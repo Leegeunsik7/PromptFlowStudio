@@ -260,6 +260,7 @@
 @inject PromptFlowStudio.Services.AvatarActing.AvatarActingDirectorStudioRunner ActRun
 @inject PromptFlowStudio.Services.InfluencerLive.VirtualInfluencerLiveStudioRunner IlRun
 @inject PromptFlowStudio.Services.StreamGateway.StreamGatewayClipperStudioRunner SgRun
+@inject PromptFlowStudio.Services.GlobalDubbing.GlobalDubbingStudioRunner GdRun
 @inject PromptFlowStudio.Services.SkinnedSplatAvatar.DualQuaternionGaussianAvatarStudioRunner DqAvRun
 @inject PromptFlowStudio.Services.AgentFederation.RealtimeSpatiotemporalKnowledgeGraph FedKg
 @inject PromptFlowStudio.Services.AgentFederation.ZeroTrustInterAgentConsensusResolver FedCons
@@ -979,6 +980,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.64.0: 실시간 다국어 더빙 — 번역 지연 · 립싱크 편차 · 언어 트랙 · 찢어짐 잔여 ── *@
+    <div class="gth-v1764">
+        <div class="gth-v96-card pid @(GdRun.Translator.MaxLatencyAll <= 200 && GdRun.LipSync.MaxDriftMs < 50 && GdRun.Translator.Chunks > 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>🗣️ 다국어 더빙</b>
+                <span class="gth-v96-be">@(PromptFlowStudio.Services.GlobalDubbing.GlobalDubbingStudioRunner.LangCode(GdRun.Router.PlatformLanguage(PromptFlowStudio.Services.StreamGateway.ChatPlatform.Twitch)))/@(PromptFlowStudio.Services.GlobalDubbing.GlobalDubbingStudioRunner.LangCode(GdRun.Router.PlatformLanguage(PromptFlowStudio.Services.StreamGateway.ChatPlatform.YouTube)))/@(PromptFlowStudio.Services.GlobalDubbing.GlobalDubbingStudioRunner.LangCode(GdRun.Router.PlatformLanguage(PromptFlowStudio.Services.StreamGateway.ChatPlatform.Chzzk))) 트랙 · @(GdRun.Translator.Chunks) 청크</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="@(GdRun.Translator.MaxLatencyAll <= 200 ? "acc" : "warn")">@(GdRun.Translator.MaxLatencyAll.ToString("0", System.Globalization.CultureInfo.InvariantCulture))</b><span>번역 ms</span></span>
+                <span class="gth-v96-m"><b class="@(GdRun.LipSync.MaxDriftMs < 50 ? "acc" : "warn")">@(GdRun.LipSync.MaxDriftMs.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture))</b><span>립 편차 ms</span></span>
+                <span class="gth-v96-m"><b>@(GdRun.LipSync.Resyncs)</b><span>재동기</span></span>
+                <span class="gth-v96-m"><b>@(GdRun.LipSync.Guard.TearResidual)</b><span>찢어짐 잔여</span></span>
+            </div>
+            <div class="gth-v96-act">@(GdRun.LastAction ?? "대기")</div>
+        </div>
+    </div>
     @* ── v17.62.0: 스트림 게이트웨이 — 연결 플랫폼 · 수신률/셰딩 · 드롭 · 링 점유 · 리먹스 ms ── *@
     <div class="gth-v1762">
         <div class="gth-v96-card pid @(SgRun.FramesOverBudget == 0 && SgRun.Gateway.ConnectedCount > 0 ? "ok" : null)">
@@ -5374,6 +5390,7 @@
         VtRun.OnChange += OnSwarmChanged; // v17.49.0 (10 Hz → 250 ms 스로틀)
         VlRun.OnChange += OnSwarmChanged; // v17.50.0 (3.3 Hz)
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
+        GdRun.OnChange += OnSwarmChanged; // v17.64.0 (10 Hz → 250 ms 스로틀)
         SgRun.OnChange += OnSwarmChanged; // v17.62.0 (10 Hz → 250 ms 스로틀)
         IlRun.OnChange += OnSwarmChanged; // v17.61.0 (10 Hz → 250 ms 스로틀)
         ActRun.OnChange += OnSwarmChanged; // v17.60.0 (10 Hz → 250 ms 스로틀)
@@ -5735,6 +5752,7 @@
         VtRun.OnChange -= OnSwarmChanged;
         VlRun.OnChange -= OnSwarmChanged;
         OcRun.OnChange -= OnSwarmChanged;
+        GdRun.OnChange -= OnSwarmChanged;
         SgRun.OnChange -= OnSwarmChanged;
         IlRun.OnChange -= OnSwarmChanged;
         ActRun.OnChange -= OnSwarmChanged;

@@ -1,0 +1,227 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.GlobalDubbing
+@using PromptFlowStudio.Services.LiveDubbing
+@using DubLanguage = PromptFlowStudio.Services.Localization.Dubbing.DubLanguage
+@using PromptFlowStudio.Services.StreamGateway
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject GlobalDubbingStudioRunner Runner
+
+@* [PromptFlow Studio v17.64.0] 🗣️ 실시간 다국어 더빙 스튜디오 — 플랫폼별 출력 언어 · 번역 청크 스트림 · 언어별 레벨 미터 · 립싱크 딜레이 모니터. *@
+<div class="mds-scrim" @onclick="Close">
+    <div class="mds-modal" @onclick:stopPropagation="true">
+        <div class="mds-h">
+            <div>
+                <div class="mds-title">🗣️ 실시간 다국어 더빙 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null)</div>
+                <div class="mds-sub"><b>스트리밍 번역기</b>가 한국어 대사를 어절 단위로 청취하며 3 어절/구두점마다 청크를 확정해 대상 언어로 200 ms 안에 사출하고, 언어 고유 운율로 음소 링을 추출합니다. <b>멀티 스트림 라우터</b>는 원본 한국어 음성의 화자 임베딩으로 모든 언어 레인의 음색을 맞추고 v17.60 감정 운율을 입혀 Twitch · YouTube · 치지직에 서로 다른 언어 트랙을 송출하며, <b>립싱크 합성기</b>는 오디오 마스터 시계에 맞춰 ARKit 52 가우시안 입/턱 블렌드셰이프를 50 ms 미만 편차로 구동합니다.</div>
+            </div>
+            <button class="mds-x" @onclick="Close">✕</button>
+        </div>
+        <div class="mds-bar">
+            <button class="mds-btn @(Runner.IsRunning ? "on" : "go")" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 동시 더빙 시작")</button>
+            <button class="mds-btn @(Runner.AutoDemo ? "on" : null)" @onclick="() => Runner.SetAutoDemo(!Runner.AutoDemo)">🎬 데모 각본</button>
+            <button class="mds-btn @(Runner.LinkInfluencer ? "on" : null)" disabled="@(!Runner.InfluencerAvailable)" @onclick="() => Runner.SetLinkInfluencer(!Runner.LinkInfluencer)">🎙 v17.61 리액션</button>
+            <button class="mds-btn @(Runner.LinkNarrative ? "on" : null)" disabled="@(!Runner.NarrativeAvailable)" @onclick="() => Runner.SetLinkNarrative(!Runner.LinkNarrative)">📜 v17.40 각본</button>
+            <button class="mds-btn @(Runner.LinkAvatar ? "on" : null)" disabled="@(!Runner.AvatarAvailable)" @onclick="() => Runner.SetLinkAvatar(!Runner.LinkAvatar)">🎭 v17.60 감정</button>
+            <button class="mds-btn" @onclick="Runner.ResetMetrics">♻ 지표</button>
+            <span class="mds-sep"></span>
+            <input class="mds-in" placeholder="한국어 대사 입력 후 Enter" @bind="_text" @bind:event="oninput" @onkeydown="OnKey" />
+            <button class="mds-btn go" @onclick="Send">🗣 송출</button>
+        </div>
+        <div class="mds-main">
+            <div class="mds-col">
+                <div class="mds-card">
+                    <div class="mds-sec">🌍 플랫폼별 출력 언어</div>
+                    <div class="mds-plats">
+                        @for (var p = 0; p < 3; p++)
+                        {
+                            var pl = (ChatPlatform)p;
+                            var lang = Runner.Router.PlatformLanguage(pl);
+                            var lane = Runner.Router.LaneOfPlatform(pl);
+                            <div class="mds-plat @(Runner.PreviewPlatform == pl ? "sel" : null)">
+                                <div class="hd"><i class="dot @(Runner.Router.OnAir(pl) ? "air" : null)"></i><b>@(MultiPlatformLiveChatGatewaySynthesizer.PlatformName(pl))</b><span>@(Runner.Router.OnAir(pl) ? "ON-AIR" : "버퍼")</span></div>
+                                <select class="mds-sel" value="@((int)lang)" @onchange="e => OnLang(pl, e)">
+                                    @foreach (var c in GlobalDubbingStudioRunner.Choices)
+                                    {
+                                        <option value="@((int)c)">@(GlobalDubbingStudioRunner.LangCode(c)) · @(GlobalDubbingStudioRunner.LangName(c))</option>
+                                    }
+                                </select>
+                                <div class="kv">레인 @(lane) · 라우팅 @(F1(Runner.Router.Routed(pl) / 48000.0)) s</div>
+                                <button class="mds-btn sm @(Runner.PreviewPlatform == pl ? "on" : null)" @onclick="() => Runner.SetPreviewPlatform(pl)">👄 립싱크 미리보기</button>
+                            </div>
+                        }
+                    </div>
+                </div>
+                <div class="mds-card">
+                    <div class="mds-sec">🔊 언어별 오디오 레벨 · 음색 유사도</div>
+                    @for (var l = 0; l < MultilingualVoiceSynthAndStreamRouter.Lanes; l++)
+                    {
+                        if (!Runner.Router.LaneActive(l)) continue;
+                        var lang = Runner.Router.LaneLanguage(l);
+                        <div class="mds-meter">
+                            <b>@(GlobalDubbingStudioRunner.LangCode(lang))</b>
+                            <div class="bar"><div class="@(Runner.Router.PeakDb(l) > -1f ? "warn" : "ok")" style="width:@(Pct(Runner.Router.Level(l)))%"></div></div>
+                            <span>@(F1(Runner.Router.RmsDb(l))) dB · 피크 @(F1(Runner.Router.PeakDb(l))) · 유사 @(F2(Runner.Router.Similarity(l))) · 청크 @(Runner.Router.ChunksIn(l))</span>
+                        </div>
+                    }
+                    <div class="mds-row">
+                        <label class="mds-lbl">각성 @(F2(Runner.Router.Arousal))</label>
+                        <input class="mds-rng" type="range" min="0" max="100" value="@((int)(Runner.Router.Arousal * 100))" disabled="@Runner.LinkAvatar" @oninput="OnArousal" />
+                        <label class="mds-lbl">정서가 @(F2(Runner.Router.Valence))</label>
+                        <input class="mds-rng" type="range" min="-100" max="100" value="@((int)(Runner.Router.Valence * 100))" disabled="@Runner.LinkAvatar" @oninput="OnValence" />
+                    </div>
+                </div>
+            </div>
+            <div class="mds-col">
+                <div class="mds-card">
+                    <div class="mds-sec">📝 실시간 번역 청크 스트림 · 최대 @(F0(Runner.Translator.MaxLatencyAll)) ms / 200 ms @(Runner.Translator.BudgetMisses > 0 ? "· ⚠ 초과 " + Runner.Translator.BudgetMisses : null)</div>
+                    @if (Runner.Translator.RecentCount == 0)
+                    {
+                        <div class="mds-empty">청크 대기 — 대사를 입력하거나 데모 각본을 켜고 시작하세요.</div>
+                    }
+                    else
+                    {
+                        <div class="mds-chunks">
+                            @for (var i = 0; i < Math.Min(18, Runner.Translator.RecentCount); i++)
+                            {
+                                var c = Runner.Translator.Recent(i);
+                                <div class="mds-chunk l@((int)c.Lang)">
+                                    <i>@(GlobalDubbingStudioRunner.LangCode(c.Lang))</i>
+                                    <span>@(new string(Runner.Translator.Text(in c)))</span>
+                                    <em class="@(c.LatencyMs <= RealtimeMultilingualTranslationPhonemeEngine.BudgetMs ? null : "bad")">@(F0(c.LatencyMs)) ms</em>
+                                </div>
+                            }
+                        </div>
+                    }
+                    <div class="mds-kv">어절 @(Runner.Translator.Words) · 미등록 음역 @(Runner.Translator.UnknownWords) · 음소 @(Runner.Translator.PhonemesExtracted) · 스텝 @(F1(Runner.Translator.MaxStepUs)) µs</div>
+                </div>
+                <div class="mds-card">
+                    <div class="mds-sec">👄 립싱크 딜레이 모니터 · @(GlobalDubbingStudioRunner.LangCode(Runner.PreviewLanguage)) · 편차 @(F1(Runner.LipSync.DriftMs)) ms (최대 @(F1(Runner.LipSync.MaxDriftMs)) / 50)</div>
+                    <svg class="mds-plot" viewBox="0 0 600 60" preserveAspectRatio="none">
+                        <line class="gate" x1="0" x2="600" y1="@(Y(50 / 60.0))" y2="@(Y(50 / 60.0))" />
+                        <polyline class="drift" points="@(Series(0))" />
+                        <polyline class="ap" points="@(Series(1))" />
+                    </svg>
+                    <div class="mds-vis">
+                        <div class="ph"><b>@(RealtimeNeuralVoiceCloningDubbingEngine.Name(Runner.LipSync.Current))</b><span>현재 음소 · 이전 @(RealtimeNeuralVoiceCloningDubbingEngine.Name(Runner.LipSync.Previous)) · 혼합 @(F2(Runner.LipSync.Blend01))</span></div>
+                        <div class="ws">
+                            @for (var k = 0; k < 6; k++)
+                            {
+                                <div class="w"><span>@(ShapeName(k))</span><div class="bar"><div style="width:@(Pct(Runner.LipSync.Weight(k)))%"></div></div></div>
+                            }
+                        </div>
+                    </div>
+                    <div class="mds-kv">개구도 @(F2(Runner.LipSync.Face.Aperture)) · 재동기 @(Runner.LipSync.Resyncs) · 언어 전환 @(Runner.LipSync.LanguageSwitches) · 찢어짐 잔여 @(Runner.LipSync.Guard.TearResidual) · 프레임 @(F0(Runner.LipSync.MaxFrameUs)) µs · 틱 최대 @(F2(Runner.MaxTickMs)) ms</div>
+                </div>
+                <div class="mds-act">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .mds-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .mds-modal { width: min(1180px, 96vw); max-height: 92vh; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); padding: 14px 16px; color: var(--text-primary); }
+    .mds-h { display: flex; justify-content: space-between; gap: 12px; } .mds-title { font-size: 17px; font-weight: 800; } .mds-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .mds-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .mds-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 10px 0; }
+    .mds-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .mds-btn.go { border-color: #22c55e; } .mds-btn.on { background: color-mix(in srgb, #0ea5e9 30%, #1e293b); border-color: #0ea5e9; } .mds-btn:disabled { opacity: .45; cursor: default; } .mds-btn.sm { padding: 3px 8px; font-size: 11px; }
+    .mds-sep { flex: 1; } .mds-in { min-width: 280px; background: #0f172a; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; font-size: 12px; }
+    .mds-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 12px; }
+    .mds-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .mds-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: #0b1324; }
+    .mds-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 8px; }
+    .mds-plats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .mds-plat { border: 1px solid var(--line); border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 6px; background: #0f172a; } .mds-plat.sel { border-color: #f472b6; }
+    .mds-plat .hd { display: flex; gap: 6px; align-items: center; font-size: 12px; } .mds-plat .hd span { margin-left: auto; font: 600 10px var(--mono); color: var(--text-muted); }
+    .mds-plat .dot { width: 8px; height: 8px; border-radius: 50%; background: #475569; } .mds-plat .dot.air { background: #ef4444; box-shadow: 0 0 6px #ef4444; }
+    .mds-plat .kv, .mds-kv { font-size: 10.5px; color: var(--text-muted); } .mds-kv { margin-top: 6px; }
+    .mds-sel { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 3px; font-size: 11.5px; }
+    .mds-meter { display: grid; grid-template-columns: 30px 1fr; gap: 2px 8px; align-items: center; margin-bottom: 6px; } .mds-meter b { font: 800 11px var(--mono); color: #93c5fd; } .mds-meter span { grid-column: 2; font-size: 10px; color: var(--text-muted); }
+    .mds-meter .bar, .mds-vis .bar { height: 8px; background: #1e293b; border-radius: 4px; overflow: hidden; } .mds-meter .bar div, .mds-vis .bar div { height: 100%; background: #22c55e; } .mds-meter .bar .warn { background: #f59e0b; }
+    .mds-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; } .mds-lbl { font-size: 11px; color: var(--text-muted); } .mds-rng { width: 110px; }
+    .mds-empty { font-size: 11px; color: var(--text-muted); padding: 8px 0; }
+    .mds-chunks { display: flex; flex-direction: column; gap: 3px; max-height: 260px; overflow-y: auto; }
+    .mds-chunk { display: grid; grid-template-columns: 28px 1fr auto; gap: 6px; font-size: 11.5px; padding: 3px 6px; border-radius: 5px; background: #0f172a; border-left: 3px solid #64748b; }
+    .mds-chunk i { font: 800 10px var(--mono); font-style: normal; color: #fde047; } .mds-chunk span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .mds-chunk em { font: 700 10px var(--mono); font-style: normal; color: #86efac; } .mds-chunk em.bad { color: #f87171; }
+    .mds-chunk.l1 { border-left-color: #a855f7; } .mds-chunk.l2 { border-left-color: #ef4444; } .mds-chunk.l4 { border-left-color: #f59e0b; } .mds-chunk.l3 { border-left-color: #22c55e; } .mds-chunk.l5 { border-left-color: #0ea5e9; } .mds-chunk.l6 { border-left-color: #e2e8f0; }
+    .mds-plot { width: 100%; height: 60px; background: #0f172a; border-radius: 6px; display: block; }
+    .mds-plot polyline { fill: none; stroke-width: 1.4; } .mds-plot .drift { stroke: #f472b6; } .mds-plot .ap { stroke: #38bdf8; opacity: .7; } .mds-plot .gate { stroke: #ef4444; stroke-dasharray: 4 3; stroke-width: 1; }
+    .mds-vis { display: grid; grid-template-columns: 150px 1fr; gap: 10px; margin-top: 8px; align-items: center; }
+    .mds-vis .ph b { display: block; font: 800 26px var(--mono); color: #f9a8d4; } .mds-vis .ph span { font-size: 10px; color: var(--text-muted); }
+    .mds-vis .ws { display: flex; flex-direction: column; gap: 3px; } .mds-vis .w { display: grid; grid-template-columns: 96px 1fr; gap: 6px; align-items: center; font-size: 10px; color: var(--text-muted); } .mds-vis .bar div { background: #f472b6; }
+    .mds-act { font-size: 11px; color: var(--text-muted); }
+    @@media (max-width: 960px) { .mds-main { grid-template-columns: 1fr; } .mds-plats { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+    private string _text = "";
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("GlobalDub.Modal.Timer", ex); }
+        }, null, 200, 200);
+    }
+
+    private static string F0(double v) => double.IsFinite(v) ? v.ToString("0", CultureInfo.InvariantCulture) : "—";
+    private static string F1(double v) => double.IsFinite(v) ? v.ToString("0.0", CultureInfo.InvariantCulture) : "—";
+    private static string F2(double v) => double.IsFinite(v) ? v.ToString("0.00", CultureInfo.InvariantCulture) : "—";
+    private static string Pct(float v) => Math.Clamp(v * 100.0, 0, 100).ToString("0.#", CultureInfo.InvariantCulture);
+    private static string Y(double v) => (58 - 56 * Math.Clamp(v, 0, 1)).ToString("0.#", CultureInfo.InvariantCulture);
+    private static string ShapeName(int k) => LocalizedLipSyncBlendshapeSynthesizer.Channels[k].ToString();
+
+    private string Series(int kind)
+    {
+        var n = Runner.LipSync.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            var v = kind == 0 ? Runner.LipSync.DriftSeries(k) / 60.0 : Runner.LipSync.ApertureSeries(k);
+            sb.Append((600.0 * i / (n - 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append(Y(v)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void OnLang(ChatPlatform p, ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetPlatformLanguage(p, (DubLanguage)v);
+    }
+
+    private void OnArousal(ChangeEventArgs e) { if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetArousal(v / 100f); }
+    private void OnValence(ChangeEventArgs e) { if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetValence(v / 100f); }
+
+    private void OnKey(KeyboardEventArgs e) { if (e.Key == "Enter") Send(); }
+
+    private void Send()
+    {
+        if (Runner.Say(_text)) _text = "";
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}

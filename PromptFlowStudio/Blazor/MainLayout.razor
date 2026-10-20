@@ -481,6 +481,10 @@
         {
             <CinematicLensOpticsStudioModal OnClose="() => _lensOpen = false" />
         }
+        @if (_globalDub)
+        {
+            <MultilingualDubbingStudioModal OnClose="() => _globalDub = false" />
+        }
         @if (_streamGateway)
         {
             <StreamGatewayClipperStudioModal OnClose="() => _streamGateway = false" />
@@ -916,7 +920,7 @@
     private bool _camTrack; // v17.45.0 헤더 📐 AI 카메라 트래킹 스튜디오
     private bool _directorOpen, _multiEngineOpen, _virtualLiveOpen, _liveDubOpen, _motionMatchOpen, _visualQaOpen, _contactLocoOpen, _dexManipOpen, _ragdollOpen, _foleyOpen, _cineDirectorOpen, _narrativeOpen, _stageLightOpen, _pyroOpen, _lensOpen; // v17.50.1 스토리보드 → 레이아웃 이관 스튜디오 15종
     private bool _sideCollapsed; // v17.50.1 트랜스포트 바 ☰ 사이드바 접기
-    private readonly bool[] _openCats = new bool[6];
+    private readonly bool[] _openCats = new bool[StudioCatalog.Categories.Length];
     private string _navFilter = "";
 
     private void ToggleSidebar() => _sideCollapsed = !_sideCollapsed;
@@ -978,6 +982,7 @@
             case "_igLoop": _igLoop = on; break;
             case "_omni": _omni = on; break;
             case "_streamGateway": _streamGateway = on; break;
+            case "_globalDub": _globalDub = on; break;
             case "_influencerLive": _influencerLive = on; break;
             case "_acting": _acting = on; break;
             case "_clothHair": _clothHair = on; break;
@@ -1108,6 +1113,7 @@
         "_igLoop" => _igLoop,
         "_omni" => _omni,
         "_streamGateway" => _streamGateway,
+        "_globalDub" => _globalDub,
         "_influencerLive" => _influencerLive,
         "_acting" => _acting,
         "_clothHair" => _clothHair,
@@ -1201,6 +1207,7 @@
         _ => false,
     };
 
+    private bool _globalDub; // v17.64.0 사이드바 🌍 글로벌 & 로컬라이제이션 ▸ 🗣️ 실시간 다국어 더빙 스튜디오(스트리밍 번역 ≤ 200 ms · 다국어 음색 유지 합성 · 플랫폼별 언어 트랙 · ARKit 가우시안 립싱크 < 50 ms)
     private bool _streamGateway; // v17.62.0 사이드바 📜 각본 & 타임라인 ▸ 🛰️ 스트림 게이트웨이 & 클리퍼 스튜디오(32 MB 압축 NAL 링 · 무손실 1080p 리먹스 · Twitch/YouTube/치지직 게이트웨이 · 백오프/배압)
     private bool _influencerLive; // v17.61.0 사이드바 📜 각본 & 타임라인 ▸ 🎙️ 버추얼 인플루언서 라이브 스튜디오(채팅 리액션 트리거 · 하이라이트 9:16 즉시 클리핑 · 도배/비속어 가드)
     private bool _acting; // v17.60.0 사이드바 🎭 디지털 휴먼 ▸ 🎬 아바타 자율 연기 디렉터 스튜디오(텍스트-투-제스처 · FABRIK 상지 IK · 관절 한계 가드)

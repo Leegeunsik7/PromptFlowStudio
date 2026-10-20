@@ -17,6 +17,7 @@ public static class StudioCatalog
         "📜 각본 & 타임라인",
         "📸 소셜 & 바이럴 오토메이션",
         "⚙️ 시스템 & QA 인프라",
+        "🌍 글로벌 & 로컬라이제이션",
     };
 
     public static readonly StudioEntry[] Entries =
@@ -160,6 +161,7 @@ public static class StudioCatalog
         new("L_visualQaOpen", "👁️", "AI 헤드리스 시각 QA & 디버깅 스튜디오", 5),
         new("sb:_enterpriseOpen", "🏢", "엔터프라이즈 팀 & 렌더 팜 (스토리보드)", 5),
         new("sb:_masterOpen", "👑", "마스터 엔터프라이즈 스튜디오 (스토리보드)", 5),
+        new("_globalDub", "🗣️", "실시간 다국어 더빙 스튜디오", 6),
     };
 
     public static int CountIn(int category) { var n = 0; foreach (var e in Entries) if (e.Category == category) n++; return n; }
