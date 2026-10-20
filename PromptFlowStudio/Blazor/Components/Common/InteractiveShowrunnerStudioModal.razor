@@ -1,0 +1,208 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Showrunner
+@using PromptFlowStudio.Services.BroadcastMcr
+@using PromptFlowStudio.Services.Talkshow
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject InteractiveShowrunnerStudioRunner Runner
+
+@* [PromptFlow Studio v17.67.0] 🎪 AI 자율 쇼러너 & 인터랙티브 스튜디오 — 활성 물리 객체 · 드롭 단가 · 스팸 가드 · 쇼러너 개입 로그. *@
+<div class="isr-scrim" @onclick="Close">
+    <div class="isr-modal" @onclick:stopPropagation="true">
+        <div class="isr-h">
+            <div>
+                <div class="isr-title">🎪 AI 자율 쇼러너 &amp; 인터랙티브 스튜디오 @(Runner.IsRunning ? "· ▶ MCR 60 Hz" : null)</div>
+                <div class="isr-sub"><b>인터랙티브 물리 스포너</b>가 v17.62 채팅 커맨드(<code>!drop tomato|balloon|ball [@@host|@@1|@@2]</code> · <code>!confetti</code>)를 받아 500 슬롯 풀에서 3DGS 프롭을 세트 상공에 스폰하고, v17.57 골격 캡슐과 v17.59 데님 의상 셸에 반발 · 마찰 · 찌그러짐 · 파열을 계산합니다. <b>AI 쇼러너</b>는 피격 즉시 대본을 끊고 FSM 강제 발언권으로 "방금 누구야!" 같은 애드리브와 놀람/화남 표정을 넣은 뒤 v17.66 MCR에 피격 아바타 클로즈업을 같은 프레임에 디스패치하며, <b>스팸 가드</b>는 40 객체/s 글로벌 버킷 · 1.5 s 사용자 쿨다운 · 틱당 48 커맨드 · 카메라 밖 최고령 재활용으로 1만 개 폭주에도 프레임 예산을 지킵니다.</div>
+            </div>
+            <button class="isr-x" @onclick="Close">✕</button>
+        </div>
+        <div class="isr-bar">
+            <button class="isr-btn @(Runner.IsRunning ? "on" : "go")" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 쇼 시작")</button>
+            <button class="isr-btn @(Runner.LinkGateway ? "on" : null)" disabled="@(!Runner.GatewayAvailable)" @onclick="() => Runner.SetLinkGateway(!Runner.LinkGateway)">🔗 v17.62 채팅</button>
+            <button class="isr-btn @(Runner.Showrunner.Enabled ? "on" : null)" @onclick="() => Runner.SetShowrunner(!Runner.Showrunner.Enabled)">🎬 쇼러너</button>
+            <button class="isr-btn @(Runner.Guard.Enabled ? "on" : "bad")" @onclick="() => Runner.SetGuard(!Runner.Guard.Enabled)">🛡 스팸 가드</button>
+            <span class="isr-sep"></span>
+            <select class="isr-sel" value="@_target" @onchange="OnTarget">
+                <option value="-1">🎯 자동</option>
+                <option value="0">@@host</option><option value="1">@@1</option><option value="2">@@2</option>
+            </select>
+            <button class="isr-btn" @onclick="() => Drop(DropKind.Tomato)">🍅 토마토</button>
+            <button class="isr-btn" @onclick="() => Drop(DropKind.WaterBalloon)">💧 물풍선</button>
+            <button class="isr-btn" @onclick="() => Drop(DropKind.Ball)">⚽ 공</button>
+            <button class="isr-btn" @onclick="Confetti">🎊 컨페티</button>
+            <button class="isr-btn hot" @onclick="() => Runner.Flood(10_000)">🌊 1만 스팸</button>
+            <button class="isr-btn" @onclick="Runner.ClearProps">🧹 회수</button>
+            <button class="isr-btn" @onclick="Runner.ResetMetrics">♻ 지표</button>
+        </div>
+        <div class="isr-main">
+            <div class="isr-col">
+                <div class="isr-card">
+                    <div class="isr-sec">📺 PGM · @(BroadcastMcrMasterControlSynthesizer.SourceName(Runner.Mcr.Mcr.Program)) · @(TalkshowMultiCamDeadlockGuard.ShotName(Runner.Talkshow.Guard.Shot))</div>
+                    <div class="isr-view">@if (_pgm.Length > 0) { <img src="@_pgm" alt="PGM" /> } else { <div class="ph">대기 — 쇼 시작</div> }</div>
+                    <div class="isr-kv">긴급 컷 @(Runner.Mcr.CueCuts) · 지연 @(Runner.Mcr.LastCueLatencyFrames) f · 애드리브 @(Runner.Talkshow.Adlibs) · 강제 컷 @(Runner.Talkshow.Guard.ForcedCuts) · 화자 @(Runner.Talkshow.Fsm.Holder >= 0 ? MultiAvatarTalkshowStudioRunner.Name(Runner.Talkshow.Fsm.Holder) : "—")</div>
+                </div>
+                <div class="isr-card">
+                    <div class="isr-sec">⚙️ 활성 물리 객체 · <b class="@(Runner.Spawner.Active >= ViewerInteractivePhysicsSpawnerEngine.Capacity ? "warn" : null)">@(Runner.Spawner.Active)</b> / @(ViewerInteractivePhysicsSpawnerEngine.Capacity)</div>
+                    <div class="isr-meter"><div style="width:@(Pct(Runner.Spawner.Active / (float)ViewerInteractivePhysicsSpawnerEngine.Capacity))%"></div></div>
+                    <svg class="isr-plot" viewBox="0 0 600 60" preserveAspectRatio="none">
+                        <line class="gate" x1="0" x2="600" y1="@(Yv(PhysicsSpamPoolingSafetyGuard.LayerBudgetMs / 6.0))" y2="@(Yv(PhysicsSpamPoolingSafetyGuard.LayerBudgetMs / 6.0))" />
+                        <polyline class="ms" points="@(Series(0))" />
+                        <polyline class="act" points="@(Series(1))" />
+                    </svg>
+                    <div class="isr-kv">스폰 @(Runner.Spawner.Spawned) · 피격 @(Runner.Spawner.Hits)(머리 @(Runner.Spawner.HeadHits) · 의상 @(Runner.Spawner.GarmentHits)) · 파열 @(Runner.Spawner.Bursts) · 접촉 @(Runner.Spawner.Contacts) · 최대 찌그러짐 @(Pct(Runner.Spawner.PeakSquash))%</div>
+                    <div class="isr-kv">레이어 @(F2(Runner.LastLayerMs)) ms (최대 @(F2(Runner.MaxLayerMs)) · 16.7 ms 초과 @(Runner.LayerOverBudget)) · 물리 @(F0(Runner.Spawner.LastStepUs)) µs · 스플랫 @(F0(Runner.Spawner.LastWriteUs)) µs · MCR 틱 최대 @(F2(Runner.Mcr.MaxTickMs)) ms</div>
+                </div>
+            </div>
+            <div class="isr-col">
+                <div class="isr-card">
+                    <div class="isr-sec">💰 드롭 커맨드 단가(후원 연동 · 0 = 무료)</div>
+                    <div class="isr-prices">
+                        @for (var k = 0; k < 4; k++)
+                        {
+                            var kind = (DropKind)k;
+                            <div class="isr-price"><span>@(ViewerInteractivePhysicsSpawnerEngine.KindName(kind))</span><input type="number" min="0" step="500" value="@(Runner.Price(kind))" @onchange="e => OnPrice(kind, e)" /><em>원 · @(Runner.SpawnedBy(kind))회</em></div>
+                        }
+                    </div>
+                </div>
+                <div class="isr-card">
+                    <div class="isr-sec">🛡 스팸 가드 · 버킷 @(F1(Runner.Guard.Tokens)) / @(F0(PhysicsSpamPoolingSafetyGuard.Burst)) @(Runner.Guard.RateScale < 1f ? "· ⚠ 유입 " + Pct(Runner.Guard.RateScale) + "%" : null)</div>
+                    <div class="isr-counters">
+                        <span><b>@(Runner.Guard.Offered)</b>수신</span><span><b class="ok">@(Runner.Guard.Admitted)</b>허가</span><span><b class="warn">@(Runner.Guard.RateLimited)</b>버킷 거부</span>
+                        <span><b class="warn">@(Runner.Guard.UserLimited)</b>쿨다운</span><span><b>@(Runner.Guard.Unpaid)</b>단가 미달</span><span><b class="err">@(Runner.Guard.QueueDropped)</b>링 포화</span>
+                        <span><b>@(Runner.Guard.Recycled)</b>재활용</span><span><b>@(Runner.Guard.Throttles)</b>스로틀</span><span><b>@(Runner.Guard.Pending)</b>대기</span>
+                    </div>
+                </div>
+                <div class="isr-card">
+                    <div class="isr-sec">🎬 쇼러너 개입 로그 · @(Runner.Showrunner.Interventions)회 · 억제 @(Runner.Showrunner.Suppressed) · 커맨드 @(F1(Runner.Showrunner.CommandsPerSec))/s</div>
+                    @if (Runner.Showrunner.LogCount == 0)
+                    {
+                        <div class="isr-empty">개입 대기 — 아바타가 피격되거나 채팅이 폭주하면 쇼러너가 대본을 끊고 애드리브합니다.</div>
+                    }
+                    else
+                    {
+                        <div class="isr-log">
+                            @for (var i = 0; i < Math.Min(12, Runner.Showrunner.LogCount); i++)
+                            {
+                                var r = Runner.Showrunner.Log(i);
+                                <div class="isr-ev c@((int)r.Cue)"><i>@(AutonomousShowrunnerAdlibSynthesizer.CueName(r.Cue))</i><b>@(MultiAvatarTalkshowStudioRunner.Name(r.Avatar))</b><span>@(new string(Runner.Showrunner.LogText(i)))</span><em>@(r.CloseUp ? "📸 CU" : null)@(r.Anger > 0.3f ? " 😠" : r.Surprise > 0.5f ? " 😲" : null)</em></div>
+                            }
+                        </div>
+                    }
+                </div>
+                <div class="isr-act">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .isr-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .isr-modal { width: min(1280px, 96vw); max-height: 94vh; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); padding: 14px 16px; color: var(--text-primary); }
+    .isr-h { display: flex; justify-content: space-between; gap: 12px; } .isr-title { font-size: 17px; font-weight: 800; } .isr-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; } .isr-sub code { font: 600 10.5px var(--mono); color: #fde047; }
+    .isr-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .isr-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 10px 0; }
+    .isr-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .isr-btn.go { border-color: #22c55e; } .isr-btn.on { background: color-mix(in srgb, #f59e0b 28%, #1e293b); border-color: #f59e0b; } .isr-btn.hot { border-color: #ef4444; } .isr-btn.bad { border-color: #ef4444; color: #fca5a5; } .isr-btn:disabled { opacity: .45; cursor: default; }
+    .isr-sep { flex: 1; } .isr-sel { background: #0f172a; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; font-size: 12px; }
+    .isr-main { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 12px; }
+    .isr-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .isr-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: #0b1324; }
+    .isr-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 8px; } .isr-sec .warn { color: #f87171; }
+    .isr-view { border-radius: 8px; overflow: hidden; background: #05070c; aspect-ratio: 5 / 3; border: 3px solid #ef4444; } .isr-view img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .isr-view .ph { display: flex; align-items: center; justify-content: center; height: 100%; font-size: 12px; color: var(--text-muted); }
+    .isr-kv { font-size: 10.5px; color: var(--text-muted); margin-top: 6px; }
+    .isr-meter { height: 10px; background: #1e293b; border-radius: 5px; overflow: hidden; } .isr-meter div { height: 100%; background: linear-gradient(90deg, #22c55e, #f59e0b 80%, #ef4444); }
+    .isr-plot { width: 100%; height: 60px; background: #0f172a; border-radius: 6px; display: block; margin-top: 6px; } .isr-plot polyline { fill: none; stroke-width: 1.4; } .isr-plot .ms { stroke: #38bdf8; } .isr-plot .act { stroke: #f59e0b; opacity: .8; } .isr-plot .gate { stroke: #ef4444; stroke-dasharray: 4 3; }
+    .isr-prices { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .isr-price { display: grid; grid-template-columns: 74px 1fr; gap: 2px 6px; align-items: center; font-size: 11.5px; } .isr-price input { background: #0f172a; color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font: 600 11px var(--mono); width: 100%; } .isr-price em { grid-column: 2; font-size: 10px; font-style: normal; color: var(--text-muted); }
+    .isr-counters { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; } .isr-counters span { display: flex; flex-direction: column; font-size: 10px; color: var(--text-muted); background: #0f172a; border-radius: 6px; padding: 4px 6px; }
+    .isr-counters b { font: 800 14px var(--mono); color: var(--text-primary); } .isr-counters .ok { color: #86efac; } .isr-counters .warn { color: #fbbf24; } .isr-counters .err { color: #f87171; }
+    .isr-empty { font-size: 11px; color: var(--text-muted); padding: 6px 0; }
+    .isr-log { display: flex; flex-direction: column; gap: 3px; max-height: 240px; overflow-y: auto; }
+    .isr-ev { display: grid; grid-template-columns: 62px 58px 1fr auto; gap: 6px; font-size: 11px; padding: 3px 6px; border-radius: 5px; background: #0f172a; border-left: 3px solid #64748b; }
+    .isr-ev i { font: 700 10px var(--mono); font-style: normal; color: #fde047; } .isr-ev span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .isr-ev em { font-style: normal; font-size: 10px; color: #fca5a5; }
+    .isr-ev.c0 { border-left-color: #ef4444; } .isr-ev.c1 { border-left-color: #f59e0b; } .isr-ev.c2 { border-left-color: #38bdf8; } .isr-ev.c3 { border-left-color: #a855f7; } .isr-ev.c4 { border-left-color: #22c55e; }
+    .isr-act { font-size: 11px; color: var(--text-muted); }
+    @@media (max-width: 960px) { .isr-main { grid-template-columns: 1fr; } .isr-prices { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly byte[] _bmp = new byte[BroadcastMcrStudioRunner.PreviewBytes];
+    private System.Threading.Timer? _timer;
+    private string _pgm = "";
+    private int _target = -1, _seq;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Showrunner.Modal.Timer", ex); }
+        }, null, 200, 200);
+    }
+
+    protected override bool ShouldRender()
+    {
+        if (Runner.Mcr.Compositor is not null && Runner.Mcr.Mcr.VideoFrames > 0)
+        {
+            Runner.Mcr.WritePreviews();
+            Runner.Mcr.CopyPreview(true, _bmp);
+            _pgm = "data:image/bmp;base64," + Convert.ToBase64String(_bmp);
+        }
+        return true;
+    }
+
+    private static string F0(double v) => double.IsFinite(v) ? v.ToString("0", CultureInfo.InvariantCulture) : "—";
+    private static string F1(double v) => double.IsFinite(v) ? v.ToString("0.0", CultureInfo.InvariantCulture) : "—";
+    private static string F2(double v) => double.IsFinite(v) ? v.ToString("0.00", CultureInfo.InvariantCulture) : "—";
+    private static string Pct(float v) => Math.Clamp(v * 100.0, 0, 100).ToString("0.#", CultureInfo.InvariantCulture);
+    private static string Yv(double v) => (58 - 56 * Math.Clamp(v, 0, 1)).ToString("0.#", CultureInfo.InvariantCulture);
+
+    private string Series(int kind)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            var v = kind == 0 ? Runner.LayerMsSeries(k) / 6.0 : Runner.ActiveSeries(k) / ViewerInteractivePhysicsSpawnerEngine.Capacity;
+            sb.Append((600.0 * i / (n - 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append(Yv(v)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private string Tag() => _target switch { 0 => " @host", 1 => " @1", 2 => " @2", _ => "" };
+
+    private void Drop(DropKind k)
+    {
+        var item = k switch { DropKind.Tomato => "tomato", DropKind.WaterBalloon => "balloon", _ => "ball" };
+        Runner.Submit("스튜디오" + (++_seq).ToString(CultureInfo.InvariantCulture), "!drop " + item + Tag(), Runner.Price(k));
+    }
+
+    private void Confetti() => Runner.Submit("스튜디오" + (++_seq).ToString(CultureInfo.InvariantCulture), "!confetti", Runner.Price(DropKind.Confetti));
+
+    private void OnTarget(ChangeEventArgs e) { if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) _target = v; }
+    private void OnPrice(DropKind k, ChangeEventArgs e) { if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetPrice(k, v); }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}

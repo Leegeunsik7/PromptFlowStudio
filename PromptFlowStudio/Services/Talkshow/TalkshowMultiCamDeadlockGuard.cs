@@ -26,7 +26,7 @@ public sealed class TalkshowMultiCamDeadlockGuard
     private DirectorCam _cam = DirectorCam.Master;
     private int _pairA = 1, _pairB = 2, _subject = -1, _pendSubject, _pendOther, _speaker = -1, _addressee = -1, _bustToggle;
     private double _liveSince = double.NaN, _pendAt, _pendReady;
-    private bool _pending, _deferred;
+    private bool _pending, _deferred, _lastForced;
 
     public TalkshowMultiCamDeadlockGuard() { }
 
@@ -132,6 +132,17 @@ public sealed class TalkshowMultiCamDeadlockGuard
         RequestShot(TalkShot.Reaction, listener, _speaker, nowMs, 0);
     }
 
+    /// <summary>v17.67 쇼러너 긴급 컷 — 최소 유지 규칙 예외(돌발 피격 클로즈업) · 일반 컷 지표와 분리 집계.</summary>
+    public void ForceShot(TalkShot shot, int subject, double nowMs)
+    {
+        if ((uint)subject >= (uint)_active) return;
+        _pending = false; _speaker = subject;
+        Execute(shot, subject, Other(subject), nowMs, true);
+        ForcedCuts++;
+    }
+
+    public long ForcedCuts { get; private set; }
+
     public void RequestShot(TalkShot shot, int subject, int other, double nowMs, double delayS)
     {
         if ((uint)subject >= (uint)_active) return;
@@ -145,7 +156,7 @@ public sealed class TalkshowMultiCamDeadlockGuard
     /// <summary>프레임 — 정책(독백 · 리액션 복귀) · 대기 컷 실행(최소 유지) · v17.39 프레이밍 갱신.</summary>
     public void StepCamera(double nowMs, float dt)
     {
-        if (double.IsNaN(_liveSince)) { Execute(TalkShot.Wide, 0, 0, nowMs); }
+        if (double.IsNaN(_liveSince)) { Execute(TalkShot.Wide, 0, 0, nowMs, false); }
         var age = ShotAgeS(nowMs);
         if (!_pending && _speaker >= 0)
         {
@@ -155,7 +166,7 @@ public sealed class TalkshowMultiCamDeadlockGuard
         }
         if (_pending && nowMs >= _pendReady)
         {
-            if (age >= MinHoldS) { _pending = false; Execute(_pendShot, _pendSubject, _pendOther, nowMs); }
+            if (age >= MinHoldS) { _pending = false; Execute(_pendShot, _pendSubject, _pendOther, nowMs, false); }
             else if (!_deferred) { _deferred = true; DeferredCuts++; }
         }
         Framing.A = _actors[_pairA];
@@ -163,7 +174,7 @@ public sealed class TalkshowMultiCamDeadlockGuard
         Framing.Update(dt);
     }
 
-    private void Execute(TalkShot shot, int subject, int other, double nowMs)
+    private void Execute(TalkShot shot, int subject, int other, double nowMs, bool forced)
     {
         int a, b;
         if (shot == TalkShot.Wide)
@@ -182,14 +193,14 @@ public sealed class TalkshowMultiCamDeadlockGuard
         };
         Framing.ActionSubject = (byte)(subjIsA ? 0 : 1);
         Framing.ActionSize = shot == TalkShot.Reaction ? ShotSize.CloseUp : ShotSize.MediumClose;
-        if (!double.IsNaN(_liveSince))
+        if (!double.IsNaN(_liveSince) && !forced && !_lastForced)
         {
             var hold = (float)((nowMs - _liveSince) / 1000.0);
             if (hold < MinObservedHoldS) MinObservedHoldS = hold;
             Cuts++;
             LastCutLatencyMs = (float)(nowMs - _pendAt);
         }
-        _shot = shot; _cam = cam; _pairA = a; _pairB = b; _subject = subject; _liveSince = nowMs;
+        _shot = shot; _cam = cam; _pairA = a; _pairB = b; _subject = subject; _liveSince = nowMs; _lastForced = forced;
         Framing.Snap((int)cam);
     }
 }

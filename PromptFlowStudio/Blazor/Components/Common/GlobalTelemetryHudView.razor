@@ -262,6 +262,8 @@
 @inject PromptFlowStudio.Services.StreamGateway.StreamGatewayClipperStudioRunner SgRun
 @inject PromptFlowStudio.Services.GlobalDubbing.GlobalDubbingStudioRunner GdRun
 @inject PromptFlowStudio.Services.Talkshow.MultiAvatarTalkshowStudioRunner TkRun
+@inject PromptFlowStudio.Services.BroadcastMcr.BroadcastMcrStudioRunner BmcRun
+@inject PromptFlowStudio.Services.Showrunner.InteractiveShowrunnerStudioRunner ShwRun
 @inject PromptFlowStudio.Services.SkinnedSplatAvatar.DualQuaternionGaussianAvatarStudioRunner DqAvRun
 @inject PromptFlowStudio.Services.AgentFederation.RealtimeSpatiotemporalKnowledgeGraph FedKg
 @inject PromptFlowStudio.Services.AgentFederation.ZeroTrustInterAgentConsensusResolver FedCons
@@ -981,6 +983,36 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.67.0: AI 쇼러너 & 인터랙티브 — 활성 객체 · 피격 · 개입 · 스팸 차단 · 레이어 예산 ── *@
+    <div class="gth-v1767">
+        <div class="gth-v96-card pid @(ShwRun.LayerOverBudget == 0 && ShwRun.Spawner.Active <= 500 && ShwRun.LayerFrames > 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>🎪 AI 쇼러너</b>
+                <span class="gth-v96-be">활성 @(ShwRun.Spawner.Active)/500 · 커맨드 @(ShwRun.Showrunner.CommandsPerSec.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture))/s@(ShwRun.Guard.RateScale < 1f ? " · ⚠ 스로틀" : null)</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b>@(ShwRun.Spawner.Hits)</b><span>피격</span></span>
+                <span class="gth-v96-m"><b class="acc">@(ShwRun.Showrunner.Interventions)</b><span>애드리브</span></span>
+                <span class="gth-v96-m"><b class="@(ShwRun.Guard.RateLimited + ShwRun.Guard.QueueDropped > 0 ? "warn" : null)">@(ShwRun.Guard.RateLimited + ShwRun.Guard.UserLimited + ShwRun.Guard.QueueDropped)</b><span>스팸 차단</span></span>
+                <span class="gth-v96-m"><b class="@(ShwRun.LayerOverBudget == 0 ? "acc" : "warn")">@(ShwRun.MaxLayerMs.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture))</b><span>레이어 ms</span></span>
+            </div>
+            <div class="gth-v96-act">@(ShwRun.LastAction ?? "대기")</div>
+        </div>
+    </div>
+    @* ── v17.66.0: 브로드캐스트 MCR — PGM/PVW · 테이크 · A/V 동기 · PPL 가림/회피 ── *@
+    <div class="gth-v1766">
+        <div class="gth-v96-card pid @(BmcRun.Mcr.AvSyncFrames == 0 && BmcRun.Ppl.AvoidRate >= 1f && BmcRun.FramesOverBudget == 0 && BmcRun.Mcr.VideoFrames > 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>🎛️ 주조정실 MCR</b>
+                <span class="gth-v96-be">PGM @(BmcRun.Mcr.Program + 1) · PVW @(BmcRun.Mcr.Preview + 1)@(BmcRun.Mcr.EncoderOpen ? " · 🔴 ON-AIR" : null)@(BmcRun.Mcr.Transitioning ? " · " + PromptFlowStudio.Services.BroadcastMcr.BroadcastMcrMasterControlSynthesizer.TransitionName(BmcRun.Mcr.ActiveTransition) : null)</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b>@(BmcRun.Mcr.Takes)</b><span>테이크</span></span>
+                <span class="gth-v96-m"><b class="@(BmcRun.Mcr.AvSyncFrames == 0 ? "acc" : "warn")">@(BmcRun.Mcr.AvSyncFrames)</b><span>A/V 오차 f</span></span>
+                <span class="gth-v96-m"><b class="@(BmcRun.Ppl.OcclusionRatio <= 0.6f ? "acc" : "warn")">@((BmcRun.Ppl.OcclusionRatio * 100f).ToString("0", System.Globalization.CultureInfo.InvariantCulture))%</b><span>PPL 가림</span></span>
+                <span class="gth-v96-m"><b>@((BmcRun.Ppl.AvoidRate * 100f).ToString("0", System.Globalization.CultureInfo.InvariantCulture))%</b><span>회피 발동</span></span>
+            </div>
+            <div class="gth-v96-act">@(BmcRun.LastAction ?? "대기")</div>
+        </div>
+    </div>
     @* ── v17.65.0: 멀티 아바타 토크쇼 — 발언권 · 인계 간격 · 컷 유지 · 오버랩/데드락 ── *@
     <div class="gth-v1765">
         <div class="gth-v96-card pid @(TkRun.Fsm.Handovers > 0 && TkRun.Fsm.MaxHandoverGapMs <= 300 && (TkRun.Guard.Cuts == 0 || TkRun.Guard.MinObservedHoldS >= 0.35f) ? "ok" : null)">
@@ -5406,6 +5438,8 @@
         VtRun.OnChange += OnSwarmChanged; // v17.49.0 (10 Hz → 250 ms 스로틀)
         VlRun.OnChange += OnSwarmChanged; // v17.50.0 (3.3 Hz)
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
+        ShwRun.OnChange += OnSwarmChanged; // v17.67.0 (10 Hz → 250 ms 스로틀)
+        BmcRun.OnChange += OnSwarmChanged; // v17.66.0 (10 Hz → 250 ms 스로틀)
         TkRun.OnChange += OnSwarmChanged; // v17.65.0 (10 Hz → 250 ms 스로틀)
         GdRun.OnChange += OnSwarmChanged; // v17.64.0 (10 Hz → 250 ms 스로틀)
         SgRun.OnChange += OnSwarmChanged; // v17.62.0 (10 Hz → 250 ms 스로틀)
@@ -5769,6 +5803,8 @@
         VtRun.OnChange -= OnSwarmChanged;
         VlRun.OnChange -= OnSwarmChanged;
         OcRun.OnChange -= OnSwarmChanged;
+        ShwRun.OnChange -= OnSwarmChanged;
+        BmcRun.OnChange -= OnSwarmChanged;
         TkRun.OnChange -= OnSwarmChanged;
         GdRun.OnChange -= OnSwarmChanged;
         SgRun.OnChange -= OnSwarmChanged;

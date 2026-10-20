@@ -143,6 +143,24 @@ public sealed class MultiAvatarTalkshowStudioRunner : IDisposable
         return true;
     }
 
+    /// <summary>v17.67 쇼러너 애드리브 — 대본 인터럽트 · 강제 발언권 · 즉시 발화(무할당 · 스팬 복사).</summary>
+    public bool InjectAdlib(int a, ReadOnlySpan<char> text)
+    {
+        if ((uint)a >= (uint)_active || text.IsEmpty) return false;
+        lock (_gate)
+        {
+            var t = text.Length > LineCap ? text[..LineCap] : text;
+            t.CopyTo(_custom[a]); _customLen[a] = t.Length;
+            for (var o = 0; o < _active; o++) if (o != a) { _tr[o].Interrupt(); Fsm.WithdrawRequest(o); }
+            _requested = -1;
+            Fsm.ForceFloor(a, NowMs);
+            Adlibs++;
+        }
+        return true;
+    }
+
+    public long Adlibs { get; private set; }
+
     public void ResetMetrics()
     {
         lock (_gate) { Fsm.ResetMetrics(); Guard.ResetMetrics(); Gaze.ResetMetrics(); MaxTickMs = 0; FramesOverBudget = 0; }

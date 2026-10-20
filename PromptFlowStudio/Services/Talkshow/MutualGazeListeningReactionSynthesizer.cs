@@ -8,7 +8,7 @@ namespace PromptFlowStudio.Services.Talkshow;
 public struct GazePose
 {
     public float HeadYaw, HeadPitch, HeadRoll, EyeYaw, EyePitch, Blink;
-    public float Nod, Smile, Surprise, HandWeight;
+    public float Nod, Smile, Surprise, Anger, HandWeight;
     public GestureClass Hand;
     public Vector3 Target, GazeDir;
     /// <summary>주 대상(화자/청자 얼굴) 대비 실제 시선 오차(°) · 시선 분산 중 여부.</summary>
@@ -37,7 +37,7 @@ public sealed class MutualGazeListeningReactionSynthesizer
     private readonly float[] _bodyYaw = new float[MaxAgents];
     private readonly float[] _avertT = new float[MaxAgents], _avertLeft = new float[MaxAgents], _sacT = new float[MaxAgents], _blinkT = new float[MaxAgents], _blinkPhase = new float[MaxAgents];
     private readonly float[] _sacYaw = new float[MaxAgents], _sacPitch = new float[MaxAgents], _avYaw = new float[MaxAgents], _avPitch = new float[MaxAgents];
-    private readonly float[] _nodPhase = new float[MaxAgents], _nodAmp = new float[MaxAgents], _nodCool = new float[MaxAgents], _surprise = new float[MaxAgents];
+    private readonly float[] _nodPhase = new float[MaxAgents], _nodAmp = new float[MaxAgents], _nodCool = new float[MaxAgents], _surprise = new float[MaxAgents], _anger = new float[MaxAgents];
     private readonly float[] _lock = new float[MaxAgents], _glanceT = new float[MaxAgents], _glanceLeft = new float[MaxAgents];
     private readonly float[] _lastYaw = new float[MaxAgents], _blinkCool = new float[MaxAgents];
     private readonly int[] _glance = { -1, -1, -1 };
@@ -67,6 +67,15 @@ public sealed class MutualGazeListeningReactionSynthesizer
     public void SetSeat(int a, Vector3 head, float bodyYaw) { _head[a] = head; _bodyYaw[a] = bodyYaw; }
 
     public void ResetMetrics() { Blinks = Aversions = Saccades = Nods = Surprises = 0; MaxLockS = 0; }
+
+    /// <summary>v17.67 쇼러너 감정 주입(돌발 피격) — 놀람 · 화남 0..1(감쇠 0.8 s · 2.5 s).</summary>
+    public void Provoke(int a, float surprise, float anger)
+    {
+        if ((uint)a >= MaxAgents) return;
+        _surprise[a] = MathF.Max(_surprise[a], Math.Clamp(surprise, 0f, 1f));
+        _anger[a] = MathF.Max(_anger[a], Math.Clamp(anger, 0f, 1f));
+        if (surprise > 0.2f) Surprises++;
+    }
 
     /// <summary>청자 놀람 큐 1 회 소비(멀티캠 리액션 컷).</summary>
     public bool TakeSurpriseCue(out int listener) { listener = _surpriseCue; _surpriseCue = -1; return listener >= 0; }
@@ -137,7 +146,8 @@ public sealed class MutualGazeListeningReactionSynthesizer
             if (_nodAmp[a] > 1e-4f) { _nodPhase[a] += dt; nod = -_nodAmp[a] * MathF.Sin(_nodPhase[a] * 2.2f * 2f * MathF.PI) * MathF.Exp(-_nodPhase[a] / 0.35f); if (_nodPhase[a] > 1.2f) _nodAmp[a] = 0f; }
             var smileT = isSpeaker ? MathF.Max(0f, valence) * 0.45f : 0.08f + MathF.Max(0f, valence) * 0.7f;
             p.Smile += (smileT - p.Smile) * kFace;
-            p.Nod = nod; p.Surprise = _surprise[a];
+            _anger[a] = MathF.Max(0f, _anger[a] - dt / 2.5f);
+            p.Nod = nod; p.Surprise = _surprise[a]; p.Anger = _anger[a];
             // ⑤ 머리(70 %) · 안구(잔여) 운동학
             var hYaw = Math.Clamp(gYaw * HeadShare, -MaxHeadYaw, MaxHeadYaw);
             var hPitch = Math.Clamp(gPitch * HeadShare, -MaxHeadPitch, MaxHeadPitch);
@@ -192,6 +202,10 @@ public sealed class MutualGazeListeningReactionSynthesizer
         Add(w52, ArkitBlendshape.BrowOuterUpLeft, 0.7f * p.Surprise); Add(w52, ArkitBlendshape.BrowOuterUpRight, 0.7f * p.Surprise);
         Add(w52, ArkitBlendshape.EyeWideLeft, 0.7f * p.Surprise); Add(w52, ArkitBlendshape.EyeWideRight, 0.7f * p.Surprise);
         Add(w52, ArkitBlendshape.JawOpen, 0.22f * p.Surprise);
+        Add(w52, ArkitBlendshape.BrowDownLeft, 0.75f * p.Anger); Add(w52, ArkitBlendshape.BrowDownRight, 0.75f * p.Anger);
+        Add(w52, ArkitBlendshape.NoseSneerLeft, 0.45f * p.Anger); Add(w52, ArkitBlendshape.NoseSneerRight, 0.45f * p.Anger);
+        Add(w52, ArkitBlendshape.MouthPressLeft, 0.3f * p.Anger); Add(w52, ArkitBlendshape.MouthPressRight, 0.3f * p.Anger);
+        Add(w52, ArkitBlendshape.EyeSquintLeft, 0.35f * p.Anger); Add(w52, ArkitBlendshape.EyeSquintRight, 0.35f * p.Anger);
     }
 
     private static void Set(Span<float> w, ArkitBlendshape k, float v) => w[(int)k] = Math.Clamp(v, 0f, 1f);

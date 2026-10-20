@@ -3,7 +3,7 @@ namespace PromptFlowStudio.Services.Talkshow;
 public enum TalkRole : byte { Host, Guest }
 public enum FloorState : byte { Listening, Speaking, Yielding, Interrupted }
 public enum FloorPhase : byte { Open, Held, Gap }
-public enum TurnEventKind : byte { Requested, Granted, Yielded, Interrupted, ForcedListen, OverlapResolved, DeadlockBreak }
+public enum TurnEventKind : byte { Requested, Granted, Yielded, Interrupted, ForcedListen, OverlapResolved, DeadlockBreak, Adlib }
 
 /// <summary>v17.65.0 턴 이벤트(무할당 값 전달) — 대상 · 이전 화자 · 시각 · 실측 침묵 간격 · 중재 점수.</summary>
 public struct TurnEvent
@@ -74,7 +74,7 @@ public sealed class RealtimeTurnTakingFsmEngine
     public static string KindName(TurnEventKind k) => k switch
     {
         TurnEventKind.Requested => "요청", TurnEventKind.Granted => "인계", TurnEventKind.Yielded => "EOU", TurnEventKind.Interrupted => "인터럽트",
-        TurnEventKind.ForcedListen => "경청 강제", TurnEventKind.OverlapResolved => "오버랩 판정", _ => "데드락 해소",
+        TurnEventKind.ForcedListen => "경청 강제", TurnEventKind.OverlapResolved => "오버랩 판정", TurnEventKind.Adlib => "애드리브", _ => "데드락 해소",
     };
 
     public void Reset(double nowMs = 0)
@@ -97,6 +97,22 @@ public sealed class RealtimeTurnTakingFsmEngine
     }
 
     public void WithdrawRequest(int a) { _req[a] = false; _barge[a] = false; }
+
+    /// <summary>v17.67 쇼러너 강제 발언권(돌발 이벤트 애드리브) — 현 화자 즉시 인터럽트 · 점수 중재 생략 · 무할당.</summary>
+    public void ForceFloor(int a, double nowMs)
+    {
+        if ((uint)a >= (uint)_agents) return;
+        _now = nowMs;
+        if (_holder >= 0 && _holder != a && _phase == FloorPhase.Held)
+        {
+            var prev = _holder;
+            Set(prev, FloorState.Interrupted, nowMs);
+            _suppressed[prev] = _voiced[prev];
+            Interruptions++;
+            Emit(TurnEventKind.Interrupted, prev, a, nowMs, 0f, 0f, 1);
+        }
+        Grant(a, nowMs, TurnEventKind.Adlib, 0f, 1, false);
+    }
 
     /// <summary>음성 활동(VAD) — 틱마다 갱신.</summary>
     public void Voice(int a, bool voiced) => _voiced[a] = voiced;
