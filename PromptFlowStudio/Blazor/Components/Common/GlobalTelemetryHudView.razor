@@ -261,6 +261,7 @@
 @inject PromptFlowStudio.Services.InfluencerLive.VirtualInfluencerLiveStudioRunner IlRun
 @inject PromptFlowStudio.Services.StreamGateway.StreamGatewayClipperStudioRunner SgRun
 @inject PromptFlowStudio.Services.GlobalDubbing.GlobalDubbingStudioRunner GdRun
+@inject PromptFlowStudio.Services.Talkshow.MultiAvatarTalkshowStudioRunner TkRun
 @inject PromptFlowStudio.Services.SkinnedSplatAvatar.DualQuaternionGaussianAvatarStudioRunner DqAvRun
 @inject PromptFlowStudio.Services.AgentFederation.RealtimeSpatiotemporalKnowledgeGraph FedKg
 @inject PromptFlowStudio.Services.AgentFederation.ZeroTrustInterAgentConsensusResolver FedCons
@@ -980,6 +981,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.65.0: 멀티 아바타 토크쇼 — 발언권 · 인계 간격 · 컷 유지 · 오버랩/데드락 ── *@
+    <div class="gth-v1765">
+        <div class="gth-v96-card pid @(TkRun.Fsm.Handovers > 0 && TkRun.Fsm.MaxHandoverGapMs <= 300 && (TkRun.Guard.Cuts == 0 || TkRun.Guard.MinObservedHoldS >= 0.35f) ? "ok" : null)">
+            <div class="gth-v96-h"><b>👥 멀티 아바타 토크쇼</b>
+                <span class="gth-v96-be">@(TkRun.Fsm.Holder >= 0 ? PromptFlowStudio.Services.Talkshow.MultiAvatarTalkshowStudioRunner.Name(TkRun.Fsm.Holder) + " 발언" : "침묵") · @(PromptFlowStudio.Services.Talkshow.TalkshowMultiCamDeadlockGuard.ShotName(TkRun.Guard.Shot)) · @(TkRun.Active)인</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="@(TkRun.Fsm.MaxHandoverGapMs <= 300 ? "acc" : "warn")">@(TkRun.Fsm.Handovers > 0 ? TkRun.Fsm.MaxHandoverGapMs.ToString("0", System.Globalization.CultureInfo.InvariantCulture) : "—")</b><span>인계 ms</span></span>
+                <span class="gth-v96-m"><b>@(TkRun.Guard.Cuts)</b><span>자동 컷</span></span>
+                <span class="gth-v96-m"><b>@(TkRun.Guard.OverlapsResolved)</b><span>오버랩 판정</span></span>
+                <span class="gth-v96-m"><b>@(TkRun.Guard.Deadlocks)</b><span>데드락 해소</span></span>
+            </div>
+            <div class="gth-v96-act">@(TkRun.LastAction ?? "대기")</div>
+        </div>
+    </div>
     @* ── v17.64.0: 실시간 다국어 더빙 — 번역 지연 · 립싱크 편차 · 언어 트랙 · 찢어짐 잔여 ── *@
     <div class="gth-v1764">
         <div class="gth-v96-card pid @(GdRun.Translator.MaxLatencyAll <= 200 && GdRun.LipSync.MaxDriftMs < 50 && GdRun.Translator.Chunks > 0 ? "ok" : null)">
@@ -5390,6 +5406,7 @@
         VtRun.OnChange += OnSwarmChanged; // v17.49.0 (10 Hz → 250 ms 스로틀)
         VlRun.OnChange += OnSwarmChanged; // v17.50.0 (3.3 Hz)
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
+        TkRun.OnChange += OnSwarmChanged; // v17.65.0 (10 Hz → 250 ms 스로틀)
         GdRun.OnChange += OnSwarmChanged; // v17.64.0 (10 Hz → 250 ms 스로틀)
         SgRun.OnChange += OnSwarmChanged; // v17.62.0 (10 Hz → 250 ms 스로틀)
         IlRun.OnChange += OnSwarmChanged; // v17.61.0 (10 Hz → 250 ms 스로틀)
@@ -5752,6 +5769,7 @@
         VtRun.OnChange -= OnSwarmChanged;
         VlRun.OnChange -= OnSwarmChanged;
         OcRun.OnChange -= OnSwarmChanged;
+        TkRun.OnChange -= OnSwarmChanged;
         GdRun.OnChange -= OnSwarmChanged;
         SgRun.OnChange -= OnSwarmChanged;
         IlRun.OnChange -= OnSwarmChanged;

@@ -29817,3 +29817,110 @@ public sealed class MultilingualDubbingIsolatedTests
         Assert.True(hi > lo * 1.02, "운율 " + hi + "/" + lo);
     }
 }
+
+/// <summary>v17.65.0 멀티 아바타 토크쇼 — 턴테이킹 FSM · 오버랩/데드락 가드 · 상호 시선 · 멀티캠 컷 회귀(틱 예산 측정 → 비병렬).</summary>
+[Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 틱 게이트 → 비병렬
+public sealed class MultiAvatarTalkshowIsolatedTests
+{
+    [Fact]
+    public void MultiAvatarTalkshow_TurnTaking_Check()
+    {
+        // ── TALK-1: EOU → 150~300 ms 침묵 인계 · 무할당 이벤트 디스패치 ──
+        var guard = new PromptFlowStudio.Services.Talkshow.TalkshowMultiCamDeadlockGuard();
+        var fsm = new PromptFlowStudio.Services.Talkshow.RealtimeTurnTakingFsmEngine(guard);
+        var log = new System.Collections.Generic.List<string>();
+        fsm.OnTurn += (in PromptFlowStudio.Services.Talkshow.TurnEvent e) => log.Add(e.Kind + ":" + e.Agent);
+        double t = 0;
+        void Run(double untilMs, int voiced = -1)
+        {
+            for (; t < untilMs; t += 1000.0 / 60) { for (var a = 0; a < 3; a++) fsm.Voice(a, a == voiced); fsm.Step(t); }
+        }
+        fsm.RequestFloor(1, t);
+        Run(50);
+        Assert.True(fsm.Holder == 1 && fsm.State(1) == PromptFlowStudio.Services.Talkshow.FloorState.Speaking, "초기 인계 " + fsm.Holder);
+        for (var turn = 0; turn < 6; turn++)
+        {
+            var h = fsm.Holder; var next = (h + 1) % 3;
+            Run(t + 1200, h);
+            fsm.EndOfUtterance(h, t, question: turn % 2 == 0, arousal: turn / 5f);
+            fsm.RequestFloor(next, t);
+            Run(t + 400);
+            Assert.True(fsm.Holder == next, "턴 " + turn + " 화자 " + fsm.Holder);
+        }
+        Assert.True(fsm.Handovers == 6 && fsm.MinHandoverGapMs >= 150f && fsm.MaxHandoverGapMs <= 300f, "간격 " + fsm.MinHandoverGapMs + "~" + fsm.MaxHandoverGapMs);
+        Assert.Contains("Yielded:" + 1, log);
+
+        // ── TALK-3: 동시 요청 → 호스트 우선 · 나머지 경청 강제 ──
+        var hh = fsm.Holder;
+        Run(t + 1000, hh);
+        fsm.EndOfUtterance(hh, t);
+        var g1 = hh == 1 ? 2 : 1;
+        fsm.RequestFloor(0, t); fsm.RequestFloor(g1, t);
+        log.Clear();
+        Run(t + 400);
+        Assert.True(fsm.Holder == 0 && log.Contains("ForcedListen:" + g1) && log.Contains("OverlapResolved:0"), string.Join(",", log));
+        // 바지인 — 게스트 끼어들기 거부(호스트 유지) → 토픽 오너 게스트는 수락(호스트 인터럽트)
+        Run(t + 1500, 0);
+        log.Clear();
+        fsm.RequestFloor(1, t, barge: true);
+        Run(t + 50, 0);
+        Assert.True(fsm.Holder == 0 && log.Contains("ForcedListen:1") && guard.BargeRejected >= 1, string.Join(",", log));
+        guard.TopicOwner = 1;
+        fsm.RequestFloor(1, t, barge: true);
+        Run(t + 50, 0);
+        Assert.True(fsm.Holder == 1 && fsm.State(0) == PromptFlowStudio.Services.Talkshow.FloorState.Interrupted && guard.BargeIns >= 1 && fsm.Interruptions >= 1, "바지인 " + fsm.Holder + " " + fsm.State(0));
+        Run(t + 100, 1);
+        Assert.Equal(PromptFlowStudio.Services.Talkshow.FloorState.Listening, fsm.State(0));
+        // 예기치 않은 동시 발성 — 즉시 판정(미해결 오버랩 ≤ 1 틱)
+        var unresolved0 = fsm.UnresolvedOverlapMs;
+        for (var i = 0; i < 30; i++) { fsm.Voice(1, true); fsm.Voice(2, true); fsm.Voice(0, false); fsm.Step(t); t += 1000.0 / 60; }
+        Assert.True(fsm.Holder == 1 && fsm.Suppressed(2) && fsm.UnresolvedOverlapMs - unresolved0 <= 17 && fsm.OverlapMs > 300, "오버랩 " + (fsm.UnresolvedOverlapMs - unresolved0));
+        // 데드락 — 전원 침묵 1.2 s → 토픽 오너(직전 화자면 호스트) 강제 인계
+        guard.TopicOwner = -1;
+        fsm.EndOfUtterance(1, t);
+        log.Clear();
+        Run(t + 1600);
+        Assert.True(fsm.Holder == 0 && log.Contains("DeadlockBreak:0") && guard.Deadlocks == 1, string.Join(",", log));
+        // FSM 틱 무할당
+        var a0 = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 120; i++) { fsm.Voice(0, i % 7 != 0); fsm.Step(t); t += 1000.0 / 60; }
+        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - a0);
+
+        // ── TALK-4: 카탈로그 ──
+        Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, e => e.Key == "_talkshow" && e.Category == 1);
+
+        // ── 러너 전체 쇼(각본 1 회 + 주입) · 시선 · 리액션 · 멀티캠 ──
+        var run = new PromptFlowStudio.Services.Talkshow.MultiAvatarTalkshowStudioRunner(faceSplats: 1500);
+        var mutual = 0; var shots = new bool[5]; long ra = 0, rb = 0;
+        for (var i = 0; i < 60 * 75; i++)
+        {
+            if (i == 60 * 30) run.InjectOverlap(run.Fsm.Holder == 2 ? 1 : 2, 500);
+            if (i == 60 * 40) ra = GC.GetAllocatedBytesForCurrentThread();
+            run.Step();
+            if (i == 60 * 40 + 119) rb = GC.GetAllocatedBytesForCurrentThread();
+            var sp = run.Fsm.Holder;
+            if (sp >= 0 && run.Gaze.Mutual(sp, run.Addressee(sp))) mutual++;
+            shots[(int)run.Guard.Shot] = true;
+        }
+        var g = run.Guard; var f = run.Fsm; var z = run.Gaze;
+        var info = "대사 " + run.LinesSpoken + " 인계 " + f.Handovers + " " + f.MinHandoverGapMs + "~" + f.MaxHandoverGapMs + " 컷 " + g.Cuts + " 최소유지 " + g.MinObservedHoldS
+            + " 바지인거부 " + g.BargeRejected + " 판정 " + g.OverlapsResolved + " 데드락 " + g.Deadlocks + " 미해결 " + f.UnresolvedOverlapMs + " 상호 " + mutual
+            + " 깜빡 " + z.Blinks + " 회피 " + z.Aversions + " 끄덕 " + z.Nods + " 최장응시 " + z.MaxLockS + " 틱 " + run.MaxTickMs;
+        Assert.True(rb - ra == 0, "러너 할당 " + (rb - ra) + " · " + info);
+        Assert.True(run.LinesSpoken >= run.ScriptLength && f.Handovers >= 6 && f.MinHandoverGapMs >= 150f && f.MaxHandoverGapMs <= 300f, info);
+        Assert.True(g.BargeRejected >= 1 && g.OverlapsResolved >= 2 && g.Deadlocks >= 1 && f.UnresolvedOverlapMs <= 17, info);
+        Assert.True(g.Cuts >= 8 && g.MinObservedHoldS >= PromptFlowStudio.Services.Talkshow.TalkshowMultiCamDeadlockGuard.MinHoldS && shots[1] && shots[2] && shots[3], info);
+        Assert.True(mutual > 60 && z.Blinks > 10 && z.Aversions > 10 && z.MaxLockS < 6f, info);
+        ref readonly var prog = ref g.Program;
+        Assert.True(float.IsFinite(prog.Position.X) && prog.VFovDeg > 5f && prog.VFovDeg < 90f, "프로그램 캠");
+        for (var a = 0; a < 3; a++) Assert.True(float.IsFinite(run.Face(a).Aperture) && float.IsFinite(z.Pose(a).ErrorDeg));
+        var tk = new double[60]; var med = double.MaxValue;
+        for (var attempt = 0; attempt < 5 && med >= 16.7; attempt++)
+        {
+            for (var i = 0; i < 60; i++) { run.Step(); tk[i] = run.LastTickMs; }
+            Array.Sort(tk); med = Math.Min(med, tk[30]);
+        }
+        Assert.True(med < 16.7, "중앙 틱 " + med + " ms");
+        run.Dispose();
+    }
+}

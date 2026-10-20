@@ -1,0 +1,235 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.Talkshow
+@using PromptFlowStudio.Services.CinematicDirector
+@using PromptFlowStudio.Services.AvatarActing
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject MultiAvatarTalkshowStudioRunner Runner
+
+@* [PromptFlow Studio v17.65.0] 👥 멀티 아바타 토크쇼 스튜디오 — 아바타 슬롯 · 발언권 인디케이터 · 자동 멀티캠 프리뷰 · 상호 시선 각도계. *@
+<div class="mtk-scrim" @onclick="Close">
+    <div class="mtk-modal" @onclick:stopPropagation="true">
+        <div class="mtk-h">
+            <div>
+                <div class="mtk-title">👥 멀티 아바타 토크쇼 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null)</div>
+                <div class="mtk-sub"><b>턴테이킹 FSM</b>이 호스트와 게스트 최대 2인의 발언 상태(발언 · 양보 · 경청 · 끊김)를 관리하며 발화 종료 큐 후 150~300 ms 자연 침묵을 두고 발언권을 인계합니다. <b>상호 시선 합성기</b>는 청자의 머리와 안구를 화자 얼굴로 유도하되 시선 회피 · 미세 단속 · 깜빡임으로 노려봄을 피하고 화자 감정에 맞춰 끄덕임 · 미소 · 놀람을 블렌딩하며, <b>멀티캠 데드락 가드</b>는 v17.39 가상 카메라로 투샷 · OTS · 바스트 · 리액션 컷을 0.35 s 이상 유지하고 동시 발화와 침묵 교착을 우선순위 점수로 즉시 해소합니다.</div>
+            </div>
+            <button class="mtk-x" @onclick="Close">✕</button>
+        </div>
+        <div class="mtk-bar">
+            <button class="mtk-btn @(Runner.IsRunning ? "on" : "go")" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 토크쇼 시작")</button>
+            <button class="mtk-btn @(Runner.AutoScript ? "on" : null)" @onclick="() => Runner.SetAutoScript(!Runner.AutoScript)">📜 데모 각본</button>
+            <button class="mtk-btn @(Runner.Active == 2 ? "on" : null)" @onclick="() => Runner.SetActive(2)">2인</button>
+            <button class="mtk-btn @(Runner.Active == 3 ? "on" : null)" @onclick="() => Runner.SetActive(3)">3인</button>
+            <select class="mtk-sel" value="@(Runner.Guard.TopicOwner)" @onchange="OnOwner">
+                <option value="-1">🎯 토픽 오너 없음</option>
+                @for (var a = 0; a < Runner.Active; a++)
+                {
+                    <option value="@(a)">🎯 @(MultiAvatarTalkshowStudioRunner.Name(a))</option>
+                }
+            </select>
+            <button class="mtk-btn" @onclick="Runner.SimulateSilence">🤐 침묵 교착</button>
+            <button class="mtk-btn hot" @onclick="() => Runner.InjectOverlap(Runner.Fsm.Holder == 2 || Runner.Active < 3 ? 1 : 2)">🔊 동시 발화</button>
+            <button class="mtk-btn" @onclick="Runner.ResetMetrics">♻ 지표</button>
+            <span class="mtk-sep"></span>
+            <select class="mtk-sel" value="@(_who)" @onchange="OnWho">
+                @for (var a = 0; a < Runner.Active; a++)
+                {
+                    <option value="@(a)">@(MultiAvatarTalkshowStudioRunner.Name(a))</option>
+                }
+            </select>
+            <input class="mtk-in" placeholder="대사 입력 후 Enter" @bind="_text" @bind:event="oninput" @onkeydown="OnKey" />
+            <label class="mtk-lbl"><input type="checkbox" @bind="_barge" /> 끼어들기</label>
+            <button class="mtk-btn go" @onclick="Send">🙋 발언</button>
+        </div>
+        <div class="mtk-main">
+            <div class="mtk-col">
+                <div class="mtk-card">
+                    <div class="mtk-sec">🎙️ 아바타 슬롯 · 발언권(Floor) · @(PhaseName(Runner.Fsm.Phase)) @(Runner.Fsm.Phase != FloorPhase.Held ? "· 침묵 " + F0(Runner.Fsm.SilenceMs) + " ms" : null) @(Runner.Fsm.Phase == FloorPhase.Gap ? "· 계획 " + F0(Runner.Fsm.PlannedGapMs) + " ms" : null)</div>
+                    <div class="mtk-slots">
+                        @for (var a = 0; a < Runner.Active; a++)
+                        {
+                            var st = Runner.Fsm.State(a);
+                            ref readonly var p = ref Runner.Gaze.Pose(a);
+                            <div class="mtk-slot s@((int)st) @(Runner.Fsm.Holder == a ? "hold" : null)">
+                                <div class="hd"><i class="dot @(Runner.Fsm.Voiced(a) ? "on" : null)"></i><b>@(MultiAvatarTalkshowStudioRunner.Name(a))</b><span class="st">@(RealtimeTurnTakingFsmEngine.StateName(st))@(Runner.Fsm.Requesting(a) ? " · 🙋" : null)@(Runner.Fsm.Suppressed(a) ? " · 🔇" : null)</span></div>
+                                <div class="ln">@(Runner.CurrentLine(a))</div>
+                                <svg class="mtk-gauge" viewBox="0 0 120 66">
+                                    <path class="arc" d="M10 60 A50 50 0 0 1 110 60" />
+                                    <path class="ok" d="M10 60 A50 50 0 0 1 @(Gx(8)) @(Gy(8))" />
+                                    <line class="needle @(p.Averted ? "av" : null)" x1="60" y1="60" x2="@(Gx(p.ErrorDeg))" y2="@(Gy(p.ErrorDeg))" />
+                                    <g><text x="60" y="44" text-anchor="middle">@(F1(p.ErrorDeg))°</text></g>
+                                </svg>
+                                <div class="kv">→ @(MultiAvatarTalkshowStudioRunner.Name(p.LookAt))@(p.Averted ? " · 회피" : null)@(Runner.Fsm.Holder >= 0 && Runner.Gaze.Mutual(a, p.LookAt) ? " · 👀 상호" : null) · 머리 @(F0(p.HeadYaw * 57.2958f))° · 안구 @(F0(p.EyeYaw * 57.2958f))°</div>
+                                <div class="mtk-mini">
+                                    <span>미소<b style="width:@(Pct(p.Smile))%"></b></span>
+                                    <span>놀람<b style="width:@(Pct(p.Surprise))%"></b></span>
+                                    <span>끄덕<b style="width:@(Pct(MathF.Abs(p.Nod) * 8f))%"></b></span>
+                                    <span>@(RealtimeLlmTextToGestureTransformer.ClassName(p.Hand))<b style="width:@(Pct(p.HandWeight))%"></b></span>
+                                </div>
+                                <div class="kv">발언 @(F1(Runner.Fsm.TalkMs(a) / 1000.0)) s · 깜빡 @(F2(p.Blink))</div>
+                            </div>
+                        }
+                    </div>
+                </div>
+                <div class="mtk-card">
+                    <div class="mtk-sec">🧭 턴 이벤트 · 인계 @(Runner.Fsm.Handovers) · 간격 @(Runner.Fsm.Handovers > 0 ? F0(Runner.Fsm.MinHandoverGapMs) + "~" + F0(Runner.Fsm.MaxHandoverGapMs) : "—") ms</div>
+                    <div class="mtk-events">
+                        @for (var i = 0; i < Math.Min(14, Runner.Fsm.EventCount); i++)
+                        {
+                            var e = Runner.Fsm.Event(i);
+                            <div class="mtk-ev k@((int)e.Kind)"><i>@(F1(e.AtMs / 1000.0))s</i><b>@(RealtimeTurnTakingFsmEngine.KindName(e.Kind))</b><span>@(MultiAvatarTalkshowStudioRunner.Name(e.Agent))@(e.From >= 0 && e.From != e.Agent ? " ← " + MultiAvatarTalkshowStudioRunner.Name(e.From) : null)@(e.GapMs > 0 ? " · " + F0(e.GapMs) + " ms" : null)@(e.Contenders > 1 ? " · 경합 " + e.Contenders : null)</span></div>
+                        }
+                    </div>
+                    <div class="mtk-kv">판정 @(Runner.Guard.OverlapsResolved) · 바지인 수락 @(Runner.Guard.BargeIns) / 거부 @(Runner.Guard.BargeRejected) · 데드락 해소 @(Runner.Guard.Deadlocks) · 오버랩 @(F0(Runner.Fsm.OverlapMs)) ms(미해결 @(F0(Runner.Fsm.UnresolvedOverlapMs)))</div>
+                </div>
+            </div>
+            <div class="mtk-col">
+                <div class="mtk-card">
+                    <div class="mtk-sec">📺 프로그램 모니터 · @(TalkshowMultiCamDeadlockGuard.ShotName(Runner.Guard.Shot)) · @(RealtimeCinematicShotFramingEngine.Name(Runner.Guard.LiveCam)) · @(F1(Runner.Guard.ShotAgeS(Runner.NowMs))) s @(Runner.Guard.HasPending ? "· ⏳ " + TalkshowMultiCamDeadlockGuard.ShotName(Runner.Guard.PendingShot) : null)</div>
+                    <svg class="mtk-pgm" viewBox="0 0 320 180">
+                        <rect class="bg" x="0" y="0" width="320" height="180" />
+                        <line class="third" x1="106.7" y1="0" x2="106.7" y2="180" /><line class="third" x1="213.3" y1="0" x2="213.3" y2="180" />
+                        <line class="third" x1="0" y1="60" x2="320" y2="60" /><line class="third" x1="0" y1="120" x2="320" y2="120" />
+                        @for (var a = 0; a < Runner.Active; a++)
+                        {
+                            var hp = Proj(Runner.Gaze.Head(a), out var dh);
+                            var bp = Proj(Runner.Seat(a) + new Vector3(0f, 1.05f, 0f), out var db);
+                            if (dh <= 0.05f) continue;
+                            var r = Math.Clamp(26f / dh, 3f, 90f);
+                            <g class="av a@(a) @(Runner.Fsm.Holder == a ? "spk" : null)">
+                                <line x1="@(N(hp.X))" y1="@(N(hp.Y + r))" x2="@(N(bp.X))" y2="@(N(bp.Y))" style="stroke-width:@(N(r * 1.3f))" />
+                                <circle cx="@(N(hp.X))" cy="@(N(hp.Y))" r="@(N(r))" />
+                                <text x="@(N(hp.X))" y="@(N(hp.Y - r - 3))" text-anchor="middle">@(MultiAvatarTalkshowStudioRunner.Name(a))</text>
+                            </g>
+                        }
+                        <g><text class="rec" x="8" y="14">● PGM</text></g>
+                    </svg>
+                    <div class="mtk-kv">컷 @(Runner.Guard.Cuts) · 최소 유지 @(Runner.Guard.Cuts > 0 ? F2(Runner.Guard.MinObservedHoldS) : "—") s / 0.35 · 대기 컷 @(Runner.Guard.DeferredCuts) · FoV @(F1(Runner.Guard.Program.VFovDeg))° · 초점 @(F2(Runner.Guard.Program.FocusM)) m</div>
+                </div>
+                <div class="mtk-card">
+                    <div class="mtk-sec">🗺️ 세트 탑뷰 · 시선 벡터 · 카메라</div>
+                    <svg class="mtk-top" viewBox="-200 -90 400 230">
+                        @{ var cam = Runner.Guard.Program; }
+                        <line class="cam" x1="@(N(cam.Position.X * 60))" y1="@(N(cam.Position.Z * 60))" x2="@(N((cam.Position.X + cam.Forward.X * 1.2f) * 60))" y2="@(N((cam.Position.Z + cam.Forward.Z * 1.2f) * 60))" />
+                        <circle class="camdot" cx="@(N(cam.Position.X * 60))" cy="@(N(cam.Position.Z * 60))" r="5" />
+                        @for (var a = 0; a < Runner.Active; a++)
+                        {
+                            ref readonly var p = ref Runner.Gaze.Pose(a);
+                            var s = Runner.Seat(a);
+                            <g class="av a@(a) @(Runner.Fsm.Holder == a ? "spk" : null)">
+                                <line class="ray" x1="@(N(s.X * 60))" y1="@(N(s.Z * 60))" x2="@(N((s.X + p.GazeDir.X * 1.1f) * 60))" y2="@(N((s.Z + p.GazeDir.Z * 1.1f) * 60))" />
+                                <circle cx="@(N(s.X * 60))" cy="@(N(s.Z * 60))" r="11" />
+                                <text x="@(N(s.X * 60))" y="@(N(s.Z * 60 - 15))" text-anchor="middle">@(MultiAvatarTalkshowStudioRunner.Name(a))</text>
+                            </g>
+                        }
+                    </svg>
+                    <div class="mtk-kv">깜빡임 @(Runner.Gaze.Blinks) · 회피 @(Runner.Gaze.Aversions) · 단속 @(Runner.Gaze.Saccades) · 끄덕임 @(Runner.Gaze.Nods) · 놀람 @(Runner.Gaze.Surprises) · 최장 응시 @(F1(Runner.Gaze.MaxLockS)) s · 틱 최대 @(F2(Runner.MaxTickMs)) ms</div>
+                </div>
+                <div class="mtk-act">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .mtk-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .mtk-modal { width: min(1280px, 96vw); max-height: 94vh; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); padding: 14px 16px; color: var(--text-primary); }
+    .mtk-h { display: flex; justify-content: space-between; gap: 12px; } .mtk-title { font-size: 17px; font-weight: 800; } .mtk-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .mtk-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .mtk-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 10px 0; }
+    .mtk-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .mtk-btn.go { border-color: #22c55e; } .mtk-btn.on { background: color-mix(in srgb, #8b5cf6 30%, #1e293b); border-color: #8b5cf6; } .mtk-btn.hot { border-color: #f97316; }
+    .mtk-sep { flex: 1; } .mtk-sel, .mtk-in { background: #0f172a; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; font-size: 12px; } .mtk-in { min-width: 220px; }
+    .mtk-lbl { font-size: 11px; color: var(--text-muted); display: flex; gap: 4px; align-items: center; }
+    .mtk-main { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 12px; }
+    .mtk-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .mtk-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: #0b1324; }
+    .mtk-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 8px; }
+    .mtk-slots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .mtk-slot { border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: #0f172a; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    .mtk-slot.hold { border-color: #f472b6; box-shadow: 0 0 0 1px #f472b6 inset; } .mtk-slot.s2 { border-color: #f59e0b; } .mtk-slot.s3 { border-color: #ef4444; }
+    .mtk-slot .hd { display: flex; gap: 6px; align-items: center; font-size: 12px; } .mtk-slot .st { margin-left: auto; font: 700 10px var(--mono); color: var(--text-muted); }
+    .mtk-slot .dot { width: 8px; height: 8px; border-radius: 50%; background: #475569; } .mtk-slot .dot.on { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
+    .mtk-slot .ln { font-size: 11px; min-height: 30px; color: var(--text-primary); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    .mtk-slot .kv, .mtk-kv { font-size: 10.5px; color: var(--text-muted); } .mtk-kv { margin-top: 6px; }
+    .mtk-gauge { width: 100%; height: 62px; } .mtk-gauge .arc { fill: none; stroke: #1e293b; stroke-width: 8; } .mtk-gauge .ok { fill: none; stroke: #22c55e; stroke-width: 8; }
+    .mtk-gauge .needle { stroke: #f9a8d4; stroke-width: 2.4; stroke-linecap: round; } .mtk-gauge .needle.av { stroke: #94a3b8; } .mtk-gauge text { fill: var(--text-primary); font: 800 13px var(--mono); }
+    .mtk-mini { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 8px; } .mtk-mini span { font-size: 10px; color: var(--text-muted); display: grid; grid-template-columns: 34px 1fr; align-items: center; gap: 4px; }
+    .mtk-mini b { display: block; height: 6px; background: #8b5cf6; border-radius: 3px; min-width: 1px; }
+    .mtk-events { display: flex; flex-direction: column; gap: 3px; max-height: 220px; overflow-y: auto; }
+    .mtk-ev { display: grid; grid-template-columns: 50px 80px 1fr; gap: 6px; font-size: 11px; padding: 2px 6px; border-radius: 5px; background: #0f172a; border-left: 3px solid #64748b; }
+    .mtk-ev i { font: 600 10px var(--mono); font-style: normal; color: var(--text-muted); } .mtk-ev span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mtk-ev.k1 { border-left-color: #22c55e; } .mtk-ev.k2 { border-left-color: #38bdf8; } .mtk-ev.k3 { border-left-color: #ef4444; } .mtk-ev.k4 { border-left-color: #f59e0b; } .mtk-ev.k5 { border-left-color: #a855f7; } .mtk-ev.k6 { border-left-color: #f472b6; }
+    .mtk-pgm { width: 100%; aspect-ratio: 16 / 9; border-radius: 6px; display: block; } .mtk-pgm .bg { fill: #05070c; } .mtk-pgm .third { stroke: #1e293b; stroke-width: .6; }
+    .mtk-pgm .av circle { fill: #64748b; } .mtk-pgm .av line { stroke: #334155; stroke-linecap: round; } .mtk-pgm .av text { fill: #cbd5e1; font: 700 9px var(--mono); } .mtk-pgm .av.spk circle { fill: #f472b6; }
+    .mtk-pgm .rec { fill: #ef4444; font: 800 9px var(--mono); }
+    .mtk-top { width: 100%; height: 200px; background: #0f172a; border-radius: 6px; display: block; }
+    .mtk-top .av circle { fill: #334155; stroke: #64748b; } .mtk-top .av.spk circle { fill: #be185d; stroke: #f472b6; } .mtk-top .ray { stroke: #fde047; stroke-width: 1.6; } .mtk-top text { fill: #cbd5e1; font: 700 10px var(--mono); }
+    .mtk-top .cam { stroke: #38bdf8; stroke-width: 1.4; stroke-dasharray: 4 3; } .mtk-top .camdot { fill: #38bdf8; }
+    .mtk-act { font-size: 11px; color: var(--text-muted); }
+    @@media (max-width: 960px) { .mtk-main { grid-template-columns: 1fr; } .mtk-slots { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+    private string _text = "";
+    private int _who;
+    private bool _barge;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Talkshow.Modal.Timer", ex); }
+        }, null, 200, 200);
+    }
+
+    private static string F0(double v) => double.IsFinite(v) ? v.ToString("0", CultureInfo.InvariantCulture) : "—";
+    private static string F1(double v) => double.IsFinite(v) ? v.ToString("0.0", CultureInfo.InvariantCulture) : "—";
+    private static string F2(double v) => double.IsFinite(v) ? v.ToString("0.00", CultureInfo.InvariantCulture) : "—";
+    private static string N(float v) => float.IsFinite(v) ? v.ToString("0.#", CultureInfo.InvariantCulture) : "0";
+    private static string Pct(float v) => Math.Clamp(v * 100.0, 0, 100).ToString("0.#", CultureInfo.InvariantCulture);
+    private static string PhaseName(FloorPhase p) => p switch { FloorPhase.Held => "발언 중", FloorPhase.Gap => "인계 간격", _ => "침묵" };
+    // 각도계: 0° = 왼쪽 끝 · 30° = 오른쪽 끝(반원)
+    private static string Gx(float deg) => N(60f - 50f * MathF.Cos(Math.Clamp(deg / 30f, 0f, 1f) * MathF.PI));
+    private static string Gy(float deg) => N(60f - 50f * MathF.Sin(Math.Clamp(deg / 30f, 0f, 1f) * MathF.PI));
+
+    private Vector2 Proj(Vector3 p, out float depth)
+    {
+        var ndc = RealtimeCinematicShotFramingEngine.Project(in Runner.Guard.Program, p, out depth);
+        return new Vector2((ndc.X + 1f) * 160f, (1f - ndc.Y) * 90f);
+    }
+
+    private void OnOwner(ChangeEventArgs e) { if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetTopicOwner(v); }
+    private void OnWho(ChangeEventArgs e) { if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) _who = v; }
+    private void OnKey(KeyboardEventArgs e) { if (e.Key == "Enter") Send(); }
+
+    private void Send()
+    {
+        if (Runner.Say(_who, _text, _barge)) _text = "";
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}
