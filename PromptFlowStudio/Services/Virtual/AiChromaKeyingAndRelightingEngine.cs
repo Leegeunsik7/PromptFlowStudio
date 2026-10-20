@@ -435,7 +435,7 @@ public sealed class AiChromaKeyingAndRelightingEngine
             foreach (var p in new[] { dfg, dbg, enc })
             {
                 if (p is null) continue;
-                try { if (!p.HasExited) p.Kill(true); } catch { }
+                try { if (!p.HasExited) p.KillCompat(true); } catch { }
                 p.Dispose();
             }
             if (!ok) { try { if (File.Exists(output)) File.Delete(output); } catch (Exception ex) { Program.Log("Chroma.Cleanup", ex); } }
@@ -449,7 +449,7 @@ public sealed class AiChromaKeyingAndRelightingEngine
         var psi = new ProcessStartInfo { FileName = exe, RedirectStandardOutput = !stdin, RedirectStandardInput = stdin, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
         foreach (var a in args) psi.ArgumentList.Add(a);
         var p = new Process { StartInfo = psi };
-        if (!p.Start()) { p.Dispose(); throw new InvalidOperationException("ffmpeg 시작 실패"); }
+        if (!p.StartCompat()) { p.Dispose(); throw new InvalidOperationException("ffmpeg 시작 실패"); }
         _ = p.StandardError.ReadToEndAsync(ct);
         return p;
     }
@@ -464,7 +464,7 @@ public sealed class AiChromaKeyingAndRelightingEngine
         d.CancelAfter(TimeSpan.FromSeconds(30));
         var buf = new byte[w * h * 3];
         try { return await Spatial3dGaussianSplattingEngine.ReadExactAsync(p.StandardOutput.BaseStream, buf, buf.Length, d.Token).ConfigureAwait(false) ? buf : null; }
-        finally { try { if (!p.HasExited) p.Kill(true); } catch { } }
+        finally { try { if (!p.HasExited) p.KillCompat(true); } catch { } }
     }
 
     private ChromaVideoResult Done(ChromaVideoResult r)

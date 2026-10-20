@@ -179,14 +179,14 @@ public sealed class MotionTrackingSubtitleService
 
         using var proc = new Process { StartInfo = psi };
         var list = new List<byte[]>();
-        if (!proc.Start()) return list;
+        if (!proc.StartCompat()) return list;
 
         using var ms = new MemoryStream();
         var copy = proc.StandardOutput.BaseStream.CopyToAsync(ms, 81920, ct);
         var drain = proc.StandardError.ReadToEndAsync(ct);
         await Task.WhenAll(copy, drain).ConfigureAwait(false);
         try { await proc.WaitForExitAsync(ct).ConfigureAwait(false); }
-        catch (OperationCanceledException) { try { if (!proc.HasExited) proc.Kill(true); } catch { } throw; }
+        catch (OperationCanceledException) { try { if (!proc.HasExited) proc.KillCompat(true); } catch { } throw; }
 
         var bytes = ms.ToArray();
         var frameSize = W * H;

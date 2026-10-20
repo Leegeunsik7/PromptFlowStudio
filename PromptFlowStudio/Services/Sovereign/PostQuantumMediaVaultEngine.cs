@@ -101,14 +101,14 @@ public sealed class PostQuantumMediaVaultEngine
         var nonce = RandomNumberGenerator.GetBytes(12);
         var outp = new byte[12 + 16 + secret.Length];
         nonce.CopyTo(outp, 0);
-        using (var g = new AesGcm(kek, 16)) g.Encrypt(nonce, secret, outp.AsSpan(28), outp.AsSpan(12, 16), Encoding.UTF8.GetBytes(keyId + "/" + purpose));
+        using (var g = new AesGcmCompat(kek, 16)) g.Encrypt(nonce, secret, outp.AsSpan(28), outp.AsSpan(12, 16), Encoding.UTF8.GetBytes(keyId + "/" + purpose));
         return outp;
     }
 
     private byte[] Unwrap(byte[] wrapped, string keyId, string purpose)
     {
         var plain = new byte[wrapped.Length - 28];
-        using var g = new AesGcm(_kek(), 16);
+        using var g = new AesGcmCompat(_kek(), 16);
         g.Decrypt(wrapped.AsSpan(0, 12), wrapped.AsSpan(28), wrapped.AsSpan(12, 16), plain, Encoding.UTF8.GetBytes(keyId + "/" + purpose));
         return plain;
     }
@@ -177,7 +177,7 @@ public sealed class PostQuantumMediaVaultEngine
         var aad = ms.ToArray();
         var ct = new byte[plaintext.Length]; var tag = new byte[16];
         var key = Combine(ssKem, ssEc, kemCt, ephPub);
-        try { using var g = new AesGcm(key, 16); g.Encrypt(nonce, plaintext, ct, tag, AadWithoutTag(aad, (int)tagPos)); }
+        try { using var g = new AesGcmCompat(key, 16); g.Encrypt(nonce, plaintext, ct, tag, AadWithoutTag(aad, (int)tagPos)); }
         finally { CryptographicOperations.ZeroMemory(key); CryptographicOperations.ZeroMemory(ssKem); CryptographicOperations.ZeroMemory(ssEc); }
         ms.Position = tagPos; ms.Write(tag); ms.Position = ms.Length;
         WriteU32(ms, ct.Length); ms.Write(ct);
@@ -233,7 +233,7 @@ public sealed class PostQuantumMediaVaultEngine
             var plain = new byte[ctLen];
             try
             {
-                using var g = new AesGcm(key, 16);
+                using var g = new AesGcmCompat(key, 16);
                 g.Decrypt(nonce, ct, tag, plain, AadWithoutTag(env[..aadEnd].ToArray(), tagPos));
             }
             finally { CryptographicOperations.ZeroMemory(key); CryptographicOperations.ZeroMemory(ssKem); CryptographicOperations.ZeroMemory(ssEc); }

@@ -43,6 +43,8 @@ public static class FfmpegFrameExtractor
                 return toPlaybackUrl?.Invoke(outputPath) ?? outputPath;   // 실프레임 → 가상호스트 URL(델리게이트)
         }
         catch { /* ffmpeg 미설치/프로세스 예외 → 스텁 폴백 */ }
+#else
+        await Task.CompletedTask; // 모바일: ffmpeg 프로세스 미지원 → 스텁 폴백
 #endif
         return stub;
     }

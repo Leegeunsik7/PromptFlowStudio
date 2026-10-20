@@ -7,16 +7,16 @@ public enum GraphOutcome : byte { Ok, RateLimited, Retry, AuthError, Fatal }
 
 /// <summary>
 /// 메모리 내 비밀 슬롯 — 프로세스 임시 키 AES-GCM 암호문으로만 보관(평문은 사용 순간 호출자 버퍼에만 복호화).
-/// .NET 8 에는 ProtectedMemory 가 없으므로 BCL AesGcm 로 대체, 미지원 플랫폼은 무작위 패드 XOR.
+/// .NET 8 에는 ProtectedMemory 가 없으므로 BCL AesGcmCompat 로 대체, 미지원 플랫폼은 무작위 패드 XOR.
 /// </summary>
 public sealed class GraphSecretSlot : IDisposable
 {
     public const int Cap = 1024;
     private readonly byte[] _key = RandomNumberGenerator.GetBytes(32), _nonce = new byte[12], _tag = new byte[16], _cipher = new byte[Cap], _pad = new byte[Cap];
-    private readonly AesGcm? _aes;
+    private readonly AesGcmCompat? _aes;
     public GraphSecretSlot()
     {
-        if (AesGcm.IsSupported) _aes = new AesGcm(_key, 16);
+        if (AesGcmCompat.IsSupported) _aes = new AesGcmCompat(_key, 16);
     }
     public int Length { get; private set; }
     public bool IsSet => Length > 0;

@@ -36,7 +36,7 @@ internal static class VfxProcess
         var psi = new ProcessStartInfo { FileName = exe, RedirectStandardOutput = !stdin, RedirectStandardInput = stdin, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
         foreach (var a in args) psi.ArgumentList.Add(a);
         var p = new Process { StartInfo = psi };
-        if (!p.Start()) { p.Dispose(); throw new InvalidOperationException("프로세스 시작 실패: " + Path.GetFileName(exe)); }
+        if (!p.StartCompat()) { p.Dispose(); throw new InvalidOperationException("프로세스 시작 실패: " + Path.GetFileName(exe)); }
         _ = p.StandardError.ReadToEndAsync(ct);
         return p;
     }
@@ -94,7 +94,7 @@ internal static class VfxProcess
             foreach (var p in new[] { dec, enc })
             {
                 if (p is null) continue;
-                try { if (!p.HasExited) p.Kill(true); } catch { }
+                try { if (!p.HasExited) p.KillCompat(true); } catch { }
                 p.Dispose();
             }
             ArrayPool<byte>.Shared.Return(src);

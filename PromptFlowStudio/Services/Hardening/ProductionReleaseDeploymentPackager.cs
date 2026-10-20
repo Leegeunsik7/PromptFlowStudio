@@ -354,7 +354,7 @@ public sealed class ProductionReleaseDeploymentPackager
             using var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
             p.OutputDataReceived += (_, e) => { if (e.Data is { } d) Log(d); };
             p.ErrorDataReceived += (_, e) => { if (e.Data is { } d) Log("ERR " + d); };
-            try { if (!p.Start()) return -1; }
+            try { if (!p.StartCompat()) return -1; }
             catch (System.ComponentModel.Win32Exception ex) { Log("dotnet 실행 실패: " + ex.Message); return -1; }
             p.BeginOutputReadLine(); p.BeginErrorReadLine();
             using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -362,7 +362,7 @@ public sealed class ProductionReleaseDeploymentPackager
             try { await p.WaitForExitAsync(d.Token).ConfigureAwait(false); }
             catch (OperationCanceledException)
             {
-                try { p.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+                try { p.KillCompat(entireProcessTree: true); } catch (InvalidOperationException) { }
                 Log("⏱ 퍼블리시 타임아웃/취소 → 프로세스 트리 종료");
                 return -2;
             }

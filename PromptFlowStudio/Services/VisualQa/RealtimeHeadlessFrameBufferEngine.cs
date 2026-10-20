@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Components.RenderTree;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.JSInterop;
 using PromptFlowStudio.Services.MotionMatching;
+using Dispatcher = Microsoft.AspNetCore.Components.Dispatcher; // MAUI 전역 using(Microsoft.Maui.Dispatching) 모호성 차단
 
 namespace PromptFlowStudio.Services.VisualQa;
 

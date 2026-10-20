@@ -168,7 +168,7 @@ public sealed class MobileOfflineStore : IMobileOfflineStore
             var nonce = RandomNumberGenerator.GetBytes(12);
             var tag = new byte[16];
             var cipher = new byte[json.Length];
-            using (var gcm = new AesGcm(_key, 16)) gcm.Encrypt(nonce, json, cipher, tag);
+            using (var gcm = new AesGcmCompat(_key, 16)) gcm.Encrypt(nonce, json, cipher, tag);
 
             var blob = new byte[12 + 16 + cipher.Length];
             Buffer.BlockCopy(nonce, 0, blob, 0, 12);
@@ -193,7 +193,7 @@ public sealed class MobileOfflineStore : IMobileOfflineStore
             var tag = blob.AsSpan(12, 16).ToArray();
             var cipher = blob.AsSpan(28).ToArray();
             var plain = new byte[cipher.Length];
-            using (var gcm = new AesGcm(_key, 16)) gcm.Decrypt(nonce, cipher, tag, plain);
+            using (var gcm = new AesGcmCompat(_key, 16)) gcm.Decrypt(nonce, cipher, tag, plain);
             var items = JsonSerializer.Deserialize(plain, PromptFlowJsonContext.Default.SyncItemList);
             if (items is not null) lock (_lock) { _queue.Clear(); _queue.AddRange(items); }
         }

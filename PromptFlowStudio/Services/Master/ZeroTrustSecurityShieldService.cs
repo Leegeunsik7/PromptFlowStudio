@@ -252,7 +252,7 @@ public sealed class ZeroTrustSecurityShieldService : IDisposable
     {
         var o = new byte[28 + plain.Length];
         RandomNumberGenerator.Fill(o.AsSpan(0, 12));
-        using var g = new AesGcm(key, 16);
+        using var g = new AesGcmCompat(key, 16);
         g.Encrypt(o.AsSpan(0, 12), plain, o.AsSpan(28), o.AsSpan(12, 16), aad);
         return o;
     }
@@ -263,7 +263,7 @@ public sealed class ZeroTrustSecurityShieldService : IDisposable
         var p = new byte[blob.Length - 28];
         try
         {
-            using var g = new AesGcm(key, 16);
+            using var g = new AesGcmCompat(key, 16);
             g.Decrypt(blob[..12], blob[28..], blob.Slice(12, 16), p, aad);
             return p;
         }
@@ -449,7 +449,7 @@ public sealed class ZeroTrustSecurityShieldService : IDisposable
             long idx = 0;
             var total = src.Length;
             long read = 0;
-            using var g = new AesGcm(key.AsSpan(0, 32), 16);
+            using var g = new AesGcmCompat(key.AsSpan(0, 32), 16);
             do
             {
                 var n = await ReadFullAsync(src, plain, FrameSize, ct).ConfigureAwait(false);
@@ -497,7 +497,7 @@ public sealed class ZeroTrustSecurityShieldService : IDisposable
             if (await ReadFullAsync(src, head, head.Length, ct).ConfigureAwait(false) != head.Length || !head.AsSpan(0, FileMagic.Length).SequenceEqual(FileMagic)) return false;
             var baseNonce = head.AsSpan(FileMagic.Length, 12).ToArray();
             await using var dst = new FileStream(output + ".tmp", FileMode.Create, FileAccess.Write, FileShare.None, 81920, true);
-            using var g = new AesGcm(key.AsSpan(0, 32), 16);
+            using var g = new AesGcmCompat(key.AsSpan(0, 32), 16);
             var hdr = new byte[20];
             var nonce = new byte[12];
             var aad = new byte[9];
@@ -833,7 +833,7 @@ public sealed class ZeroTrustSecurityShieldService : IDisposable
         using var listener = new HttpListener();
         listener.Prefixes.Add(redirect);
         listener.Start();
-        try { Process.Start(new ProcessStartInfo(req.Url) { UseShellExecute = true }); }
+        try { ProcessCompat.Start(new ProcessStartInfo(req.Url) { UseShellExecute = true }); }
         catch (Exception ex) { Program.Log("ZeroTrust.Browser", ex); return null; }
         using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
         d.CancelAfter(TimeSpan.FromMinutes(5));

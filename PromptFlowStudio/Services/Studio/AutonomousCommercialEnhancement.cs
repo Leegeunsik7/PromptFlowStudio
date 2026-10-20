@@ -140,7 +140,7 @@ public sealed class StudioFolderLinkService
 
     private static bool Start(string exe, string args)
     {
-        try { using var p = Process.Start(new ProcessStartInfo { FileName = exe, Arguments = args, UseShellExecute = true }); return true; }
+        try { using var p = ProcessCompat.Start(new ProcessStartInfo { FileName = exe, Arguments = args, UseShellExecute = true }); return p is not null; }
         catch { return false; }
     }
 }

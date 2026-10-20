@@ -326,7 +326,7 @@ public sealed class AiNeuralVfxRelightingEngine
         d.CancelAfter(TimeSpan.FromSeconds(30));
         var buf = new byte[w * h * 3];
         try { return await Spatial3dGaussianSplattingEngine.ReadExactAsync(p.StandardOutput.BaseStream, buf, buf.Length, d.Token).ConfigureAwait(false) ? buf : null; }
-        finally { try { if (!p.HasExited) p.Kill(true); } catch { } }
+        finally { try { if (!p.HasExited) p.KillCompat(true); } catch { } }
     }
 
     // ══════════════════════ 영상 ══════════════════════
@@ -379,11 +379,11 @@ public sealed class AiNeuralVfxRelightingEngine
         var psi = new System.Diagnostics.ProcessStartInfo { FileName = ffmpeg, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
         psi.ArgumentList.Add("-hide_banner"); psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(path);
         using var p = new System.Diagnostics.Process { StartInfo = psi };
-        if (!p.Start()) return 30;
+        if (!p.StartCompat()) return 30;
         using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
         d.CancelAfter(TimeSpan.FromSeconds(15));
         try { return ParseFps(await p.StandardError.ReadToEndAsync(d.Token).ConfigureAwait(false)); }
-        finally { try { if (!p.HasExited) p.Kill(true); } catch { } }
+        finally { try { if (!p.HasExited) p.KillCompat(true); } catch { } }
     }
 
     private VfxVideoResult Done(VfxVideoResult r)

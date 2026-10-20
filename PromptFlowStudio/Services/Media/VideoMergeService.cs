@@ -585,7 +585,7 @@ public sealed class VideoMergeService(IConfiguration cfg) : IVideoMergeService
                 if (om.Success && TryHms(om, out var s)) ReportPct(s);
             };
 
-            if (!proc.Start())
+            if (!proc.StartCompat())
                 return new(false, null, "ffmpeg 프로세스를 시작하지 못했습니다.");
             proc.BeginErrorReadLine();
             proc.BeginOutputReadLine();
@@ -593,7 +593,7 @@ public sealed class VideoMergeService(IConfiguration cfg) : IVideoMergeService
             try { await proc.WaitForExitAsync(ct).ConfigureAwait(false); }
             catch (OperationCanceledException)
             {
-                try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { /* 무시 */ }
+                try { if (!proc.HasExited) proc.KillCompat(entireProcessTree: true); } catch { /* 무시 */ }
                 return new(false, null, "병합이 취소되었습니다.");
             }
 
@@ -644,11 +644,11 @@ public sealed class VideoMergeService(IConfiguration cfg) : IVideoMergeService
             using var proc = new Process { StartInfo = psi };
             proc.ErrorDataReceived += (_, __) => { };   // 버퍼 드레인(데드락 방지)
             proc.OutputDataReceived += (_, __) => { };
-            if (!proc.Start()) return false;
+            if (!proc.StartCompat()) return false;
             proc.BeginErrorReadLine();
             proc.BeginOutputReadLine();
             try { await proc.WaitForExitAsync(ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) { try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { } return false; }
+            catch (OperationCanceledException) { try { if (!proc.HasExited) proc.KillCompat(entireProcessTree: true); } catch { } return false; }
 
             return proc.ExitCode == 0 && File.Exists(jpg);
         }
@@ -680,11 +680,11 @@ public sealed class VideoMergeService(IConfiguration cfg) : IVideoMergeService
             using var proc = new Process { StartInfo = psi };
             proc.ErrorDataReceived += (_, __) => { };   // 버퍼 드레인(데드락 방지)
             proc.OutputDataReceived += (_, __) => { };
-            if (!proc.Start()) return null;
+            if (!proc.StartCompat()) return null;
             proc.BeginErrorReadLine();
             proc.BeginOutputReadLine();
             try { await proc.WaitForExitAsync(ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) { try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { } return null; }
+            catch (OperationCanceledException) { try { if (!proc.HasExited) proc.KillCompat(entireProcessTree: true); } catch { } return null; }
 
             return proc.ExitCode == 0 && File.Exists(outputJpgPath) ? outputJpgPath : null;
         }

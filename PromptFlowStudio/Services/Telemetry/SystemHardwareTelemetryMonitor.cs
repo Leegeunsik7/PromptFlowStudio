@@ -286,7 +286,7 @@ public sealed class SystemHardwareTelemetryMonitor : IDisposable
         try
         {
             using var p = Process.GetCurrentProcess();
-            var cpuTime = p.TotalProcessorTime;
+            var cpuTime = p.TotalProcessorTimeCompat();
             var ticks = Environment.TickCount64;
             if (_lastCpuTicks > 0 && ticks > _lastCpuTicks)
                 cpu = Math.Clamp((cpuTime - _lastCpuTime).TotalMilliseconds / (ticks - _lastCpuTicks) / Environment.ProcessorCount * 100, 0, 100);

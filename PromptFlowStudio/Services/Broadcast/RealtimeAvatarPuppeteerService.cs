@@ -427,7 +427,7 @@ public sealed class RealtimeAvatarPuppeteerService : IDisposable
             psi.ArgumentList.Add(a);
 
         using var proc = new Process { StartInfo = psi };
-        if (!proc.Start()) return (null, 0);
+        if (!proc.StartCompat()) return (null, 0);
         using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
         d.CancelAfter(DecodeTimeout);
         var buf = ArrayPool<byte>.Shared.Rent(MaxClipBytes);
@@ -442,7 +442,7 @@ public sealed class RealtimeAvatarPuppeteerService : IDisposable
                 if (r <= 0) break;
                 len += r;
             }
-            if (len >= MaxClipBytes) { try { proc.Kill(true); } catch { } }
+            if (len >= MaxClipBytes) { try { proc.KillCompat(true); } catch { } }
             else await proc.WaitForExitAsync(d.Token).ConfigureAwait(false);
             len &= ~1;
             if (len == 0) { ArrayPool<byte>.Shared.Return(buf); return (null, 0); }
@@ -450,7 +450,7 @@ public sealed class RealtimeAvatarPuppeteerService : IDisposable
         }
         catch (Exception ex)
         {
-            try { if (!proc.HasExited) proc.Kill(true); } catch { }
+            try { if (!proc.HasExited) proc.KillCompat(true); } catch { }
             ArrayPool<byte>.Shared.Return(buf);
             if (ex is OperationCanceledException && ct.IsCancellationRequested) throw;
             Program.Log("AvatarPuppeteer.Decode", ex);

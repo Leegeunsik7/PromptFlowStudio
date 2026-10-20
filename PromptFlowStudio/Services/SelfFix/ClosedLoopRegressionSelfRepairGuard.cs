@@ -234,14 +234,15 @@ public sealed class ClosedLoopRegressionSelfRepairGuard
         var t0 = Stopwatch.GetTimestamp();
         using var p = new Process { StartInfo = psi };
         p.OutputDataReceived += On; p.ErrorDataReceived += On;
-        p.Start(); p.BeginOutputReadLine(); p.BeginErrorReadLine();
+        if (!p.StartCompat()) return new CommandResult(-1, "프로세스 미지원 플랫폼", 0, false);
+        p.BeginOutputReadLine(); p.BeginErrorReadLine();
         using var lim = CancellationTokenSource.CreateLinkedTokenSource(ct);
         lim.CancelAfter(CommandTimeout);
         var timedOut = false;
         try { await p.WaitForExitAsync(lim.Token).ConfigureAwait(false); }
         catch (OperationCanceledException)
         {
-            try { p.Kill(entireProcessTree: true); } catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception) { PromptFlowStudio.Program.Log("SelfFix.Kill", ex); }
+            try { p.KillCompat(entireProcessTree: true); } catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception) { PromptFlowStudio.Program.Log("SelfFix.Kill", ex); }
             if (ct.IsCancellationRequested) throw;
             timedOut = true;
         }

@@ -51,6 +51,7 @@ public sealed class NativePluginSandbox : IDisposable
     {
         try
         {
+            if (!ProcessCompat.IsSupported) throw new PlatformNotSupportedException("동적 어셈블리 로드 미지원 플랫폼");
             var ctx = new PluginContext(name, assemblyPath);
             _plugins[name] = ctx;
             Notify();
@@ -142,11 +143,15 @@ public sealed class NativePluginSandbox : IDisposable
         [RequiresUnreferencedCode(DynamicLoadingReason)]
         public PluginContext(string name, string path)
         {
+            if (!ProcessCompat.IsSupported) throw new PlatformNotSupportedException("동적 어셈블리 로드 미지원 플랫폼");
             _resolver = new AssemblyDependencyResolver(path);
             Alc = new IsolatedAlc(name, _resolver);
             Loaded = Alc.LoadFromAssemblyPath(path);   // 격리 컨텍스트로 1회 로드(의존성은 IsolatedAlc.Load 가 해석)
         }
 
+        [System.Runtime.Versioning.UnsupportedOSPlatform("ios")]
+        [System.Runtime.Versioning.UnsupportedOSPlatform("maccatalyst")]
+        [System.Runtime.Versioning.UnsupportedOSPlatform("tvos")]
         private sealed class IsolatedAlc : AssemblyLoadContext
         {
             private readonly AssemblyDependencyResolver _res;

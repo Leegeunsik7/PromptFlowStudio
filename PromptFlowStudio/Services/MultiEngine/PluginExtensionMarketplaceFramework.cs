@@ -89,6 +89,9 @@ namespace PromptFlowStudio.Services.MultiEngine
     }
 
     /// <summary>플러그인별 수집 가능 로드 컨텍스트 — SDK/호스트 어셈블리는 기본 컨텍스트 공유(타입 동일성), 나머지는 플러그인 폴더에서.</summary>
+    [System.Runtime.Versioning.UnsupportedOSPlatform("ios")]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("maccatalyst")]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("tvos")]
     internal sealed class PluginLoadContext : AssemblyLoadContext
     {
         private readonly AssemblyDependencyResolver _resolver;
@@ -163,7 +166,7 @@ namespace PromptFlowStudio.Services.MultiEngine
         public string HostVersion => "16.29.0";
         public string DataFolder => _root;
         public string Root => _root;
-        public bool HotReloadEnabled => Volatile.Read(ref _watcher) is not null;
+        public bool HotReloadEnabled => ProcessCompat.IsSupported && Volatile.Read(ref _watcher) is not null;
         public int LoadCount => Volatile.Read(ref _loads);
         public int UnloadCount => Volatile.Read(ref _unloads);
         public string? LastAction { get; private set; }
@@ -365,6 +368,7 @@ namespace PromptFlowStudio.Services.MultiEngine
                 p.Sha256 = Convert.ToHexString(SHA256.HashData(bytes));
                 if (!IsTrusted(p.Sha256)) { p.Status = PluginStatus.Untrusted; p.LastError = "신뢰 승인 필요(SHA-256 " + p.Sha256[..12] + "…)"; return false; }
                 if (!p.Enabled) { p.Status = PluginStatus.Disabled; return false; }
+                if (!ProcessCompat.IsSupported) { p.Status = PluginStatus.Faulted; p.LastError = "동적 로드 미지원 플랫폼"; return false; }
                 var ctx = new PluginLoadContext(dll);
                 var asm = ctx.LoadFromStream(new MemoryStream(bytes));
                 var type = asm.GetType(m.Type!, throwOnError: false);
@@ -437,6 +441,7 @@ namespace PromptFlowStudio.Services.MultiEngine
 
         public bool EnableHotReload()
         {
+            if (!ProcessCompat.IsSupported) return false;   // v17.63.2: iOS 계열 FileSystemWatcher 미지원
             if (_disposed || _watcher is not null) return _watcher is not null;
             try
             {
@@ -455,6 +460,7 @@ namespace PromptFlowStudio.Services.MultiEngine
 
         public void DisableHotReload()
         {
+            if (!ProcessCompat.IsSupported) return;
             var w = Interlocked.Exchange(ref _watcher, null);
             if (w is null) return;
             w.EnableRaisingEvents = false;

@@ -474,7 +474,7 @@ public sealed class CloudDeltaAssetSyncEngine
         Span<byte> km = stackalloc byte[44];
         HKDF.DeriveKey(HashAlgorithmName.SHA256, tenantKey, km, Encoding.ASCII.GetBytes(hash), "pfs-delta-ce-v1"u8);
         var o = new byte[16 + plain.Length];
-        using (var g = new AesGcm(km[..32], 16)) g.Encrypt(km.Slice(32, 12), plain, o.AsSpan(16), o.AsSpan(0, 16));
+        using (var g = new AesGcmCompat(km[..32], 16)) g.Encrypt(km.Slice(32, 12), plain, o.AsSpan(16), o.AsSpan(0, 16));
         CryptographicOperations.ZeroMemory(km);
         return o;
     }
@@ -485,7 +485,7 @@ public sealed class CloudDeltaAssetSyncEngine
         Span<byte> km = stackalloc byte[44];
         HKDF.DeriveKey(HashAlgorithmName.SHA256, tenantKey, km, Encoding.ASCII.GetBytes(hash), "pfs-delta-ce-v1"u8);
         var p = new byte[blob.Length - 16];
-        try { using var g = new AesGcm(km[..32], 16); g.Decrypt(km.Slice(32, 12), blob[16..], blob[..16], p); return p; }
+        try { using var g = new AesGcmCompat(km[..32], 16); g.Decrypt(km.Slice(32, 12), blob[16..], blob[..16], p); return p; }
         catch (CryptographicException) { return null; }
         finally { CryptographicOperations.ZeroMemory(km); }
     }

@@ -256,7 +256,7 @@ internal static class SmtpPortableCipher
         var pt = Encoding.UTF8.GetBytes(plain ?? "");
         var ct = new byte[pt.Length];
         var tag = new byte[TagLen];
-        using (var aes = new AesGcm(key, TagLen))
+        using (var aes = new AesGcmCompat(key, TagLen))
             aes.Encrypt(nonce, pt, ct, tag);
 
         var buf = new byte[NonceLen + TagLen + ct.Length];
@@ -277,7 +277,7 @@ internal static class SmtpPortableCipher
             var tag = buf.AsSpan(NonceLen, TagLen);
             var ct = buf.AsSpan(NonceLen + TagLen);
             var pt = new byte[ct.Length];
-            using (var aes = new AesGcm(key, TagLen))
+            using (var aes = new AesGcmCompat(key, TagLen))
                 aes.Decrypt(nonce, ct, tag, pt);
             return Encoding.UTF8.GetString(pt);
         }

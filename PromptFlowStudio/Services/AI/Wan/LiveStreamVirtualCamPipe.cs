@@ -195,7 +195,9 @@ public sealed class LiveStreamVirtualCamPipe : IDisposable
         MemoryMappedViewStream? stream = null;
         try
         {
-            mmf = MemoryMappedFile.CreateOrOpen(mapName ?? DefaultMapName, HeaderBytes + MaxPayloadBytes, MemoryMappedFileAccess.ReadWrite);
+            mmf = OperatingSystem.IsWindows()
+                ? MemoryMappedFile.CreateOrOpen(mapName ?? DefaultMapName, HeaderBytes + MaxPayloadBytes, MemoryMappedFileAccess.ReadWrite)
+                : MemoryMappedFile.CreateNew(null, HeaderBytes + MaxPayloadBytes, MemoryMappedFileAccess.ReadWrite);   // v17.63.2: 비-Windows 는 명명 매핑 미지원 → 익명(프로세스 내) 매핑 폴백
             stream = mmf.CreateViewStream(0, HeaderBytes + MaxPayloadBytes, MemoryMappedFileAccess.ReadWrite);
             _mutex = new Mutex(false, mutexName ?? DefaultMutexName);
         }

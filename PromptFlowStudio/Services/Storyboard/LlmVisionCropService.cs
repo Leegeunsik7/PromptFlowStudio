@@ -195,11 +195,11 @@ public sealed class LlmVisionCropService(IVideoMergeService merge, EngineConfigS
             using var proc = new Process { StartInfo = psi };
             proc.ErrorDataReceived += (_, __) => { };
             proc.OutputDataReceived += (_, __) => { };
-            if (!proc.Start()) return false;
+            if (!proc.StartCompat()) return false;
             proc.BeginErrorReadLine();
             proc.BeginOutputReadLine();
             try { await proc.WaitForExitAsync(ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) { try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { } return false; }
+            catch (OperationCanceledException) { try { if (!proc.HasExited) proc.KillCompat(entireProcessTree: true); } catch { } return false; }
             return proc.ExitCode == 0;
         }
         catch (Exception ex) { Program.Log("LlmVisionCrop.Ffmpeg", ex); return false; }

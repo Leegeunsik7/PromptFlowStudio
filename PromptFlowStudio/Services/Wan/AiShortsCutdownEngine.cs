@@ -120,6 +120,8 @@ public sealed class AiShortsCutdownEngine(ILocalMediaService media)
             }
         }
         catch (Exception ex) { Program.Log("AiShortsCutdown.Probe", ex); }
+#else
+        await Task.CompletedTask; // 모바일: ffmpeg 프로세스 미지원 → 0 폴백
 #endif
         return 0;
     }

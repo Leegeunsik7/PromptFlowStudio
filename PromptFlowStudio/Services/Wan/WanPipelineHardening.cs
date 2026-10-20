@@ -84,7 +84,7 @@ public sealed class WanPipelineHardening
             psi.ArgumentList.Add("--format=csv,noheader,nounits");
 
             proc = new Process { StartInfo = psi };
-            if (!proc.Start()) return VramProbe.None;
+            if (!proc.StartCompat()) return VramProbe.None;
 
             // ⚠ stdout·stderr 를 동시에 비동기로 읽는다 — 한쪽 파이프 버퍼가 가득 차 WaitForExit 가 영원히 막히는 데드락을 차단.
             var stdoutTask = proc.StandardOutput.ReadToEndAsync();
@@ -117,7 +117,7 @@ public sealed class WanPipelineHardening
         finally
         {
             // 어떤 경로로 빠져나가도 살아있는 프로세스를 남기지 않는다.
-            try { if (proc is not null && !proc.HasExited) proc.Kill(entireProcessTree: true); } catch { /* 무시 */ }
+            try { if (proc is not null && !proc.HasExited) proc.KillCompat(entireProcessTree: true); } catch { /* 무시 */ }
             proc?.Dispose();
         }
     }
@@ -256,7 +256,7 @@ public sealed class WanPipelineHardening
     {
         try
         {
-            if (!proc.HasExited) proc.Kill(entireProcessTree: true);
+            if (!proc.HasExited) proc.KillCompat(entireProcessTree: true);
             try { proc.WaitForExit(2000); } catch { /* 무시 */ }
         }
         catch { /* 이미 종료/권한 — 무시 */ }

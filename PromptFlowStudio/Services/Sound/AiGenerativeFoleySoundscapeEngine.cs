@@ -401,7 +401,7 @@ public sealed class AiGenerativeFoleySoundscapeEngine
                          "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1" })
                 psi.ArgumentList.Add(x);
             using var p = new Process { StartInfo = psi };
-            if (!p.Start()) return null;
+            if (!p.StartCompat()) return null;
             using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
             d.CancelAfter(TimeSpan.FromMinutes(5));
             _ = p.StandardError.ReadToEndAsync(d.Token);
@@ -418,7 +418,7 @@ public sealed class AiGenerativeFoleySoundscapeEngine
                     (a, b) = (b, a);
                 }
             }
-            finally { try { if (!p.HasExited) p.Kill(true); } catch { } }
+            finally { try { if (!p.HasExited) p.KillCompat(true); } catch { } }
             var dur = probe.Value.Duration > 0 ? probe.Value.Duration : motion.Count / MotionFps;
             return Generate(motion.ToArray(), MotionFps, dur, sceneText, CinematicSeed(videoPath));
         }
@@ -466,7 +466,7 @@ public sealed class AiGenerativeFoleySoundscapeEngine
         using var p = new Process { StartInfo = psi };
         try
         {
-            if (!p.Start()) return -1;
+            if (!p.StartCompat()) return -1;
             using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
             d.CancelAfter(TimeSpan.FromMinutes(10));
             _ = p.StandardOutput.ReadToEndAsync(d.Token);
@@ -476,7 +476,7 @@ public sealed class AiGenerativeFoleySoundscapeEngine
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return -2; }
         catch (System.ComponentModel.Win32Exception ex) { Program.Log("Sound.Run", ex); return -3; }
-        finally { try { if (!p.HasExited) p.Kill(true); } catch { } }
+        finally { try { if (!p.HasExited) p.KillCompat(true); } catch { } }
     }
 
     private void Raise()

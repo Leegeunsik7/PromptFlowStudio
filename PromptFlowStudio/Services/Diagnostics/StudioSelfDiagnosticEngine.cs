@@ -178,16 +178,16 @@ public sealed class StudioSelfDiagnosticEngine
 
     private static List<Process> SafeGetFfmpeg()
     {
-        try { return Process.GetProcessesByName("ffmpeg").ToList(); }
+        try { return ProcessCompat.GetProcessesByName("ffmpeg").ToList(); }
         catch { return new List<Process>(); }
     }
-    private static double SafeCpu(Process p) { try { return p.TotalProcessorTime.TotalMilliseconds; } catch { return 0; } }
-    private static DateTimeOffset SafeStart(Process p) { try { return p.StartTime; } catch { return DateTimeOffset.Now; } }
+    private static double SafeCpu(Process p) { try { return p.TotalProcessorTimeCompat().TotalMilliseconds; } catch { return 0; } }
+    private static DateTimeOffset SafeStart(Process p) { try { return p.StartTimeCompat(); } catch { return DateTimeOffset.Now; } }
     private static long SafeWorkingSetMb(Process p) { try { return p.WorkingSet64 / (1024 * 1024); } catch { return 0; } }
     private static int SafePid(Process p) { try { return p.Id; } catch { return 0; } }
     private static bool SafeKill(int pid)
     {
-        try { using var p = Process.GetProcessById(pid); p.Kill(true); return true; }
+        try { using var p = Process.GetProcessById(pid); p.KillCompat(true); return true; }
         catch (Exception ex) { Program.Log("SelfHeal.Kill", ex); return false; }
     }
 }

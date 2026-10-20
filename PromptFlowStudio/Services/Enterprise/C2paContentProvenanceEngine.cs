@@ -397,7 +397,7 @@ public sealed class C2paContentProvenanceEngine : IDisposable
         SHA256.HashData(secret, k);
         var outBuf = new byte[12 + 16 + plain.Length];
         RandomNumberGenerator.Fill(outBuf.AsSpan(0, 12));
-        using var gcm = new AesGcm(k, 16);
+        using var gcm = new AesGcmCompat(k, 16);
         gcm.Encrypt(outBuf.AsSpan(0, 12), plain, outBuf.AsSpan(28), outBuf.AsSpan(12, 16));
         CryptographicOperations.ZeroMemory(k);
         return outBuf;
@@ -411,7 +411,7 @@ public sealed class C2paContentProvenanceEngine : IDisposable
         var plain = new byte[data.Length - 28];
         try
         {
-            using var gcm = new AesGcm(k, 16);
+            using var gcm = new AesGcmCompat(k, 16);
             gcm.Decrypt(data.AsSpan(0, 12), data.AsSpan(28), data.AsSpan(12, 16), plain);
             return plain;
         }
@@ -487,8 +487,8 @@ public sealed class C2paContentProvenanceEngine : IDisposable
             d.CancelAfter(EncodeTimeout);
             using var pd = new Process { StartInfo = dec };
             using var pe = new Process { StartInfo = enc };
-            if (!pd.Start()) return Fail("디코더 시작 실패");
-            if (!pe.Start()) { try { pd.Kill(true); } catch { } return Fail("인코더 시작 실패"); }
+            if (!pd.StartCompat()) return Fail("디코더 시작 실패");
+            if (!pe.StartCompat()) { try { pd.KillCompat(true); } catch { } return Fail("인코더 시작 실패"); }
             var decErr = pd.StandardError.ReadToEndAsync(d.Token);
             var encErr = pe.StandardError.ReadToEndAsync(d.Token);
             _ = pe.StandardOutput.ReadToEndAsync(d.Token);
@@ -521,8 +521,8 @@ public sealed class C2paContentProvenanceEngine : IDisposable
             }
             catch (OperationCanceledException)
             {
-                try { if (!pd.HasExited) pd.Kill(true); } catch { }
-                try { if (!pe.HasExited) pe.Kill(true); } catch { }
+                try { if (!pd.HasExited) pd.KillCompat(true); } catch { }
+                try { if (!pe.HasExited) pe.KillCompat(true); } catch { }
                 throw;
             }
             finally { ArrayPool<byte>.Shared.Return(buf); }
@@ -605,7 +605,7 @@ public sealed class C2paContentProvenanceEngine : IDisposable
                      "-vf", "scale=" + w.ToString(CultureInfo.InvariantCulture) + ":" + h.ToString(CultureInfo.InvariantCulture), "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1" })
             psi.ArgumentList.Add(a);
         using var p = new Process { StartInfo = psi };
-        if (!p.Start()) return null;
+        if (!p.StartCompat()) return null;
         using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
         d.CancelAfter(TimeSpan.FromSeconds(60));
         _ = p.StandardError.ReadToEndAsync(d.Token);
@@ -633,7 +633,7 @@ public sealed class C2paContentProvenanceEngine : IDisposable
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
         finally
         {
-            try { if (!p.HasExited) p.Kill(true); } catch { }
+            try { if (!p.HasExited) p.KillCompat(true); } catch { }
             ArrayPool<byte>.Shared.Return(frame);
             ArrayPool<float>.Shared.Return(means);
         }
@@ -649,7 +649,7 @@ public sealed class C2paContentProvenanceEngine : IDisposable
             var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
             psi.ArgumentList.Add("-hide_banner"); psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(input);
             using var p = new Process { StartInfo = psi };
-            if (!p.Start()) return 30;
+            if (!p.StartCompat()) return 30;
             using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
             d.CancelAfter(TimeSpan.FromSeconds(15));
             var err = await p.StandardError.ReadToEndAsync(d.Token).ConfigureAwait(false);

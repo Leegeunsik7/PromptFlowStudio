@@ -346,13 +346,13 @@ public sealed class MvHevcSpatialVideoTranscoder
                          "-vf", "scale=" + w.ToString(ci) + ":" + h.ToString(ci), "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1" })
                 psi.ArgumentList.Add(a);
             using var proc = new Process { StartInfo = psi };
-            if (!proc.Start()) return null;
+            if (!proc.StartCompat()) return null;
             using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
             d.CancelAfter(TimeSpan.FromSeconds(30));
             _ = proc.StandardError.ReadToEndAsync(d.Token);
             var rgb = new byte[w * h * 3];
             var ok = await Spatial3dGaussianSplattingEngine.ReadExactAsync(proc.StandardOutput.BaseStream, rgb, rgb.Length, d.Token).ConfigureAwait(false);
-            try { if (!proc.HasExited) proc.Kill(true); } catch { }
+            try { if (!proc.HasExited) proc.KillCompat(true); } catch { }
             if (!ok) { LastAction = "⚠ 프레임 디코드 실패"; Raise(); return null; }
             return SetPreview(rgb, w, h, t);
         }
@@ -512,7 +512,7 @@ public sealed class MvHevcSpatialVideoTranscoder
         var frames = 0;
         try
         {
-            if (!dec.Start() || !enc.Start()) return (0, Array.Empty<float>());
+            if (!dec.StartCompat() || !enc.StartCompat()) return (0, Array.Empty<float>());
             _ = dec.StandardError.ReadToEndAsync(ct);
             _ = enc.StandardError.ReadToEndAsync(ct);
             var input0 = dec.StandardOutput.BaseStream;
@@ -538,8 +538,8 @@ public sealed class MvHevcSpatialVideoTranscoder
         }
         finally
         {
-            try { if (!dec.HasExited) dec.Kill(true); } catch { }
-            try { if (!enc.HasExited) enc.Kill(true); } catch { }
+            try { if (!dec.HasExited) dec.KillCompat(true); } catch { }
+            try { if (!enc.HasExited) enc.KillCompat(true); } catch { }
             ArrayPool<byte>.Shared.Return(sbs);
             ArrayPool<float>.Shared.Return(depth);
             ArrayPool<float>.Shared.Return(scratch);
@@ -554,11 +554,11 @@ public sealed class MvHevcSpatialVideoTranscoder
         foreach (var a in new[] { "-hide_banner", "-v", "error", "-i", input, "-vn", "-ac", "1", "-ar", AudioRate.ToString(ci), "-t", MaxAudioSeconds.ToString(ci), "-f", "f32le", "pipe:1" })
             psi.ArgumentList.Add(a);
         using var p = new Process { StartInfo = psi };
-        if (!p.Start()) return false;
+        if (!p.StartCompat()) return false;
         _ = p.StandardError.ReadToEndAsync(ct);
         using var ms = new MemoryStream();
         try { await p.StandardOutput.BaseStream.CopyToAsync(ms, ct).ConfigureAwait(false); }
-        finally { try { if (!p.HasExited) p.Kill(true); } catch { } }
+        finally { try { if (!p.HasExited) p.KillCompat(true); } catch { } }
         var count = (int)(ms.Length / 4);
         if (count < AudioRate / 10) return false;   // 오디오 트랙 없음/100ms 미만
         WriteBinauralWav(ms.GetBuffer(), count, wavPath, azimuth, fps);
@@ -579,10 +579,10 @@ public sealed class MvHevcSpatialVideoTranscoder
         var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
         psi.ArgumentList.Add("-hide_banner"); psi.ArgumentList.Add("-encoders");
         using var p = new Process { StartInfo = psi };
-        if (!p.Start()) return "libx264";
+        if (!p.StartCompat()) return "libx264";
         _ = p.StandardError.ReadToEndAsync(ct);
         var text = await p.StandardOutput.ReadToEndAsync(ct).ConfigureAwait(false);
-        try { await p.WaitForExitAsync(ct).ConfigureAwait(false); } catch (OperationCanceledException) { try { p.Kill(true); } catch { } throw; }
+        try { await p.WaitForExitAsync(ct).ConfigureAwait(false); } catch (OperationCanceledException) { try { p.KillCompat(true); } catch { } throw; }
         return _encoder = PickEncoder(text);
     }
 
@@ -593,7 +593,7 @@ public sealed class MvHevcSpatialVideoTranscoder
         using var p = new Process { StartInfo = psi };
         try
         {
-            if (!p.Start()) return -1;
+            if (!p.StartCompat()) return -1;
             using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
             d.CancelAfter(timeout);
             _ = p.StandardOutput.ReadToEndAsync(d.Token);
@@ -603,7 +603,7 @@ public sealed class MvHevcSpatialVideoTranscoder
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return -2; }   // 개별 단계 타임아웃
         catch (System.ComponentModel.Win32Exception ex) { Program.Log("Spatial.Run", ex); return -3; }
-        finally { try { if (!p.HasExited) p.Kill(true); } catch { } }
+        finally { try { if (!p.HasExited) p.KillCompat(true); } catch { } }
     }
 
     // ══════════════════════ 패키지 ══════════════════════

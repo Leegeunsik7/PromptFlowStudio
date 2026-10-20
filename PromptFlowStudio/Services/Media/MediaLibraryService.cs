@@ -71,7 +71,7 @@ public sealed class MediaLibraryService(ILocalMediaService media) : IMediaLibrar
         try
         {
             // 탐색기에서 해당 파일을 선택한 채로 연다.
-            Process.Start(new ProcessStartInfo
+            ProcessCompat.Start(new ProcessStartInfo
             {
                 FileName = "explorer.exe",
                 Arguments = $"/select,\"{path}\"",

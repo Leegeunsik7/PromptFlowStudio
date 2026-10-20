@@ -47,7 +47,9 @@ public sealed class OperationsCanaryLogRetentionCleaner : IDisposable
     public OperationsCanaryLogRetentionCleaner(string? mmfName = null)
     {
         // v12.2.0: 뷰 생성 실패 시 앞서 연 매핑 핸들 즉시 반환(이전엔 필드 대입 전 예외로 종료자까지 잔류).
-        var mmf = MemoryMappedFile.CreateOrOpen(mmfName ?? "Local\\PromptFlowStudio_CanaryRetention_Ring_v1", (long)SlotBytes * RingSlots, MemoryMappedFileAccess.ReadWrite);
+        var mmf = OperatingSystem.IsWindows()
+            ? MemoryMappedFile.CreateOrOpen(mmfName ?? "Local\\PromptFlowStudio_CanaryRetention_Ring_v1", (long)SlotBytes * RingSlots, MemoryMappedFileAccess.ReadWrite)
+            : MemoryMappedFile.CreateNew(null, (long)SlotBytes * RingSlots, MemoryMappedFileAccess.ReadWrite);   // v17.63.2: 비-Windows 는 명명 매핑 미지원 → 익명(프로세스 내) 매핑 폴백
         try { _stream = mmf.CreateViewStream(0, (long)SlotBytes * RingSlots, MemoryMappedFileAccess.ReadWrite); }
         catch { mmf.Dispose(); throw; }
         _mmf = mmf;

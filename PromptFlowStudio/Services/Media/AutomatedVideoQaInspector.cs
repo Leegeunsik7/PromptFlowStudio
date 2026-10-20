@@ -401,7 +401,7 @@ public sealed class AutomatedVideoQaInspector
         var psi = new ProcessStartInfo { FileName = exe, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
         foreach (var a in BuildArgs(input)) psi.ArgumentList.Add(a);
         using var proc = new Process { StartInfo = psi };
-        if (!proc.Start()) throw new InvalidOperationException("ffmpeg 시작 실패");
+        if (!proc.StartCompat()) throw new InvalidOperationException("ffmpeg 시작 실패");
         try
         {
             var drainOut = proc.StandardOutput.BaseStream.CopyToAsync(Stream.Null, ct);
@@ -413,7 +413,7 @@ public sealed class AutomatedVideoQaInspector
         }
         catch (OperationCanceledException)
         {
-            try { if (!proc.HasExited) proc.Kill(true); } catch { }
+            try { if (!proc.HasExited) proc.KillCompat(true); } catch { }
             throw;
         }
     }

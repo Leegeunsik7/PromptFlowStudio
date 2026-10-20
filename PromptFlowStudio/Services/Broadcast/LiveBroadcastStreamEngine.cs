@@ -105,7 +105,7 @@ public sealed class LiveBroadcastStreamEngine
             foreach (var a in args) psi.ArgumentList.Add(a);
 
             var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
-            if (!proc.Start()) return new(false, "송출 프로세스 시작 실패.");
+            if (!proc.StartCompat()) return new(false, "송출 프로세스 시작 실패.");
 
             lock (_lock)
             {
@@ -128,7 +128,7 @@ public sealed class LiveBroadcastStreamEngine
     {
         lock (_lock)
         {
-            try { if (_proc is { HasExited: false }) _proc.Kill(true); } catch { }
+            try { if (_proc is { HasExited: false }) _proc.KillCompat(true); } catch { }
             _cts?.Cancel();
             IsLive = false; LastMessage = "⏹ 송출 중지됨"; StartedAt = null; _proc = null;
         }

@@ -456,7 +456,7 @@ public sealed class UnrealEngine5LiveStagingBridge : IDisposable
         try
         {
             using var p = new Process { StartInfo = psi };
-            if (!p.Start()) return;
+            if (!p.StartCompat()) return;
             _ = p.StandardError.ReadToEndAsync(cts.Token);
             try
             {
@@ -479,7 +479,7 @@ public sealed class UnrealEngine5LiveStagingBridge : IDisposable
                     }
                 }
             }
-            finally { try { if (!p.HasExited) p.Kill(true); } catch { } }
+            finally { try { if (!p.HasExited) p.KillCompat(true); } catch { } }
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { Program.Log("UE5.Ingest", ex); LastAction = "⚠ 프레임 수신 실패: " + ex.Message; }

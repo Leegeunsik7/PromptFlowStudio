@@ -155,7 +155,7 @@ public sealed class DeploymentRunnerHardening
             proc.OutputDataReceived += (_, e) => { if (e.Data is null) return; if (so.Length < 400_000) so.AppendLine(e.Data); log?.Invoke(e.Data); };
             proc.ErrorDataReceived  += (_, e) => { if (e.Data is null) return; if (se.Length < 400_000) se.AppendLine(e.Data); log?.Invoke(e.Data); };
 
-            if (!proc.Start()) return ScriptRunResult.Rejected("프로세스를 시작하지 못했습니다.");
+            if (!proc.StartCompat()) return ScriptRunResult.Rejected("프로세스를 시작하지 못했습니다.");
             proc.BeginOutputReadLine();
             proc.BeginErrorReadLine();
 
@@ -185,7 +185,7 @@ public sealed class DeploymentRunnerHardening
         finally
         {
             // 어떤 경로(취소·예외·조기반환)로 나가도 살아있는 프로세스 트리를 남기지 않는다(Orphan/Zombie 0).
-            try { if (proc is not null && !proc.HasExited) proc.Kill(entireProcessTree: true); } catch { /* 무시 */ }
+            try { if (proc is not null && !proc.HasExited) proc.KillCompat(entireProcessTree: true); } catch { /* 무시 */ }
             proc?.Dispose();
         }
     }
@@ -197,7 +197,7 @@ public sealed class DeploymentRunnerHardening
         try
         {
             if (proc.HasExited) return false;
-            proc.Kill(entireProcessTree: true);   // Win/맥/리눅스 공통 — 자식까지 확실히 종료
+            proc.KillCompat(entireProcessTree: true);   // Win/맥/리눅스 공통 — 자식까지 확실히 종료
             try { proc.WaitForExit(3000); } catch { /* 무시 */ }
             return true;
         }

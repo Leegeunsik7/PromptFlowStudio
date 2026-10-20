@@ -392,7 +392,7 @@ public sealed class Spatial3dGaussianSplattingEngine
                          "-frames:v", maxFrames.ToString(ci), "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1" })
                 psi.ArgumentList.Add(a);
             using var proc = new Process { StartInfo = psi };
-            if (!proc.Start()) return Done(new(false, 0, 0, SplatCount, 0, 0, "ffmpeg 시작 실패"));
+            if (!proc.StartCompat()) return Done(new(false, 0, 0, SplatCount, 0, 0, "ffmpeg 시작 실패"));
             using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
             d.CancelAfter(ReconTimeout);
             _ = proc.StandardError.ReadToEndAsync(d.Token);
@@ -437,7 +437,7 @@ public sealed class Spatial3dGaussianSplattingEngine
                 keys++;
                 if (SplatCount >= MaxSplats) break;
             }
-            try { if (!proc.HasExited) proc.Kill(true); } catch { }
+            try { if (!proc.HasExited) proc.KillCompat(true); } catch { }
             if (frames == 0) return Done(new(false, 0, 0, SplatCount, 0, 0, "디코드된 프레임이 없습니다."));
             Interlocked.Increment(ref _recons);
             var yd = yaw * (180f / MathF.PI);

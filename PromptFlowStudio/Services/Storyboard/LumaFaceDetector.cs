@@ -136,14 +136,14 @@ public sealed class LumaFaceDetector
             psi.ArgumentList.Add(a);
 
         using var proc = new Process { StartInfo = psi };
-        if (!proc.Start()) return (null, 0, 0);
+        if (!proc.StartCompat()) return (null, 0, 0);
 
         using var ms = new MemoryStream();
         var copy = proc.StandardOutput.BaseStream.CopyToAsync(ms, 81920, ct);
         var drain = proc.StandardError.ReadToEndAsync(ct);   // stderr 드레인(데드락 방지)
         await Task.WhenAll(copy, drain).ConfigureAwait(false);
         try { await proc.WaitForExitAsync(ct).ConfigureAwait(false); }
-        catch (OperationCanceledException) { try { if (!proc.HasExited) proc.Kill(true); } catch { } throw; }
+        catch (OperationCanceledException) { try { if (!proc.HasExited) proc.KillCompat(true); } catch { } throw; }
 
         var bytes = ms.ToArray();
         if (bytes.Length < SampleWidth * 3) return (null, 0, 0);

@@ -26,12 +26,14 @@ public sealed class IosHapticEngine : IHapticEngine
             case HapticEvent.DeploySuccess:
                 using (var g = new UINotificationFeedbackGenerator()) g.NotificationOccurred(UINotificationFeedbackType.Success);
                 break;
+#pragma warning disable CA1422 // iOS 15 최소 타깃: 17.5+ GetFeedbackGenerator(UIView) 대체 불가 → 기존 생성자 유지(17.5+ 에서도 동작)
             case HapticEvent.SwLimit:
                 using (var g = new UIImpactFeedbackGenerator(UIImpactFeedbackStyle.Medium)) g.ImpactOccurred();
                 break;
             default: // SimTouch
                 using (var g = new UIImpactFeedbackGenerator(UIImpactFeedbackStyle.Light)) g.ImpactOccurred();
                 break;
+#pragma warning restore CA1422
         }
     }
 

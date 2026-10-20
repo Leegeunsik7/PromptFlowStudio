@@ -48,7 +48,7 @@ public sealed class SovereignMediaCloudConfidentialMesh : IDisposable
     private sealed class Session
     {
         public int Enclave;
-        public AesGcm Up = null!, Down = null!;
+        public AesGcmCompat Up = null!, Down = null!;
         public byte[] Salt = new byte[4];
         public ulong SendCtr, RecvCtr, EnclaveSendCtr;
         public bool Open;
@@ -213,7 +213,7 @@ public sealed class SovereignMediaCloudConfidentialMesh : IDisposable
         var nonce = RandomNumberGenerator.GetBytes(NonceSize);
         var outp = new byte[NonceSize + TagSize + weights256.Length];
         nonce.CopyTo(outp, 0);
-        using var g = new AesGcm(SealingKey(measurement), TagSize);
+        using var g = new AesGcmCompat(SealingKey(measurement), TagSize);
         g.Encrypt(nonce, weights256, outp.AsSpan(NonceSize + TagSize), outp.AsSpan(NonceSize, TagSize), "pfs-model"u8);
         return outp;
     }
@@ -225,7 +225,7 @@ public sealed class SovereignMediaCloudConfidentialMesh : IDisposable
         if (e.State != EnclaveState.Attested || sealedModel.Length != NonceSize + TagSize + 256) return false;
         try
         {
-            using var g = new AesGcm(SealingKey(e.Measurement), TagSize);
+            using var g = new AesGcmCompat(SealingKey(e.Measurement), TagSize);
             g.Decrypt(sealedModel.AsSpan(0, NonceSize), sealedModel.AsSpan(NonceSize + TagSize), sealedModel.AsSpan(NonceSize, TagSize), e.Lut, "pfs-model"u8);
             e.ModelLoaded = true;
             return true;
@@ -270,7 +270,7 @@ public sealed class SovereignMediaCloudConfidentialMesh : IDisposable
         if (!CryptographicOperations.FixedTimeEquals(shared, shared2)) return (PlacementVerdict.AttestationFailed, -1, -1);
         Span<byte> keys = stackalloc byte[64];
         HKDF.DeriveKey(HashAlgorithmName.SHA384, shared, keys, nonce, "pfs-confidential-channel/v1"u8);
-        var s = new Session { Enclave = best, Up = new AesGcm(keys[..32], TagSize), Down = new AesGcm(keys[32..], TagSize), Open = true };
+        var s = new Session { Enclave = best, Up = new AesGcmCompat(keys[..32], TagSize), Down = new AesGcmCompat(keys[32..], TagSize), Open = true };
         RandomNumberGenerator.Fill(s.Salt);
         CryptographicOperations.ZeroMemory(keys); CryptographicOperations.ZeroMemory(shared); CryptographicOperations.ZeroMemory(shared2);
         int id;

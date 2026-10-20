@@ -139,13 +139,13 @@ public sealed class PreExportQaSentinel
         var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
         foreach (var a in args) psi.ArgumentList.Add(a);
         using var proc = new Process { StartInfo = psi };
-        if (!proc.Start()) return Array.Empty<byte>();
+        if (!proc.StartCompat()) return Array.Empty<byte>();
         using var ms = new MemoryStream();
         var copy = proc.StandardOutput.BaseStream.CopyToAsync(ms, 81920, ct);
         var drain = proc.StandardError.ReadToEndAsync(ct);
         await Task.WhenAll(copy, drain).ConfigureAwait(false);
         try { await proc.WaitForExitAsync(ct).ConfigureAwait(false); }
-        catch (OperationCanceledException) { try { if (!proc.HasExited) proc.Kill(true); } catch { } throw; }
+        catch (OperationCanceledException) { try { if (!proc.HasExited) proc.KillCompat(true); } catch { } throw; }
         return ms.ToArray();
     }
 

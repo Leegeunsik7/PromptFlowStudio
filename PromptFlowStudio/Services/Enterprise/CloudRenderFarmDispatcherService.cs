@@ -630,11 +630,11 @@ public sealed class CloudRenderFarmDispatcherService : IDisposable
             var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
             psi.ArgumentList.Add("-hide_banner"); psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(path);
             using var p = new Process { StartInfo = psi };
-            if (!p.Start()) return null;
+            if (!p.StartCompat()) return null;
             using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
             d.CancelAfter(TimeSpan.FromSeconds(15));
             var err = await p.StandardError.ReadToEndAsync(d.Token).ConfigureAwait(false);
-            try { await p.WaitForExitAsync(d.Token).ConfigureAwait(false); } catch (OperationCanceledException) { try { p.Kill(true); } catch { } }
+            try { await p.WaitForExitAsync(d.Token).ConfigureAwait(false); } catch (OperationCanceledException) { try { p.KillCompat(true); } catch { } }
             if (!CommercialProductSegmenterService.TryParseVideoSize(err, out var w, out var h)) return null;
             return (w, h, InteractiveChoiceBranchingService.ParseDuration(err), ParseFps(err));
         }
@@ -647,7 +647,7 @@ public sealed class CloudRenderFarmDispatcherService : IDisposable
         var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
         foreach (var a in args) psi.ArgumentList.Add(a);
         using var p = new Process { StartInfo = psi };
-        try { if (!p.Start()) return false; }
+        try { if (!p.StartCompat()) return false; }
         catch (Exception ex) { Program.Log("RenderFarm.Ffmpeg", ex); return false; }
         using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
         d.CancelAfter(timeout);
@@ -661,7 +661,7 @@ public sealed class CloudRenderFarmDispatcherService : IDisposable
         }
         catch (OperationCanceledException)
         {
-            try { if (!p.HasExited) p.Kill(true); } catch { }
+            try { if (!p.HasExited) p.KillCompat(true); } catch { }
             if (ct.IsCancellationRequested) throw;
             return false;
         }

@@ -549,7 +549,7 @@ end;
                 using var proc = new Process { StartInfo = psi };
                 proc.OutputDataReceived += (_, e) => { if (e.Data is not null) Log($"   › {e.Data}"); };
                 proc.ErrorDataReceived += (_, e) => { if (e.Data is not null) Log(ClassifyStderr(e.Data)); };
-                proc.Start();
+                if (!proc.StartCompat()) throw new PlatformNotSupportedException("외부 프로세스 미지원 플랫폼");
                 proc.BeginOutputReadLine();
                 proc.BeginErrorReadLine();
                 proc.WaitForExit();

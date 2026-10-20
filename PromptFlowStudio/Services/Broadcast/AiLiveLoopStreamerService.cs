@@ -467,7 +467,7 @@ public sealed class AiLiveLoopStreamerService : IDisposable
             };
             foreach (var a in args) psi.ArgumentList.Add(a);
             proc = new Process { StartInfo = psi };
-            if (!proc.Start()) return (-1, "송출 프로세스 시작 실패");
+            if (!proc.StartCompat()) return (-1, "송출 프로세스 시작 실패");
 
             lock (_gate)
             {
@@ -534,7 +534,7 @@ public sealed class AiLiveLoopStreamerService : IDisposable
     {
         Process? p;
         lock (_gate) p = _proc;
-        try { if (p is { HasExited: false }) p.Kill(true); } catch { }
+        try { if (p is { HasExited: false }) p.KillCompat(true); } catch { }
     }
 
     private static string LastLine(string? s)

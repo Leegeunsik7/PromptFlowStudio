@@ -370,7 +370,7 @@ public sealed class ShoppableVideoOverlayEngine
                 psi.ArgumentList.Add(a);
 
             using var proc = new Process { StartInfo = psi };
-            if (!proc.Start()) return new(false, 0, 0, "ffmpeg 시작 실패");
+            if (!proc.StartCompat()) return new(false, 0, 0, "ffmpeg 시작 실패");
             using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
             d.CancelAfter(TrackTimeout);
             _ = proc.StandardError.ReadToEndAsync(d.Token);
@@ -406,7 +406,7 @@ public sealed class ShoppableVideoOverlayEngine
                     }
                     keys.Add(new(tt, new HotspotBox((float)px / w, (float)py / h, (float)tw / w, (float)th / h).Clamp()));
                 }
-                try { if (!proc.HasExited) proc.Kill(true); } catch { }
+                try { if (!proc.HasExited) proc.KillCompat(true); } catch { }
                 if (keys.Count < 2) return new(false, keys.Count, 0, "추적할 프레임이 부족합니다.");
                 var simple = Simplify(keys);
                 lock (_gate) { tag.Keyframes.Clear(); tag.Keyframes.AddRange(simple); }
@@ -419,7 +419,7 @@ public sealed class ShoppableVideoOverlayEngine
             {
                 ArrayPool<byte>.Shared.Return(frame);
                 ArrayPool<byte>.Shared.Return(tpl);
-                try { if (!proc.HasExited) proc.Kill(true); } catch { }
+                try { if (!proc.HasExited) proc.KillCompat(true); } catch { }
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { return new(false, 0, 0, "취소됨"); }
@@ -451,11 +451,11 @@ public sealed class ShoppableVideoOverlayEngine
             var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
             psi.ArgumentList.Add("-hide_banner"); psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(path);
             using var p = new Process { StartInfo = psi };
-            if (!p.Start()) return null;
+            if (!p.StartCompat()) return null;
             using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
             d.CancelAfter(TimeSpan.FromSeconds(15));
             var err = await p.StandardError.ReadToEndAsync(d.Token).ConfigureAwait(false);
-            try { await p.WaitForExitAsync(d.Token).ConfigureAwait(false); } catch (OperationCanceledException) { try { p.Kill(true); } catch { } }
+            try { await p.WaitForExitAsync(d.Token).ConfigureAwait(false); } catch (OperationCanceledException) { try { p.KillCompat(true); } catch { } }
             if (!CommercialProductSegmenterService.TryParseVideoSize(err, out var w, out var h)) return null;
             return (w, h, InteractiveChoiceBranchingService.ParseDuration(err));
         }

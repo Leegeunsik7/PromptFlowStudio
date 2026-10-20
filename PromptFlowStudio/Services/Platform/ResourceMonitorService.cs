@@ -53,13 +53,13 @@ public sealed class ResourceMonitorService
                 Arguments = "--query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits",
                 RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true,
             };
-            using var proc = Process.Start(psi);
+            using var proc = ProcessCompat.Start(psi);
             if (proc is null) return null;
             var outTask = proc.StandardOutput.ReadToEndAsync();
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(2500);
             try { await proc.WaitForExitAsync(cts.Token).ConfigureAwait(false); }
-            catch { try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { } return null; }
+            catch { try { if (!proc.HasExited) proc.KillCompat(entireProcessTree: true); } catch { } return null; }
             var outp = await outTask.ConfigureAwait(false);
 
             var line = outp.Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.Length > 0);

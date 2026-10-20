@@ -219,7 +219,7 @@ internal static class LicenseKeyCipher
             var tag = buf.AsSpan(NonceLen, TagLen);
             var ct = buf.AsSpan(NonceLen + TagLen);
             var pt = new byte[ct.Length];
-            using (var aes = new AesGcm(key, TagLen))
+            using (var aes = new AesGcmCompat(key, TagLen))
                 aes.Decrypt(nonce, ct, tag, pt);
             return Encoding.UTF8.GetString(pt);
         }

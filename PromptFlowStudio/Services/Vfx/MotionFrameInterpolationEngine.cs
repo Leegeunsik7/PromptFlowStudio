@@ -363,9 +363,9 @@ public sealed class MotionFrameInterpolationEngine
         var psi = new System.Diagnostics.ProcessStartInfo { FileName = ffmpeg, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
         psi.ArgumentList.Add("-hide_banner"); psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(input);
         using var p = new System.Diagnostics.Process { StartInfo = psi };
-        if (!p.Start()) return false;
+        if (!p.StartCompat()) return false;
         try { return (await p.StandardError.ReadToEndAsync(ct).ConfigureAwait(false)).Contains("Audio:", StringComparison.Ordinal); }
-        finally { try { if (!p.HasExited) p.Kill(true); } catch { } }
+        finally { try { if (!p.HasExited) p.KillCompat(true); } catch { } }
     }
 
     private VfxVideoResult Ok(string output, int frames, string engine, int fps, string note)

@@ -657,7 +657,7 @@ public sealed class InteractiveChoiceBranchingService : IDisposable
         var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
         foreach (var a in args) psi.ArgumentList.Add(a);
         using var p = new Process { StartInfo = psi };
-        if (!p.Start()) return false;
+        if (!p.StartCompat()) return false;
         using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
         d.CancelAfter(RenderTimeout);
         try
@@ -670,7 +670,7 @@ public sealed class InteractiveChoiceBranchingService : IDisposable
         }
         catch (OperationCanceledException)
         {
-            try { if (!p.HasExited) p.Kill(true); } catch { }
+            try { if (!p.HasExited) p.KillCompat(true); } catch { }
             if (ct.IsCancellationRequested) throw;
             return false;
         }

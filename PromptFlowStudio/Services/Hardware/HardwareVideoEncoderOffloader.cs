@@ -245,7 +245,7 @@ public sealed class HardwareVideoEncoderOffloader : IDisposable
             var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
             p.ErrorDataReceived += (_, e) => { if (e.Data is { Length: > 0 } d) lock (_log) { _log.Enqueue(d); while (_log.Count > 12) _log.Dequeue(); } };
             p.OutputDataReceived += (_, _) => { };
-            if (!p.Start()) { p.Dispose(); return false; }
+            if (!p.StartCompat()) { p.Dispose(); return false; }
             p.BeginErrorReadLine(); p.BeginOutputReadLine();
             _proc = p;
             _stdin = p.StandardInput.BaseStream;
@@ -409,9 +409,9 @@ public sealed class HardwareVideoEncoderOffloader : IDisposable
             if (_proc is { } p)
             {
                 try { _stdin?.Dispose(); } catch (IOException) { }
-                if (!p.WaitForExit(5000)) { try { p.Kill(true); } catch (InvalidOperationException) { } }
+                if (!p.WaitForExit(5000)) { try { p.KillCompat(true); } catch (InvalidOperationException) { } }
                 p.WaitForExit(2000);
-                try { exit = p.ExitCode; cpu = p.TotalProcessorTime.TotalMilliseconds; } catch (InvalidOperationException) { }
+                try { exit = p.ExitCode; cpu = p.TotalProcessorTimeCompat().TotalMilliseconds; } catch (InvalidOperationException) { }
                 p.Dispose();
             }
             _proc = null; _stdin = null;
@@ -436,7 +436,7 @@ public sealed class HardwareVideoEncoderOffloader : IDisposable
         var p = _proc;
         _proc = null; _stdin = null;
         if (p is null) return;
-        try { if (!p.HasExited) p.Kill(true); p.WaitForExit(2000); } catch (InvalidOperationException) { }
+        try { if (!p.HasExited) p.KillCompat(true); p.WaitForExit(2000); } catch (InvalidOperationException) { }
         p.Dispose();
     }
 

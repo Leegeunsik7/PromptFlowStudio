@@ -107,12 +107,12 @@ public sealed class ShortsCoverService(IVideoMergeService merge) : IShortsCoverS
             using var proc = new Process { StartInfo = psi };
             proc.ErrorDataReceived += (_, __) => { };   // 버퍼 드레인(데드락 방지)
             proc.OutputDataReceived += (_, __) => { };
-            if (!proc.Start()) return null;
+            if (!proc.StartCompat()) return null;
             proc.BeginErrorReadLine();
             proc.BeginOutputReadLine();
 
             try { await proc.WaitForExitAsync(ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) { try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { } return null; }
+            catch (OperationCanceledException) { try { if (!proc.HasExited) proc.KillCompat(entireProcessTree: true); } catch { } return null; }
 
             return proc.ExitCode == 0 && File.Exists(outputPath) ? outputPath : null;
         }

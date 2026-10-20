@@ -65,7 +65,7 @@ public static class ProcessRunner
                 onLine?.Invoke(true, e.Data);
             };
 
-            if (!proc.Start()) return new(false, -1, "", "프로세스를 시작하지 못했습니다.");
+            if (!proc.StartCompat()) return new(false, -1, "", "프로세스를 시작하지 못했습니다.");
             proc.BeginOutputReadLine();
             proc.BeginErrorReadLine();
 
@@ -83,7 +83,7 @@ public static class ProcessRunner
         finally
         {
             // ⚠ 어떤 경로(취소·예외·조기반환)로 빠져나가도 살아있는 프로세스 트리를 남기지 않는다(Orphan 방지).
-            try { if (proc is not null && !proc.HasExited) proc.Kill(entireProcessTree: true); } catch { /* 무시 */ }
+            try { if (proc is not null && !proc.HasExited) proc.KillCompat(entireProcessTree: true); } catch { /* 무시 */ }
             proc?.Dispose();
         }
     }
@@ -93,7 +93,7 @@ public static class ProcessRunner
     {
         try
         {
-            if (!proc.HasExited) proc.Kill(entireProcessTree: true);
+            if (!proc.HasExited) proc.KillCompat(entireProcessTree: true);
             try { proc.WaitForExit(2000); } catch { /* 무시 */ }
         }
         catch { /* 이미 종료/권한 등 — 무시 */ }

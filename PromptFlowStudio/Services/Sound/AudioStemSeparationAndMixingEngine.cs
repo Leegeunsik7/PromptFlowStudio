@@ -309,11 +309,11 @@ public sealed class AudioStemSeparationAndMixingEngine
         foreach (var a in new[] { "-hide_banner", "-v", "error", "-t", MaxSeconds.ToString(ci), "-i", path, "-vn", "-ac", "2", "-ar", Rate.ToString(ci), "-f", "f32le", "pipe:1" })
             psi.ArgumentList.Add(a);
         using var p = new Process { StartInfo = psi };
-        if (!p.Start()) return null;
+        if (!p.StartCompat()) return null;
         _ = p.StandardError.ReadToEndAsync(ct);
         using var ms = new MemoryStream();
         try { await p.StandardOutput.BaseStream.CopyToAsync(ms, ct).ConfigureAwait(false); }
-        finally { try { if (!p.HasExited) p.Kill(true); } catch { } }
+        finally { try { if (!p.HasExited) p.KillCompat(true); } catch { } }
         var frames = (int)(ms.Length / 8);
         if (frames < Rate / 10) return null;
         return Deinterleave(ms.GetBuffer(), frames);

@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Components.RenderTree;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.JSInterop;
+using Dispatcher = Microsoft.AspNetCore.Components.Dispatcher; // MAUI 전역 using(Microsoft.Maui.Dispatching) 모호성 차단
 
 namespace PromptFlowStudio.Services.SelfFix;
 
