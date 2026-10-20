@@ -1,0 +1,301 @@
+@inject CustomThemeRegistryService Registry
+@inject BabyThemeDatabase Db
+
+@* [PromptFlow Studio v16.8.0] 🛠️ 커스텀 테마 저작도구 — 이름·카테고리·컷별 장면·카메라·조명·SFX·모션 강도·네거티브 편집,
+   .pftheme 단일/다중 내보내기 + 드래그 앤 드롭 가져오기, Wan 2.1 / Luma / Runway 트랜스파일 미리보기.
+   저장 즉시 백과사전 "🛠️ 내 커스텀 테마" 탭에 병합(내장 테마와 동일 인스펙터·추천). *@
+<div class="ct-scrim" @onclick="OnCloseClick">
+    <div class="ct-modal" @onclick:stopPropagation="true">
+        <div class="ct-h">
+            <div>
+                <div class="ct-title">🛠️ 커스텀 테마 저작도구 <span class="ct-badge">@(Registry.Themes.Count)개 저장됨</span></div>
+                <div class="ct-sub">컷별 장면을 쓰고 카메라·조명·SFX·모션 강도를 정하면 백과사전에 바로 추가됩니다. <b>.pftheme</b> 파일로 공유할 수 있어요.</div>
+            </div>
+            <button class="ct-x" @onclick="OnCloseClick" title="닫기">✕</button>
+        </div>
+
+        <div class="ct-body">
+            @* ── 좌: 저장된 테마 목록 + 가져오기/내보내기 ── *@
+            <div class="ct-side">
+                <button class="ct-btn go sm" @onclick="NewTheme">＋ 새 테마</button>
+                <div class="ct-list">
+                    @foreach (var t in Registry.Themes)
+                    {
+                        <div class="ct-item @(_edit.Key == t.Key ? "on" : null)" @key="t.Key">
+                            <input type="checkbox" checked="@_checked.Contains(t.Key)" @onchange="e => ToggleCheck(t.Key, e)" title="내보내기 선택" />
+                            <button class="ct-item-btn" @onclick="() => Load(t.Key)">@t.Emoji @t.Name</button>
+                        </div>
+                    }
+                    @if (Registry.Themes.Count == 0) { <div class="ct-empty">아직 저장된 테마가 없습니다.</div> }
+                </div>
+                <div class="ct-drop">
+                    <InputFile class="ct-drop-input" OnChange="OnImport" multiple accept=".pftheme,application/json" />
+                    <span>📥 .pftheme 파일을 <b>드래그</b> 또는 <b>클릭</b>해 가져오기</span>
+                </div>
+                <div class="ct-side-btns">
+                    <button class="ct-btn ghost sm" @onclick="ExportChecked" disabled="@(_checked.Count == 0)">📤 선택 내보내기(@_checked.Count)</button>
+                    <button class="ct-btn ghost sm" @onclick="ExportAll" disabled="@(Registry.Themes.Count == 0)">📦 전체 내보내기</button>
+                </div>
+            </div>
+
+            @* ── 우: 편집 폼 ── *@
+            <div class="ct-form">
+                <div class="ct-row">
+                    <label class="ct-f w-emoji"><span>아이콘</span><input class="ct-in" @bind="_edit.Emoji" maxlength="8" /></label>
+                    <label class="ct-f grow"><span>테마 이름</span><input class="ct-in" @bind="_edit.Name" maxlength="80" placeholder="예) 할머니댁 마당 첫 나들이" /></label>
+                    <label class="ct-f"><span>기본 카테고리</span>
+                        <select class="ct-in" @bind="_edit.CategoryKey">
+                            @foreach (var c in Db.BuiltInCategories) { <option value="@c.Key">@c.Emoji @c.Name</option> }
+                        </select></label>
+                </div>
+                <label class="ct-f"><span>훅(카드 한 줄)</span><input class="ct-in" @bind="_edit.Hook" maxlength="600" placeholder="예) 처음 본 닭에게 인사하는 아기 🐔" /></label>
+
+                <div class="ct-row">
+                    <label class="ct-f"><span>🎥 카메라 무빙</span>
+                        <select class="ct-in" @bind="_edit.Camera">
+                            @foreach (var cm in Cameras) { <option value="@cm">@WanCameraStyleStudio.Cameras[(int)cm].Icon @WanCameraStyleStudio.Cameras[(int)cm].Label</option> }
+                        </select></label>
+                    <label class="ct-f"><span>💡 조명</span>
+                        <select class="ct-in" @bind="_edit.Lighting">
+                            @foreach (var l in Lights) { <option value="@l">@ThemeCinematicsCatalog.LightingLabel(l)</option> }
+                        </select></label>
+                    <label class="ct-f"><span>⚡ 모션 강도 <b>@_edit.MotionIntensity</b>/4</span>
+                        <input type="range" min="2" max="4" step="1" @bind="_edit.MotionIntensity" @bind:event="oninput" /></label>
+                </div>
+                <div class="ct-row">
+                    <label class="ct-f grow"><span>🔊 SFX 키워드(쉼표 · 최대 3)</span><input class="ct-in" @bind="SfxText" placeholder="giggle, splash, whoosh" /></label>
+                    <label class="ct-f grow"><span>🚫 네거티브(역방향 방지 자동 결합)</span><input class="ct-in" @bind="_edit.Negative" maxlength="500" placeholder="blurry, distorted face" /></label>
+                </div>
+
+                <div class="ct-cuts-h">🎬 컷별 장면 묘사 <span>(@_edit.Cuts.Count / @CustomThemeRegistryService.MaxCuts)</span>
+                    <button class="ct-btn ghost xs" @onclick="AddCut" disabled="@(_edit.Cuts.Count >= CustomThemeRegistryService.MaxCuts)">＋ 컷</button></div>
+                <div class="ct-cuts">
+                    @foreach (var cut in _edit.Cuts)
+                    {
+                        <div class="ct-cut @(ReferenceEquals(cut, _previewCut) ? "on" : null)" @key="cut">
+                            <div class="ct-cut-top">
+                                <span class="ct-cut-n">#@(_edit.Cuts.IndexOf(cut) + 1)</span>
+                                <input class="ct-in sm grow" @bind="cut.Voice" placeholder="속마음 대사(선택)" maxlength="80" />
+                                <label class="ct-mini">텐션 <input type="number" class="ct-in xs" min="0" max="100" @bind="cut.Tension" /></label>
+                                <button class="ct-btn ghost xs" @onclick="() => _previewCut = cut" title="트랜스파일 미리보기">🔀</button>
+                                <button class="ct-btn ghost xs" @onclick="() => RemoveCut(cut)" disabled="@(_edit.Cuts.Count <= 1)" title="컷 삭제">✕</button>
+                            </div>
+                            <textarea class="ct-ta" rows="2" @bind="cut.Shot" @bind:event="oninput" maxlength="600"
+                                      placeholder="예) 35mm, sunny yard, a toddler walking forward toward a hen, curious smile"></textarea>
+                        </div>
+                    }
+                </div>
+
+                @* ── 🔀 멀티 엔진 트랜스파일 미리보기 ── *@
+                @if (PreviewShot is { Length: > 0 } shot)
+                {
+                    var cine = CustomThemeRegistryService.ToCinematics(Normalized);
+                    <div class="ct-tp">
+                        <div class="ct-tp-h">🔀 엔진별 변환 미리보기 <span>(컷 #@(_edit.Cuts.IndexOf(_previewCut ?? _edit.Cuts[0]) + 1))</span></div>
+                        @foreach (var eng in Engines)
+                        {
+                            var tp = MultiEnginePromptTranspiler.Transpile(shot, cine, eng);
+                            <div class="ct-tp-r" @key="eng">
+                                <div class="ct-tp-l">@MultiEnginePromptTranspiler.Label(eng) <em>@tp.Prompt.Length/@MultiEnginePromptTranspiler.MaxChars(eng)@(tp.Truncated ? " · 절단" : "")@(tp.NegativeDropped ? " · 네거티브 미지원" : "")</em></div>
+                                <div class="ct-tp-p">@tp.Prompt</div>
+                                @if (tp.Negative is { } neg) { <div class="ct-tp-n">🚫 @neg</div> }
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+
+        <div class="ct-foot">
+            <div class="ct-msg @(_msgErr ? "err" : null)">@_msg</div>
+            <div class="ct-foot-btns">
+                @if (Registry.IsCustom(_edit.Key))
+                {
+                    <button class="ct-btn ghost" @onclick="DeleteCurrent">🗑️ 삭제</button>
+                }
+                <button class="ct-btn ghost" @onclick="OnCloseClick">닫기</button>
+                <button class="ct-btn go" @onclick="SaveCurrent">💾 저장 후 백과사전에 추가</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .ct-scrim{position:fixed; inset:0; z-index:var(--z-submodal-dialog); background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; padding:20px}
+    .ct-modal{width:min(1040px,97vw); max-height:92vh; display:flex; flex-direction:column; border-radius:18px; overflow:hidden; border:1px solid rgba(255,255,255,.16);
+        background:color-mix(in srgb,var(--card) 82%,transparent); backdrop-filter:blur(18px) saturate(1.3); -webkit-backdrop-filter:blur(18px) saturate(1.3); box-shadow:0 24px 60px rgba(0,0,0,.4)}
+    .ct-h{display:flex; justify-content:space-between; gap:12px; padding:16px 20px; border-bottom:1px solid var(--line)}
+    .ct-title{font-size:17px; font-weight:900; color:var(--text-primary); display:flex; gap:8px; align-items:center}
+    .ct-badge{font:700 10.5px var(--mono); padding:2px 8px; border-radius:999px; background:var(--card-2); color:var(--text-muted)}
+    .ct-sub{font-size:12px; color:var(--text-secondary); margin-top:4px} .ct-sub b{color:var(--text-primary)}
+    .ct-x{width:30px; height:30px; border:none; background:none; color:var(--text-muted); cursor:pointer; font-size:15px; border-radius:8px}
+    .ct-body{display:flex; gap:14px; padding:14px 18px; overflow:hidden; flex:1; min-height:0}
+    .ct-side{flex:0 0 230px; display:flex; flex-direction:column; gap:8px; min-height:0}
+    .ct-list{flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:4px; min-height:80px}
+    .ct-item{display:flex; align-items:center; gap:6px; padding:4px 6px; border-radius:9px; border:1px solid transparent}
+    .ct-item.on{border-color:var(--accent); background:color-mix(in srgb,var(--accent) 8%,transparent)}
+    .ct-item-btn{flex:1; text-align:left; background:none; border:none; color:var(--text-primary); font:600 12.5px inherit; cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+    .ct-empty{font-size:11.5px; color:var(--text-muted); padding:10px 4px}
+    .ct-drop{position:relative; border:1.5px dashed color-mix(in srgb,var(--accent) 45%,var(--line)); border-radius:11px; padding:12px; font-size:11.5px; color:var(--text-secondary); text-align:center}
+    .ct-drop:hover{background:color-mix(in srgb,var(--accent) 6%,transparent)} .ct-drop b{color:var(--text-primary)}
+    .ct-drop-input{position:absolute; inset:0; opacity:0; cursor:pointer; width:100%; height:100%}
+    .ct-side-btns{display:flex; flex-direction:column; gap:6px}
+    .ct-form{flex:1; min-width:0; overflow-y:auto; display:flex; flex-direction:column; gap:9px; padding-right:4px}
+    .ct-row{display:flex; gap:9px; flex-wrap:wrap}
+    .ct-f{display:flex; flex-direction:column; gap:3px; font-size:11px; font-weight:700; color:var(--text-muted); min-width:140px} .ct-f.grow{flex:1} .ct-f.w-emoji{min-width:0; width:64px}
+    .ct-f b{color:var(--text-primary)}
+    .ct-in{font:500 12.5px inherit; padding:7px 9px; border-radius:9px; border:1px solid var(--line); background:var(--card-2); color:var(--text-primary); min-width:0}
+    .ct-in.sm{padding:5px 8px} .ct-in.xs{width:56px; padding:4px 6px} .ct-in.grow{flex:1}
+    .ct-cuts-h{font-size:12.5px; font-weight:800; color:var(--text-primary); display:flex; align-items:center; gap:8px} .ct-cuts-h span{color:var(--text-muted); font-weight:600}
+    .ct-cuts{display:flex; flex-direction:column; gap:7px}
+    .ct-cut{padding:8px; border-radius:11px; border:1px solid var(--line); background:color-mix(in srgb,var(--card-2) 80%,transparent); animation:ctIn .25s ease both}
+    .ct-cut.on{border-color:var(--accent)}
+    .ct-cut-top{display:flex; align-items:center; gap:6px; margin-bottom:6px}
+    .ct-cut-n{font:800 11px var(--mono); color:var(--accent-2)}
+    .ct-mini{font-size:10.5px; color:var(--text-muted); display:flex; align-items:center; gap:4px}
+    .ct-ta{width:100%; box-sizing:border-box; font:500 12px var(--mono); padding:7px 9px; border-radius:9px; border:1px solid var(--line); background:var(--card-2); color:var(--text-primary); resize:vertical}
+    .ct-tp{border-radius:12px; padding:10px 12px; border:1px solid color-mix(in srgb,var(--accent) 30%,var(--line));
+        background:linear-gradient(135deg,color-mix(in srgb,var(--flow-violet) 10%,transparent),color-mix(in srgb,var(--flow-magenta) 7%,transparent))}
+    .ct-tp-h{font-size:12px; font-weight:800; color:var(--text-primary); margin-bottom:6px} .ct-tp-h span{color:var(--text-muted); font-weight:600}
+    .ct-tp-r{padding:6px 0; border-top:1px solid color-mix(in srgb,var(--line) 70%,transparent)} .ct-tp-r:first-of-type{border-top:none}
+    .ct-tp-l{font:800 11px var(--mono); color:var(--accent-2)} .ct-tp-l em{font-style:normal; font-weight:600; color:var(--text-muted); margin-left:6px}
+    .ct-tp-p{font:500 11.5px var(--mono); color:var(--text-secondary); line-height:1.5; word-break:break-word}
+    .ct-tp-n{font:500 10.5px var(--mono); color:var(--text-muted); margin-top:2px}
+    .ct-foot{display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 18px; border-top:1px solid var(--line); flex-wrap:wrap}
+    .ct-msg{font-size:12px; color:var(--text-secondary); flex:1; min-width:200px; word-break:break-all} .ct-msg.err{color:#ff7a7a}
+    .ct-foot-btns{display:flex; gap:8px}
+    .ct-btn{font:800 12.5px inherit; padding:9px 14px; border-radius:11px; cursor:pointer; border:1px solid var(--line); background:var(--card-2); color:var(--text-secondary)}
+    .ct-btn.sm{padding:7px 10px; font-size:12px} .ct-btn.xs{padding:3px 8px; font-size:11px; border-radius:8px}
+    .ct-btn.ghost:hover:not(:disabled){border-color:var(--accent); color:var(--text-primary)}
+    .ct-btn.go{border:none; color:#fff; background:linear-gradient(135deg,var(--flow-violet),var(--flow-magenta))}
+    .ct-btn:disabled{opacity:.45; cursor:not-allowed}
+    @@keyframes ctIn{from{opacity:0; transform:translateY(4px)} to{opacity:1; transform:none}}
+    @@media(prefers-reduced-motion:reduce){.ct-cut{animation:none}}
+    @@media(max-width:760px){.ct-body{flex-direction:column; overflow-y:auto} .ct-side{flex:0 0 auto}}
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+    /// <summary>편집 시작 테마 키(null = 새 테마).</summary>
+    [Parameter] public string? InitialKey { get; set; }
+    /// <summary>저장 완료(최종 키) 알림 — 부모가 백과사전에서 선택 상태로 전환.</summary>
+    [Parameter] public EventCallback<string> OnSaved { get; set; }
+
+    private static readonly CameraMotion[] Cameras = Enum.GetValues<CameraMotion>();
+    private static readonly ThemeLighting[] Lights = Enum.GetValues<ThemeLighting>();
+    private static readonly VideoEngineTarget[] Engines = Enum.GetValues<VideoEngineTarget>();
+
+    private CustomThemeDefinition _edit = NewDefinition();
+    private CustomThemeCut? _previewCut;
+    private readonly HashSet<string> _checked = new(StringComparer.OrdinalIgnoreCase);
+    private string _msg = "";
+    private bool _msgErr;
+
+    protected override void OnInitialized()
+    {
+        if (InitialKey is not null && Registry.Get(InitialKey) is { } d) _edit = d;
+    }
+
+    private static CustomThemeDefinition NewDefinition() => new()
+    {
+        Cuts = { new CustomThemeCut { Tension = 35 }, new CustomThemeCut { Tension = 65 }, new CustomThemeCut { Tension = 85 }, new CustomThemeCut { Tension = 45 } },
+    };
+
+    private string SfxText
+    {
+        get => string.Join(", ", _edit.Sfx);
+        set => _edit.Sfx = new List<string>((value ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+    }
+
+    // 미리보기는 정규화본 기준(저장 결과와 동일 메타) — 이름이 비어도 미리보기는 가능하도록 임시 이름 부여.
+    private CustomThemeDefinition Normalized
+    {
+        get
+        {
+            var n = CustomThemeRegistryService.Normalize(_edit, out _);
+            if (n is not null) return n;
+            var tmpName = string.IsNullOrWhiteSpace(_edit.Name) ? "preview" : _edit.Name;
+            var probe = new CustomThemeDefinition
+            {
+                Name = tmpName, Camera = _edit.Camera, Lighting = _edit.Lighting, Sfx = _edit.Sfx, MotionIntensity = _edit.MotionIntensity,
+                Negative = _edit.Negative, Cuts = { new CustomThemeCut { Shot = "preview" } },
+            };
+            return CustomThemeRegistryService.Normalize(probe, out _) ?? probe;
+        }
+    }
+
+    private string? PreviewShot => (_previewCut ?? (_edit.Cuts.Count > 0 ? _edit.Cuts[0] : null))?.Shot;
+
+    private void NewTheme() { _edit = NewDefinition(); _previewCut = null; Say(""); }
+
+    private void Load(string key)
+    {
+        if (Registry.Get(key) is { } d) { _edit = d; _previewCut = null; Say(""); }
+    }
+
+    private void AddCut()
+    {
+        if (_edit.Cuts.Count < CustomThemeRegistryService.MaxCuts) _edit.Cuts.Add(new CustomThemeCut { Tension = 50 });
+    }
+
+    private void RemoveCut(CustomThemeCut c)
+    {
+        if (_edit.Cuts.Count <= 1) return;
+        _edit.Cuts.Remove(c);
+        if (ReferenceEquals(_previewCut, c)) _previewCut = null;
+    }
+
+    private void ToggleCheck(string key, ChangeEventArgs e)
+    {
+        if (e.Value is true) _checked.Add(key); else _checked.Remove(key);
+    }
+
+    private async Task SaveCurrent()
+    {
+        var key = Registry.Save(_edit, out var err);
+        if (key is null) { Say("⚠ " + err, true); return; }
+        _edit = Registry.Get(key) ?? _edit;
+        Say("✅ 저장 완료 — 백과사전 [🛠️ 내 커스텀 테마] 탭에 추가되었습니다.");
+        await OnSaved.InvokeAsync(key);
+    }
+
+    private void DeleteCurrent()
+    {
+        var name = _edit.Name;
+        if (Registry.Delete(_edit.Key)) { _checked.Remove(_edit.Key); _edit = NewDefinition(); Say("🗑️ '" + name + "' 삭제됨"); }
+    }
+
+    private void ExportChecked() => Export(_checked);
+    private void ExportAll() => Export(null);
+
+    private void Export(IEnumerable<string>? keys)
+    {
+        var path = Registry.ExportToFile(keys is null ? null : new List<string>(keys), null, out var err);
+        Say(path is null ? "⚠ " + err : "📤 내보내기 완료: " + path, path is null);
+    }
+
+    private async Task OnImport(InputFileChangeEventArgs e)
+    {
+        int ok = 0, renamed = 0;
+        var errors = new List<string>();
+        try
+        {
+            foreach (var f in e.GetMultipleFiles(20))
+            {
+                if (f.Size > CustomThemeRegistryService.MaxFileBytes) { errors.Add(f.Name + ": 1MB 초과"); continue; }
+                await using var s = f.OpenReadStream(CustomThemeRegistryService.MaxFileBytes);
+                var r = await Registry.ImportAsync(s);
+                ok += r.Imported.Count; renamed += r.Renamed.Count;
+                foreach (var er in r.Errors) errors.Add(f.Name + ": " + er);
+            }
+        }
+        catch (Exception ex) { errors.Add(ex.Message); }
+        Say(errors.Count == 0
+                ? $"📥 {ok}개 가져옴{(renamed > 0 ? $" · {renamed}개 키 재명명" : "")}"
+                : $"📥 {ok}개 가져옴 · ⚠ {string.Join(" / ", errors)}", errors.Count > 0 && ok == 0);
+    }
+
+    private void Say(string msg, bool err = false) { _msg = msg; _msgErr = err; }
+
+    private async Task OnCloseClick() => await OnClose.InvokeAsync();
+}

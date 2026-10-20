@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- PromptFlow Studio v4.4.0 · CI/CD 게이트키퍼 콘솔 — AAB/IPA 실검수 후 Exit Code 반환.
+       ⚠ 데스크톱 앱 빌드 글롭에서 제외됨(<Compile Remove="tools/**">). 별도 빌드/실행. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>PromptFlowCiGate</AssemblyName>
+    <RootNamespace>PromptFlowStudio.CiGate</RootNamespace>
+  </PropertyGroup>
+
+  <!-- 공용 RCL 의 검수 엔진(CiCdPipelineRunner) 재사용 -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="..\..\..\PromptFlowStudio.Shared\PromptFlowStudio.Shared.csproj" />
+  </ItemGroup>
+
+</Project>

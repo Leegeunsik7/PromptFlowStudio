@@ -1,0 +1,248 @@
+@implements IDisposable
+@using System.Globalization
+@using System.Threading
+@inject BatchProductionQueueService Queue
+@inject BabyThemeDatabase Db
+@inject VideoFormatFactory Factory
+
+@* [PromptFlow Studio v16.16.0] 🏭 대량 생산 허브 — 테마 다중 선택 → 원클릭 일괄 큐 등록 · 생성/대기 카드 · ETA · 1-Click 재시도 · 자원 거버너 상태.
+   상태는 BatchProductionQueueService(싱글턴) 소유 — 이 컴포넌트는 OnChange 구독 + 250ms 스로틀 InvokeAsync(StateHasChanged) 로만 갱신. *@
+<section class="bh">
+    <div class="bh-head">
+        <h2 class="bh-h2">🏭 대량 생산 허브 <span class="bh-mini">테마 @(Db.AllThemes.Count)종</span></h2>
+        <div class="bh-gov">
+            <span class="bh-chip" title="VRAM/RAM 여유 기반 동시 실행 한도">⚙️ 동시 @(Gov.ActiveCount)/@(Gov.CurrentLimit) <small>(최대 @Gov.MaxConcurrency)</small></span>
+            <span class="bh-chip">🧠 RAM 여유 @Pct(Gov.LastResources.RamFreeRatio)</span>
+            @if (Gov.LastResources.VramFreeRatio is { } vf) { <span class="bh-chip">🎮 VRAM 여유 @Pct(vf)</span> }
+            @if (Gov.CooldownRemaining > TimeSpan.Zero) { <span class="bh-chip warn">⏳ 429 쿨다운 @(Gov.CooldownRemaining.TotalSeconds.ToString("0", CultureInfo.InvariantCulture))초</span> }
+            @if (Gov.Rotations > 0) { <span class="bh-chip">🔑 키 로테이션 @(Gov.Rotations)회</span> }
+            <select class="bh-sel" value="@Gov.MaxConcurrency" @onchange="OnMaxChanged" title="최대 동시 실행">
+                @for (var i = 1; i <= 4; i++) { var v = i; <option value="@v">최대 @(v)개</option> }
+            </select>
+        </div>
+    </div>
+
+    <div class="bh-grid">
+        @* ── 좌: 테마 다중 선택 ── *@
+        <div class="bh-pick">
+            <div class="bh-row">
+                <select class="bh-sel" @bind="_cat">
+                    <option value="">전체 카테고리</option>
+                    @foreach (var c in Db.Categories) { <option value="@c.Key" @key="c.Key">@c.Emoji @c.Name (@c.Themes.Count)</option> }
+                </select>
+                <input class="bh-in" placeholder="테마 검색" @bind="_q" @bind:event="oninput" />
+            </div>
+            <div class="bh-list">
+                @foreach (var t in Visible)
+                {
+                    <label class="bh-item @(_sel.Contains(t.Key) ? "on" : null)" @key="t.Key">
+                        <input type="checkbox" checked="@_sel.Contains(t.Key)" @onchange="e => Toggle(t.Key, e)" /> @t.Emoji @t.Title
+                    </label>
+                }
+            </div>
+            <div class="bh-row">
+                <button class="bh-btn ghost" @onclick="SelectVisible">☑ 보이는 테마 전체(@Visible.Count)</button>
+                <button class="bh-btn ghost" @onclick="() => _sel.Clear()" disabled="@(_sel.Count == 0)">선택 해제</button>
+                <select class="bh-sel" @bind="_prio">
+                    <option value="@BatchPriority.Normal">보통</option>
+                    <option value="@BatchPriority.High">높음</option>
+                    <option value="@BatchPriority.Low">낮음</option>
+                </select>
+                <button class="bh-btn go" @onclick="EnqueueSelected" disabled="@(_sel.Count == 0)">🚀 @(_sel.Count)개 테마 일괄 생성</button>
+            </div>
+            @if (_note is not null) { <div class="bh-note">@_note</div> }
+        </div>
+
+        @* ── 우: 큐 모니터 ── *@
+        <div class="bh-mon">
+            <div class="bh-row">
+                <span class="bh-stat">🎞️ 생성 중 <b>@Queue.ActiveCount</b></span>
+                <span class="bh-stat">⏳ 대기 <b>@Queue.Count(BatchStage.Queued)</b></span>
+                <span class="bh-stat">✅ <b>@Queue.Count(BatchStage.Completed)</b></span>
+                <span class="bh-stat">⚠ <b>@Queue.Count(BatchStage.Failed)</b></span>
+                <span class="bh-stat">⏱ 예상 @Eta(Queue.EstimateRemaining())</span>
+            </div>
+            <div class="bh-row">
+                @if (Queue.IsPaused) { <button class="bh-btn go" @onclick="Queue.Resume">▶ 재개</button> }
+                else { <button class="bh-btn ghost" @onclick="Queue.Pause">⏸ 일시정지</button> }
+                <button class="bh-btn ghost" @onclick="() => Queue.RetryAllFailed()" disabled="@(Queue.Count(BatchStage.Failed) == 0)">↻ 실패 전체 재시도</button>
+                <button class="bh-btn ghost" @onclick="() => Queue.ClearFinished()">🧹 완료 정리</button>
+            </div>
+            <div class="bh-cards">
+                @foreach (var j in Queue.Jobs)
+                {
+                    <div class="bh-card s-@j.Stage.ToString().ToLowerInvariant()" @key="j.Id">
+                        <div class="bh-card-h">
+                            <span class="bh-card-t">@j.Title</span>
+                            <span class="bh-badge">@BatchProductionQueueService.StageLabel(j.Stage)</span>
+                        </div>
+                        <div class="bh-bar"><div class="bh-bar-f" style="width:@(j.Percent)%"></div></div>
+                        <div class="bh-card-m">
+                            <span>@j.StatusText</span>
+                            <span>@(j.Percent)%@(j.IsTerminal ? "" : " · ETA " + Eta(Queue.EstimateFor(j.Id)))@(j.Attempts > 1 ? " · 시도 " + j.Attempts.ToString(CultureInfo.InvariantCulture) : "")</span>
+                        </div>
+                        @if (j.Error is not null) { <div class="bh-err">@j.Error</div> }
+                        <div class="bh-card-a">
+                            @if (j.Stage == BatchStage.Queued)
+                            {
+                                <button class="bh-tb" @onclick="() => Queue.MoveToFront(j.Id)" title="맨 앞으로">⏫</button>
+                                <button class="bh-tb" @onclick="() => Bump(j)" title="우선순위 올리기">▲</button>
+                            }
+                            @if (j.CanRetry) { <button class="bh-tb go" @onclick="() => Queue.Retry(j.Id)">↻ 재시도</button> }
+                            @if (!j.IsTerminal) { <button class="bh-tb" @onclick="() => Queue.Cancel(j.Id)">✕ 취소</button> }
+                        </div>
+                    </div>
+                }
+                @if (Queue.Jobs.Count == 0) { <div class="bh-empty">대기열이 비었습니다 — 왼쪽에서 테마를 골라 일괄 생성하세요.</div> }
+            </div>
+        </div>
+    </div>
+</section>
+
+<style>
+    .bh{background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; margin:0 0 16px}
+    .bh-head{display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px}
+    .bh-h2{font-size:15px; font-weight:900; margin:0; color:var(--text-primary)}
+    .bh-mini{font-size:11px; color:var(--text-muted); font-weight:600}
+    .bh-gov{display:flex; flex-wrap:wrap; gap:6px; align-items:center}
+    .bh-chip{font:700 11px var(--mono); padding:5px 9px; border-radius:8px; border:1px solid var(--line); background:var(--card-2); color:var(--text-secondary)}
+    .bh-chip.warn{color:#f59e0b; border-color:color-mix(in srgb,#f59e0b 40%,var(--line))}
+    .bh-grid{display:grid; grid-template-columns:minmax(260px,1fr) minmax(320px,1.4fr); gap:14px}
+    @@media (max-width:900px){.bh-grid{grid-template-columns:1fr}}
+    .bh-pick,.bh-mon{display:flex; flex-direction:column; gap:8px; min-width:0}
+    .bh-row{display:flex; flex-wrap:wrap; gap:6px; align-items:center}
+    .bh-sel,.bh-in{font:600 12px inherit; padding:7px 9px; border-radius:9px; border:1px solid var(--line); background:var(--card-2); color:var(--text-primary)}
+    .bh-in{flex:1 1 140px}
+    .bh-list{max-height:300px; overflow-y:auto; display:flex; flex-direction:column; gap:3px; border:1px solid var(--line); border-radius:10px; padding:6px}
+    .bh-item{display:flex; gap:6px; align-items:center; font-size:12.5px; padding:5px 7px; border-radius:7px; cursor:pointer; color:var(--text-secondary)}
+    .bh-item.on{background:color-mix(in srgb,var(--accent) 12%,transparent); color:var(--text-primary)}
+    .bh-btn{font:800 12px inherit; padding:8px 12px; border-radius:10px; cursor:pointer; border:1px solid var(--line); background:var(--card-2); color:var(--text-secondary)}
+    .bh-btn.go{border:none; color:#fff; background:linear-gradient(135deg,var(--flow-violet),var(--flow-magenta))}
+    .bh-btn:disabled{opacity:.5; cursor:not-allowed}
+    .bh-note{font-size:12px; color:#10b981; font-weight:700}
+    .bh-stat{font-size:12px; color:var(--text-secondary)} .bh-stat b{color:var(--text-primary)}
+    .bh-cards{display:flex; flex-direction:column; gap:8px; max-height:420px; overflow-y:auto}
+    .bh-card{border:1px solid var(--line); border-radius:11px; padding:9px 11px; background:var(--card-2)}
+    .bh-card.s-failed{border-color:color-mix(in srgb,#ef4444 45%,var(--line))}
+    .bh-card.s-completed{border-color:color-mix(in srgb,#10b981 45%,var(--line))}
+    .bh-card-h{display:flex; justify-content:space-between; gap:8px; font-size:12.5px; font-weight:800; color:var(--text-primary)}
+    .bh-card-t{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+    .bh-badge{flex:0 0 auto; font:700 11px var(--mono); color:var(--text-secondary)}
+    .bh-bar{height:6px; border-radius:5px; background:var(--card); overflow:hidden; margin:6px 0 4px}
+    .bh-bar-f{height:100%; background:linear-gradient(90deg,var(--flow-violet),var(--flow-magenta)); transition:width .25s}
+    .bh-card-m{display:flex; justify-content:space-between; gap:8px; font-size:11px; color:var(--text-muted)}
+    .bh-err{font-size:11px; color:#ef4444; margin-top:3px}
+    .bh-card-a{display:flex; gap:5px; justify-content:flex-end; margin-top:5px}
+    .bh-tb{font:700 11px inherit; padding:4px 8px; border-radius:7px; border:1px solid var(--line); background:var(--card); color:var(--text-secondary); cursor:pointer}
+    .bh-tb.go{color:var(--accent); border-color:var(--accent)}
+    .bh-empty{padding:24px; text-align:center; font-size:12px; color:var(--text-muted)}
+</style>
+
+@code {
+    private QueueResourceGovernor Gov => Queue.Governor;
+    private readonly HashSet<string> _sel = new(StringComparer.OrdinalIgnoreCase);
+    private string _cat = "";
+    private string _q = "";
+    private BatchPriority _prio = BatchPriority.Normal;
+    private string? _note;
+    private long _lastRenderTick;
+    private int _renderPending;
+
+    private List<BabyThemeDef> Visible
+    {
+        get
+        {
+            var list = new List<BabyThemeDef>(64);
+            foreach (var c in Db.Categories)
+            {
+                if (_cat.Length > 0 && c.Key != _cat) continue;
+                foreach (var t in c.Themes)
+                    if (_q.Length == 0 || t.Title.Contains(_q, StringComparison.OrdinalIgnoreCase) || t.Key.Contains(_q, StringComparison.OrdinalIgnoreCase)) list.Add(t);
+            }
+            return list;
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        Queue.OnChange += OnQueueChanged;
+        Gov.OnChange += OnQueueChanged;
+        Gov.StartMonitoring(TimeSpan.FromSeconds(5));
+    }
+
+    // ≤250ms 스로틀 — 진행률 폭주 시에도 렌더는 초당 4회 이하(마지막 변경은 지연 렌더로 보장).
+    private void OnQueueChanged()
+    {
+        try
+        {
+            var now = Environment.TickCount64;
+            if (now - Interlocked.Read(ref _lastRenderTick) >= 250)
+            {
+                Interlocked.Exchange(ref _lastRenderTick, now);
+                _ = InvokeAsync(StateHasChanged);
+            }
+            else if (Interlocked.Exchange(ref _renderPending, 1) == 0)
+            {
+                _ = InvokeAsync(async () =>
+                {
+                    await Task.Delay(250);
+                    Interlocked.Exchange(ref _renderPending, 0);
+                    Interlocked.Exchange(ref _lastRenderTick, Environment.TickCount64);
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (Exception ex) { Program.Log("BatchProductionHub.OnChange", ex); }
+    }
+
+    private void Toggle(string key, ChangeEventArgs e)
+    {
+        if (e.Value is true) _sel.Add(key); else _sel.Remove(key);
+    }
+
+    private void SelectVisible()
+    {
+        foreach (var t in Visible) _sel.Add(t.Key);
+    }
+
+    private void EnqueueSelected()
+    {
+        var keys = new List<string>(_sel);
+        var n = Queue.EnqueueThemes(keys, BuildProject, _prio);
+        Queue.Start();
+        _note = "✓ " + n.ToString(CultureInfo.InvariantCulture) + "개 테마를 생성 큐에 등록했습니다" + (n < keys.Count ? " (" + (keys.Count - n).ToString(CultureInfo.InvariantCulture) + "개 건너뜀)" : "");
+        _sel.Clear();
+    }
+
+    private StoryboardProject? BuildProject(string key)
+    {
+        var t = Db.Get(key);
+        if (t is null) return null;
+        var p = new StoryboardProject { Title = t.Title, CoverTitle = t.Title, ExportResolution = "1080x1920" };
+        return Factory.Apply(p, t, VideoFormat.Shorts) ? p : null;
+    }
+
+    private void Bump(BatchJob j)
+    {
+        var next = j.Priority < BatchPriority.Urgent ? j.Priority + 1 : BatchPriority.Urgent;
+        Queue.SetPriority(j.Id, next);
+    }
+
+    private void OnMaxChanged(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Gov.SetMaxConcurrency(v);
+    }
+
+    private static string Pct(double r) => Math.Round(r * 100).ToString("0", CultureInfo.InvariantCulture) + "%";
+
+    private static string Eta(TimeSpan t) => t.TotalSeconds < 1 ? "-"
+        : t.TotalHours >= 1 ? ((int)t.TotalHours).ToString(CultureInfo.InvariantCulture) + "시간 " + t.Minutes.ToString(CultureInfo.InvariantCulture) + "분"
+        : t.TotalMinutes >= 1 ? ((int)t.TotalMinutes).ToString(CultureInfo.InvariantCulture) + "분 " + t.Seconds.ToString(CultureInfo.InvariantCulture) + "초"
+        : t.Seconds.ToString(CultureInfo.InvariantCulture) + "초";
+
+    public void Dispose()
+    {
+        Queue.OnChange -= OnQueueChanged;
+        Gov.OnChange -= OnQueueChanged;
+    }
+}

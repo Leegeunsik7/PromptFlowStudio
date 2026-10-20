@@ -1,0 +1,296 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.Editorial
+@implements IDisposable
+@inject AutonomousEditorialStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.79.0] ✂️ AI 자율 편집 & 몽타주 조립 스튜디오 — 6 앵글 모니터(점수 · 시선 · 모션 · 180° 측면) · 프로그램 출력 ·
+    멀티트랙 타임라인(V1 컷 · V2 몽타주 · A1 BGM + 비트 · 감정 곡선 · 플레이헤드) · 리듬 비트 스펙트럼(템포 자기상관 · 온셋 포락선) · EDL/FCPXML/AAF 익스포트.
+*@
+
+<div class="edt-scrim" @onclick="Close">
+    <div class="edt-modal" @onclick:stopPropagation="true">
+        <div class="edt-h">
+            <div>
+                <div class="edt-title">✂️ AI 자율 편집 &amp; 몽타주 조립 스튜디오</div>
+                <div class="edt-sub">다중 앵글의 <b>인물 시선 · 모션 템포 · 오디오 피크</b>를 SIMD 로 추적해 <b>180° 규칙</b>을 지키는 교차 편집을 수행하고,
+                    BGM <b>비트</b>와 <b>감정 곡선</b>에 맞춰 컷 호흡 · 몽타주를 조립한 뒤 <b>EDL · FCPXML · AAF</b> 로 내보냅니다.</div>
+            </div>
+            <button class="edt-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="edt-bar">
+            <button class="edt-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 편집 정지" : Runner.Finalized ? "🔁 새 테이크 편집" : "▶ 자율 편집")</button>
+            <button class="edt-btn" @onclick="Step" disabled="@(Runner.IsRunning || Runner.Finalized)">⏭ 1초</button>
+            <button class="edt-btn" @onclick="Runner.NewTake" disabled="@Runner.IsRunning">🎬 새 테이크</button>
+            <label class="edt-tg"><input type="checkbox" checked="@Runner.Engine.BeatSync" @onchange="e => Runner.SetBeatSync(e.Value is true)" /> 비트 동기 컷</label>
+            <label class="edt-tg"><input type="checkbox" checked="@Runner.Engine.CutOnAction" @onchange="e => Runner.Engine.CutOnAction = e.Value is true" /> 컷 온 액션</label>
+            <label class="edt-tg"><input type="checkbox" checked="@Runner.Engine.Enforce180" @onchange="e => Runner.Engine.Enforce180 = e.Value is true" /> 180° 규칙</label>
+            <span class="edt-chip">@(F1(Runner.Frame / 30f))s / @(AutonomousEditorialStudioRunner.TakeSeconds)s · @(AutonomousEditorialStudioRunner.SectionName(Runner.Frame / 30f))</span>
+            <span class="edt-chip">컷 @(Runner.Engine.CutCount) · 비트 @(Runner.Engine.BeatCuts) · 액션 @(Runner.Engine.ActionCuts)</span>
+            <span class="edt-chip @(Runner.Engine.Violations180 + Runner.Engine.JumpCuts == 0 ? "ok" : "warn")">180° 위반 @(Runner.Engine.Violations180) · 점프 컷 @(Runner.Engine.JumpCuts)</span>
+            <span class="edt-chip">결정 @(F0(Runner.Engine.LastStepMicros))µs</span>
+        </div>
+
+        <div class="edt-main">
+            <div class="edt-col">
+                <div class="edt-card">
+                    <div class="edt-sec">🎥 멀티캠 모니터 — 프로그램 <b>@(Runner.Engine.Angle(Runner.Engine.Current).Name)</b> · 화자 @(Runner.Engine.Speaker < 0 ? "없음(액션)" : Runner.Engine.Speaker == 0 ? "A" : "B")</div>
+                    <div class="edt-grid">
+                        @for (var i = 0; i < AutonomousEditorialStudioRunner.Angles; i++)
+                        {
+                            var idx = i;
+                            var side = Runner.Engine.Side(idx);
+                            <div class="edt-mon @(idx == Runner.Engine.Current ? "pgm" : null)">
+                                <svg viewBox="0 0 @(TW) @(TH)" preserveAspectRatio="none">
+                                    @for (var y = 0; y < TH; y++)
+                                    {
+                                        for (var x = 0; x < TW; x++)
+                                        {
+                                            <rect x="@x" y="@y" width="1.03" height="1.03" style="fill:@(Gray(idx, x, y))" />
+                                        }
+                                    }
+                                </svg>
+                                <div class="cap"><b>@(idx + 1). @(Runner.Engine.Angle(idx).Name)</b><em>@(side > 0 ? "＋측" : side < 0 ? "−측" : "라인 위")</em></div>
+                                <div class="bars">
+                                    <span title="점수"><i style="width:@(F0(Math.Clamp(Runner.Engine.Score(idx) / 3f, 0f, 1f) * 100))%"></i>점수 @(F2(Runner.Engine.Score(idx)))</span>
+                                    <span title="시선"><i class="g" style="width:@(F0(Runner.Engine.GazeScore(idx) * 100))%"></i>시선 @(F2(Runner.Engine.GazeScore(idx)))</span>
+                                    <span title="모션"><i class="m" style="width:@(F0(Math.Clamp(Runner.Engine.Motion(idx) * 20f, 0f, 1f) * 100))%"></i>모션 @(F3(Runner.Engine.Motion(idx)))</span>
+                                    <span title="오디오"><i class="a" style="width:@(F0(Math.Clamp(Runner.Engine.Peak(idx) * 2f, 0f, 1f) * 100))%"></i>피크 @(F2(Runner.Engine.Peak(idx)))</span>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                <div class="edt-card">
+                    <div class="edt-sec">🎞 멀티트랙 편집 타임라인</div>
+                    <svg class="edt-tl" viewBox="0 0 @(F0(TlW)) 150" preserveAspectRatio="none">
+                        <polyline points="@(CurvePoints())" class="curve" />
+                        @for (var k = 0; k < Runner.Timeline.Count; k++)
+                        {
+                            var c = Runner.Timeline.Clip(k);
+                            var y = c.Track == AutonomousEditorialStudioRunner.TrackV1 ? 30 : c.Track == AutonomousEditorialStudioRunner.TrackV2 ? 66 : 102;
+                            <rect x="@(F1(X(c.RecIn)))" y="@y" width="@(F1(Math.Max(1f, X(c.RecOut) - X(c.RecIn))))" height="30" rx="2" class="clip edt-s@(c.Source)" />
+                        }
+                        @if (Runner.Rhythm.TempoConfidence > 0.05f)
+                        {
+                            for (var bt = Runner.Rhythm.NextBeat(0); bt < AutonomousEditorialStudioRunner.TakeSeconds; bt += Runner.Rhythm.PeriodSec)
+                            {
+                                <line x1="@(F1(X(bt * 30)))" y1="102" x2="@(F1(X(bt * 30)))" y2="132" class="beat" />
+                            }
+                        }
+                        <line x1="@(F1(X(Runner.Frame)))" y1="0" x2="@(F1(X(Runner.Frame)))" y2="150" class="ph" />
+                        <text x="4" y="12">감정 곡선(액션 ↑)</text><text x="4" y="47">V1</text><text x="4" y="83">V2</text><text x="4" y="119">A1</text>
+                    </svg>
+                    <div class="edt-legend">
+                        @for (var s = 0; s < Runner.Timeline.SourceCount; s++)
+                        {
+                            <span><i class="edt-s@(s)"></i>@(Runner.Timeline.SourceName(s))</span>
+                        }
+                    </div>
+                    <div class="edt-cuts">
+                        @for (var k = 0; k < Math.Min(6, Runner.Engine.CutCount); k++)
+                        {
+                            var c = Runner.Engine.Cut(k);
+                            <div><em>@(F2(c.Frame / 30f))s</em> @(c.From >= 0 ? Runner.Engine.Angle(c.From).Name : "—") → <b>@(Runner.Engine.Angle(c.To).Name)</b> <span>@(ReasonLabel(c.Reason)) · Δ@(F2(c.Margin))</span></div>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="edt-col">
+                <div class="edt-card">
+                    <div class="edt-sec">🥁 몽타주 리듬 비트 스펙트럼 — <b>@(F1(Runner.Rhythm.Bpm)) BPM</b> · 신뢰도 @(F2(Runner.Rhythm.TempoConfidence)) · 컷당 @(NeuralRhythmMontageSynthesizer.BeatsPerCut(Runner.Rhythm.Intensity(Runner.Frame / 30f)))비트</div>
+                    <svg class="edt-spec" viewBox="0 0 @(SpecW()) 100" preserveAspectRatio="none">
+                        @for (var lag = Runner.Rhythm.MinLag; lag <= Runner.Rhythm.MaxLag; lag++)
+                        {
+                            var v = Math.Clamp(Runner.Rhythm.Autocorrelation(lag) / AcMax(), 0f, 1f);
+                            var x = lag - Runner.Rhythm.MinLag;
+                            <rect x="@x" y="@(F1(100 - v * 100))" width="0.9" height="@(F1(v * 100))" class="@(MathF.Abs(lag / Runner.Rhythm.EnvelopeRate - Runner.Rhythm.PeriodSec) < 0.6f / Runner.Rhythm.EnvelopeRate ? "pk" : null)" />
+                        }
+                    </svg>
+                    <div class="edt-axis"><span>@(F0(60f * Runner.Rhythm.EnvelopeRate / Runner.Rhythm.MinLag)) BPM</span><span>템포 자기상관</span><span>@(F0(60f * Runner.Rhythm.EnvelopeRate / Runner.Rhythm.MaxLag)) BPM</span></div>
+                    <svg class="edt-env" viewBox="0 0 300 60" preserveAspectRatio="none">
+                        <polyline points="@(EnvPoints())" />
+                    </svg>
+                    <div class="edt-note">온셋 포락선(최근 3.2 s · 저역 킥 가중 로그 플럭스)</div>
+                </div>
+
+                <div class="edt-card">
+                    <div class="edt-sec">🧭 180° 액션 라인(탑뷰)</div>
+                    <svg class="edt-top" viewBox="-6 -6 12 12">
+                        @{ var a = Runner.Engine.SubjectPosition(0); var b = Runner.Engine.SubjectPosition(1); var d = b - a; }
+                        <line x1="@(F2(a.X - d.X * 4))" y1="@(F2(a.Z - d.Z * 4))" x2="@(F2(b.X + d.X * 4))" y2="@(F2(b.Z + d.Z * 4))" class="line" />
+                        <circle cx="@(F2(a.X))" cy="@(F2(a.Z))" r="0.3" class="sa" /><circle cx="@(F2(b.X))" cy="@(F2(b.Z))" r="0.3" class="sb" />
+                        @for (var i = 0; i < AutonomousEditorialStudioRunner.Angles; i++)
+                        {
+                            var cam = Runner.Engine.Angle(i);
+                            var tip = cam.Position + cam.Forward * 0.9f;
+                            <g>
+                                <line x1="@(F2(cam.Position.X))" y1="@(F2(cam.Position.Z))" x2="@(F2(tip.X))" y2="@(F2(tip.Z))" class="dir" />
+                                <rect x="@(F2(cam.Position.X - 0.25f))" y="@(F2(cam.Position.Z - 0.25f))" width="0.5" height="0.5" class="cam @(i == Runner.Engine.Current ? "pgm" : null) @(Runner.Engine.Side(i) < 0 ? "far" : null)" />
+                                <text x="@(F2(cam.Position.X + 0.35f))" y="@(F2(cam.Position.Z + 0.15f))">@(i + 1)</text>
+                            </g>
+                        }
+                    </svg>
+                </div>
+
+                <div class="edt-card">
+                    <div class="edt-sec">📤 NLE 타임라인 익스포트 @(Runner.Finalized ? "· 테이크 완료(몽타주 · BGM 포함)" : "· 진행 중(V1 + BGM)")</div>
+                    <div class="edt-row">
+                        <button class="edt-btn" @onclick="() => DoExport(NleFormat.Edl)">EDL (CMX3600)</button>
+                        <button class="edt-btn" @onclick="() => DoExport(NleFormat.FcpXml)">FCPXML 1.9</button>
+                        <button class="edt-btn" @onclick="() => DoExport(NleFormat.Aaf)">AAF (CFB)</button>
+                        @if (_dl is not null)
+                        {
+                            <a class="edt-btn on" href="@_dl" download="@_dlName">💾 @(_dlName) 저장</a>
+                        }
+                    </div>
+                    <div class="edt-kv">
+                        <span>클립 <b>@(Runner.Timeline.Count)</b></span>
+                        <span>V2 몽타주 <b>@(Runner.Timeline.ClipsOn(AutonomousEditorialStudioRunner.TrackV2))</b></span>
+                        <span>마지막 <b>@(Runner.Export.LastFormat) · @(Runner.Export.LastBytes)B · @(F2(Runner.Export.LastMs))ms</b></span>
+                        <span>검증 <b>@(Runner.Export.LastIssue)</b></span>
+                    </div>
+                    <div class="edt-note">AAF 는 CFB(복합 문서) 구조화 저장소 — 공식 AAF SDK 객체 모델이 아니므로 NLE 교환은 EDL/FCPXML 권장.</div>
+                </div>
+                <div class="edt-note">@(Runner.LastAction ?? "대기") · @(Runner.Engine.LastAction ?? "")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .edt-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .edt-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .edt-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #6366f1 18%, var(--card)), color-mix(in srgb, #10b981 14%, var(--card))); }
+    .edt-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .edt-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .edt-sub b { color: var(--text-primary); }
+    .edt-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .edt-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .edt-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; text-decoration: none; }
+    .edt-btn:disabled { opacity: .4; cursor: default; } .edt-btn.on { background: color-mix(in srgb, #6366f1 24%, transparent); border-color: #6366f1; }
+    .edt-tg { font-size: 11.5px; color: var(--text-secondary); display: flex; gap: 4px; align-items: center; font-weight: 600; }
+    .edt-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .edt-chip.ok { border-color: #22c55e; color: #86efac; } .edt-chip.warn { border-color: #f97316; color: #fdba74; }
+    .edt-main { display: grid; grid-template-columns: 1.3fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .edt-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .edt-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .edt-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .edt-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .edt-mon { border: 2px solid var(--line); border-radius: 8px; overflow: hidden; background: #050914; }
+    .edt-mon.pgm { border-color: #ef4444; box-shadow: 0 0 0 2px rgba(239,68,68,.35); }
+    .edt-mon svg { width: 100%; aspect-ratio: 16 / 9; display: block; }
+    .edt-mon .cap { display: flex; justify-content: space-between; padding: 3px 6px; font-size: 10.5px; color: #cbd5e1; } .edt-mon .cap em { font-style: normal; color: #94a3b8; }
+    .edt-mon .bars { display: flex; flex-direction: column; gap: 2px; padding: 0 6px 5px; }
+    .edt-mon .bars span { position: relative; font: 600 9.5px var(--mono); color: #e2e8f0; height: 12px; line-height: 12px; padding-left: 3px; background: #0f172a; border-radius: 3px; overflow: hidden; }
+    .edt-mon .bars i { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(99,102,241,.55); z-index: 0; } .edt-mon .bars i.g { background: rgba(250,204,21,.45); } .edt-mon .bars i.m { background: rgba(16,185,129,.5); } .edt-mon .bars i.a { background: rgba(236,72,153,.45); }
+    .edt-tl { width: 100%; height: 170px; background: #0b1020; border-radius: 8px; }
+    .edt-tl .clip { stroke: #0b1020; stroke-width: .6; } .edt-tl .beat { stroke: #f59e0b; stroke-width: .5; opacity: .7; }
+    .edt-tl .ph { stroke: #ef4444; stroke-width: 1.2; } .edt-tl .curve { fill: none; stroke: #f472b6; stroke-width: 1; } .edt-tl text { font-size: 8px; fill: #94a3b8; }
+    .edt-s0 { fill: #6366f1; background: #6366f1; } .edt-s1 { fill: #10b981; background: #10b981; } .edt-s2 { fill: #f59e0b; background: #f59e0b; } .edt-s3 { fill: #06b6d4; background: #06b6d4; }
+    .edt-s4 { fill: #a855f7; background: #a855f7; } .edt-s5 { fill: #ef4444; background: #ef4444; } .edt-s6 { fill: #64748b; background: #64748b; }
+    .edt-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 10.5px; color: var(--text-muted); } .edt-legend i { display: inline-block; width: 12px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+    .edt-cuts div { font-size: 11px; color: var(--text-secondary); padding: 2px 0; border-bottom: 1px dashed var(--line); }
+    .edt-cuts em { font-style: normal; font-family: var(--mono); color: var(--text-muted); } .edt-cuts b { color: var(--text-primary); } .edt-cuts span { color: var(--text-muted); font-size: 10.5px; }
+    .edt-spec { width: 100%; height: 110px; background: #0b1020; border-radius: 8px; } .edt-spec rect { fill: #6366f1; } .edt-spec rect.pk { fill: #f59e0b; }
+    .edt-axis { display: flex; justify-content: space-between; font: 600 10px var(--mono); color: var(--text-muted); }
+    .edt-env { width: 100%; height: 60px; background: #0b1020; border-radius: 8px; } .edt-env polyline { fill: none; stroke: #10b981; stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .edt-top { width: 100%; max-width: 340px; align-self: center; background: #0b1020; border-radius: 10px; }
+    .edt-top .line { stroke: #f59e0b; stroke-width: .06; stroke-dasharray: .3 .2; } .edt-top .sa { fill: #10b981; } .edt-top .sb { fill: #f59e0b; }
+    .edt-top .dir { stroke: #94a3b8; stroke-width: .05; } .edt-top .cam { fill: #6366f1; } .edt-top .cam.pgm { fill: #ef4444; } .edt-top .cam.far { fill: #475569; } .edt-top text { font-size: .45px; fill: #e2e8f0; }
+    .edt-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .edt-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; color: var(--text-secondary); } .edt-kv b { color: var(--text-primary); font-family: var(--mono); }
+    .edt-note { font-size: 11px; color: var(--text-muted); }
+    @@media (max-width: 1200px) { .edt-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int TW = 16, TH = 9;
+    private const float TlW = 600f;
+    private string? _dl, _dlName;
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Editorial.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static float X(float frame) => frame / AutonomousEditorialStudioRunner.TakeFrames * TlW;
+    private static string ReasonLabel(CutReason r) => r switch
+    {
+        CutReason.Speaker => "화자", CutReason.Action => "컷 온 액션", CutReason.Beat => "비트", CutReason.MaxLength => "최대 길이", CutReason.Reaction => "반응", CutReason.Montage => "몽타주", _ => "시작",
+    };
+
+    private string Gray(int angle, int tx, int ty)
+    {
+        var l = Runner.Luma(angle);
+        var x = tx * AutonomousEditorialStudioRunner.W / TW + 2; var y = ty * AutonomousEditorialStudioRunner.H / TH + 2;
+        var v = l[y * AutonomousEditorialStudioRunner.W + x].ToString(CultureInfo.InvariantCulture);
+        return "rgb(" + v + "," + v + "," + v + ")";
+    }
+
+    private string CurvePoints()
+    {
+        var sb = new System.Text.StringBuilder(1024);
+        for (var s = 0; s <= AutonomousEditorialStudioRunner.TakeSeconds; s++)
+            sb.Append(F1(X(s * 30))).Append(',').Append(F1(26 - Runner.Rhythm.Intensity(s) * 22)).Append(' ');
+        return sb.ToString();
+    }
+
+    private string SpecW() => F0(Runner.Rhythm.MaxLag - Runner.Rhythm.MinLag + 1);
+
+    private float AcMax()
+    {
+        var m = 1e-9f;
+        for (var lag = Runner.Rhythm.MinLag; lag <= Runner.Rhythm.MaxLag; lag++) m = MathF.Max(m, Runner.Rhythm.Autocorrelation(lag));
+        return m;
+    }
+
+    private string EnvPoints()
+    {
+        const int n = 300;
+        var mx = 1e-6f;
+        for (var i = 0; i < n; i++) mx = MathF.Max(mx, Runner.Rhythm.Envelope(i));
+        var sb = new System.Text.StringBuilder(4096);
+        for (var i = 0; i < n; i++) sb.Append(F0(n - 1 - i)).Append(',').Append(F1(58 - Runner.Rhythm.Envelope(i) / mx * 54)).Append(' ');
+        return sb.ToString();
+    }
+
+    private void DoExport(NleFormat fmt)
+    {
+        var bytes = Runner.ExportBytes(fmt);
+        if (bytes is null) { _dl = null; return; }
+        var (mime, ext) = fmt switch { NleFormat.Edl => ("text/plain", "edl"), NleFormat.FcpXml => ("application/xml", "fcpxml"), _ => ("application/octet-stream", "aaf") };
+        _dlName = "promptflow_edit." + ext;
+        _dl = "data:" + mime + ";base64," + Convert.ToBase64String(bytes);
+    }
+
+    private void Step() { for (var k = 0; k < 30 && !Runner.Finalized; k++) Runner.TickOnce(); }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

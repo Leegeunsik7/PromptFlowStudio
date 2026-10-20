@@ -1,0 +1,364 @@
+@using System.Globalization
+@using System.Numerics
+@using System.Text
+@using PromptFlowStudio.Services.HairCloth
+@using PromptFlowStudio.Services.DigitalHuman
+@implements IDisposable
+@inject NeuralHairClothStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.83.0] 💇 AI 신경망 헤어 & 의상 다이내믹스 스튜디오 — 3D 뷰포트(바디 캡슐 · SSS 얼굴 · 셰이딩 의상 · 가닥) ·
+    헤어 스트랜드 개수 슬라이더 · 스타일/컬러/Marschner·KK · 의상 강도/탄성 스펙트럼(변형률 히스토그램) · 바람 벡터 패드 · 프롬프트.
+*@
+
+<div class="hcs-scrim" @onclick="Close">
+    <div class="hcs-modal" @onclick:stopPropagation="true">
+        <div class="hcs-h">
+            <div>
+                <div class="hcs-title">💇 AI 신경망 헤어 &amp; 의상 다이내믹스 스튜디오</div>
+                <div class="hcs-sub">수만 가닥 <b>헤어/모피</b>를 DFTL(동적 Follow-The-Leader)로 SIMD 시뮬레이션하고, <b>의상</b>을 XPBD 서브스텝으로 바디 캡슐에 드레이핑해
+                    주름 · 플레어를 합성하며, <b>Marschner/Kajiya-Kay</b> 이방성 광택 · 딥 오패시티 자기 그림자 · 피부 SSS 오버레이를 3DGS/경로 추적에 결합합니다.</div>
+            </div>
+            <button class="hcs-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="hcs-bar">
+            <button class="hcs-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 시뮬레이션")</button>
+            <button class="hcs-btn" @onclick="Step" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="hcs-btn" @onclick="Runner.NewShot">🎬 새 샷</button>
+            @foreach (var m in Motions)
+            {
+                <button class="hcs-btn @(Runner.Motion == m ? "on" : null)" @onclick="() => Runner.SetMotion(m)">@(NeuralHairClothStudioRunner.MotionName(m))</button>
+            }
+            <span class="hcs-chip @(Runner.LastTickMs < 16.6 ? "ok" : "warn")">프레임 @(F1(Runner.LastTickMs)) ms</span>
+            <span class="hcs-chip">헤어 @(F1(Runner.Hair.LastStepMs)) · 의상 @(F1(Runner.Cloth.LastStepMs)) · 그림자 @(F1(Runner.Shader.LastShadowMs)) · 셰이딩 @(F1(Runner.Shader.LastHairMs + Runner.Shader.LastClothMs)) ms</span>
+            <span class="hcs-chip">3DGS @(Runner.Splats.Count)</span>
+        </div>
+
+        <div class="hcs-main">
+            <div class="hcs-col">
+                <div class="hcs-card">
+                    <div class="hcs-sec">🎥 3D 뷰포트 — 궤도 @(F0(_yaw))°
+                        <input type="range" min="-180" max="180" value="@(F0(_yaw))" @oninput="OnYaw" class="hcs-grow" />
+                    </div>
+                    <svg class="hcs-vp" viewBox="0 0 @(VW) @(VH)">
+                        @{ var nq = CollectQuads(); var bodyDepth = Depth(new Vector3(0f, -0.5f, 0f) + Runner.Body.Offset); var split = 0; while (split < nq && _qd[split] > bodyDepth) split++; }
+                        @for (var k = 0; k < split; k++)
+                        {
+                            @Quad(_qi[k])
+                        }
+                        @for (var c = 0; c < HumanBodyColliderRig.CapsuleCount; c++)
+                        {
+                            var a = Proj(Runner.Body.CapsuleA(c)); var b = Proj(Runner.Body.CapsuleB(c));
+                            <line x1="@(F1(a.X))" y1="@(F1(a.Y))" x2="@(F1(b.X))" y2="@(F1(b.Y))" class="bone" stroke-width="@(F1(2f * HumanBodyColliderRig.CapsuleRadius(c) * Focal / a.Z))" />
+                        }
+                        @{ var hp = Runner.Body.HeadPose; }
+                        @for (var v = 0; v < NeuralFacialMuscleSimulator.VertexCount; v += 2)
+                        {
+                            var n = Vector3.TransformNormal(Runner.Face.Normal(v), hp); var p = Vector3.Transform(Runner.Face.Position(v), hp);
+                            if (Vector3.Dot(n, _eye - p) <= 0f) continue;
+                            var s = Proj(p);
+                            <circle cx="@(F1(s.X))" cy="@(F1(s.Y))" r="@(F1(Math.Max(1f, 0.006f * Focal / s.Z)))" style="fill:@(Rgb(Runner.Shader.SkinR[v], Runner.Shader.SkinG[v], Runner.Shader.SkinB[v]))" />
+                        }
+                        @for (var k = split; k < nq; k++)
+                        {
+                            @Quad(_qi[k])
+                        }
+                        @{ var st = Math.Max(Runner.Stride, Runner.Hair.ActiveStrands / MaxStrands); }
+                        @for (var sIdx = 0; sIdx < Runner.Hair.ActiveStrands; sIdx += st)
+                        {
+                            var b0 = sIdx * NeuralStrandHairDynamicsEngine.NodesPerStrand; var shadeIdx = sIdx - sIdx % Runner.Stride;
+                            <polyline points="@Strand(b0)" class="strand" style="stroke:@(Rgb(Runner.Shader.HairR[shadeIdx * NeuralStrandHairDynamicsEngine.NodesPerStrand + 4], Runner.Shader.HairG[shadeIdx * NeuralStrandHairDynamicsEngine.NodesPerStrand + 4], Runner.Shader.HairB[shadeIdx * NeuralStrandHairDynamicsEngine.NodesPerStrand + 4]))" />
+                        }
+                    </svg>
+                    <div class="hcs-kv">
+                        <span>가닥 <b>@(Runner.Hair.ActiveStrands)</b> × @(NeuralStrandHairDynamicsEngine.NodesPerStrand) 노드</span>
+                        <span>끝단 속도 <b>@(F2(Runner.Hair.MeanTipSpeed)) m/s</b></span>
+                        <span>형상 이탈 <b>@(F1(Runner.Hair.MeanTipDeviation * 100)) cm</b></span>
+                        <span>충돌 <b>@(Runner.Hair.LastContacts)</b> / 의상 @(Runner.Cloth.LastContacts)</span>
+                        <span>최대 신장 오차 <b>@(F2(Runner.Hair.MaxStretchError * 100))%</b></span>
+                    </div>
+                </div>
+
+                <div class="hcs-card">
+                    <div class="hcs-sec">✨ 프롬프트 — 의상 · 원단 · 헤어 · 바람 · 모션</div>
+                    <div class="hcs-row">
+                        <input class="hcs-in" @bind="_prompt" placeholder="예: 금발 곱슬 머리, 실크 드레스, 폭풍 속 회전" />
+                        <button class="hcs-btn on" @onclick="() => Runner.TriggerPrompt(_prompt)">적용</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="hcs-col">
+                <div class="hcs-card">
+                    <div class="hcs-sec">💇 헤어 스트랜드 — @(NeuralStrandHairDynamicsEngine.StyleName(Runner.Hair.Style)) · @(NeuralHairClothShaderIntegrationGuard.ColorName(Runner.Shader.HairColor))</div>
+                    <label class="hcs-lab">가닥 수 <b>@(Runner.Hair.ActiveStrands) / @(Runner.Hair.Capacity)</b>
+                        <input type="range" min="500" max="@(Runner.Hair.Capacity)" step="500" value="@(Runner.Hair.ActiveStrands)" @onchange="OnStrands" />
+                    </label>
+                    <div class="hcs-row">
+                        @foreach (var s in Styles)
+                        {
+                            <button class="hcs-btn @(Runner.Hair.Style == s ? "on" : null)" @onclick="() => Runner.SetStyle(s)">@(NeuralStrandHairDynamicsEngine.StyleName(s))</button>
+                        }
+                        <span class="hcs-gap"></span>
+                        @foreach (var c in Colors)
+                        {
+                            <button class="hcs-sw @(Runner.Shader.HairColor == c ? "on" : null)" title="@(NeuralHairClothShaderIntegrationGuard.ColorName(c))" style="background:@(Swatch(c))" @onclick="() => Runner.SetHairColor(c)"></button>
+                        }
+                    </div>
+                    <div class="hcs-row">
+                        <button class="hcs-btn @(Runner.Shader.Model == HairShadingModel.Marschner ? "on" : null)" @onclick="() => Runner.SetModel(HairShadingModel.Marschner)">Marschner R/TT/TRT</button>
+                        <button class="hcs-btn @(Runner.Shader.Model == HairShadingModel.KajiyaKay ? "on" : null)" @onclick="() => Runner.SetModel(HairShadingModel.KajiyaKay)">Kajiya-Kay</button>
+                    </div>
+                    <div class="hcs-sl">
+                        <label>큐티클 이동 α <b>@(F1(Runner.Shader.ShiftDeg))°</b><input type="range" min="-12" max="0" step="0.5" value="@(F1(Runner.Shader.ShiftDeg))" @onchange="e => SetF(e, v => Runner.Shader.ShiftDeg = v)" /></label>
+                        <label>로브 폭 β <b>@(F1(Runner.Shader.WidthDeg))°</b><input type="range" min="2" max="20" step="0.5" value="@(F1(Runner.Shader.WidthDeg))" @onchange="e => SetF(e, v => Runner.Shader.WidthDeg = v)" /></label>
+                        <label>그림자 밀도 <b>@(F2(Runner.Shader.ShadowDensity))</b><input type="range" min="0" max="100" value="@(F0(Runner.Shader.ShadowDensity * 100))" @onchange="e => SetF(e, v => Runner.Shader.ShadowDensity = v / 100f)" /></label>
+                    </div>
+                    <div class="hcs-kv">
+                        <span>에너지 가드 <b>알베도 @(F3(Runner.Shader.RawAlbedo)) → @(F3(Runner.Shader.GuardedAlbedo))</b> (×@(F3(Runner.Shader.EnergyScale)))</span>
+                        <span>자기 그림자 투과 <b>@(F2(Runner.Shader.MeanHairShadow))</b></span>
+                        <span>σa <b>@(F2(Runner.Shader.Absorption.X)) / @(F2(Runner.Shader.Absorption.Y)) / @(F2(Runner.Shader.Absorption.Z))</b></span>
+                        <span>가드 NaN @(Runner.Shader.NanGuards) · 파이어플라이 @(Runner.Shader.FireflyClamps)</span>
+                    </div>
+                </div>
+
+                <div class="hcs-card">
+                    <div class="hcs-sec">👗 의상 — @(GenerativeGarmentClothCollisionSynthesizer.GarmentName(Runner.Cloth.Garment)) · @(Runner.Cloth.Material.Name)</div>
+                    <div class="hcs-row">
+                        @foreach (var g in Garments)
+                        {
+                            <button class="hcs-btn @(Runner.Cloth.Garment == g ? "on" : null)" @onclick="() => Runner.SetGarment(g, Runner.Cloth.Fabric)">@(GenerativeGarmentClothCollisionSynthesizer.GarmentName(g))</button>
+                        }
+                        <span class="hcs-gap"></span>
+                        @for (var f = 0; f < GenerativeGarmentClothCollisionSynthesizer.Fabrics.Length; f++)
+                        {
+                            var fk = (FabricKind)f;
+                            <button class="hcs-btn @(Runner.Cloth.Fabric == fk ? "on" : null)" @onclick="() => Runner.SetGarment(Runner.Cloth.Garment, fk)">@(GenerativeGarmentClothCollisionSynthesizer.Fabrics[f].Name)</button>
+                        }
+                    </div>
+                    <div class="hcs-split">
+                        <div>
+                            <svg class="hcs-spec" viewBox="0 0 @(GenerativeGarmentClothCollisionSynthesizer.Bins * 10) 60" preserveAspectRatio="none">
+                                @{ var hist = Runner.Cloth.StrainHistogram; var hmax = 1; foreach (var hv in hist) hmax = Math.Max(hmax, hv); }
+                                @for (var k = 0; k < hist.Length; k++)
+                                {
+                                    var hgt = 56f * MathF.Sqrt(hist[k] / (float)hmax);
+                                    <rect x="@(k * 10 + 1)" y="@(F1(58 - hgt))" width="8" height="@(F1(hgt))" class="@(k < GenerativeGarmentClothCollisionSynthesizer.Bins / 2 ? "cmp" : "ten")" />
+                                }
+                            </svg>
+                            <div class="hcs-axis"><span>압축 −20%</span><span>변형률 스펙트럼</span><span>+20% 인장</span></div>
+                        </div>
+                        <div class="hcs-kv col">
+                            <span>최대 변형률 <b>@(F1(Runner.Cloth.MaxStrain * 100))%</b> · 평균 @(F2(Runner.Cloth.MeanStrain * 100))%</span>
+                            <span>주름 강도 <b>@(F3(Runner.Cloth.MeanWrinkle))</b> · 좌굴 파장 <b>@(F1(Runner.Cloth.WrinkleWavelength * 1000)) mm</b></span>
+                            <span>면밀도 <b>@(F2(Runner.Cloth.Material.Density)) kg/m²</b></span>
+                            <span>컴플라이언스 신축 @(Sci(Runner.Cloth.Material.StretchCompliance)) · 굽힘 @(Sci(Runner.Cloth.Material.BendCompliance))</span>
+                            <span>제약 <b>@(Runner.Cloth.ConstraintCount)</b> · XPBD 서브스텝 @(GenerativeGarmentClothCollisionSynthesizer.Substeps)</span>
+                        </div>
+                    </div>
+                    <div class="hcs-sl">
+                        <label>신축 강도 <b>×@(F2(Runner.Cloth.StretchScale))</b><input type="range" min="-200" max="200" value="@(F0(MathF.Log10(Runner.Cloth.StretchScale) * 100))" @onchange="OnStretch" /></label>
+                        <label>굽힘 탄성 <b>×@(F2(Runner.Cloth.BendScale))</b><input type="range" min="-200" max="200" value="@(F0(MathF.Log10(Runner.Cloth.BendScale) * 100))" @onchange="OnBend" /></label>
+                        <label>감쇠 <b>×@(F2(Runner.Cloth.DampingScale))</b><input type="range" min="0" max="400" value="@(F0(Runner.Cloth.DampingScale * 100))" @onchange="e => SetF(e, v => Runner.Cloth.DampingScale = v / 100f)" /></label>
+                    </div>
+                </div>
+
+                <div class="hcs-card">
+                    <div class="hcs-sec">🌬 바람 벡터 — @(F0(Runner.WindYawDeg))° · @(F1(Runner.WindSpeed)) m/s · 난류 @(F2(Runner.Turbulence))</div>
+                    <div class="hcs-wind">
+                        <svg class="hcs-pad" viewBox="0 0 @(Pad) @(Pad)" @onclick="OnPad">
+                            <circle cx="@(Pad / 2)" cy="@(Pad / 2)" r="@(Pad / 2 - 4)" class="ring" />
+                            <circle cx="@(Pad / 2)" cy="@(Pad / 2)" r="@(Pad / 4)" class="ring in" />
+                            @{ var wv = Runner.WindVector; var av = Runner.ApparentWind; }
+                            <line x1="@(Pad / 2)" y1="@(Pad / 2)" x2="@(F1(Pad / 2 + wv.X * PadScale))" y2="@(F1(Pad / 2 - wv.Z * PadScale))" class="wv" />
+                            <line x1="@(Pad / 2)" y1="@(Pad / 2)" x2="@(F1(Pad / 2 + av.X * PadScale))" y2="@(F1(Pad / 2 - av.Z * PadScale))" class="av" />
+                            <circle cx="@(F1(Pad / 2 + wv.X * PadScale))" cy="@(F1(Pad / 2 - wv.Z * PadScale))" r="5" class="tip" />
+                        </svg>
+                        <div class="hcs-kv col">
+                            <span>패드 클릭 = 방향 · 세기(바깥 = 25 m/s · 화면 위 = 캐릭터 정면 +Z)</span>
+                            <span>겉보기 바람 <b>@(F1(av.Length())) m/s</b> (바람 − 몸 이동)</span>
+                            <label class="hcs-lab">세기 <input type="range" min="0" max="250" value="@(F0(Runner.WindSpeed * 10))" @onchange="e => SetF(e, v => Runner.SetWind(Runner.WindYawDeg, v / 10f, Runner.Turbulence))" /></label>
+                            <label class="hcs-lab">난류 <input type="range" min="0" max="100" value="@(F0(Runner.Turbulence * 100))" @onchange="e => SetF(e, v => Runner.SetWind(Runner.WindYawDeg, Runner.WindSpeed, v / 100f))" /></label>
+                            <div class="hcs-row">
+                                <button class="hcs-btn" @onclick="() => Runner.SetWind(Runner.WindYawDeg, 0f, 0.2f)">무풍</button>
+                                <button class="hcs-btn" @onclick="() => Runner.SetWind(Runner.WindYawDeg, 4f, 0.4f)">산들바람</button>
+                                <button class="hcs-btn" @onclick="() => Runner.SetWind(Runner.WindYawDeg, 14f, 0.7f)">폭풍</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="hcs-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .hcs-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .hcs-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .hcs-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #eab308 16%, var(--card)), color-mix(in srgb, #14b8a6 16%, var(--card))); }
+    .hcs-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .hcs-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .hcs-sub b { color: var(--text-primary); }
+    .hcs-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .hcs-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .hcs-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .hcs-btn:disabled { opacity: .4; cursor: default; } .hcs-btn.on { background: color-mix(in srgb, #14b8a6 24%, transparent); border-color: #14b8a6; }
+    .hcs-sw { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--line); cursor: pointer; } .hcs-sw.on { border-color: #fff; box-shadow: 0 0 0 2px #14b8a6; }
+    .hcs-gap { width: 10px; }
+    .hcs-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .hcs-chip.ok { border-color: #22c55e; color: #86efac; } .hcs-chip.warn { border-color: #f97316; color: #fdba74; }
+    .hcs-main { display: grid; grid-template-columns: 1.1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .hcs-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .hcs-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .hcs-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .hcs-grow { flex: 1; min-width: 120px; }
+    .hcs-vp { width: 100%; aspect-ratio: 4 / 5; max-height: 640px; background: radial-gradient(ellipse at 50% 30%, #1f2937, #030712); border-radius: 10px; }
+    .hcs-vp .bone { stroke: #3f3f46; stroke-linecap: round; stroke-opacity: .85; } .hcs-vp .strand { fill: none; stroke-width: .8; stroke-opacity: .85; }
+    .hcs-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .hcs-in { flex: 1; min-width: 200px; font-size: 12px; padding: 6px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .hcs-lab { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-secondary); } .hcs-lab b { font-family: var(--mono); color: var(--text-primary); }
+    .hcs-sl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 10px; }
+    .hcs-sl label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-secondary); } .hcs-sl b { font-family: var(--mono); color: var(--text-primary); }
+    .hcs-split { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }
+    .hcs-spec { width: 100%; height: 90px; background: #030712; border-radius: 8px; } .hcs-spec .cmp { fill: #38bdf8; } .hcs-spec .ten { fill: #f97316; }
+    .hcs-wind { display: grid; grid-template-columns: 170px 1fr; gap: 12px; align-items: start; }
+    .hcs-pad { width: 160px; height: 160px; background: #030712; border-radius: 50%; cursor: crosshair; }
+    .hcs-pad .ring { fill: none; stroke: #1e293b; stroke-width: 1; } .hcs-pad .ring.in { stroke-dasharray: 3 3; }
+    .hcs-pad .wv { stroke: #2dd4bf; stroke-width: 3; stroke-linecap: round; } .hcs-pad .av { stroke: #fbbf24; stroke-width: 1.5; stroke-dasharray: 4 3; } .hcs-pad .tip { fill: #2dd4bf; }
+    .hcs-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; color: var(--text-secondary); } .hcs-kv b { color: var(--text-primary); font-family: var(--mono); }
+    .hcs-kv.col { flex-direction: column; gap: 4px; }
+    .hcs-axis { display: flex; justify-content: space-between; font: 600 10px var(--mono); color: var(--text-muted); }
+    .hcs-note { font-size: 11px; color: var(--text-muted); }
+    @@media (max-width: 1200px) { .hcs-main { grid-template-columns: 1fr; } .hcs-sl { grid-template-columns: 1fr 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int VW = 480, VH = 600, MaxStrands = 600, Pad = 160;
+    private const float Focal = 560f, PadScale = 76f / 25f;
+    private const int QuadCount = (GenerativeGarmentClothCollisionSynthesizer.Rows - 1) * GenerativeGarmentClothCollisionSynthesizer.Cols;
+    private static readonly BodyMotion[] Motions = { BodyMotion.Idle, BodyMotion.Walk, BodyMotion.Spin, BodyMotion.Headbang, BodyMotion.Jump };
+    private static readonly HairStyle[] Styles = { HairStyle.Long, HairStyle.Bob, HairStyle.Curly, HairStyle.Fur };
+    private static readonly HairColorPreset[] Colors = { HairColorPreset.Black, HairColorPreset.Brown, HairColorPreset.Blonde, HairColorPreset.Red, HairColorPreset.Silver };
+    private static readonly GarmentType[] Garments = { GarmentType.Cape, GarmentType.Skirt, GarmentType.Dress };
+    private float _yaw = 20f;
+    private string? _prompt;
+    private System.Threading.Timer? _timer;
+    private Vector3 _eye, _f, _r, _u;
+    private readonly int[] _qi = new int[QuadCount];
+    private readonly float[] _qd = new float[QuadCount];
+    private readonly StringBuilder _sb = new();
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        UpdateCamera();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("HairCloth.Modal.Timer", ex); }
+        }, null, 200, 200);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static string Sci(double v) => v.ToString("0.0E0", CultureInfo.InvariantCulture);
+
+    private static string Swatch(HairColorPreset c) => c switch
+    {
+        HairColorPreset.Black => "#18181b", HairColorPreset.Blonde => "#e5c07b", HairColorPreset.Red => "#b4532a", HairColorPreset.Silver => "#d4d4d8", _ => "#6b4423",
+    };
+
+    private void UpdateCamera()
+    {
+        var a = _yaw * MathF.PI / 180f;
+        var target = new Vector3(0f, -0.55f, 0f);
+        _eye = target + new Vector3(MathF.Sin(a) * 2.6f, 0.35f, MathF.Cos(a) * 2.6f);
+        _f = Vector3.Normalize(target - _eye); _r = Vector3.Normalize(Vector3.Cross(_f, Vector3.UnitY)); _u = Vector3.Cross(_r, _f);
+    }
+
+    private float Depth(Vector3 p) => Vector3.Dot(p - _eye, _f);
+
+    private Vector3 Proj(Vector3 p)
+    {
+        var d = p - _eye; var z = Vector3.Dot(d, _f);
+        if (z < 0.05f) return new Vector3(-100, -100, 1f);
+        return new Vector3(VW * 0.5f + Focal * Vector3.Dot(d, _r) / z, VH * 0.5f - Focal * Vector3.Dot(d, _u) / z, z);
+    }
+
+    private static string Rgb(float r, float g, float b) =>
+        "rgb(" + ((int)(Math.Clamp(r, 0f, 1f) * 255f)).ToString(CultureInfo.InvariantCulture) + "," + ((int)(Math.Clamp(g, 0f, 1f) * 255f)).ToString(CultureInfo.InvariantCulture) + "," + ((int)(Math.Clamp(b, 0f, 1f) * 255f)).ToString(CultureInfo.InvariantCulture) + ")";
+
+    /// <summary>의상 사각형 수집 + 깊이 정렬(먼 것 → 가까운 것 · 선할당 버퍼).</summary>
+    private int CollectQuads()
+    {
+        const int C = GenerativeGarmentClothCollisionSynthesizer.Cols, R = GenerativeGarmentClothCollisionSynthesizer.Rows;
+        var cl = Runner.Cloth; var n = 0;
+        for (var i = 0; i + 1 < R; i++)
+            for (var j = 0; j < C; j++)
+            {
+                if (j + 1 >= C && !cl.Closed) continue;
+                var v = GenerativeGarmentClothCollisionSynthesizer.Index(i, j);
+                _qi[n] = v; _qd[n] = -Depth(0.5f * (cl.Position(v) + cl.Position(GenerativeGarmentClothCollisionSynthesizer.Index(i + 1, (j + 1) % C)))); n++;
+            }
+        Array.Sort(_qd, _qi, 0, n);
+        for (var k = 0; k < n; k++) _qd[k] = -_qd[k];
+        return n;
+    }
+
+    private RenderFragment Quad(int v) => __builder =>
+    {
+        const int C = GenerativeGarmentClothCollisionSynthesizer.Cols;
+        var cl = Runner.Cloth; var i = v / C; var j = v % C; var j1 = (j + 1) % C;
+        var a = Proj(cl.Position(v)); var b = Proj(cl.Position(GenerativeGarmentClothCollisionSynthesizer.Index(i, j1)));
+        var c = Proj(cl.Position(GenerativeGarmentClothCollisionSynthesizer.Index(i + 1, j1))); var d = Proj(cl.Position(GenerativeGarmentClothCollisionSynthesizer.Index(i + 1, j)));
+        var pts = F1(a.X) + "," + F1(a.Y) + " " + F1(b.X) + "," + F1(b.Y) + " " + F1(c.X) + "," + F1(c.Y) + " " + F1(d.X) + "," + F1(d.Y);
+        <polygon points="@pts" style="fill:@(Rgb(Runner.Shader.ClothR[v], Runner.Shader.ClothG[v], Runner.Shader.ClothB[v]));stroke:@(Rgb(Runner.Shader.ClothR[v], Runner.Shader.ClothG[v], Runner.Shader.ClothB[v]));stroke-width:.4" />
+    };
+
+    private string Strand(int b0)
+    {
+        _sb.Clear();
+        for (var k = 0; k < NeuralStrandHairDynamicsEngine.NodesPerStrand; k++)
+        {
+            var p = Proj(Runner.Hair.Position(b0 + k));
+            _sb.Append(F1(p.X)).Append(',').Append(F1(p.Y)).Append(' ');
+        }
+        return _sb.ToString();
+    }
+
+    private static bool TryF(ChangeEventArgs e, out float v) => float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+
+    private void OnYaw(ChangeEventArgs e) { if (TryF(e, out var v)) { _yaw = v; UpdateCamera(); } }
+    private void OnStrands(ChangeEventArgs e) { if (TryF(e, out var v)) Runner.SetStrandCount((int)v); }
+    private void OnStretch(ChangeEventArgs e) { if (TryF(e, out var v)) Runner.SetClothStiffness(MathF.Pow(10f, v / 100f), Runner.Cloth.BendScale); }
+    private void OnBend(ChangeEventArgs e) { if (TryF(e, out var v)) Runner.SetClothStiffness(Runner.Cloth.StretchScale, MathF.Pow(10f, v / 100f)); }
+    private void SetF(ChangeEventArgs e, Action<float> apply) { if (TryF(e, out var v)) apply(v); }
+
+    /// <summary>바람 패드: 중심 → 클릭 벡터(화면 위 = +Z) → 방위 · 세기.</summary>
+    private void OnPad(MouseEventArgs e)
+    {
+        float dx = (float)e.OffsetX - Pad / 2f, dy = Pad / 2f - (float)e.OffsetY;
+        var len = MathF.Sqrt(dx * dx + dy * dy);
+        Runner.SetWind(MathF.Atan2(dx, dy) * 180f / MathF.PI, Math.Clamp(len / PadScale, 0f, 25f), Runner.Turbulence);
+    }
+
+    private void Step() { for (var k = 0; k < NeuralHairClothStudioRunner.Hz; k++) Runner.TickOnce(); }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

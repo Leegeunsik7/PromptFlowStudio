@@ -1,0 +1,196 @@
+@using PromptFlowStudio.Services.Media
+@inject StoryboardJobManager Jobs
+@inject PromptFlowStudio.Services.Wan.NvencGpuMotionEngine Gpu
+@implements IDisposable
+
+@* [PromptFlow Studio] 주조종실 마스터 제작 덱 — 대형 네온 [✨ 영상 제작 시작] + 단계 뱃지 + 진행률 + 8대 멀티플랫폼 선택. *@
+
+<div class="mpc @(Busy ? "live" : null)">
+    <div class="mpc-h">
+        <span class="mpc-title">🎛️ 주조종실</span>
+        <span class="mpc-gpu @(Gpu.GpuDetected ? "on" : null)">@(Gpu.GpuDetected ? "⚡ GPU 가속" : "CPU 렌더")</span>
+    </div>
+
+    @if (!Busy)
+    {
+        <button class="mpc-go" disabled="@(!CanStart)" @onclick="Start">
+            <span class="mpc-go-ic">✨</span>
+            <span class="mpc-go-t">영상 제작 시작</span>
+            <span class="mpc-go-s">위생화 → AI 생성 → 오디오 → 세이프존 → 렌더링 원스톱</span>
+        </button>
+        @if (!CanStart)
+        {
+            <div class="mpc-hint">⚙️ 컷과 프롬프트를 준비하고 Wan API 키를 등록하면 시작할 수 있어요.</div>
+        }
+    }
+    else
+    {
+        <div class="mpc-run">
+            <div class="mpc-pct"><span>@CurrentStageLabel</span><b>@LivePct%</b></div>
+            <div class="mpc-bar"><span style="width:@LivePct%"></span></div>
+            <button class="mpc-stop" @onclick="() => Jobs.Cancel()">■ 제작 중단</button>
+        </div>
+    }
+
+    <div class="mpc-stages">
+        @for (var i = 0; i < Stages.Length; i++)
+        {
+            var st = StageClass(i);
+            <div class="mpc-stage @st" @key="i">
+                <span class="mpc-stage-ic">@Stages[i].Icon</span>
+                <span class="mpc-stage-l">@Stages[i].Label</span>
+                @if (st == "done") { <span class="mpc-stage-chk">✓</span> }
+            </div>
+        }
+    </div>
+
+    <div class="mpc-plat">
+        <div class="mpc-plat-h">📦 멀티 플랫폼 일괄 내보내기 <span class="mpc-plat-sub">체크한 규격을 최종 병합 후 동시 렌더링</span></div>
+        <div class="mpc-plat-grid">
+            @foreach (var s in MultiPlatformRenderEngine.Specs)
+            {
+                <label class="mpc-chip @(IsSelected(s.Platform) ? "on" : null)" @key="s.Platform">
+                    <input type="checkbox" checked="@IsSelected(s.Platform)" @onchange="() => TogglePlatform(s.Platform)" disabled="@Busy" />
+                    <span>@s.Icon @s.Platform</span>
+                    <span class="mpc-chip-a">@s.AspectLabel</span>
+                </label>
+            }
+        </div>
+        @if (SelectedCount > 0)
+        {
+            <div class="mpc-plat-n">✓ @(SelectedCount)개 플랫폼 규격을 <b>platforms</b> 폴더에 자동 분류 저장합니다.</div>
+        }
+    </div>
+</div>
+
+<style>
+    .mpc { border: 1px solid color-mix(in srgb, var(--flow-violet) 40%, var(--line)); border-radius: 15px; overflow: hidden; margin-bottom: 14px;
+        background: linear-gradient(160deg, color-mix(in srgb, var(--flow-violet) 12%, transparent), transparent 55%), var(--card); }
+    .mpc.live { border-color: color-mix(in srgb, var(--flow-cyan, #22d3ee) 50%, var(--line)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--flow-cyan, #22d3ee) 25%, transparent) inset; }
+    .mpc-h { display: flex; align-items: center; justify-content: space-between; padding: 11px 14px 0; }
+    .mpc-title { font: 900 13px var(--mono); color: var(--text-primary); }
+    .mpc-gpu { font: 800 9px var(--mono); color: var(--text-muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; }
+    .mpc-gpu.on { color: #7ef0c6; border-color: #10b98155; background: #10b9811a; }
+
+    /* 대형 네온 CTA */
+    .mpc-go { display: flex; flex-direction: column; align-items: center; gap: 2px; width: calc(100% - 28px); margin: 12px 14px; padding: 15px; cursor: pointer;
+        border: none; border-radius: 14px; color: #fff; background: linear-gradient(135deg, var(--flow-violet), var(--flow-magenta));
+        box-shadow: 0 10px 26px color-mix(in srgb, var(--flow-magenta) 40%, transparent), 0 0 0 1px rgba(255,255,255,.1) inset; transition: .15s; }
+    .mpc-go:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); box-shadow: 0 14px 34px color-mix(in srgb, var(--flow-magenta) 50%, transparent), 0 0 24px color-mix(in srgb, var(--flow-cyan, #22d3ee) 30%, transparent); }
+    .mpc-go:disabled { opacity: .45; cursor: not-allowed; filter: grayscale(.4); }
+    .mpc-go-ic { font-size: 22px; line-height: 1; filter: drop-shadow(0 0 10px rgba(255,255,255,.7)); }
+    .mpc-go-t { font: 900 17px var(--mono); letter-spacing: .01em; }
+    .mpc-go-s { font: 600 10px var(--mono); opacity: .9; }
+    .mpc-hint { padding: 0 14px 10px; font-size: 11px; color: var(--text-muted); line-height: 1.5; }
+
+    .mpc-run { padding: 12px 14px; }
+    .mpc-pct { display: flex; align-items: center; justify-content: space-between; font: 800 12px var(--mono); color: var(--text-primary); margin-bottom: 7px; }
+    .mpc-pct b { color: var(--flow-cyan, #22d3ee); }
+    .mpc-bar { height: 8px; border-radius: 999px; background: var(--card-2); overflow: hidden; }
+    .mpc-bar span { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--flow-violet), var(--flow-cyan, #22d3ee)); transition: width .3s; box-shadow: 0 0 12px color-mix(in srgb, var(--flow-cyan, #22d3ee) 50%, transparent); }
+    .mpc-stop { margin-top: 10px; width: 100%; font: 800 12px var(--mono); padding: 9px; border-radius: 10px; cursor: pointer; border: 1px solid #ef444455; background: color-mix(in srgb, #ef4444 12%, transparent); color: #ff9aa8; }
+    .mpc-stop:hover { background: color-mix(in srgb, #ef4444 20%, transparent); }
+
+    /* 단계 뱃지 */
+    .mpc-stages { display: flex; gap: 4px; padding: 0 14px 12px; flex-wrap: wrap; }
+    .mpc-stage { display: flex; align-items: center; gap: 4px; font: 700 9.5px var(--mono); padding: 5px 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-muted); }
+    .mpc-stage.active { color: #fff; border-color: transparent; background: linear-gradient(135deg, var(--flow-violet), var(--flow-cyan, #22d3ee)); animation: mpc-pulse 1.3s ease-in-out infinite; }
+    .mpc-stage.done { color: #7ef0c6; border-color: #10b98155; background: #10b9811a; }
+    .mpc-stage-chk { font-size: 9px; }
+
+    /* 플랫폼 선택 */
+    .mpc-plat { border-top: 1px solid var(--line); padding: 12px 14px; }
+    .mpc-plat-h { font: 800 11.5px var(--mono); color: var(--text-primary); margin-bottom: 8px; }
+    .mpc-plat-sub { font-weight: 600; color: var(--text-muted); }
+    .mpc-plat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .mpc-chip { display: flex; align-items: center; gap: 6px; font: 700 10.5px var(--mono); padding: 7px 9px; border-radius: 9px; cursor: pointer;
+        border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); }
+    .mpc-chip.on { border-color: color-mix(in srgb, var(--flow-cyan, #22d3ee) 45%, var(--line)); background: color-mix(in srgb, var(--flow-cyan, #22d3ee) 9%, var(--card-2)); color: var(--text-primary); }
+    .mpc-chip input { width: 14px; height: 14px; accent-color: var(--flow-violet); }
+    .mpc-chip span:nth-child(2) { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mpc-chip-a { font: 800 8.5px var(--mono); color: var(--text-muted); }
+    .mpc-plat-n { margin-top: 8px; font-size: 10.5px; color: var(--flow-cyan, #22d3ee); }
+
+    @@keyframes mpc-pulse { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--flow-cyan, #22d3ee) 40%, transparent); } 50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--flow-cyan, #22d3ee) 18%, transparent); } }
+</style>
+
+@code {
+    /// <summary>대상 프로젝트(플랫폼 선택 상태 보관).</summary>
+    [Parameter, EditorRequired] public StoryboardProject Project { get; set; } = default!;
+    /// <summary>제작 시작 가능 여부(부모 CanStart).</summary>
+    [Parameter] public bool CanStart { get; set; }
+    /// <summary>[✨ 영상 제작 시작] 클릭 콜백(부모의 전체 생성 실행).</summary>
+    [Parameter] public EventCallback OnStart { get; set; }
+    /// <summary>플랫폼 선택 변경 시 부모 알림.</summary>
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private static readonly (string Icon, string Label)[] Stages =
+    {
+        ("🧼", "위생화"), ("🎬", "AI 생성"), ("🎙️", "오디오"), ("🛡️", "세이프존"), ("✨", "렌더링"),
+    };
+
+    private bool Busy => Jobs.IsRunning || Jobs.IsMerging;
+    private int SelectedCount => Project.RenderPlatforms.Count;
+    private int LivePct => Jobs.IsMerging ? Jobs.MergePercent : (Jobs.IsRunning ? Jobs.OverallPercent : (CurrentStage >= 4 ? 100 : 0));
+
+    /// <summary>현재 파이프라인 단계(-1 대기 · 0~4 진행 · 5 완료). MergeMessage 로 오디오/세이프존/렌더 구분.</summary>
+    private int CurrentStage
+    {
+        get
+        {
+            if (Jobs.IsRunning && !Jobs.IsMerging) return 1;   // 위생화는 생성에 포함
+            if (Jobs.IsMerging)
+            {
+                var m = Jobs.MergeMessage ?? "";
+                if (m.Contains("나레이션") || m.Contains("음성") || m.Contains("TTS") || m.Contains("립싱크")) return 2;
+                if (m.Contains("플랫폼") || m.Contains("보정") || m.Contains("세이프") || m.Contains("크롭") || m.Contains("업스케일")) return 3;
+                return 4;
+            }
+            return -1;   // 대기
+        }
+    }
+
+    private string CurrentStageLabel => CurrentStage is >= 0 and < 5 ? $"{Stages[CurrentStage].Icon} {StageFull(CurrentStage)}" : "대기";
+
+    private static string StageFull(int i) => i switch
+    {
+        0 => "프롬프트 위생화 중…", 1 => "AI 비디오 생성 중…", 2 => "오디오 합성 중…", 3 => "멀티플랫폼 세이프존 크롭 중…", _ => "최종 렌더링 중…",
+    };
+
+    private string StageClass(int i)
+    {
+        var cur = CurrentStage;
+        if (cur < 0) return "";           // 대기 — 전부 pending
+        if (cur >= 5) return "done";
+        if (i < cur) return "done";
+        if (i == cur) return "active";
+        return "";
+    }
+
+    private bool IsSelected(SafePlatform p) => Project.RenderPlatforms.Contains(p.ToString());
+
+    private async Task TogglePlatform(SafePlatform p)
+    {
+        if (Busy) return;
+        var name = p.ToString();
+        if (!Project.RenderPlatforms.Remove(name)) Project.RenderPlatforms.Add(name);
+        Project.MultiPlatformExport = Project.RenderPlatforms.Count > 0;
+        if (OnChanged.HasDelegate) await OnChanged.InvokeAsync();
+    }
+
+    private async Task Start()
+    {
+        if (CanStart && OnStart.HasDelegate) await OnStart.InvokeAsync();
+    }
+
+    protected override void OnInitialized() => Jobs.OnChange += OnJobs;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { await Gpu.DetectGpuAsync(); StateHasChanged(); } catch { /* GPU 탐지 실패는 무시(CPU 표시) */ }
+    }
+
+    private void OnJobs() => InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Jobs.OnChange -= OnJobs;
+}

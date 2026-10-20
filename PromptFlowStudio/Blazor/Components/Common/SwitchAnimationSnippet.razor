@@ -1,0 +1,101 @@
+@* [PromptFlow Studio] 스위치 역할 미니 애니메이션 스니펫 — ON/OFF 연출 차이를 순수 CSS/SVG 로 직관 시각화(ToggleTooltip 내부). aria-hidden 장식. *@
+
+<div class="sas sas-@Key" aria-hidden="true">
+    @switch (Key)
+    {
+        case "kineticCaptions":
+            <span class="sas-kw">까르르</span>
+            break;
+        case "emotionPacing":
+            <div class="sas-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+            break;
+        case "genFoley":
+            <div class="sas-burst"><span class="sas-burst-ring"></span><span class="sas-burst-c">💥</span></div>
+            break;
+        case "visualBadges":
+            <span class="sas-badge">콰광! ⚡</span>
+            break;
+        case "tempoSpeedup":
+            <div class="sas-speed"><i class="t2"></i><i class="t1"></i><i class="d"></i></div>
+            break;
+        case "safeZone":
+            <div class="sas-frame"><span class="sas-danger"></span><span class="sas-cap"></span></div>
+            break;
+        case "smartFraming":
+            <div class="sas-frame2"><span class="sas-safe"></span><span class="sas-face"></span></div>
+            break;
+        case "smartTransitions":
+            <div class="sas-trans"><span class="a"></span><span class="b"></span></div>
+            break;
+        default:
+            <div class="sas-dot"></div>
+            break;
+    }
+</div>
+
+<style>
+    .sas { position: relative; height: 40px; margin: 2px 0 10px; border-radius: 9px; overflow: hidden;
+        background: linear-gradient(180deg, color-mix(in srgb, var(--flow-violet) 8%, var(--card-2)), var(--card-2));
+        border: 1px solid var(--line); display: grid; place-items: center; }
+
+    /* 키네틱 자막 — 골드 단어 바운스 팝 */
+    .sas-kw { font: 900 15px var(--mono); color: #FFE24D; text-shadow: 0 1px 3px rgba(0,0,0,.6); animation: sas-pop 1.3s ease-in-out infinite; }
+    @@keyframes sas-pop { 0%,100% { transform: scale(.82); color: #fff; } 45% { transform: scale(1.18) translateY(-2px); color: #FFE24D; } }
+
+    /* 감정선 BGM — 파형 + 덕킹 강하 */
+    .sas-wave { display: flex; align-items: flex-end; gap: 3px; height: 24px; }
+    .sas-wave i { width: 4px; border-radius: 2px; background: var(--flow-cyan, #22d3ee); animation: sas-vu 1.1s ease-in-out infinite; }
+    .sas-wave i:nth-child(1){ animation-delay: 0s } .sas-wave i:nth-child(2){ animation-delay: .1s }
+    .sas-wave i:nth-child(3){ animation-delay: .2s } .sas-wave i:nth-child(4){ animation-delay: .3s; background: #ef4444; }
+    .sas-wave i:nth-child(5){ animation-delay: .4s } .sas-wave i:nth-child(6){ animation-delay: .5s } .sas-wave i:nth-child(7){ animation-delay: .6s }
+    @@keyframes sas-vu { 0%,100% { height: 40% } 50% { height: 95% } }
+    .sas-wave i:nth-child(4) { animation: sas-duck 1.6s ease-in-out infinite; }   /* 덕킹 구간 급강하 */
+    @@keyframes sas-duck { 0%,30%,100% { height: 90% } 45%,70% { height: 18% } }
+
+    /* Gen-Foley — 버스트 링 펄스 */
+    .sas-burst { position: relative; width: 30px; height: 30px; display: grid; place-items: center; }
+    .sas-burst-c { font-size: 16px; animation: sas-punch .9s ease-in-out infinite; }
+    .sas-burst-ring { position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--flow-cyan, #22d3ee); animation: sas-ring 1.1s ease-out infinite; }
+    @@keyframes sas-ring { 0% { transform: scale(.3); opacity: .9 } 100% { transform: scale(1.6); opacity: 0 } }
+    @@keyframes sas-punch { 0%,100% { transform: scale(.9) } 40% { transform: scale(1.25) } }
+
+    /* 시각 뱃지 — 팝업 */
+    .sas-badge { font: 800 11.5px var(--mono); color: #fff; background: rgba(0,0,0,.6); border: 1px solid rgba(255,255,255,.25);
+        padding: 4px 10px; border-radius: 999px; animation: sas-badge 1.6s ease-in-out infinite; }
+    @@keyframes sas-badge { 0%,20%,100% { transform: scale(0); opacity: 0 } 35% { transform: scale(1.15); opacity: 1 } 70% { transform: scale(1); opacity: 1 } 85% { opacity: 0 } }
+
+    /* 템포 배속 — 잔상 + 질주 */
+    .sas-speed { position: relative; width: 100%; height: 100%; }
+    .sas-speed i { position: absolute; top: 50%; width: 10px; height: 10px; border-radius: 50%; background: var(--flow-magenta, #d946ef); margin-top: -5px; animation: sas-zoom 1s cubic-bezier(.5,0,.9,.4) infinite; }
+    .sas-speed .t1 { opacity: .45; animation-delay: -.06s; } .sas-speed .t2 { opacity: .2; animation-delay: -.12s; }
+    @@keyframes sas-zoom { 0% { left: -10px } 100% { left: 100% } }
+
+    /* 세이프존 — 자막이 위험영역 위로 상승 */
+    .sas-frame { position: relative; width: 58px; height: 30px; border: 1px solid var(--line); border-radius: 5px; background: #0f172a; overflow: hidden; }
+    .sas-danger { position: absolute; left: 0; right: 0; bottom: 0; height: 34%; background: rgba(239,68,68,.35); border-top: 1px dashed #ef4444; }
+    .sas-cap { position: absolute; left: 10%; right: 10%; height: 5px; border-radius: 3px; background: #FFE24D; animation: sas-lift 1.8s ease-in-out infinite; }
+    @@keyframes sas-lift { 0%,30% { bottom: 8% } 60%,100% { bottom: 42% } }
+
+    /* 피사체 프레이밍 — 얼굴이 상단-중앙 안전대로 이동/줌 */
+    .sas-frame2 { position: relative; width: 30px; height: 30px; border: 1px solid var(--line); border-radius: 5px; background: #0f172a; overflow: hidden; }
+    .sas-safe { position: absolute; left: 12%; right: 12%; top: 20%; height: 45%; border: 1px solid rgba(16,185,129,.7); border-radius: 3px; }
+    .sas-face { position: absolute; width: 9px; height: 9px; border-radius: 50%; background: var(--flow-cyan, #22d3ee); animation: sas-center 2s ease-in-out infinite; }
+    @@keyframes sas-center { 0% { left: 8%; top: 68%; transform: scale(.7) } 100% { left: 50%; top: 34%; transform: translateX(-50%) scale(1.15) } }
+
+    /* 스마트 트랜지션 — 두 컷 크로스 슬라이드 */
+    .sas-trans { position: relative; width: 58px; height: 30px; border-radius: 5px; overflow: hidden; }
+    .sas-trans span { position: absolute; inset: 0; }
+    .sas-trans .a { background: linear-gradient(135deg, var(--flow-violet), var(--flow-magenta)); animation: sas-slideA 2s ease-in-out infinite; }
+    .sas-trans .b { background: linear-gradient(135deg, var(--flow-cyan, #22d3ee), var(--flow-violet)); animation: sas-slideB 2s ease-in-out infinite; }
+    @@keyframes sas-slideA { 0%,40% { transform: none } 60%,100% { transform: translateX(-100%) } }
+    @@keyframes sas-slideB { 0%,40% { transform: translateX(100%) } 60%,100% { transform: none } }
+
+    .sas-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--flow-violet); animation: sas-punch 1s ease-in-out infinite; }
+
+    @@media (prefers-reduced-motion: reduce) { .sas * { animation: none !important; } }
+</style>
+
+@code {
+    /// <summary>스위치 키(SwitchRoleGuideService.Keys).</summary>
+    [Parameter] public string Key { get; set; } = "";
+}

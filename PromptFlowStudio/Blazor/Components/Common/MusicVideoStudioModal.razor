@@ -1,0 +1,552 @@
+@using System.Globalization
+@using System.Numerics
+@using System.Text
+@using System.Threading
+@using PromptFlowStudio.Services.DigitalTwin
+@using PromptFlowStudio.Services.Media
+@using PromptFlowStudio.Services.Music
+@implements IDisposable
+@inject AiGenerativeMusicEngine Music
+@inject AudioBeatVisualSyncEngine Sync
+@inject AlgorithmicChoreographyController Choreo
+@inject AiDigitalTwinGeneratorEngine Twin
+@inject ILocalMediaService Media
+
+@* [PromptFlow Studio v16.37.0] 🎵 AI 뮤직비디오 & 안무 스튜디오
+   음악 생성(Suno/Udio 어댑터 · BCL 신디사이저 폴백 · 가사/장르/무드) · 파형 + 비트/다운비트/드랍/컷 마커 오버레이 · 비트 컷 플랜(전환/VFX/스피드 램프) ·
+   디지털 트윈 안무(스타일 · 강도/복잡도 슬라이더 · 리그 프리뷰 스크럽/재생 · BVH) · 1-Click MV 구성. 상태는 서비스(싱글턴) 소유 OnChange 구독. *@
+
+<div class="mv-scrim" @onclick="Close">
+    <div class="mv-modal" @onclick:stopPropagation="true">
+        <div class="mv-h">
+            <div>
+                <div class="mv-title">🎵 AI 뮤직비디오 &amp; 안무 스튜디오</div>
+                <div class="mv-sub">가사·장르·무드로 <b>보컬 트랙과 BGM</b>을 만들고, <b>BPM·온셋·드랍</b>에 맞춰 컷 전환·VFX·스피드 램프를 매핑한 뒤 디지털 트윈에 <b>자동 안무</b>를 입혀 MV를 구성합니다.</div>
+            </div>
+            <button class="mv-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="mv-bar">
+            <span class="mv-chip @(Music.RemoteConfigured ? "ok" : "")">@(Music.RemoteConfigured ? Music.Provider.ToUpperInvariant() + " API" : "BCL 신디사이저(오프라인)")</span>
+            @if (Music.Current is { } ct)
+            {
+                <span class="mv-mut">🎼 @(AiGenerativeMusicEngine.GenreLabel(ct.Genre)) · @(ct.Bpm > 0 ? ct.Bpm.ToString(CultureInfo.InvariantCulture) + " BPM · " : "")@(ct.Seconds.ToString("0", CultureInfo.InvariantCulture))초 · @(ct.Source)</span>
+            }
+            @if (Sync.LastAnalysis is { } ca)
+            {
+                <span class="mv-mut">🥁 @(ca.Bpm.ToString("0.#", CultureInfo.InvariantCulture)) BPM · 드랍 @(ca.Drops.Length)</span>
+            }
+            @if (Choreo.Current is { } cc)
+            {
+                <span class="mv-mut">💃 @(cc.Summary)</span>
+            }
+        </div>
+
+        <div class="mv-tabs">
+            <button class="@(_tab == 0 ? "on" : "")" @onclick="() => _tab = 0">🎼 음악 생성</button>
+            <button class="@(_tab == 1 ? "on" : "")" @onclick="() => _tab = 1">🥁 비트 맵 · 컷</button>
+            <button class="@(_tab == 2 ? "on" : "")" @onclick="() => _tab = 2">💃 트윈 안무</button>
+        </div>
+
+        <div class="mv-body">
+            @if (_tab == 0)
+            {
+                <div class="mv-row">
+                    <select class="mv-in" @bind="_genre">
+                        @foreach (var g in Enum.GetValues<MusicGenre>())
+                        {
+                            <option value="@g">@(AiGenerativeMusicEngine.GenreLabel(g))</option>
+                        }
+                    </select>
+                    <input class="mv-in grow" @bind="_mood" placeholder="무드(예: 신나는 여름밤, 슬픈 이별, 어두운 긴장감)" />
+                    <label class="mv-mut">길이(초) <input class="mv-in w60" type="number" min="6" max="240" @bind="_seconds" /></label>
+                    <label class="mv-mut">BPM <input class="mv-in w60" type="number" min="0" max="200" @bind="_bpm" /></label>
+                    <label class="mv-mut"><input type="checkbox" @bind="_vocals" /> 보컬</label>
+                    <label class="mv-mut"><input type="checkbox" @bind="_remote" disabled="@(!Music.RemoteConfigured)" /> 원격 API</label>
+                </div>
+                <textarea class="mv-in mv-ta" @bind="_lyrics" placeholder="가사(줄바꿈 = 소절 · [Chorus] 같은 태그 줄은 무시)"></textarea>
+                <div class="mv-row">
+                    <button class="mv-btn sm go" disabled="@(_busy || Music.IsBusy)" @onclick="GenerateAsync">🎼 음악 생성</button>
+                    @if (Music.Current is { Path: { } p })
+                    {
+                        <audio class="mv-audio" src="@(PlaybackUrl(p))" controls></audio>
+                        <span class="mv-mono">@(Path.GetFileName(p))</span>
+                    }
+                </div>
+                @if (!Music.RemoteConfigured)
+                {
+                    <div class="mv-note">원격 API 미구성 — 환경변수 @(MusicApiConfig.EndpointVar) / @(MusicApiConfig.KeyVar) / @(MusicApiConfig.ProviderVar)(suno|udio) 설정 시 사용. 실패 시 즉시 BCL 신디사이저로 폴백합니다.</div>
+                }
+                @if (Music.Current is { } t)
+                {
+                    <div class="mv-grid2">
+                        <div class="mv-card">
+                            <div class="mv-sec">곡 구성 · @(t.KeyName) · @(t.Lufs.ToString("0.0", CultureInfo.InvariantCulture)) LUFS · 피크 @(t.PeakDb.ToString("0.0", CultureInfo.InvariantCulture)) dB</div>
+                            <div class="mv-sections">
+                                @foreach (var s in t.Sections)
+                                {
+                                    <i class="k@((int)s.Kind)" style="flex:@(s.Bars)" title="@(s.Kind) · @(s.Bars)마디">@(SectionLabel(s.Kind))</i>
+                                }
+                            </div>
+                            <div class="mv-mono">@(t.Prompt)</div>
+                        </div>
+                        <div class="mv-card">
+                            <div class="mv-sec">가사 큐 @(t.Lyrics.Count) · 보컬 음표 @(t.VocalNotes)</div>
+                            <table class="mv-tbl">
+                                @foreach (var c in t.Lyrics.Take(12))
+                                {
+                                    <tr><td class="mv-mono">@(c.StartSec.ToString("0.0", CultureInfo.InvariantCulture))–@(c.EndSec.ToString("0.0", CultureInfo.InvariantCulture))s</td><td>@(c.Text)</td></tr>
+                                }
+                            </table>
+                        </div>
+                    </div>
+                }
+            }
+            else if (_tab == 1)
+            {
+                <div class="mv-row">
+                    <button class="mv-btn sm go" disabled="@(Music.Current is null || _busy)" @onclick="AnalyzeAsync">🥁 비트 분석</button>
+                    <label class="mv-mut">컷 간격
+                        <select class="mv-in" @bind="_beatsPerCut">
+                            <option value="1">1박</option><option value="2">2박</option><option value="4">1마디</option><option value="8">2마디</option>
+                        </select>
+                    </label>
+                    <label class="mv-mut"><input type="checkbox" @bind="_dropVfx" /> 드랍 폭발 VFX</label>
+                    <label class="mv-mut"><input type="checkbox" @bind="_speedRamp" /> 스피드 램프</label>
+                    <label class="mv-mut"><input type="checkbox" @bind="_flash" /> 강박 플래시</label>
+                    <button class="mv-btn sm" disabled="@(Sync.LastAnalysis is null)" @onclick="BuildPlan">✂ 비트 컷 플랜</button>
+                    <button class="mv-btn sm" disabled="@(Sync.LastPlan is null || Project is null)" @onclick="ApplyPlanAsync">🎞 현재 컷에 적용</button>
+                </div>
+                @if (Sync.LastAnalysis is { } a)
+                {
+                    <svg class="mv-wave" viewBox="0 0 1000 160" preserveAspectRatio="none">
+                        <path d="@(WavePath())" stroke="#38bdf8" stroke-width="1" fill="none" />
+                        <polyline points="@(EnvPoints(a))" fill="none" stroke="#a3e635" stroke-width="1" opacity="0.6" />
+                        @foreach (var b in a.Beats)
+                        {
+                            <line x1="@(Px(b, a))" y1="140" x2="@(Px(b, a))" y2="160" stroke="#64748b" stroke-width="0.6" />
+                        }
+                        @foreach (var b in a.Downbeats)
+                        {
+                            <line x1="@(Px(b, a))" y1="0" x2="@(Px(b, a))" y2="160" stroke="#94a3b8" stroke-width="0.8" opacity="0.45" />
+                        }
+                        @if (Sync.LastPlan is { } pl)
+                        {
+                            @foreach (var c in pl.Cuts)
+                            {
+                                <line x1="@(Px((float)c.StartSec, a))" y1="0" x2="@(Px((float)c.StartSec, a))" y2="18" stroke="@(c.OnDrop ? "#f43f5e" : c.Vfx == CutVfx.Flash ? "#fde047" : "#22d3ee")" stroke-width="2" />
+                            }
+                        }
+                        @foreach (var d in a.Drops)
+                        {
+                            <line x1="@(Px(d, a))" y1="0" x2="@(Px(d, a))" y2="160" stroke="#f43f5e" stroke-width="2.5" />
+                        }
+                    </svg>
+                    <div class="mv-legend"><i style="background:#94a3b8"></i>다운비트 <i style="background:#f43f5e"></i>드랍 <i style="background:#22d3ee"></i>컷 <i style="background:#fde047"></i>플래시 <i style="background:#a3e635"></i>온셋 엔벨로프 · 신뢰도 @((a.Confidence * 100).ToString("0", CultureInfo.InvariantCulture))% · 온셋 @(a.Onsets.Length)</div>
+                    @if (Sync.LastPlan is { } plan)
+                    {
+                        <table class="mv-tbl">
+                            <tr><th>#</th><th>시작</th><th>길이</th><th>전환</th><th>VFX</th><th>속도</th><th>긴장</th></tr>
+                            @foreach (var c in plan.Cuts.Take(40))
+                            {
+                                <tr class="@(c.OnDrop ? "drop" : "")">
+                                    <td>@(c.Index + 1)</td><td>@(c.StartSec.ToString("0.00", CultureInfo.InvariantCulture))s</td><td>@(c.DurationSec.ToString("0.00", CultureInfo.InvariantCulture))s</td>
+                                    <td>@(c.Transition ?? "하드컷")</td><td>@(AudioBeatVisualSyncEngine.VfxLabel(c.Vfx))</td><td>@(c.Speed.ToString("0.00", CultureInfo.InvariantCulture))×</td><td>@(c.Tension)</td>
+                                </tr>
+                            }
+                        </table>
+                    }
+                }
+                else
+                {
+                    <div class="mv-empty">음악을 생성한 뒤 [🥁 비트 분석]을 누르세요.</div>
+                }
+            }
+            else
+            {
+                <div class="mv-row">
+                    <select class="mv-in" @bind="_style">
+                        <option value="-1">스타일 자동(장르/무드)</option>
+                        @foreach (var s in Enum.GetValues<DanceStyle>())
+                        {
+                            <option value="@((int)s)">@(AlgorithmicChoreographyController.StyleLabel(s))</option>
+                        }
+                    </select>
+                    <label class="mv-mut">대상
+                        <select class="mv-in" @bind="_target">
+                            <option value="adult">성인(8두신)</option><option value="baby">아기(4두신)</option>
+                            <option value="twin" disabled="@(Twin.Current is null)">현재 디지털 트윈</option>
+                        </select>
+                    </label>
+                    <button class="mv-btn sm go" disabled="@(Sync.LastAnalysis is null)" @onclick="GenerateChoreo">💃 안무 생성</button>
+                    <button class="mv-btn sm" disabled="@(Choreo.Current is null)" @onclick="ExportBvh">💾 BVH</button>
+                </div>
+                <div class="mv-sliders">
+                    <label>트윈 안무 강도 @((_amp * 100).ToString("0", CultureInfo.InvariantCulture))%<input type="range" min="0" max="1" step="0.05" value="@(_amp.ToString(CultureInfo.InvariantCulture))" @oninput="e => _amp = ParseF(e, _amp)" @onchange="RegenIfReady" /></label>
+                    <label>동작 복잡도 @((_cx * 100).ToString("0", CultureInfo.InvariantCulture))%<input type="range" min="0" max="1" step="0.05" value="@(_cx.ToString(CultureInfo.InvariantCulture))" @oninput="e => _cx = ParseF(e, _cx)" @onchange="RegenIfReady" /></label>
+                </div>
+                @if (Choreo.Current is { } cp)
+                {
+                    <div class="mv-timeline">
+                        @foreach (var s in cp.Segments)
+                        {
+                            <i class="m@((int)s.Move)" style="@SegStyle(s, cp)" title="@SegTitle(s)">@(AlgorithmicChoreographyController.MoveLabel(s.Move))</i>
+                        }
+                        <b style="left:@((_time / Math.Max(0.01, cp.DurationSec) * 100).ToString("0.##", CultureInfo.InvariantCulture))%"></b>
+                    </div>
+                    <div class="mv-live">
+                        <svg class="mv-rig" viewBox="-60 -100 120 200">
+                            @for (var i = 0; i + 1 < Rig.Bones.Length; i += 2)
+                            {
+                                var pa = Rig.Bones[i] * 3; var pb = Rig.Bones[i + 1] * 3;
+                                <line x1="@RX(pa)" y1="@RY(pa)" x2="@RX(pb)" y2="@RY(pb)" stroke="#f472b6" stroke-width="2.6" stroke-linecap="round" />
+                            }
+                            @for (var j = 0; j < Rig.Joints; j++)
+                            {
+                                <circle cx="@RX(j * 3)" cy="@RY(j * 3)" r="2.2" fill="#fde047" />
+                            }
+                        </svg>
+                        <div class="mv-side">
+                            <div class="mv-sec">@(AlgorithmicChoreographyController.MoveLabel(_move)) · @(_time.ToString("0.0", CultureInfo.InvariantCulture))초</div>
+                            <input type="range" min="0" max="@(cp.DurationSec.ToString("0.##", CultureInfo.InvariantCulture))" step="0.02" value="@(_time.ToString(CultureInfo.InvariantCulture))" @oninput="OnScrub" />
+                            <div class="mv-row">
+                                <button class="mv-btn sm" @onclick="TogglePlay">@(_playing ? "⏸ 정지" : "▶ 재생")</button>
+                            </div>
+                            <div class="mv-kv"><span>스타일</span><b>@(AlgorithmicChoreographyController.StyleLabel(cp.Style))</b></div>
+                            <div class="mv-kv"><span>구간 · 훅 반복</span><b>@(cp.Segments.Length) · @(cp.HookRepeats)</b></div>
+                            @if (Choreo.LastClip is { } clip)
+                            {
+                                <div class="mv-kv"><span>클립</span><b>@(clip.Frames)프레임 · @(clip.Target.Label)</b></div>
+                                <div class="mv-kv"><span>동작 분석</span><b>@(clip.ActionLabel)</b></div>
+                            }
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    <div class="mv-empty">비트 분석 후 [💃 안무 생성]을 누르세요.</div>
+                }
+            }
+            @if (_msg is not null)
+            {
+                <div class="mv-note @(_msg.StartsWith('⚠') ? "" : "ok")">@(_msg)</div>
+            }
+        </div>
+
+        <div class="mv-f">
+            <span class="mv-mut">@(Choreo.LastAction ?? Sync.LastAction ?? Music.LastAction ?? "대기")</span>
+            <label class="mv-mut"><input type="checkbox" @bind="_useTwin" disabled="@(Twin.Current is null)" /> 트윈 적용</label>
+            <label class="mv-mut"><input type="checkbox" @bind="_replace" /> 기존 컷 교체</label>
+            <button class="mv-btn go" disabled="@(_busy || Music.IsBusy || Project is null)" @onclick="OneClickAsync">🎬 1-Click MV 렌더링</button>
+            <button class="mv-btn" disabled="@(_busy)" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .mv-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .mv-modal { width: min(1200px, 97vw); max-height: 93vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .mv-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f472b6 12%, var(--card)), color-mix(in srgb, #38bdf8 8%, var(--card))); }
+    .mv-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .mv-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .mv-sub b { color: var(--text-primary); }
+    .mv-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .mv-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .mv-tabs { display: flex; gap: 4px; padding: 8px 18px 0; border-bottom: 1px solid var(--line); }
+    .mv-tabs button { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; border: 0; background: none; color: var(--text-muted); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
+    .mv-tabs button.on { color: var(--text-primary); border-bottom-color: #f472b6; }
+    .mv-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .mv-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .mv-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); margin: 4px 0; }
+    .mv-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .mv-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .mv-sections { display: flex; gap: 2px; height: 26px; }
+    .mv-sections i { font: 700 10px var(--mono); color: #04111a; display: flex; align-items: center; justify-content: center; border-radius: 4px; overflow: hidden; font-style: normal; }
+    .mv-sections .k0, .mv-sections .k5 { background: #94a3b8; } .mv-sections .k1 { background: #38bdf8; } .mv-sections .k2 { background: #a78bfa; } .mv-sections .k3 { background: #f472b6; } .mv-sections .k4 { background: #f43f5e; color: #fff; }
+    .mv-wave { width: 100%; height: 170px; background: #06080e; border-radius: 10px; border: 1px solid var(--line); }
+    .mv-legend { font-size: 11px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .mv-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+    .mv-audio { height: 32px; }
+    .mv-sliders { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; font-size: 12px; color: var(--text-secondary); }
+    .mv-sliders label { display: flex; flex-direction: column; gap: 4px; } .mv-sliders input { width: 100%; }
+    .mv-timeline { position: relative; height: 34px; background: #06080e; border-radius: 8px; border: 1px solid var(--line); overflow: hidden; }
+    .mv-timeline i { position: absolute; top: 3px; bottom: 3px; border-radius: 4px; font: 700 9.5px Pretendard,sans-serif; font-style: normal; color: #04111a; padding: 0 3px; overflow: hidden; white-space: nowrap; display: flex; align-items: center; border-right: 1px solid #06080e; }
+    .mv-timeline .m0 { background: #94a3b8; } .mv-timeline .m1 { background: #38bdf8; } .mv-timeline .m2 { background: #f472b6; } .mv-timeline .m3 { background: #fde047; } .mv-timeline .m4 { background: #a78bfa; }
+    .mv-timeline .m5 { background: #4ade80; } .mv-timeline .m6 { background: #fb923c; } .mv-timeline .m7 { background: #f43f5e; color: #fff; } .mv-timeline .m8 { background: #22d3ee; }
+    .mv-timeline b { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; }
+    .mv-live { display: grid; grid-template-columns: 1fr 300px; gap: 12px; }
+    .mv-rig { width: 100%; height: 320px; background: #06080e; border-radius: 12px; border: 1px solid var(--line); }
+    .mv-side { display: flex; flex-direction: column; gap: 6px; } .mv-side input[type=range] { width: 100%; }
+    .mv-kv { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--text-secondary); } .mv-kv b { color: var(--text-primary); text-align: right; }
+    .mv-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .mv-chip.ok { color: #4ade80; }
+    .mv-mut { font-size: 11px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+    .mv-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; }
+    .mv-in.grow { flex: 1; min-width: 200px; } .mv-in.w60 { width: 64px; }
+    .mv-ta { width: 100%; min-height: 96px; resize: vertical; font-family: inherit; }
+    .mv-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+    .mv-tbl th, .mv-tbl td { border-bottom: 1px solid var(--line); padding: 3px 6px; text-align: left; vertical-align: top; }
+    .mv-tbl tr.drop td { color: #f43f5e; font-weight: 700; }
+    .mv-mono { font: 10.5px var(--mono); color: var(--text-secondary); word-break: break-word; }
+    .mv-empty { font-size: 12px; color: var(--text-muted); padding: 24px; text-align: center; border: 1px dashed var(--line); border-radius: 10px; }
+    .mv-note { font-size: 12px; color: var(--text-secondary); } .mv-note.ok { color: #4ade80; }
+    .mv-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }
+    .mv-f > .mv-mut:first-child { margin-right: auto; }
+    .mv-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .mv-btn.sm { padding: 3px 8px; font-size: 11px; }
+    .mv-btn.go { background: linear-gradient(135deg,#f472b6,#38bdf8); color: #fff; border: 0; }
+    .mv-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 860px) { .mv-grid2, .mv-live, .mv-sliders { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public StoryboardProject? Project { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback OnApplied { get; set; }
+
+    private readonly float[] _pose = new float[MocapFrame.PoseLength];
+    private readonly float[] _p3 = new float[MocapFrame.PoseJoints * 3];
+    private readonly Vector3[] _src = new Vector3[Rig.Joints];
+    private readonly Vector3[] _dst = new Vector3[Rig.Joints];
+    private readonly float[] _rig = new float[Rig.Joints * 3];
+    private CancellationTokenSource? _playCts;
+    private int _tab, _bpm, _beatsPerCut = 4, _style = -1;
+    private double _seconds = 30, _time;
+    private float _amp = 0.7f, _cx = 0.5f;
+    private bool _busy, _vocals = true, _remote = true, _dropVfx = true, _speedRamp = true, _flash = true, _useTwin = true, _replace = true, _playing;
+    private MusicGenre _genre = MusicGenre.KPop;
+    private string _mood = "신나는", _lyrics = "", _target = "adult";
+    private string? _msg, _peaksFor, _wave;
+    private DanceMove _move;
+
+    protected override void OnInitialized()
+    {
+        Music.OnChange += OnServiceChanged;
+        Sync.OnChange += OnServiceChanged;
+        Choreo.OnChange += OnServiceChanged;
+        if (Project is { Scenes.Count: > 0 } p && string.IsNullOrWhiteSpace(_lyrics)) _lyrics = p.Title;
+        if (Choreo.Current is not null) UpdateRig();
+    }
+
+    private static string SegTitle(ChoreoSegment s) => AlgorithmicChoreographyController.MoveLabel(s.Move) + (s.Mirror ? " (반전)" : "");
+
+    private static string SegStyle(ChoreoSegment s, ChoreographyPlan p)
+    {
+        var total = Math.Max(1, (p.DurationSec - p.FirstBeatSec) / p.BeatSec);
+        return "left:" + (s.StartBeat / total * 100).ToString("0.##", CultureInfo.InvariantCulture) + "%;width:" + (s.Beats / total * 100).ToString("0.##", CultureInfo.InvariantCulture) + "%";
+    }
+
+    private static string SectionLabel(SectionKind k) => k switch
+    {
+        SectionKind.Intro => "인트로", SectionKind.Verse => "벌스", SectionKind.PreChorus => "프리", SectionKind.Chorus => "코러스", SectionKind.Drop => "드랍", _ => "아웃트로",
+    };
+
+    private static float ParseF(ChangeEventArgs e, float fallback) => float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    private string? PlaybackUrl(string path)
+    {
+        try { return Media.ToPlaybackUrl(path); }
+        catch (Exception ex) { Program.Log("MvStudio.Url", ex); return null; }
+    }
+
+    private static string Px(float t, BeatAnalysis a) => (t / Math.Max(0.01, a.Duration) * 1000).ToString("0.#", CultureInfo.InvariantCulture);
+
+    private string WavePath()
+    {
+        if (Music.Current is not { } t) return "";
+        if (_peaksFor == t.Id && _wave is not null) return _wave;
+        var pk = PromptFlowStudio.Services.Sound.SoundDsp.Peaks(t.Left, 500);
+        var sb = new StringBuilder(pk.Length * 24);
+        for (var i = 0; i < pk.Length; i++)
+        {
+            var x = (i * 2).ToString(CultureInfo.InvariantCulture);
+            var h = (pk[i] * 55).ToString("0.#", CultureInfo.InvariantCulture);
+            sb.Append('M').Append(x).Append(",80v-").Append(h).Append('M').Append(x).Append(",80v").Append(h);
+        }
+        _peaksFor = t.Id;
+        _wave = sb.ToString();
+        return _wave;
+    }
+
+    private static string EnvPoints(BeatAnalysis a)
+    {
+        var e = a.Envelope;
+        if (e.Length == 0) return "";
+        var sb = new StringBuilder(e.Length * 12);
+        for (var i = 0; i < e.Length; i++)
+            sb.Append((i * 1000.0 / e.Length).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append((158 - e[i] * 40).ToString("0.#", CultureInfo.InvariantCulture)).Append(' ');
+        return sb.ToString();
+    }
+
+    private RigProportions Target() => _target == "baby" ? RigProportions.Baby : _target == "twin" && Twin.Current is { } t ? RigProportions.FromTwin(t) : RigProportions.Adult;
+
+    private ChoreoOptions ChoreoOpts() => new(_style < 0 ? null : (DanceStyle)_style, _amp, _cx);
+
+    private MusicRequest Request() => new(_genre, _lyrics, _mood, Math.Clamp(_seconds, AiGenerativeMusicEngine.MinSeconds, AiGenerativeMusicEngine.MaxSeconds), Math.Clamp(_bpm, 0, 200), 0, _remote, 44100, _vocals);
+
+    // ── 단계 ──
+    private async Task GenerateAsync()
+    {
+        _busy = true;
+        try
+        {
+            var t = await Music.GenerateAsync(Request());
+            if (t is null) { _msg = "⚠ " + (Music.LastAction ?? "생성 실패"); return; }
+            await AnalyzeCoreAsync(t);
+            _msg = null;
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task AnalyzeAsync()
+    {
+        if (Music.Current is not { } t) return;
+        _busy = true;
+        try { await AnalyzeCoreAsync(t); }
+        finally { _busy = false; }
+    }
+
+    private async Task AnalyzeCoreAsync(MusicTrack t)
+    {
+        try
+        {
+            await Task.Run(() => Sync.Analyze(t.Left, t.Right, t.Rate));
+            BuildPlan();
+        }
+        catch (Exception ex) { Program.Log("MvStudio.Analyze", ex); _msg = "⚠ 분석 실패: " + ex.Message; }
+    }
+
+    private void BuildPlan()
+    {
+        if (Sync.LastAnalysis is not { } a) return;
+        Sync.BuildPlan(a, new BeatSyncOptions(_beatsPerCut, 40, _dropVfx, _speedRamp, _flash));
+    }
+
+    private async Task ApplyPlanAsync()
+    {
+        if (Project is null || Sync.LastPlan is not { } plan) return;
+        var n = Sync.ApplyToProject(Project, plan, Music.Current?.Path);
+        _msg = "🎞 " + n.ToString(CultureInfo.InvariantCulture) + "컷에 비트 싱크 적용";
+        await OnApplied.InvokeAsync();
+    }
+
+    private void GenerateChoreo()
+    {
+        if (Sync.LastAnalysis is not { } a) return;
+        try
+        {
+            var plan = Choreo.Generate(a, Music.Current, ChoreoOpts());
+            Choreo.BuildClip(plan, Target());
+            _time = Math.Min(_time, plan.DurationSec);
+            UpdateRig();
+        }
+        catch (Exception ex) { Program.Log("MvStudio.Choreo", ex); _msg = "⚠ 안무 생성 실패: " + ex.Message; }
+    }
+
+    private void RegenIfReady()
+    {
+        if (Choreo.Current is not null) GenerateChoreo();
+    }
+
+    private void ExportBvh()
+    {
+        try
+        {
+            var clip = Choreo.LastClip ?? (Choreo.Current is { } p ? Choreo.BuildClip(p, Target()) : null);
+            if (clip is null) return;
+            var path = Path.Combine(Music.Folder, "dance_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture) + ".bvh");
+            _msg = "💾 " + Choreo.ExportBvh(clip, path);
+        }
+        catch (Exception ex) { Program.Log("MvStudio.Bvh", ex); _msg = "⚠ BVH 실패: " + ex.Message; }
+    }
+
+    private async Task OneClickAsync()
+    {
+        if (Project is null) return;
+        _busy = true;
+        StopPlay();
+        try
+        {
+            var t = Music.Current ?? await Music.GenerateAsync(Request());
+            if (t is null) { _msg = "⚠ " + (Music.LastAction ?? "음악 생성 실패"); return; }
+            if (Sync.LastAnalysis is null || Math.Abs(Sync.LastAnalysis.Duration - t.Seconds) > 0.5) await Task.Run(() => Sync.Analyze(t.Left, t.Right, t.Rate));
+            var a = Sync.LastAnalysis!;
+            var plan = Sync.BuildPlan(a, new BeatSyncOptions(_beatsPerCut, 40, _dropVfx, _speedRamp, _flash));
+            var choreo = Choreo.Generate(a, t, ChoreoOpts());
+            Choreo.BuildClip(choreo, Target());
+            var n = Choreo.ComposeMusicVideo(Project, Sync, plan, choreo, t, _useTwin ? Twin.Current : null, _replace);
+            _msg = "🎬 MV " + n.ToString(CultureInfo.InvariantCulture) + "컷 구성 완료 — BGM · 비트 전환 · VFX · 안무 프롬프트 주입. 스토리보드 생성/병합으로 렌더링하세요.";
+            UpdateRig();
+            await OnApplied.InvokeAsync();
+        }
+        catch (Exception ex) { Program.Log("MvStudio.OneClick", ex); _msg = "⚠ MV 구성 실패: " + ex.Message; }
+        finally { _busy = false; }
+    }
+
+    // ── 리그 프리뷰 ──
+    private void UpdateRig()
+    {
+        if (Choreo.Current is not { } p) return;
+        _move = AlgorithmicChoreographyController.EvaluatePose(p, _time, _pose);
+        for (var j = 0; j < MocapFrame.PoseJoints; j++) { _p3[j * 3] = _pose[j * 4]; _p3[j * 3 + 1] = _pose[j * 4 + 1]; _p3[j * 3 + 2] = _pose[j * 4 + 2]; }
+        FacialAndHandGestureMappingController.SourceRig(_p3, _src);
+        FacialAndHandGestureMappingController.Retarget(_src, Target(), _dst);
+        for (var j = 0; j < Rig.Joints; j++) { _rig[j * 3] = _dst[j].X; _rig[j * 3 + 1] = _dst[j].Y; _rig[j * 3 + 2] = _dst[j].Z; }
+    }
+
+    private string RX(int o) => ((_rig[o] - _rig[0]) * 200).ToString("0.#", CultureInfo.InvariantCulture);
+    private string RY(int o) => (-(_rig[o + 1] - _rig[1]) * 200 + 15).ToString("0.#", CultureInfo.InvariantCulture);
+
+    private void OnScrub(ChangeEventArgs e)
+    {
+        if (double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) { _time = v; UpdateRig(); }
+    }
+
+    private void TogglePlay()
+    {
+        if (_playing) { StopPlay(); return; }
+        var cts = new CancellationTokenSource();
+        _playCts = cts;
+        _playing = true;
+        _ = PlayLoopAsync(cts.Token);
+    }
+
+    private void StopPlay()
+    {
+        _playing = false;
+        var cts = Interlocked.Exchange(ref _playCts, null);
+        if (cts is null) return;
+        try { cts.Cancel(); } catch (ObjectDisposedException) { }
+        cts.Dispose();
+    }
+
+    private async Task PlayLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(33));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                if (Choreo.Current is not { } p) continue;
+                _time += 0.033;
+                if (_time > p.DurationSec) _time = 0;
+                UpdateRig();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("MvStudio.Play", ex); }
+    }
+
+    private Task Close() => _busy ? Task.CompletedTask : OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Music.OnChange -= OnServiceChanged;
+        Sync.OnChange -= OnServiceChanged;
+        Choreo.OnChange -= OnServiceChanged;
+        StopPlay();
+    }
+}

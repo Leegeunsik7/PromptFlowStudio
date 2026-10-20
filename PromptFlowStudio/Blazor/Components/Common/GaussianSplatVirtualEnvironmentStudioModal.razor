@@ -1,0 +1,227 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.SplatEnvironment
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject GaussianSplatEnvironmentStudioRunner Runner
+
+@* [PromptFlow Studio v17.55.0] 🌌 3D 가우시안 스플래팅 스튜디오 — 볼류메트릭 세트 프리뷰 · 활성 스플랫 · SH 레이턴시 · VRAM 미터 · 타일 블렌딩 패스 인디케이터 · v17.44/v17.46 결선. *@
+<div class="gse-scrim" @onclick="Close">
+    <div class="gse-modal" @onclick:stopPropagation="true">
+        <div class="gse-h">
+            <div>
+                <div class="gse-title">🌌 3D 가우시안 스플래팅 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null) · @(Runner.SplatCount.ToString("N0", CultureInfo.InvariantCulture)) 스플랫</div>
+                <div class="gse-sub"><b>래스터라이저</b>가 SIMD 조기 컬링 → 16 비트 깊이 래딕스 정렬 → EWA 투영 → 16×16 타일 전방-후방 알파 블렌딩으로 폴리곤 없이 볼류메트릭 세트를 렌더합니다. <b>SH 합성기</b>는 차수 3 구면 조화로 시점에 따른 정반사 · 광택을 재현하고 v17.44 인너 프러스텀 · v17.46 세트 확장 텍스처에 결합합니다. <b>VRAM 가드</b>는 불투명도 ≤ 0.02 · 프러스텀 밖 입자를 먼저 버리고, 예산 접근 시 같은 프레임에서 원경 LOD 를 낮춥니다.</div>
+            </div>
+            <button class="gse-x" @onclick="Close">✕</button>
+        </div>
+        <div class="gse-bar">
+            <button class="gse-btn @(Runner.IsRunning ? "on" : "go")" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 재생")</button>
+            <button class="gse-btn" disabled="@Runner.IsRunning" @onclick="Runner.Step">⏭ 1 프레임</button>
+            <span class="gse-sep"></span>
+            @foreach (var n in GaussianSplatEnvironmentStudioRunner.SplatPresets)
+            {
+                var c = n;
+                <button class="gse-btn pre @(Runner.SplatTarget == c ? "on" : null)" @onclick="() => Runner.SetSplatCount(c)">@(c >= 1_000_000 ? (c / 1_000_000).ToString(CultureInfo.InvariantCulture) + "M" : (c / 1000).ToString(CultureInfo.InvariantCulture) + "K")</button>
+            }
+            <span class="gse-sep"></span>
+            @for (var d = 0; d <= 3; d++)
+            {
+                var deg = d;
+                <button class="gse-btn @(Runner.Sh.Degree == deg ? "on" : null)" @onclick="() => Runner.SetShDegree(deg)">SH @(deg)</button>
+            }
+            <button class="gse-btn @(Runner.ShowTiles ? "on" : null)" @onclick="() => Runner.ShowTiles = !Runner.ShowTiles">▦ 타일 패스</button>
+        </div>
+        <div class="gse-bar">
+            <label class="gse-lbl">✨ 정반사</label>
+            <input class="gse-rng" type="range" min="0" max="300" value="@((int)(Runner.Sh.SpecularGain * 100))" @oninput="OnSpec" />
+            <span class="gse-chip">×@(F2(Runner.Sh.SpecularGain))</span>
+            <label class="gse-lbl">🔄 오빗</label>
+            <input class="gse-rng" type="range" min="-100" max="100" value="@((int)(Runner.OrbitSpeed * 100))" @oninput="OnOrbit" />
+            <span class="gse-chip">@(F2(Runner.OrbitSpeed)) rad/s</span>
+            <span class="gse-sep"></span>
+            <button class="gse-btn @(Runner.Guard.Enabled ? "on" : null)" @onclick="() => Runner.SetGuard(!Runner.Guard.Enabled)">🛡 VRAM · LOD 가드</button>
+            <label class="gse-lbl">예산</label>
+            <input class="gse-rng" type="range" min="1" max="64" value="@((int)(Runner.Guard.BudgetBytes / (1L << 28)))" @oninput="OnBudget" />
+            <span class="gse-chip">@(F2(Runner.Guard.BudgetBytes / (double)(1L << 30))) GB</span>
+            <label class="gse-lbl">복제</label>
+            <input class="gse-rng" type="range" min="1" max="80" value="@((int)Runner.Guard.Replication)" @oninput="OnRep" />
+            <span class="gse-chip">×@(F0(Runner.Guard.Replication))</span>
+        </div>
+        <div class="gse-bar">
+            <button class="gse-btn @(Runner.LinkLed ? "on" : null)" disabled="@(!Runner.LedAvailable)" @onclick="() => Runner.SetLinkLed(!Runner.LinkLed)">🖥 v17.44 인너 프러스텀</button>
+            <button class="gse-btn @(Runner.FollowLedPose ? "on" : null)" disabled="@(!Runner.LedAvailable)" @onclick="() => Runner.SetFollowLed(!Runner.FollowLedPose)">🎥 트래킹 포즈 추종</button>
+            <button class="gse-btn @(Runner.LinkSetExt ? "on" : null)" disabled="@(!Runner.SetExtAvailable)" @onclick="() => Runner.SetLinkSetExt(!Runner.LinkSetExt)">🏛 v17.46 세트 확장</button>
+            <span class="gse-chip">LED 샘플 @(Runner.Sh.SampleHits) / @(Runner.Sh.SampleCalls)</span>
+        </div>
+        <div class="gse-main">
+            <div class="gse-card">
+                <div class="gse-sec">🎞 볼류메트릭 프리뷰 320×192 · 워커 @(Runner.Engine.Workers + 1)</div>
+                <img class="gse-view" src="@(_img)" alt="gaussian splat preview" />
+                <div class="gse-sec mt">▦ 타일별 블렌딩 패스(처리 엔트리 · 테두리 = 포화)</div>
+                <svg class="gse-tiles" viewBox="0 0 @(RealtimeGaussianSplatRasterizerEngine.TilesX * 10) @(RealtimeGaussianSplatRasterizerEngine.TilesY * 10)" preserveAspectRatio="none">
+                    @for (var t = 0; t < RealtimeGaussianSplatRasterizerEngine.TileCount; t++)
+                    {
+                        var tx = t % RealtimeGaussianSplatRasterizerEngine.TilesX; var ty = t / RealtimeGaussianSplatRasterizerEngine.TilesX;
+                        var h = Runner.Engine.TilePass(t) / (double)Math.Max(_maxPass, 1);
+                        var sat = Runner.Engine.TileSaturation(t);
+                        <rect x="@(tx * 10)" y="@(ty * 10)" width="10" height="10" fill="@(Heat(h))" stroke="@(sat > 0.99f ? "#f8fafc" : "#0f172a")" stroke-width="@(sat > 0.99f ? "0.8" : "0.4")" />
+                    }
+                </svg>
+            </div>
+            <div class="gse-col">
+                <div class="gse-card">
+                    <div class="gse-sec">📊 렌더 파이프라인</div>
+                    <div class="gse-meter"><span class="lbl">프레임</span><div class="track"><div class="fill @(Runner.LastTickMs < 16.7 ? "ok" : "warn")" style="width:@(Pct((float)(Runner.LastTickMs / 33.4)))%"></div><div class="thr" style="left:50%"></div></div><b>@(F2(Runner.LastTickMs)) ms</b></div>
+                    <div class="gse-meter"><span class="lbl">VRAM</span><div class="track"><div class="fill @(Runner.Guard.VramPct <= 95f ? "ok" : "warn")" style="width:@(Pct(Runner.Guard.VramPct / 100f))%"></div><div class="thr" style="left:95%"></div></div><b>@(F1(Runner.Guard.VramPct)) %</b></div>
+                    <div class="gse-kv grid2">
+                        <div>활성 스플랫 <b>@(Runner.Engine.Visible.ToString("N0", CultureInfo.InvariantCulture))</b> / @(Runner.SplatCount.ToString("N0", CultureInfo.InvariantCulture))</div>
+                        <div>조기 컬링 감축 <b class="@(Runner.Guard.ReductionPct >= 70f ? "ok" : "warn")">@(F1(Runner.Guard.ReductionPct))</b> %</div>
+                        <div>프러스텀 @(Runner.Guard.CulledFrustum.ToString("N0", CultureInfo.InvariantCulture)) · 불투명도 @(Runner.Guard.CulledOpacity.ToString("N0", CultureInfo.InvariantCulture))</div>
+                        <div>LOD @(Runner.Guard.LodLevel) · 솎음 @(Runner.Guard.CulledLod.ToString("N0", CultureInfo.InvariantCulture)) · 원경 ×@(F2(Runner.Guard.FarScale))</div>
+                        <div>컬링 @(F2(Runner.Engine.LastCullUs / 1000)) · 투영 @(F2(Runner.Engine.LastProjectUs / 1000)) ms</div>
+                        <div>SH @(F2(Runner.Engine.LastShUs / 1000)) · 정렬 @(F2(Runner.Engine.LastSortUs / 1000)) ms</div>
+                        <div>비닝 @(F2(Runner.Engine.LastBinUs / 1000)) · 블렌딩 @(F2(Runner.Engine.LastBlendUs / 1000)) ms</div>
+                        <div>타일 엔트리 @(Runner.Engine.TileEntries.ToString("N0", CultureInfo.InvariantCulture)) · 조기 종료 타일 @(Runner.Engine.EarlyExitTiles)</div>
+                        <div>픽셀 연산 @(Runner.Engine.PixelOps.ToString("N0", CultureInfo.InvariantCulture))</div>
+                        <div>예산 초과 프레임 <b class="@(Runner.Guard.OverBudgetFrames == 0 ? "ok" : "warn")">@(Runner.Guard.OverBudgetFrames)</b> · LOD↑ @(Runner.Guard.LodRaises)</div>
+                    </div>
+                </div>
+                <div class="gse-card">
+                    <div class="gse-sec">📈 최근 4 s — <span class="ms">프레임 ms(0~33)</span> · <span class="vr">VRAM %</span> · <span class="sh">SH ms(0~4)</span></div>
+                    <svg class="gse-graph" viewBox="0 0 600 70" preserveAspectRatio="none">
+                        <line class="lim" x1="0" x2="600" y1="35" y2="35" />
+                        <polyline class="ms" points="@(Series(0))" />
+                        <polyline class="vr" points="@(Series(1))" />
+                        <polyline class="sh" points="@(Series(2))" />
+                    </svg>
+                    <div class="gse-act">@(Runner.LastAction ?? "대기")</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .gse-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .gse-modal { width: min(1280px, 96vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
+    .gse-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #6366f1 18%, var(--card)), color-mix(in srgb, #06b6d4 12%, var(--card))); }
+    .gse-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .gse-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .gse-sub b { color: var(--text-primary); }
+    .gse-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .gse-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .gse-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .gse-btn:disabled { opacity: .45; cursor: default; }
+    .gse-btn.on { background: color-mix(in srgb, #6366f1 24%, var(--card)); border-color: #6366f1; }
+    .gse-btn.pre.on { background: color-mix(in srgb, #06b6d4 22%, var(--card)); border-color: #06b6d4; }
+    .gse-btn.go { background: #6366f1; color: #fff; border: none; }
+    .gse-sep { width: 1px; height: 20px; background: var(--line); margin: 0 4px; }
+    .gse-lbl { font-size: 12px; color: var(--text-secondary); }
+    .gse-rng { width: 110px; }
+    .gse-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .gse-main { display: grid; grid-template-columns: 1.1fr 1fr; gap: 12px; padding: 14px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .gse-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .gse-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); min-width: 0; }
+    .gse-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .gse-sec.mt { margin-top: 10px; }
+    .gse-sec .ms { color: #f59e0b; } .gse-sec .vr { color: #22c55e; } .gse-sec .sh { color: #a78bfa; }
+    .gse-view { width: 100%; aspect-ratio: 320 / 192; border-radius: 8px; image-rendering: pixelated; background: #05070c; display: block; }
+    .gse-tiles { width: 100%; aspect-ratio: 320 / 192; border-radius: 6px; display: block; }
+    .gse-graph { width: 100%; height: 70px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; display: block; }
+    .gse-graph polyline { fill: none; stroke-width: 1.6; }
+    .gse-graph .ms { stroke: #f59e0b; } .gse-graph .vr { stroke: #22c55e; } .gse-graph .sh { stroke: #a78bfa; }
+    .gse-graph .lim { stroke: #ef4444; stroke-dasharray: 6 4; }
+    .gse-meter { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 11px; color: var(--text-secondary); }
+    .gse-meter .lbl { width: 44px; font-weight: 700; }
+    .gse-meter b { width: 70px; text-align: right; font: 700 11px var(--mono); color: var(--text-primary); }
+    .gse-meter .track { position: relative; flex: 1; height: 12px; border-radius: 6px; background: #1e293b; overflow: hidden; }
+    .gse-meter .fill { height: 100%; transition: width .1s linear; }
+    .gse-meter .fill.ok { background: #22c55e; } .gse-meter .fill.warn { background: #f59e0b; }
+    .gse-meter .thr { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; opacity: .8; }
+    .gse-kv { font-size: 11px; color: var(--text-secondary); margin-top: 6px; }
+    .gse-kv.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+    .gse-kv b.ok { color: #22c55e; } .gse-kv b.warn { color: #f59e0b; }
+    .gse-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+    @@media (max-width: 860px) { .gse-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly byte[] _bmp = new byte[GaussianSplatEnvironmentStudioRunner.PreviewBytes];
+    private System.Threading.Timer? _timer;
+    private string _img = "";
+    private int _maxPass = 1;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        if (!Runner.IsRunning) Runner.Step();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("SplatEnv.Modal.Timer", ex); }
+        }, null, 120, 120);
+    }
+
+    protected override bool ShouldRender()
+    {
+        Runner.WritePreviewBmp(_bmp);
+        _img = "data:image/bmp;base64," + Convert.ToBase64String(_bmp);
+        _maxPass = 1;
+        for (var t = 0; t < RealtimeGaussianSplatRasterizerEngine.TileCount; t++) _maxPass = Math.Max(_maxPass, Runner.Engine.TilePass(t));
+        return true;
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string Pct(float v) => (Math.Clamp(v, 0f, 1f) * 100f).ToString("0.#", CultureInfo.InvariantCulture);
+
+    /// <summary>패스 부하 히트맵(남색 → 청록 → 황 → 적).</summary>
+    private static string Heat(double h)
+    {
+        h = Math.Clamp(h, 0, 1);
+        int r = (int)(255 * Math.Clamp(2 * h - 0.4, 0, 1)), g = (int)(255 * Math.Clamp(1.4 - Math.Abs(2 * h - 1) * 1.4, 0, 1)), b = (int)(255 * Math.Clamp(1 - 2 * h, 0.15, 1));
+        return "rgb(" + r.ToString(CultureInfo.InvariantCulture) + "," + g.ToString(CultureInfo.InvariantCulture) + "," + b.ToString(CultureInfo.InvariantCulture) + ")";
+    }
+
+    private string Series(int kind)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            var v = kind == 0 ? Runner.FrameMsSeries(k) / 33.4 : kind == 1 ? Runner.VramSeries(k) / 100.0 : Runner.ShMsSeries(k) / 4.0;
+            sb.Append((600.0 * i / (n - 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append((68 - 66 * Math.Clamp(v, 0, 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private static bool TryInt(ChangeEventArgs e, out int v) => int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out v);
+    private void OnSpec(ChangeEventArgs e) { if (TryInt(e, out var v)) Runner.SetSpecular(v / 100f); }
+    private void OnOrbit(ChangeEventArgs e) { if (TryInt(e, out var v)) Runner.SetOrbitSpeed(v / 100f); }
+    private void OnBudget(ChangeEventArgs e) { if (TryInt(e, out var v)) Runner.SetBudgetGb(v / 4f); }
+    private void OnRep(ChangeEventArgs e) { if (TryInt(e, out var v)) Runner.SetReplication(v); }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

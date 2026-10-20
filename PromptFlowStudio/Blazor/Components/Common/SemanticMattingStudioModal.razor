@@ -1,0 +1,215 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.SemanticMatting
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject SemanticMattingStudioRunner Runner
+
+@*
+    [PromptFlow Studio v17.08.0] 🎭 AI 시맨틱 매팅 & 가상 세트 융합 스튜디오 — 알파 매트/트라이맵 뷰어 · HDRI 조명 리그 컨트롤러 ·
+    Z-Depth 오클루전 디버그 뷰(SLAM 앵커 · OpenUSD 프림 토글) · 리라이팅/라이트 랩 가드 지표.
+*@
+
+<div class="smt-scrim" @onclick="Close">
+    <div class="smt-modal" @onclick:stopPropagation="true">
+        <div class="smt-h">
+            <div>
+                <div class="smt-title">🎭 AI 시맨틱 매팅 &amp; 가상 세트 융합 스튜디오</div>
+                <div class="smt-sub"><b>매팅 엔진</b>이 그린스크린 없는 실사 플레이트에서 시맨틱 prior로 트라이맵(머리카락 = 넓은 대역 · 유리 = 반투명)을 만들고, 16방향 공유 표본 + SIMD α 사영으로 머리카락 가닥과 유리 틴트까지 분리합니다.
+                    <b>가상 세트 합성기</b>는 v16.71 OpenUSD 프림과 v16.98 SLAM 바닥에 피사체 발 접지점을 앵커링해 같은 프레임에 Z-Depth 오클루전 합성하고,
+                    <b>리라이팅 가드</b>는 HDRI SH9 조도 · 림 · 스페큘러를 역산 부여하고 경계에 라이트 랩을 스며들게 합니다. 카메라·피사체는 인프로세스 시뮬레이션입니다.</div>
+            </div>
+            <button class="smt-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="smt-bar">
+            <button class="smt-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 매팅 가동")</button>
+            <button class="smt-btn" @onclick="Step30" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="smt-btn" @onclick="Runner.CapturePlate">📸 클린 플레이트</button>
+            <button class="smt-btn @(Runner.Sim.Light < 1f ? "stop" : null)" @onclick="Runner.DimStudio">💡 실조명 @(Runner.Sim.Light < 1f ? "복귀" : "감광")</button>
+            <button class="smt-btn @(Runner.Sim.Sway ? "on" : null)" @onclick="() => Runner.Sim.Sway = !Runner.Sim.Sway">↔ 피사체 이동</button>
+            <span class="smt-chip">틱 @(Runner.Tick) · @(F1(Runner.LastTickMs)) ms · 매팅 @(F0(M.LastUs)) · 세트 @(F0(S.RenderUs)) · 합성 @(F0(S.CompositeUs)) · 리라이트 @(F0(L.RelightUs)) · 랩 @(F0(L.WrapUs)) µs</span>
+            <span class="smt-chip @(Runner.EdgeError < Runner.PriorEdgeError * 0.5f ? "ok" : "warn")">경계 α 오차 @(F3(Runner.EdgeError)) / prior @(F3(Runner.PriorEdgeError))</span>
+            <span class="smt-chip @(S.LatencyFrames == 0 ? "ok" : "bad")">합성 지연 @(S.LatencyFrames) f</span>
+        </div>
+
+        <div class="smt-main">
+            <div class="smt-col">
+                <div class="smt-card">
+                    <div class="smt-sec">🖼 매트 뷰어
+                        @for (var v = 0; v < ViewNames.Length; v++)
+                        {
+                            var vv = v;
+                            <button class="smt-btn sm @(_view == vv ? "on" : null)" @onclick="() => _view = vv">@(ViewNames[vv])</button>
+                        }
+                    </div>
+                    <div class="smt-vp"><img src="data:image/bmp;base64,@(Runner.MonitorBase64(_view))" alt="view" /></div>
+                    <div class="smt-split">
+                        <div class="smt-mon"><div class="lab">알파 매트</div><img src="data:image/bmp;base64,@(Runner.MonitorBase64(2))" alt="alpha" /></div>
+                        <div class="smt-mon"><div class="lab">트라이맵 (미지 주황 · 반투명 시안)</div><img src="data:image/bmp;base64,@(Runner.MonitorBase64(3))" alt="trimap" /></div>
+                    </div>
+                    <div class="smt-ctl">
+                        <label class="smt-sl">경계 대역 <b>@(M.Band) px</b><input type="range" min="1" max="8" step="1" value="@(M.Band)" @onchange="e => M.Band = (int)Num(e, 3)" /></label>
+                        <label class="smt-sl">머리카락 대역 <b>@(M.HairBand) px</b><input type="range" min="2" max="12" step="1" value="@(M.HairBand)" @onchange="e => M.HairBand = (int)Num(e, 6)" /></label>
+                        <label class="smt-sl">시간 평활 <b>@(F2(M.Temporal))</b><input type="range" min="0" max="0.9" step="0.05" value="@(F2(M.Temporal))" @onchange="e => M.Temporal = (float)Num(e, 0.35)" /></label>
+                    </div>
+                    <div class="smt-kv">미지 <b>@(M.UnknownPixels)</b> · 확정 전경 @(M.FgPixels) · 반투명 @(M.TranslucentPixels) · 저신뢰 @(M.LowConfidencePixels) ·
+                        머리카락 α 오차 <b>@(F3(Runner.HairError))</b> / prior @(F3(Runner.PriorHairError)) · 전경색 오차 <b>@(F3(Runner.ForegroundError))</b> · 전체 α @(F3(Runner.AlphaError))</div>
+                    <div class="smt-kv">유리 α <b>@(F3(M.GlassAlpha))</b> (정답 @(F2(StudioPlateSimulator.GlassAlphaTrue))) · 틴트 <i class="sw" style="background:@(Rgb(M.GlassR, M.GlassG, M.GlassB))"></i> 오차 @(F3(Runner.GlassTintError)) · 노출 이득 @(F3(M.ExposureGain)) (보정 @(M.ExposureCorrections)회)</div>
+                    <svg class="smt-spark" viewBox="0 0 360 50" preserveAspectRatio="none">
+                        <polyline class="pe" points="@(Series(Runner.PriorSeries, 0.4, 50))" />
+                        <polyline class="er" points="@(Series(Runner.ErrorSeries, 0.4, 50))" />
+                    </svg>
+                    <div class="smt-legend"><i class="er"></i>엔진 경계 α 오차 <i class="pe"></i>세그멘테이션 prior 오차 (0–0.4)</div>
+                </div>
+            </div>
+
+            <div class="smt-col">
+                <div class="smt-card">
+                    <div class="smt-sec">🌐 HDRI 조명 리그
+                        @foreach (var p in Presets)
+                        {
+                            var pp = p;
+                            <button class="smt-btn sm @(L.Env.Preset == pp ? "on" : null)" @onclick="() => Runner.SetPreset(pp)">@(PresetName(pp))</button>
+                        }
+                        <span class="smt-chip @(L.Slewing ? "warn" : "ok")">@(L.Slewing ? "SH 슬루 중" : "안정")</span>
+                    </div>
+                    <div class="smt-hdri"><img src="data:image/bmp;base64,@(Runner.HdriBase64())" alt="HDRI" /></div>
+                    <div class="smt-ctl">
+                        <label class="smt-sl">키 방위 <b>@(F0(L.Env.KeyAzimuth))°</b><input type="range" min="-180" max="180" step="5" value="@(F0(L.Env.KeyAzimuth))" @onchange="e => Key(az: (float)Num(e, -35))" /></label>
+                        <label class="smt-sl">고도 <b>@(F0(L.Env.KeyElevation))°</b><input type="range" min="-10" max="85" step="5" value="@(F0(L.Env.KeyElevation))" @onchange="e => Key(el: (float)Num(e, 35))" /></label>
+                        <label class="smt-sl">세기 <b>@(F1(L.Env.KeyIntensity))</b><input type="range" min="0" max="8" step="0.2" value="@(F1(L.Env.KeyIntensity))" @onchange="e => Key(it: (float)Num(e, 2.2))" /></label>
+                        <label class="smt-sl">색온도 <b>@(F0(L.Env.KeyKelvin)) K</b><input type="range" min="2000" max="10000" step="100" value="@(F0(L.Env.KeyKelvin))" @onchange="e => Key(k: (float)Num(e, 5600))" /></label>
+                    </div>
+                    <div class="smt-ctl">
+                        <button class="smt-btn sm @(L.Relight ? "on" : null)" @onclick="() => L.Relight = !L.Relight">리라이팅</button>
+                        <button class="smt-btn sm @(L.Wrap ? "on" : null)" @onclick="() => L.Wrap = !L.Wrap">라이트 랩</button>
+                        <label class="smt-sl">림 <b>@(F2(L.RimStrength))</b><input type="range" min="0" max="2" step="0.05" value="@(F2(L.RimStrength))" @onchange="e => L.RimStrength = (float)Num(e, 0.8)" /></label>
+                        <label class="smt-sl">스페큘러 <b>@(F2(L.Specular))</b><input type="range" min="0" max="1" step="0.05" value="@(F2(L.Specular))" @onchange="e => L.Specular = (float)Num(e, 0.25)" /></label>
+                        <label class="smt-sl">랩 <b>@(F2(L.WrapAmount))</b><input type="range" min="0" max="1" step="0.05" value="@(F2(L.WrapAmount))" @onchange="e => L.WrapAmount = (float)Num(e, 0.45)" /></label>
+                        <label class="smt-sl">노출 <b>@(F2(L.Exposure))</b><input type="range" min="0.3" max="2.5" step="0.05" value="@(F2(L.Exposure))" @onchange="e => L.Exposure = (float)Num(e, 1)" /></label>
+                    </div>
+                    <div class="smt-kv">지배 광원 <i class="sw" style="background:@(Rgb(L.Env.DominantColor.X / 4, L.Env.DominantColor.Y / 4, L.Env.DominantColor.Z / 4))"></i> (@(F2(L.Env.DominantDir.X)), @(F2(L.Env.DominantDir.Y)), @(F2(L.Env.DominantDir.Z))) ·
+                        평균 이득 <b>@(F2(L.MeanGain))</b> · 이득 클램프 @(L.GainClamps) · 레벨 니 @(L.LevelClamps) · NaN 차단 @(L.NanBlocked) · 림 @(L.RimPixels) · 랩 <b>@(L.WrapPixels)</b> · 랩 위반 <b>@(L.WrapViolations)</b></div>
+                    <div class="smt-kv">노출 불일치 원본 <b>@(F2(Runner.RawMismatch)) st</b> → 리라이팅 <b>@(F2(Runner.Mismatch)) st</b></div>
+                </div>
+
+                <div class="smt-card">
+                    <div class="smt-sec">🧊 Z-Depth 오클루전 디버그
+                        <span class="smt-kv"><i class="vi"></i>피사체 앞 <i class="oc"></i>가상 물체에 가림</span></div>
+                    <div class="smt-split">
+                        <div class="smt-mon"><div class="lab">Z-DEPTH (근 = 적 · 원 = 청)</div><img src="data:image/bmp;base64,@(Runner.MonitorBase64(4))" alt="depth" /></div>
+                        <div class="smt-mon"><div class="lab">리라이팅 전경</div><img src="data:image/bmp;base64,@(Runner.MonitorBase64(7))" alt="relit" /></div>
+                    </div>
+                    <div class="smt-ctl">
+                        <label class="smt-sl">앵커 깊이 오프셋 <b>@(F2(S.DepthOffset)) m</b><input type="range" min="-2.5" max="5" step="0.05" value="@(F2(S.DepthOffset))" @onchange="e => Runner.SetDepthOffset((float)Num(e, 0))" /></label>
+                        <button class="smt-btn sm @(Runner.OrbitOrb ? "on" : null)" @onclick="() => Runner.OrbitOrb = !Runner.OrbitOrb">🪐 Orb 공전</button>
+                        @for (var k = 0; k < S.ObjectCount; k++)
+                        {
+                            var kk = k;
+                            <button class="smt-btn sm @(S.ObjectVisible(kk) ? "on" : null)" @onclick="() => Runner.ToggleObject(kk)">@(S.ObjectName(kk)) z@(F1(S.ObjectCenter(kk).Z))</button>
+                        }
+                    </div>
+                    <div class="smt-kv">바닥 @(S.FloorFromSlam ? "SLAM #" + Runner.FloorPlane : "기본") · 앵커 <b>(@(F2(S.Anchor.X)), @(F2(S.Anchor.Y)), @(F2(S.Anchor.Z))) m</b> · 피사체 깊이 <b>@(F2(S.SubjectDepth)) m</b> · 키 @(F2(S.SubjectHeightM)) m ·
+                        앞 <b>@(S.FrontPixels)</b> · 가림 <b>@(S.OccludedPixels)</b> px · USD @(S.Layer.Count)프림 (@(S.LastUsdError))</div>
+                </div>
+                <div class="smt-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .smt-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .smt-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .smt-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #a855f7 15%, var(--card)), color-mix(in srgb, #14b8a6 12%, var(--card))); }
+    .smt-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .smt-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .smt-sub b { color: var(--text-primary); }
+    .smt-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .smt-bar { display: flex; flex-wrap: wrap; gap: 6px 10px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .smt-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; } .smt-btn:disabled { opacity: .4; cursor: default; }
+    .smt-btn.sm { font-size: 10px; padding: 2px 8px; } .smt-btn.on { background: color-mix(in srgb, #a855f7 24%, transparent); border-color: #c084fc; } .smt-btn.stop { background: #7f1d1d; border-color: #ef4444; color: #fff; }
+    .smt-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .smt-chip.ok { border-color: #22c55e; color: #86efac; } .smt-chip.bad { border-color: #ef4444; color: #fca5a5; } .smt-chip.warn { border-color: #eab308; color: #fde68a; }
+    .smt-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .smt-sl b { font-family: var(--mono); color: var(--text-primary); } .smt-sl input { width: 80px; }
+    .smt-main { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .smt-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .smt-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .smt-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .smt-vp { width: 100%; aspect-ratio: 5 / 3; background: #000; border-radius: 8px; overflow: hidden; }
+    .smt-vp img, .smt-mon img, .smt-hdri img { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+    .smt-hdri { width: 100%; aspect-ratio: 2 / 1; background: #000; border-radius: 8px; overflow: hidden; }
+    .smt-split { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .smt-mon { position: relative; aspect-ratio: 5 / 3; background: #000; border-radius: 8px; overflow: hidden; border: 2px solid #334155; }
+    .smt-mon .lab { position: absolute; top: 0; left: 0; right: 0; font: 800 10px var(--mono); color: #fff; background: rgba(0,0,0,.6); padding: 2px 6px; }
+    .smt-ctl { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+    .smt-spark { width: 100%; height: 50px; background: #030712; border-radius: 6px; }
+    .smt-spark polyline { fill: none; stroke-width: 1.4; vector-effect: non-scaling-stroke; } .smt-spark .er { stroke: #a855f7; } .smt-spark .pe { stroke: #64748b; }
+    .smt-legend, .smt-kv { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11px; color: var(--text-secondary); align-items: center; } .smt-kv b { color: var(--text-primary); }
+    .smt-legend i, .smt-kv i { display: inline-block; width: 10px; height: 8px; border-radius: 2px; }
+    .smt-legend .er { background: #a855f7; } .smt-legend .pe { background: #64748b; } .smt-kv .vi { background: #26e659; } .smt-kv .oc { background: #ff1ad9; } .smt-kv .sw { width: 14px; height: 10px; border: 1px solid var(--line); }
+    .smt-note { font-size: 11px; color: var(--text-muted); word-break: break-all; }
+    @@media (max-width: 1200px) { .smt-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly string[] ViewNames = { "합성", "카메라 원본", "알파", "트라이맵", "Z-Depth", "전경(체커)", "α 오차", "리라이팅" };
+    private static readonly HdriPreset[] Presets = { HdriPreset.Studio, HdriPreset.Sunset, HdriPreset.Neon, HdriPreset.Night };
+    private System.Threading.Timer? _timer;
+    private int _view;
+
+    private RealtimeSemanticAlphaMattingEngine M => Runner.Matting;
+    private GenerativeVirtualSetZDepthSynthesizer S => Runner.Set;
+    private DynamicEnvironmentRelightingGuard L => Runner.Light;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("SemanticMatting.Modal.Timer", ex); }
+        }, null, 300, 300);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+    private static string Rgb(float r, float g, float b) => "rgb(" + F0(Math.Clamp(r, 0, 1) * 255) + "," + F0(Math.Clamp(g, 0, 1) * 255) + "," + F0(Math.Clamp(b, 0, 1) * 255) + ")";
+
+    private static string PresetName(HdriPreset p) => p switch { HdriPreset.Studio => "🏢 스튜디오", HdriPreset.Sunset => "🌇 석양", HdriPreset.Neon => "🌃 네온", _ => "🌙 야간" };
+
+    private void Key(float? az = null, float? el = null, float? it = null, float? k = null)
+    {
+        var env = L.Env;
+        Runner.SetKey(az ?? env.KeyAzimuth, el ?? env.KeyElevation, it ?? env.KeyIntensity, k ?? env.KeyKelvin);
+    }
+
+    private string Series(Func<int, float> f, double max, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (SemanticMattingStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - 2 - (h - 4) * Math.Clamp(f(i) / max, 0, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step30() { for (var i = 0; i < SemanticMattingStudioRunner.Hz; i++) Runner.Step(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중(10 Hz 이벤트)은 300 ms 타이머가 처리 — 정지 상태 액션만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

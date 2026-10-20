@@ -1,0 +1,126 @@
+@inject ISchemaCompatProbe Schema
+@inject GlobalMultiPlatformAdapter I18n
+
+@* [PromptFlow Studio v4.3.0] 공용 RCL 컴포넌트 — 양대 스토어 배포 프리플라이트 제어반.
+   준비도 게이지 · Android/iOS 체크리스트(Pass/Warn/Fail) · 원클릭 검수 · 거절 리스크 경고 패널. *@
+
+<div class="srd">
+    <div class="srd-h"><span class="srd-title">🚀 스토어 배포 프리플라이트</span><span class="srd-badge">v4.3.0</span>
+        <label class="srd-tg"><input type="checkbox" checked="@_risk" @onchange="OnRisk" /> 리스크 시뮬</label></div>
+
+    <div class="srd-top">
+        <div class="srd-gauge @GaugeClass" style="--pct:@_pre.Readiness"><div class="srd-gauge-in"><b>@(_pre.Readiness)%</b><small>준비도</small></div></div>
+        <div class="srd-sum">
+            <div class="srd-sum-line @(_pre.Android.HasRejectionRisk ? "bad" : "ok")">🤖 Google Play — @_pre.Android.Summary</div>
+            <div class="srd-sum-line @(_pre.Ios.HasRejectionRisk ? "bad" : "ok")">🍎 App Store — @_pre.Ios.Summary</div>
+            <div class="srd-sum-line">🌐 등록정보 5개국 · 스크린샷 @(_shots)컷 · @_pre.Summary</div>
+        </div>
+    </div>
+
+    <div class="srd-grid">
+        <div class="srd-card"><div class="srd-ct">🤖 Google Play Console</div>@Checklist(_pre.Android.Checks)</div>
+        <div class="srd-card"><div class="srd-ct">🍎 App Store Connect</div>@Checklist(_pre.Ios.Checks)</div>
+        <div class="srd-card srd-wide"><div class="srd-ct">🔐 공통(무결성·역호환·용량)</div>@Checklist(_pre.Global)</div>
+    </div>
+
+    @if (RiskItems.Count > 0)
+    {
+        <div class="srd-riskpanel">
+            <div class="srd-risk-h">❌ 거절 리스크 @(RiskItems.Count)건 — 배포 전 해결 필수</div>
+            @foreach (var c in RiskItems) { <div class="srd-risk-item"><b>@c.Title</b> — @c.Detail</div> }
+        </div>
+    }
+
+    <div class="srd-actions">
+        <button class="srd-btn go" @onclick="RunAll">🚀 원클릭 양대 스토어 빌드 검수 실행</button>
+        <button class="srd-btn meta" @onclick="Meta">🌐 등록정보·개인정보 문서 생성</button>
+    </div>
+    @if (_msg is not null) { <div class="srd-msg">@_msg</div> }
+</div>
+
+<style>
+    .srd { border: 1px solid color-mix(in srgb, #818cf8 34%, #2b2f42); border-radius: 16px; overflow: hidden; font-family: Pretendard, 'Malgun Gothic', sans-serif; color: #e6edff; background: linear-gradient(160deg, rgba(129,140,248,.08), rgba(18,20,31,.92)); }
+    .srd-h { display: flex; align-items: center; gap: 8px; padding: 12px 15px; border-bottom: 1px solid #2b2f42; }
+    .srd-title { font: 900 14px Pretendard,'Malgun Gothic',sans-serif; background: linear-gradient(90deg,#a5b4fc,#fcd34d); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .srd-badge { font: 800 10px ui-monospace,monospace; color: #fff; background: linear-gradient(135deg,#6366f1,#a855f7); border-radius: 20px; padding: 2px 8px; }
+    .srd-tg { margin-left: auto; font: 700 10.5px Pretendard,'Malgun Gothic',sans-serif; color: #9aa6c8; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+    .srd-top { display: flex; gap: 14px; align-items: center; padding: 13px 15px; }
+    .srd-gauge { width: 92px; height: 92px; flex: 0 0 auto; border-radius: 50%; background: conic-gradient(#818cf8 calc(var(--pct)*1%), #1a1d2b 0); display: grid; place-items: center; box-shadow: 0 0 18px color-mix(in srgb,#818cf8 30%,transparent); }
+    .srd-gauge.ok { background: conic-gradient(#22c55e calc(var(--pct)*1%), #1a1d2b 0); } .srd-gauge.bad { background: conic-gradient(#ef4444 calc(var(--pct)*1%), #1a1d2b 0); }
+    .srd-gauge-in { width: 70px; height: 70px; border-radius: 50%; background: #12141f; display: grid; place-items: center; text-align: center; } .srd-gauge-in b { font: 900 21px ui-monospace,monospace; color: #c7d2fe; } .srd-gauge.ok .srd-gauge-in b { color: #86efac; } .srd-gauge.bad .srd-gauge-in b { color: #fca5a5; } .srd-gauge-in small { font: 700 8.5px ui-monospace,monospace; color: #6b7392; }
+    .srd-sum { flex: 1; display: flex; flex-direction: column; gap: 5px; } .srd-sum-line { font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: #9aa6c8; word-break: keep-all; } .srd-sum-line.ok { color: #86efac; } .srd-sum-line.bad { color: #fca5a5; }
+    .srd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 0 15px 12px; } @@media (max-width: 720px) { .srd-grid { grid-template-columns: 1fr; } }
+    .srd-card { border: 1px solid #2b2f42; border-radius: 12px; background: rgba(26,29,43,.6); padding: 11px; display: flex; flex-direction: column; gap: 7px; } .srd-card.srd-wide { grid-column: 1 / -1; }
+    .srd-ct { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; }
+    .srd-chk { display: flex; align-items: center; gap: 7px; font: 600 10.5px Pretendard,'Malgun Gothic',sans-serif; color: #9aa6c8; } .srd-chk b { color: #e6edff; } .srd-chk .d { margin-left: auto; font: 600 9px ui-monospace,monospace; color: #6b7392; max-width: 48%; text-align: right; }
+    .srd-bdg { font: 900 8.5px ui-monospace,monospace; border-radius: 5px; padding: 2px 6px; flex: 0 0 auto; }
+    .srd-bdg.pass { color: #052e16; background: #22c55e; } .srd-bdg.warn { color: #422006; background: #f59e0b; } .srd-bdg.fail { color: #fff; background: #ef4444; }
+    .srd-riskpanel { margin: 0 15px 12px; border: 1px solid color-mix(in srgb,#ef4444 45%,#2b2f42); border-radius: 12px; background: color-mix(in srgb,#ef4444 10%,transparent); padding: 11px; }
+    .srd-risk-h { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: #fca5a5; margin-bottom: 6px; }
+    .srd-risk-item { font: 600 10.5px Pretendard,'Malgun Gothic',sans-serif; color: #fecaca; line-height: 1.5; word-break: keep-all; } .srd-risk-item b { color: #fff; }
+    .srd-actions { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 15px 12px; }
+    .srd-btn { flex: 1; min-width: 220px; font: 800 13px Pretendard,'Malgun Gothic',sans-serif; padding: 12px 14px; border: none; border-radius: 12px; cursor: pointer; }
+    .srd-btn.go { color: #fff; background: linear-gradient(135deg,#6366f1,#a855f7); box-shadow: 0 6px 16px color-mix(in srgb,#6366f1 30%,transparent), inset 0 1px 0 rgba(255,255,255,.25); }
+    .srd-btn.meta { color: #1a1206; background: linear-gradient(135deg,#fde68a,#f5c451); }
+    .srd-btn:hover { filter: brightness(1.07); }
+    .srd-msg { margin: 0 15px 14px; padding: 9px 12px; border-radius: 10px; background: #12141f; border: 1px solid color-mix(in srgb,#818cf8 30%,#2b2f42); font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: #c7d2fe; line-height: 1.5; word-break: break-word; }
+</style>
+
+@code {
+    private bool _risk;
+    private string? _msg;
+    private PreflightReport _pre = default!;
+    private int _shots;
+
+    private const string SampleJson = "{\"Id\":\"abc12345\",\"Title\":\"샘플\",\"Scenes\":[],\"WanRenderMode\":\"local\",\"BabyName\":\"\"}";
+
+    protected override void OnInitialized() { _pre = Build(); _shots = ScreenshotBundlePlanner.PlanBundle(new[] { AppLanguage.Ko, AppLanguage.En, AppLanguage.De, AppLanguage.Zh, AppLanguage.Ja }).Count; }
+
+    private string GaugeClass => _pre.Readiness >= 90 ? "ok" : RiskItems.Count > 0 ? "bad" : "";
+
+    private List<StoreCheck> RiskItems => _pre.Android.Checks.Concat(_pre.Ios.Checks).Concat(_pre.Global)
+        .Where(c => c.Severity == CheckSeverity.Fail).ToList();
+
+    private PreflightReport Build()
+    {
+        // 현재 빌드 선언 메타(리스크 시뮬 시 결함 주입).
+        var android = AndroidStoreCheckEngine.Check(
+            new AndroidManifestInfo("com.angtec.promptflowstudio", 24, _risk ? 33 : 35,
+                new[] { "android.permission.CAMERA", "android.permission.INTERNET", "android.permission.QUERY_ALL_PACKAGES" }),
+            pageAligned16k: !_risk, playAppSigning: true, dataSafetyDeclared: !_risk);
+
+        var privacy = _risk ? null : new PrivacyManifestInfo(false,
+            new[] { "NSPrivacyAccessedAPICategoryFileTimestamp", "NSPrivacyAccessedAPICategoryUserDefaults" }, Array.Empty<string>());
+        var expiry = _risk ? DateTimeOffset.Now.AddDays(-3) : DateTimeOffset.Now.AddDays(180);
+        var ios = IosStoreCheckEngine.Check(privacy, expiry, DateTimeOffset.Now);
+
+        var schema = Schema.Check(SampleJson);
+        var aSize = StoreDeploymentInspector.CheckSize(_risk ? 260L * 1024 * 1024 : 85L * 1024 * 1024, StorePlatform.Android);
+        var iSize = StoreDeploymentInspector.CheckSize(120L * 1024 * 1024, StorePlatform.iOS);
+        return StoreDeploymentInspector.Preflight(android, ios, schema, aSize, iSize);
+    }
+
+    private void OnRisk(ChangeEventArgs e) { _risk = e.Value is true; _pre = Build(); _msg = null; }
+    private void RunAll() { _pre = Build(); _msg = RiskItems.Count > 0 ? $"⚠ 검수 완료 — 거절 리스크 {RiskItems.Count}건. 준비도 {_pre.Readiness}%." : $"✅ 검수 통과 — 준비도 {_pre.Readiness}%. AAB/IPA 업로드 가능."; }
+    private void Meta()
+    {
+        var listings = StoreListingGenerator.GenerateAll("PromptFlow Studio", "4.3.0");
+        _msg = $"🌐 등록정보 {listings.Count}개국 + 개인정보 처리방침(HTML/MD) + 스크린샷 {_shots}컷 계획 생성 완료 · AI 톤: {GlobalMultiPlatformAdapter.PromptTone(I18n.Current)}";
+    }
+
+    private RenderFragment Checklist(IReadOnlyList<StoreCheck> checks) => builder =>
+    {
+        var seq = 0;
+        foreach (var c in checks)
+        {
+            builder.OpenElement(seq++, "div"); builder.AddAttribute(seq++, "class", "srd-chk");
+            builder.OpenElement(seq++, "span");
+            builder.AddAttribute(seq++, "class", "srd-bdg " + c.Severity.ToString().ToLowerInvariant());
+            builder.AddContent(seq++, c.Severity == CheckSeverity.Pass ? "PASS" : c.Severity == CheckSeverity.Warn ? "WARN" : "FAIL");
+            builder.CloseElement();
+            builder.OpenElement(seq++, "b"); builder.AddContent(seq++, c.Title); builder.CloseElement();
+            builder.OpenElement(seq++, "span"); builder.AddAttribute(seq++, "class", "d"); builder.AddContent(seq++, c.Detail); builder.CloseElement();
+            builder.CloseElement();
+        }
+    };
+}

@@ -1,0 +1,250 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.RhythmAction
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject RhythmActionMvStudioRunner Runner
+
+@* [PromptFlow Studio v17.54.0] 🎬 MV 리듬 액션 스튜디오 — 마디별 컷 타임라인 · 베이스 반응 조명/VFX 감도 · 컷 빈도 모니터 · v17.39/41/42/43 결선. *@
+<div class="rmv-scrim" @onclick="Close">
+    <div class="rmv-modal" @onclick:stopPropagation="true">
+        <div class="rmv-h">
+            <div>
+                <div class="rmv-title">🎬 MV 리듬 액션 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null) · @(F1(Runner.TimeSec))s · 곡 마디 @(Runner.SongBar + 1)/@(RhythmActionMvStudioRunner.SongBars)</div>
+                <div class="rmv-sub"><b>리듬 시퀀서</b>가 v17.53 비트 그리드의 다운비트로 마디 · 4/8 마디 프레이즈를 세고, 다운비트 직후 라우드니스 서지로 빌드업 → 드롭을 판정해 와이드/미디엄/클로즈업/오빗을 비트에 맞춰 전환합니다. <b>피로도 가드</b>는 0.35 s 미만 전환을 전부 차단하고 180° 선을 넘는 카메라를 반사 클램프합니다. <b>베이스 반응 합성기</b>는 60~120 Hz 펄스로 DMX 조도 · 림 · 스트릭 플레어 · 파이로 점화를 비트 동기로 방출합니다.</div>
+            </div>
+            <button class="rmv-x" @onclick="Close">✕</button>
+        </div>
+        <div class="rmv-bar">
+            <button class="rmv-btn @(Runner.IsRunning ? "on" : "go")" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 재생")</button>
+            <span class="rmv-sep"></span>
+            @foreach (var bpm in Tempos)
+            {
+                var b = bpm;
+                <button class="rmv-btn pre @(Math.Abs(Runner.Bgm.Bpm - b) < 0.5 ? "on" : null)" @onclick="() => Runner.SetTempo(b)">🥁 @(F0(b))</button>
+            }
+            <span class="rmv-sep"></span>
+            <button class="rmv-btn @(Runner.Engine.PhraseBars == 4 ? "on" : null)" @onclick="() => Runner.SetPhraseBars(4)">4 마디</button>
+            <button class="rmv-btn @(Runner.Engine.PhraseBars == 8 ? "on" : null)" @onclick="() => Runner.SetPhraseBars(8)">8 마디</button>
+            <button class="rmv-btn @(Runner.Engine.DoubleTimeDrop ? "on" : null)" @onclick="() => Runner.SetDoubleTime(!Runner.Engine.DoubleTimeDrop)">⚡ 드롭 더블 타임</button>
+            <button class="rmv-btn @(Runner.Guard.Enabled ? "on" : null)" @onclick="() => Runner.SetGuard(!Runner.Guard.Enabled)">🛡 피로도 · 180° 가드</button>
+        </div>
+        <div class="rmv-bar">
+            <label class="rmv-lbl">💡 조명 감도</label>
+            <input class="rmv-rng" type="range" min="0" max="200" value="@((int)(Runner.Reactive.LightSensitivity * 100))" @oninput="OnLight" />
+            <span class="rmv-chip">×@(F2(Runner.Reactive.LightSensitivity))</span>
+            <label class="rmv-lbl">🔥 VFX 감도</label>
+            <input class="rmv-rng" type="range" min="0" max="200" value="@((int)(Runner.Reactive.VfxSensitivity * 100))" @oninput="OnVfx" />
+            <span class="rmv-chip">×@(F2(Runner.Reactive.VfxSensitivity))</span>
+            <span class="rmv-sep"></span>
+            <button class="rmv-btn @(Runner.LinkDirector ? "on" : null)" disabled="@(!Runner.DirectorAvailable)" @onclick="() => Runner.SetLinkDirector(!Runner.LinkDirector)">🎥 v17.39 멀티캠</button>
+            <button class="rmv-btn @(Runner.LinkLights ? "on" : null)" disabled="@(!Runner.LightsAvailable)" @onclick="() => Runner.SetLinkLights(!Runner.LinkLights)">💡 v17.41 DMX</button>
+            <button class="rmv-btn @(Runner.LinkPyro ? "on" : null)" disabled="@(!Runner.PyroAvailable)" @onclick="() => Runner.SetLinkPyro(!Runner.LinkPyro)">🔥 v17.42 파이로</button>
+            <button class="rmv-btn @(Runner.LinkLens ? "on" : null)" disabled="@(!Runner.LensAvailable)" @onclick="() => Runner.SetLinkLens(!Runner.LinkLens)">✨ v17.43 플레어</button>
+        </div>
+        <div class="rmv-main">
+            <div class="rmv-card wide">
+                <div class="rmv-sec">🎞 마디별 컷 타임라인(최근 @(F0(Window)) s) —
+                    @for (var c = 0; c < 4; c++)
+                    {
+                        var cam = (MvCam)c;
+                        <span class="lg c@(c)">■ @(RealtimeRhythmDropCameraSequencerEngine.CamName(cam))</span>
+                    }
+                </div>
+                <svg class="rmv-tl" viewBox="0 0 600 130" preserveAspectRatio="none">
+                    @for (var i = 0; i < Runner.Engine.MarkerCount; i++)
+                    {
+                        var mk = Runner.Engine.Marker(i);
+                        var x0 = X(mk.TimeSec);
+                        var x1 = i == 0 ? 600 : X(Runner.Engine.Marker(i - 1).TimeSec);
+                        if (x1 > 0)
+                        {
+                            <rect class="sec s@((int)mk.Section)" x="@(F1(Math.Max(x0, 0)))" y="0" width="@(F1(Math.Max(0, x1 - Math.Max(x0, 0))))" height="22" />
+                            <g>
+                                <text class="bar" x="@(F1(Math.Max(x0, 0) + 3))" y="15">@(mk.Bar + 1)@(mk.Drop ? " DROP" : mk.PhraseStart ? " ¶" : null)</text>
+                            </g>
+                            @if (x0 >= 0)
+                            {
+                                <line class="@(mk.Drop ? "drop" : mk.PhraseStart ? "phr" : "bl")" x1="@(F1(x0))" x2="@(F1(x0))" y1="0" y2="130" />
+                            }
+                        }
+                    }
+                    @for (var i = 0; i < Runner.Engine.CutCount; i++)
+                    {
+                        var cut = Runner.Engine.Cut(i);
+                        var x0 = X(cut.TimeSec);
+                        var x1 = i == 0 ? 600 : X(Runner.Engine.Cut(i - 1).TimeSec);
+                        if (x1 > 0)
+                        {
+                            <rect class="cut c@((int)cut.To)" x="@(F1(Math.Max(x0, 0)))" y="@(30 + 22 * (int)cut.To)" width="@(F1(Math.Max(1, x1 - Math.Max(x0, 0))))" height="18" />
+                        }
+                    }
+                </svg>
+                <div class="rmv-kv grid4">
+                    <div>BPM <b class="@(Runner.Tracker.Locked ? "ok" : "warn")">@(F1(Runner.Tracker.Bpm))</b> · 마디 @(Runner.Engine.Bar + 1) · 박 @(Runner.Engine.BeatInBar + 1)/4</div>
+                    <div>구간 <b>@(RealtimeRhythmDropCameraSequencerEngine.SectionName(Runner.Engine.Section))</b> · 프레이즈 @(Runner.Engine.PhraseBar % Runner.Engine.PhraseBars + 1)/@(Runner.Engine.PhraseBars)</div>
+                    <div>드롭 @(Runner.Engine.Drops) · 서지 비 @(F2(Runner.Engine.LastRatio))</div>
+                    <div>프로그램 <b>@(RealtimeRhythmDropCameraSequencerEngine.CamName(Runner.Engine.Program))</b> · 방위 @(F0(Runner.Engine.ProgramAzimuthDeg))°</div>
+                </div>
+            </div>
+            <div class="rmv-card">
+                <div class="rmv-sec">⏱ 컷 전환 빈도 · 피로도 가드</div>
+                <div class="rmv-meter"><span class="lbl">컷/s</span><div class="track"><div class="fill @(Runner.Guard.FatigueIndex <= 1f ? "ok" : "warn")" style="width:@(Pct(Runner.Guard.CutsPerSecond / 4f))%"></div><div class="thr" style="left:@(Pct(Runner.Guard.MaxCutsPerWindow / RapidCutVisualFatigueGuard.WindowS / 4f))%"></div></div><b>@(F2(Runner.Guard.CutsPerSecond))</b></div>
+                <svg class="rmv-graph" viewBox="0 0 600 60" preserveAspectRatio="none"><polyline class="cps" points="@(Series(0))" /></svg>
+                <div class="rmv-kv grid2">
+                    <div>컷 @(Runner.Engine.Cuts) / 요청 @(Runner.Engine.Requests)</div>
+                    <div>최소 간격 <b class="@(Runner.Guard.MinGapSeen >= RapidCutVisualFatigueGuard.MinHoldFloorS - 1e-9 ? "ok" : "warn")">@(double.IsInfinity(Runner.Guard.MinGapSeen) ? "—" : F2(Runner.Guard.MinGapSeen))</b> s(≥ 0.35)</div>
+                    <div>유지 미달 차단 @(Runner.Guard.TooSoonRejects) · 피로도 보류 @(Runner.Guard.RateRejects)</div>
+                    <div>방송 유지 위반 <b class="@(Runner.Guard.OnAirHoldViolations == 0 ? "ok" : "warn")">@(Runner.Guard.OnAirHoldViolations)</b></div>
+                    <div>축 클램프 @(Runner.Guard.AxisClamps) · 오빗 정지 @(Runner.Guard.OrbitHolds)</div>
+                    <div>방송 선 넘김 <b class="@(Runner.Guard.OnAirAxisFrames == 0 && Runner.Guard.OnAirAxisCuts == 0 ? "ok" : "warn")">@(Runner.Guard.OnAirAxisFrames + Runner.Guard.OnAirAxisCuts)</b></div>
+                </div>
+                <div class="rmv-cams">
+                    @for (var c = 0; c < 4; c++)
+                    {
+                        var cam = (MvCam)c;
+                        <span class="cam c@(c) @(Runner.Engine.Program == cam ? "live" : null)">@(RealtimeRhythmDropCameraSequencerEngine.CamName(cam)) @(Runner.Engine.CamCuts(cam))</span>
+                    }
+                </div>
+            </div>
+            <div class="rmv-card">
+                <div class="rmv-sec">🔊 베이스 반응 조명 · VFX (60~120 Hz)</div>
+                <div class="rmv-meter"><span class="lbl">조도</span><div class="track"><div class="fill dmx" style="width:@(Pct(Runner.Reactive.Current.DmxBoost))%"></div></div><b>@(F2(Runner.Reactive.Current.DmxBoost))</b></div>
+                <div class="rmv-meter"><span class="lbl">림</span><div class="track"><div class="fill rim" style="width:@(Pct(Runner.Reactive.Current.RimPulse))%"></div></div><b>@(F2(Runner.Reactive.Current.RimPulse))</b></div>
+                <div class="rmv-meter"><span class="lbl">플레어</span><div class="track"><div class="fill flr" style="width:@(Pct(Runner.Reactive.Current.FlareStreak))%"></div></div><b>@(F2(Runner.Reactive.Current.FlareStreak))</b></div>
+                <svg class="rmv-graph" viewBox="0 0 600 60" preserveAspectRatio="none"><polyline class="dmx" points="@(Series(1))" /><polyline class="bass" points="@(Series(2))" /></svg>
+                <div class="rmv-kv grid2">
+                    <div>베이스 @(F1(Runner.Reactive.Current.BassDb)) dB · 바닥 @(F1(Runner.Reactive.Current.FloorDb))</div>
+                    <div>히트 @(Runner.Reactive.Hits) · 비트 동기 @(Runner.Reactive.OnBeatHits)</div>
+                    <div>플레어 @(Runner.Reactive.Flares) · 파이로 점화 @(Runner.Reactive.PyroIgnitions)</div>
+                    <div>결선 송신: 컷 @(Runner.DirectorCutsSent) · 점화 @(Runner.PyroSent) · 섬광 @(Runner.FlaresSent)</div>
+                </div>
+                <div class="rmv-kv">블록 @(F0(Runner.LastBlockUs)) µs · 최대 @(F0(Runner.MaxBlockUs)) µs</div>
+                <div class="rmv-act">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .rmv-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .rmv-modal { width: min(1200px, 96vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
+    .rmv-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f43f5e 16%, var(--card)), color-mix(in srgb, #f59e0b 12%, var(--card))); }
+    .rmv-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .rmv-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .rmv-sub b { color: var(--text-primary); }
+    .rmv-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .rmv-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .rmv-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .rmv-btn:disabled { opacity: .45; cursor: default; }
+    .rmv-btn.on { background: color-mix(in srgb, #f43f5e 22%, var(--card)); border-color: #f43f5e; }
+    .rmv-btn.pre.on { background: color-mix(in srgb, #f59e0b 22%, var(--card)); border-color: #f59e0b; }
+    .rmv-btn.go { background: #f43f5e; color: #fff; border: none; }
+    .rmv-sep { width: 1px; height: 20px; background: var(--line); margin: 0 4px; }
+    .rmv-lbl { font-size: 12px; color: var(--text-secondary); }
+    .rmv-rng { width: 120px; }
+    .rmv-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .rmv-main { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 14px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .rmv-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); min-width: 0; }
+    .rmv-card.wide { grid-column: 1 / -1; }
+    .rmv-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .rmv-sec .lg { font-weight: 700; margin-left: 8px; }
+    .lg.c0, .cam.c0 { color: #38bdf8; } .lg.c1, .cam.c1 { color: #a3e635; } .lg.c2, .cam.c2 { color: #f43f5e; } .lg.c3, .cam.c3 { color: #f59e0b; }
+    .rmv-tl, .rmv-graph { width: 100%; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; display: block; }
+    .rmv-tl { height: 130px; }
+    .rmv-graph { height: 60px; margin-top: 6px; }
+    .rmv-tl .sec { opacity: .55; }
+    .rmv-tl .s0 { fill: #334155; } .rmv-tl .s1 { fill: #1e3a8a; } .rmv-tl .s2 { fill: #92400e; } .rmv-tl .s3 { fill: #9f1239; } .rmv-tl .s4 { fill: #3f3f46; }
+    .rmv-tl .bar { fill: #e2e8f0; font: 700 10px var(--mono); }
+    .rmv-tl .bl { stroke: #64748b; stroke-width: 1; }
+    .rmv-tl .phr { stroke: #e2e8f0; stroke-width: 1.6; stroke-dasharray: 4 3; }
+    .rmv-tl .drop { stroke: #f43f5e; stroke-width: 3; }
+    .rmv-tl .cut.c0 { fill: #38bdf8; } .rmv-tl .cut.c1 { fill: #a3e635; } .rmv-tl .cut.c2 { fill: #f43f5e; } .rmv-tl .cut.c3 { fill: #f59e0b; }
+    .rmv-graph polyline { fill: none; stroke-width: 1.6; }
+    .rmv-graph .cps { stroke: #f43f5e; } .rmv-graph .dmx { stroke: #facc15; } .rmv-graph .bass { stroke: #38bdf8; }
+    .rmv-meter { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 11px; color: var(--text-secondary); }
+    .rmv-meter .lbl { width: 40px; font-weight: 700; }
+    .rmv-meter b { width: 56px; text-align: right; font: 700 11px var(--mono); color: var(--text-primary); }
+    .rmv-meter .track { position: relative; flex: 1; height: 12px; border-radius: 6px; background: #1e293b; overflow: hidden; }
+    .rmv-meter .fill { height: 100%; transition: width .1s linear; }
+    .rmv-meter .fill.ok { background: #22c55e; } .rmv-meter .fill.warn { background: #f59e0b; }
+    .rmv-meter .fill.dmx { background: #facc15; } .rmv-meter .fill.rim { background: #a855f7; } .rmv-meter .fill.flr { background: #38bdf8; }
+    .rmv-meter .thr { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; opacity: .8; }
+    .rmv-kv { font-size: 11px; color: var(--text-secondary); margin-top: 6px; }
+    .rmv-kv.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+    .rmv-kv.grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px 12px; }
+    .rmv-kv b.ok { color: #22c55e; } .rmv-kv b.warn { color: #f59e0b; }
+    .rmv-cams { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .rmv-cams .cam { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); }
+    .rmv-cams .cam.live { background: #dc2626; color: #fff; border-color: #dc2626; }
+    .rmv-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+    @@media (max-width: 760px) { .rmv-main { grid-template-columns: 1fr; } .rmv-kv.grid4 { grid-template-columns: 1fr 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const double Window = 12;
+    private static readonly double[] Tempos = { 100, 128, 150 };
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("RhythmMv.Modal.Timer", ex); }
+        }, null, 120, 120);
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string Pct(float v) => (Math.Clamp(v, 0f, 1f) * 100f).ToString("0.#", CultureInfo.InvariantCulture);
+
+    /// <summary>오디오 시각 → 타임라인 x(우측 = 현재 · 창 12 s).</summary>
+    private double X(double t) => 600 - (Runner.Tracker.TimeSec - t) * 600 / Window;
+
+    private string Series(int kind)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            var v = kind == 0 ? Runner.CutRateSeries(k) / 4.0 : kind == 1 ? Runner.DmxSeries(k) : (Runner.BassSeries(k) + 80.0) / 70.0;
+            sb.Append((600.0 * i / (n - 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append((58 - 56 * Math.Clamp(v, 0, 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void OnLight(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetLightSensitivity(v / 100f);
+    }
+
+    private void OnVfx(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetVfxSensitivity(v / 100f);
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

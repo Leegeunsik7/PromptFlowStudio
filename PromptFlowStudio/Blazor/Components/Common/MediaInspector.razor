@@ -1,0 +1,81 @@
+@inject AssetMetadataService Meta
+@inject ProjectHandoffService Handoff
+@inject NavigationManager Nav
+
+@* [PromptFlow Studio] 갤러리 메타 인스펙터 — 완성 영상의 Wan 프롬프트·Foley 타임코드·템포/프리셋 정밀 조회 + 원클릭 스토리보드 복원. *@
+
+<div class="mi">
+    <div class="mi-h">🔎 메타 인스펙터 <span class="mi-title">@_m.Title</span></div>
+    <div class="mi-grid">
+        <div class="mi-kv"><span>프리셋</span><b>@(_m.PresetKey ?? "—")</b></div>
+        <div class="mi-kv"><span>해상도</span><b>@(_m.Resolution.Length > 0 ? _m.Resolution : "—")</b></div>
+        <div class="mi-kv"><span>배속</span><b>@Inv(_m.Speed)x</b></div>
+        <div class="mi-kv"><span>컷 수</span><b>@_m.CutCount</b></div>
+    </div>
+
+    @if (_m.Prompts.Count > 0)
+    {
+        <div class="mi-sec">
+            <div class="mi-sec-h">🎬 Wan 2.1 프롬프트 <span class="mi-mini">@(_m.Prompts.Count)</span></div>
+            <div class="mi-lines">@foreach (var p in _m.Prompts) { <div class="mi-line">@p</div> }</div>
+        </div>
+    }
+    @if (_m.Foley.Count > 0)
+    {
+        <div class="mi-sec">
+            <div class="mi-sec-h">🔊 Gen-Foley 타임코드 <span class="mi-mini">@(_m.Foley.Count)</span></div>
+            <div class="mi-chips">@foreach (var f in _m.Foley) { <span class="mi-chip">@f</span> }</div>
+        </div>
+    }
+
+    <div class="mi-foot">
+        @if (_m.ProjectFound)
+        {
+            <button class="mi-restore" @onclick="Restore" title="원본 프로젝트를 스토리보드에서 다시 열어 재편집/재생성">🎞️ 스토리보드로 복원 (재편집)</button>
+        }
+        else
+        {
+            <div class="mi-warn">⚠ @_m.Message</div>
+        }
+    </div>
+</div>
+
+<style>
+    .mi { border: 1px solid var(--line); border-radius: 12px; background: var(--card-2); padding: 12px 14px; margin-top: 12px; }
+    .mi-h { display: flex; align-items: baseline; gap: 8px; font: 800 12.5px var(--mono); color: var(--text-primary); margin-bottom: 10px; }
+    .mi-title { font-weight: 600; color: var(--text-muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 10px; }
+    @@media (max-width: 520px) { .mi-grid { grid-template-columns: 1fr 1fr; } }
+    .mi-kv { background: var(--card); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; }
+    .mi-kv span { display: block; font: 700 9.5px var(--mono); letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted); }
+    .mi-kv b { font-size: 14px; color: var(--text-primary); }
+    .mi-sec { margin-top: 8px; }
+    .mi-sec-h { font: 800 11px var(--mono); color: var(--accent-2); margin-bottom: 6px; } .mi-mini { color: var(--text-muted); }
+    .mi-lines { display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto; }
+    .mi-line { font-size: 11.5px; line-height: 1.4; color: var(--text-secondary); background: var(--card); border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; }
+    .mi-chips { display: flex; flex-wrap: wrap; gap: 5px; max-height: 96px; overflow-y: auto; }
+    .mi-chip { font: 600 10.5px var(--mono); color: #0d9488; background: color-mix(in srgb, #14b8a6 11%, transparent); border: 1px solid color-mix(in srgb, #14b8a6 30%, var(--line)); border-radius: 6px; padding: 3px 7px; }
+    .mi-foot { margin-top: 12px; }
+    .mi-restore { width: 100%; font: 800 13px inherit; padding: 11px; border-radius: 11px; border: none; color: #fff; cursor: pointer;
+        background: linear-gradient(135deg, var(--flow-violet), var(--flow-cyan, #22d3ee)); box-shadow: 0 8px 20px color-mix(in srgb, var(--flow-violet) 30%, transparent); }
+    .mi-restore:hover { filter: brightness(1.07); }
+    .mi-warn { font-size: 11.5px; color: #f59e0b; line-height: 1.5; }
+</style>
+
+@code {
+    /// <summary>영상 파일 경로.</summary>
+    [Parameter] public string VideoPath { get; set; } = "";
+
+    private AssetMetadata _m = new(false, null, "", null, 1.0, "", 0, Array.Empty<string>(), Array.Empty<string>(), "");
+
+    protected override void OnParametersSet() => _m = Meta.Inspect(VideoPath);
+
+    private void Restore()
+    {
+        if (_m.ProjectPath is null) return;
+        Handoff.Set(_m.ProjectPath);          // 스토리보드가 최초 로드 시 소비
+        Nav.NavigateTo("storyboard");
+    }
+
+    private static string Inv(double d) => d.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+}

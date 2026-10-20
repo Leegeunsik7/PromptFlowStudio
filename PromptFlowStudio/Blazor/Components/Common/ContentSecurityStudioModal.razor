@@ -1,0 +1,309 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.ContentSecurity
+@implements IDisposable
+@inject ContentSecurityStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.90.0] 🛡️ AI 콘텐츠 보안 & 디지털 저작권 스튜디오 — 원본/워터마크 차이(×12)/수신 프레임(변조 오버레이) · 워터마크 강도 스펙트럼 슬라이더(대역/강도/마스킹/오디오/3DGS) ·
+    딥페이크 위변조 탐지 레이더(6축) · 검출/역추적 · 저작권 분배 트리카드(지분 · 회수 · 잔액/지급) · 분산 원장 블록 · 계약 편집.
+*@
+
+<div class="css-scrim" @onclick="Close">
+    <div class="css-modal" @onclick:stopPropagation="true">
+        <div class="css-h">
+            <div>
+                <div class="css-title">🛡️ AI 콘텐츠 보안 &amp; 디지털 저작권 스튜디오</div>
+                <div class="css-sub">비디오 <b>DCT 블록 QIM</b> · 오디오 <b>차분 위상</b> · 3DGS SH 계수에 시청자 디바이스/사용자 ID를 비가시 내장하고, 봉인 지문(HMAC-SHA512)과 타일별 워터마크 일치율로
+                    <b>재압축 vs 국소 위변조(딥페이크)</b>를 구분·위치 표시하며, 유출 사본을 역추적해 저작권 원장(해시 체인 · 워터폴 정산)에서 차단합니다. 학습 모델은 사용하지 않습니다.</div>
+            </div>
+            <button class="css-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="css-bar">
+            <button class="css-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 관제")</button>
+            <button class="css-btn" @onclick="Step" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="css-btn" @onclick="Runner.NewSession">🔑 새 시청 세션</button>
+            <button class="css-btn @(Runner.AutoScenario ? "on" : null)" @onclick="() => Runner.AutoScenario = !Runner.AutoScenario">🔁 배포 시나리오</button>
+            @if (!Runner.AutoScenario)
+            {
+                @foreach (var a in Attacks)
+                {
+                    <button class="css-btn @(Runner.ManualAttack == a ? "on" : null)" @onclick="() => Runner.ManualAttack = a">@(ContentAttackSimulator.Name(a))</button>
+                }
+            }
+            <span class="css-chip @(Runner.LastTickMs < 16.6 ? "ok" : "warn")">틱 @(F1(Runner.LastTickMs)) ms</span>
+            <span class="css-chip">인코딩 @(F2(Wm.LastEncodeMs)) · 검증 @(F1(G.LastVerifyMs)) · 봉인 @(F2(G.LastSealMs)) · 정산 @(F2(R.LastSettleMs)) ms</span>
+            <span class="css-chip">키 @(Wm.KeyFingerprint)@(Wm.EphemeralKey ? " (임시)" : "")</span>
+        </div>
+
+        <div class="css-main">
+            <div class="css-col">
+                <div class="css-card">
+                    <div class="css-sec">🎞 배포 경로 — @(ContentAttackSimulator.Name(Runner.CurrentAttack))@(Runner.LeakCopy ? " · 유출 사본" : "") → <span class="css-verdict v@((int)G.Verdict)">@(DeepfakeProtectionContentAuthenticityGuard.VerdictName(G.Verdict))</span></div>
+                    <div class="css-frames">
+                        <div><img src="@Url(0)" alt="orig" /><span>원본</span></div>
+                        <div><img src="@Url(1)" alt="diff" /><span>워터마크 차이 ×12</span></div>
+                        <div><img src="@Url(2)" alt="rx" /><span>수신 + 변조 오버레이</span></div>
+                    </div>
+                    <div class="css-kv">
+                        <span>PSNR <b>@(F1(Wm.LastPsnr)) dB</b></span>
+                        <span>프레임 일치율 <b>@(F2(G.FrameAgreement))</b></span>
+                        <span>변조 타일 <b>@(G.TamperedTiles)</b> / @(G.TilesX * G.TilesY)</span>
+                        <span>블록 경계비 @(F2(G.Blockiness)) · 합성 흔적 @(F2(G.SyntheticScore))</span>
+                    </div>
+                </div>
+
+                <div class="css-card">
+                    <div class="css-sec">🎚 워터마크 강도 스펙트럼 — 대역 @(BandName(Wm.Band)) · 슬롯 @(Wm.SlotCount) · 페이로드 80비트</div>
+                    <div class="css-row">
+                        @foreach (var b in Bands)
+                        {
+                            <button class="css-btn @(Wm.Band == b ? "on" : null)" @onclick="() => Wm.Band = b">@(BandName(b))</button>
+                        }
+                    </div>
+                    <svg class="css-spec" viewBox="0 0 240 70" preserveAspectRatio="none">
+                        @for (var k = 0; k < 24; k++)
+                        {
+                            var f = k / 23f; var center = Wm.Band == WmBand.Low ? 0.12f : Wm.Band == WmBand.Mid ? 0.35f : 0.6f;
+                            var h = 64f * Math.Clamp(Wm.Strength / 0.2f, 0f, 1f) * MathF.Exp(-(f - center) * (f - center) / 0.006f);
+                            var jpeg = 64f * (0.15f + 0.8f * f * f);
+                            <rect x="@(k * 10 + 1)" y="@(F1(68 - jpeg))" width="8" height="@(F1(jpeg))" class="q" />
+                            <rect x="@(k * 10 + 2)" y="@(F1(68 - h))" width="6" height="@(F1(h))" class="w" />
+                        }
+                    </svg>
+                    <div class="css-kv"><span><i class="lg" style="background:#334155"></i>JPEG 양자화 강도(고주파 ↑)</span><span><i class="lg" style="background:#22d3ee"></i>워터마크 에너지</span><span>저역 = 견고·가시성 ↑ · 고역 = 비가시·취약</span></div>
+                    <div class="css-sl">
+                        <label>비디오 강도 Δ <b>@(F3(Wm.Strength))</b><input type="range" min="10" max="200" value="@(F0(Wm.Strength * 1000))" @onchange="e => SetF(e, v => Wm.Strength = v / 1000f)" /></label>
+                        <label>질감 마스킹 <b>@(F2(Wm.Masking))</b><input type="range" min="0" max="200" value="@(F0(Wm.Masking * 100))" @onchange="e => SetF(e, v => Wm.Masking = v / 100f)" /></label>
+                        <label>오디오 여유각 <b>@(F2(Wm.AudioStrength))</b><input type="range" min="2" max="100" value="@(F0(Wm.AudioStrength * 100))" @onchange="e => SetF(e, v => Wm.AudioStrength = v / 100f)" /></label>
+                        <label>3DGS 스텝 <b>@(F3(Wm.SplatStep))</b><input type="range" min="5" max="200" value="@(F0(Wm.SplatStep * 1000))" @onchange="e => SetF(e, v => Wm.SplatStep = v / 1000f)" /></label>
+                        <label>재압축 품질 <b>Q@(Runner.RecompressQuality)</b><input type="range" min="20" max="95" value="@(Runner.RecompressQuality)" @onchange="e => SetF(e, v => Runner.RecompressQuality = (int)v)" /></label>
+                    </div>
+                    <div class="css-kv">
+                        <span>비디오 검출 <b class="@(G.Detection.Valid ? "ok" : "bad")">@(G.Detection.Valid ? "✔" : "✕")</b> 신뢰도 @(F2(G.Detection.Confidence))</span>
+                        <span>오디오(7.1.4 위상) <b class="@(Runner.AudioDetection.Valid ? "ok" : "bad")">@(Runner.AudioDetection.Valid ? "✔" : "✕")</b> @(F2(Runner.AudioDetection.Confidence)) · SNR @(F1(Wm.LastAudioSnrDb)) dB</span>
+                        <span>3DGS <b class="@(Runner.SplatDetection.Valid ? "ok" : "bad")">@(Runner.SplatDetection.Valid ? "✔" : "✕")</b> @(F2(Runner.SplatDetection.Confidence))</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="css-col">
+                <div class="css-card">
+                    <div class="css-sec">📡 딥페이크 위변조 탐지 레이더</div>
+                    <div class="css-split">
+                        <svg class="css-radar" viewBox="-60 -60 120 120">
+                            @for (var ring = 1; ring <= 4; ring++)
+                            {
+                                <polygon points="@Poly(ring / 4f)" class="ring" />
+                            }
+                            @for (var a = 0; a < DeepfakeProtectionContentAuthenticityGuard.Axes; a++)
+                            {
+                                var (x, y) = Pt(a, 1f);
+                                <line x1="0" y1="0" x2="@(F1(x))" y2="@(F1(y))" class="spoke" />
+                                var (lx, ly) = Pt(a, 1.22f);
+                                <g><text x="@(F1(lx))" y="@(F1(ly))" class="lb">@(DeepfakeProtectionContentAuthenticityGuard.AxisName((ThreatAxis)a))</text></g>
+                            }
+                            <polygon points="@RadarPoly()" class="val v@((int)G.Verdict)" />
+                        </svg>
+                        <div>
+                            <svg class="css-map" viewBox="0 0 @(G.TilesX) @(G.TilesY)" preserveAspectRatio="none">
+                                @for (var t = 0; t < G.TilesX * G.TilesY; t++)
+                                {
+                                    var ag = Math.Clamp(G.TileAgreement(t), 0f, 1f);
+                                    <rect x="@(t % G.TilesX)" y="@(t / G.TilesX)" width="0.96" height="0.96" style="fill:@(G.TamperMask[t] != 0 ? "#ef4444" : Heat(ag))" />
+                                }
+                            </svg>
+                            <div class="css-kv"><span>타일 워터마크 일치율(청 = 1 · 적 = 변조)</span></div>
+                        </div>
+                    </div>
+                    <div class="css-kv">
+                        <span>시청자 <b>D-@(Runner.Viewer.Device.ToString("X6", CultureInfo.InvariantCulture)) · U-@(Runner.Viewer.User.ToString("X6", CultureInfo.InvariantCulture))</b></span>
+                        <span>추출 ID <b>@(G.Detection.Valid ? "D-" + G.Detection.Payload.Device.ToString("X6", CultureInfo.InvariantCulture) + " · U-" + G.Detection.Payload.User.ToString("X6", CultureInfo.InvariantCulture) : "—")</b></span>
+                        <span>유출 역추적 <b>@(Runner.LeaksTraced)</b> · 위변조 프레임 @(Runner.Tampers) · 검증 @(G.Verifications)</span>
+                    </div>
+                </div>
+
+                <div class="css-card">
+                    <div class="css-sec">🌳 저작권 분배 — @(R.AssetName) <span class="css-id">@(R.AssetId)</span> · 총수익 @(EnterpriseDigitalRightsMonetizationSynthesizer.Won(R.TotalRevenue))</div>
+                    <div class="css-tree">
+                        <div class="root">🎬 @(R.AssetName)<span>재생 @(R.TotalPlays.ToString("#,0", CultureInfo.InvariantCulture)) · 불법 @(R.PiracyPlays.ToString("#,0", CultureInfo.InvariantCulture)) (손실 @(EnterpriseDigitalRightsMonetizationSynthesizer.Won(R.PiracyLoss)))</span></div>
+                        <div class="kids">
+                            @for (var h = 0; h < R.HolderCount; h++)
+                            {
+
+                                <div class="kid">
+                                    <b>@(R.HolderName(h))</b><span class="pct">@(F1(R.ShareBasisPoints(h) / 100.0))%</span>
+                                    <div class="bar"><i class="paid" style="width:@(Pc(R.PaidTotal(h), R.TotalRevenue))"></i><i class="bal" style="width:@(Pc(R.Balance(h), R.TotalRevenue))"></i></div>
+                                    <span>지급 @(EnterpriseDigitalRightsMonetizationSynthesizer.Won(R.PaidTotal(h))) · 대기 @(EnterpriseDigitalRightsMonetizationSynthesizer.Won(R.Balance(h)))</span>
+                                    @if (R.RecoupTarget(h) > 0) { <span class="rc">회수 @(EnterpriseDigitalRightsMonetizationSynthesizer.Won(R.Recouped(h))) / @(EnterpriseDigitalRightsMonetizationSynthesizer.Won(R.RecoupTarget(h)))</span> }
+                                </div>
+
+                            }
+                        </div>
+                    </div>
+                    <div class="css-ledger">
+                        @for (var b = 0; b < Math.Min(6, R.LedgerCount); b++)
+                        {
+                            var blk = R.Block(b);
+                            <div class="blk st@((int)blk.State)">
+                                <b>#@(blk.Index)</b><span>@(EnterpriseDigitalRightsMonetizationSynthesizer.Won(blk.Revenue))</span><span class="hash">@(Hex(blk.Hash))</span><span>@(EnterpriseDigitalRightsMonetizationSynthesizer.StateName(blk.State))</span>
+                            </div>
+                        }
+                    </div>
+                    <div class="css-kv">
+                        <span>원장 높이 <b>@(R.LedgerHeight)</b> · 무결성 <b class="@(_ledgerOk ? "ok" : "bad")">@(_ledgerOk ? "✔ 해시 체인 · 서명 정상" : "✕ 변조 블록 #" + _ledgerBad.ToString(CultureInfo.InvariantCulture))</b></span>
+                        <span>정산 완료 @(EnterpriseDigitalRightsMonetizationSynthesizer.Won(R.TotalPaid)) · 배치 대기 @(EnterpriseDigitalRightsMonetizationSynthesizer.Won(R.PendingRevenue)) · 차단 디바이스 @(R.BlockedCount)</span>
+                        <button class="css-btn" @onclick="CheckLedger">🔍 원장 검증</button>
+                    </div>
+                    <textarea class="css-ta" @bind="_contract" rows="5"></textarea>
+                    <div class="css-row">
+                        <button class="css-btn on" @onclick="() => Runner.LoadContract(_contract)">📜 계약 적용</button>
+                        <button class="css-btn" @onclick="() => _contract = ContentSecurityStudioRunner.DefaultContract">↺ 기본값</button>
+                        <span class="css-msg">@(R.ParseMessage)</span>
+                    </div>
+                </div>
+                <div class="css-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .css-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .css-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .css-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #0ea5e9 16%, var(--card)), color-mix(in srgb, #dc2626 12%, var(--card))); }
+    .css-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .css-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .css-sub b { color: var(--text-primary); }
+    .css-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .css-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .css-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .css-btn:disabled { opacity: .4; cursor: default; } .css-btn.on { background: color-mix(in srgb, #0ea5e9 24%, transparent); border-color: #38bdf8; }
+    .css-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .css-chip.ok { border-color: #22c55e; color: #86efac; } .css-chip.warn { border-color: #f97316; color: #fdba74; }
+    .css-main { display: grid; grid-template-columns: 1.1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .css-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .css-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .css-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .css-verdict { font: 800 11px var(--mono); padding: 2px 8px; border-radius: 999px; } .css-verdict.v0 { background: #14532d; color: #86efac; } .css-verdict.v1 { background: #422006; color: #fcd34d; }
+    .css-verdict.v2 { background: #450a0a; color: #fca5a5; } .css-verdict.v3, .css-verdict.v4 { background: #3b0764; color: #e9d5ff; }
+    .css-frames { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .css-frames > div { position: relative; aspect-ratio: 16 / 9; background: #000; border-radius: 8px; overflow: hidden; } .css-frames img { width: 100%; height: 100%; image-rendering: pixelated; }
+    .css-frames span { position: absolute; left: 5px; bottom: 3px; font: 700 10px var(--mono); color: #fff; text-shadow: 0 1px 2px #000; }
+    .css-spec { width: 100%; height: 80px; background: #030712; border-radius: 8px; } .css-spec .q { fill: #334155; } .css-spec .w { fill: #22d3ee; }
+    .lg { display: inline-block; width: 12px; height: 6px; margin-right: 4px; vertical-align: middle; border-radius: 2px; }
+    .css-split { display: grid; grid-template-columns: 220px 1fr; gap: 12px; align-items: center; }
+    .css-radar { width: 220px; height: 220px; } .css-radar .ring { fill: none; stroke: #1f2937; stroke-width: .6; } .css-radar .spoke { stroke: #1f2937; stroke-width: .6; }
+    .css-radar .lb { font: 700 6px var(--mono); fill: var(--text-muted); text-anchor: middle; dominant-baseline: middle; }
+    .css-radar .val { fill-opacity: .35; stroke-width: 1.2; } .css-radar .val.v0 { fill: #22c55e; stroke: #22c55e; } .css-radar .val.v1 { fill: #f59e0b; stroke: #f59e0b; }
+    .css-radar .val.v2 { fill: #ef4444; stroke: #ef4444; } .css-radar .val.v3, .css-radar .val.v4 { fill: #a855f7; stroke: #a855f7; }
+    .css-map { width: 100%; aspect-ratio: 16 / 9; background: #030712; border-radius: 6px; }
+    .css-tree { display: flex; flex-direction: column; gap: 6px; }
+    .css-tree .root { font-weight: 800; font-size: 12px; color: var(--text-primary); display: flex; gap: 10px; align-items: baseline; } .css-tree .root span { font: 600 10px var(--mono); color: var(--text-muted); }
+    .css-tree .kids { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px; border-left: 2px solid var(--line); padding-left: 10px; }
+    .css-tree .kid { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; gap: 3px; font-size: 10px; color: var(--text-secondary); }
+    .css-tree .kid b { font-size: 12px; color: var(--text-primary); } .css-tree .pct { font: 800 11px var(--mono); color: #38bdf8; } .css-tree .rc { color: #fbbf24; }
+    .css-tree .bar { display: flex; height: 7px; background: #0b1020; border-radius: 4px; overflow: hidden; } .css-tree .bar .paid { background: #22c55e; } .css-tree .bar .bal { background: #f59e0b; }
+    .css-id { font: 700 10px var(--mono); color: var(--text-muted); }
+    .css-ledger { display: flex; gap: 4px; overflow-x: auto; }
+    .css-ledger .blk { min-width: 108px; border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; display: flex; flex-direction: column; gap: 1px; font: 600 10px var(--mono); color: var(--text-secondary); }
+    .css-ledger .blk b { color: var(--text-primary); } .css-ledger .hash { color: var(--text-muted); } .css-ledger .st0 { border-color: #64748b; } .css-ledger .st1 { border-color: #f59e0b; } .css-ledger .st2 { border-color: #22c55e; }
+    .css-ta { width: 100%; font: 11px var(--mono); padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); resize: vertical; }
+    .css-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; } .css-msg { font-size: 11px; color: var(--text-muted); }
+    .css-sl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 10px; }
+    .css-sl label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-secondary); } .css-sl b { font-family: var(--mono); color: var(--text-primary); }
+    .css-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; color: var(--text-secondary); align-items: center; } .css-kv b { color: var(--text-primary); font-family: var(--mono); }
+    .css-kv .ok { color: #86efac; } .css-kv .bad { color: #fca5a5; }
+    .css-note { font-size: 11px; color: var(--text-muted); }
+    @@media (max-width: 1200px) { .css-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly AttackKind[] Attacks = { AttackKind.None, AttackKind.Recompress, AttackKind.Noise, AttackKind.Brightness, AttackKind.FaceSwap, AttackKind.Splice };
+    private static readonly WmBand[] Bands = { WmBand.Low, WmBand.Mid, WmBand.High };
+    private string _contract = "";
+    private bool _ledgerOk = true;
+    private long _ledgerBad = -1;
+    private System.Threading.Timer? _timer;
+    private long _urlFrame = -1;
+    private readonly string[] _urls = { "", "", "" };
+    private readonly System.Text.StringBuilder _sb = new();
+
+    private NeuralInvisibleWatermarkEncoderEngine Wm => Runner.Watermark;
+    private DeepfakeProtectionContentAuthenticityGuard G => Runner.Guard;
+    private EnterpriseDigitalRightsMonetizationSynthesizer R => Runner.Rights;
+
+    protected override void OnInitialized()
+    {
+        _contract = Runner.ContractText;
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("ContentSecurity.Modal.Timer", ex); }
+        }, null, 200, 200);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static string Pc(long part, long total) => F1(total > 0 ? Math.Clamp(part * 100.0 / total, 0, 100) : 0) + "%";
+    private static string Hex(byte[] h) => Convert.ToHexString(h, 0, 4).ToLowerInvariant() + "…";
+    private static string BandName(WmBand b) => b switch { WmBand.Low => "저역(견고)", WmBand.High => "고역(비가시)", _ => "중역(균형)" };
+    private static string Heat(float a) => "hsl(" + F0(a * 210f) + ",80%," + F0(30 + a * 20) + "%)";
+
+    private string Url(int k)
+    {
+        var f = Runner.VideoFrames;
+        if (f != _urlFrame)
+        {
+            _urls[0] = PromptFlowStudio.Services.Spatial.SpatialImageCodec.BmpDataUrl(Runner.OriginalBytes, ContentSecurityStudioRunner.W, ContentSecurityStudioRunner.H);
+            _urls[1] = PromptFlowStudio.Services.Spatial.SpatialImageCodec.BmpDataUrl(Runner.DiffBytes, ContentSecurityStudioRunner.W, ContentSecurityStudioRunner.H);
+            _urls[2] = PromptFlowStudio.Services.Spatial.SpatialImageCodec.BmpDataUrl(Runner.ReceivedBytes, ContentSecurityStudioRunner.W, ContentSecurityStudioRunner.H);
+            _urlFrame = f;
+        }
+        return _urls[k];
+    }
+
+    private static (float X, float Y) Pt(int axis, float r)
+    {
+        var a = -MathF.PI / 2f + axis * MathF.Tau / DeepfakeProtectionContentAuthenticityGuard.Axes;
+        return (MathF.Cos(a) * 46f * r, MathF.Sin(a) * 46f * r);
+    }
+
+    private string Poly(float r)
+    {
+        _sb.Clear();
+        for (var a = 0; a < DeepfakeProtectionContentAuthenticityGuard.Axes; a++) { var (x, y) = Pt(a, r); _sb.Append(F1(x)).Append(',').Append(F1(y)).Append(' '); }
+        return _sb.ToString();
+    }
+
+    private string RadarPoly()
+    {
+        _sb.Clear();
+        for (var a = 0; a < DeepfakeProtectionContentAuthenticityGuard.Axes; a++) { var (x, y) = Pt(a, MathF.Max(0.04f, G.Radar((ThreatAxis)a))); _sb.Append(F1(x)).Append(',').Append(F1(y)).Append(' '); }
+        return _sb.ToString();
+    }
+
+    private void CheckLedger() { _ledgerBad = R.VerifyLedger(); _ledgerOk = _ledgerBad < 0; }
+
+    private static bool TryF(ChangeEventArgs e, out float v) => float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+    private void SetF(ChangeEventArgs e, Action<float> apply) { if (TryF(e, out var v)) apply(v); }
+
+    private void Step() { for (var k = 0; k < ContentSecurityStudioRunner.Hz; k++) Runner.TickOnce(); }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

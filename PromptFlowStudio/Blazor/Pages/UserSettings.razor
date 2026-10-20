@@ -1,0 +1,219 @@
+@page "/user-settings"
+@using PromptFlowStudio.Services.Account
+@inject SessionState Session
+@inject NavigationManager Nav
+@inject PromptFlowStudio.Services.Ui.UserPreferenceService Prefs
+@inject IJSRuntime JS
+
+@* [PromptFlow Studio] 사용자 설정 — 이 PC 의 화면·생성 기본값 표시 설정.
+   ⚠ 관리자 비밀번호 없이 <로그인한 모든 사용자>가 쓴다. 이 PC 의 localStorage 에만 저장된다.
+     관리자 전용(회원·메일·라이선스·설치PC)은 <관리자 설정>에 있다. *@
+
+<PageTitle>PromptFlow Studio · 사용자 설정</PageTitle>
+
+<div class="st">
+    <header class="st-head">
+        <div><h1 class="st-title">🎚️ 사용자 설정 <MenuHelpBadge MenuKey="@GranularHelpService.Keys.UserSettings" /></h1><HelpHint /><div class="st-sub">화면 표시 · 렌더 알림 · 생성 기본값 — 이 PC 의 작업 환경</div></div>
+        <button class="st-save" @onclick="Save">💾 설정 저장</button>
+    </header>
+
+    @if (_saved) { <div class="st-toast">✓ 설정이 저장되었습니다.</div> }
+
+    @* ── 화면 표시 ── *@
+    <section class="st-card">
+        <div class="st-card-h"><span class="st-ic">🎨</span><div><div class="st-card-t">화면 표시</div><div class="st-card-d">테마·밀도·모션 등 이 PC 의 화면 환경.</div></div></div>
+        <div class="st-grid">
+            <div class="st-field"><label>화면 테마</label>
+                <select @bind="_theme" class="st-sel"><option value="dark">다크(기본)</option><option value="light">라이트</option></select>
+            </div>
+            <div class="st-field"><label>목록 밀도</label>
+                <select @bind="_density" class="st-sel"><option value="comfortable">여유</option><option value="compact">컴팩트</option></select>
+            </div>
+            <div class="st-field"><label>표시 언어</label>
+                <select @bind="_lang" class="st-sel"><option value="ko">한국어</option><option value="en">English</option></select>
+            </div>
+        </div>
+        <div class="st-toggles" style="margin-top:14px">
+            <button class="st-tog @(!_motionOff ? "on" : null)" @onclick="() => _motionOff = !_motionOff"><span class="st-knob"></span>모션 효과 @(_motionOff ? "정지" : "켜기")</button>
+        </div>
+    </section>
+
+    @* ── 스튜디오 모드(테마 갤러리) ── *@
+    <section class="st-card">
+        <div class="st-card-h"><span class="st-ic">🎬</span><div><div class="st-card-t">스튜디오 모드</div><div class="st-card-d">앱 전체 UI 무드를 선택합니다 — 표준 다크 vs 방송 주조종실. 즉시 적용·저장됩니다.</div></div></div>
+        <div class="st-themegrid">
+            <ThemePreviewCard Broadcast="false" Active="@(!_broadcast)" Name="표준 다크" Icon="🌑" OnSelect="() => SelectBroadcast(false)" />
+            <ThemePreviewCard Broadcast="true" Active="@_broadcast" Name="방송 스튜디오" Icon="📡" OnSelect="() => SelectBroadcast(true)" />
+        </div>
+        <div class="st-hint">방송 스튜디오 모드: 글래스모피즘·네온 시그널·펄스 LED·라이브 VU 미터로 전 메뉴가 프로덕션 제어반처럼 바뀝니다.</div>
+    </section>
+
+    @* ── 렌더 알림 ── *@
+    <section class="st-card">
+        <div class="st-card-h"><span class="st-ic">🔔</span><div><div class="st-card-t">렌더 알림</div><div class="st-card-d">영상 생성·렌더 완료 시 알림 방식을 선택합니다.</div></div></div>
+        <div class="st-toggles">
+            <button class="st-tog @(_soundDone ? "on" : null)" @onclick="() => _soundDone = !_soundDone"><span class="st-knob"></span>완료 알림음</button>
+        </div>
+        <div class="st-hint">생성 파이프라인이 연결되면 렌더 완료 시 이 설정에 따라 알림이 동작합니다.</div>
+    </section>
+
+    @* ── AI 비디오 품질 & 정체성 유지 가드레일 (v5.6.4 · 즉시 적용) ── *@
+    <section class="st-card">
+        <div class="st-card-h"><span class="st-ic">🛡️</span><div><div class="st-card-t">AI 비디오 품질 &amp; 정체성 유지 가드레일</div><div class="st-card-d">인물·사물·동물의 형상을 1:1 유지하고 프레임 전환을 부드럽게 만드는 전역 품질 구문을 렌더 요청에 자동 결합합니다. T2V·I2V 모든 요청에 즉시 반영됩니다.</div></div></div>
+        <div class="st-toggles">
+            <button class="st-tog @(Prefs.EnableGlobalQualityGuardrail ? "on" : null)" @onclick="() => Prefs.EnableGlobalQualityGuardrail = !Prefs.EnableGlobalQualityGuardrail">
+                <span class="st-knob"></span>가드레일 @(Prefs.EnableGlobalQualityGuardrail ? "켜짐" : "꺼짐 — 원본 프롬프트 100%")
+            </button>
+        </div>
+        @if (Prefs.EnableGlobalQualityGuardrail)
+        {
+            <div class="st-grid" style="margin-top:14px">
+                <div class="st-field"><label>강도 프리셋</label>
+                    <select class="st-sel" value="@Prefs.QualityGuardrailPreset" @onchange="OnGuardPreset">
+                        <option value="Soft">Soft — 경량(정체성 핵심만)</option>
+                        <option value="Balanced">Balanced — 표준(권장)</option>
+                        <option value="Strict">Strict — 최상위(무플리커·초고밀도 모션)</option>
+                    </select>
+                </div>
+            </div>
+            <div class="st-field" style="margin-top:12px"><label>커스텀 키워드 <span style="opacity:.6">(선택 · 비우면 프리셋 사용)</span></label>
+                <textarea class="st-sel" rows="2" style="resize:vertical" value="@Prefs.CustomQualityPrompt" @onchange="OnGuardCustom"
+                          placeholder="예: consistent character face, stable product shape, no morphing"></textarea>
+            </div>
+        }
+        <div class="st-hint">⚠ 끄면(Off) 시스템이 프롬프트에 일절 개입하지 않아 <b>원본 그대로</b> 렌더됩니다(완전한 제어권).</div>
+    </section>
+
+    @* ── FFmpeg 실행 경로 (v5.7.3 · 데스크톱 실프레임 추출) ── *@
+    <section class="st-card">
+        <div class="st-card-h"><span class="st-ic">🎬</span><div><div class="st-card-t">FFmpeg 실행 경로</div><div class="st-card-d">시스템 PATH에 FFmpeg가 없거나 포터블 실행 파일을 쓸 때 경로를 직접 지정합니다. 비우면 PATH 탐색 → 없으면 스텁 프리뷰로 폴백됩니다.</div></div></div>
+        <div class="st-field"><label>FFmpeg 파일 경로 (.exe)</label>
+            <div class="st-inrow">
+                <input type="text" class="st-sel" placeholder="예: C:\Tools\ffmpeg\bin\ffmpeg.exe" value="@Prefs.FfmpegBinaryPath" @onchange="OnFfmpegPathChanged" />
+                <button type="button" class="st-btn-sm" @onclick="ValidateFfmpegPath">🔍 경로 검증</button>
+            </div>
+        </div>
+        @if (!string.IsNullOrEmpty(_ffmpegMsg))
+        {
+            <div class="st-hint @(_ffmpegOk ? "ok" : "err")">@_ffmpegMsg</div>
+        }
+        <div class="st-hint">지정 경로는 스토리보드 ▸ Long→Shorts 재구성의 실프레임 추출에 즉시 적용됩니다.</div>
+    </section>
+
+    @* ── 생성 기본값 (준비 중) ── *@
+    <section class="st-card">
+        <div class="st-card-h"><span class="st-ic">🎬</span><div><div class="st-card-t">생성 기본값 <span class="st-soon">준비 중</span></div><div class="st-card-d">새 프로젝트의 기본 해상도·화면비·길이. 생성 파이프라인 연결 후 적용됩니다.</div></div></div>
+        <div class="st-grid">
+            <div class="st-field"><label>기본 해상도</label>
+                <select class="st-sel" disabled><option>1080p (FHD)</option><option>720p (HD)</option><option>4K (UHD)</option></select>
+            </div>
+            <div class="st-field"><label>화면비</label>
+                <select class="st-sel" disabled><option>16:9 (가로)</option><option>9:16 (세로)</option><option>1:1 (정사각)</option></select>
+            </div>
+            <div class="st-field"><label>기본 길이</label>
+                <select class="st-sel" disabled><option>5초</option><option>10초</option><option>15초</option></select>
+            </div>
+        </div>
+    </section>
+</div>
+
+<style>
+    .st{padding:22px 26px 40px;max-width:980px;color:var(--ink,#e6eefc)}
+    .st-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:16px}
+    .st-title{font-size:22px;font-weight:800;margin:0;color:var(--ink,#f1f6ff)}
+    .st-sub{font-size:13px;color:var(--sub,#93a3b8);margin-top:4px}
+    .st-save{padding:10px 18px;border-radius:11px;border:0;cursor:pointer;font-weight:800;font-size:13.5px;color:#fff;background:linear-gradient(135deg,#8b7bff,#6d5efc);box-shadow:0 8px 22px rgba(124,108,255,.32)}
+    .st-toast{margin-bottom:14px;padding:10px 14px;border-radius:10px;font-size:13px;font-weight:700;color:#4ade80;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.4)}
+    .st-card{background:var(--card,#111a2e);border:1px solid var(--line,rgba(148,163,184,.16));border-radius:16px;padding:16px 18px;margin-bottom:14px}
+    .st-card-h{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+    .st-ic{width:42px;height:42px;flex:0 0 auto;display:grid;place-items:center;font-size:20px;border-radius:11px;background:rgba(124,108,255,.14);border:1px solid rgba(124,108,255,.3)}
+    .st-card-t{font-size:15px;font-weight:800;color:var(--ink,#f1f6ff)}
+    .st-card-d{font-size:11.5px;color:var(--sub,#93a3b8);margin-top:2px}
+    .st-soon{font:700 9px/1 'Roboto Mono',Consolas,monospace;color:var(--sub,#94a3b8);border:1px solid rgba(148,163,184,.3);border-radius:999px;padding:3px 7px;margin-left:6px;vertical-align:middle}
+    .st-toggles{display:flex;gap:10px;flex-wrap:wrap}
+    .st-tog{display:inline-flex;align-items:center;gap:9px;padding:9px 14px;border-radius:11px;cursor:pointer;font-size:13px;font-weight:700;color:var(--sub,#94a3b8);background:rgba(148,163,184,.06);border:1px solid var(--line,rgba(148,163,184,.18))}
+    .st-tog .st-knob{width:30px;height:17px;border-radius:999px;background:#334155;position:relative;transition:.18s}
+    .st-tog .st-knob::after{content:'';position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:#94a3b8;transition:.18s}
+    .st-tog.on{color:#c4b5fd;border-color:rgba(124,108,255,.45);background:rgba(124,108,255,.1)}
+    .st-tog.on .st-knob{background:linear-gradient(135deg,#6d5efc,#8b7bff)}
+    .st-tog.on .st-knob::after{left:15px;background:#fff}
+    .st-hint{margin-top:10px;font-size:11px;color:var(--sub,#94a3b8)} .st-hint b{color:var(--accent,#7c6cff)}
+    .st-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}
+    .st-field label{display:block;font-size:12px;font-weight:600;color:var(--sub,#b6c2d6);margin-bottom:6px}
+    .st-sel{width:100%;padding:9px 11px;border-radius:9px;background:rgba(8,6,16,.6);border:1px solid var(--line,rgba(148,163,184,.22));color:var(--ink,#e6eefc);font-size:13px;font-family:inherit}
+    .st-sel:disabled{opacity:.5;cursor:not-allowed}
+    .st-themegrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    @@media(max-width:620px){.st-themegrid{grid-template-columns:1fr}}
+    .st-inrow{display:flex;gap:8px;align-items:center}
+    .st-inrow .st-sel{flex:1}
+    .st-btn-sm{flex:0 0 auto;padding:9px 14px;border-radius:9px;border:1px solid var(--line,rgba(148,163,184,.22));background:rgba(124,108,255,.14);color:var(--ink,#e6eefc);font-size:12.5px;font-weight:700;cursor:pointer;white-space:nowrap}
+    .st-btn-sm:hover{border-color:var(--accent,#7c6cff)}
+    .st-hint.ok{color:#4ade80} .st-hint.err{color:#f87171}
+</style>
+
+@code {
+    private string _theme = "dark", _density = "comfortable", _lang = "ko";
+    private bool _motionOff, _soundDone, _broadcast;
+    private bool _saved;
+
+    // v5.6.4: 품질 가드레일 — Prefs 직결(즉시 영속·렌더 파이프라인 실시간 반영).
+    private void OnGuardPreset(ChangeEventArgs e)
+    {
+        if (Enum.TryParse<PromptFlowStudio.Services.Wan.QualityGuardrailPreset>(e.Value?.ToString(), out var p))
+            Prefs.QualityGuardrailPreset = p;
+    }
+    private void OnGuardCustom(ChangeEventArgs e) => Prefs.CustomQualityPrompt = e.Value?.ToString() ?? "";
+
+    // v5.7.3: 커스텀 FFmpeg 경로 — Prefs 직결(즉시 영속) + 파일 존재 검증.
+    private string? _ffmpegMsg;
+    private bool _ffmpegOk;
+    private void OnFfmpegPathChanged(ChangeEventArgs e) { Prefs.FfmpegBinaryPath = e.Value?.ToString() ?? ""; _ffmpegMsg = null; }
+    private void ValidateFfmpegPath()
+    {
+        var path = (Prefs.FfmpegBinaryPath ?? "").Trim();
+        if (string.IsNullOrEmpty(path)) { _ffmpegOk = true; _ffmpegMsg = "ℹ 비어 있음 — 시스템 PATH의 ffmpeg를 탐색합니다(없으면 스텁 프리뷰)."; return; }
+        if (System.IO.File.Exists(path)) { _ffmpegOk = true; _ffmpegMsg = "✅ 유효한 실행 파일을 확인했습니다."; }
+        else { _ffmpegOk = false; _ffmpegMsg = "❌ 해당 경로에 파일이 존재하지 않습니다."; }
+    }
+
+    // 스튜디오 모드 즉시 전환(방송 스튜디오 테마 루트 플래그 + 영속).
+    private async Task SelectBroadcast(bool on)
+    {
+        _broadcast = on;
+        Prefs.IsBroadcast = on;   // localStorage 영속(비동기)
+        try { await JS.InvokeVoidAsync("siteMaticUi.setRootFlag", "broadcast", on); }
+        catch (Exception) { /* 화면 옵션 때문에 앱이 죽으면 안 된다 */ }
+    }
+
+    protected override void OnInitialized()
+    {
+        if (!Session.IsAuthenticated) { Nav.NavigateTo("login"); return; }
+
+        // 저장된 값을 화면에 되살린다.
+        _theme = Prefs.Get(UserPreferenceService.Keys.Theme);
+        _density = Prefs.Get(UserPreferenceService.Keys.Density);
+        _soundDone = Prefs.GetBool(UserPreferenceService.Keys.SoundAlert);
+        _motionOff = Prefs.IsMotionDisabled;
+        _broadcast = Prefs.IsBroadcast;
+    }
+
+    private async Task Save()
+    {
+        Prefs.Set(UserPreferenceService.Keys.Theme, _theme);
+        Prefs.Set(UserPreferenceService.Keys.Density, _density);
+        Prefs.SetBool(UserPreferenceService.Keys.SoundAlert, _soundDone);
+        Prefs.IsMotionDisabled = _motionOff;
+
+        await ApplyTheme();
+        try { await JS.InvokeVoidAsync("siteMaticUi.setRootFlag", "motion-off", _motionOff); }
+        catch (Exception) { /* 화면 옵션 때문에 앱이 죽으면 안 된다 */ }
+
+        _saved = true;
+    }
+
+    private async Task ApplyTheme()
+    {
+        try { await JS.InvokeVoidAsync("siteMaticUi.setTheme", _theme); }
+        catch (Exception) { /* 테마 때문에 화면이 죽으면 안 된다 */ }
+    }
+}

@@ -1,0 +1,171 @@
+@using System.Threading
+@using Microsoft.AspNetCore.Components.Web.Virtualization
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+@* [PromptFlow Studio · v4.4.3 Task1] 테마 갤러리 하드닝 — <Virtualize> 가상화 + 네이티브 지연 로딩 + 리스너 즉시 소멸.
+   157종 고해상도 테마(Baby/Corporate/Automotive)를 고속 스크롤해도 ▸ 화면에 보이는 카드만 DOM 에 존재(Virtualize)하고
+   ▸ 오프스크린 썸네일은 브라우저 네이티브 loading="lazy"/decoding="async" 로 다운로드·디코드하지 않아 메모리 고갈·렌더 병목을 방어한다.
+   ▸ 모달이 닫혀 컴포넌트가 렌더 트리에서 제거되면 IAsyncDisposable 로 CTS 취소·JS 리스너 해제·DotNetRef 해제를 즉시 수행(핸들/리스너 누수 0). *@
+
+<div class="tgh-wrap">
+    <div class="tgh-head">
+        <div class="tgh-title">🖼️ 테마 갤러리 <span class="tgh-badge">@Filtered.Count / @(Items?.Count ?? 0)종</span></div>
+        <div class="tgh-cats">
+            @foreach (var c in Categories)
+            {
+                <button class="tgh-cat @(_activeCat == c ? "on" : null)" @onclick="() => SetCat(c)" @key="c">@CatLabel(c)</button>
+            }
+        </div>
+    </div>
+
+    @if (Filtered.Count == 0)
+    {
+        <div class="tgh-empty">표시할 테마가 없습니다.</div>
+    }
+    else
+    {
+        @* Virtualize 는 스크롤 컨테이너(고정 높이 + overflow) 안에서만 가상화가 동작한다. *@
+        <div class="tgh-scroll" @ref="_scrollRef">
+            <Virtualize Items="Filtered" ItemSize="140" OverscanCount="4" Context="t">
+                <ItemContent>
+                    <div class="tgh-card" @key="t.Key">
+                        <div class="tgh-thumb">
+                            @* 🖼️ 네이티브 지연 로딩 — 오프스크린이면 다운로드/디코드하지 않음(메모리 방어).
+                               width/height 고정으로 레이아웃 시프트(CLS) 차단. URL 없으면 이모지 플레이스홀더. *@
+                            @if (!string.IsNullOrWhiteSpace(t.ImageUrl))
+                            {
+                                <img src="@t.ImageUrl" alt="@t.Title" loading="lazy" decoding="async"
+                                     width="120" height="120" draggable="false" />
+                            }
+                            else
+                            {
+                                <span class="tgh-emoji">@(!string.IsNullOrWhiteSpace(t.Emoji) ? t.Emoji : "🎬")</span>
+                            }
+                        </div>
+                        <div class="tgh-meta">
+                            <div class="tgh-name">@t.Title</div>
+                            <div class="tgh-hook">@t.Hook</div>
+                            <div class="tgh-cat-tag">@CatLabel(t.Category)</div>
+                        </div>
+                        <button class="tgh-pick" @onclick="() => OnPick.InvokeAsync(t)" title="이 테마 선택">선택</button>
+                    </div>
+                </ItemContent>
+                <Placeholder>
+                    @* 아직 렌더되지 않은 행 — 셔머 자리표시자(스크롤 점프 방지). *@
+                    <div class="tgh-card tgh-ph">
+                        <div class="tgh-thumb tgh-shimmer"></div>
+                        <div class="tgh-meta"><div class="tgh-ph-line"></div><div class="tgh-ph-line short"></div></div>
+                    </div>
+                </Placeholder>
+            </Virtualize>
+        </div>
+    }
+</div>
+
+<style>
+    .tgh-wrap{display:flex; flex-direction:column; min-height:0; gap:12px}
+    .tgh-head{display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap}
+    .tgh-title{font-size:15px; font-weight:900; color:var(--text-primary); display:flex; align-items:center; gap:9px}
+    .tgh-badge{font:700 10.5px var(--mono); color:var(--accent-2); background:color-mix(in srgb,var(--accent-2) 12%,transparent); border:1px solid color-mix(in srgb,var(--accent-2) 30%,var(--line)); border-radius:20px; padding:3px 9px}
+    .tgh-cats{display:inline-flex; gap:6px; flex-wrap:wrap}
+    .tgh-cat{font:800 12px inherit; padding:7px 13px; border-radius:10px; border:1px solid var(--line); background:var(--card-2); color:var(--text-secondary); cursor:pointer}
+    .tgh-cat:hover{border-color:var(--accent); color:var(--text-primary)}
+    .tgh-cat.on{color:#fff; border-color:transparent; background:linear-gradient(135deg,var(--flow-violet),var(--flow-magenta)); box-shadow:0 4px 12px color-mix(in srgb,var(--flow-magenta) 24%,transparent)}
+    .tgh-empty{font:600 12px var(--mono); color:var(--text-muted); padding:36px 8px; text-align:center}
+    /* ⚡ 고정 높이 + 스크롤 = Virtualize 활성 조건. 보이는 행만 DOM 에 존재. */
+    .tgh-scroll{max-height:min(62vh,640px); overflow-y:auto; padding-right:4px}
+    .tgh-card{display:flex; align-items:center; gap:12px; height:132px; box-sizing:border-box; margin-bottom:8px; padding:10px; border-radius:13px; border:1px solid var(--line); background:var(--card-2)}
+    .tgh-card:hover{border-color:var(--accent)}
+    .tgh-thumb{flex:0 0 auto; width:120px; height:120px; border-radius:11px; overflow:hidden; display:grid; place-items:center; background:linear-gradient(135deg,#1a1730,#241d3f); border:1px solid rgba(255,255,255,.14)}
+    .tgh-thumb img{width:120px; height:120px; object-fit:cover; display:block}
+    .tgh-emoji{font-size:40px}
+    .tgh-meta{flex:1; min-width:0; display:flex; flex-direction:column; gap:4px}
+    .tgh-name{font-size:14px; font-weight:800; color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+    .tgh-hook{font-size:11.5px; color:var(--accent-2); line-height:1.4; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical}
+    .tgh-cat-tag{font:700 10px var(--mono); color:var(--text-muted); margin-top:2px}
+    .tgh-pick{flex:0 0 auto; align-self:center; font:800 12.5px inherit; padding:9px 15px; border-radius:10px; border:none; color:#fff; cursor:pointer; background:linear-gradient(135deg,var(--flow-violet),var(--flow-magenta)); box-shadow:0 4px 12px color-mix(in srgb,var(--flow-magenta) 22%,transparent)}
+    .tgh-pick:hover{filter:brightness(1.07)}
+    /* 자리표시자 셔머 */
+    .tgh-ph{opacity:.6}
+    .tgh-shimmer,.tgh-ph-line{background:linear-gradient(90deg,var(--card-2) 25%,color-mix(in srgb,var(--text-muted) 18%,var(--card-2)) 37%,var(--card-2) 63%); background-size:400% 100%; animation:tgh-sh 1.2s ease infinite}
+    .tgh-ph-line{height:12px; border-radius:6px; margin-top:8px} .tgh-ph-line.short{width:55%}
+    @@keyframes tgh-sh{0%{background-position:100% 0}100%{background-position:-100% 0}}
+    @@media(max-width:640px){.tgh-thumb,.tgh-thumb img{width:90px; height:90px} .tgh-card{height:auto; min-height:112px}}
+</style>
+
+@code {
+    /// <summary>갤러리 썸네일 뷰모델 — Baby/Corporate/Automotive DB 항목을 이 경량 레코드로 사영해 전달한다(가상화·지연로딩 대상).</summary>
+    public sealed record GalleryThumb(string Key, string Title, string Hook, string Emoji, string? ImageUrl, string Category);
+
+    /// <summary>표출할 테마 항목(부모가 3개 DB 를 GalleryThumb 로 사영해 합친 목록). null 이면 빈 갤러리.</summary>
+    [Parameter] public IReadOnlyList<GalleryThumb>? Items { get; set; }
+    /// <summary>카드 [선택] 콜백 — 부모가 스토리보드 구성으로 연결.</summary>
+    [Parameter] public EventCallback<GalleryThumb> OnPick { get; set; }
+    /// <summary>초기 활성 카테고리(all/baby/corporate/automotive · 기본 all).</summary>
+    [Parameter] public string InitialCategory { get; set; } = "all";
+
+    private static readonly string[] BaseCats = { "all", "baby", "corporate", "automotive" };
+
+    private string _activeCat = "all";
+    private ElementReference _scrollRef;
+    private DotNetObjectReference<ThemeGalleryHardening>? _selfRef;
+    private readonly CancellationTokenSource _cts = new();
+    private bool _jsObserved;
+
+    protected override void OnInitialized()
+        => _activeCat = string.IsNullOrWhiteSpace(InitialCategory) ? "all" : InitialCategory.Trim().ToLowerInvariant();
+
+    private IReadOnlyList<string> Categories
+    {
+        get
+        {
+            // 실제 존재하는 카테고리만 노출(빈 탭 방지) — all 은 항상 포함.
+            var present = (Items ?? Array.Empty<GalleryThumb>()).Select(i => i.Category).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            return BaseCats.Where(c => c == "all" || present.Contains(c)).ToList();
+        }
+    }
+
+    private List<GalleryThumb> Filtered =>
+        (Items ?? Array.Empty<GalleryThumb>())
+            .Where(i => _activeCat == "all" || string.Equals(i.Category, _activeCat, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+    private void SetCat(string c) => _activeCat = c;
+
+    private static string CatLabel(string c) => (c ?? "").ToLowerInvariant() switch
+    {
+        "all" => "전체",
+        "baby" => "👶 베이비",
+        "corporate" => "🏢 기업",
+        "automotive" => "🚗 자동차",
+        _ => string.IsNullOrWhiteSpace(c) ? "기타" : c,
+    };
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        // 스크롤 프리페치 등 JS 헬퍼가 탑재돼 있으면 등록 — 없으면 네이티브 lazy 로 충분(Graceful, 오류 아님).
+        try
+        {
+            _selfRef ??= DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("promptflowGallery.observe", _cts.Token, _scrollRef, _selfRef);
+            _jsObserved = true;
+        }
+        catch (JSException) { /* 헬퍼 미탑재 — 네이티브 지연 로딩으로 동작(정상) */ }
+        catch (Exception) { /* WebView 준비 전/취소 — 무시 */ }
+    }
+
+    /// <summary>⏹️ 모달 소멸(렌더 트리 제거) 즉시 호출 — CTS 취소 · JS 리스너 해제 · DotNetRef 해제로 리스너/핸들 누수 0.</summary>
+    public async ValueTask DisposeAsync()
+    {
+        try { _cts.Cancel(); } catch { /* 무시 */ }
+        if (_jsObserved)
+        {
+            try { await JS.InvokeVoidAsync("promptflowGallery.unobserve", _scrollRef); }
+            catch { /* WebView 종료 중일 수 있음 — 무시 */ }
+        }
+        _selfRef?.Dispose();
+        _cts.Dispose();
+    }
+}

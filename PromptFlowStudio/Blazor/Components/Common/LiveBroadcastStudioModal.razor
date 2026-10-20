@@ -1,0 +1,319 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.LiveStream
+@implements IDisposable
+@inject LiveBroadcastStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.71.0] 📺 AI 자율 라이브 방송 & 스트리밍 스튜디오 — 스위처 멀티뷰(프로그램/프리뷰 탈리 · 소스 점수 · 전환 로그) ·
+    시청자 반응 감도 게이지(열기/정서 · 감도 슬라이더 · BPM · 조명 · 앵커 모션 · 월드 분기 투표) · 1-Click 온에어 토글 · 다중 플랫폼 송출 현황.
+*@
+
+<div class="lbs-scrim" @onclick="Close">
+    <div class="lbs-modal" @onclick:stopPropagation="true">
+        <div class="lbs-h">
+            <div>
+                <div class="lbs-title">📺 AI 자율 라이브 방송 &amp; 스트리밍 스튜디오</div>
+                <div class="lbs-sub">멀티캠 · 3DGS · ICVFX 소스를 <b>발화 · 모션 · 시청자 반응</b>으로 자율 스위칭(Cut/Dissolve/Wipe · 60fps A/V 정렬)하고,
+                    채팅 · 후원 · 투표로 <b>4D 월드 · BGM · 조명 · 앵커 모션</b>을 변조해 <b>RTMP · SRT · WebRTC</b>로 동시 송출합니다.</div>
+            </div>
+            <button class="lbs-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="lbs-bar">
+            <button class="lbs-air @(Runner.OnAir ? "on" : null)" @onclick="ToggleAir">@(Runner.OnAir ? "🔴 ON AIR · " + Clock(Runner.OnAirMs) : "⚪ 1-Click 온에어")</button>
+            <button class="lbs-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 스튜디오 정지" : "▶ 리허설(미송출)")</button>
+            <button class="lbs-btn @(Runner.Switcher.CompensateLatency ? "on" : null)" @onclick="() => Runner.Switcher.CompensateLatency = !Runner.Switcher.CompensateLatency">🎚 지연 보상 @(Runner.Switcher.CompensateLatency ? "ON" : "OFF")</button>
+            <button class="lbs-btn @(Runner.DemoCrowd ? "on" : null)" @onclick="() => Runner.DemoCrowd = !Runner.DemoCrowd">👥 데모 관객 @(Runner.DemoCrowd ? "ON" : "OFF")</button>
+            <span class="lbs-chip">프레임 @(Runner.Frame)</span>
+            <span class="lbs-chip">렌더 @(F0(Runner.Switcher.RenderMicros))μs</span>
+            <span class="lbs-chip @(MathF.Abs(Runner.Switcher.AvOffsetMs) > 20 ? "warn" : null)">A/V @(F1(Runner.Switcher.AvOffsetMs))ms</span>
+            <span class="lbs-chip">파이프 @(F1(Runner.Switcher.PipelineDelayMs + LiveBroadcastStudioRunner.EncodeMs))ms</span>
+        </div>
+
+        <div class="lbs-main">
+            <div class="lbs-col">
+                <div class="lbs-card">
+                    <div class="lbs-sec">🎛 스위처 멀티뷰</div>
+                    <div class="lbs-pp">
+                        <div class="lbs-big pvw">
+                            @if (_thumbs.TryGetValue(Runner.Switcher.Preview, out var pv)) { <img src="@pv" /> }
+                            <span>PVW · @(Runner.Switcher.Preview >= 0 ? Runner.Switcher.SourceAt(Runner.Switcher.Preview).Name : "—")</span>
+                        </div>
+                        <div class="lbs-big pgm">
+                            @if (_thumbs.TryGetValue(-1, out var pg)) { <img src="@pg" /> }
+                            <span>PGM · @(Runner.Switcher.SourceAt(Runner.Switcher.Live).Name) @(Runner.Switcher.InTransition ? "· " + TransLabel(Runner.Switcher.CurrentTransition) : null)</span>
+                        </div>
+                    </div>
+                    <div class="lbs-grid">
+                        @for (var i = 0; i < Runner.Switcher.SourceCount; i++)
+                        {
+                            var s = i;
+                            var src = Runner.Switcher.SourceAt(s);
+                            <div class="lbs-tile @(Runner.Switcher.Live == s ? "pgm" : Runner.Switcher.Preview == s ? "pvw" : null)">
+                                @if (_thumbs.TryGetValue(s, out var th)) { <img src="@th" /> }
+                                <div class="lbs-tn">@(s + 1). @src.Name <em>@(KindLabel(src.Kind)) · +@(src.LatencyFrames)f</em></div>
+                                <div class="lbs-meter"><i style="width:@(Pct(Runner.Switcher.ScoreOf(s) / 2f))"></i></div>
+                                <div class="lbs-take">
+                                    <button @onclick="() => Runner.Switcher.Take(s, LiveTransition.Cut)">CUT</button>
+                                    <button @onclick="() => Runner.Switcher.Take(s, LiveTransition.Dissolve)">MIX</button>
+                                    <button @onclick="() => Runner.Switcher.Take(s, LiveTransition.Wipe)">WIPE</button>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                    <div class="lbs-log">
+                        @for (var i = 0; i < _logN; i++)
+                        {
+                            var e = _log[i];
+                            <div><b>@(Clock(e.Frame * 1000 / AiLiveBroadcastAutonomousSwitchingEngine.Fps))</b> @(e.From >= 0 ? (e.From + 1).ToString(CultureInfo.InvariantCulture) : "—") → @(e.To + 1) · @(TransLabel(e.Transition)) · <em>@(ReasonLabel(e.Reason))</em></div>
+                        }
+                    </div>
+                </div>
+
+                <div class="lbs-card">
+                    <div class="lbs-sec">📡 다중 플랫폼 송출 (인제스트 지연 · 목표 &lt; @(F0(UltraLowLatencyMultiPlatformStreamer.TargetMs))ms)</div>
+                    <table class="lbs-tbl">
+                        <tr><th>대상</th><th>프로토콜</th><th>비트레이트</th><th>P50 · P95</th><th>전달</th><th>재전송</th><th>키</th></tr>
+                        @for (var i = 0; i < _destN; i++)
+                        {
+                            var d = _dest[i];
+                            <tr class="@(d.Frames > 0 ? d.Healthy ? "ok" : "bad" : null)">
+                                <td>@d.Platform</td>
+                                <td>@(d.Protocol switch { LiveProtocol.Rtmp => "RTMP", LiveProtocol.Srt => "SRT", _ => "WebRTC" })</td>
+                                <td>@(d.BitrateKbps)kbps</td>
+                                <td>@(F0(d.P50Ms)) · @(F0(d.P95Ms))ms</td>
+                                <td>@(d.Frames > 0 ? Pct((float)d.Delivered / d.Frames) : "—")</td>
+                                <td>@d.Retransmits</td>
+                                <td>@(d.KeyConfigured ? "🔑" : "미설정")</td>
+                            </tr>
+                        }
+                    </table>
+                    <div class="lbs-note">링크는 시뮬레이션 모델 · 스트림 키는 환경변수(PFS_*_STREAM_KEY 등)에서만 읽고 실 소켓은 전송 결선점 등록 시 사용 · 시청자 측 플랫폼 배포 지연 제외</div>
+                </div>
+            </div>
+
+            <div class="lbs-col">
+                <div class="lbs-card">
+                    <div class="lbs-sec">💬 시청자 반응 감도 게이지</div>
+                    <div class="lbs-gauges">
+                        <svg viewBox="-60 -60 120 75" class="lbs-gauge">
+                            <path d="M-48,0 A48,48 0 0 1 48,0" class="bg" />
+                            <path d="@GaugeArc(_st.Hype)" class="hype" />
+                            <text y="-8" class="v">@(Pct(_st.Hype))</text>
+                            <text y="10" class="l">열기</text>
+                        </svg>
+                        <svg viewBox="-60 -60 120 75" class="lbs-gauge">
+                            <path d="M-48,0 A48,48 0 0 1 48,0" class="bg" />
+                            <path d="@GaugeArc((_st.Valence + 1) / 2)" class="val" />
+                            <text y="-8" class="v">@(F2(_st.Valence))</text>
+                            <text y="10" class="l">정서</text>
+                        </svg>
+                        <div class="lbs-dir">
+                            <div><b>🎵 @(F0(_st.BgmBpm)) BPM</b> BGM 템포</div>
+                            <div><b><i class="sw" style="background:hsl(@F0(_st.LightHue),@(F0(_st.LightSat * 100))%,@(F0(_st.LightLevel * 60))%)"></i> @(F0(_st.LightHue))°</b> 조명 색조</div>
+                            <div><b>@(MotionIcon(_st.Motion)) @(MotionLabel(_st.Motion))</b> 앵커 모션</div>
+                            <div><b>🌍 @(InteractiveStreamViewerFeedbackDirector.WorldBranches[_st.WorldBranch])</b> 4D 월드</div>
+                        </div>
+                    </div>
+                    <label class="lbs-slider">반응 감도 <b>×@(F1(Runner.Director.Sensitivity))</b><input type="range" min="0" max="2" step="0.1" value="@F1(Runner.Director.Sensitivity)" @oninput="e => Runner.Director.Sensitivity = P(e)" /></label>
+                    <div class="lbs-note">채팅 @(F1(_st.MsgPerSec))/s · 후원 @(F1(_st.DonationPerMin))/분 · 수락 @(_st.Accepted) · 차단/제한 @(_st.Dropped) · 지배 감정 @(EmotionLabel(_st.Dominant))</div>
+                    <div class="lbs-poll">
+                        <button class="lbs-btn" disabled="@_st.PollOpen" @onclick="Runner.StartPoll">🗳 월드 분기 투표</button>
+                        @for (var i = 0; i < Runner.Director.PollOptions; i++)
+                        {
+                            var o = i;
+                            <div class="opt @(Runner.Director.LastWinner == o && !_st.PollOpen ? "win" : null)">
+                                <span>@(InteractiveStreamViewerFeedbackDirector.WorldBranches[o])</span>
+                                <i style="width:@(Pct(_votesTotal > 0 ? (float)_votes[o] / _votesTotal : 0))"></i><b>@_votes[o]</b>
+                            </div>
+                        }
+                        @if (_st.PollOpen)
+                        {
+                            <div class="lbs-note">남은 시간 @(F0(Math.Max(0, Runner.Director.PollEndsMs - Runner.NowMs) / 1000.0))초</div>
+                        }
+                    </div>
+                </div>
+
+                <div class="lbs-card">
+                    <div class="lbs-sec">🗨 라이브 채팅 · 후원</div>
+                    <div class="lbs-chat">
+                        @for (var i = 0; i < _feedN; i++)
+                        {
+                            var c = _feed[i];
+                            <div class="v@((int)c.Verdict)"><b>@c.User</b> @c.Text @if (c.Donation > 0) { <em>₩@(c.Donation.ToString("N0", CultureInfo.InvariantCulture))</em> } <i>@(EmotionLabel(c.Emotion))</i></div>
+                        }
+                    </div>
+                    <div class="lbs-row">
+                        <input class="lbs-in" @bind="_chat" @bind:event="oninput" placeholder="채팅 테스트 입력" @onkeydown="OnChatKey" />
+                        <button class="lbs-btn" @onclick="SendChat">전송</button>
+                        @for (var i = 0; i < InteractiveStreamViewerFeedbackDirector.Emotes.Length; i++)
+                        {
+                            var em = i;
+                            <button class="lbs-emote" @onclick="() => Runner.Director.Donate(_me, em, 3000, Runner.NowMs)">@(InteractiveStreamViewerFeedbackDirector.Emotes[em])</button>
+                        }
+                    </div>
+                </div>
+                @if ((Runner.LastAction ?? Runner.Director.LastAction) is { } act)
+                {
+                    <div class="lbs-note">@act</div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .lbs-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .lbs-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .lbs-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #ef4444 16%, var(--card)), color-mix(in srgb, #0ea5e9 14%, var(--card))); }
+    .lbs-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .lbs-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .lbs-sub b { color: var(--text-primary); }
+    .lbs-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .lbs-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .lbs-air { font-size: 13px; font-weight: 900; padding: 7px 16px; border-radius: 10px; border: 2px solid #64748b; background: transparent; color: var(--text-primary); cursor: pointer; }
+    .lbs-air.on { border-color: #ef4444; background: color-mix(in srgb, #ef4444 28%, transparent); animation: lbs-blink 1.2s ease-in-out infinite; }
+    .lbs-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .lbs-btn.on { background: color-mix(in srgb, #0ea5e9 22%, transparent); border-color: #0ea5e9; }
+    .lbs-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .lbs-chip.warn { border-color: #f97316; color: #fdba74; }
+    .lbs-main { display: grid; grid-template-columns: 1.25fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .lbs-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .lbs-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .lbs-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); }
+    .lbs-pp { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .lbs-big { position: relative; aspect-ratio: 16 / 9; background: #020617; border-radius: 8px; overflow: hidden; border: 3px solid #334155; }
+    .lbs-big.pgm { border-color: #ef4444; } .lbs-big.pvw { border-color: #22c55e; }
+    .lbs-big img, .lbs-tile img { width: 100%; height: 100%; object-fit: cover; image-rendering: pixelated; display: block; }
+    .lbs-big span { position: absolute; left: 6px; bottom: 4px; font: 800 11px var(--mono); color: #fff; text-shadow: 0 1px 2px #000; }
+    .lbs-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .lbs-tile { position: relative; border: 2px solid #334155; border-radius: 8px; overflow: hidden; background: #020617; display: flex; flex-direction: column; }
+    .lbs-tile img { aspect-ratio: 16 / 9; height: auto; }
+    .lbs-tile.pgm { border-color: #ef4444; } .lbs-tile.pvw { border-color: #22c55e; }
+    .lbs-tn { font-size: 10.5px; font-weight: 700; color: #e2e8f0; padding: 2px 5px; } .lbs-tn em { font-style: normal; color: #94a3b8; font-weight: 500; }
+    .lbs-meter { height: 4px; background: #1e293b; margin: 0 5px; border-radius: 2px; } .lbs-meter i { display: block; height: 100%; background: #38bdf8; border-radius: 2px; }
+    .lbs-take { display: flex; gap: 3px; padding: 4px 5px; } .lbs-take button { flex: 1; font: 800 9.5px var(--mono); border: 1px solid #475569; background: #0f172a; color: #e2e8f0; border-radius: 4px; cursor: pointer; padding: 2px 0; }
+    .lbs-log { font-size: 11px; color: var(--text-secondary); max-height: 96px; overflow-y: auto; font-family: var(--mono); }
+    .lbs-log em { font-style: normal; color: var(--text-muted); }
+    .lbs-tbl { width: 100%; border-collapse: collapse; font-size: 11px; color: var(--text-secondary); }
+    .lbs-tbl th { text-align: left; font-weight: 700; color: var(--text-muted); border-bottom: 1px solid var(--line); padding: 3px 4px; }
+    .lbs-tbl td { padding: 3px 4px; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); font-family: var(--mono); }
+    .lbs-tbl tr.ok td:first-child { color: #86efac; } .lbs-tbl tr.bad td:first-child { color: #fca5a5; }
+    .lbs-gauges { display: grid; grid-template-columns: 1fr 1fr 1.3fr; gap: 8px; align-items: center; }
+    .lbs-gauge .bg { fill: none; stroke: #1e293b; stroke-width: 10; } .lbs-gauge .hype { fill: none; stroke: #f43f5e; stroke-width: 10; stroke-linecap: round; } .lbs-gauge .val { fill: none; stroke: #facc15; stroke-width: 10; stroke-linecap: round; }
+    .lbs-gauge .v { font: 800 14px var(--mono); fill: var(--text-primary); text-anchor: middle; } .lbs-gauge .l { font-size: 9px; fill: var(--text-muted); text-anchor: middle; }
+    .lbs-dir { display: flex; flex-direction: column; gap: 4px; font-size: 10.5px; color: var(--text-muted); }
+    .lbs-dir b { color: var(--text-primary); font-size: 12px; margin-right: 4px; } .lbs-dir .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -2px; }
+    .lbs-slider { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--text-secondary); }
+    .lbs-slider b { color: var(--text-primary); font-family: var(--mono); } .lbs-slider input { width: 100%; accent-color: #f43f5e; }
+    .lbs-poll { display: flex; flex-direction: column; gap: 4px; }
+    .lbs-poll .opt { position: relative; display: flex; justify-content: space-between; font-size: 11.5px; color: var(--text-primary); padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+    .lbs-poll .opt i { position: absolute; left: 0; top: 0; bottom: 0; background: color-mix(in srgb, #0ea5e9 25%, transparent); z-index: 0; } .lbs-poll .opt span, .lbs-poll .opt b { position: relative; z-index: 1; }
+    .lbs-poll .opt.win { border-color: #22c55e; }
+    .lbs-chat { display: flex; flex-direction: column-reverse; gap: 2px; max-height: 220px; overflow-y: auto; font-size: 11.5px; color: var(--text-secondary); }
+    .lbs-chat b { color: #93c5fd; } .lbs-chat em { font-style: normal; color: #fde047; font-weight: 800; } .lbs-chat i { font-style: normal; font-size: 10px; color: var(--text-muted); }
+    .lbs-chat .v1 { opacity: .45; } .lbs-chat .v2 { color: #fca5a5; }
+    .lbs-row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+    .lbs-in { flex: 1; min-width: 140px; font-size: 12px; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .lbs-emote { font-size: 15px; background: transparent; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; padding: 1px 5px; }
+    .lbs-note { font-size: 11px; color: var(--text-muted); }
+    @@keyframes lbs-blink { 50% { box-shadow: 0 0 14px #ef4444; } }
+    @@media (max-width: 1200px) { .lbs-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly Dictionary<int, string> _thumbs = new();
+    private readonly SwitchEvent[] _log = new SwitchEvent[12];
+    private readonly LiveDestinationStats[] _dest = new LiveDestinationStats[8];
+    private readonly ChatItem[] _feed = new ChatItem[30];
+    private readonly int[] _votes = new int[InteractiveStreamViewerFeedbackDirector.MaxOptions];
+    private int _logN, _destN, _feedN, _votesTotal, _tick;
+    private DirectorState _st;
+    private string _chat = "";
+    private const string _me = "스튜디오";
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        Refresh(true);
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(() => { Refresh(++_tick % 2 == 0); StateHasChanged(); }); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Live.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string Pct(float v) => (Math.Clamp(v, 0f, 1f) * 100f).ToString("0", CultureInfo.InvariantCulture) + "%";
+    private static float P(ChangeEventArgs e) => float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0;
+    private static string Clock(long ms) => (ms / 60000).ToString("00", CultureInfo.InvariantCulture) + ":" + (ms / 1000 % 60).ToString("00", CultureInfo.InvariantCulture);
+
+    private static string GaugeArc(float v)
+    {
+        var a = MathF.PI * (1 - Math.Clamp(v, 0.001f, 1f));
+        return "M-48,0 A48,48 0 0 1 " + F1(MathF.Cos(a) * 48) + "," + F1(-MathF.Sin(a) * 48);
+    }
+
+    private static string TransLabel(LiveTransition t) => t switch { LiveTransition.Cut => "CUT", LiveTransition.Dissolve => "DISSOLVE", _ => "WIPE" };
+    private static string ReasonLabel(SwitchReason r) => r switch
+    {
+        SwitchReason.Speech => "발화", SwitchReason.Motion => "모션", SwitchReason.Director => "시청자 반응", SwitchReason.MaxHold => "최대 홀드", _ => "수동",
+    };
+    private static string KindLabel(LiveSourceKind k) => k switch { LiveSourceKind.Camera => "실사", LiveSourceKind.Gaussian3d => "3DGS", _ => "ICVFX" };
+    private static string EmotionLabel(ChatEmotion e) => e switch
+    {
+        ChatEmotion.Joy => "즐거움", ChatEmotion.Hype => "열광", ChatEmotion.Surprise => "놀람", ChatEmotion.Sad => "슬픔", ChatEmotion.Angry => "불만", _ => "중립",
+    };
+    private static string MotionLabel(AnchorMotion m) => m switch
+    {
+        AnchorMotion.Nod => "끄덕임", AnchorMotion.Laugh => "웃음", AnchorMotion.Cheer => "환호", AnchorMotion.Dance => "댄스", AnchorMotion.Surprise => "깜짝", AnchorMotion.Sad => "울먹임", AnchorMotion.Calm => "진정", _ => "대기",
+    };
+    private static string MotionIcon(AnchorMotion m) => m switch
+    {
+        AnchorMotion.Nod => "🙂", AnchorMotion.Laugh => "😆", AnchorMotion.Cheer => "🙌", AnchorMotion.Dance => "💃", AnchorMotion.Surprise => "😲", AnchorMotion.Sad => "🥺", AnchorMotion.Calm => "😌", _ => "😐",
+    };
+
+    private void Refresh(bool thumbs)
+    {
+        _st = Runner.State;
+        _logN = Runner.Switcher.CopyLog(_log);
+        _destN = Runner.Streamer.CopyStats(_dest);
+        _feedN = Runner.Director.CopyFeed(_feed);
+        var n = Runner.Director.CopyVotes(_votes);
+        _votesTotal = 0; for (var i = 0; i < n; i++) _votesTotal += _votes[i];
+        if (!thumbs) return;
+        _thumbs[-1] = Uri(Runner.SnapshotBmp(-1));
+        for (var s = 0; s < Runner.Switcher.SourceCount; s++) _thumbs[s] = Uri(Runner.SnapshotBmp(s));
+    }
+
+    private static string Uri(byte[] bmp) => "data:image/bmp;base64," + Convert.ToBase64String(bmp);
+
+    private void ToggleAir() => Runner.ToggleOnAir();
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+
+    private void SendChat()
+    {
+        if (string.IsNullOrWhiteSpace(_chat)) return;
+        Runner.Director.Chat(_me, _chat, Runner.NowMs);
+        _chat = "";
+    }
+
+    private void OnChatKey(KeyboardEventArgs e) { if (e.Key == "Enter") SendChat(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        if (!Runner.OnAir) Runner.Stop();   // 온에어 중에는 모달을 닫아도 송출 유지
+    }
+}

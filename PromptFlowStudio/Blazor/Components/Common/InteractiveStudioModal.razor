@@ -1,0 +1,471 @@
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.Interactive
+@implements IDisposable
+@inject InteractiveChoiceBranchingService Branch
+@inject ShoppableVideoOverlayEngine Shop
+@inject InteractiveConversionAnalytics Analytics
+
+@* [PromptFlow Studio v16.26.0] 🔀 인터랙티브 분기 & 쇼핑 스튜디오 — 결정 트리 에디터/비주얼라이저 · 선택지 카운트다운 · 라이브 투표 리허설
+   · 쇼핑 핫스팟 태그(브랜드 캠페인 시드 · 자동 추적) · 전환율 분석 · 1-Click 인터랙티브 패키지. 상태는 서비스(싱글턴) 소유 — OnChange 구독 + InvokeAsync(StateHasChanged). *@
+
+<div class="ix-scrim" @onclick="Close">
+    <div class="ix-modal" @onclick:stopPropagation="true">
+        <div class="ix-h">
+            <div>
+                <div class="ix-title">🔀 인터랙티브 분기 &amp; 쇼핑 스튜디오</div>
+                <div class="ix-sub">컷 영상을 노드로, 시청자 선택지(A~D)를 링크로 엮어 분기형 스토리를 만들고 화면 속 상품에 터치형 구매 태그를 붙입니다.
+                    내보내기는 <b>player.html + graph.json + 클립</b>(인터랙티브)과 기본 경로 <b>선형 영상</b>(카운트다운·태그 번인)을 함께 만듭니다.</div>
+            </div>
+            <button class="ix-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="ix-tabs">
+            <button class="@(_tab == 0 ? "on" : "")" @onclick="() => _tab = 0">🌳 분기 시나리오</button>
+            <button class="@(_tab == 1 ? "on" : "")" @onclick="() => _tab = 1">🗳 라이브 투표</button>
+            <button class="@(_tab == 2 ? "on" : "")" @onclick="() => _tab = 2">🛍️ 쇼핑 태그 @(Shop.TagCount)개</button>
+            <button class="@(_tab == 3 ? "on" : "")" @onclick="() => _tab = 3">📊 전환율</button>
+        </div>
+
+        <div class="ix-body">
+            @if (_tab == 0)
+            {
+                var nodes = Branch.Nodes;
+                var start = Branch.StartNodeId;
+                var issues = InteractiveChoiceBranchingService.ValidateGraph(nodes, start);
+                <div class="ix-row">
+                    <button class="ix-btn" disabled="@Busy" @onclick="Seed">🎬 스토리보드 컷으로 시드</button>
+                    <button class="ix-btn" disabled="@(Busy || nodes.Count >= InteractiveChoiceBranchingService.MaxNodes)" @onclick="AddNode">➕ 빈 노드</button>
+                    <span class="ix-sec">시작</span>
+                    <select class="ix-in" value="@(start ?? "")" @onchange="e => Branch.StartNodeId = e.Value?.ToString()" disabled="@Busy">
+                        @foreach (var n in nodes) { <option value="@n.Id">@(n.Title) (@(n.Id))</option> }
+                    </select>
+                    <span class="ix-chip">노드 @(nodes.Count)/@(InteractiveChoiceBranchingService.MaxNodes)</span>
+                    <button class="ix-btn" disabled="@(Busy || nodes.Count == 0)" @onclick="Branch.ClearGraph">🗑 초기화</button>
+                </div>
+
+                @if (nodes.Count > 0 && start is not null)
+                {
+                    var depths = InteractiveChoiceBranchingService.ComputeDepths(nodes, start);
+                    var pos = Layout(nodes, depths, out var vw, out var vh);
+                    <svg class="ix-tree" viewBox="0 0 @(vw.ToString(CultureInfo.InvariantCulture)) @(vh.ToString(CultureInfo.InvariantCulture))" preserveAspectRatio="xMinYMin meet">
+                        @foreach (var n in nodes)
+                        {
+                            if (!pos.TryGetValue(n.Id, out var p0)) continue;
+                            for (var oi = 0; oi < n.Options.Count; oi++)
+                            {
+                                if (!pos.TryGetValue(n.Options[oi].TargetNodeId, out var p1)) continue;
+                                var dflt = oi == n.DefaultOption;
+                                <g>
+                                    <line x1="@F(p0.X + 150)" y1="@F(p0.Y + 22)" x2="@F(p1.X)" y2="@F(p1.Y + 22)" stroke="@(dflt ? "#fbbf24" : "#64748b")" stroke-width="@(dflt ? "2.5" : "1.5")" />
+                                    @if (n.IsChoicePoint)
+                                    {
+                                        <g><text x="@F((p0.X + 150 + p1.X) / 2)" y="@F((p0.Y + p1.Y) / 2 + 18)" class="ix-tl">@(InteractiveChoiceBranchingService.OptionLetter(oi))</text></g>
+                                    }
+                                </g>
+                            }
+                        }
+                        @foreach (var n in nodes)
+                        {
+                            if (!pos.TryGetValue(n.Id, out var p)) continue;
+                            var fill = n.Id == start ? "#0ea5e9" : n.IsEnding ? "#16a34a" : n.IsChoicePoint ? "#8b5cf6" : "#475569";
+                            var live = Branch.CurrentNode?.Id == n.Id && Branch.State == ChoiceSessionState.Voting;
+                            <g>
+                                <rect x="@F(p.X)" y="@F(p.Y)" width="150" height="44" rx="10" fill="@fill" stroke="@(live ? "#f43f5e" : "none")" stroke-width="3" />
+                                <text x="@F(p.X + 10)" y="@F(p.Y + 19)" class="ix-tn">@(Cut(n.Title, 14))</text>
+                                <text x="@F(p.X + 10)" y="@F(p.Y + 35)" class="ix-ts">@(n.IsEnding ? "엔딩" : n.IsChoicePoint ? "선택 " + n.Options.Count.ToString(CultureInfo.InvariantCulture) + "지 · " + n.CountdownSeconds.ToString("0", CultureInfo.InvariantCulture) + "초" : "자동 진행")</text>
+                            </g>
+                        }
+                    </svg>
+                }
+
+                @if (issues.Count > 0)
+                {
+                    <div class="ix-issues">
+                        @foreach (var i in issues)
+                        {
+                            <div class="@(i.Fatal ? "bad" : "warn")">@(i.Fatal ? "⛔" : "⚠") @(i.NodeId.Length > 0 ? "[" + i.NodeId + "] " : "")@(i.Message)</div>
+                        }
+                    </div>
+                }
+                else { <div class="ix-note ok">✅ 결정 트리 검증 통과</div> }
+
+                @foreach (var n in nodes)
+                {
+                    <div class="ix-node">
+                        <div class="ix-row">
+                            <input class="ix-in w140" @bind="n.Title" @bind:after="Branch.Touch" placeholder="노드 제목" disabled="@Busy" />
+                            <input class="ix-in grow" @bind="n.Prompt" @bind:after="Branch.Touch" placeholder="선택 질문(예: 어느 길로 갈까요?)" disabled="@Busy" />
+                            <label class="ix-mut">⏱ <input class="ix-in w56" type="number" min="3" max="20" step="1" @bind="n.CountdownSeconds" @bind:after="Branch.Touch" disabled="@Busy" />초</label>
+                            <span class="ix-mut ix-path" title="@(n.VideoPath)">@(string.IsNullOrWhiteSpace(n.VideoPath) ? "영상 없음" : System.IO.Path.GetFileName(n.VideoPath))</span>
+                            <button class="ix-btn" disabled="@Busy" @onclick="() => Branch.RemoveNode(n.Id)">✕</button>
+                        </div>
+                        @for (var oi = 0; oi < n.Options.Count; oi++)
+                        {
+                            var idx = oi;
+                            var o = n.Options[idx];
+                            <div class="ix-row ix-opt">
+                                <label class="ix-mut"><input type="radio" name="@("def_" + n.Id)" checked="@(n.DefaultOption == idx)" @onchange="() => { n.DefaultOption = idx; Branch.Touch(); }" disabled="@Busy" /> @(InteractiveChoiceBranchingService.OptionLetter(idx))</label>
+                                <input class="ix-in grow" @bind="o.Label" @bind:after="Branch.Touch" placeholder="버튼 라벨" disabled="@Busy" />
+                                <span class="ix-mut">→ @(Branch.NodeOf(o.TargetNodeId)?.Title ?? o.TargetNodeId)</span>
+                                <button class="ix-btn" disabled="@Busy" @onclick="() => { n.Options.RemoveAt(idx); if (n.DefaultOption >= n.Options.Count) n.DefaultOption = 0; Branch.Touch(); }">✕</button>
+                            </div>
+                        }
+                        @if (n.Options.Count < InteractiveChoiceBranchingService.MaxOptions)
+                        {
+                            <div class="ix-row ix-opt">
+                                <select class="ix-in" @onchange="e => LinkTo(n.Id, e.Value?.ToString())" disabled="@Busy">
+                                    <option value="">+ 선택지 @(InteractiveChoiceBranchingService.OptionLetter(n.Options.Count)) 연결 대상…</option>
+                                    @foreach (var t in nodes) { if (t.Id != n.Id) { <option value="@t.Id">@(t.Title)</option> } }
+                                </select>
+                            </div>
+                        }
+                    </div>
+                }
+            }
+            else if (_tab == 1)
+            {
+                var cur = Branch.CurrentNode;
+                <div class="ix-row">
+                    <span class="ix-sec">선택 지점</span>
+                    <select class="ix-in" @bind="_voteNode" disabled="@(Branch.State == ChoiceSessionState.Voting)">
+                        <option value="">선택…</option>
+                        @foreach (var n in Branch.Nodes) { if (n.IsChoicePoint) { <option value="@n.Id">@(n.Title)</option> } }
+                    </select>
+                    <button class="ix-btn go" disabled="@(string.IsNullOrEmpty(_voteNode) || Branch.State == ChoiceSessionState.Voting)" @onclick="() => Branch.BeginChoice(_voteNode!)">🗳 투표 시작</button>
+                    <button class="ix-btn" disabled="@(Branch.State != ChoiceSessionState.Voting)" @onclick="() => Branch.Resolve()">⏹ 즉시 마감</button>
+                    <button class="ix-btn" disabled="@(Branch.State != ChoiceSessionState.Voting)" @onclick="Branch.CancelVoting">취소</button>
+                </div>
+                <div class="ix-note">라이브 채팅의 <b>A/B/1/2/!A</b> 메시지가 시청자당 1표로 집계됩니다(📺 라이브 스튜디오 연동). 아래 버튼은 리허설용 수동 투표입니다.</div>
+                @if (cur is not null)
+                {
+                    var total = Branch.TotalVotes;
+                    <div class="ix-row">
+                        <span class="ix-chip @(Branch.State == ChoiceSessionState.Voting ? "live" : "")">@(Branch.State == ChoiceSessionState.Voting ? "🔴 투표 중 · " + Branch.RemainingSeconds.ToString("0.0", CultureInfo.InvariantCulture) + "초" : "마감")</span>
+                        <span class="ix-sec">@(cur.Prompt.Length > 0 ? cur.Prompt : cur.Title)</span>
+                        <span class="ix-chip">총 @(total)표</span>
+                    </div>
+                    @for (var oi = 0; oi < cur.Options.Count && oi < InteractiveChoiceBranchingService.MaxOptions; oi++)
+                    {
+                        var idx = oi;
+                        var v = Branch.VotesOf(idx);
+                        var pct = total > 0 ? v * 100.0 / total : 0;
+                        <div class="ix-vote">
+                            <button class="ix-btn" disabled="@(Branch.State != ChoiceSessionState.Voting)" @onclick="() => Branch.Vote(idx)">@(InteractiveChoiceBranchingService.OptionLetter(idx))</button>
+                            <div class="ix-prog"><div class="ix-bar" style="width:@(pct.ToString("0.#", CultureInfo.InvariantCulture))%"></div><span>@(cur.Options[idx].Label) · @(v)표 · @(pct.ToString("0", CultureInfo.InvariantCulture))%</span></div>
+                        </div>
+                    }
+                }
+                @if (Branch.LastResolution is { } r)
+                {
+                    <div class="ix-note ok">✅ 최근 확정: [@(r.NodeId)] @(InteractiveChoiceBranchingService.OptionLetter(r.Option))@(r.ByDefault ? " (기본/무응답)" : "") → @(Branch.NodeOf(r.NextNodeId)?.Title ?? "엔딩") · @(r.TotalVotes)표 · 누적 @(Branch.ResolvedCount)회</div>
+                }
+            }
+            else if (_tab == 2)
+            {
+                var nodes = Branch.Nodes;
+                <div class="ix-form">
+                    <select class="ix-in" @bind="_tagNode" disabled="@Busy">
+                        <option value="">노드 선택…</option>
+                        @foreach (var n in nodes) { <option value="@n.Id">@(n.Title)</option> }
+                    </select>
+                    <input class="ix-in" @bind="_tagName" placeholder="상품명(예: 유모차 X1)" disabled="@Busy" />
+                    <input class="ix-in grow" @bind="_tagUrl" placeholder="https:// 구매 링크" disabled="@Busy" />
+                    <input class="ix-in w100" @bind="_tagPrice" placeholder="가격" disabled="@Busy" />
+                    <input class="ix-in w100" @bind="_tagCoupon" placeholder="쿠폰 코드" disabled="@Busy" />
+                    <label class="ix-mut">⏱ <input class="ix-in w56" type="number" min="0" step="0.5" @bind="_tagStart" disabled="@Busy" />~<input class="ix-in w56" type="number" min="0.5" step="0.5" @bind="_tagEnd" disabled="@Busy" />초</label>
+                    <button class="ix-btn go" disabled="@(Busy || string.IsNullOrEmpty(_tagNode))" @onclick="AddTag">🏷 태그 추가</button>
+                    <button class="ix-btn" disabled="@(Busy || string.IsNullOrEmpty(_tagNode) || Shop.Brand?.Last is null)" title="v16.19.0 브랜드 캠페인 최근 결과의 제품 앵커로 박스 시드" @onclick="SeedBrand">🤝 브랜드 캠페인 시드</button>
+                </div>
+                @if (Shop.TagCount == 0) { <div class="ix-note">등록된 쇼핑 태그가 없습니다. 노드를 고르고 상품과 https 링크를 입력하세요.</div> }
+                <table class="ix-tbl">
+                    <tr><th>상품</th><th>노드</th><th>구간</th><th>키프레임</th><th>상태</th><th></th></tr>
+                    @foreach (var t in Shop.Tags)
+                    {
+                        var err = ShoppableVideoOverlayEngine.Validate(t);
+                        <tr class="@(err is null ? "" : "bad")">
+                            <td><span class="ix-dot" style="background:#@(SponsorVideoCompositorService.Hex(t.Color))"></span>@(t.ProductName) @(string.IsNullOrEmpty(t.PriceText) ? "" : "· " + t.PriceText)</td>
+                            <td>@(Branch.NodeOf(t.NodeId)?.Title ?? t.NodeId)</td>
+                            <td>@(t.StartSeconds.ToString("0.#", CultureInfo.InvariantCulture))~@(t.EndSeconds.ToString("0.#", CultureInfo.InvariantCulture))초</td>
+                            <td>@(t.Keyframes.Count)</td>
+                            <td>@(err ?? "✅")</td>
+                            <td>
+                                <button class="ix-btn" disabled="@(Busy || !Shop.FfmpegAvailable || string.IsNullOrWhiteSpace(Branch.NodeOf(t.NodeId)?.VideoPath))" @onclick="() => TrackAsync(t)">🎯 추적</button>
+                                <button class="ix-btn" disabled="@Busy" @onclick="() => { _previewTag = t.Id; _previewT = t.StartSeconds; }">👁</button>
+                                <button class="ix-btn" disabled="@Busy" @onclick="() => Shop.RemoveTag(t.Id)">✕</button>
+                            </td>
+                        </tr>
+                    }
+                </table>
+                @if (_previewTag is not null)
+                {
+                    ShoppableTag? pt = null;
+                    foreach (var t in Shop.Tags) if (t.Id == _previewTag) { pt = t; break; }
+                    if (pt is not null)
+                    {
+                        <div class="ix-row">
+                            <span class="ix-sec">👁 핫스팟 프리뷰 · @(pt.ProductName)</span>
+                            <input type="range" min="@F(pt.StartSeconds)" max="@F(pt.EndSeconds)" step="0.1" @bind="_previewT" @bind:event="oninput" />
+                            <span class="ix-chip">@(_previewT.ToString("0.0", CultureInfo.InvariantCulture))초</span>
+                        </div>
+                        <div class="ix-prev">@((MarkupString)ShoppableVideoOverlayEngine.BuildSvg(new[] { pt }, pt.NodeId, _previewT, 270, 480))</div>
+                    }
+                }
+            }
+            else
+            {
+                var tot = Analytics.Totals();
+                <div class="ix-row">
+                    <span class="ix-chip">이벤트 @(Analytics.TotalEvents)</span>
+                    <span class="ix-chip">평균 이탈 @((Analytics.OverallDropOff() * 100).ToString("0.#", CultureInfo.InvariantCulture))%</span>
+                    <span class="ix-chip">CTR @((tot.Ctr * 100).ToString("0.##", CultureInfo.InvariantCulture))%</span>
+                    <span class="ix-chip">CVR @((tot.Cvr * 100).ToString("0.##", CultureInfo.InvariantCulture))%</span>
+                    <span class="ix-chip ok">매출 @(tot.Revenue.ToString("#,0", CultureInfo.InvariantCulture))</span>
+                    <label class="ix-btn">📥 플레이어 로그 가져오기<InputFile OnChange="ImportAsync" accept=".json" style="display:none" /></label>
+                    <button class="ix-btn" @onclick="ExportCsv">📤 CSV</button>
+                    <button class="ix-btn" @onclick="Analytics.Reset">초기화</button>
+                </div>
+                <table class="ix-tbl">
+                    <tr><th>분기 지점</th><th>노출</th><th>결정</th><th>A</th><th>B</th><th>C</th><th>D</th><th>이탈률</th></tr>
+                    @foreach (var c in Analytics.Choices())
+                    {
+                        <tr>
+                            <td>@(Branch.NodeOf(c.NodeId)?.Title ?? c.NodeId)</td><td>@(c.Shown)</td><td>@(c.Decided)</td>
+                            @for (var i = 0; i < InteractiveConversionAnalytics.MaxOptions; i++) { <td>@((c.Ratio(i) * 100).ToString("0", CultureInfo.InvariantCulture))%</td> }
+                            <td>@((c.DropOffRate * 100).ToString("0.#", CultureInfo.InvariantCulture))%</td>
+                        </tr>
+                    }
+                </table>
+                <table class="ix-tbl">
+                    <tr><th>핫스팟</th><th>노출</th><th>클릭</th><th>CTR</th><th>구매</th><th>CVR</th><th>매출</th></tr>
+                    @foreach (var h in Analytics.Hotspots())
+                    {
+                        <tr>
+                            <td>@(h.TagId)</td><td>@(h.Impressions)</td><td>@(h.Clicks)</td><td>@((h.Ctr * 100).ToString("0.##", CultureInfo.InvariantCulture))%</td>
+                            <td>@(h.Conversions)</td><td>@((h.Cvr * 100).ToString("0.##", CultureInfo.InvariantCulture))%</td><td>@(h.Revenue.ToString("#,0", CultureInfo.InvariantCulture))</td>
+                        </tr>
+                    }
+                </table>
+            }
+            @if (_msg is not null) { <div class="ix-note">@(_msg)</div> }
+        </div>
+
+        <div class="ix-f">
+            <span class="ix-mut">@(Branch.LastAction ?? Shop.LastAction ?? "대기") · ffmpeg @(Branch.FfmpegAvailable ? "사용 가능" : "없음 → 선형 영상 생략")</span>
+            @if (Busy) { <button class="ix-btn" @onclick="Cancel">취소</button> }
+            <button class="ix-btn go" disabled="@(Busy || Branch.NodeCount == 0)" @onclick="ExportAsync">📦 1-Click 인터랙티브 패키지</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .ix-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .ix-modal { width: min(1080px, 96vw); max-height: 92vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.4); overflow: hidden; }
+    .ix-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+    .ix-title { font-size: 16px; font-weight: 900; color: var(--text-primary); }
+    .ix-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .ix-sub b, .ix-note b { color: var(--text-primary); }
+    .ix-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .ix-tabs { display: flex; gap: 4px; padding: 8px 18px 0; border-bottom: 1px solid var(--line); }
+    .ix-tabs button { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; border: 0; background: none; color: var(--text-muted); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
+    .ix-tabs button.on { color: var(--text-primary); border-bottom-color: #8b5cf6; }
+    .ix-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .ix-row, .ix-form { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .ix-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .ix-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .ix-chip.ok { color: #4ade80; } .ix-chip.live { color: #f43f5e; border-color: #f43f5e; }
+    .ix-mut { font-size: 11px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; }
+    .ix-path { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ix-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 5px 7px; }
+    .ix-in.grow { flex: 1; min-width: 160px; } .ix-in.w140 { width: 140px; } .ix-in.w100 { width: 100px; } .ix-in.w56 { width: 56px; }
+    .ix-tree { width: 100%; max-height: 300px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; }
+    .ix-tn { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; fill: #fff; }
+    .ix-ts { font: 600 10px var(--mono); fill: rgba(255,255,255,.8); }
+    .ix-tl { font: 900 12px var(--mono); fill: #fbbf24; }
+    .ix-issues { font-size: 11.5px; display: flex; flex-direction: column; gap: 2px; }
+    .ix-issues .bad { color: #f87171; } .ix-issues .warn { color: #fbbf24; }
+    .ix-node { border: 1px solid var(--line); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+    .ix-opt { padding-left: 18px; }
+    .ix-vote { display: flex; align-items: center; gap: 8px; }
+    .ix-prog { position: relative; flex: 1; height: 22px; border-radius: 11px; background: var(--bg); overflow: hidden; }
+    .ix-bar { position: absolute; inset: 0 auto 0 0; background: linear-gradient(90deg,#8b5cf6,#f43f5e); transition: width .2s; }
+    .ix-prog span { position: relative; font: 700 11px var(--mono); padding-left: 10px; line-height: 22px; }
+    .ix-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+    .ix-tbl th, .ix-tbl td { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: left; }
+    .ix-tbl tr.bad td { color: #f87171; }
+    .ix-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+    .ix-prev { width: 270px; height: 480px; background: repeating-linear-gradient(45deg,#1e293b 0 10px,#0f172a 10px 20px); border-radius: 12px; overflow: hidden; }
+    .ix-note { font-size: 12px; color: var(--text-secondary); } .ix-note.ok { color: #4ade80; }
+    .ix-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }
+    .ix-f .ix-mut { margin-right: auto; }
+    .ix-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .ix-btn.go { background: linear-gradient(135deg,#8b5cf6,#f43f5e); color: #fff; border: 0; }
+    .ix-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 720px) { .ix-in.grow { min-width: 100%; } }
+</style>
+
+@code {
+    [Parameter, EditorRequired] public StoryboardProject Project { get; set; } = default!;
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<string> OnReveal { get; set; }
+
+    private int _tab;
+    private string? _msg, _voteNode, _tagNode, _previewTag;
+    private string _tagName = "", _tagUrl = "", _tagPrice = "", _tagCoupon = "";
+    private double _tagStart, _tagEnd = 5, _previewT;
+    private CancellationTokenSource? _cts;
+
+    private bool Busy => _cts is not null || Branch.IsBusy || Shop.IsBusy;
+
+    protected override void OnInitialized()
+    {
+        Branch.OnChange += OnServiceChanged;
+        Shop.OnChange += OnServiceChanged;
+        Analytics.OnChange += OnServiceChanged;
+        if (Branch.NodeCount == 0) Branch.SeedFromProject(Project);
+    }
+
+    private static string F(double v) => v.ToString("0.#", CultureInfo.InvariantCulture);
+
+    private static string Cut(string s, int max) => s.Length <= max ? s : s[..max] + "…";
+
+    /// <summary>깊이(열) × 순번(행) 배치 — 도달 불가 노드는 마지막 열.</summary>
+    private static Dictionary<string, (double X, double Y)> Layout(IReadOnlyList<ChoiceNode> nodes, Dictionary<string, int> depths, out int vw, out int vh)
+    {
+        var maxDepth = 0;
+        foreach (var d in depths.Values) if (d > maxDepth) maxDepth = d;
+        var orphan = maxDepth + 1;
+        var rows = new Dictionary<int, int>();
+        var pos = new Dictionary<string, (double X, double Y)>(nodes.Count, StringComparer.Ordinal);
+        int maxRow = 0, maxCol = 0;
+        foreach (var n in nodes)
+        {
+            var col = depths.TryGetValue(n.Id, out var d) ? d : orphan;
+            rows.TryGetValue(col, out var row);
+            rows[col] = row + 1;
+            pos[n.Id] = (12 + col * 200, 12 + row * 60);
+            if (row > maxRow) maxRow = row;
+            if (col > maxCol) maxCol = col;
+        }
+        vw = 24 + (maxCol + 1) * 200;
+        vh = 24 + (maxRow + 1) * 60;
+        return pos;
+    }
+
+    private void Seed()
+    {
+        var n = Branch.SeedFromProject(Project);
+        _msg = n == 0 ? "⚠ 완성된 컷 영상이 없습니다 — 빈 노드로 시작하세요." : "🎬 컷 " + n.ToString(CultureInfo.InvariantCulture) + "개를 선형 체인으로 시드했습니다. 선택지를 추가해 분기를 만드세요.";
+    }
+
+    private void AddNode()
+    {
+        var k = Branch.NodeCount + 1;
+        Branch.AddNode(new ChoiceNode { Title = "노드 " + k.ToString(CultureInfo.InvariantCulture), VideoPath = Project.FinalVideoPath });
+    }
+
+    private void LinkTo(string fromId, string? targetId)
+    {
+        if (string.IsNullOrEmpty(targetId)) return;
+        var from = Branch.NodeOf(fromId);
+        var label = from is null ? "" : "선택 " + InteractiveChoiceBranchingService.OptionLetter(from.Options.Count);
+        if (!Branch.LinkOption(fromId, label, targetId)) _msg = "⚠ 선택지를 추가할 수 없습니다(최대 4개).";
+    }
+
+    private void AddTag()
+    {
+        var tag = new ShoppableTag
+        {
+            NodeId = _tagNode!, ProductName = _tagName.Trim(), Url = _tagUrl.Trim(),
+            PriceText = string.IsNullOrWhiteSpace(_tagPrice) ? null : _tagPrice.Trim(),
+            CouponCode = string.IsNullOrWhiteSpace(_tagCoupon) ? null : _tagCoupon.Trim(),
+            StartSeconds = Math.Max(0, _tagStart), EndSeconds = Math.Max(_tagStart + 0.5, _tagEnd),
+        };
+        if (!Shop.AddTag(tag)) { _msg = "⚠ 태그 상한(" + ShoppableVideoOverlayEngine.MaxTags.ToString(CultureInfo.InvariantCulture) + ")"; return; }
+        if (ShoppableVideoOverlayEngine.Validate(tag) is { } e2) _msg = "⚠ " + e2;
+        else { _msg = "🏷 태그 추가 — 🎯 추적으로 피사체 이동 경로를 따라가게 할 수 있습니다."; _tagName = _tagUrl = _tagPrice = _tagCoupon = ""; }
+    }
+
+    private void SeedBrand()
+    {
+        if (Shop.Brand?.Last is not { } last || string.IsNullOrEmpty(_tagNode)) return;
+        var tag = ShoppableVideoOverlayEngine.SeedFromCampaign(last, _tagNode);
+        if (!string.IsNullOrWhiteSpace(_tagUrl)) tag.Url = _tagUrl.Trim();
+        if (Shop.AddTag(tag)) _msg = "🤝 '" + last.Name + "' 캠페인 제품 위치로 태그를 만들었습니다" + (ShoppableVideoOverlayEngine.IsSafeUrl(tag.Url) ? "." : " — 구매 링크(https)를 입력하세요.");
+    }
+
+    private Task TrackAsync(ShoppableTag tag)
+    {
+        var video = Branch.NodeOf(tag.NodeId)?.VideoPath;
+        return RunAsync(async ct =>
+        {
+            var r = await Shop.TrackAsync(tag, video ?? "", ct);
+            _msg = (r.Ok ? "🎯 " : "⚠ ") + r.Message + (r.Ok ? " · 키 " + r.Keyframes.ToString(CultureInfo.InvariantCulture) + " · 신뢰도 " + r.MeanConfidence.ToString("0.00", CultureInfo.InvariantCulture) : "");
+        });
+    }
+
+    private async Task ImportAsync(InputFileChangeEventArgs e)
+    {
+        try
+        {
+            using var s = e.File.OpenReadStream(20 * 1024 * 1024);
+            using var rd = new StreamReader(s);
+            var r = Analytics.ImportEventLog(await rd.ReadToEndAsync());
+            _msg = r is { } v ? "📥 " + v.Accepted.ToString(CultureInfo.InvariantCulture) + "건 반영 · " + v.Skipped.ToString(CultureInfo.InvariantCulture) + "건 건너뜀" : "⚠ 이벤트 로그 형식이 아닙니다.";
+        }
+        catch (Exception ex) { Program.Log("InteractiveStudio.Import", ex); _msg = "⚠ 가져오기 실패: " + ex.Message; }
+    }
+
+    private async Task ExportCsv()
+    {
+        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "PromptFlowStudio", "Interactive");
+        var p = Analytics.ExportCsv(root);
+        _msg = p is null ? "⚠ CSV 저장 실패" : "📤 " + p;
+        if (p is not null) await OnReveal.InvokeAsync(p);
+    }
+
+    private Task ExportAsync()
+    {
+        var root = !string.IsNullOrWhiteSpace(Project.FinalVideoPath) ? Path.GetDirectoryName(Path.GetFullPath(Project.FinalVideoPath))!
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "PromptFlowStudio", "Interactive");
+        return RunAsync(async ct =>
+        {
+            var r = await Branch.ExportPackageAsync(root, ct);
+            _msg = (r.Ok ? "✅ " : "⚠ ") + r.Message + (r.Folder is null ? "" : " · " + r.Folder);
+            if (r.Ok && r.Folder is not null) await OnReveal.InvokeAsync(r.Folder);
+        });
+    }
+
+    private async Task RunAsync(Func<CancellationToken, Task> work)
+    {
+        var cts = new CancellationTokenSource();
+        if (Interlocked.CompareExchange(ref _cts, cts, null) is not null) { cts.Dispose(); return; }
+        _msg = null;
+        try { await work(cts.Token); }
+        catch (OperationCanceledException) { _msg = "⚠ 취소됨"; }
+        catch (Exception ex) { Program.Log("InteractiveStudio.Run", ex); _msg = "⚠ 실패: " + ex.Message; }
+        finally
+        {
+            Interlocked.CompareExchange(ref _cts, null, cts);
+            cts.Dispose();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void Cancel()
+    {
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
+    private Task Close() => Busy ? Task.CompletedTask : OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Branch.OnChange -= OnServiceChanged;
+        Shop.OnChange -= OnServiceChanged;
+        Analytics.OnChange -= OnServiceChanged;
+        Cancel();   // 진행 중 작업은 RunAsync finally 에서 CTS 정리
+    }
+}

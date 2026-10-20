@@ -1,0 +1,67 @@
+@* [PromptFlow Studio v5.7.3] 시네마틱 히어로 랜딩 — 풀스크린 진입(AMOLED 딥블랙 + 앰비언트 글로우 · 타사 상표명 미사용).
+   [스튜디오 시작하기] → CSS opacity fade-out(300ms) 후 OnEnterStudio 콜백. 무주입(모바일 안전 · 파라미터/콜백만). *@
+
+<div class="flh-hero-overlay @(_fadingOut ? "fade" : null)">
+    @* v15.7.1 OLED Neon Flow 배경 영상 + 다크 베일 — 파일 미동봉 시 #06080e 딥블랙이 그대로 노출(Graceful). *@
+    <video class="mobile-bgv" src="media/oled_flow_bg.mp4" autoplay loop muted playsinline disablepictureinpicture aria-hidden="true"></video>
+    <div class="mobile-bgv-veil" aria-hidden="true"></div>
+    <div class="flh-ambient-glow"></div>
+
+    <div class="flh-hero-body">
+        <div class="flh-brand-badge">PromptFlow Studio v5.7.3</div>
+        <h1 class="flh-title">차세대 시네마틱<br /><span class="flh-highlight">AI 스토리텔링</span></h1>
+        <p class="flh-sub">Wan 3.0 DAG 오케스트레이션 · 1:1 정체성 보장</p>
+
+        <button type="button" class="flh-btn-pill" @onclick="HandleStart">
+            PromptFlow 스튜디오 시작하기 ➔
+        </button>
+
+        <div class="flh-footer-info">
+            <span>Pure BCL / Blazor Hybrid</span> · <span>0-Warning Engine</span>
+        </div>
+    </div>
+</div>
+
+@code {
+    /// <summary>히어로 fade-out 완료 후 부모가 대시보드로 진입.</summary>
+    [Parameter] public EventCallback OnEnterStudio { get; set; }
+
+    private bool _fadingOut;
+
+    private async Task HandleStart()
+    {
+        _fadingOut = true;
+        StateHasChanged();          // 페이드 클래스 반영
+        await Task.Delay(300);      // CSS opacity 트랜지션(300ms) 대기 — 외부 애니 라이브러리 0
+        if (OnEnterStudio.HasDelegate) await OnEnterStudio.InvokeAsync();
+    }
+}
+
+<style>
+    .flh-hero-overlay {
+        position: fixed; inset: 0; z-index: 10000; background: #06080e;
+        display: flex; flex-direction: column; justify-content: flex-end; align-items: center;
+        padding: 40px 24px; text-align: center; color: #fff; transition: opacity 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .flh-hero-overlay.fade { opacity: 0; pointer-events: none; }
+    .mobile-bgv { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 0; pointer-events: none; transform: translateZ(0); will-change: transform; backface-visibility: hidden; }
+    .mobile-bgv-veil { position: absolute; inset: 0; z-index: 0; pointer-events: none; background: linear-gradient(180deg, rgba(6,8,14,0.25) 0%, rgba(6,8,14,0.55) 50%, rgba(6,8,14,0.9) 100%); }
+    @@media (prefers-reduced-motion: reduce) { .mobile-bgv { display: none; } }
+    .flh-ambient-glow {
+        position: absolute; top: 20%; left: 50%; transform: translate(-50%, -50%); z-index: 0;
+        width: 320px; height: 320px; background: radial-gradient(circle, rgba(34, 211, 238, 0.22) 0%, rgba(6, 8, 14, 0) 70%);
+        pointer-events: none;
+    }
+    .flh-hero-body { position: relative; z-index: 2; width: 100%; max-width: 440px; }
+    .flh-brand-badge { display: inline-block; padding: 6px 14px; border-radius: 20px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); font-size: 0.75rem; color: #38bdf8; margin-bottom: 16px; }
+    .flh-title { font-size: 1.5rem; font-weight: 800; line-height: 1.3; letter-spacing: -0.5px; margin-bottom: 10px; word-break: keep-all; }
+    .flh-highlight { background: linear-gradient(135deg, #fff 30%, #38bdf8 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+    .flh-sub { font-size: 0.9rem; color: #94a3b8; margin-bottom: 36px; line-height: 1.5; word-break: keep-all; }
+    .flh-btn-pill {
+        width: 100%; height: 54px; border-radius: 27px; background: #1e2433; border: 1px solid rgba(255,255,255,0.18);
+        color: #fff; font-size: 1rem; font-weight: 700; cursor: pointer; transition: transform 0.15s, background 0.15s;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+    }
+    .flh-btn-pill:active { transform: scale(0.97); background: #2a3347; }
+    .flh-footer-info { margin-top: 28px; font-size: 0.75rem; color: #475569; }
+</style>

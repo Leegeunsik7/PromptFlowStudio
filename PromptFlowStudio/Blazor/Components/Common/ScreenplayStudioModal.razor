@@ -1,0 +1,443 @@
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.Screenplay
+@implements IDisposable
+@inject WorldbuildingStoryAgentEngine World
+@inject SceneBeatSheetScriptGenerator Writer
+@inject ScreenplayToStoryboardConverter Converter
+
+@* [PromptFlow Studio v16.35.0] 📜 AI 시나리오 & 세계관 스튜디오 — 멀티 에이전트 세계관 토론(로어/인물/관계 노드 뷰어 · 토론 기록 · 저장/로드)
+   · 비트 시트 타임라인 에디터(요약/긴장도 편집 · 3막/숏폼) · Fountain 대본 프리뷰/편집/재파싱 · 1-Click 스토리보드 변환(컷/립싱크/TTS 큐/테마 매칭).
+   상태는 서비스(싱글턴) 소유 — OnChange 구독. *@
+
+<div class="sp-scrim" @onclick="Close">
+    <div class="sp-modal" @onclick:stopPropagation="true">
+        <div class="sp-h">
+            <div>
+                <div class="sp-title">📜 AI 시나리오 &amp; 세계관 스튜디오</div>
+                <div class="sp-sub"><b>세계관·작가·감독 에이전트</b>가 토론해 배경 설정과 인물 관계도를 만들고, <b>3막/숏폼 비트 시트</b>로 대사·지문·카메라 가이드가 담긴 대본을 작성한 뒤
+                    <b>1-Click</b>으로 스토리보드 컷·립싱크·TTS 큐로 변환합니다.</div>
+            </div>
+            <button class="sp-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="sp-bar">
+            <span class="sp-chip @(World.LlmAvailable ? "ok" : "")">@(World.LlmAvailable ? "Gemini 작가실" : "BCL 에이전트(오프라인)")</span>
+            <span class="sp-chip">테마 카탈로그 @(Converter.CatalogSize)</span>
+            @if (World.Current is { } cw)
+            {
+                <span class="sp-mut">🌍 @(cw.Lore.Title) · @(cw.Lore.Genre) · 인물 @(cw.Characters.Count) · 합의 @((cw.Consensus * 100).ToString("0", CultureInfo.InvariantCulture))% · @(cw.Source)</span>
+            }
+            @if (Writer.Current is { } cd)
+            {
+                <span class="sp-mut">✍ @(cd.Scenes.Count)씬 · @(cd.TotalSeconds.ToString("0", CultureInfo.InvariantCulture))초</span>
+            }
+        </div>
+
+        <div class="sp-tabs">
+            <button class="@(_tab == 0 ? "on" : "")" @onclick="() => _tab = 0">🌍 세계관 · 인물 관계도</button>
+            <button class="@(_tab == 1 ? "on" : "")" @onclick="() => _tab = 1">🧭 비트 시트</button>
+            <button class="@(_tab == 2 ? "on" : "")" @onclick="() => _tab = 2">🎭 대본 · 대사</button>
+            <button class="@(_tab == 3 ? "on" : "")" @onclick="() => _tab = 3">🎬 스토리보드 변환</button>
+        </div>
+
+        <div class="sp-body">
+            @if (_tab == 0)
+            {
+                <div class="sp-row">
+                    <textarea class="sp-in sp-ta" @bind="_premise" placeholder="프리미스(예: 기억을 대가로 마법을 쓰는 소녀가 잃어버린 동생을 찾아 용의 협곡으로 떠난다)"></textarea>
+                </div>
+                <div class="sp-row">
+                    <label class="sp-mut">인물 수 <input class="sp-in w60" type="number" min="2" max="8" @bind="_chars" /></label>
+                    <label class="sp-mut"><input type="checkbox" @bind="_useLlm" disabled="@(!World.LlmAvailable)" /> Gemini 사용</label>
+                    <button class="sp-btn sm go" disabled="@(_cts is not null || World.IsBusy)" @onclick="BuildWorldAsync">🗣 에이전트 토론 시작</button>
+                    <button class="sp-btn sm" disabled="@(World.Current is null)" @onclick="SaveWorld">💾 저장</button>
+                    <select class="sp-in" @bind="_loadPath">
+                        <option value="">— 저장된 세계관 —</option>
+                        @foreach (var f in World.List()) { <option value="@f">@(Path.GetFileNameWithoutExtension(f))</option> }
+                    </select>
+                    <button class="sp-btn sm" disabled="@string.IsNullOrEmpty(_loadPath)" @onclick="LoadWorld">📂 로드</button>
+                </div>
+                @if (World.Current is { } b)
+                {
+                    var nodes = WorldbuildingStoryAgentEngine.LayoutGraph(b);
+                    <div class="sp-grid2">
+                        <div>
+                            <div class="sp-sec">인물 관계도</div>
+                            <svg class="sp-graph" viewBox="-1.25 -1.15 2.5 2.3">
+                                @foreach (var e in b.Relationships)
+                                {
+                                    var a = nodes.Find(n => n.Id == e.From); var z = nodes.Find(n => n.Id == e.To);
+                                    if (a is null || z is null) continue;
+                                    <g>
+                                        <line x1="@(F(a.X))" y1="@(F(a.Y))" x2="@(F(z.X))" y2="@(F(z.Y))" stroke="@(e.Strength < 0 ? "#f87171" : "#4ade80")" stroke-width="@(F(0.01f + MathF.Abs(e.Strength) * 0.025f))" stroke-dasharray="@(e.Kind == RelationKind.Rival ? "0.04 0.03" : "none")" />
+                                        <text x="@(F((a.X + z.X) / 2))" y="@(F((a.Y + z.Y) / 2 - 0.03f))" fill="#94a3b8" font-size="0.06" text-anchor="middle">@(RelLabel(e.Kind))</text>
+                                    </g>
+                                }
+                                @foreach (var n in nodes)
+                                {
+                                    <g @onclick="() => _selChar = n.Id" style="cursor:pointer">
+                                        <circle cx="@(F(n.X))" cy="@(F(n.Y))" r="@(F(0.09f + n.Centrality * 0.06f))" fill="@(RoleColor(n.Role))" stroke="@(n.Id == _selChar ? "#fde047" : "#0f172a")" stroke-width="0.015" />
+                                        <text x="@(F(n.X))" y="@(F(n.Y + 0.2f + n.Centrality * 0.06f))" fill="#e2e8f0" font-size="0.075" text-anchor="middle">@(n.Label)</text>
+                                    </g>
+                                }
+                            </svg>
+                        </div>
+                        <div class="sp-lore">
+                            <div class="sp-sec">@(b.Lore.Title)</div>
+                            <div class="sp-note">@(b.Lore.Logline)</div>
+                            <div class="sp-mut">@(b.Lore.Era) · @(b.Lore.Setting) · 톤 @(b.Lore.Tone) · 모티프 @(b.Lore.VisualMotif)</div>
+                            <div class="sp-mut">규칙: @(string.Join(" / ", b.Lore.Rules))</div>
+                            <div class="sp-mut">장소: @(string.Join(" · ", b.Lore.Locations))</div>
+                            <div class="sp-mut">세력: @(string.Join(" · ", b.Lore.Factions)) · 주제: @(string.Join(" · ", b.Lore.Themes))</div>
+                            @if (b.Find(_selChar) is { } c)
+                            {
+                                <div class="sp-card">
+                                    <b>@(c.Name)</b> <span class="sp-mut">@(c.Role) · @(c.Archetype) · @(c.Age)세 · 톤 @(c.VoiceTone)</span>
+                                    <div class="sp-mut">원함: @(c.Want) · 필요: @(c.Need) · 결함: @(c.Flaw)</div>
+                                    <div class="sp-mono">@(c.Look)</div>
+                                    <svg class="sp-arc" viewBox="0 0 200 50" preserveAspectRatio="none">
+                                        <line x1="0" y1="25" x2="200" y2="25" stroke="#334155" />
+                                        <polyline fill="none" stroke="#a78bfa" stroke-width="2" points="@(ArcPoints(c.EmotionArc))" />
+                                    </svg>
+                                </div>
+                            }
+                            <div class="sp-sec">서사 아크</div>
+                            <ol class="sp-ol">@foreach (var a in b.Arc) { <li>@a</li> }</ol>
+                        </div>
+                    </div>
+                    <details class="sp-det"><summary>에이전트 토론 기록 (@(b.Rounds)라운드)</summary>
+                        @foreach (var t in b.Transcript) { <div class="sp-turn"><b>@(AgentLabel(t.Agent))</b> R@(t.Round) · @(t.Text)</div> }
+                    </details>
+                }
+                else
+                {
+                    <div class="sp-empty">프리미스를 입력하고 에이전트 토론을 시작하세요.</div>
+                }
+            }
+            else if (_tab == 1)
+            {
+                <div class="sp-row">
+                    <label class="sp-mut"><input type="radio" name="sp-st" checked="@(_structure == StoryStructure.ShortForm)" @onchange="() => _structure = StoryStructure.ShortForm" /> 숏폼 하이라이트(6비트)</label>
+                    <label class="sp-mut"><input type="radio" name="sp-st" checked="@(_structure == StoryStructure.ThreeAct)" @onchange="() => _structure = StoryStructure.ThreeAct" /> 할리우드 3막(15비트)</label>
+                    <label class="sp-mut">목표 길이(초) <input class="sp-in w80" type="number" min="10" max="7200" @bind="_seconds" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                    <button class="sp-btn sm go" disabled="@(_cts is not null || World.Current is null || Writer.IsBusy)" @onclick="WriteAsync">✍ 비트 시트 &amp; 대본 생성</button>
+                </div>
+                @if (Writer.Current is { Beats.Count: > 0 } d)
+                {
+                    <div class="sp-timeline">
+                        @foreach (var bt in d.Beats)
+                        {
+                            var next = bt.Index + 1 < d.Beats.Count ? d.Beats[bt.Index + 1].Position : 1.0;
+                            <div class="sp-beat a@(bt.Act) @(bt.Index == _selBeat ? "sel" : "")" style="left:@((bt.Position * 100).ToString("0.##", CultureInfo.InvariantCulture))%;width:@((Math.Max(0.02, next - bt.Position) * 100).ToString("0.##", CultureInfo.InvariantCulture))%" @onclick="() => _selBeat = bt.Index" title="@bt.Purpose">
+                                <div class="sp-tens" style="height:@(bt.Tension)%"></div><span>@(bt.Name)</span>
+                            </div>
+                        }
+                    </div>
+                    @if (_selBeat >= 0 && _selBeat < d.Beats.Count)
+                    {
+                        var sb = d.Beats[_selBeat];
+                        <div class="sp-card">
+                            <b>@(sb.Index + 1). @(sb.Name)</b> <span class="sp-mut">@(sb.Act)막 · @((sb.Position * 100).ToString("0", CultureInfo.InvariantCulture))% · @(sb.Purpose)</span>
+                            <textarea class="sp-in sp-ta sm" @bind="sb.Summary"></textarea>
+                            <label class="sp-mut">긴장도 @(sb.Tension) <input type="range" min="0" max="100" @bind="sb.Tension" /></label>
+                            <button class="sp-btn sm" @onclick="RewriteFromBeats">↻ 편집 비트로 대본 재작성</button>
+                        </div>
+                    }
+                }
+                else
+                {
+                    <div class="sp-empty">세계관을 만든 뒤 비트 시트를 생성하세요.</div>
+                }
+            }
+            else if (_tab == 2)
+            {
+                @if (Writer.Current is { } d)
+                {
+                    <div class="sp-row">
+                        <button class="sp-btn sm" @onclick="() => _editFountain = !_editFountain">@(_editFountain ? "👁 프리뷰" : "✏ Fountain 편집")</button>
+                        @if (_editFountain) { <button class="sp-btn sm go" @onclick="ApplyFountain">⤵ 파싱 적용</button> }
+                        <span class="sp-mut">@(d.Source) · @(d.Scenes.Count)씬</span>
+                    </div>
+                    @if (_editFountain)
+                    {
+                        <textarea class="sp-in sp-fountain" @bind="_fountain"></textarea>
+                    }
+                    else
+                    {
+                        <div class="sp-script">
+                            @foreach (var s in d.Scenes)
+                            {
+                                <div class="sp-scene">
+                                    <div class="sp-head">@(s.Number). @(s.Heading) <span class="sp-mut">· @(s.Seconds.ToString("0.#", CultureInfo.InvariantCulture))초 · 긴장 @(s.Tension)</span></div>
+                                    @foreach (var e in s.Elements)
+                                    {
+                                        @switch (e.Kind)
+                                        {
+                                            case ScriptElementKind.Action: <div class="sp-action">@(e.Text)</div> break;
+                                            case ScriptElementKind.Camera: <div class="sp-cam">🎥 @(e.Text)</div> break;
+                                            case ScriptElementKind.Transition: <div class="sp-trans">@(e.Text)</div> break;
+                                            default:
+                                                <div class="sp-dlg"><div class="sp-cue">@(e.Character)</div>@if (e.Parenthetical is { } pp) { <div class="sp-par">(@pp)</div> }<div>@(e.Text)</div></div>
+                                                break;
+                                        }
+                                    }
+                                </div>
+                            }
+                        </div>
+                    }
+                }
+                else
+                {
+                    <div class="sp-empty">대본이 없습니다. 비트 시트 탭에서 생성하거나 Fountain 을 붙여 넣으세요.</div>
+                    <textarea class="sp-in sp-fountain" @bind="_fountain" placeholder="@(FountainHint)"></textarea>
+                    <button class="sp-btn sm go" @onclick="ApplyFountain">⤵ Fountain 파싱</button>
+                }
+            }
+            else
+            {
+                <div class="sp-row">
+                    <label class="sp-mut"><input type="checkbox" @bind="_vertical" /> 세로 숏폼(1080×1920)</label>
+                    <label class="sp-mut"><input type="checkbox" @bind="_lipSync" /> 화면 속 대사 립싱크</label>
+                    <label class="sp-mut"><input type="checkbox" @bind="_matchThemes" /> 테마 시네마틱 매칭</label>
+                    <label class="sp-mut"><input type="checkbox" @bind="_append" /> 기존 컷 뒤에 추가</label>
+                    <label class="sp-mut">컷 최대 @(_maxCut.ToString("0", CultureInfo.InvariantCulture))초 <input type="range" min="2" max="15" step="1" @bind="_maxCut" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                    <label class="sp-mut">언어
+                        <select class="sp-in" @bind="_lang"><option value="ko">한국어</option><option value="en">English</option><option value="ja">日本語</option><option value="zh">中文</option><option value="de">Deutsch</option></select>
+                    </label>
+                </div>
+                @if (Writer.Current is { } d)
+                {
+                    var preview = Converter.Convert(d, World.Current, Options());
+                    <div class="sp-mut">미리보기: @(preview.Report.Message)</div>
+                    <table class="sp-tbl">
+                        <thead><tr><th>#</th><th>프롬프트</th><th>음성</th><th>립싱크</th><th>긴장</th></tr></thead>
+                        <tbody>
+                            @for (var i = 0; i < preview.Cuts.Count && i < 30; i++)
+                            {
+                                var c = preview.Cuts[i];
+                                <tr><td>@(i + 1)</td><td class="sp-mono">@(c.Prompt.Length > 140 ? c.Prompt[..140] + "…" : c.Prompt)</td><td>@(c.VoiceText)</td><td>@(c.UseLipSync ? "👄" : "")</td><td>@(c.PresetTension)</td></tr>
+                            }
+                        </tbody>
+                    </table>
+                }
+                else
+                {
+                    <div class="sp-empty">변환할 대본이 없습니다.</div>
+                }
+                @if (Converter.LastReport is { } r)
+                {
+                    <div class="sp-note ok">✅ 적용됨 — @(r.Message)</div>
+                }
+            }
+        </div>
+
+        <div class="sp-f">
+            <span class="sp-mut">@(_msg ?? Converter.LastAction ?? Writer.LastAction ?? World.LastAction ?? "대기 중")</span>
+            @if (_cts is not null)
+            {
+                <button class="sp-btn" @onclick="Cancel">■ 취소</button>
+            }
+            <button class="sp-btn go" disabled="@(_cts is not null || Writer.Current is null || Project is null)" @onclick="ConvertToStoryboard">🎬 1-Click 스토리보드 변환</button>
+            <button class="sp-btn" disabled="@(_cts is not null)" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .sp-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .sp-modal { width: min(1180px, 97vw); max-height: 93vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .sp-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #a78bfa 12%, var(--card)), color-mix(in srgb, #f59e0b 8%, var(--card))); }
+    .sp-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .sp-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .sp-sub b { color: var(--text-primary); }
+    .sp-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .sp-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .sp-tabs { display: flex; gap: 4px; padding: 8px 18px 0; border-bottom: 1px solid var(--line); }
+    .sp-tabs button { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; border: 0; background: none; color: var(--text-muted); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
+    .sp-tabs button.on { color: var(--text-primary); border-bottom-color: #a78bfa; }
+    .sp-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .sp-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .sp-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); margin: 4px 0; }
+    .sp-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .sp-graph { width: 100%; aspect-ratio: 1.1; background: #06080e; border-radius: 12px; border: 1px solid var(--line); }
+    .sp-lore { display: flex; flex-direction: column; gap: 4px; }
+    .sp-card { border: 1px solid var(--line); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+    .sp-card b { color: var(--text-primary); }
+    .sp-arc { width: 100%; height: 50px; background: #06080e; border-radius: 6px; }
+    .sp-ol { margin: 0; padding-left: 18px; font-size: 12px; color: var(--text-secondary); }
+    .sp-det { font-size: 12px; color: var(--text-secondary); } .sp-turn { padding: 2px 0; } .sp-turn b { color: var(--text-primary); }
+    .sp-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .sp-chip.ok { color: #4ade80; }
+    .sp-mut { font-size: 11px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+    .sp-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; }
+    .sp-in.w60 { width: 60px; } .sp-in.w80 { width: 80px; }
+    .sp-ta { width: 100%; min-height: 54px; resize: vertical; font-family: inherit; } .sp-ta.sm { min-height: 40px; }
+    .sp-fountain { width: 100%; min-height: 360px; font: 12px var(--mono); resize: vertical; }
+    .sp-timeline { position: relative; height: 110px; background: #06080e; border-radius: 10px; border: 1px solid var(--line); overflow: hidden; }
+    .sp-beat { position: absolute; bottom: 0; top: 0; border-right: 1px solid #1e293b; cursor: pointer; display: flex; align-items: flex-end; }
+    .sp-beat span { position: absolute; top: 4px; left: 3px; right: 2px; font-size: 9.5px; color: #e2e8f0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sp-beat.sel { outline: 2px solid #fde047; outline-offset: -2px; }
+    .sp-tens { width: 100%; opacity: .75; } .sp-beat.a1 .sp-tens { background: #38bdf8; } .sp-beat.a2 .sp-tens { background: #f59e0b; } .sp-beat.a3 .sp-tens { background: #ec4899; }
+    .sp-script { display: flex; flex-direction: column; gap: 10px; font-family: 'Courier New', var(--mono); }
+    .sp-scene { border-left: 3px solid #a78bfa; padding-left: 10px; }
+    .sp-head { font-weight: 800; color: var(--text-primary); font-size: 12.5px; }
+    .sp-action { font-size: 12px; color: var(--text-secondary); margin: 4px 0; }
+    .sp-cam { font-size: 11px; color: #22d3ee; }
+    .sp-trans { font-size: 11px; color: var(--text-muted); text-align: right; }
+    .sp-dlg { margin: 4px auto 4px 22%; max-width: 56%; font-size: 12px; color: var(--text-primary); }
+    .sp-cue { text-align: center; font-weight: 800; } .sp-par { text-align: center; font-style: italic; color: var(--text-muted); font-size: 11px; }
+    .sp-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+    .sp-tbl th, .sp-tbl td { border-bottom: 1px solid var(--line); padding: 3px 6px; text-align: left; vertical-align: top; }
+    .sp-mono { font: 10.5px var(--mono); }
+    .sp-empty { font-size: 12px; color: var(--text-muted); padding: 24px; text-align: center; border: 1px dashed var(--line); border-radius: 10px; }
+    .sp-note { font-size: 12px; color: var(--text-secondary); } .sp-note.ok { color: #4ade80; }
+    .sp-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }
+    .sp-f .sp-mut { margin-right: auto; }
+    .sp-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .sp-btn.sm { padding: 3px 8px; font-size: 11px; }
+    .sp-btn.go { background: linear-gradient(135deg,#a78bfa,#f59e0b); color: #fff; border: 0; }
+    .sp-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 820px) { .sp-grid2 { grid-template-columns: 1fr; } .sp-dlg { margin-left: 8%; max-width: 84%; } }
+</style>
+
+@code {
+    [Parameter] public StoryboardProject? Project { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback OnApplied { get; set; }
+
+    private int _tab, _chars = 4, _selBeat = -1;
+    private double _seconds = 45, _maxCut = 6;
+    private bool _useLlm = true, _vertical = true, _lipSync = true, _matchThemes = true, _append, _editFountain;
+    private string _premise = "", _loadPath = "", _fountain = "", _lang = "ko";
+    private string? _msg, _selChar;
+    private StoryStructure _structure = StoryStructure.ShortForm;
+    private CancellationTokenSource? _cts;
+
+    protected override void OnInitialized()
+    {
+        World.OnChange += OnServiceChanged;
+        Writer.OnChange += OnServiceChanged;
+        Converter.OnChange += OnServiceChanged;
+        if (World.Current is { } b) { _premise = b.Premise; _selChar = b.Protagonist?.Id; }
+        else if (Project is { Scenes.Count: > 0 } p) _premise = p.Scenes[0].Prompt;
+        if (Writer.Current is { } d) { _structure = d.Structure; _fountain = SceneBeatSheetScriptGenerator.ToFountain(d); }
+    }
+
+    private static readonly string FountainHint = string.Join('\n', "INT. 카페 - 낮", "", "@수아", "(웃으며)", "안녕?");
+
+    private static string F(float v) => v.ToString("0.###", CultureInfo.InvariantCulture);
+
+    private static string RoleColor(CharacterRole r) => r switch
+    {
+        CharacterRole.Protagonist => "#f59e0b", CharacterRole.Antagonist => "#ef4444", CharacterRole.Mentor => "#22d3ee",
+        CharacterRole.Foil => "#a78bfa", CharacterRole.Narrator => "#94a3b8", _ => "#4ade80",
+    };
+
+    private static string RelLabel(RelationKind k) => k switch
+    {
+        RelationKind.Ally => "동료", RelationKind.Rival => "라이벌", RelationKind.Family => "가족", RelationKind.Romance => "로맨스", RelationKind.Mentor => "사제", _ => "적대",
+    };
+
+    private static string AgentLabel(StoryAgent a) => a switch { StoryAgent.Loremaster => "🌍 세계관", StoryAgent.Writer => "✍ 작가", _ => "🎬 감독" };
+
+    private static string ArcPoints(List<float> arc)
+    {
+        if (arc.Count == 0) return "";
+        var sb = new System.Text.StringBuilder();
+        for (var i = 0; i < arc.Count; i++)
+            sb.Append((i * 200f / Math.Max(1, arc.Count - 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append((25 - arc[i] * 22).ToString("0.#", CultureInfo.InvariantCulture)).Append(' ');
+        return sb.ToString();
+    }
+
+    private ConvertOptions Options() => new(_vertical, _lipSync, _maxCut, _lang, _append, _matchThemes);
+
+    private Task BuildWorldAsync() => RunAsync(async ct =>
+    {
+        var b = await World.BuildAsync(_premise, _chars, _useLlm, ct);
+        _selChar = b.Protagonist?.Id;
+        _msg = null;
+    });
+
+    private void SaveWorld()
+    {
+        if (World.Current is not { } b) return;
+        try { _msg = "💾 " + World.Save(b); }
+        catch (Exception ex) { Program.Log("ScreenplayStudio.Save", ex); _msg = "⚠ 저장 실패: " + ex.Message; }
+    }
+
+    private void LoadWorld()
+    {
+        var b = World.Load(_loadPath);
+        _msg = b is null ? "⚠ 로드 실패" : null;
+        if (b is not null) { _premise = b.Premise; _selChar = b.Protagonist?.Id; }
+    }
+
+    private Task WriteAsync() => RunAsync(async ct =>
+    {
+        if (World.Current is not { } b) return;
+        var d = await Writer.GenerateAsync(b, _structure, _seconds, _useLlm, ct);
+        _fountain = SceneBeatSheetScriptGenerator.ToFountain(d);
+        _selBeat = 0;
+        _msg = null;
+    });
+
+    private void RewriteFromBeats()
+    {
+        if (World.Current is not { } b || Writer.Current is not { } d) return;
+        var doc = SceneBeatSheetScriptGenerator.WriteScript(b, d.Beats, d.Structure, d.TotalSeconds > 0 ? d.TotalSeconds : _seconds);
+        Writer.SetCurrent(doc);
+        _fountain = SceneBeatSheetScriptGenerator.ToFountain(doc);
+    }
+
+    private void ApplyFountain()
+    {
+        var doc = SceneBeatSheetScriptGenerator.ParseFountain(_fountain, _structure);
+        if (doc.Scenes.Count == 0) { _msg = "⚠ 씬을 찾지 못했습니다(INT./EXT. 헤딩 필요)."; return; }
+        if (Writer.Current is { } prev) { doc.Beats = prev.Beats; if (string.IsNullOrWhiteSpace(doc.Title)) doc.Title = prev.Title; }
+        Writer.SetCurrent(doc);
+        _editFountain = false;
+        _msg = "⤵ " + doc.Scenes.Count.ToString(CultureInfo.InvariantCulture) + "씬 파싱";
+    }
+
+    private async Task ConvertToStoryboard()
+    {
+        if (Project is null || Writer.Current is not { } d) return;
+        var r = Converter.Apply(Project, d, World.Current, Options());
+        _msg = "🎬 " + r.Message;
+        _tab = 3;
+        await OnApplied.InvokeAsync();
+    }
+
+    private async Task RunAsync(Func<CancellationToken, Task> work)
+    {
+        var cts = new CancellationTokenSource();
+        if (Interlocked.CompareExchange(ref _cts, cts, null) is not null) { cts.Dispose(); return; }
+        try { await work(cts.Token); }
+        catch (OperationCanceledException) { _msg = "⚠ 취소됨"; }
+        catch (Exception ex) { Program.Log("ScreenplayStudio.Run", ex); _msg = "⚠ 실패: " + ex.Message; }
+        finally
+        {
+            Interlocked.CompareExchange(ref _cts, null, cts);
+            cts.Dispose();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void Cancel()
+    {
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
+    private Task Close() => _cts is not null ? Task.CompletedTask : OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        World.OnChange -= OnServiceChanged;
+        Writer.OnChange -= OnServiceChanged;
+        Converter.OnChange -= OnServiceChanged;
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+}

@@ -1,0 +1,348 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.SpatialAcoustics
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject SpatialAcousticsStudioRunner Runner
+
+@* [PromptFlow Studio v17.23.0] 🎧 AI 6DoF 공간 음향 & 광선 추적 스튜디오 — 광선 반사 궤적 평면도 · 감쇠 곡선/에코그램 · 360° HRTF 방위 레이더 · 재질별 RT60 미터 · 도플러/차폐 가드 · 바이노럴 출력. *@
+
+<div class="sas-scrim" @onclick="Close">
+    <div class="sas-modal" @onclick:stopPropagation="true">
+        <div class="sas-h">
+            <div>
+                <div class="sas-title">🎧 AI 6DoF 공간 음향 &amp; 광선 추적 스튜디오</div>
+                <div class="sas-sub"><b>광선 추적 엔진</b>이 v17.21 세트(방 6면 · 기둥 · 상자 = @(T.Bvh.TriangleCount) 삼각형 BVH)에서 직접음 + 이미지 소스 1·2차 경로(@(RealtimeAcousticRayTracingEngine.PathSlots) 슬롯)를 광선으로 가시성 검증하고, 프레임당 @(T.RaysPerFrame)개 확률적 광선을 재질별 8대역 흡음 · 산란으로 반사시켜 RT60 을 구합니다. <b>HRTF 합성기</b>는 v17.22 HMD 헤드 포즈로 머리 기준 방위/고도를 구해 귀별 ITD 지연과 64탭 HRIR 컨볼루션(ILD · 귓바퀴)을 적용하고, <b>가드</b>는 도플러 램프 · 회절 경로 전환 교차 페이드 · 이득 윈도우 스무딩으로 팝핑을 막습니다.</div>
+            </div>
+            <button class="sas-x" @onclick="Close">✕</button>
+        </div>
+        <div class="sas-bar">
+            <button class="sas-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 가동")</button>
+            <button class="sas-btn" @onclick="Step30" disabled="@Runner.IsRunning">⏭ 0.5초</button>
+            <button class="sas-btn @(Runner.HeadMotion ? "on" : null)" @onclick="() => Runner.SetHeadMotion(!Runner.HeadMotion)">🙆 헤드 모션</button>
+            <button class="sas-btn @(Runner.Set.Blocking ? "on" : null)" @onclick="() => Runner.SetBlocking(!Runner.Set.Blocking)">🚶 액터 동선</button>
+            <button class="sas-btn @(Runner.VoiceOn ? "on" : null)" @onclick="() => Runner.SetVoice(!Runner.VoiceOn)">🗣 음성</button>
+            <button class="sas-btn @(Runner.Drone ? "on" : null)" @onclick="() => Runner.SetDrone(!Runner.Drone)">🛸 드론</button>
+            <button class="sas-btn @(S.HrtfEnabled ? "on" : null)" @onclick="() => Runner.SetHrtf(!S.HrtfEnabled)">🎧 HRTF</button>
+            <button class="sas-btn @(S.LateEnabled ? "on" : null)" @onclick="() => Runner.SetLate(!S.LateEnabled)">🌊 후기 잔향</button>
+            <button class="sas-btn @(G.Enabled ? "on" : null)" @onclick="() => Runner.SetGuard(!G.Enabled)">🛡 위상 가드</button>
+            <button class="sas-btn @(S.UseSimd ? "on" : null)" @onclick="() => Runner.SetSimd(!S.UseSimd)">⚡ SIMD</button>
+            <span class="sas-chip @(Runner.LastTickMs <= 16.7 ? "ok" : "warn")">틱 @(F2(Runner.LastTickMs)) ms · 광선 @(F2(T.LastTraceUs / 1000)) ms · 경로 @(F2(T.LastPathUs / 1000)) ms · 렌더 @(F2(S.LastRenderUs / 1000)) ms</span>
+            <span class="sas-chip">RT60(500 Hz) @(F0(T.Rt60(3) * 1000)) ms · Eyring @(F0(T.EyringRt60(3) * 1000)) ms</span>
+        </div>
+        <div class="sas-main">
+            <div class="sas-col">
+                <div class="sas-card">
+                    <div class="sas-sec">🔦 음향 광선 반사 궤적(평면도 · 10 × 11 × @(F1(RealtimeAcousticRayTracingEngine.H)) m)</div>
+                    <svg class="sas-plan" viewBox="0 0 300 330">
+                        <rect class="room" x="0" y="0" width="300" height="330" />
+                        <line class="win" x1="1" y1="0" x2="1" y2="330" />
+                        @for (var r = 0; r < RealtimeAcousticRayTracingEngine.VizRays; r++)
+                        {
+                            <polyline class="ray" points="@(RayPoints(r))" />
+                        }
+                        @for (var j = 1; j <= RealtimeAcousticRayTracingEngine.Planes; j++)
+                        {
+                            var pp = Runner.Path(j);
+                            if (pp.Valid)
+                            {
+                                <polyline class="er" points="@(Pt(Runner.Source0)) @(Pt(pp.Via)) @(Pt(Runner.HeadPosition))" />
+                            }
+                        }
+                        @if (Runner.Occlusion0.Occluded)
+                        {
+                            <polyline class="dif" points="@(Pt(Runner.Source0)) @(Pt(Runner.Occlusion0.Edge)) @(Pt(Runner.HeadPosition))" />
+                        }
+                        else
+                        {
+                            <line class="dir" x1="@(Px(Runner.Source0.X))" y1="@(Pz(Runner.Source0.Z))" x2="@(Px(Runner.HeadPosition.X))" y2="@(Pz(Runner.HeadPosition.Z))" />
+                        }
+                        @foreach (var pl in RealtimeAcousticRayTracingEngine.Pillars)
+                        {
+                            <rect class="pil" x="@(Px(pl.X - RealtimeAcousticRayTracingEngine.PillarHalf))" y="@(Pz(pl.Y - RealtimeAcousticRayTracingEngine.PillarHalf))" width="@(F1(RealtimeAcousticRayTracingEngine.PillarHalf * 60))" height="@(F1(RealtimeAcousticRayTracingEngine.PillarHalf * 60))" />
+                        }
+                        @for (var c = 0; c < RealtimeAcousticRayTracingEngine.CrateMin.Length; c++)
+                        {
+                            var mn = RealtimeAcousticRayTracingEngine.CrateMin[c];
+                            var mx = RealtimeAcousticRayTracingEngine.CrateMax[c];
+                            <rect class="crate" x="@(Px(mn.X))" y="@(Pz(mn.Z))" width="@(F1((mx.X - mn.X) * 30))" height="@(F1((mx.Z - mn.Z) * 30))" />
+                        }
+                        @for (var a = 0; a < 2; a++)
+                        {
+                            var ap = Runner.Set.ActorPosition(a);
+                            <circle class="@(a == 0 ? "actor a0" : "actor a1")" cx="@(Px(ap.X))" cy="@(Pz(ap.Z))" r="6" />
+                        }
+                        <circle class="src" cx="@(Px(Runner.Source0.X))" cy="@(Pz(Runner.Source0.Z))" r="4" />
+                        @if (Runner.Drone)
+                        {
+                            <circle class="drone" cx="@(Px(Runner.Source1.X))" cy="@(Pz(Runner.Source1.Z))" r="5" />
+                        }
+                        <circle class="lis" cx="@(Px(Runner.HeadPosition.X))" cy="@(Pz(Runner.HeadPosition.Z))" r="7" />
+                        <line class="fwd" x1="@(Px(Runner.HeadPosition.X))" y1="@(Pz(Runner.HeadPosition.Z))" x2="@(Px(Runner.HeadPosition.X + Fwd.X * 0.9f))" y2="@(Pz(Runner.HeadPosition.Z + Fwd.Z * 0.9f))" />
+                    </svg>
+                    <div class="sas-legend"><i class="ray"></i>확률적 광선(@(RealtimeAcousticRayTracingEngine.VizRays)개) <i class="er"></i>1차 반사(음성) <i class="dir"></i>직접음 <i class="dif"></i>회절 경로 <i class="src"></i>액터 입 <i class="drone"></i>드론 <i class="lis"></i>HMD 청자</div>
+                    <div class="sas-ctl">
+                        <label class="sas-sl">광선/프레임 <b>@(T.RaysPerFrame)</b><input type="range" min="16" max="512" step="16" value="@(T.RaysPerFrame)" @onchange="e => Runner.SetRays((int)Num(e, 64))" /></label>
+                        <button class="sas-btn sm @(Runner.RayTracing ? "on" : null)" @onclick="() => Runner.SetRayTracing(!Runner.RayTracing)">🔦 광선 추적</button>
+                    </div>
+                    <div class="sas-kv">BVH 노드 @(T.Bvh.NodeCount) · 누적 광선 @(T.RaysTraced) · 반사 @(T.Bounces) · 수음 구 적중 @(T.ReceiverHits) · 누출 @(T.Escaped) · 유효 경로 <b>@(T.ValidPaths)</b>/@(RealtimeAcousticRayTracingEngine.PathSlots) · 후기 레벨 @(F2(T.LateLevel))</div>
+                </div>
+
+                <div class="sas-card">
+                    <div class="sas-sec">📉 에너지 감쇠 곡선(0 → −60 dB · 0–1.6 s) · 수음 에코그램</div>
+                    <svg class="sas-ser" viewBox="0 0 360 110" preserveAspectRatio="none">
+                        <line class="m" x1="0" x2="360" y1="@(F1(Y(5, 60, 110)))" y2="@(F1(Y(5, 60, 110)))" /><line class="m" x1="0" x2="360" y1="@(F1(Y(25, 60, 110)))" y2="@(F1(Y(25, 60, 110)))" />
+                        <polyline class="eg" points="@(EchoPoints())" />
+                        <polyline class="b1" points="@(DecayPoints(1))" /><polyline class="b3" points="@(DecayPoints(3))" /><polyline class="b6" points="@(DecayPoints(6))" />
+                    </svg>
+                    <div class="sas-legend"><i class="b1"></i>125 Hz <i class="b3"></i>500 Hz <i class="b6"></i>4 kHz <i class="m"></i>T20 회귀 구간(−5 / −25 dB) <i class="eg"></i>에코그램(4 ms 빈)</div>
+                </div>
+            </div>
+
+            <div class="sas-col">
+                <div class="sas-card">
+                    <div class="sas-sec">🧭 360° HRTF 방위 레이더(머리 기준 · 위 = 정면 · 반경 = 도달 지연 0–60 ms)</div>
+                    <div class="sas-radar-row">
+                        <svg class="sas-radar" viewBox="0 0 220 220">
+                            <circle class="ring" cx="110" cy="110" r="44" /><circle class="ring" cx="110" cy="110" r="74" /><circle class="ring" cx="110" cy="110" r="104" />
+                            <line class="ax" x1="110" y1="4" x2="110" y2="216" /><line class="ax" x1="4" y1="110" x2="216" y2="110" />
+                            <g><text x="110" y="12" class="lb">정면</text></g><g><text x="208" y="113" class="lb">R</text></g><g><text x="12" y="113" class="lb">L</text></g>
+                            @for (var i = 0; i < RadarSlots; i++)
+                            {
+                                var p = Runner.Path(i);
+                                if (p.Valid && G.Active(i))
+                                {
+                                    <circle class="@(RadarClass(i))" cx="@(RadarX(i, p))" cy="@(RadarY(i, p))" r="@(RadarR(p))" />
+                                }
+                            }
+                        </svg>
+                        <div class="sas-hrtf">
+                            <div>방위 <b>@(F1(S.AzimuthDeg))°</b></div>
+                            <div>고도 <b>@(F1(S.ElevationDeg))°</b></div>
+                            <div>ITD <b>@(F0(S.ItdUs)) µs</b></div>
+                            <div>ILD <b>@(F1(S.IldDb)) dB</b></div>
+                            <div>가청 경로 <b>@(S.AudiblePaths)</b></div>
+                            <div class="mu">HRIR @(HrtfFilterSet.AzCount)×@(HrtfFilterSet.ElCount) · @(HrtfFilterSet.Taps)탭 · 48 kHz · 가상 스피커 @(HrtfFilterSet.VirtualBins)</div>
+                        </div>
+                    </div>
+                    <div class="sas-legend"><i class="d0"></i>음성 직접 <i class="r0"></i>음성 반사 <i class="d1"></i>드론 직접 <i class="r1"></i>드론 반사</div>
+                </div>
+
+                <div class="sas-card">
+                    <div class="sas-sec">🧱 재질별 흡음 · RT60 미터</div>
+                    <div class="sas-mats">
+                        @foreach (var s in Surfaces)
+                        {
+                            var ss = s;
+                            <label class="sas-mat"><span class="nm">@(AcousticMaterials.SurfaceName(ss))</span>
+                                <select @onchange="e => OnMaterial(ss, e)">
+                                    @foreach (var m in Materials)
+                                    {
+                                        <option value="@((int)m)" selected="@(T.Material(ss) == m)">@(AcousticMaterials.Name(m))</option>
+                                    }
+                                </select>
+                                <span class="ar">@(F1(T.SurfaceArea(ss))) m²</span>
+                            </label>
+                        }
+                    </div>
+                    <div class="sas-rt">
+                        @for (var k = 0; k < AcousticMaterials.Bands; k++)
+                        {
+                            <span class="hz">@(HzLabel(k))</span>
+                            <span class="bar"><i style="width:@(Pct(T.Rt60(k) / 2.0))"></i><em style="left:@(Pct(T.EyringRt60(k) / 2.0))"></em></span>
+                            <span class="v">@(F0(T.Rt60(k) * 1000)) ms</span>
+                        }
+                    </div>
+                    <div class="sas-legend"><i class="rt"></i>광선 추적 RT60(T20 × 3 · 0–2 s) <i class="ey"></i>Eyring 해석해</div>
+                </div>
+
+                <div class="sas-card">
+                    <div class="sas-sec">🛸 도플러 · 차폐/회절 위상 가드</div>
+                    <svg class="sas-ser sm" viewBox="0 0 360 50" preserveAspectRatio="none">
+                        <line class="m" x1="0" x2="360" y1="25" y2="25" />
+                        <polyline class="dop" points="@(Series(Runner.DopplerSeries, 0.9, 1.1, 50))" /><polyline class="occ" points="@(Series(Runner.OcclusionSeries, 0, 24, 50))" /><polyline class="lv" points="@(Series(Runner.LevelSeries, -60, 0, 50))" />
+                    </svg>
+                    <div class="sas-legend"><i class="dop"></i>드론 도플러 비(0.9–1.1) <i class="occ"></i>음성 고역 회절 감쇠(0–24 dB) <i class="lv"></i>출력 레벨(−60–0 dB)</div>
+                    <div class="sas-kv">드론 도플러 <b>@(F2(G.Doppler(SpatialAcousticsStudioRunner.Slots)))×</b> (@(F0(Cents(G.Doppler(SpatialAcousticsStudioRunner.Slots)))) cent) · 음성 @(F2(G.Doppler(0)))× · 경로 지연 @(F1(G.DelaySamples(0) / 48.0)) ms</div>
+                    <div class="sas-kv">음성 직접음 <b class="@(Runner.Occlusion0.Occluded ? "warn" : null)">@(Runner.Occlusion0.Occluded ? "차폐 → 회절" : "시야 확보")</b> · δ @(F1(Runner.Occlusion0.DeltaM * 100)) cm · 저역 −@(F1(Runner.Occlusion0.AttLowDb)) dB · 고역 −@(F1(Runner.Occlusion0.AttHighDb)) dB · 드론 @(Runner.Occlusion1.Occluded ? "차폐" : "시야")</div>
+                    <div class="sas-kv">교차 페이드 <b>@(G.Crossfades)</b> · 윈도우 스무딩 @(G.Windowed) · 경로 전환 @(G.OcclusionToggles) · 슬루 점프 @(G.SlewJumps) · 활성화 @(G.Activations)</div>
+                </div>
+
+                <div class="sas-card">
+                    <div class="sas-sec">🔊 바이노럴 출력</div>
+                    <svg class="sas-ser sm" viewBox="0 0 360 50" preserveAspectRatio="none">
+                        <polyline class="sl" points="@(Scope(true))" /><polyline class="sr" points="@(Scope(false))" />
+                    </svg>
+                    <div class="sas-meter"><span class="nm">L</span><span class="bar"><i style="width:@(Pct(S.PeakL))"></i></span><span class="nm">R</span><span class="bar"><i style="width:@(Pct(S.PeakR))"></i></span></div>
+                    <div class="sas-kv">RMS L @(F1(Db(S.RmsL))) dB · R @(F1(Db(S.RmsR))) dB · 클립 <b class="@(S.Clips > 0 ? "warn" : null)">@(S.Clips)</b> · 블록 @(S.Blocks) · 최대 렌더 @(F2(S.MaxRenderUs / 1000)) ms · FDN RT60 @(F0(S.Late.Rt60Low * 1000))/@(F0(S.Late.Rt60High * 1000)) ms</div>
+                </div>
+                <div class="sas-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .sas-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .sas-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .sas-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f59e0b 14%, var(--card)), color-mix(in srgb, #0ea5e9 12%, var(--card))); }
+    .sas-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .sas-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .sas-sub b { color: var(--text-primary); }
+    .sas-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .sas-bar { display: flex; flex-wrap: wrap; gap: 6px 10px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .sas-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; } .sas-btn:disabled { opacity: .4; cursor: default; }
+    .sas-btn.sm { font-size: 10px; padding: 2px 8px; } .sas-btn.on { background: color-mix(in srgb, #f59e0b 22%, transparent); border-color: #fbbf24; }
+    .sas-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .sas-chip.ok { border-color: #22c55e; color: #86efac; } .sas-chip.warn { border-color: #eab308; color: #fde68a; }
+    .sas-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .sas-sl b { font-family: var(--mono); color: var(--text-primary); } .sas-sl input { width: 140px; }
+    .sas-main { display: grid; grid-template-columns: 1.05fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .sas-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .sas-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+    .sas-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .sas-ctl { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+    .sas-plan { width: 100%; max-width: 520px; aspect-ratio: 300 / 330; align-self: center; background: #030712; border-radius: 8px; }
+    .sas-plan .room { fill: #0b1220; stroke: #475569; stroke-width: 2; } .sas-plan .win { stroke: #7dd3fc; stroke-width: 3; }
+    .sas-plan .ray { fill: none; stroke: #fbbf24; stroke-opacity: .28; stroke-width: 1; } .sas-plan .er { fill: none; stroke: #f97316; stroke-width: 1.2; stroke-opacity: .8; }
+    .sas-plan .dir { stroke: #4ade80; stroke-width: 1.6; } .sas-plan .dif { fill: none; stroke: #f472b6; stroke-width: 1.6; stroke-dasharray: 4 3; }
+    .sas-plan .pil { fill: #64748b; } .sas-plan .crate { fill: #92400e; } .sas-plan .actor { fill: none; stroke-width: 2; } .sas-plan .actor.a0 { stroke: #fb923c; } .sas-plan .actor.a1 { stroke: #60a5fa; }
+    .sas-plan .src { fill: #f97316; } .sas-plan .drone { fill: #22d3ee; } .sas-plan .lis { fill: #a78bfa; stroke: #ede9fe; stroke-width: 1.5; } .sas-plan .fwd { stroke: #ede9fe; stroke-width: 2.5; }
+    .sas-radar-row { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+    .sas-radar { width: 220px; height: 220px; background: #030712; border-radius: 50%; flex: none; }
+    .sas-radar .ring { fill: none; stroke: #1e293b; } .sas-radar .ax { stroke: #1e293b; } .sas-radar .lb { fill: #94a3b8; font: 700 9px var(--mono); text-anchor: middle; }
+    .sas-radar .d0 { fill: #f97316; } .sas-radar .r0 { fill: #fdba74; fill-opacity: .7; } .sas-radar .d1 { fill: #22d3ee; } .sas-radar .r1 { fill: #67e8f9; fill-opacity: .6; }
+    .sas-hrtf { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); } .sas-hrtf b { font-family: var(--mono); color: var(--text-primary); } .sas-hrtf .mu { font-size: 10px; color: var(--text-muted); }
+    .sas-mats { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px 10px; }
+    .sas-mat { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .sas-mat .nm { width: 52px; font-weight: 700; color: var(--text-primary); } .sas-mat .ar { font-family: var(--mono); font-size: 10px; color: var(--text-muted); }
+    .sas-mat select { font-size: 11px; background: var(--card); color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 1px 4px; }
+    .sas-rt { display: grid; grid-template-columns: 56px 1fr 64px; gap: 3px 8px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .sas-rt .hz { font-family: var(--mono); color: var(--text-primary); } .sas-rt .v { font-family: var(--mono); text-align: right; }
+    .sas-rt .bar { position: relative; height: 10px; background: #0f172a; border-radius: 5px; overflow: hidden; }
+    .sas-rt .bar i { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, #b45309, #fbbf24); border-radius: 5px; transition: width .2s; }
+    .sas-rt .bar em { position: absolute; top: -1px; bottom: -1px; width: 2px; background: #38bdf8; }
+    .sas-ser { width: 100%; height: 110px; background: #030712; border-radius: 6px; } .sas-ser.sm { height: 50px; }
+    .sas-ser polyline, .sas-ser line { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+    .sas-ser .m { stroke: #334155; stroke-dasharray: 4 3; } .sas-ser .eg { stroke: #a78bfa; stroke-opacity: .7; } .sas-ser .b1 { stroke: #f87171; } .sas-ser .b3 { stroke: #fbbf24; } .sas-ser .b6 { stroke: #22d3ee; }
+    .sas-ser .dop { stroke: #22d3ee; } .sas-ser .occ { stroke: #f472b6; } .sas-ser .lv { stroke: #4ade80; } .sas-ser .sl { stroke: #fb923c; } .sas-ser .sr { stroke: #60a5fa; }
+    .sas-meter { display: grid; grid-template-columns: 14px 1fr 14px 1fr; gap: 4px 8px; align-items: center; font-size: 11px; } .sas-meter .nm { font-weight: 800; color: var(--text-primary); }
+    .sas-meter .bar { position: relative; height: 10px; background: #0f172a; border-radius: 5px; overflow: hidden; } .sas-meter .bar i { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, #16a34a, #eab308, #ef4444); border-radius: 5px; }
+    .sas-legend, .sas-kv { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11px; line-height: 1.45; color: var(--text-secondary); align-items: center; min-width: 0; overflow-wrap: anywhere; } .sas-kv b { color: var(--text-primary); } .sas-kv b.warn { color: #fde68a; }
+    .sas-legend i { display: inline-block; width: 10px; height: 8px; border-radius: 2px; margin-right: 2px; }
+    .sas-legend .ray { background: #fbbf24; opacity: .5; } .sas-legend .er { background: #f97316; } .sas-legend .dir { background: #4ade80; } .sas-legend .dif { background: #f472b6; } .sas-legend .src { background: #f97316; } .sas-legend .drone { background: #22d3ee; } .sas-legend .lis { background: #a78bfa; }
+    .sas-legend .b1 { background: #f87171; } .sas-legend .b3 { background: #fbbf24; } .sas-legend .b6 { background: #22d3ee; } .sas-legend .m { background: #334155; } .sas-legend .eg { background: #a78bfa; }
+    .sas-legend .d0 { background: #f97316; } .sas-legend .r0 { background: #fdba74; } .sas-legend .d1 { background: #22d3ee; } .sas-legend .r1 { background: #67e8f9; } .sas-legend .rt { background: #fbbf24; } .sas-legend .ey { background: #38bdf8; }
+    .sas-legend .dop { background: #22d3ee; } .sas-legend .occ { background: #f472b6; } .sas-legend .lv { background: #4ade80; }
+    .sas-note { font-size: 11px; color: var(--text-muted); word-break: break-all; }
+    @@media (max-width: 1100px) { .sas-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int RadarSlots = 2 * SpatialAcousticsStudioRunner.Slots;
+    private static readonly AcousticSurface[] Surfaces = { AcousticSurface.Floor, AcousticSurface.Ceiling, AcousticSurface.BackWall, AcousticSurface.WindowWall, AcousticSurface.SideWall, AcousticSurface.FrontWall, AcousticSurface.Pillars, AcousticSurface.Crates };
+    private static readonly AcousticMaterial[] Materials = { AcousticMaterial.Concrete, AcousticMaterial.Wood, AcousticMaterial.Fabric, AcousticMaterial.Glass, AcousticMaterial.AcousticPanel, AcousticMaterial.Plaster };
+    private System.Threading.Timer? _timer;
+
+    private RealtimeAcousticRayTracingEngine T => Runner.Tracer;
+    private Hrtf6DoFBinauralSpatialAudioSynthesizer S => Runner.Synth;
+    private DopplerDiffractionOcclusionPhaseGuard G => Runner.Guard;
+    private Vector3 Fwd => Vector3.Transform(Vector3.UnitZ, Runner.HeadOrientation);
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("SpatialAcoustics.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string Pct(double v) => (Math.Clamp(double.IsFinite(v) ? v : 0, 0, 1) * 100).ToString("0.##", CultureInfo.InvariantCulture) + "%";
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+    private static double Y(double v, double max, double h) => 2 + (h - 4) * Math.Clamp(v / max, 0, 1);
+    private static double Db(double v) => 20 * Math.Log10(Math.Max(v, 1e-6));
+    private static double Cents(double ratio) => 1200 * Math.Log2(Math.Max(ratio, 1e-6));
+    private static string HzLabel(int k) { var hz = AcousticMaterials.CenterHz[k]; return hz >= 1000 ? (hz / 1000).ToString("0", CultureInfo.InvariantCulture) + " kHz" : hz.ToString("0", CultureInfo.InvariantCulture) + " Hz"; }
+
+    private static string Px(float x) => F1((x - RealtimeAcousticRayTracingEngine.X0) * 30);
+    private static string Pz(float z) => F1((z - RealtimeAcousticRayTracingEngine.Z0) * 30);
+    private static string Pt(Vector3 p) => Px(p.X) + "," + Pz(p.Z);
+
+    private string RayPoints(int r)
+    {
+        var n = T.VizCount(r);
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 14);
+        for (var k = 0; k < n; k++) sb.Append(Pt(T.VizPoint(r, k))).Append(' ');
+        return sb.ToString();
+    }
+
+    private string DecayPoints(int band)
+    {
+        var sb = new System.Text.StringBuilder(RealtimeAcousticRayTracingEngine.DecayBins * 7);
+        var d0 = T.DecayDb(0, band);
+        for (var i = 0; i < RealtimeAcousticRayTracingEngine.DecayBins; i += 2)
+            sb.Append(F1(360.0 * i / RealtimeAcousticRayTracingEngine.DecayBins)).Append(',').Append(F1(Y(d0 - T.DecayDb(i, band), 60, 110))).Append(' ');
+        return sb.ToString();
+    }
+
+    private string EchoPoints()
+    {
+        var mx = -120.0;
+        for (var i = 0; i < RealtimeAcousticRayTracingEngine.EchoBins; i++) mx = Math.Max(mx, T.EchoDb(i));
+        var sb = new System.Text.StringBuilder(RealtimeAcousticRayTracingEngine.EchoBins * 12);
+        var span = RealtimeAcousticRayTracingEngine.DecayBins * RealtimeAcousticRayTracingEngine.DecayBinMs;
+        for (var i = 0; i < RealtimeAcousticRayTracingEngine.EchoBins; i++)
+            sb.Append(F1(360.0 * i * RealtimeAcousticRayTracingEngine.EchoBinMs / span)).Append(',').Append(F1(Y(mx - T.EchoDb(i), 60, 110))).Append(' ');
+        return sb.ToString();
+    }
+
+    private string Series(Func<int, float> f, double lo, double hi, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (SpatialAcousticsStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - Y(f(i) - lo, hi - lo, h))).Append(' ');
+        return sb.ToString();
+    }
+
+    private string Scope(bool left)
+    {
+        var sb = new System.Text.StringBuilder(Hrtf6DoFBinauralSpatialAudioSynthesizer.ScopeLen * 12);
+        for (var i = 0; i < Hrtf6DoFBinauralSpatialAudioSynthesizer.ScopeLen; i++)
+            sb.Append(F1(360.0 * i / (Hrtf6DoFBinauralSpatialAudioSynthesizer.ScopeLen - 1))).Append(',').Append(F1(25 - 23 * Math.Clamp(left ? S.ScopeL(i) : S.ScopeR(i), -1f, 1f))).Append(' ');
+        return sb.ToString();
+    }
+
+    private static string RadarClass(int i) => i % SpatialAcousticsStudioRunner.Slots == 0 ? (i == 0 ? "d0" : "d1") : (i < SpatialAcousticsStudioRunner.Slots ? "r0" : "r1");
+    private static double RadarRadius(AcousticPath p) => 14 + 90 * Math.Clamp(p.LengthM / 343.0 * 1000.0 / 60.0, 0, 1);
+    private string RadarX(int i, AcousticPath p) => F1(110 + RadarRadius(p) * Math.Sin(S.PathAzimuth(i) * Math.PI / 180));
+    private string RadarY(int i, AcousticPath p) => F1(110 - RadarRadius(p) * Math.Cos(S.PathAzimuth(i) * Math.PI / 180));
+    private static string RadarR(AcousticPath p) => F1(1.5 + 5 * Math.Clamp((Db(Math.Max(p.GainLow, p.GainHigh)) + 40) / 40, 0, 1));
+
+    private void OnMaterial(AcousticSurface s, ChangeEventArgs e)
+    {
+        var v = (int)Num(e, (int)T.Material(s));
+        if (v >= 0 && v < AcousticMaterials.Count) Runner.SetMaterial(s, (AcousticMaterial)v);
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step30() { for (var i = 0; i < SpatialAcousticsStudioRunner.Hz / 2; i++) Runner.Step(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중 갱신은 250 ms 타이머가 처리 — 정지 상태 변경만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

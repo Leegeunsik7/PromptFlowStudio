@@ -1,0 +1,227 @@
+@page "/ai-cutdown"
+@using System.Globalization
+@using PromptFlowStudio.Services.Wan
+@using PromptFlowStudio.Services.Ui
+@using PromptFlowStudio.Services.Platform
+@using PromptFlowStudio.Services.Storyboard
+@inject AiShortsCutdownEngine Cutdown
+@inject IFilePickerService Picker
+@inject UserPreferenceService Prefs
+@inject GalleryAutoSaveService Gallery
+
+<PageTitle>PromptFlow Studio · AI 15초 컷다운</PageTitle>
+
+@* [PromptFlow Studio v5.8.3] AI 숏폼 컷다운 — 4단계 전문가용 워크플로우(원본 분석 → 전략/품질 선택 → 실행 → 결과).
+   컷 전략(AI 추천/훅 우선/클라이맥스 우선/직접 지정) + 실시간 타임라인 미리보기로 "어떤 식으로 변환할지" 사용자가 직접 통제. *@
+
+<div class="acd-wrap">
+    <div class="acd-head">
+        <div class="acd-title">✂️ AI 15초 컷다운</div>
+        <div class="acd-sub">15~30초 원본 동영상을 4단계로 숏폼 15초 1편으로 재단합니다 — 컷 전략과 출력 품질을 직접 선택할 수 있습니다.</div>
+    </div>
+
+    <div class="acd-step">
+        <div class="acd-step-h"><span class="acd-num">1</span>원본 동영상</div>
+        <div class="acd-row">
+            <input class="acd-input" value="@_sourcePath" @oninput="OnPathInput" placeholder="동영상 파일 경로 또는 http(s) URL" disabled="@_busy" />
+            <button class="acd-btn" @onclick="BrowseFile" disabled="@_busy">📂 파일 선택</button>
+            <button class="acd-btn" @onclick="AnalyzeSource" disabled="@(_busy || string.IsNullOrWhiteSpace(_sourcePath))">🔍 분석</button>
+        </div>
+        @if (_analyzing)
+        {
+            <div class="acd-hint">⏳ ffmpeg 로 원본 길이를 확인하는 중…</div>
+        }
+        else if (_analyzeError is { } err)
+        {
+            <div class="acd-hint warn">⚠ @err</div>
+        }
+        else if (_sourceDurationSec is { } d)
+        {
+            <div class="acd-hint ok">✓ 원본 길이 @(d.ToString("0.#", CultureInfo.InvariantCulture))초 확인됨</div>
+        }
+    </div>
+
+    <div class="acd-step @(_sourceDurationSec is null ? "disabled" : null)">
+        <div class="acd-step-h"><span class="acd-num">2</span>변환 옵션 — 어떤 식으로 자를지 선택</div>
+
+        <div class="acd-optlabel">컷 전략</div>
+        <div class="acd-seg">
+            <button class="acd-segbtn @(_strategy == CutdownStrategy.Balanced ? "on" : null)" @onclick='() => _strategy = CutdownStrategy.Balanced' disabled="@(_sourceDurationSec is null)">✨ AI 추천(균형)</button>
+            <button class="acd-segbtn @(_strategy == CutdownStrategy.HookPriority ? "on" : null)" @onclick='() => _strategy = CutdownStrategy.HookPriority' disabled="@(_sourceDurationSec is null)">🪝 훅 우선(도입부)</button>
+            <button class="acd-segbtn @(_strategy == CutdownStrategy.ClimaxPriority ? "on" : null)" @onclick='() => _strategy = CutdownStrategy.ClimaxPriority' disabled="@(_sourceDurationSec is null)">🎆 클라이맥스 우선(엔딩)</button>
+            <button class="acd-segbtn @(_strategy == CutdownStrategy.Manual ? "on" : null)" @onclick='() => _strategy = CutdownStrategy.Manual' disabled="@(_sourceDurationSec is null)">🎚️ 직접 지정</button>
+        </div>
+
+        @if (_strategy == CutdownStrategy.Manual && _sourceDurationSec is { } sd)
+        {
+            <div class="acd-row">
+                <input class="acd-slider" type="range" min="0" max="@(MaxManualStart(sd).ToString(CultureInfo.InvariantCulture))" step="0.1"
+                       value="@(_manualStartSec.ToString(CultureInfo.InvariantCulture))" @oninput="OnManualSlider" />
+                <span class="acd-slider-v">@(_manualStartSec.ToString("0.#", CultureInfo.InvariantCulture))s 부터</span>
+            </div>
+        }
+
+        <div class="acd-optlabel">출력 품질</div>
+        <div class="acd-seg">
+            <button class="acd-segbtn @(_quality == CutdownQuality.Fast ? "on" : null)" @onclick='() => _quality = CutdownQuality.Fast' disabled="@(_sourceDurationSec is null)">⚡ 빠름</button>
+            <button class="acd-segbtn @(_quality == CutdownQuality.Balanced ? "on" : null)" @onclick='() => _quality = CutdownQuality.Balanced' disabled="@(_sourceDurationSec is null)">⚖️ 균형</button>
+            <button class="acd-segbtn @(_quality == CutdownQuality.High ? "on" : null)" @onclick='() => _quality = CutdownQuality.High' disabled="@(_sourceDurationSec is null)">💎 고화질</button>
+        </div>
+
+        @if (_sourceDurationSec is { } total)
+        {
+            var plan = CurrentPlan!;
+            var leftPct = total <= 0 ? 0 : plan.StartSec / total * 100.0;
+            var widthPct = total <= 0 ? 0 : Math.Max(0, plan.EndSec - plan.StartSec) / total * 100.0;
+            <div class="acd-tl">
+                <div class="acd-tl-track"><div class="acd-tl-seg" style="left:@(leftPct.ToString("0.##", CultureInfo.InvariantCulture))%; width:@(widthPct.ToString("0.##", CultureInfo.InvariantCulture))%"></div></div>
+                <div class="acd-tl-labels"><span>0s</span><span>@(total.ToString("0.#", CultureInfo.InvariantCulture))s(원본)</span></div>
+            </div>
+            <div class="acd-plan">@plan.Strategy</div>
+        }
+    </div>
+
+    <div class="acd-step">
+        <div class="acd-step-h"><span class="acd-num">3</span>실행</div>
+        <button class="acd-btn go" @onclick="RunCutdown" disabled="@(_busy || _sourceDurationSec is null)">
+            @(_running ? "⏳ 컷다운 중…" : "✨ 15초로 컷다운 시작")
+        </button>
+    </div>
+
+    @if (_result is { } r)
+    {
+        <div class="acd-step">
+            <div class="acd-step-h"><span class="acd-num">4</span>결과</div>
+            <div class="acd-result @(r.Ok ? "ok" : "warn")">
+                @if (r.Plan is { } p)
+                {
+                    <div class="acd-plan">
+                        원본 @(p.SourceDurationSec.ToString("0.#", CultureInfo.InvariantCulture))s → @(p.TargetDurationSec.ToString("0", CultureInfo.InvariantCulture))s
+                        (구간 @(p.StartSec.ToString("0.#", CultureInfo.InvariantCulture))s~@(p.EndSec.ToString("0.#", CultureInfo.InvariantCulture))s) · @p.Strategy
+                    </div>
+                }
+                <div class="acd-note">@r.Note</div>
+                @if (r.Ok && r.PlaybackUrl is { } url)
+                {
+                    <video class="acd-video" src="@url" controls preload="metadata"></video>
+                    <div class="acd-row">
+                        <button class="acd-btn" @onclick="() => SaveToGallery(url)" disabled="@_savedToGallery">@(_savedToGallery ? "✓ 갤러리에 저장됨" : "🖼️ 갤러리에 저장")</button>
+                        <span class="acd-path" title="@r.OutputPath">@r.OutputPath</span>
+                    </div>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+<style>
+    .acd-wrap{display:flex; flex-direction:column; gap:14px; padding:20px; max-width:820px}
+    .acd-title{font-size:18px; font-weight:900; color:var(--text-primary)}
+    .acd-sub{font-size:12.5px; color:var(--text-secondary); margin-top:6px; line-height:1.6em; word-break:keep-all}
+    .acd-step{display:flex; flex-direction:column; gap:10px; padding:16px; border-radius:16px; border:1px solid var(--line); background:var(--card); transition:opacity .15s}
+    .acd-step.disabled{opacity:.55}
+    .acd-step-h{display:flex; align-items:center; gap:9px; font:900 13px Pretendard,'Malgun Gothic',sans-serif; color:var(--text-primary)}
+    .acd-num{display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border-radius:50%; font:800 11px var(--mono); color:#fff; background:linear-gradient(135deg,#0ea5e9,#6366f1); flex:0 0 auto}
+    .acd-optlabel{font:800 11px var(--mono); color:var(--text-muted); margin-top:4px}
+    .acd-row{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+    .acd-input{flex:1; min-width:240px; font:600 12.5px var(--mono); padding:10px 12px; border-radius:10px; border:1px solid var(--line); background:var(--card-2); color:var(--text-primary)}
+    .acd-input:disabled{opacity:.6}
+    .acd-btn{font:800 12.5px Pretendard,'Malgun Gothic',sans-serif; padding:10px 16px; border-radius:11px; cursor:pointer; border:1px solid var(--line); background:var(--card-2); color:var(--text-secondary)}
+    .acd-btn:hover:not(:disabled){border-color:var(--accent); color:var(--text-primary)}
+    .acd-btn:disabled{opacity:.5; cursor:not-allowed}
+    .acd-btn.go{border:none; color:#fff; background:linear-gradient(135deg,#0ea5e9,#6366f1); box-shadow:0 4px 14px color-mix(in srgb,#6366f1 30%,transparent)}
+    .acd-hint{font-size:11.5px; color:var(--text-muted)}
+    .acd-hint.ok{color:#22c55e} .acd-hint.warn{color:#f59e0b}
+    /* 세그먼트(전략/품질) — B2B 백과사전/날씨 갤러리와 동일 필 그룹 스타일 */
+    .acd-seg{display:inline-flex; background:var(--card-2); border:1px solid var(--line); border-radius:12px; padding:3px; gap:3px; flex-wrap:wrap}
+    .acd-segbtn{font:800 11.5px Pretendard,'Malgun Gothic',sans-serif; padding:7px 12px; border-radius:9px; border:none; background:none; color:var(--text-secondary); cursor:pointer}
+    .acd-segbtn:disabled{opacity:.5; cursor:not-allowed}
+    .acd-segbtn.on{color:#fff; background:linear-gradient(135deg,#0ea5e9,#6366f1)}
+    .acd-slider{flex:1; min-width:160px} .acd-slider-v{font:700 11.5px var(--mono); color:#7dd3fc; white-space:nowrap}
+    /* 실시간 타임라인 미리보기 */
+    .acd-tl{display:flex; flex-direction:column; gap:4px; margin-top:2px}
+    .acd-tl-track{position:relative; height:14px; border-radius:7px; background:var(--card-2); border:1px solid var(--line); overflow:hidden}
+    .acd-tl-seg{position:absolute; top:0; bottom:0; background:linear-gradient(135deg,#0ea5e9,#6366f1); border-radius:7px}
+    .acd-tl-labels{display:flex; justify-content:space-between; font:700 9.5px var(--mono); color:var(--text-muted)}
+    .acd-plan{font:700 12px var(--mono); color:#7dd3fc}
+    .acd-result{display:flex; flex-direction:column; gap:8px; padding:12px; border-radius:12px; border:1px solid var(--line); background:var(--card-2)}
+    .acd-result.ok{border-color:color-mix(in srgb,#22c55e 40%,var(--line))}
+    .acd-result.warn{border-color:color-mix(in srgb,#f59e0b 45%,var(--line))}
+    .acd-note{font-size:12px; color:var(--text-secondary)}
+    .acd-video{width:100%; max-height:56vh; border-radius:10px; background:#000}
+    .acd-path{font:600 10.5px var(--mono); color:var(--text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0}
+</style>
+
+@code {
+    private string _sourcePath = "";
+    private bool _analyzing;
+    private bool _running;
+    private bool _savedToGallery;
+    private double? _sourceDurationSec;
+    private string? _analyzeError;
+    private CutdownStrategy _strategy = CutdownStrategy.Balanced;
+    private CutdownQuality _quality = CutdownQuality.Balanced;
+    private double _manualStartSec;
+    private CutdownResult? _result;
+
+    private bool _busy => _analyzing || _running;
+
+    private CutdownPlan? CurrentPlan => _sourceDurationSec is { } d
+        ? AiShortsCutdownEngine.PlanCutdown(d, AiShortsCutdownEngine.TargetDurationSec, _strategy, _manualStartSec)
+        : null;
+
+    private static double MaxManualStart(double sourceDurationSec) => Math.Max(0, sourceDurationSec - AiShortsCutdownEngine.TargetDurationSec);
+
+    private void ResetAnalysis()
+    {
+        _sourceDurationSec = null; _analyzeError = null; _result = null; _savedToGallery = false; _manualStartSec = 0;
+    }
+
+    private void OnPathInput(ChangeEventArgs e)
+    {
+        _sourcePath = e.Value?.ToString() ?? string.Empty;
+        ResetAnalysis();
+    }
+
+    private void OnManualSlider(ChangeEventArgs e)
+    {
+        if (double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) _manualStartSec = v;
+    }
+
+    private async Task BrowseFile()
+    {
+        var p = Picker.PickFile("컷다운할 동영상 선택", "동영상 파일 (*.mp4;*.mov;*.mkv;*.webm)|*.mp4;*.mov;*.mkv;*.webm|모든 파일 (*.*)|*.*");
+        if (string.IsNullOrEmpty(p)) return;
+        _sourcePath = p!;
+        ResetAnalysis();
+        await AnalyzeSource();
+    }
+
+    private async Task AnalyzeSource()
+    {
+        if (_busy || string.IsNullOrWhiteSpace(_sourcePath)) return;
+        _analyzing = true; _analyzeError = null; _sourceDurationSec = null; _result = null;
+        try
+        {
+            var dur = await Cutdown.ProbeDurationSecAsync(_sourcePath, Prefs.FfmpegBinaryPath);
+            if (dur <= 0) _analyzeError = "원본 길이를 확인할 수 없습니다(ffmpeg 미탑재이거나 로컬 파일이 아닌 경로/손상된 파일).";
+            else { _sourceDurationSec = dur; _manualStartSec = Math.Min(_manualStartSec, MaxManualStart(dur)); }
+        }
+        finally { _analyzing = false; }
+    }
+
+    private async Task RunCutdown()
+    {
+        if (_busy || _sourceDurationSec is null) return;
+        _running = true; _result = null; _savedToGallery = false;
+        try { _result = await Cutdown.ExecuteCutdownAsync(_sourcePath, Prefs.FfmpegBinaryPath, AiShortsCutdownEngine.TargetDurationSec, _strategy, _manualStartSec, _quality); }
+        finally { _running = false; }
+    }
+
+    private void SaveToGallery(string url)
+    {
+        if (_savedToGallery) return;
+        Gallery.Register(null, GalleryAssetKind.Video, url, "AI 15초 컷다운");
+        _savedToGallery = true;
+    }
+}

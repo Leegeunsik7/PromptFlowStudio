@@ -1,0 +1,146 @@
+@using Microsoft.AspNetCore.Components.Web
+@* [PromptFlow Studio v4.4.0 · v5.6.1] PC ▸ 모바일 실시간 사이드 시뮬레이터(공용 RCL) + 전체화면 대형 모드.
+   디바이스 프레임 스킨(갤럭시 S26 Ultra / iPhone 15 Pro / iPad) + 논리 해상도 에뮬레이션 + 자동 핏 스케일.
+   v5.6.1: [🖥️ 전체화면] 토글 → 화면 중앙 대형 스케일업(1.2~1.5×) + Esc/배경클릭 복귀(접근성). *@
+
+<div class="msp @(_open ? "open" : "closed") @(_fullscreen ? "fullscreen" : null)" tabindex="0" @onkeydown="OnKey">
+    @if (_fullscreen) { <div class="msp-scrim" @onclick="ExitFullscreen" title="배경 클릭 시 팝업으로 복귀"></div> }
+    <button class="msp-handle" @onclick="() => _open = !_open" title="시뮬레이터 토글">@(_open ? "▶" : "◀") 📱</button>
+    @if (_open)
+    {
+        <div class="msp-body">
+            <div class="msp-head">
+                <span class="msp-title">📱 실시간 모바일 시뮬레이터</span>
+                <div class="msp-devs">
+                    @foreach (var d in MobileSimProfiles.Devices)
+                    {
+                        <button class="msp-dev @(_device.Key == d.Key ? "on" : null)" @onclick="() => _device = d" @key="d.Key">@d.Emoji @d.Name</button>
+                    }
+                </div>
+                <div class="msp-ctl">
+                    @* v5.6.6: 단일 회전 토글(9:16 ↔ 16:9) — 논리 치수 스왑 + rotateZ 피벗 애니메이션 *@
+                    <button class="msp-mini rot" @onclick="ToggleOrient" title="가로/세로 회전 (9:16 ↔ 16:9)">🔄 @(_orient == SimOrientation.Portrait ? "9:16" : "16:9")</button>
+                    <button class="msp-mini fs @(_fullscreen ? "on" : null)" @onclick="ToggleFullscreen" title="전체 화면/팝업 전환">@(_fullscreen ? "📱 팝업" : "🖥️ 전체화면")</button>
+                    <span class="msp-plat @(_device.Platform == DevicePlatform.iOS ? "ios" : "and")">@(_device.Platform == DevicePlatform.iOS ? "iOS" : "Android")</span>
+                </div>
+            </div>
+
+            <div class="msp-stage">
+                <div class="msp-device @(_device.Platform == DevicePlatform.iOS ? "ios" : "android") @(_pivot ? "pivot" : null)" style="width:@(SW + 16)px;height:@(SH + 16)px">
+                    @if (_device.DynamicIsland) { <div class="msp-island @NotchCls"></div> }
+                    @if (_device.Notch) { <div class="msp-punch @NotchCls"></div> }
+                    <div class="msp-screen" style="width:@(SW)px;height:@(SH)px">
+                        <div class="msp-viewport @(_orient == SimOrientation.Landscape ? "land" : "port")" style="width:@(LW)px;height:@(LH)px;transform:scale(@Scale)">
+                            @if (ChildContent is not null) { @ChildContent }
+                            else
+                            {
+                                <div class="msp-placeholder">📱 공용 RCL 모바일 UI 를 여기에 렌더<br /><small>ChildContent 로 컴포넌트를 주입하세요</small></div>
+                            }
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="msp-caption">@_device.Name · @(LW)×@(LH) dp · @(Math.Round(_scale * 100))% 스케일 · 마우스 클릭=터치</div>
+        </div>
+    }
+</div>
+
+<style>
+    .msp { border: 1px solid color-mix(in srgb, #22d3ee 34%, #2b2f42); border-radius: 16px; overflow: hidden; font-family: Pretendard, 'Malgun Gothic', sans-serif; color: #e6edff; background: linear-gradient(160deg, rgba(34,211,238,.08), rgba(11,13,20,.96)); }
+    .msp-handle { width: 100%; text-align: left; font: 800 12px Pretendard,'Malgun Gothic',sans-serif; padding: 10px 14px; background: linear-gradient(120deg, color-mix(in srgb,#22d3ee 16%,transparent), transparent 60%); border: none; border-bottom: 1px solid #2b2f42; color: #7dd3fc; cursor: pointer; }
+    .msp-body { padding: 8px; }   /* v6.2.x(B): 도킹 크롬 패딩 축소 → 폰 렌더 영역/핏 스케일 확대 */
+    .msp-head { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+    .msp-title { font: 900 13px Pretendard,'Malgun Gothic',sans-serif; color: #7dd3fc; }
+    .msp-devs { display: flex; flex-wrap: wrap; gap: 5px; }
+    .msp-dev { font: 700 10px Pretendard,'Malgun Gothic',sans-serif; color: #9aa6c8; background: #1a1d2b; border: 1px solid #2b2f42; border-radius: 8px; padding: 5px 9px; cursor: pointer; }
+    .msp-dev.on { color: #fff; border-color: transparent; background: linear-gradient(135deg,#0ea5e9,#6366f1); }
+    .msp-ctl { display: flex; align-items: center; gap: 5px; }
+    .msp-mini { font: 700 10px Pretendard,'Malgun Gothic',sans-serif; color: #9aa6c8; background: #1a1d2b; border: 1px solid #2b2f42; border-radius: 7px; padding: 4px 8px; cursor: pointer; } .msp-mini.on { color: #fff; border-color: transparent; background: #334155; }
+    .msp-plat { margin-left: auto; font: 800 9px ui-monospace,monospace; border-radius: 20px; padding: 2px 8px; } .msp-plat.ios { color: #e6edff; background: #334155; } .msp-plat.and { color: #052e16; background: #34d399; }
+    /* 디바이스 베젤 */
+    .msp-stage { display: grid; place-items: center; padding: 4px 0; }   /* v6.2.x(B): 스테이지 상하 여백 축소 */
+    .msp-device { position: relative; background: #05070c; border: 2px solid #2b2f42; box-shadow: 0 12px 40px rgba(0,0,0,.55), inset 0 0 0 2px #12141f; display: grid; place-items: center; }
+    .msp-device.ios { border-radius: 44px; } .msp-device.android { border-radius: 28px; }
+    /* v5.6.6: 가로/세로 전환 시 프레임 크기 부드러운 모핑 + rotateZ 피벗 원샷 애니메이션(순수 CSS · scale(1.28) 있는 .msp-stage 와 충돌 회피 위해 device 에 적용) */
+    .msp-device { transition: width .45s cubic-bezier(.22,.61,.36,1), height .45s cubic-bezier(.22,.61,.36,1); }
+    .msp-device.pivot { animation: mspPivot .5s cubic-bezier(.22,.61,.36,1); }
+    @@keyframes mspPivot { 0% { transform: rotateZ(-90deg) scale(.5); opacity: .35; } 60% { transform: rotateZ(6deg) scale(1.03); opacity: 1; } 100% { transform: none; opacity: 1; } }
+    .msp-mini.rot { color: #7dd3fc; border-color: color-mix(in srgb, #22d3ee 40%, #2b2f42); font-weight: 800; }
+    .msp-mini.rot:hover { color: #fff; background: linear-gradient(135deg, #7c5cff, #0ea5e9); border-color: transparent; }
+    /* v5.3.4: 디바이스 프레임 내부 콘텐츠가 길어도 잘리지 않고 세로 스크롤(가로는 프레임 고정). */
+    .msp-screen { position: relative; overflow-y: auto; overflow-x: hidden; background: #0b0d14; border-radius: 20px; }
+    .msp-device.ios .msp-screen { border-radius: 34px; }
+    /* v5.7.6(2차): 논리 뷰포트를 definite height(LH)로 확정 → height:100% 자식 덱(.msd)이 화면 높이에 정확히 바운드(닥 하단 고정 근거). 콘텐츠-플로우 덱은 이 박스 내부에서 스크롤. */
+    .msp-viewport { transform-origin: top left; background: #0b0d14; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; }
+    .msp-island { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); width: 84px; height: 22px; background: #000; border-radius: 14px; z-index: 5; }
+    .msp-punch { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); width: 12px; height: 12px; background: #000; border-radius: 50%; z-index: 5; }
+    /* v5.6.7: 가로 피벗 시 노치/펀치홀이 상단 → 측면 가장자리로 매끄럽게 이동(rotateZ 피벗과 동시 · transition) */
+    .msp-island, .msp-punch { transition: top .45s cubic-bezier(.22,.61,.36,1), left .45s cubic-bezier(.22,.61,.36,1), right .45s cubic-bezier(.22,.61,.36,1), transform .45s cubic-bezier(.22,.61,.36,1); }
+    .msp-island.land.left  { top: 50%; left: 12px; right: auto; transform: translateY(-50%) rotate(90deg); }
+    .msp-island.land.right { top: 50%; right: 12px; left: auto; transform: translateY(-50%) rotate(90deg); }
+    .msp-punch.land.left   { top: 50%; left: 12px; right: auto; transform: translateY(-50%); }
+    .msp-punch.land.right  { top: 50%; right: 12px; left: auto; transform: translateY(-50%); }
+    .msp-placeholder { display: grid; place-items: center; height: 100%; text-align: center; color: #6b7392; font: 700 13px Pretendard,'Malgun Gothic',sans-serif; padding: 20px; } .msp-placeholder small { color: #475569; font-weight: 500; }
+    .msp-caption { text-align: center; font: 700 10px ui-monospace,monospace; color: #6b7392; margin-top: 6px; }
+    .msp-mini.fs { color: #7dd3fc; } .msp-mini.fs.on { color: #fff; border-color: transparent; background: linear-gradient(135deg,#7c5cff,#0ea5e9); }
+    /* v5.6.1 전체화면 대형 모드 — 화면 중앙 대형 스케일업 + 배경 스크림(다크/네온 톤 유지) */
+    .msp.fullscreen { position: fixed !important; inset: 0 !important; z-index: 9999; width: 100vw !important; height: 100vh !important; border-radius: 0; border: none;
+        display: flex; flex-direction: column; align-items: center; justify-content: flex-start; overflow: auto; padding: 18px; box-sizing: border-box;
+        background: radial-gradient(60% 50% at 50% 0%, rgba(34,211,238,.12), transparent 70%), rgba(6,8,14,.94); backdrop-filter: blur(12px) saturate(140%); }
+    .msp-scrim { position: absolute; inset: 0; z-index: 0; cursor: zoom-out; }
+    .msp.fullscreen .msp-handle { position: relative; z-index: 1; align-self: flex-start; width: auto; border-radius: 10px; }
+    .msp.fullscreen .msp-body { position: relative; z-index: 1; padding: 0; width: 100%; max-width: 680px; }
+    .msp.fullscreen .msp-stage { transform: scale(1.28); transform-origin: top center; margin: 44px 0 96px; }
+    @@media (max-width: 720px) { .msp.fullscreen .msp-stage { transform: scale(1.0); } }
+</style>
+
+@code {
+    /// <summary>디바이스 프레임 안에 렌더할 공용 모바일 UI(비우면 안내 표시).</summary>
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    /// <summary>초기 오픈 상태.</summary>
+    [Parameter] public bool Open { get; set; } = true;
+    /// <summary>시뮬 스테이지 가용 폭/높이(px · fit 스케일 기준).</summary>
+    [Parameter] public int PaneW { get; set; } = 380;
+    [Parameter] public int PaneH { get; set; } = 720;
+    /// <summary>v5.6.5: 전체화면 토글 상태를 부모(MainLayout)에 통지 — 부모가 슬라이드 오버레이의 transform 제약(고정위치 containing block)을 해제해 우측 쏠림/짤림을 원천 차단.</summary>
+    [Parameter] public EventCallback<bool> OnFullscreenChanged { get; set; }
+
+    private bool _open;
+    private bool _fullscreen;
+    private bool _pivot;   // v5.6.6 회전 피벗 애니메이션 원샷 플래그
+    private SimDevice _device = MobileSimProfiles.Devices[0];
+    private SimOrientation _orient = SimOrientation.Portrait;
+
+    protected override void OnInitialized() => _open = Open;
+
+    // v5.6.1 전체화면: 큰 가용 영역으로 FitScale(≈논리 크기) → CSS 로 최종 대형(1.2~1.5×) 스케일업.
+    private int EffW => _fullscreen ? 760 : PaneW;
+    private int EffH => _fullscreen ? 1200 : PaneH;
+    private void ToggleFullscreen() { _fullscreen = !_fullscreen; NotifyFullscreen(); }
+    private void ExitFullscreen() { _fullscreen = false; NotifyFullscreen(); }
+    private void OnKey(KeyboardEventArgs e) { if (e.Key == "Escape" && _fullscreen) { _fullscreen = false; NotifyFullscreen(); } }
+    private void NotifyFullscreen() { if (OnFullscreenChanged.HasDelegate) _ = OnFullscreenChanged.InvokeAsync(_fullscreen); }
+
+    // v5.6.6: 가로/세로 회전 — 논리 치수 스왑(실제 레이아웃 재배치) + rotateZ 피벗 원샷 애니메이션(순수 CSS).
+    private async Task ToggleOrient()
+    {
+        _orient = _orient == SimOrientation.Portrait ? SimOrientation.Landscape : SimOrientation.Portrait;
+        _pivot = true;
+        StateHasChanged();
+        await Task.Delay(520);   // 애니메이션 길이 후 클래스 제거(다음 회전 재트리거 가능)
+        _pivot = false;
+    }
+
+    // v5.6.7: 가로일 때 노치/펀치홀을 디바이스 지정 측면(Left/Right)으로 이동시키는 CSS 클래스.
+    private string? NotchCls => _orient == SimOrientation.Landscape
+        ? (_device.NotchSide == NotchPosition.Right ? "land right" : "land left")
+        : null;
+
+    private double _scale => MobileSimProfiles.FitScale(_device, EffW, EffH, _orient);
+    private (int W, int H) _logical => MobileSimProfiles.Logical(_device, _orient);
+    private int LW => _logical.W;
+    private int LH => _logical.H;
+    private int SW => MobileSimProfiles.ScaledSize(_device, _scale, _orient).W;
+    private int SH => MobileSimProfiles.ScaledSize(_device, _scale, _orient).H;
+    private string Scale => _scale.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
+}

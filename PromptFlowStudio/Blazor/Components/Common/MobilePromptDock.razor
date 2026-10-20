@@ -1,0 +1,286 @@
+@using PromptFlowStudio.Services.Wan
+
+@* [PromptFlow Studio v5.6.7] Google Flow 스타일 플로팅 바텀 생성 닥 — rounded-pill 캡슐(앵커 첨부 + 프롬프트 입력 + 가드레일 칩 + 생성 실행).
+   ⚠ 무주입 컴포넌트(모바일 안전): 모든 상태는 [Parameter] + EventCallback 체인. 데스크톱 전용 DI(@inject) 금지. *@
+
+<div class="mpd-floating-dock">
+    <div class="mpd-dock-pill @(IsRunning ? "running" : null)">
+        @* v5.7.0: 생성 중 상단 border 네온 프로그레스 바 *@
+        @if (IsRunning)
+        {
+            <div class="mpd-progress-track"><div class="mpd-progress-bar" style="width:@ProgressPercent%"></div></div>
+        }
+
+        <div class="mpd-dock-head">
+            @if (IsRunning)
+            {
+                <span class="mpd-dock-label">@LiveStepMessage</span>
+            }
+            else
+            {
+                @* v5.7.1: 세그먼트 셀렉터(단일/3컷 숏츠/4컷 롱폼) *@
+                <div class="mpd-mode-selector">
+                    <button type="button" class="mpd-mode-btn @(_chainMode == ChainMode.Single ? "on" : null)" @onclick="() => _chainMode = ChainMode.Single">1컷</button>
+                    <button type="button" class="mpd-mode-btn @(_chainMode == ChainMode.Shorts3Cut ? "on" : null)" @onclick="() => _chainMode = ChainMode.Shorts3Cut">🎬 숏츠 3컷</button>
+                    <button type="button" class="mpd-mode-btn @(_chainMode == ChainMode.Long4Cut ? "on" : null)" @onclick="() => _chainMode = ChainMode.Long4Cut">🎞️ 롱폼 4컷</button>
+                </div>
+            }
+            @if (IsRunning)
+            {
+                @* v5.7.3: 생성 중 실시간 취소 *@
+                <button type="button" class="mpd-btn-cancel" @onclick="Cancel" title="생성 파이프라인 중단">⏹ 취소</button>
+            }
+            else
+            {
+                <button type="button" class="mpd-guard-chip @(GuardEnabled ? "on" : "off")" @onclick="ToggleGuard" title="가드레일 On/Off 퀵 토글">
+                    🛡️ @(GuardEnabled ? GuardPreset.ToString() : "Off")
+                </button>
+            }
+        </div>
+
+        @* v5.7.6: 다중 컷 모드에서 컷별 프롬프트 세부 지시 아코디언 *@
+        @if (Segments > 1 && !IsRunning)
+        {
+            <div class="mpd-cutov">
+                <button type="button" class="mpd-cutov-toggle" @onclick="() => _showCutOverride = !_showCutOverride">
+                    ✏️ 컷별 프롬프트 세부 지시 (@(Segments)컷) @(_showCutOverride ? "▲" : "▼")
+                </button>
+                @if (_showCutOverride)
+                {
+                    <div class="mpd-cutov-fields">
+                        @for (var i = 0; i < Segments; i++)
+                        {
+                            var ci = i;
+                            <div class="mpd-cutov-row">
+                                <span class="mpd-cutov-no">컷 #@(ci + 1)</span>
+                                <input type="text" class="mpd-cutov-in" value="@GetCut(ci)" @onchange="e => SetCut(ci, e.Value?.ToString())"
+                                       placeholder="비우면 자동 연장(seamless)" />
+                            </div>
+                            @* v5.7.7: 컷별 퀵 연출 프리셋 칩(멱등 부착) *@
+                            <div class="mpd-preset-chips">
+                                <button type="button" class="mpd-preset-chip" @onclick='() => AppendPreset(ci, "extreme close-up shot, detailed facial expression")'>🎥 클로즈업</button>
+                                <button type="button" class="mpd-preset-chip" @onclick='() => AppendPreset(ci, "drone aerial shot, sweeping wide angle")'>🛸 드론뷰</button>
+                                <button type="button" class="mpd-preset-chip" @onclick='() => AppendPreset(ci, "slow panning motion, smooth tracking")'>🔍 패닝</button>
+                                <button type="button" class="mpd-preset-chip" @onclick='() => AppendPreset(ci, "swish pan transition, fast whip pan")'>⚡ 스위시 팬</button>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        }
+
+        @* v5.7.2: 연쇄 생성 중 완성 컷 실시간 썸네일 스트립 *@
+        @if (IsRunning && CompletedThumbs.Count > 0)
+        {
+            <div class="mpd-thumb-strip">
+                @foreach (var (thumb, ti) in CompletedThumbs.Select((t, i) => (t, i)))
+                {
+                    <div class="mpd-thumb-item" @key="ti"><img src="@thumb" alt="컷 @(ti + 1)" /><span class="mpd-thumb-badge">✔</span></div>
+                }
+            </div>
+        }
+
+        <div class="mpd-dock-input-row">
+            <button type="button" class="mpd-btn-attach" title="앵커 이미지 첨부" @onclick="AttachAnchor" disabled="@IsRunning">
+                @if (!string.IsNullOrEmpty(AnchorImageUrl))
+                {
+                    <img src="@AnchorImageUrl" class="mpd-anchor-preview" alt="앵커" />
+                }
+                else
+                {
+                    <span>＋</span>
+                }
+            </button>
+
+            <input type="text" class="mpd-input" placeholder="@Placeholder"
+                   @bind="_promptText" @bind:event="oninput" @onkeyup="HandleKeyUp" disabled="@IsRunning" />
+
+            <button type="button" class="mpd-btn-send @(CanSubmit && !IsRunning ? "ready" : null)" @onclick="Submit" disabled="@(!CanSubmit || IsRunning)">
+                @(IsRunning ? "…" : "➔")
+            </button>
+        </div>
+    </div>
+</div>
+
+@code {
+    /// <summary>앵커/시드 이미지의 표시 가능한 URL(가상호스트) — 있으면 첨부 버튼에 썸네일.</summary>
+    [Parameter] public string? AnchorImageUrl { get; set; }
+    /// <summary>가드레일 On/Off(표시용 · 부모가 소유).</summary>
+    [Parameter] public bool GuardEnabled { get; set; } = true;
+    /// <summary>가드레일 강도 프리셋(표시용).</summary>
+    [Parameter] public QualityGuardrailPreset GuardPreset { get; set; } = QualityGuardrailPreset.Balanced;
+    /// <summary>v5.7.1: 생성 실행(➔) — 입력 프롬프트 + 세그먼트 수(1/3/4)를 부모 파이프라인으로 전달.</summary>
+    [Parameter] public EventCallback<ChainSubmit> OnSubmit { get; set; }
+    /// <summary>앵커(＋) 첨부 요청 — 부모가 카메라/갤러리 호출.</summary>
+    [Parameter] public EventCallback OnAttachAnchorRequest { get; set; }
+    /// <summary>가드레일 칩 토글 요청 — 부모가 On/Off 전환.</summary>
+    [Parameter] public EventCallback OnToggleGuard { get; set; }
+    /// <summary>v5.7.3: 생성 중 [⏹ 취소] 요청 — 부모가 CancellationTokenSource.Cancel().</summary>
+    [Parameter] public EventCallback OnCancelRequest { get; set; }
+    /// <summary>v5.7.0: 생성(파이프라인) 진행 중 — 프로그레스 바 표시 + 입력/전송 잠금.</summary>
+    [Parameter] public bool IsRunning { get; set; }
+    /// <summary>v5.7.0: 진행률(0~100) — 상단 네온 바 너비.</summary>
+    [Parameter] public int ProgressPercent { get; set; }
+    /// <summary>v5.7.2: 라이브 세그먼트 단계 메시지(예: [1/3] 컷 1 I2V 연쇄 생성 중…).</summary>
+    [Parameter] public string LiveStepMessage { get; set; } = "🎬 생성 파이프라인 가동 중…";
+    /// <summary>v5.7.2: 생성 완료된 컷 썸네일 URL(실시간 누적) — 인라인 스트립 렌더.</summary>
+    [Parameter] public List<string> CompletedThumbs { get; set; } = new();
+    /// <summary>v5.7.0: 카셀 카드 등에서 주입할 시드 프롬프트(변경 시 입력창에 자동 채움).</summary>
+    [Parameter] public string? SeedText { get; set; }
+
+    private string _promptText = "";
+    private string? _lastSeed;
+    private bool CanSubmit => !string.IsNullOrWhiteSpace(_promptText);
+
+    // v5.7.1 세그먼트 체인 모드(단일/3컷 숏츠/4컷 롱폼).
+    public enum ChainMode { Single, Shorts3Cut, Long4Cut }
+    public sealed record ChainSubmit(string Prompt, int Segments, IReadOnlyList<string>? CutPrompts = null);
+    private ChainMode _chainMode = ChainMode.Single;
+    private int Segments => _chainMode switch { ChainMode.Shorts3Cut => 3, ChainMode.Long4Cut => 4, _ => 1 };
+    private string Placeholder => _chainMode switch
+    {
+        ChainMode.Shorts3Cut => "3컷 연쇄 숏츠 주제 프롬프트…",
+        ChainMode.Long4Cut => "4컷 롱폼 스토리 주제 프롬프트…",
+        _ => "시네마틱 장면 프롬프트를 입력하세요…",
+    };
+
+    protected override void OnParametersSet()
+    {
+        // 시드가 바뀌면(카드 터치 등) 입력창에 자동 주입. 동일 시드 반복은 무시(사용자 편집 보존).
+        if (SeedText != _lastSeed)
+        {
+            _lastSeed = SeedText;
+            if (!string.IsNullOrWhiteSpace(SeedText)) _promptText = SeedText!;
+        }
+    }
+
+    // v5.7.6: 컷별 프롬프트 오버라이드(비우면 자동 연장) — 아코디언 입력.
+    private bool _showCutOverride;
+    private readonly Dictionary<int, string> _cutOverrides = new();
+    private string GetCut(int i) => _cutOverrides.TryGetValue(i, out var v) ? v : "";
+    private void SetCut(int i, string? v) => _cutOverrides[i] = v ?? "";
+
+    // v5.7.7: 컷별 퀵 연출 프리셋 — 선택 컷 입력란에 카메라/모션 키워드를 콤마 구분 멱등 부착(중복 방지).
+    private void AppendPreset(int cutIndex, string presetText)
+    {
+        var current = GetCut(cutIndex);
+        if (current.Contains(presetText, StringComparison.OrdinalIgnoreCase)) return;
+        SetCut(cutIndex, string.IsNullOrWhiteSpace(current) ? presetText : $"{current}, {presetText}");
+    }
+
+    private async Task Submit()
+    {
+        if (!CanSubmit || IsRunning) return;
+        IReadOnlyList<string>? cuts = Segments > 1
+            ? Enumerable.Range(0, Segments).Select(GetCut).ToList()   // 컷별 오버라이드(빈 문자열=자동 연장)
+            : null;
+        if (OnSubmit.HasDelegate) await OnSubmit.InvokeAsync(new ChainSubmit(_promptText, Segments, cuts));
+        _promptText = "";
+    }
+
+    private async Task AttachAnchor()
+    {
+        if (OnAttachAnchorRequest.HasDelegate) await OnAttachAnchorRequest.InvokeAsync();
+    }
+
+    private async Task ToggleGuard()
+    {
+        if (OnToggleGuard.HasDelegate) await OnToggleGuard.InvokeAsync();
+    }
+
+    private async Task Cancel()
+    {
+        if (OnCancelRequest.HasDelegate) await OnCancelRequest.InvokeAsync();
+    }
+
+    private async Task HandleKeyUp(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await Submit();
+    }
+}
+
+<style>
+    .mpd-floating-dock {
+        /* v5.7.6(2차): fixed → absolute — 시뮬레이터 폰 프레임(.msd position:relative) 하단에 종속 고정. 윈도우/스크롤 기준 이탈 방지(세로=사라짐·가로=겹침 근본 해소). */
+        position: absolute; bottom: 12px; left: 12px; right: 12px; z-index: 1000;
+        display: flex; justify-content: center; pointer-events: none;
+    }
+    .mpd-dock-pill {
+        position: relative; pointer-events: auto; width: 100%; max-width: 500px; background: rgba(26, 32, 48, 0.92);
+        backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+        border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 28px; padding: 12px 16px;
+        box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+        display: flex; flex-direction: column; gap: 8px;
+    }
+    .mpd-dock-pill.running { border-color: rgba(56,189,248,0.55); box-shadow: 0 12px 36px rgba(0,0,0,0.6), 0 0 18px rgba(56,189,248,0.35), inset 0 1px 0 rgba(255,255,255,0.1); }
+    /* v5.7.0 상단 네온 프로그레스 바 */
+    .mpd-progress-track { position: absolute; top: 0; left: 14px; right: 14px; height: 3px; border-radius: 3px; background: rgba(255,255,255,0.08); overflow: hidden; }
+    .mpd-progress-bar { height: 100%; border-radius: 3px; background: linear-gradient(90deg,#38bdf8,#22d3ee,#a855f7); box-shadow: 0 0 10px rgba(56,189,248,0.7); transition: width .18s ease; }
+    .mpd-dock-head { display: flex; justify-content: space-between; align-items: center; padding: 0 4px; gap: 8px; }
+    .mpd-dock-label { font-size: 0.8rem; font-weight: 700; color: #94a3b8; }
+    .mpd-guard-chip { font-size: 0.7rem; font-weight: 700; padding: 3px 9px; border-radius: 10px; background: rgba(255,255,255,0.06); color: #64748b; border: none; cursor: pointer; transition: transform .15s; }
+    .mpd-guard-chip:active { transform: scale(0.95); }
+    .mpd-guard-chip.on { color: #38bdf8; background: rgba(56, 189, 248, 0.12); }
+    /* v5.7.1 세그먼트 모드 셀렉터 */
+    .mpd-mode-selector { display: flex; gap: 4px; flex-wrap: wrap; }
+    .mpd-mode-btn { font: 700 10px Pretendard,'Malgun Gothic',sans-serif; padding: 4px 9px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.04); color: #94a3b8; cursor: pointer; white-space: nowrap; }
+    .mpd-mode-btn.on { color: #0f172a; background: linear-gradient(135deg,#38bdf8,#22d3ee); border-color: transparent; }
+    /* v5.7.3 취소 버튼 */
+    .mpd-btn-cancel { font-size: 0.72rem; font-weight: 800; padding: 4px 11px; border-radius: 10px; border: 1px solid rgba(239,68,68,0.5); background: rgba(239,68,68,0.14); color: #fca5a5; cursor: pointer; white-space: nowrap; }
+    .mpd-btn-cancel:active { transform: scale(0.95); }
+    /* v5.7.6 컷별 오버라이드 아코디언 */
+    .mpd-cutov { display: flex; flex-direction: column; gap: 6px; }
+    .mpd-cutov-toggle { align-self: flex-start; font: 700 10.5px Pretendard,'Malgun Gothic',sans-serif; color: #c4b5fd; background: rgba(168,85,247,0.12); border: 1px solid rgba(168,85,247,0.35); border-radius: 12px; padding: 5px 11px; cursor: pointer; }
+    .mpd-cutov-fields { display: flex; flex-direction: column; gap: 6px; }
+    .mpd-cutov-row { display: flex; align-items: center; gap: 8px; }
+    .mpd-cutov-no { flex: 0 0 auto; width: 42px; font: 800 9.5px 'JetBrains Mono', ui-monospace, monospace; color: #c4b5fd; }
+    .mpd-cutov-in { flex: 1; min-width: 0; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; padding: 6px 10px; color: #fff; font: 600 11.5px Pretendard,'Malgun Gothic',sans-serif; outline: none; }
+    .mpd-cutov-in:focus { border-color: #a855f7; }
+    /* v5.7.7 컷별 퀵 연출 프리셋 칩 */
+    .mpd-preset-chips { display: flex; flex-wrap: wrap; gap: 4px; padding-left: 50px; margin: -2px 0 4px; }
+    .mpd-preset-chip { font: 700 9.5px Pretendard,'Malgun Gothic',sans-serif; color: #93c5fd; background: rgba(56,189,248,0.10); border: 1px solid rgba(56,189,248,0.28); border-radius: 9px; padding: 3px 8px; cursor: pointer; white-space: nowrap; }
+    .mpd-preset-chip:active { background: #38bdf8; color: #0f172a; }
+    /* v5.7.2 완성 컷 썸네일 스트립 */
+    .mpd-thumb-strip { display: flex; gap: 6px; padding: 2px 4px 4px; overflow-x: auto; scrollbar-width: none; }
+    .mpd-thumb-strip::-webkit-scrollbar { display: none; }
+    .mpd-thumb-item { position: relative; flex: 0 0 auto; width: 42px; height: 42px; border-radius: 9px; overflow: hidden; border: 1px solid #38bdf8; box-shadow: 0 0 8px rgba(56,189,248,0.35); }
+    .mpd-thumb-item img { width: 100%; height: 100%; object-fit: cover; }
+    .mpd-thumb-badge { position: absolute; bottom: 2px; right: 2px; font-size: 0.55rem; color: #fff; background: #0284c7; padding: 0 3px; border-radius: 4px; }
+
+    .mpd-dock-input-row { display: flex; align-items: center; gap: 10px; }
+    .mpd-btn-attach {
+        flex: 0 0 auto; width: 38px; height: 38px; border-radius: 50%; background: #262e42; border: 1px solid rgba(255,255,255,0.1);
+        color: #fff; font-size: 1.2rem; display: flex; align-items: center; justify-content: center; cursor: pointer; overflow: hidden;
+    }
+    .mpd-anchor-preview { width: 100%; height: 100%; object-fit: cover; }
+    .mpd-input {
+        flex: 1; min-width: 0; background: transparent; border: none; color: #fff; font-size: 0.95rem; outline: none;
+    }
+    .mpd-input::placeholder { color: #64748b; }
+    .mpd-btn-send {
+        flex: 0 0 auto; width: 38px; height: 38px; border-radius: 50%; background: #334155; border: none; color: #94a3b8;
+        font-weight: 800; font-size: 1rem; cursor: pointer; transition: background 0.2s, color 0.2s, transform 0.15s;
+    }
+    .mpd-btn-send:disabled { cursor: default; }
+    .mpd-btn-send.ready { background: #38bdf8; color: #0f172a; box-shadow: 0 0 12px rgba(56, 189, 248, 0.4); }
+    .mpd-btn-send.ready:active { transform: scale(0.92); }
+    /* v5.7.6(2차): 16:9 가로(저높이) 컴팩트 닥 — 실디바이스 랜드스케이프에서 콘텐츠 가림 최소화(.razor 내 @@media 이스케이프 필수) */
+    @@media (max-height: 500px) {
+        .mpd-floating-dock { bottom: 8px; left: 8px; right: 8px; }
+        .mpd-dock-pill { padding: 7px 12px; border-radius: 20px; gap: 5px; }
+        .mpd-dock-label { font-size: 0.72rem; }
+        .mpd-mode-btn { padding: 3px 7px; }
+        .mpd-btn-attach, .mpd-btn-send { width: 32px; height: 32px; font-size: 0.9rem; }
+        .mpd-input { font-size: 0.85rem; }
+        .mpd-thumb-item { width: 34px; height: 34px; }
+    }
+    /* v6.2.x: 시뮬레이터 가로(short) 대응 — @@media(max-height)는 실제 창 높이 기준이라 시뮬 폰 가로에서 미발동.
+       시뮬 뷰포트가 부여하는 .msp-viewport.land 조상 클래스로 동일 컴팩트 닥을 강제 발동해 카셀/콘텐츠 겹침을 차단. (실디바이스는 위 @@media 가 담당) */
+    .msp-viewport.land .mpd-floating-dock { bottom: 8px; left: 8px; right: 8px; }
+    .msp-viewport.land .mpd-dock-pill { padding: 7px 12px; border-radius: 20px; gap: 5px; }
+    .msp-viewport.land .mpd-dock-label { font-size: 0.72rem; }
+    .msp-viewport.land .mpd-mode-btn { padding: 3px 7px; }
+    .msp-viewport.land .mpd-btn-attach, .msp-viewport.land .mpd-btn-send { width: 32px; height: 32px; font-size: 0.9rem; }
+    .msp-viewport.land .mpd-input { font-size: 0.85rem; }
+    .msp-viewport.land .mpd-thumb-item { width: 34px; height: 34px; }
+</style>

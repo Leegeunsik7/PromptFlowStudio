@@ -1,0 +1,61 @@
+@inject HelpContentService Help
+
+@* [PromptFlow Studio] 메뉴별 컨텍스트 도움말 모달 — 핵심 개념 + 섹션(플랫폼별 권장·실패 시 조치)을 정돈해 표출. HelpBadge [❓] 가 연다. *@
+
+@if (Help.Get(TopicKey) is { } t)
+{
+    <div class="ch-scrim" @onclick="Close">
+        <div class="ch-modal" @onclick:stopPropagation="true">
+            <div class="ch-h">
+                <div class="ch-title">@t.Icon @t.Title</div>
+                <button class="ch-x" @onclick="Close" title="닫기">✕</button>
+            </div>
+            <div class="ch-body">
+                <div class="ch-concept">@t.Concept</div>
+                @foreach (var s in t.Sections)
+                {
+                    <div class="ch-sec" @key="s.Heading">
+                        <div class="ch-sec-h">@SectionIcon(s.Heading) @s.Heading</div>
+                        <div class="ch-sec-b">@s.Body</div>
+                    </div>
+                }
+            </div>
+            <div class="ch-foot">
+                <button class="ch-btn" @onclick="Close">확인</button>
+            </div>
+        </div>
+    </div>
+}
+
+<style>
+    .ch-scrim { position: fixed; inset: 0; z-index: var(--z-submodal-dialog); background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .ch-modal { width: min(560px, 96vw); max-height: 88vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.4); overflow: hidden; }
+    .ch-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+    .ch-title { font-size: 16px; font-weight: 900; color: var(--text-primary); }
+    .ch-x { flex: 0 0 auto; width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .ch-x:hover { background: var(--card-2); color: var(--text-primary); }
+    .ch-body { padding: 16px 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+    .ch-concept { font-size: 13px; line-height: 1.6; color: var(--text-primary); background: color-mix(in srgb, var(--accent) 7%, var(--card-2)); border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line)); border-radius: 11px; padding: 12px 14px; }
+    .ch-sec-h { font: 800 12px var(--mono); color: var(--accent-2); margin-bottom: 5px; letter-spacing: .02em; }
+    .ch-sec-b { font-size: 12.5px; line-height: 1.6; color: var(--text-secondary); white-space: pre-line; }
+    .ch-foot { padding: 13px 20px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; }
+    .ch-btn { font: 800 13px inherit; padding: 9px 20px; border-radius: 11px; border: none; color: #fff; cursor: pointer; background: linear-gradient(135deg, var(--flow-violet), var(--flow-magenta)); }
+    .ch-btn:hover { filter: brightness(1.07); }
+</style>
+
+@code {
+    /// <summary>도움말 토픽 키(HelpContentService.Keys).</summary>
+    [Parameter] public string TopicKey { get; set; } = "";
+    /// <summary>닫기 콜백.</summary>
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private async Task Close() => await OnClose.InvokeAsync();
+
+    private static string SectionIcon(string heading) => heading switch
+    {
+        var h when h.Contains("개념") => "📘",
+        var h when h.Contains("권장") => "✅",
+        var h when h.Contains("조치") || h.Contains("실패") => "🛠️",
+        _ => "•",
+    };
+}

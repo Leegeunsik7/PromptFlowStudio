@@ -1,0 +1,264 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.GraphBridge
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject GraphApiBridgeStudioRunner Runner
+
+@* [PromptFlow Studio v17.48.0] 🔗 AI 인스타그램 API 연동 스튜디오 — 자격 설정 · 쿼터 게이지 · 청크 진행률 · 트렌딩 미디어 · 웹훅/이벤트 로그. *@
+
+<div class="gab-scrim" @onclick="Close">
+    <div class="gab-modal" @onclick:stopPropagation="true">
+        <div class="gab-h">
+            <div>
+                <div class="gab-title">🔗 AI 인스타그램 API 연동 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null) · @(Runner.Live ? "🌐 실 Graph API" : "🧪 시뮬레이션")</div>
+                <div class="gab-sub"><b>인제스천 엔진</b>이 Graph API v21.0 해시태그 top_media · 본인 media(insights 조회수)를 Utf8JsonReader 로 무할당 파싱해 링버퍼에 적재하고, 서명 검증된 웹훅만 이벤트로 기록합니다. <b>디스패처</b>는 REELS 컨테이너(resumable) → rupload 4 MB 청크(offset 재개) → status_code 폴링 → media_publish 순으로 발행합니다. <b>가드</b>는 200 회/시간 토큰 버킷 · 429 지수 백오프 · X-App-Usage 선제 정지 · AES-GCM 토큰 보관 · 장기 토큰 자동 갱신 · 24 시간 50 건 발행 한도를 지킵니다.</div>
+            </div>
+            <button class="gab-x" @onclick="Close">✕</button>
+        </div>
+        <div class="gab-bar">
+            <button class="gab-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 시작")</button>
+            <button class="gab-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="gab-btn @(Runner.Live ? null : "on")" @onclick="() => Runner.SetLive(false)">🧪 시뮬레이션</button>
+            <button class="gab-btn @(Runner.Live ? "on" : null)" @onclick="() => Runner.SetLive(true)">🌐 실 API</button>
+            <button class="gab-btn" @onclick="Runner.IngestNow">⟳ 지금 수집</button>
+            <button class="gab-btn" @onclick="Runner.RefreshTokenNow">🔑 토큰 갱신</button>
+            <span class="gab-chip @(Runner.LastTickMs < 16.7 ? "ok" : "warn")">프레임 @(F2(Runner.LastTickMs)) ms · 파싱 @(F0(Runner.Ingest.LastParseUs)) µs · 디스패치 @(F0(Runner.Dispatcher.LastStepUs)) µs</span>
+        </div>
+        <div class="gab-main">
+            <div class="gab-col">
+                <div class="gab-card">
+                    <div class="gab-sec">🔐 Meta 앱 · 계정 자격 — 토큰 <b>@(Runner.Guard.TokenMasked)</b> · 잔여 <b class="@(Runner.Guard.TokenInvalid ? "warn" : "ok")">@(Runner.Guard.TokenInvalid ? "무효(190)" : F1(Runner.Guard.TokenDaysLeft(Runner.Now)) + " 일")</b> · 갱신 @(Runner.Guard.Refreshes)</div>
+                    <div class="gab-form">
+                        <label>Meta Business App ID<input class="gab-in" @bind="_appId" placeholder="1234567890" /></label>
+                        <label>Instagram 사용자 ID<input class="gab-in" @bind="_igUser" placeholder="1784140…" /></label>
+                        <label>장기 액세스 토큰<input class="gab-in" type="password" autocomplete="off" @bind="_token" placeholder="IGAA… / EAA…" /></label>
+                        <label>앱 시크릿(웹훅 서명)<input class="gab-in" type="password" autocomplete="off" @bind="_secret" /></label>
+                        <label>토큰 잔여 일수<input class="gab-in" type="number" min="0" max="60" @bind="_days" /></label>
+                        <label>해시태그<input class="gab-in" @bind="_tag" placeholder="reels" /></label>
+                    </div>
+                    <div class="gab-row">
+                        <button class="gab-btn" @onclick="ApplyCreds">🔐 자격 적용</button>
+                        <button class="gab-btn" @onclick="ApplyTag">#️⃣ 해시태그 적용</button>
+                    </div>
+                    <div class="gab-act">토큰 · 시크릿은 메모리에서 AES-GCM 암호문으로만 보관되며 디스크에 저장되지 않습니다. 환경변수(PFS_IG_ACCESS_TOKEN) 사용을 권장합니다.</div>
+                </div>
+                <div class="gab-card">
+                    <div class="gab-sec">📊 API 쿼터 — 잔여 <b class="@(Runner.Guard.QuotaPct > 20 ? "ok" : "warn")">@(F0(Runner.Guard.QuotaPct))%</b> (@(F1(Runner.Guard.Tokens))/@(F0(Runner.Guard.Capacity))) · X-App-Usage <b class="@(Runner.Guard.UsagePct < 80 ? "ok" : "warn")">@(Runner.Guard.UsagePct)%</b></div>
+                    <svg class="gab-meter" viewBox="0 0 100 10" preserveAspectRatio="none">
+                        <rect class="q" x="0" y="0" width="@(P(Runner.Guard.QuotaPct))" height="5" />
+                        <rect class="u" x="0" y="5" width="@(P(Runner.Guard.UsagePct))" height="5" />
+                    </svg>
+                    <div class="gab-kv grid">
+                        <div>획득 @(Runner.Guard.Acquired) · 지연 @(Runner.Guard.Deferred)</div>
+                        <div>429/레이트 @(Runner.Guard.RateLimitHits) · 재시도 @(Runner.Guard.Retries)</div>
+                        <div>차단 <b class="@(Runner.Guard.IsBlocked(Runner.Now) ? "warn" : "ok")">@(Runner.Guard.IsBlocked(Runner.Now) ? F1(Runner.Guard.BlockedUntil - Runner.Now) + " s" : "없음")</b> · 백오프 @(F1(Runner.Guard.LastBackoffSec)) s</div>
+                        <div>발행 24h @(Runner.Guard.PublishedLast24h(Runner.Now))/@(TokenBucketRateLimitOAuthSecurityGuard.PublishLimit)</div>
+                    </div>
+                    <svg class="gab-graph" viewBox="0 0 600 90" preserveAspectRatio="none">
+                        <polyline class="q" points="@(Series(0))" />
+                        <polyline class="u" points="@(Series(1))" />
+                    </svg>
+                    <div class="gab-legend"><span class="q">━ 버킷 잔여 %</span><span class="u">━ X-App-Usage %</span></div>
+                </div>
+            </div>
+            <div class="gab-col">
+                <div class="gab-card">
+                    <div class="gab-sec">🚀 릴스 발행 — <b class="@(Runner.Dispatcher.Phase == ReelsPublishPhase.Failed ? "warn" : "ok")">@(ChunkedReelsPublishingDispatcherSynthesizer.PhaseName(Runner.Dispatcher.Phase))</b> @(Runner.Dispatcher.LastError is { } e ? "· " + e : null)</div>
+                    <div class="gab-row">
+                        <button class="gab-btn" @onclick="PublishRemix" disabled="@(Runner.Dispatcher.IsActive || Runner.Live)">📱 v17.47 리믹스 발행(시뮬)</button>
+                        <input class="gab-in wide" @bind="_path" placeholder="렌더된 MP4 경로(1080×1920)" />
+                        <button class="gab-btn" @onclick="PublishFile" disabled="@Runner.Dispatcher.IsActive">📤 파일 발행</button>
+                        <button class="gab-btn" @onclick="Runner.CancelPublish" disabled="@(!Runner.Dispatcher.IsActive)">⏹ 취소</button>
+                    </div>
+                    <div class="gab-prog"><div class="gab-prog-f" style="width:@(P(Runner.Dispatcher.Progress * 100))%"></div></div>
+                    <div class="gab-chunks">
+                        @for (var c = 0; c < Math.Min(Runner.Dispatcher.TotalChunks, 80); c++)
+                        {
+                            <span class="gab-ck @(c < Runner.Dispatcher.ChunksSent ? "done" : c == Runner.Dispatcher.ChunksSent && Runner.Dispatcher.Phase == ReelsPublishPhase.Uploading ? "cur" : null)"></span>
+                        }
+                    </div>
+                    <div class="gab-kv grid">
+                        <div>청크 @(Runner.Dispatcher.ChunksSent)/@(Runner.Dispatcher.TotalChunks) × 4 MB · 재개 @(Runner.Dispatcher.ChunkRetries)</div>
+                        <div>@(F1(Runner.Dispatcher.Offset / 1048576.0)) / @(F1(Runner.Dispatcher.FileSize / 1048576.0)) MB</div>
+                        <div>컨테이너 @(Runner.Dispatcher.ContainerId == 0 ? "—" : Runner.Dispatcher.ContainerId.ToString(CultureInfo.InvariantCulture)) · 폴링 @(Runner.Dispatcher.Polls)</div>
+                        <div>미디어 <b>@(Runner.Dispatcher.MediaId == 0 ? "—" : Runner.Dispatcher.MediaId.ToString(CultureInfo.InvariantCulture))</b> · HTTP @(Runner.Dispatcher.LastStatus)</div>
+                    </div>
+                    <div class="gab-act">@(Runner.ReelsLinked ? "v17.47 오리지널리티 가드 Ready 일 때만 발행됩니다." : "v17.47 미연동 — 오리지널리티 게이트 없음")</div>
+                </div>
+                <div class="gab-card">
+                    <div class="gab-sec">🔥 트렌딩 미디어 — #@(Tag()) · ID @(Runner.Ingest.HashtagId == 0 ? "검색 전" : Runner.Ingest.HashtagId.ToString(CultureInfo.InvariantCulture)) · 링 @(Runner.Ingest.Count)/@(RealtimeMetaGraphApiIngestionEngine.Cap)</div>
+                    <table class="gab-tbl">
+                        <tr><th>미디어</th><th>유형</th><th>조회</th><th>좋아요</th><th>댓글</th><th>링크</th></tr>
+                        @for (var i = 0; i < Math.Min(Runner.Ingest.Count, 10); i++)
+                        {
+                            var m = Runner.Ingest.Media(i);
+                            <tr>
+                                <td>@(m.Id % 1000000)@(m.Own ? " ★" : null)</td>
+                                <td>@(m.IsReel ? "REELS" : m.Kind.ToString())</td>
+                                <td>@(m.Views == 0 ? "—" : m.Views.ToString(CultureInfo.InvariantCulture))</td>
+                                <td>@(m.Likes)</td>
+                                <td>@(m.Comments)</td>
+                                <td class="lnk">@(System.Text.Encoding.UTF8.GetString(Runner.Ingest.Permalink(i)))</td>
+                            </tr>
+                        }
+                    </table>
+                </div>
+            </div>
+            <div class="gab-col">
+                <div class="gab-card">
+                    <div class="gab-sec">📨 웹훅 · 이벤트 로그 — 웹훅 @(Runner.Ingest.WebhookEvents) · 서명 거부 @(Runner.Ingest.WebhookRejected)</div>
+                    <div class="gab-log">
+                        @for (var i = 0; i < Math.Min(Runner.LogCount, 24); i++)
+                        {
+                            var l = Runner.Log(i);
+                            <div class="@(LogClass(l.Kind))"><span class="t">@(F1(l.T))s</span> @(LogText(l))</div>
+                        }
+                    </div>
+                    <div class="gab-act">@(Runner.LastAction ?? "대기")</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .gab-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .gab-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .gab-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #3b82f6 16%, var(--card)), color-mix(in srgb, #ec4899 12%, var(--card))); }
+    .gab-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .gab-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .gab-sub b { color: var(--text-primary); }
+    .gab-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .gab-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .gab-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .gab-btn:disabled { opacity: .45; cursor: default; }
+    .gab-btn.on { background: color-mix(in srgb, #3b82f6 20%, var(--card)); border-color: #3b82f6; }
+    .gab-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .gab-chip.ok { border-color: #22c55e; color: #22c55e; } .gab-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .gab-main { display: grid; grid-template-columns: 1fr 1.2fr 0.9fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .gab-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .gab-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); }
+    .gab-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .gab-sec b.ok, .gab-kv b.ok { color: #22c55e; } .gab-sec b.warn, .gab-kv b.warn { color: #f59e0b; }
+    .gab-form { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+    .gab-form label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--text-secondary); }
+    .gab-in { font: 12px var(--mono); padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); min-width: 0; }
+    .gab-in.wide { flex: 1; }
+    .gab-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
+    .gab-meter { width: 100%; height: 16px; display: block; border-radius: 4px; overflow: hidden; background: #1e293b; }
+    .gab-meter .q, .gab-legend .q, .gab-graph .q { fill: #22c55e; stroke: #22c55e; color: #22c55e; } .gab-meter .u, .gab-legend .u, .gab-graph .u { fill: #f59e0b; stroke: #f59e0b; color: #f59e0b; }
+    .gab-graph { width: 100%; height: 80px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; margin-top: 6px; }
+    .gab-graph polyline { fill: none; stroke-width: 1.6; }
+    .gab-legend { display: flex; gap: 12px; font-size: 10px; margin-top: 3px; }
+    .gab-prog { height: 10px; border-radius: 999px; background: #1e293b; overflow: hidden; margin-top: 8px; }
+    .gab-prog-f { height: 100%; background: linear-gradient(90deg, #3b82f6, #ec4899); }
+    .gab-chunks { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 6px; }
+    .gab-ck { width: 14px; height: 8px; border-radius: 2px; background: #334155; } .gab-ck.done { background: #22c55e; } .gab-ck.cur { background: #f59e0b; }
+    .gab-kv { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px; }
+    .gab-kv.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; margin-top: 6px; }
+    .gab-kv b { color: var(--text-primary); }
+    .gab-tbl { width: 100%; border-collapse: collapse; font: 11px var(--mono); color: var(--text-secondary); table-layout: fixed; }
+    .gab-tbl th { text-align: left; font-weight: 800; color: var(--text-primary); border-bottom: 1px solid var(--line); padding: 3px 4px; }
+    .gab-tbl td { padding: 3px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .gab-tbl td.lnk { width: 40%; }
+    .gab-log { font: 11px var(--mono); color: var(--text-secondary); display: flex; flex-direction: column; gap: 2px; max-height: 520px; overflow-y: auto; }
+    .gab-log .t { color: var(--text-muted); } .gab-log .ok { color: #22c55e; } .gab-log .warn { color: #f59e0b; } .gab-log .info { color: #60a5fa; }
+    .gab-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+    private string _appId = "", _igUser = "", _token = "", _secret = "", _tag = "reels", _path = "";
+    private double _days = 60;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _appId = Runner.AppId.ToString(CultureInfo.InvariantCulture);
+        _igUser = Runner.IgUserId.ToString(CultureInfo.InvariantCulture);
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("GraphBridge.Modal.Timer", ex); }
+        }, null, 200, 200);
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string P(double v) => Math.Clamp(v, 0, 100).ToString("0.###", CultureInfo.InvariantCulture);
+    private string Tag() => System.Text.Encoding.UTF8.GetString(Runner.Ingest.Hashtag);
+
+    private static string LogClass(GraphLogKind k) => k switch
+    {
+        GraphLogKind.Published or GraphLogKind.TokenRefreshed or GraphLogKind.IngestOk => "ok",
+        GraphLogKind.Webhook or GraphLogKind.Chunk => "info",
+        _ => "warn",
+    };
+
+    private static string LogText(GraphLogEntry l)
+    {
+        var c = l.Code.ToString(CultureInfo.InvariantCulture);
+        return l.Kind switch
+        {
+            GraphLogKind.IngestOk => "수집 HTTP " + c + " · " + l.Value.ToString(CultureInfo.InvariantCulture) + " 건" + (l.Id != 0 ? " · 해시태그 " + l.Id.ToString(CultureInfo.InvariantCulture) : ""),
+            GraphLogKind.IngestError => "수집 실패 HTTP " + c + " · 코드 " + l.Value.ToString(CultureInfo.InvariantCulture),
+            GraphLogKind.RateLimited => "⏳ 레이트 리밋 HTTP " + c + " · 코드 " + l.Value.ToString(CultureInfo.InvariantCulture) + " → 백오프",
+            GraphLogKind.Webhook => "📨 웹훅 " + RealtimeMetaGraphApiIngestionEngine.FieldName((GraphWebhookField)l.Code) + " · 미디어 " + l.Id.ToString(CultureInfo.InvariantCulture),
+            GraphLogKind.WebhookRejected => "⛔ 웹훅 서명 불일치 거부",
+            GraphLogKind.Chunk => "📦 청크 → offset " + (l.Value / 1048576.0).ToString("0.0", CultureInfo.InvariantCulture) + " MB",
+            GraphLogKind.Published => "✅ 게시 완료 · 미디어 " + l.Id.ToString(CultureInfo.InvariantCulture),
+            GraphLogKind.PublishFailed => "❌ 발행 실패 HTTP " + c,
+            GraphLogKind.TokenRefreshed => "🔑 토큰 갱신 · 잔여 " + l.Value.ToString(CultureInfo.InvariantCulture) + " 일",
+            _ => "🔑 토큰 갱신 실패 HTTP " + c,
+        };
+    }
+
+    private string Series(int which)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            var v = which == 0 ? Runner.QuotaSeries(k) : Runner.UsageSeries(k);
+            sb.Append(P(600.0 * i / (n - 1))).Append(',').Append((88f - 86f * Math.Clamp(v / 100f, 0f, 1f)).ToString("0.###", CultureInfo.InvariantCulture)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void ApplyCreds()
+    {
+        if (Runner.SetCredentials(_appId, _igUser, _token, _secret, _days)) { _token = ""; _secret = ""; }
+    }
+
+    private void ApplyTag() => Runner.SetHashtag(_tag);
+    private void PublishRemix() => Runner.PublishRemix();
+    private void PublishFile() => Runner.PublishFile(_path.Trim().Trim('"'), "PromptFlow Studio remix #reels");
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void Step60()
+    {
+        for (var i = 0; i < GraphApiBridgeStudioRunner.Hz; i++) Runner.Step();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

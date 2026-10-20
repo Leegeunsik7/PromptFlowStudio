@@ -1,0 +1,10 @@
+/* [PromptFlow Studio v4.1] 공용 RCL 정적 자산 — 데스크톱/모바일 공유(경로: _content/PromptFlowStudio.Shared/field-shared.css).
+   RCL StaticWebAssetBasePath=_pfs. 호스트 index.html 에서 <link href="_content/PromptFlowStudio.Shared/field-shared.css"> 로 참조. */
+:root {
+    --pfs-field-cyan: #22d3ee;
+    --pfs-field-amber: #f59e0b;
+    --pfs-field-ok: #22c55e;
+    --pfs-field-danger: #ef4444;
+}
+.pfs-field-scan { animation: pfs-field-sweep 1.6s ease-in-out infinite; }
+@keyframes pfs-field-sweep { 0%,100% { opacity: .4; } 50% { opacity: 1; } }

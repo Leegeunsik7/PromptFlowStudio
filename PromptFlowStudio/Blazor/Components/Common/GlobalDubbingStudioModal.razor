@@ -1,0 +1,248 @@
+@using System.Globalization
+@using System.Threading
+@implements IDisposable
+@inject MultilingualVoiceCloningDubbingService Dubbing
+@inject ILocalMediaService Media
+
+@* [PromptFlow Studio v16.24.0] 🌐 글로벌 다국어 더빙 스튜디오 — 34개 로캘 선택 · 음색 분석/매칭 · (선택) 음성 복제 · 언어별 음성 미리듣기
+   · 문화적 각색(화폐/단위/관용구/금기어) · 립싱크/자막 재정렬 · 1-Click 다국어 패키지. 상태는 서비스(싱글턴) 소유 — OnChange 구독 + InvokeAsync(StateHasChanged). *@
+
+<div class="gd-scrim" @onclick="Close">
+    <div class="gd-modal" @onclick:stopPropagation="true">
+        <div class="gd-h">
+            <div>
+                <div class="gd-title">🌐 글로벌 다국어 더빙 스튜디오</div>
+                <div class="gd-sub">원본 나레이터 음색(F0·밝기)을 분석해 대상 언어 음성을 매칭하고, 컷 감정을 유지한 더빙 트랙과 언어별 자막·타임라인을 자동 재정렬합니다.
+                    화폐·단위는 <b>참고 환율/환산</b>(PFS_FX_RATES 로 조정)으로 변환됩니다.</div>
+            </div>
+            <button class="gd-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="gd-body">
+            @* ── 음색 ── *@
+            <div class="gd-row">
+                <span class="gd-sec">🎙️ 나레이터 음색</span>
+                @if (Dubbing.LastTimbre is { } tb)
+                {
+                    <span class="gd-chip ok">F0 @(tb.MedianF0.ToString("0", CultureInfo.InvariantCulture))Hz · @(tb.IsMale ? "남성형" : "여성형") · 밝기 @(tb.Brightness.ToString("0.000", CultureInfo.InvariantCulture)) · 유성 @((tb.VoicedRatio * 100).ToString("0", CultureInfo.InvariantCulture))%</span>
+                }
+                else { <span class="gd-chip">미분석</span> }
+                @if (Dubbing.ClonedVoiceId is not null) { <span class="gd-chip ok">🧬 복제 음성 준비</span> }
+                <button class="gd-btn" disabled="@(Busy || !HasFinal || !Dubbing.IsAvailable)" @onclick="AnalyzeAsync">🔬 음색 분석</button>
+            </div>
+
+            @* ── 옵션 ── *@
+            <div class="gd-opts">
+                <label><input type="checkbox" @bind="_cultural" disabled="@Busy" /> 🌏 문화적 각색(관용구·금기어·화폐·단위)</label>
+                <label><input type="checkbox" @bind="_useAi" disabled="@Busy" /> ✨ Gemini 번역·각색 <span class="gd-mut">(@(Dubbing.Localizer.AiEnabled ? "사용 가능" : "키 없음 → 오프라인"))</span></label>
+                <label><input type="checkbox" @bind="_timbre" disabled="@Busy" /> 🎚️ 음색 매칭</label>
+                <label title="원본 나레이션 60초를 ElevenLabs 에 업로드해 복제 음성을 만듭니다(본인/권리 보유 음성만 · 과금 발생).">
+                    <input type="checkbox" @bind="_clone" disabled="@(Busy || !Dubbing.CanClone)" /> 🧬 ElevenLabs 음성 복제 <span class="gd-mut">(@(Dubbing.CanClone ? "음성 권리 보유 시에만" : "ELEVENLABS_API_KEY 없음"))</span></label>
+                <label><input type="checkbox" @bind="_lip" disabled="@Busy" /> 👄 립싱크 재정렬 <span class="gd-mut">(@(Dubbing.CanLipSync ? "AI 립싱크" : "viseme 타임라인만"))</span></label>
+                <label><input type="checkbox" @bind="_subs" disabled="@Busy" /> 💬 자막(SRT/ASS)</label>
+                <label><input type="checkbox" @bind="_burn" disabled="@(Busy || !_subs)" /> 🔥 자막 번인</label>
+                <label><input type="checkbox" @bind="_zip" disabled="@Busy" /> 🗜️ ZIP</label>
+                <label>원본 오디오 <input type="range" min="0" max="0.6" step="0.05" @bind="_origVol" @bind:event="oninput" disabled="@Busy" /> @((_origVol * 100).ToString("0", CultureInfo.InvariantCulture))%</label>
+            </div>
+
+            @* ── 로캘 ── *@
+            <div class="gd-row">
+                <span class="gd-sec">🗺️ 대상 국가/언어 (@_selected.Count/@(CulturalLocalizationTranspiler.Locales.Count - 1))</span>
+                <button class="gd-btn" disabled="@Busy" @onclick="SelectTop">⭐ 주요 5개</button>
+                <button class="gd-btn" disabled="@Busy" @onclick="SelectAll">전체</button>
+                <button class="gd-btn" disabled="@Busy" @onclick="() => _selected.Clear()">해제</button>
+            </div>
+            <div class="gd-grid">
+                @foreach (var l in CulturalLocalizationTranspiler.Locales)
+                {
+                    if (l.Code == "ko-KR") continue;
+                    var loc = l;
+                    var item = _results.Find(r => r.Code == loc.Code);
+                    <div class="gd-loc @(_selected.Contains(loc.Code) ? "on" : null)">
+                        <label class="gd-pick">
+                            <input type="checkbox" checked="@_selected.Contains(loc.Code)" disabled="@Busy" @onchange="e => Toggle(loc.Code, e.Value is true)" />
+                            <span>@(loc.Flag) @(loc.Native)</span>
+                        </label>
+                        <span class="gd-mut">@(loc.Code) · @(loc.Currency)@(loc.Imperial ? " · in/lb" : "")</span>
+                        <button class="gd-pv" disabled="@(Busy || _previewing is not null || !Dubbing.CanSpeak)" @onclick="() => PreviewAsync(loc)" title="음성 미리듣기">@(_previewing == loc.Code ? "…" : "🔊")</button>
+                        @if (item is not null) { <span class="gd-st @(item.Ok ? "ok" : "bad")" title="@item.Message">@(item.Ok ? "✓" : "✗")</span> }
+                    </div>
+                }
+            </div>
+            @if (_previewUrl is not null)
+            {
+                <audio class="gd-audio" src="@_previewUrl" controls autoplay></audio>
+            }
+
+            @if (_stage is not null) { <div class="gd-prog"><div class="gd-bar" style="width:@(_pct)%"></div><span>@(_stage) @(_pct)%</span></div> }
+            @if (_results.Count > 0)
+            {
+                <table class="gd-tbl">
+                    <tr><th>언어</th><th>더빙</th><th>스트레칭</th><th>자막</th><th>변환</th><th>상태</th></tr>
+                    @foreach (var r in _results)
+                    {
+                        <tr class="@(r.Ok ? null : "bad")">
+                            <td>@(CulturalLocalizationTranspiler.LocaleOf(r.Code)?.Flag) @(r.Code)</td>
+                            <td>@(r.VoicedLines)</td><td>@(r.StretchedLines)</td><td>@(r.SubtitleBlocks)</td>
+                            <td>@(r.Conversions)@(r.AiLocalized ? " · AI" : "")</td>
+                            <td class="gd-msg" title="@(r.VideoPath ?? r.Message)">@(r.Message)</td>
+                        </tr>
+                    }
+                </table>
+            }
+            @if (_msg is not null) { <div class="gd-note">@_msg</div> }
+        </div>
+
+        <div class="gd-f">
+            <span class="gd-mut">@(HasFinal ? "원본: " + Path.GetFileName(Project.FinalVideoPath) : "먼저 최종 영상을 내보내세요.")</span>
+            @if (Busy) { <button class="gd-btn" @onclick="Cancel">⏹ 취소</button> }
+            <button class="gd-btn go" disabled="@(Busy || !HasFinal || _selected.Count == 0 || !Dubbing.IsAvailable)" @onclick="ExportAsync">🌐 1-Click 다국어 패키지 출력 (@_selected.Count)</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .gd-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .gd-modal { width: min(1020px, 96vw); max-height: 92vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.4); overflow: hidden; }
+    .gd-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+    .gd-title { font-size: 16px; font-weight: 900; color: var(--text-primary); }
+    .gd-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .gd-sub b { color: var(--text-primary); }
+    .gd-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .gd-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .gd-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .gd-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .gd-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .gd-chip.ok { color: #4ade80; border-color: color-mix(in srgb, #4ade80 40%, var(--line)); }
+    .gd-opts { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--text-secondary); }
+    .gd-opts label { display: inline-flex; align-items: center; gap: 5px; }
+    .gd-mut { font-size: 10.5px; color: var(--text-muted); }
+    .gd-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px; }
+    .gd-loc { display: grid; grid-template-columns: 1fr auto auto; grid-template-rows: auto auto; align-items: center; gap: 0 6px; border: 1px solid var(--line); border-radius: 10px; padding: 6px 8px; opacity: .7; }
+    .gd-loc.on { opacity: 1; border-color: color-mix(in srgb, #38bdf8 55%, var(--line)); background: color-mix(in srgb, #38bdf8 6%, var(--card)); }
+    .gd-pick { display: inline-flex; gap: 5px; align-items: center; font-size: 12px; font-weight: 700; color: var(--text-primary); }
+    .gd-loc .gd-mut { grid-column: 1; }
+    .gd-pv { grid-row: 1 / span 2; grid-column: 2; border: 1px solid var(--line); background: none; border-radius: 8px; cursor: pointer; padding: 3px 6px; }
+    .gd-st { grid-row: 1 / span 2; grid-column: 3; font-weight: 900; }
+    .gd-st.ok { color: #4ade80; } .gd-st.bad { color: #f87171; }
+    .gd-audio { width: 100%; height: 34px; }
+    .gd-prog { position: relative; height: 18px; border-radius: 9px; background: var(--bg); overflow: hidden; }
+    .gd-bar { position: absolute; inset: 0 auto 0 0; background: linear-gradient(90deg,#38bdf8,#a78bfa); transition: width .2s; }
+    .gd-prog span { position: relative; font: 700 10px var(--mono); padding-left: 8px; line-height: 18px; }
+    .gd-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+    .gd-tbl th, .gd-tbl td { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: left; }
+    .gd-tbl tr.bad td { color: #f87171; }
+    .gd-msg { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .gd-note { font-size: 12px; color: var(--text-secondary); }
+    .gd-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }
+    .gd-f .gd-mut { margin-right: auto; }
+    .gd-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .gd-btn.go { background: linear-gradient(135deg,#0ea5e9,#8b5cf6); color: #fff; border: 0; }
+    .gd-btn:disabled, .gd-pv:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 720px) { .gd-grid { grid-template-columns: 1fr 1fr; } }
+</style>
+
+@code {
+    [Parameter, EditorRequired] public StoryboardProject Project { get; set; } = default!;
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<string> OnReveal { get; set; }
+
+    private static readonly string[] Top = { "en-US", "ja-JP", "zh-CN", "es-ES", "fr-FR" };
+    private readonly HashSet<string> _selected = new(StringComparer.OrdinalIgnoreCase) { "en-US", "ja-JP" };
+    private List<DubbingLocaleResult> _results = new();
+    private CancellationTokenSource? _cts;
+    private string? _stage;
+    private string? _msg;
+    private string? _previewUrl;
+    private string? _previewing;
+    private int _pct;
+    private double _origVol = 0.25;
+    private bool _cultural = true, _useAi = true, _timbre = true, _clone, _lip, _subs = true, _burn = true, _zip;
+
+    private bool Busy => _cts is not null;
+    private bool HasFinal => !string.IsNullOrWhiteSpace(Project.FinalVideoPath) && File.Exists(Project.FinalVideoPath);
+
+    protected override void OnInitialized() => Dubbing.OnChange += OnServiceChanged;
+
+    private void Toggle(string code, bool on)
+    {
+        if (on) _selected.Add(code); else _selected.Remove(code);
+    }
+
+    private void SelectTop() { _selected.Clear(); foreach (var c in Top) _selected.Add(c); }
+
+    private void SelectAll()
+    {
+        foreach (var l in CulturalLocalizationTranspiler.Locales) if (l.Code != "ko-KR") _selected.Add(l.Code);
+    }
+
+    private Task AnalyzeAsync() => RunAsync(async ct =>
+    {
+        _stage = "🔬 음색 분석 중…";
+        var p = await Dubbing.AnalyzeSourceAsync(Project.FinalVideoPath!, ct);
+        _msg = p is null ? "⚠ 음색을 분석하지 못했습니다(무음 또는 ffmpeg 없음) — 기본 음성으로 더빙합니다." : "✅ 음색 분석 완료";
+    });
+
+    private async Task PreviewAsync(LocaleProfile loc)
+    {
+        _previewing = loc.Code;
+        _previewUrl = null;
+        try
+        {
+            var path = await Dubbing.PreviewAsync(loc);
+            _previewUrl = path is null ? null : Media.ToPlaybackUrl(path);
+            if (path is null) _msg = "⚠ " + loc.Native + " 미리듣기 합성 실패(Edge/ElevenLabs 응답 없음)";
+        }
+        catch (Exception ex) { Program.Log("GlobalDubbing.Preview", ex); _msg = "⚠ 미리듣기 실패: " + ex.Message; }
+        finally { _previewing = null; }
+    }
+
+    private Task ExportAsync()
+    {
+        var req = new DubbingRequest(_selected.ToArray(), _cultural, _useAi, _timbre, _clone && Dubbing.CanClone, _lip, _subs, _burn && _subs,
+            OriginalVolume: _origVol, Zip: _zip);
+        var master = Project.FinalVideoPath!;
+        return RunAsync(async ct =>
+        {
+            _results = new();
+            var progress = new Progress<PostProductionProgress>(p => { _pct = p.Percent; _stage = p.Stage; _ = InvokeAsync(StateHasChanged); });
+            var r = await Dubbing.ExportAsync(Project, master, req, progress, ct);
+            _results = new List<DubbingLocaleResult>(r.Items);
+            _msg = (r.Ok ? "✅ " : "⚠ ") + r.Message + (r.OutputPath is null ? "" : " · " + r.OutputPath);
+            if (r.Ok && r.OutputPath is not null) await OnReveal.InvokeAsync(r.OutputPath);
+        });
+    }
+
+    private async Task RunAsync(Func<CancellationToken, Task> work)
+    {
+        var cts = new CancellationTokenSource();
+        if (Interlocked.CompareExchange(ref _cts, cts, null) is not null) { cts.Dispose(); return; }
+        _pct = 0;
+        _msg = null;
+        try { await work(cts.Token); }
+        catch (OperationCanceledException) { _msg = "⚠ 취소됨"; }
+        catch (Exception ex) { Program.Log("GlobalDubbing.Run", ex); _msg = "⚠ 실패: " + ex.Message; }
+        finally
+        {
+            Interlocked.CompareExchange(ref _cts, null, cts);
+            cts.Dispose();
+            _stage = null;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void Cancel()
+    {
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
+    private Task Close() => Busy ? Task.CompletedTask : OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Dubbing.OnChange -= OnServiceChanged;
+        Cancel();   // 진행 중 작업은 RunAsync finally 에서 CTS 정리
+    }
+}

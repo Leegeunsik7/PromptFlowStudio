@@ -1,0 +1,134 @@
+@implements IDisposable
+@inject IParityProbe Probe
+@inject GlobalMultiPlatformAdapter I18n
+
+@* [PromptFlow Studio v4.2] 공용 RCL 컴포넌트 — 크로스플랫폼 통합 제어반.
+   기기/해상도·시뮬레이터 QA 통과율·다국어·화면비 자동 프리뷰·크로스 렌더 시연(데스크톱/모바일 동일 렌더). *@
+
+<div class="cps">
+    <div class="cps-h"><span class="cps-title">🌐 @I18n.T("deck.title")</span><span class="cps-badge">v4.2</span>
+        <span class="cps-plat">@_snap.Platform · @I18n.T("app.title")</span></div>
+
+    <div class="cps-langs">
+        <span class="cps-lg-lbl">@I18n.T("lang.label")</span>
+        @foreach (var l in GlobalMultiPlatformAdapter.Languages)
+        {
+            <button class="cps-lg @(I18n.Current == l.Lang ? "on" : null)" @onclick="() => I18n.SetLanguage(l.Lang)" @key="l.Code">@l.Flag @l.Native</button>
+        }
+    </div>
+
+    <div class="cps-grid">
+        @* ── 시뮬레이터 QA 통과율 ── *@
+        <div class="cps-card">
+            <div class="cps-ct">🧪 @I18n.T("qa.title")</div>
+            <div class="cps-gaugewrap">
+                <div class="cps-gauge @(_report.AllPass ? "pass" : "warn")" style="--pct:@_report.PassPercent"><div class="cps-gauge-in"><b>@(_report.PassPercent)%</b><small>@_report.Passed/@_report.Total</small></div></div>
+                <div class="cps-checks">
+                    @foreach (var c in _report.Checks)
+                    {
+                        <div class="cps-chk @(c.Pass ? "ok" : "no")"><span>@(c.Pass ? "✓" : "✗")</span>@c.Feature<b>@c.Actual</b></div>
+                    }
+                </div>
+            </div>
+            <div class="cps-sum @(_report.AllPass ? "ok" : "warn")">@_report.Summary</div>
+        </div>
+
+        @* ── 기기 · 화면비 자동 프리뷰 ── *@
+        <div class="cps-card">
+            <div class="cps-ct">📱 @I18n.T("device.label")</div>
+            <div class="cps-devs">
+                @foreach (var d in CrossPlatformEnhancement.Devices)
+                {
+                    <button class="cps-dev @(_device.Key == d.Key ? "on" : null)" @onclick="() => _device = d" @key="d.Key" title="@(d.PxW)x@(d.PxH)">@PlatEmoji(d.Platform) @d.Name</button>
+                }
+            </div>
+            <div class="cps-aspects">
+                @foreach (var a in CrossPlatformEnhancement.Aspects)
+                {
+                    <button class="cps-asp @(_aspect == a.Key ? "on" : null)" @onclick="() => _aspect = a.Key" @key="a.Key">@a.Key</button>
+                }
+            </div>
+            <div class="cps-preview">
+                <svg viewBox="0 0 260 150" class="cps-svg" role="img" aria-label="화면비 프리뷰">
+                    <rect x="0" y="0" width="260" height="150" rx="10" fill="#0b0d14" stroke="#2b2f42"/>
+                    <rect x="@N(Box.X)" y="@N(Box.Y)" width="@N(Box.W)" height="@N(Box.H)" rx="4" fill="#34d39933" stroke="#34d399" stroke-width="2"/>
+                </svg>
+                <div class="cps-fitlbl">@_aspect · @Box.Mode · @(Box.W)×@(Box.H)px</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="cps-actions">
+        <button class="cps-btn go" @onclick="CrossRender">📱 @I18n.T("deck.crossrender")</button>
+        <button class="cps-btn rep" @onclick="Report">📄 @I18n.T("qa.report")</button>
+    </div>
+    @if (_msg is not null) { <div class="cps-msg">@_msg</div> }
+</div>
+
+<style>
+    .cps { border: 1px solid color-mix(in srgb, #34d399 34%, #2b2f42); border-radius: 16px; overflow: hidden; font-family: Pretendard, 'Malgun Gothic', sans-serif; color: #e6edff; background: linear-gradient(160deg, rgba(52,211,153,.08), rgba(18,20,31,.92)); }
+    .cps-h { display: flex; align-items: center; gap: 8px; padding: 12px 15px; border-bottom: 1px solid #2b2f42; flex-wrap: wrap; }
+    .cps-title { font: 900 14px Pretendard,'Malgun Gothic',sans-serif; background: linear-gradient(90deg,#6ee7b7,#818cf8); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .cps-badge { font: 800 10px ui-monospace,monospace; color: #fff; background: linear-gradient(135deg,#10b981,#6366f1); border-radius: 20px; padding: 2px 8px; }
+    .cps-plat { margin-left: auto; font: 600 10px ui-monospace,monospace; color: #6b7392; }
+    .cps-langs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 10px 15px 0; } .cps-lg-lbl { font: 700 10px ui-monospace,monospace; color: #6b7392; }
+    .cps-lg { font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: #9aa6c8; background: #1a1d2b; border: 1px solid #2b2f42; border-radius: 8px; padding: 5px 10px; cursor: pointer; }
+    .cps-lg.on { color: #fff; border-color: transparent; background: linear-gradient(135deg,#10b981,#6366f1); }
+    .cps-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px 15px; } @@media (max-width: 720px) { .cps-grid { grid-template-columns: 1fr; } }
+    .cps-card { border: 1px solid #2b2f42; border-radius: 12px; background: rgba(26,29,43,.6); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+    .cps-ct { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; }
+    .cps-gaugewrap { display: flex; gap: 12px; align-items: center; }
+    .cps-gauge { width: 84px; height: 84px; flex: 0 0 auto; border-radius: 50%; background: conic-gradient(#34d399 calc(var(--pct)*1%), #1a1d2b 0); display: grid; place-items: center; }
+    .cps-gauge.warn { background: conic-gradient(#f59e0b calc(var(--pct)*1%), #1a1d2b 0); }
+    .cps-gauge-in { width: 62px; height: 62px; border-radius: 50%; background: #12141f; display: grid; place-items: center; text-align: center; } .cps-gauge-in b { font: 900 18px ui-monospace,monospace; color: #6ee7b7; } .cps-gauge.warn .cps-gauge-in b { color: #fbbf24; } .cps-gauge-in small { font: 700 8.5px ui-monospace,monospace; color: #6b7392; }
+    .cps-checks { flex: 1; display: flex; flex-direction: column; gap: 3px; max-height: 132px; overflow-y: auto; }
+    .cps-chk { display: flex; align-items: center; gap: 6px; font: 600 10px Pretendard,'Malgun Gothic',sans-serif; color: #9aa6c8; } .cps-chk b { margin-left: auto; font: 700 9.5px ui-monospace,monospace; }
+    .cps-chk.ok span { color: #22c55e; } .cps-chk.no span { color: #ef4444; } .cps-chk.no { color: #fca5a5; }
+    .cps-sum { font: 700 10.5px Pretendard,'Malgun Gothic',sans-serif; padding: 7px 9px; border-radius: 8px; word-break: keep-all; } .cps-sum.ok { color: #86efac; background: color-mix(in srgb,#22c55e 12%,transparent); } .cps-sum.warn { color: #fbbf24; background: color-mix(in srgb,#f59e0b 12%,transparent); }
+    .cps-devs { display: flex; flex-wrap: wrap; gap: 5px; } .cps-dev { font: 700 10px Pretendard,'Malgun Gothic',sans-serif; color: #9aa6c8; background: #1a1d2b; border: 1px solid #2b2f42; border-radius: 8px; padding: 6px 9px; cursor: pointer; }
+    .cps-dev.on { color: #fff; border-color: transparent; background: linear-gradient(135deg,#6366f1,#a855f7); }
+    .cps-aspects { display: flex; flex-wrap: wrap; gap: 5px; } .cps-asp { font: 700 10px ui-monospace,monospace; color: #9aa6c8; background: #1a1d2b; border: 1px solid #2b2f42; border-radius: 7px; padding: 4px 8px; cursor: pointer; } .cps-asp.on { color: #fff; border-color: transparent; background: linear-gradient(135deg,#10b981,#0ea5e9); }
+    .cps-preview { display: flex; flex-direction: column; gap: 4px; } .cps-svg { width: 100%; height: auto; } .cps-fitlbl { font: 700 10px ui-monospace,monospace; color: #6ee7b7; text-align: center; }
+    .cps-actions { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 15px 12px; }
+    .cps-btn { flex: 1; min-width: 200px; font: 800 13px Pretendard,'Malgun Gothic',sans-serif; padding: 12px 14px; border: none; border-radius: 12px; cursor: pointer; word-break: keep-all; }
+    .cps-btn.go { color: #fff; background: linear-gradient(135deg,#10b981,#6366f1); box-shadow: 0 6px 16px color-mix(in srgb,#10b981 30%,transparent), inset 0 1px 0 rgba(255,255,255,.25); }
+    .cps-btn.rep { color: #fff; background: linear-gradient(135deg,#6366f1,#a855f7); }
+    .cps-btn:hover { filter: brightness(1.07); }
+    .cps-msg { margin: 0 15px 14px; padding: 9px 12px; border-radius: 10px; background: #12141f; border: 1px solid color-mix(in srgb,#34d399 30%,#2b2f42); font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: #6ee7b7; line-height: 1.5; word-break: break-word; }
+</style>
+
+@code {
+    private FeatureParitySnapshot _snap = MobileSimQaEngine.ExpectedBaseline(DevicePlatform.Web);
+    private QaReport _report = MobileSimQaEngine.VerifyAgainstBaseline(MobileSimQaEngine.ExpectedBaseline(DevicePlatform.Web));
+    private DeviceProfile _device = CrossPlatformEnhancement.Devices[0];
+    private string _aspect = "9:16";
+    private string? _msg;
+
+    private FitBox Box => CrossPlatformEnhancement.FitToDevice(_device, _aspect, 260, 150);
+
+    protected override void OnInitialized()
+    {
+        _snap = Probe.Capture();
+        _report = MobileSimQaEngine.VerifyAgainstBaseline(_snap);
+        I18n.OnChange += OnLang;
+    }
+    private void OnLang(AppLanguage _) => InvokeAsync(StateHasChanged);
+
+    private static string N(double v) => v.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+    private static string PlatEmoji(DevicePlatform p) => p switch { DevicePlatform.iOS => "🍎", DevicePlatform.Android => "🤖", DevicePlatform.Windows => "💻", _ => "🌐" };
+
+    private void CrossRender()
+    {
+        var modes = string.Join(" · ", CrossPlatformEnhancement.Devices.Select(d =>
+            $"{d.Name}={CrossPlatformEnhancement.FitToDevice(d, _aspect, 1000, 1000).Mode}"));
+        _msg = $"📱 크로스 렌더 시연 — 화면비 {_aspect} · {CrossPlatformEnhancement.Devices.Count}기기 자동 최적화: {modes}";
+    }
+
+    private void Report()
+    {
+        var rows = CrossPlatformEnhancement.BuildSimReport(_snap, _report, I18n.Current, CrossPlatformEnhancement.Devices);
+        _msg = $"📄 시뮬레이션 리포트 발급 — {rows.Count}행 · QA {_report.PassPercent}% · 언어 {I18n.Current} · 프롬프트 톤: {GlobalMultiPlatformAdapter.PromptTone(I18n.Current)}";
+    }
+
+    public void Dispose() => I18n.OnChange -= OnLang;
+}

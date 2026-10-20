@@ -1,0 +1,314 @@
+@using System.Globalization
+@using System.Numerics
+@using System.Text
+@using PromptFlowStudio.Services.Cinematography
+@implements IDisposable
+@inject NeuralCinematographyStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.85.0] 🎥 AI 신경망 시네마토그래피 & 구도 스튜디오 — 아나모픽 렌즈 뷰파인더(삼등분/황금비 오버레이) ·
+    카메라 3D 궤적 패스 비주얼라이저(계획/희망/이력 · 장애물 · 프러스텀) · 구도 미학 점수 게이지 · 렌즈 초점/아나모픽 플레어 슬라이더 · 프롬프트.
+*@
+
+<div class="ncs-scrim" @onclick="Close">
+    <div class="ncs-modal" @onclick:stopPropagation="true">
+        <div class="ncs-h">
+            <div>
+                <div class="ncs-title">🎥 AI 신경망 시네마토그래피 &amp; 구도 스튜디오</div>
+                <div class="ncs-sub">피사체 움직임을 예측해 장애물 · 지형 · 가시선을 우회하는 <b>6DoF 카메라 궤적</b>을 최적화하고, <b>삼등분/황금비 · 헤드룸 · 리드룸</b>으로 구도를 채점해
+                    자동 역조준하며, <b>아나모픽</b> 타원 보케 · 스트릭 플레어 · 왜곡/색수차를 3DGS · 경로 추적 프레임에 합성합니다.</div>
+            </div>
+            <button class="ncs-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="ncs-bar">
+            <button class="ncs-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 촬영")</button>
+            <button class="ncs-btn" @onclick="Step" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="ncs-btn" @onclick="Runner.NewShot">🎬 새 샷</button>
+            @foreach (var m in Moves)
+            {
+                <button class="ncs-btn @(Tr.Move == m ? "on" : null)" @onclick="() => Runner.SetMove(m)">@(NeuralCameraTrajectoryEngine.MoveName(m))</button>
+            }
+            <span class="ncs-chip @(Runner.LastTickMs < 16.6 ? "ok" : "warn")">프레임 @(F1(Runner.LastTickMs)) ms</span>
+            <span class="ncs-chip">궤적 @(F2(Tr.LastStepMs)) · 렌더 @(F1(Runner.LastRenderMs)) · 렌즈 @(F1(Runner.Lens.LastMs)) ms</span>
+            <span class="ncs-chip">@(Runner.UsePathTracer ? "경로 추적" : "3DGS") @(Runner.FrameWidth)×@(Runner.FrameHeight)</span>
+        </div>
+
+        <div class="ncs-main">
+            <div class="ncs-col">
+                <div class="ncs-card">
+                    @{ var fr = Runner.LastFraming; var pose = Tr.RenderPose; }
+                    <div class="ncs-sec">🎞 뷰파인더 — @(GenerativeShotFramingEvaluator.TypeName(fr.Type))@(fr.Dutch ? " · 더치" : "") · @(F0(pose.FocalMm))mm T@(F1(pose.FStop)) · 초점 @(F2(pose.FocusDistance)) m</div>
+                    <div class="ncs-vf">
+                        <img src="@FrameUrl()" alt="viewfinder" />
+                        <svg viewBox="0 0 240 100" preserveAspectRatio="none">
+                            <line x1="80" y1="0" x2="80" y2="100" class="g3" /><line x1="160" y1="0" x2="160" y2="100" class="g3" />
+                            <line x1="0" y1="33.3" x2="240" y2="33.3" class="g3" /><line x1="0" y1="66.7" x2="240" y2="66.7" class="g3" />
+                            <line x1="91.7" y1="0" x2="91.7" y2="100" class="gp" /><line x1="148.3" y1="0" x2="148.3" y2="100" class="gp" />
+                            <line x1="0" y1="38.2" x2="240" y2="38.2" class="gp" /><line x1="0" y1="61.8" x2="240" y2="61.8" class="gp" />
+                            @if (fr.Visible)
+                            {
+                                <circle cx="@(F1(fr.Eye.X * 240))" cy="@(F1(fr.Eye.Y * 100))" r="2.2" class="eye" />
+                                var sug = GenerativeShotFramingEvaluator.SuggestEyeTarget(fr);
+                                <circle cx="@(F1(sug.X * 240))" cy="@(F1(sug.Y * 100))" r="3.2" class="sug" />
+                                <line x1="0" y1="@(F1(fr.HeadTop * 100))" x2="240" y2="@(F1(fr.HeadTop * 100))" class="hr" />
+                            }
+                        </svg>
+                    </div>
+                    <div class="ncs-kv">
+                        <span>보케 픽셀 <b>@(Runner.Lens.BokehPixels)</b> · 최대 CoC @(F1(Runner.Lens.MaxCoc)) px</span>
+                        <span>스트릭 <b>@(F3(Runner.Lens.StreakEnergy))</b></span>
+                        <span>모서리 왜곡 <b>@(F1(Runner.Lens.CornerShiftPx)) px</b> · 색수차 @(F1(Runner.Lens.CornerCaPx)) px</span>
+                        @{ var dof = NeuralCameraTrajectoryEngine.DepthOfField(pose.FocusDistance, pose.FocalMm, pose.FStop); }
+                        <span>DoF <b>@(F2(dof.Near)) ~ @(float.IsInfinity(dof.Far) ? "∞" : F2(dof.Far)) m</b> · 과초점 @(F1(NeuralCameraTrajectoryEngine.Hyperfocal(pose.FocalMm, pose.FStop))) m</span>
+                    </div>
+                </div>
+
+                <div class="ncs-card">
+                    <div class="ncs-sec">🧭 카메라 3D 궤적 패스 — 계획 @(NeuralCameraTrajectoryEngine.Horizon)점 · 비용 @(F1(Tr.RawCost)) → @(F1(Tr.OptimizedCost)) · 최소 여유 @(F2(Tr.MinClearance)) m</div>
+                    <svg class="ncs-path" viewBox="0 0 @(PW) @(PH)">
+                        @for (var g = -10; g <= 10; g += 2)
+                        {
+                            var ga = Iso(new Vector3(g, 0f, -10f)); var gb = Iso(new Vector3(g, 0f, 10f)); var gc = Iso(new Vector3(-10f, 0f, g)); var gd = Iso(new Vector3(10f, 0f, g));
+                            <line x1="@(F1(ga.X))" y1="@(F1(ga.Y))" x2="@(F1(gb.X))" y2="@(F1(gb.Y))" class="grid" />
+                            <line x1="@(F1(gc.X))" y1="@(F1(gc.Y))" x2="@(F1(gd.X))" y2="@(F1(gd.Y))" class="grid" />
+                        }
+                        @for (var p = 0; p < NeuralCinematographyStudioRunner.PillarCount; p++)
+                        {
+                            var pa = Iso(Runner.PillarPosition(p)); var pb = Iso(Runner.PillarPosition(p) + Vector3.UnitY * 3.6f);
+                            <line x1="@(F1(pa.X))" y1="@(F1(pa.Y))" x2="@(F1(pb.X))" y2="@(F1(pb.Y))" class="pillar" />
+                        }
+                        <polyline points="@Hist(true)" class="subj" />
+                        <polyline points="@Hist(false)" class="camh" />
+                        <polyline points="@PathPts(Tr.DesiredPath)" class="des" />
+                        <polyline points="@PathPts(Tr.Plan)" class="plan" />
+                        @{ var cpos = Iso(pose.Position); var aimp = Iso(pose.Position + pose.Forward * 2.5f); var sp = Iso(Tr.Subject + Vector3.UnitY * 1.6f); var s2 = Iso(Tr.Secondary); }
+                        <line x1="@(F1(cpos.X))" y1="@(F1(cpos.Y))" x2="@(F1(aimp.X))" y2="@(F1(aimp.Y))" class="fr" />
+                        <circle cx="@(F1(cpos.X))" cy="@(F1(cpos.Y))" r="4" class="cam" />
+                        <circle cx="@(F1(sp.X))" cy="@(F1(sp.Y))" r="4" class="sub" />
+                        <circle cx="@(F1(s2.X))" cy="@(F1(s2.Y))" r="3" class="sec" />
+                    </svg>
+                    <div class="ncs-kv">
+                        <span><i class="lg plan"></i>최적 계획</span><span><i class="lg des"></i>희망 경로</span><span><i class="lg camh"></i>카메라 이력</span><span><i class="lg subj"></i>피사체 이력</span>
+                        <span>RMS 저크 <b>@(F1(Tr.RmsJerk))</b> m/s³ · 가림 보정 @(Tr.OcclusionFixes)</span>
+                        <label class="ncs-lab">방위 <input type="range" min="-180" max="180" value="@(F0(_isoYaw))" @oninput="e => SetF(e, v => _isoYaw = v)" /></label>
+                    </div>
+                </div>
+
+                <div class="ncs-card">
+                    <div class="ncs-sec">✨ 프롬프트 — 무브 · 샷 · 더치 · 심도 · 렌즈</div>
+                    <div class="ncs-row">
+                        <input class="ncs-in" @bind="_prompt" placeholder="예: 아나모픽 오빗 클로즈업, 얕은 심도 보케 / handheld wide dutch" />
+                        <button class="ncs-btn on" @onclick="() => Runner.TriggerPrompt(_prompt)">적용</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="ncs-col">
+                <div class="ncs-card">
+                    <div class="ncs-sec">📐 구도 미학 점수 — @(GenerativeShotFramingEvaluator.TypeName(fr.Type))</div>
+                    <div class="ncs-split">
+                        <svg class="ncs-gauge" viewBox="0 0 120 70">
+                            <path d="M10,60 A50,50 0 0 1 110,60" class="trk" />
+                            <path d="@Arc(fr.Score)" class="val @(fr.Score >= 70 ? "hi" : fr.Score >= 45 ? "mid" : "lo")" />
+                            <g><text x="60" y="56" class="num">@(F0(fr.Score))</text></g>
+                            <g><text x="60" y="68" class="cap">/ 100</text></g>
+                        </svg>
+                        <div class="ncs-bars">
+                            <span>삼등분</span><i style="width:@(Pc(fr.Thirds))"></i>
+                            <span>황금비</span><i style="width:@(Pc(fr.Golden))"></i>
+                            <span>헤드룸</span><i style="width:@(Pc(fr.Headroom))"></i>
+                            <span>리드룸</span><i style="width:@(Pc(fr.LeadRoom))"></i>
+                            <span>수평</span><i style="width:@(Pc(fr.Horizon))"></i>
+                            <span>균형</span><i style="width:@(Pc(fr.Balance))"></i>
+                            <span>경계</span><i style="width:@(Pc(fr.Edge))"></i>
+                        </div>
+                    </div>
+                    <div class="ncs-kv">
+                        <span>눈 <b>@(F2(fr.Eye.X)), @(F2(fr.Eye.Y))</b></span>
+                        <span>머리 점유 <b>@(F2(fr.HeadFraction))</b> · 전신 @(F2(fr.BodyFraction))</span>
+                        <span>시선 화면 성분 <b>@(F2(fr.FacingX))</b></span>
+                        <button class="ncs-btn @(Runner.AutoCompose ? "on" : null)" @onclick="() => Runner.AutoCompose = !Runner.AutoCompose">🤖 자동 구도</button>
+                    </div>
+                    <div class="ncs-row">
+                        @foreach (var s in Scales)
+                        {
+                            <button class="ncs-btn @(Tr.Scale == s && Tr.AutoZoom ? "on" : null)" @onclick="() => Runner.SetScale(s)">@(NeuralCameraTrajectoryEngine.ScaleName(s))</button>
+                        }
+                    </div>
+                    <div class="ncs-sl">
+                        <label>거리 <b>@(F1(Tr.Distance)) m</b><input type="range" min="15" max="150" value="@(F0(Tr.Distance * 10))" @onchange="e => SetF(e, v => Tr.Distance = v / 10f)" /></label>
+                        <label>높이 <b>@(F1(Tr.Height)) m</b><input type="range" min="0" max="60" value="@(F0(Tr.Height * 10))" @onchange="e => SetF(e, v => Tr.Height = v / 10f)" /></label>
+                        <label>방위 오프셋 <b>@(F0(Tr.AzimuthOffsetDeg))°</b><input type="range" min="-90" max="90" value="@(F0(Tr.AzimuthOffsetDeg))" @onchange="e => SetF(e, v => Tr.AzimuthOffsetDeg = v)" /></label>
+                        <label>더치 <b>@(F0(Tr.DutchDeg))°</b><input type="range" min="-30" max="30" value="@(F0(Tr.DutchDeg))" @onchange="e => SetF(e, v => Runner.SetDutch(v))" /></label>
+                        <label>리드 타임 <b>@(F2(Tr.LeadTime)) s</b><input type="range" min="0" max="100" value="@(F0(Tr.LeadTime * 100))" @onchange="e => SetF(e, v => Tr.LeadTime = v / 100f)" /></label>
+                        <label>평활 가중 <b>@(F1(Tr.SmoothWeight))</b><input type="range" min="0" max="200" value="@(F0(Tr.SmoothWeight * 10))" @onchange="e => SetF(e, v => Tr.SmoothWeight = v / 10f)" /></label>
+                    </div>
+                </div>
+
+                <div class="ncs-card">
+                    <div class="ncs-sec">🔭 렌즈 초점 &amp; 아나모픽 플레어 — 스퀴즈 ×@(F1(Runner.Lens.Squeeze))</div>
+                    <div class="ncs-row">
+                        <button class="ncs-btn @(Tr.Focus == FocusTarget.Subject ? "on" : null)" @onclick="() => Runner.SetFocus(FocusTarget.Subject)">🎯 주 피사체</button>
+                        <button class="ncs-btn @(Tr.Focus == FocusTarget.Secondary ? "on" : null)" @onclick="() => Runner.SetFocus(FocusTarget.Secondary)">🎯 보조 인물(랙)</button>
+                        <button class="ncs-btn @(Tr.Focus == FocusTarget.Manual ? "on" : null)" @onclick="() => Runner.SetFocus(FocusTarget.Manual)">✋ 수동</button>
+                        <button class="ncs-btn @(Runner.UsePathTracer ? "on" : null)" @onclick="() => Runner.SetPathTracer(!Runner.UsePathTracer)">💡 경로 추적 입력</button>
+                    </div>
+                    <div class="ncs-sl">
+                        <label>조리개 <b>T@(F1(Tr.FStop))</b><input type="range" min="12" max="220" value="@(F0(Tr.FStop * 10))" @onchange="e => SetF(e, v => Tr.FStop = v / 10f)" /></label>
+                        <label>수동 초점 <b>@(F1(Tr.ManualFocus)) m</b><input type="range" min="3" max="300" value="@(F0(Tr.ManualFocus * 10))" @oninput="e => SetF(e, v => { Tr.ManualFocus = v / 10f; Runner.SetFocus(FocusTarget.Manual); })" /></label>
+                        <label>랙 속도 <b>@(F1(Tr.RackSpeed))</b><input type="range" min="5" max="150" value="@(F0(Tr.RackSpeed * 10))" @onchange="e => SetF(e, v => Tr.RackSpeed = v / 10f)" /></label>
+                        <label>초점거리 <b>@(Tr.AutoZoom ? "자동" : F0(Tr.ManualFocal) + "mm")</b><input type="range" min="18" max="300" value="@(F0(Tr.ManualFocal))" @onchange="e => SetF(e, v => { Tr.ManualFocal = v; Tr.AutoZoom = false; })" /></label>
+                        <label>스퀴즈 <b>×@(F2(Runner.Lens.Squeeze))</b><input type="range" min="100" max="200" value="@(F0(Runner.Lens.Squeeze * 100))" @onchange="e => SetF(e, v => Runner.Lens.Squeeze = v / 100f)" /></label>
+                        <label>보케 배율 <b>×@(F2(Runner.Lens.BokehScale))</b><input type="range" min="0" max="300" value="@(F0(Runner.Lens.BokehScale * 100))" @onchange="e => SetF(e, v => Runner.Lens.BokehScale = v / 100f)" /></label>
+                        <label>스트릭 강도 <b>@(F2(Runner.Lens.StreakIntensity))</b><input type="range" min="0" max="200" value="@(F0(Runner.Lens.StreakIntensity * 100))" @onchange="e => SetF(e, v => Runner.Lens.StreakIntensity = v / 100f)" /></label>
+                        <label>스트릭 임계 <b>@(F2(Runner.Lens.StreakThreshold))</b><input type="range" min="10" max="200" value="@(F0(Runner.Lens.StreakThreshold * 100))" @onchange="e => SetF(e, v => Runner.Lens.StreakThreshold = v / 100f)" /></label>
+                        <label>스트릭 길이 <b>@(F3(Runner.Lens.StreakDecay))</b><input type="range" min="800" max="995" value="@(F0(Runner.Lens.StreakDecay * 1000))" @onchange="e => SetF(e, v => Runner.Lens.StreakDecay = v / 1000f)" /></label>
+                        <label>왜곡 k₁ <b>@(F3(Runner.Lens.DistortionK1))</b><input type="range" min="-200" max="200" value="@(F0(Runner.Lens.DistortionK1 * 1000))" @onchange="e => SetF(e, v => Runner.Lens.DistortionK1 = v / 1000f)" /></label>
+                        <label>색수차 <b>@(F3(Runner.Lens.ChromaticAberration))</b><input type="range" min="0" max="200" value="@(F0(Runner.Lens.ChromaticAberration * 10000))" @onchange="e => SetF(e, v => Runner.Lens.ChromaticAberration = v / 10000f)" /></label>
+                        <label>비네팅 · 캣아이 <b>@(F2(Runner.Lens.Vignette)) · @(F2(Runner.Lens.CatEye))</b><input type="range" min="0" max="100" value="@(F0(Runner.Lens.Vignette * 100))" @onchange="e => SetF(e, v => { Runner.Lens.Vignette = v / 100f; Runner.Lens.CatEye = v / 100f; })" /></label>
+                    </div>
+                </div>
+                <div class="ncs-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .ncs-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .ncs-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .ncs-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #6366f1 18%, var(--card)), color-mix(in srgb, #f43f5e 14%, var(--card))); }
+    .ncs-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .ncs-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .ncs-sub b { color: var(--text-primary); }
+    .ncs-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .ncs-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .ncs-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .ncs-btn:disabled { opacity: .4; cursor: default; } .ncs-btn.on { background: color-mix(in srgb, #6366f1 26%, transparent); border-color: #818cf8; }
+    .ncs-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .ncs-chip.ok { border-color: #22c55e; color: #86efac; } .ncs-chip.warn { border-color: #f97316; color: #fdba74; }
+    .ncs-main { display: grid; grid-template-columns: 1.15fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .ncs-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .ncs-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .ncs-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .ncs-vf { position: relative; width: 100%; aspect-ratio: 2.4 / 1; background: #000; border-radius: 8px; overflow: hidden; }
+    .ncs-vf img, .ncs-vf svg { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: auto; }
+    .ncs-vf .g3 { stroke: #fff; stroke-opacity: .35; stroke-width: .4; } .ncs-vf .gp { stroke: #fbbf24; stroke-opacity: .35; stroke-width: .3; stroke-dasharray: 2 2; }
+    .ncs-vf .eye { fill: #22d3ee; } .ncs-vf .sug { fill: none; stroke: #f472b6; stroke-width: .8; } .ncs-vf .hr { stroke: #a3e635; stroke-opacity: .5; stroke-width: .4; }
+    .ncs-path { width: 100%; height: 300px; background: radial-gradient(ellipse at 50% 40%, #111827, #030712); border-radius: 10px; }
+    .ncs-path .grid { stroke: #1f2937; stroke-width: 1; } .ncs-path .pillar { stroke: #78716c; stroke-width: 9; stroke-linecap: round; stroke-opacity: .8; }
+    .ncs-path .subj { fill: none; stroke: #f87171; stroke-width: 1.5; } .ncs-path .camh { fill: none; stroke: #60a5fa; stroke-width: 1.5; }
+    .ncs-path .des { fill: none; stroke: #a3a3a3; stroke-width: 1; stroke-dasharray: 3 3; } .ncs-path .plan { fill: none; stroke: #34d399; stroke-width: 2.2; }
+    .ncs-path .fr { stroke: #fde047; stroke-width: 2; } .ncs-path .cam { fill: #60a5fa; } .ncs-path .sub { fill: #f87171; } .ncs-path .sec { fill: #818cf8; }
+    .lg { display: inline-block; width: 14px; height: 3px; margin-right: 4px; vertical-align: middle; } .lg.plan { background: #34d399; } .lg.des { background: #a3a3a3; } .lg.camh { background: #60a5fa; } .lg.subj { background: #f87171; }
+    .ncs-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .ncs-in { flex: 1; min-width: 200px; font-size: 12px; padding: 6px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .ncs-lab { display: flex; gap: 6px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .ncs-sl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 10px; }
+    .ncs-sl label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-secondary); } .ncs-sl b { font-family: var(--mono); color: var(--text-primary); }
+    .ncs-split { display: grid; grid-template-columns: 170px 1fr; gap: 12px; align-items: center; }
+    .ncs-gauge { width: 170px; height: 100px; } .ncs-gauge .trk { fill: none; stroke: #1f2937; stroke-width: 10; stroke-linecap: round; }
+    .ncs-gauge .val { fill: none; stroke-width: 10; stroke-linecap: round; } .ncs-gauge .val.hi { stroke: #22c55e; } .ncs-gauge .val.mid { stroke: #f59e0b; } .ncs-gauge .val.lo { stroke: #ef4444; }
+    .ncs-gauge .num { font: 900 20px var(--mono); fill: var(--text-primary); text-anchor: middle; } .ncs-gauge .cap { font: 600 8px var(--mono); fill: var(--text-muted); text-anchor: middle; }
+    .ncs-bars { display: grid; grid-template-columns: 52px 1fr; gap: 4px 8px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .ncs-bars i { display: block; height: 7px; border-radius: 4px; background: #818cf8; min-width: 2px; }
+    .ncs-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; color: var(--text-secondary); align-items: center; } .ncs-kv b { color: var(--text-primary); font-family: var(--mono); }
+    .ncs-note { font-size: 11px; color: var(--text-muted); }
+    @@media (max-width: 1200px) { .ncs-main { grid-template-columns: 1fr; } .ncs-sl { grid-template-columns: 1fr 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int PW = 560, PH = 300;
+    private static readonly CameraMove[] Moves = { CameraMove.Follow, CameraMove.Orbit, CameraMove.Dolly, CameraMove.Crane, CameraMove.Handheld };
+    private static readonly ShotScale[] Scales = { ShotScale.Wide, ShotScale.Full, ShotScale.Medium, ShotScale.MediumCloseUp, ShotScale.CloseUp };
+    private string? _prompt;
+    private float _isoYaw = 35f;
+    private System.Threading.Timer? _timer;
+    private long _urlFrame = -1;
+    private string _url = "";
+    private readonly StringBuilder _sb = new();
+
+    private NeuralCameraTrajectoryEngine Tr => Runner.Trajectory;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Cinematography.Modal.Timer", ex); }
+        }, null, 200, 200);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static string Pc(float v) => F0(Math.Clamp(v, 0f, 1f) * 100) + "%";
+
+    /// <summary>렌즈 출력 → BMP data URL(새 렌더 프레임일 때만 재인코딩).</summary>
+    private string FrameUrl()
+    {
+        var rf = Runner.RenderedFrames;
+        if (rf != _urlFrame && Runner.FrameWidth > 0)
+        {
+            _url = PromptFlowStudio.Services.Spatial.SpatialImageCodec.BmpDataUrl(Runner.Lens.Output, Runner.FrameWidth, Runner.FrameHeight);
+            _urlFrame = rf;
+        }
+        return _url;
+    }
+
+    /// <summary>등각 투영(방위 회전 · 30° 부감).</summary>
+    private Vector2 Iso(Vector3 p)
+    {
+        var a = _isoYaw * MathF.PI / 180f;
+        float x = p.X * MathF.Cos(a) - p.Z * MathF.Sin(a), z = p.X * MathF.Sin(a) + p.Z * MathF.Cos(a);
+        return new Vector2(PW * 0.5f + x * 19f, PH * 0.62f + z * 9.5f - p.Y * 17f);
+    }
+
+    private string PathPts(ReadOnlySpan<Vector3> path)
+    {
+        _sb.Clear();
+        for (var k = 0; k < path.Length; k++) { var s = Iso(path[k]); _sb.Append(F1(s.X)).Append(',').Append(F1(s.Y)).Append(' '); }
+        return _sb.ToString();
+    }
+
+    private string Hist(bool subject)
+    {
+        _sb.Clear();
+        var n = Tr.HistoryCount;
+        for (var k = 0; k < n; k += 2)
+        {
+            var s = Iso(subject ? Tr.SubjectHistory(k) : Tr.CameraHistory(k));
+            _sb.Append(F1(s.X)).Append(',').Append(F1(s.Y)).Append(' ');
+        }
+        return _sb.ToString();
+    }
+
+    private static string Arc(float score)
+    {
+        var a = MathF.PI * (1f - Math.Clamp(score, 0f, 100f) / 100f);
+        float x = 60f + 50f * MathF.Cos(a), y = 60f - 50f * MathF.Sin(a);
+        return "M10,60 A50,50 0 0 1 " + F1(x) + "," + F1(y);
+    }
+
+    private static bool TryF(ChangeEventArgs e, out float v) => float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+    private void SetF(ChangeEventArgs e, Action<float> apply) { if (TryF(e, out var v)) apply(v); }
+
+    private void Step() { for (var k = 0; k < NeuralCinematographyStudioRunner.Hz; k++) Runner.TickOnce(); }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

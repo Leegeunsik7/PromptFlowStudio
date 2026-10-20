@@ -1,0 +1,165 @@
+@using PromptFlowStudio.Services.Director
+@using PromptFlowStudio.Services.Media
+@using PromptFlowStudio.Services.Security
+@implements IDisposable
+@inject AiCoDirectorAgent Director
+@inject ViralityScorePredictor Virality
+@inject EnterpriseSecurityAudit Audit
+@inject PromptFlowStudio.Services.Ui.StudioMemoryAudit MemAudit
+
+@* [PromptFlow Studio] v3.0.0 플래그십 통합 연출 제어반 — AI Co-Director · 버추얼 스튜디오 · 바이럴 훅 · 감사 로그(골드 네온). *@
+
+<div class="fsd">
+    <div class="fsd-h"><span class="fsd-title">✨ 플래그십 연출 제어반</span><span class="fsd-badge">v3.0.0</span></div>
+
+    <div class="fsd-grid">
+        @* ── ① AI Co-Director ── *@
+        <div class="fsd-card">
+            <div class="fsd-ct">🎬 AI Co-Director <button class="fsd-mini" @onclick="Analyze" disabled="@Disabled">재분석</button></div>
+            @if (_report is { } rep)
+            {
+                <div class="fsd-score-row"><span class="fsd-cscore">@rep.Score</span><span class="fsd-csum">@rep.Summary</span></div>
+                <div class="fsd-notes">
+                    @if (rep.Notes.Count == 0) { <div class="fsd-ok">✅ 연출 흐름이 매끄럽습니다.</div> }
+                    @foreach (var n in rep.Notes.Take(5))
+                    {
+                        <div class="fsd-note sev-@n.Severity.ToString().ToLower()">
+                            <div class="fsd-note-msg">@n.Message</div>
+                            @if (n.Fix is not null) { <button class="fsd-fix" @onclick="() => ApplyFix(n.Fix)" disabled="@Disabled">⚡ @n.FixLabel</button> }
+                        </div>
+                    }
+                </div>
+                @if (rep.Notes.Any(n => n.Fix is not null)) { <button class="fsd-btn gold" @onclick="ApplyAll" disabled="@Disabled">⚡ 제안 전체 원클릭 적용</button> }
+            }
+            else { <div class="fsd-empty">컷을 구성한 뒤 분석하세요.</div> }
+        </div>
+
+        @* ── ② 바이럴 훅 스코어 ── *@
+        <div class="fsd-card">
+            <div class="fsd-ct">🚀 바이럴 훅 스코어 <button class="fsd-mini" @onclick="Predict" disabled="@Disabled">재예측</button></div>
+            @if (_score is { } sc)
+            {
+                <div class="fsd-gauge-wrap">
+                    <div class="fsd-gauge" style="--pct:@sc.Total"><div class="fsd-gauge-in"><b>@sc.Total</b><small>@sc.Grade 등급</small></div></div>
+                    <div class="fsd-subs">
+                        <div class="fsd-sub"><span>훅</span><div class="fsd-bar"><i style="width:@(sc.HookScore * 100 / 30)%"></i></div></div>
+                        <div class="fsd-sub"><span>사운드</span><div class="fsd-bar"><i style="width:@(sc.SfxScore * 100 / 25)%"></i></div></div>
+                        <div class="fsd-sub"><span>키워드</span><div class="fsd-bar"><i style="width:@(sc.KeywordScore * 100 / 25)%"></i></div></div>
+                        <div class="fsd-sub"><span>템포</span><div class="fsd-bar"><i style="width:@(sc.TempoScore * 100 / 20)%"></i></div></div>
+                    </div>
+                </div>
+                <div class="fsd-tip">💡 @sc.Tip · WPM @sc.Wpm</div>
+                @foreach (var r in sc.Risks.Take(2)) { <div class="fsd-risk">⚠️ @r</div> }
+            }
+            else { <div class="fsd-empty">컷을 구성한 뒤 예측하세요.</div> }
+        </div>
+
+        @* ── ③ 버추얼 스튜디오 배경 ── *@
+        <div class="fsd-card">
+            <div class="fsd-ct">🎭 버추얼 스튜디오 배경</div>
+            <div class="fsd-bgs">
+                @foreach (var bg in VirtualStudioCompositor.Backgrounds)
+                {
+                    <button class="fsd-bg @(Project.VirtualStudioTemplate == bg.Key ? "on" : null)" @onclick="() => SetBg(bg.Key)" disabled="@Disabled" @key="bg.Key">
+                        <span class="fsd-bg-emoji">@bg.Emoji</span><span class="fsd-bg-name">@bg.Name</span>
+                    </button>
+                }
+                <button class="fsd-bg @(string.IsNullOrEmpty(Project.VirtualStudioTemplate) ? "on" : null)" @onclick="ClearBg" disabled="@Disabled">🚫<span class="fsd-bg-name">사용 안 함</span></button>
+            </div>
+            <div class="fsd-chroma">
+                <span>크로마</span>
+                <button class="fsd-ck @(Project.ChromaColor == "green" ? "on" : null)" style="--ck:#22c55e" @onclick='() => Project.ChromaColor = "green"' disabled="@Disabled">🟢 그린</button>
+                <button class="fsd-ck @(Project.ChromaColor == "blue" ? "on" : null)" style="--ck:#3b82f6" @onclick='() => Project.ChromaColor = "blue"' disabled="@Disabled">🔵 블루</button>
+            </div>
+        </div>
+
+        @* ── ④ 보안 감사 로그 ── *@
+        <div class="fsd-card">
+            <div class="fsd-ct">🔐 보안 감사 로그 <span class="fsd-cnt">@Audit.Count</span> <button class="fsd-mini" @onclick="VerifyAudit" disabled="@Disabled">무결성 검증</button></div>
+            @if (_verify is { } v) { <div class="fsd-verify @(v.Ok ? "ok" : "bad")">@(v.Ok ? "🛡️ " : "❗ ")@v.Message</div> }
+            <div class="fsd-log">
+                @if (Audit.Count == 0) { <div class="fsd-empty">기록된 감사 이력이 없습니다.</div> }
+                @foreach (var e in Audit.Entries.Take(5))
+                {
+                    <div class="fsd-lrow"><span class="fsd-lcat">@e.Category</span><span class="fsd-lact">@e.Action</span><span class="fsd-ldet">@e.Detail</span></div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .fsd { border: 1px solid color-mix(in srgb,#f5c451 34%,var(--line)); border-radius: 16px; overflow: hidden; font-family: Pretendard, 'Malgun Gothic', sans-serif;
+        background: linear-gradient(160deg, color-mix(in srgb,#f5c451 8%,rgba(18,20,31,.74)), rgba(18,20,31,.9)); backdrop-filter: blur(16px) saturate(150%); -webkit-backdrop-filter: blur(16px) saturate(150%); box-shadow: 0 0 0 1px color-mix(in srgb,#f5c451 20%,transparent) inset; }
+    .fsd-h { display: flex; align-items: center; gap: 8px; padding: 13px 16px; border-bottom: 1px solid color-mix(in srgb,#f5c451 22%,var(--line)); background: linear-gradient(120deg, color-mix(in srgb,#f5c451 16%,transparent), transparent 60%); }
+    .fsd-title { font: 900 15px var(--mono); background: linear-gradient(90deg,#fde68a,#f5c451); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .fsd-badge { font: 800 10px var(--mono); color: #1a1206; background: linear-gradient(135deg,#fde68a,#f5c451); border-radius: 20px; padding: 2px 9px; }
+    .fsd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 14px 16px; }
+    .fsd-card { border: 1px solid var(--line); border-radius: 13px; background: rgba(26,29,43,.62); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+    .fsd-ct { font: 800 12px var(--mono); display: flex; align-items: center; gap: 7px; }
+    .fsd-mini { margin-left: auto; font: 700 10px var(--mono); color: #f5c451; background: color-mix(in srgb,#f5c451 12%,transparent); border: 1px solid color-mix(in srgb,#f5c451 34%,var(--line)); border-radius: 8px; padding: 3px 9px; cursor: pointer; }
+    .fsd-cnt { font: 700 10px var(--mono); color: var(--text-muted); background: #12141f; border: 1px solid var(--line); border-radius: 20px; padding: 1px 8px; }
+    .fsd-empty, .fsd-ok { font: 600 11px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); padding: 6px 0; word-break: keep-all; } .fsd-ok { color: #86efac; }
+    .fsd-score-row { display: flex; align-items: center; gap: 10px; } .fsd-cscore { font: 900 26px var(--mono); color: #f5c451; } .fsd-csum { font: 600 11.5px Pretendard,'Malgun Gothic',sans-serif; color: #f1f5f9; line-height: 1.6em; word-break: keep-all; }
+    .fsd-notes { display: flex; flex-direction: column; gap: 6px; max-height: 150px; overflow-y: auto; }
+    .fsd-note { padding: 7px 9px; border-radius: 8px; background: #12141f; border-left: 3px solid var(--text-muted); }
+    .fsd-note.sev-warn { border-left-color: #ef4444; } .fsd-note.sev-suggest { border-left-color: #f5c451; } .fsd-note.sev-info { border-left-color: #0ea5e9; }
+    .fsd-note-msg { font: 600 11.5px Pretendard,'Malgun Gothic',sans-serif; color: #f1f5f9; line-height: 1.65em; word-break: keep-all; }
+    .fsd-fix { margin-top: 5px; font: 700 10px var(--mono); color: #1a1206; background: linear-gradient(135deg,#fde68a,#f5c451); border: none; border-radius: 7px; padding: 5px 9px; cursor: pointer; }
+    .fsd-btn.gold { font: 800 12px var(--mono); color: #1a1206; background: linear-gradient(135deg,#fde68a,#f5c451); border: none; border-radius: 10px; padding: 9px 14px; cursor: pointer; }
+    .fsd-btn:disabled, .fsd-fix:disabled, .fsd-mini:disabled { opacity: .45; cursor: not-allowed; }
+    .fsd-gauge-wrap { display: flex; align-items: center; gap: 14px; }
+    .fsd-gauge { width: 88px; height: 88px; border-radius: 50%; flex: 0 0 auto; background: conic-gradient(#f5c451 calc(var(--pct)*1%), #1a1d2b 0); display: grid; place-items: center; box-shadow: 0 0 18px color-mix(in srgb,#f5c451 30%,transparent); }
+    .fsd-gauge-in { width: 66px; height: 66px; border-radius: 50%; background: var(--card); display: grid; place-items: center; text-align: center; } .fsd-gauge-in b { font: 900 21px var(--mono); color: #f5c451; } .fsd-gauge-in small { font: 700 8.5px var(--mono); color: var(--text-muted); }
+    .fsd-subs { flex: 1; display: flex; flex-direction: column; gap: 5px; } .fsd-sub { display: grid; grid-template-columns: 42px 1fr; align-items: center; gap: 7px; font: 700 9.5px var(--mono); color: var(--text-muted); }
+    .fsd-bar { height: 7px; border-radius: 5px; background: #12141f; border: 1px solid var(--line); overflow: hidden; } .fsd-bar i { display: block; height: 100%; background: linear-gradient(90deg,#fde68a,#f5c451); }
+    .fsd-tip { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; color: #fde68a; line-height: 1.6em; word-break: keep-all; } .fsd-risk { font: 600 11px Pretendard,'Malgun Gothic',sans-serif; color: #fca5a5; line-height: 1.55em; word-break: keep-all; }
+    .fsd-bgs { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+    .fsd-bg { display: flex; align-items: center; gap: 7px; border: 1px solid var(--line); background: #12141f; border-radius: 10px; padding: 8px 9px; cursor: pointer; font-family: inherit; color: var(--text-secondary); }
+    .fsd-bg.on { border-color: transparent; box-shadow: 0 0 0 2px #f5c451; background: color-mix(in srgb,#f5c451 8%,#12141f); color: var(--text-primary); }
+    .fsd-bg-emoji { font-size: 16px; } .fsd-bg-name { font: 700 10.5px var(--mono); }
+    .fsd-chroma { display: flex; align-items: center; gap: 6px; font: 700 10px var(--mono); color: var(--text-muted); }
+    .fsd-ck { font: 700 10px var(--mono); color: var(--text-secondary); background: #12141f; border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; cursor: pointer; } .fsd-ck.on { border-color: var(--ck); box-shadow: 0 0 0 1px var(--ck); color: var(--text-primary); }
+    .fsd-verify { font: 700 10.5px var(--mono); padding: 6px 9px; border-radius: 8px; } .fsd-verify.ok { color: #86efac; background: color-mix(in srgb,#22c55e 12%,transparent); } .fsd-verify.bad { color: #fca5a5; background: color-mix(in srgb,#ef4444 12%,transparent); }
+    .fsd-log { display: flex; flex-direction: column; gap: 4px; max-height: 130px; overflow-y: auto; }
+    .fsd-lrow { display: flex; gap: 7px; font: 600 9.5px var(--mono); padding: 4px 8px; border-radius: 7px; background: #12141f; } .fsd-lcat { color: #f5c451; font-weight: 800; } .fsd-lact { color: var(--text-secondary); } .fsd-ldet { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    @@media (max-width: 720px) { .fsd-grid { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter, EditorRequired] public StoryboardProject Project { get; set; } = default!;
+    [Parameter] public bool Disabled { get; set; }
+
+    private DirectorReport? _report;
+    private ViralityScore? _score;
+    private AuditVerify? _verify;
+
+    private long _memToken;
+
+    protected override void OnInitialized()
+    {
+        _memToken = MemAudit.Track("FlagshipStudioDeck");   // v3.1.0 누수 감사 추적
+        Audit.OnChange += OnSvc;
+        if (Project.Scenes.Count > 0) { _report = Director.Analyze(Project); _score = Virality.Predict(Project); }
+    }
+    private void OnSvc() => InvokeAsync(StateHasChanged);
+
+    private void Analyze() => _report = Director.Analyze(Project);
+    private void Predict() => _score = Virality.Predict(Project);
+
+    private void ApplyFix(DirectorFix? fix)
+    {
+        if (Director.ApplyFix(Project, fix)) { _report = Director.Analyze(Project); _score = Virality.Predict(Project); }
+    }
+    private void ApplyAll()
+    {
+        Director.ApplyAll(Project, _report ?? Director.Analyze(Project));
+        _report = Director.Analyze(Project); _score = Virality.Predict(Project);
+    }
+
+    private void SetBg(string key) => Project.VirtualStudioTemplate = key;
+    private void ClearBg() => Project.VirtualStudioTemplate = "";
+    private void VerifyAudit() => _verify = Audit.Verify();
+
+    public void Dispose() { Audit.OnChange -= OnSvc; MemAudit.Release(_memToken); }   // v3.1.0 누수 감사 해제
+}

@@ -1,0 +1,58 @@
+# PromptFlow Studio v4.4.0 — Azure DevOps CI/CD (Android AAB + iOS IPA · C# 실검수 게이트 → 스토어 자동 릴리스)
+trigger:
+  tags:
+    include: [ 'v*.*.*' ]
+
+variables:
+  dotnetVersion: '8.0.x'
+  appVersion: '4.4.0'
+
+stages:
+  - stage: Android
+    displayName: 'Android AAB → Google Play'
+    pool: { vmImage: 'ubuntu-latest' }
+    jobs:
+      - job: build_android
+        steps:
+          - task: UseDotNet@2
+            inputs: { packageType: 'sdk', version: '$(dotnetVersion)' }
+          - script: dotnet workload install maui-android
+            displayName: 'MAUI(android) 설치'
+          - script: |
+              echo "$(ANDROID_KEYSTORE_B64)" | base64 -d > $(Agent.TempDirectory)/pf.keystore
+              dotnet publish PromptFlowStudio.Mobile/PromptFlowStudio.Mobile.csproj -f net8.0-android -c Release \
+                -p:AndroidPackageFormat=aab -p:ApplicationDisplayVersion=$(appVersion) \
+                -p:AndroidKeyStore=true -p:AndroidSigningKeyStore=$(Agent.TempDirectory)/pf.keystore \
+                -p:AndroidSigningKeyAlias=$(ANDROID_KEY_ALIAS) -p:AndroidSigningStorePass=$(ANDROID_STORE_PASS) -p:AndroidSigningKeyPass=$(ANDROID_KEY_PASS)
+            displayName: '서명 AAB 빌드'
+          - script: |
+              AAB=$(find . -name '*-Signed.aab' | head -1)
+              dotnet run --project tools/PromptFlowCiGate -c Release -- --aab "$AAB" --min-score 90
+            displayName: '🚦 CI Gate — 실파일 검수(결함 시 Exit 1 → 스테이지 실패)'
+          - script: |
+              dotnet run --project tools/PromptFlowCiGate -c Release -- --upload-aab "$(find . -name '*-Signed.aab' | head -1)" --package com.angtec.promptflowstudio --track internal
+            displayName: 'Google Play 릴리스(통과 시)'
+            condition: succeeded()
+
+  - stage: iOS
+    displayName: 'iOS IPA → App Store Connect'
+    pool: { vmImage: 'macOS-14' }
+    jobs:
+      - job: build_ios
+        steps:
+          - task: UseDotNet@2
+            inputs: { packageType: 'sdk', version: '$(dotnetVersion)' }
+          - script: dotnet workload install maui-ios
+            displayName: 'MAUI(ios) 설치'
+          - script: |
+              dotnet publish PromptFlowStudio.Mobile/PromptFlowStudio.Mobile.csproj -f net8.0-ios -c Release \
+                -p:ApplicationDisplayVersion=$(appVersion) -p:RuntimeIdentifier=ios-arm64
+            displayName: '서명 IPA 빌드'
+          - script: |
+              IPA=$(find . -name '*.ipa' | head -1)
+              dotnet run --project tools/PromptFlowCiGate -c Release -- --ipa "$IPA" --min-score 90
+            displayName: '🚦 CI Gate — Privacy/Required Reason/프로파일 검수(결함 시 Exit 1)'
+          - script: |
+              dotnet run --project tools/PromptFlowCiGate -c Release -- --upload-ipa "$(find . -name '*.ipa' | head -1)" --asc-key-id $(ASC_KEY_ID) --asc-issuer $(ASC_ISSUER_ID)
+            displayName: 'TestFlight 업로드(통과 시 · ES256 JWT)'
+            condition: succeeded()

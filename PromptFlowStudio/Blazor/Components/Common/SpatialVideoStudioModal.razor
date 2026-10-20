@@ -1,0 +1,365 @@
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.Spatial
+@implements IDisposable
+@inject Spatial3dGaussianSplattingEngine Splat
+@inject MvHevcSpatialVideoTranscoder Spatial
+@inject ImmersiveVisionProInteractionBridge Vision
+
+@* [PromptFlow Studio v16.31.0] 🥽 공간 비디오 & Vision Pro 스튜디오 — 깊이 맵 인스펙터 · 3DGS 씬 복원/오빗 프리뷰 · 입체 시차 조절(DIBR SBS 실시간 재합성)
+   · 공간 핫스팟 배치(쇼핑 태그/분기 선택지 → 3D 앵커 · 시선/핀치 시뮬레이션) · 1-Click Vision Pro(MV-HEVC)/Meta Quest(SBS) 공간 패키지(.mov/.usda/.ply). 상태는 서비스(싱글턴) 소유 — OnChange 구독. *@
+
+<div class="sv-scrim" @onclick="Close">
+    <div class="sv-modal" @onclick:stopPropagation="true">
+        <div class="sv-h">
+            <div>
+                <div class="sv-title">🥽 공간 비디오 &amp; Vision Pro 스튜디오</div>
+                <div class="sv-sub">2D 숏폼/사진을 <b>3D 가우시안 스플래팅</b> 공간 씬으로 복원하고, 좌우 시차를 반영한 <b>MV-HEVC 공간 비디오</b>와 <b>바이노럴 3D 음향</b>으로 변환합니다.
+                    쇼핑 태그·분기 선택지는 공간 좌표에 떠 있는 오버레이로 배치되어 시선·핀치로 상호작용합니다.</div>
+            </div>
+            <button class="sv-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="sv-bar">
+            <label class="sv-mut">소스 <input class="sv-in w320" @bind="_src" placeholder="영상/사진 경로" /></label>
+            <label class="sv-mut">시각(초) <input class="sv-in w60" type="number" step="0.1" min="0" @bind="_t" @bind:culture="CultureInfo.InvariantCulture" /></label>
+            <button class="sv-btn sm" disabled="@(_cts is not null)" @onclick="AnalyzeAsync">🔎 프레임 분석</button>
+            <span class="sv-chip @(Spatial.FfmpegAvailable ? "ok" : "bad")">ffmpeg @(Spatial.FfmpegAvailable ? "준비" : "없음")</span>
+            <span class="sv-chip @(Spatial.MvHevcAvailable ? "ok" : "")">@(Spatial.MvHevcAvailable ? "MV-HEVC CLI 준비" : "MV-HEVC CLI 없음 → SBS 폴백")</span>
+            <span class="sv-mut">스플랫 @(Splat.SplatCount.ToString("N0", CultureInfo.InvariantCulture)) · 앵커 @(Vision.AnchorCount) · 변환 @(Spatial.Transcoded)회</span>
+        </div>
+
+        <div class="sv-tabs">
+            <button class="@(_tab == 0 ? "on" : "")" @onclick="() => _tab = 0">🧊 깊이 인스펙터 · 3DGS</button>
+            <button class="@(_tab == 1 ? "on" : "")" @onclick="() => _tab = 1">👓 입체 시차</button>
+            <button class="@(_tab == 2 ? "on" : "")" @onclick="() => _tab = 2">📍 공간 핫스팟</button>
+            <button class="@(_tab == 3 ? "on" : "")" @onclick="() => _tab = 3">📦 패키지 내보내기</button>
+        </div>
+
+        <div class="sv-body">
+            @if (_tab == 0)
+            {
+                <div class="sv-grid2">
+                    <div class="sv-pane">
+                        <div class="sv-sec">깊이 맵(근=난색 · 원=한색)</div>
+                        @if (Spatial.LastPreview is { } pv)
+                        {
+                            <img class="sv-img" src="@(pv.DepthDataUrl)" alt="depth" />
+                            <div class="sv-mut">@(pv.Width)×@(pv.Height) · @(pv.Seconds.ToString("0.0", CultureInfo.InvariantCulture))초 · 중앙 깊이 @(pv.MedianDepthMeters.ToString("0.00", CultureInfo.InvariantCulture))m</div>
+                        }
+                        else
+                        {
+                            <div class="sv-empty">상단 [🔎 프레임 분석]으로 깊이 맵을 생성하세요.</div>
+                        }
+                    </div>
+                    <div class="sv-pane">
+                        <div class="sv-sec">3D 가우시안 스플래팅 · 오빗 신규 시점</div>
+                        <div class="sv-row">
+                            <label class="sv-mut">프레임 <input class="sv-in w60" type="number" min="1" max="240" @bind="_frames" /></label>
+                            <button class="sv-btn sm go" disabled="@(_cts is not null || Splat.IsBusy)" @onclick="ReconstructAsync">🧊 씬 복원</button>
+                            <button class="sv-btn sm" disabled="@(_cts is not null)" @onclick="ResetScene">초기화</button>
+                        </div>
+                        @if (_orbitUrl is not null)
+                        {
+                            <img class="sv-img" src="@(_orbitUrl)" alt="splat" />
+                            <label class="sv-mut">오빗 <input type="range" min="0" max="1" step="0.02" @bind="_orbit" @bind:event="oninput" @bind:after="RenderOrbit" @bind:culture="CultureInfo.InvariantCulture" /> 호 @(Arc)°</label>
+                        }
+                        else
+                        {
+                            <div class="sv-empty">복원된 씬이 없습니다.</div>
+                        }
+                        @if (Splat.LastResult is { } rr)
+                        {
+                            <div class="sv-note @(rr.Ok ? "ok" : "bad")">@(rr.Ok ? "✅" : "⚠") @(rr.Message) · 프레임 @(rr.Frames) · 키 @(rr.Keyframes) · 패닝 @(rr.PanYawDeg.ToString("0.#", CultureInfo.InvariantCulture))°/@(rr.PanPitchDeg.ToString("0.#", CultureInfo.InvariantCulture))°</div>
+                        }
+                    </div>
+                </div>
+            }
+            else if (_tab == 1)
+            {
+                <div class="sv-row">
+                    <label class="sv-mut">최대 시차 @(_maxDisp.ToString("0.0", CultureInfo.InvariantCulture))% <input type="range" min="0.2" max="6" step="0.1" @bind="_maxDisp" @bind:after="ApplyStereo" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                    <label class="sv-mut">수렴면 @(_conv.ToString("0.00", CultureInfo.InvariantCulture)) <input type="range" min="0" max="1" step="0.01" @bind="_conv" @bind:after="ApplyStereo" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                    <label class="sv-mut">기준선 @(_baseline.ToString("0", CultureInfo.InvariantCulture))mm <input type="range" min="10" max="90" step="1" @bind="_baseline" @bind:after="ApplyStereo" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                    <label class="sv-mut">수평 FOV @(_fov.ToString("0.#", CultureInfo.InvariantCulture))° <input type="range" min="30" max="120" step="0.5" @bind="_fov" @bind:after="ApplyStereo" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                </div>
+                <div class="sv-mut">수렴면보다 가까운 피사체는 화면 앞으로 돌출(교차 시차), 먼 배경은 화면 뒤로 물러납니다. 과도한 시차(&gt;3%)는 눈의 피로를 유발할 수 있습니다.</div>
+                @if (Spatial.LastPreview is { } sp)
+                {
+                    <img class="sv-img wide" src="@(sp.SbsDataUrl)" alt="sbs" />
+                    <div class="sv-mut">Side-by-Side(좌안 | 우안) · 교차 응시로 입체 확인 가능</div>
+                }
+                else
+                {
+                    <div class="sv-empty">먼저 프레임을 분석하세요.</div>
+                }
+            }
+            else if (_tab == 2)
+            {
+                <div class="sv-row">
+                    <button class="sv-btn sm go" @onclick="LayoutAnchors">📍 시각 @(_t.ToString("0.0", CultureInfo.InvariantCulture))초 기준 배치</button>
+                    <button class="sv-btn sm" @onclick="() => Vision.ProcessGesture(SpatialGesture.SwipeLeft)">⟵ 스와이프</button>
+                    <button class="sv-btn sm" @onclick="() => Vision.ProcessGesture(SpatialGesture.SwipeRight)">스와이프 ⟶</button>
+                    <button class="sv-btn sm" @onclick="() => Vision.ProcessGesture(SpatialGesture.Pinch)">✋ 핀치</button>
+                    <span class="sv-mut">응시 @(Vision.GazeSamples) · 노출 @(Vision.Impressions) · 활성 @(Vision.Activations)(드웰 @(Vision.DwellActivations))</span>
+                </div>
+                <svg class="sv-space" viewBox="0 0 400 220">
+                    <rect x="0" y="0" width="400" height="220" fill="#06080e" />
+                    <line x1="200" y1="0" x2="200" y2="220" stroke="#1e2d3d" />
+                    <line x1="0" y1="110" x2="400" y2="110" stroke="#1e2d3d" />
+                    @for (var i = 0; i < _anchors.Count; i++)
+                    {
+                        var idx = i;
+                        var a = _anchors[i];
+                        var z = Math.Max(0.3f, a.Z);
+                        var px = 200 + a.X / z * 180;
+                        var py = 110 - a.Y / z * 180;
+                        var pr = Math.Clamp(a.Radius / z * 180, 6, 40);
+                        <g @key="idx" class="sv-anc" @onclick="() => GazeAndPinch(idx)">
+                            <circle cx="@(px.ToString("0.#", CultureInfo.InvariantCulture))" cy="@(py.ToString("0.#", CultureInfo.InvariantCulture))" r="@(pr.ToString("0.#", CultureInfo.InvariantCulture))"
+                                    fill="@(a.Kind == SpatialAnchorKind.ShoppableTag ? "#ec489955" : "#22d3ee55")"
+                                    stroke="@(Vision.GazedIndex == idx ? "#fde047" : Vision.FocusIndex == idx ? "#a78bfa" : "#94a3b8")" stroke-width="2" />
+                            <g><text x="@(px.ToString("0.#", CultureInfo.InvariantCulture))" y="@((py + pr + 11).ToString("0.#", CultureInfo.InvariantCulture))" fill="#cbd5e1" font-size="10" text-anchor="middle">@(a.Label) · @(a.Z.ToString("0.0", CultureInfo.InvariantCulture))m</text></g>
+                        </g>
+                    }
+                </svg>
+                <table class="sv-tbl">
+                    <thead><tr><th>#</th><th>종류</th><th>라벨</th><th>위치(m)</th><th>수동 깊이(m)</th><th></th></tr></thead>
+                    <tbody>
+                        @for (var i = 0; i < _anchors.Count; i++)
+                        {
+                            var idx = i;
+                            var a = _anchors[i];
+                            <tr @key="idx" class="@(Vision.GazedIndex == idx ? "gz" : "")">
+                                <td>@(idx)</td>
+                                <td>@(a.Kind == SpatialAnchorKind.ShoppableTag ? "🛍 쇼핑" : "🗳 선택지")</td>
+                                <td>@(a.Label)</td>
+                                <td class="sv-mono">@(a.X.ToString("0.00", CultureInfo.InvariantCulture)), @(a.Y.ToString("0.00", CultureInfo.InvariantCulture)), @(a.Z.ToString("0.00", CultureInfo.InvariantCulture))</td>
+                                <td>
+                                    @if (a.Kind == SpatialAnchorKind.ShoppableTag)
+                                    {
+                                        <input class="sv-in w60" type="number" step="0.1" min="0" placeholder="자동" value="@(Vision.DepthOverrideOf(a.Key)?.ToString("0.0", CultureInfo.InvariantCulture))" @onchange="e => SetDepth(a.Key, e.Value)" />
+                                    }
+                                </td>
+                                <td>
+                                    <button class="sv-btn sm" @onclick="() => Vision.GazeAt(idx, Environment.TickCount64)">👁 응시</button>
+                                    <button class="sv-btn sm" @onclick="() => GazeAndPinch(idx)">✋ 선택</button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+                @if (_anchors.Count == 0)
+                {
+                    <div class="sv-empty">해당 시각에 노출되는 쇼핑 태그나 투표 중인 분기 선택지가 없습니다(인터랙티브 스튜디오에서 구성).</div>
+                }
+                @if (Vision.LastActivation is { } act)
+                {
+                    <div class="sv-note @(act.Accepted ? "ok" : "bad")">@(act.Accepted ? "✅" : "⛔") @(act.Kind == SpatialAnchorKind.ShoppableTag ? "쇼핑" : "선택지") · @(act.Label)@(act.ByDwell ? " · 드웰" : " · 핀치")@(act.Url is { } u ? " · " + u : "")</div>
+                }
+            }
+            else
+            {
+                <div class="sv-row">
+                    <label class="sv-mut"><input type="radio" name="sv-target" checked="@(_target == SpatialTarget.VisionPro)" @onchange="() => _target = SpatialTarget.VisionPro" /> Apple Vision Pro (MV-HEVC .mov)</label>
+                    <label class="sv-mut"><input type="radio" name="sv-target" checked="@(_target == SpatialTarget.MetaQuest)" @onchange="() => _target = SpatialTarget.MetaQuest" /> Meta Quest (SBS .mp4)</label>
+                </div>
+                <div class="sv-row">
+                    <label class="sv-mut">안구 폭
+                        <select class="sv-in" @bind="_eyeW">
+                            <option value="720">720</option>
+                            <option value="960">960</option>
+                            <option value="1280">1280</option>
+                            <option value="1920">1920</option>
+                        </select>
+                    </label>
+                    <label class="sv-mut">FPS <input class="sv-in w60" type="number" min="1" max="60" @bind="_fps" /></label>
+                    <label class="sv-mut"><input type="checkbox" @bind="_binaural" /> 바이노럴 3D 음향</label>
+                    <label class="sv-mut">출력 폴더 <input class="sv-in w320" @bind="_outDir" /></label>
+                </div>
+                <div class="sv-mut">패키지: 공간 비디오 + 핫스팟 씬(.usda · 앵커 @(Vision.AnchorCount)개) + 3DGS(.ply · 스플랫 @(Splat.SplatCount.ToString("N0", CultureInfo.InvariantCulture))) + manifest.json(SHA-256)</div>
+                <div class="sv-prog"><div class="sv-pbar" style="width:@((Spatial.Progress * 100).ToString("0.#", CultureInfo.InvariantCulture))%"></div><span>@((Spatial.Progress * 100).ToString("0", CultureInfo.InvariantCulture))%</span></div>
+                @if (_pkg is { } pk)
+                {
+                    <div class="sv-note @(pk.Ok ? "ok" : "bad")">@(pk.Ok ? "📦" : "⚠") @(pk.Message)@(pk.Folder is { } fo ? " · " + fo : "")</div>
+                }
+            }
+        </div>
+
+        <div class="sv-f">
+            <span class="sv-mut">@(_msg ?? Spatial.LastAction ?? Splat.LastAction ?? Vision.LastAction ?? "대기 중")</span>
+            @if (_cts is not null)
+            {
+                <button class="sv-btn" @onclick="Cancel">■ 취소</button>
+            }
+            <button class="sv-btn go" disabled="@(_cts is not null || Spatial.IsBusy)" @onclick="ExportAsync">🚀 1-Click 공간 패키지 내보내기</button>
+            <button class="sv-btn" disabled="@(_cts is not null)" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .sv-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .sv-modal { width: min(1180px, 97vw); max-height: 93vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .sv-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #22d3ee 12%, var(--card)), color-mix(in srgb, #ec4899 6%, var(--card))); }
+    .sv-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .sv-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .sv-sub b { color: var(--text-primary); }
+    .sv-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .sv-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .sv-tabs { display: flex; gap: 4px; padding: 8px 18px 0; border-bottom: 1px solid var(--line); }
+    .sv-tabs button { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; border: 0; background: none; color: var(--text-muted); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
+    .sv-tabs button.on { color: var(--text-primary); border-bottom-color: #22d3ee; }
+    .sv-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .sv-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .sv-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .sv-pane { border: 1px solid var(--line); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .sv-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .sv-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .sv-chip.ok { color: #4ade80; } .sv-chip.bad { color: #f87171; }
+    .sv-mut { font-size: 11px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; }
+    .sv-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; }
+    .sv-in.w60 { width: 60px; } .sv-in.w320 { width: 320px; }
+    .sv-img { width: 100%; border-radius: 10px; border: 1px solid var(--line); image-rendering: auto; background: #06080e; }
+    .sv-img.wide { max-width: 900px; }
+    .sv-empty { font-size: 12px; color: var(--text-muted); padding: 24px; text-align: center; border: 1px dashed var(--line); border-radius: 10px; }
+    .sv-space { width: 100%; max-width: 720px; border-radius: 12px; border: 1px solid var(--line); }
+    .sv-anc { cursor: pointer; }
+    .sv-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+    .sv-tbl th, .sv-tbl td { border-bottom: 1px solid var(--line); padding: 3px 6px; text-align: left; }
+    .sv-tbl tr.gz td { color: #fde047; }
+    .sv-mono { font: 10.5px var(--mono); }
+    .sv-prog { position: relative; height: 22px; border-radius: 11px; background: var(--bg); overflow: hidden; }
+    .sv-pbar { position: absolute; inset: 0 auto 0 0; background: linear-gradient(90deg,#22d3ee,#ec4899); transition: width .2s; }
+    .sv-prog span { position: relative; font: 700 11px var(--mono); padding-left: 10px; line-height: 22px; }
+    .sv-note { font-size: 12px; color: var(--text-secondary); } .sv-note.ok { color: #4ade80; } .sv-note.bad { color: #f87171; }
+    .sv-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }
+    .sv-f .sv-mut { margin-right: auto; }
+    .sv-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .sv-btn.sm { padding: 3px 8px; font-size: 11px; }
+    .sv-btn.go { background: linear-gradient(135deg,#22d3ee,#ec4899); color: #fff; border: 0; }
+    .sv-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 820px) { .sv-grid2 { grid-template-columns: 1fr; } .sv-in.w320 { width: 200px; } }
+</style>
+
+@code {
+    [Parameter] public StoryboardProject? Project { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int Arc = 24;
+    private int _tab, _frames = 24, _eyeW = 960, _fps = 30;
+    private double _t, _orbit = 0.5;
+    private float _maxDisp, _conv, _baseline, _fov;
+    private bool _binaural = true;
+    private string _src = "", _outDir = "";
+    private string? _msg, _orbitUrl;
+    private SpatialTarget _target = SpatialTarget.VisionPro;
+    private SpatialPackageResult? _pkg;
+    private IReadOnlyList<SpatialAnchor> _anchors = Array.Empty<SpatialAnchor>();
+    private CancellationTokenSource? _cts;
+
+    protected override void OnInitialized()
+    {
+        Splat.OnChange += OnServiceChanged;
+        Spatial.OnChange += OnServiceChanged;
+        Vision.OnChange += OnVisionChanged;
+        var s = Spatial.Settings;
+        _maxDisp = s.MaxDisparityPct; _conv = s.Convergence; _baseline = s.BaselineMm; _fov = s.HfovDeg;
+        _src = Project?.FinalVideoPath ?? "";
+        _outDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "PromptFlow Spatial");
+        _anchors = Vision.Anchors;
+        if (Splat.SplatCount > 0) RenderOrbit();
+    }
+
+    private Task AnalyzeAsync() => RunAsync(async ct =>
+    {
+        var p = await Spatial.AnalyzeFrameAsync(_src.Trim(), _t, ct);
+        _msg = p is null ? "⚠ 프레임 분석 실패(경로/ffmpeg 확인)" : null;
+    });
+
+    private Task ReconstructAsync() => RunAsync(async ct =>
+    {
+        var r = await Splat.ReconstructAsync(_src.Trim(), _frames, _fov, ct);
+        _msg = r.Ok ? null : "⚠ " + r.Message;
+        RenderOrbit();
+    });
+
+    private void ResetScene() { Splat.Reset(); _orbitUrl = null; }
+
+    private void RenderOrbit() => _orbitUrl = Splat.RenderPreviewDataUrl(_orbit, Arc);
+
+    private void ApplyStereo()
+    {
+        Spatial.Settings = new StereoSettings(_maxDisp, _conv, _baseline, _fov).Clamp();
+        Vision.HfovDeg = Spatial.Settings.HfovDeg;
+        Spatial.RebuildPreview();
+    }
+
+    private void LayoutAnchors()
+    {
+        var (depth, w, h) = Spatial.PreviewDepth;
+        Vision.HfovDeg = Spatial.Settings.HfovDeg;
+        Vision.Layout(_t, depth, w, h);
+        _anchors = Vision.Anchors;
+    }
+
+    private void SetDepth(string key, object? value)
+    {
+        var s = value?.ToString();
+        Vision.SetDepthOverride(key, float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var m) ? m : float.NaN);
+        LayoutAnchors();
+    }
+
+    private void GazeAndPinch(int idx)
+    {
+        Vision.GazeAt(idx, Environment.TickCount64);
+        Vision.ProcessGesture(SpatialGesture.Pinch);
+    }
+
+    private Task ExportAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_src) || string.IsNullOrWhiteSpace(_outDir)) { _msg = "⚠ 소스/출력 폴더를 확인하세요."; return Task.CompletedTask; }
+        var req = new SpatialTranscodeRequest(_src.Trim(), _outDir.Trim(), _target, Spatial.Settings, null, _eyeW, _fps, _binaural);
+        var anchors = Vision.AnchorCount;
+        _tab = 3;
+        return RunAsync(async ct =>
+        {
+            _pkg = await Spatial.ExportPackageAsync(req, Vision.BuildUsda, anchors, ct);
+            _msg = null;
+        });
+    }
+
+    private async Task RunAsync(Func<CancellationToken, Task> work)
+    {
+        var cts = new CancellationTokenSource();
+        if (Interlocked.CompareExchange(ref _cts, cts, null) is not null) { cts.Dispose(); return; }
+        try { await work(cts.Token); }
+        catch (OperationCanceledException) { _msg = "⚠ 취소됨"; }
+        catch (Exception ex) { Program.Log("SpatialStudio.Run", ex); _msg = "⚠ 실패: " + ex.Message; }
+        finally
+        {
+            Interlocked.CompareExchange(ref _cts, null, cts);
+            cts.Dispose();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void Cancel()
+    {
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
+    private Task Close() => _cts is not null ? Task.CompletedTask : OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    private void OnVisionChanged() => _ = InvokeAsync(() => { _anchors = Vision.Anchors; StateHasChanged(); });
+
+    public void Dispose()
+    {
+        Splat.OnChange -= OnServiceChanged;
+        Spatial.OnChange -= OnServiceChanged;
+        Vision.OnChange -= OnVisionChanged;
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+}

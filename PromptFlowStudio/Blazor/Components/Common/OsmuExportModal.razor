@@ -1,0 +1,772 @@
+@inject PlatformSeoAgent PlatformSeo
+@inject IClipboardService Clipboard
+@inject PlatformDeepLinkService DeepLink
+@inject OsmuExportPackager Packager
+@inject AutomatedVideoQaInspector Qa
+@inject IServiceProvider Services
+@implements IDisposable
+
+@* [PromptFlow Studio] OSMU 8대 플랫폼 내보내기 — 1회 콘텐츠를 8대 글로벌/국내 플랫폼 포맷으로 재구성 + 플랫폼별 탭 + 원클릭 복사/딥링크. *@
+<div class="om-scrim" @onclick="Close">
+    <div class="om-modal" @onclick:stopPropagation="true">
+        <div class="om-h">
+            <div>
+                <div class="om-title">🌐 OSMU 멀티 플랫폼 내보내기 <HelpBadge Topic="@HelpContentService.Keys.Osmu" /></div>
+                <div class="om-sub">1회 생성 콘텐츠를 <b>유튜브·인스타·틱톡·네이버클립·당근·샤오홍슈·핀터레스트·치지직</b> 8대 플랫폼 최적 포맷으로 재구성했어요. 탭에서 복사·붙여넣거나 [플랫폼 열기]로 바로 이동하세요.</div>
+            </div>
+            <button class="om-x" @onclick="Close" title="닫기">✕</button>
+        </div>
+
+        @if (_metas is { Count: > 0 })
+        {
+            <div class="om-tabs">
+                @* v16.17.0 최종 QC — AI 품질 검수 · 소셜 바로 게시(게시 브릿지는 데스크톱 전용 → 미등록 시 탭 숨김) *@
+                <button class="om-tab @(_active == QaTab ? "on" : null)" @onclick="ShowQaTab">
+                    <span>🔍</span> AI 품질 검수
+                    @if (CurrentQa is { } tq) { <span class="om-qa-dot @VerdictCss(tq.Verdict)">@VerdictShort(tq.Verdict)</span> }
+                </button>
+                @if (_bridge is not null)
+                {
+                    <button class="om-tab @(_active == PublishTab ? "on" : null)" @onclick="ShowPublishTab">
+                        <span>🚀</span> 소셜 게시
+                    </button>
+                }
+                <button class="om-tab @(_active == PackTab ? "on" : null)" @onclick="() => _active = PackTab">
+                    <span>🌐</span> 영상+메타 패키지
+                </button>
+                @foreach (var p in _metas)
+                {
+                    <button class="om-tab @(_active == p.Platform ? "on" : null)" @onclick="() => _active = p.Platform" @key="p.Platform">
+                        <span>@p.Icon</span> @p.Platform
+                    </button>
+                }
+                <button class="om-tab @(_active == AudioTab ? "on" : null)" @onclick="() => _active = AudioTab">
+                    <span>🎵</span> 트렌딩 오디오
+                </button>
+            </div>
+
+            @if (_active == QaTab)
+            {
+                @* v16.17.0 🔍 AI 품질 검수 — blackdetect·freezedetect·astats·자막 가림 → 통과/경고/거부 + 결함 타임스탬프 *@
+                <div class="om-body">
+                    <div class="om-sec">
+                        <div class="om-lbl"><span>검수 대상 영상</span></div>
+                        <div class="om-box">@(HasMaster ? Path.GetFileName(Project.FinalVideoPath) : "아직 최종 영상이 없습니다 — [🎬 최종 영상 내보내기]를 먼저 실행하세요.")</div>
+                    </div>
+                    <div class="om-opts">
+                        <select class="om-sel" @bind="_qaTarget" disabled="@QaRunning" title="자막 가림 검사 기준 플랫폼 세이프존">
+                            <option value="@SafePlatform.YouTubeShorts">▶️ YouTube Shorts 세이프존</option>
+                            <option value="@SafePlatform.TikTok">🎵 TikTok 세이프존</option>
+                            <option value="@SafePlatform.InstagramReels">📸 Instagram Reels 세이프존</option>
+                        </select>
+                        <span class="om-audio-note">@(HasSidecar ? "💬 자막 사이드카(.ass) 감지 — 자막 가림 검사 포함" : "💬 자막 사이드카 없음 — 프레임/오디오만 검사")</span>
+                    </div>
+                    @if (QaRunning)
+                    {
+                        <div class="om-bar"><div class="om-bar-f indet"></div></div>
+                        <div class="om-audio-note">ffmpeg 스캔 중… (블랙·정지 프레임 · 오디오 피크 · 자막 가림)</div>
+                    }
+                    @if (CurrentQa is { } qr)
+                    {
+                        <div class="om-qa-head">
+                            <span class="om-qa-badge @VerdictCss(qr.Verdict)">@VerdictLabel(qr.Verdict)</span>
+                            <span class="om-qa-msg">@qr.Message</span>
+                        </div>
+                        <div class="om-qa-stats">
+                            <span>⏱ @(AutomatedVideoQaInspector.Clock(qr.DurationSeconds))</span>
+                            <span>📈 피크 @(Db(qr.PeakDbfs))dBFS</span>
+                            <span>🎚 RMS @(Db(qr.RmsDbfs))dBFS</span>
+                            <span>@(qr.Scanned ? "🔬 프레임/오디오 스캔 완료" : "⚠ 프레임/오디오 미검사")</span>
+                        </div>
+                        <div class="om-sec">
+                            <div class="om-lbl"><span>결함 리포트 <span class="om-mini">@(qr.Defects.Count)건</span></span></div>
+                            @if (qr.Defects.Count == 0)
+                            {
+                                <div class="om-box">결함이 발견되지 않았습니다.</div>
+                            }
+                            @for (var di = 0; di < qr.Defects.Count; di++)
+                            {
+                                var d = qr.Defects[di];
+                                <div class="om-qa-row @VerdictCss(d.Severity)" @key="di">
+                                    <span class="om-qa-kind">@(AutomatedVideoQaInspector.LabelOf(d.Kind))</span>
+                                    <span class="om-qa-ts">@(AutomatedVideoQaInspector.Clock(d.StartSeconds)) – @(AutomatedVideoQaInspector.Clock(d.EndSeconds))</span>
+                                    <span class="om-qa-det">@d.Detail</span>
+                                    <span class="om-qa-dot @VerdictCss(d.Severity)">@VerdictShort(d.Severity)</span>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+
+                <div class="om-foot">
+                    @if (_toast is not null) { <span class="om-toast">@_toast</span> }
+                    <div class="om-foot-btns">
+                        <button class="om-btn ghost" @onclick="Close">닫기</button>
+                        @if (QaRunning)
+                        {
+                            <button class="om-btn ghost" @onclick="CancelQa">■ 취소</button>
+                        }
+                        else
+                        {
+                            <button class="om-btn go" disabled="@(!HasMaster)" @onclick="RunQaAsync"
+                                    title="@(Qa.IsAvailable ? "최종 영상의 블랙/정지 프레임 · 오디오 클리핑 · 자막 가림을 자동 검수" : "ffmpeg.exe 가 없어 자막 가림만 검사합니다")">🔍 품질 검수 실행</button>
+                        }
+                    </div>
+                </div>
+            }
+            else if (_active == PublishTab && _bridge is not null)
+            {
+                @* v16.17.0 🚀 소셜 바로 게시 — 채널 토글 · 메타 편집 · 공개/예약 · QA 게이트(거부 시 경고 + 강제 진행) · 진행률/링크 *@
+                <div class="om-body">
+                    @for (var i = 0; i < _drafts.Length; i++)
+                    {
+                        var dr = _drafts[i];
+                        <div class="om-pub @(dr.On ? "on" : null)" @key="dr.Target">
+                            <div class="om-pub-h">
+                                <label class="om-opt">
+                                    <input type="checkbox" @bind="dr.On" disabled="@Publishing" /> @dr.Icon @dr.Label
+                                </label>
+                                <span class="om-mini">@(_bridge.IsEnabled(dr.Target) ? "🔐 자격 연결됨" : "⚠ 자격 미구성(환경변수/설정)") · @(Path.GetFileName(VideoFor(dr)))</span>
+                            </div>
+                            @if (dr.On)
+                            {
+                                <input class="om-box om-in" @bind="dr.Title" disabled="@Publishing" placeholder="제목" maxlength="100" />
+                                <textarea class="om-box area" rows="3" @bind="dr.Body" disabled="@Publishing" placeholder="본문/설명"></textarea>
+                                <input class="om-box om-in" @bind="dr.Tags" disabled="@Publishing" placeholder="#해시태그 #공백구분" />
+                            }
+                            @if (dr.Stage.Length > 0)
+                            {
+                                <div class="om-bar"><div class="om-bar-f" style="width:@(dr.Pct)%"></div></div>
+                                <div class="om-audio-note">@dr.Stage · @(dr.Pct)%</div>
+                            }
+                            @if (dr.Result is { } res)
+                            {
+                                <div class="om-pub-res @(res.Ok ? "ok" : "bad")">
+                                    <span>@(res.Ok ? "✅" : "⚠") @res.Message</span>
+                                    @if (res.Url is not null)
+                                    {
+                                        <button class="om-copy" @onclick="_openLink[i]">🔗 게시물 열기</button>
+                                    }
+                                    else if (res.PostId is not null)
+                                    {
+                                        <span class="om-mini">ID @res.PostId</span>
+                                    }
+                                    @if (!res.Ok && !Publishing)
+                                    {
+                                        <button class="om-copy" @onclick="_retry[i]">↻ 재시도</button>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    }
+                    <div class="om-opts">
+                        <label class="om-opt" title="기본은 비공개(YouTube private · TikTok 나만 보기) — Instagram 은 공개 게시만 지원">
+                            <input type="checkbox" @bind="_public" disabled="@Publishing" /> 🌍 공개 게시
+                        </label>
+                        <label class="om-opt" title="YouTube 는 네이티브 예약 · TikTok/Instagram 은 앱 실행 중 로컬 예약">
+                            ⏰ 예약 <input type="datetime-local" class="om-sel" @bind="_scheduleLocal" @bind:format="yyyy-MM-ddTHH:mm" disabled="@Publishing" />
+                        </label>
+                        @if (_scheduleLocal is not null)
+                        {
+                            <button class="om-copy" @onclick="ClearSchedule" disabled="@Publishing">✕ 즉시 게시</button>
+                        }
+                    </div>
+                    @if (QaRejected)
+                    {
+                        <div class="om-qa-warn">
+                            ⛔ 최근 AI 품질 검수가 <b>거부</b> 판정입니다 — 결함을 수정하거나 아래 옵션으로 강제 진행하세요.
+                            <label class="om-opt"><input type="checkbox" @bind="_forceQa" disabled="@Publishing" /> ⚠ QA 무시하고 강제 진행</label>
+                        </div>
+                    }
+                    else if (!Qa.IsAvailable)
+                    {
+                        <div class="om-audio-note">ffmpeg 가 없어 게시 전 프레임/오디오 검수는 생략됩니다(자막 가림만 검사).</div>
+                    }
+                </div>
+
+                <div class="om-foot">
+                    @if (_toast is not null) { <span class="om-toast">@_toast</span> }
+                    <div class="om-foot-btns">
+                        <button class="om-btn ghost" @onclick="Close">닫기</button>
+                        @if (Publishing)
+                        {
+                            <button class="om-btn ghost" @onclick="CancelPublish">■ 취소</button>
+                        }
+                        else
+                        {
+                            <button class="om-btn go @(QaRejected && !_forceQa ? "warn" : null)" disabled="@(!CanPublish)" @onclick="PublishAllAsync"
+                                    title="@(QaRejected && !_forceQa ? "QA 거부 판정 — 게시 전 검수에서 차단될 수 있습니다" : "선택 채널에 게시 전 QA 검수 후 업로드")">@(QaRejected && !_forceQa ? "⚠️ " : "")🚀 1-Click 게시 (@(SelectedCount)개 채널)</button>
+                        }
+                    </div>
+                </div>
+            }
+            else if (_active == PackTab)
+            {
+                @* v16.15.0 OSMU 패키지 — 완성 영상 → 9:16·1:1·4:5 재구성 MP4 + AI 메타데이터 .txt → 폴더/ZIP *@
+                <div class="om-body">
+                    <div class="om-sec">
+                        <div class="om-lbl"><span>원본 완성 영상</span></div>
+                        <div class="om-box">@(HasMaster ? Path.GetFileName(Project.FinalVideoPath) : "아직 최종 영상이 없습니다 — [🎬 최종 영상 내보내기]를 먼저 실행하세요.")</div>
+                    </div>
+                    <div class="om-sec">
+                        <div class="om-lbl"><span>플랫폼 규격 <span class="om-mini">@(_targets.Count)개 선택</span></span></div>
+                        <div class="om-chips">
+                            @foreach (var spec in OsmuSmartReframingService.Specs)
+                            {
+                                <label class="om-pick @(_targets.Contains(spec.Target) ? "on" : null)" @key="spec.Key">
+                                    <input type="checkbox" checked="@_targets.Contains(spec.Target)" disabled="@Running" @onchange="e => ToggleTarget(spec.Target, e)" />
+                                    @spec.Icon @spec.Label <span class="om-mini">@spec.Aspect · @(spec.Width)x@(spec.Height)</span>
+                                </label>
+                            }
+                        </div>
+                    </div>
+                    <div class="om-opts">
+                        <select class="om-sel" @bind="_framing" disabled="@Running" title="재구성 방식">
+                            <option value="@OsmuFraming.BlurBackground">블러 배경(원본 전체 보존)</option>
+                            <option value="@OsmuFraming.CenterCrop">센터 프레이밍(꽉 찬 크롭)</option>
+                        </select>
+                        <label class="om-opt" title="@(Packager.AiEnabled ? "Gemini 로 플랫폼별 제목·본문·해시태그 생성" : "Gemini API 키가 없어 오프라인 SEO 로 생성합니다")">
+                            <input type="checkbox" @bind="_useAi" disabled="@(Running || !Packager.AiEnabled)" /> 🤖 AI 메타데이터
+                        </label>
+                        <label class="om-opt"><input type="checkbox" @bind="_zip" disabled="@Running" /> 🗜️ ZIP 으로 묶기</label>
+                    </div>
+                    @if (Running || _packPct > 0)
+                    {
+                        <div class="om-bar"><div class="om-bar-f" style="width:@(_packPct)%"></div></div>
+                        <div class="om-audio-note">@_packStage · @(_packPct)%</div>
+                    }
+                    @if (_packResult is { } pr)
+                    {
+                        <div class="om-sec">
+                            <div class="om-lbl"><span>@(pr.Ok ? "✅ 완료" : "⚠ 실패")</span></div>
+                            <div class="om-box">@pr.Message</div>
+                            @foreach (var it in pr.Items)
+                            {
+                                <div class="om-audio-note" @key="it.Target">@(it.Ok ? "✓" : "✗") @OsmuSmartReframingService.SpecOf(it.Target).Label — @it.Message</div>
+                            }
+                        </div>
+                    }
+                </div>
+
+                <div class="om-foot">
+                    @if (_toast is not null) { <span class="om-toast">@_toast</span> }
+                    <div class="om-foot-btns">
+                        <button class="om-btn ghost" @onclick="Close">닫기</button>
+                        @if (_packResult is { Ok: true, OutputPath: { } outPath } && OnReveal is not null)
+                        {
+                            <button class="om-btn ghost" @onclick="() => OnReveal(outPath)">📂 탐색기에서 열기</button>
+                        }
+                        @if (Running)
+                        {
+                            <button class="om-btn ghost" @onclick="CancelPack">■ 취소</button>
+                        }
+                        else
+                        {
+                            <button class="om-btn go" disabled="@(!CanPack)" @onclick="PackAsync"
+                                    title="@(Packager.IsAvailable ? "선택 플랫폼별 MP4 + 메타데이터 .txt 패키지 생성" : "ffmpeg.exe 가 필요합니다")">🌐 OSMU 패키지 내보내기</button>
+                        }
+                    </div>
+                </div>
+            }
+            else if (_active == AudioTab)
+            {
+                <div class="om-body">
+                    <div class="om-audio-head">
+                        <span class="om-energy">🎚️ 에너지: <b>@(_audio?.EnergyLabel)</b> <HelpBadge Topic="@HelpContentService.Keys.TrendingAudio" /></span>
+                        <span class="om-audio-note">@(_audio?.Note)</span>
+                    </div>
+                    @foreach (var a in AudioCards)
+                    {
+                        <div class="om-sec" @key="a.Key">
+                            <div class="om-lbl"><span>@a.Icon @a.Name <span class="om-mini">@(a.Tags.Count)개</span></span>
+                                <span class="om-abtns">
+                                    <button class="om-copy" @onclick="() => OpenAudioSearch(a.SearchPlatform, a.SearchQuery)" disabled="@string.IsNullOrWhiteSpace(a.SearchQuery)" title="@($"{a.Name} 음원 검색 페이지를 브라우저로 열기")">@a.Icon 음원 검색</button>
+                                    <button class="om-copy" @onclick="() => Copy(a.CopyLabel, a.Copy)">📋 복사</button>
+                                </span>
+                            </div>
+                            <div class="om-chips">
+                                @foreach (var t in a.Tags) { <span class="om-chip audio">@t</span> }
+                            </div>
+                        </div>
+                    }
+                </div>
+
+                <div class="om-foot">
+                    @if (_toast is not null) { <span class="om-toast">@_toast</span> }
+                    <div class="om-foot-btns">
+                        <button class="om-btn ghost" @onclick="Close">닫기</button>
+                        <button class="om-btn go" @onclick='() => Copy("전체 오디오 태그", AudioAllText())'>📋 전체 오디오 태그 복사</button>
+                    </div>
+                </div>
+            }
+            else if (ActiveMeta is { } m)
+            {
+                <div class="om-body">
+                    @if (!string.IsNullOrWhiteSpace(m.Title))
+                    {
+                        <div class="om-sec">
+                            <div class="om-lbl"><span>제목</span><button class="om-copy" @onclick='() => Copy("제목", m.Title)'>📋 복사</button></div>
+                            <div class="om-box">@m.Title</div>
+                        </div>
+                    }
+                    <div class="om-sec">
+                        <div class="om-lbl"><span>@(_active is "YouTube Shorts" or "Naver Clip" or "Pinterest" ? "설명란" : "캡션")</span>
+                            <button class="om-copy" @onclick='() => Copy("본문", m.Body)'>📋 복사</button></div>
+                        <textarea class="om-box area" readonly rows="7">@m.Body</textarea>
+                    </div>
+                    <div class="om-sec">
+                        <div class="om-lbl"><span>해시태그 <span class="om-mini">@(m.Hashtags.Count)개</span></span>
+                            <button class="om-copy" @onclick='() => Copy("해시태그", m.HashtagLine)'>📋 복사</button></div>
+                        <div class="om-chips">
+                            @foreach (var h in m.Hashtags) { <span class="om-chip">#@h</span> }
+                        </div>
+                    </div>
+                </div>
+
+                <div class="om-foot">
+                    @if (_toast is not null) { <span class="om-toast">@_toast</span> }
+                    <div class="om-foot-btns">
+                        <button class="om-btn ghost" @onclick="Close">닫기</button>
+                        <button class="om-btn ghost" @onclick="() => OpenPlatform(m.Platform)" title="@($"{m.Platform} 업로드/스튜디오 페이지 열기")">🔗 플랫폼 열기</button>
+                        <button class="om-btn go" @onclick='() => Copy(m.Platform + " 전체", m.FullText)'>📋 이 플랫폼 전체 복사</button>
+                    </div>
+                </div>
+            }
+        }
+        else
+        {
+            <div class="om-empty">메타데이터를 구성하지 못했습니다.</div>
+        }
+    </div>
+</div>
+
+<style>
+    .om-scrim{position:fixed; inset:0; z-index:var(--z-studio-modal); background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; padding:20px}
+    .om-modal{width:min(720px,96vw); max-height:90vh; display:flex; flex-direction:column; background:var(--card); border:1px solid var(--line); border-radius:18px; box-shadow:0 24px 60px rgba(0,0,0,.4); overflow:hidden}
+    .om-h{display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding:18px 20px; border-bottom:1px solid var(--line)}
+    .om-title{font-size:16px; font-weight:900; color:var(--text-primary)}
+    .om-sub{font-size:12px; color:var(--text-secondary); margin-top:4px; line-height:1.5; max-width:60ch} .om-sub b{color:var(--text-primary)}
+    .om-x{flex:0 0 auto; width:30px; height:30px; border:none; background:none; color:var(--text-muted); cursor:pointer; font-size:15px; border-radius:8px}
+    .om-x:hover{background:var(--card-2); color:var(--text-primary)}
+    .om-tabs{display:flex; flex-wrap:wrap; gap:6px; padding:14px 18px 4px}
+    .om-tab{flex:0 0 auto; font:700 11.5px inherit; padding:8px 12px; border-radius:10px; border:1px solid var(--line); background:var(--card-2); color:var(--text-secondary); cursor:pointer; white-space:nowrap}
+    .om-tab:hover{border-color:var(--accent); color:var(--text-primary)}
+    .om-tab.on{background:var(--card); color:var(--text-primary); border-color:var(--accent); box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 40%,transparent)}
+    .om-body{padding:16px 18px; overflow-y:auto; display:flex; flex-direction:column; gap:14px}
+    .om-sec{display:flex; flex-direction:column; gap:7px}
+    .om-lbl{display:flex; align-items:center; justify-content:space-between; font:700 11px var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--text-secondary)}
+    .om-mini{color:var(--text-muted); font-weight:600}
+    .om-copy{font:700 11px inherit; padding:5px 10px; border-radius:8px; border:1px solid var(--line); background:var(--card-2); color:var(--text-secondary); cursor:pointer}
+    .om-copy:hover{border-color:var(--accent); color:var(--text-primary)}
+    .om-box{background:var(--card-2); border:1px solid var(--line); border-radius:10px; padding:11px 13px; color:var(--text-primary); font-size:13.5px; line-height:1.55}
+    .om-box.area{width:100%; box-sizing:border-box; resize:vertical; font-family:inherit}
+    .om-chips{display:flex; flex-wrap:wrap; gap:6px}
+    .om-chip{font:600 12px var(--mono); color:var(--accent-2); background:color-mix(in srgb,var(--accent-2) 9%,transparent); border:1px solid color-mix(in srgb,var(--accent-2) 26%,var(--line)); border-radius:7px; padding:5px 9px}
+    .om-chip.audio{color:#0d9488; background:color-mix(in srgb,#14b8a6 11%,transparent); border-color:color-mix(in srgb,#14b8a6 32%,var(--line))}
+    .om-audio-head{display:flex; flex-direction:column; gap:4px; padding-bottom:2px}
+    .om-energy{font-size:12.5px; font-weight:800; color:var(--text-primary)}
+    .om-audio-note{font-size:11px; color:var(--text-muted); line-height:1.45}
+    .om-abtns{display:flex; gap:6px}
+    .om-foot{display:flex; align-items:center; justify-content:space-between; gap:12px; padding:13px 18px; border-top:1px solid var(--line); flex-wrap:wrap}
+    .om-toast{font-size:12px; font-weight:700; color:#10b981}
+    .om-foot-btns{display:flex; gap:8px; margin-left:auto}
+    .om-btn{font:800 12.5px inherit; padding:10px 15px; border-radius:11px; cursor:pointer; border:1px solid var(--line); background:var(--card-2); color:var(--text-secondary)}
+    .om-btn.ghost:hover{border-color:var(--accent); color:var(--text-primary)}
+    .om-btn.go{border:none; color:#fff; background:linear-gradient(135deg,var(--flow-violet),var(--flow-magenta)); box-shadow:0 6px 16px color-mix(in srgb,var(--flow-magenta) 26%,transparent)}
+    .om-btn.go:hover{filter:brightness(1.07)}
+    .om-pick{display:flex; align-items:center; gap:6px; font:700 12px inherit; padding:7px 10px; border-radius:9px; border:1px solid var(--line); background:var(--card-2); color:var(--text-secondary); cursor:pointer}
+    .om-pick.on{border-color:var(--accent); color:var(--text-primary)}
+    .om-opts{display:flex; flex-wrap:wrap; align-items:center; gap:10px}
+    .om-sel{font:700 12px inherit; padding:7px 10px; border-radius:9px; border:1px solid var(--line); background:var(--card-2); color:var(--text-primary)}
+    .om-opt{display:flex; align-items:center; gap:5px; font:700 12px inherit; color:var(--text-secondary)}
+    .om-bar{height:8px; border-radius:6px; background:var(--card-2); overflow:hidden}
+    .om-bar-f{height:100%; background:linear-gradient(90deg,var(--flow-violet),var(--flow-magenta)); transition:width .25s}
+    .om-btn:disabled{opacity:.5; cursor:not-allowed}
+    .om-qa-head{display:flex; align-items:center; gap:10px; flex-wrap:wrap}
+    .om-qa-badge{font:900 12.5px inherit; padding:6px 12px; border-radius:999px; border:1px solid var(--line)}
+    .om-qa-msg{font-size:12.5px; font-weight:700; color:var(--text-primary)}
+    .om-qa-stats{display:flex; flex-wrap:wrap; gap:12px; font:600 11.5px var(--mono); color:var(--text-secondary)}
+    .om-qa-row{display:grid; grid-template-columns:auto auto 1fr auto; align-items:center; gap:10px; padding:8px 11px; border-radius:10px; border:1px solid var(--line); border-left-width:4px; font-size:12px}
+    .om-qa-kind{font-weight:800; white-space:nowrap}
+    .om-qa-ts{font:700 11.5px var(--mono); white-space:nowrap}
+    .om-qa-det{color:var(--text-secondary)}
+    .om-qa-dot{font:800 10px inherit; padding:2px 7px; border-radius:999px; margin-left:4px}
+    .qa-pass{color:#059669; background:color-mix(in srgb,#10b981 14%,transparent); border-color:color-mix(in srgb,#10b981 40%,var(--line))}
+    .qa-warn{color:#b45309; background:color-mix(in srgb,#f59e0b 15%,transparent); border-color:color-mix(in srgb,#f59e0b 45%,var(--line))}
+    .qa-reject{color:#dc2626; background:color-mix(in srgb,#ef4444 14%,transparent); border-color:color-mix(in srgb,#ef4444 45%,var(--line))}
+    .om-qa-warn{display:flex; flex-direction:column; gap:6px; padding:10px 12px; border-radius:10px; font-size:12px; color:#dc2626; background:color-mix(in srgb,#ef4444 9%,transparent); border:1px solid color-mix(in srgb,#ef4444 35%,var(--line))}
+    .om-pub{display:flex; flex-direction:column; gap:7px; padding:11px 12px; border-radius:12px; border:1px solid var(--line); background:color-mix(in srgb,var(--card-2) 55%,transparent)}
+    .om-pub.on{border-color:var(--accent)}
+    .om-pub-h{display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap}
+    .om-in{width:100%; box-sizing:border-box; font-family:inherit}
+    .om-pub-res{display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:12px; font-weight:700}
+    .om-pub-res.ok{color:#059669} .om-pub-res.bad{color:#dc2626}
+    .om-btn.go.warn{background:linear-gradient(135deg,#f59e0b,#ef4444)}
+    .om-bar-f.indet{width:35%; animation:om-indet 1.2s ease-in-out infinite}
+    @@keyframes om-indet{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}
+    .om-empty{padding:40px; text-align:center; color:var(--text-muted); font-size:13px}
+</style>
+
+@code {
+    [Parameter] public StoryboardProject Project { get; set; } = default!;
+    [Parameter] public EventCallback OnClose { get; set; }
+    /// <summary>v16.15.0 결과 폴더/ZIP 탐색기 열기(호스트 주입 · 미지정 시 버튼 숨김).</summary>
+    [Parameter] public Action<string>? OnReveal { get; set; }
+
+    private const string PackTab = "__pack__";
+    private readonly List<OsmuTarget> _targets = new() { OsmuTarget.YouTubeShorts, OsmuTarget.InstagramReels, OsmuTarget.TikTok, OsmuTarget.InstagramFeed, OsmuTarget.Pinterest, OsmuTarget.NaverClip };
+    private OsmuFraming _framing = OsmuFraming.BlurBackground;
+    private bool _useAi = true;
+    private bool _zip;
+    private int _packPct;
+    private string _packStage = "";
+    private OsmuExportResult? _packResult;
+    private System.Threading.CancellationTokenSource? _packCts;
+    private bool Running => _packCts is not null;
+    private bool HasMaster => !string.IsNullOrWhiteSpace(Project?.FinalVideoPath) && File.Exists(Project.FinalVideoPath);
+    private bool CanPack => !Running && HasMaster && _targets.Count > 0 && Packager.IsAvailable && !Packager.IsBusy;
+
+    // ── v16.17.0 🔍 AI 품질 검수 ──
+    private const string QaTab = "__qa__";
+    private const string PublishTab = "__publish__";
+    private DirectSocialPublisherBridge? _bridge;   // 데스크톱 전용(모바일 미등록 → 게시 탭 숨김 · @inject 대신 선택적 해석)
+    private QaInspectionReport? _qaReport;
+    private SafePlatform _qaTarget = SafePlatform.YouTubeShorts;
+    private System.Threading.CancellationTokenSource? _qaCts;
+    private bool QaRunning => _qaCts is not null;
+    private bool HasSidecar => HasMaster && File.Exists(Path.ChangeExtension(Project.FinalVideoPath!, ".ass"));
+
+    /// <summary>현재 프로젝트 최종 영상의 검수 결과(모달 실행분 우선 · 없으면 검수기 최근 결과 중 같은 영상).</summary>
+    private QaInspectionReport? CurrentQa
+    {
+        get
+        {
+            var r = _qaReport ?? Qa.LastReport;
+            return r is not null && HasMaster && string.Equals(r.VideoPath, Project.FinalVideoPath, StringComparison.OrdinalIgnoreCase) ? r : null;
+        }
+    }
+
+    private bool QaRejected => CurrentQa is { CanPublish: false };
+
+    private static string VerdictCss(QaVerdict v) => v switch { QaVerdict.Pass => "qa-pass", QaVerdict.Warn => "qa-warn", _ => "qa-reject" };
+    private static string VerdictShort(QaVerdict v) => v switch { QaVerdict.Pass => "통과", QaVerdict.Warn => "경고", _ => "거부" };
+    private static string VerdictLabel(QaVerdict v) => v switch { QaVerdict.Pass => "✅ 통과", QaVerdict.Warn => "⚠️ 경고", _ => "⛔ 거부" };
+    private static string Db(double v) => double.IsNegativeInfinity(v) || double.IsNaN(v) ? "-∞" : v.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
+
+    private void ShowQaTab() => _active = QaTab;
+    private void ShowPublishTab() => _active = PublishTab;
+
+    private async Task RunQaAsync()
+    {
+        if (!HasMaster || QaRunning) return;
+        var cts = new System.Threading.CancellationTokenSource();
+        _qaCts = cts;
+        try
+        {
+            var video = Project.FinalVideoPath!;
+            var probe = AutomatedVideoQaInspector.TryLoadSidecarProbe(video, _qaTarget);
+            _qaReport = await Task.Run(() => Qa.InspectAsync(video, probe, cts.Token));
+            if (_qaReport is { CanPublish: true }) _forceQa = false;
+        }
+        catch (Exception ex) { Program.Log("OsmuModal.Qa", ex); ShowToast("검수 실패: " + ex.Message); }
+        finally
+        {
+            if (ReferenceEquals(System.Threading.Interlocked.CompareExchange(ref _qaCts, null, cts), cts)) cts.Dispose();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void CancelQa()
+    {
+        try { _qaCts?.Cancel(); } catch (ObjectDisposedException) { /* 이미 종료 */ }
+    }
+
+    // ── v16.17.0 🚀 소셜 바로 게시 ──
+    private sealed class PublishDraft(SocialPublishTarget target, OsmuTarget osmu, SafePlatform safe, string icon, string label)
+    {
+        public SocialPublishTarget Target { get; } = target;
+        public OsmuTarget Osmu { get; } = osmu;
+        public SafePlatform Safe { get; } = safe;
+        public string Icon { get; } = icon;
+        public string Label { get; } = label;
+        public bool On { get; set; } = true;
+        public string Title { get; set; } = "";
+        public string Body { get; set; } = "";
+        public string Tags { get; set; } = "";
+        public int Pct { get; set; }
+        public string Stage { get; set; } = "";
+        public SocialPublishResult? Result { get; set; }
+    }
+
+    private readonly PublishDraft[] _drafts =
+    {
+        new(SocialPublishTarget.YouTubeShorts, OsmuTarget.YouTubeShorts, SafePlatform.YouTubeShorts, "▶️", "YouTube Shorts"),
+        new(SocialPublishTarget.TikTok, OsmuTarget.TikTok, SafePlatform.TikTok, "🎵", "TikTok"),
+        new(SocialPublishTarget.InstagramReels, OsmuTarget.InstagramReels, SafePlatform.InstagramReels, "📸", "Instagram Reels"),
+    };
+    private static readonly char[] TagSeparators = { ' ', ',', '\n', '\r', '\t' };
+    private Func<Task>[] _retry = Array.Empty<Func<Task>>();
+    private Action[] _openLink = Array.Empty<Action>();
+    private bool _public;
+    private bool _forceQa;
+    private DateTime? _scheduleLocal;
+    private System.Threading.CancellationTokenSource? _pubCts;
+    private long _lastPubRender;
+    private bool Publishing => _pubCts is not null;
+    private int SelectedCount { get { var n = 0; foreach (var d in _drafts) if (d.On) n++; return n; } }
+    private bool CanPublish => !Publishing && HasMaster && SelectedCount > 0;
+
+    private void InitPublish()
+    {
+        _bridge = Services.GetService(typeof(DirectSocialPublisherBridge)) as DirectSocialPublisherBridge;
+        var fallbackTitle = Project?.Title ?? "";
+        foreach (var m in _metas)
+            if (m.Platform == "YouTube Shorts" && !string.IsNullOrWhiteSpace(m.Title)) { fallbackTitle = m.Title; break; }
+        foreach (var d in _drafts)
+        {
+            PlatformMeta? meta = null;
+            foreach (var m in _metas) if (m.Platform == d.Label) { meta = m; break; }
+            d.Title = meta is not null && !string.IsNullOrWhiteSpace(meta.Title) ? meta.Title : fallbackTitle;
+            d.Body = meta?.Body ?? "";
+            d.Tags = meta?.HashtagLine ?? "";
+        }
+        // 루프 내 핸들러 클로저 할당 방지 — 채널 슬롯 수만큼 1회 생성.
+        _retry = new Func<Task>[_drafts.Length];
+        _openLink = new Action[_drafts.Length];
+        for (var i = 0; i < _drafts.Length; i++)
+        {
+            var d = _drafts[i];
+            _retry[i] = () => RetryAsync(d);
+            _openLink[i] = () => OpenResultLink(d);
+        }
+        if (_bridge is not null) _bridge.OnChange += OnBridgeChanged;
+    }
+
+    /// <summary>채널 업로드 소스 — 같은 세션 OSMU 패키지 결과(대상 규격 MP4) 우선, 없으면 원본 완성 영상.</summary>
+    private string VideoFor(PublishDraft d)
+    {
+        if (_packResult is { Items: { } items })
+            foreach (var it in items)
+                if (it.Target == d.Osmu && it.Ok && it.VideoPath is { } vp && File.Exists(vp)) return vp;
+        return Project?.FinalVideoPath ?? "";
+    }
+
+    private static IReadOnlyList<string> ParseTags(string raw)
+    {
+        var parts = (raw ?? "").Split(TagSeparators, StringSplitOptions.RemoveEmptyEntries);
+        var list = new List<string>(parts.Length);
+        foreach (var p in parts) { var t = p.TrimStart('#'); if (t.Length > 0) list.Add(t); }
+        return list;
+    }
+
+    private void ClearSchedule() => _scheduleLocal = null;
+
+    private DateTime? ScheduleUtc => _scheduleLocal is { } local ? DateTime.SpecifyKind(local, DateTimeKind.Local).ToUniversalTime() : null;
+
+    private async Task PublishAllAsync()
+    {
+        if (!CanPublish || _bridge is null) return;
+        var scheduleUtc = ScheduleUtc;
+        if (scheduleUtc is { } su && su <= DateTime.UtcNow.AddMinutes(1)) { ShowToast("예약 시각은 현재보다 이후여야 합니다"); return; }
+        var cts = new System.Threading.CancellationTokenSource();
+        _pubCts = cts;
+        foreach (var d in _drafts) if (d.On) { d.Result = null; d.Pct = 0; d.Stage = "대기"; }
+        try
+        {
+            foreach (var d in _drafts)
+            {
+                if (!d.On) continue;
+                if (cts.IsCancellationRequested) { d.Stage = ""; d.Result = new SocialPublishResult(d.Target, false, SocialPublishState.Canceled, null, null, "취소됨"); continue; }
+                await PublishOneAsync(d, scheduleUtc, cts.Token);   // 채널 실패는 건너뛰고 계속([부분 구제])
+            }
+            int ok = 0, total = 0;
+            foreach (var d in _drafts) if (d.On) { total++; if (d.Result is { Ok: true }) ok++; }
+            ShowToast("🚀 게시 " + ok.ToString(System.Globalization.CultureInfo.InvariantCulture) + "/" + total.ToString(System.Globalization.CultureInfo.InvariantCulture) + " 성공");
+        }
+        finally
+        {
+            if (ReferenceEquals(System.Threading.Interlocked.CompareExchange(ref _pubCts, null, cts), cts)) cts.Dispose();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task PublishOneAsync(PublishDraft d, DateTime? scheduleUtc, System.Threading.CancellationToken ct)
+    {
+        var bridge = _bridge;
+        if (bridge is null) return;
+        var video = VideoFor(d);
+        var req = new SocialPublishRequest(d.Target, video, d.Title, d.Body, ParseTags(d.Tags), scheduleUtc, _public, _forceQa,
+            AutomatedVideoQaInspector.TryLoadSidecarProbe(video, d.Safe));
+        d.Stage = "QA 검수 · 업로드"; d.Pct = 0;
+        await InvokeAsync(StateHasChanged);
+        var progress = new Progress<double>(p =>
+        {
+            d.Pct = (int)Math.Clamp(p, 0, 100);
+            ThrottledRender();
+        });
+        SocialPublishResult result;
+        try { result = await Task.Run(() => bridge.PublishAsync(req, progress, ct)); }
+        catch (Exception ex) { result = new SocialPublishResult(d.Target, false, SocialPublishState.Failed, null, null, "게시 실패: " + ex.Message); }
+        d.Result = result;
+        d.Stage = result.Ok ? "완료" : "";
+        if (result.Ok) d.Pct = 100;
+        if (result.Qa is { } qa && string.Equals(qa.VideoPath, Project?.FinalVideoPath, StringComparison.OrdinalIgnoreCase)) _qaReport = qa;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task RetryAsync(PublishDraft d)
+    {
+        if (Publishing || _bridge is null || !HasMaster) return;
+        var cts = new System.Threading.CancellationTokenSource();
+        _pubCts = cts;
+        try
+        {
+            var scheduleUtc = ScheduleUtc;
+            if (scheduleUtc is { } su && su <= DateTime.UtcNow.AddMinutes(1)) scheduleUtc = null;   // 지난 예약 → 즉시
+            await PublishOneAsync(d, scheduleUtc, cts.Token);
+        }
+        finally
+        {
+            if (ReferenceEquals(System.Threading.Interlocked.CompareExchange(ref _pubCts, null, cts), cts)) cts.Dispose();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void CancelPublish()
+    {
+        try { _pubCts?.Cancel(); } catch (ObjectDisposedException) { /* 이미 종료 */ }
+    }
+
+    private void OpenResultLink(PublishDraft d)
+    {
+        if (d.Result?.Url is not { } url) return;
+        ShowToast(DeepLink.OpenUrl(url) ? "🔗 게시물을 브라우저로 열었어요" : "브라우저를 열지 못했습니다");
+    }
+
+    // 업로드 진행률/브릿지 상태(백그라운드 콜백) → 250ms 스로틀 렌더.
+    private void ThrottledRender()
+    {
+        var now = Environment.TickCount64;
+        if (now - System.Threading.Interlocked.Read(ref _lastPubRender) < 250) return;
+        System.Threading.Interlocked.Exchange(ref _lastPubRender, now);
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void OnBridgeChanged()
+    {
+        try { if (Publishing) ThrottledRender(); }
+        catch (Exception ex) { Program.Log("OsmuModal.BridgeChanged", ex); }
+    }
+
+    private void ShowToast(string text)
+    {
+        _toast = text;
+        _toastTimer?.Dispose();
+        _toastTimer = new System.Threading.Timer(_ => { _toast = null; _ = InvokeAsync(StateHasChanged); }, null, 2500, System.Threading.Timeout.Infinite);
+    }
+
+    private void ToggleTarget(OsmuTarget t, ChangeEventArgs e)
+    {
+        if (e.Value is true) { if (!_targets.Contains(t)) _targets.Add(t); }
+        else _targets.Remove(t);
+    }
+
+    private async Task PackAsync()
+    {
+        if (!CanPack) return;
+        var cts = new System.Threading.CancellationTokenSource();
+        _packCts = cts;
+        _packPct = 0; _packStage = "준비 중…"; _packResult = null;
+        var progress = new Progress<PostProductionProgress>(p =>
+        {
+            _packPct = p.Percent; _packStage = p.Stage;
+            _ = InvokeAsync(StateHasChanged);
+        });
+        try
+        {
+            var req = new OsmuExportRequest(Project.FinalVideoPath!, _targets.ToArray(), _framing, _zip, _useAi && Packager.AiEnabled);
+            _packResult = await Task.Run(() => Packager.ExportAsync(Project, req, progress, cts.Token));
+            if (_packResult.Ok && _packResult.OutputPath is not null) OnReveal?.Invoke(_packResult.OutputPath);
+        }
+        catch (Exception ex) { _packResult = new OsmuExportResult(false, null, Array.Empty<OsmuExportItem>(), "OSMU 내보내기 실패: " + ex.Message); }
+        finally
+        {
+            if (ReferenceEquals(System.Threading.Interlocked.CompareExchange(ref _packCts, null, cts), cts)) cts.Dispose();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void CancelPack()
+    {
+        try { _packCts?.Cancel(); } catch (ObjectDisposedException) { /* 이미 종료 */ }
+    }
+
+    private const string AudioTab = "__audio__";
+    private IReadOnlyList<PlatformMeta> _metas = Array.Empty<PlatformMeta>();
+    private BabySeoAgent.TrendingAudioTags? _audio;
+    private string _active = PackTab;
+    private PlatformMeta? ActiveMeta => _metas.FirstOrDefault(x => x.Platform == _active) ?? _metas.FirstOrDefault();
+    private string? _toast;
+    private System.Threading.Timer? _toastTimer;
+
+    protected override void OnInitialized()
+    {
+        if (Project is not null)
+        {
+            _metas = PlatformSeo.PackageAll(Project);           // 8대 플랫폼 재구성
+            _audio = BabySeoAgent.GetTrendingAudio(Project);    // metadata_seo.json 과 동일 소스
+        }
+        InitPublish();
+        if (CurrentQa is { CanPublish: false }) _active = QaTab;   // 같은 영상의 최근 검수가 거부면 검수 탭부터
+    }
+
+    private void OpenPlatform(string platform)
+    {
+        var ok = DeepLink.OpenPlatform(platform);
+        _toast = ok ? $"🔗 {platform} 페이지를 브라우저로 열었어요" : "브라우저를 열지 못했습니다";
+        _toastTimer?.Dispose();
+        _toastTimer = new System.Threading.Timer(_ => { _toast = null; _ = InvokeAsync(StateHasChanged); }, null, 2500, System.Threading.Timeout.Infinite);
+    }
+
+    private sealed record AudioCard(string Key, string Icon, string Name, string CopyLabel, IReadOnlyList<string> Tags, string Copy, AudioSearchPlatform SearchPlatform, string SearchQuery);
+
+    private IReadOnlyList<AudioCard> AudioCards => _audio is null ? Array.Empty<AudioCard>() : new[]
+    {
+        new AudioCard("yt", "▶️", "YouTube Shorts", "유튜브 오디오 태그", _audio.YouTubeShorts, string.Join(", ", _audio.YouTubeShorts), AudioSearchPlatform.YouTube, _audio.YouTubeShorts.FirstOrDefault() ?? ""),
+        new AudioCard("ig", "📸", "Instagram Reels", "인스타 오디오 태그", _audio.InstagramReels, string.Join(", ", _audio.InstagramReels), AudioSearchPlatform.Instagram, _audio.InstagramReels.FirstOrDefault() ?? ""),
+        new AudioCard("tt", "🎵", "TikTok", "틱톡 오디오 태그", _audio.TikTok, string.Join(", ", _audio.TikTok), AudioSearchPlatform.TikTok, _audio.TikTok.FirstOrDefault() ?? ""),
+    };
+
+    private void OpenAudioSearch(AudioSearchPlatform platform, string query)
+    {
+        var ok = DeepLink.OpenSearch(platform, query);
+        _toast = ok ? "🔎 브라우저에서 음원 검색을 열었어요" : "브라우저를 열지 못했습니다";
+        _toastTimer?.Dispose();
+        _toastTimer = new System.Threading.Timer(_ => { _toast = null; _ = InvokeAsync(StateHasChanged); }, null, 2500, System.Threading.Timeout.Infinite);
+    }
+
+    private string AudioAllText() => _audio is null ? "" :
+        $"🎵 트렌딩 오디오 추천 ({_audio.EnergyLabel})\n\n▶️ YouTube Shorts: {string.Join(", ", _audio.YouTubeShorts)}\n📸 Instagram Reels: {string.Join(", ", _audio.InstagramReels)}\n🎵 TikTok: {string.Join(", ", _audio.TikTok)}\n\n※ {_audio.Note}";
+
+    private async Task Close() => await OnClose.InvokeAsync();
+
+    private void Copy(string label, string text)
+    {
+        var ok = Clipboard.SetText(text ?? "");
+        _toast = ok ? $"✓ {label} 복사됨" : "복사 실패";
+        _toastTimer?.Dispose();
+        _toastTimer = new System.Threading.Timer(_ => { _toast = null; _ = InvokeAsync(StateHasChanged); }, null, 2500, System.Threading.Timeout.Infinite);
+    }
+
+    public void Dispose()
+    {
+        _toastTimer?.Dispose();
+        if (_bridge is not null) _bridge.OnChange -= OnBridgeChanged;
+        var qcts = System.Threading.Interlocked.Exchange(ref _qaCts, null);
+        if (qcts is not null) { try { qcts.Cancel(); } catch (ObjectDisposedException) { } qcts.Dispose(); }
+        var pcts = System.Threading.Interlocked.Exchange(ref _pubCts, null);
+        if (pcts is not null) { try { pcts.Cancel(); } catch (ObjectDisposedException) { } pcts.Dispose(); }
+        var cts = System.Threading.Interlocked.Exchange(ref _packCts, null);
+        if (cts is not null) { try { cts.Cancel(); } catch (ObjectDisposedException) { } cts.Dispose(); }
+    }
+}

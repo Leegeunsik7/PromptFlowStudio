@@ -1,0 +1,51 @@
+@using PromptFlowStudio.Services.Wan
+
+@* [PromptFlow Studio v5.5.5 · Task1] concat 노드 카드 — N개 세그먼트 수신 상태 + 병합 진행/완료 표시(순수 Blazor · 외부 UI 0).
+   실제 롱폼 재생은 하위 [🖥️ 프리뷰] 노드가 병합 결과(video_url)를 단일 <video> 로 담당. *@
+
+<div class="cvn">
+    <div class="cvn-h">🎞️ 롱폼 병합</div>
+    <div class="cvn-seg">@SegmentCount / @Capacity 세그먼트 결선</div>
+    <div class="cvn-state @StateClass">
+        @if (Running)
+        {
+            <span class="cvn-spin"></span><span>병합 중…</span>
+        }
+        else if (Merged?.HasVideo == true)
+        {
+            <span>✅ 병합 완료 · @Short(Merged.JobId)</span>
+        }
+        else
+        {
+            <span>대기 — 세그먼트 렌더 후 자동 병합</span>
+        }
+    </div>
+    <div class="cvn-hint">완성 롱폼은 하위 프리뷰에서 단일 재생됩니다.</div>
+</div>
+
+<style>
+    .cvn { width: 100%; height: 100%; display: flex; flex-direction: column; gap: 5px; justify-content: center; font-family: Pretendard, 'Malgun Gothic', sans-serif; padding: 4px; box-sizing: border-box; }
+    .cvn-h { font: 900 12px Pretendard,'Malgun Gothic',sans-serif; color: #fde68a; }
+    .cvn-seg { font: 700 10.5px 'JetBrains Mono', ui-monospace, monospace; color: #cbd5e1; }
+    .cvn-state { display: flex; align-items: center; gap: 6px; font: 800 10.5px Pretendard,'Malgun Gothic',sans-serif; padding: 5px 8px; border-radius: 8px; border: 1px solid #2b2f42; background: #0b0d14; }
+    .cvn-state.run { color: #f5c451; border-color: color-mix(in srgb,#f5c451 45%,#2b2f42); }
+    .cvn-state.ok { color: #34d399; border-color: color-mix(in srgb,#34d399 45%,#2b2f42); }
+    .cvn-state.idle { color: #93a3b8; }
+    .cvn-hint { font: 600 9px Pretendard,'Malgun Gothic',sans-serif; color: #64748b; word-break: keep-all; line-height: 1.4; }
+    .cvn-spin { width: 13px; height: 13px; border-radius: 50%; border: 2px solid rgba(245,196,81,.25); border-top-color: #f5c451; animation: cvnSpin .8s linear infinite; flex: 0 0 auto; }
+    @@keyframes cvnSpin { to { transform: rotate(360deg); } }
+</style>
+
+@code {
+    /// <summary>결선된 세그먼트(입력 연결) 수.</summary>
+    [Parameter] public int SegmentCount { get; set; }
+    /// <summary>세그먼트 입력 포트 용량.</summary>
+    [Parameter] public int Capacity { get; set; }
+    /// <summary>병합 결과 참조(완료 시 video_url 보유).</summary>
+    [Parameter] public WanVideoRef? Merged { get; set; }
+    /// <summary>병합 실행 중 여부(스피너).</summary>
+    [Parameter] public bool Running { get; set; }
+
+    private string StateClass => Running ? "run" : (Merged?.HasVideo == true ? "ok" : "idle");
+    private static string Short(string? s) => string.IsNullOrEmpty(s) ? "" : (s!.Length > 8 ? s[..8] : s);
+}

@@ -1,0 +1,1267 @@
+﻿@using PromptFlowStudio.Services.Mobile
+@using PromptFlowStudio.Services.Wan
+@using PromptFlowStudio.Services.Flow
+@using PromptFlowStudio.Services
+@using PromptFlowStudio.Services.Integration
+@implements IDisposable
+@inject IMobilePlatformBridge Bridge
+@inject RemoteRenderClient Remote
+@inject ILocalMediaService Media
+@inject ISpatialVoicePrompter Voice
+@inject WanRenderClient Wan
+@inject FlowExecutionPipeline Pipeline
+@inject DistributedRenderGrid Grid
+@inject PromptFlowStudio.Services.Integration.WebhookDispatcher Webhook
+@inject PromptFlowStudio.Services.Integration.WebRtcStreamer Rtc
+@* v6.0.1-b~v6.1.0: 분산 GPU 그리드/Webhook 디스패처/WebRTC 스트리머 — 부모(셸)가 주입, 서브 패널엔 [Parameter] 로 전달(모바일 무주입 원칙). *@
+@inject PromptFlowStudio.Services.Ui.StudioMemoryAudit MemAudit
+@* v5.7.3: PC NavigationManager 주입 제거 — 모바일은 MobileInternalView 내부 라우팅만 사용(PC 화면 전환 차단) *@
+
+@* [PromptFlow Studio] v4.0.0 모바일 제어반(Task 4) — 삼성 DeX/갤럭시 S26 반응형 + 터치 드래그 CAD 3D · 카메라 캡처 · 리모트 오프로딩 · 온디바이스 배경 분리(네온 글래스모피즘). *@
+
+<div class="msd">
+    @* v5.6.7: 부팅 시네마틱 히어로(진입 후 숨김) *@
+    @if (_showHero) { <FlowLandingHero OnEnterStudio="EnterStudio" /> }
+    <div class="msd-h">
+        @* v5.6.1: PC 사이드바 대칭 햄버거 드로어 · v5.6.5: 모바일 특화 액션 결선 *@
+        <MobileNavDrawer OnMobileAction="HandleMobileAction" OnInternalNav="HandleDrawerNav" CurrentInternalView="_internalView" />
+        <span class="msd-title">📱 모바일 · DeX 스튜디오</span><span class="msd-badge">v4.0.0</span>
+        <span class="msd-plat">@Bridge.Info.Platform · @Bridge.Info.FfmpegBackend</span>
+    </div>
+
+    @* v5.6.5: 워크스페이스 ↔ 스튜디오 탭(모바일 부팅 기본 = 🏠 워크스페이스 · PC 워크스페이스 대칭) *@
+    <div class="msd-tabs">
+        <button class="msd-tab @(_view == MobileView.Workspace ? "on" : null)" @onclick="() => _view = MobileView.Workspace">🏠 워크스페이스</button>
+        <button class="msd-tab @(_view == MobileView.Studio ? "on" : null)" @onclick="() => _view = MobileView.Studio">📱 스튜디오</button>
+    </div>
+
+    @* v5.7.6(2차): 독립 스크롤 본문(flex:1 1 auto) — 헤더/탭 고정 + 닥은 스크롤 외부 absolute 풋터 레이어로 격리(하단 130px 여백=닥 겹침 해소) *@
+    <div class="msd-scroll-body">
+    @if (_view == MobileView.Workspace)
+    {
+        @* 부팅 대시보드 — 프로젝트 요약 + 예상 첫 프레임(전역 시뮬레이터) + PC 라우트 퀵런치 *@
+        @* v5.7.3: 수직(full-width) 컬럼 흐름 — 카드 겹침/찌그러짐 0 *@
+        <div class="msd-ws">
+            @if (_internalView == MobileInternalView.Workspace)
+            {
+                <div class="msd-ws-hero">
+                    <span class="msd-ws-ic">🏠</span>
+                    <div class="msd-ws-tt">
+                        <div class="msd-ws-t">워크스페이스</div>
+                        <div class="msd-ws-s">@(string.IsNullOrWhiteSpace(Project?.Title) ? "새 프로젝트" : Project!.Title) · @(Project?.Scenes.Count ?? 0)컷</div>
+                    </div>
+                </div>
+
+                @* v6.2.x: PC 공용 테마 퀵스위치를 워크스페이스 상단(히어로 직하단)으로 이동 — 세로 스크롤 없이 즉시 노출. 호스트 ThemeService 위임(무주입). *@
+                @if (ThemeNames is { Count: > 0 })
+                {
+                    <div class="msd-theme">
+                        <span class="msd-theme-t">🎨 테마 (PC 공용 · @(ThemeNames.Count)종)</span>
+                        <div class="msd-theme-chips">
+                            <button type="button" class="msd-theme-chip @(string.IsNullOrEmpty(ActiveThemeName) ? "on" : null)" @onclick='() => ApplyThemePick("")'>기본</button>
+                            @foreach (var t in ThemeNames)
+                            {
+                                <button type="button" class="msd-theme-chip @(t == ActiveThemeName ? "on" : null)" @onclick="() => ApplyThemePick(t)" @key="t">@t</button>
+                            }
+                        </div>
+                    </div>
+                }
+
+                @* v5.7.7: 부분 완성(중단/실패 후 구제) 컷 감지 시 이어보기 스마트 배너(성공 병합 후 자동 해제) *@
+                @if (HasResumableCuts && !_dockRunning)
+                {
+                    <div class="msd-resume-banner">
+                        <div class="rb-info"><span class="rb-ic">🔄</span><span>중단된 숏츠 — 완성 <b>@ResumableCount</b>컷 계승, <b>#@(ResumableCount + 1)</b>컷부터 이어서 생성할 수 있습니다.</span></div>
+                        <button type="button" class="msd-resume-run" @onclick="ResumeShortsChain">▶ 이어서 생성</button>
+                    </div>
+                }
+
+                @* 3:4 가로 스크롤 퀵 카셀(카드 터치=닥/프리뷰 시드 주입 · PC 전환 없음) *@
+                <div class="msd-carousel">
+                    @foreach (var (c, ci) in FlowCards.Select((c, i) => (c, i)))
+                    {
+                        <button class="msd-card34" style="--acc:@c.Accent" @onclick="() => HandleCardAction(c.Key)" @key="c.Key">
+                            <span class="msd-card34-media">
+                                @if (GalleryCover(ci) is { } cover) { <img class="msd-card34-cover" src="@cover" alt="@c.Label" /> }
+                                else { <span class="msd-card34-emoji">@c.Emoji</span> }
+                                <span class="msd-card34-tag">@c.Tag</span>
+                            </span>
+                            <span class="msd-card34-lbl">@c.Label</span>
+                        </button>
+                    }
+                </div>
+
+                @* 프로젝트 구획 + [＋ 신규](모바일 내부 전환) *@
+                <div class="msd-proj-head">
+                    <span class="msd-proj-title">스토리보드 프로젝트</span>
+                    <button class="msd-proj-new" @onclick="() => SwitchInternal(MobileInternalView.Prompt)">＋ 신규</button>
+                </div>
+                <div class="msd-proj-list">
+                    @if (Project is not null && (Project.Scenes.Count > 0 || !string.IsNullOrWhiteSpace(Project.Title)))
+                    {
+                        <div class="msd-proj-item">
+                            <span class="msd-proj-thumb">🎬</span>
+                            <span class="msd-proj-info">
+                                <span class="pn">@(string.IsNullOrWhiteSpace(Project.Title) ? "새 프로젝트" : Project.Title)</span>
+                                <span class="pm">@(Project.Scenes.Count)컷 · Wan 3.0</span>
+                            </span>
+                            <span class="msd-proj-more">⋮</span>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="msd-proj-empty">아직 프로젝트가 없습니다. 아래 생성 닥에서 첫 장면을 시작하세요.</div>
+                    }
+                </div>
+
+                @* v5.7.3 Task3: 스토리보드 카드 직하단 full-width 단독 수직 구획(겹침·찌그러짐 근본 해소) *@
+                <section class="msd-preview-wrap">
+                    <FirstFramePreviewDeck Prompt="@(string.IsNullOrWhiteSpace(_session.DraftPrompt) ? WorkspaceSeed : _session.DraftPrompt)" AnchorImageUrl="@AnchorUrl" ActualOutputUrl="@(_dockResultUrl ?? ActualUrl)" OnRegisterAnchor="() => Capture(CaptureKind.Photo)" />
+                </section>
+
+                @* 퀵런치 — 전 모바일 내부 뷰를 워크스페이스에 직접 타일로 노출(세로에서 카셀 가로스크롤·드로어 없이 즉시 진입). v6.2.x: 자이로/대량양산/오디오/GPU 그리드 추가. *@
+                <div class="msd-ws-quick-h">빠른 메뉴</div>
+                <div class="msd-ws-quick">
+                    <button class="msd-ws-q" @onclick="() => SwitchInternal(MobileInternalView.Prompt)">✍️<span>프롬프트</span></button>
+                    <button class="msd-ws-q" @onclick="() => SwitchInternal(MobileInternalView.Storyboard)">🎞️<span>스토리보드</span></button>
+                    <button class="msd-ws-q" @onclick="() => SwitchInternal(MobileInternalView.Flow)">🕹️<span>노드 플로우</span></button>
+                    <button class="msd-ws-q" @onclick="() => SwitchInternal(MobileInternalView.Gyro)">🌀<span>자이로 3D</span></button>
+                    <button class="msd-ws-q" @onclick="() => SwitchInternal(MobileInternalView.Batch)">🏭<span>대량 양산</span></button>
+                    <button class="msd-ws-q" @onclick="() => SwitchInternal(MobileInternalView.AudioSync)">🎼<span>오디오 립싱크</span></button>
+                    <button class="msd-ws-q" @onclick="() => SwitchInternal(MobileInternalView.NodeGrid)">⚡<span>GPU 그리드</span></button>
+                    <button class="msd-ws-q" @onclick="() => _view = MobileView.Studio">📱<span>스튜디오</span></button>
+                </div>
+
+                @* v6.0.1-b: [⚡ GPU 그리드 분산 가동] 원클릭 전환 CTA — 가용 노드 수 배지 동반 *@
+                <button class="msd-grid-cta" @onclick="() => SwitchInternal(MobileInternalView.NodeGrid)">
+                    <span class="msd-grid-cta-ic">⚡</span>
+                    <span class="msd-grid-cta-tx">GPU 그리드 분산 가동<span class="msd-grid-cta-sub">원격 워커에 대량 양산·세그먼트 큐 분산 + 페일오버</span></span>
+                    <span class="msd-grid-cta-badge @(Grid.UsableNodeCount > 0 ? "on" : null)">노드 @Grid.UsableNodeCount</span>
+                </button>
+
+                @* v6.0.3: 생성 시 GPU 그리드로 분산 렌더 토글 — ON+가용노드면 닥 제출이 컷 세그먼트를 분산 노드로 즉시 이관 *@
+                <label class="msd-grid-toggle @(_useGpuGrid ? "on" : null)">
+                    <input type="checkbox" checked="@_useGpuGrid" @onchange="OnToggleGpuGrid" disabled="@(Grid.UsableNodeCount == 0)" />
+                    <span class="msd-grid-toggle-tx">⚡ 생성 시 GPU 그리드로 컷 분산 렌더 @(Grid.UsableNodeCount == 0 ? "(노드 등록 필요)" : $"({Grid.UsableNodeCount}노드 병렬)")</span>
+                </label>
+
+            }
+            else
+            {
+                @* v5.7.4: 모바일 내부 독립 서브 스튜디오(실체화 · PC 전환 없음) *@
+                <div class="msd-sub">
+                    <div class="msd-sub-head">
+                        <button class="msd-sub-back" @onclick="() => SwitchInternal(MobileInternalView.Workspace)" title="워크스페이스로">←</button>
+                        <span class="msd-sub-t">@InternalIcon @InternalTitle</span>
+                    </div>
+
+                    @if (_internalView == MobileInternalView.Storyboard)
+                    {
+                        @* 1. 컴팩트 스토리보드 컷 뷰어(썸네일+인라인 편집+추가/삭제) *@
+                        <div class="msd-sub-actions">
+                            <span class="msd-sub-count">총 @(Project?.Scenes.Count ?? 0)컷</span>
+                            <button class="msd-sub-add" @onclick="AddCompactCut">＋ 컷 추가</button>
+                        </div>
+                        <div class="msd-cutlist">
+                            @if (Project?.Scenes is { Count: > 0 })
+                            {
+                                @foreach (var (scene, idx) in Project.Scenes.Select((s, i) => (s, i)))
+                                {
+                                    <div class="msd-cutcard" @key="scene.Id">
+                                        @if (!string.IsNullOrEmpty(scene.PosterUrl)) { <img class="msd-cut-thumb" src="@scene.PosterUrl" alt="컷" /> }
+                                        else { <div class="msd-cut-thumb ph">🎬</div> }
+                                        <div class="msd-cut-mid">
+                                            <span class="msd-cut-no">컷 #@(idx + 1)</span>
+                                            <input class="msd-cut-in" @bind="scene.Prompt" @bind:event="oninput" placeholder="장면 프롬프트…" />
+                                        </div>
+                                        <button class="msd-cut-del" @onclick="() => RemoveCut(scene)" title="컷 삭제">✕</button>
+                                    </div>
+                                }
+                            }
+                            else { <div class="msd-sub-empty">등록된 컷이 없습니다. [＋ 컷 추가]로 시작하세요.</div> }
+                        </div>
+                    }
+                    else if (_internalView == MobileInternalView.Prompt)
+                    {
+                        @* 2. AI 프롬프트 부스터 — 초안 편집 + 칩 부착 + ✨ AI 부스팅(원격 델리게이트 or BCL 폴백) *@
+                        <div class="msd-boost-head">
+                            <p class="msd-sub-desc">초안을 적고 칩으로 살을 붙인 뒤 [✨ AI 부스팅]으로 고밀도 시네마틱 구문으로 증강하세요.</p>
+                            <button class="msd-boost-btn" @onclick="ApplyAiBoost" disabled="@(_isBoosting || string.IsNullOrWhiteSpace(_session.DraftPrompt))">
+                                @(_isBoosting ? "✨ 증강 중…" : "✨ AI 부스팅 주입")
+                            </button>
+                        </div>
+                        <textarea class="msd-draft-ta" rows="3" @bind="_session.DraftPrompt" @bind:event="oninput"
+                                  placeholder="장면 구상을 자유롭게 적으세요… (칩·부스팅이 여기에 합성됩니다)"></textarea>
+                        @foreach (var grp in PromptChipGroups)
+                        {
+                            <div class="msd-chip-grp" @key="grp.Title">
+                                <span class="msd-chip-gtitle">@grp.Title</span>
+                                <div class="msd-chip-row">
+                                    @foreach (var chip in grp.Chips)
+                                    {
+                                        <button class="msd-chip" @onclick="() => AppendPromptChip(chip.Text)" @key="chip.Label">@chip.Label</button>
+                                    }
+                                </div>
+                            </div>
+                        }
+                        <div class="msd-boost-foot">이 초안은 화면 전환 후에도 세션에 보존되며 하단 생성 닥·예상 프레임에 자동 반영됩니다.</div>
+                    }
+                    else if (_internalView == MobileInternalView.Flow)
+                    {
+                        @* 3. 라이브 DAG 스텝퍼 — RunShortsChainAsync SegmentProgress와 1:1 바인딩(컷별 대기/가동/완공 + 썸네일) *@
+                        <p class="msd-sub-desc">컷별 I2V 연쇄 렌더 상태 — @(_dockRunning ? $"진행 {_dockPercent}%" : "대기 중")</p>
+                        <div class="msd-dagstep">
+                            @for (var i = 1; i <= Math.Max(_currentTotalSteps, 1); i++)
+                            {
+                                var step = i;
+                                var done = _completedStepThumbs.ContainsKey(step);
+                                var running = _dockRunning && _currentStepIndex == step && !done;
+                                <div class="msd-dagstep-item @(running ? "run" : done ? "done" : "idle")" @key="step">
+                                    <span class="msd-dagstep-no">컷 #@step</span>
+                                    <div class="msd-dagstep-mid">
+                                        <span class="msd-dagstep-lbl">I2V 세그먼트 @step/@Math.Max(_currentTotalSteps, 1)</span>
+                                        <span class="msd-dagstep-st">
+                                            @if (running) { <span class="pulse">⚡ 렌더링 가동 중…</span> }
+                                            else if (done) { <span class="ok">✓ 완공</span> }
+                                            else { <span class="muted">· 대기</span> }
+                                        </span>
+                                    </div>
+                                    @if (done && _completedStepThumbs.TryGetValue(step, out var thumb) && !string.IsNullOrEmpty(thumb))
+                                    {
+                                        <img class="msd-dagstep-thumb" src="@thumb" alt="컷 @step 결과" />
+                                    }
+                                </div>
+                            }
+                        </div>
+                        @if (_driftWarn)
+                        {
+                            <div class="msd-drift-banner">🛡️ 정체성 이탈 주의 — 가드레일이 <b>Strict</b> 로 자율 격상되었습니다(변형 키워드 감지).</div>
+                        }
+                    }
+                    else if (_internalView == MobileInternalView.Batch)
+                    {
+                        @* v5.8.0: B2B 대량 양산 팩토리(템플릿 변수 치환 → 세그먼트 큐 렌더 · 완료 즉시 자산화) *@
+                        <BatchFactoryMobileView IsRunning="_dockRunning" ProgressPercent="_dockPercent" LiveStep="@_liveStep" OnStartBatchRequest="HandleBatchStart" />
+                    }
+                    else if (_internalView == MobileInternalView.Gyro)
+                    {
+                        @* v5.8.0: 3D 자이로 모션 라이브 뷰어(가상 조이스틱 → 카메라 모션 태그 주입) *@
+                        <MobileGyroViewer OnApplyMotionTag="HandleGyroMotion" />
+                    }
+                    else if (_internalView == MobileInternalView.NodeGrid)
+                    {
+                        @* v6.0.1-b: 원격 GPU 워커 분산 렌더 노드 HUD(그리드 싱글턴 [Parameter] 전달 · 무주입) *@
+                        <DistributedNodeHudPanel Grid="Grid" />
+                    }
+                    else if (_internalView == MobileInternalView.AudioSync)
+                    {
+                        @* v6.0.2: 오디오 파형 스튜디오 — 보컬 립싱크 컷 분할 → 컷별 프롬프트 주입(무주입 · EventCallback) *@
+                        <AudioWaveformStudioView OnApplySync="HandleAudioSync" />
+                    }
+                    else if (_internalView == MobileInternalView.WebhookLog)
+                    {
+                        @* v6.1.0: B2B Webhook 발송 로그(디스패처 싱글턴 [Parameter] 전달 · 무주입) *@
+                        <WebhookLogView Dispatcher="Webhook" />
+                    }
+                    else if (_internalView == MobileInternalView.LiveStream)
+                    {
+                        @* v6.1.0: WebRTC 초저지연 라이브 프리뷰(스트리머 [Parameter] 전달 · 최신 프레임 제공자 · 무주입) *@
+                        <MobileLivePreviewPlayer Streamer="Rtc" SignalUrl="@Project?.RemoteWorkerUrl" StillFrameProvider="LatestFrameProvider" />
+                    }
+                    else
+                    {
+                        <div class="msd-sub-empty">@InternalTitle 뷰는 준비 중입니다 — 워크스페이스에서 계속하세요.</div>
+                    }
+                </div>
+            }
+        </div>
+    }
+    else
+    {
+    @* v5.3.4: PromptFlow 모바일 스튜디오 덱(프롬프트/씬/렌더큐/자이로 3D 구도) 상단 마운트 · 프로젝트 전달 *@
+    <div class="msd-supremacy"><MobileSupremacyDeck Project="Project" /></div>
+
+    <div class="msd-grid">
+        @* ── ① 네이티브 캡처 ── *@
+        <div class="msd-card">
+            <div class="msd-ct">📷 즉석 캡처 <span class="msd-sub">@(Bridge.Info.IsMobile ? "카메라/마이크 권한 연동" : "데스크톱=파일 선택")</span></div>
+            <div class="msd-caps">
+                <button class="msd-cap" @onclick="() => Capture(CaptureKind.Photo)" disabled="@(Disabled || _busy)"><span class="msd-cap-e">📷</span>사옥/아기 촬영</button>
+                <button class="msd-cap" @onclick="() => Capture(CaptureKind.Video)" disabled="@(Disabled || _busy)"><span class="msd-cap-e">🎬</span>영상 클립</button>
+                <button class="msd-cap" @onclick="() => Capture(CaptureKind.Audio)" disabled="@(Disabled || _busy)"><span class="msd-cap-e">🎤</span>음성 지시(NLU)</button>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(Project.AnchorImagePath)) { <div class="msd-anchor">⚓ 앵커: @System.IO.Path.GetFileName(Project.AnchorImagePath)</div> }
+        </div>
+
+        @* ── ② 리모트 렌더 오프로딩 ── *@
+        <div class="msd-card">
+            <div class="msd-ct">☁️ 리모트 렌더 오프로딩 <span class="msd-sub">PC RTX 워커</span></div>
+            <input class="msd-in" value="@Project.RemoteWorkerUrl" @oninput="OnWorker" placeholder="워커 주소 (예: http://192.168.0.10:8080)" disabled="@Disabled" inputmode="url" />
+            <label class="msd-tg"><input type="checkbox" checked="@Project.RemoteRenderEnabled" @onchange="OnRemoteToggle" disabled="@Disabled" /> 스마트폰 렌더를 PC 워커로 위임(AES-256 암호화 전송)</label>
+            <button class="msd-btn go" @onclick="Offload" disabled="@(Disabled || _busy)">☁️ PC 워커로 60fps 오프로딩</button>
+        </div>
+
+        @* ── ③ 3D 씬 구도 프리뷰(드래그 회전) ── *@
+        <div class="msd-card">
+            <div class="msd-ct">🧊 3D 씬 구도 프리뷰 <span class="msd-sub">드래그로 회전</span><button class="msd-mini" @onclick="ResetCube">↺</button></div>
+            <div class="msd-cube-wrap" @onpointerdown="OnDown" @onpointermove="OnMove" @onpointerup="OnUp" @onpointerleave="OnUp">
+                <div class="msd-cube" style="--rx:@(N(_rotX))deg; --ry:@(N(_rotY))deg">
+                    <div class="msd-face f1"></div><div class="msd-face f2"></div><div class="msd-face f3"></div>
+                    <div class="msd-face f4"></div><div class="msd-face f5"></div><div class="msd-face f6"></div>
+                </div>
+            </div>
+            <div class="msd-rot">X @(N(_rotX))° · Y @(N(_rotY))°</div>
+        </div>
+
+        @* ── ④ 온디바이스 배경 분리 ── *@
+        <div class="msd-card">
+            <div class="msd-ct">✂️ 온디바이스 배경 분리 <span class="msd-sub">1초 크로마 알파</span></div>
+            <label class="msd-tg"><input type="checkbox" checked="@Project.ChromaAutoKey" @onchange="OnChromaToggle" disabled="@Disabled" /> 촬영 배경을 자동 알파 컷아웃</label>
+            <button class="msd-btn cut" @onclick="SeparateBg" disabled="@(Disabled || _busy)">✂️ 배경 1초 분리</button>
+            <div class="msd-note">순수 BCL 색거리 매트(GPU 불필요) + FFmpegKit chromakey 고품질 경로. 버추얼 스튜디오/기념 카드 합성에 재사용됩니다.</div>
+        </div>
+    </div>
+
+    @* ── v5.4 인터랙티브 플로우 런처(구글 Flow 초월 4대 모바일 UX) ── *@
+    <div class="msd-flow54">
+        <div class="msd-ct">🚀 v5.4 인터랙티브 플로우 <span class="msd-sub">제스처·모션·음성·햅틱</span></div>
+        <div class="msd-flow-btns">
+            <button class="msd-flow-b canvas" @onclick="() => OpenFlow(FlowScreen.Canvas)">🕹️<span>노드 오케스트레이터</span></button>
+            <button class="msd-flow-b motion" @onclick="() => OpenFlow(FlowScreen.Motion)">🎯<span>모션 벡터</span></button>
+            <button class="msd-flow-b voice" @onclick="() => OpenFlow(FlowScreen.Voice)">🎙️<span>공간 음성</span></button>
+            <button class="msd-flow-b scrub" @onclick="() => OpenFlow(FlowScreen.Scrub)">🎞️<span>햅틱 스크러버</span></button>
+        </div>
+    </div>
+    }
+
+    @if (_msg is not null) { <div class="msd-msg">@_msg</div> }
+    </div>@* /.msd-scroll-body *@
+
+    @* ── v5.4 풀-블리드 오버레이(선택 플로우를 폰 프레임 내부에 전체 표시) ── *@
+    @if (_flow != FlowScreen.None)
+    {
+        <div class="msd-ov">
+            <div class="msd-ov-h">
+                <button class="msd-ov-back" @onclick="CloseFlow">‹ 뒤로</button>
+                <span class="msd-ov-t">@FlowTitle</span>
+            </div>
+            <div class="msd-ov-bd">
+                @if (_flow == FlowScreen.Canvas)
+                {
+                    <TrueFlowCanvas Project="Project" />
+                }
+                else if (_flow == FlowScreen.Motion)
+                {
+                    <MotionVectorPainter Project="Project" OnPrompt="OnMotionPrompt" OnVectors="v => _lastMotion = v" />
+                }
+                else if (_flow == FlowScreen.Scrub)
+                {
+                    <HapticFrameScrubber Project="Project" />
+                }
+                else if (_flow == FlowScreen.Voice)
+                {
+                    <div class="msd-voice">
+                        <div class="msd-voice-ct">🎙️ 공간 음성-비전 앵커링 <span class="msd-sub">@(Voice.IsSupported ? "실시간 음성 인식" : "데스크톱=데모 구조화")</span></div>
+                        <div class="msd-voice-pad" @onpointerdown="SetAnchor" title="탭하여 사물 인식 앵커 지정">
+                            <span class="msd-voice-cam">📷 현장 프리뷰 — 탭하여 앵커 지정</span>
+                            <div class="msd-voice-anchor" style="left:@F(_anchorPx.X)px; top:@F(_anchorPx.Y)px">◎</div>
+                        </div>
+                        <textarea class="msd-voice-in" @bind="_voiceText" @bind:event="oninput" rows="2"
+                                  placeholder="음성 명령 또는 직접 입력 (예: 이 기계 뒤에서 안개가 피어오르고 붉은 조명이 비추는 비디오 생성)"></textarea>
+                        <div class="msd-voice-act">
+                            <button class="msd-btn go" @onclick="VoiceCapture" disabled="@_voiceBusy">🎤 음성 캡처</button>
+                            <button class="msd-btn cut" @onclick="VoiceStructure" disabled="@_voiceBusy">🧩 구조화</button>
+                        </div>
+                        @if (_voiceNode is not null)
+                        {
+                            <div class="msd-voice-node">
+                                <div class="msd-voice-row"><b>주체</b> @_voiceNode.Subject</div>
+                                <div class="msd-voice-row"><b>분위기</b> @_voiceNode.Atmosphere</div>
+                                <div class="msd-voice-row"><b>조명</b> @_voiceNode.Lighting</div>
+                                <div class="msd-voice-row"><b>카메라</b> @_voiceNode.Camera</div>
+                                <div class="msd-voice-row"><b>앵커</b> (@F(_voiceNode.Anchor.ScreenX), @F(_voiceNode.Anchor.ScreenY)) · @SpatialPromptStructurer.Bearing(_voiceNode.Anchor.HeadingDeg)</div>
+                                <code class="msd-voice-wan">@_voiceNode.WanPrompt</code>
+                            </div>
+                        }
+                        @if (_voiceMsg is not null) { <div class="msd-voice-msg">@_voiceMsg</div> }
+
+                        @* v5.4.1 — 모션 벡터 + 공간 음성 → WanPromptCompiler → WanRenderClient(백엔드 직결/오프라인 큐) *@
+                        <div class="msd-wan">
+                            <div class="msd-wan-sum">🚀 Wan 3.0 전송 대기 — 음성 @(_voiceNode is null ? "미구성" : "구성됨") · 모션 @(_lastMotion.Count)벡터 · 강도 @WanIntensity</div>
+                            <button class="msd-btn go" @onclick="SendToWan" disabled="@_wanBusy">🚀 Wan 3.0 렌더 전송</button>
+                            @if (_wanMsg is not null) { <div class="msd-voice-msg">@_wanMsg</div> }
+                        </div>
+                    </div>
+                }
+            </div>
+        </div>
+    }
+
+    @* v5.6.7: Google Flow 플로팅 바텀 생성 닥(워크스페이스 · 히어로/오버레이 없을 때만) *@
+    @if (_view == MobileView.Workspace && _flow == FlowScreen.None && !_showHero)
+    {
+        <MobilePromptDock AnchorImageUrl="@AnchorUrl" GuardEnabled="_guardEnabled" GuardPreset="_guardPreset"
+                          IsRunning="_dockRunning" ProgressPercent="_dockPercent" SeedText="@_session.DraftPrompt"
+                          LiveStepMessage="@_liveStep" CompletedThumbs="_completedThumbs"
+                          OnSubmit="HandleDockSubmit" OnAttachAnchorRequest="() => Capture(CaptureKind.Photo)" OnToggleGuard="ToggleGuard" OnCancelRequest="HandleDockCancel" />
+    }
+</div>
+
+<style>
+    .msd { position: relative; display: flex; flex-direction: column; height: 100%; box-sizing: border-box; border: 1px solid color-mix(in srgb, #34d399 34%, var(--line)); border-radius: 16px; overflow: hidden; font-family: Pretendard, 'Malgun Gothic', sans-serif;
+        background: linear-gradient(160deg, color-mix(in srgb, #34d399 9%, var(--card)), var(--card)); backdrop-filter: blur(16px) saturate(150%); -webkit-backdrop-filter: blur(16px) saturate(150%); }
+    /* v5.7.6(2차): 뷰포트 Flexbox 3층 격리 — 헤더/탭 고정(flex:0 0 auto) · 본문 독립 스크롤(flex:1 1 auto, 하단 130px 여백) · 닥은 absolute 풋터(.msd position:relative 종속). height:100% 미확정 부모(B2B .bg-pane)에선 auto 폴백 → 종전 동작 유지. */
+    .msd > .msd-h, .msd > .msd-tabs { flex: 0 0 auto; }
+    .msd-scroll-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding-bottom: 130px; scrollbar-width: thin; scrollbar-color: color-mix(in srgb,#34d399 40%,transparent) transparent; }
+    /* v6.2.x: 시뮬 가로(short) — 컴팩트 닥(≈90px) 높이에 맞춰 하단 여백 축소(과다 여백/겹침 동시 방지). */
+    .msp-viewport.land .msd-scroll-body { padding-bottom: 104px; }
+    .msd-scroll-body::-webkit-scrollbar { width: 7px; }
+    .msd-scroll-body::-webkit-scrollbar-thumb { background: color-mix(in srgb,#34d399 38%,transparent); border-radius: 4px; }
+    .msd-h { display: flex; align-items: center; gap: 8px; padding: 12px 15px; border-bottom: 1px solid color-mix(in srgb, #34d399 22%, var(--line)); background: linear-gradient(120deg, color-mix(in srgb, #34d399 14%, transparent), transparent 62%); flex-wrap: wrap; }
+    .msd-title { font: 900 14px Pretendard,'Malgun Gothic',sans-serif; background: linear-gradient(90deg, #6ee7b7, #7dd3fc); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .msd-badge { font: 800 10px var(--mono); color: #fff; background: linear-gradient(135deg, #10b981, #0ea5e9); border-radius: 20px; padding: 2px 8px; }
+    /* v6.2.x(A): 세로 좁은 폭에서 우측 잘림 방지 — 남는 폭 안에서 말줄임(shrink 허용). */
+    .msd-plat { margin-left: auto; flex: 0 1 auto; min-width: 0; font: 600 10px var(--mono); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .msd-supremacy { padding: 0 15px 13px; }
+    /* 반응형: 모바일 세로 1열 → 태블릿/DeX 2열 → DeX 대형 모니터 3열 */
+    .msd-grid { display: grid; grid-template-columns: 1fr; gap: 12px; padding: 13px 15px; }
+    @@media (min-width: 720px) { .msd-grid { grid-template-columns: 1fr 1fr; } }
+    @@media (min-width: 1200px) { .msd-grid { grid-template-columns: 1fr 1fr 1fr 1fr; } }
+    .msd-card { border: 1px solid var(--line); border-radius: 13px; background: var(--card-2); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+    .msd-ct { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; display: flex; align-items: center; gap: 8px; color: var(--text-primary); }
+    .msd-sub { font: 600 10px var(--mono); color: var(--text-muted); }
+    .msd-mini { margin-left: auto; width: 30px; height: 30px; font-size: 14px; color: var(--text-secondary); background: var(--card-2); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+    /* 캡처(터치 타깃 크게) */
+    .msd-caps { display: flex; flex-direction: column; gap: 7px; }
+    .msd-cap { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 0 14px; border-radius: 11px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; font: 700 12.5px Pretendard,'Malgun Gothic',sans-serif; }
+    .msd-cap:hover:not(:disabled) { border-color: #34d399; color: var(--text-primary); } .msd-cap:disabled { opacity: .5; cursor: not-allowed; }
+    .msd-cap-e { font-size: 20px; }
+    .msd-anchor { font: 700 10.5px var(--mono); color: #6ee7b7; word-break: break-all; }
+    /* 리모트 */
+    .msd-in { min-height: 46px; background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 0 12px; color: var(--text-primary); font: 700 12.5px var(--mono); outline: none; }
+    .msd-in:focus { border-color: #34d399; } .msd-in:disabled { opacity: .55; }
+    .msd-tg { font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-secondary); display: inline-flex; align-items: flex-start; gap: 7px; cursor: pointer; line-height: 1.45; word-break: keep-all; }
+    .msd-tg input { margin-top: 2px; }
+    .msd-btn { min-height: 48px; font: 800 13.5px Pretendard,'Malgun Gothic',sans-serif; padding: 0 16px; border: none; border-radius: 12px; cursor: pointer; word-break: keep-all; }
+    .msd-btn.go { color: #fff; background: linear-gradient(135deg, #10b981, #0ea5e9); box-shadow: 0 6px 16px color-mix(in srgb, #10b981 30%, transparent), inset 0 1px 0 rgba(255,255,255,.28); }
+    .msd-btn.cut { color: #fff; background: linear-gradient(135deg, #6366f1, #a855f7); box-shadow: 0 6px 16px color-mix(in srgb, #6366f1 30%, transparent); }
+    .msd-btn:hover:not(:disabled) { filter: brightness(1.07); } .msd-btn:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
+    /* 터치 CAD 큐브 */
+    .msd-cube-wrap { height: 150px; display: grid; place-items: center; perspective: 620px; touch-action: none; cursor: grab; user-select: none; -webkit-user-select: none; }
+    .msd-cube-wrap:active { cursor: grabbing; }
+    .msd-cube { width: 92px; height: 92px; position: relative; transform-style: preserve-3d; transform: rotateX(var(--rx,-20deg)) rotateY(var(--ry,20deg)); }
+    .msd-face { position: absolute; width: 92px; height: 92px; border: 1.5px solid #34d399; box-shadow: 0 0 12px #34d399, inset 0 0 12px #34d39955; background: #34d3990f; }
+    .msd-face.f1 { transform: translateZ(46px); } .msd-face.f2 { transform: rotateY(180deg) translateZ(46px); } .msd-face.f3 { transform: rotateY(90deg) translateZ(46px); }
+    .msd-face.f4 { transform: rotateY(-90deg) translateZ(46px); } .msd-face.f5 { transform: rotateX(90deg) translateZ(46px); } .msd-face.f6 { transform: rotateX(-90deg) translateZ(46px); }
+    .msd-rot { text-align: center; font: 700 10px var(--mono); color: var(--text-muted); }
+    .msd-note { font: 600 10.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); line-height: 1.5; word-break: keep-all; }
+    .msd-msg { margin: 0 15px 14px; padding: 9px 12px; border-radius: 10px; background: var(--card); border: 1px solid color-mix(in srgb,#34d399 30%,var(--line)); font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: #6ee7b7; word-break: keep-all; line-height: 1.5; }
+    /* v5.4 런처 */
+    .msd-flow54 { margin: 0 15px 14px; padding: 12px; border-radius: 13px; border: 1px solid color-mix(in srgb, #7c5cff 30%, var(--line)); background: linear-gradient(135deg, color-mix(in srgb, #7c5cff 12%, transparent), transparent 70%); }
+    .msd-flow-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+    .msd-flow-b { display: flex; flex-direction: column; align-items: center; gap: 5px; min-height: 66px; padding: 10px; border-radius: 12px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; font: 800 11px Pretendard,'Malgun Gothic',sans-serif; }
+    .msd-flow-b { font-size: 21px; } .msd-flow-b span { font-size: 11px; }
+    .msd-flow-b:hover { color: var(--text-primary); }
+    .msd-flow-b.canvas:hover { border-color: #7c5cff; box-shadow: 0 0 12px color-mix(in srgb, #7c5cff 40%, transparent); }
+    .msd-flow-b.motion:hover { border-color: #22d3ee; box-shadow: 0 0 12px color-mix(in srgb, #22d3ee 40%, transparent); }
+    .msd-flow-b.voice:hover { border-color: #34d399; box-shadow: 0 0 12px color-mix(in srgb, #34d399 40%, transparent); }
+    .msd-flow-b.scrub:hover { border-color: #f5c451; box-shadow: 0 0 12px color-mix(in srgb, #f5c451 40%, transparent); }
+    /* v5.4 오버레이(폰 프레임 내부 전체) */
+    .msd-ov { position: absolute; inset: 0; z-index: 30; display: flex; flex-direction: column; background: rgba(8,10,18,.98); backdrop-filter: blur(6px); }
+    .msd-ov-h { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); flex: 0 0 auto; }
+    .msd-ov-back { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; padding: 8px 12px; border-radius: 9px; border: 1px solid var(--line); background: var(--card-2); color: #6ee7b7; cursor: pointer; min-height: 38px; }
+    .msd-ov-back:hover { border-color: #34d399; color: var(--text-primary); }
+    .msd-ov-t { font: 900 13px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .msd-ov-bd { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; }
+    /* v5.4 공간 음성 패널 */
+    .msd-voice { display: flex; flex-direction: column; gap: 10px; }
+    .msd-voice-ct { font: 800 12.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .msd-voice-pad { position: relative; height: 130px; border-radius: 12px; overflow: hidden; cursor: crosshair; touch-action: none;
+        background: radial-gradient(60% 60% at 50% 40%, color-mix(in srgb, #34d399 14%, transparent), transparent 70%), linear-gradient(135deg, #0b1020, #161a2e); border: 1px solid color-mix(in srgb, #34d399 26%, var(--line)); }
+    .msd-voice-cam { position: absolute; left: 10px; top: 10px; font: 700 10px var(--mono); color: #6ee7b7; }
+    .msd-voice-anchor { position: absolute; transform: translate(-50%, -50%); font-size: 22px; color: #34d399; text-shadow: 0 0 10px #34d399; pointer-events: none; }
+    .msd-voice-in { width: 100%; box-sizing: border-box; resize: none; background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; color: var(--text-primary); font: 600 11.5px Pretendard,'Malgun Gothic',sans-serif; line-height: 1.5; outline: none; }
+    .msd-voice-act { display: flex; gap: 8px; }
+    .msd-voice-node { border: 1px solid color-mix(in srgb, #34d399 26%, var(--line)); border-radius: 11px; padding: 11px; background: rgba(11,13,20,.5); display: flex; flex-direction: column; gap: 5px; }
+    .msd-voice-row { font: 600 11px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-secondary); } .msd-voice-row b { color: #6ee7b7; margin-right: 7px; font-weight: 800; }
+    .msd-voice-wan { margin-top: 5px; font: 600 10.5px var(--mono); color: #a7f3d0; background: rgba(52,211,153,.08); border: 1px solid color-mix(in srgb, #34d399 22%, var(--line)); border-radius: 8px; padding: 8px 10px; word-break: break-word; line-height: 1.5; }
+    .msd-voice-msg { font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: #6ee7b7; word-break: keep-all; line-height: 1.5; }
+    /* v5.4.1 Wan 전송 블록 */
+    .msd-wan { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; padding: 11px; border-radius: 11px; border: 1px solid color-mix(in srgb, #7c5cff 30%, var(--line)); background: linear-gradient(135deg, color-mix(in srgb, #7c5cff 12%, transparent), transparent 70%); }
+    .msd-wan-sum { font: 700 10.5px var(--mono); color: #c4b5fd; word-break: keep-all; line-height: 1.5; }
+    /* v5.6.5 워크스페이스/스튜디오 탭 */
+    .msd-tabs { display: flex; gap: 6px; padding: 10px 15px 0; }
+    .msd-tab { flex: 1; min-height: 40px; border-radius: 11px 11px 0 0; border: 1px solid var(--line); border-bottom: none; background: var(--card-2); color: var(--text-muted); cursor: pointer; font: 800 12px Pretendard,'Malgun Gothic',sans-serif; }
+    .msd-tab.on { color: #fff; background: linear-gradient(135deg, color-mix(in srgb,#34d399 22%,transparent), color-mix(in srgb,#0ea5e9 22%,transparent)); border-color: color-mix(in srgb,#34d399 40%,var(--line)); }
+    /* v5.6.5 워크스페이스 부팅 대시보드 */
+    .msd-ws { padding: 12px 15px 14px; display: flex; flex-direction: column; gap: 16px; width: 100%; box-sizing: border-box; }
+    /* v6.2.x(B): 세로 도킹 — 워크스페이스 상하 여백/간격 압축으로 한 화면 가시영역 확장. */
+    .msp-viewport.port .msd-ws { padding: 8px 12px 10px; gap: 11px; }
+    .msp-viewport.port .msd-scroll-body { padding-bottom: 118px; }
+    .msd-ws-hero { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 13px; border: 1px solid color-mix(in srgb,#34d399 26%,var(--line));
+        background: linear-gradient(135deg, color-mix(in srgb,#34d399 12%,transparent), transparent 70%); }
+    .msd-ws-ic { font-size: 26px; }
+    .msd-ws-t { font: 900 15px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .msd-ws-s { font: 700 11px var(--mono); color: var(--text-muted); margin-top: 2px; }
+    .msd-ws-quick-h { font: 900 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); margin: 2px 2px -2px; }
+    .msd-ws-quick { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .msd-ws-q { display: flex; flex-direction: column; align-items: center; gap: 4px; min-height: 60px; padding: 8px; border-radius: 12px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; font-size: 20px; }
+    .msd-ws-q span { font: 700 10px Pretendard,'Malgun Gothic',sans-serif; }
+    .msd-ws-q:hover { border-color: #34d399; color: var(--text-primary); }
+    /* v6.0.1-b: GPU 그리드 분산 가동 CTA(네온 그린-시안) */
+    .msd-grid-cta { display: flex; align-items: center; gap: 12px; width: 100%; box-sizing: border-box; padding: 12px 14px; border-radius: 14px; cursor: pointer; text-align: left;
+        border: 1px solid color-mix(in srgb,#34d399 40%,var(--line)); background: linear-gradient(120deg, color-mix(in srgb,#34d399 14%,transparent), color-mix(in srgb,#0ea5e9 10%,transparent) 70%); }
+    .msd-grid-cta:hover { border-color: #34d399; box-shadow: 0 0 16px color-mix(in srgb,#34d399 26%,transparent); }
+    .msd-grid-cta:active { transform: scale(0.99); }
+    .msd-grid-cta-ic { font-size: 24px; flex: 0 0 auto; }
+    .msd-grid-cta-tx { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; font: 900 13px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .msd-grid-cta-sub { font: 600 9.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); word-break: keep-all; line-height: 1.4; }
+    .msd-grid-cta-badge { flex: 0 0 auto; font: 800 10px var(--mono); color: var(--text-muted); background: var(--card-2); border: 1px solid var(--line); border-radius: 12px; padding: 4px 10px; }
+    .msd-grid-cta-badge.on { color: #04121c; background: linear-gradient(135deg,#34d399,#0ea5e9); border: none; }
+    /* v6.2.x: 모바일 테마 퀵스위치(PC 공용 ThemeService 위임 · 활성 칩은 테마 토큰 accent 반영) */
+    .msd-theme { display: flex; flex-direction: column; gap: 7px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: rgba(11,13,20,.5); }
+    .msd-theme-t { font: 800 10px var(--mono); color: var(--text-muted); }
+    .msd-theme-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .msd-theme-chip { font: 700 10.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-secondary); background: var(--card-2); border: 1px solid var(--line); border-radius: 14px; padding: 6px 11px; cursor: pointer; }
+    .msd-theme-chip:hover { border-color: var(--accent, #7c5cff); color: var(--text-primary); }
+    .msd-theme-chip.on { color: #fff; background: linear-gradient(135deg, var(--accent, #7c5cff), var(--accent-2, #22d3ee)); border-color: transparent; }
+    /* v6.0.3: 생성 시 GPU 분산 렌더 토글 */
+    .msd-grid-toggle { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-radius: 12px; cursor: pointer; border: 1px solid var(--line); background: rgba(11,13,20,.5); }
+    .msd-grid-toggle.on { border-color: color-mix(in srgb,#34d399 45%,var(--line)); background: color-mix(in srgb,#34d399 10%,transparent); }
+    .msd-grid-toggle input { width: 18px; height: 18px; flex: 0 0 auto; accent-color: #34d399; }
+    .msd-grid-toggle input:disabled { opacity: .5; cursor: not-allowed; }
+    .msd-grid-toggle-tx { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-secondary); word-break: keep-all; line-height: 1.4; }
+    .msd-grid-toggle.on .msd-grid-toggle-tx { color: #6ee7b7; }
+    /* v5.7.3: full-width 수직 컬럼 유지(2열 그리드 폐지 — 카드 겹침/찌그러짐 근본 차단) + 예상 첫 프레임 단독 구획 + 모바일 내부 독립 페이지 */
+    .msd-preview-wrap { width: 100%; }
+    /* v5.7.7 이어보기 복구 스마트 배너 */
+    .msd-resume-banner { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: color-mix(in srgb,#38bdf8 12%,transparent); border: 1px solid color-mix(in srgb,#38bdf8 34%,var(--line)); border-radius: 14px; padding: 10px 12px; }
+    .msd-resume-banner .rb-info { display: flex; align-items: center; gap: 8px; font: 600 11.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-secondary); line-height: 1.4; word-break: keep-all; }
+    .msd-resume-banner .rb-info b { color: #7dd3fc; font-weight: 800; }
+    .msd-resume-banner .rb-ic { font-size: 18px; flex: 0 0 auto; }
+    .msd-resume-run { flex: 0 0 auto; font: 800 11px Pretendard,'Malgun Gothic',sans-serif; color: #04121c; background: linear-gradient(135deg,#38bdf8,#22d3ee); border: none; border-radius: 12px; padding: 7px 12px; cursor: pointer; white-space: nowrap; }
+    .msd-resume-run:active { transform: scale(0.96); }
+    /* v5.7.4 모바일 서브 스튜디오(컷 뷰어/칩 패널/DAG 인스펙터) */
+    .msd-sub { padding: 14px 15px; display: flex; flex-direction: column; gap: 12px; }
+    .msd-sub-head { display: flex; align-items: center; gap: 10px; }
+    .msd-sub-back { flex: 0 0 auto; width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); font-size: 15px; cursor: pointer; }
+    .msd-sub-t { font: 900 14px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .msd-sub-desc { font: 600 11px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); line-height: 1.5; word-break: keep-all; margin: 0; }
+    .msd-sub-empty { font: 600 11.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); padding: 20px 4px; text-align: center; line-height: 1.5; word-break: keep-all; }
+    .msd-sub-actions { display: flex; align-items: center; justify-content: space-between; }
+    .msd-sub-count { font: 700 11px var(--mono); color: var(--text-muted); }
+    .msd-sub-add { font: 800 11.5px Pretendard,'Malgun Gothic',sans-serif; color: #04121c; background: linear-gradient(135deg,#38bdf8,#22d3ee); border: none; border-radius: 16px; padding: 6px 14px; cursor: pointer; }
+    .msd-cutlist { display: flex; flex-direction: column; gap: 8px; }
+    .msd-cutcard { display: flex; align-items: center; gap: 10px; background: var(--card-2); border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; }
+    .msd-cut-thumb { flex: 0 0 auto; width: 40px; height: 40px; border-radius: 8px; object-fit: cover; background: #000; display: grid; place-items: center; font-size: 18px; }
+    .msd-cut-thumb.ph { color: var(--text-muted); }
+    .msd-cut-mid { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .msd-cut-no { font: 800 9.5px var(--mono); color: #7dd3fc; }
+    .msd-cut-in { width: 100%; background: transparent; border: none; color: var(--text-primary); font: 600 12px Pretendard,'Malgun Gothic',sans-serif; outline: none; }
+    .msd-cut-del { flex: 0 0 auto; width: 28px; height: 28px; border: none; background: none; color: #ef4444; font-size: 13px; cursor: pointer; border-radius: 7px; }
+    .msd-cut-del:hover { background: color-mix(in srgb,#ef4444 15%,transparent); }
+    .msd-chip-grp { display: flex; flex-direction: column; gap: 6px; }
+    .msd-chip-gtitle { font: 800 10px var(--mono); color: var(--text-muted); }
+    .msd-chip-row { display: flex; flex-wrap: wrap; gap: 7px; }
+    .msd-chip { font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-secondary); background: var(--card-2); border: 1px solid var(--line); border-radius: 16px; padding: 7px 12px; cursor: pointer; }
+    .msd-chip:hover { border-color: #38bdf8; color: var(--text-primary); }
+    .msd-chip-seed { display: flex; align-items: center; justify-content: space-between; gap: 8px; font: 700 10.5px Pretendard,'Malgun Gothic',sans-serif; color: #7dd3fc; background: rgba(56,189,248,.1); border: 1px solid color-mix(in srgb,#38bdf8 26%,var(--line)); border-radius: 10px; padding: 7px 10px; }
+    .msd-chip-seed span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .msd-chip-clear { flex: 0 0 auto; font: 700 10px Pretendard,'Malgun Gothic',sans-serif; color: #fca5a5; background: none; border: 1px solid color-mix(in srgb,#ef4444 40%,var(--line)); border-radius: 8px; padding: 3px 8px; cursor: pointer; }
+    .msd-dag { display: flex; flex-direction: column; gap: 8px; }
+    .msd-dag-item { display: flex; align-items: center; gap: 9px; background: var(--card-2); border: 1px solid var(--line); border-radius: 11px; padding: 10px 12px; font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-secondary); }
+    .msd-dag-step { flex: 0 0 auto; width: 20px; height: 20px; border-radius: 50%; background: var(--card); color: var(--text-muted); font: 800 10px var(--mono); display: grid; place-items: center; }
+    .msd-dag-ic { font-size: 15px; }
+    .msd-dag-lbl { flex: 1; color: var(--text-primary); }
+    .msd-dag-st { flex: 0 0 auto; font: 800 10px var(--mono); }
+    .msd-dag-item.idle .msd-dag-st { color: var(--text-muted); }
+    .msd-dag-item.run { border-color: color-mix(in srgb,#f5c451 45%,var(--line)); } .msd-dag-item.run .msd-dag-st { color: #f5c451; }
+    .msd-dag-item.ok .msd-dag-st { color: #34d399; }
+    /* v5.7.5 프롬프트 부스터 */
+    .msd-boost-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+    .msd-boost-btn { flex: 0 0 auto; font: 800 11.5px Pretendard,'Malgun Gothic',sans-serif; color: #04121c; background: linear-gradient(135deg,#a855f7,#38bdf8); border: none; border-radius: 16px; padding: 7px 13px; cursor: pointer; white-space: nowrap; }
+    .msd-boost-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .msd-draft-ta { width: 100%; box-sizing: border-box; resize: vertical; background: var(--card-2); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; color: var(--text-primary); font: 600 12.5px Pretendard,'Malgun Gothic',sans-serif; line-height: 1.55; outline: none; }
+    .msd-draft-ta:focus { border-color: #a855f7; }
+    .msd-boost-foot { font: 600 10px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); line-height: 1.5; word-break: keep-all; }
+    /* v5.7.5 라이브 DAG 스텝퍼 */
+    .msd-dagstep { display: flex; flex-direction: column; gap: 8px; }
+    .msd-dagstep-item { display: flex; align-items: center; gap: 10px; background: var(--card-2); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+    .msd-dagstep-no { flex: 0 0 auto; font: 800 10px var(--mono); color: var(--text-muted); width: 40px; }
+    .msd-dagstep-mid { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .msd-dagstep-lbl { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .msd-dagstep-st { font: 800 10px var(--mono); }
+    .msd-dagstep-st .muted { color: var(--text-muted); } .msd-dagstep-st .ok { color: #34d399; }
+    .msd-dagstep-thumb { flex: 0 0 auto; width: 40px; height: 40px; border-radius: 8px; object-fit: cover; border: 1px solid var(--line); background: #000; }
+    .msd-dagstep-item.run { border-color: color-mix(in srgb,#f5c451 50%,var(--line)); box-shadow: 0 0 0 1px color-mix(in srgb,#f5c451 30%,transparent), 0 0 14px color-mix(in srgb,#f5c451 22%,transparent); }
+    .msd-dagstep-item.run .msd-dagstep-no { color: #f5c451; }
+    .msd-dagstep-item.done { border-color: color-mix(in srgb,#34d399 40%,var(--line)); }
+    .msd-dagstep-item.done .msd-dagstep-no { color: #34d399; }
+    .msd-dagstep-st .pulse { color: #f5c451; animation: msdPulse 1s ease-in-out infinite; }
+    @@keyframes msdPulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+    /* v5.7.5 정체성 드리프트 배너 */
+    .msd-drift-banner { margin-top: 4px; font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: #fbbf24; background: color-mix(in srgb,#f59e0b 12%,transparent); border: 1px solid color-mix(in srgb,#f59e0b 40%,var(--line)); border-radius: 10px; padding: 9px 11px; line-height: 1.5; word-break: keep-all; }
+    /* v5.6.7 Google Flow 3:4 카셀(외부 에셋 0) */
+    .msd-carousel { display: flex; gap: 12px; overflow-x: auto; padding: 6px 2px 10px; scrollbar-width: none; }
+    .msd-carousel::-webkit-scrollbar { display: none; }
+    .msd-card34 { flex: 0 0 118px; display: flex; flex-direction: column; gap: 7px; background: none; border: none; padding: 0; cursor: pointer; }
+    .msd-card34-media { position: relative; width: 118px; height: 157px; border-radius: 18px; overflow: hidden; display: grid; place-items: center;
+        background: radial-gradient(120% 90% at 50% 10%, color-mix(in srgb, var(--acc,#7c5cff) 42%, #0b0d14), #0b0d14 75%);
+        border: 1px solid color-mix(in srgb, var(--acc,#7c5cff) 40%, rgba(255,255,255,.08)); box-shadow: inset 0 0 24px color-mix(in srgb, var(--acc,#7c5cff) 22%, transparent); transition: transform .15s; }
+    .msd-card34:active .msd-card34-media { transform: scale(0.97); }
+    .msd-card34-cover { width: 100%; height: 100%; object-fit: cover; }
+    .msd-card34-emoji { font-size: 46px; filter: drop-shadow(0 4px 10px rgba(0,0,0,.5)); }
+    .msd-card34-tag { position: absolute; bottom: 8px; left: 8px; font: 700 9.5px Pretendard,'Malgun Gothic',sans-serif; color: #fff; background: rgba(6,8,14,.72); backdrop-filter: blur(4px); padding: 3px 8px; border-radius: 10px; }
+    .msd-card34-lbl { font: 600 11.5px Pretendard,'Malgun Gothic',sans-serif; color: #cbd5e1; text-align: center; }
+    /* v5.6.7 프로젝트 구획 */
+    .msd-proj-head { display: flex; align-items: center; justify-content: space-between; margin: 8px 2px 8px; }
+    .msd-proj-title { font: 900 14px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .msd-proj-new { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; color: #fff; background: #1e293b; border: 1px solid rgba(255,255,255,.1); padding: 6px 14px; border-radius: 16px; cursor: pointer; }
+    .msd-proj-new:hover { border-color: #38bdf8; }
+    .msd-proj-list { display: flex; flex-direction: column; gap: 8px; }
+    .msd-proj-item { display: flex; align-items: center; gap: 12px; background: var(--card-2); border: 1px solid rgba(255,255,255,.06); padding: 10px 13px; border-radius: 16px; }
+    .msd-proj-thumb { flex: 0 0 auto; width: 42px; height: 42px; border-radius: 12px; background: var(--card); display: grid; place-items: center; font-size: 20px; }
+    .msd-proj-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .msd-proj-info .pn { font: 700 12.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .msd-proj-info .pm { font: 600 10px var(--mono); color: var(--text-muted); }
+    .msd-proj-more { flex: 0 0 auto; color: var(--text-muted); font-size: 18px; }
+    .msd-proj-empty { font: 600 11px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); padding: 12px 4px; line-height: 1.5; word-break: keep-all; }
+</style>
+
+@code {
+    [Parameter, EditorRequired] public StoryboardProject Project { get; set; } = default!;
+    [Parameter] public bool Disabled { get; set; }
+
+    private bool _busy;
+    private string? _msg;
+    private long _memToken;
+
+    // v5.6.5: 모바일 부팅 기본 뷰 = 🏠 워크스페이스(PC 대칭) · 스튜디오 뷰로 전환 가능.
+    private enum MobileView { Workspace, Studio }
+    private MobileView _view = MobileView.Workspace;
+
+    // v5.7.3~v5.7.4: 모바일 내부 독립 라우팅(공용 MobileInternalView · PC NavigationManager 미사용 · 드로어와 활성 상태 공유).
+    private MobileInternalView _internalView = MobileInternalView.Workspace;
+    private void SwitchInternal(MobileInternalView v) { _internalView = v; _view = MobileView.Workspace; }
+    // 드로어 라우트 문자열 → 내부 뷰 매핑(PC 라우팅 대체).
+    private void HandleDrawerNav(string route)
+    {
+        _view = MobileView.Workspace;
+        _internalView = route switch
+        {
+            "storyboard" => MobileInternalView.Storyboard,
+            "workspace" => MobileInternalView.Prompt,
+            "flow" => MobileInternalView.Flow,
+            "gallery" => MobileInternalView.Gallery,
+            "settings" or "user-settings" => MobileInternalView.Settings,
+            "batch" => MobileInternalView.Batch,     // v5.8.0: 대량 양산 팩토리
+            "motion" => MobileInternalView.Gyro,     // v5.8.0: 모션·카메라 → 3D 자이로 뷰어
+            "nodegrid" => MobileInternalView.NodeGrid,   // v6.0.1-b: 분산 GPU 노드 그리드 HUD
+            "audiosync" => MobileInternalView.AudioSync, // v6.0.2: 오디오 립싱크 파형 스튜디오
+            "webhooklog" => MobileInternalView.WebhookLog, // v6.1.0: B2B Webhook 로그
+            "livestream" => MobileInternalView.LiveStream, // v6.1.0: WebRTC 라이브 프리뷰
+            _ => MobileInternalView.Workspace,   // queue 등 전용 내부 페이지 없음 → 워크스페이스
+        };
+    }
+    private string InternalIcon => _internalView switch
+    {
+        MobileInternalView.Storyboard => "🎞️", MobileInternalView.Prompt => "✍️", MobileInternalView.Flow => "🕹️",
+        MobileInternalView.Gallery => "🖼️", MobileInternalView.Settings => "⚙️",
+        MobileInternalView.Batch => "🏭", MobileInternalView.Gyro => "📱",
+        MobileInternalView.NodeGrid => "⚡", MobileInternalView.AudioSync => "🎼",
+        MobileInternalView.WebhookLog => "🔗", MobileInternalView.LiveStream => "📡", _ => "🏠",
+    };
+    private string InternalTitle => _internalView switch
+    {
+        MobileInternalView.Storyboard => "모바일 스토리보드", MobileInternalView.Prompt => "프롬프트 입력",
+        MobileInternalView.Flow => "노드 오케스트레이터", MobileInternalView.Gallery => "갤러리",
+        MobileInternalView.Settings => "설정",
+        MobileInternalView.Batch => "B2B 대량 양산", MobileInternalView.Gyro => "3D 자이로 모션",
+        MobileInternalView.NodeGrid => "GPU 노드 그리드", MobileInternalView.AudioSync => "오디오 립싱크 스튜디오",
+        MobileInternalView.WebhookLog => "B2B Webhook 로그", MobileInternalView.LiveStream => "라이브 프리뷰", _ => "워크스페이스",
+    };
+
+    // ── v5.7.4 모바일 서브 스튜디오(무주입 · Project 파라미터·정적 데이터만) ──
+    private void AddCompactCut() => Project?.Scenes.Add(new StoryboardScene { Prompt = "" });
+    private void RemoveCut(StoryboardScene s) => Project?.Scenes.Remove(s);
+
+    // 칩 터치 → 세션 초안에 부착(닥 SeedText·예상 프레임에 즉시 반영 · 뷰 전환에도 보존).
+    private void AppendPromptChip(string text)
+        => _session.DraftPrompt = string.IsNullOrWhiteSpace(_session.DraftPrompt) ? text : $"{_session.DraftPrompt}, {text}";
+
+    private sealed record PromptChip(string Label, string Text);
+    private sealed record ChipGroup(string Title, PromptChip[] Chips);
+    private static readonly ChipGroup[] PromptChipGroups =
+    {
+        new("시네마틱 구도", new[]
+        {
+            new PromptChip("🌅 골든아워 85mm", "85mm lens, golden hour backlight"),
+            new PromptChip("🎥 슬로우 모션", "slow motion 60fps, smooth tracking shot"),
+            new PromptChip("🎬 시네마틱 조명", "hyper-realistic cinematic lighting, volumetric"),
+            new PromptChip("🛰️ 드론 부감", "aerial drone shot, sweeping wide angle"),
+        }),
+        new("스타일·무드", new[]
+        {
+            new PromptChip("🎞️ 필름 그레인", "35mm film grain, analog color"),
+            new PromptChip("🌫️ 몽환적", "dreamy soft focus, ethereal atmosphere"),
+            new PromptChip("⚡ 하이 콘트라스트", "high contrast, dramatic shadows"),
+            new PromptChip("🎨 파스텔", "soft pastel palette, gentle tones"),
+        }),
+    };
+
+    private string? _lastDockPrompt;   // v5.6.7 생성 닥 입력(예상 첫 프레임 시드 우선)
+    // 예상 첫 프레임 시드 — 생성 닥 입력 → 첫 유효 프롬프트 컷 → 프로젝트 제목.
+    private string WorkspaceSeed => !string.IsNullOrWhiteSpace(_lastDockPrompt) ? _lastDockPrompt!
+        : Project?.Scenes?.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.Prompt))?.Prompt ?? Project?.Title ?? "";
+
+    // v5.6.6: 프로젝트 앵커 이미지의 표시 가능한 URL(가상호스트) — 없으면 null(등록 유도).
+    private string? AnchorUrl => string.IsNullOrWhiteSpace(Project?.AnchorImagePath) ? null : Media.ToPlaybackUrl(Project!.AnchorImagePath!);
+
+    // v5.6.7: 실제 생성 결과 첫 프레임 — 완료된 첫 컷의 포스터(있으면). 3단 실측 대조 활성.
+    private string? ActualUrl => Project?.Scenes?.FirstOrDefault(s => s.Status == SceneStatus.Completed && !string.IsNullOrEmpty(s.PosterUrl))?.PosterUrl;
+
+    // ── v5.6.7 Google Flow 모바일 UI ──
+    private bool _showHero = true;                 // 부팅 시네마틱 히어로(진입 후 숨김)
+    private void EnterStudio() => _showHero = false;
+
+    // 가드레일 표시 상태(로컬 · 시뮬 프리뷰용). ⚠ UserPreferenceService 는 데스크톱 DI 전용 → 모바일 컴포넌트 무주입 유지.
+    private bool _guardEnabled = true;
+    private QualityGuardrailPreset _guardPreset = QualityGuardrailPreset.Balanced;
+    private void ToggleGuard() => _guardEnabled = !_guardEnabled;
+
+    // ── v5.7.0 플로팅 닥 파이프라인 실결선 ──
+    private bool _dockRunning;
+    private int _dockPercent;
+    private string? _dockResultUrl;   // 생성 결과 프레임(스텁=이미지 data URL) → 3단 실측 [🎞️ 실제 결과] 바인딩
+
+    // ── v5.7.5 세션 메모리 보존(뷰 전환 간 초안/설정 유지 · 인스턴스 필드라 스위칭에도 상시 보존) ──
+    private sealed class DraftMemorySession { public string DraftPrompt { get; set; } = ""; }
+    private readonly DraftMemorySession _session = new();
+    private bool _isBoosting;
+    /// <summary>v5.7.5 원격 부스터 델리게이트(데스크톱 부모 주입 · 없으면 BCL 폴백) — 모바일 무주입 원칙.</summary>
+    [Parameter] public Func<string, Task<string>>? OnBoostPrompt { get; set; }
+
+    // ── v6.2.x: PC 공용 테마 퀵스위치(호스트 ThemeService 위임 · 무주입 델리게이트 체인) ──
+    /// <summary>선택 가능한 테마 이름 목록(부모가 ThemeService.BuiltIns 등에서 전달). null/빈 목록이면 테마 UI 숨김.</summary>
+    [Parameter] public IReadOnlyList<string>? ThemeNames { get; set; }
+    /// <summary>현재 활성 테마 이름(빈 문자열/null = 기본). 활성 칩 하이라이트.</summary>
+    [Parameter] public string? ActiveThemeName { get; set; }
+    /// <summary>테마 선택 → 부모(호스트)가 ThemeService.ApplyByName 실행(전역 재테마 · 시뮬 즉시 반영).</summary>
+    [Parameter] public EventCallback<string> OnApplyTheme { get; set; }
+    private async Task ApplyThemePick(string name) { if (OnApplyTheme.HasDelegate) await OnApplyTheme.InvokeAsync(name); }
+
+    // ── v5.7.5 라이브 DAG 스텝퍼(SegmentProgress 1:1) + 정체성 드리프트 얼럿 ──
+    private int _currentStepIndex;
+    private int _currentTotalSteps;
+    private readonly Dictionary<int, string> _completedStepThumbs = new();
+    private bool _driftWarn;
+    private static readonly string[] DriftKw = { "변신", "변형", "다른 얼굴", "얼굴 교체", "합성", "morph", "transform", "face swap", "deepfake" };
+
+    // ✨ AI 부스팅 — 원격 델리게이트 우선, 없거나 실패 시 BCL 휴리스틱 폴백(오프라인·1/60초).
+    private async Task ApplyAiBoost()
+    {
+        var draft = (_session.DraftPrompt ?? "").Trim();
+        if (_isBoosting || string.IsNullOrWhiteSpace(draft)) return;
+        _isBoosting = true; StateHasChanged();
+        try { _session.DraftPrompt = OnBoostPrompt is not null ? await OnBoostPrompt(draft) : WanPromptCompiler.EnhancePromptHeuristic(draft); }
+        catch { _session.DraftPrompt = WanPromptCompiler.EnhancePromptHeuristic(draft); }   // 원격 실패 → BCL 폴백
+        finally { _isBoosting = false; }
+    }
+
+    // 생성 닥 제출(➔) → WanRenderClient.SubmitAsync 직결(백엔드 미구성 시 WanLocalStubEngine 폴백) + 인라인 프로그레스.
+    private string _liveStep = "";               // v5.7.2 라이브 세그먼트 단계 메시지
+    private List<string> _completedThumbs = new();  // v5.7.2 완성 컷 썸네일 스트립
+    private System.Threading.CancellationTokenSource? _dockCts;   // v5.7.3 닥 체인 취소
+
+    // v5.7.1~v5.7.3: 세그먼트 수(1/3/4)만큼 FlowExecutionPipeline 연쇄 생성 + Concat 병합 · SegmentProgress 라이브 바인딩 · CTS 취소.
+    private async Task HandleDockSubmit(MobilePromptDock.ChainSubmit sub)
+    {
+        if (_dockRunning || string.IsNullOrWhiteSpace(sub.Prompt)) return;
+
+        // v6.0.3: [⚡ GPU 그리드 분산 가동] ON + 가용 노드 존재 → 컷 세그먼트를 분산 노드로 즉시 이관(멀티모달 파이프라인 브리지).
+        //   가용 노드가 없으면 조용히 로컬 파이프라인으로 폴백(Graceful) — 기존 RunShortsChainAsync 흐름 무손상.
+        if (_useGpuGrid && Grid.UsableNodeCount > 0)
+        {
+            await RunViaGpuGridAsync(sub);
+            return;
+        }
+
+        _dockCts?.Cancel(); _dockCts?.Dispose();
+        _dockCts = new System.Threading.CancellationTokenSource();
+        var ct = _dockCts.Token;
+
+        _lastDockPrompt = sub.Prompt; _msg = null;   // v5.7.5: 초안(_session)은 제출/뷰 전환 후에도 보존
+        _dockRunning = true; _dockPercent = 3; _liveStep = "🎬 파이프라인 가동 중…"; _completedThumbs = new();
+        // v5.7.5 라이브 스텝퍼 초기화 + 정체성 드리프트 사전 판정(변형 키워드 → Strict 자율 격상).
+        _currentTotalSteps = sub.Segments; _currentStepIndex = 1; _completedStepThumbs.Clear();
+        _lastChainSegments = sub.Segments;   // v5.7.7: 이어보기 총 컷 추정용(세션 보존)
+        var lower = sub.Prompt.ToLowerInvariant();
+        _driftWarn = System.Array.Exists(DriftKw, k => lower.Contains(k));
+        if (_driftWarn) _guardPreset = QualityGuardrailPreset.Strict;
+        StateHasChanged();
+
+        var progress = new Progress<FlowExecutionPipeline.SegmentProgress>(sp =>
+        {
+            _dockPercent = sp.ProgressPercent;
+            _liveStep = sp.StepMessage;
+            _currentStepIndex = sp.StepIndex;
+            // 완료 통지 → 스텝퍼(딕셔너리)·닥 스트립(리스트) 동시 누적(스텝당 첫 완료만 · 최종 병합 결과 제외).
+            if (sp.Completed && !string.IsNullOrEmpty(sp.CompletedThumbUrl))
+            {
+                if (!_completedStepThumbs.ContainsKey(sp.StepIndex)) _completedStepThumbs[sp.StepIndex] = sp.CompletedThumbUrl!;
+                if (_completedThumbs.Count < sp.StepIndex) _completedThumbs.Add(sp.CompletedThumbUrl!);
+            }
+            _ = InvokeAsync(StateHasChanged);
+        });
+
+        try
+        {
+            // v5.7.6 컷별 오버라이드 전달 · v6.0.2 닥 자체 오버라이드가 없으면 오디오 립싱크 컷 프롬프트를 폴백으로 사용(기존 동작 무손상 · 추가 결선).
+            var cutOverride = sub.CutPrompts is { Count: > 0 } ? sub.CutPrompts : _audioCutPrompts;
+            var r = await Pipeline.RunShortsChainAsync(sub.Prompt, sub.Segments, Project, progress, ct, cutOverride);
+            _dockPercent = 100;
+            _dockResultUrl = r.MergedUrl;   // 병합 결과(스텁=이미지 data URL) → 3단 실측 [🎞️ 실제 결과]
+            var snip = sub.Prompt.Length > 24 ? sub.Prompt[..24] + "…" : sub.Prompt;
+            _msg = (r.Ok ? "✅ " : "⚠ ") + $"\"{snip}\" ({sub.Segments}컷) · {r.Message}";
+            if (!string.IsNullOrEmpty(_dockResultUrl) && Project is not null)
+            {
+                Project.Gallery.Insert(0, new GalleryAsset { Url = _dockResultUrl!, Kind = GalleryAssetKind.Image, Label = snip, CreatedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() });
+                FireVideoWebhook(_dockResultUrl, snip);   // v6.1.0: 파이프라인 완공 → B2B Webhook 자동 발화
+            }
+        }
+        catch (OperationCanceledException) { _msg = "⏹ 생성 파이프라인이 사용자에 의해 중단되었습니다."; }
+        catch (Exception ex) { _msg = "⚠ 생성 오류: " + ex.Message; }
+        finally { _dockRunning = false; _dockPercent = 0; StateHasChanged(); }
+    }
+
+    // v5.7.3: 닥 [⏹ 취소] → 실행 중 체인 CTS 취소(RunShortsChainAsync·GPU 분산 공통 조기 탈출).
+    private void HandleDockCancel() { try { _dockCts?.Cancel(); } catch { } }
+
+    // ── v6.0.3: 오디오 립싱크 컷 ↔ GPU 분산 그리드 실행 브리지 ──
+    private bool _useGpuGrid;   // ⚡ GPU 그리드 분산 가동 토글(세션 인스턴스 필드 → 뷰 전환에도 보존)
+    private void OnToggleGpuGrid(ChangeEventArgs e) => _useGpuGrid = e.Value is true;
+
+    // 컷 프롬프트 우선순위(닥 오버라이드 > 오디오 립싱크 컷 > 기저 프롬프트 N등분) → 노드 세그먼트 요청 배열로 변환.
+    private List<WanRenderRequest> BuildGridRequests(string basePrompt, int segments, IReadOnlyList<string>? cutPrompts)
+    {
+        var n = Math.Clamp(segments, 1, FlowExecutionPipeline.ConcatInputs);
+        var list = new List<WanRenderRequest>(n);
+        for (var i = 0; i < n; i++)
+        {
+            var prompt = cutPrompts is { Count: > 0 } && i < cutPrompts.Count ? cutPrompts[i] : basePrompt;
+            list.Add(WanRenderClient.BuildRequest(new WanPromptBuild(prompt, 30, System.Array.Empty<string>(), null), Project));
+        }
+        return list;
+    }
+
+    // 닥 제출을 분산 그리드로 이관 — 컷 세그먼트를 워커 노드에 병렬 배정(페일오버 포함)하고 완료분을 자산화한다.
+    private async Task RunViaGpuGridAsync(MobilePromptDock.ChainSubmit sub)
+    {
+        _dockCts?.Cancel(); _dockCts?.Dispose();
+        _dockCts = new System.Threading.CancellationTokenSource();
+        var ct = _dockCts.Token;
+
+        _lastDockPrompt = sub.Prompt; _msg = null;   // 초안(_session)은 보존
+        _dockRunning = true; _dockPercent = 2; _liveStep = "⚡ GPU 그리드 분산 배정 중…"; _completedThumbs = new();
+        _currentTotalSteps = sub.Segments; _currentStepIndex = 1; _completedStepThumbs.Clear();
+        _lastChainSegments = sub.Segments;
+        var lower = sub.Prompt.ToLowerInvariant();
+        _driftWarn = System.Array.Exists(DriftKw, k => lower.Contains(k));
+        if (_driftWarn) _guardPreset = QualityGuardrailPreset.Strict;
+        StateHasChanged();
+
+        // 컷 프롬프트 결정: 닥 자체 오버라이드 > 오디오 립싱크 컷(_audioCutPrompts) > 기저 프롬프트.
+        var cutPrompts = sub.CutPrompts is { Count: > 0 } ? sub.CutPrompts
+                       : _audioCutPrompts is { Count: > 0 } ? _audioCutPrompts
+                       : null;
+        var requests = BuildGridRequests(sub.Prompt, sub.Segments, cutPrompts);
+
+        // ⚠ 그리드 스케줄러/하트비트는 백그라운드 스레드 → InvokeAsync 마샬링(제3헌장).
+        var progress = new Progress<GridProgress>(gp =>
+        {
+            _dockPercent = gp.Percent;
+            _liveStep = $"⚡ 분산 렌더 {gp.Completed}/{gp.Total} · 가동 {gp.Dispatched} · 대기 {gp.Queued}" + (gp.Failed > 0 ? $" · 실패 {gp.Failed}" : "");
+            _currentStepIndex = Math.Clamp(gp.Completed + gp.Dispatched, 1, Math.Max(1, gp.Total));
+            _ = InvokeAsync(StateHasChanged);
+        });
+
+        try
+        {
+            var r = await Grid.DispatchAsync(requests, progress, ct);
+            _dockPercent = 100;
+
+            // 완료 세그먼트 URL → 라이브 스트립/스텝퍼 + 갤러리·씬 자산화(부분 보존).
+            if (Project is not null && r.OrderedVideoUrls.Count > 0)
+            {
+                _dockResultUrl = r.OrderedVideoUrls[^1];   // 대표 프레임(3단 실측 [🎞️ 실제 결과])
+                for (var i = 0; i < r.OrderedVideoUrls.Count; i++)
+                {
+                    var url = r.OrderedVideoUrls[i];
+                    if (string.IsNullOrWhiteSpace(url)) continue;
+                    var img = WanSampleFactory.IsImageUrl(url);
+                    Project.Gallery.Insert(0, new GalleryAsset { Url = url, Kind = img ? GalleryAssetKind.Image : GalleryAssetKind.Video, Label = $"GPU 분산 컷 {i + 1}", CreatedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() });
+                    Project.Scenes.Add(new StoryboardScene { Prompt = $"GPU 분산 컷 {i + 1}", Status = SceneStatus.Completed, VideoUrl = img ? null : url, PosterUrl = img ? url : null });
+                    if (_completedThumbs.Count < i + 1) _completedThumbs.Add(url);
+                    _completedStepThumbs[i + 1] = url;
+                    FireVideoWebhook(url, $"GPU 분산 컷 {i + 1}");   // v6.1.0: 세그먼트 완공 → B2B Webhook 자동 발화
+                }
+            }
+            _msg = (r.Ok ? "✅ " : "⚠ ") + $"GPU 그리드 분산 렌더 — 성공 {r.Completed}/{r.Total} · 실패 {r.Failed} · {r.Message}";
+        }
+        catch (OperationCanceledException) { _msg = "⏹ GPU 분산 렌더가 중단되었습니다(완료 세그먼트는 보존)."; }
+        catch (Exception ex) { _msg = "⚠ GPU 분산 오류: " + ex.Message; }
+        finally { _dockRunning = false; _dockPercent = 0; StateHasChanged(); }
+    }
+
+    // ── v5.7.7: 끊긴 체인 이어보기(부분 구제된 컷 계승 → 남은 컷만 이어 렌더 + 종합 병합) ──
+    private const string RescueMarker = "[부분 구제]";
+    private int _lastChainSegments;   // 마지막 체인 요청 세그먼트 수(이어보기 총 컷 추정 · 세션 보존)
+
+    // RescuePartial 이 컷 순서대로 Scenes.Add → "[부분 구제]" 마커 씬이 곧 재개 시그널(순서 보존).
+    private List<StoryboardScene> RescuedScenes => Project?.Scenes
+        .Where(s => s.Status == SceneStatus.Completed && (s.Prompt?.StartsWith(RescueMarker, StringComparison.Ordinal) ?? false) && !string.IsNullOrEmpty(s.PosterUrl ?? s.VideoUrl))
+        .ToList() ?? new List<StoryboardScene>();
+    private List<string> CompletedResumableUrls => RescuedScenes.Select(s => (s.PosterUrl ?? s.VideoUrl)!).ToList();
+    private int ResumableCount => CompletedResumableUrls.Count;
+    private int ResumeTotalSegments => _lastChainSegments > 1 ? _lastChainSegments : Math.Max(ResumableCount + 1, 3);
+    // 부분 완성(≥1) + 목표 미달일 때만 배너 노출(완전 완료/무체인은 숨김).
+    private bool HasResumableCuts => ResumableCount > 0 && ResumableCount < ResumeTotalSegments && ResumableCount < FlowExecutionPipeline.ConcatInputs;
+
+    // 배너 [▶ 이어서 생성] → 계승 컷을 시드로 남은 컷만 이어 렌더 후 전체 Concat(성공 시 구제 씬 정리→배너 자동 해제).
+    private async Task ResumeShortsChain()
+    {
+        if (_dockRunning) return;
+        var resumeUrls = CompletedResumableUrls;
+        if (resumeUrls.Count == 0) return;
+        var total = ResumeTotalSegments;
+
+        var prompt = !string.IsNullOrWhiteSpace(_session.DraftPrompt) ? _session.DraftPrompt
+            : !string.IsNullOrWhiteSpace(WorkspaceSeed) ? WorkspaceSeed : "cinematic continuation, consistent identity";
+
+        _dockCts?.Cancel(); _dockCts?.Dispose();
+        _dockCts = new System.Threading.CancellationTokenSource();
+        var ct = _dockCts.Token;
+
+        _dockRunning = true; _msg = null;
+        _currentTotalSteps = total; _currentStepIndex = resumeUrls.Count;
+        _completedThumbs = new List<string>(resumeUrls);          // 계승 컷을 라이브 스트립에 선반영(연속성)
+        _completedStepThumbs.Clear();
+        for (var k = 0; k < resumeUrls.Count; k++) _completedStepThumbs[k + 1] = resumeUrls[k];
+        _dockPercent = resumeUrls.Count * 80 / Math.Max(total, 1);
+        _liveStep = $"🎬 컷 #{resumeUrls.Count + 1}부터 이어서 가동 중…";
+        StateHasChanged();
+
+        var progress = new Progress<FlowExecutionPipeline.SegmentProgress>(sp =>
+        {
+            _dockPercent = sp.ProgressPercent; _liveStep = sp.StepMessage; _currentStepIndex = sp.StepIndex;
+            if (sp.Completed && !string.IsNullOrEmpty(sp.CompletedThumbUrl))
+            {
+                if (!_completedStepThumbs.ContainsKey(sp.StepIndex)) _completedStepThumbs[sp.StepIndex] = sp.CompletedThumbUrl!;
+                if (_completedThumbs.Count < sp.StepIndex) _completedThumbs.Add(sp.CompletedThumbUrl!);
+            }
+            _ = InvokeAsync(StateHasChanged);
+        });
+
+        try
+        {
+            // v5.7.7: existingCompletedUrls 로 계승분 전달 → 파이프라인이 startIdx 이후만 렌더 후 종합 병합.
+            var r = await Pipeline.RunShortsChainAsync(prompt, total, Project, progress, ct, null, resumeUrls);
+            _dockPercent = 100;
+            _dockResultUrl = r.MergedUrl;
+            _msg = (r.Ok ? "✅ " : "⚠ ") + $"({total}컷 이어서 완공) · {r.Message}";
+            if (r.Ok && Project is not null)
+            {
+                foreach (var sc in RescuedScenes) Project.Scenes.Remove(sc);   // 병합 완료 → 구제 컷 정리(배너 자동 해제)
+                if (!string.IsNullOrEmpty(_dockResultUrl))
+                    Project.Gallery.Insert(0, new GalleryAsset { Url = _dockResultUrl!, Kind = WanSampleFactory.IsImageUrl(_dockResultUrl!) ? GalleryAssetKind.Image : GalleryAssetKind.Video, Label = "이어보기 최종", CreatedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() });
+            }
+        }
+        catch (OperationCanceledException) { _msg = "⏹ 이어보기가 중단되었습니다."; }
+        catch (Exception ex) { _msg = "⚠ 이어보기 오류: " + ex.Message; }
+        finally { _dockRunning = false; _dockPercent = 0; StateHasChanged(); }
+    }
+
+    // 3:4 카셀 카드 커버 — 최신 갤러리 이미지 자산(없으면 null → 그라디언트+이모지 폴백).
+    private string? GalleryCover(int index)
+    {
+        if (Project?.Gallery is null || Project.Gallery.Count == 0) return null;
+        var imgs = Project.Gallery.Where(a => a.Kind == GalleryAssetKind.Image || WanSampleFactory.IsImageUrl(a.Url))
+                                  .OrderByDescending(a => a.CreatedMs).Select(a => a.Url).ToList();
+        return index >= 0 && index < imgs.Count ? imgs[index] : null;
+    }
+
+    // 3:4 카셀 카드(외부 에셋 0 · 그라디언트/갤러리 커버 + 이모지 + 대표 시드 프롬프트).
+    private sealed record FlowCard(string Key, string Emoji, string Label, string Tag, string Accent, string Seed);
+    private static readonly FlowCard[] FlowCards =
+    {
+        new("storyboard","🎞️","스토리보드","연쇄 생성","#7c5cff","여러 컷으로 이어지는 시네마틱 스토리, 일관된 인물, 부드러운 전환"),
+        new("t2v","✍️","T2V 프롬프트","텍스트→영상","#22d3ee","노을 지는 해변을 천천히 걷는 인물, 시네마틱, 부드러운 카메라 팬"),
+        new("i2v","📸","I2V 앵커 체인","1:1 정체성","#ec4899","앵커 인물의 정체성을 1:1 유지한 클로즈업, 자연스러운 표정 변화"),
+        new("gyro","📱","3D 자이로 모션","센서 카메라","#34d399","자이로 카메라로 서서히 궤도 회전하는 3D 씬, 몰입형 시점"),
+        new("flow","🕹️","노드 플로우","DAG 엔진","#a855f7","여러 장면을 노드로 연결한 무인 체인, 프레임 연속성 유지"),
+        new("batch","🏭","대량 양산","배치 팩토리","#f59e0b","동일 스타일로 대량 생성할 숏폼 시리즈, 브랜드 톤 일관"),
+        new("audio","🎼","오디오 립싱크","보컬 싱크","#a855f7","보컬 오디오 강도에 맞춘 립싱크 컷, 다이내믹 표정 변화"),
+    };
+    // v5.7.0: 카드 터치 → 대표 프롬프트를 생성 닥 입력창에 주입(Google Flow 템플릿 패턴).
+    private void HandleCardAction(string key)
+    {
+        var card = System.Array.Find(FlowCards, c => c.Key == key);
+        if (card is null) return;
+        // v5.8.0: 배치/자이로 카드는 전용 독립 화면으로 스위칭, 그 외는 대표 프롬프트를 닥에 시드 주입.
+        switch (key)
+        {
+            case "batch": SwitchInternal(MobileInternalView.Batch); _msg = "🏭 B2B 대량 양산 — 템플릿과 변수 목록으로 수십 건을 일괄 렌더하세요."; return;
+            case "gyro":  SwitchInternal(MobileInternalView.Gyro);  _msg = "📱 3D 자이로 모션 — 조이스틱으로 카메라 앵글을 조율하세요."; return;
+            case "audio": SwitchInternal(MobileInternalView.AudioSync); _msg = "🎼 오디오 립싱크 — 보컬 트랙을 업로드하면 강도에 맞춰 컷별 립싱크 수식어가 주입됩니다."; return;
+        }
+        _session.DraftPrompt = card.Seed;   // v5.7.5 세션 초안에 주입(뷰 전환에도 보존)
+        _view = MobileView.Workspace;
+        _internalView = MobileInternalView.Workspace;
+        _msg = $"💡 «{card.Label}» 대표 프롬프트를 생성 닥에 주입 — 편집 후 ➔ 로 생성";
+    }
+
+    // ── v5.8.0: B2B 대량 양산 실행(각 배치 항목 = 독립 1컷 렌더 · 완료 즉시 갤러리/씬 자산화 = 부분 보존 · CTS 취소) ──
+    private async Task HandleBatchStart(List<BatchTemplateItem> items)
+    {
+        if (_dockRunning || items is null || items.Count == 0) return;
+        _dockCts?.Cancel(); _dockCts?.Dispose();
+        _dockCts = new System.Threading.CancellationTokenSource();
+        var ct = _dockCts.Token;
+
+        _dockRunning = true; _msg = null; _completedThumbs = new();
+        _currentTotalSteps = items.Count; _currentStepIndex = 1; _completedStepThumbs.Clear();
+        var ok = 0;
+        StateHasChanged();
+        try
+        {
+            for (var i = 0; i < items.Count; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                _currentStepIndex = i + 1; _dockPercent = i * 100 / items.Count;
+                _liveStep = $"🏭 배치 {i + 1}/{items.Count} — {items[i].VariableValue}";
+                StateHasChanged();
+
+                var build = new WanPromptBuild(items[i].InterpolatedPrompt, 30, System.Array.Empty<string>(), null);
+                var r = await Wan.SubmitAsync(build, Project, ct);
+                var url = r.VideoUrl ?? r.LastFrameUrl;
+                if (!string.IsNullOrEmpty(url) && Project is not null)
+                {
+                    ok++;
+                    var img = WanSampleFactory.IsImageUrl(url!);
+                    Project.Gallery.Insert(0, new GalleryAsset { Url = url!, Kind = img ? GalleryAssetKind.Image : GalleryAssetKind.Video, Label = $"배치 {items[i].VariableValue}", CreatedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() });
+                    Project.Scenes.Add(new StoryboardScene { Prompt = items[i].InterpolatedPrompt, Status = SceneStatus.Completed, VideoUrl = img ? null : url, PosterUrl = img ? url : null });
+                    _completedThumbs.Add(url!); _completedStepThumbs[i + 1] = url!;
+                    FireVideoWebhook(url, $"배치 {items[i].VariableValue}");   // v6.1.0: 배치 항목 완공 → B2B Webhook 자동 발화
+                }
+            }
+            _dockPercent = 100;
+            _msg = $"✅ 대량 양산 완료 — {ok}/{items.Count}건 생성 · 갤러리 자산화";
+        }
+        catch (OperationCanceledException) { _msg = $"⏹ 대량 양산 중단 — {ok}건 부분 보존(갤러리)"; }
+        catch (Exception ex) { _msg = "⚠ 대량 양산 오류: " + ex.Message; }
+        finally { _dockRunning = false; _dockPercent = 0; StateHasChanged(); }
+    }
+
+    // ── v6.1.0: 완공 비디오 자산 → B2B Webhook 자동 발화(FireAndForget · 비블로킹) + 라이브 프리뷰 프레임 제공자 ──
+    private void FireVideoWebhook(string? url, string label)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return;
+        Webhook.FireAndForget("video.completed",
+            new VideoCompletedWebhookPayload(
+                string.IsNullOrWhiteSpace(Project?.Title) ? "PromptFlow" : Project!.Title,
+                label,
+                url,
+                WanSampleFactory.IsImageUrl(url!) ? "image" : "video",
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()),
+            PromptFlowWireJsonContext.Default.VideoCompletedWebhookPayload);
+    }
+
+    // 라이브 프리뷰 스틸 프레임 제공자 — 최신 결과/완료 썸네일(없으면 null → 스트리머가 합성 스틸 폴백).
+    private string? LatestFrameProvider()
+        => _dockResultUrl ?? (_completedThumbs.Count > 0 ? _completedThumbs[^1] : ActualUrl);
+
+    // v5.8.0: 자이로 뷰어 카메라 모션 태그 → 세션 초안(닥/예상 프레임)에 콤마 부착 주입.
+    private void HandleGyroMotion(string tag)
+    {
+        if (string.IsNullOrWhiteSpace(tag)) return;
+        _session.DraftPrompt = string.IsNullOrWhiteSpace(_session.DraftPrompt) ? tag : $"{_session.DraftPrompt}, {tag}";
+        _msg = "🎥 카메라 모션 태그를 생성 닥 초안에 주입했습니다.";
+    }
+
+    // ── v6.0.2: 오디오 파형 스튜디오 결선 — 보컬 싱크 계획을 초안(대표 립싱크 수식어·멱등) + 컷 오버라이드로 반영 ──
+    private IReadOnlyList<string>? _audioCutPrompts;   // 컷별 립싱크 프롬프트(닥 자체 오버라이드가 없을 때 폴백으로 사용)
+    private void HandleAudioSync(VocalSyncPlan plan)
+    {
+        if (plan is null || plan.CutCount == 0) return;
+        // 대표 다이내믹 수식어를 초안에 멱등 주입(닥 SeedText·예상 프레임에 즉시 반영 · 뷰 전환에도 보존).
+        _session.DraftPrompt = VocalSyncNode.AppendLipSync(_session.DraftPrompt, VocalSyncNode.DominantModifier(plan));
+        // 컷별 립싱크 프롬프트를 파이프라인 컷 오버라이드 폴백으로 보관(닥이 자체 컷 프롬프트를 주면 그쪽이 우선).
+        _audioCutPrompts = VocalSyncNode.BuildCutPrompts(_session.DraftPrompt, plan);
+        _msg = $"🎼 오디오 {plan.CutCount}컷 립싱크 수식어 주입 — 생성 닥 ➔ 로 렌더하면 컷별로 적용됩니다.";
+    }
+
+    private double _rotX = -20, _rotY = 20;
+    private bool _dragging;
+    private double _lastX, _lastY;
+
+    protected override void OnInitialized() => _memToken = MemAudit.Track("MobileStudioDeck");
+
+    private static string N(double v) => v.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+
+    private static MobilePermission PermFor(CaptureKind kind) => kind == CaptureKind.Audio ? MobilePermission.Microphone : MobilePermission.Camera;
+
+    private async Task Capture(CaptureKind kind)
+    {
+        _busy = true; _msg = null;
+        try
+        {
+            if (!await Bridge.EnsurePermissionAsync(PermFor(kind))) { _msg = "⚠ 권한이 거부되었습니다."; return; }
+            var r = await Bridge.CaptureAsync(kind);
+            if (r.Ok && r.Path is not null)
+            {
+                if (kind == CaptureKind.Photo) { Project.AnchorImagePath = r.Path; Project.MobileCaptureSource = "camera"; _msg = "📷 촬영 완료 — 앵커 이미지로 설정(전 컷 i2v 일관성)."; }
+                else _msg = $"✅ 캡처 완료: {System.IO.Path.GetFileName(r.Path)}";
+            }
+            else _msg = r.Message;
+        }
+        catch (Exception ex) { _msg = "⚠ " + ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private void OnWorker(ChangeEventArgs e) => Project.RemoteWorkerUrl = e.Value?.ToString() ?? "";
+    private void OnRemoteToggle(ChangeEventArgs e) => Project.RemoteRenderEnabled = e.Value is true;
+    private void OnChromaToggle(ChangeEventArgs e) => Project.ChromaAutoKey = e.Value is true;
+
+    private void Offload()
+    {
+        if (!RemoteRenderClient.IsValidWorkerUrl(Project.RemoteWorkerUrl)) { _msg = "⚠ 워커 URL 이 유효하지 않습니다 (http/https/ws/wss)."; return; }
+        var env = RemoteRenderClient.BuildEnvelope(Project);
+        Project.RemoteRenderEnabled = true;
+        var head = env.Checksum.Length >= 8 ? env.Checksum[..8] : env.Checksum;
+        _msg = $"☁️ 오프로딩 준비 — 잡 {env.JobId} · {Project.Scenes.Count}컷 · 체크섬 {head}… · AES-256 암호화. [✨ 전체 생성] 시 PC 워커로 위임되어 60fps MP4 + PDF 를 수신합니다.";
+    }
+
+    private void SeparateBg()
+    {
+        Project.ChromaAutoKey = true;
+        _msg = string.IsNullOrWhiteSpace(Project.AnchorImagePath)
+            ? "✂️ 먼저 카메라/갤러리로 사진을 등록하면 배경이 1초 만에 알파로 분리됩니다."
+            : "✂️ 온디바이스 배경 분리 활성 — 순수 BCL 색거리 매트 + FFmpegKit chromakey 로 크로마 알파 컷아웃을 생성합니다.";
+    }
+
+    private void ResetCube() { _rotX = -20; _rotY = 20; }
+    private void OnDown(PointerEventArgs e) { _dragging = true; _lastX = e.ClientX; _lastY = e.ClientY; }
+    private void OnMove(PointerEventArgs e)
+    {
+        if (!_dragging) return;
+        _rotY += (e.ClientX - _lastX) * 0.6;
+        _rotX -= (e.ClientY - _lastY) * 0.6;
+        _lastX = e.ClientX; _lastY = e.ClientY;
+    }
+    private void OnUp(PointerEventArgs e) => _dragging = false;
+
+    // ══════════════════ v5.4 인터랙티브 플로우 오버레이 ══════════════════
+    private enum FlowScreen { None, Canvas, Motion, Voice, Scrub }
+    private FlowScreen _flow = FlowScreen.None;
+
+    private string FlowTitle => _flow switch
+    {
+        FlowScreen.Canvas => "🕹️ True Flow 노드 오케스트레이터",
+        FlowScreen.Motion => "🎯 모션-벡터 드로잉 가이드",
+        FlowScreen.Voice => "🎙️ 공간 음성-비전 앵커링",
+        FlowScreen.Scrub => "🎞️ 햅틱 프레임 스크러버",
+        _ => "",
+    };
+
+    private void OpenFlow(FlowScreen s) { _flow = s; _msg = null; }
+    private void CloseFlow() { if (_voiceBusy) { _ = Voice.CancelAsync(); _voiceBusy = false; } _flow = FlowScreen.None; }
+
+    // v5.6.5: 드로어의 모바일 특화 항목(gyro/haptic/offline) → 스튜디오 뷰 전환 후 해당 오버레이/안내 표출.
+    private void HandleMobileAction(string key)
+    {
+        _view = MobileView.Studio;
+        switch (key)
+        {
+            case "gyro":    SwitchInternal(MobileInternalView.Gyro); _msg = "📱 3D 자이로 모션 뷰어 — 조이스틱으로 카메라 앵글을 조율해 모션 태그를 주입하세요."; break;
+            case "haptic":  _flow = FlowScreen.Scrub; _msg = null; break;
+            case "offline": _flow = FlowScreen.Voice; _msg = "📥 오프라인 큐 — 네트워크가 없으면 Wan 3.0 전송이 자동 큐잉됩니다."; break;
+            case "nodegrid": SwitchInternal(MobileInternalView.NodeGrid); _msg = "⚡ 분산 GPU 노드 그리드 — 원격 워커를 등록하면 대량 양산·세그먼트 큐가 자동 분산·페일오버됩니다."; break;   // v6.0.1-b
+            case "audiosync": SwitchInternal(MobileInternalView.AudioSync); _msg = "🎼 오디오 파형 스튜디오 — 보컬 트랙 강도에 맞춰 컷별 립싱크 수식어가 자동 주입됩니다."; break;   // v6.0.2
+            case "webhooklog": SwitchInternal(MobileInternalView.WebhookLog); _msg = "🔗 B2B Webhook — 완공 비디오 자산이 HMAC-SHA256 서명 후 외부 엔드포인트로 자동 발송됩니다."; break;   // v6.1.0
+            case "livestream": SwitchInternal(MobileInternalView.LiveStream); _msg = "📡 라이브 프리뷰 — 렌더 노드의 생성 프레임을 초저지연으로 미러링합니다(불가 시 스틸 폴백)."; break;   // v6.1.0
+        }
+    }
+
+    private void OnMotionPrompt(string prompt)
+    {
+        var snip = string.IsNullOrWhiteSpace(prompt) ? "" : (prompt.Length > 90 ? prompt[..90] + "…" : prompt);
+        _msg = "🎯 모션 프롬프트 생성 — " + snip;
+    }
+
+    // ── 공간 음성-비전 앵커링 상태 ──
+    private string _voiceText = "";
+    private SpatialPromptNode? _voiceNode;
+    private bool _voiceBusy;
+    private string? _voiceMsg;
+    private SpatialAnchor _anchor = SpatialAnchor.Center;
+    private (double X, double Y) _anchorPx = (150, 65);
+
+    private void SetAnchor(PointerEventArgs e)
+    {
+        _anchorPx = (e.OffsetX, e.OffsetY);
+        // 패드(가로≈300 · 세로 130px 가정) → 정규화 0~1 앵커(사물 인식 좌표 근사).
+        _anchor = _anchor with { ScreenX = Math.Clamp(e.OffsetX / 300.0, 0, 1), ScreenY = Math.Clamp(e.OffsetY / 130.0, 0, 1) };
+        _voiceMsg = $"◎ 앵커 지정 — ({F(_anchor.ScreenX)}, {F(_anchor.ScreenY)})";
+    }
+
+    private async Task VoiceCapture()
+    {
+        _voiceBusy = true; _voiceMsg = null; StateHasChanged();
+        try
+        {
+            var r = await Voice.CaptureAsync(_anchor);
+            if (r.Ok)
+            {
+                _voiceNode = r.Node;
+                if (!string.IsNullOrWhiteSpace(r.Transcript)) _voiceText = r.Transcript;
+            }
+            _voiceMsg = r.Message;
+        }
+        catch (Exception ex) { _voiceMsg = "⚠ " + ex.Message; }
+        finally { _voiceBusy = false; }
+    }
+
+    private void VoiceStructure()
+    {
+        _voiceNode = SpatialPromptStructurer.Structure(_voiceText, _anchor);
+        _voiceMsg = "🧩 구조화 완료 — Wan 워크플로우 노드가 생성되었습니다.";
+    }
+
+    // ── v5.4.1 Wan 3.0 백엔드 직결(모션 벡터 + 공간 음성 합성 전송) ──
+    private IReadOnlyList<MotionVector> _lastMotion = System.Array.Empty<MotionVector>();
+    private bool _wanBusy;
+    private string? _wanMsg;
+    private int WanIntensity => WanPromptCompiler.AggregateIntensity(_lastMotion);
+
+    private async Task SendToWan()
+    {
+        _wanBusy = true; _wanMsg = null; StateHasChanged();
+        try
+        {
+            var build = WanPromptCompiler.Compile(_voiceNode, _lastMotion, Project?.Title);
+            var r = await Wan.SubmitAsync(build, Project);
+            _wanMsg = (r.Ok ? "✅ " : r.Queued ? "📥 " : "⚠ ") + r.Message + $" · job {r.JobId}";
+        }
+        catch (Exception ex) { _wanMsg = "⚠ " + ex.Message; }
+        finally { _wanBusy = false; }
+    }
+
+    private static string F(double v) => (double.IsNaN(v) || double.IsInfinity(v) ? 0 : v).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+
+    public void Dispose()
+    {
+        try { if (_voiceBusy) _ = Voice.CancelAsync(); } catch { }
+        try { _dockCts?.Cancel(); _dockCts?.Dispose(); } catch { }   // v5.7.3 닥 체인 취소 정리
+        MemAudit.Release(_memToken);
+    }
+}

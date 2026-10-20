@@ -1,0 +1,172 @@
+@page "/queue"
+@implements IDisposable
+@inject WanJobState WanJob
+@inject StoryboardJobManager Jobs
+@inject NavigationManager Nav
+
+@* [PromptFlow Studio] 렌더링 큐 — 단일 컷(WanJobState)과 스토리보드 배치(StoryboardJobManager)의 진행을 대형 뷰어로 관찰. *@
+
+<PageTitle>PromptFlow Studio · 렌더링 큐</PageTitle>
+
+<div class="q">
+    <header class="q-head">
+        <h1 class="q-title">렌더링 <span class="q-title-g">큐</span> <MenuHelpBadge MenuKey="@GranularHelpService.Keys.RenderQueue" /></h1>
+        <p class="q-sub">백그라운드에서 진행 중인 생성·병합 작업을 실시간으로 모니터링합니다.</p>
+    </header>
+
+    <div style="margin:12px 0;"><StudioMonitorHeader EngineReady="true" /></div>
+    <div style="margin:0 0 16px;"><ResourceMonitor /></div>
+
+    @if (!AnyActive)
+    {
+        <div class="q-empty">
+            <div class="q-empty-ic">💤</div>
+            <div class="q-empty-t">진행 중인 렌더링 작업이 없습니다</div>
+            <div class="q-empty-a">
+                <button class="q-btn go" @onclick='() => Nav.NavigateTo("workspace")'>＋ 단일 컷 생성</button>
+                <button class="q-btn ghost" @onclick='() => Nav.NavigateTo("storyboard")'>🎬 스토리보드</button>
+            </div>
+        </div>
+    }
+
+    @* ── 단일 컷 작업 ── *@
+    @if (WanJob.Phase != WanJobPhase.Idle)
+    {
+        <section class="q-card">
+            <div class="q-card-h"><span>🎨 단일 컷 생성</span><span class="q-badge @WanCls">@WanLabel</span></div>
+            <div class="q-bignum">@WanJob.Percent<span>%</span></div>
+            <div class="q-bar"><div class="q-bar-f" style="width:@(WanJob.Percent)%"></div></div>
+            <div class="q-line"><span class="q-line-t">@WanJob.StatusText</span><span class="q-line-m">경과 @($"{WanJob.Elapsed.TotalSeconds:0}")초 @(WanJob.TaskId is { } tid ? $"· task {Short(tid)}" : "")</span></div>
+            @if (WanJob.Phase == WanJobPhase.Completed && WanJob.VideoUrl is not null)
+            {
+                <video class="q-vid" src="@WanJob.VideoUrl" controls muted loop preload="metadata"></video>
+            }
+        </section>
+    }
+
+    @* ── 스토리보드 배치 ── *@
+    @if (Jobs.Current is { } proj && proj.Scenes.Count > 0)
+    {
+        <section class="q-card">
+            <div class="q-card-h">
+                <span>🎞️ 스토리보드 배치 <span class="q-dim">— @proj.Title</span></span>
+                <span class="q-badge @(Jobs.IsRunning || Jobs.IsMerging ? "run" : "idle")">@(Jobs.IsMerging ? "병합 중" : Jobs.IsRunning ? "생성 중" : "대기/완료")</span>
+            </div>
+            <div class="q-bignum">@Jobs.OverallPercent<span>%</span></div>
+            <div class="q-bar"><div class="q-bar-f" style="width:@(Jobs.OverallPercent)%"></div></div>
+            <div class="q-line">
+                <span class="q-line-t"><b>@Jobs.CompletedCount</b> / @proj.Scenes.Count 완료 @(Jobs.FailedCount > 0 ? $"· 실패 {Jobs.FailedCount}" : "")</span>
+                @if (Jobs.IsMerging) { <span class="q-line-m">병합 @Jobs.MergePercent%</span> }
+            </div>
+
+            <div class="q-scenes">
+                @foreach (var (s, i) in proj.Scenes.Select((s, idx) => (s, idx)))
+                {
+                    <div class="q-scene @SceneCls(s.Status)" @key="s.Id">
+                        <span class="q-scene-no">@(i + 1)</span>
+                        <div class="q-scene-mid">
+                            <div class="q-scene-t">@(string.IsNullOrWhiteSpace(s.Prompt) ? (s.IsI2v ? "(이미지 컷)" : "(빈 프롬프트)") : Trunc(s.Prompt))</div>
+                            <div class="q-scene-bar"><div class="q-scene-bar-f" style="width:@(s.IsTerminal ? 100 : s.Percent)%"></div></div>
+                        </div>
+                        <span class="q-badge sm @SceneCls(s.Status)">@SceneLabel(s.Status)</span>
+                    </div>
+                }
+            </div>
+
+            @if (Jobs.MergeMessage is not null) { <div class="q-merge">@Jobs.MergeMessage</div> }
+        </section>
+    }
+</div>
+
+<style>
+    .q { padding: 6px 8px 48px; width: 100%; box-sizing: border-box; }
+    .q-head { margin-bottom: 18px; }
+    .q-title { font-size: 26px; font-weight: 900; letter-spacing: -.4px; color: var(--text-primary); margin: 0 0 6px; }
+    .q-title-g { background: linear-gradient(90deg, var(--flow-cyan), var(--flow-violet)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .q-sub { font-size: 13.5px; color: var(--text-secondary); margin: 0; }
+
+    .q-empty { text-align: center; padding: 60px 20px; border: 1px dashed var(--line); border-radius: 18px; background: var(--card); }
+    .q-empty-ic { font-size: 48px; opacity: .5; }
+    .q-empty-t { font-size: 16px; font-weight: 800; color: var(--text-primary); margin: 10px 0 16px; }
+    .q-empty-a { display: flex; gap: 10px; justify-content: center; }
+
+    .q-card { border: 1px solid var(--line); border-radius: 18px; background: var(--card); padding: 18px 20px; margin-bottom: 16px; }
+    .q-card-h { display: flex; align-items: center; justify-content: space-between; font-size: 14px; font-weight: 800; color: var(--text-primary); margin-bottom: 10px; }
+    .q-dim { color: var(--text-muted); font-weight: 600; }
+    .q-bignum { font-size: 40px; font-weight: 900; color: var(--text-primary); line-height: 1; letter-spacing: -1px; }
+    .q-bignum span { font-size: 18px; color: var(--text-muted); margin-left: 3px; }
+    .q-bar { height: 12px; border-radius: 999px; background: var(--card-2); border: 1px solid var(--line); overflow: hidden; margin: 10px 0; }
+    .q-bar-f { height: 100%; border-radius: 999px; transition: width .5s ease; background: linear-gradient(90deg, var(--flow-violet), var(--flow-cyan), var(--flow-magenta)); background-size: 200% 100%; animation: q-flow 2.4s linear infinite; }
+    .q-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .q-line-t { font-size: 13px; color: var(--text-secondary); } .q-line-t b { color: var(--text-primary); }
+    .q-line-m { font: 600 11.5px var(--mono); color: var(--text-muted); }
+    .q-vid { width: 100%; max-width: 420px; border-radius: 11px; background: #000; border: 1px solid var(--line); margin-top: 12px; }
+
+    .q-badge { font: 700 10.5px var(--mono); border-radius: 999px; padding: 4px 10px; border: 1px dashed var(--line); color: var(--text-muted); white-space: nowrap; }
+    .q-badge.sm { padding: 3px 8px; font-size: 10px; }
+    .q-badge.run { color: var(--accent-2); border-style: solid; border-color: color-mix(in srgb, var(--flow-cyan) 45%, var(--line)); }
+    .q-badge.ok { color: #10b981; border-style: solid; border-color: color-mix(in srgb, #10b981 45%, var(--line)); }
+    .q-badge.bad { color: #ef4444; border-style: solid; border-color: color-mix(in srgb, #ef4444 45%, var(--line)); }
+
+    .q-scenes { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+    .q-scene { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); }
+    .q-scene.run { border-color: color-mix(in srgb, var(--flow-cyan) 40%, var(--line)); }
+    .q-scene.ok { border-color: color-mix(in srgb, #10b981 35%, var(--line)); }
+    .q-scene.bad { border-color: color-mix(in srgb, #ef4444 35%, var(--line)); }
+    .q-scene-no { font: 800 12px var(--mono); color: var(--text-muted); width: 18px; text-align: center; }
+    .q-scene-mid { flex: 1; min-width: 0; }
+    .q-scene-t { font-size: 12.5px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .q-scene-bar { height: 5px; border-radius: 999px; background: var(--card); border: 1px solid var(--line); overflow: hidden; margin-top: 5px; }
+    .q-scene-bar-f { height: 100%; background: linear-gradient(90deg, var(--flow-violet), var(--flow-cyan)); transition: width .4s ease; }
+    .q-merge { margin-top: 12px; font-size: 12.5px; color: var(--text-secondary); }
+
+    .q-btn { border: none; border-radius: 11px; padding: 10px 16px; font-weight: 800; font-size: 13px; cursor: pointer; font-family: inherit; }
+    .q-btn.go { color: #fff; background: linear-gradient(135deg, var(--flow-violet), var(--accent)); }
+    .q-btn.ghost { background: var(--card-2); color: var(--text-secondary); border: 1px solid var(--line); }
+
+    @@keyframes q-flow { to { background-position: 200% 0; } }
+    @@media (prefers-reduced-motion: reduce) { .q-bar-f { animation: none; } }
+</style>
+
+@code {
+    private bool AnyActive => WanJob.Phase != WanJobPhase.Idle || (Jobs.Current is { } p && p.Scenes.Count > 0);
+
+    protected override void OnInitialized()
+    {
+        WanJob.OnChange += OnCh;
+        Jobs.OnChange += OnCh;
+        Jobs.OnCompleted += OnCh;
+    }
+    public void Dispose()
+    {
+        WanJob.OnChange -= OnCh;
+        Jobs.OnChange -= OnCh;
+        Jobs.OnCompleted -= OnCh;
+    }
+    private void OnCh() => InvokeAsync(StateHasChanged);
+
+    private string WanLabel => WanJob.Phase switch
+    {
+        WanJobPhase.Submitting => "제출 중", WanJobPhase.Queued => "대기열", WanJobPhase.Rendering => "렌더링",
+        WanJobPhase.Downloading => "다운로드", WanJobPhase.Completed => "완료", WanJobPhase.Failed => "실패",
+        WanJobPhase.Canceled => "취소", _ => "대기",
+    };
+    private string WanCls => WanJob.Phase switch
+    {
+        WanJobPhase.Completed => "ok", WanJobPhase.Failed or WanJobPhase.Canceled => "bad", WanJobPhase.Idle => "", _ => "run",
+    };
+
+    private static string SceneLabel(SceneStatus s) => s switch
+    {
+        SceneStatus.Pending => "대기", SceneStatus.Generating => "생성중", SceneStatus.Downloading => "다운로드",
+        SceneStatus.Completed => "완료", SceneStatus.Failed => "실패", SceneStatus.Canceled => "취소", _ => "",
+    };
+    private static string SceneCls(SceneStatus s) => s switch
+    {
+        SceneStatus.Completed => "ok", SceneStatus.Failed or SceneStatus.Canceled => "bad",
+        SceneStatus.Generating or SceneStatus.Downloading => "run", _ => "",
+    };
+
+    private static string Trunc(string s) => s.Length <= 60 ? s : s[..58] + "…";
+    private static string Short(string id) => id.Length <= 10 ? id : id[..8] + "…";
+}

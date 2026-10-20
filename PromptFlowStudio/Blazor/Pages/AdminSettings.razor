@@ -1,0 +1,176 @@
+@page "/admin/settings"
+@using PromptFlowStudio.Services.Account
+@using PromptFlowStudio.Services.Wan
+@implements IDisposable
+@inject SessionState Session
+@inject WanTokenVault Vault
+
+@* [PromptFlowStudio] v15.11.0 다중 클라우드 Key Vault — 프로바이더별 [+ 키 추가]로 입력칸을 동적 생성하고,
+     입력/수정/삭제 즉시(저장 버튼 없음) WanTokenVault.UpdateProviderKeys 로 순환 큐에 반영한다.
+     관리자 설정(/settings) [🗝️ 키 볼트] 탭에 Embedded 로 임베드되며 단독 라우트(/admin/settings)도 지원. *@
+
+@if (!Embedded) { <PageTitle>PromptFlow Studio · 다중 클라우드 Key Vault</PageTitle> }
+
+@if (!Session.IsAdmin)
+{
+    <div class="kv-lock">🔒 관리자(Admin) 권한이 필요한 기능입니다. 현재 권한: <b>@Session.Role</b></div>
+}
+else
+{
+<section class="kv">
+    <header class="kv-head">
+        <div class="kv-title">🗝️ 다중 클라우드 Key Vault</div>
+        <div class="kv-sub">키 입력 즉시 순환 큐(라운드로빈)에 반영 · 402/429 응답 키는 자동 소진 처리 후 다음 키로 무중단 전환</div>
+        <div class="kv-store @(Vault.IsPersisted ? "ok" : null)">@(Vault.IsPersisted ? "🔐 " + WanTokenVault.CipherName + " 암호화 로컬 저장 완료" : "⏳ " + WanTokenVault.CipherName + " 암호화 저장 대기")</div>
+    </header>
+
+    @foreach (var p in WanTokenVault.Providers)
+    {
+        var provider = p;
+        var list = _drafts[provider];
+        <div class="kv-prov" @key="provider">
+            <div class="kv-prov-head">
+                <span class="kv-prov-name">@provider</span>
+                <span class="kv-badge @(Vault.GetActiveKeyCount(provider) > 0 ? "on" : null)">@(Vault.GetActiveKeyCount(provider))/@(Vault.GetKeyCount(provider)) 활성</span>
+                <button class="kv-add" type="button" @onclick="() => AddKey(provider)">＋ 키 추가</button>
+            </div>
+            @if (provider == WanTokenVault.Custom)
+            {
+                @* v15.14.0 Custom 엔드포인트 — DashScope 호환 BaseUrl, 입력 즉시 Vault(DPAPI) 반영 *@
+                <div class="kv-row kv-ep-row">
+                    <span class="kv-idx" title="Base URL">🌐</span>
+                    <input class="kv-in kv-ep @(_customUrlState)" type="url" autocomplete="off" spellcheck="false"
+                           placeholder="https://dashscope-compatible.example.com (미입력 시 기본 BaseUrl)"
+                           value="@_customUrl" @oninput="OnCustomUrlInput" />
+                    <span></span>
+                </div>
+                @if (_customUrlState == "dead")
+                {
+                    <div class="kv-ep-err">⚠ http(s):// 로 시작하는 절대 URL 을 입력하세요(저장되지 않음).</div>
+                }
+            }
+            @if (list.Count == 0)
+            {
+                <div class="kv-empty">등록된 키가 없습니다. [＋ 키 추가]를 눌러 입력칸을 만드세요.</div>
+            }
+            @for (int i = 0; i < list.Count; i++)
+            {
+                var idx = i;
+                var state = KeyState(provider, list[idx]);
+                <div class="kv-row">
+                    <span class="kv-idx" title="@(state == "dead" ? "소진(402/429)" : state == "ok" ? "활성" : "미입력")">@(state == "dead" ? "🔴" : state == "ok" ? "🟢" : "⚪")</span>
+                    <input class="kv-in @(state)" type="password" autocomplete="off" spellcheck="false"
+                           placeholder="@(provider) API Key"
+                           value="@list[idx]" @oninput="e => OnKeyInput(provider, idx, e)" />
+                    <button class="kv-del" type="button" title="삭제" @onclick="() => RemoveKey(provider, idx)">✕</button>
+                </div>
+            }
+        </div>
+    }
+</section>
+}
+
+<style>
+    .kv{display:flex;flex-direction:column;gap:14px;padding:20px 22px;border-radius:18px;color:var(--ink,#e6eefc);
+        background:linear-gradient(135deg,rgba(255,255,255,.07),rgba(255,255,255,.02));border:1px solid rgba(255,255,255,.12);
+        backdrop-filter:blur(14px) saturate(140%);-webkit-backdrop-filter:blur(14px) saturate(140%);box-shadow:0 18px 50px rgba(0,0,0,.35)}
+    .kv-head{display:flex;flex-direction:column;gap:4px}
+    .kv-title{font-size:17px;font-weight:800}
+    .kv-sub{font-size:12.5px;color:var(--sub,#93a3b8)}
+    .kv-prov{display:flex;flex-direction:column;gap:8px;padding:14px;border-radius:14px;background:rgba(8,13,24,.45);border:1px solid rgba(148,163,184,.16)}
+    .kv-prov-head{display:flex;align-items:center;gap:10px}
+    .kv-prov-name{font-weight:800;font-size:14px}
+    .kv-badge{font-size:11.5px;font-variant-numeric:tabular-nums;padding:3px 9px;border-radius:999px;color:var(--sub,#93a3b8);border:1px solid rgba(148,163,184,.25)}
+    .kv-badge.on{color:#34d399;border-color:rgba(52,211,153,.45);background:rgba(52,211,153,.1)}
+    .kv-add{margin-left:auto;appearance:none;cursor:pointer;font-family:inherit;font-size:12.5px;font-weight:700;color:#fff;padding:7px 12px;border:0;border-radius:10px;background:linear-gradient(135deg,#8b7bff,#6d5efc);box-shadow:0 6px 16px rgba(124,108,255,.3)}
+    .kv-add:hover{filter:brightness(1.08)}
+    .kv-empty{font-size:12.5px;color:var(--sub,#93a3b8)}
+    .kv-ep{font-family:inherit}
+    .kv-ep-err{font-size:11.5px;color:#f87171;padding-left:44px}
+    .kv-row{display:grid;grid-template-columns:36px 1fr 34px;align-items:center;gap:8px}
+    .kv-idx{font-size:12px;color:var(--sub,#93a3b8);font-variant-numeric:tabular-nums;text-align:right}
+    .kv-in{width:100%;box-sizing:border-box;background:rgba(8,13,24,.6);border:1px solid rgba(148,163,184,.28);border-radius:10px;padding:9px 12px;color:var(--ink,#e6eefc);font-size:13px;font-family:ui-monospace,Consolas,monospace;outline:none}
+    .kv-in:focus{border-color:#8b7bff;box-shadow:0 0 0 3px rgba(139,123,255,.2)}
+    .kv-in.ok{border-color:rgba(52,211,153,.6);box-shadow:0 0 0 1px rgba(52,211,153,.25)}
+    .kv-in.dead{border-color:rgba(248,113,113,.7);box-shadow:0 0 0 1px rgba(248,113,113,.3);color:#fca5a5}
+    .kv-store{align-self:flex-start;font-size:11.5px;font-weight:700;padding:3px 10px;border-radius:999px;color:#fbbf24;border:1px solid rgba(251,191,36,.4);background:rgba(251,191,36,.08)}
+    .kv-store.ok{color:#34d399;border-color:rgba(52,211,153,.45);background:rgba(52,211,153,.1)}
+    .kv-del{appearance:none;cursor:pointer;height:34px;border-radius:10px;border:1px solid rgba(248,113,113,.35);background:rgba(248,113,113,.08);color:#f87171;font-size:13px}
+    .kv-del:hover{background:rgba(248,113,113,.18)}
+    .kv-lock{padding:16px 18px;border-radius:12px;background:rgba(220,38,38,.12);border:1px solid rgba(220,38,38,.4);color:#f87171;font-size:13.5px}
+    @@media (max-width:640px){.kv{padding:14px}.kv-row{grid-template-columns:28px 1fr 32px}}
+</style>
+
+@code {
+    /// <summary>관리자 설정 탭 임베드 여부(true 면 PageTitle 생략).</summary>
+    [Parameter] public bool Embedded { get; set; }
+
+    private readonly Dictionary<string, List<string>> _drafts = new(StringComparer.Ordinal);
+    private string _customUrl = "";
+    private string? _customUrlState;   // ok · dead · null(미입력)
+    private readonly CancellationTokenSource _life = new();
+
+    protected override void OnInitialized()
+    {
+        foreach (var p in WanTokenVault.Providers)
+        {
+            var list = new List<string>();
+            Vault.CopyKeys(p, list);
+            _drafts[p] = list;
+        }
+        _customUrl = Vault.GetProviderEndpoint(WanTokenVault.Custom) ?? "";
+        _customUrlState = _customUrl.Length > 0 ? "ok" : null;
+        _ = PumpVaultSignalsAsync(Vault.Subscribe(_life.Token));   // v15.15.0 Channel 구독 — 발행 스레드 비차단
+    }
+
+    // 🟢 활성 · 🔴 소진 · ⚪ 미입력(빈 칸)
+    private string? KeyState(string provider, string key)
+        => string.IsNullOrWhiteSpace(key) ? null : Vault.IsExhausted(provider, key) ? "dead" : "ok";
+
+    private void OnCustomUrlInput(ChangeEventArgs e)
+    {
+        _customUrl = e.Value as string ?? "";
+        if (string.IsNullOrWhiteSpace(_customUrl)) { Vault.SetProviderEndpoint(WanTokenVault.Custom, null); _customUrlState = null; }
+        else _customUrlState = Vault.SetProviderEndpoint(WanTokenVault.Custom, _customUrl) ? "ok" : "dead";
+    }
+
+    private void AddKey(string provider) => _drafts[provider].Add("");   // 빈 칸은 Vault 에서 무시 → 입력 시점에 반영
+
+    private void RemoveKey(string provider, int idx)
+    {
+        var list = _drafts[provider];
+        if ((uint)idx >= (uint)list.Count) return;
+        list.RemoveAt(idx);
+        Vault.UpdateProviderKeys(provider, list);
+    }
+
+    private void OnKeyInput(string provider, int idx, ChangeEventArgs e)
+    {
+        var list = _drafts[provider];
+        if ((uint)idx >= (uint)list.Count) return;
+        list[idx] = e.Value as string ?? "";
+        Vault.UpdateProviderKeys(provider, list);
+    }
+
+    // 다른 화면/세션에서 변경 시 배지 갱신(입력 중인 초안은 덮어쓰지 않음). 누적 신호는 한 번에 비워 렌더 1회로 합류.
+    private async Task PumpVaultSignalsAsync(System.Threading.Channels.ChannelReader<VaultSignal> reader)
+    {
+        try
+        {
+            while (await reader.WaitToReadAsync(_life.Token).ConfigureAwait(false))
+            {
+                while (reader.TryRead(out _)) { }
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
+        catch (Exception ex) { Program.Log("AdminSettings.VaultSignals", ex); }
+    }
+
+    public void Dispose()
+    {
+        _life.Cancel();
+        _life.Dispose();
+    }
+}

@@ -1,0 +1,186 @@
+@inject PromptFlowStudio.Services.Storyboard.BatchProductionService Batch
+@using System.Text.Json
+
+@* [PromptFlow Studio] 엑셀식 배치 그리드 — 셀 직접 수정·행 추가/삭제·실시간 검증·CSV/JSON 임포트 후 원클릭 일괄 큐 등록. 순수 BCL. *@
+
+<div class="mpg">
+    <div class="mpg-h">
+        <span class="mpg-t">🏭 엑셀식 배치 그리드 <span class="mpg-sub">셀 수정 · 실시간 검증 · 일괄 등록</span></span>
+        <div class="mpg-tools">
+            <button class="mpg-btn" @onclick="AddRow">＋ 행</button>
+            <button class="mpg-btn" @onclick="() => _importOpen = !_importOpen">📋 CSV/JSON</button>
+            <button class="mpg-btn go" @onclick="Enqueue" disabled="@(ValidCount == 0 || Batch.IsRunning)">＋ 유효 @(ValidCount)건 일괄 큐 등록</button>
+        </div>
+    </div>
+
+    @if (_importOpen)
+    {
+        <div class="mpg-import">
+            <textarea class="mpg-ta" @bind="_import" rows="4" placeholder="CSV: 제목,대본  (줄바꿈=행)  ·  또는 JSON: [{&quot;title&quot;:&quot;...&quot;,&quot;script&quot;:&quot;...&quot;}]"></textarea>
+            <div class="mpg-import-btns">
+                <button class="mpg-btn" @onclick="Import">불러오기(추가)</button>
+                <button class="mpg-btn" @onclick="() => { _import = string.Empty; _importOpen = false; }">닫기</button>
+                @if (_importMsg is not null) { <span class="mpg-msg">@_importMsg</span> }
+            </div>
+        </div>
+    }
+
+    <div class="mpg-wrap">
+        <table class="mpg-tbl">
+            <thead><tr><th style="width:34px">#</th><th style="width:26%">제목 *</th><th>대본 / 주제 *</th><th style="width:120px">검증</th><th style="width:34px"></th></tr></thead>
+            <tbody>
+                @foreach (var (row, i) in _rows.Select((r, i) => (r, i)))
+                {
+                    <tr class="@(row.Valid ? null : "bad")" @key="row.Id">
+                        <td class="mpg-no">@(i + 1)</td>
+                        <td><input class="mpg-in" @bind="row.Title" @bind:event="oninput" @bind:after="Validate" placeholder="예: 첫 레몬 시식" /></td>
+                        <td><input class="mpg-in" @bind="row.Script" @bind:event="oninput" @bind:after="Validate" placeholder="예: 아기가 레몬을 처음 맛본다" /></td>
+                        <td class="mpg-val">@(row.Valid ? "✓ 준비됨" : "⚠ " + row.Error)</td>
+                        <td><button class="mpg-del" @onclick="() => Remove(row)" title="행 삭제">✕</button></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <div class="mpg-foot">총 <b>@_rows.Count</b>행 · 유효 <b class="ok">@ValidCount</b> · 오류 <b class="err">@(_rows.Count - ValidCount)</b> — 유효 행만 큐에 등록됩니다.</div>
+</div>
+
+<style>
+    .mpg { border: 1px solid var(--line); border-radius: 14px; background: var(--card); overflow: hidden; }
+    .mpg-h { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 12px 15px; border-bottom: 1px solid var(--line); }
+    .mpg-t { font: 800 13px var(--mono); color: var(--text-primary); } .mpg-sub { font-weight: 600; color: var(--text-muted); }
+    .mpg-tools { display: flex; gap: 7px; flex-wrap: wrap; }
+    .mpg-btn { font: 700 11.5px inherit; padding: 7px 12px; border-radius: 9px; cursor: pointer; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); }
+    .mpg-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--text-primary); }
+    .mpg-btn.go { border: none; color: #fff; background: linear-gradient(135deg, var(--flow-violet), var(--flow-magenta)); }
+    .mpg-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .mpg-import { padding: 12px 15px; border-bottom: 1px solid var(--line); background: var(--card-2); }
+    .mpg-ta { width: 100%; box-sizing: border-box; resize: vertical; font: 12px var(--mono); padding: 9px; border-radius: 8px; background: var(--card); border: 1px solid var(--line); color: var(--text-primary); }
+    .mpg-import-btns { display: flex; align-items: center; gap: 8px; margin-top: 8px; } .mpg-msg { font-size: 11.5px; color: var(--accent-2); }
+    .mpg-wrap { overflow-x: auto; max-height: 340px; overflow-y: auto; }
+    .mpg-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    .mpg-tbl th { position: sticky; top: 0; text-align: left; font: 700 10.5px var(--mono); letter-spacing: .04em; color: var(--text-muted); padding: 9px 10px; background: var(--card-2); border-bottom: 1px solid var(--line); }
+    .mpg-tbl td { padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+    .mpg-tbl tr.bad td { background: color-mix(in srgb, #ef4444 6%, transparent); }
+    .mpg-no { font: 700 11px var(--mono); color: var(--text-muted); text-align: center; }
+    .mpg-in { width: 100%; box-sizing: border-box; padding: 7px 9px; border-radius: 7px; background: var(--card-2); border: 1px solid transparent; color: var(--text-primary); font: 12.5px inherit; }
+    .mpg-in:focus { border-color: var(--accent); outline: none; background: var(--card); }
+    .mpg-val { font: 700 11px var(--mono); color: #10b981; white-space: nowrap; } tr.bad .mpg-val { color: #ef4444; }
+    .mpg-del { width: 24px; height: 24px; border: none; background: none; color: var(--text-muted); cursor: pointer; border-radius: 6px; }
+    .mpg-del:hover { background: color-mix(in srgb, #ef4444 14%, transparent); color: #ef4444; }
+    .mpg-foot { padding: 10px 15px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--text-secondary); }
+    .mpg-foot b.ok { color: #10b981; } .mpg-foot b.err { color: #ef4444; }
+</style>
+
+@code {
+    /// <summary>일괄 큐 등록 완료 콜백(등록 건수).</summary>
+    [Parameter] public EventCallback<int> OnEnqueued { get; set; }
+
+    private sealed class GridRow
+    {
+        public string Id { get; } = Guid.NewGuid().ToString("N")[..6];
+        public string Title { get; set; } = "";
+        public string Script { get; set; } = "";
+        public bool Valid { get; set; }
+        public string Error { get; set; } = "제목 필요";
+    }
+
+    private readonly List<GridRow> _rows = new() { new GridRow() };
+    private bool _importOpen;
+    private string _import = "";
+    private string? _importMsg;
+
+    private int ValidCount => _rows.Count(r => r.Valid);
+
+    private void AddRow() { _rows.Add(new GridRow()); Validate(); }
+
+    private void Remove(GridRow r)
+    {
+        _rows.Remove(r);
+        if (_rows.Count == 0) _rows.Add(new GridRow());
+        Validate();
+    }
+
+    private void Validate()
+    {
+        foreach (var r in _rows)
+        {
+            var t = (r.Title ?? "").Trim();
+            var s = (r.Script ?? "").Trim();
+            r.Valid = t.Length > 0 && s.Length >= 2;
+            r.Error = t.Length == 0 ? "제목 필요" : s.Length < 2 ? "대본 필요" : "";
+        }
+    }
+
+    private void Import()
+    {
+        var text = (_import ?? "").Trim();
+        if (text.Length == 0) { _importMsg = "붙여넣은 내용이 없습니다."; return; }
+        var added = 0;
+        try
+        {
+            if (text.StartsWith('[') || text.StartsWith('{'))   // JSON
+            {
+                using var doc = JsonDocument.Parse(text);
+                var arr = doc.RootElement.ValueKind == JsonValueKind.Array ? doc.RootElement.EnumerateArray() : default;
+                if (doc.RootElement.ValueKind == JsonValueKind.Array)
+                    foreach (var el in arr)
+                    {
+                        var title = Str(el, "title");
+                        var script = Str(el, "script");
+                        if (title.Length + script.Length == 0) continue;
+                        _rows.Add(new GridRow { Title = title, Script = script }); added++;
+                    }
+            }
+            else   // CSV (제목,대본)
+            {
+                foreach (var raw in text.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var cells = SplitCsv(raw.TrimEnd('\r'));
+                    if (cells.Count == 0) continue;
+                    var title = cells[0].Trim();
+                    var script = cells.Count > 1 ? string.Join(" ", cells.Skip(1)).Trim() : "";
+                    if (title.Length == 0 && script.Length == 0) continue;
+                    _rows.Add(new GridRow { Title = title, Script = script }); added++;
+                }
+            }
+            // 첫 빈 행 정리(임포트로 채웠으면 초기 빈 행 제거)
+            if (added > 0 && _rows.Count > added && _rows[0] is { Title.Length: 0, Script.Length: 0 }) _rows.RemoveAt(0);
+            Validate();
+            _importMsg = $"✓ {added}행 추가됨";
+            _import = "";
+        }
+        catch (Exception ex) { _importMsg = "파싱 실패: " + ex.Message; }
+    }
+
+    private async Task Enqueue()
+    {
+        Validate();
+        var n = 0;
+        foreach (var r in _rows.Where(r => r.Valid)) { Batch.AddManual(r.Title.Trim(), r.Script.Trim()); n++; }
+        if (n > 0 && OnEnqueued.HasDelegate) await OnEnqueued.InvokeAsync(n);
+    }
+
+    private static string Str(JsonElement el, string name)
+        => el.ValueKind == JsonValueKind.Object && el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
+
+    // 따옴표 인식 CSV 라인 분할(간이).
+    private static List<string> SplitCsv(string line)
+    {
+        var res = new List<string>();
+        var sb = new System.Text.StringBuilder();
+        var q = false;
+        for (var i = 0; i < line.Length; i++)
+        {
+            var c = line[i];
+            if (c == '"') { if (q && i + 1 < line.Length && line[i + 1] == '"') { sb.Append('"'); i++; } else q = !q; }
+            else if (c == ',' && !q) { res.Add(sb.ToString()); sb.Clear(); }
+            else sb.Append(c);
+        }
+        res.Add(sb.ToString());
+        return res;
+    }
+
+    protected override void OnInitialized() => Validate();
+}

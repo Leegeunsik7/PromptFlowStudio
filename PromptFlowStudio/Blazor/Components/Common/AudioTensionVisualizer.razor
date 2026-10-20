@@ -1,0 +1,78 @@
+@inject VisualSfxCaptionService Visual
+
+@* [PromptFlow Studio] 오디오 텐션 & SFX 덕킹 타임라인 파형 — 컷 1개의 긴장도(0~100)를 컬러 험프로, BGM 덕킹 구간을 붉은 점선으로,
+   폴리 SFX 트리거(예: 콰광! ⚡)를 청록 핀으로 시각화. 오디오 밀당(Mute/Fade)과 효과음 발사 시점을 한눈에. authored 데이터(PresetTension/PresetFoley) 소비. *@
+
+<div class="atv" title="@Title">
+    <div class="atv-head">
+        <span class="atv-t" style="@($"color:{TensionColor}")">긴장 @Tension</span>
+        @if (DuckOn) { <span class="atv-duck">🔇 BGM 덕킹</span> }
+        @if (Pins.Count > 0) { <span class="atv-sfx">🎯 SFX @Pins.Count</span> }
+    </div>
+    <svg class="atv-svg" viewBox="0 0 100 26" preserveAspectRatio="none" role="img">
+        <path d="@HumpPath" fill="@TensionColor" fill-opacity="0.28" stroke="@TensionColor" stroke-width="1" />
+        @if (DuckOn)
+        {
+            <line x1="0" y1="24.2" x2="100" y2="24.2" stroke="#ef4444" stroke-width="1.6" stroke-dasharray="3 2" />
+        }
+        @foreach (var pin in Pins)
+        {
+            <g>
+                <line x1="@pin.X" y1="3" x2="@pin.X" y2="24" stroke="#22d3ee" stroke-width="1.3" />
+                <circle cx="@pin.X" cy="3.2" r="2" fill="#22d3ee"><title>@pin.Label</title></circle>
+            </g>
+        }
+    </svg>
+    @if (Pins.Count > 0)
+    {
+        <div class="atv-pins">
+            @foreach (var pin in Pins) { <span class="atv-pin">@pin.Label</span> }
+        </div>
+    }
+</div>
+
+<style>
+    .atv { display: flex; flex-direction: column; gap: 3px; padding: 5px 2px 2px; }
+    .atv-head { display: flex; align-items: center; gap: 7px; font: 800 10px var(--mono); }
+    .atv-t { letter-spacing: .02em; }
+    .atv-duck { color: #ef4444; }
+    .atv-sfx { color: #0ea5a4; }
+    .atv-svg { width: 100%; height: 26px; display: block; background: color-mix(in srgb, var(--card-2) 70%, transparent); border: 1px solid var(--line); border-radius: 6px; }
+    .atv-pins { display: flex; flex-wrap: wrap; gap: 3px; }
+    .atv-pin { font: 700 9.5px var(--mono); color: #0d9488; background: color-mix(in srgb, #14b8a6 11%, transparent); border: 1px solid color-mix(in srgb, #14b8a6 30%, var(--line)); border-radius: 5px; padding: 1px 5px; }
+</style>
+
+@code {
+    /// <summary>시각화할 컷.</summary>
+    [Parameter] public StoryboardScene? Scene { get; set; }
+    /// <summary>컷 길이(ms) — SFX 핀 X 위치 계산 기준.</summary>
+    [Parameter] public int ClipMs { get; set; } = 5000;
+    /// <summary>BGM 덕킹 활성(프로젝트에 BGM + 오디오 덕킹 ON). 나레이션 있는 컷에 덕킹 표시.</summary>
+    [Parameter] public bool BgmDucking { get; set; }
+
+    private static readonly System.Globalization.CultureInfo Inv = System.Globalization.CultureInfo.InvariantCulture;
+
+    private int Tension => Math.Clamp(Scene?.PresetTension ?? Scene?.EmotionTension ?? 0, 0, 100);
+    private string TensionColor => Tension < 40 ? "#10b981" : Tension < 70 ? "#f59e0b" : "#ef4444";
+    private bool DuckOn => BgmDucking && Scene is not null && !string.IsNullOrWhiteSpace(Scene.VoiceText);
+    private string HumpPath => $"M0,26 Q50,{(26 - Tension * 0.22).ToString("0.#", Inv)} 100,26 Z";   // 긴장도 클수록 높은 험프
+
+    private sealed record Pin(string X, string Label);
+
+    private IReadOnlyList<Pin> Pins
+    {
+        get
+        {
+            var list = new List<Pin>();
+            if (Scene is null) return list;
+            foreach (var b in Visual.BuildBadges(Scene, ClipMs))
+            {
+                var x = (Math.Clamp(b.StartMs, 0, ClipMs) / (double)Math.Max(1, ClipMs) * 100).ToString("0.#", Inv);
+                list.Add(new Pin(x, b.Label));
+            }
+            return list;
+        }
+    }
+
+    private string Title => $"긴장도 {Tension}/100" + (DuckOn ? " · BGM 덕킹(나레이션 구간)" : "") + (Pins.Count > 0 ? $" · SFX {Pins.Count}개" : "");
+}

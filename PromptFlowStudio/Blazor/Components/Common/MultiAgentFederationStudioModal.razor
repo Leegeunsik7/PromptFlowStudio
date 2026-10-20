@@ -1,0 +1,311 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.AgentFederation
+@implements IDisposable
+@inject MultiAgentFederationStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.68.0] 🤖 AI 멀티 에이전트 연합 & 지식 그래프 스튜디오 — 에코시스템 토폴로지(시공간 지식 그래프) · 에이전트 카드(부하/낙찰/평판) ·
+    자율 협상 로그(메시지 버스) · ML-DSA 합의 로그 · 1-Click 스웜 동기화 · 경합/위조/비잔틴/SRE 장애 주입.
+*@
+
+<div class="maf-scrim" @onclick="Close">
+    <div class="maf-modal" @onclick:stopPropagation="true">
+        <div class="maf-h">
+            <div>
+                <div class="maf-title">🤖 AI 멀티 에이전트 연합 &amp; 지식 그래프 스튜디오</div>
+                <div class="maf-sub"><b>연출 · 음향 · VFX · SRE · 자산 관리</b> 에이전트가 무할당 메시지 버스로 작업을 입찰·분담하고, 제어권 경합은
+                    <b>ML-DSA-65 서명 BFT 합의</b>로 해결합니다. 4D 월드·샷·캐릭터·자산·SRE 상태는 <b>시공간 지식 그래프</b>로 실시간 추론됩니다.</div>
+            </div>
+            <button class="maf-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="maf-bar">
+            <span class="maf-chip @(Runner.IsRunning ? "ok" : null)">@(Runner.IsRunning ? "● 라이브" : "○ 정지") · 버스 #@(F.BusSequence)</span>
+            <span class="maf-chip">작업 @(F.TasksDone)/@(F.TasksSubmitted) · 입찰 @(F.Bids) · 평균 @(F0(F.MeanTaskLatencyMs))ms</span>
+            <span class="maf-chip">그래프 노드 @(G.NodeCount) · 엣지 @(G.EdgeCount) · 추론 @(G.InferredEdges) · v@(G.Version)</span>
+            <span class="maf-chip">경합 @(F.Conflicts) · 이관 @(F.Preemptions) · 거부 @(F.Denied)</span>
+            <span class="maf-chip ok">합의 @(C.Committed) · 중단 @(C.Aborted) · 에포크 @(C.Epoch) · q=@(C.Quorum)/@(C.AgentCount)</span>
+            <span class="maf-chip @(C.InvalidVotes + C.Equivocations + C.Replays > 0 ? "hot" : null)">위조표 @(C.InvalidVotes) · 이중투표 @(C.Equivocations) · 재생 @(C.Replays)</span>
+        </div>
+
+        <div class="maf-main">
+            <div class="maf-col">
+                <div class="maf-card">
+                    <div class="maf-row maf-between">
+                        <span class="maf-sec">🕸 에코시스템 토폴로지 (시공간 지식 그래프)</span>
+                        <span class="maf-row">
+                            <button class="maf-btn @(Runner.IsRunning ? "on" : null)" @onclick="Toggle">@(Runner.IsRunning ? "⏸ 정지" : "▶ 라이브")</button>
+                            <button class="maf-btn sm" @onclick="Step">⏭ 1초</button>
+                        </span>
+                    </div>
+                    <svg class="maf-graph" viewBox="0 0 440 300">
+                        @for (var i = 0; i < _edgeCount; i++)
+                        {
+                            var e = _edges[i];
+                            var (x1, y1) = P(e.Src); var (x2, y2) = P(e.Dst);
+                            <line x1="@F0(x1)" y1="@F0(y1)" x2="@F0(x2)" y2="@F0(y2)" class="maf-e r@((int)e.Relation) @(e.Inferred ? "inf" : null)" />
+                        }
+                        @for (var n = 0; n < G.NodeCount; n++)
+                        {
+                            var (x, y) = P(n);
+                            var k = G.KindOf(n);
+                            <g>
+                                <circle cx="@F0(x)" cy="@F0(y)" r="@(k == KgNodeKind.World4D ? 11 : k == KgNodeKind.Agent ? 8 : 7)" class="maf-n k@((int)k) @(G.IsDown(n) ? "down" : null)" />
+                                <text x="@F0(x)" y="@F0(y + 16)" class="maf-nt">@(Short(G.NameOf(n)))</text>
+                            </g>
+                        }
+                    </svg>
+                    <div class="maf-legend">
+                        <span class="k0">● 4D 월드</span><span class="k1">● 샷</span><span class="k2">● 캐릭터</span><span class="k3">● 자산</span><span class="k4">● SRE</span><span class="k5">● 에이전트</span>
+                        <span class="inf">┅ 추론 엣지</span><span class="risk">━ 위험(AtRisk)</span>
+                    </div>
+                    <div class="maf-row">
+                        <button class="maf-btn sm" @onclick="() => G.InferDependencies()">🧩 전이 추론</button>
+                        <button class="maf-btn sm" @onclick="Propagate">🧠 임베딩 전파</button>
+                        <button class="maf-btn sm hot" @onclick="ToggleSre">@(G.IsDown(F.SreNodes[0]) ? "🌤 SRE 서울-1 복구" : "🌩 SRE 서울-1 장애")</button>
+                        @if (_impact is not null)
+                        {
+                            <span class="maf-note">@_impact</span>
+                        }
+                    </div>
+                    @if (_similar is not null)
+                    {
+                        <div class="maf-note">@_similar</div>
+                    }
+                </div>
+
+                <div class="maf-card">
+                    <div class="maf-sec">🗣 에이전트 간 자율 협상 로그 (메시지 버스)</div>
+                    <div class="maf-log">
+                        @for (var i = 0; i < _msgCount; i++)
+                        {
+                            var m = _msgs[i];
+                            <div class="mk@((int)m.Kind)">#@(m.Seq) <b>@(MultiAgentSwarmFederationOrchestrator.MessageLabel(m.Kind))</b> @(Who(m.From)) → @(Who(m.To)) · ref @(m.Ref) · @(F2(m.Value))</div>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="maf-col">
+                <div class="maf-card">
+                    <div class="maf-row maf-between">
+                        <span class="maf-sec">🤝 에이전트 연합</span>
+                        <button class="maf-sync" disabled="@_busy" @onclick="Sync">🔄 1-Click 스웜 동기화</button>
+                    </div>
+                    <table class="maf-tbl">
+                        <thead><tr><th>에이전트</th><th>부하</th><th>진행</th><th>낙찰/완료</th><th>평판</th><th>모드</th></tr></thead>
+                        <tbody>
+                            @for (var a = 0; a < MultiAgentSwarmFederationOrchestrator.Agents; a++)
+                            {
+                                var id = a;
+                                var s = F.StatusOf(id);
+                                <tr class="@(s.Quarantined ? "q" : null)">
+                                    <td><b>@(ZeroTrustInterAgentConsensusResolver.RoleLabel(s.Role))</b>@(s.Quarantined ? " ⛔격리" : "")</td>
+                                    <td><div class="maf-mbar"><i style="width:@(Pc(s.Load / 3f))"></i></div></td>
+                                    <td>@s.Active</td>
+                                    <td>@s.Won / @s.Completed</td>
+                                    <td>@(F2(s.Reputation))</td>
+                                    <td>
+                                        <select class="maf-sel" value="@((int)s.Mode)" @onchange="e => SetMode(id, e)">
+                                            @for (var m = 0; m < 4; m++)
+                                            {
+                                                <option value="@m">@(MultiAgentSwarmFederationOrchestrator.ModeLabel((ByzantineMode)m))</option>
+                                            }
+                                        </select>
+                                        @if (s.Quarantined)
+                                        {
+                                            <button class="maf-btn sm" @onclick="() => C.Release(id)">🔓</button>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                    <div class="maf-row">
+                        <button class="maf-btn sm" disabled="@_busy" @onclick="Contention">⚔ 카메라 제어권 경합</button>
+                        <button class="maf-btn sm hot" disabled="@_busy" @onclick="Inflated">🎭 권한 과대 주장(음향)</button>
+                        <button class="maf-btn sm hot" disabled="@_busy" @onclick="Tampered">📨 변조 데이터 교환</button>
+                    </div>
+                    <div class="maf-note">S3 카메라 소유: <b>@(OwnerLabel(F.OwnerOf(F.Shots[2])))</b> · 리스 5s · 이관 마진 +@(F2(MultiAgentSwarmFederationOrchestrator.PreemptMargin))</div>
+                </div>
+
+                <div class="maf-card">
+                    <div class="maf-sec">🔐 제로트러스트 합의 (ML-DSA-65 · BFT ⌊2n/3⌋+1)</div>
+                    <div class="maf-log cons">
+                        @for (var i = 0; i < _consCount; i++)
+                        {
+                            var r = _cons[i]!;
+                            <div class="o@((int)r.Outcome)">#@(r.ProposalId) <b>@(ZeroTrustInterAgentConsensusResolver.KindLabel(r.Kind))</b> · @(OutcomeLabel(r.Outcome)) · 찬 @(r.Accepts) 반 @(r.Rejects) / q @(r.Quorum)
+                                @(r.InvalidVotes > 0 ? " · 위조 " + r.InvalidVotes : "")@(r.Equivocations > 0 ? " · 이중 " + r.Equivocations : "") · @(F1(r.Millis))ms
+                                @(r.Certificate.Length > 0 ? " · 인증서 " + Convert.ToHexString(r.Certificate, 0, 6) : "")</div>
+                        }
+                    </div>
+                    <div class="maf-note">서명 검증 @(C.Verifications) · 무효 제안 @(C.InvalidProposals)</div>
+                </div>
+                @if ((F.LastAction ?? C.LastAction ?? G.LastAction) is { } act)
+                {
+                    <div class="maf-note">@act</div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .maf-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .maf-modal { width: min(1560px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .maf-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #8b5cf6 18%, var(--card)), color-mix(in srgb, #14b8a6 14%, var(--card))); }
+    .maf-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .maf-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .maf-sub b { color: var(--text-primary); }
+    .maf-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .maf-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); }
+    .maf-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .maf-chip.ok { color: #22c55e; border-color: #22c55e; }
+    .maf-chip.hot { color: #f97316; border-color: #f97316; }
+    .maf-main { display: grid; grid-template-columns: 1.2fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .maf-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .maf-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .maf-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); }
+    .maf-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .maf-between { justify-content: space-between; }
+    .maf-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .maf-btn.on { background: color-mix(in srgb, #8b5cf6 22%, transparent); border-color: #8b5cf6; }
+    .maf-btn.hot { background: color-mix(in srgb, #ef4444 18%, transparent); border-color: #ef4444; }
+    .maf-btn.sm { font-size: 11px; padding: 3px 8px; }
+    .maf-sync { font-size: 13px; font-weight: 900; padding: 8px 14px; border-radius: 10px; border: 2px solid #14b8a6; background: color-mix(in srgb, #14b8a6 18%, transparent); color: var(--text-primary); cursor: pointer; }
+    .maf-sel { font-size: 11px; padding: 2px 4px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .maf-graph { width: 100%; aspect-ratio: 22 / 15; background: color-mix(in srgb, #0f172a 60%, transparent); border-radius: 10px; border: 1px solid var(--line); }
+    .maf-e { stroke: #64748b; stroke-width: 1.2; stroke-opacity: .6; }
+    .maf-e.r0 { stroke: #0ea5e9; } .maf-e.r1 { stroke: #f472b6; } .maf-e.r2 { stroke: #eab308; } .maf-e.r3 { stroke: #22c55e; }
+    .maf-e.r4 { stroke: #a855f7; stroke-width: 2.5; stroke-opacity: .9; } .maf-e.r5 { stroke: #fb923c; } .maf-e.r6 { stroke: #67e8f9; stroke-opacity: .9; }
+    .maf-e.r7 { stroke: #c4b5fd; } .maf-e.r8 { stroke: #ef4444; stroke-width: 2; stroke-opacity: 1; }
+    .maf-e.inf { stroke-dasharray: 3 3; }
+    .maf-n { stroke: #0f172a; stroke-width: 1.5; }
+    .maf-n.k0 { fill: #0ea5e9; } .maf-n.k1 { fill: #eab308; } .maf-n.k2 { fill: #f472b6; } .maf-n.k3 { fill: #22c55e; } .maf-n.k4 { fill: #94a3b8; } .maf-n.k5 { fill: #a855f7; }
+    .maf-n.down { fill: #ef4444; stroke: #fff; stroke-dasharray: 2 2; }
+    .maf-nt { fill: var(--text-secondary); font-size: 7.5px; font-weight: 700; text-anchor: middle; }
+    .maf-legend { display: flex; flex-wrap: wrap; gap: 8px; font-size: 10.5px; color: var(--text-muted); }
+    .maf-legend .k0 { color: #0ea5e9; } .maf-legend .k1 { color: #eab308; } .maf-legend .k2 { color: #f472b6; } .maf-legend .k3 { color: #22c55e; } .maf-legend .k4 { color: #94a3b8; } .maf-legend .k5 { color: #a855f7; }
+    .maf-legend .inf { color: #c4b5fd; } .maf-legend .risk { color: #ef4444; }
+    .maf-log { max-height: 190px; overflow-y: auto; font: 10.5px var(--mono); color: var(--text-muted); display: flex; flex-direction: column; gap: 2px; }
+    .maf-log b { color: var(--text-primary); }
+    .maf-log .mk2 b, .maf-log .mk5 b, .maf-log .mk10 b { color: #22c55e; } .maf-log .mk6 b, .maf-log .mk11 b { color: #ef4444; } .maf-log .mk7 b, .maf-log .mk8 b { color: #a855f7; }
+    .maf-log.cons .o0 b { color: #22c55e; } .maf-log.cons .o1 b, .maf-log.cons .o2 b, .maf-log.cons .o3 b { color: #f97316; }
+    .maf-tbl { width: 100%; border-collapse: collapse; font-size: 11px; }
+    .maf-tbl th, .maf-tbl td { padding: 4px 5px; border-bottom: 1px solid var(--line); text-align: left; color: var(--text-secondary); }
+    .maf-tbl th { color: var(--text-muted); font-weight: 700; }
+    .maf-tbl b { color: var(--text-primary); }
+    .maf-tbl tr.q td { color: #ef4444; }
+    .maf-mbar { height: 6px; min-width: 50px; border-radius: 3px; background: color-mix(in srgb, var(--line) 70%, transparent); overflow: hidden; }
+    .maf-mbar i { display: block; height: 100%; background: linear-gradient(90deg, #8b5cf6, #14b8a6); }
+    .maf-note { font-size: 11px; color: var(--text-muted); }
+    .maf-note b { color: var(--text-primary); }
+    @@media (max-width: 1200px) { .maf-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly KgEdge[] _edges = new KgEdge[600];
+    private readonly BusMessage[] _msgs = new BusMessage[40];
+    private readonly ConsensusResult?[] _cons = new ConsensusResult?[12];
+    private readonly int[] _impacted = new int[32];
+    private int _edgeCount, _msgCount, _consCount;
+    private string? _impact, _similar;
+    private bool _busy;
+    private long _shownSeq = -1;
+    private System.Threading.Timer? _timer;
+
+    private MultiAgentSwarmFederationOrchestrator F => Runner.Federation;
+    private RealtimeSpatiotemporalKnowledgeGraph G => F.Graph;
+    private ZeroTrustInterAgentConsensusResolver C => F.Consensus;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        F.OnChange += OnServiceChanged;
+        G.OnChange += OnServiceChanged;
+        C.OnChange += OnServiceChanged;
+        if (Runner.FrameSeq == 0) Runner.TickOnce(1000.0 / MultiAgentFederationStudioRunner.TickHz);
+        Refresh();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { if (Runner.FrameSeq != _shownSeq) _ = InvokeAsync(() => { Refresh(); StateHasChanged(); }); }
+            catch (ObjectDisposedException) { }
+        }, null, 250, 250);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(float v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string Pc(float v) => (Math.Clamp(v, 0f, 1f) * 100f).ToString("0", CultureInfo.InvariantCulture) + "%";
+    private static string Short(string s) => s.Length > 9 ? s[..9] : s;
+    private static string Who(sbyte a) => a < 0 ? "전체" : ZeroTrustInterAgentConsensusResolver.RoleLabel((FedAgentRole)a);
+    private static string OwnerLabel(int a) => a < 0 ? "없음" : ZeroTrustInterAgentConsensusResolver.RoleLabel((FedAgentRole)a);
+    private static string OutcomeLabel(ConsensusOutcome o) => o switch { ConsensusOutcome.Committed => "커밋", ConsensusOutcome.Aborted => "중단", ConsensusOutcome.InvalidProposal => "무효 제안", _ => "재생 차단" };
+
+    private (float X, float Y) P(int n) { var (x, y, _) = G.PositionOf(n); return (220 + x * 17, 150 - (y - 3) * 15); }
+
+    private void Refresh()
+    {
+        _shownSeq = Runner.FrameSeq;
+        _edgeCount = G.CopyEdges(_edges);
+        _msgCount = F.CopyRecent(_msgs);
+        _consCount = C.CopyLog(_cons);
+    }
+
+    private void Toggle() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step() { for (var i = 0; i < MultiAgentFederationStudioRunner.TickHz; i++) Runner.TickOnce(1000.0 / MultiAgentFederationStudioRunner.TickHz); Refresh(); }
+
+    private void Propagate()
+    {
+        for (var i = 0; i < 3; i++) G.PropagateEmbeddings();
+        var best = G.MostSimilar(F.Characters[0], out var score);
+        _similar = best >= 0 ? "🧠 '" + G.NameOf(F.Characters[0]) + "'와 가장 유사한 캐릭터: " + G.NameOf(best) + " (코사인 " + F2(score) + ")" : null;
+    }
+
+    private void ToggleSre()
+    {
+        var n = F.SreNodes[0];
+        var c = G.MarkDown(n, !G.IsDown(n), _impacted);
+        _impact = G.IsDown(n) ? "⚠ 영향 노드 " + c + "개 AtRisk" : "✅ SRE 복구";
+    }
+
+    private void SetMode(int agent, ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var m)) F.SetMode(agent, (ByzantineMode)m);
+    }
+
+    private async Task Sync() => await Busy(() => F.SyncSwarm());
+    private async Task Contention() => await Busy(() => Runner.RunContention());
+    private async Task Inflated() => await Busy(() => F.ClaimWithInflatedScore((int)FedAgentRole.Audio, F.Shots[2], AgentTaskKind.Shot, 0.99f));
+
+    private async Task Tampered()
+    {
+        var payload = System.Text.Encoding.UTF8.GetBytes("S2 추격 BGM 스템 · 128bpm · -14 LUFS");
+        var tampered = (byte[])payload.Clone(); tampered[0] ^= 1;
+        await Busy(() => F.ExchangeData((int)FedAgentRole.Audio, (int)FedAgentRole.Director, payload, tampered));
+    }
+
+    private async Task Busy(Func<object> work)
+    {
+        _busy = true;
+        try { await Task.Run(work); }
+        catch (Exception ex) when (ex is InvalidOperationException or System.Security.Cryptography.CryptographicException) { PromptFlowStudio.Program.Log("Federation.Modal", ex); }
+        finally { _busy = false; Refresh(); }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(() => { Refresh(); StateHasChanged(); });
+
+    public void Dispose()
+    {
+        _timer?.Dispose();
+        Runner.OnChange -= OnServiceChanged;
+        F.OnChange -= OnServiceChanged;
+        G.OnChange -= OnServiceChanged;
+        C.OnChange -= OnServiceChanged;
+    }
+}

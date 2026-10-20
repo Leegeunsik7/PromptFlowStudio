@@ -1,0 +1,210 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Deflicker
+@implements IDisposable
+@inject TemporalDeflickerStudioRunner Runner
+
+@*
+    [PromptFlow Studio v17.07.0] ✨ AI 시공간 디플리커 & 텍스처 피닝 스튜디오 — 원본 vs 보정 실시간 Split 뷰어 · 피닝 강도 슬라이더 ·
+    모핑 억제 게이지(타일 윤곽 거리 · 롤백) · 서브픽셀 흐름/디테일 층 모니터 · 질감 플리커/픽셀 일관성 시계열.
+*@
+
+<div class="dfk-scrim" @onclick="Close">
+    <div class="dfk-modal" @onclick:stopPropagation="true">
+        <div class="dfk-h">
+            <div>
+                <div class="dfk-title">✨ AI 시공간 디플리커 &amp; 텍스처 피닝 스튜디오</div>
+                <div class="dfk-sub"><b>흐름 엔진</b>이 저역 휘도에서 3 단계 피라미드 루카스-카나데로 서브픽셀 광학 흐름을 추적하고, 앵커 프레임의 텍스처 좌표를 누적 트랙으로 고정(피닝)합니다.
+                    <b>디플리커 합성기</b>는 라플라시안 피라미드로 조명(저역)과 질감(고역)을 분리해 조명 변화는 통과시키고 레이스 · 체크 등 질감 층의 재생성 떨림만 SIMD 피닝으로 제거합니다.
+                    <b>모핑 가드</b>는 등속 예측 기준 대비 새로 생긴 윤곽(모자 윤곽 · 눈 모양 변형)을 타일 단위로 감지해 해당 영역을 롤백합니다. 영상은 인프로세스 생성형 클립 시뮬레이터입니다.</div>
+            </div>
+            <button class="dfk-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="dfk-bar">
+            <button class="dfk-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 디플리커 가동")</button>
+            <button class="dfk-btn" @onclick="Step30" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="dfk-btn" @onclick="Runner.Restart">⏮ 처음부터</button>
+            <button class="dfk-btn @(S.Pinning ? "on" : null)" @onclick="Runner.TogglePinning">📌 피닝</button>
+            <button class="dfk-btn @(G.Enabled ? "on" : null)" @onclick="Runner.ToggleGuard">🛡 모핑 가드</button>
+            <button class="dfk-btn @(S.LightDeflicker ? "on" : null)" @onclick="Runner.ToggleLight">💡 조명 플리커 평탄화</button>
+            <button class="dfk-btn stop" @onclick="Runner.InjectMorph">🎭 모핑 환각 주입</button>
+            <label class="dfk-sl">피닝 강도 <b>@(F2(S.Strength))</b><input type="range" min="0" max="1" step="0.01" value="@(F2(S.Strength))" @onchange="e => Runner.SetStrength((float)Num(e, 0.97))" /></label>
+            <label class="dfk-sl">형태 허용 오차 <b>@(F2(G.Tolerance)) px</b><input type="range" min="0.2" max="6" step="0.1" value="@(F1(G.Tolerance))" @onchange="e => Runner.SetTolerance((float)Num(e, 0.9))" /></label>
+            <label class="dfk-sl">생성 아티팩트 <b>@(F0(C.Artifacts * 100))%</b><input type="range" min="0" max="2" step="0.05" value="@(F2(C.Artifacts))" @onchange="e => Runner.SetArtifacts((float)Num(e, 1))" /></label>
+            <span class="dfk-chip">프레임 @(Runner.Time) · @(F1(Runner.LastTickMs)) ms · 흐름 @(F0(Runner.Flow.LastFlowUs)) · 분리/합성 @(F0(S.DecomposeUs)) · 가드 @(F0(G.LastUs)) µs</span>
+        </div>
+
+        <div class="dfk-main">
+            <div class="dfk-col">
+                <div class="dfk-card">
+                    <div class="dfk-sec">🔀 원본 vs 보정 Split 뷰어
+                        @for (var m = 0; m < ViewNames.Length; m++)
+                        {
+                            var mm = m;
+                            <button class="dfk-btn sm @(_view == mm ? "on" : null)" @onclick="() => _view = mm">@(ViewNames[mm])</button>
+                        }
+                        <label class="dfk-sl">분할 <b>@(F0(Runner.SplitPos * 100))%</b><input type="range" min="0.02" max="0.98" step="0.01" value="@(F2(Runner.SplitPos))" @oninput="e => Runner.SplitPos = (float)Num(e, 0.5)" /></label></div>
+                    <div class="dfk-split">
+                        <img src="data:image/bmp;base64,@(Runner.MonitorBase64(ViewModes[_view]))" alt="split" />
+                        @if (ViewModes[_view] is 0 or 4)
+                        {
+                            <div class="bar" style="left:@(F1(Runner.SplitPos * 100))%"></div>
+                            <span class="lab l">ORIGINAL</span><span class="lab r">DEFLICKERED</span>
+                        }
+                    </div>
+                    <div class="dfk-kv">
+                        <span class="dfk-chip @(S.Consistency >= 0.99f ? "ok" : S.Consistency >= 0.95f ? "warn" : "bad")">픽셀 일관성 @(F2(S.Consistency * 100))%</span>
+                        질감 플리커 <b>@(S.FlickerIn.ToString("0.0000", CultureInfo.InvariantCulture))</b> → <b>@(S.FlickerOut.ToString("0.0000", CultureInfo.InvariantCulture))</b> (@(F0(Reduction()))% 감소) ·
+                        형태 오차 원본 @(S3(Runner.ShapeErrorIn)) / 보정 @(S3(Runner.ShapeErrorOut)) · 조명 입력 @(F2(S.MeanIn)) / 출력 @(F2(S.MeanOut)) · 장면 전환 @(S.SceneCuts)
+                    </div>
+                    <svg class="dfk-spark" viewBox="0 0 360 60" preserveAspectRatio="none">
+                        <polyline class="fi" points="@(Series(Runner.FlickerInSeries, 0.02, 60))" />
+                        <polyline class="fo" points="@(Series(Runner.FlickerOutSeries, 0.02, 60))" />
+                        <polyline class="cs" points="@(Series(i => Runner.ConsistencySeries(i) - 0.8f, 0.2, 60))" />
+                    </svg>
+                    <div class="dfk-legend"><i class="fi"></i>질감 플리커(원본) <i class="fo"></i>질감 플리커(보정) <i class="cs"></i>픽셀 일관성(80–100%)</div>
+                </div>
+            </div>
+
+            <div class="dfk-col">
+                <div class="dfk-card">
+                    <div class="dfk-sec">🛡 모핑 억제 게이지
+                        <span class="dfk-chip @(G.Suppression > 0 ? "bad" : "ok")">@(G.LastRollback ? "프레임 롤백" : G.Suppression > 0 ? "영역 억제" : "형태 정상")</span></div>
+                    <div class="dfk-gauge">
+                        <svg viewBox="0 0 120 70">
+                            <path class="bg" d="M 10 62 A 50 50 0 0 1 110 62" />
+                            <path class="fg @(G.MaxScore > G.Tolerance ? "hot" : G.MaxScore > G.Tolerance * 0.6f ? "warm" : null)" d="@(Arc(Math.Min(1, G.MaxScore / Math.Max(0.1, G.Tolerance * 2))))" />
+                            <line class="tol" x1="60" y1="12" x2="60" y2="22" />
+                        </svg>
+                        <b>@(F2(G.MaxScore)) px</b><span>최대 윤곽 변형 / 허용 @(F2(G.Tolerance)) px</span>
+                    </div>
+                    <div class="dfk-tiles">
+                        @for (var t = 0; t < GenerativeMorphingSuppressionGuard.TilesX * GenerativeMorphingSuppressionGuard.TilesY; t++)
+                        {
+                            var sc = G.TileScore(t);
+                            <i class="@(G.TileMorph(t) ? "m" : sc > 0 ? "e" : null)" title="@(F2(sc)) px" style="opacity:@(F2(0.35 + 0.65 * Math.Min(1, sc / Math.Max(0.1, G.Tolerance * 2))))"></i>
+                        }
+                    </div>
+                    <div class="dfk-kv">억제 <b>@(F1(G.Suppression * 100))%</b> · 모핑 프레임 <b>@(G.MorphFrames)</b> · 타일 @(G.MorphTiles) · 프레임 롤백 <b>@(G.FrameRollbacks)</b> · 지속 변화 수용 @(G.Accepted) · 주입 @(Runner.MorphInjected) · 윤곽 타일 @(G.LastEdgeTiles)</div>
+                    <svg class="dfk-spark" viewBox="0 0 360 60" preserveAspectRatio="none">
+                        <line class="tl" x1="0" x2="360" y1="@(F1(58 - 56 * Math.Min(1, G.Tolerance / 6)))" y2="@(F1(58 - 56 * Math.Min(1, G.Tolerance / 6)))" />
+                        <polyline class="mp" points="@(Series(Runner.MorphSeries, 6, 60))" />
+                    </svg>
+                </div>
+
+                <div class="dfk-card">
+                    <div class="dfk-sec">🧭 서브픽셀 흐름 · 텍스처 트랙</div>
+                    <div class="dfk-kv">평균 이동 <b>@(F2(Runner.Flow.MeanMotion)) px</b> · 흐름 신뢰 <b>@(F1(Runner.Flow.MeanConfidence * 100))%</b> · 고유값 신뢰 픽셀 @(F1(Runner.Flow.ReliableShare * 100))% · 조명 이득 @(F2(Runner.Flow.LightGain))</div>
+                    <div class="dfk-kv">트랙 신뢰 <b>@(F1(Runner.Flow.TrackFull.MeanTrust * 100))%</b> · 앵커 수명 @(Runner.Flow.Age)/@(Runner.Flow.MaxAge) · 재고정 @(Runner.Flow.Reanchors) · 가림 무효화 @(S.InvalidatedPixels) px · 구조 보호 @(F1(S.StructureShare * 100))%</div>
+                    <div class="dfk-mons">
+                        <div class="dfk-mon"><div class="lab">흐름(HSV · 신뢰)</div><img src="data:image/bmp;base64,@(Runner.MonitorBase64(3))" alt="flow" /></div>
+                        <div class="dfk-mon"><div class="lab">억제 마스크</div><img src="data:image/bmp;base64,@(Runner.MonitorBase64(5))" alt="mask" /></div>
+                    </div>
+                </div>
+                <div class="dfk-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .dfk-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .dfk-modal { width: min(1560px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .dfk-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #a855f7 15%, var(--card)), color-mix(in srgb, #06b6d4 12%, var(--card))); }
+    .dfk-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .dfk-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .dfk-sub b { color: var(--text-primary); }
+    .dfk-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .dfk-bar { display: flex; flex-wrap: wrap; gap: 6px 10px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .dfk-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; } .dfk-btn:disabled { opacity: .4; cursor: default; }
+    .dfk-btn.sm { font-size: 10px; padding: 2px 8px; } .dfk-btn.on { background: color-mix(in srgb, #a855f7 24%, transparent); border-color: #c084fc; } .dfk-btn.stop { background: #7f1d1d; border-color: #ef4444; color: #fff; }
+    .dfk-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .dfk-chip.ok { border-color: #22c55e; color: #86efac; } .dfk-chip.bad { border-color: #ef4444; color: #fca5a5; } .dfk-chip.warn { border-color: #eab308; color: #fde68a; }
+    .dfk-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .dfk-sl b { font-family: var(--mono); color: var(--text-primary); } .dfk-sl input { width: 100px; }
+    .dfk-main { display: grid; grid-template-columns: 1.35fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .dfk-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .dfk-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .dfk-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .dfk-split { position: relative; width: 100%; aspect-ratio: 5 / 3; background: #000; border-radius: 8px; overflow: hidden; }
+    .dfk-split img, .dfk-mon img { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+    .dfk-split .bar { position: absolute; top: 0; bottom: 0; width: 2px; background: #facc15; box-shadow: 0 0 8px rgba(250,204,21,.8); pointer-events: none; }
+    .dfk-split .lab { position: absolute; top: 6px; font: 800 10px var(--mono); color: #fff; background: rgba(0,0,0,.6); padding: 2px 6px; border-radius: 4px; pointer-events: none; } .dfk-split .l { left: 6px; } .dfk-split .r { right: 6px; }
+    .dfk-gauge { display: flex; flex-direction: column; align-items: center; } .dfk-gauge svg { width: 180px; height: 104px; }
+    .dfk-gauge .bg { fill: none; stroke: #1f2937; stroke-width: 10; } .dfk-gauge .fg { fill: none; stroke: #22c55e; stroke-width: 10; stroke-linecap: round; } .dfk-gauge .fg.warm { stroke: #eab308; } .dfk-gauge .fg.hot { stroke: #ef4444; }
+    .dfk-gauge .tol { stroke: #f8fafc; stroke-width: 2; }
+    .dfk-gauge b { font: 900 18px var(--mono); color: var(--text-primary); margin-top: -34px; } .dfk-gauge span { font-size: 10px; color: var(--text-muted); margin-top: 10px; }
+    .dfk-tiles { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; } .dfk-tiles i { display: block; height: 14px; border-radius: 2px; background: #1f2937; }
+    .dfk-tiles i.e { background: #22c55e; } .dfk-tiles i.m { background: #ef4444; }
+    .dfk-mons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .dfk-mon { position: relative; aspect-ratio: 5 / 3; background: #000; border-radius: 8px; overflow: hidden; border: 2px solid #334155; }
+    .dfk-mon .lab { position: absolute; top: 0; left: 0; right: 0; font: 800 10px var(--mono); color: #fff; background: rgba(0,0,0,.6); padding: 2px 6px; }
+    .dfk-spark { width: 100%; height: 60px; background: #030712; border-radius: 6px; } .dfk-spark polyline { fill: none; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+    .dfk-spark .fi { stroke: #f97316; } .dfk-spark .fo { stroke: #22c55e; } .dfk-spark .cs { stroke: #38bdf8; } .dfk-spark .mp { stroke: #ef4444; } .dfk-spark .tl { stroke: #64748b; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+    .dfk-legend, .dfk-kv { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11px; color: var(--text-secondary); align-items: center; } .dfk-kv b { color: var(--text-primary); }
+    .dfk-legend i { display: inline-block; width: 10px; height: 8px; border-radius: 2px; } .dfk-legend .fi { background: #f97316; } .dfk-legend .fo { background: #22c55e; } .dfk-legend .cs { background: #38bdf8; }
+    .dfk-note { font-size: 11px; color: var(--text-muted); word-break: break-all; }
+    @@media (max-width: 1200px) { .dfk-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly string[] ViewNames = { "Split", "원본", "보정", "디테일 층 Split" };
+    private static readonly int[] ViewModes = { 0, 1, 2, 4 };
+    private System.Threading.Timer? _timer;
+    private int _view;
+
+    private HighFrequencyDetailBlindDeflickerSynthesizer S => Runner.Synth;
+    private GenerativeMorphingSuppressionGuard G => Runner.Guard;
+    private GenerativeClipSimulator C => Runner.Clip;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Deflicker.Modal.Timer", ex); }
+        }, null, 300, 300);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string S3(double v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    private double Reduction() => S.FlickerIn <= 1e-6f ? 0 : Math.Clamp((1 - S.FlickerOut / S.FlickerIn) * 100, 0, 100);
+
+    /// <summary>반원 게이지 호(0..1).</summary>
+    private static string Arc(double t)
+    {
+        t = Math.Clamp(t, 0.001, 1);
+        var a = Math.PI * (1 - t);
+        return "M 10 62 A 50 50 0 0 1 " + F1(60 + 50 * Math.Cos(a)) + " " + F1(62 - 50 * Math.Sin(a));
+    }
+
+    private string Series(Func<int, float> f, double max, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (TemporalDeflickerStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - 2 - (h - 4) * Math.Clamp(f(i) / max, 0, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step30() { for (var i = 0; i < TemporalDeflickerStudioRunner.Hz; i++) Runner.Step(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중(10 Hz 이벤트)은 300 ms 타이머가 처리 — 정지 상태 액션만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

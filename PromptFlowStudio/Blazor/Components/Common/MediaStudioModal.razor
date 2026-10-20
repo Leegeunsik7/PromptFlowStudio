@@ -1,0 +1,317 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.MediaPipeline
+@using PromptFlowStudio.Services.Storyboard
+@implements IDisposable
+@inject UnlimitedMediaStreamBufferPipeline Pipe
+@inject AutoPresetContextTuner Tuner
+@inject UniversalFullFeatureChainAdapter Chain
+@inject ILocalMediaService Media
+
+@*
+    [PromptFlow Studio v16.57.0] ✨ AI 오토 최적화 미디어 스튜디오 — 무제한 스트리밍 드롭존(진행률 · 처리량 · SHA-256 · 프록시) · 메모리 맵 프로브 ·
+    [✨ AI 최적화 자동 셋팅] 토글 + 이미지/프롬프트 기반 파라미터 실시간 자동 채우기 · 컷 추가 · 전체 기능 오토 체이닝 실행/결과.
+*@
+
+<div class="ms-scrim" @onclick="Close">
+    <div class="ms-modal" @onclick:stopPropagation="true">
+        <div class="ms-h">
+            <div>
+                <div class="ms-title">✨ AI 오토 최적화 미디어 스튜디오</div>
+                <div class="ms-sub">사진/영상을 <b>용량 제한 없이 청크 스트리밍</b>으로 받아 메모리 맵으로 분석하고, 프롬프트와 결합해 <b>카메라 · 조명 · FPS · 템포 · 캐릭터</b>를 자동 셋팅한 뒤
+                    v16.x 핵심 기능을 <b>단일 파이프라인으로 오토 체이닝</b>합니다.</div>
+            </div>
+            <button class="ms-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="ms-bar">
+            <span class="ms-chip">수신 @(Pipe.FilesIngested)건 · @(UnlimitedMediaStreamBufferPipeline.FormatBytes(Pipe.BytesIngested))</span>
+            <span class="ms-chip">청크 @(Pipe.ChunksProcessed) · @(Pipe.LastMegabytesPerSecond.ToString("0", CultureInfo.InvariantCulture))MB/s</span>
+            <span class="ms-chip">프록시 @(Pipe.ProxiesGenerated) · 실패 @(Pipe.Failures)</span>
+            <span class="ms-chip ok">상한 @(UnlimitedMediaStreamBufferPipeline.FormatBytes(Pipe.MaxIngestBytes)) (기존 12MB 해제)</span>
+            <span class="ms-chip">튜닝 @(Tuner.Tunes) · 체인 @(Chain.Runs)회</span>
+        </div>
+
+        <div class="ms-main">
+            <div class="ms-col">
+                <div class="ms-card">
+                    <div class="ms-sec">📦 무제한 미디어 드롭존</div>
+                    <div class="ms-drop @(_busy ? "busy" : null)">
+                        <InputFile class="ms-drop-input" OnChange="OnPicked" accept="image/*,video/*,audio/*,.dng,.cr2,.nef,.arw,.heic,.mov,.mkv" disabled="@_busy" />
+                        @if (_busy)
+                        {
+                            <div class="ms-prog"><i style="width:@(_pct)%"></i></div>
+                            <div class="ms-hint">스트리밍 수신 @(_pct)% · @(UnlimitedMediaStreamBufferPipeline.FormatBytes(_done)) / @(UnlimitedMediaStreamBufferPipeline.FormatBytes(_total))</div>
+                        }
+                        else
+                        {
+                            <div class="ms-hint">🖼️🎬 사진(8K · RAW) / 영상(500MB+)을 드래그 또는 클릭 <span>1MB 청크 · 메모리 상수 · SHA-256 무결성</span></div>
+                        }
+                    </div>
+                    @if (_media is { } m)
+                    {
+                        <div class="ms-kv">
+                            <span>상태</span><b class="@(m.Ok ? "good" : "bad")">@(m.Message)</b>
+                            @if (m.Ok)
+                            {
+                                <span>포맷</span><b>@(m.Probe.Format) · @(m.Probe.Kind) · @(m.Probe.Codec)</b>
+                                <span>해상도</span><b>@(m.Probe.Width)×@(m.Probe.Height) · @(m.Probe.Megapixels.ToString("0.0", CultureInfo.InvariantCulture))MP</b>
+                                @if (m.Probe.Kind == MediaKind.Video)
+                                {
+                                    <span>길이/FPS</span><b>@(m.Probe.DurationSec.ToString("0.0", CultureInfo.InvariantCulture))s · @(m.Probe.Fps.ToString("0.##", CultureInfo.InvariantCulture))fps</b>
+                                }
+                                <span>크기/속도</span><b>@(UnlimitedMediaStreamBufferPipeline.FormatBytes(m.Bytes)) · @(m.Chunks)청크 · @(m.MegabytesPerSecond.ToString("0", CultureInfo.InvariantCulture))MB/s</b>
+                                <span>SHA-256</span><b class="ms-mono">@(m.Sha256.Length > 16 ? m.Sha256[..16] + "…" : m.Sha256)</b>
+                                @if (m.ProxyPath is not null)
+                                {
+                                    <span>프록시</span><b>업로드용 장변 @(UnlimitedMediaStreamBufferPipeline.ProxyLongSide)px 자동 생성</b>
+                                }
+                                @if (m.Stats.Valid)
+                                {
+                                    <span>비전 통계</span><b>휘도 @(P(m.Stats.MeanLuma)) · 대비 @(P(m.Stats.Contrast)) · 채도 @(P(m.Stats.Saturation)) · 엣지 @(P(m.Stats.EdgeDensity)) · 피부 @(P(m.Stats.SkinRatio))</b>
+                                }
+                            }
+                        </div>
+                        @if (_thumb is not null)
+                        {
+                            <img class="ms-thumb" src="@(_thumb)" alt="미리보기" />
+                        }
+                    }
+                </div>
+            </div>
+
+            <div class="ms-col">
+                <div class="ms-card">
+                    <div class="ms-row ms-between">
+                        <div class="ms-sec">✍️ 프롬프트</div>
+                        <button class="ms-btn @(_auto ? "on" : null)" @onclick="ToggleAuto">✨ AI 최적화 자동 셋팅 @(_auto ? "ON" : "OFF")</button>
+                    </div>
+                    <textarea class="ms-ta" rows="4" @bind="_prompt" @bind:event="oninput" @bind:after="Retune" placeholder="예: 노을 지는 바닷가에서 연인이 천천히 걷는다, 세로 쇼츠"></textarea>
+                    @if (_auto && _preset is { } p)
+                    {
+                        <div class="ms-sec">🎛 자동 채움 파라미터 · 신뢰도 @(P(p.Confidence))</div>
+                        <div class="ms-grid">
+                            <span>장르</span><b>@(AutoPresetContextTuner.GenreLabel(p.Genre)) · @(AutoPresetContextTuner.TimeLabel(p.Time)) · @(p.Subject)</b>
+                            <span>카메라 앵글</span><b>@(p.CameraAngle)</b>
+                            <span>카메라 무브</span><b>@(p.CameraMove) · @(p.LensMm)mm</b>
+                            <span>조명</span><b>@(p.Lighting)</b>
+                            <span>FPS · 컷</span><b>@(p.Fps)fps · @(p.ShotSeconds.ToString("0.0", CultureInfo.InvariantCulture))s</b>
+                            <span>음향 템포</span><b>@(p.TempoBpm) BPM</b>
+                            <span>해상도/모드</span><b>@(p.Size) · @(p.Mode == SceneMode.ImageToVideo ? "I2V" : "T2V")</b>
+                            <span>표정/긴장</span><b>@(p.Emotion) @(p.EmotionIntensity.ToString("0.00", CultureInfo.InvariantCulture)) · @(p.Tension)</b>
+                            <span>캐릭터</span><b>@(string.IsNullOrEmpty(p.CharacterPrompt) ? "—" : p.CharacterPrompt)</b>
+                            <span>스타일</span><b>@(p.StyleTags)</b>
+                        </div>
+                        <div class="ms-pr">@(p.TunedPrompt)</div>
+                        <div class="ms-mut">⛔ @(p.Negative)</div>
+                        <div class="ms-reasons">
+                            @foreach (var r in p.Reasons)
+                            {
+                                <span>@(r)</span>
+                            }
+                        </div>
+                    }
+                    <div class="ms-row">
+                        <button class="ms-btn go" disabled="@(Project is null || (_preset is null && _media is null))" @onclick="AddScene">＋ 스토리보드 컷으로 추가</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="ms-col">
+                <div class="ms-card">
+                    <div class="ms-sec">🔗 전체 기능 오토 체이닝 @(Project is null ? "(스토리보드에서 열기)" : "· " + Project.Scenes.Count + "컷")</div>
+                    <label class="ms-chk"><input type="checkbox" @bind="_maxQuality" /> 최고 화질/음질(4K 업스케일 · QA 80)</label>
+                    <label class="ms-chk"><input type="checkbox" @bind="_boost" /> 시네마틱 프롬프트 부스트</label>
+                    <label class="ms-chk"><input type="checkbox" @bind="_replacePrompt" /> 컷 프롬프트를 튜닝 프롬프트로 교체</label>
+                    <button class="ms-btn go" disabled="@(Project is null || _chainBusy)" @onclick="RunChain">@(_chainBusy ? "체이닝 중…" : "🚀 오토 체이닝 실행")</button>
+                    @{ var rep = Chain.LastReport; }
+                    <div class="ms-stages">
+                        @foreach (var s in Chain.Stages)
+                        {
+                            var o = rep?.Outcomes.FirstOrDefault(x => x.Id == s.Id);
+                            <div class="ms-stage @(o is null ? null : StatusClass(o.Status))">
+                                <span class="ms-ph">@(PhaseLabel(s.Phase))</span>
+                                <b>@(s.Label)</b>
+                                <em>v@(s.Version)</em>
+                                <i>@(o is null ? (Chain.IsAvailable(s) ? "대기" : "미등록") : StatusLabel(o.Status) + (o.Changes > 0 ? " ·" + o.Changes : ""))</i>
+                                @if (o is not null)
+                                {
+                                    <small>@(o.Detail)</small>
+                                }
+                            </div>
+                        }
+                    </div>
+                </div>
+                <div class="ms-act">@(Chain.LastAction ?? Pipe.LastAction ?? Tuner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .ms-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .ms-modal { width: min(1520px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .ms-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f59e0b 16%, var(--card)), color-mix(in srgb, #8b5cf6 14%, var(--card))); }
+    .ms-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .ms-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .ms-sub b { color: var(--text-primary); }
+    .ms-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .ms-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); }
+    .ms-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .ms-chip.ok { color: #22c55e; border-color: #22c55e; }
+    .ms-main { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .ms-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .ms-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .ms-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); }
+    .ms-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .ms-between { justify-content: space-between; }
+    .ms-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .ms-btn.on { background: color-mix(in srgb, #f59e0b 22%, transparent); border-color: #f59e0b; }
+    .ms-btn.go { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .ms-btn:disabled { opacity: .45; cursor: default; }
+    .ms-drop { position: relative; border: 1.5px dashed var(--line); border-radius: 12px; min-height: 120px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 12px; }
+    .ms-drop:hover { border-color: var(--accent); }
+    .ms-drop.busy { border-style: solid; border-color: #f59e0b; }
+    .ms-drop-input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+    .ms-hint { pointer-events: none; color: var(--text-muted); font-size: 12px; text-align: center; }
+    .ms-hint span { display: block; font-size: 10.5px; opacity: .8; margin-top: 4px; }
+    .ms-prog { width: 90%; height: 8px; border-radius: 999px; background: var(--line); overflow: hidden; }
+    .ms-prog i { display: block; height: 100%; background: linear-gradient(90deg, #f59e0b, #8b5cf6); transition: width .15s; }
+    .ms-kv, .ms-grid { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 11px; }
+    .ms-kv span, .ms-grid span { color: var(--text-muted); }
+    .ms-kv b, .ms-grid b { color: var(--text-primary); font-weight: 600; word-break: break-word; }
+    .ms-kv b.good { color: #22c55e; } .ms-kv b.bad { color: #ef4444; }
+    .ms-mono { font-family: var(--mono); }
+    .ms-thumb { width: 100%; max-height: 220px; object-fit: contain; border-radius: 10px; border: 1px solid var(--line); background: #000; }
+    .ms-ta { width: 100%; resize: vertical; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); padding: 8px; font-size: 13px; }
+    .ms-pr { font-size: 11.5px; color: var(--text-primary); background: var(--card-2); border-radius: 8px; padding: 8px; line-height: 1.5; }
+    .ms-mut { font-size: 10.5px; color: var(--text-muted); }
+    .ms-reasons { display: flex; flex-wrap: wrap; gap: 4px; }
+    .ms-reasons span { font-size: 10.5px; padding: 2px 7px; border-radius: 999px; background: color-mix(in srgb, #8b5cf6 14%, transparent); color: var(--text-secondary); }
+    .ms-chk { font-size: 12px; color: var(--text-secondary); display: flex; gap: 6px; align-items: center; }
+    .ms-stages { display: flex; flex-direction: column; gap: 4px; }
+    .ms-stage { display: grid; grid-template-columns: 44px 1fr auto auto; gap: 6px; align-items: baseline; font-size: 11px; padding: 4px 6px; border-radius: 8px; border: 1px solid var(--line); }
+    .ms-stage b { color: var(--text-primary); font-weight: 600; }
+    .ms-stage em { color: var(--text-muted); font-style: normal; font-family: var(--mono); }
+    .ms-stage i { font-style: normal; font-weight: 700; color: var(--text-muted); }
+    .ms-stage small { grid-column: 2 / -1; color: var(--text-muted); }
+    .ms-stage.ok i { color: #22c55e; } .ms-stage.warn i { color: #f59e0b; } .ms-stage.bad i { color: #ef4444; }
+    .ms-ph { font-size: 9.5px; color: var(--text-muted); }
+    .ms-act { font-size: 11px; color: var(--text-muted); font-family: var(--mono); padding: 4px 2px; }
+    @@media (max-width: 1100px) { .ms-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public StoryboardProject? Project { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly CancellationTokenSource _life = new();
+    private MediaIngestResult? _media;
+    private AutoPreset? _preset;
+    private string _prompt = "";
+    private string? _thumb;
+    private bool _auto = true, _busy, _chainBusy, _maxQuality = true, _boost = true, _replacePrompt;
+    private long _done, _total;
+    private int _pct;
+
+    protected override void OnInitialized()
+    {
+        Pipe.OnChange += OnServiceChanged;
+        Tuner.OnChange += OnServiceChanged;
+        Chain.OnChange += OnServiceChanged;
+    }
+
+    private static string P(float v) => (v * 100f).ToString("0", CultureInfo.InvariantCulture) + "%";
+
+    private static string PhaseLabel(ChainPhase p) => p switch { ChainPhase.PreRender => "프리", ChainPhase.Live => "라이브", _ => "포스트" };
+
+    private static string StatusLabel(StageStatus s) => s switch
+    {
+        StageStatus.Applied => "적용", StageStatus.NoChange => "변경 없음", StageStatus.Skipped => "건너뜀", StageStatus.Unavailable => "미등록",
+        StageStatus.Pending => "결선 대기", StageStatus.TimedOut => "타임아웃", _ => "실패",
+    };
+
+    private static string? StatusClass(StageStatus s) => s switch
+    {
+        StageStatus.Applied or StageStatus.NoChange => "ok",
+        StageStatus.Failed or StageStatus.TimedOut => "bad",
+        StageStatus.Pending or StageStatus.Skipped => "warn",
+        _ => null,
+    };
+
+    private async Task OnPicked(InputFileChangeEventArgs e)
+    {
+        var f = e.File;
+        if (f is null) return;
+        _busy = true; _done = 0; _total = f.Size; _pct = 0; _thumb = null;
+        StateHasChanged();
+        try
+        {
+            var dir = Path.Combine(Media.MediaRoot, "_uploads", "media");
+            await using var src = f.OpenReadStream(Pipe.MaxIngestBytes, _life.Token);
+            _media = await Pipe.IngestAsync(src, dir, f.Name, f.Size, (d, t) =>
+            {
+                _done = d; _pct = t > 0 ? (int)(d * 100 / t) : 0;
+                _ = InvokeAsync(StateHasChanged);
+            }, _life.Token);
+            if (_media.Ok && _media.Probe.Kind == MediaKind.Image && _media.EffectivePath is not null) _thumb = Media.ToPlaybackUrl(_media.EffectivePath);
+            Retune();
+        }
+        catch (OperationCanceledException) { }
+        catch (IOException ex) { PromptFlowStudio.Program.Log("MediaStudio.Upload", ex); }
+        finally { _busy = false; }
+    }
+
+    private void ToggleAuto()
+    {
+        _auto = !_auto;
+        Retune();
+    }
+
+    private void Retune()
+    {
+        if (!_auto) { _preset = null; return; }
+        if (string.IsNullOrWhiteSpace(_prompt) && _media is not { Ok: true }) { _preset = null; return; }
+        _preset = _media is { Ok: true } m ? Tuner.Tune(_prompt, m) : Tuner.Tune(_prompt);
+    }
+
+    private void AddScene()
+    {
+        if (Project is null) return;
+        var s = new StoryboardScene { Prompt = _prompt };
+        if (_media is { Ok: true } m && m.Probe.Kind == MediaKind.Image && m.EffectivePath is not null)
+        {
+            s.Mode = SceneMode.ImageToVideo;
+            s.ImagePath = m.EffectivePath;
+            s.ThumbUrl = Media.ToPlaybackUrl(m.EffectivePath);
+            s.ImageName = Path.GetFileName(m.Path);
+        }
+        if (_preset is { } p)
+        {
+            AutoPresetContextTuner.ApplyToScene(s, p, replacePrompt: string.IsNullOrWhiteSpace(_prompt) || _replacePrompt);
+            AutoPresetContextTuner.ApplyToProject(Project, p);
+        }
+        Project.Scenes.Add(s);
+    }
+
+    private async Task RunChain()
+    {
+        if (Project is null) return;
+        _chainBusy = true;
+        try { await Chain.RunAsync(Project, new ChainOptions(_maxQuality, _boost, _replacePrompt), _life.Token); }
+        catch (OperationCanceledException) { }
+        finally { _chainBusy = false; }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        _life.Cancel();
+        _life.Dispose();
+        Pipe.OnChange -= OnServiceChanged;
+        Tuner.OnChange -= OnServiceChanged;
+        Chain.OnChange -= OnServiceChanged;
+    }
+}

@@ -1,0 +1,209 @@
+@using PromptFlowStudio.Services.Cad
+
+@* [PromptFlow Studio] v2.6.0 글로벌 트레이드 제어반 — CAD 3D 홀로그램 · 다국어 더빙 믹서 · AI 퀄리티 가드 · 바이어 각인/스펙시트. *@
+
+<div class="gtd">
+    <div class="gtd-h"><span class="gtd-title">🌐 글로벌 B2B 수주 스튜디오</span><span class="gtd-badge">v2.6.0</span></div>
+
+    <div class="gtd-grid">
+        @* ── ① CAD 3D 홀로그램 와이어프레임 ── *@
+        <div class="gtd-card">
+            <div class="gtd-ct">🧊 CAD 3D 홀로그램 와이어프레임</div>
+            <div class="gtd-cad @(HasCad ? "on" : null)">
+                <div class="gtd-cad-ico">@(HasCad ? "🧊" : "＋")</div>
+                <div class="gtd-cad-info">
+                    <div class="gtd-cad-t">@(HasCad ? "STL 메시 등록됨" : "STL 3D 파일 드롭 / 선택")</div>
+                    <div class="gtd-cad-s">@(_cadStatus ?? "장비 CAD(STL Binary/ASCII) → 회전 홀로그램 오버레이")</div>
+                </div>
+                <InputFile class="gtd-file" OnChange="OnCad" accept=".stl" disabled="@Disabled" />
+            </div>
+            <div class="gtd-neon">
+                <span class="gtd-neon-lbl">네온 컬러</span>
+                @foreach (var (key, hex, name) in Neons)
+                {
+                    <button class="gtd-swatch @(Project.WireframeNeonColor == key ? "on" : null)" style="--sw:@hex"
+                            @onclick="() => SetNeon(key)" disabled="@Disabled" title="@name">
+                        <span class="gtd-dot"></span>@name
+                    </button>
+                }
+            </div>
+        </div>
+
+        @* ── ② 글로벌 다국어 더빙 믹서 ── *@
+        <div class="gtd-card">
+            <div class="gtd-ct">🎙️ 글로벌 더빙 · 동적 자막 믹서</div>
+            <div class="gtd-langs">
+                @foreach (var lang in Targets)
+                {
+                    <button class="gtd-lang @(IsLang(lang.Code) ? "on" : null)" @onclick="() => ToggleLang(lang.Code)" disabled="@Disabled" @key="lang.Code">
+                        <span class="gtd-flag">@lang.Flag</span>
+                        <span class="gtd-lang-txt"><span class="gtd-lang-n">@lang.Native</span><span class="gtd-lang-c">@lang.Country</span></span>
+                        @if (IsLang(lang.Code)) { <span class="gtd-lang-ck">✓</span> }
+                    </button>
+                }
+            </div>
+            <div class="gtd-note">@(SelectedCount > 0 ? $"{SelectedCount}개국 홍보본을 global 폴더로 병렬 내보내기" : "선택 국가별 번역 자막 + 세이프존 동적 자막 자동 합성")</div>
+        </div>
+
+        @* ── ③ AI 퀄리티 가드 ── *@
+        <div class="gtd-card">
+            <div class="gtd-ct">🛡️ AI 비주얼 퀄리티 가드</div>
+            <label class="gtd-toggle">
+                <input type="checkbox" checked="@Project.AutoQualityGuard" @onchange="OnGuardToggle" disabled="@Disabled" />
+                <span class="gtd-tg-track"><span class="gtd-tg-knob"></span></span>
+                <span class="gtd-tg-lbl">프레임 손상·안면 뭉개짐 자동 감수 &amp; 재발주</span>
+            </label>
+            <div class="gtd-thr @(Project.AutoQualityGuard ? null : "dim")">
+                <span>SSIM 임계값</span>
+                <input type="range" min="0.4" max="0.9" step="0.02" value="@Project.SsimQualityThreshold"
+                       @oninput="OnThreshold" disabled="@(Disabled || !Project.AutoQualityGuard)" />
+                <b>@Project.SsimQualityThreshold.ToString("0.00")</b>
+            </div>
+        </div>
+
+        @* ── ④ 바이어 각인 & 스펙 시트 ── *@
+        <div class="gtd-card">
+            <div class="gtd-ct">🏷️ 바이어 각인 &amp; PDF 스펙 시트</div>
+            <input class="gtd-input" placeholder="바이어 사명 (예: Mercedes-Benz, BYD)" value="@Project.BuyerName"
+                   @oninput="OnBuyerName" disabled="@Disabled" />
+            <div class="gtd-emblem @(HasEmblem ? "on" : null)">
+                <span class="gtd-em-ico">@(HasEmblem ? "🏷️" : "＋")</span>
+                <span class="gtd-em-t">@(_emblemStatus ?? "바이어 엠블럼/로고 (음각 각인)")</span>
+                <InputFile class="gtd-file" OnChange="OnEmblem" accept="image/*" disabled="@Disabled" />
+            </div>
+            <div class="gtd-note">병합 시 <b>spec_sheet.pdf</b> 자동 생성 · 엠블럼은 좌측 하단 음각 각인</div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .gtd { border: 1px solid color-mix(in srgb, #0ea5e9 30%, var(--line)); border-radius: 16px; background: linear-gradient(160deg, color-mix(in srgb,#0ea5e9 6%, var(--card)), var(--card)); overflow: hidden; }
+    .gtd-h { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb,#0ea5e9 12%, transparent), transparent 60%); }
+    .gtd-title { font: 900 14px var(--mono); color: var(--text-primary); }
+    .gtd-badge { font: 700 10px var(--mono); color: #7dd3fc; background: color-mix(in srgb,#0ea5e9 14%,transparent); border: 1px solid color-mix(in srgb,#0ea5e9 34%,var(--line)); border-radius: 20px; padding: 2px 8px; }
+    .gtd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 14px 16px; }
+    .gtd-card { border: 1px solid var(--line); border-radius: 13px; background: var(--card-2); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+    .gtd-ct { font: 800 12px var(--mono); color: var(--text-primary); }
+    /* CAD */
+    .gtd-cad { display: flex; align-items: center; gap: 10px; border: 2px dashed color-mix(in srgb,#0ea5e9 45%,var(--line)); border-radius: 11px; padding: 10px; position: relative; background: color-mix(in srgb,#0ea5e9 5%, transparent); }
+    .gtd-cad.on { border-style: solid; border-color: #0ea5e9; }
+    .gtd-cad-ico { width: 42px; height: 42px; border-radius: 10px; display: grid; place-items: center; font-size: 21px; background: linear-gradient(135deg,#0f172a,#0ea5e9); flex: 0 0 auto; }
+    .gtd-cad-info { flex: 1; min-width: 0; } .gtd-cad-t { font: 800 12px var(--mono); } .gtd-cad-s { font-size: 10.5px; color: var(--text-muted); margin-top: 2px; line-height: 1.4; }
+    .gtd-file { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+    .gtd-neon { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .gtd-neon-lbl { font: 700 10.5px var(--mono); color: var(--text-secondary); margin-right: 2px; }
+    .gtd-swatch { display: inline-flex; align-items: center; gap: 5px; font: 700 10.5px var(--mono); color: var(--text-secondary); background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; cursor: pointer; }
+    .gtd-swatch.on { color: var(--text-primary); border-color: var(--sw); box-shadow: 0 0 0 1px var(--sw); }
+    .gtd-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--sw); box-shadow: 0 0 6px var(--sw); }
+    /* langs */
+    .gtd-langs { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+    .gtd-lang { display: flex; align-items: center; gap: 8px; text-align: left; border: 1px solid var(--line); background: var(--card); border-radius: 10px; padding: 7px 9px; cursor: pointer; position: relative; font-family: inherit; }
+    .gtd-lang.on { border-color: transparent; box-shadow: 0 0 0 2px #0ea5e9; background: color-mix(in srgb,#0ea5e9 8%,var(--card)); }
+    .gtd-flag { font-size: 18px; } .gtd-lang-txt { display: flex; flex-direction: column; } .gtd-lang-n { font: 800 11.5px var(--mono); color: var(--text-primary); } .gtd-lang-c { font-size: 9.5px; color: var(--text-muted); }
+    .gtd-lang-ck { position: absolute; top: 5px; right: 6px; width: 15px; height: 15px; border-radius: 50%; background: #0ea5e9; color: #fff; display: grid; place-items: center; font-size: 9px; font-weight: 900; }
+    .gtd-note { font-size: 10.5px; color: var(--text-muted); line-height: 1.4; } .gtd-note b { color: #7dd3fc; }
+    /* toggle */
+    .gtd-toggle { display: flex; align-items: center; gap: 9px; cursor: pointer; }
+    .gtd-toggle input { display: none; }
+    .gtd-tg-track { width: 40px; height: 22px; border-radius: 20px; background: var(--card); border: 1px solid var(--line); position: relative; flex: 0 0 auto; transition: background .15s; }
+    .gtd-tg-knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--text-muted); transition: transform .15s, background .15s; }
+    .gtd-toggle input:checked + .gtd-tg-track { background: color-mix(in srgb,#0ea5e9 30%, var(--card)); border-color: #0ea5e9; }
+    .gtd-toggle input:checked + .gtd-tg-track .gtd-tg-knob { transform: translateX(18px); background: #22d3ee; }
+    .gtd-tg-lbl { font-size: 11px; color: var(--text-secondary); }
+    .gtd-thr { display: flex; align-items: center; gap: 8px; font: 700 11px var(--mono); color: var(--text-secondary); } .gtd-thr.dim { opacity: .45; } .gtd-thr input { flex: 1; } .gtd-thr b { color: #22d3ee; }
+    /* buyer */
+    .gtd-input { width: 100%; box-sizing: border-box; background: var(--card); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; color: var(--text-primary); font: 600 12px var(--mono); }
+    .gtd-input:focus { outline: none; border-color: #0ea5e9; }
+    .gtd-emblem { display: flex; align-items: center; gap: 9px; border: 2px dashed color-mix(in srgb,#0ea5e9 40%,var(--line)); border-radius: 10px; padding: 8px 10px; position: relative; }
+    .gtd-emblem.on { border-style: solid; border-color: #0ea5e9; }
+    .gtd-em-ico { font-size: 18px; } .gtd-em-t { font-size: 11px; color: var(--text-secondary); flex: 1; }
+    @@media (max-width: 720px) { .gtd-grid { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter, EditorRequired] public StoryboardProject Project { get; set; } = default!;
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private string? _cadStatus;
+    private string? _emblemStatus;
+
+    private static readonly (string Key, string Hex, string Name)[] Neons =
+    {
+        ("cyan", "#22d3ee", "시안"), ("magenta", "#d946ef", "마젠타"), ("emerald", "#10b981", "에메랄드"),
+    };
+
+    private IEnumerable<DubLanguage> Targets => GlobalMultiDubbingEngine.Languages.Where(l => l.Code != "ko");
+    private bool HasCad => !string.IsNullOrWhiteSpace(Project.CadModelPath);
+    private bool HasEmblem => !string.IsNullOrWhiteSpace(Project.BuyerEmblemPath);
+    private bool IsLang(string code) => Project.DubbingLanguages.Contains(code);
+    private int SelectedCount => Project.SelectedDubbingLanguages.Count;
+
+    private async Task SetNeon(string key) { Project.WireframeNeonColor = key; await OnChanged.InvokeAsync(); }
+
+    private async Task ToggleLang(string code)
+    {
+        if (Project.DubbingLanguages.Contains(code)) Project.DubbingLanguages.Remove(code);
+        else Project.DubbingLanguages.Add(code);
+        await OnChanged.InvokeAsync();
+    }
+
+    private async Task OnGuardToggle(ChangeEventArgs e) { Project.AutoQualityGuard = e.Value is true; await OnChanged.InvokeAsync(); }
+
+    private void OnThreshold(ChangeEventArgs e)
+    {
+        if (double.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v))
+            Project.SsimQualityThreshold = Math.Clamp(v, 0.4, 0.9);
+    }
+
+    private void OnBuyerName(ChangeEventArgs e) => Project.BuyerName = e.Value?.ToString() ?? "";
+
+    private async Task OnCad(InputFileChangeEventArgs e)
+    {
+        var f = e.File;
+        if (f is null) return;
+        try
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "promptflow-cad", Project.Id);
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, SafeName(f.Name, ".stl"));
+            await using (var fs = File.Create(path))
+            await using (var s = f.OpenReadStream(64L * 1024 * 1024))
+                await s.CopyToAsync(fs);
+
+            var mesh = StlMeshParser.Parse(path);
+            if (mesh is null || !mesh.IsValid) { _cadStatus = "⚠ STL 파싱 실패 — 파일을 확인하세요."; try { File.Delete(path); } catch { } return; }
+
+            Project.CadModelPath = path;
+            _cadStatus = $"✓ {f.Name} · 정점 {mesh.Vertices.Count} · 엣지 {mesh.Edges.Count} · 삼각형 {mesh.TriangleCount} ({(mesh.IsBinary ? "Binary" : "ASCII")})";
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception) { _cadStatus = "⚠ CAD 로드 실패"; }
+    }
+
+    private async Task OnEmblem(InputFileChangeEventArgs e)
+    {
+        var f = e.File;
+        if (f is null) return;
+        try
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "promptflow-cad", Project.Id);
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, SafeName("emblem_" + f.Name, ".png"));
+            await using (var fs = File.Create(path))
+            await using (var s = f.OpenReadStream(16L * 1024 * 1024))
+                await s.CopyToAsync(fs);
+            Project.BuyerEmblemPath = path;
+            _emblemStatus = $"✓ {f.Name} 등록됨 (좌측 하단 음각)";
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception) { _emblemStatus = "⚠ 엠블럼 로드 실패"; }
+    }
+
+    private static string SafeName(string name, string fallbackExt)
+    {
+        var clean = new string((name ?? "").Where(c => !Path.GetInvalidFileNameChars().Contains(c)).ToArray());
+        if (string.IsNullOrWhiteSpace(clean)) clean = "file" + fallbackExt;
+        return clean;
+    }
+}

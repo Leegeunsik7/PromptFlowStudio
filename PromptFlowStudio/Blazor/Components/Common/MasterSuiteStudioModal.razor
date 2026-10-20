@@ -1,0 +1,329 @@
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.Master
+@implements IDisposable
+@inject UniversalMasterStudioOrchestrator Master
+@inject ZeroTrustSecurityShieldService Shield
+@inject CloudDeltaAssetSyncEngine Delta
+
+@* [PromptFlow Studio v16.30.0] 👑 마스터 엔터프라이즈 스튜디오 — 30개 모듈 실시간 매트릭스 · 마스터 파이프라인(단계 토글/실행/결과)
+   · 제로 트러스트 보안 인스펙터(세션 · KEK · 비밀 인벤토리 · 감사 트레일 검증) · 클라우드 델타 동기화 진행바. 상태는 서비스(싱글턴) 소유 — OnChange 구독. *@
+
+<div class="ms-scrim" @onclick="Close">
+    <div class="ms-modal" @onclick:stopPropagation="true">
+        <div class="ms-h">
+            <div>
+                <div class="ms-title">👑 마스터 엔터프라이즈 스튜디오</div>
+                <div class="ms-sub">v16.17~v16.30 전 모듈을 한 화면에서 관제하고, 기획→생성→립싱크→캐릭터 ID→더빙→C2PA→QA→게시→라이브→인터랙티브→자율 디렉터→델타 동기화를 하나의 파이프라인으로 실행합니다.
+                    모든 실행은 <b>제로 트러스트 세션 인가</b>와 <b>HMAC 감사 체인</b>을 거칩니다.</div>
+            </div>
+            <button class="ms-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="ms-bar">
+            <span class="ms-chip @(Shield.IsUnlocked ? "ok" : "bad")">🛡 @(Shield.IsUnlocked ? Shield.KeyProtection : "쉴드 잠김")</span>
+            @if (_session is { } s && Shield.SessionOf(s.Token) is not null)
+            {
+                <span class="ms-chip ok">👤 @(s.Subject) · @(s.Role) · @(s.Method) · 만료 @(s.ExpiresAt.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture))</span>
+                <button class="ms-btn sm" @onclick="Logout">로그아웃</button>
+            }
+            else
+            {
+                <button class="ms-btn sm" disabled="@Shield.EnforceSso" @onclick="LoginLocal">🔑 로컬 세션(Windows)</button>
+                <button class="ms-btn sm" disabled="@(Shield.Oidc is null || _cts is not null)" @onclick="LoginSsoAsync">🌐 SSO 로그인(OIDC)</button>
+            }
+            <span class="ms-mut">모듈 @(Master.OnlineModules)/@(Master.ModuleCount) 가동 · 실행 @(Master.Runs)회 · 허용 @(Shield.AllowedCount) · 거부 @(Shield.DeniedCount)</span>
+        </div>
+
+        <div class="ms-tabs">
+            <button class="@(_tab == 0 ? "on" : "")" @onclick="() => _tab = 0">🧩 모듈 매트릭스</button>
+            <button class="@(_tab == 1 ? "on" : "")" @onclick="() => _tab = 1">🚦 마스터 파이프라인</button>
+            <button class="@(_tab == 2 ? "on" : "")" @onclick="() => _tab = 2">🛡 보안 인스펙터</button>
+            <button class="@(_tab == 3 ? "on" : "")" @onclick="() => _tab = 3">☁️ 델타 동기화</button>
+        </div>
+
+        <div class="ms-body">
+            @if (_tab == 0)
+            {
+                <div class="ms-matrix">
+                    @foreach (var m in Master.Matrix)
+                    {
+                        <div class="ms-cell @(HealthClass(m.Health))" title="@(m.Activity ?? m.Metric)">
+                            <div class="ms-ch"><span class="ms-dot"></span><b>@(m.Name)</b></div>
+                            <div class="ms-mut">v@(m.Version) · @(m.Category)</div>
+                            <div class="ms-metric">@(m.Metric)</div>
+                            @if (m.Activity is not null) { <div class="ms-act">@(m.Activity)</div> }
+                        </div>
+                    }
+                </div>
+            }
+            else if (_tab == 1)
+            {
+                <div class="ms-row">
+                    <label class="ms-mut">테마 <input class="ms-in" @bind="_theme" /></label>
+                    <label class="ms-mut"><input type="checkbox" @bind="_lockId" /> 캐릭터 ID 락</label>
+                    <label class="ms-mut"><input type="checkbox" @bind="_sign" /> C2PA 서명</label>
+                    <label class="ms-mut"><input type="checkbox" @bind="_live" /> 24/7 루프 추가</label>
+                    <label class="ms-mut"><input type="checkbox" @bind="_interactive" /> 인터랙티브 패키지</label>
+                    <label class="ms-mut">더빙 로캘 <input class="ms-in w120" @bind="_locales" placeholder="en-US,ja-JP" /></label>
+                    <label class="ms-mut"><input type="checkbox" @bind="_yt" /> YouTube</label>
+                    <label class="ms-mut"><input type="checkbox" @bind="_tt" /> TikTok</label>
+                    <label class="ms-mut"><input type="checkbox" @bind="_public" /> 공개 게시</label>
+                    <label class="ms-mut">델타 저장소 <input class="ms-in w160" @bind="_deltaFolder" placeholder="\\NAS\share (선택)" /></label>
+                </div>
+                <div class="ms-pipe">
+                    @foreach (var r in Master.Stages)
+                    {
+                        var stage = r.Stage;
+                        <div class="ms-stage @(OutcomeClass(r.Outcome)) @(Master.CurrentStage == stage ? "cur" : "")">
+                            <label class="ms-mut"><input type="checkbox" checked="@Master.IsStageEnabled(stage)" disabled="@Master.IsRunning" @onchange="e => Master.SetStageEnabled(stage, e.Value is true)" /></label>
+                            <b>@(UniversalMasterStudioOrchestrator.StageLabel(stage))</b>
+                            <span class="ms-oc">@(OutcomeLabel(r.Outcome))</span>
+                            <span class="ms-msg" title="@(r.Message)">@(r.Message)</span>
+                            @if (r.Duration > TimeSpan.Zero) { <span class="ms-mut">@(r.Duration.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture))s</span> }
+                        </div>
+                    }
+                </div>
+                <div class="ms-row">
+                    <button class="ms-btn go" disabled="@(Master.IsRunning || _session is null)" @onclick="RunAsync">👑 마스터 파이프라인 실행</button>
+                    @if (Master.IsRunning) { <button class="ms-btn" @onclick="Master.Cancel">중지</button> }
+                    @if (_session is null) { <span class="ms-mut">⚠ 실행하려면 세션이 필요합니다(제로 트러스트).</span> }
+                </div>
+            }
+            else if (_tab == 2)
+            {
+                var v = _verify;
+                <div class="ms-row">
+                    <button class="ms-btn" @onclick="VerifyAudit">🔗 감사 트레일 무결성 검증</button>
+                    <button class="ms-btn" disabled="@(_session is null)" @onclick="Rotate">♻ KEK 회전</button>
+                    <label class="ms-mut"><input type="checkbox" checked="@Shield.EnforceSso" @onchange="e => Shield.EnforceSso = e.Value is true" /> SSO 강제(로컬 세션 차단)</label>
+                    @if (v is not null) { <span class="ms-chip @(v.Ok ? "ok" : "bad")">@(v.Message)</span> }
+                </div>
+                <div class="ms-row">
+                    <span class="ms-sec">🌐 OIDC</span>
+                    <input class="ms-in w220" @bind="_authority" placeholder="https://login.example.com/tenant/v2.0" />
+                    <input class="ms-in w160" @bind="_clientId" placeholder="client_id" />
+                    <button class="ms-btn sm" disabled="@(_cts is not null)" @onclick="ConfigureOidcAsync">구성</button>
+                    <span class="ms-mut">@(Shield.Oidc is { } o ? "✅ " + o.Issuer : "미구성") · SAML2 는 IdP 인증서로 XML-DSig 검증</span>
+                </div>
+                <div class="ms-row">
+                    <span class="ms-sec">🔐 비밀</span>
+                    <input class="ms-in w160" @bind="_secretName" placeholder="이름(예: OPENAI_API_KEY)" />
+                    <input class="ms-in w220" type="password" @bind="_secretValue" placeholder="값(저장 후 즉시 지움)" />
+                    <button class="ms-btn sm" disabled="@(_session is null)" @onclick="SaveSecret">AES-GCM 저장</button>
+                </div>
+                <table class="ms-tbl">
+                    <tr><th>비밀</th><th>갱신</th><th>크기</th><th></th></tr>
+                    @foreach (var sec in Shield.SecretInventory())
+                    {
+                        <tr><td>@(sec.Name)</td><td>@(sec.Updated.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture))</td><td>@(sec.Bytes)B</td>
+                            <td><button class="ms-btn sm" disabled="@(_session is null)" @onclick="() => DeleteSecret(sec.Name)">삭제</button></td></tr>
+                    }
+                </table>
+                <div class="ms-sec">📜 감사 트레일(최근)</div>
+                <table class="ms-tbl">
+                    <tr><th>#</th><th>시각</th><th>주체</th><th>행위</th><th>대상</th><th>결과</th><th>사유</th><th>MAC</th></tr>
+                    @foreach (var a in Shield.RecentAudit(30))
+                    {
+                        <tr class="@(a.Allowed ? "" : "bad")"><td>@(a.Seq)</td><td>@(a.At.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture))</td><td>@(a.Actor)</td><td>@(a.Action)</td>
+                            <td>@(a.Resource)</td><td>@(a.Allowed ? "허용" : "거부")</td><td class="ms-msg">@(a.Detail)</td><td class="ms-mono">@(a.Mac[..10])…</td></tr>
+                    }
+                </table>
+            }
+            else
+            {
+                <div class="ms-row">
+                    <input class="ms-in w260" @bind="_syncFile" placeholder="동기화할 파일 경로(영상/모델)" />
+                    <input class="ms-in w220" @bind="_syncStore" placeholder="저장소 폴더(NAS/피어 공유)" />
+                    <button class="ms-btn go" disabled="@(Delta.IsBusy || _session is null)" @onclick="UploadAsync">⬆ 델타 업로드</button>
+                    <button class="ms-btn" disabled="@(Delta.IsBusy || _session is null)" @onclick="DownloadAsync">⬇ 델타 복원</button>
+                </div>
+                <div class="ms-prog"><div class="ms-pbar" style="width:@((Delta.Progress * 100).ToString("0.#", CultureInfo.InvariantCulture))%"></div>
+                    <span>@(Delta.IsBusy ? "동기화 " + (Delta.Progress * 100).ToString("0", CultureInfo.InvariantCulture) + "%" : "대기") · 누적 전송 @(Delta.TotalSentChunks) · 중복 제거 @(Delta.TotalDedupedChunks)</span></div>
+                @if (Delta.LastResult is { } dr)
+                {
+                    <div class="ms-note @(dr.Ok ? "ok" : "bad")">@(dr.Message) · 청크 @(dr.Chunks) · 전송 @(dr.Transferred) · 재사용 @(dr.Deduplicated) · 절감 @((dr.SavingRatio * 100).ToString("0", CultureInfo.InvariantCulture))%</div>
+                }
+                <div class="ms-note">FastCDC 콘텐츠 정의 청킹(평균 1MB) — 영상 일부만 바뀌면 바뀐 청크만 전송합니다. 저장소 폴더를 다른 PC 와 공유하면 P2P 릴레이로 동작합니다.</div>
+            }
+            @if (_msg is not null) { <div class="ms-note">@(_msg)</div> }
+        </div>
+
+        <div class="ms-f">
+            <span class="ms-mut">@(Master.LastAction ?? Shield.LastAction ?? Delta.LastAction ?? "대기")</span>
+            @if (_cts is not null) { <button class="ms-btn" @onclick="Cancel">취소</button> }
+            <button class="ms-btn" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .ms-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .ms-modal { width: min(1180px, 97vw); max-height: 93vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .ms-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f59e0b 10%, var(--card)), var(--card)); }
+    .ms-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .ms-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .ms-sub b { color: var(--text-primary); }
+    .ms-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .ms-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .ms-tabs { display: flex; gap: 4px; padding: 8px 18px 0; border-bottom: 1px solid var(--line); }
+    .ms-tabs button { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; border: 0; background: none; color: var(--text-muted); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
+    .ms-tabs button.on { color: var(--text-primary); border-bottom-color: #f59e0b; }
+    .ms-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .ms-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .ms-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .ms-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .ms-chip.ok { color: #4ade80; } .ms-chip.bad { color: #f87171; }
+    .ms-mut { font-size: 11px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; }
+    .ms-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; }
+    .ms-in.w120 { width: 120px; } .ms-in.w160 { width: 160px; } .ms-in.w220 { width: 220px; } .ms-in.w260 { width: 260px; }
+    .ms-matrix { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 6px; }
+    .ms-cell { border: 1px solid var(--line); border-radius: 10px; padding: 7px; display: flex; flex-direction: column; gap: 2px; font-size: 11px; }
+    .ms-ch { display: flex; align-items: center; gap: 6px; } .ms-ch b { font-size: 11.5px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ms-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); flex: none; }
+    .ms-cell.on .ms-dot { background: #22c55e; } .ms-cell.busy .ms-dot { background: #38bdf8; animation: ms-p 1s infinite; } .ms-cell.idle .ms-dot { background: #a3e635; }
+    .ms-cell.deg { border-color: #fbbf24; } .ms-cell.deg .ms-dot { background: #fbbf24; } .ms-cell.na { opacity: .45; }
+    @@keyframes ms-p { 50% { opacity: .35; } }
+    .ms-metric { font: 700 11px var(--mono); color: var(--text-secondary); }
+    .ms-act { font-size: 10.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ms-pipe { display: flex; flex-direction: column; gap: 4px; }
+    .ms-stage { display: grid; grid-template-columns: 24px 140px 80px 1fr auto; gap: 8px; align-items: center; border: 1px solid var(--line); border-radius: 9px; padding: 5px 8px; font-size: 12px; }
+    .ms-stage b { color: var(--text-primary); } .ms-stage.cur { border-color: #38bdf8; box-shadow: 0 0 0 2px color-mix(in srgb, #38bdf8 30%, transparent); }
+    .ms-stage.done .ms-oc { color: #4ade80; } .ms-stage.fail .ms-oc { color: #f87171; } .ms-stage.skip { opacity: .6; } .ms-stage.run .ms-oc { color: #38bdf8; }
+    .ms-oc { font: 800 11px var(--mono); }
+    .ms-msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); max-width: 520px; }
+    .ms-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+    .ms-tbl th, .ms-tbl td { border-bottom: 1px solid var(--line); padding: 3px 6px; text-align: left; }
+    .ms-tbl tr.bad td { color: #f87171; }
+    .ms-mono { font: 10.5px var(--mono); }
+    .ms-prog { position: relative; height: 22px; border-radius: 11px; background: var(--bg); overflow: hidden; }
+    .ms-pbar { position: absolute; inset: 0 auto 0 0; background: linear-gradient(90deg,#0ea5e9,#22c55e); transition: width .2s; }
+    .ms-prog span { position: relative; font: 700 11px var(--mono); padding-left: 10px; line-height: 22px; }
+    .ms-note { font-size: 12px; color: var(--text-secondary); } .ms-note.ok { color: #4ade80; } .ms-note.bad { color: #f87171; }
+    .ms-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }
+    .ms-f .ms-mut { margin-right: auto; }
+    .ms-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .ms-btn.sm { padding: 3px 8px; font-size: 11px; }
+    .ms-btn.go { background: linear-gradient(135deg,#f59e0b,#8b5cf6); color: #fff; border: 0; }
+    .ms-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 720px) { .ms-stage { grid-template-columns: 24px 1fr auto; } .ms-msg { display: none; } }
+</style>
+
+@code {
+    [Parameter] public StoryboardProject? Project { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private int _tab;
+    private string? _msg;
+    private ZtSession? _session;
+    private ZtAuditVerify? _verify;
+    private CancellationTokenSource? _cts;
+    private string _theme = "general", _locales = "", _deltaFolder = "", _authority = "", _clientId = "", _secretName = "", _secretValue = "", _syncFile = "", _syncStore = "";
+    private bool _lockId = true, _sign = true, _live, _interactive, _yt, _tt, _public;
+
+    protected override void OnInitialized()
+    {
+        Master.OnChange += OnServiceChanged;
+        Shield.OnChange += OnServiceChanged;
+        Delta.OnChange += OnServiceChanged;
+        Master.StartMonitoring();
+        Master.RefreshMatrix();
+        if (Project?.FinalVideoPath is { } f) _syncFile = f;
+    }
+
+    private static string HealthClass(ModuleHealth h) => h switch { ModuleHealth.Online => "on", ModuleHealth.Busy => "busy", ModuleHealth.Idle => "idle", ModuleHealth.Degraded => "deg", _ => "na" };
+    private static string OutcomeClass(StageOutcome o) => o switch { StageOutcome.Done => "done", StageOutcome.Failed => "fail", StageOutcome.Skipped => "skip", StageOutcome.Running => "run", _ => "" };
+    private static string OutcomeLabel(StageOutcome o) => o switch { StageOutcome.Done => "완료", StageOutcome.Failed => "실패", StageOutcome.Skipped => "건너뜀", StageOutcome.Running => "실행 중", _ => "대기" };
+
+    private void LoginLocal() { _session = Shield.IssueLocalSession(); _msg = _session is null ? "⛔ 로컬 세션 거부(SSO 강제 또는 쉴드 잠김)" : "🔑 로컬 세션 발급"; }
+
+    private Task LoginSsoAsync() => RunAsync(async ct => { _session = await Shield.LoginInteractiveAsync(ct); _msg = _session is null ? "⛔ SSO 로그인 실패" : "🌐 SSO 세션 발급"; });
+
+    private void Logout() { Shield.Revoke(_session?.Token); _session = null; }
+
+    private Task ConfigureOidcAsync() => RunAsync(async ct => { _msg = await Shield.ConfigureOidcAsync(_authority.Trim(), _clientId.Trim(), ct) ? "✅ OIDC 구성 완료" : "⚠ OIDC 디스커버리 실패(https authority 확인)"; });
+
+    private void VerifyAudit() => _verify = Shield.VerifyAudit();
+
+    private void Rotate() => _msg = Shield.RotateKek(_session?.Token) ? "♻ KEK 회전 완료" : "⛔ KEK 회전 거부(Admin · 스텝업 필요)";
+
+    private void SaveSecret()
+    {
+        var ok = Shield.SetSecret(_session?.Token, _secretName.Trim(), _secretValue);
+        _secretValue = "";
+        _msg = ok ? "🔐 저장 완료" : "⛔ 저장 거부(이름 형식/권한/스텝업)";
+    }
+
+    private void DeleteSecret(string name) => _msg = Shield.DeleteSecret(_session?.Token, name) ? "🗑 삭제" : "⛔ 삭제 거부";
+
+    private Task RunAsync()
+    {
+        if (Project is null) { _msg = "⚠ 스토리보드에서 열어야 파이프라인을 실행할 수 있습니다."; return Task.CompletedTask; }
+        var targets = new List<PromptFlowStudio.Services.Wan.SocialPublishTarget>();
+        if (_yt) targets.Add(PromptFlowStudio.Services.Wan.SocialPublishTarget.YouTubeShorts);
+        if (_tt) targets.Add(PromptFlowStudio.Services.Wan.SocialPublishTarget.TikTok);
+        var locales = _locales.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var req = new MasterRunRequest(Project, string.IsNullOrWhiteSpace(_theme) ? "general" : _theme.Trim(), true, _lockId, null, locales.Length > 0 ? locales : null, _sign,
+            targets.Count > 0 ? targets : null, _public, _live, _interactive, true, string.IsNullOrWhiteSpace(_deltaFolder) ? null : _deltaFolder.Trim());
+        var token = _session?.Token;
+        return RunAsync(async ct =>
+        {
+            var r = await Master.RunAsync(req, token, ct);
+            _msg = r is null ? "⚠ 이미 실행 중입니다." : Master.LastAction;
+        });
+    }
+
+    private Task UploadAsync() => RunAsync(async ct =>
+    {
+        if (!File.Exists(_syncFile) || string.IsNullOrWhiteSpace(_syncStore)) { _msg = "⚠ 파일/저장소 경로를 확인하세요."; return; }
+        await Delta.UploadAsync(_syncFile, AssetIdOf(_syncFile), new LocalFolderChunkStore(_syncStore.Trim()), _session?.Token, ct);
+    });
+
+    private Task DownloadAsync() => RunAsync(async ct =>
+    {
+        if (string.IsNullOrWhiteSpace(_syncFile) || string.IsNullOrWhiteSpace(_syncStore)) { _msg = "⚠ 파일/저장소 경로를 확인하세요."; return; }
+        await Delta.DownloadAsync(AssetIdOf(_syncFile), new LocalFolderChunkStore(_syncStore.Trim()), _syncFile, _session?.Token, ct);
+    });
+
+    private static string AssetIdOf(string path)
+    {
+        var name = Path.GetFileName(path);
+        var sb = new System.Text.StringBuilder(name.Length);
+        foreach (var ch in name) sb.Append(char.IsAsciiLetterOrDigit(ch) || ch is '_' or '-' or '.' ? ch : '_');
+        var id = sb.ToString().TrimStart('.');
+        return id.Length is 0 ? "asset" : id.Length > 96 ? id[..96] : id;
+    }
+
+    private async Task RunAsync(Func<CancellationToken, Task> work)
+    {
+        var cts = new CancellationTokenSource();
+        if (Interlocked.CompareExchange(ref _cts, cts, null) is not null) { cts.Dispose(); return; }
+        try { await work(cts.Token); }
+        catch (OperationCanceledException) { _msg = "⚠ 취소됨"; }
+        catch (Exception ex) { Program.Log("MasterSuite.Run", ex); _msg = "⚠ 실패: " + ex.Message; }
+        finally
+        {
+            Interlocked.CompareExchange(ref _cts, null, cts);
+            cts.Dispose();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void Cancel()
+    {
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+        Master.Cancel();
+    }
+
+    private Task Close() => _cts is not null ? Task.CompletedTask : OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Master.OnChange -= OnServiceChanged;
+        Shield.OnChange -= OnServiceChanged;
+        Delta.OnChange -= OnServiceChanged;
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+}

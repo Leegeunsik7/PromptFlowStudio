@@ -1,0 +1,19 @@
+@* [PromptFlow Studio] 컷별 독립 VU 미터 — 개별 컷 비디오에 Web Audio 바인딩(재생 시 물리 반응). 음량 과다(클리핑)·덕킹 스파이크 실시간 시각화.
+   재생 중인 컷만 AnalyserNode 가동(audio-analyzer.js bind). 컷 비디오가 muted 면 재생해도 진폭 0 — 음소거 해제 시 반응. *@
+
+<div class="cvu">
+    <span class="cvu-ic" title="컷 오디오 레벨 · 재생 시 반응 · 붉은 발광=클리핑">🎚️</span>
+    <LiveVuMeter MediaElementId="@VideoElementId" Count="12" Active="false" />
+    <span class="cvu-tag">VU</span>
+</div>
+
+<style>
+    .cvu { display: inline-flex; align-items: center; gap: 6px; }
+    .cvu-ic { font-size: 12px; opacity: .8; }
+    .cvu-tag { font: 800 8.5px var(--mono); letter-spacing: .1em; color: var(--text-muted); }
+</style>
+
+@code {
+    /// <summary>바인딩할 컷 비디오 요소 id.</summary>
+    [Parameter] public string VideoElementId { get; set; } = "";
+}

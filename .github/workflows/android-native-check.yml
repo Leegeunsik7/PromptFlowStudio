@@ -1,0 +1,91 @@
+name: Android Native Compile Check
+
+# v5.4.1 마감 — 로컬 샌드박스의 Android SDK 부재를 극복하기 위한 CI 실컴파일 검증.
+#  ① desktop-check : net8.0-windows 데스크톱 빌드를 -warnaserror 로 0경고/0오류 강제(제약사항 1 무손상 게이트).
+#     → WanPromptCompiler / WanRenderClient / SpatialVoicePrompter 의 비-Android 부(계약·DTO·구조화기·데스크톱 폴백)까지 경고 0 보장.
+#  ② android-native-check : net8.0-android Release 빌드로 #if ANDROID 네이티브 글루의 컴파일 정합성 검증(-warnaserror = 0경고/0오류).
+#     검증 대상 글루: v5.4 SpatialVoicePrompter(Android.Speech.SpeechRecognizer · ko-KR 음성 인식) +
+#       CameraX ImageAnalysis · AR 카메라 패스스루 · NFC · Foreground Service · Maui.Sensors(자이로).
+#  ⚠ v5.3 크로스플랫폼 디커플링으로 데스크톱 전용 4대 구현체(AutoUpdate/FilePicker/Clipboard/VideoExport)를 mobile 컴파일에서
+#     <Compile Remove> 처리하고 계약을 Shared 로 이관 → android 빌드가 네이티브 글루까지 도달 가능해졌다(선재 얽힘 해소).
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── ① 데스크톱 무손상 게이트(제약사항 1) ─────────────────────────────
+  desktop-check:
+    name: Desktop (net8.0-windows · warn=error)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore (desktop)
+        run: dotnet restore PromptFlowStudio/PromptFlowStudio.csproj
+
+      - name: Build (net8.0-windows · Release · 0 warning/0 error 강제)
+        run: dotnet build PromptFlowStudio/PromptFlowStudio.csproj -c Release --no-restore -warnaserror
+
+  # ── ② Android 네이티브 글루 실컴파일 검증 ────────────────────────────
+  android-native-check:
+    name: Android (net8.0-android · Release · warn=error)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Setup JDK 17 (Microsoft OpenJDK · MAUI Android 요구)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'microsoft'
+          java-version: '17'
+
+      - name: Setup Android SDK (cmdline-tools)
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 34 packages
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Install MAUI Android workload
+        run: dotnet workload install maui-android
+
+      # v5.4 공간 음성 앵커링의 Android 네이티브 음성 블록이 실제로 존재하는지 선제 확인
+      # (실수로 제거/리네임되면 아래 실컴파일이 통과해도 검증 의미가 사라지므로 가드).
+      - name: Assert SpatialVoicePrompter #if ANDROID speech block present
+        shell: bash
+        run: |
+          f=PromptFlowStudio/Services/Mobile/SpatialVoicePrompter.cs
+          test -f "$f" || { echo "::error::$f 가 없습니다"; exit 1; }
+          grep -q "#if ANDROID" "$f" || { echo "::error::#if ANDROID 블록이 없습니다"; exit 1; }
+          grep -q "Android.Speech" "$f" || { echo "::error::Android.Speech(SpeechRecognizer) 참조가 없습니다"; exit 1; }
+          grep -q "MauiSpatialVoicePrompter" "$f" || { echo "::error::MauiSpatialVoicePrompter 네이티브 구현이 없습니다"; exit 1; }
+          echo "OK — Android.Speech.SpeechRecognizer 네이티브 블록 확인됨."
+
+      - name: Restore (mobile)
+        run: dotnet restore PromptFlowStudio.Mobile/PromptFlowStudio.Mobile.csproj
+
+      # #if ANDROID 블록(SpatialVoicePrompter=Android.Speech · AndroidArFieldVision · AndroidNfcSyncCommander ·
+      #  PfsForegroundService · MauiMotionTiltController 등)이 실제로 컴파일되는 유일한 경로.
+      # -warnaserror 로 0경고/0오류가 아니면 잡 실패(태스크 요건: 0 경고/0 오류 통과).
+      - name: Build (net8.0-android · Release · #if ANDROID 글루 · warn=error)
+        run: dotnet build PromptFlowStudio.Mobile/PromptFlowStudio.Mobile.csproj -f net8.0-android -c Release --no-restore -warnaserror

@@ -1,0 +1,43 @@
+@* [PromptFlow Studio] v3.1.0 테마 실시간 검색 바 — 스티키 · 장비명/키워드 즉시 필터 · 결과 카운트/초기화. *@
+
+<div class="tsb">
+    <span class="tsb-ico">🔎</span>
+    <input class="tsb-input" placeholder="@Placeholder" value="@Query" @oninput="OnInput" @onkeyup="OnKeyUp" />
+    @if (!string.IsNullOrEmpty(Query))
+    {
+        <span class="tsb-count">@ResultCount / @TotalCount</span>
+        <button class="tsb-clear" @onclick="Clear" title="검색 초기화">✕</button>
+    }
+    else
+    {
+        <span class="tsb-count muted">@(TotalCount)종</span>
+    }
+</div>
+
+<style>
+    .tsb { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 8px; padding: 8px 10px; margin-bottom: 10px;
+        background: color-mix(in srgb, var(--card) 92%, transparent); backdrop-filter: blur(8px); border: 1px solid var(--line); border-radius: 12px; }
+    .tsb-ico { font-size: 14px; opacity: .8; }
+    .tsb-input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: var(--text-primary); font: 600 13px var(--mono); }
+    .tsb-input::placeholder { color: var(--text-muted); }
+    .tsb-count { font: 700 10.5px var(--mono); color: #7dd3fc; background: color-mix(in srgb, #0ea5e9 12%, transparent); border-radius: 20px; padding: 3px 9px; white-space: nowrap; }
+    .tsb-count.muted { color: var(--text-muted); background: var(--card-2); }
+    .tsb-clear { flex: 0 0 auto; width: 22px; height: 22px; border: none; background: var(--card-2); color: var(--text-secondary); border-radius: 50%; cursor: pointer; font-size: 11px; }
+    .tsb-clear:hover { background: var(--accent); color: #fff; }
+</style>
+
+@code {
+    /// <summary>현재 검색어(양방향).</summary>
+    [Parameter] public string Query { get; set; } = "";
+    [Parameter] public EventCallback<string> QueryChanged { get; set; }
+    /// <summary>필터 결과 개수(배지).</summary>
+    [Parameter] public int ResultCount { get; set; }
+    /// <summary>전체 개수.</summary>
+    [Parameter] public int TotalCount { get; set; }
+    /// <summary>플레이스홀더.</summary>
+    [Parameter] public string Placeholder { get; set; } = "테마·장비명·키워드 검색…";
+
+    private async Task OnInput(ChangeEventArgs e) => await QueryChanged.InvokeAsync(e.Value?.ToString() ?? "");
+    private async Task OnKeyUp(KeyboardEventArgs e) { if (e.Key == "Escape") await Clear(); }
+    private async Task Clear() => await QueryChanged.InvokeAsync("");
+}

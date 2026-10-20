@@ -1,0 +1,235 @@
+@using System.Diagnostics
+@using System.Globalization
+@using System.Net.Http
+@using System.Threading
+@implements IDisposable
+@inject WanPipelineHardening Wan
+@inject AudioEngineHardening Audio
+
+@* [PromptFlow Studio · v4.4.3 Task4] 3단계 하드닝 완수 게이트 — 자가검증(갤러리 벤치 + AI 타임아웃 방어 + 클라우드→로컬 폴백 + 오디오 I/O 가드)을
+   실제로 실행해 전 항목이 통과하면 CSS 파티클(Confetti)과 [✅ 3단계 완수] 패널을 오버레이하고
+   [🏁 4단계: 관리자 배포 덱 점검 진입] 버튼을 활성화한다. 자가검증은 실 코드 경로를 호출하므로 회귀(무응답/누수)가 생기면 실패로 드러난다. *@
+
+<div class="s3-panel">
+    <div class="s3-h">
+        <div class="s3-title">🛡️ 3단계 하드닝 자가검증</div>
+        <div class="s3-sub">갤러리 가상화 · AI 파이프라인 타임아웃 방어 · 3D 음향 I/O 가드를 실제 실행해 무결성을 확인합니다.</div>
+    </div>
+
+    <div class="s3-checks">
+        @foreach (var c in _checks)
+        {
+            <div class="s3-check @(c.Ran ? (c.Passed ? "ok" : "fail") : "idle")" @key="c.Name">
+                <span class="s3-ico">@(c.Ran ? (c.Passed ? "✅" : "⚠️") : "⏳")</span>
+                <span class="s3-cname">@c.Name</span>
+                <span class="s3-cdetail">@c.Detail</span>
+                @if (c.Ran) { <span class="s3-cms">@c.Ms ms</span> }
+            </div>
+        }
+    </div>
+
+    <div class="s3-foot">
+        <button class="s3-btn run" @onclick="RunVerificationAsync" disabled="@_running">@(_running ? "검증 중…" : "🔍 자가검증 실행")</button>
+        <button class="s3-btn go @(_passed ? null : "locked")" @onclick="EnterStage4" disabled="@(!_passed)">🏁 4단계: 관리자 배포 덱 점검 진입</button>
+    </div>
+</div>
+
+@if (_passed)
+{
+    <div class="s3-celebrate" @onclick="Dismiss">
+        <div class="s3-confetti" aria-hidden="true">
+            @foreach (var p in _particles) { <span style="@p"></span> }
+        </div>
+        <div class="s3-card" @onclick:stopPropagation="true">
+            <div class="s3-emoji">🏆</div>
+            <div class="s3-done">3단계 하드닝 완수!</div>
+            <div class="s3-donesub">갤러리 메모리 방어 · AI 무응답 타임아웃 흡수 · 3D 음향 고립 차단 — 전 항목 자가검증 통과.</div>
+            <div class="s3-cardbtns">
+                <button class="s3-btn go" @onclick="EnterStage4">🏁 4단계: 관리자 배포 덱 점검 진입</button>
+                <button class="s3-btn ghost" @onclick="Dismiss">닫기</button>
+            </div>
+        </div>
+    </div>
+}
+
+<style>
+    .s3-panel{display:flex; flex-direction:column; gap:14px; padding:18px 20px; border-radius:16px; border:1px solid var(--line); background:var(--card)}
+    .s3-title{font-size:16px; font-weight:900; color:var(--text-primary)}
+    .s3-sub{font-size:12px; color:var(--text-secondary); margin-top:4px; line-height:1.55}
+    .s3-checks{display:flex; flex-direction:column; gap:7px}
+    .s3-check{display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:11px; border:1px solid var(--line); background:var(--card-2)}
+    .s3-check.ok{border-color:color-mix(in srgb,#34d399 42%,var(--line)); background:color-mix(in srgb,#34d399 9%,var(--card-2))}
+    .s3-check.fail{border-color:color-mix(in srgb,#f5a623 46%,var(--line)); background:color-mix(in srgb,#f5a623 10%,var(--card-2))}
+    .s3-ico{flex:0 0 auto; font-size:15px}
+    .s3-cname{font-size:12.5px; font-weight:800; color:var(--text-primary); flex:0 0 auto}
+    .s3-cdetail{font:600 11px var(--mono); color:var(--text-secondary); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+    .s3-cms{flex:0 0 auto; font:700 10.5px var(--mono); color:var(--text-muted)}
+    .s3-foot{display:flex; gap:9px; flex-wrap:wrap}
+    .s3-btn{font:800 13px inherit; padding:11px 17px; border-radius:11px; cursor:pointer; border:1px solid var(--line); background:var(--card-2); color:var(--text-secondary)}
+    .s3-btn.run:hover{border-color:var(--accent); color:var(--text-primary)}
+    .s3-btn.go{border:none; color:#fff; background:linear-gradient(135deg,var(--flow-violet),var(--flow-magenta)); box-shadow:0 6px 16px color-mix(in srgb,var(--flow-magenta) 26%,transparent)}
+    .s3-btn.go:hover:not(:disabled){filter:brightness(1.07)}
+    .s3-btn.go.locked,.s3-btn:disabled{opacity:.45; cursor:not-allowed; box-shadow:none}
+    .s3-btn.ghost:hover{border-color:var(--accent); color:var(--text-primary)}
+    /* 완수 오버레이 + Confetti */
+    .s3-celebrate{position:fixed; inset:0; z-index:200; display:flex; align-items:center; justify-content:center; padding:20px; background:rgba(3,4,10,.62); overflow:hidden}
+    .s3-confetti{position:absolute; inset:0; pointer-events:none; overflow:hidden}
+    .s3-confetti span{position:absolute; top:-24px; border-radius:2px; opacity:.9; animation-name:s3-fall; animation-timing-function:cubic-bezier(.28,.44,.63,1); animation-iteration-count:infinite}
+    @@keyframes s3-fall{
+        0%{transform:translateY(-24px) rotate(0deg); opacity:0}
+        8%{opacity:1}
+        100%{transform:translateY(102vh) rotate(720deg); opacity:.85}
+    }
+    .s3-card{position:relative; z-index:1; width:min(460px,94vw); text-align:center; padding:28px 26px; border-radius:20px; border:1px solid color-mix(in srgb,var(--accent) 40%,var(--line)); background:var(--card); box-shadow:0 30px 70px rgba(0,0,0,.5)}
+    .s3-emoji{font-size:52px; animation:s3-pop .5s ease}
+    @@keyframes s3-pop{0%{transform:scale(.3); opacity:0}70%{transform:scale(1.15)}100%{transform:scale(1); opacity:1}}
+    .s3-done{font-size:22px; font-weight:900; color:var(--text-primary); margin-top:8px; background:linear-gradient(135deg,var(--flow-violet),var(--flow-magenta)); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent}
+    .s3-donesub{font-size:12.5px; color:var(--text-secondary); margin:10px 0 18px; line-height:1.6}
+    .s3-cardbtns{display:flex; gap:9px; justify-content:center; flex-wrap:wrap}
+    @@media(prefers-reduced-motion:reduce){.s3-confetti span{animation:none; display:none} .s3-emoji{animation:none}}
+</style>
+
+@code {
+    /// <summary>4단계(관리자 배포 덱 점검) 진입 요청 — 부모가 라우팅/모달 전환을 수행.</summary>
+    [Parameter] public EventCallback OnEnterStage4 { get; set; }
+
+    private sealed record Check(string Name)
+    {
+        public bool Ran { get; set; }
+        public bool Passed { get; set; }
+        public string Detail { get; set; } = "대기 중";
+        public long Ms { get; set; }
+    }
+
+    private readonly List<Check> _checks = new()
+    {
+        new Check("갤러리 가상화·필터 벤치"),
+        new Check("AI VRAM 탐지 타임아웃 방어"),
+        new Check("클라우드→로컬 폴백 엔진"),
+        new Check("오디오 I/O 무한대기 가드"),
+    };
+
+    private bool _running;
+    private bool _passed;
+    private readonly List<string> _particles = new();
+    private readonly CancellationTokenSource _cts = new();
+
+    private async Task RunVerificationAsync()
+    {
+        if (_running) return;
+        _running = true;
+        _passed = false;
+        foreach (var c in _checks) { c.Ran = false; c.Passed = false; c.Detail = "실행 중…"; c.Ms = 0; }
+        StateHasChanged();
+
+        await RunCheck(_checks[0], BenchGalleryAsync);
+        await RunCheck(_checks[1], BenchVramTimeoutAsync);
+        await RunCheck(_checks[2], BenchFallbackAsync);
+        await RunCheck(_checks[3], BenchAudioGuardAsync);
+
+        _passed = _checks.All(c => c.Passed);
+        if (_passed) BuildParticles();
+        _running = false;
+        StateHasChanged();
+    }
+
+    private async Task RunCheck(Check c, Func<Task<(bool Ok, string Detail)>> body)
+    {
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            var (ok, detail) = await body();
+            c.Passed = ok; c.Detail = detail;
+        }
+        catch (Exception ex) { c.Passed = false; c.Detail = "예외: " + ex.Message; }
+        sw.Stop();
+        c.Ran = true; c.Ms = sw.ElapsedMilliseconds;
+        StateHasChanged();
+        await Task.Yield();   // UI 프레임 양보(체크마다 갱신 표출)
+    }
+
+    // ① 갤러리 데이터 파이프라인(Virtualize 입력) 벤치 — 2000종 사영·필터가 예산(200ms) 내인지.
+    private Task<(bool, string)> BenchGalleryAsync()
+    {
+        const int N = 2000, budgetMs = 200;
+        var sw = Stopwatch.StartNew();
+        var data = Enumerable.Range(0, N)
+            .Select(i => new ThemeGalleryHardening.GalleryThumb(
+                $"k{i}", $"테마 {i}", "훅 라인", "🎬", null,
+                i % 3 == 0 ? "baby" : i % 3 == 1 ? "corporate" : "automotive"))
+            .ToList();
+        var visible = data.Where(d => d.Category == "baby").Take(50).Count();
+        sw.Stop();
+        var ok = sw.ElapsedMilliseconds <= budgetMs;
+        return Task.FromResult((ok, $"{N}종 사영·필터 {sw.ElapsedMilliseconds}ms (≤{budgetMs}ms) · 가시행 {visible}"));
+    }
+
+    // ② nvidia-smi 탐지가 예산 내 '반드시 반환'(무응답 Hang 없음)하는지 — 값이 아니라 반환성 검증.
+    private async Task<(bool, string)> BenchVramTimeoutAsync()
+    {
+        var sw = Stopwatch.StartNew();
+        var probe = await Wan.DetectVramMbAsync(TimeSpan.FromMilliseconds(1500), _cts.Token);
+        sw.Stop();
+        var ok = sw.ElapsedMilliseconds <= 3000;   // 타임아웃(1.5s) + 종료 여유
+        var state = probe.Detected ? $"{probe.TotalMb}MB 탐지" : probe.TimedOut ? "타임아웃→0MB" : "미탐지→0MB";
+        return (ok, $"{sw.ElapsedMilliseconds}ms 내 반환 · {state}");
+    }
+
+    // ③ 클라우드가 연속 단선(5xx/타임아웃)일 때 로컬 폴백으로 흡수되는지.
+    private async Task<(bool, string)> BenchFallbackAsync()
+    {
+        var outcome = await Wan.RunWithFallbackAsync<string>(
+            cloudCall: _ => throw new HttpRequestException("모의 5xx 단선"),
+            isTransient: WanPipelineHardening.IsTransientException,
+            localFallback: _ => Task.FromResult("local-frame"),
+            progress: null,
+            ct: _cts.Token);
+        var ok = outcome.Path == HybridPath.LocalFallback && outcome.Value == "local-frame";
+        return (ok, $"{outcome.Path} · 클라우드 {outcome.CloudAttempts}회 후 로컬 흡수");
+    }
+
+    // ④ 없는/잠긴 오디오에서 무한 대기 없이 예산 내 반환 + sofalizer 안전 스킵 검증.
+    private async Task<(bool, string)> BenchAudioGuardAsync()
+    {
+        var ghost = Path.Combine(Path.GetTempPath(), "promptflow_missing_" + Guid.NewGuid().ToString("N") + ".wav");
+        var sw = Stopwatch.StartNew();
+        var r = await Audio.EnsureAudioReadyAsync(ghost, TimeSpan.FromMilliseconds(400), _cts.Token);
+        sw.Stop();
+        var sofaSkip = AudioEngineHardening.BuildSofalizerOrNull(null, new SpatialPoint(0, CameraCue.Static, 0, 0.5, 0, 0.707, 0.707)) is null;
+        var ok = !r.Ready && sw.ElapsedMilliseconds <= 1500 && sofaSkip;
+        return (ok, $"{sw.ElapsedMilliseconds}ms 내 반환(Ready={r.Ready}) · sofalizer 스킵={sofaSkip}");
+    }
+
+    private void BuildParticles()
+    {
+        _particles.Clear();
+        var rnd = new Random();
+        string[] colors = { "#f5a623", "#ff6b6b", "#7c5cff", "#22d3ee", "#34d399", "#f472b6" };
+        for (var i = 0; i < 48; i++)
+        {
+            var left = rnd.Next(0, 100);
+            var delay = rnd.NextDouble() * 1.8;
+            var dur = 2.4 + rnd.NextDouble() * 1.8;
+            var size = 7 + rnd.Next(0, 8);
+            var color = colors[rnd.Next(colors.Length)];
+            _particles.Add(
+                $"left:{left}%; width:{size}px; height:{size}px; background:{color}; " +
+                $"animation-delay:{delay.ToString("0.##", CultureInfo.InvariantCulture)}s; " +
+                $"animation-duration:{dur.ToString("0.##", CultureInfo.InvariantCulture)}s");
+        }
+    }
+
+    private async Task EnterStage4()
+    {
+        if (!_passed) return;
+        await OnEnterStage4.InvokeAsync();
+    }
+
+    private void Dismiss() => _passed = false;
+
+    public void Dispose()
+    {
+        try { _cts.Cancel(); } catch { /* 무시 */ }
+        _cts.Dispose();
+    }
+}

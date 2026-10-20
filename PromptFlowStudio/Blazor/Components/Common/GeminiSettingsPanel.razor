@@ -1,0 +1,153 @@
+@inject GeminiConfigService Cfg
+@implements IDisposable
+
+@* [PromptFlow Studio] Gemini AI API 간편 등록 — 설정 파일 직접 수정 없이 화면에서 키 등록 + 연결 검증(핑).
+   저장 즉시 GeminiConfigService 스냅샷이 교체되어 재시작 없이 7대 Gemini 기능(감독/분석/키네틱/그레이딩/감정/트랜지션/번역/스웜/폴리)이 활성화된다. *@
+<section class="gc-card">
+    <div class="gc-head">
+        <span class="gc-ico">🔑</span>
+        <div class="gc-hgrow">
+            <div class="gc-title">Gemini AI API 연동</div>
+            <div class="gc-desc">Google AI Studio 에서 발급한 Gemini API 키를 등록 — 파일 수정 없이 즉시 검증·저장 · <b>재시작 불필요</b></div>
+        </div>
+        <span class="gc-live @(_verified == true ? "on" : "off")">
+            @(_verified == true ? "🟢 연동 완료" : (_checking ? "⏳ 확인 중…" : "🔴 미연결"))
+        </span>
+    </div>
+
+    <div class="gc-row">
+        <label class="gc-lbl" for="gc-key">API Key <span class="gc-sub">Google AI Studio(aistudio.google.com) → Get API key</span></label>
+        <div class="gc-keywrap">
+            <input id="gc-key" class="gc-in" type="@(_show ? "text" : "password")" @bind="_apiKey" @bind:event="oninput"
+                   placeholder="AIza..." spellcheck="false" autocomplete="off" />
+            <button type="button" class="gc-eye" title="@(_show ? "숨기기" : "보기")" @onclick="() => _show = !_show">@(_show ? "🙈" : "👁")</button>
+        </div>
+        <div class="gc-hint">키는 <b>@Cfg.FilePath</b> 에 <b>머신 바운드 암호화(AES-256-GCM)</b>로 봉인 저장됩니다(이 PC 전용).</div>
+    </div>
+
+    <div class="gc-actions">
+        <button class="gc-btn save" @onclick="ValidateAndSaveAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_apiKey))">
+            @(_busy ? "🔗 검증 중…" : "🔗 연결 검증 및 저장")
+        </button>
+        @if (Cfg.IsConfigured)
+        {
+            <button class="gc-btn test" @onclick="TestAsync" disabled="@_busy">@(_checking ? "⚡ 핑 중…" : "⚡ 연결 테스트")</button>
+            <button class="gc-btn clear" @onclick="ClearAsync" disabled="@_busy">🗑 연동 해제</button>
+        }
+        @if (_savedAt is not null) { <span class="gc-savedat">최근 저장: @_savedAt</span> }
+    </div>
+
+    @if (_toast is not null)
+    {
+        <div class="gc-toast @(_toastOk ? "ok" : "bad")">@_toast</div>
+    }
+
+    <div class="gc-note">
+        🔓 키가 없어도 앱은 <b>로컬 팩토리 파이프라인(Wan 생성·병합·자막·양산)</b>으로 100% 동작합니다. Gemini 키는 AI 디렉터·자율 에이전시 등 <b>선택 고급 기능</b>을 켭니다.
+    </div>
+</section>
+
+<style>
+    .gc-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 14px; position: relative; }
+    .gc-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+    .gc-ico { width: 42px; height: 42px; flex: 0 0 auto; display: grid; place-items: center; font-size: 20px; border-radius: 11px; background: color-mix(in srgb, var(--accent) 12%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); }
+    .gc-hgrow { min-width: 0; flex: 1; }
+    .gc-title { font-size: 15px; font-weight: 800; color: var(--ink); }
+    .gc-desc { font-size: 11.5px; color: var(--sub); margin-top: 2px; line-height: 1.5; } .gc-desc b { color: var(--accent); }
+    .gc-live { font-size: .74rem; font-weight: 800; padding: .3rem .7rem; border-radius: 999px; white-space: nowrap; }
+    .gc-live.on { color: var(--up); background: color-mix(in srgb, var(--up) 14%, transparent); border: 1px solid color-mix(in srgb, var(--up) 45%, transparent); }
+    .gc-live.off { color: var(--sub); background: color-mix(in srgb, var(--sub) 12%, transparent); border: 1px solid color-mix(in srgb, var(--sub) 35%, transparent); }
+    .gc-row { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    .gc-lbl { font-size: .78rem; font-weight: 800; color: var(--ink); }
+    .gc-sub { font-size: .66rem; font-weight: 600; color: var(--sub); margin-left: 6px; }
+    .gc-in { width: 100%; box-sizing: border-box; background: var(--card-2); border: 1px solid var(--field-line, var(--line)); border-radius: 10px; padding: 9px 12px; color: var(--ink); font-size: .86rem; outline: none; font-family: inherit; }
+    .gc-in:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+    .gc-keywrap { position: relative; display: flex; align-items: center; }
+    .gc-keywrap .gc-in { padding-right: 44px; font-family: var(--mono, monospace); letter-spacing: .02em; }
+    .gc-eye { position: absolute; right: 6px; width: 32px; height: 32px; border: 0; background: transparent; cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .gc-eye:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+    .gc-hint { font-size: .68rem; color: var(--sub); line-height: 1.5; word-break: break-all; } .gc-hint b { color: var(--sub); font-family: var(--mono, monospace); }
+    .gc-actions { display: flex; align-items: center; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+    .gc-btn { border: none; border-radius: 11px; padding: 10px 18px; font-weight: 800; font-size: .86rem; cursor: pointer; transition: filter .15s ease, transform .1s ease; font-family: inherit; }
+    .gc-btn.save { color: #fff; background: linear-gradient(135deg, #8b7bff, #6d5efc); box-shadow: 0 6px 18px color-mix(in srgb, #6d5efc 30%, transparent); }
+    .gc-btn.test { color: var(--up); background: color-mix(in srgb, var(--up) 14%, transparent); border: 1px solid color-mix(in srgb, var(--up) 50%, transparent); }
+    .gc-btn.clear { color: var(--down); background: color-mix(in srgb, var(--down) 10%, transparent); border: 1px solid color-mix(in srgb, var(--down) 40%, transparent); }
+    .gc-btn:hover:not(:disabled) { filter: brightness(1.06); } .gc-btn:active:not(:disabled) { transform: scale(.98); }
+    .gc-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .gc-savedat { font-size: .72rem; color: var(--sub); font-weight: 700; }
+    .gc-toast { margin-top: 14px; padding: 12px 16px; border-radius: 11px; font-size: .84rem; font-weight: 700; line-height: 1.5; }
+    .gc-toast.ok { color: var(--up); background: color-mix(in srgb, var(--up) 12%, transparent); border: 1px solid color-mix(in srgb, var(--up) 42%, transparent); }
+    .gc-toast.bad { color: var(--down); background: color-mix(in srgb, var(--down) 12%, transparent); border: 1px solid color-mix(in srgb, var(--down) 42%, transparent); }
+    .gc-note { margin-top: 14px; padding: 10px 13px; border-radius: 10px; font-size: 11.5px; line-height: 1.6; color: var(--sub);
+        background: color-mix(in srgb, var(--accent) 6%, var(--card-2)); border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--line)); } .gc-note b { color: var(--ink); }
+</style>
+
+@code {
+    private string _apiKey = "";
+    private bool _show;
+    private bool _busy, _checking;
+    private bool? _verified;   // null=미확인, true=핑 성공(🟢), false=실패(🔴)
+    private string? _savedAt;
+    private string? _toast;
+    private bool _toastOk;
+    private System.Threading.Timer? _toastTimer;
+
+    protected override void OnInitialized()
+    {
+        _apiKey = Cfg.ApiKey;
+        if (Cfg.SavedAt is { } dt) _savedAt = dt.ToString("MM-dd HH:mm:ss");
+        Cfg.OnConfigChanged += OnCfgChanged;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // 첫 렌더 후 저장된 키가 있으면 백그라운드 핑으로 뱃지 확정(🟢/🔴).
+        if (firstRender && Cfg.IsConfigured) await TestAsync();
+    }
+
+    private void OnCfgChanged() => InvokeAsync(StateHasChanged);
+
+    private async Task ValidateAndSaveAsync()
+    {
+        _busy = true; _checking = true; await InvokeAsync(StateHasChanged);
+        var ping = await Cfg.ValidateAndSaveAsync(_apiKey, CancellationToken.None);
+        _busy = false; _checking = false;
+        _verified = ping.Ok;
+        if (ping.Ok) _savedAt = DateTime.Now.ToString("MM-dd HH:mm:ss");
+        ShowToast(ping.Ok ? "🟢 " + ping.Message + " — 이제 모든 Gemini 기능이 켜집니다." : "🔴 " + ping.Message, ping.Ok);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task TestAsync()
+    {
+        _checking = true; await InvokeAsync(StateHasChanged);
+        // 저장 여부와 무관하게 현재 입력값(없으면 저장된 키)으로 연결만 확인.
+        var key = string.IsNullOrWhiteSpace(_apiKey) ? Cfg.ApiKey : _apiKey;
+        var ping = await Cfg.ValidateAsync(key, CancellationToken.None);
+        _checking = false;
+        _verified = ping.Ok;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ClearAsync()
+    {
+        _busy = true; await InvokeAsync(StateHasChanged);
+        Cfg.Clear();
+        _apiKey = ""; _verified = false; _busy = false;
+        ShowToast("연동을 해제했습니다. Gemini 기능이 꺼지고 로컬 파이프라인만 동작합니다.", true);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void ShowToast(string msg, bool ok)
+    {
+        _toast = msg; _toastOk = ok;
+        _toastTimer?.Dispose();
+        _toastTimer = new System.Threading.Timer(_ => { _toast = null; _ = InvokeAsync(StateHasChanged); }, null, 7000, System.Threading.Timeout.Infinite);
+    }
+
+    public void Dispose()
+    {
+        Cfg.OnConfigChanged -= OnCfgChanged;
+        _toastTimer?.Dispose();
+    }
+}

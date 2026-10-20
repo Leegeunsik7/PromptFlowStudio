@@ -1,0 +1,24 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>PromptFlowStudio.Launcher</RootNamespace>
+    <AssemblyName>PromptFlowStudio.Launcher</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- 리포 루트에 프로젝트가 유일하게 이 파일 하나만 있어야 "dotnet run"이 대상을 자동 특정한다.
+         실제 앱은 PromptFlowStudio/PromptFlowStudio.csproj이며, 이 프로젝트는 그것으로 위임만 한다. -->
+    <RunWorkingDirectory>$(MSBuildProjectDirectory)</RunWorkingDirectory>
+    <!-- 이 프로젝트가 리포 루트에 있어 기본 글롭(**/*.cs)이 다른 4개 프로젝트 소스까지 전부 쓸어담는다 -
+         반드시 꺼서 Launcher.cs 하나만 명시적으로 포함시킨다. -->
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <EnableDefaultEmbeddedResourceItems>false</EnableDefaultEmbeddedResourceItems>
+    <EnableDefaultNoneItems>false</EnableDefaultNoneItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Launcher.cs" />
+  </ItemGroup>
+
+</Project>

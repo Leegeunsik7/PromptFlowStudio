@@ -1,0 +1,382 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.SpatialXr
+@implements IDisposable
+@inject SpatialComputingStudioRunner Runner
+@inject IJSRuntime JS
+
+@*
+    [PromptFlow Studio v16.97.0] 🥽 AI 공간 컴퓨팅 & WebXR 스튜디오 — 양안 스테레오 뷰포트 프리뷰(재투영 출력 · 시선/손 오버레이) ·
+    포비에이티드 밀도 맵 · 트래킹/예측 오차 · 압축/대역폭 · 재투영 모드 · 손 제스처/햅틱 로그 · 디바이스 연결 토글(시뮬레이션 + 실 WebXR 세션).
+*@
+
+<div class="sxr-scrim" @onclick="Close">
+    <div class="sxr-modal" @onclick:stopPropagation="true">
+        <div class="sxr-h">
+            <div>
+                <div class="sxr-title">🥽 AI 공간 컴퓨팅 &amp; WebXR 스튜디오</div>
+                <div class="sxr-sub"><b>6DoF 트래킹</b>이 헤드셋 포즈를 표시 시각까지 예측해 IPD 양안 뷰/비대칭 투영을 서브 ms로 갱신하고,
+                    <b>포비에이션</b>은 시선 이심률에 따라 8×8 타일을 1/2/4/8배 블록·비트로 압축합니다. 원격 프레임은 네트워크 지연 뒤 도착하므로 매 디스플레이 틱마다 최신 포즈로 <b>ATW/PTW 재투영</b>합니다.
+                    <b>핸드 가드</b>는 26관절 핀치·그랩·포인트를 판정해 OpenUSD/3DGS 소품과 충돌·잡기를 처리하고 햅틱 임펄스를 가드합니다.</div>
+            </div>
+            <button class="sxr-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="sxr-bar">
+            <button class="sxr-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ XR 컴포지터 가동")</button>
+            @for (var i = 0; i < XrDeviceProfile.All.Length - 1; i++)
+            {
+                var d = i;
+                <button class="sxr-btn @(Runner.Device == d ? "on" : null)" @onclick="() => Runner.Connect(Runner.Device == d ? -1 : d)">@(Runner.Device == d ? "🔗 " : "")@(XrDeviceProfile.All[d].Name)</button>
+            }
+            <button class="sxr-btn @(Runner.ExternalSession ? "on" : null)" @onclick="ToggleWebXr">🌐 실 WebXR 세션</button>
+            <span class="sxr-chip @(_probe.StartsWith("✔") ? "ok" : null)">@(_probe)</span>
+            <span class="sxr-chip">@(F0(P.RefreshHz)) Hz · IPD @(F1(T.IpdMm)) mm · 폴링 @(F0(T.PollHz)) Hz · 표본 @(T.Samples)</span>
+        </div>
+
+        <div class="sxr-main">
+            <div class="sxr-col">
+                <div class="sxr-card">
+                    <div class="sxr-sec">👓 양안 스테레오 뷰포트 <span class="sxr-kv">재투영 @(FoveatedCompressionReprojectionSynthesizer.ModeNames[(int)S.Mode]) · 홀 @(S.Holes(0) + S.Holes(1)) px · 프레임 나이 @(F1(Runner.FrameAgeMs)) ms</span></div>
+                    <div class="sxr-stereo">
+                        @for (var e = 0; e < 2; e++)
+                        {
+                            var eye = e;
+                            <div class="sxr-eye">
+                                @if (_img[eye] is not null)
+                                {
+                                    <img src="@_img[eye]" alt="@(eye == 0 ? "좌안" : "우안")" />
+                                }
+                                <svg viewBox="0 0 @(S.Width) @(S.Height)" preserveAspectRatio="none">
+                                    <circle class="gz" cx="@(F1(GazePx(eye).X))" cy="@(F1(GazePx(eye).Y))" r="4" />
+                                    @for (var h = 0; h < 2; h++)
+                                    {
+                                        var hp = JointPx(eye, h);
+                                        if (hp.X > -900)
+                                        {
+                                            <circle class="hd h@(h)" cx="@(F1(hp.X))" cy="@(F1(hp.Y))" r="3" />
+                                        }
+                                    }
+                                </svg>
+                                <span class="lb">@(eye == 0 ? "L" : "R")</span>
+                            </div>
+                        }
+                    </div>
+                    <div class="sxr-row">
+                        @for (var m = 0; m < 3; m++)
+                        {
+                            var mm = (ReprojectionMode)m;
+                            <button class="sxr-btn sm @(S.Mode == mm ? "on" : null)" @onclick="() => S.Mode = mm">@(FoveatedCompressionReprojectionSynthesizer.ModeNames[m])</button>
+                        }
+                        <label class="sxr-sl">네트워크 지연 <b>@(F0(Runner.NetworkLatencyMs)) ms</b><input type="range" min="0" max="120" step="5" value="@(F0(Runner.NetworkLatencyMs))" @onchange="SetLatency" /></label>
+                        <label class="sxr-sl">머리 움직임 <b>×@(F1(Runner.MotionIntensity))</b><input type="range" min="0" max="2.5" step="0.1" value="@(F1(Runner.MotionIntensity))" @onchange="SetMotion" /></label>
+                    </div>
+                    <div class="sxr-mtp">
+                        <span><b>@(F1(Runner.MotionToPhotonMs)) ms</b>모션-투-포톤(재투영)</span>
+                        <span><b class="dim">@(F1(Runner.MotionToPhotonRawMs)) ms</b>재투영 없을 때</span>
+                        <span><b>@(F1(T.PredErrorMm)) mm · @(F2(T.PredErrorDeg))°</b>예측 오차(EMA)</span>
+                        <span><b>@(F1(T.LastUpdateUs)) µs</b>양안 뷰 갱신</span>
+                        <span><b>@(F0(S.LastReprojectUs)) µs</b>재투영/안구</span>
+                        <span><b>@(F0(Runner.TickUs)) µs</b>틱</span>
+                    </div>
+                </div>
+
+                <div class="sxr-card">
+                    <div class="sxr-sec">🎯 포비에이티드 밀도 맵 <span class="sxr-kv">@(P.EyeTracking ? "시선 추적" : "고정 포비에이션") · 배율 ×@(F2(S.FoveaScale)) · 압축 @(F1(S.CompressionRatio)):1 · @(F1(S.FrameMbps)) / @(F0(S.BudgetMbps)) Mbps</span></div>
+                    <div class="sxr-density">
+                        @for (var e = 0; e < 2; e++)
+                        {
+                            var eye = e;
+                            <svg viewBox="0 0 @(S.TilesX) @(S.TilesY)" preserveAspectRatio="none">
+                                @for (var ty = 0; ty < S.TilesY; ty++)
+                                {
+                                    for (var tx = 0; tx < S.TilesX; tx++)
+                                    {
+                                        <rect x="@tx" y="@ty" width="1" height="1" class="l@(S.Level(eye, tx, ty))" />
+                                    }
+                                }
+                            </svg>
+                        }
+                        <div class="sxr-bars">
+                            @for (var l = 0; l < FoveatedCompressionReprojectionSynthesizer.Levels; l++)
+                            {
+                                var lv = l;
+                                <div class="br"><span class="sw l@(lv)"></span><span>@(Lbl(lv))</span><i style="width:@(F0(100.0 * S.LevelCount(lv) / Math.Max(1, S.TilesX * S.TilesY)))%"></i><b>@(S.LevelCount(lv))</b></div>
+                            }
+                        </div>
+                    </div>
+                    <div class="sxr-row">
+                        <button class="sxr-btn sm @(S.Foveated ? "on" : null)" @onclick="() => S.Foveated = !S.Foveated">🎯 포비에이션</button>
+                        <button class="sxr-btn sm @(S.Adaptive ? "on" : null)" @onclick="() => S.Adaptive = !S.Adaptive">📶 예산 적응</button>
+                        <label class="sxr-sl">대역폭 예산 <b>@(F0(S.BudgetMbps)) Mbps</b><input type="range" min="1" max="40" step="1" value="@(F0(S.BudgetMbps))" @onchange="SetBudget" /></label>
+                    </div>
+                    <div class="sxr-note">L0 중심와(1× · 8bit) · L1(2× · 6bit) · L2(4× · 5bit) · L3 주변(8× · 4bit) — 원본 @(Kb(S.FullBytes * 2)) → 부호화 @(Kb(S.EncodedBytes(0) + S.EncodedBytes(1))) /프레임.</div>
+                </div>
+            </div>
+
+            <div class="sxr-col">
+                <div class="sxr-card">
+                    <div class="sxr-sec">🛰 6DoF 트래킹 <span class="sxr-kv">거부 @(T.Rejected) · 갱신 @(T.Updates)</span></div>
+                    <div class="sxr-pose">
+                        <span><b>@(V3(T.HeadPosition))</b>머리 위치(m)</span>
+                        <span><b>@(Euler())</b>요/피치/롤(°)</span>
+                        <span><b>@(F2(T.LinearVelocity.Length())) m/s</b>선속도</span>
+                        <span><b>@(F0(T.AngularVelocity.Length() * 57.2958f)) °/s</b>각속도</span>
+                        <span><b>@(Fov())</b>좌안 FOV(°)</span>
+                        <span><b>@(Runner.ExternalSession ? Runner.ExternalPoses.ToString(CultureInfo.InvariantCulture) : "시뮬레이션")</b>WebXR 포즈</span>
+                    </div>
+                    <label class="sxr-ck"><input type="checkbox" checked="@T.PredictionEnabled" @onchange="e => T.PredictionEnabled = e.Value is true" /> 자세 예측(선속도/각속도 외삽)</label>
+                </div>
+
+                <div class="sxr-card">
+                    <div class="sxr-sec">✋ 핸드 제스처 &amp; 햅틱 <span class="sxr-kv">햅틱 @(H.HapticSeq) · 드롭 @(H.Dropped) · 무효 입력 @(H.Invalid) · @(F1(H.LastUpdateUs)) µs</span></div>
+                    <div class="sxr-hands">
+                        @for (var h = 0; h < 2; h++)
+                        {
+                            var hh = h;
+                            <div class="hand @(H.Tracked(hh) ? null : "lost")">
+                                <div class="hh"><b>@(hh == 0 ? "왼손" : "오른손")</b><span class="sxr-chip g@((int)H.Gesture(hh))">@(SpatialHandGestureHapticGuard.GestureNames[(int)H.Gesture(hh)])</span>
+                                    <span>@(H.Held(hh) >= 0 ? "잡음: " + H.PropName(H.Held(hh)) : H.PointTarget(hh) >= 0 ? "가리킴: " + H.PropName(H.PointTarget(hh)) : "")</span></div>
+                                <div class="meters">
+                                    <span>핀치<i style="width:@(F0(H.PinchStrength(hh) * 100))%"></i></span>
+                                    <span>그랩<i style="width:@(F0(H.GrabStrength(hh) * 100))%"></i></span>
+                                    @for (var f = 0; f < 5; f++)
+                                    {
+                                        var ff = f;
+                                        <span>@(Fingers[ff])<i style="width:@(F0(H.Curl(hh, ff) * 100))%"></i></span>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                    <div class="sxr-row">
+                        <button class="sxr-btn sm @(Runner.SimulateHands ? "on" : null)" @onclick="() => Runner.SimulateHands = !Runner.SimulateHands">🤖 손 시뮬레이션</button>
+                        <button class="sxr-btn sm" @onclick="Runner.SeedProps">🔄 소품 초기화</button>
+                        <span class="sxr-note">소품 @(H.PropCount)개 (OpenUSD/3DGS 가져오기는 가드 API)</span>
+                    </div>
+                    <div class="sxr-log">
+                        @for (var i = 0; i < Math.Min(H.HapticCount, 16); i++)
+                        {
+                            var hi = H.Haptic(i);
+                            <div class="ln c@((int)hi.Cause)"><b>@(hi.Hand == 0 ? "L" : "R")</b><span>@(SpatialHandGestureHapticGuard.CauseNames[(int)hi.Cause])</span><span>@(hi.Prop >= 0 && hi.Prop < H.PropCount ? H.PropName(hi.Prop) : "—")</span>
+                                <span class="mono">amp @(F2(hi.Amplitude)) · @(F0(hi.FrequencyHz)) Hz · @(F0(hi.DurationMs)) ms</span></div>
+                        }
+                    </div>
+                </div>
+                <div class="sxr-note">@(Runner.LastAction ?? "대기") · 실 WebXR 세션은 WebView2/브라우저가 navigator.xr과 헤드셋 런타임을 제공할 때만 시작되며, 세션 화면은 단색 클리어(포즈 수신용)입니다.</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .sxr-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .sxr-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .sxr-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #a855f7 16%, var(--card)), color-mix(in srgb, #06b6d4 14%, var(--card))); }
+    .sxr-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .sxr-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .sxr-sub b { color: var(--text-primary); }
+    .sxr-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .sxr-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .sxr-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .sxr-btn.sm { font-size: 10px; padding: 2px 8px; } .sxr-btn.on { background: color-mix(in srgb, #a855f7 24%, transparent); border-color: #c084fc; }
+    .sxr-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); } .sxr-chip.ok { border-color: #22c55e; color: #86efac; }
+    .sxr-chip.g1 { border-color: #38bdf8; color: #7dd3fc; } .sxr-chip.g2 { border-color: #f472b6; color: #f9a8d4; } .sxr-chip.g3 { border-color: #f59e0b; color: #fcd34d; }
+    .sxr-main { display: grid; grid-template-columns: 1.2fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .sxr-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .sxr-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .sxr-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .sxr-stereo { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .sxr-eye { position: relative; aspect-ratio: 1 / 1; background: #030712; border-radius: 10px; overflow: hidden; }
+    .sxr-eye img, .sxr-eye svg { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+    .sxr-eye .gz { fill: none; stroke: #f0abfc; stroke-width: 1.2; } .sxr-eye .hd { stroke: #0b1220; stroke-width: .6; } .sxr-eye .h0 { fill: #38bdf8; } .sxr-eye .h1 { fill: #fbbf24; }
+    .sxr-eye .lb { position: absolute; left: 8px; top: 6px; font: 800 11px var(--mono); color: #e2e8f0; text-shadow: 0 1px 2px #000; }
+    .sxr-mtp, .sxr-pose { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .sxr-mtp span, .sxr-pose span { display: flex; flex-direction: column; font-size: 10px; color: var(--text-muted); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; }
+    .sxr-mtp b, .sxr-pose b { font: 800 12px var(--mono); color: var(--text-primary); } .sxr-mtp b.dim { color: #f87171; }
+    .sxr-density { display: grid; grid-template-columns: 1fr 1fr 1.1fr; gap: 8px; align-items: center; }
+    .sxr-density svg { width: 100%; aspect-ratio: 1 / 1; border-radius: 6px; background: #030712; }
+    .sxr-density .l0, .sxr-bars .l0 { fill: #ef4444; background: #ef4444; } .sxr-density .l1, .sxr-bars .l1 { fill: #f59e0b; background: #f59e0b; }
+    .sxr-density .l2, .sxr-bars .l2 { fill: #0ea5e9; background: #0ea5e9; } .sxr-density .l3, .sxr-bars .l3 { fill: #1e3a8a; background: #1e3a8a; }
+    .sxr-bars { display: flex; flex-direction: column; gap: 4px; } .sxr-bars .br { display: grid; grid-template-columns: 10px 70px 1fr 34px; gap: 6px; align-items: center; font-size: 10px; color: var(--text-secondary); }
+    .sxr-bars .sw { width: 10px; height: 10px; border-radius: 2px; } .sxr-bars i { display: block; height: 6px; border-radius: 99px; background: #a855f7; } .sxr-bars b { font: 700 10px var(--mono); color: var(--text-primary); text-align: right; }
+    .sxr-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .sxr-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .sxr-sl b { font-family: var(--mono); color: var(--text-primary); } .sxr-sl input { width: 110px; }
+    .sxr-ck { display: flex; gap: 6px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .sxr-hands { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .sxr-hands .hand { border: 1px solid var(--line); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 6px; } .sxr-hands .hand.lost { opacity: .45; }
+    .sxr-hands .hh { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 11px; color: var(--text-secondary); } .sxr-hands .hh b { color: var(--text-primary); }
+    .sxr-hands .meters { display: grid; grid-template-columns: 1fr; gap: 2px; } .sxr-hands .meters span { display: grid; grid-template-columns: 36px 1fr; gap: 6px; align-items: center; font-size: 10px; color: var(--text-muted); }
+    .sxr-hands .meters i { display: block; height: 5px; border-radius: 99px; background: linear-gradient(90deg, #22d3ee, #a855f7); }
+    .sxr-log { display: flex; flex-direction: column; gap: 3px; max-height: 170px; overflow-y: auto; }
+    .sxr-log .ln { display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; color: var(--text-secondary); border-left: 3px solid #475569; padding: 2px 6px; } .sxr-log b { color: var(--text-primary); }
+    .sxr-log .c0 { border-color: #38bdf8; } .sxr-log .c1 { border-color: #f59e0b; } .sxr-log .c2 { border-color: #64748b; } .sxr-log .c3 { border-color: #a855f7; }
+    .sxr-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; font-weight: 500; color: var(--text-secondary); align-items: center; }
+    .sxr-note { font-size: 11px; color: var(--text-muted); } .mono { font-family: var(--mono); }
+    @@media (max-width: 1200px) { .sxr-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly string[] Fingers = { "엄지", "검지", "중지", "약지", "소지" };
+    private readonly string?[] _img = new string?[2];
+    private System.Threading.Timer? _timer;
+    private DotNetObjectReference<SpatialComputingStudioModal>? _self;
+    private string _probe = "WebXR 탐지 중…";
+    private long _imgTick = -1;
+
+    private OpenXrWebXrSpatialTrackingEngine T => Runner.Tracking;
+    private FoveatedCompressionReprojectionSynthesizer S => Runner.Synth;
+    private SpatialHandGestureHapticGuard H => Runner.Hands;
+    private XrDeviceProfile P => T.Profile;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(Refresh); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Xr.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        try
+        {
+            var r = await JS.InvokeAsync<XrProbe>("pfXr.probe");
+            _probe = !r.Xr ? "navigator.xr 없음(시뮬레이션만)" : r.Vr || r.Ar ? "✔ WebXR immersive " + (r.Vr ? "VR" : "") + (r.Ar ? " AR" : "") : "WebXR 있음 · 헤드셋 없음";
+        }
+        catch (Exception ex) when (ex is JSException or InvalidOperationException or TaskCanceledException) { _probe = "WebXR 브리지 없음(시뮬레이션만)"; }
+        StateHasChanged();
+    }
+
+    private sealed class XrProbe { public bool Xr { get; set; } public bool Secure { get; set; } public bool Vr { get; set; } public bool Ar { get; set; } }
+
+    private async Task ToggleWebXr()
+    {
+        var ext = XrDeviceProfile.All.Length - 1;
+        if (Runner.ExternalSession)
+        {
+            try { await JS.InvokeVoidAsync("pfXr.stop"); } catch (Exception ex) when (ex is JSException or InvalidOperationException) { }
+            Runner.Connect(-1);
+            return;
+        }
+        _self ??= DotNetObjectReference.Create(this);
+        try
+        {
+            var r = await JS.InvokeAsync<string>("pfXr.start", _self, "immersive-vr");
+            if (r == "ok") { Runner.Connect(ext); if (!Runner.IsRunning) Runner.Start(); }
+            else _probe = "세션 실패: " + r;
+        }
+        catch (Exception ex) when (ex is JSException or InvalidOperationException or TaskCanceledException) { _probe = "세션 실패: " + ex.Message; }
+    }
+
+    [JSInvokable]
+    public void OnXrPose(float px, float py, float pz, float qx, float qy, float qz, float qw, float ipd) =>
+        Runner.SubmitExternalPose(new Vector3(px, py, pz), new Quaternion(qx, qy, qz, qw), ipd);
+
+    [JSInvokable]
+    public void OnXrEnded() { if (Runner.ExternalSession) Runner.Connect(-1); }
+
+    private void Refresh()
+    {
+        if (Runner.Ticks != _imgTick) { _imgTick = Runner.Ticks; _img[0] = Bmp(0); _img[1] = Bmp(1); }
+        StateHasChanged();
+    }
+
+    /// <summary>재투영 출력 → 24-bit BMP data URI(UI 콜드 경로).</summary>
+    private string? Bmp(int eye)
+    {
+        var f = S.Output(eye);
+        int w = S.Width, h = S.Height, stride = (w * 3 + 3) & ~3;
+        if (f.Length < w * h * 3) return null;
+        var px = new byte[54 + stride * h];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(px, 0x4D42);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(px.AsSpan(2), px.Length);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(px.AsSpan(10), 54);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(px.AsSpan(14), 40);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(px.AsSpan(18), w);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(px.AsSpan(22), -h);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(px.AsSpan(26), 1);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(px.AsSpan(28), 24);
+        for (var y = 0; y < h; y++)
+            for (var x = 0; x < w; x++)
+            {
+                var s = (y * w + x) * 3; var d = 54 + y * stride + x * 3;
+                px[d] = B(f[s + 2]); px[d + 1] = B(f[s + 1]); px[d + 2] = B(f[s]);
+            }
+        return "data:image/bmp;base64," + Convert.ToBase64String(px);
+    }
+
+    private static byte B(float v) => (byte)Math.Clamp((int)(MathF.Pow(Math.Clamp(v, 0f, 1f), 1 / 2.2f) * 255 + 0.5f), 0, 255);
+
+    private Vector2 GazePx(int eye)
+    {
+        ref readonly var v = ref T.Eye(eye);
+        var g = Runner.GazeDir;
+        if (g.Z >= -1e-4f) return new Vector2(-999, -999);
+        var tx = g.X / -g.Z; var ty = g.Y / -g.Z;
+        return new Vector2((tx - v.TanL) / (v.TanR - v.TanL) * S.Width, (v.TanU - ty) / (v.TanU - v.TanD) * S.Height);
+    }
+
+    private Vector2 JointPx(int eye, int hand)
+    {
+        if (!H.Tracked(hand)) return new Vector2(-999, -999);
+        ref readonly var v = ref T.Eye(eye);
+        var p = Vector3.Transform(H.Joint(hand, XrHandJoint.IndexTip), v.View);
+        if (p.Z >= -0.01f) return new Vector2(-999, -999);
+        var tx = p.X / -p.Z; var ty = p.Y / -p.Z;
+        return new Vector2((tx - v.TanL) / (v.TanR - v.TanL) * S.Width, (v.TanU - ty) / (v.TanU - v.TanD) * S.Height);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string Kb(long b) => (b / 1024d).ToString("0.0", CultureInfo.InvariantCulture) + " KB";
+    private static string V3(Vector3 v) => F2(v.X) + ", " + F2(v.Y) + ", " + F2(v.Z);
+    private static string Lbl(int l) => l switch { 0 => "L0 중심와", 1 => "L1 근주변", 2 => "L2 주변", _ => "L3 원주변" };
+
+    private string Euler()
+    {
+        var q = T.HeadOrientation;
+        var yaw = MathF.Atan2(2 * (q.W * q.Y + q.X * q.Z), 1 - 2 * (q.X * q.X + q.Y * q.Y));
+        var pitch = MathF.Asin(Math.Clamp(2 * (q.W * q.X - q.Z * q.Y), -1f, 1f));
+        var roll = MathF.Atan2(2 * (q.W * q.Z + q.X * q.Y), 1 - 2 * (q.X * q.X + q.Z * q.Z));
+        const float d = 57.2958f;
+        return F0(yaw * d) + " / " + F0(pitch * d) + " / " + F0(roll * d);
+    }
+
+    private string Fov()
+    {
+        const double d = 57.2958;
+        return F0((Math.Atan(-P.TanLeft) + Math.Atan(P.TanRight)) * d) + "×" + F0((Math.Atan(P.TanUp) + Math.Atan(-P.TanDown)) * d);
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+
+    private void SetLatency(ChangeEventArgs e) { if (double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) Runner.NetworkLatencyMs = Math.Clamp(v, 0, 200); }
+    private void SetMotion(ChangeEventArgs e) { if (float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) Runner.MotionIntensity = Math.Clamp(v, 0f, 3f); }
+    private void SetBudget(ChangeEventArgs e) { if (double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) S.BudgetMbps = Math.Clamp(v, 0.5, 100); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중 틱 이벤트는 250 ms 타이머가 처리 — 정지 상태 액션만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(Refresh); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        if (Runner.ExternalSession) { _ = StopXrAsync(); Runner.Connect(-1); }
+        Runner.Stop();
+        _self?.Dispose();
+    }
+
+    private async Task StopXrAsync()
+    {
+        try { await JS.InvokeVoidAsync("pfXr.stop"); }
+        catch (Exception ex) when (ex is JSException or InvalidOperationException or TaskCanceledException or JSDisconnectedException) { }
+    }
+}

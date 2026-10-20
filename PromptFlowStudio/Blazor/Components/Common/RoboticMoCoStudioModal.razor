@@ -1,0 +1,306 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.RoboticMoCo
+@implements IDisposable
+@inject RoboticMoCoStudioRunner Runner
+
+@*
+    [PromptFlow Studio v17.01.0] 🤖 AI 로보틱 MoCo & 물리 스테이지 스튜디오 — 6축 관절 각도/토크 부하 비주얼라이저(측면/탑뷰 · 한계 · 저크) ·
+    MoCo 패스 사전 검증 · DMX 유니버스 채널 모니터(512 셀 · 장치 패치 · Art-Net/ArtSync/루프백 노드) · HIL 세이프티 존 인디케이터(SSM · 릴레이 A/B · 워치독 · 리셋).
+*@
+
+<div class="rmc-scrim" @onclick="Close">
+    <div class="rmc-modal" @onclick:stopPropagation="true">
+        <div class="rmc-h">
+            <div>
+                <div class="rmc-title">🤖 AI 로보틱 MoCo &amp; 물리 스테이지 스튜디오</div>
+                <div class="rmc-sub"><b>IK 엔진</b>이 MoCo 카메라 6DoF 궤적(반복 프로그램 아크 또는 v16.85 궤적)을 6축 로봇 관절 J1~J6로 해석 역변환하고 저크 제한 프로파일로 추종합니다.
+                    <b>DMX 합성기</b>는 v16.84 조명/기상 · v16.81 VFX를 무대 조명 · 턴테이블 · 포그/CO2로 옮겨 Art-Net 유니버스를 생성하고,
+                    <b>HIL 가드</b>는 배우/스태프 분리 거리(SSM) · SLAM 평면 · 침범 불가 구역을 매 틱 감시해 동기 감속 정지와 하드웨어 E-Stop 릴레이를 구동합니다. 로봇·DMX 노드·인원은 인프로세스 시뮬레이션입니다.</div>
+            </div>
+            <button class="rmc-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="rmc-bar">
+            <button class="rmc-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ MoCo 가동")</button>
+            <button class="rmc-btn" @onclick="Step100" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="rmc-btn @(Runner.UseCameraEngine ? "on" : null)" @onclick="() => Runner.UseCameraEngine = !Runner.UseCameraEngine" disabled="@(!Runner.CameraBound)">🎥 v16.85 궤적</button>
+            <button class="rmc-btn" @onclick="Runner.StaffEnter">🚶 스태프 진입</button>
+            <button class="rmc-btn" @onclick="Runner.ActorApproach">🎭 배우 접근</button>
+            <button class="rmc-btn" @onclick="Runner.Lightning">⚡ 번개</button>
+            <button class="rmc-btn" @onclick="Runner.Explosion">💥 VFX 폭발</button>
+            <button class="rmc-btn @(Runner.HeartbeatFault ? "warn" : null)" @onclick="() => Runner.HeartbeatFault = !Runner.HeartbeatFault">💓 하트비트 @(Runner.HeartbeatFault ? "끊김" : "정상")</button>
+            <button class="rmc-btn stop" @onclick="Runner.EStop">🛑 E-STOP</button>
+            <button class="rmc-btn" @onclick="DoReset">🔓 리셋</button>
+            <label class="rmc-sl">턴테이블 <b>@(F1(Runner.TurntableRpm)) rpm</b><input type="range" min="-10" max="10" step="0.5" value="@(F1(Runner.TurntableRpm))" @onchange="e => Runner.TurntableRpm = (float)Num(e, 2)" /></label>
+            <span class="rmc-chip">틱 @(Runner.Tick) · @(F2(Runner.LastTickMs)) ms · IK @(F1(R.LastSolveUs)) µs · 가드 @(F1(G.LastEvalUs)) µs</span>
+        </div>
+
+        <div class="rmc-main">
+            <div class="rmc-col">
+                <div class="rmc-card">
+                    <div class="rmc-sec">🦾 6축 로봇 리그 <span class="rmc-kv">TCP @(F2(R.TcpSpeed)) m/s · 추종 오차 @(F1(R.TrackingErrorMm)) mm · IK @(StatusName(R.LastStatus)) · @(ModeName(R.Mode)) · 오버라이드 @(F0(G.Override * 100))%</span></div>
+                    <div class="rmc-views">
+                        <svg class="rmc-view" viewBox="-0.6 -2.9 3.4 3.1" preserveAspectRatio="xMidYMid meet">
+                            <line class="floor" x1="-0.6" y1="0" x2="2.8" y2="0" />
+                            @Person(Runner.Actor.X, 1.8)
+                            @for (var i = 0; i < RoboticMoCoInverseKinematicsEngine.Points - 1; i++)
+                            {
+                                var a = R.Point(i); var b = R.Point(i + 1);
+                                <line class="lk l@(i)" x1="@(F3(a.X))" y1="@(F3(-a.Y))" x2="@(F3(b.X))" y2="@(F3(-b.Y))" style="stroke-width:@(F3(HardwareInTheLoopSafetyEStopGuard.LinkRadius[i] * 0.9))" />
+                            }
+                            @for (var i = 1; i < RoboticMoCoInverseKinematicsEngine.Points; i++)
+                            {
+                                var p = R.Point(i);
+                                <circle class="jt" cx="@(F3(p.X))" cy="@(F3(-p.Y))" r="0.035" />
+                            }
+                            <text x="-0.55" y="-2.7">측면(X-Y)</text>
+                        </svg>
+                        <svg class="rmc-view" viewBox="-2.2 -2.6 5.2 4.4" preserveAspectRatio="xMidYMid meet">
+                            <rect class="cell" x="-2" y="-2.5" width="4.8" height="4.2" />
+                            @for (var k = 0; k < G.KeepOutCount; k++)
+                            {
+                                var lo = G.KeepOutMin(k); var hi = G.KeepOutMax(k);
+                                <rect class="ko" x="@(F3(lo.X))" y="@(F3(lo.Z))" width="@(F3(hi.X - lo.X))" height="@(F3(hi.Z - lo.Z))" />
+                            }
+                            @for (var p = 0; p < HardwareInTheLoopSafetyEStopGuard.MaxPersons; p++)
+                            {
+                                if (!G.PersonActive(p)) continue;
+                                var pp = G.PersonPosition(p);
+                                var sep = G.PersonSeparation(p); var sp = G.PersonProtective(p);
+                                <circle class="sp @(sep < sp ? "hit" : sep < sp + HardwareInTheLoopSafetyEStopGuard.WarnBand ? "warn" : null)" cx="@(F3(pp.X))" cy="@(F3(pp.Z))" r="@(F3(G.PersonRadius(p) + sp))" />
+                                <circle class="ps @(G.Role(p) == PersonRole.Actor ? "actor" : "staff")" cx="@(F3(pp.X))" cy="@(F3(pp.Z))" r="@(F3(G.PersonRadius(p)))" />
+                            }
+                            @for (var i = 0; i < RoboticMoCoInverseKinematicsEngine.Points - 1; i++)
+                            {
+                                var a = R.Point(i); var b = R.Point(i + 1);
+                                <line class="lk l@(i)" x1="@(F3(a.X))" y1="@(F3(a.Z))" x2="@(F3(b.X))" y2="@(F3(b.Z))" style="stroke-width:@(F3(HardwareInTheLoopSafetyEStopGuard.LinkRadius[i] * 0.9))" />
+                            }
+                            <text x="-2.1" y="-2.3">탑뷰(X-Z) · 원 = 보호 거리 S_p</text>
+                        </svg>
+                    </div>
+                    <div class="rmc-joints">
+                        @for (var j = 0; j < RoboticMoCoInverseKinematicsEngine.Joints; j++)
+                        {
+                            var lo = RoboticMoCoInverseKinematicsEngine.LimitLo[j]; var hi = RoboticMoCoInverseKinematicsEngine.LimitHi[j];
+                            var pos = (R.Angle(j) - lo) / (hi - lo); var tgt = (R.TargetAngle(j) - lo) / (hi - lo);
+                            var load = R.Load(j);
+                            <div class="jr">
+                                <b>@(RoboticMoCoInverseKinematicsEngine.JointNames[j])</b>
+                                <div class="ang"><i class="tg" style="left:@(F1(tgt * 100))%"></i><i class="cur" style="left:@(F1(pos * 100))%"></i></div>
+                                <span class="mono">@(F1(R.Angle(j) * 57.2958))°</span>
+                                <span class="mono dim">@(F0(Math.Abs(R.Velocity(j)) / R.VelocityLimit(j) * 100))% v · @(F1(R.Jerk(j))) j</span>
+                                <div class="ld"><i class="@(load > 0.85 ? "hot" : load > 0.6 ? "warm" : null)" style="width:@(F1(Math.Clamp(load, 0, 1) * 100))%"></i></div>
+                                <span class="mono">@(F0(R.Torque(j))) N·m</span>
+                            </div>
+                        }
+                    </div>
+                    <div class="rmc-kv">
+                        <span class="rmc-chip @(R.PassFeasible ? "ok" : "bad")">패스 사전 검증 @(R.PassFeasible ? "통과" : "주의")</span>
+                        <span>@(R.PassSamples) 샘플 · 도달 불가 @(R.PassUnreachable) · 관절 한계 @(R.PassLimitHits)</span>
+                        <span>피크 v J1 @(F0(R.PassPeakVelocity(0) / R.VelocityLimit(0) * 100))% · J4 @(F0(R.PassPeakVelocity(3) / R.VelocityLimit(3) * 100))% · J6 @(F0(R.PassPeakVelocity(5) / R.VelocityLimit(5) * 100))%</span>
+                        <span>IK @(R.Solves) · 클램프 @(R.ClampedSolves) · 한계 거부 @(R.LimitRejects) · 손목 특이 @(R.Singular)</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="rmc-col">
+                <div class="rmc-card safety s@((int)G.State)">
+                    <div class="rmc-sec">🛡 HIL 세이프티 존 <span class="rmc-state">@(HardwareInTheLoopSafetyEStopGuard.StateNames[(int)G.State])</span>
+                        <span class="rmc-kv">원인 @(HardwareInTheLoopSafetyEStopGuard.CauseNames[(int)G.Cause])</span></div>
+                    <div class="rmc-lamps">
+                        <div class="lamp @(G.RelayA ? "on" : null)"><i></i>릴레이 A</div>
+                        <div class="lamp @(G.RelayB ? "on" : null)"><i></i>릴레이 B</div>
+                        <div class="lamp @(G.RelayFault ? "on" : null)"><i></i>채널 불일치</div>
+                        <div class="lamp @(Runner.HeartbeatFault ? "on" : null)"><i></i>워치독</div>
+                        <div class="lamp @(R.Mode == RobotMode.Braked ? "on" : null)"><i></i>브레이크</div>
+                    </div>
+                    <div class="rmc-kv">
+                        <span>최소 분리 <b>@(SepText(G.MinSeparation))</b></span>
+                        <span>보호 거리 S_p <b>@(F2(G.ProtectiveDistance)) m</b></span>
+                        <span>정지 시간 @(F0(G.StopTimeS * 1000)) ms · 정지 거리 @(F0(G.StopDistance * 1000)) mm</span>
+                        <span>검출→차단 @(F1(G.LastTriggerUs)) µs (최대 @(F1(G.MaxTriggerUs)))</span>
+                    </div>
+                    <svg class="rmc-spark" viewBox="0 0 360 60" preserveAspectRatio="none">
+                        <polyline class="sep" points="@(Series(i => Runner.SeparationSeries(i), 3, 60))" />
+                        <polyline class="ov" points="@(Series(i => Runner.OverrideSeries(i), 1, 60))" />
+                        <polyline class="ld" points="@(Series(i => Runner.LoadSeries(i), 1, 60))" />
+                    </svg>
+                    <div class="rmc-legend"><i class="sep"></i>최소 분리(0~3 m) <i class="ov"></i>속도 오버라이드 <i class="ld"></i>최대 토크 부하</div>
+                    <div class="rmc-kv">경고 @(G.Warnings) · 보호 정지 @(G.ProtectiveStops) · 자동 재개 @(G.AutoResumes) · 비상 정지 @(G.EmergencyStops) · 리셋 거부 @(G.ResetsDenied) · 평면 @(G.PlaneCount)@(Runner.SlamPlanes ? "(SLAM)" : "(기본)") · 침범 불가 @(G.KeepOutCount)</div>
+                </div>
+
+                <div class="rmc-card">
+                    <div class="rmc-sec">💡 DMX 유니버스 모니터
+                        @for (var u = 0; u < PhysicalStageDmxActuatorSynthesizer.Universes; u++)
+                        {
+                            var uu = u;
+                            <button class="rmc-btn sm @(uu == _uni ? "on" : null)" @onclick="() => _uni = uu">U@(uu) · seq @(S.Sequence(uu))</button>
+                        }
+                        <span class="rmc-kv">@(F0(PhysicalStageDmxActuatorSynthesizer.MaxRefreshHz(512))) Hz 한계 · 렌더 @(F1(S.LastRenderUs)) µs</span></div>
+                    <svg class="rmc-dmx" viewBox="0 0 320 160" preserveAspectRatio="none">
+                        @for (var c = 0; c < PhysicalStageDmxActuatorSynthesizer.Slots; c++)
+                        {
+                            var v = S.Channel(_uni, c + 1);
+                            <rect class="@(Owner(c + 1) >= 0 ? "pt" : null)" x="@(c % 32 * 10)" y="@(c / 32 * 10)" width="9.2" height="9.2" style="fill-opacity:@(F2(0.08 + 0.92 * v / 255.0))" />
+                        }
+                    </svg>
+                    <div class="rmc-fx">
+                        @for (var i = 0; i < S.FixtureCount; i++)
+                        {
+                            ref readonly var f = ref S.Fixture(i);
+                            if (f.Universe != _uni) continue;
+                            <div><b>@(f.Name)</b><em>@(PhysicalStageDmxActuatorSynthesizer.KindNames[(int)f.Kind]) · @(f.Address)–@(f.Address + PhysicalStageDmxActuatorSynthesizer.Footprint(f.Kind) - 1)</em><span class="mono">@(Values(f))</span></div>
+                        }
+                    </div>
+                    <div class="rmc-kv">
+                        <span class="rmc-chip @(S.SafeState ? "bad" : "ok")">@(S.SafeState ? "안전 상태(포그/CO2/턴테이블 차단 · 워크 라이트)" : "공연 상태")</span>
+                        <span>ArtDmx @(S.PacketsSent) · 억제 @(S.Suppressed) · 킵얼라이브 @(S.KeepAlives) · ArtSync @(S.Syncs) · @(Kb(S.BytesSent))</span>
+                        <span>노드 수신 @(S.NodeReceived) · 래치 @(S.NodeLatches) · 거부 @(S.NodeRejected) · 시퀀스 결손 @(S.NodeSeqGaps)</span>
+                        <span>플래시 @(S.Flashes) · CO2 @(S.Co2Bursts) · 결선 대기 @(S.AtmosphereBound ? "✓" : "—") 기상 @(S.WeatherBound ? "✓" : "—") VFX @(S.VfxBound ? "✓" : "—")</span>
+                    </div>
+                    <div class="rmc-note mono">@(Header())</div>
+                </div>
+                <div class="rmc-note">@(Runner.Action ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .rmc-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .rmc-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .rmc-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f97316 16%, var(--card)), color-mix(in srgb, #eab308 12%, var(--card))); }
+    .rmc-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .rmc-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .rmc-sub b { color: var(--text-primary); }
+    .rmc-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .rmc-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .rmc-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; } .rmc-btn:disabled { opacity: .4; cursor: default; }
+    .rmc-btn.sm { font-size: 10px; padding: 2px 8px; } .rmc-btn.on { background: color-mix(in srgb, #f97316 24%, transparent); border-color: #fb923c; } .rmc-btn.warn { background: color-mix(in srgb, #eab308 24%, transparent); border-color: #facc15; }
+    .rmc-btn.stop { background: #b91c1c; border-color: #ef4444; color: #fff; }
+    .rmc-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .rmc-chip.ok { border-color: #22c55e; color: #86efac; } .rmc-chip.bad { border-color: #ef4444; color: #fca5a5; }
+    .rmc-main { display: grid; grid-template-columns: 1.05fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .rmc-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .rmc-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .rmc-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .rmc-views { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; } .rmc-view { width: 100%; height: 260px; background: #030712; border-radius: 10px; }
+    .rmc-view .floor { stroke: #475569; stroke-width: .02; } .rmc-view .cell { fill: #0b1220; stroke: #334155; stroke-width: .02; }
+    .rmc-view .lk { stroke-linecap: round; stroke: #f97316; } .rmc-view .lk.l0 { stroke: #64748b; } .rmc-view .lk.l1 { stroke: #94a3b8; } .rmc-view .lk.l5 { stroke: #facc15; }
+    .rmc-view .jt { fill: #e2e8f0; } .rmc-view .ko { fill: rgba(239,68,68,.12); stroke: #ef4444; stroke-width: .02; stroke-dasharray: .06 .04; }
+    .rmc-view .ps.actor { fill: #a855f7; } .rmc-view .ps.staff { fill: #38bdf8; } .rmc-view .pb { fill: rgba(168,85,247,.35); }
+    .rmc-view .sp { fill: none; stroke: #22c55e; stroke-width: .02; } .rmc-view .sp.warn { stroke: #eab308; } .rmc-view .sp.hit { stroke: #ef4444; stroke-width: .04; }
+    .rmc-view text { fill: #94a3b8; font-size: .13px; }
+    .rmc-joints { display: flex; flex-direction: column; gap: 4px; }
+    .rmc-joints .jr { display: grid; grid-template-columns: 86px 1fr 60px 120px 110px 70px; gap: 8px; align-items: center; font-size: 11px; color: var(--text-secondary); } .rmc-joints b { color: var(--text-primary); }
+    .rmc-joints .ang { position: relative; height: 10px; border-radius: 5px; background: linear-gradient(90deg, #7f1d1d, #1f2937 8%, #1f2937 92%, #7f1d1d); }
+    .rmc-joints .ang i { position: absolute; top: -2px; width: 3px; height: 14px; border-radius: 2px; transform: translateX(-1px); } .rmc-joints .ang .cur { background: #f97316; } .rmc-joints .ang .tg { background: #38bdf8; opacity: .7; }
+    .rmc-joints .ld { height: 6px; background: #1f2937; border-radius: 3px; overflow: hidden; } .rmc-joints .ld i { display: block; height: 100%; background: #22c55e; } .rmc-joints .ld i.warm { background: #eab308; } .rmc-joints .ld i.hot { background: #ef4444; }
+    .rmc-joints .dim { color: var(--text-muted); }
+    .rmc-card.safety { border-left: 5px solid #22c55e; } .rmc-card.safety.s1 { border-left-color: #eab308; } .rmc-card.safety.s2 { border-left-color: #f97316; } .rmc-card.safety.s3 { border-left-color: #ef4444; box-shadow: 0 0 22px rgba(239,68,68,.35); }
+    .rmc-state { font: 900 13px var(--mono); padding: 3px 12px; border-radius: 8px; background: #14532d; color: #bbf7d0; }
+    .s1 .rmc-state { background: #713f12; color: #fef08a; } .s2 .rmc-state { background: #7c2d12; color: #fed7aa; } .s3 .rmc-state { background: #7f1d1d; color: #fecaca; animation: rmc-blink 0.8s steps(2) infinite; }
+    @@keyframes rmc-blink { 50% { opacity: .45; } }
+    .rmc-lamps { display: flex; gap: 10px; flex-wrap: wrap; } .rmc-lamps .lamp { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-secondary); }
+    .rmc-lamps .lamp i { width: 12px; height: 12px; border-radius: 50%; background: #1f2937; border: 1px solid #334155; } .rmc-lamps .lamp.on i { background: #ef4444; box-shadow: 0 0 8px #ef4444; }
+    .rmc-spark { width: 100%; height: 60px; background: #030712; border-radius: 6px; } .rmc-spark polyline { fill: none; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+    .rmc-spark .sep { stroke: #22c55e; } .rmc-spark .ov { stroke: #38bdf8; } .rmc-spark .ld { stroke: #f97316; }
+    .rmc-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 10px; color: var(--text-muted); align-items: center; } .rmc-legend i { display: inline-block; width: 10px; height: 3px; }
+    .rmc-legend .sep { background: #22c55e; } .rmc-legend .ov { background: #38bdf8; } .rmc-legend .ld { background: #f97316; }
+    .rmc-dmx { width: 100%; height: 170px; background: #030712; border-radius: 8px; } .rmc-dmx rect { fill: #64748b; } .rmc-dmx rect.pt { fill: #fbbf24; }
+    .rmc-fx { display: flex; flex-direction: column; gap: 3px; max-height: 150px; overflow-y: auto; }
+    .rmc-fx div { display: grid; grid-template-columns: 120px 150px 1fr; gap: 8px; font-size: 11px; color: var(--text-secondary); } .rmc-fx b { color: var(--text-primary); } .rmc-fx em { font-style: normal; color: var(--text-muted); }
+    .rmc-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .rmc-sl b { font-family: var(--mono); color: var(--text-primary); } .rmc-sl input { width: 100px; }
+    .rmc-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; font-weight: 500; color: var(--text-secondary); align-items: center; } .rmc-kv b { color: var(--text-primary); }
+    .rmc-note { font-size: 11px; color: var(--text-muted); word-break: break-all; } .mono { font-family: var(--mono); }
+    @@media (max-width: 1200px) { .rmc-main { grid-template-columns: 1fr; } .rmc-joints .jr { grid-template-columns: 80px 1fr 56px 70px; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+    private int _uni;
+
+    private RoboticMoCoInverseKinematicsEngine R => Runner.Robot;
+    private PhysicalStageDmxActuatorSynthesizer S => Runner.Stage;
+    private HardwareInTheLoopSafetyEStopGuard G => Runner.Guard;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("MoCo.Modal.Timer", ex); }
+        }, null, 300, 300);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => v.ToString("0.###", CultureInfo.InvariantCulture);
+    private static string Kb(long b) => (b / 1024d).ToString("0.0", CultureInfo.InvariantCulture) + " KB";
+    private static string SepText(float m) => float.IsInfinity(m) ? "—" : F2(m) + " m";
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+    private static string StatusName(IkStatus s) => s switch { IkStatus.Ok => "정상", IkStatus.Clamped => "도달 경계", IkStatus.LimitViolation => "관절 한계", _ => "손목 특이" };
+    private static string ModeName(RobotMode m) => m switch { RobotMode.Tracking => "추종", RobotMode.Stopping => "정지 궤적", _ => "브레이크" };
+
+    private int Owner(int address)
+    {
+        for (var i = 0; i < S.FixtureCount; i++)
+        {
+            ref readonly var f = ref S.Fixture(i);
+            if (f.Universe == _uni && address >= f.Address && address < f.Address + PhysicalStageDmxActuatorSynthesizer.Footprint(f.Kind)) return i;
+        }
+        return -1;
+    }
+
+    private string Values(in StageFixture f)
+    {
+        var sb = new System.Text.StringBuilder(64);
+        var n = PhysicalStageDmxActuatorSynthesizer.Footprint(f.Kind);
+        for (var c = 0; c < n; c++) { if (c > 0) sb.Append(' '); sb.Append(S.Channel(f.Universe, f.Address + c).ToString("000", CultureInfo.InvariantCulture)); }
+        return sb.ToString();
+    }
+
+    private string Header()
+    {
+        var p = S.LastPacket;
+        var sb = new System.Text.StringBuilder(80);
+        sb.Append("ArtDmx ");
+        for (var i = 0; i < PhysicalStageDmxActuatorSynthesizer.ArtHeader; i++) sb.Append(p[i].ToString("X2", CultureInfo.InvariantCulture)).Append(' ');
+        return sb.ToString();
+    }
+
+    private string Series(Func<int, float> f, double max, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (RoboticMoCoStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - 2 - (h - 4) * Math.Clamp(f(i) / max, 0, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private RenderFragment Person(float x, double height) => __builder =>
+    {
+        <rect class="pb" x="@(F3(x - 0.25))" y="@(F3(-height))" width="0.5" height="@(F3(height))" rx="0.2" />
+    };
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step100() { for (var i = 0; i < RoboticMoCoStudioRunner.Hz; i++) Runner.Step(); }
+    private void DoReset() => Runner.Reset();
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중(10 Hz 이벤트)은 300 ms 타이머가 처리 — 정지 상태 액션만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

@@ -1,0 +1,75 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.AudioTelemetry
+@using PromptFlowStudio.Shared.Hud
+@inject RealtimeAudioTelemetryMonitor AudioMon
+@implements IDisposable
+
+@* ── v17.29.0: 실시간 오디오/텔레메트리 모니터 뼈대 — RMS · 피크 · 영교차 · 로그 밴드 스펙트럼(64) ── *@
+<div class="gth-v1729-card hud-panel hud-gpu @(AudioMon.Last.Clipping ? "err" : AudioMon.IsRunning ? "ok" : null)">
+    <div class="gth-v1729-h">🎚 오디오 텔레메트리
+        <span class="gth-v1729-be">@(AudioMon.IsRunning ? "가동" : "대기") · @(AudioMon.SyntheticTone ? "합성 톤 " + AudioMon.ToneHz.ToString("0", CultureInfo.InvariantCulture) + " Hz" : "외부 입력") · 프레임 @(AudioMon.Last.Frame)</span>
+    </div>
+    <div class="gth-v1729-grid">
+        <span class="gth-v1729-m"><b>@(AudioMon.Last.RmsDb.ToString("0.0", CultureInfo.InvariantCulture)) dB</b><span>RMS</span></span>
+        <span class="gth-v1729-m"><b>@(AudioMon.Last.Peak.ToString("0.000", CultureInfo.InvariantCulture))</b><span>피크</span></span>
+        <span class="gth-v1729-m"><b>@(AudioMon.Last.ZeroCrossings)</b><span>영교차</span></span>
+        <span class="gth-v1729-m"><b class="@(AudioMon.ClipEvents > 0 ? "err" : null)">@(AudioMon.ClipEvents)</b><span>클립</span></span>
+    </div>
+    @* v17.30: DOM 막대 64개 diff → Shared HudCanvas(rAF Canvas) 교체 — 틱당 Blazor 렌더 트리에서 스펙트럼 제외 *@
+    <div class="gth-v1729-viz">
+        <HudCanvas Buffer="_spec" Mode="HudCanvasMode.Bars" Height="56px" Label="SPECTRUM" />
+        <HudCanvas Buffer="_wave" Mode="HudCanvasMode.Wave" Height="56px" Label="WAVE" />
+    </div>
+    <div class="gth-v1729-row">
+        <button class="gth-v1729-btn" @onclick="Toggle">@(AudioMon.IsRunning ? "■ 정지" : "▶ 시작")</button>
+        <button class="gth-v1729-btn" @onclick="ToggleTone">@(AudioMon.SyntheticTone ? "합성 톤 OFF" : "합성 톤 ON")</button>
+    </div>
+    @if (AudioMon.LastError is { } err)
+    {
+        <div class="gth-v1729-act">⚠ @(err)</div>
+    }
+</div>
+
+<style>
+    .gth-v1729-card { padding: 8px 10px; margin-bottom: 8px; }
+    .gth-v1729-h { font-weight: 600; display: flex; justify-content: space-between; gap: 8px; }
+    .gth-v1729-be { font-weight: 400; color: var(--hud-text-muted, #94A3B8); font-size: .85em; }
+    .gth-v1729-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 6px 0; }
+    .gth-v1729-m { display: flex; flex-direction: column; align-items: center; font-size: .8em; }
+    .gth-v1729-m b { font-size: 1.15em; }
+    .gth-v1729-m b.err { color: var(--hud-err, #F87171); }
+    .gth-v1729-viz { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .gth-v1729-row { display: flex; gap: 6px; margin-top: 6px; }
+    .gth-v1729-btn { font-size: .8em; padding: 2px 8px; }
+    .gth-v1729-act { font-size: .8em; color: var(--hud-warn, #FBBF24); margin-top: 4px; }
+</style>
+
+@code {
+    // 컴포넌트 소유 HUD 프레임 — 모니터 틱 스레드에서 갱신, HudCanvas 가 변경분만 JS 로 푸시
+    private readonly HudFrameBuffer _spec = new(RealtimeAudioTelemetryMonitor.Bands);
+    private readonly HudFrameBuffer _wave = new(256);
+    private readonly float[] _pcm = new float[RealtimeAudioTelemetryMonitor.FftSize];
+
+    protected override void OnInitialized() => AudioMon.OnChange += OnMonChanged;
+
+    private void OnMonChanged()
+    {
+        try
+        {
+            _spec.Write(AudioMon.BandLevels);
+            int n = AudioMon.CopyLastPcm(_pcm);
+            _wave.WriteSamples(new ReadOnlySpan<float>(_pcm, 0, n));
+        }
+        catch (Exception) { /* 콜백 예외 격리 */ }
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void Toggle()
+    {
+        if (AudioMon.IsRunning) AudioMon.Stop(); else AudioMon.Start();
+    }
+
+    private void ToggleTone() => AudioMon.SyntheticTone = !AudioMon.SyntheticTone;
+
+    public void Dispose() => AudioMon.OnChange -= OnMonChanged;
+}

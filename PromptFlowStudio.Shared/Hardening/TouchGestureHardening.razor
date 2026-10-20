@@ -1,0 +1,183 @@
+@implements IDisposable
+
+@* [PromptFlow Studio v4.4.2] 모바일 시뮬레이터 제스처/멀티터치 예외 방어(Task 3 · 공용 RCL).
+   touch-action:none + preventDefault 로 스크롤 밀림 차단 · PinchGuard/PointerDragGuard 로
+   인덱스 초과·NaN 좌표·Sticky Drag Lock 을 전면 방어. *@
+
+<div class="tgh">
+    <div class="tgh-h">
+        <span class="tgh-title">🧊 3D 뷰어 터치 제스처 하드닝</span>
+        <span class="tgh-badge">v4.4.2 · 2단계</span>
+        <span class="tgh-state">@_log</span>
+    </div>
+
+    <div class="tgh-stagewrap">
+        @* ★ touch-action:none → 브라우저 스크롤/줌 하이재킹 차단, preventDefault 로 이중 방어 *@
+        <div class="tgh-stage"
+             style="touch-action:none;"
+             @onpointerdown="OnDown"
+             @onpointermove="OnMove" @onpointermove:preventDefault="true"
+             @onpointerup="OnUp"
+             @onpointercancel="OnCancel"
+             @onpointerleave="OnLeave"
+             @onpointerout="OnLeave"
+             @onlostpointercapture="OnLostCapture">
+            <div class="tgh-scene" style="transform:scale(@Fmt(_scale)) rotateX(@Fmt(_rotX)deg) rotateY(@Fmt(_rotY)deg);">
+                <div class="tgh-face f-front">FRONT</div>
+                <div class="tgh-face f-back">BACK</div>
+                <div class="tgh-face f-right">R</div>
+                <div class="tgh-face f-left">L</div>
+                <div class="tgh-face f-top">TOP</div>
+                <div class="tgh-face f-bottom">BTM</div>
+            </div>
+            <div class="tgh-hint">한 손가락 = 회전 · 두 손가락 = 핀치 줌</div>
+        </div>
+    </div>
+
+    <div class="tgh-readout">
+        <div class="tgh-cell"><small>활성 포인터</small><b>@_pointers.Count</b></div>
+        <div class="tgh-cell"><small>회전 X / Y</small><b>@Fmt(_rotX)° / @Fmt(_rotY)°</b></div>
+        <div class="tgh-cell"><small>줌 배율</small><b>×@_scale.ToString("0.00")</b></div>
+        <div class="tgh-cell"><small>드래그 락</small><b class="@(_drag.IsDragging ? "warn" : "ok")">@(_drag.IsDragging ? "HOLD" : "CLEAR")</b></div>
+        <div class="tgh-cell"><small>강제해제</small><b>@_drag.ForceReleaseCount</b></div>
+    </div>
+
+    <div class="tgh-tools">
+        <button class="tgh-tbtn" @onclick="SimulateBlur">💨 blur(포커스 이탈) 시뮬레이트</button>
+        <button class="tgh-tbtn" @onclick="SimulateNaN">🧪 NaN 좌표 주입 테스트</button>
+        <button class="tgh-tbtn" @onclick="Reset">↺ 초기화</button>
+    </div>
+    <div class="tgh-note">💡 <b>touch-action:none</b> + <b>preventDefault</b> 로 뷰포트 스크롤 동반 이동 차단 · 2점 미만/NaN/0-거리 핀치는 배율 1.0 안전 폴백(<code>IndexOutOfRange</code>·NaN 방어) · <b>pointerleave/cancel/blur/lostcapture</b> 시 드래그 무조건 해제(Sticky Lock 차단).</div>
+</div>
+
+<style>
+    .tgh { border: 1px solid color-mix(in srgb, #0ea5e9 34%, #2b2f42); border-radius: 16px; overflow: hidden; font-family: Pretendard, 'Malgun Gothic', sans-serif; color: #e6edff; background: linear-gradient(160deg, rgba(14,165,233,.08), rgba(18,20,31,.92)); }
+    .tgh-h { display: flex; align-items: center; gap: 8px; padding: 12px 15px; border-bottom: 1px solid #2b2f42; flex-wrap: wrap; }
+    .tgh-title { font: 900 14px Pretendard,'Malgun Gothic',sans-serif; color: #7dd3fc; }
+    .tgh-badge { font: 800 10px ui-monospace,monospace; color: #04222f; background: #38bdf8; border-radius: 20px; padding: 2px 8px; }
+    .tgh-state { margin-left: auto; font: 700 10px ui-monospace,monospace; color: #9aa6c8; max-width: 55%; text-align: right; overflow-wrap: anywhere; }
+    .tgh-stagewrap { padding: 14px 15px; }
+    /* ★ 3D 조작 표면 — touch-action:none & 텍스트 선택 방지 */
+    .tgh-stage { position: relative; height: 240px; border-radius: 14px; background: radial-gradient(120% 90% at 50% 0%, #1b2436, #0c0f18); border: 1px solid #23283b; overflow: hidden; cursor: grab; user-select: none; -webkit-user-select: none; perspective: 720px; display: grid; place-items: center; }
+    .tgh-stage:active { cursor: grabbing; }
+    .tgh-scene { position: relative; width: 108px; height: 108px; transform-style: preserve-3d; transition: transform .04s linear; }
+    .tgh-face { position: absolute; inset: 0; display: grid; place-items: center; font: 800 15px ui-monospace,monospace; color: #e6edff; border: 1px solid #38bdf8; background: color-mix(in srgb,#0ea5e9 20%,rgba(12,15,24,.72)); box-shadow: inset 0 0 22px color-mix(in srgb,#0ea5e9 26%,transparent); }
+    .f-front { transform: translateZ(54px); } .f-back { transform: rotateY(180deg) translateZ(54px); }
+    .f-right { transform: rotateY(90deg) translateZ(54px); } .f-left { transform: rotateY(-90deg) translateZ(54px); }
+    .f-top { transform: rotateX(90deg) translateZ(54px); } .f-bottom { transform: rotateX(-90deg) translateZ(54px); }
+    .tgh-hint { position: absolute; left: 0; right: 0; bottom: 8px; text-align: center; font: 600 10px Pretendard,'Malgun Gothic',sans-serif; color: #6b7392; pointer-events: none; }
+    .tgh-readout { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; padding: 0 15px 12px; }
+    @@media (max-width: 560px) { .tgh-readout { grid-template-columns: repeat(2, 1fr); } }
+    .tgh-cell { background: rgba(26,29,43,.6); border: 1px solid #2b2f42; border-radius: 10px; padding: 8px; text-align: center; } .tgh-cell small { display: block; font: 700 8.5px ui-monospace,monospace; color: #6b7392; margin-bottom: 3px; } .tgh-cell b { font: 900 13px ui-monospace,monospace; color: #e6edff; } .tgh-cell b.ok { color: #86efac; } .tgh-cell b.warn { color: #fbbf24; }
+    .tgh-tools { display: flex; gap: 8px; padding: 0 15px 12px; flex-wrap: wrap; }
+    .tgh-tbtn { min-height: 44px; flex: 1; min-width: 130px; border-radius: 11px; border: 1px solid #2b2f42; background: #1a1d2b; color: #cbd5e1; font: 700 11px Pretendard,'Malgun Gothic',sans-serif; cursor: pointer; } .tgh-tbtn:hover { border-color: #0ea5e9; color: #7dd3fc; }
+    .tgh-note { padding: 0 15px 14px; font: 600 10.5px Pretendard,'Malgun Gothic',sans-serif; color: #6b7392; line-height: 1.6; word-break: keep-all; } .tgh-note code { background: #1a1d2b; color: #7dd3fc; padding: 1px 5px; border-radius: 5px; }
+</style>
+
+@code {
+    private readonly Dictionary<long, (double X, double Y)> _pointers = new();
+    private readonly PointerDragGuard _drag = new();
+    private readonly PinchGuard _pinch = new();
+
+    private double _rotX = -18, _rotY = 26, _scale = 1.0;
+    private double _pinchStartScale = 1.0;
+    private string _log = "대기 중 — 스테이지를 드래그/핀치 하세요";
+
+    // 활성 포인터 중 앞의 2점(핀치 계산용) — 방어적으로 최대 2개만.
+    private IReadOnlyList<(double X, double Y)> TwoPoints()
+    {
+        var list = new List<(double, double)>(2);
+        foreach (var p in _pointers.Values) { list.Add(p); if (list.Count == 2) break; }
+        return list;
+    }
+
+    private void OnDown(PointerEventArgs e)
+    {
+        if (!SafeGeom.IsFinite(e.ClientX) || !SafeGeom.IsFinite(e.ClientY)) return;   // NaN 방어
+        _pointers[e.PointerId] = (e.ClientX, e.ClientY);
+        if (_pointers.Count >= 2)
+        {
+            _pinchStartScale = _scale;
+            _pinch.Begin(TwoPoints());                 // 2점 이상에서만 핀치 시작
+            _drag.ForceRelease(DragReleaseReason.LostCapture);   // 회전 → 핀치 전환 시 드래그 정리
+            _log = "핀치 시작(2점)";
+        }
+        else
+        {
+            _drag.Begin(e.PointerId, e.ClientX, e.ClientY);
+            _log = $"드래그 시작 · id={e.PointerId}";
+        }
+    }
+
+    private void OnMove(PointerEventArgs e)
+    {
+        if (!SafeGeom.IsFinite(e.ClientX) || !SafeGeom.IsFinite(e.ClientY)) return;   // NaN 방어
+        if (_pointers.ContainsKey(e.PointerId)) _pointers[e.PointerId] = (e.ClientX, e.ClientY);
+
+        if (_pointers.Count >= 2)
+        {
+            var factor = _pinch.Scale(TwoPoints());    // 인덱스 초과/NaN/0-거리 → 1.0 안전 폴백
+            _scale = Math.Clamp(_pinchStartScale * factor, 0.4, 4.0);
+            _log = $"핀치 줌 · ×{_scale:0.00}";
+        }
+        else if (_drag.IsDragging)
+        {
+            var (dx, dy) = _drag.Move(e.PointerId, e.ClientX, e.ClientY);
+            _rotY = ((_rotY + dx * 0.45) % 360 + 360) % 360;
+            _rotX = Math.Clamp(_rotX - dy * 0.45, -89, 89);
+        }
+    }
+
+    private void OnUp(PointerEventArgs e) => EndPointer(e.PointerId, "up", DragReleaseReason.PointerUp);
+    private void OnCancel(PointerEventArgs e) => EndPointer(e.PointerId, "cancel", DragReleaseReason.PointerCancel);       // ★ Sticky Lock 방어
+    private void OnLeave(PointerEventArgs e) => EndPointer(e.PointerId, "leave", DragReleaseReason.PointerLeave);         // ★ Sticky Lock 방어
+    private void OnLostCapture(PointerEventArgs e) => EndPointer(e.PointerId, "lostcapture", DragReleaseReason.LostCapture); // ★ Sticky Lock 방어
+
+    private void EndPointer(long id, string why, DragReleaseReason reason)
+    {
+        _pointers.Remove(id);
+        if (_pointers.Count < 2) _pinch.End();
+        if (_pointers.Count == 0)
+        {
+            _drag.ForceRelease(reason);
+            _log = $"해제({why}) · 드래그 락 없음";
+        }
+        else
+        {
+            _log = $"포인터 {id} {why} — 잔여 {_pointers.Count}점";
+        }
+    }
+
+    // ★ blur(창 포커스 이탈) — 모든 포인터/드래그/핀치 강제 정리(Sticky Lock 차단).
+    private void SimulateBlur()
+    {
+        _pointers.Clear();
+        _pinch.End();
+        _drag.ForceRelease(DragReleaseReason.Blur);
+        _log = "blur 감지 → 전체 포인터/드래그 강제 해제(락 차단)";
+    }
+
+    // NaN 좌표를 주입해도 상태가 오염되지 않음을 시연.
+    private void SimulateNaN()
+    {
+        var began = _drag.Begin(1, double.NaN, 12);                 // 좌표 NaN → false
+        var pinch = _pinch.Scale(new (double, double)[] { (double.NaN, 0) }); // 1점+NaN → 1.0
+        _log = $"NaN 주입 결과 → Begin={began}(무시) · Scale=×{pinch:0.00}(안전)";
+    }
+
+    private void Reset()
+    {
+        _pointers.Clear(); _pinch.End(); _drag.ForceRelease(DragReleaseReason.Blur);
+        _rotX = -18; _rotY = 26; _scale = 1.0; _pinchStartScale = 1.0;
+        _log = "초기화 완료";
+    }
+
+    private static string Fmt(double v) => (SafeGeom.IsFinite(v) ? v : 0).ToString("0.0");
+
+    public void Dispose()
+    {
+        _pointers.Clear();
+        _pinch.End();
+        _drag.ForceRelease(DragReleaseReason.Blur);
+    }
+}

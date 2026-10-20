@@ -1,0 +1,26 @@
+@* v16.5.1: 데스크톱 Blazor/Components 소스 링크(LinkBase=Shared\Blazor) 전용 임포트.
+   링크 경로 기반 기본 네임스페이스(PromptFlowStudio.Mobile.Shared.Blazor.*)를 데스크톱과 동일하게 고정하고,
+   데스크톱 Blazor/_Imports.razor 의 using 을 미러링(Pages 는 모바일 미포함이라 제외). *@
+@namespace PromptFlowStudio.Blazor.Components
+@using System
+@using System.Collections.Generic
+@using System.IO
+@using System.Linq
+@using System.Threading.Tasks
+@using Microsoft.AspNetCore.Components
+@using Microsoft.AspNetCore.Components.Web
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.AspNetCore.Components.Routing
+@using Microsoft.JSInterop
+@using PromptFlowStudio
+@using PromptFlowStudio.Blazor
+@using PromptFlowStudio.Services.Account
+@using PromptFlowStudio.Blazor.Components
+@using PromptFlowStudio.Services.Help
+@using PromptFlowStudio.Services.Ui
+@using PromptFlowStudio.Services.Wan
+@using PromptFlowStudio.Services.Media
+@using PromptFlowStudio.Services.Platform
+@using PromptFlowStudio.Services.Storyboard
+@using PromptFlowStudio.Blazor.Components.Common
+@using PromptFlowStudio.Shared.Haptics

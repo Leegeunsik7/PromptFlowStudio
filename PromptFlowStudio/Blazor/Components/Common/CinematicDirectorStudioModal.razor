@@ -1,0 +1,298 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.CinematicDirector
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject CinematicDirectorStudioRunner Runner
+
+@* [PromptFlow Studio v17.39.0] 🎬 AI 시네마틱 감독 스튜디오 — 4분할 멀티캠 · 탑다운 180° 축/시선 · 탤리 · 페이싱 · 컷 로그 · 가드. *@
+
+<div class="cdm-scrim" @onclick="Close">
+    <div class="cdm-modal" @onclick:stopPropagation="true">
+        <div class="cdm-h">
+            <div>
+                <div class="cdm-title">🎬 AI 시네마틱 감독 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null)</div>
+                <div class="cdm-sub"><b>샷 구도 엔진</b>이 두 배우의 위치·얼굴·시선으로 마스터/OTS 2대/트래킹 카메라를 SIMD 후보 평가로 배치하고 삼분선 헤드룸·시선 리드룸·DoF 를 맞추며, <b>컷 합성기</b>가 v17.32 음성 레인의 발화 창과 v17.37 충격 에너지로 화자 전환·리액션·충격 인서트를 편집합니다. <b>세이프티 가드</b>는 대화 축을 추적해 선을 넘는 카메라를 반사하고, 30° 미만·초점비 1.5 미만 점프컷과 과도한 컷 빈도를 거부합니다.</div>
+            </div>
+            <button class="cdm-x" @onclick="Close">✕</button>
+        </div>
+        <div class="cdm-bar">
+            <button class="cdm-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 시작")</button>
+            <button class="cdm-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="cdm-btn warn" @onclick="() => Runner.InjectImpact(40f)">💥 충격 40</button>
+            <button class="cdm-btn warn" @onclick="() => Runner.InjectImpact(160f)">💥 강타 160</button>
+            <button class="cdm-btn @(Runner.AutoImpact ? "on" : null)" @onclick="() => Runner.SetAutoImpact(!Runner.AutoImpact)">🤖 자동 충격</button>
+            <button class="cdm-btn @(Runner.Guard.Enabled ? "on" : null)" @onclick="() => Runner.SetGuard(!Runner.Guard.Enabled)">🛡 180° · 점프컷 가드</button>
+            <span class="cdm-lbl">페이싱 <b>@(DialogueActionCinematicCutSynthesizer.PacingName(Runner.Cuts.Pacing))</b></span>
+            <input type="range" min="0" max="2" step="1" value="@((int)Runner.Cuts.Pacing)" @onchange="e => Runner.SetPacing((CutPacing)(int)Num(e, 1))" />
+            <button class="cdm-btn" @onclick="Runner.ResetMetrics">↺ 지표</button>
+            <span class="cdm-chip @(Runner.LastTickMs <= 16.7 ? "ok" : "warn")">프레임 @(F2(Runner.LastTickMs)) ms(최대 @(F1(Runner.MaxTickMs))) · 구도 @(F0(Runner.Framing.LastUpdateUs)) µs</span>
+        </div>
+        <div class="cdm-main">
+            <div class="cdm-col">
+                <div class="cdm-card">
+                    <div class="cdm-sec">📺 4분할 멀티캠 프리뷰 · 🔴 = 온에어(탤리) · 십자 = 삼분선</div>
+                    <div class="cdm-grid">
+                        @for (var c = 0; c < 4; c++)
+                        {
+                            var rig = Runner.CamSnapshot(c);
+                            var on = Runner.Tally(c);
+                            <div class="cdm-cam @(on ? "air" : null)">
+                                <div class="cdm-camh"><i class="cdm-tally @(on ? "on" : null)"></i><b>@(RealtimeCinematicShotFramingEngine.Name((DirectorCam)c))</b><span>@(RealtimeCinematicShotFramingEngine.SizeName(rig.Size)) · @(F0(rig.FocalMm)) mm · f/@(F1(rig.FStop)) · 초점 @(F2(rig.FocusM)) m</span></div>
+                                <svg viewBox="-160 -90 320 180" class="cdm-view">@((MarkupString)CamSvg(rig))</svg>
+                                <div class="cdm-camf">헤드룸 오차 @(F3(rig.HeadroomError)) · 리드룸 @(F3(rig.LeadroomError)) · DoF @(F2(rig.NearM))–@(Far(rig.FarM)) m @(rig.Occluded ? "· ⚠ 차폐" : null)</div>
+                            </div>
+                        }
+                    </div>
+                </div>
+                <div class="cdm-card">
+                    <div class="cdm-sec">🎙 발화 창(dBFS) · 화자 @(Runner.Cuts.Speaker < 0 ? "—" : Runner.Cuts.Speaker == 0 ? "배우 0(따뜻)" : "배우 1(차가움)") · 대사: <span class="cdm-line">@(Runner.CurrentLine)</span></div>
+                    <svg class="cdm-spark" viewBox="0 0 360 70" preserveAspectRatio="none">
+                        <line class="th" x1="0" y1="@(F1(DbY(DialogueActionCinematicCutSynthesizer.OnDb)))" x2="360" y2="@(F1(DbY(DialogueActionCinematicCutSynthesizer.OnDb)))" />
+                        <polyline class="a0" points="@(Series(0))" />
+                        <polyline class="a1" points="@(Series(1))" />
+                    </svg>
+                    <div class="cdm-legend"><span class="a0">■ 배우 0</span><span class="a1">■ 배우 1</span><span>— 발화 임계 @(F0(DialogueActionCinematicCutSynthesizer.OnDb)) dBFS</span></div>
+                </div>
+            </div>
+            <div class="cdm-col">
+                <div class="cdm-card">
+                    <div class="cdm-sec">🧭 탑다운 — 180° 액션 축(실선) · 금지 반평면(빗금) · 시선 벡터 · 카메라 절두체</div>
+                    <svg class="cdm-top" viewBox="-5.5 -5.5 11 11">@((MarkupString)TopSvg())</svg>
+                </div>
+                <div class="cdm-card">
+                    <div class="cdm-sec">✂ 컷 편집 · 프로그램 @(RealtimeCinematicShotFramingEngine.Name((DirectorCam)Runner.Cuts.Program)) · 샷 @(F1(Runner.Cuts.ShotSeconds)) s · 디졸브 @(F0(Runner.Cuts.Blend * 100))%</div>
+                    <div class="cdm-kv grid">
+                        <div>컷 @(Runner.Cuts.Cuts) · 평균 샷 <b>@(F2(Runner.Cuts.MeanShotSeconds)) s</b></div>
+                        <div>화자 전환 @(Runner.Cuts.SpeakerCuts) · 리액션 @(Runner.Cuts.ReactionCuts)</div>
+                        <div>충격 인서트 @(Runner.Cuts.ImpactInserts) · 지연 <b>@(F0(Runner.Cuts.LastImpactLatencyMs)) ms</b></div>
+                        <div>재확립 @(Runner.Cuts.Reestablish) · 보류 @(Runner.Cuts.Deferred) · 대안 @(Runner.Cuts.Alternates)</div>
+                    </div>
+                    <div class="cdm-log">
+                        @for (var i = 0; i < Math.Min(Runner.Cuts.LogCount, 8); i++)
+                        {
+                            var ev = Runner.Cuts.Log(i);
+                            <div><b>@(F2(ev.TimeS)) s</b> @(Short(ev.From)) → @(Short(ev.To)) · @(DialogueActionCinematicCutSynthesizer.ReasonName(ev.Reason)) · @(F0(ev.AngleDeg))° @(ev.FirstVerdict != CutVerdict.Approved ? "· 1차 " + CinematicAxisJumpCutSafetyGuard.VerdictName(ev.FirstVerdict) : null)</div>
+                        }
+                    </div>
+                </div>
+                <div class="cdm-card">
+                    <div class="cdm-sec">🛡 연출 세이프티 가드 @(Runner.Guard.Enabled ? "ON" : "OFF(관측만)") · 축 @(F0(Runner.Guard.AxisAngleDeg))°</div>
+                    <div class="cdm-kv grid">
+                        <div>온에어 선 위반 <b class="@(Runner.Guard.OnAirAxisViolations == 0 ? "ok" : "warn")">@(Runner.Guard.OnAirAxisViolations)</b> 프레임</div>
+                        <div>온에어 점프컷 <b class="@(Runner.Guard.OnAirJumpCuts == 0 ? "ok" : "warn")">@(Runner.Guard.OnAirJumpCuts)</b> · 간격 부족 @(Runner.Guard.OnAirTooSoon)</div>
+                        <div>측 위반 감지 @(Runner.Guard.SideViolationsDetected) · 반사 @(Runner.Guard.Reflections) · 궤도 클램프 @(Runner.Guard.OrbitClamps)</div>
+                        <div>거부 — 축 @(Runner.Guard.AxisRejects) · 점프 @(Runner.Guard.JumpRejects) · 간격 @(Runner.Guard.FatigueRejects) · 상한 @(Runner.Guard.RateRejects)</div>
+                        <div>최근 컷 각 @(F0(Runner.Guard.LastCutAngleDeg))° · 초점비 @(F2(Runner.Guard.LastFocalRatio))</div>
+                        <div>최소 컷 간격 @(F2(Runner.Guard.MinGapSeen)) s · 판정 @(CinematicAxisJumpCutSafetyGuard.VerdictName(Runner.Guard.LastVerdict))</div>
+                    </div>
+                </div>
+                <div class="cdm-act">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .cdm-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .cdm-modal { width: min(1680px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .cdm-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #ef4444 12%, var(--card)), color-mix(in srgb, #eab308 12%, var(--card))); }
+    .cdm-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .cdm-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .cdm-sub b { color: var(--text-primary); }
+    .cdm-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .cdm-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .cdm-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .cdm-btn:disabled { opacity: .45; cursor: default; }
+    .cdm-btn.on { background: color-mix(in srgb, #22c55e 20%, var(--card)); border-color: #22c55e; }
+    .cdm-btn.warn { border-color: #f59e0b; }
+    .cdm-lbl { font-size: 11px; color: var(--text-muted); font-weight: 700; margin-left: 6px; }
+    .cdm-lbl b { color: var(--text-primary); }
+    .cdm-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .cdm-chip.ok { border-color: #22c55e; color: #22c55e; } .cdm-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .cdm-main { display: grid; grid-template-columns: 1.3fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .cdm-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .cdm-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); }
+    .cdm-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .cdm-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .cdm-cam { border: 2px solid #1e293b; border-radius: 8px; overflow: hidden; background: #020617; }
+    .cdm-cam.air { border-color: #ef4444; box-shadow: 0 0 0 1px #ef4444, 0 0 14px rgba(239,68,68,.35); }
+    .cdm-camh, .cdm-camf { display: flex; gap: 6px; align-items: center; font-size: 10px; color: var(--text-muted); padding: 3px 6px; flex-wrap: wrap; }
+    .cdm-camh b { color: var(--text-primary); font-size: 11px; }
+    .cdm-tally { width: 9px; height: 9px; border-radius: 50%; background: #334155; display: inline-block; }
+    .cdm-tally.on { background: #ef4444; box-shadow: 0 0 8px #ef4444; }
+    .cdm-view { width: 100%; aspect-ratio: 16 / 9; display: block; background: linear-gradient(#0b1220, #111827); }
+    .cdm-view .fl { stroke: #1f2937; stroke-width: .6; } .cdm-view .pl { stroke: #64748b; stroke-width: 6; stroke-linecap: round; opacity: .8; }
+    .cdm-view .b0 { stroke: #f97316; stroke-linecap: round; } .cdm-view .b1 { stroke: #3b82f6; stroke-linecap: round; }
+    .cdm-view .h0 { fill: #fdba74; } .cdm-view .h1 { fill: #93c5fd; } .cdm-view .ey { fill: #fff; }
+    .cdm-view .tg { stroke: rgba(255,255,255,.18); stroke-width: .6; stroke-dasharray: 3 3; }
+    .cdm-view .gz { stroke: #facc15; stroke-width: 1.2; }
+    .cdm-top { width: 100%; aspect-ratio: 1; background: radial-gradient(circle at 50% 50%, #0f172a, #020617); border-radius: 8px; }
+    .cdm-top .fl { stroke: #1e293b; stroke-width: .02; } .cdm-top .ax { stroke: #ef4444; stroke-width: .04; } .cdm-top .ln { stroke: rgba(239,68,68,.45); stroke-width: .025; stroke-dasharray: .15 .1; }
+    .cdm-top .forb { fill: rgba(239,68,68,.08); }
+    .cdm-top .a0 { fill: #f97316; } .cdm-top .a1 { fill: #3b82f6; } .cdm-top .gz { stroke: #facc15; stroke-width: .035; }
+    .cdm-top .pl { fill: #475569; } .cdm-top .cam { fill: #e2e8f0; } .cdm-top .cam.air { fill: #ef4444; } .cdm-top .fr { stroke: rgba(226,232,240,.35); stroke-width: .02; fill: none; } .cdm-top .fr.air { stroke: rgba(239,68,68,.8); }
+    .cdm-top text { font: 700 .3px sans-serif; fill: #cbd5e1; }
+    .cdm-spark { width: 100%; height: 60px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; }
+    .cdm-spark polyline { fill: none; stroke-width: 1.4; } .cdm-spark .a0 { stroke: #f97316; } .cdm-spark .a1 { stroke: #3b82f6; } .cdm-spark .th { stroke: #64748b; stroke-dasharray: 4 3; stroke-width: .8; }
+    .cdm-legend { display: flex; gap: 12px; font-size: 11px; color: var(--text-muted); margin-top: 4px; } .cdm-legend .a0 { color: #f97316; } .cdm-legend .a1 { color: #3b82f6; }
+    .cdm-line { font-weight: 600; color: var(--text-secondary); }
+    .cdm-kv { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px; }
+    .cdm-kv.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+    .cdm-kv b { color: var(--text-primary); } .cdm-kv b.ok { color: #22c55e; } .cdm-kv b.warn { color: #f59e0b; }
+    .cdm-log { margin-top: 6px; font: 11px var(--mono); color: var(--text-muted); display: flex; flex-direction: column; gap: 2px; max-height: 150px; overflow-y: auto; }
+    .cdm-log b { color: var(--text-primary); }
+    .cdm-act { font-size: 11px; color: var(--text-muted); }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("CinematicDirector.Modal.Timer", ex); }
+        }, null, 100, 100);
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static string Far(float v) => float.IsInfinity(v) ? "∞" : F2(v);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+    private static float DbY(float db) => 70f - 70f * Math.Clamp((db + 80f) / 70f, 0f, 1f);
+    private static string Short(byte c) => c switch { 0 => "M", 1 => "A", 2 => "B", _ => "ACT" };
+
+    private string Series(int actor)
+    {
+        var sb = new System.Text.StringBuilder(240 * 12);
+        for (var i = 239; i >= 0; i--)
+            sb.Append(F1(360.0 * (239 - i) / 239)).Append(',').Append(F1(DbY(Runner.LevelSeries(actor, i)))).Append(' ');
+        return sb.ToString();
+    }
+
+    private static Vector2 S(in CameraRig rig, Vector3 p, out bool front)
+    {
+        var n = RealtimeCinematicShotFramingEngine.Project(in rig, p, out var depth);
+        front = depth > 0.05f;
+        return new Vector2(n.X * 160f, -n.Y * 90f);
+    }
+
+    private static void Ln(System.Text.StringBuilder sb, string cls, Vector2 a, Vector2 b, float w = 0f)
+    {
+        sb.Append("<line class=\"").Append(cls).Append("\" x1=\"").Append(F1(a.X)).Append("\" y1=\"").Append(F1(a.Y)).Append("\" x2=\"").Append(F1(b.X)).Append("\" y2=\"").Append(F1(b.Y)).Append('"');
+        if (w > 0f) sb.Append(" style=\"stroke-width:").Append(F1(w)).Append("px\"");
+        sb.Append("/>");
+    }
+
+    private string CamSvg(CameraRig rig)
+    {
+        var sb = new System.Text.StringBuilder(6000);
+        for (var i = -5; i <= 5; i++)
+        {
+            var a = S(in rig, new Vector3(i, 0f, -5f), out var fa); var b = S(in rig, new Vector3(i, 0f, 6f), out var fb);
+            if (fa && fb) Ln(sb, "fl", a, b);
+            a = S(in rig, new Vector3(-5f, 0f, i), out fa); b = S(in rig, new Vector3(5f, 0f, i), out fb);
+            if (fa && fb) Ln(sb, "fl", a, b);
+        }
+        for (var o = 0; o < Runner.Framing.OccluderCount; o++)
+        {
+            var p = Runner.Framing.Occluder(o, out _);
+            var a = S(in rig, p, out var fa); var b = S(in rig, p + new Vector3(0f, 3.5f, 0f), out var fb);
+            if (fa && fb) Ln(sb, "pl", a, b);
+        }
+        for (var k = 0; k < 2; k++)
+        {
+            var act = k == 0 ? Runner.Framing.A : Runner.Framing.B;
+            var foot = S(in rig, act.Foot + new Vector3(0f, 0.2f, 0f), out var f0); var neck = S(in rig, act.Foot + new Vector3(0f, 1.42f, 0f), out var f1);
+            var head = S(in rig, act.Head, out var f2); var top = S(in rig, act.Head + new Vector3(0f, 0.12f, 0f), out _);
+            if (!f0 || !f1 || !f2) continue;
+            var rpx = MathF.Max(1.5f, MathF.Abs(top.Y - head.Y));
+            var side = S(in rig, act.Foot + new Vector3(0f, 0.8f, 0f) + rig.Right * 0.19f, out _); var mid = S(in rig, act.Foot + new Vector3(0f, 0.8f, 0f), out _);
+            Ln(sb, k == 0 ? "b0" : "b1", foot, neck, MathF.Max(2f, 2f * MathF.Abs(side.X - mid.X)));
+            sb.Append("<circle class=\"").Append(k == 0 ? "h0" : "h1").Append("\" cx=\"").Append(F1(head.X)).Append("\" cy=\"").Append(F1(head.Y)).Append("\" r=\"").Append(F1(rpx)).Append("\"/>");
+            var eye = S(in rig, act.Eye, out _); var g = S(in rig, act.Eye + act.Gaze * 0.35f, out var fg);
+            if (fg) Ln(sb, "gz", eye, g);
+        }
+        // 삼분선
+        Ln(sb, "tg", new Vector2(-160f / 3f, -90f), new Vector2(-160f / 3f, 90f)); Ln(sb, "tg", new Vector2(160f / 3f, -90f), new Vector2(160f / 3f, 90f));
+        Ln(sb, "tg", new Vector2(-160f, -30f), new Vector2(160f, -30f)); Ln(sb, "tg", new Vector2(-160f, 30f), new Vector2(160f, 30f));
+        return sb.ToString();
+    }
+
+    private string TopSvg()
+    {
+        var sb = new System.Text.StringBuilder(5000);
+        static string P(float v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+        for (var i = -5; i <= 5; i++)
+        {
+            sb.Append("<line class=\"fl\" x1=\"").Append(i).Append("\" y1=\"-5\" x2=\"").Append(i).Append("\" y2=\"5\"/>");
+            sb.Append("<line class=\"fl\" x1=\"-5\" y1=\"").Append(i).Append("\" x2=\"5\" y2=\"").Append(i).Append("\"/>");
+        }
+        var g = Runner.Guard;
+        var ax = g.AxisDir; var mid = g.AxisMid; var n = new Vector3(-ax.Z, 0f, ax.X) * -g.LineSide;
+        // 금지 반평면(선 너머)
+        Vector3 a = mid - ax * 12f, b = mid + ax * 12f, c = b + n * 12f, d = a + n * 12f;
+        sb.Append("<polygon class=\"forb\" points=\"").Append(P(a.X)).Append(',').Append(P(a.Z)).Append(' ').Append(P(b.X)).Append(',').Append(P(b.Z)).Append(' ').Append(P(c.X)).Append(',').Append(P(c.Z)).Append(' ').Append(P(d.X)).Append(',').Append(P(d.Z)).Append("\"/>");
+        sb.Append("<line class=\"ln\" x1=\"").Append(P(a.X)).Append("\" y1=\"").Append(P(a.Z)).Append("\" x2=\"").Append(P(b.X)).Append("\" y2=\"").Append(P(b.Z)).Append("\"/>");
+        var A = Runner.Framing.A; var B = Runner.Framing.B;
+        sb.Append("<line class=\"ax\" x1=\"").Append(P(A.Foot.X)).Append("\" y1=\"").Append(P(A.Foot.Z)).Append("\" x2=\"").Append(P(B.Foot.X)).Append("\" y2=\"").Append(P(B.Foot.Z)).Append("\"/>");
+        for (var o = 0; o < Runner.Framing.OccluderCount; o++)
+        {
+            var p = Runner.Framing.Occluder(o, out var r);
+            sb.Append("<circle class=\"pl\" cx=\"").Append(P(p.X)).Append("\" cy=\"").Append(P(p.Z)).Append("\" r=\"").Append(P(r)).Append("\"/>");
+        }
+        for (var k = 0; k < 2; k++)
+        {
+            var act = k == 0 ? A : B;
+            sb.Append("<circle class=\"").Append(k == 0 ? "a0" : "a1").Append("\" cx=\"").Append(P(act.Foot.X)).Append("\" cy=\"").Append(P(act.Foot.Z)).Append("\" r=\".2\"/>");
+            sb.Append("<line class=\"gz\" x1=\"").Append(P(act.Foot.X)).Append("\" y1=\"").Append(P(act.Foot.Z)).Append("\" x2=\"").Append(P(act.Foot.X + act.Gaze.X * 0.8f)).Append("\" y2=\"").Append(P(act.Foot.Z + act.Gaze.Z * 0.8f)).Append("\"/>");
+        }
+        for (var cI = 0; cI < 4; cI++)
+        {
+            var rig = Runner.CamSnapshot(cI);
+            var air = Runner.Tally(cI) ? " air" : "";
+            var p = rig.Position;
+            var hf = MathF.Atan(MathF.Tan(0.5f * rig.VFovDeg * MathF.PI / 180f) * RealtimeCinematicShotFramingEngine.Aspect);
+            var f = new Vector2(rig.Forward.X, rig.Forward.Z); if (f.LengthSquared() > 1e-6f) f = Vector2.Normalize(f);
+            var len = 1.4f;
+            var l = Rot(f, hf) * len; var r = Rot(f, -hf) * len;
+            sb.Append("<polygon class=\"fr").Append(air).Append("\" points=\"").Append(P(p.X)).Append(',').Append(P(p.Z)).Append(' ').Append(P(p.X + l.X)).Append(',').Append(P(p.Z + l.Y)).Append(' ').Append(P(p.X + r.X)).Append(',').Append(P(p.Z + r.Y)).Append("\"/>");
+            sb.Append("<circle class=\"cam").Append(air).Append("\" cx=\"").Append(P(p.X)).Append("\" cy=\"").Append(P(p.Z)).Append("\" r=\".14\"/>");
+            sb.Append("<text x=\"").Append(P(p.X + 0.18f)).Append("\" y=\"").Append(P(p.Z - 0.12f)).Append("\">").Append(Short((byte)cI)).Append("</text>");
+        }
+        return sb.ToString();
+    }
+
+    private static Vector2 Rot(Vector2 v, float a) { float c = MathF.Cos(a), s = MathF.Sin(a); return new Vector2(v.X * c - v.Y * s, v.X * s + v.Y * c); }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void Step60()
+    {
+        for (var i = 0; i < CinematicDirectorStudioRunner.Hz; i++) Runner.Step();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

@@ -1,0 +1,316 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.HolographicTelepresence
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject NeuralTelepresenceStudioRunner Runner
+
+@* [PromptFlow Studio v17.25.0] 🌐 AI 홀로그래픽 텔레프레전스 스튜디오 — 참가자 토폴로지 3D 뷰 · 시선 교차 보정 · RTT/손실/롤백 미터 · 옥트리 LoD 청크 맵 · 대역폭(Mbps) 슬라이더 · AEC/햅틱 정합. *@
+
+<div class="hts-scrim" @onclick="Close">
+    <div class="hts-modal" @onclick:stopPropagation="true">
+        <div class="hts-h">
+            <div>
+                <div class="hts-title">🌐 AI 홀로그래픽 텔레프레전스 &amp; 체적 상호작용 스튜디오</div>
+                <div class="hts-sub"><b>체적 스트리밍</b>이 v17.20 아바타 가우시안 @(S.Count)개를 깊이 4 옥트리(@(S.ChunkCount) 청크 · 모턴 순서)로 나눠 원격 참가자 HMD 거리와 대역폭에 따라 16bit/8bit/희소/프록시로 가변 양자화합니다. <b>크로스모달 합성기</b>는 HMD 6DoF 와 시선 벡터를 교차해 상호 아이컨택을 복원하고 공간 오디오 · NLMS 반향 제거 · 원격 햅틱 이벤트를 샘플 정합 합성하며, <b>롤백 가드</b>는 RTT 20–150 ms 지연/손실을 GGPO 방식 결정적 롤백(최대 @(DeterministicRollbackStateResimulationGuard.MaxRollback) 프레임) · 에르미트 평활로 교정합니다.</div>
+            </div>
+            <button class="hts-x" @onclick="Close">✕</button>
+        </div>
+        <div class="hts-bar">
+            <button class="hts-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 가동")</button>
+            <button class="hts-btn" @onclick="Step30" disabled="@Runner.IsRunning">⏭ 0.5초</button>
+            <button class="hts-btn @(R.RollbackEnabled ? "on" : null)" @onclick="() => Runner.SetRollback(!R.RollbackEnabled)">⏪ 롤백</button>
+            <button class="hts-btn @(R.Smoothing ? "on" : null)" @onclick="() => Runner.SetSmoothing(!R.Smoothing)">〰 에르미트 평활</button>
+            <button class="hts-btn @(I.EyeContactCorrection ? "on" : null)" @onclick="() => Runner.SetEyeContact(!I.EyeContactCorrection)">👁 아이컨택 보정</button>
+            <button class="hts-btn @(I.AecEnabled ? "on" : null)" @onclick="() => Runner.SetAec(!I.AecEnabled)">🎙 AEC</button>
+            <button class="hts-btn @(I.HapticsEnabled ? "on" : null)" @onclick="() => Runner.SetHaptics(!I.HapticsEnabled)">🤝 햅틱</button>
+            <button class="hts-btn @(S.UseSimd ? "on" : null)" @onclick="() => Runner.SetSimd(!S.UseSimd)">⚡ SIMD</button>
+            <span class="hts-chip @(Runner.LastTickMs <= 16.7 ? "ok" : "warn")">프레임 @(F2(Runner.LastTickMs)) ms(최대 @(F1(Runner.MaxTickMs))) · 인코드 @(F2(S.LastEncodeMs)) · 디코드 @(F2(S.LastDecodeMs)) ms</span>
+            <span class="hts-chip">시뮬 프레임 @(R.CurrentFrame) · 송출 @(F0(Runner.TotalMbps)) Mbps</span>
+        </div>
+        <div class="hts-main">
+            <div class="hts-col">
+                <div class="hts-card">
+                    <div class="hts-sec">🛰 참가자 토폴로지 3D(원탁 · HMD · 시선 원시 ┄ / 보정 ─ · 손 · 공유 퍽) · 상호 아이컨택 <b>@(I.MutualPairs)쌍</b></div>
+                    <svg class="hts-topo" viewBox="0 0 400 260">
+                        <ellipse class="tbl" cx="@(F1(PX(0, 0)))" cy="@(F1(PY(0, TelepresenceScenario.TableY, 0)))" rx="@(F1(TelepresenceScenario.TableR * Kx))" ry="@(F1(TelepresenceScenario.TableR * Kz))" />
+                        @for (var k = 0; k < TelepresenceScenario.Bodies; k++)
+                        {
+                            var o = R.OraclePosition(k);
+                            var d = R.Display(k);
+                            <circle class="ghost" cx="@(F1(PX(o.X, o.Y)))" cy="@(F1(PY(o.X, TelepresenceScenario.TableY, o.Y)))" r="@(F1(TelepresenceScenario.BodyR * Kx))" />
+                            <circle class="puck" cx="@(F1(PX(d.X, d.Y)))" cy="@(F1(PY(d.X, TelepresenceScenario.TableY, d.Y)))" r="@(F1(TelepresenceScenario.BodyR * Kx))" />
+                        }
+                        @for (var p = 0; p < TelepresenceScenario.Participants; p++)
+                        {
+                            var g = I.Gaze(p);
+                            var raw = g.Head + g.Raw * 0.9f;
+                            var cor = g.Head + g.Corrected * 0.9f;
+                            var h = I.HandPosition(p);
+                            <g>
+                                <line class="neck" x1="@(F1(PX(g.Head.X, g.Head.Z)))" y1="@(F1(PY(g.Head.X, g.Head.Y, g.Head.Z)))" x2="@(F1(PX(g.Head.X, g.Head.Z)))" y2="@(F1(PY(g.Head.X, TelepresenceScenario.TableY, g.Head.Z)))" />
+                                <line class="raw" x1="@(F1(PX(g.Head.X, g.Head.Z)))" y1="@(F1(PY(g.Head.X, g.Head.Y, g.Head.Z)))" x2="@(F1(PX(raw.X, raw.Z)))" y2="@(F1(PY(raw.X, raw.Y, raw.Z)))" />
+                                <line class="cor @(g.Mutual ? "mut" : null)" x1="@(F1(PX(g.Head.X, g.Head.Z)))" y1="@(F1(PY(g.Head.X, g.Head.Y, g.Head.Z)))" x2="@(F1(PX(cor.X, cor.Z)))" y2="@(F1(PY(cor.X, cor.Y, cor.Z)))" />
+                                <circle class="hand @(p == 0 ? "loc" : null) @(h.Y < TelepresenceScenario.TableY + 0.1f ? "press" : null)" cx="@(F1(PX(h.X, h.Z)))" cy="@(F1(PY(h.X, h.Y, h.Z)))" r="4" />
+                                <circle class="head @(p == 0 ? "loc" : null) @(p == I.Speaker ? "spk" : null)" cx="@(F1(PX(g.Head.X, g.Head.Z)))" cy="@(F1(PY(g.Head.X, g.Head.Y, g.Head.Z)))" r="9" />
+                                <text x="@(F1(PX(g.Head.X, g.Head.Z)))" y="@(F1(PY(g.Head.X, g.Head.Y, g.Head.Z) - 13))">@(TelepresenceScenario.Names[p])</text>
+                            </g>
+                        }
+                    </svg>
+                    <div class="hts-legend"><i class="hl"></i>HMD 머리 <i class="spl"></i>화자 <i class="rawl"></i>원시 시선 <i class="corl"></i>보정 시선 <i class="mutl"></i>상호 아이컨택 <i class="pkl"></i>표시 퍽 <i class="ghl"></i>오라클(지연 0) <i class="hdl"></i>손</div>
+                    <div class="hts-gaze">
+                        @for (var p = 0; p < TelepresenceScenario.Participants; p++)
+                        {
+                            var g = I.Gaze(p);
+                            <span class="@(g.Mutual ? "ok" : null)">@(TelepresenceScenario.Names[p]) → @(g.Target >= 0 ? TelepresenceScenario.Names[g.Target] : "—") · 보정 @(F1(g.CorrectionDeg))° · 오차 @(F1(g.ErrorDeg))°@(g.Mutual ? " · 👁↔👁" : null)</span>
+                        }
+                    </div>
+                </div>
+
+                <div class="hts-card">
+                    <div class="hts-sec">📦 옥트리 LoD 청크 맵(로컬 아바타 정면 x–y) → 수신 피어
+                        @for (var v = 0; v < NeuralTelepresenceStudioRunner.Viewers; v++)
+                        {
+                            var vv = v;
+                            <button class="hts-btn sm @(_viewer == vv ? "on" : null)" @onclick="() => _viewer = vv">@(TelepresenceScenario.Names[vv + 1])</button>
+                        }
+                    </div>
+                    <svg class="hts-lod" viewBox="0 0 220 300">
+                        @for (var c = 0; c < S.ChunkCount; c++)
+                        {
+                            var ctr = S.ChunkCenterLocal(c);
+                            <rect class="l@((int)S.Level(_viewer, c))" x="@(F1(110 + ctr.X * 260 - 4))" y="@(F1(300 - (ctr.Y - 0.05f) * 190 - 4))" width="8" height="8" />
+                        }
+                    </svg>
+                    <div class="hts-hist">
+                        @for (var l = 0; l < NeuralVolumetricGaussianStreamingEngine.Levels; l++)
+                        {
+                            var n = S.LevelCount(_viewer, (StreamLod)l);
+                            <div class="nm"><i class="l@(l)"></i>@(NeuralVolumetricGaussianStreamingEngine.LevelNames[l])</div>
+                            <span class="bar"><i class="l@(l)" style="width:@(Pct(n / (double)Math.Max(1, S.ChunkCount)))"></i></span>
+                            <div class="v">@(n) 청크</div>
+                        }
+                    </div>
+                    <div class="hts-kv">거리 @(F2(Vector3.Distance(S.ViewerPosition(_viewer), TelepresenceScenario.Seat(0) + new Vector3(0, 1f, 0)))) m · 패킷 <b>@(F1(S.PacketBytes(_viewer) / 1024f)) KB</b>/프레임 · 송출 <b>@(F1(S.SentMbps(_viewer))) Mbps</b> / 예산 @(F0(S.BudgetMbps(_viewer))) · 원본 대비 @(F1(100.0 * S.PacketBytes(_viewer) / NeuralVolumetricGaussianStreamingEngine.RawBytesPerFrame(S.Count))) % · 재구성 RMS <b class="@(S.RmsErrorMm(_viewer) > 10 ? "warn" : null)">@(F2(S.RmsErrorMm(_viewer))) mm</b> · 최대 @(F1(S.MaxErrorMm(_viewer))) mm · 손실 청크 @(S.LostChunks(_viewer)) (누적 @(S.TotalLostChunks(_viewer)))</div>
+                    <div class="hts-ctl">
+                        <label class="hts-sl">@(TelepresenceScenario.Names[_viewer + 1]) 대역폭 <b>@(F0(S.BudgetMbps(_viewer))) Mbps</b><input type="range" min="10" max="1500" step="10" value="@(F0(S.BudgetMbps(_viewer)))" @onchange="e => Runner.SetBandwidth(_viewer, (float)Num(e, 250))" /></label>
+                        <label class="hts-sl">전체 <input type="range" min="10" max="1500" step="10" value="@(F0(S.BudgetMbps(_viewer)))" @onchange="e => Runner.SetAllBandwidth((float)Num(e, 250))" /></label>
+                    </div>
+                    <svg class="hts-ser sm" viewBox="0 0 360 50" preserveAspectRatio="none">
+                        <polyline class="mb" points="@(Series(2, MbpsScale(), 50))" />
+                    </svg>
+                    <div class="hts-legend"><i class="mbl"></i>총 송출(0–@(F0(MbpsScale())) Mbps · 4 s)</div>
+                </div>
+            </div>
+
+            <div class="hts-col">
+                <div class="hts-card">
+                    <div class="hts-sec">📡 네트워크 RTT · 패킷 손실 · 입력 지연(롤백 깊이) 미터</div>
+                    <div class="hts-net">
+                        @for (var p = 1; p < TelepresenceScenario.Participants; p++)
+                        {
+                            var pp = p;
+                            <div class="nm">@(TelepresenceScenario.Names[p])</div>
+                            <label>RTT <b>@(F0(R.RttMs(p)))</b><input type="range" min="0" max="300" step="5" value="@(F0(R.RttMs(p)))" @onchange="e => Runner.SetLink(pp, (float)Num(e, 60), R.JitterMs(pp), R.LossRate(pp) * 100f)" /></label>
+                            <label>지터 <b>@(F0(R.JitterMs(p)))</b><input type="range" min="0" max="40" step="1" value="@(F0(R.JitterMs(p)))" @onchange="e => Runner.SetLink(pp, R.RttMs(pp), (float)Num(e, 8), R.LossRate(pp) * 100f)" /></label>
+                            <label>손실 <b>@(F1(R.LossRate(p) * 100))%</b><input type="range" min="0" max="20" step="0.5" value="@(F1(R.LossRate(p) * 100))" @onchange="e => Runner.SetLink(pp, R.RttMs(pp), R.JitterMs(pp), (float)Num(e, 2))" /></label>
+                            <div class="meter"><span class="bar"><i class="@(R.LagFrames(p) > 7 ? "hot" : null)" style="width:@(Pct(R.LagFrames(p) / DeterministicRollbackStateResimulationGuard.MaxRollback))"></i></span>@(F0(R.LagFrames(p)))f · 실측 @(F0(R.MeasuredRttMs(p))) ms · 유실 @(R.PacketsLost(p))/@(R.Sent(p))</div>
+                        }
+                    </div>
+                    <svg class="hts-ser" viewBox="0 0 360 80" preserveAspectRatio="none">
+                        <polyline class="rt" points="@(Series(0, 200, 80))" /><polyline class="rb" points="@(Series(1, DeterministicRollbackStateResimulationGuard.MaxRollback, 80))" /><polyline class="wp" points="@(Series(4, 20, 80))" />
+                    </svg>
+                    <div class="hts-legend"><i class="rtl"></i>평균 실측 RTT(0–200 ms) <i class="rbl"></i>재시뮬레이션 프레임(0–10) <i class="wpl"></i>표시 워프(0–20 mm)</div>
+                </div>
+
+                <div class="hts-card">
+                    <div class="hts-sec">⏪ 확정론적 롤백 가드 @(R.RollbackEnabled ? "ON" : "OFF") · 평활 @(R.Smoothing ? "ON" : "OFF")</div>
+                    <div class="hts-stats">
+                        <span><b>@(R.Rollbacks)</b>롤백</span><span><b>@(R.ResimFrames)</b>재시뮬 프레임</span><span><b>@(R.LastDepth)/@(R.MaxDepth)</b>깊이(최근/최대)</span>
+                        <span><b class="@(R.Stalls > 0 ? "warn" : null)">@(R.Stalls)</b>예측 한계 정지</span><span><b class="@(R.Desyncs > 0 ? "bad" : "ok")">@(R.Desyncs)</b>디싱크 / 검증 @(R.Verified)</span><span><b>@(R.Mispredictions)</b>예측 실패</span>
+                        <span><b>@(F1(R.CorrectionMm)) mm</b>보정 Δ</span><span><b class="@(R.WarpMm > 5 ? "warn" : null)">@(F2(R.WarpMm)) mm</b>워프(최대 @(F1(R.MaxWarpMm)))</span><span><b>@(F0((float)R.LastAdvanceUs)) µs</b>가드 틱</span>
+                    </div>
+                    <div class="hts-kv">체크섬 0x@(R.Checksum.ToString("X16", CultureInfo.InvariantCulture)) · 확정 프레임 @(R.VerifiedFrame) · 비행 중 패킷 @(R.InFlight) · 중복 입력 @(DeterministicRollbackStateResimulationGuard.Redundancy) 프레임/패킷</div>
+                    <div class="hts-ctl"><button class="hts-btn sm" @onclick="Runner.ResetMetrics">↺ 지표 초기화</button></div>
+                </div>
+
+                <div class="hts-card">
+                    <div class="hts-sec">🎙 공간 오디오 · AEC · 🤝 원격 햅틱 정합</div>
+                    <div class="hts-stats">
+                        <span><b class="@(I.ErleDb >= 15 ? "ok" : "warn")">@(F1(I.ErleDb)) dB</b>ERLE</span><span><b>@(F2(I.EchoRms * 1000)) → @(F2(I.ResidualRms * 1000))</b>반향 → 잔여(×10⁻³)</span><span><b class="@(I.DoubleTalk ? "warn" : null)">@(I.DoubleTalk ? "이중 발화" : "단일")</b>Geigel(@(I.DoubleTalkBlocks))</span>
+                        <span><b>@(F2(I.RmsLeft)) / @(F2(I.RmsRight))</b>L/R RMS</span><span><b>@(I.Events)</b>접촉 이벤트(지연 @(I.LateEvents))</span><span><b>@(F2(I.MaxSkewMs)) ms</b>오디오-햅틱 스큐</span>
+                    </div>
+                    <svg class="hts-ser sm" viewBox="0 0 360 50" preserveAspectRatio="none">
+                        <polyline class="mic" points="@(Wave(I.Mic))" /><polyline class="res" points="@(Wave(I.Residual))" />
+                    </svg>
+                    <div class="hts-legend"><i class="micl"></i>마이크(근단 + 반향) <i class="resl"></i>AEC 출력 <i class="erl"></i>ERLE @(F1(I.ErleDb)) dB · 화자 @(TelepresenceScenario.Names[I.Speaker]) → @(TelepresenceScenario.Names[I.Addressee])</div>
+                    <div class="hts-evt">
+                        @for (var i = 0; i < I.RecentCount; i++)
+                        {
+                            var e = I.Recent(i);
+                            <span class="@(e.Late ? "warn" : null)">@(TelepresenceScenario.Names[e.From]) → @(e.Target >= 0 ? "퍽 " + e.Target.ToString(CultureInfo.InvariantCulture) : "✋ " + TelepresenceScenario.Names[-1 - e.Target]) · @(F1(e.Force)) N · 이득 @(F2(e.Gain)) · +@(F0((float)(e.PlayoutMs - e.TimeMs))) ms</span>
+                        }
+                    </div>
+                </div>
+                <div class="hts-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .hts-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .hts-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .hts-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #22d3ee 14%, var(--card)), color-mix(in srgb, #a78bfa 12%, var(--card))); }
+    .hts-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .hts-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .hts-sub b { color: var(--text-primary); }
+    .hts-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .hts-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .hts-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .hts-btn:disabled { opacity: .45; cursor: default; }
+    .hts-btn.sm { font-size: 11px; padding: 3px 8px; }
+    .hts-btn.on { background: color-mix(in srgb, #22d3ee 22%, var(--card)); border-color: #22d3ee; }
+    .hts-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .hts-chip.ok { border-color: #22c55e; color: #22c55e; }
+    .hts-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .hts-main { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .hts-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .hts-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+    .hts-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .hts-ctl { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
+    .hts-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); }
+    .hts-sl b { font-family: var(--mono); color: var(--text-primary); }
+    .hts-topo { width: 100%; height: 260px; background: radial-gradient(ellipse at 50% 60%, #0b1730, #030712); border-radius: 8px; }
+    .hts-topo .tbl { fill: #1e293b; stroke: #334155; stroke-width: 1.5; }
+    .hts-topo .puck { fill: #f59e0b; stroke: #fde68a; stroke-width: 1; }
+    .hts-topo .ghost { fill: none; stroke: #94a3b8; stroke-dasharray: 2 2; }
+    .hts-topo .neck { stroke: #475569; stroke-width: 1; }
+    .hts-topo .raw { stroke: #f87171; stroke-width: 1.2; stroke-dasharray: 4 3; }
+    .hts-topo .cor { stroke: #22d3ee; stroke-width: 1.6; }
+    .hts-topo .cor.mut { stroke: #4ade80; stroke-width: 2.6; }
+    .hts-topo .head { fill: #6366f1; stroke: #c7d2fe; stroke-width: 1.2; }
+    .hts-topo .head.loc { fill: #0ea5e9; }
+    .hts-topo .head.spk { stroke: #fbbf24; stroke-width: 2.5; }
+    .hts-topo .hand { fill: #a78bfa; }
+    .hts-topo .hand.loc { fill: #38bdf8; }
+    .hts-topo .hand.press { stroke: #fff; stroke-width: 1.2; }
+    .hts-topo text { fill: #e2e8f0; font: 700 10px var(--mono); text-anchor: middle; }
+    .hts-gaze, .hts-evt { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 3px 10px; font: 600 10.5px var(--mono); color: var(--text-secondary); }
+    .hts-gaze .ok { color: #4ade80; }
+    .hts-evt .warn { color: #f59e0b; }
+    .hts-lod { width: 100%; max-width: 260px; height: 300px; align-self: center; background: #030712; border-radius: 8px; }
+    .hts-lod rect { stroke: #030712; stroke-width: .6; }
+    .hts-lod .l0, .hts-hist .l0 { fill: #4ade80; background: #4ade80; } .hts-lod .l1, .hts-hist .l1 { fill: #22d3ee; background: #22d3ee; }
+    .hts-lod .l2, .hts-hist .l2 { fill: #a78bfa; background: #a78bfa; } .hts-lod .l3, .hts-hist .l3 { fill: #64748b; background: #64748b; }
+    .hts-hist { display: grid; grid-template-columns: 80px 1fr 70px; gap: 3px 8px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .hts-hist .nm { font-weight: 800; color: var(--text-primary); display: flex; align-items: center; gap: 5px; }
+    .hts-hist .nm i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; }
+    .hts-hist .v { font-family: var(--mono); text-align: right; color: var(--text-primary); }
+    .hts-hist .bar, .hts-net .bar { position: relative; height: 8px; background: #0f172a; border-radius: 4px; overflow: hidden; display: block; }
+    .hts-hist .bar i, .hts-net .bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; transition: width .15s; }
+    .hts-net { display: grid; grid-template-columns: 92px 1fr 1fr 1fr; gap: 4px 10px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .hts-net .nm { font-weight: 800; color: var(--text-primary); }
+    .hts-net label { display: flex; align-items: center; gap: 5px; }
+    .hts-net label b { font-family: var(--mono); color: var(--text-primary); min-width: 30px; }
+    .hts-net input { flex: 1; min-width: 50px; }
+    .hts-net .meter { grid-column: 2 / -1; display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; font: 600 10.5px var(--mono); margin-bottom: 4px; }
+    .hts-net .bar i { background: linear-gradient(90deg, #0891b2, #22d3ee); }
+    .hts-net .bar i.hot { background: linear-gradient(90deg, #d97706, #f87171); }
+    .hts-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 10px; font-size: 10.5px; color: var(--text-muted); }
+    .hts-stats span { display: flex; flex-direction: column; gap: 1px; }
+    .hts-stats b { font: 800 13px var(--mono); color: var(--text-primary); }
+    .hts-stats b.ok, .hts-kv b.ok { color: #22c55e; } .hts-stats b.warn, .hts-kv b.warn { color: #f59e0b; } .hts-stats b.bad { color: #ef4444; }
+    .hts-ser { width: 100%; height: 80px; background: #030712; border-radius: 6px; }
+    .hts-ser.sm { height: 50px; }
+    .hts-ser polyline { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+    .hts-ser .rt { stroke: #22d3ee; } .hts-ser .rb { stroke: #f472b6; } .hts-ser .wp { stroke: #fbbf24; } .hts-ser .mb { stroke: #4ade80; } .hts-ser .mic { stroke: #f87171; } .hts-ser .res { stroke: #4ade80; }
+    .hts-legend, .hts-kv { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; line-height: 1.45; color: var(--text-secondary); align-items: center; min-width: 0; overflow-wrap: anywhere; }
+    .hts-kv b { color: var(--text-primary); }
+    .hts-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 3px; }
+    .hts-legend .hl { background: #6366f1; } .hts-legend .spl { background: #fbbf24; } .hts-legend .rawl { background: #f87171; } .hts-legend .corl { background: #22d3ee; } .hts-legend .mutl { background: #4ade80; }
+    .hts-legend .pkl { background: #f59e0b; } .hts-legend .ghl { background: #94a3b8; } .hts-legend .hdl { background: #a78bfa; } .hts-legend .mbl { background: #4ade80; }
+    .hts-legend .rtl { background: #22d3ee; } .hts-legend .rbl { background: #f472b6; } .hts-legend .wpl { background: #fbbf24; } .hts-legend .micl { background: #f87171; } .hts-legend .resl { background: #4ade80; } .hts-legend .erl { background: transparent; width: 0; margin: 0; }
+    .hts-note { font-size: 11px; color: var(--text-muted); word-break: break-all; }
+    @@media (max-width: 1100px) { .hts-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const float Kx = 150f, Kz = 62f, Ky = 110f;
+    private int _viewer;
+    private System.Threading.Timer? _timer;
+    private NeuralVolumetricGaussianStreamingEngine S => Runner.Stream;
+    private MultiUserCrossModalInteractionSynthesizer I => Runner.Interaction;
+    private DeterministicRollbackStateResimulationGuard R => Runner.Rollback;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Telepresence.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string Pct(double v) => (Math.Clamp(double.IsFinite(v) ? v : 0, 0, 1) * 100).ToString("0.##", CultureInfo.InvariantCulture) + "%";
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    // 사선 투영: 화면 x ← 월드 x · 화면 y ← 깊이 z(원근 축소) − 높이 y
+    private static float PX(float x, float z) => 200f + x * Kx;
+    private static float PY(float x, float y, float z) => 150f + z * Kz - (y - TelepresenceScenario.TableY) * Ky;
+
+    private double MbpsScale() => Math.Max(50.0, Runner.TotalMbps * 1.3);
+
+    private string Series(int kind, double full, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+        {
+            double v = kind switch { 0 => Runner.RttSeries(i), 1 => Runner.RollbackSeries(i), 2 => Runner.MbpsSeries(i), 3 => Runner.ErleSeries(i), _ => Runner.WarpSeries(i) };
+            sb.Append(F1(360.0 * (n - 1 - i) / (NeuralTelepresenceStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - 2 - (h - 4) * Math.Clamp(v / full, 0, 1))).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private static string Wave(ReadOnlySpan<float> s)
+    {
+        const int n = 200;
+        var sb = new System.Text.StringBuilder(n * 12);
+        var step = s.Length / n;
+        for (var i = 0; i < n; i++) sb.Append(F1(360.0 * i / (n - 1))).Append(',').Append(F1(25 - 23 * Math.Clamp(s[i * step] * 2.5, -1, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void Step30()
+    {
+        for (var i = 0; i < NeuralTelepresenceStudioRunner.Hz / 2; i++) Runner.Step();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중 갱신은 250 ms 타이머가 처리 — 정지 상태 변경만 즉시 반영.</summary>
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

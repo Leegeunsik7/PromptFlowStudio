@@ -1,0 +1,154 @@
+﻿/* ═══════════════════ PromptFlow Studio · 프롬프트→영상 생성 워크플로우 — 테마 ═══════════════════
+   딥 인디고/스튜디오 다크 + 바이올렛(Wan) 프라이머리 · 플로우 그라디언트(바이올렛→시안→마젠타)로
+   입력→최종 영상까지 유기적으로 흐르는 워크플로우를 강조. 라이트 기본 + 다크(기본 표시). */
+:root {
+    --bg: #f4f6fb; --canvas: #eef1f7; --card: #ffffff; --card-2: #f6f8fc;
+    --ink: #14203a; --sub: #64748b; --line: #e2e7f0; --hairline: #eef1f7;
+    --side: #17132e; --side-2: #0f0b22; --side-ink: #cdd3f0; --side-sub: #8b8ab8; --side-active: #241a4a;
+    --accent: #6d5efc; --accent-2: #8b7bff; --accent-ink: #150c33;
+    --cost: #6d5efc; --up: #16a34a; --down: #dc2626; --warn: #d97706;
+    --flow-violet: #7c6cff; --flow-cyan: #0891b2; --flow-magenta: #db2777;
+    --radius: 14px;
+    /* v17.63.1 레이어 토큰 — 스튜디오 모달 < 서브모달(도움말·설정) < 토스트. 개별 .razor 의 z-index 매직 넘버 금지(Z_Index_Tokens 감사).
+       모바일 사이드바 드로어(site-ui-advanced.css 1100~1200)·전체화면(9999)·에러 UI(20000)는 별도 최상위 계층. */
+    --z-sidebar-nav: 100; --z-transport-header: 110; --z-studio-modal: 120; --z-submodal-dialog: 130; --z-toast-notification: 140;
+    --z-drawer-scrim: 150; --z-drawer-panel: 151;
+    --mono: "Roboto Mono", "JetBrains Mono", ui-monospace, Consolas, monospace;
+
+    /* ── 텍스트 위계 토큰 (WCAG AA 4.5:1 기준) ─────────────────────────────
+       ⚠ 이 토큰은 반드시 테마별로 정의한다. 다크 값(#F8FAFC 등)을 :root 에
+         전역 정의하면 라이트 테마에서 흰 배경에 흰 글씨가 된다.
+         실측: #F8FAFC on #ffffff = 1.05:1, #CBD5E1 = 1.48:1, #94A3B8 = 2.56:1.
+       라이트 테마 값은 아래와 같이 어두운 쪽으로 뒤집는다. */
+    --text-primary:   #0f172a;   /* on #ffffff → 17.85:1 */
+    --text-secondary: #334155;   /* on #ffffff → 10.36:1  폼 라벨 */
+    --text-muted:     #52627a;   /* on #ffffff →  6.55:1  보조 설명문 */
+    --bg-disabled:    #eef1f7;
+    --text-disabled:  #64748b;   /* on #eef1f7 →  4.02:1 (비활성 = WCAG 면제) */
+    --text-disabled-aa: #55637a; /* 4.5:1 이 필요할 때 쓰는 대체값 */
+    /* ── --field-line : 입력 컨트롤의 <경계선> ──────────────────────────
+       ★ 왜 --line 을 그대로 쓰지 않는가 (실측)
+         --line 은 카드·구분선용이고 일부러 흐리다. 그것을 입력 테두리에
+         쓰면 입력란의 경계가 사실상 보이지 않는다. 실측값:
+           다크  #223047 on .memo #0c1423        = 1.39:1
+                 #223047 on cam-mo input #1d263c = 1.13:1
+                 #223047 on .mo #141d33          = 1.26:1
+           라이트 #e2e7f0 on #ffffff              = 1.24:1
+         WCAG 2.1 SC 1.4.11(Non-text Contrast)은 <UI 컴포넌트의 경계>에
+         3:1 을 요구한다. 위 네 값은 전부 미달이었다.
+       ★ 왜 #64748b 하나로 양쪽 테마를 덮는가
+         다크 3.16~3.87:1 · 라이트 4.51~4.76:1 로 두 테마 모두 3:1 을 넘긴다.
+         알파를 올리는 방식(rgba(148,163,184,.55))도 3:1 을 넘기지만, 합성
+         결과가 <어떤 배경 위에 얹히느냐>에 따라 달라져 모달·카드·입력배경이
+         겹칠 때마다 다시 재야 한다. 불투명색은 그 계산이 필요 없다.
+       ★ 이 값은 <글자>가 아니라 경계선용이다. 글자에 쓰면 4.5:1 미달이다. */
+    --field-line: #64748b;
+
+    font-family: "Pretendard Variable", "Pretendard", "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --bg: #0a0f1a; --canvas: #080d18; --card: #111a2e; --card-2: #0d1524;
+        --ink: #e6eefc; --sub: #93a3b8; --line: #223047; --hairline: #1a2436;
+        --side: #120e28; --side-2: #0a0718; --side-ink: #cdd3f0; --side-sub: #8b8ab8; --side-active: #221a44;
+        --accent: #7c6cff; --accent-2: #a78bfa; --accent-ink: #0b0620;
+        --cost: #7c6cff; --up: #34d399; --down: #f87171; --warn: #fbbf24;
+        --flow-violet: #a78bfa; --flow-cyan: #22d3ee; --flow-magenta: #f472b6;
+
+        --text-primary:   #F8FAFC;   /* on --card #111a2e → 16.57:1 */
+        --text-secondary: #CBD5E1;   /* on --card         → 11.68:1  폼 라벨 */
+        --text-muted:     #94A3B8;   /* on --card         →  6.76:1  보조 설명문 */
+
+
+        /* 입력 경계선 — :root 의 --field-line 주석에 실측 근거가 있다.
+           다크에서도 같은 값으로 3:1 을 넘긴다(3.16~3.87:1). */
+        --field-line: #64748b;
+        --bg-disabled:    #1E293B;
+        --text-disabled:  #64748B;   /* on --bg-disabled  →  3.07:1
+                                        ⚠ AA(4.5:1) 미달. WCAG 1.4.3 은 '비활성 UI
+                                          구성요소'를 대비 요구에서 면제하고 Lighthouse
+                                          대비 감사도 disabled 를 건너뛴다. 요청 사양을
+                                          그대로 따르되 수치를 명시해 둔다.
+                                          4.5:1 이 필요하면 아래 대체값으로 바꿀 것. */
+        --text-disabled-aa: #8492A8; /* on --bg-disabled  →  4.64:1 */
+    }
+}
+:root[data-theme="dark"] {
+    --bg: #0a0f1a; --canvas: #080d18; --card: #111a2e; --card-2: #0d1524;
+    --ink: #e6eefc; --sub: #93a3b8; --line: #223047; --hairline: #1a2436;
+    --side: #120e28; --side-2: #0a0718; --side-ink: #cdd3f0; --side-sub: #8b8ab8; --side-active: #221a44;
+    --accent: #7c6cff; --accent-2: #a78bfa; --accent-ink: #0b0620;
+    --cost: #7c6cff; --up: #34d399; --down: #f87171; --warn: #fbbf24;
+    --flow-violet: #a78bfa; --flow-cyan: #22d3ee; --flow-magenta: #f472b6;
+
+    --text-primary:   #F8FAFC;   /* on --card #111a2e → 16.57:1 */
+    --text-secondary: #CBD5E1;   /* on --card         → 11.68:1  폼 라벨 */
+    --text-muted:     #94A3B8;   /* on --card         →  6.76:1  보조 설명문 */
+
+    /* 입력 경계선 — :root 의 --field-line 주석 참조(다크에서도 3:1 초과). */
+    --field-line: #64748b;
+    --bg-disabled:    #1E293B;
+    --text-disabled:  #64748B;   /* on --bg-disabled  →  3.07:1
+                                    ⚠ AA(4.5:1) 미달. WCAG 1.4.3 은 '비활성 UI
+                                      구성요소'를 대비 요구에서 면제하고 Lighthouse
+                                      대비 감사도 disabled 를 건너뛴다. 요청 사양을
+                                      그대로 따르되 수치를 명시해 둔다.
+                                      4.5:1 이 필요하면 아래 대체값으로 바꿀 것. */
+    --text-disabled-aa: #8492A8; /* on --bg-disabled  →  4.64:1 */
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--ink); font-size: 14px; -webkit-font-smoothing: antialiased; }
+h1, h2, h3, h4 { margin: 0; }
+a { color: inherit; text-decoration: none; }
+
+.boot { display: grid; place-items: center; height: 100vh; color: var(--sub); font-weight: 600; letter-spacing: .02em; }
+
+/* ── 앱 셸(사이드바 + 콘텐츠) ── */
+.app-shell { display: grid; grid-template-columns: 250px 1fr; height: 100vh; overflow: hidden; }
+.content { overflow: auto; background: var(--canvas); }
+
+.sidebar { display: flex; flex-direction: column; background: linear-gradient(180deg, var(--side), var(--side-2)); color: var(--side-ink); border-right: 1px solid rgba(255,255,255,.05); }
+.side-brand { display: flex; align-items: center; gap: 11px; padding: 20px 18px 16px; }
+/* 안전 방패 마크는 인라인 SVG(앰버)다. 어두운 사이드바에서 또렷하도록 다크 타일 위에 얹는다. */
+.side-logo { width: 40px; height: 40px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 11px;
+    background: linear-gradient(180deg, #241a4a, #140f2c); border: 1px solid rgba(124,108,255,.45); box-shadow: 0 8px 22px rgba(0,0,0,.32); }
+.side-name { font-size: 16px; font-weight: 900; letter-spacing: -.2px; color: #eef2fb; line-height: 1; }
+.side-tag { font: 700 8.5px/1 var(--mono); letter-spacing: .16em; color: var(--accent-2); margin-top: 5px; }
+.nav { flex: 1; overflow-y: auto; padding: 8px 10px; }
+.nav-grp { font: 700 9.5px/1 var(--mono); letter-spacing: .1em; color: var(--side-sub); text-transform: uppercase; margin: 14px 8px 6px; }
+.nav-item { display: flex; align-items: center; gap: 11px; padding: 10px 12px; border-radius: 10px; color: var(--side-ink); font-size: 13.5px; font-weight: 600; cursor: pointer; transition: background .14s ease, color .14s ease; }
+.nav-item:hover { background: rgba(255,255,255,.05); }
+.nav-item.active { background: var(--side-active); color: #fff; box-shadow: inset 2px 0 0 var(--accent-2); }
+.nav-item .ic { font-size: 15px; flex: 0 0 auto; width: 20px; text-align: center; }
+/* '준비 중' 워크플로우 단계 — 아직 라우트가 없는 로드맵 항목(클릭 불가). */
+.nav-item.nav-soon { cursor: default; opacity: .62; }
+.nav-item.nav-soon:hover { background: transparent; }
+.nav-item .nav-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-soon-b { font: 700 8.5px/1 var(--mono); letter-spacing: .04em; color: var(--side-sub); border: 1px solid rgba(148,163,184,.3); border-radius: 999px; padding: 3px 6px; flex: 0 0 auto; }
+.nav-kbd { font: 700 9px/1 var(--mono); color: var(--side-sub); opacity: .8; flex: 0 0 auto; }
+.side-foot { display: flex; align-items: center; gap: 11px; padding: 14px 16px; border-top: 1px solid rgba(255,255,255,.06); }
+.side-ava { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; font-weight: 800; color: var(--accent-ink); background: linear-gradient(135deg, var(--accent-2), var(--accent)); flex: 0 0 auto; }
+.side-um { min-width: 0; flex: 1; } .side-un { font-size: 12.5px; font-weight: 800; color: #eef2fb; } .side-ue { font-size: 10.5px; color: var(--side-sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-out { width: 30px; height: 30px; flex: 0 0 auto; border-radius: 9px; border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.04); color: var(--side-sub); cursor: pointer; font-size: 14px; transition: color .14s, border-color .14s, background .14s; }
+.side-out:hover { color: #fca5a5; border-color: rgba(248,113,113,.5); background: rgba(248,113,113,.1); }
+
+/* ── 공용 카드/유틸 ── */
+.page-h { font-size: 1.5rem; font-weight: 800; color: var(--ink); }
+.page-sub { font-size: 13px; color: var(--sub); margin-top: 6px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+
+/* ── Blazor 오류 UI ── */
+#blazor-error-ui { display: none; position: fixed; bottom: 0; left: 0; right: 0; z-index: 20000; padding: 10px 16px;
+    background: #b91c1c; color: #fff; font-size: 13px; box-shadow: 0 -2px 12px rgba(0,0,0,.3); }
+#blazor-error-ui .reload, #blazor-error-ui .dismiss { color: #fff; margin-left: 10px; cursor: pointer; text-decoration: underline; }
+
+/* ── v17.63.0 스튜디오 모달 반응형 가드 ──
+   스튜디오 모달(.xx-scrim > .xx-modal)은 컴포넌트별 <style> 로 width:min(…,97vw)/max-height:94vh 만 지정 —
+   짧은 뷰포트(모바일 주소창 · 768px 노트북)에서 하단이 잘리고, 2~3열 .xx-main 그리드가 좁은 화면에서 찌그러졌다.
+   속성 선택자 2단(0,2,0)이라 컴포넌트 <style>(0,1,0)보다 로드 순서와 무관하게 우선한다. */
+[class$="-scrim"] > [class$="-modal"] { max-width: calc(100vw - 12px); max-height: calc(100dvh - 12px); min-height: 0; }
+@media (max-width: 760px) {
+    [class$="-scrim"] > [class$="-modal"] > [class$="-main"] { grid-template-columns: minmax(0, 1fr); }
+}

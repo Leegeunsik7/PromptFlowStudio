@@ -1,0 +1,681 @@
+@using PromptFlowStudio.Services.Flow
+@using PromptFlowStudio.Services.Wan
+@implements IDisposable
+@inject FlowExecutionPipeline Pipeline
+@inject PromptFlowStudio.Shared.Haptics.IHapticEngine Haptic
+@inject ILocalMediaService Media
+@inject IFilePickerService Picker
+@inject IVideoExportService Exporter
+@inject PromptFlowStudio.Services.Ui.GalleryAutoSaveService Gallery
+@inject PromptFlowStudio.Services.Ui.StudioMemoryAudit MemAudit
+
+@* [PromptFlow Studio v5.5 · Task2] True Flow — 동적 무한 노드 캔버스. 순수 Blazor SVG + PointerEventArgs(외부 JS 라이브러리 0).
+   ▸ 노드 추가/삭제/이동 · 출력 포트 → 입력 포트 큐빅 베지어 드래그 연결(근접 시 햅틱 스냅) · 핀치줌/팬(무한 캔버스).
+   ▸ 실행 중 노드는 헤더 테두리 색 + 스피너, 데이터가 흐르는 연결선은 animated neon dash-array 파동.
+   ▸ 좌표는 viewBox 없는 픽셀 SVG + 내부 <g scale> → 포인터 델타 1:1(getBoundingClientRect 불필요). *@
+
+<div class="tfc">
+    <div class="tfc-h">
+        <span class="tfc-title">🕹️ True Flow 노드 오케스트레이터</span>
+        <span class="tfc-badge @(_engine.IsRunning ? "live" : null)">@(_engine.IsRunning ? "⚡ 실행중" : $"{_engine.Nodes.Count} 노드")</span>
+        <div class="tfc-tools">
+            @foreach (var p in FlowExecutionPipeline.Palette)
+            {
+                <button class="tfc-add" @onclick="() => AddNode(p.Kind)" title="@(p.Label) 노드 추가" @key="p.Kind">＋@p.Emoji</button>
+            }
+            <button class="tfc-run" @onclick="Run" disabled="@_engine.IsRunning">▶ 실행</button>
+            <input type="number" min="1" max="8" step="1" class="tfc-n" @bind="_chainN" disabled="@_engine.IsRunning" title="자동 체인 세그먼트 수(1~8)" />
+            <button class="tfc-run alt" @onclick="RunAutoChain" disabled="@_engine.IsRunning" title="N회 무인 I2V 체인 생성·실행">🔄 N회 체인</button>
+            <button class="tfc-tool" @onclick="Cancel" disabled="@(!_engine.IsRunning)" title="취소">■</button>
+            @* v5.6.4: 페이지 통합 툴바가 있으면(CompactToolbar) 중복 저장/불러오기 숨김 → 캔버스 작업공간 확장. *@
+            @if (!CompactToolbar)
+            {
+                <button class="tfc-tool" @onclick="SaveGraph" title="플로우 저장(.pfGraph · 위치 선택)">💾</button>
+                <button class="tfc-tool" @onclick="LoadGraph" title="플로우 불러오기(.pfGraph)">📂</button>
+            }
+            <button class="tfc-tool" @onclick="ResetView" title="뷰 초기화">↺</button>
+        </div>
+    </div>
+
+    @* v5.5.5: 라이브 체인 프로그레스 HUD(엔진 OnChanged 연동) *@
+    <ChainProgressHud Engine="_engine" Running="@_engine.IsRunning" OnCancel="Cancel" />
+
+    @* v5.6: 베이스 프리라이트 & 원클릭 템플릿 라이브러리 *@
+    <BasePreviewDeck OnApplyTemplate="ApplyTemplate" BaseSample="_baseSampleOn" BaseSampleChanged="v => _baseSampleOn = v"
+                     Prompt="@FirstPromptText" GuardEnabled="GuardEnabled" GuardPreset="GuardPreset" GuardCustom="@GuardCustom" />
+
+    <div class="tfc-stage">
+        <svg class="tfc-svg" @onpointerdown="BgDown" @onpointermove="Move" @onpointerup="Up" @onpointercancel="Up" @onpointerleave="Up">
+            <g transform="translate(@F(_panX) @F(_panY)) scale(@F(_zoom))">
+                @* ── 연결선(활성 시 네온 파동) ── *@
+                @foreach (var c in _engine.Connections)
+                {
+                    var fromN = _engine.Get(c.FromNodeId);
+                    var toN = _engine.Get(c.ToNodeId);
+                    if (fromN is null || toN is null) { continue; }
+                    var a = OutPos(fromN, c.FromPortId);
+                    var b = InPos(toN, c.ToPortId);
+                    var active = fromN.State is NodeRunState.Running or NodeRunState.Completed;
+                    <g @key="c.Id">
+                        <path class="tfc-edge-base" d="@Curve(a.X, a.Y, b.X, b.Y)" />
+                        @if (active)
+                        {
+                            <path class="tfc-edge-flow" d="@Curve(a.X, a.Y, b.X, b.Y)" stroke="@(fromN.State == NodeRunState.Running ? "#f5c451" : "#34d399")" />
+                        }
+                        @* 투명 히트박스(14px) — 터치/클릭 시 연결 삭제 *@
+                        <path class="tfc-edge-hit" d="@Curve(a.X, a.Y, b.X, b.Y)" @onpointerdown:stopPropagation="true" @onclick="() => DeleteConnection(c.Id)">
+                            <title>클릭하여 연결 삭제</title>
+                        </path>
+                    </g>
+                }
+
+                @* ── 드래그 중 미리보기 연결선 ── *@
+                @if (_mode == Mode.Link && _linkFromNodeId is not null)
+                {
+                    var fromN = _engine.Get(_linkFromNodeId);
+                    if (fromN is not null)
+                    {
+                        var a = OutPos(fromN, _linkFromPortId!);
+                        <path class="tfc-edge-preview @(_snapNodeId is not null ? "snap" : null)" d="@Curve(a.X, a.Y, _linkX, _linkY)" />
+                    }
+                }
+
+                @* ── 노드 ── *@
+                @foreach (var n in _engine.Nodes)
+                {
+                    var w = NodeW2(n);
+                    var h = NodeH2(n);
+                    var isCard = HasCard(n);
+                    <g class="tfc-node" transform="translate(@F(n.X) @F(n.Y))" @key="n.Id"
+                       @onpointerdown="(e) => NodeDown(n, e)" @onpointerdown:stopPropagation="true">
+                        @* 바디 *@
+                        <rect class="tfc-nbody" width="@F(w)" height="@F(h)" rx="13" />
+                        @* 헤더 *@
+                        <rect class="tfc-nhead" width="@F(w)" height="@F(HeaderH)" rx="13" stroke="@StateStroke(n.State)"
+                              fill="@(_selectedId == n.Id ? "rgba(124,92,255,.28)" : "rgba(124,92,255,.14)")" />
+                        <text class="tfc-nemoji" x="12" y="21">@n.Emoji</text>
+                        <text class="tfc-ntitle" x="34" y="21">@n.Title</text>
+                        @if (n.State == NodeRunState.Running)
+                        {
+                            <g class="tfc-spin" transform="translate(@F(w - 30) 16)">
+                                <circle r="7" fill="none" stroke="#f5c451" stroke-width="2.5" stroke-dasharray="30 14" />
+                            </g>
+                        }
+                        <text class="tfc-del" x="@F(w - 11)" y="21" @onpointerdown:stopPropagation="true" @onclick="() => DeleteNode(n.Id)">✕</text>
+
+                        @* 입력 포트(좌) *@
+                        @for (var i = 0; i < n.Inputs.Count; i++)
+                        {
+                            var y = PortYFor(n, i);
+                            var port = n.Inputs[i];
+                            <g @key="port.Id">
+                                <circle class="tfc-port in @(_snapNodeId == n.Id && _snapPortId == port.Id ? "hot" : null)" cx="0" cy="@F(y)" r="@F(PortR)" fill="@PortColor(port.DataType)" />
+                                @if (!isCard) { <g><text class="tfc-plabel in" x="14" y="@F(y + 4)">@port.Name</text></g> }
+                            </g>
+                        }
+                        @* 출력 포트(우) — 드래그 시작점 *@
+                        @for (var j = 0; j < n.Outputs.Count; j++)
+                        {
+                            var y = PortYFor(n, j);
+                            var port = n.Outputs[j];
+                            <g @key="port.Id">
+                                @if (!isCard) { <g><text class="tfc-plabel out" x="@F(w - 14)" y="@F(y + 4)">@port.Name</text></g> }
+                                <circle class="tfc-port out" cx="@F(w)" cy="@F(y)" r="@F(PortR + 1)" fill="@PortColor(port.DataType)"
+                                        @onpointerdown="(e) => PortDown(n, port, e)" @onpointerdown:stopPropagation="true" />
+                            </g>
+                        }
+
+                        @if (n.Kind == "preview")
+                        {
+                            @* 프리뷰 노드 카드 내부 인라인 HTML5 <video> + 📸 키프레임 추출 (foreignObject) *@
+                            <foreignObject x="14" y="@F(HeaderH + 2)" width="@F(w - 28)" height="@F(h - HeaderH - 8)">
+                                <div xmlns="http://www.w3.org/1999/xhtml" style="width:100%;height:100%" @onpointerdown:stopPropagation="true">
+                                    <WanVideoPreviewNode Video="@(n.Inputs.FirstOrDefault()?.Value as WanVideoRef)" NodeId="@n.Id" OnKeyframeExtracted="HandleKeyframeExtracted"
+                                                         BaseSample="@(_baseSampleOn ? WanSampleFactory.FrameDataUrl("Wan 3.0 예상 출력", "#7c5cff", "BASE SAMPLE") : null)" />
+                                </div>
+                            </foreignObject>
+                        }
+                        else if (n.Kind == "imagemix")
+                        {
+                            @* v5.5.2 추출 키프레임 인라인 썸네일 (foreignObject <img>) *@
+                            <foreignObject x="14" y="@F(HeaderH + 2)" width="@F(w - 28)" height="@F(h - HeaderH - 8)">
+                                <div xmlns="http://www.w3.org/1999/xhtml" style="width:100%;height:100%;display:flex;flex-direction:column;gap:4px" @onpointerdown:stopPropagation="true">
+                                    @if (ImageOf(n) is { } src)
+                                    {
+                                        <img src="@src" alt="keyframe" style="flex:1;min-height:0;width:100%;object-fit:contain;background:#000;border-radius:6px" />
+                                        <button @onclick="() => SaveAnchorFromNode(n)" title="이 프레임을 프로젝트 앵커 이미지로 저장"
+                                                style="flex:0 0 auto;height:26px;border:1px solid #34d399;background:#0b0d14;color:#34d399;border-radius:6px;font:700 10px 'Malgun Gothic',sans-serif;cursor:pointer">💾 프로젝트 앵커로 저장</button>
+                                    }
+                                    else if (_baseSampleOn)
+                                    {
+                                        <img src="@WanSampleFactory.FrameDataUrl("I2V 예상 프레임", "#ec4899", "BASE SAMPLE")" alt="base sample" style="flex:1;min-height:0;width:100%;object-fit:contain;background:#000;border-radius:6px;opacity:.85" />
+                                    }
+                                    else
+                                    {
+                                        <div style="display:grid;place-items:center;height:100%;color:#93a3b8;font:700 10px 'Malgun Gothic',sans-serif">🖼️ 키프레임 대기</div>
+                                    }
+                                </div>
+                            </foreignObject>
+                        }
+                        else if (n.Kind == "concat")
+                        {
+                            @* v5.5.5 롱폼 병합 상태 카드(입력 포트는 좌측에 분산 · 카드는 우측) *@
+                            <foreignObject x="26" y="@F(HeaderH + 2)" width="@F(w - 40)" height="@F(h - HeaderH - 8)">
+                                <div xmlns="http://www.w3.org/1999/xhtml" style="width:100%;height:100%" @onpointerdown:stopPropagation="true">
+                                    <ConcatVideoNode SegmentCount="@ConcatSegCount(n)" Capacity="FlowExecutionPipeline.ConcatInputs"
+                                                     Merged="@(n.Outputs.FirstOrDefault()?.Value as WanVideoRef)" Running="@(n.State == NodeRunState.Running)" />
+                                </div>
+                            </foreignObject>
+                        }
+                        else
+                        {
+                            <g><text class="tfc-nval" x="@F(w / 2)" y="@F(h - 9)">@NodeValue(n)</text></g>
+                        }
+                    </g>
+                }
+            </g>
+        </svg>
+        <div class="tfc-hint">➕ 팔레트로 노드 추가 · ⭕ 우측 포트를 끌어 좌측 포트에 연결 · 🤏 핀치 줌 · ✌️ 팬</div>
+    </div>
+
+    @* ── 선택 노드 파라미터 편집기 ── *@
+    @if (Selected is { } sel)
+    {
+        <div class="tfc-editor">
+            <div class="tfc-ed-h">
+                <span>@sel.Emoji @sel.Title</span>
+                <span class="tfc-ed-state @StateClass(sel.State)">@StateLabel(sel.State)</span>
+                <button class="tfc-ed-del" @onclick="() => DeleteNode(sel.Id)">🗑 삭제</button>
+            </div>
+            @if (sel.Kind == "prompt")
+            {
+                <textarea class="tfc-ed-in" rows="2" @bind="sel.Param" @bind:event="oninput" placeholder="영상 프롬프트"></textarea>
+            }
+            else if (sel.Kind == "motion")
+            {
+                <select class="tfc-ed-sel" @bind="sel.Param">
+                    <option value="zoom-in">🔍 줌 인 (dolly in)</option>
+                    <option value="zoom-out">🔍 줌 아웃 (dolly out)</option>
+                    <option value="pan-right">↔️ 팬 오른쪽</option>
+                    <option value="pan-left">↔️ 팬 왼쪽</option>
+                    <option value="tilt-up">↕️ 틸트 업</option>
+                    <option value="tilt-down">↕️ 틸트 다운</option>
+                    <option value="subject-right">🏃 피사체 오른쪽</option>
+                </select>
+            }
+            else
+            {
+                <div class="tfc-ed-info">이 노드는 상위 노드의 데이터를 자동으로 처리합니다(실행 시 결과 표시).</div>
+            }
+            @if (sel.StatusMessage is not null) { <div class="tfc-ed-msg">@sel.StatusMessage</div> }
+        </div>
+    }
+
+    <div class="tfc-foot">
+        <span>줌 @Pct(_zoom)% · 연결 @_engine.Connections.Count</span>
+        @if (_runMsg is not null) { <span class="tfc-runmsg">@_runMsg</span> }
+    </div>
+</div>
+
+<style>
+    .tfc { border: 1px solid color-mix(in srgb, #7c5cff 34%, var(--line)); border-radius: 16px; overflow: hidden; font-family: Pretendard, 'Malgun Gothic', sans-serif;
+        background: linear-gradient(160deg, color-mix(in srgb, #7c5cff 10%, rgba(8,10,18,.94)), rgba(8,10,18,.97)); }
+    .tfc-h { display: flex; align-items: center; gap: 8px; padding: 10px 13px; border-bottom: 1px solid color-mix(in srgb, #7c5cff 22%, var(--line)); flex-wrap: wrap; }
+    .tfc-title { font: 900 13px Pretendard,'Malgun Gothic',sans-serif; background: linear-gradient(90deg, #a78bfa, #22d3ee); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .tfc-badge { font: 800 9.5px var(--mono); color: var(--text-muted); border: 1px solid var(--line); background: var(--card-2); border-radius: 20px; padding: 3px 9px; }
+    .tfc-badge.live { color: #04121c; background: linear-gradient(135deg, #f5c451, #fbbf24); border-color: transparent; animation: tfcPulse 1.2s ease-in-out infinite; }
+    .tfc-tools { margin-left: auto; display: flex; gap: 5px; flex-wrap: wrap; }
+    .tfc-add, .tfc-tool, .tfc-run { font: 800 11px Pretendard,'Malgun Gothic',sans-serif; min-height: 34px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; }
+    .tfc-add:hover, .tfc-tool:hover { border-color: #7c5cff; color: var(--text-primary); }
+    .tfc-run { border: none; color: #04121c; background: linear-gradient(135deg, #34d399, #22d3ee); }
+    .tfc-run.alt { color: #fff; background: linear-gradient(135deg, #a855f7, #ec4899); }
+    .tfc-run:disabled { opacity: .5; cursor: not-allowed; }
+    .tfc-n { width: 46px; height: 34px; border-radius: 9px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); font: 800 12px var(--mono); text-align: center; }
+    .tfc-n:disabled { opacity: .5; }
+    .tfc-stage { position: relative; height: 440px; background:
+        radial-gradient(60% 60% at 50% 15%, color-mix(in srgb, #7c5cff 12%, transparent), transparent 70%),
+        repeating-linear-gradient(0deg, transparent 0 25px, color-mix(in srgb, #7c5cff 6%, transparent) 25px 26px),
+        repeating-linear-gradient(90deg, transparent 0 25px, color-mix(in srgb, #7c5cff 6%, transparent) 25px 26px), #070912; }
+    .tfc-svg { width: 100%; height: 100%; display: block; touch-action: none; user-select: none; -webkit-user-select: none; cursor: grab; }
+    .tfc-svg:active { cursor: grabbing; }
+    /* 연결선 */
+    .tfc-edge-base { fill: none; stroke: #475569; stroke-width: 3; opacity: .5; }
+    .tfc-edge-flow { fill: none; stroke-width: 3; stroke-linecap: round; stroke-dasharray: 9 14; filter: drop-shadow(0 0 5px currentColor); animation: tfcFlow .6s linear infinite; }
+    .tfc-edge-preview { fill: none; stroke: #94a3b8; stroke-width: 2.5; stroke-dasharray: 6 7; opacity: .85; }
+    .tfc-edge-preview.snap { stroke: #34d399; stroke-width: 3.5; filter: drop-shadow(0 0 6px #34d399); }
+    .tfc-edge-hit { fill: none; stroke: transparent; stroke-width: 14; pointer-events: stroke; cursor: pointer; }
+    @@keyframes tfcFlow { to { stroke-dashoffset: -23; } }
+    @@keyframes tfcPulse { 0%,100% { filter: brightness(1); } 50% { filter: brightness(1.2); } }
+    @@keyframes tfcSpin { to { transform: rotate(360deg); } }
+    /* 노드 */
+    .tfc-node { cursor: grab; }
+    .tfc-node:active { cursor: grabbing; }
+    .tfc-nbody { fill: rgba(18,20,31,.95); stroke: #2b2f42; stroke-width: 1; filter: drop-shadow(0 6px 14px rgba(0,0,0,.5)); }
+    .tfc-nhead { stroke-width: 2.5; }
+    .tfc-nemoji { font-size: 15px; } .tfc-ntitle { fill: #e6eefc; font: 800 12px Pretendard,'Malgun Gothic',sans-serif; }
+    .tfc-del { fill: #93a3b8; font: 800 12px var(--mono); cursor: pointer; text-anchor: middle; } .tfc-del:hover { fill: #ef4444; }
+    .tfc-spin { transform-box: view-box; animation: tfcSpin .9s linear infinite; }
+    .tfc-port { stroke: #0b0d14; stroke-width: 2; }
+    .tfc-port.out { cursor: crosshair; }
+    .tfc-port.in.hot { stroke: #34d399; stroke-width: 3; }
+    .tfc-plabel { fill: #93a3b8; font: 600 9.5px 'JetBrains Mono', ui-monospace, monospace; } .tfc-plabel.out { text-anchor: end; }
+    .tfc-nval { fill: #7dd3fc; font: 700 9px 'JetBrains Mono', ui-monospace, monospace; text-anchor: middle; }
+    .tfc-hint { position: absolute; left: 0; right: 0; bottom: 5px; text-align: center; font: 600 9.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); pointer-events: none; padding: 0 10px; }
+    /* 편집기 */
+    .tfc-editor { margin: 10px 13px; padding: 11px; border-radius: 12px; border: 1px solid color-mix(in srgb, #7c5cff 28%, var(--line)); background: var(--card-2); display: flex; flex-direction: column; gap: 8px; }
+    .tfc-ed-h { display: flex; align-items: center; gap: 9px; font: 800 12.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .tfc-ed-state { font: 800 9.5px var(--mono); border-radius: 20px; padding: 2px 8px; }
+    .tfc-ed-state.idle { color: #93a3b8; background: #1a1d2b; } .tfc-ed-state.run { color: #1a1206; background: #f5c451; }
+    .tfc-ed-state.ok { color: #04121c; background: #34d399; } .tfc-ed-state.err { color: #fff; background: #ef4444; }
+    .tfc-ed-del { margin-left: auto; font: 800 11px Pretendard,'Malgun Gothic',sans-serif; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: #fca5a5; cursor: pointer; }
+    .tfc-ed-del:hover { border-color: #ef4444; color: #fff; }
+    .tfc-ed-in, .tfc-ed-sel { width: 100%; box-sizing: border-box; background: var(--card); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; color: var(--text-primary); font: 600 11.5px Pretendard,'Malgun Gothic',sans-serif; outline: none; resize: none; }
+    .tfc-ed-info { font: 600 11px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); line-height: 1.5; }
+    .tfc-ed-msg { font: 700 10.5px var(--mono); color: #fca5a5; word-break: break-word; }
+    .tfc-foot { display: flex; align-items: center; gap: 10px; padding: 8px 13px; border-top: 1px solid var(--line); font: 700 10px var(--mono); color: var(--text-muted); flex-wrap: wrap; }
+    .tfc-runmsg { color: #a78bfa; }
+    @@media (prefers-reduced-motion: reduce) { .tfc-edge-flow, .tfc-spin, .tfc-badge.live { animation: none; } }
+</style>
+
+@code {
+    /// <summary>미리보기 소스 프로젝트(선택) — Wan 노드가 해상도/씬 메타에 사용.</summary>
+    [Parameter] public StoryboardProject? Project { get; set; }
+
+    private const double NodeW = 182, HeaderH = 32, PortTop = 48, PortRow = 26, PortR = 6, Snap = 30, ZMin = 0.4, ZMax = 2.4;
+    private const double PreviewW = 252, PreviewH = 210;   // 프리뷰(비디오) 노드는 더 크게
+    private const double MixW = 210, MixH = 172;           // v5.5.2 I2V 믹싱(이미지) 노드
+    private const double ConcatW = 250;                    // v5.5.5 롱폼 병합 노드(세그먼트 포트 다수 + 카드)
+
+    private enum Mode { None, Pan, Pinch, DragNode, Link }
+
+    private NodeGraphEngine _engine = new();
+    private readonly Dictionary<long, double[]> _ptr = new();
+
+    private Mode _mode = Mode.None;
+    private string? _dragNodeId;
+    private double _dragAccum;
+    private string? _linkFromNodeId, _linkFromPortId;
+    private double _linkX, _linkY;
+    private string? _snapNodeId, _snapPortId;
+    private string? _selectedId;
+    private double _pinchDist, _panX = 6, _panY = 6, _zoom = 1;
+    private int _spawnSeq;
+
+    private CancellationTokenSource? _cts;
+    private string? _runMsg;
+    private long _memToken;
+
+    private FlowNode? Selected => _engine.Get(_selectedId);
+
+    // v5.6.3: /flow 통합 툴바(FlowOrchestrator)가 @ref 로 상태/명령을 제어하기 위한 공개 API.
+    /// <summary>엔진 상태 변경 방송(부모 페이지 라이브 상태 인디케이터 갱신).</summary>
+    [Parameter] public EventCallback OnStateChanged { get; set; }
+    /// <summary>true 면 캔버스 내부 저장/불러오기 버튼 숨김(페이지 통합 툴바가 담당 · /flow).</summary>
+    [Parameter] public bool CompactToolbar { get; set; }
+    // v5.6.5: 프롬프트 디버거용 가드레일 상태 — 부모(/flow)가 UserPreferenceService 값을 전달. 미전달(모바일)이면 앱 기본 On/Balanced.
+    [Parameter] public bool GuardEnabled { get; set; } = true;
+    [Parameter] public QualityGuardrailPreset GuardPreset { get; set; } = QualityGuardrailPreset.Balanced;
+    [Parameter] public string? GuardCustom { get; set; }
+    /// <summary>디버거 시드 — 그래프의 첫 프롬프트 노드 텍스트.</summary>
+    private string? FirstPromptText => _engine.Nodes.FirstOrDefault(n => n.Kind == "prompt")?.Param;
+    public int NodeCount => _engine.Nodes.Count;
+    public int ConnCount => _engine.Connections.Count;
+    public bool IsRunning => _engine.IsRunning;
+    /// <summary>전체 노드/연결 초기화(실행 중 무시).</summary>
+    public void ClearGraph() { if (_engine.IsRunning) return; _engine.Clear(); _selectedId = null; _runMsg = "🗑️ 캔버스를 비웠습니다."; }
+
+    protected override void OnInitialized()
+    {
+        _memToken = MemAudit.Track("TrueFlowCanvas");
+        _engine = Pipeline.BuildDefaultGraph(Project);   // 프롬프트→모션→Wan→프리뷰 기본 파이프라인
+        _engine.OnChanged += HandleChanged;
+    }
+
+    private void HandleChanged() { _ = OnStateChanged.InvokeAsync(); _ = InvokeAsync(StateHasChanged); }
+
+    // ── 팔레트/실행 ──
+    private void AddNode(string kind)
+    {
+        // 현재 뷰 좌상단 부근에 캐스케이드 배치(논리 좌표 = (화면-팬)/줌).
+        var x = (30 - _panX) / _zoom + (_spawnSeq % 5) * 24;
+        var y = (90 - _panY) / _zoom + (_spawnSeq % 5) * 24;
+        _spawnSeq++;
+        var n = Pipeline.NewNode(_engine, kind, x, y, Project);
+        _selectedId = n.Id;
+    }
+
+    private void DeleteNode(string id)
+    {
+        _engine.RemoveNode(id);
+        if (_selectedId == id) _selectedId = null;
+    }
+
+    // 연결선 히트박스 클릭 → 연결 삭제 + 햅틱 스냅
+    private void DeleteConnection(string id)
+    {
+        _engine.Disconnect(id);
+        Haptic.Play(HapticEvent.SimTouch);
+        _runMsg = "🔌 연결을 삭제했습니다.";
+    }
+
+    // 📸 키프레임 추출 → I2V 믹싱 노드 동적 생성 + 자동 연결(사용자 v5.5.2 설계를 실제 NodeGraphEngine API 로 이식)
+    private void HandleKeyframeExtracted(WanVideoPreviewNode.KeyframeExtractPayload payload)
+    {
+        var preview = _engine.Get(payload.NodeId);
+        if (preview is null || string.IsNullOrEmpty(payload.DataUrl)) return;
+
+        // 추출 프레임 보존(node.Param → 재실행에도 유지) + frame 출력 포트 즉시 반영
+        preview.Param = payload.DataUrl;
+        var framePort = preview.Outputs.FirstOrDefault(p => p.Name == "frame");
+        if (framePort is not null) framePort.Value = payload.DataUrl;
+
+        // I2V 믹싱 노드 생성(프리뷰 우측) — 팩토리로 포트 + Executor 부여
+        var mix = Pipeline.NewNode(_engine, "imagemix", preview.X + NodeW2(preview) + 60, preview.Y + 20, Project);
+        var inPort = mix.Inputs.FirstOrDefault(p => p.Name == "frame");
+        if (inPort is not null) inPort.Value = payload.DataUrl;   // 즉시 썸네일 표시(실행 전에도)
+
+        // 자동 연결: 프리뷰.frame → 믹스.frame (실제 포트 Id 로 연결 · 순환/타입 검증은 엔진이 수행)
+        if (framePort is not null && inPort is not null)
+            _engine.Connect(preview.Id, framePort.Id, mix.Id, inPort.Id);
+
+        Haptic.Play(HapticEvent.DeploySuccess);
+        Gallery.Register(Project, GalleryAssetKind.Image, payload.DataUrl, $"키프레임 f{payload.Frame}");   // v5.6 갤러리 자동 자산화
+        _selectedId = mix.Id;
+        _runMsg = $"📸 키프레임 추출(f{payload.Frame}) → I2V 믹싱 노드 생성·연결 · 갤러리 저장";
+    }
+
+    // 💾 imagemix 프레임 → 프로젝트 앵커 이미지 파일로 저장(다른 씬에서 레퍼런스 재사용)
+    private void SaveAnchorFromNode(FlowNode n)
+    {
+        var dataUrl = ImageOf(n);
+        if (string.IsNullOrEmpty(dataUrl) || Project is null) { _runMsg = "저장할 프레임이 없습니다."; return; }
+        var bytes = DecodeDataUrl(dataUrl!);
+        if (bytes is null) { _runMsg = "프레임 디코딩 실패."; return; }
+        try
+        {
+            var pid = string.IsNullOrWhiteSpace(Project.Id) ? "flow" : Project.Id;
+            var dir = System.IO.Path.Combine(Media.MediaRoot, pid, "anchor");
+            System.IO.Directory.CreateDirectory(dir);
+            var path = System.IO.Path.Combine(dir, $"keyframe_{DateTime.Now:yyyyMMdd_HHmmss}.jpg");
+            System.IO.File.WriteAllBytes(path, bytes);
+            Project.AnchorImagePath = path;
+            Haptic.Play(HapticEvent.DeploySuccess);
+            _runMsg = $"💾 프레임을 프로젝트 앵커로 저장 — {System.IO.Path.GetFileName(path)}";
+        }
+        catch (Exception ex) { _runMsg = "앵커 저장 오류: " + ex.Message; }
+    }
+
+    // "data:image/...;base64,XXXX" → 바이트(base64 마커 없으면 null · Graceful)
+    private static byte[]? DecodeDataUrl(string dataUrl)
+    {
+        var idx = dataUrl.IndexOf("base64,", StringComparison.Ordinal);
+        if (idx < 0) return null;
+        try { return Convert.FromBase64String(dataUrl[(idx + 7)..]); }
+        catch { return null; }
+    }
+
+    // 💾 v5.5.4: 사용자 지정 위치 저장 — 임시 파일로 직렬화 후 IVideoExportService(데스크톱 SaveFileDialog · 모바일 공유시트)로 내보내기.
+    public async Task SaveGraph()
+    {
+        string tmp = "";
+        try
+        {
+            var json = FlowSerializer.Serialize(_engine);
+            var tmpDir = System.IO.Path.Combine(Media.MediaRoot, "flows");
+            System.IO.Directory.CreateDirectory(tmpDir);
+            tmp = System.IO.Path.Combine(tmpDir, $"_export_{Guid.NewGuid():N}.pfGraph");
+            await System.IO.File.WriteAllTextAsync(tmp, json);
+
+            var saved = await Exporter.ExportAsync(tmp, $"promptflow_{DateTime.Now:yyyyMMdd_HHmmss}.pfGraph");
+            if (string.IsNullOrEmpty(saved)) { _runMsg = "저장이 취소되었습니다."; return; }
+            Haptic.Play(HapticEvent.DeploySuccess);
+            _runMsg = $"💾 플로우 저장 — {System.IO.Path.GetFileName(saved)} · {_engine.Nodes.Count}노드/{_engine.Connections.Count}연결";
+        }
+        catch (Exception ex) { _runMsg = "저장 오류: " + ex.Message; }
+        finally { try { if (!string.IsNullOrEmpty(tmp) && System.IO.File.Exists(tmp)) System.IO.File.Delete(tmp); } catch { } }
+    }
+
+    // 🔄 v5.5.4: 무인 N회 I2V 체인 — 체인 그래프 구성 후 위상 실행 1회(각 Wan 마지막 프레임이 다음 Wan 으로 자동 전파).
+    private int _chainN = 3;
+    private bool _baseSampleOn;   // v5.6 베이스 샘플 미리보기 토글
+    private async Task RunAutoChain()
+    {
+        if (_engine.IsRunning) return;
+        _selectedId = null;
+        var n = Math.Clamp(_chainN, 1, FlowExecutionPipeline.ConcatInputs);
+        _chainN = n;
+        Pipeline.BuildChainInto(_engine, n, Project);   // prompt→motion→Wan[→imagemix→Wan]×(n-1)→concat→preview
+        await Run();   // ExecuteAsync 1회 — DAG 전파로 N회 체인 자동 재귀 실행
+    }
+
+    // v5.6 원클릭 템플릿 배치(프롬프트/모션 파라미터까지 주입)
+    public void ApplyTemplate(ChainTemplate t)
+    {
+        if (_engine.IsRunning) return;
+        _selectedId = null;
+        ChainTemplateLibrary.Apply(t, _engine, Pipeline, Project);
+        _runMsg = $"📚 «{t.Name}» 템플릿 배치({t.Segments}컷) — ▶ 실행 또는 🔄 N회 체인으로 렌더";
+    }
+
+    // 📂 .pfGraph 선택(IFilePickerService) → 역직렬화 → 엔진 초기화 후 복원 → 재렌더
+    public void LoadGraph()
+    {
+        var dir = System.IO.Path.Combine(Media.MediaRoot, "flows");
+        var initial = System.IO.Directory.Exists(dir) ? dir : null;
+        var path = Picker.PickFile("플로우 불러오기", "PromptFlow Graph (*.pfGraph)|*.pfGraph|모든 파일 (*.*)|*.*", initial);
+        if (string.IsNullOrEmpty(path)) return;
+
+        string json;
+        try { json = System.IO.File.ReadAllText(path!); }
+        catch (Exception ex) { _runMsg = "읽기 오류: " + ex.Message; return; }
+
+        _selectedId = null;
+        if (FlowSerializer.TryLoad(json, Pipeline, _engine, Project, out var msg))
+        {
+            Haptic.Play(HapticEvent.DeploySuccess);
+            _runMsg = "📂 " + msg;
+        }
+        else _runMsg = "⚠ " + msg;
+        _ = SafeRender();
+    }
+
+    private Task SafeRender() => InvokeAsync(StateHasChanged);
+
+    private async Task Run()
+    {
+        _cts?.Cancel(); _cts?.Dispose(); _cts = new CancellationTokenSource();
+        _runMsg = "▶ 파이프라인 실행 중…";
+        var r = await Pipeline.RunAsync(_engine, _cts.Token);
+        _runMsg = (r.Ok ? "✅ " : "⚠ ") + r.Message;
+
+        // v5.6: 완료된 concat 롱폼 병합 결과를 갤러리에 자동 등록
+        foreach (var node in _engine.Nodes)
+            if (node.Kind == "concat" && node.State == NodeRunState.Completed
+                && node.Outputs.FirstOrDefault()?.Value is WanVideoRef cv && cv.HasVideo)
+            {
+                Gallery.Register(Project, GalleryAssetKind.Video, cv.VideoUrl, "롱폼 병합");
+                // v5.6.7: 실측 결과 대표 프레임(있으면)도 갤러리에 등록 → 3단 대조/자산화.
+                var thumb = FlowExecutionPipeline.ResultFrameThumb(cv);
+                if (!string.IsNullOrEmpty(thumb)) Gallery.Register(Project, GalleryAssetKind.Image, thumb!, "실측 결과 프레임");
+            }
+    }
+
+    private void Cancel() { _cts?.Cancel(); _runMsg = "■ 취소 요청됨"; }
+    private void ResetView() { _panX = 6; _panY = 6; _zoom = 1; }
+
+    // ── 포인터 ──
+    private void BgDown(PointerEventArgs e)
+    {
+        _ptr[e.PointerId] = new[] { e.ClientX, e.ClientY };
+        _selectedId = null;   // 배경 탭 = 선택 해제
+        _mode = _ptr.Count >= 2 ? Mode.Pinch : Mode.Pan;
+        if (_mode == Mode.Pinch) _pinchDist = PinchDist();
+    }
+
+    private void NodeDown(FlowNode n, PointerEventArgs e)
+    {
+        _ptr[e.PointerId] = new[] { e.ClientX, e.ClientY };
+        if (_ptr.Count >= 2) { _mode = Mode.Pinch; _pinchDist = PinchDist(); return; }
+        _mode = Mode.DragNode; _dragNodeId = n.Id; _dragAccum = 0;
+    }
+
+    private void PortDown(FlowNode n, FlowPort port, PointerEventArgs e)
+    {
+        _ptr[e.PointerId] = new[] { e.ClientX, e.ClientY };
+        _mode = Mode.Link; _linkFromNodeId = n.Id; _linkFromPortId = port.Id;
+        var a = OutPos(n, port.Id); _linkX = a.X; _linkY = a.Y; _snapNodeId = null; _snapPortId = null;
+    }
+
+    private void Move(PointerEventArgs e)
+    {
+        if (!_ptr.TryGetValue(e.PointerId, out var last)) return;
+        var dx = e.ClientX - last[0];
+        var dy = e.ClientY - last[1];
+        last[0] = e.ClientX; last[1] = e.ClientY;
+
+        if (_ptr.Count >= 2)
+        {
+            var nd = PinchDist();
+            if (_pinchDist > 1 && nd > 1) { _zoom = Math.Clamp(_zoom * (nd / _pinchDist), ZMin, ZMax); _panX += dx / 2; _panY += dy / 2; }
+            _pinchDist = nd;
+            return;
+        }
+
+        switch (_mode)
+        {
+            case Mode.Pan: _panX += dx; _panY += dy; break;
+            case Mode.DragNode when _dragNodeId is not null:
+                var n = _engine.Get(_dragNodeId);
+                if (n is not null) { n.X += dx / _zoom; n.Y += dy / _zoom; _dragAccum += Math.Abs(dx) + Math.Abs(dy); }
+                break;
+            case Mode.Link:
+                _linkX += dx / _zoom; _linkY += dy / _zoom; UpdateSnap();
+                break;
+        }
+    }
+
+    private void Up(PointerEventArgs e)
+    {
+        if (_mode == Mode.Link)
+        {
+            if (_snapNodeId is not null && _snapPortId is not null && _linkFromNodeId is not null && _linkFromPortId is not null)
+            {
+                var conn = _engine.Connect(_linkFromNodeId, _linkFromPortId, _snapNodeId, _snapPortId);
+                if (conn is not null) Haptic.Play(HapticEvent.DeploySuccess);
+            }
+            _linkFromNodeId = null; _linkFromPortId = null; _snapNodeId = null; _snapPortId = null;
+        }
+        else if (_mode == Mode.DragNode && _dragAccum < 5 && _dragNodeId is not null)
+        {
+            _selectedId = _dragNodeId;   // 이동 없이 탭 = 선택
+        }
+
+        _ptr.Remove(e.PointerId);
+        if (_ptr.Count < 2) _pinchDist = 0;
+        if (_ptr.Count == 0) { _mode = Mode.None; _dragNodeId = null; }
+    }
+
+    private double PinchDist()
+    {
+        if (_ptr.Count < 2) return 0;
+        var pts = _ptr.Values.Take(2).ToArray();
+        var dx = pts[0][0] - pts[1][0];
+        var dy = pts[0][1] - pts[1][1];
+        return Math.Sqrt(dx * dx + dy * dy);
+    }
+
+    private void UpdateSnap()
+    {
+        string? bn = null, bp = null; var bestD = Snap;
+        foreach (var n in _engine.Nodes)
+        {
+            if (n.Id == _linkFromNodeId) continue;
+            for (var i = 0; i < n.Inputs.Count; i++)
+            {
+                var pos = InPos(n, n.Inputs[i].Id);
+                var d = Math.Sqrt((pos.X - _linkX) * (pos.X - _linkX) + (pos.Y - _linkY) * (pos.Y - _linkY));
+                if (d < bestD)
+                {
+                    var (ok, _) = _engine.CanConnect(_linkFromNodeId!, _linkFromPortId!, n.Id, n.Inputs[i].Id);
+                    if (ok) { bestD = d; bn = n.Id; bp = n.Inputs[i].Id; }
+                }
+            }
+        }
+        if (bn != _snapNodeId || bp != _snapPortId)
+        {
+            _snapNodeId = bn; _snapPortId = bp;
+            if (bn is not null) Haptic.Play(HapticEvent.SimTouch);   // 근접 스냅 햅틱
+        }
+    }
+
+    // ── 지오메트리(종류별 크기 · 프리뷰 노드는 비디오 카드 수용) ──
+    private static int Rows(FlowNode n) => Math.Max(Math.Max(n.Inputs.Count, n.Outputs.Count), 1);
+    private static bool IsVisual(FlowNode n) => n.Kind is "preview" or "imagemix";                 // 중앙 단일 포트 미디어 카드
+    private static bool HasCard(FlowNode n) => n.Kind is "preview" or "imagemix" or "concat";       // foreignObject 카드(포트 라벨 숨김)
+    private static double NodeW2(FlowNode n) => n.Kind switch { "preview" => PreviewW, "imagemix" => MixW, "concat" => ConcatW, _ => NodeW };
+    private static double NodeH2(FlowNode n) => n.Kind switch { "preview" => PreviewH, "imagemix" => MixH, "concat" => HeaderH + 18 + FlowExecutionPipeline.ConcatInputs * 22 + 14, _ => PortTop + Rows(n) * PortRow + 16 };
+    private static double PortYFor(FlowNode n, int index) => n.Kind == "concat" ? HeaderH + 18 + index * 22 : IsVisual(n) ? NodeH2(n) / 2 : PortTop + index * PortRow;
+    private int ConcatSegCount(FlowNode n) => _engine.Connections.Count(c => c.ToNodeId == n.Id);   // 결선된 세그먼트 수
+    private static string? ImageOf(FlowNode n) => n.Inputs.FirstOrDefault()?.Value as string;   // imagemix 썸네일 소스(data URL)
+
+    private (double X, double Y) InPos(FlowNode n, string portId)
+    {
+        var i = n.Inputs.FindIndex(p => p.Id == portId);
+        return (n.X, n.Y + PortYFor(n, i < 0 ? 0 : i));
+    }
+    private (double X, double Y) OutPos(FlowNode n, string portId)
+    {
+        var j = n.Outputs.FindIndex(p => p.Id == portId);
+        return (n.X + NodeW2(n), n.Y + PortYFor(n, j < 0 ? 0 : j));
+    }
+
+    private static string Curve(double x1, double y1, double x2, double y2)
+    {
+        var dx = Math.Clamp(Math.Abs(x2 - x1) * 0.5, 40, 160);
+        return $"M {F(x1)} {F(y1)} C {F(x1 + dx)} {F(y1)} {F(x2 - dx)} {F(y2)} {F(x2)} {F(y2)}";
+    }
+
+    // ── 표시 헬퍼 ──
+    private static string StateStroke(NodeRunState s) => s switch
+    {
+        NodeRunState.Running => "#f5c451",
+        NodeRunState.Completed => "#34d399",
+        NodeRunState.Faulted => "#ef4444",
+        _ => "#475569",
+    };
+    private static string StateClass(NodeRunState s) => s switch
+    {
+        NodeRunState.Running => "run", NodeRunState.Completed => "ok", NodeRunState.Faulted => "err", _ => "idle",
+    };
+    private static string StateLabel(NodeRunState s) => s switch
+    {
+        NodeRunState.Running => "● 실행중", NodeRunState.Completed => "✓ 완료", NodeRunState.Faulted => "⚠ 실패", _ => "· 대기",
+    };
+    private static string PortColor(string type) => type switch
+    {
+        "prompt" => "#a78bfa", "motion" => "#22d3ee", "video" => "#f5c451", _ => "#64748b",
+    };
+
+    private static string NodeValue(FlowNode n)
+    {
+        var v = n.Kind switch
+        {
+            "preview" or "wan" => n.Outputs.FirstOrDefault()?.Value?.ToString(),
+            _ => n.Param,
+        };
+        v = (v ?? "").Trim();
+        return v.Length > 26 ? v[..26] + "…" : v;
+    }
+
+    private static string F(double v) => (double.IsNaN(v) || double.IsInfinity(v) ? 0 : v).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+    private static string Pct(double z) => Math.Round(z * 100).ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    public void Dispose()
+    {
+        _engine.OnChanged -= HandleChanged;
+        try { _cts?.Cancel(); } catch { }
+        _cts?.Dispose();
+        _ptr.Clear();
+        MemAudit.Release(_memToken);
+    }
+}

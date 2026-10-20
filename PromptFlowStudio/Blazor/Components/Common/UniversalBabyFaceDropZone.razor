@@ -1,0 +1,111 @@
+@inject ICharacterAnchorService Anchor
+@inject FaceCenterAutoCropService FaceCrop
+
+@* [PromptFlow Studio] 전 테마 공통 아기 얼굴 레퍼런스 드롭존 — 드래그앤드롭/클릭 업로드 → 1:1 정중앙 오토 크롭 → 썸네일 미리보기 → 전 컷 I2V 일괄 바인딩. 미등록 시 T2V 자동 폴백. *@
+
+<div class="ubz @(_over ? "over" : null) @(HasAnchor ? "set" : null) @(Disabled ? "off" : null)"
+     @ondragenter="() => _over = true" @ondragleave="() => _over = false"
+     @ondragover:preventDefault="true" @ondrop:preventDefault="true" @ondrop="() => _over = false">
+
+    @if (HasAnchor)
+    {
+        <div class="ubz-set-row">
+            <img class="ubz-thumb" src="@Thumb" alt="아기 얼굴 레퍼런스" />
+            <div class="ubz-info">
+                <div class="ubz-t">👶 아기 얼굴 레퍼런스 적용 중</div>
+                <div class="ubz-s">전 컷을 이 얼굴 기반 <b>Wan 2.1 I2V</b>로 생성합니다(등장인물 일관성).</div>
+            </div>
+            <label class="ubz-change @(Disabled ? "off" : null)">🔄 교체
+                <InputFile class="ubz-input" OnChange="OnPick" accept="image/*" disabled="@(Disabled || _busy)" />
+            </label>
+            <button class="ubz-clear" @onclick="Clear" disabled="@(Disabled || _busy)" title="레퍼런스 해제(텍스트 T2V로 전환)">✕</button>
+        </div>
+    }
+    else
+    {
+        <label class="ubz-drop">
+            <div class="ubz-ic">👶⬆️</div>
+            <div class="ubz-txt"><b>아기 얼굴 사진을 여기에 끌어다 놓거나 클릭</b>해서 업로드하세요</div>
+            <div class="ubz-sub">전 테마 공통 · 모든 컷에 <b>I2V 레퍼런스</b>로 자동 바인딩 · 미등록 시 텍스트(T2V)로 자동 생성</div>
+            <InputFile class="ubz-input" OnChange="OnPick" accept="image/*" disabled="@(Disabled || _busy)" />
+        </label>
+    }
+
+    @if (_msg is not null) { <div class="ubz-msg @(_err ? "err" : null)">@_msg</div> }
+</div>
+
+<style>
+    .ubz { position: relative; border: 2px dashed color-mix(in srgb, var(--flow-violet) 45%, var(--line)); border-radius: 14px;
+        background: linear-gradient(135deg, color-mix(in srgb, var(--flow-violet) 8%, transparent), transparent 60%), var(--card); padding: 14px 16px; margin-bottom: 14px; transition: .15s; }
+    .ubz.over { border-color: var(--flow-cyan, #22d3ee); background: color-mix(in srgb, var(--flow-cyan, #22d3ee) 10%, var(--card)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--flow-cyan, #22d3ee) 18%, transparent); }
+    .ubz.set { border-style: solid; border-color: color-mix(in srgb, var(--flow-cyan, #22d3ee) 40%, var(--line)); }
+    .ubz.off { opacity: .6; }
+
+    .ubz-drop { display: flex; flex-direction: column; align-items: center; gap: 5px; text-align: center; cursor: pointer; }
+    .ubz-ic { font-size: 30px; line-height: 1; filter: drop-shadow(0 4px 10px color-mix(in srgb, var(--flow-violet) 40%, transparent)); }
+    .ubz-txt { font-size: 13px; color: var(--text-primary); } .ubz-txt b { color: var(--text-primary); }
+    .ubz-sub { font-size: 11px; color: var(--text-muted); line-height: 1.5; max-width: 52ch; }
+
+    .ubz-input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+    .ubz-set .ubz-input, .ubz-change .ubz-input { position: absolute; inset: 0; }
+
+    .ubz-set-row { display: flex; align-items: center; gap: 13px; }
+    .ubz-thumb { width: 56px; height: 56px; flex: none; object-fit: cover; border-radius: 12px; border: 1px solid var(--line); box-shadow: 0 4px 12px rgba(0,0,0,.35); }
+    .ubz-info { flex: 1; min-width: 0; }
+    .ubz-t { font: 800 13px var(--mono); color: var(--text-primary); }
+    .ubz-s { font-size: 11px; color: var(--text-secondary); margin-top: 2px; line-height: 1.45; }
+    .ubz-change { position: relative; flex: none; font: 700 11.5px var(--mono); padding: 7px 12px; border-radius: 9px; cursor: pointer;
+        border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); overflow: hidden; }
+    .ubz-change:hover { border-color: var(--accent); color: var(--text-primary); } .ubz-change.off { pointer-events: none; opacity: .5; }
+    .ubz-clear { flex: none; width: 28px; height: 28px; border: none; background: none; color: var(--text-muted); cursor: pointer; border-radius: 7px; font-size: 13px; }
+    .ubz-clear:hover:not(:disabled) { background: color-mix(in srgb, #ef4444 14%, transparent); color: #ef4444; }
+
+    .ubz-msg { margin-top: 9px; font: 700 11.5px var(--mono); color: var(--flow-cyan, #22d3ee); }
+    .ubz-msg.err { color: #ef4444; }
+</style>
+
+@code {
+    /// <summary>대상 프로젝트(AnchorImagePath 를 제자리 설정).</summary>
+    [Parameter, EditorRequired] public StoryboardProject Project { get; set; } = default!;
+    /// <summary>생성/병합 중이면 잠금.</summary>
+    [Parameter] public bool Disabled { get; set; }
+    /// <summary>등록/해제 시 부모에 알림(재렌더).</summary>
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private bool _over, _busy, _err;
+    private string? _msg;
+
+    private bool HasAnchor => Anchor.HasAnchor(Project);
+    private string? Thumb => Anchor.ThumbUrl(Project);
+
+    private async Task OnPick(InputFileChangeEventArgs e)
+    {
+        if (_busy || Disabled) return;
+        _busy = true; _err = false; _msg = "이미지 등록 중…"; StateHasChanged();
+        try
+        {
+            var r = await Anchor.RegisterAsync(e.File);
+            if (r.Ok && r.Path is not null)
+            {
+                _msg = "👶 얼굴 1:1 정중앙 오토 크롭 중…"; StateHasChanged();
+                var crop = await FaceCrop.CropSquareAsync(r.Path);       // 오프라인 1:1 정중앙 크롭(안면 왜곡 최소화)
+                Project.AnchorImagePath = crop.Cropped && crop.Path is not null ? crop.Path : r.Path;   // 전 컷 I2V 일괄 바인딩
+                _err = false;
+                _msg = crop.Cropped ? "✓ 아기 얼굴 1:1 오토 크롭 등록 — 전 컷 I2V(안면 왜곡 최소화)"
+                                    : "✓ 아기 얼굴 레퍼런스 등록 — 모든 컷이 이 얼굴 기반 I2V 로 생성됩니다.";
+                if (OnChanged.HasDelegate) await OnChanged.InvokeAsync();
+            }
+            else { _err = true; _msg = "등록 실패: " + r.Message; }
+        }
+        catch (Exception ex) { _err = true; _msg = "등록 실패: " + ex.Message; }
+        finally { _busy = false; StateHasChanged(); }
+    }
+
+    private async Task Clear()
+    {
+        if (Disabled) return;
+        Project.AnchorImagePath = null;                 // T2V 자동 폴백
+        _err = false; _msg = "레퍼런스 해제 — 컷은 텍스트(T2V) 또는 개별 이미지로 생성됩니다.";
+        if (OnChanged.HasDelegate) await OnChanged.InvokeAsync();
+    }
+}

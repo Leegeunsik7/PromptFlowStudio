@@ -1,0 +1,191 @@
+@using PromptFlowStudio.Services.Marketing
+@using PromptFlowStudio.Services.Media
+@using PromptFlowStudio.Services.Studio
+@implements IDisposable
+@inject MarketingAutomationEngine Mkt
+@inject AbTestingAnalyticsEngine Ab
+@inject MultiThumbnailAbMixer Thumbs
+@inject StudioFolderLinkService FolderLink
+@inject ILocalMediaService Media
+@inject PromptFlowStudio.Services.Ui.StudioMemoryAudit MemAudit
+
+@* [PromptFlow Studio] v3.5.0 마케팅 오토메이션 & A/B 테스팅 제어반 — 웹훅 발행·A/B 3종·전환 예측·썸네일. *@
+
+<div class="mk">
+    <div class="mk-h"><span class="mk-title">📣 마케팅 오토메이션 &amp; A/B 테스팅</span><span class="mk-badge">v3.5.0</span></div>
+    <div class="mk-grid">
+        @* ── ① A/B 3종 스타일 + 국가별 전환 예측 ── *@
+        <div class="mk-card wide">
+            <div class="mk-ct">🧪 A/B 테스팅 3종 · 국가별 수주 전환 예측 <button class="mk-mini" @onclick="RunAb">재분석</button></div>
+            <div class="mk-ab">
+                @foreach (var v in _ab.Variants)
+                {
+                    <div class="mk-var @(v.Key == _ab.BestVariantKey ? "best" : null)">
+                        <div class="mk-var-h"><span class="mk-var-emoji">@v.Emoji</span><span class="mk-var-name">@v.Name</span><span class="mk-var-score">@v.OverallScore</span></div>
+                        <div class="mk-var-style">@v.StyleDesc</div>
+                        <div class="mk-countries">
+                            @foreach (var c in v.Scores)
+                            {
+                                <div class="mk-cty"><span class="mk-cty-f">@c.Flag</span><div class="mk-cty-bar"><i style="width:@c.Score%"></i></div><span class="mk-cty-s">@c.Score</span></div>
+                            }
+                        </div>
+                        <button class="mk-var-apply" @onclick="() => ApplyVar(v.Key)" disabled="@Disabled">이 스타일 적용</button>
+                        @if (v.Key == _ab.BestVariantKey) { <div class="mk-best-tag">⭐ 최적 변종</div> }
+                    </div>
+                }
+            </div>
+        </div>
+
+        @* ── ② 웹훅 자율 발행 ── *@
+        <div class="mk-card">
+            <div class="mk-ct">📡 웹훅 자율 발행 <span class="mk-cnt">@Mkt.Targets.Count 대상</span></div>
+            <div class="mk-addwh">
+                <input class="mk-input" placeholder="대상 이름" @bind="_tName" />
+                <input class="mk-input" placeholder="웹훅 URL (https://…)" @bind="_tUrl" />
+                <div class="mk-addrow">
+                    <input class="mk-input" placeholder="플랫폼(youtube…)" @bind="_tPlatform" />
+                    <button class="mk-btn sm" @onclick="AddTarget" disabled="@(string.IsNullOrWhiteSpace(_tUrl))">+ 등록</button>
+                </div>
+            </div>
+            @foreach (var t in Mkt.Targets.Take(3))
+            {
+                <div class="mk-wh"><span class="mk-wh-led"></span>@t.Name · @t.Platform<button class="mk-wh-x" @onclick="() => Mkt.RemoveTarget(t.Id)">✕</button></div>
+            }
+            <button class="mk-btn go" @onclick="PublishAll" disabled="@(_busy || Disabled || Mkt.Targets.Count == 0 || !HasMaster)">🚀 전 대상 자율 발행</button>
+            @if (_pubMsg is not null) { <div class="mk-sub">@_pubMsg</div> }
+        </div>
+
+        @* ── ③ 썸네일 A/B + 이메일/로그 ── *@
+        <div class="mk-card">
+            <div class="mk-ct">🖼️ 썸네일 A/B & 캠페인 자산</div>
+            <button class="mk-btn" @onclick="GenThumbs" disabled="@(_busy || !HasMaster)">🖼️ 3종 A/B 썸네일 추출(피크 프레임)</button>
+            @if (_thumbMsg is not null) { <div class="mk-sub">@_thumbMsg</div> }
+            <div class="mk-actions">
+                <button class="mk-btn sm" @onclick="ExportEmail">📧 바이어 이메일 HTML</button>
+                <button class="mk-btn sm" @onclick="ExportLog">📄 캠페인 로그</button>
+            </div>
+            @if (_assetMsg is not null) { <div class="mk-sub">@_assetMsg</div> }
+        </div>
+    </div>
+</div>
+
+<style>
+    .mk { border: 1px solid color-mix(in srgb,#d946ef 26%,var(--line)); border-radius: 16px; overflow: hidden; background: linear-gradient(160deg, color-mix(in srgb,#d946ef 7%,rgba(18,20,31,.72)), rgba(18,20,31,.85)); backdrop-filter: blur(16px) saturate(140%); -webkit-backdrop-filter: blur(16px) saturate(140%); }
+    .mk-h { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb,#d946ef 12%,transparent), transparent 60%); }
+    .mk-title { font: 900 14px var(--mono); } .mk-badge { font: 700 10px var(--mono); color: #f0abfc; background: color-mix(in srgb,#d946ef 15%,transparent); border: 1px solid color-mix(in srgb,#d946ef 38%,var(--line)); border-radius: 20px; padding: 2px 8px; }
+    .mk-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 14px 16px; }
+    .mk-card { border: 1px solid var(--line); border-radius: 13px; background: rgba(26,29,43,.6); padding: 12px; display: flex; flex-direction: column; gap: 9px; } .mk-card.wide { grid-column: 1/-1; }
+    .mk-ct { font: 800 12px var(--mono); display: flex; align-items: center; gap: 7px; } .mk-cnt { font: 700 10px var(--mono); color: var(--text-muted); background: #12141f; border: 1px solid var(--line); border-radius: 20px; padding: 1px 8px; }
+    .mk-mini { margin-left: auto; font: 700 10px var(--mono); color: #f0abfc; background: color-mix(in srgb,#d946ef 12%,transparent); border: 1px solid color-mix(in srgb,#d946ef 34%,var(--line)); border-radius: 8px; padding: 3px 9px; cursor: pointer; }
+    .mk-ab { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    .mk-var { position: relative; border: 1px solid var(--line); border-radius: 12px; background: #12141f; padding: 10px; }
+    .mk-var.best { border-color: transparent; box-shadow: 0 0 0 2px #d946ef; background: color-mix(in srgb,#d946ef 8%,#12141f); }
+    .mk-var-h { display: flex; align-items: center; gap: 6px; } .mk-var-emoji { font-size: 17px; } .mk-var-name { font: 800 11px var(--mono); flex: 1; } .mk-var-score { font: 900 14px var(--mono); color: #f0abfc; }
+    .mk-var-style { font: 600 9.5px var(--mono); color: var(--text-muted); margin: 4px 0 8px; line-height: 1.4; min-height: 26px; }
+    .mk-countries { display: flex; flex-direction: column; gap: 4px; }
+    .mk-cty { display: grid; grid-template-columns: 20px 1fr 24px; align-items: center; gap: 5px; } .mk-cty-f { font-size: 12px; }
+    .mk-cty-bar { height: 7px; border-radius: 5px; background: #0b0d14; border: 1px solid var(--line); overflow: hidden; } .mk-cty-bar i { display: block; height: 100%; background: linear-gradient(90deg,#a855f7,#d946ef); } .mk-cty-s { font: 700 9px var(--mono); color: var(--text-secondary); text-align: right; }
+    .mk-var-apply { width: 100%; margin-top: 8px; font: 700 10px var(--mono); color: #fff; border: none; border-radius: 7px; padding: 6px; cursor: pointer; background: linear-gradient(135deg,#a855f7,#d946ef); }
+    .mk-best-tag { position: absolute; top: -8px; right: 8px; font: 800 8.5px var(--mono); color: #1a1206; background: linear-gradient(135deg,#fde68a,#f5c451); border-radius: 20px; padding: 2px 8px; }
+    .mk-addwh { display: flex; flex-direction: column; gap: 5px; } .mk-addrow { display: flex; gap: 5px; } .mk-addrow .mk-input { flex: 1; }
+    .mk-input { background: #12141f; border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; color: var(--text-primary); font: 600 11px var(--mono); box-sizing: border-box; width: 100%; } .mk-input:focus { outline: none; border-color: #d946ef; }
+    .mk-wh { display: flex; align-items: center; gap: 7px; font: 700 10.5px var(--mono); color: var(--text-secondary); padding: 5px 8px; border-radius: 7px; background: #12141f; } .mk-wh-led { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 6px #22c55e; } .mk-wh-x { margin-left: auto; border: none; background: none; color: var(--text-muted); cursor: pointer; }
+    .mk-btn { font: 800 12px var(--mono); padding: 9px 13px; border: none; border-radius: 10px; color: #fff; cursor: pointer; background: linear-gradient(135deg,#a855f7,#d946ef); } .mk-btn.go { background: linear-gradient(135deg,#22c55e,#16a34a); } .mk-btn.sm { padding: 7px 11px; font-size: 11px; }
+    .mk-btn:disabled { opacity: .45; cursor: not-allowed; } .mk-btn:hover:not(:disabled) { filter: brightness(1.08); }
+    .mk-sub { font: 600 10.5px var(--mono); color: var(--text-muted); line-height: 1.4; }
+    .mk-actions { display: flex; gap: 6px; }
+    @@media (max-width: 820px) { .mk-grid { grid-template-columns: 1fr; } .mk-ab { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter, EditorRequired] public StoryboardProject Project { get; set; } = default!;
+    [Parameter] public bool Disabled { get; set; }
+
+    private long _memToken;
+    private AbReport _ab = new(Array.Empty<AbVariant>(), "", "");
+    private string _tName = "", _tUrl = "", _tPlatform = "youtube";
+    private string? _pubMsg, _thumbMsg, _assetMsg;
+    private bool _busy;
+
+    private bool HasMaster => !string.IsNullOrWhiteSpace(Project.FinalVideoPath) && System.IO.File.Exists(Project.FinalVideoPath);
+
+    protected override void OnInitialized()
+    {
+        _memToken = MemAudit.Track("MarketingStudioDeck");
+        Mkt.OnChange += OnSvc;
+        _ab = Ab.Analyze(Project);
+    }
+    private void OnSvc() => InvokeAsync(StateHasChanged);
+
+    private void RunAb() => _ab = Ab.Analyze(Project);
+    private void ApplyVar(string key) => _assetMsg = "✅ " + Ab.ApplyVariant(Project, key);
+
+    private void AddTarget()
+    {
+        if (string.IsNullOrWhiteSpace(_tUrl)) return;
+        Mkt.SaveTarget(new WebhookTarget("", string.IsNullOrWhiteSpace(_tName) ? _tPlatform : _tName, _tUrl.Trim(), "", _tPlatform.Trim()));
+        _tName = ""; _tUrl = "";
+    }
+
+    private async Task PublishAll()
+    {
+        if (!HasMaster || Mkt.Targets.Count == 0) return;
+        _busy = true; _pubMsg = "발행 중…"; StateHasChanged();
+        try
+        {
+            var caption = MarketingAutomationEngine.BuildCaption(Project.Title, "multi");
+            var tags = MarketingAutomationEngine.BuildHashtags("youtube", Project.PresetKey);
+            var payload = new MarketingPayload(caption, tags, "multi", Project.FinalVideoPath!, null);
+            var results = await Mkt.PublishAllAsync(Mkt.Targets, payload);
+            _pubMsg = $"📡 {results.Count(r => r.Ok)}/{results.Count} 발행 완료";
+        }
+        catch (Exception ex) { _pubMsg = "⚠ " + ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private async Task GenThumbs()
+    {
+        if (!HasMaster) return;
+        _busy = true; _thumbMsg = "썸네일 추출 중…"; StateHasChanged();
+        try
+        {
+            var dir = System.IO.Path.Combine(Media.MediaRoot, Project.Id, "thumbnails");
+            var (w, h) = StoryboardProject.ParseResolution(Project.ExportResolution);
+            var r = await Thumbs.GenerateAsync(Project, Project.FinalVideoPath!, dir, w, h);
+            _thumbMsg = r.Ok ? "🖼️ " + r.Message : "⚠ " + r.Message;
+        }
+        catch (Exception ex) { _thumbMsg = "⚠ " + ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private void ExportEmail()
+    {
+        try
+        {
+            var best = _ab.Variants.FirstOrDefault(v => v.Key == _ab.BestVariantKey);
+            var html = MarketingEmailRenderer.BuildHtml(Project.BuyerName, Project.Title, best?.Name, "#", null);
+            var path = System.IO.Path.Combine(Media.MediaRoot, Project.Id, "buyer_email.html");
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+            System.IO.File.WriteAllText(path, html, new System.Text.UTF8Encoding(false));
+            FolderLink.Reveal(path);
+            _assetMsg = "📧 바이어 이메일 HTML 발급 완료";
+        }
+        catch (Exception ex) { _assetMsg = "⚠ " + ex.Message; }
+    }
+
+    private void ExportLog()
+    {
+        try
+        {
+            var entries = CampaignLogExtractor.BuildEntries(Mkt.Log, _ab);
+            var path = System.IO.Path.Combine(Media.MediaRoot, Project.Id, "campaign_log.csv");
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+            System.IO.File.WriteAllText(path, CampaignLogExtractor.RenderCsv(entries), new System.Text.UTF8Encoding(false));
+            FolderLink.Reveal(path);
+            _assetMsg = $"📄 캠페인 로그 {entries.Count}건 추출 완료";
+        }
+        catch (Exception ex) { _assetMsg = "⚠ " + ex.Message; }
+    }
+
+    public void Dispose() { Mkt.OnChange -= OnSvc; MemAudit.Release(_memToken); }
+}

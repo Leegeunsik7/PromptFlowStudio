@@ -1,0 +1,397 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.SpatialSlam
+@implements IDisposable
+@inject SpatialSlamStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.98.0] 🗺️ AI 신경망 공간 SLAM & 3D 환경 재구성 스튜디오 — 궤도 3D 뷰포트(TSDF 메쉬 정점 평면 라벨 색 · 현재 프레임 포인트 클라우드 · 앵커) ·
+    평면 감지 인디케이터(바닥/벽/천장/테이블) · 탑뷰 궤적(지상 진실/추정 · 키프레임 · 루프 폐쇄) · 드리프트 오차 미터 · 앵커 가드 로그 · OpenUSD/3DGS 내보내기.
+*@
+
+<div class="slm-scrim" @onclick="Close">
+    <div class="slm-modal" @onclick:stopPropagation="true">
+        <div class="slm-h">
+            <div>
+                <div class="slm-title">🗺️ AI 신경망 공간 SLAM &amp; 3D 환경 재구성 스튜디오</div>
+                <div class="slm-sub"><b>SLAM</b>이 깊이 프레임을 정점/법선 맵으로 역투영해 기준 키프레임에 점-평면 ICP로 6DoF 자세를 추적하고(평면만 보이는 퇴화 축은 등속 예측 유지), 키프레임 기술자로 재방문을 찾아 <b>루프 폐쇄</b>로 드리프트를 궤적에 분배 보정합니다.
+                    <b>TSDF</b>는 깊이 또는 라이다 스윕을 10 cm 복셀에 융합해 Surface Nets 메쉬를 추출(OpenUSD/3DGS 변환)하고, <b>RANSAC</b>이 바닥·벽·천장·테이블을 분할해 소품/디지털 휴먼의 부양·관통을 가드합니다.
+                    센서는 합성 실내 장면 시뮬레이션이며 "신경망"은 명칭 — 학습 모델 없는 결정적 기하 알고리즘입니다.</div>
+            </div>
+            <button class="slm-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="slm-bar">
+            <button class="slm-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ SLAM 가동")</button>
+            <button class="slm-btn" @onclick="Step10" disabled="@Runner.IsRunning">⏭ 10프레임</button>
+            <button class="slm-btn" @onclick="Restart">↺ 재시작</button>
+            <button class="slm-btn @(Runner.LidarMode ? "on" : null)" @onclick="() => Runner.LidarMode = !Runner.LidarMode">@(Runner.LidarMode ? "📡 라이다 융합" : "📷 RGB-D 융합")</button>
+            <button class="slm-btn @(S.InjectDriftDeg != 0 ? "warn" : null)" @onclick="ToggleDrift">🌀 드리프트 주입</button>
+            <button class="slm-btn @(S.LoopClosureEnabled ? "on" : null)" @onclick="() => S.LoopClosureEnabled = !S.LoopClosureEnabled">🔁 루프 폐쇄</button>
+            <button class="slm-btn @(G.Gravity ? "on" : null)" @onclick="() => G.Gravity = !G.Gravity">🪂 중력</button>
+            <button class="slm-btn" @onclick="Export">📦 OpenUSD + 3DGS 내보내기</button>
+            <span class="slm-chip">프레임 @(Runner.Frame) · 루프 @(F0(100.0 * (Runner.Frame % SpatialSlamStudioRunner.FramesPerLoop) / SpatialSlamStudioRunner.FramesPerLoop))% · 틱 @(F1(Runner.LastTickMs)) ms</span>
+        </div>
+
+        <div class="slm-main">
+            <div class="slm-col">
+                <div class="slm-card">
+                    <div class="slm-sec">🧊 3D 포인트 클라우드 / 메쉬 뷰포트 <span class="slm-kv">정점 @(M.VertexCount) · 삼각형 @(M.TriangleCount) · 관측 복셀 @(_observed) · 현재 프레임 점 @(Runner.CloudCount)</span></div>
+                    <div class="slm-view">
+                        @if (_img is not null)
+                        {
+                            <img src="@_img" alt="SLAM 3D 뷰" />
+                        }
+                    </div>
+                    <div class="slm-row">
+                        <label class="slm-sl">궤도 <b>@(F0(_yaw))°</b><input type="range" min="0" max="359" step="1" value="@(F0(_yaw))" @onchange="SetYaw" /></label>
+                        <label class="slm-sl">고도 <b>@(F0(_pitch))°</b><input type="range" min="10" max="85" step="1" value="@(F0(_pitch))" @onchange="SetPitch" /></label>
+                        <label class="slm-ck"><input type="checkbox" checked="@_showCloud" @onchange="e => _showCloud = e.Value is true" /> 현재 프레임 클라우드</label>
+                    </div>
+                    <div class="slm-legend"><i class="k1"></i>바닥 <i class="k3"></i>벽 <i class="k2"></i>천장 <i class="k4"></i>테이블 <i class="k0"></i>기타 평면 <i class="kn"></i>비평면 메쉬 <i class="kc"></i>라이브 클라우드 <i class="ka"></i>앵커</div>
+                </div>
+
+                <div class="slm-card">
+                    <div class="slm-sec">🧭 탑뷰 궤적 · 루프 폐쇄 <span class="slm-kv">키프레임 @(S.KeyframeCount) · 기술자 거리 @(Desc())</span></div>
+                    <svg class="slm-map" viewBox="-3.2 -2.7 6.4 5.4" preserveAspectRatio="xMidYMid meet">
+                        <rect class="room" x="-3" y="-2.5" width="6" height="5" />
+                        @foreach (var b in SlamSyntheticRoom.Boxes)
+                        {
+                            <rect class="furn" x="@(F2(b.Min.X))" y="@(F2(b.Min.Z))" width="@(F2(b.Max.X - b.Min.X))" height="@(F2(b.Max.Z - b.Min.Z))" />
+                        }
+                        @for (var i = 0; i < G.PlaneCount; i++)
+                        {
+                            var p = G.Plane(i);
+                            if (p.Kind == PlaneKind.Wall)
+                            {
+                                var a = p.Centroid + p.U * p.UMin; var c = p.Centroid + p.U * p.UMax;
+                                <line class="wall" x1="@(F2(a.X))" y1="@(F2(a.Z))" x2="@(F2(c.X))" y2="@(F2(c.Z))" />
+                            }
+                        }
+                        <polyline class="gt" points="@(TrajPoints(true))" />
+                        <polyline class="est" points="@(TrajPoints(false))" />
+                        @for (var k = 0; k < S.KeyframeCount; k++)
+                        {
+                            var kp = S.KeyframePose(k).T;
+                            <circle class="kf" cx="@(F2(kp.X))" cy="@(F2(kp.Z))" r="0.04" />
+                        }
+                        @for (var l = 0; l < Math.Min(S.LoopCount, 8); l++)
+                        {
+                            var lc = S.Loop(S.LoopCount - 1 - l);
+                            var pa = PoseAtFrame(lc.Frame); var pb = PoseAtFrame(lc.KeyframeFrame);
+                            <line class="loop" x1="@(F2(pa.X))" y1="@(F2(pa.Z))" x2="@(F2(pb.X))" y2="@(F2(pb.Z))" />
+                        }
+                        @for (var a = 0; a < G.AnchorCount; a++)
+                        {
+                            var an = G.Anchor(a);
+                            <circle class="anc @(an.LastFix != AnchorFix.None && an.LastFix != AnchorFix.NoSupport ? "fix" : null)" cx="@(F2(an.Position.X))" cy="@(F2(an.Position.Z))" r="@(F2(an.Radius))" />
+                        }
+                        <circle class="cam" cx="@(F2(S.Pose.T.X))" cy="@(F2(S.Pose.T.Z))" r="0.07" />
+                    </svg>
+                    <div class="slm-legend"><i class="gt"></i>지상 진실 <i class="est"></i>SLAM 추정(보정 반영) <i class="kf"></i>키프레임 <i class="lp"></i>루프 폐쇄 <i class="wl"></i>감지 벽</div>
+                </div>
+            </div>
+
+            <div class="slm-col">
+                <div class="slm-card">
+                    <div class="slm-sec">📏 루프 폐쇄 드리프트 오차 미터</div>
+                    <div class="slm-drift">
+                        @Meter("현재 오차", S.CurrentErrorM * 100, 50, " cm")
+                        @Meter("ATE RMSE", S.AteRmse * 100, 50, " cm")
+                        @Meter("최근 보정", LastLoop.CorrectionM * 100, 50, " cm")
+                        @Meter("보정 각", LastLoop.CorrectionDeg, 20, "°")
+                    </div>
+                    <div class="slm-stats">
+                        <span><b>@(F2(S.LastRms * 100)) cm</b>ICP RMS</span>
+                        <span><b>@(F0(S.LastInlierRatio * 100))%</b>인라이어</span>
+                        <span><b>@(S.LastIterations)</b>반복</span>
+                        <span><b>@(S.LastDegenerateAxes)</b>퇴화 축</span>
+                        <span><b>@(S.Features)</b>곡률 특징점</span>
+                        <span><b>@(F1(S.LastTrackUs / 1000)) ms</b>추적</span>
+                        <span><b>@(S.LoopCount)</b>루프 폐쇄</span>
+                        <span><b>@(S.Lost) / @(S.Fallbacks)</b>상실 / 폴백</span>
+                    </div>
+                    @if (S.LoopCount > 0)
+                    {
+                        <div class="slm-note">최근 루프: 프레임 @(LastLoop.Frame) → 키프레임 @(LastLoop.KeyframeFrame) · 검증 RMS @(F2(LastLoop.Rms * 100)) cm · 인라이어 @(F0(LastLoop.Inliers * 100))% · 오차 @(F1(LastLoop.ErrorBeforeM * 100)) → @(F1(LastLoop.ErrorAfterM * 100)) cm · TSDF 재융합 @(Runner.Refuses)회</div>
+                    }
+                </div>
+
+                <div class="slm-card">
+                    <div class="slm-sec">🧱 평면 감지 상태 <span class="slm-kv">@(G.PlaneCount)면 · RANSAC @(F1(G.LastDetectUs / 1000)) ms · 점 @(G.PointCount)</span></div>
+                    <div class="slm-ind">
+                        @for (var k = 1; k <= 4; k++)
+                        {
+                            var kind = (PlaneKind)k;
+                            var n = G.CountKind(kind);
+                            <span class="ind k@(k) @(n > 0 ? "on" : null)"><b>@(SpatialPlaneDetectionAnchorGuard.KindNames[k])</b>@(n > 0 ? n + "면" : "미감지")</span>
+                        }
+                    </div>
+                    <div class="slm-planes">
+                        <div class="hd"><span>ID</span><span>종류</span><span>높이</span><span>법선</span><span>면적</span><span>인라이어</span><span>상태</span></div>
+                        @for (var i = 0; i < G.PlaneCount; i++)
+                        {
+                            var p = G.Plane(i);
+                            <div class="rw"><span class="mono">#@(p.Id)</span><span class="k@((int)p.Kind)t">@(SpatialPlaneDetectionAnchorGuard.KindNames[(int)p.Kind])</span><span class="mono">@(F2(p.Height)) m</span>
+                                <span class="mono">@(F2(p.Normal.X)),@(F2(p.Normal.Y)),@(F2(p.Normal.Z))</span><span class="mono">@(F1(p.Area)) m²</span><span class="mono">@(p.Inliers)</span><span>@(p.Stable ? "안정" : "추적 중")</span></div>
+                        }
+                    </div>
+                </div>
+
+                <div class="slm-card">
+                    <div class="slm-sec">⚓ 물리 충돌 앵커 가드 <span class="slm-kv">보정 @(G.EventSeq)</span></div>
+                    <div class="slm-anchors">
+                        @for (var a = 0; a < G.AnchorCount; a++)
+                        {
+                            var an = G.Anchor(a);
+                            <div class="an"><b>@(an.Kind == PromptFlowStudio.Services.SpatialSlam.AnchorKind.DigitalHuman ? "🧍" : "📦") @(an.Name)</b><span class="mono">(@(F2(an.Position.X)), @(F2(an.Position.Y)), @(F2(an.Position.Z)))</span>
+                                <span class="@(an.Grounded ? "ok" : "warn")">@(an.Grounded ? "접지" : "비접지")</span><span>@(SpatialPlaneDetectionAnchorGuard.FixNames[(int)an.LastFix])</span></div>
+                        }
+                    </div>
+                    <div class="slm-log">
+                        @for (var i = 0; i < Math.Min(G.EventCount, 10); i++)
+                        {
+                            var e = G.Event(i);
+                            if (e.Seq == 0 || e.Anchor >= G.AnchorCount) continue;
+                            <div class="ln f@((int)e.Fix)"><span class="mono">#@(e.Seq)</span><b>@(G.Anchor(e.Anchor).Name)</b><span>@(SpatialPlaneDetectionAnchorGuard.FixNames[(int)e.Fix])</span><span class="mono">@(F1(e.Amount * 100)) cm</span></div>
+                        }
+                    </div>
+                </div>
+                <div class="slm-note">@(Runner.LastAction ?? "대기")@(Runner.LastExport is null ? "" : " · " + Runner.LastExport)</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .slm-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .slm-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .slm-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #10b981 16%, var(--card)), color-mix(in srgb, #3b82f6 14%, var(--card))); }
+    .slm-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .slm-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .slm-sub b { color: var(--text-primary); }
+    .slm-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .slm-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .slm-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; } .slm-btn:disabled { opacity: .4; cursor: default; }
+    .slm-btn.on { background: color-mix(in srgb, #10b981 24%, transparent); border-color: #34d399; } .slm-btn.warn { background: color-mix(in srgb, #f97316 26%, transparent); border-color: #fb923c; }
+    .slm-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .slm-main { display: grid; grid-template-columns: 1.15fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .slm-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .slm-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .slm-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .slm-view { position: relative; width: 100%; aspect-ratio: 16 / 10; background: #030712; border-radius: 10px; overflow: hidden; } .slm-view img { width: 100%; height: 100%; image-rendering: pixelated; }
+    .slm-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    .slm-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .slm-sl b { font-family: var(--mono); color: var(--text-primary); } .slm-sl input { width: 120px; }
+    .slm-ck { display: flex; gap: 4px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .slm-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 10px; color: var(--text-muted); align-items: center; } .slm-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; }
+    .slm-legend .k1 { background: #22c55e; } .slm-legend .k3 { background: #3b82f6; } .slm-legend .k2 { background: #a855f7; } .slm-legend .k4 { background: #f59e0b; } .slm-legend .k0 { background: #64748b; }
+    .slm-legend .kn { background: #cbd5e1; } .slm-legend .kc { background: #22d3ee; } .slm-legend .ka { background: #f43f5e; }
+    .slm-legend .gt { background: #94a3b8; height: 3px; } .slm-legend .est { background: #34d399; height: 3px; } .slm-legend .kf { background: #fbbf24; border-radius: 50%; } .slm-legend .lp { background: #f472b6; height: 3px; } .slm-legend .wl { background: #3b82f6; height: 3px; }
+    .slm-map { width: 100%; height: 300px; background: #030712; border-radius: 10px; }
+    .slm-map .room { fill: #0b1220; stroke: #334155; stroke-width: .03; } .slm-map .furn { fill: #1e293b; stroke: #475569; stroke-width: .015; }
+    .slm-map .wall { stroke: #3b82f6; stroke-width: .06; stroke-linecap: round; opacity: .8; }
+    .slm-map polyline { fill: none; stroke-width: .03; } .slm-map .gt { stroke: #94a3b8; stroke-dasharray: .08 .06; } .slm-map .est { stroke: #34d399; }
+    .slm-map .kf { fill: #fbbf24; } .slm-map .loop { stroke: #f472b6; stroke-width: .04; } .slm-map .cam { fill: #22d3ee; stroke: #0b1220; stroke-width: .02; }
+    .slm-map .anc { fill: rgba(244,63,94,.35); stroke: #f43f5e; stroke-width: .02; } .slm-map .anc.fix { fill: rgba(250,204,21,.45); stroke: #facc15; }
+    .slm-drift { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .slm-meter { display: flex; flex-direction: column; align-items: center; font-size: 10px; color: var(--text-muted); } .slm-meter svg { width: 96px; height: 56px; }
+    .slm-meter .tr { fill: none; stroke: #1f2937; stroke-width: 8; } .slm-meter .vl { fill: none; stroke-width: 8; stroke-linecap: round; } .slm-meter b { font: 800 12px var(--mono); color: var(--text-primary); }
+    .slm-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .slm-stats span { display: flex; flex-direction: column; font-size: 10px; color: var(--text-muted); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; } .slm-stats b { font: 800 12px var(--mono); color: var(--text-primary); }
+    .slm-ind { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .slm-ind .ind { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 11px; color: var(--text-muted); border: 1px dashed var(--line); border-radius: 10px; padding: 6px; }
+    .slm-ind .ind b { font-size: 12px; color: var(--text-secondary); } .slm-ind .ind.on { border-style: solid; color: var(--text-primary); }
+    .slm-ind .k1.on { border-color: #22c55e; background: color-mix(in srgb, #22c55e 14%, transparent); } .slm-ind .k3.on { border-color: #3b82f6; background: color-mix(in srgb, #3b82f6 14%, transparent); }
+    .slm-ind .k2.on { border-color: #a855f7; background: color-mix(in srgb, #a855f7 14%, transparent); } .slm-ind .k4.on { border-color: #f59e0b; background: color-mix(in srgb, #f59e0b 14%, transparent); }
+    .slm-planes { display: flex; flex-direction: column; gap: 2px; max-height: 190px; overflow-y: auto; }
+    .slm-planes .hd, .slm-planes .rw { display: grid; grid-template-columns: 40px 56px 60px 1fr 60px 60px 56px; gap: 6px; font-size: 11px; color: var(--text-secondary); align-items: center; }
+    .slm-planes .hd { font-weight: 800; color: var(--text-muted); font-size: 10px; }
+    .k1t { color: #4ade80; } .k2t { color: #c084fc; } .k3t { color: #60a5fa; } .k4t { color: #fbbf24; } .k0t { color: #94a3b8; }
+    .slm-anchors { display: flex; flex-direction: column; gap: 3px; } .slm-anchors .an { display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; color: var(--text-secondary); align-items: center; } .slm-anchors b { color: var(--text-primary); }
+    .slm-anchors .ok { color: #4ade80; } .slm-anchors .warn { color: #fbbf24; }
+    .slm-log { display: flex; flex-direction: column; gap: 3px; max-height: 150px; overflow-y: auto; }
+    .slm-log .ln { display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; color: var(--text-secondary); border-left: 3px solid #475569; padding: 2px 6px; } .slm-log b { color: var(--text-primary); }
+    .slm-log .f1 { border-color: #22c55e; } .slm-log .f2 { border-color: #f59e0b; } .slm-log .f3 { border-color: #3b82f6; } .slm-log .f4 { border-color: #a855f7; } .slm-log .f5 { border-color: #f43f5e; }
+    .slm-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; font-weight: 500; color: var(--text-secondary); align-items: center; }
+    .slm-note { font-size: 11px; color: var(--text-muted); } .mono { font-family: var(--mono); }
+    @@media (max-width: 1200px) { .slm-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int VW = 320, VH = 200;
+    private static readonly Vector3[] KindColor = { new(0.39f, 0.45f, 0.55f), new(0.13f, 0.77f, 0.37f), new(0.66f, 0.33f, 0.97f), new(0.23f, 0.51f, 0.96f), new(0.96f, 0.62f, 0.04f) };
+    private System.Threading.Timer? _timer;
+    private string? _img;
+    private float _yaw = 35, _pitch = 50;
+    private bool _showCloud = true;
+    private int _observed;
+    private long _imgFrame = -1;
+    private byte[]? _px;
+    private float[]? _zb;
+
+    private NeuralSpatialSlamTrackingEngine S => Runner.Slam;
+    private LidarPointCloudMeshReconstructionSynthesizer M => Runner.Mesh;
+    private SpatialPlaneDetectionAnchorGuard G => Runner.Guard;
+    private LoopClosure LastLoop => S.LoopCount > 0 ? S.Loop(S.LoopCount - 1) : default;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(Refresh); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Slam.Modal.Timer", ex); }
+        }, null, 300, 300);
+        Render();
+    }
+
+    private void Refresh()
+    {
+        if (Runner.Frame != _imgFrame) Render();
+        StateHasChanged();
+    }
+
+    /// <summary>궤도 카메라 소프트웨어 점 렌더(z-버퍼 · 평면 라벨 색 · 라이브 클라우드 · 앵커) → BMP(UI 콜드 경로).</summary>
+    private void Render()
+    {
+        _imgFrame = Runner.Frame;
+        _observed = M.ObservedVoxels;
+        _px ??= new byte[54 + VW * 3 * VH];
+        _zb ??= new float[VW * VH];
+        var px = _px; Array.Clear(px, 54, px.Length - 54); Array.Fill(_zb, float.MaxValue);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(px, 0x4D42);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(px.AsSpan(2), px.Length);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(px.AsSpan(10), 54);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(px.AsSpan(14), 40);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(px.AsSpan(18), VW);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(px.AsSpan(22), -VH);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(px.AsSpan(26), 1);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(px.AsSpan(28), 24);
+        for (var i = 54; i < px.Length; i += 3) { px[i] = 18; px[i + 1] = 7; px[i + 2] = 3; }
+        float yr = _yaw * MathF.PI / 180f, pr = _pitch * MathF.PI / 180f;
+        var target = new Vector3(0, 1.0f, 0);
+        var eye = target + new Vector3(MathF.Cos(pr) * MathF.Sin(yr), MathF.Sin(pr), MathF.Cos(pr) * MathF.Cos(yr)) * 8.5f;
+        var cam = SlamPose.LookAt(eye, target).Inverse();
+        const float f = 260f;
+        void Plot(Vector3 w, Vector3 c, int size)
+        {
+            var p = cam.Apply(w);
+            if (p.Z > -0.2f) return;
+            var z = -p.Z;
+            var u = (int)(f * p.X / z + VW / 2); var v = (int)(-f * p.Y / z + VH / 2);
+            for (var dy = 0; dy < size; dy++)
+                for (var dx = 0; dx < size; dx++)
+                {
+                    int uu = u + dx, vv = v + dy;
+                    if ((uint)uu >= VW || (uint)vv >= VH) continue;
+                    var k = vv * VW + uu;
+                    if (z >= _zb[k]) continue;
+                    _zb[k] = z;
+                    var o = 54 + vv * VW * 3 + uu * 3;
+                    px[o] = (byte)(Math.Clamp(c.Z, 0, 1) * 255); px[o + 1] = (byte)(Math.Clamp(c.Y, 0, 1) * 255); px[o + 2] = (byte)(Math.Clamp(c.X, 0, 1) * 255);
+                }
+        }
+        var lightDir = Vector3.Normalize(new Vector3(0.3f, 0.9f, 0.4f));
+        for (var i = 0; i < G.PointCount; i++)
+        {
+            var p = G.Point(i);
+            var lab = G.Label(i);
+            var shade = 0.55f + 0.45f * MathF.Abs(Vector3.Dot(lightDir, Vector3.UnitY));
+            var c = lab >= 0 && lab < G.PlaneCount ? KindColor[(int)G.Plane(lab).Kind] * shade : new Vector3(0.8f, 0.84f, 0.88f) * (0.5f + 0.3f * Math.Clamp(p.Y / 3f, 0, 1));
+            if (p.Y > 2.85f && _pitch > 30) continue; // 천장은 탑뷰에서 생략(내부 가시화)
+            Plot(p, c, 2);
+        }
+        if (_showCloud)
+            for (var i = 0; i < Runner.CloudCount; i++) Plot(Runner.CloudPoint(i), new Vector3(0.13f, 0.83f, 0.93f), 1);
+        for (var a = 0; a < G.AnchorCount; a++)
+        {
+            var an = G.Anchor(a);
+            for (var h = 0f; h <= an.Height; h += 0.05f)
+                for (var t = 0; t < 12; t++)
+                {
+                    var ang = t * MathF.PI / 6;
+                    Plot(an.Position + new Vector3(MathF.Cos(ang) * an.Radius, h, MathF.Sin(ang) * an.Radius), new Vector3(0.96f, 0.25f, 0.37f), 2);
+                }
+        }
+        var pose = S.Pose;
+        for (var s = 0f; s < 0.5f; s += 0.02f) Plot(pose.Apply(new Vector3(0, 0, -s)), new Vector3(1f, 1f, 0.3f), 2);
+        _img = "data:image/bmp;base64," + Convert.ToBase64String(px);
+    }
+
+    private string TrajPoints(bool gt)
+    {
+        var n = S.TrajectoryCount;
+        if (n < 2) return "";
+        var step = Math.Max(1, n / 300);
+        var sb = new System.Text.StringBuilder(n / step * 14);
+        for (var i = 0; i < n; i += step)
+        {
+            Vector3 p;
+            if (gt) { if (!S.TryGroundTruth(i, out var g)) continue; p = g.T; }
+            else p = S.TrajectoryPose(i).T;
+            sb.Append(F2(p.X)).Append(',').Append(F2(p.Z)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private Vector3 PoseAtFrame(long frame)
+    {
+        for (var i = S.TrajectoryCount - 1; i >= 0; i--) if (S.TrajectoryFrame(i) == frame) return S.TrajectoryPose(i).T;
+        return Vector3.Zero;
+    }
+
+    private string Desc() => float.IsNaN(S.LastDescDistance) ? "—" : F2(S.LastDescDistance) + " (임계 " + F2(S.LoopDescThreshold) + ")";
+
+    private RenderFragment Meter(string name, double v, double max, string unit) => __builder =>
+    {
+        if (double.IsNaN(v)) v = 0;
+        var t = Math.Clamp(v / max, 0, 1);
+        var a = Math.PI * (1 - t);
+        var x = 48 + 38 * Math.Cos(a); var y = 50 - 38 * Math.Sin(a);
+        var col = t < 0.2 ? "#22c55e" : t < 0.5 ? "#f59e0b" : "#ef4444";
+        <div class="slm-meter">
+            <svg viewBox="0 0 96 56">
+                <path class="tr" d="M 10 50 A 38 38 0 0 1 86 50" />
+                <path class="vl" stroke="@col" d="M 10 50 A 38 38 0 0 1 @(F1(x)) @(F1(y))" />
+            </svg>
+            <b>@(F1(v))@(unit)</b>
+            <span>@name</span>
+        </div>
+    };
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step10() { for (var i = 0; i < 10; i++) Runner.Step(); Render(); }
+    private void Restart() { Runner.Restart(); Render(); }
+
+    private void ToggleDrift()
+    {
+        var on = S.InjectDriftDeg == 0;
+        S.InjectDriftDeg = on ? 0.04f : 0f; S.InjectDriftMm = on ? 1.5f : 0f;
+    }
+
+    private void Export()
+    {
+        try { Runner.Export(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { PromptFlowStudio.Program.Log("Slam.Export", ex); }
+    }
+
+    private void SetYaw(ChangeEventArgs e) { if (float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) { _yaw = v; Render(); } }
+    private void SetPitch(ChangeEventArgs e) { if (float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) { _pitch = v; Render(); } }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중(15 Hz) 이벤트는 300 ms 타이머가 처리 — 정지 상태 액션만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(Refresh); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

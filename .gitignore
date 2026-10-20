@@ -1,0 +1,16 @@
+# 빌드 산출물 · 대용량 생성물 (v17.63.1 체크포인트 커밋 시 추가)
+bin/
+obj/
+publish/
+release/
+TestResults/
+installer/Output/
+installer/redist/
+graphify-out/
+.serena/
+.vs/
+node_modules/
+*.log
+*.zip
+*.trx
+*.user

@@ -1,0 +1,263 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.SelfFix
+@implements IDisposable
+@inject RealUiSelfHealingStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.93.0] 🛠️ AI 실시간 DOM UI 구동 & 소스 자동 수정 스튜디오 — 모달 RenderTree 실구동 진행률 · 컴포넌트별 결과 · 이벤트 로그 ·
+    소스 패치 Diff 프리뷰 · 수동 권고 · 폐루프(적용 → 빌드 → 테스트 → 커밋/롤백) 모니터 · 1-Click 자율 구동 + 패치 스위치.
+*@
+
+<div class="rsh-scrim" @onclick="Close">
+    <div class="rsh-modal" @onclick:stopPropagation="true">
+        <div class="rsh-h">
+            <div>
+                <div class="rsh-title">🛠️ AI 실시간 DOM UI 구동 &amp; 소스 자동 수정 스튜디오</div>
+                <div class="rsh-sub">헤드리스 Blazor <b>Renderer</b>로 스튜디오 모달 @(Runner.ModalCount)종을 실제 인스턴스화(실 DI)해 RenderTree의 onclick/onchange 핸들러를 직접 디스패치하고 예외·지연을 전수 수집합니다.
+                    소스 결함 중 의미 보존 삽입으로 고칠 수 있는 항목(미관찰 Task → <span class="mono">_ =</span>)만 자동 패치하며, <b>패치 스위치</b>가 켜진 경우에만 파일을 수정하고 Release 빌드(-warnaserror)와 전체 테스트로 검증해 실패 시 원본으로 롤백합니다.</div>
+            </div>
+            <button class="rsh-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="rsh-bar">
+            <button class="rsh-btn prim" @onclick="Runner.StartFull" disabled="@Runner.IsRunning">⚡ 1-Click 자율 전수 구동</button>
+            <button class="rsh-btn" @onclick="Runner.Stop" disabled="@(!Runner.IsRunning)">⏹ 정지</button>
+            <button class="rsh-btn @(Runner.DriveDom ? "on" : null)" @onclick="ToggleDom">🖱 DOM 구동</button>
+            <button class="rsh-btn @(Runner.ApplyPatches ? "warn" : null)" @onclick="TogglePatch">@(PatchLabel())</button>
+            <button class="rsh-btn @(Runner.RunTests ? "on" : null)" @onclick="ToggleTests">🧪 전체 테스트 검증</button>
+            <span class="rsh-chip @(PhaseChip())">@(RealUiSelfHealingStudioRunner.PhaseNames[(int)Runner.Phase])</span>
+            <span class="rsh-chip">이벤트 @(D.Events) · 클릭 @(D.Clicks) · 변경 @(D.Changes) · 생략 @(D.Skipped)</span>
+            <span class="rsh-chip">배치 @(D.Batches.ToString("#,0", CultureInfo.InvariantCulture)) · @(F0(D.LastRunMs)) ms</span>
+        </div>
+
+        <div class="rsh-main">
+            <div class="rsh-col">
+                <div class="rsh-card">
+                    <div class="rsh-sec">📈 DOM 직접 구동 진행률 <span class="rsh-kv">@(D.Current ?? "—") · 예외 @(D.Exceptions) · 지연 @(D.Timeouts) · 마운트 실패 @(D.MountFaults)</span></div>
+                    <div class="rsh-prog"><i style="width:@(F1(D.Progress * 100))%"></i><span>@(D.ComponentIndex) / @(D.ComponentTotal)</span></div>
+                    <div class="rsh-comps">
+                        @for (var i = 0; i < D.ReportCount; i++)
+                        {
+                            var rp = D.Report(i);
+                            <div class="cp @(CompClass(rp))" title="@(CompTip(rp))">
+                                <span class="nm">@(ShortName(rp.Name))</span>
+                                <span class="mt">@(CompMetrics(rp))</span>
+                            </div>
+                        }
+                    </div>
+                    <div class="rsh-legend"><i class="ok"></i>정상 <i class="ex"></i>예외/지연 <i class="mf"></i>마운트 실패</div>
+                </div>
+
+                <div class="rsh-card">
+                    <div class="rsh-sec">🧾 이벤트 로그(최근)</div>
+                    <div class="rsh-log">
+                        @for (var i = 0; i < EventShown; i++)
+                        {
+                            var ev = D.Log(i);
+                            <div class="ln o@((int)ev.Outcome)">
+                                <span class="mono">@(Seq(ev.Seq))</span>
+                                <b>@(ShortName(ev.Component))</b>
+                                <span class="mono">@(ev.Element)·@(KindName(ev.Kind))</span>
+                                <span>@(ev.Label)</span>
+                                <span class="mono">@(F1(ev.Ms))ms</span>
+                                <span class="er">@(ev.Error)</span>
+                            </div>
+                        }
+                        @if (D.LogCount == 0)
+                        {
+                            <div class="rsh-note">구동 기록 없음.</div>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="rsh-col">
+                <div class="rsh-card">
+                    <div class="rsh-sec">🧩 소스 자동 수정 Diff 프리뷰 <span class="rsh-kv">패치 @(E.PatchCount) · 파일 @(E.FilesWithPatches) · 스캔 @(E.FilesScanned) · @(F0(E.LastPlanMs)) ms</span></div>
+                    @if (E.PatchCount == 0)
+                    {
+                        <div class="rsh-note">계획된 패치 없음 — 1-Click 구동 시 계획됩니다(패치 스위치 OFF = 드라이런).</div>
+                    }
+                    else
+                    {
+                        <pre class="rsh-diff">@(DiffText())</pre>
+                    }
+                </div>
+
+                <div class="rsh-card">
+                    <div class="rsh-sec">📝 수동 조치 권고(자동 수정 금지 — 의미 변경 위험) <span class="rsh-kv">@(E.AdvisoryCount)건</span></div>
+                    <div class="rsh-adv">
+                        @for (var i = 0; i < AdvShown; i++)
+                        {
+                            var a = E.Advisory(i);
+                            <div class="ln">
+                                <b>@(Code(a.Rule))</b>
+                                <span class="mono">@(a.File):@(a.Line)</span>
+                                <span>@(a.Member)</span>
+                                <span class="rs">@(a.Reason)</span>
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                <div class="rsh-card">
+                    <div class="rsh-sec">🔁 폐루프 회귀 검증 <span class="rsh-chip">@(RealUiSelfHealingStudioRunner.GuardPhaseName(G.Phase)) · 시도 @(G.Attempt)</span></div>
+                    <div class="rsh-steps">
+                        @for (var s = 0; s < StepNames.Length; s++)
+                        {
+                            <span class="st @(StepClass(s))">@(StepNames[s])</span>
+                        }
+                    </div>
+                    @if (G.Last is not null)
+                    {
+                        <div class="rsh-kv">@(ReportLine())</div>
+                        <div class="rsh-log sm">
+                            @foreach (var line in G.Last.Log)
+                            {
+                                <div class="ln">@line</div>
+                            }
+                        </div>
+                    }
+                    @if (G.LastOutputTail is not null)
+                    {
+                        <pre class="rsh-out">@(OutputTail())</pre>
+                    }
+                </div>
+                <div class="rsh-note">@(Runner.LastAction ?? "대기") · 소스 루트 @(Runner.SourceRoot ?? "미발견")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .rsh-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .rsh-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .rsh-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f97316 16%, var(--card)), color-mix(in srgb, #0ea5e9 14%, var(--card))); }
+    .rsh-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .rsh-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .rsh-sub b { color: var(--text-primary); }
+    .rsh-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .rsh-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .rsh-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .rsh-btn:disabled { opacity: .4; cursor: default; } .rsh-btn.on { background: color-mix(in srgb, #0ea5e9 24%, transparent); border-color: #38bdf8; }
+    .rsh-btn.prim { background: color-mix(in srgb, #22c55e 22%, transparent); border-color: #4ade80; } .rsh-btn.warn { background: color-mix(in srgb, #f97316 28%, transparent); border-color: #fb923c; }
+    .rsh-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .rsh-chip.ok { border-color: #22c55e; color: #86efac; } .rsh-chip.warn { border-color: #f97316; color: #fdba74; } .rsh-chip.run { border-color: #38bdf8; color: #7dd3fc; }
+    .rsh-main { display: grid; grid-template-columns: 1fr 1.1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .rsh-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .rsh-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .rsh-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .rsh-prog { position: relative; height: 16px; background: #0b1020; border-radius: 8px; overflow: hidden; }
+    .rsh-prog i { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, #0ea5e9, #22c55e); transition: width .2s; }
+    .rsh-prog span { position: relative; font: 700 10px var(--mono); color: #e2e8f0; padding-left: 8px; line-height: 16px; }
+    .rsh-comps { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px; }
+    .rsh-comps .cp { display: flex; flex-direction: column; gap: 1px; font-size: 10px; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .rsh-comps .cp .nm { color: var(--text-primary); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .rsh-comps .cp .mt { font: 600 9px var(--mono); color: var(--text-muted); }
+    .rsh-comps .ok { border-color: #22c55e; background: color-mix(in srgb, #22c55e 9%, transparent); } .rsh-comps .ex { border-color: #ef4444; background: color-mix(in srgb, #ef4444 12%, transparent); }
+    .rsh-comps .mf { border-color: #a855f7; border-style: dashed; } .rsh-comps .cur { outline: 2px solid #38bdf8; }
+    .rsh-legend { display: flex; gap: 8px; font-size: 10px; color: var(--text-muted); align-items: center; } .rsh-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; }
+    .rsh-legend .ok { background: #22c55e; } .rsh-legend .ex { background: #ef4444; } .rsh-legend .mf { background: #a855f7; }
+    .rsh-log, .rsh-adv { display: flex; flex-direction: column; gap: 3px; max-height: 280px; overflow-y: auto; } .rsh-log.sm { max-height: 120px; }
+    .rsh-log .ln, .rsh-adv .ln { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; color: var(--text-secondary); border-left: 3px solid #475569; padding: 2px 6px; }
+    .rsh-log .o0 { border-color: #22c55e; } .rsh-log .o1 { border-color: #ef4444; } .rsh-log .o2 { border-color: #a855f7; } .rsh-log .o3 { border-color: #64748b; opacity: .7; }
+    .rsh-log b, .rsh-adv b { color: var(--text-primary); } .rsh-log .er { color: #fca5a5; } .rsh-adv .rs { color: var(--text-muted); }
+    .rsh-diff, .rsh-out { font: 500 10.5px var(--mono); max-height: 300px; overflow: auto; background: #030712; color: #cbd5e1; padding: 8px; border-radius: 8px; white-space: pre; margin: 0; }
+    .rsh-out { max-height: 140px; color: #94a3b8; white-space: pre-wrap; }
+    .rsh-steps { display: flex; gap: 4px; flex-wrap: wrap; } .rsh-steps .st { font: 700 10px var(--mono); padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); color: var(--text-muted); }
+    .rsh-steps .done { border-color: #22c55e; color: #86efac; } .rsh-steps .act { border-color: #38bdf8; color: #7dd3fc; animation: rsh-pulse .6s ease-in-out infinite alternate; } .rsh-steps .bad { border-color: #ef4444; color: #fca5a5; }
+    .rsh-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; font-weight: 500; color: var(--text-secondary); align-items: center; }
+    .rsh-note { font-size: 11px; color: var(--text-muted); } .mono { font-family: var(--mono); }
+    @@keyframes rsh-pulse { from { opacity: .55; } to { opacity: 1; } }
+    @@media (max-width: 1200px) { .rsh-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly string[] StepNames = { "스냅샷", "적용", "빌드", "테스트", "커밋" };
+    private System.Threading.Timer? _timer;
+    private string? _diff;
+    private int _diffStamp = -1;
+
+    private RealDomBlazorRenderTreeDriver D => Runner.Driver;
+    private AutonomousCodeDefectSelfFixEngine E => Runner.Engine;
+    private ClosedLoopRegressionSelfRepairGuard G => Runner.Guard;
+    private int EventShown => Math.Min(D.LogCount, 60);
+    private int AdvShown => Math.Min(E.AdvisoryCount, 60);
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("SelfFix.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string Seq(long s) => "#" + s.ToString(CultureInfo.InvariantCulture);
+    private static string Code(PromptFlowStudio.Services.CloudVerification.VerifyRule r) => PromptFlowStudio.Services.CloudVerification.CloudSourceCodeIntegrityVerifierEngine.RuleCodes[(int)r];
+    private static string KindName(DomActionKind k) => k switch { DomActionKind.Click => "click", DomActionKind.Check => "check", _ => "change" };
+    private static string ShortName(string n) => n.EndsWith("StudioModal", StringComparison.Ordinal) ? n[..^11] : n;
+
+    private string PatchLabel() => Runner.ApplyPatches ? "🩹 패치 적용 ON(파일 수정)" : "🩹 패치 적용 OFF(드라이런)";
+
+    private string? PhaseChip() => Runner.Phase switch
+    {
+        SelfHealPhase.Done => "ok", SelfHealPhase.RolledBack or SelfHealPhase.Failed => "warn", SelfHealPhase.Idle => null, _ => "run",
+    };
+
+    private string CompClass(DomComponentReport r)
+    {
+        var c = !r.Mounted ? "mf" : r.Clean ? "ok" : "ex";
+        return D.Current == r.Name && Runner.Phase == SelfHealPhase.DomDriving ? c + " cur" : c;
+    }
+
+    private static string CompTip(DomComponentReport r) => r.MountError ?? (r.Name + " · 요소 " + r.Elements.ToString(CultureInfo.InvariantCulture));
+
+    private static string CompMetrics(DomComponentReport r) => !r.Mounted ? "마운트 실패"
+        : "요소 " + r.Elements.ToString(CultureInfo.InvariantCulture) + " · 클릭 " + r.Clicks.ToString(CultureInfo.InvariantCulture) + " · 변경 " + r.Changes.ToString(CultureInfo.InvariantCulture)
+          + " · 예외 " + r.Exceptions.ToString(CultureInfo.InvariantCulture) + " · " + F0(r.Ms) + "ms";
+
+    private string DiffText()
+    {
+        if (_diffStamp != E.PatchCount || _diff is null) { _diff = E.BuildDiff(); _diffStamp = E.PatchCount; }
+        return _diff;
+    }
+
+    private string? StepClass(int s)
+    {
+        var p = G.Phase;
+        var cur = p switch { RepairPhase.Snapshot => 0, RepairPhase.Applying => 1, RepairPhase.Building => 2, RepairPhase.Testing => 3, RepairPhase.Committed => 5, _ => -1 };
+        if (p is RepairPhase.RolledBack or RepairPhase.Failed or RepairPhase.Restoring) return s == 4 ? "bad" : null;
+        if (cur < 0) return null;
+        return s < cur ? "done" : s == cur ? "act" : null;
+    }
+
+    private string ReportLine()
+    {
+        var r = G.Last!;
+        return "패치 " + r.PatchesCommitted.ToString(CultureInfo.InvariantCulture) + "/" + r.PatchesPlanned.ToString(CultureInfo.InvariantCulture)
+            + " · 빌드 " + (r.BuildOk ? "OK" : "실패") + " · 테스트 " + (r.TestsOk ? "OK" : "—")
+            + (r.TestsPassed >= 0 ? " (" + r.TestsPassed.ToString(CultureInfo.InvariantCulture) + " 통과)" : "")
+            + " · 제외 " + r.ExcludedFiles.Count.ToString(CultureInfo.InvariantCulture) + " · 복원 " + r.RestoredFiles.ToString(CultureInfo.InvariantCulture)
+            + " · 충돌 " + r.Conflicts.ToString(CultureInfo.InvariantCulture) + " · " + F0(r.Ms / 1000) + " s";
+    }
+
+    private string OutputTail() { var t = G.LastOutputTail ?? ""; return t.Length > 1500 ? t[^1500..] : t; }
+
+    private void ToggleDom() => Runner.DriveDom = !Runner.DriveDom;
+    private void TogglePatch() => Runner.ApplyPatches = !Runner.ApplyPatches;
+    private void ToggleTests() => Runner.RunTests = !Runner.RunTests;
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}

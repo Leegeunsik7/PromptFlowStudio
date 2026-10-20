@@ -1,0 +1,359 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Nexus
+@implements IDisposable
+@inject OmniModalNexusStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.70.0] 🌌 AI 옴니모달 넥서스 마스터 스튜디오 — 통합 넥서스 토폴로지 노드 뷰어(모달리티 → 메시 → 오케스트레이터 단계 → 스트리머 → 엔드포인트) ·
+    양자 가속 텐서 모니터(고유 스펙트럼 · 에너지 · 압축 · 잔차 이상 트레일 · SQA 통계) · 1-Click 자율 싱귤래리티 컨트롤 휠(장르/무드/길이/옵션 세그먼트 + 중앙 생성).
+*@
+
+<div class="nxs-scrim" @onclick="Close">
+    <div class="nxs-modal" @onclick:stopPropagation="true">
+        <div class="nxs-h">
+            <div>
+                <div class="nxs-title">🌌 AI 옴니모달 넥서스 마스터 스튜디오</div>
+                <div class="nxs-sub">장면 · 3DGS · BCI · 에이전트 신호를 <b>시공간 텐서 저랭크 메시</b>로 결속하고, 시나리오 한 줄을 <b>v16.x 모듈 오토 체이닝 DAG</b>로 전개해
+                    렌더 잡을 <b>양자 영감 어닐링(SQA)</b>으로 배치한 뒤 <b>단일 FEC · HMAC 스트림</b>으로 전 세계 에지 · XR 에 송출합니다.</div>
+            </div>
+            <button class="nxs-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="nxs-bar">
+            <span class="nxs-chip @(Runner.IsRunning ? "on" : null)">@(Runner.IsRunning ? "● 메시 가동" : "○ 대기")</span>
+            <span class="nxs-chip">틱 @(Runner.Ticks)</span>
+            <span class="nxs-chip">랭크 @(Runner.Mesh.Rank)/@(QuantumHybridNeuralMeshEngine.Features)</span>
+            <span class="nxs-chip @(Runner.Anomaly > 0.3f ? "warn" : null)">잔차 @(F2(Runner.Anomaly))</span>
+            <span class="nxs-chip">송출 @(F1(Runner.Streamer.BytesOut / 1048576.0))MB · 패리티 @(Runner.Streamer.ParityPackets)</span>
+            <button class="nxs-btn @(Runner.IsRunning ? "on" : null)" @onclick="Toggle">@(Runner.IsRunning ? "⏸ 정지" : "▶ 넥서스 가동")</button>
+            <button class="nxs-btn @(Runner.InjectAnomaly ? "warn" : null)" @onclick="() => Runner.InjectAnomaly = !Runner.InjectAnomaly">⚡ 이상 주입 @(Runner.InjectAnomaly ? "ON" : "OFF")</button>
+        </div>
+
+        <div class="nxs-main">
+            <div class="nxs-col">
+                <div class="nxs-card">
+                    <div class="nxs-sec">🕸 통합 넥서스 토폴로지</div>
+                    <svg class="nxs-topo" viewBox="0 0 520 250">
+                        @for (var i = 0; i < Sources.Length; i++)
+                        {
+                            var y = 30 + i * 60;
+                            <g>
+                                <line x1="70" y1="@y" x2="170" y2="125" class="e @(Runner.IsRunning ? "live" : null)" />
+                                <circle cx="50" cy="@y" r="18" class="n src" />
+                                <text x="50" y="@(y + 4)" class="t">@Sources[i].Icon</text>
+                                <text x="50" y="@(y + 30)" class="s">@Sources[i].Label</text>
+                            </g>
+                        }
+                        <circle cx="190" cy="125" r="26" class="n core" />
+                        <text x="190" y="122" class="t">⚛</text>
+                        <text x="190" y="137" class="s">메시 k=@(Runner.Mesh.Rank)</text>
+                        <line x1="216" y1="125" x2="268" y2="125" class="e live" />
+                        <circle cx="290" cy="125" r="22" class="n orch @(Runner.IsBusy ? "busy" : null)" />
+                        <text x="290" y="129" class="t">🌌</text>
+                        <text x="290" y="160" class="s">@(Runner.Orchestrator.Current?.Label ?? "오케스트레이터")</text>
+                        <line x1="312" y1="125" x2="360" y2="125" class="e live" />
+                        <rect x="360" y="105" width="40" height="40" rx="8" class="n strm" />
+                        <text x="380" y="130" class="t">📡</text>
+                        @for (var i = 0; i < _epCount; i++)
+                        {
+                            var ey = 20 + i * (210f / Math.Max(1, _epCount - 1));
+                            var st = _eps[i];
+                            <g>
+                                <line x1="400" y1="125" x2="455" y2="@F1(ey)" class="e" style="stroke:@LayerColor(st.MaxLayer)" />
+                                <circle cx="465" cy="@F1(ey)" r="8" class="n ep" style="fill:@LayerColor(st.MaxLayer)" />
+                                <text x="478" y="@F1(ey + 3)" class="l">@(KindIcon(Runner.Streamer.EndpointAt(i).Kind)) @(F0(st.LatencyMs))ms</text>
+                            </g>
+                        }
+                    </svg>
+                    <table class="nxs-tbl">
+                        <tr><th>엔드포인트</th><th>계층</th><th>지연 · P95</th><th>전달</th><th>FEC 복구</th><th>손실</th><th>부하</th></tr>
+                        @for (var i = 0; i < _epCount; i++)
+                        {
+                            var st = _eps[i];
+                            <tr>
+                                <td>@(KindIcon(Runner.Streamer.EndpointAt(i).Kind)) @st.Id</td>
+                                <td><span class="nxs-layer" style="background:@LayerColor(st.MaxLayer)">@(LayerLabel(st.MaxLayer))</span></td>
+                                <td>@(F1(st.LatencyMs)) · @(F0(st.P95Ms))ms</td>
+                                <td>@(st.FramesSent > 0 ? Pc((float)st.Delivered / st.FramesSent) : "—")</td>
+                                <td>@st.Recovered</td>
+                                <td>@(F1(st.LossEwmaPct))%</td>
+                                <td>@(F1(st.LoadMbps))Mbps</td>
+                            </tr>
+                        }
+                    </table>
+                </div>
+
+                <div class="nxs-card">
+                    <div class="nxs-sec">⚛ 양자 가속 텐서 모니터</div>
+                    <div class="nxs-kpis">
+                        <span><b>@(Pc(_fz.EnergyCaptured))</b>포착 에너지 (k=@_fz.Rank)</span>
+                        <span><b>×@(F1(_fz.CompressionRatio))</b>텐서 압축</span>
+                        <span><b>×@(F1(_fz.FlopReduction))</b>투영 FLOP 절감</span>
+                        <span><b>@(F0(_fz.Micros))μs</b>분해 (@(_fz.Iterations)회 반복)</span>
+                    </div>
+                    <div class="nxs-two">
+                        <div>
+                            <div class="nxs-note">고유 스펙트럼 (선택 랭크 강조)</div>
+                            <svg class="nxs-spec" viewBox="0 0 160 60" preserveAspectRatio="none">
+                                @for (var i = 0; i < _spec.Length; i++)
+                                {
+                                    var h = _specMax > 0 ? MathF.Max(0.6f, MathF.Sqrt(_spec[i] / _specMax) * 56) : 0.6f;
+                                    <rect x="@F1(i * 10 + 1)" y="@F1(58 - h)" width="8" height="@F1(h)" class="@(i < _fz.Rank ? "on" : null)" />
+                                }
+                            </svg>
+                        </div>
+                        <div>
+                            <div class="nxs-note">잔차 이상 점수 트레일</div>
+                            <svg class="nxs-spec" viewBox="0 0 160 60" preserveAspectRatio="none">
+                                <line x1="0" x2="160" y1="@F1(58 - 0.3f * 56)" y2="@F1(58 - 0.3f * 56)" class="thr" />
+                                <polyline points="@_trailLine" class="trail" />
+                            </svg>
+                        </div>
+                    </div>
+                    <div class="nxs-note">SQA · 큐비트 @(_an.Qubits) · 레플리카 @(_an.Replicas) · 스윕 @(_an.Sweeps) · 수락 @(_an.Accepted) · 에너지 @(F2(_an.Energy)) · @(F0(_an.Micros))μs — 고전 경로적분 시뮬레이션</div>
+                </div>
+            </div>
+
+            <div class="nxs-col">
+                <div class="nxs-card">
+                    <div class="nxs-sec">🎡 1-Click 자율 싱귤래리티 컨트롤 휠</div>
+                    <div class="nxs-wheelrow">
+                        <svg class="nxs-wheel" viewBox="-110 -110 220 220">
+                            @for (var i = 0; i < Segments.Length; i++)
+                            {
+                                var idx = i;
+                                var seg = Segments[i];
+                                var a0 = i * 2 * MathF.PI / Segments.Length - MathF.PI / 2;
+                                var a1 = (i + 1) * 2 * MathF.PI / Segments.Length - MathF.PI / 2;
+                                var am = (a0 + a1) / 2;
+                                <g @onclick="() => ToggleSeg(idx)" class="seg @(_segOn[idx] ? "on" : null)">
+                                    <path d="@Arc(a0, a1)" />
+                                    <text x="@F1(MathF.Cos(am) * 78)" y="@F1(MathF.Sin(am) * 78 - 2)" class="si">@seg.Icon</text>
+                                    <text x="@F1(MathF.Cos(am) * 78)" y="@F1(MathF.Sin(am) * 78 + 10)" class="sl">@seg.Label</text>
+                                </g>
+                            }
+                            <g @onclick="Create" class="hub @(Runner.IsBusy ? "busy" : null)">
+                                <circle r="42" />
+                                <text y="-4" class="hi">@(Runner.IsBusy ? "⏳" : "🌌")</text>
+                                <text y="14" class="hl">@(Runner.IsBusy ? "생성 중" : "생성")</text>
+                            </g>
+                        </svg>
+                        <div class="nxs-form">
+                            <textarea class="nxs-in" rows="3" @bind="_scenario" @bind:event="oninput" placeholder="시나리오 한 줄 (예: 비 내리는 밤 사이버 도시의 추격전 2분, 글로벌 더빙)"></textarea>
+                            <div class="nxs-note">휠 조합: <b>@ComposedSuffix()</b></div>
+                            <label class="nxs-slider">길이 <b>@(_duration)초</b><input type="range" min="30" max="300" step="15" value="@_duration" @oninput="e => _duration = int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var d) ? d : 60" /></label>
+                            @if (Runner.Orchestrator.LastAction is not null)
+                            {
+                                <div class="nxs-note">@Runner.Orchestrator.LastAction</div>
+                            }
+                        </div>
+                    </div>
+                </div>
+
+                <div class="nxs-card">
+                    <div class="nxs-sec">🧬 오토 체이닝 DAG · 렌더 배치</div>
+                    @if (Runner.Orchestrator.Last is { } run)
+                    {
+                        <div class="nxs-kpis">
+                            <span><b>@run.Brief.Genre · @run.Brief.Mood</b>@(run.Brief.DurationSec)초 · 샷 @(run.Shots.Length)</span>
+                            <span><b>@(Pc(run.Quality))</b>품질 점수</span>
+                            <span><b>@(F1(run.CriticalPathMs / 1000))s</b>임계 경로(계획)</span>
+                            <span><b>@(run.Linked) · @(run.Invoked) · @(run.Failed)</b>DI 결선 · 실호출 · 실패</span>
+                        </div>
+                        <div class="nxs-gantt">
+                            @foreach (var s in run.Stages)
+                            {
+                                <div class="g">
+                                    <span class="gl">@s.Icon @s.Label</span>
+                                    <span class="gt"><i class="st@((int)s.Status) @(s.Critical ? "crit" : null)" style="left:@(Pct(s.StartMs, run.CriticalPathMs));width:@(Pct(Math.Max(s.CostMs, run.CriticalPathMs * 0.01f), run.CriticalPathMs))"></i></span>
+                                    <span class="ga" title="@s.Artifact">@(s.Linked ? "🔗" : "·")@(s.Invoked ? "⚙" : null) @s.Artifact</span>
+                                </div>
+                            }
+                        </div>
+                        <div class="nxs-note">렌더 배치(SQA) · makespan @(F2(run.Makespan)) / 이상 @(F2(run.IdealMakespan)) · @(F0(run.TotalMs))ms</div>
+                        <div class="nxs-shots">
+                            @foreach (var sh in run.Shots)
+                            {
+                                <div class="sh n@(sh.Node)" title="@sh.Camera · @sh.Lighting" style="flex:@F2(sh.DurationSec)">
+                                    <b>#@(sh.Index + 1) @sh.Beat</b><span>@(run.RenderNodes[Math.Max(0, sh.Node)]) · 비용 @(F1(sh.RenderCost))</span>
+                                </div>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="nxs-note">시나리오를 입력하고 휠 중앙 [🌌 생성]을 누르세요.</div>
+                    }
+                </div>
+                @if (Runner.LastAction is not null)
+                {
+                    <div class="nxs-note">@Runner.LastAction</div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .nxs-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .nxs-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .nxs-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #8b5cf6 18%, var(--card)), color-mix(in srgb, #06b6d4 16%, var(--card))); }
+    .nxs-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .nxs-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .nxs-sub b { color: var(--text-primary); }
+    .nxs-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .nxs-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .nxs-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .nxs-chip.on { border-color: #22c55e; color: #86efac; } .nxs-chip.warn { border-color: #f97316; color: #fdba74; }
+    .nxs-btn { font-size: 12px; font-weight: 800; padding: 5px 11px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .nxs-btn.on { background: color-mix(in srgb, #8b5cf6 24%, transparent); border-color: #8b5cf6; } .nxs-btn.warn { background: color-mix(in srgb, #f97316 22%, transparent); border-color: #f97316; }
+    .nxs-main { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .nxs-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .nxs-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .nxs-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); }
+    .nxs-topo { width: 100%; height: 250px; background: color-mix(in srgb, #0f172a 55%, transparent); border-radius: 8px; }
+    .nxs-topo .e { stroke: #475569; stroke-width: 1.2; } .nxs-topo .e.live { stroke: #8b5cf6; stroke-dasharray: 4 3; animation: nxs-flow 1s linear infinite; }
+    .nxs-topo .n { stroke: #e2e8f0; stroke-width: .6; } .nxs-topo .src { fill: #1e3a8a; } .nxs-topo .core { fill: #6d28d9; } .nxs-topo .orch { fill: #0e7490; } .nxs-topo .orch.busy { animation: nxs-pulse .8s ease-in-out infinite; } .nxs-topo .strm { fill: #334155; }
+    .nxs-topo .t { font-size: 14px; text-anchor: middle; } .nxs-topo .s { font-size: 8px; fill: #cbd5e1; text-anchor: middle; } .nxs-topo .l { font-size: 8px; fill: #cbd5e1; }
+    .nxs-tbl { width: 100%; border-collapse: collapse; font-size: 11px; color: var(--text-secondary); }
+    .nxs-tbl th { text-align: left; font-weight: 700; color: var(--text-muted); border-bottom: 1px solid var(--line); padding: 3px 4px; }
+    .nxs-tbl td { padding: 3px 4px; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); font-family: var(--mono); }
+    .nxs-layer { font-size: 10px; padding: 1px 6px; border-radius: 6px; color: #0f172a; font-weight: 800; }
+    .nxs-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .nxs-kpis span { display: flex; flex-direction: column; font-size: 10.5px; color: var(--text-muted); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+    .nxs-kpis b { font: 800 12px var(--mono); color: var(--text-primary); }
+    .nxs-two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .nxs-spec { width: 100%; height: 60px; background: color-mix(in srgb, #0f172a 55%, transparent); border-radius: 6px; }
+    .nxs-spec rect { fill: #475569; } .nxs-spec rect.on { fill: #a78bfa; }
+    .nxs-spec .trail { fill: none; stroke: #22d3ee; stroke-width: 1.2; } .nxs-spec .thr { stroke: #f97316; stroke-width: .6; stroke-dasharray: 3 2; }
+    .nxs-wheelrow { display: flex; gap: 12px; align-items: center; }
+    .nxs-wheel { width: 230px; flex-shrink: 0; }
+    .nxs-wheel .seg path { fill: color-mix(in srgb, #334155 70%, transparent); stroke: var(--card); stroke-width: 2; cursor: pointer; transition: fill .15s; }
+    .nxs-wheel .seg.on path { fill: #7c3aed; } .nxs-wheel .seg:hover path { fill: #6366f1; }
+    .nxs-wheel .si { font-size: 15px; text-anchor: middle; pointer-events: none; } .nxs-wheel .sl { font-size: 8px; fill: #e2e8f0; text-anchor: middle; pointer-events: none; }
+    .nxs-wheel .hub circle { fill: #0e7490; stroke: #67e8f9; stroke-width: 2; cursor: pointer; } .nxs-wheel .hub.busy circle { animation: nxs-pulse .8s ease-in-out infinite; }
+    .nxs-wheel .hi { font-size: 20px; text-anchor: middle; pointer-events: none; } .nxs-wheel .hl { font-size: 10px; font-weight: 800; fill: #ecfeff; text-anchor: middle; pointer-events: none; }
+    .nxs-form { flex: 1; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    .nxs-in { width: 100%; font-size: 13px; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); resize: vertical; }
+    .nxs-slider { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--text-secondary); }
+    .nxs-slider b { color: var(--text-primary); font-family: var(--mono); } .nxs-slider input { width: 100%; accent-color: #8b5cf6; }
+    .nxs-gantt { display: flex; flex-direction: column; gap: 3px; }
+    .nxs-gantt .g { display: grid; grid-template-columns: 150px 1fr 220px; gap: 6px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .nxs-gantt .gt { position: relative; height: 10px; background: color-mix(in srgb, #0f172a 50%, transparent); border-radius: 4px; }
+    .nxs-gantt .gt i { position: absolute; top: 0; bottom: 0; border-radius: 4px; background: #64748b; }
+    .nxs-gantt .gt i.st2 { background: #22c55e; } .nxs-gantt .gt i.st1 { background: #eab308; } .nxs-gantt .gt i.st3 { background: #475569; } .nxs-gantt .gt i.st4 { background: #ef4444; }
+    .nxs-gantt .gt i.crit { box-shadow: 0 0 0 1.5px #f472b6; }
+    .nxs-gantt .ga { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-muted); }
+    .nxs-shots { display: flex; gap: 3px; }
+    .nxs-shots .sh { min-width: 0; display: flex; flex-direction: column; font-size: 9.5px; border-radius: 6px; padding: 4px 5px; color: #e2e8f0; overflow: hidden; }
+    .nxs-shots .sh b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .nxs-shots .sh span { color: #cbd5e1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .nxs-shots .n0 { background: #4c1d95; } .nxs-shots .n1 { background: #155e75; } .nxs-shots .n2 { background: #1e40af; } .nxs-shots .n3 { background: #3f6212; }
+    .nxs-note { font-size: 11px; color: var(--text-muted); } .nxs-note b { color: var(--text-primary); }
+    @@keyframes nxs-flow { to { stroke-dashoffset: -14; } }
+    @@keyframes nxs-pulse { 50% { opacity: .55; } }
+    @@media (max-width: 1200px) { .nxs-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly (string Icon, string Label)[] Sources = { ("🎬", "장면 그래프"), ("✨", "3DGS 입자"), ("🧠", "BCI"), ("🤖", "에이전트") };
+    private static readonly (string Icon, string Label, string Word)[] Segments =
+    {
+        ("🚀", "SF", "우주"), ("💥", "액션", "추격"), ("💞", "로맨스", "사랑"), ("👻", "호러", "공포"),
+        ("🌧", "누아르", "빗속 밤"), ("🌅", "희망", "희망"), ("🌐", "글로벌 더빙", "글로벌"), ("🥽", "XR", "VR"), ("🧠", "BCI", "뇌파"), ("📡", "라이브", "라이브"),
+    };
+
+    private readonly bool[] _segOn = new bool[Segments.Length];
+    private readonly NexusEndpointStats[] _eps = new NexusEndpointStats[16];
+    private readonly float[] _spec = new float[QuantumHybridNeuralMeshEngine.MaxRank];
+    private readonly float[] _trail = new float[96];
+    private int _epCount, _duration = 90;
+    private float _specMax;
+    private string _scenario = "버려진 우주 정거장에서 깨어난 로봇이 마지막 인류를 찾아 나서는 이야기";
+    private string _trailLine = "";
+    private MeshFactorization _fz;
+    private AnnealResult _an;
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        Refresh();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(() => { Refresh(); StateHasChanged(); }); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Nexus.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string Pc(float v) => (Math.Clamp(v, 0f, 1f) * 100f).ToString("0", CultureInfo.InvariantCulture) + "%";
+    private static string Pct(float v, float total) => (total > 0 ? Math.Clamp(v / total * 100f, 0f, 100f) : 0f).ToString("0.00", CultureInfo.InvariantCulture) + "%";
+
+    private static string LayerColor(NexusLayer l) => l switch
+    {
+        NexusLayer.Splat => "#a78bfa", NexusLayer.Video => "#60a5fa", NexusLayer.Audio => "#34d399", NexusLayer.Telemetry => "#fbbf24", _ => "#f87171",
+    };
+    private static string LayerLabel(NexusLayer l) => l switch
+    {
+        NexusLayer.Splat => "3DGS", NexusLayer.Video => "영상", NexusLayer.Audio => "오디오", NexusLayer.Telemetry => "텔레메트리", NexusLayer.Pose => "포즈", _ => "제어",
+    };
+    private static string KindIcon(NexusEndpointKind k) => k switch
+    {
+        NexusEndpointKind.CloudRegion => "☁", NexusEndpointKind.EdgePop => "🛰", NexusEndpointKind.XrHeadset => "🥽", _ => "📱",
+    };
+
+    private static string Arc(float a0, float a1)
+    {
+        const float R = 104, r = 48;
+        return "M" + F1(MathF.Cos(a0) * R) + "," + F1(MathF.Sin(a0) * R) + " A" + F0(R) + "," + F0(R) + " 0 0 1 " + F1(MathF.Cos(a1) * R) + "," + F1(MathF.Sin(a1) * R)
+            + " L" + F1(MathF.Cos(a1) * r) + "," + F1(MathF.Sin(a1) * r) + " A" + F0(r) + "," + F0(r) + " 0 0 0 " + F1(MathF.Cos(a0) * r) + "," + F1(MathF.Sin(a0) * r) + " Z";
+    }
+
+    private void ToggleSeg(int i) => _segOn[i] = !_segOn[i];
+
+    private string ComposedSuffix()
+    {
+        var sb = new System.Text.StringBuilder();
+        for (var i = 0; i < Segments.Length; i++) if (_segOn[i]) sb.Append(Segments[i].Word).Append(' ');
+        sb.Append(_duration.ToString(CultureInfo.InvariantCulture)).Append("초");
+        return sb.ToString();
+    }
+
+    private void Refresh()
+    {
+        _epCount = Runner.Streamer.CopyStats(_eps);
+        _fz = Runner.Mesh.LastFactorization;
+        _an = Runner.Mesh.LastAnneal;
+        Runner.Mesh.CopySpectrum(_spec);
+        _specMax = 0;
+        foreach (var v in _spec) _specMax = MathF.Max(_specMax, v);
+        var n = Runner.CopyResidualTrail(_trail);
+        var sb = new System.Text.StringBuilder();
+        for (var i = 0; i < n; i++) sb.Append(F1(i * 160.0 / Math.Max(1, n - 1))).Append(',').Append(F1(58 - Math.Clamp(_trail[i], 0f, 1f) * 56)).Append(' ');
+        _trailLine = sb.ToString();
+    }
+
+    private void Toggle() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+
+    private async Task Create()
+    {
+        if (Runner.IsBusy) return;
+        await Runner.CreateAsync((_scenario ?? "").Trim() + " " + ComposedSuffix());
+        Refresh();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

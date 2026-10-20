@@ -1,0 +1,486 @@
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.Media
+@using PromptFlowStudio.Services.Music
+@using PromptFlowStudio.Services.VTuber
+@implements IDisposable
+@inject VTuberPersonaMemoryEngine Memory
+@inject LiveVTuberBroadcastingBridge Bridge
+@inject FanInteractionReactionController Fans
+
+@* [PromptFlow Studio v16.38.0] 🌟 버추얼 아이돌 에이전시 — V-Tuber 로스터/데뷔 · 팬덤·수익 지표(게이지 · 시간대 수익 · 팬 등급) ·
+   RAG 기억 열람/검색/삭제/초기화 · 라이브 관제(VMC/VTS/OBS/오버레이 · 블렌드셰이프 미러 · 리액션 큐 · 테스트 채팅/후원) · 1-Click 자율 방송.
+   상태는 서비스(싱글턴) 소유 OnChange 구독 · 라이브 탭은 150ms UI 틱. *@
+
+<div class="ag-scrim" @onclick="Close">
+    <div class="ag-modal" @onclick:stopPropagation="true">
+        <div class="ag-h">
+            <div>
+                <div class="ag-title">🌟 버추얼 아이돌 에이전시</div>
+                <div class="ag-sub">소속 V-Tuber의 <b>페르소나·장기 기억(RAG)</b>을 관리하고, 팬 채팅·후원에 자율 응답하며 <b>VMC/VTube Studio/OBS</b>로 입모양·표정·감사 댄스·폭죽 오버레이를 실시간 송출합니다.</div>
+            </div>
+            <button class="ag-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="ag-bar">
+            <span class="ag-chip @(Memory.LlmAvailable ? "ok" : "")">@(Memory.LlmAvailable ? "Gemini 대화" : "BCL 대화(오프라인)")</span>
+            <span class="ag-chip @(Fans.InSession ? "live" : "")">@(Fans.InSession ? "🔴 ON AIR " + Uptime() : "오프라인")</span>
+            <span class="ag-chip @(Bridge.VmcOpen ? "ok" : "")">VMC</span>
+            <span class="ag-chip @(Bridge.VtsConnected ? "ok" : "")">VTube Studio</span>
+            <span class="ag-chip @(Bridge.ObsConnected ? "ok" : "")">OBS</span>
+            <span class="ag-chip @(Bridge.Overlay.IsRunning ? "ok" : "")">오버레이 @(Bridge.Overlay.IsRunning ? Bridge.Overlay.Clients.ToString(CultureInfo.InvariantCulture) : "—")</span>
+            @if (Fans.TwitchStatus is { } ts)
+            {
+                <span class="ag-mut">@(ts)</span>
+            }
+        </div>
+
+        <div class="ag-main">
+            <aside class="ag-roster">
+                <div class="ag-sec">소속 V-Tuber @(Memory.Personas.Count)</div>
+                @foreach (var p in Memory.Personas)
+                {
+                    <button class="ag-card @(p.Id == _sel ? "on" : "")" @onclick="() => Select(p.Id)">
+                        <b>@(p.Name) @if (Fans.SessionPersonaId == p.Id) { <i class="ag-live">LIVE</i> }</b>
+                        <span>👥 @(p.Followers.ToString("#,0", CultureInfo.InvariantCulture)) · ₩@(p.Revenue.ToString("#,0", CultureInfo.InvariantCulture))</span>
+                        <span>🧠 @(Memory.MemoryCount(p.Id)) · 📺 @(p.Broadcasts)회</span>
+                    </button>
+                }
+                <button class="ag-btn sm" @onclick="() => _debut = !_debut">@(_debut ? "취소" : "＋ 신규 데뷔")</button>
+                @if (_debut)
+                {
+                    <div class="ag-form">
+                        <input class="ag-in" @bind="_nName" placeholder="이름" />
+                        <textarea class="ag-in ag-ta" @bind="_nConcept" placeholder="컨셉(예: 달의 왕국에서 온 견습 마법사 아이돌)"></textarea>
+                        <textarea class="ag-in ag-ta" @bind="_nLore" placeholder="세계관 설정(줄마다 1개)"></textarea>
+                        <input class="ag-in" @bind="_nCatch" placeholder="캐치프레이즈(| 로 구분)" />
+                        <input class="ag-in" @bind="_nSpeech" placeholder="말투(예: 밝고 다정한 반말)" />
+                        <div class="ag-row">
+                            <select class="ag-in" @bind="_nVoice">
+                                @foreach (var v in Enum.GetValues<NarrationTone>()) { <option value="@v">@(v)</option> }
+                            </select>
+                            <select class="ag-in" @bind="_nDance">
+                                @foreach (var d in Enum.GetValues<DanceStyle>()) { <option value="@d">@(AlgorithmicChoreographyController.StyleLabel(d))</option> }
+                            </select>
+                        </div>
+                        <button class="ag-btn sm go" disabled="@string.IsNullOrWhiteSpace(_nName)" @onclick="Debut">🌟 데뷔</button>
+                    </div>
+                }
+            </aside>
+
+            <section class="ag-panel">
+                @if (Selected is not { } sp)
+                {
+                    <div class="ag-empty">V-Tuber 를 선택하거나 신규 데뷔시키세요.</div>
+                }
+                else
+                {
+                    <div class="ag-tabs">
+                        <button class="@(_tab == 0 ? "on" : "")" @onclick="() => _tab = 0">📊 팬덤 · 수익</button>
+                        <button class="@(_tab == 1 ? "on" : "")" @onclick="() => _tab = 1">🧠 RAG 메모리</button>
+                        <button class="@(_tab == 2 ? "on" : "")" @onclick="() => SetTab(2)">🔴 라이브 관제</button>
+                    </div>
+                    @if (_tab == 0)
+                    {
+                        var fans = Memory.Fans(sp.Id);
+                        <div class="ag-grid3">
+                            <div class="ag-gauge">
+                                <svg viewBox="0 0 120 70"><path d="M10 60 A50 50 0 0 1 110 60" stroke="#1e293b" stroke-width="10" fill="none" /><path d="@(Arc(sp.Revenue / Math.Max(1, _goal)))" stroke="url(#agg)" stroke-width="10" fill="none" stroke-linecap="round" />
+                                    <defs><linearGradient id="agg"><stop offset="0" stop-color="#f472b6" /><stop offset="1" stop-color="#fde047" /></linearGradient></defs></svg>
+                                <b>₩@(sp.Revenue.ToString("#,0", CultureInfo.InvariantCulture))</b>
+                                <span>수익 목표 <input class="ag-in w100" type="number" min="10000" step="10000" @bind="_goal" /> (@((sp.Revenue / Math.Max(1, _goal) * 100).ToString("0", CultureInfo.InvariantCulture))%)</span>
+                            </div>
+                            <div class="ag-gauge">
+                                <svg viewBox="0 0 120 70"><path d="M10 60 A50 50 0 0 1 110 60" stroke="#1e293b" stroke-width="10" fill="none" /><path d="@(Arc(sp.Followers / Math.Max(1.0, _followGoal)))" stroke="#38bdf8" stroke-width="10" fill="none" stroke-linecap="round" /></svg>
+                                <b>@(sp.Followers.ToString("#,0", CultureInfo.InvariantCulture))명</b>
+                                <span>팬덤 목표 @(_followGoal.ToString("#,0", CultureInfo.InvariantCulture)) · 채팅 @(sp.ChatCount.ToString("#,0", CultureInfo.InvariantCulture))</span>
+                            </div>
+                            <div class="ag-gauge">
+                                <div class="ag-tiers">
+                                    @foreach (var t in Enum.GetValues<FanTier>())
+                                    {
+                                        var c = fans.Count(f => f.Tier == t);
+                                        <div><span>@(VTuberPersonaMemoryEngine.TierLabel(t))</span><i style="width:@((fans.Count == 0 ? 0 : c * 100.0 / fans.Count).ToString("0", CultureInfo.InvariantCulture))%"></i><b>@(c)</b></div>
+                                    }
+                                </div>
+                                <span>방송 @(sp.Broadcasts)회 · 기억 @(Memory.MemoryCount(sp.Id))건</span>
+                            </div>
+                        </div>
+                        <div class="ag-sec">시간대별 수익(₩)</div>
+                        <svg class="ag-hours" viewBox="0 0 240 60" preserveAspectRatio="none">
+                            @for (var h = 0; h < 24; h++)
+                            {
+                                var v = sp.RevenueByHour[h];
+                                var max = Math.Max(1, sp.RevenueByHour.Max());
+                                var bh = v / max * 50;
+                                <rect x="@((h * 10 + 1).ToString(CultureInfo.InvariantCulture))" y="@((55 - bh).ToString("0.#", CultureInfo.InvariantCulture))" width="8" height="@(bh.ToString("0.#", CultureInfo.InvariantCulture))" fill="#f472b6" opacity="0.85" />
+                            }
+                        </svg>
+                        <div class="ag-sec">팬 랭킹</div>
+                        <table class="ag-tbl">
+                            <tr><th>팬</th><th>등급</th><th>후원</th><th>메시지</th><th>최근</th></tr>
+                            @foreach (var f in fans.Take(15))
+                            {
+                                <tr><td>@(f.Name)</td><td>@(VTuberPersonaMemoryEngine.TierLabel(f.Tier))</td><td>₩@(f.Donated.ToString("#,0", CultureInfo.InvariantCulture))</td><td>@(f.Messages)</td><td>@(f.LastSeenUtc.ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture))</td></tr>
+                            }
+                        </table>
+                        <div class="ag-row">
+                            <button class="ag-btn sm danger" disabled="@(Fans.SessionPersonaId == sp.Id)" @onclick="Remove">🗑 은퇴(삭제)</button>
+                        </div>
+                    }
+                    else if (_tab == 1)
+                    {
+                        <div class="ag-row">
+                            <input class="ag-in grow" @bind="_query" placeholder="기억 검색(RAG 회상 미리보기 — 예: 케이크, 고향)" @onkeydown="OnQueryKey" />
+                            <input class="ag-in w120" @bind="_queryFan" placeholder="팬 ID(선택)" />
+                            <button class="ag-btn sm" @onclick="Search">🔎 회상</button>
+                            <select class="ag-in" @bind="_kind">
+                                <option value="-1">전체</option>
+                                @foreach (var k in Enum.GetValues<MemoryKind>()) { <option value="@((int)k)">@(k)</option> }
+                            </select>
+                        </div>
+                        @if (_recall.Count > 0)
+                        {
+                            <div class="ag-card2">
+                                @foreach (var r in _recall)
+                                {
+                                    <div class="ag-mem"><i class="k-@(r.Kind)">@(r.Kind)</i><span>@(r.Text)</span><b>@(r.Score.ToString("0.000", CultureInfo.InvariantCulture))</b></div>
+                                }
+                            </div>
+                        }
+                        <div class="ag-row">
+                            <input class="ag-in grow" @bind="_newLore" placeholder="세계관 설정 추가" />
+                            <button class="ag-btn sm" disabled="@string.IsNullOrWhiteSpace(_newLore)" @onclick="AddLore">＋ 세계관</button>
+                            <button class="ag-btn sm" @onclick="() => Reset(true)">🧹 팬 기억 초기화(세계관 유지)</button>
+                            <button class="ag-btn sm danger" @onclick="() => Reset(false)">⚠ 전체 초기화</button>
+                        </div>
+                        <div class="ag-memlist">
+                            @foreach (var m in Memory.Memories(sp.Id, _kind < 0 ? null : (MemoryKind)_kind, 150))
+                            {
+                                <div class="ag-mem">
+                                    <i class="k-@(m.Kind)">@(m.Kind)</i>
+                                    <span>@(m.FanName is null ? "" : m.FanName + ": ")@(m.Text)@(m.Amount > 0 ? " (₩" + m.Amount.ToString("#,0", CultureInfo.InvariantCulture) + ")" : "")</span>
+                                    <b>@(m.AtUtc.ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture))</b>
+                                    <button class="ag-x sm" title="잊기" @onclick="() => Memory.ForgetMemory(sp.Id, m.Id)">✕</button>
+                                </div>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="ag-grid2">
+                            <div class="ag-card2">
+                                <div class="ag-sec">자율 방송 옵션</div>
+                                <label class="ag-mut"><input type="checkbox" @bind="_useLlm" disabled="@(!Memory.LlmAvailable)" /> Gemini 답변</label>
+                                <label class="ag-mut"><input type="checkbox" @bind="_useTts" /> AI 음성(TTS)</label>
+                                <label class="ag-mut"><input type="checkbox" @bind="_demo" /> 데모 팬 채팅(연결 없이 리허설)</label>
+                                <label class="ag-mut">Twitch 채널(읽기 전용) <input class="ag-in w120" @bind="_twitch" placeholder="channel" /></label>
+                                <label class="ag-mut">공백 멘트 간격 <input class="ag-in w60" type="number" min="5" max="300" @bind="_idle" />초</label>
+                                <div class="ag-row">
+                                    @if (Fans.InSession)
+                                    {
+                                        <button class="ag-btn danger" @onclick="StopSession">⏹ 방송 종료</button>
+                                    }
+                                    else
+                                    {
+                                        <button class="ag-btn go" @onclick="StartSession">🔴 1-Click 자율 방송 시작</button>
+                                    }
+                                </div>
+                                @if (Bridge.Overlay.IsRunning)
+                                {
+                                    <div class="ag-mut">OBS 브라우저 소스: <code>@(Bridge.Overlay.Url)</code></div>
+                                }
+                            </div>
+                            <div class="ag-card2">
+                                <div class="ag-sec">송출 연결</div>
+                                <div class="ag-row"><span class="ag-mut">VMC</span><input class="ag-in w120" @bind="_vmcHost" /><input class="ag-in w60" type="number" @bind="_vmcPort" /><span class="ag-mut">(VSeeFace/VNyan/Warudo 수신 포트)</span></div>
+                                <div class="ag-row"><input class="ag-in grow" @bind="_vtsUrl" /><button class="ag-btn sm" disabled="@_connecting" @onclick="ConnectVts">🔗 VTube Studio</button></div>
+                                <div class="ag-row"><input class="ag-in grow" @bind="_obsUrl" /><input class="ag-in w120" type="password" @bind="_obsPw" placeholder="OBS 비밀번호" /><button class="ag-btn sm" disabled="@_connecting" @onclick="ConnectObs">🔗 OBS</button></div>
+                                <div class="ag-mut">VTS 토큰은 최초 1회 VTube Studio 앱에서 승인(세션 메모리 보관 · 환경변수 @(LiveVTuberBroadcastingBridge.VtsTokenVar) 지원).</div>
+                            </div>
+                        </div>
+                        <div class="ag-grid2">
+                            <div class="ag-card2">
+                                <div class="ag-sec">아바타 블렌드셰이프 @(Bridge.Speaking ? "🗣" : "")@(Bridge.Dancing ? " 💃" : "")</div>
+                                @for (var i = 0; i < VrmBlend.Count; i++)
+                                {
+                                    <div class="ag-bs"><span>@(VrmBlend.Names[i])</span><i style="width:@((_blend[i] * 100).ToString("0", CultureInfo.InvariantCulture))%"></i></div>
+                                }
+                                <div class="ag-mut">송출 @(Bridge.Frames.ToString("#,0", CultureInfo.InvariantCulture))프레임 · @((Bridge.BytesSent / 1024.0).ToString("0", CultureInfo.InvariantCulture))KB · VTS @(Bridge.VtsSent) · OBS 이벤트 @(Bridge.ObsEvents)</div>
+                                @if (Bridge.CurrentText is { } ct)
+                                {
+                                    <div class="ag-speech">💬 @(ct)</div>
+                                }
+                            </div>
+                            <div class="ag-card2">
+                                <div class="ag-sec">팬 시뮬레이션 · 리액션 큐 @(Fans.QueueLength) · 재생 @(Fans.Played) · 드롭 @(Fans.Dropped)</div>
+                                <div class="ag-row">
+                                    <input class="ag-in w100" @bind="_tFan" placeholder="팬 이름" />
+                                    <input class="ag-in grow" @bind="_tMsg" placeholder="채팅/후원 메시지" />
+                                </div>
+                                <div class="ag-row">
+                                    <button class="ag-btn sm" disabled="@(!Fans.InSession)" @onclick="SendChat">💬 채팅</button>
+                                    @foreach (var amt in new[] { 5_000, 20_000, 60_000, 300_000 })
+                                    {
+                                        <button class="ag-btn sm" @onclick="() => Donate(amt)">💸 ₩@(amt.ToString("#,0", CultureInfo.InvariantCulture))</button>
+                                    }
+                                </div>
+                                @if (Fans.Current is { } cur)
+                                {
+                                    <div class="ag-speech">@(FanInteractionReactionController.TierLabel(cur.Tier)) · @(cur.Banner) · @(cur.Vfx)@(cur.DanceBeats > 0 ? " · 댄스 " + cur.DanceBeats.ToString(CultureInfo.InvariantCulture) + "박" : "")</div>
+                                }
+                                @foreach (var q in Fans.Pending.Take(6))
+                                {
+                                    <div class="ag-mut">⏳ @(FanInteractionReactionController.TierLabel(q.Tier)) @(q.FanName) ₩@(q.AmountKrw.ToString("#,0", CultureInfo.InvariantCulture))</div>
+                                }
+                                <div class="ag-sec">최근 답변 · 채팅 @(Fans.MessagesPerMinute)/분</div>
+                                @foreach (var r in Fans.RecentReplies.Take(6))
+                                {
+                                    <div class="ag-reply"><b>@(r.Source)</b> @(r.Text)@(r.Recalled.Count > 0 ? " · 🧠" + r.Recalled.Count.ToString(CultureInfo.InvariantCulture) : "")</div>
+                                }
+                            </div>
+                        </div>
+                    }
+                }
+                @if (_msg is not null)
+                {
+                    <div class="ag-note @(_msg.StartsWith('⚠') ? "" : "ok")">@(_msg)</div>
+                }
+            </section>
+        </div>
+
+        <div class="ag-f">
+            <span class="ag-mut">@(Fans.LastAction ?? Bridge.LastAction ?? Memory.LastAction ?? "대기")</span>
+            <button class="ag-btn" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .ag-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .ag-modal { width: min(1260px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .ag-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #fde047 10%, var(--card)), color-mix(in srgb, #f472b6 12%, var(--card))); }
+    .ag-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .ag-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .ag-sub b { color: var(--text-primary); }
+    .ag-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; } .ag-x.sm { width: 20px; height: 20px; font-size: 11px; }
+    .ag-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .ag-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .ag-chip.ok { color: #4ade80; } .ag-chip.live { color: #fff; background: #ef4444; border-color: #ef4444; }
+    .ag-main { display: grid; grid-template-columns: 250px 1fr; min-height: 0; flex: 1; overflow: hidden; }
+    .ag-roster { border-right: 1px solid var(--line); padding: 12px; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+    .ag-card { text-align: left; border: 1px solid var(--line); background: var(--card); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 2px; cursor: pointer; color: var(--text-secondary); font-size: 11px; }
+    .ag-card b { color: var(--text-primary); font-size: 13px; } .ag-card.on { border-color: #f472b6; box-shadow: 0 0 0 1px #f472b6 inset; }
+    .ag-live { font: 800 9px var(--mono); color: #fff; background: #ef4444; padding: 1px 5px; border-radius: 4px; font-style: normal; margin-left: 4px; }
+    .ag-form { display: flex; flex-direction: column; gap: 5px; }
+    .ag-panel { padding: 12px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .ag-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
+    .ag-tabs button { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; border: 0; background: none; color: var(--text-muted); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
+    .ag-tabs button.on { color: var(--text-primary); border-bottom-color: #f472b6; }
+    .ag-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .ag-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); margin: 2px 0; }
+    .ag-grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; } .ag-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .ag-gauge { border: 1px solid var(--line); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 11px; color: var(--text-muted); }
+    .ag-gauge svg { width: 100%; max-width: 180px; } .ag-gauge b { font-size: 18px; color: var(--text-primary); }
+    .ag-tiers { width: 100%; display: flex; flex-direction: column; gap: 4px; }
+    .ag-tiers div { display: grid; grid-template-columns: 64px 1fr 28px; align-items: center; gap: 6px; } .ag-tiers i { height: 7px; border-radius: 4px; background: linear-gradient(90deg,#f472b6,#fde047); display: block; } .ag-tiers b { font-size: 11px; text-align: right; }
+    .ag-hours { width: 100%; height: 70px; background: #06080e; border-radius: 8px; }
+    .ag-card2 { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .ag-memlist { display: flex; flex-direction: column; gap: 3px; max-height: 420px; overflow-y: auto; }
+    .ag-mem { display: grid; grid-template-columns: 70px 1fr auto auto; gap: 8px; align-items: center; font-size: 12px; color: var(--text-secondary); border-bottom: 1px solid var(--line); padding: 3px 0; }
+    .ag-mem i { font: 700 10px var(--mono); font-style: normal; padding: 1px 6px; border-radius: 5px; background: #334155; color: #fff; text-align: center; }
+    .ag-mem i.k-Lore { background: #a78bfa; } .ag-mem i.k-Fact { background: #22c55e; } .ag-mem i.k-Donation { background: #f59e0b; } .ag-mem i.k-Reply { background: #64748b; } .ag-mem i.k-Chat { background: #38bdf8; }
+    .ag-mem b { font: 10px var(--mono); color: var(--text-muted); }
+    .ag-bs { display: grid; grid-template-columns: 70px 1fr; align-items: center; gap: 6px; font: 11px var(--mono); color: var(--text-muted); }
+    .ag-bs i { display: block; height: 7px; border-radius: 4px; background: linear-gradient(90deg,#38bdf8,#f472b6); transition: width .08s linear; }
+    .ag-speech { font-size: 12px; color: var(--text-primary); background: color-mix(in srgb, #f472b6 12%, var(--card)); border-radius: 8px; padding: 6px 8px; }
+    .ag-reply { font-size: 11.5px; color: var(--text-secondary); } .ag-reply b { font: 700 10px var(--mono); color: #a78bfa; }
+    .ag-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; } .ag-tbl th, .ag-tbl td { border-bottom: 1px solid var(--line); padding: 3px 6px; text-align: left; }
+    .ag-mut { font-size: 11px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; } .ag-mut code { font: 11px var(--mono); color: #22d3ee; user-select: all; }
+    .ag-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; }
+    .ag-in.grow { flex: 1; min-width: 160px; } .ag-in.w60 { width: 64px; } .ag-in.w100 { width: 100px; } .ag-in.w120 { width: 120px; }
+    .ag-ta { min-height: 44px; resize: vertical; font-family: inherit; }
+    .ag-empty { font-size: 12px; color: var(--text-muted); padding: 40px; text-align: center; border: 1px dashed var(--line); border-radius: 10px; }
+    .ag-note { font-size: 12px; color: var(--text-secondary); } .ag-note.ok { color: #4ade80; }
+    .ag-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); } .ag-f .ag-mut { margin-right: auto; }
+    .ag-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .ag-btn.sm { padding: 3px 8px; font-size: 11px; } .ag-btn.go { background: linear-gradient(135deg,#ef4444,#f472b6); color: #fff; border: 0; } .ag-btn.danger { color: #f87171; border-color: #f87171; }
+    .ag-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 900px) { .ag-main { grid-template-columns: 1fr; } .ag-grid3, .ag-grid2 { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly float[] _blend = new float[VrmBlend.Count];
+    private CancellationTokenSource? _ui;
+    private List<RecalledMemory> _recall = new();
+    private int _tab, _kind = -1, _idle = 25, _vmcPort = 39539;
+    private double _goal = 1_000_000;
+    private long _followGoal = 1000;
+    private bool _debut, _useLlm = true, _useTts = true, _demo = true, _connecting;
+    private string? _sel, _msg;
+    private string _nName = "", _nConcept = "", _nLore = "", _nCatch = "", _nSpeech = "밝고 다정한 반말", _query = "", _queryFan = "", _newLore = "", _twitch = "";
+    private string _vmcHost = "127.0.0.1", _vtsUrl = "ws://127.0.0.1:8001", _obsUrl = "ws://127.0.0.1:4455", _obsPw = "", _tFan = "테스트팬", _tMsg = "오늘도 응원해!";
+    private NarrationTone _nVoice = NarrationTone.Bright;
+    private DanceStyle _nDance = DanceStyle.KPop;
+
+    private VTuberPersona? Selected => _sel is null ? null : Memory.Find(_sel);
+
+    protected override void OnInitialized()
+    {
+        Memory.OnChange += OnServiceChanged;
+        Bridge.OnChange += OnServiceChanged;
+        Fans.OnChange += OnServiceChanged;
+        _sel = Fans.SessionPersonaId ?? Memory.Personas.FirstOrDefault()?.Id;
+        _vmcHost = Bridge.VmcHost; _vmcPort = Bridge.VmcPort;
+        if (Fans.InSession) SetTab(2);
+    }
+
+    private string Uptime() => Fans.Uptime.ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture);
+
+    private static string Arc(double frac)
+    {
+        var f = Math.Clamp(frac, 0, 1);
+        var a = Math.PI * (1 - f);
+        var x = 60 + 50 * Math.Cos(a); var y = 60 - 50 * Math.Sin(a);
+        return f <= 0 ? "" : "M10 60 A50 50 0 0 1 " + x.ToString("0.##", CultureInfo.InvariantCulture) + " " + y.ToString("0.##", CultureInfo.InvariantCulture);
+    }
+
+    private void Select(string id) { _sel = id; _recall.Clear(); _msg = null; }
+
+    private void SetTab(int t)
+    {
+        _tab = t;
+        if (t == 2) StartUi(); else StopUi();
+    }
+
+    private void Debut()
+    {
+        var lore = _nLore.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var cps = _nCatch.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var p = Memory.CreatePersona(_nName, _nConcept, lore, cps, _nVoice, _nDance, string.IsNullOrWhiteSpace(_nSpeech) ? "밝고 다정한 반말" : _nSpeech);
+        _sel = p.Id; _debut = false; _nName = _nConcept = _nLore = _nCatch = "";
+        _msg = "🌟 " + p.Name + " 데뷔!";
+    }
+
+    private void Remove()
+    {
+        if (_sel is null) return;
+        Memory.RemovePersona(_sel);
+        _sel = Memory.Personas.FirstOrDefault()?.Id;
+    }
+
+    private void OnQueryKey(KeyboardEventArgs e) { if (e.Key == "Enter") Search(); }
+
+    private void Search()
+    {
+        if (_sel is null || string.IsNullOrWhiteSpace(_query)) return;
+        _recall = Memory.Recall(_sel, _query, string.IsNullOrWhiteSpace(_queryFan) ? null : _queryFan.Trim(), 8);
+        if (_recall.Count == 0) _msg = "⚠ 관련 기억 없음";
+    }
+
+    private void AddLore()
+    {
+        if (_sel is null) return;
+        Memory.AddMemory(_sel, MemoryKind.Lore, null, null, _newLore, 0, 1f);
+        Memory.Save(_sel);
+        _newLore = "";
+    }
+
+    private void Reset(bool keepLore)
+    {
+        if (_sel is null) return;
+        var n = Memory.ResetMemory(_sel, keepLore);
+        _recall.Clear();
+        _msg = "🧹 " + n.ToString(CultureInfo.InvariantCulture) + "건 삭제" + (keepLore ? "(세계관 유지)" : "");
+    }
+
+    private void StartSession()
+    {
+        if (_sel is null) return;
+        Bridge.VmcHost = _vmcHost.Trim(); Bridge.VmcPort = Math.Clamp(_vmcPort, 1, 65535);
+        var tw = string.IsNullOrWhiteSpace(_twitch) ? null : _twitch.Trim();
+        var ok = Fans.StartSession(_sel, new SessionOptions(_useLlm && Memory.LlmAvailable, _useTts, _demo, Math.Clamp(_idle, 5, 300), 2500, tw));
+        _msg = ok ? "🔴 자율 방송 시작 — OBS 브라우저 소스에 오버레이 URL 을 추가하세요." : "⚠ 시작 실패";
+        StartUi();
+    }
+
+    private void StopSession()
+    {
+        Fans.StopSession();
+        Bridge.Stop();
+        _msg = "⏹ 방송 종료";
+    }
+
+    private async Task ConnectVts()
+    {
+        if (!Uri.TryCreate(_vtsUrl, UriKind.Absolute, out var u)) { _msg = "⚠ URL 형식 오류"; return; }
+        _connecting = true;
+        try { var (ok, _, m) = await Bridge.ConnectVtsAsync(u); _msg = ok ? "🔗 " + m : "⚠ " + m; }
+        finally { _connecting = false; }
+    }
+
+    private async Task ConnectObs()
+    {
+        if (!Uri.TryCreate(_obsUrl, UriKind.Absolute, out var u)) { _msg = "⚠ URL 형식 오류"; return; }
+        _connecting = true;
+        try { var (ok, m) = await Bridge.ConnectObsAsync(u, string.IsNullOrEmpty(_obsPw) ? null : _obsPw); _msg = ok ? "🔗 " + m : m; }
+        finally { _connecting = false; _obsPw = ""; }
+    }
+
+    private void SendChat()
+    {
+        if (string.IsNullOrWhiteSpace(_tMsg)) return;
+        Fans.ReceiveChat(new ChatMessage("ui_" + _tFan, _tFan, _tMsg));
+    }
+
+    private void Donate(int amount)
+    {
+        if (!Bridge.IsRunning && _sel is not null && !Fans.InSession) { _msg = "⚠ 방송 시작 후 후원 테스트가 가능합니다(오버레이/안무 송출 필요)."; return; }
+        Fans.ReceiveDonation(new DonationEvent(Guid.NewGuid(), "ui_" + _tFan, _tFan, amount, "KRW", _tMsg, "test"));
+    }
+
+    private void StartUi()
+    {
+        if (_ui is not null) return;
+        var cts = new CancellationTokenSource();
+        _ui = cts;
+        _ = UiLoopAsync(cts.Token);
+    }
+
+    private void StopUi()
+    {
+        var cts = Interlocked.Exchange(ref _ui, null);
+        if (cts is null) return;
+        try { cts.Cancel(); } catch (ObjectDisposedException) { }
+        cts.Dispose();
+    }
+
+    private async Task UiLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(150));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                if (_tab != 2 || !Bridge.IsRunning) continue;
+                Bridge.CopyBlend(_blend);
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("AgencyStudio.Ui", ex); }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Memory.OnChange -= OnServiceChanged;
+        Bridge.OnChange -= OnServiceChanged;
+        Fans.OnChange -= OnServiceChanged;
+        StopUi();
+    }
+}

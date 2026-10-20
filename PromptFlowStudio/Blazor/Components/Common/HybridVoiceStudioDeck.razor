@@ -1,0 +1,224 @@
+@using PromptFlowStudio.Services.Voice
+@using PromptFlowStudio.Services.Studio
+@implements IDisposable
+@inject AlibabaWanHybridEngine Wan
+@inject EmotionalVoiceSynthesizer Voice
+@inject SpatialAudioEngine Spatial
+@inject StudioFolderLinkService FolderLink
+@inject ILocalMediaService Media
+@inject PromptFlowStudio.Services.Ui.StudioMemoryAudit MemAudit
+
+@* [PromptFlow Studio] v3.8.0 완 하이브리드 렌더 · 감정 보이스 · 3D 입체 음향 스튜디오(Task 4) — 로컬 0원 무료 vs Wan 3.0 · 보이스 톤 · 바이노럴 파닝 캔버스(네온 글래스모피즘). *@
+
+<div class="hvs">
+    <div class="hvs-h"><span class="hvs-title">🎬 완 하이브리드 · 감정 보이스 스튜디오</span><span class="hvs-badge">v3.8.0</span>
+        <span class="hvs-hint">로컬 0원 무료 · Wan 3.0급 화질 · 3D 입체 음향</span></div>
+
+    <div class="hvs-grid">
+        @* ── ① 완 하이브리드 렌더 모드 ── *@
+        <div class="hvs-card">
+            <div class="hvs-ct">⚡ 완 렌더링 모드 <button class="hvs-mini" @onclick="DetectVram" disabled="@(Disabled || _busy)">🔍 VRAM 탐지</button></div>
+            <div class="hvs-modes">
+                <button class="hvs-mode @(Project.WanRenderMode == "local" ? "on" : null)" @onclick='() => SetMode("local")' disabled="@Disabled">
+                    <span class="hvs-mode-e">💻</span><span class="hvs-mode-n">로컬 0원 무제한</span><span class="hvs-mode-d">완 1.3B FP8/GGUF · 무료</span>
+                </button>
+                <button class="hvs-mode @(Project.WanRenderMode == "cloud_upscale" ? "on" : null)" @onclick='() => SetMode("cloud_upscale")' disabled="@Disabled">
+                    <span class="hvs-mode-e">☁️</span><span class="hvs-mode-n">Wan 3.0 업스케일</span><span class="hvs-mode-d">원격 프리미엄</span>
+                </button>
+            </div>
+            <div class="hvs-vram">
+                <span>VRAM</span><b>@(Project.DetectedVramMb > 0 ? Project.DetectedVramMb + " MB" : "미탐지")</b>
+                <span class="hvs-model">@Plan.Model.DisplayName</span>
+            </div>
+            <label class="hvs-tg"><input type="checkbox" checked="@Project.WanQualityBoost" @onchange="OnBoost" disabled="@Disabled" /> Wan 3.0급 화질 보완(minterpolate @(Project.WanEnhanceFps)fps · CAS · EQ)</label>
+            <div class="hvs-plan @(Plan.CostKrw == 0 ? "free" : null)">@Plan.Summary</div>
+        </div>
+
+        @* ── ② 감정 보이스 톤 ── *@
+        <div class="hvs-card">
+            <div class="hvs-ct">🎙️ 감정 보이스 톤</div>
+            <div class="hvs-voices">
+                @foreach (var p in EmotionalVoiceSynthesizer.Personas)
+                {
+                    <button class="hvs-voice @(Project.VoiceTone == p.Key ? "on" : null)" @onclick="() => SetTone(p.Key)" disabled="@Disabled" @key="p.Key">
+                        <span class="hvs-voice-e">@p.Emoji</span><span class="hvs-voice-n">@p.Name</span><span class="hvs-voice-t">@p.Tone</span>
+                    </button>
+                }
+            </div>
+            <div class="hvs-langs">
+                @foreach (var l in EmotionalVoiceSynthesizer.Languages)
+                {
+                    <button class="hvs-lang @(VoiceLang == l.Code ? "on" : null)" @onclick="() => SetLang(l.Code)" disabled="@Disabled" @key="l.Code" title="@l.Native">@l.Flag @l.Code.ToUpperInvariant()</button>
+                }
+            </div>
+            <div class="hvs-sample">💬 “@SamplePersona.Sample”</div>
+        </div>
+
+        @* ── ③ 3D 바이노럴 입체 음향 파닝 캔버스 ── *@
+        <div class="hvs-card wide">
+            <div class="hvs-ct">🔊 3D 입체 음향 파닝 캔버스 <span class="hvs-sub">카메라 오르빗 → 좌우·원근 정위</span>
+                <label class="hvs-tg" style="margin-left:auto"><input type="checkbox" checked="@Project.SpatialAudio" @onchange="OnSpatial" disabled="@Disabled" /> 적용</label></div>
+            <div class="hvs-canvaswrap">
+                <span class="hvs-ax l">◀ L</span><span class="hvs-ax r">R ▶</span>
+                <span class="hvs-ax far">원거리</span><span class="hvs-ax near">근접</span><span class="hvs-ax me">🎧 청취자</span>
+                <svg class="hvs-canvas" viewBox="0 0 300 170" preserveAspectRatio="xMidYMid meet" role="img" aria-label="3D 입체 음향 파닝 캔버스">
+                    <defs><radialGradient id="hvsg" cx="50%" cy="90%" r="80%"><stop offset="0%" stop-color="#22d3ee33"/><stop offset="100%" stop-color="transparent"/></radialGradient></defs>
+                    <rect x="0" y="0" width="300" height="170" fill="url(#hvsg)" rx="10"/>
+                    <line x1="150" y1="10" x2="150" y2="150" stroke="#2b2f42" stroke-width="1" stroke-dasharray="3 3"/>
+                    <circle cx="150" cy="158" r="4" fill="#7dd3fc"/>
+                    @foreach (var pt in SpatialPoints)
+                    {
+                        <circle cx="@N(150 + pt.Pan * 132)" cy="@N(20 + (1 - pt.Depth) * 120)" r="8" fill="@CueHex(pt.Cue)" opacity="0.9" stroke="#0b0d14" stroke-width="1.5">
+                            <title>컷 @(pt.Index + 1) · @CueLabel(pt.Cue) · 팬 @N(pt.Pan) · 방위 @N(pt.Azimuth)°</title>
+                        </circle>
+                    }
+                </svg>
+            </div>
+            <div class="hvs-cuelegend">
+                <span class="hvs-cl" style="--c:#22d3ee">오르빗 좌</span><span class="hvs-cl" style="--c:#f472b6">오르빗 우</span>
+                <span class="hvs-cl" style="--c:#a3e635">근접 푸시인</span><span class="hvs-cl" style="--c:#c4b5fd">원거리 풀아웃</span><span class="hvs-cl" style="--c:#9aa6c8">고정</span>
+            </div>
+            <label class="hvs-tg"><input type="checkbox" checked="@Project.KineticSpatialSubtitle" @onchange="OnKinetic" disabled="@Disabled" /> 키네틱 타이포 자막(파형 피크 반응)</label>
+        </div>
+    </div>
+
+    <div class="hvs-actions">
+        <button class="hvs-btn go" @onclick="PrepareGenerate" disabled="@(Disabled || _busy)">🚀 완 3.0급 0원 무료 생성</button>
+        <button class="hvs-btn spec" @onclick="ExportSpec" disabled="@(Disabled || _busy)">📄 입체 음향 스펙 시트</button>
+    </div>
+    @if (_msg is not null) { <div class="hvs-msg">@_msg</div> }
+</div>
+
+<style>
+    .hvs { border: 1px solid color-mix(in srgb, #22d3ee 34%, var(--line)); border-radius: 16px; overflow: hidden; font-family: Pretendard, 'Malgun Gothic', sans-serif;
+        background: linear-gradient(160deg, color-mix(in srgb, #22d3ee 9%, rgba(18,20,31,.74)), rgba(18,20,31,.9)); backdrop-filter: blur(16px) saturate(150%); -webkit-backdrop-filter: blur(16px) saturate(150%); }
+    .hvs-h { display: flex; align-items: center; gap: 8px; padding: 12px 15px; border-bottom: 1px solid color-mix(in srgb, #22d3ee 22%, var(--line)); background: linear-gradient(120deg, color-mix(in srgb, #22d3ee 14%, transparent), transparent 62%); }
+    .hvs-title { font: 900 14px Pretendard,'Malgun Gothic',sans-serif; background: linear-gradient(90deg, #7dd3fc, #a78bfa); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .hvs-badge { font: 800 10px var(--mono); color: #fff; background: linear-gradient(135deg, #0ea5e9, #6366f1); border-radius: 20px; padding: 2px 8px; }
+    .hvs-hint { margin-left: auto; font: 600 10.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); word-break: keep-all; }
+    .hvs-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 13px 15px; }
+    .hvs-card { border: 1px solid var(--line); border-radius: 13px; background: rgba(26,29,43,.62); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+    .hvs-card.wide { grid-column: 1 / -1; }
+    .hvs-ct { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; display: flex; align-items: center; gap: 8px; color: var(--text-primary); }
+    .hvs-sub { font: 600 10px var(--mono); color: var(--text-muted); }
+    .hvs-mini { margin-left: auto; font: 700 10px Pretendard,'Malgun Gothic',sans-serif; color: #7dd3fc; background: color-mix(in srgb,#0ea5e9 12%,transparent); border: 1px solid color-mix(in srgb,#0ea5e9 34%,var(--line)); border-radius: 8px; padding: 4px 9px; cursor: pointer; }
+    .hvs-mini:disabled { opacity: .5; cursor: not-allowed; }
+    /* 렌더 모드 */
+    .hvs-modes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .hvs-mode { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 11px; border-radius: 11px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; font-family: inherit; text-align: left; }
+    .hvs-mode:hover:not(:disabled) { border-color: #22d3ee; }
+    .hvs-mode.on { border-color: transparent; box-shadow: 0 0 0 2px #22d3ee; background: color-mix(in srgb, #22d3ee 10%, var(--card-2)); color: var(--text-primary); }
+    .hvs-mode-e { font-size: 19px; } .hvs-mode-n { font: 800 11.5px Pretendard,'Malgun Gothic',sans-serif; } .hvs-mode-d { font: 600 9.5px var(--mono); color: var(--text-muted); }
+    .hvs-vram { display: flex; align-items: center; gap: 8px; font: 700 10.5px var(--mono); color: var(--text-muted); }
+    .hvs-vram b { color: #7dd3fc; } .hvs-model { margin-left: auto; color: var(--text-secondary); font: 700 10px Pretendard,'Malgun Gothic',sans-serif; }
+    .hvs-tg { font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 6px; cursor: pointer; word-break: keep-all; }
+    .hvs-plan { font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-secondary); background: var(--card); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; word-break: keep-all; }
+    .hvs-plan.free { color: #86efac; border-color: color-mix(in srgb,#22c55e 40%,var(--line)); background: color-mix(in srgb,#22c55e 10%,transparent); }
+    /* 보이스 */
+    .hvs-voices { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+    .hvs-voice { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 9px 5px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; font-family: inherit; }
+    .hvs-voice:hover:not(:disabled) { border-color: #a78bfa; }
+    .hvs-voice.on { border-color: transparent; box-shadow: 0 0 0 2px #a78bfa; background: color-mix(in srgb, #a78bfa 12%, var(--card-2)); color: var(--text-primary); }
+    .hvs-voice-e { font-size: 18px; } .hvs-voice-n { font: 800 10.5px Pretendard,'Malgun Gothic',sans-serif; } .hvs-voice-t { font: 600 8.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); text-align: center; line-height: 1.2; word-break: keep-all; }
+    .hvs-langs { display: flex; gap: 5px; flex-wrap: wrap; }
+    .hvs-lang { font: 700 10px var(--mono); color: var(--text-secondary); background: var(--card-2); border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; cursor: pointer; }
+    .hvs-lang.on { color: #fff; border-color: transparent; background: linear-gradient(135deg, #0ea5e9, #6366f1); }
+    .hvs-sample { font: 600 11px Pretendard,'Malgun Gothic',sans-serif; color: #c4b5fd; word-break: keep-all; }
+    /* 파닝 캔버스 */
+    .hvs-canvaswrap { position: relative; }
+    .hvs-canvas { width: 100%; height: auto; background: #0b0d14; border: 1px solid var(--line); border-radius: 11px; display: block; }
+    .hvs-ax { position: absolute; font: 700 9px var(--mono); color: var(--text-muted); pointer-events: none; }
+    .hvs-ax.l { top: 8px; left: 10px; } .hvs-ax.r { top: 8px; right: 10px; }
+    .hvs-ax.far { top: 24%; left: 8px; } .hvs-ax.near { bottom: 16%; left: 8px; } .hvs-ax.me { bottom: 4px; left: 50%; transform: translateX(-50%); }
+    .hvs-cuelegend { display: flex; flex-wrap: wrap; gap: 9px; }
+    .hvs-cl { font: 700 9.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 5px; }
+    .hvs-cl::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--c); box-shadow: 0 0 6px var(--c); }
+    /* 액션 */
+    .hvs-actions { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 15px 14px; }
+    .hvs-btn { font: 800 14px Pretendard,'Malgun Gothic',sans-serif; padding: 12px 16px; border: none; border-radius: 12px; cursor: pointer; word-break: keep-all; }
+    .hvs-btn.go { flex: 1; min-width: 240px; color: #fff; background: linear-gradient(135deg, #22c55e, #0ea5e9); box-shadow: 0 6px 16px color-mix(in srgb, #22c55e 30%, transparent), inset 0 1px 0 rgba(255,255,255,.28); text-shadow: 0 1px 2px rgba(0,0,0,.35); }
+    .hvs-btn.spec { color: #fff; background: linear-gradient(135deg, #6366f1, #a855f7); box-shadow: 0 6px 16px color-mix(in srgb, #6366f1 30%, transparent), inset 0 1px 0 rgba(255,255,255,.22); }
+    .hvs-btn:hover:not(:disabled) { filter: brightness(1.07); } .hvs-btn:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
+    .hvs-msg { padding: 0 15px 14px; font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: #7dd3fc; word-break: keep-all; line-height: 1.5; }
+    @@media (max-width: 720px) { .hvs-grid { grid-template-columns: 1fr; } .hvs-voices { grid-template-columns: 1fr 1fr 1fr; } }
+</style>
+
+@code {
+    [Parameter, EditorRequired] public StoryboardProject Project { get; set; } = default!;
+    [Parameter] public bool Disabled { get; set; }
+
+    private bool _busy;
+    private string? _msg;
+    private long _memToken;
+
+    private HybridRenderPlan Plan => Wan.BuildPlan(Project, Project.DetectedVramMb, Project.WanRenderMode == "cloud_upscale");
+    private IReadOnlyList<SpatialPoint> SpatialPoints => Spatial.AnalyzeProject(Project);
+    private string VoiceLang => string.IsNullOrWhiteSpace(Project.VoiceLanguage) ? "ko" : Project.VoiceLanguage;
+    private VoicePersona SamplePersona => EmotionalVoiceSynthesizer.PersonaFor(Project.VoiceTone) ?? EmotionalVoiceSynthesizer.Personas[0];
+
+    protected override void OnInitialized() => _memToken = MemAudit.Track("HybridVoiceStudioDeck");
+
+    private static string N(double v) => v.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
+    private static string CueHex(CameraCue c) => c switch
+    {
+        CameraCue.OrbitLeft => "#22d3ee",
+        CameraCue.OrbitRight => "#f472b6",
+        CameraCue.PushIn => "#a3e635",
+        CameraCue.PullOut => "#c4b5fd",
+        _ => "#9aa6c8",
+    };
+    private static string CueLabel(CameraCue c) => c switch
+    {
+        CameraCue.OrbitLeft => "오르빗 좌",
+        CameraCue.OrbitRight => "오르빗 우",
+        CameraCue.PushIn => "근접 푸시인",
+        CameraCue.PullOut => "원거리 풀아웃",
+        _ => "고정",
+    };
+
+    private void SetMode(string mode) => Project.WanRenderMode = mode;
+    private void SetTone(string key) => Project.VoiceTone = key;
+    private void SetLang(string code) => Project.VoiceLanguage = code;
+    private void OnBoost(ChangeEventArgs e) => Project.WanQualityBoost = e.Value is true;
+    private void OnSpatial(ChangeEventArgs e) => Project.SpatialAudio = e.Value is true;
+    private void OnKinetic(ChangeEventArgs e) => Project.KineticSpatialSubtitle = e.Value is true;
+
+    private async Task DetectVram()
+    {
+        _busy = true; _msg = null;
+        try
+        {
+            var mb = await Wan.DetectVramMbAsync();
+            Project.DetectedVramMb = mb;
+            _msg = mb > 0 ? $"🔍 VRAM {mb} MB 탐지 — 권장 {AlibabaWanHybridEngine.RecommendLocalTier(mb).DisplayName}" : "🔍 nvidia-smi 미검출 — FP8 로컬로 진행(오프로딩)";
+        }
+        catch (Exception ex) { _msg = "⚠ " + ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private void PrepareGenerate()
+    {
+        if (Project.WanRenderMode == "local") Project.WanQualityBoost = true;   // 로컬은 완 3.0급 보완 기본 ON
+        var plan = Plan;
+        _msg = $"🚀 {plan.Summary} · 보이스 {SamplePersona.Name}({VoiceLang.ToUpperInvariant()})"
+            + (Project.SpatialAudio ? " · 3D 입체음향" : "") + (Project.KineticSpatialSubtitle ? " · 키네틱 자막" : "")
+            + " 설정 완료 — [✨ 전체 생성] 시 적용됩니다.";
+    }
+
+    private void ExportSpec()
+    {
+        _busy = true; _msg = null;
+        try
+        {
+            var dir = System.IO.Path.Combine(Media.MediaRoot, Project.Id);
+            var path = System.IO.Path.Combine(dir, "spatial_voice_spec.pdf");
+            var outp = SpatialAudioSpecSheetExporter.Export(Project, Plan, SamplePersona, SpatialPoints, path);
+            if (outp is not null) { FolderLink.Reveal(outp); _msg = "📄 입체 음향 스펙 시트 PDF 발급 완료 — 탐색기에서 열림"; }
+            else _msg = "⚠ 스펙 시트 발급 실패";
+        }
+        catch (Exception ex) { _msg = "⚠ " + ex.Message; }
+        finally { _busy = false; }
+    }
+
+    public void Dispose() => MemAudit.Release(_memToken);
+}

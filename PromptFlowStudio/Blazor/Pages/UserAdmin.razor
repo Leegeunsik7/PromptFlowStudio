@@ -1,0 +1,10 @@
+@page "/admin/users"
+@inject NavigationManager Nav
+
+@* [PromptFlowStudio] 구 회원·라이선스 관리 경로 — 이제 <관리자 설정>의 [회원·권한] 탭으로 통합됐다.
+   회원 표는 MemberAdminPanel 컴포넌트 <한 곳>에만 둔다(중복 표 방지).
+   기존 링크/북마크 호환을 위해 경로만 유지하고 관리자 설정으로 넘긴다. *@
+
+@code {
+    protected override void OnInitialized() => Nav.NavigateTo("settings", replace: true);
+}

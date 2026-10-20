@@ -1,0 +1,370 @@
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.Mcr
+@using PromptFlowStudio.Services.Screenplay
+@using PromptFlowStudio.Services.Cinema
+@implements IDisposable
+@inject AutonomousMcrProgramSwitcherEngine Mcr
+@inject ContextualServerSideAdInsertionEngine Ssai
+@inject DynamicAdRevenueOptimizationEngine Revenue
+@inject SceneBeatSheetScriptGenerator Script
+
+@*
+    [PromptFlow Studio v16.43.0] 📺 AI 자율 주행 MCR & SSAI 스튜디오 — PGM/PVW 듀얼 시그널 뷰포트 · 채널 스트립(PVW 지정 · 장애 주입) · TAKE/자동 연출/자동·수동 바이패스 ·
+    SCTE-35 광고 삽입 타임라인(대본 맥락 분석 · HLS/DASH 인젝션 미리보기) · eCPM 경매/지분 정산. 서비스 OnChange 구독 + 가동 중 150ms UI 틱.
+*@
+
+<div class="mc-scrim" @onclick="Close">
+    <div class="mc-modal" @onclick:stopPropagation="true">
+        <div class="mc-h">
+            <div>
+                <div class="mc-title">📺 AI 자율 주행 MCR &amp; SSAI 스튜디오</div>
+                <div class="mc-sub">PGM/PVW 신호를 <b>AI 관제</b>해 블랙·프리즈·유실 시 <b>0초 에머전시 바이패스</b>하고, 장면 맥락에 맞춰 <b>SCTE-35 광고 큐</b>를 삽입해 <b>eCPM 최고가</b>로 판매·정산합니다.</div>
+            </div>
+            <button class="mc-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="mc-bar">
+            <span class="mc-chip @(Mcr.DemoRunning ? "live" : "")">@(Mcr.DemoRunning ? "● ON AIR" : "OFF AIR")</span>
+            <span class="mc-chip @(Mcr.InBypass ? "bad" : "ok")">@(Mcr.InBypass ? "🚨 BYPASS" : "정상 송출")</span>
+            <span class="mc-chip">바이패스 @(Mcr.Bypasses) · 지연 @(F0(Mcr.LastBypassLatencyMs))ms</span>
+            <span class="mc-chip">TAKE @(Mcr.Takes) · AI컷 @(Mcr.AutoTakes)</span>
+            <span class="mc-chip @(Mcr.AdBreakActive(Mcr.NowMs) ? "ad" : "")">📢 라이브 큐 @(Ssai.LiveCues)</span>
+            <span class="mc-chip">수익 $@((Revenue.TotalRevenueMicros / 1e6).ToString("0.00", CultureInfo.InvariantCulture))</span>
+        </div>
+
+        <div class="mc-main">
+            <div class="mc-left">
+                <div class="mc-views">
+                    @foreach (var (label, ch, cls) in Views())
+                    {
+                        <div class="mc-view @(cls)">
+                            <div class="mc-vh"><b>@(label)</b><span>@(Mcr.NameOf(ch))</span><i>@(ch >= 0 ? AutonomousMcrProgramSwitcherEngine.HealthLabel(Mcr.HealthOf(ch)) : "—")</i></div>
+                            <svg viewBox="0 0 16 9" preserveAspectRatio="none" class="mc-screen">
+                                @{ var th = cls == "pgm" ? _pgmThumb : _pvwThumb; }
+                                @for (var i = 0; i < 144; i++)
+                                {
+                                    <rect x="@(i % 16)" y="@(i / 16)" width="1.02" height="1.02" fill="@(Gray(th[i]))" />
+                                }
+                                @if (cls == "pgm" && Mcr.AdBreakActive(Mcr.NowMs))
+                                {
+                                    <g><text x="0.5" y="1.4" font-size="1.1" fill="#fbbf24">AD BREAK · SCTE-35</text></g>
+                                }
+                            </svg>
+                        </div>
+                    }
+                </div>
+                <div class="mc-strip">
+                    @for (var i = 0; i < Mcr.ChannelCount; i++)
+                    {
+                        var ch = i;
+                        var h = Mcr.HealthOf(ch);
+                        <div class="mc-src @(ch == Mcr.Program ? "pgm" : ch == Mcr.Preview ? "pvw" : "") @(h is SignalHealth.Ok ? "" : h is SignalHealth.Silent ? "warn" : "bad")">
+                            <button class="mc-srcb" @onclick="() => Mcr.SetPreview(ch)">
+                                <b>@(Mcr.NameOf(ch))</b>
+                                <span>@(AutonomousMcrProgramSwitcherEngine.HealthLabel(h)) · 활동 @(F0(Mcr.ActivityOf(ch) * 100))</span>
+                            </button>
+                            @if (Mcr.KindOf(ch) != McrSourceKind.Slate)
+                            {
+                                <div class="mc-faults">
+                                    @foreach (var f in _faults)
+                                    {
+                                        var ff = f;
+                                        <button class="mc-fb @(Mcr.FaultOf(ch) == ff ? "on" : "")" title="@(ff)" @onclick="() => Mcr.InjectFault(ch, Mcr.FaultOf(ch) == ff ? InjectedFault.None : ff)">@(FaultIcon(ff))</button>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+                <div class="mc-row">
+                    @if (!Mcr.DemoRunning)
+                    {
+                        <button class="mc-btn go" @onclick="StartAir">▶ 데모 송출 시작</button>
+                    }
+                    else
+                    {
+                        <button class="mc-btn danger" @onclick="StopAir">⏹ 송출 정지</button>
+                    }
+                    <button class="mc-btn take" disabled="@(!Mcr.DemoRunning)" @onclick="Mcr.Take">✂ TAKE</button>
+                    <label class="mc-ck"><input type="checkbox" @bind="_autoDirector" @bind:after="Apply" /> 🤖 AI 자율 연출</label>
+                    <label class="mc-ck"><input type="checkbox" @bind="_autoBypass" @bind:after="Apply" /> 🚨 자동 바이패스</label>
+                    <label class="mc-ck"><input type="checkbox" @bind="_autoRestore" @bind:after="Apply" /> ↩ 자동 복귀</label>
+                    <button class="mc-btn sm" disabled="@(!Mcr.DemoRunning)" @onclick="() => Mcr.ForceBypass(false)">수동 바이패스</button>
+                    <button class="mc-btn sm danger" disabled="@(!Mcr.DemoRunning)" @onclick="() => Mcr.ForceBypass(true)">🛑 슬레이트</button>
+                </div>
+                <div class="mc-card">
+                    <div class="mc-sec">이벤트 로그</div>
+                    <div class="mc-log">
+                        @for (var i = 0; i < _evN; i++)
+                        {
+                            var e = _ev[i];
+                            <div class="mc-ev"><b>@(F1(e.TimeMs / 1000))s</b><span>@(AutonomousMcrProgramSwitcherEngine.EventLabel(e.Kind))</span><em>@(Mcr.NameOf(e.From)) → @(Mcr.NameOf(e.To))@(e.Kind == McrEventKind.Bypass ? " · " + AutonomousMcrProgramSwitcherEngine.HealthLabel(e.Reason) + " · " + F0(e.LatencyMs) + "ms" : "")</em></div>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="mc-right">
+                <div class="mc-card">
+                    <div class="mc-row">
+                        <div class="mc-sec">SCTE-35 광고 삽입 타임라인</div>
+                        <button class="mc-btn sm" @onclick="PlanFromScript">@(Script.Current is null ? "🧪 데모 대본 분석" : "📜 현재 대본 분석")</button>
+                    </div>
+                    @if (_beats.Length > 0)
+                    {
+                        <svg class="mc-tl" viewBox="0 0 600 90" preserveAspectRatio="none">
+                            @foreach (var b in _beats)
+                            {
+                                var x = b.Start / _total * 600; var w = b.Duration / _total * 600;
+                                <rect x="@(F1(x))" y="@(F1(80 - b.Tension * 0.7))" width="@(F1(Math.Max(1, w - 1)))" height="@(F1(b.Tension * 0.7))" fill="@(b.Tension >= Ssai.Policy.ClimaxTension ? "#ef4444" : b.Valence > 0.3 ? "#f59e0b" : "#64748b")" opacity="0.75" />
+                            }
+                            @foreach (var (s, e) in _dlg)
+                            {
+                                <rect x="@(F1(s / _total * 600))" y="84" width="@(F1(Math.Max(0.5, (e - s) / _total * 600)))" height="4" fill="#38bdf8" />
+                            }
+                            @foreach (var br in Ssai.Plan)
+                            {
+                                var x = br.TimeSec / _total * 600;
+                                <g>
+                                    <line x1="@(F1(x))" y1="0" x2="@(F1(x))" y2="90" stroke="#fbbf24" stroke-width="2" />
+                                    <text x="@(F1(x + 3))" y="10" fill="#fbbf24" font-size="9">AD@(br.Index)</text>
+                                </g>
+                            }
+                        </svg>
+                        <div class="mc-legend"><span><i style="background:#64748b"></i>긴장도</span><span><i style="background:#ef4444"></i>클라이맥스(금지)</span><span><i style="background:#38bdf8"></i>대사</span><span><i style="background:#fbbf24"></i>SCTE-35 큐</span></div>
+                        @foreach (var br in Ssai.Plan)
+                        {
+                            <div class="mc-brk"><b>AD@(br.Index)</b><span>@(F1(br.TimeSec))s · @(F0(br.DurationSec))s</span><i>@(br.Reason)</i><em>@(br.Score.ToString("0.00", CultureInfo.InvariantCulture))</em></div>
+                        }
+                        <div class="mc-row">
+                            <button class="mc-tg @(_manifest == "hls" ? "on" : "")" @onclick="ShowHls">HLS</button>
+                            <button class="mc-tg @(_manifest == "dash" ? "on" : "")" @onclick="ShowDash">DASH</button>
+                        </div>
+                        <pre class="mc-pre">@(_manifest == "hls" ? _hls : _dash)</pre>
+                    }
+                    else
+                    {
+                        <div class="mc-note">대본을 분석하면 긴장도·대사 흐름을 피해 최적 광고 타임코드를 배치합니다.</div>
+                    }
+                </div>
+
+                <div class="mc-card">
+                    <div class="mc-row">
+                        <div class="mc-sec">eCPM 경매 &amp; 지분 정산</div>
+                        <button class="mc-btn sm" @onclick="SimulateRevenue">💰 브레이크 정산 실행</button>
+                        <span class="mc-chip @(Revenue.VerifyLedger() < 0 ? "ok" : "bad")">원장 @(Revenue.VerifyLedger() < 0 ? "무결" : "변조 감지")</span>
+                    </div>
+                    <div class="mc-grid">
+                        @for (var c = 0; c < DynamicAdRevenueOptimizationEngine.Countries.Length; c++)
+                        {
+                            <div class="mc-cty"><b>@(DynamicAdRevenueOptimizationEngine.Countries[c])</b><span>$@((Revenue.RevenueMicrosOf(c) / 1e6).ToString("0.00", CultureInfo.InvariantCulture))</span><i>하한 $@(Revenue.FloorOf(c).ToString("0.00", CultureInfo.InvariantCulture)) · 필 @(F0(Revenue.FillRateOf(c) * 100))%</i></div>
+                        }
+                    </div>
+                    <div class="mc-sec">DSP 낙찰</div>
+                    @{ var bidders = Revenue.Bidders; }
+                    @for (var b = 0; b < bidders.Count; b++)
+                    {
+                        <div class="mc-kv"><span>@(bidders[b].Name)</span><b>@(Revenue.BidderWins(b))승 · $@((Revenue.BidderRevenueMicros(b) / 1e6).ToString("0.00", CultureInfo.InvariantCulture))</b></div>
+                    }
+                    <div class="mc-sec">지분권자 정산</div>
+                    @foreach (var (n, m) in Revenue.SettlementTotals())
+                    {
+                        <div class="mc-kv"><span>@(n)</span><b>$@((m / 1e6).ToString("0.000000", CultureInfo.InvariantCulture))</b></div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="mc-f">
+            <span class="mc-mut">@(_msg ?? Mcr.LastAction ?? Revenue.LastAction ?? Ssai.LastAction ?? "MCR 대기")</span>
+            <button class="mc-btn" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .mc-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .mc-modal { width: min(1360px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .mc-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #ef4444 12%, var(--card)), color-mix(in srgb, #fbbf24 12%, var(--card))); }
+    .mc-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .mc-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .mc-sub b { color: var(--text-primary); }
+    .mc-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .mc-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .mc-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .mc-chip.ok { color: #4ade80; } .mc-chip.bad { color: #fff; background: #ef4444; border-color: #ef4444; } .mc-chip.live { color: #fff; background: #dc2626; border-color: #dc2626; animation: mc-pulse 1.2s infinite; } .mc-chip.ad { color: #111; background: #fbbf24; border-color: #fbbf24; }
+    @@keyframes mc-pulse { 50% { opacity: .6; } }
+    .mc-main { display: grid; grid-template-columns: 1.1fr 1fr; gap: 12px; padding: 12px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .mc-left, .mc-right { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .mc-views { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .mc-view { border: 3px solid #334155; border-radius: 10px; overflow: hidden; background: #000; } .mc-view.pgm { border-color: #ef4444; } .mc-view.pvw { border-color: #22c55e; }
+    .mc-vh { display: flex; gap: 8px; align-items: center; padding: 4px 8px; font-size: 12px; color: #e2e8f0; background: #0f172a; } .mc-vh b { font: 800 11px var(--mono); } .mc-vh i { margin-left: auto; font: 10px var(--mono); font-style: normal; color: #94a3b8; }
+    .mc-screen { width: 100%; aspect-ratio: 16 / 9; display: block; }
+    .mc-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+    .mc-src { border: 2px solid var(--line); border-radius: 8px; padding: 4px; display: flex; flex-direction: column; gap: 3px; } .mc-src.pgm { border-color: #ef4444; } .mc-src.pvw { border-color: #22c55e; }
+    .mc-src.bad { background: color-mix(in srgb, #ef4444 14%, var(--card)); } .mc-src.warn { background: color-mix(in srgb, #f59e0b 12%, var(--card)); }
+    .mc-srcb { background: none; border: 0; text-align: left; cursor: pointer; color: var(--text-primary); display: flex; flex-direction: column; } .mc-srcb b { font-size: 12px; } .mc-srcb span { font: 10px var(--mono); color: var(--text-muted); }
+    .mc-faults { display: flex; gap: 3px; } .mc-fb { font-size: 11px; border: 1px solid var(--line); background: var(--card); border-radius: 5px; padding: 1px 5px; cursor: pointer; } .mc-fb.on { border-color: #ef4444; background: #3b1220; }
+    .mc-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .mc-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .mc-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .mc-ck { font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 5px; }
+    .mc-log { display: flex; flex-direction: column; gap: 2px; max-height: 170px; overflow-y: auto; }
+    .mc-ev { display: grid; grid-template-columns: 60px 90px 1fr; gap: 6px; font-size: 11.5px; color: var(--text-secondary); border-bottom: 1px solid var(--line); } .mc-ev b { font: 10px var(--mono); color: var(--text-muted); } .mc-ev em { font-style: normal; color: var(--text-primary); }
+    .mc-tl { width: 100%; height: 100px; background: #0b1020; border-radius: 6px; }
+    .mc-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: var(--text-secondary); } .mc-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; }
+    .mc-brk { display: grid; grid-template-columns: 44px 90px 1fr 40px; gap: 6px; font-size: 11.5px; color: var(--text-secondary); } .mc-brk b { color: #fbbf24; } .mc-brk i { font-style: normal; } .mc-brk em { font: 10px var(--mono); font-style: normal; }
+    .mc-tg { font: 700 11px var(--mono); border: 1px solid var(--line); background: var(--card); color: var(--text-secondary); border-radius: 6px; padding: 3px 8px; cursor: pointer; } .mc-tg.on { color: var(--text-primary); border-color: #fbbf24; }
+    .mc-pre { font: 10px var(--mono); color: var(--text-secondary); background: var(--bg); border-radius: 6px; padding: 6px; max-height: 200px; overflow: auto; white-space: pre-wrap; word-break: break-all; margin: 0; }
+    .mc-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+    .mc-cty { border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; display: flex; flex-direction: column; font-size: 11px; color: var(--text-secondary); } .mc-cty b { font: 800 11px var(--mono); color: var(--text-primary); } .mc-cty span { font: 700 12px var(--mono); color: #4ade80; } .mc-cty i { font: 10px var(--mono); font-style: normal; }
+    .mc-kv { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--text-muted); } .mc-kv b { color: var(--text-primary); font-family: var(--mono); }
+    .mc-note { font-size: 11.5px; color: var(--text-secondary); }
+    .mc-mut { font-size: 11px; color: var(--text-muted); }
+    .mc-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); } .mc-f .mc-mut { margin-right: auto; }
+    .mc-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .mc-btn.sm { padding: 3px 8px; font-size: 11px; } .mc-btn.go { background: linear-gradient(135deg,#ef4444,#fbbf24); color: #fff; border: 0; } .mc-btn.danger { color: #f87171; border-color: #f87171; }
+    .mc-btn.take { background: #dc2626; color: #fff; border: 0; font-size: 13px; padding: 6px 18px; } .mc-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 1000px) { .mc-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly InjectedFault[] _faults = { InjectedFault.Black, InjectedFault.Freeze, InjectedFault.Silence, InjectedFault.Loss };
+    private readonly float[] _pgmThumb = new float[144], _pvwThumb = new float[144];
+    private readonly McrEvent[] _ev = new McrEvent[40];
+    private int _evN;
+    private bool _autoDirector, _autoBypass = true, _autoRestore = true;
+    private string _manifest = "hls", _hls = "", _dash = "";
+    private string? _msg;
+    private ContentBeat[] _beats = Array.Empty<ContentBeat>();
+    private (double Start, double End)[] _dlg = Array.Empty<(double, double)>();
+    private double _total = 1;
+    private CancellationTokenSource? _ui;
+
+    protected override void OnInitialized()
+    {
+        Mcr.OnChange += OnServiceChanged;
+        Ssai.OnChange += OnServiceChanged;
+        Revenue.OnChange += OnServiceChanged;
+        Mcr.ConfigureDefault();
+        Revenue.SeedDemoBidders();
+        _autoDirector = Mcr.AutoDirector; _autoBypass = Mcr.AutoBypass; _autoRestore = Mcr.AutoRestore;
+        Refresh();
+        if (Mcr.DemoRunning) StartUi();
+    }
+
+    private IEnumerable<(string, int, string)> Views()
+    {
+        yield return ("PGM", Mcr.Program, "pgm");
+        yield return ("PVW", Mcr.Preview, "pvw");
+    }
+
+    private void ShowHls() => _manifest = "hls";
+    private void ShowDash() => _manifest = "dash";
+
+    private void Apply() { Mcr.AutoDirector = _autoDirector; Mcr.AutoBypass = _autoBypass; Mcr.AutoRestore = _autoRestore; }
+
+    private void StartAir()
+    {
+        Apply();
+        Mcr.StartDemo();
+        StartUi();
+    }
+
+    private void StopAir()
+    {
+        Mcr.StopDemo();
+        StopUi();
+        Refresh();
+    }
+
+    private void PlanFromScript()
+    {
+        var doc = Script.Current;
+        if (doc is null)
+        {
+            var u = CinematicUniverseTimelineEngine.DemoFranchise();
+            doc = SceneBeatSheetScriptGenerator.ParseFountain(u[0].Fountain);
+            var t = 0;
+            foreach (var s in doc.Scenes) { s.Seconds = 240; s.Tension = 30 + (t++ * 25) % 70; }
+            Ssai.Policy = Ssai.Policy with { MinSpacingSec = 120, GuardStartSec = 30 };
+        }
+        (_beats, _dlg) = ContextualServerSideAdInsertionEngine.Timeline(doc);
+        _total = 1;
+        foreach (var b in _beats) _total = Math.Max(_total, b.Start + b.Duration);
+        var plan = Ssai.PlanBreaks(_beats, _dlg);
+        var playlist = new System.Text.StringBuilder("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:6\n#EXT-X-PLAYLIST-TYPE:VOD\n");
+        for (var i = 0; i < (int)Math.Ceiling(_total / 6); i++) playlist.Append("#EXTINF:6.000,\nseg_").Append(i.ToString("0000", CultureInfo.InvariantCulture)).Append(".ts\n");
+        playlist.Append("#EXT-X-ENDLIST\n");
+        _hls = Ssai.InjectHls(playlist.ToString(), plan, DateTimeOffset.UtcNow);
+        _dash = Ssai.InjectDash("<?xml version=\"1.0\"?>\n<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\" type=\"static\">\n  <Period id=\"p0\">\n    <AdaptationSet mimeType=\"video/mp4\"/>\n  </Period>\n</MPD>\n", plan);
+        _msg = "🧭 SCTE-35 브레이크 " + plan.Count.ToString(CultureInfo.InvariantCulture) + "개 · HLS/DASH 인젝션 완료";
+    }
+
+    private void SimulateRevenue()
+    {
+        Span<int> viewers = stackalloc int[DynamicAdRevenueOptimizationEngine.Countries.Length];
+        var rnd = Random.Shared;
+        for (var i = 0; i < viewers.Length; i++) viewers[i] = rnd.Next(500, 20000);
+        var mood = _beats.Length > 0 ? SceneMood.Warm : SceneMood.Neutral;
+        var total = Revenue.SimulateBreak("live-" + DateTime.UtcNow.ToString("yyyyMMdd", CultureInfo.InvariantCulture), viewers, DynamicAdRevenueOptimizationEngine.ContextFor(mood));
+        _msg = "💰 브레이크 수익 $" + (total / 1e6).ToString("0.00", CultureInfo.InvariantCulture);
+    }
+
+    private void Refresh()
+    {
+        Mcr.CopyThumb(Mcr.Program, _pgmThumb);
+        Mcr.CopyThumb(Mcr.Preview, _pvwThumb);
+        _evN = Mcr.CopyEvents(_ev);
+    }
+
+    private static string FaultIcon(InjectedFault f) => f switch { InjectedFault.Black => "⬛", InjectedFault.Freeze => "🧊", InjectedFault.Silence => "🔇", _ => "📵" };
+    private static string Gray(float v) { var g = (int)Math.Clamp(v, 0, 255); return "rgb(" + g.ToString(CultureInfo.InvariantCulture) + "," + g.ToString(CultureInfo.InvariantCulture) + "," + Math.Min(255, g + 12).ToString(CultureInfo.InvariantCulture) + ")"; }
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.#", CultureInfo.InvariantCulture);
+
+    private void StartUi()
+    {
+        if (_ui is not null) return;
+        var cts = new CancellationTokenSource();
+        _ui = cts;
+        _ = UiLoopAsync(cts.Token);
+    }
+
+    private void StopUi()
+    {
+        var cts = Interlocked.Exchange(ref _ui, null);
+        if (cts is null) return;
+        try { cts.Cancel(); } catch (ObjectDisposedException) { }
+        cts.Dispose();
+    }
+
+    private async Task UiLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(150));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                Refresh();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("McrStudio.Ui", ex); }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Mcr.OnChange -= OnServiceChanged;
+        Ssai.OnChange -= OnServiceChanged;
+        Revenue.OnChange -= OnServiceChanged;
+        StopUi();
+    }
+}

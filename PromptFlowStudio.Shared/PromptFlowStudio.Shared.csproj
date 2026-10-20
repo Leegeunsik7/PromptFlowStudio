@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+
+  <!-- ══════════════════════════════════════════════════════════════════════
+       PromptFlow Studio v4.1 · 공용 Razor Class Library
+       WinForms 데스크톱 호스트와 MAUI 모바일 호스트가 공유하는 단일 코드 자산.
+       Blazor 컴포넌트/페이지/wwwroot 정적자산 + 크로스 플랫폼 서비스 시임을 담는다.
+       ⚠ net8.0(플랫폼 중립) — net8.0-windows/net8.0-android 양측에서 참조 가능.
+       ══════════════════════════════════════════════════════════════════ -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>PromptFlowStudio.Shared</RootNamespace>
+    <AssemblyName>PromptFlowStudio.Shared</AssemblyName>
+    <AddRazorSupportForMvc>false</AddRazorSupportForMvc>
+    <StaticWebAssetBasePath>_pfs</StaticWebAssetBasePath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 데스크톱(net8.0-windows)/MAUI(android·ios) 전용 공용 라이브러리 — browser(WASM) 타깃 아님(암호화 API browser 미지원 CA1416 회피).
+         v16.5.1: FrameworkReference Microsoft.AspNetCore.App 은 android/ios 런타임 팩이 없어 모바일 빌드 NETSDK1082 →
+         실사용 범위(Components·Web·Virtualization·DI)만 패키지 참조로 축소. 양 호스트 WebView 패키지가 이미 전이 의존하는 동일 패키지(신규 의존 0). -->
+    <PackageReference Include="Microsoft.AspNetCore.Components.Web" Version="8.0.10" />
+  </ItemGroup>
+
+</Project>

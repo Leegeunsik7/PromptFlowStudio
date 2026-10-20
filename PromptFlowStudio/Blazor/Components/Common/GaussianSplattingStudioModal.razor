@@ -1,0 +1,374 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Neural3d
+@using PromptFlowStudio.Services.MediaPipeline
+@implements IDisposable
+@inject AiGaussianSplattingRasterizerEngine Ras
+@inject DynamicNeRfToSplattingConverter Conv
+@inject NeuralCameraPoseRelightingEngine Pose
+@inject GaussianSplattingStudioRunner Runner
+@inject ILocalMediaService Media
+
+@*
+    [PromptFlow Studio v16.58.0] 🧊 AI 3DGS & NeRF 실시간 스튜디오 — 3D 뷰포트(추적 포즈 · 리라이트 렌더) · 가우시안 밀도/클리핑/스케일 · NeRF 변환 해상도 ·
+    광원 휠(방위 클릭 · 고도 · 강도 · 색온도 · 환경광 · 그림자) · HDR 환경맵 · 3DGS PLY 입출력 · 다시점 사진 복원 · 스트림/추적 통계.
+*@
+
+<div class="gs-scrim" @onclick="Close">
+    <div class="gs-modal" @onclick:stopPropagation="true">
+        <div class="gs-h">
+            <div>
+                <div class="gs-title">🧊 AI 3DGS &amp; NeRF 실시간 스튜디오</div>
+                <div class="gs-sub">동적 <b>NeRF</b>를 경량 <b>3D 가우시안 스플래팅</b>으로 실시간 변환·스트리밍하고, <b>서브밀리미터 카메라 추적</b>과 <b>HDR 환경광 리라이팅</b>을 합성해 렌더합니다.</div>
+            </div>
+            <button class="gs-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="gs-bar">
+            <span class="gs-chip @(Runner.IsRunning ? "ok" : null)">@(Runner.IsRunning ? "● 라이브" : "○ 정지") · t=@(F1((float)Runner.TimeSec))s</span>
+            <span class="gs-chip">가우시안 @(Runner.Scene.Count) · 가시 @(Ras.LastVisible) · 타일 인스턴스 @(Ras.LastInstances)</span>
+            <span class="gs-chip">라스터 @(F1((float)Ras.LastRenderMs))ms · 변환 @(F1((float)Conv.LastConvertMs))ms</span>
+            <span class="gs-chip @(Runner.LastPackets == 0 && Runner.StaticScene is null && Runner.FrameSeq > 0 ? "hot" : null)">스트림 @((Conv.LastBytes / 1024.0).ToString("0", CultureInfo.InvariantCulture))KB · @(Runner.LastPackets)패킷 · @(Conv.Codec.LastKey ? "키" : "델타")</span>
+            <span class="gs-chip @(Runner.TrackErrorMm < 1 ? "ok" : "hot")">추적 오차 @(Runner.TrackErrorMm.ToString("0.000", CultureInfo.InvariantCulture))mm · RMS @(Pose.LastRmsPx.ToString("0.000", CultureInfo.InvariantCulture))px</span>
+        </div>
+
+        <div class="gs-main">
+            <div class="gs-col wide">
+                <div class="gs-card">
+                    <div class="gs-row gs-between">
+                        <div class="gs-sec">🎥 3D 뷰포트 @(Runner.StaticScene is null ? "· 동적 NeRF 스트림" : "· 정적 장면")</div>
+                        <div class="gs-row">
+                            @if (Runner.IsRunning)
+                            {
+                                <button class="gs-btn hot" @onclick="Runner.Stop">⏸ 정지</button>
+                            }
+                            else
+                            {
+                                <button class="gs-btn on" @onclick="Runner.Start">▶ 라이브</button>
+                            }
+                            <button class="gs-btn" disabled="@(Runner.IsRunning)" @onclick="Step">⏩ 1프레임</button>
+                        </div>
+                    </div>
+                    @if (_frameUrl is not null)
+                    {
+                        <img class="gs-view" src="@(_frameUrl)" alt="3DGS 뷰포트" />
+                    }
+                    <div class="gs-grid3">
+                        <label>입자 밀도 <b>@(P(Runner.Density))</b><input type="range" min="0.05" max="1" step="0.05" value="@(F2(Runner.Density))" @oninput="e => { Runner.Density = Parse(e, Runner.Density); Refresh(); }" /></label>
+                        <label>근 클리핑 <b>@(F2(Runner.NearClip))m</b><input type="range" min="0.05" max="3" step="0.05" value="@(F2(Runner.NearClip))" @oninput="e => { Runner.NearClip = Parse(e, Runner.NearClip); Refresh(); }" /></label>
+                        <label>원 클리핑 <b>@(F1(Runner.FarClip))m</b><input type="range" min="1" max="20" step="0.5" value="@(F1(Runner.FarClip))" @oninput="e => { Runner.FarClip = Parse(e, Runner.FarClip); Refresh(); }" /></label>
+                        <label>스케일 배율 <b>@(F2(Runner.ScaleMultiplier))×</b><input type="range" min="0.3" max="2" step="0.05" value="@(F2(Runner.ScaleMultiplier))" @oninput="e => { Runner.ScaleMultiplier = Parse(e, Runner.ScaleMultiplier); Refresh(); }" /></label>
+                        <label>NeRF 해상도 <b>@(Runner.Resolution)³</b><input type="range" min="16" max="64" step="4" value="@(Runner.Resolution)" @onchange="e => { Runner.Resolution = (int)Parse(e, Runner.Resolution); Refresh(); }" /></label>
+                        <label>오빗 속도 <b>@(F0(Runner.OrbitSpeedDeg))°/s</b><input type="range" min="0" max="60" step="2" value="@(F0(Runner.OrbitSpeedDeg))" @oninput="e => Runner.OrbitSpeedDeg = Parse(e, Runner.OrbitSpeedDeg)" /></label>
+                        <label>카메라 고도 <b>@(F0(Runner.ElevationDeg))°</b><input type="range" min="-10" max="80" step="1" value="@(F0(Runner.ElevationDeg))" @oninput="e => { Runner.ElevationDeg = Parse(e, Runner.ElevationDeg); Refresh(); }" /></label>
+                        <label>카메라 거리 <b>@(F2(Runner.Distance))m</b><input type="range" min="1" max="6" step="0.1" value="@(F2(Runner.Distance))" @oninput="e => { Runner.Distance = Parse(e, Runner.Distance); Refresh(); }" /></label>
+                        <label>센서 노이즈 <b>@(F2(Runner.SensorNoisePx))px</b><input type="range" min="0" max="2" step="0.05" value="@(F2(Runner.SensorNoisePx))" @oninput="e => Runner.SensorNoisePx = Parse(e, Runner.SensorNoisePx)" /></label>
+                    </div>
+                    <div class="gs-row">
+                        <button class="gs-btn sm @(Runner.Animate ? "on" : null)" @onclick="() => Runner.Animate = !Runner.Animate">🎞 동적 시간 @(Runner.Animate ? "ON" : "OFF")</button>
+                        <button class="gs-btn sm @(Runner.Relighting ? "on" : null)" @onclick="() => { Runner.Relighting = !Runner.Relighting; Refresh(); }">💡 리라이트 @(Runner.Relighting ? "ON" : "OFF")</button>
+                        @if (Runner.StaticScene is not null)
+                        {
+                            <button class="gs-btn sm" @onclick="() => { Runner.StaticScene = null; Refresh(); }">🔁 동적 NeRF 스트림 복귀</button>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="gs-col">
+                <div class="gs-card">
+                    <div class="gs-sec">🔆 광원 휠</div>
+                    <div class="gs-wheel-wrap">
+                        <svg class="gs-wheel" viewBox="-100 -100 200 200" @onclick="OnWheel">
+                            <defs>
+                                <radialGradient id="gsw" cx="50%" cy="50%" r="50%">
+                                    <stop offset="0%" stop-color="#fef3c7" />
+                                    <stop offset="100%" stop-color="#1e293b" />
+                                </radialGradient>
+                            </defs>
+                            <circle r="92" fill="url(#gsw)" stroke="#475569" stroke-width="2" />
+                            @for (var e = 30; e < 90; e += 30)
+                            {
+                                <circle r="@(F1(92f * (1 - e / 90f)))" fill="none" stroke="#64748b" stroke-width="0.6" stroke-dasharray="3 3" />
+                            }
+                            <line x1="0" y1="-92" x2="0" y2="92" stroke="#64748b" stroke-width="0.5" />
+                            <line x1="-92" y1="0" x2="92" y2="0" stroke="#64748b" stroke-width="0.5" />
+                            <g><text x="-4" y="-80" class="gs-svgt">N</text></g>
+                            <g><text x="82" y="4" class="gs-svgt">E</text></g>
+                            <circle cx="@(F1(SunX))" cy="@(F1(SunY))" r="9" fill="@(SunHex)" stroke="#fff" stroke-width="2" />
+                        </svg>
+                    </div>
+                    <div class="gs-grid1">
+                        <label>방위 <b>@(F0(_rig.AzimuthDeg))°</b><input type="range" min="0" max="359" step="1" value="@(F0(_rig.AzimuthDeg))" @oninput="e => SetRig(_rig with { AzimuthDeg = Parse(e, _rig.AzimuthDeg) })" /></label>
+                        <label>고도 <b>@(F0(_rig.ElevationDeg))°</b><input type="range" min="-5" max="89" step="1" value="@(F0(_rig.ElevationDeg))" @oninput="e => SetRig(_rig with { ElevationDeg = Parse(e, _rig.ElevationDeg) })" /></label>
+                        <label>강도 <b>@(F2(_rig.Intensity))</b><input type="range" min="0" max="6" step="0.1" value="@(F2(_rig.Intensity))" @oninput="e => SetRig(_rig with { Intensity = Parse(e, _rig.Intensity) })" /></label>
+                        <label>색온도 <b>@(F0(_rig.Kelvin))K</b><input type="range" min="2000" max="12000" step="100" value="@(F0(_rig.Kelvin))" @oninput="e => SetRig(_rig with { Kelvin = Parse(e, _rig.Kelvin) })" /></label>
+                        <label>환경광 <b>@(F2(_rig.Ambient))</b><input type="range" min="0" max="2" step="0.05" value="@(F2(_rig.Ambient))" @oninput="e => SetRig(_rig with { Ambient = Parse(e, _rig.Ambient) })" /></label>
+                        <label>그림자 <b>@(P(_rig.ShadowStrength))</b><input type="range" min="0" max="1" step="0.05" value="@(F2(_rig.ShadowStrength))" @oninput="e => SetRig(_rig with { ShadowStrength = Parse(e, _rig.ShadowStrength) })" /></label>
+                    </div>
+                    <div class="gs-drop">
+                        <InputFile class="gs-drop-input" OnChange="OnHdr" accept=".hdr" />
+                        <span>🌅 HDR 환경맵(.hdr) 불러오기</span>
+                    </div>
+                    <div class="gs-mut">리라이트 @(F1((float)Pose.LastRelightMs))ms · 태양 (@(F2(Pose.SunDirection.X)), @(F2(Pose.SunDirection.Y)), @(F2(Pose.SunDirection.Z)))</div>
+                </div>
+            </div>
+
+            <div class="gs-col">
+                <div class="gs-card">
+                    <div class="gs-sec">📥 장면 입력</div>
+                    <div class="gs-drop">
+                        <InputFile class="gs-drop-input" OnChange="OnPly" accept=".ply" />
+                        <span>🧊 3DGS PLY 불러오기(Inria 표준)</span>
+                    </div>
+                    <div class="gs-drop">
+                        <InputFile class="gs-drop-input" OnChange="OnViews" accept="image/*" multiple />
+                        <span>📸 다시점 사진(4장+ · 오빗 순서) → 가우시안 복원</span>
+                    </div>
+                    <button class="gs-btn" disabled="@(Runner.Scene.Count == 0)" @onclick="ExportPly">💾 현재 장면 PLY 내보내기</button>
+                    @if (_message is not null)
+                    {
+                        <div class="gs-msg">@(_message)</div>
+                    }
+                </div>
+                <div class="gs-card">
+                    <div class="gs-sec">📡 NeRF→3DGS 스트림</div>
+                    <div class="gs-kv">
+                        <span>프레임</span><b>@(Conv.Frames) · 키 간격 @(Conv.Codec.KeyInterval)</b>
+                        <span>추가/갱신 · 제거</span><b>@(Conv.Codec.LastUpserts) · @(Conv.Codec.LastRemoves)</b>
+                        <span>누적 전송</span><b>@((Conv.BytesStreamed / 1048576.0).ToString("0.0", CultureInfo.InvariantCulture))MB · @(Conv.PacketsSent)패킷</b>
+                        <span>임계/솎음</span><b>α≥@(F2(Conv.LastThreshold)) · ×@(Conv.LastStride)</b>
+                        <span>추적</span><b>@(Pose.Tracks)회 · @(F1((float)Pose.LastTrackMicros))µs</b>
+                    </div>
+                    @if (Runner.LastPackets == 0 && Runner.StaticScene is null && Runner.FrameSeq > 0)
+                    {
+                        <div class="gs-msg warn">키 프레임이 MTU 패킷 상한(@(PromptFlowStudio.Services.Teleport.TeleportPacket.MaxFragments)조각)을 초과 — 해상도를 낮추세요.</div>
+                    }
+                </div>
+                <div class="gs-act">@(Runner.LastAction ?? Conv.LastAction ?? Pose.LastAction ?? Ras.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .gs-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .gs-modal { width: min(1560px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .gs-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #22d3ee 16%, var(--card)), color-mix(in srgb, #6366f1 14%, var(--card))); }
+    .gs-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .gs-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .gs-sub b { color: var(--text-primary); }
+    .gs-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .gs-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); }
+    .gs-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .gs-chip.ok { color: #22c55e; border-color: #22c55e; }
+    .gs-chip.hot { color: #f97316; border-color: #f97316; }
+    .gs-main { display: grid; grid-template-columns: 1.6fr 0.9fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .gs-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .gs-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .gs-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); }
+    .gs-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .gs-between { justify-content: space-between; }
+    .gs-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .gs-btn.on { background: color-mix(in srgb, #22d3ee 22%, transparent); border-color: #22d3ee; }
+    .gs-btn.hot { background: color-mix(in srgb, #f97316 22%, transparent); border-color: #f97316; }
+    .gs-btn.sm { font-size: 11px; padding: 3px 8px; }
+    .gs-btn:disabled { opacity: .45; cursor: default; }
+    .gs-view { width: 100%; aspect-ratio: 16 / 9; border-radius: 10px; image-rendering: pixelated; background: #000; border: 1px solid var(--line); }
+    .gs-grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 12px; }
+    .gs-grid1 { display: grid; grid-template-columns: 1fr; gap: 4px; }
+    .gs-grid3 label, .gs-grid1 label { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 2px; }
+    .gs-grid3 b, .gs-grid1 b { color: var(--text-primary); font-family: var(--mono); }
+    .gs-wheel-wrap { display: flex; justify-content: center; }
+    .gs-wheel { width: 180px; height: 180px; cursor: crosshair; }
+    .gs-svgt { font-size: 10px; fill: #e2e8f0; font-weight: 700; }
+    .gs-drop { position: relative; border: 1.5px dashed var(--line); border-radius: 10px; padding: 10px; font-size: 12px; color: var(--text-muted); text-align: center; }
+    .gs-drop:hover { border-color: var(--accent); }
+    .gs-drop-input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+    .gs-drop span { pointer-events: none; }
+    .gs-kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 11px; }
+    .gs-kv span { color: var(--text-muted); }
+    .gs-kv b { color: var(--text-primary); font-family: var(--mono); font-weight: 600; }
+    .gs-msg { font-size: 11px; color: var(--text-secondary); background: var(--card-2); border-radius: 8px; padding: 6px 8px; }
+    .gs-msg.warn { color: #f97316; }
+    .gs-mut { font-size: 10.5px; color: var(--text-muted); font-family: var(--mono); }
+    .gs-act { font-size: 11px; color: var(--text-muted); font-family: var(--mono); padding: 4px 2px; }
+    @@media (max-width: 1200px) { .gs-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly CancellationTokenSource _life = new();
+    private readonly byte[] _frame = new byte[GaussianSplattingStudioRunner.FrameWidth * GaussianSplattingStudioRunner.FrameHeight * 3];
+    private string? _frameUrl, _message;
+    private long _shownSeq = -1;
+    private LightRig _rig;
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        _rig = Pose.Light;
+        Runner.OnChange += OnServiceChanged;
+        Pose.OnChange += OnServiceChanged;
+        if (Runner.FrameSeq == 0) Runner.TickOnce(0);
+        Refresh();
+        _timer = new System.Threading.Timer(_ => { if (Runner.IsRunning && Runner.FrameSeq != _shownSeq) _ = InvokeAsync(() => { Refresh(); StateHasChanged(); }); }, null, 100, 100);
+    }
+
+    private static string F0(float v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(float v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(float v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string P(float v) => (v * 100f).ToString("0", CultureInfo.InvariantCulture) + "%";
+
+    private static float Parse(ChangeEventArgs e, float fallback)
+        => float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    private float SunR => 92f * (1f - Math.Clamp(_rig.ElevationDeg, 0f, 90f) / 90f);
+    private float SunX => MathF.Sin(_rig.AzimuthDeg * MathF.PI / 180f) * SunR;
+    private float SunY => -MathF.Cos(_rig.AzimuthDeg * MathF.PI / 180f) * SunR;
+    private string SunHex
+    {
+        get
+        {
+            var c = NeuralCameraPoseRelightingEngine.KelvinToRgb(_rig.Kelvin);
+            return "rgb(" + ((int)(c.X * 255)).ToString(CultureInfo.InvariantCulture) + "," + ((int)(c.Y * 255)).ToString(CultureInfo.InvariantCulture) + "," + ((int)(c.Z * 255)).ToString(CultureInfo.InvariantCulture) + ")";
+        }
+    }
+
+    /// <summary>휠 클릭 → 방위(각) · 고도(반경) — SVG 180px ↔ viewBox 200.</summary>
+    private void OnWheel(MouseEventArgs e)
+    {
+        var x = (float)e.OffsetX / 180f * 200f - 100f;
+        var y = (float)e.OffsetY / 180f * 200f - 100f;
+        var r = MathF.Min(92f, MathF.Sqrt(x * x + y * y));
+        var az = MathF.Atan2(x, -y) * 180f / MathF.PI;
+        if (az < 0) az += 360f;
+        SetRig(_rig with { AzimuthDeg = az, ElevationDeg = 90f * (1f - r / 92f) });
+    }
+
+    private void SetRig(LightRig rig)
+    {
+        _rig = rig;
+        Runner.SetLight(rig);
+        if (!Runner.IsRunning) { Runner.TickOnce(0); Refresh(); }
+    }
+
+    private void Step()
+    {
+        Runner.TickOnce(1.0 / GaussianSplattingStudioRunner.TickHz);
+        Refresh();
+    }
+
+    private void Refresh()
+    {
+        if (!Runner.IsRunning && Runner.FrameSeq == _shownSeq) Runner.TickOnce(0);
+        Runner.CopyFrame(_frame);
+        _frameUrl = PromptFlowStudio.Services.Spatial.SpatialImageCodec.BmpDataUrl(_frame, GaussianSplattingStudioRunner.FrameWidth, GaussianSplattingStudioRunner.FrameHeight);
+        _shownSeq = Runner.FrameSeq;
+    }
+
+    private async Task<string?> SaveAsync(IBrowserFile f, string sub)
+    {
+        var dir = Path.Combine(Media.MediaRoot, "_uploads", sub);
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, Guid.NewGuid().ToString("N") + Path.GetExtension(f.Name));
+        await using var src = f.OpenReadStream(UnlimitedMediaStreamBufferPipeline.DefaultMaxBytes, _life.Token);
+        await using var dst = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16, FileOptions.Asynchronous);
+        await src.CopyToAsync(dst, _life.Token);
+        return path;
+    }
+
+    private async Task OnPly(InputFileChangeEventArgs e)
+    {
+        try
+        {
+            var path = await SaveAsync(e.File, "3dgs");
+            if (path is null) return;
+            var scene = new GaussianScene();
+            var n = await Task.Run(() => AiGaussianSplattingRasterizerEngine.ImportPly(path, scene));
+            if (n < 0) { _message = "❌ 지원하지 않는 PLY(binary_little_endian float 3DGS 필요)"; return; }
+            Runner.StaticScene = scene;
+            _message = "✅ PLY 가우시안 " + n.ToString(CultureInfo.InvariantCulture) + "개 로드";
+            Refresh();
+        }
+        catch (Exception ex) when (ex is IOException or FormatException or OperationCanceledException) { _message = "❌ PLY 로드 실패: " + ex.Message; }
+    }
+
+    private async Task OnHdr(InputFileChangeEventArgs e)
+    {
+        try
+        {
+            var path = await SaveAsync(e.File, "hdr");
+            if (path is null) return;
+            var ok = await Task.Run(() => Pose.LoadHdr(path));
+            _message = ok ? "🌅 HDR 환경맵 적용" : "❌ HDR 형식 오류";
+            Refresh();
+        }
+        catch (Exception ex) when (ex is IOException or OperationCanceledException) { _message = "❌ HDR 로드 실패: " + ex.Message; }
+    }
+
+    /// <summary>다시점 사진 → 공통 해상도(장변 128) RGB → 오빗 포즈 가정 · 단안 깊이 → 복원.</summary>
+    private async Task OnViews(InputFileChangeEventArgs e)
+    {
+        var files = e.GetMultipleFiles(64);
+        if (files.Count < 4) { _message = "❌ 최소 4장의 다시점 사진이 필요합니다."; return; }
+        _message = "⏳ " + files.Count.ToString(CultureInfo.InvariantCulture) + "장 분석 중…";
+        StateHasChanged();
+        try
+        {
+            var paths = new List<string>();
+            foreach (var f in files) if (await SaveAsync(f, "multiview") is { } p) paths.Add(p);
+            var rep = await Task.Run(() =>
+            {
+                var views = new List<AiGaussianSplattingRasterizerEngine.SplatView>();
+                int w0 = 0, h0 = 0;
+                for (var k = 0; k < paths.Count; k++)
+                {
+                    var probe = UnlimitedMediaStreamBufferPipeline.Probe(paths[k]);
+                    var img = UnlimitedMediaStreamBufferPipeline.AnalyzeImage(paths[k], probe, 128, out _);
+                    if (img is not { } im) continue;
+                    if (w0 == 0) { w0 = im.W; h0 = im.H; }
+                    if (im.W != w0 || im.H != h0) continue;
+                    var cam = SplatCamera.Orbit(new System.Numerics.Vector3(0, 0.3f, 0), k * 360f / paths.Count, 15f, 2.5f, 55f, im.W, im.H);
+                    views.Add(new(im.Rgb, cam));
+                }
+                var scene = new GaussianScene();
+                var r = Ras.Reconstruct(views, scene, voxel: 0.04f, step: 2, depthTolerance: 0.15f, nearMeters: 1.2f, farMeters: 4f, ct: _life.Token);
+                return (r, scene);
+            }, _life.Token);
+            if (rep.scene.Count == 0) { _message = "⚠ 복원 결과 없음 — 시점 간 겹침/조명 일관성을 확인하세요."; return; }
+            Runner.StaticScene = rep.scene;
+            _message = "✅ " + rep.r.Message + " (단안 깊이 추정 · 오빗 포즈 가정)";
+            Refresh();
+        }
+        catch (Exception ex) when (ex is IOException or OperationCanceledException or ArgumentException) { _message = "❌ 복원 실패: " + ex.Message; }
+    }
+
+    private async Task ExportPly()
+    {
+        try
+        {
+            var dir = Path.Combine(Media.MediaRoot, "exports");
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, "3dgs_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture) + ".ply");
+            var snap = new GaussianScene();
+            Runner.SnapshotScene(snap);
+            var n = await Task.Run(() => AiGaussianSplattingRasterizerEngine.ExportPly(snap, path));
+            _message = "💾 " + n.ToString(CultureInfo.InvariantCulture) + " 가우시안 → " + path;
+        }
+        catch (IOException ex) { _message = "❌ 내보내기 실패: " + ex.Message; }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(() => { if (Runner.IsRunning) Refresh(); StateHasChanged(); });
+
+    public void Dispose()
+    {
+        _timer?.Dispose();
+        _life.Cancel();
+        _life.Dispose();
+        Runner.OnChange -= OnServiceChanged;
+        Pose.OnChange -= OnServiceChanged;
+    }
+}

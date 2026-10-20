@@ -1,0 +1,294 @@
+@page "/login"
+@layout EmptyLayout
+@implements IDisposable
+@inject MemberRegistryService Members
+@inject SessionState Session
+@inject NavigationManager Nav
+
+@* [PromptFlow Studio] 생성 스튜디오 로그인 — 프롬프트→영상 워크플로우 테마.
+   좌: 브랜딩 + 생성 파이프라인(프롬프트→스토리보드→모션→렌더→영상) 플로우 + 실시간 지표 HUD /
+   우: 접속 카드. 자립형 SVG·CSS + 서버 타이머(외부 라이브러리 0). 회원 원장 실인증 · BlazorWebView 단일 인터랙티브. *@
+
+<div class="lg-wrap">
+    @* v15.7.0 OLED Neon Flow 배경 영상 — 파일 미동봉 시 기존 그라디언트 배경이 그대로 노출(Graceful). *@
+    <video class="lg-bgv" src="media/oled_flow_bg.mp4" autoplay loop muted playsinline preload="auto" disablepictureinpicture aria-hidden="true"></video>
+    <div class="lg-bgv-veil" aria-hidden="true"></div>
+    <div class="lg-scanlines" aria-hidden="true"></div>
+
+    <div class="lg-brand">
+        <div class="lg-orb a" aria-hidden="true"></div>
+        <div class="lg-orb b" aria-hidden="true"></div>
+
+        <div class="lg-brand-in">
+            <div class="lg-tele">
+                <span class="lg-arm"><span class="lg-arm-dot"></span>GENERATION ENGINE LIVE</span>
+                @foreach (var t in _ticks)
+                {
+                    <span class="lg-t-i"><i>@t.Label</i><b>@t.Val.ToString(t.Fmt, Ci)@t.Unit</b></span>
+                }
+            </div>
+
+            <div class="lg-brandrow">
+                <div class="lg-logobox">
+                    <img class="lg-ang" src="img/ang_logo_w.png" alt="" aria-hidden="true" draggable="false" />
+                    <span class="lg-lb-ring"></span>
+                </div>
+                <div>
+                    <div class="lg-logo"><span class="lg-logo-t">PromptFlow Studio</span></div>
+                    <div class="lg-logo-sub">PROMPT · FLOW · VIDEO</div>
+                </div>
+            </div>
+
+            <div class="lg-h1">프롬프트 한 줄이, <span class="lg-em">영상</span>이 되기까지</div>
+            <div class="lg-sub">입력부터 최종 렌더까지 — 생성 파이프라인이 하나의 흐름으로 이어지는 AI 영상 제작 스튜디오</div>
+
+            @* ── 생성 파이프라인 플로우 ── *@
+            <div class="lg-pipe" aria-hidden="true">
+                <div class="lg-stage"><span class="lg-stage-ic">✍️</span><b>프롬프트</b></div>
+                <div class="lg-wire"></div>
+                <div class="lg-stage"><span class="lg-stage-ic">🎞️</span><b>스토리보드</b></div>
+                <div class="lg-wire"></div>
+                <div class="lg-stage"><span class="lg-stage-ic">🎥</span><b>모션</b></div>
+                <div class="lg-wire"></div>
+                <div class="lg-stage"><span class="lg-stage-ic">⚙️</span><b>렌더</b></div>
+                <div class="lg-wire"></div>
+                <div class="lg-stage final"><span class="lg-stage-ic">🎬</span><b>영상</b></div>
+            </div>
+
+            <div class="lg-pillars">
+                <div class="lg-pill"><span class="lg-pill-ic">✨</span><div><b>텍스트→영상 생성</b><small>프롬프트에서 바로 영상으로</small></div></div>
+                <div class="lg-pill"><span class="lg-pill-ic">🎞️</span><div><b>스토리보드 구성</b><small>장면·컷을 흐름으로 정리</small></div></div>
+                <div class="lg-pill"><span class="lg-pill-ic">🎥</span><div><b>카메라·모션 제어</b><small>움직임과 워크를 지정</small></div></div>
+                <div class="lg-pill"><span class="lg-pill-ic">⚡</span><div><b>원클릭 렌더</b><small>고해상 영상 자동 출력</small></div></div>
+            </div>
+
+            <div class="lg-badges">
+                <span class="lg-badge ok">⚡ 실시간 생성 파이프라인</span>
+                <span class="lg-badge">🔒 로컬 서명 라이선스</span>
+                <span class="lg-badge">📋 오프라인 운용</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="lg-panel">
+        <span class="lg-pc tl"></span><span class="lg-pc tr"></span><span class="lg-pc bl"></span><span class="lg-pc br"></span>
+        <div class="lg-pscan" aria-hidden="true"></div>
+
+        <div class="lg-p-status"><span class="lg-p-dot"></span>SECURE · OFFLINE · RSA-2048<span class="lg-p-armed">● READY</span></div>
+
+        <div class="lg-p-head">
+            <div class="lg-p-title">🎬 생성 스튜디오 로그인</div>
+            <div class="lg-p-sub">인가된 사용자만 스튜디오에 접근할 수 있습니다.</div>
+        </div>
+
+        @if (_justRegistered is { Length: > 0 })
+        {
+            <div class="lg-reg-ok">🎉 가입 완료(<b>@_justRegistered</b>) · 아이디가 자동 입력되었습니다. 비밀번호를 입력해 로그인하세요.</div>
+        }
+
+        <label class="lg-lbl">아이디</label>
+        <div class="lg-inwrap"><span class="lg-in-ic">👤</span><input class="lg-in2" placeholder="USER ID" @bind="_id" @bind:event="oninput" @onkeydown="OnKey" /></div>
+        <label class="lg-lbl">비밀번호</label>
+        <div class="lg-inwrap"><span class="lg-in-ic">🔒</span><input class="lg-in2" type="password" placeholder="••••••••" @bind="_pw" @bind:event="oninput" @onkeydown="OnKey" /></div>
+
+        @if (_error is { Length: > 0 })
+        {
+            <div class="lg-err">⚠ @_error</div>
+        }
+
+        <button class="lg-btn" @onclick="DoLogin"><span>스튜디오 입장</span><span class="lg-arrow">➔</span></button>
+        <button class="lg-alt" @onclick="() => _showRegister = true">📝 신규 회원가입</button>
+        <button class="lg-find" @onclick="() => _showFind = true">아이디 · 비밀번호를 잊으셨나요?</button>
+
+        <div class="lg-trust"><span>🔒 오프라인 서명 검증</span><span>🎬 생성 워크플로우</span><span>📋 에어갭 격리</span></div>
+        <div class="lg-foot">© ANG Technology · PromptFlow Studio</div>
+    </div>
+</div>
+
+<RegisterModal Visible="_showRegister" OnComplete="OnRegistered" OnClose="() => _showRegister = false" />
+<FindAccountModal Visible="_showFind" OnClose="() => _showFind = false" OnResolved="OnAccountResolved" />
+
+<style>
+    .lg-wrap{position:fixed;inset:0;display:grid;grid-template-columns:1.15fr .85fr;gap:0;color:#cbd5f0;font-family:'Pretendard Variable','Pretendard','Segoe UI','Malgun Gothic',system-ui,sans-serif;
+        width:100vw;height:100dvh;overflow-x:hidden;overflow-y:auto;
+        background:radial-gradient(1200px 800px at 18% 16%,#1c1740 0%,#120e2a 46%,#08060f 100%),linear-gradient(135deg,#08060f,#140f2c)}
+    .lg-bgv{position:fixed;inset:0;width:100vw;height:100dvh;object-fit:cover;z-index:0;pointer-events:none;transform:translateZ(0);will-change:transform;backface-visibility:hidden}
+    .lg-bgv-veil{position:fixed;inset:0;z-index:0;pointer-events:none;background:radial-gradient(120% 90% at 70% 50%,rgba(8,6,15,.18),rgba(8,6,15,.66))}
+    .lg-scanlines{position:fixed;inset:0;z-index:4;pointer-events:none;opacity:.22;
+        background:repeating-linear-gradient(0deg,rgba(124,108,255,.05) 0,rgba(124,108,255,.05) 1px,transparent 2px,transparent 4px)}
+    .lg-scanlines::after{content:'';position:absolute;left:0;right:0;height:150px;
+        background:linear-gradient(180deg,transparent,rgba(124,108,255,.07),transparent);animation:lgSweepY 6.5s linear infinite}
+    @@keyframes lgSweepY{0%{top:-150px}100%{top:100%}}
+
+    .lg-brand{position:relative;display:flex;flex-direction:column;justify-content:center;padding:6vh 6vw;overflow:hidden}
+    .lg-orb{position:absolute;border-radius:50%;filter:blur(70px);pointer-events:none;z-index:0}
+    .lg-orb.a{right:-60px;top:-40px;width:340px;height:340px;
+        background:conic-gradient(from 0deg,#7c6cff,#22d3ee,#f472b6,#7c6cff);opacity:.26;animation:lgSpin 20s linear infinite}
+    .lg-orb.b{left:-80px;bottom:-60px;width:280px;height:280px;background:radial-gradient(circle,#22d3ee,transparent 68%);opacity:.16}
+    @@keyframes lgSpin{to{transform:rotate(360deg)}}
+    .lg-brand-in{position:relative;z-index:2;max-width:640px}
+
+    .lg-tele{display:flex;align-items:center;gap:9px 16px;flex-wrap:wrap;margin-bottom:24px;padding:9px 14px;border-radius:12px;
+        background:linear-gradient(180deg,rgba(30,24,60,.72),rgba(14,11,30,.5));border:1px solid rgba(124,108,255,.24);
+        box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 6px 20px rgba(0,0,0,.3);backdrop-filter:blur(6px);max-width:42em}
+    .lg-arm{display:inline-flex;align-items:center;gap:7px;font:800 10.5px/1 'Roboto Mono',Consolas,monospace;letter-spacing:.08em;color:#a78bfa}
+    .lg-arm-dot{width:8px;height:8px;border-radius:50%;background:#7c6cff;box-shadow:0 0 8px #7c6cff;animation:lgPulse 1.4s ease-in-out infinite}
+    @@keyframes lgPulse{0%,100%{opacity:.35}50%{opacity:1}}
+    .lg-t-i{display:inline-flex;align-items:baseline;gap:5px;font-family:'Roboto Mono',Consolas,monospace}
+    .lg-t-i i{font-style:normal;font-size:9px;font-weight:700;letter-spacing:.04em;color:#8b8ab8}
+    .lg-t-i b{font-size:12px;font-weight:800;color:#eef0ff;font-variant-numeric:tabular-nums}
+
+    .lg-brandrow{display:flex;align-items:center;gap:14px;margin-bottom:22px}
+    .lg-logobox{position:relative;width:58px;height:58px;display:grid;place-items:center;border-radius:16px;background:linear-gradient(180deg,#241a4a,#140f2c);border:1px solid rgba(124,108,255,.45);box-shadow:0 10px 30px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.08)}
+    .lg-lb-ring{position:absolute;inset:-6px;border-radius:20px;border:1px solid rgba(124,108,255,.4);animation:lgRing 2.6s ease-out infinite}
+    @@keyframes lgRing{0%{transform:scale(.9);opacity:.8}100%{transform:scale(1.18);opacity:0}}
+    .lg-ang{width:38px;height:auto;display:block;position:relative;z-index:1}
+    .lg-logo{font-size:25px;font-weight:900;letter-spacing:-.3px;line-height:1;margin:0}
+    .lg-logo-t{background:linear-gradient(90deg,#a78bfa,#22d3ee,#f472b6);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;filter:drop-shadow(0 0 16px rgba(124,108,255,.35))}
+    .lg-logo-sub{font:800 9.5px/1 'Roboto Mono',Consolas,monospace;letter-spacing:.2em;color:#8b8ab8;margin-top:6px;opacity:.95}
+    .lg-h1{font-size:clamp(26px,3.9vw,44px);font-weight:800;line-height:1.14;letter-spacing:-1px;color:#f3f2ff;text-shadow:0 2px 30px rgba(124,108,255,.28)}
+    .lg-em{background:linear-gradient(90deg,#7c6cff,#22d3ee,#f472b6);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;filter:drop-shadow(0 0 22px rgba(124,108,255,.32))}
+    .lg-sub{margin-top:14px;font-size:14.5px;color:#9a9ac8;letter-spacing:.2px;line-height:1.6}
+
+    /* 생성 파이프라인 플로우 */
+    .lg-pipe{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:26px 0 4px}
+    .lg-stage{display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px 10px;min-width:74px;border-radius:14px;
+        background:rgba(255,255,255,.03);border:1px solid rgba(124,108,255,.2)}
+    .lg-stage-ic{font-size:20px}
+    .lg-stage b{font-size:11px;font-weight:700;color:#cdd3f0}
+    .lg-stage.final{background:linear-gradient(160deg,rgba(244,114,182,.16),rgba(255,255,255,.02));border-color:rgba(244,114,182,.45)}
+    .lg-wire{flex:1;min-width:16px;height:3px;border-radius:2px;
+        background:linear-gradient(90deg,#7c6cff,#22d3ee,#f472b6,#7c6cff);background-size:300% 100%;animation:lgFlow 2.8s linear infinite}
+    @@keyframes lgFlow{to{background-position:-300% 0}}
+
+    .lg-pillars{display:grid;grid-template-columns:1fr 1fr;gap:10px;max-width:35em;margin:26px 0 0}
+    .lg-pill{position:relative;display:flex;align-items:center;gap:11px;padding:12px 13px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:13px;overflow:hidden;transition:border-color .18s,transform .18s,background .18s}
+    .lg-pill::before{content:'';position:absolute;left:0;top:0;bottom:0;width:2px;background:linear-gradient(180deg,#7c6cff,transparent);opacity:.75}
+    .lg-pill:hover{border-color:rgba(124,108,255,.44);background:rgba(124,108,255,.07);transform:translateY(-2px)}
+    .lg-pill-ic{font-size:1.35rem;flex:0 0 auto}
+    .lg-pill b{display:block;font-size:13px;color:#f3f2ff}
+    .lg-pill small{font-size:10.5px;color:#9a9ac8}
+    .lg-badges{margin-top:26px;display:flex;gap:9px;flex-wrap:wrap}
+    .lg-badge{font-size:11.5px;font-weight:700;padding:6px 13px;border-radius:999px;background:rgba(124,108,255,.1);border:1px solid rgba(124,108,255,.3);color:#c4b5fd}
+    .lg-badge.ok{background:rgba(34,211,238,.12);border-color:rgba(34,211,238,.4);color:#67e8f9}
+
+    .lg-panel{position:relative;align-self:center;justify-self:center;width:min(410px,86%);margin:5vh 6% 5vh 0;padding:30px 32px 34px;border-radius:20px;overflow:hidden;z-index:3;
+        background:linear-gradient(180deg,rgba(28,22,54,.58),rgba(12,9,26,.7));backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+        border:1px solid rgba(124,108,255,.26);box-shadow:0 30px 80px rgba(0,0,0,.6),0 0 40px rgba(124,108,255,.12),inset 0 1px 0 rgba(255,255,255,.05)}
+    .lg-panel::before{content:'';position:absolute;top:0;left:12%;right:12%;height:2px;border-radius:2px;z-index:3;pointer-events:none;
+        background:linear-gradient(90deg,transparent,#22d3ee,#a78bfa,#f472b6,transparent);box-shadow:0 0 14px rgba(34,211,238,.7),0 0 28px rgba(167,139,250,.45)}
+    .lg-pc{position:absolute;width:18px;height:18px;border:2px solid rgba(124,108,255,.6);z-index:2}
+    .lg-pc.tl{top:10px;left:10px;border-right:0;border-bottom:0}.lg-pc.tr{top:10px;right:10px;border-left:0;border-bottom:0}
+    .lg-pc.bl{bottom:10px;left:10px;border-right:0;border-top:0}.lg-pc.br{bottom:10px;right:10px;border-left:0;border-top:0}
+    .lg-pscan{position:absolute;left:0;right:0;height:70px;pointer-events:none;background:linear-gradient(180deg,transparent,rgba(124,108,255,.08),transparent);animation:lgSweepY 5.5s linear infinite}
+    .lg-p-status{display:flex;align-items:center;gap:8px;font:700 9.5px/1 'Roboto Mono',Consolas,monospace;letter-spacing:.1em;color:#8b8ab8;margin-bottom:16px}
+    .lg-p-dot{width:7px;height:7px;border-radius:50%;background:#7c6cff;box-shadow:0 0 8px #7c6cff;animation:lgPulse 1.6s ease-in-out infinite}
+    .lg-p-armed{margin-left:auto;color:#67e8f9;letter-spacing:.08em}
+    .lg-p-head{margin-bottom:18px}
+    .lg-p-title{font-size:19px;font-weight:800;color:#f3f2ff}
+    .lg-p-sub{font-size:12.5px;color:#9a9ac8;margin-top:5px}
+    .lg-lbl{display:block;font-size:12px;font-weight:600;color:#c0c0e0;margin:14px 0 6px}
+    .lg-inwrap{position:relative;display:flex;align-items:center;gap:9px;background:rgba(8,6,16,.6);border:1px solid rgba(124,108,255,.22);border-radius:11px;padding:0 13px;transition:border-color .15s,box-shadow .15s}
+    .lg-inwrap:focus-within{border-color:#7c6cff;box-shadow:0 0 0 3px rgba(124,108,255,.16),0 0 22px rgba(124,108,255,.14)}
+    .lg-in-ic{font-size:14px;opacity:.82}
+    .lg-in2{flex:1;min-width:0;box-sizing:border-box;background:transparent;border:none;outline:none;color:#f3f2ff;font-size:14px;font-family:inherit;padding:12px 0;letter-spacing:.3px}
+    .lg-in2::placeholder{color:#6a6a90}
+    .lg-err{margin-top:12px;padding:9px 12px;border-radius:9px;background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.35);color:#fca5a5;font-size:12.5px}
+    .lg-reg-ok{margin-bottom:14px;padding:10px 12px;border-radius:10px;font-size:12.5px;font-weight:700;color:#c4b5fd;background:rgba(124,108,255,.1);border:1px solid rgba(124,108,255,.3);line-height:1.5}
+    .lg-reg-ok b{color:#f3f2ff}
+    .lg-btn{position:relative;display:flex;align-items:center;justify-content:center;gap:8px;width:100%;margin-top:20px;padding:14px;border-radius:12px;border:0;cursor:pointer;font-family:inherit;font-size:15px;font-weight:800;overflow:hidden;
+        color:#fff;background:linear-gradient(135deg,#8b7bff,#6d5efc);box-shadow:0 10px 26px rgba(124,108,255,.4);transition:filter .15s,transform .1s}
+    .lg-btn::after{content:'';position:absolute;top:0;left:-60%;width:45%;height:100%;transform:skewX(-20deg);background:linear-gradient(90deg,transparent,rgba(255,255,255,.5),transparent);animation:lgShine 3.6s ease-in-out infinite}
+    @@keyframes lgShine{0%{left:-60%}55%,100%{left:130%}}
+    .lg-btn:hover{filter:brightness(1.08)}.lg-btn:active{transform:translateY(1px)}
+    .lg-arrow{font-weight:900}
+    .lg-alt{width:100%;margin-top:11px;padding:11px;border-radius:11px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:700;
+        color:#c4b5fd;background:transparent;border:1px solid rgba(124,108,255,.32);transition:background .15s,border-color .15s}
+    .lg-alt:hover{background:rgba(124,108,255,.09);border-color:rgba(124,108,255,.55)}
+    .lg-find{display:block;width:100%;margin-top:10px;padding:6px;background:none;border:none;cursor:pointer;font-family:inherit;font-size:12px;font-weight:600;color:#9a9ac8;text-decoration:underline;text-underline-offset:3px}
+    .lg-find:hover{color:#c4b5fd}
+    .lg-trust{display:flex;flex-wrap:wrap;justify-content:center;gap:6px 14px;margin-top:16px;padding-top:14px;border-top:1px solid rgba(255,255,255,.07)}
+    .lg-trust span{font-size:10px;font-weight:700;color:#8b8ab8}
+    .lg-foot{margin-top:12px;text-align:center;font-size:11px;color:#6a6a90}
+
+    @@media(max-width:860px){.lg-wrap{grid-template-columns:1fr}.lg-brand{padding:7vh 8vw 2vh}.lg-panel{margin:2vh auto 6vh}.lg-pillars{grid-template-columns:1fr}.lg-brand-in{max-width:none}.lg-tele{max-width:none}}
+    @@media(max-width:480px){.lg-panel{width:min(410px,92%);padding:24px 20px 26px}.lg-in2{font-size:16px}}
+    @@media(prefers-reduced-motion:reduce){.lg-bgv{display:none}.lg-orb.a,.lg-wire,.lg-btn::after,.lg-scanlines::after,.lg-pscan,.lg-lb-ring{animation:none}}
+</style>
+
+@code {
+    private string _id = "", _pw = "", _error = "";
+    private bool _showRegister;
+    private bool _showFind;
+    private string _justRegistered = "";
+    private static readonly System.Globalization.CultureInfo Ci = System.Globalization.CultureInfo.InvariantCulture;
+
+    // ── 생성 스튜디오 지표 텔레메트리(서버 타이머 · 데모 표시용) ──
+    private sealed class Tick { public string Label = ""; public double Val; public double Min; public double Max; public string Fmt = "N0"; public string Unit = ""; }
+    private readonly List<Tick> _ticks = new()
+    {
+        new Tick { Label = "생성 세션", Val = 12, Min = 4, Max = 24, Fmt = "N0", Unit = "" },
+        new Tick { Label = "렌더 큐", Val = 3, Min = 0, Max = 12, Fmt = "N0", Unit = "건" },
+        new Tick { Label = "완료 영상", Val = 128, Min = 120, Max = 260, Fmt = "N0", Unit = "편" },
+        new Tick { Label = "GPU 노드", Val = 6, Min = 4, Max = 8, Fmt = "N0", Unit = "" },
+        new Tick { Label = "평균 렌더", Val = 42.0, Min = 28, Max = 90, Fmt = "N0", Unit = "s" },
+    };
+    private readonly Random _rng = new();
+    private System.Threading.Timer? _hudTimer;
+    private volatile bool _disposed;
+
+    protected override void OnInitialized()
+    {
+        if (Session.IsAuthenticated) { Nav.NavigateTo("", forceLoad: false); return; }
+        _hudTimer = new System.Threading.Timer(_ => HudTick(), null, 1400, 1400);
+    }
+
+    private void HudTick()
+    {
+        if (_disposed) return;
+        try
+        {
+            foreach (var t in _ticks)
+            {
+                var drift = (_rng.NextDouble() - 0.5) * ((t.Max - t.Min) * 0.06);
+                t.Val = Math.Clamp(t.Val + drift, t.Min, t.Max);
+            }
+            _ = InvokeAsync(StateHasChanged);
+        }
+        catch { /* 회로 종료 후 무시 */ }
+    }
+
+    private void DoLogin()
+    {
+        var id = _id.Trim();
+        // 테스트 계정(ANG)만 3자 비밀번호를 허용한다 — 일반 계정은 4자 이상.
+        var minPw = string.Equals(id, "ANG", StringComparison.OrdinalIgnoreCase) ? 3 : 4;
+        if (id.Length < 3 || _pw.Length < minPw) { _error = "아이디 3자·비밀번호 4자 이상 입력하세요."; return; }
+        var m = Members.Authenticate(id, _pw);
+        if (!m.Ok) { _error = m.Message; _pw = ""; return; }
+        Session.SignIn(id, m.Role, m.Message);
+        _error = "";
+        Nav.NavigateTo("/workspace", forceLoad: false);   // BlazorWebView 단일 컨텍스트 — SPA 네비게이션(게이트가 싱글턴 세션 판독)
+    }
+
+    private void OnRegistered(RegisterModal.RegisterResult res)
+    {
+        _showRegister = false;
+        _id = res.UserId;
+        _pw = "";
+        _justRegistered = res.MemberId;
+        _error = "";
+    }
+
+    // 아이디·비밀번호 찾기에서 복구(재설정)된 아이디를 로그인 칸에 채운다.
+    private void OnAccountResolved(string id)
+    {
+        _id = id;
+        _pw = "";
+        _error = "";
+    }
+
+    private void OnKey(KeyboardEventArgs e) { if (e.Key == "Enter") DoLogin(); }
+
+    public void Dispose() { _disposed = true; _hudTimer?.Dispose(); _hudTimer = null; }
+}

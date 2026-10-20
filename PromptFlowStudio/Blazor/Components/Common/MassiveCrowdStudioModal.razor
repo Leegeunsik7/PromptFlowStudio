@@ -1,0 +1,355 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.MassiveCrowd
+@implements IDisposable
+@inject MassiveCrowdStudioRunner Runner
+
+@*
+    [PromptFlow Studio v17.04.0] 👥 AI 대규모 군중 시뮬레이션 & 음향 스튜디오 — 아레나 밀도/흥분/공포 히트맵(카메라 FoV · LOD 반경 · 출구 · 파도) ·
+    스타디움 음압(dB SPL) 게이지 · 옥타브 스펙트럼 미터 · 섹터 음압 링 · 군중 흥분도 트리거 · 행동 LOD 예산 모니터.
+*@
+
+<div class="cwd-scrim" @onclick="Close">
+    <div class="cwd-modal" @onclick:stopPropagation="true">
+        <div class="cwd-h">
+            <div>
+                <div class="cwd-title">👥 AI 대규모 군중 시뮬레이션 스튜디오</div>
+                <div class="cwd-sub"><b>군중 엔진</b>이 스타디움 관중 에이전트의 좌석 이동 · RVO2/ORCA 상호 충돌 회피 · 흥분/공포 감정 전파를 공간 해시 그리드와 SIMD 장 연산으로 진행하고,
+                    <b>LOD 가드</b>는 카메라 시야/거리로 근거리(풀 본 + ORCA) · 중거리(그룹 플로킹) · 원거리(스프라이트/밀도장)를 나눠 16.6 ms 예산을 지킵니다.
+                    <b>음향 합성기</b>는 16 섹터의 함성 · 박수 · 챈트 · 야유 · 파도타기를 음압 모델로 합성해 v16.76 바이노럴 HRTF로 카메라 위치에서 공간화합니다. 군중과 경기는 인프로세스 시뮬레이션입니다.</div>
+            </div>
+            <button class="cwd-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="cwd-bar">
+            <button class="cwd-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 군중 가동")</button>
+            <button class="cwd-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <label class="cwd-sl">흥분도 트리거 <b>@(F0(Runner.Excitement * 100))%</b><input type="range" min="0" max="1" step="0.01" value="@(F2(Runner.Excitement))" @onchange="e => Runner.Excitement = (float)Num(e, 0.25)" /></label>
+            <button class="cwd-btn" @onclick="Runner.GoalHome">⚽ 홈 골</button>
+            <button class="cwd-btn" @onclick="Runner.GoalAway">⚽ 원정 골</button>
+            <button class="cwd-btn" @onclick="Runner.Cheer">🙌 환호</button>
+            <button class="cwd-btn @(C.WaveActive ? "warn" : null)" @onclick="Runner.Wave">🌊 파도타기</button>
+            <button class="cwd-btn @(A.ChantEnabled ? "on" : null)" @onclick="Runner.ToggleChant">📢 챈트</button>
+            <button class="cwd-btn stop" @onclick="Runner.Hit">💥 피격/위협</button>
+            <label class="cwd-sl">군중 <b>@(C.Count)</b><input type="range" min="10000" max="@(MassiveAgenticCrowdSimulationEngine.MaxAgents)" step="10000" value="@(C.Count)" @onchange="e => Runner.SetPopulation((int)Num(e, 100000))" /></label>
+            <button class="cwd-btn @(Runner.Orbit ? "on" : null)" @onclick="() => Runner.Orbit = !Runner.Orbit">🎥 궤도</button>
+            <label class="cwd-sl">방위 <b>@(F0(Mod360(Runner.CameraYawDeg)))°</b><input type="range" min="0" max="360" step="5" value="@(F0(Mod360(Runner.CameraYawDeg)))" @onchange="e => Runner.CameraYawDeg = (float)Num(e, 180)" disabled="@Runner.Orbit" /></label>
+            <span class="cwd-chip">틱 @(Runner.Tick) · @(F1(Runner.LastTickMs)) ms · 그리드 @(F0(C.GridUs)) · 감정 @(F0(C.EmotionUs)) · ORCA @(F0(C.OrcaUs)) · 플로킹 @(F0(C.FlockUs)) · LOD @(F0(L.LastAssignUs)) · 음향 @(F0(A.LastRenderUs)) µs</span>
+        </div>
+
+        <div class="cwd-main">
+            <div class="cwd-col">
+                <div class="cwd-card">
+                    <div class="cwd-sec">🗺 아레나 군중 히트맵
+                        @for (var m = 0; m < 3; m++)
+                        {
+                            var mm = m;
+                            <button class="cwd-btn sm @(_mode == mm ? "on" : null)" @onclick="() => _mode = mm">@(ModeNames[mm])</button>
+                        }
+                        <span class="cwd-kv">최대 밀도 @(F2(C.MaxDensity)) 인/m² · 평균 흥분 @(F0(C.MeanArousal * 100))% · 공포 @(F0(C.MeanFear * 100))% · 평균 속도 @(F2(C.MeanSpeed)) m/s</span></div>
+                    <svg class="cwd-heat" viewBox="0 0 400 400" preserveAspectRatio="xMidYMid meet" shape-rendering="crispEdges">
+                        @for (var hz = 0; hz < HeatN; hz++)
+                        {
+                            for (var hx = 0; hx < HeatN; hx++)
+                            {
+                                var v = HeatValue(hx, hz, out var pop);
+                                if (pop == 0) continue;
+                                <rect x="@(hx * 8)" y="@(hz * 8)" width="8" height="8" fill="@(Heat(v))" />
+                            }
+                        }
+                        <ellipse class="field" cx="@(F1(MassiveAgenticCrowdSimulationEngine.Cx))" cy="@(F1(MassiveAgenticCrowdSimulationEngine.Cz))" rx="@(F1(MassiveAgenticCrowdSimulationEngine.FieldRx))" ry="@(F1(MassiveAgenticCrowdSimulationEngine.FieldRz))" />
+                        <ellipse class="outer" cx="@(F1(MassiveAgenticCrowdSimulationEngine.Cx))" cy="@(F1(MassiveAgenticCrowdSimulationEngine.Cz))" rx="@(F1(MassiveAgenticCrowdSimulationEngine.FieldRx * MassiveAgenticCrowdSimulationEngine.StandOuter))" ry="@(F1(MassiveAgenticCrowdSimulationEngine.FieldRz * MassiveAgenticCrowdSimulationEngine.StandOuter))" />
+                        @for (var k = 0; k < MassiveAgenticCrowdSimulationEngine.Exits; k++)
+                        {
+                            <rect class="exit" x="@(F1(C.ExitX(k) - 3))" y="@(F1(C.ExitZ(k) - 3))" width="6" height="6" />
+                        }
+                        <path class="cone" d="@(Cone(BehavioralLodSpatialCullingGuard.MidDistMax))" />
+                        <path class="mid" d="@(Cone(L.MidRadius))" />
+                        <path class="near" d="@(Cone(L.NearRadius))" />
+                        <circle class="cam" cx="@(F1(L.CameraX))" cy="@(F1(L.CameraZ))" r="4" />
+                        @if (C.PanicActive)
+                        {
+                            <circle class="panic" cx="@(F1(C.PanicX))" cy="@(F1(C.PanicZ))" r="@(F1(C.PanicRadius))" />
+                        }
+                        @if (C.WaveActive)
+                        {
+                            var (wx, wz) = WavePoint();
+                            <line class="wave" x1="@(F1(MassiveAgenticCrowdSimulationEngine.Cx))" y1="@(F1(MassiveAgenticCrowdSimulationEngine.Cz))" x2="@(F1(wx))" y2="@(F1(wz))" />
+                        }
+                    </svg>
+                    <div class="cwd-legend"><i class="lg"></i>@(ModeNames[_mode]) 낮음 → 높음 · 필드 타원 · 사각 = 출구 8 · 부채꼴 = 카메라 FoV(안쪽부터 근거리/중거리 LOD 반경) · 빨간 원 = 위협 · 선 = 파도 전선</div>
+                </div>
+
+                <div class="cwd-card">
+                    <div class="cwd-sec">🎚 행동 LOD &amp; 프레임 예산 <span class="cwd-chip @(L.P95FrameMs <= L.BudgetMs ? "ok" : "bad")">p95 @(F1(L.P95FrameMs)) ms / @(F1(L.BudgetMs)) ms</span>
+                        <button class="cwd-btn sm @(L.Adaptive ? "on" : null)" @onclick="() => L.Adaptive = !L.Adaptive">적응</button></div>
+                    <div class="cwd-lod">
+                        @LodRow(BehavioralLodSpatialCullingGuard.LodNames[0], L.NearCount, L.NearCap, "near")
+                        @LodRow(BehavioralLodSpatialCullingGuard.LodNames[1], L.MidCount, L.MidCap, "mid")
+                        @LodRow(BehavioralLodSpatialCullingGuard.LodNames[2], L.FarCount, C.Count, "far")
+                    </div>
+                    <div class="cwd-kv">
+                        <span>근거리 반경 <b>@(F1(L.NearRadius)) m</b> · 중거리 반경 <b>@(F1(L.MidRadius)) m</b> · 시야 밖 컬링 @(L.CulledCount) · 원거리 갱신 1/@(L.FarStride) 프레임</span>
+                        <span>본 비용 @(L.BoneCost) · 전원 풀 본 대비 절감 <b>@(F1(L.CostSavings(C.Count) * 100))%</b> · 예산 초과 @(L.Overruns)/@(L.Frames)</span>
+                        <span>ORCA @(C.OrcaSolves) · 3D 폴백 @(C.Lp3Fallbacks) · ORCA 쌍 접촉 @(C.NearCollisions) · 원거리 갱신 @(C.LastFarUpdated)</span>
+                        <label class="cwd-sl">예산 <b>@(F1(L.BudgetMs)) ms</b><input type="range" min="4" max="33" step="0.5" value="@(F1(L.BudgetMs))" @onchange="e => L.BudgetMs = (float)Num(e, 16.6)" /></label>
+                    </div>
+                    <svg class="cwd-spark" viewBox="0 0 360 60" preserveAspectRatio="none">
+                        <line class="bud" x1="0" y1="@(F1(58 - 56 * Math.Min(1, L.BudgetMs / 33.0)))" x2="360" y2="@(F1(58 - 56 * Math.Min(1, L.BudgetMs / 33.0)))" />
+                        <polyline class="ms" points="@(Series(i => Runner.FrameMsSeries(i), 33, 60))" />
+                        <polyline class="nr" points="@(Series(i => Runner.NearSeries(i), Math.Max(1, L.NearCap), 60))" />
+                    </svg>
+                    <div class="cwd-legend"><i class="ms"></i>프레임 시간(0~33 ms · 점선 = 예산) <i class="nr"></i>근거리 에이전트(상한 대비)</div>
+                </div>
+            </div>
+
+            <div class="cwd-col">
+                <div class="cwd-card">
+                    <div class="cwd-sec">📣 스타디움 음압 &amp; 스펙트럼
+                        @if (A.GoalActive) { <span class="cwd-chip warn">골 함성</span> }
+                        @if (A.GaspActive) { <span class="cwd-chip bad">탄성</span> }</div>
+                    <div class="cwd-acou">
+                        <div class="cwd-spl">
+                            <svg viewBox="0 0 120 70">
+                                <path class="bg" d="M 10 62 A 50 50 0 0 1 110 62" />
+                                <path class="fg @(A.TotalSplDb > 105 ? "hot" : A.TotalSplDb > 95 ? "warm" : null)" d="M 10 62 A 50 50 0 0 1 110 62" style="stroke-dasharray:@(F1(157.08 * Math.Clamp((A.TotalSplDb - 60) / 60.0, 0, 1))) 158" />
+                            </svg>
+                            <b>@(F1(A.TotalSplDb)) dB</b>
+                            <span>청취점 음압(SPL)</span>
+                        </div>
+                        <div class="cwd-bands">
+                            @for (var b = 0; b < SwarmStadiumAcousticsSynthesizer.Bands; b++)
+                            {
+                                var db = A.BandSplDb(b);
+                                <div class="bd"><i style="height:@(F1(Math.Clamp((db - 40) / 80.0, 0, 1) * 100))%" class="@(db > 100 ? "hot" : db > 90 ? "warm" : null)"></i><span>@(SwarmStadiumAcousticsSynthesizer.BandNames[b])</span><em>@(F0(db))</em></div>
+                            }
+                        </div>
+                        <svg class="cwd-ring" viewBox="-60 -60 120 120">
+                            @for (var s = 0; s < SwarmStadiumAcousticsSynthesizer.Sectors; s++)
+                            {
+                                <path class="sec" d="@(Wedge(s))" fill="@(Heat(Math.Clamp((A.SectorSplDb(s) - 55) / 40.0, 0, 1)))" />
+                                if (A.ChantLevel(s) > 0.15f || A.BooLevel(s) > 0.15f)
+                                {
+                                    var (mx, mz) = WedgeMid(s);
+                                    <g><text x="@(F1(mx))" y="@(F1(mz))">@(A.BooLevel(s) > A.ChantLevel(s) ? "B" : "♪")</text></g>
+                                }
+                            }
+                            <ellipse class="fieldr" cx="0" cy="0" rx="22" ry="14" />
+                        </svg>
+                    </div>
+                    <div class="cwd-kv">
+                        <span>출력 피크 @(F1(A.PeakDbfs)) dBFS · RMS @(F1(A.RmsDbfs)) dBFS · 리미터 @(F1(A.LimiterGainDb)) dB · 클립 @(A.ClipSamples)</span>
+                        <span>좌/우 에너지 @(F2(Ratio(A.EnergyL, A.EnergyR))) · 블록 @(A.Blocks) · 48 kHz × 800 샘플 · HRTF 섹터 16</span>
+                    </div>
+                    <svg class="cwd-wave" viewBox="0 0 200 60" preserveAspectRatio="none">
+                        <polyline class="wl" points="@(Wave(A.Left, 18))" />
+                        <polyline class="wr" points="@(Wave(A.Right, 42))" />
+                    </svg>
+                    <svg class="cwd-spark" viewBox="0 0 360 60" preserveAspectRatio="none">
+                        <polyline class="sp" points="@(Series(i => Runner.SplSeries(i) - 60, 60, 60))" />
+                    </svg>
+                    <div class="cwd-legend"><i class="wl"></i>L <i class="wr"></i>R 파형 · <i class="sp"></i>음압 추이(60~120 dB) · 섹터 링 = 섹터별 음압(♪ 챈트 · B 야유)</div>
+                </div>
+
+                <div class="cwd-card">
+                    <div class="cwd-sec">💓 감정 전파</div>
+                    <svg class="cwd-spark" viewBox="0 0 360 60" preserveAspectRatio="none">
+                        <polyline class="ar" points="@(Series(i => Runner.ArousalSeries(i), 1, 60))" />
+                        <polyline class="fe" points="@(Series(i => Runner.FearSeries(i), 1, 60))" />
+                    </svg>
+                    <div class="cwd-legend"><i class="ar"></i>평균 흥분 <i class="fe"></i>평균 공포</div>
+                    <div class="cwd-secs">
+                        @for (var s = 0; s < MassiveAgenticCrowdSimulationEngine.Sectors; s++)
+                        {
+                            <div><b>S@(s)</b><span class="mono">@(F0(C.SectorCount(s)))명 · 흥분 @(F0(C.SectorArousal(s) * 100))% · 공포 @(F0(C.SectorFear(s) * 100))% · 기립 @(F0(C.SectorStanding(s) * 100))% · 홈 @(F0(C.SectorHomeShare(s) * 100))%</span></div>
+                        }
+                    </div>
+                </div>
+                <div class="cwd-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .cwd-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .cwd-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .cwd-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f43f5e 15%, var(--card)), color-mix(in srgb, #f59e0b 13%, var(--card))); }
+    .cwd-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .cwd-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .cwd-sub b { color: var(--text-primary); }
+    .cwd-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .cwd-bar { display: flex; flex-wrap: wrap; gap: 6px 10px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .cwd-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; } .cwd-btn:disabled { opacity: .4; cursor: default; }
+    .cwd-btn.sm { font-size: 10px; padding: 2px 8px; } .cwd-btn.on { background: color-mix(in srgb, #f43f5e 22%, transparent); border-color: #fb7185; } .cwd-btn.warn { background: color-mix(in srgb, #eab308 24%, transparent); border-color: #facc15; }
+    .cwd-btn.stop { background: #b91c1c; border-color: #ef4444; color: #fff; }
+    .cwd-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .cwd-chip.ok { border-color: #22c55e; color: #86efac; } .cwd-chip.bad { border-color: #ef4444; color: #fca5a5; } .cwd-chip.warn { border-color: #eab308; color: #fde68a; }
+    .cwd-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .cwd-sl b { font-family: var(--mono); color: var(--text-primary); } .cwd-sl input { width: 100px; }
+    .cwd-main { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .cwd-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .cwd-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .cwd-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .cwd-heat { width: 100%; height: 380px; background: #030712; border-radius: 10px; }
+    .cwd-heat .field { fill: rgba(34,197,94,.08); stroke: #22c55e; stroke-width: 1; } .cwd-heat .outer { fill: none; stroke: #334155; stroke-width: 1; stroke-dasharray: 4 3; }
+    .cwd-heat .exit { fill: #38bdf8; } .cwd-heat .cam { fill: #f472b6; stroke: #fff; stroke-width: 1; }
+    .cwd-heat .cone { fill: rgba(244,114,182,.06); stroke: rgba(244,114,182,.5); stroke-width: .8; } .cwd-heat .mid { fill: rgba(250,204,21,.08); stroke: #facc15; stroke-width: .8; } .cwd-heat .near { fill: rgba(239,68,68,.15); stroke: #ef4444; stroke-width: 1; }
+    .cwd-heat .panic { fill: rgba(239,68,68,.2); stroke: #ef4444; stroke-width: 2; } .cwd-heat .wave { stroke: #a5f3fc; stroke-width: 3; stroke-linecap: round; }
+    .cwd-legend { display: flex; flex-wrap: wrap; gap: 8px; font-size: 10px; color: var(--text-muted); align-items: center; } .cwd-legend i { display: inline-block; width: 10px; height: 8px; border-radius: 2px; }
+    .cwd-legend .lg { width: 40px; background: linear-gradient(90deg, #142a5a, #14b4c8, #fadc1e, #fa3214); }
+    .cwd-legend .ms { background: #f59e0b; } .cwd-legend .nr { background: #ef4444; } .cwd-legend .wl { background: #38bdf8; } .cwd-legend .wr { background: #f472b6; } .cwd-legend .sp { background: #22c55e; } .cwd-legend .ar { background: #f97316; } .cwd-legend .fe { background: #a855f7; }
+    .cwd-lod { display: flex; flex-direction: column; gap: 4px; }
+    .cwd-lod > div { display: grid; grid-template-columns: 170px 1fr 120px; gap: 8px; align-items: center; font-size: 11px; color: var(--text-secondary); } .cwd-lod b { color: var(--text-primary); }
+    .cwd-lod .bar { height: 9px; background: #1f2937; border-radius: 4px; overflow: hidden; } .cwd-lod .bar i { display: block; height: 100%; }
+    .cwd-lod .near i { background: #ef4444; } .cwd-lod .mid i { background: #facc15; } .cwd-lod .far i { background: #38bdf8; }
+    .cwd-spark { width: 100%; height: 60px; background: #030712; border-radius: 6px; } .cwd-spark polyline { fill: none; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+    .cwd-spark .bud { stroke: #64748b; stroke-width: 1; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+    .cwd-spark .ms { stroke: #f59e0b; } .cwd-spark .nr { stroke: #ef4444; } .cwd-spark .sp { stroke: #22c55e; } .cwd-spark .ar { stroke: #f97316; } .cwd-spark .fe { stroke: #a855f7; }
+    .cwd-acou { display: grid; grid-template-columns: 150px 1fr 150px; gap: 10px; align-items: center; }
+    .cwd-spl { display: flex; flex-direction: column; align-items: center; } .cwd-spl svg { width: 140px; height: 82px; }
+    .cwd-spl .bg { fill: none; stroke: #1f2937; stroke-width: 10; } .cwd-spl .fg { fill: none; stroke: #22c55e; stroke-width: 10; stroke-linecap: round; } .cwd-spl .fg.warm { stroke: #eab308; } .cwd-spl .fg.hot { stroke: #ef4444; }
+    .cwd-spl b { font: 900 18px var(--mono); color: var(--text-primary); margin-top: -30px; } .cwd-spl span { font-size: 10px; color: var(--text-muted); margin-top: 8px; }
+    .cwd-bands { display: flex; align-items: flex-end; gap: 4px; height: 150px; padding: 4px; background: #030712; border-radius: 8px; }
+    .cwd-bands .bd { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; gap: 1px; }
+    .cwd-bands .bd i { display: block; width: 100%; background: #22c55e; border-radius: 3px 3px 0 0; } .cwd-bands .bd i.warm { background: #eab308; } .cwd-bands .bd i.hot { background: #ef4444; }
+    .cwd-bands .bd span { font: 600 9px var(--mono); color: var(--text-muted); } .cwd-bands .bd em { font: 600 9px var(--mono); font-style: normal; color: var(--text-secondary); }
+    .cwd-ring { width: 150px; height: 150px; } .cwd-ring .sec { stroke: #0f172a; stroke-width: .8; } .cwd-ring .fieldr { fill: rgba(34,197,94,.15); stroke: #22c55e; stroke-width: .6; }
+    .cwd-ring text { fill: #fff; font-size: 7px; font-weight: 800; text-anchor: middle; dominant-baseline: middle; }
+    .cwd-wave { width: 100%; height: 60px; background: #030712; border-radius: 6px; } .cwd-wave polyline { fill: none; stroke-width: 1; vector-effect: non-scaling-stroke; } .cwd-wave .wl { stroke: #38bdf8; } .cwd-wave .wr { stroke: #f472b6; }
+    .cwd-secs { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; max-height: 170px; overflow-y: auto; }
+    .cwd-secs div { display: flex; gap: 6px; font-size: 10px; color: var(--text-secondary); } .cwd-secs b { color: var(--text-primary); min-width: 26px; }
+    .cwd-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; font-weight: 500; color: var(--text-secondary); align-items: center; } .cwd-kv b { color: var(--text-primary); }
+    .cwd-note { font-size: 11px; color: var(--text-muted); word-break: break-all; } .mono { font-family: var(--mono); }
+    @@media (max-width: 1200px) { .cwd-main { grid-template-columns: 1fr; } .cwd-acou { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int HeatN = 50, HeatStep = MassiveAgenticCrowdSimulationEngine.Grid / HeatN;
+    private static readonly string[] ModeNames = { "밀도", "흥분", "공포" };
+    private static readonly string[] HeatHex = BuildHeat();
+    private System.Threading.Timer? _timer;
+    private int _mode;
+
+    private MassiveAgenticCrowdSimulationEngine C => Runner.Crowd;
+    private SwarmStadiumAcousticsSynthesizer A => Runner.Acoustics;
+    private BehavioralLodSpatialCullingGuard L => Runner.Lod;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Crowd.Modal.Timer", ex); }
+        }, null, 300, 300);
+    }
+
+    private static string[] BuildHeat()
+    {
+        var h = new string[64];
+        for (var i = 0; i < 64; i++)
+        {
+            var t = i / 63.0;
+            double r, g, b;
+            if (t < 0.33) { var u = t / 0.33; r = 20; g = 42 + 138 * u; b = 90 + 110 * u; }
+            else if (t < 0.66) { var u = (t - 0.33) / 0.33; r = 20 + 230 * u; g = 180 + 40 * u; b = 200 - 170 * u; }
+            else { var u = (t - 0.66) / 0.34; r = 250; g = 220 - 170 * u; b = 30 - 10 * u; }
+            h[i] = "#" + ((int)r).ToString("X2", CultureInfo.InvariantCulture) + ((int)g).ToString("X2", CultureInfo.InvariantCulture) + ((int)b).ToString("X2", CultureInfo.InvariantCulture);
+        }
+        return h;
+    }
+
+    private static string Heat(double t) => HeatHex[Math.Clamp((int)(t * 63), 0, 63)];
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+    private static double Mod360(double d) => ((d % 360) + 360) % 360;
+    private static double Ratio(float l, float r) => l + r <= 0 ? 0.5 : l / (l + r);
+
+    /// <summary>4×4 셀 묶음 → 모드 값(밀도 = 인/m² 4 기준 · 흥분/공포 = 인원 가중 평균).</summary>
+    private double HeatValue(int hx, int hz, out int pop)
+    {
+        pop = 0; double acc = 0;
+        for (var z = 0; z < HeatStep; z++)
+            for (var x = 0; x < HeatStep; x++)
+            {
+                var c = (hz * HeatStep + z) * MassiveAgenticCrowdSimulationEngine.Grid + hx * HeatStep + x;
+                var p = C.CellPopulation(c);
+                pop += p;
+                acc += _mode == 1 ? C.CellArousal(c) * p : _mode == 2 ? C.CellFear(c) * p : 0;
+            }
+        if (pop == 0) return 0;
+        if (_mode == 0) return pop / (HeatStep * HeatStep * MassiveAgenticCrowdSimulationEngine.Cell * MassiveAgenticCrowdSimulationEngine.Cell) / 4.0;
+        return acc / pop;
+    }
+
+    private string Cone(float r)
+    {
+        double x = L.CameraX, z = L.CameraZ, yaw = L.CameraYaw, half = L.FovDeg * Math.PI / 360.0;
+        double x1 = x + r * Math.Cos(yaw - half), z1 = z + r * Math.Sin(yaw - half), x2 = x + r * Math.Cos(yaw + half), z2 = z + r * Math.Sin(yaw + half);
+        return "M " + F1(x) + " " + F1(z) + " L " + F1(x1) + " " + F1(z1) + " A " + F1(r) + " " + F1(r) + " 0 0 1 " + F1(x2) + " " + F1(z2) + " Z";
+    }
+
+    /// <summary>다이아몬드 각 → 외곽 타원 위 점(파도 전선 표시).</summary>
+    private (double X, double Z) WavePoint()
+    {
+        var d = C.WaveAngle; double ex, ez;
+        if (d < 1) { ex = 1 - d; ez = d; } else if (d < 2) { ex = -(d - 1); ez = 2 - d; } else if (d < 3) { ex = -(3 - d); ez = -(d - 2); } else { ex = d - 3; ez = -(4 - d); }
+        var l = Math.Sqrt(ex * ex + ez * ez); var s = MassiveAgenticCrowdSimulationEngine.StandOuter;
+        return (MassiveAgenticCrowdSimulationEngine.Cx + ex / l * MassiveAgenticCrowdSimulationEngine.FieldRx * s, MassiveAgenticCrowdSimulationEngine.Cz + ez / l * MassiveAgenticCrowdSimulationEngine.FieldRz * s);
+    }
+
+    /// <summary>섹터 링 쐐기(무게중심 방위 기준 · 16등분 근사).</summary>
+    private string Wedge(int s)
+    {
+        double a0 = SectorAngle(s) - Math.PI / 16, a1 = SectorAngle(s) + Math.PI / 16;
+        double ri = 26, ro = 56;
+        return "M " + F1(ri * Math.Cos(a0)) + " " + F1(ri * 0.7 * Math.Sin(a0)) + " L " + F1(ro * Math.Cos(a0)) + " " + F1(ro * 0.7 * Math.Sin(a0)) +
+               " L " + F1(ro * Math.Cos(a1)) + " " + F1(ro * 0.7 * Math.Sin(a1)) + " L " + F1(ri * Math.Cos(a1)) + " " + F1(ri * 0.7 * Math.Sin(a1)) + " Z";
+    }
+
+    private (double X, double Z) WedgeMid(int s) { var a = SectorAngle(s); return (41 * Math.Cos(a), 41 * 0.7 * Math.Sin(a)); }
+
+    private double SectorAngle(int s) => C.SectorCount(s) > 0
+        ? Math.Atan2((C.SectorZ(s) - MassiveAgenticCrowdSimulationEngine.Cz) / MassiveAgenticCrowdSimulationEngine.FieldRz, (C.SectorX(s) - MassiveAgenticCrowdSimulationEngine.Cx) / MassiveAgenticCrowdSimulationEngine.FieldRx)
+        : (s + 0.5) * Math.PI / 8;
+
+    private string Wave(ReadOnlySpan<float> x, double mid)
+    {
+        var sb = new System.Text.StringBuilder(200 * 10);
+        for (var i = 0; i < 200; i++)
+            sb.Append(F1(i)).Append(',').Append(F1(mid - 16 * Math.Clamp(x[i * 4], -1, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private RenderFragment LodRow(string name, int n, int cap, string cls) => __builder =>
+    {
+        <div class="@cls"><b>@name</b><div class="bar"><i style="width:@(F1(Math.Min(1, n / (double)Math.Max(1, cap)) * 100))%"></i></div><span class="mono">@n / @cap</span></div>
+    };
+
+    private string Series(Func<int, float> f, double max, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (MassiveCrowdStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - 2 - (h - 4) * Math.Clamp(f(i) / max, 0, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step60() { for (var i = 0; i < MassiveCrowdStudioRunner.Hz; i++) Runner.Step(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중(10 Hz 이벤트)은 300 ms 타이머가 처리 — 정지 상태 액션만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

@@ -1,0 +1,389 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Icvfx
+@implements IDisposable
+@inject VirtualProductionStudioRunner Runner
+@inject ILocalMediaService Media
+
+@*
+    [PromptFlow Studio v16.59.0] 🎬 AI ICVFX 가상 제작 & 자율 디렉터 스튜디오 — LED 월 전개도(이너 프러스텀 윤곽) · 인-카메라 프리뷰 · 대본 → 비트 ·
+    에이전틱 감독 상태(카메라/조명 DMX/VFX/코디네이터 로그) · ACES 토글/LED 출력 · 오버스캔/지연 보상/크로마키 · 무아레 예측 + 위상 상쇄 슬라이더 · .cube 내보내기 · Art-Net.
+*@
+
+<div class="icv-scrim" @onclick="Close">
+    <div class="icv-modal" @onclick:stopPropagation="true">
+        <div class="icv-h">
+            <div>
+                <div class="icv-title">🎬 AI ICVFX 가상 제작 &amp; 자율 디렉터 스튜디오</div>
+                <div class="icv-sub">시네마 카메라 추적에 맞춰 <b>LED 월 이너/아우터 프러스텀</b>을 시차 정확하게 렌더하고, <b>AI 카메라·조명(DMX)·VFX 감독</b>이 대본에 따라 협력 지휘하며,
+                    <b>ACES/OCIO</b> 색 관리와 <b>무아레 위상 상쇄</b>로 인-카메라 품질을 지킵니다.</div>
+            </div>
+            <button class="icv-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="icv-bar">
+            <span class="icv-chip @(Runner.IsRunning ? "ok" : null)">@(Runner.IsRunning ? "● 자율 디렉팅" : "○ 정지") · @(F1((float)D.TimeSec))s</span>
+            <span class="icv-chip">비트 @(D.CurrentBeat + 1)/@(D.Beats.Count) · @(D.Beat is { } b ? KindLabel(b.Kind) : "—")</span>
+            <span class="icv-chip">프러스텀 @(F1((float)F.LastRenderMs))ms · 이너 @(F.LastInnerPixels)px</span>
+            <span class="icv-chip @(Runner.InCameraCoverage > 0.97f ? "ok" : "hot")">인-카메라 커버리지 @(P(Runner.InCameraCoverage))</span>
+            <span class="icv-chip">코디네이터 조정 @(D.Conflicts) · Art-Net @(D.ArtNetPackets)</span>
+        </div>
+
+        <div class="icv-main">
+            <div class="icv-col wide">
+                <div class="icv-card">
+                    <div class="icv-row icv-between">
+                        <div class="icv-sec">🧱 LED 월 전개도 · @(F.Volume.Count)세그먼트 · 노란 선 = 이너 프러스텀 경계</div>
+                        <div class="icv-row">
+                            @if (Runner.IsRunning)
+                            {
+                                <button class="icv-btn hot" @onclick="Runner.Stop">⏸ 정지</button>
+                            }
+                            else
+                            {
+                                <button class="icv-btn on" @onclick="Runner.Start">▶ 자율 디렉팅</button>
+                            }
+                            <button class="icv-btn" disabled="@(Runner.IsRunning)" @onclick="Step">⏩ 1초</button>
+                            <button class="icv-btn" @onclick="() => { Runner.Restart(); Refresh(); }">⏮ 처음</button>
+                        </div>
+                    </div>
+                    @if (_wallUrl is not null)
+                    {
+                        <img class="icv-wall" src="@(_wallUrl)" alt="LED 월" />
+                    }
+                    <div class="icv-row">
+                        <label class="icv-chk"><input type="checkbox" checked="@(_showPq)" @onchange="e => { _showPq = e.Value is true; Refresh(); }" /> LED 신호(PQ 코드값) 보기</label>
+                        <label class="icv-chk"><input type="checkbox" checked="@(Runner.ShowFrustumOutline)" @onchange="e => Runner.ShowFrustumOutline = e.Value is true" /> 프러스텀 윤곽</label>
+                        <label class="icv-chk"><input type="checkbox" checked="@(F.ChromaKeyInner)" @onchange="e => F.ChromaKeyInner = e.Value is true" /> 이너 크로마키 그린</label>
+                        <label class="icv-chk"><input type="checkbox" checked="@(F.LatencyCompensation)" @onchange="e => F.LatencyCompensation = e.Value is true" /> 지연 보상</label>
+                        <label class="icv-chk"><input type="checkbox" checked="@(D.DriveCamera)" @onchange="e => D.DriveCamera = e.Value is true" /> AI 카메라 구동(모션 컨트롤)</label>
+                    </div>
+                    <div class="icv-grid3">
+                        <label>오버스캔 <b>@(P(F.Overscan))</b><input type="range" min="0" max="0.5" step="0.01" value="@(F2(F.Overscan))" @oninput="e => F.Overscan = Parse(e, F.Overscan)" /></label>
+                        <label>에지 소프트 <b>@(F2(F.EdgeSoftness))</b><input type="range" min="0.01" max="0.3" step="0.01" value="@(F2(F.EdgeSoftness))" @oninput="e => F.EdgeSoftness = Parse(e, F.EdgeSoftness)" /></label>
+                        <label>시스템 지연 <b>@(F0(F.LatencyMs))ms</b><input type="range" min="0" max="120" step="2" value="@(F0(F.LatencyMs))" @oninput="e => F.LatencyMs = Parse(e, F.LatencyMs)" /></label>
+                        <label>아우터 노출 <b>@(F2(F.OuterExposure))</b><input type="range" min="0.2" max="1.5" step="0.05" value="@(F2(F.OuterExposure))" @oninput="e => F.OuterExposure = Parse(e, F.OuterExposure)" /></label>
+                        <label>LED 니트/단위 <b>@(F0(C.WallNitsPerUnit))</b><input type="range" min="50" max="1500" step="25" value="@(F0(C.WallNitsPerUnit))" @oninput="e => C.WallNitsPerUnit = Parse(e, C.WallNitsPerUnit)" /></label>
+                        <label>콘텐츠 프리필터 <b>@(P(C.ContentPrefilter))</b><input type="range" min="0" max="1" step="0.05" value="@(F2(C.ContentPrefilter))" @oninput="e => C.ContentPrefilter = Parse(e, C.ContentPrefilter)" /></label>
+                    </div>
+                </div>
+                <div class="icv-card">
+                    <div class="icv-row icv-between">
+                        <div class="icv-sec">🎥 인-카메라(ACES SDR) · @(F0(D.FocalMm))mm · @(ShotLabel(D.Shot))</div>
+                        <div class="icv-row">
+                            <button class="icv-btn sm @(C.AcesEnabled ? "on" : null)" @onclick="() => { C.AcesEnabled = !C.AcesEnabled; Refresh(); }">🎨 ACES @(C.AcesEnabled ? "ON" : "OFF")</button>
+                            <select class="icv-sel" @bind="LedOutput">
+                                <option value="@(ColorSpace.Rec2100Pq)">LED: Rec.2100-PQ</option>
+                                <option value="@(ColorSpace.SRgbTexture)">LED: sRGB</option>
+                                <option value="@(ColorSpace.LinearRec2020)">LED: Linear Rec.2020</option>
+                            </select>
+                            <button class="icv-btn sm" @onclick="ExportLut">💾 ACEScct→Rec.709 .cube</button>
+                        </div>
+                    </div>
+                    @if (_camUrl is not null)
+                    {
+                        <img class="icv-cam" src="@(_camUrl)" alt="인-카메라" />
+                    }
+                </div>
+            </div>
+
+            <div class="icv-col">
+                <div class="icv-card">
+                    <div class="icv-sec">📜 대본 → 비트</div>
+                    <textarea class="icv-ta" rows="6" @bind="_script"></textarea>
+                    <button class="icv-btn" disabled="@(Runner.IsRunning)" @onclick="LoadScript">📥 대본 적용</button>
+                    <div class="icv-beats">
+                        @foreach (var bt in D.Beats)
+                        {
+                            <div class="icv-beat @(bt.Index == D.CurrentBeat ? "cur" : null)"><b>@(bt.Index + 1)</b><span>@(KindLabel(bt.Kind))</span><em>@(Trunc(bt.Text, 34))</em></div>
+                        }
+                    </div>
+                </div>
+                <div class="icv-card">
+                    <div class="icv-sec">🤖 에이전트 상태</div>
+                    <div class="icv-agent"><b>🎥 카메라</b><span>@(ShotLabel(D.Shot)) · @(F0(D.FocalMm))mm · 커버리지 @(P(D.Coverage)) · 팬 @(F0(D.CameraYawDeg))° 틸트 @(F0(D.CameraPitchDeg))°</span></div>
+                    <div class="icv-agent"><b>💡 조명(DMX)</b><span>@(F0(D.Kelvin))K · 플래시 @(P(D.FlashLevel))</span></div>
+                    <div class="icv-dmx">
+                        @for (var ch = 1; ch <= 40; ch++)
+                        {
+                            <i title="CH @(ch) = @(D.Channel(ch))" style="height:@(F0(D.Channel(ch) / 255f * 100f))%"></i>
+                        }
+                    </div>
+                    <div class="icv-agent"><b>✨ VFX</b><span>태양 @(F0(D.SunAzimuth))°/@(F0(D.SunElevation))° · 비 @(P(D.Rain)) · 안개 @(D.Fog.ToString("0.000", CultureInfo.InvariantCulture))</span></div>
+                    <div class="icv-row">
+                        <input class="icv-in" @bind="_artHost" placeholder="Art-Net 노드 IP" />
+                        @if (D.ArtNetEnabled)
+                        {
+                            <button class="icv-btn sm hot" @onclick="D.DisableArtNet">⏹ Art-Net</button>
+                        }
+                        else
+                        {
+                            <button class="icv-btn sm" @onclick="EnableArtNet">📡 Art-Net 송출</button>
+                        }
+                    </div>
+                    <div class="icv-log">
+                        @for (var i = 0; i < _logCount; i++)
+                        {
+                            var d = _log[i];
+                            <div><em>@(F1((float)d.Time))s</em> @(AgenticAutonomousVirtualProductionDirector.Describe(d))</div>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="icv-col">
+                <div class="icv-card">
+                    <div class="icv-sec">〰 무아레 예측 &amp; 위상 상쇄</div>
+                    <div class="icv-grid1">
+                        <label>LED 피치 <b>@(F2(_pitch))mm</b><input type="range" min="1.2" max="5" step="0.1" value="@(F2(_pitch))" @oninput="e => { _pitch = Parse(e, _pitch); Analyze(); }" /></label>
+                        <label>카메라-월 거리 <b>@(F1(_dist))m</b><input type="range" min="1" max="12" step="0.1" value="@(F1(_dist))" @oninput="e => { _dist = Parse(e, _dist); Analyze(); }" /></label>
+                        <label>초점거리 <b>@(F0(_focal))mm</b><input type="range" min="14" max="135" step="1" value="@(F0(_focal))" @oninput="e => { _focal = Parse(e, _focal); Analyze(); }" /></label>
+                        <label>초점 위치 <b>@(F1(_focus))m</b><input type="range" min="0.5" max="12" step="0.1" value="@(F1(_focus))" @oninput="e => { _focus = Parse(e, _focus); Analyze(); }" /></label>
+                        <label>조리개 <b>f/@(F1(_fstop))</b><input type="range" min="1.2" max="16" step="0.1" value="@(F1(_fstop))" @oninput="e => { _fstop = Parse(e, _fstop); Analyze(); }" /></label>
+                        <label>무아레 필터 강도 <b>@(P(C.MoireStrength))</b><input type="range" min="0" max="1" step="0.05" value="@(F2(C.MoireStrength))" @oninput="e => { C.MoireStrength = Parse(e, C.MoireStrength); Analyze(); }" /></label>
+                    </div>
+                    <div class="icv-risk"><i style="width:@(F0(_moire.Risk * 100f))%" class="@(_moire.Risk > 0.5f ? "bad" : null)"></i></div>
+                    <div class="icv-kv">
+                        <span>위험도</span><b>@(P(_moire.Risk))</b>
+                        <span>결상 피치</span><b>@(F2(_moire.ImagedPitchPx))px</b>
+                        <span>맥놀이 주기</span><b>@(float.IsInfinity(_moire.BeatPeriodPx) ? "—" : F1(_moire.BeatPeriodPx) + "px")</b>
+                        <span>DoF 블러</span><b>@(F1(_moire.DefocusBlurPx))px</b>
+                        <span>안전 거리</span><b>@(F1(_moire.SafeDistanceM))m 이상</b>
+                        <span>권장</span><b>@(_moire.Advice)</b>
+                    </div>
+                    <div class="icv-row">
+                        @if (_moireBefore is not null)
+                        {
+                            <figure><img src="@(_moireBefore)" alt="상쇄 전" /><figcaption>촬영 시뮬 · 대비 @(C.LastMoireContrastBefore.ToString("0.000", CultureInfo.InvariantCulture))</figcaption></figure>
+                        }
+                        @if (_moireAfter is not null)
+                        {
+                            <figure><img src="@(_moireAfter)" alt="상쇄 후" /><figcaption>위상 상쇄 · 대비 @(C.LastMoireContrastAfter.ToString("0.000", CultureInfo.InvariantCulture))</figcaption></figure>
+                        }
+                    </div>
+                </div>
+                @if (_message is not null)
+                {
+                    <div class="icv-msg">@(_message)</div>
+                }
+                <div class="icv-act">@(Runner.LastAction ?? D.LastAction ?? F.LastAction ?? C.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .icv-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .icv-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .icv-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f59e0b 16%, var(--card)), color-mix(in srgb, #0ea5e9 14%, var(--card))); }
+    .icv-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .icv-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .icv-sub b { color: var(--text-primary); }
+    .icv-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .icv-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); }
+    .icv-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .icv-chip.ok { color: #22c55e; border-color: #22c55e; }
+    .icv-chip.hot { color: #f97316; border-color: #f97316; }
+    .icv-main { display: grid; grid-template-columns: 1.6fr 1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .icv-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .icv-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .icv-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); }
+    .icv-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .icv-between { justify-content: space-between; }
+    .icv-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .icv-btn.on { background: color-mix(in srgb, #f59e0b 22%, transparent); border-color: #f59e0b; }
+    .icv-btn.hot { background: color-mix(in srgb, #ef4444 20%, transparent); border-color: #ef4444; }
+    .icv-btn.sm { font-size: 11px; padding: 3px 8px; }
+    .icv-btn:disabled { opacity: .45; cursor: default; }
+    .icv-sel, .icv-in { font-size: 12px; padding: 4px 6px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .icv-in { flex: 1; min-width: 100px; }
+    .icv-chk { font-size: 11px; color: var(--text-secondary); display: flex; gap: 4px; align-items: center; }
+    .icv-wall { width: 100%; image-rendering: pixelated; border-radius: 8px; background: #000; border: 1px solid var(--line); }
+    .icv-cam { width: 100%; aspect-ratio: 16 / 9; image-rendering: pixelated; border-radius: 8px; background: #000; border: 1px solid var(--line); }
+    .icv-grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 12px; }
+    .icv-grid1 { display: grid; grid-template-columns: 1fr; gap: 4px; }
+    .icv-grid3 label, .icv-grid1 label { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 2px; }
+    .icv-grid3 b, .icv-grid1 b { color: var(--text-primary); font-family: var(--mono); }
+    .icv-ta { width: 100%; resize: vertical; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); padding: 8px; font-size: 12px; }
+    .icv-beats { display: flex; flex-direction: column; gap: 2px; max-height: 160px; overflow-y: auto; }
+    .icv-beat { display: grid; grid-template-columns: 22px 60px 1fr; gap: 6px; font-size: 11px; padding: 2px 4px; border-radius: 6px; }
+    .icv-beat.cur { background: color-mix(in srgb, #f59e0b 20%, transparent); }
+    .icv-beat b { color: var(--text-primary); font-family: var(--mono); }
+    .icv-beat span { color: #f59e0b; font-weight: 700; }
+    .icv-beat em { color: var(--text-muted); font-style: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .icv-agent { display: flex; flex-direction: column; font-size: 11px; }
+    .icv-agent b { color: var(--text-primary); }
+    .icv-agent span { color: var(--text-secondary); font-family: var(--mono); }
+    .icv-dmx { display: flex; align-items: flex-end; gap: 1px; height: 42px; border: 1px solid var(--line); border-radius: 6px; padding: 2px; }
+    .icv-dmx i { flex: 1; background: linear-gradient(0deg, #f59e0b, #fde68a); min-height: 1px; }
+    .icv-log { max-height: 200px; overflow-y: auto; font-size: 10.5px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 1px; }
+    .icv-log em { color: var(--text-muted); font-family: var(--mono); font-style: normal; }
+    .icv-risk { height: 8px; border-radius: 999px; background: var(--line); overflow: hidden; }
+    .icv-risk i { display: block; height: 100%; background: #22c55e; } .icv-risk i.bad { background: #ef4444; }
+    .icv-kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 11px; }
+    .icv-kv span { color: var(--text-muted); } .icv-kv b { color: var(--text-primary); font-weight: 600; }
+    figure { margin: 0; flex: 1; min-width: 120px; } figure img { width: 100%; image-rendering: pixelated; border-radius: 6px; } figcaption { font-size: 10px; color: var(--text-muted); }
+    .icv-msg { font-size: 11px; color: var(--text-secondary); background: var(--card-2); border-radius: 8px; padding: 6px 8px; word-break: break-all; }
+    .icv-act { font-size: 11px; color: var(--text-muted); font-family: var(--mono); padding: 4px 2px; }
+    @@media (max-width: 1200px) { .icv-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int MW = 160, MH = 96;
+    private readonly byte[] _cam = new byte[VirtualProductionStudioRunner.CamWidth * VirtualProductionStudioRunner.CamHeight * 3];
+    private readonly DirectorDecision[] _log = new DirectorDecision[24];
+    private readonly float[] _moireImg = new float[MW * MH];
+    private byte[] _wall = Array.Empty<byte>();
+    private string? _wallUrl, _camUrl, _moireBefore, _moireAfter, _message;
+    private string _script = VirtualProductionStudioRunner.DemoScript;
+    private string _artHost = "2.255.255.255";
+    private bool _showPq;
+    private int _logCount;
+    private long _shownSeq = -1;
+    private float _pitch = 2.6f, _dist = 3f, _focal = 50f, _focus = 3f, _fstop = 2.8f;
+    private MoireAnalysis _moire;
+    private System.Threading.Timer? _timer;
+
+    private IcvfxLedWallFrustumRendererEngine F => Runner.Frustum;
+    private AgenticAutonomousVirtualProductionDirector D => Runner.Director;
+    private AcesColorManagementAndMoireSuppressionEngine C => Runner.Color;
+
+    private ColorSpace LedOutput { get => Runner.LedOutput; set { Runner.LedOutput = value; Refresh(); } }
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        D.OnChange += OnServiceChanged;
+        if (Runner.FrameSeq == 0) Runner.TickOnce(1.0 / VirtualProductionStudioRunner.TickHz);
+        Refresh();
+        Analyze();
+        _timer = new System.Threading.Timer(_ => { if (Runner.IsRunning && Runner.FrameSeq != _shownSeq) _ = InvokeAsync(() => { Refresh(); StateHasChanged(); }); }, null, 120, 120);
+    }
+
+    private static string F0(float v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(float v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(float v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string P(float v) => (v * 100f).ToString("0", CultureInfo.InvariantCulture) + "%";
+    private static string Trunc(string s, int n) => s.Length <= n ? s : s[..n] + "…";
+
+    private static float Parse(ChangeEventArgs e, float fallback)
+        => float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    private static string KindLabel(BeatKind k) => k switch
+    {
+        BeatKind.Establishing => "설정", BeatKind.Dialogue => "대사", BeatKind.Action => "액션", BeatKind.Reveal => "공개",
+        BeatKind.Tension => "긴장", BeatKind.Climax => "클라이맥스", _ => "평온",
+    };
+
+    private static string ShotLabel(ShotSize s) => s switch { ShotSize.Wide => "와이드", ShotSize.Medium => "미디엄", _ => "클로즈" };
+
+    private void Step()
+    {
+        for (var i = 0; i < VirtualProductionStudioRunner.TickHz; i++) Runner.TickOnce(1.0 / VirtualProductionStudioRunner.TickHz);
+        Refresh();
+    }
+
+    private void Refresh()
+    {
+        var need = Runner.WallWidth * Runner.WallHeight * 3;
+        if (_wall.Length != need) _wall = new byte[need];
+        Runner.CopyWall(_wall, _showPq);
+        _wallUrl = PromptFlowStudio.Services.Spatial.SpatialImageCodec.BmpDataUrl(_wall, Runner.WallWidth, Runner.WallHeight);
+        Runner.CopyCamera(_cam);
+        _camUrl = PromptFlowStudio.Services.Spatial.SpatialImageCodec.BmpDataUrl(_cam, VirtualProductionStudioRunner.CamWidth, VirtualProductionStudioRunner.CamHeight);
+        _logCount = D.CopyLog(_log);
+        _shownSeq = Runner.FrameSeq;
+    }
+
+    /// <summary>무아레 예측 + 촬영 시뮬(축 정렬 · 결상 피치) → 위상 상쇄 전/후 시각화.</summary>
+    private void Analyze()
+    {
+        _moire = AcesColorManagementAndMoireSuppressionEngine.Analyze(_pitch, _dist, _focal, 5.9f, _focus, _fstop);
+        var p = Math.Clamp(_moire.ImagedPitchPx, 0.55f, 8f);
+        AcesColorManagementAndMoireSuppressionEngine.SimulateCapture(_moireImg, MW, MH, p, 0.6f, 0f);
+        Blur(_moireImg, Math.Clamp(_moire.DefocusBlurPx * 0.5f, 0f, 6f));
+        _moireBefore = Gray(_moireImg);
+        var f = 1f / p;
+        var beat = MathF.Abs(f - MathF.Round(f));
+        if (beat > 0.01f && beat < 0.45f) C.SuppressMoire(_moireImg, MW, MH, beat, beat);
+        _moireAfter = Gray(_moireImg);
+    }
+
+    private void Blur(float[] img, float radius)
+    {
+        var r = (int)MathF.Round(radius);
+        if (r <= 0) return;
+        var tmp = (float[])img.Clone();
+        for (var y = 0; y < MH; y++)
+            for (var x = 0; x < MW; x++)
+            {
+                float s = 0; var c = 0;
+                for (var dy = -r; dy <= r; dy++) for (var dx = -r; dx <= r; dx++)
+                {
+                    int xx = x + dx, yy = y + dy;
+                    if ((uint)xx >= MW || (uint)yy >= MH) continue;
+                    s += tmp[yy * MW + xx]; c++;
+                }
+                img[y * MW + x] = s / c;
+            }
+    }
+
+    private static string Gray(float[] img)
+    {
+        float mn = float.MaxValue, mx = float.MinValue;
+        foreach (var v in img) { mn = MathF.Min(mn, v); mx = MathF.Max(mx, v); }
+        var mean = 0f; foreach (var v in img) mean += v; mean /= img.Length;
+        var span = MathF.Max(mx - mn, mean * 0.5f);
+        var rgb = new byte[img.Length * 3];
+        for (var i = 0; i < img.Length; i++)
+        {
+            var g = (byte)Math.Clamp((int)(((img[i] - mean) / span + 0.5f) * 255f), 0, 255);
+            rgb[i * 3] = g; rgb[i * 3 + 1] = g; rgb[i * 3 + 2] = g;
+        }
+        return PromptFlowStudio.Services.Spatial.SpatialImageCodec.BmpDataUrl(rgb, MW, MH);
+    }
+
+    private void LoadScript()
+    {
+        var n = D.LoadScript(_script);
+        Runner.Restart();
+        _message = "📜 " + n.ToString(CultureInfo.InvariantCulture) + "비트로 분해";
+        Refresh();
+    }
+
+    private void EnableArtNet()
+    {
+        if (!System.Net.IPAddress.TryParse(_artHost, out _)) { _message = "❌ IP 형식 오류"; return; }
+        try { D.EnableArtNet(_artHost); _message = "📡 Art-Net 송출 → " + _artHost + ":6454"; }
+        catch (System.Net.Sockets.SocketException ex) { _message = "❌ Art-Net 실패: " + ex.SocketErrorCode; }
+    }
+
+    private async Task ExportLut()
+    {
+        try
+        {
+            var dir = Path.Combine(Media.MediaRoot, "exports");
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, "ACEScct_to_Rec709_ACES_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture) + ".cube");
+            await Task.Run(() =>
+            {
+                var lut = C.BakeLut(ColorSpace.ACEScct, ColorSpace.Rec709DisplayAces);
+                AcesColorManagementAndMoireSuppressionEngine.WriteCube(path, lut, AcesColorManagementAndMoireSuppressionEngine.LutSize, "ACEScct to Rec.709 (ACES 1.x SDR approx)");
+            });
+            _message = "💾 " + path;
+        }
+        catch (IOException ex) { _message = "❌ LUT 저장 실패: " + ex.Message; }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(() => { if (Runner.IsRunning) Refresh(); StateHasChanged(); });
+
+    public void Dispose()
+    {
+        _timer?.Dispose();
+        Runner.OnChange -= OnServiceChanged;
+        D.OnChange -= OnServiceChanged;
+    }
+}

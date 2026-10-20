@@ -1,0 +1,426 @@
+@page "/live-studio"
+@implements IDisposable
+@using System.Globalization
+@using PromptFlowStudio.Services.Broadcast
+@using PromptFlowStudio.Services.Media
+@using PromptFlowStudio.Services.Storyboard
+@inject AiLiveLoopStreamerService Streamer
+@inject LiveChatAiReactionEngine Chat
+@inject RealtimeAvatarPuppeteerService Avatar
+@inject PromptFlowStudio.Services.Studio.StudioFolderLinkService FolderLink
+@inject NavigationManager Nav
+
+@* [PromptFlow Studio v16.25.0] 📺 24/7 AI 라이브 스튜디오 — 플레이리스트 루프 송출(RTMP/SRT 동시) · 실시간 채팅 AI 반응 · 아바타 립싱크/표정 오버레이.
+   상태는 싱글턴 서비스 소유 — 이 페이지는 OnChange 구독 + 250ms 스로틀 InvokeAsync(StateHasChanged), 아바타 미리보기는 발화 중에만 100ms 폴링. 스트림 키는 입력란 메모리에만 보관. *@
+
+<PageTitle>PromptFlow Studio · 24/7 AI 라이브 스튜디오</PageTitle>
+
+<div class="ls">
+    <header class="ls-head">
+        <div class="ls-navrow">
+            <button class="ls-back" @onclick='() => Nav.NavigateTo("storyboard")'>← 스토리보드</button>
+            <button class="ls-back" @onclick='() => Nav.NavigateTo("")'>홈</button>
+        </div>
+        <div class="ls-titlerow">
+            <h1 class="ls-title">📺 24/7 AI <span class="ls-title-g">라이브 스튜디오</span></h1>
+            <span class="ls-state @StateCss(Streamer.State)">@StateLabel(Streamer.State)</span>
+            @if (Streamer.IsLive) { <span class="ls-pill">⏱ @(FormatUptime(Streamer.Uptime))</span> }
+        </div>
+        <p class="ls-sub">완성 영상 플레이리스트를 <b>끊김 없이 무한 루프</b>로 여러 플랫폼에 동시 송출하고, 시청자 채팅에 <b>AI 아바타가 목소리·표정으로 실시간 반응</b>합니다.</p>
+    </header>
+
+    <section class="ls-kpis">
+        <div class="ls-kpi"><span>송출 상태</span><b>@(Streamer.Progress.Fps.ToString("0.0", CultureInfo.InvariantCulture)) fps</b><small>@(Streamer.Progress.BitrateKbps.ToString("0", CultureInfo.InvariantCulture)) kbps · @(Streamer.Progress.Speed.ToString("0.00", CultureInfo.InvariantCulture))x</small></div>
+        <div class="ls-kpi"><span>재연결</span><b>@(Streamer.Restarts)회</b><small>드롭 @(Streamer.Progress.DroppedFrames)프레임</small></div>
+        <div class="ls-kpi"><span>채팅 수신</span><b>@(Chat.ReceivedCount)</b><small>필터 @(Chat.FilteredCount) · 대기 @(Chat.QueueDepth)</small></div>
+        <div class="ls-kpi"><span>AI 응답</span><b>@(Chat.RepliedCount)</b><small>AI @(Chat.AiReplyCount) · 템플릿 @(Chat.FallbackCount) · 평균 @(Chat.AvgLatencyMs.ToString("0", CultureInfo.InvariantCulture))ms</small></div>
+        <div class="ls-kpi"><span>아바타 발화</span><b>@(Avatar.SpokenCount)</b><small>큐 @(Avatar.QueueDepth) · 음성 @(Chat.VoicedCount)</small></div>
+    </section>
+
+    <div class="ls-grid">
+        @* ── ① 송출 대상 ── *@
+        <section class="ls-card">
+            <h2 class="ls-h2">① 송출 대상 · RTMP/SRT 키</h2>
+            @for (var i = 0; i < AiLiveLoopStreamerService.Presets.Count; i++)
+            {
+                var idx = i;
+                var p = AiLiveLoopStreamerService.Presets[idx];
+                <div class="ls-target @(_use[idx] ? "on" : null)">
+                    <label class="ls-opt"><input type="checkbox" checked="@_use[idx]" disabled="@Streamer.IsLive" @onchange="e => _use[idx] = e.Value is true" /> @p.Icon @p.Label</label>
+                    @if (_use[idx])
+                    {
+                        <input class="ls-in" placeholder="@(p.Platform == LivePlatform.Srt ? "srt://host:port" : "rtmp://서버 주소")" @bind="_server[idx]" disabled="@Streamer.IsLive" />
+                        <input class="ls-in" type="password" autocomplete="off" placeholder="@(p.KeyRequired ? "스트림 키(필수)" : "스트림 키(선택)")" @bind="_key[idx]" disabled="@Streamer.IsLive" />
+                    }
+                </div>
+            }
+            <div class="ls-row">
+                <label class="ls-opt">해상도
+                    <select class="ls-in sm" @bind="_res" disabled="@Streamer.IsLive">
+                        <option value="1080">1920×1080</option><option value="720">1280×720</option><option value="v1080">1080×1920(세로)</option>
+                    </select></label>
+                <label class="ls-opt">FPS <select class="ls-in sm" @bind="_fps" disabled="@Streamer.IsLive"><option value="30">30</option><option value="60">60</option></select></label>
+                <label class="ls-opt">비트레이트 <input class="ls-in sm" type="number" min="500" max="20000" step="500" @bind="_kbps" disabled="@Streamer.IsLive" /> kbps</label>
+            </div>
+            <div class="ls-row">
+                <label class="ls-opt"><input type="checkbox" @bind="_nvenc" disabled="@Streamer.IsLive" /> NVENC(실패 시 x264 자동)</label>
+                <label class="ls-opt"><input type="checkbox" @bind="_overlay" disabled="@Streamer.IsLive" /> 아바타 오버레이</label>
+                <label class="ls-opt"><input type="checkbox" @bind="_voiceMix" disabled="@Streamer.IsLive" /> AI 음성 믹스(덕킹)</label>
+            </div>
+            <div class="ls-row">
+                @if (!Streamer.IsLive)
+                {
+                    <button class="ls-btn go" @onclick="StartLive" disabled="@(Streamer.PlaylistCount == 0)">🔴 24/7 송출 시작</button>
+                }
+                else
+                {
+                    <button class="ls-btn stop" @onclick="StopLive">⏹ 송출 중지</button>
+                    <button class="ls-btn" @onclick="ApplyPlaylist">🔁 플레이리스트 즉시 반영</button>
+                }
+            </div>
+            <div class="ls-msg">@Streamer.LastMessage</div>
+            @if (Streamer.LastError is { } err) { <div class="ls-msg warn">⚠️ @err</div> }
+            <p class="ls-note">스트림 키는 저장되지 않으며 상태/로그에는 마스킹됩니다. TikTok LIVE 는 계정별 서버 URL 을 LIVE Studio 에서 복사해 입력하세요.</p>
+        </section>
+
+        @* ── ② 플레이리스트 큐 ── *@
+        <section class="ls-card">
+            <h2 class="ls-h2">② 루프 플레이리스트 <span class="ls-pill">@(Streamer.PlaylistCount)편</span></h2>
+            <div class="ls-row">
+                <input class="ls-in grow" placeholder="영상 파일 또는 폴더 경로" @bind="_path" />
+                <button class="ls-btn" @onclick="AddPath">＋ 추가</button>
+                <button class="ls-btn" @onclick="Streamer.ClearPlaylist" disabled="@(Streamer.PlaylistCount == 0)">비우기</button>
+            </div>
+            <ol class="ls-list">
+                @{ var list = Streamer.Playlist; }
+                @for (var i = 0; i < list.Count; i++)
+                {
+                    var idx = i;
+                    <li>
+                        <span class="ls-file" title="@list[idx]">@System.IO.Path.GetFileName(list[idx])</span>
+                        <button class="ls-mini" @onclick="() => Streamer.Move(idx, -1)" disabled="@(idx == 0)">▲</button>
+                        <button class="ls-mini" @onclick="() => Streamer.Move(idx, 1)" disabled="@(idx == list.Count - 1)">▼</button>
+                        <button class="ls-mini" @onclick="() => FolderLink.Reveal(list[idx])">📂</button>
+                        <button class="ls-mini" @onclick="() => Streamer.RemoveAt(idx)">✕</button>
+                    </li>
+                }
+            </ol>
+            @if (_toast is not null) { <div class="ls-msg">@_toast</div> }
+            <p class="ls-note">모든 영상은 송출 해상도/FPS 로 자동 정규화되어 하나의 스트림으로 무한 반복됩니다(오디오 트랙 포함 영상 권장). 송출 중 변경은 [즉시 반영]으로 적용.</p>
+        </section>
+
+        @* ── ③ AI 아바타 ── *@
+        <section class="ls-card">
+            <h2 class="ls-h2">③ AI 아바타 <span class="ls-pill">@(Chat.PersonaName)</span></h2>
+            <div class="ls-avatar emo-@((int)_frame.Emotion) @(_frame.Speaking ? "talk" : null)">
+                <div class="ls-face">
+                    <div class="ls-eyes"><i></i><i></i></div>
+                    <div class="ls-mouth" style="height:@((4 + _frame.Openness * 26).ToString("0.#", CultureInfo.InvariantCulture))px; width:@(MouthWidth(_frame.Mouth))px"></div>
+                </div>
+                <div class="ls-ascii">@Avatar.CurrentFace</div>
+                <div class="ls-cap">@(string.IsNullOrEmpty(Avatar.Caption) ? "…" : Avatar.Caption)</div>
+            </div>
+            <div class="ls-row">
+                <label class="ls-opt">이름 <input class="ls-in sm" @bind="Chat.PersonaName" /></label>
+                <label class="ls-opt grow">주제 <input class="ls-in grow" @bind="Chat.Topic" /></label>
+            </div>
+            <input class="ls-in" placeholder="말투/성격" @bind="Chat.PersonaStyle" />
+            <div class="ls-row">
+                <input class="ls-in grow" placeholder="아바타가 바로 말할 문장(테스트)" @bind="_say" />
+                <button class="ls-btn" @onclick="SayNow">🗣 말하기</button>
+                <button class="ls-btn" @onclick="Avatar.ClearQueue">큐 비우기</button>
+            </div>
+            <p class="ls-note">발화 @(Avatar.SpokenCount) · 드롭 @(Avatar.DroppedCount) · 디코드 실패 @(Avatar.DecodeFailCount) · 언더런 @(Avatar.UnderrunCount) · 송출 연결 @(Avatar.SinkAttached ? "●" : "○")</p>
+        </section>
+
+        @* ── ④ 채팅 & 인터랙션 ── *@
+        <section class="ls-card wide">
+            <h2 class="ls-h2">④ 실시간 채팅 · AI 반응
+                <span class="ls-pill @(Chat.IsRunning ? "ok" : null)">@(Chat.IsRunning ? "반응 가동" : "반응 정지")</span>
+                <span class="ls-pill">@(Chat.AiAvailable ? "Gemini" : "오프라인 템플릿")</span>
+            </h2>
+            <div class="ls-row">
+                @if (Chat.IsRunning) { <button class="ls-btn stop" @onclick="Chat.Stop">⏹ AI 반응 정지</button> }
+                else { <button class="ls-btn go" @onclick="Chat.Start">▶ AI 반응 시작</button> }
+                <label class="ls-opt"><input type="checkbox" @bind="_useAi" /> Gemini 응답</label>
+                <label class="ls-opt"><input type="checkbox" @bind="_useVoice" /> TTS 음성</label>
+                <label class="ls-opt"><input type="checkbox" @bind="_chatter" /> 잡담에도 응답</label>
+                <label class="ls-opt">간격 <input class="ls-in xs" type="number" min="2" max="120" @bind="_interval" />초</label>
+            </div>
+            <div class="ls-row">
+                <input class="ls-in grow" placeholder="YouTube 라이브 videoId 또는 liveChatId" @bind="_ytId" />
+                @if (Chat.IsPolling) { <button class="ls-btn" @onclick="Chat.StopPolling">채팅 연결 해제</button> }
+                else { <button class="ls-btn" @onclick="ConnectYouTube" disabled="@(!Chat.YouTubeConfigured)">▶️ YouTube 채팅 연결</button> }
+                <span class="ls-note">@(Chat.PollStatus ?? (Chat.YouTubeConfigured ? "API 키 준비됨" : "PFS_YOUTUBE_API_KEY 미설정 — 수동 입력/브리지만"))</span>
+            </div>
+            <div class="ls-row">
+                <input class="ls-in sm" placeholder="닉네임" @bind="_testUser" />
+                <input class="ls-in grow" placeholder="테스트 채팅 입력(치지직/TikTok 브리지 동일 경로)" @bind="_testText" @onkeyup="OnTestKey" />
+                <label class="ls-opt"><input type="checkbox" @bind="_testDonation" /> 후원</label>
+                <button class="ls-btn" @onclick="SendTest">보내기</button>
+                <button class="ls-btn" @onclick="Chat.ClearLogs">로그 지우기</button>
+            </div>
+            <div class="ls-split">
+                <div class="ls-log">
+                    <div class="ls-logh">채팅 로그</div>
+                    @{ var log = Chat.Log; }
+                    @for (var i = log.Count - 1; i >= 0 && i >= log.Count - 60; i--)
+                    {
+                        var e = log[i];
+                        <div class="ls-line @(e.Status.StartsWith("필터", StringComparison.Ordinal) ? "bad" : e.Status.StartsWith("응답", StringComparison.Ordinal) ? "ok" : null)">
+                            <span class="ls-t">@(e.Msg.At.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture))</span>
+                            <span class="ls-tag">@(IntentLabel(e.Intent))</span>
+                            <b>@e.Msg.User</b> @e.Msg.Text
+                            <span class="ls-st">@e.Status</span>
+                        </div>
+                    }
+                </div>
+                <div class="ls-log">
+                    <div class="ls-logh">AI 인터랙션 모니터</div>
+                    @{ var rx = Chat.Reactions; }
+                    @for (var i = rx.Count - 1; i >= 0 && i >= rx.Count - 40; i--)
+                    {
+                        var r = rx[i];
+                        <div class="ls-rx">
+                            <div class="ls-q"><b>@r.Source.User</b> @r.Source.Text</div>
+                            <div class="ls-a">@(FacialEmotionPuppeteerEngine.PresetOf(r.Emotion).Icon) @r.Reply</div>
+                            <div class="ls-meta">@(r.Ai ? "Gemini" : "템플릿") · @(r.Voiced ? "음성" : "자막") · @(r.LatencyMs.ToString("0", CultureInfo.InvariantCulture))ms</div>
+                        </div>
+                    }
+                </div>
+            </div>
+        </section>
+    </div>
+</div>
+
+<style>
+    .ls { width: 100%; box-sizing: border-box; padding: 18px 22px 40px; display: flex; flex-direction: column; gap: 14px; }
+    .ls-navrow { display: flex; gap: 10px; }
+    .ls-back { font: 700 12px/1 var(--mono); color: var(--text-muted); background: none; border: none; cursor: pointer; padding: 0; }
+    .ls-back:hover { color: var(--text-primary); }
+    .ls-titlerow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+    .ls-title { font-size: 24px; font-weight: 900; margin: 0; color: var(--text-primary); }
+    .ls-title-g { background: linear-gradient(135deg, #ff3b5c, var(--flow-magenta)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .ls-sub { font-size: 13px; color: var(--text-secondary); margin: 6px 0 0; }
+    .ls-state, .ls-pill { font: 800 11px/1 var(--mono); padding: 5px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .ls-state.live { color: #fff; background: #e5203a; border-color: #e5203a; animation: lsPulse 1.6s infinite; }
+    .ls-state.warn { color: #f5a524; border-color: #f5a524; } .ls-state.bad { color: #ff5d6c; border-color: #ff5d6c; }
+    .ls-pill.ok { color: #2fd27d; border-color: #2fd27d; }
+    .ls-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+    .ls-kpi { display: flex; flex-direction: column; gap: 3px; padding: 12px 14px; border-radius: 14px; background: var(--card); border: 1px solid var(--line); }
+    .ls-kpi span { font: 700 10.5px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); }
+    .ls-kpi b { font-size: 20px; font-weight: 900; color: var(--text-primary); } .ls-kpi small { font-size: 11px; color: var(--text-secondary); }
+    .ls-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .ls-card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 9px; min-width: 0; }
+    .ls-card.wide { grid-column: 1 / -1; }
+    .ls-h2 { font-size: 14px; font-weight: 900; margin: 0; color: var(--text-primary); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .ls-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .ls-opt { display: flex; align-items: center; gap: 6px; font: 700 12px inherit; color: var(--text-secondary); }
+    .ls-opt.grow, .ls-in.grow { flex: 1 1 160px; }
+    .ls-in { box-sizing: border-box; width: 100%; padding: 7px 9px; border-radius: 9px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); font-size: 12px; }
+    .ls-in.sm { width: 120px; } .ls-in.xs { width: 64px; }
+    .ls-target { display: flex; flex-direction: column; gap: 5px; padding: 7px 9px; border-radius: 10px; border: 1px dashed var(--line); }
+    .ls-target.on { border-style: solid; border-color: var(--accent); }
+    .ls-btn { padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); font: 800 12px inherit; cursor: pointer; }
+    .ls-btn:disabled { opacity: .45; cursor: not-allowed; }
+    .ls-btn.go { background: #e5203a; border-color: #e5203a; color: #fff; } .ls-btn.stop { border-color: #ff5d6c; color: #ff5d6c; }
+    .ls-msg { font-size: 12px; color: var(--text-primary); } .ls-msg.warn { color: #f5a524; }
+    .ls-note { font-size: 11.5px; color: var(--text-muted); line-height: 1.45; margin: 0; }
+    .ls-list { margin: 0; padding-left: 20px; max-height: 260px; overflow: auto; display: flex; flex-direction: column; gap: 4px; }
+    .ls-list li { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-secondary); }
+    .ls-file { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ls-mini { border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 11px; padding: 2px 4px; }
+    .ls-mini:hover:not(:disabled) { color: var(--text-primary); } .ls-mini:disabled { opacity: .3; }
+    .ls-avatar { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 14px; border-radius: 14px; background: radial-gradient(circle at 50% 30%, rgba(255,59,92,.18), transparent 70%), var(--card-2); }
+    .ls-face { width: 110px; height: 110px; border-radius: 50%; background: linear-gradient(160deg, #ffe1c9, #f6b99a); position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; transition: transform .2s; }
+    .ls-avatar.talk .ls-face { transform: scale(1.04); }
+    .ls-eyes { display: flex; gap: 26px; } .ls-eyes i { width: 12px; height: 14px; border-radius: 50%; background: #2b2230; transition: height .15s; }
+    .ls-avatar.emo-1 .ls-eyes i, .ls-avatar.emo-2 .ls-eyes i { height: 5px; border-radius: 6px 6px 0 0; }
+    .ls-avatar.emo-3 .ls-eyes i { height: 18px; width: 16px; } .ls-avatar.emo-5 .ls-eyes i { height: 3px; }
+    .ls-mouth { background: #7a2338; border-radius: 0 0 14px 14px; transition: height 80ms linear, width 80ms linear; min-height: 3px; }
+    .ls-avatar.emo-5 .ls-mouth { border-radius: 14px 14px 0 0; }
+    .ls-ascii { font: 800 14px var(--mono); color: var(--text-secondary); }
+    .ls-cap { font-size: 12.5px; color: var(--text-primary); text-align: center; min-height: 2.6em; white-space: pre-line; }
+    .ls-split { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .ls-log { max-height: 340px; overflow: auto; border: 1px solid var(--line); border-radius: 12px; padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+    .ls-logh { font: 800 11px var(--mono); color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; }
+    .ls-line { font-size: 12px; color: var(--text-secondary); line-height: 1.4; } .ls-line b { color: var(--text-primary); }
+    .ls-line.bad { opacity: .5; text-decoration: line-through; } .ls-line.ok b { color: #2fd27d; }
+    .ls-t { font: 600 10.5px var(--mono); color: var(--text-muted); margin-right: 4px; }
+    .ls-tag { font: 700 10px var(--mono); padding: 1px 5px; border-radius: 5px; border: 1px solid var(--line); margin-right: 4px; }
+    .ls-st { float: right; font: 700 10.5px var(--mono); color: var(--text-muted); }
+    .ls-rx { padding: 6px 8px; border-radius: 9px; background: var(--card-2); display: flex; flex-direction: column; gap: 3px; }
+    .ls-q { font-size: 11.5px; color: var(--text-muted); } .ls-a { font-size: 12.5px; color: var(--text-primary); } .ls-meta { font: 600 10.5px var(--mono); color: var(--text-muted); }
+    @@keyframes lsPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(229,32,58,.55); } 50% { box-shadow: 0 0 0 6px rgba(229,32,58,0); } }
+    @@media (max-width: 1200px) { .ls-grid { grid-template-columns: 1fr 1fr; } .ls-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+    @@media (max-width: 820px) { .ls-grid, .ls-split { grid-template-columns: 1fr; } .ls-kpis { grid-template-columns: 1fr 1fr; } }
+</style>
+
+@code {
+    private readonly bool[] _use = new bool[AiLiveLoopStreamerService.Presets.Count];
+    private readonly string[] _server = new string[AiLiveLoopStreamerService.Presets.Count];
+    private readonly string[] _key = new string[AiLiveLoopStreamerService.Presets.Count];
+    private string _res = "1080", _fps = "30";
+    private int _kbps = 4500;
+    private bool _nvenc = true, _overlay = true, _voiceMix = true;
+    private string? _path, _toast, _say, _ytId, _testText;
+    private string _testUser = "시청자";
+    private bool _testDonation;
+    private AvatarFrame _frame;
+    private CancellationTokenSource? _previewCts;
+    private int _renderQueued;
+    private long _lastRender;
+
+    private bool _useAi { get => Chat.UseAi; set => Chat.UseAi = value; }
+    private bool _useVoice { get => Chat.UseVoice; set => Chat.UseVoice = value; }
+    private bool _chatter { get => Chat.ReplyToChatter; set => Chat.ReplyToChatter = value; }
+    private int _interval { get => Chat.MinReplyIntervalSeconds; set => Chat.MinReplyIntervalSeconds = value; }
+
+    protected override void OnInitialized()
+    {
+        for (var i = 0; i < _server.Length; i++) { _server[i] = AiLiveLoopStreamerService.Presets[i].DefaultServer; _key[i] = ""; }
+        _use[0] = true;
+        _frame = Avatar.Current;
+        Streamer.OnChange += OnLiveChanged;
+        Chat.OnChange += OnLiveChanged;
+        Avatar.OnChange += OnAvatarChanged;
+        Avatar.Arm();   // 미리보기 립싱크(송출 전에도)
+    }
+
+    private void OnLiveChanged()
+    {
+        // 250ms 스로틀 — 대기 중 렌더 1건만 예약.
+        if (Interlocked.Exchange(ref _renderQueued, 1) == 1) return;
+        var wait = 250 - (Environment.TickCount64 - Interlocked.Read(ref _lastRender));
+        _ = RenderLaterAsync(wait > 0 ? (int)wait : 0);
+    }
+
+    private async Task RenderLaterAsync(int delayMs)
+    {
+        try
+        {
+            if (delayMs > 0) await Task.Delay(delayMs);
+            Interlocked.Exchange(ref _lastRender, Environment.TickCount64);
+            Volatile.Write(ref _renderQueued, 0);
+            _frame = Avatar.Current;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex) { Volatile.Write(ref _renderQueued, 0); Program.Log("LiveStudio.Render", ex); }
+    }
+
+    // 발화 시작/종료 시 미리보기 폴링(100ms)을 켜고 끈다.
+    private void OnAvatarChanged()
+    {
+        OnLiveChanged();
+        if (Avatar.QueueDepth > 0 && Volatile.Read(ref _previewCts) is null)
+        {
+            var cts = new CancellationTokenSource();
+            if (Interlocked.CompareExchange(ref _previewCts, cts, null) is null) _ = PreviewLoopAsync(cts);
+            else cts.Dispose();
+        }
+    }
+
+    private async Task PreviewLoopAsync(CancellationTokenSource cts)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(100));
+            var idleTicks = 0;
+            while (await timer.WaitForNextTickAsync(cts.Token))
+            {
+                _frame = Avatar.Current;
+                await InvokeAsync(StateHasChanged);
+                idleTicks = _frame.Speaking || Avatar.QueueDepth > 0 ? 0 : idleTicks + 1;
+                if (idleTicks > 10) break;
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("LiveStudio.Preview", ex); }
+        finally
+        {
+            if (ReferenceEquals(Interlocked.CompareExchange(ref _previewCts, null, cts), cts)) cts.Dispose();
+        }
+    }
+
+    private void StartLive()
+    {
+        var targets = new List<LiveTarget>();
+        for (var i = 0; i < _use.Length; i++)
+            if (_use[i]) targets.Add(new LiveTarget(AiLiveLoopStreamerService.Presets[i].Platform, _server[i] ?? "", _key[i] ?? ""));
+        var (w, h) = _res switch { "720" => (1280, 720), "v1080" => (1080, 1920), _ => (1920, 1080) };
+        var fps = int.TryParse(_fps, NumberStyles.Integer, CultureInfo.InvariantCulture, out var f) ? f : 30;
+        var r = Streamer.Start(new LiveStreamConfig(targets, w, h, fps, _kbps, 160, _nvenc, _overlay, _voiceMix));
+        _toast = r.Ok ? null : "⚠️ " + r.Message;
+        if (r.Ok && !Chat.IsRunning) Chat.Start();
+    }
+
+    private async Task StopLive() => await Streamer.StopAsync();
+
+    private void ApplyPlaylist() => _toast = Streamer.ApplyPlaylistNow() ? "🔁 플레이리스트를 반영해 재시작합니다." : "반영할 내용이 없습니다.";
+
+    private void AddPath()
+    {
+        var p = (_path ?? "").Trim().Trim('"');
+        if (p.Length == 0) return;
+        if (System.IO.Directory.Exists(p)) { var n = Streamer.AddFolder(p); _toast = n > 0 ? "📁 " + n.ToString(CultureInfo.InvariantCulture) + "편 추가" : "추가할 영상이 없습니다."; }
+        else _toast = Streamer.AddToPlaylist(p) ? "＋ 추가됨" : "⚠️ 추가 실패(파일 없음/형식/중복/상한 " + AiLiveLoopStreamerService.MaxPlaylist.ToString(CultureInfo.InvariantCulture) + ")";
+        if (_toast.StartsWith("＋", StringComparison.Ordinal) || _toast.StartsWith("📁", StringComparison.Ordinal)) _path = null;
+    }
+
+    private async Task SayNow()
+    {
+        var t = (_say ?? "").Trim();
+        if (t.Length == 0) return;
+        await Avatar.EnqueueAsync(new AvatarCue(t, FacialEmotionPuppeteerEngine.Detect(t), 0.6, null, "manual"));
+        _say = null;
+    }
+
+    private void SendTest()
+    {
+        var t = (_testText ?? "").Trim();
+        if (t.Length == 0) return;
+        var st = Chat.Ingest(new LiveChatMessage("Studio", _testUser, t, DateTimeOffset.Now, _testDonation, _testDonation ? 10000 : 0));
+        _toast = "💬 " + st;
+        _testText = null;
+        if (st == "대기" && !Chat.IsRunning) Chat.Start();
+    }
+
+    private void OnTestKey(KeyboardEventArgs e) { if (e.Key == "Enter") SendTest(); }
+
+    private void ConnectYouTube() => Chat.StartYouTubePolling(_ytId);
+
+    private static string StateLabel(LiveLoopState s) => s switch
+    {
+        LiveLoopState.Live => "● LIVE", LiveLoopState.Starting => "준비 중", LiveLoopState.Reconnecting => "재연결 중",
+        LiveLoopState.Failed => "송출 실패", LiveLoopState.Stopped => "중지됨", _ => "대기",
+    };
+
+    private static string? StateCss(LiveLoopState s) => s switch
+    {
+        LiveLoopState.Live => "live", LiveLoopState.Starting or LiveLoopState.Reconnecting => "warn", LiveLoopState.Failed => "bad", _ => null,
+    };
+
+    private static string IntentLabel(ChatIntent i) => i switch
+    {
+        ChatIntent.Question => "질문", ChatIntent.Greeting => "인사", ChatIntent.Thanks => "감사", ChatIntent.Request => "요청",
+        ChatIntent.Donation => "후원", ChatIntent.Spam => "스팸", _ => "잡담",
+    };
+
+    private static string MouthWidth(Viseme v) => v switch
+    {
+        Viseme.A => "34", Viseme.E => "38", Viseme.I => "40", Viseme.O => "24", Viseme.U => "16", Viseme.Closed => "30", _ => "28",
+    };
+
+    private static string FormatUptime(TimeSpan t) =>
+        ((int)t.TotalHours).ToString("00", CultureInfo.InvariantCulture) + ":" + t.Minutes.ToString("00", CultureInfo.InvariantCulture) + ":" + t.Seconds.ToString("00", CultureInfo.InvariantCulture);
+
+    public void Dispose()
+    {
+        Streamer.OnChange -= OnLiveChanged;
+        Chat.OnChange -= OnLiveChanged;
+        Avatar.OnChange -= OnAvatarChanged;
+        var cts = Interlocked.Exchange(ref _previewCts, null);
+        if (cts is not null) { try { cts.Cancel(); cts.Dispose(); } catch { } }
+        if (!Streamer.IsLive) Avatar.Disarm();   // 송출 중이면 펌프 유지
+    }
+}

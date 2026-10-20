@@ -1,0 +1,425 @@
+@using System.Globalization
+@using System.Threading
+@implements IDisposable
+@inject EpisodicStorySeriesBuilder Series
+@inject ILocalMediaService Media
+
+@* [PromptFlow Studio v16.22.0] 👶 캐릭터 스튜디오 — 프로필 등록(얼굴 사진·영역·특징) · 의상/소품 앵커 · 음성/스타일/시드 · 1-Click 적용 · 시리즈/에피소드 · 드리프트 억제 · 컷 정합성.
+   상태는 EpisodicStorySeriesBuilder(싱글턴) 소유 — OnChange 구독 + InvokeAsync(StateHasChanged). 모바일 링크(Components/**) — 주입 서비스는 MauiProgram 에도 등록. *@
+
+<div class="cs-scrim" @onclick="Close">
+    <div class="cs-modal" @onclick:stopPropagation="true">
+        <div class="cs-h">
+            <div>
+                <div class="cs-title">👶 캐릭터 스튜디오 · 피사체 Identity 고정</div>
+                <div class="cs-sub">등록한 얼굴·의상·소품을 모든 컷과 에피소드에 동일하게 유지합니다. 정합성은 <b>외형 특징 비교 신뢰도</b>로 측정합니다(100% 보존 보장 아님 · 낮으면 재생성 권장).</div>
+            </div>
+            <button class="cs-x" @onclick="Close">✕</button>
+        </div>
+        <div class="cs-tabs">
+            <button class="cs-tab @(_tab == 0 ? "on" : null)" @onclick="() => _tab = 0">🧒 프로필</button>
+            <button class="cs-tab @(_tab == 1 ? "on" : null)" @onclick="() => _tab = 1">📚 시리즈</button>
+            @if (Project is not null) { <button class="cs-tab @(_tab == 2 ? "on" : null)" @onclick="() => _tab = 2">📈 정합성 · 드리프트</button> }
+        </div>
+
+        <div class="cs-body">
+        @if (_tab == 0)
+        {
+            <div class="cs-grid">
+                <div class="cs-col">
+                    <div class="cs-sec">등록된 캐릭터 (@Series.Profiles.Count)</div>
+                    @foreach (var p in Series.Profiles)
+                    {
+                        <button @key="p.Id" class="cs-card @(_sel?.Id == p.Id ? "on" : null)" @onclick="() => Select(p)">
+                            @if (p.FaceImagePath is not null) { <img src="@Media.ToPlaybackUrl(p.FaceImagePath)" alt="" /> }
+                            <span class="cs-card-t"><b>@p.Name</b><small>@(p.HasFace ? "🔒 특징 추출됨" : "⚠ 특징 없음") · 앵커 @(p.Anchors.Count)</small></span>
+                        </button>
+                    }
+                    <div class="cs-sec">새 캐릭터</div>
+                    <input class="cs-in" placeholder="이름(예: 예준)" @bind="_newName" />
+                    <label class="cs-drop">
+                        <InputFile class="cs-file" OnChange="OnFacePicked" accept="image/png,image/jpeg,image/webp" disabled="@_busy" />
+                        <span>📷 @(_busy ? "처리 중…" : "얼굴 사진 업로드 → 프로필 생성")</span>
+                    </label>
+                    @if (Series.LastError is not null) { <div class="cs-note warn">@Series.LastError</div> }
+                </div>
+
+                <div class="cs-col wide">
+                    @if (_sel is null) { <div class="cs-note">왼쪽에서 캐릭터를 선택하거나 새로 등록하세요.</div> }
+                    else
+                    {
+                        <div class="cs-row">
+                            <input class="cs-in" @bind="_sel.Name" />
+                            <button class="cs-btn ghost" @onclick="SaveSel">💾 저장</button>
+                            <button class="cs-btn danger" @onclick="RemoveSel">🗑</button>
+                        </div>
+                        @if (_sel.FaceImagePath is not null)
+                        {
+                            <div class="cs-face">
+                                <img src="@Media.ToPlaybackUrl(_sel.FaceImagePath)" alt="" />
+                                <div class="cs-box" style="left:@P(_sel.Region.X)%;top:@P(_sel.Region.Y)%;width:@P(_sel.Region.W)%;height:@P(_sel.Region.H)%"></div>
+                            </div>
+                            <div class="cs-row">
+                                <label class="cs-sl">X <input type="range" min="0" max="0.9" step="0.01" value="@Inv(_sel.Region.X)" @onchange='e => SetRegion(e, 0)' /></label>
+                                <label class="cs-sl">Y <input type="range" min="0" max="0.9" step="0.01" value="@Inv(_sel.Region.Y)" @onchange='e => SetRegion(e, 1)' /></label>
+                                <label class="cs-sl">크기 <input type="range" min="0.1" max="1" step="0.01" value="@Inv(_sel.Region.W)" @onchange='e => SetRegion(e, 2)' /></label>
+                                <button class="cs-btn ghost" disabled="@_busy" @onclick="RefreshFeatures">🔄 얼굴 영역 재추출</button>
+                            </div>
+                        }
+                        <div class="cs-row">
+                            <label class="cs-lbl">🎙️ 음성 톤
+                                <select class="cs-in" @bind="_sel.VoiceTone">
+                                    <option value="@NarrationTone.FairyTale">동화 구연</option>
+                                    <option value="@NarrationTone.Bright">밝은 톤</option>
+                                    <option value="@NarrationTone.Cloud">구름처럼 부드럽게</option>
+                                </select></label>
+                            <label class="cs-lbl">🧬 어댑터(ComfyUI)
+                                <select class="cs-in" @bind="_sel.Adapter">
+                                    <option value="@IdentityAdapter.PuLid">PuLID</option>
+                                    <option value="@IdentityAdapter.InstantId">InstantID</option>
+                                    <option value="@IdentityAdapter.None">사용 안 함</option>
+                                </select></label>
+                            <label class="cs-lbl">강도 @(_sel.AdapterWeight.ToString("0.00", CultureInfo.InvariantCulture))
+                                <input type="range" min="0.3" max="1.2" step="0.05" @bind="_sel.AdapterWeight" @bind:event="oninput" /></label>
+                        </div>
+                        <label class="cs-lbl">🎨 고정 스타일 토큰(쉼표 구분)
+                            <input class="cs-in" placeholder="photorealistic, soft pastel color grading, 50mm lens, natural daylight" @bind="_sel.StyleTokens" /></label>
+                        <label class="cs-lbl">🎲 고정 시드 <input class="cs-in sm" type="number" min="0" @bind="_sel.Seed" /></label>
+
+                        <div class="cs-sec">👕 의상 · 🧸 소품 앵커 (@_sel.Anchors.Count/@PropOutfitTransferEngine.MaxAnchors)</div>
+                        @foreach (var a in _sel.Anchors)
+                        {
+                            <div class="cs-anchor" @key="a">
+                                <span class="cs-sw" style="background:@a.ColorHex"></span>
+                                <span>@PropOutfitTransferEngine.Describe(a)</span>
+                                <small>@PropOutfitTransferEngine.ClauseOf(a)</small>
+                                <button class="cs-link" @onclick="() => RemoveAnchor(a)">✕</button>
+                            </div>
+                        }
+                        <div class="cs-row wrap">
+                            <select class="cs-in sm" @bind="_aKind">
+                                <option value="@AnchorKind.Outfit">👕 의상</option>
+                                <option value="@AnchorKind.Prop">🧸 소품</option>
+                            </select>
+                            <input class="cs-in" placeholder="표시명(예: 멜빵바지)" @bind="_aLabel" />
+                            <input class="cs-in" placeholder="영문(예: dungaree overalls)" @bind="_aName" />
+                            <input class="cs-color" type="color" @bind="_aColor" />
+                            <input class="cs-in sm" placeholder="패턴(stripe)" @bind="_aPattern" />
+                            <input class="cs-in sm" placeholder="질감(knit)" @bind="_aMaterial" />
+                            <label class="cs-mini">
+                                <InputFile class="cs-file" OnChange="OnAnchorImagePicked" accept="image/png,image/jpeg,image/webp" />
+                                🖼 @(_aImage is null ? "사진(색 자동)" : "사진 ✓")
+                            </label>
+                            <button class="cs-btn" disabled="@(_sel.Anchors.Count >= PropOutfitTransferEngine.MaxAnchors || string.IsNullOrWhiteSpace(_aName))" @onclick="AddAnchor">＋ 앵커</button>
+                        </div>
+                        @if (_colorNote is not null) { <div class="cs-note">@_colorNote</div> }
+
+                        @if (Project is not null)
+                        {
+                            <button class="cs-btn pri big" @onclick="ApplyToProject">👶 1-Click 캐릭터 적용 — 현재 프로젝트 전 컷 고정</button>
+                        }
+                    }
+                </div>
+            </div>
+        }
+        else if (_tab == 1)
+        {
+            <div class="cs-grid">
+                <div class="cs-col">
+                    <div class="cs-sec">시리즈 (@Series.Series.Count)</div>
+                    @foreach (var s in Series.Series)
+                    {
+                        <button @key="s.Id" class="cs-card @(_series?.Id == s.Id ? "on" : null)" @onclick="() => _series = s">
+                            <span class="cs-card-t"><b>@s.Title</b><small>@(Series.FindProfile(s.ProfileId)?.Name ?? "⚠ 프로필 없음") · 에피소드 @s.EpisodeCount</small></span>
+                        </button>
+                    }
+                    <div class="cs-sec">새 시리즈</div>
+                    <input class="cs-in" placeholder="시리즈 제목" @bind="_seriesTitle" />
+                    <select class="cs-in" @bind="_seriesProfile">
+                        <option value="">— 캐릭터 선택 —</option>
+                        @foreach (var p in Series.Profiles) { <option value="@p.Id">@p.Name</option> }
+                    </select>
+                    <input class="cs-in" placeholder="시리즈 고정 스타일(비우면 프로필 값)" @bind="_seriesStyle" />
+                    <button class="cs-btn" disabled="@string.IsNullOrEmpty(_seriesProfile)" @onclick="CreateSeries">＋ 시리즈 만들기</button>
+                </div>
+                <div class="cs-col wide">
+                    @if (_series is null) { <div class="cs-note">시리즈를 선택하세요.</div> }
+                    else
+                    {
+                        <div class="cs-row"><b class="cs-hl">@_series.Title</b><button class="cs-btn danger" @onclick="RemoveSeries">🗑</button></div>
+                        @foreach (var season in _series.Seasons)
+                        {
+                            <div class="cs-sec">@season.Title</div>
+                            @foreach (var ep in season.Episodes)
+                            {
+                                <div class="cs-anchor" @key="ep.Id">
+                                    <b>E@(ep.Number.ToString("00", CultureInfo.InvariantCulture))</b><span>@ep.Title</span>
+                                    <small>@(ep.AvgConfidence is double c ? "정합성 " + c.ToString("0", CultureInfo.InvariantCulture) + "%" : "미측정")</small>
+                                    @if (ep.ProjectPath is not null && OnOpenProject.HasDelegate) { <button class="cs-link" @onclick="() => OnOpenProject.InvokeAsync(ep.ProjectPath)">열기</button> }
+                                </div>
+                            }
+                        }
+                        <div class="cs-sec">＋ 에피소드 추가</div>
+                        <div class="cs-row">
+                            <input class="cs-in sm" type="number" min="1" max="20" @bind="_season" title="시즌" />
+                            <input class="cs-in" placeholder="에피소드 제목" @bind="_epTitle" />
+                        </div>
+                        <input class="cs-in" placeholder="한 줄 줄거리(선택)" @bind="_epSynopsis" />
+                        <textarea class="cs-in" rows="5" placeholder="컷 프롬프트(줄당 1컷 · 최대 12)" @bind="_epScenes"></textarea>
+                        <button class="cs-btn pri" @onclick="AddEpisode">🎬 에피소드 생성 · 캐릭터 자동 전파</button>
+                    }
+                </div>
+            </div>
+        }
+        else if (Project is not null)
+        {
+            var lk = Project.CharacterLock;
+            <div class="cs-sec">현재 프로젝트: @Project.Title · 고정 캐릭터 @(lk?.Name ?? "없음")</div>
+            <table class="cs-tb">
+                <thead><tr><th>컷</th><th>정합성</th><th>판정</th><th>스타일 드리프트</th></tr></thead>
+                <tbody>
+                    @{ var report = EpisodicStorySeriesBuilder.AnalyzeDrift(Project, lk?.StyleTokens); }
+                    @for (var i = 0; i < Project.Scenes.Count; i++)
+                    {
+                        var sc = Project.Scenes[i];
+                        var d = report.Scenes[i];
+                        <tr @key="sc.Id">
+                            <td>#@(i + 1)</td>
+                            <td>@(sc.IdentityConfidence is double c ? c.ToString("0.0", CultureInfo.InvariantCulture) + "%" : "—")</td>
+                            <td>@(sc.IdentityConfidence is double c2 ? CharacterIdentityLockService.VerdictLabel(c2 >= CharacterIdentityLockService.LockedThreshold ? IdentityVerdict.Locked : c2 >= CharacterIdentityLockService.DriftThreshold ? IdentityVerdict.Drifting : IdentityVerdict.Lost) : "—")</td>
+                            <td>@(d.Score <= 0 ? "✓ 일관" : "누락 " + d.MissingTokens.ToString(CultureInfo.InvariantCulture) + " · 충돌 " + d.Conflicts.ToString(CultureInfo.InvariantCulture))</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            <div class="cs-row">
+                <span class="cs-note">평균 드리프트 @((report.AverageScore * 100).ToString("0", CultureInfo.InvariantCulture))% · 제출 시에는 자동 억제(비영속)됩니다.</span>
+                <button class="cs-btn" disabled="@(lk is null || report.AverageScore <= 0)" @onclick="SuppressDrift">🧹 드리프트 억제를 컷 프롬프트에 영구 반영</button>
+            </div>
+        }
+        @if (_toast is not null) { <div class="cs-note ok">@_toast</div> }
+        </div>
+    </div>
+</div>
+
+<style>
+    .cs-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .cs-modal { width: min(980px, 96vw); max-height: 92vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.4); overflow: hidden; }
+    .cs-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+    .cs-title { font-size: 16px; font-weight: 900; color: var(--text-primary); }
+    .cs-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .cs-sub b { color: var(--text-primary); }
+    .cs-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .cs-tabs { display: flex; gap: 4px; padding: 8px 16px 0; border-bottom: 1px solid var(--line); }
+    .cs-tab { border: none; background: none; padding: 8px 12px; font-size: 12.5px; font-weight: 800; color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent; }
+    .cs-tab.on { color: var(--text-primary); border-bottom-color: #f472b6; }
+    .cs-body { padding: 14px 18px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .cs-grid { display: grid; grid-template-columns: 260px 1fr; gap: 16px; }
+    .cs-col { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+    .cs-sec { font: 800 11px var(--mono); letter-spacing: .05em; color: var(--text-muted); margin-top: 6px; }
+    .cs-card { display: flex; align-items: center; gap: 8px; padding: 7px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); cursor: pointer; text-align: left; }
+    .cs-card.on { border-color: #f472b6; }
+    .cs-card img { width: 40px; height: 40px; object-fit: cover; border-radius: 8px; }
+    .cs-card-t { display: flex; flex-direction: column; font-size: 12.5px; color: var(--text-primary); min-width: 0; } .cs-card-t small { font-size: 10.5px; color: var(--text-muted); }
+    .cs-in { width: 100%; box-sizing: border-box; background: var(--card-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; color: var(--text-primary); font-size: 12px; }
+    .cs-in.sm { width: 90px; flex: 0 0 auto; }
+    .cs-row { display: flex; align-items: center; gap: 8px; } .cs-row.wrap { flex-wrap: wrap; }
+    .cs-lbl { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; color: var(--text-secondary); flex: 1; }
+    .cs-lbl input[type=range], .cs-sl input { accent-color: #f472b6; }
+    .cs-sl { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-secondary); }
+    .cs-drop, .cs-mini { position: relative; border: 1.5px dashed var(--line); border-radius: 9px; padding: 9px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
+    .cs-mini { padding: 5px 8px; font-size: 11px; }
+    .cs-file { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+    .cs-face { position: relative; width: 220px; border-radius: 10px; overflow: hidden; }
+    .cs-face img { width: 100%; display: block; }
+    .cs-box { position: absolute; border: 2px dashed #f472b6; box-shadow: 0 0 0 9999px rgba(0,0,0,.35); pointer-events: none; }
+    .cs-anchor { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-primary); padding: 5px 8px; background: var(--card-2); border-radius: 8px; }
+    .cs-anchor small { color: var(--text-muted); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .cs-sw { width: 14px; height: 14px; border-radius: 4px; border: 1px solid var(--line); flex: 0 0 auto; }
+    .cs-color { width: 38px; height: 30px; border: none; background: none; cursor: pointer; }
+    .cs-btn { font-size: 12px; font-weight: 800; padding: 7px 11px; border-radius: 9px; border: none; cursor: pointer; color: #fff; background: linear-gradient(135deg, #f472b6, var(--flow-violet)); white-space: nowrap; }
+    .cs-btn.ghost { background: var(--card-2); color: var(--text-primary); border: 1px solid var(--line); }
+    .cs-btn.danger { background: none; color: #dc2626; border: 1px solid var(--line); }
+    .cs-btn.big { padding: 11px; font-size: 13px; margin-top: 6px; }
+    .cs-btn:disabled { opacity: .45; cursor: not-allowed; }
+    .cs-link { background: none; border: none; color: var(--accent); font-size: 11.5px; font-weight: 700; cursor: pointer; }
+    .cs-hl { font-size: 14px; color: var(--text-primary); flex: 1; }
+    .cs-note { font-size: 11.5px; color: var(--text-muted); } .cs-note.warn { color: #b45309; } .cs-note.ok { color: #059669; font-weight: 700; }
+    .cs-tb { width: 100%; border-collapse: collapse; font-size: 12px; color: var(--text-secondary); }
+    .cs-tb th, .cs-tb td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); }
+    @@media (max-width: 760px) { .cs-grid { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    /// <summary>적용 대상 프로젝트(스토리보드). null 이면 프로필/시리즈 관리만.</summary>
+    [Parameter] public StoryboardProject? Project { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    /// <summary>1-Click 적용 완료(프로필).</summary>
+    [Parameter] public EventCallback<CharacterProfile> OnApplied { get; set; }
+    /// <summary>에피소드 프로젝트 열기(저장 경로).</summary>
+    [Parameter] public EventCallback<string> OnOpenProject { get; set; }
+
+    private int _tab;
+    private CharacterProfile? _sel;
+    private StorySeries? _series;
+    private bool _busy;
+    private string _newName = "";
+    private string? _toast;
+    private string? _colorNote;
+    private AnchorKind _aKind = AnchorKind.Outfit;
+    private string _aLabel = "", _aName = "", _aColor = "#4a78c2", _aPattern = "", _aMaterial = "";
+    private string? _aImage;
+    private string _seriesTitle = "", _seriesProfile = "", _seriesStyle = "", _epTitle = "", _epSynopsis = "", _epScenes = "";
+    private int _season = 1;
+    private readonly CancellationTokenSource _life = new();
+
+    protected override void OnInitialized()
+    {
+        Series.OnChange += OnChanged;
+        var lockId = Project?.CharacterLock?.ProfileId;
+        _sel = Series.FindProfile(lockId) ?? (Series.Profiles.Count > 0 ? Series.Profiles[0] : null);
+    }
+
+    public void Dispose()
+    {
+        Series.OnChange -= OnChanged;
+        _life.Cancel();
+        _life.Dispose();
+    }
+
+    private void OnChanged() => _ = InvokeAsync(StateHasChanged);
+    private Task Close() => OnClose.InvokeAsync();
+    private void Select(CharacterProfile p) { _sel = p; _toast = null; }
+
+    private void Toast(string msg) => _toast = msg;
+
+    private async Task<string?> SaveUploadAsync(IBrowserFile f, string kind)
+    {
+        const long max = PromptFlowStudio.Services.MediaPipeline.UnlimitedMediaStreamBufferPipeline.DefaultMaxBytes;   // v16.57.0: 12MB 상한 해제
+        if (f.Size > max) { Toast("❌ 이미지가 수신 상한을 초과합니다."); return null; }
+        try
+        {
+            var dir = System.IO.Path.Combine(Media.MediaRoot, "_uploads", "characters", kind);
+            System.IO.Directory.CreateDirectory(dir);
+            var ext = System.IO.Path.GetExtension(f.Name);
+            var path = System.IO.Path.Combine(dir, Guid.NewGuid().ToString("N") + (string.IsNullOrWhiteSpace(ext) ? ".png" : ext));
+            await using (var src = f.OpenReadStream(max))
+            await using (var dst = new System.IO.FileStream(path, System.IO.FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.None, 81920, System.IO.FileOptions.Asynchronous))
+                await src.CopyToAsync(dst);
+            return PromptFlowStudio.Services.MediaPipeline.UnlimitedMediaStreamBufferPipeline.EnsureUploadProxy(path);
+        }
+        catch (Exception ex) { Program.Log("CharacterStudio.Upload", ex); Toast("❌ 업로드 실패: " + ex.Message); return null; }
+    }
+
+    private async Task OnFacePicked(InputFileChangeEventArgs e)
+    {
+        _busy = true;
+        try
+        {
+            var path = await SaveUploadAsync(e.File, "faces");
+            if (path is null) return;
+            var (p, msg) = await Series.CreateProfileAsync(_newName, path, null, _life.Token);
+            if (p is not null) { _sel = p; _newName = ""; }
+            Toast((p is null ? "⚠ " : "✅ ") + msg);
+        }
+        finally { _busy = false; }
+    }
+
+    private void SetRegion(ChangeEventArgs e, int which)
+    {
+        if (_sel is null || !float.TryParse(Convert.ToString(e.Value, CultureInfo.InvariantCulture), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+        var r = _sel.Region;
+        _sel.Region = (which switch { 0 => r with { X = v }, 1 => r with { Y = v }, _ => r with { W = v, H = v } }).Clamp();
+    }
+
+    private async Task RefreshFeatures()
+    {
+        if (_sel is null) return;
+        _busy = true;
+        try { Toast(await Series.RefreshFeaturesAsync(_sel, _life.Token) ? "✅ 얼굴 특징 재추출" : "⚠ 재추출 실패(ffmpeg 확인)"); }
+        finally { _busy = false; }
+    }
+
+    private void SaveSel() { if (_sel is not null) { Series.Upsert(_sel); Toast("💾 저장됨"); } }
+
+    private void RemoveSel()
+    {
+        if (_sel is null) return;
+        Series.RemoveProfile(_sel.Id);
+        _sel = Series.Profiles.Count > 0 ? Series.Profiles[0] : null;
+    }
+
+    private async Task OnAnchorImagePicked(InputFileChangeEventArgs e)
+    {
+        var path = await SaveUploadAsync(e.File, "anchors");
+        if (path is null) return;
+        _aImage = path;
+        var rgb = await Series.Identity.DecodeAsync(path, _life.Token);
+        if (rgb is null) { _colorNote = "색 자동 추출 실패(ffmpeg 확인) — 색을 직접 지정하세요."; return; }
+        var dc = PropOutfitTransferEngine.AnalyzeDominantColor(rgb, CharacterIdentityLockService.SampleSize, CharacterIdentityLockService.SampleSize, new FaceRegion(0.15f, 0.15f, 0.7f, 0.7f));
+        _aColor = dc.Hex.ToLowerInvariant();
+        _colorNote = "🎨 대표색 " + dc.Korean + "(" + dc.Hex + ") · 점유 " + (dc.Share * 100).ToString("0", CultureInfo.InvariantCulture) + "%";
+    }
+
+    private void AddAnchor()
+    {
+        if (_sel is null || string.IsNullOrWhiteSpace(_aName)) return;
+        _sel.Anchors.Add(new StyleAnchor(_aKind, _aName.Trim(), string.IsNullOrWhiteSpace(_aLabel) ? _aName.Trim() : _aLabel.Trim(), _aColor,
+            string.IsNullOrWhiteSpace(_aPattern) ? "plain" : _aPattern.Trim(), _aMaterial.Trim(), _aImage));
+        Series.Upsert(_sel);
+        _aLabel = _aName = _aPattern = _aMaterial = "";
+        _aImage = null;
+        _colorNote = null;
+    }
+
+    private void RemoveAnchor(StyleAnchor a)
+    {
+        if (_sel is null) return;
+        _sel.Anchors.Remove(a);
+        Series.Upsert(_sel);
+    }
+
+    private async Task ApplyToProject()
+    {
+        if (_sel is null || Project is null) return;
+        Series.Upsert(_sel);
+        EpisodicStorySeriesBuilder.Propagate(Project, _sel);
+        Toast("👶 '" + _sel.Name + "' 고정 — 전 컷 얼굴 참조 I2V · 의상/소품 " + _sel.Anchors.Count.ToString(CultureInfo.InvariantCulture) + "개 · 시드 " + _sel.Seed.ToString(CultureInfo.InvariantCulture));
+        if (OnApplied.HasDelegate) await OnApplied.InvokeAsync(_sel);
+    }
+
+    private void CreateSeries()
+    {
+        var s = Series.CreateSeries(_seriesTitle, _seriesProfile, _seriesStyle);
+        if (s is null) { Toast("⚠ 시리즈 생성 실패(프로필/상한 확인)"); return; }
+        _series = s;
+        _seriesTitle = _seriesStyle = "";
+    }
+
+    private void RemoveSeries()
+    {
+        if (_series is null) return;
+        Series.RemoveSeries(_series.Id);
+        _series = null;
+    }
+
+    private async Task AddEpisode()
+    {
+        if (_series is null) return;
+        var lines = _epScenes.Split('\n');
+        var (ep, _, msg) = Series.AddEpisode(_series.Id, _season, _epTitle, _epSynopsis, lines);
+        Toast((ep is null ? "⚠ " : "✅ ") + msg);
+        if (ep is null) return;
+        _epTitle = _epSynopsis = _epScenes = "";
+        if (ep.ProjectPath is not null && OnOpenProject.HasDelegate) await OnOpenProject.InvokeAsync(ep.ProjectPath);
+    }
+
+    private void SuppressDrift()
+    {
+        if (Project?.CharacterLock is not { } lk) return;
+        var r = EpisodicStorySeriesBuilder.AnalyzeDrift(Project, lk.StyleTokens, apply: true);
+        Toast("🧹 " + r.Corrected.ToString(CultureInfo.InvariantCulture) + "개 컷 프롬프트 드리프트 억제 반영");
+    }
+
+    private static string P(float v) => (v * 100).ToString("0.#", CultureInfo.InvariantCulture);
+    private static string Inv(float v) => v.ToString("0.##", CultureInfo.InvariantCulture);
+}

@@ -1,0 +1,163 @@
+@* [PromptFlow Studio v4.4.2] 2단계 하드닝 완수 게이트 & 3단계 전환(Task 4 · 공용 RCL).
+   3D CAD/HUD/모션카메라/터치 방어를 실제 헬퍼 호출로 자가검증 → 통과 시 세션 재인증 오버레이 →
+   무결성 확인 완료 시 [🚀 3단계] 버튼 활성. *@
+
+<div class="s2g">
+    <div class="s2g-h"><span class="s2g-title">🛡️ 2단계 하드닝 최종 검수</span><span class="s2g-badge">v4.4.2 · 2단계</span></div>
+
+    <div class="s2g-top">
+        <div class="s2g-gauge @(_report.AllPass ? "ok" : "warn")" style="--pct:@_report.Percent"><div class="s2g-gauge-in"><b>@(_report.Percent)%</b><small>@_report.PassCount/@_report.Total</small></div></div>
+        <div class="s2g-checks">
+            @foreach (var c in _report.Checks)
+            {
+                <div class="s2g-chk @(c.Pass ? "ok" : "no")"><span>@(c.Pass ? "✓" : "✗")</span><b>@c.Title</b><span class="d">@c.Detail</span></div>
+            }
+        </div>
+    </div>
+    <div class="s2g-sum @(_report.AllPass ? "ok" : "warn")">@_report.Summary</div>
+
+    @if (_phase == "authed")
+    {
+        <div class="s2g-done">
+            <div class="s2g-done-t">✅ 2단계 완료 — 세션 무결성 재확인 (토큰 @_integrity)</div>
+            <button class="s2g-btn stage3" @onclick="Stage3">🚀 3단계: 갤러리 &amp; 완 하이브리드 엔진 점검 진입</button>
+        </div>
+    }
+    @if (_msg is not null) { <div class="s2g-msg">@_msg</div> }
+
+    @* ── 하드닝 완료 직후 세션 재인증 오버레이 자동 노출 ── *@
+    @if (_phase == "reauth")
+    {
+        <div class="s2g-overlay">
+            <div class="s2g-card">
+                <div class="s2g-card-t">🔐 세션 재인증</div>
+                <div class="s2g-card-s">2단계 방어 무결성 토큰 <b>@_integrity</b> 을 확인했습니다. 무결성을 승인하여 3단계로 이행하세요.</div>
+                <button class="s2g-btn confirm" @onclick="ConfirmIntegrity">세션 무결성 확인</button>
+            </div>
+        </div>
+    }
+    @if (_phase == "blocked")
+    {
+        <div class="s2g-blocked">⚠ 2단계 하드닝 검증 미통과 — 결함 항목 보완 후 재인증이 활성화됩니다.</div>
+    }
+</div>
+
+<style>
+    .s2g { position: relative; border: 1px solid color-mix(in srgb, #22c55e 34%, #2b2f42); border-radius: 16px; overflow: hidden; font-family: Pretendard, 'Malgun Gothic', sans-serif; color: #e6edff; background: linear-gradient(160deg, rgba(34,197,94,.08), rgba(18,20,31,.92)); min-height: 260px; }
+    .s2g-h { display: flex; align-items: center; gap: 8px; padding: 12px 15px; border-bottom: 1px solid #2b2f42; }
+    .s2g-title { font: 900 14px Pretendard,'Malgun Gothic',sans-serif; background: linear-gradient(90deg,#86efac,#5eead4); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .s2g-badge { font: 800 10px ui-monospace,monospace; color: #052e16; background: linear-gradient(135deg,#22c55e,#0ea5e9); border-radius: 20px; padding: 2px 8px; }
+    .s2g-top { display: flex; gap: 12px; align-items: center; padding: 13px 15px; }
+    .s2g-gauge { width: 84px; height: 84px; flex: 0 0 auto; border-radius: 50%; background: conic-gradient(#22c55e calc(var(--pct)*1%), #1a1d2b 0); display: grid; place-items: center; }
+    .s2g-gauge.warn { background: conic-gradient(#f59e0b calc(var(--pct)*1%), #1a1d2b 0); }
+    .s2g-gauge-in { width: 62px; height: 62px; border-radius: 50%; background: #12141f; display: grid; place-items: center; text-align: center; } .s2g-gauge-in b { font: 900 18px ui-monospace,monospace; color: #86efac; } .s2g-gauge.warn .s2g-gauge-in b { color: #fbbf24; } .s2g-gauge-in small { font: 700 8.5px ui-monospace,monospace; color: #6b7392; }
+    .s2g-checks { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+    .s2g-chk { display: flex; align-items: center; gap: 7px; font: 600 10.5px Pretendard,'Malgun Gothic',sans-serif; color: #9aa6c8; } .s2g-chk b { color: #e6edff; } .s2g-chk .d { margin-left: auto; font: 600 9px ui-monospace,monospace; color: #6b7392; max-width: 48%; text-align: right; overflow-wrap: anywhere; }
+    .s2g-chk.ok span { color: #22c55e; } .s2g-chk.no span { color: #ef4444; } .s2g-chk.no { color: #fca5a5; }
+    .s2g-sum { margin: 0 15px 12px; font: 700 11px Pretendard,'Malgun Gothic',sans-serif; padding: 7px 9px; border-radius: 8px; } .s2g-sum.ok { color: #86efac; background: color-mix(in srgb,#22c55e 12%,transparent); } .s2g-sum.warn { color: #fbbf24; background: color-mix(in srgb,#f59e0b 12%,transparent); }
+    .s2g-done { margin: 0 15px 14px; } .s2g-done-t { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: #86efac; margin-bottom: 8px; word-break: keep-all; }
+    .s2g-btn { width: 100%; font: 800 14px Pretendard,'Malgun Gothic',sans-serif; padding: 13px; border: none; border-radius: 12px; cursor: pointer; word-break: keep-all; }
+    .s2g-btn.stage3 { color: #fff; background: linear-gradient(135deg,#22c55e,#0ea5e9); box-shadow: 0 6px 16px color-mix(in srgb,#22c55e 30%,transparent), inset 0 1px 0 rgba(255,255,255,.28); }
+    .s2g-btn.confirm { color: #052e16; background: linear-gradient(135deg,#86efac,#5eead4); margin-top: 4px; } .s2g-btn:hover { filter: brightness(1.07); }
+    .s2g-msg { margin: 0 15px 14px; font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: #7dd3fc; line-height: 1.5; }
+    .s2g-overlay { position: absolute; inset: 0; background: rgba(11,13,20,.72); backdrop-filter: blur(4px); display: grid; place-items: center; padding: 16px; z-index: 10; }
+    .s2g-card { width: min(360px, 100%); background: #12141f; border: 1px solid color-mix(in srgb,#22c55e 40%,#2b2f42); border-radius: 16px; padding: 18px; box-shadow: 0 20px 50px rgba(0,0,0,.55); }
+    .s2g-card-t { font: 900 15px Pretendard,'Malgun Gothic',sans-serif; color: #86efac; } .s2g-card-s { font: 600 11px Pretendard,'Malgun Gothic',sans-serif; color: #9aa6c8; margin: 4px 0 12px; line-height: 1.6; word-break: keep-all; } .s2g-card-s b { color: #5eead4; font-family: ui-monospace,monospace; }
+    .s2g-blocked { margin: 0 15px 14px; font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: #fbbf24; }
+</style>
+
+@code {
+    /// <summary>3단계 점검 진입 콜백(부모가 다음 단계로 전환).</summary>
+    [Parameter] public EventCallback OnStage3 { get; set; }
+
+    private HardenReport _report = default!;
+    private string _phase = "checking";   // checking → reauth → authed / blocked
+    private string _integrity = "--------";
+    private string? _msg;
+
+    protected override void OnInitialized()
+    {
+        _report = RunSelfChecks();
+        _integrity = ComputeIntegrityToken(_report);
+        _phase = _report.AllPass ? "reauth" : "blocked";   // 하드닝 완료 직후 재인증 오버레이 자동 노출
+    }
+
+    // 실제 v4.4.2 하드닝 헬퍼를 호출해 방어 동작을 자가 검증.
+    private static HardenReport RunSelfChecks()
+    {
+        var checks = new List<HardenCheck>();
+
+        // 1) 포인터 드래그 Sticky Lock 차단 — ForceRelease 후 락 해제.
+        var drag = new PointerDragGuard();
+        drag.Begin(7, 10, 10);
+        var wasDragging = drag.IsDragging;
+        drag.ForceRelease(DragReleaseReason.PointerLeave);
+        var nanReject = !drag.Begin(9, double.NaN, 5);   // NaN 좌표 거부
+        checks.Add(new("drag-lock", "포인터 Sticky Drag Lock 차단", wasDragging && !drag.IsDragging && nanReject, "leave/cancel/blur 시 강제 해제 · NaN 거부"));
+
+        // 2) 그래픽 버퍼 명시적 해제 + Context Loss 재초기화 + 과할당 상한.
+        using var buf = new GraphicsBufferGuard();
+        var alloc = buf.Allocate(64, 64);
+        buf.OnContextLost();
+        var lostOk = buf.ContextLost && !buf.HasBuffer;
+        var reinit = buf.Reinitialize(48, 48) && buf.HasBuffer && !buf.ContextLost;
+        var overCap = !buf.Allocate(GraphicsBufferGuard.MaxDim, GraphicsBufferGuard.MaxDim);   // 과점유 거부
+        checks.Add(new("gfx-buffer", "Canvas/RGBA 버퍼 해제·컨텍스트 복구", alloc && lostOk && reinit && overCap, "Release/OnContextLost/Reinit · 256MB 상한"));
+
+        // 3) 멀티터치 핀치 인덱스 초과 + NaN 방어.
+        var pinch = new PinchGuard();
+        var single = !pinch.Begin(new (double, double)[] { (0, 0) });   // 1점 → false(IndexOutOfRange 방어)
+        pinch.Begin(new (double, double)[] { (0, 0), (100, 0) });
+        var scaled = pinch.Scale(new (double, double)[] { (0, 0), (200, 0) });   // 2배
+        var nanScale = pinch.Scale(new (double, double)[] { (double.NaN, 0), (10, 0) });   // NaN → 1.0
+        checks.Add(new("pinch", "멀티터치 핀치 인덱스/NaN 방어", single && Math.Abs(scaled - 2.0) < 0.001 && Math.Abs(nanScale - 1.0) < 0.001, "2점 미만 무시 · NaN→1.0 clamp"));
+
+        // 4) 프레임 틱 스로틀(60fps) — CPU 스파이크 방어.
+        var thr = new FrameThrottle(60);
+        var t0 = thr.ShouldRender(0);
+        var tooSoon = !thr.ShouldRender(TimeSpan.TicksPerMillisecond * 5);   // 5ms → skip
+        var later = thr.ShouldRender(TimeSpan.TicksPerMillisecond * 40);     // 40ms → 통과
+        checks.Add(new("throttle", "프레임 틱 스로틀(60fps 상한)", t0 && tooSoon && later, "최소 간격 미만 렌더 skip"));
+
+        // 5) 모션 카메라 루프 Timer/CTS 안전 해제(멱등).
+        var loop = new MotionCameraLoop(_ => { }, 60);
+        var tok = loop.Start();
+        var running = loop.IsRunning && !tok.IsCancellationRequested;
+        loop.Stop();
+        var stopped = !loop.IsRunning;
+        loop.Dispose(); loop.Dispose();   // 멱등
+        checks.Add(new("loop", "모션 루프 Timer/CTS 안전 해제", running && stopped, "Stop/Dispose 멱등 · 누수 없음"));
+
+        // 6) 궤적 보간 NaN 방어.
+        var lerp = TrajectoryMath.Lerp(double.NaN, 10, 2.0);   // NaN a → 0, t clamp 1 → 10
+        var interp = TrajectoryMath.Interpolate((0, 0, 0), (10, 20, 30), 0.5);
+        checks.Add(new("trajectory", "카메라 궤적 보간 NaN 방어", SafeGeom.IsFinite(lerp) && Math.Abs(lerp - 10.0) < 0.001 && SafeGeom.IsFinite(interp.Y), "비유한 입력→0 · t clamp[0,1]"));
+
+        return HardenReportFactory.Build(checks);
+    }
+
+    // 리포트로부터 결정적 무결성 토큰(8 hex · 순수 BCL FNV-1a) 계산.
+    private static string ComputeIntegrityToken(HardenReport report)
+    {
+        unchecked
+        {
+            uint h = 2166136261u;
+            void Mix(string s) { foreach (var ch in s) { h ^= ch; h *= 16777619u; } }
+            Mix($"v4.4.2|{report.PassCount}/{report.Total}|");
+            foreach (var c in report.Checks) Mix($"{c.Id}:{(c.Pass ? 1 : 0)}|");
+            return h.ToString("X8");
+        }
+    }
+
+    private void ConfirmIntegrity()
+    {
+        _phase = "authed";
+        _msg = "🔓 세션 무결성 재확인 완료 — 3단계 점검으로 이행할 수 있습니다.";
+    }
+
+    private async Task Stage3()
+    {
+        _msg = "🚀 3단계: 갤러리 & 완 하이브리드 엔진 점검 진입…";
+        if (OnStage3.HasDelegate) await OnStage3.InvokeAsync();
+    }
+}

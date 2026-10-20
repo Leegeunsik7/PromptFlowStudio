@@ -1,0 +1,64 @@
+@using PromptFlowStudio.Services.Flow
+@implements IDisposable
+
+@* [PromptFlow Studio v5.5.5 · Task2] 라이브 체인 프로그레스 HUD — DAG 엔진 OnChanged 연동(순수 Blazor · 외부 UI 0).
+   무인 체인 구동 시 현재 활성 노드 · 완료 K/N · 전체 % 바 · 중단 버튼을 실시간 표출. *@
+
+@if (Visible)
+{
+    <div class="cph">
+        <span class="cph-cur">@CurrentLabel</span>
+        <div class="cph-bar"><div class="cph-fill @(Faulted > 0 ? "err" : null)" style="width:@Pct%"></div></div>
+        <span class="cph-k">@Completed/@Total@(WanTotal > 0 ? $" · 씬 {WanDone}/{WanTotal}" : "")@(Faulted > 0 ? $" · ⚠{Faulted}" : "")</span>
+        <button class="cph-cancel" @onclick="OnCancel" disabled="@(!Running)" title="자동 체인 중단">■ 중단</button>
+    </div>
+}
+
+<style>
+    .cph { display: flex; align-items: center; gap: 10px; padding: 8px 13px; border-bottom: 1px solid color-mix(in srgb, #f5c451 24%, var(--line)); background: linear-gradient(90deg, color-mix(in srgb, #f5c451 10%, transparent), transparent 70%); flex-wrap: wrap; }
+    .cph-cur { font: 800 11px Pretendard,'Malgun Gothic',sans-serif; color: #fde68a; min-width: 120px; }
+    .cph-bar { flex: 1; min-width: 120px; height: 8px; border-radius: 20px; background: var(--card); border: 1px solid var(--line); overflow: hidden; }
+    .cph-fill { height: 100%; background: linear-gradient(90deg, #f5c451, #34d399); transition: width .3s ease; }
+    .cph-fill.err { background: linear-gradient(90deg, #f5c451, #ef4444); }
+    .cph-k { font: 800 10px 'JetBrains Mono', ui-monospace, monospace; color: var(--text-secondary); }
+    .cph-cancel { font: 800 10.5px Pretendard,'Malgun Gothic',sans-serif; padding: 6px 11px; border-radius: 8px; border: 1px solid color-mix(in srgb,#ef4444 40%,var(--line)); background: var(--card-2); color: #fca5a5; cursor: pointer; min-height: 32px; }
+    .cph-cancel:hover:not(:disabled) { border-color: #ef4444; color: #fff; background: color-mix(in srgb,#ef4444 20%,var(--card-2)); }
+    .cph-cancel:disabled { opacity: .4; cursor: not-allowed; }
+</style>
+
+@code {
+    /// <summary>관측 대상 DAG 엔진.</summary>
+    [Parameter] public NodeGraphEngine? Engine { get; set; }
+    /// <summary>실행 중 여부(자동 체인/실행).</summary>
+    [Parameter] public bool Running { get; set; }
+    /// <summary>중단 콜백(부모가 CancellationToken.Cancel()).</summary>
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    private NodeGraphEngine? _bound;
+
+    // 실행 중이거나, 직전 실행 결과(진행 흔적)가 있으면 표시.
+    private bool Visible => Running || (Engine is not null && Engine.Nodes.Any(n => n.State != NodeRunState.Idle));
+    private int Total => Engine?.Nodes.Count ?? 0;
+    private int Completed => Engine?.Nodes.Count(n => n.State == NodeRunState.Completed) ?? 0;
+    private int Faulted => Engine?.Nodes.Count(n => n.State == NodeRunState.Faulted) ?? 0;
+    private int WanTotal => Engine?.Nodes.Count(n => n.Kind == "wan") ?? 0;
+    private int WanDone => Engine?.Nodes.Count(n => n.Kind == "wan" && n.State == NodeRunState.Completed) ?? 0;
+    private FlowNode? RunningNode => Engine?.Nodes.FirstOrDefault(n => n.State == NodeRunState.Running);
+    private string CurrentLabel => RunningNode is { } r ? $"▶ {r.Emoji} {r.Title}" : (Running ? "▶ 준비 중…" : (Faulted > 0 ? "⚠ 일부 실패" : "✅ 완료"));
+    private double Pct => Total == 0 ? 0 : Math.Round((Completed + Faulted) * 100.0 / Total);
+
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(_bound, Engine)) return;   // 엔진 참조 변경 시에만 재구독
+        if (_bound is not null) _bound.OnChanged -= OnEngineChanged;
+        _bound = Engine;
+        if (_bound is not null) _bound.OnChanged += OnEngineChanged;
+    }
+
+    private void OnEngineChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        if (_bound is not null) _bound.OnChanged -= OnEngineChanged;
+    }
+}

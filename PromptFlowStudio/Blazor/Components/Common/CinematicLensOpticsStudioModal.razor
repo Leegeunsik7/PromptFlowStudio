@@ -1,0 +1,279 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.LensOptics
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject CinematicLensOpticsStudioRunner Runner
+
+@* [PromptFlow Studio v17.43.0] 🎥 AI 시네마틱 렌즈 & 포스트 FX 스튜디오 — 2.4:1 렌즈 뷰 · 스퀴즈 · 렌즈 프리셋 · 스트릭 미터 · 왜곡 격자 · 블룸/레이턴시 가드. *@
+
+<div class="lom-scrim" @onclick="Close">
+    <div class="lom-modal" @onclick:stopPropagation="true">
+        <div class="lom-h">
+            <div>
+                <div class="lom-title">🎥 AI 시네마틱 렌즈 &amp; 포스트 FX 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null)</div>
+                <div class="lom-sub"><b>광학 엔진</b>이 카메라 초점 거리 · T-스톱 · 초점에 맞춰 2.39:1 아나모픽 타원 배럴 왜곡 · 방사상 RGB 색수차 · 렌즈 브리딩을 SIMD LUT로 매 프레임 재구성하고, <b>플레어 합성기</b>가 v17.41 무대 조명과 v17.42 파이로 광원을 역제곱 조도로 투영해 조리개 날 타원 보케 · 수평 블루 스트릭 · 할레이션 · 고스트를 그립니다. <b>블룸 가드</b>는 NaN/화이트아웃을 ACEScc 로그 니로 압축하고 포스트 연산이 4.0 ms 예산을 넘으면 다운샘플 피라미드 단계를 즉시 줄입니다.</div>
+            </div>
+            <button class="lom-x" @onclick="Close">✕</button>
+        </div>
+        <div class="lom-bar">
+            <button class="lom-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 시작")</button>
+            <button class="lom-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            @for (var p = 0; p < RealtimeAnamorphicLensOpticsEngine.Presets.Length; p++)
+            {
+                var pv = (LensPreset)p;
+                <button class="lom-btn pre p@(p) @(Runner.Preset == pv ? "on" : null)" @onclick="() => Runner.SetPreset(pv)">@(PresetIcon(pv)) @(CinematicLensOpticsStudioRunner.PresetName(pv))</button>
+            }
+            <button class="lom-btn det" @onclick="() => Runner.Flash()">💥 섬광</button>
+            <button class="lom-btn @(Runner.Guard.Enabled ? "on" : null)" @onclick="() => Runner.SetGuard(!Runner.Guard.Enabled)">🛡 블룸 가드</button>
+            <button class="lom-btn" @onclick="Runner.ResetMetrics">↺ 지표</button>
+            <span class="lom-chip @(Runner.Guard.EwmaPostMs <= Runner.Guard.BudgetMs ? "ok" : "warn")">포스트 @(F2(Runner.Guard.LastPostMs)) ms / 예산 @(F1(Runner.Guard.BudgetMs)) · 프레임 @(F2(Runner.LastTickMs)) ms · LUT @(F0(Runner.Lens.LastLutUs)) µs · 플레어 @(F0(Runner.Flare.LastComposeUs)) µs · 블룸 @(F0(Runner.Guard.LastBloomUs)) µs</span>
+        </div>
+        <div class="lom-bar">
+            <label class="lom-lbl">↔ 스퀴즈</label>
+            <input class="lom-rng" type="range" min="100" max="200" step="5" value="@((int)MathF.Round(Runner.Squeeze * 100f))" @oninput="OnSqueeze" />
+            <span class="lom-chip">@(F2(Runner.Squeeze))x · H @(F1(Runner.Lens.HFovDeg))° / V @(F1(Runner.Lens.EffectiveVFovDeg))°</span>
+            <label class="lom-lbl">🔍 초점 거리</label>
+            <input class="lom-rng" type="range" min="0" max="200" value="@((int)Runner.FocalOverride)" @oninput="OnFocal" />
+            <span class="lom-chip">@(Runner.FocalOverride > 0f ? F0(Runner.FocalOverride) + " mm" : "자동 " + F0(Runner.Lens.FocalMm) + " mm")</span>
+            <label class="lom-lbl">◎ T</label>
+            <input class="lom-rng" type="range" min="0" max="160" value="@((int)MathF.Round(Runner.TStopOverride * 10f))" @oninput="OnTStop" />
+            <span class="lom-chip">T@(F1(Runner.Lens.TStop)) · 초점 @(F2(Runner.Lens.FocusM)) m · 📷 @(Runner.CameraSource)</span>
+            <label class="lom-lbl"><input type="checkbox" checked="@Runner.Practicals" @onchange="OnPracticals" /> 🕯 실용광</label>
+        </div>
+        <div class="lom-main">
+            <div class="lom-col">
+                <div class="lom-card">
+                    <div class="lom-sec">🎞 렌즈 뷰 2.4:1 — 광원 @(Runner.Flare.SourceCount) · 스프라이트 @(Runner.Flare.SpriteCount) · 최대 CoC @(F1(Runner.Flare.MaxCocPx)) px · 피크 조도 @(F0(Runner.Flare.PeakIlluminance)) lux</div>
+                    <img class="lom-view" src="@(_img)" alt="lens view" />
+                    <div class="lom-sec gap">📐 왜곡 격자(G 채널 순방향) — 배럴 k₁ @(F3(Runner.Lens.Spec.K1)) · 타원 e @(F2(RealtimeAnamorphicLensOpticsEngine.Ellipse(Runner.Squeeze))) · 가장자리 맞춤 @(F3(Runner.Lens.EdgeFit)) · 브리딩 @(F3(Runner.Lens.BreathScale)) → @(F3(Runner.Lens.BreathTarget))</div>
+                    <svg class="lom-grid" viewBox="-2 -2 244 104">@((MarkupString)GridSvg())</svg>
+                </div>
+            </div>
+            <div class="lom-col">
+                <div class="lom-card">
+                    <div class="lom-sec">🌈 스트릭 플레어 강도 — <b>@(F0(Runner.Flare.StreakMeter * 100f))%</b> · 보케 @(F0(Runner.Flare.BokehEnergy)) · 할레이션 @(F0(Runner.Flare.HaloEnergy))</div>
+                    <div class="lom-meter"><div class="fill" style="width:@(P(100f * Runner.Flare.StreakMeter))%"></div></div>
+                    <svg class="lom-graph" viewBox="0 0 600 90" preserveAspectRatio="none">
+                        <line class="lim" x1="0" y1="@(F1(88f - 86f * 0.5f))" x2="600" y2="@(F1(88f - 86f * 0.5f))" />
+                        <polyline class="pm" points="@(Series(0))" />
+                        <polyline class="st" points="@(Series(1))" />
+                        <polyline class="lv" points="@(Series(2))" />
+                    </svg>
+                    <div class="lom-legend"><span class="pm">━ 포스트 ms(0~8 · 점선 4 ms)</span><span class="st">━ 스트릭</span><span class="lv">━ 블룸 단계(0~5)</span></div>
+                </div>
+                <div class="lom-card">
+                    <div class="lom-sec">🛡 HDR 블룸 가드 @(Runner.Guard.Enabled ? "ON" : "OFF") — 단계 <b>@(Runner.Guard.Levels)</b>/5 · 화이트아웃 <b class="@(Runner.Guard.WhiteoutRatio < 0.05f ? "ok" : "warn")">@(F1(Runner.Guard.WhiteoutRatio * 100f))%</b></div>
+                    <div class="lom-kv grid">
+                        <div>블룸 피크 @(F2(Runner.Guard.BloomPeak)) · 천장 @(F1(HdrBloomSaturationLatencyGuard.CeilingLinear))</div>
+                        <div>ACEScc 니 @(F2(HdrBloomSaturationLatencyGuard.KneeCc)) → 천장 @(F2(HdrBloomSaturationLatencyGuard.CeilingCc))</div>
+                        <div>압축 @(Runner.Guard.Compressions) · NaN/음수 수리 <b>@(Runner.Guard.Repairs)</b></div>
+                        <div>예산 초과 <b class="@(Runner.Guard.OverBudgetFrames == 0 ? "ok" : "warn")">@(Runner.Guard.OverBudgetFrames)</b> · ↓@(Runner.Guard.Downshifts) ↑@(Runner.Guard.Upshifts)</div>
+                        <div>EWMA @(F2(Runner.Guard.EwmaPostMs)) ms · 최대 @(F2(Runner.Guard.MaxPostMs)) ms</div>
+                        <div>최대 화이트아웃 @(F1(Runner.Guard.MaxWhiteout * 100f))% · 섬광 @(Runner.Flashes)</div>
+                    </div>
+                </div>
+                <div class="lom-card">
+                    <div class="lom-sec">🔭 @(Runner.Lens.Spec.Name) — 조리개 날 @(Runner.Lens.Spec.Blades) · 링 랩 @(Runner.Flare.RingWraps) · 광원 초과 @(Runner.Flare.SourceDrops)</div>
+                    <div class="lom-kv grid">
+                        <div>색수차 @(F3(Runner.Lens.Spec.Ca)) · 비네팅 @(F2(Runner.Lens.Spec.Vignette))</div>
+                        <div>스트릭 @(F2(Runner.Lens.Spec.Streak)) <span class="sw" style="background:@(Css(Runner.Lens.Spec.StreakTint))"></span> · 할레이션 @(F2(Runner.Lens.Spec.Halation))</div>
+                        <div>브리딩 @(F3(Runner.Lens.Spec.Breathing)) · 최소 초점 @(F2(Runner.Lens.Spec.MinFocusM)) m</div>
+                        <div>보케 림 @(F2(Runner.Lens.Spec.BokehRim)) · 고스트 @(F2(Runner.Lens.Spec.Ghosts))</div>
+                    </div>
+                    <div class="lom-bok">@((MarkupString)BokehSvg())</div>
+                    <div class="lom-act">@(Runner.LastAction ?? "대기")</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .lom-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .lom-modal { width: min(1680px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .lom-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #3b82f6 16%, var(--card)), color-mix(in srgb, #f59e0b 10%, var(--card))); }
+    .lom-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .lom-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .lom-sub b { color: var(--text-primary); }
+    .lom-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .lom-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .lom-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .lom-btn:disabled { opacity: .45; cursor: default; }
+    .lom-btn.on { background: color-mix(in srgb, #22c55e 20%, var(--card)); border-color: #22c55e; }
+    .lom-btn.pre.on { background: color-mix(in srgb, #3b82f6 24%, var(--card)); border-color: #60a5fa; }
+    .lom-btn.det { background: linear-gradient(120deg, #b91c1c, #f97316); color: #fff; border-color: #f97316; }
+    .lom-lbl { font-size: 12px; color: var(--text-secondary); display: flex; gap: 4px; align-items: center; }
+    .lom-rng { width: 130px; }
+    .lom-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .lom-chip.ok { border-color: #22c55e; color: #22c55e; } .lom-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .lom-main { display: grid; grid-template-columns: 1.4fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .lom-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .lom-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); }
+    .lom-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .lom-sec.gap { margin-top: 10px; }
+    .lom-sec b.ok, .lom-kv b.ok { color: #22c55e; } .lom-sec b.warn, .lom-kv b.warn { color: #f59e0b; }
+    .lom-view { width: 100%; aspect-ratio: 2.4 / 1; image-rendering: auto; background: #000; border-radius: 6px; display: block; }
+    .lom-grid { width: 100%; aspect-ratio: 2.4 / 1; background: #020617; border-radius: 6px; display: block; }
+    .lom-grid polyline { fill: none; stroke-width: .5; } .lom-grid .r { stroke: #f87171; } .lom-grid .g { stroke: #4ade80; } .lom-grid .f { fill: none; stroke: #334155; stroke-width: .4; stroke-dasharray: 2 2; }
+    .lom-meter { height: 12px; border-radius: 6px; background: #0f172a; border: 1px solid #1e293b; overflow: hidden; }
+    .lom-meter .fill { height: 100%; background: linear-gradient(90deg, #1d4ed8, #38bdf8, #e0f2fe); }
+    .lom-graph { width: 100%; height: 90px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; margin-top: 6px; }
+    .lom-graph polyline { fill: none; stroke-width: 1.6; } .lom-graph .lim { stroke: #ef4444; stroke-width: 1; stroke-dasharray: 5 4; }
+    .lom-graph .pm, .lom-legend .pm { stroke: #f97316; color: #f97316; } .lom-graph .st, .lom-legend .st { stroke: #38bdf8; color: #38bdf8; } .lom-graph .lv, .lom-legend .lv { stroke: #a3e635; color: #a3e635; }
+    .lom-legend { display: flex; gap: 12px; font-size: 10px; margin-top: 3px; }
+    .lom-kv { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px; }
+    .lom-kv.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; margin-top: 6px; }
+    .lom-kv b { color: var(--text-primary); }
+    .lom-kv .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; vertical-align: middle; border: 1px solid #334155; }
+    .lom-bok svg { width: 100%; height: 90px; margin-top: 6px; background: #020617; border-radius: 6px; }
+    .lom-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly byte[] _bmp = new byte[CinematicLensOpticsStudioRunner.BmpBytes];
+    private System.Threading.Timer? _timer;
+    private string _img = "";
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        Runner.Step();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("LensOptics.Modal.Timer", ex); }
+        }, null, 100, 100);
+    }
+
+    protected override void OnParametersSet() => Refresh();
+
+    protected override bool ShouldRender()
+    {
+        Refresh();
+        return true;
+    }
+
+    private void Refresh()
+    {
+        Runner.WriteBmp(_bmp);
+        _img = "data:image/bmp;base64," + Convert.ToBase64String(_bmp);
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static string P(float v) => v.ToString("0.###", CultureInfo.InvariantCulture);
+
+    private static string PresetIcon(LensPreset p) => p switch { LensPreset.CookeAnamorphic => "🎬", LensPreset.KowaProminar => "🎞", LensPreset.ZeissMasterPrime => "🔬", _ => "📽" };
+
+    private static string Css(Vector3 c) => "rgb(" + ((int)(Math.Clamp(c.X, 0f, 1f) * 255f)).ToString(CultureInfo.InvariantCulture) + "," + ((int)(Math.Clamp(c.Y, 0f, 1f) * 255f)).ToString(CultureInfo.InvariantCulture) + "," + ((int)(Math.Clamp(c.Z, 0f, 1f) * 255f)).ToString(CultureInfo.InvariantCulture) + ")";
+
+    private string GridSvg()
+    {
+        const int W = RealtimeAnamorphicLensOpticsEngine.W, H = RealtimeAnamorphicLensOpticsEngine.H;
+        var l = Runner.Lens;
+        var sb = new System.Text.StringBuilder(8192);
+        sb.Append("<rect class=\"f\" x=\"0\" y=\"0\" width=\"").Append(W).Append("\" height=\"").Append(H).Append("\"/>");
+        for (var gx = 0; gx <= W; gx += 20)
+        {
+            sb.Append("<polyline class=\"g\" points=\"");
+            for (var y = 0; y <= H; y += 5) { var p = l.Distort(new Vector2(gx, y)); sb.Append(P(p.X)).Append(',').Append(P(p.Y)).Append(' '); }
+            sb.Append("\"/>");
+        }
+        for (var gy = 0; gy <= H; gy += 20)
+        {
+            sb.Append("<polyline class=\"g\" points=\"");
+            for (var x = 0; x <= W; x += 6) { var p = l.Distort(new Vector2(x, gy)); sb.Append(P(p.X)).Append(',').Append(P(p.Y)).Append(' '); }
+            sb.Append("\"/>");
+        }
+        return sb.ToString();
+    }
+
+    private string BokehSvg()
+    {
+        var s = Runner.Lens.Spec;
+        var sq = Runner.Squeeze;
+        var sb = new System.Text.StringBuilder(2048);
+        sb.Append("<svg viewBox=\"-60 -40 120 80\">");
+        var seg = MathF.Tau / s.Blades; var apo = MathF.Cos(MathF.PI / s.Blades);
+        foreach (var cx in new[] { -30f, 30f })
+        {
+            var ry = 32f; var rx = cx < 0f ? ry : ry / sq;
+            sb.Append("<polygon fill=\"rgba(253,224,171,.35)\" stroke=\"#fde68a\" stroke-width=\"").Append(P(1f + 3f * s.BokehRim)).Append("\" points=\"");
+            for (var k = 0; k < 72; k++)
+            {
+                var th = MathF.Tau * k / 72f;
+                var a = th - seg * MathF.Floor(th / seg) - 0.5f * seg;
+                var e = apo / MathF.Cos(a);
+                sb.Append(P(cx + MathF.Cos(th) * e * rx)).Append(',').Append(P(MathF.Sin(th) * e * ry)).Append(' ');
+            }
+            sb.Append("\"/>");
+        }
+        sb.Append("<g><text x=\"-48\" y=\"38\" fill=\"#94a3b8\" font-size=\"7\">구면 1.0x</text></g><g><text x=\"14\" y=\"38\" fill=\"#94a3b8\" font-size=\"7\">").Append(P(sq)).Append("x 타원</text></g></svg>");
+        return sb.ToString();
+    }
+
+    private string Series(int which)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            float v = which switch
+            {
+                0 => Runner.PostMsSeries(k) / 8f,
+                1 => Runner.StreakSeries(k),
+                _ => Runner.LevelSeries(k) / 5f,
+            };
+            sb.Append(P(600f * i / (n - 1))).Append(',').Append(P(88f - 86f * Math.Clamp(v, 0f, 1f))).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void OnSqueeze(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetSqueeze(v / 100f);
+    }
+
+    private void OnFocal(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetFocal(v < 18 ? 0f : v);
+    }
+
+    private void OnTStop(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetTStop(v < 13 ? 0f : v / 10f);
+    }
+
+    private void OnPracticals(ChangeEventArgs e) => Runner.SetPracticals(e.Value is bool b && b);
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void Step60()
+    {
+        for (var i = 0; i < CinematicLensOpticsStudioRunner.Hz; i++) Runner.Step();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

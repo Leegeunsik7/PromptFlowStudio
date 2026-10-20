@@ -1,0 +1,2575 @@
+﻿@page "/storyboard"
+@using PromptFlowStudio.Services.Weather
+@implements IDisposable
+@inject StoryboardJobManager Jobs
+@inject StoryboardRepository Repo
+@inject ProjectHandoffService Handoff
+@inject RecentProjectService Recents
+@inject ILocalMediaService Media
+@inject IWanConfigService Cfg
+@inject IVideoExportService Export
+@inject IYoutubeMetadataService Meta
+@inject IShortsCoverService Cover
+@inject IClipboardService Clipboard
+@inject IVideoUpscaleService Upscale
+@inject IWhisperSttService Stt
+@inject ILocalTtsService LocalTts
+@inject ILipSyncService Lip
+@inject AiAudioDrivenLipSyncService LipAi
+@inject AiVoiceoverTtsService LipTts
+@inject IStoryboardScriptWizardService Wizard
+@inject BabyThemePresetService BabyPresets
+@inject VideoFormatFactory VideoFactory
+@inject MultiPlatformSafeZoneService SafeZones
+@inject UserPreferenceService Prefs
+@inject FaceCenterAutoCropService FaceCropper
+@inject CorporateBuildingThemeEngine BuildingEngine
+@inject SmartFramingBoundingService Framing
+@inject SwitchRoleGuideService Guides
+@inject LlmVisionCropService FaceCrop
+@inject IJSRuntime JS
+@inject AutoThumbnailService AutoThumb
+@inject ICharacterAnchorService Anchor
+@inject IWanPromptBoosterService Booster
+@inject IGeminiDirectorService Director
+@inject IGeminiLocalizationService Localize
+@inject IYouTubePublishService YtPublish
+@inject PromptFlowStudio.Services.Platform.ErrorDialogService Errors
+@inject NavigationManager Nav
+@inject PromptFlowStudio.Services.Ui.StudioNavigationService StudioNav
+@inject PromptFlowStudio.Services.Weather.WeatherEngine Weather
+@inject GalleryAutoSaveService Gallery
+@inject PostProductionEngine Post
+@inject PromptFlowStudio.Services.Studio.StudioFolderLinkService FolderLink
+@inject AutomatedVideoQaInspector QaInspector
+@inject PromptFlowStudio.Services.Broadcast.AiLiveLoopStreamerService LiveLoop
+@inject PromptFlowStudio.Services.Autonomous.AutonomousCampaignDirectorService AutoDirector
+@inject PromptFlowStudio.Services.MediaPipeline.UnlimitedMediaStreamBufferPipeline MediaPipe
+@inject PromptFlowStudio.Services.MediaPipeline.AutoPresetContextTuner Tuner
+@using PromptFlowStudio.Services.MediaPipeline
+
+@* [PromptFlow Studio] 스토리보드 — 여러 컷을 구성해 한 번에 연쇄 생성. 상태는 StoryboardJobManager(싱글턴)가 보유,
+   이 컴포넌트는 OnChange/OnCompleted 구독 후 InvokeAsync(StateHasChanged)로만 갱신. 편집 모델(_project)은 컴포넌트가 소유. *@
+
+<PageTitle>PromptFlow Studio · 스토리보드</PageTitle>
+
+<div class="sb">
+    <header class="sb-head">
+        <div class="sb-navrow">
+            <button class="sb-back" @onclick='() => Nav.NavigateTo("workspace")'>← 단일 컷</button>
+            <button class="sb-back" @onclick='() => Nav.NavigateTo("")'>홈</button>
+        </div>
+        <div class="sb-titlerow">
+            <h1 class="sb-title">스토리보드 <span class="sb-title-g">연쇄 생성</span></h1>
+            <input class="sb-projtitle" @bind="_project.Title" placeholder="프로젝트 제목" disabled="@Jobs.IsRunning" />
+        </div>
+        <p class="sb-sub">여러 컷을 구성하고 한 번에 생성합니다 — 각 컷은 <b>텍스트→영상</b> 또는 <b>이미지→영상</b>.</p>
+
+        @* v3.2.0 AI 프리셋 스마트 추천 바(대본/키워드 → 147종 문맥 추천) *@
+        <div class="sb-smartsuggest">
+            <ThemeSmartSuggestBar OnApply="ApplyBabyTheme" Disabled="@(Jobs.IsRunning || Jobs.IsMerging)" />
+        </div>
+
+        <div class="sb-toolbar">
+            <button class="sb-tbtn wiz" @onclick="() => _wizardOpen = true" disabled="@Jobs.IsRunning">🪄 원클릭 숏츠 대본 자동 생성</button>
+            <button class="sb-tbtn wiz" @onclick="() => _agencyOpen = true" disabled="@Jobs.IsRunning" title="실시간 트렌드 → Writer/Director/Marketer 3 AI 에이전트 자율 토론 기획 → 승인">🤖 AI 콘텐츠 에이전시</button>
+            <StoryboardHeader OnOpenBaby="() => _babyGalleryOpen = true" OnOpenHyper="() => _hyperOpen = true" OnOpenB2b="() => _b2bGalleryOpen = true" OnOpenWeather="() => _weatherGalleryOpen = true" OnOpenPitch="() => _pitchOpen = true" Disabled="@(Jobs.IsRunning || Jobs.IsMerging)" />
+            <button class="sb-tbtn" @onclick="() => _osmuOpen = true" title="완성 영상을 9:16·1:1·4:5 플랫폼 규격으로 재구성 + AI 제목/해시태그 패키지(폴더/ZIP) · AI 품질 검수 · 소셜 바로 게시">🌐 OSMU 내보내기 · 게시 @if (FinalQa is { } fq) { <span class="sb-qa @(fq.Verdict == QaVerdict.Pass ? "pass" : fq.Verdict == QaVerdict.Warn ? "warn" : "reject")" title="@fq.Message">@(fq.Verdict == QaVerdict.Pass ? "✅ QA" : fq.Verdict == QaVerdict.Warn ? "⚠️ QA" : "⛔ QA") @(fq.Defects.Count)</span> }</button>
+            <button class="sb-tbtn" @onclick="BoostAll" disabled="@Jobs.IsRunning" title="Wan 2.1 알고리즘에 최적화된 시네마틱 카메라/조명 태그를 모든 컷에 1클릭으로 덧붙입니다.">⚡ 프롬프트 부스팅</button>
+            <button class="sb-tbtn" @onclick="SaveProject" disabled="@(Jobs.IsRunning || Jobs.IsMerging)">💾 프로젝트 저장</button>
+            <div class="sb-openbtn @((Jobs.IsRunning || Jobs.IsMerging) ? "off" : null)">
+                📂 프로젝트 열기
+                <InputFile class="sb-openinput" OnChange="OnOpenProject" accept=".json,application/json"
+                           disabled="@(Jobs.IsRunning || Jobs.IsMerging)" />
+            </div>
+
+            <div class="sb-recentwrap">
+                <button class="sb-tbtn" @onclick="() => _recentsOpen = !_recentsOpen">🕒 최근 항목 (@Recents.Items.Count)</button>
+                @if (_recentsOpen)
+                {
+                    <div class="sb-recents">
+                        @if (Recents.Items.Count == 0)
+                        {
+                            <div class="sb-recent-empty">최근 항목이 없습니다.</div>
+                        }
+                        else
+                        {
+                            @foreach (var r in Recents.Items)
+                            {
+                                <div class="sb-recent-item" @key="r.Path">
+                                    <button class="sb-recent-open" @onclick="() => OpenRecent(r)" disabled="@(Jobs.IsRunning || Jobs.IsMerging)">
+                                        <span class="sb-recent-title">@r.Title</span>
+                                        <span class="sb-recent-path">@ShortPath(r.Path)</span>
+                                    </button>
+                                    <button class="sb-recent-del" @onclick="() => Recents.Remove(r.Path)" title="목록에서 제거">✕</button>
+                                </div>
+                            }
+                        }
+                    </div>
+                }
+            </div>
+
+            @* 글로벌 다국어 번역 & SEO — Gemini 키 있을 때만. *@
+            <div class="sb-locwrap" title="@(Localize.Enabled ? "완성 대본을 타깃 언어로 번역하고 국가별 숏폼 SEO(제목/썸네일/해시태그)를 생성합니다." : "Gemini API 키가 필요합니다.")">
+                <select class="sb-locsel" @bind="_locLang" disabled="@(_locBusy || !Localize.Enabled)">
+                    @foreach (var l in Localize.Languages)
+                    {
+                        <option value="@l.Code">@l.Label</option>
+                    }
+                </select>
+                <button class="sb-tbtn" @onclick="RunLocalize" disabled="@(_locBusy || !Localize.Enabled || Jobs.IsRunning)">
+                    @(_locBusy ? "🌐 번역 중…" : "🌐 글로벌 번역·SEO")@(Localize.Enabled ? "" : " (키 필요)")
+                </button>
+            </div>
+
+            <label class="sb-director @(_project.AutoDirectorMode && Director.Enabled ? "on" : null) @(Director.Enabled ? null : "off")"
+                   title="@(Director.Enabled ? "컷 생성 후 Gemini가 프레임을 시각 검수(QualityScore)하고 기준 미만이면 프롬프트를 자동 보정해 재생성합니다." : "Gemini API 키가 필요합니다 — appsettings.json 의 Gemini:ApiKey")">
+                <input type="checkbox" @bind="_project.AutoDirectorMode" disabled="@(Jobs.IsRunning || !Director.Enabled)" />
+                <span class="sb-director-sw"></span>
+                🤖 AI 감독 자율 검수@(Director.Enabled ? "" : " (키 필요)")
+            </label>
+
+            <span class="sb-ff @(Jobs.CanMerge ? "ok" : "off")" title="컷 병합 도구(ffmpeg)">
+                @(Jobs.CanMerge ? "● ffmpeg 감지됨" : "○ ffmpeg 미감지")
+            </span>
+            <UpdateBadge />
+        </div>
+    </header>
+
+    @if (!Cfg.IsConfigured)
+    {
+        <div class="sb-warn">
+            ⚠ Wan API 키가 없습니다.
+            <button class="sb-warn-link" @onclick='() => Nav.NavigateTo("settings")'>관리자 설정 › 영상(Wan)</button>에서 등록하세요.
+        </div>
+    }
+
+    <div class="sb-grid">
+        @* ── 좌: 컷 편집 ── *@
+        <section class="sb-col">
+            <div class="sb-col-h"><span>컷 목록</span>
+                <span style="display:flex; align-items:center; gap:10px;">
+                    @if (IsPortrait)
+                    {
+                        <label class="sb-cardtog" title="각 컷 썸네일에 세이프존 가이드(위험영역·자막/뱃지 마커)를 표시해 얼굴/자막 잘림을 확인">
+                            <input type="checkbox" @bind="CardGuide" /> 🛡️ 컷 세이프존
+                        </label>
+                    }
+                    <span class="sb-count">@_project.Scenes.Count 컷</span>
+                </span>
+            </div>
+
+            @if (IsFreshProject)
+            {
+                <div class="sb-getstart">
+                    <div class="sb-gs-ic">🎬</div>
+                    <div class="sb-gs-t">여기서 숏츠를 만들어 보세요</div>
+                    <div class="sb-gs-d">주제 한 줄만 입력하면 컷·나레이션·카메라가 자동으로 구성됩니다. 컷을 직접 추가해 편집할 수도 있어요.</div>
+                    <button class="sb-btn go" @onclick="() => _wizardOpen = true" disabled="@Jobs.IsRunning">🪄 원클릭 대본 자동 생성</button>
+                </div>
+            }
+
+            @* v2.1.0 전 테마 공통 아기 얼굴 레퍼런스 드롭존(최상단) — 전 컷 I2V 일괄 바인딩 · 미등록 시 T2V 자동 폴백 *@
+            <UniversalBabyFaceDropZone Project="_project" Disabled="@(Jobs.IsRunning || Jobs.IsMerging)" OnChanged="StateHasChanged" />
+
+            @* v16.23.0 🎬 AI 바이럴 후킹 감독 — 첫 3초 A/B/C 후킹 · 유지율 예측 · 스피드 램핑 · A/B 패키징/게시 *@
+            <ViralDirectorStudio Project="_project" Disabled="@(Jobs.IsRunning || Jobs.IsMerging)" OnChanged="StateHasChanged" />
+
+            @* v16.24.0 🌐 글로벌 다국어 더빙 스튜디오(음색 매칭/복제 · 문화적 각색 · 립싱크/자막 재정렬 · 1-Click 다국어 패키지) *@
+            @* v17.50.1: 스튜디오 진입점은 좌측 사이드바 6대 카테고리로 이관 — 여기에는 씬/타임라인 편집 도구와 프로젝트 컨텍스트 스튜디오만 둔다. *@
+            <div class="sb-anchor sb-tl">
+                <div class="sb-tl-tools">
+                    <span class="sb-tl-lb">🔍 줌</span>
+                    <button class="sb-ptool" @onclick="() => Zoom(-1)" disabled="@(_zoom == 0)" title="컷 카드 축소">－</button>
+                    <span class="sb-tl-v">@(ZoomName())</span>
+                    <button class="sb-ptool" @onclick="() => Zoom(1)" disabled="@(_zoom == 2)" title="컷 카드 확대">＋</button>
+                    <button class="sb-ptool @(_snap ? "on" : null)" @onclick="() => _snap = !_snap" title="분할 시 문장 경계(. ! ? 。 줄바꿈)에 스냅">🧲 스냅 @(_snap ? "ON" : "OFF")</button>
+                    <button class="sb-ptool" @onclick="ToggleMarker" disabled="@(_selScene is null)" title="선택 컷에 마커 토글">📍 마커</button>
+                    <button class="sb-ptool" @onclick="SplitSelected" disabled="@(_selScene is null || Jobs.IsRunning)" title="선택 컷의 나레이션을 둘로 나눠 다음 컷으로 분할">✂ 분할</button>
+                    <span class="sb-tl-v">선택 @(SelLabel()) · 마커 @(_markers.Count)</span>
+                    @foreach (var (ms, mi) in _project.Scenes.Select((s, idx) => (s, idx)))
+                    {
+                        if (!_markers.Contains(ms.Id)) continue;
+                        var target = ms;
+                        <button class="sb-tl-mk @(_selScene == target ? "on" : null)" @onclick="() => _selScene = target">📍 컷 @(mi + 1)</button>
+                    }
+                </div>
+                <details class="sb-studios">
+                    <summary>🧰 프로젝트 스튜디오 (13) — 현재 스토리보드 프로젝트를 사용하는 스튜디오</summary>
+                    <div class="sb-studios-g">
+                        <button class="sb-ptool" @onclick="() => _dubbingOpen = true" disabled="@(Jobs.IsRunning || Jobs.IsMerging)">🌐 글로벌 다국어 더빙 스튜디오 @(string.IsNullOrWhiteSpace(_project.FinalVideoPath) ? "· 최종 영상 필요" : "")</button>
+                        <button class="sb-ptool" @onclick="OpenLiveStudio" disabled="@(Jobs.IsRunning || Jobs.IsMerging)">📺 24/7 AI 라이브 스튜디오 @(LiveLoop.IsLive ? "· 🔴 송출 중" : string.IsNullOrWhiteSpace(_project.FinalVideoPath) ? "" : "· 최종 영상 큐 추가")</button>
+                        <button class="sb-ptool" @onclick="() => _interactiveOpen = true" disabled="@(Jobs.IsRunning || Jobs.IsMerging)">🔀 인터랙티브 분기 &amp; 쇼핑 스튜디오</button>
+                        <button class="sb-ptool" @onclick="() => _enterpriseOpen = true">🏢 엔터프라이즈 팀 &amp; 렌더 팜</button>
+                        <button class="sb-ptool" @onclick="() => _masterOpen = true">👑 마스터 엔터프라이즈 스튜디오</button>
+                        <button class="sb-ptool" @onclick="() => _spatialOpen = true">🥽 공간 비디오 &amp; Vision Pro 스튜디오</button>
+                        <button class="sb-ptool" @onclick="() => _virtualOpen = true">🎬 AI 버추얼 프로덕션 &amp; UE5 스튜디오</button>
+                        <button class="sb-ptool" @onclick="() => _soundOpen = true">🎧 AI 사운드 디자인 &amp; Dolby Atmos 스튜디오</button>
+                        <button class="sb-ptool" @onclick="() => _vfxOpen = true">✨ AI VFX 조명 &amp; 8K 업스케일 스튜디오</button>
+                        <button class="sb-ptool" @onclick="() => _screenplayOpen = true">📜 AI 시나리오 &amp; 세계관 스튜디오</button>
+                        <button class="sb-ptool" @onclick="() => _twinOpen = true">🧍‍♂️ AI 디지털 트윈 &amp; 모캡 스튜디오</button>
+                        <button class="sb-ptool" @onclick="() => _mvOpen = true">🎵 AI 뮤직비디오 &amp; 안무 스튜디오</button>
+                        <button class="sb-ptool" @onclick="() => _mediaStudioOpen = true">✨ AI 오토 최적화 미디어 스튜디오</button>
+                    </div>
+                </details>
+                <style>
+                    .sb-tl-tools { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+                    .sb-tl-lb { font-size: 12px; font-weight: 800; }
+                    .sb-tl-v { font: 700 11px var(--mono, monospace); color: var(--text-secondary, #9fb0c8); }
+                    .sb-ptool.on { border-color: var(--accent, #7c6cff); background: color-mix(in srgb, var(--accent, #7c6cff) 18%, transparent); }
+                    .sb-tl-mk { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid #f59e0b; background: transparent; color: #f59e0b; cursor: pointer; }
+                    .sb-tl-mk.on { background: color-mix(in srgb, #f59e0b 22%, transparent); }
+                    .sb-studios { margin-top: 8px; }
+                    .sb-studios > summary { cursor: pointer; font-size: 12px; font-weight: 800; }
+                    .sb-studios-g { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+                    .sb-scene-no.sel { outline: 2px solid var(--accent, #7c6cff); border-radius: 6px; padding: 0 4px; }
+                    .sb-scene-no { cursor: pointer; }
+                    .sb-scene.zoom-0 { font-size: 11px; } .sb-scene.zoom-0 textarea { min-height: 40px; }
+                    .sb-scene.zoom-2 { font-size: 14px; } .sb-scene.zoom-2 textarea { min-height: 140px; }
+                </style>
+            </div>
+
+            @* v5.7.1: Long→Shorts 스마트 재구성(파일/URL → 9:16 컷 자동 배치) *@
+            <ShortsExtractorView Project="_project" OnChanged="StateHasChanged" FfmpegPath="@Prefs.FfmpegBinaryPath" />
+
+            @* v5.6.5·v5.6.6: 생성 전 예상 첫 프레임 + 캐릭터/스타일 앵커 대조(전 컷 i2v 정체성) *@
+            <FirstFramePreviewDeck Prompt='@(_project.Scenes.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.Prompt))?.Prompt ?? _project.Title ?? "")'
+                                   AnchorImageUrl="@(Anchor.HasAnchor(_project) ? (_anchorThumb ?? Anchor.ThumbUrl(_project)) : null)"
+                                   ActualOutputUrl="@StoryboardActualUrl"
+                                   IdentityScore="@IdentityScore"
+                                   OnRegisterGallery="RegisterActualToGallery"
+                                   Size="@_project.ExportResolution" CanStart="@CanStart" OnStartGenerate="StartAll" />
+            @if (IdentityScore is double lowsc && lowsc < 80)
+            {
+                <div class="sb-note">⚠ 정체성 유지율 @lowsc.ToString("F1")% (&lt;80%) — 가드레일을 자동 <b>Strict</b> 로 격상했습니다(자율 보정).</div>
+            }
+
+            @foreach (var (scene, i) in _project.Scenes.Select((s, idx) => (s, idx)))
+            {
+                <div class="sb-scene @ZoomCls @Cls(scene.Status) @(_dragIndex == i ? "dragging" : null) @(_dragOver == i ? "dragover" : null) @(_highlightSceneId == scene.Id ? "neon-hl" : null)" @key="scene.Id" id="cut-@scene.Id"
+                     @ondragover:preventDefault="true" @ondragenter="() => OnDragEnter(i)" @ondrop="() => OnDrop(i)">
+                    <div class="sb-scene-h">
+                        <span class="sb-drag" draggable="@(Jobs.IsRunning ? "false" : "true")"
+                              @ondragstart="() => OnDragStart(i)" @ondragend="OnDragEnd" title="드래그로 순서 변경">⠿</span>
+                        <span class="sb-scene-no @(_selScene == scene ? "sel" : null)" @onclick="() => _selScene = scene" title="클릭해 선택(마커 · 분할)">컷 @(i + 1)@(_markers.Contains(scene.Id) ? " 📍" : null)</span>
+                        <div class="sb-seg">
+                            <button class="@(scene.Mode == SceneMode.TextToVideo ? "on" : null)" disabled="@Jobs.IsRunning"
+                                    @onclick="() => SetMode(scene, SceneMode.TextToVideo)">T2V</button>
+                            <button class="@(scene.Mode == SceneMode.ImageToVideo ? "on" : null)" disabled="@Jobs.IsRunning"
+                                    @onclick="() => SetMode(scene, SceneMode.ImageToVideo)">I2V</button>
+                        </div>
+                        <span class="sb-badge @Cls(scene.Status)">@Label(scene.Status)</span>
+                        @if (scene.QualityScore is int qs)
+                        {
+                            <span class="sb-qa @QaCls(qs)" title="@scene.QAReason">🎬 @(qs)점@(scene.IsAutoHealed ? " ↻" : "")</span>
+                        }
+                        @if (scene.VideoTemporalScore is int vts)
+                        {
+                            <span class="sb-qa @QaCls(vts)" title="@scene.TemporalReason">🎞️ @(vts)점</span>
+                        }
+                        @if (!string.IsNullOrEmpty(scene.EmotionMood))
+                        {
+                            <span class="sb-qa" title="@($"감정 긴장도 {scene.EmotionTension}")">🎭 @scene.EmotionMood</span>
+                        }
+                        <div class="sb-scene-ops">
+                            <button class="sb-op" disabled="@(Jobs.IsRunning || i == 0)" @onclick="() => Move(i, -1)" title="위로">↑</button>
+                            <button class="sb-op" disabled="@(Jobs.IsRunning || i == _project.Scenes.Count - 1)" @onclick="() => Move(i, 1)" title="아래로">↓</button>
+                            <button class="sb-op del" disabled="@(Jobs.IsRunning || _project.Scenes.Count <= 1)" @onclick="() => RemoveScene(scene)" title="삭제">✕</button>
+                        </div>
+                    </div>
+
+                    @if (scene.IsI2v)
+                    {
+                        <div class="sb-drop @(scene.ThumbUrl is not null ? "has" : "")">
+                            @if (scene.ThumbUrl is null)
+                            {
+                                <InputFile class="sb-drop-input" OnChange="@(e => OnScenePicked(scene, e))"
+                                           accept="image/png,image/jpeg,image/webp,image/bmp,image/gif,image/tiff,.dng,.heic" disabled="@Jobs.IsRunning" />
+                                <div class="sb-drop-hint">@(_uploadProgress.TryGetValue(scene.Id, out var up) ? "📦 스트리밍 수신 " + up + "%" : "🖼️ 참조 이미지 드래그/클릭") <span>(i2v 필수 · 용량 무제한 스트리밍 · 8K/RAW 자동 프록시)</span></div>
+                            }
+                            else
+                            {
+                                <img class="sb-thumb" src="@scene.ThumbUrl" alt="참조" />
+                                <button class="sb-thumb-x" disabled="@Jobs.IsRunning" @onclick="() => ClearSceneImage(scene)" title="이미지 제거">✕</button>
+                            }
+                        </div>
+                    }
+
+                    @* v2.1.0 프롬프트 한국어 시각화 — 한글 연출 요약·태그 + 🇰🇷/🇺🇸 탭 스위처 *@
+                    <StoryboardSceneCard Scene="scene" />
+                    <textarea class="sb-ta" @bind="scene.Prompt" @bind:event="oninput" @bind:after="() => OnPromptEdited(scene)" maxlength="800" disabled="@Jobs.IsRunning"
+                              placeholder="@(scene.IsI2v ? "움직임·카메라 지시 (선택)" : "이 컷의 장면 프롬프트")"></textarea>
+                    <div class="sb-ptools">
+                        <button class="sb-ptool" @onclick="() => BoostScene(scene)" disabled="@(Jobs.IsRunning || Booster.IsBoosted(scene.Prompt))"
+                                title="Wan 2.1 알고리즘에 최적화된 시네마틱 카메라/조명 태그를 1클릭으로 덧붙입니다.">
+                            @(Booster.IsBoosted(scene.Prompt) ? "⚡ 부스팅됨" : "⚡ 프롬프트 부스팅")
+                        </button>
+                        <button class="sb-ptool @(_autoTune ? "on" : null)" @onclick="ToggleAutoTune" title="이미지/프롬프트 입력 즉시 카메라·조명·FPS·템포·표정·네거티브를 자동 셋팅(사용자 지정 값은 보존)">
+                            ✨ AI 최적화 자동 셋팅 @(_autoTune ? "ON" : "OFF")
+                        </button>
+                        @if (_autoTune && _presets.ContainsKey(scene.Id))
+                        {
+                            <button class="sb-ptool" disabled="@Jobs.IsRunning" @onclick="() => ApplyTunedPrompt(scene)" title="튜닝된 시네마틱 프롬프트로 본문 교체">✨ 튜닝 프롬프트 적용</button>
+                        }
+                    </div>
+                    @if (_autoTune && _presets.TryGetValue(scene.Id, out var preset))
+                    {
+                        <div class="sb-autotune">
+                            <span>🎬 @(AutoPresetContextTuner.GenreLabel(preset.Genre))</span>
+                            <span>📷 @(preset.CameraAngle) · @(preset.CameraMove) · @(preset.LensMm)mm</span>
+                            <span>💡 @(preset.Lighting)</span>
+                            <span>🎞 @(preset.Fps)fps · @(preset.ShotSeconds.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture))s</span>
+                            <span>🎵 @(preset.TempoBpm)BPM</span>
+                            <span>📐 @(preset.Size)</span>
+                            <span>🙂 @(preset.Emotion) · 긴장 @(preset.Tension)</span>
+                            <span class="mut">신뢰도 @((preset.Confidence * 100).ToString("0", System.Globalization.CultureInfo.InvariantCulture))%</span>
+                        </div>
+                    }
+
+                    <div class="sb-voice">
+                        <span class="sb-voice-ic" title="나레이션 · 자막">🎙️</span>
+                        <input class="sb-voice-in" @bind="scene.VoiceText" @bind:event="oninput" maxlength="200" disabled="@Jobs.IsRunning"
+                               placeholder="나레이션·자막 문구 (선택) — TTS 음성 + 숏츠 자막" />
+                    </div>
+                    <label class="sb-lip" title="@(LipAi.AiAvailable ? AiAudioDrivenLipSyncService.LabelOf(LipAi.PreferredBackend) + " — 나레이션 음소 타임라인에 맞춰 영상 속 인물의 입모양을 동기화합니다." : "AI 립싱크 엔진 미구성 — 관리자 설정 › AI 엔진(LatentSync) 또는 PFS_LIPSYNC_ENDPOINT(Wav2Lip/MuseTalk) 지정")">
+                        <input type="checkbox" @bind="scene.UseLipSync" disabled="@(Jobs.IsRunning || !LipAi.AiAvailable)" />
+                        <span>👄 AI 정밀 립싱크 켜기 <span class="sb-sub">@(LipAi.AiAvailable ? AiAudioDrivenLipSyncService.LabelOf(LipAi.PreferredBackend) : "엔진 미설치")</span></span>
+                    </label>
+                    <div class="sb-emo">
+                        @foreach (var ep in SceneEmotions)
+                        {
+                            <button class="sb-emo-b @(scene.Emotion == ep ? "on" : null)" disabled="@Jobs.IsRunning" @key="ep"
+                                    title="표정 구문 + 얼굴 보호 네거티브를 생성 시 자동 주입(얼굴 정체성 유지)"
+                                    @onclick="() => scene.Emotion = scene.Emotion == ep ? FacialEmotion.Neutral : ep">@FacialEmotionPuppeteerEngine.LabelOf(ep)</button>
+                        }
+                        @if (scene.LocalPath is not null && !string.IsNullOrWhiteSpace(scene.VoiceText))
+                        {
+                            <button class="sb-emo-b sync" disabled="@(Jobs.IsRunning || _lipBusyId is not null || !LipAi.IsAvailable)" @onclick="() => RealignSceneAsync(scene)"
+                                    title="나레이션 TTS → 음소 정렬 립싱크(AI 엔진 없으면 FFmpeg 프레임 보정) · 결과는 별도 파일">@(_lipBusyId == scene.Id ? "⏳ 재정렬 중…" : "🔁 오디오-립싱크 재정렬")</button>
+                        }
+                    </div>
+                    @if (_lipResults.TryGetValue(scene.Id, out var lipRes))
+                    {
+                        <div class="sb-scene-stat">@lipRes.Message</div>
+                        @if (lipRes.Url is not null) { <video class="sb-lip-vid" src="@lipRes.Url" controls preload="metadata"></video> }
+                    }
+
+                    @if (scene.IdentityConfidence is double idc)
+                    {
+                        <span class="sb-idscore @(idc >= CharacterIdentityLockService.LockedThreshold ? "ok" : idc >= CharacterIdentityLockService.DriftThreshold ? "warn" : "bad")"
+                              title="캐릭터 정합성 신뢰도(외형 특징 비교) — 60% 미만이면 재생성을 권장합니다.">👶 정합성 @(idc.ToString("0", System.Globalization.CultureInfo.InvariantCulture))%</span>
+                    }
+                    @if (scene.Status is SceneStatus.Generating or SceneStatus.Downloading)
+                    {
+                        <div class="sb-bar"><div class="sb-bar-f" style="width:@(scene.Percent)%"></div></div>
+                        <div class="sb-scene-stat">@scene.StatusText</div>
+                    }
+                    else if (scene.Status == SceneStatus.Failed)
+                    {
+                        <div class="sb-scene-err">⚠ @(PromptFlowStudio.Services.Platform.ErrorDialogService.CleanMessage(scene.Error))</div>
+                    }
+                    else if (scene.Status == SceneStatus.Completed && scene.VideoUrl is not null)
+                    {
+                        @if (_cardGuide && IsPortrait)
+                        {
+                            <CutCardSafeZoneOverlay Platform="EffectiveCardPlatform">
+                                @if (scene.PosterUrl is not null) { <img class="sb-scene-vid poster" src="@scene.PosterUrl" alt="컷 썸네일" loading="lazy" /> }
+                                else { <video id="cut-vid-@scene.Id" class="sb-scene-vid" src="@scene.VideoUrl" controls muted loop preload="metadata"></video> }
+                            </CutCardSafeZoneOverlay>
+                        }
+                        else if (scene.PosterUrl is not null)
+                        {
+                            <img class="sb-scene-vid poster" src="@scene.PosterUrl" alt="컷 썸네일" loading="lazy" />
+                        }
+                        else
+                        {
+                            <video id="cut-vid-@scene.Id" class="sb-scene-vid" src="@scene.VideoUrl" controls muted loop preload="metadata"></video>
+                        }
+                    }
+
+                    @if (scene.PresetTension is not null || scene.PresetFoley is { Count: > 0 })
+                    {
+                        <AudioTensionVisualizer Scene="scene" BgmDucking="_hasBgmDuck" />
+                    }
+
+                    @if (scene.Status == SceneStatus.Completed && scene.VideoUrl is not null && scene.PosterUrl is null)
+                    {
+                        <div style="margin-top:6px;"><CutVuMeter VideoElementId="@($"cut-vid-{scene.Id}")" /></div>
+                    }
+
+                    @if (scene.Status == SceneStatus.Completed && scene.QAReason is { Length: > 0 })
+                    {
+                        <div class="sb-qa-reason">🎬 <b>AI 감독</b> @scene.QAReason</div>
+                    }
+                </div>
+            }
+
+            <button class="sb-add" disabled="@Jobs.IsRunning" @onclick="AddScene">＋ 컷 추가</button>
+        </section>
+
+        @* ── 우: 진행/제어 ── *@
+        <section class="sb-col">
+            <div class="sb-col-h"><span>전체 진행</span></div>
+
+            @* v2.1.0 주조종실 마스터 제작 덱 — 대형 네온 [✨ 영상 제작 시작] + 단계 뱃지 + 8대 멀티플랫폼 선택 *@
+            <MasterProductionControlDeck Project="_project" CanStart="CanStart" OnStart="StartAll" OnChanged="StateHasChanged" />
+
+            @* v16.12.0 Cinematic Post-Production — 완료 컷 병합(크로스페이드) + BGM 루핑/페이드 + Auto-Foley SFX 먹싱 → 탐색기 열기 *@
+            <div class="sb-panel sb-pp">
+                <div class="sb-pp-row">
+                    @if (_ppCts is not null)
+                    {
+                        <button class="sb-btn cancel" @onclick="CancelFinalExport">■ 내보내기 취소</button>
+                    }
+                    else
+                    {
+                        <button class="sb-btn go sb-pp-btn" disabled="@(!CanFinalExport)" @onclick="FinalExportAsync"
+                                title="@(Post.IsAvailable ? "완료된 컷을 크로스페이드로 병합하고 BGM·SFX를 믹싱해 최종 MP4로 내보냅니다" : "ffmpeg.exe 가 필요합니다")">🎬 최종 영상 내보내기 (BGM+SFX)</button>
+                    }
+                    <select class="sb-res" @bind="_ppTransition" disabled="@(_ppCts is not null)" title="컷 경계 트랜지션">
+                        <option value="@PostTransition.Crossfade">크로스페이드</option>
+                        <option value="@PostTransition.FadeInOut">페이드 인/아웃</option>
+                        <option value="@PostTransition.Cut">컷(전환 없음)</option>
+                    </select>
+                    @* v16.14.0 동화 나레이션(TTS·BGM 덕킹) + 세이프존 자막 번인 *@
+                    <label class="sb-res" title="컷 대본(VoiceText)을 동화 나레이션으로 합성하고 세이프존 자막을 번인합니다">
+                        <input type="checkbox" @bind="_ppVoice" disabled="@(_ppCts is not null)" /> 🎙️ 나레이션+자막
+                    </label>
+                    @if (_ppVoice)
+                    {
+                        <select class="sb-res" @bind="_ppTone" disabled="@(_ppCts is not null)" title="나레이션 감정 톤">
+                            <option value="@NarrationTone.FairyTale">동화</option>
+                            <option value="@NarrationTone.Cloud">구름(포근)</option>
+                            <option value="@NarrationTone.Bright">밝음</option>
+                        </select>
+                        <select class="sb-res" @bind="_ppSpeed" disabled="@(_ppCts is not null)" title="나레이션 배속">
+                            <option value="0.85">0.85x</option>
+                            <option value="1">1.0x</option>
+                            <option value="1.15">1.15x</option>
+                        </select>
+                        <select class="sb-res" @bind="_ppPlatform" disabled="@(_ppCts is not null)" title="자막 세이프존 플랫폼">
+                            <option value="@SafePlatform.YouTubeShorts">Shorts</option>
+                            <option value="@SafePlatform.TikTok">TikTok</option>
+                            <option value="@SafePlatform.InstagramReels">Reels</option>
+                            <option value="@SafePlatform.None">가이드 없음</option>
+                        </select>
+                    }
+                </div>
+                @if (_ppCts is not null || _ppPct > 0)
+                {
+                    <div class="sb-bar"><div class="sb-bar-f" style="width:@(_ppPct)%"></div></div>
+                    <div class="sb-overall-m"><span>@_ppStage</span><span>@(_ppPct)%</span></div>
+                }
+                @if (_ppMessage is not null)
+                {
+                    <div class="sb-pp-msg @(_ppOk ? "ok" : "bad")">
+                        <span>@_ppMessage</span>
+                        @if (_ppOk && _ppOutput is not null) { <button class="sb-tbtn" @onclick="() => FolderLink.Reveal(_ppOutput)">📂 탐색기에서 열기</button> }
+                    </div>
+                }
+            </div>
+
+            <div class="sb-panel">
+                <div class="sb-bar big"><div class="sb-bar-f" style="width:@(_project.Scenes.Count > 0 ? Jobs.OverallPercent : 0)%"></div></div>
+                <div class="sb-overall-m">
+                    <span><b>@Jobs.CompletedCount</b> / @_project.Scenes.Count 완료</span>
+                    @if (Jobs.FailedCount > 0) { <span class="sb-fail">실패 @Jobs.FailedCount</span> }
+                    <span>@(_project.Scenes.Count > 0 ? Jobs.OverallPercent : 0)%</span>
+                </div>
+
+                <div class="sb-resrow">
+                    <label class="sb-reslbl">최종 병합 해상도 <span class="sb-sub">쇼츠는 세로 1080×1920</span></label>
+                    <select class="sb-res" @bind="_project.ExportResolution" disabled="@(Jobs.IsRunning || Jobs.IsMerging)">
+                        @foreach (var (val, label) in StoryboardProject.ResolutionPresets)
+                        {
+                            <option value="@val">@label</option>
+                        }
+                    </select>
+                </div>
+
+                <div class="sb-resrow">
+                    <label class="sb-reslbl">🎵 배경음악 (BGM) <span class="sb-sub">mp3 / wav · 선택</span></label>
+                    @if (_project.BgmPath is null)
+                    {
+                        <div class="sb-openbtn @((Jobs.IsRunning || Jobs.IsMerging) ? "off" : null)">
+                            🎵 BGM 추가
+                            <InputFile class="sb-openinput" OnChange="OnBgmPicked"
+                                       accept="audio/mpeg,audio/wav,audio/x-wav,.mp3,.wav" disabled="@(Jobs.IsRunning || Jobs.IsMerging)" />
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="sb-bgm-chip">
+                            <span class="sb-bgm-name" title="@_project.BgmPath">🎵 @Path.GetFileName(_project.BgmPath)</span>
+                            <button class="sb-recent-del" @onclick="ClearBgm" disabled="@(Jobs.IsRunning || Jobs.IsMerging)" title="BGM 제거">✕</button>
+                        </div>
+
+                        @* 오디오 덕킹 + BGM 기본 음량 — BGM 있을 때만 노출 *@
+                        <label class="sb-parallel sb-duck" title="나레이션 대사가 나올 때 BGM 배경음악 소리를 자동으로 감쇄합니다.">
+                            <input type="checkbox" @bind="_project.EnableAudioDucking" disabled="@(Jobs.IsRunning || Jobs.IsMerging)" />
+                            <span>🔊 BGM 자동 덕킹 <span class="sb-sub">나레이션 구간에 BGM 자동 감소(방송용 믹싱)</span></span>
+                        </label>
+                        <div class="sb-vol">
+                            <div class="sb-vol-lbl"><span>BGM 기본 음량</span><span class="sb-vol-pct">@BgmVolPct%</span></div>
+                            <input class="sb-range" type="range" min="0" max="100" step="5" @bind="BgmVolPct" @bind:event="oninput"
+                                   disabled="@(Jobs.IsRunning || Jobs.IsMerging)" />
+                        </div>
+                    }
+                </div>
+
+                <div class="sb-resrow">
+                    <label class="sb-reslbl" style="display:flex; align-items:center; gap:6px;">
+                        <input type="checkbox" @bind="_project.UseTempoSpeedup" @bind:after="() => ShowSwitchGuide(SwitchRoleGuideService.Keys.TempoSpeedup)" disabled="@(Jobs.IsRunning || Jobs.IsMerging)" />
+                        ⚡ 숏츠 템포 배속 <span class="sb-sub">영상+오디오 함께 빨라짐</span>
+                    </label>
+                    <select class="sb-res" @bind="SpeedStr" disabled="@(Jobs.IsRunning || Jobs.IsMerging || !_project.UseTempoSpeedup)">
+                        @foreach (var (val, label) in StoryboardProject.SpeedPresets)
+                        {
+                            <option value="@Inv(val)">@label</option>
+                        }
+                    </select>
+                </div>
+                @if (_project.IsBabyPreset && _project.PlaybackSpeed > 1.001)
+                {
+                    <div style="font-size:11.5px; color:var(--accent-2); padding:1px 2px 5px; line-height:1.45;">
+                        ⚡ 이 테마는 <b>@(Inv(_project.PlaybackSpeed))x 배속</b> 권장 — @(_project.UseTempoSpeedup ? "자동 체크됨(귀여움 연출 극대화)" : "체크 시 적용")
+                    </div>
+                }
+
+                @* ── v1.8.0 Wan 무료 요금제 결함 자동 보정(Auto-Pilot) — 프롬프트 위생화·디플리커·모션 보정·속도 제한 가드 일괄 제어 ── *@
+                <AutoPilotSettings Project="_project" Disabled="@(Jobs.IsRunning || Jobs.IsMerging)" />
+
+                <div class="sb-resrow">
+                    <label class="sb-reslbl">🛡️ 자막 세이프존 <span class="sb-sub">플랫폼 UI 가림 회피 · 미리보기와 연동</span> <HelpBadge Topic="@HelpContentService.Keys.SafeZone" /></label>
+                    <select class="sb-res" @bind="PreviewPlatform" disabled="@(Jobs.IsRunning || Jobs.IsMerging)">
+                        @foreach (var z in SafeZones.All)
+                        {
+                            <option value="@z.Platform">@z.Icon @z.Label</option>
+                        }
+                    </select>
+                </div>
+                @if (IsPortrait)
+                {
+                    <label class="sb-parallel" title="세로 컷 생성 시 Wan 프롬프트에 '아기 얼굴을 상단-중앙 안전대에 배치' 프레이밍 키워드를 자동 주입(멱등·비영속)">
+                        <input type="checkbox" @bind="_project.SmartFraming" @bind:after="() => ShowSwitchGuide(SwitchRoleGuideService.Keys.SmartFraming)" disabled="@Jobs.IsRunning" />
+                        <span>🎯 피사체 세이프존 프레이밍 <span class="sb-sub">@Framing.Describe(_project.TargetPlatform)</span></span>
+                    </label>
+                }
+
+                <label class="sb-parallel">
+                    <input type="checkbox" @bind="_parallel" disabled="@Jobs.IsRunning" />
+                    <span>병렬 생성(동시 2개) <span class="sb-sub">기본은 순차 — Rate Limit 안전</span></span>
+                </label>
+
+                <label class="sb-parallel">
+                    <input type="checkbox" @bind="_project.UseFadeEffect" disabled="@(Jobs.IsRunning || Jobs.IsMerging)" />
+                    <span>부드러운 전환 (페이드 인/아웃) <span class="sb-sub">컷 사이 dip-to-black + BGM 페이드아웃</span></span>
+                </label>
+
+                <label class="sb-parallel">
+                    <input type="checkbox" @bind="_project.UseOfflineTts" disabled="@(Jobs.IsRunning || Jobs.IsMerging)" />
+                    <span>🎙️ 오프라인 TTS 우선 <span class="sb-sub">@(LocalTts.IsAvailable ? LocalTts.EngineName + " · 로컬 합성" : "미설치 — 온라인 Edge TTS 사용")</span></span>
+                </label>
+
+                @* 파이프라인 4K 업스케일 — 병합(자막 번인) 이전에 실행돼 폰트 뭉개짐 없이 선명. *@
+                <label class="sb-parallel" title="720p 컷 영상을 Real-ESRGAN 딥러닝 알고리즘으로 4K 해상도까지 선명하게 팽창시킵니다.">
+                    <input type="checkbox" @bind="_project.UpscaleTo4K" disabled="@(Jobs.IsRunning || Jobs.IsMerging || !Upscale.AnyAvailable)" />
+                    <span>🚀 4K 업스케일 (병합 전) <span class="sb-sub">@(Upscale.AnyAvailable ? "자막 번인 전 컷 업스케일 → 폰트 선명" : "업스케일 엔진 미설치")</span></span>
+                </label>
+                @if (_project.UpscaleTo4K)
+                {
+                    <div class="sb-resrow">
+                        <label class="sb-reslbl">업스케일 엔진</label>
+                        <select class="sb-res" @bind="_project.UpscaleEngine" disabled="@(Jobs.IsRunning || Jobs.IsMerging)">
+                            <option value="RealEsrgan">실사 · Real-ESRGAN</option>
+                            <option value="RealCugan">2D/애니 · Real-CUGAN</option>
+                        </select>
+                    </div>
+                }
+
+                @* ── Gemini 고급 비디오 파이프라인(키 있을 때만 · 키네틱/그레이딩/모션분석) ── *@
+                <label class="sb-parallel" title="@(Director.Enabled ? "컷 mp4 전체를 Gemini로 분석해 모션 자연스러움·프레임 일관성·물리 위반을 점수화하고, 기준 미만이면 모션 보정 프롬프트로 재생성합니다." : "Gemini API 키가 필요합니다.")">
+                    <input type="checkbox" @bind="_project.UseVideoAnalysis" disabled="@(Jobs.IsRunning || Jobs.IsMerging || !Director.Enabled)" />
+                    <span>🎞️ 네이티브 비디오 분석 <span class="sb-sub">@(Director.Enabled ? "mp4 전체 시간축 검수 + 모션 보정 Re-roll" : "Gemini 키 필요")</span></span>
+                </label>
+                <label class="sb-parallel" title="@(Director.Enabled ? "나레이션의 단어별 밀리초 타임코드를 추출해 틱톡/릴스식 단어 단위 색상 전환 자막과 정밀 SFX를 번인합니다(나레이션 있는 컷)." : "Gemini API 키가 필요합니다.")">
+                    <input type="checkbox" @bind="_project.UseKineticCaptions" @bind:after="() => ShowSwitchGuide(SwitchRoleGuideService.Keys.KineticCaptions)" disabled="@(Jobs.IsRunning || Jobs.IsMerging || !Director.Enabled)" />
+                    <span>✨ 키네틱 하이라이트 자막 <span class="sb-sub">@(Director.Enabled ? "단어 단위 색상 전환 + 밀리초 SFX" : "Gemini 키 필요")</span></span>
+                </label>
+                <label class="sb-parallel" title="@(Director.Enabled ? "장면 분위기를 Gemini가 분석해 어울리는 ffmpeg 색보정 필터를 산출·적용합니다(안전 검증된 필터만)." : "Gemini API 키가 필요합니다.")">
+                    <input type="checkbox" @bind="_project.UseAiColorGrading" disabled="@(Jobs.IsRunning || Jobs.IsMerging || !Director.Enabled)" />
+                    <span>🎨 AI 시네마틱 컬러 그레이딩 <span class="sb-sub">@(Director.Enabled ? "분위기별 영화급 컬러 톤 자동" : "Gemini 키 필요")</span></span>
+                </label>
+                <label class="sb-parallel" title="@(Director.Enabled ? "나레이션/영상의 감정선(Tension)을 분석해 긴장 씬에서 BGM이 고조되도록 볼륨/덕킹/페이드를 자동 오케스트레이션합니다." : "Gemini API 키가 필요합니다.")">
+                    <input type="checkbox" @bind="_project.UseEmotionPacing" @bind:after="() => ShowSwitchGuide(SwitchRoleGuideService.Keys.EmotionPacing)" disabled="@(Jobs.IsRunning || Jobs.IsMerging || !Director.Enabled)" />
+                    <span>🎭 감정선 동적 BGM <span class="sb-sub">@(Director.Enabled ? "긴장 씬 BGM 고조 + 덕킹/페이드 자동" : "Gemini 키 필요")</span></span>
+                </label>
+                <label class="sb-parallel" title="@(Director.Enabled ? "인접 컷의 엔딩/시작 프레임을 시각 분석해 컷 경계에 어울리는 xfade(fade/slide/zoom/blur)를 자동 적용합니다." : "Gemini API 키가 필요합니다.")">
+                    <input type="checkbox" @bind="_project.UseSmartTransitions" @bind:after="() => ShowSwitchGuide(SwitchRoleGuideService.Keys.SmartTransitions)" disabled="@(Jobs.IsRunning || Jobs.IsMerging || !Director.Enabled)" />
+                    <span>🎬 지능형 스마트 트랜지션 <span class="sb-sub">@(Director.Enabled ? "컷 경계 xfade 자동 설계(매치컷)" : "Gemini 키 필요")</span></span>
+                </label>
+                <label class="sb-parallel" title="@(Director.Enabled ? "컷을 분석해 폴리(현장 효과음)를 생성/해결하고 피사체 위치에 맞춰 좌우 3D 공간 음향으로 믹싱합니다." : "Gemini API 키가 필요합니다.")">
+                    <input type="checkbox" @bind="_project.UseGenFoley" @bind:after="() => ShowSwitchGuide(SwitchRoleGuideService.Keys.GenFoley)" disabled="@(Jobs.IsRunning || Jobs.IsMerging || !Director.Enabled)" />
+                    <span>🔊 생성형 폴리 & 3D 공간음향 <span class="sb-sub">@(Director.Enabled ? "효과음 자동 생성 + 좌우 팬(pan)" : "Gemini 키 필요")</span></span>
+                </label>
+                <label class="sb-parallel" title="음소거 시청 대응 — 폴리 효과음 순간에 이모지 뱃지(에취! 🤧, 콰광! ⚡)를 화면 상단 중앙에 팝업 번인합니다(오프라인 · Gemini 불필요).">
+                    <input type="checkbox" @bind="_project.UseVisualSfxBadges" @bind:after="() => ShowSwitchGuide(SwitchRoleGuideService.Keys.VisualBadges)" disabled="@(Jobs.IsRunning || Jobs.IsMerging)" />
+                    <span>🔇 음소거 대응 시각 효과음 뱃지 <span class="sb-sub">폴리 순간 이모지 뱃지 팝업(오프라인)</span></span>
+                </label>
+
+                @* AI 감독 자율 검수 기준 — 모드 ON + Gemini 키 있을 때만. *@
+                @if (_project.AutoDirectorMode && Director.Enabled)
+                {
+                    <div class="sb-resrow">
+                        <label class="sb-reslbl">🎬 AI 감독 채택 기준 <span class="sb-sub">@(_project.QualityThreshold)점 미만이면 자동 재생성</span></label>
+                        <div class="sb-director-cfg">
+                            <input class="sb-range" type="range" min="50" max="95" step="5" @bind="_project.QualityThreshold" @bind:event="oninput" disabled="@(Jobs.IsRunning || Jobs.IsMerging)" />
+                            <select class="sb-res" @bind="_project.MaxReroll" disabled="@(Jobs.IsRunning || Jobs.IsMerging)">
+                                <option value="1">재생성 최대 1회</option>
+                                <option value="2">재생성 최대 2회</option>
+                                <option value="3">재생성 최대 3회</option>
+                            </select>
+                        </div>
+                    </div>
+                }
+
+                @* ── v16.22.0 피사체 Identity 고정(캐릭터 프로필 · 의상/소품 · 정합성) ── *@
+                <div class="sb-anchor sb-idlock" title="등록한 아기 얼굴·의상·소품을 전 컷/에피소드에 고정하고 컷별 정합성 신뢰도를 측정합니다.">
+                    <label class="sb-reslbl">👶 피사체 Identity 고정 <span class="sb-sub">얼굴 참조 I2V + 정체성/의상 프롬프트 + 시드 고정 · 제출 시 자동 주입</span></label>
+                    @if (_project.CharacterLock is { } idl)
+                    {
+                        var (avgId, nId) = IdentityAverage();
+                        <div class="sb-anchor-has">
+                            @if (idl.FaceImagePath is not null) { <img class="sb-anchor-img" src="@Media.ToPlaybackUrl(idl.FaceImagePath)" alt="" /> }
+                            <div class="sb-anchor-info">
+                                <span class="sb-anchor-badge">🔒 @idl.Name · 앵커 @(idl.Anchors.Count) · 시드 @(idl.Seed)</span>
+                                <span class="sb-idscore @(nId == 0 ? null : avgId >= CharacterIdentityLockService.LockedThreshold ? "ok" : avgId >= CharacterIdentityLockService.DriftThreshold ? "warn" : "bad")">
+                                    @(nId == 0 ? "정합성 미측정" : "정합성 평균 " + avgId.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "% (" + nId.ToString(System.Globalization.CultureInfo.InvariantCulture) + "컷)")
+                                </span>
+                                <button class="sb-recent-del" @onclick="ReleaseCharacterLock" disabled="@(Jobs.IsRunning || Jobs.IsMerging)" title="고정 해제">✕</button>
+                            </div>
+                        </div>
+                    }
+                    <button class="sb-ptool" @onclick="() => _characterOpen = true" disabled="@(Jobs.IsRunning || Jobs.IsMerging)">👶 캐릭터 스튜디오 열기 @(_project.CharacterLock is null ? "· 1-Click 적용" : "")</button>
+                </div>
+
+                @* ── 캐릭터/스타일 앵커(전 컷 일관성 I2V) ── *@
+                <div class="sb-anchor" title="I2V 기술을 활용해 전 컷의 인물 외모와 그림체 스타일을 일정하게 유지합니다.">
+                    <label class="sb-reslbl">⚓ 메인 캐릭터/스타일 앵커 <span class="sb-sub">등록 시 전 컷을 이 이미지 기반 I2V 로 생성(일관성)</span></label>
+                    @if (Anchor.HasAnchor(_project))
+                    {
+                        <div class="sb-anchor-has">
+                            <img class="sb-anchor-img" src="@(_anchorThumb ?? Anchor.ThumbUrl(_project))" alt="앵커 이미지" />
+                            <div class="sb-anchor-info">
+                                <span class="sb-anchor-badge">⚓ 앵커 적용 중 · 모든 컷 i2v</span>
+                                <button class="sb-recent-del" @onclick="ClearAnchor" disabled="@(Jobs.IsRunning || Jobs.IsMerging)" title="앵커 해제">✕</button>
+                            </div>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="sb-drop">
+                            <InputFile class="sb-drop-input" OnChange="OnAnchorPicked"
+                                       accept="image/png,image/jpeg,image/webp,image/bmp" disabled="@Jobs.IsRunning" />
+                            <div class="sb-drop-hint">⚓ 대표 캐릭터/스타일 이미지 <span>(드래그 / 클릭)</span></div>
+                        </div>
+                    }
+                </div>
+
+                @* ── 브랜드 워터마크(채널 로고) — 최종 병합 시 우측 상단 오버레이 ── *@
+                <div class="sb-anchor" title="채널 로고 이미지를 최종 영상 우측 상단에 자동 합성합니다(투명 PNG 권장).">
+                    <label class="sb-reslbl">🏷️ 브랜드 워터마크 <span class="sb-sub">등록 시 최종 영상 우측 상단에 로고 오버레이(투명 PNG 권장)</span></label>
+                    @if (!string.IsNullOrWhiteSpace(_project.WatermarkImagePath))
+                    {
+                        <div class="sb-anchor-has">
+                            <img class="sb-anchor-img" src="@(_watermarkThumb ?? Media.ToPlaybackUrl(_project.WatermarkImagePath!))" alt="워터마크" />
+                            <div class="sb-anchor-info">
+                                <span class="sb-anchor-badge">🏷️ 로고 적용 중 · 우측 상단</span>
+                                <button class="sb-recent-del" @onclick="ClearWatermark" disabled="@(Jobs.IsRunning || Jobs.IsMerging)" title="워터마크 해제">✕</button>
+                            </div>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="sb-drop">
+                            <InputFile class="sb-drop-input" OnChange="OnWatermarkPicked"
+                                       accept="image/png,image/webp,image/jpeg" disabled="@(Jobs.IsRunning || Jobs.IsMerging)" />
+                            <div class="sb-drop-hint">🏷️ 채널 로고 이미지 <span>(드래그 / 클릭 · 투명 PNG 권장)</span></div>
+                        </div>
+                    }
+                </div>
+
+                @* 스마트 사운드 FX — 컷 전환마다 효과음 자동 믹싱(Sfx 폴더 기반) *@
+                <label class="sb-parallel" title="컷이 바뀌는 지점마다 숏츠 전용 효과음(Whoosh 등)을 자동으로 믹싱합니다.">
+                    <input type="checkbox" @bind="_project.EnableSmartSfx" disabled="@(Jobs.IsRunning || Jobs.IsMerging)" />
+                    <span>🔊 스마트 사운드 FX <span class="sb-sub">@SfxHint</span></span>
+                </label>
+
+                <div class="sb-actions">
+                    @if (Jobs.IsRunning)
+                    {
+                        <button class="sb-btn cancel" @onclick="Jobs.Cancel">■ 취소</button>
+                    }
+                    else
+                    {
+                        <button class="sb-btn go" disabled="@(!CanStart)" @onclick="StartAll">✨ 스토리보드 전체 생성</button>
+                        @if (Jobs.CompletedCount > 0) { <button class="sb-btn ghost" @onclick="Jobs.ResetAll">↺ 초기화</button> }
+                    }
+                </div>
+            </div>
+
+            @* 컷별 상태 목록 *@
+            <div class="sb-statlist">
+                @foreach (var (scene, i) in _project.Scenes.Select((s, idx) => (s, idx)))
+                {
+                    <div class="sb-statrow" @key="scene.Id">
+                        <span class="sb-statno">@(i + 1)</span>
+                        <span class="sb-stattxt">@(string.IsNullOrWhiteSpace(scene.Prompt) ? (scene.IsI2v ? "(이미지 컷)" : "(빈 프롬프트)") : Trunc(scene.Prompt))</span>
+                        <span class="sb-badge @Cls(scene.Status)">@Label(scene.Status)</span>
+                    </div>
+                }
+            </div>
+
+            @* 최종 병합 영상(ffmpeg) — 모든 컷 완료 시 자동 생성 *@
+            @if (Jobs.IsMerging)
+            {
+                <div class="sb-merge run">
+                    <div>🎬 컷 병합 중… @Jobs.MergePercent% <span class="sb-sub">(ffmpeg 재인코딩)</span></div>
+                    <div class="sb-bar" style="margin-top:8px;"><div class="sb-bar-f" style="width:@(Jobs.MergePercent)%"></div></div>
+                </div>
+            }
+            else if (_project.FinalVideoPath is not null)
+            {
+                <div class="sb-col-h">
+                    <span>최종 병합 영상</span>
+                    @if (IsPortrait)
+                    {
+                        <div class="sb-szsw" role="group" title="플랫폼 세이프존 미리보기 — 선택 시 병합 자막/뱃지 위치도 함께 보정됩니다">
+                            @foreach (var z in SafeZones.All)
+                            {
+                                <button class="sb-szbtn @(_project.TargetPlatform == z.Platform ? "on" : null)" @onclick="() => PreviewPlatform = z.Platform" @key="z.Platform">@z.Icon @ShortName(z.Platform)</button>
+                            }
+                        </div>
+                    }
+                </div>
+                <div style="margin:2px 0 8px;"><StudioMonitorHeader EngineReady="@Cfg.IsConfigured" MediaElementId="sb-final-vid" /></div>
+                @if (IsPortrait && _project.TargetPlatform != SafePlatform.None)
+                {
+                    <div class="sb-final-wrap portrait">
+                        <SafeZoneOverlay Platform="_project.TargetPlatform" Caption="@_project.Title">
+                            <video id="sb-final-vid" class="sb-final" src="@Media.ToPlaybackUrl(_project.FinalVideoPath)" controls autoplay loop muted preload="auto"></video>
+                        </SafeZoneOverlay>
+                    </div>
+                }
+                else if (IsPortrait)
+                {
+                    <div class="sb-final-wrap portrait">
+                        <video id="sb-final-vid" class="sb-final" src="@Media.ToPlaybackUrl(_project.FinalVideoPath)" controls autoplay loop muted preload="auto"></video>
+                    </div>
+                }
+                else
+                {
+                    <video id="sb-final-vid" class="sb-final" src="@Media.ToPlaybackUrl(_project.FinalVideoPath)" controls autoplay loop muted preload="auto"></video>
+                }
+                <div class="sb-final-actions">
+                    <button class="sb-btn go" @onclick="ExportFinal" disabled="@(_exporting || _upBusy)">
+                        @(_exporting ? "내보내는 중…" : "💾 비디오 파일 내보내기 (.mp4)")
+                    </button>
+                    <button class="sb-btn ghost" @onclick="OpenMeta" disabled="@_upBusy">📺 유튜브 메타데이터 생성</button>
+                    <button class="sb-btn ghost" @onclick="GenerateThumbnail" disabled="@(_thumbBusy || _upBusy)"
+                            title="표정 피크 컷의 얼굴을 1.5배 매크로 크롭 + Real-ESRGAN 4K 로 thumbnail.png 자동 생성">
+                        @(_thumbBusy ? "🖼️ 썸네일 생성 중…" : "🖼️ 자동 썸네일(4K)")
+                    </button>
+                    <button class="sb-btn ghost" @onclick="GenerateFaceCropThumbnail" disabled="@(_thumbBusy || _upBusy)"
+                            title="Gemini Vision 으로 아기 얼굴 위치(Y중심)를 추론해 얼굴 중심 1.5배 매크로 크롭 + 4K — 키 없으면 휴리스틱 폴백">
+                        @(_thumbBusy ? "🧠 크롭 중…" : "🧠 AI 얼굴 크롭(4K)")
+                    </button>
+                    @if (YtPublish.Enabled)
+                    {
+                        <button class="sb-btn ghost" @onclick="UploadYouTube" disabled="@(_ytBusy || _upBusy)"
+                                title="완성 영상을 내 유튜브 채널에 비공개(private)로 업로드합니다(자동 메타데이터). 공개는 유튜브에서 직접 전환하세요.">
+                            @(_ytBusy ? $"⬆ 업로드 중… {_ytPct}%" : "▶️ 유튜브 업로드(비공개)")
+                        </button>
+                    }
+                    <button class="sb-btn ghost" @onclick="ExtractSubs"
+                            disabled="@(_sttBusy || _upBusy || !Stt.IsAvailable)"
+                            title="@(Stt.IsAvailable ? "영상 음성에서 자막을 추출해 컷에 채웁니다(Faster-Whisper)" : "Faster-Whisper 미설치 — appsettings.json 의 Engines:FasterWhisper:Exe 지정")">
+                        @(_sttBusy ? "자막 추출 중…" : "📝 자막 자동 추출")
+                    </button>
+                </div>
+
+                @* 표정 피크 자동 썸네일 미리보기 *@
+                @if (_thumbUrl is not null)
+                {
+                    <div class="sb-thumb-preview">
+                        <img src="@_thumbUrl" alt="자동 썸네일" />
+                        <span class="sb-thumb-cap">🖼️ 표정 피크 자동 썸네일(얼굴 1.5× 매크로 크롭 · 4K) — thumbnail.png 저장됨</span>
+                    </div>
+                }
+
+                @* 4K 업스케일 *@
+                <div class="sb-up">
+                    <select class="sb-res" @bind="_upEngine" disabled="@_upBusy" style="max-width:180px;">
+                        <option value="RealEsrgan">실사 · Real-ESRGAN</option>
+                        <option value="RealCugan">2D/애니 · Real-CUGAN</option>
+                    </select>
+                    <button class="sb-btn go" @onclick="UpscaleFinal"
+                            disabled="@(_upBusy || !Upscale.AnyAvailable)"
+                            title="@(Upscale.AnyAvailable ? "720p→4K 딥러닝 업스케일" : "업스케일 엔진 미설치 — appsettings.json 의 Engines:RealEsrgan:Exe 지정")">
+                        @(_upBusy ? "업스케일 중…" : "🚀 4K 업스케일")
+                    </button>
+                </div>
+                @if (_upBusy || _upResult is not null)
+                {
+                    <div class="sb-merge run">
+                        <div>@(_upBusy ? $"🚀 {_upStatus} {(int)_upPct}%" : _upResult)</div>
+                        @if (_upBusy)
+                        {
+                            <div class="sb-bar" style="margin-top:8px;"><div class="sb-bar-f" style="width:@((int)_upPct)%"></div></div>
+                        }
+                    </div>
+                    @if (!_upBusy && _up4kPath is not null)
+                    {
+                        <video class="sb-final" src="@Media.ToPlaybackUrl(_up4kPath)" controls loop muted preload="metadata"></video>
+                    }
+                }
+                @if (!Upscale.AnyAvailable || !Stt.IsAvailable || !Lip.IsAvailable)
+                {
+                    <div class="sb-enginehint">
+                        ⚙ 일부 AI 엔진 미설치:
+                        @if (!Upscale.AnyAvailable) { <span>4K 업스케일</span> }
+                        @if (!Stt.IsAvailable) { <span>자막추출(STT)</span> }
+                        @if (!Lip.IsAvailable) { <span>립싱크</span> }
+                        — <button class="sb-warn-link" @onclick='() => Nav.NavigateTo("settings")'>관리자 설정 › 🤖 AI 엔진</button>에서 CLI 경로를 지정하면 <b>재시작 없이</b> 활성화됩니다. (모두 로컬 실행 · 무API)
+                    </div>
+                }
+                @if (Jobs.MergeMessage is not null) { <div class="sb-note">✅ @Jobs.MergeMessage</div> }
+
+                @* ── 숏츠 커버 썸네일 만들기 ── *@
+                <div class="sb-col-h" style="margin-top:6px;"><span>🖼️ 숏츠 커버 썸네일</span>
+                    <span class="sb-ff @(Cover.IsAvailable ? "ok" : "off")">@(Cover.IsAvailable ? "● ffmpeg" : "○ ffmpeg 필요")</span>
+                </div>
+                <textarea class="sb-ta" @bind="_project.CoverTitle" @bind:event="oninput" maxlength="60" rows="2"
+                          placeholder="커버 대형 문구 (줄바꿈 가능 · 예: 충격 실화&#10;AI가 만든 영상)" disabled="@_coverBusy"></textarea>
+                <div class="sb-cover-opts">
+                    <label class="sb-cover-opt">글자색
+                        <select @bind="_coverColor" disabled="@_coverBusy">
+                            <option value="yellow">노랑</option>
+                            <option value="white">흰색</option>
+                        </select>
+                    </label>
+                    <label class="sb-cover-chk"><input type="checkbox" @bind="_coverBox" disabled="@_coverBusy" /> 반투명 배경상자</label>
+                    <button class="sb-btn go sm" @onclick="GenerateCover" disabled="@(_coverBusy || !Cover.IsAvailable)">
+                        @(_coverBusy ? "생성 중…" : "✨ 커버 생성")
+                    </button>
+                </div>
+                @if (_coverUrl is not null)
+                {
+                    <img class="sb-cover-img" src="@_coverUrl" alt="커버 썸네일 미리보기" />
+                    <div class="sb-note" title="@_coverPath">💾 저장됨 — @ShortPath(_coverPath ?? "")</div>
+                }
+            }
+            else if (Jobs.MergeMessage is not null)
+            {
+                <div class="sb-merge bad">@Jobs.MergeMessage
+                    <button class="sb-warn-link" @onclick="() => Errors.Show(Jobs.MergeMessage)">🔎 해결 방법</button>
+                </div>
+            }
+
+            @* 완성 컷 이어보기(필름스트립) *@
+            @if (Jobs.CompletedCount > 0)
+            {
+                <div class="sb-col-h"><span>완성 컷</span><span class="sb-count">@Jobs.CompletedCount 개</span></div>
+                <div class="sb-strip">
+                    @foreach (var s in _project.Scenes.Where(x => x.Status == SceneStatus.Completed && x.VideoUrl is not null))
+                    {
+                        <video class="sb-strip-vid" src="@s.VideoUrl" controls muted loop preload="metadata" @key="s.Id"></video>
+                    }
+                </div>
+                <div class="sb-note">※ 모든 컷이 완료되면 ffmpeg 로 <b>자동 병합</b>됩니다(위 최종 영상). 개별 컷도 여기서 재생·보관됩니다.</div>
+            }
+        </section>
+    </div>
+
+    @* 중앙 하단 — 미니 타임라인(컷·나레이션·BGM 덕킹·배속 실시간 미리보기) *@
+    <MiniTimeline Project="_project" />
+
+    @* 전체 스토리보드 연속 텐션 파형(스토리 아크) — 긴장도 흐름·BGM 덕킹·SFX·루프 조망 *@
+    <div style="margin-top:12px;">
+        <div style="display:flex; align-items:center; gap:6px; margin:0 2px 6px;">
+            <span style="font:800 12px var(--mono); color:var(--text-secondary);">스토리 아크</span>
+            <HelpBadge Topic="@HelpContentService.Keys.TensionTimeline" />
+        </div>
+        <GlobalTensionTimeline Project="_project" BgmDucking="_hasBgmDuck" OnCutClick="ScrollToCut" VideoElementId="sb-final-vid" />
+    </div>
+
+    @if (_wizardOpen)
+    {
+        <div class="sb-modal-scrim" @onclick="() => _wizardOpen = false">
+            <div class="sb-modal" @onclick:stopPropagation="true">
+                <div class="sb-modal-h">
+                    <span>🪄 원클릭 숏츠 대본 자동 생성</span>
+                    <button class="sb-modal-x" @onclick="() => _wizardOpen = false" title="닫기">✕</button>
+                </div>
+                <div class="sb-modal-b">
+                    <p class="sb-modal-note">주제 한 줄 또는 전체 대본을 입력하세요. 문맥을 파싱해 <b>3~5개 컷</b>(영문 프롬프트 · 한국어 나레이션 · 카메라 모션)을 자동 구성합니다. ⚠ 기존 컷은 대체됩니다.</p>
+                    <textarea class="sb-ta" @bind="_wizardInput" @bind:event="oninput" rows="4" maxlength="1000"
+                              placeholder="예) 우주에 가고 싶은 고양이 이야기&#10;또는 여러 문장으로 된 전체 대본"></textarea>
+                    <div class="sb-modal-actions">
+                        <button class="sb-btn go" @onclick="RunWizard" disabled="@string.IsNullOrWhiteSpace(_wizardInput)">✨ 컷 자동 생성</button>
+                        <button class="sb-btn ghost" @onclick="() => _wizardOpen = false">취소</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
+
+    @if (_metaOpen && _meta is not null)
+    {
+        <div class="sb-modal-scrim" @onclick="CloseMeta">
+            <div class="sb-modal" @onclick:stopPropagation="true">
+                <div class="sb-modal-h">
+                    <span>📺 유튜브 숏츠 메타데이터</span>
+                    <button class="sb-modal-x" @onclick="CloseMeta" title="닫기">✕</button>
+                </div>
+                <div class="sb-modal-b">
+                    <p class="sb-modal-note">아래 내용을 복사해 유튜브 업로드 화면에 붙여넣으세요. 필요하면 다듬어 쓰세요.</p>
+
+                    <div class="sb-meta-sec">
+                        <div class="sb-meta-lbl"><span>제목 <span class="sb-sub">@_meta.Title.Length/100자</span></span>
+                            <button class="sb-copy" @onclick='() => CopyMeta("제목", _meta.Title)'>📋 복사</button></div>
+                        <div class="sb-meta-box">@_meta.Title</div>
+                    </div>
+
+                    <div class="sb-meta-sec">
+                        <div class="sb-meta-lbl"><span>설명란</span>
+                            <button class="sb-copy" @onclick='() => CopyMeta("설명", _meta.Description)'>📋 복사</button></div>
+                        <textarea class="sb-meta-box area" readonly rows="10">@_meta.Description</textarea>
+                    </div>
+
+                    <div class="sb-meta-sec">
+                        <div class="sb-meta-lbl"><span>해시태그 <span class="sb-sub">@(_tags.Count)개</span></span>
+                            <button class="sb-copy" @onclick="CopyHashtags">📋 복사</button></div>
+                        <div class="sb-chips">
+                            @if (_tags.Count == 0)
+                            {
+                                <span class="sb-chip-empty">태그가 없습니다. 아래에서 추가하세요.</span>
+                            }
+                            @foreach (var t in _tags)
+                            {
+                                <span class="sb-chip" @key="t">#@t <button class="sb-chip-x" @onclick="() => RemoveTag(t)" title="제거">✕</button></span>
+                            }
+                        </div>
+                        <div class="sb-chip-add">
+                            <span class="sb-chip-hash">#</span>
+                            <input class="sb-chip-in" @bind="_newTag" @bind:event="oninput" @onkeydown="OnTagKey" maxlength="30"
+                                   placeholder="태그 추가 후 Enter (기호·공백 자동 제거)" />
+                            <button class="sb-copy" @onclick="AddTag">＋ 추가</button>
+                        </div>
+                    </div>
+
+                    <div class="sb-modal-actions">
+                        <button class="sb-btn go" @onclick="CopyMetaAll">📋 전체 복사</button>
+                        <button class="sb-btn ghost" @onclick="CloseMeta">닫기</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
+
+    @* 글로벌 다국어 번역 & SEO 결과 모달 *@
+    @if (_locOpen && _locResult is not null)
+    {
+        <div class="sb-modal-scrim" @onclick="CloseLoc">
+            <div class="sb-modal" @onclick:stopPropagation="true">
+                <div class="sb-modal-h">
+                    <span>🌐 글로벌 번역 & SEO — @_locResult.Lang</span>
+                    <button class="sb-modal-x" @onclick="CloseLoc" title="닫기">✕</button>
+                </div>
+                <div class="sb-modal-b">
+                    <p class="sb-modal-note">
+                        해당 국가 숏폼(Shorts/TikTok/Reels) 알고리즘에 맞춘 현지화 메타데이터입니다.
+                        @if (_locResult.SavedPath is not null) { <span class="sb-sub">· 저장됨: metadata_@(_locResult.Lang.ToLower()).json</span> }
+                    </p>
+
+                    <div class="sb-meta-sec">
+                        <div class="sb-meta-lbl"><span>제목 (SEO)</span>
+                            <button class="sb-copy" @onclick='() => CopyLoc("제목", _locResult.Title)'>📋 복사</button></div>
+                        <div class="sb-meta-box">@_locResult.Title</div>
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(_locResult.ThumbnailText))
+                    {
+                        <div class="sb-meta-sec">
+                            <div class="sb-meta-lbl"><span>썸네일 문구</span>
+                                <button class="sb-copy" @onclick='() => CopyLoc("썸네일 문구", _locResult.ThumbnailText)'>📋 복사</button></div>
+                            <div class="sb-meta-box">@_locResult.ThumbnailText</div>
+                        </div>
+                    }
+
+                    <div class="sb-meta-sec">
+                        <div class="sb-meta-lbl"><span>설명란</span>
+                            <button class="sb-copy" @onclick='() => CopyLoc("설명", _locResult.Description)'>📋 복사</button></div>
+                        <textarea class="sb-meta-box area" readonly rows="6">@_locResult.Description</textarea>
+                    </div>
+
+                    <div class="sb-meta-sec">
+                        <div class="sb-meta-lbl"><span>바이럴 해시태그 <span class="sb-sub">@(_locResult.Hashtags.Count)개</span></span>
+                            <button class="sb-copy" @onclick='() => CopyLoc("해시태그", LocHashtagLine())'>📋 복사</button></div>
+                        <div class="sb-chips">
+                            @foreach (var t in _locResult.Hashtags)
+                            {
+                                <span class="sb-chip" @key="t">#@t</span>
+                            }
+                        </div>
+                    </div>
+
+                    <div class="sb-modal-actions">
+                        <button class="sb-btn ghost" @onclick="CloseLoc">닫기</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
+
+    @* 완전 자율형 AI 콘텐츠 에이전시(트렌드 + Swarm) *@
+    @if (_agencyOpen)
+    {
+        <AgencyPanel OnClose="() => _agencyOpen = false" OnApply="ApplySwarmPlan" />
+    }
+
+    @* 아기 테마 백과사전 — 10대 카테고리 탭 + 소분류 카드 + 숏츠/롱폼 포맷 토글 *@
+    @if (_babyGalleryOpen)
+    {
+        <ExpandedThemeGallery HasAnchor="@Anchor.HasAnchor(_project)" AnchorPath="@_project.AnchorImagePath" EngineReady="@Jobs.Enabled" OnClose="() => _babyGalleryOpen = false" OnApply="ApplyBabyTheme" OnInstantStart="InstantStartBabyTheme" />
+    }
+
+    @* v5.3.5: 초개인화 아기 하이퍼 스튜디오 — 테마 백과사전에서 분리한 전용 모달(혼잡 완화). 적용된 아기 테마 위에 아트/이름/감정 아크를 더해 재합성. *@
+    @if (_hyperOpen)
+    {
+        <div class="hyp-scrim" @onclick="() => _hyperOpen = false">
+            <div class="hyp-modal" @onclick:stopPropagation="true">
+                <div class="hyp-h"><span class="hyp-t">✨ 아기 하이퍼 스튜디오</span><button class="hyp-x" @onclick="() => _hyperOpen = false" title="닫기">✕</button></div>
+                <div class="hyp-bd">
+                    <BabyThemeHyperDeck Project="_project" Standalone="true"
+                                        SelectedKey="@_project.PresetKey"
+                                        Format="@(_project.ExportResolution == "1920x1080" ? VideoFormat.Longs : VideoFormat.Shorts)"
+                                        Disabled="@(!Jobs.Enabled)" OnComposed="OnHyperComposed" />
+                </div>
+            </div>
+        </div>
+        <style>
+            .hyp-scrim{position:fixed;inset:0;z-index:var(--z-studio-modal);background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:20px}
+            .hyp-modal{width:min(760px,96vw);max-height:92vh;display:flex;flex-direction:column;background:var(--card);border:1px solid var(--line);border-radius:18px;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.4)}
+            .hyp-h{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--line)}
+            .hyp-t{font:900 16px inherit;color:var(--text-primary)}
+            .hyp-x{border:none;background:none;color:var(--text-muted);font-size:15px;cursor:pointer;width:30px;height:30px;border-radius:8px}
+            .hyp-x:hover{background:var(--card-2);color:var(--text-primary)}
+            .hyp-bd{flex:1;min-height:0;overflow:auto;padding:16px 20px}
+        </style>
+    }
+
+    @* v5.3.4: 날씨/환경 테마 갤러리(모달) — 기후×시간대×강도 48종. 아기/B2B 와 동일 진입 패턴 *@
+    @if (_weatherGalleryOpen)
+    {
+        <div class="wthr-scrim" @onclick="() => _weatherGalleryOpen = false">
+            <div class="wthr-modal" @onclick:stopPropagation="true">
+                <div class="wthr-h"><span class="wthr-t">☁️ 날씨 · 환경 테마</span><button class="wthr-x" @onclick="() => _weatherGalleryOpen = false" title="닫기">✕</button></div>
+                <div class="wthr-bd"><WeatherThemeGallery OnPick="ApplyWeatherTheme" /></div>
+            </div>
+        </div>
+        <style>
+            .wthr-scrim{position:fixed;inset:0;z-index:var(--z-studio-modal);background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:20px}
+            .wthr-modal{width:min(1100px,96vw);max-height:92vh;display:flex;flex-direction:column;background:var(--card);border:1px solid var(--line);border-radius:18px;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.4)}
+            .wthr-h{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--line)}
+            .wthr-t{font:900 16px inherit;color:var(--text-primary,#e6eefc)}
+            .wthr-x{border:none;background:none;color:var(--text-muted,#93a3b8);font-size:15px;cursor:pointer;width:30px;height:30px;border-radius:8px}
+            .wthr-x:hover{background:var(--card-2);color:var(--text-primary)}
+            .wthr-bd{flex:1;min-height:0;overflow:auto;padding:16px 20px}
+        </style>
+    }
+
+    @* B2B 기업/장비 백과사전 — 아기 테마와 완전 독립된 전용 시네마틱 모달(사옥 기반 AI 홍보 + 자동차/기업 테마) *@
+    @if (_b2bGalleryOpen)
+    {
+        <B2bCorporateGalleryModal Project="_project" Disabled="@(Jobs.IsRunning || Jobs.IsMerging)" EngineReady="@Jobs.Enabled"
+                                  OnClose="() => _b2bGalleryOpen = false" OnApply="ApplyBabyTheme" OnInstantStart="InstantStartBabyTheme" OnBuildingGenerate="GenerateBuildingShowcase" />
+    }
+
+    @* v3.2.0 B2B 바이어 미팅 전용 피치 모드(전체화면 발표) *@
+    @if (_pitchOpen)
+    {
+        <ClientPitchMode Project="_project" OnClose="() => _pitchOpen = false" />
+    }
+
+    @* OSMU 멀티 플랫폼 내보내기 *@
+    @if (_osmuOpen)
+    {
+        <OsmuExportModal Project="_project" OnClose="() => _osmuOpen = false" OnReveal="p => FolderLink.Reveal(p)" />
+    }
+    @if (_dubbingOpen)
+    {
+        <GlobalDubbingStudioModal Project="_project" OnClose="() => _dubbingOpen = false" OnReveal="p => FolderLink.Reveal(p)" />
+    }
+    @if (_interactiveOpen)
+    {
+        <InteractiveStudioModal Project="_project" OnClose="() => _interactiveOpen = false" OnReveal="p => FolderLink.Reveal(p)" />
+    }
+    @if (_enterpriseOpen)
+    {
+        <EnterpriseTeamStudioModal Project="_project" OnClose="() => _enterpriseOpen = false" OnReveal="p => FolderLink.Reveal(p)" />
+    }
+    @if (_masterOpen)
+    {
+        <MasterSuiteStudioModal Project="_project" OnClose="() => _masterOpen = false" />
+    }
+    @if (_spatialOpen)
+    {
+        <SpatialVideoStudioModal Project="_project" OnClose="() => _spatialOpen = false" />
+    }
+    @if (_virtualOpen)
+    {
+        <VirtualProductionStudioModal Project="_project" OnClose="() => _virtualOpen = false" />
+    }
+    @if (_soundOpen)
+    {
+        <SoundDesignStudioModal Project="_project" OnClose="() => _soundOpen = false" />
+    }
+    @if (_vfxOpen)
+    {
+        <VfxSuperResolutionStudioModal Project="_project" OnClose="() => _vfxOpen = false" />
+    }
+    @if (_screenplayOpen)
+    {
+        <ScreenplayStudioModal Project="_project" OnClose="() => _screenplayOpen = false" OnApplied="StateHasChanged" />
+    }
+    @if (_twinOpen)
+    {
+        <DigitalTwinStudioModal Project="_project" OnClose="() => _twinOpen = false" OnApplied="StateHasChanged" />
+    }
+    @if (_mvOpen)
+    {
+        <MusicVideoStudioModal Project="_project" OnClose="() => _mvOpen = false" OnApplied="StateHasChanged" />
+    }
+    @if (_mediaStudioOpen)
+    {
+        <MediaStudioModal Project="_project" OnClose="() => _mediaStudioOpen = false" />
+    }
+    @if (_characterOpen)
+    {
+        <CharacterStudioModal Project="_project" OnClose="() => _characterOpen = false" OnApplied="OnCharacterApplied" OnOpenProject="OpenEpisodeProject" />
+    }
+
+    @if (_toast is not null) { <div class="sb-toast">@_toast</div> }
+
+    @* 스위치 역할 실시간 가이드 토스트(우하단) *@
+    <ToggleTooltip Guide="_switchGuide" OnClose="() => { _switchGuide = null; _guideTimer?.Dispose(); }" />
+</div>
+
+<style>
+    .sb { padding: 6px 8px 48px; width: 100%; box-sizing: border-box; }
+    .sb-head { margin-bottom: 16px; }
+    .sb-navrow { display: flex; gap: 6px; margin-bottom: 8px; }
+    .sb-back { font: 700 12px/1 var(--mono); color: var(--text-muted); background: none; border: none; cursor: pointer; padding: 4px 0; }
+    .sb-back:hover { color: var(--accent); }
+    .sb-titlerow { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .sb-title { font-size: 26px; font-weight: 900; letter-spacing: -.4px; color: var(--text-primary); margin: 0; }
+    .sb-title-g { background: linear-gradient(90deg, var(--flow-violet), var(--flow-magenta)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .sb-projtitle { flex: 1; min-width: 180px; background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; color: var(--text-primary); font-size: 13.5px; font-family: inherit; }
+    .sb-projtitle:focus { outline: none; border-color: var(--accent); }
+    .sb-sub { font-size: 13px; color: var(--text-secondary); margin: 8px 0 0; } .sb-sub b { color: var(--text-primary); }
+
+    .sb-warn { margin: 14px 0; padding: 12px 16px; border-radius: 12px; font-size: 12.5px; line-height: 1.6;
+        border: 1px solid color-mix(in srgb, #f5a623 45%, var(--line)); background: color-mix(in srgb, #f5a623 10%, var(--card)); color: var(--text-secondary); }
+    .sb-warn-link { font: 700 12.5px inherit; color: var(--accent-2); background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline; }
+
+    /* 툴바(저장/열기/ffmpeg) */
+    .sb-toolbar { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+    .sb-tbtn { font: 700 12.5px inherit; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; }
+    .sb-tbtn:hover:not(:disabled) { border-color: var(--accent); color: var(--text-primary); } .sb-tbtn:disabled { opacity: .45; cursor: not-allowed; }
+    .sb-qa { margin-left: 6px; font: 800 10.5px inherit; padding: 2px 7px; border-radius: 999px; }
+    .sb-qa.pass { color: #059669; background: color-mix(in srgb, #10b981 15%, transparent); }
+    .sb-qa.warn { color: #b45309; background: color-mix(in srgb, #f59e0b 16%, transparent); }
+    .sb-qa.reject { color: #dc2626; background: color-mix(in srgb, #ef4444 15%, transparent); }
+    .sb-tbtn.wiz { color: #fff; border: none; background: linear-gradient(135deg, var(--flow-violet), var(--flow-magenta)); box-shadow: 0 6px 16px color-mix(in srgb, var(--flow-magenta) 26%, transparent); }
+    .sb-tbtn.wiz:hover:not(:disabled) { filter: brightness(1.07); color: #fff; }
+    .sb-openbtn { position: relative; font: 700 12.5px inherit; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; overflow: hidden; }
+    .sb-openbtn:hover { border-color: var(--accent); color: var(--text-primary); } .sb-openbtn.off { opacity: .45; }
+    .sb-openinput { position: absolute; inset: 0; opacity: 0; cursor: pointer; } .sb-openbtn.off .sb-openinput { pointer-events: none; }
+    /* 글로벌 다국어 번역 & SEO */
+    .sb-locwrap { display: inline-flex; align-items: center; gap: 6px; }
+    .sb-locsel { border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); padding: 7px 8px; font-size: 12px; font-family: inherit; max-width: 160px; }
+    .sb-locsel:focus { outline: none; border-color: var(--accent); }
+    .sb-locsel:disabled { opacity: .5; }
+
+    /* AI 감독 자율 검수 토글 스위치 */
+    .sb-director { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; font: 700 11.5px inherit; color: var(--text-secondary); cursor: pointer;
+        padding: 5px 11px; border-radius: 999px; border: 1px solid var(--line); background: var(--card-2); user-select: none; }
+    .sb-director input { display: none; }
+    .sb-director-sw { position: relative; width: 30px; height: 16px; border-radius: 999px; background: var(--line); flex: 0 0 auto; transition: background .15s; }
+    .sb-director-sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; transition: transform .15s; }
+    .sb-director.on { color: #fff; border-color: transparent; background: linear-gradient(135deg, var(--flow-violet), var(--flow-magenta)); }
+    .sb-director.on .sb-director-sw { background: rgba(255,255,255,.4); }
+    .sb-director.on .sb-director-sw::after { transform: translateX(14px); }
+    .sb-director.off { opacity: .55; cursor: not-allowed; }
+    .sb-director-cfg { display: flex; align-items: center; gap: 8px; }
+    .sb-director-cfg .sb-range { flex: 1; }
+
+    /* AI 감독 점수 뱃지 + 평 */
+    .sb-qa { font: 800 10px var(--mono); border-radius: 999px; padding: 3px 8px; border: 1px solid var(--line); white-space: nowrap; }
+    .sb-qa.ok { color: #10b981; border-color: color-mix(in srgb, #10b981 45%, var(--line)); background: color-mix(in srgb, #10b981 10%, transparent); }
+    .sb-qa.warn { color: #f5a623; border-color: color-mix(in srgb, #f5a623 45%, var(--line)); background: color-mix(in srgb, #f5a623 10%, transparent); }
+    .sb-qa.bad { color: #ef4444; border-color: color-mix(in srgb, #ef4444 45%, var(--line)); background: color-mix(in srgb, #ef4444 10%, transparent); }
+    .sb-qa-reason { font-size: 11px; color: var(--text-secondary); line-height: 1.5; padding: 6px 9px; border-radius: 8px; background: color-mix(in srgb, var(--flow-violet) 7%, var(--card-2)); border: 1px solid color-mix(in srgb, var(--flow-violet) 25%, var(--line)); }
+    .sb-qa-reason b { color: var(--flow-violet); }
+
+    .sb-ff { font: 700 10.5px var(--mono); border-radius: 999px; padding: 4px 10px; border: 1px solid var(--line); }
+    .sb-ff.ok { color: #10b981; border-color: color-mix(in srgb, #10b981 45%, var(--line)); }
+    .sb-ff.off { color: var(--text-muted); }
+
+    /* 최근 항목 드롭다운 */
+    .sb-recentwrap { position: relative; }
+    .sb-recents { position: absolute; top: calc(100% + 6px); left: 0; z-index: 30; width: 330px; max-height: 340px; overflow-y: auto;
+        background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 16px 40px rgba(0,0,0,.35); padding: 6px; }
+    .sb-recent-empty { padding: 16px; text-align: center; font-size: 12px; color: var(--text-muted); }
+    .sb-recent-item { display: flex; align-items: stretch; gap: 4px; }
+    .sb-recent-open { flex: 1; min-width: 0; text-align: left; background: none; border: none; border-radius: 8px; padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; font-family: inherit; }
+    .sb-recent-open:hover:not(:disabled) { background: var(--card-2); }
+    .sb-recent-open:disabled { opacity: .5; cursor: not-allowed; }
+    .sb-recent-title { font-size: 12.5px; font-weight: 700; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sb-recent-path { font: 600 10px var(--mono); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sb-recent-del { flex: 0 0 auto; width: 28px; border: none; background: none; color: var(--text-muted); cursor: pointer; border-radius: 8px; font-size: 12px; }
+    .sb-recent-del:hover { background: color-mix(in srgb, #ef4444 15%, transparent); color: #ef4444; }
+
+    /* 병합 해상도 선택 */
+    .sb-resrow { display: flex; flex-direction: column; gap: 6px; }
+    .sb-reslbl { font-size: 12px; font-weight: 700; color: var(--text-secondary); }
+    .sb-res { border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); padding: 8px 10px; font-size: 13px; font-family: inherit; }
+    .sb-res:focus { outline: none; border-color: var(--accent); }
+
+    /* BGM 칩 */
+    .sb-bgm-chip { display: flex; align-items: center; gap: 6px; background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 6px 6px 6px 12px; }
+    .sb-bgm-name { flex: 1; min-width: 0; font-size: 12px; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    /* 캐릭터/스타일 앵커 */
+    .sb-anchor { display: flex; flex-direction: column; gap: 6px; }
+    .sb-idscore { font: 800 10.5px var(--mono); padding: 2px 8px; border-radius: 999px; color: var(--text-muted); background: var(--card-2); align-self: flex-start; }
+    .sb-idscore.ok { color: #059669; background: color-mix(in srgb, #10b981 13%, transparent); }
+    .sb-idscore.warn { color: #b45309; background: color-mix(in srgb, #f59e0b 15%, transparent); }
+    .sb-idscore.bad { color: #dc2626; background: color-mix(in srgb, #ef4444 14%, transparent); }
+    .sb-anchor-has { display: flex; align-items: center; gap: 10px; background: var(--card-2); border: 1px solid color-mix(in srgb, var(--flow-violet) 40%, var(--line)); border-radius: 10px; padding: 8px; }
+    .sb-anchor-img { width: 54px; height: 54px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); flex: 0 0 auto; background: #000; }
+    .sb-anchor-info { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .sb-anchor-badge { font: 700 11px var(--mono); color: var(--flow-violet); }
+
+    /* 오디오 덕킹 + BGM 음량 */
+    .sb-duck { margin-top: 8px; }
+    .sb-vol { display: flex; flex-direction: column; gap: 5px; margin-top: 2px; }
+    .sb-vol-lbl { display: flex; align-items: center; justify-content: space-between; font-size: 11.5px; font-weight: 700; color: var(--text-secondary); }
+    .sb-vol-pct { font: 700 11px var(--mono); color: var(--accent-2); }
+    .sb-range { width: 100%; accent-color: var(--flow-violet); cursor: pointer; }
+    .sb-range:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* 병합/최종 영상 */
+    .sb-merge { padding: 12px 14px; border-radius: 11px; font-size: 12.5px; font-weight: 700; line-height: 1.5; }
+    .sb-merge.run { color: var(--accent-2); background: color-mix(in srgb, var(--flow-cyan) 10%, var(--card)); border: 1px solid color-mix(in srgb, var(--flow-cyan) 40%, var(--line)); }
+    .sb-merge.bad { color: #ef4444; background: color-mix(in srgb, #ef4444 10%, var(--card)); border: 1px solid color-mix(in srgb, #ef4444 40%, var(--line)); }
+    .sb-final { width: 100%; border-radius: 11px; background: #000; border: 1px solid color-mix(in srgb, var(--flow-magenta) 45%, var(--line)); }
+    .sb-final-actions { margin-top: 8px; }
+    .sb-thumb-preview { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .sb-thumb-preview img { max-width: 220px; border-radius: 12px; border: 1px solid var(--line); box-shadow: 0 8px 22px rgba(0,0,0,.25); }
+    .sb-thumb-cap { font-size: 11px; color: var(--text-muted); }
+    /* 세로(쇼츠) 최종 영상 — 패널에서 과대 확대 방지(중앙 정렬 · 폭 캡) */
+    .sb-final-wrap.portrait { max-width: 300px; margin: 0 auto; }
+    .sb-final-wrap.portrait .sb-final { width: 100%; height: auto; }
+    /* 세이프존 토글 */
+    .sb-szsw { display: inline-flex; gap: 3px; background: var(--card-2); border: 1px solid var(--line); border-radius: 9px; padding: 2px; }
+    .sb-szbtn { font: 800 10.5px var(--mono); padding: 4px 8px; border: none; border-radius: 7px; background: none; color: var(--text-secondary); cursor: pointer; white-space: nowrap; }
+    .sb-szbtn:hover { color: var(--text-primary); }
+    .sb-szbtn.on { color: #fff; background: linear-gradient(135deg, var(--flow-violet), var(--flow-magenta)); }
+    .sb-cardtog { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; font: 700 10.5px var(--mono); color: var(--text-secondary); white-space: nowrap; }
+    .sb-cardtog input { accent-color: var(--flow-violet); }
+    /* 텐션 타임라인 클릭 → 컷 카드 네온 하이라이트(1.5초) */
+    .sb-scene.neon-hl { animation: sb-neon 1.5s ease-out; }
+    @@keyframes sb-neon {
+        0%   { box-shadow: 0 0 0 2px var(--flow-cyan, #22d3ee), 0 0 26px 4px color-mix(in srgb, var(--flow-cyan, #22d3ee) 65%, transparent); border-color: var(--flow-cyan, #22d3ee); }
+        60%  { box-shadow: 0 0 0 2px var(--flow-violet, #8b5cf6), 0 0 22px 3px color-mix(in srgb, var(--flow-violet, #8b5cf6) 45%, transparent); }
+        100% { box-shadow: none; }
+    }
+    @@media (prefers-reduced-motion: reduce) { .sb-scene.neon-hl { animation-duration: .01s; } }
+
+    .sb-grid { display: grid; grid-template-columns: 1.35fr 1fr; gap: 16px; margin-top: 16px; align-items: start; }
+    @@media (max-width: 900px) { .sb-grid { grid-template-columns: 1fr; } }
+    .sb-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .sb-col-h { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 800; color: var(--text-primary); padding: 2px; }
+    .sb-count { font: 700 10.5px var(--mono); color: var(--text-muted); }
+
+    /* 컷 카드 */
+    .sb-scene { border: 1px solid var(--line); border-radius: 14px; background: var(--card); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+    .sb-scene.run { border-color: color-mix(in srgb, var(--flow-cyan) 45%, var(--line)); }
+    .sb-scene.ok { border-color: color-mix(in srgb, #10b981 40%, var(--line)); }
+    .sb-scene.bad { border-color: color-mix(in srgb, #ef4444 40%, var(--line)); }
+    .sb-scene-h { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .sb-scene-no { font: 800 12px var(--mono); color: var(--text-secondary); }
+    .sb-drag { cursor: grab; color: var(--text-muted); font-size: 15px; line-height: 1; padding: 0 2px; user-select: none; }
+    .sb-drag:active { cursor: grabbing; }
+    .sb-scene.dragging { opacity: .45; }
+    .sb-scene.dragover { outline: 2px dashed var(--flow-violet); outline-offset: 2px; }
+    .sb-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    .sb-seg button { border: none; background: var(--card-2); color: var(--text-muted); font: 700 10.5px var(--mono); padding: 5px 9px; cursor: pointer; }
+    .sb-seg button.on { background: linear-gradient(135deg, var(--flow-violet), var(--accent)); color: #fff; }
+    .sb-seg button:disabled { opacity: .55; cursor: not-allowed; }
+    .sb-scene-ops { margin-left: auto; display: flex; gap: 4px; }
+    .sb-op { width: 26px; height: 26px; border-radius: 7px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; font-size: 12px; }
+    .sb-op:hover:not(:disabled) { border-color: var(--accent); color: var(--text-primary); }
+    .sb-op.del:hover:not(:disabled) { border-color: #ef4444; color: #ef4444; }
+    .sb-op:disabled { opacity: .35; cursor: not-allowed; }
+
+    .sb-ta { width: 100%; box-sizing: border-box; min-height: 60px; resize: vertical; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); padding: 9px 11px; font-size: 13px; line-height: 1.55; font-family: inherit; }
+    .sb-ta:focus { outline: none; border-color: var(--accent); } .sb-ta:disabled { opacity: .6; }
+
+    /* 컷별 프롬프트 부스터 */
+    .sb-ptools { display: flex; justify-content: flex-end; margin-top: -4px; }
+    .sb-ptool { font: 700 10.5px var(--mono); padding: 4px 10px; border-radius: 8px; cursor: pointer;
+        color: var(--flow-magenta); background: color-mix(in srgb, var(--flow-magenta) 8%, var(--card-2)); border: 1px solid color-mix(in srgb, var(--flow-magenta) 30%, var(--line)); }
+    .sb-ptool:hover:not(:disabled) { background: color-mix(in srgb, var(--flow-magenta) 16%, var(--card-2)); }
+    .sb-ptool:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* 컷별 립싱크 */
+    .sb-lip { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); cursor: pointer; padding: 0 2px; }
+    .sb-lip .sb-sub { font-size: 10.5px; color: var(--text-muted); }
+    .sb-lip input { accent-color: var(--flow-magenta); }
+    .sb-emo { display: flex; flex-wrap: wrap; gap: 5px; padding: 0 2px; }
+    .sb-emo-b { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px; cursor: pointer; color: var(--text-secondary); background: var(--card-2); border: 1px solid var(--line); }
+    .sb-emo-b.on { color: var(--flow-magenta); border-color: var(--flow-magenta); background: color-mix(in srgb, var(--flow-magenta) 12%, var(--card-2)); }
+    .sb-emo-b.sync { color: var(--accent); }
+    .sb-emo-b:disabled { opacity: .5; cursor: not-allowed; }
+    .sb-lip-vid { width: 100%; max-height: 220px; border-radius: 9px; background: #000; }
+
+    /* 4K 업스케일 · 엔진 안내 */
+    .sb-up { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    .sb-enginehint { font-size: 11px; color: var(--text-muted); line-height: 1.6; padding: 8px 10px; border-radius: 9px;
+        border: 1px dashed var(--line); background: var(--card-2); }
+    .sb-enginehint span { display: inline-block; font: 700 10px var(--mono); color: var(--accent-2); border: 1px solid color-mix(in srgb, var(--flow-cyan) 35%, var(--line)); border-radius: 999px; padding: 1px 7px; margin: 0 2px; }
+    .sb-enginehint code { font: 700 10.5px var(--mono); color: var(--accent-2); background: color-mix(in srgb, var(--flow-cyan) 8%, transparent); padding: 1px 5px; border-radius: 5px; }
+
+    /* 컷별 나레이션·자막 입력 */
+    .sb-voice { display: flex; align-items: center; gap: 8px; background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 4px 10px; }
+    .sb-voice:focus-within { border-color: var(--accent); }
+    .sb-voice-ic { font-size: 13px; line-height: 1; flex: 0 0 auto; }
+    .sb-voice-in { flex: 1; min-width: 0; border: none; background: none; color: var(--text-primary); font-size: 12.5px; font-family: inherit; padding: 6px 0; }
+    .sb-voice-in:focus { outline: none; } .sb-voice-in:disabled { opacity: .6; }
+    .sb-voice-in::placeholder { color: var(--text-muted); }
+
+    .sb-drop { position: relative; border: 1.5px dashed var(--line); border-radius: 10px; background: var(--card-2); min-height: 64px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    .sb-drop:hover { border-color: var(--accent); } .sb-drop.has { border-style: solid; padding: 8px; }
+    .sb-drop-input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+    .sb-autotune { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0; font-size: 10.5px; }
+    .sb-autotune span { padding: 2px 7px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--text-secondary); }
+    .sb-autotune span.mut { background: none; color: var(--text-muted); }
+    .sb-ptool.on { border-color: var(--accent); color: var(--accent); }
+    .sb-drop-hint { pointer-events: none; color: var(--text-muted); font-size: 12px; } .sb-drop-hint span { font-size: 10.5px; opacity: .8; }
+    .sb-thumb { max-height: 110px; max-width: 100%; border-radius: 7px; display: block; }
+    .sb-thumb-x { position: absolute; right: 8px; top: 8px; width: 24px; height: 24px; border-radius: 50%; border: none; background: rgba(0,0,0,.6); color: #fff; cursor: pointer; font-size: 11px; }
+    .sb-thumb-x:hover:not(:disabled) { background: #ef4444; } .sb-thumb-x:disabled { opacity: .5; }
+
+    .sb-scene-vid { width: 100%; border-radius: 9px; background: #000; border: 1px solid var(--line); max-height: 200px; }
+    .sb-scene-vid.poster { aspect-ratio: 16/9; object-fit: cover; max-height: none; display: block; }
+    .sb-scene-stat { font: 600 11px var(--mono); color: var(--text-muted); }
+    .sb-scene-err { font-size: 11.5px; color: #ef4444; line-height: 1.5; }
+
+    /* 새 프로젝트 시작 안내 카드 */
+    .sb-getstart { text-align: center; padding: 24px 18px; border: 1.5px dashed color-mix(in srgb, var(--flow-violet) 40%, var(--line)); border-radius: 14px; background: color-mix(in srgb, var(--flow-violet) 6%, var(--card)); }
+    .sb-gs-ic { font-size: 34px; opacity: .8; }
+    .sb-gs-t { font-size: 15px; font-weight: 800; color: var(--text-primary); margin: 8px 0 4px; }
+    .sb-gs-d { font-size: 12.5px; color: var(--text-secondary); line-height: 1.55; margin-bottom: 14px; }
+
+    .sb-add { border: 1.5px dashed var(--line); background: none; color: var(--text-secondary); border-radius: 12px; padding: 11px; font-size: 13px; font-weight: 700; cursor: pointer; font-family: inherit; }
+    .sb-add:hover:not(:disabled) { border-color: var(--accent); color: var(--text-primary); } .sb-add:disabled { opacity: .4; cursor: not-allowed; }
+
+    /* 우측 패널 */
+    .sb-panel { border: 1px solid var(--line); border-radius: 14px; background: var(--card); padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+    .sb-pp { gap: 10px; border-color: color-mix(in srgb, #f59e0b 35%, var(--line)); }
+    .sb-pp-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .sb-pp-btn { flex: 1 1 auto; }
+    .sb-pp-msg { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; word-break: keep-all; }
+    .sb-pp-msg.ok { color: #34d399; } .sb-pp-msg.bad { color: #f87171; }
+    .sb-bar { height: 8px; border-radius: 999px; background: var(--card-2); border: 1px solid var(--line); overflow: hidden; }
+    .sb-bar.big { height: 12px; }
+    .sb-bar-f { height: 100%; border-radius: 999px; transition: width .5s ease; background: linear-gradient(90deg, var(--flow-violet), var(--flow-cyan), var(--flow-magenta)); background-size: 200% 100%; animation: sb-flow 2.4s linear infinite; }
+    .sb-overall-m { display: flex; gap: 12px; font: 600 11.5px var(--mono); color: var(--text-muted); } .sb-overall-m b { color: var(--text-primary); }
+    .sb-fail { color: #ef4444; }
+    .sb-parallel { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--text-secondary); cursor: pointer; }
+    .sb-parallel .sb-sub { font-size: 10.5px; color: var(--text-muted); }
+    .sb-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    .sb-btn { border: none; border-radius: 11px; padding: 11px 16px; font-weight: 800; font-size: 13px; cursor: pointer; font-family: inherit; }
+    .sb-btn.go { color: #fff; background: linear-gradient(135deg, var(--flow-violet), var(--accent)); box-shadow: 0 8px 22px color-mix(in srgb, var(--flow-violet) 28%, transparent); }
+    .sb-btn.go:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
+    .sb-btn.cancel { color: #fff; background: #ef4444; }
+    .sb-btn.ghost { background: var(--card-2); color: var(--text-secondary); border: 1px solid var(--line); }
+
+    .sb-statlist { display: flex; flex-direction: column; gap: 4px; max-height: 360px; overflow-y: auto; padding-right: 4px; }
+    .sb-statrow { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 9px; background: var(--card); border: 1px solid var(--line); }
+    .sb-statno { font: 800 11px var(--mono); color: var(--text-muted); width: 16px; text-align: center; }
+    .sb-stattxt { flex: 1; min-width: 0; font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .sb-badge { font: 700 10px var(--mono); border-radius: 999px; padding: 3px 8px; border: 1px dashed var(--line); color: var(--text-muted); white-space: nowrap; }
+    .sb-badge.run { color: var(--accent-2); border-style: solid; border-color: color-mix(in srgb, var(--flow-cyan) 45%, var(--line)); }
+    .sb-badge.ok { color: #10b981; border-style: solid; border-color: color-mix(in srgb, #10b981 45%, var(--line)); }
+    .sb-badge.bad { color: #ef4444; border-style: solid; border-color: color-mix(in srgb, #ef4444 45%, var(--line)); }
+
+    .sb-strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; }
+    .sb-strip-vid { flex: 0 0 auto; width: 160px; border-radius: 9px; background: #000; border: 1px solid var(--line); }
+    .sb-note { font-size: 11px; color: var(--text-muted); line-height: 1.5; } .sb-note b { color: var(--text-secondary); }
+
+    .sb-toast { position: sticky; bottom: 12px; margin-top: 16px; padding: 12px 16px; border-radius: 11px; font-size: 13px; font-weight: 700;
+        color: var(--text-primary); background: var(--card); border: 1px solid var(--accent); box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+
+    /* 유튜브 메타데이터 모달 */
+    .sb-modal-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 24px; }
+    .sb-modal { width: 100%; max-width: 620px; max-height: 88vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.5); overflow: hidden; }
+    .sb-modal-h { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--line); font-size: 15px; font-weight: 900; color: var(--text-primary); }
+    .sb-modal-x { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; font-size: 13px; }
+    .sb-modal-x:hover { border-color: #ef4444; color: #ef4444; }
+    .sb-modal-b { padding: 16px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+    .sb-modal-note { margin: 0; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+    .sb-modal-actions { display: flex; gap: 10px; margin-top: 2px; }
+
+    .sb-meta-sec { display: flex; flex-direction: column; gap: 6px; }
+    .sb-meta-lbl { display: flex; align-items: center; justify-content: space-between; font-size: 12.5px; font-weight: 800; color: var(--text-primary); }
+    .sb-meta-lbl .sb-sub { font: 600 10.5px var(--mono); color: var(--text-muted); }
+    .sb-copy { font: 700 11px inherit; padding: 5px 11px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--accent-2); cursor: pointer; white-space: nowrap; }
+    .sb-copy:hover { border-color: var(--accent); color: var(--text-primary); }
+    .sb-meta-box { width: 100%; box-sizing: border-box; background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 12.5px; line-height: 1.55; color: var(--text-primary); word-break: break-word; }
+    .sb-meta-box.area { resize: vertical; font-family: inherit; }
+    .sb-meta-box.area:focus { outline: none; border-color: var(--accent); }
+
+    /* 태그 칩 편집기 */
+    .sb-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .sb-chip-empty { font-size: 11.5px; color: var(--text-muted); padding: 4px 0; }
+    .sb-chip { display: inline-flex; align-items: center; gap: 5px; font: 700 11.5px var(--mono); color: var(--accent-2);
+        background: color-mix(in srgb, var(--flow-cyan) 10%, var(--card-2)); border: 1px solid color-mix(in srgb, var(--flow-cyan) 35%, var(--line)); border-radius: 999px; padding: 4px 6px 4px 11px; }
+    .sb-chip-x { width: 18px; height: 18px; border-radius: 50%; border: none; background: color-mix(in srgb, var(--flow-cyan) 18%, transparent); color: var(--text-secondary); cursor: pointer; font-size: 10px; line-height: 1; }
+    .sb-chip-x:hover { background: #ef4444; color: #fff; }
+    .sb-chip-add { display: flex; align-items: center; gap: 8px; background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 4px 6px 4px 12px; }
+    .sb-chip-add:focus-within { border-color: var(--accent); }
+    .sb-chip-hash { font: 800 13px var(--mono); color: var(--text-muted); }
+    .sb-chip-in { flex: 1; min-width: 0; border: none; background: none; color: var(--text-primary); font-size: 12.5px; font-family: inherit; padding: 6px 0; }
+    .sb-chip-in:focus { outline: none; } .sb-chip-in::placeholder { color: var(--text-muted); }
+
+    /* 숏츠 커버 썸네일 */
+    .sb-btn.sm { padding: 8px 13px; font-size: 12.5px; }
+    .sb-cover-opts { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .sb-cover-opt { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
+    .sb-cover-opt select { border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); padding: 6px 8px; font-size: 12.5px; font-family: inherit; }
+    .sb-cover-opt select:focus { outline: none; border-color: var(--accent); }
+    .sb-cover-chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
+    .sb-cover-chk input { accent-color: var(--flow-violet); }
+    .sb-cover-img { width: 100%; max-width: 260px; margin: 4px auto 0; display: block; border-radius: 11px; border: 1px solid color-mix(in srgb, var(--flow-magenta) 45%, var(--line)); background: #000; }
+
+    @@keyframes sb-flow { to { background-position: 200% 0; } }
+    @@media (prefers-reduced-motion: reduce) { .sb-bar-f { animation: none; } }
+</style>
+
+@code {
+    private StoryboardProject _project = new();   // 열기 시 교체되므로 readonly 불가
+    private bool _parallel;
+    private bool _recentsOpen;
+    private bool _exporting;
+    // 미리보기 세이프존 플랫폼 = 병합 대상(_project.TargetPlatform)과 단일 소스(양방향 동기화). 변경 시 마지막 선택을 로컬(UserPreference·localStorage)에 기억.
+    private SafePlatform PreviewPlatform
+    {
+        get => _project.TargetPlatform;
+        set { _project.TargetPlatform = value; Prefs.Set(UserPreferenceService.Keys.SafeZonePlatform, value.ToString()); ShowSwitchGuide(SwitchRoleGuideService.Keys.SafeZone); }
+    }
+
+    // ── 텐션 타임라인 → 컷 카드 스크롤 + 1.5초 네온 하이라이트 ──
+    private string? _highlightSceneId;
+    private System.Threading.Timer? _hlTimer;
+    private async Task ScrollToCut(int index)
+    {
+        if (index < 0 || index >= _project.Scenes.Count) return;
+        var id = _project.Scenes[index].Id;
+        _highlightSceneId = id;
+        StateHasChanged();
+        try { await JS.InvokeVoidAsync("siteMaticUi.scrollToId", "cut-" + id, "center"); } catch { /* 스크롤 실패해도 하이라이트는 유지 */ }
+        _hlTimer?.Dispose();
+        _hlTimer = new System.Threading.Timer(_ => { _highlightSceneId = null; _ = InvokeAsync(StateHasChanged); }, null, 1500, System.Threading.Timeout.Infinite);
+    }
+
+    // ── 스위치 역할 실시간 가이드 토스트(6초 자동 소멸) ──
+    private SwitchGuide? _switchGuide;
+    private System.Threading.Timer? _guideTimer;
+    private void ShowSwitchGuide(string key)
+    {
+        var g = Guides.Get(key);
+        if (g is null) return;
+        _switchGuide = g;
+        _guideTimer?.Dispose();
+        _guideTimer = new System.Threading.Timer(_ => { _switchGuide = null; _ = InvokeAsync(StateHasChanged); }, null, 6000, System.Threading.Timeout.Infinite);
+    }
+    private static string ShortName(SafePlatform p) => p switch
+    {
+        SafePlatform.YouTubeShorts => "숏츠",
+        SafePlatform.InstagramReels => "릴스",
+        SafePlatform.TikTok => "틱톡",
+        _ => "Off",
+    };
+
+    // 컷 카드 세이프존 가이드(전 컷 썸네일 오버레이) — 토글은 로컬(UserPreference)에 기억. 플랫폼 미선택 시 숏츠 기준으로 가이드.
+    private bool _cardGuide;
+    private bool CardGuide { get => _cardGuide; set { _cardGuide = value; Prefs.SetBool(UserPreferenceService.Keys.CutCardSafeZone, value); } }
+    private SafePlatform EffectiveCardPlatform => _project.TargetPlatform == SafePlatform.None ? SafePlatform.YouTubeShorts : _project.TargetPlatform;
+    // 오디오 텐션 파형의 BGM 덕킹 표시 조건(BGM + 덕킹 ON).
+    private bool _hasBgmDuck => !string.IsNullOrWhiteSpace(_project.BgmPath) && _project.EnableAudioDucking;
+    private string? _toast;
+
+    // 유튜브 메타데이터 모달
+    private YoutubeMetadata? _meta;
+    private bool _metaOpen;
+    private List<string> _tags = new();   // 모달에서 편집 가능한 태그(칩)
+    private string _newTag = "";
+
+    // 글로벌 다국어 번역 & SEO
+    private string _locLang = "EN";
+    private bool _locBusy;
+    private LocalizedMetadata? _locResult;
+    private bool _locOpen;
+
+    // 유튜브 업로드
+    private bool _ytBusy;
+    private int _ytPct;
+
+    // 숏츠 커버 썸네일
+    private bool _coverBusy;
+    private string _coverColor = "yellow";
+    private bool _coverBox = true;
+    private string? _coverUrl;    // 미리보기 URL(가상호스트 + 캐시버스터)
+    private string? _coverPath;   // 저장 절대경로
+
+    // 대본 위저드 / 앵커
+    private bool _wizardOpen;
+    private bool _agencyOpen;   // AI 콘텐츠 에이전시(트렌드 + Swarm) 모달
+    private bool _babyGalleryOpen;   // 아기 숏츠 원클릭 테마 갤러리 모달
+    private bool _b2bGalleryOpen;    // B2B 기업/장비 전용 갤러리 모달(독립)
+    private bool _weatherGalleryOpen; // v4.5.0 날씨/환경 테마 갤러리 모달(기후×시간대×강도 48종)
+    private bool _hyperOpen;         // v5.3.5 초개인화 아기 하이퍼 스튜디오 전용 모달(테마 백과사전에서 분리)
+    private bool _pitchOpen;         // v3.2.0 B2B 바이어 피치 모드(전체화면 발표)
+    private bool _osmuOpen;          // OSMU 멀티 플랫폼 내보내기 모달
+    private bool _characterOpen;     // v16.22.0 캐릭터 스튜디오 모달
+    private bool _dubbingOpen;       // v16.24.0 글로벌 다국어 더빙 스튜디오 모달
+    private bool _interactiveOpen;   // v16.26.0 인터랙티브 분기 & 쇼핑 스튜디오 모달
+    private bool _enterpriseOpen;    // v16.27.0 엔터프라이즈 팀 & 렌더 팜 모달
+    private bool _masterOpen;        // v16.30.0 마스터 엔터프라이즈 스튜디오
+    private bool _spatialOpen;       // v16.31.0 공간 비디오 & Vision Pro 스튜디오
+    private bool _virtualOpen;       // v16.32.0 AI 버추얼 프로덕션 & UE5 스튜디오
+    private bool _soundOpen;         // v16.33.0 AI 사운드 디자인 & Dolby Atmos 스튜디오
+    private bool _vfxOpen;           // v16.34.0 AI VFX 조명 & 8K 업스케일 스튜디오
+    private bool _screenplayOpen;    // v16.35.0 AI 시나리오 & 세계관 스튜디오
+    private bool _twinOpen;          // v16.36.0 AI 디지털 트윈 & 모캡 스튜디오
+    private bool _mvOpen;            // v16.37.0 AI 뮤직비디오 & 안무 스튜디오
+    private bool _mediaStudioOpen; // v16.57.0 오토 최적화 미디어 스튜디오
+    private bool _autoTune = true;   // v16.57.0 ✨ AI 최적화 자동 셋팅(기본 ON)
+    private readonly Dictionary<string, AutoPreset> _presets = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, MediaIngestResult> _sceneMedia = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> _uploadProgress = new(StringComparer.Ordinal);
+
+    private void ToggleAutoTune()
+    {
+        _autoTune = !_autoTune;
+        if (_autoTune) foreach (var s in _project.Scenes) OnPromptEdited(s);
+    }
+
+    /// <summary>프롬프트 입력 즉시 오토 튜닝(빈 필드만 자동 채움 · 본문 미변경). 업로드 미디어가 있으면 비전 통계 결합.</summary>
+    private void OnPromptEdited(StoryboardScene s)
+    {
+        if (!_autoTune || Jobs.IsRunning) return;
+        var p = _sceneMedia.TryGetValue(s.Id, out var m) && s.ImagePath == m.EffectivePath ? Tuner.Tune(s.Prompt, m) : Tuner.Tune(s.Prompt);
+        _presets[s.Id] = p;
+        AutoPresetContextTuner.ApplyToScene(s, p);
+    }
+
+    private void AutoTuneScene(StoryboardScene s, MediaIngestResult media)
+    {
+        _sceneMedia[s.Id] = media;
+        var p = Tuner.Tune(s.Prompt, media);
+        _presets[s.Id] = p;
+        AutoPresetContextTuner.ApplyToScene(s, p);
+        AutoPresetContextTuner.ApplyToProject(_project, p);
+    }
+
+    private void ApplyTunedPrompt(StoryboardScene s)
+    {
+        if (Jobs.IsRunning || !_presets.TryGetValue(s.Id, out var p)) return;
+        AutoPresetContextTuner.ApplyToScene(s, p, replacePrompt: true);
+    }
+
+    // v16.25.0 24/7 AI 라이브 스튜디오 — 최종 영상을 루프 플레이리스트에 추가(중복은 무시) 후 이동.
+    private void OpenLiveStudio() { LiveLoop.AddToPlaylist(_project.FinalVideoPath); Nav.NavigateTo("live-studio"); }
+
+    /// <summary>v16.22.0 측정된 컷 정합성 평균(무할당 순회).</summary>
+    private (double Avg, int Count) IdentityAverage()
+    {
+        double sum = 0;
+        var n = 0;
+        foreach (var s in _project.Scenes) if (s.IdentityConfidence is double c) { sum += c; n++; }
+        return (n == 0 ? 0 : sum / n, n);
+    }
+
+    private void OnCharacterApplied(CharacterProfile p)
+    {
+        _anchorThumb = null;
+        ShowToast("👶 '" + p.Name + "' 캐릭터 고정 — 다음 생성부터 전 컷에 적용됩니다.");
+    }
+
+    private void ReleaseCharacterLock()
+    {
+        if (Jobs.IsRunning || Jobs.IsMerging) return;
+        _project.CharacterLock = null;
+        foreach (var s in _project.Scenes) s.IdentityConfidence = null;
+        ShowToast("🔓 캐릭터 고정 해제(앵커 이미지는 유지 — 필요 시 앵커도 해제하세요).");
+    }
+
+    private void OpenEpisodeProject(string path)
+    {
+        if (Jobs.IsRunning || Jobs.IsMerging) { ShowToast("⚠ 생성 중에는 다른 프로젝트를 열 수 없습니다."); return; }
+        var loaded = Repo.Load(path);
+        if (loaded is null) { ShowToast("❌ 에피소드 프로젝트를 열 수 없습니다."); return; }
+        _project = loaded;
+        _characterOpen = false;
+        _anchorThumb = null;
+        Recents.Touch(path, _project.Title);
+        ShowToast("📚 '" + _project.Title + "' 열기 · " + _project.Scenes.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + "컷 · 캐릭터 고정됨");
+    }
+    private bool _thumbBusy;         // 자동 썸네일 생성 중
+    private string? _thumbUrl;       // 생성된 썸네일 미리보기 URL
+    private string _wizardInput = "";
+    private string? _anchorThumb;
+
+    // v5.6.7: 실측 결과(완료된 첫 컷 포스터) 첫 프레임 + 갤러리 즉시 등록.
+    private string? StoryboardActualUrl => _project.Scenes.FirstOrDefault(s => s.Status == SceneStatus.Completed && !string.IsNullOrEmpty(s.PosterUrl))?.PosterUrl;
+
+    // v5.7.0: 앵커 vs 실측 결과 프레임 dHash 정체성 유지율(%). 입력(앵커/포스터 경로) 동일 시 재디코드 안 함(메모).
+    private string? _scoreKey;
+    private double? _identityScore;
+    private double? IdentityScore
+    {
+        get
+        {
+            var anchor = _project.AnchorImagePath;
+            var poster = _project.Scenes.FirstOrDefault(s => s.Status == SceneStatus.Completed && !string.IsNullOrEmpty(s.PosterPath))?.PosterPath;
+            var key = (anchor ?? "") + "|" + (poster ?? "");
+            if (key == _scoreKey) return _identityScore;
+            _scoreKey = key;
+            _identityScore = string.IsNullOrEmpty(anchor) || string.IsNullOrEmpty(poster)
+                ? null : IdentityHashAnalyzer.ScoreFiles(anchor, poster);
+            // v5.7.1 자율 피드백 루프: 유지율 80% 미만 → 가드레일 자동 Strict 격상(키당 1회 · On일 때 실효).
+            if (_identityScore is double s && s < 80.0 && Prefs.QualityGuardrailPreset != QualityGuardrailPreset.Strict)
+                Prefs.QualityGuardrailPreset = QualityGuardrailPreset.Strict;
+            return _identityScore;
+        }
+    }
+    private void RegisterActualToGallery()
+    {
+        var url = _project.FinalVideoPath is not null ? Media.ToPlaybackUrl(_project.FinalVideoPath)
+                : _project.Scenes.FirstOrDefault(s => s.Status == SceneStatus.Completed && s.VideoUrl is not null)?.VideoUrl;
+        if (!string.IsNullOrEmpty(url)) Gallery.Register(_project, GalleryAssetKind.Video, url!, "실측 검증");
+    }
+
+    // 브랜드 워터마크 / 스마트 SFX
+    private string? _watermarkThumb;   // 미리보기 URL(가상호스트)
+    private bool _sfxAvailable;        // Sfx 폴더에 효과음이 있는지(체크박스 힌트용 · OnInitialized 1회 계산)
+
+    // 4K 업스케일 / STT
+    private bool _upBusy;
+    private double _upPct;
+    private string _upStatus = "준비";
+    private string? _upResult;
+    private string? _up4kPath;
+    private string _upEngine = "RealEsrgan";
+    private bool _sttBusy;
+
+    /// <summary>배속 select 바인딩용 문자열 래퍼(문화권 무관 — 항상 '.' 소수점).</summary>
+    private string SpeedStr
+    {
+        get => Inv(_project.PlaybackSpeed);
+        set { if (double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v)) _project.PlaybackSpeed = v; }
+    }
+    private static string Inv(double d) => d.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>BGM 음량 슬라이더 바인딩(정수 % ↔ 0.0~1.0). range 는 정수라 로캘 소수점 이슈 없음.</summary>
+    private int BgmVolPct
+    {
+        get => (int)Math.Round(_project.BgmVolume * 100);
+        set => _project.BgmVolume = Math.Clamp(value, 0, 100) / 100.0;
+    }
+
+    /// <summary>선택 해상도가 세로(쇼츠) 비율인지 — 세이프존 토글/오버레이는 세로에서만 의미.</summary>
+    private bool IsPortrait { get { var (w, h) = StoryboardProject.ParseResolution(_project.ExportResolution); return h > w; } }
+
+    /// <summary>새 프로젝트(비어 있는 컷 1개 · 앵커/완료 없음)면 시작 안내 카드를 노출.</summary>
+    private bool IsFreshProject => !Jobs.IsRunning && Jobs.CompletedCount == 0
+        && _project.Scenes.Count <= 1
+        && _project.Scenes.All(s => string.IsNullOrWhiteSpace(s.Prompt) && string.IsNullOrWhiteSpace(s.VoiceText) && s.ImagePath is null)
+        && string.IsNullOrEmpty(_project.AnchorImagePath);
+    private System.Threading.Timer? _toastTimer;
+
+    // 생성할 컷이 하나라도 남아 있어야 시작 가능.
+    private bool CanStart => Cfg.IsConfigured && !Jobs.IsRunning
+        && _project.Scenes.Any(s => s.Status != SceneStatus.Completed);
+
+    /// <summary>스마트 SFX 체크박스 힌트 — 효과음 파일 유무에 따라 안내가 달라진다.</summary>
+    private string SfxHint => _sfxAvailable
+        ? "컷 전환마다 효과음(Whoosh 등) 자동 믹싱"
+        : "Sfx 폴더에 효과음(mp3/wav) 추가 시 자동 적용";
+
+    protected override void OnInitialized()
+    {
+        // 갤러리 → 원클릭 복원(핸드오프) 소비 — 최초 로드 시 원본 프로젝트를 연다.
+        ApplyStudioKey(StudioNav.Take());   // v17.50.1 사이드바 위임 스튜디오
+        StudioNav.Requested += OnStudioRequested;
+        var handoffPath = Handoff.Take();
+        if (handoffPath is not null && Repo.Load(handoffPath) is { } restored) _project = restored;
+        if (_project.Scenes.Count == 0) _project.Scenes.Add(new StoryboardScene());
+        // 새 프로젝트(TargetPlatform 미설정)면 마지막 선택 세이프존 플랫폼을 로컬(UserPreference)에서 복원 — 저장된 프로젝트의 명시값은 유지.
+        if (_project.TargetPlatform == SafePlatform.None && Enum.TryParse<SafePlatform>(Prefs.Get(UserPreferenceService.Keys.SafeZonePlatform), out var last))
+            _project.TargetPlatform = last;
+        _cardGuide = Prefs.GetBool(UserPreferenceService.Keys.CutCardSafeZone);   // 컷 세이프존 가이드 토글 복원
+        // Sfx 가용성 1회 계산(파일 IO — 렌더마다 반복 방지). 폴더 시딩도 함께 수행(앱번들 → 데이터폴더).
+        try { _sfxAvailable = PromptFlowStudio.Services.Media.SfxResolver.FindTransitionSfx() is not null; } catch { _sfxAvailable = false; }
+        Jobs.OnChange += OnStateChanged;
+        Jobs.OnCompleted += OnJobsCompleted;
+        Cfg.OnConfigChanged += OnStateChanged;   // 키 등록 시 배너/버튼 즉시 반영
+        Recents.OnChange += OnStateChanged;
+        QaInspector.OnChange += OnStateChanged;   // v16.17.0 최종 영상 QA 배지      // 최근 목록 변경 반영
+    }
+
+    // ── v16.12.0 최종 내보내기(Post-Production) ──
+    private CancellationTokenSource? _ppCts;
+    private PostTransition _ppTransition = PostTransition.Crossfade;
+    private bool _ppVoice;
+    private NarrationTone _ppTone = NarrationTone.FairyTale;
+    private double _ppSpeed = 1.0;
+    private SafePlatform _ppPlatform = SafePlatform.YouTubeShorts;
+    private int _ppPct;
+    private string _ppStage = "";
+    private string? _ppMessage;
+    private string? _ppOutput;
+    private bool _ppOk;
+
+    private bool CanFinalExport => Post.IsAvailable && !Jobs.IsRunning && !Jobs.IsMerging && _ppCts is null
+        && PostProductionEngine.ReadyScenes(_project).Count > 0;
+
+    private async Task FinalExportAsync()
+    {
+        if (!CanFinalExport) return;
+        var cts = new CancellationTokenSource();
+        _ppCts = cts;
+        _ppPct = 0; _ppStage = "준비 중…"; _ppMessage = null; _ppOutput = null; _ppOk = false;
+        var progress = new Progress<PostProductionProgress>(p =>
+        {
+            _ppPct = p.Percent; _ppStage = p.Stage;
+            _ = InvokeAsync(StateHasChanged);
+        });
+        try
+        {
+            var voice = _ppVoice ? new VoiceoverMixOptions(Tone: _ppTone, Speed: _ppSpeed, Platform: _ppPlatform) : null;
+            var r = await Task.Run(() => Post.ExportAsync(_project, progress, _ppTransition, cts.Token, voice));
+            _ppOk = r.Ok; _ppOutput = r.OutputPath;
+            _ppMessage = r.Ok ? "✅ 최종 영상 완성 — " + r.Message : "⚠ " + r.Message;
+            if (r.Ok && r.OutputPath is not null)
+            {
+                FolderLink.Reveal(r.OutputPath);   // 완료 즉시 OS 탐색기에서 결과 파일 선택
+                ShowToast("🎬 최종 영상 내보내기 완료 — 탐색기에서 결과 파일을 열었습니다.");
+            }
+        }
+        catch (Exception ex) { _ppOk = false; _ppMessage = "⚠ 최종 내보내기 실패: " + ex.Message; }
+        finally
+        {
+            if (ReferenceEquals(Interlocked.CompareExchange(ref _ppCts, null, cts), cts)) cts.Dispose();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void CancelFinalExport()
+    {
+        try { _ppCts?.Cancel(); } catch (ObjectDisposedException) { /* 이미 종료 */ }
+    }
+
+    public void Dispose()
+    {
+        try { _ppCts?.Cancel(); } catch (ObjectDisposedException) { }   // v16.12.0 진행 중 내보내기 취소
+        StudioNav.Requested -= OnStudioRequested;
+        Jobs.OnChange -= OnStateChanged;
+        Jobs.OnCompleted -= OnJobsCompleted;
+        Cfg.OnConfigChanged -= OnStateChanged;
+        Recents.OnChange -= OnStateChanged;
+        QaInspector.OnChange -= OnStateChanged;
+        _toastTimer?.Dispose();
+        _guideTimer?.Dispose();
+        _hlTimer?.Dispose();
+        _lipCts.Cancel();   // v16.20.0 진행 중 립싱크 재정렬 취소
+        _lipCts.Dispose();
+    }
+
+    // ── v16.20.0 컷 미세 표정 + 1-Click 오디오-립싱크 재정렬 ──
+    private static readonly FacialEmotion[] SceneEmotions = { FacialEmotion.HappySmile, FacialEmotion.Curious, FacialEmotion.Surprised, FacialEmotion.Giggle, FacialEmotion.Pout };
+    private readonly CancellationTokenSource _lipCts = new();
+    private readonly Dictionary<string, (string Message, string? Url)> _lipResults = new();
+    private string? _lipBusyId;
+
+    /// <summary>컷 대사 TTS → 오케스트레이터 립싱크(결과 별도 파일 · 컷 원본/병합 파이프라인 불변).</summary>
+    private async Task RealignSceneAsync(StoryboardScene scene)
+    {
+        if (_lipBusyId is not null || scene.LocalPath is not { } src || !System.IO.File.Exists(src)) return;
+        _lipBusyId = scene.Id;
+        _lipResults[scene.Id] = ("🎙️ 나레이션 합성 중…", null);
+        try
+        {
+            var ct = _lipCts.Token;
+            var audio = await LipTts.SynthesizeAsync(scene.VoiceText, NarrationTone.FairyTale, 1.0, TtsProvider.Auto, ct);
+            if (audio is null) { _lipResults[scene.Id] = ("⚠ 나레이션 합성 실패(TTS 엔진/네트워크 확인)", null); return; }
+            var output = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(src) ?? Media.MediaRoot, "lipsync_realign_" + scene.Id + ".mp4");
+            var id = scene.Id;
+            var status = new Progress<string>(s => { _lipResults[id] = (s, null); _ = InvokeAsync(StateHasChanged); });
+            var r = await LipAi.SyncAsync(new AudioLipSyncRequest(src, audio, output, scene.VoiceText + " " + scene.Prompt, scene.Emotion, scene.EmotionIntensity), status, ct);
+            _lipResults[scene.Id] = r.Ok && r.OutputPath is not null
+                ? ("✅ " + r.Message + " · 음소 " + r.Visemes.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + "구간",
+                   Media.ToPlaybackUrl(r.OutputPath) + "?v=" + DateTime.Now.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture))
+                : ("⚠ " + r.Message, null);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("Storyboard.LipRealign", ex); _lipResults[scene.Id] = ("⚠ 재정렬 실패: " + ex.Message, null); }
+        finally { _lipBusyId = null; }
+    }
+
+    /// <summary>v16.17.0 현재 프로젝트 최종 영상의 최근 QA 결과(다른 영상 결과는 무시).</summary>
+    private QaInspectionReport? FinalQa => QaInspector.LastReport is { } r && !string.IsNullOrWhiteSpace(_project.FinalVideoPath)
+        && string.Equals(r.VideoPath, _project.FinalVideoPath, StringComparison.OrdinalIgnoreCase) ? r : null;
+
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+    private void OnJobsCompleted()
+    {
+        ShowToast($"스토리보드 생성 종료 — {Jobs.CompletedCount}/{_project.Scenes.Count} 완료"
+            + (Jobs.FailedCount > 0 ? $" · 실패 {Jobs.FailedCount}" : ""));
+        // v16.3.1: 업로드/네트워크 실패 컷이 있으면 안내 팝업 + [다시 시도](완료 컷은 건너뛰고 실패 컷만 재생성).
+        foreach (var s in _project.Scenes)
+        {
+            if (s.Status == SceneStatus.Failed && PromptFlowStudio.Services.Platform.ErrorDialogService.IsUploadOrNetworkFailure(s.Error))
+            {
+                Errors.Show(s.Error, StartAll);
+                break;
+            }
+        }
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    // ── 컷 편집 ──
+    private void AddScene() { if (!Jobs.IsRunning) _project.Scenes.Add(new StoryboardScene()); }
+
+    // ══════ v17.50.1 씬 타임라인 도구(줌 · 스냅 · 마커 · 분할) · 사이드바 위임 스튜디오 ══════
+    private int _zoom = 1;
+    private bool _snap = true;
+    private StoryboardScene? _selScene;
+    private readonly HashSet<string> _markers = new();
+    private string ZoomCls => _zoom == 0 ? "zoom-0" : _zoom == 2 ? "zoom-2" : "";
+    private string ZoomName() => _zoom == 0 ? "컴팩트" : _zoom == 2 ? "확대" : "기본";
+    private void Zoom(int d) => _zoom = Math.Clamp(_zoom + d, 0, 2);
+    private string SelLabel() { var i = _selScene is null ? -1 : _project.Scenes.IndexOf(_selScene); return i < 0 ? "—" : "컷 " + (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture); }
+
+    private void ToggleMarker()
+    {
+        if (_selScene is null) return;
+        if (!_markers.Remove(_selScene.Id)) _markers.Add(_selScene.Id);
+    }
+
+    /// <summary>선택 컷 분할 — 나레이션을 중앙(스냅 ON 이면 가장 가까운 문장 경계)에서 나눠 동일 설정의 다음 컷을 삽입.</summary>
+    private void SplitSelected()
+    {
+        var s = _selScene;
+        if (s is null || Jobs.IsRunning) return;
+        var idx = _project.Scenes.IndexOf(s);
+        if (idx < 0) { _selScene = null; return; }
+        var text = s.VoiceText ?? "";
+        var cut = text.Length / 2;
+        if (_snap && text.Length > 1)
+        {
+            var best = -1;
+            for (var k = 0; k < text.Length - 1; k++)
+                if (text[k] is '.' or '!' or '?' or '。' or '\n' && (best < 0 || Math.Abs(k + 1 - text.Length / 2) < Math.Abs(best - text.Length / 2))) best = k + 1;
+            if (best > 0) cut = best;
+        }
+        var n = new StoryboardScene
+        {
+            Mode = s.Mode, Prompt = s.Prompt, Size = s.Size, NegativePrompt = s.NegativePrompt, VoiceText = text[cut..].Trim(),
+            UseLipSync = s.UseLipSync, Emotion = s.Emotion, EmotionIntensity = s.EmotionIntensity,
+            ImagePath = s.ImagePath, ThumbUrl = s.ThumbUrl, ImageName = s.ImageName,
+        };
+        s.VoiceText = text[..cut].Trim();
+        _project.Scenes.Insert(idx + 1, n);
+        _selScene = n;
+    }
+
+    /// <summary>사이드바(StudioCatalog <c>sb:</c>) 요청 → 프로젝트 컨텍스트 스튜디오 열기.</summary>
+    private void ApplyStudioKey(string? key)
+    {
+        switch (key)
+        {
+            case "_dubbingOpen": _dubbingOpen = true; break;
+            case "_interactiveOpen": _interactiveOpen = true; break;
+            case "_enterpriseOpen": _enterpriseOpen = true; break;
+            case "_masterOpen": _masterOpen = true; break;
+            case "_spatialOpen": _spatialOpen = true; break;
+            case "_virtualOpen": _virtualOpen = true; break;
+            case "_soundOpen": _soundOpen = true; break;
+            case "_vfxOpen": _vfxOpen = true; break;
+            case "_screenplayOpen": _screenplayOpen = true; break;
+            case "_twinOpen": _twinOpen = true; break;
+            case "_mvOpen": _mvOpen = true; break;
+            case "_mediaStudioOpen": _mediaStudioOpen = true; break;
+        }
+    }
+
+    private void OnStudioRequested(string key) => _ = InvokeAsync(() => { ApplyStudioKey(StudioNav.Take()); StateHasChanged(); });
+
+    private void RemoveScene(StoryboardScene s)
+    {
+        if (Jobs.IsRunning || _project.Scenes.Count <= 1) return;
+        ClearSceneImageFile(s);
+        _project.Scenes.Remove(s);
+    }
+
+    private void Move(int i, int dir)
+    {
+        if (Jobs.IsRunning) return;
+        var j = i + dir;
+        if (j < 0 || j >= _project.Scenes.Count) return;
+        (_project.Scenes[i], _project.Scenes[j]) = (_project.Scenes[j], _project.Scenes[i]);
+    }
+
+    // ── 드래그 앤 드롭 재배치(HTML5 · 외부 라이브러리 없음) ──
+    private int? _dragIndex;   // 드래그 중인 컷 인덱스
+    private int? _dragOver;    // 현재 드롭 대상(하이라이트)
+    private void OnDragStart(int i) { if (!Jobs.IsRunning) _dragIndex = i; }
+    private void OnDragEnter(int i) { if (_dragIndex is not null && !Jobs.IsRunning) _dragOver = i; }
+    private void OnDragEnd() { _dragIndex = null; _dragOver = null; }
+    private void OnDrop(int target)
+    {
+        var from = _dragIndex;
+        OnDragEnd();
+        if (Jobs.IsRunning || from is null) return;
+        var f = from.Value;
+        if (f == target || f < 0 || f >= _project.Scenes.Count || target < 0 || target >= _project.Scenes.Count) return;
+        var s = _project.Scenes[f];
+        _project.Scenes.RemoveAt(f);
+        var insertAt = Math.Clamp(f < target ? target - 1 : target, 0, _project.Scenes.Count);
+        _project.Scenes.Insert(insertAt, s);
+    }
+
+    private void SetMode(StoryboardScene s, SceneMode mode)
+    {
+        if (Jobs.IsRunning) return;
+        s.Mode = mode;
+        if (mode == SceneMode.TextToVideo) ClearSceneImage(s);   // T2V 로 바꾸면 이미지 해제
+    }
+
+    private void StartAll() { if (CanStart) _ = Jobs.StartAsync(_project, _parallel); }   // fire-and-forget
+
+    // ── 프로젝트 저장/열기 ──
+    private void SaveProject()
+    {
+        var path = Repo.Save(_project);
+        if (path is null) { ShowToast("❌ 저장 실패(로그를 확인하세요)."); return; }
+        Recents.Touch(path, _project.Title);
+        ShowToast($"💾 저장됨 — {path}");
+    }
+
+    private async Task OnOpenProject(InputFileChangeEventArgs e)
+    {
+        if (Jobs.IsRunning || Jobs.IsMerging) return;
+        var file = e.File;
+        if (file is null) return;
+        try
+        {
+            using var sr = new StreamReader(file.OpenReadStream(8L * 1024 * 1024));
+            var json = await sr.ReadToEndAsync();
+            var loaded = Repo.Deserialize(json);
+            if (loaded is null || loaded.Scenes.Count == 0) { ShowToast("❌ 열기 실패 — 올바른 스토리보드 파일이 아닙니다."); return; }
+            _project = loaded;
+            // 관리 폴더(Projects)에 있는 파일이면 절대경로를 알 수 있으므로 최근 목록에 등록.
+            var canonical = Path.Combine(Repo.ProjectsDir, _project.Id + ".json");
+            if (File.Exists(canonical)) Recents.Touch(canonical, _project.Title);
+            ShowToast($"📂 '{_project.Title}' 열기 완료 · {_project.Scenes.Count} 컷.");
+        }
+        catch (Exception ex) { ShowToast("❌ 열기 실패: " + ex.Message); }
+    }
+
+    /// <summary>최근 항목 클릭 — 저장된 절대경로로 즉시 로드. 삭제된 파일이면 목록에서 자동 제거.</summary>
+    private void OpenRecent(RecentProject r)
+    {
+        _recentsOpen = false;
+        if (Jobs.IsRunning || Jobs.IsMerging) return;
+        var loaded = Repo.Load(r.Path);
+        if (loaded is null)
+        {
+            Recents.Remove(r.Path);
+            ShowToast($"🗑 파일이 없어 최근 목록에서 제거했습니다 — {r.Title}");
+            return;
+        }
+        _project = loaded;
+        Recents.Touch(r.Path, _project.Title);   // 맨 앞으로 승격
+        ShowToast($"📂 '{_project.Title}' 열기 완료 · {_project.Scenes.Count} 컷.");
+    }
+
+    private static string ShortPath(string p) => p.Length <= 40 ? p : "…" + p[^38..];
+
+    // ── BGM ──
+    private async Task OnBgmPicked(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file is null) return;
+        const long maxSize = 30L * 1024 * 1024;   // 30MB
+        if (file.Size > maxSize) { ShowToast("❌ BGM 파일이 너무 큽니다(최대 30MB)."); return; }
+        try
+        {
+            var dir = Path.Combine(Media.MediaRoot, "_uploads", "bgm");
+            Directory.CreateDirectory(dir);
+            var name = SanitizeFileName(file.Name);
+            if (string.IsNullOrWhiteSpace(Path.GetExtension(name))) name += ".mp3";
+            var savePath = Path.Combine(dir, name);
+
+            await using (var src = file.OpenReadStream(maxSize))
+            await using (var dst = new FileStream(savePath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous))
+                await src.CopyToAsync(dst);
+
+            _project.BgmPath = savePath;
+            ShowToast($"🎵 BGM 추가됨 — {name}");
+        }
+        catch (Exception ex) { ShowToast("❌ BGM 추가 실패: " + ex.Message); }
+    }
+
+    private void ClearBgm() => _project.BgmPath = null;   // 파일은 남겨둠(재사용 가능) · 경로만 해제
+
+    private static string SanitizeFileName(string n)
+    {
+        foreach (var c in Path.GetInvalidFileNameChars()) n = n.Replace(c, '_');
+        return n;
+    }
+
+    // ── 내보내기 ──
+    private async Task ExportFinal()
+    {
+        if (_project.FinalVideoPath is null || _exporting) return;
+        _exporting = true;
+        try
+        {
+            var saved = await Export.ExportAsync(_project.FinalVideoPath, _project.Title);   // SaveFileDialog(취소 시 null)
+            ShowToast(saved is not null ? $"✅ 내보내기 성공 — {saved}" : "내보내기를 취소했습니다.");
+        }
+        catch (Exception ex) { Errors.Show(ex); }
+        finally { _exporting = false; }
+    }
+
+    // ── 원클릭 대본 위저드 ──
+    private void RunWizard()
+    {
+        if (Jobs.IsRunning || Jobs.IsMerging) { ShowToast("생성/병합 중에는 사용할 수 없습니다."); return; }
+        var cuts = Wizard.Generate(_wizardInput ?? "", 5);
+        if (cuts.Count == 0) { ShowToast("생성할 내용이 없습니다. 주제나 대본을 입력하세요."); return; }
+
+        foreach (var s in _project.Scenes) ClearSceneImageFile(s);   // 기존 컷 임시 이미지 정리
+        _project.Scenes.Clear();
+
+        var (w, h) = StoryboardProject.ParseResolution(_project.ExportResolution);
+        var size = h > w ? "720*1280" : "1280*720";   // 세로 쇼츠면 세로 생성
+        foreach (var c in cuts)
+            _project.Scenes.Add(new StoryboardScene
+            {
+                Prompt = string.IsNullOrWhiteSpace(c.CameraMotion) ? c.Prompt : $"{c.Prompt}, {c.CameraMotion}",
+                VoiceText = c.VoiceText,
+                Size = size,
+            });
+
+        if (string.IsNullOrWhiteSpace(_project.Title) || _project.Title == "새 스토리보드")
+            _project.Title = TruncTitle(_wizardInput!.Trim());
+
+        _wizardOpen = false;
+        ShowToast($"🪄 {cuts.Count}개 컷 자동 생성 완료 — 프롬프트·나레이션을 확인/편집하세요.");
+    }
+
+    private static string TruncTitle(string s)
+    {
+        s = s.Replace('\n', ' ').Replace('\r', ' ').Trim();
+        return s.Length <= 28 ? s : s[..27] + "…";
+    }
+
+    // ── AI 콘텐츠 에이전시(Swarm) 확정안 적용 ──
+    private void ApplySwarmPlan(SwarmPlan plan)
+    {
+        if (!plan.Ok || plan.Cuts.Count == 0) { ShowToast("적용할 확정안이 없습니다."); return; }
+        if (Jobs.IsRunning || Jobs.IsMerging) { ShowToast("생성/병합 중에는 적용할 수 없습니다."); return; }
+
+        foreach (var s in _project.Scenes) ClearSceneImageFile(s);
+        _project.Scenes.Clear();
+
+        var (w, h) = StoryboardProject.ParseResolution(_project.ExportResolution);
+        var size = h > w ? "720*1280" : "1280*720";
+        foreach (var c in plan.Cuts)
+            _project.Scenes.Add(new StoryboardScene { Prompt = c.Prompt, VoiceText = c.VoiceText, Size = size });
+
+        if (!string.IsNullOrWhiteSpace(plan.Title)) _project.Title = TruncTitle(plan.Title);
+
+        _agencyOpen = false;
+        ShowToast($"🤖 에이전시 확정안 적용 — {plan.Cuts.Count}컷 «{_project.Title}». 이제 생성을 시작하세요.");
+    }
+
+    // ── 아기 테마 백과사전 적용(테마 + 숏츠/롱폼 포맷) ──
+    // v3.7.0 초개인화 하이퍼 덱 — 테마 적용 + 아트 변종 + 감정 아크 각인까지 완료된 뒤 통지받아 모달 닫기/토스트.
+    // v5.3.5: 분리된 하이퍼 스튜디오 모달의 즉시 합성 완료 — 모달 닫기 + 토스트.
+    private void OnHyperComposed()
+    {
+        _hyperOpen = false;
+        var art = string.IsNullOrWhiteSpace(_project.BabyArtStyle) ? "랜덤 변종" : _project.BabyArtStyle;
+        ShowToast($"✨ 초개인화 합성 완료 — {_project.Scenes.Count}컷 · 아트({art})·seed#{_project.BabyArtSeed}"
+            + (_project.BabyEmotionArc ? "·감정 아크" : "") + " 주입. [✨ 전체 생성]을 누르세요.");
+        StateHasChanged();
+    }
+
+    private void ApplyBabyTheme((string Key, VideoFormat Format) req)
+    {
+        if (Jobs.IsRunning || Jobs.IsMerging) { ShowToast("생성/병합 중에는 적용할 수 없습니다."); return; }
+
+        foreach (var s in _project.Scenes) ClearSceneImageFile(s);   // 기존 컷 임시 이미지 정리
+        var ok = VideoFactory.Apply(_project, req.Key, req.Format);
+        _babyGalleryOpen = false;
+        _b2bGalleryOpen = false;   // 아기/B2B 어느 모달이든 적용 시 닫기
+
+        if (!ok) { ShowToast("테마 적용에 실패했습니다."); return; }
+        var anchorNote = Anchor.HasAnchor(_project) ? "앵커 사진 특징 유지(전 컷 i2v)" : "앵커 미등록 — 사진 등록 시 아기 특징 유지";
+        var fmt = req.Format == VideoFormat.Shorts ? "숏츠(3초 반전 루프)" : "롱폼(기승전결 서사)";
+        ShowToast($"👶 «{_project.Title}» 적용 완료 — {_project.Scenes.Count}컷 · {fmt} · 키네틱/전환/텐션/폴리 세팅 · {anchorNote}. [✨ 전체 생성]을 누르세요.");
+    }
+
+    // ── v4.5.0 날씨/환경 테마 적용 — 갤러리에서 프리셋 선택 시 호출(모달 닫기 + 프로젝트 기상 구성 + 빈 컷 시네마틱 프롬프트 주입) ──
+    private void ApplyWeatherTheme(WeatherPreset p)
+    {
+        if (Jobs.IsRunning || Jobs.IsMerging) { ShowToast("생성/병합 중에는 적용할 수 없습니다."); return; }
+        _weatherGalleryOpen = false;
+        if (p is null) return;
+
+        _project.Weather = WeatherThemeConfig.FromPreset(p);   // Enabled=true · 기후/시간대/강도 반영
+        _project.SpatialAudio = true;                          // 렌더 시 입체 앰비언스(빗소리/바람) 합성
+
+        // 아직 비어 있는 컷에만 시네마틱 프롬프트를 주입(기존 사용자 프롬프트는 보존).
+        var filled = 0;
+        foreach (var s in _project.Scenes)
+            if (string.IsNullOrWhiteSpace(s.Prompt)) { s.Prompt = Weather.SynthesizePrompt(_project.Weather); filled++; }
+
+        var climate = WeatherThemeCatalog.ClimateLabel(p.Climate);
+        var inject = filled > 0 ? $" · 빈 컷 {filled}개에 시네마틱 프롬프트 주입" : "";
+        ShowToast($"☁️ 날씨 테마 «{p.Title}» 적용 — 기후 {climate}·강도 {p.Intensity}{inject}. 렌더 시 입체 앰비언스가 합성됩니다.");
+        StateHasChanged();
+    }
+
+    // ── 원클릭 즉시 생성 — 아기 사진 레퍼런스 연동(+1:1 오토 크롭) + 테마 구성 + 원스톱 생성 시작 ──
+    private async Task InstantStartBabyTheme(ThemeInstantRequest req)
+    {
+        if (Jobs.IsRunning || Jobs.IsMerging) { ShowToast("생성/병합 중에는 시작할 수 없습니다."); return; }
+
+        // ① 새 사진을 골랐다면 등록 + 1:1 정중앙 오토 크롭 → 전 컷 I2V 레퍼런스로 바인딩.
+        if (req.Photo is not null)
+        {
+            var reg = await Anchor.RegisterAsync(req.Photo);
+            if (reg.Ok && reg.Path is not null)
+            {
+                var crop = await FaceCropper.CropSquareAsync(reg.Path);
+                _project.AnchorImagePath = crop.Cropped && crop.Path is not null ? crop.Path : reg.Path;
+                _anchorThumb = Anchor.ThumbUrl(_project);
+                ShowToast(crop.Cropped ? "👶 아기 얼굴 1:1 오토 크롭 등록 — 전 컷 I2V 유지" : "👶 아기 얼굴 레퍼런스 등록 — 전 컷 I2V 유지");
+            }
+        }
+        // (req.AllowT2v == true 이거나 사진이 없으면 앵커 없이 T2V 로 Graceful 진행)
+
+        // ② 테마 구성 + 즉시 시작(원스톱).
+        ApplyBabyTheme((req.Key, req.Format));        // 테마 구성 + 모달 닫기 + 토스트
+        if (_project.Scenes.Count == 0) return;       // 적용 실패면 중단
+        if (CanStart)
+        {
+            StartAll();                               // fire-and-forget 전체 생성 → 오디오 → 세이프존 → 렌더링
+            var mode = Anchor.HasAnchor(_project) ? "아기 얼굴 유지(I2V)" : "텍스트(T2V)";
+            ShowToast($"🚀 «{_project.Title}» 즉시 생성 시작 — {_project.Scenes.Count}컷 · {mode} 원스톱 실행.");
+        }
+        else
+        {
+            ShowToast("⚙️ 테마는 구성됐어요. Wan API 키 설정 후 [✨ 영상 제작 시작]을 눌러 시작하세요.");
+        }
+    }
+
+    // ── 사옥 기반 AI 시네마틱 홍보 영상 생성(6컷 · I2V 사옥 연출 + 3D 엠보싱 워터마크) ──
+    private void GenerateBuildingShowcase()
+    {
+        if (Jobs.IsRunning || Jobs.IsMerging) { ShowToast("생성/병합 중에는 시작할 수 없습니다."); return; }
+        if (!BuildingEngine.Apply(_project)) { ShowToast("먼저 회사 사옥 사진을 등록하세요."); return; }
+        _project.MultiLighting = true;   // v2.5.0 사옥 3색 조명 멀티배치 — 병합 후 주간/노을/야경 병렬 그레이딩 자동 배출
+        _b2bGalleryOpen = false;
+        if (CanStart)
+        {
+            StartAll();
+            ShowToast($"🚀 사옥 기반 홍보 영상 생성 시작 — {_project.Scenes.Count}컷 · 드론 360·홀로그램·야경 반사 · 3색 조명(주간·노을·야경) 멀티배치.");
+        }
+        else
+        {
+            ShowToast("⚙️ 사옥 홍보 구성 완료 — Wan API 키 설정 후 [✨ 영상 제작 시작]을 누르세요.");
+        }
+    }
+
+    // ── 시네마틱 프롬프트 부스터 ──
+    private void BoostScene(StoryboardScene s)
+    {
+        if (Jobs.IsRunning) return;
+        s.Prompt = Booster.Boost(s.Prompt);
+    }
+
+    private void BoostAll()
+    {
+        if (Jobs.IsRunning) { ShowToast("생성 중에는 사용할 수 없습니다."); return; }
+        var n = 0;
+        foreach (var s in _project.Scenes)
+        {
+            var boosted = Booster.Boost(s.Prompt);
+            if (!string.Equals(boosted, s.Prompt, StringComparison.Ordinal)) { s.Prompt = boosted; n++; }
+        }
+        ShowToast(n > 0 ? $"⚡ {n}개 컷 프롬프트를 시네마틱 부스팅했습니다." : "모든 컷이 이미 부스팅되어 있습니다.");
+    }
+
+    // ── 캐릭터/스타일 앵커 ──
+    private async Task OnAnchorPicked(InputFileChangeEventArgs e)
+    {
+        if (e.File is null) return;
+        var r = await Anchor.RegisterAsync(e.File, CancellationToken.None);
+        if (r.Ok && r.Path is not null)
+        {
+            _project.AnchorImagePath = r.Path;
+            _anchorThumb = r.ThumbUrl;
+            ShowToast("⚓ 앵커 등록됨 — 모든 컷이 이 캐릭터/스타일 기반 I2V 로 생성됩니다.");
+        }
+        else ShowToast("❌ " + r.Message);
+    }
+
+    private void ClearAnchor()
+    {
+        _project.AnchorImagePath = null;
+        _anchorThumb = null;
+        ShowToast("앵커를 해제했습니다. 컷은 기존 방식(T2V/개별 이미지)으로 생성됩니다.");
+    }
+
+    // ── 브랜드 워터마크(채널 로고) ──
+    private async Task OnWatermarkPicked(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file is null) return;
+        const long maxSize = 8L * 1024 * 1024;   // 8MB(로고 이미지)
+        if (file.Size > maxSize) { ShowToast("❌ 워터마크 이미지가 너무 큽니다(최대 8MB)."); return; }
+        try
+        {
+            var dir = Path.Combine(Media.MediaRoot, "_uploads", "watermark");
+            Directory.CreateDirectory(dir);
+            var name = SanitizeFileName(file.Name);
+            if (string.IsNullOrWhiteSpace(Path.GetExtension(name))) name += ".png";
+            var savePath = Path.Combine(dir, name);
+
+            await using (var src = file.OpenReadStream(maxSize))
+            await using (var dst = new FileStream(savePath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous))
+                await src.CopyToAsync(dst);
+
+            _project.WatermarkImagePath = savePath;
+            _watermarkThumb = Media.ToPlaybackUrl(savePath) + "?v=" + DateTime.Now.Ticks;   // 캐시버스터로 즉시 갱신
+            ShowToast($"🏷️ 워터마크 등록됨 — {name} · 최종 영상 우측 상단에 합성됩니다.");
+        }
+        catch (Exception ex) { ShowToast("❌ 워터마크 추가 실패: " + ex.Message); }
+    }
+
+    private void ClearWatermark()
+    {
+        _project.WatermarkImagePath = null;   // 파일은 남겨둠(재사용) · 경로만 해제
+        _watermarkThumb = null;
+        ShowToast("워터마크를 해제했습니다. 최종 영상에 로고가 합성되지 않습니다.");
+    }
+
+    // ── 유튜브 메타데이터 ──
+    private void OpenMeta()
+    {
+        _meta = Meta.Generate(_project);
+        if (_meta is null || !_meta.HasContent) { ShowToast("메타데이터를 만들 컷 내용이 없습니다."); return; }
+        _tags = _meta.Tags.ToList();   // 편집용 복사본(칩)
+        _newTag = "";
+        _metaOpen = true;
+    }
+
+    private void CloseMeta() => _metaOpen = false;
+
+    private void CopyMeta(string label, string text)
+        => ShowToast(Clipboard.SetText(text) ? $"📋 {label} 복사됨 — 유튜브에 붙여넣기 하세요." : "❌ 복사에 실패했습니다.");
+
+    // ── 글로벌 다국어 번역 & SEO ──
+    private async Task RunLocalize()
+    {
+        if (_locBusy || !Localize.Enabled) return;
+        _locBusy = true; _locResult = null;
+        try
+        {
+            var r = await Localize.LocalizeAsync(_project, _locLang, CancellationToken.None);
+            if (r.Ok)
+            {
+                _locResult = r;
+                _locOpen = true;
+                ShowToast(r.SavedPath is not null ? $"🌐 {_locLang} 번역·SEO 완료 — metadata_{_locLang.ToLowerInvariant()}.json 저장됨" : $"🌐 {_locLang} 번역 완료");
+            }
+            else ShowToast("❌ 번역 실패: " + r.Message);
+        }
+        catch (Exception ex) { Errors.Show(ex); }
+        finally { _locBusy = false; }
+    }
+
+    private void CloseLoc() => _locOpen = false;
+
+    // ── 표정 피크 자동 썸네일(4K) ──
+    private async Task GenerateThumbnail()
+    {
+        if (_thumbBusy) return;
+        if (!_project.Scenes.Any(s => !string.IsNullOrEmpty(s.LocalPath))) { ShowToast("먼저 컷을 생성해 주세요(완료된 컷이 필요합니다)."); return; }
+        _thumbBusy = true;
+        try
+        {
+            var log = new Progress<string>(m => { ShowToast("🖼️ " + m); });
+            var r = await AutoThumb.GenerateThumbnailAsync(_project, log, CancellationToken.None);
+            if (r.Ok && r.Path is not null)
+            {
+                _thumbUrl = AutoThumb.PlaybackUrl(r.Path) + "?v=" + DateTime.Now.Ticks;
+                ShowToast($"✅ {r.Message} — {System.IO.Path.GetFileName(r.Path)}");
+            }
+            else ShowToast("❌ " + r.Message);
+        }
+        catch (Exception ex) { Errors.Show(ex); }
+        finally { _thumbBusy = false; }
+    }
+
+    // ── Gemini Vision 무모델 얼굴 오토 크롭(4K) ──
+    private async Task GenerateFaceCropThumbnail()
+    {
+        if (_thumbBusy) return;
+        if (!_project.Scenes.Any(s => !string.IsNullOrEmpty(s.LocalPath))) { ShowToast("먼저 컷을 생성해 주세요(완료된 컷이 필요합니다)."); return; }
+        _thumbBusy = true;
+        try
+        {
+            var log = new Progress<string>(m => { ShowToast("🧠 " + m); });
+            var r = await FaceCrop.CropFaceThumbnailAsync(_project, log, CancellationToken.None);
+            if (r.Ok && r.Path is not null)
+            {
+                _thumbUrl = FaceCrop.PlaybackUrl(r.Path) + "?v=" + DateTime.Now.Ticks;
+                ShowToast($"✅ {r.Message}");
+            }
+            else ShowToast("얼굴 크롭 실패: " + r.Message);
+        }
+        catch (Exception ex) { Errors.Show(ex); }
+        finally { _thumbBusy = false; }
+    }
+
+    // ── 유튜브 자동 업로드(비공개 기본) ──
+    private async Task UploadYouTube()
+    {
+        if (_ytBusy || _project.FinalVideoPath is null || !YtPublish.Enabled) return;
+        _ytBusy = true; _ytPct = 0;
+        try
+        {
+            var meta = Meta.Generate(_project);
+            var title = meta.HasContent ? meta.Title : _project.Title;
+            var desc = meta.HasContent ? meta.Description : _project.Title;
+            var tags = meta.HasContent ? (System.Collections.Generic.IReadOnlyList<string>)meta.Tags : System.Array.Empty<string>();
+            var prog = new Progress<double>(p => { _ytPct = (int)p; _ = InvokeAsync(StateHasChanged); });
+            var r = await YtPublish.UploadAsync(_project.FinalVideoPath, title, desc, tags, "private", null, prog, CancellationToken.None);
+            ShowToast(r.Ok ? $"✅ 유튜브 업로드 완료(비공개) — {r.Url}" : "❌ 업로드 실패: " + r.Message);
+        }
+        catch (Exception ex) { Errors.Show(ex); }
+        finally { _ytBusy = false; await InvokeAsync(StateHasChanged); }
+    }
+
+    private string LocHashtagLine() => _locResult is null ? "" : string.Join(" ", _locResult.Hashtags.Select(h => "#" + h));
+
+    private void CopyLoc(string label, string text)
+        => ShowToast(Clipboard.SetText(text) ? $"📋 {label} 복사됨" : "❌ 복사에 실패했습니다.");
+
+    // ── 태그 칩 편집 ──
+    private string HashtagString() => string.Join(" ", _tags.Select(t => "#" + t));
+
+    private void RemoveTag(string t) => _tags.Remove(t);
+
+    private void AddTag()
+    {
+        var t = SanitizeTagInput(_newTag);
+        if (t.Length < 2) { _newTag = ""; return; }
+        if (!_tags.Any(x => string.Equals(x, t, StringComparison.OrdinalIgnoreCase))) _tags.Add(t);
+        _newTag = "";
+    }
+
+    private void OnTagKey(KeyboardEventArgs e) { if (e.Key == "Enter") AddTag(); }
+
+    // 해시태그는 공백/기호 불가 → 문자/숫자만(한글 포함), 선행 # 제거.
+    private static string SanitizeTagInput(string? s) => new string((s ?? "").Where(char.IsLetterOrDigit).ToArray());
+
+    private void CopyHashtags()
+        => ShowToast(Clipboard.SetText(HashtagString()) ? "📋 해시태그 복사됨 — 유튜브에 붙여넣기 하세요." : "❌ 복사에 실패했습니다.");
+
+    private void CopyMetaAll()
+    {
+        if (_meta is null) return;
+        var all = $"[제목]\n{_meta.Title}\n\n[설명]\n{_meta.Description}\n\n[해시태그]\n{HashtagString()}";
+        ShowToast(Clipboard.SetText(all) ? "📋 전체 메타데이터 복사됨." : "❌ 복사에 실패했습니다.");
+    }
+
+    // ── 숏츠 커버 썸네일 ──
+    private async Task GenerateCover()
+    {
+        if (_project.FinalVideoPath is null) { ShowToast("먼저 최종 영상을 만들어 주세요."); return; }
+        var text = (_project.CoverTitle ?? "").Trim();
+        if (text.Length == 0) { ShowToast("커버 문구를 입력하세요."); return; }
+        if (!Cover.IsAvailable) { ShowToast("ffmpeg.exe 가 필요합니다."); return; }
+
+        _coverBusy = true;
+        try
+        {
+            var poster = _project.FinalVideoPath + ".jpg";
+            var src = File.Exists(poster) ? poster : _project.FinalVideoPath;   // 포스터 없으면 영상에서 프레임 추출
+            var outPath = Path.Combine(Path.GetDirectoryName(_project.FinalVideoPath)!, "cover.jpg");
+            var result = await Cover.GenerateAsync(src, text, outPath, _coverColor, _coverBox);
+            if (result is not null)
+            {
+                _coverPath = result;
+                _coverUrl = Media.ToPlaybackUrl(result) + "?t=" + DateTime.Now.Ticks;   // 덮어써도 새로 로드되도록 캐시버스터
+                ShowToast("🖼️ 커버 썸네일 생성 완료");
+            }
+            else ShowToast("❌ 커버 생성 실패 (ffmpeg 확인 필요)");
+        }
+        catch (Exception ex) { ShowToast("❌ 커버 생성 실패: " + ex.Message); }
+        finally { _coverBusy = false; }
+    }
+
+    // ── 4K 업스케일 ──
+    private async Task UpscaleFinal()
+    {
+        if (_project.FinalVideoPath is null || _upBusy) return;
+        var engine = _upEngine == "RealCugan" ? UpscaleEngine.RealCugan : UpscaleEngine.RealEsrgan;
+        if (!Upscale.IsAvailable(engine)) { ShowToast($"{engine} 엔진 미설치 — appsettings.json 의 Engines 경로를 지정하세요."); return; }
+
+        _upBusy = true; _upPct = 0; _upStatus = "시작"; _upResult = null; _up4kPath = null;
+        try
+        {
+            var dir = Path.GetDirectoryName(_project.FinalVideoPath)!;
+            var outPath = Path.Combine(dir, "final_4k.mp4");
+            var prog = new Progress<double>(p => { _upPct = p; _ = InvokeAsync(StateHasChanged); });
+            var stat = new Progress<string>(s => { _upStatus = s; _ = InvokeAsync(StateHasChanged); });
+            var r = await Upscale.UpscaleAsync(_project.FinalVideoPath, outPath, 4, engine, prog, stat, CancellationToken.None);
+            if (r.Ok && r.OutputPath is not null)
+            {
+                _up4kPath = r.OutputPath;
+                _upResult = "✅ 4K 업스케일 완료 — " + ShortPath(r.OutputPath);
+                ShowToast("🚀 4K 업스케일 완료");
+            }
+            else { _upResult = "❌ " + r.Message; ShowToast("❌ 업스케일 실패: " + r.Message); }
+        }
+        catch (Exception ex) { _upResult = "❌ " + ex.Message; ShowToast("❌ 업스케일 실패: " + ex.Message); }
+        finally { _upBusy = false; _ = InvokeAsync(StateHasChanged); }
+    }
+
+    // ── 자막 자동 추출(STT) → 컷 동기화 ──
+    private async Task ExtractSubs()
+    {
+        if (_project.FinalVideoPath is null || _sttBusy) return;
+        if (!Stt.IsAvailable) { ShowToast("Faster-Whisper 미설치 — appsettings.json 의 Engines:FasterWhisper:Exe 를 지정하세요."); return; }
+        _sttBusy = true;
+        try
+        {
+            var r = await Stt.TranscribeAsync(_project.FinalVideoPath, null, null, CancellationToken.None);
+            if (r.Ok)
+            {
+                var filled = Stt.DistributeToScenes(r.Cues, _project.Scenes, 5.0, _project.PlaybackSpeed);
+                ShowToast($"📝 자막 {r.Cues.Count}구간 추출 · {filled}개 컷에 반영됨(재병합 시 자막·나레이션 적용).");
+            }
+            else ShowToast("❌ 자막 추출 실패: " + r.Message);
+        }
+        catch (Exception ex) { ShowToast("❌ 자막 추출 실패: " + ex.Message); }
+        finally { _sttBusy = false; }
+    }
+
+    // ── 컷 이미지(i2v) ──
+    private async Task OnScenePicked(StoryboardScene scene, InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file is null) return;
+        // v16.57.0: 12MB/32MB 상한 해제 — 1MB 청크 스트리밍 수신 · 업로드 한도/4K 초과 시 프록시 PNG 자동 생성(원본 보존).
+        try
+        {
+            var dir = Path.Combine(Media.MediaRoot, "_uploads");
+            MediaIngestResult r;
+            await using (var src = file.OpenReadStream(MediaPipe.MaxIngestBytes))
+                r = await MediaPipe.IngestAsync(src, dir, file.Name, file.Size, (done, total) =>
+                {
+                    _uploadProgress[scene.Id] = total > 0 ? (int)(done * 100 / total) : 0;
+                    _ = InvokeAsync(StateHasChanged);
+                });
+            _uploadProgress.Remove(scene.Id);
+            if (!r.Ok || r.EffectivePath is null) { scene.Error = r.Message; return; }
+            var savePath = r.EffectivePath;
+            if (_autoTune) AutoTuneScene(scene, r);
+
+            scene.ImagePath = savePath;
+            scene.ImageName = file.Name;
+            scene.ThumbUrl = Media.ToPlaybackUrl(savePath);   // 가상호스트 썸네일
+            scene.Error = null;
+        }
+        catch (Exception ex) { scene.Error = "이미지 로드 실패: " + ex.Message; }
+    }
+
+    private void ClearSceneImage(StoryboardScene s)
+    {
+        ClearSceneImageFile(s);
+        s.ImagePath = null; s.ThumbUrl = null; s.ImageName = null;
+    }
+
+    private static void ClearSceneImageFile(StoryboardScene s)
+    { try { if (!string.IsNullOrEmpty(s.ImagePath) && File.Exists(s.ImagePath)) File.Delete(s.ImagePath); } catch { /* 무시 */ } }
+
+    private void ShowToast(string msg)
+    {
+        _toast = msg;
+        _toastTimer?.Dispose();
+        _toastTimer = new System.Threading.Timer(_ => { _toast = null; _ = InvokeAsync(StateHasChanged); },
+            null, 8000, System.Threading.Timeout.Infinite);
+    }
+
+    // ── 표시 헬퍼 ──
+    private static string Trunc(string s) => s.Length <= 42 ? s : s[..40] + "…";
+
+    private static string Label(SceneStatus st) => st switch
+    {
+        SceneStatus.Pending => "대기",
+        SceneStatus.Generating => "생성중",
+        SceneStatus.Downloading => "다운로드",
+        SceneStatus.Completed => "완료",
+        SceneStatus.Failed => "실패",
+        SceneStatus.Canceled => "취소",
+        _ => "",
+    };
+
+    private static string Cls(SceneStatus st) => st switch
+    {
+        SceneStatus.Completed => "ok",
+        SceneStatus.Failed or SceneStatus.Canceled => "bad",
+        SceneStatus.Generating or SceneStatus.Downloading => "run",
+        _ => "",
+    };
+
+    /// <summary>AI 감독 점수 뱃지 색 — 기준점 이상 ok, 15점 이내 근접 warn, 그 외 bad.</summary>
+    private string QaCls(int score)
+        => score >= _project.QualityThreshold ? "ok" : score >= _project.QualityThreshold - 15 ? "warn" : "bad";
+}

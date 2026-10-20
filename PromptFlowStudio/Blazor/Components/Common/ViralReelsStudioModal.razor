@@ -1,0 +1,281 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.ViralReels
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject ViralReelsStudioRunner Runner
+
+@* [PromptFlow Studio v17.47.0] 📱 AI 릴스 바이럴 리믹스 스튜디오 — 트렌드 랭킹 · 원본/리믹스 비교 · 캡션/해시태그 · 발행 큐(드라이런) · 오리지널리티 가드. *@
+
+<div class="vrl-scrim" @onclick="Close">
+    <div class="vrl-modal" @onclick:stopPropagation="true">
+        <div class="vrl-h">
+            <div>
+                <div class="vrl-title">📱 AI 릴스 바이럴 리믹스 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null)</div>
+                <div class="vrl-sub"><b>인제스천 엔진</b>이 트렌딩 피드(시뮬레이션) 4096 건을 무할당 파싱해 확산 속도 · 참여율로 랭킹하고, 1위 릴스의 0~3초를 SIMD 프레임 차분 · 오디오 RMS 서지로 분해해 훅 컷과 비트 타임코드를 찾습니다. <b>리믹스 합성기</b>는 훅을 콜드 오픈으로 당긴 긴장 아크 · 다국어 더빙 · 3D 세트 치환 · 펀치인 · 아나모픽 플레어 · 모달 폴리로 9:16 숏폼을 새로 만듭니다. <b>가드</b>는 원본 대비 SSIM 60% 이하를 강제하고, 원본 오디오가 감지되면 제거하며, 원작 크레딧이 없으면 발행을 막습니다.</div>
+            </div>
+            <button class="vrl-x" @onclick="Close">✕</button>
+        </div>
+        <div class="vrl-bar">
+            <button class="vrl-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 시작")</button>
+            <button class="vrl-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            @for (var l = 0; l < 3; l++)
+            {
+                var lang = (ReelDubLang)l;
+                <button class="vrl-btn pre @(Runner.Synth.Language == lang ? "on" : null)" @onclick="() => Runner.SetLanguage(lang)">🗣 @(AutonomousReelsStudioRemixSynthesizer.LangName(lang))</button>
+            }
+            @for (var v = 0; v <= AutonomousReelsStudioRemixSynthesizer.MaxLevel; v++)
+            {
+                var lv = v;
+                <button class="vrl-btn pre @(Runner.Synth.TransformLevel == lv ? "on" : null)" @onclick="() => Runner.SetLevel(lv)">L@(lv)</button>
+            }
+            <button class="vrl-btn @(Runner.Synth.FlareEnabled ? "on" : null)" @onclick="() => Runner.SetFlare(!Runner.Synth.FlareEnabled)">✨ 플레어</button>
+            <button class="vrl-btn @(Runner.Guard.AutoEscalate ? "on" : null)" @onclick="() => Runner.SetAutoEscalate(!Runner.Guard.AutoEscalate)">🛡 유사도 자동 상향</button>
+            <button class="vrl-btn @(Runner.Guard.AutoProtectAudio ? "on" : null)" @onclick="() => Runner.SetAudioProtect(!Runner.Guard.AutoProtectAudio)">🎧 원본 오디오 차단</button>
+            <button class="vrl-btn @(Runner.Guard.CreditAttached ? "on" : null)" @onclick="() => Runner.SetCredit(!Runner.Guard.CreditAttached)">✍ 원작 크레딧</button>
+            <button class="vrl-btn @(Runner.PinReel ? "on" : null)" @onclick="() => Runner.SetPin(!Runner.PinReel)">📌 고정</button>
+            <span class="vrl-chip @(Runner.LastTickMs < 16.7 ? "ok" : "warn")">프레임 @(F2(Runner.LastTickMs)) ms · 파싱 @(F0(Runner.Ingest.LastIngestUs)) µs · 분해 @(F0(Runner.Ingest.LastDeconUs)) µs · 합성 @(F0(Runner.Synth.LastComposeUs)) µs · 가드 @(F0(Runner.Guard.LastGuardUs)) µs</span>
+        </div>
+        <div class="vrl-bar">
+            <label class="vrl-lbl">🎵 원본 오디오 혼입</label>
+            <input class="vrl-rng" type="range" min="0" max="100" value="@((int)MathF.Round(Runner.Synth.SourceAudioMix * 100f))" @oninput="OnMix" />
+            <span class="vrl-chip">@(F0(Runner.Synth.SourceAudioMix * 100f))%</span>
+            <span class="vrl-chip">변환 @(AutonomousReelsStudioRemixSynthesizer.LevelName(Runner.Synth.TransformLevel))</span>
+            <span class="vrl-chip">연동 @(Runner.LinkedStudios.Count == 0 ? "내장" : string.Join(" · ", Runner.LinkedStudios))</span>
+        </div>
+        <div class="vrl-main">
+            <div class="vrl-col">
+                <div class="vrl-card">
+                    <div class="vrl-sec">🔥 트렌드 랭킹 — 피드 @(RealtimeViralReelsIngestionEngine.FeedSize) 건 · 패스 @(Runner.Ingest.Passes) · 상위 0.1% = @(RealtimeViralReelsIngestionEngine.Top01Count)</div>
+                    <table class="vrl-tbl">
+                        <tr><th>#</th><th>릴스</th><th>조회</th><th>확산/h</th><th>점수</th><th>분류</th></tr>
+                        @for (var i = 0; i < Runner.Ingest.TopCount; i++)
+                        {
+                            var m = Runner.Ingest.Top(i);
+                            var id = m.Id;
+                            <tr class="@(m.Id == Runner.Ingest.ReelId ? "sel" : null)" @onclick="() => PickReel(id)">
+                                <td>@(i + 1)@(i < RealtimeViralReelsIngestionEngine.Top01Count ? " 🔥" : null)</td>
+                                <td>#@(m.Id)</td>
+                                <td>@(Kilo(m.Views))</td>
+                                <td>@(Kilo((long)m.Velocity))</td>
+                                <td>@(Kilo((long)m.Score))</td>
+                                <td>@(RealtimeViralReelsIngestionEngine.Categories[m.Category])</td>
+                            </tr>
+                        }
+                    </table>
+                </div>
+                <div class="vrl-card">
+                    <div class="vrl-sec">⏱ 3초 훅 분해 — 프레임 @(Runner.Frame)/@(RealtimeViralReelsIngestionEngine.WindowFrames) · 훅 컷 <b>@(Runner.LastHookFrame >= 0 ? F0(Runner.LastHookFrame * 1000.0 / 60.0) + " ms" : "분석 중")</b> · 비트 @(Runner.LastBeatCount) · BPM @(F0(Runner.Ingest.Bpm))</div>
+                    <svg class="vrl-graph" viewBox="0 0 600 90" preserveAspectRatio="none">
+                        <polyline class="fl" points="@(Series(2))" />
+                        <polyline class="rm" points="@(Series(3))" />
+                    </svg>
+                    <div class="vrl-legend"><span class="fl">━ 플로우(0~0.15)</span><span class="rm">━ 오디오 RMS(0~0.6)</span></div>
+                    <div class="vrl-sec gap">📈 긴장 아크 — 원본 vs 리믹스 · 이득 <b>×@(F2(Runner.Synth.ArcGain))</b> · 훅 @(F0(Runner.Synth.SourceHookMs)) → @(F0(Runner.Synth.RemixHookMs)) ms</div>
+                    <svg class="vrl-arc" viewBox="0 0 120 40" preserveAspectRatio="none">
+                        @for (var s = 0; s < AutonomousReelsStudioRemixSynthesizer.Segments; s++)
+                        {
+                            <rect class="src" x="@(P(s * 10 + 1))" y="@(P(40 - 38 * Runner.Synth.SourceArc(s)))" width="4" height="@(P(38 * Runner.Synth.SourceArc(s)))" />
+                            <rect class="rmx" x="@(P(s * 10 + 5))" y="@(P(40 - 38 * Runner.Synth.RemixArc(s)))" width="4" height="@(P(38 * Runner.Synth.RemixArc(s)))" />
+                        }
+                    </svg>
+                    <div class="vrl-legend"><span class="src">■ 원본</span><span class="rmx">■ 리믹스</span></div>
+                </div>
+            </div>
+            <div class="vrl-col">
+                <div class="vrl-card">
+                    <div class="vrl-sec">🎬 원본(프레임 @(Runner.Synth.SourceIndex)) vs AI 스튜디오 리믹스 — 줌 ×@(F2(Runner.Synth.Zoom)) · 세트 @(F0(Runner.Synth.SetCoverage * 100f))% · 플레어 @(F2(Runner.Synth.FlareAmt)) · 폴리 @(Runner.Synth.Impacts)</div>
+                    <div class="vrl-pair">
+                        <img class="vrl-view" src="@(_srcImg)" alt="source reel" />
+                        <img class="vrl-view" src="@(_rmxImg)" alt="remix reel" />
+                    </div>
+                </div>
+            </div>
+            <div class="vrl-col">
+                <div class="vrl-card">
+                    <div class="vrl-sec">🛡 오리지널리티 가드 — <b class="@(Runner.Guard.Verdict == ReelsPublishVerdict.Ready ? "ok" : "warn")">@(ReelsOriginalityAntiShadowbanGuard.VerdictName(Runner.Guard.Verdict))</b></div>
+                    <div class="vrl-kv grid">
+                        <div>SSIM <b class="@(Runner.Guard.SsimAvg <= ReelsOriginalityAntiShadowbanGuard.SsimLimit ? "ok" : "warn")">@(F0(Runner.Guard.SsimAvg * 100f))%</b> / 한도 60%</div>
+                        <div>레벨 상향 @(Runner.Guard.Escalations)</div>
+                        <div>오디오 BER <b class="@(Runner.Guard.AudioCollision ? "warn" : "ok")">@(F3(Runner.Guard.BerAvg))</b></div>
+                        <div>원본 오디오 차단 @(Runner.Guard.AudioBlocks)</div>
+                    </div>
+                    <svg class="vrl-graph" viewBox="0 0 600 90" preserveAspectRatio="none">
+                        <line class="lim" x1="0" x2="600" y1="@(P(88 - 86 * ReelsOriginalityAntiShadowbanGuard.SsimLimit))" y2="@(P(88 - 86 * ReelsOriginalityAntiShadowbanGuard.SsimLimit))" />
+                        <polyline class="ss" points="@(Series(0))" />
+                        <polyline class="be" points="@(Series(1))" />
+                    </svg>
+                    <div class="vrl-legend"><span class="ss">━ SSIM(0~1)</span><span class="be">━ 지문 BER(0~1)</span></div>
+                </div>
+                <div class="vrl-card">
+                    <div class="vrl-sec">✍ AI 캡션 · 해시태그 <button class="vrl-btn mini" @onclick="RefreshCaption">↻ 생성</button></div>
+                    <pre class="vrl-cap">@(_caption)</pre>
+                </div>
+                <div class="vrl-card">
+                    <div class="vrl-sec">🗓 발행 큐(Graph API 드라이런) — 발행 @(Runner.Published) · 차단 @(Runner.Blocked)
+                        <button class="vrl-btn mini" @onclick="() => Runner.Schedule(2)">+2 s</button>
+                        <button class="vrl-btn mini" @onclick="() => Runner.Schedule(10)">+10 s</button>
+                    </div>
+                    <div class="vrl-kv">
+                        @for (var i = 0; i < ViralReelsStudioRunner.QueueCap; i++)
+                        {
+                            var q = Runner.QueueSlot(i);
+                            if (q.State == ReelsSlotState.Empty) continue;
+                            <div>#@(q.ReelId) · @(AutonomousReelsStudioRemixSynthesizer.LangName(q.Lang)) · <b class="@(q.State == ReelsSlotState.DryRunPublished ? "ok" : q.State == ReelsSlotState.Blocked ? "warn" : null)">@(SlotName(q))</b></div>
+                        }
+                    </div>
+                    <div class="vrl-act">실 발행은 Instagram Graph API 자격(환경변수) 구성 후 수동 승인 경로로만 진행됩니다.</div>
+                    <div class="vrl-act">@(Runner.LastAction ?? "대기")</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .vrl-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .vrl-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .vrl-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #ec4899 16%, var(--card)), color-mix(in srgb, #f59e0b 12%, var(--card))); }
+    .vrl-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .vrl-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .vrl-sub b { color: var(--text-primary); }
+    .vrl-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .vrl-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .vrl-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .vrl-btn:disabled { opacity: .45; cursor: default; }
+    .vrl-btn.on { background: color-mix(in srgb, #ec4899 20%, var(--card)); border-color: #ec4899; }
+    .vrl-btn.pre.on { background: color-mix(in srgb, #f59e0b 22%, var(--card)); border-color: #fbbf24; }
+    .vrl-btn.mini { font-size: 10px; padding: 2px 6px; margin-left: 6px; }
+    .vrl-lbl { font-size: 12px; color: var(--text-secondary); display: flex; gap: 4px; align-items: center; }
+    .vrl-rng { width: 120px; }
+    .vrl-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .vrl-chip.ok { border-color: #22c55e; color: #22c55e; } .vrl-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .vrl-main { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .vrl-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .vrl-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); }
+    .vrl-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .vrl-sec.gap { margin-top: 10px; }
+    .vrl-sec b.ok, .vrl-kv b.ok { color: #22c55e; } .vrl-sec b.warn, .vrl-kv b.warn { color: #f59e0b; }
+    .vrl-tbl { width: 100%; border-collapse: collapse; font: 11px var(--mono); color: var(--text-secondary); }
+    .vrl-tbl th { text-align: left; font-weight: 800; color: var(--text-primary); border-bottom: 1px solid var(--line); padding: 3px 4px; }
+    .vrl-tbl td { padding: 3px 4px; cursor: pointer; } .vrl-tbl tr.sel td { background: color-mix(in srgb, #ec4899 16%, transparent); color: var(--text-primary); }
+    .vrl-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .vrl-view { width: min(100%, calc(62vh * 9 / 16)); margin: 0 auto; aspect-ratio: 9 / 16; image-rendering: pixelated; background: #000; border-radius: 8px; display: block; }
+    .vrl-graph { width: 100%; height: 90px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; margin-top: 6px; }
+    .vrl-graph polyline { fill: none; stroke-width: 1.6; } .vrl-graph .lim { stroke: #ef4444; stroke-width: 1; stroke-dasharray: 6 4; }
+    .vrl-graph .fl, .vrl-legend .fl { stroke: #22d3ee; color: #22d3ee; } .vrl-graph .rm, .vrl-legend .rm { stroke: #f472b6; color: #f472b6; } .vrl-graph .ss, .vrl-legend .ss { stroke: #f59e0b; color: #f59e0b; } .vrl-graph .be, .vrl-legend .be { stroke: #22c55e; color: #22c55e; }
+    .vrl-arc { width: 100%; height: 80px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; }
+    .vrl-arc .src, .vrl-legend .src { fill: #64748b; color: #64748b; } .vrl-arc .rmx, .vrl-legend .rmx { fill: #ec4899; color: #ec4899; }
+    .vrl-legend { display: flex; gap: 12px; font-size: 10px; margin-top: 3px; }
+    .vrl-kv { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px; }
+    .vrl-kv.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; margin-top: 6px; }
+    .vrl-kv b { color: var(--text-primary); }
+    .vrl-cap { font: 11px var(--mono); white-space: pre-wrap; color: var(--text-secondary); margin: 0; }
+    .vrl-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly byte[] _bmp = new byte[ViralReelsStudioRunner.BmpBytes];
+    private System.Threading.Timer? _timer;
+    private string _srcImg = "", _rmxImg = "", _caption = "";
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        Runner.Step();
+        _caption = Runner.BuildCaption();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("ViralReels.Modal.Timer", ex); }
+        }, null, 100, 100);
+    }
+
+    protected override void OnParametersSet() => Refresh();
+
+    protected override bool ShouldRender()
+    {
+        Refresh();
+        return true;
+    }
+
+    private void Refresh()
+    {
+        Runner.WriteBmp(_bmp, false);
+        _srcImg = "data:image/bmp;base64," + Convert.ToBase64String(_bmp);
+        Runner.WriteBmp(_bmp, true);
+        _rmxImg = "data:image/bmp;base64," + Convert.ToBase64String(_bmp);
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static string P(double v) => v.ToString("0.###", CultureInfo.InvariantCulture);
+    private static string Kilo(long v) => v >= 1_000_000 ? (v / 1e6).ToString("0.0", CultureInfo.InvariantCulture) + "M" : v >= 1000 ? (v / 1e3).ToString("0.0", CultureInfo.InvariantCulture) + "K" : v.ToString(CultureInfo.InvariantCulture);
+    private static string SlotName(ReelsPublishSlot q) => q.State switch
+    {
+        ReelsSlotState.Scheduled => "예약됨",
+        ReelsSlotState.DryRunPublished => "드라이런 발행 · SSIM " + (q.Ssim * 100f).ToString("0", CultureInfo.InvariantCulture) + "%",
+        ReelsSlotState.Blocked => "차단 · " + ReelsOriginalityAntiShadowbanGuard.VerdictName(q.Verdict),
+        _ => "—",
+    };
+
+    private string Series(int which)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            float y = which switch
+            {
+                0 => 88f - 86f * Math.Clamp(Runner.SsimSeries(k), 0f, 1f),
+                1 => 88f - 86f * Math.Clamp(Runner.BerSeries(k), 0f, 1f),
+                2 => 88f - 86f * Math.Clamp(Runner.FlowSeries(k) / 0.15f, 0f, 1f),
+                _ => 88f - 86f * Math.Clamp(Runner.RmsSeries(k) / 0.6f, 0f, 1f),
+            };
+            sb.Append(P(600f * i / (n - 1))).Append(',').Append(P(y)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void OnMix(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetSourceAudio(v / 100f);
+    }
+
+    private void PickReel(int id)
+    {
+        Runner.SetPin(true);
+        Runner.SelectReel(id);
+        _caption = Runner.BuildCaption();
+    }
+
+    private void RefreshCaption() => _caption = Runner.BuildCaption();
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void Step60()
+    {
+        for (var i = 0; i < ViralReelsStudioRunner.Hz; i++) Runner.Step();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

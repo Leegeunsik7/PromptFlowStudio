@@ -1,0 +1,59 @@
+@inject MultiPlatformSafeZoneService SafeZones
+
+@* [PromptFlow Studio] 컷 카드 미니 세이프존 오버레이 — 개별 컷 썸네일 위에 콤팩트 가이드(위험영역 + 자막/뱃지 마커)를 겹쳐 얼굴/자막 잘림을 컷 단위로 확인.
+   SafeZoneOverlay 의 축소판(레일/목업 텍스트 없음). 마커 위치는 병합 Y-앵커(MultiPlatformSafeZoneService)와 동일. Platform=None 이면 생략. pointer-events:none. *@
+
+<div class="ccz-w">
+    @ChildContent
+    @if (Platform != SafePlatform.None)
+    {
+        <div class="ccz-ov" aria-hidden="true" style="@AccentVar">
+            <div class="ccz-danger ccz-top" style="@($"height:{Pct(Zone.TopPct)}")"></div>
+            <div class="ccz-danger ccz-bot" style="@($"height:{Pct(1 - Zone.BottomPct)}")"></div>
+            <div class="ccz-danger ccz-right"></div>
+            <div class="ccz-safe" style="@($"top:{Pct(Zone.TopPct)}; bottom:{Pct(1 - Zone.BottomPct)}")"></div>
+            <div class="ccz-mark ccz-badge" style="@($"top:{Pct(BadgeTop)}")"></div>
+            <div class="ccz-mark ccz-cap" style="@($"bottom:{Pct(CaptionBottom)}")"></div>
+            <div class="ccz-tag">@Zone.Icon</div>
+        </div>
+    }
+</div>
+
+<style>
+    .ccz-w { position: relative; display: block; line-height: 0; }
+    .ccz-w > :not(.ccz-ov) { display: block; width: 100%; }
+    .ccz-ov { position: absolute; inset: 0; pointer-events: none; z-index: 3; border-radius: inherit; overflow: hidden; }
+    .ccz-danger { position: absolute; left: 0; right: 0; background: rgba(239,68,68,.16); }
+    .ccz-top { top: 0; border-bottom: 1px dashed rgba(239,68,68,.75); }
+    .ccz-bot { bottom: 0; border-top: 1px dashed rgba(239,68,68,.75); }
+    .ccz-right { top: 24%; bottom: 12%; left: auto; right: 0; width: 18%; background: rgba(239,68,68,.12); border-left: 1px dashed rgba(239,68,68,.6); }
+    .ccz-safe { position: absolute; left: 3%; right: 20%; border: 1px solid rgba(16,185,129,.8); border-radius: 6px; }
+    .ccz-mark { position: absolute; left: 3%; right: 20%; height: 0; border-top: 1.5px dashed var(--ccz-accent, #8b5cf6); }
+    .ccz-tag { position: absolute; top: 3px; left: 4px; font-size: 11px; line-height: 1; filter: drop-shadow(0 1px 2px rgba(0,0,0,.7)); }
+</style>
+
+@code {
+    /// <summary>세이프존 대상 플랫폼. None 이면 오버레이 생략.</summary>
+    [Parameter] public SafePlatform Platform { get; set; } = SafePlatform.None;
+    /// <summary>감쌀 썸네일(img/video).</summary>
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    private MultiPlatformSafeZoneService.SafeZone Zone => SafeZones.Get(Platform);
+    private double CaptionBottom => MultiPlatformSafeZoneService.CaptionBottomFraction(Platform);
+    private double BadgeTop => MultiPlatformSafeZoneService.BadgeTopFraction(Platform);
+
+    private static string Pct(double f) => (f * 100).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + "%";
+
+    private string AccentVar => "--ccz-accent:" + Platform switch
+    {
+        SafePlatform.YouTubeShorts => "#ef4444",
+        SafePlatform.InstagramReels => "#d946ef",
+        SafePlatform.TikTok => "#22d3ee",
+        SafePlatform.NaverClip => "#22c55e",
+        SafePlatform.KarrotStory => "#f97316",
+        SafePlatform.Xiaohongshu => "#f43f5e",
+        SafePlatform.Pinterest => "#e11d48",
+        SafePlatform.Chzzk => "#06e6a8",
+        _ => "#8b5cf6",
+    } + ";";
+}

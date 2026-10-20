@@ -1,0 +1,334 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Localization.Dubbing
+@using PromptFlowStudio.Services.DigitalHuman
+@using SubtitlePlacement = PromptFlowStudio.Services.Localization.Dubbing.SubtitlePlacement
+@using DubLanguage = PromptFlowStudio.Services.Localization.Dubbing.DubLanguage
+@implements IDisposable
+@inject NeuralLipSyncDubbingStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.89.0] 🌐 AI 글로벌 로컬라이제이션 & 신경망 립싱크 스튜디오 — 언어 패밀리 트리카드 · 음색 음파 피드백 웨이브폼(원본/더빙 F0) ·
+    립싱크 모션 델타 인디케이터(입 블렌드셰이프 목표/명령/실제 · 동기 오차) · 자막 프리뷰(구도 배치) · 문화 적응 노트 · 대사별 지표.
+*@
+
+<div class="gls-scrim" @onclick="Close">
+    <div class="gls-modal" @onclick:stopPropagation="true">
+        <div class="gls-h">
+            <div>
+                <div class="gls-title">🌐 AI 글로벌 로컬라이제이션 &amp; 신경망 립싱크 스튜디오</div>
+                <div class="gls-sub">원본 배우 음성을 분석해 <b>음색(F0 · 성도 길이 · 기식) · 억양/에너지 윤곽</b>을 복제하고 12개 언어 더빙을 등시성으로 합성하며, 오디오 재생 시계 기준
+                    <b>음소 → 비짐 공동조음</b>과 근육 역동역학 피드포워드로 v16.82 디지털 휴먼 입모양을 동기화합니다. 관용구 · 유머 · 경어 · 민감 표현을 적응하고 v16.85 구도로 자막 위치를 가드합니다.
+                    음성은 소스-필터 보코더 · 번역은 내장 구문집이며 학습 모델은 사용하지 않습니다.</div>
+            </div>
+            <button class="gls-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="gls-bar">
+            <button class="gls-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 더빙 재생")</button>
+            <button class="gls-btn" @onclick="Step" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="gls-btn @(E.SourceSpeaker.F0 < 150f ? "on" : null)" @onclick="() => Runner.SetSourceSpeaker(VoiceTimbre.Actor)">🎭 남배우</button>
+            <button class="gls-btn @(E.SourceSpeaker.F0 >= 150f ? "on" : null)" @onclick="() => Runner.SetSourceSpeaker(VoiceTimbre.Actress)">🎭 여배우</button>
+            <button class="gls-btn @(E.CloneTimbre ? "on" : null)" @onclick="() => { E.CloneTimbre = !E.CloneTimbre; Runner.SetLanguage(Runner.Language); }">🧬 음색 복제</button>
+            <button class="gls-btn @(E.TransferProsody ? "on" : null)" @onclick="() => { E.TransferProsody = !E.TransferProsody; Runner.SetLanguage(Runner.Language); }">〰 운율 전이</button>
+            <button class="gls-btn @(L.Feedforward ? "on" : null)" @onclick="() => L.Feedforward = !L.Feedforward">⚙ 근육 피드포워드</button>
+            <button class="gls-btn @(L.AutoCalibrate ? "on" : null)" @onclick="() => L.AutoCalibrate = !L.AutoCalibrate">🎯 자동 동기 보정</button>
+            <span class="gls-chip @(Runner.LastTickMs < 16.6 ? "ok" : "warn")">틱 @(F2(Runner.LastTickMs)) ms</span>
+            <span class="gls-chip">대사 준비 @(F1(Runner.LastPrepareMs)) · 립 @(F2(L.LastStepMs)) · 얼굴 @(F2(Runner.Face.LastStepMs)) ms</span>
+        </div>
+
+        <div class="gls-main">
+            <div class="gls-col">
+                <div class="gls-card">
+                    <div class="gls-sec">🌳 언어 패밀리 — 대상 @(P.Name) · @(P.Family) › @(P.Branch) · @(RhythmName(P.Rhythm))@(P.Tonal ? " · 성조" : "")@(P.Rtl ? " · RTL" : "")</div>
+                    <div class="gls-tree">
+                        @foreach (var fam in Families)
+                        {
+                            <div class="fam">
+                                <b>@fam</b>
+                                <div class="langs">
+                                    @foreach (var p in GlobalLanguageCatalog.Profiles)
+                                    {
+                                        if (p.Family != fam || p.Id == DubLanguage.Ko) continue;
+                                        var id = p.Id;
+                                        <button class="gls-lang @(Runner.Language == id ? "on" : null)" title="@(p.Branch) · @(F1(p.SyllablesPerSec)) 음절/s · CPS @(F0(p.MaxCps))" @onclick="() => Runner.SetLanguage(id)">
+                                            <span class="cd">@(p.Code)</span>@(p.Name)
+                                        </button>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                    <div class="gls-row">
+                        <button class="gls-btn @(G.AdaptIdioms ? "on" : null)" @onclick="() => Runner.SetIdiomAdaptation(!G.AdaptIdioms)">🧩 관용구/유머 적응</button>
+                        <button class="gls-btn @(G.FormalRegister ? "on" : null)" @onclick="() => Runner.SetFormal(!G.FormalRegister)">🙇 경어</button>
+                        <button class="gls-btn @(G.ReplaceSensitive ? "on" : null)" @onclick="() => { G.ReplaceSensitive = !G.ReplaceSensitive; Runner.SetLanguage(Runner.Language); }">🛡 민감 표현 대체</button>
+                    </div>
+                </div>
+
+                <div class="gls-card">
+                    <div class="gls-sec">🎬 자막 프리뷰 — 대사 @(Runner.Line + 1)/@(GlobalLanguageCatalog.Lines) · @(GlobalLanguageCatalog.EmotionName(GlobalLanguageCatalog.Emotions[Runner.Line])) · @(PlacementName(G.Placement))</div>
+                    <svg class="gls-frame" viewBox="0 0 160 90" preserveAspectRatio="none">
+                        <rect x="0" y="0" width="160" height="90" class="bg" />
+                        @{ var fb = G.FaceBox; var sb = G.SubtitleBox; var cur = Runner.Current; }
+                        @if (Runner.Framing.Visible)
+                        {
+                            <ellipse cx="@(F1((fb.X + fb.Z) * 80f))" cy="@(F1((fb.Y + fb.W) * 45f))" rx="@(F1((fb.Z - fb.X) * 80f))" ry="@(F1((fb.W - fb.Y) * 45f))" class="face" />
+                            <rect x="@(F1(fb.X * 160f))" y="@(F1(fb.Y * 90f))" width="@(F1((fb.Z - fb.X) * 160f))" height="@(F1((fb.W - fb.Y) * 90f))" class="fbox" />
+                        }
+                        <rect x="0" y="@(F1((1f - CulturalLocalizationSubtitleGuard.SafeMargin) * 90f))" width="160" height="@(F1(CulturalLocalizationSubtitleGuard.SafeMargin * 90f))" class="safe" />
+                        @if (G.Placement == SubtitlePlacement.BottomPlate)
+                        {
+                            <rect x="@(F1(sb.X * 160f))" y="@(F1(sb.Y * 90f))" width="@(F1((sb.Z - sb.X) * 160f))" height="@(F1((sb.W - sb.Y) * 90f))" class="plate" />
+                        }
+                        <g><text x="80" y="@(F1(sb.Y * 90f + 6.5f))" class="sub" direction="@(P.Rtl ? "rtl" : "ltr")">@(cur.Line1)</text></g>
+                        @if (cur.Line2.Length > 0)
+                        {
+                            <g><text x="80" y="@(F1(sb.Y * 90f + 12.3f))" class="sub" direction="@(P.Rtl ? "rtl" : "ltr")">@(cur.Line2)</text></g>
+                        }
+                    </svg>
+                    <div class="gls-kv">
+                        <span>원본 <b>@(KoDisplay())</b></span>
+                        <span>발음 <b class="mono">@(cur.Roman)</b></span>
+                        <span>CPS <b>@(F1(cur.Cps))</b> / @(F0(P.MaxCps)) · @(F2(cur.Duration)) s · @(cur.Chars)자</span>
+                    </div>
+                    <div class="gls-tags">
+                        @foreach (var f in IssueFlags)
+                        {
+                            if ((cur.Issues & f) == 0) continue;
+                            <span class="tag @(IsWarn(f) ? "warn" : "ok")">@(IssueName(f))</span>
+                        }
+                    </div>
+                    @if (cur.Notes.Length > 0) { <div class="gls-note">📝 @(cur.Notes)</div> }
+                </div>
+
+                <div class="gls-card">
+                    <div class="gls-sec">📊 대사별 지표 — 음색 유사도 · 억양 상관 · 등시성 · 역추출 · 동기 오차</div>
+                    <table class="gls-tbl">
+                        <tr><th>#</th><th>대사</th><th>음색</th><th>억양</th><th>등시성</th><th>역추출</th><th>동기</th><th>자막</th></tr>
+                        @for (var i = 0; i < GlobalLanguageCatalog.Lines; i++)
+                        {
+                            var m = Runner.Metrics(i);
+                            <tr class="@(i == Runner.Line ? "cur" : null)">
+                                <td>@(i + 1)</td><td class="txt">@(Runner.Localized(i).Display)</td>
+                                <td>@(F2(m.Similarity))</td><td>@(F2(m.ProsodyCorr))</td><td>@(F0(m.Isochrony * 100))%</td><td>@(F0(m.Extraction * 100))%</td>
+                                <td class="@(MathF.Abs(m.SyncMs) < 8.4f ? "ok" : "warn")">@(F1(m.SyncMs)) ms</td><td>@(PlacementName(m.Placement))</td>
+                            </tr>
+                        }
+                    </table>
+                </div>
+            </div>
+
+            <div class="gls-col">
+                <div class="gls-card">
+                    <div class="gls-sec">〰 음색 음파 피드백 — @(Runner.Speaking ? "재생 " + F2(E.PlaybackTime) + " s" : "휴지") · 블록 RMS @(F3(E.BlockRms))</div>
+                    <svg class="gls-wave" viewBox="0 0 @(NeuralLipSyncDubbingStudioRunner.WaveBins) 60" preserveAspectRatio="none">
+                        <line x1="0" y1="30" x2="@(NeuralLipSyncDubbingStudioRunner.WaveBins)" y2="30" class="mid" />
+                        @for (var k = 0; k < NeuralLipSyncDubbingStudioRunner.WaveBins; k++)
+                        {
+                            var x = NeuralLipSyncDubbingStudioRunner.WaveBins - 1 - k;
+                            <line x1="@(x)" y1="@(F1(30 - Runner.WaveMax(k) * 60f))" x2="@(x)" y2="@(F1(30 - Runner.WaveMin(k) * 60f))" class="wv" />
+                        }
+                    </svg>
+                    <svg class="gls-f0" viewBox="0 0 200 60" preserveAspectRatio="none">
+                        <polyline points="@F0Line(E.SourceF0)" class="src" />
+                        <polyline points="@F0Line(E.DubF0)" class="dub" />
+                    </svg>
+                    <div class="gls-kv">
+                        <span><i class="lg" style="background:#94a3b8"></i>원본 F0</span><span><i class="lg" style="background:#38bdf8"></i>더빙 F0</span>
+                        <span>복제 F0 <b>@(F0(E.Clone.F0)) Hz</b> · 폭 @(F1(E.Clone.RangeSt)) st · 성도 ×@(F3(E.Clone.Vtf)) · 기식 @(F2(E.Clone.Breathiness))</span>
+                        <span>재분석 F0 <b>@(F0(E.DubMeasured.F0)) Hz</b> · 성도 ×@(F3(E.DubMeasured.Vtf))</span>
+                        <span>음색 유사도 <b>@(F2(E.TimbreSimilarity))</b> · 억양 상관 <b>@(F2(E.ProsodyCorrelation))</b> · 등시성 오차 @(F1(E.IsochronyError * 100))% · 속도 ×@(F2(E.Plan.RateScale))</span>
+                    </div>
+                    <div class="gls-sl">
+                        <label>감정 강도 <b>×@(F2(E.EmotionGain))</b><input type="range" min="0" max="200" value="@(F0(E.EmotionGain * 100))" @onchange="e => SetF(e, v => { E.EmotionGain = v / 100f; Runner.SetLanguage(Runner.Language); })" /></label>
+                    </div>
+                </div>
+
+                <div class="gls-card">
+                    <div class="gls-sec">👄 립싱크 모션 델타 — @(L.CurrentPhone) → 비짐 @(L.CurrentViseme) · 동기 오차 @(F1(L.LineSyncErrorMs)) ms (@(L.FrameOffset) 프레임)</div>
+                    <div class="gls-split">
+                        <div class="gls-shapes">
+                            @for (var s = 0; s < GenerativeNeuralLipSyncSynthesizer.Shapes; s++)
+                            {
+                                <span class="nm">@(GenerativeNeuralLipSyncSynthesizer.ShapeName(s))</span>
+                                <div class="bar"><i class="tg" style="width:@(Pc(L.Target(s)))"></i><i class="ac" style="width:@(Pc(L.Achieved(s)))"></i><i class="cm" style="left:@(Pc(L.Weight(s)))"></i></div>
+                            }
+                        </div>
+                        <div>
+                            <svg class="gls-mouth" viewBox="-1 -1 2 2">
+                                @{ var jaw = Runner.Face.Weight(ArkitBlendshape.JawOpen); var fun = Runner.Face.Weight(ArkitBlendshape.MouthFunnel) + Runner.Face.Weight(ArkitBlendshape.MouthPucker);
+                                   var str = 0.5f * (Runner.Face.Weight(ArkitBlendshape.MouthStretchLeft) + Runner.Face.Weight(ArkitBlendshape.MouthStretchRight)); var cls = Runner.Face.Weight(ArkitBlendshape.MouthClose); }
+                                <ellipse cx="0" cy="0" rx="@(F3(Math.Max(0.15f, 0.55f + 0.35f * str - 0.3f * fun)))" ry="@(F3(Math.Max(0.02f, 0.06f + 0.7f * jaw - 0.3f * cls)))" class="lips" />
+                                <ellipse cx="0" cy="0" rx="@(F3(Math.Max(0.1f, 0.45f + 0.3f * str - 0.28f * fun)))" ry="@(F3(Math.Max(0.005f, 0.6f * jaw - 0.3f * cls)))" class="cav" />
+                            </svg>
+                            <svg class="gls-sync" viewBox="0 0 120 40" preserveAspectRatio="none">
+                                <polyline points="@SyncLine(true)" class="tgt" />
+                                <polyline points="@SyncLine(false)" class="act" />
+                            </svg>
+                        </div>
+                    </div>
+                    <div class="gls-kv">
+                        <span><i class="lg" style="background:#334155"></i>목표 <i class="lg" style="background:#f472b6"></i>실제 <i class="lg" style="background:#fde047"></i>명령(피드포워드)</span>
+                        <span>모션 Δ <b>@(F3(L.MotionDelta))</b> · 추종 오차 <b>@(F3(L.TrackingError))</b></span>
+                        <span>리드 <b>@(F1(L.LeadSeconds * 1000)) ms</b> · 측정 지연 @(F1(L.MeasuredLagMs)) ms</span>
+                        <span>오디오 역추출 정확도 <b>@(F0(L.ExtractionAccuracy * 100))%</b> (@(L.ExtractedFrames) 프레임)</span>
+                    </div>
+                    <div class="gls-sl">
+                        <label>조음 강도 <b>×@(F2(L.Articulation))</b><input type="range" min="30" max="150" value="@(F0(L.Articulation * 100))" @onchange="e => SetF(e, v => L.Articulation = v / 100f)" /></label>
+                        <label>공동조음 <b>@(F0(L.CoarticulationMs)) ms</b><input type="range" min="10" max="120" value="@(F0(L.CoarticulationMs))" @onchange="e => SetF(e, v => L.CoarticulationMs = v)" /></label>
+                    </div>
+                </div>
+                <div class="gls-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .gls-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .gls-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .gls-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #10b981 16%, var(--card)), color-mix(in srgb, #3b82f6 16%, var(--card))); }
+    .gls-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .gls-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .gls-sub b { color: var(--text-primary); }
+    .gls-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .gls-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .gls-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .gls-btn:disabled { opacity: .4; cursor: default; } .gls-btn.on { background: color-mix(in srgb, #10b981 24%, transparent); border-color: #34d399; }
+    .gls-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .gls-chip.ok { border-color: #22c55e; color: #86efac; } .gls-chip.warn { border-color: #f97316; color: #fdba74; }
+    .gls-main { display: grid; grid-template-columns: 1.05fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .gls-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .gls-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .gls-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .gls-tree { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; }
+    .gls-tree .fam { border: 1px solid var(--line); border-radius: 10px; padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text-secondary); }
+    .gls-tree .fam b { color: var(--text-primary); } .gls-tree .langs { display: flex; flex-wrap: wrap; gap: 4px; }
+    .gls-lang { font-size: 11px; padding: 3px 7px; border-radius: 7px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .gls-lang.on { background: color-mix(in srgb, #3b82f6 28%, transparent); border-color: #60a5fa; } .gls-lang .cd { font: 800 9px var(--mono); color: var(--text-muted); margin-right: 4px; }
+    .gls-frame { width: 100%; aspect-ratio: 16 / 9; border-radius: 8px; }
+    .gls-frame .bg { fill: #111827; } .gls-frame .face { fill: #fcd9b6; fill-opacity: .55; } .gls-frame .fbox { fill: none; stroke: #f472b6; stroke-width: .4; stroke-dasharray: 1.5 1; }
+    .gls-frame .safe { fill: #22c55e; fill-opacity: .08; } .gls-frame .plate { fill: #000; fill-opacity: .55; }
+    .gls-frame .sub { font: 700 5px var(--font, sans-serif); fill: #fff; text-anchor: middle; paint-order: stroke; stroke: #000; stroke-width: .7; }
+    .gls-tags { display: flex; flex-wrap: wrap; gap: 4px; } .gls-tags .tag { font: 700 10px var(--mono); padding: 2px 7px; border-radius: 999px; }
+    .gls-tags .ok { background: #064e3b; color: #6ee7b7; } .gls-tags .warn { background: #431407; color: #fdba74; }
+    .gls-tbl { width: 100%; border-collapse: collapse; font-size: 11px; color: var(--text-secondary); }
+    .gls-tbl th, .gls-tbl td { padding: 3px 5px; border-bottom: 1px solid var(--line); text-align: right; font-family: var(--mono); } .gls-tbl .txt { text-align: left; font-family: inherit; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .gls-tbl tr.cur td { color: var(--text-primary); background: color-mix(in srgb, #3b82f6 10%, transparent); } .gls-tbl .ok { color: #86efac; } .gls-tbl .warn { color: #fdba74; }
+    .gls-wave { width: 100%; height: 80px; background: #030712; border-radius: 8px; } .gls-wave .wv { stroke: #34d399; stroke-width: 1; } .gls-wave .mid { stroke: #1f2937; }
+    .gls-f0 { width: 100%; height: 70px; background: #030712; border-radius: 8px; } .gls-f0 .src { fill: none; stroke: #94a3b8; stroke-width: 1.2; } .gls-f0 .dub { fill: none; stroke: #38bdf8; stroke-width: 1.4; }
+    .lg { display: inline-block; width: 12px; height: 6px; margin: 0 4px; vertical-align: middle; border-radius: 2px; }
+    .gls-split { display: grid; grid-template-columns: 1fr 150px; gap: 10px; align-items: start; }
+    .gls-shapes { display: grid; grid-template-columns: 120px 1fr; gap: 3px 8px; align-items: center; font: 600 10px var(--mono); color: var(--text-muted); }
+    .gls-shapes .bar { position: relative; height: 8px; background: #0b1020; border-radius: 4px; overflow: hidden; }
+    .gls-shapes .bar .tg { position: absolute; left: 0; top: 0; bottom: 0; background: #334155; } .gls-shapes .bar .ac { position: absolute; left: 0; top: 2px; bottom: 2px; background: #f472b6; }
+    .gls-shapes .bar .cm { position: absolute; top: 0; bottom: 0; width: 2px; background: #fde047; }
+    .gls-mouth { width: 150px; height: 110px; background: #fcd9b6; border-radius: 12px; } .gls-mouth .lips { fill: #be185d; } .gls-mouth .cav { fill: #3f0d1e; }
+    .gls-sync { width: 150px; height: 50px; background: #030712; border-radius: 6px; margin-top: 6px; } .gls-sync .tgt { fill: none; stroke: #64748b; stroke-width: 1.2; } .gls-sync .act { fill: none; stroke: #f472b6; stroke-width: 1.2; }
+    .gls-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .gls-sl { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 10px; }
+    .gls-sl label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-secondary); } .gls-sl b { font-family: var(--mono); color: var(--text-primary); }
+    .gls-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; color: var(--text-secondary); align-items: center; } .gls-kv b { color: var(--text-primary); } .gls-kv .mono { font-family: var(--mono); font-weight: 600; }
+    .gls-note { font-size: 11px; color: var(--text-muted); }
+    @@media (max-width: 1200px) { .gls-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly string[] Families = BuildFamilies();
+    private static readonly SubtitleIssue[] IssueFlags =
+    {
+        SubtitleIssue.IdiomAdapted, SubtitleIssue.HumorAdapted, SubtitleIssue.SensitiveReplaced, SubtitleIssue.FormalityApplied, SubtitleIssue.Rtl, SubtitleIssue.Relocated,
+        SubtitleIssue.LiteralIdiom, SubtitleIssue.CpsExceeded, SubtitleIssue.LineTooLong, SubtitleIssue.TooShort, SubtitleIssue.FaceOverlap,
+    };
+    private System.Threading.Timer? _timer;
+    private readonly System.Text.StringBuilder _sb = new();
+
+    private NeuralVoiceCloningDubbingEngine E => Runner.Engine;
+    private GenerativeNeuralLipSyncSynthesizer L => Runner.LipSync;
+    private CulturalLocalizationSubtitleGuard G => Runner.Subtitles;
+    private LanguageProfile P => GlobalLanguageCatalog.Profile(Runner.Language);
+
+    private static string[] BuildFamilies()
+    {
+        var list = new List<string>();
+        foreach (var p in GlobalLanguageCatalog.Profiles) if (p.Id != DubLanguage.Ko && !list.Contains(p.Family)) list.Add(p.Family);
+        return list.ToArray();
+    }
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Localization.Modal.Timer", ex); }
+        }, null, 150, 150);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static string Pc(float v) => F0(Math.Clamp(v, 0f, 1f) * 100) + "%";
+
+    private static string RhythmName(Rhythm r) => r switch { Rhythm.Stress => "강세 박자", Rhythm.Mora => "모라 박자", _ => "음절 박자" };
+    private static string PlacementName(SubtitlePlacement p) => p switch { SubtitlePlacement.Top => "상단 이동", SubtitlePlacement.BottomPlate => "하단 + 판", _ => "하단" };
+    private static bool IsWarn(SubtitleIssue f) => f is SubtitleIssue.LiteralIdiom or SubtitleIssue.CpsExceeded or SubtitleIssue.LineTooLong or SubtitleIssue.TooShort or SubtitleIssue.FaceOverlap;
+    private static string IssueName(SubtitleIssue f) => f switch
+    {
+        SubtitleIssue.IdiomAdapted => "관용구 적응", SubtitleIssue.HumorAdapted => "유머 적응", SubtitleIssue.SensitiveReplaced => "민감 표현 대체", SubtitleIssue.FormalityApplied => "경어",
+        SubtitleIssue.Rtl => "RTL", SubtitleIssue.Relocated => "자막 이동", SubtitleIssue.LiteralIdiom => "직역", SubtitleIssue.CpsExceeded => "CPS 초과",
+        SubtitleIssue.LineTooLong => "줄 길이 초과", SubtitleIssue.TooShort => "표시 시간 부족", _ => "얼굴 겹침",
+    };
+
+    private string KoDisplay()
+    {
+        var t = GlobalLanguageCatalog.Text[0][Runner.Line].Display;
+        return t.Replace("{easy}", GlobalLanguageCatalog.Idioms[0][0].Adapted).Replace("{funny}", GlobalLanguageCatalog.Idioms[1][0].Adapted)
+                .Replace("{thanks}", G.FormalRegister ? GlobalLanguageCatalog.Thanks[0].Formal : GlobalLanguageCatalog.Thanks[0].Casual).Replace("{thumbs}", "👍");
+    }
+
+    private string F0Line(ReadOnlySpan<float> f0)
+    {
+        _sb.Clear();
+        if (f0.Length == 0) return "";
+        for (var i = 0; i < f0.Length; i++)
+        {
+            if (f0[i] <= 0f) continue;
+            var y = 58f - Math.Clamp((MathF.Log2(f0[i]) - MathF.Log2(70f)) / (MathF.Log2(400f) - MathF.Log2(70f)), 0f, 1f) * 56f;
+            _sb.Append(F1(i * 200f / f0.Length)).Append(',').Append(F1(y)).Append(' ');
+        }
+        return _sb.ToString();
+    }
+
+    private string SyncLine(bool target)
+    {
+        _sb.Clear();
+        var n = Math.Min(L.HistoryCount, 120);
+        for (var k = 0; k < n; k++)
+        {
+            var v = target ? L.TargetHistory(k) : L.ActualHistory(k);
+            _sb.Append(F1(119 - k)).Append(',').Append(F1(38f - Math.Clamp(v / 2.5f, 0f, 1f) * 36f)).Append(' ');
+        }
+        return _sb.ToString();
+    }
+
+    private static bool TryF(ChangeEventArgs e, out float v) => float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+    private void SetF(ChangeEventArgs e, Action<float> apply) { if (TryF(e, out var v)) apply(v); }
+
+    private void Step() { for (var k = 0; k < NeuralLipSyncDubbingStudioRunner.Hz; k++) Runner.TickOnce(); }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

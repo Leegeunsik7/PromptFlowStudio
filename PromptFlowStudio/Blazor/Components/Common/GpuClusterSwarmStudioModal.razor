@@ -1,0 +1,286 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.GpuSwarm
+@implements IDisposable
+@inject GpuClusterSwarmStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.96.0] ⚡ AI 분산 GPU 클러스터 & 렌더 스웜 스튜디오 — 노드 VRAM/부하 게이지 · 처리율/대역폭/RTT · 토폴로지 ·
+    실시간 타일 분할 렌더 뷰어(노드별 타일 오버레이 · 비용 맵) · 클라우드 워커 연결/무통보 단절 토글 · 프레임 배치 계획.
+*@
+
+<div class="gcs-scrim" @onclick="Close">
+    <div class="gcs-modal" @onclick:stopPropagation="true">
+        <div class="gcs-h">
+            <div>
+                <div class="gcs-title">⚡ AI 분산 GPU 클러스터 &amp; 렌더 스웜 스튜디오</div>
+                <div class="gcs-sub"><b>토폴로지 엔진</b>이 노드별 처리율 · 링크 대역폭 · RTT · VRAM 예약을 SIMD EMA로 프로빙하고, <b>로드밸런서</b>가 비용 맵 기반 적응 타일을 LPT로 노드 성능 비에 맞춰 배정합니다.
+                    <b>조립 가드</b>는 로컬 타일을 매핑 프레임 버퍼에 제로카피로 직접 쓰고, 원격 노드가 끊기거나 데드라인을 넘기면 epoch CAS로 타일을 로컬 백엔드에 즉시 재배정합니다.
+                    원격 노드는 인프로세스 시뮬레이션(실 연산 + RTT/대역폭 지연)이며, GPU API는 런타임 검출만 하고 연산은 CPU SIMD로 수행합니다.</div>
+            </div>
+            <button class="gcs-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="gcs-bar">
+            <button class="gcs-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 스웜 가동")</button>
+            <button class="gcs-btn" @onclick="Step" disabled="@Runner.IsRunning">⏭ 1프레임</button>
+            <button class="gcs-btn @(Runner.WorkloadIndex == 0 ? "on" : null)" @onclick="() => Runner.SetWorkload(0)">🔦 패스트레이싱</button>
+            <button class="gcs-btn @(Runner.WorkloadIndex == 1 ? "on" : null)" @onclick="() => Runner.SetWorkload(1)">🌫 라텐트 디퓨전</button>
+            <button class="gcs-btn @(B.Adaptive ? "on" : null)" @onclick="ToggleAdaptive">🧩 적응 타일</button>
+            <button class="gcs-btn @(_showCost ? "on" : null)" @onclick="() => _showCost = !_showCost">🌡 비용 맵</button>
+            <button class="gcs-btn" @onclick="Runner.PlanBatch">🗂 @(GpuClusterSwarmStudioRunner.BatchFrames)프레임 배치 계획</button>
+            <span class="gcs-chip">FPS @(F1(Runner.Fps)) · 프레임 @(F1(L.FrameMs)) ms · 예측 @(F1(L.PredictedMs)) ms</span>
+            <span class="gcs-chip">타일 @(L.Tiles) · 페일백 @(G.TotalFallbacks) · 지연 결과 드롭 @(G.TotalStale)</span>
+            <span class="gcs-chip @(G.IsMapped ? "ok" : null)">@(G.IsMapped ? "MMF 매핑 버퍼" : "고정 배열 버퍼") · 제로카피 @(Kb(L.ZeroCopyBytes)) · 블릿 @(Kb(L.CopiedBytes))</span>
+        </div>
+
+        <div class="gcs-main">
+            <div class="gcs-col">
+                <div class="gcs-card">
+                    <div class="gcs-sec">🖼 실시간 타일 분할 렌더 뷰어 <span class="gcs-kv">@(G.Workload?.Name) · @(G.Width)×@(G.Height) · 프레임 #@(L.Frame)</span></div>
+                    <div class="gcs-view" style="aspect-ratio:@(G.Width) / @(Math.Max(1, G.Height))">
+                        @if (_img is not null)
+                        {
+                            <img src="@_img" alt="분산 렌더 프레임" />
+                        }
+                        <svg viewBox="0 0 @(G.Width) @(G.Height)" preserveAspectRatio="none">
+                            @if (_showCost)
+                            {
+                                @for (var cy = 0; cy < DynamicCloudRenderSwarmLoadBalancer.CostH; cy++)
+                                {
+                                    for (var cx = 0; cx < DynamicCloudRenderSwarmLoadBalancer.CostW; cx++)
+                                    {
+                                        <rect class="cell" x="@(F1(cx * (double)G.Width / DynamicCloudRenderSwarmLoadBalancer.CostW))" y="@(F1(cy * (double)G.Height / DynamicCloudRenderSwarmLoadBalancer.CostH))"
+                                              width="@(F1((double)G.Width / DynamicCloudRenderSwarmLoadBalancer.CostW))" height="@(F1((double)G.Height / DynamicCloudRenderSwarmLoadBalancer.CostH))"
+                                              fill-opacity="@(F2(Math.Clamp((B.CellCost(cx, cy) - 0.5) / 2.5, 0, 0.75)))" />
+                                    }
+                                }
+                            }
+                            @for (var i = 0; i < G.TileCount; i++)
+                            {
+                                var r = G.TileRect(i);
+                                <rect class="tile" x="@(r.X + 0.5)" y="@(r.Y + 0.5)" width="@(Math.Max(0, r.W - 1))" height="@(Math.Max(0, r.H - 1))" stroke="@(Color(G.TileOwner(i)))" />
+                            }
+                        </svg>
+                    </div>
+                    <div class="gcs-legend">
+                        @for (var n = 0; n < T.Count; n++)
+                        {
+                            var nn = n;
+                            <span><i style="background:@(Color(nn))"></i>@(T.Name(nn)) · @(B.NodeTiles(nn))타일</span>
+                        }
+                    </div>
+                    <div class="gcs-note">타일 테두리 = 실제 완료 노드(페일백 시 로컬 색으로 바뀜) · 비용 맵 = 실측 상대 µs/px(밝을수록 비쌈 → 더 잘게 분할).</div>
+                </div>
+
+                <div class="gcs-card">
+                    <div class="gcs-sec">🗂 프레임 배치 배정 (LPT) <span class="gcs-kv">예측 makespan @(F0(Runner.BatchMakespanMs)) ms</span></div>
+                    <div class="gcs-batch">
+                        @for (var i = 0; i < GpuClusterSwarmStudioRunner.BatchFrames; i++)
+                        {
+                            var f = i;
+                            <span style="background:@(Runner.BatchMakespanMs > 0 ? Color(Runner.BatchFrame(f)) : "#1f2937")">@(f + 1)</span>
+                        }
+                    </div>
+                    <div class="gcs-note">디퓨전 시퀀스 같은 다프레임 작업은 프레임 단위로, 단일 프레임은 타일 단위로 분배합니다.</div>
+                </div>
+            </div>
+
+            <div class="gcs-col">
+                <div class="gcs-card">
+                    <div class="gcs-sec">🕸 클러스터 토폴로지 <span class="gcs-kv">건강 @(T.HealthyCount)/@(T.Count) · 프로브 @(T.Probes) · @(F1(T.LastProbeUs)) µs</span></div>
+                    <svg class="gcs-topo" viewBox="0 0 420 150">
+                        @for (var n = 1; n < T.Count; n++)
+                        {
+                            var nn = n;
+                            <line x1="70" y1="75" x2="@(NX(nn))" y2="@(NY(nn))" class="ln @(T.Healthy(nn) ? null : "down")" stroke-width="@(F1(1 + 10 * T.Weight(nn)))" />
+                        }
+                        @for (var n = 0; n < T.Count; n++)
+                        {
+                            var nn = n;
+                            <g>
+                                <circle cx="@(NX(nn))" cy="@(NY(nn))" r="@(F1(12 + 16 * T.Weight(nn)))" fill="@(Color(nn))" class="nd @(T.Healthy(nn) ? null : "down")" />
+                                <text x="@(NX(nn))" y="@(NY(nn) + 4)" class="tl">@(F0(T.Weight(nn) * 100))%</text>
+                            </g>
+                        }
+                    </svg>
+                    <div class="gcs-kv">로컬 GPU API: DX12 @(Yes(T.HasDx12)) · Vulkan @(Yes(T.HasVulkan)) · Metal @(Yes(T.HasMetal)) · CPU FMA @(F1(T.CpuGflops)) GFLOPS(단일 코어) · 메모리 @(F1(T.CpuBandwidthGBs)) GB/s</div>
+                </div>
+
+                <div class="gcs-nodes">
+                    @for (var n = 0; n < T.Count; n++)
+                    {
+                        var nn = n;
+                        var link = G.LinkOf(nn);
+                        <div class="gcs-node @(T.Healthy(nn) ? null : "down")" style="border-left-color:@(Color(nn))">
+                            <div class="nh"><b>@(T.Name(nn))</b><span>@(DistributedHeterogeneousGpuTopologyEngine.BackendNames[(int)T.Backend(nn)]) · @(DistributedHeterogeneousGpuTopologyEngine.LinkNames[(int)T.Link(nn)]) · 레인 @(T.Lanes(nn))</span>
+                                <span class="gcs-chip @(T.Healthy(nn) ? "ok" : "bad")">@(T.Healthy(nn) ? "정상" : "비건강")</span></div>
+                            <div class="gauges">
+                                @Gauge("VRAM", T.VramUsed(nn) / (double)T.VramTotal(nn), Mb(T.VramUsed(nn)) + " / " + Gb(T.VramTotal(nn)))
+                                @Gauge("GPU 부하", L.PredictedMs > 0 ? B.NodePredMs(nn) / L.PredictedMs : 0, Pct(L.PredictedMs > 0 ? B.NodePredMs(nn) / L.PredictedMs : 0))
+                                @Gauge("가중치", T.Weight(nn), Pct(T.Weight(nn)))
+                            </div>
+                            <div class="gcs-kv">@(F2(T.Mpx(nn))) Mpx/s/레인 · @(F0(T.BandwidthMBs(nn))) MB/s · RTT @(F1(T.RttMs(nn))) ms · HB @(F0(Math.Min(9999, T.HeartbeatAgeMs(nn)))) ms · 타일 @(T.Tiles(nn)) · VRAM 피크 @(Mb(T.VramPeak(nn)))</div>
+                            @if (link is not null)
+                            {
+                                <div class="gcs-row">
+                                    <button class="gcs-btn sm @(T.Connected(nn) ? "on" : "warn")" @onclick="() => Runner.SetConnected(nn, !T.Connected(nn))">@(T.Connected(nn) ? "🔌 연결됨" : "✂ 단절됨")</button>
+                                    <label class="ck"><input type="checkbox" checked="@link.Silent" @onchange="e => Runner.SetSilent(nn, e.Value is true)" /> 무통보 단절(하트비트 소실)</label>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+                <div class="gcs-note">최근 페일백 검출→재배정 @(F1(L.FallbackMs)) ms · 최대 @(F1(G.MaxFallbackMs)) ms (명시 단절 = 다음 스캔 · 무통보 = 타일 데드라인 또는 하트비트 타임아웃 @(F0(T.HeartbeatTimeoutMs)) ms 중 먼저)</div>
+                <div class="gcs-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .gcs-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .gcs-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .gcs-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #eab308 16%, var(--card)), color-mix(in srgb, #0ea5e9 14%, var(--card))); }
+    .gcs-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .gcs-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .gcs-sub b { color: var(--text-primary); }
+    .gcs-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .gcs-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .gcs-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .gcs-btn.sm { font-size: 10px; padding: 2px 8px; } .gcs-btn:disabled { opacity: .4; cursor: default; }
+    .gcs-btn.on { background: color-mix(in srgb, #eab308 22%, transparent); border-color: #facc15; } .gcs-btn.warn { background: color-mix(in srgb, #ef4444 24%, transparent); border-color: #f87171; }
+    .gcs-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .gcs-chip.ok { border-color: #22c55e; color: #86efac; } .gcs-chip.bad { border-color: #ef4444; color: #fca5a5; }
+    .gcs-main { display: grid; grid-template-columns: 1.15fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .gcs-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .gcs-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .gcs-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .gcs-view { position: relative; width: 100%; background: #030712; border-radius: 8px; overflow: hidden; }
+    .gcs-view img, .gcs-view svg { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+    .gcs-view .tile { fill: none; stroke-width: .6; vector-effect: non-scaling-stroke; } .gcs-view .cell { fill: #ef4444; }
+    .gcs-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: var(--text-secondary); align-items: center; } .gcs-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; }
+    .gcs-batch { display: grid; grid-template-columns: repeat(12, 1fr); gap: 4px; } .gcs-batch span { font: 700 10px var(--mono); color: #0b1220; text-align: center; border-radius: 4px; padding: 3px 0; }
+    .gcs-topo { width: 100%; height: 160px; background: #030712; border-radius: 10px; }
+    .gcs-topo .ln { stroke: #475569; stroke-linecap: round; } .gcs-topo .ln.down { stroke: #7f1d1d; stroke-dasharray: 4 4; }
+    .gcs-topo .nd { stroke: #0f172a; stroke-width: 2; } .gcs-topo .nd.down { opacity: .3; } .gcs-topo .tl { font: 800 10px var(--mono); fill: #0b1220; text-anchor: middle; }
+    .gcs-nodes { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 8px; }
+    .gcs-node { border: 1px solid var(--line); border-left: 4px solid; border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 6px; } .gcs-node.down { background: color-mix(in srgb, #ef4444 8%, transparent); }
+    .gcs-node .nh { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 11px; color: var(--text-secondary); } .gcs-node .nh b { color: var(--text-primary); font-size: 12px; }
+    .gcs-node .gauges { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .gcs-gauge { display: flex; flex-direction: column; align-items: center; font-size: 10px; color: var(--text-muted); } .gcs-gauge svg { width: 76px; height: 44px; }
+    .gcs-gauge .tr { fill: none; stroke: #1f2937; stroke-width: 7; } .gcs-gauge .vl { fill: none; stroke: #facc15; stroke-width: 7; stroke-linecap: round; } .gcs-gauge b { font: 800 11px var(--mono); color: var(--text-primary); }
+    .gcs-node .ck { display: flex; gap: 4px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .gcs-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .gcs-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; font-weight: 500; color: var(--text-secondary); align-items: center; }
+    .gcs-note { font-size: 11px; color: var(--text-muted); } .mono { font-family: var(--mono); }
+    @@media (max-width: 1200px) { .gcs-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly string[] Palette = { "#38bdf8", "#a3e635", "#f472b6", "#fbbf24", "#a78bfa", "#2dd4bf" };
+    private System.Threading.Timer? _timer;
+    private string? _img;
+    private bool _showCost;
+    private long _imgFrame = -1;
+
+    private DistributedHeterogeneousGpuTopologyEngine T => Runner.Topology;
+    private DynamicCloudRenderSwarmLoadBalancer B => Runner.Balancer;
+    private LowLatencyFrameAssemblyFallbackGuard G => Runner.Guard;
+    private SwarmFrameResult L => G.Last;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(Refresh); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("GpuSwarm.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private void Refresh()
+    {
+        if (L.Frame != _imgFrame && G.Frames > 0) { _imgFrame = L.Frame; _img = BuildBmp(); }
+        StateHasChanged();
+    }
+
+    /// <summary>전면 프레임 → 24-bit BMP data URI(UI 콜드 경로 · 패스트레이싱 = Reinhard+감마).</summary>
+    private string BuildBmp()
+    {
+        int w = G.Width, h = G.Height, stride = (w * 3 + 3) & ~3;
+        var px = new byte[54 + stride * h];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(px, 0x4D42);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(px.AsSpan(2), px.Length);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(px.AsSpan(10), 54);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(px.AsSpan(14), 40);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(px.AsSpan(18), w);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(px.AsSpan(22), -h);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(px.AsSpan(26), 1);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(px.AsSpan(28), 24);
+        var f = G.Front;
+        var tone = Runner.WorkloadIndex == 0;
+        for (var y = 0; y < h; y++)
+            for (var x = 0; x < w; x++)
+            {
+                var s = (y * w + x) * 3; var d = 54 + y * stride + x * 3;
+                if (s + 2 >= f.Length) break;
+                px[d] = Byte(f[s + 2], tone); px[d + 1] = Byte(f[s + 1], tone); px[d + 2] = Byte(f[s], tone);
+            }
+        return "data:image/bmp;base64," + Convert.ToBase64String(px);
+    }
+
+    private static byte Byte(float v, bool tone)
+    {
+        if (!float.IsFinite(v)) v = 0;
+        if (tone) v = MathF.Pow(v / (1 + v), 1 / 2.2f);
+        return (byte)Math.Clamp((int)(v * 255 + 0.5f), 0, 255);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string Pct(double v) => (v * 100).ToString("0", CultureInfo.InvariantCulture) + "%";
+    private static string Kb(long b) => (b / 1024d).ToString("0", CultureInfo.InvariantCulture) + " KB";
+    private static string Mb(long b) => (b / (1024d * 1024d)).ToString("0.0", CultureInfo.InvariantCulture) + " MB";
+    private static string Gb(long b) => (b / (1024d * 1024d * 1024d)).ToString("0", CultureInfo.InvariantCulture) + " GB";
+    private static string Yes(bool b) => b ? "✔" : "—";
+    private static string Color(int n) => n < 0 ? "#64748b" : Palette[n % Palette.Length];
+    private static int NX(int n) => n == 0 ? 70 : 330;
+    private static int NY(int n) => n == 0 ? 75 : 25 + (n - 1) * 50;
+
+    private RenderFragment Gauge(string name, double t, string label) => __builder =>
+    {
+        t = Math.Clamp(t, 0, 1);
+        var a = Math.PI * (1 - t);
+        var x = 38 + 30 * Math.Cos(a); var y = 40 - 30 * Math.Sin(a);
+        <div class="gcs-gauge">
+            <svg viewBox="0 0 76 44">
+                <path class="tr" d="M 8 40 A 30 30 0 0 1 68 40" />
+                <path class="vl" d="M 8 40 A 30 30 0 0 1 @(F1(x)) @(F1(y))" />
+            </svg>
+            <b>@label</b>
+            <span>@name</span>
+        </div>
+    };
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step() => _ = Task.Run(() =>
+    {
+        try { Runner.RenderOnce(); }
+        catch (InvalidOperationException ex) { PromptFlowStudio.Program.Log("GpuSwarm.Modal.Step", ex); }
+    });
+    private void ToggleAdaptive() => B.Adaptive = !B.Adaptive;
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중 프레임 이벤트(~30 Hz)는 무시 — 250 ms 타이머가 갱신(토글/액션만 즉시 반영).</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(Refresh); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

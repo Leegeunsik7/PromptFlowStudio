@@ -1,0 +1,214 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.CognitiveCinematography
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject CognitiveCinematographyStudioRunner Runner
+
+@* [PromptFlow Studio v17.21.0] 🎥 AI 시네마토그래피 & 카메라 디렉터 스튜디오 — 삼분할 그리드 프리뷰 뷰포트 · 화각/초점 거리 컨트롤러 · 조리개 · 보케 프리셋 · 볼류메트릭 갓레이 · 포커스 풀링/가림 가드 계측. *@
+
+<div class="cgc-scrim" @onclick="Close">
+    <div class="cgc-modal" @onclick:stopPropagation="true">
+        <div class="cgc-h">
+            <div>
+                <div class="cgc-title">🎥 AI 시네마토그래피 &amp; 카메라 디렉터 스튜디오</div>
+                <div class="cgc-sub"><b>프레이밍 엔진</b>이 v17.00 AGI 디렉터의 각성 · 긴장으로 렌즈(24–135 mm)와 프레임 크기를 정하고, v17.12 시선 방향에 리드 룸을 두도록 피사체 눈을 삼분할 교차점에 놓아 8 레인 스프링-댐퍼(Vector256)로 이동합니다. <b>합성기</b>는 블라인드 창 햇빛을 ½ 해상도 레이 마칭(@(VolumetricRayMarchingCinematicDoFSynthesizer.Steps) 스텝 · HG 위상)으로 산란시켜 갓레이를 만들고 마름모 3 개 분리형 게더로 6 엽 보케를 합성하며, <b>가드</b>는 안구 z 깊이로 포커스를 당기고 SDF 구체 추적으로 v17.08 세트 장애물의 가림을 감지해 카메라를 미끄러뜨리거나 투명화합니다.</div>
+            </div>
+            <button class="cgc-x" @onclick="Close">✕</button>
+        </div>
+        <div class="cgc-bar">
+            <button class="cgc-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 가동")</button>
+            <button class="cgc-btn" @onclick="Step30" disabled="@Runner.IsRunning">⏭ 0.5초</button>
+            <button class="cgc-btn @(Runner.Set.Blocking ? "on" : null)" @onclick="() => Runner.SetBlocking(!Runner.Set.Blocking)">🚶 블로킹 동선</button>
+            <button class="cgc-btn @(F.Path == CineSimdPath.V256 ? "on" : null)" @onclick="() => Runner.SetSimd(F.Path != CineSimdPath.V256)">⚡ SIMD</button>
+            <span class="cgc-chip">틱 @(F2(Runner.LastTickMs)) ms · 1차 광선 @(F1(S.LastPrimaryUs / 1000)) ms · 마칭 @(F1(S.LastMarchUs / 1000)) ms · 보케 @(F1(S.LastBokehUs / 1000)) ms</span>
+            <span class="cgc-chip @(Runner.LastTickMs < 16.6 ? "ok" : "warn")">@(Runner.LastTickMs < 16.6 ? "60 fps 예산 이내" : "예산 초과")</span>
+        </div>
+        <div class="cgc-main">
+            <div class="cgc-col">
+                <div class="cgc-card">
+                    <div class="cgc-sec">🎞 프리뷰 뷰포트 · @(F.ShotName)
+                        @foreach (var v in Views)
+                        {
+                            var vv = v;
+                            <button class="cgc-btn sm @(S.View == vv ? "on" : null)" @onclick="() => Runner.SetView(vv)">@(ViewName(vv))</button>
+                        }
+                        <button class="cgc-btn sm @(Runner.ThirdsGrid ? "on" : null)" @onclick="() => Runner.SetThirds(!Runner.ThirdsGrid)">▦ 삼분할</button>
+                    </div>
+                    <div class="cgc-vp">
+                        <img src="data:image/bmp;base64,@(Runner.RenderBase64())" alt="cinematography preview" />
+                        @if (Runner.ThirdsGrid)
+                        {
+                            <i class="gl v" style="left:33.333%"></i><i class="gl v" style="left:66.667%"></i><i class="gl h" style="top:33.333%"></i><i class="gl h" style="top:66.667%"></i>
+                            <i class="tg" style="left:@(Pct(F.TargetX));top:@(Pct(F.TargetY))"></i>
+                            <i class="ey" style="left:@(Pct(F.EyeX));top:@(Pct(F.EyeY))"></i>
+                            <span class="lead @(F.GazeScreenRight ? "r" : "l")">@(F.GazeScreenRight ? "시선 →" : "← 시선")</span>
+                        }
+                    </div>
+                    <div class="cgc-kv">피사체 <b>액터 @(F.Subject + 1)</b> · 구도 오차 <b>@(F3(F.FramingError))</b> · 리드 룸 @(F0(F.LeadRoom * 100))% · 헤드 룸 @(F0(F.HeadTopY * 100))% · 거리 @(F2(F.Distance)) m · 궤도 @(F0(F.OrbitYawDeg))° · 더치 @(F1(F.DutchDeg))° · 속도 @(F2(F.Speed)) m/s</div>
+                </div>
+
+                <div class="cgc-card">
+                    <div class="cgc-sec">📈 렌즈 · 구도 · 포커스 궤적</div>
+                    <svg class="cgc-ser" viewBox="0 0 360 60" preserveAspectRatio="none">
+                        <polyline class="fl" points="@(Series(Runner.FocalSeries, 135, 60))" /><polyline class="fe" points="@(Series(Runner.FramingErrorSeries, 0.2, 60))" /><polyline class="fo" points="@(Series(Runner.FocusErrorSeries, 300, 60))" /><polyline class="mr" points="@(Series(Runner.MarchUsSeries, 16600, 60))" />
+                    </svg>
+                    <div class="cgc-legend"><i class="fl"></i>초점 거리(0–135 mm) <i class="fe"></i>구도 오차(0–0.2) <i class="fo"></i>포커스 오차(0–300 mm) <i class="mr"></i>레이 마칭(0–16.6 ms)</div>
+                    <div class="cgc-kv">디렉터 비트 <b>@(Runner.Director.BeatName(Runner.Director.CurrentBeat))</b> · 각성 @(F2(Runner.Director.Arousal)) · 긴장 @(F2(Runner.Director.Tension)) · 감정 강도 <b>@(F2(F.Intensity))</b> · 분기 @(Runner.Director.Branches)</div>
+                </div>
+            </div>
+
+            <div class="cgc-col">
+                <div class="cgc-card">
+                    <div class="cgc-sec">🔭 렌즈 · 조리개 컨트롤러
+                        <button class="cgc-btn sm @(F.AutoFocal ? "on" : null)" @onclick="() => Runner.SetAutoFocal(!F.AutoFocal)">🧠 렌즈 자율</button>
+                        <button class="cgc-btn sm @(G.AutoFStop ? "on" : null)" @onclick="() => Runner.SetAutoFStop(!G.AutoFStop)">🧠 조리개 자율</button>
+                        <button class="cgc-btn sm @(G.AutoFocus ? "on" : null)" @onclick="() => Runner.SetAutoFocus(!G.AutoFocus)">🎯 포커스 풀링</button>
+                    </div>
+                    <div class="cgc-ctl">
+                        <label class="cgc-sl">초점 거리 <b>@(F0(F.FocalMm)) mm</b><input type="range" min="24" max="135" step="1" value="@(F0(F.AutoFocal ? F.TargetFocalMm : F.ManualFocalMm))" @onchange="e => Runner.SetFocal((float)Num(e, 50))" /></label>
+                        <label class="cgc-sl">조리개 <b>f/@(F1(G.FStop))</b><input type="range" min="1.4" max="16" step="0.1" value="@(F1(G.FStop))" @onchange="e => Runner.SetFStop((float)Num(e, 2.8))" /></label>
+                        <label class="cgc-sl">화각 <b>@(F1(HFov))°</b></label>
+                    </div>
+                    <div class="cgc-ctl">
+                        @foreach (var p in Presets)
+                        {
+                            var pp = p;
+                            <button class="cgc-btn sm @(S.Preset == pp ? "on" : null)" @onclick="() => Runner.SetBokeh(pp)">🔶 @(VolumetricRayMarchingCinematicDoFSynthesizer.PresetName(pp))</button>
+                        }
+                        <button class="cgc-btn sm @(S.DepthOfFieldOn ? "on" : null)" @onclick="() => Runner.SetDof(!S.DepthOfFieldOn)">피사계 심도</button>
+                    </div>
+                    <div class="cgc-meter">
+                        <span class="nm">심도 구간</span>
+                        <span class="bar"><i style="left:@(Pct(Math.Min(1, G.NearLimit / 12)));width:@(Pct(Math.Max(0.01, Math.Min(1, (float.IsInfinity(G.FarLimit) ? 12 : G.FarLimit) / 12) - Math.Min(1, G.NearLimit / 12))))"></i><em style="left:@(Pct(Math.Min(1, G.SubjectDepth / 12)))"></em></span>
+                        <span class="v">근 <b>@(F2(G.NearLimit)) m</b> · 초점 @(F2(G.FocusDistance)) m · 원 @(float.IsInfinity(G.FarLimit) ? "∞" : F2(G.FarLimit) + " m") · 과초점 @(F1(G.Hyperfocal)) m</span>
+                    </div>
+                    <div class="cgc-kv">안구 깊이 @(F2(G.SubjectDepth)) m · 포커스 오차 <b>@(F0(G.FocusErrorMm)) mm</b> · 안구 CoC @(F2(G.EyeCocPx)) px · @(G.EyeInFocus ? "✅ 심도 내" : "⚠ 심도 밖") · 랙 포커스 @(G.Racks)</div>
+                    <div class="cgc-kv">보케 블레이드 6 · 회전 @(F0(S.BladeRotationDeg))° · 압축 × @(F1(S.Squeeze)) · 흐림 픽셀 @(F0(S.BlurredFraction * 100))% · 최대 CoC @(F1(S.MaxCocPx)) px · 탭 @(S.BokehTaps)</div>
+                </div>
+
+                <div class="cgc-card">
+                    <div class="cgc-sec">🌫 볼류메트릭 산란
+                        <button class="cgc-btn sm @(S.Volumetric ? "on" : null)" @onclick="() => Runner.SetVolumetric(!S.Volumetric)">레이 마칭</button>
+                    </div>
+                    <div class="cgc-ctl">
+                        <label class="cgc-sl">안개 밀도 σ <b>@(F2(S.FogDensity))</b><input type="range" min="0" max="0.6" step="0.01" value="@(F2(S.FogDensity))" @onchange="e => Runner.SetFog((float)Num(e, 0.1))" /></label>
+                    </div>
+                    <div class="cgc-kv">평균 산란 <b>@(F3(S.MeanScatter))</b> · 평균 투과 @(F2(S.MeanTransmit)) · 샘플 @(S.MarchSamples) · HG g @(F2(S.Anisotropy)) · 지터 4×4 Bayer</div>
+                </div>
+
+                <div class="cgc-card">
+                    <div class="cgc-sec">🛡 시선 가림 가드
+                        @foreach (var m in Modes)
+                        {
+                            var mm = m;
+                            <button class="cgc-btn sm @(G.Mode == mm ? "on" : null)" @onclick="() => Runner.SetOcclusion(mm)">@(ModeName(mm))</button>
+                        }
+                    </div>
+                    <div class="cgc-ctl">
+                        <button class="cgc-btn sm @(F.AutoSubject ? "on" : null)" @onclick="() => Runner.SetSubject(-1)">🧠 피사체 자율</button>
+                        <button class="cgc-btn sm @(!F.AutoSubject && F.Subject == 0 ? "on" : null)" @onclick="() => Runner.SetSubject(0)">액터 1</button>
+                        <button class="cgc-btn sm @(!F.AutoSubject && F.Subject == 1 ? "on" : null)" @onclick="() => Runner.SetSubject(1)">액터 2</button>
+                    </div>
+                    <div class="cgc-kv">가림률 <b class="@(G.VisibleOcclusion > 0 ? "warn" : null)">@(F0(G.Occlusion * 100))%</b> · 화면 가림 @(F0(G.VisibleOcclusion * 100))% · 최소 여유 @(F2(G.MinClearance)) m · 미끄러짐 @(F0(G.SlideYawDeg))°/@(F0(G.SlideTargetDeg))° · 이벤트 @(G.OcclusionEvents) · 미끄러짐 @(G.Slides) · 투명화 @(G.Fades) · SDF 스텝 @(G.SdfSteps)</div>
+                </div>
+                <div class="cgc-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .cgc-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .cgc-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .cgc-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f59e0b 16%, var(--card)), color-mix(in srgb, #0ea5e9 12%, var(--card))); }
+    .cgc-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .cgc-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .cgc-sub b { color: var(--text-primary); }
+    .cgc-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .cgc-bar { display: flex; flex-wrap: wrap; gap: 6px 10px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .cgc-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; } .cgc-btn:disabled { opacity: .4; cursor: default; }
+    .cgc-btn.sm { font-size: 10px; padding: 2px 8px; } .cgc-btn.on { background: color-mix(in srgb, #f59e0b 24%, transparent); border-color: #fbbf24; }
+    .cgc-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .cgc-chip.ok { border-color: #22c55e; color: #86efac; } .cgc-chip.warn { border-color: #eab308; color: #fde68a; }
+    .cgc-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .cgc-sl b { font-family: var(--mono); color: var(--text-primary); } .cgc-sl input { width: 110px; }
+    .cgc-main { display: grid; grid-template-columns: 1.25fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .cgc-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .cgc-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+    .cgc-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .cgc-ctl { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+    .cgc-vp { position: relative; aspect-ratio: 16 / 9; background: #030712; border-radius: 8px; overflow: hidden; }
+    .cgc-vp img { display: block; width: 100%; height: 100%; object-fit: fill; image-rendering: auto; }
+    .cgc-vp .gl { position: absolute; background: rgba(255,255,255,.35); pointer-events: none; } .cgc-vp .gl.v { top: 0; bottom: 0; width: 1px; } .cgc-vp .gl.h { left: 0; right: 0; height: 1px; }
+    .cgc-vp .tg, .cgc-vp .ey { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; pointer-events: none; }
+    .cgc-vp .tg { border: 2px dashed #fbbf24; } .cgc-vp .ey { width: 8px; height: 8px; margin: -4px 0 0 -4px; background: #38bdf8; box-shadow: 0 0 6px #38bdf8; }
+    .cgc-vp .lead { position: absolute; bottom: 6px; font: 700 10px var(--mono); color: #fde68a; background: rgba(0,0,0,.5); padding: 1px 6px; border-radius: 6px; } .cgc-vp .lead.r { right: 8px; } .cgc-vp .lead.l { left: 8px; }
+    .cgc-ser { width: 100%; height: 60px; background: #030712; border-radius: 6px; }
+    .cgc-ser polyline { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; } .cgc-ser .fl { stroke: #fbbf24; } .cgc-ser .fe { stroke: #38bdf8; } .cgc-ser .fo { stroke: #f472b6; } .cgc-ser .mr { stroke: #a3e635; }
+    .cgc-meter { display: grid; grid-template-columns: 90px 1fr; gap: 2px 10px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .cgc-meter .nm { font-weight: 700; color: var(--text-primary); } .cgc-meter .v { grid-column: 2; font-family: var(--mono); min-width: 0; overflow-wrap: anywhere; } .cgc-meter .v b { color: #fbbf24; }
+    .cgc-meter .bar { position: relative; height: 12px; background: #0f172a; border-radius: 6px; overflow: hidden; }
+    .cgc-meter .bar i { position: absolute; top: 0; bottom: 0; background: linear-gradient(90deg, #b45309, #fbbf24); border-radius: 6px; transition: left .2s, width .2s; }
+    .cgc-meter .bar em { position: absolute; top: 0; bottom: 0; width: 2px; background: #38bdf8; }
+    .cgc-legend, .cgc-kv { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11px; line-height: 1.45; color: var(--text-secondary); align-items: center; min-width: 0; overflow-wrap: anywhere; } .cgc-kv b { color: var(--text-primary); } .cgc-kv b.warn { color: #fde68a; }
+    .cgc-legend i { display: inline-block; width: 10px; height: 8px; border-radius: 2px; margin-right: 2px; }
+    .cgc-legend .fl { background: #fbbf24; } .cgc-legend .fe { background: #38bdf8; } .cgc-legend .fo { background: #f472b6; } .cgc-legend .mr { background: #a3e635; }
+    .cgc-note { font-size: 11px; color: var(--text-muted); word-break: break-all; }
+    @@media (max-width: 1100px) { .cgc-main { grid-template-columns: 1fr; } .cgc-meter { grid-template-columns: 1fr; } .cgc-meter .v { grid-column: 1; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly BokehPreset[] Presets = { BokehPreset.Hexagon, BokehPreset.HexRotated, BokehPreset.Anamorphic };
+    private static readonly CineView[] Views = { CineView.Final, CineView.Scatter, CineView.Depth, CineView.Coc };
+    private static readonly OcclusionMode[] Modes = { OcclusionMode.Auto, OcclusionMode.Slide, OcclusionMode.Fade, OcclusionMode.Off };
+    private System.Threading.Timer? _timer;
+
+    private CognitiveCameraFramingBlockingEngine F => Runner.Framing;
+    private VolumetricRayMarchingCinematicDoFSynthesizer S => Runner.Synth;
+    private AutonomousFocusPullingOcclusionGuard G => Runner.Guard;
+    private double HFov => 2 * Math.Atan(CognitiveCameraFramingBlockingEngine.SensorW * 0.5 / Math.Max(1, F.FocalMm)) * 180 / Math.PI;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("CognitiveCinematography.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string ViewName(CineView v) => v switch { CineView.Scatter => "산란광", CineView.Depth => "Z 깊이", CineView.Coc => "CoC", _ => "최종" };
+    private static string ModeName(OcclusionMode m) => m switch { OcclusionMode.Auto => "🛡 자동", OcclusionMode.Slide => "↔ 미끄러짐", OcclusionMode.Fade => "👻 투명화", _ => "⛔ 끔" };
+    private static string Pct(double v) => (Math.Clamp(v, 0, 1) * 100).ToString("0.##", CultureInfo.InvariantCulture) + "%";
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    private string Series(Func<int, float> f, double max, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (CognitiveCinematographyStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - 2 - (h - 4) * Math.Clamp(f(i) / max, 0, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step30() { for (var i = 0; i < CognitiveCinematographyStudioRunner.Hz / 2; i++) Runner.Step(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중 갱신은 250 ms 타이머가 처리 — 정지 상태 변경만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

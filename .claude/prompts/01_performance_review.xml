@@ -1,0 +1,22 @@
+<performance_review_protocol>
+  <objective>
+    %LocalAppData%\PromptFlowStudio\Reports 의 wan-benchmark-*.json 및 benchmark-v*.json 실측 데이터를 분석하여 LivePipelineAutoTuner의 최적 PID 스칼라 및 양자화 파라미터를 도출한다.
+  </objective>
+  <target_file_patterns>
+    - wan-benchmark-*.json
+    - benchmark-v*.json
+    - *benchmark*.json
+  </target_file_patterns>
+  <analysis_metrics>
+    - Latency P95/P99 (ms) 및 Frame Drop Rate
+    - Resident VRAM Peak vs Virtual Budget (4GB/6GB/8GB)
+    - VAE Temporal Tiling Throughput (fps)
+  </analysis_metrics>
+  <output_format>
+    1. 병목 구간 요약 (VRAM Bottleneck / CPU-GPU Transfer Delay)
+    2. LivePipelineAutoTuner 적용 권장 파라미터 — 실제 필드: TargetFrameMs · DowngradeRatio · UpgradeHeadroomRatio ·
+       HysteresisTicks · EwmaAlpha. ⚠ Kp/Ki/Kd(PID 게인)는 별도 클래스 Services/Pipeline/SelfOptimizingPipelineTuner.cs
+       소속 — LivePipelineAutoTuner 는 PID 가 아닌 히스테리시스(bang-bang) 제어기이므로 혼동 금지(2026-09-26 정정).
+    3. STATUS.md 최신 상태 마크다운 덮어쓰기 블록
+  </output_format>
+</performance_review_protocol>

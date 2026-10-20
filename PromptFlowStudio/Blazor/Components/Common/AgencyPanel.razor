@@ -1,0 +1,185 @@
+@inject ISwarmAgencyService Swarm
+@inject IAutoViralTrendService Trends
+@implements IDisposable
+
+@* [PromptFlow Studio] 완전 자율형 AI 콘텐츠 에이전시 — 실시간 트렌드 → Multi-Agent Swarm 자율 토론 기획 → 승인.
+   Writer/Director/Marketer 3 페르소나가 토론하며 대본을 다듬고, 사용자는 Approve 만 누르거나 Auto-Approve 로 위임. *@
+<div class="ag-scrim" @onclick="Close">
+    <div class="ag-modal" @onclick:stopPropagation="true">
+        <div class="ag-h">
+            <span>🤖 AI 콘텐츠 에이전시 <span class="ag-sub">트렌드 → 자율 토론 기획 → 승인</span></span>
+            <button class="ag-x" @onclick="Close" title="닫기">✕</button>
+        </div>
+
+        <div class="ag-body">
+            @* ── 트렌드 하이재킹 ── *@
+            <div class="ag-sec">
+                <div class="ag-sec-h">
+                    <span>🔥 실시간 트렌드</span>
+                    <div class="ag-trend-ctl">
+                        <select class="ag-min-sel" @bind="_geo" disabled="@_trendBusy">
+                            @foreach (var (geo, label) in Trends.Regions) { <option value="@geo">@label</option> }
+                        </select>
+                        <button class="ag-min-btn" @onclick="FetchTrends" disabled="@_trendBusy">@(_trendBusy ? "수집 중…" : "가져오기")</button>
+                    </div>
+                </div>
+                @if (_trends.Count > 0)
+                {
+                    <div class="ag-trends">
+                        @foreach (var t in _trends)
+                        {
+                            <button class="ag-trend @(string.Equals(_topic, t.Keyword, StringComparison.Ordinal) ? "on" : null)"
+                                    @onclick="() => _topic = t.Keyword" title="@t.Snippet">
+                                <span class="ag-trend-k">@t.Keyword</span>
+                                @if (!string.IsNullOrWhiteSpace(t.Traffic)) { <span class="ag-trend-t">@t.Traffic</span> }
+                            </button>
+                        }
+                    </div>
+                }
+                else if (_trendNote is not null) { <div class="ag-note">@_trendNote</div> }
+            </div>
+
+            @* ── 주제 입력 + 실행 ── *@
+            <div class="ag-sec">
+                <div class="ag-sec-h"><span>🎬 기획 주제</span></div>
+                <input class="ag-topic" @bind="_topic" @bind:event="oninput" placeholder="트렌드를 고르거나 주제를 직접 입력…" disabled="@_running" />
+                <div class="ag-run">
+                    <button class="ag-go" @onclick="RunSwarm" disabled="@(_running || Swarm.Enabled == false || string.IsNullOrWhiteSpace(_topic))">
+                        @(_running ? "🧠 에이전트 토론 중…" : "🧠 Swarm 자율 기획 시작")
+                    </button>
+                    <label class="ag-auto" title="사람 개입 없이 확정안을 자동 적용">
+                        <input type="checkbox" @bind="_autoApprove" disabled="@_running" /> <span>완전 자동 승인</span>
+                    </label>
+                </div>
+                @if (!Swarm.Enabled) { <div class="ag-note">⚠ Gemini API 키가 필요합니다(관리자 설정 › 🔑 Gemini AI).</div> }
+            </div>
+
+            @* ── 토론 트랜스크립트 ── *@
+            @if (_transcript.Count > 0)
+            {
+                <div class="ag-sec">
+                    <div class="ag-sec-h"><span>💬 에이전트 토론</span></div>
+                    <div class="ag-chat">
+                        @foreach (var m in _transcript)
+                        {
+                            <div class="ag-msg @RoleCls(m.Role)">
+                                <span class="ag-role">@RoleIcon(m.Role) @m.Role</span>
+                                <span class="ag-content">@m.Content</span>
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+
+            @* ── 확정안 + 승인 ── *@
+            @if (_plan is { Ok: true })
+            {
+                <div class="ag-sec ag-final">
+                    <div class="ag-sec-h"><span>✅ 확정 기획안</span></div>
+                    <div class="ag-plan-title">@_plan.Title</div>
+                    @if (!string.IsNullOrWhiteSpace(_plan.ViralHook)) { <div class="ag-plan-hook">🪝 @_plan.ViralHook</div> }
+                    <div class="ag-plan-cuts">@(_plan.Cuts.Count)컷 · 프롬프트/나레이션 자동 구성</div>
+                    <button class="ag-approve" @onclick="Approve">✅ 승인하고 스토리보드에 적용</button>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+<style>
+    .ag-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .ag-modal { width: min(640px, 96vw); max-height: 90vh; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.4); }
+    .ag-h { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid var(--line); font-weight: 800; font-size: 15px; color: var(--text-primary); position: sticky; top: 0; background: var(--card); }
+    .ag-h .ag-sub { font-size: 11.5px; font-weight: 600; color: var(--text-muted); margin-left: 6px; }
+    .ag-x { border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; width: 30px; height: 30px; }
+    .ag-x:hover { background: var(--card-2); color: var(--text-primary); }
+    .ag-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 18px; }
+    .ag-sec-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; font-weight: 800; color: var(--text-secondary); margin-bottom: 8px; }
+    .ag-trend-ctl { display: flex; gap: 6px; }
+    .ag-min-sel { border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); padding: 5px 7px; font-size: 11.5px; font-family: inherit; }
+    .ag-min-btn { border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); padding: 5px 11px; font-size: 11.5px; font-weight: 700; cursor: pointer; }
+    .ag-min-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--text-primary); } .ag-min-btn:disabled { opacity: .5; }
+    .ag-trends { display: flex; flex-wrap: wrap; gap: 6px; }
+    .ag-trend { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--card-2); border-radius: 999px; padding: 5px 11px; cursor: pointer; font-family: inherit; }
+    .ag-trend:hover { border-color: var(--accent); } .ag-trend.on { border-color: transparent; background: linear-gradient(135deg, var(--flow-violet), var(--flow-magenta)); }
+    .ag-trend-k { font-size: 12px; font-weight: 700; color: var(--text-primary); } .ag-trend.on .ag-trend-k { color: #fff; }
+    .ag-trend-t { font: 700 9.5px var(--mono); color: var(--text-muted); } .ag-trend.on .ag-trend-t { color: rgba(255,255,255,.8); }
+    .ag-topic { width: 100%; box-sizing: border-box; background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; color: var(--text-primary); font-size: 13px; font-family: inherit; }
+    .ag-topic:focus { outline: none; border-color: var(--accent); }
+    .ag-run { display: flex; align-items: center; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
+    .ag-go { font: 800 13px inherit; padding: 11px 18px; border-radius: 11px; border: none; color: #fff; cursor: pointer; background: linear-gradient(135deg, var(--flow-violet), var(--flow-magenta)); box-shadow: 0 6px 18px color-mix(in srgb, var(--flow-magenta) 28%, transparent); }
+    .ag-go:hover:not(:disabled) { filter: brightness(1.07); } .ag-go:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
+    .ag-auto { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); cursor: pointer; } .ag-auto input { accent-color: var(--accent); }
+    .ag-note { font-size: 11.5px; color: var(--text-muted); padding: 8px 10px; border-radius: 8px; background: var(--card-2); border: 1px solid var(--line); line-height: 1.5; }
+    .ag-chat { display: flex; flex-direction: column; gap: 8px; max-height: 240px; overflow-y: auto; padding-right: 2px; }
+    .ag-msg { display: flex; flex-direction: column; gap: 3px; padding: 9px 12px; border-radius: 10px; background: var(--card-2); border: 1px solid var(--line); }
+    .ag-msg.w { border-left: 3px solid #7c6cff; } .ag-msg.d { border-left: 3px solid #f5a623; } .ag-msg.m { border-left: 3px solid #10b981; }
+    .ag-role { font: 800 10.5px var(--mono); color: var(--text-secondary); }
+    .ag-content { font-size: 12.5px; color: var(--text-primary); line-height: 1.55; }
+    .ag-final { border: 1px solid color-mix(in srgb, #10b981 40%, var(--line)); border-radius: 12px; padding: 14px; background: color-mix(in srgb, #10b981 7%, var(--card-2)); }
+    .ag-plan-title { font-size: 15px; font-weight: 800; color: var(--text-primary); }
+    .ag-plan-hook { font-size: 12.5px; color: var(--accent-2); margin-top: 4px; }
+    .ag-plan-cuts { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; }
+    .ag-approve { margin-top: 12px; width: 100%; font: 800 13px inherit; padding: 11px; border-radius: 11px; border: none; color: #fff; cursor: pointer; background: linear-gradient(135deg, #10b981, #059669); }
+    .ag-approve:hover { filter: brightness(1.06); }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<SwarmPlan> OnApply { get; set; }
+
+    private string _geo = "KR";
+    private string _topic = "";
+    private bool _trendBusy;
+    private string? _trendNote;
+    private List<TrendItem> _trends = new();
+
+    private bool _running;
+    private bool _autoApprove;
+    private readonly List<SwarmMessage> _transcript = new();
+    private SwarmPlan? _plan;
+    private CancellationTokenSource? _cts;
+
+    private async Task FetchTrends()
+    {
+        _trendBusy = true; _trendNote = null; await InvokeAsync(StateHasChanged);
+        var r = await Trends.FetchTrendsAsync(_geo, CancellationToken.None);
+        _trends = r.Ok ? r.Items.ToList() : new();
+        if (!r.Ok) _trendNote = "트렌드를 가져오지 못했습니다: " + r.Message;
+        _trendBusy = false; await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task RunSwarm()
+    {
+        if (_running || !Swarm.Enabled || string.IsNullOrWhiteSpace(_topic)) return;
+        _running = true; _plan = null; _transcript.Clear();
+        _cts = new CancellationTokenSource();
+        await InvokeAsync(StateHasChanged);
+
+        var progress = new Progress<SwarmMessage>(m => { _transcript.Add(m); _ = InvokeAsync(StateHasChanged); });
+        var plan = await Swarm.RunAsync(_topic, 3, progress, _cts.Token);
+        _plan = plan;
+        _running = false;
+        await InvokeAsync(StateHasChanged);
+
+        if (plan.Ok && _autoApprove) await Approve();
+    }
+
+    private async Task Approve()
+    {
+        if (_plan is not { Ok: true }) return;
+        await OnApply.InvokeAsync(_plan);
+        await Close();
+    }
+
+    private async Task Close()
+    {
+        _cts?.Cancel();
+        await OnClose.InvokeAsync();
+    }
+
+    private static string RoleCls(string role) => role switch { "Writer" => "w", "Director" => "d", "Marketer" => "m", _ => "" };
+    private static string RoleIcon(string role) => role switch { "Writer" => "✍️", "Director" => "🎬", "Marketer" => "📣", _ => "•" };
+
+    public void Dispose() => _cts?.Dispose();
+}

@@ -1,0 +1,86 @@
+@* [PromptFlow Studio] Wan 2.1 3D 카메라 워크 비주얼라이저 — Pan/Tilt/Zoom/Orbit/Roll/Truck 를 인터랙티브 SVG 로 시연 + 프롬프트 키워드 제공. 순수 CSS/SVG. *@
+
+<div class="cmv">
+    <div class="cmv-h"><span>🎥 3D 카메라 워크 비주얼라이저</span><span class="cmv-tag">WAN 2.1 CAMERA MOUNT</span></div>
+    <div class="cmv-stage move-@Current.Key" aria-hidden="true">
+        <svg viewBox="0 0 220 120" preserveAspectRatio="xMidYMid meet">
+            <defs><radialGradient id="cmv-sub" cx="50%" cy="45%" r="60%"><stop offset="0%" stop-color="#22d3ee"/><stop offset="100%" stop-color="#8b5cf6"/></radialGradient></defs>
+            <ellipse cx="110" cy="104" rx="70" ry="9" fill="rgba(139,92,246,.14)" />
+            <g class="cmv-frame">
+                <rect x="72" y="34" width="76" height="52" rx="7" fill="none" stroke="#22d3ee" stroke-width="1.6" />
+                <circle class="cmv-subject" cx="110" cy="60" r="13" fill="url(#cmv-sub)" />
+                <line x1="110" y1="28" x2="110" y2="18" stroke="#d946ef" stroke-width="2" />   <!-- 카메라 상단 표식 -->
+            </g>
+            <g class="cmv-arrows" stroke="#e5edff" stroke-width="2" fill="none" opacity=".85">
+                <path class="ar ar-h" d="M40 60 h20 M180 60 h-20" marker-end="url(#ah)" />
+                <path class="ar ar-v" d="M110 8 v14 M110 112 v-14" marker-end="url(#ah)" />
+                <path class="ar ar-o" d="M52 60 a58 40 0 0 1 116 0" stroke-dasharray="3 4" />
+            </g>
+        </svg>
+    </div>
+    <div class="cmv-chips">
+        @foreach (var m in Moves)
+        {
+            <button class="cmv-chip @(_sel == m.Key ? "on" : null)" @onclick="() => Pick(m.Key)" @key="m.Key">@m.Icon @m.Name</button>
+        }
+    </div>
+    <div class="cmv-desc">
+        <div><b>@Current.Icon @Current.Name</b> — @Current.Desc</div>
+        <code class="cmv-kw">@Current.Prompt</code>
+        @if (OnPick.HasDelegate) { <button class="cmv-apply" @onclick="() => OnPick.InvokeAsync(Current.Prompt)">＋ 프롬프트에 추가</button> }
+    </div>
+</div>
+
+<style>
+    .cmv { border: 1px solid var(--line); border-radius: 14px; background: var(--card); overflow: hidden; }
+    .cmv-h { display: flex; align-items: center; justify-content: space-between; padding: 12px 15px; border-bottom: 1px solid var(--line); font: 800 13px var(--mono); color: var(--text-primary); }
+    .cmv-tag { font: 700 9px var(--mono); letter-spacing: .1em; color: var(--accent-2); border: 1px solid color-mix(in srgb, var(--accent-2) 30%, var(--line)); border-radius: 999px; padding: 3px 8px; }
+    .cmv-stage { height: 132px; display: grid; place-items: center; background: radial-gradient(80% 80% at 50% 30%, color-mix(in srgb, var(--flow-violet) 12%, transparent), transparent 65%), #0b0d14; }
+    .cmv-stage svg { width: 100%; height: 100%; }
+    .cmv-frame, .cmv-subject { transform-box: fill-box; transform-origin: center; }
+    .cmv-frame { transform-origin: 110px 60px; }
+    .cmv-arrows .ar { opacity: 0; }
+    /* 이동별 애니메이션 */
+    .move-pan   .cmv-frame { animation: cmv-pan 2.4s ease-in-out infinite; } .move-pan .ar-h { opacity: .85; }
+    .move-tilt  .cmv-frame { animation: cmv-tilt 2.4s ease-in-out infinite; } .move-tilt .ar-v { opacity: .85; }
+    .move-zoom  .cmv-subject { animation: cmv-zoom 2.2s ease-in-out infinite; }
+    .move-orbit .cmv-frame { animation: cmv-orbit 3.4s linear infinite; } .move-orbit .ar-o { opacity: .8; }
+    .move-roll  .cmv-frame { animation: cmv-roll 3s ease-in-out infinite; }
+    .move-truck .cmv-frame { animation: cmv-truck 2.4s ease-in-out infinite; } .move-truck .ar-h { opacity: .85; }
+    @@keyframes cmv-pan { 0%,100% { transform: rotateY(0) translateX(-8px); } 50% { transform: translateX(8px); } }
+    @@keyframes cmv-tilt { 0%,100% { transform: translateY(-6px); } 50% { transform: translateY(6px); } }
+    @@keyframes cmv-zoom { 0%,100% { transform: scale(.7); } 50% { transform: scale(1.35); } }
+    @@keyframes cmv-orbit { 0% { transform: rotate(0) translateX(10px) rotate(0); } 100% { transform: rotate(360deg) translateX(10px) rotate(-360deg); } }
+    @@keyframes cmv-roll { 0%,100% { transform: rotate(-12deg); } 50% { transform: rotate(12deg); } }
+    @@keyframes cmv-truck { 0%,100% { transform: translateX(-14px); } 50% { transform: translateX(14px); } }
+    .cmv-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 12px 14px 6px; }
+    .cmv-chip { font: 700 11.5px inherit; padding: 7px 11px; border-radius: 10px; cursor: pointer; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); }
+    .cmv-chip:hover { border-color: var(--accent); color: var(--text-primary); }
+    .cmv-chip.on { color: #fff; background: linear-gradient(135deg, var(--flow-violet), var(--flow-cyan, #22d3ee)); border-color: transparent; }
+    .cmv-desc { padding: 8px 14px 14px; display: flex; flex-direction: column; gap: 7px; font-size: 12px; color: var(--text-secondary); }
+    .cmv-desc b { color: var(--text-primary); }
+    .cmv-kw { font: 600 11px var(--mono); color: var(--accent-2); background: color-mix(in srgb, var(--accent-2) 9%, transparent); border: 1px solid color-mix(in srgb, var(--accent-2) 24%, var(--line)); border-radius: 7px; padding: 6px 9px; word-break: break-word; }
+    .cmv-apply { align-self: flex-start; font: 800 11.5px inherit; padding: 7px 13px; border-radius: 10px; border: none; color: #fff; cursor: pointer; background: linear-gradient(135deg, var(--flow-violet), var(--flow-magenta)); }
+    @@media (prefers-reduced-motion: reduce) { .cmv-stage * { animation: none !important; } }
+</style>
+
+@code {
+    /// <summary>선택한 카메라 워크의 프롬프트 키워드 콜백(선택). 없으면 [프롬프트에 추가] 버튼 숨김.</summary>
+    [Parameter] public EventCallback<string> OnPick { get; set; }
+
+    private sealed record Move(string Key, string Icon, string Name, string Desc, string Prompt);
+
+    private static readonly Move[] Moves =
+    {
+        new("pan",   "↔️", "팬 (Pan)",   "카메라가 좌우로 회전하며 넓은 공간을 훑습니다.",           "smooth horizontal camera pan"),
+        new("tilt",  "↕️", "틸트 (Tilt)", "카메라가 위아래로 회전해 높이감을 강조합니다.",           "vertical camera tilt up"),
+        new("zoom",  "🔍", "줌 (Zoom)",   "렌즈가 피사체로 밀고 당기며 몰입/전환을 만듭니다.",       "slow cinematic zoom in"),
+        new("orbit", "🔄", "오빗 (Orbit)","피사체 주위를 공전하며 입체감을 부여합니다.",             "360 degree orbit around the subject"),
+        new("roll",  "🌀", "롤 (Roll)",   "카메라가 광축으로 기울어 역동적 긴장을 줍니다.",         "dynamic dutch angle camera roll"),
+        new("truck", "🚚", "트럭 (Truck)","카메라 본체가 좌우로 평행 이동(달리)합니다.",             "lateral truck dolly move"),
+    };
+
+    private string _sel = "pan";
+    private Move Current => Moves.FirstOrDefault(m => m.Key == _sel) ?? Moves[0];
+    private void Pick(string key) => _sel = key;
+}

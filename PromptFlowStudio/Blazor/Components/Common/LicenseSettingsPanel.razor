@@ -1,0 +1,136 @@
+@inject SerialLicenseService Serial
+@inject IJSRuntime JS
+@implements IDisposable
+
+@* [PromptFlow Studio] 라이선스 관리 — 시리얼 키 발급/명부 관리. 관리자 설정 › 라이선스 탭에 마운트. *@
+<section class="lc-card">
+    <div class="lc-head">
+        <span class="lc-ico">🪪</span>
+        <div class="lc-hgrow">
+            <div class="lc-title">라이선스 관리</div>
+            <div class="lc-desc">회원가입 게이트용 시리얼 키를 발급·관리합니다. 미사용 키만 가입에 사용되며, 가입 완료 시 자동으로 <b>Used</b> 로 소진됩니다.</div>
+        </div>
+        <span class="lc-live @(Serial.EnforcementOn ? "on" : "off")">@(Serial.EnforcementOn ? "● 게이트 활성" : "○ 게이트 꺼짐")</span>
+    </div>
+
+    @if (!Serial.EnforcementOn)
+    {
+        <div class="lc-warn">⚠ 현재 라이선스 게이트가 꺼져 있습니다(appsettings <code>License:Enabled=false</code>). 키를 발급해도 회원가입에서 요구하지 않습니다.</div>
+    }
+
+    <div class="lc-actions">
+        <button class="lc-btn issue" @onclick="Issue">＋ 신규 라이선스 발급</button>
+        <span class="lc-count">총 @(_items.Count)개 · 미사용 @(_items.Count(i => !i.Used))개</span>
+    </div>
+
+    @if (_newKey is not null)
+    {
+        <div class="lc-newkey">
+            <span class="lc-newkey-l">방금 발급된 키</span>
+            <code class="lc-newkey-v">@_newKey</code>
+            <button class="lc-mini" @onclick="() => CopyAsync(_newKey!)">📋 복사</button>
+        </div>
+    }
+
+    @if (_items.Count == 0)
+    {
+        <div class="lc-empty">아직 발급된 키가 없습니다. [신규 라이선스 발급]으로 시작하세요.</div>
+    }
+    else
+    {
+        <div class="lc-table">
+            <div class="lc-tr lc-th"><span>시리얼 키</span><span>발급일</span><span>상태</span><span>매핑 이메일</span><span></span></div>
+            @foreach (var m in _items)
+            {
+                <div class="lc-tr" @key="m.Key">
+                    <code class="lc-key">@m.Key</code>
+                    <span class="lc-dim">@m.IssuedAt</span>
+                    <span><span class="lc-badge @(m.Used ? "used" : "free")">@(m.Used ? "Used" : "Unused")</span></span>
+                    <span class="lc-dim">@(string.IsNullOrWhiteSpace(m.Email) ? "-" : m.Email)</span>
+                    <span class="lc-rowops">
+                        <button class="lc-mini" @onclick="() => CopyAsync(m.Key)" title="복사">📋</button>
+                        <button class="lc-mini del" @onclick="() => RemoveKey(m.Key)" title="삭제">🗑️</button>
+                    </span>
+                </div>
+            }
+        </div>
+    }
+
+    <div class="lc-path">🔒 저장 위치: <span>@Serial.RegistryPath</span></div>
+    @if (_toast is not null) { <div class="lc-toast">@_toast</div> }
+</section>
+
+<style>
+    .lc-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; position: relative; }
+    .lc-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+    .lc-ico { width: 42px; height: 42px; flex: 0 0 auto; display: grid; place-items: center; font-size: 20px; border-radius: 11px; background: color-mix(in srgb, var(--accent) 12%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); }
+    .lc-hgrow { min-width: 0; flex: 1; }
+    .lc-title { font-size: 15px; font-weight: 800; color: var(--ink); }
+    .lc-desc { font-size: 11.5px; color: var(--sub); margin-top: 2px; line-height: 1.5; } .lc-desc b { color: var(--accent); }
+    .lc-live { font-size: .74rem; font-weight: 800; padding: .3rem .7rem; border-radius: 999px; white-space: nowrap; }
+    .lc-live.on { color: var(--up); background: color-mix(in srgb, var(--up) 14%, transparent); border: 1px solid color-mix(in srgb, var(--up) 45%, transparent); }
+    .lc-live.off { color: var(--sub); background: color-mix(in srgb, var(--sub) 12%, transparent); border: 1px solid color-mix(in srgb, var(--sub) 35%, transparent); }
+    .lc-warn { margin-bottom: 12px; padding: 10px 14px; border-radius: 10px; font-size: 12px; line-height: 1.5; color: var(--sub); border: 1px solid color-mix(in srgb, #f5a623 40%, var(--line)); background: color-mix(in srgb, #f5a623 10%, transparent); } .lc-warn code { font: 600 11px var(--mono); color: var(--accent); }
+    .lc-actions { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .lc-btn.issue { border: none; border-radius: 11px; padding: 10px 16px; font-weight: 800; font-size: .86rem; cursor: pointer; font-family: inherit; color: var(--accent-ink, #1a1204); background: linear-gradient(135deg, var(--accent-2), var(--accent)); box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 30%, transparent); }
+    .lc-btn.issue:hover { filter: brightness(1.06); }
+    .lc-count { font: 700 11.5px var(--mono); color: var(--sub); }
+    .lc-newkey { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 10px; margin-bottom: 12px; background: color-mix(in srgb, var(--up) 10%, transparent); border: 1px solid color-mix(in srgb, var(--up) 40%, transparent); flex-wrap: wrap; }
+    .lc-newkey-l { font-size: 11px; font-weight: 800; color: var(--up); }
+    .lc-newkey-v { font: 800 15px var(--mono); color: var(--ink); letter-spacing: .06em; }
+    .lc-empty { padding: 26px; text-align: center; font-size: 12.5px; color: var(--sub); border: 1px dashed var(--line); border-radius: 12px; }
+    .lc-table { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+    .lc-tr { display: grid; grid-template-columns: 2fr 1.3fr .8fr 1.6fr .8fr; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+    .lc-tr:last-child { border-bottom: none; }
+    .lc-th { background: var(--card-2); font-size: 10.5px; font-weight: 800; color: var(--sub); text-transform: uppercase; letter-spacing: .04em; }
+    .lc-key { font: 700 12.5px var(--mono); color: var(--ink); letter-spacing: .04em; }
+    .lc-dim { font-size: 11.5px; color: var(--sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lc-badge { font: 800 10px var(--mono); border-radius: 999px; padding: 3px 9px; }
+    .lc-badge.free { color: var(--up); background: color-mix(in srgb, var(--up) 14%, transparent); border: 1px solid color-mix(in srgb, var(--up) 45%, transparent); }
+    .lc-badge.used { color: var(--sub); background: color-mix(in srgb, var(--sub) 12%, transparent); border: 1px solid color-mix(in srgb, var(--sub) 35%, transparent); }
+    .lc-rowops { display: flex; gap: 4px; justify-content: flex-end; }
+    .lc-mini { width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--sub); cursor: pointer; font-size: 12px; }
+    .lc-mini:hover { color: var(--ink); border-color: var(--accent); } .lc-mini.del:hover { color: var(--down); border-color: var(--down); }
+    .lc-path { margin-top: 12px; font-size: 11px; color: var(--sub); word-break: break-all; } .lc-path span { font-family: var(--mono); }
+    .lc-toast { margin-top: 12px; padding: 10px 14px; border-radius: 10px; font-size: 12.5px; font-weight: 700; color: var(--up); background: color-mix(in srgb, var(--up) 12%, transparent); border: 1px solid color-mix(in srgb, var(--up) 42%, transparent); }
+    @@media (max-width: 720px) { .lc-tr { grid-template-columns: 1.6fr 1fr .7fr; } .lc-tr > :nth-child(4) { display: none; } }
+</style>
+
+@code {
+    private List<SerialLicense> _items = new();
+    private string? _newKey;
+    private string? _toast;
+    // v13.0.1: 이전엔 IDisposable 미구현 + Timer 미해제라 탭 전환(4초 이내) 시 타이머 핸들과 콜백 클로저(파기된 컴포넌트)가 남았다.
+    private readonly PromptFlowStudio.Services.Ui.SafeDebouncer _toastClear = new(ex => Program.Log("LicenseSettingsPanel.Toast", ex));
+
+    protected override void OnInitialized() => Refresh();
+
+    private void Refresh() => _items = Serial.List();
+
+    private void Issue()
+    {
+        _newKey = Serial.Issue();
+        Refresh();
+        Toast($"✅ 새 라이선스 키를 발급했습니다: {_newKey}");
+    }
+
+    private void RemoveKey(string key)
+    {
+        if (Serial.Remove(key)) { if (_newKey == key) _newKey = null; Refresh(); Toast("🗑️ 키를 삭제했습니다."); }
+    }
+
+    private async Task CopyAsync(string key)
+    {
+        try { await JS.InvokeVoidAsync("navigator.clipboard.writeText", key); Toast("📋 클립보드에 복사되었습니다."); }
+        catch { Toast("복사 실패 — 키를 직접 선택해 복사하세요."); }
+    }
+
+    private void Toast(string msg)
+    {
+        if (_toastClear.IsDisposed) return;
+        _toast = msg;
+        _toastClear.Schedule(TimeSpan.FromSeconds(4), _ => InvokeAsync(() => { _toast = null; StateHasChanged(); }));
+    }
+
+    public void Dispose() => _toastClear.Dispose();   // 대기 중 토스트 해제 예약 취소 + 핸들 반환
+}

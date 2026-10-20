@@ -1,0 +1,328 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.ProductionCrew
+@implements IDisposable
+@inject MultiAgentCrewStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.91.0] 🎬 AI 멀티에이전트 프로덕션 크루 스튜디오 — 크루 에이전트 상태 토폴로지 그래프(부하 · 신뢰 가중 · 메시지 흐름) · 작업 DAG 진행 ·
+    컨센서스 토론 로그 · 주제별 제안 분포/결정 + 1-Click 오버라이드 · 감정 목표 vs 예측 · 실행 가드(모듈 예산/선점/격리).
+*@
+
+<div class="mac-scrim" @onclick="Close">
+    <div class="mac-modal" @onclick:stopPropagation="true">
+        <div class="mac-h">
+            <div>
+                <div class="mac-title">🎬 AI 멀티에이전트 프로덕션 크루 스튜디오</div>
+                <div class="mac-sub">연출 · 촬영 · 조명 · 음향 · VFX · 편집 · 스크립트 7개 에이전트가 무할당 메시지 버스로 제안을 교환하고, <b>감정 목표 함수</b>(정서가/각성/긴장) + 역할 권한 + 신뢰 가중(Hedge)으로
+                    충돌을 합의하며, 샷 작업 DAG를 임계 경로 순으로 분배합니다. <b>실행 가드</b>는 v16.71~v16.90 스튜디오 모듈 20종의 프레임/메모리 예산을 감시해 스태킹을 선점·차단합니다. 에이전트는 규칙 기반이며 LLM을 사용하지 않습니다.</div>
+            </div>
+            <button class="mac-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="mac-bar">
+            <button class="mac-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 크루 가동")</button>
+            <button class="mac-btn" @onclick="Step" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="mac-btn" @onclick="Runner.NewProduction">🎬 새 프로덕션</button>
+            <button class="mac-btn @(Runner.ApplyToModules ? "on" : null)" @onclick="() => Runner.ApplyToModules = !Runner.ApplyToModules">🔗 모듈 결선(음악/더치/안개)</button>
+            <button class="mac-btn @(C.AdaptWeights ? "on" : null)" @onclick="() => C.AdaptWeights = !C.AdaptWeights">⚖ 신뢰 학습</button>
+            <button class="mac-btn" @onclick="C.ResetWeights">↺ 가중 초기화</button>
+            <span class="mac-chip @(Crew.MaxTickMs < 2 ? "ok" : "warn")">틱 @(F3(Runner.LastTickMs)) ms · 최대 @(F2(Crew.MaxTickMs))</span>
+            <span class="mac-chip">합의 @(F3(C.LastResolveMs)) · 가드 @(F3(G.LastScanMs)) ms</span>
+            <span class="mac-chip">버스 @(Crew.Bus.Published.ToString("#,0", CultureInfo.InvariantCulture)) · 손실 @(Crew.Bus.Dropped)</span>
+        </div>
+
+        <div class="mac-main">
+            <div class="mac-col">
+                <div class="mac-card">
+                    <div class="mac-sec">🕸 크루 토폴로지 — 샷 @(Runner.ShotIndex + 1) @(MultiAgentCrewStudioRunner.ShotNames[Runner.ShotIndex]) · 가동률 @(F0(Crew.UtilizationPct))%</div>
+                    <svg class="mac-graph" viewBox="-120 -110 240 220">
+                        @for (var r = 0; r < MultiAgentVirtualProductionCrewOrchestratorEngine.Agents; r++)
+                        {
+                            if (r == 0) continue;
+                            var (x, y) = Node(r);
+                            <line x1="0" y1="0" x2="@(F1(x))" y2="@(F1(y))" class="edge" style="stroke-width:@(F2(0.6f + 2.2f * Load(r)))" />
+                        }
+                        @for (var r = 1; r < MultiAgentVirtualProductionCrewOrchestratorEngine.Agents; r++)
+                        {
+                            var (x1, y1) = Node(r); var (x2, y2) = Node(r % 6 + 1);
+                            <line x1="@(F1(x1))" y1="@(F1(y1))" x2="@(F1(x2))" y2="@(F1(y2))" class="ring" />
+                        }
+                        @for (var i = 0; i < 24; i++)
+                        {
+                            var m = Crew.Bus.Recent(i);
+                            if (m.Kind is not (CrewMsgKind.TaskAssign or CrewMsgKind.TaskDone or CrewMsgKind.Throttle)) continue;
+                            var (fx, fy) = Node((int)m.From); var (tx, ty) = m.To == CrewMessageBus.Broadcast ? (0f, 0f) : Node(m.To);
+                            var u = (i % 6) / 6f;
+                            <circle cx="@(F1(fx + (tx - fx) * u))" cy="@(F1(fy + (ty - fy) * u))" r="2.2" class="pkt k@((int)m.Kind)" />
+                        }
+                        @for (var r = 0; r < MultiAgentVirtualProductionCrewOrchestratorEngine.Agents; r++)
+                        {
+                            var (x, y) = Node(r); var w = C.Weight((CrewRole)r); var ld = Load(r);
+                            <circle cx="@(F1(x))" cy="@(F1(y))" r="@(F1(12 + 5 * w))" class="node @(ld > 0.01f ? "busy" : null)" />
+                            <circle cx="@(F1(x))" cy="@(F1(y))" r="@(F1(12 + 5 * w))" class="load" style="stroke-dasharray:@(F1(ld * 6.28f * (12 + 5 * w))) 999" />
+                            <g><text x="@(F1(x))" y="@(F1(y + 2))" class="ic">@(MultiAgentVirtualProductionCrewOrchestratorEngine.RoleIcons[r])</text></g>
+                            <g><text x="@(F1(x))" y="@(F1(y + 24 + 5 * w))" class="nm">@(MultiAgentVirtualProductionCrewOrchestratorEngine.RoleNames[r]) ×@(F2(w))</text></g>
+                        }
+                    </svg>
+                    <div class="mac-kv"><span>노드 크기 = 신뢰 가중 · 링 = 이번 틱 작업 부하 · 점 = 작업 할당/완료/스로틀 메시지</span></div>
+                </div>
+
+                <div class="mac-card">
+                    <div class="mac-sec">🧩 샷 작업 DAG — 계획 @(F1(Crew.PlannedMakespanSec)) s · 직전 실측 @(F1(Crew.LastMakespanSec)) s · 완료 샷 @(Crew.ShotsCompleted)</div>
+                    <div class="mac-tasks">
+                        @for (var i = 0; i < MultiAgentVirtualProductionCrewOrchestratorEngine.Tasks; i++)
+                        {
+                            var tk = Crew.Task(i);
+                            <div class="tk st@((int)tk.State)">
+                                <span class="ow">@(MultiAgentVirtualProductionCrewOrchestratorEngine.RoleIcons[(int)tk.Owner])</span>
+                                <span class="nm">@(MultiAgentVirtualProductionCrewOrchestratorEngine.TaskNames[i])</span>
+                                <div class="bar"><i style="width:@(F0(Math.Min(1f, tk.Done / tk.Work) * 100))%"></i></div>
+                                <span class="pr">P @(F0(tk.Priority))</span>
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                <div class="mac-card">
+                    <div class="mac-sec">🎭 감정 목표 vs 합의 예측 — 손실 @(F3(C.LastLossBefore)) → @(F3(C.LastLossAfter)) · 컷당 @(F1(C.BeatsPerCut))박</div>
+                    <div class="mac-emo">
+                        @Emo("정서가", Crew.Target.Valence * 0.5f + 0.5f, C.Predicted.Valence * 0.5f + 0.5f)
+                        @Emo("각성", Crew.Target.Arousal, C.Predicted.Arousal)
+                        @Emo("긴장", Crew.Target.Tension, C.Predicted.Tension)
+                    </div>
+                    <div class="mac-shots">
+                        @for (var k = Math.Min(Runner.RecordCount, 8) - 1; k >= 0; k--)
+                        {
+                            var r = Runner.Record(k);
+                            <span class="sh" title="@(MultiAgentCrewStudioRunner.ShotNames[r.Shot])">#@(r.Shot + 1) L @(F3(r.Loss)) · @(F1(r.MakespanSec))s · 충돌 @(r.Conflicts)</span>
+                        }
+                    </div>
+                    <div class="mac-row">
+                        @for (var s = 0; s < MultiAgentCrewStudioRunner.Script.Length; s++)
+                        {
+                            var si = s;
+                            <button class="mac-btn @(Runner.ShotIndex == si ? "on" : null)" @onclick="() => Runner.JumpToShot(si)">@(si + 1)</button>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="mac-col">
+                <div class="mac-card">
+                    <div class="mac-sec">🎛 주제별 제안 분포 · 결정 · 1-Click 오버라이드</div>
+                    <div class="mac-topics">
+                        @for (var k = 0; k < MultiAgentVirtualProductionCrewOrchestratorEngine.Topics; k++)
+                        {
+                            var t = (CrewTopic)k; var d = Crew.Decided(t);
+                            <div class="tp">
+                                <span class="nm">@(MultiAgentVirtualProductionCrewOrchestratorEngine.TopicNames[k])</span>
+                                <div class="axis">
+                                    @for (var r = 0; r < MultiAgentVirtualProductionCrewOrchestratorEngine.Agents; r++)
+                                    {
+                                        if (!Crew.HasProposal((CrewRole)r, t)) continue;
+                                        <span class="pp" style="left:@(F1(Crew.Proposal((CrewRole)r, t) * 100))%" title="@(MultiAgentVirtualProductionCrewOrchestratorEngine.RoleNames[r])">@(MultiAgentVirtualProductionCrewOrchestratorEngine.RoleIcons[r])</span>
+                                    }
+                                    <i class="dec @(C.IsLocked(t) ? "lock" : null)" style="left:@(F1(d * 100))%"></i>
+                                </div>
+                                <span class="val">@(Fmt(k, Crew.DecidedValue(t)))</span>
+                                <button class="ov @(C.IsLocked(t) ? "on" : null)" title="현재 값으로 잠금/해제" @onclick="() => ToggleLock(t)">@(C.IsLocked(t) ? "🔒" : "✋")</button>
+                                <input type="range" min="0" max="100" value="@(F0(d * 100))" @onchange="e => OverrideSlider(t, e)" />
+                            </div>
+                        }
+                    </div>
+                    <div class="mac-row">
+                        <button class="mac-btn" @onclick="ClearAll">↺ 전체 오버라이드 해제</button>
+                        <span class="mac-kv">충돌 @(C.Conflicts) / @(MultiAgentVirtualProductionCrewOrchestratorEngine.Topics) · 누적 @(C.TotalConflicts.ToString("#,0", CultureInfo.InvariantCulture))</span>
+                    </div>
+                </div>
+
+                <div class="mac-card">
+                    <div class="mac-sec">🗣 컨센서스 토론 로그</div>
+                    <div class="mac-log">
+                        @for (var i = 0; i < Math.Min(C.LogCount, 14); i++)
+                        {
+                            var e = C.Log(i);
+                            <div class="ln r@((int)e.Reason)">
+                                <span class="tm">#@(e.Shot + 1) t@(e.Tick)</span>
+                                <b>@(MultiAgentVirtualProductionCrewOrchestratorEngine.TopicNames[(int)e.Topic])</b>
+                                <span>@(MultiAgentVirtualProductionCrewOrchestratorEngine.RoleIcons[(int)e.Winner])@(MultiAgentVirtualProductionCrewOrchestratorEngine.RoleNames[(int)e.Winner]) ⟵ @(MultiAgentVirtualProductionCrewOrchestratorEngine.RoleIcons[(int)e.Conceder])@(MultiAgentVirtualProductionCrewOrchestratorEngine.RoleNames[(int)e.Conceder]) 양보</span>
+                                <span class="rs">@(AutonomousDirectorialConsensusEvaluator.ReasonName(e.Reason))</span>
+                                <span class="mono">→ @(Fmt((int)e.Topic, MultiAgentVirtualProductionCrewOrchestratorEngine.Denormalize((int)e.Topic, e.Value))) · 분산 @(F2(e.Spread)) · 손실 @(F3(e.LossBefore))→@(F3(e.LossAfter))</span>
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                <div class="mac-card">
+                    <div class="mac-sec">🚦 실행 가드 — 부하 @(F1(G.LoadMs)) / @(F1(G.CapacityMs)) ms · @(F0(G.LoadMb)) / @(F0(G.MemoryBudgetMb)) MB · 힙 @(F0(G.ManagedHeapMb)) MB · VFX 스로틀 @(F2(G.VfxThrottle))</div>
+                    <div class="mac-mods">
+                        @for (var i = 0; i < G.Count; i++)
+                        {
+                            var m = G.Module(i); var mi = i; var on = m.IsRunning();
+                            <button class="mod @(on ? "on" : null) @(m.QuarantinedUntil > Crew.Tick ? "q" : null)" title="v@(m.Version) · @(F1(m.CostMs)) ms · @(F0(m.MemoryMb)) MB · 우선 @(m.Priority) · 선점 @(m.Preemptions)" @onclick="() => ToggleModule(mi, on)">
+                                <span>@(m.Name)</span><i style="width:@(F0(Math.Min(1f, m.CostMs / 16.6f) * 100))%"></i>
+                            </button>
+                        }
+                        @if (G.Count == 0) { <span class="mac-kv">등록된 모듈 없음(DI 미결선)</span> }
+                    </div>
+                    <div class="mac-sl">
+                        <label>병렬 레인 <b>@(G.Lanes)</b><input type="range" min="1" max="8" value="@(G.Lanes)" @onchange="e => SetF(e, v => G.Lanes = (int)v)" /></label>
+                        <label>메모리 예산 <b>@(F0(G.MemoryBudgetMb)) MB</b><input type="range" min="128" max="4096" step="64" value="@(F0(G.MemoryBudgetMb))" @onchange="e => SetF(e, v => G.MemoryBudgetMb = v)" /></label>
+                        <label class="ck"><input type="checkbox" checked="@G.AutoPreempt" @onchange="() => G.AutoPreempt = !G.AutoPreempt" /> 자동 선점</label>
+                    </div>
+                    <div class="mac-glog">
+                        @for (var i = 0; i < Math.Min(G.LogCount, 6); i++)
+                        {
+                            var ev = G.Log(i);
+                            <span class="a@((int)ev.Action)">t@(ev.Tick) @(RealtimeProductionSwarmExecutionGuard.ActionName(ev.Action)) @(ev.Module >= 0 ? G.Module(ev.Module).Name : "")</span>
+                        }
+                    </div>
+                    <div class="mac-kv"><span>선점 @(G.Preemptions) · 거부 @(G.Denials) · 격리 @(G.Quarantines) · 실행 @(G.RunningCount) · 압력 @(F2(G.Pressure))</span></div>
+                </div>
+                <div class="mac-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .mac-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .mac-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .mac-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f59e0b 16%, var(--card)), color-mix(in srgb, #8b5cf6 16%, var(--card))); }
+    .mac-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .mac-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .mac-sub b { color: var(--text-primary); }
+    .mac-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .mac-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .mac-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .mac-btn:disabled { opacity: .4; cursor: default; } .mac-btn.on { background: color-mix(in srgb, #8b5cf6 26%, transparent); border-color: #a78bfa; }
+    .mac-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .mac-chip.ok { border-color: #22c55e; color: #86efac; } .mac-chip.warn { border-color: #f97316; color: #fdba74; }
+    .mac-main { display: grid; grid-template-columns: 1fr 1.1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .mac-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .mac-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .mac-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .mac-graph { width: 100%; height: 320px; background: radial-gradient(circle at 50% 50%, #111827, #030712); border-radius: 10px; }
+    .mac-graph .edge { stroke: #6366f1; stroke-opacity: .6; } .mac-graph .ring { stroke: #1f2937; stroke-width: .8; stroke-dasharray: 2 2; }
+    .mac-graph .node { fill: #1e1b4b; stroke: #4338ca; stroke-width: 1; } .mac-graph .node.busy { fill: #312e81; }
+    .mac-graph .load { fill: none; stroke: #fbbf24; stroke-width: 2.4; transform-box: fill-box; transform-origin: center; transform: rotate(-90deg); }
+    .mac-graph .ic { font-size: 12px; text-anchor: middle; dominant-baseline: middle; } .mac-graph .nm { font: 700 7px var(--mono); fill: var(--text-secondary); text-anchor: middle; }
+    .mac-graph .pkt.k3 { fill: #38bdf8; } .mac-graph .pkt.k4 { fill: #22c55e; } .mac-graph .pkt.k7 { fill: #ef4444; }
+    .mac-tasks { display: flex; flex-direction: column; gap: 4px; }
+    .mac-tasks .tk { display: grid; grid-template-columns: 22px 110px 1fr 46px; gap: 6px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .mac-tasks .bar { height: 8px; background: #0b1020; border-radius: 4px; overflow: hidden; } .mac-tasks .bar i { display: block; height: 100%; background: #475569; }
+    .mac-tasks .st2 .bar i { background: #f59e0b; } .mac-tasks .st3 .bar i { background: #22c55e; } .mac-tasks .st1 .nm { color: #fbbf24; } .mac-tasks .pr { font: 600 10px var(--mono); color: var(--text-muted); }
+    .mac-emo { display: flex; flex-direction: column; gap: 4px; }
+    .mac-emo .row { display: grid; grid-template-columns: 50px 1fr 90px; gap: 8px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .mac-emo .tr { position: relative; height: 10px; background: #0b1020; border-radius: 5px; } .mac-emo .tg { position: absolute; top: -2px; width: 3px; height: 14px; background: #f472b6; }
+    .mac-emo .pd { position: absolute; top: 2px; height: 6px; left: 0; background: #818cf8; border-radius: 3px; } .mac-emo b { font-family: var(--mono); color: var(--text-primary); }
+    .mac-shots { display: flex; flex-wrap: wrap; gap: 4px; } .mac-shots .sh { font: 600 10px var(--mono); padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; color: var(--text-secondary); }
+    .mac-topics { display: flex; flex-direction: column; gap: 5px; }
+    .mac-topics .tp { display: grid; grid-template-columns: 74px 1fr 70px 28px 90px; gap: 6px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .mac-topics .axis { position: relative; height: 18px; background: #0b1020; border-radius: 4px; }
+    .mac-topics .pp { position: absolute; top: 1px; transform: translateX(-50%); font-size: 11px; opacity: .85; }
+    .mac-topics .dec { position: absolute; top: -2px; width: 3px; height: 22px; background: #fbbf24; transform: translateX(-50%); } .mac-topics .dec.lock { background: #ef4444; width: 4px; }
+    .mac-topics .val { font: 700 11px var(--mono); color: var(--text-primary); text-align: right; }
+    .mac-topics .ov { font-size: 12px; border: 1px solid var(--line); border-radius: 6px; background: transparent; cursor: pointer; } .mac-topics .ov.on { background: #450a0a; border-color: #ef4444; }
+    .mac-log { display: flex; flex-direction: column; gap: 3px; max-height: 260px; overflow-y: auto; }
+    .mac-log .ln { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; color: var(--text-secondary); border-left: 3px solid #475569; padding: 2px 6px; }
+    .mac-log .ln b { color: var(--text-primary); } .mac-log .tm, .mac-log .mono { font: 600 10px var(--mono); color: var(--text-muted); } .mac-log .rs { font-weight: 800; }
+    .mac-log .r0 { border-color: #22c55e; } .mac-log .r1 { border-color: #94a3b8; } .mac-log .r2 { border-color: #f472b6; } .mac-log .r3 { border-color: #38bdf8; } .mac-log .r4 { border-color: #a3e635; } .mac-log .r5 { border-color: #f59e0b; } .mac-log .r6 { border-color: #ef4444; }
+    .mac-mods { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 4px; }
+    .mac-mods .mod { position: relative; text-align: left; font-size: 10px; padding: 4px 6px 7px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--text-secondary); cursor: pointer; overflow: hidden; }
+    .mac-mods .mod.on { border-color: #22c55e; color: var(--text-primary); background: color-mix(in srgb, #22c55e 10%, transparent); } .mac-mods .mod.q { border-color: #ef4444; opacity: .7; }
+    .mac-mods .mod i { position: absolute; left: 0; bottom: 0; height: 3px; background: #f59e0b; }
+    .mac-glog { display: flex; flex-wrap: wrap; gap: 4px; } .mac-glog span { font: 600 10px var(--mono); padding: 1px 6px; border-radius: 5px; background: #0b1020; color: var(--text-secondary); }
+    .mac-glog .a2, .mac-glog .a1, .mac-glog .a3 { color: #fca5a5; } .mac-glog .a0, .mac-glog .a6 { color: #86efac; } .mac-glog .a5 { color: #fdba74; }
+    .mac-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .mac-sl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 10px; align-items: end; }
+    .mac-sl label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-secondary); } .mac-sl b { font-family: var(--mono); color: var(--text-primary); } .mac-sl .ck { flex-direction: row; gap: 4px; align-items: center; }
+    .mac-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; color: var(--text-secondary); align-items: center; }
+    .mac-note { font-size: 11px; color: var(--text-muted); }
+    @@media (max-width: 1200px) { .mac-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+
+    private MultiAgentVirtualProductionCrewOrchestratorEngine Crew => Runner.Crew;
+    private AutonomousDirectorialConsensusEvaluator C => Runner.Consensus;
+    private RealtimeProductionSwarmExecutionGuard G => Runner.Guard;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Crew.Modal.Timer", ex); }
+        }, null, 200, 200);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+
+    private static string Fmt(int topic, float v) => topic switch
+    {
+        1 or 6 => F0(v) + MultiAgentVirtualProductionCrewOrchestratorEngine.TopicUnits[topic],
+        2 => F0(v) + "mm", 4 => F1(v) + "°", 5 => F1(v) + "s", 3 => F2(v) + "m/s", _ => F2(v),
+    };
+
+    private static (float X, float Y) Node(int r)
+    {
+        if (r == 0) return (0f, 0f);
+        var a = -MathF.PI / 2f + (r - 1) * MathF.Tau / 6f;
+        return (MathF.Cos(a) * 78f, MathF.Sin(a) * 74f);
+    }
+
+    private float Load(int r) { var c = Crew.Capacity((CrewRole)r); return c > 0f ? Math.Clamp(Crew.Busy((CrewRole)r) / c, 0f, 1f) : 0f; }
+
+    private RenderFragment Emo(string name, float target, float predicted) => __builder =>
+    {
+        <div class="row">
+            <span>@name</span>
+            <div class="tr"><i class="pd" style="width:@(F0(Math.Clamp(predicted, 0f, 1f) * 100))%"></i><i class="tg" style="left:@(F0(Math.Clamp(target, 0f, 1f) * 100))%"></i></div>
+            <span>목표 <b>@(F2(target))</b> · 예측 <b>@(F2(predicted))</b></span>
+        </div>
+    };
+
+    private void ToggleLock(CrewTopic t)
+    {
+        if (C.IsLocked(t)) Runner.Override(t, null);
+        else Runner.Override(t, Crew.DecidedValue(t));
+    }
+
+    private void OverrideSlider(CrewTopic t, ChangeEventArgs e)
+    {
+        if (!float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+        Runner.Override(t, MultiAgentVirtualProductionCrewOrchestratorEngine.Denormalize((int)t, v / 100f));
+    }
+
+    private void ClearAll() { C.ClearOverrides(); }
+
+    private void ToggleModule(int i, bool running)
+    {
+        if (running) G.Module(i).Stop(); else G.RequestStart(i);
+    }
+
+    private static bool TryF(ChangeEventArgs e, out float v) => float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+    private void SetF(ChangeEventArgs e, Action<float> apply) { if (TryF(e, out var v)) apply(v); }
+
+    private void Step() { for (var k = 0; k < MultiAgentCrewStudioRunner.Hz; k++) Runner.TickOnce(); }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

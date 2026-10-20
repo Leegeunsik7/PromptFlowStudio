@@ -1,0 +1,628 @@
+@using System.Globalization
+@using System.Text
+@using System.Threading
+@using Microsoft.JSInterop
+@using PromptFlowStudio.Services.DigitalTwin
+@implements IDisposable
+@inject AiDigitalTwinGeneratorEngine Twin
+@inject RealtimeWebcamMotionCaptureTracker Tracker
+@inject FacialAndHandGestureMappingController Mapper
+@inject IJSRuntime JS
+@inject IServiceProvider Services
+
+@* [PromptFlow Studio v16.36.0] 🧍 AI 디지털 트윈 & 모캡 스튜디오
+   트윈 복원(사진/영상/웹캠 스냅샷 → 3DMM 메시 · 알베도 · 피부/헤어/체형 · 패키지 · 테마 결합 · 캐릭터 프로필 등록) ·
+   라이브 모캡(웹캠 뷰포트 + 33 관절/468 안면/손 와이어프레임) · 매핑(노이즈 감도 · 표정/제스처 · 리타겟 리그) ·
+   녹화/BVH/1-Click 스토리보드 인젝션. 상태는 서비스(싱글턴) 소유 OnChange 구독 · 라이브 뷰는 33ms UI 틱. *@
+
+<div class="dt-scrim" @onclick="Close">
+    <div class="dt-modal" @onclick:stopPropagation="true">
+        <div class="dt-h">
+            <div>
+                <div class="dt-title">🧍‍♂️ AI 디지털 트윈 &amp; 모캡 스튜디오</div>
+                <div class="dt-sub">사진·영상으로 <b>실사 디지털 트윈</b>을 복원하고, 웹캠 하나로 <b>전신·표정·손가락</b>을 추적해 캐릭터에 <b>1:1 리타겟</b>합니다.</div>
+            </div>
+            <button class="dt-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="dt-bar">
+            <span class="dt-chip @(Tracker.IsRunning ? "ok" : "")">@(Tracker.IsRunning ? "● " + Tracker.SourceName : "추적 정지")</span>
+            <span class="dt-chip">@(Tracker.Fps.ToString("0", CultureInfo.InvariantCulture)) FPS</span>
+            <span class="dt-chip @(Tracker.SimdAccelerated ? "ok" : "")">SIMD @(Tracker.SimdAccelerated ? "ON" : "OFF")</span>
+            <span class="dt-chip">테마 @(Twin.CatalogSize)</span>
+            @if (Twin.Current is { } cur)
+            {
+                <span class="dt-mut">🧍 @(cur.Name) · 품질 @(cur.Quality.ToString("0", CultureInfo.InvariantCulture))</span>
+            }
+            @if (Mapper.IsRecording)
+            {
+                <span class="dt-chip rec">⏺ REC @(Mapper.RecordedFrames)</span>
+            }
+        </div>
+
+        <div class="dt-tabs">
+            <button class="@(_tab == 0 ? "on" : "")" @onclick="() => _tab = 0">🧍 디지털 트윈 복원</button>
+            <button class="@(_tab == 1 ? "on" : "")" @onclick="() => _tab = 1">🎥 라이브 모캡</button>
+            <button class="@(_tab == 2 ? "on" : "")" @onclick="() => _tab = 2">🦴 매핑 · 리타겟</button>
+            <button class="@(_tab == 3 ? "on" : "")" @onclick="() => _tab = 3">⏺ 녹화 · 인젝션</button>
+        </div>
+
+        <div class="dt-body">
+            @if (_tab == 0)
+            {
+                <div class="dt-row">
+                    <input class="dt-in grow" @bind="_path" placeholder="인물 사진/단편 영상 경로(.jpg .png .mp4 …)" />
+                    <input class="dt-in w140" @bind="_name" placeholder="이름" />
+                    <button class="dt-btn sm go" disabled="@(_busy || Twin.IsBusy || string.IsNullOrWhiteSpace(_path))" @onclick="GenerateAsync">🧬 트윈 생성</button>
+                    <button class="dt-btn sm" disabled="@(!_camOn || _busy)" @onclick="SnapshotAsync">📸 웹캠 스냅샷으로 생성</button>
+                </div>
+                @if (!Twin.FfmpegAvailable)
+                {
+                    <div class="dt-note">ffmpeg 미탐지 — 파일 디코드 불가. 웹캠 스냅샷으로 생성할 수 있습니다.</div>
+                }
+                @if (Twin.Current is { } a)
+                {
+                    <div class="dt-grid2">
+                        <div class="dt-card">
+                            <div class="dt-sec">3DMM 메시 프리뷰 · 정점 @(a.Mesh?.VertexCount ?? 0) · 삼각형 @(a.Mesh?.TriangleCount ?? 0)</div>
+                            <svg class="dt-view" viewBox="-0.6 -0.65 1.2 1.3">
+                                @foreach (var line in MeshLines(a))
+                                {
+                                    <polyline points="@line" fill="none" stroke="#22d3ee" stroke-width="0.004" stroke-opacity="0.75" />
+                                }
+                            </svg>
+                        </div>
+                        <div class="dt-card">
+                            <div class="dt-sec">자산 분석</div>
+                            <div class="dt-kv"><span>피부 톤</span><b><i class="dt-sw" style="background:@(a.SkinHex)"></i>@(AiDigitalTwinGeneratorEngine.ToneLabel(a.SkinTone)) · ITA @(a.Ita.ToString("0.0", CultureInfo.InvariantCulture))°</b></div>
+                            <div class="dt-kv"><span>헤어</span><b><i class="dt-sw" style="background:@(a.HairHex)"></i>@(HairLabel(a.Hair)) · 커버리지 @((a.HairCoverage * 100).ToString("0", CultureInfo.InvariantCulture))%</b></div>
+                            <div class="dt-kv"><span>체형</span><b>@(BodyLabel(a.Body)) · 어깨/얼굴 @(a.ShoulderRatio.ToString("0.00", CultureInfo.InvariantCulture)) · @(a.HeadsTall.ToString("0.0", CultureInfo.InvariantCulture))두신</b></div>
+                            <div class="dt-kv"><span>소스</span><b>@(a.SourceFrames)프레임 · 정체성 @(a.Features?.Length ?? 0)D</b></div>
+                            <div class="dt-sec">형상 계수</div>
+                            @for (var i = 0; i < TwinShape.Count; i++)
+                            {
+                                var v = a.Shape[i];
+                                <div class="dt-bar2"><span>@(TwinShape.Labels[i])</span><i style="width:@((v * 100).ToString("0", CultureInfo.InvariantCulture))%"></i><b>@(v.ToString("0.00", CultureInfo.InvariantCulture))</b></div>
+                            }
+                            <div class="dt-mono">@(a.PromptTokens)</div>
+                        </div>
+                    </div>
+                    <div class="dt-row">
+                        <button class="dt-btn sm" @onclick="ExportPackage">📦 패키지 내보내기(JSON · OBJ · PNG)</button>
+                        <button class="dt-btn sm" disabled="@(_busy)" @onclick="RegisterProfileAsync">👶 캐릭터 프로필 등록(v16.22.0)</button>
+                        <button class="dt-btn sm" disabled="@(Project is null)" @onclick="ApplyTwinToProject">🎯 모든 컷에 트윈 적용</button>
+                        <select class="dt-in" @bind="_loadPath">
+                            <option value="">패키지 선택 —</option>
+                            @foreach (var f in Twin.ListPackages())
+                            {
+                                <option value="@f">@(Path.GetFileName(f))</option>
+                            }
+                        </select>
+                        <button class="dt-btn sm" disabled="@string.IsNullOrEmpty(_loadPath)" @onclick="LoadPackage">📂 로드</button>
+                    </div>
+                    <div class="dt-row">
+                        <input class="dt-in grow" @bind="_themeQuery" placeholder="테마 결합 검색(예: 벚꽃 공원 산책, 신제품 발표)" />
+                        <button class="dt-btn sm" @onclick="BindThemes">🎨 204+ 테마 결합</button>
+                    </div>
+                    @if (_bindings.Count > 0)
+                    {
+                        <table class="dt-tbl">
+                            <tr><th>테마</th><th>점수</th><th>합성 프롬프트</th></tr>
+                            @foreach (var b in _bindings)
+                            {
+                                <tr><td>@(b.Title)</td><td>@(b.Score.ToString("0.000", CultureInfo.InvariantCulture))</td><td class="dt-mono">@(b.Prompt)</td></tr>
+                            }
+                        </table>
+                    }
+                }
+                else
+                {
+                    <div class="dt-empty">사진/영상 경로를 입력하거나 [🎥 라이브 모캡]에서 웹캠을 켠 뒤 스냅샷으로 트윈을 생성하세요.</div>
+                }
+            }
+            else if (_tab == 1 || _tab == 2)
+            {
+                <div class="dt-row">
+                    <select class="dt-in" @bind="_source">
+                        <option value="0">웹캠(BCL 추정)</option>
+                        <option value="1">합성 퍼포머(데모)</option>
+                        <option value="2">외부 MediaPipe 피드</option>
+                    </select>
+                    <button class="dt-btn sm go" disabled="@(_busy)" @onclick="StartAsync">▶ 추적 시작</button>
+                    <button class="dt-btn sm" disabled="@(!Tracker.IsRunning)" @onclick="StopAsync">■ 정지</button>
+                    <span class="dt-mut">프레임 @(Tracker.Frames) · 신뢰도 @((Tracker.Confidence * 100).ToString("0", CultureInfo.InvariantCulture))% · 틱 @(Tracker.TickCostMs.ToString("0.00", CultureInfo.InvariantCulture))ms</span>
+                </div>
+            }
+            @* 뷰포트는 탭 1·2 에서 유지(비디오 요소 재생성 방지) *@
+            <div class="dt-live" style="@(_tab == 1 || _tab == 2 ? "" : "display:none")">
+                <div class="dt-stage">
+                    <video id="@_videoId" class="dt-video" playsinline muted></video>
+                    <svg class="dt-ovl" viewBox="0 0 100 75" preserveAspectRatio="none">
+                        @if (_showPose)
+                        {
+                            @for (var i = 0; i + 1 < MocapTopology.PoseBones.Length; i += 2)
+                            {
+                                var a0 = MocapTopology.PoseBones[i] * 4; var b0 = MocapTopology.PoseBones[i + 1] * 4;
+                                <line x1="@X(_pose[a0])" y1="@Y(_pose[a0 + 1])" x2="@X(_pose[b0])" y2="@Y(_pose[b0 + 1])" stroke="#4ade80" stroke-width="0.6" stroke-linecap="round" />
+                            }
+                            @for (var j = 0; j < MocapFrame.PoseJoints; j++)
+                            {
+                                <circle cx="@X(_pose[j * 4])" cy="@Y(_pose[j * 4 + 1])" r="0.7" fill="#fde047" />
+                            }
+                        }
+                        @if (_showFace && _frame.FaceValid)
+                        {
+                            @for (var k = 0; k < MocapFrame.FaceLandmarks; k += 3)
+                            {
+                                <circle cx="@X(_frame.Face[k * 3])" cy="@Y(_frame.Face[k * 3 + 1])" r="0.22" fill="#f472b6" />
+                            }
+                        }
+                        @if (_showHands)
+                        {
+                            @for (var side = 0; side < 2; side++)
+                            {
+                                if (side == 0 ? !_frame.LeftValid : !_frame.RightValid) continue;
+                                var o = side * MocapFrame.HandLength;
+                                @for (var i = 0; i + 1 < MocapTopology.HandBones.Length; i += 2)
+                                {
+                                    var p0 = o + MocapTopology.HandBones[i] * 3; var p1 = o + MocapTopology.HandBones[i + 1] * 3;
+                                    <line x1="@X(_frame.HandsXyz[p0])" y1="@Y(_frame.HandsXyz[p0 + 1])" x2="@X(_frame.HandsXyz[p1])" y2="@Y(_frame.HandsXyz[p1 + 1])" stroke="@(side == 0 ? "#38bdf8" : "#fb923c")" stroke-width="0.35" />
+                                }
+                            }
+                        }
+                    </svg>
+                    @if (!Tracker.IsRunning)
+                    {
+                        <div class="dt-idle">카메라 대기 — ▶ 추적 시작</div>
+                    }
+                </div>
+                <div class="dt-side">
+                    @if (_tab == 1)
+                    {
+                        <div class="dt-sec">오버레이</div>
+                        <label class="dt-mut"><input type="checkbox" @bind="_showPose" /> 33 관절 골격</label>
+                        <label class="dt-mut"><input type="checkbox" @bind="_showFace" /> 468 안면 랜드마크</label>
+                        <label class="dt-mut"><input type="checkbox" @bind="_showHands" /> 21×2 손가락 관절</label>
+                        <div class="dt-sec">스트림</div>
+                        <div class="dt-kv"><span>소스</span><b>@(Tracker.SourceName)</b></div>
+                        <div class="dt-kv"><span>틱 / 프레임</span><b>@(Tracker.Ticks) / @(Tracker.Frames)</b></div>
+                        <div class="dt-kv"><span>안면 · 손</span><b>@(_frame.FaceValid ? "✔" : "—") · @(_frame.LeftValid ? "L" : "—")@(_frame.RightValid ? "R" : "—")</b></div>
+                        <div class="dt-kv"><span>싱크 오류</span><b>@(Tracker.SinkErrors)</b></div>
+                        @if (_source == 2)
+                        {
+                            <div class="dt-note">외부 피드: MediaPipe 사이드카/JS 가 ExternalLandmarkSource.Push 로 33/468/21 좌표를 투입하면 즉시 반영됩니다.</div>
+                        }
+                    }
+                    else
+                    {
+                        <div class="dt-sec">모션 노이즈 감도 @((_sens * 100).ToString("0", CultureInfo.InvariantCulture))</div>
+                        <input type="range" min="0" max="1" step="0.05" value="@(_sens.ToString(CultureInfo.InvariantCulture))" @oninput="OnSensitivity" />
+                        <div class="dt-kv"><span>α · 데드밴드</span><b>@(Mapper.PoseFilter.Alpha.ToString("0.00", CultureInfo.InvariantCulture)) · @(Mapper.PoseFilter.Deadband.ToString("0.0000", CultureInfo.InvariantCulture))</b></div>
+                        <div class="dt-kv"><span>지터 감소</span><b>@((_mapped.JitterReduction * 100).ToString("0", CultureInfo.InvariantCulture))% · 스파이크 @(Mapper.PoseFilter.SpikesRejected)</b></div>
+                        <div class="dt-sec">표정 → @(EmotionLabel(_mapped.Emotion)) @((_mapped.Intensity * 100).ToString("0", CultureInfo.InvariantCulture))%</div>
+                        @foreach (var (label, val) in GuideRows(_mapped.Guide))
+                        {
+                            <div class="dt-bar2 c"><span>@(label)</span><i style="margin-left:@(val < 0 ? (50 + val * 50).ToString("0", CultureInfo.InvariantCulture) : "50")%;width:@((Math.Abs(val) * 50).ToString("0", CultureInfo.InvariantCulture))%"></i><b>@(val.ToString("0.00", CultureInfo.InvariantCulture))</b></div>
+                        }
+                        <div class="dt-sec">손 제스처</div>
+                        <div class="dt-kv"><span>왼손</span><b>@(FacialAndHandGestureMappingController.GestureLabel(_mapped.Left))</b></div>
+                        <div class="dt-kv"><span>오른손</span><b>@(FacialAndHandGestureMappingController.GestureLabel(_mapped.Right))</b></div>
+                        <div class="dt-fingers">
+                            @for (var f = 0; f < 10; f++)
+                            {
+                                <i title="@FingerTitle(f)" style="@FingerStyle(f)"></i>
+                            }
+                        </div>
+                        <div class="dt-sec">리타겟 대상</div>
+                        <select class="dt-in" @bind="TargetKey">
+                            <option value="adult">성인(8두신)</option>
+                            <option value="baby">아기(4두신)</option>
+                            <option value="twin" disabled="@(Twin.Current is null)">현재 트윈</option>
+                        </select>
+                        <svg class="dt-rig" viewBox="-60 -95 120 190">
+                            @for (var i = 0; i + 1 < Rig.Bones.Length; i += 2)
+                            {
+                                var pa = Rig.Bones[i] * 3; var pb = Rig.Bones[i + 1] * 3;
+                                <line x1="@RX(pa)" y1="@RY(pa)" x2="@RX(pb)" y2="@RY(pb)" stroke="#a78bfa" stroke-width="2.4" stroke-linecap="round" />
+                            }
+                            @for (var j = 0; j < Rig.Joints; j++)
+                            {
+                                <circle cx="@RX(j * 3)" cy="@RY(j * 3)" r="2.2" fill="#fde047" />
+                            }
+                        </svg>
+                    }
+                </div>
+            </div>
+            @if (_tab == 3)
+            {
+                <div class="dt-row">
+                    <button class="dt-btn sm go" disabled="@(Mapper.IsRecording || !Tracker.IsRunning)" @onclick="BeginRecording">⏺ 녹화 시작</button>
+                    <button class="dt-btn sm" disabled="@(!Mapper.IsRecording)" @onclick="EndRecording">⏹ 정지</button>
+                    <span class="dt-mut">@(Mapper.IsRecording ? "녹화 중 " + Mapper.RecordedFrames.ToString(CultureInfo.InvariantCulture) + "프레임" : Tracker.IsRunning ? "추적 중 — 녹화 가능" : "먼저 [🎥 라이브 모캡]에서 추적을 시작하세요")</span>
+                </div>
+                @if (Mapper.LastClip is { } clip)
+                {
+                    <div class="dt-card">
+                        <div class="dt-kv"><span>클립</span><b>@(clip.Frames)프레임 · @(clip.DurationSec.ToString("0.0", CultureInfo.InvariantCulture))초 · @(clip.Fps.ToString("0", CultureInfo.InvariantCulture))fps · @(clip.Target.Label)</b></div>
+                        <div class="dt-kv"><span>동작</span><b>@(clip.ActionLabel) · 에너지 @(clip.MotionEnergy.ToString("0.0000", CultureInfo.InvariantCulture))</b></div>
+                        <div class="dt-kv"><span>지배 표정</span><b>@(EmotionLabel(clip.DominantEmotion)) @((clip.MeanIntensity * 100).ToString("0", CultureInfo.InvariantCulture))%</b></div>
+                        <div class="dt-kv"><span>제스처</span><b>L @(FacialAndHandGestureMappingController.GestureLabel(clip.DominantLeft)) · R @(FacialAndHandGestureMappingController.GestureLabel(clip.DominantRight))</b></div>
+                        <div class="dt-mono">@(clip.Action)</div>
+                    </div>
+                    <div class="dt-row">
+                        <button class="dt-btn sm" @onclick="ExportBvh">💾 BVH 내보내기(UE5/Blender)</button>
+                        <label class="dt-mut"><input type="checkbox" @bind="_append" /> 기존 컷 뒤에 추가</label>
+                        <label class="dt-mut">최대 컷 <input class="dt-in w60" type="number" min="1" max="20" @bind="_maxCuts" /></label>
+                        <label class="dt-mut"><input type="checkbox" @bind="_useTwin" disabled="@(Twin.Current is null)" /> 트윈 적용</label>
+                    </div>
+                    <input class="dt-in grow" @bind="_basePrompt" placeholder="기본 프롬프트(선택 — 비우면 자동)" />
+                }
+                else
+                {
+                    <div class="dt-empty">녹화된 클립이 없습니다. 추적 시작 → ⏺ 녹화 → ⏹ 정지.</div>
+                }
+            }
+            @if (_msg is not null)
+            {
+                <div class="dt-note @(_msg.StartsWith('⚠') ? "" : "ok")">@(_msg)</div>
+            }
+        </div>
+
+        <div class="dt-f">
+            <span class="dt-mut">@(Mapper.LastAction ?? Tracker.LastAction ?? Twin.LastAction ?? "대기")</span>
+            <button class="dt-btn go" disabled="@(Mapper.LastClip is null || Project is null)" @onclick="InjectAsync">🎬 1-Click 모션 캡처 인젝션</button>
+            <button class="dt-btn" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .dt-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .dt-modal { width: min(1200px, 97vw); max-height: 93vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .dt-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #22d3ee 12%, var(--card)), color-mix(in srgb, #4ade80 8%, var(--card))); }
+    .dt-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .dt-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .dt-sub b { color: var(--text-primary); }
+    .dt-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .dt-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .dt-tabs { display: flex; gap: 4px; padding: 8px 18px 0; border-bottom: 1px solid var(--line); }
+    .dt-tabs button { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; border: 0; background: none; color: var(--text-muted); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
+    .dt-tabs button.on { color: var(--text-primary); border-bottom-color: #22d3ee; }
+    .dt-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .dt-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .dt-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); margin: 4px 0; }
+    .dt-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .dt-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 5px; }
+    .dt-view { width: 100%; aspect-ratio: 1; background: #06080e; border-radius: 10px; }
+    .dt-kv { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--text-secondary); }
+    .dt-kv b { color: var(--text-primary); display: inline-flex; align-items: center; gap: 5px; text-align: right; }
+    .dt-sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--line); }
+    .dt-bar2 { display: grid; grid-template-columns: 64px 1fr 40px; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); position: relative; }
+    .dt-bar2 i { display: block; height: 6px; border-radius: 3px; background: linear-gradient(90deg,#22d3ee,#4ade80); }
+    .dt-bar2.c i { background: #f472b6; }
+    .dt-bar2 b { color: var(--text-primary); font: 10.5px var(--mono); text-align: right; }
+    .dt-live { display: grid; grid-template-columns: 1fr 300px; gap: 12px; }
+    .dt-stage { position: relative; aspect-ratio: 4 / 3; background: #06080e; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); }
+    .dt-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; opacity: .85; }
+    .dt-ovl { position: absolute; inset: 0; width: 100%; height: 100%; }
+    .dt-idle { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 13px; }
+    .dt-side { display: flex; flex-direction: column; gap: 6px; }
+    .dt-side input[type=range] { width: 100%; }
+    .dt-rig { width: 100%; height: 220px; background: #06080e; border-radius: 10px; }
+    .dt-fingers { display: flex; align-items: flex-end; gap: 4px; height: 44px; }
+    .dt-fingers i { width: 14px; border-radius: 4px 4px 2px 2px; background: #38bdf8; }
+    .dt-fingers i:nth-child(n+6) { background: #fb923c; }
+    .dt-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .dt-chip.ok { color: #4ade80; } .dt-chip.rec { color: #f87171; border-color: #f87171; }
+    .dt-mut { font-size: 11px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+    .dt-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; }
+    .dt-in.grow { flex: 1; min-width: 220px; } .dt-in.w60 { width: 60px; } .dt-in.w140 { width: 140px; }
+    .dt-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+    .dt-tbl th, .dt-tbl td { border-bottom: 1px solid var(--line); padding: 3px 6px; text-align: left; vertical-align: top; }
+    .dt-mono { font: 10.5px var(--mono); color: var(--text-secondary); word-break: break-word; }
+    .dt-empty { font-size: 12px; color: var(--text-muted); padding: 24px; text-align: center; border: 1px dashed var(--line); border-radius: 10px; }
+    .dt-note { font-size: 12px; color: var(--text-secondary); } .dt-note.ok { color: #4ade80; }
+    .dt-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }
+    .dt-f .dt-mut { margin-right: auto; }
+    .dt-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .dt-btn.sm { padding: 3px 8px; font-size: 11px; }
+    .dt-btn.go { background: linear-gradient(135deg,#22d3ee,#4ade80); color: #04111a; border: 0; }
+    .dt-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 860px) { .dt-grid2, .dt-live { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public StoryboardProject? Project { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback OnApplied { get; set; }
+
+    private readonly string _videoId = "dt-cam-" + Guid.NewGuid().ToString("N")[..8];
+    private readonly MocapFrame _frame = new();
+    private readonly MappedPose _mapped = new();
+    private readonly float[] _pose = new float[MocapFrame.PoseLength];
+    private readonly List<TwinThemeBinding> _bindings = new();
+    private DotNetObjectReference<DigitalTwinStudioModal>? _ref;
+    private CancellationTokenSource? _uiCts;
+    private int _tab, _source, _maxCuts = 6;
+    private float _sens = 0.5f;
+    private bool _busy, _camOn, _showPose = true, _showFace = true, _showHands = true, _append = true, _useTwin = true;
+    private string _path = "", _name = "", _loadPath = "", _themeQuery = "", _basePrompt = "", _targetKey = "adult";
+    private string? _msg, _meshFor;
+    private List<string> _meshLines = new();
+
+    protected override void OnInitialized()
+    {
+        Twin.OnChange += OnServiceChanged;
+        Tracker.OnChange += OnServiceChanged;
+        Mapper.OnChange += OnServiceChanged;
+        _sens = Mapper.Sensitivity;
+        if (Tracker.IsRunning) StartUiLoop();
+    }
+
+    private static string X(float v) => (v * 100).ToString("0.##", CultureInfo.InvariantCulture);
+    private static string Y(float v) => (v * 75).ToString("0.##", CultureInfo.InvariantCulture);
+
+    private string RX(int o) => ((_mapped.Joints[o] - _mapped.Joints[0]) * 220).ToString("0.#", CultureInfo.InvariantCulture);
+    private string RY(int o) => (-(_mapped.Joints[o + 1] - _mapped.Joints[1]) * 220 + 10).ToString("0.#", CultureInfo.InvariantCulture);
+
+    private static string FingerTitle(int f) => (f < 5 ? "L" : "R") + (f % 5).ToString(CultureInfo.InvariantCulture);
+    private string FingerStyle(int f) => "height:" + (10 + (1 - _mapped.Curls[f]) * 30).ToString("0", CultureInfo.InvariantCulture) + "px";
+
+    private static string HairLabel(TwinHairStyle h) => h switch { TwinHairStyle.Bald => "민머리", TwinHairStyle.Short => "짧은 머리", TwinHairStyle.Medium => "중간 길이", _ => "긴 머리" };
+    private static string BodyLabel(TwinBodyBuild b) => b switch { TwinBodyBuild.Slim => "슬림", TwinBodyBuild.Broad => "넓은 어깨", _ => "보통" };
+
+    private static string EmotionLabel(FacialEmotion e) => e switch
+    {
+        FacialEmotion.HappySmile => "😊 미소", FacialEmotion.Giggle => "😆 깔깔", FacialEmotion.Surprised => "😲 놀람", FacialEmotion.Curious => "🤔 호기심", FacialEmotion.Pout => "😤 삐침", _ => "😐 중립",
+    };
+
+    private static (string, double)[] GuideRows(LandmarkGuide g) => new[]
+    {
+        ("입꼬리", g.MouthCornerLift), ("입 벌림", g.MouthOpen), ("눈썹", g.BrowRaise), ("눈 크기", g.EyeOpen), ("볼", g.CheekRaise), ("오므림", g.LipPucker),
+    };
+
+    private List<string> MeshLines(DigitalTwinAsset a)
+    {
+        if (_meshFor == a.Id) return _meshLines;
+        _meshFor = a.Id;
+        _meshLines = new List<string>(TwinMesh.Rows + TwinMesh.Cols);
+        if (a.Mesh is not { } m) return _meshLines;
+        var sb = new StringBuilder(512);
+        for (var pass = 0; pass < 2; pass++)
+            for (var i = 0; i < TwinMesh.Rows; i++)
+            {
+                sb.Clear();
+                for (var k = 0; k < TwinMesh.Cols; k++)
+                {
+                    var v = pass == 0 ? i * TwinMesh.Cols + k : k * TwinMesh.Cols + i;
+                    // 정면 투영 + 깊이 약간 오프셋(입체감)
+                    var x = m.Vertices[v * 3] + m.Vertices[v * 3 + 2] * 0.08f;
+                    var y = -m.Vertices[v * 3 + 1];
+                    sb.Append(x.ToString("0.####", CultureInfo.InvariantCulture)).Append(',').Append(y.ToString("0.####", CultureInfo.InvariantCulture)).Append(' ');
+                }
+                _meshLines.Add(sb.ToString());
+            }
+        return _meshLines;
+    }
+
+    private string TargetKey
+    {
+        get => _targetKey;
+        set
+        {
+            _targetKey = value;
+            Mapper.Target = value == "baby" ? RigProportions.Baby : value == "twin" && Twin.Current is { } t ? RigProportions.FromTwin(t) : RigProportions.Adult;
+        }
+    }
+
+    private void OnSensitivity(ChangeEventArgs e)
+    {
+        if (float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) { _sens = v; Mapper.Sensitivity = v; }
+    }
+
+    // ── 트윈 ──
+    private async Task GenerateAsync()
+    {
+        _busy = true;
+        try
+        {
+            var a = await Twin.GenerateAsync(_path.Trim().Trim('"'), string.IsNullOrWhiteSpace(_name) ? null : _name);
+            _msg = a is null ? Twin.LastAction : null;
+            _bindings.Clear();
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task SnapshotAsync()
+    {
+        _busy = true;
+        try
+        {
+            const int S = AiDigitalTwinGeneratorEngine.AnalysisSize;
+            var rgba = await JS.InvokeAsync<byte[]?>("pfsMocap.snapshot", S, S);
+            if (rgba is null || rgba.Length < S * S * 4) { _msg = "⚠ 스냅샷 실패(웹캠 프레임 없음)"; return; }
+            var rgb = new byte[S * S * 3];
+            for (int i = 0, o = 0; i < S * S; i++, o += 3) { rgb[o] = rgba[i * 4]; rgb[o + 1] = rgba[i * 4 + 1]; rgb[o + 2] = rgba[i * 4 + 2]; }
+            Twin.GenerateFromRgb(rgb, S, S, string.IsNullOrWhiteSpace(_name) ? "웹캠 트윈" : _name);
+            _bindings.Clear();
+            _tab = 0;
+            _msg = null;
+        }
+        catch (Exception ex) { Program.Log("DigitalTwinStudio.Snapshot", ex); _msg = "⚠ 스냅샷 실패: " + ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private void ExportPackage()
+    {
+        if (Twin.Current is not { } a) return;
+        try { _msg = "📦 " + Twin.ExportPackage(a).Folder; }
+        catch (Exception ex) { Program.Log("DigitalTwinStudio.Export", ex); _msg = "⚠ 내보내기 실패: " + ex.Message; }
+    }
+
+    private void LoadPackage()
+    {
+        _msg = Twin.LoadPackage(_loadPath) is null ? "⚠ 로드 실패" : null;
+        _bindings.Clear();
+    }
+
+    private void BindThemes()
+    {
+        if (Twin.Current is not { } a) return;
+        _bindings.Clear();
+        _bindings.AddRange(Twin.BindThemes(a, _themeQuery, 6));
+        if (_bindings.Count == 0) _msg = "⚠ 테마 추천기 미등록/결과 없음";
+    }
+
+    private async Task RegisterProfileAsync()
+    {
+        if (Twin.Current is not { } a) return;
+        _busy = true;
+        try
+        {
+            if (Services.GetService(typeof(EpisodicStorySeriesBuilder)) is not EpisodicStorySeriesBuilder series) { _msg = "⚠ 캐릭터 시리즈 서비스 미등록"; return; }
+            if (a.TexturePath is null) Twin.ExportPackage(a);
+            var p = AiDigitalTwinGeneratorEngine.ToCharacterProfile(a);
+            if (string.IsNullOrWhiteSpace(p.FaceImagePath)) { _msg = "⚠ 얼굴 이미지 없음"; return; }
+            var (profile, message) = await series.CreateProfileAsync(p.Name, p.FaceImagePath, p.Region);
+            _msg = profile is null ? "⚠ " + message : "👶 프로필 등록 · " + profile.Name;
+        }
+        catch (Exception ex) { Program.Log("DigitalTwinStudio.Profile", ex); _msg = "⚠ 등록 실패: " + ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private async Task ApplyTwinToProject()
+    {
+        if (Project is null || Twin.Current is not { } a) return;
+        foreach (var s in Project.Scenes) AiDigitalTwinGeneratorEngine.ApplyToScene(s, a);
+        _msg = "🎯 " + Project.Scenes.Count.ToString(CultureInfo.InvariantCulture) + "컷에 트윈 적용";
+        await OnApplied.InvokeAsync();
+    }
+
+    // ── 모캡 ──
+    private async Task StartAsync()
+    {
+        _busy = true;
+        try
+        {
+            if (_source == 0)
+            {
+                _ref ??= DotNetObjectReference.Create(this);
+                _camOn = await JS.InvokeAsync<bool>("pfsMocap.start", _videoId, _ref, 96, 72, 30);
+                if (!_camOn) { _msg ??= "⚠ 웹캠을 열 수 없습니다 — 합성 퍼포머로 미리보기 가능"; return; }
+                Tracker.Start(Tracker.Webcam);
+            }
+            else
+            {
+                await StopCameraAsync();
+                Tracker.Start(_source == 1 ? Tracker.Synthetic : Tracker.External);
+            }
+            _msg = null;
+            StartUiLoop();
+        }
+        catch (Exception ex) { Program.Log("DigitalTwinStudio.Start", ex); _msg = "⚠ 시작 실패: " + ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private async Task StopAsync()
+    {
+        if (Mapper.IsRecording) Mapper.EndRecording();
+        Tracker.Stop();
+        StopUiLoop();
+        await StopCameraAsync();
+    }
+
+    private async Task StopCameraAsync()
+    {
+        if (!_camOn) return;
+        _camOn = false;
+        try { await JS.InvokeAsync<bool>("pfsMocap.stop"); } catch (Exception ex) { Program.Log("DigitalTwinStudio.StopCam", ex); }
+    }
+
+    [JSInvokable]
+    public void PushRgba(byte[] rgba, int w, int h)
+    {
+        try { Tracker.Webcam.PushRgba(rgba, w, h, Environment.TickCount64); }
+        catch (Exception ex) { Program.Log("DigitalTwinStudio.Push", ex); }
+    }
+
+    [JSInvokable]
+    public Task ReportError(string message)
+    {
+        _msg = "⚠ " + message;
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private void StartUiLoop()
+    {
+        if (_uiCts is not null) return;
+        var cts = new CancellationTokenSource();
+        _uiCts = cts;
+        _ = UiLoopAsync(cts.Token);
+    }
+
+    private void StopUiLoop()
+    {
+        var cts = Interlocked.Exchange(ref _uiCts, null);
+        if (cts is null) return;
+        try { cts.Cancel(); } catch (ObjectDisposedException) { }
+        cts.Dispose();
+    }
+
+    private async Task UiLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(33));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                if (_tab != 1 && _tab != 2 && !Mapper.IsRecording) continue;
+                Tracker.CopyLatest(_frame);
+                Tracker.SampleForRender(0.5f, _pose);
+                Mapper.CopyMapped(_mapped);
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("DigitalTwinStudio.UiLoop", ex); }
+    }
+
+    // ── 녹화 · 인젝션 ──
+    private void BeginRecording() => Mapper.BeginRecording();
+
+    private void EndRecording() => Mapper.EndRecording();
+
+    private void ExportBvh()
+    {
+        if (Mapper.LastClip is not { } clip) return;
+        try
+        {
+            var path = Path.Combine(Twin.Folder, "mocap", "take_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture) + ".bvh");
+            _msg = "💾 " + Mapper.ExportBvh(clip, path);
+        }
+        catch (Exception ex) { Program.Log("DigitalTwinStudio.Bvh", ex); _msg = "⚠ BVH 실패: " + ex.Message; }
+    }
+
+    private async Task InjectAsync()
+    {
+        if (Project is null || Mapper.LastClip is not { } clip) return;
+        var n = Mapper.InjectToProject(Project, clip, _useTwin ? Twin.Current : null, _append, _maxCuts, string.IsNullOrWhiteSpace(_basePrompt) ? null : _basePrompt);
+        _msg = n == 0 ? "⚠ 인젝션할 구간 없음" : "🎬 " + n.ToString(CultureInfo.InvariantCulture) + "컷 인젝션 완료";
+        await OnApplied.InvokeAsync();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Twin.OnChange -= OnServiceChanged;
+        Tracker.OnChange -= OnServiceChanged;
+        Mapper.OnChange -= OnServiceChanged;
+        StopUiLoop();
+        if (Mapper.IsRecording) Mapper.EndRecording();
+        Tracker.Stop();
+        if (_camOn) { _camOn = false; _ = JS.InvokeAsync<bool>("pfsMocap.stop").AsTask().ContinueWith(t => Program.Log("DigitalTwinStudio.Dispose", t.Exception!), TaskContinuationOptions.OnlyOnFaulted); }
+        _ref?.Dispose();
+    }
+}

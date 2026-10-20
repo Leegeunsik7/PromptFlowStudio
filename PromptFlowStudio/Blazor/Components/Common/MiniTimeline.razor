@@ -1,0 +1,133 @@
+@using PromptFlowStudio.Services.Storyboard
+
+@* [PromptFlow Studio] 미니 타임라인 — FFmpeg 전체 병합 전, 컷 순서·나레이션·BGM 덕킹·배속 결과를 한눈에 조율하는 초경량 미리보기.
+   순수 CSS/HTML 바인딩(외부 NuGet 0). 컷당 5초 가정(VideoMergeService.ClipSeconds 와 동일) — 실제 길이는 생성 결과에 따라 다를 수 있음. *@
+
+@if (Project is { } p && p.Scenes.Count > 0)
+{
+    <div class="mt">
+        <div class="mt-head">
+            <span class="mt-title">🎞️ 미니 타임라인</span>
+            <span class="mt-meta">@(p.Scenes.Count)컷 · @SpeedLabel · 총 @TotalLabel</span>
+        </div>
+
+        <div class="mt-grid">
+            @* 비디오 컷 트랙 *@
+            <div class="mt-lbl">🎬 컷</div>
+            <div class="mt-track">
+                @foreach (var (s, i) in p.Scenes.Select((s, i) => (s, i)))
+                {
+                    <div class="mt-cell vid @Cls(s.Status)" @key="s.Id" title="@Title(s, i)">
+                        <span class="mt-cut">컷 @(i + 1)</span>
+                        <small>@ClipLabel</small>
+                    </div>
+                }
+            </div>
+
+            @* 나레이션(TTS) 트랙 *@
+            <div class="mt-lbl">🎙 나레이션</div>
+            <div class="mt-track">
+                @foreach (var s in p.Scenes)
+                {
+                    var has = !string.IsNullOrWhiteSpace(s.VoiceText);
+                    <div class="mt-cell narr @(has ? "on" : "off")" @key="s.Id" title="@(has ? s.VoiceText : "무음")">
+                        @(has ? Trunc(s.VoiceText!) : "무음")
+                    </div>
+                }
+            </div>
+
+            @* BGM 트랙(덕킹 시각화) *@
+            <div class="mt-lbl">🎵 BGM</div>
+            <div class="mt-track">
+                @if (HasBgm)
+                {
+                    @foreach (var s in p.Scenes)
+                    {
+                        var duck = p.EnableAudioDucking && !string.IsNullOrWhiteSpace(s.VoiceText);
+                        <div class="mt-cell bgm" @key="s.Id" title="@(duck ? "덕킹 구간 — 나레이션 중 BGM 자동 감소" : "BGM 원음")">
+                            <div class="mt-bgm-bar @(duck ? "duck" : "full")" style="height:@(duck ? DuckHeight : 100)%"></div>
+                        </div>
+                    }
+                }
+                else
+                {
+                    <div class="mt-empty">BGM 없음</div>
+                }
+            </div>
+        </div>
+
+        <div class="mt-legend">
+            <span><i class="lg on"></i> 나레이션</span>
+            <span><i class="lg duck"></i> 덕킹(BGM↓)</span>
+            <span class="mt-note">※ 컷당 5초 가정 · 배속·나레이션·덕킹이 실시간 반영됩니다.</span>
+        </div>
+    </div>
+}
+
+<style>
+    .mt { border: 1px solid var(--line); border-radius: 14px; background: var(--card); padding: 12px 14px; margin-top: 16px; }
+    .mt-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .mt-title { font-size: 13px; font-weight: 800; color: var(--text-primary); }
+    .mt-meta { font: 700 11px var(--mono); color: var(--text-muted); }
+    .mt-grid { display: grid; grid-template-columns: 74px 1fr; row-gap: 6px; column-gap: 8px; align-items: center; }
+    .mt-lbl { font: 700 11px var(--mono); color: var(--text-secondary); white-space: nowrap; }
+    .mt-track { display: flex; gap: 4px; min-width: 0; }
+    .mt-cell { flex: 1; min-width: 0; border-radius: 7px; padding: 6px 6px; font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 1px solid var(--line); }
+
+    /* 비디오 컷 */
+    .mt-cell.vid { display: flex; flex-direction: column; align-items: center; gap: 1px; background: color-mix(in srgb, var(--flow-violet) 14%, var(--card-2)); color: var(--text-primary); }
+    .mt-cell.vid .mt-cut { font-weight: 800; }
+    .mt-cell.vid small { font: 600 9px var(--mono); color: var(--text-muted); }
+    .mt-cell.vid.ok { border-color: color-mix(in srgb, #10b981 45%, var(--line)); }
+    .mt-cell.vid.run { border-color: color-mix(in srgb, var(--flow-cyan) 45%, var(--line)); }
+    .mt-cell.vid.bad { border-color: color-mix(in srgb, #ef4444 45%, var(--line)); }
+
+    /* 나레이션 */
+    .mt-cell.narr { text-align: center; }
+    .mt-cell.narr.on { background: color-mix(in srgb, var(--flow-cyan) 20%, var(--card-2)); color: var(--accent-2); border-color: color-mix(in srgb, var(--flow-cyan) 40%, var(--line)); font-weight: 700; }
+    .mt-cell.narr.off { background: var(--card-2); color: var(--text-muted); }
+
+    /* BGM(덕킹 바) */
+    .mt-cell.bgm { display: flex; align-items: flex-end; height: 30px; padding: 3px; background: var(--card-2); }
+    .mt-bgm-bar { width: 100%; border-radius: 4px; transition: height .25s ease; }
+    .mt-bgm-bar.full { background: linear-gradient(180deg, var(--flow-magenta), color-mix(in srgb, var(--flow-magenta) 55%, transparent)); }
+    .mt-bgm-bar.duck { background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--flow-magenta) 45%, transparent), color-mix(in srgb, var(--flow-magenta) 45%, transparent) 4px, transparent 4px, transparent 8px); }
+    .mt-empty { flex: 1; text-align: center; font-size: 10.5px; color: var(--text-muted); padding: 8px; border: 1px dashed var(--line); border-radius: 7px; }
+
+    .mt-legend { display: flex; align-items: center; gap: 14px; margin-top: 10px; font-size: 10.5px; color: var(--text-muted); }
+    .mt-legend .lg { display: inline-block; width: 11px; height: 11px; border-radius: 3px; vertical-align: -1px; margin-right: 4px; }
+    .mt-legend .lg.on { background: color-mix(in srgb, var(--flow-cyan) 60%, var(--card-2)); }
+    .mt-legend .lg.duck { background: repeating-linear-gradient(45deg, var(--flow-magenta), var(--flow-magenta) 3px, transparent 3px, transparent 6px); }
+    .mt-note { margin-left: auto; }
+    @@media (prefers-reduced-motion: reduce) { .mt-bgm-bar { transition: none; } }
+</style>
+
+@code {
+    /// <summary>표시할 스토리보드 프로젝트(컷·배속·BGM·덕킹 설정을 읽는다).</summary>
+    [Parameter] public StoryboardProject? Project { get; set; }
+
+    private const double ClipSeconds = 5.0;   // VideoMergeService.ClipSeconds 와 동일 가정
+    private const int DuckHeight = 38;         // 덕킹 시 BGM 바 높이(%)
+
+    private double Speed => Project is null ? 1.0 : Math.Clamp(Project.PlaybackSpeed <= 0 ? 1.0 : Project.PlaybackSpeed, 0.5, 2.0);
+    private bool HasBgm => !string.IsNullOrWhiteSpace(Project?.BgmPath);
+
+    private string ClipLabel => (ClipSeconds / Speed).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "s";
+    private string TotalLabel => (((Project?.Scenes.Count ?? 0) * ClipSeconds) / Speed).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "s";
+    private string SpeedLabel => Math.Abs(Speed - 1.0) < 1e-9
+        ? "1.0x(원본)"
+        : Speed.ToString("0.0#", System.Globalization.CultureInfo.InvariantCulture) + "x";
+
+    private static string Trunc(string s) => s.Length <= 14 ? s : s[..13] + "…";
+
+    private string Title(StoryboardScene s, int i)
+        => $"컷 {i + 1} · {s.Status} · {ClipLabel}" + (string.IsNullOrWhiteSpace(s.Prompt) ? "" : $"\n{s.Prompt}");
+
+    private static string Cls(SceneStatus st) => st switch
+    {
+        SceneStatus.Completed => "ok",
+        SceneStatus.Failed or SceneStatus.Canceled => "bad",
+        SceneStatus.Generating or SceneStatus.Downloading => "run",
+        _ => "",
+    };
+}

@@ -1,0 +1,10 @@
+bin/
+obj/
+node_modules/
+dist/
+build/
+coverage/
+.next/
+.venv/
+vendor/
+*.min.js

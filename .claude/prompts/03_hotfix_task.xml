@@ -1,0 +1,11 @@
+<hotfix_task_template>
+  <objective>
+    LtsHotfixPatcher 및 QuantumResistantStateSealer 연동 규격에 맞춘 긴급 핫픽스 패시브 코드 작성.
+  </objective>
+  <constraints>
+    - Zero-Alloc Hotpath (CLAUDE.md Rule 6) 엄수 (Span<T>, ArrayPool<T> 활용)
+    - CTS 타임아웃 및 DPAPI 시크릿 폴백 (CLAUDE.md Rule 7) 적용
+    - LtsHotfixPatcher.SealExternalArtifact() 무결성 검증 통과 보장
+    - 빌드 -warnaserror 기준 Release 0/0 통과 필수
+  </constraints>
+</hotfix_task_template>

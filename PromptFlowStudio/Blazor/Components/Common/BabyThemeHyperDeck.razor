@@ -1,0 +1,228 @@
+@using PromptFlowStudio.Services.Studio
+@inject VideoFormatFactory Factory
+@inject BabyThemeDatabase Db
+@inject DigitalKeepsakeCardService Keepsake
+@inject StudioFolderLinkService FolderLink
+@inject ILocalMediaService Media
+
+@* [PromptFlow Studio] v3.7.0 초개인화 아기 하이퍼 스튜디오(Task 4) — 아트 믹서·이름/D+Day·감정 아크 그래프·즉시 합성·기념 카드(네온 글래스모피즘). *@
+
+<div class="bhd">
+    <div class="bhd-h"><span class="bhd-title">✨ 초개인화 아기 하이퍼 스튜디오</span><span class="bhd-badge">v3.7.0</span>
+        <span class="bhd-hint">세상에 단 하나뿐인 아트·구도·각인</span></div>
+
+    @if (Standalone)
+    {
+        <div class="bhd-applied @(AppliedTheme is null ? "none" : null)">
+            @if (AppliedTheme is { } th)
+            {
+                <span>🎯 적용된 테마 <b>@th.Emoji @th.Title</b> · @FormatLabel @(CutCount)컷 — 아래에서 아트·이름·감정 아크를 더해 재합성하세요.</span>
+            }
+            else
+            {
+                <span>⚠ 아직 적용된 아기 테마가 없습니다 — 먼저 상단 <b>[👶 아기 테마 백과사전]</b>에서 테마를 적용한 뒤 여기서 초개인화하세요.</span>
+            }
+        </div>
+    }
+
+    <div class="bhd-body">
+        @* ── ① 예술 텍스처 믹서 ── *@
+        <div class="bhd-sec">
+            <div class="bhd-lbl">🎨 예술 텍스처 믹서 <span class="bhd-sub">렌더마다 고유 변종</span></div>
+            <div class="bhd-arts">
+                <button class="bhd-art @(string.IsNullOrEmpty(Project.BabyArtStyle) ? "on" : null)" @onclick='() => SetArt("")' disabled="@Disabled">
+                    <span class="bhd-art-e">🎲</span><span class="bhd-art-n">랜덤 변종</span>
+                </button>
+                @foreach (var t in BabyPromptMutator.Textures)
+                {
+                    <button class="bhd-art @(Project.BabyArtStyle == t.Key ? "on" : null)" @onclick="() => SetArt(t.Key)" disabled="@Disabled" @key="t.Key">
+                        <span class="bhd-art-e">@t.Emoji</span><span class="bhd-art-n">@t.Name</span>
+                    </button>
+                }
+            </div>
+        </div>
+
+        @* ── ② 이름 · 탄생일 · D+Day ── *@
+        <div class="bhd-sec">
+            <div class="bhd-lbl">🍼 아기 이름 · 탄생일</div>
+            <div class="bhd-idrow">
+                <input class="bhd-in" value="@Project.BabyName" @oninput="OnName" placeholder="아기 이름 (예: 예준, 지아)" maxlength="20" disabled="@Disabled" />
+                <input class="bhd-in date" type="date" value="@Project.BabyBirthDate" @onchange="OnBirth" disabled="@Disabled" />
+                <div class="bhd-dday" title="탄생 D+일수">@(string.IsNullOrEmpty(Dday) ? "D-DAY" : Dday)</div>
+            </div>
+        </div>
+
+        @* ── ③ 감정 텐션 가이드 그래프 ── *@
+        <div class="bhd-sec">
+            <div class="bhd-lbl">💗 5단계 감정 마이크로 아크 <span class="bhd-sub">@(CutCount)컷 · @FormatLabel</span>
+                <label class="bhd-tg"><input type="checkbox" checked="@Project.BabyEmotionArc" @onchange="OnArc" disabled="@Disabled" /> 적용</label>
+            </div>
+            <div class="bhd-arc">
+                @foreach (var pt in ArcPreview)
+                {
+                    <div class="bhd-arc-bar" title="@(pt.Label) · 긴장도 @(pt.Tension)">
+                        <div class="bhd-arc-fill" style="height:@(pt.Tension)%; background:@pt.Hex"></div>
+                    </div>
+                }
+            </div>
+            <div class="bhd-arc-legend">
+                @foreach (var s in BabyEmotionalArcEngine.Order)
+                {
+                    <span class="bhd-lg" style="--c:@BabyEmotionalArcEngine.Hex(s)">@BabyEmotionalArcEngine.Label(s)</span>
+                }
+            </div>
+        </div>
+
+        @* ── ④ 각인 옵션 · 변종 시드 ── *@
+        <div class="bhd-sec bhd-optrow">
+            <label class="bhd-tg gold"><input type="checkbox" checked="@Project.BabyGoldKeepsake" @onchange="OnGold" disabled="@Disabled" /> 24K 골드 아우라 각인</label>
+            <div class="bhd-seed">
+                <span class="bhd-seed-l">변종 시드</span>
+                <code class="bhd-seed-v">@(Project.BabyArtSeed == 0 ? "자동(매번 새 시드)" : Project.BabyArtSeed.ToString())</code>
+                <button class="bhd-mini" @onclick="RerollSeed" disabled="@Disabled">🎲 새 시드</button>
+                @if (Project.BabyArtSeed != 0) { <button class="bhd-mini" @onclick="ClearSeed" disabled="@Disabled">고정 해제</button> }
+            </div>
+        </div>
+
+        @* ── ⑤ 액션 ── *@
+        <div class="bhd-actions">
+            <button class="bhd-btn go" @onclick="Compose" disabled="@(Disabled || _busy || string.IsNullOrWhiteSpace(EffectiveKey))">✨ 세상에 하나뿐인 컷 즉시 합성</button>
+            <button class="bhd-btn card" @onclick="IssueCard" disabled="@(Disabled || _busy)">🎗️ 4K 성장 기념 카드 발급</button>
+        </div>
+        @if (string.IsNullOrWhiteSpace(EffectiveKey))
+        {
+            <div class="bhd-note">@(Standalone ? "👆 먼저 [👶 아기 테마 백과사전]에서 아기 테마를 적용하면 즉시 합성이 활성화됩니다." : "👆 위 카테고리에서 아기 테마를 먼저 선택하면 즉시 합성이 활성화됩니다.")</div>
+        }
+        @if (_msg is not null) { <div class="bhd-msg">@_msg</div> }
+    </div>
+</div>
+
+<style>
+    .bhd { border: 1px solid color-mix(in srgb, var(--flow-magenta) 34%, var(--line)); border-radius: 16px; overflow: hidden; font-family: Pretendard, 'Malgun Gothic', sans-serif;
+        background: linear-gradient(160deg, color-mix(in srgb, var(--flow-violet) 12%, rgba(18,20,31,.72)), rgba(18,20,31,.9)); backdrop-filter: blur(16px) saturate(150%); -webkit-backdrop-filter: blur(16px) saturate(150%); }
+    .bhd-h { display: flex; align-items: center; gap: 8px; padding: 12px 15px; border-bottom: 1px solid color-mix(in srgb, var(--flow-magenta) 22%, var(--line));
+        background: linear-gradient(120deg, color-mix(in srgb, var(--flow-magenta) 15%, transparent), transparent 62%); }
+    .bhd-title { font: 900 14px Pretendard,'Malgun Gothic',sans-serif; background: linear-gradient(90deg, #f0abfc, #c4b5fd); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .bhd-badge { font: 800 10px var(--mono); color: #fff; background: linear-gradient(135deg, var(--flow-violet), var(--flow-magenta)); border-radius: 20px; padding: 2px 8px; }
+    .bhd-hint { margin-left: auto; font: 600 10.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); word-break: keep-all; }
+    /* 단독 모달: 적용 테마 배너 */
+    .bhd-applied { margin: 12px 15px 0; padding: 10px 13px; border-radius: 11px; font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; line-height: 1.5; word-break: keep-all;
+        color: #ddd6fe; background: color-mix(in srgb, var(--flow-violet) 14%, transparent); border: 1px solid color-mix(in srgb, var(--flow-violet) 34%, var(--line)); }
+    .bhd-applied b { color: #fff; }
+    .bhd-applied.none { color: #fbbf24; background: color-mix(in srgb, #f59e0b 12%, transparent); border-color: color-mix(in srgb, #f59e0b 38%, var(--line)); }
+    .bhd-applied.none b { color: #fde68a; }
+    .bhd-body { padding: 13px 15px; display: flex; flex-direction: column; gap: 13px; }
+    .bhd-sec { display: flex; flex-direction: column; gap: 8px; }
+    .bhd-lbl { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); display: flex; align-items: center; gap: 8px; }
+    .bhd-sub { font: 600 10px var(--mono); color: var(--text-muted); }
+    /* 아트 믹서 */
+    .bhd-arts { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
+    .bhd-art { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 9px 5px; border-radius: 11px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; font-family: inherit; }
+    .bhd-art:hover:not(:disabled) { border-color: var(--flow-magenta); }
+    .bhd-art.on { border-color: transparent; box-shadow: 0 0 0 2px var(--flow-magenta); background: color-mix(in srgb, var(--flow-magenta) 12%, var(--card-2)); color: var(--text-primary); }
+    .bhd-art:disabled { opacity: .5; cursor: not-allowed; }
+    .bhd-art-e { font-size: 20px; } .bhd-art-n { font: 700 10px Pretendard,'Malgun Gothic',sans-serif; text-align: center; line-height: 1.2; word-break: keep-all; }
+    /* 이름/날짜 */
+    .bhd-idrow { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .bhd-in { flex: 1; min-width: 150px; background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; color: var(--text-primary); font: 700 13px Pretendard,'Malgun Gothic',sans-serif; outline: none; }
+    .bhd-in:focus { border-color: var(--flow-magenta); } .bhd-in.date { flex: 0 0 auto; min-width: 150px; }
+    .bhd-in:disabled { opacity: .55; }
+    .bhd-dday { flex: 0 0 auto; font: 900 18px var(--mono); color: #fde68a; background: color-mix(in srgb, #f5c451 12%, transparent); border: 1px solid color-mix(in srgb, #f5c451 40%, var(--line)); border-radius: 10px; padding: 6px 14px; min-width: 96px; text-align: center; text-shadow: 0 0 10px color-mix(in srgb, #f5c451 45%, transparent); }
+    /* 감정 아크 그래프 */
+    .bhd-arc { display: flex; align-items: flex-end; gap: 3px; height: 80px; padding: 6px 8px; background: #0b0d14; border: 1px solid var(--line); border-radius: 11px; }
+    .bhd-arc-bar { flex: 1; height: 100%; display: flex; align-items: flex-end; }
+    .bhd-arc-fill { width: 100%; border-radius: 4px 4px 0 0; min-height: 3px; box-shadow: 0 0 8px currentColor; transition: height .25s ease; }
+    .bhd-arc-legend { display: flex; flex-wrap: wrap; gap: 10px; }
+    .bhd-lg { font: 700 10px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 5px; }
+    .bhd-lg::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--c); box-shadow: 0 0 6px var(--c); }
+    /* 옵션 · 시드 */
+    .bhd-optrow { flex-direction: row; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    .bhd-tg { font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+    .bhd-tg.gold { color: #fde68a; }
+    .bhd-seed { display: inline-flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+    .bhd-seed-l { font: 700 10.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); }
+    .bhd-seed-v { font: 700 10.5px var(--mono); color: #c4b5fd; background: var(--card-2); border: 1px solid var(--line); border-radius: 7px; padding: 3px 8px; }
+    .bhd-mini { font: 700 10px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-secondary); background: var(--card-2); border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; cursor: pointer; }
+    .bhd-mini:hover:not(:disabled) { border-color: var(--flow-magenta); color: var(--text-primary); } .bhd-mini:disabled { opacity: .5; cursor: not-allowed; }
+    /* 액션 */
+    .bhd-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .bhd-btn { font: 800 14px Pretendard,'Malgun Gothic',sans-serif; padding: 12px 16px; border: none; border-radius: 12px; cursor: pointer; word-break: keep-all; }
+    .bhd-btn.go { flex: 1; min-width: 240px; color: #fff; background: linear-gradient(135deg, var(--flow-violet), var(--flow-magenta)); box-shadow: 0 6px 16px color-mix(in srgb, var(--flow-magenta) 30%, transparent), inset 0 1px 0 rgba(255,255,255,.25); text-shadow: 0 1px 2px rgba(0,0,0,.35); }
+    .bhd-btn.card { color: #1a1206; background: linear-gradient(135deg, #fde68a, #f5c451); box-shadow: 0 6px 16px color-mix(in srgb, #f5c451 30%, transparent), inset 0 1px 0 rgba(255,255,255,.55); text-shadow: 0 1px 0 rgba(255,255,255,.4); }
+    .bhd-btn:hover:not(:disabled) { filter: brightness(1.07); } .bhd-btn:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
+    .bhd-note { font: 600 11px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); word-break: keep-all; }
+    .bhd-msg { font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: #c4b5fd; word-break: keep-all; line-height: 1.5; }
+</style>
+
+@code {
+    [Parameter, EditorRequired] public StoryboardProject Project { get; set; } = default!;
+    /// <summary>갤러리에서 현재 선택된 아기 테마 키(없으면 즉시 합성 비활성).</summary>
+    [Parameter] public string? SelectedKey { get; set; }
+    /// <summary>숏츠/롱폼 포맷(갤러리 토글과 공유).</summary>
+    [Parameter] public VideoFormat Format { get; set; } = VideoFormat.Shorts;
+    [Parameter] public bool Disabled { get; set; }
+    /// <summary>즉시 합성 완료 통지(부모가 모달 닫기/토스트/갱신).</summary>
+    [Parameter] public EventCallback OnComposed { get; set; }
+    /// <summary>단독 모달 모드 — 테마 백과사전에서 분리된 전용 화면. 적용 테마 키를 <see cref="SelectedKey"/>(프로젝트 PresetKey)에서 받아 안내/배너를 표시.</summary>
+    [Parameter] public bool Standalone { get; set; }
+
+    private bool _busy;
+    private string? _msg;
+
+    /// <summary>실효 테마 키 — 단독 모드에서는 아기 테마 DB 에 존재하는 키만 인정(B2B/자동차 프리셋 배제). 갤러리 모드에서는 선택 키 그대로.</summary>
+    private string? EffectiveKey => Standalone ? (Db.Get(SelectedKey) is not null ? SelectedKey : null) : SelectedKey;
+    /// <summary>현재 적용된 아기 테마 정의(배너 표시용 · 없으면 null).</summary>
+    private BabyThemeDef? AppliedTheme => Db.Get(EffectiveKey);
+
+    private string Dday => BabyKeepsakeOverlayEngine.ComputeDDay(Project.BabyBirthDate, DateTime.Now);
+    private int CutCount => Project.Scenes.Count > 0 ? Project.Scenes.Count : VideoFormatFactory.CutCountOf(Format);
+    private IReadOnlyList<ArcPoint> ArcPreview => BabyEmotionalArcEngine.Arc(CutCount);
+    private string FormatLabel => Format == VideoFormat.Shorts ? "숏츠" : "롱폼";
+
+    private void SetArt(string key) => Project.BabyArtStyle = key;
+    private void OnName(ChangeEventArgs e) => Project.BabyName = e.Value?.ToString() ?? "";
+    private void OnBirth(ChangeEventArgs e) => Project.BabyBirthDate = e.Value?.ToString() ?? "";
+    private void OnGold(ChangeEventArgs e) => Project.BabyGoldKeepsake = e.Value is true;
+    private void OnArc(ChangeEventArgs e) => Project.BabyEmotionArc = e.Value is true;
+    private void RerollSeed() => Project.BabyArtSeed = BabyPromptMutator.NewSeed();
+    private void ClearSeed() => Project.BabyArtSeed = 0;
+
+    private async Task Compose()
+    {
+        var key = EffectiveKey;
+        if (string.IsNullOrWhiteSpace(key)) { _msg = Standalone ? "먼저 아기 테마 백과사전에서 테마를 적용하세요." : "먼저 테마를 선택하세요."; return; }
+        _busy = true; _msg = null;
+        try
+        {
+            if (Project.BabyArtSeed == 0) Project.BabyArtSeed = BabyPromptMutator.NewSeed();
+            if (!Factory.Apply(Project, key!, Format)) { _msg = "⚠ 테마 적용에 실패했습니다."; return; }
+
+            var mutated = BabyPromptMutator.MutateProject(Project, Project.BabyArtSeed,
+                string.IsNullOrWhiteSpace(Project.BabyArtStyle) ? null : Project.BabyArtStyle);
+            if (Project.BabyEmotionArc) BabyEmotionalArcEngine.ApplyArc(Project);
+
+            var art = string.IsNullOrWhiteSpace(Project.BabyArtStyle) ? "랜덤 변종" : (BabyPromptMutator.FindTexture(Project.BabyArtStyle)?.Name ?? Project.BabyArtStyle);
+            _msg = $"✨ {mutated}컷 초개인화 합성 완료 — {art} · seed#{Project.BabyArtSeed}" + (Project.BabyEmotionArc ? " · 5단계 감정 아크" : "");
+            await OnComposed.InvokeAsync();
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task IssueCard()
+    {
+        _busy = true; _msg = null;
+        try
+        {
+            var dir = System.IO.Path.Combine(Media.MediaRoot, Project.Id, "keepsake");
+            var r = await Keepsake.IssueAsync(Project, dir);
+            if (r.Ok)
+            {
+                if (r.PngPath is not null) FolderLink.Reveal(r.PngPath);
+                _msg = "🎗️ " + r.Message + " — 탐색기에서 열림";
+            }
+            else _msg = "⚠ 기념 카드 발급 실패: " + r.Message;
+        }
+        catch (Exception ex) { _msg = "⚠ " + ex.Message; }
+        finally { _busy = false; }
+    }
+}

@@ -1,0 +1,211 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.StereoXr
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject SpatialComputingXrStudioRunner Runner
+
+@* [PromptFlow Studio v17.22.0] 🥽 AI 공간 컴퓨팅 & WebXR 스트리밍 스튜디오 — 양안 분할/적청 애너글리프 프리뷰 · VRS 레이트 맵 · IPD 슬라이더 · M2P 레이턴시 그래프 · ATW 가드 · WebRTC 링크 계측. *@
+
+<div class="sxs-scrim" @onclick="Close">
+    <div class="sxs-modal" @onclick:stopPropagation="true">
+        <div class="sxs-h">
+            <div>
+                <div class="sxs-title">🥽 AI 공간 컴퓨팅 &amp; WebXR 스트리밍 스튜디오</div>
+                <div class="sxs-sub"><b>렌더러</b>가 IPD 로 분리한 좌/우 비대칭 프러스텀으로 v17.21 블로킹 세트를 8×8 타일 단일 패스로 양안 셰이딩하고, HMD 시선 추적 이심률에 따라 1×1 · 2×2 · 4×4 VRS 를 적용합니다. <b>합성기</b>는 변경 타일만 RGB565 로 RTP(MTU @(WebRtcUltraLowLatencyXrSynthesizer.Mtu) B) 패킷화하고 v17.18 음성을 우드워스 ITD/ILD 바이노럴 L16 으로 보내며, 데이터 채널로 6DoF 포즈 · 컨트롤러 · 시선을 역수신합니다. <b>ATW 가드</b>는 M2P 가 @(F0(MotionToPhotonAtwReprojectionGuard.BudgetMs)) ms 를 넘거나 프레임이 반복되면 IMU 예측 회전으로 직전 프레임을 역투영합니다.</div>
+            </div>
+            <button class="sxs-x" @onclick="Close">✕</button>
+        </div>
+        <div class="sxs-bar">
+            <button class="sxs-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 가동")</button>
+            <button class="sxs-btn" @onclick="Step30" disabled="@Runner.IsRunning">⏭ 0.5초</button>
+            <button class="sxs-btn @(Runner.HeadMotion ? "on" : null)" @onclick="() => Runner.SetHeadMotion(!Runner.HeadMotion)">🙆 헤드 모션</button>
+            <span class="sxs-chip">틱 @(F2(Runner.LastTickMs)) ms · 양안 렌더 @(F2(R.LastRenderUs / 1000)) ms · 부호화 @(F2(L.LastEncodeUs / 1000)) ms · 워프 @(F2(G.LastWarpUs / 1000)) ms</span>
+            <span class="sxs-chip @(G.EffectiveM2pMs <= MotionToPhotonAtwReprojectionGuard.BudgetMs ? "ok" : "warn")">M2P @(F1(G.EffectiveM2pMs)) ms @(G.EffectiveM2pMs <= MotionToPhotonAtwReprojectionGuard.BudgetMs ? "편안" : "멀미 위험")</span>
+        </div>
+        <div class="sxs-main">
+            <div class="sxs-col">
+                <div class="sxs-card">
+                    <div class="sxs-sec">👓 HMD 표시 프리뷰(ATW 후)
+                        @foreach (var v in Views)
+                        {
+                            var vv = v;
+                            <button class="sxs-btn sm @(Runner.View == vv ? "on" : null)" @onclick="() => Runner.SetView(vv)">@(ViewName(vv))</button>
+                        }
+                    </div>
+                    <div class="sxs-vp @(Runner.View == StereoView.Anaglyph ? "ana" : null)">
+                        <img src="data:image/bmp;base64,@(Runner.RenderBase64())" alt="stereo preview" />
+                        @if (Runner.View != StereoView.Anaglyph)
+                        {
+                            <i class="split"></i>
+                            <i class="gz" style="left:@(Pct(Runner.Gaze.X * 0.5));top:@(Pct(Runner.Gaze.Y))"></i>
+                            <i class="gz" style="left:@(Pct(0.5 + Runner.Gaze.X * 0.5));top:@(Pct(Runner.Gaze.Y))"></i>
+                            <span class="lb l">L</span><span class="lb r">R</span>
+                        }
+                        else
+                        {
+                            <i class="gz" style="left:@(Pct(Runner.Gaze.X));top:@(Pct(Runner.Gaze.Y))"></i>
+                        }
+                        @if (G.Engaged)
+                        {
+                            <span class="atw">⏱ ATW @(G.Repeat ? "· 반복 프레임" : "")</span>
+                        }
+                    </div>
+                    <div class="sxs-kv">시선 <b>액터 @(Runner.GazeActor + 1)</b> (@(F2(Runner.Gaze.X)), @(F2(Runner.Gaze.Y))) · 셰이딩 <b>@(F0(R.ShadingRatio * 100))%</b> · 중심와 타일 @(R.FoveaTiles)/@(StereoscopicFoveatedRenderingEngine.Tiles * 2) · @(F2(R.PixelsPerDegree)) px/° · 프레임 @(R.Frames)</div>
+                </div>
+
+                <div class="sxs-card">
+                    <div class="sxs-sec">📈 Motion-to-Photon 레이턴시 · 회전 잔차</div>
+                    <svg class="sxs-ser" viewBox="0 0 360 80" preserveAspectRatio="none">
+                        <line class="bud" x1="0" x2="360" y1="@(F1(Y(MotionToPhotonAtwReprojectionGuard.BudgetMs, 80, 80)))" y2="@(F1(Y(MotionToPhotonAtwReprojectionGuard.BudgetMs, 80, 80)))" />
+                        <polyline class="raw" points="@(Series(Runner.RawM2pSeries, 80, 80))" /><polyline class="eff" points="@(Series(Runner.EffectiveM2pSeries, 80, 80))" /><polyline class="unc" points="@(Series(Runner.UncorrectedSeries, 8, 80))" /><polyline class="res" points="@(Series(Runner.ResidualSeries, 8, 80))" />
+                    </svg>
+                    <div class="sxs-legend"><i class="raw"></i>원 M2P(0–80 ms) <i class="eff"></i>실효 M2P <i class="bud"></i>예산 @(F0(MotionToPhotonAtwReprojectionGuard.BudgetMs)) ms <i class="unc"></i>미보정 회전(0–8°) <i class="res"></i>ATW 잔차</div>
+                    <div class="sxs-kv">원 M2P <b class="@(G.RawM2pMs > MotionToPhotonAtwReprojectionGuard.BudgetMs ? "warn" : null)">@(F1(G.RawM2pMs)) ms</b> · 최대 @(F1(G.MaxRawM2pMs)) ms · 실효 <b>@(F1(G.EffectiveM2pMs)) ms</b> · 잔차 <b>@(F2(G.ResidualDeg))°</b> / 미보정 @(F2(G.UncorrectedDeg))° · 가장자리 @(F1(G.EdgeFill * 100))%</div>
+                    <div class="sxs-kv">스파이크 프레임 @(G.SpikeFrames) · 방어 <b>@(G.Defended)</b> · 반복 @(G.Repeats) · 워프 @(G.Warps)/@(G.Frames) · 멀미 위험 <b class="@(G.ComfortViolations > 0 ? "warn" : null)">@(G.ComfortViolations)</b></div>
+                </div>
+            </div>
+
+            <div class="sxs-col">
+                <div class="sxs-card">
+                    <div class="sxs-sec">👀 양안 · 포비티드 렌더링
+                        <button class="sxs-btn sm @(R.VrsEnabled ? "on" : null)" @onclick="() => Runner.SetVrs(!R.VrsEnabled)">🔍 VRS</button>
+                    </div>
+                    <div class="sxs-ctl">
+                        <label class="sxs-sl">IPD <b>@(F1(R.IpdMm)) mm</b><input type="range" min="@(F0(StereoscopicFoveatedRenderingEngine.MinIpd))" max="@(F0(StereoscopicFoveatedRenderingEngine.MaxIpd))" step="0.5" value="@(F1(R.IpdMm))" @onchange="e => Runner.SetIpd((float)Num(e, 63))" /></label>
+                        <label class="sxs-sl">수렴 <b>@(F1(R.ConvergenceM)) m</b><input type="range" min="0.5" max="20" step="0.5" value="@(F1(R.ConvergenceM))" @onchange="e => Runner.SetConvergence((float)Num(e, 4))" /></label>
+                        <label class="sxs-sl">중심와 <b>@(F0(R.FoveaDeg))°</b><input type="range" min="4" max="40" step="1" value="@(F0(R.FoveaDeg))" @onchange="e => Runner.SetFovea((float)Num(e, 12))" /></label>
+                    </div>
+                    <div class="sxs-meter">
+                        <span class="nm">셰이딩 비용</span>
+                        <span class="bar"><i style="width:@(Pct(R.ShadingRatio))"></i></span>
+                        <span class="v">샘플 <b>@(R.ShadedSamples)</b> / @(StereoscopicFoveatedRenderingEngine.EN * 2) · 절감 @(F0((1 - R.ShadingRatio) * 100))% · 화각 @(F0(R.FovHDeg))° · 근주변 @(F0(R.MidDeg))°</span>
+                    </div>
+                </div>
+
+                <div class="sxs-card">
+                    <div class="sxs-sec">📡 WebRTC 링크
+                        <button class="sxs-btn sm @(L.Spikes ? "on" : null)" @onclick="() => Runner.SetSpikes(!L.Spikes)">📶 스파이크</button>
+                    </div>
+                    <div class="sxs-ctl">
+                        <label class="sxs-sl">지터 <b>@(F1(L.JitterMs)) ms</b><input type="range" min="0" max="30" step="0.5" value="@(F1(L.JitterMs))" @onchange="e => Runner.SetJitter((float)Num(e, 2))" /></label>
+                        <label class="sxs-sl">손실 <b>@(F1(L.LossRate * 100))%</b><input type="range" min="0" max="10" step="0.5" value="@(F1(L.LossRate * 100))" @onchange="e => Runner.SetLoss((float)Num(e, 0))" /></label>
+                    </div>
+                    <svg class="sxs-ser sm" viewBox="0 0 360 40" preserveAspectRatio="none">
+                        <polyline class="mb" points="@(Series(Runner.BitrateSeries, 40, 40))" /><polyline class="sh" points="@(Series(Runner.ShadingSeries, 1, 40))" />
+                    </svg>
+                    <div class="sxs-legend"><i class="mb"></i>비트레이트(0–40 Mbps) <i class="sh"></i>셰이딩 비율</div>
+                    <div class="sxs-kv">비트레이트 <b>@(F1(L.BitrateMbps)) Mbps</b> · 프레임 @(F1(L.LastFrameBytes / 1024.0)) KB / @(L.LastFramePackets) 패킷 · 타일 @(L.LastTilesSent) 전송 · @(L.LastTilesSkipped) 생략 · 키프레임 @(L.KeyFrames) · 링크 지연 @(F1(L.LinkDelayMs)) ms</div>
+                    <div class="sxs-kv">복호 @(L.FramesDecoded) · 손상 <b class="@(L.FramesCorrupted > 0 ? "warn" : null)">@(L.FramesCorrupted)</b> · 손실 패킷 @(L.LostPackets) · 체공 @(L.InFlight) · 오디오 @(L.AudioDecoded) 패킷 · L @(F2(L.AudioLevelL)) / R @(F2(L.AudioLevelR)) · ITD @(F0(L.AudioItdUs)) µs</div>
+                    <div class="sxs-kv">데이터 채널 포즈 @(L.PosesReceived) · 순서 역전 @(L.StaleDrops) · 손상 @(L.CorruptDrops) · 트리거 @(F2(L.LatestPose.Trigger)) · 버튼 @("0x" + L.LatestPose.Buttons.ToString("X2", CultureInfo.InvariantCulture))</div>
+                </div>
+
+                <div class="sxs-card">
+                    <div class="sxs-sec">⏱ ATW 리프로젝션 가드
+                        @foreach (var m in Modes)
+                        {
+                            var mm = m;
+                            <button class="sxs-btn sm @(G.Mode == mm ? "on" : null)" @onclick="() => Runner.SetAtw(mm)">@(ModeName(mm))</button>
+                        }
+                        <button class="sxs-btn sm @(G.Prediction ? "on" : null)" @onclick="() => Runner.SetPrediction(!G.Prediction)">📈 IMU 예측</button>
+                    </div>
+                    <div class="sxs-kv">IMU → 광자 @(F1(G.AtwLeadMs)) ms · 개입 임계 @(F2(G.EngageDeg))° · 현재 @(G.Engaged ? "워프 중" : "패스스루")</div>
+                </div>
+                <div class="sxs-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .sxs-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .sxs-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .sxs-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #8b5cf6 16%, var(--card)), color-mix(in srgb, #06b6d4 12%, var(--card))); }
+    .sxs-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .sxs-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .sxs-sub b { color: var(--text-primary); }
+    .sxs-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .sxs-bar { display: flex; flex-wrap: wrap; gap: 6px 10px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .sxs-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; } .sxs-btn:disabled { opacity: .4; cursor: default; }
+    .sxs-btn.sm { font-size: 10px; padding: 2px 8px; } .sxs-btn.on { background: color-mix(in srgb, #8b5cf6 24%, transparent); border-color: #a78bfa; }
+    .sxs-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .sxs-chip.ok { border-color: #22c55e; color: #86efac; } .sxs-chip.warn { border-color: #eab308; color: #fde68a; }
+    .sxs-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .sxs-sl b { font-family: var(--mono); color: var(--text-primary); } .sxs-sl input { width: 110px; }
+    .sxs-main { display: grid; grid-template-columns: 1.25fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .sxs-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .sxs-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+    .sxs-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .sxs-ctl { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+    .sxs-vp { position: relative; aspect-ratio: 32 / 9; background: #030712; border-radius: 8px; overflow: hidden; } .sxs-vp.ana { aspect-ratio: 16 / 9; }
+    .sxs-vp img { display: block; width: 100%; height: 100%; object-fit: fill; image-rendering: auto; }
+    .sxs-vp .split { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px; background: #000; pointer-events: none; }
+    .sxs-vp .gz { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; border: 2px solid #22d3ee; box-shadow: 0 0 8px #22d3ee; pointer-events: none; }
+    .sxs-vp .lb { position: absolute; top: 6px; font: 700 10px var(--mono); color: #e9d5ff; background: rgba(0,0,0,.5); padding: 1px 6px; border-radius: 6px; } .sxs-vp .lb.l { left: 8px; } .sxs-vp .lb.r { left: calc(50% + 8px); }
+    .sxs-vp .atw { position: absolute; bottom: 6px; right: 8px; font: 700 10px var(--mono); color: #fde68a; background: rgba(0,0,0,.55); padding: 1px 6px; border-radius: 6px; }
+    .sxs-ser { width: 100%; height: 80px; background: #030712; border-radius: 6px; } .sxs-ser.sm { height: 40px; }
+    .sxs-ser polyline, .sxs-ser line { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+    .sxs-ser .raw { stroke: #f87171; } .sxs-ser .eff { stroke: #4ade80; } .sxs-ser .bud { stroke: #eab308; stroke-dasharray: 4 3; } .sxs-ser .unc { stroke: #f472b6; } .sxs-ser .res { stroke: #22d3ee; } .sxs-ser .mb { stroke: #a78bfa; } .sxs-ser .sh { stroke: #fbbf24; }
+    .sxs-meter { display: grid; grid-template-columns: 90px 1fr; gap: 2px 10px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .sxs-meter .nm { font-weight: 700; color: var(--text-primary); } .sxs-meter .v { grid-column: 2; font-family: var(--mono); min-width: 0; overflow-wrap: anywhere; } .sxs-meter .v b { color: #a78bfa; }
+    .sxs-meter .bar { position: relative; height: 12px; background: #0f172a; border-radius: 6px; overflow: hidden; }
+    .sxs-meter .bar i { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, #6d28d9, #22d3ee); border-radius: 6px; transition: width .2s; }
+    .sxs-legend, .sxs-kv { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11px; line-height: 1.45; color: var(--text-secondary); align-items: center; min-width: 0; overflow-wrap: anywhere; } .sxs-kv b { color: var(--text-primary); } .sxs-kv b.warn { color: #fde68a; }
+    .sxs-legend i { display: inline-block; width: 10px; height: 8px; border-radius: 2px; margin-right: 2px; }
+    .sxs-legend .raw { background: #f87171; } .sxs-legend .eff { background: #4ade80; } .sxs-legend .bud { background: #eab308; } .sxs-legend .unc { background: #f472b6; } .sxs-legend .res { background: #22d3ee; } .sxs-legend .mb { background: #a78bfa; } .sxs-legend .sh { background: #fbbf24; }
+    .sxs-note { font-size: 11px; color: var(--text-muted); word-break: break-all; }
+    @@media (max-width: 1100px) { .sxs-main { grid-template-columns: 1fr; } .sxs-meter { grid-template-columns: 1fr; } .sxs-meter .v { grid-column: 1; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly StereoView[] Views = { StereoView.SideBySide, StereoView.Anaglyph, StereoView.RateMap };
+    private static readonly AtwMode[] Modes = { AtwMode.Auto, AtwMode.Always, AtwMode.Off };
+    private System.Threading.Timer? _timer;
+
+    private StereoscopicFoveatedRenderingEngine R => Runner.Renderer;
+    private WebRtcUltraLowLatencyXrSynthesizer L => Runner.Link;
+    private MotionToPhotonAtwReprojectionGuard G => Runner.Guard;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("StereoXr.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string ViewName(StereoView v) => v switch { StereoView.Anaglyph => "🟥🟦 애너글리프", StereoView.RateMap => "🗺 VRS 맵", _ => "◫ 양안 분할" };
+    private static string ModeName(AtwMode m) => m switch { AtwMode.Auto => "🛡 자동", AtwMode.Always => "⏱ 항상", _ => "⛔ 끔" };
+    private static string Pct(double v) => (Math.Clamp(v, 0, 1) * 100).ToString("0.##", CultureInfo.InvariantCulture) + "%";
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+    private static double Y(double v, double max, double h) => h - 2 - (h - 4) * Math.Clamp(v / max, 0, 1);
+
+    private string Series(Func<int, float> f, double max, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (SpatialComputingXrStudioRunner.SeriesLen - 1))).Append(',').Append(F1(Y(f(i), max, h))).Append(' ');
+        return sb.ToString();
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step30() { for (var i = 0; i < SpatialComputingXrStudioRunner.Hz / 2; i++) Runner.Step(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중 갱신은 250 ms 타이머가 처리 — 정지 상태 변경만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

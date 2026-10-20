@@ -1,0 +1,215 @@
+@using System.Threading
+@using Microsoft.AspNetCore.Components.Routing
+@using PromptFlowStudio.Services.Mobile
+@implements IDisposable
+@inject NavigationManager Nav
+@inject PromptFlowStudio.Services.Ui.SidebarGuideService Guide
+
+@* [PromptFlow Studio v5.6.1·v5.6.2 · Task2/3] 모바일 햄버거 드로어 — PC MainLayout 사이드바와 100% 대칭(순수 Blazor · 외부 JS 0).
+   ⚠ 그룹/명칭/아이콘/라우트/순서를 실제 PC 사이드바 그대로 미러링(제약사항 2). 클릭 시 동일 라우트 이동.
+   v5.6.2: 항목 마우스 호버 또는 500ms 롱프레스(터치) 시 SidebarGuideService 가이드 툴팁을 드로어 상단에 표출(Pure Pointer Events + BCL Task 타이머). *@
+
+<button class="mnd-burger" @onclick="() => _open = true" @onclick:stopPropagation="true" title="메뉴 탐색">☰</button>
+
+@if (_open)
+{
+    <div class="mnd-scrim" @onclick="Close"></div>
+    <aside class="mnd-drawer" @onpointerdown:stopPropagation="true">
+        <div class="mnd-head"><span>메뉴 탐색</span><button class="mnd-x" @onclick="Close">✕</button></div>
+
+        @* 롱프레스/호버 가이드 툴팁(드로어 상단 팝업) *@
+        @if (_guide is not null)
+        {
+            <div class="mnd-tip">
+                <span class="mnd-tip-h">@_guide.Icon @_guide.Title</span>
+                <span class="mnd-tip-s">@_guide.Summary</span>
+                <span class="mnd-tip-r">@_guide.Role</span>
+            </div>
+        }
+
+        <nav class="mnd-menu">
+            <div class="mnd-grp">스튜디오</div>
+            @foreach (var m in Studio) { @RenderItem(m) }
+            <div class="mnd-grp">생성 워크플로우</div>
+            @foreach (var m in Workflow) { @RenderItem(m) }
+            @* v5.6.5: PC 에 없는 모바일 단말 특화 — 라우트가 아니라 모바일 덱 내부 뷰/오버레이를 연다. *@
+            <div class="mnd-grp mnd-grp-mob">모바일 특화</div>
+            @foreach (var m in MobileExtras) { @RenderExtra(m) }
+            <div class="mnd-grp">시스템</div>
+            @foreach (var m in System) { @RenderItem(m) }
+        </nav>
+    </aside>
+}
+
+@code {
+    /// <summary>메뉴 선택 후 콜백(선택) — 부모가 시뮬레이터를 닫는 등 후처리.</summary>
+    [Parameter] public EventCallback OnNavigate { get; set; }
+
+    /// <summary>v5.6.5: 모바일 특화 항목(gyro/haptic/offline) 클릭 — 부모(MobileStudioDeck)가 해당 뷰/오버레이를 연다.</summary>
+    [Parameter] public EventCallback<string> OnMobileAction { get; set; }
+    /// <summary>v5.7.3: 모바일 내부 라우팅 콜백 — 있으면 PC NavigationManager.NavigateTo 대신 시뮬레이터 내부 화면 전환(PC 화면 전환 버그 차단).</summary>
+    [Parameter] public EventCallback<string> OnInternalNav { get; set; }
+    /// <summary>v5.7.4: 현재 모바일 내부 뷰 — 드로어 메뉴 활성 하이라이트 실시간 동기화(내부 라우트 전환 시 라우트 미변경이라 이 값으로 판정).</summary>
+    [Parameter] public MobileInternalView CurrentInternalView { get; set; } = MobileInternalView.Workspace;
+
+    private bool _open;
+    private PromptFlowStudio.Services.Ui.SidebarGuide? _guide;   // 표시 중인 가이드
+    private bool _longPressed;                                    // 롱프레스로 툴팁을 띄운 직후엔 클릭(내비) 억제
+    private CancellationTokenSource? _pressCts;
+
+    // v5.6.3: 라우트 변경 시 활성 항목 하이라이트 실시간 동기화(PC NavLink 와 대칭).
+    protected override void OnInitialized() => Nav.LocationChanged += OnLocationChanged;
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs e) => InvokeAsync(StateHasChanged);
+
+    private sealed record NavItem(string Route, string Icon, string Label);
+
+    // ⚠ MainLayout.razor 사이드바와 동일(그룹/라우트/아이콘/명칭/순서 미러링). 모바일 시뮬 버튼(PC 전용 · 라우팅 아님)은 제외.
+    private static readonly NavItem[] Studio =
+    {
+        new("", "🎬", "워크스페이스"),
+    };
+    private static readonly NavItem[] Workflow =
+    {
+        new("workspace", "✍️", "프롬프트 입력"),
+        new("storyboard", "🎞️", "스토리보드"),
+        new("batch", "🏭", "대량 양산"),
+        new("motion", "🎥", "모션·카메라"),
+        new("queue", "⏳", "렌더링 큐"),
+        new("gallery", "🖼️", "갤러리"),
+        new("flow", "🕹️", "노드 오케스트레이터"),   // v5.6.2 정식 추가(갤러리 다음)
+    };
+    private static readonly NavItem[] System =
+    {
+        new("user-settings", "🎚️", "사용자 설정"),
+        new("settings", "⚙️", "관리자 설정"),
+    };
+
+    // v5.6.5: 모바일 단말 특화(라우트 아님 · Route 필드를 액션 키로 재사용).
+    private static readonly NavItem[] MobileExtras =
+    {
+        new("nodegrid", "⚡", "GPU 노드 그리드"),   // v6.0.1-b: 원격 GPU 워커 분산 렌더 HUD
+        new("audiosync", "🎼", "오디오 스튜디오"),   // v6.0.2: 보컬 립싱크 파형 스튜디오
+        new("livestream", "📡", "라이브 프리뷰"),    // v6.1.0: WebRTC 초저지연 프리뷰
+        new("webhooklog", "🔗", "Webhook 로그"),     // v6.1.0: B2B Webhook 발송 로그
+        new("gyro", "📱", "자이로 3D 모션"),
+        new("haptic", "📳", "햅틱 스크러버"),
+        new("offline", "📥", "오프라인 큐"),
+    };
+
+    private RenderFragment RenderItem(NavItem m) =>
+        @<button class="mnd-item @((IsActive(m.Route) || IsInternalActive(m.Route)) ? "active" : null)"
+                 @onclick="() => OnItemClick(m)"
+                 @onmouseenter="() => ShowGuide(m)" @onmouseleave="HideGuide"
+                 @onpointerdown="() => BeginPress(m)" @onpointerup="EndPress" @onpointercancel="EndPress">
+            <span class="mnd-ic">@m.Icon</span><span>@m.Label</span>
+        </button>;
+
+    // 모바일 특화 항목 — 라우트 내비 대신 부모 액션 콜백(가이드/롱프레스 불필요).
+    private RenderFragment RenderExtra(NavItem m) =>
+        @<button class="mnd-item mnd-extra" @onclick="() => OnExtraClick(m)">
+            <span class="mnd-ic">@m.Icon</span><span>@m.Label</span>
+        </button>;
+
+    private void Close() { _open = false; HideGuide(); }
+
+    private bool IsActive(string route)
+    {
+        var cur = Nav.ToBaseRelativePath(Nav.Uri).Split('?')[0].TrimEnd('/');
+        return string.Equals(cur, route.TrimEnd('/'), StringComparison.OrdinalIgnoreCase);
+    }
+
+    // v5.7.4: 모바일 내부 뷰(CurrentInternalView) 기준 활성 판정(내부 라우팅은 URL을 바꾸지 않으므로 IsActive 대신 이걸로 동기화).
+    private bool IsInternalActive(string route) => route switch
+    {
+        "storyboard" => CurrentInternalView == MobileInternalView.Storyboard,
+        "workspace" => CurrentInternalView == MobileInternalView.Prompt,
+        "flow" => CurrentInternalView == MobileInternalView.Flow,
+        "gallery" => CurrentInternalView == MobileInternalView.Gallery,
+        "settings" or "user-settings" => CurrentInternalView == MobileInternalView.Settings,
+        "" => CurrentInternalView == MobileInternalView.Workspace,
+        _ => false,
+    };
+
+    private async Task OnItemClick(NavItem m)
+    {
+        if (_longPressed) { _longPressed = false; return; }   // 롱프레스(툴팁)였으면 내비 억제
+        _open = false; HideGuide();
+        // v5.7.3: 내부 라우팅 콜백이 있으면 시뮬레이터 안에서만 전환(PC NavigateTo 미호출). 없을 때만 PC 라우팅 폴백.
+        if (OnInternalNav.HasDelegate) await OnInternalNav.InvokeAsync(m.Route);
+        else Nav.NavigateTo(m.Route);
+        if (OnNavigate.HasDelegate) await OnNavigate.InvokeAsync();
+    }
+
+    // v5.6.5: 모바일 특화 항목 — 라우트 대신 부모(MobileStudioDeck)가 뷰/오버레이를 연다.
+    private async Task OnExtraClick(NavItem m)
+    {
+        _open = false; HideGuide();
+        if (OnMobileAction.HasDelegate) await OnMobileAction.InvokeAsync(m.Route);   // m.Route = 액션 키(gyro/haptic/offline)
+        if (OnNavigate.HasDelegate) await OnNavigate.InvokeAsync();
+    }
+
+    // ── 호버(마우스) 즉시 / 롱프레스(터치) 500ms 가이드 툴팁 ──
+    private void ShowGuide(NavItem m) => _guide = Guide.Get(m.Route);
+    private void HideGuide() { _guide = null; EndPress(); }
+
+    private void BeginPress(NavItem m)
+    {
+        EndPress();
+        _longPressed = false;
+        _pressCts = new CancellationTokenSource();
+        _ = LongPressAsync(m, _pressCts.Token);
+    }
+
+    private async Task LongPressAsync(NavItem m, CancellationToken ct)
+    {
+        try { await Task.Delay(500, ct); }                    // BCL 타이머(외부 라이브러리 0)
+        catch (OperationCanceledException) { return; }        // 500ms 전 손 뗌 = 일반 탭(내비)
+        _longPressed = true;
+        ShowGuide(m);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void EndPress() { try { _pressCts?.Cancel(); } catch { } }
+
+    public void Dispose()
+    {
+        Nav.LocationChanged -= OnLocationChanged;
+        try { _pressCts?.Cancel(); _pressCts?.Dispose(); } catch { }
+    }
+}
+
+<style>
+    .mnd-burger { width: 36px; height: 32px; border-radius: 9px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); font-size: 15px; cursor: pointer; }
+    .mnd-burger:hover { border-color: #7c5cff; color: var(--text-primary); }
+    .mnd-scrim { position: absolute; inset: 0; z-index: 40; background: rgba(0,0,0,.5); }
+    .mnd-drawer { position: absolute; top: 0; left: 0; bottom: 0; z-index: 41; width: min(244px, 84%); display: flex; flex-direction: column;
+        background: linear-gradient(160deg, color-mix(in srgb,#7c5cff 12%, rgba(11,13,20,.98)), rgba(11,13,20,.99)); border-right: 1px solid color-mix(in srgb,#7c5cff 30%, var(--line));
+        box-shadow: 6px 0 24px rgba(0,0,0,.5); animation: mndSlide .2s ease both; }
+    @@keyframes mndSlide { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+    .mnd-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--line); font: 900 12.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); flex: 0 0 auto; }
+    .mnd-x { border: none; background: none; color: var(--text-muted); font-size: 14px; cursor: pointer; width: 28px; height: 28px; border-radius: 7px; }
+    .mnd-x:hover { background: var(--card-2); color: var(--text-primary); }
+    /* 가이드 툴팁 */
+    .mnd-tip { margin: 8px; padding: 9px 11px; border-radius: 10px; border: 1px solid color-mix(in srgb,#22d3ee 34%, var(--line)); background: color-mix(in srgb,#22d3ee 10%, var(--card-2));
+        display: flex; flex-direction: column; gap: 3px; animation: mndTip .15s ease both; flex: 0 0 auto; }
+    @@keyframes mndTip { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+    .mnd-tip-h { font: 800 11px Pretendard,'Malgun Gothic',sans-serif; color: #7dd3fc; }
+    .mnd-tip-s { font: 600 10px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-secondary); line-height: 1.5; word-break: keep-all; }
+    .mnd-tip-r { font: 700 9px var(--mono); color: var(--text-muted); }
+    /* v6.2.x(C): 내부 패딩 12→8px 밀도 압축 + 상하단 스크롤 인디케이터 힌트(mask 그래디언트로 더 있음을 암시). */
+    .mnd-menu { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 3px;
+        -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%);
+        mask-image: linear-gradient(to bottom, transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%); }
+    .mnd-grp { font: 800 9.5px var(--mono); color: var(--text-muted); letter-spacing: .08em; padding: 7px 8px 3px; }
+    .mnd-item { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 0 11px; border-radius: 10px; border: 1px solid transparent; background: transparent; color: var(--text-secondary); cursor: pointer; font: 700 12.5px Pretendard,'Malgun Gothic',sans-serif; text-align: left; touch-action: none; user-select: none; -webkit-user-select: none; }
+    .mnd-item:hover { background: var(--card-2); color: var(--text-primary); }
+    /* v5.6.3: 현재 라우트 활성 — PC 사이드바 .nav-item.active 와 동일 네온 톤 동기화 */
+    .mnd-item.active { color: #fff; background: color-mix(in srgb,#22d3ee 16%, transparent);
+        box-shadow: inset 3px 0 0 #22d3ee, 0 0 14px color-mix(in srgb,#22d3ee 40%, transparent);
+        border-color: color-mix(in srgb,#22d3ee 45%, var(--line)); }
+    /* v5.6.5: 모바일 특화 그룹/항목 강조(시안 톤) */
+    .mnd-grp-mob { color: #7dd3fc; }
+    .mnd-extra { color: #7dd3fc; }
+    .mnd-extra:hover { background: color-mix(in srgb,#22d3ee 12%, transparent); color: #fff; }
+    .mnd-ic { font-size: 16px; width: 22px; text-align: center; }
+</style>

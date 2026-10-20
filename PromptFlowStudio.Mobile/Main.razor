@@ -1,0 +1,26 @@
+@using PromptFlowStudio.Services.Storyboard
+@using PromptFlowStudio.Blazor.Components.Common
+
+@* [PromptFlow Studio v4.0.0] 모바일 홈 — 기존 Blazor 컴포넌트(MobileStudioDeck)를 그대로 호스팅(로직 무변경 재사용). *@
+<div class="pfs-mobile-root">
+    <header class="pfs-m-top">📱 PromptFlow Studio <span>· Galaxy S26 · DeX</span></header>
+    <main class="pfs-m-body">
+        @* v13.0.1: 루트 덱 예외가 모바일 WebView 렌더러 전체를 죽이지 않도록 격리(다시 시도 = Recover). *@
+        <ErrorBoundary @ref="_boundary">
+            <ChildContent><MobileStudioDeck Project="_project" /></ChildContent>
+            <ErrorContent Context="fault">
+                <div role="alert" style="display:flex;flex-direction:column;gap:8px;margin:16px;padding:14px 16px;border:1px solid #E53935;border-radius:10px;background:rgba(229,57,53,.08);">
+                    <b>⚠ 스튜디오 화면 오류를 격리했습니다.</b>
+                    <span>(@(fault.GetType().Name))</span>
+                    <button type="button" style="align-self:flex-start;padding:6px 14px;border-radius:6px;border:1px solid currentColor;background:transparent;color:inherit;" @onclick="() => _boundary?.Recover()">다시 시도</button>
+                </div>
+            </ErrorContent>
+        </ErrorBoundary>
+    </main>
+</div>
+
+@code {
+    // 실제 앱은 프로젝트 저장소(project.json)에서 로드/저장 — 여기서는 신규 프로젝트로 데모.
+    private readonly StoryboardProject _project = new();
+    private ErrorBoundary? _boundary;
+}

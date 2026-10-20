@@ -1,0 +1,317 @@
+@inject VisualSfxCaptionService Visual
+@inject SfxAuditionService Sfx
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+@* [PromptFlow Studio] 시네마틱 네온 스플라인 텐션 타임라인 — 3차 베지어 곡선 · 네온 그라데이션 채우기 · 라이브 글로우 노드 ·
+   SFX 청록 펄스 아우라 · BGM 덕킹 붉은 하강 쉐도우 · 인터랙티브 호버 카드 · 클릭 컷 이동. SVG(면/곡선) + HTML 오버레이(원형 노드/카드). *@
+
+@if (Pts.Count > 0)
+{
+    <div class="ctg" id="@_graphId">
+        <div class="ctg-h">
+            <span class="ctg-title">📈 스토리 아크 <span class="ctg-sub">@(Pts.Count)컷</span> <span class="ctg-arc @ArcCls" title="@Arc.Tip">@Arc.Grade · @Arc.Label</span></span>
+            <span class="ctg-legend">
+                <span><i class="lg-spline"></i>긴장 곡선</span>
+                <span><i class="lg-sfx"></i>SFX 아우라</span>
+                <span><i class="lg-duck"></i>BGM 덕킹</span>
+                @if (IsLoop) { <span><i class="lg-loop"></i>루프</span> }
+            </span>
+        </div>
+
+        <div class="ctg-stage" @onmouseleave="() => _hover = -1">
+            <div class="ctg-playhead"></div>
+            <svg class="ctg-svg" viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="긴장도 타임라인">
+                <defs>
+                    <linearGradient id="ctg-neon" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stop-color="var(--flow-magenta, #d946ef)" stop-opacity="0.55" />
+                        <stop offset="45%" stop-color="var(--flow-violet, #8b5cf6)" stop-opacity="0.28" />
+                        <stop offset="100%" stop-color="var(--flow-cyan, #22d3ee)" stop-opacity="0.03" />
+                    </linearGradient>
+                    <linearGradient id="ctg-stroke" x1="0" y1="0" x2="1" y2="0">
+                        <stop offset="0%" stop-color="var(--flow-violet, #8b5cf6)" />
+                        <stop offset="100%" stop-color="var(--flow-cyan, #22d3ee)" />
+                    </linearGradient>
+                    <linearGradient id="ctg-duck" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stop-color="#ef4444" stop-opacity="0.30" />
+                        <stop offset="100%" stop-color="#ef4444" stop-opacity="0.02" />
+                    </linearGradient>
+                </defs>
+
+                @* 그리드 *@
+                @foreach (var gy in Grid)
+                {
+                    <line x1="0" y1="@Inv(gy)" x2="100" y2="@Inv(gy)" stroke="var(--line)" stroke-width="0.3" stroke-dasharray="1.5 2.5" />
+                }
+
+                @* BGM 덕킹 붉은 하강 쉐도우 *@
+                @foreach (var d in DuckRegions) { <path d="@d" fill="url(#ctg-duck)" /> }
+
+                @* 네온 그라데이션 면적(스플라인 아래) *@
+                <path d="@AreaPath" fill="url(#ctg-neon)" />
+                @* 3차 베지어 스플라인 곡선 *@
+                <path d="@SplinePath" fill="none" stroke="url(#ctg-stroke)" stroke-width="1.1" stroke-linecap="round" vector-effect="non-scaling-stroke" />
+
+                @* 루프 연결(마지막→첫 컷) *@
+                @if (IsLoop && Pts.Count >= 2)
+                {
+                    <path d="@LoopPath" fill="none" stroke="#a78bfa" stroke-width="0.8" stroke-dasharray="2 2" vector-effect="non-scaling-stroke" opacity="0.7" />
+                }
+            </svg>
+
+            @* HTML 오버레이 노드(완전한 원형·글로우·SFX 아우라·호버/클릭) *@
+            @foreach (var p in Pts)
+            {
+                <div class="ctg-node @(p.HasSfx ? "sfx" : null) @(_hover == p.Idx ? "hot" : null)"
+                     style="left:@Inv(p.X)%; top:@Inv(p.Y)%; --nc:@p.Color"
+                     @onmouseenter="() => _hover = p.Idx" @onclick="() => HandleNodeClick(p.Idx)" @key="p.Idx"
+                     title="@($"컷 {p.CutNo} · 긴장 {p.Tension}")">
+                    @if (p.HasSfx) { <span class="ctg-aura"></span> }
+                    <span class="ctg-dot"></span>
+                    @if (p.Duck) { <span class="ctg-duckdot" title="BGM 덕킹">🔇</span> }
+                </div>
+            }
+
+            @* 시네마틱 호버 카드 *@
+            @if (_hover >= 0 && _hover < Pts.Count)
+            {
+                var h = Pts[_hover];
+                <div class="ctg-card @(h.X > 62 ? "left" : null)" style="left:@Inv(h.X)%">
+                    <div class="ctg-card-h">
+                        <span class="ctg-card-no" style="--nc:@h.Color">컷 @h.CutNo</span>
+                        <span class="ctg-card-t">긴장도 <b style="color:@h.Color">@h.Tension</b>@(h.Mood is null ? "" : " · " + h.Mood)</span>
+                    </div>
+                    <div class="ctg-card-b">
+                        <div class="ctg-card-thumb">
+                            @if (h.Thumb is not null) { <img src="@h.Thumb" alt="컷 @h.CutNo" /> }
+                            else { <span class="ctg-card-emoji">🎬</span> }
+                        </div>
+                        <div class="ctg-card-meta">
+                            <div class="ctg-card-script">@(string.IsNullOrWhiteSpace(h.Script) ? "(나레이션 없음)" : "🎙️ " + h.Script)</div>
+                            @if (h.HasSfx) { <div class="ctg-card-sfx">💥 @h.Sfx</div> }
+                            @if (h.Duck) { <div class="ctg-card-duck">🔇 BGM 덕킹 구간</div> }
+                        </div>
+                    </div>
+                    <div class="ctg-card-f">클릭하면 이 컷으로 이동 →</div>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+<style>
+    .ctg { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 14px;
+        background: radial-gradient(120% 90% at 80% 0%, color-mix(in srgb, var(--flow-violet) 8%, transparent), transparent 60%), var(--card); }
+    .ctg-h { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    .ctg-title { font: 800 12.5px var(--mono); color: var(--text-primary); }
+    .ctg-sub { font-weight: 600; color: var(--text-muted); }
+    .ctg-legend { display: flex; gap: 11px; font: 700 9.5px var(--mono); color: var(--text-secondary); }
+    .ctg-legend span { display: inline-flex; align-items: center; gap: 4px; }
+    .ctg-legend i { width: 12px; height: 0; display: inline-block; }
+    .lg-spline { border-top: 2px solid var(--flow-cyan, #22d3ee); }
+    .lg-sfx { width: 7px !important; height: 7px !important; border-radius: 50%; background: var(--flow-cyan, #22d3ee); box-shadow: 0 0 5px var(--flow-cyan, #22d3ee); }
+    .lg-duck { border-top: 2px solid #ef4444; }
+    .lg-loop { border-top: 2px dashed #a78bfa; }
+
+    .ctg-stage { position: relative; width: 100%; height: 132px; }
+    .ctg-svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; overflow: visible; }
+
+    /* 실시간 플레이헤드 네온 빔 */
+    .ctg-playhead { position: absolute; top: 0; bottom: 0; left: 0; width: 2px; opacity: 0; pointer-events: none; z-index: 3;
+        background: linear-gradient(to bottom, transparent, var(--flow-cyan, #22d3ee), transparent);
+        box-shadow: 0 0 10px var(--flow-cyan, #22d3ee), 0 0 22px color-mix(in srgb, var(--flow-cyan, #22d3ee) 50%, transparent);
+        transition: left .06s linear, opacity .2s; }
+    /* 빔이 지나는 노드 펄스 */
+    .ctg-node.lit .ctg-dot { transform: scale(1.9); box-shadow: 0 0 16px var(--nc), 0 0 7px #fff; }
+    .ctg-node.lit .ctg-aura { animation-duration: .7s; }
+    /* 스토리 아크 품질 배지 */
+    .ctg-arc { font: 800 9.5px var(--mono); padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); margin-left: 6px; }
+    .ctg-arc.s { color: #7ef0c6; border-color: #10b98155; background: #10b9811a; }
+    .ctg-arc.a { color: var(--flow-cyan, #22d3ee); border-color: #22d3ee4d; background: #22d3ee12; }
+    .ctg-arc.b { color: #ffd66b; border-color: #f59e0b4d; background: #f59e0b12; }
+    .ctg-arc.c { color: var(--text-muted); }
+
+    /* 노드 */
+    .ctg-node { position: absolute; width: 0; height: 0; transform: translate(-50%, -50%); z-index: 2; cursor: pointer; }
+    .ctg-dot { position: absolute; left: -4px; top: -4px; width: 8px; height: 8px; border-radius: 50%; background: var(--nc); border: 1.5px solid #fff;
+        box-shadow: 0 0 8px var(--nc), 0 0 3px #fff; transition: transform .12s; }
+    .ctg-node:hover .ctg-dot, .ctg-node.hot .ctg-dot { transform: scale(1.5); }
+    .ctg-aura { position: absolute; left: -8px; top: -8px; width: 16px; height: 16px; border-radius: 50%;
+        border: 1.5px solid var(--flow-cyan, #22d3ee); box-shadow: 0 0 8px color-mix(in srgb, var(--flow-cyan, #22d3ee) 60%, transparent);
+        animation: ctg-pulse 1.6s ease-out infinite; }
+    .ctg-duckdot { position: absolute; left: -6px; top: 6px; font-size: 8px; filter: drop-shadow(0 0 3px #ef4444); }
+
+    /* 호버 카드 */
+    .ctg-card { position: absolute; bottom: calc(100% + 8px); transform: translateX(-50%); width: 210px; z-index: 20; pointer-events: none;
+        background: color-mix(in srgb, #111a2e 78%, transparent); backdrop-filter: blur(14px) saturate(1.2); -webkit-backdrop-filter: blur(14px) saturate(1.2);
+        border: 1px solid rgba(255,255,255,.14); border-radius: 12px; padding: 10px; box-shadow: 0 18px 42px rgba(0,0,0,.55); animation: ctg-in .13s ease-out; }
+    .ctg-card.left { transform: translateX(-88%); }
+    .ctg-card-h { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; }
+    .ctg-card-no { font: 900 10px var(--mono); color: #fff; background: var(--nc); border-radius: 999px; padding: 2px 8px; }
+    .ctg-card-t { font: 700 10.5px var(--mono); color: var(--text-secondary); }
+    .ctg-card-b { display: flex; gap: 9px; }
+    .ctg-card-thumb { flex: 0 0 auto; width: 48px; height: 48px; border-radius: 9px; overflow: hidden; background: var(--card-2); border: 1px solid var(--line); display: grid; place-items: center; }
+    .ctg-card-thumb img { width: 100%; height: 100%; object-fit: cover; }
+    .ctg-card-emoji { font-size: 20px; }
+    .ctg-card-meta { min-width: 0; flex: 1; }
+    .ctg-card-script { font-size: 11px; color: var(--text-primary); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .ctg-card-sfx { font: 700 10px var(--mono); color: var(--flow-cyan, #22d3ee); margin-top: 4px; }
+    .ctg-card-duck { font: 700 10px var(--mono); color: #ff9aa8; margin-top: 3px; }
+    .ctg-card-f { margin-top: 8px; padding-top: 7px; border-top: 1px dashed rgba(255,255,255,.12); font: 700 9.5px var(--mono); color: var(--flow-cyan, #22d3ee); }
+
+    @@keyframes ctg-pulse { 0% { transform: scale(.6); opacity: .9; } 100% { transform: scale(1.7); opacity: 0; } }
+    @@keyframes ctg-in { from { opacity: 0; transform: translateX(-50%) translateY(5px); } to { opacity: 1; } }
+    @@media (prefers-reduced-motion: reduce) { .ctg-aura { animation: none; } .ctg-card { animation: none; } }
+</style>
+
+@code {
+    /// <summary>대상 프로젝트.</summary>
+    [Parameter] public StoryboardProject Project { get; set; } = default!;
+    /// <summary>BGM 덕킹 표시 조건(프로젝트 BGM + 오디오 덕킹 ON).</summary>
+    [Parameter] public bool BgmDucking { get; set; }
+    /// <summary>컷 노드 클릭 콜백(0-based) — 부모가 해당 컷으로 스크롤/하이라이트.</summary>
+    [Parameter] public EventCallback<int> OnCutClick { get; set; }
+    /// <summary>최종 영상 &lt;video&gt; 요소 id — 지정 시 재생 currentTime 에 맞춰 플레이헤드 빔이 그래프를 가로지른다.</summary>
+    [Parameter] public string? VideoElementId { get; set; }
+
+    private readonly string _graphId = "ctg-" + Guid.NewGuid().ToString("N")[..8];
+    private bool _bound;
+
+    /// <summary>[자율확장] 스토리 아크 품질(등급/라벨/팁) — 헤더 배지로 코칭.</summary>
+    private ArcQuality Arc => TensionArcQualityAnalyzer.Analyze(Pts.Select(p => p.Tension).ToList());
+    private string ArcCls => Arc.Grade switch { "S" => "s", "A" => "a", "B" => "b", _ => "c" };
+
+    /// <summary>노드 클릭 — [자율확장] 컷 SFX 합성음 시연(Web Audio) 후 컷으로 이동.</summary>
+    private async Task HandleNodeClick(int idx)
+    {
+        if (Project is not null && idx >= 0 && idx < Project.Scenes.Count)
+        {
+            var aud = Sfx.ForScene(Project.Scenes[idx]);
+            if (aud.Ok && aud.Cues.Count > 0)
+            {
+                try { await JS.InvokeVoidAsync("pfPlayhead.playSfx", aud.Cues[0].Type); } catch { /* Web Audio 미지원 무시 */ }
+            }
+        }
+        await OnCutClick.InvokeAsync(idx);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // 최종 영상이 준비되면(요소 존재) 플레이헤드 바인딩 — 실패(요소 미존재) 시 다음 렌더에 재시도.
+        if (!_bound && !string.IsNullOrEmpty(VideoElementId) && Pts.Count > 0)
+        {
+            try { _bound = await JS.InvokeAsync<bool>("pfPlayhead.bind", _graphId, VideoElementId); } catch { /* 무시 */ }
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_bound) { try { await JS.InvokeVoidAsync("pfPlayhead.unbind", _graphId); } catch { /* 무시 */ } }
+    }
+
+    private const int ClipMs = 5000;
+    private static readonly System.Globalization.CultureInfo Ci = System.Globalization.CultureInfo.InvariantCulture;
+
+    private int _hover = -1;
+
+    private const double PadL = 6, PadR = 6, YTop = 15, YBase = 86;
+
+    private sealed record Pt(int Idx, int CutNo, double X, double Y, int Tension, bool Duck, bool HasSfx, string Sfx, string Color, string? Thumb, string Script, string? Mood);
+
+    private bool IsLoop => Project is not null && Project.IsBabyPreset && Project.Scenes.Count is > 0 and <= 8;
+
+    private double[] Grid => new[] { YBase - (YBase - YTop) * 0.25, YBase - (YBase - YTop) * 0.5, YBase - (YBase - YTop) * 0.75 };
+
+    private IReadOnlyList<Pt> Pts
+    {
+        get
+        {
+            var list = new List<Pt>();
+            if (Project is null) return list;
+            var scenes = Project.Scenes;
+            var n = scenes.Count;
+            for (var i = 0; i < n; i++)
+            {
+                var s = scenes[i];
+                var t = Math.Clamp(s.PresetTension ?? s.EmotionTension ?? 0, 0, 100);
+                var x = n <= 1 ? 50.0 : PadL + i / (double)(n - 1) * (100 - PadL - PadR);
+                var y = YBase - (YBase - YTop) * (t / 100.0);
+                var duck = BgmDucking && !string.IsNullOrWhiteSpace(s.VoiceText);
+                var badges = Visual.BuildBadges(s, ClipMs);
+                var sfx = badges.Count > 0 ? string.Join(" · ", badges.Select(b => b.Label)) : "";
+                var color = t < 40 ? "#10b981" : t < 70 ? "#f59e0b" : "#ef4444";
+                var thumb = !string.IsNullOrEmpty(s.PosterUrl) ? s.PosterUrl : (!string.IsNullOrEmpty(s.ThumbUrl) ? s.ThumbUrl : null);
+                list.Add(new Pt(i, i + 1, x, y, t, duck, badges.Count > 0, sfx, color, thumb, s.VoiceText ?? "", s.EmotionMood));
+            }
+            return list;
+        }
+    }
+
+    /// <summary>Catmull-Rom → 3차 베지어 스플라인 경로(점들을 부드럽게 통과).</summary>
+    private string SplinePath => BuildSpline(Pts);
+
+    /// <summary>스플라인 아래 면적(그라데이션 채우기) — 곡선 + 하단 베이스라인 폐곡선.</summary>
+    private string AreaPath
+    {
+        get
+        {
+            var pts = Pts;
+            if (pts.Count == 0) return "";
+            var spline = BuildSpline(pts);
+            if (pts.Count == 1) return $"M {Inv(pts[0].X - 4)},{Inv(YBase)} L {Inv(pts[0].X)},{Inv(pts[0].Y)} L {Inv(pts[0].X + 4)},{Inv(YBase)} Z";
+            return $"{spline} L {Inv(pts[^1].X)},{Inv(YBase)} L {Inv(pts[0].X)},{Inv(YBase)} Z";
+        }
+    }
+
+    /// <summary>BGM 덕킹 구간의 붉은 하강 쉐도우(노드 아래 라운드-탑 컬럼).</summary>
+    private IReadOnlyList<string> DuckRegions
+    {
+        get
+        {
+            var res = new List<string>();
+            foreach (var p in Pts)
+            {
+                if (!p.Duck) continue;
+                var x0 = p.X - 3.2; var x1 = p.X + 3.2;
+                res.Add($"M {Inv(x0)},{Inv(p.Y + 2)} Q {Inv(p.X)},{Inv(p.Y - 4)} {Inv(x1)},{Inv(p.Y + 2)} L {Inv(x1)},{Inv(YBase)} L {Inv(x0)},{Inv(YBase)} Z");
+            }
+            return res;
+        }
+    }
+
+    private string LoopPath
+    {
+        get
+        {
+            var pts = Pts;
+            if (pts.Count < 2) return "";
+            var a = pts[^1]; var b = pts[0];
+            return $"M {Inv(a.X)},{Inv(YBase + 6)} C {Inv(a.X)},{Inv(YBase + 12)} {Inv(b.X)},{Inv(YBase + 12)} {Inv(b.X)},{Inv(YBase + 6)}";
+        }
+    }
+
+    private static string BuildSpline(IReadOnlyList<Pt> pts)
+    {
+        if (pts.Count == 0) return "";
+        if (pts.Count == 1) return $"M {Inv(pts[0].X)},{Inv(pts[0].Y)}";
+        var sb = new System.Text.StringBuilder();
+        sb.Append("M ").Append(Inv(pts[0].X)).Append(',').Append(Inv(pts[0].Y)).Append(' ');
+        for (var i = 0; i < pts.Count - 1; i++)
+        {
+            var p0 = pts[Math.Max(0, i - 1)];
+            var p1 = pts[i];
+            var p2 = pts[i + 1];
+            var p3 = pts[Math.Min(pts.Count - 1, i + 2)];
+            var c1x = p1.X + (p2.X - p0.X) / 6.0;
+            var c1y = p1.Y + (p2.Y - p0.Y) / 6.0;
+            var c2x = p2.X - (p3.X - p1.X) / 6.0;
+            var c2y = p2.Y - (p3.Y - p1.Y) / 6.0;
+            sb.Append("C ").Append(Inv(c1x)).Append(',').Append(Inv(c1y)).Append(' ')
+              .Append(Inv(c2x)).Append(',').Append(Inv(c2y)).Append(' ')
+              .Append(Inv(p2.X)).Append(',').Append(Inv(p2.Y)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private static string Inv(double d) => d.ToString("0.##", Ci);
+}

@@ -1,0 +1,348 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.LiveDubbing
+@using PromptFlowStudio.Services.NeuralVoice
+@using PromptFlowStudio.Services.DigitalHuman
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject MultilingualDubbingLipSyncStudioRunner Runner
+
+@* [PromptFlow Studio v17.32.0] 🗣️ AI 다국어 더빙 & 립싱크 스튜디오 — 타깃 언어 다중 선택 · 음소 파형 · 블렌드셰이프 가중치 · A/V 지연 게이지 · 화자 음색 유사도. *@
+
+<div class="mdl-scrim" @onclick="Close">
+    <div class="mdl-modal" @onclick:stopPropagation="true">
+        <div class="mdl-h">
+            <div>
+                <div class="mdl-title">🗣️ AI 다국어 더빙 &amp; 립싱크 스튜디오 @(Runner.IsRunning ? "· ▶ 동시 더빙 중" : null)</div>
+                <div class="mdl-sub"><b>더빙 엔진</b>이 v17.18 액터 음성에서 화자 d-vector(32D)를 추출해 번역 토큰을 같은 음색의 48 kHz 음성으로 500 ms 예산 안에 합성하고, <b>립싱크 합성기</b>가 10 ms 음소 윈도우를 v17.12 ARKit 52 블렌드셰이프 입 영역(jawOpen · mouthPucker · mouthFunnel · mouthSmile …)으로 60 fps 오버라이드합니다. <b>A/V 가드</b>는 언어별 음절 길이 차이를 WSOLA(피치 보존)로 원본 발화 구간에 맞추고, 입모양 떨림을 3차 Hermite 필터로 억제합니다.</div>
+            </div>
+            <button class="mdl-x" @onclick="Close">✕</button>
+        </div>
+        <div class="mdl-bar">
+            <button class="mdl-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 동시 더빙 시작")</button>
+            <button class="mdl-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="mdl-btn @(Runner.GuardEnabled ? "on" : null)" @onclick="() => Runner.SetGuard(!Runner.GuardEnabled)">🛡 A/V 가드</button>
+            <button class="mdl-btn @(Runner.Engine.CloneEnabled ? "on" : null)" @onclick="() => Runner.SetCloning(!Runner.Engine.CloneEnabled)">🧬 음색 클로닝</button>
+            <span class="mdl-lbl">원본 화자</span>
+            @foreach (var sp in Speakers)
+            {
+                var p = sp;
+                <button class="mdl-btn @(Runner.Voice.Primary == p ? "on" : null)" @onclick="() => Runner.SetSourceSpeaker(p)">@(MultilingualDubbingLipSyncStudioRunner.SpeakerName(p))</button>
+            }
+            <button class="mdl-btn" @onclick="Runner.ResetMetrics">↺ 지표</button>
+            <span class="mdl-chip @(Runner.LastTickMs <= 16.7 ? "ok" : "warn")">프레임 @(F2(Runner.LastTickMs)) ms(최대 @(F1(Runner.MaxTickMs))) · 렌더 @(F0(Runner.Engine.LastRenderUs)) µs</span>
+        </div>
+        <div class="mdl-langs">
+            <span class="mdl-lbl">타깃 언어(최대 @(MultilingualDubbingLipSyncStudioRunner.MaxLanes))</span>
+            @for (var c = 0; c < MultilingualDubbingLipSyncStudioRunner.Choices.Length; c++)
+            {
+                var k = c;
+                <button class="mdl-lang @(Runner.IsSelected(k) ? "on" : null)" @onclick="() => Runner.ToggleLanguage(k)">@(MultilingualDubbingLipSyncStudioRunner.LangName(MultilingualDubbingLipSyncStudioRunner.Choices[k]))</button>
+            }
+            <span class="mdl-mut">원문 🇰🇷 "@(MultilingualDubbingLipSyncStudioRunner.KoLines[Runner.Line])"</span>
+        </div>
+        <div class="mdl-main">
+            <div class="mdl-col">
+                <div class="mdl-card">
+                    <div class="mdl-sec">🎯 모니터 레인</div>
+                    <div class="mdl-tabs">
+                        @for (var l = 0; l < _n; l++)
+                        {
+                            var k = l;
+                            <button class="mdl-tab @(Runner.Focus == k ? "on" : null)" @onclick="() => Runner.SetFocus(k)">@(MultilingualDubbingLipSyncStudioRunner.LangName(_m[k].Language))</button>
+                        }
+                    </div>
+                    <div class="mdl-stage">
+                        <svg class="mdl-face" viewBox="-60 -70 120 140">@((MarkupString)FaceSvg())</svg>
+                        <div class="mdl-say">
+                            <div class="mdl-mut">번역 토큰</div>
+                            <div class="mdl-tr">@(_n > 0 ? Runner.LaneText(Runner.Focus) : "—")</div>
+                            <div class="mdl-ph">현재 음소 <b>@(RealtimeNeuralVoiceCloningDubbingEngine.Name(Fm.Dominant))</b> · 포락 @(F2(Lip.Envelope)) · ZCR @(F2(Lip.Zcr))</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="mdl-card">
+                    <div class="mdl-sec">🌊 실시간 음소 파형(10 ms 홉 · 최근 2.4 s)</div>
+                    <svg class="mdl-wave" viewBox="0 0 480 90" preserveAspectRatio="none">@((MarkupString)WaveSvg())</svg>
+                    <div class="mdl-legend"><span class="v">■ 모음</span><span class="c">■ 폐쇄(P/B/M)</span><span class="f">■ 마찰(F/V · S/Z · Th)</span><span class="o">■ 기타 자음</span></div>
+                </div>
+                <div class="mdl-card">
+                    <div class="mdl-sec">👄 ARKit 블렌드셰이프 가중치(입 영역 18 / 52)</div>
+                    <div class="mdl-bars">
+                        @for (var s = 0; s < PhonemeStreamProceduralLipSyncSynthesizer.MouthCount; s++)
+                        {
+                            var w = Lip.MouthWeight(s);
+                            <div class="mdl-bs"><span>@(PhonemeStreamProceduralLipSyncSynthesizer.MouthName(s))</span><div class="mdl-bsbar"><div style="width:@(F0(w * 100))%"></div></div><b>@(F2(w))</b></div>
+                        }
+                    </div>
+                    <div class="mdl-sec mt">🔤 음소 가중치</div>
+                    <div class="mdl-phs">
+                        @for (var p = 1; p < RealtimeNeuralVoiceCloningDubbingEngine.PhonemeCount; p++)
+                        {
+                            var w = Lip.PhonemeWeight(p);
+                            <div class="mdl-pw"><div class="mdl-pwbar"><div class="@(PhClass((LipPhoneme)p))" style="height:@(F0(Math.Min(1f, w) * 100))%"></div></div><span>@(RealtimeNeuralVoiceCloningDubbingEngine.Name((LipPhoneme)p))</span></div>
+                        }
+                    </div>
+                </div>
+            </div>
+            <div class="mdl-col">
+                <div class="mdl-card">
+                    <div class="mdl-sec">⏱ A/V 지연 · 🎙 음색 유사도 · @(MultilingualDubbingLipSyncStudioRunner.LangName(Fm.Language))</div>
+                    <div class="mdl-gauges">
+                        <svg class="mdl-gauge" viewBox="-60 -60 120 72">@((MarkupString)Gauge(MathF.Abs(Fm.ProjectedDriftMs), 500f, MathF.Abs(Fm.ProjectedDriftMs) < 60f))<text x="0" y="-8">@(F0(Fm.ProjectedDriftMs)) ms</text><text class="s" x="0" y="8">A/V 드리프트(예측)</text></svg>
+                        <svg class="mdl-gauge" viewBox="-60 -60 120 72">@((MarkupString)Gauge(Fm.Similarity * 100f, 100f, Fm.Similarity >= 0.8f))<text x="0" y="-8">@(F1(Fm.Similarity * 100)) %</text><text class="s" x="0" y="8">화자 음색 유사도</text></svg>
+                        <div class="mdl-kv">
+                            <div>파이프라인 지연 <b class="@(Fm.PipelineMs < RealtimeNeuralVoiceCloningDubbingEngine.BudgetMs ? "ok" : "warn")">@(F0(Fm.PipelineMs)) ms</b> / @(F0(RealtimeNeuralVoiceCloningDubbingEngine.BudgetMs))</div>
+                            <div>실측 첫 발화 지연 <b class="@(Fm.MaxLatencyMs < RealtimeNeuralVoiceCloningDubbingEngine.BudgetMs ? "ok" : "warn")">@(F0(Fm.LatencyMs)) ms</b>(최대 @(F0(Fm.MaxLatencyMs)))</div>
+                            <div>발화 종료 드리프트 <b>@(F0(Fm.DriftMs)) ms</b>(최대 @(F0(Fm.MaxDriftMs)))</div>
+                            <div>립-오디오 오프셋 <b>@(F1(G.LipAudioOffsetMs)) ms</b> · 오디오 지연 @(F0(G.AudioDelayMs)) ms</div>
+                            <div>WSOLA α <b>@(F2(G.Ratio))</b> · 상관 @(F2(G.LastCorrelation)) · 홉 @(F0(G.LastHopUs)) µs</div>
+                            <div>클론 F0 <b>@(F0(Fm.CloneF0)) Hz</b>(원본 @(F0(Runner.Engine.Source.F0Hz))) · 성도 ×@(F2(Fm.FormantScale))</div>
+                            <div>플리커 지수 <b>@(F2(Fm.Flicker))</b> · 스무딩 @(G.SmoothedFrames) · 홀드 @(G.FlickerHolds)</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="mdl-card">
+                    <div class="mdl-sec">🌐 레인별 더빙 상태</div>
+                    <table class="mdl-tbl">
+                        <thead><tr><th>언어</th><th>α</th><th>드리프트(최대)</th><th>지연(최대)</th><th>유사도</th><th>플리커</th><th>F0</th><th>발화</th></tr></thead>
+                        <tbody>
+                            @for (var l = 0; l < _n; l++)
+                            {
+                                var m = _m[l];
+                                <tr class="@(Runner.Focus == l ? "focus" : null)">
+                                    <td><b>@(MultilingualDubbingLipSyncStudioRunner.LangName(m.Language))</b></td>
+                                    <td>@(F2(m.Ratio))</td>
+                                    <td class="@(m.MaxDriftMs < 60 ? "ok" : "warn")">@(F0(m.DriftMs)) (@(F0(m.MaxDriftMs)))</td>
+                                    <td class="@(m.MaxLatencyMs < RealtimeNeuralVoiceCloningDubbingEngine.BudgetMs ? "ok" : "warn")">@(F0(m.LatencyMs)) (@(F0(m.MaxLatencyMs)))</td>
+                                    <td class="@(m.Similarity >= 0.8f ? "ok" : "warn")">@(F1(m.Similarity * 100))%</td>
+                                    <td>@(F2(m.Flicker))</td>
+                                    <td>@(F0(m.CloneF0))</td>
+                                    <td>@(m.Utterances)</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                    <svg class="mdl-spark" viewBox="0 0 360 80" preserveAspectRatio="none">
+                        <polyline class="dr" points="@(Series(0, 500))" />
+                        <polyline class="sim" points="@(Series(1, 1))" />
+                        <polyline class="fl" points="@(Series(2, 5))" />
+                    </svg>
+                    <div class="mdl-legend"><span class="dr">■ |드리프트| ms</span><span class="sim">■ 유사도</span><span class="fl">■ 플리커</span></div>
+                </div>
+                <div class="mdl-act">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .mdl-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .mdl-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .mdl-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #14b8a6 14%, var(--card)), color-mix(in srgb, #6366f1 12%, var(--card))); }
+    .mdl-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .mdl-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .mdl-sub b { color: var(--text-primary); }
+    .mdl-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .mdl-bar, .mdl-langs { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .mdl-btn, .mdl-lang, .mdl-tab { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .mdl-btn:disabled { opacity: .45; cursor: default; }
+    .mdl-btn.on, .mdl-lang.on, .mdl-tab.on { background: color-mix(in srgb, #14b8a6 20%, var(--card)); border-color: #14b8a6; }
+    .mdl-lbl { font-size: 11px; color: var(--text-muted); font-weight: 700; margin-left: 4px; }
+    .mdl-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .mdl-chip.ok { border-color: #22c55e; color: #22c55e; }
+    .mdl-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .mdl-main { display: grid; grid-template-columns: 1.1fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .mdl-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .mdl-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); }
+    .mdl-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .mdl-sec.mt { margin-top: 10px; }
+    .mdl-mut { font-size: 11px; color: var(--text-muted); }
+    .mdl-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+    .mdl-stage { display: flex; gap: 12px; align-items: center; }
+    .mdl-face { width: 170px; height: 200px; background: radial-gradient(circle at 50% 35%, #134e4a, #0b1020); border-radius: 10px; flex: none; }
+    .mdl-face .skin { fill: #fde2c8; } .mdl-face .hair { fill: #0f766e; } .mdl-face .ln { stroke: #1e1b4b; stroke-width: 1.6; fill: none; stroke-linecap: round; }
+    .mdl-face .lip { fill: #be123c; } .mdl-face .in { fill: #450a0a; } .mdl-face .tg { fill: #fb7185; }
+    .mdl-say { flex: 1; min-width: 0; }
+    .mdl-tr { font-size: 14px; font-weight: 700; color: var(--text-primary); margin: 4px 0 8px; }
+    .mdl-ph { font-size: 12px; color: var(--text-secondary); }
+    .mdl-ph b { color: #14b8a6; font-size: 15px; }
+    .mdl-wave { width: 100%; height: 90px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; }
+    .mdl-wave .v, .mdl-legend .v { fill: #38bdf8; color: #38bdf8; } .mdl-wave .c, .mdl-legend .c { fill: #f43f5e; color: #f43f5e; }
+    .mdl-wave .f, .mdl-legend .f { fill: #f59e0b; color: #f59e0b; } .mdl-wave .o, .mdl-legend .o { fill: #a78bfa; color: #a78bfa; } .mdl-wave .r { fill: #475569; }
+    .mdl-wave text { fill: #e2e8f0; font: 700 8px var(--mono); }
+    .mdl-legend { display: flex; gap: 12px; font-size: 11px; color: var(--text-muted); margin-top: 4px; flex-wrap: wrap; }
+    .mdl-bars { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 14px; }
+    .mdl-bs { display: grid; grid-template-columns: 120px 1fr 34px; gap: 6px; align-items: center; font-size: 11px; }
+    .mdl-bs span { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mdl-bsbar { height: 7px; border-radius: 4px; background: color-mix(in srgb, var(--line) 60%, transparent); overflow: hidden; }
+    .mdl-bsbar div { height: 100%; background: linear-gradient(90deg, #14b8a6, #6366f1); }
+    .mdl-bs b { font: 700 10px var(--mono); color: var(--text-primary); text-align: right; }
+    .mdl-phs { display: flex; gap: 4px; align-items: flex-end; }
+    .mdl-pw { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 9px; color: var(--text-muted); }
+    .mdl-pwbar { width: 100%; height: 50px; display: flex; align-items: flex-end; background: color-mix(in srgb, var(--line) 40%, transparent); border-radius: 3px; overflow: hidden; }
+    .mdl-pwbar div { width: 100%; }
+    .mdl-pwbar .v { background: #38bdf8; } .mdl-pwbar .c { background: #f43f5e; } .mdl-pwbar .f { background: #f59e0b; } .mdl-pwbar .o { background: #a78bfa; }
+    .mdl-gauges { display: grid; grid-template-columns: 150px 150px 1fr; gap: 10px; align-items: center; }
+    .mdl-gauge { width: 150px; height: 92px; }
+    .mdl-gauge .bg { stroke: color-mix(in srgb, var(--line) 80%, transparent); stroke-width: 9; fill: none; stroke-linecap: round; }
+    .mdl-gauge .fg { stroke-width: 9; fill: none; stroke-linecap: round; }
+    .mdl-gauge .fg.ok { stroke: #22c55e; } .mdl-gauge .fg.warn { stroke: #f59e0b; }
+    .mdl-gauge text { fill: var(--text-primary); font: 800 13px var(--mono); text-anchor: middle; }
+    .mdl-gauge text.s { font: 600 8px sans-serif; fill: var(--text-muted); }
+    .mdl-kv { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px; }
+    .mdl-kv b { color: var(--text-primary); } .mdl-kv b.ok { color: #22c55e; } .mdl-kv b.warn { color: #f59e0b; }
+    .mdl-tbl { width: 100%; border-collapse: collapse; font-size: 11px; }
+    .mdl-tbl th { text-align: left; color: var(--text-muted); font-weight: 700; padding: 3px 4px; border-bottom: 1px solid var(--line); }
+    .mdl-tbl td { padding: 3px 4px; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); white-space: nowrap; }
+    .mdl-tbl td.ok { color: #22c55e; } .mdl-tbl td.warn { color: #f59e0b; }
+    .mdl-tbl tr.focus td { background: color-mix(in srgb, #14b8a6 10%, transparent); }
+    .mdl-spark { width: 100%; height: 70px; margin-top: 8px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; }
+    .mdl-spark polyline { fill: none; stroke-width: 1.5; }
+    .mdl-spark .dr, .mdl-legend .dr { stroke: #f87171; color: #f87171; }
+    .mdl-spark .sim, .mdl-legend .sim { stroke: #22c55e; color: #22c55e; }
+    .mdl-spark .fl, .mdl-legend .fl { stroke: #a78bfa; color: #a78bfa; }
+    .mdl-act { font-size: 11px; color: var(--text-muted); }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly SpeakerPreset[] Speakers = { SpeakerPreset.Male, SpeakerPreset.Female, SpeakerPreset.Child };
+    private System.Threading.Timer? _timer;
+    private readonly DubLaneMetrics[] _m = new DubLaneMetrics[MultilingualDubbingLipSyncStudioRunner.MaxLanes];
+    private int _n;
+
+    private DubLaneMetrics Fm => Runner.Focus < _n ? _m[Runner.Focus] : default;
+    private PhonemeStreamProceduralLipSyncSynthesizer Lip => Runner.Lip(Runner.Focus);
+    private AudioVisualSyncJitterCompensationGuard G => Runner.Guard(Runner.Focus);
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        Snapshot();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(() => { Snapshot(); StateHasChanged(); }); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("LiveDubbing.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private void Snapshot() => _n = Runner.CopyMetrics(_m);
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+
+    private static string PhClass(LipPhoneme p) => p switch
+    {
+        LipPhoneme.Rest => "r",
+        >= LipPhoneme.A and <= LipPhoneme.U => "v",
+        LipPhoneme.Pbm => "c",
+        LipPhoneme.Fv or LipPhoneme.Sz or LipPhoneme.Th => "f",
+        _ => "o",
+    };
+
+    private float Bs(ArkitBlendshape k) => Runner.Blendshape(Runner.Focus, (int)k);
+
+    /// <summary>모니터 레인 52 블렌드셰이프 입 영역 → 스타일라이즈드 얼굴 SVG(턱 · 오므림 · 깔때기 · 미소 · 늘림 · 다묾 · 혀).</summary>
+    private string FaceSvg()
+    {
+        float jaw = Bs(ArkitBlendshape.JawOpen), pucker = Bs(ArkitBlendshape.MouthPucker), funnel = Bs(ArkitBlendshape.MouthFunnel);
+        float smile = 0.5f * (Bs(ArkitBlendshape.MouthSmileLeft) + Bs(ArkitBlendshape.MouthSmileRight));
+        float stretch = 0.5f * (Bs(ArkitBlendshape.MouthStretchLeft) + Bs(ArkitBlendshape.MouthStretchRight));
+        float close = MathF.Max(Bs(ArkitBlendshape.MouthClose), 0.5f * (Bs(ArkitBlendshape.MouthPressLeft) + Bs(ArkitBlendshape.MouthPressRight)));
+        float roll = Bs(ArkitBlendshape.MouthRollLower), tongue = Bs(ArkitBlendshape.TongueOut);
+        var sb = new System.Text.StringBuilder(1200);
+        sb.Append("<ellipse class=\"hair\" cx=\"0\" cy=\"-10\" rx=\"46\" ry=\"54\"/>");
+        sb.Append("<ellipse class=\"skin\" cx=\"0\" cy=\"").Append(F1(2f + 6f * jaw)).Append("\" rx=\"38\" ry=\"").Append(F1(48f + 6f * jaw)).Append("\"/>");
+        sb.Append("<circle cx=\"-14\" cy=\"-12\" r=\"3.4\" fill=\"#1e1b4b\"/><circle cx=\"14\" cy=\"-12\" r=\"3.4\" fill=\"#1e1b4b\"/>");
+        sb.Append("<path class=\"ln\" d=\"M0 -6 L-3 8 L2 9\"/>");
+        var half = Math.Clamp(13f + 7f * stretch + 4f * smile - 8f * pucker - 4f * funnel, 4f, 22f);
+        var open = Math.Clamp(1f + 15f * jaw + 4f * funnel - 6f * close, 0.4f, 18f);
+        var cy = 26f + 4f * jaw;
+        var cornerY = cy - 4f * smile;
+        sb.Append("<g>");
+        sb.Append("<path class=\"lip\" d=\"M").Append(F1(-half)).Append(' ').Append(F1(cornerY))
+          .Append(" Q0 ").Append(F1(cy - open * 0.5f - 3f)).Append(' ').Append(F1(half)).Append(' ').Append(F1(cornerY))
+          .Append(" Q0 ").Append(F1(cy + open + 3f - 2f * roll)).Append(' ').Append(F1(-half)).Append(' ').Append(F1(cornerY)).Append(" Z\"/>");
+        if (open > 1.2f)
+            sb.Append("<ellipse class=\"in\" cx=\"0\" cy=\"").Append(F1(cy + open * 0.2f)).Append("\" rx=\"").Append(F1(half * 0.72f)).Append("\" ry=\"").Append(F1(open * 0.5f)).Append("\"/>");
+        if (tongue > 0.05f)
+            sb.Append("<ellipse class=\"tg\" cx=\"0\" cy=\"").Append(F1(cy + open * 0.35f)).Append("\" rx=\"").Append(F1(4f + 3f * tongue)).Append("\" ry=\"").Append(F1(1.5f + 3f * tongue)).Append("\"/>");
+        sb.Append("</g>");
+        return sb.ToString();
+    }
+
+    private string WaveSvg()
+    {
+        var n = Runner.WaveCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 64);
+        var bw = 480.0 / MultilingualDubbingLipSyncStudioRunner.WaveBins;
+        var last = LipPhoneme.Rest;
+        for (var i = n - 1; i >= 0; i--)
+        {
+            var x = 480.0 - (i + 1) * bw;
+            double mn = Runner.WaveMin(i), mx = Runner.WaveMax(i);
+            var y0 = 45 - 42 * Math.Clamp(mx, -1, 1);
+            var h = Math.Max(0.8, 42 * (Math.Clamp(mx, -1, 1) - Math.Clamp(mn, -1, 1)));
+            var ph = Runner.WavePhoneme(i);
+            sb.Append("<rect class=\"").Append(PhClass(ph)).Append("\" x=\"").Append(F1(x)).Append("\" y=\"").Append(F1(y0)).Append("\" width=\"").Append(F1(bw * 0.9)).Append("\" height=\"").Append(F1(h)).Append("\"/>");
+            if (ph != last && ph != LipPhoneme.Rest && i % 2 == 0)
+                sb.Append("<g><text x=\"").Append(F1(x)).Append("\" y=\"88\">").Append(RealtimeNeuralVoiceCloningDubbingEngine.Name(ph)).Append("</text></g>");
+            last = ph;
+        }
+        return sb.ToString();
+    }
+
+    private static string Gauge(float v, float full, bool ok)
+    {
+        var f = Math.Clamp(v / full, 0f, 1f);
+        var a = MathF.PI * (1f - f);
+        var x = 46f * MathF.Cos(a); var y = -46f * MathF.Sin(a);
+        var sb = new System.Text.StringBuilder(240);
+        sb.Append("<path class=\"bg\" d=\"M-46 0 A46 46 0 0 1 46 0\"/>");
+        if (f > 0.005f) sb.Append("<path class=\"fg ").Append(ok ? "ok" : "warn").Append("\" d=\"M-46 0 A46 46 0 0 1 ").Append(F1(x)).Append(' ').Append(F1(y)).Append("\"/>");
+        return sb.ToString();
+    }
+
+    private string Series(int kind, double full)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+        {
+            double v = kind switch { 0 => Runner.DriftSeries(i), 1 => Runner.SimilaritySeries(i), _ => Runner.FlickerSeries(i) };
+            if (!double.IsFinite(v)) v = full;
+            sb.Append(F1(360.0 * (n - 1 - i) / (MultilingualDubbingLipSyncStudioRunner.SeriesLen - 1))).Append(',').Append(F1(78 - 76 * Math.Clamp(v / full, 0, 1))).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void Step60()
+    {
+        for (var i = 0; i < MultilingualDubbingLipSyncStudioRunner.Hz; i++) Runner.Step();
+        Snapshot();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중 갱신은 250 ms 타이머가 처리 — 정지 상태 변경만 즉시 반영.</summary>
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(() => { Snapshot(); StateHasChanged(); });
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

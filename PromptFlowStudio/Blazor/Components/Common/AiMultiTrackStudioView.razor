@@ -1,0 +1,340 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Timeline
+@using PromptFlowStudio.Services.Inference
+@implements IDisposable
+@inject MultiTrackTimelineState State
+@inject WebGpuInferenceEngine Local
+@inject AiAutoDirectorEngine Director
+@inject PromptFlowStudio.Services.Media.AudioWaveSynthesizer WaveSynth
+@inject TimelineRenderCompiler Compiler
+@inject FcpXmlExporter Exporter
+@inject PromptFlowStudio.Services.Wan.DistributedRenderGrid Grid
+@inject PromptFlowStudio.Services.Agents.AgentSwarmOrchestrator Swarm
+@inject PromptFlowStudio.Services.Media.Spatial3DVideoEngine Spatial
+@inject PromptFlowStudio.Services.Integration.C2PaWatermarkEngine C2pa
+
+@* [PromptFlow Studio v7.0.0] AI 멀티트랙 NLE 타임라인 스튜디오 — 비디오/보컬/자이로/프롬프트 트랙을 타임코드로 정밀 조율.
+   ⚠ 데스크톱 오버레이 전용(모바일 미마운트)이라 @inject 안전. State.OnChange 는 포인터/엔진 스레드 → InvokeAsync(StateHasChanged) 마샬링(제3헌장).
+   ⚠ 외부 Timeline JS 0 — 고정 px/초(PxPerSec) + 델타 드래그(폭 측정 불필요) + 눈금 OffsetX 스크러빙(Pure Blazor 포인터 이벤트 · 제약사항 2). *@
+
+<div class="amt">
+    <div class="amt-head">
+        <span class="amt-title">🎬 AI 멀티트랙 타임라인</span>
+        <span class="amt-badge @(Local.Accelerated ? "on" : null)">로컬 추론 · @Local.BackendLabel</span>
+        <span class="amt-play">▮ @Fmt(State.PlayheadSec)s / @Fmt(State.TotalDurationSec)s</span>
+    </div>
+
+    @* v7.2.0: AI 오토 디렉팅 — 대본 입력 → 4트랙 자동 배치 원클릭 CTA *@
+    <div class="amt-director">
+        <input class="amt-story" @bind="_story" @bind:event="oninput" placeholder="스토리/대본을 입력하세요 — 문장 단위로 씬 분할·감정 분석 후 4트랙 자동 배치됩니다…" disabled="@_busy" />
+        <button class="amt-direct" @onclick="RunAutoDirect" disabled="@(_busy || string.IsNullOrWhiteSpace(_story))">
+            @(_busy ? "🎬 디렉팅 중…" : "🎬 AI 오토 디렉팅")
+        </button>
+    </div>
+
+    @* 트랙별 AI 컷/클립 추가 툴바 *@
+    <div class="amt-tools">
+        <button class="amt-add vid" @onclick="AddAiCut" disabled="@_busy">＋ 로컬 AI 컷</button>
+        <button class="amt-add voc" @onclick='() => AddClip(TimelineTrackKind.Vocal, "보컬 립싱크", "#a855f7")'>＋ 보컬</button>
+        <button class="amt-add gyr" @onclick='() => AddClip(TimelineTrackKind.Gyro, "자이로 모션", "#34d399")'>＋ 자이로</button>
+        <button class="amt-add prm" @onclick='() => AddClip(TimelineTrackKind.Prompt, "프롬프트 오버라이드", "#f59e0b")'>＋ 프롬프트</button>
+        @* v8.0.0: 자율 에이전트 스웜 교정 · 공간 3D 변환 · C2PA 서명 *@
+        <button class="amt-swarm" @onclick="RunSwarm" disabled="@_busy">🤖 자율 교정</button>
+        <button class="amt-spatial" @onclick="RunSpatial" disabled="@_busy">🥽 공간 3D</button>
+        <button class="amt-c2pa" @onclick="RunC2pa" disabled="@_busy">🔏 C2PA 서명</button>
+        <span class="amt-tools-sp"></span>
+        @* v7.3.0: 타임라인 컴파일→그리드 렌더 / FCPXML 내보내기 *@
+        <button class="amt-render" @onclick="RunRender" disabled="@_busy">🚀 타임라인 일괄 렌더링</button>
+        <button class="amt-export" @onclick="OpenExport" disabled="@_busy">📤 FCPXML 내보내기</button>
+    </div>
+
+    <div class="amt-grid">
+        @* 좌측 트랙 라벨 열(눈금 스페이서 + 4트랙) *@
+        <div class="amt-labels">
+            <div class="amt-ruler-spacer"></div>
+            @foreach (var tr in _tracks)
+            {
+                <div class="amt-label" style="--acc:@tr.Accent" @key="tr.Kind"><span class="amt-label-ic">@tr.Icon</span>@tr.Name</div>
+            }
+        </div>
+
+        @* 우측 타임라인(가로 스크롤 · 고정 px/초 캔버스) *@
+        <div class="amt-scroll">
+            <div class="amt-canvas" style="width:@Px(State.TotalDurationSec)"
+                 @onpointermove="OnMove" @onpointerup="OnUp" @onpointerleave="OnUp">
+                @* 눈금(초 단위 틱 · 클릭=플레이헤드 스크러빙) *@
+                <div class="amt-ruler" @onpointerdown="OnRulerDown">
+                    @for (var s = 0; s <= (int)State.TotalDurationSec; s += 5)
+                    {
+                        <div class="amt-tick" style="left:@Px(s)" @key="s"><span>@s</span></div>
+                    }
+                </div>
+
+                @* 트랙 레인 + 클립 *@
+                @foreach (var tr in _tracks)
+                {
+                    <div class="amt-lane" @key="tr.Kind">
+                        @foreach (var c in State.ClipsFor(tr.Kind))
+                        {
+                            <div class="amt-clip @(c.Id == _dragId ? "drag" : null)" style="left:@Px(c.StartSec);width:@Px(c.DurationSec);--acc:@c.Accent"
+                                 @onpointerdown="e => OnClipDown(e, c, false)" @key="c.Id" title="@c.Label (@Fmt(c.StartSec)s~@Fmt(c.EndSec)s)">
+                                @if (!string.IsNullOrEmpty(c.ThumbUrl)) { <img class="amt-clip-thumb" src="@c.ThumbUrl" alt="" /> }
+                                <span class="amt-clip-lbl">@c.Label</span>
+                                <button type="button" class="amt-clip-del" @onclick="() => State.RemoveClip(c.Id)" @onpointerdown:stopPropagation="true" title="삭제">✕</button>
+                                <span class="amt-clip-rz" @onpointerdown="e => OnClipDown(e, c, true)" @onpointerdown:stopPropagation="true" title="길이 조정"></span>
+                            </div>
+                        }
+                    </div>
+                }
+
+                @* 플레이헤드 *@
+                <div class="amt-playhead" style="left:@Px(State.PlayheadSec)"></div>
+            </div>
+        </div>
+    </div>
+
+    @if (_msg is not null) { <div class="amt-msg">@_msg</div> }
+
+    @* v7.3.0: 내보내기 모달 — 외부 JS 없이 textarea 로 추출(전체 선택 후 복사/저장). *@
+    @if (_showExport)
+    {
+        <div class="amt-exp-scrim" @onclick="() => _showExport = false"></div>
+        <div class="amt-exp" role="dialog" aria-modal="true">
+            <div class="amt-exp-head">
+                <span class="amt-exp-t">📤 프로젝트 내보내기</span>
+                <div class="amt-exp-tabs">
+                    <button class="amt-exp-tab @(_exportFmt == "fcpxml" ? "on" : null)" @onclick='() => SetExportFmt("fcpxml")'>FCPXML</button>
+                    <button class="amt-exp-tab @(_exportFmt == "otio" ? "on" : null)" @onclick='() => SetExportFmt("otio")'>OTIO</button>
+                </div>
+                <button class="amt-exp-x" @onclick="() => _showExport = false">✕</button>
+            </div>
+            <div class="amt-exp-hint">아래 내용을 전체 선택(Ctrl+A) → 복사해 <b>@ExtFor(_exportFmt)</b> 파일로 저장하세요. @(_exportFmt == "c2pa" ? "C2PA 프로비넌스 매니페스트(위변조 검증용)입니다." : "Premiere/FCP/Resolve 에서 편집 가능합니다.")</div>
+            <textarea class="amt-exp-ta" readonly>@_exportText</textarea>
+        </div>
+    }
+</div>
+
+@code {
+    private const double PxPerSec = 32;
+
+    private sealed record TrackDef(TimelineTrackKind Kind, string Icon, string Name, string Accent);
+    private static readonly TrackDef[] _tracks =
+    {
+        new(TimelineTrackKind.Video,  "🎬", "비디오 컷",  "#22d3ee"),
+        new(TimelineTrackKind.Vocal,  "🎤", "보컬 립싱크", "#a855f7"),
+        new(TimelineTrackKind.Gyro,   "🌀", "자이로 모션", "#34d399"),
+        new(TimelineTrackKind.Prompt, "✍️", "프롬프트",    "#f59e0b"),
+    };
+
+    // 드래그 상태(델타 기반 · 폭 측정 불필요).
+    private string? _dragId;
+    private bool _dragResize;
+    private double _dragStartX, _dragOrigStart, _dragOrigDur;
+    private bool _busy;
+    private string? _msg;
+    private string _story = "노을 지는 해변을 천천히 걷는다. 갑자기 폭풍이 몰아치고 파도가 거세게 부딪친다! \"돌아가야 해\" 그가 외쳤다. 비가 그치자 잔잔한 별밤이 찾아온다.";
+
+    protected override void OnInitialized()
+    {
+        State.OnChange += OnChanged;
+        Local.OnChange += OnChanged;
+    }
+
+    private void OnChanged() => InvokeAsync(StateHasChanged);
+
+    // 눈금 클릭 → 플레이헤드 스크러빙(OffsetX = 캔버스 내 px).
+    private void OnRulerDown(PointerEventArgs e) => State.SetPlayhead(e.OffsetX / PxPerSec);
+
+    private void OnClipDown(PointerEventArgs e, TimelineClip c, bool resize)
+    {
+        _dragId = c.Id; _dragResize = resize;
+        _dragStartX = e.ClientX; _dragOrigStart = c.StartSec; _dragOrigDur = c.DurationSec;
+    }
+
+    private void OnMove(PointerEventArgs e)
+    {
+        if (_dragId is null) return;
+        var deltaSec = (e.ClientX - _dragStartX) / PxPerSec;
+        if (_dragResize) State.ResizeClip(_dragId, _dragOrigDur + deltaSec);
+        else State.MoveClip(_dragId, _dragOrigStart + deltaSec);
+    }
+
+    private void OnUp(PointerEventArgs e) => _dragId = null;
+
+    private void AddClip(TimelineTrackKind kind, string label, string accent)
+    {
+        State.AddClip(kind, State.PlayheadSec, 4, label, accent);
+        _msg = $"＋ {label} 클립 추가 @ {Fmt(State.PlayheadSec)}s";
+    }
+
+    // ── v7.3.0: 타임라인 컴파일→그리드 렌더 / FCPXML·OTIO 내보내기 ──
+    private bool _showExport;
+    private string _exportFmt = "fcpxml";
+    private string _exportText = "";
+
+    private async Task RunRender()
+    {
+        if (_busy) return;
+        _busy = true; _msg = "🚀 타임라인 컴파일 중…"; StateHasChanged();
+        try
+        {
+            var r = Compiler.Compile(State);
+            if (!r.Ok) { _msg = "⚠ " + r.Message; return; }
+            if (Grid.UsableNodeCount == 0)
+                _msg = $"⚠ 가용 GPU 워커 없음 — {r.Requests.Count}세그먼트 컴파일 완료(노드 등록 후 재시도). [글로벌 관제]에서 워커를 등록하세요.";
+            else
+            {
+                _ = Grid.DispatchAsync(r.Requests);   // 그리드가 페일오버·자산화 담당(fire-and-forget)
+                _msg = $"🚀 {r.Requests.Count}세그먼트 → GPU 그리드 이관({Grid.UsableNodeCount}노드 병렬)";
+            }
+        }
+        catch (Exception ex) { _msg = "⚠ 렌더 컴파일 오류: " + ex.Message; }
+        finally { _busy = false; await InvokeAsync(StateHasChanged); }
+    }
+
+    // ── v8.0.0: 자율 교정 / 공간 3D / C2PA ──
+    private async Task RunSwarm()
+    {
+        if (_busy) return;
+        _busy = true; _msg = "🤖 에이전트 스웜 자율 교정 중…"; StateHasChanged();
+        try { _msg = await Swarm.RunAutoHealAsync(State); }
+        catch (Exception ex) { _msg = "⚠ 스웜 오류: " + ex.Message; }
+        finally { _busy = false; await InvokeAsync(StateHasChanged); }
+    }
+
+    private void RunSpatial()
+    {
+        var p = Spatial.Transcode(State);
+        _msg = p.Ok ? $"🥽 {p.Message}" : "⚠ " + p.Message;
+    }
+
+    private void RunC2pa()
+    {
+        var claim = new PromptFlowStudio.Services.Integration.C2paClaim("tenant-local", "seed-" + State.ClipCount, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        var manifest = C2pa.SignManifest(claim);
+        var verified = C2pa.VerifyManifest(manifest);
+        _exportFmt = "c2pa";
+        _exportText = System.Text.Json.JsonSerializer.Serialize(manifest, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+        _showExport = true;
+        _msg = verified ? "🔏 C2PA 서명·검증 완료(무결)" : "⚠ C2PA 검증 실패 — 보안 경고 발화";
+    }
+
+    private void OpenExport() { _exportFmt = "fcpxml"; _exportText = Exporter.ToFcpXml(State); _showExport = true; }
+    private void SetExportFmt(string fmt)
+    {
+        _exportFmt = fmt;
+        _exportText = fmt == "otio" ? Exporter.ToOtioJson(State) : Exporter.ToFcpXml(State);
+    }
+
+    private static string ExtFor(string fmt) => fmt switch { "otio" => ".otio", "c2pa" => ".c2pa.json", _ => ".fcpxml" };
+
+    // v7.2.0: AI 오토 디렉팅 — 대본 파싱 → 4트랙 자동 배치(보컬 트랙엔 합성 가이드 파형 첨부). 비동기 마샬링.
+    private async Task RunAutoDirect()
+    {
+        if (_busy || string.IsNullOrWhiteSpace(_story)) return;
+        _busy = true; _msg = "🎬 대본 분석·타임코드 배치 중…"; StateHasChanged();
+        try
+        {
+            var plan = Director.Direct(_story);
+            _msg = await Director.ApplyToTimelineAsync(plan, State, WaveSynth);
+        }
+        catch (Exception ex) { _msg = "⚠ 오토 디렉팅 오류: " + ex.Message; }
+        finally { _busy = false; await InvokeAsync(StateHasChanged); }
+    }
+
+    // 로컬 WebGPU/BCL 추론으로 스틸컷 프레임 생성 → 비디오 트랙에 클립으로 배치.
+    private async Task AddAiCut()
+    {
+        if (_busy) return;
+        _busy = true; _msg = "🎬 로컬 추론 컷 생성 중…"; StateHasChanged();
+        try
+        {
+            var r = await Local.GenerateStillAsync("local ai cut", "#22d3ee");
+            State.AddClip(TimelineTrackKind.Video, State.PlayheadSec, 4, "AI 컷", "#22d3ee", r.FrameUrl);
+            _msg = $"✅ 로컬 AI 컷 생성 · {r.Backend} · {r.ElapsedMs:0}ms";
+        }
+        catch (Exception ex) { _msg = "⚠ 생성 오류: " + ex.Message; }
+        finally { _busy = false; StateHasChanged(); }
+    }
+
+    private static string Px(double sec) => (sec * PxPerSec).ToString("0.##", CultureInfo.InvariantCulture) + "px";
+    private static string Fmt(double sec) => sec.ToString("0.#", CultureInfo.InvariantCulture);
+
+    public void Dispose()
+    {
+        State.OnChange -= OnChanged;
+        Local.OnChange -= OnChanged;
+    }
+}
+
+<style>
+    .amt { display: flex; flex-direction: column; gap: 12px; font-family: Pretendard,'Malgun Gothic',sans-serif; }
+    .amt-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .amt-title { font: 900 15px Pretendard,'Malgun Gothic',sans-serif; background: linear-gradient(90deg,#22d3ee,#a855f7); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .amt-badge { font: 700 9.5px var(--mono); color: var(--text-muted); background: var(--card-2); border: 1px solid var(--line); border-radius: 12px; padding: 3px 9px; }
+    .amt-badge.on { color: #6ee7b7; border-color: color-mix(in srgb,#34d399 40%,var(--line)); }
+    .amt-play { margin-left: auto; font: 800 11px var(--mono); color: #7dd3fc; }
+
+    .amt-director { display: flex; gap: 8px; }
+    .amt-story { flex: 1; min-width: 0; min-height: 40px; background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 0 12px; color: var(--text-primary); font: 600 12px Pretendard,'Malgun Gothic',sans-serif; outline: none; }
+    .amt-story:focus { border-color: #a855f7; }
+    .amt-story:disabled { opacity: .6; }
+    .amt-direct { flex: 0 0 auto; min-height: 40px; padding: 0 16px; border: none; border-radius: 11px; cursor: pointer; font: 800 12.5px Pretendard,'Malgun Gothic',sans-serif; color: #fff; background: linear-gradient(135deg,#a855f7,#22d3ee); white-space: nowrap; }
+    .amt-direct:disabled { opacity: .5; cursor: not-allowed; }
+    .amt-tools { display: flex; flex-wrap: wrap; gap: 7px; }
+    .amt-add { font: 800 11px Pretendard,'Malgun Gothic',sans-serif; color: #04121c; border: none; border-radius: 10px; padding: 7px 12px; cursor: pointer; }
+    .amt-add.vid { background: linear-gradient(135deg,#22d3ee,#0ea5e9); }
+    .amt-add.voc { background: linear-gradient(135deg,#a855f7,#7c3aed); color: #fff; }
+    .amt-add.gyr { background: linear-gradient(135deg,#34d399,#059669); }
+    .amt-add.prm { background: linear-gradient(135deg,#f59e0b,#d97706); }
+    .amt-add:disabled { opacity: .5; cursor: not-allowed; }
+    .amt-tools-sp { flex: 1 1 auto; }
+    .amt-render { font: 800 11px Pretendard,'Malgun Gothic',sans-serif; color: #04121c; border: none; border-radius: 10px; padding: 7px 13px; cursor: pointer; background: linear-gradient(135deg,#34d399,#0ea5e9); }
+    .amt-export { font: 800 11px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); border: 1px solid var(--line); border-radius: 10px; padding: 7px 13px; cursor: pointer; background: var(--card-2); }
+    .amt-render:disabled, .amt-export:disabled { opacity: .5; cursor: not-allowed; }
+    .amt-swarm, .amt-spatial, .amt-c2pa { font: 800 11px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); border-radius: 10px; padding: 7px 12px; cursor: pointer; color: var(--text-primary); }
+    .amt-swarm { background: color-mix(in srgb,#a855f7 20%,var(--card-2)); border-color: color-mix(in srgb,#a855f7 40%,var(--line)); }
+    .amt-spatial { background: color-mix(in srgb,#22d3ee 20%,var(--card-2)); border-color: color-mix(in srgb,#22d3ee 40%,var(--line)); }
+    .amt-c2pa { background: color-mix(in srgb,#34d399 18%,var(--card-2)); border-color: color-mix(in srgb,#34d399 40%,var(--line)); }
+    .amt-swarm:disabled, .amt-spatial:disabled, .amt-c2pa:disabled { opacity: .5; cursor: not-allowed; }
+    /* v7.3.0 내보내기 모달 */
+    .amt-exp-scrim { position: fixed; inset: 0; z-index: 200; background: rgba(3,4,10,.55); }
+    .amt-exp { position: fixed; z-index: 201; top: 50%; left: 50%; transform: translate(-50%,-50%); width: min(720px, 94vw); max-height: 82vh; display: flex; flex-direction: column;
+        background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.55); overflow: hidden; }
+    .amt-exp-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+    .amt-exp-t { font: 900 13px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .amt-exp-tabs { display: flex; gap: 5px; margin-left: 6px; }
+    .amt-exp-tab { font: 800 10px var(--mono); color: var(--text-muted); background: var(--card-2); border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; cursor: pointer; }
+    .amt-exp-tab.on { color: #fff; background: linear-gradient(135deg,#a855f7,#22d3ee); border-color: transparent; }
+    .amt-exp-x { margin-left: auto; border: none; background: none; color: var(--text-muted); font-size: 14px; cursor: pointer; width: 28px; height: 28px; border-radius: 7px; }
+    .amt-exp-x:hover { background: var(--card-2); color: var(--text-primary); }
+    .amt-exp-hint { font: 600 10.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); padding: 9px 14px; line-height: 1.5; word-break: keep-all; } .amt-exp-hint b { color: #7dd3fc; }
+    .amt-exp-ta { flex: 1; min-height: 320px; margin: 0 14px 14px; background: #06080e; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; color: #a7f3d0; font: 500 10.5px ui-monospace,'JetBrains Mono',monospace; line-height: 1.5; outline: none; resize: none; white-space: pre; overflow: auto; }
+
+    .amt-grid { display: grid; grid-template-columns: 92px 1fr; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: rgba(6,8,14,.5); }
+    .amt-labels { display: flex; flex-direction: column; border-right: 1px solid var(--line); }
+    .amt-ruler-spacer { height: 26px; border-bottom: 1px solid var(--line); background: var(--card-2); }
+    .amt-label { height: 46px; display: flex; align-items: center; gap: 6px; padding: 0 10px; font: 700 10.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-secondary); border-bottom: 1px solid var(--line); box-shadow: inset 3px 0 0 var(--acc, #22d3ee); }
+    .amt-label:last-child { border-bottom: none; }
+    .amt-label-ic { font-size: 13px; }
+
+    .amt-scroll { overflow-x: auto; overflow-y: hidden; }
+    .amt-scroll::-webkit-scrollbar { height: 8px; }
+    .amt-scroll::-webkit-scrollbar-thumb { background: color-mix(in srgb,#22d3ee 40%,transparent); border-radius: 4px; }
+    .amt-canvas { position: relative; touch-action: none; user-select: none; -webkit-user-select: none; min-width: 100%; }
+    .amt-ruler { position: relative; height: 26px; border-bottom: 1px solid var(--line); background: var(--card-2); cursor: text; }
+    .amt-tick { position: absolute; top: 0; bottom: 0; border-left: 1px solid color-mix(in srgb,var(--text-muted) 40%,transparent); }
+    .amt-tick span { position: absolute; top: 5px; left: 4px; font: 700 8.5px var(--mono); color: var(--text-muted); }
+    .amt-lane { position: relative; height: 46px; border-bottom: 1px solid var(--line); background: repeating-linear-gradient(90deg, transparent, transparent 31px, color-mix(in srgb,var(--line) 50%,transparent) 32px); }
+    .amt-lane:last-of-type { border-bottom: none; }
+    .amt-clip { position: absolute; top: 5px; height: 36px; border-radius: 8px; overflow: hidden; cursor: grab; display: flex; align-items: center; gap: 5px; padding: 0 6px;
+        background: color-mix(in srgb, var(--acc,#22d3ee) 26%, rgba(11,13,20,.85)); border: 1px solid color-mix(in srgb, var(--acc,#22d3ee) 60%, transparent); box-shadow: 0 2px 8px rgba(0,0,0,.4); }
+    .amt-clip.drag { cursor: grabbing; box-shadow: 0 0 0 1px var(--acc,#22d3ee), 0 4px 14px rgba(0,0,0,.5); z-index: 5; }
+    .amt-clip-thumb { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 5px; object-fit: cover; }
+    .amt-clip-lbl { flex: 1; min-width: 0; font: 700 9.5px Pretendard,'Malgun Gothic',sans-serif; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-shadow: 0 1px 2px rgba(0,0,0,.6); }
+    .amt-clip-del { flex: 0 0 auto; width: 15px; height: 15px; border: none; background: rgba(0,0,0,.4); color: #fca5a5; border-radius: 4px; font-size: 8px; cursor: pointer; line-height: 1; }
+    .amt-clip-rz { position: absolute; top: 0; right: 0; bottom: 0; width: 8px; cursor: ew-resize; background: linear-gradient(90deg, transparent, color-mix(in srgb,var(--acc,#22d3ee) 60%,transparent)); }
+    .amt-playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: #ef4444; box-shadow: 0 0 8px #ef4444; pointer-events: none; z-index: 6; }
+    .amt-playhead::before { content: ""; position: absolute; top: 0; left: -4px; border: 5px solid transparent; border-top-color: #ef4444; }
+    .amt-msg { font: 700 10.5px Pretendard,'Malgun Gothic',sans-serif; color: #6ee7b7; background: rgba(52,211,153,.08); border: 1px solid color-mix(in srgb,#34d399 26%,var(--line)); border-radius: 9px; padding: 8px 11px; word-break: keep-all; }
+</style>

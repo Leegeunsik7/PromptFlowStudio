@@ -1,0 +1,348 @@
+﻿@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.DexterousManipulation
+@using PromptFlowStudio.Services.DexterousHand
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject DexterousManipulationStudioRunner Runner
+
+@* [PromptFlow Studio v17.36.0] 🤲 AI 양손 정밀 조작 & 소품 스튜디오 — 3D 손/팔/소품 · 접촉 법선 · 마찰 원뿔 · 손가락 관절 각 · 파지력 미터 · 인계 단계. *@
+
+<div class="dxm-scrim" @onclick="Close">
+    <div class="dxm-modal" @onclick:stopPropagation="true">
+        <div class="dxm-h">
+            <div>
+                <div class="dxm-title">🤲 AI 양손 정밀 조작 &amp; 소품 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null)</div>
+                <div class="dxm-sub"><b>덱스그랩 엔진</b>이 소품 SDF 위 파지 템플릿에서 20 관절 손가락을 근위→원위 순차 이분 탐색으로 접촉까지 닫고 쿨롱 원뿔 렌치로 힘 폐쇄를 판정하며, <b>인계 합성기</b>가 두 액터의 손을 같은 위상 변수로 잠가 소유권을 점진 이양하거나 4 손 폐쇄 체인으로 상자를 함께 운반합니다. <b>마찰 원뿔 가드</b>는 접선 하중이 원뿔을 넘으면 파지력을 즉시 증폭하고 압착·미끄럼으로 생긴 손가락 관통을 스프링-댐퍼와 하드 투영으로 차단합니다.</div>
+            </div>
+            <button class="dxm-x" @onclick="Close">✕</button>
+        </div>
+        <div class="dxm-bar">
+            <button class="dxm-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 시작")</button>
+            <button class="dxm-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            @foreach (var k in Kinds)
+            {
+                var kk = k;
+                <button class="dxm-btn @(Runner.Prop.Kind == kk ? "on" : null)" @onclick="() => Runner.SetProp(kk)">@(DexProp.KindName(kk))</button>
+            }
+            <button class="dxm-btn warn @(Runner.ImpulseActive ? "on" : null)" @onclick="Runner.InjectImpulse">💥 외력 충격</button>
+            <button class="dxm-btn @(Runner.Guard.SlipGuard ? "on" : null)" @onclick="() => Runner.SetSlipGuard(!Runner.Guard.SlipGuard)">🧲 파지력 증폭</button>
+            <button class="dxm-btn @(Runner.Guard.PenetrationGuard ? "on" : null)" @onclick="() => Runner.SetPenetrationGuard(!Runner.Guard.PenetrationGuard)">🛡 관통 방어</button>
+            <button class="dxm-btn" @onclick="Runner.ResetMetrics">↺ 지표</button>
+            <span class="dxm-chip @(Runner.LastTickMs <= 16.7 ? "ok" : "warn")">프레임 @(F2(Runner.LastTickMs)) ms(최대 @(F1(Runner.MaxTickMs))) · 파지 합성 @(F0(Runner.Engine.LastSynthUs)) µs</span>
+        </div>
+        <div class="dxm-phases">
+            @foreach (var p in Phases)
+            {
+                <span class="dxm-ph @(H.Phase == p ? "on" : null) @(p == TakeoverPhase.Dropped && H.Phase == p ? "bad" : null)">@(MultiActorPropHandoverSynthesizer.PhaseName(p))</span>
+            }
+            <span class="dxm-own"><i style="width:@(F1(H.Ownership * 100))%"></i></span>
+            <span class="dxm-mut">@(H.Mode == ManipulationMode.Carry ? "4 손 협동 운반" : (H.Giver == 0 ? "A → B" : "B → A") + " · 소유권 α " + F2(H.Ownership)) · 인계 @(H.Transfers) · 낙하 @(H.Drops)</span>
+        </div>
+        <div class="dxm-main">
+            <div class="dxm-col">
+                <div class="dxm-card">
+                    <div class="dxm-sec">🧍‍♂️🧍 3D 액터 · 손 · 소품 · 접촉 법선/마찰 원뿔 · @(Runner.Prop.Name) · @(F2(Runner.Prop.Mass)) kg · μ @(F2(Runner.Prop.Friction))</div>
+                    <svg class="dxm-view" viewBox="-200 -150 400 260">@((MarkupString)SceneSvg())</svg>
+                    <div class="dxm-viewbar">
+                        <span class="dxm-lbl">카메라</span><input type="range" min="-180" max="180" step="5" value="@(F0(_camYaw))" @oninput="e => _camYaw = (float)Num(e, 30)" />
+                        <span class="dxm-lbl">확대</span><input type="range" min="1" max="4" step="0.25" value="@(F2(_zoom))" @oninput="e => _zoom = (float)Num(e, 1.5)" />
+                        <span class="dxm-legend"><i class="cn"></i>접촉 법선 <i class="fc"></i>마찰 원뿔 <i class="ar"></i>팔 <i class="pr"></i>소품</span>
+                    </div>
+                </div>
+                <div class="dxm-card">
+                    <div class="dxm-sec">📈 소유권 α · 폐쇄 오차(mm) · 4 s</div>
+                    <svg class="dxm-spark" viewBox="0 0 360 80" preserveAspectRatio="none">
+                        <polyline class="ow" points="@(Series(0))" />
+                        <polyline class="ce" points="@(Series(1))" />
+                    </svg>
+                    <div class="dxm-legend2"><span class="ow">■ 소유권 α</span><span class="ce">■ 폐쇄 오차(5 mm 만점)</span></div>
+                </div>
+            </div>
+            <div class="dxm-col">
+                <div class="dxm-card">
+                    <div class="dxm-sec">🖐 손가락 관절 각(20 DOF) ·
+                        @for (var s = 0; s < 4; s++)
+                        {
+                            var ss = s;
+                            <button class="dxm-btn sm @(Runner.ViewSlot == ss ? "on" : null)" @onclick="() => Runner.ViewSlot = ss">@(SlotNames[ss])</button>
+                        }
+                    </div>
+                    <div class="dxm-joints">
+                        @for (var f = 0; f < 5; f++)
+                        {
+                            <div class="dxm-fr"><b>@(HandTopology.FingerNames[f])</b>
+                                @for (var j = 0; j < 4; j++)
+                                {
+                                    var v = Runner.Engine.FinalAngle(Runner.ViewSlot, f, j);
+                                    var lo = RealtimeDexterousGraspSynthesisEngine.JointLo(f, j); var hi = RealtimeDexterousGraspSynthesisEngine.JointHi(f, j);
+                                    <span class="dxm-j" title="@(JointNames(f, j))"><i style="width:@(F1(Math.Clamp((v - lo) / (hi - lo), 0, 1) * 100))%"></i><em>@(JointNames(f, j)) @(F0(v))°</em></span>
+                                }
+                            </div>
+                        }
+                    </div>
+                </div>
+                <div class="dxm-card">
+                    <div class="dxm-sec">⚡ 파지력 미터(N) · @(SlotNames[Runner.ViewSlot]) · 기저 @(F2(Runner.Guard.BaseGrip(Runner.ViewSlot))) N/접촉</div>
+                    <div class="dxm-meters">
+                        @for (var f = 0; f < 5; f++)
+                        {
+                            var n = Runner.Guard.FingerForce(Runner.ViewSlot, f);
+                            <div class="dxm-m"><div class="dxm-mbar"><div class="@(n > 3f * MathF.Max(Runner.Guard.BaseGrip(Runner.ViewSlot) * 3f, 0.5f) ? "hot" : null)" style="height:@(F0(Math.Min(100, n / 1.5)))%"></div></div><b>@(F1(n))</b><span>@(HandTopology.FingerNames[f])</span></div>
+                        }
+                        <div class="dxm-kv">
+                            <div>힘 폐쇄 <b class="@(Runner.Engine.ForceClosure(Runner.ViewSlot) ? "ok" : "warn")">@(Runner.Engine.ForceClosure(Runner.ViewSlot) ? "✔ 성립" : "✖ 미성립")</b> · ε @(F3(Runner.Engine.Epsilon(Runner.ViewSlot))) · 껍질 거리 @(F3(Runner.Engine.HullDistance(Runner.ViewSlot)))</div>
+                            <div>접촉 @(Runner.Engine.ContactCount(Runner.ViewSlot)) · 하중 몫 @(F0(H.Share(Runner.ViewSlot) * 100))% · @(F1(H.Load(Runner.ViewSlot).Length())) N</div>
+                            <div>미끄럼 <b class="@(Runner.Guard.Slipping(Runner.ViewSlot) ? "warn" : "ok")">@(F1(Runner.Guard.SlipMm(Runner.ViewSlot))) mm</b> · 원뿔 초과 @(F1(Runner.Guard.ExcessN(Runner.ViewSlot))) N</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="dxm-card">
+                    <div class="dxm-sec">🧲 마찰 원뿔 가드 · 🤝 인계/폐쇄 체인</div>
+                    <div class="dxm-kv grid">
+                        <div>미끄럼 이벤트 <b class="@(Runner.Guard.SlipEvents == 0 ? "ok" : "warn")">@(Runner.Guard.SlipEvents)</b> · 최대 @(F1(Runner.Guard.MaxSlipMm)) mm</div>
+                        <div>파지력 증폭 @(Runner.Guard.Amplifications) · 최대 <b>@(F1(Runner.Guard.MaxGripN)) N</b></div>
+                        <div>관통 원시 @(F1(Runner.Guard.MaxRawPenetrationMm)) → 잔여 <b class="@(Runner.Guard.MaxResidualPenetrationMm <= 1.01f ? "ok" : "warn")">@(F2(Runner.Guard.MaxResidualPenetrationMm)) mm</b></div>
+                        <div>하드 투영 @(Runner.Guard.HardProjections) · 터널링 차단 @(Runner.Guard.TunnelsBlocked)</div>
+                        <div>위상 잠금 @(H.Locks)회 · 잠금 오차 @(F2(H.LockErrorMm)) mm · 상대 속도 @(F1(H.LockRelVelMmS)) mm/s</div>
+                        <div>폐쇄 오차 @(F2(H.ClosureErrorMm)) mm(최대 @(F2(H.MaxClosureErrorMm))) · 체인 보정 @(F1(H.ChainCorrectionCm)) cm · 기울기 @(F1(H.TiltDeg))°</div>
+                        <div>하중 분담 A/B 오 @(F0(H.Share(0) * 100))/@(F0(H.Share(1) * 100))% · 왼 @(F0(H.Share(2) * 100))/@(F0(H.Share(3) * 100))%</div>
+                        <div>파지 합성 @(Runner.Engine.Syntheses) · 캐시 재사용 @(Runner.Engine.CacheHits) · 최대 @(F0(Runner.Engine.MaxSynthUs)) µs</div>
+                    </div>
+                </div>
+                <div class="dxm-act">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .dxm-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .dxm-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .dxm-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f472b6 14%, var(--card)), color-mix(in srgb, #38bdf8 12%, var(--card))); }
+    .dxm-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .dxm-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .dxm-sub b { color: var(--text-primary); }
+    .dxm-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .dxm-bar, .dxm-phases { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .dxm-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .dxm-btn.sm { font-size: 10px; padding: 2px 6px; }
+    .dxm-btn:disabled { opacity: .45; cursor: default; }
+    .dxm-btn.on { background: color-mix(in srgb, #22c55e 20%, var(--card)); border-color: #22c55e; }
+    .dxm-btn.warn { border-color: #f59e0b; }
+    .dxm-ph { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .dxm-ph.on { color: #fff; background: #6366f1; border-color: #6366f1; } .dxm-ph.bad { background: #ef4444; border-color: #ef4444; }
+    .dxm-own { width: 140px; height: 8px; border-radius: 4px; background: #1e293b; overflow: hidden; display: inline-block; }
+    .dxm-own i { display: block; height: 100%; background: linear-gradient(90deg, #38bdf8, #f472b6); }
+    .dxm-lbl { font-size: 11px; color: var(--text-muted); font-weight: 700; margin-left: 4px; }
+    .dxm-mut { font-size: 11px; color: var(--text-muted); }
+    .dxm-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .dxm-chip.ok { border-color: #22c55e; color: #22c55e; } .dxm-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .dxm-main { display: grid; grid-template-columns: 1.15fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .dxm-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .dxm-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); }
+    .dxm-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+    .dxm-view { width: 100%; aspect-ratio: 400 / 260; background: radial-gradient(circle at 50% 20%, #1e293b, #020617); border-radius: 8px; }
+    .dxm-view .fl { stroke: #334155; stroke-width: .6; }
+    .dxm-view .ar { stroke: #94a3b8; stroke-width: 3; stroke-linecap: round; } .dxm-view .bd { stroke: #475569; stroke-width: 5; stroke-linecap: round; }
+    .dxm-view .hb { stroke: #e2e8f0; stroke-width: 1.6; stroke-linecap: round; } .dxm-view .hb.r { stroke: #f472b6; } .dxm-view .hb.l { stroke: #38bdf8; }
+    .dxm-view .pr { fill: rgba(250,204,21,.18); stroke: #facc15; stroke-width: 1.2; }
+    .dxm-view .cp { fill: #22c55e; } .dxm-view .cn { stroke: #22c55e; stroke-width: 1; } .dxm-view .fc { stroke: rgba(167,139,250,.75); stroke-width: .8; }
+    .dxm-viewbar { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+    .dxm-legend { font-size: 10px; color: var(--text-muted); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .dxm-legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 2px; }
+    .dxm-legend i.cn { background: #22c55e; } .dxm-legend i.fc { background: #a78bfa; } .dxm-legend i.ar { background: #94a3b8; } .dxm-legend i.pr { background: #facc15; }
+    .dxm-spark { width: 100%; height: 64px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; }
+    .dxm-spark polyline { fill: none; stroke-width: 1.5; }
+    .dxm-spark .ow, .dxm-legend2 .ow { stroke: #38bdf8; color: #38bdf8; } .dxm-spark .ce, .dxm-legend2 .ce { stroke: #f59e0b; color: #f59e0b; }
+    .dxm-legend2 { display: flex; gap: 12px; font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+    .dxm-joints { display: flex; flex-direction: column; gap: 4px; }
+    .dxm-fr { display: grid; grid-template-columns: 34px repeat(4, 1fr); gap: 4px; align-items: center; font-size: 10px; color: var(--text-muted); }
+    .dxm-fr b { color: var(--text-primary); font-size: 11px; }
+    .dxm-j { position: relative; height: 16px; border-radius: 4px; background: #1e293b; overflow: hidden; }
+    .dxm-j i { position: absolute; inset: 0 auto 0 0; background: linear-gradient(90deg, #0ea5e9, #a78bfa); opacity: .7; }
+    .dxm-j em { position: relative; font: 700 9px var(--mono); font-style: normal; color: #f8fafc; padding-left: 4px; line-height: 16px; }
+    .dxm-meters { display: grid; grid-template-columns: repeat(5, 44px) 1fr; gap: 8px; align-items: end; }
+    .dxm-m { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 10px; color: var(--text-muted); }
+    .dxm-m b { font: 700 11px var(--mono); color: var(--text-primary); }
+    .dxm-mbar { width: 22px; height: 96px; border-radius: 6px; border: 1px solid var(--line); display: flex; align-items: flex-end; overflow: hidden; }
+    .dxm-mbar div { width: 100%; background: linear-gradient(0deg, #16a34a, #22c55e); } .dxm-mbar div.hot { background: linear-gradient(0deg, #ea580c, #f59e0b); }
+    .dxm-kv { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px; }
+    .dxm-kv.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+    .dxm-kv b { color: var(--text-primary); } .dxm-kv b.ok { color: #22c55e; } .dxm-kv b.warn { color: #f59e0b; }
+    .dxm-act { font-size: 11px; color: var(--text-muted); }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly DexPropKind[] Kinds = { DexPropKind.Cylinder, DexPropKind.Sphere, DexPropKind.Handle, DexPropKind.Box, DexPropKind.Crate };
+    private static readonly TakeoverPhase[] Phases = { TakeoverPhase.Offer, TakeoverPhase.Reach, TakeoverPhase.Lock, TakeoverPhase.Transfer, TakeoverPhase.Release, TakeoverPhase.Retract, TakeoverPhase.Hold, TakeoverPhase.Carry, TakeoverPhase.Dropped };
+    private static readonly string[] SlotNames = { "A 오른손", "B 오른손", "A 왼손", "B 왼손" };
+    private static readonly string[] ThumbJ = { "CMC", "대립", "MCP", "IP" }, FingerJ = { "MCP", "외전", "PIP", "DIP" };
+    private const int Pts = DexterousManipulationStudioRunner.Pts, MaxC = DexterousManipulationStudioRunner.MaxC;
+    private System.Threading.Timer? _timer;
+    private readonly Vector3[] _hand = new Vector3[Pts], _arm = new Vector3[3], _cp = new Vector3[MaxC], _cn = new Vector3[MaxC];
+    private readonly float[] _cg = new float[MaxC];
+    private float _camYaw = 30f, _zoom = 1.5f;
+    private Vector3 _focus;
+
+    private MultiActorPropHandoverSynthesizer H => Runner.Handover;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("DexManipulation.Modal.Timer", ex); }
+        }, null, 100, 100);
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+    private static string JointNames(int f, int j) => f == 0 ? ThumbJ[j] : FingerJ[j];
+
+    /// <summary>궤도 카메라 원근 투영(대상 = 소품 · 피치 20°).</summary>
+    private Vector2 P(Vector3 w)
+    {
+        var yaw = _camYaw * MathF.PI / 180f; const float pitch = 0.35f;
+        var d = w - _focus;
+        float cy = MathF.Cos(yaw), sy = MathF.Sin(yaw);
+        var x = d.X * cy - d.Z * sy; var z = d.X * sy + d.Z * cy;
+        float cp = MathF.Cos(pitch), sp = MathF.Sin(pitch);
+        var y = d.Y * cp - z * sp; var zz = d.Y * sp + z * cp + 2.4f / _zoom;
+        var f = 260f / MathF.Max(zz, 0.15f);
+        return new Vector2(x * f, -y * f);
+    }
+
+    private static void Ln(System.Text.StringBuilder sb, string cls, Vector2 a, Vector2 b) =>
+        sb.Append("<line class=\"").Append(cls).Append("\" x1=\"").Append(F1(a.X)).Append("\" y1=\"").Append(F1(a.Y)).Append("\" x2=\"").Append(F1(b.X)).Append("\" y2=\"").Append(F1(b.Y)).Append("\"/>");
+
+    private string SceneSvg()
+    {
+        var sb = new System.Text.StringBuilder(12000);
+        Runner.PropPose(out var pp, out var pr);
+        _focus = pp;
+        for (var i = -4; i <= 4; i++)
+        {
+            Ln(sb, "fl", P(new Vector3(i * 0.25f, 0f, -1f) + new Vector3(0, 0, pp.Z)), P(new Vector3(i * 0.25f, 0f, 1f) + new Vector3(0, 0, pp.Z)));
+            Ln(sb, "fl", P(new Vector3(-1f, 0f, i * 0.25f + pp.Z)), P(new Vector3(1f, 0f, i * 0.25f + pp.Z)));
+        }
+        // 액터 몸통(어깨 중점 → 지면)
+        for (var a = 0; a < 2; a++)
+        {
+            var r = H.ActorRoot(a);
+            Ln(sb, "bd", P(r + new Vector3(0, 0.9f, 0)), P(r + new Vector3(0, 1.45f, 0)));
+        }
+        // 소품
+        var prop = Runner.Prop;
+        for (var i = 0; i < prop.ShapeCount; i++)
+        {
+            var s = prop.Shape(i);
+            Vector3 W(Vector3 l) => pp + Vector3.Transform(l, pr);
+            switch (s.Kind)
+            {
+                case SdfPrimitive.Sphere:
+                {
+                    var c = P(W(s.A)); var e = P(W(s.A) + new Vector3(s.R, 0, 0));
+                    var rr = MathF.Max(2f, MathF.Abs(e.X - c.X));
+                    sb.Append("<circle class=\"pr\" cx=\"").Append(F1(c.X)).Append("\" cy=\"").Append(F1(c.Y)).Append("\" r=\"").Append(F1(rr)).Append("\"/>");
+                    break;
+                }
+                case SdfPrimitive.Capsule:
+                {
+                    var a = P(W(s.A)); var b = P(W(s.B)); var e = P(W(s.A) + new Vector3(0, s.R, 0));
+                    var wpx = MathF.Max(2f, 2f * MathF.Abs(e.Y - a.Y));
+                    sb.Append("<line class=\"pr\" stroke-linecap=\"round\" style=\"stroke-width:").Append(F1(wpx)).Append("px;stroke:rgba(250,204,21,.45)\" x1=\"").Append(F1(a.X)).Append("\" y1=\"").Append(F1(a.Y)).Append("\" x2=\"").Append(F1(b.X)).Append("\" y2=\"").Append(F1(b.Y)).Append("\"/>");
+                    break;
+                }
+                case SdfPrimitive.RoundBox:
+                {
+                    var h = s.B + new Vector3(s.R);
+                    for (var e = 0; e < 12; e++)
+                    {
+                        var axis = e / 4; var k = e % 4;
+                        float u = (k & 1) == 0 ? -1 : 1, v = (k & 2) == 0 ? -1 : 1;
+                        Vector3 p0, p1;
+                        if (axis == 0) { p0 = new Vector3(-h.X, u * h.Y, v * h.Z); p1 = new Vector3(h.X, u * h.Y, v * h.Z); }
+                        else if (axis == 1) { p0 = new Vector3(u * h.X, -h.Y, v * h.Z); p1 = new Vector3(u * h.X, h.Y, v * h.Z); }
+                        else { p0 = new Vector3(u * h.X, v * h.Y, -h.Z); p1 = new Vector3(u * h.X, v * h.Y, h.Z); }
+                        Ln(sb, "pr", P(W(s.A + p0)), P(W(s.A + p1)));
+                    }
+                    break;
+                }
+            }
+        }
+        // 팔 · 손 · 접촉
+        Span<Vector3> arm = _arm;
+        for (var slot = 0; slot < 4; slot++)
+        {
+            if (!Runner.SlotActive(slot)) continue;
+            Runner.CopyArm(slot, arm);
+            Ln(sb, "ar", P(arm[0]), P(arm[1])); Ln(sb, "ar", P(arm[1]), P(arm[2]));
+            Runner.CopyHand(slot, _hand);
+            var cls = slot < 2 ? "hb r" : "hb l";
+            for (var k = 1; k < Pts; k++) Ln(sb, cls, P(_hand[HandTopology.Parent[k]]), P(_hand[k]));
+            var n = Runner.CopyContacts(slot, _cp, _cn, _cg);
+            var mu = prop.Friction;
+            for (var i = 0; i < n; i++)
+            {
+                var c = _cp[i]; var nn = _cn[i];
+                var len = 0.02f + MathF.Min(_cg[i], 30f) * 0.0015f;
+                var pc = P(c);
+                sb.Append("<circle class=\"cp\" cx=\"").Append(F1(pc.X)).Append("\" cy=\"").Append(F1(pc.Y)).Append("\" r=\"1.8\"/>");
+                Ln(sb, "cn", pc, P(c + nn * len));
+                var t1 = Vector3.Normalize(Vector3.Cross(nn, MathF.Abs(nn.Y) < 0.9f ? Vector3.UnitY : Vector3.UnitX)); var t2 = Vector3.Cross(nn, t1);
+                for (var q = 0; q < 4; q++)
+                {
+                    var ang = q * MathF.PI / 2f;
+                    var e = Vector3.Normalize(nn + mu * (MathF.Cos(ang) * t1 + MathF.Sin(ang) * t2));
+                    Ln(sb, "fc", pc, P(c + e * 0.03f));
+                }
+            }
+        }
+        return sb.ToString();
+    }
+
+    private string Series(int kind)
+    {
+        var n = H.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+        {
+            double v = kind == 0 ? H.OwnershipSeries(i) : H.ClosureSeries(i) / 5.0;
+            if (!double.IsFinite(v)) v = 0;
+            sb.Append(F1(360.0 * (n - 1 - i) / (MultiActorPropHandoverSynthesizer.Series - 1))).Append(',').Append(F1(78 - 76 * Math.Clamp(v, 0, 1))).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void Step60()
+    {
+        for (var i = 0; i < DexterousManipulationStudioRunner.Hz; i++) Runner.Step();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

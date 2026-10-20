@@ -1,0 +1,455 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.CinematicDirector
+@using PromptFlowStudio.Services.StageLighting
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject IntelligentStageLightingStudioRunner Runner
+
+@* [PromptFlow Studio v17.41.0] 💡 AI 지능형 무대 조명 스튜디오 — 가상 라이트 릭(Top/Front) · DMX 512 페이더 뱅크 · CCT 휠 · 무드 프리셋 · PSE/조도 가드 · Art-Net. *@
+
+<div class="slm-scrim" @onclick="Close">
+    <div class="slm-modal" @onclick:stopPropagation="true">
+        <div class="slm-h">
+            <div>
+                <div class="slm-title">💡 AI 지능형 무대 조명 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null)</div>
+                <div class="slm-sub"><b>추적 엔진</b>이 v17.40 배우 블로킹과 v17.39 프로그램 카메라를 따라 무빙헤드 키/필/림을 배정하고 팬/틸트(540°/270°)를 3차 에르미트로 구동해 DMX512를 무할당 SIMD 인코딩 · 44 Hz Art-Net으로 송출합니다. <b>볼류메트릭 합성기</b>가 긴장도에 맞춰 2700 → 6500 K 색온도와 젤 · 고보 · v17.28 안개 연동 원뿔 빔을 크로스페이드하고, <b>광학 가드</b>가 ITU-R BT.1702 기준(1 s 3 플래시 · 포화 적색) 위반 플리커와 피크 조도 화이트아웃을 즉시 억제합니다.</div>
+            </div>
+            <button class="slm-x" @onclick="Close">✕</button>
+        </div>
+        <div class="slm-bar">
+            <button class="slm-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 시작")</button>
+            <button class="slm-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            @for (var m = 0; m < EmotionalVolumetricLightBeamSynthesizer.Moods.Length; m++)
+            {
+                var mv = (LightingMood)m;
+                <button class="slm-btn mood m@(m) @(Runner.Look.Mood == mv ? "on" : null)" @onclick="() => Runner.SetMood(mv)">@(MoodIcon(mv)) @(EmotionalVolumetricLightBeamSynthesizer.MoodName(mv))</button>
+            }
+            <button class="slm-btn @(Runner.Guard.Enabled ? "on" : null)" @onclick="() => Runner.SetGuard(!Runner.Guard.Enabled)">🛡 광학 가드</button>
+            <button class="slm-btn" @onclick="Runner.ResetMetrics">↺ 지표</button>
+            <span class="slm-chip @(Runner.LastTickMs <= 16.7 ? "ok" : "warn")">프레임 @(F2(Runner.LastTickMs)) ms(최대 @(F1(Runner.MaxTickMs))) · 계획 @(F0(Runner.Engine.LastPlanUs)) µs · 커밋 @(F0(Runner.Engine.LastCommitUs)) µs · 가드 @(F0(Runner.Guard.LastProcessUs)) µs</span>
+        </div>
+        <div class="slm-bar">
+            <label class="slm-lbl"><input type="checkbox" checked="@(Runner.TensionOverride < 0f)" @onchange="AutoTension" /> 긴장도 자동(v17.40)</label>
+            <input class="slm-rng" type="range" min="0" max="100" value="@((int)MathF.Round(Runner.Tension * 100f))" disabled="@(Runner.TensionOverride < 0f)" @oninput="OnTension" />
+            <span class="slm-chip">T <b>@(F2(Runner.Tension))</b> · 절정 @(F2(Runner.Look.Climax))</span>
+            <label class="slm-lbl">🌫 안개 σ</label>
+            <input class="slm-rng" type="range" min="0" max="100" value="@((int)MathF.Round(Runner.ManualFog / 0.002f))" disabled="@Runner.FogFromWeather" @oninput="OnFog" />
+            <span class="slm-chip">@(Runner.FogFromWeather ? "v17.28 기상 연동" : "수동") · @(F3(Runner.Look.FogDensity)) /m</span>
+            <input class="slm-ip" @bind="_host" placeholder="Art-Net IP" />
+            @if (Runner.Engine.ArtNetLive)
+            {
+                <button class="slm-btn on" @onclick="Runner.DisableArtNet">📡 @(Runner.Engine.ArtNetTarget) 해제</button>
+            }
+            else
+            {
+                <button class="slm-btn" @onclick="() => Runner.EnableArtNet(_host ?? string.Empty)">📡 UDP 송출</button>
+            }
+        </div>
+        <div class="slm-main">
+            <div class="slm-col">
+                <div class="slm-card">
+                    <div class="slm-sec">🗺 가상 라이트 릭 — Top(평면 배치도) · 🎥 @(RealtimeCinematicShotFramingEngine.Name((DirectorCam)Runner.Story.Program)) · 역할 교체 @(Runner.Engine.RoleSwaps)</div>
+                    <svg class="slm-top" viewBox="-6.2 -5.4 12.4 12.4">@((MarkupString)TopSvg())</svg>
+                </div>
+                <div class="slm-card">
+                    <div class="slm-sec">🎭 Front(정면 단면) · 볼류메트릭 콘 — 산란 σs @(F3(Runner.Look.Scatter)) · HG g @(F2(Runner.Look.Anisotropy)) · 헤이즈 @(F2(Runner.Look.HazeAccum)) · 샤프트 @(F2(Runner.Look.MeanShaft))</div>
+                    <svg class="slm-front" viewBox="-6.2 -7.2 12.4 7.6">@((MarkupString)FrontSvg())</svg>
+                </div>
+                <div class="slm-card">
+                    <div class="slm-sec">🎚 DMX 유니버스 0 — 512 ch 페이더 뱅크 · 페이지 @(_page + 1)/8 · 사용 @(Runner.Engine.UsedChannels) ch · 파킹 @(Runner.Engine.ParkedCount)</div>
+                    <div class="slm-row">
+                        @for (var p = 0; p < 8; p++)
+                        {
+                            var pv = p;
+                            <button class="slm-btn sm @(_page == pv ? "on" : null)" @onclick="() => _page = pv">@(pv * 64 + 1)–@(pv * 64 + 64)</button>
+                        }
+                        <button class="slm-btn sm" @onclick="Runner.ReleaseAll">파킹 해제</button>
+                    </div>
+                    <div class="slm-faders">
+                        @for (var i = 0; i < 64; i++)
+                        {
+                            var ch = _page * 64 + i;
+                            var parked = Runner.Engine.Parked(ch) >= 0;
+                            <div class="slm-fd @(parked ? "pk" : null) @(ch < Runner.Engine.UsedChannels ? null : "nu")" title="@(ChannelName(ch)) — 더블클릭 = 파킹 해제" @ondblclick="() => Runner.Park(ch, -1)">
+                                <span class="v">@(Runner.Engine.Dmx(ch))</span>
+                                <input type="range" min="0" max="255" value="@(Runner.Engine.Dmx(ch))" @oninput="e => OnFader(ch, e)" />
+                                <span class="n">@(ch + 1)</span>
+                                <span class="f">@(ChannelShort(ch))</span>
+                            </div>
+                        }
+                    </div>
+                </div>
+            </div>
+            <div class="slm-col">
+                <div class="slm-card">
+                    <div class="slm-sec">🌡 CCT 휠 — <b>@(F0(Runner.Look.CctK)) K</b> → 목표 @(F0(Runner.Look.GoalK)) K · 젤 @(F2(Runner.Look.GelMix)) · CTO @(F2(Runner.Look.Cto))</div>
+                    <div class="slm-cct">
+                        <svg viewBox="-1.25 -1.25 2.5 2.5">@((MarkupString)WheelSvg())</svg>
+                        <div class="slm-kv">
+                            <div>키 <span class="sw" style="background:@(Css(Runner.Look.KeyColor))"></span> <b>@(F2(Runner.Look.KeyLevel))</b> · 줌 @(F0(Runner.Look.KeyZoom))°</div>
+                            <div>필 <span class="sw" style="background:@(Css(Runner.Look.FillColor))"></span> <b>@(F2(Runner.Look.FillLevel))</b> · 키/필 @(F1(Runner.Look.KeyFill)):1</div>
+                            <div>림 <span class="sw" style="background:@(Css(Runner.Look.RimColor))"></span> <b>@(F2(Runner.Look.RimLevel))</b></div>
+                            <div>워시 <span class="sw" style="background:@(Css(Runner.Look.WashColor))"></span> <b>@(F2(Runner.Look.WashLevel))</b></div>
+                            <div>고보 <b>@(RealtimeIntelligentStageLightingEngine.GoboNames[Runner.Look.Gobo])</b> · @(F0(Runner.Look.GoboRotDps)) °/s</div>
+                            <div>플리커 @(F1(Runner.Look.FlickerHz)) Hz × @(F2(Runner.Look.FlickerDepth)) · 스트로브 요청 @(F1(Runner.Look.StrobeRequestHz)) Hz</div>
+                            <div class="slm-row">
+                                @foreach (var k in Kelvins)
+                                {
+                                    var kv = k;
+                                    <button class="slm-btn sm @(MathF.Abs(Runner.Look.CctOverrideK - kv) < 1f ? "on" : null)" @onclick="() => Runner.SetCct(kv)">@(kv == 0f ? "자동" : F0(kv))</button>
+                                }
+                            </div>
+                        </div>
+                    </div>
+                    <svg class="slm-graph" viewBox="0 0 600 90" preserveAspectRatio="none">
+                        <line class="g" x1="0" y1="45" x2="600" y2="45" />
+                        <polyline class="t" points="@(LookSeries(0))" />
+                        <polyline class="k" points="@(LookSeries(1))" />
+                        <polyline class="s" points="@(LookSeries(2))" />
+                    </svg>
+                    <div class="slm-legend"><span class="t">━ 긴장도</span><span class="k">━ 색온도(2000~10000 K)</span><span class="s">━ 빔 샤프트</span></div>
+                </div>
+                <div class="slm-card">
+                    <div class="slm-sec">🛡 PSE · 조도 광학 가드 @(Runner.Guard.Enabled ? "ON" : "OFF") — 플래시 <b class="@(Runner.Guard.FlashRate <= 3f ? "ok" : "warn")">@(F1(Runner.Guard.FlashRate))/s</b> · 적색 @(F1(Runner.Guard.RedFlashRate))/s · α @(F2(Runner.Guard.LastAlpha))</div>
+                    <svg class="slm-graph" viewBox="0 0 600 90" preserveAspectRatio="none">
+                        <line class="lim" x1="0" y1="@(F1(90 - 3 * 9))" x2="600" y2="@(F1(90 - 3 * 9))" />
+                        <polyline class="fr" points="@(GuardSeries(0))" />
+                        <polyline class="lx" points="@(GuardSeries(1))" />
+                        <polyline class="lm" points="@(GuardSeries(2))" />
+                    </svg>
+                    <div class="slm-legend"><span class="fr">━ 플래시/s(빨간 점선 = 3)</span><span class="lx">━ 조도(0~3000 lux)</span><span class="lm">━ 화면 휘도(0~300 cd/m²)</span></div>
+                    <div class="slm-kv grid">
+                        <div>BT.1702 위반 <b class="@(Runner.Guard.Violations == 0 ? "ok" : "warn")">@(Runner.Guard.Violations)</b> · 적색 <b class="@(Runner.Guard.RedViolations == 0 ? "ok" : "warn")">@(Runner.Guard.RedViolations)</b></div>
+                        <div>최대 플래시율 @(F1(Runner.Guard.MaxFlashRate))/s · 적색 @(F1(Runner.Guard.MaxRedFlashRate))/s</div>
+                        <div>전이 @(Runner.Guard.Transitions) · 적색 @(Runner.Guard.RedTransitions) · 억제 프레임 @(Runner.Guard.SuppressedFrames)</div>
+                        <div>스트로브 클램프 @(Runner.Guard.StrobeClamps) · 상한 @(F1(PhotosensitiveEpilepsyLuxSafetyGuard.MaxSafeStrobeHz)) Hz</div>
+                        <div>조도 <b>@(F0(Runner.Guard.Lux))</b> lux(원 @(F0(Runner.Guard.RawLux))) · 이득 @(F2(Runner.Guard.LuxGain))</div>
+                        <div>피크 @(F0(Runner.Guard.PeakLux)) / 원 @(F0(Runner.Guard.PeakRawLux)) lux · 제한 @(Runner.Guard.LuxLimitedFrames)</div>
+                    </div>
+                </div>
+                <div class="slm-card">
+                    <div class="slm-sec">📡 Art-Net · 무빙헤드 상태</div>
+                    <div class="slm-kv grid">
+                        <div>ArtDmx <b>@(Runner.Engine.PacketsSent)</b> · @(F1(Runner.Engine.BytesSent / 1024.0)) KiB</div>
+                        <div>루프백 노드 @(Runner.Engine.NodeFrames) · 거부 @(Runner.Engine.NodeRejected)</div>
+                        <div>UDP @(Runner.Engine.UdpSent) · 오류 @(Runner.Engine.TxErrors)</div>
+                        <div>최대 스텝 팬 @(F2(Runner.Engine.MaxPanStep))° · 틸트 @(F2(Runner.Engine.MaxTiltStep))°</div>
+                    </div>
+                    <table class="slm-tbl">
+                        <tr><th>장치</th><th>역할</th><th>팬</th><th>틸트</th><th>출력</th><th>오차</th></tr>
+                        @for (var i = 0; i < RealtimeIntelligentStageLightingEngine.MovingHeads; i++)
+                        {
+                            var f = Runner.Engine.Fixture(i);
+                            <tr>
+                                <td><span class="sw" style="background:@(Css(f.Color))"></span>@(f.Name)</td>
+                                <td>@(RoleName(f.Role))@(TargetName(f.Target))</td>
+                                <td>@(F1(f.Pan))°</td><td>@(F1(f.Tilt))°</td>
+                                <td>@(F2(Runner.Engine.OutLevel(i)))</td>
+                                <td>@(F1(Runner.Engine.AimErrorDeg(i)))°</td>
+                            </tr>
+                        }
+                    </table>
+                    <div class="slm-act">@(Runner.LastAction ?? "대기")</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .slm-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .slm-modal { width: min(1680px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .slm-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #facc15 14%, var(--card)), color-mix(in srgb, #06b6d4 12%, var(--card))); }
+    .slm-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .slm-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .slm-sub b { color: var(--text-primary); }
+    .slm-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .slm-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .slm-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .slm-btn.sm { font-size: 10px; padding: 3px 6px; }
+    .slm-btn:disabled { opacity: .45; cursor: default; }
+    .slm-btn.on { background: color-mix(in srgb, #22c55e 20%, var(--card)); border-color: #22c55e; }
+    .slm-btn.mood.m0.on { background: color-mix(in srgb, #64748b 30%, var(--card)); border-color: #94a3b8; }
+    .slm-btn.mood.m1.on { background: color-mix(in srgb, #d946ef 24%, var(--card)); border-color: #22d3ee; }
+    .slm-btn.mood.m2.on { background: color-mix(in srgb, #f59e0b 26%, var(--card)); border-color: #f59e0b; }
+    .slm-btn.mood.m3.on { background: color-mix(in srgb, #dc2626 28%, var(--card)); border-color: #ef4444; }
+    .slm-lbl { font-size: 12px; color: var(--text-secondary); display: flex; gap: 4px; align-items: center; }
+    .slm-rng { width: 140px; }
+    .slm-ip { font: 12px var(--mono); width: 130px; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: #020617; color: #e2e8f0; }
+    .slm-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .slm-chip.ok { border-color: #22c55e; color: #22c55e; } .slm-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .slm-main { display: grid; grid-template-columns: 1.3fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .slm-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .slm-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); }
+    .slm-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .slm-top { width: 100%; height: 330px; background: radial-gradient(circle at 50% 45%, #1e1b4b, #020617); border-radius: 8px; display: block; }
+    .slm-front { width: 100%; height: 220px; background: linear-gradient(#020617, #0f172a); border-radius: 8px; display: block; }
+    .slm-top .fl, .slm-front .fl { stroke: #1e293b; stroke-width: .02; } .slm-top .tr, .slm-front .tr { stroke: #475569; stroke-width: .08; }
+    .slm-top .fx, .slm-front .fx { stroke: #e2e8f0; stroke-width: .03; } .slm-top .cam { fill: #facc15; } .slm-top .fov { fill: rgba(250,204,21,.08); stroke: rgba(250,204,21,.4); stroke-width: .02; }
+    .slm-top .a0, .slm-front .a0 { fill: #f97316; } .slm-top .a1, .slm-front .a1 { fill: #3b82f6; }
+    .slm-top text, .slm-front text { font: 700 .26px sans-serif; fill: #cbd5e1; }
+    .slm-faders { display: grid; grid-template-columns: repeat(16, 1fr); gap: 3px; margin-top: 6px; }
+    .slm-fd { display: flex; flex-direction: column; align-items: center; border: 1px solid #1e293b; border-radius: 6px; padding: 2px 0; background: #020617; }
+    .slm-fd.pk { border-color: #f59e0b; box-shadow: 0 0 6px rgba(245,158,11,.4); } .slm-fd.nu { opacity: .45; }
+    .slm-fd input { writing-mode: vertical-lr; direction: rtl; height: 70px; width: 16px; }
+    .slm-fd .v { font: 700 9px var(--mono); color: #facc15; } .slm-fd .n { font: 9px var(--mono); color: #94a3b8; } .slm-fd .f { font: 8px sans-serif; color: #64748b; height: 10px; overflow: hidden; }
+    .slm-cct { display: grid; grid-template-columns: 170px 1fr; gap: 10px; align-items: center; }
+    .slm-cct svg { width: 170px; height: 170px; }
+    .slm-cct .nd { stroke: #f8fafc; stroke-width: .05; } .slm-cct .ng { stroke: #94a3b8; stroke-width: .03; stroke-dasharray: .06 .04; }
+    .slm-cct text { font: 700 .15px sans-serif; fill: #e2e8f0; }
+    .slm-graph { width: 100%; height: 90px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; margin-top: 6px; }
+    .slm-graph polyline { fill: none; stroke-width: 1.6; } .slm-graph .g { stroke: #1e293b; stroke-width: .8; } .slm-graph .lim { stroke: #ef4444; stroke-width: 1; stroke-dasharray: 5 4; }
+    .slm-graph .t, .slm-legend .t { stroke: #f43f5e; color: #f43f5e; } .slm-graph .k, .slm-legend .k { stroke: #38bdf8; color: #38bdf8; } .slm-graph .s, .slm-legend .s { stroke: #a3e635; color: #a3e635; }
+    .slm-graph .fr, .slm-legend .fr { stroke: #f97316; color: #f97316; } .slm-graph .lx, .slm-legend .lx { stroke: #facc15; color: #facc15; } .slm-graph .lm, .slm-legend .lm { stroke: #a78bfa; color: #a78bfa; }
+    .slm-legend { display: flex; gap: 12px; font-size: 10px; margin-top: 3px; }
+    .slm-kv { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px; }
+    .slm-kv.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; margin-top: 6px; }
+    .slm-kv b { color: var(--text-primary); } .slm-kv b.ok, .slm-sec b.ok { color: #22c55e; } .slm-kv b.warn, .slm-sec b.warn { color: #f59e0b; }
+    .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: middle; border: 1px solid #334155; }
+    .slm-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+    .slm-tbl { width: 100%; border-collapse: collapse; font: 11px var(--mono); color: var(--text-secondary); margin-top: 8px; }
+    .slm-tbl th { text-align: left; font-weight: 800; color: var(--text-primary); border-bottom: 1px solid var(--line); padding: 2px 4px; }
+    .slm-tbl td { padding: 2px 4px; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }
+    .slm-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly float[] Kelvins = { 0f, 2700f, 3200f, 4300f, 5600f, 6500f };
+    private System.Threading.Timer? _timer;
+    private int _page;
+    private string? _host = "127.0.0.1";
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("StageLighting.Modal.Timer", ex); }
+        }, null, 100, 100);
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static string P(float v) => v.ToString("0.###", CultureInfo.InvariantCulture);
+
+    private static string MoodIcon(LightingMood m) => m switch { LightingMood.DramaticNoir => "🕵", LightingMood.CyberNeon => "🌃", LightingMood.GoldenHour => "🌇", _ => "🩸" };
+    private static string RoleName(LightRole r) => r switch { LightRole.Key => "키", LightRole.Fill => "필", LightRole.Rim => "림", LightRole.Spot => "스팟", LightRole.Wash => "워시", LightRole.Strobe => "스트로브", _ => "헤이저" };
+    private static string TargetName(int t) => t switch { 0 => " → A", 1 => " → B", 2 => " → 중간", 3 => " → 화자", _ => "" };
+
+    private static string Css(Vector3 c) => "rgb(" + ((int)(Math.Clamp(c.X, 0f, 1f) * 255f)).ToString(CultureInfo.InvariantCulture) + "," + ((int)(Math.Clamp(c.Y, 0f, 1f) * 255f)).ToString(CultureInfo.InvariantCulture) + "," + ((int)(Math.Clamp(c.Z, 0f, 1f) * 255f)).ToString(CultureInfo.InvariantCulture) + ")";
+
+    private static readonly string[] MhFn = { "Pan", "Pan·f", "Tilt", "Tilt·f", "Dim", "Shut", "R", "G", "B", "W", "CTO", "Zoom", "Gobo", "G·rot", "Focus", "Frost" };
+    private static readonly string[] WashFn = { "Dim", "R", "G", "B", "W", "Strb" };
+
+    private (int fixture, int offset) Locate(int ch)
+    {
+        for (var i = 0; i < RealtimeIntelligentStageLightingEngine.Fixtures; i++)
+        {
+            ref readonly var f = ref Runner.Engine.Fixture(i);
+            var n = f.Type switch { FixtureType.MovingHead => 16, FixtureType.Wash => 6, _ => 2 };
+            var o = ch - (f.Address - 1);
+            if (o >= 0 && o < n) return (i, o);
+        }
+        return (-1, 0);
+    }
+
+    private string ChannelShort(int ch)
+    {
+        var (i, o) = Locate(ch);
+        if (i < 0) return "";
+        var t = Runner.Engine.Fixture(i).Type;
+        return t switch { FixtureType.MovingHead => MhFn[o], FixtureType.Wash => WashFn[o], FixtureType.Strobe => o == 0 ? "Dim" : "Rate", _ => o == 0 ? "Out" : "Fan" };
+    }
+
+    private string ChannelName(int ch)
+    {
+        var (i, _) = Locate(ch);
+        return i < 0 ? "미사용" : Runner.Engine.Fixture(i).Name + " · " + ChannelShort(ch);
+    }
+
+    private string TopSvg()
+    {
+        var e = Runner.Engine;
+        var sb = new System.Text.StringBuilder(4096);
+        for (var x = -6; x <= 6; x += 2) sb.Append("<line class=\"fl\" x1=\"").Append(x).Append("\" y1=\"-5\" x2=\"").Append(x).Append("\" y2=\"6.8\"/>");
+        for (var z = -5; z <= 6; z += 2) sb.Append("<line class=\"fl\" x1=\"-6\" y1=\"").Append(z).Append("\" x2=\"6\" y2=\"").Append(z).Append("\"/>");
+        sb.Append("<line class=\"tr\" x1=\"-3.5\" y1=\"3.5\" x2=\"3.5\" y2=\"3.5\"/><line class=\"tr\" x1=\"-3.5\" y1=\"-3.5\" x2=\"3.5\" y2=\"-3.5\"/><line class=\"tr\" x1=\"-4\" y1=\"-4.5\" x2=\"4\" y2=\"-4.5\"/>");
+        for (var i = 0; i < RealtimeIntelligentStageLightingEngine.Fixtures; i++)
+        {
+            ref readonly var f = ref e.Fixture(i);
+            var o = e.OutLevel(i);
+            if (f.Type == FixtureType.MovingHead && f.Beam.Y < -0.05f)
+            {
+                var hit = f.Position + f.Beam * (f.Position.Y / -f.Beam.Y);
+                var w = MathF.Max(0.05f, Vector3.Distance(hit, f.Position) * MathF.Tan(0.5f * f.Zoom * MathF.PI / 180f));
+                sb.Append("<line x1=\"").Append(P(f.Position.X)).Append("\" y1=\"").Append(P(f.Position.Z)).Append("\" x2=\"").Append(P(hit.X)).Append("\" y2=\"").Append(P(hit.Z))
+                  .Append("\" stroke=\"").Append(Css(f.Color)).Append("\" stroke-opacity=\"").Append(P(0.15f + 0.6f * o)).Append("\" stroke-width=\"0.06\"/>");
+                sb.Append("<ellipse cx=\"").Append(P(hit.X)).Append("\" cy=\"").Append(P(hit.Z)).Append("\" rx=\"").Append(P(w)).Append("\" ry=\"").Append(P(w))
+                  .Append("\" fill=\"").Append(Css(f.Color)).Append("\" fill-opacity=\"").Append(P(0.08f + 0.35f * o)).Append("\"/>");
+            }
+            var r = f.Type == FixtureType.MovingHead ? 0.22f : 0.16f;
+            sb.Append("<circle class=\"fx\" cx=\"").Append(P(f.Position.X)).Append("\" cy=\"").Append(P(f.Position.Z)).Append("\" r=\"").Append(P(r))
+              .Append("\" fill=\"").Append(Css(f.Color * (0.25f + 0.75f * o))).Append("\"/>");
+            if (f.Type == FixtureType.MovingHead)
+                sb.Append("<text x=\"").Append(P(f.Position.X + 0.28f)).Append("\" y=\"").Append(P(f.Position.Z - 0.12f)).Append("\">").Append(RoleName(f.Role)).Append("</text>");
+        }
+        var c = e.Camera;
+        var mid = 0.5f * (e.Actor0 + e.Actor1);
+        var fw = new Vector2(mid.X - c.X, mid.Z - c.Z);
+        if (fw.LengthSquared() > 1e-4f) fw = Vector2.Normalize(fw); else fw = -Vector2.UnitY;
+        var sd = new Vector2(-fw.Y, fw.X);
+        var l1 = new Vector2(c.X, c.Z) + fw * 3f + sd * 1.4f; var l2 = new Vector2(c.X, c.Z) + fw * 3f - sd * 1.4f;
+        sb.Append("<polygon class=\"fov\" points=\"").Append(P(c.X)).Append(',').Append(P(c.Z)).Append(' ').Append(P(l1.X)).Append(',').Append(P(l1.Y)).Append(' ').Append(P(l2.X)).Append(',').Append(P(l2.Y)).Append("\"/>");
+        sb.Append("<circle class=\"cam\" cx=\"").Append(P(c.X)).Append("\" cy=\"").Append(P(c.Z)).Append("\" r=\"0.18\"/>");
+        sb.Append("<circle class=\"a0\" cx=\"").Append(P(e.Actor0.X)).Append("\" cy=\"").Append(P(e.Actor0.Z)).Append("\" r=\"0.25\"/><text x=\"").Append(P(e.Actor0.X - 0.1f)).Append("\" y=\"").Append(P(e.Actor0.Z + 0.6f)).Append("\">A</text>");
+        sb.Append("<circle class=\"a1\" cx=\"").Append(P(e.Actor1.X)).Append("\" cy=\"").Append(P(e.Actor1.Z)).Append("\" r=\"0.25\"/><text x=\"").Append(P(e.Actor1.X - 0.1f)).Append("\" y=\"").Append(P(e.Actor1.Z + 0.6f)).Append("\">B</text>");
+        return sb.ToString();
+    }
+
+    private string FrontSvg()
+    {
+        var e = Runner.Engine;
+        var sb = new System.Text.StringBuilder(4096);
+        sb.Append("<line class=\"fl\" x1=\"-6\" y1=\"0\" x2=\"6\" y2=\"0\" style=\"stroke-width:.05\"/><line class=\"tr\" x1=\"-3.5\" y1=\"-5.5\" x2=\"3.5\" y2=\"-5.5\"/>");
+        for (var i = 0; i < RealtimeIntelligentStageLightingEngine.MovingHeads; i++)
+        {
+            ref readonly var f = ref e.Fixture(i);
+            if (f.Beam.Y >= -0.05f) continue;
+            var len = f.Position.Y / -f.Beam.Y;
+            var hit = f.Position + f.Beam * len;
+            var d = new Vector2(hit.X - f.Position.X, -(hit.Y - f.Position.Y));
+            var dl = MathF.Max(d.Length(), 1e-3f);
+            var half = MathF.Tan(0.5f * f.Zoom * MathF.PI / 180f) * len;
+            var pr = new Vector2(-d.Y / dl, d.X / dl) * half;
+            var bx = new Vector2(hit.X, -hit.Y);
+            var op = 0.06f + 0.55f * f.Shaft + 0.1f * e.OutLevel(i);
+            sb.Append("<polygon points=\"").Append(P(f.Position.X)).Append(',').Append(P(-f.Position.Y)).Append(' ')
+              .Append(P(bx.X + pr.X)).Append(',').Append(P(bx.Y + pr.Y)).Append(' ').Append(P(bx.X - pr.X)).Append(',').Append(P(bx.Y - pr.Y))
+              .Append("\" fill=\"").Append(Css(f.Color)).Append("\" fill-opacity=\"").Append(P(MathF.Min(op, 0.8f))).Append("\"/>");
+        }
+        for (var i = 0; i < RealtimeIntelligentStageLightingEngine.Fixtures; i++)
+        {
+            ref readonly var f = ref e.Fixture(i);
+            sb.Append("<circle class=\"fx\" cx=\"").Append(P(f.Position.X)).Append("\" cy=\"").Append(P(-f.Position.Y)).Append("\" r=\"0.16\" fill=\"").Append(Css(f.Color * (0.25f + 0.75f * e.OutLevel(i)))).Append("\"/>");
+        }
+        sb.Append("<rect class=\"a0\" x=\"").Append(P(e.Actor0.X - 0.22f)).Append("\" y=\"-1.75\" width=\"0.44\" height=\"1.75\" rx=\"0.15\"/>");
+        sb.Append("<rect class=\"a1\" x=\"").Append(P(e.Actor1.X - 0.22f)).Append("\" y=\"-1.75\" width=\"0.44\" height=\"1.75\" rx=\"0.15\"/>");
+        return sb.ToString();
+    }
+
+    private string WheelSvg()
+    {
+        const float min = EmotionalVolumetricLightBeamSynthesizer.MinK, max = EmotionalVolumetricLightBeamSynthesizer.MaxK;
+        const int seg = 36;
+        var sb = new System.Text.StringBuilder(4096);
+        for (var s = 0; s < seg; s++)
+        {
+            float A(int k) => (-240f + 300f * k / seg) * MathF.PI / 180f;
+            var k0 = min + (max - min) * (s + 0.5f) / seg;
+            var a0 = A(s); var a1 = A(s + 1);
+            sb.Append("<path d=\"M").Append(P(MathF.Cos(a0) * 0.72f)).Append(',').Append(P(MathF.Sin(a0) * 0.72f))
+              .Append(" L").Append(P(MathF.Cos(a0))).Append(',').Append(P(MathF.Sin(a0)))
+              .Append(" A1,1 0 0 1 ").Append(P(MathF.Cos(a1))).Append(',').Append(P(MathF.Sin(a1)))
+              .Append(" L").Append(P(MathF.Cos(a1) * 0.72f)).Append(',').Append(P(MathF.Sin(a1) * 0.72f))
+              .Append(" A0.72,0.72 0 0 0 ").Append(P(MathF.Cos(a0) * 0.72f)).Append(',').Append(P(MathF.Sin(a0) * 0.72f))
+              .Append("Z\" fill=\"").Append(Css(EmotionalVolumetricLightBeamSynthesizer.Kelvin(k0))).Append("\"/>");
+        }
+        float Ang(float k) => (-240f + 300f * Math.Clamp((k - min) / (max - min), 0f, 1f)) * MathF.PI / 180f;
+        var g = Ang(Runner.Look.GoalK); var a = Ang(Runner.Look.CctK);
+        sb.Append("<line class=\"ng\" x1=\"0\" y1=\"0\" x2=\"").Append(P(MathF.Cos(g) * 1.08f)).Append("\" y2=\"").Append(P(MathF.Sin(g) * 1.08f)).Append("\"/>");
+        sb.Append("<line class=\"nd\" x1=\"0\" y1=\"0\" x2=\"").Append(P(MathF.Cos(a) * 1.12f)).Append("\" y2=\"").Append(P(MathF.Sin(a) * 1.12f)).Append("\"/>");
+        sb.Append("<circle cx=\"0\" cy=\"0\" r=\"0.42\" fill=\"").Append(Css(Runner.Look.KeyColor)).Append("\" stroke=\"").Append(Css(Runner.Look.Gel)).Append("\" stroke-width=\"0.08\"/>");
+        sb.Append("<text x=\"-0.3\" y=\"0.05\">").Append(F0(Runner.Look.CctK)).Append(" K</text>");
+        return sb.ToString();
+    }
+
+    private string LookSeries(int which)
+    {
+        var l = Runner.Look;
+        var n = Math.Min(l.SeriesCount, 300);
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            float v = which switch
+            {
+                0 => l.TensionSeries(n - 1 - i),
+                1 => (l.CctSeries(n - 1 - i) - EmotionalVolumetricLightBeamSynthesizer.MinK) / (EmotionalVolumetricLightBeamSynthesizer.MaxK - EmotionalVolumetricLightBeamSynthesizer.MinK),
+                _ => l.ShaftSeries(n - 1 - i),
+            };
+            sb.Append(P(600f * i / (n - 1))).Append(',').Append(P(88f - 86f * Math.Clamp(v, 0f, 1f))).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private string GuardSeries(int which)
+    {
+        var g = Runner.Guard;
+        var n = g.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            float y = which switch
+            {
+                0 => 90f - 9f * MathF.Min(g.FlashRateSeries(k), 10f),
+                1 => 88f - 86f * Math.Clamp(g.LuxSeries(k) / 3000f, 0f, 1f),
+                _ => 88f - 86f * Math.Clamp(g.LuminanceSeries(k) / 300f, 0f, 1f),
+            };
+            sb.Append(P(600f * i / (n - 1))).Append(',').Append(P(y)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void OnFader(int ch, ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.Park(ch, v);
+    }
+
+    private void OnTension(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetTensionOverride(v / 100f);
+    }
+
+    private void OnFog(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetFog(v * 0.002f);
+    }
+
+    private void AutoTension(ChangeEventArgs e)
+    {
+        var auto = e.Value is bool b && b;
+        Runner.SetTensionOverride(auto ? -1f : Runner.Tension);
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void Step60()
+    {
+        for (var i = 0; i < IntelligentStageLightingStudioRunner.Hz; i++) Runner.Step();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

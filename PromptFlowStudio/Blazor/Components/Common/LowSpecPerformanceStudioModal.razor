@@ -1,0 +1,292 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.LowSpec
+@implements IDisposable
+@inject LowSpecPerformanceStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.65.0] ⚡ AI 저사양 초고성능 최적화 스튜디오 — 하드웨어 프리셋/실측 · 1-Click 부스터(INT4 · GC 억제 · 압착) ·
+    LOD/연산 해상도 자율 스케일링 · INT4/INT8 iGPU/CPU SIMD 폴백 라우팅 · 아레나 자원 압축률 스펙트럼 · FPS/VRAM 실시간 슬라이더.
+*@
+
+<div class="lsp-scrim" @onclick="Close">
+    <div class="lsp-modal" @onclick:stopPropagation="true">
+        <div class="lsp-h">
+            <div>
+                <div class="lsp-title">⚡ AI 저사양 초고성능 최적화 스튜디오</div>
+                <div class="lsp-sub"><b>듀얼코어 · 4GB RAM · 내장 그래픽</b>에서도 60fps를 지키도록 LOD와 연산 해상도를 자율 조절하고,
+                    VRAM이 모자라면 <b>INT8/INT4 양자화</b>로 iGPU · CPU SIMD 경로에 우회합니다. 핫패스는 <b>선할당 아레나</b>로 GC를 억제합니다.</div>
+            </div>
+            <button class="lsp-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="lsp-bar">
+            <span class="lsp-chip @(Runner.IsRunning ? "ok" : null)">@(Runner.IsRunning ? "● 라이브" : "○ 정지") · #@(Runner.FrameSeq)</span>
+            <span class="lsp-chip @(Runner.Fps >= P.TargetFps * 0.95f ? "ok" : "hot")">@(F0(Runner.Fps)) fps / 목표 @(P.TargetFps)</span>
+            <span class="lsp-chip">프레임 @(F1(Runner.LastFrameMs))ms · 예산 @(F1(P.BudgetMs))ms</span>
+            <span class="lsp-chip">LOD @(P.Lod) · 해상도 @(Pc(P.RenderScale))</span>
+            <span class="lsp-chip">하향 @(P.StepDowns) · 상향 @(P.StepUps) · 메모리 압박 @(P.PressureEvents)</span>
+            <span class="lsp-chip @(Q.GuardViolations == 0 ? "ok" : "hot")">무할당 위반 @(Q.GuardViolations)</span>
+        </div>
+
+        <div class="lsp-main">
+            <div class="lsp-col">
+                <div class="lsp-card">
+                    <div class="lsp-row lsp-between">
+                        <span class="lsp-sec">🖥 하드웨어 프로파일</span>
+                        <span class="lsp-row">
+                            <select class="lsp-sel" value="@Runner.Preset" @onchange="OnPreset">
+                                @for (var i = 0; i < LowSpecPerformanceStudioRunner.PresetNames.Length; i++)
+                                {
+                                    <option value="@i">@LowSpecPerformanceStudioRunner.PresetNames[i]</option>
+                                }
+                            </select>
+                            <button class="lsp-btn sm" disabled="@_detecting" @onclick="DetectGpu">🔍 GPU 실측</button>
+                        </span>
+                    </div>
+                    <div class="lsp-hw">
+                        <span><b>@(H.LogicalCores)</b>코어</span>
+                        <span><b>@(F0(H.TotalRamMb / 1024f))GB</b>RAM</span>
+                        <span><b>@(F0(H.AvailableRamMb))MB</b>여유</span>
+                        <span><b>@(H.VramMb)MB</b>@(H.HasDiscreteGpu ? "외장 VRAM" : "iGPU 공유")</span>
+                        <span><b>@(H.Avx2 ? "AVX2" : H.AdvSimd ? "NEON" : "스칼라")</b>SIMD</span>
+                        <span><b class="t@((int)H.Tier)">@(HardwareAdaptiveLowSpecProfiler.TierLabel(H.Tier))</b>점수 @(F2(H.Score))</span>
+                    </div>
+                </div>
+
+                <div class="lsp-card">
+                    <div class="lsp-row lsp-between">
+                        <span class="lsp-sec">🚀 1-Click 부스터 · 레귤레이터</span>
+                        <span class="lsp-row">
+                            <button class="lsp-btn @(Runner.IsRunning ? "on" : null)" @onclick="Toggle">@(Runner.IsRunning ? "⏸ 정지" : "▶ 라이브")</button>
+                            <button class="lsp-btn sm" @onclick="Step">⏭ 1틱</button>
+                        </span>
+                    </div>
+                    <button class="lsp-boost @(Runner.Booster ? "on" : null)" @onclick="ToggleBooster">
+                        @(Runner.Booster ? "🚀 초저사양 부스터 ON — INT4 허용 · GC 억제 · 아레나 압착" : "⚡ 초저사양 부스터 켜기")
+                    </button>
+                    <label class="lsp-slider">
+                        <span>목표 FPS <b>@(P.TargetFps)</b></span>
+                        <input type="range" min="24" max="144" step="1" value="@P.TargetFps" @oninput="OnFps" />
+                    </label>
+                    <label class="lsp-slider">
+                        <span>VRAM 예산 <b>@(F0(Runner.VramBudgetMb))MB</b></span>
+                        <input type="range" min="128" max="8192" step="64" value="@(F0(Runner.VramBudgetMb))" @oninput="OnVram" />
+                    </label>
+                    <div class="lsp-sec">📈 프레임 시간 (예산선 = 목표 FPS)</div>
+                    <svg class="lsp-spark" viewBox="0 0 240 60" preserveAspectRatio="none">
+                        <line x1="0" x2="240" y1="@_budgetY" y2="@_budgetY" class="lsp-budget" />
+                        <polyline points="@_spark" />
+                    </svg>
+                    <div class="lsp-lod">
+                        @for (var l = 0; l <= HardwareAdaptiveLowSpecProfiler.MaxLod; l++)
+                        {
+                            <span class="@(l == P.Lod ? "on" : null)">LOD@(l)<em>×@(F2(HardwareAdaptiveLowSpecProfiler.LodCost(l)))</em></span>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="lsp-col">
+                <div class="lsp-card">
+                    <div class="lsp-sec">🧮 가변 양자화 · 폴백 라우팅</div>
+                    <table class="lsp-tbl">
+                        <thead><tr><th>워크로드</th><th>정밀도</th><th>경로</th><th>점유 / 예산</th></tr></thead>
+                        <tbody>
+                            @for (var w = 0; w < 3; w++)
+                            {
+                                var r = R.RouteOf((LowSpecWorkload)w);
+                                <tr class="@(r.Fits ? null : "off")">
+                                    <td>@(DynamicLowBitQuantizationFallbackRouter.WorkloadLabel(r.Workload))</td>
+                                    <td><span class="lsp-q q@((int)r.Precision)">@(DynamicLowBitQuantizationFallbackRouter.PrecisionLabel(r.Precision))</span></td>
+                                    <td>@(DynamicLowBitQuantizationFallbackRouter.PathLabel(r.Path))</td>
+                                    <td>@(F0(r.FootprintMb)) / @(F0(r.BudgetMb))MB</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                    <div class="lsp-note">커널 @(F1((float)R.LastKernelMicros))μs · 실행 @(R.KernelRuns) · 폴백 @(R.Fallbacks) · 하한 @(DynamicLowBitQuantizationFallbackRouter.PrecisionLabel(R.Floor))
+                        · 실측 상대오차 INT8 @(Pct(R.Int8RelError)) / INT4 @(Pct(R.Int4RelError))</div>
+                </div>
+
+                <div class="lsp-card">
+                    <div class="lsp-row lsp-between">
+                        <span class="lsp-sec">🗜 자원 압축률 스펙트럼 (아레나 @(F0(Q.ArenaBytes / 1024f))KB)</span>
+                        <button class="lsp-btn sm" @onclick="Squeeze">🗜 압착</button>
+                    </div>
+                    <div class="lsp-spec">
+                        @for (var c = 0; c < ZeroAllocMemorySqueezerGuard.ClassSizes.Length; c++)
+                        {
+                            var total = Math.Max(1, Q.SlotCount(c));
+                            var used = total - Q.FreeSlots(c);
+                            var peak = Q.PeakSlots(c);
+                            <div class="lsp-band">
+                                <div class="lsp-band-bar"><i class="pk" style="height:@(Pc(peak / (float)total))"></i><i style="height:@(Pc(Math.Max(0.02f, used / (float)total)))"></i></div>
+                                <span>@(SizeLabel(ZeroAllocMemorySqueezerGuard.ClassSizes[c]))</span>
+                                <em>@(used)/@(total)</em>
+                            </div>
+                        }
+                    </div>
+                    <div class="lsp-note">압축률 <b>@(Pct(Q.CompressionRate))</b> · 패킹 @(Pct(Q.PackingRatio)) · 대여 @(Q.Rents) · 미스 @(Q.Misses) · 링 @(Q.RingWrites)(래핑 @(Q.RingWraps))</div>
+                    <div class="lsp-note">GC 억제 @(Q.SessionActive ? "ON" : "OFF") · 세션 수집 Gen0 @(_gc.Gen0) / Gen1 @(_gc.Gen1) / Gen2 @(_gc.Gen2)@(_trim is null ? "" : " · " + _trim)</div>
+                </div>
+                @if (Runner.LastAction is not null)
+                {
+                    <div class="lsp-note">@Runner.LastAction</div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .lsp-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .lsp-modal { width: min(1400px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .lsp-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #eab308 18%, var(--card)), color-mix(in srgb, #22c55e 14%, var(--card))); }
+    .lsp-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .lsp-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .lsp-sub b { color: var(--text-primary); }
+    .lsp-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .lsp-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); }
+    .lsp-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .lsp-chip.ok { color: #22c55e; border-color: #22c55e; }
+    .lsp-chip.hot { color: #f97316; border-color: #f97316; }
+    .lsp-main { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .lsp-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .lsp-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .lsp-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); }
+    .lsp-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .lsp-between { justify-content: space-between; }
+    .lsp-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .lsp-btn.on { background: color-mix(in srgb, #eab308 22%, transparent); border-color: #eab308; }
+    .lsp-btn.sm { font-size: 11px; padding: 3px 8px; }
+    .lsp-sel { font-size: 12px; padding: 4px 6px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .lsp-hw { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .lsp-hw span { display: flex; flex-direction: column; font-size: 10.5px; color: var(--text-muted); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+    .lsp-hw b { font: 800 14px var(--mono); color: var(--text-primary); }
+    .lsp-hw b.t0 { color: #ef4444; } .lsp-hw b.t1 { color: #f97316; } .lsp-hw b.t2 { color: #eab308; } .lsp-hw b.t3 { color: #22c55e; }
+    .lsp-boost { font-size: 14px; font-weight: 900; padding: 12px; border-radius: 12px; border: 2px solid #eab308; background: color-mix(in srgb, #eab308 10%, transparent); color: var(--text-primary); cursor: pointer; }
+    .lsp-boost.on { background: linear-gradient(90deg, color-mix(in srgb, #eab308 35%, transparent), color-mix(in srgb, #22c55e 30%, transparent)); border-color: #22c55e; animation: lsp-pulse 1.4s ease-in-out infinite; }
+    @@keyframes lsp-pulse { 50% { box-shadow: 0 0 18px color-mix(in srgb, #22c55e 55%, transparent); } }
+    .lsp-slider { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--text-secondary); }
+    .lsp-slider b { color: var(--text-primary); font-family: var(--mono); }
+    .lsp-slider input { width: 100%; accent-color: #eab308; }
+    .lsp-spark { width: 100%; height: 60px; background: color-mix(in srgb, #0f172a 50%, transparent); border-radius: 6px; }
+    .lsp-spark polyline { fill: none; stroke: #22c55e; stroke-width: 1.5; }
+    .lsp-budget { stroke: #f97316; stroke-width: 1; stroke-dasharray: 4 3; }
+    .lsp-lod { display: flex; gap: 4px; }
+    .lsp-lod span { flex: 1; text-align: center; font: 700 10.5px var(--mono); padding: 4px 0; border-radius: 6px; border: 1px solid var(--line); color: var(--text-muted); display: flex; flex-direction: column; }
+    .lsp-lod span.on { border-color: #eab308; color: var(--text-primary); background: color-mix(in srgb, #eab308 18%, transparent); }
+    .lsp-lod em { font-style: normal; font-size: 9.5px; opacity: .8; }
+    .lsp-tbl { width: 100%; border-collapse: collapse; font-size: 11px; }
+    .lsp-tbl th, .lsp-tbl td { padding: 4px 5px; border-bottom: 1px solid var(--line); text-align: left; color: var(--text-secondary); }
+    .lsp-tbl th { color: var(--text-muted); font-weight: 700; }
+    .lsp-tbl tr.off td { color: #f97316; }
+    .lsp-q { font: 800 10.5px var(--mono); padding: 1px 6px; border-radius: 6px; border: 1px solid var(--line); }
+    .lsp-q.q1 { color: #3b82f6; border-color: #3b82f6; } .lsp-q.q2 { color: #eab308; border-color: #eab308; } .lsp-q.q3 { color: #f97316; border-color: #f97316; }
+    .lsp-spec { display: flex; gap: 8px; align-items: flex-end; }
+    .lsp-band { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; font: 10px var(--mono); color: var(--text-muted); }
+    .lsp-band em { font-style: normal; font-size: 9.5px; }
+    .lsp-band-bar { position: relative; width: 100%; height: 70px; border-radius: 6px; background: color-mix(in srgb, var(--line) 60%, transparent); overflow: hidden; }
+    .lsp-band-bar i { position: absolute; left: 0; right: 0; bottom: 0; background: linear-gradient(0deg, #22c55e, #eab308); }
+    .lsp-band-bar i.pk { background: color-mix(in srgb, #f97316 35%, transparent); }
+    .lsp-note { font-size: 11px; color: var(--text-muted); }
+    .lsp-note b { color: var(--text-primary); }
+    @@media (max-width: 1100px) { .lsp-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly float[] _hist = new float[LowSpecPerformanceStudioRunner.HistoryLength];
+    private string _spark = "", _budgetY = "0";
+    private string? _trim;
+    private bool _detecting;
+    private (int Gen0, int Gen1, int Gen2) _gc;
+    private long _shownSeq = -1;
+    private System.Threading.Timer? _timer;
+
+    private HardwareAdaptiveLowSpecProfiler P => Runner.Profiler;
+    private DynamicLowBitQuantizationFallbackRouter R => Runner.Router;
+    private ZeroAllocMemorySqueezerGuard Q => Runner.Squeezer;
+    private HardwareSnapshot H => P.Hardware;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        P.OnChange += OnServiceChanged;
+        R.OnChange += OnServiceChanged;
+        Q.OnChange += OnServiceChanged;
+        if (Runner.FrameSeq == 0) Runner.TickOnce();
+        Refresh();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { if (Runner.FrameSeq != _shownSeq) _ = InvokeAsync(() => { Refresh(); StateHasChanged(); }); }
+            catch (ObjectDisposedException) { }
+        }, null, 250, 250);
+    }
+
+    private static string F0(float v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(float v) => float.IsNaN(v) ? "—" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(float v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string Pc(float v) => (Math.Clamp(v, 0f, 1f) * 100f).ToString("0", CultureInfo.InvariantCulture) + "%";
+    private static string Pct(float v) => (v * 100f).ToString("0.0", CultureInfo.InvariantCulture) + "%";
+    private static string SizeLabel(int b) => b >= 1024 ? (b / 1024).ToString(CultureInfo.InvariantCulture) + "K" : b.ToString(CultureInfo.InvariantCulture);
+
+    private void Refresh()
+    {
+        _shownSeq = Runner.FrameSeq;
+        _gc = Q.CollectionsSinceSession;
+        var n = Runner.CopyFrameHistory(_hist);
+        var max = P.BudgetMs * 2f;
+        for (var i = 0; i < n; i++) max = MathF.Max(max, _hist[i]);
+        _budgetY = F1(58 - P.BudgetMs / max * 54);
+        var sb = new System.Text.StringBuilder();
+        for (var i = 0; i < n; i++) sb.Append(F1(i * 240f / Math.Max(1, n - 1))).Append(',').Append(F1(58 - _hist[i] / max * 54)).Append(' ');
+        _spark = sb.ToString();
+    }
+
+    private void Toggle() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step() { Runner.TickOnce(); Refresh(); }
+    private void ToggleBooster() => Runner.SetBooster(!Runner.Booster);
+
+    private void OnPreset(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var p)) { Runner.ApplyPreset(p); Refresh(); }
+    }
+
+    private void OnFps(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var f)) P.TargetFps = f;
+    }
+
+    private void OnVram(ChangeEventArgs e)
+    {
+        if (float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) Runner.VramBudgetMb = v;
+    }
+
+    private void Squeeze()
+    {
+        var t = Q.Squeeze();
+        _trim = "회수 가능 " + F0(t / 1024f) + "KB";
+    }
+
+    private async Task DetectGpu()
+    {
+        _detecting = true;
+        try { await Runner.DetectGpuAsync(); }
+        finally { _detecting = false; Refresh(); }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(() => { Refresh(); StateHasChanged(); });
+
+    public void Dispose()
+    {
+        _timer?.Dispose();
+        Runner.OnChange -= OnServiceChanged;
+        P.OnChange -= OnServiceChanged;
+        R.OnChange -= OnServiceChanged;
+        Q.OnChange -= OnServiceChanged;
+    }
+}

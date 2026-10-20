@@ -1,0 +1,70 @@
+@inject SmartThemeRecommender Rec
+
+@* [PromptFlow Studio] v3.2.0 AI 프리셋 스마트 추천 바 — 대본/키워드 입력 → 상위 3 테마 실시간 추천(TF-IDF 코사인). *@
+
+<div class="sg">
+    <div class="sg-row">
+        <span class="sg-ico">🤖</span>
+        <input class="sg-input" placeholder="대본·주제 키워드 입력 → AI 추천 (예: PODS 소음, 백일 파티, 배터리 시험)" value="@_query" @oninput="OnInput" disabled="@Disabled" />
+        @if (!string.IsNullOrEmpty(_query)) { <button class="sg-clear" @onclick="Clear" title="지우기">✕</button> }
+    </div>
+    @if (_recs.Count > 0)
+    {
+        <div class="sg-recs">
+            <span class="sg-label">추천</span>
+            @foreach (var r in _recs)
+            {
+                <button class="sg-chip" @onclick="() => Apply(r.Theme.Key)" disabled="@Disabled" title="@r.Theme.Hook">
+                    <span class="sg-chip-emoji">@r.Theme.Emoji</span>
+                    <span class="sg-chip-name">@r.Theme.Title</span>
+                    <span class="sg-chip-score">@r.ScoreLabel</span>
+                </button>
+            }
+        </div>
+    }
+    else if (!string.IsNullOrEmpty(_query))
+    {
+        <div class="sg-recs"><span class="sg-none">🔍 적합한 테마를 찾지 못했습니다 — 다른 키워드를 입력해 보세요.</span></div>
+    }
+</div>
+
+<style>
+    .sg { position: sticky; top: 0; z-index: 6; background: color-mix(in srgb, var(--card) 92%, transparent); backdrop-filter: blur(8px); border: 1px solid color-mix(in srgb, #6366f1 26%, var(--line)); border-radius: 12px; padding: 8px 10px; }
+    .sg-row { display: flex; align-items: center; gap: 8px; }
+    .sg-ico { font-size: 14px; }
+    .sg-input { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: var(--text-primary); font: 600 12.5px var(--mono); }
+    .sg-input::placeholder { color: var(--text-muted); }
+    .sg-clear { width: 22px; height: 22px; border: none; border-radius: 50%; background: var(--card-2); color: var(--text-secondary); cursor: pointer; font-size: 11px; }
+    .sg-recs { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: 8px; }
+    .sg-label { font: 800 9.5px var(--mono); color: var(--text-muted); letter-spacing: .08em; }
+    .sg-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid color-mix(in srgb, #6366f1 34%, var(--line)); background: color-mix(in srgb, #6366f1 8%, var(--card-2)); border-radius: 20px; padding: 5px 10px; cursor: pointer; font-family: inherit; }
+    .sg-chip:hover:not(:disabled) { border-color: #6366f1; filter: brightness(1.08); }
+    .sg-chip-emoji { font-size: 14px; } .sg-chip-name { font: 800 11px var(--mono); color: var(--text-primary); }
+    .sg-chip-score { font: 800 10px var(--mono); color: #86efac; background: color-mix(in srgb, #22c55e 15%, transparent); border-radius: 20px; padding: 1px 7px; }
+    .sg-none { font: 600 10.5px var(--mono); color: var(--text-muted); }
+</style>
+
+@code {
+    /// <summary>추천 테마 적용(부모가 VideoFormatFactory 로 구성).</summary>
+    [Parameter] public EventCallback<(string Key, VideoFormat Format)> OnApply { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    /// <summary>추천 적용 시 사용할 포맷(기본 숏츠).</summary>
+    [Parameter] public VideoFormat Format { get; set; } = VideoFormat.Shorts;
+
+    private string _query = "";
+    private IReadOnlyList<ThemeRecommendation> _recs = System.Array.Empty<ThemeRecommendation>();
+
+    private void OnInput(ChangeEventArgs e)
+    {
+        _query = e.Value?.ToString() ?? "";
+        _recs = string.IsNullOrWhiteSpace(_query) ? System.Array.Empty<ThemeRecommendation>() : Rec.Recommend(_query, 3);
+    }
+
+    private void Clear() { _query = ""; _recs = System.Array.Empty<ThemeRecommendation>(); }
+
+    private async Task Apply(string key)
+    {
+        await OnApply.InvokeAsync((key, Format));
+        Clear();
+    }
+}

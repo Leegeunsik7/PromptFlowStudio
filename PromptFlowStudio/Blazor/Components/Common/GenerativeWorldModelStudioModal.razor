@@ -1,0 +1,474 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.World
+@implements IDisposable
+@inject AiGenerative4dWorldModelEngine World
+@inject InteractiveVideoBranchingTranspiler Branch
+@inject NeuralSceneGraphPromptOptimizer Opt
+@inject WorldModelStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.54.0] 🌐 AI 4D 월드 모델 & 신경망 비디오 스튜디오 — 프롬프트 → 4D 장면 그래프 트리(관계 · 시간 이벤트 · 진단) · 정제 프롬프트/네거티브/품질 ·
+    퍼셉트론 피드백 · 레이트레이서 라이브 프리뷰 · 인터랙티브 분기 선택/되감기/미리보기 · 물리 슬라이더 · 분기 DSL 노드 에디터(SVG) · 4D 컨디셔닝 내보내기.
+*@
+
+<div class="wm-scrim" @onclick="Close">
+    <div class="wm-modal" @onclick:stopPropagation="true">
+        <div class="wm-h">
+            <div>
+                <div class="wm-title">🌐 AI 4D 월드 모델 &amp; 신경망 비디오 스튜디오</div>
+                <div class="wm-sub">프롬프트를 <b>4D 장면 그래프</b>(객체 · 공간 관계 · 시간 이벤트 · 카메라)로 구조화해 정제하고, <b>물리 일관 월드</b>(중력 · 충돌 · 반사 · 카메라 궤적)로 시뮬레이션하며,
+                    시청자 선택에 따라 <b>상태를 이관한 채 끊김 없이 분기</b>합니다.</div>
+            </div>
+            <button class="wm-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="wm-bar">
+            <span class="wm-chip">시뮬 @(World.FramesSimulated) · 렌더 @(World.FramesRendered)</span>
+            <span class="wm-chip @(ScoreCls)">일관성 @(World.LastReport?.Score.ToString(CultureInfo.InvariantCulture) ?? "—")</span>
+            <span class="wm-chip">분기 @(Branch.Switches) · 심리스 @(Branch.SeamlessSwitches) · 아티팩트 @(Branch.ArtifactSwitches) · 거부 @(Branch.RejectedChoices) · 타임아웃 @(Branch.TimeoutDefaults)</span>
+            <span class="wm-chip">전환 @(Branch.LastSwitchLatencyFrames)f · @(Branch.LastSwitchMicros.ToString("0.0", CultureInfo.InvariantCulture))µs</span>
+            <span class="wm-chip">그래프 @(Opt.Optimizations) · 보정 @(Opt.AutoFixes) · 피드백 @(Opt.Feedbacks)</span>
+        </div>
+
+        <div class="wm-main">
+            <div class="wm-col">
+                <div class="wm-card">
+                    <div class="wm-sec">✍️ 장면 프롬프트</div>
+                    <textarea class="wm-ta" rows="3" @bind="_prompt" placeholder="예: 빨간 공 두 개가 나무 테이블 위에서 떨어져 바닥에 튄다. 카메라는 천천히 오비트한다. 노을 조명"></textarea>
+                    <div class="wm-row">
+                        <button class="wm-btn go" disabled="@(_busy || string.IsNullOrWhiteSpace(_prompt))" @onclick="Generate">@(_busy ? "생성 중…" : "🌐 4D 월드 생성")</button>
+                        @foreach (var s in Samples)
+                        {
+                            var sample = s;
+                            <button class="wm-btn sm" @onclick="() => _prompt = sample">@(sample[..Math.Min(14, sample.Length)])…</button>
+                        }
+                    </div>
+                </div>
+
+                @if (Runner.Last is { } last)
+                {
+                    <div class="wm-card">
+                        <div class="wm-sec">🧠 정제 프롬프트 · @(last.Prompt.Variant) · 채택 p=@(last.Prompt.Acceptance.ToString("0.00", CultureInfo.InvariantCulture))</div>
+                        <div class="wm-q">
+                            @foreach (var (name, b, a) in QualityRows(last.Prompt))
+                            {
+                                <span>@(name)</span><div class="wm-qb"><i style="width:@(Pct(b))%"></i><b style="width:@(Pct(a))%"></b></div><em>@(Pct(b))→@(Pct(a))</em>
+                            }
+                        </div>
+                        <div class="wm-pr">@(last.Prompt.Refined)</div>
+                        <div class="wm-mut">⛔ @(last.Prompt.Negative)</div>
+                        <div class="wm-row">
+                            @foreach (var c in last.Prompt.Candidates)
+                            {
+                                var cc = c;
+                                <span class="wm-cand">@(cc.Variant) @(Opt.Predict(cc.Features).ToString("0.00", CultureInfo.InvariantCulture))
+                                    <button class="wm-btn sm" @onclick="() => Opt.Feedback(cc, true)">👍</button><button class="wm-btn sm" @onclick="() => Opt.Feedback(cc, false)">👎</button></span>
+                            }
+                        </div>
+                    </div>
+
+                    <div class="wm-card">
+                        <div class="wm-sec">🌳 4D 장면 그래프 · 중력 @(last.Graph.Gravity.ToString("0.00", CultureInfo.InvariantCulture)) · @(last.Graph.Light) · 📷 @(last.Graph.Camera)</div>
+                        <div class="wm-tree">
+                            <div class="wm-node root">🌍 World · @(last.Graph.Duration.ToString("0.#", CultureInfo.InvariantCulture))s · 반사 @(last.Graph.Reflectivity.ToString("0.00", CultureInfo.InvariantCulture))@(last.Graph.Styles.Count > 0 ? " · " + string.Join(", ", last.Graph.Styles) : "")</div>
+                            @foreach (var (i, depth) in TreeOrder(last.Graph))
+                            {
+                                var e = last.Graph.Entities[i];
+                                <div class="wm-node" style="padding-left:@((depth + 1) * 16)px">
+                                    <b>@(e.Kind == SceneEntityKind.Support ? "🪵" : e.Shape == WorldShape.Sphere ? "⚪" : "📦") @(e.Label)</b><i>@(e.Id) · @(e.Mass > 0 ? e.Mass.ToString("0.##", CultureInfo.InvariantCulture) + "kg" : "정적")</i>
+                                    @foreach (var ed in last.Graph.Edges)
+                                    {
+                                        if (ed.From != i || ed.Relation == SceneRelation.On) continue;
+                                        <span class="wm-rel">@(SceneGraph.RelLabel(ed.Relation)) @(last.Graph.Entities[ed.To].Label)</span>
+                                    }
+                                    @foreach (var ev in last.Graph.Events)
+                                    {
+                                        if (ev.Entity != i) continue;
+                                        <span class="wm-evt">⏱ @(ev.Start.ToString("0.0", CultureInfo.InvariantCulture))s @(SceneGraph.ActionLabel(ev.Action))</span>
+                                    }
+                                </div>
+                            }
+                        </div>
+                        <div class="wm-log">
+                            @foreach (var iss in last.Graph.Issues)
+                            {
+                                <div class="wm-iss s@((int)iss.Severity)"><b>@(iss.Code)</b><span>@(iss.Message)</span><i>@(iss.AutoFixed ? "자동 보정" : "")</i></div>
+                            }
+                        </div>
+                    </div>
+                }
+            </div>
+
+            <div class="wm-col">
+                <div class="wm-card">
+                    <div class="wm-sec">🎬 인터랙티브 4D 프리뷰 · @(SegmentCaption) · f@(Branch.SegmentFrame)</div>
+                    <div class="wm-view">
+                        @if (_frameUrl is not null)
+                        {
+                            <img src="@(_frameUrl)" alt="4D 프리뷰" />
+                        }
+                        else
+                        {
+                            <div class="wm-mut">프롬프트로 4D 월드를 생성하세요.</div>
+                        }
+                    </div>
+                    <div class="wm-row">
+                        <button class="wm-btn" disabled="@(Branch.Program is null)" @onclick="TogglePlay">@(Runner.IsPlaying ? "⏸ 일시정지" : "▶ 재생")</button>
+                        <button class="wm-btn" disabled="@(Branch.HistoryCount == 0)" @onclick="Rewind">⏪ 되감기</button>
+                        <button class="wm-btn" disabled="@(Branch.Program is null || Runner.IsPlaying)" @onclick="StepOnce">⏭ 1프레임</button>
+                    </div>
+                    @if (Branch.Program is { } prog && Branch.CurrentSegment >= 0)
+                    {
+                        var seg = prog.Segments[Branch.CurrentSegment];
+                        <div class="wm-row">
+                            @for (var c = 0; c < seg.ChoiceCount; c++)
+                            {
+                                var ci = c;
+                                var ch = prog.Choices[seg.ChoiceStart + c];
+                                var open = Branch.IsWindowOpen(ci);
+                                <button class="wm-btn choice @(open ? "open" : "")" disabled="@(!open)" @onclick="() => Runner.Choose(ci)">@(ch.Label)@(ch.IsDefault ? " ⏳" : "")</button>
+                                <button class="wm-btn sm" title="섀도 월드 미리보기" @onclick="() => Preview(ci)">👁</button>
+                            }
+                            @if (seg.ChoiceCount == 0)
+                            {
+                                <span class="wm-mut">@(Branch.Ended ? "🏁 엔딩" : seg.Next >= 0 ? "→ " + prog.Segments[seg.Next].Caption : "")</span>
+                            }
+                        </div>
+                    }
+                    @if (_previewUrl is not null)
+                    {
+                        <div class="wm-row"><img class="wm-thumb" src="@(_previewUrl)" alt="분기 미리보기" /><span class="wm-mut">@(_previewLabel) — 1.5초 후(본 월드 불변)</span></div>
+                    }
+                    @if (World.LastReport is { } rep)
+                    {
+                        <div class="wm-kv">
+                            <span>에너지 위반</span><b>@(rep.EnergyViolations)</b><span>최대 침투</span><b>@((rep.MaxPenetration * 100).ToString("0.0", CultureInfo.InvariantCulture))cm</b>
+                            <span>영속성 위반</span><b>@(rep.PermanenceViolations)</b><span>카메라 점프</span><b>@(rep.CameraJumps) · @(rep.MaxCameraDegPerSec.ToString("0", CultureInfo.InvariantCulture))°/s</b>
+                            <span>평균 Δ휘도</span><b>@(rep.MeanDelta.ToString("0.0", CultureInfo.InvariantCulture))</b><span>최대 스파이크</span><b>×@(rep.MaxSpike.ToString("0.0", CultureInfo.InvariantCulture))</b>
+                        </div>
+                        @foreach (var i in rep.Issues)
+                        {
+                            <div class="wm-mut badt">⚠ @(i)</div>
+                        }
+                    }
+                </div>
+
+                <div class="wm-card">
+                    <div class="wm-sec">🎚 물리 시뮬레이션</div>
+                    <div class="wm-sl">
+                        <span>중력 @(_gravity.ToString("0.00", CultureInfo.InvariantCulture))</span><input type="range" min="0" max="25" step="0.01" @bind="_gravity" @bind:after="() => Runner.SetPhysics(WorldOpKind.Gravity, _gravity)" />
+                        <span>반발 @(_rest.ToString("0.00", CultureInfo.InvariantCulture))</span><input type="range" min="0" max="0.95" step="0.01" @bind="_rest" @bind:after="() => Runner.SetPhysics(WorldOpKind.Restitution, _rest)" />
+                        <span>마찰 @(_fric.ToString("0.00", CultureInfo.InvariantCulture))</span><input type="range" min="0" max="1.5" step="0.01" @bind="_fric" @bind:after="() => Runner.SetPhysics(WorldOpKind.Friction, _fric)" />
+                        <span>바닥 반사 @(_refl.ToString("0.00", CultureInfo.InvariantCulture))</span><input type="range" min="0" max="0.9" step="0.01" @bind="_refl" @bind:after="() => Runner.SetPhysics(WorldOpKind.Reflectivity, _refl)" />
+                        <span>시간 배속 @(_ts.ToString("0.00", CultureInfo.InvariantCulture))</span><input type="range" min="0.25" max="2" step="0.05" @bind="_ts" @bind:after="() => Runner.SetPhysics(WorldOpKind.TimeScale, _ts)" />
+                    </div>
+                    <div class="wm-row">
+                        <select class="wm-in" @bind="_light" @bind:after="() => Runner.SetLighting(_light)">
+                            @foreach (var l in Enum.GetValues<LightPreset>())
+                            {
+                                <option value="@(l)">@(l)</option>
+                            }
+                        </select>
+                        <button class="wm-btn sm" disabled="@(Runner.Last is null || _busy)" @onclick="Reanalyze">🔍 일관성 재분석</button>
+                        <button class="wm-btn sm" disabled="@(Runner.Last is null || _busy)" @onclick="Export">📦 4D 컨디셔닝 내보내기</button>
+                    </div>
+                    @if (_exportMsg is not null)
+                    {
+                        <div class="wm-mut">@(_exportMsg)</div>
+                    }
+                </div>
+
+                <div class="wm-card">
+                    <div class="wm-sec">🔀 분기 노드 에디터</div>
+                    @if (Branch.Program is { } gp)
+                    {
+                        <svg class="wm-svg" viewBox="0 0 @(SvgW) @(SvgH)">
+                            @foreach (var (from, to, dashed) in GraphEdges(gp))
+                            {
+                                <line x1="@(NodeX(from) + 120)" y1="@(NodeY(from) + 15)" x2="@(NodeX(to))" y2="@(NodeY(to) + 15)" class="@(dashed ? "nx" : "ch")" />
+                            }
+                            @for (var s = 0; s < gp.Segments.Length; s++)
+                            {
+                                var sg = gp.Segments[s];
+                                <g>
+                                    <rect x="@(NodeX(s))" y="@(NodeY(s))" width="120" height="30" rx="7" class="@(s == Branch.CurrentSegment ? "cur" : sg.ChoiceCount == 0 && sg.Next < 0 ? "end" : "")" />
+                                    <text x="@(NodeX(s) + 60)" y="@(NodeY(s) + 19)">@(sg.Id) · @(sg.Frames)f</text>
+                                </g>
+                            }
+                        </svg>
+                    }
+                    <textarea class="wm-ta mono" rows="8" @bind="_dsl"></textarea>
+                    <div class="wm-row"><button class="wm-btn" disabled="@(string.IsNullOrWhiteSpace(_dsl))" @onclick="Transpile">⚙ 트랜스파일 &amp; 로드</button></div>
+                    <div class="wm-log">
+                        @foreach (var d in _diags)
+                        {
+                            <div class="wm-iss s@((int)d.Severity)"><b>L@(d.Line) @(d.Code)</b><span>@(d.Message)</span><i></i></div>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="wm-f">
+            <span class="wm-mut">@(_msg ?? Runner.LastAction ?? Branch.LastAction ?? Opt.LastAction ?? World.LastAction ?? "대기")</span>
+            <button class="wm-btn" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .wm-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .wm-modal { width: min(1520px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .wm-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #0ea5e9 16%, var(--card)), color-mix(in srgb, #a855f7 14%, var(--card))); }
+    .wm-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .wm-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .wm-sub b { color: var(--text-primary); }
+    .wm-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .wm-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .wm-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); } .wm-chip.ok { color: #4ade80; } .wm-chip.hot { color: #fff; background: #f97316; border-color: #f97316; }
+    .wm-main { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 12px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .wm-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .wm-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .wm-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .wm-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .wm-ta { width: 100%; box-sizing: border-box; font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; resize: vertical; } .wm-ta.mono { font: 11px var(--mono); }
+    .wm-pr { font: 11.5px var(--mono); color: var(--text-primary); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; line-height: 1.5; }
+    .wm-q { display: grid; grid-template-columns: 70px 1fr 70px; gap: 3px 6px; align-items: center; font-size: 11px; color: var(--text-secondary); } .wm-q em { font: 10px var(--mono); font-style: normal; text-align: right; }
+    .wm-qb { position: relative; height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden; } .wm-qb i, .wm-qb b { position: absolute; left: 0; top: 0; bottom: 0; } .wm-qb b { background: #0ea5e9; opacity: .55; } .wm-qb i { background: #f97316; z-index: 1; height: 3px; }
+    .wm-cand { display: inline-flex; align-items: center; gap: 3px; font: 10.5px var(--mono); color: var(--text-muted); border: 1px solid var(--line); border-radius: 8px; padding: 2px 4px; }
+    .wm-tree { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow-y: auto; }
+    .wm-node { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-secondary); border-left: 2px solid var(--line); padding: 2px 6px; } .wm-node.root { font-weight: 800; color: var(--text-primary); border-left-color: #0ea5e9; }
+    .wm-node b { color: var(--text-primary); } .wm-node i { font: 10px var(--mono); font-style: normal; color: var(--text-muted); }
+    .wm-rel { font-size: 10.5px; padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, #a855f7 18%, var(--card)); } .wm-evt { font-size: 10.5px; padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, #0ea5e9 18%, var(--card)); }
+    .wm-log { display: flex; flex-direction: column; gap: 2px; max-height: 150px; overflow-y: auto; }
+    .wm-iss { display: grid; grid-template-columns: 150px 1fr 70px; gap: 6px; font-size: 11px; color: var(--text-secondary); } .wm-iss b { font: 10px var(--mono); } .wm-iss i { font-size: 10px; font-style: normal; color: #4ade80; text-align: right; }
+    .wm-iss.s0 b { color: #38bdf8; } .wm-iss.s1 b { color: #fbbf24; } .wm-iss.s2 b { color: #f87171; }
+    .wm-view { aspect-ratio: 16 / 9; background: #000; border-radius: 8px; overflow: hidden; display: flex; align-items: center; justify-content: center; } .wm-view img { width: 100%; height: 100%; image-rendering: auto; }
+    .wm-thumb { width: 192px; height: 108px; border-radius: 6px; border: 1px solid var(--line); }
+    .wm-kv { display: grid; grid-template-columns: 90px 1fr 90px 1fr; gap: 4px 8px; font-size: 11px; } .wm-kv span { color: var(--text-muted); } .wm-kv b { font: 600 11px var(--mono); color: var(--text-primary); }
+    .wm-sl { display: grid; grid-template-columns: 110px 1fr; gap: 4px 8px; align-items: center; font-size: 11.5px; color: var(--text-secondary); }
+    .wm-svg { width: 100%; height: auto; max-height: 200px; background: var(--bg); border-radius: 8px; }
+    .wm-svg rect { fill: var(--card); stroke: #64748b; stroke-width: 1.2; } .wm-svg rect.cur { stroke: #0ea5e9; stroke-width: 2.5; fill: color-mix(in srgb, #0ea5e9 18%, var(--card)); } .wm-svg rect.end { stroke: #a855f7; }
+    .wm-svg text { font: 10px var(--mono); fill: var(--text-primary); text-anchor: middle; } .wm-svg line.ch { stroke: #0ea5e9; stroke-width: 1.4; } .wm-svg line.nx { stroke: #94a3b8; stroke-width: 1.2; stroke-dasharray: 4 3; }
+    .wm-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+    .wm-mut { font-size: 11px; color: var(--text-muted); word-break: break-all; } .wm-mut.badt { color: #f87171; font-weight: 700; }
+    .wm-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); } .wm-f .wm-mut { margin-right: auto; }
+    .wm-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .wm-btn.sm { padding: 3px 8px; font-size: 11px; } .wm-btn.go { background: linear-gradient(135deg,#0ea5e9,#a855f7); color: #fff; border: 0; } .wm-btn:disabled { opacity: .45; cursor: not-allowed; }
+    .wm-btn.choice.open { border-color: #0ea5e9; color: #0ea5e9; animation: wm-pulse 1.2s infinite; }
+    @@keyframes wm-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(14,165,233,.5); } 50% { box-shadow: 0 0 0 4px rgba(14,165,233,0); } }
+    @@media (max-width: 1100px) { .wm-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly string[] Samples =
+    {
+        "빨간 공 두 개가 나무 테이블 위에서 떨어져 바닥에 튄다. 파란 상자는 테이블 왼쪽에 있다. 카메라는 천천히 오비트한다. 노을 조명, 시네마틱",
+        "노란 고무 공이 받침대 위에서 2초 후 떨어진다. 빨간 상자가 공 오른쪽에 있다. 카메라가 공을 따라간다. 정오 햇빛",
+        "볼링공이 초록 공과 충돌한다. 거울 바닥, 달에서. 부감 카메라, 35mm. 밤",
+    };
+
+    private string _prompt = Samples[0];
+    private string _dsl = "";
+    private string? _msg, _exportMsg, _frameUrl, _previewUrl, _previewLabel;
+    private bool _busy;
+    private float _gravity = 9.81f, _rest = 0.7f, _fric = 0.5f, _refl = 0.2f, _ts = 1f;
+    private LightPreset _light = LightPreset.Studio;
+    private IReadOnlyList<BranchDiagnostic> _diags = Array.Empty<BranchDiagnostic>();
+    private readonly byte[] _frame = new byte[WorldModelStudioRunner.FrameWidth * WorldModelStudioRunner.FrameHeight * 3];
+    private readonly byte[] _thumb = new byte[WorldModelStudioRunner.FrameWidth * WorldModelStudioRunner.FrameHeight * 3];
+    private System.Threading.Timer? _timer;
+    private long _shownSeq = -1;
+    private int[] _col = Array.Empty<int>(), _rowIdx = Array.Empty<int>();
+    private int _cols = 1, _rows = 1;
+
+    private string ScoreCls => World.LastReport is { } r ? (r.Score >= 85 ? "ok" : "hot") : "";
+    private string SegmentCaption => Branch.Program is { } p && Branch.CurrentSegment >= 0 ? p.Segments[Branch.CurrentSegment].Caption : "—";
+    private int SvgW => Math.Max(300, _cols * 150 + 10);
+    private int SvgH => Math.Max(60, _rows * 42 + 10);
+
+    protected override void OnInitialized()
+    {
+        World.OnChange += OnServiceChanged;
+        Branch.OnChange += OnServiceChanged;
+        Opt.OnChange += OnServiceChanged;
+        Runner.OnChange += OnServiceChanged;
+        if (Runner.Last is { } last) { _dsl = last.StoryDsl; _diags = last.Story.Diagnostics; Layout(); }
+        _light = World.Light;
+        _gravity = -World.GravityY; _refl = World.Reflectivity; _ts = World.TimeScale;
+        RefreshFrame(true);
+        _timer = new System.Threading.Timer(_ => { if (Runner.IsPlaying && Runner.FrameSeq != _shownSeq) _ = InvokeAsync(() => { RefreshFrame(false); StateHasChanged(); }); }, null, 100, 100);
+    }
+
+    private async Task Generate()
+    {
+        _busy = true; _msg = null; _previewUrl = null;
+        try
+        {
+            var p = _prompt;
+            var r = await Task.Run(() => Runner.Generate(p));
+            _dsl = r.StoryDsl; _diags = r.Story.Diagnostics;
+            _light = World.Light; _gravity = -World.GravityY; _refl = World.Reflectivity; _ts = World.TimeScale;
+            Layout();
+            RefreshFrame(true);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException) { _msg = "⚠ 생성 실패 · " + ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private void Transpile()
+    {
+        var r = Runner.LoadStory(_dsl);
+        _diags = r.Diagnostics;
+        _msg = r.Ok ? "✅ 트랜스파일 성공 · 세그먼트 " + r.Program!.Segments.Length.ToString(CultureInfo.InvariantCulture) : "⛔ 오류 " + r.Errors.ToString(CultureInfo.InvariantCulture) + "건";
+        Layout();
+        RefreshFrame(true);
+    }
+
+    private void TogglePlay()
+    {
+        if (Runner.IsPlaying) Runner.StopPlayback(); else Runner.StartPlayback();
+    }
+
+    private void StepOnce() { Runner.TickOnce(); RefreshFrame(true); }
+
+    private void Rewind() { if (Runner.Rewind()) { Runner.TickOnce(); RefreshFrame(true); } }
+
+    private void Preview(int choice)
+    {
+        if (!Runner.Preview(choice, _thumb, WorldModelStudioRunner.FrameWidth, WorldModelStudioRunner.FrameHeight)) return;
+        _previewUrl = BmpUrl(_thumb, WorldModelStudioRunner.FrameWidth, WorldModelStudioRunner.FrameHeight);
+        var p = Branch.Program!;
+        _previewLabel = p.Choices[p.Segments[Branch.CurrentSegment].ChoiceStart + choice].Label;
+    }
+
+    private async Task Reanalyze()
+    {
+        _busy = true;
+        try { var r = await Task.Run(() => Runner.Reanalyze(4f)); _msg = "🔍 일관성 " + r.Score.ToString(CultureInfo.InvariantCulture) + "점"; }
+        finally { _busy = false; }
+    }
+
+    private async Task Export()
+    {
+        _busy = true;
+        try
+        {
+            var (json, status) = await Runner.ExportConditioningAsync();
+            _exportMsg = "📦 " + (json.Length / 1024.0).ToString("0.0", CultureInfo.InvariantCulture) + "KB · " + status;
+        }
+        finally { _busy = false; }
+    }
+
+    private void RefreshFrame(bool force)
+    {
+        if (Runner.Last is null) return;
+        var seq = Runner.FrameSeq;
+        if (!force && seq == _shownSeq) return;
+        Runner.CopyFrame(_frame);
+        _frameUrl = BmpUrl(_frame, WorldModelStudioRunner.FrameWidth, WorldModelStudioRunner.FrameHeight);
+        _shownSeq = seq;
+    }
+
+    /// <summary>RGB24 → BMP data URL(UI 계층 할당 허용).</summary>
+    private static string BmpUrl(byte[] rgb, int w, int h)
+    {
+        var stride = (w * 3 + 3) & ~3;
+        var size = 54 + stride * h;
+        var b = new byte[size];
+        b[0] = (byte)'B'; b[1] = (byte)'M';
+        BitConverter.TryWriteBytes(b.AsSpan(2), size); BitConverter.TryWriteBytes(b.AsSpan(10), 54); BitConverter.TryWriteBytes(b.AsSpan(14), 40);
+        BitConverter.TryWriteBytes(b.AsSpan(18), w); BitConverter.TryWriteBytes(b.AsSpan(22), h); BitConverter.TryWriteBytes(b.AsSpan(26), (short)1); BitConverter.TryWriteBytes(b.AsSpan(28), (short)24);
+        BitConverter.TryWriteBytes(b.AsSpan(34), stride * h);
+        for (var y = 0; y < h; y++)
+        {
+            var dst = 54 + (h - 1 - y) * stride; var src = y * w * 3;
+            for (var x = 0; x < w; x++) { b[dst + x * 3] = rgb[src + x * 3 + 2]; b[dst + x * 3 + 1] = rgb[src + x * 3 + 1]; b[dst + x * 3 + 2] = rgb[src + x * 3]; }
+        }
+        return "data:image/bmp;base64," + Convert.ToBase64String(b);
+    }
+
+    private static IEnumerable<(string, float, float)> QualityRows(OptimizedPrompt p)
+    {
+        yield return ("주체", p.Before.Subject, p.After.Subject);
+        yield return ("관계", p.Before.Relations, p.After.Relations);
+        yield return ("시간", p.Before.Temporal, p.After.Temporal);
+        yield return ("카메라", p.Before.Camera, p.After.Camera);
+        yield return ("조명", p.Before.Lighting, p.After.Lighting);
+        yield return ("물리", p.Before.Physics, p.After.Physics);
+        yield return ("일관성", p.Before.Consistency, p.After.Consistency);
+        yield return ("종합", p.Before.Overall, p.After.Overall);
+    }
+
+    private static int Pct(float v) => (int)MathF.Round(Math.Clamp(v, 0f, 1f) * 100f);
+
+    /// <summary>지지(On) 관계 기준 트리 순회(지지체 → 적재물) — 순환은 Repair 에서 제거됨.</summary>
+    private static List<(int, int)> TreeOrder(SceneGraph g)
+    {
+        var res = new List<(int, int)>();
+        var seen = new bool[g.Entities.Count];
+        void Visit(int i, int d)
+        {
+            if (seen[i] || d > 8) return;
+            seen[i] = true; res.Add((i, d));
+            foreach (var e in g.Edges) if (e.Relation == SceneRelation.On && e.To == i) Visit(e.From, d + 1);
+        }
+        for (var i = 0; i < g.Entities.Count; i++)
+        {
+            var supported = false;
+            foreach (var e in g.Edges) if (e.Relation == SceneRelation.On && e.From == i) supported = true;
+            if (!supported) Visit(i, 0);
+        }
+        for (var i = 0; i < g.Entities.Count; i++) if (!seen[i]) Visit(i, 0);
+        return res;
+    }
+
+    private static IEnumerable<(int, int, bool)> GraphEdges(BranchProgram p)
+    {
+        for (var s = 0; s < p.Segments.Length; s++)
+        {
+            var sg = p.Segments[s];
+            for (var c = 0; c < sg.ChoiceCount; c++) { var t = p.Choices[sg.ChoiceStart + c].Target; if (t >= 0) yield return (s, t, false); }
+            if (sg.Next >= 0) yield return (s, sg.Next, true);
+        }
+    }
+
+    /// <summary>BFS 깊이 = 열, 같은 깊이 순번 = 행.</summary>
+    private void Layout()
+    {
+        var p = Branch.Program;
+        if (p is null) { _col = Array.Empty<int>(); _rowIdx = Array.Empty<int>(); return; }
+        var n = p.Segments.Length;
+        _col = new int[n]; _rowIdx = new int[n];
+        Array.Fill(_col, -1);
+        var q = new Queue<int>(); q.Enqueue(p.Start); _col[p.Start] = 0;
+        while (q.Count > 0)
+        {
+            var s = q.Dequeue();
+            foreach (var (from, to, _) in GraphEdges(p)) if (from == s && _col[to] < 0) { _col[to] = _col[s] + 1; q.Enqueue(to); }
+        }
+        var maxCol = 0;
+        for (var s = 0; s < n; s++) { if (_col[s] < 0) _col[s] = 0; maxCol = Math.Max(maxCol, _col[s]); }
+        var counts = new int[maxCol + 1];
+        for (var s = 0; s < n; s++) _rowIdx[s] = counts[_col[s]]++;
+        _cols = maxCol + 1; _rows = 1;
+        foreach (var c in counts) _rows = Math.Max(_rows, c);
+    }
+
+    private int NodeX(int s) => s < _col.Length ? 6 + _col[s] * 150 : 6;
+    private int NodeY(int s) => s < _rowIdx.Length ? 6 + _rowIdx[s] * 42 : 6;
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(() => { RefreshFrame(false); StateHasChanged(); });
+
+    public void Dispose()
+    {
+        _timer?.Dispose();
+        World.OnChange -= OnServiceChanged;
+        Branch.OnChange -= OnServiceChanged;
+        Opt.OnChange -= OnServiceChanged;
+        Runner.OnChange -= OnServiceChanged;
+    }
+}

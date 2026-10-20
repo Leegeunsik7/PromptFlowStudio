@@ -1,0 +1,91 @@
+@implements IDisposable
+@inject IBuildLauncher Launcher
+
+@* [PromptFlow Studio v4.4.0] 관리자 설정 ▸ 보안·배포 — 멀티플랫폼 원클릭 패키징 스위치(공용 RCL). *@
+
+<div class="add">
+    <div class="add-h"><span class="add-title">🔐 보안·배포 · 멀티플랫폼 패키징</span><span class="add-badge">v4.4.0</span></div>
+
+    <div class="add-targets">
+        @foreach (var t in AllTargets)
+        {
+            <button class="add-target @(_targets.Contains(t) ? "on" : null)" @onclick="() => Toggle(t)" @key="t">
+                <span class="add-t-e">@DeploymentBuildPlanner.Emoji(t)</span>
+                <span class="add-t-n">@DeploymentBuildPlanner.Label(t)</span>
+                <span class="add-t-c">@(_targets.Contains(t) ? "포함" : "제외")</span>
+            </button>
+        }
+    </div>
+
+    <div class="add-plan">
+        <div class="add-plan-h">📦 패키징 계획 <span class="add-out">→ @Plan.OutputDir/</span></div>
+        @if (Plan.Steps.Count == 0) { <div class="add-empty">대상을 1개 이상 선택하세요.</div> }
+        @foreach (var s in Plan.Steps)
+        {
+            <div class="add-step"><span class="add-step-run">@s.Runner</span><span class="add-step-scr">@s.Script</span><span class="add-step-out">@s.OutputName</span></div>
+        }
+    </div>
+
+    <div class="add-actions">
+        <button class="add-btn go" @onclick="Package" disabled="@(_busy || _targets.Count == 0)">🚀 패키징 실행 (PowerShell + Bash 체이닝)</button>
+    </div>
+    @if (_results.Count > 0)
+    {
+        <div class="add-results">
+            @foreach (var r in _results) { <div class="add-res @(r.Ok ? "ok" : "no")">@(r.Ok ? "✅ " : "⚠ ")@DeploymentBuildPlanner.Label(r.Target) — @r.Message</div> }
+        </div>
+    }
+    @if (_msg is not null) { <div class="add-msg">@_msg</div> }
+    <div class="add-note">💡 CI/CD 무인 배포는 <code>store-deploy.yml</code>(GitHub Actions)·<code>azure-pipelines.yml</code>에서 <code>CiCdPipelineRunner</code>가 AAB/IPA 실검수 후 통과 시 자동 릴리스합니다.</div>
+</div>
+
+<style>
+    .add { border: 1px solid color-mix(in srgb, #f59e0b 34%, #2b2f42); border-radius: 16px; overflow: hidden; font-family: Pretendard, 'Malgun Gothic', sans-serif; color: #e6edff; background: linear-gradient(160deg, rgba(245,158,11,.08), rgba(18,20,31,.92)); }
+    .add-h { display: flex; align-items: center; gap: 8px; padding: 12px 15px; border-bottom: 1px solid #2b2f42; }
+    .add-title { font: 900 14px Pretendard,'Malgun Gothic',sans-serif; background: linear-gradient(90deg,#fcd34d,#fca5a5); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .add-badge { font: 800 10px ui-monospace,monospace; color: #1a1206; background: linear-gradient(135deg,#fde68a,#f5c451); border-radius: 20px; padding: 2px 8px; }
+    .add-targets { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; padding: 13px 15px; } @@media (max-width: 640px) { .add-targets { grid-template-columns: 1fr; } }
+    .add-target { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 14px 8px; border-radius: 13px; border: 1px solid #2b2f42; background: #1a1d2b; color: #9aa6c8; cursor: pointer; font-family: inherit; }
+    .add-target:hover { border-color: #f59e0b; }
+    .add-target.on { border-color: transparent; box-shadow: 0 0 0 2px #f59e0b; background: color-mix(in srgb,#f59e0b 12%,#1a1d2b); color: #fff; }
+    .add-t-e { font-size: 26px; } .add-t-n { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; } .add-t-c { font: 700 9px ui-monospace,monospace; color: #6b7392; } .add-target.on .add-t-c { color: #fcd34d; }
+    .add-plan { margin: 0 15px 12px; border: 1px solid #2b2f42; border-radius: 12px; background: #0b0d14; padding: 10px; }
+    .add-plan-h { font: 800 11px Pretendard,'Malgun Gothic',sans-serif; color: #9aa6c8; margin-bottom: 6px; } .add-out { color: #6ee7b7; font-family: ui-monospace,monospace; }
+    .add-empty { font: 600 10.5px Pretendard,'Malgun Gothic',sans-serif; color: #6b7392; }
+    .add-step { display: flex; gap: 8px; align-items: center; font: 600 10px ui-monospace,monospace; color: #9aa6c8; padding: 3px 0; }
+    .add-step-run { color: #fcd34d; font-weight: 800; min-width: 42px; } .add-step-scr { color: #7dd3fc; } .add-step-out { margin-left: auto; color: #6ee7b7; }
+    .add-actions { padding: 0 15px 10px; } .add-btn { width: 100%; font: 800 14px Pretendard,'Malgun Gothic',sans-serif; padding: 13px; border: none; border-radius: 12px; cursor: pointer; color: #1a1206; background: linear-gradient(135deg,#fde68a,#f5c451); box-shadow: 0 6px 16px color-mix(in srgb,#f5c451 30%,transparent), inset 0 1px 0 rgba(255,255,255,.5); }
+    .add-btn:hover:not(:disabled) { filter: brightness(1.06); } .add-btn:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
+    .add-results { padding: 0 15px 6px; display: flex; flex-direction: column; gap: 4px; } .add-res { font: 700 10.5px Pretendard,'Malgun Gothic',sans-serif; } .add-res.ok { color: #86efac; } .add-res.no { color: #fbbf24; }
+    .add-msg { margin: 0 15px 10px; padding: 8px 11px; border-radius: 9px; background: #12141f; border: 1px solid color-mix(in srgb,#f59e0b 30%,#2b2f42); font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: #fcd34d; line-height: 1.5; }
+    .add-note { margin: 0 15px 14px; font: 600 10px Pretendard,'Malgun Gothic',sans-serif; color: #6b7392; line-height: 1.5; word-break: keep-all; } .add-note code { color: #7dd3fc; background: #1a1d2b; padding: 1px 4px; border-radius: 4px; }
+</style>
+
+@code {
+    private static readonly BuildTarget[] AllTargets = { BuildTarget.WinExe, BuildTarget.AndroidApk, BuildTarget.IosIpa };
+    private readonly HashSet<BuildTarget> _targets = new() { BuildTarget.WinExe };
+    private readonly List<BuildRunResult> _results = new();
+    private bool _busy;
+    private string? _msg;
+
+    private DeploymentPlan Plan => DeploymentBuildPlanner.Plan(_targets.ToList());
+
+    private void Toggle(BuildTarget t) { if (!_targets.Add(t)) _targets.Remove(t); _results.Clear(); _msg = null; }
+
+    private async Task Package()
+    {
+        _busy = true; _results.Clear(); _msg = null;
+        try
+        {
+            var plan = Plan;
+            foreach (var step in plan.Steps)
+                _results.Add(await Launcher.RunAsync(step, plan.OutputDir));
+            _msg = Launcher.IsSupported
+                ? $"패키징 완료 — {_results.Count(r => r.Ok)}/{_results.Count} 성공 · {plan.OutputDir}/ 통합 추출"
+                : "ℹ 실제 패키징은 데스크톱(PowerShell/Bash)에서 실행됩니다 — 현재는 계획만 표시(Graceful).";
+        }
+        finally { _busy = false; }
+    }
+
+    public void Dispose() { }
+}

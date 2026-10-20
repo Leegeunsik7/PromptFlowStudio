@@ -1,0 +1,339 @@
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.GlobalOps
+@implements IDisposable
+@inject LiveProductionHotReloadingEngine Hot
+@inject GlobalSlaAutoScalingLoadBalancer Lb
+@inject ZeroTrustContinuousSecurityAuditor Zt
+@inject GlobalOperationsRunner Runner
+
+@*
+    [PromptFlow Studio v16.52.0] 🌐 글로벌 SLA & 운용 총괄 스튜디오 — SLA 가동률 매트릭스(윈도별 가동률 · 오류 예산 · 번 레이트 · p50/p99 · 리전×노드 이용률) · 스케일 이벤트 ·
+    핫 리로딩 모듈 관리자(DSL 편집 · 트랜스파일 미리보기 · 카나리 · 롤백 · 서명 어셈블리) · 제로 트러스트 보안 인스펙터(점수 · 위협 로그 · 격리 · 키 유출 스캐너) · 1-Click 최적화.
+    서비스 OnChange 구독 + 가동 중 300ms UI 틱.
+*@
+
+<div class="go-scrim" @onclick="Close">
+    <div class="go-modal" @onclick:stopPropagation="true">
+        <div class="go-h">
+            <div>
+                <div class="go-title">🌐 글로벌 SLA &amp; 운용 총괄 스튜디오</div>
+                <div class="go-sub">재시작 없는 <b>모듈 핫 리로딩</b>, 트래픽 폭주 대응 <b>예측 오토스케일 · 에지 로드밸런싱</b>(목표 99.999%), <b>제로 트러스트 연속 보안 감사</b>를 한 화면에서 운용합니다.</div>
+            </div>
+            <button class="go-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="go-bar">
+            <span class="go-chip @(Runner.IsLive ? "live" : "")">@(Runner.IsLive ? "● 운용 중" : "대기")</span>
+            <span class="go-chip @(Lb.LifetimeAvailability >= GlobalSlaAutoScalingLoadBalancer.SlaTarget ? "ok" : "hot")">SLA @(GlobalSlaAutoScalingLoadBalancer.Nines(Lb.LifetimeAvailability))</span>
+            <span class="go-chip">오류 예산 @(F1(Lb.ErrorBudgetRemaining * 100))%</span>
+            <span class="go-chip @(Lb.BurnAlert ? "hot" : "")">번 레이트 5m @(F1(Lb.BurnRate(300)))× · 1h @(F1(Lb.BurnRate(3600)))×</span>
+            <span class="go-chip">노드 @(Lb.CountState(EdgeNodeState.Active)) (+@(Lb.CountState(EdgeNodeState.Provisioning)) · 웜 @(Lb.CountState(EdgeNodeState.Standby))) · 이용률 @(F0(Lb.Utilization * 100))% → 예측 @(F0(Lb.Forecast * 100))%</span>
+            <span class="go-chip">p50 @(F0(Lb.LatencyPercentile(0.5)))ms · p99 @(F0(Lb.LatencyPercentile(0.99)))ms</span>
+            <span class="go-chip @(Zt.Score(Runner.NowMs) >= 80 ? "ok" : "hot")">🔐 보안 @(Zt.Score(Runner.NowMs))</span>
+            <span class="go-chip">♻ 핫 스왑 @(Hot.Swaps) · 거부 @(Hot.Rejects) · 롤백 @(Hot.Rollbacks)</span>
+        </div>
+
+        <div class="go-main">
+            <div class="go-col">
+                <div class="go-row">
+                    @if (!Runner.IsLive)
+                    {
+                        <button class="go-btn go" @onclick="StartOps">▶ 글로벌 운용 시작</button>
+                    }
+                    else
+                    {
+                        <button class="go-btn danger" @onclick="StopOps">⏹ 정지</button>
+                    }
+                    <button class="go-btn opt" @onclick="Optimize">⚙ 1-Click 글로벌 운용 최적화</button>
+                    <button class="go-btn sm" disabled="@(!Runner.IsLive)" @onclick="Spike">🌊 트래픽 스파이크 ×@(F0(Runner.SpikeMultiplier))</button>
+                    <label class="go-ck">기본 RPS <input class="go-in w70" type="number" min="10" max="5000" step="10" @bind="Runner.BaseRps" /></label>
+                    <label class="go-ck"><input type="checkbox" checked="@(Runner.InjectAttacks)" @onchange="ToggleAttacks" /> 공격 주입</label>
+                </div>
+
+                <div class="go-card">
+                    <div class="go-sec">📊 SLA 가동률 매트릭스</div>
+                    <div class="go-avail">
+                        @foreach (var (label, sec) in Windows)
+                        {
+                            var a = Lb.Availability(sec);
+                            <div class="@(a >= GlobalSlaAutoScalingLoadBalancer.SlaTarget ? "ok" : a >= 0.999 ? "warn" : "bad")"><span>@(label)</span><b>@(GlobalSlaAutoScalingLoadBalancer.Nines(a))</b></div>
+                        }
+                    </div>
+                    <div class="go-nodes">
+                        @for (var r = 0; r < GlobalSlaAutoScalingLoadBalancer.Regions; r++)
+                        {
+                            var region = r;
+                            <div class="go-region">
+                                <span>@(GlobalSlaAutoScalingLoadBalancer.RegionNames[region])</span>
+                                <div>
+                                    @for (var i = 0; i < Lb.NodeCount; i++)
+                                    {
+                                        if (Lb.Region(i) != region || Lb.State(i) == EdgeNodeState.Free) continue;
+                                        var u = Lb.NodeUtilization(i);
+                                        var node = i;
+                                        <i class="s@((int)Lb.State(i))" style="--u:@(F2(u))" title="#@(node) @(GlobalSlaAutoScalingLoadBalancer.KindLabel(Lb.Kind(node))) · @(GlobalSlaAutoScalingLoadBalancer.StateLabel(Lb.State(node))) · @(Lb.ActiveConnections(node))/@(Lb.Capacity(node)) · 처리 @(Lb.Served(node))" @onclick="() => Lb.MarkUnhealthy(node)"></i>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                    <div class="go-mut">타일 = 노드(색 농도 = 이용률 · 클릭 = 장애 주입) · 스케일아웃 @(Lb.ScaleOuts) · 스케일인 @(Lb.ScaleIns) · 교체 @(Lb.Replacements) · 거부 @(Lb.Rejected) · in-flight @(Runner.InFlight)</div>
+                    <div class="go-log sm">
+                        @for (var k = 0; k < _evN; k++)
+                        {
+                            var e = _ev[k];
+                            <div class="go-ev"><b>@(F1(e.TimeMs / 1000))s</b><span>@(DecisionLabel(e.Decision)) · 노드 #@(e.Node) · 가동 @(e.Active)</span><i>@(F0(e.Utilization * 100))% → @(F0(e.Forecast * 100))%</i></div>
+                        }
+                    </div>
+                </div>
+
+                <div class="go-card">
+                    <div class="go-sec">🔐 제로 트러스트 보안 인스펙터</div>
+                    <div class="go-row">
+                        <span class="go-chip">패킷 @(Zt.Packets) · 수락 @(Zt.Accepted) · 차단 @(Zt.Blocked)</span>
+                        <span class="go-chip">격리 소스 @(Zt.QuarantinedSources(Runner.NowMs)) · 누적 @(Zt.Quarantines)</span>
+                        <span class="go-chip">메모리 변조 @(Zt.TamperDetected) · 복원 @(Zt.Restored) · 보호 @(Zt.RegionCount)영역</span>
+                        <span class="go-chip">키 유출 @(Zt.Leaks)</span>
+                    </div>
+                    <div class="go-row">
+                        <textarea class="go-in go-ta grow" @bind="_scanText" placeholder="로그/페이로드를 붙여 넣어 API 키 유출 검사"></textarea>
+                        <button class="go-btn sm" disabled="@(string.IsNullOrWhiteSpace(_scanText))" @onclick="Scan">🔑 스캔</button>
+                    </div>
+                    @if (_redacted is not null)
+                    {
+                        <div class="go-mut mono">@(_redacted)</div>
+                    }
+                    <div class="go-log sm">
+                        @for (var k = 0; k < _thN; k++)
+                        {
+                            var f = _th[k];
+                            <div class="go-ev sev@((int)f.Severity)"><b>@(F1(f.TimeMs / 1000))s</b><span>@(ZeroTrustContinuousSecurityAuditor.KindLabel(f.Kind)) · @(Detail(f))</span><i>@(f.Severity)</i></div>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="go-col">
+                <div class="go-card">
+                    <div class="go-sec">♻ 핫 리로딩 모듈 관리자</div>
+                    <div class="go-row">
+                        <select class="go-in" @bind="_slot" @bind:after="LoadCurrent">
+                            @foreach (var s in Hot.SlotNames)
+                            {
+                                <option value="@(s)">@(s)</option>
+                            }
+                        </select>
+                        @if (Hot.Current(_slot) is { } cur)
+                        {
+                            <span class="go-chip ok">v@(cur.Version) · @(LiveProductionHotReloadingEngine.KindLabel(cur.Kind)) · @(cur.Sha256[..10])</span>
+                        }
+                        <button class="go-btn sm" @onclick="LoadCurrent">현재 소스 불러오기</button>
+                    </div>
+                    <textarea class="go-in go-code" @bind="_source" @bind:event="oninput" @bind:after="UpdatePreview"></textarea>
+                    @if (IsScoreSlot)
+                    {
+                        <div class="go-mut">변수: @(string.Join(", ", Features)) · 함수: min max clamp abs sqrt log exp sigmoid · 연산: + - * / ^ 비교 ?:</div>
+                        <div class="go-mut mono">→ @(_preview)</div>
+                    }
+                    else
+                    {
+                        <div class="go-mut">규칙: when "키워드" [and "…"] [and not "…"] -> append "…" | prepend "…" | replace "a" with "b" | block</div>
+                        <div class="go-row">
+                            <input class="go-in grow" @bind="_testPrompt" placeholder="테스트 프롬프트" />
+                            <span class="go-mut mono">→ @(Hot.Rewrite(_slot, _testPrompt ?? ""))</span>
+                        </div>
+                    }
+                    <div class="go-row">
+                        <button class="go-btn go" @onclick="SwapNow">♻ 무중단 핫 스왑(카나리)</button>
+                        <button class="go-btn sm" disabled="@(Hot.Previous(_slot) is null)" @onclick="RollbackNow">↩ 롤백</button>
+                        @if (IsScoreSlot)
+                        {
+                            <span class="go-mut">현재 점수(실시간) @(F3(Runner.LastPriority))</span>
+                        }
+                    </div>
+                    <div class="go-row">
+                        <input class="go-in grow" @bind="_dllPath" placeholder="플러그인 DLL 경로(IHotPipelineModule)" />
+                        <input class="go-in w120" @bind="_dllSig" placeholder="HMAC 서명(hex)" />
+                        <button class="go-btn sm" disabled="@(string.IsNullOrWhiteSpace(_dllPath))" @onclick="SwapDll">📦 어셈블리 스왑</button>
+                    </div>
+                    <div class="go-log">
+                        @foreach (var h in Hot.History.Reverse().Take(14))
+                        {
+                            <div class="go-ev o@((int)h.Outcome)"><b>@(h.Slot) v@(h.Version)</b><span>@(LiveProductionHotReloadingEngine.OutcomeLabel(h.Outcome)) · @(h.Detail)</span><i>@(h.At.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture))</i></div>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="go-f">
+            <span class="go-mut">@(_msg ?? Runner.LastOptimize ?? Zt.LastAction ?? Lb.LastAction ?? Hot.LastAction ?? "대기")</span>
+            <button class="go-btn" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .go-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .go-modal { width: min(1480px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .go-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #2563eb 16%, var(--card)), color-mix(in srgb, #14b8a6 12%, var(--card))); }
+    .go-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .go-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .go-sub b { color: var(--text-primary); }
+    .go-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .go-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .go-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); } .go-chip.ok { color: #4ade80; } .go-chip.hot { color: #fff; background: #f97316; border-color: #f97316; }
+    .go-chip.live { color: #fff; background: #2563eb; border-color: #2563eb; animation: go-pulse 1.4s infinite; }
+    @@keyframes go-pulse { 50% { opacity: .65; } }
+    .go-main { display: grid; grid-template-columns: 1.2fr 1fr; gap: 12px; padding: 12px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .go-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .go-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .go-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .go-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .go-avail { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .go-avail > div { border: 1px solid var(--line); border-radius: 8px; padding: 6px; display: flex; flex-direction: column; gap: 2px; } .go-avail span { font-size: 10.5px; color: var(--text-muted); } .go-avail b { font: 800 14px var(--mono); }
+    .go-avail .ok b { color: #4ade80; } .go-avail .warn b { color: #facc15; } .go-avail .bad b { color: #f87171; }
+    .go-nodes { display: flex; flex-direction: column; gap: 3px; }
+    .go-region { display: grid; grid-template-columns: 110px 1fr; gap: 6px; align-items: center; } .go-region > span { font: 10px var(--mono); color: var(--text-muted); }
+    .go-region > div { display: flex; flex-wrap: wrap; gap: 2px; }
+    .go-region i { width: 14px; height: 14px; border-radius: 3px; cursor: pointer; background: color-mix(in srgb, #ef4444 calc(var(--u) * 100%), #22c55e); }
+    .go-region i.s1 { background: #38bdf8; opacity: .6; } .go-region i.s3 { background: #64748b; } .go-region i.s4 { background: #7f1d1d; outline: 1px solid #f87171; } .go-region i.s5 { background: #a78bfa; opacity: .55; }
+    .go-log { display: flex; flex-direction: column; gap: 2px; max-height: 230px; overflow-y: auto; } .go-log.sm { max-height: 130px; }
+    .go-ev { display: grid; grid-template-columns: 70px 1fr 80px; gap: 6px; font-size: 11px; color: var(--text-secondary); } .go-ev b { font: 10px var(--mono); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .go-ev i { font: 10px var(--mono); font-style: normal; text-align: right; }
+    .go-ev.sev3 span { color: #f87171; } .go-ev.sev2 span { color: #fb923c; } .go-ev.o1 span, .go-ev.o2 span, .go-ev.o3 span { color: #f87171; } .go-ev.o4 span { color: #facc15; }
+    .go-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; } .go-in.grow { flex: 1; min-width: 140px; } .go-in.w70 { width: 70px; } .go-in.w120 { width: 120px; }
+    .go-ta { min-height: 44px; resize: vertical; font-family: var(--mono); }
+    .go-code { min-height: 120px; resize: vertical; font: 12px var(--mono); }
+    .go-ck { font-size: 11.5px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; }
+    .go-mut { font-size: 11px; color: var(--text-muted); word-break: break-all; } .go-mut.mono { font-family: var(--mono); }
+    .go-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); } .go-f .go-mut { margin-right: auto; }
+    .go-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .go-btn.sm { padding: 3px 8px; font-size: 11px; } .go-btn.go { background: linear-gradient(135deg,#2563eb,#14b8a6); color: #fff; border: 0; } .go-btn.opt { background: #f59e0b; color: #1c1917; border: 0; } .go-btn.danger { color: #f87171; border-color: #f87171; } .go-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 1100px) { .go-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly (string, int)[] Windows = { ("1분", 60), ("5분", 300), ("15분", 900), ("1시간", 3600) };
+    private readonly ScaleEvent[] _ev = new ScaleEvent[12];
+    private readonly ThreatFinding[] _th = new ThreatFinding[14];
+    private int _evN, _thN;
+    private string _slot = "engagement", _source = "", _preview = "";
+    private string? _msg, _scanText, _redacted, _testPrompt = "night city with a famous logo", _dllPath, _dllSig;
+    private CancellationTokenSource? _ui;
+
+    private string[] Features => Hot.FeaturesOf(_slot);
+    private bool IsScoreSlot => Hot.Current(_slot)?.Kind is null or HotModuleKind.ScoreExpression && Features.Length > 0;
+
+    protected override void OnInitialized()
+    {
+        Hot.OnChange += OnServiceChanged;
+        Lb.OnChange += OnServiceChanged;
+        Zt.OnChange += OnServiceChanged;
+        LoadCurrent();
+        Refresh();
+        if (Runner.IsLive) StartUi();
+    }
+
+    private void LoadCurrent() { _source = Hot.Current(_slot)?.Source ?? ""; UpdatePreview(); }
+
+    private void UpdatePreview()
+    {
+        if (!IsScoreSlot) { _preview = ""; return; }
+        try { _preview = LiveProductionHotReloadingEngine.Transpile(_source, Features); }
+        catch (FormatException ex) { _preview = "⚠ " + ex.Message; }
+    }
+
+    private void StartOps() { Runner.Start(); _msg = null; StartUi(); }
+
+    private void StopOps() { Runner.Stop(); StopUi(); Refresh(); }
+
+    private void Optimize() => _msg = Runner.OptimizeNow(Runner.NowMs);
+
+    private void Spike() => Runner.TriggerSpike(Runner.NowMs);
+
+    private void ToggleAttacks(ChangeEventArgs e) => Runner.InjectAttacks = e.Value is true;
+
+    private void Scan()
+    {
+        var n = Zt.ScanForSecrets(_scanText, Runner.NowMs);
+        _redacted = n > 0 ? Zt.Redact(_scanText!) : null;
+        _msg = n > 0 ? "🔑 유출 의심 " + n.ToString(CultureInfo.InvariantCulture) + "건 — 마스킹 사본 표시" : "✅ 유출 패턴 없음";
+    }
+
+    private void SwapNow()
+    {
+        var kind = IsScoreSlot ? HotModuleKind.ScoreExpression : HotModuleKind.PromptRules;
+        IReadOnlyList<CanaryCase>? canary = kind == HotModuleKind.ScoreExpression && _slot == "engagement"
+            ? new[] { new CanaryCase(new[] { 0.05, 0.6, 0.5, 40.0 }, 0, 1), new CanaryCase(new[] { 0.0, 0.0, 1.0, 500.0 }, 0, 1), new CanaryCase(new[] { 1.0, 1.0, 0.0, 0.0 }, 0, 1) }
+            : null;
+        var o = Hot.Swap(_slot, kind, _source, Features, canary, DateTimeOffset.UtcNow);
+        _msg = LiveProductionHotReloadingEngine.OutcomeLabel(o) + (o == HotSwapOutcome.Activated ? "" : " · " + Hot.LastAction);
+    }
+
+    private void RollbackNow() { if (Hot.Rollback(_slot, DateTimeOffset.UtcNow)) LoadCurrent(); }
+
+    private void SwapDll()
+    {
+        var o = Hot.SwapAssembly(_slot, _dllPath!.Trim(), string.IsNullOrWhiteSpace(_dllSig) ? null : _dllSig.Trim(), null, DateTimeOffset.UtcNow);
+        _msg = LiveProductionHotReloadingEngine.OutcomeLabel(o) + " · " + Hot.LastAction;
+    }
+
+    private void Refresh()
+    {
+        _evN = Lb.CopyEvents(_ev);
+        _thN = Zt.CopyFindings(_th);
+        UpdatePreview();
+    }
+
+    private static string Detail(ThreatFinding f) => f.Kind switch
+    {
+        ThreatKind.KeyLeak => ZeroTrustContinuousSecurityAuditor.PatternLabel(f.Code) + " @" + f.Offset.ToString(CultureInfo.InvariantCulture),
+        ThreatKind.MemoryTamper => "보호 영역 #" + f.Code.ToString(CultureInfo.InvariantCulture) + " 복원",
+        _ => "소스 #" + f.Source.ToString(CultureInfo.InvariantCulture) + " · " + ZeroTrustContinuousSecurityAuditor.VerdictLabel((PacketVerdict)f.Code),
+    };
+
+    private static string DecisionLabel(ScaleDecision d) => d switch { ScaleDecision.ScaleOut => "⬆ 스케일아웃", ScaleDecision.ScaleIn => "⬇ 스케일인", ScaleDecision.Replace => "♻ 교체", _ => "유지" };
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+
+    private void StartUi()
+    {
+        if (_ui is not null) return;
+        var cts = new CancellationTokenSource();
+        _ui = cts;
+        _ = UiLoopAsync(cts.Token);
+    }
+
+    private void StopUi()
+    {
+        var cts = Interlocked.Exchange(ref _ui, null);
+        if (cts is null) return;
+        try { cts.Cancel(); } catch (ObjectDisposedException) { }
+        cts.Dispose();
+    }
+
+    private async Task UiLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(300));
+        try { while (await timer.WaitForNextTickAsync(ct)) await InvokeAsync(() => { Refresh(); StateHasChanged(); }); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("GlobalOpsStudio.Ui", ex); }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Hot.OnChange -= OnServiceChanged;
+        Lb.OnChange -= OnServiceChanged;
+        Zt.OnChange -= OnServiceChanged;
+        StopUi();
+    }
+}

@@ -1,0 +1,360 @@
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.Empire
+@implements IDisposable
+@inject OmnichannelGlobalBroadcastDispatcher Omni
+@inject SelfEvolvingMediaEmpireFranchiseEngine Ip
+@inject ExecutiveEmpireTelemetryAndRevenueMatrix Matrix
+@inject MediaEmpireRunner Runner
+
+@*
+    [PromptFlow Studio v16.50.0] 👑 AI 미디어 제국 & 옴니채널 마스터 스튜디오 — 53채널 동시 송출 관제 뷰포트(상태 · kbps · 백업 인게스트) · 수동 분배 ·
+    IP 자가 증식 트리(SVG) · 통합 수익 게이지(수익원 · eCPM · 분당 수익) · 50 시스템 헬스 매트릭스(격리 해제) · 메모리 하이퍼 관제 · 봉인 정산 원장 검증 · 1-Click 제국 가동.
+    서비스 OnChange 구독 + 가동 중 250ms UI 틱.
+*@
+
+<div class="me-scrim" @onclick="Close">
+    <div class="me-modal" @onclick:stopPropagation="true">
+        <div class="me-h">
+            <div>
+                <div class="me-title">👑 AI 미디어 제국 &amp; 옴니채널 마스터 스튜디오</div>
+                <div class="me-sub"><b>@(Omni.PlatformCount)개 글로벌 플랫폼</b>으로 동시 송출하고, 원천 IP를 <b>숏폼·장편·팟캐스트·라이브 커머스·V-Tuber</b>로 자가 증식하며, <b>50개 시스템 헬스 · 메모리 · 실시간 수익/정산</b>을 한 화면에서 관제합니다.</div>
+            </div>
+            <button class="me-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="me-bar">
+            <span class="me-chip @(Runner.IsLive ? "live" : "")">@(Runner.IsLive ? "● EMPIRE ONLINE" : "OFFLINE")</span>
+            <span class="me-chip ok">💰 @(ExecutiveEmpireTelemetryAndRevenueMatrix.Usd(Matrix.TotalRevenue))</span>
+            <span class="me-chip">eCPM $@(F2(Matrix.GlobalEcpm))</span>
+            <span class="me-chip">LIVE @(Omni.LiveCount) · 송출 @(Omni.Delivered) · 실패 @(Omni.Failed) · 페일오버 @(Omni.Failovers) · 재연결 @(Omni.Reconnects)</span>
+            <span class="me-chip">🎞 인코딩 @(Omni.Encodes)</span>
+            <span class="me-chip">🧬 IP @(Ip.Count) · 스핀오프 @(Ip.Spinoffs) · 은퇴 @(Ip.RetiredCount)</span>
+            <span class="me-chip @(Matrix.CountHealth(SystemHealth.Quarantined) > 0 ? "hot" : "")">🩺 정상 @(Matrix.CountHealth(SystemHealth.Healthy))/@(Matrix.SystemCount) · 복구 @(Matrix.Heals) · 격리 @(Matrix.Quarantines)</span>
+        </div>
+
+        <div class="me-main">
+            <div class="me-col">
+                <div class="me-row">
+                    @if (!Runner.IsLive)
+                    {
+                        <button class="me-btn go" @onclick="StartEmpire">👑 1-Click 미디어 제국 가동</button>
+                    }
+                    else
+                    {
+                        <button class="me-btn danger" @onclick="StopEmpire">⏹ 제국 정지(정산)</button>
+                    }
+                    <label class="me-ck"><input type="checkbox" checked="@(Runner.InjectFaults)" @onchange="ToggleFaults" /> 장애 주입(자율 복구 시연)</label>
+                    <label class="me-ck">동시 송출 <input class="me-in w60" type="number" min="1" max="53" @bind="Omni.MaxParallel" /></label>
+                    <label class="me-ck">진화 배속 <input class="me-in w60" type="number" min="0.1" max="20" step="0.5" @bind="Ip.TimeScale" /></label>
+                </div>
+
+                <div class="me-card">
+                    <div class="me-sec">🌐 @(Omni.PlatformCount)채널 동시 송출 관제 뷰포트 <span class="me-mut">활성 @(Omni.EnabledCount)</span></div>
+                    <div class="me-grid">
+                        @for (var i = 0; i < Omni.PlatformCount; i++)
+                        {
+                            var p = Omni.Platform(i);
+                            var st = Omni.State(i);
+                            <div class="me-tile s@((int)st) @(Omni.Enabled(i) ? "" : "off")" title="@(p.Name) · @(p.Width)x@(p.Height) @(p.Fps)fps · @(p.Protocol) · @(p.Region)" @onclick="_toggle[i]">
+                                <b>@(p.Name)</b>
+                                <span>@(OmnichannelGlobalBroadcastDispatcher.KindLabel(p.Kind)) · @(OmnichannelGlobalBroadcastDispatcher.StateLabel(st))@(Omni.OnBackup(i) ? " ⇄" : "")</span>
+                                <i>@(st == ChannelState.Live ? F0(Omni.Kbps(i)) + "kbps" : ExecutiveEmpireTelemetryAndRevenueMatrix.Usd(Matrix.PlatformRevenue(i)))</i>
+                            </div>
+                        }
+                    </div>
+                    <div class="me-row">
+                        <input class="me-in grow" @bind="_title" placeholder="수동 분배 제목" />
+                        <label class="me-ck"><input type="checkbox" @bind="_live" /> 라이브</label>
+                        <button class="me-btn sm" disabled="@(_busy || string.IsNullOrWhiteSpace(_title))" @onclick="ManualDispatch">🚀 전 채널 분배</button>
+                    </div>
+                    <div class="me-mut">자격 증명 = 환경변수 PFS_EMPIRE_KEY_&lt;플랫폼ID&gt; (미설정 시 드라이런) · 렌디션 공유 인코딩 · 타일 클릭 = 채널 on/off</div>
+                </div>
+
+                <div class="me-card">
+                    <div class="me-sec">🧬 IP 자가 증식 트리</div>
+                    <svg class="me-tree" viewBox="0 0 @(TreeW) @(TreeH)" preserveAspectRatio="none">
+                        @foreach (var n in _nodes)
+                        {
+                            if (n.Parent < 0 || n.Parent >= _nodes.Length) continue;
+                            var pa = _nodes[n.Parent];
+                            <line x1="@(F1(pa.X * TreeW))" y1="@(F1(Gy(pa.Generation)))" x2="@(F1(n.X * TreeW))" y2="@(F1(Gy(n.Generation)))" stroke="#475569" stroke-width="1.2" />
+                        }
+                        @foreach (var n in _nodes)
+                        {
+                            <g>
+                                <circle cx="@(F1(n.X * TreeW))" cy="@(F1(Gy(n.Generation)))" r="@(F1(6 + 10 * n.Fitness))" fill="@(NodeColor(n))" stroke="#0f172a" stroke-width="1" opacity="@(n.Status == IpStatus.Retired ? "0.35" : "1")">
+                                    <title>@(n.Title) · @(SelfEvolvingMediaEmpireFranchiseEngine.FormatLabel(n.Format)) · 적합도 @(F2(n.Fitness)) · 조회 @(n.Views)</title>
+                                </circle>
+                                <text x="@(F1(n.X * TreeW))" y="@(F1(Gy(n.Generation) + 4))" text-anchor="middle" font-size="10">@(SelfEvolvingMediaEmpireFranchiseEngine.FormatIcon(n.Format))</text>
+                            </g>
+                        }
+                    </svg>
+                    <div class="me-row">
+                        <input class="me-in grow" @bind="_seedTitle" placeholder="원천 IP 제목" />
+                        <input class="me-in grow" @bind="_seedLog" placeholder="로그라인" />
+                        <button class="me-btn sm" disabled="@(string.IsNullOrWhiteSpace(_seedTitle))" @onclick="Seed">🌱 시드</button>
+                    </div>
+                    <div class="me-log sm">
+                        @foreach (var n in _nodes.Where(x => x.Status != IpStatus.Retired).OrderByDescending(x => x.Fitness).Take(8))
+                        {
+                            <div class="me-ev"><b>@(SelfEvolvingMediaEmpireFranchiseEngine.FormatIcon(n.Format)) G@(n.Generation)</b><span>@(n.Title)</span><i>@(F2(n.Fitness)) · @(ExecutiveEmpireTelemetryAndRevenueMatrix.Usd(n.RevenueMicros))</i></div>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="me-col">
+                <div class="me-card">
+                    <div class="me-sec">💰 통합 수익 텔레메트리</div>
+                    <div class="me-gauges">
+                        @for (var s = 0; s < ExecutiveEmpireTelemetryAndRevenueMatrix.Streams; s++)
+                        {
+                            var sv = Matrix.StreamRevenue((RevenueStream)s);
+                            var total = Math.Max(1, Matrix.TotalRevenue);
+                            <div class="me-gauge">
+                                <span>@(ExecutiveEmpireTelemetryAndRevenueMatrix.StreamLabel((RevenueStream)s))</span>
+                                <div><div class="g@(s)" style="width:@(F1(sv * 100.0 / total))%"></div></div>
+                                <i>@(ExecutiveEmpireTelemetryAndRevenueMatrix.Usd(sv))</i>
+                            </div>
+                        }
+                    </div>
+                    <svg class="me-spark" viewBox="0 0 300 50" preserveAspectRatio="none">
+                        <polyline fill="none" stroke="#facc15" stroke-width="2" points="@(_spark)" />
+                    </svg>
+                    <div class="me-mut">분당 수익(최근 @(ExecutiveEmpireTelemetryAndRevenueMatrix.MinuteRing)분) · 노출 @(Matrix.TotalImpressions.ToString("#,0", CultureInfo.InvariantCulture))</div>
+                    <div class="me-log sm">
+                        @foreach (var i in _topPlatforms)
+                        {
+                            <div class="me-ev"><b>@(Omni.Platform(i).Name)</b><span>eCPM $@(F2(Matrix.Ecpm(i))) · 노출 @(Matrix.Impressions(i))</span><i>@(ExecutiveEmpireTelemetryAndRevenueMatrix.Usd(Matrix.PlatformRevenue(i)))</i></div>
+                        }
+                    </div>
+                </div>
+
+                <div class="me-card">
+                    <div class="me-sec">🩺 50 마일스톤 시스템 헬스 매트릭스</div>
+                    <div class="me-sys">
+                        @for (var i = 0; i < Matrix.SystemCount; i++)
+                        {
+                            var s = Matrix.System(i);
+                            <div class="me-cell h@((int)s.Health)" title="@(s.Version) @(s.Name) · @(ExecutiveEmpireTelemetryAndRevenueMatrix.HealthLabel(s.Health)) · 복구 @(s.Heals)" @onclick="_release[i]">@(s.Version[4..])</div>
+                        }
+                    </div>
+                    <div class="me-mut">초록 정상 · 노랑 저하 · 빨강 다운 · 보라 격리(클릭 해제) · 회색 미확인</div>
+                </div>
+
+                <div class="me-card">
+                    <div class="me-sec">🧠 Zero-Alloc 메모리 하이퍼 관제</div>
+                    <div class="me-row">
+                        <span class="me-chip">힙 @(Mb(_mem.HeapBytes))MB</span>
+                        <span class="me-chip @(_mem.Alarm ? "hot" : "")">할당 @(Mb((long)_mem.AllocBytesPerSec))MB/s</span>
+                        <span class="me-chip">GC @(_mem.Gen0)/@(_mem.Gen1)/@(_mem.Gen2)</span>
+                        <span class="me-chip @(_mem.ZeroGcViolations > 0 ? "hot" : "ok")">Zero-Alloc 위반 @(_mem.ZeroGcViolations)</span>
+                    </div>
+                </div>
+
+                <div class="me-card">
+                    <div class="me-sec">🧾 봉인 정산 원장</div>
+                    <div class="me-row">
+                        <button class="me-btn sm" @onclick="SettleNow">정산 실행</button>
+                        <button class="me-btn sm" @onclick="Verify">🔏 원장 검증</button>
+                        <span class="me-mut">정산 누계 @(ExecutiveEmpireTelemetryAndRevenueMatrix.Usd(Matrix.SettledMicros))@(_verify is null ? "" : " · " + _verify)</span>
+                    </div>
+                    <div class="me-log sm">
+                        @foreach (var e in Matrix.Ledger.Reverse().Take(6))
+                        {
+                            <div class="me-ev"><b>#@(e.Seq)</b><span>@(string.Join(" · ", e.Splits.Select(x => x.Party + " " + ExecutiveEmpireTelemetryAndRevenueMatrix.Usd(x.Micros))))</span><i>@(e.Hash[..12])</i></div>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="me-f">
+            <span class="me-mut">@(_msg ?? Matrix.LastAction ?? Ip.LastAction ?? Omni.LastAction ?? "대기")</span>
+            <button class="me-btn" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .me-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .me-modal { width: min(1480px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .me-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #eab308 16%, var(--card)), color-mix(in srgb, #7c3aed 12%, var(--card))); }
+    .me-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .me-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .me-sub b { color: var(--text-primary); }
+    .me-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .me-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .me-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); } .me-chip.ok { color: #4ade80; } .me-chip.hot { color: #fff; background: #f97316; border-color: #f97316; }
+    .me-chip.live { color: #1c1917; background: #facc15; border-color: #facc15; animation: me-pulse 1.4s infinite; }
+    @@keyframes me-pulse { 50% { opacity: .65; } }
+    .me-main { display: grid; grid-template-columns: 1.25fr 1fr; gap: 12px; padding: 12px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .me-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .me-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .me-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .me-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .me-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 4px; }
+    .me-tile { border: 1px solid var(--line); border-left: 4px solid #475569; border-radius: 6px; padding: 3px 6px; display: flex; flex-direction: column; gap: 1px; cursor: pointer; min-width: 0; }
+    .me-tile b { font-size: 11px; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .me-tile span, .me-tile i { font: 9.5px var(--mono); font-style: normal; color: var(--text-muted); }
+    .me-tile.off { opacity: .35; }
+    .me-tile.s1, .me-tile.s2 { border-left-color: #38bdf8; } .me-tile.s3 { border-left-color: #a78bfa; } .me-tile.s4 { border-left-color: #ef4444; background: color-mix(in srgb, #ef4444 10%, var(--card)); }
+    .me-tile.s5 { border-left-color: #22c55e; } .me-tile.s6 { border-left-color: #f59e0b; } .me-tile.s7 { border-left-color: #7f1d1d; background: color-mix(in srgb, #7f1d1d 18%, var(--card)); }
+    .me-tree { width: 100%; height: 220px; background: radial-gradient(circle at 50% 0%, #1e1b4b, #0b1220); border-radius: 8px; }
+    .me-gauges { display: flex; flex-direction: column; gap: 4px; }
+    .me-gauge { display: grid; grid-template-columns: 56px 1fr 90px; gap: 6px; align-items: center; font-size: 11px; color: var(--text-secondary); } .me-gauge i { font: 10.5px var(--mono); font-style: normal; text-align: right; }
+    .me-gauge > div { height: 8px; background: #1f2937; border-radius: 4px; overflow: hidden; } .me-gauge > div > div { height: 100%; }
+    .g0 { background: #facc15; } .g1 { background: #38bdf8; } .g2 { background: #f472b6; } .g3 { background: #22c55e; } .g4 { background: #a78bfa; }
+    .me-spark { width: 100%; height: 50px; background: #0b1220; border-radius: 6px; }
+    .me-sys { display: grid; grid-template-columns: repeat(10, 1fr); gap: 3px; }
+    .me-cell { font: 700 10px var(--mono); text-align: center; padding: 4px 0; border-radius: 4px; color: #0b1220; background: #64748b; cursor: pointer; }
+    .me-cell.h1 { background: #22c55e; } .me-cell.h2 { background: #facc15; } .me-cell.h3 { background: #ef4444; color: #fff; } .me-cell.h4 { background: #38bdf8; } .me-cell.h5 { background: #7c3aed; color: #fff; }
+    .me-log { display: flex; flex-direction: column; gap: 2px; max-height: 210px; overflow-y: auto; } .me-log.sm { max-height: 130px; }
+    .me-ev { display: grid; grid-template-columns: 110px 1fr 110px; gap: 6px; font-size: 11px; color: var(--text-secondary); } .me-ev b { font: 10px var(--mono); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .me-ev i { font: 10px var(--mono); font-style: normal; text-align: right; }
+    .me-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; } .me-in.grow { flex: 1; min-width: 120px; } .me-in.w60 { width: 58px; }
+    .me-ck { font-size: 11.5px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; }
+    .me-mut { font-size: 11px; color: var(--text-muted); word-break: break-all; font-weight: 400; }
+    .me-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); } .me-f .me-mut { margin-right: auto; }
+    .me-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .me-btn.sm { padding: 3px 8px; font-size: 11px; } .me-btn.go { background: linear-gradient(135deg,#eab308,#7c3aed); color: #fff; border: 0; } .me-btn.danger { color: #f87171; border-color: #f87171; } .me-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 1100px) { .me-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const float TreeW = 600, TreeH = 220;
+    private readonly Action[] _toggle = new Action[OmnichannelGlobalBroadcastDispatcher.Catalog().Length];
+    private readonly Action[] _release = new Action[ExecutiveEmpireTelemetryAndRevenueMatrix.MilestoneCatalog().Length];
+    private readonly long[] _minutes = new long[ExecutiveEmpireTelemetryAndRevenueMatrix.MinuteRing];
+    private IpNode[] _nodes = Array.Empty<IpNode>();
+    private int[] _topPlatforms = Array.Empty<int>();
+    private MemorySample _mem;
+    private string _spark = "";
+    private string? _title = "AI 제국 오리지널 쇼케이스", _seedTitle, _seedLog, _msg, _verify;
+    private bool _live, _busy;
+    private CancellationTokenSource? _ui;
+
+    protected override void OnInitialized()
+    {
+        for (var i = 0; i < _toggle.Length; i++) { var s = i; _toggle[i] = () => Omni.SetEnabled(s, !Omni.Enabled(s)); }
+        for (var i = 0; i < _release.Length; i++) { var s = i; _release[i] = () => { if (Matrix.System(s).Health == SystemHealth.Quarantined) Matrix.Release(s); }; }
+        Omni.OnChange += OnServiceChanged;
+        Ip.OnChange += OnServiceChanged;
+        Matrix.OnChange += OnServiceChanged;
+        Refresh();
+        if (Runner.IsLive) StartUi();
+    }
+
+    private void StartEmpire()
+    {
+        try { Runner.Start(); _msg = null; StartUi(); }
+        catch (InvalidOperationException ex) { _msg = "⚠ " + ex.Message; }
+    }
+
+    private void StopEmpire() { Runner.Stop(); StopUi(); Refresh(); }
+
+    private void Seed()
+    {
+        try { Ip.SeedIp(_seedTitle ?? "", _seedLog ?? "", Runner.NowMs); _seedTitle = _seedLog = null; Refresh(); }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException) { _msg = "⚠ " + ex.Message; }
+    }
+
+    private async Task ManualDispatch()
+    {
+        _busy = true;
+        try
+        {
+            var pkg = new DispatchPackage("manual-" + DateTime.UtcNow.Ticks.ToString(CultureInfo.InvariantCulture), _title!.Trim(), _title.Trim() + " — PromptFlow Studio AI 미디어 제국 오리지널",
+                new[] { "PromptFlowStudio", "AI", "Original" }, _live ? 3600 : 600, "ko", _live);
+            var res = await Omni.DispatchAsync(pkg, DateTimeOffset.UtcNow, Runner.NowMs);
+            var ok = res.Count(r => r.Ok); var dry = res.Count(r => r.DryRun);
+            _msg = "🚀 " + ok.ToString(CultureInfo.InvariantCulture) + "/" + res.Length.ToString(CultureInfo.InvariantCulture) + " 채널 송출" + (dry > 0 ? " (드라이런 " + dry.ToString(CultureInfo.InvariantCulture) + ")" : "");
+        }
+        catch (OperationCanceledException) { _msg = "⚠ 분배 취소"; }
+        finally { _busy = false; }
+    }
+
+    private void SettleNow() { var s = Matrix.Settle(DateTimeOffset.UtcNow); _msg = s is null ? "정산할 수익이 없습니다." : null; }
+
+    private void Verify()
+    {
+        var bad = Matrix.VerifyLedger(Matrix.Ledger);
+        _verify = bad < 0 ? "✅ 무결성 확인(" + Matrix.Ledger.Count.ToString(CultureInfo.InvariantCulture) + "건)" : "❌ #" + (bad + 1).ToString(CultureInfo.InvariantCulture) + " 위변조";
+    }
+
+    private void ToggleFaults(ChangeEventArgs e) => Runner.InjectFaults = e.Value is true;
+
+    private void Refresh()
+    {
+        Ip.Layout();
+        _nodes = Ip.Nodes.ToArray();
+        _mem = Matrix.LastMemory;
+        var n = Matrix.CopyMinutes(_minutes);
+        long max = 1;
+        for (var i = 0; i < n; i++) max = Math.Max(max, _minutes[i]);
+        var sb = new System.Text.StringBuilder();
+        for (var i = 0; i < n; i++)
+        {
+            var x = 300 - i * 300.0 / Math.Max(1, n - 1);
+            sb.Append(x.ToString("0.0", CultureInfo.InvariantCulture)).Append(',').Append((48 - 44.0 * _minutes[i] / max).ToString("0.0", CultureInfo.InvariantCulture)).Append(' ');
+        }
+        _spark = sb.ToString();
+        _topPlatforms = Enumerable.Range(0, Omni.PlatformCount).Where(i => Matrix.PlatformRevenue(i) > 0).OrderByDescending(Matrix.PlatformRevenue).Take(8).ToArray();
+    }
+
+    private int MaxGen => _nodes.Length == 0 ? 1 : Math.Max(1, _nodes.Max(x => x.Generation));
+    private float Gy(int gen) => 18 + gen * (TreeH - 36) / MaxGen;
+
+    private static string NodeColor(IpNode n) => n.Status switch
+    {
+        IpStatus.Planned => "#64748b",
+        IpStatus.Producing => "#38bdf8",
+        IpStatus.Retired => "#334155",
+        _ => n.Format switch { IpFormat.Origin => "#facc15", IpFormat.ShortForm => "#f472b6", IpFormat.LongForm => "#a78bfa", IpFormat.Podcast => "#22c55e", IpFormat.LiveCommerce => "#fb923c", _ => "#2dd4bf" },
+    };
+
+    private static string Mb(long bytes) => (bytes / 1048576.0).ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+
+    private void StartUi()
+    {
+        if (_ui is not null) return;
+        var cts = new CancellationTokenSource();
+        _ui = cts;
+        _ = UiLoopAsync(cts.Token);
+    }
+
+    private void StopUi()
+    {
+        var cts = Interlocked.Exchange(ref _ui, null);
+        if (cts is null) return;
+        try { cts.Cancel(); } catch (ObjectDisposedException) { }
+        cts.Dispose();
+    }
+
+    private async Task UiLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+                await InvokeAsync(() => { Refresh(); StateHasChanged(); });
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("EmpireStudio.Ui", ex); }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Omni.OnChange -= OnServiceChanged;
+        Ip.OnChange -= OnServiceChanged;
+        Matrix.OnChange -= OnServiceChanged;
+        StopUi();
+    }
+}

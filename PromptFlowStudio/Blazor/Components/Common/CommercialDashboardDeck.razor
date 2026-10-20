@@ -1,0 +1,182 @@
+@using PromptFlowStudio.Services.Studio
+@implements IDisposable
+@inject StudioBenchmarkEngine Bench
+@inject LicenseQuotaGuard License
+@inject StudioProjectPackager Packager
+@inject StudioFolderLinkService FolderLink
+@inject ILocalMediaService Media
+@inject PromptFlowStudio.Services.Ui.StudioMemoryAudit MemAudit
+
+@* [PromptFlow Studio] v2.7.0 상용화 마스터 대시보드 — 벤치마크 게이지 · VRAM/NVENC · 원클릭 패키징 · 라이선스 쿼터. *@
+
+<div class="cdd">
+    <div class="cdd-h"><span class="cdd-title">🏆 상용화 마스터 대시보드</span><span class="cdd-badge">v2.7.0</span></div>
+
+    <div class="cdd-grid">
+        @* ── ① 하드웨어 벤치마크 게이지 ── *@
+        <div class="cdd-card">
+            <div class="cdd-ct">⚙️ 하드웨어 벤치마크</div>
+            <div class="cdd-gauge-wrap">
+                <div class="cdd-gauge" style="--pct:@(B.Score)">
+                    <div class="cdd-gauge-in"><b>@B.Score</b><small>티어 @B.Tier</small></div>
+                </div>
+                <div class="cdd-reco">
+                    <div class="cdd-reco-r">병렬 스레드 <b>@B.RecommendedParallel</b></div>
+                    <div class="cdd-reco-r">GPU 보간 <b>@(B.RecommendInterpolation ? "60fps" : "OFF")</b></div>
+                </div>
+            </div>
+            <button class="cdd-btn" @onclick="RunBench" disabled="@(Bench.IsRunning || Disabled)">
+                @(Bench.IsRunning ? "측정 중…" : "🚀 측정 / 재측정 & 자동 교정")
+            </button>
+            <div class="cdd-sub">@(Bench.IsRunning ? Bench.Stage : B.Message)</div>
+        </div>
+
+        @* ── ② VRAM / NVENC 라이브 게이지 ── *@
+        <div class="cdd-card">
+            <div class="cdd-ct">🎛️ 리소스 게이지</div>
+            <div class="cdd-bars">
+                <div class="cdd-bar"><span class="cdd-bl">VRAM</span><div class="cdd-track"><div class="cdd-fill vram" style="width:@(Pct(B.VramGB, 16))%"></div></div><span class="cdd-bv">@B.VramGB.ToString("0.0") GB</span></div>
+                <div class="cdd-bar"><span class="cdd-bl">RAM</span><div class="cdd-track"><div class="cdd-fill ram" style="width:@(Pct(B.RamGB, 64))%"></div></div><span class="cdd-bv">@B.RamGB.ToString("0.0") GB</span></div>
+                <div class="cdd-bar"><span class="cdd-bl">NVENC</span><div class="cdd-track"><div class="cdd-fill nvenc" style="width:@(Pct(B.NvencFps, 120))%"></div></div><span class="cdd-bv">@(B.NvencAvailable ? $"{B.NvencFps:0} fps" : "N/A")</span></div>
+                <div class="cdd-bar"><span class="cdd-bl">API</span><div class="cdd-track"><div class="cdd-fill api" style="width:@(ApiPct(B.ApiLatencyMs))%"></div></div><span class="cdd-bv">@(B.ApiLatencyMs < 0 ? "—" : $"{B.ApiLatencyMs} ms")</span></div>
+            </div>
+            <div class="cdd-chips">
+                <span class="cdd-chip">CPU @B.CpuThreads T</span>
+                <span class="cdd-chip">@(string.IsNullOrEmpty(B.GpuName) ? "GPU 미감지" : B.GpuName)</span>
+            </div>
+        </div>
+
+        @* ── ③ 원클릭 마스터 패키징 ── *@
+        <div class="cdd-card">
+            <div class="cdd-ct">📦 방송 마스터 패키징</div>
+            <button class="cdd-btn pack" @onclick="Package" disabled="@(_packaging || Disabled || !HasMaster)">
+                @(_packaging ? $"압축 중… {(int)(_packPct * 100)}%" : "📦 원클릭 마스터 패키징")
+            </button>
+            @if (_packaging)
+            {
+                <div class="cdd-track big"><div class="cdd-fill pack" style="width:@((int)(_packPct * 100))%"></div></div>
+            }
+            <div class="cdd-sub">@(_packMsg ?? (HasMaster ? "마스터·플랫폼·더빙·PDF·STL·명세서 → 무손실 ZIP" : "먼저 영상을 병합/생성하세요."))</div>
+        </div>
+
+        @* ── ④ 라이선스 & 쿼터 ── *@
+        <div class="cdd-card @(License.Status.Ok ? null : "warn")">
+            <div class="cdd-ct">🔑 라이선스 & 쿼터 <span class="cdd-tier">@License.Status.Tier</span></div>
+            <div class="cdd-lic">@(License.Status.Ok ? "✅ " : "⚠️ ")@License.Status.Message</div>
+            <div class="cdd-quota">
+                <div class="cdd-qrow"><span>일일</span><div class="cdd-track"><div class="cdd-fill @(License.Status.QuotaExceeded ? "over" : "quota")" style="width:@(QuotaPct(License.Status.DailyUsed, License.Status.DailyLimit))%"></div></div><b>@License.Status.DailyUsed/@(LimitLabel(License.Status.DailyLimit))</b></div>
+                <div class="cdd-qrow"><span>월간</span><div class="cdd-track"><div class="cdd-fill @(License.Status.QuotaExceeded ? "over" : "quota")" style="width:@(QuotaPct(License.Status.MonthlyUsed, License.Status.MonthlyLimit))%"></div></div><b>@License.Status.MonthlyUsed/@(LimitLabel(License.Status.MonthlyLimit))</b></div>
+            </div>
+            <div class="cdd-key">
+                <input class="cdd-input" placeholder="상용 라이선스 키 붙여넣기…" @bind="_licenseKey" disabled="@Disabled" />
+                <button class="cdd-btn sm" @onclick="RegisterLicense" disabled="@Disabled">등록</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .cdd { border: 1px solid color-mix(in srgb,#a855f7 30%,var(--line)); border-radius: 16px; overflow: hidden;
+        background: linear-gradient(160deg, color-mix(in srgb,#a855f7 8%,rgba(18,20,31,.75)), rgba(18,20,31,.85)); backdrop-filter: blur(16px) saturate(140%); -webkit-backdrop-filter: blur(16px) saturate(140%); }
+    .cdd-h { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb,#a855f7 14%,transparent), transparent 60%); }
+    .cdd-title { font: 900 14px var(--mono); }
+    .cdd-badge { font: 700 10px var(--mono); color: #d8b4fe; background: color-mix(in srgb,#a855f7 16%,transparent); border: 1px solid color-mix(in srgb,#a855f7 40%,var(--line)); border-radius: 20px; padding: 2px 8px; }
+    .cdd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 14px 16px; }
+    .cdd-card { border: 1px solid var(--line); border-radius: 13px; background: rgba(26,29,43,.6); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+    .cdd-card.warn { border-color: color-mix(in srgb,#f59e0b 50%,var(--line)); box-shadow: 0 0 0 1px color-mix(in srgb,#f59e0b 30%,transparent) inset; }
+    .cdd-ct { font: 800 12px var(--mono); display: flex; align-items: center; gap: 6px; }
+    /* gauge */
+    .cdd-gauge-wrap { display: flex; align-items: center; gap: 14px; }
+    .cdd-gauge { width: 92px; height: 92px; border-radius: 50%; flex: 0 0 auto;
+        background: conic-gradient(#a855f7 calc(var(--pct) * 1%), #1a1d2b 0); display: grid; place-items: center; box-shadow: 0 0 18px color-mix(in srgb,#a855f7 30%,transparent); }
+    .cdd-gauge-in { width: 70px; height: 70px; border-radius: 50%; background: var(--card); display: grid; place-items: center; text-align: center; }
+    .cdd-gauge-in b { font: 900 22px var(--mono); color: #d8b4fe; } .cdd-gauge-in small { font: 700 9px var(--mono); color: var(--text-muted); }
+    .cdd-reco { display: flex; flex-direction: column; gap: 6px; } .cdd-reco-r { font: 700 11px var(--mono); color: var(--text-secondary); } .cdd-reco-r b { color: #22d3ee; }
+    /* bars */
+    .cdd-bars { display: flex; flex-direction: column; gap: 8px; }
+    .cdd-bar { display: grid; grid-template-columns: 48px 1fr auto; align-items: center; gap: 8px; }
+    .cdd-bl { font: 700 10px var(--mono); color: var(--text-muted); }
+    .cdd-track { height: 9px; border-radius: 6px; background: #12141f; border: 1px solid var(--line); overflow: hidden; } .cdd-track.big { height: 12px; margin-top: 2px; }
+    .cdd-fill { height: 100%; border-radius: 6px; transition: width .4s; }
+    .cdd-fill.vram { background: linear-gradient(90deg,#22d3ee,#0ea5e9); } .cdd-fill.ram { background: linear-gradient(90deg,#34d399,#10b981); }
+    .cdd-fill.nvenc { background: linear-gradient(90deg,#a855f7,#d946ef); } .cdd-fill.api { background: linear-gradient(90deg,#f59e0b,#fbbf24); }
+    .cdd-fill.pack { background: linear-gradient(90deg,#a855f7,#22d3ee); } .cdd-fill.quota { background: linear-gradient(90deg,#22c55e,#84cc16); } .cdd-fill.over { background: linear-gradient(90deg,#ef4444,#f97316); }
+    .cdd-bv { font: 700 10.5px var(--mono); color: var(--text-secondary); min-width: 52px; text-align: right; }
+    .cdd-chips { display: flex; gap: 6px; flex-wrap: wrap; } .cdd-chip { font: 700 9.5px var(--mono); color: var(--text-muted); background: #12141f; border: 1px solid var(--line); border-radius: 7px; padding: 4px 8px; }
+    /* buttons */
+    .cdd-btn { font: 800 12.5px var(--mono); padding: 10px 14px; border-radius: 10px; border: none; color: #fff; cursor: pointer; background: linear-gradient(135deg,#7c3aed,#a855f7); }
+    .cdd-btn.pack { background: linear-gradient(135deg,#0ea5e9,#a855f7); } .cdd-btn.sm { padding: 8px 12px; font-size: 11.5px; }
+    .cdd-btn:disabled { opacity: .45; cursor: not-allowed; } .cdd-btn:hover:not(:disabled) { filter: brightness(1.08); }
+    .cdd-sub { font: 600 10.5px var(--mono); color: var(--text-muted); line-height: 1.4; }
+    /* license */
+    .cdd-tier { margin-left: auto; font: 900 10px var(--mono); color: #d8b4fe; background: color-mix(in srgb,#a855f7 16%,transparent); border-radius: 6px; padding: 1px 7px; }
+    .cdd-lic { font: 700 11px var(--mono); color: var(--text-secondary); line-height: 1.4; }
+    .cdd-quota { display: flex; flex-direction: column; gap: 6px; }
+    .cdd-qrow { display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 8px; font: 700 10px var(--mono); color: var(--text-muted); } .cdd-qrow b { color: var(--text-secondary); font-size: 10.5px; }
+    .cdd-key { display: flex; gap: 6px; }
+    .cdd-input { flex: 1; min-width: 0; background: #12141f; border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; color: var(--text-primary); font: 600 11px var(--mono); }
+    .cdd-input:focus { outline: none; border-color: #a855f7; }
+    @@media (max-width: 720px) { .cdd-grid { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter, EditorRequired] public StoryboardProject Project { get; set; } = default!;
+    [Parameter] public bool Disabled { get; set; }
+
+    private BenchmarkResult B => Bench.Last;
+    private bool _packaging;
+    private double _packPct;
+    private string? _packMsg;
+    private string _licenseKey = "";
+
+    private bool HasMaster => !string.IsNullOrWhiteSpace(Project.FinalVideoPath) && System.IO.File.Exists(Project.FinalVideoPath);
+
+    private long _memToken;
+
+    protected override void OnInitialized()
+    {
+        _memToken = MemAudit.Track("CommercialDashboardDeck");   // v3.1.0 누수 감사 추적
+        Bench.OnChange += OnSvc;
+        License.OnChange += OnSvc;
+    }
+
+    private void OnSvc() => InvokeAsync(StateHasChanged);
+
+    private async Task RunBench()
+    {
+        if (Bench.IsRunning) return;
+        await Bench.RunAsync(null);
+        Bench.ApplyTo(Project);   // 하드웨어 교정 → 프로젝트에 병렬/보간 적용
+    }
+
+    private async Task Package()
+    {
+        if (_packaging || !HasMaster) return;
+        _packaging = true; _packMsg = null; _packPct = 0;
+        try
+        {
+            var dir = System.IO.Path.Combine(Media.MediaRoot, Project.Id);
+            var progress = new Progress<(string Stage, double Pct)>(t => { _packPct = t.Pct; _ = InvokeAsync(StateHasChanged); });
+            var result = await Packager.PackageAsync(Project, dir, null, progress);
+            _packMsg = result.Message;
+            if (result.Ok && result.ZipPath is not null) FolderLink.Reveal(result.ZipPath);   // 완료 후 폴더 열기
+        }
+        catch (Exception ex) { _packMsg = "패키징 실패: " + ex.Message; }
+        finally { _packaging = false; }
+    }
+
+    private LicenseStatus RegisterLicenseResult() => License.SetLicense(_licenseKey);
+    private void RegisterLicense() { if (!string.IsNullOrWhiteSpace(_licenseKey)) RegisterLicenseResult(); }
+
+    private static int Pct(double v, double max) => (int)Math.Clamp(v / max * 100, 0, 100);
+    private static int ApiPct(int ms) => ms < 0 ? 0 : (int)Math.Clamp(100 - ms / 12.0, 4, 100);   // 낮을수록 김(좋음)
+    private static int QuotaPct(int used, int limit) => limit <= 0 ? 0 : (int)Math.Clamp(used / (double)limit * 100, 0, 100);
+    private static string LimitLabel(int limit) => limit <= 0 ? "∞" : limit.ToString();
+
+    public void Dispose()
+    {
+        Bench.OnChange -= OnSvc;
+        License.OnChange -= OnSvc;
+        MemAudit.Release(_memToken);   // v3.1.0 누수 감사 해제
+    }
+}

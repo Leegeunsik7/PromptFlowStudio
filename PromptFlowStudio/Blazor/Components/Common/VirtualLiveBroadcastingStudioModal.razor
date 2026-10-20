@@ -1,0 +1,349 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.VirtualLive
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject VirtualLiveBroadcastStudioRunner Runner
+
+@* [PromptFlow Studio v17.31.0] 📡 AI 버추얼 라이브 방송 스튜디오 — 송출 뷰어(16:9 · 9:16) · 목적지 ABR 모니터 · 채팅 스트림 · 감정 온도계 · 슈퍼챗 리액션 큐 · 세이프티 가드. *@
+
+<div class="vlb-scrim" @onclick="Close">
+    <div class="vlb-modal" @onclick:stopPropagation="true">
+        <div class="vlb-h">
+            <div>
+                <div class="vlb-title">📡 AI 버추얼 라이브 방송 스튜디오 @(Runner.IsOnAir ? "· 🔴 ON AIR" : null)</div>
+                <div class="vlb-sub"><b>송출 엔진</b>이 9:16 · 16:9 렌더 프레임을 무할당 링버퍼에서 H.264 NAL(에뮬레이션 방지) · AAC 로 패킷화해 RTMP(FLV) · WebRTC(RTP FU-A) 목적지로 ABR 60 fps 동시 송출하고, <b>반응 합성기</b>가 초당 수백 건 채팅의 감정 극성과 슈퍼챗 금액을 시선 · 표정 · 대사 · 제스처 시퀀스로 바꿉니다. <b>세이프티 가드</b>는 욕설 · 탈옥(룰 + 트라이그램 임베딩) · 도배를 차단하고 대역폭 급감 시 직전 키프레임 P-Skip 보간으로 화면 멈춤을 막습니다.</div>
+            </div>
+            <button class="vlb-x" @onclick="Close">✕</button>
+        </div>
+        <div class="vlb-bar">
+            <button class="vlb-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 송출 정지" : "🔴 송출 시작")</button>
+            <button class="vlb-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="vlb-btn @(G.Enabled ? "on" : null)" @onclick="() => Runner.SetGuard(!G.Enabled)">🛡 가드</button>
+            <button class="vlb-btn @(G.EmbeddingEnabled ? "on" : null)" @onclick="() => Runner.SetEmbedding(!G.EmbeddingEnabled)">🧠 임베딩</button>
+            <button class="vlb-btn @(Runner.DemoChat ? "on" : null)" @onclick="() => Runner.SetDemoChat(!Runner.DemoChat)">💬 데모 채팅</button>
+            <button class="vlb-btn warn" @onclick="() => Runner.InjectSpike()">📉 대역폭 스파이크</button>
+            <button class="vlb-btn warn" @onclick="() => Runner.InjectTrollWave()">🧌 트롤 웨이브</button>
+            <button class="vlb-btn" @onclick="Runner.ResetMetrics">↺ 지표</button>
+            <span class="vlb-chip @(Runner.LastTickMs <= 16.7 ? "ok" : "warn")">프레임 @(F2(Runner.LastTickMs)) ms(최대 @(F1(Runner.MaxTickMs))) · 패킷화 @(F0(Runner.Engine.LastPacketizeUs)) µs</span>
+            <span class="vlb-chip">채팅 @(F0(C.MsgPerSec)) msg/s · 수신 @(F2(C.LastIngestUs)) µs</span>
+        </div>
+        <div class="vlb-main">
+            <div class="vlb-col">
+                <div class="vlb-card">
+                    <div class="vlb-sec">🎥 송출 뷰어 · @(GestureLabel(A.Gesture)) @(A.VoiceLine > 0 ? "· 🗣 \"" + AudienceChatReactionBehaviorSynthesizer.VoiceLines[A.VoiceLine] + "\"" : null)</div>
+                    <div class="vlb-views">
+                        <svg class="vlb-view wide" viewBox="-160 -90 320 180">@((MarkupString)ActorSvg(1f))<text x="-150" y="-76">16:9 · @(StatOf(0).BitrateKbps) kbps</text></svg>
+                        <svg class="vlb-view tall" viewBox="-90 -160 180 320">@((MarkupString)ActorSvg(1.25f))<text x="-82" y="-146">9:16 · @(StatOf(2).BitrateKbps) kbps</text></svg>
+                    </div>
+                </div>
+                <div class="vlb-card">
+                    <div class="vlb-sec">📶 송출 목적지 · ABR 래더 800 → 8000 kbps</div>
+                    <table class="vlb-tbl">
+                        <thead><tr><th>목적지</th><th>규격</th><th>비트레이트</th><th>대역폭</th><th>FPS</th><th>지연</th><th>정지(최대)</th><th>보간</th><th>폐기</th></tr></thead>
+                        <tbody>
+                            @for (var i = 0; i < _statN; i++)
+                            {
+                                var s = _stats[i];
+                                var k = i;
+                                <tr class="@(s.InSpike ? "spike" : null)">
+                                    <td><b>@(s.Name)</b> <span class="vlb-mut">@(s.Aspect == LiveAspect.Portrait9x16 ? "9:16" : "16:9")</span></td>
+                                    <td>@(s.Transport == LiveTransport.Rtmp ? "RTMP" : "WebRTC")</td>
+                                    <td><span class="vlb-rung">@for (var r = 0; r < RealtimeVirtualLiveBroadcastEngine.Ladder.Length; r++) { <i class="@(r <= s.Rung ? "on" : null)"></i> }</span> @(s.BitrateKbps)</td>
+                                    <td><input class="vlb-bw" type="range" min="300" max="20000" step="100" value="@(F0(s.BandwidthKbps))" @onchange="e => Runner.SetBandwidth(k, (float)Num(e, 6000))" /> @(F0(s.BandwidthKbps))</td>
+                                    <td class="@(s.Fps >= 55 ? "ok" : "warn")">@(F0(s.Fps))</td>
+                                    <td>@(F0(s.LatencyMs)) ms</td>
+                                    <td class="@(s.MaxFreezeMs < 150 ? "ok" : "warn")">@(F0(s.FreezeMs)) (@(F0(s.MaxFreezeMs)))</td>
+                                    <td>@(s.Stabilized)</td>
+                                    <td class="@(s.Dropped == 0 ? null : "warn")">@(s.Dropped)</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                    <svg class="vlb-spark" viewBox="0 0 360 80" preserveAspectRatio="none">
+                        <polyline class="kbps" points="@(Series(0, 32000))" />
+                        <polyline class="frz" points="@(Series(1, 1000))" />
+                    </svg>
+                    <div class="vlb-legend"><span class="kbps">■ 총 비트레이트</span><span class="frz">■ 최대 정지 ms</span><span>스파이크 @(G.Spikes) · 보간 프레임 @(G.StabilizedFrames)</span></div>
+                </div>
+            </div>
+            <div class="vlb-col">
+                <div class="vlb-card">
+                    <div class="vlb-sec">🌡 감정 온도계 · 무드 @(MoodLabel(C.Mood))</div>
+                    <div class="vlb-thermo-row">
+                        <div class="vlb-thermo"><div style="height:@(F0(C.Temperature))%"></div><b>@(F0(C.Temperature))°</b></div>
+                        <div class="vlb-pols">
+                            @foreach (var p in Pols)
+                            {
+                                <div class="vlb-pol"><span>@(MoodLabel(p))</span><div class="vlb-polbar"><div class="p@((int)p)" style="width:@(F0(Math.Min(100, C.Rate(p) * 2)))%"></div></div><b>@(F1(C.Rate(p)))/s</b></div>
+                            }
+                            <div class="vlb-mut">누적 메시지 @(C.Messages) · 수용 @(C.Accepted) · 슈퍼챗 @(C.SuperchatCount)건 @(C.SuperchatAmount.ToString("N0", CultureInfo.InvariantCulture))원</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="vlb-card">
+                    <div class="vlb-sec">💰 슈퍼챗 리액션 큐 · 대기 @(C.QueueCount) · 재생 @(C.CuesPlayed)</div>
+                    @if (C.HasActive)
+                    {
+                        var a = C.Active;
+                        <div class="vlb-cue active t@(a.Tier)"><b>▶ @(a.User)</b> @(a.Amount.ToString("N0", CultureInfo.InvariantCulture))원 · @(GestureLabel(a.Gesture)) @(a.Masked ? "· 🔇 본문 차단" : null)<div class="vlb-cuebar"><div style="width:@(F0(C.ActiveProgress * 100))%"></div></div></div>
+                    }
+                    @for (var i = 0; i < Math.Min(_queueN, 6); i++)
+                    {
+                        var c = _queue[i];
+                        <div class="vlb-cue t@(c.Tier)">@(c.User) · @(c.Amount.ToString("N0", CultureInfo.InvariantCulture))원 · @(GestureLabel(c.Gesture)) · @(c.DurationMs / 1000) s</div>
+                    }
+                </div>
+                <div class="vlb-card">
+                    <div class="vlb-sec">💬 채팅 스트림 · 차단 @(G.Blocked)(욕설 @(G.BlockedProfanity) · 탈옥 @(G.BlockedJailbreak) · 도배 @(G.BlockedFlood) · 스팸 @(G.BlockedSpam) · 임베딩 @(G.EmbeddingHits))</div>
+                    <div class="vlb-feed">
+                        @for (var i = 0; i < _feedN; i++)
+                        {
+                            var m = _feed[i];
+                            <div class="vlb-msg @(m.Verdict != LiveChatVerdict.Allow ? "blk" : null) @(m.Amount > 0 ? "sc" : null)">
+                                <b>@(m.User)</b>
+                                @if (m.Verdict == LiveChatVerdict.Allow)
+                                {
+                                    <span>@(m.Text)</span><em class="p@((int)m.Polarity)">@(MoodLabel(m.Polarity))</em>
+                                }
+                                else
+                                {
+                                    <span>🚫 @(VirtualLiveBroadcastStudioRunner.VerdictLabel(m.Verdict))</span>
+                                }
+                                @if (m.Amount > 0) { <em class="sc">💰 @(m.Amount.ToString("N0", CultureInfo.InvariantCulture))</em> }
+                            </div>
+                        }
+                    </div>
+                    <div class="vlb-post">
+                        <input placeholder="닉네임" @bind="_user" />
+                        <input class="txt" placeholder="채팅 메시지" @bind="_text" />
+                        <input class="amt" type="number" min="0" step="1000" placeholder="후원(원)" @bind="_amount" />
+                        <button class="vlb-btn" @onclick="Post">전송</button>
+                    </div>
+                </div>
+                <div class="vlb-act">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .vlb-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .vlb-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .vlb-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #ef4444 14%, var(--card)), color-mix(in srgb, #a855f7 12%, var(--card))); }
+    .vlb-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .vlb-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .vlb-sub b { color: var(--text-primary); }
+    .vlb-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .vlb-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .vlb-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .vlb-btn:disabled { opacity: .45; cursor: default; }
+    .vlb-btn.on { background: color-mix(in srgb, #ef4444 20%, var(--card)); border-color: #ef4444; }
+    .vlb-btn.warn { border-color: #f59e0b; }
+    .vlb-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .vlb-chip.ok { border-color: #22c55e; color: #22c55e; }
+    .vlb-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .vlb-main { display: grid; grid-template-columns: 1.15fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .vlb-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .vlb-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); }
+    .vlb-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .vlb-mut { font-size: 11px; color: var(--text-muted); }
+    .vlb-views { display: flex; gap: 10px; align-items: flex-start; }
+    .vlb-view { background: radial-gradient(circle at 50% 30%, #312e81, #0b1020); border-radius: 8px; }
+    .vlb-view.wide { flex: 16; aspect-ratio: 16 / 9; }
+    .vlb-view.tall { flex: 5; aspect-ratio: 9 / 16; }
+    .vlb-view text { fill: #e2e8f0; font: 700 9px var(--mono); }
+    .vlb-view .skin { fill: #fde2c8; } .vlb-view .hair { fill: #7c3aed; } .vlb-view .body { fill: #ec4899; }
+    .vlb-view .ln { stroke: #1e1b4b; stroke-width: 2; fill: none; stroke-linecap: round; }
+    .vlb-view .arm { stroke: #fde2c8; stroke-width: 7; stroke-linecap: round; fill: none; }
+    .vlb-tbl { width: 100%; border-collapse: collapse; font-size: 11px; }
+    .vlb-tbl th { text-align: left; color: var(--text-muted); font-weight: 700; padding: 3px 4px; border-bottom: 1px solid var(--line); }
+    .vlb-tbl td { padding: 3px 4px; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); white-space: nowrap; }
+    .vlb-tbl td.ok { color: #22c55e; } .vlb-tbl td.warn { color: #f59e0b; }
+    .vlb-tbl tr.spike td { background: color-mix(in srgb, #f59e0b 12%, transparent); }
+    .vlb-bw { width: 80px; vertical-align: middle; }
+    .vlb-rung { display: inline-flex; gap: 1px; vertical-align: middle; }
+    .vlb-rung i { width: 4px; height: 10px; background: color-mix(in srgb, var(--line) 80%, transparent); border-radius: 1px; }
+    .vlb-rung i.on { background: #22c55e; }
+    .vlb-spark { width: 100%; height: 70px; margin-top: 8px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; }
+    .vlb-spark polyline { fill: none; stroke-width: 1.5; }
+    .vlb-spark .kbps, .vlb-legend .kbps { stroke: #38bdf8; color: #38bdf8; }
+    .vlb-spark .frz, .vlb-legend .frz { stroke: #f87171; color: #f87171; }
+    .vlb-legend { display: flex; gap: 12px; font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+    .vlb-thermo-row { display: flex; gap: 14px; align-items: stretch; }
+    .vlb-thermo { position: relative; width: 34px; height: 130px; border-radius: 17px; border: 2px solid var(--line); overflow: hidden; display: flex; align-items: flex-end; }
+    .vlb-thermo div { width: 100%; background: linear-gradient(0deg, #38bdf8, #f59e0b 55%, #ef4444); transition: height .2s; }
+    .vlb-thermo b { position: absolute; top: 4px; width: 100%; text-align: center; font-size: 11px; color: var(--text-primary); }
+    .vlb-pols { flex: 1; display: flex; flex-direction: column; gap: 6px; justify-content: center; }
+    .vlb-pol { display: grid; grid-template-columns: 52px 1fr 56px; gap: 6px; align-items: center; font-size: 11px; }
+    .vlb-polbar { height: 8px; border-radius: 4px; background: color-mix(in srgb, var(--line) 60%, transparent); overflow: hidden; }
+    .vlb-polbar div { height: 100%; transition: width .2s; }
+    .p1 { background: #22c55e; color: #22c55e; } .p2 { background: #38bdf8; color: #38bdf8; } .p3 { background: #f59e0b; color: #f59e0b; } .p4 { background: #a855f7; color: #a855f7; }
+    .vlb-cue { font-size: 11px; padding: 4px 8px; border-radius: 6px; margin-bottom: 4px; border-left: 3px solid var(--line); background: color-mix(in srgb, var(--card) 85%, #000); }
+    .vlb-cue.active { border-left-width: 5px; font-size: 12px; }
+    .vlb-cue.t1 { border-left-color: #38bdf8; } .vlb-cue.t2 { border-left-color: #22c55e; } .vlb-cue.t3 { border-left-color: #f59e0b; } .vlb-cue.t4 { border-left-color: #ef4444; }
+    .vlb-cuebar { height: 3px; background: var(--line); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+    .vlb-cuebar div { height: 100%; background: #ef4444; }
+    .vlb-feed { height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; font-size: 11px; }
+    .vlb-msg { display: flex; gap: 6px; align-items: baseline; }
+    .vlb-msg b { color: var(--text-secondary); min-width: 64px; }
+    .vlb-msg span { color: var(--text-primary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .vlb-msg em { font-style: normal; font-size: 10px; background: none; }
+    .vlb-msg em.sc { color: #f59e0b; font-weight: 800; }
+    .vlb-msg.blk span { color: #f87171; }
+    .vlb-msg.sc { background: color-mix(in srgb, #f59e0b 10%, transparent); border-radius: 4px; }
+    .vlb-post { display: flex; gap: 6px; margin-top: 8px; }
+    .vlb-post input { font-size: 12px; padding: 4px 6px; min-width: 0; width: 90px; }
+    .vlb-post input.txt { flex: 1; }
+    .vlb-act { font-size: 11px; color: var(--text-muted); }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly ChatPolarity[] Pols = { ChatPolarity.Positive, ChatPolarity.Question, ChatPolarity.Celebrate, ChatPolarity.Surprise };
+    private System.Threading.Timer? _timer;
+    private readonly LiveOutletStats[] _stats = new LiveOutletStats[RealtimeVirtualLiveBroadcastEngine.MaxOutlets];
+    private readonly LiveChatEntry[] _feed = new LiveChatEntry[18];
+    private readonly SuperchatCue[] _queue = new SuperchatCue[8];
+    private int _statN, _feedN, _queueN;
+    private string _user = "me", _text = "";
+    private int _amount;
+
+    private StreamSafetyAntiTrollingDivergenceGuard G => Runner.Guard;
+    private AudienceChatReactionBehaviorSynthesizer C => Runner.Chat;
+    private ActorReactionState A => C.State;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        Snapshot();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(() => { Snapshot(); StateHasChanged(); }); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("VirtualLive.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private void Snapshot()
+    {
+        _statN = Runner.CopyStats(_stats);
+        _feedN = Runner.CopyFeed(_feed);
+        _queueN = Runner.CopyQueue(_queue);
+    }
+
+    private LiveOutletStats StatOf(int i) => i < _statN ? _stats[i] : default;
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    private static string MoodLabel(ChatPolarity p) => p switch
+    {
+        ChatPolarity.Positive => "긍정",
+        ChatPolarity.Question => "질문",
+        ChatPolarity.Celebrate => "축하",
+        ChatPolarity.Surprise => "놀람",
+        _ => "중립",
+    };
+
+    private static string GestureLabel(ReactionGesture g) => g switch
+    {
+        ReactionGesture.Nod => "🙂 끄덕",
+        ReactionGesture.Wave => "👋 손인사",
+        ReactionGesture.Wink => "😉 윙크",
+        ReactionGesture.HeartHands => "🫶 하트+윙크",
+        ReactionGesture.Clap => "👏 박수",
+        ReactionGesture.ThinkingPose => "🤔 질문 응시",
+        ReactionGesture.ReactionDance => "💃 리액션 댄스",
+        ReactionGesture.Bow => "🙇 감사 인사+댄스",
+        _ => "아이들",
+    };
+
+    /// <summary>액터 리액션 상태 → 스타일라이즈드 SVG(시선 · 윙크 · 미소 · 팔 · 스웨이 · 인사).</summary>
+    private string ActorSvg(float scale)
+    {
+        var a = A;
+        var sb = new System.Text.StringBuilder(1400);
+        sb.Append("<g transform=\"scale(").Append(F2(scale)).Append(") rotate(").Append(F1(a.BodySwayDeg)).Append(" 0 70)\">");
+        sb.Append("<path class=\"body\" d=\"M-38 75 Q-34 20 0 18 Q34 20 38 75 Z\"/>");
+        // 팔: 0 = 내림 · 1 = 머리 위
+        AppendArm(sb, -1, a.ArmL);
+        AppendArm(sb, 1, a.ArmR);
+        sb.Append("<g transform=\"rotate(").Append(F1(a.BowDeg * 0.6f)).Append(" 0 18) translate(0 ").Append(F1(a.BowDeg * 0.4f)).Append(")\">");
+        sb.Append("<ellipse class=\"hair\" cx=\"0\" cy=\"-22\" rx=\"31\" ry=\"34\"/><circle class=\"skin\" cx=\"0\" cy=\"-16\" r=\"26\"/>");
+        var ex = a.GazeYawDeg / 25f * 3f; var ey = -a.GazePitchDeg / 10f * 2f + (a.Gaze == GazeTarget.Donor ? -1.5f : 0f);
+        AppendEye(sb, -9f, ex, ey, a.WinkL, a.BrowRaise);
+        AppendEye(sb, 9f, ex, ey, a.WinkR, a.BrowRaise);
+        var sm = 2f + 8f * a.Smile;
+        sb.Append("<path class=\"ln\" d=\"M-9 -4 Q0 ").Append(F1(-4f + sm)).Append(" 9 -4\"/>");
+        if (a.MouthOpen > 0.05f) sb.Append("<ellipse cx=\"0\" cy=\"-1\" rx=\"4\" ry=\"").Append(F1(1f + 5f * a.MouthOpen)).Append("\" fill=\"#7f1d1d\"/>");
+        sb.Append("</g></g>");
+        return sb.ToString();
+    }
+
+    private static void AppendArm(System.Text.StringBuilder sb, int side, float lift)
+    {
+        var ang = (20f + 150f * Math.Clamp(lift, 0f, 1.2f)) * MathF.PI / 180f;
+        float sx = side * 30f, sy = 30f;
+        var ex = sx + side * MathF.Sin(ang) * 32f;
+        var ey = sy + MathF.Cos(ang) * 32f;
+        sb.Append("<path class=\"arm\" d=\"M").Append(F1(sx)).Append(' ').Append(F1(sy)).Append(" L").Append(F1(ex)).Append(' ').Append(F1(ey)).Append("\"/>");
+    }
+
+    private static void AppendEye(System.Text.StringBuilder sb, float x, float dx, float dy, float wink, float brow)
+    {
+        if (wink > 0.5f) sb.Append("<path class=\"ln\" d=\"M").Append(F1(x - 4)).Append(" -18 Q").Append(F1(x)).Append(" -14 ").Append(F1(x + 4)).Append(" -18\"/>");
+        else sb.Append("<circle cx=\"").Append(F1(x + dx)).Append("\" cy=\"").Append(F1(-18f + dy)).Append("\" r=\"3.2\" fill=\"#1e1b4b\"/>");
+        sb.Append("<path class=\"ln\" d=\"M").Append(F1(x - 5)).Append(' ').Append(F1(-26f - 4f * brow)).Append(" L").Append(F1(x + 5)).Append(' ').Append(F1(-27f - 4f * brow)).Append("\"/>");
+    }
+
+    private string Series(int kind, double full)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+        {
+            double v = kind == 0 ? Runner.BitrateSeries(i) : Runner.FreezeSeries(i);
+            if (!double.IsFinite(v)) v = full;
+            sb.Append(F1(360.0 * (n - 1 - i) / (VirtualLiveBroadcastStudioRunner.SeriesLen - 1))).Append(',').Append(F1(78 - 76 * Math.Clamp(v / full, 0, 1))).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void Step60()
+    {
+        for (var i = 0; i < VirtualLiveBroadcastStudioRunner.Hz; i++) Runner.Step();
+        Snapshot();
+    }
+
+    private void Post()
+    {
+        if (string.IsNullOrWhiteSpace(_text) && _amount <= 0) return;
+        Runner.PostChat(_user, _text, _amount);
+        _text = "";
+        _amount = 0;
+        Snapshot();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중 갱신은 250 ms 타이머가 처리 — 정지 상태 변경만 즉시 반영.</summary>
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(() => { Snapshot(); StateHasChanged(); });
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

@@ -1,0 +1,439 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Mam
+@using PromptFlowStudio.Services.Screenplay
+@using PromptFlowStudio.Services.Storyboard
+@using PromptFlowStudio.Services.DigitalTwin
+@implements IDisposable
+@inject EnterpriseMamSmartIndexingEngine Mam
+@inject AiContentModerationComplianceShield Shield
+@inject MultiCloudEdgeCdnDistributionRouter Cdn
+@inject StoryboardJobManager Jobs
+@inject SceneBeatSheetScriptGenerator Script
+@inject AiDigitalTwinGeneratorEngine Twins
+
+@*
+    [PromptFlow Studio v16.42.0] 🗄️ 엔터프라이즈 MAM & 글로벌 CDN 스튜디오 — 자산 수집/시맨틱 검색/중복 인스펙터 · 국가별 심의 승인/경고 리포트(등급 · 브랜드 안전 · 저작권) ·
+    글로벌 CDN 트래픽 지도 스펙트럼(PoP · 공급자 · 차단) · 1-Click 글로벌 송출(심의 게이트 → 오프로더 → 공급자 배포). 서비스 OnChange 구독.
+*@
+
+<div class="mm-scrim" @onclick="Close">
+    <div class="mm-modal" @onclick:stopPropagation="true">
+        <div class="mm-h">
+            <div>
+                <div class="mm-title">🗄️ 엔터프라이즈 MAM &amp; 글로벌 CDN 스튜디오</div>
+                <div class="mm-sub">전체 미디어 자산을 <b>시맨틱 색인·중복 제거</b>하고, 국가별 <b>방송 심의·연령 등급·저작권·딥페이크·브랜드 안전</b>을 진단한 뒤 <b>멀티클라우드 CDN + 토큰 DRM</b>으로 1-Click 글로벌 송출합니다.</div>
+            </div>
+            <button class="mm-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="mm-bar">
+            <span class="mm-chip ok">자산 @(Mam.Count.ToString(CultureInfo.InvariantCulture))</span>
+            <span class="mm-chip">중복 차단 @(Mam.DuplicatesBlocked.ToString(CultureInfo.InvariantCulture))</span>
+            <span class="mm-chip">심의 @(Shield.Diagnoses.ToString(CultureInfo.InvariantCulture)) · 저작물 @(Shield.RegisteredWorks.ToString(CultureInfo.InvariantCulture))</span>
+            <span class="mm-chip @(Cdn.IsRunning ? "ok" : "")">@(Cdn.IsRunning ? "오프로더 " + Cdn.BaseUrl : "오프로더 OFF")</span>
+            <span class="mm-chip">토큰 @(Cdn.TokensIssued.ToString(CultureInfo.InvariantCulture)) · 거부 @(Cdn.TokensRejected.ToString(CultureInfo.InvariantCulture))</span>
+            <div class="mm-tabs">
+                @foreach (var t in _tabs)
+                {
+                    var key = t.Key;
+                    <button class="mm-tab @(_tab == key ? "on" : "")" @onclick="() => _tab = key">@(t.Label)</button>
+                }
+            </div>
+        </div>
+
+        <div class="mm-main">
+            <div class="mm-side">
+                <div class="mm-sec">자산 수집</div>
+                <div class="mm-row">
+                    <button class="mm-btn sm" @onclick="SeedDemo">🧪 데모 카탈로그</button>
+                    <button class="mm-btn sm" disabled="@(Jobs.Current is null)" @onclick="IngestStoryboard">🎞 스토리보드</button>
+                    <button class="mm-btn sm" disabled="@(Script.Current is null)" @onclick="IngestScript">📜 대본</button>
+                    <button class="mm-btn sm" disabled="@(Twins.Assets.Count == 0)" @onclick="IngestTwins">🧍 트윈</button>
+                </div>
+                <div class="mm-row">
+                    <input class="mm-in grow" @bind="_filePath" placeholder="파일 경로(영상/오디오/OBJ/대본/이미지)" />
+                    <button class="mm-btn sm" disabled="@(string.IsNullOrWhiteSpace(_filePath))" @onclick="IngestFile">📥</button>
+                </div>
+                <div class="mm-row">
+                    <button class="mm-btn sm" @onclick="SaveCatalog">💾 저장</button>
+                    <button class="mm-btn sm" @onclick="LoadCatalog">📂 로드</button>
+                    <button class="mm-btn sm" @onclick="FindDups">♻ 중복 스캔</button>
+                </div>
+
+                <div class="mm-sec">선택 자산</div>
+                @if (_sel is { } a)
+                {
+                    <div class="mm-card">
+                        <div class="mm-kv"><span>@(EnterpriseMamSmartIndexingEngine.KindLabel(a.Kind))</span><b>@(a.Title)</b></div>
+                        <div class="mm-note">@(Clip(a.Description, 120))</div>
+                        <div class="mm-tags">@foreach (var t in a.Tags) { <i>#@(t)</i> }</div>
+                        <label class="mm-ck"><input type="checkbox" @bind="_c2pa" /> C2PA/AI 라벨 표시</label>
+                        <label class="mm-ck"><input type="checkbox" @bind="_realPerson" /> 실존 인물 얼굴 합성</label>
+                        <label class="mm-ck"><input type="checkbox" @bind="_consent" /> 초상권 동의서 보유</label>
+                        <label class="mm-ck"><input type="checkbox" @bind="_political" /> 정치/선거 콘텐츠</label>
+                        <div class="mm-row"><span class="mm-mut">PPL</span><input class="mm-in w60" type="number" @bind="_ppl" /><label class="mm-ck"><input type="checkbox" @bind="_pplDisc" /> 고지</label></div>
+                        <button class="mm-btn go" @onclick="RunCompliance">🛡 국가별 심의 진단</button>
+                    </div>
+                }
+                else
+                {
+                    <div class="mm-note">검색 결과에서 자산을 선택하세요.</div>
+                }
+                <button class="mm-btn go big" disabled="@(_sel is null || _busy)" @onclick="DeployAsync">🚀 1-Click 글로벌 송출 배포</button>
+            </div>
+
+            <div class="mm-panel">
+                @if (_tab == "search")
+                {
+                    <div class="mm-card">
+                        <div class="mm-row">
+                            <input class="mm-in grow" @bind="_query" @bind:event="oninput" @bind:after="DoSearch" placeholder="자연어 검색 — 예: 비 오는 밤 야경 드론 / kind:audio 몽환적 신스" />
+                            <select class="mm-in" @bind="_kind" @bind:after="DoSearch">
+                                <option value="-1">전체</option>
+                                @foreach (var k in Enum.GetValues<MamAssetKind>())
+                                {
+                                    <option value="@((int)k)">@(EnterpriseMamSmartIndexingEngine.KindLabel(k))</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="mm-list">
+                            @for (var i = 0; i < _hitCount; i++)
+                            {
+                                var h = _hits[i];
+                                var asset = Mam[h.Index];
+                                if (asset is null) continue;
+                                <div class="mm-hit @(_sel?.Id == asset.Id ? "on" : "")" @onclick="() => Select(asset)">
+                                    <b>@(EnterpriseMamSmartIndexingEngine.KindLabel(asset.Kind))</b><span>@(asset.Title)</span><i>@(h.Score.ToString("0.000", CultureInfo.InvariantCulture))</i>
+                                    <em>@(Shield.ReportFor(asset.Id) is { } rr ? Badge(rr) : "미심의")</em>
+                                </div>
+                            }
+                        </div>
+                    </div>
+                    @if (_dups.Count > 0)
+                    {
+                        <div class="mm-card">
+                            <div class="mm-sec">중복 자산 그룹 @(_dups.Count)</div>
+                            @foreach (var g in _dups)
+                            {
+                                <div class="mm-dup"><b>@(EnterpriseMamSmartIndexingEngine.DupLabel(g.Kind))</b><span>@(g.Primary.Title)</span><i>+@(g.Duplicates.Count) · @(g.Similarity.ToString("0.00", CultureInfo.InvariantCulture))</i></div>
+                            }
+                        </div>
+                    }
+                }
+                else if (_tab == "compliance")
+                {
+                    var rep = _sel is null ? null : Shield.ReportFor(_sel.Id);
+                    <div class="mm-card">
+                        <div class="mm-sec">국가별 심의 승인/경고 리포트 @(rep is null ? "" : "· " + rep.Title)</div>
+                        @if (rep is null)
+                        {
+                            <div class="mm-note">자산 선택 후 [국가별 심의 진단]을 실행하세요.</div>
+                        }
+                        else
+                        {
+                            <div class="mm-regions">
+                                @foreach (var r in rep.Regions)
+                                {
+                                    <div class="mm-region @(StatusClass(r.Status))">
+                                        <div class="mm-kv"><span>@(AiContentModerationComplianceShield.RegionLabel(r.Region))</span><b>@(r.Rating)</b></div>
+                                        <div class="mm-status">@(StatusLabel(r.Status))</div>
+                                        @foreach (var iss in r.Issues)
+                                        {
+                                            <div class="mm-issue">@(iss)</div>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                            <div class="mm-kv"><span>브랜드 안전(GARM)</span><b>@(rep.BrandRisk) / 100 · @(TierLabel(rep.BrandTier))</b></div>
+                            <div class="mm-meter"><i style="width:@(rep.BrandRisk)%;background:@(rep.BrandRisk >= 60 ? "#ef4444" : rep.BrandRisk >= 30 ? "#f59e0b" : "#22c55e")"></i></div>
+                            <div class="mm-kv"><span>저작권 핑거프린트</span><b>@(rep.CopyrightOwner is null ? "일치 없음" : "⚠ " + rep.CopyrightOwner)</b></div>
+                            <div class="mm-kv"><span>배포 허용 지역</span><b>@(string.Join(" · ", rep.ApprovedRegions))</b></div>
+                        }
+                    </div>
+                }
+                else if (_tab == "cdn")
+                {
+                    <div class="mm-card">
+                        <div class="mm-row">
+                            <div class="mm-sec">글로벌 CDN 트래픽 지도 스펙트럼</div>
+                            <button class="mm-btn sm" @onclick="Simulate">🧪 시청자 5,000 시뮬레이션</button>
+                            <button class="mm-btn sm" @onclick="Cdn.ResetTraffic">초기화</button>
+                        </div>
+                        <svg class="mm-map" viewBox="0 0 720 360">
+                            <rect x="0" y="0" width="720" height="360" fill="#060b18" />
+                            @for (var g = 1; g < 12; g++)
+                            {
+                                <line x1="@(g * 60)" y1="0" x2="@(g * 60)" y2="360" stroke="#132036" />
+                            }
+                            @for (var g = 1; g < 6; g++)
+                            {
+                                <line x1="0" y1="@(g * 60)" x2="720" y2="@(g * 60)" stroke="#132036" />
+                            }
+                            @for (var i = 0; i < Cdn.Pops.Count; i++)
+                            {
+                                var p = Cdn.Pops[i];
+                                var req = Cdn.RequestsAt(i);
+                                var r = 3 + Math.Sqrt(req) * 0.6;
+                                <g>
+                                    <circle cx="@(F((p.Lon + 180) * 2))" cy="@(F((90 - p.Lat) * 2))" r="@(F(r))" fill="@(ProviderColor(p.Provider))" opacity="0.55" />
+                                    <circle cx="@(F((p.Lon + 180) * 2))" cy="@(F((90 - p.Lat) * 2))" r="2" fill="#fff" />
+                                    <text x="@(F((p.Lon + 180) * 2 + 5))" y="@(F((90 - p.Lat) * 2 - 5))" fill="#94a3b8" font-size="9">@(p.City) @(req)</text>
+                                </g>
+                            }
+                        </svg>
+                        <div class="mm-legend">
+                            @foreach (var pv in Enum.GetValues<CdnProvider>())
+                            {
+                                <span><i style="background:@(ProviderColor(pv))"></i>@(MultiCloudEdgeCdnDistributionRouter.ProviderLabel(pv))</span>
+                            }
+                            <span>⛔ 차단: @(BlockedSummary())</span>
+                        </div>
+                        <svg class="mm-spec" viewBox="0 0 @(Cdn.Pops.Count * 24) 100" preserveAspectRatio="none">
+                            @for (var i = 0; i < Cdn.Pops.Count; i++)
+                            {
+                                var hgt = MaxReq() == 0 ? 0 : Cdn.RequestsAt(i) * 90.0 / MaxReq();
+                                <rect x="@(i * 24 + 3)" y="@(F(100 - hgt))" width="18" height="@(F(hgt))" fill="@(ProviderColor(Cdn.Pops[i].Provider))" />
+                            }
+                        </svg>
+                    </div>
+                }
+                else
+                {
+                    var pub = Cdn.LastPublish;
+                    <div class="mm-card">
+                        <div class="mm-sec">1-Click 글로벌 송출 배포</div>
+                        <div class="mm-note">심의 진단 → 반려 지역 게이트 → 매니페스트 오프로더 가동 → Cloudflare Stream / Fastly / CloudFront 배포(자격 미설정 시 드라이런 [부분 구제]).</div>
+                        @if (pub is null)
+                        {
+                            <div class="mm-note">아직 배포 이력이 없습니다.</div>
+                        }
+                        else
+                        {
+                            <div class="mm-kv"><span>결과</span><b>@(pub.Ok ? pub.PartialRescue ? "부분 구제" : "완료" : "실패/차단")</b></div>
+                            <div class="mm-kv"><span>허용 지역</span><b>@(string.Join(" · ", pub.Regions))</b></div>
+                            @foreach (var st in pub.Steps)
+                            {
+                                <div class="mm-step @(st.Ok ? st.DryRun ? "dry" : "ok" : "bad")"><b>@(MultiCloudEdgeCdnDistributionRouter.ProviderLabel(st.Provider))</b><span>@(st.Message)</span><i>@(st.Attempts)회</i></div>
+                            }
+                            @if (!string.IsNullOrEmpty(pub.PlaybackUrl))
+                            {
+                                <div class="mm-mut">재생(HLS) <code>@(pub.PlaybackUrl)?cc=KR&amp;lat=37.5&amp;lon=127</code></div>
+                            }
+                            @if (_preview is not null)
+                            {
+                                <div class="mm-sec">서울 시청자 동적 매니페스트 미리보기</div>
+                                <pre class="mm-pre">@(_preview)</pre>
+                            }
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+
+        <div class="mm-f">
+            <span class="mm-mut">@(_msg ?? Cdn.LastAction ?? Shield.LastAction ?? Mam.LastAction ?? "MAM 대기")</span>
+            <button class="mm-btn" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .mm-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .mm-modal { width: min(1320px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .mm-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #14b8a6 14%, var(--card)), color-mix(in srgb, #6366f1 14%, var(--card))); }
+    .mm-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .mm-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .mm-sub b { color: var(--text-primary); }
+    .mm-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .mm-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .mm-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); } .mm-chip.ok { color: #4ade80; }
+    .mm-tabs { margin-left: auto; display: flex; gap: 4px; }
+    .mm-tab { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-secondary); border-radius: 8px; padding: 5px 10px; cursor: pointer; }
+    .mm-tab.on { color: var(--text-primary); border-color: #14b8a6; box-shadow: 0 0 0 1px #14b8a6 inset; }
+    .mm-main { display: grid; grid-template-columns: 300px 1fr; min-height: 0; flex: 1; overflow: hidden; }
+    .mm-side { border-right: 1px solid var(--line); padding: 12px; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+    .mm-panel { padding: 12px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .mm-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); margin: 2px 0; }
+    .mm-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .mm-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .mm-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; min-width: 0; } .mm-in.grow { flex: 1; } .mm-in.w60 { width: 60px; }
+    .mm-ck { font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 5px; }
+    .mm-kv { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--text-muted); } .mm-kv b { color: var(--text-primary); font-family: var(--mono); text-align: right; }
+    .mm-tags { display: flex; flex-wrap: wrap; gap: 4px; } .mm-tags i { font: 10px var(--mono); color: #14b8a6; font-style: normal; }
+    .mm-list { display: flex; flex-direction: column; gap: 3px; max-height: 420px; overflow-y: auto; }
+    .mm-hit { display: grid; grid-template-columns: 96px 1fr 54px 96px; gap: 8px; font-size: 12px; color: var(--text-secondary); border-bottom: 1px solid var(--line); padding: 4px 2px; cursor: pointer; }
+    .mm-hit.on { background: color-mix(in srgb, #14b8a6 12%, var(--card)); } .mm-hit b, .mm-hit i, .mm-hit em { font: 10px var(--mono); font-style: normal; color: var(--text-muted); } .mm-hit span { color: var(--text-primary); }
+    .mm-dup { display: grid; grid-template-columns: 80px 1fr auto; gap: 8px; font-size: 12px; color: var(--text-secondary); } .mm-dup b { color: #f59e0b; font-size: 11px; } .mm-dup i { font: 10px var(--mono); font-style: normal; }
+    .mm-regions { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+    .mm-region { border: 1px solid var(--line); border-left-width: 4px; border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 3px; }
+    .mm-region.ok { border-left-color: #22c55e; } .mm-region.warn { border-left-color: #f59e0b; } .mm-region.bad { border-left-color: #ef4444; }
+    .mm-status { font: 800 12px var(--mono); color: var(--text-primary); } .mm-issue { font-size: 11.5px; color: var(--text-secondary); }
+    .mm-meter { height: 8px; border-radius: 6px; background: #1e293b; overflow: hidden; } .mm-meter i { display: block; height: 100%; }
+    .mm-map { width: 100%; border-radius: 8px; } .mm-spec { width: 100%; height: 90px; background: #0b1020; border-radius: 6px; }
+    .mm-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11.5px; color: var(--text-secondary); } .mm-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; }
+    .mm-step { display: grid; grid-template-columns: 130px 1fr 40px; gap: 8px; font-size: 12px; color: var(--text-secondary); border-left: 3px solid var(--line); padding: 3px 6px; }
+    .mm-step.ok { border-left-color: #22c55e; } .mm-step.dry { border-left-color: #f59e0b; } .mm-step.bad { border-left-color: #ef4444; } .mm-step b { color: var(--text-primary); }
+    .mm-pre { font: 10.5px var(--mono); color: var(--text-secondary); background: var(--bg); border-radius: 6px; padding: 8px; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all; margin: 0; }
+    .mm-mut { font-size: 11px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; } .mm-mut code { font: 11px var(--mono); color: #14b8a6; user-select: all; word-break: break-all; }
+    .mm-note { font-size: 11.5px; color: var(--text-secondary); }
+    .mm-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); } .mm-f .mm-mut { margin-right: auto; }
+    .mm-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .mm-btn.sm { padding: 3px 8px; font-size: 11px; } .mm-btn.big { padding: 10px; font-size: 13px; margin-top: 6px; }
+    .mm-btn.go { background: linear-gradient(135deg,#14b8a6,#6366f1); color: #fff; border: 0; }
+    .mm-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 900px) { .mm-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly (string Key, string Label)[] _tabs = { ("search", "🔎 자산 검색"), ("compliance", "🛡 심의 리포트"), ("cdn", "🌐 CDN 지도"), ("deploy", "🚀 배포") };
+    private readonly MamHit[] _hits = new MamHit[40];
+    private int _hitCount, _kind = -1, _ppl;
+    private string _tab = "search", _query = "", _filePath = "";
+    private string? _msg, _preview;
+    private bool _busy, _c2pa, _realPerson, _consent, _political, _pplDisc;
+    private MamAsset? _sel;
+    private IReadOnlyList<DuplicateGroup> _dups = Array.Empty<DuplicateGroup>();
+
+    protected override void OnInitialized()
+    {
+        Mam.OnChange += OnServiceChanged;
+        Shield.OnChange += OnServiceChanged;
+        Cdn.OnChange += OnServiceChanged;
+        DoSearch();
+    }
+
+    private void DoSearch() => _hitCount = Mam.Search(_query, _hits, _kind >= 0 ? (MamAssetKind)_kind : null);
+
+    private void Select(MamAsset a)
+    {
+        _sel = a;
+        _c2pa = a.C2paSigned;
+        _realPerson = _consent = _political = _pplDisc = false;
+        _ppl = 0;
+    }
+
+    private void SeedDemo()
+    {
+        var n = Mam.SeedDemo();
+        if (Shield.RegisteredWorks == 0)
+        {
+            foreach (var a in Mam.Assets)
+                if (a.Title == "몽환적 신스 BGM") Shield.RegisterProtectedWork("© Neon Records (미허가 샘플)", MamAssetKind.Audio, a.PHash, a.PHash2);
+        }
+        _msg = "🧪 데모 자산 " + n.ToString(CultureInfo.InvariantCulture) + "건 색인 · 중복 차단 " + Mam.DuplicatesBlocked.ToString(CultureInfo.InvariantCulture);
+        DoSearch();
+    }
+
+    private void IngestStoryboard() { if (Jobs.Current is { } p) _msg = "🎞 컷 " + Mam.IngestStoryboard(p).ToString(CultureInfo.InvariantCulture) + "건 색인"; DoSearch(); }
+    private void IngestScript() { if (Script.Current is { } d) { var r = Mam.IngestScript(d); _msg = r.Added ? "📜 대본 색인" : "♻ 중복 대본"; } DoSearch(); }
+
+    private void IngestTwins()
+    {
+        var n = 0;
+        foreach (var t in Twins.Assets) if (Mam.IngestTwin(t).Added) n++;
+        _msg = "🧍 트윈 " + n.ToString(CultureInfo.InvariantCulture) + "건 색인";
+        DoSearch();
+    }
+
+    private void IngestFile()
+    {
+        try
+        {
+            var path = _filePath.Trim().Trim('"');
+            if (!File.Exists(path)) { _msg = "⚠ 파일 없음"; return; }
+            var r = Mam.IngestFile(path);
+            _msg = r.Added ? "📥 색인 · " + r.Asset.Title : "♻ 중복 · " + r.DuplicateOf?.Title;
+            DoSearch();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { _msg = "⚠ " + ex.Message; }
+    }
+
+    private void SaveCatalog() { try { Mam.Save(); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { _msg = "⚠ " + ex.Message; } }
+    private void LoadCatalog() { Mam.Load(); DoSearch(); }
+    private void FindDups() { _dups = Mam.FindDuplicates(); _msg = "♻ 중복 그룹 " + _dups.Count.ToString(CultureInfo.InvariantCulture); }
+
+    private void RunCompliance()
+    {
+        if (_sel is not { } a) return;
+        a.C2paSigned = _c2pa;
+        var s = AiContentModerationComplianceShield.SignalsFor(a);
+        s.AiLabelShown = _c2pa;
+        s.SyntheticFace = _realPerson;
+        s.RealPersonLikeness = _realPerson;
+        s.ConsentOnFile = _consent;
+        s.Political = _political;
+        s.ProductPlacements = _ppl;
+        s.PplDisclosed = _pplDisc;
+        var rep = Shield.Check(a, s);
+        Cdn.SetGate(rep);
+        _tab = "compliance";
+    }
+
+    private async Task DeployAsync()
+    {
+        if (_sel is not { } a) return;
+        _busy = true;
+        try
+        {
+            if (Shield.ReportFor(a.Id) is null) RunCompliance();
+            if (!Cdn.IsRunning) Cdn.Start();
+            var res = await Cdn.PublishAsync(a);
+            var (status, _, body, edge) = Cdn.Dispatch("/play/" + a.Id + "/master.m3u8", "cc=KR&lat=37.5&lon=127");
+            _preview = status == 200 ? "X-PFS-Edge: " + edge + "\n" + System.Text.Encoding.UTF8.GetString(body) : "HTTP " + status.ToString(CultureInfo.InvariantCulture) + " — 한국 지역 심의 반려로 차단";
+            _msg = res.Ok ? "🚀 배포 · " + a.Title : "⚠ 배포 차단/실패";
+            _tab = "deploy";
+        }
+        catch (Exception ex) when (ex is System.Net.Sockets.SocketException or IOException or HttpRequestException)
+        {
+            Program.Log("MamStudio.Deploy", ex);
+            _msg = "⚠ 배포 실패: " + ex.Message;
+        }
+        finally { _busy = false; }
+    }
+
+    private void Simulate()
+    {
+        var blocked = Cdn.SimulateViewers(5000, _sel?.Id);
+        _msg = "🧪 시청자 5,000 라우팅 · 차단 " + blocked.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private long MaxReq()
+    {
+        long m = 0;
+        for (var i = 0; i < Cdn.Pops.Count; i++) m = Math.Max(m, Cdn.RequestsAt(i));
+        return m;
+    }
+
+    private string BlockedSummary()
+    {
+        var parts = new List<string>();
+        foreach (var r in AiContentModerationComplianceShield.AllRegions) { var b = Cdn.BlockedIn(r); if (b > 0) parts.Add(r + " " + b.ToString(CultureInfo.InvariantCulture)); }
+        return parts.Count == 0 ? "없음" : string.Join(" · ", parts);
+    }
+
+    private static string Badge(ComplianceReport r)
+    {
+        var rej = 0; var warn = 0;
+        foreach (var x in r.Regions) { if (x.Status == ComplianceStatus.Rejected) rej++; else if (x.Status == ComplianceStatus.Warning) warn++; }
+        return rej > 0 ? "⛔ 반려 " + rej.ToString(CultureInfo.InvariantCulture) : warn > 0 ? "⚠ 경고 " + warn.ToString(CultureInfo.InvariantCulture) : "✅ 승인";
+    }
+
+    private static string StatusLabel(ComplianceStatus s) => s switch { ComplianceStatus.Approved => "✅ 승인", ComplianceStatus.Warning => "⚠ 조건부 승인", _ => "⛔ 반려" };
+    private static string StatusClass(ComplianceStatus s) => s switch { ComplianceStatus.Approved => "ok", ComplianceStatus.Warning => "warn", _ => "bad" };
+    private static string TierLabel(BrandSafetyTier t) => t switch { BrandSafetyTier.Safe => "안전", BrandSafetyTier.Low => "낮음", BrandSafetyTier.Medium => "중간", BrandSafetyTier.High => "높음", _ => "바닥(광고 금지)" };
+    private static string ProviderColor(CdnProvider p) => p switch { CdnProvider.CloudFront => "#f59e0b", CdnProvider.CloudflareStream => "#f97316", _ => "#ef4444" };
+    private static string F(double v) => v.ToString("0.#", CultureInfo.InvariantCulture);
+    private static string Clip(string s, int n) => s.Length > n ? s[..n] + "…" : s;
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Mam.OnChange -= OnServiceChanged;
+        Shield.OnChange -= OnServiceChanged;
+        Cdn.OnChange -= OnServiceChanged;
+    }
+}

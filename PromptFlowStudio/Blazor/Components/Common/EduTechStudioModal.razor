@@ -1,0 +1,547 @@
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.EduTech
+@using PromptFlowStudio.Services.Spatial
+@implements IDisposable
+@inject InteractiveEduVideoQuizEngine Quiz
+@inject AdaptiveAiTutorCoPilot Tutor
+@inject ScormXApiElearningPackager Packager
+
+@*
+    [PromptFlow Studio v16.46.0] 🎓 AI 에듀테크 & 이러닝 스튜디오 — 강의 플레이어 프리뷰(퀴즈 오버레이 합성) · 챕터 타임라인(퀴즈 마커 탐색) · 인터랙티브 퀴즈 카드(객관식/OX/주관식/터치) ·
+    퀴즈 오버레이 에디터 · AI 튜터 페르소나/실시간 Q&A · 개념 숙달도 · 1-Click SCORM/xAPI/LTI 패키지 + 검증. 서비스 OnChange 구독 + 재생 중 100ms 틱.
+*@
+
+<div class="ed-scrim" @onclick="Close">
+    <div class="ed-modal" @onclick:stopPropagation="true">
+        <div class="ed-h">
+            <div>
+                <div class="ed-title">🎓 AI 에듀테크 &amp; 이러닝 스튜디오</div>
+                <div class="ed-sub">강의 영상의 핵심 타임코드에서 <b>퀴즈 카드를 인젝션</b>하고, 오답·질문에 <b>RAG 기억 기반 AI 튜터</b>가 쉬운 비유로 보충 강의한 뒤, <b>SCORM · xAPI · LTI</b> 표준 패키지로 내보냅니다.</div>
+            </div>
+            <button class="ed-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="ed-bar">
+            <span class="ed-chip">📚 @(Quiz.Course.Title)</span>
+            <span class="ed-chip">진도 @(P0(Quiz.Progress * 100))%</span>
+            <span class="ed-chip">점수 @(P0(Quiz.Score * 100))%</span>
+            <span class="ed-chip @(Quiz.Passed ? "ok" : Quiz.IsComplete ? "bad" : "")">@(Quiz.Passed ? "🏅 PASSED" : Quiz.IsComplete ? "FAILED" : "학습 중")</span>
+            <span class="ed-chip @(Tutor.LlmAvailable ? "ok" : "")">🧑‍🏫 @(Tutor.LlmAvailable ? "Gemini 튜터" : "BCL 튜터") · @(Tutor.RagAvailable ? "RAG" : "RAG 없음")</span>
+            <span class="ed-chip">📦 패키지 @(Packager.Packages)</span>
+        </div>
+
+        <div class="ed-main">
+            <div class="ed-col">
+                <div class="ed-player">
+                    @if (_frameUrl is not null)
+                    {
+                        <img class="ed-screen" src="@(_frameUrl)" alt="강의 프리뷰" />
+                    }
+                    <div class="ed-ph">
+                        <span>@(Chapter())</span>
+                        <i>@(Clock(Math.Max(0, Quiz.Position))) / @(Clock(Quiz.Course.DurationSec))</i>
+                    </div>
+                </div>
+                <div class="ed-row">
+                    @if (!_playing)
+                    {
+                        <button class="ed-btn go" disabled="@(Quiz.ActiveQuiz >= 0)" @onclick="Play">▶ 재생</button>
+                    }
+                    else
+                    {
+                        <button class="ed-btn" @onclick="Pause">⏸ 일시정지</button>
+                    }
+                    <select class="ed-in" @bind="_speed">
+                        <option value="1">×1</option>
+                        <option value="5">×5</option>
+                        <option value="20">×20</option>
+                    </select>
+                    <button class="ed-btn" @onclick="Restart">⏮ 새 학습 세션</button>
+                    <input class="ed-in w120" @bind="_learner" placeholder="학습자 이름" />
+                </div>
+
+                <svg class="ed-tl" viewBox="0 0 1000 70" preserveAspectRatio="none">
+                    @{ var dur = Math.Max(1, Quiz.Course.DurationSec); }
+                    @for (var i = 0; i < Quiz.Course.Chapters.Count; i++)
+                    {
+                        var c = Quiz.Course.Chapters[i];
+                        <g>
+                            <rect x="@(F1(c.StartSec / dur * 1000))" y="8" width="@(F1(Math.Max(1, (c.EndSec - c.StartSec) / dur * 1000 - 3)))" height="30" rx="4" fill="@(Palette[i % Palette.Length])" opacity="0.55" />
+                            <text x="@(F1(c.StartSec / dur * 1000 + 6))" y="28" font-size="12" fill="#f8fafc">@(c.Title)</text>
+                        </g>
+                    }
+                    @for (var i = 0; i < Quiz.Course.Quizzes.Count; i++)
+                    {
+                        var q = Quiz.Course.Quizzes[i];
+                        var qi = i;
+                        <g @onclick="_seekQuiz[Math.Min(qi, _seekQuiz.Length - 1)]" style="cursor:pointer">
+                            <circle cx="@(F1(q.TimeSec / dur * 1000))" cy="52" r="7" fill="@(Quiz.Session.Done.Length > qi && Quiz.Session.Done[qi] ? "#22c55e" : q.Required ? "#fbbf24" : "#94a3b8")" />
+                            <text x="@(F1(q.TimeSec / dur * 1000))" y="56" font-size="9" text-anchor="middle" fill="#111">@(qi + 1)</text>
+                        </g>
+                    }
+                    <rect x="@(F1(Math.Max(0, Quiz.Position) / dur * 1000))" y="0" width="2" height="70" fill="#f43f5e" />
+                </svg>
+
+                @if (Quiz.ActiveItem is { } aq)
+                {
+                    <div class="ed-card">
+                        <div class="ed-qh"><b>Q@(Quiz.ActiveQuiz + 1)</b> <span>@(KindLabel(aq.Kind)) · @(aq.Concept) · 시도 @(Quiz.Session.Attempts[Quiz.ActiveQuiz])/@(aq.MaxAttempts)</span></div>
+                        <div class="ed-qp">@(aq.Prompt)</div>
+                        @if (aq.Kind == QuizKind.ShortAnswer)
+                        {
+                            <input class="ed-in grow" @bind="_answer" placeholder="답을 입력하세요" />
+                        }
+                        else if (aq.Kind == QuizKind.Hotspot)
+                        {
+                            <svg class="ed-hot" width="320" height="180" viewBox="0 0 320 180" @onclick="HotClick">
+                                <rect width="320" height="180" fill="#0f172a" />
+                                @for (var l = 0; l < 3; l++)
+                                {
+                                    var lx = 40 + l * 120;
+                                    @for (var n = 0; n < 4; n++)
+                                    {
+                                        <circle cx="@(lx)" cy="@(30 + n * 40)" r="12" fill="@(l == 1 ? "#6366f1" : "#334155")" />
+                                    }
+                                }
+                                @if (_hot is { } hp)
+                                {
+                                    <circle cx="@(F1(hp.X * 320))" cy="@(F1(hp.Y * 180))" r="6" fill="#f43f5e" />
+                                }
+                            </svg>
+                        }
+                        else
+                        {
+                            @for (var o = 0; o < aq.Options.Count; o++)
+                            {
+                                var bit = 1 << o;
+                                <button class="ed-opt @((_mask & bit) != 0 ? "on" : "")" @onclick="_optToggle[Math.Min(o, _optToggle.Length - 1)]">@((char)('A' + o)). @(aq.Options[o])</button>
+                            }
+                        }
+                        <div class="ed-row">
+                            <button class="ed-btn go" @onclick="SubmitAnswer">제출</button>
+                            @if (!aq.Required)
+                            {
+                                <button class="ed-btn" @onclick="SkipQuiz">건너뛰기</button>
+                            }
+                        </div>
+                    </div>
+                }
+                @if (Quiz.LastGrade is { } lg)
+                {
+                    <div class="ed-fb @(lg.Correct ? "ok" : "bad")">@(lg.Feedback)</div>
+                }
+
+                <div class="ed-card">
+                    <div class="ed-sec">개념 숙달도 (BKT)</div>
+                    @foreach (var c in Quiz.Course.Chapters)
+                    {
+                        var m = Quiz.MasteryOf(c.Concept);
+                        <div class="ed-mast"><span>@(c.Concept)</span><div><i style="width:@(P0(m * 100))%;background:@(m < 0.4f ? "#ef4444" : m < 0.75f ? "#f59e0b" : "#22c55e")"></i></div><b>@(P0(m * 100))%</b></div>
+                    }
+                </div>
+            </div>
+
+            <div class="ed-col">
+                <div class="ed-card">
+                    <div class="ed-sec">🧑‍🏫 AI 튜터 페르소나</div>
+                    <div class="ed-row">
+                        <input class="ed-in w120" @bind="Tutor.Persona.Name" placeholder="튜터 이름" />
+                        <select class="ed-in" @bind="Tutor.Persona.Style">
+                            @foreach (var s in Enum.GetValues<TutorStyle>())
+                            {
+                                <option value="@(s)">@(StyleLabel(s))</option>
+                            }
+                        </select>
+                        <select class="ed-in" @bind="Tutor.Persona.AnalogyDomain">
+                            <option value="일상">비유: 일상</option>
+                            <option value="요리">비유: 요리</option>
+                            <option value="스포츠">비유: 스포츠</option>
+                            <option value="게임">비유: 게임</option>
+                        </select>
+                    </div>
+                    <div class="ed-row">
+                        <input class="ed-in grow" @bind="Tutor.Persona.Speech" placeholder="화법(예: 친절한 존댓말)" />
+                        <label class="ed-ck"><input type="checkbox" @bind="Tutor.Persona.AutoRemediate" /> 오답 자동 보충</label>
+                        <label class="ed-ck"><input type="checkbox" @bind="Tutor.Persona.UseLlm" /> Gemini</label>
+                        <label class="ed-ck"><input type="checkbox" @bind="Tutor.Persona.UseAvatar" /> 립싱크 아바타</label>
+                    </div>
+                    <div class="ed-tutor">
+                        <svg viewBox="0 0 60 60" class="ed-face">
+                            <circle cx="30" cy="30" r="26" fill="#fde68a" />
+                            <circle cx="21" cy="25" r="3" fill="#111" /><circle cx="39" cy="25" r="3" fill="#111" />
+                            <ellipse cx="30" cy="42" rx="8" ry="@(F1(1 + _mouth * 7))" fill="#7f1d1d" />
+                        </svg>
+                        <div class="ed-chat">
+                            @foreach (var r in Tutor.History.Reverse().Take(5))
+                            {
+                                <div class="ed-msg"><b>@(r.Concept) · @(AdaptiveAiTutorCoPilot.ModeLabel(r.Mode)) · @(r.Source)</b><span>@(r.Text)</span>@if (r.Recalled.Count > 0)
+                                    {<i>근거 @(r.Recalled.Count)건</i>}</div>
+                            }
+                            @if (Tutor.History.Count == 0)
+                            {
+                                <div class="ed-mut">오답을 내거나 질문하면 튜터가 비유로 보충 설명합니다.</div>
+                            }
+                        </div>
+                    </div>
+                    <div class="ed-row">
+                        <input class="ed-in grow" @bind="_question" @bind:event="oninput" placeholder="튜터에게 질문 (예: 과적합이 뭐예요?)" />
+                        <button class="ed-btn go" disabled="@(_busy || string.IsNullOrWhiteSpace(_question))" @onclick="Ask">💬 질문</button>
+                    </div>
+                </div>
+
+                <div class="ed-card">
+                    <div class="ed-row"><div class="ed-sec">퀴즈 오버레이 에디터</div><button class="ed-btn sm" @onclick="AddQuiz">➕ 퀴즈</button><button class="ed-btn sm" @onclick="AutoPlace">🪄 챕터 체크포인트 자동 배치</button></div>
+                    <div class="ed-list">
+                        @for (var i = 0; i < Quiz.Course.Quizzes.Count; i++)
+                        {
+                            var q = Quiz.Course.Quizzes[i];
+                            var qi = i;
+                            <button class="ed-li @(qi == _edit ? "on" : "")" @onclick="_editSel[Math.Min(qi, _editSel.Length - 1)]"><b>@(Clock(q.TimeSec))</b><span>@(KindLabel(q.Kind))</span><em>@(q.Prompt)</em></button>
+                        }
+                    </div>
+                    @if (_edit >= 0 && _edit < Quiz.Course.Quizzes.Count)
+                    {
+                        var eq = Quiz.Course.Quizzes[_edit];
+                        <div class="ed-form">
+                            <label>시각(초)<input class="ed-in" type="number" step="1" @bind="eq.TimeSec" /></label>
+                            <label>유형<select class="ed-in" @bind="eq.Kind">@foreach (var k in Enum.GetValues<QuizKind>())
+                                {<option value="@(k)">@(KindLabel(k))</option>}</select></label>
+                            <label>개념<input class="ed-in" @bind="eq.Concept" /></label>
+                            <label>배점<input class="ed-in" type="number" @bind="eq.Points" /></label>
+                            <label class="wide">문제<input class="ed-in" @bind="eq.Prompt" /></label>
+                            <label class="wide">보기(줄바꿈)<textarea class="ed-in" rows="3" @bind="_optText"></textarea></label>
+                            <label>정답 번호(1,3)<input class="ed-in" @bind="_correctText" /></label>
+                            <label>주관식 허용 답(,)<input class="ed-in" @bind="_answersText" /></label>
+                            <label class="wide">힌트<input class="ed-in" @bind="eq.Hint" /></label>
+                            <label class="wide">해설<input class="ed-in" @bind="eq.Explanation" /></label>
+                            <label class="ed-ck"><input type="checkbox" @bind="eq.Required" /> 필수(탐색 게이트)</label>
+                            <div class="ed-row"><button class="ed-btn go" @onclick="ApplyEdit">💾 적용</button><button class="ed-btn danger" @onclick="DeleteQuiz">🗑 삭제</button></div>
+                        </div>
+                    }
+                </div>
+
+                <div class="ed-card">
+                    <div class="ed-sec">📦 LMS 표준 패키지</div>
+                    <div class="ed-row">
+                        <button class="ed-btn" @onclick="_pack[0]">SCORM 1.2</button>
+                        <button class="ed-btn" @onclick="_pack[1]">SCORM 2004</button>
+                        <button class="ed-btn" @onclick="_pack[2]">xAPI</button>
+                        <button class="ed-btn" @onclick="_pack[3]">LTI 1.3</button>
+                        <button class="ed-btn go" @onclick="PackAll">⚡ 1-Click 전체</button>
+                    </div>
+                    @foreach (var (r, v) in _results)
+                    {
+                        <div class="ed-pkg @(v.Ok ? "ok" : "bad")"><b>@(ScormXApiElearningPackager.Label(r.Standard))</b><span>@(System.IO.Path.GetFileName(r.ZipPath)) · @(r.Files)파일 · @(KB(r.Bytes))</span><i>@(v.Ok ? "✅ 검증 통과" : "⚠ " + string.Join(" / ", v.Errors.Take(2)))</i></div>
+                    }
+                    @if (_results.Count > 0)
+                    {
+                        <div class="ed-mut">📁 @(System.IO.Path.GetDirectoryName(_results[0].Result.ZipPath))</div>
+                    }
+                    @if (_analytics.Count > 0)
+                    {
+                        <div class="ed-sec">문항 분석</div>
+                        @foreach (var a in _analytics)
+                        {
+                            <div class="ed-kv"><span>@(a.Prompt)</span><b>정답률 @(P0(a.PValue * 100))% · 첫시도 @(P0(a.FirstTryRate * 100))%</b></div>
+                        }
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="ed-f">
+            <span class="ed-mut">@(_msg ?? Tutor.LastAction ?? Quiz.LastAction ?? Packager.LastAction ?? "대기")</span>
+            <button class="ed-btn" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .ed-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .ed-modal { width: min(1380px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .ed-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #6366f1 14%, var(--card)), color-mix(in srgb, #22c55e 10%, var(--card))); }
+    .ed-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .ed-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .ed-sub b { color: var(--text-primary); }
+    .ed-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .ed-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .ed-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); } .ed-chip.ok { color: #4ade80; } .ed-chip.bad { color: #f87171; }
+    .ed-main { display: grid; grid-template-columns: 1.15fr 1fr; gap: 12px; padding: 12px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .ed-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .ed-player { border-radius: 10px; overflow: hidden; background: #000; border: 2px solid #6366f1; }
+    .ed-screen { width: 100%; aspect-ratio: 16 / 9; display: block; }
+    .ed-ph { display: flex; justify-content: space-between; padding: 4px 8px; font-size: 12px; color: #e2e8f0; background: #0f172a; } .ed-ph i { font: 11px var(--mono); font-style: normal; color: #a5b4fc; }
+    .ed-tl { width: 100%; height: 70px; background: #0b1020; border-radius: 6px; }
+    .ed-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .ed-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .ed-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .ed-qh { font-size: 11px; color: var(--text-muted); } .ed-qh b { color: #a5b4fc; font-family: var(--mono); }
+    .ed-qp { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+    .ed-opt { text-align: left; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 7px 10px; cursor: pointer; font-size: 12.5px; } .ed-opt.on { border-color: #6366f1; background: color-mix(in srgb, #6366f1 22%, var(--card)); }
+    .ed-hot { border-radius: 8px; cursor: crosshair; }
+    .ed-fb { font-size: 12.5px; padding: 8px 10px; border-radius: 8px; } .ed-fb.ok { background: color-mix(in srgb, #22c55e 18%, var(--card)); color: var(--text-primary); } .ed-fb.bad { background: color-mix(in srgb, #f59e0b 16%, var(--card)); color: var(--text-primary); }
+    .ed-mast { display: grid; grid-template-columns: 90px 1fr 40px; gap: 6px; align-items: center; font-size: 11.5px; color: var(--text-secondary); } .ed-mast div { height: 7px; background: #1e293b; border-radius: 4px; overflow: hidden; } .ed-mast i { display: block; height: 100%; } .ed-mast b { font: 10.5px var(--mono); color: var(--text-primary); }
+    .ed-tutor { display: flex; gap: 8px; align-items: flex-start; } .ed-face { width: 64px; height: 64px; flex: none; }
+    .ed-chat { display: flex; flex-direction: column; gap: 4px; max-height: 190px; overflow-y: auto; flex: 1; }
+    .ed-msg { display: flex; flex-direction: column; gap: 2px; border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font-size: 12px; color: var(--text-primary); } .ed-msg b { font: 10px var(--mono); color: #a5b4fc; } .ed-msg i { font: 10px var(--mono); font-style: normal; color: var(--text-muted); }
+    .ed-list { display: flex; flex-direction: column; gap: 3px; max-height: 150px; overflow-y: auto; }
+    .ed-li { display: grid; grid-template-columns: 52px 64px 1fr; gap: 6px; text-align: left; border: 1px solid var(--line); background: var(--card); border-radius: 6px; padding: 3px 6px; cursor: pointer; font-size: 11.5px; color: var(--text-secondary); } .ed-li.on { border-color: #6366f1; } .ed-li b { font: 10.5px var(--mono); color: var(--text-primary); } .ed-li em { font-style: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ed-form { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; } .ed-form label { display: flex; flex-direction: column; gap: 2px; font-size: 10.5px; color: var(--text-muted); } .ed-form label.wide { grid-column: span 2; }
+    .ed-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; } .ed-in.grow { flex: 1; min-width: 140px; } .ed-in.w120 { width: 120px; }
+    .ed-ck { font-size: 11.5px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; }
+    .ed-pkg { display: grid; grid-template-columns: 110px 1fr; gap: 2px 8px; font-size: 11.5px; border-bottom: 1px solid var(--line); padding: 3px 0; } .ed-pkg span { color: var(--text-secondary); font-family: var(--mono); font-size: 10.5px; } .ed-pkg i { grid-column: 2; font-style: normal; font-size: 11px; } .ed-pkg.ok i { color: #4ade80; } .ed-pkg.bad i { color: #f87171; }
+    .ed-kv { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--text-muted); } .ed-kv span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .ed-kv b { color: var(--text-primary); font-family: var(--mono); font-size: 10.5px; flex: none; }
+    .ed-mut { font-size: 11px; color: var(--text-muted); }
+    .ed-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); } .ed-f .ed-mut { margin-right: auto; }
+    .ed-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .ed-btn.sm { padding: 3px 8px; font-size: 11px; } .ed-btn.go { background: linear-gradient(135deg,#6366f1,#22c55e); color: #fff; border: 0; } .ed-btn.danger { color: #f87171; border-color: #f87171; } .ed-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 1050px) { .ed-main { grid-template-columns: 1fr; } .ed-form { grid-template-columns: 1fr 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int FW = 640, FH = 360, MaxSlots = 32;
+    private static readonly string[] Palette = { "#6366f1", "#0ea5e9", "#22c55e", "#f59e0b", "#ec4899", "#14b8a6" };
+    private readonly byte[] _bg = new byte[FW * FH * 4], _rgba = new byte[FW * FH * 4], _rgb = new byte[FW * FH * 3];
+    private readonly Action[] _seekQuiz = new Action[MaxSlots], _editSel = new Action[MaxSlots], _optToggle = new Action[8], _pack = new Action[4];
+    private readonly List<(PackageResult Result, PackageValidation Valid)> _results = new();
+    private List<QuizItemAnalytics> _analytics = new();
+    private string? _frameUrl, _msg, _answer, _question, _optText, _correctText, _answersText;
+    private string _learner = "학습자", _speed = "5";
+    private int _mask, _edit = -1;
+    private (float X, float Y)? _hot;
+    private float _mouth;
+    private bool _playing, _busy;
+    private DateTime _talkStart;
+    private CancellationTokenSource? _ui;
+
+    protected override void OnInitialized()
+    {
+        for (var i = 0; i < MaxSlots; i++)
+        {
+            var qi = i;
+            _seekQuiz[i] = () => { if (qi < Quiz.Course.Quizzes.Count) { Quiz.Seek(Quiz.Course.Quizzes[qi].TimeSec - 1); Quiz.Tick(Quiz.Position + 0.0005); RenderFrame(); } };
+            _editSel[i] = () => SelectEdit(qi);
+        }
+        for (var i = 0; i < _optToggle.Length; i++)
+        {
+            var bit = 1 << i;
+            _optToggle[i] = () => { var q = Quiz.ActiveItem; _mask = q is not null && q.Kind == QuizKind.MultiChoice ? _mask ^ bit : bit; };
+        }
+        var stds = new[] { ElearningStandard.Scorm12, ElearningStandard.Scorm2004, ElearningStandard.XApi, ElearningStandard.Lti13 };
+        for (var i = 0; i < 4; i++) { var s = stds[i]; _pack[i] = () => Pack(s); }
+        for (var y = 0; y < FH; y++)
+            for (var x = 0; x < FW; x++)
+            {
+                var o = (y * FW + x) * 4;
+                _bg[o] = (byte)(15 + x * 30 / FW); _bg[o + 1] = (byte)(23 + y * 40 / FH); _bg[o + 2] = (byte)(60 + x * 80 / FW); _bg[o + 3] = 255;
+            }
+        Quiz.OnChange += OnServiceChanged;
+        Tutor.OnChange += OnServiceChanged;
+        Tutor.OnReply += OnTutorReply;
+        Packager.OnChange += OnServiceChanged;
+        if (Quiz.Course.Quizzes.Count == 0 && Quiz.Course.Chapters.Count == 0)
+        {
+            Quiz.LoadCourse(InteractiveEduVideoQuizEngine.DemoCourse());
+            Quiz.StartSession("learner-1", _learner);
+        }
+        Tutor.IndexCourse(Quiz.Course);
+        RenderFrame();
+    }
+
+    private void RenderFrame()
+    {
+        _bg.AsSpan().CopyTo(_rgba);
+        Quiz.Render(_rgba, FW, FH, FW * 4);
+        for (int i = 0, j = 0; i < _rgb.Length; i += 3, j += 4) { _rgb[i] = _rgba[j]; _rgb[i + 1] = _rgba[j + 1]; _rgb[i + 2] = _rgba[j + 2]; }
+        _frameUrl = SpatialImageCodec.BmpDataUrl(_rgb, FW, FH);
+    }
+
+    private void Play()
+    {
+        if (Quiz.ActiveQuiz >= 0) return;
+        Quiz.DismissFeedback();
+        _playing = true;
+        StartUi();
+    }
+
+    private void Pause() { _playing = false; }
+
+    private void Restart()
+    {
+        _playing = false;
+        Quiz.StartSession("learner-" + Math.Abs(_learner.GetHashCode()).ToString(CultureInfo.InvariantCulture), _learner);
+        _mask = 0; _answer = null; _hot = null;
+        RenderFrame();
+    }
+
+    private void HotClick(MouseEventArgs e) => _hot = ((float)(e.OffsetX / 320.0), (float)(e.OffsetY / 180.0));
+
+    private void SubmitAnswer()
+    {
+        var q = Quiz.ActiveItem;
+        if (q is null) return;
+        var r = new QuizResponse(_mask, _answer, _hot?.X ?? -1, _hot?.Y ?? -1);
+        var g = Quiz.Submit(r);
+        if (g.Final) { _mask = 0; _answer = null; _hot = null; }
+        _msg = null;
+        RenderFrame();
+    }
+
+    private void SkipQuiz() { Quiz.Skip(); RenderFrame(); }
+
+    private async Task Ask()
+    {
+        if (string.IsNullOrWhiteSpace(_question)) return;
+        _busy = true;
+        try { await Tutor.AskAsync(Quiz.Session.LearnerId, _question); _question = null; }
+        catch (ArgumentException ex) { _msg = "⚠ " + ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private void OnTutorReply(TutorReply r) => _ = InvokeAsync(() => { _talkStart = DateTime.UtcNow; StartUi(); });
+
+    private void SelectEdit(int i)
+    {
+        if (i >= Quiz.Course.Quizzes.Count) return;
+        _edit = i;
+        var q = Quiz.Course.Quizzes[i];
+        _optText = string.Join("\n", q.Options);
+        var idx = new List<string>();
+        for (var k = 0; k < 31; k++) if ((q.CorrectMask & (1 << k)) != 0) idx.Add((k + 1).ToString(CultureInfo.InvariantCulture));
+        _correctText = string.Join(",", idx);
+        _answersText = string.Join(",", q.Answers);
+    }
+
+    private void AddQuiz()
+    {
+        Quiz.Course.Quizzes.Add(new QuizItem { TimeSec = Math.Max(0, Quiz.Position) + 5, Kind = QuizKind.SingleChoice, Prompt = "새 퀴즈", Options = { "보기 1", "보기 2" }, CorrectMask = 1 });
+        _edit = Quiz.Course.Quizzes.Count - 1;
+        SelectEdit(_edit);
+    }
+
+    private void ApplyEdit()
+    {
+        if (_edit < 0 || _edit >= Quiz.Course.Quizzes.Count) return;
+        var q = Quiz.Course.Quizzes[_edit];
+        q.Options = (_optText ?? "").Replace("\r", "").Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Take(8).ToList();
+        var mask = 0;
+        foreach (var t in (_correctText ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            if (int.TryParse(t, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) && n >= 1 && n <= 8) mask |= 1 << (n - 1);
+        q.CorrectMask = mask;
+        q.Answers = (_answersText ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+        q.TimeSec = Math.Clamp(q.TimeSec, 0, Quiz.Course.DurationSec);
+        Quiz.Reindex();
+        Tutor.IndexCourse(Quiz.Course);
+        _edit = Quiz.Course.Quizzes.IndexOf(q);
+        _msg = "💾 퀴즈 적용 · 세션 재시작";
+        RenderFrame();
+    }
+
+    private void DeleteQuiz()
+    {
+        if (_edit < 0 || _edit >= Quiz.Course.Quizzes.Count) return;
+        Quiz.Course.Quizzes.RemoveAt(_edit);
+        _edit = -1;
+        Quiz.Reindex();
+        RenderFrame();
+    }
+
+    private void AutoPlace() => _msg = "🪄 체크포인트 " + Quiz.AutoPlaceCheckpoints().ToString(CultureInfo.InvariantCulture) + "개 배치";
+
+    private void Pack(ElearningStandard s)
+    {
+        try
+        {
+            var r = Packager.Build(Quiz.Course, Quiz.Session, s);
+            _results.RemoveAll(x => x.Result.Standard == s);
+            _results.Add((r, ScormXApiElearningPackager.Validate(r.ZipPath)));
+            _analytics = ScormXApiElearningPackager.AnalyzeItems(Quiz.Course, new[] { Quiz.Session });
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { _msg = "⚠ " + ex.Message; }
+    }
+
+    private void PackAll()
+    {
+        try
+        {
+            _results.Clear();
+            foreach (var r in Packager.ExportAll(Quiz.Course, Quiz.Session)) _results.Add((r, ScormXApiElearningPackager.Validate(r.ZipPath)));
+            _analytics = ScormXApiElearningPackager.AnalyzeItems(Quiz.Course, new[] { Quiz.Session });
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { _msg = "⚠ " + ex.Message; }
+    }
+
+    private string Chapter() => Quiz.ChapterAt(Math.Max(0, Quiz.Position))?.Title ?? Quiz.Course.Title;
+
+    private static string KindLabel(QuizKind k) => k switch { QuizKind.SingleChoice => "객관식", QuizKind.MultiChoice => "복수 선택", QuizKind.TrueFalse => "OX", QuizKind.ShortAnswer => "주관식", _ => "터치" };
+    private static string StyleLabel(TutorStyle s) => s switch { TutorStyle.Socratic => "소크라테스식", TutorStyle.Concise => "핵심 요약", TutorStyle.Storyteller => "스토리텔러", _ => "다정한 코치" };
+    private static string Clock(double s) { var t = (int)Math.Max(0, s); return (t / 60).ToString("00", CultureInfo.InvariantCulture) + ":" + (t % 60).ToString("00", CultureInfo.InvariantCulture); }
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string P0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string KB(long b) => (b / 1024.0).ToString("0.0", CultureInfo.InvariantCulture) + "KB";
+
+    private void StartUi()
+    {
+        if (_ui is not null) return;
+        var cts = new CancellationTokenSource();
+        _ui = cts;
+        _ = UiLoopAsync(cts);
+    }
+
+    private void StopUi()
+    {
+        var cts = Interlocked.Exchange(ref _ui, null);
+        if (cts is null) return;
+        try { cts.Cancel(); } catch (ObjectDisposedException) { }
+        cts.Dispose();
+    }
+
+    private async Task UiLoopAsync(CancellationTokenSource mine)
+    {
+        var ct = mine.Token;
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(100));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                var talking = false;
+                if (Tutor.Last is { } r)
+                {
+                    var t = (DateTime.UtcNow - _talkStart).TotalSeconds;
+                    talking = t < r.DurationSec;
+                    _mouth = talking ? AdaptiveAiTutorCoPilot.MouthOpenAt(r.Visemes, t) : 0;
+                }
+                if (_playing)
+                {
+                    var speed = double.TryParse(_speed, NumberStyles.Float, CultureInfo.InvariantCulture, out var sp) ? sp : 1;
+                    var act = Quiz.Tick(Math.Max(0, Quiz.Position) + 0.1 * speed);
+                    if (act != PlayerAction.Play) _playing = false;
+                    RenderFrame();
+                }
+                await InvokeAsync(StateHasChanged);
+                if (!_playing && !talking) break;
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("EduStudio.Ui", ex); }
+        finally
+        {
+            if (Interlocked.CompareExchange(ref _ui, null, mine) == mine) mine.Dispose();
+        }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Quiz.OnChange -= OnServiceChanged;
+        Tutor.OnChange -= OnServiceChanged;
+        Tutor.OnReply -= OnTutorReply;
+        Packager.OnChange -= OnServiceChanged;
+        StopUi();
+    }
+}

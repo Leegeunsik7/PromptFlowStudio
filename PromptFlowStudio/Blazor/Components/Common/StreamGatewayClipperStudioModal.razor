@@ -1,0 +1,304 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.StreamGateway
+@using PromptFlowStudio.Services.InfluencerLive
+@using PromptFlowStudio.Services.VerticalTranscode
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject StreamGatewayClipperStudioRunner Runner
+
+@* [PromptFlow Studio v17.62.0] 🛰️ 스트림 게이트웨이 & 클리퍼 스튜디오 — 플랫폼 소켓 핑 · 32 MB 링버퍼 점유/키프레임 맵 · 1080p 무손실 즉시 클립 · 배압 드롭 카운터. *@
+<div class="sgc-scrim" @onclick="Close">
+    <div class="sgc-modal" @onclick:stopPropagation="true">
+        <div class="sgc-h">
+            <div>
+                <div class="sgc-title">🛰️ 스트림 게이트웨이 &amp; 클리퍼 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null) @(Runner.IsEncoding ? "· 🔴 송출" : null)</div>
+                <div class="sgc-sub"><b>압축 비트스트림 링버퍼</b>가 v17.49 인코더의 H.264 NAL · AAC 패킷을 32 MB 고정 풀에 30 s 롤링 기록하고, 스파이크 시 최인접 IDR 부터 재인코딩 없이 fMP4 로 리먹스해 1080×1920 원본 화질 클립을 10 ms 안에 사출합니다. <b>멀티 플랫폼 게이트웨이</b>는 Twitch IRC(TLS 6697) · YouTube Live 폴링 · 치지직 WSS 를 하나의 수신기로 묶어 채팅을 스팬으로 해제하고, <b>배압 가드</b>는 1-2-4-…-16 s 지터 백오프 재접속과 500 msg/s 초과 시 후원/모더레이터 우선 · 일반 텍스트 테일 드롭으로 렌더 프레임을 보호합니다.</div>
+            </div>
+            <button class="sgc-x" @onclick="Close">✕</button>
+        </div>
+        <div class="sgc-bar">
+            <button class="sgc-btn @(Runner.IsRunning ? "on" : "go")" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 게이트웨이 정지" : "▶ 게이트웨이 시작")</button>
+            <button class="sgc-btn @(Runner.IsEncoding ? "on" : null)" @onclick="ToggleEncoder">@(Runner.IsEncoding ? "⏹ 송출 인코더" : "🎥 송출 인코더")</button>
+            <button class="sgc-btn @(Runner.TapTranscoder ? "on" : null)" disabled="@(!Runner.TranscoderAvailable)" @onclick="() => Runner.SetTapTranscoder(!Runner.TapTranscoder)">🔗 v17.49 탭</button>
+            <button class="sgc-btn @(Runner.LinkInfluencer ? "on" : null)" disabled="@(!Runner.InfluencerAvailable)" @onclick="() => Runner.SetLinkInfluencer(!Runner.LinkInfluencer)">🎙 v17.61 아바타 결선</button>
+            <span class="sgc-sep"></span>
+            <button class="sgc-btn" @onclick="Runner.ConnectSimulatedAll">🧪 3 플랫폼 시뮬 연결</button>
+            <button class="sgc-btn hot" @onclick="() => Runner.StartRaid(8)">🌊 1,200 msg/s 레이드</button>
+            <button class="sgc-btn @(Runner.Gateway.Traffic.Flaky ? "bad" : null)" @onclick="() => Runner.SetFlaky(!Runner.Gateway.Traffic.Flaky)">📶 불안정 네트워크</button>
+            <label class="sgc-lbl">평소 @(F1(Runner.Gateway.Traffic.RatePerSec)) msg/s/플랫폼</label>
+            <input class="sgc-rng" type="range" min="0" max="400" value="@((int)(Runner.Gateway.Traffic.RatePerSec * 10))" @oninput="OnRate" />
+        </div>
+        <div class="sgc-main">
+            <div class="sgc-col">
+                <div class="sgc-card">
+                    <div class="sgc-sec">📡 플랫폼 소켓 · 핑</div>
+                    <div class="sgc-plats">
+                        @for (var p = 0; p < 3; p++)
+                        {
+                            var pl = (ChatPlatform)p;
+                            var s = Runner.Gateway.Session(pl);
+                            <div class="sgc-plat">
+                                <div class="hd"><i class="dot s@((int)s.State)"></i><b>@(MultiPlatformLiveChatGatewaySynthesizer.PlatformName(pl))</b><span>@(MultiPlatformLiveChatGatewaySynthesizer.StateName(s.State))@(s.Simulated ? " · 시뮬" : null)</span></div>
+                                <div class="ping"><b class="@(s.RttMs < 0 ? null : s.RttMs < 120 ? "ok" : "warn")">@(s.RttMs < 0 ? "—" : F0(s.RttMs) + " ms")</b><span>RTT</span></div>
+                                <div class="kv">수신 @(s.Messages.ToString("N0", CultureInfo.InvariantCulture)) · @(F1(s.Bytes / 1024.0)) KB · 연결 @(s.Connects) · 실패 @(s.Failures)</div>
+                                <div class="kv">백오프 시도 @(Runner.Guard.Attempt(pl)) · 직전 @(F1(Runner.Guard.LastBackoffSec(pl))) s@(s.State == GatewayLinkState.Backoff ? " · 재접속 " + F1(Math.Max(0, s.NextRetryAtMs - GatewayClock.NowMs) / 1000.0) + " s" : null)</div>
+                                <div class="kv ep">@(s.Endpoint)@(s.LastError is { } e ? " · ⚠ " + e : null)</div>
+                                <div class="row">
+                                    <input class="sgc-in" placeholder="@(Hint(pl))" @bind="_ids[p]" />
+                                    <button class="sgc-btn sm go" @onclick="() => ConnectLive(pl)">연결</button>
+                                    <button class="sgc-btn sm" @onclick="() => Runner.ConnectSimulated(pl)">시뮬</button>
+                                    <button class="sgc-btn sm" @onclick="() => Runner.ForceDrop(pl)">✂ 순단</button>
+                                    <button class="sgc-btn sm" @onclick="() => Runner.Disconnect(pl)">⏏</button>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+                <div class="sgc-card">
+                    <div class="sgc-sec">🧯 배압 가드 · @(Runner.Guard.RatePerSec.ToString("N0", CultureInfo.InvariantCulture)) msg/s @(Runner.Guard.Shedding ? "· 🌊 셰딩" : null)</div>
+                    <div class="sgc-meter"><div class="@(Runner.Guard.Shedding ? "warn" : "ok")" style="width:@(Pct(Runner.Guard.RatePerSec / 1000f))%"></div><span>수신률 @(Runner.Guard.RatePerSec) / 500 msg/s 임계 · 최대 @(Runner.Guard.PeakRatePerSec)</span></div>
+                    <div class="sgc-counters">
+                        <div><b>@(Runner.Guard.TailDropped.ToString("N0", CultureInfo.InvariantCulture))</b><span>테일 드롭</span></div>
+                        <div><b>@(Runner.Guard.ShedDropped.ToString("N0", CultureInfo.InvariantCulture))</b><span>셰딩 드롭</span></div>
+                        <div><b>@(Runner.Guard.StaleDropped.ToString("N0", CultureInfo.InvariantCulture))</b><span>지연 폐기</span></div>
+                        <div><b class="@(Runner.Guard.PriorityOverflow == 0 ? "ok" : "warn")">@(Runner.Guard.PriorityQueued.ToString("N0", CultureInfo.InvariantCulture))</b><span>우선 수용</span></div>
+                        <div><b>@(Runner.Guard.Drained.ToString("N0", CultureInfo.InvariantCulture))</b><span>디스패치</span></div>
+                        <div><b class="@(Runner.FramesOverBudget == 0 ? "ok" : "warn")">@(Runner.FramesOverBudget)</b><span>16.7 ms 초과</span></div>
+                    </div>
+                    <svg class="sgc-graph" viewBox="0 0 600 60" preserveAspectRatio="none">
+                        <line class="lim" x1="0" x2="600" y1="@(F1(58 - 56 * 0.5))" y2="@(F1(58 - 56 * 0.5))" />
+                        <polyline class="rate" points="@(Series(0))" />
+                        <polyline class="drop" points="@(Series(1))" />
+                        <polyline class="ms" points="@(Series(2))" />
+                    </svg>
+                    <div class="sgc-kv">틱 <b class="@(Runner.LastTickMs < 16.7 ? "ok" : "warn")">@(F2(Runner.LastTickMs))</b> ms · 최대 @(F2(Runner.MaxTickMs)) · 소비 @(F1(Runner.Guard.LastDrainUs)) µs(@(Runner.Guard.LastDrainCount) 건) · 큐 우선 @(Runner.Guard.PriorityDepth) / 일반 @(Runner.Guard.NormalDepth)</div>
+                </div>
+                <div class="sgc-card">
+                    <div class="sgc-sec">💬 통합 채팅 피드 @(Runner.LinkInfluencer ? "(v17.61 아바타 결선 중)" : null)</div>
+                    <div class="sgc-feed">
+                        @for (var i = 0; i < Math.Min(12, Runner.FeedCount); i++)
+                        {
+                            var e = Runner.FeedAt(i);
+                            <div class="sgc-msg p@((int)e.Platform) @(e.Verdict != ChatSafetyVerdict.Clean ? "blk" : null)">
+                                <i>@(PlatIcon(e.Platform))</i><b>@(Runner.FeedUser(i).ToString())@((e.Role & (ChatRole.Moderator | ChatRole.Broadcaster)) != 0 ? " 🛡" : null)</b>
+                                <span>@(e.Verdict != ChatSafetyVerdict.Clean ? "••• " + ChatSpamToxicitySafetyGuard.VerdictName(e.Verdict) : Runner.FeedText(i).ToString())</span>
+                                @if (e.Amount > 0) { <em>₩@(e.Amount.ToString("N0", CultureInfo.InvariantCulture))</em> }
+                            </div>
+                        }
+                    </div>
+                </div>
+            </div>
+            <div class="sgc-col">
+                <div class="sgc-card">
+                    <div class="sgc-sec">🎞 32 MB 압축 링버퍼 · @(Runner.Ring.Width)×@(Runner.Ring.Height) @(Runner.Ring.Fps) fps</div>
+                    <div class="sgc-live">
+                        <img class="sgc-view" src="@(_img)" alt="live" />
+                        <div class="sgc-ringinfo">
+                            <div class="sgc-meter"><div class="ok" style="width:@(Pct((float)Runner.Ring.Occupancy))%"></div><span>@(F1(Runner.Ring.OccupiedBytes / 1048576.0)) / 32 MB · @(F1(Runner.Ring.BufferedSec)) s</span></div>
+                            <div class="sgc-kv">영상 @(Runner.Ring.VideoCount) · 음성 @(Runner.Ring.AudioCount) · IDR @(Runner.Ring.KeyCount) · 축출 @(Runner.Ring.Evicted) · 기록 @(F1(Runner.Ring.LastRecordUs)) µs</div>
+                            <div class="sgc-kv">인코더 @(RealtimeHardwareVerticalTranscoderEngine.BackendName(Runner.Encoder.Backend)) · @(F1(Runner.Encoder.LastEncodeMs)) ms/프레임 · 송출 @(Runner.EncodedFrames.ToString("N0", CultureInfo.InvariantCulture))</div>
+                            <div class="sgc-kv">평균 @(F1(Runner.Ring.BufferedSec > 0 ? Runner.Ring.OccupiedBytes * 8 / 1000.0 / Runner.Ring.BufferedSec : 0)) kbps · 에포크 @(Runner.Ring.Epoch)</div>
+                        </div>
+                    </div>
+                    <div class="sgc-sec2">🔑 키프레임 인덱스 맵(최근 30 s)</div>
+                    <svg class="sgc-keys" viewBox="0 0 600 24" preserveAspectRatio="none">
+                        <rect class="buf" x="@(F1(600 - 600 * Math.Min(1, Runner.Ring.BufferedSec / 30)))" y="6" width="@(F1(600 * Math.Min(1, Runner.Ring.BufferedSec / 30)))" height="12" />
+                        @if (Runner.Ring.LastClipStart >= 0 && Runner.Ring.NewestVideo >= Runner.Ring.LastClipStart)
+                        {
+                            <rect class="clip" x="@(F1(KeyX(Runner.Ring.LastClipStart)))" y="2" width="@(F1(Math.Max(1, KeyX(Runner.Ring.LastClipEnd) - KeyX(Runner.Ring.LastClipStart))))" height="20" />
+                        }
+                        @for (var k = 0; k < Math.Min(240, Runner.Ring.KeyCount); k++)
+                        {
+                            var ki = Runner.Ring.KeyAt(k);
+                            if (ki < 0) continue;
+                            <line x1="@(F1(KeyX(ki)))" x2="@(F1(KeyX(ki)))" y1="3" y2="21" />
+                        }
+                    </svg>
+                    <div class="sgc-clipbar">
+                        <label class="sgc-lbl">클립 @(F0(Runner.ClipSeconds)) s</label>
+                        <input class="sgc-rng" type="range" min="3" max="30" value="@((int)Runner.ClipSeconds)" @oninput="OnSec" />
+                        <button class="sgc-btn go" @onclick="Clip">✂ 1080p 무손실 클립 즉시 추출</button>
+                        <button class="sgc-btn @(Runner.AutoClip ? "on" : null)" @onclick="() => Runner.SetAutoClip(!Runner.AutoClip)">🔥 스파이크 자동</button>
+                        <button class="sgc-btn @(Runner.AutoPublish ? "on" : null)" disabled="@(!Runner.OmniLinked)" @onclick="() => Runner.SetAutoPublish(!Runner.AutoPublish)">🚀 자동 배포</button>
+                    </div>
+                    <div class="sgc-meter"><div class="@(Runner.Ring.LastRemuxMs <= 10 ? "ok" : "warn")" style="width:@(Pct((float)(Runner.Ring.LastRemuxMs / 10.0)))%"></div><span>리먹스 @(F2(Runner.Ring.LastRemuxMs)) ms / 10 ms · 최대 @(F2(Runner.Ring.MaxRemuxMs)) · @(F1(Runner.Ring.LastClipBytes / 1048576.0)) MB · 조각 @(Runner.Ring.LastClipFragments)</span></div>
+                    <div class="sgc-kv">세이프티 통과 @(F0(Runner.CleanPerSec))/s · 평소 @(F1(Runner.BaselineClean)) · 스파이크 <b class="@(Runner.SpikeLevel >= StreamGatewayClipperStudioRunner.SpikeRatio ? "hot" : null)">@(F0(Runner.SpikeLevel * 100))%</b> · 감지 @(Runner.Spikes)@(Runner.Ring.LastFailure is { } lf ? " · ⚠ " + lf : null)</div>
+                </div>
+                <div class="sgc-card">
+                    <div class="sgc-sec">🎬 무손실 클립 (@(Runner.ClipCount) · 배포 @(Runner.Published))</div>
+                    @if (Runner.ClipCount == 0) { <div class="sgc-empty">송출 인코더를 켜고 ✂ 즉시 추출 또는 레이드가 아닌 실제 반응 급증을 기다리세요.</div> }
+                    <div class="sgc-clips">
+                        @for (var i = 0; i < Runner.ClipCount; i++)
+                        {
+                            var c = Runner.Clip(i);
+                            if (c is null) continue;
+                            var id = c.Id;
+                            <div class="sgc-clip @(c.Published ? "pub" : null)">
+                                <div class="hd"><b>#@(id) @(c.Auto ? "🔥" : "✂") · @(F1(c.DurationSec)) s</b><span>@(c.Width)×@(c.Height) @(c.Fps) fps · @(F2(c.Bytes / 1048576.0)) MB · 리먹스 @(F2(c.RemuxMs)) ms</span></div>
+                                <div class="ft">
+                                    <span>IDR #@(c.StartIndex) · 영상 @(c.Frames) · 음성 @(c.AudioFrames) · 조각 @(c.Fragments) · 무인코딩</span>
+                                    <button class="sgc-btn sm go" disabled="@(!Runner.OmniLinked)" @onclick="() => Runner.PublishClip(id)">🚀 배포</button>
+                                    <button class="sgc-btn sm" @onclick="() => Save(id)">💾 다운로드</button>
+                                    <button class="sgc-btn sm" @onclick="() => Runner.RemoveClip(id)">🗑</button>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                    @if (_saved is not null) { <div class="sgc-kv">💾 @(_saved)</div> }
+                    <div class="sgc-act">@(Runner.LastAction ?? "대기")</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .sgc-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .sgc-modal { width: min(1340px, 96vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
+    .sgc-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #0ea5e9 16%, var(--card)), color-mix(in srgb, #22c55e 12%, var(--card))); }
+    .sgc-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .sgc-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .sgc-sub b { color: var(--text-primary); }
+    .sgc-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .sgc-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .sgc-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .sgc-btn:disabled { opacity: .45; cursor: default; }
+    .sgc-btn.on { background: color-mix(in srgb, #0ea5e9 22%, var(--card)); border-color: #0ea5e9; }
+    .sgc-btn.bad { background: #7f1d1d; border-color: #ef4444; color: #fff; }
+    .sgc-btn.hot { background: linear-gradient(90deg, #f97316, #ef4444); color: #fff; border: none; }
+    .sgc-btn.go { background: #0ea5e9; color: #fff; border: none; }
+    .sgc-btn.sm { font-size: 11px; padding: 3px 8px; }
+    .sgc-sep { width: 1px; height: 20px; background: var(--line); margin: 0 4px; }
+    .sgc-lbl { font-size: 11px; color: var(--text-secondary); }
+    .sgc-rng { width: 110px; }
+    .sgc-main { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 14px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .sgc-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .sgc-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); min-width: 0; }
+    .sgc-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .sgc-sec2 { font-size: 11px; font-weight: 800; color: var(--text-secondary); margin: 8px 0 4px; }
+    .sgc-plats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .sgc-plat { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: #0f172a; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+    .sgc-plat .hd { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-primary); } .sgc-plat .hd span { font-size: 10px; color: var(--text-muted); margin-left: auto; }
+    .sgc-plat .dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b; } .dot.s1 { background: #f59e0b; } .dot.s2 { background: #22c55e; box-shadow: 0 0 6px #22c55e; } .dot.s3 { background: #ef4444; }
+    .sgc-plat .ping { display: flex; align-items: baseline; gap: 4px; } .sgc-plat .ping b { font: 800 18px var(--mono); color: var(--text-primary); } .sgc-plat .ping span { font-size: 10px; color: var(--text-muted); }
+    .sgc-plat .ping b.ok { color: #22c55e; } .sgc-plat .ping b.warn { color: #f59e0b; }
+    .sgc-plat .kv { font-size: 10px; color: var(--text-secondary); } .sgc-plat .kv.ep { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sgc-plat .row { display: flex; gap: 3px; flex-wrap: wrap; margin-top: 2px; }
+    .sgc-in { flex: 1; min-width: 60px; font-size: 11px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--line); background: #020617; color: var(--text-primary); }
+    .sgc-kv { font-size: 11px; color: var(--text-secondary); margin-top: 6px; }
+    .sgc-kv b.ok, .sgc-counters b.ok { color: #22c55e; } .sgc-kv b.warn, .sgc-counters b.warn { color: #f59e0b; } .sgc-kv b.hot { color: #ef4444; }
+    .sgc-meter { position: relative; height: 18px; border-radius: 6px; background: #0f172a; overflow: hidden; margin: 6px 0; }
+    .sgc-meter div { height: 100%; } .sgc-meter div.ok { background: #22c55e; } .sgc-meter div.warn { background: #ef4444; }
+    .sgc-meter span { position: absolute; inset: 0; font: 700 10px var(--mono); color: #fff; display: flex; align-items: center; justify-content: center; }
+    .sgc-counters { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+    .sgc-counters div { display: flex; flex-direction: column; align-items: center; padding: 6px 2px; border-radius: 8px; background: #0f172a; }
+    .sgc-counters b { font: 800 14px var(--mono); color: var(--text-primary); } .sgc-counters span { font-size: 10px; color: var(--text-muted); }
+    .sgc-graph { width: 100%; height: 60px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; display: block; margin-top: 8px; }
+    .sgc-graph polyline { fill: none; stroke-width: 1.6; } .sgc-graph .rate { stroke: #0ea5e9; } .sgc-graph .drop { stroke: #ef4444; } .sgc-graph .ms { stroke: #22c55e; }
+    .sgc-graph .lim { stroke: #f59e0b; stroke-dasharray: 6 4; opacity: .6; }
+    .sgc-feed { display: flex; flex-direction: column; gap: 2px; max-height: 240px; overflow-y: auto; }
+    .sgc-msg { display: grid; grid-template-columns: 18px 110px 1fr auto; gap: 6px; font-size: 11px; padding: 3px 6px; border-radius: 5px; background: #0f172a; }
+    .sgc-msg i { font-style: normal; } .sgc-msg b { color: #93c5fd; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .sgc-msg span { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sgc-msg em { font: 800 11px var(--mono); font-style: normal; color: #fde047; }
+    .sgc-msg.p0 { border-left: 3px solid #a855f7; } .sgc-msg.p1 { border-left: 3px solid #ef4444; } .sgc-msg.p2 { border-left: 3px solid #22c55e; } .sgc-msg.blk span { color: var(--text-muted); font-style: italic; }
+    .sgc-live { display: grid; grid-template-columns: 110px 1fr; gap: 10px; align-items: start; }
+    .sgc-view { width: 110px; aspect-ratio: 9 / 16; border-radius: 6px; background: #05070c; image-rendering: pixelated; }
+    .sgc-ringinfo { min-width: 0; }
+    .sgc-keys { width: 100%; height: 24px; background: #0f172a; border-radius: 6px; display: block; }
+    .sgc-keys line { stroke: #fbbf24; stroke-width: 1.2; } .sgc-keys .buf { fill: color-mix(in srgb, #0ea5e9 30%, transparent); } .sgc-keys .clip { fill: color-mix(in srgb, #22c55e 35%, transparent); stroke: #22c55e; stroke-width: .8; }
+    .sgc-clipbar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+    .sgc-empty { font-size: 11px; color: var(--text-muted); padding: 8px 0; }
+    .sgc-clips { display: flex; flex-direction: column; gap: 6px; max-height: 280px; overflow-y: auto; }
+    .sgc-clip { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: #0f172a; } .sgc-clip.pub { border-color: #8b5cf6; }
+    .sgc-clip .hd { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-primary); } .sgc-clip .hd span { font: 600 10px var(--mono); color: var(--text-muted); }
+    .sgc-clip .ft { display: flex; gap: 6px; align-items: center; font-size: 10px; color: var(--text-muted); margin-top: 3px; } .sgc-clip .ft span { flex: 1; }
+    .sgc-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+    @@media (max-width: 960px) { .sgc-main { grid-template-columns: 1fr; } .sgc-plats { grid-template-columns: 1fr; } .sgc-counters { grid-template-columns: repeat(3, 1fr); } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly byte[] _bmp = new byte[StreamGatewayClipperStudioRunner.PreviewBytes];
+    private readonly string[] _ids = { "", "", "" };
+    private System.Threading.Timer? _timer;
+    private string _img = "";
+    private string? _saved;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Gateway.Modal.Timer", ex); }
+        }, null, 200, 200);
+    }
+
+    protected override bool ShouldRender()
+    {
+        Runner.WritePreviewBmp(_bmp);
+        _img = _bmp[1] == (byte)'M' ? "data:image/bmp;base64," + Convert.ToBase64String(_bmp) : "";
+        return true;
+    }
+
+    private static string F0(double v) => double.IsFinite(v) ? v.ToString("0", CultureInfo.InvariantCulture) : "—";
+    private static string F1(double v) => double.IsFinite(v) ? v.ToString("0.0", CultureInfo.InvariantCulture) : "—";
+    private static string F2(double v) => double.IsFinite(v) ? v.ToString("0.00", CultureInfo.InvariantCulture) : "—";
+    private static string Pct(float v) => Math.Clamp(v * 100.0, 0, 100).ToString("0.#", CultureInfo.InvariantCulture);
+    private static string PlatIcon(ChatPlatform p) => p switch { ChatPlatform.Twitch => "🟣", ChatPlatform.YouTube => "🔴", _ => "🟢" };
+    private static string Hint(ChatPlatform p) => p switch { ChatPlatform.Twitch => "채널명", ChatPlatform.YouTube => "videoId(PF_YOUTUBE_API_KEY)", _ => "채널 ID" };
+
+    private double KeyX(long index)
+    {
+        var newest = Runner.Ring.NewestVideo;
+        var span = 30.0 * Math.Max(1, Runner.Ring.Fps);
+        return Math.Clamp(600 - 600 * (newest - index) / span, 0, 600);
+    }
+
+    private string Series(int kind)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            var v = kind switch { 0 => Runner.RateSeries(k) / 1000.0, 1 => Runner.DropSeries(k) / 30.0, _ => Runner.FrameMsSeries(k) / 33.4 };
+            sb.Append((600.0 * i / (n - 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append((58 - 56 * Math.Clamp(v, 0, 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void OnRate(ChangeEventArgs e) { if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetTrafficRate(v / 10f); }
+    private void OnSec(ChangeEventArgs e) { if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetClipSeconds(v); }
+
+    private async Task ConnectLive(ChatPlatform p) => await Runner.ConnectLiveAsync(p, _ids[(int)p]);
+
+    private void Clip() => Runner.ClipNow(Runner.ClipSeconds);
+
+    private void Save(int id) => _saved = Runner.SaveClip(id) ?? "저장 실패";
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void ToggleEncoder()
+    {
+        if (Runner.IsEncoding) Runner.StopEncoder(); else Runner.StartEncoder();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}

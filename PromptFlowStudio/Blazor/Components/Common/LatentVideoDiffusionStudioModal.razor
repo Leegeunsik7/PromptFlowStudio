@@ -1,0 +1,283 @@
+@using System.Globalization
+@using System.Text
+@using PromptFlowStudio.Services.VideoDiffusion
+@using PromptFlowStudio.Services.Cinematography
+@implements IDisposable
+@inject LatentVideoDiffusionStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.87.0] 🎬 AI 비디오 디퓨전 & 시공간 일관성 스튜디오 — 원본/보정 프레임 비교 · 디노이징 스텝 모니터(σ_t · x̂0 변화 · 체크포인트 썸네일) ·
+    ControlNet 깊이/포즈 맵 · 컨디셔닝 웨이트 슬라이더 · 옵티컬 플로 필드 · 플리커 방지 게이지 · 프롬프트.
+*@
+
+<div class="lvd-scrim" @onclick="Close">
+    <div class="lvd-modal" @onclick:stopPropagation="true">
+        <div class="lvd-h">
+            <div>
+                <div class="lvd-title">🎬 AI 비디오 디퓨전 &amp; 시공간 일관성 스튜디오</div>
+                <div class="lvd-sub">프롬프트 팔레트와 <b>ControlNet</b>(v16.72 지형 깊이 · v16.75 모캡 포즈 · v16.85 카메라 궤적) 조건으로 <b>라텐트 CFG-DDIM</b> 디노이징을 실시간 수행하고,
+                    <b>옵티컬 플로</b> 워핑 · 가림 검출 · 디플리커 시간 블렌드로 프레임 간 깜빡임과 질감 왜곡을 보정합니다. 디노이저는 학습 모델이 아닌 해석적 가우시안 사후 평균입니다.</div>
+            </div>
+            <button class="lvd-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="lvd-bar">
+            <button class="lvd-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 생성")</button>
+            <button class="lvd-btn" @onclick="Step" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="lvd-btn" @onclick="Runner.NewShot">🎬 새 샷</button>
+            @foreach (var nm in Modes)
+            {
+                <button class="lvd-btn @(E.Noise == nm ? "on" : null)" @onclick="() => Runner.SetNoise(nm)">🎲 @(LatentVideoDiffusionStudioRunner.NoiseName(nm))</button>
+            }
+            <button class="lvd-btn @(G.Enabled ? "on" : null)" @onclick="() => G.Enabled = !G.Enabled">🧷 일관성 가드</button>
+            <span class="lvd-chip @(Runner.LastFrameMs < 33.3 ? "ok" : "warn")">프레임 @(F1(Runner.LastFrameMs)) ms</span>
+            <span class="lvd-chip">컨트롤 @(F1(C.LastBuildMs)) · 디퓨전 @(F1(E.LastGenerateMs)) · 디코드 @(F1(E.LastDecodeMs)) · 가드 @(F1(G.LastProcessMs)) ms</span>
+            <span class="lvd-chip">생성 @(Runner.GeneratedFrames)</span>
+        </div>
+
+        <div class="lvd-main">
+            <div class="lvd-col">
+                <div class="lvd-card">
+                    <div class="lvd-sec">🖼 원본 ↔ 보정 — @(E.Palette.Name) · @(RealtimeLatentVideoDiffusionEngine.W)×@(RealtimeLatentVideoDiffusionEngine.H) · @(E.LastSteps) 스텝 (컨트롤 @(E.ControlledSteps))</div>
+                    <div class="lvd-pair">
+                        <div><img src="@RawUrl()" alt="raw" /><span>디퓨전 원본</span></div>
+                        <div class="ov">
+                            <img src="@OutUrl()" alt="stabilized" />
+                            @if (_showFlow)
+                            {
+                                <svg viewBox="0 0 @(RealtimeLatentVideoDiffusionEngine.W) @(RealtimeLatentVideoDiffusionEngine.H)" preserveAspectRatio="none">
+                                    @for (var by = 0; by < NeuralTemporalConsistencyGuard.BY; by++)
+                                    {
+                                        for (var bx = 0; bx < NeuralTemporalConsistencyGuard.BX; bx++)
+                                        {
+                                            var f = G.BlockFlow(bx, by); float cx = bx * 16 + 8, cy = by * 16 + 8;
+                                            <line x1="@(F1(cx))" y1="@(F1(cy))" x2="@(F1(cx + f.X * 2f))" y2="@(F1(cy + f.Y * 2f))" class="@(G.BlockOccluded(bx, by) ? "occ" : "fl")" />
+                                        }
+                                    }
+                                </svg>
+                            }
+                            <span>일관성 보정 출력</span>
+                        </div>
+                    </div>
+                    <div class="lvd-kv">
+                        <label class="lvd-lab"><input type="checkbox" checked="@_showFlow" @onchange="() => _showFlow = !_showFlow" /> 플로 필드</label>
+                        <span>평균 플로 <b>@(F1(G.MeanFlow.X)), @(F1(G.MeanFlow.Y)) px</b> · 카메라 @(F1(C.CameraFlowPx.X)), @(F1(C.CameraFlowPx.Y))</span>
+                        <span>가림 <b>@(F0(G.OcclusionRatio * 100))%</b> · 블렌드 α @(F2(G.MeanBlend)) · 디플리커 ×@(F3(G.DeflickerGain))</span>
+                        <span>라텐트 오차 <b>@(F3(E.LatentMeanAbsError))</b></span>
+                    </div>
+                </div>
+
+                <div class="lvd-card">
+                    <div class="lvd-sec">📉 디노이징 스텝 모니터 — σ_t(로그) · x̂0 변화량 · 체크포인트</div>
+                    <div class="lvd-split">
+                        <svg class="lvd-steps" viewBox="0 0 200 70" preserveAspectRatio="none">
+                            @{ var sig = E.StepSigma; var del = E.StepDelta; var n = sig.Length; var dmax = 1e-6f; for (var k = 0; k < del.Length; k++) dmax = MathF.Max(dmax, del[k]); }
+                            @for (var k = 0; k < n; k++)
+                            {
+                                var x = k * 200f / Math.Max(n, 1); var bw = 200f / Math.Max(n, 1) - 1f;
+                                var hs = Math.Clamp((MathF.Log10(sig[k]) + 2f) / 4.5f, 0f, 1f) * 66f; var hd = del[k] / dmax * 66f;
+                                <rect x="@(F1(x))" y="@(F1(68 - hs))" width="@(F1(MathF.Max(bw, 0.5f)))" height="@(F1(hs))" class="sg" />
+                                <rect x="@(F1(x + bw * 0.25f))" y="@(F1(68 - hd))" width="@(F1(MathF.Max(bw * 0.5f, 0.4f)))" height="@(F1(hd))" class="dl" />
+                            }
+                        </svg>
+                        <div class="lvd-thumbs">
+                            @for (var cp = 0; cp < RealtimeLatentVideoDiffusionEngine.Checkpoints; cp++)
+                            {
+                                var th = E.Thumbnail(cp);
+                                <svg viewBox="0 0 @(RealtimeLatentVideoDiffusionEngine.ThumbW) @(RealtimeLatentVideoDiffusionEngine.ThumbH)" preserveAspectRatio="none">
+                                    @for (var i = 0; i < th.Length; i++)
+                                    {
+                                        var g = (int)(Math.Clamp(th[i], 0f, 1f) * 255f);
+                                        <rect x="@(i % RealtimeLatentVideoDiffusionEngine.ThumbW)" y="@(i / RealtimeLatentVideoDiffusionEngine.ThumbW)" width="1.05" height="1.05" style="fill:rgb(@(g),@(g),@(g))" />
+                                    }
+                                </svg>
+                            }
+                        </div>
+                    </div>
+                    <div class="lvd-kv"><span><i class="lg sg"></i>σ_t = √(1−ᾱ)/√ᾱ</span><span><i class="lg dl"></i>x̂0 변화</span><span>썸네일 = 25/50/75/100% x̂0 휘도</span></div>
+                    <div class="lvd-sl">
+                        <label>스텝 <b>@(E.Steps)</b><input type="range" min="4" max="@(RealtimeLatentVideoDiffusionEngine.MaxSteps)" value="@(E.Steps)" @onchange="e => SetF(e, v => E.Steps = (int)v)" /></label>
+                        <label>CFG 스케일 <b>@(F1(E.GuidanceScale))</b><input type="range" min="10" max="100" value="@(F0(E.GuidanceScale * 10))" @onchange="e => SetF(e, v => E.GuidanceScale = v / 10f)" /></label>
+                        <label>노이즈 지속 ρ <b>@(F3(E.NoisePersistence))</b><input type="range" min="0" max="999" value="@(F0(E.NoisePersistence * 1000))" @onchange="e => SetF(e, v => E.NoisePersistence = v / 1000f)" /></label>
+                    </div>
+                </div>
+
+                <div class="lvd-card">
+                    <div class="lvd-sec">✨ 프롬프트 — 팔레트 · 지형 · 스타일 · 피사체 · 동작 · 카메라</div>
+                    <div class="lvd-row">
+                        <input class="lvd-in" @bind="_prompt" placeholder="예: 석양 숲 속 빨간 망토, 안개, 달리는 오빗 / neon cyberpunk night film grain" />
+                        <button class="lvd-btn on" @onclick="() => Runner.TriggerPrompt(_prompt)">적용</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="lvd-col">
+                <div class="lvd-card">
+                    <div class="lvd-sec">🧷 플리커 방지 게이지</div>
+                    <div class="lvd-split">
+                        <svg class="lvd-gauge" viewBox="0 0 120 70">
+                            <path d="M10,60 A50,50 0 0 1 110,60" class="trk" />
+                            <path d="@Arc(G.MeanFlickerReduction * 100f)" class="val @(G.MeanFlickerReduction >= 0.5f ? "hi" : G.MeanFlickerReduction >= 0.2f ? "mid" : "lo")" />
+                            <g><text x="60" y="56" class="num">@(F0(Math.Max(0f, G.MeanFlickerReduction) * 100))%</text></g>
+                            <g><text x="60" y="68" class="cap">플리커 감소</text></g>
+                        </svg>
+                        <div class="lvd-kv col">
+                            <span>워핑 오차 원본 <b>@(F3(G.RawWarpError))</b> → 출력 <b>@(F3(G.OutWarpError))</b></span>
+                            <span>누적 평균 <b>@(F3(G.MeanRawWarpError))</b> → <b>@(F3(G.MeanOutWarpError))</b></span>
+                            <span>휘도 지터 <b>@(F3(G.RawLumaJitter))</b> → <b>@(F3(G.OutLumaJitter))</b></span>
+                            <span>플로 @(F2(G.LastFlowMs)) ms · 블록 @(NeuralTemporalConsistencyGuard.Blocks)</span>
+                        </div>
+                    </div>
+                    <div class="lvd-sl">
+                        <label>블렌드 강도 <b>@(F2(G.Strength))</b><input type="range" min="0" max="100" value="@(F0(G.Strength * 100))" @onchange="e => SetF(e, v => G.Strength = v / 100f)" /></label>
+                        <label>τ(에지 보존) <b>@(F3(G.Tau))</b><input type="range" min="5" max="300" value="@(F0(G.Tau * 1000))" @onchange="e => SetF(e, v => G.Tau = v / 1000f)" /></label>
+                        <label>디플리커 <b>@(F2(G.Deflicker))</b><input type="range" min="0" max="100" value="@(F0(G.Deflicker * 100))" @onchange="e => SetF(e, v => G.Deflicker = v / 100f)" /></label>
+                        <label>FB 임계 <b>@(F1(G.FbThreshold)) px</b><input type="range" min="5" max="60" value="@(F0(G.FbThreshold * 10))" @onchange="e => SetF(e, v => G.FbThreshold = v / 10f)" /></label>
+                    </div>
+                </div>
+
+                <div class="lvd-card">
+                    <div class="lvd-sec">🦴 ControlNet 컨디셔닝 — 하늘 @(F0(C.SkyFraction * 100))% · 포즈 점유 @(F1(C.PoseCoverage * 100))% · 피사체 @(F1(C.SubjectDepth)) m</div>
+                    <div class="lvd-maps">
+                        <svg viewBox="0 0 @(ControlNetSpatialConditioningSynthesizer.LW) @(ControlNetSpatialConditioningSynthesizer.LH)" preserveAspectRatio="none">
+                            @for (var i = 0; i < ControlNetSpatialConditioningSynthesizer.Cells; i += 1)
+                            {
+                                var d = (int)((1f - C.Depth[i]) * 255f);
+                                <rect x="@(i % ControlNetSpatialConditioningSynthesizer.LW)" y="@(i / ControlNetSpatialConditioningSynthesizer.LW)" width="1.05" height="1.05" style="fill:rgb(@(d),@(d),@(Math.Min(255, d + 30)))" />
+                            }
+                        </svg>
+                        <svg viewBox="0 0 1 1" preserveAspectRatio="none" class="pose">
+                            <rect x="0" y="0" width="1" height="1" style="fill:#030712" />
+                            @for (var k = 0; k < ControlNetSpatialConditioningSynthesizer.BoneCount; k++)
+                            {
+                                var (ja, jb) = ControlNetSpatialConditioningSynthesizer.Bone(k);
+                                var a = C.Joint2D(ja); var b = C.Joint2D(jb);
+                                if (a.Z <= 0f || b.Z <= 0f) continue;
+                                <line x1="@(F3(a.X))" y1="@(F3(a.Y))" x2="@(F3(b.X))" y2="@(F3(b.Y))" style="stroke:hsl(@(k * 15),90%,60%);stroke-width:.012" />
+                            }
+                        </svg>
+                    </div>
+                    <div class="lvd-kv"><span>깊이(밝음 = 근거리 · v16.72 @(Runner.UsesWorld ? "절차 월드" : "해석 언덕"))</span><span>포즈(v16.75 스켈레톤 24관절)</span></div>
+                    <div class="lvd-sl">
+                        <label>깊이 웨이트 <b>@(F2(C.DepthWeight))</b><input type="range" min="0" max="150" value="@(F0(C.DepthWeight * 100))" @onchange="e => SetF(e, v => C.DepthWeight = v / 100f)" /></label>
+                        <label>포즈 웨이트 <b>@(F2(C.PoseWeight))</b><input type="range" min="0" max="150" value="@(F0(C.PoseWeight * 100))" @onchange="e => SetF(e, v => C.PoseWeight = v / 100f)" /></label>
+                        <label>카메라 웨이트 <b>@(F2(C.CameraWeight))</b><input type="range" min="0" max="150" value="@(F0(C.CameraWeight * 100))" @onchange="e => SetF(e, v => C.CameraWeight = v / 100f)" /></label>
+                        <label>적용 시작 <b>@(F0(C.ControlStart * 100))%</b><input type="range" min="0" max="100" value="@(F0(C.ControlStart * 100))" @onchange="e => SetF(e, v => C.ControlStart = v / 100f)" /></label>
+                        <label>적용 끝 <b>@(F0(C.ControlEnd * 100))%</b><input type="range" min="0" max="100" value="@(F0(C.ControlEnd * 100))" @onchange="e => SetF(e, v => C.ControlEnd = v / 100f)" /></label>
+                        <label>카메라 흔들림 <b>@(F2(Runner.CameraJitter)) m</b><input type="range" min="0" max="20" value="@(F0(Runner.CameraJitter * 100))" @onchange="e => SetF(e, v => Runner.CameraJitter = v / 100f)" /></label>
+                    </div>
+                    <div class="lvd-kv"><span>카메라 무브 <b>@(NeuralCameraTrajectoryEngine.MoveName(Runner.Camera.Move))</b> · @(F0(Runner.Camera.Pose.FocalMm)) mm</span></div>
+                </div>
+                <div class="lvd-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .lvd-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .lvd-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .lvd-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #0ea5e9 18%, var(--card)), color-mix(in srgb, #d946ef 14%, var(--card))); }
+    .lvd-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .lvd-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .lvd-sub b { color: var(--text-primary); }
+    .lvd-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .lvd-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .lvd-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .lvd-btn:disabled { opacity: .4; cursor: default; } .lvd-btn.on { background: color-mix(in srgb, #0ea5e9 26%, transparent); border-color: #38bdf8; }
+    .lvd-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .lvd-chip.ok { border-color: #22c55e; color: #86efac; } .lvd-chip.warn { border-color: #f97316; color: #fdba74; }
+    .lvd-main { display: grid; grid-template-columns: 1.2fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .lvd-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .lvd-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .lvd-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .lvd-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .lvd-pair > div { position: relative; aspect-ratio: 16 / 9; background: #000; border-radius: 8px; overflow: hidden; }
+    .lvd-pair img, .lvd-pair svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+    .lvd-pair span { position: absolute; left: 6px; bottom: 4px; font: 700 10px var(--mono); color: #fff; text-shadow: 0 1px 2px #000; }
+    .lvd-pair .fl { stroke: #22d3ee; stroke-width: 1; } .lvd-pair .occ { stroke: #f43f5e; stroke-width: 1.2; }
+    .lvd-split { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: center; }
+    .lvd-steps { width: 100%; height: 90px; background: #030712; border-radius: 8px; } .lvd-steps .sg { fill: #38bdf8; fill-opacity: .55; } .lvd-steps .dl { fill: #f472b6; }
+    .lvd-thumbs { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; } .lvd-thumbs svg { width: 100%; aspect-ratio: 16 / 9; border-radius: 4px; background: #000; }
+    .lg { display: inline-block; width: 10px; height: 10px; margin-right: 4px; vertical-align: middle; border-radius: 2px; } .lg.sg { background: #38bdf8; } .lg.dl { background: #f472b6; }
+    .lvd-maps { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; } .lvd-maps svg { width: 100%; aspect-ratio: 16 / 9; border-radius: 6px; background: #000; }
+    .lvd-gauge { width: 170px; height: 100px; } .lvd-gauge .trk { fill: none; stroke: #1f2937; stroke-width: 10; stroke-linecap: round; }
+    .lvd-gauge .val { fill: none; stroke-width: 10; stroke-linecap: round; } .lvd-gauge .val.hi { stroke: #22c55e; } .lvd-gauge .val.mid { stroke: #f59e0b; } .lvd-gauge .val.lo { stroke: #ef4444; }
+    .lvd-gauge .num { font: 900 18px var(--mono); fill: var(--text-primary); text-anchor: middle; } .lvd-gauge .cap { font: 600 8px var(--mono); fill: var(--text-muted); text-anchor: middle; }
+    .lvd-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .lvd-in { flex: 1; min-width: 200px; font-size: 12px; padding: 6px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .lvd-lab { display: flex; gap: 4px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .lvd-sl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 10px; }
+    .lvd-sl label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-secondary); } .lvd-sl b { font-family: var(--mono); color: var(--text-primary); }
+    .lvd-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; color: var(--text-secondary); align-items: center; } .lvd-kv b { color: var(--text-primary); font-family: var(--mono); }
+    .lvd-kv.col { flex-direction: column; align-items: flex-start; gap: 4px; }
+    .lvd-note { font-size: 11px; color: var(--text-muted); }
+    @@media (max-width: 1200px) { .lvd-main { grid-template-columns: 1fr; } .lvd-sl { grid-template-columns: 1fr 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly NoiseMode[] Modes = { NoiseMode.Independent, NoiseMode.Shared, NoiseMode.FlowWarped };
+    private string? _prompt;
+    private bool _showFlow = true;
+    private System.Threading.Timer? _timer;
+    private long _urlFrame = -1;
+    private string _raw = "", _out = "";
+
+    private RealtimeLatentVideoDiffusionEngine E => Runner.Engine;
+    private NeuralTemporalConsistencyGuard G => Runner.Guard;
+    private ControlNetSpatialConditioningSynthesizer C => Runner.Control;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("VideoDiffusion.Modal.Timer", ex); }
+        }, null, 200, 200);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+
+    /// <summary>원본/보정 프레임 BMP data URL(새 프레임일 때만 재인코딩).</summary>
+    private void Refresh()
+    {
+        var f = G.Frames;
+        if (f == _urlFrame) return;
+        _raw = PromptFlowStudio.Services.Spatial.SpatialImageCodec.BmpDataUrl(G.RawBytes, RealtimeLatentVideoDiffusionEngine.W, RealtimeLatentVideoDiffusionEngine.H);
+        _out = PromptFlowStudio.Services.Spatial.SpatialImageCodec.BmpDataUrl(G.OutputBytes, RealtimeLatentVideoDiffusionEngine.W, RealtimeLatentVideoDiffusionEngine.H);
+        _urlFrame = f;
+    }
+
+    private string RawUrl() { Refresh(); return _raw; }
+    private string OutUrl() { Refresh(); return _out; }
+
+    private static string Arc(float score)
+    {
+        var a = MathF.PI * (1f - Math.Clamp(score, 0f, 100f) / 100f);
+        float x = 60f + 50f * MathF.Cos(a), y = 60f - 50f * MathF.Sin(a);
+        return "M10,60 A50,50 0 0 1 " + F1(x) + "," + F1(y);
+    }
+
+    private static bool TryF(ChangeEventArgs e, out float v) => float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+    private void SetF(ChangeEventArgs e, Action<float> apply) { if (TryF(e, out var v)) apply(v); }
+
+    private void Step() { for (var k = 0; k < LatentVideoDiffusionStudioRunner.Hz; k++) Runner.TickOnce(); }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

@@ -1,0 +1,21 @@
+@* [PromptFlow Studio] 메뉴별 [❓] 컨텍스트 도움말 뱃지 — 제목 옆에 배치, 클릭 시 해당 토픽 ContextHelpModal 을 연다. 자체 모달 상태 보유. *@
+
+<button class="hb" @onclick:stopPropagation="true" @onclick="() => _open = true" title="도움말 보기" aria-label="도움말">❓</button>
+
+@if (_open)
+{
+    <ContextHelpModal TopicKey="@Topic" OnClose="() => _open = false" />
+}
+
+<style>
+    .hb { flex: 0 0 auto; width: 18px; height: 18px; padding: 0; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary);
+        border-radius: 50%; font-size: 10px; line-height: 1; cursor: pointer; display: inline-grid; place-items: center; vertical-align: middle; }
+    .hb:hover { border-color: var(--accent); color: var(--text-primary); }
+</style>
+
+@code {
+    /// <summary>열 도움말 토픽 키(HelpContentService.Keys).</summary>
+    [Parameter] public string Topic { get; set; } = "";
+
+    private bool _open;
+}

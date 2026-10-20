@@ -1,0 +1,390 @@
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.Sports
+@using PromptFlowStudio.Services.Spatial
+@implements IDisposable
+@inject AiSportsMulticamAutoDirectorEngine Director
+@inject BiometricSportsAnalyticsOverlayEngine Stats
+@inject AutomatedSportsHighlightReplayEngine Replay
+
+@*
+    [PromptFlow Studio v16.45.0] ⚽ AI 스포츠 중계 & 멀티캠 스튜디오 — PGM 합성 뷰포트(분석 오버레이 · 리플레이 인젝션) · 9분할 멀티캠 라이브 뷰포트(클릭 TAKE · AI 점수) ·
+    바이오메트릭 그래픽 토글 · 포커스 선수 카드 · 슛/xG 로그 · 인스턴트 리플레이 파이어링 · 하이라이트 클립 · 1-Click 스포츠 생중계. 서비스 OnChange 구독 + 가동 중 150ms UI 틱.
+*@
+
+<div class="sp-scrim" @onclick="Close">
+    <div class="sp-modal" @onclick:stopPropagation="true">
+        <div class="sp-h">
+            <div>
+                <div class="sp-title">⚽ AI 스포츠 중계 &amp; 멀티캠 스튜디오</div>
+                <div class="sp-sub">9대 카메라에서 <b>볼·선수 3D 궤적</b>을 추적해 가장 박진감 있는 앵글로 <b>자율 스위칭</b>하고, <b>심박·속도·xG</b> 그래픽과 <b>120fps 초슬로 리플레이</b>를 중계 화면에 인젝션합니다.</div>
+            </div>
+            <button class="sp-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="sp-bar">
+            <span class="sp-chip @(Director.IsLive ? "live" : "")">@(Director.IsLive ? "● ON AIR" : "OFF AIR")</span>
+            <span class="sp-chip">PGM @(Director.NameOf(Director.Program))</span>
+            <span class="sp-chip">AI컷 @(Director.AutoCuts) · 이벤트컷 @(Director.EventCuts) · TAKE @(Director.Takes)</span>
+            <span class="sp-chip score"><i class="h"></i>@(Stats.Goals(0)) : @(Stats.Goals(1))<i class="a"></i></span>
+            <span class="sp-chip @(Replay.State == ReplayState.Playing ? "rp" : "")">🔁 @(AutomatedSportsHighlightReplayEngine.StateLabel(Replay.State))</span>
+            <span class="sp-chip @(Replay.ExcitementDb >= AutomatedSportsHighlightReplayEngine.SurgeDb ? "hot" : "")">📣 @(F1(Replay.CrowdDb))dB (+@(F1(Replay.ExcitementDb)))</span>
+        </div>
+
+        <div class="sp-main">
+            <div class="sp-left">
+                <div class="sp-pgm">
+                    <div class="sp-vh"><b>PGM</b><span>@(Director.NameOf(Director.Program))</span><i>@(Director.ReplayOnAir ? "REPLAY ×" + AutomatedSportsHighlightReplayEngine.SlowFactor.ToString(CultureInfo.InvariantCulture) : "LIVE")</i></div>
+                    @if (_pgmUrl is not null)
+                    {
+                        <img class="sp-screen" src="@(_pgmUrl)" alt="PGM" />
+                    }
+                    else
+                    {
+                        <div class="sp-screen sp-empty">⚽ 1-Click 생중계를 가동하면 PGM 합성 화면이 표시됩니다.</div>
+                    }
+                    @if (Replay.State == ReplayState.Playing)
+                    {
+                        <div class="sp-prog"><div style="width:@(P0(Replay.PlaybackProgress * 100))%"></div></div>
+                    }
+                </div>
+                <div class="sp-ctl">
+                    @if (!Director.IsLive)
+                    {
+                        <button class="sp-btn go" @onclick="StartLive">⚽ 1-Click 스포츠 생중계 가동</button>
+                    }
+                    else
+                    {
+                        <button class="sp-btn danger" @onclick="StopLive">⏹ 생중계 정지</button>
+                    }
+                    <button class="sp-btn fire" disabled="@(Replay.BufferedFrames < 2 || Replay.State is ReplayState.Preparing or ReplayState.Playing)" @onclick="FireReplay">🔁 인스턴트 리플레이</button>
+                    @if (Replay.State == ReplayState.Ready)
+                    {
+                        <button class="sp-btn" @onclick="() => { Replay.PlayReady(); }">▶ 리플레이 송출</button>
+                    }
+                    @if (Replay.State == ReplayState.Playing)
+                    {
+                        <button class="sp-btn" @onclick="Replay.StopReplay">⏹ 리플레이 중단</button>
+                    }
+                    <label class="sp-ck"><input type="checkbox" checked="@(Director.AutoDirector)" @onchange="ToggleDirector" /> AI 자율 디렉터</label>
+                    <label class="sp-ck"><input type="checkbox" checked="@(Replay.AutoReplay)" @onchange="ToggleAutoReplay" /> 자동 하이라이트</label>
+                    <label class="sp-ck"><input type="checkbox" checked="@(Replay.AutoReplayShots)" @onchange="ToggleShotReplay" /> 슈팅 리플레이</label>
+                </div>
+
+                <div class="sp-sec">9분할 멀티캠 라이브 뷰포트 <span class="sp-mut">클릭 = TAKE</span></div>
+                <div class="sp-grid">
+                    @for (var i = 0; i < AiSportsMulticamAutoDirectorEngine.MaxCameras; i++)
+                    {
+                        var ci = i;
+                        if (ci >= Director.CameraCount) break;
+                        var cam = Director.Camera(ci);
+                        var cls = ci == Director.Program ? "pgm" : ci == Director.Preview ? "pvw" : "";
+                        <button class="sp-cam @(cls)" @onclick="_take[ci]">
+                            <div class="sp-ch"><b>@(ci + 1)</b><span>@(AiSportsMulticamAutoDirectorEngine.KindLabel(cam.Kind))</span><i>@(F2(cam.Score))</i></div>
+                            <svg viewBox="0 0 160 90" preserveAspectRatio="none" class="sp-cv">
+                                <rect x="0" y="0" width="160" height="90" fill="@(cam.Kind == SportsCamKind.Crowd ? "#26303f" : "#2e7d32")" />
+                                @for (var k = 0; k < _dotN[ci]; k++)
+                                {
+                                    var d = _dots[ci][k];
+                                    <circle cx="@(F1(d.U * 160))" cy="@(F1(d.V * 90))" r="@(F1(Math.Max(1.2f, d.Radius * 90)))" fill="@(DotColor(d))" />
+                                }
+                                @if (ci == Director.Program)
+                                {
+                                    <g><text x="4" y="10" font-size="8" fill="#fca5a5" font-weight="800">PGM</text></g>
+                                }
+                                else if (ci == Director.Preview)
+                                {
+                                    <g><text x="4" y="10" font-size="8" fill="#86efac" font-weight="800">PVW</text></g>
+                                }
+                            </svg>
+                            <div class="sp-cn">@(cam.Name)</div>
+                            <div class="sp-sb"><div style="width:@(P0(Math.Min(1f, cam.Score / 1.2f) * 100))%"></div></div>
+                        </button>
+                    }
+                </div>
+            </div>
+
+            <div class="sp-right">
+                <div class="sp-card">
+                    <div class="sp-sec">바이오메트릭 &amp; 분석 그래픽</div>
+                    <div class="sp-row">
+                        <button class="sp-tg @(Stats.ShowScoreBar ? "on" : "")" @onclick="() => { Stats.ShowScoreBar = !Stats.ShowScoreBar; }">스코어/xG</button>
+                        <button class="sp-tg @(Stats.ShowMinimap ? "on" : "")" @onclick="() => { Stats.ShowMinimap = !Stats.ShowMinimap; }">3D 미니맵</button>
+                        <button class="sp-tg @(Stats.ShowPlayerCard ? "on" : "")" @onclick="() => { Stats.ShowPlayerCard = !Stats.ShowPlayerCard; }">선수 카드</button>
+                        <button class="sp-tg @(Stats.ShowShotCard ? "on" : "")" @onclick="() => { Stats.ShowShotCard = !Stats.ShowShotCard; }">슛 xG 카드</button>
+                    </div>
+                    <div class="sp-row">
+                        <span class="sp-mut">포커스</span>
+                        <select class="sp-in" @onchange="SetFocus">
+                            <option value="-1" selected="@(Stats.FocusPlayer < 0)">🤖 볼 소유자 자동</option>
+                            @for (var p = 0; p < BiometricSportsAnalyticsOverlayEngine.MaxPlayers; p++)
+                            {
+                                var pi = p;
+                                <option value="@(pi)" selected="@(Stats.FocusPlayer == pi)">@(SportsMatchSimulator.TeamOf(pi) == 0 ? "🔴" : "🔵") @(Stats.NameOf(pi))</option>
+                            }
+                        </select>
+                    </div>
+                    @{ var fp = Stats.CurrentFocus; }
+                    @if (fp >= 0)
+                    {
+                        var st = Stats.Stat(fp);
+                        var zone = BiometricSportsAnalyticsOverlayEngine.HeartZone(st.HeartRate);
+                        <div class="sp-player">
+                            <div class="sp-pn">@(SportsMatchSimulator.TeamOf(fp) == 0 ? "🔴" : "🔵") <b>@(Stats.NameOf(fp))</b> <span class="sp-mut">@(st.HrExternal ? "웨어러블" : "부하 모델")</span></div>
+                            <div class="sp-kpis">
+                                <div><b>@(F1(st.SpeedKmh))</b><span>km/h</span></div>
+                                <div><b>@(F1(st.TopKmh))</b><span>최고</span></div>
+                                <div><b>@(F2(st.DistanceM / 1000f))</b><span>km</span></div>
+                                <div><b>@(st.Sprints)</b><span>스프린트</span></div>
+                                <div><b style="color:@(Hex(BiometricSportsAnalyticsOverlayEngine.ZoneColor(zone)))">@(P0(st.HeartRate))</b><span>bpm Z@(zone)</span></div>
+                                <div><b>@(F2(st.Xg))</b><span>xG</span></div>
+                                <div><b>@(F2(st.Xa))</b><span>xA</span></div>
+                                <div><b>@(st.Shots)/@(st.Passes)</b><span>슛/패스</span></div>
+                            </div>
+                        </div>
+                    }
+                    <div class="sp-team">
+                        <div class="sp-kv"><span>점유율</span><b>@(P0(Stats.PossessionPct(0)))% : @(P0(Stats.PossessionPct(1)))%</b></div>
+                        <div class="sp-kv"><span>팀 xG</span><b>@(F2(Stats.TeamXg(0))) : @(F2(Stats.TeamXg(1)))</b></div>
+                        <div class="sp-pos"><div style="width:@(P0(Stats.PossessionPct(0)))%"></div></div>
+                    </div>
+                    <div class="sp-row">
+                        <input class="sp-in grow" @bind="_wearable" placeholder='웨어러블 JSON [{"player":9,"bpm":172}]' />
+                        <button class="sp-btn sm" disabled="@(string.IsNullOrWhiteSpace(_wearable))" @onclick="IngestWearable">💓 주입</button>
+                    </div>
+                </div>
+
+                <div class="sp-card">
+                    <div class="sp-sec">슈팅 분석 (xG · 시야각 · 블로커)</div>
+                    <div class="sp-log">
+                        @for (var i = 0; i < _shotN; i++)
+                        {
+                            var s = _shots[i];
+                            <div class="sp-shot @(s.Goal ? "goal" : "")">
+                                <b>@(s.Goal ? "⚽" : "🎯")</b>
+                                <span>@(Stats.NameOf(s.Player))@(s.Assist >= 0 ? " ← " + Stats.NameOf(s.Assist) : "")</span>
+                                <em>xG @(F2(s.Xg))</em>
+                                <i>@(P0(s.AngleDeg))° · @(F1(s.DistanceM))m · 블로커 @(s.Blockers)</i>
+                            </div>
+                        }
+                        @if (_shotN == 0)
+                        {
+                            <div class="sp-mut">아직 슈팅이 없습니다.</div>
+                        }
+                    </div>
+                </div>
+
+                <div class="sp-card">
+                    <div class="sp-sec">하이라이트 클립 <span class="sp-mut">트리거 @(Replay.Triggers) · 송출 @(Replay.ReplaysPlayed) · 드롭 @(Replay.Dropped)</span></div>
+                    <div class="sp-log">
+                        @foreach (var c in Replay.Clips)
+                        {
+                            <div class="sp-clip"><b>#@(c.Id)</b><span>@(c.Title)</span><i>@(c.SourceFrames)f → @(TotalOf(c))f · @(P0(c.PrepareMs))ms · @(F1(c.PeakDb))dB</i></div>
+                        }
+                        @if (Replay.Clips.Count == 0)
+                        {
+                            <div class="sp-mut">골 · 관중 함성 서지 감지 시 직전 5초가 120fps 슬로 리플레이로 자동 생성됩니다.</div>
+                        }
+                    </div>
+                </div>
+
+                <div class="sp-card">
+                    <div class="sp-sec">디렉터 이벤트</div>
+                    <div class="sp-log">
+                        @for (var i = 0; i < _evN; i++)
+                        {
+                            var e = _ev[i];
+                            <div class="sp-ev"><b>@(F1(e.TimeMs / 1000))s</b><span>@(AiSportsMulticamAutoDirectorEngine.EventLabel(e.Kind))</span><em>@(Director.NameOf(e.From)) → @(Director.NameOf(e.To))</em></div>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="sp-f">
+            <span class="sp-mut">@(_msg ?? Director.LastAction ?? Replay.LastAction ?? Stats.LastAction ?? "대기")</span>
+            <button class="sp-btn" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .sp-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .sp-modal { width: min(1400px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .sp-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #22c55e 14%, var(--card)), color-mix(in srgb, #3b82f6 12%, var(--card))); }
+    .sp-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .sp-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .sp-sub b { color: var(--text-primary); }
+    .sp-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .sp-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .sp-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); display: inline-flex; align-items: center; gap: 5px; }
+    .sp-chip.live { color: #fff; background: #dc2626; border-color: #dc2626; animation: sp-pulse 1.2s infinite; } .sp-chip.rp { color: #111; background: #fbbf24; border-color: #fbbf24; } .sp-chip.hot { color: #fff; background: #f97316; border-color: #f97316; }
+    .sp-chip.score { color: var(--text-primary); font-size: 12px; } .sp-chip i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; } .sp-chip i.h { background: #dc2832; } .sp-chip i.a { background: #2f5bdc; }
+    @@keyframes sp-pulse { 50% { opacity: .6; } }
+    .sp-main { display: grid; grid-template-columns: 1.35fr 1fr; gap: 12px; padding: 12px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .sp-left, .sp-right { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .sp-pgm { border: 3px solid #ef4444; border-radius: 10px; overflow: hidden; background: #000; position: relative; }
+    .sp-vh { display: flex; gap: 8px; align-items: center; padding: 4px 8px; font-size: 12px; color: #e2e8f0; background: #0f172a; } .sp-vh b { font: 800 11px var(--mono); color: #fca5a5; } .sp-vh i { margin-left: auto; font: 700 10px var(--mono); font-style: normal; color: #fbbf24; }
+    .sp-screen { width: 100%; aspect-ratio: 16 / 9; display: block; image-rendering: auto; object-fit: cover; }
+    .sp-empty { display: flex; align-items: center; justify-content: center; color: #94a3b8; font-size: 13px; background: radial-gradient(circle, #14532d, #0b1220); }
+    .sp-prog { height: 4px; background: #1e293b; } .sp-prog div { height: 100%; background: #fbbf24; }
+    .sp-ctl { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .sp-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .sp-cam { border: 2px solid #334155; border-radius: 8px; padding: 0; background: #0b1220; cursor: pointer; overflow: hidden; display: flex; flex-direction: column; text-align: left; }
+    .sp-cam.pgm { border-color: #ef4444; } .sp-cam.pvw { border-color: #22c55e; } .sp-cam:hover { border-color: #fbbf24; }
+    .sp-ch { display: flex; gap: 6px; align-items: center; padding: 2px 6px; font-size: 10.5px; color: #e2e8f0; } .sp-ch b { font: 800 10px var(--mono); color: #94a3b8; } .sp-ch i { margin-left: auto; font: 10px var(--mono); font-style: normal; color: #38bdf8; }
+    .sp-cv { width: 100%; aspect-ratio: 16 / 9; display: block; }
+    .sp-cn { font-size: 10px; color: #94a3b8; padding: 1px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sp-sb { height: 3px; background: #1e293b; } .sp-sb div { height: 100%; background: linear-gradient(90deg, #22c55e, #fbbf24); }
+    .sp-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .sp-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .sp-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); display: flex; gap: 8px; align-items: baseline; }
+    .sp-ck { font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; }
+    .sp-tg { font: 700 11px var(--mono); border: 1px solid var(--line); background: var(--card); color: var(--text-secondary); border-radius: 6px; padding: 3px 8px; cursor: pointer; } .sp-tg.on { color: var(--text-primary); border-color: #22c55e; background: color-mix(in srgb, #22c55e 14%, var(--card)); }
+    .sp-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; } .sp-in.grow { flex: 1; min-width: 120px; }
+    .sp-player { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; gap: 6px; }
+    .sp-pn { font-size: 13px; color: var(--text-primary); display: flex; gap: 6px; align-items: center; }
+    .sp-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; } .sp-kpis div { display: flex; flex-direction: column; align-items: center; border: 1px solid var(--line); border-radius: 6px; padding: 3px; }
+    .sp-kpis b { font: 800 14px var(--mono); color: var(--text-primary); } .sp-kpis span { font-size: 10px; color: var(--text-muted); }
+    .sp-team { display: flex; flex-direction: column; gap: 3px; }
+    .sp-kv { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--text-muted); } .sp-kv b { color: var(--text-primary); font-family: var(--mono); }
+    .sp-pos { height: 6px; border-radius: 3px; background: #2f5bdc; overflow: hidden; } .sp-pos div { height: 100%; background: #dc2832; }
+    .sp-log { display: flex; flex-direction: column; gap: 2px; max-height: 150px; overflow-y: auto; }
+    .sp-shot { display: grid; grid-template-columns: 20px 1fr 60px; gap: 4px 6px; font-size: 11.5px; color: var(--text-secondary); border-bottom: 1px solid var(--line); padding: 2px 0; }
+    .sp-shot.goal { background: color-mix(in srgb, #22c55e 14%, var(--card)); } .sp-shot em { font: 700 11px var(--mono); font-style: normal; color: #fbbf24; } .sp-shot i { grid-column: 2 / 4; font: 10px var(--mono); font-style: normal; color: var(--text-muted); }
+    .sp-clip { display: grid; grid-template-columns: 30px 1fr; gap: 2px 6px; font-size: 11.5px; color: var(--text-primary); border-bottom: 1px solid var(--line); } .sp-clip b { font: 10px var(--mono); color: var(--text-muted); } .sp-clip i { grid-column: 2; font: 10px var(--mono); font-style: normal; color: var(--text-muted); }
+    .sp-ev { display: grid; grid-template-columns: 54px 90px 1fr; gap: 6px; font-size: 11.5px; color: var(--text-secondary); border-bottom: 1px solid var(--line); } .sp-ev b { font: 10px var(--mono); color: var(--text-muted); } .sp-ev em { font-style: normal; color: var(--text-primary); }
+    .sp-mut { font-size: 11px; color: var(--text-muted); font-weight: 400; }
+    .sp-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); } .sp-f .sp-mut { margin-right: auto; }
+    .sp-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .sp-btn.sm { padding: 3px 8px; font-size: 11px; } .sp-btn.go { background: linear-gradient(135deg,#16a34a,#2563eb); color: #fff; border: 0; font-size: 13px; padding: 7px 16px; } .sp-btn.danger { color: #f87171; border-color: #f87171; }
+    .sp-btn.fire { background: #f59e0b; color: #111; border: 0; } .sp-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 1050px) { .sp-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly ScreenDot[][] _dots = new ScreenDot[AiSportsMulticamAutoDirectorEngine.MaxCameras][];
+    private readonly int[] _dotN = new int[AiSportsMulticamAutoDirectorEngine.MaxCameras];
+    private readonly Action[] _take = new Action[AiSportsMulticamAutoDirectorEngine.MaxCameras];
+    private readonly byte[] _rgb = new byte[AiSportsMulticamAutoDirectorEngine.OutW * AiSportsMulticamAutoDirectorEngine.OutH * 3];
+    private readonly DirectorEvent[] _ev = new DirectorEvent[30];
+    private readonly ShotInfo[] _shots = new ShotInfo[10];
+    private int _evN, _shotN;
+    private string? _pgmUrl, _msg, _wearable;
+    private CancellationTokenSource? _ui;
+
+    protected override void OnInitialized()
+    {
+        for (var i = 0; i < _dots.Length; i++)
+        {
+            _dots[i] = new ScreenDot[SportsMatchSimulator.PlayerCount + 1];
+            var ci = i;
+            _take[i] = () => { if (Director.Take(ci)) _msg = null; };
+        }
+        Director.OnChange += OnServiceChanged;
+        Stats.OnChange += OnServiceChanged;
+        Replay.OnChange += OnServiceChanged;
+        Director.ConfigureDefault();
+        Refresh();
+        if (Director.IsLive) StartUi();
+    }
+
+    private void StartLive()
+    {
+        Director.StartLive();
+        _msg = null;
+        StartUi();
+    }
+
+    private void StopLive()
+    {
+        Director.StopLive();
+        StopUi();
+        Refresh();
+    }
+
+    private void FireReplay() => _msg = Replay.FireReplay() ? "🔁 인스턴트 리플레이 생성 중 — 직전 5초 · ×" + AutomatedSportsHighlightReplayEngine.SlowFactor.ToString(CultureInfo.InvariantCulture) + " 보간" : "⚠ 리플레이 버퍼 부족 또는 진행 중";
+
+    private void ToggleDirector(ChangeEventArgs e) => Director.AutoDirector = e.Value is true;
+    private void ToggleAutoReplay(ChangeEventArgs e) => Replay.AutoReplay = e.Value is true;
+    private void ToggleShotReplay(ChangeEventArgs e) => Replay.AutoReplayShots = e.Value is true;
+
+    private void SetFocus(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var p)) Stats.FocusPlayer = p;
+    }
+
+    private void IngestWearable()
+    {
+        try
+        {
+            var n = Stats.IngestWearableJson(_wearable ?? "", Director.NowMs);
+            _msg = "💓 웨어러블 심박 " + n.ToString(CultureInfo.InvariantCulture) + "건 반영";
+        }
+        catch (Exception ex) when (ex is FormatException or System.Text.Json.JsonException) { _msg = "⚠ " + ex.Message; }
+    }
+
+    private void Refresh()
+    {
+        for (var i = 0; i < Director.CameraCount && i < _dots.Length; i++) _dotN[i] = Director.ProjectDots(i, _dots[i]);
+        _evN = Director.CopyEvents(_ev);
+        _shotN = Stats.CopyShots(_shots);
+        if (Director.Frames > 0)
+        {
+            Director.CopyProgramRgb(_rgb);
+            _pgmUrl = SpatialImageCodec.BmpDataUrl(_rgb, AiSportsMulticamAutoDirectorEngine.OutW, AiSportsMulticamAutoDirectorEngine.OutH);
+        }
+    }
+
+    private static int TotalOf(HighlightClip c) => (c.SourceFrames - 1) * c.SlowFactor + 1;
+
+    private static string DotColor(ScreenDot d) => d.Ball ? "#ffffff" : d.Team switch { 0 => "#dc2832", 1 => "#2f5bdc", 2 => "#f2d21b", _ => "#2bd47d" };
+    private static string Hex(uint c) => "#" + c.ToString("X6", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string P0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+
+    private void StartUi()
+    {
+        if (_ui is not null) return;
+        var cts = new CancellationTokenSource();
+        _ui = cts;
+        _ = UiLoopAsync(cts.Token);
+    }
+
+    private void StopUi()
+    {
+        var cts = Interlocked.Exchange(ref _ui, null);
+        if (cts is null) return;
+        try { cts.Cancel(); } catch (ObjectDisposedException) { }
+        cts.Dispose();
+    }
+
+    private async Task UiLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(150));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                Refresh();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("SportsStudio.Ui", ex); }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Director.OnChange -= OnServiceChanged;
+        Stats.OnChange -= OnServiceChanged;
+        Replay.OnChange -= OnServiceChanged;
+        StopUi();
+    }
+}

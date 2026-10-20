@@ -1,0 +1,246 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.SkinOptics
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject SkinSssHemodynamicsStudioRunner Runner
+
+@*
+    [PromptFlow Studio v17.17.0] 🧬 AI 피부 SSS & 미세 혈류 스튜디오 — 피부 투광 반경 · 분리형 SSS 커널 · 심박 연동 혈류 관류 히트맵 ·
+    감정 홍조 · PPG 파형 · 안구 각막 이중 굴절 오버레이 · 눈물막 메니스커스.
+*@
+
+<div class="sko-scrim" @onclick="Close">
+    <div class="sko-modal" @onclick:stopPropagation="true">
+        <div class="sko-h">
+            <div>
+                <div class="sko-title">🧬 AI 피부 SSS &amp; 미세 혈류 스튜디오</div>
+                <div class="sko-sub"><b>SSS 엔진</b>이 d'Eon 6-가우시안 확산 프로파일을 채널별 1D 커널로 분리해 텍스처 공간에서 수평/수직 컨볼루션(마스크 정규화 · SIMD)하고, 두께 기반 투광으로 귀 · 코끝 · 손가락 끝의 적색 투과를 합성합니다.
+                    <b>혈류 합성기</b>는 v17.00 AGI 디렉터 정서@(Runner.FaceBound ? "와 v17.12 페이셜 ARKit" : "")에서 분노 · 수줍음 · 긴장을 읽어 뺨 · 코끝 · 이마 · 귀의 혈액량/산소포화도와 PPG 맥동을 링버퍼로 합성해 헤모글로빈 흡수 알베도를 만들고,
+                    <b>광학 가드</b>는 각막(n 1.376) · 방수(n 1.336) 이중 굴절 광선 추적으로 홍채 심도를 입체화하며 눈물막 박화 시 깜빡임을 요청하고 메니스커스 하이라이트를 유지합니다.</div>
+            </div>
+            <button class="sko-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="sko-bar">
+            <button class="sko-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 피부 광학 가동")</button>
+            <button class="sko-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="sko-btn @(Runner.Source == EmotionSource.Director ? "on" : null)" @onclick="() => Runner.SetSource(EmotionSource.Director)">🎬 디렉터 감정</button>
+            <button class="sko-btn @(Runner.Source == EmotionSource.Manual ? "on" : null)" @onclick="() => Runner.SetSource(EmotionSource.Manual)">🎚 수동 감정</button>
+            <span class="sko-chip">틱 @(Runner.Tick) · @(F2(Runner.LastTickMs)) ms · SSS @(F0(S.LastConvUs)) / 렌더 @(F0(S.LastRenderUs)) · 혈류 @(F0(V.LastUpdateUs)) · 각막 계측 @(F0(E.LastMeasureUs)) · 안구 렌더 @(F0(E.LastRenderUs)) µs · @(S.Path)</span>
+            <span class="sko-chip @(Runner.LastTickMs < 16.7 ? "ok" : "warn")">@(Runner.LastTickMs < 16.7 ? "60 FPS 예산 내" : "예산 초과")</span>
+        </div>
+
+        <div class="sko-main">
+            <div class="sko-col">
+                <div class="sko-card">
+                    <div class="sko-sec">🖼 피부 렌더(UV @(SeparableNeuralSkinSssEngine.W)²)
+                        @for (var m = 0; m < 4; m++)
+                        {
+                            var mi = m;
+                            <button class="sko-btn sm @(Runner.SkinView == mi ? "on" : null)" @onclick="() => Runner.SkinView = mi">@(ViewName(mi))</button>
+                        }
+                        <button class="sko-btn sm @(S.SssEnabled ? "on" : null)" @onclick="() => S.SssEnabled = !S.SssEnabled">SSS</button>
+                        <button class="sko-btn sm @(S.TransmitEnabled ? "on" : null)" @onclick="() => S.TransmitEnabled = !S.TransmitEnabled">투광</button>
+                    </div>
+                    <div class="sko-skin"><img src="data:image/bmp;base64,@(Runner.SkinBase64())" alt="skin" /></div>
+                    <div class="sko-ctl">
+                        <label class="sko-sl">투광 반경 <b>× @(F2(S.TranslucencyRadius))</b><input type="range" min="0.1" max="3" step="0.05" value="@(F2(S.TranslucencyRadius))" @onchange="e => Runner.SetRadius((float)Num(e, 1))" /></label>
+                        <label class="sko-sl">투광 이득 <b>@(F1(S.TransmitGain))</b><input type="range" min="0" max="10" step="0.5" value="@(F1(S.TransmitGain))" @onchange="e => S.TransmitGain = (float)Num(e, 3)" /></label>
+                        <label class="sko-sl">광원 방위 <b>@(F0(Runner.LightYawDeg))°</b><input type="range" min="-180" max="180" step="5" value="@(F0(Runner.LightYawDeg))" @onchange="e => Runner.LightYawDeg = (float)Num(e, 30)" /></label>
+                        <label class="sko-sl">거칠기 <b>@(F2(S.Roughness))</b><input type="range" min="0.1" max="0.8" step="0.01" value="@(F2(S.Roughness))" @onchange="e => S.Roughness = (float)Num(e, 0.35)" /></label>
+                        <label class="sko-sl">멜라닌 <b>@(F2(V.Melanin))</b><input type="range" min="0" max="6" step="0.1" value="@(F2(V.Melanin))" @onchange="e => V.Melanin = (float)Num(e, 1)" /></label>
+                    </div>
+                    <svg class="sko-kernel" viewBox="0 0 170 60" preserveAspectRatio="none">
+                        <polyline class="kr" points="@(KernelPts(0))" /><polyline class="kg" points="@(KernelPts(1))" /><polyline class="kb" points="@(KernelPts(2))" />
+                    </svg>
+                    <div class="sko-legend"><i class="kr"></i>R σ² @(F2(S.KernelVarianceMm2(0))) mm² <i class="kg"></i>G @(F2(S.KernelVarianceMm2(1))) <i class="kb"></i>B @(F2(S.KernelVarianceMm2(2))) · 1D 커널 @(SeparableNeuralSkinSssEngine.Taps) 탭 · 텍셀 @(F2(S.TexelMm)) mm</div>
+                    <div class="sko-kv">투광 평균(R/G/B) 귀 <b>@(Tri(S.RegionTransmit(SkinRegion.Ear)))</b> · 코 @(Tri(S.RegionTransmit(SkinRegion.Nose))) · 손가락 @(Tri(S.RegionTransmit(SkinRegion.Finger))) · 얼굴 @(Tri(S.RegionTransmit(SkinRegion.Face)))</div>
+                </div>
+
+                <div class="sko-card">
+                    <div class="sko-sec">👁 안구 각막 굴절 오버레이
+                        <button class="sko-btn sm @(E.RefractionEnabled ? "on" : null)" @onclick="() => Runner.SetRefraction(!E.RefractionEnabled)">이중 굴절</button>
+                        <button class="sko-btn sm @(Runner.EyeOverlay ? "on" : null)" @onclick="() => Runner.EyeOverlay = !Runner.EyeOverlay">오버레이</button>
+                        <button class="sko-btn sm @(E.TearFilmGuard ? "on" : null)" @onclick="() => Runner.SetTearGuard(!E.TearFilmGuard)">눈물막 가드</button>
+                    </div>
+                    <div class="sko-eye">
+                        <img src="data:image/bmp;base64,@(Runner.EyeBase64())" alt="eye" />
+                        <div class="sko-ctl col">
+                            <div class="sko-legend"><i class="o1"></i>굴절 홍채/동공 윤곽 <i class="o2"></i>직진(무굴절) 윤곽 <i class="o3"></i>눈물막 메니스커스</div>
+                            <div class="sko-kv">겉보기 동공 확대 <b>× @(F3(E.Magnification))</b> · 30° 시차 <b>@(F2(E.ParallaxMm)) mm</b> · 동공 @(F2(E.PupilRadius)) mm · 전반사 @(E.TirCount) · NaN @(E.NanCount)</div>
+                            <div class="sko-kv">눈물막 <b>@(F2(E.TearFilmUm)) µm</b> · 거칠기 @(F3(E.TearRoughness)) · 깜빡임 후 @(F1(E.SinceBlinkS)) s · 깜빡임 @(E.BlinksSeen) · 건조 이벤트 @(E.DryEvents) @(E.BlinkRequested ? "· ⚠ 깜빡임 요청" : "") · 메니스커스 피크 @(F2(E.MeniscusPeak))</div>
+                            <label class="sko-sl">조도 <b>@(F0(Runner.Lux)) lux</b><input type="range" min="1" max="10000" step="10" value="@(F0(Runner.Lux))" @onchange="e => Runner.Lux = (float)Num(e, 400)" /></label>
+                            <label class="sko-sl">증발 <b>@(F2(E.EvaporationUmS)) µm/s</b><input type="range" min="0.05" max="1.5" step="0.05" value="@(F2(E.EvaporationUmS))" @onchange="e => E.EvaporationUmS = (float)Num(e, 0.35)" /></label>
+                            <svg class="sko-spark" viewBox="0 0 360 40" preserveAspectRatio="none"><polyline class="tear" points="@(Series(Runner.TearSeries, 8, 40))" /></svg>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="sko-col">
+                <div class="sko-card">
+                    <div class="sko-sec">❤ 심박 · 혈류 관류 <span class="sko-chip">HR @(F0(V.Bpm)) bpm · 박동 @(V.Beats) · SpO₂ @(F0(V.Saturation * 100))%</span></div>
+                    <svg class="sko-ppg" viewBox="0 0 256 60" preserveAspectRatio="none"><polyline points="@(PpgPts())" /></svg>
+                    <div class="sko-legend"><span>PPG 링버퍼 @(V.RingCount)/@(MicroVascularHemodynamicsFlushingSynthesizer.Ring) 프레임 · 수축기 피크 + 중복 절흔</span></div>
+                    <div class="sko-ctl">
+                        <label class="sko-sl">심박 고정 <b>@(V.BpmOverride > 0 ? F0(V.BpmOverride) + " bpm" : "감정 연동")</b><input type="range" min="0" max="180" step="1" value="@(F0(V.BpmOverride))" @onchange="e => V.BpmOverride = (float)Num(e, 0)" /></label>
+                        <label class="sko-sl">홍조 이득 <b>@(F3(V.FlushGain))</b><input type="range" min="0" max="0.12" step="0.005" value="@(F3(V.FlushGain))" @onchange="e => V.FlushGain = (float)Num(e, 0.045)" /></label>
+                    </div>
+                    <div class="sko-regions">
+                        @for (var r = 0; r < MicroVascularHemodynamicsFlushingSynthesizer.Regions; r++)
+                        {
+                            <div class="sko-rg"><span class="nm">@(MicroVascularHemodynamicsFlushingSynthesizer.RegionNames[r])</span>
+                                <span class="bar"><span style="width:@(F1(Math.Min(100, V.RegionVolume(r) / 0.09 * 100)))%"></span></span>
+                                <span class="v">V @(F1(V.RegionVolume(r) * 100))% · EI @(F1(V.RegionErythema(r)))</span></div>
+                        }
+                    </div>
+                    <svg class="sko-spark" viewBox="0 0 360 50" preserveAspectRatio="none">
+                        <polyline class="bpm" points="@(Series(Runner.BpmSeries, 180, 50))" />
+                        <polyline class="cheek" points="@(Series(Runner.CheekSeries, 40, 50))" />
+                        <polyline class="fore" points="@(Series(Runner.ForeheadSeries, 40, 50))" />
+                    </svg>
+                    <div class="sko-legend"><i class="bpm"></i>심박(0–180) <i class="cheek"></i>뺨 홍반 지수(0–40) <i class="fore"></i>이마 홍반 지수</div>
+                </div>
+
+                <div class="sko-card">
+                    <div class="sko-sec">🎭 감정 → 혈관 반응 <span class="sko-dim">@(Runner.Source == EmotionSource.Director ? "디렉터 비트 " + Runner.Director.BeatName(Runner.Director.CurrentBeat) : "수동")</span></div>
+                    <div class="sko-emo">
+                        <span>분노 <b>@(F2(V.Anger))</b><i style="width:@(F0(V.Anger * 100))%" class="an"></i></span>
+                        <span>수줍음 <b>@(F2(V.Shyness))</b><i style="width:@(F0(V.Shyness * 100))%" class="sh"></i></span>
+                        <span>긴장 <b>@(F2(V.Tension))</b><i style="width:@(F0(V.Tension * 100))%" class="te"></i></span>
+                    </div>
+                    <div class="sko-kv">입력 정서가 @(F2(V.Valence)) · 각성 @(F2(V.Arousal)) · 긴장 @(F2(V.DirectorTension)) → 목표 분노 @(F2(V.AngerTarget)) · 수줍음 @(F2(V.ShyTarget)) · 긴장 @(F2(V.TensionTarget)) · 확장 τ @(F1(MicroVascularHemodynamicsFlushingSynthesizer.TauRise)) s / 회복 τ @(F1(MicroVascularHemodynamicsFlushingSynthesizer.TauFall)) s</div>
+                    <div class="sko-ctl">
+                        <button class="sko-btn sm" @onclick="() => Runner.SetManual(-0.85f, 0.95f, 0.1f)">😠 분노</button>
+                        <button class="sko-btn sm" @onclick="() => Runner.SetManual(0.8f, 0.15f, 0f)">😊 수줍음</button>
+                        <button class="sko-btn sm" @onclick="() => Runner.SetManual(-0.1f, 0.3f, 1f)">😰 긴장(창백)</button>
+                        <button class="sko-btn sm" @onclick="() => Runner.SetManual(0f, 0.2f, 0f)">😐 평정</button>
+                    </div>
+                    <div class="sko-ctl">
+                        <label class="sko-sl">정서가 <b>@(F2(Runner.ManualValence))</b><input type="range" min="-1" max="1" step="0.05" value="@(F2(Runner.ManualValence))" @onchange="e => Runner.SetManual((float)Num(e, 0), Runner.ManualArousal, Runner.ManualTension)" /></label>
+                        <label class="sko-sl">각성 <b>@(F2(Runner.ManualArousal))</b><input type="range" min="0" max="1" step="0.05" value="@(F2(Runner.ManualArousal))" @onchange="e => Runner.SetManual(Runner.ManualValence, (float)Num(e, 0.3), Runner.ManualTension)" /></label>
+                        <label class="sko-sl">긴장 <b>@(F2(Runner.ManualTension))</b><input type="range" min="0" max="1" step="0.05" value="@(F2(Runner.ManualTension))" @onchange="e => Runner.SetManual(Runner.ManualValence, Runner.ManualArousal, (float)Num(e, 0))" /></label>
+                    </div>
+                </div>
+                <div class="sko-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .sko-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .sko-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .sko-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #e11d48 13%, var(--card)), color-mix(in srgb, #f59e0b 12%, var(--card))); }
+    .sko-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .sko-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .sko-sub b { color: var(--text-primary); }
+    .sko-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .sko-bar { display: flex; flex-wrap: wrap; gap: 6px 10px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .sko-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; } .sko-btn:disabled { opacity: .4; cursor: default; }
+    .sko-btn.sm { font-size: 10px; padding: 2px 8px; } .sko-btn.on { background: color-mix(in srgb, #e11d48 22%, transparent); border-color: #fb7185; }
+    .sko-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .sko-chip.ok { border-color: #22c55e; color: #86efac; } .sko-chip.warn { border-color: #eab308; color: #fde68a; }
+    .sko-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .sko-sl b { font-family: var(--mono); color: var(--text-primary); } .sko-sl input { width: 90px; }
+    .sko-dim { font-size: 11px; font-weight: 500; color: var(--text-muted); }
+    .sko-main { display: grid; grid-template-columns: 1.1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .sko-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .sko-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .sko-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .sko-ctl { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; } .sko-ctl.col { flex-direction: column; align-items: flex-start; }
+    .sko-skin { display: flex; justify-content: center; background: #05070d; border-radius: 10px; } .sko-skin img { width: min(100%, 360px); aspect-ratio: 1; image-rendering: auto; }
+    .sko-eye { display: grid; grid-template-columns: 220px 1fr; gap: 10px; align-items: start; } .sko-eye img { width: 220px; height: 220px; border-radius: 10px; image-rendering: pixelated; }
+    .sko-kernel { width: 100%; height: 60px; background: #030712; border-radius: 6px; }
+    .sko-kernel polyline, .sko-ppg polyline, .sko-spark polyline { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+    .sko-kernel .kr { stroke: #ef4444; } .sko-kernel .kg { stroke: #22c55e; } .sko-kernel .kb { stroke: #3b82f6; }
+    .sko-ppg { width: 100%; height: 60px; background: #030712; border-radius: 6px; } .sko-ppg polyline { stroke: #f43f5e; }
+    .sko-spark { width: 100%; height: 50px; background: #030712; border-radius: 6px; }
+    .sko-spark .tear { stroke: #38bdf8; } .sko-spark .bpm { stroke: #f43f5e; } .sko-spark .cheek { stroke: #fb923c; } .sko-spark .fore { stroke: #facc15; }
+    .sko-regions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px 14px; }
+    .sko-rg { display: grid; grid-template-columns: 56px 1fr 120px; gap: 6px; align-items: center; font-size: 10px; }
+    .sko-rg .nm { color: var(--text-secondary); font-weight: 700; } .sko-rg .v { font-family: var(--mono); color: var(--text-primary); }
+    .sko-rg .bar { height: 8px; background: #1e293b; border-radius: 4px; overflow: hidden; } .sko-rg .bar span { display: block; height: 100%; background: linear-gradient(90deg, #fb7185, #e11d48); }
+    .sko-emo { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; font-size: 11px; color: var(--text-secondary); }
+    .sko-emo span { display: flex; flex-direction: column; gap: 3px; } .sko-emo b { color: var(--text-primary); font-family: var(--mono); }
+    .sko-emo i { display: block; height: 8px; border-radius: 4px; } .sko-emo .an { background: #dc2626; } .sko-emo .sh { background: #f472b6; } .sko-emo .te { background: #94a3b8; }
+    .sko-legend, .sko-kv { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11px; color: var(--text-secondary); align-items: center; } .sko-kv b { color: var(--text-primary); }
+    .sko-legend i { display: inline-block; width: 10px; height: 8px; border-radius: 2px; margin-right: 2px; }
+    .sko-legend .kr { background: #ef4444; } .sko-legend .kg { background: #22c55e; } .sko-legend .kb { background: #3b82f6; }
+    .sko-legend .o1 { background: #1aff66; } .sko-legend .o2 { background: #ff4de6; } .sko-legend .o3 { background: #4dd9ff; }
+    .sko-legend .bpm { background: #f43f5e; } .sko-legend .cheek { background: #fb923c; } .sko-legend .fore { background: #facc15; }
+    .sko-note { font-size: 11px; color: var(--text-muted); word-break: break-all; }
+    @@media (max-width: 1250px) { .sko-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+
+    private SeparableNeuralSkinSssEngine S => Runner.Skin;
+    private MicroVascularHemodynamicsFlushingSynthesizer V => Runner.Vascular;
+    private CornealRefractionTearFilmOpticsGuard E => Runner.Eye;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("SkinOptics.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+    private static string Tri(Vector3 v) => F3(v.X) + "/" + F3(v.Y) + "/" + F3(v.Z);
+    private static string ViewName(int m) => m switch { 1 => "관류 히트맵", 2 => "SSS 확산", 3 => "투광", _ => "최종" };
+
+    private string KernelPts(int c)
+    {
+        var sb = new System.Text.StringBuilder(SeparableNeuralSkinSssEngine.Taps * 12);
+        var mx = 1e-6f;
+        for (var t = 0; t < SeparableNeuralSkinSssEngine.Taps; t++) mx = MathF.Max(mx, S.Kernel(2, t));
+        for (var t = 0; t < SeparableNeuralSkinSssEngine.Taps; t++)
+            sb.Append(F1(t * 170.0 / (SeparableNeuralSkinSssEngine.Taps - 1))).Append(',').Append(F1(58 - 54 * S.Kernel(c, t) / mx)).Append(' ');
+        return sb.ToString();
+    }
+
+    private string PpgPts()
+    {
+        var n = V.RingCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1((n - 1 - i) * 256.0 / (MicroVascularHemodynamicsFlushingSynthesizer.Ring - 1))).Append(',').Append(F1(56 - 48 * Math.Clamp(V.PpgSample(i), 0, 1.1) / 1.1)).Append(' ');
+        return sb.ToString();
+    }
+
+    private string Series(Func<int, float> f, double max, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (SkinSssHemodynamicsStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - 2 - (h - 4) * Math.Clamp(f(i) / max, 0, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step60() { for (var i = 0; i < SkinSssHemodynamicsStudioRunner.Hz; i++) Runner.Step(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중(10 Hz 이벤트)은 250 ms 타이머가 처리 — 정지 상태 액션만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

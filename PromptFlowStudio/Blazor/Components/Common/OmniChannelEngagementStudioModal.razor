@@ -1,0 +1,238 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.OmniChannel
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject OmniChannelEngagementStudioRunner Runner
+
+@* [PromptFlow Studio v17.51.0] 🌐 옴니채널 크로스 배포 & 댓글 스튜디오 — 3 플랫폼 레일 · 메타 미리보기 · 통합 댓글 피드 · AI 답글 · 쿼터 게이지. *@
+
+<div class="omc-scrim" @onclick="Close">
+    <div class="omc-modal" @onclick:stopPropagation="true">
+        <div class="omc-h">
+            <div>
+                <div class="omc-title">🌐 옴니채널 크로스 배포 &amp; 댓글 스튜디오 @(Runner.IsRunning ? "· ▶ 루프" : null) · @(Runner.Live ? "🌐 실 API" : "🧪 시뮬레이션") · T+@(F0(Runner.Now)) s</div>
+                <div class="omc-sub"><b>배포 엔진</b>이 v17.49 9:16 마스터 MP4 하나를 참조 계수 분기 뷰로 Instagram Reels(v17.48) · YouTube Shorts(Data API v3 재개 업로드) · TikTok(Content Posting API v2)에 동시에 올리고, 제목/설명/해시태그/커버 프레임을 플랫폼 규칙에 맞춰 변환합니다. <b>댓글 합성기</b>는 의도(긍정 · 호기심 · 반박 · 스팸)를 분류해 v17.40 내러티브 맥락을 반영한 다국어 답글을 제안하고, <b>가드</b>는 YouTube 일일 유닛 · TikTok 분당 한도 · 답글 유사도 ≤ 40% · 45~180 초 페이싱을 지킵니다. 고정(pin)은 플랫폼 API 미지원이라 수동입니다.</div>
+            </div>
+            <button class="omc-x" @onclick="Close">✕</button>
+        </div>
+        <div class="omc-bar">
+            <button class="omc-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 루프")</button>
+            <button class="omc-btn" @onclick="StepMin" disabled="@Runner.IsRunning">⏭ +60 s</button>
+            <button class="omc-btn go" @onclick="Publish" disabled="@(Runner.Engine.IsActive || Runner.WaitingForMaster)">🚀 3 플랫폼 동시 배포</button>
+            <button class="omc-btn" @onclick="Runner.Cancel" disabled="@(!Runner.Engine.IsActive && !Runner.WaitingForMaster)">⏹ 취소</button>
+            @for (var p = 0; p < 3; p++)
+            {
+                var bit = 1 << p;
+                <button class="omc-btn pre @((Runner.Mask & bit) != 0 ? "on" : null)" @onclick="() => Runner.SetMask(Runner.Mask ^ bit)">@(Icon((OmniPlatform)p)) @(RealtimeOmniChannelPublishingEngine.PlatformName((OmniPlatform)p))</button>
+            }
+            <button class="omc-btn @(Runner.AutoSend ? "on" : null)" @onclick="() => Runner.SetAutoSend(!Runner.AutoSend)">🤖 자동 답글</button>
+            <button class="omc-btn @(Runner.Comments.AiSignature ? "on" : null)" @onclick="() => Runner.SetAiSignature(!Runner.Comments.AiSignature)">🏷 AI 서명</button>
+            <button class="omc-btn @(Runner.Live ? null : "on")" @onclick="() => Runner.SetLive(false)">🧪 시뮬</button>
+            <button class="omc-btn @(Runner.Live ? "on" : null)" @onclick="() => Runner.SetLive(true)">🌐 실 API</button>
+        </div>
+        <div class="omc-main">
+            <div class="omc-col">
+                <div class="omc-card">
+                    <div class="omc-sec">🛤 배포 레일 @(Runner.WaitingForMaster ? "· 🎞 v17.49 마스터 인코딩 중" : null)</div>
+                    @for (var p = 0; p < 3; p++)
+                    {
+                        var pl = (OmniPlatform)p;
+                        var l = Runner.Engine.Leg(pl);
+                        <div class="omc-leg @(PhaseCls(l.Phase))">
+                            <div class="hd">@(Icon(pl)) <b>@(RealtimeOmniChannelPublishingEngine.PlatformName(pl))</b> · @(RealtimeOmniChannelPublishingEngine.PhaseName(l.Phase)) @(l.LastStatus != 0 ? "· HTTP " + l.LastStatus.ToString(CultureInfo.InvariantCulture) : null) @(l.Retries > 0 ? "· 재시도 " + l.Retries.ToString(CultureInfo.InvariantCulture) : null)</div>
+                            <div class="steps">
+                                @for (var s = 0; s < 4; s++)
+                                {
+                                    <span class="st @(StepCls(l.Phase, s))">@(StepName(s))</span>
+                                }
+                            </div>
+                            <div class="bar"><div style="width:@(P(l.Size > 0 ? 100.0 * l.Offset / l.Size : 0))%"></div></div>
+                            <div class="ft">@(F1(l.Offset / 1048576.0)) / @(F1(l.Size / 1048576.0)) MB @(pl == OmniPlatform.TikTok && l.ChunkCount > 0 ? "· 청크 " + l.ChunkIndex.ToString(CultureInfo.InvariantCulture) + "/" + l.ChunkCount.ToString(CultureInfo.InvariantCulture) : null) @(Runner.Engine.PlatformId(pl).Length > 0 ? "· ID " + System.Text.Encoding.UTF8.GetString(Runner.Engine.PlatformId(pl)) : null) · 고정 훅 @(Runner.HookPosted(pl) ? (pl == OmniPlatform.TikTok ? "수동" : "게시") : "—")</div>
+                        </div>
+                    }
+                </div>
+                <div class="omc-card">
+                    <div class="omc-sec">🏷 플랫폼 메타 변환</div>
+                    <div class="omc-meta"><b>YouTube 제목(@(Runner.Engine.YouTubeTitle.Length)/100 · 카테고리 @(Runner.Engine.YouTubeCategoryId))</b><span>@(Runner.Engine.YouTubeTitle.ToString())</span></div>
+                    <div class="omc-meta"><b>YouTube 태그 @(Runner.Engine.YouTubeTagCount)</b><span>@(Runner.Engine.YouTubeTags.ToString())</span></div>
+                    <div class="omc-meta"><b>TikTok 캡션(해시태그 @(Runner.Engine.TikTokTags)/5 · 커버 @(Runner.Engine.CoverMs) ms)</b><span>@(Runner.Engine.TikTokCaption.ToString())</span></div>
+                    <div class="omc-meta"><b>Instagram 캡션(해시태그 @(Runner.Engine.InstagramTags)/30)</b><span>@(Runner.Engine.InstagramCaption.ToString())</span></div>
+                </div>
+            </div>
+            <div class="omc-col wide">
+                <div class="omc-card">
+                    <div class="omc-sec">💬 통합 댓글 피드 — @(Runner.Comments.Count) · 스팸 @(Runner.Comments.Spam) · 분류 최대 @(F1(Runner.Comments.MaxClassifyUs)) µs · 전송 @(Runner.RepliesSent) · 수동 @(Runner.ManualQueued)</div>
+                    @if (Runner.HookText.Length > 0) { <div class="omc-hook">📌 고정 질문 훅: @(Runner.HookText.ToString())</div> }
+                    <div class="omc-feed">
+                        @for (var i = 0; i < Math.Min(Runner.Comments.Count, 30); i++)
+                        {
+                            var c = Runner.Comments.Comment(i);
+                            var idx = i;
+                            <div class="omc-c @(IntentCls(c.Intent))">
+                                <div class="top">@(Icon(c.Platform)) <span class="it">@(AiAudienceCommentInteractionSynthesizer.IntentName(c.Intent)) @(F0(c.Confidence * 100))%</span> <span class="lg">@(AiAudienceCommentInteractionSynthesizer.LangName(c.Lang))</span> <span class="tm">T+@(F0(c.At)) s · @(F1(c.ClassifyUs)) µs</span></div>
+                                <div class="tx">@(Runner.Comments.Text(i).ToString())</div>
+                                @if (c.ReplyLen > 0)
+                                {
+                                    <div class="rp">↳ @(Runner.Comments.ReplyText(i).ToString())</div>
+                                }
+                                <div class="ac">
+                                    <span class="rs">@(ReplyName(c.Reply))</span>
+                                    @if (c.Reply is ReplyState.Suggested or ReplyState.Waiting)
+                                    {
+                                        <button class="omc-btn mini go" @onclick="() => Runner.SendReply(idx)">📤 전송</button>
+                                    }
+                                    @if (c.Intent != CommentIntent.Spam)
+                                    {
+                                        <button class="omc-btn mini" @onclick="() => Runner.Regenerate(idx)">↻ 다른 문구</button>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+            </div>
+            <div class="omc-col">
+                <div class="omc-card">
+                    <div class="omc-sec">📊 플랫폼 쿼터</div>
+                    <div class="omc-q"><span>YouTube 유닛</span><div class="bar"><div style="width:@(P(Runner.Guard.YtQuotaPct))%"></div></div><b>@(Math.Max(Runner.Guard.YtRemaining, 0))/10000</b></div>
+                    <div class="omc-q"><span>TikTok 일일 발행</span><div class="bar tt"><div style="width:@(P(100.0 * (Runner.Guard.TikTokDailyCap - Runner.Guard.TikTokPostsToday) / Runner.Guard.TikTokDailyCap))%"></div></div><b>@(Runner.Guard.TikTokPostsToday)/@(Runner.Guard.TikTokDailyCap)</b></div>
+                    <div class="omc-q"><span>Instagram 버킷</span><div class="bar ig"><div style="width:@(P(IgQuota()))%"></div></div><b>@(F0(IgQuota()))%</b></div>
+                    <div class="omc-kv">
+                        <div>YT 지연 @(Runner.Guard.YtDeferred) · TT 지연 @(Runner.Guard.TikTokDeferred)</div>
+                        <div>답글 허용 @(Runner.Guard.RepliesAllowed) · 유사 차단 @(Runner.Guard.RepliesBlockedSimilar) · 페이싱 대기 @(Runner.Guard.RepliesBlockedRate)</div>
+                        <div>최근 유사도 @(F0(Runner.Guard.LastSimilarity * 100))% / 40% · 다음 답글 @(F0(Math.Max(Runner.Guard.NextReplyAt - Runner.Now, 0))) s 후(간격 @(F0(Runner.Guard.LastPaceSec)) s)</div>
+                    </div>
+                    <svg class="omc-graph" viewBox="0 0 600 80" preserveAspectRatio="none"><polyline points="@(Series())" /></svg>
+                    <div class="omc-act">답글 속도 제한 · 문구 다양성은 플랫폼 스팸 정책 준수용이며, 자동화 사실을 숨기거나 봇 탐지를 우회하는 기능은 제공하지 않습니다.</div>
+                </div>
+                <div class="omc-card">
+                    <div class="omc-sec">🔐 YouTube / TikTok 토큰</div>
+                    <input class="omc-in" type="password" autocomplete="off" @bind="_yt" placeholder="YouTube OAuth 액세스 토큰(youtube.upload · force-ssl)" />
+                    <input class="omc-in" type="password" autocomplete="off" @bind="_tt" placeholder="TikTok 액세스 토큰(video.publish)" />
+                    <button class="omc-btn" @onclick="ApplyTokens">🔐 적용</button>
+                    <div class="omc-act">TikTok 직접 게시는 감사(audit) 전 앱이면 SELF_ONLY 공개 범위만 허용됩니다.</div>
+                    <div class="omc-act">@(Runner.LastAction ?? "대기")</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .omc-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .omc-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .omc-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #e1306c 14%, var(--card)), color-mix(in srgb, #ff0000 10%, var(--card)), color-mix(in srgb, #25f4ee 12%, var(--card))); }
+    .omc-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .omc-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .omc-sub b { color: var(--text-primary); }
+    .omc-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .omc-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .omc-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .omc-btn:disabled { opacity: .45; cursor: default; }
+    .omc-btn.on { background: color-mix(in srgb, #25f4ee 18%, var(--card)); border-color: #25f4ee; }
+    .omc-btn.pre.on { background: color-mix(in srgb, #e1306c 20%, var(--card)); border-color: #e1306c; }
+    .omc-btn.go { background: linear-gradient(90deg, #e1306c, #ff0000, #25f4ee); color: #fff; border: none; }
+    .omc-btn.mini { font-size: 10px; padding: 2px 7px; }
+    .omc-main { display: grid; grid-template-columns: 1fr 1.25fr 0.9fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .omc-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .omc-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); }
+    .omc-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .omc-leg { border: 1px solid var(--line); border-radius: 10px; padding: 7px 9px; margin-bottom: 7px; }
+    .omc-leg.err { border-color: #ef4444; } .omc-leg.done { border-color: #22c55e; }
+    .omc-leg .hd, .omc-leg .ft { font-size: 11px; color: var(--text-secondary); }
+    .omc-leg .hd b { color: var(--text-primary); }
+    .omc-leg .steps { display: flex; gap: 4px; margin: 5px 0; }
+    .omc-leg .st { flex: 1; text-align: center; font-size: 10px; padding: 2px 0; border-radius: 6px; background: #1e293b; color: var(--text-muted); }
+    .omc-leg .st.done { background: color-mix(in srgb, #22c55e 30%, #1e293b); color: #dcfce7; } .omc-leg .st.cur { background: linear-gradient(90deg, #e1306c, #25f4ee); color: #fff; } .omc-leg .st.err { background: #7f1d1d; color: #fecaca; }
+    .omc-leg .bar, .omc-q .bar { height: 7px; border-radius: 999px; background: #1e293b; overflow: hidden; }
+    .omc-leg .bar div { height: 100%; background: linear-gradient(90deg, #e1306c, #25f4ee); }
+    .omc-meta { display: flex; flex-direction: column; gap: 2px; font-size: 11px; margin-bottom: 6px; color: var(--text-secondary); }
+    .omc-meta b { color: var(--text-primary); font-size: 11px; } .omc-meta span { white-space: pre-wrap; word-break: break-word; max-height: 60px; overflow: hidden; }
+    .omc-hook { font-size: 12px; padding: 6px 8px; border-radius: 8px; background: color-mix(in srgb, #f59e0b 16%, transparent); margin-bottom: 8px; }
+    .omc-feed { display: flex; flex-direction: column; gap: 6px; max-height: 620px; overflow-y: auto; }
+    .omc-c { border: 1px solid var(--line); border-left: 3px solid #64748b; border-radius: 8px; padding: 6px 8px; font-size: 12px; }
+    .omc-c.pos { border-left-color: #22c55e; } .omc-c.q { border-left-color: #38bdf8; } .omc-c.neg { border-left-color: #f59e0b; } .omc-c.spam { border-left-color: #ef4444; opacity: .6; }
+    .omc-c .top { font-size: 10px; color: var(--text-muted); display: flex; gap: 6px; align-items: center; }
+    .omc-c .it { font-weight: 800; color: var(--text-primary); } .omc-c .tm { margin-left: auto; }
+    .omc-c .tx { color: var(--text-primary); margin: 3px 0; }
+    .omc-c .rp { color: var(--text-secondary); background: color-mix(in srgb, #25f4ee 8%, transparent); border-radius: 6px; padding: 4px 6px; }
+    .omc-c .ac { display: flex; gap: 6px; align-items: center; margin-top: 4px; } .omc-c .rs { font-size: 10px; color: var(--text-muted); }
+    .omc-q { display: grid; grid-template-columns: 96px 1fr 72px; gap: 6px; align-items: center; font-size: 11px; color: var(--text-secondary); margin-bottom: 6px; }
+    .omc-q .bar div { height: 100%; background: #ef4444; } .omc-q .bar.tt div { background: #25f4ee; } .omc-q .bar.ig div { background: #e1306c; }
+    .omc-q b { font: 700 11px var(--mono); color: var(--text-primary); text-align: right; }
+    .omc-kv { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px; }
+    .omc-graph { width: 100%; height: 70px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; margin-top: 6px; }
+    .omc-graph polyline { fill: none; stroke: #ef4444; stroke-width: 1.6; }
+    .omc-in { width: 100%; box-sizing: border-box; font: 12px var(--mono); padding: 5px 7px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); margin-bottom: 6px; }
+    .omc-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+    private string _yt = "", _tt = "";
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("OmniChannel.Modal.Timer", ex); }
+        }, null, 300, 300);
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string P(double v) => Math.Clamp(v, 0, 100).ToString("0.#", CultureInfo.InvariantCulture);
+    private static string Icon(OmniPlatform p) => p switch { OmniPlatform.Instagram => "📸", OmniPlatform.YouTube => "▶️", _ => "🎵" };
+    private static string StepName(int s) => s switch { 0 => "대기", 1 => "세션", 2 => "업로드", _ => "완료" };
+    private static string? PhaseCls(OmniLegPhase p) => p == OmniLegPhase.Done ? "done" : p == OmniLegPhase.Error ? "err" : null;
+    private static string? StepCls(OmniLegPhase p, int s)
+    {
+        if (p == OmniLegPhase.Idle) return null;
+        if (p == OmniLegPhase.Error) return "err";
+        var cur = p switch { OmniLegPhase.Waiting or OmniLegPhase.Deferred => 0, OmniLegPhase.Init => 1, OmniLegPhase.Uploading or OmniLegPhase.Processing => 2, OmniLegPhase.Done => 4, _ => -1 };
+        return s < cur ? "done" : s == cur ? "cur" : null;
+    }
+    private static string? IntentCls(CommentIntent c) => c switch { CommentIntent.Positive => "pos", CommentIntent.Question => "q", CommentIntent.Rebuttal => "neg", CommentIntent.Spam => "spam", _ => null };
+    private static string ReplyName(ReplyState r) => r switch { ReplyState.Suggested => "AI 추천 답글", ReplyState.Sent => "✅ 전송됨", ReplyState.Manual => "✋ 수동(TikTok 댓글 API 없음)", ReplyState.Skipped => "🚫 스팸 — 답하지 않음", ReplyState.BlockedSimilar => "⛔ 유사 문구 차단", ReplyState.Waiting => "⏳ 페이싱 대기", _ => "" };
+    private double IgQuota() => Runner.InstagramQuotaPct;
+
+    private string Series()
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++) sb.Append(P(600.0 * i / (n - 1))).Append(',').Append((78 - 76 * Math.Clamp(Runner.YtQuotaSeries(n - 1 - i) / 100, 0, 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(' ');
+        return sb.ToString();
+    }
+
+    private void Publish() => Runner.PublishAll();
+    private void ApplyTokens() { Runner.SetCredentials(_yt, _tt); _yt = ""; _tt = ""; }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void StepMin()
+    {
+        var n = (int)Math.Ceiling(60 / Runner.SecondsPerTick);
+        for (var i = 0; i < n; i++) Runner.Step();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}

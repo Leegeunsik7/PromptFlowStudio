@@ -1,0 +1,183 @@
+@page "/settings"
+@using PromptFlowStudio.Services.Account
+@inject SessionState Session
+@inject MemberRegistryService Members
+@inject NavigationManager Nav
+
+@* [PromptFlowStudio] 관리자 설정 — 사이드바에서 진입하는 관리자 전용 화면(진입 시 관리자 비밀번호 게이트). 탭 구성:
+     [회원·권한] 회원 RBAC 관리 · [메일(SMTP)] 발송 서버(암호화 저장) · [설치 PC] 배포자 수집 정보
+     [라이선스] 발급 목록 · [보안·배포] 올인원 인스톨러/단일 EXE · [관리자 명부] 관리자 자격
+   ⚠ 일반 사용자 설정(임계·경보·테마)은 별도 <사용자 설정>(/user-settings)으로 분리했다.
+   모니터링 오토메이션(SoundStack) 관리 센터 기능 이식. MainLayout(사이드바) 안에서 렌더. *@
+
+<PageTitle>PromptFlow Studio · 관리자 설정</PageTitle>
+
+@* ★ [관리자 설정 진입 게이트] 잠금 해제 전에는 관리자 비밀번호만 요구한다.
+     들어올 때마다 다시 묻는다(_unlocked 는 페이지 재진입 시 false 로 시작). *@
+@if (!_unlocked)
+{
+    <div class="st-gatewrap">
+        <div class="st-gate">
+            <div class="st-gate-ic">🔒</div>
+            <h1 class="st-gate-t">관리자 설정</h1>
+            <div class="st-gate-d">이 화면은 <b>관리자 비밀번호</b>가 필요합니다. 관리자(Admin) 계정의 비밀번호를 입력하세요.</div>
+            <input class="st-gate-in" type="password" placeholder="관리자 비밀번호"
+                   @bind="_pwInput" @bind:event="oninput" @onkeydown="OnGateKey" />
+            @if (_pwErr is { Length: > 0 }) { <div class="st-gate-e" role="alert">⚠ @_pwErr</div> }
+            <button class="st-gate-b" @onclick="TryUnlock">🔓 잠금 해제</button>
+            <div class="st-gate-hint">💡 테스트 계정(ANG)은 관리자 설정에 들어올 수 없습니다.</div>
+        </div>
+    </div>
+}
+else
+{
+<div class="st">
+    <header class="st-head">
+        <div><h1 class="st-title">⚙️ 관리자 설정</h1><HelpHint /><div class="st-sub">회원·권한 · 메일 발송 · 설치 PC · 라이선스 · 관리자 명부</div></div>
+    </header>
+
+    @* ── 탭 바 ── *@
+    <nav class="st-tabs">
+        <button class="st-tab @(_tab == Tab.Members ? "on" : null)" @onclick="() => _tab = Tab.Members">👥 회원·권한</button>
+        <button class="st-tab @(_tab == Tab.Mail ? "on" : null)" @onclick="() => _tab = Tab.Mail">📧 메일(SMTP)</button>
+        <button class="st-tab @(_tab == Tab.Video ? "on" : null)" @onclick="() => _tab = Tab.Video">🎬 영상(Wan)</button>
+        <button class="st-tab @(_tab == Tab.Engines ? "on" : null)" @onclick="() => _tab = Tab.Engines">🤖 AI 엔진</button>
+        <button class="st-tab @(_tab == Tab.Gemini ? "on" : null)" @onclick="() => _tab = Tab.Gemini">🔑 Gemini AI</button>
+        <button class="st-tab @(_tab == Tab.KeyVault ? "on" : null)" @onclick="() => _tab = Tab.KeyVault">🗝️ 키 볼트</button>
+        <button class="st-tab @(_tab == Tab.InstallPc ? "on" : null)" @onclick="() => _tab = Tab.InstallPc">💻 설치 PC</button>
+        <button class="st-tab @(_tab == Tab.License ? "on" : null)" @onclick="() => _tab = Tab.License">🪪 라이선스 관리</button>
+        <button class="st-tab @(_tab == Tab.Deploy ? "on" : null)" @onclick="() => _tab = Tab.Deploy">🚀 보안·배포</button>
+        <button class="st-tab @(_tab == Tab.Admins ? "on" : null)" @onclick="() => _tab = Tab.Admins">🛡️ 관리자 명부</button>
+    </nav>
+
+    @if (!Session.IsAdmin)
+    {
+        <div class="st-lock">🔒 관리자(Admin) 권한이 필요한 기능입니다. 현재 권한: <b>@Session.Role</b> · Admin 계정(GSLEE)으로 로그인하세요.</div>
+    }
+    else if (_tab == Tab.Members)
+    {
+        @* 사이드바에서 옮겨 온 <회원·라이선스 관리> — 회원 표는 이 컴포넌트 한 곳에만 있다. *@
+        <MemberAdminPanel />
+    }
+    else if (_tab == Tab.Mail)
+    {
+        <SmtpSettingsPanel />
+    }
+    else if (_tab == Tab.Video)
+    {
+        <WanSettingsPanel />
+    }
+    else if (_tab == Tab.Engines)
+    {
+        @* 4대 오픈소스 AI 엔진(TTS/업스케일/STT/립싱크) 실행 파일 경로·인자 설정 + 연결 진단. *@
+        <EngineSettingsPanel />
+    }
+    else if (_tab == Tab.Gemini)
+    {
+        @* Gemini AI API 키 간편 등록 + 연결 검증(핑) — 7대 Gemini 디렉터/자율 에이전시 기능의 열쇠. *@
+        <GeminiSettingsPanel />
+    }
+    else if (_tab == Tab.KeyVault)
+    {
+        @* v15.11.0 다중 클라우드 Key Vault(DashScope/SiliconFlow/Custom 다중 키 · 입력 즉시 반영). *@
+        <AdminSettings Embedded="true" />
+    }
+    else if (_tab == Tab.InstallPc)
+    {
+        <InstallPcPanel />
+    }
+    else if (_tab == Tab.License)
+    {
+        @* 시리얼 라이선스 발급/명부 관리(XXXX-XXXX · Used/Unused). *@
+        <LicenseSettingsPanel />
+    }
+    else if (_tab == Tab.Deploy)
+    {
+        @* 보안 배포 · 올인원 인스톨러 & 단일 EXE 패키징 집행(발급자 PC 전용). *@
+        <DeployPackagerPanel />
+    }
+    else if (_tab == Tab.Admins)
+    {
+        <AdminRosterPanel />
+    }
+</div>
+}
+
+<style>
+    .st{padding:22px 26px 40px;max-width:980px;color:var(--ink,#e6eefc)}
+    .st-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:16px}
+    .st-title{font-size:22px;font-weight:800;margin:0;color:var(--ink,#f1f6ff)}
+    .st-sub{font-size:13px;color:var(--sub,#93a3b8);margin-top:4px}
+    /* 탭 바 */
+    .st-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px;border-bottom:1px solid var(--line,rgba(148,163,184,.18));padding-bottom:2px}
+    .st-tab{appearance:none;border:0;background:transparent;cursor:pointer;font-family:inherit;font-size:13px;font-weight:700;color:var(--sub,#93a3b8);padding:9px 14px;border-radius:10px 10px 0 0;border-bottom:2px solid transparent;transition:color .14s ease,border-color .14s ease,background .14s ease}
+    .st-tab:hover{color:var(--ink,#e6eefc);background:color-mix(in srgb,var(--accent,#f59e0b) 7%,transparent)}
+    .st-tab.on{color:var(--accent,#f59e0b);border-bottom-color:var(--accent,#f59e0b);background:color-mix(in srgb,var(--accent,#f59e0b) 10%,transparent)}
+    .st-lock{padding:16px 18px;border-radius:12px;background:color-mix(in srgb,var(--down,#dc2626) 12%,transparent);border:1px solid color-mix(in srgb,var(--down,#dc2626) 40%,transparent);color:var(--down,#f87171);font-size:13.5px;line-height:1.6}
+    .st-lock b{color:var(--ink,#e6eefc)}
+    /* ── 관리자 설정 진입 게이트(관리자 비밀번호) — 콘텐츠 영역 정중앙 ── */
+    .st-gatewrap{display:grid;place-items:center;width:100%;min-height:calc(100vh - 64px);box-sizing:border-box;padding:24px}
+    .st-gate{max-width:420px;width:100%;text-align:center;background:var(--card,#111a2e);border:1px solid var(--line,rgba(148,163,184,.18));border-radius:18px;padding:34px 30px;box-shadow:0 20px 60px rgba(0,0,0,.35)}
+    .st-gate-ic{font-size:38px;line-height:1;margin-bottom:12px}
+    .st-gate-t{font-size:20px;font-weight:800;margin:0 0 8px;color:var(--ink,#f1f6ff)}
+    .st-gate-d{font-size:13px;color:var(--sub,#93a3b8);line-height:1.6;margin-bottom:18px}
+    .st-gate-d b{color:var(--accent,#fbbf24)}
+    .st-gate-in{width:100%;box-sizing:border-box;text-align:center;letter-spacing:.15em;background:rgba(8,13,24,.6);border:1px solid var(--line,rgba(148,163,184,.28));border-radius:11px;padding:12px 14px;color:var(--ink,#e6eefc);font-size:15px;font-family:inherit;outline:none}
+    .st-gate-in:focus{border-color:var(--accent,#f59e0b);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent,#f59e0b) 18%,transparent)}
+    .st-gate-e{margin-top:12px;padding:9px 12px;border-radius:9px;background:color-mix(in srgb,var(--down,#dc2626) 12%,transparent);border:1px solid color-mix(in srgb,var(--down,#dc2626) 38%,transparent);color:var(--down,#f87171);font-size:12.5px}
+    .st-gate-b{width:100%;margin-top:16px;padding:13px;border-radius:12px;border:0;cursor:pointer;font-family:inherit;font-size:14.5px;font-weight:800;color:#fff;background:linear-gradient(135deg,#8b7bff,#6d5efc);box-shadow:0 8px 22px rgba(124,108,255,.32)}
+    .st-gate-b:hover{filter:brightness(1.06)}
+    .st-gate-hint{margin-top:14px;font-size:11.5px;color:var(--sub,#94a3b8)}
+</style>
+
+@code {
+    private enum Tab { Members, Mail, Video, Engines, Gemini, KeyVault, InstallPc, License, Deploy, Admins }
+    private Tab _tab = Tab.Members;
+
+    /// <summary>v5.3.2: 원클릭 앱 제작 직결 — <c>/settings?tab=deploy</c> 진입 시 보안·배포 탭 자동 활성.
+    ///   ⚠ 프로퍼티명은 enum <c>Tab</c> 과의 충돌을 피해 <c>TabParam</c> 로 두고 쿼리키는 <c>tab</c> 으로 매핑.</summary>
+    [Parameter, SupplyParameterFromQuery(Name = "tab")] public string? TabParam { get; set; }
+    private string? _appliedTabParam;
+
+    // ── 관리자 설정 진입 게이트(관리자 비밀번호) ──
+    private bool _unlocked;
+    private string _pwInput = "";
+    private string? _pwErr;
+
+    private void TryUnlock()
+    {
+        if (Members.VerifyAdminPassword(_pwInput)) { _unlocked = true; _pwErr = null; _pwInput = ""; }
+        else { _pwErr = "관리자 비밀번호가 일치하지 않습니다."; _pwInput = ""; }
+    }
+    private void OnGateKey(KeyboardEventArgs e) { if (e.Key == "Enter") TryUnlock(); }
+
+    protected override void OnInitialized()
+    {
+        if (!Session.IsAuthenticated) { Nav.NavigateTo("login"); return; }
+    }
+
+    // v5.3.2: 쿼리(?tab=) 값이 바뀔 때만 초기 활성 탭을 반영한다(사용자의 이후 탭 클릭은 보존).
+    //   같은 /settings 에서 [원클릭 앱 제작](?tab=deploy) 재진입 시에도 OnParametersSet 이 잡아 Deploy 탭으로 전환.
+    protected override void OnParametersSet()
+    {
+        if (string.Equals(_appliedTabParam, TabParam, StringComparison.Ordinal)) return;
+        _appliedTabParam = TabParam;
+        if (ParseTab(TabParam) is { } t) _tab = t;
+    }
+
+    /// <summary>쿼리 tab 값 → 탭(모르는 값은 null). deploy=보안·배포(원클릭 APK/iOS 제작).</summary>
+    private static Tab? ParseTab(string? q) => (q ?? "").Trim().ToLowerInvariant() switch
+    {
+        "deploy" => Tab.Deploy,
+        "members" => Tab.Members,
+        "mail" => Tab.Mail,
+        "video" => Tab.Video,
+        "engines" => Tab.Engines,
+        "gemini" => Tab.Gemini,
+        "keyvault" => Tab.KeyVault,
+        "installpc" => Tab.InstallPc,
+        "license" => Tab.License,
+        "admins" => Tab.Admins,
+        _ => null,
+    };
+}

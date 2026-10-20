@@ -1,0 +1,182 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.GaussianAvatar
+@using PromptFlowStudio.Services.SemanticMatting
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject GaussianAvatarStudioRunner Runner
+
+@* [PromptFlow Studio v17.20.0] 🔮 AI 4D 가우시안 아바타 스튜디오 — 스플랫 밀도 뷰포트(타원체 EWA · 포인트 · 중첩 히트맵) · 16 비트 래딕스 정렬 µs 미터 · SH 반사광/확산 슬라이더 · HDRI 재조명 · SSS/젖음 합성 · DQS 바인딩 계측. *@
+
+<div class="gav-scrim" @onclick="Close">
+    <div class="gav-modal" @onclick:stopPropagation="true">
+        <div class="gav-h">
+            <div>
+                <div class="gav-title">🔮 AI 4D 가우시안 아바타 스튜디오</div>
+                <div class="gav-sub"><b>스키닝 엔진</b>이 가우시안 @(E.N)개(근육 @(E.Count(GaussianSurface.Muscle)) · 의상 @(E.Count(GaussianSurface.Garment)) · 헤어 @(E.Count(GaussianSurface.Hair)))를 v17.14 근육 · v17.16 의상 · v17.15 헤어 앵커 @(E.A)개에 듀얼 쿼터니언(DQS)으로 바인딩해 중심 · 공분산 회전을 SIMD 로 변형합니다. <b>SH 합성기</b>는 차수 3 · 16 계수 RGB 를 정준 시점으로 평가하고 v17.08 HDRI 링버퍼 조도 · v17.17 SSS 투광 · v17.19 젖음 암전을 합성하며, <b>가드</b>는 16 비트 깊이 키 2 패스 래딕스 정렬 · 프러스텀 컬링 · 알파 0.999 타일 조기 종료로 16.6 ms 예산을 지킵니다.</div>
+            </div>
+            <button class="gav-x" @onclick="Close">✕</button>
+        </div>
+        <div class="gav-bar">
+            <button class="gav-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 가동")</button>
+            <button class="gav-btn" @onclick="Step30" disabled="@Runner.IsRunning">⏭ 0.5초</button>
+            <button class="gav-btn @(Runner.BaseSim ? "on" : null)" @onclick="() => Runner.SetBaseSim(!Runner.BaseSim)">🧬 동역학</button>
+            <button class="gav-btn @(E.Path == GaussianSimdPath.V256 ? "on" : null)" @onclick="() => Runner.SetSimd(E.Path != GaussianSimdPath.V256)">⚡ SIMD</button>
+            <span class="gav-chip">틱 @(F2(Runner.LastTickMs)) ms · 기반 @(F1(Runner.LastBaseMs)) ms · 래스터 예산 @(F1(Runner.BudgetMs)) ms</span>
+            <span class="gav-chip @(G.BudgetExceeded ? "warn" : "ok")">@(G.BudgetExceeded ? "예산 절단 " + G.BudgetSkipped : "프레임 예산 이내")</span>
+        </div>
+        <div class="gav-main">
+            <div class="gav-col">
+                <div class="gav-card">
+                    <div class="gav-sec">🎥 스플랫 밀도 뷰포트
+                        <button class="gav-btn sm @(G.View == SplatView.Ellipsoid ? "on" : null)" @onclick="() => Runner.SetView(SplatView.Ellipsoid)">타원체</button>
+                        <button class="gav-btn sm @(G.View == SplatView.Point ? "on" : null)" @onclick="() => Runner.SetView(SplatView.Point)">포인트</button>
+                        <button class="gav-btn sm @(G.View == SplatView.Density ? "on" : null)" @onclick="() => Runner.SetView(SplatView.Density)">중첩 밀도</button>
+                    </div>
+                    <div class="gav-vp"><img src="data:image/bmp;base64,@(Runner.RenderBase64())" alt="gaussian splats" /></div>
+                    <div class="gav-ctl">
+                        <label class="gav-sl">궤도 <b>@(F0(Runner.CameraYawDeg))°</b><input type="range" min="0" max="359" step="1" value="@(F0(Runner.CameraYawDeg))" @onchange="e => Runner.SetYaw((float)Num(e, 20))" /></label>
+                        <label class="gav-sl">줌 <b>× @(F2(Runner.Zoom))</b><input type="range" min="0.4" max="3" step="0.05" value="@(F2(Runner.Zoom))" @onchange="e => Runner.SetZoom((float)Num(e, 1))" /></label>
+                        <button class="gav-btn sm @(Runner.AutoOrbit ? "on" : null)" @onclick="() => Runner.SetOrbit(!Runner.AutoOrbit)">자동 궤도</button>
+                    </div>
+                    <div class="gav-kv">가시 <b>@(G.Visible)</b> · 프러스텀 컬링 @(G.CulledFrustum) · 알파 컬링 @(G.CulledAlpha) · 스플랫 @(G.Splatted) · 조기 종료 @(G.EarlySkipped) · 포화 타일 <b>@(G.SaturatedTiles)/@(RadixSortDepthCullingTileRasterizerGuard.TileCount)</b> · 픽셀 연산 @(G.PixelOps)</div>
+                </div>
+
+                <div class="gav-card">
+                    <div class="gav-sec">⏱ 16 비트 래딕스 정렬 미터
+                        <button class="gav-btn sm @(G.EarlyTermination ? "on" : null)" @onclick="() => Runner.SetEarlyTermination(!G.EarlyTermination)">0.999 조기 종료</button>
+                    </div>
+                    <div class="gav-meter">
+                        <span class="nm">정렬(목표 &lt; 1000 µs)</span>
+                        <span class="bar"><i class="@(G.LastSortUs < 1000 ? null : "hot")" style="width:@(F0(Math.Min(100, G.LastSortUs / 10)))%"></i><em style="left:@(F0(Math.Min(100, G.PeakSortUs / 10)))%"></em></span>
+                        <span class="v"><b>@(F0(G.LastSortUs)) µs</b> · 최대 @(F0(G.PeakSortUs)) µs · 컬링 @(F0(G.LastCullUs)) µs · 키 @(G.Visible) × 2 패스</span>
+                    </div>
+                    <div class="gav-meter">
+                        <span class="nm">래스터(예산 16.6 ms)</span>
+                        <span class="bar"><i class="@(G.BudgetExceeded ? "hot" : null)" style="width:@(F0(Math.Min(100, G.LastRasterUs / 166)))%"></i></span>
+                        <span class="v"><b>@(F2(G.LastRasterUs / 1000)) ms</b> · 예산 절단 @(G.BudgetSkipped)</span>
+                    </div>
+                    <svg class="gav-ser" viewBox="0 0 360 60" preserveAspectRatio="none">
+                        <polyline class="so" points="@(Series(Runner.SortUsSeries, 1500, 60))" /><polyline class="sk" points="@(Series(Runner.SkinUsSeries, 15000, 60))" /><polyline class="sh" points="@(Series(Runner.ShUsSeries, 15000, 60))" /><polyline class="ra" points="@(Series(Runner.RasterUsSeries, 16600, 60))" />
+                    </svg>
+                    <div class="gav-legend"><i class="so"></i>정렬(0–1.5 ms) <i class="sk"></i>DQS 스키닝(0–15 ms) <i class="sh"></i>SH 재조명(0–15 ms) <i class="ra"></i>래스터(0–16.6 ms)</div>
+                </div>
+            </div>
+
+            <div class="gav-col">
+                <div class="gav-card">
+                    <div class="gav-sec">🌈 SH 차수 3 신경망 재조명
+                        <button class="gav-btn sm @(S.Relight ? "on" : null)" @onclick="() => Runner.SetRelight(!S.Relight)">HDRI 재조명</button>
+                        <button class="gav-btn sm @(S.SssEnabled ? "on" : null)" @onclick="() => Runner.SetSss(!S.SssEnabled)">SSS 투과</button>
+                        <button class="gav-btn sm @(S.WetEnabled ? "on" : null)" @onclick="() => Runner.SetWet(!S.WetEnabled)">젖음 합성</button>
+                    </div>
+                    <div class="gav-ctl">
+                        <label class="gav-sl">반사광 강도 <b>× @(F2(S.SpecularGain))</b><input type="range" min="0" max="4" step="0.05" value="@(F2(S.SpecularGain))" @onchange="e => Runner.SetSpecular((float)Num(e, 1))" /></label>
+                        <label class="gav-sl">확산 조도 <b>× @(F2(S.DiffuseGain))</b><input type="range" min="0" max="3" step="0.05" value="@(F2(S.DiffuseGain))" @onchange="e => Runner.SetDiffuse((float)Num(e, 1))" /></label>
+                    </div>
+                    <div class="gav-ctl">
+                        @foreach (var p in Presets)
+                        {
+                            var pp = p;
+                            <button class="gav-btn sm @(Runner.Env.Preset == pp ? "on" : null)" @onclick="() => Runner.SetHdri(pp)">@(pp)</button>
+                        }
+                    </div>
+                    <div class="gav-kv">평균 반사 <b>@(F3(S.MeanSpecular))</b> · SSS 투과 @(F3(S.MeanTransmit)) · 평균 휘도 @(F3(S.MeanLuma)) · 젖음 <b>@(F0(S.MeanWetness * 100))%</b> · 링버퍼 @(S.RingCount)/@(SphericalHarmonicsNeuralRelightingSynthesizer.Ring)</div>
+                    <div class="gav-kv">SH 평가 @(F0(S.LastShUs)) µs · 합성 @(F0(S.LastShadeUs)) µs · 젖음 샘플 @(F0(S.LastSampleUs)) µs · @(S.Path)</div>
+                </div>
+
+                <div class="gav-card">
+                    <div class="gav-sec">🦴 듀얼 쿼터니언 표면 바인딩</div>
+                    <div class="gav-kv">앵커 <b>@(E.A)</b> · 퇴화 프레임 @(E.DegenerateAnchors) · 영향 @(DeformableGaussianSkinningBindingEngine.Influences)/가우시안 · 최대 변위 <b>@(F1(E.MaxDisplacementMm)) mm</b></div>
+                    <div class="gav-kv">수집 @(F0(E.LastGatherUs)) µs · 앵커 DQ @(F0(E.LastAnchorUs)) µs · 블렌딩 @(F0(E.LastBlendUs)) µs · 변환 @(F0(E.LastApplyUs)) µs · 합계 <b>@(F2(E.LastUpdateUs / 1000)) ms</b></div>
+                    <div class="gav-kv">기반 동역학: @(Runner.Base.Weather) · 피막 @(F1(Runner.Base.Wet.SkinMeanUm)) µm · 모발 수분 @(F0(Runner.Base.Guard.HairWetMean * 100))%</div>
+                </div>
+                <div class="gav-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .gav-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .gav-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .gav-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #8b5cf6 16%, var(--card)), color-mix(in srgb, #ec4899 12%, var(--card))); }
+    .gav-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .gav-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .gav-sub b { color: var(--text-primary); }
+    .gav-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .gav-bar { display: flex; flex-wrap: wrap; gap: 6px 10px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .gav-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; } .gav-btn:disabled { opacity: .4; cursor: default; }
+    .gav-btn.sm { font-size: 10px; padding: 2px 8px; } .gav-btn.on { background: color-mix(in srgb, #8b5cf6 24%, transparent); border-color: #a78bfa; }
+    .gav-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .gav-chip.ok { border-color: #22c55e; color: #86efac; } .gav-chip.warn { border-color: #eab308; color: #fde68a; }
+    .gav-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .gav-sl b { font-family: var(--mono); color: var(--text-primary); } .gav-sl input { width: 110px; }
+    .gav-main { display: grid; grid-template-columns: 1.1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .gav-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .gav-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+    .gav-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .gav-ctl { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+    .gav-vp img { display: block; width: 100%; max-height: 52vh; aspect-ratio: 3 / 4; object-fit: contain; image-rendering: pixelated; background: #030712; border-radius: 8px; }
+    .gav-ser { width: 100%; height: 60px; background: #030712; border-radius: 6px; }
+    .gav-ser polyline { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; } .gav-ser .so { stroke: #a78bfa; } .gav-ser .sk { stroke: #38bdf8; } .gav-ser .sh { stroke: #f472b6; } .gav-ser .ra { stroke: #f59e0b; }
+    .gav-meter { display: grid; grid-template-columns: 150px 1fr; gap: 2px 10px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .gav-meter .nm { font-weight: 700; color: var(--text-primary); min-width: 0; overflow-wrap: anywhere; } .gav-meter .v { grid-column: 2; font-family: var(--mono); min-width: 0; overflow-wrap: anywhere; } .gav-meter .v b { color: #a78bfa; }
+    .gav-meter .bar { position: relative; height: 12px; background: #0f172a; border-radius: 6px; overflow: hidden; }
+    .gav-meter .bar i { display: block; height: 100%; background: linear-gradient(90deg, #6d28d9, #a78bfa, #ede9fe); border-radius: 6px; transition: width .2s; } .gav-meter .bar i.hot { background: linear-gradient(90deg, #b45309, #f59e0b); }
+    .gav-meter .bar em { position: absolute; top: 0; bottom: 0; width: 2px; background: #f472b6; }
+    .gav-legend, .gav-kv { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11px; line-height: 1.45; color: var(--text-secondary); align-items: center; min-width: 0; overflow-wrap: anywhere; } .gav-kv b { color: var(--text-primary); }
+    .gav-legend i { display: inline-block; width: 10px; height: 8px; border-radius: 2px; margin-right: 2px; }
+    .gav-legend .so { background: #a78bfa; } .gav-legend .sk { background: #38bdf8; } .gav-legend .sh { background: #f472b6; } .gav-legend .ra { background: #f59e0b; }
+    .gav-note { font-size: 11px; color: var(--text-muted); word-break: break-all; }
+    @@media (max-width: 1100px) { .gav-main { grid-template-columns: 1fr; } .gav-meter { grid-template-columns: 1fr; } .gav-meter .v { grid-column: 1; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly HdriPreset[] Presets = { HdriPreset.Studio, HdriPreset.Sunset, HdriPreset.Neon, HdriPreset.Night };
+    private System.Threading.Timer? _timer;
+
+    private DeformableGaussianSkinningBindingEngine E => Runner.Engine;
+    private SphericalHarmonicsNeuralRelightingSynthesizer S => Runner.Synth;
+    private RadixSortDepthCullingTileRasterizerGuard G => Runner.Guard;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("GaussianAvatar.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    private string Series(Func<int, float> f, double max, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (GaussianAvatarStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - 2 - (h - 4) * Math.Clamp(f(i) / max, 0, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step30() { for (var i = 0; i < GaussianAvatarStudioRunner.Hz / 2; i++) Runner.Step(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중 갱신은 250 ms 타이머가 처리 — 정지 상태 변경만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

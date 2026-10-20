@@ -1,0 +1,127 @@
+@inject IAutoUpdateService Updater
+
+@* [PromptFlow Studio] 릴리스 노트 모달 — 새 업데이트 감지 시 다운로드 전에 변경사항을 보여주고 [즉시 업데이트/나중에] 선택.
+   릴리스 설명(GitHub body)은 외부 마크다운 라이브러리 없이 순수 BCL 로 라인 단위 파싱해 렌더.
+   ⚠ body 는 원격(GitHub) 데이터 → 반드시 '텍스트로만' 바인딩(@n.Text)한다. MarkupString(HTML 주입) 절대 금지. *@
+
+<div class="rn-scrim" @onclick="Close">
+    <div class="rn" @onclick:stopPropagation="true">
+        <div class="rn-head">
+            <span class="rn-title">🎁 새 버전이 준비되었습니다</span>
+            <button class="rn-x" @onclick="Close" title="닫기">✕</button>
+        </div>
+
+        <div class="rn-ver">
+            <span class="rn-ver-cur">@Updater.CurrentVersion</span>
+            <span class="rn-ver-arrow">➔</span>
+            <span class="rn-ver-new">@(Updater.LatestVersion ?? "최신")</span>
+        </div>
+
+        <div class="rn-body">
+            @if (_notes.Count > 0)
+            {
+                @foreach (var n in _notes)
+                {
+                    @if (n.Kind == "h2") { <div class="rn-h2">@n.Text</div> }
+                    else if (n.Kind == "h3") { <div class="rn-h3">@n.Text</div> }
+                    else if (n.Kind == "li") { <div class="rn-li"><span class="rn-dot">•</span><span>@n.Text</span></div> }
+                    else if (n.Kind == "gap") { <div class="rn-gap"></div> }
+                    else { <div class="rn-p">@n.Text</div> }
+                }
+            }
+            else
+            {
+                @* 릴리스 설명이 비어 있을 때의 일반 안내(버전 무관 · 오탐 방지) *@
+                <div class="rn-h3">이번 업데이트</div>
+                <div class="rn-p">새로운 기능과 안정성 개선이 포함되어 있습니다. 자세한 내용은 릴리스 페이지를 확인하세요.</div>
+            }
+        </div>
+
+        <div class="rn-foot">
+            <button class="rn-btn go" @onclick="StartUpdate">🚀 즉시 업데이트 및 재시작</button>
+            <button class="rn-btn ghost" @onclick="Close">나중에</button>
+        </div>
+        <div class="rn-note">업데이트는 자동으로 다운로드·설치되고 앱이 재시작됩니다. 로컬 데이터(프로젝트·설정·엔진 경로)는 그대로 유지됩니다.</div>
+    </div>
+</div>
+
+<style>
+    .rn-scrim { position: fixed; inset: 0; z-index: 300; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 24px; }
+    .rn { width: 100%; max-width: 560px; max-height: 86vh; display: flex; flex-direction: column; background: var(--card, #161922); border: 1px solid var(--line, #2d3342); border-radius: 18px; box-shadow: 0 30px 80px rgba(0,0,0,.55); overflow: hidden; }
+    .rn-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--line, #2d3342); }
+    .rn-title { font-size: 16px; font-weight: 900; color: var(--text-primary, #eef1f7); }
+    .rn-x { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line, #2d3342); background: var(--card-2, #1e222e); color: var(--text-secondary, #aab2c5); cursor: pointer; font-size: 13px; }
+    .rn-x:hover { border-color: #ef4444; color: #ef4444; }
+
+    .rn-ver { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 18px 20px 6px; }
+    .rn-ver-cur { font: 700 14px var(--mono, monospace); color: var(--text-muted, #6b7488); }
+    .rn-ver-arrow { color: var(--text-muted, #6b7488); font-size: 15px; }
+    .rn-ver-new { font: 900 20px var(--mono, monospace); padding: 5px 14px; border-radius: 999px; color: #fff;
+        background: linear-gradient(135deg, var(--flow-violet, #8b5cf6), var(--flow-magenta, #d946ef)); box-shadow: 0 6px 18px color-mix(in srgb, var(--flow-magenta, #d946ef) 30%, transparent); }
+
+    .rn-body { padding: 12px 22px 6px; overflow-y: auto; }
+    .rn-h2 { font-size: 14.5px; font-weight: 900; color: var(--text-primary, #eef1f7); margin: 14px 0 6px; padding-bottom: 5px; border-bottom: 1px solid var(--line, #2d3342); }
+    .rn-h2:first-child { margin-top: 2px; }
+    .rn-h3 { font-size: 13px; font-weight: 800; color: var(--accent-2, #22d3ee); margin: 10px 0 4px; }
+    .rn-li { display: flex; gap: 8px; align-items: flex-start; font-size: 12.5px; line-height: 1.55; color: var(--text-secondary, #aab2c5); padding: 2px 0; }
+    .rn-dot { color: var(--flow-violet, #8b5cf6); font-weight: 900; flex: 0 0 auto; }
+    .rn-p { font-size: 12.5px; line-height: 1.6; color: var(--text-secondary, #aab2c5); margin: 3px 0; }
+    .rn-gap { height: 5px; }
+
+    .rn-foot { display: flex; gap: 10px; padding: 14px 22px 8px; flex-wrap: wrap; }
+    .rn-btn { border: none; border-radius: 12px; padding: 12px 18px; font-weight: 800; font-size: 13.5px; cursor: pointer; font-family: inherit; }
+    .rn-btn.go { flex: 1; min-width: 220px; color: #fff; background: linear-gradient(135deg, var(--flow-violet, #8b5cf6), var(--accent, #8b5cf6)); box-shadow: 0 8px 22px color-mix(in srgb, var(--flow-violet, #8b5cf6) 30%, transparent); }
+    .rn-btn.go:hover { filter: brightness(1.07); }
+    .rn-btn.ghost { background: var(--card-2, #1e222e); color: var(--text-secondary, #aab2c5); border: 1px solid var(--line, #2d3342); }
+    .rn-btn.ghost:hover { border-color: var(--accent, #8b5cf6); color: var(--text-primary, #eef1f7); }
+    .rn-note { padding: 0 22px 18px; font-size: 11px; color: var(--text-muted, #6b7488); line-height: 1.5; }
+</style>
+
+@code {
+    /// <summary>모달 닫기 콜백(부모=UpdateBadge 가 표시 상태를 내린다).</summary>
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly List<NoteLine> _notes = new();
+
+    protected override void OnInitialized() => ParseInto(_notes, Updater.LatestReleaseNotes);
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private async Task StartUpdate()
+    {
+        _ = Updater.DownloadAndInstallAsync();   // fire-and-forget — 진행률은 UpdateBadge(⬇)에 표시, 설치 후 앱 재시작
+        await Close();
+    }
+
+    // ── 경량 마크다운 파서(BCL only) — 라인 단위 분류. 인라인 강조/코드 마커는 제거해 텍스트만 남긴다. ──
+    private static void ParseInto(List<NoteLine> outl, string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return;
+        var lines = body.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+        var lastGap = true;   // 선행 빈 줄 무시
+        var count = 0;
+        foreach (var raw in lines)
+        {
+            if (count >= 100) break;   // 과도한 길이 방지
+            var t = raw.Trim();
+            if (t.Length == 0)
+            {
+                if (!lastGap) { outl.Add(new NoteLine("gap", "")); lastGap = true; }
+                continue;
+            }
+            lastGap = false;
+            if (t.StartsWith("### ")) outl.Add(new NoteLine("h3", Clean(t[4..])));
+            else if (t.StartsWith("## ")) outl.Add(new NoteLine("h2", Clean(t[3..])));
+            else if (t.StartsWith("# ")) outl.Add(new NoteLine("h2", Clean(t[2..])));      // h1 은 모달 크기상 h2 로
+            else if (t.StartsWith("- ") || t.StartsWith("* ") || t.StartsWith("• ")) outl.Add(new NoteLine("li", Clean(t[2..])));
+            else if (t.StartsWith("> ")) outl.Add(new NoteLine("p", Clean(t[2..])));       // 인용문 → 일반 문단
+            else outl.Add(new NoteLine("p", Clean(t)));
+            count++;
+        }
+    }
+
+    private static string Clean(string s) =>
+        s.Replace("**", "").Replace("__", "").Replace("`", "").Trim();
+
+    private sealed record NoteLine(string Kind, string Text);
+}

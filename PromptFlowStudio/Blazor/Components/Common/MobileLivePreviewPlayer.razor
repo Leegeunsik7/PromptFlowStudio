@@ -1,0 +1,128 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Integration
+@implements IDisposable
+
+@* [PromptFlow Studio v6.1.0] 초저지연 라이브 프리뷰 플레이어 — 렌더 노드 WebRTC 스트림(또는 스틸 폴백)을 모바일 뷰포트에 인라인 표출.
+   ⚠ 무주입(모바일 안전 · 제2헌장): WebRtcStreamer 는 부모에서 [Parameter] 로 수신. Streamer.OnChange 는 백그라운드 프레임 펌프 스레드 → InvokeAsync(StateHasChanged) 마샬링(제3헌장). *@
+
+<div class="mlp">
+    <div class="mlp-head">
+        <span class="mlp-title">📡 라이브 프리뷰</span>
+        <span class="mlp-state @StateClass"><span class="mlp-dot"></span>@StateLabel</span>
+    </div>
+
+    <div class="mlp-stage">
+        @if (!string.IsNullOrEmpty(Streamer?.CurrentFrameUrl))
+        {
+            <img class="mlp-frame" src="@Streamer!.CurrentFrameUrl" alt="라이브 프레임" />
+        }
+        else
+        {
+            <div class="mlp-empty">
+                <span class="mlp-empty-ic">📡</span>
+                <span>[▶ 프리뷰 시작]으로 렌더 노드의 생성 프레임을 실시간으로 받아보세요.</span>
+            </div>
+        }
+        @if (Streamer?.IsLive == true)
+        {
+            <span class="mlp-badge">@(Streamer!.State == RtcConnectionState.Connected ? "RTP" : "STILL") · @Streamer.LatencyMs ms</span>
+        }
+    </div>
+
+    @if (Streamer?.State == RtcConnectionState.Degraded)
+    {
+        <div class="mlp-degrade">⚠ 초저지연 스트림 불가 — 스틸 프레임으로 완만 폴백 중(렌더 진행 상황은 계속 표시됩니다).</div>
+    }
+    @if (!string.IsNullOrWhiteSpace(Streamer?.StatusMessage))
+    {
+        <div class="mlp-status">@Streamer!.StatusMessage @(Streamer.IsLive ? $"· 가동 {Fmt(Streamer.Uptime)}" : "")</div>
+    }
+
+    <div class="mlp-act">
+        @if (Streamer?.IsLive == true)
+        {
+            <button class="mlp-btn stop" @onclick="StopPreview">⏹ 프리뷰 중지</button>
+        }
+        else
+        {
+            <button class="mlp-btn go" @onclick="StartPreview">▶ 프리뷰 시작</button>
+        }
+    </div>
+</div>
+
+@code {
+    /// <summary>초저지연 스트리머(관찰 가능 싱글턴) — 부모(MobileStudioDeck)가 [Parameter] 로 주입(모바일 무주입 원칙).</summary>
+    [Parameter, EditorRequired] public WebRtcStreamer Streamer { get; set; } = default!;
+    /// <summary>시그널링 URL(예: 워커 ws 주소). 비면 즉시 스틸 폴백.</summary>
+    [Parameter] public string? SignalUrl { get; set; }
+    /// <summary>최신 렌더 프레임 제공자(없으면 합성 스틸). 부모가 완료 썸네일/결과 URL 을 넘긴다.</summary>
+    [Parameter] public Func<string?>? StillFrameProvider { get; set; }
+
+    protected override void OnInitialized()
+    {
+        if (Streamer is not null) Streamer.OnChange += OnStreamerChanged;
+    }
+
+    private void OnStreamerChanged() => InvokeAsync(StateHasChanged);
+
+    private async Task StartPreview()
+    {
+        if (Streamer is null) return;
+        await Streamer.StartAsync(SignalUrl, StillFrameProvider);
+    }
+
+    private void StopPreview() => Streamer?.Stop();
+
+    private string StateClass => Streamer?.State switch
+    {
+        RtcConnectionState.Connected => "on",
+        RtcConnectionState.Signaling => "sig",
+        RtcConnectionState.Degraded => "deg",
+        RtcConnectionState.Failed => "err",
+        _ => "idle",
+    };
+
+    private string StateLabel => Streamer?.State switch
+    {
+        RtcConnectionState.Connected => "연결됨",
+        RtcConnectionState.Signaling => "연결 중",
+        RtcConnectionState.Degraded => "스틸 폴백",
+        RtcConnectionState.Failed => "실패",
+        _ => "대기",
+    };
+
+    private static string Fmt(TimeSpan t) => t.TotalSeconds < 60
+        ? ((int)t.TotalSeconds).ToString(CultureInfo.InvariantCulture) + "초"
+        : ((int)t.TotalMinutes).ToString(CultureInfo.InvariantCulture) + "분";
+
+    public void Dispose()
+    {
+        if (Streamer is not null) Streamer.OnChange -= OnStreamerChanged;
+    }
+}
+
+<style>
+    .mlp { display: flex; flex-direction: column; gap: 10px; font-family: Pretendard,'Malgun Gothic',sans-serif; }
+    .mlp-head { display: flex; align-items: center; justify-content: space-between; }
+    .mlp-title { font: 900 14px Pretendard,'Malgun Gothic',sans-serif; background: linear-gradient(90deg,#7dd3fc,#22d3ee); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .mlp-state { display: inline-flex; align-items: center; gap: 6px; font: 800 10px var(--mono); color: var(--text-muted); }
+    .mlp-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
+    .mlp-state.on { color: #34d399; } .mlp-state.on .mlp-dot { background: #34d399; box-shadow: 0 0 8px #34d399; animation: mlpBeat 1.4s ease-in-out infinite; }
+    .mlp-state.sig { color: #f5c451; } .mlp-state.sig .mlp-dot { background: #f5c451; animation: mlpBeat 1s ease-in-out infinite; }
+    .mlp-state.deg { color: #f5c451; } .mlp-state.deg .mlp-dot { background: #f5c451; }
+    .mlp-state.err { color: #fca5a5; } .mlp-state.err .mlp-dot { background: #ef4444; }
+    @@keyframes mlpBeat { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .5; transform: scale(1.3); } }
+
+    .mlp-stage { position: relative; aspect-ratio: 9 / 16; max-height: 340px; margin: 0 auto; width: 100%; max-width: 220px; border-radius: 14px; overflow: hidden; background: #06080e; border: 1px solid color-mix(in srgb,#22d3ee 30%,var(--line)); display: grid; place-items: center; }
+    .mlp-frame { width: 100%; height: 100%; object-fit: cover; }
+    .mlp-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 16px; text-align: center; font: 600 10.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); line-height: 1.5; word-break: keep-all; }
+    .mlp-empty-ic { font-size: 30px; }
+    .mlp-badge { position: absolute; top: 8px; right: 8px; font: 800 9px var(--mono); color: #fff; background: rgba(6,8,14,.72); backdrop-filter: blur(4px); padding: 3px 8px; border-radius: 9px; }
+    .mlp-degrade { font: 700 10px Pretendard,'Malgun Gothic',sans-serif; color: #fbbf24; background: color-mix(in srgb,#f59e0b 12%,transparent); border: 1px solid color-mix(in srgb,#f59e0b 40%,var(--line)); border-radius: 9px; padding: 8px 10px; line-height: 1.5; word-break: keep-all; }
+    .mlp-status { font: 600 10px var(--mono); color: var(--text-muted); word-break: keep-all; }
+    .mlp-act { display: flex; }
+    .mlp-btn { flex: 1; min-height: 44px; border: none; border-radius: 12px; cursor: pointer; font: 800 12.5px Pretendard,'Malgun Gothic',sans-serif; }
+    .mlp-btn.go { color: #04121c; background: linear-gradient(135deg,#22d3ee,#0ea5e9); }
+    .mlp-btn.stop { color: #fff; background: linear-gradient(135deg,#ef4444,#b91c1c); }
+    .mlp-btn:active { transform: scale(0.99); }
+</style>

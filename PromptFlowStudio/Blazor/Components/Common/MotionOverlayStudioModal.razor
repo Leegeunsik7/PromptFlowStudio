@@ -1,0 +1,235 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.MotionTypography
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject MotionOverlayStudioRunner Runner
+
+@* [PromptFlow Studio v17.52.0] 🔤 9:16 모션 타이포그래피 스튜디오 — 세이프 존 그리드 프리뷰 · 프리셋 · 폰트 · 오버레이 토글 · v17.49 결선. *@
+
+<div class="mos-scrim" @onclick="Close">
+    <div class="mos-modal" @onclick:stopPropagation="true">
+        <div class="mos-h">
+            <div>
+                <div class="mos-title">🔤 9:16 모션 타이포그래피 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null) · @(F2(Runner.TimeMs / 1000)) / @(F2(Runner.DurationMs / 1000)) s</div>
+                <div class="mos-sub"><b>타이포 엔진</b>이 발화 타임라인(언어별 음절 속도 추정)에 맞춰 현재 단어를 150% 팝업 · 노랑/형광 하이라이트로 SDF 아틀라스에서 래스터합니다. <b>오버레이 합성기</b>는 진행률 바 · A/B 투표 스티커 · WAIT FOR IT 배지 · 전환 인디케이터를 Z 순서로 RGBA 레이어에 합성하고, <b>세이프 존 가드</b>가 Instagram · TikTok · YouTube 시스템 UI 데드존 교집합 밖으로 모든 요소를 클램프합니다. v17.49 인코딩 직전 NV12 에 직접 합성할 수 있습니다.</div>
+            </div>
+            <button class="mos-x" @onclick="Close">✕</button>
+        </div>
+        <div class="mos-bar">
+            <button class="mos-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 재생")</button>
+            <button class="mos-btn" @onclick="() => Runner.Seek(0)">⏮</button>
+            @for (var p = 0; p < 3; p++)
+            {
+                var pr = (TypoPreset)p;
+                <button class="mos-btn pre @(Runner.Typo.Preset == pr ? "on" : null)" @onclick="() => Runner.SetPreset(pr)">@(MotionOverlayStudioRunner.PresetName(pr))</button>
+            }
+            @foreach (var f in MotionOverlayStudioRunner.Fonts)
+            {
+                var font = f;
+                <button class="mos-btn @(Runner.Atlas.LatinFont == font ? "on" : null)" @onclick="() => Runner.SetFont(font)">@font</button>
+            }
+            <label class="mos-lbl">크기</label>
+            <input class="mos-rng" type="range" min="40" max="140" value="@((int)Runner.Typo.FontPx)" @oninput="OnPx" />
+            <span class="mos-chip">@(F0(Runner.Typo.FontPx)) px</span>
+        </div>
+        <div class="mos-bar">
+            <button class="mos-btn @(Runner.Overlay.Progress ? "on" : null)" @onclick="() => Runner.SetProgress(!Runner.Overlay.Progress)">▬ 진행률 바</button>
+            <button class="mos-btn @(Runner.Overlay.Vote ? "on" : null)" @onclick="() => Runner.SetVote(!Runner.Overlay.Vote)">🗳 투표 스티커</button>
+            <button class="mos-btn @(Runner.Overlay.Badge ? "on" : null)" @onclick="() => Runner.SetBadge(!Runner.Overlay.Badge)">👀 WAIT 배지</button>
+            <button class="mos-btn @(Runner.Overlay.Transitions ? "on" : null)" @onclick="() => Runner.SetTransitions(!Runner.Overlay.Transitions)">⚡ 전환 표시</button>
+            <span class="mos-sep"></span>
+            @for (var b = 0; b < 3; b++)
+            {
+                var bit = 1 << b;
+                <button class="mos-btn pre @((Runner.Guard.Mask & bit) != 0 ? "on" : null)" @onclick="() => TogglePlatform(bit)">@(b == 0 ? "📸 Instagram" : b == 1 ? "🎵 TikTok" : "▶️ YouTube")</button>
+            }
+            <button class="mos-btn @(_grid ? "on" : null)" @onclick="() => _grid = !_grid">▦ 데드존 그리드</button>
+            <button class="mos-btn @(Runner.Attached ? "on" : null)" @onclick="() => Runner.Attach(!Runner.Attached)" disabled="@(!Runner.TranscoderLinked)">🎞 v17.49 인코딩 결선</button>
+        </div>
+        <div class="mos-main">
+            <div class="mos-col narrow">
+                <div class="mos-card">
+                    <div class="mos-sec">📱 1080×1920 프리뷰 — 세이프 존 @(Runner.Safe())</div>
+                    <div class="mos-stage">
+                        <img class="mos-view" src="@(_img)" alt="9:16 typography preview" />
+                        @if (_grid)
+                        {
+                            <svg class="mos-grid" viewBox="0 0 1080 1920" preserveAspectRatio="none">
+                                @for (var i = 0; i < Runner.Guard.DeadCount; i++)
+                                {
+                                    var d = Runner.Guard.Dead(i);
+                                    <rect class="dead" x="@d.X" y="@d.Y" width="@d.W" height="@d.H" />
+                                }
+                                <rect class="safe" x="@Runner.Guard.Safe.X" y="@Runner.Guard.Safe.Y" width="@Runner.Guard.Safe.W" height="@Runner.Guard.Safe.H" />
+                                @if (!Runner.Typo.LastDrawnBounds.IsEmpty)
+                                {
+                                    var b = Runner.Typo.LastDrawnBounds;
+                                    <rect class="text" x="@b.X" y="@b.Y" width="@b.W" height="@b.H" />
+                                }
+                            </svg>
+                        }
+                    </div>
+                    <input class="mos-rng wide" type="range" min="0" max="@((int)Runner.DurationMs)" value="@((int)Runner.TimeMs)" @oninput="OnSeek" />
+                </div>
+            </div>
+            <div class="mos-col">
+                <div class="mos-card">
+                    <div class="mos-sec">✍ 캡션 · 발화 언어</div>
+                    <textarea class="mos-ta" @bind="_caption" rows="3"></textarea>
+                    <div class="mos-row">
+                        @for (var l = 0; l < 4; l++)
+                        {
+                            var lang = (TypoLang)l;
+                            <button class="mos-btn pre @(_lang == lang ? "on" : null)" @onclick="() => _lang = lang">@(lang.ToString().ToUpperInvariant())</button>
+                        }
+                        <button class="mos-btn go" @onclick="Apply">✔ 적용</button>
+                    </div>
+                    <div class="mos-words">
+                        @for (var i = 0; i < Runner.Typo.WordCount; i++)
+                        {
+                            var w = Runner.Typo.Word(i);
+                            <span class="mw @(i == Runner.Typo.CurrentWord ? "cur" : null)" title="@(F0(w.StartMs))–@(F0(w.EndMs)) ms · 페이지 @(w.Page + 1)">@(Runner.Typo.WordText(i).ToString())</span>
+                        }
+                    </div>
+                </div>
+                <div class="mos-card">
+                    <div class="mos-sec">📊 렌더 · 가드</div>
+                    <div class="mos-kv grid">
+                        <div>프레임 <b class="@(Runner.LastFrameMs < 16.7 ? "ok" : "warn")">@(F2(Runner.LastFrameMs))</b> ms · 최대 @(F2(Runner.MaxFrameMs))</div>
+                        <div>자막 @(F0(Runner.Typo.LastRenderUs)) µs · 오버레이 @(F0(Runner.Overlay.LastRenderUs)) µs</div>
+                        <div>현재 단어 #@(Runner.Typo.CurrentWord + 1) · 배율 ×@(F2(Runner.Typo.CurrentScale)) · 블록 ×@(F2(Runner.Typo.LastBlockScale))</div>
+                        <div>아틀라스 글리프 @(Runner.Atlas.Count)@(Runner.Atlas.UsingFallback ? " (대체 글리프)" : null) · 오버레이 요소 @(Runner.Overlay.Elements)</div>
+                        <div>Fit @(Runner.Guard.Fits) · 이동 @(Runner.Guard.Moves) · 축소 @(Runner.Guard.Shrinks)</div>
+                        <div>데드존 침범 <b class="@(Runner.Guard.Violations == 0 ? "ok" : "warn")">@(Runner.Guard.Violations)</b> · 인코딩 합성 @(Runner.OverlayFrames) 프레임</div>
+                    </div>
+                    <svg class="mos-graph" viewBox="0 0 600 70" preserveAspectRatio="none"><line x1="0" x2="600" y1="35" y2="35" class="lim" /><polyline points="@(Series())" /></svg>
+                    <div class="mos-act">@(Runner.LastAction ?? "대기")</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .mos-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .mos-modal { width: min(1400px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .mos-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #facc15 16%, var(--card)), color-mix(in srgb, #39ff14 10%, var(--card))); }
+    .mos-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .mos-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .mos-sub b { color: var(--text-primary); }
+    .mos-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .mos-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .mos-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .mos-btn:disabled { opacity: .45; cursor: default; }
+    .mos-btn.on { background: color-mix(in srgb, #facc15 22%, var(--card)); border-color: #facc15; }
+    .mos-btn.pre.on { background: color-mix(in srgb, #39ff14 18%, var(--card)); border-color: #39ff14; }
+    .mos-btn.go { background: #facc15; color: #111; border: none; }
+    .mos-sep { width: 1px; height: 20px; background: var(--line); margin: 0 4px; }
+    .mos-lbl { font-size: 12px; color: var(--text-secondary); }
+    .mos-rng { width: 120px; } .mos-rng.wide { width: 100%; margin-top: 6px; }
+    .mos-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .mos-main { display: grid; grid-template-columns: 0.75fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .mos-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .mos-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); }
+    .mos-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .mos-stage { position: relative; width: min(100%, calc(62vh * 9 / 16)); max-width: 380px; aspect-ratio: 9 / 16; margin: 0 auto; }
+    .mos-view, .mos-grid { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 10px; }
+    .mos-grid .dead { fill: rgba(239,68,68,.22); stroke: #ef4444; stroke-width: 3; }
+    .mos-grid .safe { fill: none; stroke: #22c55e; stroke-width: 5; stroke-dasharray: 18 10; }
+    .mos-grid .text { fill: none; stroke: #facc15; stroke-width: 3; }
+    .mos-ta { width: 100%; box-sizing: border-box; font: 13px inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .mos-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .mos-words { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+    .mos-words .mw { font-size: 11px; padding: 2px 6px; border-radius: 6px; background: #1e293b; color: var(--text-secondary); }
+    .mos-words .mw.cur { background: #facc15; color: #111; font-weight: 800; }
+    .mos-kv { font-size: 11px; color: var(--text-secondary); }
+    .mos-kv.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+    .mos-kv b.ok { color: #22c55e; } .mos-kv b.warn { color: #f59e0b; }
+    .mos-graph { width: 100%; height: 70px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; margin-top: 8px; }
+    .mos-graph polyline { fill: none; stroke: #facc15; stroke-width: 1.6; } .mos-graph .lim { stroke: #ef4444; stroke-dasharray: 6 4; }
+    .mos-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly byte[] _bmp = new byte[MotionOverlayStudioRunner.PreviewBytes];
+    private System.Threading.Timer? _timer;
+    private string _img = "", _caption = "";
+    private TypoLang _lang;
+    private bool _grid = true;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _caption = Runner.Caption; _lang = Runner.Lang;
+        if (!Runner.IsRunning) Runner.RenderFrame(Runner.TimeMs);
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("MotionOverlay.Modal.Timer", ex); }
+        }, null, 120, 120);
+    }
+
+    protected override bool ShouldRender()
+    {
+        Runner.WritePreviewBmp(_bmp);
+        _img = "data:image/bmp;base64," + Convert.ToBase64String(_bmp);
+        return true;
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+
+    private string Series()
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++) sb.Append((600.0 * i / (n - 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append((68 - 33 * Math.Clamp(Runner.FrameMsSeries(n - 1 - i) / 16.7, 0, 2)).ToString("0.#", CultureInfo.InvariantCulture)).Append(' ');
+        return sb.ToString();
+    }
+
+    private void TogglePlatform(int bit)
+    {
+        var m = Runner.Guard.Mask ^ bit;
+        Runner.SetPlatforms(m == 0 ? CrossPlatformUiSafeZoneGuard.All : m);
+        if (!Runner.IsRunning) Runner.RenderFrame(Runner.TimeMs);
+    }
+
+    private void OnPx(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) { Runner.SetFontPx(v); if (!Runner.IsRunning) Runner.RenderFrame(Runner.TimeMs); }
+    }
+
+    private void OnSeek(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) { Runner.Seek(v); if (!Runner.IsRunning) Runner.RenderFrame(v); }
+    }
+
+    private void Apply()
+    {
+        if (string.IsNullOrWhiteSpace(_caption)) return;
+        Runner.SetCaption(_caption.Trim(), _lang);
+        if (!Runner.IsRunning) Runner.RenderFrame(0);
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

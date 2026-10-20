@@ -1,0 +1,342 @@
+@using PromptFlowStudio.Services.Wan
+@using PromptFlowStudio.Services.Ui
+@implements IDisposable
+
+@* [PromptFlow Studio v5.6.5 · v5.6.6] 전역 예상 첫 프레임 시뮬레이터 + 정체성 드리프트 사전 대조.
+   ▸ v5.6.5: 프롬프트/정체성 키워드(순수 BCL) → WanSampleFactory.FrameDataUrl 로 예상 시드 프레임 SVG 즉시 생성(무API·무GPU).
+   ▸ v5.6.6: AnchorImageUrl 이 있으면 [앵커(원본) → 예상 첫 프레임] Side-by-Side 대조 + 앵커 일치율 칩(정체성 드리프트 사전 검증).
+   ▸ v16.11.0: FirstFrameSimulationService 결선 — T2V 500ms 디바운스 실시간 프레임(Pending 스켈레톤) · 앵커 즉시 합성(카메라 무빙·16:9/9:16 오버레이)
+     · 프레임 클릭 → OnStartGenerate 1-Click 생성.
+   ⚠ 무주입 컴포넌트(모바일 안전) — 앵커는 표시 가능한 URL 로 수신(BlazorWebView 는 file:// 불가 → 부모가 가상호스트 URL 전달). *@
+
+<div class="ffp">
+    <div class="ffp-h">
+        <span class="ffp-tag">👁️ 예상 첫 프레임 시뮬레이션</span>
+        <span class="ffp-st">@(HasAnchor ? "앵커 대조 · 정체성 드리프트 사전검증" : "생성 전 1:1 정체성 검증 · 무API")</span>
+        @if (Sim.Kind != FirstFrameKind.Empty)
+        {
+            <span class="ffs-meta">@Sim.AspectLabel · @Sim.CameraLabel · @(Sim.Kind == FirstFrameKind.Pending ? "구성 중" : Sim.Kind == FirstFrameKind.Anchor ? "앵커 합성" : Sim.FromCache ? "캐시" : "실시간")</span>
+        }
+    </div>
+
+    @if (Multi)
+    {
+        @* v5.6.7: [📸 앵커] → [🎬 예상] → [🎞️ 실제 결과] 동적 실측 타임라인(존재하는 단계만 · 화살표는 CSS ::after) *@
+        var stages = Stages;
+        <div class="ffp-cmp ffp-cmp-@stages.Count">
+            @foreach (var st in stages)
+            {
+                <figure class="ffp-cell">
+                    <div class="ffp-cell-vp">
+                        @if (st.Cls == "frame") { @SimFrame }
+                        else if (!string.IsNullOrEmpty(st.Url)) { <img src="@st.Url" class="ffp-img" alt="@st.Cap" /> }
+                        else { <div class="ffp-ph"><span class="ffp-ph-ic">🎬</span><span>프롬프트 입력 시 구성</span></div> }
+                    </div>
+                    <figcaption class="ffp-cap @st.Cls">@st.Cap</figcaption>
+                </figure>
+            }
+        </div>
+    }
+    else
+    {
+        <div class="ffp-vp">@SimFrame</div>
+    }
+
+    <div class="ffp-foot">
+        @if (HasActual)
+        {
+            @if (IdentityScore is double sc)
+            {
+                <span class="ffp-match @(sc >= 90 ? "ok" : sc >= 75 ? "warn" : "bad")">📸 정체성 유지율: @sc.ToString("F1")%</span>
+                <span class="ffp-match-sub">dHash 지각적 해시 실측 — 앵커 vs 실제 결과 첫 프레임(64bit 해밍)</span>
+            }
+            else
+            {
+                <span class="ffp-match verified">✅ 실측 드리프트 검증 완료</span>
+                <span class="ffp-match-sub">앵커 → 예상 → 실제 결과 첫 프레임까지 정체성 흐름 확인</span>
+            }
+            @if (OnRegisterGallery.HasDelegate)
+            {
+                <button class="ffp-gal" disabled="@_registered" @onclick="RegisterGallery">@(_registered ? "✔ 갤러리 등록됨" : "🖼️ 갤러리 등록")</button>
+            }
+        }
+        else if (HasAnchor)
+        {
+            <span class="ffp-match @(_driftWarn ? "warn" : "ok")">📸 앵커 일치율: @(_driftWarn ? "Medium ⚠" : "High")</span>
+            <span class="ffp-match-sub">@(_driftWarn
+                ? "변형 키워드 감지 — i2v 앵커가 정체성을 잡아주지만 결과 검토 권장"
+                : "앵커 i2v 잠금 — 인물·사물 정체성 유지(드리프트 낮음)")</span>
+        }
+        else
+        {
+            <button class="ffp-reg" disabled="@(!OnRegisterAnchor.HasDelegate)"
+                    @onclick="() => OnRegisterAnchor.InvokeAsync()"
+                    title="@(OnRegisterAnchor.HasDelegate ? "앵커/시드 이미지 등록" : "이 화면의 참조·앵커 업로드 영역에서 이미지를 등록하세요")">
+                ➕ 앵커 등록
+            </button>
+            <span class="ffp-reg-hint">앵커 등록 시 [📸 앵커 일치율] 정체성 대조가 활성화됩니다</span>
+        }
+    </div>
+
+    @if (_tags.Count > 0)
+    {
+        <div class="ffp-tags">
+            <span class="ffp-tags-l">정체성 앵커</span>
+            @foreach (var t in _tags)
+            {
+                <span class="ffp-chip" @key="t.Tag">@t.Icon @t.Tag</span>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    /// <summary>분석할 사용자 프롬프트(비면 플레이스홀더).</summary>
+    [Parameter] public string Prompt { get; set; } = "";
+    /// <summary>모션 스타일 힌트(선택) — 부제에 병기.</summary>
+    [Parameter] public string MotionStyle { get; set; } = "";
+    /// <summary>v5.6.6: 앵커/시드 이미지의 표시 가능한 URL(가상호스트) — 있으면 좌우 대조 뷰 활성.</summary>
+    [Parameter] public string? AnchorImageUrl { get; set; }
+    /// <summary>v5.6.6: 앵커 미등록 시 등록 유도 버튼 콜백(선택 · 없으면 안내 문구).</summary>
+    [Parameter] public EventCallback OnRegisterAnchor { get; set; }
+    /// <summary>v5.6.7: 실제 생성 결과(Wan/Concat) 첫 프레임 thumbnail URL — 있으면 3단 실측 대조 활성.</summary>
+    [Parameter] public string? ActualOutputUrl { get; set; }
+    /// <summary>v5.6.7: 실측 결과 갤러리 즉시 등록 콜백(선택 · 있을 때만 버튼 노출).</summary>
+    [Parameter] public EventCallback OnRegisterGallery { get; set; }
+    /// <summary>v5.7.0: dHash 정체성 유지율(%) — 부모(데스크톱)가 IdentityHashAnalyzer 로 산출해 전달(있으면 %칩).</summary>
+    [Parameter] public double? IdentityScore { get; set; }
+
+    /// <summary>v16.11.0: 출력 해상도("1280*720" / "1080x1920") — 구도 어스펙트(16:9·9:16) 반영.</summary>
+    [Parameter] public string? Size { get; set; }
+
+    /// <summary>v16.11.0: 시뮬레이션 프레임 클릭 시 영상 생성 시작(선택 · 있을 때만 1-Click 활성).</summary>
+    [Parameter] public EventCallback OnStartGenerate { get; set; }
+
+    /// <summary>v16.11.0: 부모의 생성 가능 여부(키·입력·진행 상태).</summary>
+    [Parameter] public bool CanStart { get; set; } = true;
+
+    private readonly FirstFrameSimulationService _engine = new();
+    private bool _updating;                                         // Update 중 동기 Changed 는 현재 렌더가 반영(중복 렌더 생략)
+    private bool _starting;
+    private FirstFrameSimulation Sim => _engine.Current;
+    private bool Clickable => OnStartGenerate.HasDelegate && CanStart && !_starting && Sim.HasFrame && Sim.Kind != FirstFrameKind.Pending;
+
+    protected override void OnInitialized() => _engine.Changed += OnSimChanged;
+
+    private void OnSimChanged()
+    {
+        if (_updating) return;
+        _ = RefreshAsync();
+    }
+
+    private async Task RefreshAsync()
+    {
+        try { await InvokeAsync(StateHasChanged); }
+        catch { /* 파기 경합 — 렌더러 종료 후 콜백 무시 */ }
+    }
+
+    private async Task ClickStart()
+    {
+        if (!Clickable) return;
+        _starting = true;
+        try
+        {
+            _engine.Flush();                                        // 대기 중 디바운스 확정(클릭 시점 프레임 = 생성 입력)
+            await OnStartGenerate.InvokeAsync();
+        }
+        finally { _starting = false; }
+    }
+
+    public void Dispose()
+    {
+        _engine.Changed -= OnSimChanged;
+        _engine.Dispose();
+    }
+
+    // 시뮬레이션 캔버스(단일 뷰·대조 타임라인 '예상' 셀 공용).
+    private RenderFragment SimFrame => @<div class="ffs @(Sim.Portrait ? "ffs-portrait" : null) @(Clickable ? "ffs-click" : null)"
+                                             role="@(Clickable ? "button" : null)" tabindex="@(Clickable ? "0" : null)"
+                                             title="@(Clickable ? "클릭하면 이 첫 프레임으로 영상 생성을 시작합니다" : null)" @onclick="ClickStart">
+        @if (Sim.Kind == FirstFrameKind.Anchor)
+        {
+            <img src="@Sim.AnchorUrl" class="ffp-img ffs-anchor @Sim.MotionCss" alt="앵커 합성 첫 프레임" />
+            <img src="@Sim.OverlayUrl" class="ffs-ov" alt="" />
+        }
+        else if (!string.IsNullOrEmpty(Sim.FrameUrl))
+        {
+            <img src="@Sim.FrameUrl" class="ffp-img" alt="예상 첫 프레임" />
+        }
+        else if (Sim.Kind != FirstFrameKind.Pending)
+        {
+            <div class="ffp-ph">
+                <span class="ffp-ph-ic">🎬</span>
+                <span>프롬프트를 입력하거나 앵커를 등록하면 예상 첫 프레임이 즉시 구성됩니다.</span>
+            </div>
+        }
+        @if (Sim.Kind == FirstFrameKind.Pending)
+        {
+            <div class="ffs-skel"><span>⏳ 첫 프레임 시뮬레이션 구성 중…</span></div>
+        }
+        @if (Clickable)
+        {
+            <div class="ffs-go">▶ 클릭하여 영상 생성 시작</div>
+        }
+    </div>;
+    private string _lastKey = "";                                   // 프롬프트/모션/앵커/실측 변화 시에만 재생성(멱등)
+    private bool _driftWarn;                                        // 변형/이탈 위험 키워드 감지
+    private bool _registered;                                       // 갤러리 등록 완료(입력/결과 변화 시 초기화)
+    private readonly List<IdentityHit> _tags = new();
+
+    private bool HasAnchor => !string.IsNullOrWhiteSpace(AnchorImageUrl);
+    private bool HasActual => !string.IsNullOrWhiteSpace(ActualOutputUrl);
+    private bool Multi => HasAnchor || HasActual;
+
+    // [📸 앵커] → [🎬 예상] → [🎞️ 실제] 중 존재하는 단계만(예상은 항상 포함).
+    private List<(string? Url, string Cap, string Cls)> Stages
+    {
+        get
+        {
+            var list = new List<(string?, string, string)>();
+            if (HasAnchor) list.Add((AnchorImageUrl, "📸 앵커(시드)", "anchor"));
+            list.Add((null, "🎬 예상 프레임", "frame"));   // v16.11.0: 셀은 SimFrame 이 렌더
+            if (HasActual) list.Add((ActualOutputUrl, "🎞️ 실제 결과", "actual"));
+            return list;
+        }
+    }
+
+    private async Task RegisterGallery()
+    {
+        if (_registered) return;
+        await OnRegisterGallery.InvokeAsync();
+        _registered = true;
+    }
+
+    private sealed record IdentityHit(string Tag, string Icon, string Accent);
+
+    // 인물/동물/사물/풍경 정체성 키워드(한·영) → 강조색. 순수 BCL 문자열 매칭(무API).
+    private static readonly (string Tag, string Icon, string Accent, string[] Kw)[] Rules =
+    {
+        ("인물", "🧑", "#ec4899", new[]{ "인물","사람","여성","남성","아기","아이","얼굴","모델","캐릭터","소녀","소년",
+            "baby","face","person","woman","man","child","girl","boy","model","character","portrait" }),
+        ("동물", "🐾", "#34d399", new[]{ "동물","강아지","개","고양이","펫","새","말","사자","호랑이","토끼",
+            "dog","cat","animal","pet","bird","horse","lion","tiger","rabbit","puppy","kitten" }),
+        ("사물·제품", "📦", "#0ea5e9", new[]{ "제품","사물","기계","자동차","가방","시계","드론","로봇","건물","음식","커피",
+            "car","product","object","bag","watch","drone","robot","building","food","coffee","bottle" }),
+        ("풍경", "🏞️", "#f59e0b", new[]{ "풍경","자연","바다","해변","산","하늘","도시","숲","노을","우주",
+            "landscape","nature","sea","beach","mountain","sky","city","forest","sunset","space" }),
+    };
+
+    // 정체성 이탈(드리프트) 위험 키워드 — 앵커가 있어도 결과가 크게 달라질 수 있는 변형 지시.
+    private static readonly string[] DriftKw =
+    {
+        "변신","변형","다른 얼굴","얼굴 교체","다른 사람","합성","morph","transform","face swap","deepfake","de-age","aging",
+    };
+
+    protected override void OnParametersSet()
+    {
+        var p = (Prompt ?? "").Trim();
+        var key = p + "" + (MotionStyle ?? "") + "" + (AnchorImageUrl ?? "") + "|" + (ActualOutputUrl ?? "") + "|" + (Size ?? "");
+        if (key == _lastKey) return;                                // 동일 입력이면 재생성 생략
+        _lastKey = key;
+        _registered = false;                                        // 입력/결과 변화 시 갤러리 등록 상태 초기화
+        _tags.Clear();
+        _driftWarn = false;
+
+        if (string.IsNullOrWhiteSpace(p)) { Simulate(p, null, null); return; }   // 앵커만 있어도 즉시 합성
+
+        var lower = p.ToLowerInvariant();
+        foreach (var r in Rules)
+        {
+            if (Array.Exists(r.Kw, k => lower.Contains(k)))
+                _tags.Add(new IdentityHit(r.Tag, r.Icon, r.Accent));
+        }
+        _driftWarn = Array.Exists(DriftKw, k => lower.Contains(k));
+
+        var accent = _tags.Count > 0 ? _tags[0].Accent : "#7c5cff";
+        var sub = _tags.Count > 0 ? string.Join(" · ", _tags.ConvertAll(t => t.Tag)) : "예상 첫 프레임 · 정체성 프리뷰";
+        if (!string.IsNullOrWhiteSpace(MotionStyle)) sub += " · " + MotionStyle;
+
+        Simulate(p, accent, sub);
+    }
+
+    private void Simulate(string prompt, string? accent, string? sub)
+    {
+        _updating = true;
+        try { _engine.Update(prompt, Size, AnchorImageUrl, accent, sub); }
+        finally { _updating = false; }
+    }
+}
+
+<style>
+    .ffp { border: 1px solid color-mix(in srgb, #22d3ee 28%, var(--line)); border-radius: 12px; overflow: hidden;
+        background: linear-gradient(160deg, color-mix(in srgb, #22d3ee 7%, var(--card)), var(--card)); margin: 2px 0 4px; }
+    .ffp-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 11px;
+        border-bottom: 1px solid color-mix(in srgb, #22d3ee 18%, var(--line)); flex-wrap: wrap; }
+    .ffp-tag { font: 800 11px Pretendard,'Malgun Gothic',sans-serif; color: #7dd3fc; }
+    .ffp-st { font: 600 9.5px var(--mono); color: var(--text-muted); }
+    /* 단일 예상 프레임 */
+    .ffp-vp { position: relative; background: #05070c; display: grid; place-items: center; aspect-ratio: 16/9; overflow: hidden; }
+    .ffp-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    /* v16.11.0 시뮬레이션 캔버스 — 어스펙트(16:9/9:16) · 앵커 합성 레이어 · 스켈레톤 · 1-Click */
+    .ffs { position: relative; height: 100%; max-width: 100%; aspect-ratio: 16/9; margin: 0 auto; overflow: hidden; display: grid; place-items: center; }
+    .ffs-portrait { aspect-ratio: 9/16; }
+    .ffs-ov { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    .ffs-click { cursor: pointer; }
+    .ffs-click:hover .ffp-img, .ffs-click:focus-visible .ffp-img { filter: brightness(1.12); }
+    .ffs-go { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); font: 800 10.5px Pretendard,'Malgun Gothic',sans-serif; color: #fff; background: linear-gradient(135deg,#7c5cff,#22d3ee); border-radius: 999px; padding: 5px 12px; white-space: nowrap; box-shadow: 0 4px 14px rgba(0,0,0,.35); }
+    .ffs-skel { position: absolute; inset: 0; display: grid; place-items: center; color: #e2e8f0; font: 700 11px Pretendard,'Malgun Gothic',sans-serif;
+        background: linear-gradient(100deg, rgba(255,255,255,.04) 30%, rgba(255,255,255,.16) 50%, rgba(255,255,255,.04) 70%) #0b0d14cc; background-size: 200% 100%; animation: ffs-shimmer 1.1s linear infinite; }
+    .ffs-meta { font: 700 9.5px var(--mono); color: #7dd3fc; }
+    .ffs-cam-orbit { animation: ffs-orbit 6s ease-in-out infinite alternate; }
+    .ffs-cam-fpv { animation: ffs-fpv 5s ease-in-out infinite alternate; }
+    .ffs-cam-crane { animation: ffs-crane 5s ease-in-out infinite alternate; }
+    .ffs-cam-dolly { animation: ffs-dolly 4s ease-in-out infinite alternate; }
+    .ffs-cam-pan { animation: ffs-pan 6s ease-in-out infinite alternate; }
+    .ffs-cam-tilt { animation: ffs-tilt 5s ease-in-out infinite alternate; }
+    @@keyframes ffs-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+    @@keyframes ffs-orbit { from { transform: perspective(600px) rotateY(-6deg) scale(1.06); } to { transform: perspective(600px) rotateY(6deg) scale(1.06); } }
+    @@keyframes ffs-fpv { from { transform: scale(1.02) translate(-2%, 1%); } to { transform: scale(1.14) translate(2%, -1%); } }
+    @@keyframes ffs-crane { from { transform: scale(1.08) translateY(3%); } to { transform: scale(1.08) translateY(-3%); } }
+    @@keyframes ffs-dolly { from { transform: scale(1); } to { transform: scale(1.16); } }
+    @@keyframes ffs-pan { from { transform: scale(1.08) translateX(-3%); } to { transform: scale(1.08) translateX(3%); } }
+    @@keyframes ffs-tilt { from { transform: scale(1.1) rotate(-3deg); } to { transform: scale(1.1) rotate(3deg); } }
+    @@media (prefers-reduced-motion: reduce) { .ffs-anchor, .ffs-skel { animation: none; } }
+    .ffp-ph { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; padding: 22px 16px;
+        color: var(--text-muted); font: 600 11.5px Pretendard,'Malgun Gothic',sans-serif; line-height: 1.5; word-break: keep-all; }
+    .ffp-ph-ic { font-size: 30px; opacity: .55; }
+    /* v5.6.6·v5.6.7 실측 타임라인 대조(앵커 → 예상 → 실제 · 존재 단계만 · 화살표 CSS ::after) */
+    .ffp-cmp { display: grid; align-items: start; gap: 16px; padding: 10px 11px; }
+    .ffp-cmp-2 { grid-template-columns: 1fr 1fr; }
+    .ffp-cmp-3 { grid-template-columns: 1fr 1fr 1fr; }
+    .ffp-cell { margin: 0; position: relative; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+    .ffp-cell:not(:last-child)::after { content: "→"; position: absolute; right: -12px; top: 28%; transform: translateY(-50%); font: 900 14px var(--mono); color: #22d3ee; }
+    .ffp-cell-vp { position: relative; background: #05070c; display: grid; place-items: center; aspect-ratio: 16/9; overflow: hidden;
+        border-radius: 8px; border: 1px solid var(--line); }
+    .ffp-cap { font: 800 9.5px Pretendard,'Malgun Gothic',sans-serif; text-align: center; }
+    .ffp-cap.anchor { color: #6ee7b7; } .ffp-cap.frame { color: #a78bfa; } .ffp-cap.actual { color: #f5c451; }
+    @@media (max-width: 640px) {
+        .ffp-cmp-2, .ffp-cmp-3 { grid-template-columns: 1fr; }
+        .ffp-cell:not(:last-child)::after { content: "↓"; right: auto; left: 50%; top: auto; bottom: -14px; transform: translateX(-50%); }
+    }
+    /* 푸터(일치율/등록 유도) */
+    .ffp-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 11px 9px; }
+    .ffp-match { font: 800 10.5px Pretendard,'Malgun Gothic',sans-serif; border-radius: 999px; padding: 4px 10px; }
+    .ffp-match.ok { color: #052e16; background: linear-gradient(135deg,#34d399,#22d3ee); }
+    .ffp-match.warn { color: #1a1206; background: linear-gradient(135deg,#f5c451,#fbbf24); }
+    .ffp-match.verified { color: #052e16; background: linear-gradient(135deg,#34d399,#22d3ee); }
+    .ffp-match.bad { color: #fff; background: linear-gradient(135deg,#ef4444,#b91c1c); }
+    .ffp-gal { font: 800 10.5px Pretendard,'Malgun Gothic',sans-serif; color: #fff; border: none; border-radius: 999px; padding: 6px 12px; cursor: pointer; background: linear-gradient(135deg,#f59e0b,#ec4899); }
+    .ffp-gal:hover:not(:disabled) { filter: brightness(1.08); }
+    .ffp-gal:disabled { opacity: .6; cursor: default; }
+    .ffp-match-sub { font: 600 10px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); word-break: keep-all; line-height: 1.5; }
+    .ffp-reg { font: 800 10.5px Pretendard,'Malgun Gothic',sans-serif; color: #fff; border: none; border-radius: 999px; padding: 6px 12px; cursor: pointer;
+        background: linear-gradient(135deg,#7c5cff,#22d3ee); }
+    .ffp-reg:hover:not(:disabled) { filter: brightness(1.08); }
+    .ffp-reg:disabled { opacity: .5; cursor: not-allowed; }
+    .ffp-reg-hint { font: 600 10px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); word-break: keep-all; line-height: 1.5; }
+    /* 정체성 칩 */
+    .ffp-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 11px 9px; }
+    .ffp-tags-l { font: 700 9.5px var(--mono); color: var(--text-muted); margin-right: 2px; }
+    .ffp-chip { font: 700 10px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-secondary);
+        background: var(--card-2); border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px; }
+</style>

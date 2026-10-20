@@ -1,0 +1,475 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Cinema
+@using PromptFlowStudio.Services.Screenplay
+@using PromptFlowStudio.Services.Storyboard
+@implements IDisposable
+@inject CinematicUniverseTimelineEngine Universe
+@inject AutonomousSceneBlockingEngine Blocking
+@inject FeatureFilmMasteringPackager Packager
+@inject SceneBeatSheetScriptGenerator Script
+@inject StoryboardJobManager Jobs
+
+@*
+    [PromptFlow Studio v16.41.0] 📽️ AI 시네마틱 유니버스 & 프랜차이즈 스튜디오 — 에피소드/스핀오프 등록(대본 · Fountain · 스토리보드 · 데모) ·
+    시리즈 타임라인 노드 그래프 · 개연성 경고 인스펙터 · 자율 카메라 샷 리스트(블로킹 탑뷰) · 1-Click 장편/시리즈 마스터링(MP4 · HLS · DCP). 서비스 OnChange 구독.
+*@
+
+<div class="cu-scrim" @onclick="Close">
+    <div class="cu-modal" @onclick:stopPropagation="true">
+        <div class="cu-h">
+            <div>
+                <div class="cu-title">📽️ AI 시네마틱 유니버스 &amp; 프랜차이즈 스튜디오</div>
+                <div class="cu-sub">시리즈·스핀오프 전체의 <b>인물 생사·소지품·의상·장소·기억</b>을 추적해 개연성 모순을 검출하고, <b>자율 감독 샷 리스트</b>와 <b>장편/시리즈 마스터링</b>을 1-Click 으로 수행합니다.</div>
+            </div>
+            <button class="cu-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="cu-bar">
+            <span class="cu-chip @(Universe.EpisodeCount > 0 ? "ok" : "")">에피소드 @(Universe.EpisodeCount.ToString(CultureInfo.InvariantCulture))</span>
+            <span class="cu-chip">이벤트 @(Universe.EventCount.ToString(CultureInfo.InvariantCulture)) · 인물 @(Universe.CharacterCount.ToString(CultureInfo.InvariantCulture))</span>
+            <span class="cu-chip @(Universe.IssueCount > 0 ? "bad" : Universe.Validations > 0 ? "ok" : "")">모순 @(Universe.IssueCount.ToString(CultureInfo.InvariantCulture))</span>
+            <span class="cu-chip">샷 @((Blocking.Current?.Shots.Count ?? 0).ToString(CultureInfo.InvariantCulture))</span>
+            <span class="cu-chip @(Packager.FfmpegAvailable ? "ok" : "")">@(Packager.FfmpegAvailable ? "ffmpeg" : "BCL 패키징")</span>
+            <div class="cu-tabs">
+                @foreach (var t in _tabs)
+                {
+                    var key = t.Key;
+                    <button class="cu-tab @(_tab == key ? "on" : "")" @onclick="() => _tab = key">@(t.Label)</button>
+                }
+            </div>
+        </div>
+
+        <div class="cu-main">
+            <div class="cu-side">
+                <div class="cu-sec">에피소드 등록</div>
+                <input class="cu-in" @bind="_epTitle" placeholder="에피소드 제목" />
+                <div class="cu-row">
+                    <input class="cu-in grow" @bind="_branch" placeholder="브랜치(본편/외전)" />
+                </div>
+                <div class="cu-row">
+                    <button class="cu-btn sm" disabled="@(Script.Current is null)" @onclick="AddCurrentScript">📜 현재 대본</button>
+                    <button class="cu-btn sm" disabled="@(Jobs.Current is null)" @onclick="AddCurrentStoryboard">🎞 현재 스토리보드</button>
+                    <button class="cu-btn sm" @onclick="LoadDemo">🧪 데모 유니버스</button>
+                </div>
+                <textarea class="cu-ta" rows="6" @bind="_fountain" placeholder="Fountain 대본 붙여넣기 — 주석 예: [[DAY 2]] [[DIE 이름]] [[GAIN 이름: 물건]] [[OUTFIT 이름: 의상]] [[LEARN/MENTION 이름: 사실]]"></textarea>
+                <button class="cu-btn sm" disabled="@(string.IsNullOrWhiteSpace(_fountain))" @onclick="AddFountain">➕ Fountain 에피소드 추가</button>
+
+                <div class="cu-sec">에피소드 목록</div>
+                <div class="cu-eps">
+                    @foreach (var e in Universe.Episodes)
+                    {
+                        var id = e.Id;
+                        <div class="cu-ep @(_selEp == e.Order ? "on" : "")" @onclick="() => _selEp = e.Order">
+                            <b>@(e.Order + 1)</b><span>@(e.Title)</span><i>@(e.Branch)</i>
+                            <button class="cu-x sm" @onclick="() => Universe.RemoveEpisode(id)" @onclick:stopPropagation="true">✕</button>
+                        </div>
+                    }
+                </div>
+                <button class="cu-btn go" disabled="@(Universe.EpisodeCount == 0)" @onclick="Analyze">🔍 개연성 검증</button>
+                <button class="cu-btn" disabled="@(Universe.EpisodeCount == 0)" @onclick="PlanShots">🎬 선택 에피소드 샷 리스트</button>
+            </div>
+
+            <div class="cu-panel">
+                @if (_tab == "timeline")
+                {
+                    <div class="cu-card">
+                        <div class="cu-sec">시리즈 타임라인 노드 그래프</div>
+                        @if (_graph.Count == 0)
+                        {
+                            <div class="cu-note">에피소드를 등록하고 [개연성 검증]을 실행하세요.</div>
+                        }
+                        else
+                        {
+                            var lanes = 1;
+                            foreach (var n in _graph) lanes = Math.Max(lanes, n.Lane + 1);
+                            <svg class="cu-graph" viewBox="0 0 @(GraphW) @(40 + lanes * 90)" preserveAspectRatio="xMinYMin meet">
+                                @for (var l = 0; l < lanes; l++)
+                                {
+                                    <line x1="20" y1="@(60 + l * 90)" x2="@(GraphW - 20)" y2="@(60 + l * 90)" stroke="#334155" stroke-dasharray="4 4" />
+                                }
+                                @for (var i = 0; i < _graph.Count; i++)
+                                {
+                                    var n = _graph[i];
+                                    var x = NodeX(i);
+                                    var y = 60 + n.Lane * 90;
+                                    var prev = PrevInLane(i);
+                                    <g>
+                                        @if (prev >= 0)
+                                        {
+                                            <line x1="@(F(NodeX(prev) + 34))" y1="@(60 + _graph[prev].Lane * 90)" x2="@(F(x - 34))" y2="@(y)" stroke="#64748b" stroke-width="2" />
+                                        }
+                                        else if (n.Lane > 0)
+                                        {
+                                            <path d="M @(F(NodeX(Math.Max(0, i - 1)))) 60 C @(F(x - 40)) 60, @(F(x - 60)) @(y), @(F(x - 34)) @(y)" fill="none" stroke="#a78bfa" stroke-width="2" stroke-dasharray="5 3" />
+                                        }
+                                        <rect x="@(F(x - 34))" y="@(y - 22)" width="68" height="44" rx="10" fill="@(n.Issues > 0 ? "#3b1220" : "#0f1d33")" stroke="@(_selEp == n.Episode ? "#38bdf8" : n.Issues > 0 ? "#f87171" : "#475569")" stroke-width="2" @onclick="() => _selEp = n.Episode" />
+                                        <text x="@(F(x))" y="@(y - 4)" fill="#e2e8f0" font-size="11" text-anchor="middle">@(Short(n.Title))</text>
+                                        <text x="@(F(x))" y="@(y + 12)" fill="#94a3b8" font-size="9" text-anchor="middle">D@(n.FirstDay)~@(n.LastDay) · @(n.Scenes)씬</text>
+                                        @if (n.Deaths > 0)
+                                        {
+                                            <g><text x="@(F(x - 30))" y="@(y - 26)" font-size="11">☠@(n.Deaths)</text></g>
+                                        }
+                                        @if (n.Issues > 0)
+                                        {
+                                            <g>
+                                                <circle cx="@(F(x + 32))" cy="@(y - 22)" r="9" fill="#ef4444" />
+                                                <text x="@(F(x + 32))" y="@(y - 18)" fill="#fff" font-size="10" text-anchor="middle">@(n.Issues)</text>
+                                            </g>
+                                        }
+                                        <text x="20" y="@(y - 30)" fill="#64748b" font-size="10">@(n.Branch)</text>
+                                    </g>
+                                }
+                            </svg>
+                        }
+                    </div>
+                }
+                else if (_tab == "issues")
+                {
+                    <div class="cu-card">
+                        <div class="cu-row">
+                            <div class="cu-sec">개연성 검증 경고 인스펙터</div>
+                            <select class="cu-in" @bind="_sevFilter"><option value="-1">전체</option><option value="2">치명</option><option value="1">주요</option><option value="0">경미</option></select>
+                        </div>
+                        @if (Universe.IssueCount == 0)
+                        {
+                            <div class="cu-note @(Universe.Validations > 0 ? "ok" : "")">@(Universe.Validations > 0 ? "✅ 모순 없음 — 유니버스 설정이 일관됩니다." : "검증 전입니다.")</div>
+                        }
+                        <div class="cu-log">
+                            @for (var i = 0; i < _issues.Length; i++)
+                            {
+                                var h = _issues[i];
+                                if (_sevFilter >= 0 && (int)h.Severity != _sevFilter) continue;
+                                var idx = i;
+                                <div class="cu-issue @(SevClass(h.Severity)) @(_selIssue == idx ? "on" : "")" @onclick="() => _selIssue = idx">
+                                    <b>@(SevLabel(h.Severity))</b><span>@(CinematicUniverseTimelineEngine.KindLabel(h.Kind))</span><em>@(Universe.Describe(h))</em>
+                                </div>
+                            }
+                        </div>
+                        @if (_selIssue >= 0 && _selIssue < _issues.Length)
+                        {
+                            var sel = _issues[_selIssue];
+                            <div class="cu-insp">
+                                <div class="cu-kv"><span>위치</span><b>@(Universe.Where(sel.Event))</b></div>
+                                <div class="cu-kv"><span>근거</span><b>@(sel.Ref >= 0 ? Universe.Where(sel.Ref) : "—")</b></div>
+                                <div class="cu-note">@(Fix(sel.Kind))</div>
+                            </div>
+                        }
+                    </div>
+                }
+                else if (_tab == "shots")
+                {
+                    var plan = Blocking.Current;
+                    <div class="cu-card">
+                        <div class="cu-row">
+                            <div class="cu-sec">자율 카메라 샷 리스트 @(plan is null ? "" : "· " + plan.Title)</div>
+                            @if (plan is not null)
+                            {
+                                <span class="cu-chip @(plan.AxisViolations == 0 ? "ok" : "bad")">180° 위반 @(plan.AxisViolations)</span>
+                                <span class="cu-chip">총 @(F(plan.TotalSeconds))s</span>
+                                <button class="cu-btn sm" disabled="@(Jobs.Current is null)" @onclick="ApplyShots">📋 스토리보드 적용</button>
+                            }
+                        </div>
+                        @if (plan is null)
+                        {
+                            <div class="cu-note">좌측에서 에피소드를 선택해 [샷 리스트]를 생성하세요.</div>
+                        }
+                        else
+                        {
+                            <div class="cu-grid2">
+                                <div class="cu-shots">
+                                    @foreach (var s in plan.Shots)
+                                    {
+                                        var si = s.Index;
+                                        <div class="cu-shot @(_selShot == si ? "on" : "")" @onclick="() => _selShot = si">
+                                            <b>#@(s.Index) S@(s.Scene)</b><span>@(AutonomousSceneBlockingEngine.TypeLabel(s.Type))</span><i>@(s.LensMm)mm · @(F(s.HorizontalFov))°</i><em>@(s.Subject)</em>
+                                        </div>
+                                    }
+                                </div>
+                                @{
+                                    var cur = SelectedShot(plan);
+                                }
+                                @if (cur is not null)
+                                {
+                                    <div class="cu-detail">
+                                        <svg class="cu-top" viewBox="-5 -2 10 12">
+                                            <rect x="-5" y="-2" width="10" height="12" fill="#070b16" />
+                                            <line x1="-5" y1="0" x2="5" y2="0" stroke="#f59e0b" stroke-dasharray="0.2 0.2" stroke-width="0.04" />
+                                            @foreach (var m in cur.Marks)
+                                            {
+                                                <g>
+                                                    <circle cx="@(F(m.X))" cy="@(F(-m.Z))" r="0.25" fill="@(m.Character == cur.Subject ? "#38bdf8" : "#94a3b8")" />
+                                                    <text x="@(F(m.X))" y="@(F(-m.Z - 0.4))" fill="#cbd5e1" font-size="0.4" text-anchor="middle">@(m.Character)</text>
+                                                </g>
+                                            }
+                                            <polygon points="@(FrustumPoints(cur))" fill="#38bdf8" opacity="0.18" />
+                                            <rect x="@(F(cur.CamX - 0.2))" y="@(F(Math.Min(cur.CamZ, 9.5) - 0.15))" width="0.4" height="0.3" fill="#f472b6" />
+                                        </svg>
+                                        <div class="cu-kv"><span>무브</span><b>@(cur.Movement)</b></div>
+                                        <div class="cu-kv"><span>조명</span><b>@(cur.Light.LowKey ? "로우키" : "하이키") @(F(cur.Light.KeyFillRatio)):1 · @(cur.Light.ColorTempK)K · 키 @(F(cur.Light.KeyAzimuth))°</b></div>
+                                        <div class="cu-kv"><span>길이</span><b>@(F(cur.Seconds))s</b></div>
+                                        <div class="cu-prompt">@(cur.Prompt)</div>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <div class="cu-card">
+                        <div class="cu-sec">1-Click 시네마틱 프랜차이즈 마스터링</div>
+                        <div class="cu-row">
+                            <button class="cu-tg @(_mode == PackageMode.FeatureFilm ? "on" : "")" @onclick="() => _mode = PackageMode.FeatureFilm">🎬 장편 영화(에피소드 = 챕터)</button>
+                            <button class="cu-tg @(_mode == PackageMode.Series ? "on" : "")" @onclick="() => _mode = PackageMode.Series">📺 시리즈(에피소드별)</button>
+                        </div>
+                        <input class="cu-in" @bind="_title" placeholder="패키지 제목" />
+                        <div class="cu-row">
+                            <label class="cu-ck"><input type="checkbox" @bind="_mp4" /> MP4 마스터</label>
+                            <label class="cu-ck"><input type="checkbox" @bind="_hls" /> HLS(1080/720/480)</label>
+                            <label class="cu-ck"><input type="checkbox" @bind="_dcp" /> DCP(DCI Interop)</label>
+                            <label class="cu-ck"><input type="checkbox" @bind="_subs" /> 대본 자막(ko)</label>
+                        </div>
+                        <div class="cu-row">
+                            <input class="cu-in grow" @bind="_dubPath" placeholder="추가 더빙 오디오 경로(선택)" />
+                            <input class="cu-in w60" @bind="_dubLang" placeholder="en" />
+                        </div>
+                        <button class="cu-btn go big" disabled="@(Packager.IsBusy || Universe.EpisodeCount == 0)" @onclick="MasterAsync">@(Packager.IsBusy ? "⏳ " + Packager.Stage : "🚀 1-Click 마스터링")</button>
+                        <div class="cu-meter"><i style="width:@((Packager.Progress * 100).ToString("0", CultureInfo.InvariantCulture))%"></i></div>
+                        @if (Packager.LastResult is { } res)
+                        {
+                            <div class="cu-kv"><span>결과</span><b class="@(res.PartialRescue ? "warn" : "")">@(res.Success ? res.PartialRescue ? "부분 구제" : "완료" : "실패") · @(res.Files.Count)파일 · 챕터 @(res.Chapters) · @(F(res.DurationSec))s</b></div>
+                            <div class="cu-mut"><code>@(res.Folder)</code></div>
+                            <div class="cu-log">
+                                @foreach (var w in res.Warnings)
+                                {
+                                    <div class="cu-warn">⚠ @(w)</div>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+
+        <div class="cu-f">
+            <span class="cu-mut">@(_msg ?? Packager.LastAction ?? Blocking.LastAction ?? Universe.LastAction ?? "시네마틱 유니버스 대기")</span>
+            <button class="cu-btn" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .cu-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .cu-modal { width: min(1320px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .cu-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f59e0b 12%, var(--card)), color-mix(in srgb, #a78bfa 14%, var(--card))); }
+    .cu-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .cu-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .cu-sub b { color: var(--text-primary); }
+    .cu-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; } .cu-x.sm { width: 20px; height: 20px; font-size: 11px; }
+    .cu-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .cu-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .cu-chip.ok { color: #4ade80; } .cu-chip.bad { color: #f87171; border-color: #f87171; }
+    .cu-tabs { margin-left: auto; display: flex; gap: 4px; }
+    .cu-tab { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-secondary); border-radius: 8px; padding: 5px 10px; cursor: pointer; }
+    .cu-tab.on { color: var(--text-primary); border-color: #f59e0b; box-shadow: 0 0 0 1px #f59e0b inset; }
+    .cu-main { display: grid; grid-template-columns: 300px 1fr; min-height: 0; flex: 1; overflow: hidden; }
+    .cu-side { border-right: 1px solid var(--line); padding: 12px; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+    .cu-panel { padding: 12px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .cu-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); margin: 2px 0; }
+    .cu-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .cu-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .cu-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .cu-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; min-width: 0; } .cu-in.grow { flex: 1; } .cu-in.w60 { width: 60px; }
+    .cu-ta { font: 11px var(--mono); background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 6px; resize: vertical; }
+    .cu-ck { font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 5px; }
+    .cu-tg { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-secondary); border-radius: 8px; padding: 6px 8px; cursor: pointer; }
+    .cu-tg.on { color: var(--text-primary); border-color: #f59e0b; box-shadow: 0 0 0 1px #f59e0b inset; }
+    .cu-eps { display: flex; flex-direction: column; gap: 3px; max-height: 190px; overflow-y: auto; }
+    .cu-ep { display: grid; grid-template-columns: 22px 1fr auto 22px; gap: 6px; align-items: center; font-size: 12px; color: var(--text-secondary); border: 1px solid var(--line); border-radius: 7px; padding: 3px 6px; cursor: pointer; }
+    .cu-ep.on { border-color: #38bdf8; } .cu-ep b { font: 10px var(--mono); color: var(--text-muted); } .cu-ep i { font: 10px var(--mono); color: #a78bfa; font-style: normal; }
+    .cu-graph { width: 100%; background: #070b16; border-radius: 8px; }
+    .cu-log { display: flex; flex-direction: column; gap: 3px; max-height: 300px; overflow-y: auto; }
+    .cu-issue { display: grid; grid-template-columns: 44px 120px 1fr; gap: 8px; font-size: 12px; color: var(--text-secondary); border-left: 3px solid #64748b; padding: 4px 6px; cursor: pointer; border-radius: 4px; }
+    .cu-issue.on { background: color-mix(in srgb, #38bdf8 10%, var(--card)); }
+    .cu-issue.crit { border-left-color: #ef4444; } .cu-issue.major { border-left-color: #f59e0b; } .cu-issue.minor { border-left-color: #38bdf8; }
+    .cu-issue b { font: 700 10px var(--mono); } .cu-issue em { font-style: normal; color: var(--text-primary); }
+    .cu-insp { border-top: 1px solid var(--line); padding-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+    .cu-kv { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--text-muted); } .cu-kv b { color: var(--text-primary); font-family: var(--mono); text-align: right; } .cu-kv b.warn { color: #fbbf24; }
+    .cu-shots { display: flex; flex-direction: column; gap: 3px; max-height: 360px; overflow-y: auto; }
+    .cu-shot { display: grid; grid-template-columns: 62px 70px 96px 1fr; gap: 6px; font-size: 12px; color: var(--text-secondary); border-bottom: 1px solid var(--line); padding: 3px 2px; cursor: pointer; }
+    .cu-shot.on { background: color-mix(in srgb, #f59e0b 12%, var(--card)); } .cu-shot b, .cu-shot i { font: 10px var(--mono); font-style: normal; color: var(--text-muted); } .cu-shot em { font-style: normal; color: var(--text-primary); }
+    .cu-detail { display: flex; flex-direction: column; gap: 5px; }
+    .cu-top { width: 100%; max-height: 220px; border-radius: 8px; }
+    .cu-prompt { font: 11px var(--mono); color: var(--text-secondary); background: var(--bg); border-radius: 6px; padding: 6px; user-select: all; }
+    .cu-meter { height: 8px; border-radius: 6px; background: #1e293b; overflow: hidden; } .cu-meter i { display: block; height: 100%; background: linear-gradient(90deg,#f59e0b,#a78bfa); transition: width .2s; }
+    .cu-warn { font-size: 11.5px; color: #fbbf24; }
+    .cu-mut { font-size: 11px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; } .cu-mut code { font: 11px var(--mono); color: #38bdf8; user-select: all; }
+    .cu-note { font-size: 11.5px; color: var(--text-secondary); } .cu-note.ok { color: #4ade80; }
+    .cu-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); } .cu-f .cu-mut { margin-right: auto; }
+    .cu-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .cu-btn.sm { padding: 3px 8px; font-size: 11px; } .cu-btn.big { padding: 10px; font-size: 13px; }
+    .cu-btn.go { background: linear-gradient(135deg,#f59e0b,#a78bfa); color: #fff; border: 0; }
+    .cu-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 900px) { .cu-main { grid-template-columns: 1fr; } .cu-grid2 { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int GraphW = 900;
+    private static readonly (string Key, string Label)[] _tabs = { ("timeline", "🕸 타임라인"), ("issues", "⚠ 개연성"), ("shots", "🎥 샷 리스트"), ("master", "🎞 마스터링") };
+    private string _tab = "timeline", _epTitle = "", _branch = "본편", _fountain = "", _title = "My Cinematic Universe", _dubPath = "", _dubLang = "en";
+    private string? _msg;
+    private int _selEp, _selIssue = -1, _selShot = 1, _sevFilter = -1;
+    private bool _mp4 = true, _hls = true, _dcp = true, _subs = true;
+    private PackageMode _mode = PackageMode.FeatureFilm;
+    private IReadOnlyList<TimelineNode> _graph = Array.Empty<TimelineNode>();
+    private PlotHole[] _issues = Array.Empty<PlotHole>();
+
+    protected override void OnInitialized()
+    {
+        Universe.OnChange += OnServiceChanged;
+        Blocking.OnChange += OnServiceChanged;
+        Packager.OnChange += OnServiceChanged;
+        Snapshot();
+    }
+
+    private void Snapshot()
+    {
+        _graph = Universe.BuildGraph();
+        _issues = Universe.Issues.ToArray();
+    }
+
+    private void AddCurrentScript()
+    {
+        if (Script.Current is not { } doc) return;
+        Universe.AddEpisode(_epTitle, doc, _branch);
+        _epTitle = "";
+        Analyze();
+    }
+
+    private void AddCurrentStoryboard()
+    {
+        if (Jobs.Current is not { } p) return;
+        Universe.AddStoryboard(p, _branch);
+        Analyze();
+    }
+
+    private void AddFountain()
+    {
+        Universe.AddFountain(string.IsNullOrWhiteSpace(_epTitle) ? "EP" + (Universe.EpisodeCount + 1).ToString(CultureInfo.InvariantCulture) : _epTitle, _fountain, _branch);
+        _fountain = ""; _epTitle = "";
+        Analyze();
+    }
+
+    private void LoadDemo()
+    {
+        Universe.Clear();
+        foreach (var (t, b, f) in CinematicUniverseTimelineEngine.DemoFranchise()) Universe.AddFountain(t, f, b);
+        _title = "붉은 서약 유니버스";
+        Analyze();
+        _tab = "issues";
+    }
+
+    private void Analyze()
+    {
+        var n = Universe.Analyze();
+        Snapshot();
+        _selIssue = n > 0 ? 0 : -1;
+        _msg = n > 0 ? "⚠ 개연성 모순 " + n.ToString(CultureInfo.InvariantCulture) + "건 검출" : "✅ 개연성 검증 통과";
+    }
+
+    private void PlanShots()
+    {
+        var eps = Universe.Episodes;
+        if (eps.Count == 0) return;
+        var ep = eps[Math.Clamp(_selEp, 0, eps.Count - 1)];
+        var plan = Blocking.Plan(ep.Script);
+        _selShot = plan.Shots.Count > 0 ? plan.Shots[0].Index : 0;
+        _tab = "shots";
+        _msg = "🎬 " + ep.Title + " 샷 " + plan.Shots.Count.ToString(CultureInfo.InvariantCulture) + "컷";
+    }
+
+    private void ApplyShots()
+    {
+        if (Jobs.Current is not { } p || Blocking.Current is not { } plan) return;
+        Blocking.ApplyToStoryboard(p, plan, replace: false);
+        _msg = "📋 현재 스토리보드에 " + plan.Shots.Count.ToString(CultureInfo.InvariantCulture) + "컷 추가";
+    }
+
+    private async Task MasterAsync()
+    {
+        var eps = Universe.Episodes;
+        var masters = new List<EpisodeMaster>(eps.Count);
+        var cues = new List<FilmSubtitleCue>();
+        double offset = 0;
+        foreach (var e in eps)
+        {
+            var secs = new List<double>();
+            if (e.Clips.Count > 0) secs.AddRange(e.ClipSeconds);
+            else foreach (var s in e.Script.Scenes) secs.Add(s.Seconds > 0 ? s.Seconds : 6);
+            var chapters = new List<ChapterMark>();
+            double t = 0;
+            foreach (var s in e.Script.Scenes) { chapters.Add(new ChapterMark(t, s.Heading)); t += s.Seconds > 0 ? s.Seconds : 6; }
+            masters.Add(new EpisodeMaster(e.Title, e.Clips, secs, chapters));
+            if (_subs) cues.AddRange(FeatureFilmMasteringPackager.CuesFromScript(e.Script, offset));
+            foreach (var s in secs) offset += s;
+        }
+        var subs = _subs && cues.Count > 0 ? new[] { new SubtitleTrackSpec("ko", "한국어", cues) } : null;
+        var audio = !string.IsNullOrWhiteSpace(_dubPath) && File.Exists(_dubPath) ? new[] { new AudioTrackSpec(_dubLang, _dubPath, _dubLang.ToUpperInvariant() + " 더빙") } : null;
+        var res = await Packager.PackageAsync(masters, new MasteringOptions(_mode, _title, _mp4, _hls, _dcp, audio, subs));
+        _msg = res.Success ? (res.PartialRescue ? "🩹 [부분 구제] " : "🎞 ") + "마스터링 · " + res.Files.Count.ToString(CultureInfo.InvariantCulture) + "파일" : "⚠ 마스터링 실패";
+    }
+
+    private CinematicShot? SelectedShot(ShotPlan plan)
+    {
+        foreach (var s in plan.Shots) if (s.Index == _selShot) return s;
+        return plan.Shots.Count > 0 ? plan.Shots[0] : null;
+    }
+
+    private static string FrustumPoints(CinematicShot s)
+    {
+        var half = s.HorizontalFov / 2 * Math.PI / 180;
+        var yaw = s.CamYaw * Math.PI / 180;
+        const double len = 4;
+        var cz = Math.Min(s.CamZ, 9.5);
+        double lx = s.CamX + Math.Sin(yaw - half) * len, lz = cz - Math.Cos(yaw - half) * len;
+        double rx = s.CamX + Math.Sin(yaw + half) * len, rz = cz - Math.Cos(yaw + half) * len;
+        return F(s.CamX) + "," + F(cz) + " " + F(lx) + "," + F(lz) + " " + F(rx) + "," + F(rz);
+    }
+
+    private double NodeX(int i) => 70 + i * Math.Max(90.0, (GraphW - 140.0) / Math.Max(1, _graph.Count - 1));
+
+    private int PrevInLane(int i)
+    {
+        for (var k = i - 1; k >= 0; k--) if (_graph[k].Lane == _graph[i].Lane) return k;
+        return -1;
+    }
+
+    private static string Short(string s) => s.Length > 9 ? s[..9] + "…" : s;
+    private static string F(double v) => v.ToString("0.##", CultureInfo.InvariantCulture);
+    private static string SevLabel(PlotSeverity s) => s switch { PlotSeverity.Critical => "치명", PlotSeverity.Major => "주요", _ => "경미" };
+    private static string SevClass(PlotSeverity s) => s switch { PlotSeverity.Critical => "crit", PlotSeverity.Major => "major", _ => "minor" };
+
+    private static string Fix(PlotHoleKind k) => k switch
+    {
+        PlotHoleKind.DeadCharacterActs => "💡 회상 씬 헤딩(회상/FLASHBACK)으로 전환하거나 [[REVIVE 이름]] 부활 설정을 추가하세요.",
+        PlotHoleKind.DoubleDeath => "💡 이전 사망 장면을 가사(假死)로 수정하거나 중복 사망 묘사를 제거하세요.",
+        PlotHoleKind.ItemNotOwned => "💡 앞선 씬에 획득 장면([[GAIN 이름: 물건]])을 추가하세요.",
+        PlotHoleKind.OutfitDiscontinuity => "💡 의상 교체 장면을 넣거나 같은 날 의상을 통일하세요.",
+        PlotHoleKind.Teleport => "💡 연속(CONTINUOUS) 표기를 제거하거나 이동 장면을 삽입하세요.",
+        PlotHoleKind.TimelineRegression => "💡 회상 표기를 추가하거나 [[DAY n]] 일차를 바로잡으세요.",
+        PlotHoleKind.KnowledgeLeak => "💡 정보를 알게 되는 장면([[LEARN 이름: 사실]])을 언급 이전에 배치하세요.",
+        _ => "💡 회복 경과([[HEAL 이름]]) 또는 부상 연기를 추가하세요.",
+    };
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(() => { Snapshot(); StateHasChanged(); });
+
+    public void Dispose()
+    {
+        Universe.OnChange -= OnServiceChanged;
+        Blocking.OnChange -= OnServiceChanged;
+        Packager.OnChange -= OnServiceChanged;
+    }
+}

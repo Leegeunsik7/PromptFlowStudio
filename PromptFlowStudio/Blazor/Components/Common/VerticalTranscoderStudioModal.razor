@@ -1,0 +1,247 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.VerticalTranscode
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject VerticalTranscoderStudioRunner Runner
+
+@* [PromptFlow Studio v17.49.0] 🎞️ AI 9:16 하드웨어 트랜스코더 스튜디오 — 1080×1920 프리뷰 · 인코더 점유율/지연 · 비트레이트 가드 · 로컬 웹훅 리스너. *@
+
+<div class="vtc-scrim" @onclick="Close">
+    <div class="vtc-modal" @onclick:stopPropagation="true">
+        <div class="vtc-h">
+            <div>
+                <div class="vtc-title">🎞️ AI 9:16 하드웨어 트랜스코더 스튜디오 @(Runner.IsRunning ? "· ▶ 루프" : null) · @(VerticalTranscoderStudioRunner.StateName(Runner.State))</div>
+                <div class="vtc-sub"><b>직결 합성기</b>가 v17.46 세트 확장 · v17.43 렌즈 광학 · v17.47 리믹스 버퍼를 9:16 크롭/스케일로 병합해 NV12 로 만들고, v17.32 더빙 · v17.38 폴리 스템을 스테레오로 믹스합니다. <b>트랜스코더</b>는 Media Foundation 하드웨어 H.264(GPU) → 소프트웨어 MFT(CPU) → 관리 코드 Baseline 순으로 폴백하며 AAC-LC 와 함께 fMP4 로 먹싱해 v17.48 4 MB 청크 업로더에 직결합니다. <b>가드</b>는 8 Mbps 상한 · 프레임 지연을 감시해 QP/비트레이트를 조정하고, 로컬 리스너가 Meta 웹훅 챌린지 · 서명 알림을 처리합니다.</div>
+            </div>
+            <button class="vtc-x" @onclick="Close">✕</button>
+        </div>
+        <div class="vtc-bar">
+            <button class="vtc-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 루프")</button>
+            <button class="vtc-btn" @onclick="Step30" disabled="@Runner.IsRunning">⏭ 30 프레임</button>
+            <button class="vtc-btn rec @(Runner.State == TranscodeSessionState.Recording ? "on" : null)" @onclick="ToggleRecord">@(Runner.State == TranscodeSessionState.Recording ? "⏹ 인코딩 취소" : "⏺ 인코딩 시작")</button>
+            <button class="vtc-btn @(Runner.PreferHardware ? "on" : null)" @onclick="() => Reconfig(hw: !Runner.PreferHardware)">🖥 GPU 우선</button>
+            <button class="vtc-btn @(Runner.AllowMediaFoundation ? "on" : null)" @onclick="() => Reconfig(mf: !Runner.AllowMediaFoundation)">🪟 Media Foundation</button>
+            <button class="vtc-btn @(Runner.Fps == 60 ? "on" : null)" @onclick="() => Reconfig(fps: Runner.Fps == 60 ? 30 : 60)">@(Runner.Fps) fps</button>
+            <button class="vtc-btn @(Runner.AutoHandoff ? "on" : null)" @onclick="() => Runner.SetAutoHandoff(!Runner.AutoHandoff)">🔗 완료 시 자동 발행</button>
+            <span class="vtc-chip @(Runner.LastTickMs < 1000.0 / Runner.Fps ? "ok" : "warn")">틱 @(F1(Runner.LastTickMs)) ms · 합성 @(F1(Runner.Synth.LastRenderMs)) ms · 인코딩 @(F1(Runner.Engine.LastEncodeMs)) ms</span>
+        </div>
+        <div class="vtc-bar">
+            <label class="vtc-lbl">🎚 목표 비트레이트</label>
+            <input class="vtc-rng" type="range" min="1000" max="8000" step="250" value="@(Runner.TargetKbps)" @oninput="OnKbps" />
+            <span class="vtc-chip">@(Runner.TargetKbps) kbps / 상한 @(LocalHttpsWebhookBitrateBudgetGuard.CapKbps)</span>
+            <label class="vtc-lbl">⏱ 길이</label>
+            <input class="vtc-rng" type="range" min="3" max="60" value="@((int)Runner.DurationSec)" @oninput="OnDur" />
+            <span class="vtc-chip">@(F0(Runner.DurationSec)) s · @(Runner.Width)×@(Runner.Height)</span>
+        </div>
+        <div class="vtc-main">
+            <div class="vtc-col narrow">
+                <div class="vtc-card">
+                    <div class="vtc-sec">📱 9:16 프리뷰(@(Runner.Width)×@(Runner.Height) 합성 · 1/8 표시)</div>
+                    <img class="vtc-view" src="@(_img)" alt="9:16 preview" />
+                    <div class="vtc-kv">
+                        <div>소스: @(Runner.Synth.SetLinked ? "세트 ✓" : "세트 —") · @(Runner.Synth.LensLinked ? "렌즈 ✓" : "렌즈 —") · @(Runner.Synth.ReelsLinked ? "리믹스 ✓" : "리믹스 —")</div>
+                        <div>오디오 피크 @(F2(Runner.Synth.AudioPeak)) · 48 kHz 스테레오</div>
+                    </div>
+                </div>
+            </div>
+            <div class="vtc-col">
+                <div class="vtc-card">
+                    <div class="vtc-sec">⚙ 인코더 — <b>@(RealtimeHardwareVerticalTranscoderEngine.BackendName(Runner.Engine.Backend))</b> · @(RealtimeHardwareVerticalTranscoderEngine.AudioName(Runner.Engine.Audio)) @(Runner.Engine.FallbackReason is { } fr ? "· " + fr : null)</div>
+                    <div class="vtc-gauges">
+                        <div class="vtc-g"><svg viewBox="0 0 100 10" preserveAspectRatio="none"><rect class="occ" x="0" y="0" width="@(P(Math.Min(Runner.Guard.Occupancy, 100)))" height="10" /></svg><span>인코더 점유율 <b class="@(Runner.Guard.Occupancy < 80 ? "ok" : "warn")">@(F0(Runner.Guard.Occupancy))%</b></span></div>
+                        <div class="vtc-g"><svg viewBox="0 0 100 10" preserveAspectRatio="none"><rect class="lat" x="0" y="0" width="@(P(Math.Min(Runner.Engine.LastEncodeMs / (1000.0 / Runner.Fps) * 100, 100)))" height="10" /></svg><span>인코딩 지연 <b>@(F1(Runner.Engine.LastEncodeMs))</b> ms · 최대 @(F1(Runner.Engine.MaxEncodeMs))</span></div>
+                        <div class="vtc-g"><svg viewBox="0 0 100 10" preserveAspectRatio="none"><rect class="br" x="0" y="0" width="@(P(Math.Min(Runner.Guard.WindowKbps / LocalHttpsWebhookBitrateBudgetGuard.CapKbps * 100, 100)))" height="10" /></svg><span>비트레이트 <b class="@(Runner.Guard.WindowKbps < LocalHttpsWebhookBitrateBudgetGuard.CapKbps * 0.95 ? "ok" : "warn")">@(F0(Runner.Guard.WindowKbps))</b> kbps · 피크 @(F0(Runner.Guard.PeakKbps))</span></div>
+                    </div>
+                    <div class="vtc-prog"><div class="vtc-prog-f" style="width:@(P(Runner.Progress * 100))%"></div></div>
+                    <div class="vtc-kv grid">
+                        <div>프레임 @(Runner.Engine.Frames) · 인코딩 @(Runner.Engine.EncodedFrames) · 키 @(Runner.Engine.KeyFrames)</div>
+                        <div>AAC @(Runner.Engine.AudioFrames) · 조각 @(Runner.Engine.Muxer?.Fragments ?? 0) · 거부 @(Runner.Engine.MuxRejects)</div>
+                        <div>QP <b>@(Runner.Guard.Qp)</b> (↑@(Runner.Guard.QpRaises) ↓@(Runner.Guard.QpLowers)) · MF 목표 @(Runner.Guard.MfKbps) kbps</div>
+                        <div>지연 프레임 @(Runner.Guard.LateFrames) · 드롭(반복) @(Runner.Guard.Drops) · 상한 초과 @(Runner.Guard.OverCap)</div>
+                        <div>출력 @(F2((Runner.State == TranscodeSessionState.Recording ? Runner.Engine.Muxer?.BytesWritten ?? 0 : Runner.ReadyBytes) / 1048576.0)) MB(4 MB 세그먼트)</div>
+                    </div>
+                    <svg class="vtc-graph" viewBox="0 0 600 90" preserveAspectRatio="none">
+                        <line class="cap" x1="0" x2="600" y1="2" y2="2" />
+                        <polyline class="br" points="@(Series(0))" />
+                        <polyline class="lat" points="@(Series(1))" />
+                    </svg>
+                    <div class="vtc-legend"><span class="br">━ kbps(0~8000)</span><span class="lat">━ 인코딩 ms(0~프레임 예산)</span></div>
+                    <div class="vtc-row">
+                        <button class="vtc-btn" @onclick="Handoff" disabled="@(Runner.State != TranscodeSessionState.Ready || !Runner.BridgeLinked)">🚀 v17.48 발행 이관</button>
+                        <input class="vtc-in" @bind="_savePath" placeholder="저장 경로 .mp4" />
+                        <button class="vtc-btn" @onclick="Save" disabled="@(Runner.State != TranscodeSessionState.Ready)">💾 저장</button>
+                    </div>
+                </div>
+            </div>
+            <div class="vtc-col">
+                <div class="vtc-card">
+                    <div class="vtc-sec">📡 로컬 웹훅 리스너 — <b class="@(Runner.Listener.IsRunning ? "ok" : "warn")">@(Runner.Listener.IsRunning ? (Runner.Listener.Tls ? "https" : "http") + "://127.0.0.1:" + Runner.Listener.Port.ToString(CultureInfo.InvariantCulture) + Runner.Listener.Path : "정지")</b></div>
+                    <div class="vtc-row">
+                        <input class="vtc-in sm" type="number" min="0" max="65535" @bind="_port" />
+                        <button class="vtc-btn" @onclick="() => Runner.StartWebhook(_port, false)">▶ HTTP</button>
+                        <button class="vtc-btn" @onclick="() => Runner.StartWebhook(_port, true)">🔒 HTTPS(자체 서명)</button>
+                        <button class="vtc-btn" @onclick="Runner.StopWebhook" disabled="@(!Runner.Listener.IsRunning)">⏹</button>
+                    </div>
+                    <div class="vtc-row">
+                        <input class="vtc-in" @bind="_verify" placeholder="확인 토큰(8~64)" />
+                        <button class="vtc-btn" @onclick="() => Runner.SetVerifyToken(_verify)">🔑 토큰 적용</button>
+                    </div>
+                    <div class="vtc-kv">
+                        <div>확인 토큰 <b>@(Runner.VerifyToken)</b></div>
+                        <div>SSL 인증서 @(Runner.Listener.CertThumbprint is { } tp ? tp[..12] + "… · 만료 " + Runner.Listener.CertNotAfter!.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) : "—")</div>
+                        <div>요청 @(Runner.Listener.Requests) · 챌린지 @(Runner.Listener.Challenges) · 알림 @(Runner.Listener.Notifications) · 거부 @(Runner.Listener.Rejected)</div>
+                        <div>오버플로 @(Runner.Listener.Overflows) · 타임아웃 @(Runner.Listener.Timeouts) · 과부하 @(Runner.Listener.Busy) · 서명 검증 @(Runner.BridgeLinked ? "v17.48 앱 시크릿" : "미연동")</div>
+                    </div>
+                    <div class="vtc-log">
+                        @for (var i = 0; i < Math.Min(Runner.Listener.LogCount, 20); i++)
+                        {
+                            var l = Runner.Listener.Log(i);
+                            <div class="@(l.Status == 200 ? "ok" : "warn")">@(DateTimeOffset.FromUnixTimeMilliseconds(l.UnixMs).ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture)) @(l.Tls ? "🔒" : "") @(KindName(l.Kind)) → @(l.Status) · @(l.Bytes) B</div>
+                        }
+                    </div>
+                    <div class="vtc-act">Meta 는 공인 인증서 HTTPS 만 호출합니다 — 터널(ngrok/cloudflared 등)의 공개 URL 을 이 리스너로 전달해 콜백 URL 로 등록하세요.</div>
+                    <div class="vtc-act">@(Runner.LastAction ?? "대기")</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .vtc-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .vtc-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .vtc-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #8b5cf6 16%, var(--card)), color-mix(in srgb, #06b6d4 12%, var(--card))); }
+    .vtc-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .vtc-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .vtc-sub b { color: var(--text-primary); }
+    .vtc-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .vtc-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .vtc-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .vtc-btn:disabled { opacity: .45; cursor: default; }
+    .vtc-btn.on { background: color-mix(in srgb, #8b5cf6 20%, var(--card)); border-color: #8b5cf6; }
+    .vtc-btn.rec.on { background: color-mix(in srgb, #ef4444 22%, var(--card)); border-color: #ef4444; }
+    .vtc-lbl { font-size: 12px; color: var(--text-secondary); }
+    .vtc-rng { width: 140px; }
+    .vtc-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .vtc-chip.ok { border-color: #22c55e; color: #22c55e; } .vtc-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .vtc-main { display: grid; grid-template-columns: 0.55fr 1.2fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .vtc-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .vtc-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); }
+    .vtc-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .vtc-sec b.ok, .vtc-kv b.ok, .vtc-g b.ok { color: #22c55e; } .vtc-sec b.warn, .vtc-kv b.warn, .vtc-g b.warn { color: #f59e0b; }
+    .vtc-view { width: min(100%, calc(62vh * 9 / 16)); margin: 0 auto; aspect-ratio: 9 / 16; image-rendering: auto; background: #000; border-radius: 8px; display: block; }
+    .vtc-gauges { display: flex; flex-direction: column; gap: 6px; }
+    .vtc-g { display: grid; grid-template-columns: 1fr 1.4fr; gap: 8px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .vtc-g svg { width: 100%; height: 12px; background: #1e293b; border-radius: 4px; }
+    .vtc-g .occ { fill: #8b5cf6; } .vtc-g .lat { fill: #06b6d4; } .vtc-g .br { fill: #22c55e; }
+    .vtc-prog { height: 10px; border-radius: 999px; background: #1e293b; overflow: hidden; margin-top: 8px; }
+    .vtc-prog-f { height: 100%; background: linear-gradient(90deg, #8b5cf6, #06b6d4); }
+    .vtc-graph { width: 100%; height: 90px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; margin-top: 6px; }
+    .vtc-graph polyline { fill: none; stroke-width: 1.6; } .vtc-graph .cap { stroke: #ef4444; stroke-dasharray: 6 4; }
+    .vtc-graph .br, .vtc-legend .br { stroke: #22c55e; color: #22c55e; } .vtc-graph .lat, .vtc-legend .lat { stroke: #06b6d4; color: #06b6d4; }
+    .vtc-legend { display: flex; gap: 12px; font-size: 10px; margin-top: 3px; }
+    .vtc-kv { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
+    .vtc-kv.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+    .vtc-kv b { color: var(--text-primary); }
+    .vtc-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
+    .vtc-in { font: 12px var(--mono); padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); flex: 1; min-width: 0; }
+    .vtc-in.sm { flex: 0 0 80px; }
+    .vtc-log { font: 11px var(--mono); display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto; margin-top: 8px; }
+    .vtc-log .ok { color: #22c55e; } .vtc-log .warn { color: #f59e0b; }
+    .vtc-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly byte[] _bmp = new byte[VerticalTranscoderStudioRunner.PreviewBytes];
+    private System.Threading.Timer? _timer;
+    private string _img = "", _savePath = "", _verify = "";
+    private int _port = 8443;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _savePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "promptflow_reel_9x16.mp4");
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("VerticalTranscode.Modal.Timer", ex); }
+        }, null, 150, 150);
+    }
+
+    protected override bool ShouldRender()
+    {
+        Runner.WritePreviewBmp(_bmp);
+        _img = "data:image/bmp;base64," + Convert.ToBase64String(_bmp);
+        return true;
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string P(double v) => Math.Clamp(v, 0, 100).ToString("0.###", CultureInfo.InvariantCulture);
+    private static string KindName(WebhookRequestKind k) => k switch { WebhookRequestKind.Challenge => "GET 챌린지", WebhookRequestKind.Notification => "POST 알림", WebhookRequestKind.Other => "GET", _ => "?" };
+
+    private string Series(int which)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var budget = 1000.0 / Runner.Fps;
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            var v = which == 0 ? Runner.KbpsSeries(k) / LocalHttpsWebhookBitrateBudgetGuard.CapKbps : Runner.EncodeMsSeries(k) / budget;
+            sb.Append(P(600.0 * i / (n - 1))).Append(',').Append((88 - 86 * Math.Clamp(v, 0, 1)).ToString("0.###", CultureInfo.InvariantCulture)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void Reconfig(bool? hw = null, bool? mf = null, int? fps = null) =>
+        Runner.Configure(Runner.Width, Runner.Height, fps ?? Runner.Fps, Runner.TargetKbps, Runner.DurationSec, hw ?? Runner.PreferHardware, mf ?? Runner.AllowMediaFoundation);
+
+    private void OnKbps(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetTargetKbps(v);
+    }
+
+    private void OnDur(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v))
+            Runner.Configure(Runner.Width, Runner.Height, Runner.Fps, Runner.TargetKbps, v, Runner.PreferHardware, Runner.AllowMediaFoundation);
+    }
+
+    private void ToggleRecord()
+    {
+        if (Runner.State == TranscodeSessionState.Recording) Runner.CancelRecording();
+        else if (Runner.BeginRecording() && !Runner.IsRunning) Runner.Start();
+    }
+
+    private void Handoff() => Runner.Handoff();
+    private void Save() => Runner.SaveTo(_savePath.Trim().Trim('"'));
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void Step30()
+    {
+        for (var i = 0; i < 30; i++) Runner.Step();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        if (Runner.State != TranscodeSessionState.Recording) Runner.Stop();
+    }
+}

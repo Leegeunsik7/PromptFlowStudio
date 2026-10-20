@@ -1,0 +1,352 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.GenlockFrustum
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject GenlockFrustumLedWallStudioRunner Runner
+
+@* [PromptFlow Studio v17.44.0] 🖥️ AI ICVFX LED 월 관제 스튜디오 — 곡면 볼륨 탑다운 · 인너 프러스텀 · LED 캔버스 · PTP 젠록 지터/셔터 위상 게이지 · 컬러 캘리브레이션. *@
+
+<div class="gfm-scrim" @onclick="Close">
+    <div class="gfm-modal" @onclick:stopPropagation="true">
+        <div class="gfm-h">
+            <div>
+                <div class="gfm-title">🖥️ AI ICVFX LED 월 관제 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null)</div>
+                <div class="gfm-sub"><b>투영 엔진</b>이 6DoF 트래커 좌표로 반경 6 m · 240° 곡면 LED 월 96 패널의 오프액시스 비대칭 절두체(전단 행렬)를 SIMD로 매 프레임 재계산하고 LED 피치 투영 간격 · 초점 CoC 로 모아레 블러 맵을 산출합니다. <b>듀얼 합성기</b>는 카메라 화각 내부에 v17.43 렌즈 FoV 정합 시차 배경(4K 목표)을, 외부에 v17.41 무대 조명 연동 HDRI 환경광을 링버퍼로 이원 스트리밍합니다. <b>젠록 가드</b>는 PTP 위상차를 ±0.5 µs 로 잠그고 ±1.0 µs 초과 시 즉시 프레임 버퍼를 보정하며 셔터 각도에 PWM 주기를 정렬해 밴딩을 제거합니다.</div>
+            </div>
+            <button class="gfm-x" @onclick="Close">✕</button>
+        </div>
+        <div class="gfm-bar">
+            <button class="gfm-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 시작")</button>
+            <button class="gfm-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            @for (var m = 0; m < 4; m++)
+            {
+                var mv = (TrackerMove)m;
+                <button class="gfm-btn pre @(Runner.Move == mv ? "on" : null)" @onclick="() => Runner.SetMove(mv)">@(GenlockFrustumLedWallStudioRunner.MoveName(mv))</button>
+            }
+            <button class="gfm-btn @(Runner.Genlock.GenlockEnabled ? "on" : null)" @onclick="() => Runner.SetGenlock(!Runner.Genlock.GenlockEnabled)">🔒 PTP 젠록</button>
+            <button class="gfm-btn @(Runner.Genlock.GuardEnabled ? "on" : null)" @onclick="() => Runner.SetGuard(!Runner.Genlock.GuardEnabled)">🛡 티어링 가드</button>
+            <button class="gfm-btn @(Runner.Synth.Calibrated ? "on" : null)" @onclick="() => Runner.SetCalibration(!Runner.Synth.Calibrated)">🎨 캘리브레이션</button>
+            <button class="gfm-btn @(Runner.Synth.MoireBlur ? "on" : null)" @onclick="() => Runner.SetMoireBlur(!Runner.Synth.MoireBlur)">〰 모아레 블러</button>
+            <button class="gfm-btn @(Mismatch ? "warn" : null)" @onclick="() => Runner.SetRateMismatch(!Mismatch)">⚠ 23.976↔24</button>
+            <button class="gfm-btn det" @onclick="() => Runner.Spike()">⚡ PTP 스파이크</button>
+            <button class="gfm-btn" @onclick="Runner.ResetMetrics">↺ 지표</button>
+            <span class="gfm-chip @(Runner.LastTickMs < 16.7 ? "ok" : "warn")">프레임 @(F2(Runner.LastTickMs)) ms · 투영 @(F0(Runner.Projection.LastComputeUs)) µs · 합성 @(F0(Runner.Synth.LastComposeUs)) µs · HDRI @(F0(Runner.Synth.LastOuterUs)) µs</span>
+        </div>
+        <div class="gfm-bar">
+            <label class="gfm-lbl">🔍 초점 거리</label>
+            <input class="gfm-rng" type="range" min="0" max="200" value="@((int)Runner.FocalOverride)" @oninput="OnFocal" />
+            <span class="gfm-chip">@(Runner.LensSource) · @(F0(Runner.Pose.FocalMm)) mm · H @(F1(Runner.Pose.HFovDeg))° / V @(F1(Runner.Pose.VFovDeg))°</span>
+            <label class="gfm-lbl">◎ 초점</label>
+            <input class="gfm-rng" type="range" min="0" max="120" value="@((int)MathF.Round(Runner.FocusOverride * 10f))" @oninput="OnFocus" />
+            <span class="gfm-chip">@(F1(Runner.Pose.FocusM)) m · T@(F1(Runner.Pose.TStop))</span>
+            <label class="gfm-lbl">◔ 셔터</label>
+            <input class="gfm-rng" type="range" min="45" max="358" step="0.1" value="@(Runner.Genlock.ShutterAngle.ToString("0.0", CultureInfo.InvariantCulture))" @oninput="OnShutter" />
+            <span class="gfm-chip">@(F1(Runner.Genlock.ShutterAngle))° · PWM @(F0(Runner.Genlock.EffectivePwmHz)) Hz × @(F2(Runner.Genlock.PwmCycles)) 주기</span>
+        </div>
+        <div class="gfm-main">
+            <div class="gfm-col">
+                <div class="gfm-card">
+                    <div class="gfm-sec">🧱 LED 월 캔버스(θ 언랩 384×64) — 인너 @(F1(Runner.Synth.InnerCoverage * 100f))% · LED @(F0(Runner.Synth.InnerLedPx)) px · 4K 텍셀/LED @(F2(Runner.Synth.TexelsPerLedPx)) · 아우터 평균 @(F3(Runner.Synth.OuterMeanLum)) · HDRI 슬롯 @(Runner.Synth.PublishedSlot)</div>
+                    <img class="gfm-view" src="@(_img)" alt="led wall canvas" />
+                    <div class="gfm-sec gap">🗺 곡면 볼륨 탑다운 — 인너 패널 <b>@(Runner.Projection.InnerPanels)</b>/@(RealtimeOffAxisFrustumProjectionEngine.Panels) · 카메라 (@(F2(Runner.Pose.Position.X)), @(F2(Runner.Pose.Position.Y)), @(F2(Runner.Pose.Position.Z))) m · 최대 전단 @(F2(Runner.Projection.MaxShear))</div>
+                    <svg class="gfm-top" viewBox="-7 -6.6 14 9.4">@((MarkupString)TopSvg())</svg>
+                    <div class="gfm-sec gap">〰 모아레 블러 맵(열 24 × 행 4) — 최대 위험 @(F2(Runner.Projection.MaxRisk)) · 최대 블러 @(F2(Runner.Projection.MaxBlur)) px · 블러 픽셀 @(F0(Runner.Synth.BlurredPixels)) · 베젤 단차 @(F3(Runner.Projection.SeamMax)) · 게인 @(F2(Runner.Projection.MinGain))~@(F2(Runner.Projection.MaxGainUsed))</div>
+                    <svg class="gfm-heat" viewBox="0 0 240 40" preserveAspectRatio="none">@((MarkupString)HeatSvg())</svg>
+                </div>
+            </div>
+            <div class="gfm-col">
+                <div class="gfm-card">
+                    <div class="gfm-sec">🔒 PTP 젠록 — <b class="@(Runner.Genlock.Locked ? "ok" : "warn")">@(Runner.Genlock.Locked ? "LOCKED" : Runner.Genlock.GenlockEnabled ? "획득 중" : "프리런")</b> · 위상 <b>@(F3(Runner.Genlock.PhaseErrNs / 1000.0))</b> µs · 지터 RMS <b class="@(Runner.Genlock.JitterRmsNs <= PtpGenlockRollingShutterTearingGuard.LockNs ? "ok" : "warn")">@(F3(Runner.Genlock.JitterRmsNs / 1000.0))</b> µs</div>
+                    <svg class="gfm-gauge" viewBox="-2.2 0 4.4 1">
+                        <rect class="bad" x="-2" y="0.3" width="4" height="0.4" />
+                        <rect class="corr" x="-1" y="0.3" width="2" height="0.4" />
+                        <rect class="lock" x="-0.5" y="0.3" width="1" height="0.4" />
+                        <line class="needle" x1="@(P(Clamp2(Runner.Genlock.PhaseErrNs / 1000.0)))" y1="0.15" x2="@(P(Clamp2(Runner.Genlock.PhaseErrNs / 1000.0)))" y2="0.85" />
+                        <g><text x="-2" y="0.98">−2 µs</text></g><g><text x="-0.62" y="0.98">±0.5</text></g><g><text x="0.86" y="0.98">±1.0</text></g><g><text x="1.62" y="0.98">+2 µs</text></g>
+                    </svg>
+                    <svg class="gfm-graph" viewBox="0 0 600 90" preserveAspectRatio="none">
+                        <line class="lim" x1="0" y1="@(F1(45f - 43f * 0.25f))" x2="600" y2="@(F1(45f - 43f * 0.25f))" />
+                        <line class="lim" x1="0" y1="@(F1(45f + 43f * 0.25f))" x2="600" y2="@(F1(45f + 43f * 0.25f))" />
+                        <polyline class="ph" points="@(Series(0))" />
+                        <polyline class="jt" points="@(Series(1))" />
+                        <polyline class="cv" points="@(Series(2))" />
+                    </svg>
+                    <div class="gfm-legend"><span class="ph">━ 위상(±2 µs · 점선 ±0.5)</span><span class="jt">━ 지터 RMS</span><span class="cv">━ 인너 커버리지</span></div>
+                    <div class="gfm-kv grid">
+                        <div>보정 프레임 <b class="@(Runner.Genlock.LastCorrected ? "warn" : null)">@(Runner.Genlock.Corrections)</b> · 스파이크 @(Runner.Genlock.Spikes)</div>
+                        <div>티어링 <b class="@(Runner.Genlock.Tears == 0 ? "ok" : "warn")">@(Runner.Genlock.Tears)</b> · 드롭 <b class="@(Runner.Genlock.Drops == 0 ? "ok" : "warn")">@(Runner.Genlock.Drops)</b></div>
+                        <div>주기 트림 @(F1(Runner.Genlock.TrimNs)) ns · 드리프트 @(F1(Runner.Genlock.DriftPpm)) ppm</div>
+                        <div>잠금 최대 오차 @(F3(Runner.Genlock.MaxLockedErrNs / 1000.0)) µs · 잔차 @(F3(Runner.Genlock.MaxResidualLockedNs / 1000.0)) µs</div>
+                        <div>카메라 @(F3(Runner.Genlock.CameraFps)) · 디스플레이 @(F3(Runner.Genlock.DisplayFps)) fps</div>
+                        <div>프레임 @(Runner.Genlock.Frames) · 잠금 해제 @(Runner.Genlock.LockLosses)</div>
+                    </div>
+                </div>
+                <div class="gfm-card">
+                    <div class="gfm-sec">◔ 셔터 위상 — 노출 @(F2(Runner.Genlock.ExposureNs / 1e6)) ms + 리드아웃 @(F1(Runner.Genlock.ReadoutMs)) ms · 스왑 @(F1(Runner.Genlock.SwapPhaseDeg))° · 밴딩 <b class="@(Runner.Genlock.BandContrast < 1e-3 ? "ok" : "warn")">@(F2(Runner.Genlock.BandContrast * 100.0))%</b> · 플리커 @(F2(Runner.Genlock.Flicker * 100.0))%</div>
+                    <div class="gfm-row">
+                        <svg class="gfm-dial" viewBox="-1.2 -1.2 2.4 2.4">@((MarkupString)DialSvg())</svg>
+                        <svg class="gfm-band" viewBox="0 0 64 20" preserveAspectRatio="none">@((MarkupString)BandSvg())</svg>
+                    </div>
+                </div>
+                <div class="gfm-card">
+                    <div class="gfm-sec">🎨 컬러 캘리브레이션 매트릭스(LED → 카메라) @(Runner.Synth.Calibrated ? "ON" : "OFF · 항등")</div>
+                    <div class="gfm-mat">
+                        @for (var i = 0; i < 9; i++)
+                        {
+                            var v = Runner.Synth.Matrix(i);
+                            <span class="@(i % 4 == 0 ? "d" : null)">@(F3(v))</span>
+                        }
+                    </div>
+                    <div class="gfm-kv grid">
+                        <div>무대 조명 @(Runner.StageLinked ? "v17.41 연동" : "미연동") · 광원 @(Runner.Synth.LightCount)</div>
+                        <div>HDRI 피크 @(F2(Runner.Synth.HdriPeak)) · 아우터 @(Runner.Synth.OuterFrames) · 인너 @(Runner.Synth.InnerFrames)</div>
+                    </div>
+                    <div class="gfm-act">@(Runner.LastAction ?? "대기")</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .gfm-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .gfm-modal { width: min(1680px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .gfm-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #06b6d4 16%, var(--card)), color-mix(in srgb, #a855f7 10%, var(--card))); }
+    .gfm-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .gfm-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .gfm-sub b { color: var(--text-primary); }
+    .gfm-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .gfm-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .gfm-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .gfm-btn:disabled { opacity: .45; cursor: default; }
+    .gfm-btn.on { background: color-mix(in srgb, #22c55e 20%, var(--card)); border-color: #22c55e; }
+    .gfm-btn.pre.on { background: color-mix(in srgb, #06b6d4 24%, var(--card)); border-color: #22d3ee; }
+    .gfm-btn.warn { background: color-mix(in srgb, #f59e0b 22%, var(--card)); border-color: #f59e0b; }
+    .gfm-btn.det { background: linear-gradient(120deg, #7c3aed, #ec4899); color: #fff; border-color: #ec4899; }
+    .gfm-lbl { font-size: 12px; color: var(--text-secondary); display: flex; gap: 4px; align-items: center; }
+    .gfm-rng { width: 120px; }
+    .gfm-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .gfm-chip.ok { border-color: #22c55e; color: #22c55e; } .gfm-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .gfm-main { display: grid; grid-template-columns: 1.35fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .gfm-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .gfm-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); }
+    .gfm-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .gfm-sec.gap { margin-top: 10px; }
+    .gfm-sec b.ok, .gfm-kv b.ok { color: #22c55e; } .gfm-sec b.warn, .gfm-kv b.warn { color: #f59e0b; }
+    .gfm-view { width: 100%; aspect-ratio: 6 / 1; image-rendering: pixelated; background: #000; border-radius: 6px; display: block; }
+    .gfm-top { width: 100%; height: 260px; background: #020617; border-radius: 6px; display: block; }
+    .gfm-top .pn { stroke-width: .16; stroke-linecap: butt; } .gfm-top .pn.o { stroke: #b45309; } .gfm-top .pn.i { stroke: #22d3ee; }
+    .gfm-top .fr { stroke: #f472b6; stroke-width: .03; stroke-dasharray: .12 .08; } .gfm-top .fw { fill: rgba(34,211,238,.10); stroke: none; }
+    .gfm-top .cam { fill: #f8fafc; } .gfm-top .ax { stroke: #f8fafc; stroke-width: .04; } .gfm-top .ctr { fill: #475569; }
+    .gfm-top text { fill: #94a3b8; font-size: .32px; }
+    .gfm-heat { width: 100%; height: 70px; background: #020617; border-radius: 6px; display: block; }
+    .gfm-heat .in { fill: none; stroke: #22d3ee; stroke-width: .6; }
+    .gfm-gauge { width: 100%; height: 46px; display: block; }
+    .gfm-gauge .bad { fill: #7f1d1d; } .gfm-gauge .corr { fill: #b45309; } .gfm-gauge .lock { fill: #15803d; }
+    .gfm-gauge .needle { stroke: #f8fafc; stroke-width: .05; } .gfm-gauge text { fill: #94a3b8; font-size: .17px; }
+    .gfm-graph { width: 100%; height: 90px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; margin-top: 6px; }
+    .gfm-graph polyline { fill: none; stroke-width: 1.6; } .gfm-graph .lim { stroke: #22c55e; stroke-width: 1; stroke-dasharray: 5 4; }
+    .gfm-graph .ph, .gfm-legend .ph { stroke: #f472b6; color: #f472b6; } .gfm-graph .jt, .gfm-legend .jt { stroke: #facc15; color: #facc15; } .gfm-graph .cv, .gfm-legend .cv { stroke: #22d3ee; color: #22d3ee; }
+    .gfm-legend { display: flex; gap: 12px; font-size: 10px; margin-top: 3px; }
+    .gfm-row { display: grid; grid-template-columns: 130px 1fr; gap: 10px; align-items: center; }
+    .gfm-dial { width: 130px; height: 130px; }
+    .gfm-dial .bg { fill: #0f172a; } .gfm-dial .ex { fill: none; stroke: #f59e0b; stroke-width: .16; } .gfm-dial .ro { fill: none; stroke: #ef4444; stroke-width: .08; } .gfm-dial .sw { stroke: #22d3ee; stroke-width: .06; }
+    .gfm-dial text { fill: #94a3b8; font-size: .16px; }
+    .gfm-band { width: 100%; height: 110px; background: #020617; border-radius: 6px; }
+    .gfm-band rect { fill: #e2e8f0; }
+    .gfm-mat { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; font: 700 12px var(--mono); }
+    .gfm-mat span { padding: 4px 8px; border-radius: 6px; background: #0f172a; color: #94a3b8; text-align: right; }
+    .gfm-mat span.d { color: #22d3ee; }
+    .gfm-kv { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px; }
+    .gfm-kv.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; margin-top: 6px; }
+    .gfm-kv b { color: var(--text-primary); }
+    .gfm-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly byte[] _bmp = new byte[GenlockFrustumLedWallStudioRunner.BmpBytes];
+    private System.Threading.Timer? _timer;
+    private string _img = "";
+
+    private bool Mismatch => Math.Abs(Runner.Genlock.DisplayFps - Runner.Genlock.CameraFps) > 1e-6;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        Runner.Step();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("GenlockFrustum.Modal.Timer", ex); }
+        }, null, 100, 100);
+    }
+
+    protected override void OnParametersSet() => Refresh();
+
+    protected override bool ShouldRender()
+    {
+        Refresh();
+        return true;
+    }
+
+    private void Refresh()
+    {
+        Runner.WriteBmp(_bmp);
+        _img = "data:image/bmp;base64," + Convert.ToBase64String(_bmp);
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static string P(double v) => v.ToString("0.###", CultureInfo.InvariantCulture);
+    private static double Clamp2(double us) => Math.Clamp(us, -2.0, 2.0);
+
+    private string TopSvg()
+    {
+        var pr = Runner.Projection;
+        var sb = new System.Text.StringBuilder(6144);
+        sb.Append("<circle class=\"ctr\" cx=\"0\" cy=\"0\" r=\"0.08\"/>");
+        ref readonly var pose = ref pr.Pose;
+        var tanH = MathF.Tan(Math.Clamp(pose.HFovDeg, 1f, 170f) * (MathF.PI / 360f));
+        var cam = pose.Position;
+        if (RealtimeOffAxisFrustumProjectionEngine.TryHitWall(cam, pose.Forward - pose.Right * tanH, out var ta, out _)
+            && RealtimeOffAxisFrustumProjectionEngine.TryHitWall(cam, pose.Forward + pose.Right * tanH, out var tb, out _))
+        {
+            var a = RealtimeOffAxisFrustumProjectionEngine.WallPoint(ta, 0f); var b = RealtimeOffAxisFrustumProjectionEngine.WallPoint(tb, 0f);
+            sb.Append("<polygon class=\"fw\" points=\"").Append(P(cam.X)).Append(',').Append(P(cam.Z)).Append(' ').Append(P(a.X)).Append(',').Append(P(a.Z)).Append(' ').Append(P(b.X)).Append(',').Append(P(b.Z)).Append("\"/>");
+            sb.Append("<line class=\"fr\" x1=\"").Append(P(cam.X)).Append("\" y1=\"").Append(P(cam.Z)).Append("\" x2=\"").Append(P(a.X)).Append("\" y2=\"").Append(P(a.Z)).Append("\"/>");
+            sb.Append("<line class=\"fr\" x1=\"").Append(P(cam.X)).Append("\" y1=\"").Append(P(cam.Z)).Append("\" x2=\"").Append(P(b.X)).Append("\" y2=\"").Append(P(b.Z)).Append("\"/>");
+        }
+        for (var c = 0; c < RealtimeOffAxisFrustumProjectionEngine.Cols; c++)
+        {
+            var inner = false;
+            for (var r = 0; r < RealtimeOffAxisFrustumProjectionEngine.Rows; r++) inner |= pr.IsInner(r * RealtimeOffAxisFrustumProjectionEngine.Cols + c);
+            var a = pr.CornerA(c); var b = pr.CornerB(c);
+            sb.Append("<line class=\"pn ").Append(inner ? "i" : "o").Append("\" x1=\"").Append(P(a.X)).Append("\" y1=\"").Append(P(a.Z)).Append("\" x2=\"").Append(P(b.X)).Append("\" y2=\"").Append(P(b.Z)).Append("\"/>");
+        }
+        var tip = cam + pose.Forward * 0.6f;
+        sb.Append("<line class=\"ax\" x1=\"").Append(P(cam.X)).Append("\" y1=\"").Append(P(cam.Z)).Append("\" x2=\"").Append(P(tip.X)).Append("\" y2=\"").Append(P(tip.Z)).Append("\"/>");
+        sb.Append("<circle class=\"cam\" cx=\"").Append(P(cam.X)).Append("\" cy=\"").Append(P(cam.Z)).Append("\" r=\"0.14\"/>");
+        sb.Append("<g><text x=\"-6.8\" y=\"2.6\">R 6 m · 240° · 24×4 패널 · 피치 2.6 mm</text></g>");
+        return sb.ToString();
+    }
+
+    private string HeatSvg()
+    {
+        const int C = RealtimeOffAxisFrustumProjectionEngine.Cols, R = RealtimeOffAxisFrustumProjectionEngine.Rows;
+        var pr = Runner.Projection;
+        var sb = new System.Text.StringBuilder(8192);
+        for (var r = 0; r < R; r++)
+        for (var c = 0; c < C; c++)
+        {
+            var i = r * C + c;
+            var k = Math.Clamp(pr.Blur(i) / RealtimeOffAxisFrustumProjectionEngine.MaxBlurPx, 0f, 1f);
+            var x = c * 10f; var y = (R - 1 - r) * 10f;
+            sb.Append("<rect x=\"").Append(P(x)).Append("\" y=\"").Append(P(y)).Append("\" width=\"9.6\" height=\"9.6\" fill=\"rgb(")
+              .Append(((int)(30 + 220 * k)).ToString(CultureInfo.InvariantCulture)).Append(',').Append(((int)(41 + 60 * k)).ToString(CultureInfo.InvariantCulture)).Append(',').Append(((int)(59 + 120 * (1 - k))).ToString(CultureInfo.InvariantCulture)).Append(")\"/>");
+            if (pr.IsInner(i)) sb.Append("<rect class=\"in\" x=\"").Append(P(x + 0.4f)).Append("\" y=\"").Append(P(y + 0.4f)).Append("\" width=\"8.8\" height=\"8.8\"/>");
+        }
+        return sb.ToString();
+    }
+
+    private string DialSvg()
+    {
+        var g = Runner.Genlock;
+        var sb = new System.Text.StringBuilder(1024);
+        sb.Append("<circle class=\"bg\" cx=\"0\" cy=\"0\" r=\"1.1\"/>");
+        Arc(sb, "ex", 0.92, 0.0, g.ShutterAngle);
+        Arc(sb, "ro", 0.74, 0.0, Math.Min(360.0, g.ReadoutMs * 1e6 / g.PeriodNs * 360.0));
+        var a = (g.SwapPhaseDeg - 90.0) * Math.PI / 180.0;
+        sb.Append("<line class=\"sw\" x1=\"0\" y1=\"0\" x2=\"").Append(P(Math.Cos(a))).Append("\" y2=\"").Append(P(Math.Sin(a))).Append("\"/>");
+        sb.Append("<g><text x=\"-0.42\" y=\"0.08\">").Append(F1(g.SwapPhaseDeg)).Append("° 스왑</text></g>");
+        return sb.ToString();
+    }
+
+    private static void Arc(System.Text.StringBuilder sb, string cls, double r, double d0, double d1)
+    {
+        if (d1 - d0 < 0.5) return;
+        if (d1 - d0 > 359.5) { sb.Append("<circle class=\"").Append(cls).Append("\" cx=\"0\" cy=\"0\" r=\"").Append(P(r)).Append("\"/>"); return; }
+        double a0 = (d0 - 90.0) * Math.PI / 180.0, a1 = (d1 - 90.0) * Math.PI / 180.0;
+        sb.Append("<path class=\"").Append(cls).Append("\" d=\"M").Append(P(r * Math.Cos(a0))).Append(' ').Append(P(r * Math.Sin(a0)))
+          .Append(" A").Append(P(r)).Append(' ').Append(P(r)).Append(" 0 ").Append(d1 - d0 > 180.0 ? '1' : '0').Append(" 1 ")
+          .Append(P(r * Math.Cos(a1))).Append(' ').Append(P(r * Math.Sin(a1))).Append("\"/>");
+    }
+
+    private string BandSvg()
+    {
+        var g = Runner.Genlock;
+        float mn = float.MaxValue, mx = 0f;
+        for (var k = 0; k < PtpGenlockRollingShutterTearingGuard.BandRows; k++) { var v = g.Band(k); if (v < mn) mn = v; if (v > mx) mx = v; }
+        var mean = 0.5f * (mn + mx);
+        var sb = new System.Text.StringBuilder(4096);
+        for (var k = 0; k < PtpGenlockRollingShutterTearingGuard.BandRows; k++)
+        {
+            var rel = mean > 0f ? (g.Band(k) - mean) / mean : 0f;
+            var h = Math.Clamp(10f + rel * 400f, 0.5f, 20f);
+            sb.Append("<rect x=\"").Append(P(k)).Append("\" y=\"").Append(P(20f - h)).Append("\" width=\"0.85\" height=\"").Append(P(h)).Append("\"/>");
+        }
+        return sb.ToString();
+    }
+
+    private string Series(int which)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            float y = which switch
+            {
+                0 => 45f - 43f * Math.Clamp(Runner.PhaseSeries(k) / 2000f, -1f, 1f),
+                1 => 88f - 86f * Math.Clamp(Runner.JitterSeries(k) / 2000f, 0f, 1f),
+                _ => 88f - 86f * Math.Clamp(Runner.CoverageSeries(k), 0f, 1f),
+            };
+            sb.Append(P(600f * i / (n - 1))).Append(',').Append(P(y)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void OnFocal(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetFocal(v < 12 ? 0f : v);
+    }
+
+    private void OnFocus(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetFocus(v < 5 ? 0f : v / 10f);
+    }
+
+    private void OnShutter(ChangeEventArgs e)
+    {
+        if (double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) Runner.SetShutter(v);
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void Step60()
+    {
+        for (var i = 0; i < GenlockFrustumLedWallStudioRunner.Hz; i++) Runner.Step();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

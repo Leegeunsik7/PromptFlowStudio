@@ -1,0 +1,10 @@
+<triage_protocol>
+  <objective>
+    복잡한 런타임 에러 또는 빌드 충돌 발생 시, 토큰 낭비를 차단하기 위해 최소한의 맥락을 TRIAGE.md에 격리 저장한다.
+  </objective>
+  <execution_rule>
+    1. 발생 에러의 StackTrace, 관련 C#/Razor 파일 경로, 해당 메서드 코드(50줄 이내)만 수집.
+    2. 프로젝트 루트의 TRIAGE.md 파일에 '덮어쓰기(Overwrite)'로 저장 후 CLI 작업 일시 정지.
+    3. 개발자가 TRIAGE.md를 웹 Claude에 전달하여 분석을 완료하면, 전달받은 외과적 수정안만 적용.
+  </execution_rule>
+</triage_protocol>

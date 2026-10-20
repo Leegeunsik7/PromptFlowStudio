@@ -1,0 +1,68 @@
+@* [PromptFlow Studio] 테마 미리보기 카드 — 표준/방송 스튜디오 모드를 미니 가상 인터페이스로 비교 체험 + 클릭 즉시 전환. 순수 CSS. *@
+
+<button type="button" class="tpc @(Broadcast ? "bx" : "std") @(Active ? "on" : null)" @onclick="OnSelect" aria-pressed="@(Active ? "true" : "false")">
+    <div class="tpc-mock" aria-hidden="true">
+        <div class="tpc-side"><span></span><span></span><span></span><span></span></div>
+        <div class="tpc-main">
+            <div class="tpc-bar">
+                @if (Broadcast) { <em class="led l1"></em><em class="led l2"></em><em class="led l3"></em> }
+                else { <b></b><b></b> }
+            </div>
+            <div class="tpc-cards"><i></i><i></i><i></i></div>
+        </div>
+    </div>
+    <div class="tpc-foot">
+        <span class="tpc-name">@Icon @Name</span>
+        @if (Active) { <span class="tpc-badge">✓ 사용 중</span> }
+    </div>
+</button>
+
+<style>
+    .tpc { display: flex; flex-direction: column; gap: 0; width: 100%; text-align: left; padding: 0; cursor: pointer; font-family: inherit;
+        border: 1px solid var(--line, #223047); border-radius: 14px; overflow: hidden; background: var(--card-2, #141c2e); transition: transform .14s, border-color .14s, box-shadow .14s; }
+    .tpc:hover { transform: translateY(-3px); }
+    .tpc.on { border-color: transparent; box-shadow: 0 0 0 2px var(--accent, #7c6cff); }
+    .tpc-mock { display: flex; height: 108px; }
+    .tpc-side { flex: 0 0 34px; display: flex; flex-direction: column; gap: 6px; padding: 9px 7px; background: #0c1120; }
+    .tpc-side span { height: 8px; border-radius: 3px; background: rgba(148,163,184,.28); }
+    .tpc-side span:first-child { background: linear-gradient(90deg, #8b5cf6, #22d3ee); }
+    .tpc-main { flex: 1; padding: 9px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+    .tpc-bar { display: flex; align-items: center; gap: 5px; height: 16px; }
+    .tpc-bar b { width: 30px; height: 7px; border-radius: 3px; background: rgba(148,163,184,.3); }
+    .tpc-bar .led { width: 7px; height: 7px; border-radius: 50%; }
+    .tpc-cards { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; flex: 1; }
+    .tpc-cards i { border-radius: 6px; background: rgba(148,163,184,.14); border: 1px solid rgba(148,163,184,.12); }
+    .tpc-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line, #223047); }
+    .tpc-name { font-size: 12.5px; font-weight: 800; color: var(--text-primary, #e6eefc); }
+    .tpc-badge { font: 800 9.5px var(--mono); color: #10b981; background: rgba(16,185,129,.12); border: 1px solid rgba(16,185,129,.4); border-radius: 999px; padding: 3px 8px; }
+
+    /* 표준 모드 목업 */
+    .tpc.std .tpc-main { background: #111a2e; }
+
+    /* 방송 스튜디오 목업 — 칠흑 + 글래스 + 네온 LED */
+    .tpc.bx .tpc-mock { background: #0b0d14; }
+    .tpc.bx .tpc-main { background:
+        radial-gradient(80% 60% at 100% 0%, #8b5cf633, transparent 60%),
+        radial-gradient(60% 50% at 0% 100%, #22d3ee22, transparent), #0b0d14; }
+    .tpc.bx .tpc-cards i { background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.1); backdrop-filter: blur(4px); box-shadow: inset 0 1px 0 rgba(255,255,255,.06); }
+    .tpc.bx .tpc-cards i:nth-child(1) { box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 0 0 1px #22d3ee55, 0 0 10px #22d3ee44; }
+    .tpc.bx .led.l1 { background: #ef4444; box-shadow: 0 0 6px #ef4444; animation: tpc-blink 1.1s steps(1) infinite; }
+    .tpc.bx .led.l2 { background: #d946ef; box-shadow: 0 0 6px #d946ef; animation: tpc-pulse 1.6s ease-in-out infinite; }
+    .tpc.bx .led.l3 { background: #10b981; box-shadow: 0 0 6px #10b981; animation: tpc-pulse 2.2s ease-in-out infinite; }
+    @@keyframes tpc-blink { 0%,50% { opacity: 1 } 51%,100% { opacity: .3 } }
+    @@keyframes tpc-pulse { 0%,100% { opacity: .5 } 50% { opacity: 1 } }
+    @@media (prefers-reduced-motion: reduce) { .tpc.bx .led { animation: none !important; } .tpc:hover { transform: none; } }
+</style>
+
+@code {
+    /// <summary>방송 스튜디오 스타일 미리보기인지(false=표준 다크).</summary>
+    [Parameter] public bool Broadcast { get; set; }
+    /// <summary>현재 활성(사용 중) 테마인지.</summary>
+    [Parameter] public bool Active { get; set; }
+    /// <summary>표시 이름.</summary>
+    [Parameter] public string Name { get; set; } = "";
+    /// <summary>표시 아이콘.</summary>
+    [Parameter] public string Icon { get; set; } = "";
+    /// <summary>선택 콜백.</summary>
+    [Parameter] public EventCallback OnSelect { get; set; }
+}

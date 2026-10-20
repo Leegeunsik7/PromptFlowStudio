@@ -1,0 +1,214 @@
+@using PromptFlowStudio.Shared.Cross
+@using PromptFlowStudio.Shared.Store
+@using PromptFlowStudio.Shared.Deploy
+@using PromptFlowStudio.Shared.Sim
+@using PromptFlowStudio.Shared.Hardening
+@inject CorporateThemeDatabase Corp
+@inject AutomotiveEquipmentDatabase Auto
+@inject ThemeInstantGeneratorService Instant
+@inject ThemeSearchFilterService Search
+@inject ThemePinService Pins
+@implements IDisposable
+
+@* [PromptFlow Studio] v3.1.0 — 3탭 재구조화로 45종 테마 전면 시각화.
+   [🎯 테마(45종)] 기본 · [🏢 사옥 홍보] · [🎬 플래그십 제어반]. 헤더/탭 고정 + 본문 독립 스크롤(max-height 85vh) + 스티키 검색. *@
+
+<div class="bg-scrim" @onclick="OnCloseClick">
+    <div class="bg-modal" @onclick:stopPropagation="true">
+        @* ── 헤더(고정) ── *@
+        <div class="bg-h">
+            <div>
+                <div class="bg-title">🏢 B2B 기업/장비 백과사전 <span class="bg-badge">@(AllCount)개 테마</span></div>
+                <div class="bg-sub">자동차 검사·시험 장비 33종 + 기업/제품 12종 + 사옥 AI 홍보 + 플래그십 연출 제어반.</div>
+            </div>
+            <button class="bg-x" @onclick="OnCloseClick" title="닫기">✕</button>
+        </div>
+
+        @* ── 메인 3탭(고정) ── *@
+        <div class="bg-maintabs">
+            <button class="bg-mtab @(_tab == "themes" ? "on" : null)" @onclick='() => _tab = "themes"'>🎯 B2B &amp; 자동차 장비 테마 <span class="bg-mtab-cnt">45</span></button>
+            <button class="bg-mtab @(_tab == "building" ? "on" : null)" @onclick='() => _tab = "building"'>🏢 사옥 AI 브랜드 홍보</button>
+            <button class="bg-mtab @(_tab == "studio" ? "on" : null)" @onclick='() => _tab = "studio"'>🎬 플래그십 제어반 &amp; 스튜디오</button>
+        </div>
+
+        @* ── 본문(독립 스크롤) ── *@
+        <div class="bg-scroll">
+            @if (_tab == "themes")
+            {
+                <ThemeSearchBar Query="@_query" QueryChanged="OnQuery" ResultCount="TotalMatches" TotalCount="AllCount"
+                                Placeholder="검색어를 입력하세요. (예: PODS, 다이나모, 백일, 사옥)" />
+                <div class="bg-fmt">
+                    <div class="bg-seg">
+                        <button class="bg-segbtn @(_mode == "corp" ? "on" : null)" @onclick='() => SetMode("corp")'>🏢 기업/제품 <span class="bg-mini">@Corp.AllThemes.Count</span></button>
+                        <button class="bg-segbtn @(_mode == "auto" ? "on" : null)" @onclick='() => SetMode("auto")'>🚗 자동차 장비 <span class="bg-mini">@Auto.AllThemes.Count</span></button>
+                    </div>
+                    <div class="bg-seg">
+                        <button class="bg-segbtn @(_format == VideoFormat.Shorts ? "on" : null)" @onclick="() => _format = VideoFormat.Shorts">📱 숏츠</button>
+                        <button class="bg-segbtn @(_format == VideoFormat.Longs ? "on" : null)" @onclick="() => _format = VideoFormat.Longs">🖥️ 롱폼</button>
+                    </div>
+                    <span class="bg-fmt-note">@(_format == VideoFormat.Shorts ? "6컷 · 세로 1080×1920" : "16컷 · 가로 1920×1080")</span>
+                </div>
+
+                @if (_mode == "corp")
+                {
+                    @if (CorpFiltered.Count == 0) { <div class="bg-none">🔍 "@_query" 검색 결과가 없습니다.</div> }
+                    <div class="bg-grid resp">
+                        @foreach (var t in CorpFiltered)
+                        {
+                            <div class="bg-card @(_selectedKey == t.Key ? "on" : null)" @key="t.Key">
+                                <button class="bg-pin @(Pins.IsPinned(t.Key) ? "on" : null)" @onclick="() => TogglePin(t.Key)" @onclick:stopPropagation="true" title="즐겨찾기 고정">📌</button>
+                                <button class="bg-cardbtn" @onclick="() => _selectedKey = t.Key">
+                                    <div class="bg-thumb"><span>@t.Emoji</span></div>
+                                    <div class="bg-cinfo"><div class="bg-name">@t.Title</div><div class="bg-hook">@t.Hook</div><div class="bg-ex">@t.Example</div></div>
+                                    @if (_selectedKey == t.Key) { <div class="bg-check">✓</div> }
+                                </button>
+                                <div class="bg-tip">@foreach (var line in ThemePreviewBuilder.BuildLines(t)) { <div class="bg-tip-l">@line</div> }</div>
+                            </div>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <AutomotiveEquipmentSelector SelectedKey="@_selectedKey" OnSelect="OnAutoSelect" OnCsvLoaded="OnAutoCsv" SearchQuery="@_query" />
+                }
+            }
+            else if (_tab == "building")
+            {
+                <div class="bg-pane"><CompanyBuildingDropZone Project="Project" Disabled="Disabled" OnGenerate="OnBuildingGenerate" OnChanged="StateHasChanged" /></div>
+            }
+            else
+            {
+                <div class="bg-pane"><FlagshipStudioDeck Project="Project" Disabled="Disabled" /></div>
+                <div class="bg-pane"><BatchPublishStudioDeck Project="Project" Disabled="Disabled" /></div>
+                <div class="bg-pane"><MarketingStudioDeck Project="Project" Disabled="Disabled" /></div>
+                <div class="bg-pane"><EnterpriseDiagnosticsStudioDeck Project="Project" Disabled="Disabled" /></div>
+                <div class="bg-pane"><GlobalTradeStudioDeck Project="Project" Disabled="Disabled" OnChanged="StateHasChanged" /></div>
+                <div class="bg-pane"><CommercialDashboardDeck Project="Project" Disabled="Disabled" /></div>
+                <div class="bg-pane"><LiveBroadcastStudioDeck Project="Project" Disabled="Disabled" /></div>
+                <div class="bg-pane"><VoiceCloudStudioDeck Project="Project" Disabled="Disabled" /></div>
+                <div class="bg-pane"><HybridVoiceStudioDeck Project="Project" Disabled="Disabled" /></div>
+                <div class="bg-pane"><MobileStudioDeck Project="Project" Disabled="Disabled" /></div>
+                <div class="bg-pane"><CrossPlatformStudioDeck /></div>
+                <div class="bg-pane"><StoreReleaseStudioDeck /></div>
+                <div class="bg-pane"><AdminDeploymentDeck /></div>
+                <div class="bg-pane"><MobileSimulatorSidePane><CrossPlatformStudioDeck /></MobileSimulatorSidePane></div>
+                <div class="bg-pane"><StoryboardUiHardening /></div>
+                <div class="bg-pane"><LoginStudioHardening /></div>
+                <div class="bg-pane"><TouchGestureHardening /></div>
+                <div class="bg-pane"><Stage2HardeningGate /></div>
+            }
+        </div>
+
+        @* ── 푸터(고정 · 테마 탭 전용) ── *@
+        @if (_tab == "themes")
+        {
+            <div class="bg-foot">
+                <div class="bg-foot-note">
+                    @if (Selected is { } sel) { <span>선택: <b>@sel.Emoji @sel.Title</b> · <b>@(CutCount)컷</b> 시네마틱 자동 구성</span> }
+                    else { <span>테마 카드를 선택하세요. 📌 로 즐겨찾기 고정 · 카드에 마우스를 올리면 프롬프트 미리보기.</span> }
+                </div>
+                <div class="bg-foot-btns">
+                    <button class="bg-btn ghost" @onclick="OnCloseClick">취소</button>
+                    <button class="bg-btn go" @onclick="Apply" disabled="@(_selectedKey is null)">✨ 이 테마로 자동 구성</button>
+                    <button class="bg-btn run" @onclick="Run" disabled="@(_selectedKey is null)" title="테마 구성 + 제작을 한 번에 시작">🚀 즉시 생성 시작</button>
+                </div>
+            </div>
+        }
+    </div>
+</div>
+
+<style>
+    .bg-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    /* v3.1.0: 85vh 상한 + Flexbox 3단(헤더/탭 고정 · 본문 스크롤 · 푸터 고정) */
+    .bg-modal { width: min(1120px, 97vw); max-height: 85vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid color-mix(in srgb, #6366f1 30%, var(--line)); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; font-family: Pretendard, 'Malgun Gothic', sans-serif; }
+    .bg-h { flex: 0 0 auto; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 20px 12px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #6366f1 12%, transparent), transparent 60%); }
+    .bg-title { font-size: 16px; font-weight: 900; color: var(--text-primary); }
+    .bg-badge { font: 700 10.5px var(--mono); color: #7dd3fc; background: color-mix(in srgb, #0ea5e9 14%, transparent); border: 1px solid color-mix(in srgb, #0ea5e9 34%, var(--line)); border-radius: 20px; padding: 3px 9px; margin-left: 6px; }
+    .bg-sub { font-size: 11.5px; color: var(--text-secondary); margin-top: 4px; line-height: 1.65em; word-break: keep-all; }
+    .bg-x { flex: 0 0 auto; width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .bg-x:hover { background: var(--card-2); color: var(--text-primary); }
+    /* 메인 탭(고정) */
+    .bg-maintabs { flex: 0 0 auto; display: flex; gap: 6px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--card); overflow-x: auto; }
+    .bg-mtab { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font: 800 12.5px Pretendard,'Malgun Gothic',sans-serif; padding: 9px 14px; border-radius: 11px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; }
+    .bg-mtab:hover { border-color: #6366f1; }
+    .bg-mtab.on { color: #fff; border-color: transparent; background: linear-gradient(135deg, #0ea5e9, #6366f1); box-shadow: 0 4px 14px color-mix(in srgb, #6366f1 30%, transparent); }
+    .bg-mtab-cnt { font: 700 10px var(--mono); background: rgba(255,255,255,.18); border-radius: 20px; padding: 1px 7px; }
+    /* 본문(독립 스크롤) */
+    .bg-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 14px 18px; }
+    .bg-pane { margin-bottom: 14px; }
+    .bg-fmt { display: flex; align-items: center; gap: 12px; padding: 2px 0 12px; flex-wrap: wrap; }
+    .bg-seg { display: inline-flex; background: var(--card-2); border: 1px solid var(--line); border-radius: 12px; padding: 3px; gap: 3px; }
+    .bg-segbtn { display: inline-flex; align-items: center; gap: 6px; font: 800 12.5px Pretendard,'Malgun Gothic',sans-serif; padding: 8px 14px; border-radius: 9px; border: none; background: none; color: var(--text-secondary); cursor: pointer; }
+    .bg-segbtn.on { color: #fff; background: linear-gradient(135deg, #0ea5e9, #6366f1); }
+    .bg-mini { font: 700 9.5px var(--mono); background: rgba(255,255,255,.14); border-radius: 20px; padding: 1px 6px; }
+    .bg-fmt-note { font-size: 11.5px; color: var(--text-muted); }
+    .bg-none { font: 600 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); padding: 24px 8px; text-align: center; word-break: keep-all; }
+    /* 반응형 카드 그리드(잘림 방지) */
+    .bg-grid.resp { display: grid; grid-template-columns: repeat(auto-fill, minmax(238px, 1fr)); gap: 10px; align-content: start; }
+    .bg-card { position: relative; border-radius: 13px; border: 1px solid var(--line); background: var(--card-2); }
+    .bg-card:hover { border-color: #6366f1; }
+    .bg-card.on { border-color: transparent; box-shadow: 0 0 0 2px #6366f1; background: color-mix(in srgb, #6366f1 8%, var(--card-2)); }
+    .bg-cardbtn { display: flex; gap: 11px; width: 100%; text-align: left; padding: 10px; background: none; border: none; cursor: pointer; font-family: inherit; }
+    .bg-pin { position: absolute; top: 7px; left: 8px; z-index: 2; width: 22px; height: 22px; border: none; border-radius: 7px; background: var(--card); color: var(--text-muted); cursor: pointer; font-size: 11px; opacity: .5; }
+    .bg-pin:hover { opacity: 1; } .bg-pin.on { opacity: 1; color: #fbbf24; background: color-mix(in srgb, #fbbf24 16%, var(--card)); }
+    .bg-thumb { flex: 0 0 auto; width: 50px; height: 50px; border-radius: 11px; display: grid; place-items: center; font-size: 24px; background: linear-gradient(135deg, #1e293b, #0ea5e9); border: 1px solid rgba(255,255,255,.18); margin-left: 20px; }
+    .bg-cinfo { min-width: 0; flex: 1; }
+    .bg-name { font-size: 13px; font-weight: 800; color: var(--text-primary); }
+    .bg-hook { font-size: 11px; color: #7dd3fc; margin-top: 3px; line-height: 1.4; }
+    .bg-ex { font-size: 10.5px; color: var(--text-muted); margin-top: 3px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    .bg-check { position: absolute; top: 8px; right: 9px; width: 19px; height: 19px; border-radius: 50%; background: #6366f1; color: #fff; display: grid; place-items: center; font-size: 11px; font-weight: 900; }
+    /* 호버 프롬프트 미리보기 툴팁 */
+    .bg-tip { position: absolute; left: 8px; right: 8px; top: calc(100% - 4px); z-index: 20; display: none; background: #0b0d14; border: 1px solid color-mix(in srgb, #6366f1 45%, var(--line)); border-radius: 10px; padding: 9px 11px; box-shadow: 0 12px 30px rgba(0,0,0,.5); }
+    .bg-card:hover .bg-tip { display: block; }
+    .bg-tip-l { font: 600 11px Pretendard,'Malgun Gothic',sans-serif; color: #e2e8f0; line-height: 1.6em; word-break: keep-all; white-space: normal; }
+    /* 푸터(고정) */
+    .bg-foot { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 18px; border-top: 1px solid var(--line); flex-wrap: wrap; background: var(--card); }
+    .bg-foot-note { font-size: 11.5px; color: var(--text-secondary); flex: 1; min-width: 200px; line-height: 1.6em; word-break: keep-all; } .bg-foot-note b { color: var(--text-primary); }
+    .bg-foot-btns { display: flex; gap: 8px; }
+    .bg-btn { font: 800 13px Pretendard,'Malgun Gothic',sans-serif; padding: 10px 16px; border-radius: 11px; cursor: pointer; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); }
+    .bg-btn.ghost:hover { border-color: var(--accent); color: var(--text-primary); }
+    .bg-btn.go { border: none; color: #fff; background: linear-gradient(135deg, #0ea5e9, #6366f1); }
+    .bg-btn.go:disabled, .bg-btn.run:disabled { opacity: .45; cursor: not-allowed; }
+    .bg-btn.run { border: none; color: #fff; background: linear-gradient(135deg, #6366f1, #a855f7); box-shadow: 0 6px 16px color-mix(in srgb, #a855f7 26%, transparent); }
+    .bg-btn.go:hover:not(:disabled), .bg-btn.run:hover:not(:disabled) { filter: brightness(1.08); }
+    @@media (max-width: 720px) { .bg-grid.resp { grid-template-columns: 1fr; } .bg-mtab { font-size: 11px; padding: 8px 10px; } }
+</style>
+
+@code {
+    [Parameter, EditorRequired] public StoryboardProject Project { get; set; } = default!;
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public bool EngineReady { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<(string Key, VideoFormat Format)> OnApply { get; set; }
+    [Parameter] public EventCallback<ThemeInstantRequest> OnInstantStart { get; set; }
+    [Parameter] public EventCallback OnBuildingGenerate { get; set; }
+
+    private string _tab = "themes";                   // themes(기본) · building · studio
+    private VideoFormat _format = VideoFormat.Shorts;
+    private string _mode = "corp";                    // corp · auto
+    private string _query = "";
+    private string? _selectedKey;
+
+    private int AllCount => Corp.AllThemes.Count + Auto.AllThemes.Count;
+    private int TotalMatches => Search.Count(Corp.AllThemes, _query) + Search.Count(Auto.AllThemes, _query);
+    // 기업 테마: 검색 필터 → 즐겨찾기 우선 정렬(플랫 반응형 그리드).
+    private IReadOnlyList<BabyThemeDef> CorpFiltered => Pins.SortPinnedFirst(Search.Filter(Corp.AllThemes, _query));
+    private BabyThemeDef? Selected => _selectedKey is null ? null : (Corp.Get(_selectedKey) ?? Auto.Get(_selectedKey));
+    private int CutCount => VideoFormatFactory.CutCountOf(_format);
+
+    protected override void OnInitialized() => Pins.OnChange += OnPins;
+    private void OnPins() => InvokeAsync(StateHasChanged);
+
+    private void OnQuery(string q) => _query = q ?? "";
+    private void SetMode(string mode) { if (_mode == mode) return; _mode = mode; _selectedKey = null; }
+    private void TogglePin(string key) => Pins.Toggle(key);
+
+    private void OnAutoSelect(string key) { _selectedKey = key; StateHasChanged(); }
+    private void OnAutoCsv(string csvText) => Project.TelemetryCsvPath = csvText ?? "";
+
+    private async Task OnCloseClick() => await OnClose.InvokeAsync();
+    private async Task Apply() { if (_selectedKey is not null) await OnApply.InvokeAsync((_selectedKey, _format)); }
+    private async Task Run() { if (_selectedKey is not null) await OnInstantStart.InvokeAsync(new ThemeInstantRequest(_selectedKey, _format, null, true)); }
+
+    public void Dispose() => Pins.OnChange -= OnPins;
+}

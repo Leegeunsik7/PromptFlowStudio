@@ -1,0 +1,349 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.HoloTelepresence
+@implements IDisposable
+@inject HolographicTelepresenceStudioRunner Runner
+
+@*
+    [PromptFlow Studio v17.00.0] 🔮 AI 홀로그래픽 텔레프레전스 & AGI 디렉터 스튜디오 — 다시점 라이트필드 뷰포트 프리뷰(45 시점 · 시청 각도) ·
+    AGI 서사 분기 트리(현재 비트 · 경로 · 결정 로그 · 수동 분기) · 감정선/오케스트레이션 큐 · 공간 텔레프레전스 대역폭 모니터 · 햅틱 & 인지 안정 가드.
+*@
+
+<div class="htp-scrim" @onclick="Close">
+    <div class="htp-modal" @onclick:stopPropagation="true">
+        <div class="htp-h">
+            <div>
+                <div class="htp-title">🔮 AI 홀로그래픽 텔레프레전스 &amp; AGI 디렉터 스튜디오</div>
+                <div class="htp-sub"><b>라이트필드 엔진</b>이 원격 퍼포머의 볼류메트릭 스플랫을 16비트 키/델타 패킷으로 스트리밍하고(대역폭 예산 적응), 수신측에서 6DoF 자세로 SIMD 변환한 뒤 45 시점 퀼트로 슬라이싱합니다.
+                    <b>AGI 디렉터</b>는 관객 몰입·정서·환호에 감응해 서사를 무단절 분기하며 카메라(v16.85) · 조명(v16.84) · BGM(v16.86) · 표정(v16.82)을 자율 지휘하고,
+                    <b>인지 가드</b>는 햅틱 역각/진동 합성 · 관통 이탈 차단 · 시각-전정 불일치(멀미)를 실시간 억제합니다. 원격 퍼포머·관객·햅틱 장치는 인프로세스 시뮬레이션입니다.</div>
+            </div>
+            <button class="htp-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="htp-bar">
+            <button class="htp-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 텔레프레전스 가동")</button>
+            <button class="htp-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="htp-btn" @onclick="Runner.Cheer">📣 환호</button>
+            <button class="htp-btn" @onclick="Runner.Leave">😴 몰입 이탈</button>
+            <button class="htp-btn" @onclick="Runner.Boo">💔 반감</button>
+            <button class="htp-btn" @onclick="Runner.Spin">🌀 급회전</button>
+            <button class="htp-btn" @onclick="Runner.Swipe">✋ 고속 스와이프</button>
+            <button class="htp-btn" @onclick="Runner.ForceKey">🔑 키 프레임</button>
+            <button class="htp-btn @(D.Autonomous ? "on" : "warn")" @onclick="() => D.Autonomous = !D.Autonomous">@(D.Autonomous ? "🤖 자율 연출" : "✋ 수동 연출")</button>
+            <label class="htp-sl">예산 <b>@(F0(H.BudgetMbps)) Mbps</b><input type="range" min="5" max="80" step="1" value="@(F0(H.BudgetMbps))" @onchange="e => H.BudgetMbps = (float)Num(e, 40)" /></label>
+            <label class="htp-sl">지연 <b>@(F0(Runner.LatencyMs)) ms</b><input type="range" min="5" max="60" step="1" value="@(F0(Runner.LatencyMs))" @onchange="e => Runner.LatencyMs = (float)Num(e, 14)" /></label>
+            <span class="htp-chip">틱 @(Runner.Tick) · @(F2(Runner.LastTickMs)) ms · 프레임 @(F0(H.FrameUs)) µs</span>
+        </div>
+
+        <div class="htp-main">
+            <div class="htp-col">
+                <div class="htp-card">
+                    <div class="htp-sec">🔮 다시점 라이트필드 뷰포트 <span class="htp-kv">@(HolographicLightFieldTelepresenceEngine.Views)시점 · 시야각 @(F0(HolographicLightFieldTelepresenceEngine.ViewConeDeg))° · 퀼트 @(HolographicLightFieldTelepresenceEngine.QuiltW)×@(HolographicLightFieldTelepresenceEngine.QuiltH) · 스플랫 @(H.ReceivedCount)</span></div>
+                    <div class="htp-view">
+                        <img class="big" src="@(ViewSrc(_view))" alt="라이트필드 시점" />
+                        <div class="htp-vside">
+                            <label class="htp-sl">시청 각도 <b>@(F1(HolographicLightFieldTelepresenceEngine.ViewAngleDeg(_view)))°</b>
+                                <input type="range" min="-20" max="20" step="1" value="@(F0(HolographicLightFieldTelepresenceEngine.ViewAngleDeg(_view)))" @onchange="e => _view = HolographicLightFieldTelepresenceEngine.ViewForAngle((float)Num(e, 0))" /></label>
+                            <div class="htp-kv">시점 #@(_view) · 커버리지 @(H.Coverage(_view)) px · 시차 오프셋 @(F2(HolographicLightFieldTelepresenceEngine.ViewOffsetX(_view))) m</div>
+                            <div class="htp-kv">홀로그램 축척 @(F2(H.HologramScale)) · 퍼포머 6DoF (@(F2(H.PoseTranslation.X)), @(F2(H.PoseTranslation.Y)), @(F2(H.PoseTranslation.Z)))</div>
+                        </div>
+                    </div>
+                    <div class="htp-strip">
+                        @for (var k = 0; k < 5; k++)
+                        {
+                            var v = k * 11;
+                            <button class="htp-thumb @(v == _view ? "on" : null)" @onclick="() => _view = v">
+                                <img src="@(ViewSrc(v))" alt="시점" />
+                                <span>@(F0(HolographicLightFieldTelepresenceEngine.ViewAngleDeg(v)))° · @(H.Coverage(v))px</span>
+                            </button>
+                        }
+                    </div>
+                    <div class="htp-note">초점면(z = 0) 스플랫은 모든 시점에서 고정되고 앞/뒤 스플랫은 반대 방향으로 시차 이동합니다. 원근 계수는 프레임당 1회, 시점별 전단 투영은 Vector&lt;float&gt;로 일괄 계산됩니다.</div>
+                </div>
+
+                <div class="htp-card">
+                    <div class="htp-sec">📡 공간 텔레프레전스 대역폭 <span class="htp-kv">@(F1(H.Mbps)) / @(F0(H.BudgetMbps)) Mbps · 최대 @(F1(H.PeakMbps)) · 누적 @(Kb(H.TotalBytes))</span></div>
+                    <svg class="htp-spark" viewBox="0 0 360 70" preserveAspectRatio="none">
+                        <line class="bud" x1="0" x2="360" y1="@(F1(68 - 64 * H.BudgetMbps / MbpsMax()))" y2="@(F1(68 - 64 * H.BudgetMbps / MbpsMax()))" />
+                        <polyline class="mb" points="@(Series(i => Runner.MbpsSeries(i), MbpsMax(), 70))" />
+                    </svg>
+                    <div class="htp-kv">
+                        <span class="htp-chip @(H.LastKey ? "key" : null)">@(H.LastKey ? "키 프레임" : "델타")</span>
+                        <span>패킷 @(H.LastPacketBytes) B · 레코드 @(H.LastRecords)</span>
+                        <span>데드밴드 @(H.DeadbandQ) q (@(F2(H.DeadbandQ * 2.4 / 65535 * 1000)) mm)</span>
+                        <span>이월 @(H.Deferred) · 거부 @(H.Rejected) · 키 @(H.KeyFrames)/@(H.Frames)</span>
+                        <span>재구성 오차 @(F2(H.MaxErrorMm)) mm</span>
+                    </div>
+                    <div class="htp-stages">
+                        @Stage("인코딩", H.EncodeUs, "s0")
+                        @Stage("디코딩", H.DecodeUs, "s1")
+                        @Stage("6DoF 변환", H.TransformUs, "s2")
+                        @Stage("45 시점 슬라이싱", H.SliceUs, "s3")
+                    </div>
+                </div>
+
+                <div class="htp-card">
+                    <div class="htp-sec">✋ 햅틱 포스 피드백 &amp; 인지 앵커 가드 <span class="htp-kv">접촉 @(G.Touches) · 해제 @(G.Releases) · 관통 차단 @(G.PopThroughBlocked) · 포화 @(G.ForceClamped) · @(F1(G.LastHapticUs)) µs</span></div>
+                    <div class="htp-hands">
+                        @for (var h = 0; h < SpatialHapticCognitiveInteractionGuard.Hands; h++)
+                        {
+                            var hh = h;
+                            <div class="hand">
+                                <div class="htp-kv"><b>@(hh == 0 ? "왼손(오브)" : "오른손(블록)")</b>
+                                    <span class="htp-chip @(G.ContactObject(hh) >= 0 ? "ok" : null)">@(G.ContactObject(hh) >= 0 ? "접촉" : "자유")</span>
+                                    <span>@(F2(G.ForceMagnitude(hh))) N · 침투 @(F1(G.Penetration(hh) * 1000)) mm · 결 @(F0(G.TextureHz(hh))) Hz</span></div>
+                                <div class="htp-fbar"><i style="width:@(F1(100 * G.ForceMagnitude(hh) / SpatialHapticCognitiveInteractionGuard.MaxForceN))%"></i></div>
+                                <svg class="htp-wave" viewBox="0 0 160 40" preserveAspectRatio="none"><line x1="0" x2="160" y1="20" y2="20" /><polyline points="@(Wave(hh))" /></svg>
+                            </div>
+                        }
+                    </div>
+                    <div class="htp-cog">
+                        <div class="vig" style="--vig:@(F2(G.Vignette)); --anc:@(F2(G.AnchorOpacity))"><span>시야</span><em></em></div>
+                        <div class="htp-col2">
+                            <div class="htp-kv"><span class="htp-chip lv@((int)G.Level)">@(SpatialHapticCognitiveInteractionGuard.LevelName(G.Level))</span>
+                                <span>멀미 @(F0(G.Sickness * 100))% (최대 @(F0(G.PeakSickness * 100))%)</span>
+                                <span>불일치 @(F2(G.Mismatch))</span>
+                                @if (G.ComfortMode)
+                                {
+                                    <span class="htp-chip warn">🛟 컴포트 모드</span>
+                                }
+                                @if (G.Reprojection)
+                                {
+                                    <span class="htp-chip">♻ 재투영</span>
+                                }
+                            </div>
+                            <div class="htp-kv"><span>회전 제한 @(F0(G.RotationLimitDeg)) °/s</span><span>비네트 @(F0(G.Vignette * 100))%</span><span>인지 앵커 @(F0(G.AnchorOpacity * 100))%</span><span>개입 @(G.Interventions) · 컴포트 진입 @(G.ComfortEntries)</span></div>
+                            <svg class="htp-spark sm" viewBox="0 0 360 40" preserveAspectRatio="none">
+                                <polyline class="sk" points="@(Series(i => Runner.SicknessSeries(i), 1, 40))" />
+                                <polyline class="vg" points="@(Series(i => Runner.VignetteSeries(i), 1, 40))" />
+                            </svg>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="htp-col">
+                <div class="htp-card">
+                    <div class="htp-sec">🌳 AGI 서사 분기 트리 <span class="htp-kv">현재 <b>@(D.BeatName(D.CurrentBeat))</b> · 진행 @(F0(D.BeatProgress * 100))% · 템포 ×@(F2(D.Tempo)) · 분기 @(D.Branches)(조기 @(D.EarlyBranches))</span></div>
+                    <svg class="htp-tree" viewBox="0 0 400 200" preserveAspectRatio="xMidYMid meet">
+                        @for (var b = 0; b < D.BeatCount; b++)
+                        {
+                            var bb = b;
+                            for (var k = 0; k < D.ChildCount(bb); k++)
+                            {
+                                var c = D.Child(bb, k);
+                                <line class="ed @(OnPath(bb, c) ? "hot" : null)" x1="@(F1(X(bb)))" y1="@(F1(Y(bb)))" x2="@(F1(X(c)))" y2="@(F1(Y(c)))" />
+                            }
+                        }
+                        @for (var b = 0; b < D.BeatCount; b++)
+                        {
+                            var bb = b;
+                            <g>
+                                <circle class="nd @(bb == D.CurrentBeat ? "cur" : null)" cx="@(F1(X(bb)))" cy="@(F1(Y(bb)))" r="@(F1(9 + 9 * D.BeatArousal(bb)))" style="fill:@(BeatColor(bb))" />
+                                @if (bb == D.CurrentBeat)
+                                {
+                                    <circle class="prog" cx="@(F1(X(bb)))" cy="@(F1(Y(bb)))" r="@(F1(12 + 9 * D.BeatArousal(bb)))" stroke-dasharray="@(F1(D.BeatProgress * 6.3 * (12 + 9 * D.BeatArousal(bb)))) 999" />
+                                }
+                                <text x="@(F1(X(bb)))" y="@(F1(Y(bb) + 26))">@(D.BeatName(bb)) ×@(D.Visits(bb))</text>
+                            </g>
+                        }
+                    </svg>
+                    <div class="htp-kv">수동 분기:
+                        @for (var k = 0; k < D.ChildCount(D.CurrentBeat); k++)
+                        {
+                            var kk = k;
+                            var c = D.Child(D.CurrentBeat, kk);
+                            <button class="htp-btn sm" @onclick="() => Runner.ForceBranch(kk)">→ @(D.BeatName(c)) (@(F2(D.ScoreChild(c))))</button>
+                        }
+                    </div>
+                    <div class="htp-log">
+                        @for (var i = 0; i < Math.Min(6, D.LogCount); i++)
+                        {
+                            var e = D.LogEntry(i);
+                            <div><span class="htp-chip r@((int)e.Reason)">@(UniversalAgiCinematicDirectorSynthesizer.ReasonName(e.Reason))</span> @(e.From >= 0 ? D.BeatName(e.From) : "—") → <b>@(D.BeatName(e.To))</b> <span class="mono">점수 @(F2(e.Score)) · 틱 @(e.Tick)</span></div>
+                        }
+                    </div>
+                </div>
+
+                <div class="htp-card">
+                    <div class="htp-sec">🎭 감정선 &amp; 자율 오케스트레이션 <span class="htp-kv">무단절 최대 변화 @(F3(D.MaxEmotionStep))/틱 · 크로스페이드 @(F0(D.Crossfade * 100))% · 지휘 @(F1(D.LastDirectUs)) µs</span></div>
+                    <svg class="htp-spark" viewBox="0 0 360 70" preserveAspectRatio="none">
+                        <line class="zero" x1="0" x2="360" y1="35" y2="35" />
+                        <polyline class="ev" points="@(Series(i => (Runner.EmotionSeries(i).X + 1) * 0.5f, 1, 70))" />
+                        <polyline class="ea" points="@(Series(i => Runner.EmotionSeries(i).Y, 1, 70))" />
+                        <polyline class="et" points="@(Series(i => Runner.EmotionSeries(i).Z, 1, 70))" />
+                    </svg>
+                    <div class="htp-legend"><i class="ev"></i>정서가 @(F2(D.Valence)) <i class="ea"></i>각성 @(F2(D.Arousal)) <i class="et"></i>긴장 @(F2(D.Tension))</div>
+                    <div class="htp-meters">
+                        @Meter("관객 몰입", D.Engagement)
+                        @Meter("관객 정서", (D.Sentiment + 1) * 0.5f)
+                        @Meter("관객 환호", D.Excitement)
+                    </div>
+                    <div class="htp-cues">
+                        <div><em>🎥 카메라 v16.85</em><b>@(UniversalAgiCinematicDirectorSynthesizer.ScaleName(Q.Scale)) · @(UniversalAgiCinematicDirectorSynthesizer.MoveName(Q.Move))</b><span>@(F0(Q.FocalMm)) mm · f/@(F1(Q.FStop)) · 더치 @(F1(Q.DutchDeg))° · 오빗 @(F0(Q.OrbitRateDeg)) °/s</span><i class="@(D.CameraBound ? "ok" : null)">@(D.CameraBound ? "결선" : "큐만")</i></div>
+                        <div><em>💡 조명 v16.84</em><b>@(F0(Q.ColorTempK)) K · 키 @(F0(Q.KeyLux)) lx</b><span>키:필 @(F1(Q.FillRatio)):1 · 림 @(F0(Q.RimLux)) lx · 태양 @(F0(Q.SunElevationDeg))° · 안개 @(F3(Q.FogDensity))</span><i class="@(D.LightingBound ? "ok" : null)">@(D.LightingBound ? "결선" : "큐만")</i></div>
+                        <div><em>🎼 BGM v16.86</em><b>@(F0(Q.Bpm)) BPM</b><span>정서가 @(F2(Q.Valence)) · 각성 @(F2(Q.Arousal)) · 긴장 @(F2(Q.Tension)) · 분기 = 스팅어 컷</span><i class="@(D.ScoreBound ? "ok" : null)">@(D.ScoreBound ? "결선" : "큐만")</i></div>
+                        <div><em>🙂 표정 v16.82</em><b>@(FaceName(Q.Face))</b><span>감정 혼합(정서가 · 각성 · 공포) 변화 ≥ 0.02 시 적용</span><i class="@(D.FaceBound ? "ok" : null)">@(D.FaceBound ? "결선" : "큐만")</i></div>
+                    </div>
+                </div>
+                <div class="htp-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .htp-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .htp-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .htp-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #a855f7 18%, var(--card)), color-mix(in srgb, #06b6d4 14%, var(--card))); }
+    .htp-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .htp-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .htp-sub b { color: var(--text-primary); }
+    .htp-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .htp-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .htp-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; } .htp-btn:disabled { opacity: .4; cursor: default; }
+    .htp-btn.sm { font-size: 10px; padding: 2px 8px; } .htp-btn.on { background: color-mix(in srgb, #a855f7 24%, transparent); border-color: #c084fc; } .htp-btn.warn { background: color-mix(in srgb, #f97316 24%, transparent); border-color: #fb923c; }
+    .htp-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .htp-chip.ok { border-color: #22c55e; color: #86efac; } .htp-chip.warn { border-color: #f59e0b; color: #fcd34d; } .htp-chip.key { border-color: #38bdf8; color: #7dd3fc; }
+    .htp-chip.lv0 { border-color: #22c55e; color: #86efac; } .htp-chip.lv1 { border-color: #a3e635; color: #d9f99d; } .htp-chip.lv2 { border-color: #f59e0b; color: #fcd34d; } .htp-chip.lv3 { border-color: #ef4444; color: #fca5a5; }
+    .htp-chip.r0, .htp-chip.r1 { border-color: #64748b; } .htp-chip.r2 { border-color: #22c55e; color: #86efac; } .htp-chip.r3 { border-color: #f59e0b; color: #fcd34d; } .htp-chip.r4 { border-color: #ef4444; color: #fca5a5; } .htp-chip.r5 { border-color: #a855f7; color: #d8b4fe; }
+    .htp-main { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .htp-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .htp-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .htp-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .htp-view { display: flex; gap: 12px; align-items: flex-start; } .htp-view img.big { width: 320px; height: 240px; image-rendering: pixelated; background: #000; border-radius: 10px; border: 1px solid #312e81; box-shadow: 0 0 24px rgba(168,85,247,.35); }
+    .htp-vside { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+    .htp-strip { display: flex; gap: 6px; } .htp-thumb { flex: 1; display: flex; flex-direction: column; gap: 2px; align-items: center; border: 1px solid var(--line); background: transparent; border-radius: 8px; padding: 4px; cursor: pointer; color: var(--text-muted); font-size: 10px; }
+    .htp-thumb.on { border-color: #c084fc; } .htp-thumb img { width: 100%; aspect-ratio: 4 / 3; image-rendering: pixelated; background: #000; border-radius: 4px; }
+    .htp-spark { width: 100%; height: 70px; background: #030712; border-radius: 6px; } .htp-spark.sm { height: 40px; }
+    .htp-spark polyline { fill: none; stroke-width: 1.4; vector-effect: non-scaling-stroke; } .htp-spark .mb { stroke: #22d3ee; } .htp-spark .bud { stroke: #f97316; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+    .htp-spark .sk { stroke: #ef4444; } .htp-spark .vg { stroke: #a855f7; } .htp-spark .ev { stroke: #facc15; } .htp-spark .ea { stroke: #f472b6; } .htp-spark .et { stroke: #38bdf8; } .htp-spark .zero { stroke: #334155; vector-effect: non-scaling-stroke; }
+    .htp-stages { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; } .htp-stage { font-size: 10px; color: var(--text-muted); } .htp-stage b { display: block; font: 800 12px var(--mono); color: var(--text-primary); }
+    .htp-stage i { display: block; height: 5px; border-radius: 3px; margin-top: 3px; } .htp-stage.s0 i { background: #22d3ee; } .htp-stage.s1 i { background: #a3e635; } .htp-stage.s2 i { background: #f472b6; } .htp-stage.s3 i { background: #a855f7; }
+    .htp-hands { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; } .htp-hands .hand { border: 1px solid var(--line); border-radius: 10px; padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; }
+    .htp-fbar { height: 6px; background: #1f2937; border-radius: 3px; overflow: hidden; } .htp-fbar i { display: block; height: 100%; background: linear-gradient(90deg, #22c55e, #f59e0b, #ef4444); }
+    .htp-wave { width: 100%; height: 40px; background: #030712; border-radius: 6px; } .htp-wave line { stroke: #334155; vector-effect: non-scaling-stroke; } .htp-wave polyline { fill: none; stroke: #f472b6; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+    .htp-cog { display: flex; gap: 12px; align-items: center; } .htp-col2 { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
+    .htp-cog .vig { position: relative; width: 110px; height: 80px; flex: none; border-radius: 10px; overflow: hidden; background: linear-gradient(180deg, #1e3a8a, #0f172a 55%, #14532d 55%); display: flex; align-items: center; justify-content: center; font-size: 10px; color: #e2e8f0; }
+    .htp-cog .vig::after { content: ""; position: absolute; inset: 0; background: radial-gradient(ellipse at center, transparent calc(70% - var(--vig) * 60%), #000 calc(100% - var(--vig) * 40%)); }
+    .htp-cog .vig em { position: absolute; left: 8%; right: 8%; top: 55%; height: 2px; background: #a855f7; opacity: var(--anc); }
+    .htp-tree { width: 100%; height: 230px; background: #030712; border-radius: 10px; }
+    .htp-tree .ed { stroke: #334155; stroke-width: 1.4; } .htp-tree .ed.hot { stroke: #c084fc; stroke-width: 2.6; }
+    .htp-tree .nd { stroke: #0f172a; stroke-width: 2; opacity: .85; } .htp-tree .nd.cur { stroke: #fff; stroke-width: 3; opacity: 1; }
+    .htp-tree .prog { fill: none; stroke: #facc15; stroke-width: 2.5; transform-box: fill-box; }
+    .htp-tree text { fill: #cbd5e1; font-size: 9px; text-anchor: middle; }
+    .htp-log { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text-secondary); } .htp-log b { color: var(--text-primary); }
+    .htp-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 10px; color: var(--text-muted); align-items: center; } .htp-legend i { display: inline-block; width: 10px; height: 3px; }
+    .htp-legend .ev { background: #facc15; } .htp-legend .ea { background: #f472b6; } .htp-legend .et { background: #38bdf8; }
+    .htp-meters { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; } .htp-meter { font-size: 10px; color: var(--text-muted); } .htp-meter b { font: 800 12px var(--mono); color: var(--text-primary); }
+    .htp-meter i { display: block; height: 6px; border-radius: 3px; background: #1f2937; overflow: hidden; margin-top: 3px; } .htp-meter i s { display: block; height: 100%; background: #a855f7; }
+    .htp-cues { display: flex; flex-direction: column; gap: 6px; } .htp-cues div { display: grid; grid-template-columns: 110px 170px 1fr auto; gap: 8px; align-items: center; font-size: 11px; color: var(--text-secondary); border-bottom: 1px dashed var(--line); padding-bottom: 4px; }
+    .htp-cues em { font-style: normal; color: var(--text-muted); } .htp-cues b { color: var(--text-primary); } .htp-cues i { font-style: normal; font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line); } .htp-cues i.ok { border-color: #22c55e; color: #86efac; }
+    .htp-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .htp-sl b { font-family: var(--mono); color: var(--text-primary); } .htp-sl input { width: 100px; }
+    .htp-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; font-weight: 500; color: var(--text-secondary); align-items: center; } .htp-kv b { color: var(--text-primary); }
+    .htp-note { font-size: 11px; color: var(--text-muted); } .mono { font-family: var(--mono); }
+    @@media (max-width: 1200px) { .htp-main { grid-template-columns: 1fr; } .htp-view { flex-direction: column; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+    private int _view = HolographicLightFieldTelepresenceEngine.Views / 2;
+    private readonly byte[] _bmp = new byte[HolographicLightFieldTelepresenceEngine.ViewBmpBytes];
+
+    private HolographicLightFieldTelepresenceEngine H => Runner.Holo;
+    private UniversalAgiCinematicDirectorSynthesizer D => Runner.Director;
+    private SpatialHapticCognitiveInteractionGuard G => Runner.Guard;
+    private DirectorCue Q => Runner.Director.Cue;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("HoloTele.Modal.Timer", ex); }
+        }, null, 300, 300);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static string Kb(long b) => (b / 1048576d).ToString("0.0", CultureInfo.InvariantCulture) + " MB";
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+    private static string FaceName(PromptFlowStudio.Services.DigitalHuman.FacePreset p) => p switch
+    {
+        PromptFlowStudio.Services.DigitalHuman.FacePreset.Joy => "기쁨", PromptFlowStudio.Services.DigitalHuman.FacePreset.Sadness => "슬픔",
+        PromptFlowStudio.Services.DigitalHuman.FacePreset.Anger => "분노", PromptFlowStudio.Services.DigitalHuman.FacePreset.Surprise => "놀람",
+        PromptFlowStudio.Services.DigitalHuman.FacePreset.Fear => "공포", PromptFlowStudio.Services.DigitalHuman.FacePreset.Disgust => "혐오", _ => "중립",
+    };
+
+    private string ViewSrc(int view)
+    {
+        var n = H.WriteViewBmp(view, _bmp);
+        return "data:image/bmp;base64," + Convert.ToBase64String(_bmp, 0, n);
+    }
+
+    private double MbpsMax() => Math.Max(H.BudgetMbps * 1.25, Math.Max(1, H.PeakMbps));
+
+    private string Series(Func<int, float> f, double max, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (HolographicTelepresenceStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - 2 - (h - 4) * Math.Clamp(f(i) / max, 0, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private string Wave(int h)
+    {
+        var w = G.Waveform(h);
+        var sb = new System.Text.StringBuilder(w.Length * 12);
+        for (var i = 0; i < w.Length; i++) sb.Append(F1(160.0 * i / (w.Length - 1))).Append(',').Append(F1(20 - 18 * w[i])).Append(' ');
+        return sb.ToString();
+    }
+
+    private double X(int b) => 20 + 360 * D.LayoutX(b);
+    private double Y(int b) => 14 + 160 * D.LayoutY(b);
+
+    private bool OnPath(int from, int to)
+    {
+        for (var i = 0; i + 1 < Math.Min(6, D.PathCount); i++) if (D.PathBeat(i) == to && D.PathBeat(i + 1) == from) return true;
+        return false;
+    }
+
+    private string BeatColor(int b)
+    {
+        var v = D.BeatValence(b); var t = D.BeatTension(b);
+        var r = (int)(120 + 120 * Math.Max(0, -v) + 60 * t); var g = (int)(90 + 140 * Math.Max(0, v)); var bl = (int)(200 - 120 * t);
+        return "rgb(" + Math.Clamp(r, 0, 255).ToString(CultureInfo.InvariantCulture) + "," + Math.Clamp(g, 0, 255).ToString(CultureInfo.InvariantCulture) + "," + Math.Clamp(bl, 0, 255).ToString(CultureInfo.InvariantCulture) + ")";
+    }
+
+    private RenderFragment Stage(string name, double us, string cls) => __builder =>
+    {
+        var total = Math.Max(1, H.FrameUs);
+        <div class="htp-stage @cls">@name<b>@(F0(us)) µs</b><i style="width:@(F1(100 * us / total))%"></i></div>
+    };
+
+    private RenderFragment Meter(string name, float v) => __builder =>
+    {
+        <div class="htp-meter">@name <b>@(F0(v * 100))%</b><i><s style="width:@(F1(100 * Math.Clamp(v, 0, 1)))%"></s></i></div>
+    };
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step60() { for (var i = 0; i < HolographicTelepresenceStudioRunner.Hz; i++) Runner.Step(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중(10 Hz 이벤트)은 300 ms 타이머가 처리 — 정지 상태 액션만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

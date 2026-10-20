@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- net8.0-windows(메인 프로젝트와 동일 TFM) — #if WINDOWS 구간(DPAPI/레지스트리 등)이 실제로 컴파일·실행되려면 필수. -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <!-- SecureSecretVault 의 DPAPI(ProtectedData)가 WindowsDesktop 공유 프레임워크 의존이라, 테스트 호스트 프로세스에도
+         동일 프레임워크가 로드되도록 명시(메인 프로젝트에서 이미 검증된 요건과 동일). -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.5.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\PromptFlowStudio\PromptFlowStudio.csproj" />
+  </ItemGroup>
+
+</Project>

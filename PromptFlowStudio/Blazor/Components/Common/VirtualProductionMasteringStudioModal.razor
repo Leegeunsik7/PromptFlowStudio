@@ -1,0 +1,306 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.CinematicMastering
+@implements IDisposable
+@inject VirtualProductionMasteringStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.80.0] 🎬 AI 가상 프로덕션 & 마스터링 스튜디오 — ICVFX LED 월 프리뷰(인너 프러스텀 · 레이어 시차) · 트래킹 탑뷰 ·
+    ACES 웨이브폼 스코프(감정선 신경망 룩 · CDL) · Genlock 프레임 동기화 게이지(위상 오차 · 셔터/LED 위상 창 · 홀드/지연/티어).
+*@
+
+<div class="vpm-scrim" @onclick="Close">
+    <div class="vpm-modal" @onclick:stopPropagation="true">
+        <div class="vpm-h">
+            <div>
+                <div class="vpm-title">🎬 AI 가상 프로덕션 &amp; 마스터링 스튜디오</div>
+                <div class="vpm-sub">실물 카메라 <b>6DoF 트래킹</b>을 지연 보상 예측해 LED 월 배경(3DGS · 깊이 레이어)의 <b>오프-액시스 시점 · 시차</b>를 서브 ms 로 동기화하고,
+                    장면 <b>감정선</b>에 맞춘 신경망 룩을 <b>ACES2065-1 → ACEScg</b> 파이프라인에서 SIMD 그레이딩 · SDR/HDR 마스터링하며, <b>Genlock/타임코드</b> 프레임 가드로 티어링을 차단합니다.</div>
+            </div>
+            <button class="vpm-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="vpm-bar">
+            <button class="vpm-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 촬영 가동")</button>
+            <button class="vpm-btn" @onclick="Step" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="vpm-btn" @onclick="Runner.Reset" disabled="@Runner.IsRunning">🎬 새 테이크</button>
+            <label class="vpm-tg"><input type="checkbox" checked="@Runner.Sync.Enabled" @onchange="e => Runner.SetGuard(e.Value is true)" /> 프레임 가드</label>
+            <label class="vpm-tg"><input type="checkbox" checked="@Runner.Track.Prediction" @onchange="e => Runner.SetPrediction(e.Value is true)" /> 지연 보상 예측</label>
+            <select class="vpm-sel" value="@_rate" @onchange="OnRate" disabled="@Runner.IsRunning">
+                @for (var i = 0; i < Rates.Length; i++)
+                {
+                    <option value="@i">@(Rates[i].Label) fps@(Rates[i].DropFrame ? " DF" : "")</option>
+                }
+            </select>
+            <select class="vpm-sel" value="@_led" @onchange="OnLed">
+                @for (var i = 0; i < LedHz.Length; i++)
+                {
+                    <option value="@i">LED @(F0(LedHz[i])) Hz</option>
+                }
+            </select>
+            <select class="vpm-sel" value="@_shutter" @onchange="OnShutter">
+                @for (var i = 0; i < Shutters.Length; i++)
+                {
+                    <option value="@i">셔터 @(F1(Shutters[i]))°</option>
+                }
+            </select>
+            <span class="vpm-chip tc">@(Runner.Sync.Timecode.ToString())</span>
+            <span class="vpm-chip @(Runner.Sync.Locked ? "ok" : "warn")">@(Runner.Sync.Locked ? "🔒 GENLOCK" : "⌛ 획득 중")</span>
+            <span class="vpm-chip">트래킹 @(F1(Runner.Track.LastSolveMicros))µs · 그레이딩 @(F0(Runner.Grade.LastFrameMicros))µs</span>
+        </div>
+
+        <div class="vpm-main">
+            <div class="vpm-col">
+                <div class="vpm-card">
+                    <div class="vpm-sec">🎥 ICVFX LED 월 프리뷰 — @(Runner.Grade.Target == MasteringTarget.SdrRec709 ? "SDR BT.1886" : "HDR PQ 코드값") · @(VirtualProductionMasteringStudioRunner.SectionName(Runner.SceneTime))</div>
+                    <svg class="vpm-wall" viewBox="0 0 @(PW) @(PH)" preserveAspectRatio="none">
+                        @for (var y = 0; y < PH; y++)
+                        {
+                            for (var x = 0; x < PW; x++)
+                            {
+                                <rect x="@x" y="@y" width="1.04" height="1.04" style="fill:@(Px(x, y))" />
+                            }
+                        }
+                        @if (Runner.Track.InnerValid)
+                        {
+                            <polygon points="@(InnerPoints())" class="inner" />
+                        }
+                    </svg>
+                    <div class="vpm-kv">
+                        <span>인너 프러스텀 <b>@(F0(Runner.Track.InnerCoverage * 100))%</b></span>
+                        <span>예측 오차 <b>@(F2(Runner.Track.PredictionErrorMm)) mm</b></span>
+                        <span>지터 <b>@(F2(Runner.Track.JitterMm)) mm</b></span>
+                        <span>최대 해 <b>@(F1(Runner.Track.MaxSolveMicros))µs</b></span>
+                    </div>
+                    <div class="vpm-layers">
+                        @for (var i = 0; i < Runner.Track.LayerCount; i++)
+                        {
+                            var s = Runner.Track.LayerShift(i);
+                            <div><em>@(VirtualProductionMasteringStudioRunner.LayerNames[i])</em><i style="width:@(F0(Math.Clamp(s.Length() * 400f, 0f, 100f)))%"></i><b>Δu @(F3(s.X)) · Δv @(F3(s.Y))</b></div>
+                        }
+                    </div>
+                </div>
+
+                <div class="vpm-card">
+                    <div class="vpm-sec">🧭 카메라 트래킹 탑뷰 — 오프-액시스 프러스텀 L @(F3(Runner.Track.FrustumLeft)) · R @(F3(Runner.Track.FrustumRight))</div>
+                    <svg class="vpm-top" viewBox="-7.5 -1 15 8">
+                        @{ var eye = Runner.Track.EyePosition; var wall = Runner.Track.Wall; var q = Runner.Track.InnerQuad; }
+                        <line x1="@(F2(wall.Origin.X))" y1="0" x2="@(F2(wall.Origin.X + wall.WidthM))" y2="0" class="wall" />
+                        <line x1="@(F2(eye.X))" y1="@(F2(eye.Z))" x2="@(F2(wall.Origin.X))" y2="0" class="fr" />
+                        <line x1="@(F2(eye.X))" y1="@(F2(eye.Z))" x2="@(F2(wall.Origin.X + wall.WidthM))" y2="0" class="fr" />
+                        @if (Runner.Track.InnerValid)
+                        {
+                            <polygon points="@(F2(eye.X)),@(F2(eye.Z)) @(F2(wall.Origin.X + q[0].X * wall.WidthM)),0 @(F2(wall.Origin.X + q[1].X * wall.WidthM)),0" class="in" />
+                        }
+                        <circle cx="@(F2(Runner.Track.NominalEye.X))" cy="@(F2(Runner.Track.NominalEye.Z))" r="0.12" class="nom" />
+                        <circle cx="@(F2(Runner.TruePosition.X))" cy="@(F2(Runner.TruePosition.Z))" r="0.2" class="true" />
+                        <circle cx="@(F2(eye.X))" cy="@(F2(eye.Z))" r="0.14" class="eye" />
+                        <text x="-7.2" y="-0.3">LED 월 12 × 5 m</text>
+                        <text x="@(F2(eye.X + 0.3f))" y="@(F2(eye.Z + 0.1f))">예측 시점</text>
+                    </svg>
+                    <div class="vpm-note">● 청록 = 예측 시점(지연 @(F0(Runner.Track.LatencyCompensationSec * 1000)) ms 리드) · ○ 노랑 = 실제 카메라 · 회색 = 공칭(아우터) 시점</div>
+                </div>
+            </div>
+
+            <div class="vpm-col">
+                <div class="vpm-card">
+                    <div class="vpm-sec">🌈 ACES 웨이브폼 스코프 — APL @(F0(Runner.Grade.Apl * 100))% · 최대 @(F0(Runner.Grade.MaxNits)) nit</div>
+                    <svg class="vpm-wf" viewBox="0 0 @(NeuralColorGradingAcesMasteringPipeline.WfCols) @(NeuralColorGradingAcesMasteringPipeline.WfBins)" preserveAspectRatio="none">
+                        @for (var bin = 0; bin < NeuralColorGradingAcesMasteringPipeline.WfBins; bin++)
+                        {
+                            for (var col = 0; col < NeuralColorGradingAcesMasteringPipeline.WfCols; col++)
+                            {
+                                var c = Runner.Grade.Waveform[bin * NeuralColorGradingAcesMasteringPipeline.WfCols + col];
+                                if (c == 0) continue;
+                                <rect x="@col" y="@(NeuralColorGradingAcesMasteringPipeline.WfBins - 1 - bin)" width="1" height="1" style="opacity:@(F2(0.25 + 0.75 * c / (double)Math.Max(1, Runner.Grade.WaveformMax)))" />
+                            }
+                        }
+                        <line x1="0" y1="@(F1(NeuralColorGradingAcesMasteringPipeline.WfBins * 0.1))" x2="64" y2="@(F1(NeuralColorGradingAcesMasteringPipeline.WfBins * 0.1))" class="g" />
+                    </svg>
+                    <div class="vpm-kv">
+                        <span>클리핑 <b>@(Runner.Grade.ClipPixels)px</b></span>
+                        <span>블랙 크러시 <b>@(Runner.Grade.CrushPixels)px</b></span>
+                        <span>평균 RGB <b>@(F2(Runner.Grade.MeanCode.X)) / @(F2(Runner.Grade.MeanCode.Y)) / @(F2(Runner.Grade.MeanCode.Z))</b></span>
+                        <span>LUT 베이크 <b>@(Runner.Grade.LutBakes) · @(F0(Runner.Grade.LastBakeMicros))µs</b></span>
+                    </div>
+                    <div class="vpm-row">
+                        <select class="vpm-sel" value="@Runner.Grade.Preset" @onchange="OnPreset">
+                            @for (var i = 0; i < NeuralColorGradingAcesMasteringPipeline.PresetNames.Length; i++)
+                            {
+                                <option value="@i">@(NeuralColorGradingAcesMasteringPipeline.PresetNames[i])</option>
+                            }
+                        </select>
+                        <label class="vpm-tg">신경망 룩 @(F0(Runner.Grade.NeuralMix * 100))%
+                            <input type="range" min="0" max="100" value="@(F0(Runner.Grade.NeuralMix * 100))" @onchange="OnMix" /></label>
+                        <button class="vpm-btn @(Runner.Grade.Target == MasteringTarget.HdrPq1000 ? "on" : null)" @onclick="ToggleHdr">@(Runner.Grade.Target == MasteringTarget.SdrRec709 ? "📺 SDR Rec.709" : "🌟 HDR PQ 1000")</button>
+                    </div>
+                    <div class="vpm-emo">
+                        <span>정서가 <i style="width:@(F0((Runner.Grade.Emotion.Valence + 1f) * 50f))%"></i></span>
+                        <span>각성 <i class="a" style="width:@(F0(Runner.Grade.Emotion.Arousal * 100f))%"></i></span>
+                        <span>긴장 <i class="t" style="width:@(F0(Runner.Grade.Emotion.Tension * 100f))%"></i></span>
+                    </div>
+                    <div class="vpm-cdl">
+                        @{ var lk = Runner.Grade.Look; }
+                        <span>Slope <b>@(F3(lk.Slope.X)) @(F3(lk.Slope.Y)) @(F3(lk.Slope.Z))</b></span>
+                        <span>Offset <b>@(F3(lk.Offset.X)) @(F3(lk.Offset.Y)) @(F3(lk.Offset.Z))</b></span>
+                        <span>Power <b>@(F3(lk.Power.X)) @(F3(lk.Power.Y)) @(F3(lk.Power.Z))</b></span>
+                        <span>Sat <b>@(F3(lk.Saturation))</b> · 노출 <b>@(F2(lk.Exposure)) EV</b></span>
+                    </div>
+                </div>
+
+                <div class="vpm-card">
+                    <div class="vpm-sec">⏱ Genlock 프레임 동기화 — @(Runner.Sync.Rate.Label) fps · 주기 @(F3(Runner.Sync.PeriodMs)) ms · @(VerdictLabel(Runner.Sync.LastVerdict))</div>
+                    <div class="vpm-sync">
+                        <svg class="vpm-gauge" viewBox="-60 -60 120 70">
+                            <path d="M -50 0 A 50 50 0 0 1 50 0" class="arc" />
+                            <path d="M -15.5 -47.6 A 50 50 0 0 1 15.5 -47.6" class="ok" />
+                            @{ var ang = Math.Clamp(Runner.Sync.PhaseErrorUs / 500.0, -1.0, 1.0) * Math.PI / 2; }
+                            <line x1="0" y1="0" x2="@(F2(Math.Sin(ang) * 44))" y2="@(F2(-Math.Cos(ang) * 44))" class="needle" />
+                            <circle cx="0" cy="0" r="3" class="hub" />
+                            <text x="0" y="-14" text-anchor="middle" class="big">@(F0(Runner.Sync.PhaseErrorUs))µs</text>
+                            <text x="0" y="8" text-anchor="middle">위상 오차 · 지터 @(F1(Runner.Sync.JitterUs))µs</text>
+                        </svg>
+                        <div class="vpm-kv col">
+                            <span>락 프레임 <b>@(Runner.Sync.LockedFrames) / @(Runner.Sync.Frames)</b></span>
+                            <span>지연 프레임 홀드 <b>@(Runner.Sync.Held)</b></span>
+                            <span>스왑 지연(티어 차단) <b>@(Runner.Sync.TearsPrevented)</b></span>
+                            <span class="@(Runner.Sync.Tears == 0 ? "okt" : "bad")">티어링 <b>@(Runner.Sync.Tears)</b></span>
+                            <span>렌더 비용 <b>@(F1(Runner.LastRenderCostMs)) ms</b> · 여유 <b>@(F1(Runner.Sync.LastRenderSlackMs)) ms</b></span>
+                        </div>
+                    </div>
+                    <svg class="vpm-phase" viewBox="0 0 @(F2(Runner.Sync.PeriodMs)) 20" preserveAspectRatio="none">
+                        <rect x="@(F2(Runner.Sync.ShutterPhaseMs))" y="2" width="@(F2(Runner.Sync.ExposureMs))" height="16" class="exp" />
+                        <rect x="@(F2(Runner.Sync.ShutterPhaseMs + Runner.Sync.ExposureMs))" y="2" width="@(F2(Runner.Sync.ReadoutMs))" height="16" class="ro" />
+                        <rect x="@(F2(Runner.Sync.LedPhaseMs + Runner.Sync.LedProcessorLatencyMs))" y="0" width="@(F2(Math.Max(0.3, Runner.Sync.LedUpdateMs)))" height="20" class="led" />
+                        <line x1="@(F2(Runner.Sync.LastSwapPhaseMs))" y1="0" x2="@(F2(Runner.Sync.LastSwapPhaseMs))" y2="20" class="swap" />
+                    </svg>
+                    <div class="vpm-legend"><span><i class="exp"></i>노출</span><span><i class="ro"></i>롤링 리드아웃</span><span><i class="led"></i>LED 갱신 위상</span><span><i class="swap"></i>마지막 스왑</span></div>
+                    <div class="vpm-kv">
+                        <span>노출 중 LED 사이클 <b>@(F2(Runner.Sync.BandingCycles))</b></span>
+                        <span class="@(Runner.Sync.BandingRisk < 0.05 ? "okt" : "bad")">밴딩 위험 <b>@(F0(Runner.Sync.BandingRisk * 100))%</b></span>
+                        <span>권장 셔터 <b>@(F1(Runner.Sync.RecommendedShutterAngle))°</b></span>
+                        <span class="@(Runner.Sync.Feasible ? "okt" : "bad")">닫힌 창 <b>@(F1(Runner.Sync.ClosedWindowMs)) ms</b></span>
+                    </div>
+                </div>
+                <div class="vpm-note">@(Runner.LastAction ?? "대기") · @(Runner.Sync.LastAction ?? "")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .vpm-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .vpm-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .vpm-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f59e0b 16%, var(--card)), color-mix(in srgb, #06b6d4 16%, var(--card))); }
+    .vpm-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .vpm-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .vpm-sub b { color: var(--text-primary); }
+    .vpm-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .vpm-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .vpm-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .vpm-btn:disabled { opacity: .4; cursor: default; } .vpm-btn.on { background: color-mix(in srgb, #06b6d4 24%, transparent); border-color: #06b6d4; }
+    .vpm-sel { font-size: 11.5px; padding: 4px 6px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .vpm-tg { font-size: 11.5px; color: var(--text-secondary); display: flex; gap: 4px; align-items: center; font-weight: 600; }
+    .vpm-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .vpm-chip.tc { color: #fde68a; border-color: #b45309; letter-spacing: .5px; }
+    .vpm-chip.ok { border-color: #22c55e; color: #86efac; } .vpm-chip.warn { border-color: #f97316; color: #fdba74; }
+    .vpm-main { display: grid; grid-template-columns: 1.2fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .vpm-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .vpm-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .vpm-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .vpm-wall { width: 100%; aspect-ratio: 12 / 5; display: block; border-radius: 6px; background: #000; }
+    .vpm-wall .inner { fill: rgba(6,182,212,.06); stroke: #22d3ee; stroke-width: .35; stroke-dasharray: 1 .6; }
+    .vpm-layers div { display: grid; grid-template-columns: 110px 1fr 170px; gap: 8px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .vpm-layers em { font-style: normal; } .vpm-layers i { display: block; height: 6px; border-radius: 3px; background: linear-gradient(90deg, #06b6d4, #a855f7); }
+    .vpm-layers b { font: 600 10.5px var(--mono); color: var(--text-primary); text-align: right; }
+    .vpm-top { width: 100%; max-height: 260px; background: #0b1020; border-radius: 10px; }
+    .vpm-top .wall { stroke: #f59e0b; stroke-width: .12; } .vpm-top .fr { stroke: #475569; stroke-width: .03; stroke-dasharray: .2 .15; }
+    .vpm-top .in { fill: rgba(34,211,238,.18); stroke: #22d3ee; stroke-width: .04; } .vpm-top .nom { fill: #64748b; }
+    .vpm-top .true { fill: none; stroke: #facc15; stroke-width: .05; } .vpm-top .eye { fill: #22d3ee; } .vpm-top text { font-size: .35px; fill: #cbd5e1; }
+    .vpm-wf { width: 100%; height: 170px; background: #050a14; border-radius: 8px; } .vpm-wf rect { fill: #4ade80; } .vpm-wf .g { stroke: #475569; stroke-width: .3; stroke-dasharray: 1 1; }
+    .vpm-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .vpm-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; color: var(--text-secondary); } .vpm-kv b { color: var(--text-primary); font-family: var(--mono); }
+    .vpm-kv.col { flex-direction: column; gap: 4px; } .vpm-kv .okt b { color: #86efac; } .vpm-kv .bad b { color: #fca5a5; }
+    .vpm-emo { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; } .vpm-emo span { font-size: 10.5px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px; }
+    .vpm-emo i { display: block; height: 6px; border-radius: 3px; background: #f59e0b; } .vpm-emo i.a { background: #ec4899; } .vpm-emo i.t { background: #06b6d4; }
+    .vpm-cdl { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; font-size: 10.5px; color: var(--text-muted); } .vpm-cdl b { font-family: var(--mono); color: var(--text-primary); }
+    .vpm-sync { display: grid; grid-template-columns: 220px 1fr; gap: 12px; align-items: center; }
+    .vpm-gauge { width: 100%; } .vpm-gauge .arc { fill: none; stroke: #334155; stroke-width: 8; } .vpm-gauge .ok { fill: none; stroke: #22c55e; stroke-width: 8; }
+    .vpm-gauge .needle { stroke: #f8fafc; stroke-width: 2; } .vpm-gauge .hub { fill: #f8fafc; } .vpm-gauge text { font-size: 7px; fill: #94a3b8; } .vpm-gauge .big { font-size: 12px; fill: #f8fafc; font-weight: 800; }
+    .vpm-phase { width: 100%; height: 28px; background: #0b1020; border-radius: 6px; }
+    .vpm-phase .exp, .vpm-legend .exp { fill: rgba(250,204,21,.55); background: rgba(250,204,21,.55); } .vpm-phase .ro, .vpm-legend .ro { fill: rgba(249,115,22,.4); background: rgba(249,115,22,.4); }
+    .vpm-phase .led, .vpm-legend .led { fill: #22d3ee; background: #22d3ee; } .vpm-phase .swap { stroke: #ef4444; stroke-width: .5; } .vpm-legend .swap { background: #ef4444; }
+    .vpm-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 10.5px; color: var(--text-muted); } .vpm-legend i { display: inline-block; width: 12px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+    .vpm-note { font-size: 11px; color: var(--text-muted); }
+    @@media (max-width: 1200px) { .vpm-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int PW = 48, PH = 27;
+    private static readonly GenlockRate[] Rates = { GenlockRate.Fps23976, GenlockRate.Fps24, GenlockRate.Fps25, GenlockRate.Fps2997, GenlockRate.Fps30, GenlockRate.Fps50, GenlockRate.Fps5994, GenlockRate.Fps60 };
+    private static readonly double[] LedHz = { 1920, 3840, 7680 };
+    private static readonly float[] Shutters = { 90f, 144f, 172.8f, 180f, 216f, 270f };
+    private int _rate, _led = 1, _shutter = 3;
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("VpMaster.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static string VerdictLabel(SyncVerdict v) => v switch
+    {
+        SyncVerdict.Locked => "🔒 락", SyncVerdict.HeldLate => "⏸ 지연 프레임 홀드", SyncVerdict.SwapDeferred => "↪ 스왑 지연(셔터 회피)", SyncVerdict.Torn => "⚠ 티어링", _ => "⌛ 획득 중",
+    };
+
+    private string Px(int tx, int ty)
+    {
+        var x = tx * VirtualProductionMasteringStudioRunner.W / PW; var y = ty * VirtualProductionMasteringStudioRunner.H / PH;
+        var i = y * VirtualProductionMasteringStudioRunner.W + x;
+        return "rgb(" + B(Runner.Grade.OutR, i) + "," + B(Runner.Grade.OutG, i) + "," + B(Runner.Grade.OutB, i) + ")";
+    }
+
+    private static string B(ReadOnlySpan<float> s, int i) => (uint)i < (uint)s.Length ? ((int)(Math.Clamp(s[i], 0f, 1f) * 255f + 0.5f)).ToString(CultureInfo.InvariantCulture) : "0";
+
+    private string InnerPoints()
+    {
+        var q = Runner.Track.InnerQuad;
+        var sb = new System.Text.StringBuilder(96);
+        for (var i = 0; i < 4; i++) sb.Append(F2(q[i].X * PW)).Append(',').Append(F2((1f - q[i].Y) * PH)).Append(' ');
+        return sb.ToString();
+    }
+
+    private void OnRate(ChangeEventArgs e) { if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var i)) { _rate = i; Apply(); } }
+    private void OnLed(ChangeEventArgs e) { if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var i)) { _led = i; Apply(); } }
+    private void OnShutter(ChangeEventArgs e) { if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var i)) { _shutter = i; Apply(); } }
+    private void OnPreset(ChangeEventArgs e) { if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var i)) Runner.SetPreset(i); }
+    private void OnMix(ChangeEventArgs e) { if (float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) Runner.SetNeuralMix(v / 100f); }
+    private void Apply() => Runner.ConfigureSync(Rates[Math.Clamp(_rate, 0, Rates.Length - 1)], LedHz[Math.Clamp(_led, 0, LedHz.Length - 1)], Shutters[Math.Clamp(_shutter, 0, Shutters.Length - 1)], Runner.Sync.ReadoutMs);
+
+    private void ToggleHdr() => Runner.SetTarget(Runner.Grade.Target == MasteringTarget.SdrRec709 ? MasteringTarget.HdrPq1000 : MasteringTarget.SdrRec709);
+
+    private void Step() { var n = (int)Math.Round(Runner.Sync.Rate.Fps); for (var k = 0; k < n; k++) Runner.TickOnce(); }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

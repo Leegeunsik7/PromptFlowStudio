@@ -1,0 +1,197 @@
+@using PromptFlowStudio.Services.Wan
+@implements IDisposable
+@inject PromptFlowStudio.Shared.Haptics.IHapticEngine Haptic
+@inject PromptFlowStudio.Services.Ui.StudioMemoryAudit MemAudit
+
+@* [PromptFlow Studio v5.4 · Task2] 프레임 직관 모션-벡터 드로잉 가이드 — 순수 Blazor SVG(외부 SDK 0).
+   ▸ 스토리보드 프레임 위에 손가락으로 화살표(모션 벡터)를 스케치 → Wan 3.0 카메라/피사체 이동 프롬프트로 자동 변환.
+   ▸ 구글 Flow 의 텍스트 기반 제어를 탈피 — 터치 모션 스케치 기반 다이내믹 AI 제어 UX.
+   ▸ 좌표는 캡처 <rect> 의 OffsetX/Y(프레임 로컬 픽셀) 사용 → JS getBoundingClientRect 불필요. 자식은 pointer-events:none. *@
+
+<div class="mvp">
+    <div class="mvp-h">
+        <span class="mvp-title">🎯 모션-벡터 드로잉 가이드</span>
+        <div class="mvp-modes">
+            @foreach (var m in Modes)
+            {
+                <button class="mvp-mode @(_mode == m.Key ? "on" : null)" @onclick="() => SetMode(m.Key)" @key="m.Key">@m.Icon @m.Name</button>
+            }
+        </div>
+    </div>
+
+    <div class="mvp-stage">
+        <svg class="mvp-svg">
+            <defs>
+                <marker id="mvpHead" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+                    <path d="M0,0 L6,3 L0,6 Z" fill="@ModeColor" />
+                </marker>
+                <marker id="mvpHeadLive" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+                    <path d="M0,0 L6,3 L0,6 Z" fill="#e2e8f0" />
+                </marker>
+                <radialGradient id="mvpSub" cx="50%" cy="45%" r="55%"><stop offset="0%" stop-color="#334155" /><stop offset="100%" stop-color="#1e293b" /></radialGradient>
+            </defs>
+
+            @* 프레임 배경(플레이스홀더 · 피사체 실루엣 + 3분할 가이드) *@
+            <rect x="0" y="0" width="100%" height="100%" fill="#0b0d14" pointer-events="none" />
+            <ellipse cx="50%" cy="62%" rx="86" ry="20" fill="rgba(148,163,184,.10)" pointer-events="none" />
+            <circle cx="50%" cy="46%" r="42" fill="url(#mvpSub)" stroke="#475569" stroke-width="1.5" pointer-events="none" />
+            <g stroke="rgba(148,163,184,.16)" stroke-width="1" pointer-events="none">
+                <line x1="33.33%" y1="0" x2="33.33%" y2="100%" /><line x1="66.66%" y1="0" x2="66.66%" y2="100%" />
+                <line x1="0" y1="33.33%" x2="100%" y2="33.33%" /><line x1="0" y1="66.66%" x2="100%" y2="66.66%" />
+            </g>
+            <text x="12" y="22" fill="#64748b" font-size="11" font-family="monospace" pointer-events="none">@FrameLabel</text>
+
+            @* 확정 화살표 *@
+            @foreach (var (a, i) in _arrows.Select((a, i) => (a, i)))
+            {
+                <g pointer-events="none" @key="i">
+                    <line x1="@F(a.X1)" y1="@F(a.Y1)" x2="@F(a.X2)" y2="@F(a.Y2)" stroke="@ModeColor" stroke-width="3.5" stroke-linecap="round" marker-end="url(#mvpHead)" opacity="0.9" />
+                    <circle cx="@F(a.X1)" cy="@F(a.Y1)" r="4" fill="@ModeColor" />
+                    <text x="@F(a.X1 + 6)" y="@F(a.Y1 - 6)" fill="@ModeColor" font-size="11" font-weight="800" font-family="monospace">@(i + 1)</text>
+                </g>
+            }
+
+            @* 라이브(드로잉 중) 화살표 *@
+            @if (_drawing)
+            {
+                <line pointer-events="none" x1="@F(_lx1)" y1="@F(_ly1)" x2="@F(_lx2)" y2="@F(_ly2)" stroke="#e2e8f0" stroke-width="3" stroke-dasharray="6 6" stroke-linecap="round" marker-end="url(#mvpHeadLive)" />
+            }
+
+            @* 캡처 표면(단일 이벤트 서피스 · OffsetX/Y 일관성 확보) *@
+            <rect class="mvp-capture" x="0" y="0" width="100%" height="100%" fill="transparent"
+                  @onpointerdown="Down" @onpointermove="MoveP" @onpointerup="Up" @onpointerleave="Up" @onpointercancel="Up" />
+        </svg>
+        <div class="mvp-hint">✏️ 프레임 위에 이동 방향으로 화살표를 그으세요 — 길이 = 속도/각도</div>
+    </div>
+
+    <div class="mvp-body">
+        <div class="mvp-vecs">
+            @if (_arrows.Count == 0) { <div class="mvp-empty">아직 그린 모션 벡터가 없습니다.</div> }
+            else
+            {
+                @foreach (var (a, i) in _arrows.Select((a, i) => (a, i)))
+                {
+                    <div class="mvp-vec" @key="i"><span class="mvp-vec-i">@(i + 1)</span><span class="mvp-vec-p">@PhraseFor(a)</span></div>
+                }
+            }
+        </div>
+
+        <textarea class="mvp-prompt" readonly rows="2">@Composed</textarea>
+
+        <div class="mvp-act">
+            <button class="mvp-btn go" @onclick="Apply" disabled="@(_arrows.Count == 0)">＋ 이 모션을 프롬프트에 적용</button>
+            <button class="mvp-btn" @onclick="Undo" disabled="@(_arrows.Count == 0)">↶ 되돌리기</button>
+            <button class="mvp-btn" @onclick="ClearAll" disabled="@(_arrows.Count == 0)">🗑️ 전체</button>
+        </div>
+        @if (_msg is not null) { <div class="mvp-msg">@_msg</div> }
+    </div>
+</div>
+
+<style>
+    .mvp { border: 1px solid color-mix(in srgb, #22d3ee 34%, var(--line)); border-radius: 16px; overflow: hidden; font-family: Pretendard, 'Malgun Gothic', sans-serif;
+        background: linear-gradient(160deg, color-mix(in srgb, #22d3ee 9%, rgba(11,13,20,.9)), rgba(11,13,20,.96)); }
+    .mvp-h { display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-bottom: 1px solid color-mix(in srgb, #22d3ee 22%, var(--line)); flex-wrap: wrap; }
+    .mvp-title { font: 900 13.5px Pretendard,'Malgun Gothic',sans-serif; background: linear-gradient(90deg, #22d3ee, #a78bfa); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .mvp-modes { margin-left: auto; display: flex; gap: 5px; flex-wrap: wrap; }
+    .mvp-mode { font: 700 10.5px Pretendard,'Malgun Gothic',sans-serif; padding: 6px 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; min-height: 32px; }
+    .mvp-mode.on { color: #04121c; border-color: transparent; background: linear-gradient(135deg, #22d3ee, #38bdf8); }
+    .mvp-stage { position: relative; }
+    .mvp-svg { width: 100%; height: 300px; display: block; touch-action: none; user-select: none; -webkit-user-select: none; }
+    .mvp-capture { cursor: crosshair; }
+    .mvp-hint { position: absolute; left: 0; right: 0; bottom: 6px; text-align: center; font: 600 10px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); pointer-events: none; }
+    .mvp-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+    .mvp-vecs { display: flex; flex-direction: column; gap: 5px; max-height: 108px; overflow-y: auto; }
+    .mvp-empty { font: 600 11px var(--mono); color: var(--text-muted); text-align: center; padding: 8px; }
+    .mvp-vec { display: flex; align-items: center; gap: 9px; font: 600 11px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-secondary); }
+    .mvp-vec-i { flex: 0 0 auto; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 6px; background: color-mix(in srgb, #22d3ee 18%, transparent); color: #7dd3fc; font: 800 10px var(--mono); }
+    .mvp-vec-p { word-break: keep-all; }
+    .mvp-prompt { width: 100%; box-sizing: border-box; resize: none; background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; color: var(--text-primary); font: 600 11px var(--mono); line-height: 1.5; outline: none; }
+    .mvp-act { display: flex; gap: 7px; flex-wrap: wrap; }
+    .mvp-btn { font: 800 11.5px Pretendard,'Malgun Gothic',sans-serif; padding: 9px 13px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; min-height: 40px; }
+    .mvp-btn.go { flex: 1; min-width: 190px; border: none; color: #04121c; background: linear-gradient(135deg, #22d3ee, #34d399); }
+    .mvp-btn:hover:not(:disabled) { filter: brightness(1.07); border-color: #22d3ee; }
+    .mvp-btn:disabled { opacity: .45; cursor: not-allowed; }
+    .mvp-msg { font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: #7dd3fc; word-break: keep-all; }
+</style>
+
+@code {
+    /// <summary>미리보기 소스 프로젝트(선택) — 프레임 라벨에 씬 컨텍스트 표기.</summary>
+    [Parameter] public StoryboardProject? Project { get; set; }
+    /// <summary>생성된 모션 프롬프트(문자열) 적용 콜백(선택). 없으면 [적용] 은 토스트만.</summary>
+    [Parameter] public EventCallback<string> OnPrompt { get; set; }
+    /// <summary>구조화된 모션 벡터 목록 방출(선택) — 부모가 공간 음성과 합성해 Wan 3.0 백엔드로 전송(v5.4.1 파이프라인 결선).</summary>
+    [Parameter] public EventCallback<IReadOnlyList<MotionVector>> OnVectors { get; set; }
+
+    private sealed record Arrow(double X1, double Y1, double X2, double Y2);
+    private sealed record ModeDef(string Key, string Icon, string Name);
+
+    private static readonly ModeDef[] Modes =
+    {
+        new("camera", "🎥", "카메라"),
+        new("subject", "🏃", "피사체"),
+        new("zoom", "🔍", "줌/달리"),
+    };
+
+    private readonly List<Arrow> _arrows = new();
+    private string _mode = "camera";
+    private bool _drawing;
+    private double _lx1, _ly1, _lx2, _ly2;
+    private string? _msg;
+    private long _memToken;
+
+    protected override void OnInitialized() => _memToken = MemAudit.Track("MotionVectorPainter");
+
+    private string ModeColor => _mode switch { "subject" => "#f5c451", "zoom" => "#a78bfa", _ => "#22d3ee" };
+    private string FrameLabel => Project?.Scenes is { Count: > 0 } s ? $"FRAME · {s.Count}컷 스토리보드" : "FRAME · 720×1280";
+
+    private void SetMode(string m) { _mode = m; _msg = null; }
+
+    private void Down(PointerEventArgs e)
+    {
+        _drawing = true;
+        _lx1 = e.OffsetX; _ly1 = e.OffsetY; _lx2 = e.OffsetX; _ly2 = e.OffsetY;
+    }
+
+    private void MoveP(PointerEventArgs e)
+    {
+        if (!_drawing) return;
+        _lx2 = e.OffsetX; _ly2 = e.OffsetY;
+    }
+
+    private void Up(PointerEventArgs e)
+    {
+        if (!_drawing) return;
+        _drawing = false;
+        var len = Math.Sqrt((_lx2 - _lx1) * (_lx2 - _lx1) + (_ly2 - _ly1) * (_ly2 - _ly1));
+        if (len < 14) { _msg = "화살표가 너무 짧습니다 — 이동 방향으로 길게 그어 주세요."; return; }   // 오터치 방어
+        _arrows.Add(new Arrow(_lx1, _ly1, _lx2, _ly2));
+        Haptic.Play(HapticEvent.SimTouch);
+        _msg = $"✔ 모션 벡터 #{_arrows.Count} 추가 — {PhraseFor(_arrows[^1])}";
+    }
+
+    private void Undo() { if (_arrows.Count > 0) { _arrows.RemoveAt(_arrows.Count - 1); _msg = "마지막 벡터를 되돌렸습니다."; } }
+    private void ClearAll() { _arrows.Clear(); _msg = "모든 벡터를 지웠습니다."; }
+
+    private async Task Apply()
+    {
+        if (_arrows.Count == 0) return;
+        Haptic.Play(HapticEvent.DeploySuccess);
+        var vectors = Vectors;
+        if (OnVectors.HasDelegate) await OnVectors.InvokeAsync(vectors);   // 구조화 벡터를 부모(파이프라인)로 방출
+        if (OnPrompt.HasDelegate) { await OnPrompt.InvokeAsync(Composed); _msg = "✅ 모션 벡터를 Wan 3.0 파이프라인에 전달했습니다."; }
+        else _msg = "✅ 모션 프롬프트 생성 완료 — 아래 텍스트를 복사해 사용하세요.";
+    }
+
+    // ── 화살표 → 구조화 MotionVector(현재 모드 · refPx=프레임 높이 300) ──
+    private MotionKind KindOf() => _mode switch { "subject" => MotionKind.Subject, "zoom" => MotionKind.Zoom, _ => MotionKind.Camera };
+    private MotionVector ToVector(Arrow a) => MotionVector.FromDelta(a.X2 - a.X1, a.Y2 - a.Y1, KindOf(), 300);
+    private IReadOnlyList<MotionVector> Vectors => _arrows.Select(ToVector).ToList();
+
+    // 프롬프트/문구는 WanPromptCompiler 를 단일 원천으로 사용(프론트·백엔드 문법 일치).
+    private string Composed => _arrows.Count == 0 ? "" : WanPromptCompiler.Compile(null, Vectors).Prompt;
+    private string PhraseFor(Arrow a) => WanPromptCompiler.PhraseFor(ToVector(a));
+
+    private static string F(double v) => (double.IsNaN(v) || double.IsInfinity(v) ? 0 : v).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+
+    public void Dispose() => MemAudit.Release(_memToken);
+}

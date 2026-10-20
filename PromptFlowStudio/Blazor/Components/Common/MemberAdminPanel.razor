@@ -1,0 +1,280 @@
+@inject MemberRegistryService Members
+@inject LicenseService License
+@inject SessionState Session
+@inject MemberDirectorySyncService Sync
+@implements IDisposable
+
+@* [PromptFlowStudio] 회원·권한(RBAC) 관리 패널 — <관리자 설정> 의 [회원·권한] 탭에 마운트.
+   ⚠ 예전 /admin/users 페이지 본문을 컴포넌트로 <추출>한 것이다. 회원 표는 여기 <한 곳>에만 둔다 —
+     두 화면에 같은 표가 있으면 한쪽만 고쳐지고 다른 쪽이 낡는다.
+   발급 라이선스 목록·설치 PC 이력은 같은 화면의 다른 탭에 있다. *@
+
+@if (!Session.IsAdmin)
+{
+    <div class="ua-notice">🔒 관리자(Admin) 권한이 필요한 화면입니다. 현재 권한: <b>@Session.Role</b> · Admin 계정(GSLEE)으로 로그인하세요.</div>
+}
+else
+{
+    @if (_temp is { } t)
+    {
+        <div class="ua-temp">🔑 <b>@t.Item1</b> 임시 비밀번호가 발급되었습니다: <b class="v">@t.Item2</b> — 사용자에게 안전하게 전달하세요.</div>
+    }
+
+    <div class="ua-stats">
+        <div class="ua-stat"><div class="ua-stat-ic">👥</div><div><div class="ua-stat-v">@Members.Count<span> 명</span></div><div class="ua-stat-l">등록 회원 · 승인 대기 @(Members.PendingCount)명</div></div></div>
+    </div>
+
+    @* ── 신규 가입 통보(관리자 메일 + JSON 첨부) 상태 · 테스트 ── *@
+    <div class="ua-sync">
+        <div class="ua-sync-h">
+            <span>📧 신규 가입 통보(관리자 메일)</span>
+            <span class="ua-sync-badge @(Sync.Configured ? "on" : "off")">@(Sync.Configured ? "구성됨" : "미구성")</span>
+        </div>
+        <div class="ua-sync-d">
+            가입 시 회원 프로필(<b>비밀번호 제외</b>)이 <b>@(string.IsNullOrWhiteSpace(Sync.AdminEmail) ? "관리자 메일" : Sync.AdminEmail)</b> 로 통보되고 <b>member_아이디.json</b> 이 첨부됩니다. 관리자 Gmail 의 Apps Script 가 그 첨부를 구글 드라이브(→ G:)에 자동 저장합니다.
+            @if (!Sync.Configured) { <span>· <b>Members:AdminNotifyEmail</b> 과 <b>메일(SMTP)</b> 설정을 확인하세요.</span> }
+        </div>
+        <div class="ua-sync-a">
+            <button class="ua-b acc" @onclick="TestSync" disabled="@(_syncBusy || !Sync.Configured)">@(_syncBusy ? "전송 중…" : "🧪 테스트 통보 전송")</button>
+            @if (_syncMsg is { } sm) { <span class="ua-sync-msg @(_syncOk ? "ok" : "bad")">@sm</span> }
+        </div>
+    </div>
+
+    <div class="ua-card">
+        <div class="ua-ch"><h3 class="ua-ct">👥 회원 · 권한(RBAC) 관리</h3><span class="ua-cs">총 @(Members.Count)명 · 승인 대기 @(Members.PendingCount)명</span></div>
+        <div class="ua-wrap">
+            <table class="ua-tbl">
+                <thead><tr><th>아이디</th><th>이름 · 연락처 · 소속</th><th>권한</th><th>상태</th><th>관리</th></tr></thead>
+                <tbody>
+                    @foreach (var u in Members.Members)
+                    {
+                        <tr>
+                            <td class="ua-id">@u.Id</td>
+                            <td>
+                                @* ⚠ 아이디와 권한은 여기서 못 고친다. 아이디는 감사 로그의 주체
+                                     식별자이고, 권한은 별도 검증을 거친다. 한 자리에서 다 고치게
+                                     하면 "이름 고치려다 권한이 바뀌는" 사고가 난다. *@
+                                @if (_editId == u.Id)
+                                {
+                                    <div class="ua-edit">
+                                        <input class="ua-in" placeholder="이름 (필수)" value="@_eName"
+                                               @oninput="e => _eName = e.Value?.ToString() ?? string.Empty" />
+                                        <input class="ua-in" placeholder="이메일" value="@_eEmail"
+                                               @oninput="e => _eEmail = e.Value?.ToString() ?? string.Empty" />
+                                        <input class="ua-in" placeholder="연락처" value="@_ePhone"
+                                               @oninput="e => _ePhone = e.Value?.ToString() ?? string.Empty" />
+                                        <input class="ua-in" placeholder="소속" value="@_eCompany"
+                                               @oninput="e => _eCompany = e.Value?.ToString() ?? string.Empty" />
+                                        <div class="ua-edit-a">
+                                            <button class="ua-b ok" @onclick="SaveProfile"
+                                                    disabled="@(string.IsNullOrWhiteSpace(_eName))">저장</button>
+                                            <button class="ua-b" @onclick="() => _editId = null">취소</button>
+                                        </div>
+                                        @if (_editErr is { } er)
+                                        {
+                                            <div class="ua-edit-e" role="alert">@er</div>
+                                        }
+                                    </div>
+                                }
+                                else
+                                {
+                                    <div>
+                                        <b>@u.Name</b><span class="ua-mut"> · @u.Email · @u.Phone</span>
+                                        <button class="ua-pen" title="이름·연락처·소속 수정"
+                                                aria-label="@($"{u.Name} 정보 수정")"
+                                                @onclick="() => BeginEdit(u)">✎</button>
+                                    </div>
+                                    @if (!string.IsNullOrWhiteSpace(u.Company)) { <div class="ua-mut2">🏢 @u.Company</div> }
+                                }
+                                @{ var lic = string.IsNullOrWhiteSpace(u.LicenseKey) ? null : License.VerifyKey(u.LicenseKey); }
+                                @if (lic is not null)
+                                {
+                                    <div class="ua-lic @(lic.Valid ? "ok" : "bad")">@(lic.Valid ? $"✅ 라이선스 유효 · 만료 {(string.IsNullOrEmpty(lic.Expiry) ? "무기한" : Ymd(lic.Expiry))}" : "⛔ " + lic.Reason)</div>
+                                }
+                            </td>
+                            <td>
+                                <select class="ua-role" value="@u.Role" @onchange="e => SetMemberRole(u.Id, e.Value?.ToString())">
+                                    <option value="Admin">Admin</option><option value="Operator">Operator</option><option value="Viewer">Viewer</option>
+                                </select>
+                            </td>
+                            <td><span class="ua-bdg @StatusCls(u.Status)">@StatusKo(u.Status)</span></td>
+                            <td class="ua-acts">
+                                <button class="ua-b acc" @onclick="() => BeginLic(u.Id)">🔑 라이선스</button>
+                                @if (u.Status == "pending")
+                                {
+                                    <button class="ua-b ok" @onclick="() => Members.Approve(u.Id)">승인</button>
+                                }
+                                else
+                                {
+                                    <button class="ua-b" @onclick="() => Members.ToggleStatus(u.Id)">@(u.Status == "active" ? "잠금" : "해제")</button>
+                                }
+                                <button class="ua-b" @onclick="() => Reset(u.Id)">비번 리셋</button>
+                                @if (u.Role != "Admin")
+                                {
+                                    <button class="ua-b del" @onclick="() => Members.Delete(u.Id)">삭제</button>
+                                }
+                            </td>
+                        </tr>
+                        @if (_licEditId == u.Id)
+                        {
+                            <tr class="ua-subrow"><td colspan="5">
+                                <div class="ua-le">
+                                    <span>🔑 <b>@u.Name</b> 라이선스 재발급 · 만료일</span>
+                                    <input type="date" min="2024-01-01" max="2099-12-31" value="@_licExpiry" @onchange="e => _licExpiry = e.Value?.ToString() ?? string.Empty" />
+                                    <span class="ua-note">(비우면 무기한)</span>
+                                    <button class="ua-b ok" @onclick="() => ApplyLic(u.Id, u.Name)" disabled="@_licBusy">@(_licBusy ? "발급 중…" : "발급 & 적용")</button>
+                                    <button class="ua-b" @onclick="() => { _licEditId = null; _licMsg = null; }">취소</button>
+                                    @if (_licMsg is not null) { <span class="ua-licmsg">@_licMsg</span> }
+                                </div>
+                            </td></tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
+<style>
+    .ua-notice { padding: 16px 18px; border-radius: 12px; background: color-mix(in srgb, var(--down) 12%, transparent); border: 1px solid color-mix(in srgb, var(--down) 40%, transparent); color: var(--down); font-size: 13.5px; line-height: 1.6; }
+    .ua-temp { padding: 12px 16px; margin-bottom: 16px; border-radius: 11px; background: color-mix(in srgb, var(--up) 12%, transparent); border: 1px solid color-mix(in srgb, var(--up) 42%, transparent); color: var(--up); font-size: 13px; }
+    .ua-temp b.v { font-family: var(--mono); font-size: 14px; }
+    .ua-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin: 0 0 18px; }
+    .ua-stat { display: flex; align-items: center; gap: 15px; padding: 16px 18px; border-radius: var(--radius); background: var(--card); border: 1px solid var(--line); box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+    .ua-stat-ic { width: 48px; height: 48px; flex: 0 0 auto; display: grid; place-items: center; font-size: 23px; border-radius: 13px; background: color-mix(in srgb, var(--accent) 12%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); }
+    .ua-stat-v { font-size: 27px; font-weight: 800; color: var(--ink); line-height: 1; font-variant-numeric: tabular-nums; }
+    .ua-stat-v span { font-size: 14px; font-weight: 700; color: var(--sub); }
+    .ua-stat-l { font-size: 11.5px; color: var(--sub); margin-top: 6px; }
+    @@media (max-width: 900px) { .ua-stats { grid-template-columns: 1fr; } }
+    .ua-sync { margin-bottom: 16px; padding: 14px 16px; border-radius: var(--radius); background: var(--card); border: 1px solid var(--line); }
+    .ua-sync-h { display: flex; align-items: center; gap: 10px; font-size: 13.5px; font-weight: 800; color: var(--ink); }
+    .ua-sync-badge { font-size: 10.5px; font-weight: 800; padding: 2px 9px; border-radius: 999px; }
+    .ua-sync-badge.on { color: var(--up); background: color-mix(in srgb, var(--up) 14%, transparent); border: 1px solid color-mix(in srgb, var(--up) 40%, transparent); }
+    .ua-sync-badge.off { color: var(--sub); background: color-mix(in srgb, var(--sub) 12%, transparent); border: 1px solid color-mix(in srgb, var(--sub) 34%, transparent); }
+    .ua-sync-d { font-size: 11.5px; color: var(--sub); margin-top: 6px; line-height: 1.55; } .ua-sync-d b { color: var(--ink); }
+    .ua-sync-a { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+    .ua-sync-msg { font-size: 12px; font-weight: 700; } .ua-sync-msg.ok { color: var(--up); } .ua-sync-msg.bad { color: var(--down); }
+    .ua-card { margin-bottom: 16px; padding: 16px 18px; border-radius: var(--radius); background: var(--card); border: 1px solid var(--line); box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+    .ua-ch { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; }
+    .ua-ct { font-size: 15px; font-weight: 800; color: var(--ink); margin: 0; }
+    .ua-cs { margin-left: auto; font-size: 12px; font-weight: 700; color: var(--sub); display: flex; align-items: center; gap: 8px; } .ua-cs b { color: var(--accent); }
+    .ua-wrap { overflow-x: auto; }
+    .ua-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .ua-tbl th { text-align: left; color: var(--sub); font-weight: 700; padding: 9px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; font-size: 11.5px; letter-spacing: .02em; }
+    .ua-tbl td { padding: 11px 10px; border-bottom: 1px solid var(--hairline); color: var(--ink); vertical-align: middle; }
+    .ua-tbl tbody tr:hover td { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+    .ua-subrow td { background: color-mix(in srgb, var(--accent) 6%, transparent) !important; }
+    .ua-id { font-weight: 800; color: var(--ink); }
+    .ua-mut { color: var(--sub); font-size: 12px; } .ua-mut2 { color: var(--sub); font-size: 12px; margin-top: 3px; }
+    .ua-lic { margin-top: 4px; font-size: 11.5px; font-weight: 700; } .ua-lic.ok { color: var(--up); } .ua-lic.bad { color: var(--down); }
+    .ua-role { background: var(--card-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; color: var(--ink); font-size: 12.5px; cursor: pointer; font-family: inherit; }
+    .ua-bdg { font-size: 10.5px; font-weight: 800; padding: 3px 10px; border-radius: 999px; white-space: nowrap; letter-spacing: .02em; }
+    .ua-bdg.ok { color: var(--up); background: color-mix(in srgb, var(--up) 14%, transparent); border: 1px solid color-mix(in srgb, var(--up) 40%, transparent); }
+    .ua-bdg.bad { color: var(--down); background: color-mix(in srgb, var(--down) 13%, transparent); border: 1px solid color-mix(in srgb, var(--down) 38%, transparent); }
+    .ua-bdg.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 42%, transparent); }
+    .ua-acts { display: flex; gap: 6px; flex-wrap: wrap; }
+    .ua-b { font-size: 11.5px; font-weight: 700; padding: 6px 11px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--sub); cursor: pointer; white-space: nowrap; font-family: inherit; transition: border-color .14s ease, color .14s ease, background .14s ease; }
+    .ua-b:hover:not(:disabled) { border-color: var(--accent); color: var(--ink); }
+    .ua-b:disabled { opacity: .5; cursor: default; }
+    .ua-b.acc { border-color: color-mix(in srgb, var(--accent) 42%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
+    .ua-b.ok { border-color: color-mix(in srgb, var(--up) 50%, transparent); background: color-mix(in srgb, var(--up) 14%, transparent); color: var(--up); }
+    .ua-b.del { border-color: color-mix(in srgb, var(--down) 40%, transparent); background: color-mix(in srgb, var(--down) 10%, transparent); color: var(--down); }
+    /* .ua-pen / .ua-edit / .ua-in / .ua-edit-a / .ua-edit-e 는 전역 site-ui-advanced.css 에 있다(재정의 금지). */
+    .ua-le { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; font-size: 12.5px; color: var(--sub); }
+    .ua-le input[type=date] { background: var(--card-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; color: var(--ink); font-family: inherit; }
+    .ua-note { font-size: 11.5px; color: var(--sub); }
+    .ua-licmsg { font-size: 12px; font-weight: 700; color: var(--down); }
+</style>
+
+@code {
+    private (string, string)? _temp;
+
+    protected override void OnInitialized() { Members.Changed += OnCh; Session.OnChange += OnCh; }
+    private void OnCh() => InvokeAsync(StateHasChanged);
+
+    // ── 중앙 명부(구글 시트) 연동 테스트 ──
+    private bool _syncBusy;
+    private string? _syncMsg;
+    private bool _syncOk;
+    private async Task TestSync()
+    {
+        _syncBusy = true; _syncMsg = null;
+        try
+        {
+            var ok = await Sync.PushAsync(new MemberDirectoryEntry(
+                "TEST-" + DateTime.Now.ToString("HHmmss"), "연동 테스트", "test@example.com",
+                "010-0000-0000", "ANG Technology", "(00000) 서울시 테스트구 테스트로 1", "", "SITE-TEST",
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm")));
+            _syncOk = ok;
+            _syncMsg = ok
+                ? "✅ 전송 성공 — 관리자 메일함(첨부 member_*.json)과, Apps Script 설정 시 드라이브를 확인하세요."
+                : "❌ 전송 실패 — 수신 주소(Members:AdminNotifyEmail)와 메일(SMTP) 설정을 확인하세요.";
+        }
+        catch (Exception ex) { _syncOk = false; _syncMsg = "❌ 오류: " + ex.Message; }
+        finally { _syncBusy = false; }
+    }
+
+    private void SetMemberRole(string id, string? role) { if (role is not null) Members.SetRole(id, role); }
+    private void Reset(string id) { var t = Members.ForceReset(id); if (t.Length > 0) _temp = (id, t); }
+
+    private string? _licEditId;
+    private string _licExpiry = "";
+    private bool _licBusy;
+    private string? _licMsg;
+    private void BeginLic(string id) { _licEditId = id; _licExpiry = ""; _licMsg = null; }
+    private void ApplyLic(string id, string name)
+    {
+        _licBusy = true; _licMsg = null;
+        try
+        {
+            DateTime? expiry = (!string.IsNullOrWhiteSpace(_licExpiry) && DateTime.TryParse(_licExpiry, out var d)) ? d : null;
+            var target = string.IsNullOrWhiteSpace(name) ? id : name.Trim();
+            var newKey = License.IssueLicense(target, expiry);
+            var info = License.VerifyKey(newKey);
+            if (!info.Valid) { _licMsg = "발급된 키 검증 실패: " + info.Reason; return; }
+            if (!Members.UpdateLicense(id, newKey)) { _licMsg = "회원 원장 갱신 실패"; return; }
+            _licEditId = null;
+        }
+        catch (Exception ex) { _licMsg = "오류: " + ex.Message; }
+        finally { _licBusy = false; }
+    }
+
+    // ── 회원 프로필 인라인 편집 ─────────────────────────────────────────────
+    private string? _editId;
+    private string _eName = "", _eEmail = "", _ePhone = "", _eCompany = "";
+    private string? _editErr;
+
+    private void BeginEdit(MemberView u)
+    {
+        _editId = u.Id;
+        _eName = u.Name; _eEmail = u.Email; _ePhone = u.Phone; _eCompany = u.Company;
+        _editErr = null;
+    }
+
+    private void SaveProfile()
+    {
+        if (_editId is null) return;
+
+        // ⚠ 이름은 비울 수 없다. 감사 화면에서 누구인지 알 수 없게 된다.
+        if (string.IsNullOrWhiteSpace(_eName))
+        {
+            _editErr = "이름은 비울 수 없습니다.";
+            return;
+        }
+
+        if (!Members.UpdateProfile(_editId, _eName, _eEmail, _ePhone, _eCompany))
+        {
+            _editErr = "변경된 내용이 없거나 저장하지 못했습니다.";
+            return;
+        }
+
+        _editId = null;
+        _editErr = null;
+    }
+
+    private static string StatusKo(string s) => s switch { "active" => "활성", "locked" => "잠김", _ => "승인 대기" };
+    private static string StatusCls(string s) => s switch { "active" => "ok", "locked" => "bad", _ => "warn" };
+    private static string Ymd(string? s) => (s is not null && s.Length == 8) ? $"{s[..4]}-{s.Substring(4, 2)}-{s.Substring(6, 2)}" : (s ?? "");
+
+    public void Dispose() { Members.Changed -= OnCh; Session.OnChange -= OnCh; }
+}

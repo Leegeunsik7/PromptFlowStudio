@@ -1,0 +1,217 @@
+@page "/"
+@inject SessionState Session
+@inject RecentProjectService Recents
+@inject NavigationManager Nav
+
+@* [PromptFlow Studio] 워크스페이스(홈) — 입력→최종 영상까지 이어지는 생성 워크플로우를 강조하는 랜딩.
+   ⚠ 오른쪽 작업 영역은 <작업 전> 상태(생성 파이프라인 미연결)라 의도적으로 비워 둔다. *@
+
+<PageTitle>PromptFlow Studio · 워크스페이스</PageTitle>
+
+<div class="pf">
+    <header class="pf-hero">
+        <div class="pf-hero-l">
+            <div class="pf-eyebrow">AI VIDEO GENERATION · WORKFLOW STUDIO</div>
+            <div style="margin:12px 0 2px;"><StudioMonitorHeader EngineReady="true" /></div>
+            <div class="pf-title-row">
+                <h1 class="pf-title">PromptFlow&nbsp;<span class="pf-title-g">Studio</span></h1>
+                <HelpHint />
+            </div>
+            <p class="pf-sub">프롬프트 한 줄에서 완성된 영상까지 — <b>입력부터 최종 렌더까지 하나의 흐름</b>으로 이어집니다.</p>
+            <div class="pf-hero-actions">
+                <button class="pf-cta" @onclick='() => Nav.NavigateTo("workspace")' title="텍스트→영상 생성 시작">
+                    ＋ 새 프로젝트
+                </button>
+                <span class="pf-hi">@Greeting</span>
+            </div>
+        </div>
+        <div class="pf-orb" aria-hidden="true"></div>
+    </header>
+
+    @* ── 생성 워크플로우 흐름도 ── *@
+    <section class="pf-flow" aria-label="생성 워크플로우 단계">
+        @for (var i = 0; i < Stages.Length; i++)
+        {
+            var s = Stages[i];
+            <div class="pf-node @(s.Final ? "final" : "")" @key="s.Key">
+                <div class="pf-node-ic" aria-hidden="true">@s.Icon</div>
+                <div class="pf-node-t">@s.Title</div>
+                <div class="pf-node-d">@s.Desc</div>
+            </div>
+            @if (i < Stages.Length - 1)
+            {
+                <div class="pf-conn" aria-hidden="true"></div>
+            }
+        }
+    </section>
+
+    @* ── 작업 영역 + 대시보드(우측) ── *@
+    <div class="pf-dash">
+        <section class="pf-work" aria-label="작업 영역">
+            <div class="pf-work-h">
+                <span class="pf-work-t">작업 영역</span>
+                <span class="pf-work-badge">빠른 시작</span>
+            </div>
+            <div class="pf-empty">
+                <div class="pf-empty-ic" aria-hidden="true">🎬</div>
+                <div class="pf-empty-t">무엇을 만들까요?</div>
+                <p class="pf-empty-d">
+                    위 워크플로우를 따라 <b>프롬프트 입력 → 스토리보드 → 모션·카메라 → 렌더링 → 완성 영상</b>으로 이어집니다.
+                    오른쪽에서 빠른 시작 템플릿과 최근 프로젝트를 바로 열 수 있습니다.
+                </p>
+                <div class="pf-empty-actions">
+                    <button class="pf-cta sm" @onclick='() => Nav.NavigateTo("workspace")' title="텍스트→영상 생성 시작">＋ 새 프로젝트 시작</button>
+                    <button class="pf-ghost" @onclick='() => Nav.NavigateTo("gallery")'>🖼️ 갤러리</button>
+                </div>
+            </div>
+        </section>
+
+        <aside class="pf-rail">
+            <div class="pf-w">
+                <div class="pf-w-h">빠른 시작 템플릿</div>
+                <button class="pf-quick" @onclick='() => Nav.NavigateTo("workspace")'>
+                    <span class="pf-quick-ic">✍️</span>
+                    <span class="pf-quick-m"><span class="pf-quick-t">텍스트 → 영상 (T2V)</span><span class="pf-quick-d">프롬프트로 5초 생성</span></span>
+                </button>
+                <button class="pf-quick" @onclick='() => Nav.NavigateTo("workspace")'>
+                    <span class="pf-quick-ic">🖼️</span>
+                    <span class="pf-quick-m"><span class="pf-quick-t">이미지 → 영상 (I2V)</span><span class="pf-quick-d">참조 이미지로 생성</span></span>
+                </button>
+                <button class="pf-quick" @onclick='() => Nav.NavigateTo("storyboard")'>
+                    <span class="pf-quick-ic">🎞️</span>
+                    <span class="pf-quick-m"><span class="pf-quick-t">스토리보드</span><span class="pf-quick-d">여러 컷 연쇄 생성</span></span>
+                </button>
+            </div>
+
+            <div class="pf-w">
+                <div class="pf-w-h">최근 스토리보드 <button class="pf-w-more" @onclick='() => Nav.NavigateTo("storyboard")'>열기 →</button></div>
+                @if (Recents.Items.Count == 0)
+                {
+                    <div class="pf-w-empty">저장된 프로젝트가 없습니다.<br />스토리보드에서 만들고 💾 저장하세요.</div>
+                }
+                else
+                {
+                    @foreach (var r in Recents.Items.Take(5))
+                    {
+                        <button class="pf-recent" @onclick='() => Nav.NavigateTo("storyboard")' @key="r.Path">
+                            <span class="pf-recent-ic">🎬</span>
+                            <span class="pf-recent-m"><span class="pf-recent-t">@r.Title</span><span class="pf-recent-d">@ShortDate(r.SavedAt)</span></span>
+                        </button>
+                    }
+                }
+            </div>
+        </aside>
+    </div>
+</div>
+
+<style>
+    .pf { padding: 6px 8px 48px; width: 100%; box-sizing: border-box; }
+
+    /* ── 히어로 ── */
+    .pf-hero { position: relative; overflow: hidden; border: 1px solid var(--line); border-radius: 20px;
+        background:
+          radial-gradient(120% 140% at 100% 0%, color-mix(in srgb, var(--flow-violet) 22%, transparent), transparent 60%),
+          radial-gradient(90% 120% at 0% 100%, color-mix(in srgb, var(--flow-cyan) 14%, transparent), transparent 55%),
+          var(--card);
+        padding: 30px 32px; margin-bottom: 22px; }
+    .pf-eyebrow { font: 700 10.5px/1 var(--mono); letter-spacing: .18em; color: var(--accent-2); }
+    .pf-title-row { display: flex; align-items: center; gap: 8px; margin: 12px 0 6px; }
+    .pf-title { font-size: 34px; font-weight: 900; letter-spacing: -.5px; color: var(--text-primary); line-height: 1; }
+    .pf-title-g { background: linear-gradient(90deg, var(--flow-violet), var(--flow-cyan), var(--flow-magenta));
+        -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .pf-sub { font-size: 14.5px; color: var(--text-secondary); max-width: 64ch; margin: 0 0 20px; line-height: 1.65; }
+    .pf-sub b { color: var(--text-primary); }
+    .pf-hero-actions { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    .pf-hi { font-size: 12.5px; color: var(--text-muted); }
+    .pf-orb { position: absolute; right: -80px; top: -80px; width: 320px; height: 320px; border-radius: 50%;
+        background: conic-gradient(from 0deg, var(--flow-violet), var(--flow-cyan), var(--flow-magenta), var(--flow-violet));
+        filter: blur(60px); opacity: .28; pointer-events: none; animation: pf-spin 18s linear infinite; }
+
+    .pf-cta { position: relative; font-size: 14px; font-weight: 800; padding: 12px 20px; border-radius: 12px; border: none;
+        color: #fff; background: linear-gradient(135deg, var(--flow-violet), var(--accent)); cursor: pointer;
+        box-shadow: 0 10px 26px color-mix(in srgb, var(--flow-violet) 30%, transparent); transition: transform .14s, box-shadow .14s; }
+    .pf-cta:hover { transform: translateY(-1px); box-shadow: 0 14px 32px color-mix(in srgb, var(--flow-violet) 38%, transparent); }
+    .pf-cta:disabled { cursor: not-allowed; opacity: .5; }
+    .pf-cta.sm { font-size: 13px; padding: 10px 16px; }
+    .pf-soon { font: 700 9px/1 var(--mono); background: rgba(0,0,0,.28); padding: 3px 6px; border-radius: 999px; margin-left: 6px; vertical-align: middle; }
+    .pf-ghost { font-size: 13px; font-weight: 700; padding: 10px 16px; border-radius: 12px; cursor: pointer;
+        border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); }
+    .pf-ghost:hover { border-color: var(--accent); color: var(--text-primary); }
+
+    /* ── 워크플로우 흐름도 ── */
+    .pf-flow { display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap; margin-bottom: 22px; }
+    .pf-node { flex: 1 1 150px; min-width: 140px; border: 1px solid var(--line); border-radius: 16px; background: var(--card);
+        padding: 18px 16px; display: flex; flex-direction: column; gap: 7px; transition: transform .16s, border-color .16s, box-shadow .16s; }
+    .pf-node:hover { transform: translateY(-3px); border-color: color-mix(in srgb, var(--flow-violet) 55%, var(--line)); box-shadow: 0 12px 30px rgba(0,0,0,.16); }
+    .pf-node-ic { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; font-size: 22px;
+        background: color-mix(in srgb, var(--flow-violet) 14%, var(--card-2)); border: 1px solid color-mix(in srgb, var(--flow-violet) 30%, transparent); }
+    .pf-node-t { font-size: 14px; font-weight: 800; color: var(--text-primary); }
+    .pf-node-d { font-size: 11.5px; color: var(--text-muted); line-height: 1.5; }
+    .pf-node.final { background: linear-gradient(160deg, color-mix(in srgb, var(--flow-magenta) 16%, var(--card)), var(--card)); border-color: color-mix(in srgb, var(--flow-magenta) 45%, var(--line)); }
+    .pf-node.final .pf-node-ic { background: color-mix(in srgb, var(--flow-magenta) 20%, var(--card-2)); border-color: color-mix(in srgb, var(--flow-magenta) 45%, transparent); }
+
+    .pf-conn { flex: 0 0 34px; align-self: center; height: 4px; border-radius: 3px;
+        background: linear-gradient(90deg, var(--flow-violet), var(--flow-cyan), var(--flow-magenta), var(--flow-violet));
+        background-size: 300% 100%; animation: pf-flow 2.8s linear infinite; }
+
+    /* ── 작업 영역 ── */
+    .pf-work { border: 1px solid var(--line); border-radius: 18px; background: var(--card); overflow: hidden; }
+    .pf-work-h { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--card-2); }
+    .pf-work-t { font-size: 13.5px; font-weight: 800; color: var(--text-primary); }
+    .pf-work-badge { font: 700 10px/1 var(--mono); letter-spacing: .06em; color: var(--text-muted); border: 1px dashed var(--line); border-radius: 999px; padding: 5px 10px; }
+    .pf-empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px; padding: 56px 24px; }
+    .pf-empty-ic { font-size: 52px; opacity: .55; }
+    .pf-empty-t { font-size: 17px; font-weight: 800; color: var(--text-primary); }
+    .pf-empty-d { font-size: 13px; color: var(--text-muted); max-width: 62ch; line-height: 1.7; margin: 0; }
+    .pf-empty-d b { color: var(--text-secondary); }
+    .pf-empty-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; margin-top: 8px; }
+
+    /* ── 대시보드 그리드(작업영역 + 우측 레일) ── */
+    .pf-dash { display: grid; grid-template-columns: 1fr 340px; gap: 16px; align-items: start; }
+    @@media (max-width: 980px) { .pf-dash { grid-template-columns: 1fr; } }
+    .pf-rail { display: flex; flex-direction: column; gap: 14px; }
+    .pf-w { border: 1px solid var(--line); border-radius: 16px; background: var(--card); padding: 15px; }
+    .pf-w-h { display: flex; align-items: center; justify-content: space-between; font-size: 12.5px; font-weight: 800; color: var(--text-primary); margin-bottom: 12px; }
+    .pf-w-more { background: none; border: none; color: var(--accent-2); font: 700 11px inherit; cursor: pointer; padding: 0; }
+    .pf-w-more:hover { text-decoration: underline; }
+    .pf-w-empty { font-size: 11.5px; color: var(--text-muted); line-height: 1.6; }
+    .pf-quick { display: flex; align-items: center; gap: 11px; width: 100%; text-align: left; border: 1px solid var(--line); background: var(--card-2); border-radius: 12px; padding: 10px 12px; cursor: pointer; font-family: inherit; margin-bottom: 8px; transition: border-color .14s, transform .1s; }
+    .pf-quick:last-child { margin-bottom: 0; }
+    .pf-quick:hover { border-color: color-mix(in srgb, var(--flow-violet) 55%, var(--line)); transform: translateY(-2px); }
+    .pf-quick-ic { font-size: 20px; width: 36px; height: 36px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 10px; background: color-mix(in srgb, var(--flow-violet) 14%, var(--card)); }
+    .pf-quick-m { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .pf-quick-t { font-size: 12.5px; font-weight: 800; color: var(--text-primary); }
+    .pf-quick-d { font-size: 11px; color: var(--text-muted); }
+    .pf-recent { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; background: none; border: none; border-radius: 10px; padding: 8px; cursor: pointer; font-family: inherit; }
+    .pf-recent:hover { background: var(--card-2); }
+    .pf-recent-ic { font-size: 16px; }
+    .pf-recent-m { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+    .pf-recent-t { font-size: 12.5px; font-weight: 700; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pf-recent-d { font: 600 10.5px var(--mono); color: var(--text-muted); }
+
+    @@keyframes pf-flow { to { background-position: -300% 0; } }
+    @@keyframes pf-spin { to { transform: rotate(360deg); } }
+    @@media (prefers-reduced-motion: reduce) {
+        .pf-conn, .pf-orb { animation: none; }
+        .pf-node:hover { transform: none; }
+    }
+</style>
+
+@code {
+    private string Greeting => Session.Display.Length > 0
+        ? $"{Session.Display}님, 환영합니다." : "환영합니다.";
+
+    private static string ShortDate(string iso)
+        => DateTime.TryParse(iso, out var d) ? d.ToString("MM-dd HH:mm") : "";
+
+    private sealed record Stage(string Key, string Icon, string Title, string Desc, bool Final = false);
+
+    private static readonly Stage[] Stages =
+    {
+        new("prompt",  "✍️", "프롬프트 입력",  "텍스트·이미지 레퍼런스"),
+        new("story",   "🎞️", "스토리보드",     "장면·컷 구성"),
+        new("motion",  "🎥", "모션·카메라",    "움직임·카메라 워크"),
+        new("render",  "⚙️", "렌더링",         "고해상 영상 생성"),
+        new("video",   "🎬", "완성 영상",      "최종 결과물", Final: true),
+    };
+}

@@ -1,0 +1,463 @@
+@page "/node-studio"
+@implements IDisposable
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.Flow
+@using PromptFlowStudio.Services.Integration
+@inject VisualNodeGraph Graph
+@inject NodeGraphExecutionPipeline Pipeline
+@inject LiveSessionSyncBridge Bridge
+@inject RemoteGpuOffloadRelay Relay
+@inject CanvasMaskingService Masking
+@inject ILocalMediaService Media
+@inject PromptFlowStudio.Services.Studio.StudioFolderLinkService FolderLink
+@inject NavigationManager Nav
+
+@* [PromptFlow Studio v16.21.0] 🧩 비주얼 노드 플로우 스튜디오 — 무한 캔버스(팬/줌) · 드래그 노드 · 포트 클릭 배선 · 레벨 병렬 실행 · 원격 GPU 오프로딩 · 라이브 동기화.
+   그래프/파이프라인/브릿지는 싱글턴 소유 — 페이지는 OnChanged 구독(80ms 스로틀) + 포인터 입력 위임. 기존 /flow(v5.5 TrueFlowCanvas)는 무변경. *@
+
+<PageTitle>PromptFlow Studio · 비주얼 노드 플로우</PageTitle>
+
+<div class="ng">
+    <header class="ng-head">
+        <div class="ng-navrow">
+            <button class="ng-back" @onclick='() => Nav.NavigateTo("flow")'>← 노드 오케스트레이터(v5)</button>
+            <button class="ng-back" @onclick='() => Nav.NavigateTo("")'>홈</button>
+        </div>
+        <div class="ng-titlerow">
+            <h1 class="ng-title">🧩 비주얼 노드 <span class="ng-title-g">플로우 스튜디오</span></h1>
+            <span class="ng-state @(Pipeline.IsRunning ? "warn" : "ok")">@(Pipeline.IsRunning ? "● 실행 중" : "○ 대기")</span>
+            <span class="ng-state @(Bridge.IsListening ? "ok" : Bridge.State == LiveBridgeState.Failed ? "bad" : null)">📡 @(Bridge.IsListening ? "라이브 " + Bridge.ClientCount.ToString(CultureInfo.InvariantCulture) + "명" : Bridge.State == LiveBridgeState.Failed ? "동기화 실패" : "동기화 꺼짐")</span>
+            <span class="ng-state @(Relay.IsConfigured ? "ok" : null)">☁️ @(Relay.IsConfigured ? "원격 GPU 구성됨" : "원격 GPU 미구성")</span>
+        </div>
+    </header>
+
+    <div class="ng-toolbar">
+        @foreach (var spec in VisualNodeGraph.Specs)
+        {
+            <button class="ng-btn" @key="spec.Kind" disabled="@Pipeline.IsRunning" @onclick="() => AddNode(spec.Kind)">@spec.Icon @spec.Label</button>
+        }
+        <span class="ng-sep"></span>
+        <button class="ng-btn" disabled="@Pipeline.IsRunning" @onclick="LoadTemplate">📐 기본 템플릿</button>
+        <button class="ng-btn" @onclick="Validate">✔ 검증</button>
+        <button class="ng-btn" disabled="@Pipeline.IsRunning" @onclick="SaveAsync">💾 저장</button>
+        <button class="ng-btn" disabled="@Pipeline.IsRunning" @onclick="LoadAsync">📂 불러오기</button>
+        <button class="ng-btn danger" disabled="@Pipeline.IsRunning" @onclick="Graph.Clear">🗑️ 초기화</button>
+    </div>
+
+    <div class="ng-toolbar">
+        <label class="ng-opt">레벨 병렬 <b>@_parallel</b><input type="range" min="1" max="4" @bind="_parallel" @bind:event="oninput" /></label>
+        <label class="ng-opt"><input type="checkbox" @bind="_offload" disabled="@(!Relay.IsConfigured)" /> ☁️ 원격 GPU 오프로딩(실패 시 로컬)</label>
+        @if (Pipeline.IsRunning) { <button class="ng-btn danger" @onclick="Cancel">⏹ 취소</button> }
+        else { <button class="ng-btn pri" @onclick="RunAsync" disabled="@(Graph.NodeCount == 0)">▶ 그래프 실행</button> }
+        <span class="ng-sep"></span>
+        @if (Bridge.IsListening)
+        {
+            <button class="ng-btn" @onclick="Bridge.Stop">📡 동기화 중지</button>
+            <code class="ng-url" title="모바일/웹 클라이언트 접속 주소(토큰 포함 · localhost)">@Bridge.JoinUrl</code>
+        }
+        else { <button class="ng-btn" @onclick="StartSync">📡 라이브 동기화 시작</button> }
+        <span class="ng-zoom">🔍 @((_zoom * 100).ToString("0", CultureInfo.InvariantCulture))% <button class="ng-link" @onclick="ResetView">초기화</button></span>
+    </div>
+
+    @if (_note is not null) { <div class="ng-note @_noteCss">@_note</div> }
+    @if (_pendingFrom is not null) { <div class="ng-note">🔗 연결할 입력 포트(왼쪽 점)를 클릭하세요 — <button class="ng-link" @onclick="() => _pendingFrom = null">취소</button></div> }
+
+    <div class="ng-viewport" style="background-position:@Px(_panX)px @Px(_panY)px; background-size:@Px(24 * _zoom)px @Px(24 * _zoom)px"
+         @onpointerdown="OnViewportDown" @onpointermove="OnPointerMove" @onpointerup="OnPointerUp" @onpointerleave="OnPointerUp"
+         @onwheel="OnWheel" @onwheel:preventDefault="true">
+        <div class="ng-world" style="transform:translate(@Px(_panX)px,@Px(_panY)px) scale(@Px(_zoom))">
+            <svg class="ng-edges" width="4000" height="3000">
+                @foreach (var e in Graph.Edges)
+                {
+                    var a = Graph.Find(e.From);
+                    var b = Graph.Find(e.To);
+                    if (a is null || b is null) continue;
+                    <path @key="(e.From + e.To)" d="@EdgePath(a, b)" class="ng-edge @(a.State == VisualNodeState.Completed ? "done" : a.State == VisualNodeState.Running ? "run" : null)" />
+                }
+            </svg>
+            @foreach (var n in Graph.Nodes)
+            {
+                var spec = VisualNodeGraph.SpecOf(n.Kind);
+                <div @key="n.Id" class="ng-node @StateCss(n.State) @(_selected == n.Id ? "sel" : null)" style="left:@Px(n.X)px;top:@Px(n.Y)px"
+                     @onpointerdown="e => OnNodeDown(e, n)" @onpointerdown:stopPropagation="true">
+                    <div class="ng-nh">
+                        <span>@spec.Icon @spec.Label</span>
+                        <span class="ng-ns">@StateLabel(n.State)</span>
+                        <button class="ng-x" disabled="@Pipeline.IsRunning" @onclick="() => RemoveNode(n.Id)" @onpointerdown:stopPropagation="true">✕</button>
+                    </div>
+                    @if (spec.Input != VisualPortType.None)
+                    {
+                        <button class="ng-port in @(_pendingFrom is not null ? "armed" : null)" title="입력(@spec.Input)" @onclick="() => CompleteConnect(n.Id)" @onpointerdown:stopPropagation="true"></button>
+                    }
+                    @if (spec.Output != VisualPortType.None)
+                    {
+                        <button class="ng-port out @(_pendingFrom == n.Id ? "armed" : null)" title="출력(@spec.Output)" @onclick="() => BeginConnect(n.Id)" @onpointerdown:stopPropagation="true"></button>
+                    }
+                    <div class="ng-nb" @onpointerdown:stopPropagation="true">
+                        @switch (n.Kind)
+                        {
+                            case VisualNodeKind.Prompt:
+                                <textarea class="ng-in" rows="3" @bind="n.Text" disabled="@Pipeline.IsRunning" placeholder="장면 프롬프트"></textarea>
+                                break;
+                            case VisualNodeKind.ControlNet:
+                                <select class="ng-in" @bind="n.Text" disabled="@Pipeline.IsRunning">
+                                    @foreach (var m in ControlModes) { <option value="@m">@m</option> }
+                                </select>
+                                <label class="ng-mini">강도 @((n.Strength * 100).ToString("0", CultureInfo.InvariantCulture))%<input type="range" min="0" max="1" step="0.05" @bind="n.Strength" @bind:event="oninput" /></label>
+                                <InputFile class="ng-file" OnChange="e => OnReferencePicked(e, n)" accept="image/png,image/jpeg,image/webp" />
+                                <div class="ng-mini">🖼 @(n.AssetPath is null ? "참조 이미지 없음" : System.IO.Path.GetFileName(n.AssetPath))</div>
+                                <div class="ng-mini">🖌 @(n.MaskPath is null ? "마스크 없음(캔버스에서 내보내기)" : System.IO.Path.GetFileName(n.MaskPath))</div>
+                                break;
+                            case VisualNodeKind.WanGenerator:
+                                <input class="ng-in" @bind="n.Text" disabled="@Pipeline.IsRunning" placeholder="네거티브(선택)" />
+                                break;
+                            case VisualNodeKind.Upscaler:
+                                <select class="ng-in" @bind="n.Scale" disabled="@Pipeline.IsRunning">
+                                    <option value="2">×2</option><option value="4">×4</option>
+                                </select>
+                                break;
+                            case VisualNodeKind.PostProcess:
+                                <select class="ng-in" @bind="n.Text" disabled="@Pipeline.IsRunning">
+                                    @foreach (var p in PostPresets) { <option value="@p">@p</option> }
+                                </select>
+                                break;
+                            case VisualNodeKind.Output:
+                                @if (n.ResultPath is not null) { <button class="ng-link" @onclick="() => FolderLink.Reveal(n.ResultPath)">📂 결과 열기</button> }
+                                break;
+                        }
+                        @if (n.Status is not null) { <div class="ng-st" title="@n.Status">@n.Status</div> }
+                        @if (n.ElapsedMs > 0) { <div class="ng-mini">⏱ @((n.ElapsedMs / 1000).ToString("0.0", CultureInfo.InvariantCulture))s</div> }
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+
+    @if (Pipeline.LastResult is { } lr)
+    {
+        <div class="ng-note @(lr.Ok ? "ok" : "warn")">
+            @(lr.Backend == GraphRunBackend.RemoteGpu ? "☁️" : "🖥️") @lr.Message · @((lr.ElapsedMs / 1000).ToString("0.0", CultureInfo.InvariantCulture))s
+            @foreach (var o in lr.Outputs) { <button class="ng-link" @onclick="() => FolderLink.Reveal(o)">📂 @System.IO.Path.GetFileName(o)</button> }
+        </div>
+    }
+
+    <section class="ng-card">
+        <h2 class="ng-h2">🖌️ 인터랙티브 키프레임 &amp; 인페인팅 마스크 캔버스
+            <small>내보낸 마스크는 @(SelectedControlNet is null ? "모든 ControlNet 노드" : "선택한 ControlNet 노드")에 inpaint 마스크로 결선됩니다.</small></h2>
+        <InteractiveKeyframeCanvas OnMaskExported="AttachMask" />
+    </section>
+</div>
+
+<style>
+    .ng { padding: 6px 8px 48px; width: 100%; box-sizing: border-box; display: flex; flex-direction: column; gap: 10px; }
+    .ng-navrow { display: flex; gap: 14px; }
+    .ng-back { font: 700 12px/1 var(--mono); color: var(--text-muted); background: none; border: none; cursor: pointer; padding: 4px 0; }
+    .ng-titlerow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+    .ng-title { font-size: 22px; font-weight: 900; margin: 0; color: var(--text-primary); }
+    .ng-title-g { background: linear-gradient(135deg, #22d3ee, var(--flow-violet)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .ng-state { font: 800 11px var(--mono); padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .ng-state.ok { color: #059669; background: color-mix(in srgb, #10b981 13%, transparent); }
+    .ng-state.warn { color: #b45309; background: color-mix(in srgb, #f59e0b 15%, transparent); }
+    .ng-state.bad { color: #dc2626; background: color-mix(in srgb, #ef4444 14%, transparent); }
+    .ng-toolbar { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+    .ng-btn { font-size: 12px; font-weight: 700; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .ng-btn.pri { background: linear-gradient(135deg, #22d3ee, var(--flow-violet)); color: #fff; border: none; }
+    .ng-btn.danger { color: #dc2626; }
+    .ng-btn:disabled { opacity: .45; cursor: not-allowed; }
+    .ng-sep { width: 1px; height: 22px; background: var(--line); }
+    .ng-opt { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
+    .ng-opt input[type=range] { width: 80px; accent-color: #22d3ee; }
+    .ng-url { font: 600 10.5px var(--mono); color: var(--text-secondary); background: var(--card-2); padding: 4px 7px; border-radius: 6px; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ng-zoom { margin-left: auto; font: 700 11px var(--mono); color: var(--text-muted); }
+    .ng-link { background: none; border: none; color: var(--accent); font-size: 11.5px; font-weight: 700; cursor: pointer; padding: 0 4px; }
+    .ng-note { font-size: 12px; color: var(--text-secondary); }
+    .ng-note.ok { color: #059669; font-weight: 700; } .ng-note.warn { color: #b45309; }
+    .ng-viewport { position: relative; height: 520px; overflow: hidden; border-radius: 14px; border: 1px solid var(--line); background-color: var(--card);
+        background-image: radial-gradient(circle, color-mix(in srgb, var(--text-muted) 35%, transparent) 1px, transparent 1px); touch-action: none; cursor: grab; }
+    .ng-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+    .ng-edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+    .ng-edge { fill: none; stroke: color-mix(in srgb, var(--text-muted) 70%, transparent); stroke-width: 2.5; }
+    .ng-edge.run { stroke: #f59e0b; stroke-dasharray: 6 4; } .ng-edge.done { stroke: #10b981; }
+    .ng-node { position: absolute; width: 200px; background: var(--card-2); border: 1.5px solid var(--line); border-radius: 12px; box-shadow: 0 6px 18px rgba(0,0,0,.18); cursor: move; user-select: none; }
+    .ng-node.sel { border-color: #22d3ee; }
+    .ng-node.run { border-color: #f59e0b; } .ng-node.done { border-color: #10b981; } .ng-node.bad { border-color: #ef4444; } .ng-node.skip { opacity: .6; }
+    .ng-nh { display: flex; align-items: center; gap: 6px; padding: 7px 9px; font-size: 12px; font-weight: 800; color: var(--text-primary); border-bottom: 1px solid var(--line); }
+    .ng-ns { margin-left: auto; font: 700 9.5px var(--mono); color: var(--text-muted); }
+    .ng-x { background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 11px; }
+    .ng-port { position: absolute; top: 9px; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--card); background: #a855f7; cursor: crosshair; padding: 0; }
+    .ng-port.in { left: -8px; } .ng-port.out { right: -8px; background: #22d3ee; }
+    .ng-port.armed { box-shadow: 0 0 0 4px color-mix(in srgb, #22d3ee 40%, transparent); }
+    .ng-nb { padding: 8px 9px; display: flex; flex-direction: column; gap: 5px; cursor: default; }
+    .ng-in { width: 100%; box-sizing: border-box; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; color: var(--text-primary); font-size: 11.5px; resize: vertical; }
+    .ng-mini { font-size: 10.5px; color: var(--text-muted); display: flex; flex-direction: column; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ng-mini input { accent-color: #22d3ee; }
+    .ng-file { font-size: 10px; max-width: 100%; }
+    .ng-st { font-size: 10.5px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ng-card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; display: flex; flex-direction: column; gap: 9px; }
+    .ng-h2 { font-size: 14px; font-weight: 900; margin: 0; color: var(--text-primary); display: flex; flex-direction: column; gap: 3px; }
+    .ng-h2 small { font-size: 11px; font-weight: 600; color: var(--text-muted); }
+</style>
+
+@code {
+    private static readonly string[] ControlModes = { "reference", "canny", "depth", "pose", "inpaint" };
+    private static readonly string[] PostPresets = { "cinematic", "sharpen", "warm", "bright", "none" };
+
+    private double _panX = 20, _panY = 20, _zoom = 1;
+    private string? _dragId, _selected, _pendingFrom, _note, _noteCss;
+    private bool _panning, _offload;
+    private int _parallel = 2;
+    private double _startClientX, _startClientY, _startX, _startY;
+    private CancellationTokenSource? _cts;
+    private long _lastRender, _lastPublish;
+
+    private VisualNode? SelectedControlNet => Graph.Find(_selected) is { Kind: VisualNodeKind.ControlNet } n ? n : null;
+
+    protected override void OnInitialized()
+    {
+        Graph.OnChanged += OnGraphChanged;
+        Pipeline.OnChanged += OnServiceChanged;
+        Bridge.OnChange += OnServiceChanged;
+        Bridge.OnRemoteMessage += OnRemoteMessage;
+        if (Graph.NodeCount == 0) Graph.LoadDefaultTemplate();
+    }
+
+    public void Dispose()
+    {
+        Graph.OnChanged -= OnGraphChanged;
+        Pipeline.OnChanged -= OnServiceChanged;
+        Bridge.OnChange -= OnServiceChanged;
+        Bridge.OnRemoteMessage -= OnRemoteMessage;
+        var c = Interlocked.Exchange(ref _cts, null);
+        if (c is not null) { try { c.Cancel(); } catch (ObjectDisposedException) { } c.Dispose(); }
+    }
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    /// <summary>그래프 변경 — 렌더 80ms 스로틀 · 실행 중 노드 상태 150ms 간격 방송.</summary>
+    private void OnGraphChanged()
+    {
+        var now = Environment.TickCount64;
+        if (Bridge.IsListening && Pipeline.IsRunning && now - Interlocked.Read(ref _lastPublish) >= 150)
+        {
+            Interlocked.Exchange(ref _lastPublish, now);
+            Bridge.PublishNodeStates(Graph);
+        }
+        if (now - Interlocked.Read(ref _lastRender) < 80 && Pipeline.IsRunning) return;
+        Interlocked.Exchange(ref _lastRender, now);
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void OnRemoteMessage(LiveSyncEnvelope env)
+    {
+        _ = InvokeAsync(() =>
+        {
+            switch (env.T)
+            {
+                case LiveSyncTypes.Graph when !Pipeline.IsRunning:
+                    var g = Graph.LoadJson(env.Data);
+                    Note(g.Ok ? "📡 원격 그래프 반영" : "⚠ 원격 그래프 거부: " + g.Message, g.Ok);
+                    break;
+                case LiveSyncTypes.Mask:
+                case LiveSyncTypes.Keyframes:
+                    var m = Masking.LoadJson(env.Data);
+                    Note(m.Ok ? "📡 원격 마스크/키프레임 반영" : "⚠ 원격 마스크 거부: " + m.Message, m.Ok);
+                    break;
+            }
+            StateHasChanged();
+        });
+    }
+
+    private void AddNode(VisualNodeKind kind)
+    {
+        var x = (-_panX + 200) / _zoom + Graph.NodeCount % 5 * 24;
+        var y = (-_panY + 120) / _zoom + Graph.NodeCount % 5 * 24;
+        var text = kind switch { VisualNodeKind.ControlNet => "reference", VisualNodeKind.PostProcess => "cinematic", _ => "" };
+        if (Graph.Add(kind, x, y, text) is null) Note("⚠ 노드 상한(" + VisualNodeGraph.MaxNodes.ToString(CultureInfo.InvariantCulture) + ") 초과", false);
+        else PublishGraph();
+    }
+
+    private void RemoveNode(string id)
+    {
+        if (Graph.Remove(id)) { if (_selected == id) _selected = null; PublishGraph(); }
+    }
+
+    private void LoadTemplate() { Graph.LoadDefaultTemplate(); ResetView(); PublishGraph(); Note("📐 Prompt ➔ ControlNet ➔ Wan ➔ {업스케일, 후처리} ➔ 출력", true); }
+
+    private void Validate()
+    {
+        var v = Graph.Compile();
+        Note((v.Ok ? "✔ " : "⚠ ") + v.Message, v.Ok);
+    }
+
+    private void BeginConnect(string id) => _pendingFrom = _pendingFrom == id ? null : id;
+
+    private void CompleteConnect(string to)
+    {
+        if (_pendingFrom is null) return;
+        var r = Graph.Connect(_pendingFrom, to);
+        _pendingFrom = null;
+        if (r.Ok) PublishGraph(); else Note("⚠ " + r.Reason, false);
+    }
+
+    private void OnNodeDown(PointerEventArgs e, VisualNode n)
+    {
+        _selected = n.Id;
+        if (Pipeline.IsRunning) return;
+        _dragId = n.Id;
+        _startClientX = e.ClientX; _startClientY = e.ClientY; _startX = n.X; _startY = n.Y;
+    }
+
+    private void OnViewportDown(PointerEventArgs e)
+    {
+        _selected = null;
+        _panning = true;
+        _startClientX = e.ClientX; _startClientY = e.ClientY; _startX = _panX; _startY = _panY;
+    }
+
+    private void OnPointerMove(PointerEventArgs e)
+    {
+        if (_dragId is not null && Graph.Find(_dragId) is { } n)
+        {
+            n.X = Math.Round(_startX + (e.ClientX - _startClientX) / _zoom);
+            n.Y = Math.Round(_startY + (e.ClientY - _startClientY) / _zoom);
+        }
+        else if (_panning)
+        {
+            _panX = _startX + (e.ClientX - _startClientX);
+            _panY = _startY + (e.ClientY - _startClientY);
+        }
+    }
+
+    private void OnPointerUp(PointerEventArgs e)
+    {
+        if (_dragId is not null && Graph.Find(_dragId) is { } n) { Graph.Move(n.Id, n.X, n.Y); PublishGraph(); }
+        _dragId = null;
+        _panning = false;
+    }
+
+    private void OnWheel(WheelEventArgs e)
+    {
+        var next = Math.Clamp(_zoom * (e.DeltaY < 0 ? 1.1 : 1 / 1.1), 0.3, 2.0);
+        // 커서 위치 고정 줌(뷰포트 좌표 기준)
+        var wx = (e.OffsetX - _panX) / _zoom;
+        var wy = (e.OffsetY - _panY) / _zoom;
+        _zoom = next;
+        _panX = e.OffsetX - wx * _zoom;
+        _panY = e.OffsetY - wy * _zoom;
+    }
+
+    private void ResetView() { _panX = 20; _panY = 20; _zoom = 1; }
+
+    private async Task RunAsync()
+    {
+        var next = new CancellationTokenSource();
+        var prev = Interlocked.Exchange(ref _cts, next);
+        if (prev is not null) { try { prev.Cancel(); } catch (ObjectDisposedException) { } prev.Dispose(); }
+        Note(null, true);
+        var root = System.IO.Path.Combine(Media.MediaRoot, "_nodegraph", DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture));
+        var r = await Pipeline.ExecuteAsync(Graph, new GraphRunOptions(_parallel, root, _offload && Relay.IsConfigured), next.Token);
+        if (Bridge.IsListening) Bridge.PublishNodeStates(Graph);
+        Note((r.Ok ? "✅ " : "⚠ ") + r.Message, r.Ok);
+        if (Interlocked.CompareExchange(ref _cts, null, next) == next) next.Dispose();
+    }
+
+    private void Cancel()
+    {
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
+    private void StartSync()
+    {
+        if (Bridge.Start()) { PublishGraph(); Bridge.Publish(LiveSyncTypes.Mask, Masking.ToJson()); Note("📡 라이브 동기화 시작 — 접속 주소의 토큰은 세션마다 바뀝니다.", true); }
+        else Note("⚠ 동기화 시작 실패: " + Bridge.LastError, false);
+    }
+
+    private void PublishGraph() { if (Bridge.IsListening) Bridge.PublishGraph(Graph); }
+
+    private string GraphFile => System.IO.Path.Combine(Media.MediaRoot, "_nodegraph", "visual_graph.json");
+
+    private async Task SaveAsync()
+    {
+        try
+        {
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(GraphFile)!);
+            await System.IO.File.WriteAllTextAsync(GraphFile, Graph.ToJson());
+            Note("💾 저장됨 — " + GraphFile, true);
+        }
+        catch (Exception ex) { Program.Log("NodeStudio.Save", ex); Note("⚠ 저장 실패: " + ex.Message, false); }
+    }
+
+    private async Task LoadAsync()
+    {
+        try
+        {
+            if (!System.IO.File.Exists(GraphFile)) { Note("⚠ 저장된 그래프가 없습니다.", false); return; }
+            var r = Graph.LoadJson(await System.IO.File.ReadAllTextAsync(GraphFile));
+            Note(r.Ok ? "📂 불러옴" : "⚠ " + r.Message, r.Ok);
+            if (r.Ok) PublishGraph();
+        }
+        catch (Exception ex) { Program.Log("NodeStudio.Load", ex); Note("⚠ 불러오기 실패: " + ex.Message, false); }
+    }
+
+    private async Task OnReferencePicked(InputFileChangeEventArgs e, VisualNode n)
+    {
+        const long max = 32L * 1024 * 1024;
+        if (e.File.Size > max) { Note("⚠ 참조 이미지가 너무 큽니다(최대 32MB).", false); return; }
+        try
+        {
+            var dir = System.IO.Path.Combine(Media.MediaRoot, "_uploads", "nodegraph");
+            System.IO.Directory.CreateDirectory(dir);
+            var ext = System.IO.Path.GetExtension(e.File.Name);
+            var path = System.IO.Path.Combine(dir, Guid.NewGuid().ToString("N") + (string.IsNullOrWhiteSpace(ext) ? ".png" : ext));
+            await using (var src = e.File.OpenReadStream(max))
+            await using (var dst = new System.IO.FileStream(path, System.IO.FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.None, 81920, System.IO.FileOptions.Asynchronous))
+                await src.CopyToAsync(dst);
+            n.AssetPath = path;
+            PublishGraph();
+        }
+        catch (Exception ex) { Program.Log("NodeStudio.Reference", ex); Note("⚠ 참조 이미지 실패: " + ex.Message, false); }
+    }
+
+    private void AttachMask(string path)
+    {
+        var count = 0;
+        if (SelectedControlNet is { } sel) { sel.MaskPath = path; sel.Text = "inpaint"; count = 1; }
+        else
+            foreach (var n in Graph.Nodes)
+                if (n.Kind == VisualNodeKind.ControlNet) { n.MaskPath = path; n.Text = "inpaint"; count++; }
+        Note(count > 0 ? "🖌 마스크를 ControlNet " + count.ToString(CultureInfo.InvariantCulture) + "개에 결선(inpaint)" : "⚠ ControlNet 노드가 없습니다 — 마스크만 저장됨", count > 0);
+        if (count > 0) PublishGraph();
+    }
+
+    private void Note(string? msg, bool ok) { _note = msg; _noteCss = ok ? "ok" : "warn"; }
+
+    private string EdgePath(VisualNode a, VisualNode b)
+    {
+        var x1 = a.X + 200; var y1 = a.Y + 16;
+        var x2 = b.X; var y2 = b.Y + 16;
+        var dx = Math.Max(40, Math.Abs(x2 - x1) * 0.5);
+        return "M" + Px(x1) + "," + Px(y1) + " C" + Px(x1 + dx) + "," + Px(y1) + " " + Px(x2 - dx) + "," + Px(y2) + " " + Px(x2) + "," + Px(y2);
+    }
+
+    private static string StateCss(VisualNodeState s) => s switch
+    {
+        VisualNodeState.Running or VisualNodeState.Queued => "run",
+        VisualNodeState.Completed => "done",
+        VisualNodeState.Faulted => "bad",
+        VisualNodeState.Skipped => "skip",
+        _ => "",
+    };
+
+    private static string StateLabel(VisualNodeState s) => s switch
+    {
+        VisualNodeState.Queued => "대기열",
+        VisualNodeState.Running => "실행 중",
+        VisualNodeState.Completed => "완료",
+        VisualNodeState.Faulted => "실패",
+        VisualNodeState.Skipped => "건너뜀",
+        _ => "",
+    };
+
+    private static string Px(double v) => v.ToString("0.##", CultureInfo.InvariantCulture);
+}

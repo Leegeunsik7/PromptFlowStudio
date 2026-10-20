@@ -1,0 +1,14 @@
+# 참고용 목록 — 실제 차단은 .claude/settings.local.json 의 permissions.deny Read(...) 가 담당한다.
+# C#/.NET Build & Publish Artifacts
+**/bin/
+**/obj/
+**/publish/
+**/release/
+
+# Test Results & Logs & Zips
+*.log
+*.trx
+*.zip
+
+# MCP 격리 설치(npm ci 산출물)
+tools/mcp/node_modules/

@@ -1,0 +1,362 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.EnterpriseSla
+@implements IDisposable
+@inject EnterpriseSlaStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.95.0] 🛡️ AI 엔터프라이즈 SLA & 무중단 복구 스튜디오 — 스레드 가용성 토폴로지(워치독 · 레인 · 레플리카 브레이커 · 락 대기-소유 간선) ·
+    SLA 가동률 미터(99.999% · 9의 개수 · 오류 예산) · 1-Click 장애 주입/강제 페일오버 시뮬레이터 · 감지 로그 · 해시 체인 복구 매니페스트.
+*@
+
+<div class="esm-scrim" @onclick="Close">
+    <div class="esm-modal" @onclick:stopPropagation="true">
+        <div class="esm-h">
+            <div>
+                <div class="esm-title">🛡️ AI 엔터프라이즈 SLA &amp; 무중단 복구 스튜디오</div>
+                <div class="esm-sub"><b>전용 워치독 스레드</b>가 감시 슬롯의 진행 타임스탬프 · 프로브 락 대기-소유 그래프 · 스레드 풀 핑 · 힙 예산을 무할당으로 프로빙해 멈춤 · 무한 루프 · 락 교착 · 기아 · 메모리 압박을 검출합니다.
+                    <b>페일오버 합성기</b>는 레플리카별 서킷 브레이커로 고장 레플리카를 격리하고 마지막 정상 체크포인트(LKG)를 대기 레플리카에 복원해 µs 단위로 원자 교체합니다.
+                    <b>SLA 가드</b>는 실측 다운타임으로 가용성을 산출하고 모든 복구를 해시 체인 매니페스트에 기록합니다.</div>
+            </div>
+            <button class="esm-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="esm-bar">
+            <button class="esm-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ SLA 감시 시작")</button>
+            <button class="esm-btn @(G.ApplyThreadPool ? "warn" : null)" @onclick="TogglePool">🧵 기아 시 스레드 풀 실적용</button>
+            <button class="esm-btn" @onclick="Export">📜 매니페스트 내보내기</button>
+            <button class="esm-btn" @onclick="Verify">🔏 체인 검증</button>
+            @if (_verified is not null)
+            {
+                <span class="esm-chip @(_verified == true ? "ok" : "bad")">@(_verified == true ? "체인 무결" : "체인 불일치")</span>
+            }
+            <span class="esm-chip">워치독 @(E.IntervalMs) ms · 프로브 @(F1(E.LastProbeUs)) µs · @(E.Probes)회</span>
+            <span class="esm-chip">임계 @(S.FailureThreshold)회 · 쿨다운 @(F0(S.CooldownMs)) ms · 풀 핑 @(F1(E.PoolLatencyMs)) ms</span>
+            <span class="esm-chip @(G.IsSigned ? "ok" : null)">@(G.IsSigned ? "HMAC 체인" : "SHA-256 체인")</span>
+        </div>
+
+        <div class="esm-main">
+            <div class="esm-col">
+                <div class="esm-card">
+                    <div class="esm-sec">📈 SLA 가동률 미터 <span class="esm-chip @(G.SlaMet ? "ok" : "bad")">@(G.SlaMet ? "99.999% 충족" : "99.999% 미달")</span></div>
+                    <div class="esm-meter">
+                        <svg viewBox="0 0 220 124">
+                            <path class="tr" d="M 20 112 A 90 90 0 0 1 200 112" />
+                            <path class="vl @(G.SlaMet ? "ok" : "bad")" d="@(MeterArc())" />
+                            <line class="tg" x1="@(F1(TargetX(0)))" y1="@(F1(TargetY(0)))" x2="@(F1(TargetX(1)))" y2="@(F1(TargetY(1)))" />
+                            <text x="110" y="92" class="big">@(AvailText())</text>
+                            <text x="110" y="112" class="sm">@(F2(G.Nines)) nines · 목표선 = 5 nines</text>
+                        </svg>
+                        <div class="esm-stats">
+                            <span><b>@(Dur(G.WindowMs))</b>가동 창</span>
+                            <span><b>@(F1(G.DowntimeMs)) ms</b>누적 다운타임</span>
+                            <span><b>@(F1(G.ErrorBudgetMs)) ms</b>오류 예산</span>
+                            <span><b class="@(G.BudgetRemainingMs < 0 ? "neg" : null)">@(F1(G.BudgetRemainingMs)) ms</b>예산 잔여</span>
+                            <span><b>@(F1(G.MeanMttrMs)) ms</b>평균 MTTR</span>
+                            <span><b>@(G.Incidents)</b>장애</span>
+                            <span><b>@(G.ExceptionsContained)</b>예외 격리</span>
+                            <span><b>@(G.DeadlocksBroken)</b>교착 해제</span>
+                            <span><b>@(G.GcCompactions)</b>힙 압축</span>
+                        </div>
+                    </div>
+                    <div class="esm-budget"><i style="width:@(BudgetPct())%"></i></div>
+                    <svg class="esm-spark" viewBox="0 0 360 40" preserveAspectRatio="none"><polyline points="@(NinesPoints())" /><line x1="0" x2="360" y1="@(F1(40 - 40 * 5 / 9.0))" y2="@(F1(40 - 40 * 5 / 9.0))" class="tgt" /></svg>
+                    <div class="esm-note">가용성 = 1 − Σ다운타임 ÷ (가동 창 × 서브시스템 @(S.Count)) · 다운타임 = 장애 시작(마지막 진행/첫 실패) → 핫스왑 완료 실측 · 9의 개수 시계열(점선 = 5).</div>
+                </div>
+
+                <div class="esm-card">
+                    <div class="esm-sec">🕸 스레드 가용성 토폴로지 <span class="esm-kv">힙 @(Mb(E.HeapBytes)) / 예산 @(E.HeapBudgetBytes > 0 ? Mb(E.HeapBudgetBytes) : "—") · 메모리 부하 @(Pct(E.MemoryLoad)) · 락 대기 해제 @(E.AbortedWaits)</span></div>
+                    <svg class="esm-topo" viewBox="0 0 520 270">
+                        @for (var i = 0; i < EnterpriseSlaStudioRunner.Lanes; i++)
+                        {
+                            var lane = i;
+                            <line class="hub @(LaneClass(lane))" x1="260" y1="135" x2="@(LX(lane))" y2="@(LY(lane))" />
+                        }
+                        @for (var l = 0; l < 2; l++)
+                        {
+                            var lk = l == 0 ? Runner.LockA : Runner.LockB;
+                            for (var i = 0; i < EnterpriseSlaStudioRunner.Lanes; i++)
+                            {
+                                var lane = i;
+                                var s = Runner.Slot(lane);
+                                if (E.LockOwner(lk) == s)
+                                {
+                                    <line class="own" x1="@(LockX)" y1="@(LockY(l))" x2="@(LX(lane))" y2="@(LY(lane))" />
+                                }
+                                if (E.WaitingLock(s) == lk)
+                                {
+                                    <line class="wait" x1="@(LX(lane))" y1="@(LY(lane))" x2="@(LockX)" y2="@(LockY(l))" />
+                                }
+                            }
+                            <g>
+                                <rect class="lock @(E.LockOwner(lk) >= 0 ? "held" : null)" x="@(LockX - 46)" y="@(LockY(l) - 12)" width="92" height="24" rx="6" />
+                                <text x="@(LockX)" y="@(LockY(l) + 4)" class="lt">🔒 @(l == 0 ? "락 A" : "락 B")</text>
+                            </g>
+                        }
+                        <g>
+                            <circle class="wd" cx="260" cy="135" r="26" />
+                            <text x="260" y="132" class="lt">워치독</text>
+                            <text x="260" y="146" class="st">@(E.IntervalMs) ms</text>
+                        </g>
+                        @for (var i = 0; i < EnterpriseSlaStudioRunner.Lanes; i++)
+                        {
+                            var lane = i;
+                            var sub = Runner.Sub(lane);
+                            var slot = Runner.Slot(lane);
+                            <g>
+                                <rect class="lane @(LaneClass(lane))" x="@(LX(lane) - 82)" y="@(LY(lane) - 32)" width="164" height="64" rx="10" />
+                                <text x="@(LX(lane))" y="@(LY(lane) - 16)" class="lt">@(EnterpriseSlaStudioRunner.LaneNames[lane])</text>
+                                <text x="@(LX(lane))" y="@(LY(lane) - 3)" class="st">T@(E.ThreadIdOf(slot)) · @(LaneState(lane))</text>
+                                @for (var r = 0; r < 2; r++)
+                                {
+                                    var ri = r;
+                                    <g>
+                                        <circle class="rep b@((int)S.State(sub, ri)) @(S.ActiveIndex(sub) == ri ? "act" : null)" cx="@(LX(lane) - 34 + 68 * ri)" cy="@(LY(lane) + 16)" r="9" />
+                                        <text x="@(LX(lane) - 34 + 68 * ri)" y="@(LY(lane) + 19)" class="rt">R@(ri)</text>
+                                    </g>
+                                }
+                                <text x="@(LX(lane))" y="@(LY(lane) + 20)" class="st">e@(S.Epoch(sub))</text>
+                            </g>
+                        }
+                    </svg>
+                    <div class="esm-legend"><i class="ok"></i>정상 <i class="hang"></i>멈춤/스핀 <i class="wait"></i>락 대기 <i class="own"></i>락 보유 · 레플리카 테두리 = 활성 · 색 = 브레이커(초록 Closed · 빨강 Open · 노랑 HalfOpen)</div>
+                </div>
+            </div>
+
+            <div class="esm-col">
+                <div class="esm-card">
+                    <div class="esm-sec">💥 1-Click 강제 페일오버 시뮬레이터</div>
+                    <div class="esm-lanes">
+                        <div class="hd"><span>서브시스템</span><span>활성</span><span>처리</span><span>LKG</span><span>페일오버</span><span>스왑 µs</span><span>장애 주입</span></div>
+                        @for (var i = 0; i < EnterpriseSlaStudioRunner.Lanes; i++)
+                        {
+                            var lane = i;
+                            var sub = Runner.Sub(lane);
+                            <div class="rw @(S.IsDown(sub) ? "down" : null)">
+                                <span class="nm">@(EnterpriseSlaStudioRunner.LaneNames[lane])</span>
+                                <span class="mono">R@(S.ActiveIndex(sub)) · #@(Runner.ActiveReplica(lane).Counter)</span>
+                                <span class="mono">@(S.Served(sub))@(S.Rejected(sub) > 0 ? " / 거부 " + S.Rejected(sub) : "")</span>
+                                <span class="mono">@(S.LkgSeq(sub))</span>
+                                <span class="mono">@(S.Failovers(sub))</span>
+                                <span class="mono">@(F1(S.LastSwapUs(sub))) / max @(F1(S.MaxSwapUs(sub)))</span>
+                                <span class="acts">
+                                    <button class="esm-btn sm" disabled="@(!Runner.IsRunning)" @onclick="() => Runner.Inject(lane, SlaFault.Exception)">⚡예외</button>
+                                    <button class="esm-btn sm" disabled="@(!Runner.IsRunning)" @onclick="() => Runner.Inject(lane, SlaFault.Hang)">⏸멈춤</button>
+                                    <button class="esm-btn sm" disabled="@(!Runner.IsRunning)" @onclick="() => Runner.Inject(lane, SlaFault.Spin)">🔁루프</button>
+                                    <button class="esm-btn sm" disabled="@(!Runner.IsRunning)" @onclick="() => Runner.Inject(lane, SlaFault.Deadlock)">🔒교착</button>
+                                    <button class="esm-btn sm" disabled="@(!Runner.IsRunning)" @onclick="() => Runner.Inject(lane, SlaFault.Memory)">💾메모리</button>
+                                    <button class="esm-btn sm prim" @onclick="() => Runner.ForceFailover(lane)">⇄ 강제</button>
+                                </span>
+                            </div>
+                        }
+                    </div>
+                    <div class="esm-note">교착 = 해당 레인과 다음 레인이 락 A/B를 반대 순서로 실제 획득 · 메모리 = @(Runner.BallastMb) MB 밸러스트(힙 예산 +@(Runner.HeapBudgetHeadroomMb) MB 초과 시 검출) · 강제 페일오버는 감시 시작 없이도 동작.</div>
+                    @if (G.LastException is not null)
+                    {
+                        <div class="esm-note mono">최근 격리 예외: @(G.LastException)</div>
+                    }
+                </div>
+
+                <div class="esm-card">
+                    <div class="esm-sec">🔎 멈춤 요인 프로빙 로그 <span class="esm-kv">발견 @(E.FindingSeq)</span></div>
+                    <div class="esm-log">
+                        @for (var i = 0; i < Math.Min(E.FindingCount, 24); i++)
+                        {
+                            var f = E.Finding(i);
+                            <div class="ln k@((int)f.Kind)"><span class="mono">@(F1(f.AtMs / 1000.0))s</span><b>@(ThreadDeadlockAutoProbingEngine.KindNames[(int)f.Kind])</b><span>@(FindingText(f))</span></div>
+                        }
+                        @if (E.FindingSeq == 0)
+                        {
+                            <div class="esm-note">발견 없음 — 장애를 주입해 보세요.</div>
+                        }
+                    </div>
+                </div>
+
+                <div class="esm-card">
+                    <div class="esm-sec">📜 복구 이력 매니페스트 <span class="esm-kv">@(G.ManifestCount)건 · 헤드 @(Short(G.HeadHash))</span></div>
+                    <div class="esm-man">
+                        <div class="hd"><span>#</span><span>서브시스템</span><span>장애</span><span>조치</span><span>MTTR</span><span>해시</span></div>
+                        @for (var i = 0; i < Math.Min(G.ManifestCount, 30); i++)
+                        {
+                            var m = G.Manifest(i);
+                            if (m is null) continue;
+                            <div class="rw"><span class="mono">@(m.Seq)</span><span>@(m.Subsystem)</span><span>@(m.Incident)</span><span>@(m.Action)</span><span class="mono">@(F1(m.MttrMs)) ms</span><span class="mono">@(Short(m.Hash))</span></div>
+                        }
+                    </div>
+                    @if (_exportPath is not null)
+                    {
+                        <div class="esm-note mono">@(_exportPath)</div>
+                    }
+                </div>
+                <div class="esm-note">@(Runner.LastAction ?? G.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .esm-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .esm-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .esm-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #0ea5e9 16%, var(--card)), color-mix(in srgb, #22c55e 12%, var(--card))); }
+    .esm-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .esm-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .esm-sub b { color: var(--text-primary); }
+    .esm-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .esm-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .esm-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .esm-btn.sm { font-size: 10px; padding: 2px 6px; } .esm-btn:disabled { opacity: .4; cursor: default; }
+    .esm-btn.on { background: color-mix(in srgb, #0ea5e9 24%, transparent); border-color: #38bdf8; } .esm-btn.warn { background: color-mix(in srgb, #f97316 26%, transparent); border-color: #fb923c; }
+    .esm-btn.prim { background: color-mix(in srgb, #6366f1 24%, transparent); border-color: #818cf8; }
+    .esm-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .esm-chip.ok { border-color: #22c55e; color: #86efac; } .esm-chip.bad { border-color: #ef4444; color: #fca5a5; }
+    .esm-main { display: grid; grid-template-columns: 1fr 1.1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .esm-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .esm-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .esm-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .esm-meter { display: grid; grid-template-columns: 240px 1fr; gap: 12px; align-items: center; }
+    .esm-meter svg { width: 240px; height: 136px; } .esm-meter .tr { fill: none; stroke: #1f2937; stroke-width: 14; }
+    .esm-meter .vl { fill: none; stroke-width: 14; stroke-linecap: round; } .esm-meter .vl.ok { stroke: #22c55e; } .esm-meter .vl.bad { stroke: #f59e0b; }
+    .esm-meter .tg { stroke: #f8fafc; stroke-width: 2; } .esm-meter .big { font: 900 22px var(--mono); fill: var(--text-primary); text-anchor: middle; } .esm-meter .sm { font: 600 10px var(--mono); fill: var(--text-muted); text-anchor: middle; }
+    .esm-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; } .esm-stats span { display: flex; flex-direction: column; font-size: 10px; color: var(--text-muted); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; }
+    .esm-stats b { font: 800 13px var(--mono); color: var(--text-primary); } .esm-stats b.neg { color: #f87171; }
+    .esm-budget { height: 6px; border-radius: 99px; background: #1f2937; overflow: hidden; } .esm-budget i { display: block; height: 100%; background: linear-gradient(90deg, #22c55e, #84cc16); }
+    .esm-spark { width: 100%; height: 40px; background: #030712; border-radius: 6px; } .esm-spark polyline { fill: none; stroke: #38bdf8; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+    .esm-spark .tgt { stroke: #64748b; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+    .esm-topo { width: 100%; height: 280px; background: #030712; border-radius: 10px; }
+    .esm-topo .hub { stroke: #334155; stroke-width: 2; } .esm-topo .hub.hang { stroke: #ef4444; stroke-width: 3; } .esm-topo .hub.down { stroke: #7f1d1d; stroke-dasharray: 6 4; }
+    .esm-topo .own { stroke: #f59e0b; stroke-width: 2.5; } .esm-topo .wait { stroke: #ef4444; stroke-width: 2; stroke-dasharray: 5 4; }
+    .esm-topo .lock { fill: #111827; stroke: #475569; } .esm-topo .lock.held { stroke: #f59e0b; }
+    .esm-topo .wd { fill: #0c4a6e; stroke: #38bdf8; stroke-width: 2; }
+    .esm-topo .lane { fill: #0b1220; stroke: #22c55e; stroke-width: 1.5; } .esm-topo .lane.hang { stroke: #ef4444; stroke-width: 2.5; } .esm-topo .lane.wait { stroke: #f97316; } .esm-topo .lane.down { stroke: #7f1d1d; fill: #1c0a0a; }
+    .esm-topo .rep { stroke: #0f172a; stroke-width: 1; } .esm-topo .rep.b0 { fill: #16a34a; } .esm-topo .rep.b1 { fill: #dc2626; } .esm-topo .rep.b2 { fill: #ca8a04; } .esm-topo .rep.act { stroke: #f8fafc; stroke-width: 3; }
+    .esm-topo .lt { font: 800 11px sans-serif; fill: #e2e8f0; text-anchor: middle; } .esm-topo .st { font: 600 9px var(--mono); fill: #94a3b8; text-anchor: middle; } .esm-topo .rt { font: 800 8px var(--mono); fill: #f8fafc; text-anchor: middle; }
+    .esm-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 10px; color: var(--text-muted); align-items: center; } .esm-legend i { display: inline-block; width: 12px; height: 3px; }
+    .esm-legend .ok { background: #22c55e; } .esm-legend .hang { background: #ef4444; } .esm-legend .wait { background: repeating-linear-gradient(90deg, #ef4444 0 4px, transparent 4px 7px); } .esm-legend .own { background: #f59e0b; }
+    .esm-lanes, .esm-man { display: flex; flex-direction: column; gap: 3px; }
+    .esm-lanes .hd, .esm-lanes .rw { display: grid; grid-template-columns: 1fr 90px 90px 40px 56px 110px 300px; gap: 6px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .esm-lanes .hd, .esm-man .hd { font-weight: 800; color: var(--text-muted); font-size: 10px; } .esm-lanes .rw.down { background: color-mix(in srgb, #ef4444 14%, transparent); border-radius: 4px; }
+    .esm-lanes .acts { display: flex; gap: 3px; flex-wrap: wrap; } .esm-lanes .nm { font-weight: 700; color: var(--text-primary); }
+    .esm-man { max-height: 240px; overflow-y: auto; }
+    .esm-man .hd, .esm-man .rw { display: grid; grid-template-columns: 34px 96px 110px 1fr 70px 80px; gap: 6px; font-size: 11px; color: var(--text-secondary); align-items: center; }
+    .esm-log { display: flex; flex-direction: column; gap: 3px; max-height: 190px; overflow-y: auto; }
+    .esm-log .ln { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; color: var(--text-secondary); border-left: 3px solid #475569; padding: 2px 6px; } .esm-log b { color: var(--text-primary); }
+    .esm-log .k1 { border-color: #ef4444; } .esm-log .k2 { border-color: #f97316; } .esm-log .k3 { border-color: #eab308; } .esm-log .k4 { border-color: #818cf8; } .esm-log .k5 { border-color: #ec4899; }
+    .esm-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; font-weight: 500; color: var(--text-secondary); align-items: center; }
+    .esm-note { font-size: 11px; color: var(--text-muted); } .mono { font-family: var(--mono); }
+    @@media (max-width: 1200px) { .esm-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+    private bool? _verified;
+    private string? _exportPath;
+
+    private ThreadDeadlockAutoProbingEngine E => Runner.Engine;
+    private ZeroDowntimeProcessFailoverSynthesizer S => Runner.Synth;
+    private EnterpriseSlaAvailabilityGuard G => Runner.Guard;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Sla.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string Pct(double v) => (v * 100).ToString("0", CultureInfo.InvariantCulture) + "%";
+    private static string Mb(long b) => (b / (1024d * 1024d)).ToString("0", CultureInfo.InvariantCulture) + " MB";
+    private static string Short(string h) => h.Length > 12 ? h.Substring(0, 12) : h;
+    private static string Dur(double ms) => ms >= 60_000 ? (ms / 60_000).ToString("0.0", CultureInfo.InvariantCulture) + " 분" : (ms / 1000).ToString("0.0", CultureInfo.InvariantCulture) + " s";
+    private string AvailText() => (G.Availability * 100).ToString("0.0000", CultureInfo.InvariantCulture) + "%";
+
+    // 미터: 0~9 nines → 반원 각도(π → 0)
+    private static double Angle(double nines) => Math.PI * (1 - Math.Clamp(nines / 9.0, 0, 1));
+    private string MeterArc()
+    {
+        var a = Angle(G.Nines);
+        return "M 20 112 A 90 90 0 0 1 " + F1(110 + 90 * Math.Cos(a)) + " " + F1(112 - 90 * Math.Sin(a));
+    }
+    private static double TargetX(int k) => 110 + (k == 0 ? 78 : 102) * Math.Cos(Angle(5));
+    private static double TargetY(int k) => 112 - (k == 0 ? 78 : 102) * Math.Sin(Angle(5));
+    private string BudgetPct() => (G.ErrorBudgetMs <= 0 ? 100 : Math.Clamp(100 * G.BudgetRemainingMs / G.ErrorBudgetMs, 0, 100)).ToString("0.0", CultureInfo.InvariantCulture);
+
+    private string NinesPoints()
+    {
+        var n = G.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360d * (n - 1 - i) / (EnterpriseSlaAvailabilityGuard.SeriesLen - 1))).Append(',').Append(F1(40 - 40 * Math.Clamp(G.Series(i) / 9.0, 0, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    // 토폴로지 좌표
+    private static int LX(int lane) => lane % 2 == 0 ? 96 : 424;
+    private static int LY(int lane) => lane < 2 ? 70 : 200;
+    private const int LockX = 260;
+    private static int LockY(int l) => l == 0 ? 26 : 244;
+
+    private string LaneClass(int lane)
+    {
+        var sub = Runner.Sub(lane); var slot = Runner.Slot(lane);
+        if (S.IsDown(sub)) return "down";
+        if (E.WaitingLock(slot) >= 0) return "wait";
+        if (E.IsBusy(slot) && (E.SinceBeatMs(slot) > E.Timeout(slot) || E.OpElapsedMs(slot) > E.Timeout(slot) * E.SpinFactor)) return "hang";
+        return "ok";
+    }
+
+    private string LaneState(int lane)
+    {
+        var slot = Runner.Slot(lane);
+        if (S.IsDown(Runner.Sub(lane))) return "서비스 중단";
+        if (E.WaitingLock(slot) >= 0) return "락 대기 " + F0(E.OpElapsedMs(slot)) + " ms";
+        if (E.IsBusy(slot)) return "작업 " + F0(E.OpElapsedMs(slot)) + " ms";
+        return "완료 " + E.Completed(slot);
+    }
+
+    private string FindingText(HangFinding f)
+    {
+        var who = f.Slot >= 0 ? E.Name(f.Slot) + " (T" + f.ThreadId + ")" : "프로세스";
+        return f.Kind switch
+        {
+            HangKind.Stalled => who + " · 무진행 " + F0(f.DurationMs) + " ms · 진행 " + F0(f.Metric),
+            HangKind.Spinning => who + " · 작업 " + F0(f.DurationMs) + " ms 미완료 · 진행 " + F0(f.Metric),
+            HangKind.Deadlock => who + " ⇄ " + (f.Partner >= 0 ? E.Name(f.Partner) : "?") + " · " + E.LockName(f.LockId) + " 대기 " + F0(f.DurationMs) + " ms · 사이클 " + f.CycleLength,
+            HangKind.Starvation => "스레드 풀 큐 지연 " + F0(f.DurationMs) + " ms · 대기 " + F0(f.Metric),
+            HangKind.MemoryPressure => "관리 힙 " + F0(f.Metric) + " MB > 예산",
+            _ => who,
+        };
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+
+    private void TogglePool()
+    {
+        G.ApplyThreadPool = !G.ApplyThreadPool;
+        if (!G.ApplyThreadPool) G.RestoreThreadPool();
+    }
+
+    private void Export()
+    {
+        try { _exportPath = G.Export(); _verified = EnterpriseSlaAvailabilityGuard.VerifyFile(_exportPath); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { _exportPath = "⚠ " + ex.Message; }
+    }
+
+    private void Verify() => _verified = G.VerifyManifest();
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

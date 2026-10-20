@@ -1,0 +1,394 @@
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.Autonomous
+@implements IDisposable
+@inject AutonomousCampaignDirectorService Director
+
+@* [PromptFlow Studio v16.28.0] 🤖 AI 자율주행 디렉터 컨트롤 센터 — 자율 가동 토글(킬 스위치) · KPI · 트렌드 · 24시간 스케줄/승인 대기
+   · 자가 학습 프롬프트 변천사 그래프 · ROI 게이지/재배분 · 1-Click 자율 캠페인. 상태는 서비스(싱글턴) 소유 — OnChange 구독 + InvokeAsync(StateHasChanged). *@
+
+<div class="ad-scrim" @onclick="Close">
+    <div class="ad-modal" @onclick:stopPropagation="true">
+        <div class="ad-h">
+            <div>
+                <div class="ad-title">🤖 AI 자율주행 디렉터</div>
+                <div class="ad-sub">트렌드 수집 → KPI 기반 24시간 스케줄 → 스토리보드 생성·생산 → 게시 → 성과 학습(프롬프트 자가 정제 · ROI 재배분)을 반복합니다.
+                    기본값은 <b>승인 후 게시 · 비공개 업로드</b>이며, 예산 한도/일일 상한에 도달하면 자동으로 멈춥니다.</div>
+            </div>
+            <button class="ad-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="ad-ctl">
+            <label class="ad-sw @(Director.IsAutonomous ? "on" : "")">
+                <input type="checkbox" checked="@Director.IsAutonomous" disabled="@(_cts is not null)" @onchange="ToggleAsync" />
+                <span></span>@(Director.IsAutonomous ? "자율 가동 ON" : "자율 가동 OFF")
+            </label>
+            <label class="ad-mut"><input type="checkbox" @bind="Director.AutoPublish" /> 승인 없이 자동 게시</label>
+            <label class="ad-mut"><input type="checkbox" @bind="Director.PublishPublic" disabled="@(!Director.AutoPublish)" /> 공개 게시</label>
+            <span class="ad-chip @(Director.CanProduce ? "ok" : "bad")">생산 @(Director.CanProduce ? "가능" : "불가")</span>
+            <span class="ad-chip @(Director.CanPublish ? "ok" : "")">게시 @(Director.CanPublish ? "연결" : "없음")</span>
+            <span class="ad-chip @(Director.AiAvailable ? "ok" : "")">Gemini @(Director.AiAvailable ? "ON" : "폴백")</span>
+            <span class="ad-chip @(Director.YouTubeConfigured ? "ok" : "")">YouTube API @(Director.YouTubeConfigured ? "ON" : "없음")</span>
+        </div>
+
+        @* ── ROI 게이지 ── *@
+        @{
+            var tot = Director.Roi.Totals();
+            var reward = Director.Feedback.OverallMeanReward();
+            var progress = Director.Kpi.VideosPerDay > 0 ? Math.Min(1, (double)Director.ProducedToday / Director.Kpi.VideosPerDay) : 0;
+        }
+        <div class="ad-gauges">
+            @Gauge("평균 보상", Math.Min(1, reward / 1.2), reward.ToString("0.00", CultureInfo.InvariantCulture))
+            @Gauge("오늘 생산", progress, Director.ProducedToday.ToString(CultureInfo.InvariantCulture) + "/" + Director.Kpi.VideosPerDay.ToString(CultureInfo.InvariantCulture))
+            @Gauge("eCPM", tot.Ecpm <= 0 ? 0 : Math.Clamp(1 - tot.Ecpm / 20, 0, 1), tot.Ecpm <= 0 ? "-" : "$" + tot.Ecpm.ToString("0.00", CultureInfo.InvariantCulture))
+            @Gauge("ROAS", Math.Clamp(tot.Roas / 5, 0, 1), tot.Roas.ToString("0.0", CultureInfo.InvariantCulture) + "x")
+            <div class="ad-stats">
+                <div>게시 <b>@(Director.PublishedTotal)</b> · 실패 <b>@(Director.FailedTotal)</b></div>
+                <div>자가 정제 G<b>@(Director.Feedback.Generation)</b> (AI @(Director.Feedback.AiTunes) · 폴백 @(Director.Feedback.FallbackTunes))</div>
+                <div>ROI 재배분 <b>@(Director.Roi.Rebalances)</b>회 · 정제 큐 @(Director.Feedback.QueueDepth)</div>
+                <div>총 비용 $@(tot.Usd.ToString("0.00", CultureInfo.InvariantCulture)) · 조회 @(tot.Views.ToString("#,0", CultureInfo.InvariantCulture))</div>
+            </div>
+        </div>
+
+        <div class="ad-tabs">
+            <button class="@(_tab == 0 ? "on" : "")" @onclick="() => _tab = 0">🗓 스케줄 &amp; 승인</button>
+            <button class="@(_tab == 1 ? "on" : "")" @onclick="() => _tab = 1">📡 트렌드</button>
+            <button class="@(_tab == 2 ? "on" : "")" @onclick="() => _tab = 2">🧬 자가 학습</button>
+            <button class="@(_tab == 3 ? "on" : "")" @onclick="() => _tab = 3">💹 ROI 배분</button>
+        </div>
+
+        <div class="ad-body">
+            @if (_tab == 0)
+            {
+                <div class="ad-row">
+                    <span class="ad-sec">KPI</span>
+                    <label class="ad-mut">일 조회 <input class="ad-in w90" type="number" min="100" step="100" @bind="_views" /></label>
+                    <label class="ad-mut">CTR % <input class="ad-in w56" type="number" min="0.5" max="30" step="0.5" @bind="_ctr" /></label>
+                    <label class="ad-mut">일 생산 <input class="ad-in w56" type="number" min="1" max="24" @bind="_perDay" /></label>
+                    <label class="ad-mut">일 USD 상한 <input class="ad-in w56" type="number" min="0" step="1" @bind="_maxUsd" /></label>
+                    <button class="ad-btn go" disabled="@(_cts is not null)" @onclick="LaunchAsync">🚀 1-Click 자율 캠페인 가동</button>
+                    <button class="ad-btn" disabled="@(_cts is not null)" @onclick="ReplanAsync">🔄 트렌드 갱신 + 재계획</button>
+                    <button class="ad-btn" disabled="@(_cts is not null || !Director.CanProduce)" @onclick="RunNowAsync">▶ 다음 슬롯 지금 실행</button>
+                </div>
+                <table class="ad-tbl">
+                    <tr><th>시각</th><th>테마</th><th>포맷</th><th>플랫폼</th><th>상태</th><th>메시지</th><th></th></tr>
+                    @foreach (var s in Director.Slots)
+                    {
+                        <tr class="@(StateClass(s.State))">
+                            <td>@(s.At.ToString("MM-dd HH:mm", CultureInfo.InvariantCulture))</td>
+                            <td>@(s.Title ?? s.Theme)</td>
+                            <td>@(s.Format)</td>
+                            <td>@(AutonomousCampaignDirectorService.PlatformLabel(s.Platform))</td>
+                            <td>@(StateLabel(s.State))</td>
+                            <td class="ad-msg" title="@(s.Message)">@(s.Message)</td>
+                            <td>
+                                @if (s.State == SlotState.AwaitingApproval)
+                                {
+                                    <button class="ad-btn sm" disabled="@(!Director.CanPublish || _cts is not null)" @onclick="() => ApproveAsync(s.Id)">✅ 게시</button>
+                                    <button class="ad-btn sm" @onclick="() => Director.Reject(s.Id)">✕</button>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </table>
+                @if (Director.Slots.Count == 0) { <div class="ad-note">스케줄이 없습니다. 1-Click 가동 또는 재계획을 누르세요.</div> }
+            }
+            else if (_tab == 1)
+            {
+                var trends = Director.Trends;
+                double maxScore = 0.0001;
+                foreach (var t in trends) maxScore = Math.Max(maxScore, t.Score);
+                <div class="ad-note">@(Director.LastTrendAt is { } at ? "수집 " + at.ToString("HH:mm:ss", CultureInfo.InvariantCulture) : "미수집") · YouTube 인기 동영상(API 키 필요) + Google Trends 일간 RSS · 실패 시 학습 테마/기본 키워드</div>
+                @foreach (var t in trends)
+                {
+                    <div class="ad-trend">
+                        <span class="ad-tk">@(t.Keyword)</span>
+                        <div class="ad-tb"><div style="width:@((t.Score / maxScore * 100).ToString("0", CultureInfo.InvariantCulture))%"></div></div>
+                        <span class="ad-mut">@(t.Format) · @(t.Source)</span>
+                    </div>
+                }
+            }
+            else if (_tab == 2)
+            {
+                var hist = Director.Feedback.History;
+                <div class="ad-row">
+                    <label class="ad-btn">📥 성과 CSV 가져오기<InputFile OnChange="ImportAsync" accept=".csv" style="display:none" /></label>
+                    <button class="ad-btn" disabled="@(_cts is not null)" @onclick="TuneAsync">🧬 저성과 자가 정제 실행</button>
+                    <button class="ad-btn" disabled="@(_cts is not null)" @onclick="LearnAsync">🧠 학습 사이클</button>
+                    <span class="ad-mut">기록 @(Director.Feedback.RecordCount)편 · CSV 열: video_id, theme, prompt, views, impressions, likes, ctr, early_drop, retention, platform</span>
+                </div>
+                @if (hist.Count > 0)
+                {
+                    var n = hist.Count;
+                    var w = Math.Max(300, n * 40);
+                    <svg class="ad-graph" viewBox="0 0 @(w.ToString(CultureInfo.InvariantCulture)) 160" preserveAspectRatio="none">
+                        <line x1="0" y1="140" x2="@(w.ToString(CultureInfo.InvariantCulture))" y2="140" stroke="var(--line)" />
+                        <polyline fill="none" stroke="#f87171" stroke-width="2" stroke-dasharray="4 3" points="@(Points(hist, w, false))" />
+                        <polyline fill="none" stroke="#22c55e" stroke-width="2.5" points="@(Points(hist, w, true))" />
+                        @for (var i = 0; i < n; i++)
+                        {
+                            var x = X(i, n, w);
+                            <g><text x="@(x.ToString("0.#", CultureInfo.InvariantCulture))" y="155" text-anchor="middle" class="ad-gl">G@(hist[i].Generation)</text></g>
+                        }
+                    </svg>
+                    <div class="ad-mut">🔴 정제 전 보상 · 🟢 예측 보상(정제 후)</div>
+                    @for (var i = hist.Count - 1; i >= 0 && i >= hist.Count - 8; i--)
+                    {
+                        var r = hist[i];
+                        <div class="ad-rev">
+                            <div class="ad-row"><b>G@(r.Generation)</b><span class="ad-chip">@(r.Theme)</span><span class="ad-chip @(r.Ai ? "ok" : "")">@(r.Ai ? "Gemini" : "규칙 폴백")</span>
+                                <span class="ad-mut">@(r.RewardBefore.ToString("0.00", CultureInfo.InvariantCulture)) → @(r.PredictedReward.ToString("0.00", CultureInfo.InvariantCulture)) · @(r.Rationale)</span></div>
+                            <div class="ad-before">@(r.Before)</div>
+                            <div class="ad-after">@(r.After)</div>
+                        </div>
+                    }
+                }
+                else { <div class="ad-note">아직 정제 이력이 없습니다 — 성과 데이터를 가져온 뒤 자가 정제를 실행하세요.</div> }
+                <div class="ad-arms">
+                    @foreach (var axis in new[] { PromptAxis.Camera, PromptAxis.Lighting, PromptAxis.Format })
+                    {
+                        <div>
+                            <div class="ad-sec">@(axis == PromptAxis.Camera ? "🎥 카메라" : axis == PromptAxis.Lighting ? "💡 조명" : "🎞 포맷")</div>
+                            @foreach (var a in Director.Feedback.ArmStats(axis))
+                            {
+                                <div class="ad-arm"><span>@(a.Label)</span><div class="ad-tb"><div style="width:@((Math.Min(1, a.Mean / 1.2) * 100).ToString("0", CultureInfo.InvariantCulture))%"></div></div><span class="ad-mut">n@(a.N)</span></div>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+            else
+            {
+                <div class="ad-row">
+                    <button class="ad-btn go" @onclick="Rebalance">💹 지금 재배분</button>
+                    <label class="ad-mut">탐색 하한 % <input class="ad-in w56" type="number" min="0" max="20" step="1" value="@((Director.Roi.MinShare * 100).ToString("0", CultureInfo.InvariantCulture))" @onchange="e => SetMinShare(e.Value?.ToString())" /></label>
+                    <span class="ad-mut">렌더 슬롯 = 온라인 렌더 팜 노드 슬롯 + 로컬 1 · 일 예산 = v16.18.0 일 한도(없으면 $@(Director.Roi.FallbackDailyUsd.ToString("0", CultureInfo.InvariantCulture)))</span>
+                </div>
+                <table class="ad-tbl">
+                    <tr><th>테마</th><th>비중</th><th>일 예산</th><th>렌더 슬롯</th><th>eCPM</th><th>근거</th></tr>
+                    @foreach (var a in Director.Roi.Plan)
+                    {
+                        <tr>
+                            <td>@(a.Theme)</td>
+                            <td><div class="ad-tb"><div style="width:@((a.Weight * 100).ToString("0", CultureInfo.InvariantCulture))%"></div></div>@((a.Weight * 100).ToString("0.#", CultureInfo.InvariantCulture))%</td>
+                            <td>$@(a.DailyUsd.ToString("0.00", CultureInfo.InvariantCulture))</td>
+                            <td>@(a.RenderSlots)</td>
+                            <td>@(a.ExpectedEcpm > 0 ? "$" + a.ExpectedEcpm.ToString("0.00", CultureInfo.InvariantCulture) : "-")</td>
+                            <td class="ad-msg">@(a.Reason)</td>
+                        </tr>
+                    }
+                </table>
+                @if (Director.Roi.Plan.Count == 0) { <div class="ad-note">성과 데이터가 없어 균등 탐색 중입니다.</div> }
+            }
+            @if (_msg is not null) { <div class="ad-note">@(_msg)</div> }
+        </div>
+
+        <div class="ad-f">
+            <span class="ad-mut">@(Director.LastAction ?? Director.Feedback.LastAction ?? "대기") @(Director.NextSlot is { } ns ? "· 다음 " + ns.At.ToString("HH:mm", CultureInfo.InvariantCulture) + " " + ns.Theme : "")</span>
+            @if (_cts is not null) { <button class="ad-btn" @onclick="Cancel">취소</button> }
+            <button class="ad-btn" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .ad-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .ad-modal { width: min(1100px, 96vw); max-height: 92vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.4); overflow: hidden; }
+    .ad-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+    .ad-title { font-size: 16px; font-weight: 900; color: var(--text-primary); }
+    .ad-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .ad-sub b { color: var(--text-primary); }
+    .ad-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .ad-ctl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 18px; border-bottom: 1px solid var(--line); }
+    .ad-sw { display: inline-flex; align-items: center; gap: 8px; font: 900 13px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); cursor: pointer; }
+    .ad-sw input { display: none; }
+    .ad-sw span { width: 42px; height: 22px; border-radius: 11px; background: var(--line); position: relative; transition: background .2s; }
+    .ad-sw span::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .2s; }
+    .ad-sw.on span { background: #22c55e; } .ad-sw.on span::after { left: 23px; }
+    .ad-gauges { display: flex; gap: 12px; align-items: center; padding: 10px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+    .ad-g { display: flex; flex-direction: column; align-items: center; width: 96px; }
+    .ad-g svg { width: 90px; height: 54px; }
+    .ad-gv { font: 800 12px var(--mono); fill: var(--text-primary); }
+    .ad-gl { font: 700 9px var(--mono); fill: var(--text-muted); }
+    .ad-stats { font-size: 11.5px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 2px; margin-left: auto; }
+    .ad-stats b { color: var(--text-primary); }
+    .ad-tabs { display: flex; gap: 4px; padding: 8px 18px 0; border-bottom: 1px solid var(--line); }
+    .ad-tabs button { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; border: 0; background: none; color: var(--text-muted); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
+    .ad-tabs button.on { color: var(--text-primary); border-bottom-color: #22c55e; }
+    .ad-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .ad-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .ad-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .ad-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .ad-chip.ok { color: #4ade80; } .ad-chip.bad { color: #f87171; }
+    .ad-mut { font-size: 11px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; }
+    .ad-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; }
+    .ad-in.w90 { width: 90px; } .ad-in.w56 { width: 60px; }
+    .ad-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+    .ad-tbl th, .ad-tbl td { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: left; }
+    .ad-tbl tr.ok td { color: #4ade80; } .ad-tbl tr.bad td { color: #f87171; } .ad-tbl tr.wait td { color: #fbbf24; } .ad-tbl tr.run td { color: #38bdf8; }
+    .ad-msg { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ad-trend, .ad-arm { display: grid; grid-template-columns: 160px 1fr auto; gap: 8px; align-items: center; font-size: 12px; }
+    .ad-tk { font-weight: 800; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ad-tb { height: 8px; border-radius: 4px; background: var(--bg); overflow: hidden; min-width: 60px; }
+    .ad-tb div { height: 100%; background: linear-gradient(90deg,#22c55e,#0ea5e9); }
+    .ad-graph { width: 100%; height: 160px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; }
+    .ad-rev { border: 1px solid var(--line); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; }
+    .ad-before { color: #f87171; text-decoration: line-through; opacity: .8; }
+    .ad-after { color: #4ade80; }
+    .ad-arms { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .ad-arms .ad-arm { grid-template-columns: 120px 1fr auto; font-size: 11px; }
+    .ad-note { font-size: 12px; color: var(--text-secondary); }
+    .ad-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }
+    .ad-f .ad-mut { margin-right: auto; }
+    .ad-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .ad-btn.sm { padding: 3px 8px; font-size: 11px; }
+    .ad-btn.go { background: linear-gradient(135deg,#22c55e,#0ea5e9); color: #fff; border: 0; }
+    .ad-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 720px) { .ad-arms { grid-template-columns: 1fr; } .ad-trend { grid-template-columns: 110px 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private int _tab, _perDay = 6;
+    private long _views = 10_000;
+    private double _ctr = 6, _maxUsd;
+    private string? _msg;
+    private CancellationTokenSource? _cts;
+
+    protected override void OnInitialized()
+    {
+        Director.OnChange += OnServiceChanged;
+        Director.Feedback.OnChange += OnServiceChanged;
+        Director.Roi.OnChange += OnServiceChanged;
+        _perDay = Director.Kpi.VideosPerDay; _views = Director.Kpi.TargetViewsPerDay; _ctr = Director.Kpi.TargetCtr * 100; _maxUsd = Director.Kpi.MaxDailyUsd;
+    }
+
+    private RenderFragment Gauge(string label, double ratio, string value) => __builder =>
+    {
+        var r = Math.Clamp(ratio, 0, 1);
+        var color = r > 0.66 ? "#22c55e" : r > 0.33 ? "#f59e0b" : "#f43f5e";
+        <div class="ad-g">
+            <svg viewBox="0 0 100 60">
+                <path d="M10 55 A40 40 0 0 1 90 55" stroke="var(--line)" stroke-width="9" fill="none" />
+                <path d="M10 55 A40 40 0 0 1 90 55" stroke="@color" stroke-width="9" fill="none" pathLength="100" stroke-dasharray="@((r * 100).ToString("0.#", CultureInfo.InvariantCulture)) 100" />
+                <g><text x="50" y="52" text-anchor="middle" class="ad-gv">@value</text></g>
+            </svg>
+            <span class="ad-mut">@label</span>
+        </div>
+    };
+
+    private static double X(int i, int n, int w) => n <= 1 ? w / 2.0 : 20 + i * (w - 40.0) / (n - 1);
+
+    private static string Points(IReadOnlyList<PromptRevision> hist, int w, bool after)
+    {
+        var sb = new System.Text.StringBuilder(hist.Count * 14);
+        for (var i = 0; i < hist.Count; i++)
+        {
+            var v = Math.Clamp(after ? hist[i].PredictedReward : hist[i].RewardBefore, 0, 1.5);
+            sb.Append(X(i, hist.Count, w).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append((140 - v / 1.5 * 125).ToString("0.#", CultureInfo.InvariantCulture)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private static string StateClass(SlotState s) => s switch
+    {
+        SlotState.Published => "ok", SlotState.Failed => "bad", SlotState.AwaitingApproval => "wait", SlotState.Producing or SlotState.Publishing => "run", _ => "",
+    };
+
+    private static string StateLabel(SlotState s) => s switch
+    {
+        SlotState.Planned => "예정", SlotState.Producing => "🎬 생산 중", SlotState.AwaitingApproval => "⏳ 승인 대기", SlotState.Publishing => "🚀 게시 중",
+        SlotState.Published => "✅ 게시됨", SlotState.Skipped => "⏭ 건너뜀", _ => "⚠ 실패",
+    };
+
+    private CampaignKpi CurrentKpi() => new(Math.Max(100, _views), Math.Clamp(_ctr, 0.5, 30) / 100.0, Math.Clamp(_perDay, 1, 24), Math.Max(0, _maxUsd));
+
+    private Task ToggleAsync(ChangeEventArgs e)
+    {
+        if (e.Value is true) return RunAsync(async ct => { _msg = await Director.StartAutonomousAsync(ct) ? "🤖 자율 가동 시작" : "⚠ 시작 실패"; });
+        Director.StopAutonomous();
+        _msg = "⏹ 자율 가동 중지(진행 중 작업 취소)";
+        return Task.CompletedTask;
+    }
+
+    private Task LaunchAsync() => RunAsync(async ct =>
+    {
+        Director.Feedback.Targets = Director.Feedback.Targets with { Ctr = CurrentKpi().TargetCtr };
+        _msg = await Director.LaunchCampaignAsync(CurrentKpi(), ct) ? "🚀 자율 캠페인 가동 — " + Director.Slots.Count.ToString(CultureInfo.InvariantCulture) + "슬롯" : "⚠ 가동 실패";
+    });
+
+    private Task ReplanAsync() => RunAsync(async ct =>
+    {
+        Director.Kpi = CurrentKpi();
+        await Director.RefreshTrendsAsync(ct);
+        Director.Roi.Rebalance();
+        Director.PlanSchedule();
+        _msg = "🔄 재계획 완료";
+    });
+
+    private Task RunNowAsync() => RunAsync(async ct =>
+    {
+        var next = Director.NextSlot;
+        if (next is null) { _msg = "⚠ 예정 슬롯이 없습니다."; return; }
+        var r = await Director.RunSlotNowAsync(next.Id, ct);
+        _msg = r is null ? "⚠ 실행할 슬롯이 없습니다." : StateLabel(r.State) + " · " + r.Message;
+    });
+
+    private Task ApproveAsync(string id) => RunAsync(async ct => { _msg = await Director.ApproveAsync(id, ct) ? "🚀 게시 완료" : "⚠ 게시 실패"; });
+
+    private Task TuneAsync() => RunAsync(async ct => { var n = await Director.Feedback.TuneLowPerformersAsync(5, ct); _msg = "🧬 자가 정제 " + n.ToString(CultureInfo.InvariantCulture) + "건"; });
+
+    private Task LearnAsync() => RunAsync(async ct => { await Director.LearnAsync(ct); _msg = "🧠 학습 사이클 완료"; });
+
+    private void Rebalance() { var p = Director.Roi.Rebalance(); _msg = p.Count == 0 ? "성과 데이터 없음" : "💹 재배분 완료"; }
+
+    private void SetMinShare(string? v)
+    {
+        if (double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var d)) Director.Roi.MinShare = Math.Clamp(d, 0, 20) / 100.0;
+    }
+
+    private async Task ImportAsync(InputFileChangeEventArgs e)
+    {
+        try
+        {
+            using var s = e.File.OpenReadStream(10 * 1024 * 1024);
+            using var rd = new StreamReader(s);
+            var (ok, skip) = Director.Feedback.ImportCsv(await rd.ReadToEndAsync());
+            _msg = "📥 " + ok.ToString(CultureInfo.InvariantCulture) + "건 반영 · " + skip.ToString(CultureInfo.InvariantCulture) + "건 건너뜀";
+        }
+        catch (Exception ex) { Program.Log("Director.Import", ex); _msg = "⚠ 가져오기 실패: " + ex.Message; }
+    }
+
+    private async Task RunAsync(Func<CancellationToken, Task> work)
+    {
+        var cts = new CancellationTokenSource();
+        if (Interlocked.CompareExchange(ref _cts, cts, null) is not null) { cts.Dispose(); return; }
+        try { await work(cts.Token); }
+        catch (OperationCanceledException) { _msg = "⚠ 취소됨"; }
+        catch (Exception ex) { Program.Log("DirectorStudio.Run", ex); _msg = "⚠ 실패: " + ex.Message; }
+        finally
+        {
+            Interlocked.CompareExchange(ref _cts, null, cts);
+            cts.Dispose();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void Cancel()
+    {
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
+    private Task Close() => _cts is not null ? Task.CompletedTask : OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Director.OnChange -= OnServiceChanged;
+        Director.Feedback.OnChange -= OnServiceChanged;
+        Director.Roi.OnChange -= OnServiceChanged;
+        Cancel();   // 자율 루프는 서비스 소유(모달을 닫아도 계속)
+    }
+}

@@ -1,0 +1,105 @@
+@* [PromptFlow Studio v5.8.0] B2B 대량 양산 팩토리(모바일) — 프롬프트 템플릿 변수 치환 미리보기 + 일괄 렌더 가동/모니터링.
+   ⚠ 무주입(모바일 안전): [Parameter]/EventCallback 만. BatchTemplateEngine(순수 BCL) 사용 · 실행은 부모 파이프라인이 담당. *@
+
+<div class="bfm">
+    <div class="bfm-head">
+        <span class="bfm-title">🏭 B2B 대량 양산 팩토리</span>
+        <span class="bfm-badge">@_items.Count 건 대기</span>
+    </div>
+
+    <div class="bfm-field">
+        <label>프롬프트 템플릿 <span class="hint">{target}/{location}/{style} 치환</span></label>
+        <input type="text" class="bfm-in" @bind="_template" @bind:event="oninput" @bind:after="Rebuild" disabled="@IsRunning"
+               placeholder="예: {target}이(가) {location}을 달리는 시네마틱 4K" />
+    </div>
+
+    <div class="bfm-field">
+        <label>변수 목록 <span class="hint">줄바꿈 구분 · 콤마=열({target},{location},{style})</span></label>
+        <textarea class="bfm-ta" rows="3" @bind="_rawVariables" @bind:event="oninput" @bind:after="Rebuild" disabled="@IsRunning"
+                  placeholder="골든리트리버, 노을 해변&#10;사이버펑크 스포츠카, 도심 야경&#10;우주비행사, 달 표면"></textarea>
+    </div>
+
+    @* 치환 미리보기 스택 *@
+    <div class="bfm-preview">
+        <span class="bfm-preview-lbl">생성 큐 미리보기 (@_items.Count)</span>
+        @if (_items.Count == 0)
+        {
+            <div class="bfm-empty">템플릿과 변수 목록을 입력하면 큐가 미리 구성됩니다.</div>
+        }
+        else
+        {
+            @foreach (var item in _items)
+            {
+                <div class="bfm-item" @key="item.Index">
+                    <span class="no">#@item.Index</span>
+                    <span class="val">@item.VariableValue</span>
+                    <span class="prompt">@item.InterpolatedPrompt</span>
+                </div>
+            }
+        }
+    </div>
+
+    @* 전체 진행률 프로그레스(부모 파이프라인 실행 중) *@
+    @if (IsRunning)
+    {
+        <div class="bfm-run">
+            <div class="bfm-run-track"><div class="bfm-run-bar" style="width:@ProgressPercent%"></div></div>
+            <span class="bfm-run-step">@(string.IsNullOrWhiteSpace(LiveStep) ? "가동 중…" : LiveStep)</span>
+        </div>
+    }
+
+    <button type="button" class="bfm-run-btn" @onclick="StartBatch" disabled="@(IsRunning || _items.Count == 0)">
+        @(IsRunning ? "⏳ 양산 진행 중…" : $"🚀 대량 양산 일괄 가동 ({_items.Count}건)")
+    </button>
+</div>
+
+@code {
+    /// <summary>대량 양산 실행 요청 — 부모(MobileStudioDeck)가 세그먼트 큐로 순차 렌더.</summary>
+    [Parameter] public EventCallback<List<BatchTemplateItem>> OnStartBatchRequest { get; set; }
+    /// <summary>부모 파이프라인 실행 중(입력/버튼 잠금 + 진행바 표출).</summary>
+    [Parameter] public bool IsRunning { get; set; }
+    /// <summary>전체 진행률(0~100).</summary>
+    [Parameter] public int ProgressPercent { get; set; }
+    /// <summary>현재 렌더 중 배치 라이브 메시지.</summary>
+    [Parameter] public string? LiveStep { get; set; }
+
+    private string _template = "{target}이(가) {location}을 달리는 시네마틱 4K 영상, 일관된 브랜드 톤";
+    private string _rawVariables = "골든리트리버, 노을 해변\n사이버펑크 스포츠카, 도심 야경\n우주비행사, 달 표면";
+    private List<BatchTemplateItem> _items = new();
+
+    protected override void OnInitialized() => Rebuild();
+
+    private void Rebuild() => _items = BatchTemplateEngine.GenerateBatchItems(_template, _rawVariables);
+
+    private async Task StartBatch()
+    {
+        if (_items.Count > 0 && OnStartBatchRequest.HasDelegate)
+            await OnStartBatchRequest.InvokeAsync(_items);
+    }
+}
+
+<style>
+    .bfm { display: flex; flex-direction: column; gap: 12px; color: #fff; }
+    .bfm-head { display: flex; align-items: center; justify-content: space-between; }
+    .bfm-title { font: 900 14px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary, #fff); }
+    .bfm-badge { font: 700 10.5px Pretendard,'Malgun Gothic',sans-serif; color: #38bdf8; background: rgba(56,189,248,0.12); padding: 4px 10px; border-radius: 12px; }
+    .bfm-field { display: flex; flex-direction: column; gap: 6px; }
+    .bfm-field label { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; color: #94a3b8; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+    .bfm-field .hint { font: 600 9.5px ui-monospace,monospace; color: #64748b; }
+    .bfm-in, .bfm-ta { width: 100%; box-sizing: border-box; background: #121826; border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; color: #fff; padding: 9px 12px; font: 600 12.5px Pretendard,'Malgun Gothic',sans-serif; outline: none; resize: vertical; line-height: 1.5; }
+    .bfm-in:focus, .bfm-ta:focus { border-color: #38bdf8; }
+    .bfm-in:disabled, .bfm-ta:disabled { opacity: .55; }
+    .bfm-preview { display: flex; flex-direction: column; gap: 6px; background: #0b0f19; border: 1px solid rgba(255,255,255,0.06); padding: 10px; border-radius: 12px; max-height: 190px; overflow-y: auto; }
+    .bfm-preview-lbl { font: 800 10px ui-monospace,monospace; color: #64748b; }
+    .bfm-empty { font: 600 11px Pretendard,'Malgun Gothic',sans-serif; color: #64748b; padding: 8px 2px; }
+    .bfm-item { display: flex; align-items: center; gap: 8px; font: 600 11px Pretendard,'Malgun Gothic',sans-serif; background: #161d2f; padding: 6px 10px; border-radius: 8px; }
+    .bfm-item .no { flex: 0 0 auto; color: #38bdf8; font-weight: 800; }
+    .bfm-item .val { flex: 0 0 auto; max-width: 92px; color: #34d399; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .bfm-item .prompt { flex: 1; min-width: 0; color: #cbd5e1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .bfm-run { display: flex; flex-direction: column; gap: 5px; }
+    .bfm-run-track { height: 6px; border-radius: 6px; background: rgba(255,255,255,0.08); overflow: hidden; }
+    .bfm-run-bar { height: 100%; border-radius: 6px; background: linear-gradient(90deg,#38bdf8,#a855f7); transition: width .2s ease; }
+    .bfm-run-step { font: 700 10.5px Pretendard,'Malgun Gothic',sans-serif; color: #7dd3fc; word-break: keep-all; }
+    .bfm-run-btn { margin-top: 2px; font: 800 13px Pretendard,'Malgun Gothic',sans-serif; color: #fff; background: linear-gradient(135deg,#38bdf8,#a855f7); border: none; border-radius: 14px; padding: 12px; cursor: pointer; }
+    .bfm-run-btn:disabled { opacity: .5; cursor: not-allowed; }
+</style>

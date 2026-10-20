@@ -1,0 +1,74 @@
+@inject GranularHelpService Help
+
+@* [PromptFlow Studio] 메뉴 전용 도움말 모달 — 핵심 기능 사용법 · 전문가 팁 · FAQ/장애 조치 3탭. 메뉴마다 완전 독립. *@
+
+@if (Help.Get(MenuKey) is { } t)
+{
+    <div class="mh-scrim" @onclick="Close">
+        <div class="mh-modal" @onclick:stopPropagation="true">
+            <div class="mh-h">
+                <div class="mh-title">@t.Icon @t.Title <span class="mh-sub">메뉴 도움말</span></div>
+                <button class="mh-x" @onclick="Close" title="닫기">✕</button>
+            </div>
+            <div class="mh-tabs">
+                <button class="mh-tab @(_tab == 0 ? "on" : null)" @onclick="() => _tab = 0">📘 사용법</button>
+                <button class="mh-tab @(_tab == 1 ? "on" : null)" @onclick="() => _tab = 1">💡 전문가 팁</button>
+                <button class="mh-tab @(_tab == 2 ? "on" : null)" @onclick="() => _tab = 2">🛠️ FAQ · 장애 조치</button>
+            </div>
+            <div class="mh-body">
+                @if (_tab == 0)
+                {
+                    <ol class="mh-list">@foreach (var u in t.Usage) { <li>@u</li> }</ol>
+                }
+                else if (_tab == 1)
+                {
+                    <ul class="mh-list tips">@foreach (var tip in t.Tips) { <li>@tip</li> }</ul>
+                }
+                else
+                {
+                    @foreach (var f in t.Faq)
+                    {
+                        <div class="mh-faq" @key="f.Q"><div class="mh-q">Q. @f.Q</div><div class="mh-a">@f.A</div></div>
+                    }
+                    @if (t.Faq.Count == 0) { <div class="mh-empty">등록된 FAQ가 없습니다.</div> }
+                }
+            </div>
+            <div class="mh-foot"><button class="mh-btn" @onclick="Close">확인</button></div>
+        </div>
+    </div>
+}
+
+<style>
+    .mh-scrim { position: fixed; inset: 0; z-index: calc(var(--z-submodal-dialog) + 1); background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .mh-modal { width: min(560px, 96vw); max-height: 88vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.42); overflow: hidden; }
+    .mh-h { display: flex; align-items: center; justify-content: space-between; padding: 15px 20px; border-bottom: 1px solid var(--line); }
+    .mh-title { font-size: 16px; font-weight: 900; color: var(--text-primary); } .mh-sub { font: 700 10px var(--mono); color: var(--text-muted); margin-left: 6px; }
+    .mh-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .mh-x:hover { background: var(--card-2); color: var(--text-primary); }
+    .mh-tabs { display: flex; gap: 4px; padding: 12px 16px 0; }
+    .mh-tab { flex: 1; font: 800 12px inherit; padding: 10px 8px; border-radius: 10px 10px 0 0; border: 1px solid var(--line); border-bottom: none; background: var(--card-2); color: var(--text-secondary); cursor: pointer; white-space: nowrap; }
+    .mh-tab.on { background: var(--card); color: var(--text-primary); box-shadow: inset 0 3px 0 var(--accent); }
+    .mh-body { padding: 16px 20px; overflow-y: auto; }
+    .mh-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 9px; }
+    .mh-list li { font-size: 13px; line-height: 1.6; color: var(--text-secondary); }
+    .mh-list.tips { list-style: none; padding-left: 0; }
+    .mh-list.tips li { position: relative; padding-left: 20px; } .mh-list.tips li::before { content: "💡"; position: absolute; left: 0; }
+    .mh-faq { padding: 10px 0; border-bottom: 1px solid var(--line); }
+    .mh-faq:last-child { border-bottom: none; }
+    .mh-q { font-size: 12.5px; font-weight: 800; color: var(--text-primary); margin-bottom: 4px; }
+    .mh-a { font-size: 12.5px; line-height: 1.6; color: var(--text-secondary); }
+    .mh-empty { color: var(--text-muted); font-size: 13px; padding: 20px; text-align: center; }
+    .mh-foot { padding: 13px 20px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; }
+    .mh-btn { font: 800 13px inherit; padding: 9px 20px; border-radius: 11px; border: none; color: #fff; cursor: pointer; background: linear-gradient(135deg, var(--flow-violet), var(--flow-magenta)); }
+    .mh-btn:hover { filter: brightness(1.07); }
+</style>
+
+@code {
+    /// <summary>메뉴 키(GranularHelpService.Keys).</summary>
+    [Parameter] public string MenuKey { get; set; } = "";
+    /// <summary>닫기 콜백.</summary>
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private int _tab;
+    private async Task Close() => await OnClose.InvokeAsync();
+}

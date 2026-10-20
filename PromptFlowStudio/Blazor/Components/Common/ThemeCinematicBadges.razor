@@ -1,0 +1,32 @@
+@* [PromptFlow Studio v16.7.0] 테마 시네마틱 인스펙터 배지 — 카메라 무빙 · 렌즈 감성 · 조명 · SFX 아이콘 · 모션 강도 지표.
+   ⚠ 무주입(@inject 없음 · 모바일 링크 안전). 스타일(tci-*)은 호스트 갤러리 <style> 가 정의(카드 N개 반복 시 style 태그 중복 방지). *@
+@if (Cine is { } c)
+{
+    <div class="tci @(Expanded ? "open" : null)">
+        <span class="tci-b cam" title="권장 카메라 무빙 · @c.CameraChip.Snippet">@c.CameraChip.Icon @c.CameraChip.Label</span>
+        <span class="tci-b light" title="권장 조명">@c.LightingLabel</span>
+        <span class="tci-b lens" title="렌즈 감성">🔭 @c.Lens</span>
+        @if (c.Sfx.Count > 0)
+        {
+            <span class="tci-b sfx" title="권장 효과음: @string.Join(", ", c.Sfx)">
+                @foreach (var s in c.Sfx) { <i>@ThemeCinematicsCatalog.SfxIcon(s)</i> }
+            </span>
+        }
+        <span class="tci-b mot" title="최적 모션 강도 @(c.MotionIntensity)/4">
+            <span class="tci-mot-l">MOTION</span>
+            @foreach (var i in Levels)
+            {
+                <span class="tci-dot @(i <= c.MotionIntensity ? "on" : null)"></span>
+            }
+        </span>
+    </div>
+}
+
+@code {
+    /// <summary>표시할 시네마틱 메타(null 이면 렌더 생략).</summary>
+    [Parameter] public ThemeCinematics? Cine { get; set; }
+    /// <summary>펼침(hover/선택) — 접힘 상태는 카메라·강도만 노출.</summary>
+    [Parameter] public bool Expanded { get; set; }
+
+    private static readonly int[] Levels = { 1, 2, 3, 4 };   // 강도 눈금(MaxIntensity=4)
+}

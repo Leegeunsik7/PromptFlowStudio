@@ -1,0 +1,177 @@
+@using PromptFlowStudio.Services.Broadcast
+@implements IDisposable
+@inject LiveBroadcastStreamEngine Live
+@inject MultiGpuClusterEngine Cluster
+@inject ILocalMediaService Media
+@inject PromptFlowStudio.Services.Ui.StudioMemoryAudit MemAudit
+
+@* [PromptFlow Studio] v2.8.0 방송 라이브 주조종실 — NDI/RTMP 송출 LED · 듀얼 GPU 게이지 · 모션 트래킹 ROI 캔버스. *@
+
+<div class="lbd">
+    <div class="lbd-h"><span class="lbd-title">📡 방송 라이브 주조종실</span><span class="lbd-badge">v2.8.0</span></div>
+
+    <div class="lbd-grid">
+        @* ── ① NDI/RTMP 라이브 송출 ── *@
+        <div class="lbd-card">
+            <div class="lbd-ct">
+                <span class="lbd-led @(Live.IsLive ? "on" : null)"></span>
+                @(Live.IsLive ? "🔴 ON AIR — 송출 중" : "⚫ 오프라인")
+                @if (Live.IsLive) { <span class="lbd-up">@Live.Uptime.ToString(@"mm\:ss")</span> }
+            </div>
+            <div class="lbd-seg">
+                @foreach (var p in LiveBroadcastStreamEngine.Protocols)
+                {
+                    <button class="lbd-segb @(Project.LiveProtocol == p ? "on" : null)" @onclick="() => SetProto(p)" disabled="@(Live.IsLive || Disabled)">@p.ToUpperInvariant()</button>
+                }
+            </div>
+            <input class="lbd-input" placeholder="@UrlHint" @bind="Project.LiveUrl" disabled="@(Live.IsLive || Disabled)" />
+            @if (!Live.IsLive)
+            {
+                <button class="lbd-btn go" @onclick="StartLive" disabled="@(Disabled || !HasMaster)">▶ 라이브 송출 시작</button>
+            }
+            else
+            {
+                <button class="lbd-btn stop" @onclick="StopLive">⏹ 송출 중지</button>
+            }
+            <div class="lbd-sub">@Live.LastMessage</div>
+        </div>
+
+        @* ── ② 멀티 GPU 듀얼 게이지 ── *@
+        <div class="lbd-card">
+            <div class="lbd-ct">🖥️ 멀티 GPU 클러스터 <span class="lbd-cnt">@Cluster.DeviceCount 개</span></div>
+            <div class="lbd-gpus">
+                @for (var i = 0; i < 2; i++)
+                {
+                    var dev = i < Cluster.Devices.Count ? Cluster.Devices[i] : null;
+                    <div class="lbd-gpu @(dev is null ? "off" : null)">
+                        <div class="lbd-gpu-h"><b>cuda:@i</b><span>@(dev?.Name ?? "미장착")</span></div>
+                        <div class="lbd-track"><div class="lbd-fill vram" style="width:@(dev is null ? 0 : VramPct(dev.VramMB))%"></div></div>
+                        <div class="lbd-gpu-v">@(dev is null ? "—" : $"{dev.VramMB / 1024.0:0.0} GB · NVENC ✓")</div>
+                    </div>
+                }
+            </div>
+            <label class="lbd-toggle">
+                <input type="checkbox" checked="@Project.MultiGpuRender" @onchange="OnMultiGpu" disabled="@Disabled" />
+                <span class="lbd-tg"><span class="lbd-knob"></span></span> 컷 후처리 Dual NVENC 분산 렌더링
+            </label>
+            <button class="lbd-btn sm" @onclick="Redetect" disabled="@Disabled">🔄 GPU 재탐지</button>
+        </div>
+
+        @* ── ③ 모션 트래킹 ROI 캔버스 ── *@
+        <div class="lbd-card wide">
+            <div class="lbd-ct">🎯 모션 트래킹 ROI (드래그로 지정)</div>
+            <div class="lbd-canvas" @onmousedown="RoiDown" @onmousemove="RoiMove" @onmouseup="RoiUp" @onmouseleave="RoiUp">
+                <div class="lbd-cross" style="left:50%;top:50%"></div>
+                @if (Project.MotionRoiW > 0 && Project.MotionRoiH > 0)
+                {
+                    <div class="lbd-roi" style="left:@(Project.MotionRoiX * 100)%;top:@(Project.MotionRoiY * 100)%;width:@(Project.MotionRoiW * 100)%;height:@(Project.MotionRoiH * 100)%"></div>
+                }
+            </div>
+            <div class="lbd-track-row">
+                <input class="lbd-input" placeholder="추종 라벨 (예: ADAS SENSOR · 검사 헤드)" @bind="Project.MotionTrackLabel" disabled="@Disabled" />
+                <button class="lbd-btn sm" @onclick="ClearRoi" disabled="@Disabled">ROI 지우기</button>
+            </div>
+            <div class="lbd-onair">
+                <label class="lbd-toggle"><input type="checkbox" checked="@Project.OnAirBadge" @onchange="e => Project.OnAirBadge = e.Value is true" disabled="@Disabled" /><span class="lbd-tg"><span class="lbd-knob"></span></span> ON AIR 뱃지</label>
+                <label class="lbd-toggle"><input type="checkbox" checked="@Project.SwitchCountdown" @onchange="e => Project.SwitchCountdown = e.Value is true" disabled="@Disabled" /><span class="lbd-tg"><span class="lbd-knob"></span></span> 스위칭 카운트다운</label>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .lbd { border: 1px solid color-mix(in srgb,#ef4444 28%,var(--line)); border-radius: 16px; overflow: hidden;
+        background: linear-gradient(160deg, color-mix(in srgb,#ef4444 7%,rgba(18,20,31,.72)), rgba(18,20,31,.85)); backdrop-filter: blur(16px) saturate(140%); -webkit-backdrop-filter: blur(16px) saturate(140%); }
+    .lbd-h { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb,#ef4444 13%,transparent), transparent 60%); }
+    .lbd-title { font: 900 14px var(--mono); } .lbd-badge { font: 700 10px var(--mono); color: #fca5a5; background: color-mix(in srgb,#ef4444 15%,transparent); border: 1px solid color-mix(in srgb,#ef4444 38%,var(--line)); border-radius: 20px; padding: 2px 8px; }
+    .lbd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 14px 16px; }
+    .lbd-card { border: 1px solid var(--line); border-radius: 13px; background: rgba(26,29,43,.6); padding: 12px; display: flex; flex-direction: column; gap: 10px; } .lbd-card.wide { grid-column: 1 / -1; }
+    .lbd-ct { font: 800 12px var(--mono); display: flex; align-items: center; gap: 7px; }
+    .lbd-led { width: 11px; height: 11px; border-radius: 50%; background: #4b5563; box-shadow: 0 0 0 rgba(239,68,68,0); }
+    .lbd-led.on { background: #ef4444; animation: lbd-pulse 1.1s ease-in-out infinite; }
+    @@keyframes lbd-pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,.6); } 50% { box-shadow: 0 0 0 7px rgba(239,68,68,0); } }
+    .lbd-up { margin-left: auto; font: 800 11px var(--mono); color: #fca5a5; }
+    .lbd-cnt { margin-left: auto; font: 700 10px var(--mono); color: var(--text-muted); background: #12141f; border: 1px solid var(--line); border-radius: 20px; padding: 1px 8px; }
+    .lbd-seg { display: inline-flex; background: #12141f; border: 1px solid var(--line); border-radius: 10px; padding: 3px; gap: 3px; }
+    .lbd-segb { font: 800 11px var(--mono); padding: 7px 13px; border-radius: 8px; border: none; background: none; color: var(--text-secondary); cursor: pointer; }
+    .lbd-segb.on { color: #fff; background: linear-gradient(135deg,#ef4444,#f97316); } .lbd-segb:disabled { opacity: .5; }
+    .lbd-input { width: 100%; box-sizing: border-box; background: #12141f; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; color: var(--text-primary); font: 600 11.5px var(--mono); }
+    .lbd-input:focus { outline: none; border-color: #ef4444; }
+    .lbd-btn { font: 800 12.5px var(--mono); padding: 10px 14px; border: none; border-radius: 10px; color: #fff; cursor: pointer; background: linear-gradient(135deg,#7c3aed,#a855f7); }
+    .lbd-btn.go { background: linear-gradient(135deg,#ef4444,#f97316); } .lbd-btn.stop { background: linear-gradient(135deg,#475569,#1f2937); } .lbd-btn.sm { padding: 8px 12px; font-size: 11px; align-self: flex-start; }
+    .lbd-btn:disabled { opacity: .45; cursor: not-allowed; } .lbd-btn:hover:not(:disabled) { filter: brightness(1.08); }
+    .lbd-sub { font: 600 10.5px var(--mono); color: var(--text-muted); line-height: 1.4; word-break: break-all; }
+    .lbd-gpus { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .lbd-gpu { border: 1px solid var(--line); border-radius: 10px; padding: 9px; background: #12141f; } .lbd-gpu.off { opacity: .5; }
+    .lbd-gpu-h { display: flex; flex-direction: column; gap: 1px; } .lbd-gpu-h b { font: 800 11px var(--mono); color: #22d3ee; } .lbd-gpu-h span { font: 600 9px var(--mono); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .lbd-track { height: 8px; border-radius: 5px; background: #0b0d14; border: 1px solid var(--line); overflow: hidden; margin: 6px 0 4px; }
+    .lbd-fill { height: 100%; border-radius: 5px; } .lbd-fill.vram { background: linear-gradient(90deg,#22d3ee,#a855f7); }
+    .lbd-gpu-v { font: 700 9.5px var(--mono); color: var(--text-secondary); }
+    .lbd-toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 11px; color: var(--text-secondary); } .lbd-toggle input { display: none; }
+    .lbd-tg { width: 36px; height: 20px; border-radius: 20px; background: #12141f; border: 1px solid var(--line); position: relative; flex: 0 0 auto; } .lbd-knob { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: var(--text-muted); transition: transform .15s; }
+    .lbd-toggle input:checked + .lbd-tg { background: color-mix(in srgb,#ef4444 30%,var(--card)); border-color: #ef4444; } .lbd-toggle input:checked + .lbd-tg .lbd-knob { transform: translateX(16px); background: #fca5a5; }
+    .lbd-canvas { position: relative; width: 320px; height: 180px; max-width: 100%; background: repeating-linear-gradient(45deg,#0b0d14,#0b0d14 10px,#12141f 10px,#12141f 20px); border: 1px solid var(--line); border-radius: 10px; cursor: crosshair; overflow: hidden; }
+    .lbd-cross { position: absolute; width: 16px; height: 16px; transform: translate(-50%,-50%); }
+    .lbd-cross::before, .lbd-cross::after { content: ""; position: absolute; background: rgba(148,163,184,.4); } .lbd-cross::before { left: 50%; top: 0; bottom: 0; width: 1px; } .lbd-cross::after { top: 50%; left: 0; right: 0; height: 1px; }
+    .lbd-roi { position: absolute; border: 2px solid #22d3ee; background: rgba(34,211,238,.14); box-shadow: 0 0 14px rgba(34,211,238,.4); border-radius: 3px; }
+    .lbd-track-row { display: flex; gap: 8px; } .lbd-track-row .lbd-input { flex: 1; }
+    .lbd-onair { display: flex; gap: 18px; flex-wrap: wrap; }
+    @@media (max-width: 720px) { .lbd-grid { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter, EditorRequired] public StoryboardProject Project { get; set; } = default!;
+    [Parameter] public bool Disabled { get; set; }
+
+    private bool _drag;
+    private double _sx, _sy;
+    private const double CanvasW = 320, CanvasH = 180;   // 정규화 기준(좌표는 %로 렌더 · 비율만 사용)
+
+    private bool HasMaster => !string.IsNullOrWhiteSpace(Project.FinalVideoPath) && System.IO.File.Exists(Project.FinalVideoPath);
+    private string UrlHint => Project.LiveProtocol switch { "srt" => "srt://host:port", "ndi" => "NDI 소스명 (예: PROMPTFLOW)", _ => "rtmp://a.rtmp.youtube.com/live2/KEY" };
+
+    private long _memToken;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _memToken = MemAudit.Track("LiveBroadcastStudioDeck");   // v3.1.0 누수 감사 추적
+        Live.OnChange += OnSvc;
+        await Cluster.DetectGpusAsync();
+    }
+
+    private void OnSvc() => InvokeAsync(StateHasChanged);
+
+    private void SetProto(string p) => Project.LiveProtocol = p;
+    private void OnMultiGpu(ChangeEventArgs e) => Project.MultiGpuRender = e.Value is true;
+
+    private async Task StartLive()
+    {
+        if (!HasMaster) return;
+        var nvenc = Cluster.Devices.Count > 0;
+        await Live.StartAsync(Project.FinalVideoPath!, Project.LiveProtocol, Project.LiveUrl, loop: true, nvenc: nvenc);
+    }
+    private async Task StopLive() => await Live.StopAsync();
+
+    private async Task Redetect() { await Cluster.DetectGpusAsync(); StateHasChanged(); }
+
+    // ── ROI 드래그(정규화 저장) ──
+    private void RoiDown(MouseEventArgs e) { _drag = true; _sx = e.OffsetX; _sy = e.OffsetY; }
+    private void RoiMove(MouseEventArgs e)
+    {
+        if (!_drag) return;
+        // 캔버스는 고정 320×180px → OffsetX/Y 를 그대로 정규화(0~1)해 저장.
+        double x0 = Math.Min(_sx, e.OffsetX), y0 = Math.Min(_sy, e.OffsetY);
+        double rw = Math.Abs(e.OffsetX - _sx), rh = Math.Abs(e.OffsetY - _sy);
+        Project.MotionRoiX = Math.Clamp(x0 / CanvasW, 0, 1);
+        Project.MotionRoiY = Math.Clamp(y0 / CanvasH, 0, 1);
+        Project.MotionRoiW = Math.Clamp(rw / CanvasW, 0, 1);
+        Project.MotionRoiH = Math.Clamp(rh / CanvasH, 0, 1);
+    }
+    private void RoiUp(MouseEventArgs e) => _drag = false;
+
+    private void ClearRoi() { Project.MotionRoiX = Project.MotionRoiY = Project.MotionRoiW = Project.MotionRoiH = 0; }
+
+    private static int VramPct(int mb) => (int)Math.Clamp(mb / 24576.0 * 100, 4, 100);
+
+    public void Dispose() { Live.OnChange -= OnSvc; MemAudit.Release(_memToken); }   // v3.1.0 누수 감사 해제
+}

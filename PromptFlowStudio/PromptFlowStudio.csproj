@@ -1,0 +1,130 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <!-- v16.63.0 DirectPath 공유 메모리(MemoryMappedFile/NativeMemory) 포인터 Span 무복사 접근 -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>PromptFlowStudio</RootNamespace>
+    <AssemblyName>PromptFlowStudio</AssemblyName>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <Version>1.1.0</Version>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
+    <Company>ANG Technology</Company>
+    <Product>PromptFlow Studio · 프롬프트→영상 생성 워크플로우</Product>
+
+    <!-- ── 배포(Release) 대상 ── -->
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <!-- 단일 파일 self-extract 시 네이티브 DLL(WebView2 로더 등)을 포함 → CLI 에 별도 플래그 불필요. -->
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!-- ⚠ WinForms/Blazor 는 리플렉션 의존이 커서 트리밍은 런타임 크래시를 유발한다 — 반드시 비활성. -->
+    <PublishTrimmed>false</PublishTrimmed>
+  </PropertyGroup>
+
+  <!-- v15.17.0 LTS: 프로덕션 릴리스 최적화 — 계층형 JIT + 동적 PGO, 퍼블리시 시 ReadyToRun 사전 컴파일(콜드 스타트 단축). -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <Optimize>true</Optimize>
+    <Deterministic>true</Deterministic>
+    <DebugType>portable</DebugType>
+    <TieredCompilation>true</TieredCompilation>
+    <TieredPGO>true</TieredPGO>
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <UseSystemResourceKeys>false</UseSystemResourceKeys>
+  </PropertyGroup>
+
+  <!-- tools/PromptFlowKeyGen 은 별도 EXE(오프라인 라이선스 발급기) — 앱 컴파일 글롭에서
+       제외한다(중복 Main/AssemblyInfo 로 콘솔 빌드가 깨지는 것을 막는다). -->
+  <ItemGroup>
+    <Compile Remove="tools/**" />
+    <Content Remove="tools/**" />
+    <None Remove="tools/**" />
+    <EmbeddedResource Remove="tools/**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebView.WindowsForms" Version="8.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.1" />
+  </ItemGroup>
+
+  <!-- v4.1: 공용 Razor Class Library 참조 — WinForms/MAUI 호스트가 동일 코드 공유(단일 진실 원천). -->
+  <ItemGroup>
+    <ProjectReference Include="..\PromptFlowStudio.Shared\PromptFlowStudio.Shared.csproj" />
+  </ItemGroup>
+
+  <!-- ══════════════════════════════════════════════════════════════════════
+       BlazorWebView 데스크톱 배포 — wwwroot 물리 복사(SiteMatic 과 동일 안전망).
+       기본 Razor SDK 는 wwwroot 를 정적 자산 매니페스트(개발 절대경로)로만 제공하므로,
+       다른 PC/폴더에서 "There is no content at ..." 로 죽는다. exe 옆에 물리 복사해 둔다.
+       ══════════════════════════════════════════════════════════════════ -->
+  <ItemGroup>
+    <Content Update="wwwroot\**" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
+
+  <!-- ══════════════════════════════════════════════════════════════════════
+       FFmpeg 자동 동봉 — 프로젝트 루트의 ffmpeg.exe 를 빌드/퍼블리시 출력 옆으로 복사.
+       (다른 위치면 아래 FfmpegSource 만 바꾸거나 빌드 시 -p:FfmpegSource=경로 로 재정의)
+       ⚠ 없어도 빌드는 성공(경고만) — 앱은 런타임에 ffmpeg 부재를 Graceful 하게 처리한다.
+       ══════════════════════════════════════════════════════════════════ -->
+  <PropertyGroup>
+    <FfmpegSource Condition="'$(FfmpegSource)' == ''">$(MSBuildProjectDirectory)\ffmpeg.exe</FfmpegSource>
+  </PropertyGroup>
+
+  <Target Name="CopyFfmpegToBuild" AfterTargets="Build">
+    <Copy Condition="Exists('$(FfmpegSource)')" SourceFiles="$(FfmpegSource)"
+          DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Message Importance="high" Condition="!Exists('$(FfmpegSource)')"
+             Text="[알림] ffmpeg.exe 미동봉($(FfmpegSource)) — 영상 병합/썸네일은 런타임에 Graceful 비활성화됩니다(오류 아님)." />
+  </Target>
+
+  <Target Name="CopyFfmpegToPublish" AfterTargets="Publish">
+    <Copy Condition="Exists('$(FfmpegSource)')" SourceFiles="$(FfmpegSource)"
+          DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+    <Message Importance="high" Condition="!Exists('$(FfmpegSource)')"
+             Text="[알림] ffmpeg.exe 미동봉으로 퍼블리시에 포함되지 않았습니다($(FfmpegSource)) — 병합 기능 사용 시 ffmpeg.exe 를 함께 배포하세요." />
+  </Target>
+
+  <!-- ══════════════════════════════════════════════════════════════════════
+       Tools\ 번들 CLI 엔진 자동 동봉 — 프로젝트 루트 Tools\{engine}\ 하위의 <실행 파일>(Real-ESRGAN/Real-CUGAN/Kokoro/ffmpeg 등)을
+       빌드/퍼블리시 출력의 Tools\ 로 <구조 그대로> 복사. 런타임에 CliPathResolver 가 BaseDirectory\Tools\{engine}\ 를 자동 탐색한다.
+       ⚠ 폴더가 없어도 빌드 성공(알림만) — 엔진 부재는 런타임에 Graceful 비활성화(오류 아님).
+       ⚠⚠ 보안 제외: PromptFlowKeyGen(발급자 전용 · RSA 개인 서명키 내장)과 모든 소스/빌드 산출물(*.cs/*.csproj/bin/obj/*.pdb)은
+           <절대> 고객 배포본에 포함하지 않는다(개인키·소스 유출 방지). 순수 엔진 바이너리만 동봉된다.
+       ══════════════════════════════════════════════════════════════════ -->
+  <ItemGroup>
+    <BundledToolFiles Include="$(MSBuildProjectDirectory)\Tools\**\*"
+                      Exclude="$(MSBuildProjectDirectory)\Tools\PromptFlowKeyGen\**\*;$(MSBuildProjectDirectory)\Tools\**\bin\**\*;$(MSBuildProjectDirectory)\Tools\**\obj\**\*;$(MSBuildProjectDirectory)\Tools\**\*.cs;$(MSBuildProjectDirectory)\Tools\**\*.csproj;$(MSBuildProjectDirectory)\Tools\**\*.sln;$(MSBuildProjectDirectory)\Tools\**\*.pdb;$(MSBuildProjectDirectory)\Tools\**\*.user" />
+  </ItemGroup>
+
+  <Target Name="CopyToolsToBuild" AfterTargets="Build">
+    <Copy Condition="'@(BundledToolFiles)' != ''" SourceFiles="@(BundledToolFiles)"
+          DestinationFiles="@(BundledToolFiles-&gt;'$(OutDir)Tools\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+    <Message Importance="high" Condition="'@(BundledToolFiles)' == ''"
+             Text="[알림] Tools\ 번들 CLI 엔진이 없습니다 — Real-ESRGAN 등 로컬 엔진은 런타임에 Graceful 비활성화됩니다(오류 아님). 동봉하려면 프로젝트 루트에 Tools\{engine}\ 로 실행 파일을 두세요." />
+  </Target>
+
+  <Target Name="CopyToolsToPublish" AfterTargets="Publish">
+    <Copy Condition="'@(BundledToolFiles)' != ''" SourceFiles="@(BundledToolFiles)"
+          DestinationFiles="@(BundledToolFiles-&gt;'$(PublishDir)Tools\%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+    <Message Importance="high" Condition="'@(BundledToolFiles)' == ''"
+             Text="[알림] Tools\ 번들 CLI 엔진 미동봉 — 로컬 엔진 기능은 배포본에서 Graceful 비활성화됩니다(오류 아님)." />
+  </Target>
+
+</Project>

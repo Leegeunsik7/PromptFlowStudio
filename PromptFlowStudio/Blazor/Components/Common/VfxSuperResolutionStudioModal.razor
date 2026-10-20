@@ -1,0 +1,420 @@
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.Vfx
+@implements IDisposable
+@inject AiNeuralVfxRelightingEngine Relight
+@inject SuperResolution8kUpscalerEngine Upscaler
+@inject MotionFrameInterpolationEngine Interp
+
+@* [PromptFlow Studio v16.34.0] ✨ AI VFX 조명 & 8K 업스케일 스튜디오 — 깊이/법선 기반 가상 광원 3D 포지셔너(포인트·스포트·디렉셔널 · 드래그)
+   · 8K 업스케일(Real-ESRGAN/Compact · 샤프니스/디노이즈/디블록 · 전후 비교) · 60/120fps 보간 + 8x 슬로모션 구간 · 광학 흐름 프리뷰
+   · 1-Click VFX 체인(리라이팅 → 보간 → 업스케일) 내보내기. 상태는 서비스(싱글턴) 소유 — OnChange 구독. *@
+
+<div class="fx-scrim" @onclick="Close">
+    <div class="fx-modal" @onclick:stopPropagation="true">
+        <div class="fx-h">
+            <div>
+                <div class="fx-title">✨ AI VFX 조명 &amp; 8K 업스케일 스튜디오</div>
+                <div class="fx-sub">프레임의 <b>깊이·법선 지도</b>로 가상 광원을 합성해 시네마틱 조명을 재구성하고, <b>Real-ESRGAN</b>으로 8K(7680×4320)까지 업스케일하며,
+                    <b>RIFE/FLAVR 광학 흐름</b>으로 60/120fps 보간 및 최대 8x 초슬로모션을 생성합니다.</div>
+            </div>
+            <button class="fx-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="fx-bar">
+            <label class="fx-mut">소스 <input class="fx-in w320" @bind="_src" placeholder="영상 경로" /></label>
+            <label class="fx-mut">시각 <input class="fx-in w60" type="number" min="0" step="0.1" @bind="_t" @bind:culture="CultureInfo.InvariantCulture" /></label>
+            <span class="fx-chip @(Relight.FfmpegAvailable ? "ok" : "bad")">ffmpeg @(Relight.FfmpegAvailable ? "준비" : "없음")</span>
+            <span class="fx-chip @(Upscaler.AiAvailable ? "ok" : "")">@(Upscaler.AiAvailable ? "Real-ESRGAN 준비" : "ESRGAN 없음 → 정제 폴백")</span>
+            <span class="fx-chip @(Interp.RifeAvailable || Interp.FlavrAvailable ? "ok" : "")">@(Interp.RifeAvailable ? "RIFE" : Interp.FlavrAvailable ? "FLAVR" : "RIFE/FLAVR 없음 → MCI")</span>
+        </div>
+
+        <div class="fx-tabs">
+            <button class="@(_tab == 0 ? "on" : "")" @onclick="() => _tab = 0">💡 VFX 리라이팅</button>
+            <button class="@(_tab == 1 ? "on" : "")" @onclick="() => _tab = 1">🔍 8K 업스케일</button>
+            <button class="@(_tab == 2 ? "on" : "")" @onclick="() => _tab = 2">🌊 프레임 보간 · 슬로모션</button>
+            <button class="@(_tab == 3 ? "on" : "")" @onclick="() => _tab = 3">🚀 내보내기</button>
+        </div>
+
+        <div class="fx-body">
+            @if (_tab == 0)
+            {
+                <div class="fx-row">
+                    <button class="fx-btn sm go" disabled="@(_cts is not null)" @onclick="PreviewRelightAsync">🔎 프레임 분석</button>
+                    <button class="fx-btn sm" @onclick="() => Add(VfxLightKind.Point)">+ 포인트</button>
+                    <button class="fx-btn sm" @onclick="() => Add(VfxLightKind.Spot)">+ 스포트</button>
+                    <button class="fx-btn sm" @onclick="() => Add(VfxLightKind.Directional)">+ 디렉셔널</button>
+                    <label class="fx-mut">원본 보존 @(_preserve.ToString("0.00", CultureInfo.InvariantCulture)) <input type="range" min="0" max="1" step="0.05" @bind="_preserve" @bind:after="ApplyShading" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                    <label class="fx-mut">앰비언트 @(_ambient.ToString("0.00", CultureInfo.InvariantCulture)) <input type="range" min="0" max="1" step="0.05" @bind="_ambient" @bind:after="ApplyShading" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                    <label class="fx-mut">스페큘러 @(_spec.ToString("0.00", CultureInfo.InvariantCulture)) <input type="range" min="0" max="2" step="0.05" @bind="_spec" @bind:after="ApplyShading" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                    <label class="fx-mut">그림자 @(_shadow.ToString("0.00", CultureInfo.InvariantCulture)) <input type="range" min="0" max="1" step="0.05" @bind="_shadow" @bind:after="ApplyShading" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                </div>
+                <div class="fx-grid2">
+                    <div>
+                        <div class="fx-sec">광원 3D 포지셔너 (클릭 = 선택 광원 X/Y 이동 · 슬라이더 = 깊이 Z)</div>
+                        <svg class="fx-pos" viewBox="-1.1 -1.1 2.2 2.2" @onclick="PlaceLight">
+                            @if (Relight.LastPreview is { } bg)
+                            {
+                                <image href="@(bg.ResultDataUrl)" x="-1" y="-1" width="2" height="2" preserveAspectRatio="none" opacity="0.55" />
+                            }
+                            <rect x="-1" y="-1" width="2" height="2" fill="none" stroke="#334155" stroke-width="0.01" />
+                            @{ var lights = Relight.Lights; }
+                            @for (var i = 0; i < lights.Count; i++)
+                            {
+                                var l = lights[i];
+                                var lx = l.Kind == VfxLightKind.Directional ? -l.Dx * 0.9f : l.X;
+                                var ly = l.Kind == VfxLightKind.Directional ? -l.Dy * 0.9f : l.Y;
+                                var r = (0.05f + (1 - Math.Clamp(l.Z, -1f, 1f)) * 0.03f).ToString("0.###", CultureInfo.InvariantCulture);
+                                <g>
+                                    <circle cx="@(lx.ToString("0.###", CultureInfo.InvariantCulture))" cy="@((-ly).ToString("0.###", CultureInfo.InvariantCulture))" r="@r"
+                                            fill="@(Hex(l))" stroke="@(i == _sel ? "#fde047" : "#0f172a")" stroke-width="0.015" />
+                                    <text x="@(lx.ToString("0.###", CultureInfo.InvariantCulture))" y="@((-ly - 0.1f).ToString("0.###", CultureInfo.InvariantCulture))" fill="#e2e8f0" font-size="0.07" text-anchor="middle">@(KindLabel(l.Kind)) @(i + 1)</text>
+                                </g>
+                            }
+                        </svg>
+                    </div>
+                    <div>
+                        <div class="fx-sec">광원 목록</div>
+                        @{ var ls = Relight.Lights; }
+                        @for (var i = 0; i < ls.Count; i++)
+                        {
+                            var idx = i;
+                            var l = ls[i];
+                            <div class="fx-light @(idx == _sel ? "sel" : "")" @onclick="() => _sel = idx">
+                                <b>@(KindLabel(l.Kind)) @(idx + 1)</b>
+                                <input type="color" value="@(Hex(l))" @onchange="e => SetColor(idx, e.Value?.ToString())" />
+                                <label class="fx-mut">강도 <input type="range" min="0" max="4" step="0.05" value="@(l.Intensity.ToString(CultureInfo.InvariantCulture))" @onchange="e => Update(idx, Relight.Lights[idx] with { Intensity = F(e.Value) })" /></label>
+                                <label class="fx-mut">Z <input type="range" min="-1" max="1" step="0.05" value="@(l.Z.ToString(CultureInfo.InvariantCulture))" @onchange="e => Update(idx, Relight.Lights[idx] with { Z = F(e.Value) })" /></label>
+                                @if (l.Kind == VfxLightKind.Spot)
+                                {
+                                    <label class="fx-mut">콘 <input type="range" min="5" max="80" step="1" value="@(l.ConeDeg.ToString(CultureInfo.InvariantCulture))" @onchange="e => Update(idx, Relight.Lights[idx] with { ConeDeg = F(e.Value) })" /></label>
+                                }
+                                <label class="fx-mut"><input type="checkbox" checked="@l.Shadows" @onchange="e => Update(idx, Relight.Lights[idx] with { Shadows = e.Value is true })" /> 그림자</label>
+                                <button class="fx-btn sm" @onclick="() => Remove(idx)">✕</button>
+                            </div>
+                        }
+                    </div>
+                </div>
+                @if (Relight.LastPreview is { } rp)
+                {
+                    <div class="fx-grid3">
+                        <div><div class="fx-sec">깊이</div><img class="fx-img" src="@(rp.DepthDataUrl)" alt="depth" /></div>
+                        <div><div class="fx-sec">법선</div><img class="fx-img" src="@(rp.NormalDataUrl)" alt="normal" /></div>
+                        <div><div class="fx-sec">리라이팅 결과 · @(rp.Milliseconds.ToString("0", CultureInfo.InvariantCulture))ms</div><img class="fx-img" src="@(rp.ResultDataUrl)" alt="relit" /></div>
+                    </div>
+                }
+            }
+            else if (_tab == 1)
+            {
+                <div class="fx-row">
+                    <label class="fx-mut"><input type="radio" name="fx-t" checked="@(_target == SrTarget.Uhd8k)" @onchange="() => { _target = SrTarget.Uhd8k; ApplyUpscale(); }" /> 8K 7680×4320</label>
+                    <label class="fx-mut"><input type="radio" name="fx-t" checked="@(_target == SrTarget.Uhd4k)" @onchange="() => { _target = SrTarget.Uhd4k; ApplyUpscale(); }" /> 4K 3840×2160</label>
+                    <label class="fx-mut">모델
+                        <select class="fx-in" @bind="_model" @bind:after="ApplyUpscale">
+                            <option value="@SrModel.RealEsrGeneralCompact">Compact(realesr-general-x4v3)</option>
+                            <option value="@SrModel.RealEsrganX4Plus">Real-ESRGAN x4plus</option>
+                            <option value="@SrModel.RealEsrganAnime">Anime x4plus</option>
+                        </select>
+                    </label>
+                    <label class="fx-mut">샤프니스 @(_sharp.ToString("0.0", CultureInfo.InvariantCulture)) <input type="range" min="0" max="2" step="0.1" @bind="_sharp" @bind:after="ApplyUpscale" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                    <label class="fx-mut">디노이즈 @(_denoise.ToString("0.00", CultureInfo.InvariantCulture)) <input type="range" min="0" max="1" step="0.05" @bind="_denoise" @bind:after="ApplyUpscale" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                    <label class="fx-mut"><input type="checkbox" @bind="_deblock" @bind:after="ApplyUpscale" /> 압축 아티팩트 제거</label>
+                    <button class="fx-btn sm go" disabled="@(_cts is not null)" @onclick="PreviewUpscaleAsync">🔎 4x 비교 프리뷰</button>
+                </div>
+                @if (Upscaler.LastPreview is { } up)
+                {
+                    <div class="fx-grid2">
+                        <div><div class="fx-sec">이전(최근접)</div><img class="fx-img px" src="@(up.BeforeDataUrl)" alt="before" /></div>
+                        <div><div class="fx-sec">이후(정제 + 바이큐빅 + 샤프)</div><img class="fx-img" src="@(up.AfterDataUrl)" alt="after" /></div>
+                    </div>
+                    <div class="fx-mut">크롭 @(up.SrcWidth)×@(up.SrcHeight) → @(up.Width)×@(up.Height) · @(up.Milliseconds.ToString("0", CultureInfo.InvariantCulture))ms · 실제 출력은 Real-ESRGAN(설치 시) 사용</div>
+                }
+                else
+                {
+                    <div class="fx-empty">프리뷰로 샤프니스/디노이즈 효과를 비교하세요.</div>
+                }
+            }
+            else if (_tab == 2)
+            {
+                <div class="fx-row">
+                    <label class="fx-mut"><input type="radio" name="fx-fps" checked="@(_fps == 60)" @onchange="() => _fps = 60" /> 60fps</label>
+                    <label class="fx-mut"><input type="radio" name="fx-fps" checked="@(_fps == 120)" @onchange="() => _fps = 120" /> 120fps</label>
+                    <label class="fx-mut">엔진
+                        <select class="fx-in" @bind="_engine">
+                            <option value="@InterpEngine.Auto">자동</option>
+                            <option value="@InterpEngine.Rife">RIFE</option>
+                            <option value="@InterpEngine.Flavr">FLAVR</option>
+                            <option value="@InterpEngine.FfmpegMci">ffmpeg MCI</option>
+                        </select>
+                    </label>
+                    <label class="fx-mut"><input type="checkbox" @bind="_slow" /> 초슬로모션 구간</label>
+                    @if (_slow)
+                    {
+                        <label class="fx-mut">시작 <input class="fx-in w60" type="number" min="0" step="0.1" @bind="_slowStart" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                        <label class="fx-mut">끝 <input class="fx-in w60" type="number" min="0" step="0.1" @bind="_slowEnd" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                        <label class="fx-mut">배율 @(_factor)x <input type="range" min="2" max="8" step="1" @bind="_factor" /></label>
+                    }
+                    <button class="fx-btn sm go" disabled="@(_cts is not null)" @onclick="PreviewInterpAsync">🔎 광학 흐름 프리뷰</button>
+                </div>
+                @if (Interp.LastPreview is { } ip)
+                {
+                    <div class="fx-grid4">
+                        <div><div class="fx-sec">프레임 A</div><img class="fx-img" src="@(ip.FrameADataUrl)" alt="a" /></div>
+                        <div><div class="fx-sec">보간 t=0.5</div><img class="fx-img" src="@(ip.MidDataUrl)" alt="mid" /></div>
+                        <div><div class="fx-sec">프레임 B</div><img class="fx-img" src="@(ip.FrameBDataUrl)" alt="b" /></div>
+                        <div><div class="fx-sec">흐름 · 평균 @(ip.MeanMotionPx.ToString("0.0", CultureInfo.InvariantCulture))px</div><img class="fx-img" src="@(ip.FlowDataUrl)" alt="flow" /></div>
+                    </div>
+                }
+                else
+                {
+                    <div class="fx-empty">연속 두 프레임의 광학 흐름과 중간 프레임을 미리 확인하세요.</div>
+                }
+            }
+            else
+            {
+                <div class="fx-row">
+                    <label class="fx-mut"><input type="checkbox" @bind="_doRelight" /> 💡 리라이팅</label>
+                    <label class="fx-mut"><input type="checkbox" @bind="_doInterp" /> 🌊 보간 @(_fps)fps@(_slow ? " + " + _factor.ToString(CultureInfo.InvariantCulture) + "x 슬로모션" : "")</label>
+                    <label class="fx-mut"><input type="checkbox" @bind="_doUpscale" /> 🔍 업스케일 @(_target == SrTarget.Uhd8k ? "8K" : "4K")</label>
+                </div>
+                <div class="fx-row">
+                    <label class="fx-mut">출력 폴더 <input class="fx-in w320" @bind="_outDir" /></label>
+                    <label class="fx-mut">이름 <input class="fx-in w160" @bind="_name" /></label>
+                </div>
+                <div class="fx-mut">체인 순서: 리라이팅(1280폭) → 보간 → 업스케일(최종 해상도) — 각 단계 실패 시 직전 결과를 보존([부분 구제]).</div>
+                <div class="fx-prog"><div class="fx-pbar" style="width:@((_chainProgress * 100).ToString("0.#", CultureInfo.InvariantCulture))%"></div><span>@(_stage ?? "대기")</span></div>
+                @if (_results.Count > 0)
+                {
+                    <ul class="fx-files">
+                        @foreach (var r in _results) { <li class="@(r.Ok ? "ok" : "bad")">@(r.Ok ? "✅" : "⚠") @(r.Engine) · @(r.Message)@(r.OutputPath is { } o ? " · " + Path.GetFileName(o) : "")</li> }
+                    </ul>
+                }
+            }
+        </div>
+
+        <div class="fx-f">
+            <span class="fx-mut">@(_msg ?? Upscaler.LastAction ?? Interp.LastAction ?? Relight.LastAction ?? "대기 중")</span>
+            @if (_cts is not null)
+            {
+                <button class="fx-btn" @onclick="Cancel">■ 취소</button>
+            }
+            <button class="fx-btn go" disabled="@(_cts is not null || Relight.IsBusy || Upscaler.IsBusy || Interp.IsBusy)" @onclick="ExportAsync">🚀 1-Click VFX/업스케일 내보내기</button>
+            <button class="fx-btn" disabled="@(_cts is not null)" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .fx-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .fx-modal { width: min(1180px, 97vw); max-height: 93vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .fx-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f59e0b 12%, var(--card)), color-mix(in srgb, #8b5cf6 10%, var(--card))); }
+    .fx-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .fx-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .fx-sub b { color: var(--text-primary); }
+    .fx-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .fx-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .fx-tabs { display: flex; gap: 4px; padding: 8px 18px 0; border-bottom: 1px solid var(--line); }
+    .fx-tabs button { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; border: 0; background: none; color: var(--text-muted); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
+    .fx-tabs button.on { color: var(--text-primary); border-bottom-color: #f59e0b; }
+    .fx-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .fx-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .fx-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); margin-bottom: 4px; }
+    .fx-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .fx-grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .fx-grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .fx-pos { width: 360px; height: 360px; max-width: 100%; background: #06080e; border-radius: 12px; border: 1px solid var(--line); cursor: crosshair; }
+    .fx-light { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 9px; padding: 6px 8px; margin-bottom: 6px; cursor: pointer; font-size: 12px; }
+    .fx-light.sel { border-color: #fde047; }
+    .fx-light b { color: var(--text-primary); min-width: 80px; }
+    .fx-light input[type=color] { width: 28px; height: 22px; border: 0; background: none; }
+    .fx-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .fx-chip.ok { color: #4ade80; } .fx-chip.bad { color: #f87171; }
+    .fx-mut { font-size: 11px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+    .fx-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; }
+    .fx-in.w60 { width: 60px; } .fx-in.w160 { width: 160px; } .fx-in.w320 { width: 320px; }
+    .fx-img { width: 100%; border-radius: 10px; border: 1px solid var(--line); background: #06080e; }
+    .fx-img.px { image-rendering: pixelated; }
+    .fx-empty { font-size: 12px; color: var(--text-muted); padding: 24px; text-align: center; border: 1px dashed var(--line); border-radius: 10px; }
+    .fx-prog { position: relative; height: 22px; border-radius: 11px; background: var(--bg); overflow: hidden; }
+    .fx-pbar { position: absolute; inset: 0 auto 0 0; background: linear-gradient(90deg,#f59e0b,#8b5cf6); transition: width .2s; }
+    .fx-prog span { position: relative; font: 700 11px var(--mono); padding-left: 10px; line-height: 22px; }
+    .fx-files { margin: 0; padding-left: 18px; font-size: 12px; } .fx-files .ok { color: #4ade80; } .fx-files .bad { color: #f87171; }
+    .fx-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }
+    .fx-f .fx-mut { margin-right: auto; }
+    .fx-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .fx-btn.sm { padding: 3px 8px; font-size: 11px; }
+    .fx-btn.go { background: linear-gradient(135deg,#f59e0b,#8b5cf6); color: #fff; border: 0; }
+    .fx-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 820px) { .fx-grid2, .fx-grid3, .fx-grid4 { grid-template-columns: 1fr; } .fx-in.w320 { width: 200px; } }
+</style>
+
+@code {
+    [Parameter] public StoryboardProject? Project { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private int _tab, _sel, _fps = 120, _factor = 4;
+    private double _t, _slowStart = 1, _slowEnd = 2, _chainProgress;
+    private float _preserve, _ambient, _spec, _shadow, _sharp, _denoise;
+    private bool _deblock, _slow, _doRelight = true, _doInterp = true, _doUpscale = true;
+    private string _src = "", _outDir = "", _name = "vfx_master";
+    private string? _msg, _stage;
+    private SrTarget _target;
+    private SrModel _model;
+    private InterpEngine _engine;
+    private readonly List<VfxVideoResult> _results = new();
+    private CancellationTokenSource? _cts;
+
+    protected override void OnInitialized()
+    {
+        Relight.OnChange += OnServiceChanged;
+        Upscaler.OnChange += OnServiceChanged;
+        Interp.OnChange += OnServiceChanged;
+        var s = Relight.Shading;
+        _preserve = s.Preserve; _ambient = s.Ambient; _spec = s.Specular; _shadow = s.ShadowDensity;
+        var u = Upscaler.Settings;
+        _target = u.Target; _model = u.Model; _sharp = u.Sharpness; _denoise = u.Denoise; _deblock = u.Deblock;
+        _fps = Interp.TargetFps is 60 ? 60 : 120; _engine = Interp.Engine;
+        _src = Project?.FinalVideoPath ?? "";
+        _outDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "PromptFlow VFX");
+        if (!string.IsNullOrWhiteSpace(Project?.Title)) _name = Project.Title;
+    }
+
+    private static string KindLabel(VfxLightKind k) => k switch { VfxLightKind.Point => "포인트", VfxLightKind.Spot => "스포트", _ => "디렉셔널" };
+
+    private static string Hex(VfxLight l)
+    {
+        static string C(float v) => ((int)Math.Clamp(v * 255f, 0, 255)).ToString("x2", CultureInfo.InvariantCulture);
+        return "#" + C(l.R) + C(l.G) + C(l.B);
+    }
+
+    private static float F(object? v) => float.TryParse(v?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var f) ? f : 0f;
+
+    private void Add(VfxLightKind k)
+    {
+        var l = k switch
+        {
+            VfxLightKind.Point => VfxLight.Point(0, 0.3f, -0.3f, 1f, 0.9f, 0.75f, 1.2f),
+            VfxLightKind.Spot => VfxLight.Spot(-0.6f, 0.6f, -0.5f, 0.6f, -0.6f, 1f, 0.7f, 0.85f, 1f, 2f),
+            _ => VfxLight.Directional(0.5f, -0.4f, 1f, 1f, 0.95f, 0.85f, 0.6f),
+        };
+        if (!Relight.AddLight(l)) _msg = "⚠ 광원은 최대 " + AiNeuralVfxRelightingEngine.MaxLights.ToString(CultureInfo.InvariantCulture) + "개입니다.";
+        else { _sel = Relight.Lights.Count - 1; Relight.RebuildPreview(); }
+    }
+
+    private void Update(int i, VfxLight l) { Relight.SetLight(i, l); Relight.RebuildPreview(); }
+
+    private void Remove(int i) { Relight.RemoveLight(i); _sel = Math.Max(0, Math.Min(_sel, Relight.Lights.Count - 1)); Relight.RebuildPreview(); }
+
+    private void SetColor(int i, string? hex)
+    {
+        if (hex is not { Length: 7 } || !int.TryParse(hex.AsSpan(1), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var v)) return;
+        Update(i, Relight.Lights[i] with { R = ((v >> 16) & 255) / 255f, G = ((v >> 8) & 255) / 255f, B = (v & 255) / 255f });
+    }
+
+    private void PlaceLight(MouseEventArgs e)
+    {
+        var lights = Relight.Lights;
+        if ((uint)_sel >= (uint)lights.Count) return;
+        // SVG 폭 기준 오프셋 근사 → -1~1 (viewBox -1.1~1.1)
+        var size = Math.Max(1, _posSize);
+        var x = (float)Math.Clamp(e.OffsetX / size * 2.2 - 1.1, -1, 1);
+        var y = (float)Math.Clamp(-(e.OffsetY / size * 2.2 - 1.1), -1, 1);
+        var l = lights[_sel];
+        Update(_sel, l.Kind == VfxLightKind.Directional ? l with { Dx = -x, Dy = -y } : l with { X = x, Y = y });
+    }
+
+    private const double _posSize = 360;   // .fx-pos 고정 크기(px)
+
+    private void ApplyShading()
+    {
+        Relight.Shading = Relight.Shading with { Preserve = _preserve, Ambient = _ambient, Specular = _spec, ShadowDensity = _shadow };
+        Relight.RebuildPreview();
+    }
+
+    private void ApplyUpscale() => Upscaler.Settings = new UpscaleSettings(_target, _model, _sharp, _denoise, _deblock, Upscaler.Settings.Crf).Clamp();
+
+    private Task PreviewRelightAsync() => RunAsync(async ct => _msg = await Relight.PreviewAsync(_src.Trim(), _t, ct) is null ? "⚠ 프레임 분석 실패(경로/ffmpeg 확인)" : null);
+
+    private Task PreviewUpscaleAsync()
+    {
+        ApplyUpscale();
+        return RunAsync(async ct => _msg = await Upscaler.PreviewAsync(_src.Trim(), _t, ct) is null ? "⚠ 프리뷰 실패(경로/ffmpeg 확인)" : null);
+    }
+
+    private Task PreviewInterpAsync() => RunAsync(async ct => _msg = await Interp.PreviewAsync(_src.Trim(), _t, ct) is null ? "⚠ 프리뷰 실패(경로/ffmpeg 확인)" : null);
+
+    private Task ExportAsync()
+    {
+        ApplyUpscale();
+        Interp.TargetFps = _fps;
+        Interp.Engine = _engine;
+        _tab = 3;
+        _results.Clear();
+        return RunAsync(async ct =>
+        {
+            var cur = _src.Trim();
+            if (!File.Exists(cur)) { _msg = "⚠ 소스 영상이 없습니다."; return; }
+            Directory.CreateDirectory(_outDir);
+            var baseName = PromptFlowStudio.Services.Spatial.MvHevcSpatialVideoTranscoder.SafeName(_name);
+            var steps = (_doRelight ? 1 : 0) + (_doInterp ? 1 : 0) + (_doUpscale ? 1 : 0);
+            var done = 0;
+            if (_doRelight)
+            {
+                _stage = "💡 리라이팅"; await InvokeAsync(StateHasChanged);
+                var r = await Relight.RelightVideoAsync(cur, Path.Combine(_outDir, baseName + "_relit.mp4"), 1280, ct);
+                _results.Add(r); if (r.Ok) cur = r.OutputPath!;
+                _chainProgress = ++done / (double)steps;
+            }
+            if (_doInterp)
+            {
+                _stage = "🌊 보간"; await InvokeAsync(StateHasChanged);
+                SlowMoSegment? seg = _slow ? new SlowMoSegment(_slowStart, _slowEnd, _factor) : null;
+                var r = await Interp.InterpolateVideoAsync(cur, Path.Combine(_outDir, baseName + "_" + _fps.ToString(CultureInfo.InvariantCulture) + "fps.mp4"), seg, ct);
+                _results.Add(r); if (r.Ok) cur = r.OutputPath!;
+                _chainProgress = ++done / (double)steps;
+            }
+            if (_doUpscale)
+            {
+                _stage = "🔍 업스케일"; await InvokeAsync(StateHasChanged);
+                var r = await Upscaler.UpscaleVideoAsync(cur, Path.Combine(_outDir, baseName + (_target == SrTarget.Uhd8k ? "_8k.mp4" : "_4k.mp4")), ct);
+                _results.Add(r); if (r.Ok) cur = r.OutputPath!;
+                _chainProgress = ++done / (double)steps;
+            }
+            var failed = _results.FindAll(r => !r.Ok).Count;
+            _stage = failed == 0 ? "완료" : "[부분 구제] " + failed.ToString(CultureInfo.InvariantCulture) + "단계 실패";
+            _msg = "🚀 최종: " + Path.GetFileName(cur);
+        });
+    }
+
+    private async Task RunAsync(Func<CancellationToken, Task> work)
+    {
+        var cts = new CancellationTokenSource();
+        if (Interlocked.CompareExchange(ref _cts, cts, null) is not null) { cts.Dispose(); return; }
+        try { await work(cts.Token); }
+        catch (OperationCanceledException) { _msg = "⚠ 취소됨"; }
+        catch (Exception ex) { Program.Log("VfxStudio.Run", ex); _msg = "⚠ 실패: " + ex.Message; }
+        finally
+        {
+            Interlocked.CompareExchange(ref _cts, null, cts);
+            cts.Dispose();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void Cancel()
+    {
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
+    private Task Close() => _cts is not null ? Task.CompletedTask : OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Relight.OnChange -= OnServiceChanged;
+        Upscaler.OnChange -= OnServiceChanged;
+        Interp.OnChange -= OnServiceChanged;
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+}

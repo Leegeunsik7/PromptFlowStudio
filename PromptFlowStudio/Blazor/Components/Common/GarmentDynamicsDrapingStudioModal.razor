@@ -1,0 +1,227 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.Garment
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject GarmentDynamicsStudioRunner Runner
+
+@*
+    [PromptFlow Studio v17.16.0] 👗 AI 다층 의상 동역학 & 드레이핑 스튜디오 — 다층 의상 3D 솔리드/장력/와이어프레임 뷰포트 · 레이어별 직물 프리셋(실크/면/데님/가죽) ·
+    직물 장력 히트맵 · 레이어 간 자가 교차 · 신체/헤어 접촉 가드.
+*@
+
+<div class="gmt-scrim" @onclick="Close">
+    <div class="gmt-modal" @onclick:stopPropagation="true">
+        <div class="gmt-h">
+            <div>
+                <div class="gmt-title">👗 AI 다층 의상 동역학 &amp; 드레이핑 스튜디오</div>
+                <div class="gmt-sub"><b>다층 PBD 엔진</b>이 이너 · 셔츠/팬츠 · 코트(+스커트) 3 레이어 @(E.P.ToString("N0", CultureInfo.InvariantCulture)) 입자를 경사/위사 신장 · 전단 · 굽힘 엣지 @(E.Edges.ToString("N0", CultureInfo.InvariantCulture))개(정점 비공유 @(E.Colors)색 배치 = SIMD 레인)로 가우스-자이델 풉니다.
+                    <b>직물 합성기</b>는 실크 · 면 · 데님 · 가죽의 비등방 강성과 압축 이력 링버퍼로 폴드와 미세 주름 법선을 만들고,
+                    <b>가드</b>는 v17.14 근육 팽창 피부 · 레이어 두께 오프셋 · 팔/몸통/다리 교차 · v17.15 긴 머리와의 양방향 접촉을 처리합니다. 연기자는 인프로세스 시뮬레이션입니다.</div>
+            </div>
+            <button class="gmt-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="gmt-bar">
+            <button class="gmt-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 의상 가동")</button>
+            <button class="gmt-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="gmt-btn @(Runner.ScenarioEnabled ? "on" : null)" @onclick="() => Runner.ScenarioEnabled = !Runner.ScenarioEnabled">🎬 시나리오</button>
+            <span class="gmt-chip">단계 @(Runner.Phase)</span>
+            <span class="gmt-chip">틱 @(Runner.Tick) · @(F2(Runner.LastTickMs)) ms · PBD @(F0(E.LastSolveUs)) (충돌 @(F0(G.LastCollideUs))) · 직물 @(F0(D.LastUpdateUs)) · 헤어 접촉 @(F0(G.LastHairUs)) µs · @(E.EffectivePath)</span>
+            <span class="gmt-chip @(Runner.LastTickMs < 16.7 ? "ok" : "warn")">@(Runner.LastTickMs < 16.7 ? "60 FPS 예산 내" : "예산 초과")</span>
+        </div>
+
+        <div class="gmt-main">
+            <div class="gmt-col">
+                <div class="gmt-card">
+                    <div class="gmt-sec">🎥 다층 의상 3D 뷰포트
+                        <button class="gmt-btn sm @(Runner.ViewMode == 0 ? "on" : null)" @onclick="() => Runner.ViewMode = 0">솔리드</button>
+                        <button class="gmt-btn sm @(Runner.ViewMode == 1 ? "on" : null)" @onclick="() => Runner.ViewMode = 1">장력 히트맵</button>
+                        <button class="gmt-btn sm @(Runner.ViewMode == 2 ? "on" : null)" @onclick="() => Runner.ViewMode = 2">와이어프레임</button>
+                        @for (var l = 0; l < MultiLayerGarmentPbdDynamicsEngine.Layers; l++)
+                        {
+                            var li = l;
+                            <button class="gmt-btn sm @(Runner.LayerVisible[li] ? "on" : null)" @onclick="() => Runner.LayerVisible[li] = !Runner.LayerVisible[li]">@(LayerShort(li))</button>
+                        }
+                        <button class="gmt-btn sm @(Runner.ShowBody ? "on" : null)" @onclick="() => Runner.ShowBody = !Runner.ShowBody">피부</button>
+                    </div>
+                    <div class="gmt-vp"><img src="data:image/bmp;base64,@(Runner.RenderBase64())" alt="garment viewport" /></div>
+                    <div class="gmt-ctl">
+                        <label class="gmt-sl">카메라 <b>@(F0(Runner.CameraYawDeg))°</b><input type="range" min="-180" max="180" step="5" value="@(F0(Runner.CameraYawDeg))" @onchange="e => Runner.CameraYawDeg = (float)Num(e, 30)" /></label>
+                        @if (Runner.ViewMode == 1)
+                        {
+                            <span class="gmt-legend"><span class="grad"></span>장력(신장 변형률) 0 → 8%</span>
+                        }
+                    </div>
+                    <div class="gmt-kv">신장 오차 평균 <b>@(F2(E.MeanStretchError * 100))%</b> · 최대 @(F1(E.MaxStretchError * 100))% · 폴드 @(D.Folds) · 주름 압착 구간 입자 @(G.CreaseParticles)</div>
+                </div>
+
+                <div class="gmt-card">
+                    <div class="gmt-sec">🧵 레이어별 직물 프리셋 · 장력</div>
+                    @for (var l = 0; l < MultiLayerGarmentPbdDynamicsEngine.Layers; l++)
+                    {
+                        var li = l;
+                        var mat = D.LayerMaterial((GarmentLayer)li);
+                        <div class="gmt-layer">
+                            <span class="nm"><i style="background:@(Css(mat.Color))"></i>@(GarmentDynamicsStudioRunner.LayerName((GarmentLayer)li))</span>
+                            <span class="sw">
+                                @for (var p = 0; p < 4; p++)
+                                {
+                                    var pi = p;
+                                    <button class="gmt-btn sm @((int)D.LayerPreset((GarmentLayer)li) == pi ? "on" : null)" @onclick="() => Runner.SetFabric((GarmentLayer)li, (FabricPreset)pi)">@(AnisotropicFabricDrapingWrinkleSynthesizer.Presets[pi].Name)</button>
+                                }
+                            </span>
+                            <span class="bar"><span style="width:@(F1(Math.Min(100, D.LayerMaxTension[li] * 1250)))%"></span></span>
+                            <span class="v">최대 @(F1(D.LayerMaxTension[li] * 100))% · 평균 @(F2(D.LayerMeanTension[li] * 100))% · 폴드 @(D.LayerFolds[li]) · 주름 @(D.LayerWrinkled[li])</span>
+                            <span class="mono">경사 @(F2(mat.Warp)) · 위사 @(F2(mat.Weft)) · 전단 @(F2(mat.Shear)) · 굽힘 @(F3(mat.BendWarp))/@(F3(mat.BendWeft)) · 두께 @(F1(mat.Thickness * 1000)) mm · 여유 @(F0(E.LayerClearance[li] * 1000)) mm · 주름 λ @(F0(mat.WrinkleLambda * 1000)) mm · 기억 @(F2(mat.CreaseMemory))</span>
+                        </div>
+                    }
+                    <div class="gmt-ctl">
+                        <label class="gmt-sl">미세 주름 게인 <b>@(F2(D.WrinkleGain))</b><input type="range" min="0" max="3" step="0.05" value="@(F2(D.WrinkleGain))" @onchange="e => Runner.SetWrinkleGain((float)Num(e, 1))" /></label>
+                        <label class="gmt-sl">근육 팽창 <b>@(F2(Runner.Skin.MuscleGain))</b><input type="range" min="0" max="2.5" step="0.05" value="@(F2(Runner.Skin.MuscleGain))" @onchange="e => Runner.SetMuscleGain((float)Num(e, 1))" /></label>
+                    </div>
+                    <svg class="gmt-spark" viewBox="0 0 360 50" preserveAspectRatio="none">
+                        <polyline class="ten" points="@(Series(Runner.TensionSeries, 0.3, 50))" />
+                        <polyline class="fold" points="@(Series(Runner.FoldSeries, 3000, 50))" />
+                    </svg>
+                    <div class="gmt-legend"><i class="ten"></i>미드 레이어 최대 장력(0–30%) <i class="fold"></i>폴드 입자 수(0–3000)</div>
+                </div>
+            </div>
+
+            <div class="gmt-col">
+                <div class="gmt-card">
+                    <div class="gmt-sec">🧅 레이어 간 자가 교차 · 신체 접촉 가드
+                        <button class="gmt-btn sm @(G.LayerGuard ? "on" : null)" @onclick="() => Runner.SetLayerGuard(!G.LayerGuard)">레이어 가드</button>
+                        <button class="gmt-btn sm @(G.BodyCollision ? "on" : null)" @onclick="() => Runner.SetBodyCollision(!G.BodyCollision)">피부 충돌</button>
+                        <button class="gmt-btn sm @(G.CrossTube ? "on" : null)" @onclick="() => Runner.SetCrossTube(!G.CrossTube)">팔/몸통/다리 교차</button>
+                        <button class="gmt-btn sm @(G.Tether ? "on" : null)" @onclick="() => G.Tether = !G.Tether">최대 거리 테더</button>
+                    </div>
+                    <div class="gmt-kv">피부 침범(반복 전) <b>@(F1(G.BodyPenetrationBeforeMm)) mm</b> → 잔여 <b>@(F2(G.BodyPenetrationResidualMm)) mm</b> · 접촉 @(G.BodyContacts) · 교차 튜브 @(G.CrossContacts)</div>
+                    <div class="gmt-kv">레이어 위반 <b>@(G.LayerViolationsBefore) → @(G.LayerViolationsAfter)</b> (최대 @(F1(G.LayerViolationMaxMm)) mm) · 레이어 두께 @(F1(G.LayerThickness[0] * 1000)) / @(F1(G.LayerThickness[1] * 1000)) / @(F1(G.LayerThickness[2] * 1000)) mm</div>
+                    <div class="gmt-ctl">
+                        <label class="gmt-sl">이너 테더 <b>@(F0(G.TetherMax[0] * 1000)) mm</b><input type="range" min="2" max="30" step="1" value="@(F0(G.TetherMax[0] * 1000))" @onchange="e => G.TetherMax[0] = (float)Num(e, 6) * 0.001f" /></label>
+                        <label class="gmt-sl">셔츠 테더 <b>@(F0(G.TetherMax[1] * 1000)) mm</b><input type="range" min="5" max="60" step="1" value="@(F0(G.TetherMax[1] * 1000))" @onchange="e => G.TetherMax[1] = (float)Num(e, 20) * 0.001f" /></label>
+                        <label class="gmt-sl">코트 테더 <b>@(F0(G.TetherMax[2] * 1000)) mm</b><input type="range" min="10" max="120" step="1" value="@(F0(G.TetherMax[2] * 1000))" @onchange="e => G.TetherMax[2] = (float)Num(e, 45) * 0.001f" /></label>
+                    </div>
+                    <svg class="gmt-spark" viewBox="0 0 360 50" preserveAspectRatio="none">
+                        <polyline class="pen" points="@(Series(Runner.PenetrationSeries, 60, 50))" />
+                        <polyline class="lay" points="@(Series(Runner.LayerViolationSeries, 300, 50))" />
+                    </svg>
+                    <div class="gmt-legend"><i class="pen"></i>반복 전 피부 침범(0–60 mm · 가드가 해소) <i class="lay"></i>레이어 위반(반복 전 · 0–300)</div>
+                </div>
+
+                <div class="gmt-card">
+                    <div class="gmt-sec">💇 v17.15 헤어 ↔ 코트 상호 충돌
+                        <button class="gmt-btn sm @(Runner.HairEnabled ? "on" : null)" @onclick="() => Runner.HairEnabled = !Runner.HairEnabled">헤어</button>
+                        <button class="gmt-btn sm @(G.HairContactEnabled ? "on" : null)" @onclick="() => Runner.SetHairContact(!G.HairContactEnabled)">상호 충돌</button>
+                    </div>
+                    <div class="gmt-kv">의상 안쪽 헤어 입자 <b>@(G.HairInsideBefore) → @(G.HairInsideAfter)</b> · 최대 깊이 @(F1(G.HairMaxDepthMm)) mm · 반작용 질량비 @(F2(MultiLayerGarmentContactSelfIntersectionGuard.HairMassRatio)) · 가이드 @(Runner.Hair.G) × 길이 @(F2(Runner.Hair.Length)) m</div>
+                    <svg class="gmt-spark" viewBox="0 0 360 40" preserveAspectRatio="none">
+                        <polyline class="hair" points="@(Series(Runner.HairSeries, 60, 40))" />
+                    </svg>
+                    <div class="gmt-legend"><i class="hair"></i>코트 표면 안 헤어 입자(투영 전 · 0–60)</div>
+                </div>
+
+                <div class="gmt-card">
+                    <div class="gmt-sec">📋 패널</div>
+                    <div class="gmt-panels">
+                        @foreach (var pn in MultiLayerGarmentPbdDynamicsEngine.Panels)
+                        {
+                            <span class="gmt-chip">@(pn.Name) · 링 @(pn.Ring0 - pn.SkirtRings)–@(pn.Ring1) · 고정 @(pn.PinRing)</span>
+                        }
+                    </div>
+                </div>
+                <div class="gmt-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .gmt-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .gmt-modal { width: min(1680px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .gmt-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #db2777 13%, var(--card)), color-mix(in srgb, #2563eb 13%, var(--card))); }
+    .gmt-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .gmt-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .gmt-sub b { color: var(--text-primary); }
+    .gmt-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .gmt-bar { display: flex; flex-wrap: wrap; gap: 6px 10px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .gmt-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; } .gmt-btn:disabled { opacity: .4; cursor: default; }
+    .gmt-btn.sm { font-size: 10px; padding: 2px 8px; } .gmt-btn.on { background: color-mix(in srgb, #db2777 22%, transparent); border-color: #f472b6; }
+    .gmt-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .gmt-chip.ok { border-color: #22c55e; color: #86efac; } .gmt-chip.warn { border-color: #eab308; color: #fde68a; }
+    .gmt-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .gmt-sl b { font-family: var(--mono); color: var(--text-primary); } .gmt-sl input { width: 90px; }
+    .gmt-main { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .gmt-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .gmt-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .gmt-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .gmt-ctl, .gmt-panels { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+    .gmt-vp { display: flex; justify-content: center; background: #05070d; border-radius: 10px; }
+    .gmt-vp img { width: min(100%, 420px); aspect-ratio: 300 / 420; }
+    .gmt-layer { display: grid; grid-template-columns: 150px 1fr; gap: 4px 10px; align-items: center; padding: 6px 0; border-bottom: 1px dashed var(--line); font-size: 11px; }
+    .gmt-layer .nm { font-weight: 800; color: var(--text-primary); display: flex; align-items: center; gap: 6px; } .gmt-layer .nm i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+    .gmt-layer .sw { display: flex; gap: 4px; flex-wrap: wrap; }
+    .gmt-layer .bar { grid-column: 1; height: 8px; background: #1e293b; border-radius: 4px; overflow: hidden; } .gmt-layer .bar span { display: block; height: 100%; background: linear-gradient(90deg, #22c55e, #facc15, #ef4444); }
+    .gmt-layer .v { color: var(--text-secondary); } .gmt-layer .mono { grid-column: 1 / 3; font-family: var(--mono); font-size: 10px; color: var(--text-muted); }
+    .gmt-spark { width: 100%; height: 50px; background: #030712; border-radius: 6px; }
+    .gmt-spark polyline { fill: none; stroke-width: 1.4; vector-effect: non-scaling-stroke; } .gmt-spark .ten { stroke: #f97316; } .gmt-spark .fold { stroke: #a78bfa; }
+    .gmt-spark .pen { stroke: #ef4444; } .gmt-spark .lay { stroke: #22d3ee; } .gmt-spark .hair { stroke: #a16207; }
+    .gmt-legend, .gmt-kv { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11px; color: var(--text-secondary); align-items: center; } .gmt-kv b { color: var(--text-primary); }
+    .gmt-legend i { display: inline-block; width: 10px; height: 8px; border-radius: 2px; margin-right: 2px; }
+    .gmt-legend .ten { background: #f97316; } .gmt-legend .fold { background: #a78bfa; } .gmt-legend .pen { background: #ef4444; } .gmt-legend .lay { background: #22d3ee; } .gmt-legend .hair { background: #a16207; }
+    .gmt-legend .grad { display: inline-block; width: 90px; height: 8px; border-radius: 4px; background: linear-gradient(90deg, #000, #1d4ed8, #22c55e, #facc15, #ef4444); }
+    .gmt-note { font-size: 11px; color: var(--text-muted); word-break: break-all; }
+    @@media (max-width: 1250px) { .gmt-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+
+    private MultiLayerGarmentPbdDynamicsEngine E => Runner.Engine;
+    private MultiLayerGarmentContactSelfIntersectionGuard G => Runner.Guard;
+    private AnisotropicFabricDrapingWrinkleSynthesizer D => Runner.Draping;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Garment.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+    private static string Css(Vector3 c) => "rgb(" + F0(c.X * 255) + "," + F0(c.Y * 255) + "," + F0(c.Z * 255) + ")";
+    private static string LayerShort(int l) => l == 0 ? "이너" : l == 1 ? "셔츠/팬츠" : "코트";
+
+    private string Series(Func<int, float> f, double max, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (GarmentDynamicsStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - 2 - (h - 4) * Math.Clamp(f(i) / max, 0, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step60() { for (var i = 0; i < GarmentDynamicsStudioRunner.Hz; i++) Runner.Step(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중(10 Hz 이벤트)은 250 ms 타이머가 처리 — 정지 상태 액션만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

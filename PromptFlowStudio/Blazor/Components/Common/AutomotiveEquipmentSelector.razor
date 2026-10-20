@@ -1,0 +1,205 @@
+@inject AutomotiveEquipmentDatabase Auto
+@inject ThemeSearchFilterService Search
+@inject ThemePinService Pins
+@using PromptFlowStudio.Services.Media
+@using Microsoft.AspNetCore.Components.Forms
+
+@* [PromptFlow Studio] 자동차 전문 장비 선택기(v2.5.0) — B2B 모달 내 3탭 정밀 선택기.
+   [시트 검사][완성차/캘리브레이션][전동화/다이나모/챔버] 3대 라인업 · 장비 클릭 → 특화 프롬프트 + 텔레메트리 HUD 스타일 자동.
+   장비군별 HUD 미리보기(게이지/오실로스코프/다이나모)를 우측에 라이브 목업으로 표시. *@
+
+<div class="aes">
+    <div class="aes-tabs">
+        @foreach (var c in Auto.Categories)
+        {
+            <button class="aes-tab @(_activeCat == c.Key ? "on" : null)" @onclick="() => _activeCat = c.Key" @key="c.Key">
+                <span class="aes-tab-emoji">@c.Emoji</span>
+                <span class="aes-tab-txt"><span class="aes-tab-name">@c.Name (@(c.Themes.Count))</span><span class="aes-tab-desc">@c.Desc</span></span>
+                <span class="aes-tab-cnt">@(c.Themes.Count)종</span>
+                <span class="aes-tab-hud">@HudChip(c.Key)</span>
+            </button>
+        }
+    </div>
+
+    <div class="aes-main">
+        <div class="aes-grid">
+            @if (DisplayThemes.Count == 0) { <div class="aes-none">🔍 "@SearchQuery" 검색 결과가 없습니다.</div> }
+            @foreach (var t in DisplayThemes)
+            {
+                <div class="aes-card @(SelectedKey == t.Key ? "on" : null)" @key="t.Key">
+                    <button class="aes-pin @(Pins.IsPinned(t.Key) ? "on" : null)" @onclick="() => Pins.Toggle(t.Key)" @onclick:stopPropagation="true" title="즐겨찾기 고정">📌</button>
+                    <button class="aes-cardbtn" @onclick="() => Pick(t.Key)">
+                        <div class="aes-thumb"><span>@t.Emoji</span></div>
+                        <div class="aes-cinfo">
+                            <div class="aes-name">@t.Title</div>
+                            <div class="aes-hook">@t.Hook</div>
+                            <div class="aes-ex">@t.Example</div>
+                        </div>
+                        @if (SelectedKey == t.Key) { <div class="aes-check">✓</div> }
+                    </button>
+                    <div class="aes-tip">@foreach (var line in ThemePreviewBuilder.BuildLines(t)) { <div class="aes-tip-l">@line</div> }</div>
+                </div>
+            }
+        </div>
+
+        @* ── 장비군 텔레메트리 HUD 미리보기 ── *@
+        <div class="aes-preview">
+            <div class="aes-pv-h">📊 텔레메트리 HUD 미리보기</div>
+            <div class="aes-hud aes-hud-@HudStyle">
+                <div class="aes-hud-top"><span class="aes-hud-title">TELEMETRY · @HudLabel</span><span class="aes-hud-pass">PASS</span></div>
+
+                @if (HudStyle == "gauge")
+                {
+                    <div class="aes-hud-row"><span class="aes-hud-lbl">FORCE</span><span class="aes-hud-val">128 N</span></div>
+                    <div class="aes-hud-row"><span class="aes-hud-lbl">ANGLE</span><span class="aes-hud-val">42.5 deg</span></div>
+                    <div class="aes-gauge-track"><div class="aes-gauge-fill"></div></div>
+                }
+                else if (HudStyle == "oscilloscope")
+                {
+                    <div class="aes-hud-row"><span class="aes-hud-lbl">VOLT</span><span class="aes-hud-val">12.4 V</span></div>
+                    <div class="aes-hud-row"><span class="aes-hud-lbl">ANGLE</span><span class="aes-hud-val">0.12 deg</span></div>
+                    <div class="aes-scope"><div class="aes-scope-base"></div><div class="aes-scope-line"></div></div>
+                }
+                else
+                {
+                    <div class="aes-hud-row"><span class="aes-hud-lbl">RPM</span><span class="aes-dyno-num">3450</span></div>
+                    <div class="aes-hud-row"><span class="aes-hud-lbl">TORQUE</span><span class="aes-hud-val">286 Nm</span></div>
+                    <div class="aes-dyno-bar"><div class="aes-dyno-fill"></div></div>
+                }
+            </div>
+            <div class="aes-pv-note">@HudDesc</div>
+            @if (Selected is { } sel)
+            {
+                <div class="aes-pv-sel"><span class="aes-pv-selemoji">@sel.Emoji</span> <b>@sel.Title</b> 선택됨 · 특화 프롬프트 + <b>@HudLabel</b> HUD 자동 적용</div>
+            }
+            else
+            {
+                <div class="aes-pv-sel muted">장비를 선택하면 특화 프롬프트와 HUD 스타일이 자동 구성됩니다.</div>
+            }
+
+            @* ── 실측 검사/시험 CSV 로드(선택) → 최종 영상에 HUD 번인 예약 ── *@
+            <div class="aes-csv">
+                <div class="aes-csv-h">📈 실측 검사/시험 CSV <span class="aes-csv-opt">(선택 · time,voltage,torque,rpm,angle,pressure,result)</span></div>
+                <InputFile class="aes-csv-input" OnChange="OnCsv" accept=".csv,text/csv" />
+                @if (_csvStatus is not null) { <div class="aes-csv-ok @(_csvOk ? null : "warn")">@_csvStatus</div> }
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .aes { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+    .aes-tabs { display: flex; gap: 8px; flex-wrap: wrap; }
+    .aes-tab { display: flex; align-items: center; gap: 10px; text-align: left; padding: 10px 13px; border-radius: 13px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; font-family: inherit; flex: 1; min-width: 210px; position: relative; }
+    .aes-tab:hover { border-color: #0ea5e9; }
+    .aes-tab.on { border-color: transparent; box-shadow: 0 0 0 2px #0ea5e9; background: color-mix(in srgb, #0ea5e9 10%, var(--card-2)); color: var(--text-primary); }
+    .aes-tab-emoji { font-size: 21px; }
+    .aes-tab-txt { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+    .aes-tab-name { font-size: 13px; font-weight: 900; white-space: nowrap; }
+    .aes-tab-desc { font-size: 10.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .aes-tab-cnt { font: 700 10px var(--mono); color: var(--text-muted); background: var(--card); border: 1px solid var(--line); border-radius: 20px; padding: 1px 7px; }
+    .aes-tab-hud { position: absolute; top: 6px; right: 8px; font: 800 8.5px var(--mono); letter-spacing: .06em; color: #7dd3fc; }
+    .aes-main { display: flex; gap: 14px; min-height: 0; }
+    .aes-grid { flex: 1; min-width: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; overflow-y: auto; align-content: start; max-height: 340px; padding-right: 4px; }
+    .aes-card { position: relative; border-radius: 13px; border: 1px solid var(--line); background: var(--card-2); }
+    .aes-card:hover { border-color: #0ea5e9; }
+    .aes-card.on { border-color: transparent; box-shadow: 0 0 0 2px #0ea5e9; background: color-mix(in srgb, #0ea5e9 8%, var(--card-2)); }
+    .aes-cardbtn { display: flex; gap: 11px; width: 100%; text-align: left; padding: 10px; background: none; border: none; cursor: pointer; font-family: inherit; }
+    .aes-pin { position: absolute; top: 7px; left: 8px; z-index: 2; width: 22px; height: 22px; border: none; border-radius: 7px; background: var(--card); color: var(--text-muted); cursor: pointer; font-size: 11px; opacity: .5; }
+    .aes-pin:hover { opacity: 1; } .aes-pin.on { opacity: 1; color: #fbbf24; background: color-mix(in srgb, #fbbf24 16%, var(--card)); }
+    .aes-none { grid-column: 1 / -1; font: 600 11.5px var(--mono); color: var(--text-muted); padding: 20px 8px; text-align: center; }
+    .aes-tip { position: absolute; left: 8px; right: 8px; top: calc(100% - 4px); z-index: 20; display: none; background: #0b0d14; border: 1px solid color-mix(in srgb, #0ea5e9 45%, var(--line)); border-radius: 10px; padding: 9px 11px; box-shadow: 0 12px 30px rgba(0,0,0,.5); }
+    .aes-card:hover .aes-tip { display: block; }
+    .aes-tip-l { font: 600 10.5px var(--mono); color: var(--text-secondary); line-height: 1.5; }
+    .aes-thumb { flex: 0 0 auto; width: 50px; height: 50px; border-radius: 11px; display: grid; place-items: center; font-size: 24px; background: linear-gradient(135deg, #0f172a, #0ea5e9); border: 1px solid rgba(255,255,255,.18); margin-left: 20px; }
+    .aes-cinfo { min-width: 0; flex: 1; }
+    .aes-name { font-size: 13px; font-weight: 800; color: var(--text-primary); }
+    .aes-hook { font-size: 11px; color: #7dd3fc; margin-top: 3px; line-height: 1.4; }
+    .aes-ex { font-size: 10.5px; color: var(--text-muted); margin-top: 3px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    .aes-check { position: absolute; top: 8px; right: 9px; width: 19px; height: 19px; border-radius: 50%; background: #0ea5e9; color: #fff; display: grid; place-items: center; font-size: 11px; font-weight: 900; }
+    /* ── HUD 미리보기 ── */
+    .aes-preview { flex: 0 0 262px; display: flex; flex-direction: column; gap: 10px; }
+    .aes-pv-h { font: 800 12px var(--mono); color: var(--text-secondary); }
+    .aes-hud { border: 1px solid color-mix(in srgb, #22d3ee 40%, var(--line)); border-radius: 12px; background: linear-gradient(160deg, #0b0d14, #12141f); padding: 12px; box-shadow: inset 0 0 24px rgba(34,211,238,.08); }
+    .aes-hud-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .aes-hud-title { font: 800 10px var(--mono); letter-spacing: .08em; color: #e6edff; }
+    .aes-hud-pass { font: 900 11px var(--mono); color: #22c55e; border: 1.5px solid #22c55e; border-radius: 6px; padding: 2px 8px; box-shadow: 0 0 10px rgba(34,197,94,.4); }
+    .aes-hud-row { display: flex; align-items: baseline; justify-content: space-between; padding: 3px 0; }
+    .aes-hud-lbl { font: 700 10px var(--mono); color: #9aa6c8; letter-spacing: .05em; }
+    .aes-hud-val { font: 800 15px var(--mono); color: #22d3ee; }
+    .aes-gauge-track { height: 12px; border-radius: 7px; background: #1a1d2b; margin-top: 8px; overflow: hidden; border: 1px solid var(--line); }
+    .aes-gauge-fill { height: 100%; border-radius: 7px; background: linear-gradient(90deg, #0ea5e9, #22d3ee); animation: aes-gauge 2.6s ease-in-out infinite; }
+    @@keyframes aes-gauge { 0%,100% { width: 28%; } 50% { width: 82%; } }
+    .aes-scope { position: relative; height: 66px; border-radius: 8px; background: #0b0d14; margin-top: 8px; overflow: hidden; border: 1px solid var(--line); }
+    .aes-scope-base { position: absolute; top: 50%; left: 0; right: 0; height: 1px; background: rgba(57,255,20,.35); }
+    .aes-scope-line { position: absolute; top: 0; bottom: 0; width: 3px; background: #39ff14; box-shadow: 0 0 8px #39ff14; animation: aes-sweep 2s linear infinite; }
+    @@keyframes aes-sweep { 0% { left: 0; } 100% { left: calc(100% - 3px); } }
+    .aes-dyno-num { font: 900 26px var(--mono); color: #39ff14; text-shadow: 0 0 12px rgba(57,255,20,.5); }
+    .aes-dyno-bar { height: 14px; border-radius: 7px; background: #1a1d2b; margin-top: 8px; overflow: hidden; border: 1px solid var(--line); }
+    .aes-dyno-fill { height: 100%; border-radius: 7px; background: linear-gradient(90deg, #39ff14, #a3e635); animation: aes-dyno 1.6s ease-in-out infinite; }
+    @@keyframes aes-dyno { 0%,100% { width: 45%; } 50% { width: 92%; } }
+    .aes-pv-note { font-size: 11px; color: var(--text-muted); line-height: 1.5; }
+    .aes-pv-sel { font-size: 11.5px; color: var(--text-secondary); background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; line-height: 1.45; } .aes-pv-sel b { color: var(--text-primary); } .aes-pv-sel.muted { color: var(--text-muted); }
+    .aes-pv-selemoji { font-size: 15px; }
+    .aes-csv { border: 1px dashed color-mix(in srgb, #22d3ee 40%, var(--line)); border-radius: 10px; padding: 9px 11px; }
+    .aes-csv-h { font: 700 10.5px var(--mono); color: var(--text-secondary); margin-bottom: 6px; } .aes-csv-opt { color: var(--text-muted); font-weight: 500; }
+    .aes-csv-input { font-size: 10.5px; color: var(--text-muted); width: 100%; }
+    .aes-csv-ok { font-size: 10.5px; color: #22c55e; margin-top: 6px; line-height: 1.4; } .aes-csv-ok.warn { color: #f59e0b; }
+    @@media (max-width: 820px) { .aes-main { flex-direction: column; } .aes-preview { flex: 0 0 auto; } .aes-grid { max-height: none; } }
+</style>
+
+@code {
+    /// <summary>현재 선택된 장비 테마 키(상위 모달과 공유).</summary>
+    [Parameter] public string? SelectedKey { get; set; }
+    /// <summary>장비 선택 시 상위로 키 통지.</summary>
+    [Parameter] public EventCallback<string> OnSelect { get; set; }
+    /// <summary>실측 CSV 로드 시 상위로 원문(text) 통지(유효 데이터 없으면 빈 문자열). 상위가 Project.TelemetryCsvPath 에 저장.</summary>
+    [Parameter] public EventCallback<string> OnCsvLoaded { get; set; }
+    /// <summary>상위 검색어 — 비면 활성 카테고리, 있으면 전 카테고리에서 필터.</summary>
+    [Parameter] public string? SearchQuery { get; set; }
+
+    private string _activeCat = "auto_seat";
+    private string? _csvStatus;
+    private bool _csvOk;
+
+    private BabyCategory ActiveCat => Auto.Categories.FirstOrDefault(c => c.Key == _activeCat) ?? Auto.Categories[0];
+    // 검색어 있으면 전 카테고리 필터(교차 검색), 없으면 활성 카테고리. 즐겨찾기 우선 정렬.
+    private IReadOnlyList<BabyThemeDef> DisplayThemes => string.IsNullOrWhiteSpace(SearchQuery)
+        ? Pins.SortPinnedFirst(ActiveCat.Themes)
+        : Pins.SortPinnedFirst(Search.Filter(Auto.AllThemes, SearchQuery));
+    private BabyThemeDef? Selected => SelectedKey is null ? null : Auto.Get(SelectedKey);
+
+    // 활성 카테고리 → HUD 스타일(VideoFormatFactory.HudStyleFor 와 동일 매핑).
+    private string HudStyle => _activeCat switch { "auto_seat" => "gauge", "auto_finish" => "oscilloscope", "auto_ev" => "dyno", _ => "gauge" };
+    private string HudLabel => HudStyle switch { "gauge" => "GAUGE", "oscilloscope" => "SCOPE", "dyno" => "DYNO", _ => "GAUGE" };
+    private string HudDesc => HudStyle switch
+    {
+        "gauge" => "시트 검사 장비군 — 수평 바 게이지 + 하중·각도 리드아웃 + PASS/FAIL 판정 HUD가 자동 적용됩니다.",
+        "oscilloscope" => "완성차·캘리브레이션 장비군 — 스윕 파형(오실로스코프) + 전압·각도 리드아웃 HUD가 자동 적용됩니다.",
+        _ => "전동화·다이나모·챔버 장비군 — 대형 RPM 리드아웃 + 토크 바(다이나모) HUD가 자동 적용됩니다.",
+    };
+
+    private static string HudChip(string catKey) => catKey switch { "auto_seat" => "GAUGE", "auto_finish" => "SCOPE", "auto_ev" => "DYNO", _ => "" };
+
+    private async Task Pick(string key) { SelectedKey = key; await OnSelect.InvokeAsync(key); }
+
+    // 실측 CSV 업로드 → 파싱 검증 후 원문을 상위로 통지(Project.TelemetryCsvPath 에 저장 · 병합 후 HUD 번인).
+    private async Task OnCsv(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file is null) return;
+        try
+        {
+            using var s = file.OpenReadStream(2 * 1024 * 1024);   // 최대 2MB
+            using var r = new System.IO.StreamReader(s);
+            var text = await r.ReadToEndAsync();
+            var series = TelemetryHudOverlayEngine.ParseCsv(text);
+            _csvOk = series.HasData;
+            _csvStatus = _csvOk
+                ? $"✓ {series.Samples.Count}개 샘플 · {string.Join("/", series.MetricNames.Select(m => m.ToUpperInvariant()))} · {(series.OverallPass ? "PASS" : "FAIL")} · HUD 번인 예약"
+                : "⚠ 유효 데이터 없음 — 헤더(time/torque/rpm…)를 확인하세요.";
+            await OnCsvLoaded.InvokeAsync(_csvOk ? text : "");
+        }
+        catch (Exception) { _csvOk = false; _csvStatus = "⚠ CSV 읽기 실패"; }
+    }
+}

@@ -1,0 +1,400 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.Metaverse
+@implements IDisposable
+@inject SpatialXrStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.61.0] 🥽 AI 공간 XR 메타버스 & 홀로그램 스튜디오 — SBS 스테레오 프리뷰 · 6DoF 카메라 트랙패드(오빗/팬/줌) ·
+    공간 디바이스 세션 모니터(시선/핀치/이벤트) · 제스처 감도 · 홀로 타깃 · 다중 사용자 동기화/소유권 · 홀로 레이어 · XRS1 스트림(UDP/gRPC/WebXR).
+*@
+
+<div class="sxr-scrim" @onclick="Close">
+    <div class="sxr-modal" @onclick:stopPropagation="true">
+        <div class="sxr-h">
+            <div>
+                <div class="sxr-title">🥽 AI 공간 XR 메타버스 &amp; 홀로그램 스튜디오</div>
+                <div class="sxr-sub"><b>3DGS 스테이지 + 4D 월드</b>를 6DoF 공간 스튜디오로 스테레오 스트리밍하고, <b>Vision Pro/Quest 3 시선·핀치</b>로 홀로그램·카메라·서사 분기를 제어하며,
+                    <b>다중 관객 상태</b>를 일관되게 동기화해 입체 자막·VFX를 오버레이합니다.</div>
+            </div>
+            <button class="sxr-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="sxr-bar">
+            <span class="sxr-chip @(Runner.IsRunning ? "ok" : null)">@(Runner.IsRunning ? "● 스트리밍" : "○ 정지") · @(F1((float)Runner.TimeSec))s · #@(Runner.FrameSeq)</span>
+            <span class="sxr-chip">스테레오 @(F1((float)X.LastRenderMs))ms · 틱 @(F1((float)Runner.LastTickMs))ms · 가시 @(X.LastVisibleSplats)</span>
+            <span class="sxr-chip">XRS1 @(X.LastPacketBytes)B · 엔티티 @(X.LastEntities) · 키 @(X.KeyFrames)/델타 @(X.DeltaFrames)</span>
+            <span class="sxr-chip @(Runner.Mirror.NeedsKey ? "hot" : "ok")">미러 @(Runner.Mirror.Applied) · 갭 @(Runner.Mirror.Gaps)</span>
+            <span class="sxr-chip">관객 @(S.ActiveUsers) · 램포트 @(S.Lamport)</span>
+        </div>
+
+        <div class="sxr-main">
+            <div class="sxr-col wide">
+                <div class="sxr-card">
+                    <div class="sxr-row sxr-between">
+                        <div class="sxr-sec">👓 좌/우 눈 스테레오(SBS) · @(X.EyeWidth)×@(X.EyeHeight)/눈 · IPD @(F1(X.Ipd * 1000f))mm</div>
+                        <div class="sxr-row">
+                            @if (Runner.IsRunning)
+                            {
+                                <button class="sxr-btn hot" @onclick="Runner.Stop">⏸ 정지</button>
+                            }
+                            else
+                            {
+                                <button class="sxr-btn on" @onclick="Runner.Start">▶ 공간 스트리밍</button>
+                            }
+                            <button class="sxr-btn" disabled="@(Runner.IsRunning)" @onclick="Step">⏩ 1초</button>
+                        </div>
+                    </div>
+                    @if (_frameUrl is not null)
+                    {
+                        <img class="sxr-sbs" src="@(_frameUrl)" alt="스테레오 SBS" />
+                    }
+                    @if (!string.IsNullOrEmpty(Runner.CurrentCaption) && (S.Layers & HoloLayer.Subtitles) != 0)
+                    {
+                        <div class="sxr-cap">💬 @(Runner.CurrentCaption) <em>· 깊이 @(F2(S.SubtitleDepth))m · 시차 @(F1(S.SubtitleDisparityPx))px @(S.SubtitleComfortable ? "✓" : "⚠")</em></div>
+                    }
+                </div>
+                <div class="sxr-card">
+                    <div class="sxr-sec">🕹 6DoF 3D 공간 카메라 트랙패드 — 드래그 = 오빗 · 휠 = 줌</div>
+                    <div class="sxr-pad-row">
+                        <div class="sxr-pad" @onpointerdown="PadDown" @onpointermove="PadMove" @onpointerup="PadUp" @onpointerleave="PadUp" @onwheel="PadWheel" @onwheel:preventDefault="true">
+                            <i style="left:@(F1(50f + B.CameraYawDeg / 180f * 50f))%;top:@(F1(50f - B.CameraPitchDeg / 80f * 50f))%"></i>
+                            <span>요 @(F0(B.CameraYawDeg))° · 피치 @(F0(B.CameraPitchDeg))° · 거리 @(F1(B.CameraDistance))m</span>
+                        </div>
+                        <div class="sxr-pan">
+                            <button class="sxr-btn sm" @onclick="() => PanBy(0, 0, 0.25f)">⬆ 전진</button>
+                            <div class="sxr-row">
+                                <button class="sxr-btn sm" @onclick="() => PanBy(-0.25f, 0, 0)">⬅</button>
+                                <button class="sxr-btn sm" @onclick="() => PanBy(0.25f, 0, 0)">➡</button>
+                            </div>
+                            <button class="sxr-btn sm" @onclick="() => PanBy(0, 0, -0.25f)">⬇ 후진</button>
+                            <div class="sxr-row">
+                                <button class="sxr-btn sm" @onclick="() => PanBy(0, 0.2f, 0)">▲ 상승</button>
+                                <button class="sxr-btn sm" @onclick="() => PanBy(0, -0.2f, 0)">▼ 하강</button>
+                            </div>
+                            <button class="sxr-btn sm" @onclick="() => { Runner.Pan = Vector3.Zero; Refresh(); }">⌖ 팬 리셋</button>
+                            <span class="sxr-mono">팬 @(F2(Runner.Pan.X)), @(F2(Runner.Pan.Y)), @(F2(Runner.Pan.Z))</span>
+                        </div>
+                    </div>
+                    <div class="sxr-grid3">
+                        <label>IPD <b>@(F1(X.Ipd * 1000f))mm</b><input type="range" min="50" max="80" step="0.5" value="@(F1(X.Ipd * 1000f))" @oninput="e => X.Ipd = Parse(e, X.Ipd * 1000f) / 1000f" /></label>
+                        <label>시야각 <b>@(F0(X.HfovDeg))°</b><input type="range" min="60" max="120" step="1" value="@(F0(X.HfovDeg))" @oninput="e => X.HfovDeg = Parse(e, X.HfovDeg)" /></label>
+                        <label>모션-투-포톤 예측 <b>@(F0(X.PredictionMs))ms</b><input type="range" min="0" max="60" step="1" value="@(F0(X.PredictionMs))" @oninput="e => X.PredictionMs = Parse(e, X.PredictionMs)" /></label>
+                    </div>
+                    <label class="sxr-chk"><input type="checkbox" checked="@(X.Prediction)" @onchange="e => X.Prediction = e.Value is true" /> 헤드 포즈 예측(선속도+각속도 외삽)</label>
+                </div>
+            </div>
+
+            <div class="sxr-col">
+                <div class="sxr-card">
+                    <div class="sxr-sec">📡 공간 디바이스 세션 모니터</div>
+                    <div class="sxr-row">
+                        <select class="sxr-sel" @bind="Device">
+                            <option value="@(XrDeviceKind.VisionPro)">Apple Vision Pro</option>
+                            <option value="@(XrDeviceKind.Quest3)">Meta Quest 3</option>
+                            <option value="@(XrDeviceKind.WebXr)">WebXR 브라우저</option>
+                        </select>
+                        <label class="sxr-chk"><input type="checkbox" checked="@(Runner.SimulateDevices)" @onchange="e => Runner.SimulateDevices = e.Value is true" /> 디바이스 시뮬</label>
+                    </div>
+                    <div class="sxr-kv">
+                        <span>시선 방향</span><b>@(F2(B.GazeDirection.X)), @(F2(B.GazeDirection.Y)), @(F2(B.GazeDirection.Z))</b>
+                        <span>호버 타깃</span><b>@(B.HoverTarget >= 0 ? B.Target(B.HoverTarget).Label : "—")</b>
+                        <span>고정(fixation)</span><b>@(B.IsFixating ? "● " : "○ ")@(F0(B.FixationMs))ms / 드웰 @(F0(B.DwellMs))ms</b>
+                        <span>핀치 L / R</span><b>@(B.IsPinched(XrHand.Left) ? "🤏" : "✋") / @(B.IsPinched(XrHand.Right) ? "🤏" : "✋") · 임계 @(F1(B.PinchThresholds().On * 1000f))/@(F1(B.PinchThresholds().Off * 1000f))mm</b>
+                        <span>샘플 시선/손</span><b>@(B.GazeSamples) / @(B.HandSamples) · 거부 @(B.Rejected)</b>
+                        <span>선택 · 컷 · 분기</span><b>@(B.Selects) · @(B.CameraCuts) · @(B.BranchTriggers)</b>
+                        <span>제스처→액션</span><b>@(B.LastActionLatencyMicros.ToString("0.0", CultureInfo.InvariantCulture))µs</b>
+                    </div>
+                    <div class="sxr-grid1">
+                        <label>제스처 감도 <b>@(F2(B.Sensitivity))×</b><input type="range" min="0.25" max="2" step="0.05" value="@(F2(B.Sensitivity))" @oninput="e => B.Sensitivity = Parse(e, B.Sensitivity)" /></label>
+                        <label>최소 신뢰도 <b>@(F2(B.MinConfidence))</b><input type="range" min="0" max="1" step="0.05" value="@(F2(B.MinConfidence))" @oninput="e => B.MinConfidence = Parse(e, B.MinConfidence)" /></label>
+                    </div>
+                    <label class="sxr-chk"><input type="checkbox" checked="@(B.DwellSelect)" @onchange="e => B.DwellSelect = e.Value is true" /> 드웰(응시 유지) 선택</label>
+                </div>
+                <div class="sxr-card">
+                    <div class="sxr-sec">🫧 홀로그램 타깃 (시선+핀치 / 클릭)</div>
+                    <div class="sxr-targets">
+                        @for (var i = 0; i < B.TargetCount; i++)
+                        {
+                            var idx = i;
+                            var t = B.Target(i);
+                            <button class="sxr-btn sm @(i == B.HoverTarget ? "on" : null) @(t.Kind == HoloTargetKind.OverlayToggle && ((B.OverlayMask >> t.Arg) & 1) != 0 ? "lit" : null)" @onclick="() => { B.Select(idx); Refresh(); }">@(t.Label)</button>
+                        }
+                    </div>
+                    <div class="sxr-log">
+                        @foreach (var ev in _events)
+                        {
+                            <div>@(ev)</div>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="sxr-col">
+                <div class="sxr-card">
+                    <div class="sxr-sec">👥 다중 사용자 동기화</div>
+                    <div class="sxr-kv">
+                        <span>활성 관객</span><b>@(S.ActiveUsers) · 상태 @(S.StatesReceived)</b>
+                        <span>역순/중복 폐기</span><b>@(S.StaleDropped) · 무효 @(S.InvalidPackets)</b>
+                        <span>보간 / 외삽</span><b>@(S.Interpolations) / @(S.Extrapolations)</b>
+                        <span>이벤트 · 램포트</span><b>@(S.EventsApplied) · @(S.Lamport)</b>
+                        <span>객체#0 소유자</span><b>@(S.Owner(0) >= 0 ? "U" + S.Owner(0).ToString(CultureInfo.InvariantCulture) : "—") · 변경 @(S.OwnerChanges)</b>
+                        <span>VFX 파티클</span><b>@(S.LiveParticles)</b>
+                    </div>
+                    <div class="sxr-grid1">
+                        <label>관객 수 <b>@(Runner.Audience)</b><input type="range" min="0" max="24" step="1" value="@(Runner.Audience)" @oninput="e => Runner.Audience = (int)Parse(e, Runner.Audience)" /></label>
+                        <label>패킷 손실 <b>@(P(Runner.PacketLoss))</b><input type="range" min="0" max="0.5" step="0.01" value="@(F2(Runner.PacketLoss))" @oninput="e => Runner.PacketLoss = Parse(e, Runner.PacketLoss)" /></label>
+                        <label>보간 지연 <b>@(F0(S.InterpolationDelayMs))ms</b><input type="range" min="0" max="250" step="5" value="@(F0(S.InterpolationDelayMs))" @oninput="e => S.InterpolationDelayMs = Parse(e, S.InterpolationDelayMs)" /></label>
+                    </div>
+                    <div class="sxr-row">
+                        @foreach (var (layer, label) in Layers)
+                        {
+                            var ly = layer;
+                            <label class="sxr-chk"><input type="checkbox" checked="@((S.Layers & ly) != 0)" @onchange="e => S.Layers = e.Value is true ? S.Layers | ly : S.Layers & ~ly" /> @(label)</label>
+                        }
+                    </div>
+                    <div class="sxr-row">
+                        <button class="sxr-btn sm" @onclick="Cheer">🎉 내 환호</button>
+                        <button class="sxr-btn sm" @onclick="Grab">✊ 객체#0 잡기</button>
+                        <button class="sxr-btn sm" @onclick="Release">🖐 놓기</button>
+                    </div>
+                </div>
+                <div class="sxr-card">
+                    <div class="sxr-sec">🌐 4D 월드 · 3DGS 스테이지</div>
+                    <textarea class="sxr-ta" rows="3" @bind="_prompt"></textarea>
+                    <div class="sxr-row">
+                        <button class="sxr-btn" disabled="@(Runner.IsRunning)" @onclick="Generate">🌐 월드 생성</button>
+                        <button class="sxr-btn" disabled="@(!Runner.CanImport3dgs)" @onclick="Import">🧊 3DGS 스튜디오 장면 임포트</button>
+                        <button class="sxr-btn sm" @onclick="Runner.ResetStage">🏟 기본 스테이지</button>
+                    </div>
+                    @if (_worldUrl is not null)
+                    {
+                        <img class="sxr-world" src="@(_worldUrl)" alt="4D 월드" />
+                    }
+                </div>
+                <div class="sxr-card">
+                    <div class="sxr-sec">📶 XRS1 씬 스트림</div>
+                    <div class="sxr-row">
+                        <input class="sxr-in" @bind="_host" placeholder="수신 IP" />
+                        <input class="sxr-in port" @bind="_port" />
+                        @if (X.UdpEnabled)
+                        {
+                            <button class="sxr-btn sm hot" @onclick="X.DisableUdp">⏹ UDP</button>
+                        }
+                        else
+                        {
+                            <button class="sxr-btn sm" @onclick="EnableUdp">📡 UDP 송출</button>
+                        }
+                    </div>
+                    <div class="sxr-kv">
+                        <span>송신</span><b>@(X.PacketsSent)pkt · @(X.BytesOut)B · 오류 @(X.SendErrors)</b>
+                        <span>인코딩</span><b>@(X.LastEncodeMicros.ToString("0.0", CultureInfo.InvariantCulture))µs · seq @(X.Sequence)</b>
+                    </div>
+                    <div class="sxr-mono sxr-json">@(_webXr)</div>
+                </div>
+                @if (_message is not null)
+                {
+                    <div class="sxr-msg">@(_message)</div>
+                }
+                <div class="sxr-act">@(Runner.LastAction ?? B.LastAction ?? X.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .sxr-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .sxr-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .sxr-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #06b6d4 18%, var(--card)), color-mix(in srgb, #a855f7 16%, var(--card))); }
+    .sxr-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .sxr-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .sxr-sub b { color: var(--text-primary); }
+    .sxr-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .sxr-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); }
+    .sxr-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .sxr-chip.ok { color: #22c55e; border-color: #22c55e; }
+    .sxr-chip.hot { color: #f97316; border-color: #f97316; }
+    .sxr-main { display: grid; grid-template-columns: 1.6fr 1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .sxr-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .sxr-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .sxr-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); }
+    .sxr-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .sxr-between { justify-content: space-between; }
+    .sxr-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .sxr-btn.on { background: color-mix(in srgb, #06b6d4 24%, transparent); border-color: #06b6d4; }
+    .sxr-btn.lit { box-shadow: inset 0 0 0 1px #22c55e; }
+    .sxr-btn.hot { background: color-mix(in srgb, #ef4444 20%, transparent); border-color: #ef4444; }
+    .sxr-btn.sm { font-size: 11px; padding: 3px 8px; }
+    .sxr-btn:disabled { opacity: .45; cursor: default; }
+    .sxr-sel, .sxr-in { font-size: 12px; padding: 4px 6px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .sxr-in { flex: 1; min-width: 90px; } .sxr-in.port { flex: 0 0 70px; min-width: 0; }
+    .sxr-chk { font-size: 11px; color: var(--text-secondary); display: flex; gap: 4px; align-items: center; }
+    .sxr-sbs { width: 100%; aspect-ratio: 8 / 3; image-rendering: pixelated; border-radius: 8px; background: #000; border: 1px solid var(--line); }
+    .sxr-world { width: 50%; aspect-ratio: 16 / 9; image-rendering: pixelated; border-radius: 6px; border: 1px solid var(--line); }
+    .sxr-cap { font-size: 12px; color: #67e8f9; background: color-mix(in srgb, #06b6d4 12%, transparent); border-radius: 8px; padding: 4px 8px; }
+    .sxr-cap em { color: var(--text-muted); font-style: normal; font-family: var(--mono); font-size: 10.5px; }
+    .sxr-pad-row { display: grid; grid-template-columns: 1fr 180px; gap: 10px; }
+    .sxr-pad { position: relative; height: 170px; border-radius: 10px; border: 1px dashed var(--line); background: radial-gradient(circle at center, color-mix(in srgb, #06b6d4 14%, transparent), transparent 70%); cursor: grab; touch-action: none; user-select: none; }
+    .sxr-pad i { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: #06b6d4; box-shadow: 0 0 12px #06b6d4; pointer-events: none; }
+    .sxr-pad span { position: absolute; left: 8px; bottom: 6px; font: 600 10.5px var(--mono); color: var(--text-muted); pointer-events: none; }
+    .sxr-pan { display: flex; flex-direction: column; gap: 4px; align-items: center; }
+    .sxr-mono { font-family: var(--mono); font-size: 10.5px; color: var(--text-muted); }
+    .sxr-json { word-break: break-all; background: var(--card-2); border-radius: 6px; padding: 4px 6px; }
+    .sxr-grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 12px; }
+    .sxr-grid1 { display: grid; grid-template-columns: 1fr; gap: 4px; }
+    .sxr-grid3 label, .sxr-grid1 label { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 2px; }
+    .sxr-grid3 b, .sxr-grid1 b { color: var(--text-primary); font-family: var(--mono); }
+    .sxr-kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 11px; }
+    .sxr-kv span { color: var(--text-muted); } .sxr-kv b { color: var(--text-primary); font-weight: 600; font-family: var(--mono); }
+    .sxr-targets { display: flex; flex-wrap: wrap; gap: 4px; }
+    .sxr-log { max-height: 150px; overflow-y: auto; font: 10.5px var(--mono); color: var(--text-secondary); display: flex; flex-direction: column; gap: 1px; }
+    .sxr-ta { width: 100%; resize: vertical; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); padding: 8px; font-size: 12px; }
+    .sxr-msg { font-size: 11px; color: var(--text-secondary); background: var(--card-2); border-radius: 8px; padding: 6px 8px; word-break: break-all; }
+    .sxr-act { font-size: 11px; color: var(--text-muted); font-family: var(--mono); padding: 4px 2px; }
+    @@media (max-width: 1200px) { .sxr-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly (HoloLayer Layer, string Label)[] Layers =
+        [(HoloLayer.Avatars, "👥 아바타"), (HoloLayer.GazeRays, "👁 시선"), (HoloLayer.Vfx, "✨ VFX"), (HoloLayer.Subtitles, "💬 자막")];
+
+    private readonly XrInteractionEvent[] _evBuf = new XrInteractionEvent[32];
+    private readonly List<string> _events = new();
+    private readonly byte[] _wire = new byte[64], _json = new byte[256];
+    private byte[] _frame = Array.Empty<byte>();
+    private readonly byte[] _worldRgb = new byte[SpatialXrStudioRunner.WorldPreviewW * SpatialXrStudioRunner.WorldPreviewH * 3];
+    private string? _frameUrl, _worldUrl, _message, _webXr;
+    private string _prompt = SpatialXrStudioRunner.DemoPrompt;
+    private string _host = "127.0.0.1";
+    private int _port = 7461;
+    private long _shownSeq = -1, _evCursor;
+    private bool _dragging;
+    private double _px, _py;
+    private System.Threading.Timer? _timer;
+
+    private SpatialXrMetaverseBroadcastingEngine X => Runner.Xr;
+    private SpatialComputingInteractionBridge B => Runner.Bridge;
+    private NeuralHologramMultiuserStateSync S => Runner.Sync;
+
+    private XrDeviceKind Device { get => B.Device; set { B.Device = value; X.Device = value; } }
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        B.OnChange += OnServiceChanged;
+        _evCursor = Math.Max(0, B.EventCount - 12);
+        if (Runner.FrameSeq == 0) Runner.TickOnce(1.0 / SpatialXrStudioRunner.TickHz);
+        Refresh();
+        _timer = new System.Threading.Timer(_ => { if (Runner.IsRunning && Runner.FrameSeq != _shownSeq) _ = InvokeAsync(() => { Refresh(); StateHasChanged(); }); }, null, 120, 120);
+    }
+
+    private static string F0(float v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(float v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(float v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string P(float v) => (v * 100f).ToString("0", CultureInfo.InvariantCulture) + "%";
+
+    private static float Parse(ChangeEventArgs e, float fallback)
+        => float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    private static string EventLabel(XrEventKind k) => k switch
+    {
+        XrEventKind.HoverEnter => "👁 호버", XrEventKind.HoverExit => "👁 이탈", XrEventKind.Select => "🤏 선택", XrEventKind.DragStart => "✊ 드래그 시작",
+        XrEventKind.Drag => "↔ 오빗", XrEventKind.DragEnd => "✋ 드래그 끝", XrEventKind.Zoom => "🔍 줌", XrEventKind.CameraCut => "🎥 카메라 컷",
+        XrEventKind.BranchTrigger => "🔀 분기", XrEventKind.OverlayToggled => "🫧 레이어", XrEventKind.Rejected => "⛔ 거부", _ => "—",
+    };
+
+    private void Step()
+    {
+        for (var i = 0; i < SpatialXrStudioRunner.TickHz; i++) Runner.TickOnce(1.0 / SpatialXrStudioRunner.TickHz);
+        Refresh();
+    }
+
+    private void Refresh()
+    {
+        var need = Runner.FrameWidth * Runner.FrameHeight * 3;
+        if (_frame.Length != need) _frame = new byte[need];
+        Runner.CopyFrame(_frame);
+        _frameUrl = PromptFlowStudio.Services.Spatial.SpatialImageCodec.BmpDataUrl(_frame, Runner.FrameWidth, Runner.FrameHeight);
+        Runner.CopyWorldPreview(_worldRgb);
+        _worldUrl = PromptFlowStudio.Services.Spatial.SpatialImageCodec.BmpDataUrl(_worldRgb, SpatialXrStudioRunner.WorldPreviewW, SpatialXrStudioRunner.WorldPreviewH);
+        var n = B.ReadEvents(ref _evCursor, _evBuf);
+        for (var i = 0; i < n; i++)
+        {
+            var ev = _evBuf[i];
+            if (ev.Kind is XrEventKind.Drag or XrEventKind.HoverExit) continue;
+            _events.Insert(0, EventLabel(ev.Kind) + (ev.Target >= 0 && ev.Target < B.TargetCount ? " · " + B.Target(ev.Target).Label : ""));
+            if (_events.Count > 14) _events.RemoveAt(_events.Count - 1);
+        }
+        var len = X.WriteWebXrPose(_json, X.Head);
+        _webXr = System.Text.Encoding.UTF8.GetString(_json, 0, len);
+        _shownSeq = Runner.FrameSeq;
+    }
+
+    private void PadDown(PointerEventArgs e) { _dragging = true; _px = e.ClientX; _py = e.ClientY; }
+
+    private void PadMove(PointerEventArgs e)
+    {
+        if (!_dragging) return;
+        var dx = (float)(e.ClientX - _px); var dy = (float)(e.ClientY - _py);
+        _px = e.ClientX; _py = e.ClientY;
+        Runner.Move(dx * 0.6f, -dy * 0.4f, Vector3.Zero);
+        if (!Runner.IsRunning) { Runner.TickOnce(1.0 / SpatialXrStudioRunner.TickHz); Refresh(); }
+    }
+
+    private void PadUp(PointerEventArgs e) => _dragging = false;
+
+    private void PadWheel(WheelEventArgs e)
+    {
+        Runner.Move(0, 0, Vector3.Zero, e.DeltaY > 0 ? 1.08f : 1f / 1.08f);
+        if (!Runner.IsRunning) { Runner.TickOnce(1.0 / SpatialXrStudioRunner.TickHz); Refresh(); }
+    }
+
+    private void PanBy(float x, float y, float z)
+    {
+        var yaw = B.CameraYawDeg * MathF.PI / 180f;
+        var fwd = new Vector3(MathF.Sin(yaw), 0f, MathF.Cos(yaw));
+        var right = new Vector3(MathF.Cos(yaw), 0f, -MathF.Sin(yaw));
+        Runner.Move(0, 0, right * x + Vector3.UnitY * y + fwd * z);
+        if (!Runner.IsRunning) { Runner.TickOnce(1.0 / SpatialXrStudioRunner.TickHz); Refresh(); }
+    }
+
+    private void Cheer() { var n = S.EmitLocal(_wire, SharedEventKind.Cheer, 0); _message = "🎉 환호 이벤트 " + n.ToString(CultureInfo.InvariantCulture) + "B · 램포트 " + S.Lamport.ToString(CultureInfo.InvariantCulture); }
+    private void Grab() { S.EmitLocal(_wire, SharedEventKind.Grab, 0); _message = "✊ 잡기 → 소유자 " + (S.Owner(0) >= 0 ? "U" + S.Owner(0).ToString(CultureInfo.InvariantCulture) : "—"); }
+    private void Release() { S.EmitLocal(_wire, SharedEventKind.Release, 0); _message = "🖐 놓기 → 소유자 " + (S.Owner(0) >= 0 ? "U" + S.Owner(0).ToString(CultureInfo.InvariantCulture) : "—"); }
+
+    private void Generate()
+    {
+        var n = Runner.GenerateWorld(_prompt);
+        Runner.TickOnce(1.0 / SpatialXrStudioRunner.TickHz);
+        _message = "🌐 객체 " + n.ToString(CultureInfo.InvariantCulture) + "개 → 6DoF 스테이지 미러";
+        Refresh();
+    }
+
+    private void Import()
+    {
+        var n = Runner.Import3dgs();
+        Runner.TickOnce(1.0 / SpatialXrStudioRunner.TickHz);
+        _message = n > 0 ? "🧊 3DGS " + n.ToString(CultureInfo.InvariantCulture) + " 스플랫 임포트" : "❌ 3DGS 스튜디오 장면 없음";
+        Refresh();
+    }
+
+    private void EnableUdp()
+    {
+        if (!System.Net.IPAddress.TryParse(_host, out _) || _port is < 1 or > 65535) { _message = "❌ IP/포트 형식 오류"; return; }
+        try { X.EnableUdp(_host, _port); _message = "📡 XRS1 → " + _host + ":" + _port.ToString(CultureInfo.InvariantCulture); }
+        catch (System.Net.Sockets.SocketException ex) { _message = "❌ UDP 실패: " + ex.SocketErrorCode; }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(() => { if (Runner.IsRunning) Refresh(); StateHasChanged(); });
+
+    public void Dispose()
+    {
+        _timer?.Dispose();
+        Runner.OnChange -= OnServiceChanged;
+        B.OnChange -= OnServiceChanged;
+    }
+}

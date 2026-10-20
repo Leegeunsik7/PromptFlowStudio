@@ -1,0 +1,168 @@
+@using PromptFlowStudio.Services.Diagnostics
+@using PromptFlowStudio.Services.Studio
+@implements IDisposable
+@inject StudioSelfDiagnosticEngine Diag
+@inject EnterpriseAssetIndexer Assets
+@inject AutonomousRecoverySentinel Recovery
+@inject StudioFolderLinkService FolderLink
+@inject ILocalMediaService Media
+@inject PromptFlowStudio.Services.Ui.StudioMemoryAudit MemAudit
+
+@* [PromptFlow Studio] v3.4.0 엔터프라이즈 진단 제어반 — 헬스 스코어·VRAM/RAM 파편화·FFmpeg 트리·1-Click 자가 치유·중앙 자산 검색. *@
+
+<div class="edd">
+    <div class="edd-h"><span class="edd-title">🩺 엔터프라이즈 진단 제어반</span><span class="edd-badge">v3.4.0</span>
+        <button class="edd-mini" @onclick="Refresh" disabled="@_busy">🔄 재진단</button></div>
+
+    <div class="edd-grid">
+        @* ── ① 헬스 스코어 + 리소스 ── *@
+        <div class="edd-card">
+            <div class="edd-ct">💯 시스템 헬스</div>
+            <div class="edd-hs">
+                <div class="edd-gauge" style="--pct:@_snap.HealthScore;--gc:@ScoreColor"><div class="edd-gin"><b>@_snap.HealthScore</b><small>@Grade 등급</small></div></div>
+                <div class="edd-bars">
+                    <div class="edd-bar"><span>RAM</span><div class="edd-track"><i style="width:@((int)_snap.RamLoadPct)%"></i></div><b>@_snap.RamLoadPct%</b></div>
+                    <div class="edd-bar"><span>파편화</span><div class="edd-track"><i class="frag" style="width:@(Math.Min(100,(int)(_snap.FragPct*3)))%"></i></div><b>@_snap.FragPct%</b></div>
+                    <div class="edd-bar"><span>VRAM</span><div class="edd-track"><i class="vram" style="width:@(VramPct)%"></i></div><b>@_snap.VramUsedMb.ToString("0")/@_snap.VramTotalMb.ToString("0")</b></div>
+                </div>
+            </div>
+            <div class="edd-sub">워킹셋 @_snap.WorkingSetMb MB · 복구 @Recovery.RecoveredCount/@Recovery.RecoveryCount · 자산 @Assets.Count</div>
+        </div>
+
+        @* ── ② FFmpeg 프로세스 트리 ── *@
+        <div class="edd-card">
+            <div class="edd-ct">🌿 활성 FFmpeg 프로세스 <span class="edd-cnt">@_procs.Count</span></div>
+            <div class="edd-tree">
+                @if (_procs.Count == 0) { <div class="edd-none">활성 FFmpeg 프로세스 없음 (idle)</div> }
+                @foreach (var p in _procs)
+                {
+                    <div class="edd-proc @(p.Stalled ? "stalled" : null)">
+                        <span class="edd-pid">PID @p.Pid</span>
+                        <span class="edd-pm">CPU @p.CpuDeltaMs.ToString("0")ms · @p.WorkingSetMb MB · @p.AgeSeconds s</span>
+                        @if (p.Stalled) { <span class="edd-hang">⛔ HANG</span> }
+                    </div>
+                }
+            </div>
+        </div>
+
+        @* ── ③ 1-Click 자가 치유 ── *@
+        <div class="edd-card">
+            <div class="edd-ct">🧹 자가 치유</div>
+            <button class="edd-btn heal" @onclick="SelfHeal" disabled="@_busy">🧹 1-Click 자가 치유 &amp; VRAM 정리</button>
+            @if (_heal is { } h)
+            {
+                <div class="edd-heal">✅ @h.Message</div>
+                <div class="edd-sub">고스트 @h.GhostsKilled 정독 · 메모리 @h.RamBeforeMb→@h.RamAfterMb MB(−@h.FreedMb) · 파편화 @h.FragBefore%→@h.FragAfter%</div>
+            }
+            else { <div class="edd-sub">FFmpeg 데드락 정독 + GC/LOH 압축 + VRAM 반환</div> }
+            <button class="edd-btn ghost" @onclick="ExportReport" disabled="@_busy">🩺 진단서 발급(HTML)</button>
+            @if (_reportMsg is not null) { <div class="edd-sub">@_reportMsg</div> }
+        </div>
+
+        @* ── ④ 중앙 자산 퀵 검색 ── *@
+        <div class="edd-card">
+            <div class="edd-ct">🔎 중앙 자산 인덱서 <button class="edd-mini" @onclick="Reindex" disabled="@_busy">재색인</button></div>
+            <input class="edd-input" placeholder="태그 검색 (stl, csv, logo, dubbing, 프로젝트ID…)" value="@_query" @oninput="OnSearch" />
+            <div class="edd-assets">
+                @if (_query.Length > 0 && _assets.Count == 0) { <div class="edd-none">🔍 "@_query" 자산 없음</div> }
+                @foreach (var a in _assets.Take(6))
+                {
+                    <div class="edd-asset"><span class="edd-atype">@a.Type</span><span class="edd-aname">@System.IO.Path.GetFileName(a.Path)</span><span class="edd-asha">@Short(a.Sha256)</span></div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .edd { border: 1px solid color-mix(in srgb,#22d3ee 26%,var(--line)); border-radius: 16px; overflow: hidden; background: linear-gradient(160deg, color-mix(in srgb,#22d3ee 7%,rgba(18,20,31,.72)), rgba(18,20,31,.85)); backdrop-filter: blur(16px) saturate(140%); -webkit-backdrop-filter: blur(16px) saturate(140%); }
+    .edd-h { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb,#22d3ee 12%,transparent), transparent 60%); }
+    .edd-title { font: 900 14px var(--mono); } .edd-badge { font: 700 10px var(--mono); color: #7dd3fc; background: color-mix(in srgb,#22d3ee 15%,transparent); border: 1px solid color-mix(in srgb,#22d3ee 38%,var(--line)); border-radius: 20px; padding: 2px 8px; }
+    .edd-mini { margin-left: auto; font: 700 10px var(--mono); color: #7dd3fc; background: color-mix(in srgb,#22d3ee 12%,transparent); border: 1px solid color-mix(in srgb,#22d3ee 34%,var(--line)); border-radius: 8px; padding: 3px 9px; cursor: pointer; }
+    .edd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 14px 16px; }
+    .edd-card { border: 1px solid var(--line); border-radius: 13px; background: rgba(26,29,43,.6); padding: 12px; display: flex; flex-direction: column; gap: 9px; }
+    .edd-ct { font: 800 12px var(--mono); display: flex; align-items: center; gap: 7px; } .edd-cnt { font: 700 10px var(--mono); color: var(--text-muted); background: #12141f; border: 1px solid var(--line); border-radius: 20px; padding: 1px 8px; }
+    .edd-hs { display: flex; align-items: center; gap: 14px; }
+    .edd-gauge { width: 84px; height: 84px; border-radius: 50%; flex: 0 0 auto; background: conic-gradient(var(--gc) calc(var(--pct)*1%), #1a1d2b 0); display: grid; place-items: center; }
+    .edd-gin { width: 62px; height: 62px; border-radius: 50%; background: var(--card); display: grid; place-items: center; text-align: center; } .edd-gin b { font: 900 20px var(--mono); color: var(--text-primary); } .edd-gin small { font: 700 8px var(--mono); color: var(--text-muted); }
+    .edd-bars { flex: 1; display: flex; flex-direction: column; gap: 6px; } .edd-bar { display: grid; grid-template-columns: 48px 1fr auto; align-items: center; gap: 7px; font: 700 9.5px var(--mono); color: var(--text-muted); } .edd-bar b { color: var(--text-secondary); }
+    .edd-track { height: 8px; border-radius: 5px; background: #12141f; border: 1px solid var(--line); overflow: hidden; } .edd-track i { display: block; height: 100%; background: linear-gradient(90deg,#22d3ee,#0ea5e9); } .edd-track i.frag { background: linear-gradient(90deg,#f59e0b,#ef4444); } .edd-track i.vram { background: linear-gradient(90deg,#a855f7,#d946ef); }
+    .edd-sub { font: 600 10px var(--mono); color: var(--text-muted); line-height: 1.4; }
+    .edd-tree { display: flex; flex-direction: column; gap: 4px; max-height: 130px; overflow-y: auto; }
+    .edd-none { font: 600 10.5px var(--mono); color: var(--text-muted); padding: 8px 0; }
+    .edd-proc { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border-radius: 8px; background: #12141f; border-left: 3px solid #22c55e; } .edd-proc.stalled { border-left-color: #ef4444; }
+    .edd-pid { font: 800 10.5px var(--mono); color: var(--text-primary); } .edd-pm { font: 600 9.5px var(--mono); color: var(--text-muted); } .edd-hang { margin-left: auto; font: 800 9px var(--mono); color: #fca5a5; }
+    .edd-btn { font: 800 12px var(--mono); padding: 10px 14px; border: none; border-radius: 10px; cursor: pointer; color: #fff; } .edd-btn.heal { background: linear-gradient(135deg,#22d3ee,#0ea5e9); } .edd-btn.ghost { background: var(--card-2); color: var(--text-secondary); border: 1px solid var(--line); }
+    .edd-btn:disabled { opacity: .5; cursor: not-allowed; } .edd-btn:hover:not(:disabled) { filter: brightness(1.08); }
+    .edd-heal { font: 700 10.5px var(--mono); color: #86efac; }
+    .edd-input { background: #12141f; border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; color: var(--text-primary); font: 600 11.5px var(--mono); } .edd-input:focus { outline: none; border-color: #22d3ee; }
+    .edd-assets { display: flex; flex-direction: column; gap: 4px; max-height: 130px; overflow-y: auto; }
+    .edd-asset { display: flex; align-items: center; gap: 8px; padding: 5px 9px; border-radius: 7px; background: #12141f; } .edd-atype { font: 800 9px var(--mono); color: #7dd3fc; } .edd-aname { font: 600 10px var(--mono); color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .edd-asha { margin-left: auto; font: 600 8.5px var(--mono); color: var(--text-muted); }
+    @@media (max-width: 720px) { .edd-grid { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter, EditorRequired] public StoryboardProject Project { get; set; } = default!;
+    [Parameter] public bool Disabled { get; set; }
+
+    private long _memToken;
+    private DiagSnapshot _snap = new(100, 0, 0, 0, 0, 0, 0, 0);
+    private IReadOnlyList<FfmpegProcInfo> _procs = Array.Empty<FfmpegProcInfo>();
+    private SelfHealResult? _heal;
+    private string _query = "";
+    private IReadOnlyList<AssetEntry> _assets = Array.Empty<AssetEntry>();
+    private string? _reportMsg;
+    private bool _busy;
+
+    private string Grade => _snap.HealthScore >= 85 ? "S" : _snap.HealthScore >= 70 ? "A" : _snap.HealthScore >= 55 ? "B" : _snap.HealthScore >= 40 ? "C" : "D";
+    private string ScoreColor => _snap.HealthScore >= 70 ? "#22c55e" : _snap.HealthScore >= 40 ? "#f59e0b" : "#ef4444";
+    private int VramPct => _snap.VramTotalMb > 0 ? (int)Math.Clamp(_snap.VramUsedMb / _snap.VramTotalMb * 100, 0, 100) : 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _memToken = MemAudit.Track("EnterpriseDiagnosticsStudioDeck");
+        Diag.OnChange += OnSvc; Recovery.OnChange += OnSvc; Assets.OnChange += OnSvc;
+        await Refresh();
+    }
+    private void OnSvc() => InvokeAsync(StateHasChanged);
+
+    private async Task Refresh()
+    {
+        _busy = true; StateHasChanged();
+        try { _snap = await Diag.SnapshotAsync(); _procs = await Diag.ScanFfmpegAsync(500); }
+        finally { _busy = false; }
+    }
+
+    private async Task SelfHeal()
+    {
+        _busy = true; StateHasChanged();
+        try { _heal = await Diag.SelfHealAsync(); _snap = await Diag.SnapshotAsync(); _procs = await Diag.ScanFfmpegAsync(500); }
+        finally { _busy = false; }
+    }
+
+    private async Task Reindex()
+    {
+        _busy = true; StateHasChanged();
+        try { await Assets.BuildAsync(Media.MediaRoot); _assets = Assets.Search(_query); }
+        finally { _busy = false; }
+    }
+
+    private void OnSearch(ChangeEventArgs e) { _query = e.Value?.ToString() ?? ""; _assets = Assets.Search(_query); }
+
+    private void ExportReport()
+    {
+        try
+        {
+            var model = SystemHealthReport.BuildModel(_snap, Recovery.Events, Recovery.RecoveredCount, Assets.Count);
+            var path = System.IO.Path.Combine(Media.MediaRoot, "health_report.html");
+            System.IO.File.WriteAllText(path, SystemHealthReport.RenderHtml(model), new System.Text.UTF8Encoding(false));
+            FolderLink.Reveal(path);
+            _reportMsg = "🩺 진단서 발급 완료 — 탐색기에서 열림";
+        }
+        catch (Exception ex) { _reportMsg = "⚠ " + ex.Message; }
+    }
+
+    private static string Short(string sha) => string.IsNullOrEmpty(sha) ? "—" : (sha.Length > 10 ? sha[..10] : sha);
+
+    public void Dispose() { Diag.OnChange -= OnSvc; Recovery.OnChange -= OnSvc; Assets.OnChange -= OnSvc; MemAudit.Release(_memToken); }
+}

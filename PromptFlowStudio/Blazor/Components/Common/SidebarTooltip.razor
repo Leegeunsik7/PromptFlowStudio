@@ -1,0 +1,42 @@
+@* [PromptFlow Studio] 사이드바 가이드 툴팁 — 메뉴 호버 시 시네마틱 글래스모피즘 카드로 단축키·요약·역할·권장 순서 팝업. 사이드바 우측에 고정. *@
+
+@if (Guide is { } g)
+{
+    <div class="sgt" style="@($"top:{TopPx.ToString(System.Globalization.CultureInfo.InvariantCulture)}px")" aria-hidden="true">
+        <div class="sgt-arrow"></div>
+        <div class="sgt-h"><span class="sgt-ic">@g.Icon</span><span class="sgt-title">@g.Title</span>@if (g.Shortcut is { Length: > 0 } && g.Shortcut != "—") { <kbd class="sgt-kbd">@g.Shortcut</kbd> }</div>
+        <div class="sgt-sum">@g.Summary</div>
+        <div class="sgt-row"><span class="sgt-tag">역할</span><span>@g.Role</span></div>
+        <div class="sgt-row"><span class="sgt-tag ord">순서</span><span>@g.Order</span></div>
+    </div>
+}
+
+<style>
+    /* 반투명 글래스모피즘 — 뒷배경(본문 텍스트·그리드)이 은은하게 비치도록 65% 카드 + 16px 블러(깊이감) */
+    .sgt { position: fixed; left: 246px; z-index: var(--z-sidebar-nav); width: 264px; transform: translateY(-50%);
+        background: linear-gradient(160deg, rgba(255,255,255,.06), transparent 42%), color-mix(in srgb, var(--card, #111a2e) 65%, transparent);
+        backdrop-filter: blur(16px) saturate(1.2); -webkit-backdrop-filter: blur(16px) saturate(1.2);
+        border: 1px solid rgba(255,255,255,.14); border-radius: 14px; padding: 13px 15px; pointer-events: none;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.09), 0 18px 44px rgba(0,0,0,.5); animation: sgt-in .16s ease-out; }
+    .sgt-arrow { position: absolute; left: -6px; top: 50%; width: 10px; height: 10px; transform: translateY(-50%) rotate(45deg);
+        background: color-mix(in srgb, var(--card, #111a2e) 65%, transparent); backdrop-filter: blur(16px) saturate(1.2); -webkit-backdrop-filter: blur(16px) saturate(1.2);
+        border-left: 1px solid rgba(255,255,255,.14); border-bottom: 1px solid rgba(255,255,255,.14); }
+    .sgt-h { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+    .sgt-ic { font-size: 16px; }
+    .sgt-title { font: 900 13.5px var(--mono); color: var(--text-primary, #f1f6ff); flex: 1; }
+    .sgt-kbd { font: 700 9.5px var(--mono); color: var(--text-secondary); background: var(--card-2); border: 1px solid var(--line); border-radius: 5px; padding: 2px 6px; }
+    .sgt-sum { font-size: 11.5px; line-height: 1.5; color: var(--text-secondary, #93a3b8); margin-bottom: 9px; }
+    .sgt-row { display: flex; gap: 8px; align-items: flex-start; padding: 3px 0; font-size: 11px; color: var(--text-secondary, #93a3b8); line-height: 1.45; }
+    .sgt-tag { flex: 0 0 auto; font: 800 9px var(--mono); color: var(--accent-2, #22d3ee); border: 1px solid color-mix(in srgb, var(--accent-2, #22d3ee) 30%, var(--line)); border-radius: 999px; padding: 2px 7px; margin-top: 1px; }
+    .sgt-tag.ord { color: #fff; background: linear-gradient(135deg, var(--flow-violet, #8b5cf6), var(--flow-magenta, #d946ef)); border: none; }
+    @@keyframes sgt-in { from { opacity: 0; transform: translateY(-50%) translateX(-6px); } to { opacity: 1; transform: translateY(-50%); } }
+    @@media (max-width: 1000px) { .sgt { display: none; } }   /* 드로어 모드에서는 숨김 */
+    @@media (prefers-reduced-motion: reduce) { .sgt { animation: none; } }
+</style>
+
+@code {
+    /// <summary>표시할 사이드바 가이드(null 이면 숨김).</summary>
+    [Parameter] public SidebarGuide? Guide { get; set; }
+    /// <summary>세로 위치(px, 호버한 항목 중앙 근처).</summary>
+    [Parameter] public double TopPx { get; set; }
+}

@@ -1,0 +1,402 @@
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.Accessibility
+@using PromptFlowStudio.Services.Spatial
+@implements IDisposable
+@inject AiSignLanguageAvatarSynthesizer Sign
+@inject GenerativeAudioDescriptionEngine Ad
+@inject WcagAccessibilityCorrectionFilter Wcag
+@inject BarrierFreePackager Packager
+
+@*
+    [PromptFlow Studio v16.47.0] 🤟 AI 유니버설 접근성 & 배리어프리 스튜디오 — 접근성 합성 프리뷰(수어 PiP · 인지 친화 자막 · 색약 보정) · 수어 아바타 크기/위치 조절 ·
+    화면 해설(AD) 타임라인(대사 vs 해설 · 더킹) · 색약 시뮬레이터 3분할(원본/시뮬레이션/보정) · 1-Click 배리어프리 패키지. 서비스 OnChange 구독 + 재생 중 100ms 틱.
+*@
+
+<div class="ax-scrim" @onclick="Close">
+    <div class="ax-modal" @onclick:stopPropagation="true">
+        <div class="ax-h">
+            <div>
+                <div class="ax-title">🤟 AI 유니버설 접근성 &amp; 배리어프리 스튜디오</div>
+                <div class="ax-sub">대사를 <b>KSL/ASL 수어 아바타</b>로 실시간 번역해 PiP로 합성하고, 대사 공백에 <b>화면 해설(AD)</b>을 자동 더킹 삽입하며, <b>색약 보정</b>과 <b>난독증 친화 자막</b>으로 WCAG 배리어프리 패키지를 만듭니다.</div>
+            </div>
+            <button class="ax-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="ax-bar">
+            <span class="ax-chip">🤟 @(Sign.Language == SignLanguage.Ksl ? "KSL" : "ASL") 토큰 @(Sign.Tokens.Count) · 지문자 @(Spelled())</span>
+            <span class="ax-chip">🦯 AD @(Ad.Segments.Count)구간 · @(Ad.LlmAvailable ? "Gemini" : "BCL")</span>
+            <span class="ax-chip">🎨 @(WcagAccessibilityCorrectionFilter.Label(Wcag.Mode))</span>
+            <span class="ax-chip @(Contrast() >= WcagAccessibilityCorrectionFilter.AaaRatio ? "ok" : "bad")">자막 명암비 @(F1(Contrast())):1 @(Contrast() >= WcagAccessibilityCorrectionFilter.AaaRatio ? "AAA" : "미달")</span>
+            <span class="ax-chip">📦 @(Packager.Packages)</span>
+        </div>
+
+        <div class="ax-main">
+            <div class="ax-col">
+                <div class="ax-player">
+                    @if (_previewUrl is not null)
+                    {
+                        <img class="ax-screen" src="@(_previewUrl)" alt="접근성 합성 프리뷰" />
+                    }
+                    <div class="ax-ph"><span>@(CurrentCue())</span><i>@(F1(_t))s / @(F1(Duration))s</i></div>
+                </div>
+                <div class="ax-row">
+                    <button class="ax-btn go" @onclick="TogglePlay">@(_playing ? "⏸ 일시정지" : "▶ 재생")</button>
+                    <input type="range" class="grow" min="0" max="@(F1(Duration))" step="0.1" value="@(F1(_t))" @oninput="Scrub" />
+                </div>
+
+                <div class="ax-card">
+                    <div class="ax-sec">🤟 수어 아바타</div>
+                    <div class="ax-row">
+                        <select class="ax-in" value="@(Sign.Language)" @onchange="SetLanguage">
+                            <option value="Ksl">KSL 한국 수어</option>
+                            <option value="Asl">ASL 미국 수어</option>
+                        </select>
+                        <select class="ax-in" value="@(Sign.Layout.Corner)" @onchange="SetCorner">
+                            <option value="BottomRight">우측 하단</option>
+                            <option value="BottomLeft">좌측 하단</option>
+                            <option value="TopRight">우측 상단</option>
+                            <option value="TopLeft">좌측 상단</option>
+                        </select>
+                        <label class="ax-ck">크기 <input type="range" min="0.15" max="0.55" step="0.01" value="@(F2(Sign.Layout.Scale))" @oninput="SetScale" /> @(P0(Sign.Layout.Scale * 100))%</label>
+                        <label class="ax-ck">여백 <input type="range" min="0" max="0.1" step="0.005" value="@(F2(Sign.Layout.Margin))" @oninput="SetMargin" /></label>
+                    </div>
+                    <div class="ax-gloss">
+                        @foreach (var tk in Sign.Tokens.Take(40))
+                        {
+                            <span class="@(GlossClass(tk))" title="@(GlossTitle(tk))">@(tk.Gloss)</span>
+                        }
+                    </div>
+                    <div class="ax-mut">아바타 체형: @(Sign.RigLabel) · 사전 KSL @(AiSignLanguageAvatarSynthesizer.LexiconSize(SignLanguage.Ksl)) / ASL @(AiSignLanguageAvatarSynthesizer.LexiconSize(SignLanguage.Asl))어 · 시연용 근사 수어(송출 전 공인 통역사 검수 필요)</div>
+                </div>
+
+                <div class="ax-card">
+                    <div class="ax-row"><div class="ax-sec">🦯 화면 해설(AD) 타임라인</div><button class="ax-btn sm" @onclick="BuildAd">🔄 재생성</button><button class="ax-btn sm" disabled="@(!Ad.LlmAvailable || _busy)" @onclick="RefineAd">🤖 Gemini 다듬기</button>
+                        <label class="ax-ck">더킹 <input type="range" min="-24" max="-3" step="1" value="@(P0(Ad.DuckDb))" @oninput="SetDuck" /> @(P0(Ad.DuckDb))dB</label></div>
+                    <svg class="ax-tl" viewBox="0 0 1000 90" preserveAspectRatio="none">
+                        <rect x="0" y="0" width="1000" height="90" fill="#0b1020" />
+                        <g><text x="4" y="14" font-size="10" fill="#94a3b8">대사</text></g>
+                        @foreach (var c in _cues)
+                        {
+                            <rect x="@(X(c.Start))" y="18" width="@(W(c.End - c.Start))" height="20" rx="3" fill="#38bdf8" opacity="0.8" />
+                        }
+                        <g><text x="4" y="52" font-size="10" fill="#94a3b8">해설</text></g>
+                        @foreach (var s in Ad.Segments)
+                        {
+                            <rect x="@(X(s.Start))" y="56" width="@(W(s.Duration))" height="20" rx="3" fill="@(s.Source == "Gemini" ? "#a78bfa" : "#fbbf24")" />
+                        }
+                        <rect x="@(X(_t))" y="0" width="2" height="90" fill="#f43f5e" />
+                    </svg>
+                    <div class="ax-list">
+                        @foreach (var s in Ad.Segments)
+                        {
+                            <div class="ax-li @(s.Start <= _t && _t < s.End ? "on" : "")"><b>@(F1(s.Start))–@(F1(s.End))s</b><span>@(s.Text)</span><i>@(s.Source)</i></div>
+                        }
+                    </div>
+                    <div class="ax-mut">대사 겹침: @(GenerativeAudioDescriptionEngine.OverlapsDialogue(Ad.Segments, _cues) ? "⚠ 있음" : "✅ 없음") · 최소 공백 @(F1(Ad.MinGap))s · 낭독 @(F1(GenerativeAudioDescriptionEngine.CharsPerSecond))자/초</div>
+                </div>
+            </div>
+
+            <div class="ax-col">
+                <div class="ax-card">
+                    <div class="ax-row">
+                        <div class="ax-sec">🎨 색약 시뮬레이터</div>
+                        <select class="ax-in" value="@(_cvd)" @onchange="SetCvd">
+                            <option value="Protanopia">1형 적색맹</option>
+                            <option value="Deuteranopia">2형 녹색맹</option>
+                            <option value="Tritanopia">3형 청황색맹</option>
+                        </select>
+                        <label class="ax-ck">심도 <input type="range" min="0" max="1" step="0.05" value="@(F2(_severity))" @oninput="SetSeverity" /> @(P0(_severity * 100))%</label>
+                    </div>
+                    <div class="ax-tri">
+                        <figure><img src="@(_origUrl)" alt="원본" /><figcaption>원본</figcaption></figure>
+                        <figure><img src="@(_simUrl)" alt="시뮬레이션" /><figcaption>색약 시야</figcaption></figure>
+                        <figure><img src="@(_corrSimUrl)" alt="보정 후 시야" /><figcaption>보정 후 색약 시야</figcaption></figure>
+                    </div>
+                    <div class="ax-kv"><span>혼동 비율(보정 전 → 후)</span><b>@(P0(_confBefore * 100))% → @(P0(_confAfter * 100))%</b></div>
+                    <label class="ax-ck"><input type="checkbox" checked="@(_applyCorrection)" @onchange="ToggleCorrection" /> 프리뷰에 Daltonization 보정 적용</label>
+                </div>
+
+                <div class="ax-card">
+                    <div class="ax-sec">🔤 인지 친화 자막 (난독증)</div>
+                    <div class="ax-row">
+                        <select class="ax-in" value="@(Wcag.Style.FontFamily)" @onchange="SetFont">
+                            <option value="OpenDyslexic">OpenDyslexic</option>
+                            <option value="Verdana">Verdana</option>
+                            <option value="Malgun Gothic">맑은 고딕</option>
+                        </select>
+                        <label class="ax-ck">자간 <input type="range" min="0" max="0.35" step="0.01" value="@(F2(Wcag.Style.LetterSpacingEm))" @oninput="SetSpacing" /></label>
+                        <label class="ax-ck">크기 <input type="range" min="20" max="56" step="1" value="@(Wcag.Style.SizePx)" @oninput="SetSize" /></label>
+                        <input class="ax-in w70" type="color" value="#@(Wcag.Style.Foreground.ToString("X6", CultureInfo.InvariantCulture))" @onchange="SetColor" />
+                    </div>
+                    <div class="ax-mut">적용 폰트: @(Wcag.ResolvedFont) @(Wcag.ResolvedFont != Wcag.Style.FontFamily ? "(미설치 → 폴백)" : "") · 줄당 @(Wcag.Style.MaxCharsPerLine)자 · @(Wcag.Style.MaxLines)줄 · @(F1(Wcag.Style.MaxCps)) CPS</div>
+                    @if (_issues.Count > 0)
+                    {
+                        <div class="ax-warn">⚠ 가독성 위반 @(_issues.Count)건: @(string.Join(" · ", _issues.Take(3).Select(i => (i.Cue >= 0 ? "#" + (i.Cue + 1).ToString(CultureInfo.InvariantCulture) + " " : "") + i.Reason)))</div>
+                    }
+                    else
+                    {
+                        <div class="ax-okm">✅ WCAG AAA 명암비 · 줄 길이 · 읽기 속도 통과</div>
+                    }
+                </div>
+
+                <div class="ax-card">
+                    <div class="ax-sec">📦 1-Click 배리어프리 패키지</div>
+                    <div class="ax-mut">수어 트랙 · 화면 해설 VTT/스템/더킹 믹스 · 인지 친화 자막 VTT · 색약 보정 LUT 3종 · 접근성 보고서 · SHA-256 매니페스트</div>
+                    <button class="ax-btn go" @onclick="Pack">⚡ 배리어프리 패키지 생성</button>
+                    @if (Packager.Last is { } r)
+                    {
+                        <div class="ax-kv"><span>@(System.IO.Path.GetFileName(r.ZipPath))</span><b>@(r.Entries.Count)파일 · @(KB(r.Bytes))</b></div>
+                        <div class="ax-kv"><span>AD 커버리지 · 수어 토큰 · 위반</span><b>@(P0(r.AdCoverage * 100))% · @(r.SignTokens) · @(r.ReadabilityIssues)</b></div>
+                        <div class="ax-mut">📁 @(System.IO.Path.GetDirectoryName(r.ZipPath))</div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="ax-f">
+            <span class="ax-mut">@(_msg ?? Packager.LastAction ?? Ad.LastAction ?? Sign.LastAction ?? Wcag.LastAction ?? "대기")</span>
+            <button class="ax-btn" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .ax-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .ax-modal { width: min(1400px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .ax-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #38bdf8 14%, var(--card)), color-mix(in srgb, #fbbf24 12%, var(--card))); }
+    .ax-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .ax-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .ax-sub b { color: var(--text-primary); }
+    .ax-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .ax-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .ax-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); } .ax-chip.ok { color: #4ade80; } .ax-chip.bad { color: #f87171; }
+    .ax-main { display: grid; grid-template-columns: 1.2fr 1fr; gap: 12px; padding: 12px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .ax-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .ax-player { border-radius: 10px; overflow: hidden; background: #000; border: 2px solid #38bdf8; }
+    .ax-screen { width: 100%; aspect-ratio: 16 / 9; display: block; }
+    .ax-ph { display: flex; justify-content: space-between; gap: 8px; padding: 4px 8px; font-size: 12px; color: #e2e8f0; background: #0f172a; } .ax-ph span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; } .ax-ph i { font: 11px var(--mono); font-style: normal; color: #7dd3fc; flex: none; }
+    .ax-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; } .ax-row .grow { flex: 1; }
+    .ax-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .ax-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .ax-gloss { display: flex; flex-wrap: wrap; gap: 3px; } .ax-gloss span { font: 11px var(--mono); padding: 1px 6px; border-radius: 5px; background: color-mix(in srgb, #38bdf8 16%, var(--card)); color: var(--text-primary); } .ax-gloss span.fs { background: color-mix(in srgb, #a78bfa 16%, var(--card)); } .ax-gloss span.on { outline: 2px solid #f43f5e; }
+    .ax-tl { width: 100%; height: 90px; border-radius: 6px; }
+    .ax-list { display: flex; flex-direction: column; gap: 2px; max-height: 140px; overflow-y: auto; }
+    .ax-li { display: grid; grid-template-columns: 90px 1fr 50px; gap: 6px; font-size: 11.5px; color: var(--text-secondary); border-bottom: 1px solid var(--line); } .ax-li.on { background: color-mix(in srgb, #fbbf24 14%, var(--card)); } .ax-li b { font: 10px var(--mono); color: var(--text-muted); } .ax-li i { font: 10px var(--mono); font-style: normal; color: #a78bfa; }
+    .ax-tri { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; } .ax-tri figure { margin: 0; } .ax-tri img { width: 100%; aspect-ratio: 16 / 9; display: block; border-radius: 6px; background: #000; } .ax-tri figcaption { font-size: 10.5px; color: var(--text-muted); text-align: center; }
+    .ax-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; } .ax-in.w70 { width: 70px; padding: 0; height: 26px; }
+    .ax-ck { font-size: 11.5px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; }
+    .ax-kv { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--text-muted); } .ax-kv b { color: var(--text-primary); font-family: var(--mono); }
+    .ax-warn { font-size: 11.5px; color: #f87171; } .ax-okm { font-size: 11.5px; color: #4ade80; }
+    .ax-mut { font-size: 11px; color: var(--text-muted); }
+    .ax-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); } .ax-f .ax-mut { margin-right: auto; }
+    .ax-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .ax-btn.sm { padding: 3px 8px; font-size: 11px; } .ax-btn.go { background: linear-gradient(135deg,#0ea5e9,#f59e0b); color: #fff; border: 0; } .ax-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 1050px) { .ax-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int FW = 640, FH = 360, TW = 192, TH = 108;
+    private const double Duration = 30;
+    private readonly byte[] _frame = new byte[FW * FH * 3], _rgba = new byte[FW * FH * 4], _out = new byte[FW * FH * 3];
+    private readonly byte[] _thumb = new byte[TW * TH * 3], _tmp = new byte[TW * TH * 3];
+    private readonly float[] _m = new float[9];
+    private readonly List<A11yCue> _cues = new()
+    {
+        new A11yCue(1.0, 4.2, "안녕하세요 오늘 날씨 뉴스입니다"),
+        new A11yCue(8.5, 12.0, "부산에 비가 내리고 있습니다"),
+        new A11yCue(12.4, 15.0, "피해는 없나요?"),
+        new A11yCue(20.0, 23.5, "우리 모두 안전에 주의하세요 감사합니다"),
+    };
+    private List<ReadabilityIssue> _issues = new();
+    private string? _previewUrl, _origUrl, _simUrl, _corrSimUrl, _msg;
+    private ColorVisionDeficiency _cvd = ColorVisionDeficiency.Deuteranopia;
+    private float _severity = 1f, _confBefore, _confAfter;
+    private bool _applyCorrection = true, _playing, _busy;
+    private double _t = 2;
+    private CancellationTokenSource? _ui;
+
+    protected override void OnInitialized()
+    {
+        Sign.OnChange += OnServiceChanged;
+        Ad.OnChange += OnServiceChanged;
+        Wcag.OnChange += OnServiceChanged;
+        Packager.OnChange += OnServiceChanged;
+        Wcag.ResolveFont();
+        Sign.LoadCaptions(_cues);
+        BuildAd();
+        foreach (var c in WcagAccessibilityCorrectionFilter.CognitiveCues(_cues, Wcag.Style)) Wcag.Prepare(c.Text);
+        _issues = WcagAccessibilityCorrectionFilter.CheckReadability(WcagAccessibilityCorrectionFilter.CognitiveCues(_cues, Wcag.Style), Wcag.Style);
+        Wcag.Configure(_cvd, _severity, false);
+        RefreshSimulator();
+        RenderPreview();
+    }
+
+    /// <summary>데모 장면: 하늘/바닥 그라데이션 · 적/녹 신호 표지 · 이동 인물(피부색 블롭).</summary>
+    private static void DemoFrame(Span<byte> rgb, int w, int h, double t)
+    {
+        var px = (float)(0.3 + 0.25 * Math.Sin(t * 0.4));
+        for (var y = 0; y < h; y++)
+            for (var x = 0; x < w; x++)
+            {
+                var o = (y * w + x) * 3;
+                byte r, g, b;
+                if (y < h * 0.55) { r = (byte)(60 + y * 80 / h); g = (byte)(90 + y * 60 / h); b = (byte)(150 + y * 40 / h); }
+                else { r = 70; g = 110; b = 60; }
+                var fx = x / (float)w; var fy = y / (float)h;
+                if (fx > 0.62f && fx < 0.7f && fy > 0.3f && fy < 0.45f) { r = 200; g = 40; b = 40; }
+                if (fx > 0.72f && fx < 0.8f && fy > 0.3f && fy < 0.45f) { r = 40; g = 170; b = 50; }
+                var dx = fx - px; var dy = fy - 0.45f;
+                if (dx * dx / 0.004f + dy * dy / 0.02f < 1) { r = 205; g = 160; b = 130; }
+                rgb[o] = r; rgb[o + 1] = g; rgb[o + 2] = b;
+            }
+    }
+
+    private void RenderPreview()
+    {
+        DemoFrame(_frame, FW, FH, _t);
+        for (int i = 0, j = 0; i < _frame.Length; i += 3, j += 4) { _rgba[j] = _frame[i]; _rgba[j + 1] = _frame[i + 1]; _rgba[j + 2] = _frame[i + 2]; _rgba[j + 3] = 255; }
+        if (_applyCorrection) Wcag.Apply(_rgba);
+        foreach (var c in WcagAccessibilityCorrectionFilter.CognitiveCues(_cues, Wcag.Style))
+            if (c.Start <= _t && _t < c.End) { Wcag.RenderSubtitle(_rgba, FW, FH, FW * 4, c.Text); break; }
+        Sign.RenderPip(_rgba, FW, FH, FW * 4, _t);
+        for (int i = 0, j = 0; i < _out.Length; i += 3, j += 4) { _out[i] = _rgba[j]; _out[i + 1] = _rgba[j + 1]; _out[i + 2] = _rgba[j + 2]; }
+        _previewUrl = SpatialImageCodec.BmpDataUrl(_out, FW, FH);
+    }
+
+    private void RefreshSimulator()
+    {
+        DemoFrame(_thumb, TW, TH, _t);
+        _origUrl = SpatialImageCodec.BmpDataUrl(_thumb, TW, TH);
+        WcagAccessibilityCorrectionFilter.SimulationMatrix(_cvd, _severity, _m);
+        _thumb.AsSpan().CopyTo(_tmp);
+        WcagAccessibilityCorrectionFilter.ApplyMatrix(_tmp, 3, _m);
+        _simUrl = SpatialImageCodec.BmpDataUrl(_tmp, TW, TH);
+        _confBefore = WcagAccessibilityCorrectionFilter.ConfusionRatio(_thumb, TW, TH, _cvd);
+        WcagAccessibilityCorrectionFilter.CorrectionMatrix(_cvd, _severity, _m);
+        _thumb.AsSpan().CopyTo(_tmp);
+        WcagAccessibilityCorrectionFilter.ApplyMatrix(_tmp, 3, _m);
+        _confAfter = WcagAccessibilityCorrectionFilter.ConfusionRatio(_tmp, TW, TH, _cvd);
+        WcagAccessibilityCorrectionFilter.SimulationMatrix(_cvd, _severity, _m);
+        WcagAccessibilityCorrectionFilter.ApplyMatrix(_tmp, 3, _m);
+        _corrSimUrl = SpatialImageCodec.BmpDataUrl(_tmp, TW, TH);
+    }
+
+    private void BuildAd()
+    {
+        Ad.Reset();
+        for (var t = 0.0; t < Duration; t += 0.5) { DemoFrame(_thumb, TW, TH, t); Ad.AnalyzeFrame(_thumb, TW, TH, t); }
+        Ad.BuildScript(_cues, Duration);
+    }
+
+    private async Task RefineAd()
+    {
+        _busy = true;
+        try { await Ad.RefineAsync(Ad.Segments.ToList(), "날씨 뉴스 프로그램"); }
+        finally { _busy = false; }
+    }
+
+    private void Pack()
+    {
+        try
+        {
+            var main = new float[(int)(Duration * BarrierFreePackager.SampleRate)];
+            foreach (var c in _cues)
+                for (var i = (int)(c.Start * BarrierFreePackager.SampleRate); i < (int)(c.End * BarrierFreePackager.SampleRate) && i < main.Length; i++) main[i] = 0.2f * MathF.Sin(i * 0.05f);
+            Packager.Build("barrierfree-demo", _cues, Duration, main);
+            _msg = null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { _msg = "⚠ " + ex.Message; }
+    }
+
+    private void SetLanguage(ChangeEventArgs e) { Sign.Language = Enum.TryParse<SignLanguage>(e.Value?.ToString(), out var l) ? l : SignLanguage.Ksl; Sign.LoadCaptions(_cues); RenderPreview(); }
+    private void SetCorner(ChangeEventArgs e) { if (Enum.TryParse<PipCorner>(e.Value?.ToString(), out var c)) Sign.Layout = Sign.Layout with { Corner = c }; RenderPreview(); }
+    private void SetScale(ChangeEventArgs e) { Sign.Layout = Sign.Layout with { Scale = ParseF(e, 0.32f) }; RenderPreview(); }
+    private void SetMargin(ChangeEventArgs e) { Sign.Layout = Sign.Layout with { Margin = ParseF(e, 0.03f) }; RenderPreview(); }
+    private void SetDuck(ChangeEventArgs e) => Ad.DuckDb = ParseF(e, -12f);
+    private void SetCvd(ChangeEventArgs e) { if (Enum.TryParse<ColorVisionDeficiency>(e.Value?.ToString(), out var d)) _cvd = d; Wcag.Configure(_cvd, _severity, false); RefreshSimulator(); RenderPreview(); }
+    private void SetSeverity(ChangeEventArgs e) { _severity = ParseF(e, 1f); Wcag.Configure(_cvd, _severity, false); RefreshSimulator(); RenderPreview(); }
+    private void ToggleCorrection(ChangeEventArgs e) { _applyCorrection = e.Value is true; RenderPreview(); }
+    private void SetFont(ChangeEventArgs e) => RestyleSubtitles(Wcag.Style with { FontFamily = e.Value?.ToString() ?? "OpenDyslexic" });
+    private void SetSpacing(ChangeEventArgs e) => RestyleSubtitles(Wcag.Style with { LetterSpacingEm = ParseF(e, 0.12f) });
+    private void SetSize(ChangeEventArgs e) => RestyleSubtitles(Wcag.Style with { SizePx = (int)ParseF(e, 34) });
+    private void SetColor(ChangeEventArgs e) => RestyleSubtitles(Wcag.Style with { Foreground = AiSignLanguageAvatarSynthesizer.ParseHex(e.Value?.ToString()?.ToUpperInvariant(), 0xFFF5B8) });
+
+    private void RestyleSubtitles(CognitiveSubtitleStyle st)
+    {
+        Wcag.Style = st;
+        Wcag.ResolveFont();
+        var cog = WcagAccessibilityCorrectionFilter.CognitiveCues(_cues, st);
+        foreach (var c in cog) Wcag.Prepare(c.Text);
+        _issues = WcagAccessibilityCorrectionFilter.CheckReadability(cog, st);
+        RenderPreview();
+    }
+
+    private void Scrub(ChangeEventArgs e) { _t = ParseF(e, 0); RenderPreview(); }
+
+    private void TogglePlay()
+    {
+        _playing = !_playing;
+        if (_playing) StartUi(); else StopUi();
+    }
+
+    private static float ParseF(ChangeEventArgs e, float d) => float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : d;
+    private float Contrast() => WcagAccessibilityCorrectionFilter.ContrastRatio(Wcag.Style.Foreground, Wcag.Style.Background);
+    private string GlossClass(SignToken tk) => (tk.Fingerspelled ? "fs" : "") + (tk.Start <= _t && _t < tk.Start + tk.Duration ? " on" : "");
+    private static string GlossTitle(SignToken tk) => tk.Def.Motion.ToString() + " · " + tk.Face.ToString();
+    private int Spelled() { var n = 0; foreach (var t in Sign.Tokens) if (t.Fingerspelled) n++; return n; }
+    private string CurrentCue() { foreach (var c in _cues) if (c.Start <= _t && _t < c.End) return "💬 " + c.Text; foreach (var s in Ad.Segments) if (s.Start <= _t && _t < s.End) return "🦯 " + s.Text; return "—"; }
+    private static string X(double s) => (s / Duration * 1000).ToString("0.0", CultureInfo.InvariantCulture);
+    private static string W(double s) => Math.Max(1, s / Duration * 1000).ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string P0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string KB(long b) => (b / 1024.0).ToString("0.0", CultureInfo.InvariantCulture) + "KB";
+
+    private void StartUi()
+    {
+        if (_ui is not null) return;
+        var cts = new CancellationTokenSource();
+        _ui = cts;
+        _ = UiLoopAsync(cts);
+    }
+
+    private void StopUi()
+    {
+        var cts = Interlocked.Exchange(ref _ui, null);
+        if (cts is null) return;
+        try { cts.Cancel(); } catch (ObjectDisposedException) { }
+        cts.Dispose();
+    }
+
+    private async Task UiLoopAsync(CancellationTokenSource mine)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(100));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(mine.Token))
+            {
+                _t += 0.1;
+                if (_t >= Duration) _t = 0;
+                RenderPreview();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("A11yStudio.Ui", ex); }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Sign.OnChange -= OnServiceChanged;
+        Ad.OnChange -= OnServiceChanged;
+        Wcag.OnChange -= OnServiceChanged;
+        Packager.OnChange -= OnServiceChanged;
+        StopUi();
+    }
+}

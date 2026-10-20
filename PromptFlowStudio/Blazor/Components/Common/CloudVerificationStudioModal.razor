@@ -1,0 +1,395 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.CloudVerification
+@implements IDisposable
+@inject CloudVerificationStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.92.0] 🔍 AI 클라우드 소스 검증 & UI 인터랙티브 검사 스튜디오 — 소스 정합성 매트릭스(파일 × 규칙) · 규칙 요약 · 발견 목록 ·
+    동적 할당 프로브 · UI 전수 가상 순회 비주얼라이저 · 마크업 인벤토리 · 자율 복원 가드(사고/롤백/격리) · 진단 매니페스트 · 1-Click 전수 검사.
+*@
+
+<div class="cvs-scrim" @onclick="Close">
+    <div class="cvs-modal" @onclick:stopPropagation="true">
+        <div class="cvs-h">
+            <div>
+                <div class="cvs-title">🔍 AI 클라우드 소스 검증 &amp; UI 인터랙티브 검사 스튜디오</div>
+                <div class="cvs-sub">전체 C#/Razor 소스를 렉서 + 중괄호 구조 트리로 2패스 분석해 <b>핫패스 Zero-Alloc 위반</b>(LINQ · 보간 · 문자열 · 힙 new · 박싱)과 async void · 미관찰 Task · 동기 대기 · Razor 규칙을 전수 검출하고,
+                    격리 인스턴스 핫패스를 실측합니다. <b>UI 드라이버</b>는 헤더 스튜디오 · 스위치 · 슬라이더를 가상 조작해 바인딩 왕복을 검증하며, <b>자율 복원 가드</b>가 예외 시 스냅샷으로 롤백합니다.
+                    소스 루트: <span class="mono">@(Runner.SourceRoot ?? "미발견(PROMPTFLOW_SOURCE_ROOT)")</span></div>
+            </div>
+            <button class="cvs-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="cvs-bar">
+            <button class="cvs-btn prim" @onclick="Runner.StartFull" disabled="@Runner.IsRunning">⚡ 1-Click 전수 검사</button>
+            <button class="cvs-btn" @onclick="Runner.StartSourceOnly" disabled="@Runner.IsRunning">🔍 소스만</button>
+            <button class="cvs-btn" @onclick="Runner.StartUiOnly" disabled="@Runner.IsRunning">🖱 UI만</button>
+            <button class="cvs-btn" @onclick="Runner.Stop" disabled="@(!Runner.IsRunning)">⏹ 정지</button>
+            <button class="cvs-btn @(Runner.IncludeStudios ? "on" : null)" @onclick="() => Runner.IncludeStudios = !Runner.IncludeStudios">🎛 스튜디오 Start/Stop 포함</button>
+            <label class="cvs-sl">스텝 지연 <b>@(Runner.StepDelayMs)ms</b>
+                <input type="range" min="0" max="500" step="10" value="@(Runner.StepDelayMs)" @onchange="SetDelay" />
+            </label>
+            <span class="cvs-chip @(Runner.Phase == VerificationPhase.Done ? "ok" : Runner.Phase == VerificationPhase.Failed ? "warn" : null)">@(CloudVerificationStudioRunner.PhaseNames[(int)Runner.Phase])</span>
+            <span class="cvs-chip">파일 @(S.FilesScanned)/@(S.FilesTotal) · @(S.TotalLines.ToString("#,0", CultureInfo.InvariantCulture))줄 · @(F0(S.LastScanMs)) ms</span>
+            <span class="cvs-chip">메서드 @(S.Methods.ToString("#,0", CultureInfo.InvariantCulture)) · 핫 @(S.HotMethods) · 값 형식 @(S.ValueTypeCount)</span>
+        </div>
+
+        <SelfHealingRenderBoundary Guard="Runner.Guard" Component="CloudVerificationStudioModal">
+            <ChildContent>
+                <div class="cvs-main">
+                    <div class="cvs-col">
+                        <div class="cvs-card">
+                            <div class="cvs-sec">🧮 소스 정합성 매트릭스 <span class="cvs-score @(S.IntegrityScore >= 80 ? "ok" : S.IntegrityScore >= 50 ? "mid" : "bad")">@(F1(S.IntegrityScore))</span>
+                                <span class="cvs-kv">오류 @(S.Errors) · 경고 @(S.Warnings) · 정보 @(S.Infos)</span></div>
+                            @if (S.FileCount == 0)
+                            {
+                                <div class="cvs-note">스캔 결과 없음 — ⚡ 1-Click 전수 검사 또는 🔍 소스만 실행.</div>
+                            }
+                            else
+                            {
+                                <div class="cvs-mx">
+                                    <div class="hd"><span class="fn">파일 (상위 @(TopFiles().Length))</span>
+                                        @for (var r = 0; r < CloudSourceCodeIntegrityVerifierEngine.Rules; r++)
+                                        {
+                                            <span class="rc s@((int)CloudSourceCodeIntegrityVerifierEngine.SeverityOf((VerifyRule)r))" title="@(CloudSourceCodeIntegrityVerifierEngine.RuleNames[r])">@(CloudSourceCodeIntegrityVerifierEngine.RuleCodes[r])</span>
+                                        }
+                                    </div>
+                                    @foreach (var f in TopFiles())
+                                    {
+                                        <div class="rw">
+                                            <span class="fn" title="@(S.FileName(f))">@(ShortPath(S.FileName(f)))</span>
+                                            @for (var r = 0; r < CloudSourceCodeIntegrityVerifierEngine.Rules; r++)
+                                            {
+                                                var n = S.Cell(f, (VerifyRule)r);
+                                                <span class="cl h@(Heat(n))">@(n > 0 ? n.ToString(CultureInfo.InvariantCulture) : "·")</span>
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
+
+                        <div class="cvs-card">
+                            <div class="cvs-sec">📊 규칙별 검출</div>
+                            <div class="cvs-rules">
+                                @for (var r = 0; r < CloudSourceCodeIntegrityVerifierEngine.Rules; r++)
+                                {
+                                    var n = S.RuleCount((VerifyRule)r);
+                                    var sev = (int)CloudSourceCodeIntegrityVerifierEngine.SeverityOf((VerifyRule)r);
+                                    var rr = r;
+                                    <button class="ru s@(sev) @(_rule == r ? "sel" : null)" @onclick="() => ToggleRule(rr)">
+                                        <span class="nm">@(CloudSourceCodeIntegrityVerifierEngine.RuleCodes[r]) @(CloudSourceCodeIntegrityVerifierEngine.RuleNames[r])</span>
+                                        <span class="bar"><i style="width:@(F0(MaxRule() > 0 ? 100.0 * n / MaxRule() : 0))%"></i></span>
+                                        <b>@(n)</b>
+                                    </button>
+                                }
+                            </div>
+                        </div>
+
+                        <div class="cvs-card">
+                            <div class="cvs-sec">📋 발견 목록
+                                <button class="cvs-btn sm @(_sev == 2 ? "on" : null)" @onclick="() => _sev = 2">오류</button>
+                                <button class="cvs-btn sm @(_sev == 1 ? "on" : null)" @onclick="() => _sev = 1">경고↑</button>
+                                <button class="cvs-btn sm @(_sev == 0 ? "on" : null)" @onclick="() => _sev = 0">전체</button>
+                                @if (_rule >= 0)
+                                {
+                                    <span class="cvs-kv">규칙 @(CloudSourceCodeIntegrityVerifierEngine.RuleCodes[_rule]) <button class="cvs-btn sm" @onclick="() => _rule = -1">해제</button></span>
+                                }
+                            </div>
+                            <div class="cvs-find">
+                                @{ var shown = 0; }
+                                @for (var i = 0; i < S.FindingCount; i++)
+                                {
+                                    var fd = S.Finding(i);
+                                    if (shown >= 80) break;
+                                    if (!Visible(fd)) continue;
+                                    shown++;
+                                    <div class="ln s@((int)fd.Severity)">
+                                        <b>@(CloudSourceCodeIntegrityVerifierEngine.RuleCodes[(int)fd.Rule])</b>
+                                        <span class="mono">@(ShortPath(S.FileName(fd.File))):@(fd.Line)</span>
+                                        <span>@(fd.Member)</span>
+                                    </div>
+                                }
+                                @if (shown == 0)
+                                {
+                                    <div class="cvs-note">해당 조건의 발견 없음.</div>
+                                }
+                            </div>
+                        </div>
+
+                        <div class="cvs-card">
+                            <div class="cvs-sec">🧪 동적 할당 프로브(격리 인스턴스 핫패스)</div>
+                            @for (var i = 0; i < S.ProbeCount; i++)
+                            {
+                                var p = S.Probe(i);
+                                <div class="cvs-probe @(p.ZeroAlloc ? "ok" : "bad")">
+                                    <span>@(p.ZeroAlloc ? "✅" : "⚠")</span><span class="nm">@(p.Name)</span>
+                                    <span class="mono">@(F1(p.BytesPerCall)) B/호출 · @(F3(p.MsPerCall)) ms</span>
+                                </div>
+                            }
+                            @if (S.ProbeCount == 0)
+                            {
+                                <div class="cvs-note">소스 검사 시 함께 실측됩니다.</div>
+                            }
+                        </div>
+                    </div>
+
+                    <div class="cvs-col">
+                        <div class="cvs-card">
+                            <div class="cvs-sec">🖱 UI 전수 가상 순회 <span class="cvs-kv">대상 @(D.Count) · 통과 @(D.Passes) · 실패 @(D.Failures) · 순회 @(D.Cycles) · 스텝 @(F2(D.LastStepMs)) ms</span></div>
+                            <div class="cvs-tiles">
+                                @for (var i = 0; i < D.Count; i++)
+                                {
+                                    var t = D.Target(i);
+                                    var idx = i;
+                                    <button class="@(TileClass(i))" title="@(TileTip(i))" @onclick="() => G.Release(idx)">
+                                        <span class="ic">@(KindIcon(t.Kind))</span>
+                                        <span class="nm">@(t.Name)</span>
+                                        <span class="gp">@(TileSub(t))</span>
+                                    </button>
+                                }
+                            </div>
+                            <div class="cvs-legend"><i class="o0"></i>대기 <i class="o1"></i>통과 <i class="o2"></i>바인딩 불일치 <i class="o3"></i>예외 <i class="o4"></i>지연 <i class="o5"></i>격리</div>
+                        </div>
+
+                        <div class="cvs-card">
+                            <div class="cvs-sec">🧭 Razor 마크업 인벤토리</div>
+                            <div class="cvs-inv">
+                                <span><b>@(D.HeaderButtons)</b>헤더 스튜디오 버튼</span>
+                                <span><b>@(D.StoryboardTools)</b>스토리보드 도구</span>
+                                <span><b>@(D.Modals)</b>모달</span>
+                                <span><b>@(D.RazorFiles)</b>Razor 파일</span>
+                                <span><b>@(D.MarkupButtons)</b>버튼</span>
+                                <span><b>@(D.MarkupHandlers)</b>onclick 핸들러</span>
+                                <span><b>@(D.MarkupSliders)</b>슬라이더</span>
+                                <span><b>@(D.MarkupCheckboxes)</b>체크박스</span>
+                                <span><b>@(D.MarkupBinds)</b>bind 바인딩</span>
+                                <span><b>@(D.CountKind(UiControlKind.StudioButton))</b>가상 스튜디오</span>
+                                <span><b>@(D.CountKind(UiControlKind.Toggle) + D.CountKind(UiControlKind.Switch))</b>가상 토글</span>
+                                <span><b>@(D.CountKind(UiControlKind.Slider))</b>가상 슬라이더</span>
+                            </div>
+                        </div>
+
+                        <div class="cvs-card">
+                            <div class="cvs-sec">🩺 자율 복원 가드 <span class="cvs-chip @(G.IsArmed ? "ok" : null)">@(G.IsArmed ? "무장" : "해제")</span></div>
+                            <div class="cvs-kv">실행 @(G.Executions) · 사고 @(G.Incidents) · 예외 @(G.Exceptions) · 불일치 @(G.Mismatches) · 지연 @(G.Timeouts) · 롤백 @(G.Rollbacks) · 롤백 실패 @(G.RollbackFailures) · 렌더 @(G.RenderErrors) · 미관찰 @(G.UnobservedTasks) · 격리 @(G.QuarantinedCount)</div>
+                            <div class="cvs-log">
+                                @for (var i = 0; i < LogShown; i++)
+                                {
+                                    var ev = G.Log(i);
+                                    <div class="ln k@((int)ev.Kind)">
+                                        <span class="mono">@(Seq(ev.Seq))</span>
+                                        <b>@(RealtimeUiExceptionSelfHealingGuard.KindName(ev.Kind))</b>
+                                        <span>@(TargetName(ev.Target))</span>
+                                        <span class="mono">@(ev.Type)</span>
+                                        <span>@(ev.Message)</span>
+                                        @if (ev.RolledBack)
+                                        {
+                                            <span class="rb">↺ 롤백</span>
+                                        }
+                                    </div>
+                                }
+                                @if (G.LogCount == 0)
+                                {
+                                    <div class="cvs-note">사고 없음.</div>
+                                }
+                            </div>
+                        </div>
+
+                        <div class="cvs-card">
+                            <div class="cvs-sec">📦 진단 매니페스트
+                                <button class="cvs-btn sm" @onclick="BuildManifest">생성</button>
+                                @if (G.LastDigest is not null)
+                                {
+                                    <span class="mono dg">SHA-256 @(DigestShort())…</span>
+                                }
+                            </div>
+                            @if (G.LastManifest is not null)
+                            {
+                                <pre class="cvs-pre">@(ManifestPreview())</pre>
+                            }
+                        </div>
+                        <div class="cvs-note">@(Runner.LastAction ?? "대기")</div>
+                    </div>
+                </div>
+            </ChildContent>
+            <ErrorContent>
+                <div class="cvs-err">⚠ 렌더 예외 포착 — @(G.RenderLoopTripped ? "비정상 루프 감지: 자동 복구 중단(모달 재오픈 필요)" : "이전 정상 렌더 트리로 자동 복원 중…")</div>
+            </ErrorContent>
+        </SelfHealingRenderBoundary>
+    </div>
+</div>
+
+<style>
+    .cvs-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .cvs-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .cvs-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #06b6d4 16%, var(--card)), color-mix(in srgb, #22c55e 14%, var(--card))); }
+    .cvs-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .cvs-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .cvs-sub b { color: var(--text-primary); }
+    .cvs-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .cvs-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .cvs-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .cvs-btn.sm { font-size: 10px; padding: 2px 7px; } .cvs-btn:disabled { opacity: .4; cursor: default; }
+    .cvs-btn.on { background: color-mix(in srgb, #06b6d4 24%, transparent); border-color: #22d3ee; } .cvs-btn.prim { background: color-mix(in srgb, #22c55e 22%, transparent); border-color: #4ade80; }
+    .cvs-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .cvs-sl b { font-family: var(--mono); color: var(--text-primary); }
+    .cvs-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .cvs-chip.ok { border-color: #22c55e; color: #86efac; } .cvs-chip.warn { border-color: #f97316; color: #fdba74; }
+    .cvs-main { display: grid; grid-template-columns: 1.15fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .cvs-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .cvs-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .cvs-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .cvs-score { font: 900 14px var(--mono); padding: 1px 8px; border-radius: 6px; } .cvs-score.ok { background: #14532d; color: #86efac; } .cvs-score.mid { background: #713f12; color: #fde68a; } .cvs-score.bad { background: #450a0a; color: #fca5a5; }
+    .cvs-mx { display: flex; flex-direction: column; gap: 2px; overflow-x: auto; }
+    .cvs-mx .hd, .cvs-mx .rw { display: grid; grid-template-columns: minmax(180px, 1fr) repeat(12, 34px); gap: 2px; align-items: center; font-size: 10px; }
+    .cvs-mx .fn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-family: var(--mono); }
+    .cvs-mx .rc { font: 800 9px var(--mono); text-align: center; color: var(--text-muted); } .cvs-mx .rc.s2 { color: #fca5a5; } .cvs-mx .rc.s1 { color: #fde68a; }
+    .cvs-mx .cl { font: 700 10px var(--mono); text-align: center; padding: 2px 0; border-radius: 4px; background: #0b1020; color: var(--text-muted); }
+    .cvs-mx .cl.h1 { background: #1e3a5f; color: #bae6fd; } .cvs-mx .cl.h2 { background: #713f12; color: #fde68a; } .cvs-mx .cl.h3 { background: #7f1d1d; color: #fecaca; }
+    .cvs-rules { display: flex; flex-direction: column; gap: 3px; }
+    .cvs-rules .ru { display: grid; grid-template-columns: 150px 1fr 40px; gap: 6px; align-items: center; font-size: 11px; color: var(--text-secondary); background: transparent; border: 1px solid transparent; border-radius: 6px; cursor: pointer; padding: 1px 4px; text-align: left; }
+    .cvs-rules .ru.sel { border-color: #22d3ee; } .cvs-rules .bar { height: 8px; background: #0b1020; border-radius: 4px; overflow: hidden; } .cvs-rules .bar i { display: block; height: 100%; background: #64748b; }
+    .cvs-rules .s2 .bar i { background: #ef4444; } .cvs-rules .s1 .bar i { background: #f59e0b; } .cvs-rules b { font-family: var(--mono); color: var(--text-primary); text-align: right; }
+    .cvs-find, .cvs-log { display: flex; flex-direction: column; gap: 3px; max-height: 240px; overflow-y: auto; }
+    .cvs-find .ln, .cvs-log .ln { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; color: var(--text-secondary); border-left: 3px solid #475569; padding: 2px 6px; }
+    .cvs-find .s2 { border-color: #ef4444; } .cvs-find .s1 { border-color: #f59e0b; } .cvs-find b, .cvs-log b { color: var(--text-primary); }
+    .cvs-log .k0, .cvs-log .k1, .cvs-log .k2, .cvs-log .k3, .cvs-log .k4, .cvs-log .k9 { border-color: #ef4444; } .cvs-log .k5 { border-color: #f59e0b; } .cvs-log .k6 { border-color: #a855f7; } .cvs-log .k7, .cvs-log .k10 { border-color: #f43f5e; } .cvs-log .k8 { border-color: #38bdf8; }
+    .cvs-log .rb { font-weight: 800; color: #86efac; }
+    .cvs-probe { display: grid; grid-template-columns: 20px 1fr auto; gap: 6px; font-size: 11px; color: var(--text-secondary); } .cvs-probe.bad .nm { color: #fdba74; }
+    .cvs-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 4px; }
+    .cvs-tiles .tl { position: relative; display: flex; flex-direction: column; gap: 1px; text-align: left; font-size: 10px; padding: 4px 6px 4px 22px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--text-secondary); cursor: pointer; overflow: hidden; }
+    .cvs-tiles .ic { position: absolute; left: 5px; top: 5px; font-size: 11px; } .cvs-tiles .nm { color: var(--text-primary); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .cvs-tiles .gp { font: 600 9px var(--mono); color: var(--text-muted); }
+    .cvs-tiles .o1 { border-color: #22c55e; background: color-mix(in srgb, #22c55e 10%, transparent); } .cvs-tiles .o2 { border-color: #f59e0b; background: color-mix(in srgb, #f59e0b 12%, transparent); }
+    .cvs-tiles .o3 { border-color: #ef4444; background: color-mix(in srgb, #ef4444 14%, transparent); } .cvs-tiles .o4 { border-color: #a855f7; } .cvs-tiles .o5, .cvs-tiles .q { border-style: dashed; opacity: .7; }
+    .cvs-tiles .cur { outline: 2px solid #22d3ee; animation: cvs-pulse .6s ease-in-out infinite alternate; }
+    .cvs-legend { display: flex; flex-wrap: wrap; gap: 8px; font-size: 10px; color: var(--text-muted); align-items: center; } .cvs-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; border: 1px solid var(--line); }
+    .cvs-legend .o1 { background: #22c55e; } .cvs-legend .o2 { background: #f59e0b; } .cvs-legend .o3 { background: #ef4444; } .cvs-legend .o4 { background: #a855f7; } .cvs-legend .o5 { border-style: dashed; }
+    .cvs-inv { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px; }
+    .cvs-inv span { display: flex; flex-direction: column; font-size: 10px; color: var(--text-muted); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; } .cvs-inv b { font: 800 15px var(--mono); color: var(--text-primary); }
+    .cvs-pre { font: 500 10px var(--mono); max-height: 220px; overflow: auto; background: #030712; color: #a5f3fc; padding: 8px; border-radius: 8px; white-space: pre-wrap; margin: 0; }
+    .cvs-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; font-weight: 500; color: var(--text-secondary); align-items: center; }
+    .cvs-note { font-size: 11px; color: var(--text-muted); } .cvs-err { padding: 24px; color: #fca5a5; font-weight: 700; } .mono { font-family: var(--mono); } .dg { font-size: 10px; color: var(--text-muted); }
+    @@keyframes cvs-pulse { from { box-shadow: 0 0 0 0 rgba(34,211,238,.0); } to { box-shadow: 0 0 10px 2px rgba(34,211,238,.45); } }
+    @@media (max-width: 1200px) { .cvs-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+    private int[] _top = Array.Empty<int>();
+    private long _topStamp = -1;
+    private int _sev = 1, _rule = -1;
+
+    private CloudSourceCodeIntegrityVerifierEngine S => Runner.Source;
+    private FullUiInteractiveMenuAutomatedDriver D => Runner.Driver;
+    private RealtimeUiExceptionSelfHealingGuard G => Runner.Guard;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("CloudVerify.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+
+    private static int Heat(int n) => n <= 0 ? 0 : n < 3 ? 1 : n < 10 ? 2 : 3;
+
+    private static string ShortPath(string p)
+    {
+        var k = p.LastIndexOf('/');
+        if (k < 0) return p;
+        var k2 = k > 0 ? p.LastIndexOf('/', k - 1) : -1;
+        return k2 >= 0 ? p[(k2 + 1)..] : p;
+    }
+
+    private static string KindIcon(UiControlKind k) => k switch
+    {
+        UiControlKind.StudioButton => "🎛", UiControlKind.Toggle => "⏻", UiControlKind.Switch => "🔀", UiControlKind.Slider => "🎚", _ => "⚙",
+    };
+
+    private static string OutcomeName(UiStepOutcome o) => o switch
+    {
+        UiStepOutcome.Pass => "통과", UiStepOutcome.BindingMismatch => "불일치", UiStepOutcome.Exception => "예외", UiStepOutcome.Timeout => "지연", UiStepOutcome.Quarantined => "격리", _ => "대기",
+    };
+
+    /// <summary>발견 상위 16개 파일(스캔 진행 변화 시에만 재계산).</summary>
+    private int[] TopFiles()
+    {
+        var stamp = S.TotalFindings * 100_000 + S.FileCount;
+        if (stamp == _topStamp) return _top;
+        var n = S.FileCount;
+        var totals = new int[n]; var idx = new int[n];
+        for (var i = 0; i < n; i++) { idx[i] = i; totals[i] = S.FileTotal(i); }
+        Array.Sort(totals, idx);
+        var take = 0;
+        for (var i = n - 1; i >= 0 && take < 16 && totals[i] > 0; i--) take++;
+        var top = new int[take];
+        for (var i = 0; i < take; i++) top[i] = idx[n - 1 - i];
+        _top = top; _topStamp = stamp;
+        return _top;
+    }
+
+    private string TileClass(int i)
+    {
+        var t = D.Target(i);
+        var cur = Runner.Phase == VerificationPhase.UiDriving && D.Cursor == i ? " cur" : "";
+        var q = G.IsQuarantined(i) ? " q" : "";
+        return "tl o" + ((int)t.Outcome).ToString(CultureInfo.InvariantCulture) + cur + q;
+    }
+
+    private string TileTip(int i)
+    {
+        var t = D.Target(i);
+        var tip = t.Group + " · " + t.Name;
+        if (t.LastNote is not null) tip += " — " + t.LastNote;
+        return G.IsQuarantined(i) ? tip + " (클릭: 격리 해제)" : tip;
+    }
+
+    private static string TileSub(UiControlTarget t) => t.Runs > 0 ? t.Group + " · " + OutcomeName(t.Outcome) + " · " + F1(t.LastMs) + "ms" : t.Group + " · " + OutcomeName(t.Outcome);
+
+    private string TargetName(int t) => t >= 0 && t < D.Count ? D.Target(t).Name : "전역";
+
+    private static string Seq(long s) => "#" + s.ToString(CultureInfo.InvariantCulture);
+
+    private string DigestShort() => G.LastDigest is { Length: >= 16 } d ? d[..16] : "";
+
+    private string ManifestPreview() { var mf = G.LastManifest ?? ""; return mf.Length > 1800 ? mf[..1800] + "\n…" : mf; }
+
+    private int LogShown => Math.Min(G.LogCount, 40);
+
+    private bool Visible(SourceFinding f) => (int)f.Severity >= _sev && (_rule < 0 || (int)f.Rule == _rule);
+
+    private int MaxRule()
+    {
+        var m = 0;
+        for (var r = 0; r < CloudSourceCodeIntegrityVerifierEngine.Rules; r++) m = Math.Max(m, S.RuleCount((VerifyRule)r));
+        return m;
+    }
+
+    private void ToggleRule(int r) { _rule = _rule == r ? -1 : r; if (_rule >= 0) _sev = 0; }
+
+    private void SetDelay(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.StepDelayMs = Math.Clamp(v, 0, 500);
+    }
+
+    private void BuildManifest() => G.BuildManifest(S, D);
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

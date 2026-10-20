@@ -1,0 +1,71 @@
+/* ============================================================================
+   [PromptFlow Studio · Shared] HUD 다크 대시보드 토큰 — EcoMatrix(MudBlazor 7.15) PaletteDark 이식
+   ----------------------------------------------------------------------------
+   ▸ 출처: D:/PROGRAM/EcoMatrix/.../Components/EcoMatrixTheme.cs (Tailwind Slate 950~50 + 상태색).
+     MudBlazor 패키지 자체는 도입하지 않음(Pure BCL 철칙) — 검증된 팔레트 값만 CSS 변수로 이식.
+   ▸ 다크 값은 다크 테마에만 정의(app.css 규약: :root 전역 다크값 금지 — 라이트에서 흰 글씨 사고).
+   ▸ .hud-gpu 유틸: 합성 레이어 승격 + contain — 60FPS HUD 카드에 부여.
+   ============================================================================ */
+:root:not([data-theme="light"]) {
+    --hud-bg: #020617;              /* Slate 950 · DarkBackground */
+    --hud-surface: #0F172A;         /* Slate 900 · DarkSurface */
+    --hud-surface-raised: #1E293B;  /* Slate 800 · DarkSurfaceRaised */
+    --hud-surface-sunken: #020617;
+    --hud-border: #1E293B;          /* DarkBorder */
+    --hud-border-raised: #334155;   /* DarkBorderRaised */
+    --hud-text: #F8FAFC;            /* DarkTextPrimary */
+    --hud-text-2: #CBD5E1;          /* DarkTextSecondary */
+    --hud-text-muted: #94A3B8;      /* DarkTextMuted */
+    --hud-ok: #4ADE80;
+    --hud-warn: #FBBF24;
+    --hud-err: #F87171;
+    --hud-info: #38BDF8;
+    --hud-accent-c: #34D399;        /* DarkPrimary */
+    --hud-accent-2-c: #38BDF8;      /* DarkInfo */
+    --hud-grid: rgba(148, 163, 184, .14);
+    --hud-glow: 0 0 0 1px rgba(52, 211, 153, .18), 0 8px 24px -12px rgba(52, 211, 153, .35);
+    --hud-radius: 10px;
+}
+
+:root[data-theme="light"] {
+    --hud-bg: #F8FAFC;
+    --hud-surface: #FFFFFF;
+    --hud-surface-raised: #F1F5F9;
+    --hud-surface-sunken: #F1F5F9;
+    --hud-border: #E2E8F0;
+    --hud-border-raised: #CBD5E1;
+    --hud-text: #0F172A;
+    --hud-text-2: #334155;
+    --hud-text-muted: #475569;
+    --hud-ok: #15803D;
+    --hud-warn: #B45309;
+    --hud-err: #B91C1C;
+    --hud-info: #0369A1;
+    --hud-accent-c: #0F766E;        /* LightPrimary */
+    --hud-accent-2-c: #0369A1;      /* LightInfo */
+    --hud-grid: rgba(51, 65, 85, .12);
+    --hud-glow: 0 0 0 1px rgba(15, 118, 110, .18), 0 8px 24px -14px rgba(15, 118, 110, .3);
+    --hud-radius: 10px;
+}
+
+.hud-gpu {
+    transform: translateZ(0);
+    backface-visibility: hidden;
+    contain: layout paint style;
+}
+
+.hud-panel {
+    background: linear-gradient(180deg, var(--hud-surface-raised), var(--hud-surface));
+    border: 1px solid var(--hud-border-raised);
+    border-radius: var(--hud-radius);
+    box-shadow: var(--hud-glow);
+    color: var(--hud-text);
+    transition: border-color .2s ease, box-shadow .2s ease;
+}
+
+.hud-panel.ok { border-color: color-mix(in srgb, var(--hud-ok) 55%, transparent); }
+.hud-panel.err { border-color: color-mix(in srgb, var(--hud-err) 70%, transparent); }
+
+@media (prefers-reduced-motion: reduce) {
+    .hud-panel { transition: none; }
+}

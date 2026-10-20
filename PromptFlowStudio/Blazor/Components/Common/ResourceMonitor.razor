@@ -1,0 +1,81 @@
+@inject PromptFlowStudio.Services.Platform.ResourceMonitorService Res
+@implements IDisposable
+
+@* [PromptFlow Studio] 렌더링 리소스 감시 패널 — CPU/RAM(BCL) + GPU/VRAM(nvidia-smi) 실시간 게이지 + 펄스 신호. ~2초 폴링. *@
+
+<div class="rmon">
+    <div class="rmon-h"><span>🖥️ 리소스 모니터</span><i class="rmon-led"></i><span class="rmon-tag">@(_s.GpuAvailable ? "GPU RENDER" : "CPU RENDER")</span></div>
+    <div class="rmon-grid">
+        <div class="rmon-cell">
+            <div class="rmon-k">CPU 코어</div><div class="rmon-v">@_s.Cores</div>
+            <div class="rmon-bar"><span class="c" style="width:100%"></span></div>
+        </div>
+        <div class="rmon-cell">
+            <div class="rmon-k">RAM · 작업셋</div><div class="rmon-v">@(_s.WorkingSetMb)<small> / @(_s.TotalMemMb) MB</small></div>
+            <div class="rmon-bar"><span class="m" style="@($"width:{Pct(_s.WorkingSetMb, _s.TotalMemMb)}%")"></span></div>
+        </div>
+        @if (_s.GpuAvailable)
+        {
+            <div class="rmon-cell">
+                <div class="rmon-k">GPU 사용률</div><div class="rmon-v">@Int(_s.GpuUtilPct)<small>%</small></div>
+                <div class="rmon-bar"><span class="g" style="@($"width:{Clamp(_s.GpuUtilPct)}%")"></span></div>
+            </div>
+            <div class="rmon-cell">
+                <div class="rmon-k">VRAM</div><div class="rmon-v">@Int(_s.VramUsedMb)<small> / @Int(_s.VramTotalMb) MB</small></div>
+                <div class="rmon-bar"><span class="v" style="@($"width:{Pct((long)(_s.VramUsedMb ?? 0), (long)(_s.VramTotalMb ?? 1))}%")"></span></div>
+            </div>
+        }
+        else
+        {
+            <div class="rmon-cell wide">
+                <div class="rmon-k">GPU</div><div class="rmon-v muted">nvidia-smi 미검출 — CPU 렌더 모드</div>
+                <div class="rmon-note">NVIDIA 드라이버/CUDA 설치 시 GPU·VRAM 실시간 표시</div>
+            </div>
+        }
+    </div>
+    @if (_s.GpuName is { Length: > 0 }) { <div class="rmon-foot">@_s.GpuName</div> }
+</div>
+
+<style>
+    .rmon { border: 1px solid var(--line); border-radius: 14px; background: var(--card); overflow: hidden; }
+    .rmon-h { display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-bottom: 1px solid var(--line); font: 800 12.5px var(--mono); color: var(--text-primary); }
+    .rmon-led { width: 8px; height: 8px; border-radius: 50%; background: #10b981; box-shadow: 0 0 8px 1px #10b981; animation: rmon-pulse 1.6s ease-in-out infinite; }
+    .rmon-tag { margin-left: auto; font: 700 9px var(--mono); letter-spacing: .1em; color: var(--accent-2); border: 1px solid color-mix(in srgb, var(--accent-2) 30%, var(--line)); border-radius: 999px; padding: 3px 8px; }
+    .rmon-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 13px; }
+    .rmon-cell.wide { grid-column: 1 / -1; }
+    .rmon-k { font: 700 10px var(--mono); letter-spacing: .05em; text-transform: uppercase; color: var(--text-muted); }
+    .rmon-v { font-size: 17px; font-weight: 900; color: var(--text-primary); margin: 2px 0 6px; } .rmon-v small { font-size: 11px; font-weight: 700; color: var(--text-muted); }
+    .rmon-v.muted { font-size: 12.5px; font-weight: 700; color: var(--text-secondary); }
+    .rmon-bar { height: 6px; border-radius: 4px; background: var(--card-2); overflow: hidden; }
+    .rmon-bar span { display: block; height: 100%; border-radius: 4px; transition: width .5s ease; }
+    .rmon-bar span.c { background: linear-gradient(90deg, #8b5cf6, #22d3ee); }
+    .rmon-bar span.m { background: linear-gradient(90deg, #22d3ee, #10b981); }
+    .rmon-bar span.g { background: linear-gradient(90deg, #f59e0b, #ef4444); }
+    .rmon-bar span.v { background: linear-gradient(90deg, #8b5cf6, #d946ef); }
+    .rmon-note { font-size: 10.5px; color: var(--text-muted); margin-top: 4px; }
+    .rmon-foot { padding: 8px 14px; border-top: 1px solid var(--line); font: 600 10.5px var(--mono); color: var(--text-muted); }
+    @@keyframes rmon-pulse { 0%,100% { opacity: .5; } 50% { opacity: 1; } }
+    @@media (prefers-reduced-motion: reduce) { .rmon-led { animation: none; } }
+</style>
+
+@code {
+    private ResourceSample _s = new(Environment.ProcessorCount, 0, 0, 8192, null, null, null, null, false);
+    private System.Threading.Timer? _timer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Refresh();
+        _timer = new System.Threading.Timer(_ => { _ = Refresh(); }, null, 2000, 2000);
+    }
+
+    private async Task Refresh()
+    {
+        try { _s = await Res.SampleAsync(); await InvokeAsync(StateHasChanged); } catch { }
+    }
+
+    private static string Int(double? d) => d is null ? "—" : ((long)Math.Round(d.Value)).ToString();
+    private static int Clamp(double? d) => (int)Math.Clamp(d ?? 0, 0, 100);
+    private static int Pct(long used, long total) => total <= 0 ? 0 : (int)Math.Clamp(used * 100.0 / total, 0, 100);
+
+    public void Dispose() => _timer?.Dispose();
+}

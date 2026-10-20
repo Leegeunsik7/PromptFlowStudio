@@ -1,0 +1,41 @@
+{
+  "env": {
+    "ENABLE_TOOL_SEARCH": "true"
+  },
+  "permissions": {
+    "deny": [
+      "Read(**/bin/**)",
+      "Read(**/obj/**)",
+      "Read(**/node_modules/**)",
+      "Read(**/dist/**)",
+      "Read(**/publish/**)",
+      "Read(**/release/**)",
+      "Read(**/*.log)",
+      "Read(**/*.trx)",
+      "Read(**/*.zip)",
+      "Read(**/*.tsbuildinfo)"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "playwright",
+    "chrome-devtools"
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/GSLEE/AppData/Local/Programs/Python/Python313/Scripts/headroom.EXE wrap selfheal --marker headroom-wrap-selfheal",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "disabledMcpjsonServers": [
+    "playwright",
+    "chrome-devtools"
+  ]
+}

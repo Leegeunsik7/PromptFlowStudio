@@ -1,0 +1,214 @@
+@using PromptFlowStudio.Services.Storyboard
+@using PromptFlowStudio.Services.Wan
+@inject QuotaRateGuardService Guard
+@implements IDisposable
+
+@* [PromptFlow Studio] ✨ 완벽 자동 보정(Auto-Pilot) — Wan 무료 요금제 결함(프롬프트 환각·깜빡임·모션 뭉개짐·429)을 일괄 제어하는 원클릭 스위치 + 항목별 시네마틱 툴팁. *@
+
+<div class="ap @(Project.AutoPilot ? "ap-on" : "ap-off")">
+    <div class="ap-hero">
+        <div class="ap-hero-l">
+            <div class="ap-badge">✨</div>
+            <div class="ap-hero-txt">
+                <div class="ap-title">완벽 자동 보정 <span class="ap-tag">Auto-Pilot</span></div>
+                <div class="ap-desc">Wan 무료 결함(깜빡임·모션 뭉개짐·429·환각)을 한 번의 클릭으로 자동 탐지·보정합니다.</div>
+            </div>
+        </div>
+        <label class="ap-switch" title="모든 무료 결함 보정을 일괄 제어">
+            <input type="checkbox" @bind="Project.AutoPilot" @bind:after="Notify" disabled="@Disabled" />
+            <span class="ap-knob"></span>
+        </label>
+    </div>
+
+    <div class="ap-grid">
+        @* ① 프롬프트 위생화 + 네거티브 *@
+        <SmartTooltip Icon="@Info("prompt").Icon" Deficit="@Info("prompt").Deficit" Fix="@Info("prompt").Fix" Detail="@Info("prompt").Detail">
+            <label class="ap-item @(Project.AutoSanitizePrompt ? "on" : null)">
+                <input type="checkbox" @bind="Project.AutoSanitizePrompt" @bind:after="Notify" disabled="@SubDisabled" />
+                <span class="ap-ic">🧬</span>
+                <span class="ap-it"><span class="ap-in">프롬프트 위생화 · 네거티브</span><span class="ap-id">신체 왜곡·텍스트 깨짐 억제</span></span>
+                <span class="ap-chk">@Badge(Project.AutoSanitizePrompt)</span>
+            </label>
+        </SmartTooltip>
+
+        @* ② 자동 디플리커 *@
+        <SmartTooltip Icon="@Info("deflicker").Icon" Deficit="@Info("deflicker").Deficit" Fix="@Info("deflicker").Fix" Detail="@Info("deflicker").Detail">
+            <label class="ap-item @(Project.AutoDeflicker ? "on" : null)">
+                <input type="checkbox" @bind="Project.AutoDeflicker" @bind:after="Notify" disabled="@SubDisabled" />
+                <span class="ap-ic">🩹</span>
+                <span class="ap-it"><span class="ap-in">자동 디플리커 · 디노이즈</span><span class="ap-id">프레임 깜빡임 제거</span></span>
+                <span class="ap-chk">@Badge(Project.AutoDeflicker)</span>
+            </label>
+        </SmartTooltip>
+
+        @* ③ 선명도 복원 *@
+        <SmartTooltip Icon="@Info("sharpen").Icon" Deficit="@Info("sharpen").Deficit" Fix="@Info("sharpen").Fix" Detail="@Info("sharpen").Detail">
+            <label class="ap-item @(Project.AutoSharpen ? "on" : null)">
+                <input type="checkbox" @bind="Project.AutoSharpen" @bind:after="Notify" disabled="@SubDisabled" />
+                <span class="ap-ic">🔎</span>
+                <span class="ap-it"><span class="ap-in">선명도 복원 · Lanczos</span><span class="ap-id">디테일 손실 보정</span></span>
+                <span class="ap-chk">@Badge(Project.AutoSharpen)</span>
+            </label>
+        </SmartTooltip>
+
+        @* ④ 시간적 슈퍼 레졸루션 *@
+        <SmartTooltip Icon="@Info("temporal").Icon" Deficit="@Info("temporal").Deficit" Fix="@Info("temporal").Fix" Detail="@Info("temporal").Detail">
+            <label class="ap-item @(Project.AutoTemporalSr ? "on" : null)">
+                <input type="checkbox" @bind="Project.AutoTemporalSr" @bind:after="Notify" disabled="@SubDisabled" />
+                <span class="ap-ic">🌊</span>
+                <span class="ap-it"><span class="ap-in">시간적 슈퍼 레졸루션</span><span class="ap-id">시간축 노이즈 → 유료급 매끄러움</span></span>
+                <span class="ap-chk">@Badge(Project.AutoTemporalSr)</span>
+            </label>
+        </SmartTooltip>
+
+        @* ⑤ 디밴딩 색상 안정화 *@
+        <SmartTooltip Icon="@Info("deband").Icon" Deficit="@Info("deband").Deficit" Fix="@Info("deband").Fix" Detail="@Info("deband").Detail">
+            <label class="ap-item @(Project.AutoDeband ? "on" : null)">
+                <input type="checkbox" @bind="Project.AutoDeband" @bind:after="Notify" disabled="@SubDisabled" />
+                <span class="ap-ic">🎨</span>
+                <span class="ap-it"><span class="ap-in">디밴딩 색상 안정화</span><span class="ap-id">계단식 컬러 밴딩 억제</span></span>
+                <span class="ap-chk">@Badge(Project.AutoDeband)</span>
+            </label>
+        </SmartTooltip>
+
+        @* ⑥ 모션 보간(무거움 · 오픈트인) *@
+        <SmartTooltip Icon="@Info("interpolate").Icon" Deficit="@Info("interpolate").Deficit" Fix="@Info("interpolate").Fix" Detail="@Info("interpolate").Detail">
+            <label class="ap-item ap-heavy @(Project.AutoInterpolate ? "on" : null)">
+                <input type="checkbox" @bind="Project.AutoInterpolate" @bind:after="Notify" disabled="@SubDisabled" />
+                <span class="ap-ic">🎞️</span>
+                <span class="ap-it"><span class="ap-in">모션 프레임 보간 <span class="ap-heavy-tag">무거움</span></span><span class="ap-id">저 FPS 뭉개짐 → 30fps</span></span>
+                <span class="ap-chk">@Badge(Project.AutoInterpolate)</span>
+            </label>
+        </SmartTooltip>
+
+        @* ⑦ 속도 제한 가드(토글 없음 · 항상 감시 · 실시간 상태) *@
+        <SmartTooltip Icon="@Info("rate").Icon" Deficit="@Info("rate").Deficit" Fix="@Info("rate").Fix" Detail="@Info("rate").Detail" Status="@RateStatus">
+            <div class="ap-item ap-rate @(Guard.IsCoolingDown ? "cool" : "watch")">
+                <span class="ap-ic">@(Guard.IsCoolingDown ? "⏳" : "⚠️")</span>
+                <span class="ap-it"><span class="ap-in">API 속도 제한 가드</span><span class="ap-id">@RateStatus</span></span>
+                <span class="ap-chk">@(Guard.IsCoolingDown ? "쿨다운" : "감시중")</span>
+            </div>
+        </SmartTooltip>
+    </div>
+
+    @if (Guard.IsCoolingDown)
+    {
+        <div class="ap-cool">
+            <div class="ap-cool-h">
+                <span class="ap-cool-ic">⚠️</span>
+                <span class="ap-cool-t">API 쿨다운 진행 중 <b>(@(Guard.RemainingSeconds)초)</b></span>
+                <span class="ap-cool-hits">누적 감지 @(Guard.TotalHits)회</span>
+            </div>
+            <div class="ap-cool-bar"><span style="width:@(BarPct)%"></span></div>
+            <div class="ap-cool-sub">@(Guard.Reason ?? "속도 제한 감지") · 지수 백오프로 자동 재시도합니다.</div>
+        </div>
+    }
+    else if (!Project.AutoPilot)
+    {
+        <div class="ap-note">Auto-Pilot 을 끄면 무료 결함 보정이 모두 비활성화되고 기존 파이프라인 그대로 동작합니다.</div>
+    }
+</div>
+
+<style>
+    .ap { border: 1px solid var(--line); border-radius: 15px; background: var(--card); overflow: hidden; }
+    .ap-on { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent) inset; }
+
+    .ap-hero { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px;
+        background: linear-gradient(120deg, color-mix(in srgb, var(--flow-violet) 16%, transparent), transparent 62%); }
+    .ap-hero-l { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .ap-badge { width: 40px; height: 40px; flex: none; display: grid; place-items: center; border-radius: 12px; font-size: 20px;
+        background: linear-gradient(135deg, var(--flow-violet), var(--flow-magenta)); box-shadow: 0 6px 18px color-mix(in srgb, var(--flow-violet) 40%, transparent); }
+    .ap-off .ap-badge { filter: grayscale(.7) opacity(.7); box-shadow: none; }
+    .ap-hero-txt { min-width: 0; }
+    .ap-title { font: 800 14.5px var(--mono); color: var(--text-primary); display: flex; align-items: center; gap: 8px; }
+    .ap-tag { font: 800 8.5px var(--mono); letter-spacing: .1em; padding: 2px 7px; border-radius: 999px; color: #fff;
+        background: linear-gradient(135deg, var(--flow-violet), var(--flow-cyan)); }
+    .ap-desc { font-size: 11.5px; color: var(--text-secondary); margin-top: 3px; line-height: 1.45; }
+
+    /* 마스터 스위치(네온 토글) */
+    .ap-switch { position: relative; width: 54px; height: 30px; flex: none; cursor: pointer; }
+    .ap-switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+    .ap-switch input:disabled { cursor: not-allowed; }
+    .ap-knob { position: absolute; inset: 0; border-radius: 999px; background: var(--card-2); border: 1px solid var(--line); transition: .22s; }
+    .ap-knob::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%;
+        background: var(--text-muted); transition: .22s; }
+    .ap-switch input:checked + .ap-knob { background: linear-gradient(135deg, var(--flow-violet), var(--flow-magenta)); border-color: transparent; }
+    .ap-switch input:checked + .ap-knob::after { transform: translateX(24px); background: #fff; box-shadow: 0 0 10px rgba(255,255,255,.8); }
+
+    /* 항목 그리드 */
+    .ap-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px 16px 14px; }
+    .ap-off .ap-grid { opacity: .5; }
+    .ap-item { display: flex; align-items: center; gap: 9px; padding: 9px 11px; border-radius: 11px; cursor: pointer;
+        background: var(--card-2); border: 1px solid var(--line); transition: .16s; }
+    .ap-item:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+    .ap-item.on { border-color: color-mix(in srgb, var(--flow-cyan) 45%, var(--line)); background: color-mix(in srgb, var(--flow-cyan) 8%, var(--card-2)); }
+    .ap-item input { width: 16px; height: 16px; flex: none; accent-color: var(--flow-violet); cursor: pointer; }
+    .ap-item input:disabled { cursor: not-allowed; }
+    .ap-ic { font-size: 15px; line-height: 1; flex: none; }
+    .ap-it { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+    .ap-in { font: 700 11.5px var(--mono); color: var(--text-primary); display: flex; align-items: center; gap: 5px; }
+    .ap-id { font-size: 10px; color: var(--text-muted); }
+    .ap-chk { font: 800 9.5px var(--mono); color: var(--text-muted); flex: none; }
+    .ap-item.on .ap-chk { color: var(--flow-cyan); }
+    .ap-heavy-tag { font: 800 8px var(--mono); color: #ffb86b; border: 1px solid #ffb86b55; border-radius: 999px; padding: 1px 5px; }
+
+    /* 속도 제한 가드 칩 */
+    .ap-rate { cursor: default; }
+    .ap-rate.watch { border-color: color-mix(in srgb, #ffd66b 30%, var(--line)); }
+    .ap-rate.cool { border-color: #ef4444aa; background: color-mix(in srgb, #ef4444 12%, var(--card-2)); animation: ap-pulse 1.1s ease-in-out infinite; }
+    .ap-rate.cool .ap-chk { color: #ff9aa8; }
+
+    /* 쿨다운 상태 카드 */
+    .ap-cool { margin: 0 16px 14px; padding: 12px 14px; border-radius: 12px;
+        border: 1px solid #ef444455; background: color-mix(in srgb, #ef4444 10%, var(--card-2)); }
+    .ap-cool-h { display: flex; align-items: center; gap: 8px; }
+    .ap-cool-ic { font-size: 15px; }
+    .ap-cool-t { font: 700 12px var(--mono); color: var(--text-primary); flex: 1; }
+    .ap-cool-t b { color: #ff9aa8; }
+    .ap-cool-hits { font: 700 10px var(--mono); color: var(--text-muted); }
+    .ap-cool-bar { height: 6px; border-radius: 999px; background: var(--card); overflow: hidden; margin: 9px 0 6px; }
+    .ap-cool-bar span { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #ef4444, #f59e0b); transition: width .4s ease; }
+    .ap-cool-sub { font-size: 10.5px; color: var(--text-secondary); }
+
+    .ap-note { margin: 0 16px 14px; font-size: 11px; color: var(--text-muted); line-height: 1.5; }
+
+    @@keyframes ap-pulse { 0%, 100% { box-shadow: 0 0 0 0 #ef444455; } 50% { box-shadow: 0 0 0 4px #ef444422; } }
+    @@media (max-width: 560px) { .ap-grid { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    /// <summary>대상 프로젝트(AutoPilot 필드를 제자리 토글).</summary>
+    [Parameter, EditorRequired] public StoryboardProject Project { get; set; } = default!;
+    /// <summary>생성/병합 중이면 잠금.</summary>
+    [Parameter] public bool Disabled { get; set; }
+    /// <summary>토글 변경 시 부모에 알림(선택 · 저장/재렌더용).</summary>
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    /// <summary>하위 항목은 마스터가 꺼져 있거나 전체 잠금이면 비활성.</summary>
+    private bool SubDisabled => Disabled || !Project.AutoPilot;
+
+    /// <summary>쿨다운 진행률(0~100).</summary>
+    private int BarPct => (int)Math.Round(Guard.Progress * 100);
+
+    /// <summary>속도 제한 가드 실시간 상태 문구.</summary>
+    private string RateStatus => Guard.IsCoolingDown
+        ? $"쿨다운 {Guard.RemainingSeconds}초 · 지수 백오프"
+        : Guard.TotalHits > 0 ? $"복구됨 · 누적 감지 {Guard.TotalHits}회" : "429/쓰로틀 실시간 감시";
+
+    /// <summary>카탈로그에서 항목 조회(없으면 안전 폴백).</summary>
+    private static AutoFixInfo Info(string key) => WanPromptSanitizer.Get(key) ?? new AutoFixInfo(key, "✨", key, "", "");
+
+    private static string Badge(bool on) => on ? "ON" : "OFF";
+
+    protected override void OnInitialized() => Guard.OnChange += OnGuardChanged;
+
+    private void OnGuardChanged() => InvokeAsync(StateHasChanged);
+
+    private async Task Notify()
+    {
+        if (OnChanged.HasDelegate) await OnChanged.InvokeAsync();
+        StateHasChanged();
+    }
+
+    public void Dispose() => Guard.OnChange -= OnGuardChanged;
+}

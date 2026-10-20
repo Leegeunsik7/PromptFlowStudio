@@ -1,0 +1,290 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.SetExtension
+@using PromptFlowStudio.Services.GenlockFrustum
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject VirtualSetExtensionStudioRunner Runner
+
+@* [PromptFlow Studio v17.46.0] 🏛️ AI 세트 확장 & 크로마 블렌딩 스튜디오 — 합성/마스크 뷰어 · LED 클리핑 폴리곤 · 볼륨 와이어프레임 · 페더/디스필 슬라이더 · 오버런 미터. *@
+
+<div class="vsx-scrim" @onclick="Close">
+    <div class="vsx-modal" @onclick:stopPropagation="true">
+        <div class="vsx-h">
+            <div>
+                <div class="vsx-title">🏛️ AI 세트 확장 &amp; 크로마 블렌딩 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null)</div>
+                <div class="vsx-sub"><b>세트 확장 엔진</b>이 트래킹 카메라 절두체로 v17.44 곡면 LED 96 패널을 Sutherland-Hodgman 클리핑해 볼륨 경계 탈출(Overrun)을 계산하고, LED 밖 천장 · 바닥 · 측면 크로마 영역에 v17.27 가상 월드를 SIMD 광선으로 연장 투영합니다. <b>블렌드 합성기</b>는 경계 밴드 링버퍼로 LED↔확장 휘도 · CCT 게인을 매칭하고 에지 페더 · 그린 키 · 디스필로 이음새를 지웁니다. <b>가드</b>는 고속 패닝 시 확장 렌더 지연 포즈를 외삽 · 래치 재투영으로 LED 경계에 고정하고 배우 윤곽 그린 블리딩을 자동 억제합니다.</div>
+            </div>
+            <button class="vsx-x" @onclick="Close">✕</button>
+        </div>
+        <div class="vsx-bar">
+            <button class="vsx-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 시작")</button>
+            <button class="vsx-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            @for (var m = 0; m < 4; m++)
+            {
+                var mv = (SetCameraMove)m;
+                <button class="vsx-btn pre @(Runner.Move == mv ? "on" : null)" @onclick="() => Runner.SetMove(mv)">@(VirtualSetExtensionStudioRunner.MoveName(mv))</button>
+            }
+            <button class="vsx-btn @(Runner.ShowMask ? "on" : null)" @onclick="() => Runner.SetMask(!Runner.ShowMask)">◩ 블렌드 마스크</button>
+            <button class="vsx-btn @(Runner.Synth.ColorMatch ? "on" : null)" @onclick="() => Runner.SetColorMatch(!Runner.Synth.ColorMatch)">🎨 컬러 매칭</button>
+            <button class="vsx-btn @(Runner.Guard.EdgeLock ? "on" : null)" @onclick="() => Runner.SetEdgeLock(!Runner.Guard.EdgeLock)">🔗 에지 록</button>
+            <button class="vsx-btn @(Runner.Guard.AutoDespill ? "on" : null)" @onclick="() => Runner.SetAutoDespill(!Runner.Guard.AutoDespill)">🟩 자동 디스필</button>
+            <button class="vsx-btn" @onclick="NextStyle">🌄 @(Runner.Engine.StyleName)</button>
+            <button class="vsx-btn" @onclick="Runner.ResetMetrics">↺ 지표</button>
+            <span class="vsx-chip @(Runner.LastTickMs < 16.7 ? "ok" : "warn")">프레임 @(F2(Runner.LastTickMs)) ms · 클리핑/분류 @(F0(Runner.Engine.LastComputeUs)) µs · 확장 @(F0(Runner.Engine.LastExtUs)) µs · 합성 @(F0(Runner.Synth.LastComposeUs)) µs</span>
+        </div>
+        <div class="vsx-bar">
+            <label class="vsx-lbl">🪶 페더링</label>
+            <input class="vsx-rng" type="range" min="0" max="100" value="@((int)Runner.Synth.FeatherPx)" @oninput="OnFeather" />
+            <span class="vsx-chip">@(F0(Runner.Synth.FeatherPx)) px × @(F2(Runner.Guard.FeatherScale))</span>
+            <label class="vsx-lbl">🟩 디스필</label>
+            <input class="vsx-rng" type="range" min="0" max="100" value="@((int)MathF.Round(Runner.Synth.DespillStrength * 100f))" @oninput="OnDespill" />
+            <span class="vsx-chip">@(F0(Runner.Synth.DespillStrength * 100f))%</span>
+            <label class="vsx-lbl">⏱ 확장 렌더 지연</label>
+            <input class="vsx-rng" type="range" min="0" max="6" value="@(Runner.Guard.ExtLatencyFrames)" @oninput="OnLatency" />
+            <span class="vsx-chip">@(Runner.Guard.ExtLatencyFrames) 프레임 · 포즈 @(Runner.PoseSource)</span>
+        </div>
+        <div class="vsx-main">
+            <div class="vsx-col">
+                <div class="vsx-card">
+                    <div class="vsx-sec">🎬 @(Runner.ShowMask ? "블렌드 마스크(적 LED · 녹 키 알파 · 청 확장 가중치)" : "하이브리드 합성") — LED 패널 <b>@(Runner.Engine.VisiblePanels)</b>/@(RealtimeVirtualSetExtensionEngine.Panels) · 클리핑 폴리곤 오버레이</div>
+                    <div class="vsx-stage">
+                        <img class="vsx-view" src="@(_img)" alt="set extension composite" />
+                        <svg class="vsx-poly" viewBox="0 0 @(RealtimeVirtualSetExtensionEngine.W) @(RealtimeVirtualSetExtensionEngine.H)" preserveAspectRatio="none">@((MarkupString)PolySvg())</svg>
+                    </div>
+                    <div class="vsx-sec gap">🧊 LED 볼륨 · 세트 확장 와이어프레임(측면 Z–Y) — 카메라 (@(F2(Runner.Pose.Position.X)), @(F2(Runner.Pose.Position.Y)), @(F2(Runner.Pose.Position.Z))) m · 팬 @(F1(Deg(Runner.Pose.Pan)))° · 틸트 @(F1(Deg(Runner.Pose.Tilt)))°</div>
+                    <svg class="vsx-wire" viewBox="-7 -9.5 16 11">@((MarkupString)WireSvg())</svg>
+                </div>
+            </div>
+            <div class="vsx-col">
+                <div class="vsx-card">
+                    <div class="vsx-sec">📏 볼륨 경계 탈출 — Overrun <b class="@(Runner.Engine.OverrunPct < 5f ? "ok" : "warn")">@(F1(Runner.Engine.OverrunPct))%</b> · 픽셀 LED @(F1(Runner.Engine.PixelLedFraction * 100f))%</div>
+                    <svg class="vsx-meter" viewBox="0 0 100 10" preserveAspectRatio="none">
+                        <rect class="led" x="0" y="0" width="@(P(Runner.Engine.PixelLedFraction * 100f))" height="10" />
+                        <rect class="ceil" x="@(P(Runner.Engine.PixelLedFraction * 100f))" y="0" width="@(P(Runner.Engine.CeilingFraction * 100f))" height="10" />
+                        <rect class="floor" x="@(P((Runner.Engine.PixelLedFraction + Runner.Engine.CeilingFraction) * 100f))" y="0" width="@(P(Runner.Engine.FloorFraction * 100f))" height="10" />
+                        <rect class="open" x="@(P((Runner.Engine.PixelLedFraction + Runner.Engine.CeilingFraction + Runner.Engine.FloorFraction) * 100f))" y="0" width="@(P(Runner.Engine.OpenFraction * 100f))" height="10" />
+                    </svg>
+                    <div class="vsx-legend"><span class="led">■ LED</span><span class="ceil">■ 천장</span><span class="floor">■ 바닥</span><span class="open">■ 측면 개구</span></div>
+                    <svg class="vsx-graph" viewBox="0 0 600 90" preserveAspectRatio="none">
+                        <polyline class="ov" points="@(Series(0))" />
+                        <polyline class="tr" points="@(Series(2))" />
+                    </svg>
+                    <div class="vsx-legend"><span class="ov">━ Overrun(0~100%)</span><span class="tr">━ 원시 찢어짐(0~40 px)</span></div>
+                </div>
+                <div class="vsx-card">
+                    <div class="vsx-sec">🎨 경계 블렌딩 — 이음새 단차 <b class="@(Runner.Synth.SeamStep < 1e-3 ? "ok" : "warn")">@(F4(Runner.Synth.SeamStep))</b> · 최대 @(F3(Runner.Synth.SeamMax)) · 쌍 @(Runner.Synth.SeamPairs)</div>
+                    <div class="vsx-kv grid">
+                        <div>LED CCT <b>@(F0(Runner.Synth.LedCct))</b> K · 확장 @(F0(Runner.Synth.ExtCct)) K</div>
+                        <div>매칭 후 <b class="@(Math.Abs(Runner.Synth.MatchedCct - Runner.Synth.LedCct) < 50 ? "ok" : "warn")">@(F0(Runner.Synth.MatchedCct))</b> K · Δ휘도 @(F1(Runner.Synth.LumaDiffPct))%</div>
+                        <div>게인 R @(F3(Runner.Synth.Gain.X)) · G @(F3(Runner.Synth.Gain.Y)) · B @(F3(Runner.Synth.Gain.Z))</div>
+                        <div>페더 @(Runner.Synth.BlendedPixels) px · 홀드아웃 @(Runner.Synth.HeldOutPixels) · 키 @(Runner.Synth.KeyedPixels)</div>
+                    </div>
+                    <svg class="vsx-graph" viewBox="0 0 600 90" preserveAspectRatio="none">
+                        <polyline class="sm" points="@(Series(1))" />
+                        <polyline class="sp" points="@(Series(3))" />
+                    </svg>
+                    <div class="vsx-legend"><span class="sm">━ 이음새 단차(0~0.01)</span><span class="sp">━ 그린 스필(0~0.05)</span></div>
+                </div>
+                <div class="vsx-card">
+                    <div class="vsx-sec">🛡 경계 · 블리딩 가드 — 각속도 <b class="@(Runner.Guard.AngularRate > BoundarySeamTearChromaBleedGuard.FastRate ? "warn" : "ok")">@(F2(Runner.Guard.AngularRate))</b> rad/s</div>
+                    <div class="vsx-kv grid">
+                        <div>원시 찢어짐 @(F1(Runner.Guard.RawTearPx)) px · 최대 @(F1(Runner.Guard.MaxRawTearPx))</div>
+                        <div>래치 시프트 (@(F1(Runner.Guard.ShiftX)), @(F1(Runner.Guard.ShiftY))) px</div>
+                        <div>고속 프레임 @(Runner.Guard.FastFrames) · 최대 잔여 @(F1(Runner.Guard.MaxResidualPx)) px</div>
+                        <div>스필 <b class="@(Runner.Synth.Spill < 0.005 ? "ok" : "warn")">@(F4(Runner.Synth.Spill))</b> · 부스트 @(Runner.Guard.DespillBoosts)</div>
+                    </div>
+                    <div class="vsx-act">@(Runner.LastAction ?? "대기")</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .vsx-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .vsx-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .vsx-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #22c55e 14%, var(--card)), color-mix(in srgb, #f59e0b 10%, var(--card))); }
+    .vsx-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .vsx-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .vsx-sub b { color: var(--text-primary); }
+    .vsx-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .vsx-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .vsx-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .vsx-btn:disabled { opacity: .45; cursor: default; }
+    .vsx-btn.on { background: color-mix(in srgb, #22c55e 20%, var(--card)); border-color: #22c55e; }
+    .vsx-btn.pre.on { background: color-mix(in srgb, #f59e0b 22%, var(--card)); border-color: #fbbf24; }
+    .vsx-lbl { font-size: 12px; color: var(--text-secondary); display: flex; gap: 4px; align-items: center; }
+    .vsx-rng { width: 120px; }
+    .vsx-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .vsx-chip.ok { border-color: #22c55e; color: #22c55e; } .vsx-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .vsx-main { display: grid; grid-template-columns: 1.3fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .vsx-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .vsx-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); }
+    .vsx-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .vsx-sec.gap { margin-top: 10px; }
+    .vsx-sec b.ok, .vsx-kv b.ok { color: #22c55e; } .vsx-sec b.warn, .vsx-kv b.warn { color: #f59e0b; }
+    .vsx-stage { position: relative; width: 100%; aspect-ratio: 16 / 9; }
+    .vsx-view { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; background: #000; border-radius: 6px; display: block; }
+    .vsx-poly { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    .vsx-poly polygon { fill: none; stroke: #22d3ee; stroke-width: .35; stroke-opacity: .7; }
+    .vsx-wire { width: 100%; height: 230px; background: #020617; border-radius: 6px; display: block; }
+    .vsx-wire .vol { fill: rgba(34,211,238,.06); stroke: #22d3ee; stroke-width: .05; } .vsx-wire .pl { stroke: #0e7490; stroke-width: .03; }
+    .vsx-wire .chroma { stroke: #22c55e; stroke-width: .08; stroke-dasharray: .2 .12; } .vsx-wire .fr { stroke: #f472b6; stroke-width: .04; } .vsx-wire .ext { fill: rgba(245,158,11,.12); stroke: #f59e0b; stroke-width: .03; }
+    .vsx-wire .cam { fill: #f8fafc; } .vsx-wire text { fill: #94a3b8; font-size: .45px; }
+    .vsx-meter { width: 100%; height: 18px; display: block; border-radius: 4px; overflow: hidden; background: #1e293b; }
+    .vsx-meter .led, .vsx-legend .led { fill: #22d3ee; color: #22d3ee; } .vsx-meter .ceil, .vsx-legend .ceil { fill: #84cc16; color: #84cc16; } .vsx-meter .floor, .vsx-legend .floor { fill: #16a34a; color: #16a34a; } .vsx-meter .open, .vsx-legend .open { fill: #f59e0b; color: #f59e0b; }
+    .vsx-graph { width: 100%; height: 90px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; margin-top: 6px; }
+    .vsx-graph polyline { fill: none; stroke-width: 1.6; }
+    .vsx-graph .ov, .vsx-legend .ov { stroke: #f59e0b; color: #f59e0b; } .vsx-graph .tr, .vsx-legend .tr { stroke: #f472b6; color: #f472b6; } .vsx-graph .sm, .vsx-legend .sm { stroke: #22d3ee; color: #22d3ee; } .vsx-graph .sp, .vsx-legend .sp { stroke: #22c55e; color: #22c55e; }
+    .vsx-legend { display: flex; gap: 12px; font-size: 10px; margin-top: 3px; }
+    .vsx-kv { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px; }
+    .vsx-kv.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; margin-top: 6px; }
+    .vsx-kv b { color: var(--text-primary); }
+    .vsx-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly byte[] _bmp = new byte[VirtualSetExtensionStudioRunner.BmpBytes];
+    private System.Threading.Timer? _timer;
+    private string _img = "";
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        Runner.Step();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("SetExtension.Modal.Timer", ex); }
+        }, null, 100, 100);
+    }
+
+    protected override void OnParametersSet() => Refresh();
+
+    protected override bool ShouldRender()
+    {
+        Refresh();
+        return true;
+    }
+
+    private void Refresh()
+    {
+        Runner.WriteBmp(_bmp);
+        _img = "data:image/bmp;base64," + Convert.ToBase64String(_bmp);
+    }
+
+    private static double Deg(double rad) => rad * (180.0 / Math.PI);
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static string F4(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.0000", CultureInfo.InvariantCulture);
+    private static string P(double v) => v.ToString("0.###", CultureInfo.InvariantCulture);
+
+    private string PolySvg()
+    {
+        var e = Runner.Engine;
+        var sb = new System.Text.StringBuilder(8192);
+        for (var p = 0; p < RealtimeVirtualSetExtensionEngine.Panels; p++)
+        {
+            var n = e.ClipCount(p);
+            if (n < 3) continue;
+            sb.Append("<polygon points=\"");
+            for (var k = 0; k < n; k++) { var v = e.ClipVertex(p, k); sb.Append(P(v.X)).Append(',').Append(P(v.Y)).Append(' '); }
+            sb.Append("\"/>");
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>측면(Z 수평 · Y 수직) 단면 — LED 볼륨 · 크로마 천장/바닥 · 카메라 수직 절두체 · 볼륨 밖 확장 쐐기.</summary>
+    private string WireSvg()
+    {
+        const float R = RealtimeOffAxisFrustumProjectionEngine.RadiusM, Hw = RealtimeOffAxisFrustumProjectionEngine.WallHeightM;
+        var sb = new System.Text.StringBuilder(2048);
+        sb.Append("<rect class=\"vol\" x=\"").Append(P(-R)).Append("\" y=\"").Append(P(-Hw)).Append("\" width=\"").Append(P(2 * R)).Append("\" height=\"").Append(P(Hw)).Append("\"/>");
+        for (var r = 1; r < RealtimeOffAxisFrustumProjectionEngine.Rows; r++)
+            sb.Append("<line class=\"pl\" x1=\"").Append(P(-R)).Append("\" y1=\"").Append(P(-r * RealtimeOffAxisFrustumProjectionEngine.PanelHeightM)).Append("\" x2=\"").Append(P(R)).Append("\" y2=\"").Append(P(-r * RealtimeOffAxisFrustumProjectionEngine.PanelHeightM)).Append("\"/>");
+        sb.Append("<line class=\"chroma\" x1=\"").Append(P(-R)).Append("\" y1=\"").Append(P(-Hw)).Append("\" x2=\"").Append(P(R)).Append("\" y2=\"").Append(P(-Hw)).Append("\"/>");
+        sb.Append("<line class=\"chroma\" x1=\"").Append(P(-R)).Append("\" y1=\"0\" x2=\"").Append(P(R)).Append("\" y2=\"0\"/>");
+        ref readonly var pose = ref Runner.Pose;
+        pose.Basis(out var f, out _, out var u);
+        var cam = pose.Position;
+        var tanV = RealtimeVirtualSetExtensionEngine.TanV;
+        for (var s = -1; s <= 1; s += 2)
+        {
+            var d = f + u * (s * tanV);
+            var dz = -d.Z; var dy = d.Y;
+            var len = 9f / MathF.Max(MathF.Sqrt(dz * dz + dy * dy), 1e-3f);
+            sb.Append("<line class=\"fr\" x1=\"").Append(P(-cam.Z)).Append("\" y1=\"").Append(P(-cam.Y)).Append("\" x2=\"").Append(P(-cam.Z + dz * len)).Append("\" y2=\"").Append(P(-cam.Y - dy * len)).Append("\"/>");
+        }
+        sb.Append("<polygon class=\"ext\" points=\"").Append(P(-R)).Append(",-9.3 ").Append(P(R + 1.5f)).Append(",-9.3 ").Append(P(R + 1.5f)).Append(',').Append(P(-Hw)).Append(' ').Append(P(-R)).Append(',').Append(P(-Hw)).Append("\"/>");
+        sb.Append("<circle class=\"cam\" cx=\"").Append(P(-cam.Z)).Append("\" cy=\"").Append(P(-cam.Y)).Append("\" r=\"0.18\"/>");
+        sb.Append("<g><text x=\"-6.8\" y=\"-8.6\">세트 확장(v17.27 월드)</text></g>");
+        sb.Append("<g><text x=\"-6.8\" y=\"0.9\">LED R 6 m · 높이 6 m · 크로마 천장/바닥</text></g>");
+        return sb.ToString();
+    }
+
+    private string Series(int which)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            float y = which switch
+            {
+                0 => 88f - 86f * Math.Clamp(Runner.OverrunSeries(k) / 100f, 0f, 1f),
+                1 => 88f - 86f * Math.Clamp(Runner.SeamSeries(k) / 0.01f, 0f, 1f),
+                2 => 88f - 86f * Math.Clamp(Runner.TearSeries(k) / 40f, 0f, 1f),
+                _ => 88f - 86f * Math.Clamp(Runner.SpillSeries(k) / 0.05f, 0f, 1f),
+            };
+            sb.Append(P(600f * i / (n - 1))).Append(',').Append(P(y)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void OnFeather(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetFeather(v);
+    }
+
+    private void OnDespill(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetDespill(v / 100f);
+    }
+
+    private void OnLatency(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetLatency(v);
+    }
+
+    private void NextStyle() => Runner.SetStyle((Runner.Engine.StyleIndex + 1) % PromptFlowStudio.Services.WorldExpansion.GenerativeNeuralWorldExpansionEngine.Styles.Length);
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void Step60()
+    {
+        for (var i = 0; i < VirtualSetExtensionStudioRunner.Hz; i++) Runner.Step();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

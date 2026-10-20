@@ -1,0 +1,123 @@
+@* [PromptFlow Studio v5.8.0] 3D 자이로 모션 라이브 뷰어 — 가상 터치 조이스틱으로 카메라 Pitch/Yaw/Zoom 조율 → Wan 카메라 모션 태그 실시간 생성.
+   ⚠ 무주입(모바일 안전): [Parameter]/EventCallback 만. Pure CSS3 preserve-3d + SVG 뷰포트(외부 3D 엔진 0). *@
+
+<div class="mgv">
+    <div class="mgv-head">
+        <span class="mgv-title">📱 3D 자이로 모션 라이브 카메라</span>
+        <span class="mgv-tag">Wan 3.0 Motion</span>
+    </div>
+
+    @* 3D 카메라 프러스텀 프리뷰(Pure CSS3 preserve-3d + SVG 그리드) *@
+    <div class="mgv-viewport">
+        <div class="mgv-frustum" style="transform: rotateX(@Inv(_pitch)deg) rotateY(@Inv(_yaw)deg) scale(@Inv(_zoom));">
+            <svg class="mgv-grid" viewBox="0 0 150 90" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                    <pattern id="mgvGrid" width="21" height="18" patternUnits="userSpaceOnUse">
+                        <path d="M21 0 H0 V18" fill="none" stroke="#38bdf8" stroke-width="0.5" opacity="0.45" />
+                    </pattern>
+                </defs>
+                <rect x="0" y="0" width="150" height="90" fill="url(#mgvGrid)" />
+                <line x1="75" y1="0" x2="75" y2="90" stroke="#22d3ee" stroke-width="0.7" opacity="0.7" />
+                <line x1="0" y1="45" x2="150" y2="45" stroke="#22d3ee" stroke-width="0.7" opacity="0.7" />
+            </svg>
+            <span class="mgv-frustum-lbl">🎬 PREVIEW FRUSTUM</span>
+        </div>
+    </div>
+
+    @* 가상 터치 조이스틱 + 줌 슬라이더 *@
+    <div class="mgv-controls">
+        <div class="mgv-pad" @onpointerdown="OnPadDown" @onpointermove="OnPadMove" @onpointerup="OnPadUp" @onpointerleave="OnPadUp">
+            <div class="mgv-ring"></div>
+            <div class="mgv-knob" style="transform: translate(@Inv(_knobX)px, @Inv(_knobY)px);"></div>
+            <span class="mgv-pad-hint">🎯 드래그 = 팬/틸트</span>
+        </div>
+        <div class="mgv-sliders">
+            <label class="mgv-slabel">🔍 줌 레벨 <b>@_zoom.ToString("F1")x</b></label>
+            <input class="mgv-range" type="range" min="0.8" max="2.0" step="0.1" value="@Inv(_zoom)" @oninput="OnZoomChange" />
+            <div class="mgv-axes">
+                <span>Yaw <b>@_yaw.ToString("F0")°</b></span>
+                <span>Pitch <b>@_pitch.ToString("F0")°</b></span>
+            </div>
+        </div>
+    </div>
+
+    <div class="mgv-result">
+        <code class="mgv-code">💡 @MotionTag</code>
+        <button type="button" class="mgv-apply" @onclick="ApplyMotion">➕ 프롬프트에 적용</button>
+    </div>
+</div>
+
+@code {
+    /// <summary>생성된 카메라 모션 태그를 부모(생성 닥/스토리보드 초안)로 주입.</summary>
+    [Parameter] public EventCallback<string> OnApplyMotionTag { get; set; }
+
+    private double _pitch, _yaw;      // -30 ~ +30 deg
+    private double _zoom = 1.0;       // 0.8 ~ 2.0 x
+    private double _knobX, _knobY;    // 노브 오프셋(px)
+    private bool _dragging;
+
+    // 예: "cinematic panning left 15deg, tilt up 8deg, zoom in 1.2x"
+    private string MotionTag
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (Math.Abs(_yaw) >= 1) parts.Add($"cinematic panning {(_yaw >= 0 ? "right" : "left")} {Math.Abs(_yaw):F0}deg");
+            if (Math.Abs(_pitch) >= 1) parts.Add($"tilt {(_pitch >= 0 ? "up" : "down")} {Math.Abs(_pitch):F0}deg");
+            parts.Add(_zoom >= 1.0 ? $"zoom in {_zoom:F1}x" : $"zoom out {_zoom:F1}x");
+            return string.Join(", ", parts);
+        }
+    }
+
+    private void OnPadDown(PointerEventArgs e) => _dragging = true;
+
+    private void OnPadMove(PointerEventArgs e)
+    {
+        if (!_dragging) return;
+        _knobX = Math.Clamp(e.OffsetX - 60, -45, 45);   // 패드 120px → 중심 60
+        _knobY = Math.Clamp(e.OffsetY - 60, -45, 45);
+        _yaw = _knobX / 45.0 * 30.0;      // Yaw(팬) -30 ~ +30
+        _pitch = -_knobY / 45.0 * 30.0;   // Pitch(틸트) -30 ~ +30(화면 위=+)
+    }
+
+    private void OnPadUp(PointerEventArgs e) { _dragging = false; _knobX = 0; _knobY = 0; }   // 놓으면 중앙 복귀
+
+    private void OnZoomChange(ChangeEventArgs e)
+    {
+        if (double.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var z))
+            _zoom = Math.Clamp(z, 0.8, 2.0);
+    }
+
+    private async Task ApplyMotion()
+    {
+        if (OnApplyMotionTag.HasDelegate) await OnApplyMotionTag.InvokeAsync(MotionTag);
+    }
+
+    // CSS transform 은 소수점('.')이 필수 → 항상 InvariantCulture 로 직렬화(로캘 콤마 방지).
+    private static string Inv(double v) => v.ToString(System.Globalization.CultureInfo.InvariantCulture);
+}
+
+<style>
+    .mgv { display: flex; flex-direction: column; gap: 12px; background: #0f1422; border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 14px; color: #fff; }
+    .mgv-head { display: flex; align-items: center; justify-content: space-between; }
+    .mgv-title { font: 800 13px Pretendard,'Malgun Gothic',sans-serif; }
+    .mgv-tag { font: 700 9.5px ui-monospace,monospace; color: #38bdf8; background: rgba(56,189,248,0.12); padding: 3px 8px; border-radius: 8px; }
+    .mgv-viewport { height: 130px; background: #06080e; border-radius: 12px; overflow: hidden; display: grid; place-items: center; perspective: 440px; }
+    .mgv-frustum { position: relative; width: 150px; height: 90px; border: 1.5px solid #38bdf8; border-radius: 8px; background: rgba(56,189,248,0.06); box-shadow: 0 0 18px rgba(56,189,248,0.25), inset 0 0 18px rgba(56,189,248,0.12); display: grid; place-items: center; transition: transform .08s linear; transform-style: preserve-3d; }
+    .mgv-grid { position: absolute; inset: 0; width: 100%; height: 100%; }
+    .mgv-frustum-lbl { position: relative; font: 800 9px Pretendard,'Malgun Gothic',sans-serif; color: #7dd3fc; letter-spacing: 1px; text-shadow: 0 1px 4px #000; }
+    .mgv-controls { display: flex; align-items: center; gap: 14px; }
+    .mgv-pad { position: relative; flex: 0 0 auto; width: 120px; height: 120px; border-radius: 50%; background: radial-gradient(circle at 50% 40%, #1c2740, #10151f); border: 1px solid rgba(255,255,255,0.1); display: grid; place-items: center; touch-action: none; cursor: grab; user-select: none; -webkit-user-select: none; }
+    .mgv-pad:active { cursor: grabbing; }
+    .mgv-ring { position: absolute; width: 92px; height: 92px; border-radius: 50%; border: 1px dashed rgba(56,189,248,0.35); }
+    .mgv-knob { width: 40px; height: 40px; border-radius: 50%; background: radial-gradient(circle at 40% 35%, #7dd3fc, #38bdf8); box-shadow: 0 0 12px rgba(56,189,248,0.6); pointer-events: none; }
+    .mgv-pad-hint { position: absolute; bottom: 7px; font: 600 8.5px Pretendard,'Malgun Gothic',sans-serif; color: #64748b; pointer-events: none; }
+    .mgv-sliders { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+    .mgv-slabel { font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: #94a3b8; } .mgv-slabel b { color: #7dd3fc; }
+    .mgv-range { width: 100%; accent-color: #38bdf8; }
+    .mgv-axes { display: flex; justify-content: space-between; font: 700 10px ui-monospace,monospace; color: #64748b; } .mgv-axes b { color: #34d399; }
+    .mgv-result { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: #161d2f; padding: 9px 11px; border-radius: 11px; }
+    .mgv-code { flex: 1; min-width: 0; font: 600 10px ui-monospace,monospace; color: #34d399; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mgv-apply { flex: 0 0 auto; font: 800 11px Pretendard,'Malgun Gothic',sans-serif; color: #04121c; background: linear-gradient(135deg,#38bdf8,#22d3ee); border: none; border-radius: 10px; padding: 7px 11px; cursor: pointer; white-space: nowrap; }
+    .mgv-apply:active { transform: scale(0.96); }
+</style>

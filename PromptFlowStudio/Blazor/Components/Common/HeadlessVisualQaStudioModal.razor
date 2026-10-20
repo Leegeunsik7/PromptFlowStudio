@@ -1,0 +1,269 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.VisualQa
+@using PromptFlowStudio.Services.MotionMatching
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject HeadlessVisualQaStudioRunner Runner
+
+@* [PromptFlow Studio v17.34.0] 👁️ AI 헤드리스 시각 QA & 디버깅 스튜디오 — 오프스크린 캡처 뷰어 · SSIM 게이지 · 오차 히트맵 · ZMP 오버레이 · 결함 스냅샷 로그. *@
+
+<div class="hvq-scrim" @onclick="Close">
+    <div class="hvq-modal" @onclick:stopPropagation="true">
+        <div class="hvq-h">
+            <div>
+                <div class="hvq-title">👁️ AI 헤드리스 시각 QA &amp; 디버깅 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null)</div>
+                <div class="hvq-sub"><b>헤드리스 프레임버퍼</b>가 창 없이 1920×1080 메모리 버퍼에 실제 Blazor 스튜디오 컴포넌트(RenderTree 구조 래스터 — 브라우저 CSS 픽셀 렌더 아님)와 3D 액터 뷰포트를 합성하고, <b>회귀 합성기</b>가 기준 프레임 대비 SSIM · 픽셀 불일치와 3D 시간 차분으로 레이아웃 붕괴 · 팝핑을 판독합니다. <b>ZMP 가드</b>는 계단 보행의 지지 다각형 · CoM 레이캐스트 · ZMP 를 오버레이하고 계단 적응 IK 로 균형을 교정합니다.</div>
+            </div>
+            <button class="hvq-x" @onclick="Close">✕</button>
+        </div>
+        <div class="hvq-bar">
+            <button class="hvq-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 헤드리스 시작")</button>
+            <button class="hvq-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            @for (var t = 0; t < HeadlessVisualQaStudioRunner.Targets.Length; t++)
+            {
+                var k = t;
+                <button class="hvq-btn @(Runner.Target == k && Runner.FrameBuffer.CapturedComponents > 0 ? "on" : null)" disabled="@Runner.Capturing" @onclick="() => Capture(k)">📸 @(HeadlessVisualQaStudioRunner.Targets[k].Name)</button>
+            }
+            <button class="hvq-btn" @onclick="Baseline">📌 기준 등록</button>
+            <button class="hvq-btn" @onclick="Save" disabled="@(!Runner.Regression.HasBaseline)">💾 기준 저장</button>
+            <button class="hvq-btn warn @(Runner.FrameBuffer.LayoutFaultActive ? "on" : null)" @onclick="() => Runner.InjectLayoutFault(!Runner.FrameBuffer.LayoutFaultActive)">💥 레이아웃 붕괴</button>
+            <button class="hvq-btn warn" @onclick="Runner.InjectPop">💥 3D 팝핑</button>
+            <button class="hvq-btn @(Runner.Zmp.OverlayEnabled ? "on" : null)" @onclick="() => Runner.SetOverlay(!Runner.Zmp.OverlayEnabled)">🟢 ZMP 오버레이</button>
+            <button class="hvq-btn @(Runner.Zmp.Enabled ? "on" : null)" @onclick="() => Runner.SetStairGuard(!Runner.Zmp.Enabled)">🦶 계단 ZMP 가드</button>
+            <button class="hvq-btn" @onclick="Runner.ResetMetrics">↺ 지표</button>
+            <span class="hvq-chip @(Runner.LastTickMs <= 16.7 ? "ok" : "warn")">프레임 @(F2(Runner.LastTickMs)) ms · 합성 @(F0(Runner.FrameBuffer.LastRenderUs)) µs · SSIM @(F0(Runner.Regression.LastCompareUs)) µs</span>
+        </div>
+        <div class="hvq-main">
+            <div class="hvq-col">
+                <div class="hvq-card">
+                    <div class="hvq-sec">🖥 오프스크린 캡처 뷰어 · @(Runner.FrameBuffer.CapturedComponent ?? "UI 미캡처") · 프레임 @(Runner.FrameBuffer.FramesRendered) · 표시 목록 @(Runner.FrameBuffer.BoxCount)</div>
+                    <div class="hvq-frame">
+                        @if (_frame is not null) { <img src="@_frame" alt="frame" /> }
+                        @if (Runner.Regression.LastKind != VisualDefectKind.None && Runner.Regression.LastBox.W > 0)
+                        {
+                            var b = Runner.Regression.LastBox;
+                            <div class="hvq-box" style="left:@(P(b.X, 1920))%;top:@(P(b.Y, 1080))%;width:@(P(b.W, 1920))%;height:@(P(b.H, 1080))%"></div>
+                        }
+                    </div>
+                    @if (Runner.FrameBuffer.CaptureError is { } err) { <div class="hvq-err">⚠ @err</div> }
+                </div>
+                <div class="hvq-card">
+                    <div class="hvq-sec">🌡 오차 히트맵(좌 UI = 1 − SSIM · 우 3D = 시간 차분)</div>
+                    <div class="hvq-heat">@if (_heat is not null) { <img src="@_heat" alt="heatmap" /> }</div>
+                </div>
+            </div>
+            <div class="hvq-col">
+                <div class="hvq-card">
+                    <div class="hvq-sec">📐 SSIM 매칭률 · 기준 @(Runner.Regression.HasBaseline ? Runner.Regression.BaselineName : "없음")</div>
+                    <div class="hvq-gauges">
+                        <svg class="hvq-gauge" viewBox="-60 -60 120 72">@((MarkupString)Gauge(Runner.Regression.UiSsim, Runner.Regression.UiSsim >= PixelPerfectVisualRegressionSynthesizer.PassSsim))<text x="0" y="-8">@(F2(Runner.Regression.UiSsim * 100)) %</text><text class="s" x="0" y="8">UI SSIM</text></svg>
+                        <svg class="hvq-gauge" viewBox="-60 -60 120 72">@((MarkupString)Gauge(Runner.Regression.PixelExactRatio, Runner.Regression.MismatchPixels == 0))<text x="0" y="-8">@(F2(Runner.Regression.PixelExactRatio * 100)) %</text><text class="s" x="0" y="8">픽셀 정확</text></svg>
+                        <div class="hvq-kv">
+                            <div>판정 <b class="@(Runner.Regression.LastKind == VisualDefectKind.None ? "ok" : "warn")">@(KindLabel(Runner.Regression.LastKind))</b> · 최저 SSIM @(F2(Runner.Regression.MinUiSsim * 100))%</div>
+                            <div>불일치 픽셀 @(Runner.Regression.MismatchPixels.ToString("N0", CultureInfo.InvariantCulture)) · 저 SSIM 창 @(Runner.Regression.LowWindows)</div>
+                            <div>3D 시간 차분 @(F1(Runner.Regression.SceneTemporalDiff)) / EMA @(F1(Runner.Regression.SceneTemporalEma))</div>
+                            <div>결함 누적 붕괴 <b>@(Runner.Regression.LayoutDefects)</b> · 드리프트 @(Runner.Regression.DriftDefects) · 팝핑 <b>@(Runner.Regression.PopDefects)</b></div>
+                        </div>
+                    </div>
+                    <svg class="hvq-spark" viewBox="0 0 360 80" preserveAspectRatio="none">
+                        <polyline class="ss" points="@(Series(0))" />
+                        <polyline class="tp" points="@(Series(1))" />
+                    </svg>
+                    <div class="hvq-legend"><span class="ss">■ UI SSIM(0.9~1)</span><span class="tp">■ 3D 시간 차분</span></div>
+                </div>
+                <div class="hvq-card">
+                    <div class="hvq-sec">🦶 계단 ZMP 균형 · 가드 @(Runner.Zmp.Enabled ? "ON" : "OFF") · @(NeuralMotionMatchingStudioRunner.TerrainName(Runner.Motion.Terrain))</div>
+                    <div class="hvq-bar2">
+                        @foreach (var tk in Terrains)
+                        {
+                            var t = tk;
+                            <button class="hvq-btn @(Runner.Motion.Terrain == t ? "on" : null)" @onclick="() => Runner.SetTerrain(t)">@(NeuralMotionMatchingStudioRunner.TerrainName(t))</button>
+                        }
+                    </div>
+                    <div class="hvq-kv grid">
+                        <div>계단 ZMP 지지 내 <b class="@(Runner.Zmp.StairRatio >= 0.5f ? "ok" : "warn")">@(F1(Runner.Zmp.StairRatio * 100))%</b>(@(Runner.Zmp.StairFrames) 프레임)</div>
+                        <div>평지 구간 <b>@(F1(Runner.Zmp.FlatRatio * 100))%</b>(@(Runner.Zmp.FlatFrames))</div>
+                        <div>현재 ZMP 오프셋 <b class="@(Runner.Motion.Ik.ZmpOffset <= 0.01f ? "ok" : "warn")">@(F1(Runner.Motion.Ik.ZmpOffset * 100)) cm</b> · 계단 최대 이탈 @(F1(Runner.Zmp.StairMaxOutside * 100)) cm</div>
+                        <div>단차 @(F1(Runner.Motion.Ik.StepAhead * 100)) cm · 골반 Δy @(F1(Runner.Motion.Ik.PelvisOffset.Y * 100)) cm · 필터 @(F1(new System.Numerics.Vector2(Runner.Motion.Ik.FilterOffset.X, Runner.Motion.Ik.FilterOffset.Z).Length() * 100)) cm</div>
+                    </div>
+                </div>
+                <div class="hvq-card">
+                    <div class="hvq-sec">🧾 UI 시각 결함 스냅샷 로그 · @(Runner.Regression.LogCount)건</div>
+                    <div class="hvq-log">
+                        @for (var i = 0; i < Math.Min(6, Runner.Regression.LogCount); i++)
+                        {
+                            var d = Runner.Regression.Defect(i);
+                            <div class="hvq-def">
+                                @if (i < _thumbs.Length && _thumbs[i] is { } th) { <img src="@th" alt="snap" /> }
+                                <div><b class="warn">@(KindLabel(d.Kind))</b> #@(d.Seq) · 프레임 @(d.Frame)<br /><span class="hvq-mut">점수 @(F2(d.Score)) · 영역 @(d.X),@(d.Y) @(d.W)×@(d.H)</span></div>
+                            </div>
+                        }
+                    </div>
+                </div>
+                <div class="hvq-act">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .hvq-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .hvq-modal { width: min(1660px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .hvq-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #0ea5e9 14%, var(--card)), color-mix(in srgb, #f59e0b 10%, var(--card))); }
+    .hvq-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .hvq-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .hvq-sub b { color: var(--text-primary); }
+    .hvq-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .hvq-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .hvq-bar2 { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+    .hvq-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .hvq-btn:disabled { opacity: .45; cursor: default; }
+    .hvq-btn.on { background: color-mix(in srgb, #0ea5e9 20%, var(--card)); border-color: #0ea5e9; }
+    .hvq-btn.warn { border-color: #f59e0b; }
+    .hvq-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .hvq-chip.ok { border-color: #22c55e; color: #22c55e; } .hvq-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .hvq-main { display: grid; grid-template-columns: 1.3fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .hvq-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .hvq-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); }
+    .hvq-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .hvq-mut { font-size: 11px; color: var(--text-muted); }
+    .hvq-frame { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #020617; border-radius: 8px; overflow: hidden; }
+    .hvq-frame img, .hvq-heat img { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+    .hvq-heat { width: 100%; aspect-ratio: 16 / 9; background: #020617; border-radius: 8px; overflow: hidden; }
+    .hvq-box { position: absolute; border: 2px solid #ef4444; box-shadow: 0 0 0 2000px rgba(239,68,68,.06); pointer-events: none; }
+    .hvq-err { font-size: 11px; color: #f87171; margin-top: 6px; }
+    .hvq-gauges { display: grid; grid-template-columns: 140px 140px 1fr; gap: 10px; align-items: center; }
+    .hvq-gauge { width: 140px; height: 86px; }
+    .hvq-gauge .bg { stroke: color-mix(in srgb, var(--line) 80%, transparent); stroke-width: 9; fill: none; stroke-linecap: round; }
+    .hvq-gauge .fg { stroke-width: 9; fill: none; stroke-linecap: round; }
+    .hvq-gauge .fg.ok { stroke: #22c55e; } .hvq-gauge .fg.warn { stroke: #f59e0b; }
+    .hvq-gauge text { fill: var(--text-primary); font: 800 12px var(--mono); text-anchor: middle; }
+    .hvq-gauge text.s { font: 600 8px sans-serif; fill: var(--text-muted); }
+    .hvq-kv { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px; }
+    .hvq-kv.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+    .hvq-kv b, .hvq-def b { color: var(--text-primary); } .hvq-kv b.ok { color: #22c55e; } .hvq-kv b.warn, .hvq-def b.warn { color: #f59e0b; }
+    .hvq-spark { width: 100%; height: 64px; margin-top: 8px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; }
+    .hvq-spark polyline { fill: none; stroke-width: 1.5; }
+    .hvq-spark .ss, .hvq-legend .ss { stroke: #22c55e; color: #22c55e; } .hvq-spark .tp, .hvq-legend .tp { stroke: #f59e0b; color: #f59e0b; }
+    .hvq-legend { display: flex; gap: 12px; font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+    .hvq-log { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .hvq-def { display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .hvq-def img { width: 96px; height: 54px; border-radius: 4px; border: 1px solid #ef4444; image-rendering: pixelated; }
+    .hvq-act { font-size: 11px; color: var(--text-muted); }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly TerrainKind[] Terrains = { TerrainKind.Flat, TerrainKind.Stairs, TerrainKind.Ramp, TerrainKind.Bumps };
+    private System.Threading.Timer? _timer;
+    private string? _frame, _heat;
+    private readonly string?[] _thumbs = new string?[6];
+    private int _tick;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        Refresh();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(() => { Refresh(); StateHasChanged(); }); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("VisualQa.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    /// <summary>미리보기 PNG(프레임 4 Hz · 히트맵 · 결함 썸네일 2 Hz) — UI 스레드 제어 평면.</summary>
+    private void Refresh()
+    {
+        if (Runner.FrameBuffer.FramesRendered == 0) return;
+        _frame = Runner.FramePng();
+        if (_tick++ % 2 == 0)
+        {
+            _heat = Runner.HeatmapPng();
+            for (var i = 0; i < _thumbs.Length; i++)
+                _thumbs[i] = i < Runner.Regression.LogCount ? Runner.ThumbPng(Runner.Regression.Defect(i).Thumb) : null;
+        }
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string P(int v, int full) => (100.0 * v / full).ToString("0.##", CultureInfo.InvariantCulture);
+
+    private static string KindLabel(VisualDefectKind k) => k switch
+    {
+        VisualDefectKind.LayoutShift => "레이아웃 붕괴",
+        VisualDefectKind.PixelDrift => "픽셀 드리프트",
+        VisualDefectKind.Popping => "3D 팝핑",
+        _ => "정상",
+    };
+
+    private static string Gauge(float v, bool ok)
+    {
+        var f = Math.Clamp(v, 0f, 1f);
+        var a = MathF.PI * (1f - f);
+        var x = 46f * MathF.Cos(a); var y = -46f * MathF.Sin(a);
+        var sb = new System.Text.StringBuilder(240);
+        sb.Append("<path class=\"bg\" d=\"M-46 0 A46 46 0 0 1 46 0\"/>");
+        if (f > 0.005f) sb.Append("<path class=\"fg ").Append(ok ? "ok" : "warn").Append("\" d=\"M-46 0 A46 46 0 0 1 ").Append(F1(x)).Append(' ').Append(F1(y)).Append("\"/>");
+        return sb.ToString();
+    }
+
+    private string Series(int kind)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+        {
+            double v = kind == 0 ? (Runner.SsimSeries(i) - 0.9) / 0.1 : Runner.TemporalSeries(i) / 20.0;
+            if (!double.IsFinite(v)) v = 0;
+            sb.Append(F1(360.0 * (n - 1 - i) / (HeadlessVisualQaStudioRunner.SeriesLen - 1))).Append(',').Append(F1(78 - 76 * Math.Clamp(v, 0, 1))).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private async Task Capture(int k)
+    {
+        await Runner.CaptureAsync(k);
+        Refresh();
+    }
+
+    private void Baseline()
+    {
+        Runner.SetBaseline(Runner.FrameBuffer.CapturedComponent ?? "frame");
+        Refresh();
+    }
+
+    private void Save()
+    {
+        try { Runner.SaveBaseline(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException) { PromptFlowStudio.Program.Log("VisualQa.SaveBaseline", ex); }
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void Step60()
+    {
+        for (var i = 0; i < HeadlessVisualQaStudioRunner.Hz; i++) Runner.Step();
+        Refresh();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중 갱신은 250 ms 타이머가 처리 — 정지 상태 변경만 즉시 반영.</summary>
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(() => { Refresh(); StateHasChanged(); });
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

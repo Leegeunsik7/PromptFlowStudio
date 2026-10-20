@@ -1,0 +1,52 @@
+@implements IDisposable
+@inject PromptFlowStudio.Services.Platform.ErrorDialogService Errors
+
+@* [PromptFlow Studio] 전역 오류 모달 — ErrorDialogService.Current 를 사용자 친화적으로 표출(StackTrace 숨김). MainLayout 에 1개 배치. *@
+
+@if (Errors.Current is { } e)
+{
+    <div class="em-scrim" @onclick="Errors.Dismiss">
+        <div class="em" @onclick:stopPropagation="true" role="alertdialog" aria-label="@e.Title">
+            <div class="em-ic">@e.Icon</div>
+            <div class="em-t">@e.Title</div>
+            <div class="em-m">@e.Message</div>
+            @if (e.Hint is { Length: > 0 })
+            {
+                <div class="em-hint"><span class="em-hint-ic">💡</span><span>@e.Hint</span></div>
+            }
+            @if (Errors.RetryAction is not null)
+            {
+                <div class="em-row">
+                    <button class="em-btn em-ghost" @onclick="Errors.Dismiss">닫기</button>
+                    <button class="em-btn" @onclick="Errors.Retry">🔄 다시 시도</button>
+                </div>
+            }
+            else
+            {
+                <button class="em-btn" @onclick="Errors.Dismiss">확인</button>
+            }
+        </div>
+    </div>
+}
+
+<style>
+    .em-scrim { position: fixed; inset: 0; z-index: 360; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 24px; }
+    .em { width: 100%; max-width: 400px; text-align: center; background: var(--card, #161922); border: 1px solid var(--line, #2d3342); border-radius: 18px; padding: 26px 24px; box-shadow: 0 30px 80px rgba(0,0,0,.55); }
+    .em-ic { font-size: 40px; line-height: 1; margin-bottom: 12px; }
+    .em-t { font-size: 17px; font-weight: 900; color: var(--text-primary, #eef1f7); }
+    .em-m { font-size: 13px; color: var(--text-secondary, #aab2c5); line-height: 1.6; margin: 10px 0 0; }
+    .em-hint { display: flex; gap: 8px; align-items: flex-start; text-align: left; margin: 14px 0 0; padding: 11px 13px; border-radius: 11px;
+        background: color-mix(in srgb, var(--flow-cyan, #22d3ee) 9%, var(--card-2, #1e222e)); border: 1px solid color-mix(in srgb, var(--flow-cyan, #22d3ee) 30%, var(--line, #2d3342)); }
+    .em-hint-ic { flex: 0 0 auto; }
+    .em-hint span:last-child { font-size: 12px; color: var(--text-secondary, #aab2c5); line-height: 1.55; }
+    .em-btn { margin-top: 18px; width: 100%; border: none; border-radius: 12px; padding: 12px; font-weight: 800; font-size: 14px; cursor: pointer; color: #fff; background: linear-gradient(135deg, var(--flow-violet, #8b5cf6), var(--accent, #8b5cf6)); }
+    .em-row { display: flex; gap: 10px; }
+    .em-row .em-btn { flex: 1 1 0; }
+    .em-ghost { background: transparent; color: var(--text-secondary, #aab2c5); border: 1px solid var(--line, #2d3342); }
+</style>
+
+@code {
+    protected override void OnInitialized() => Errors.OnChange += OnCh;
+    public void Dispose() => Errors.OnChange -= OnCh;
+    private void OnCh() => InvokeAsync(StateHasChanged);
+}

@@ -1,0 +1,252 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Localization
+@implements IDisposable
+@inject GlobalLocalizationStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.69.0] 🌐 AI 글로벌 로컬라이제이션 & 더빙 스튜디오 — 타겟 언어 셀렉터 · 대사 선택 · 문화 적응 리포트/자막 큐 ·
+    립싱크 보정 오프셋 스펙트럼(DTW 프레임 재선택 + ROI 워프 배율) · 입모양 트랙 비교 · 보이스 클로닝 톤 조율기(피치/밝기/감정/잔향).
+*@
+
+<div class="glz-scrim" @onclick="Close">
+    <div class="glz-modal" @onclick:stopPropagation="true">
+        <div class="glz-h">
+            <div>
+                <div class="glz-title">🌐 AI 글로벌 로컬라이제이션 &amp; 더빙 스튜디오</div>
+                <div class="glz-sub">원 배우의 <b>음색 · 감정 · 공간 잔향</b>을 분석해 대상 언어로 복제 합성하고, 대사 속 <b>관용구 · 은어 · 금기</b>를 현지 정서로 재구성한 뒤
+                    영상 입모양을 <b>DTW 재정렬 + SIMD 워프</b>로 맞춥니다.</div>
+            </div>
+            <button class="glz-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="glz-bar">
+            @foreach (var l in MultiLanguageCulturalNuanceAdaptor.Targets)
+            {
+                var lang = l;
+                <button class="glz-lang @(_target == lang ? "on" : null)" @onclick="() => _target = lang">@(RealtimeNeuralAudioDubbingEngine.LanguageLabel(lang))</button>
+            }
+            <select class="glz-sel" @bind="_line">
+                @for (var i = 0; i < MultiLanguageCulturalNuanceAdaptor.DemoScript.Length; i++)
+                {
+                    <option value="@i">대사 @(i + 1) · @(MultiLanguageCulturalNuanceAdaptor.DemoScript[i].Text)</option>
+                }
+            </select>
+            <button class="glz-run" disabled="@Runner.IsBusy" @onclick="Run">@(Runner.IsBusy ? "⏳ 처리 중…" : "🎬 로컬라이즈 & 더빙")</button>
+        </div>
+
+        <div class="glz-main">
+            <div class="glz-col">
+                <div class="glz-card">
+                    <div class="glz-sec">🌏 문화적 뉘앙스 적응</div>
+                    @if (R is { } r)
+                    {
+                        var a = r.Adaptation;
+                        <div class="glz-src">🇰🇷 @a.Source <em>@a.Register</em></div>
+                        <div class="glz-lit">직역 · @a.Literal</div>
+                        <div class="glz-out" dir="auto">@a.Adapted</div>
+                        <div class="glz-note">뉘앙스 점수 <b>@(Pc(a.NuanceScore))</b> · @(a.FromMemory ? "번역 메모리" : Runner.Nuance.Translator is null ? "MT 미결선" : "외부 NMT")</div>
+                        <div class="glz-finds">
+                            @foreach (var f in a.Findings)
+                            {
+                                <div class="a@((int)f.Action)"><b>@(MultiLanguageCulturalNuanceAdaptor.KindLabel(f.Kind))</b> · @(MultiLanguageCulturalNuanceAdaptor.ActionLabel(f.Action)) · <i>@f.Trigger</i>
+                                    @if (f.Adapted is not null && f.Literal is not null && f.Adapted != f.Literal)
+                                    {
+                                        <span dir="auto"> “@f.Literal” → “@f.Adapted”</span>
+                                    }
+                                    <em>@f.Note</em></div>
+                            }
+                        </div>
+                        <div class="glz-sec">💬 자막 큐 (줄 ≤ @(MultiLanguageCulturalNuanceAdaptor.MaxLineChars(r.Target)) · CPS ≤ @(F0(MultiLanguageCulturalNuanceAdaptor.MaxCps(r.Target))))</div>
+                        @foreach (var c in a.Subtitles)
+                        {
+                            <div class="glz-cue @(c.CpsOverflow ? "over" : null)" dir="auto"><span>#@c.Index @(F2(c.StartMs / 1000))–@(F2(c.EndMs / 1000))s · @(F1(c.Cps)) cps</span><b>@c.Line1</b>@if (c.Line2 is not null) { <b>@c.Line2</b> }</div>
+                        }
+                    }
+                    else
+                    {
+                        <div class="glz-note">언어와 대사를 선택하고 [🎬 로컬라이즈 & 더빙]을 누르세요.</div>
+                    }
+                </div>
+            </div>
+
+            <div class="glz-col">
+                <div class="glz-card">
+                    <div class="glz-row glz-between">
+                        <span class="glz-sec">👄 립싱크 매칭</span>
+                        <button class="glz-btn @(Runner.IsPlaying ? "on" : null)" disabled="@(R is null)" @onclick="TogglePlay">@(Runner.IsPlaying ? "⏸ 정지" : "▶ 미리보기")</button>
+                    </div>
+                    @if (R is { } r2)
+                    {
+                        var L = r2.LipSync;
+                        <div class="glz-kpis">
+                            <span><b>@(F2(L.BeforeCorrelation)) → @(F2(L.AfterCorrelation))</b>비짐 상관</span>
+                            <span><b>@(F2(L.AvBefore)) → @(F2(L.AvAfter))</b>AV(오디오) 상관</span>
+                            <span><b>@(F0(L.MeanAbsOffsetMs))ms</b>평균 보정 오프셋</span>
+                            <span><b>×@(F2(L.IsochronyFactor))</b>등시성 · @(F1(L.DubMs / 1000))s/@(F1(L.SourceMs / 1000))s</span>
+                        </div>
+                        <div class="glz-face">
+                            <svg viewBox="0 0 120 90">
+                                <ellipse cx="60" cy="45" rx="40" ry="42" class="skin" />
+                                <circle cx="45" cy="32" r="4" class="eye" /><circle cx="75" cy="32" r="4" class="eye" />
+                                <ellipse cx="60" cy="64" rx="15" ry="@(F1(1 + 10 * Runner.PreviewOpenness))" class="lip" />
+                            </svg>
+                            <div class="glz-note">프레임 @(Runner.Playhead)/@(L.Frames) · 개방도 @(F2(Runner.PreviewOpenness)) · 워프 @(F1(L.WarpMicrosPerFrame))μs/프레임 · 개방 오차 @(F2(L.MeanAbsOpennessError))</div>
+                        </div>
+                        <div class="glz-sec">📉 입모양 트랙 (회색 원 영상 · 보라 더빙 비짐 · 초록 최종)</div>
+                        <svg class="glz-track" viewBox="0 0 300 60" preserveAspectRatio="none">
+                            <polyline class="s" points="@_srcLine" /><polyline class="t" points="@_tgtLine" /><polyline class="f" points="@_finLine" />
+                        </svg>
+                        <div class="glz-sec">🎚 립싱크 보정 오프셋 스펙트럼 (ms · 막대 색 = ROI 배율)</div>
+                        <svg class="glz-spec" viewBox="0 0 300 60" preserveAspectRatio="none">
+                            <line x1="0" x2="300" y1="30" y2="30" class="axis" />
+                            @for (var i = 0; i < r2.OffsetMs.Length; i++)
+                            {
+                                var x = i * 300f / r2.OffsetMs.Length;
+                                var h = Math.Clamp(r2.OffsetMs[i] / 320f * 28f, -28f, 28f);
+                                <rect x="@F1(x)" y="@F1(h >= 0 ? 30 - h : 30)" width="@F1(Math.Max(1f, 300f / r2.OffsetMs.Length - 0.5f))" height="@F1(Math.Max(0.6f, MathF.Abs(h)))" fill="@ScaleColor(r2.Scale[i])" />
+                            }
+                        </svg>
+                    }
+                </div>
+
+                <div class="glz-card">
+                    <div class="glz-sec">🎙 보이스 클로닝 톤 조율기</div>
+                    @if (R is { } r3)
+                    {
+                        <div class="glz-kpis">
+                            <span><b>@(F0(r3.Actor.F0Hz))Hz → @(F0(r3.Cloned.F0Hz))Hz</b>F0 (오차 @(F1(r3.F0ErrorPct))%)</span>
+                            <span><b>@(F0(r3.Actor.Rt60Ms)) → @(F0(r3.Cloned.Rt60Ms))ms</b>잔향 RT60</span>
+                            <span><b>@(F2(r3.TimbreSimilarity))</b>음색 유사도</span>
+                            <span><b>@(F2(r3.Actor.Brightness)) → @(F2(r3.Cloned.Brightness))</b>밝기 kHz</span>
+                        </div>
+                    }
+                    <label class="glz-slider">피치 이동 <b>@(F1(_pitch))반음</b><input type="range" min="-6" max="6" step="0.5" value="@F1(_pitch)" @oninput="e => { _pitch = P(e); ApplyTone(); }" /></label>
+                    <label class="glz-slider">밝기 보정 <b>@(F2(_bright))</b><input type="range" min="-0.5" max="0.5" step="0.05" value="@F2(_bright)" @oninput="e => { _bright = P(e); ApplyTone(); }" /></label>
+                    <label class="glz-slider">감정 강도 <b>×@(F1(_emotion))</b><input type="range" min="0" max="1.5" step="0.1" value="@F1(_emotion)" @oninput="e => { _emotion = P(e); ApplyTone(); }" /></label>
+                    <label class="glz-slider">공간 잔향 <b>×@(F1(_reverb))</b><input type="range" min="0" max="2" step="0.1" value="@F1(_reverb)" @oninput="e => { _reverb = P(e); ApplyTone(); }" /></label>
+                    <div class="glz-note">블록 지연 @(F0(NeuralVoiceCloningAcousticTransfer.AlgorithmicLatencyMs))ms · 렌더 @(F1(Runner.Voice.LastRenderMicros))μs/블록 · 백엔드 @(Runner.Voice.Neural?.Name ?? "내장 DSP 소스-필터") · 톤 변경 후 다시 실행하세요</div>
+                </div>
+                @if (Runner.LastAction is not null)
+                {
+                    <div class="glz-note">@Runner.LastAction</div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .glz-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .glz-modal { width: min(1560px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .glz-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f43f5e 16%, var(--card)), color-mix(in srgb, #6366f1 16%, var(--card))); }
+    .glz-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .glz-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .glz-sub b { color: var(--text-primary); }
+    .glz-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .glz-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .glz-lang { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--text-secondary); cursor: pointer; }
+    .glz-lang.on { background: color-mix(in srgb, #6366f1 25%, transparent); border-color: #6366f1; color: var(--text-primary); }
+    .glz-sel { font-size: 12px; padding: 5px 6px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); max-width: 420px; }
+    .glz-run { font-size: 13px; font-weight: 900; padding: 7px 14px; border-radius: 10px; border: 2px solid #f43f5e; background: color-mix(in srgb, #f43f5e 18%, transparent); color: var(--text-primary); cursor: pointer; }
+    .glz-main { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .glz-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .glz-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .glz-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); }
+    .glz-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .glz-between { justify-content: space-between; }
+    .glz-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .glz-btn.on { background: color-mix(in srgb, #6366f1 22%, transparent); border-color: #6366f1; }
+    .glz-src { font-size: 13px; color: var(--text-primary); }
+    .glz-src em { font-style: normal; font-size: 10.5px; color: var(--text-muted); margin-left: 6px; }
+    .glz-lit { font-size: 11.5px; color: var(--text-muted); text-decoration: line-through; text-decoration-color: color-mix(in srgb, #ef4444 60%, transparent); }
+    .glz-out { font-size: 15px; font-weight: 800; color: #a5b4fc; background: color-mix(in srgb, #6366f1 10%, transparent); border-radius: 8px; padding: 8px 10px; }
+    .glz-finds { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text-secondary); }
+    .glz-finds > div { border-left: 3px solid var(--line); padding-left: 6px; }
+    .glz-finds .a0, .glz-finds .a1, .glz-finds .a2 { border-color: #22c55e; } .glz-finds .a3 { border-color: #f97316; } .glz-finds .a4 { border-color: #64748b; }
+    .glz-finds b { color: var(--text-primary); } .glz-finds em { display: block; font-style: normal; color: var(--text-muted); font-size: 10.5px; }
+    .glz-cue { display: flex; flex-direction: column; font-size: 12px; border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; background: color-mix(in srgb, #0f172a 40%, transparent); }
+    .glz-cue span { font: 10px var(--mono); color: var(--text-muted); } .glz-cue b { color: #fef08a; font-weight: 700; }
+    .glz-cue.over { border-color: #f97316; }
+    .glz-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .glz-kpis span { display: flex; flex-direction: column; font-size: 10.5px; color: var(--text-muted); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+    .glz-kpis b { font: 800 12px var(--mono); color: var(--text-primary); }
+    .glz-face { display: flex; gap: 12px; align-items: center; }
+    .glz-face svg { width: 120px; flex-shrink: 0; }
+    .glz-face .skin { fill: #e6b48c; } .glz-face .eye { fill: #1e293b; } .glz-face .lip { fill: #5a1e2a; transition: ry .04s linear; }
+    .glz-track, .glz-spec { width: 100%; height: 60px; background: color-mix(in srgb, #0f172a 55%, transparent); border-radius: 6px; }
+    .glz-track polyline { fill: none; stroke-width: 1.4; } .glz-track .s { stroke: #64748b; } .glz-track .t { stroke: #a855f7; } .glz-track .f { stroke: #22c55e; }
+    .glz-spec .axis { stroke: #475569; stroke-width: .5; }
+    .glz-slider { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--text-secondary); }
+    .glz-slider b { color: var(--text-primary); font-family: var(--mono); }
+    .glz-slider input { width: 100%; accent-color: #f43f5e; }
+    .glz-note { font-size: 11px; color: var(--text-muted); }
+    .glz-note b { color: var(--text-primary); }
+    @@media (max-width: 1200px) { .glz-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private PromptFlowStudio.Services.Localization.DubLanguage _target = PromptFlowStudio.Services.Localization.DubLanguage.En;
+    private int _line;
+    private float _pitch, _bright, _emotion = 1, _reverb = 1;
+    private string _srcLine = "", _tgtLine = "", _finLine = "";
+    private LocalizationRun? _shownRun;
+
+    private LocalizationRun? R => Runner.Last;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        var t = Runner.Voice.Tone;
+        (_pitch, _bright, _emotion, _reverb) = (t.PitchShiftSemis, t.BrightnessTrim, t.Emotion, t.ReverbMix);
+        if (R is { } r) { _target = r.Target; _line = r.Line; }
+        BuildLines();
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string Pc(float v) => (Math.Clamp(v, 0f, 1f) * 100f).ToString("0", CultureInfo.InvariantCulture) + "%";
+    private static float P(ChangeEventArgs e) => float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0;
+    private static string ScaleColor(float s) => s >= 1 ? "hsl(150,70%," + F0(35 + Math.Min(30, (s - 1) * 25)) + "%)" : "hsl(25,85%," + F0(35 + Math.Min(30, (1 - s) * 50)) + "%)";
+
+    private void ApplyTone() => Runner.Voice.Tone = new VoiceToneSettings(_pitch, _bright, _emotion, _reverb);
+
+    private static string Poly(float[] v, int n)
+    {
+        var sb = new System.Text.StringBuilder();
+        for (var i = 0; i < v.Length; i++) sb.Append(F1(i * 300.0 / Math.Max(1, n - 1))).Append(',').Append(F1(56 - Math.Clamp(v[i], 0f, 1f) * 52)).Append(' ');
+        return sb.ToString();
+    }
+
+    private void BuildLines()
+    {
+        var r = R;
+        if (r is null || ReferenceEquals(r, _shownRun)) return;
+        _shownRun = r;
+        var n = r.TargetMouth.Length;
+        var src = new float[n];
+        for (var j = 0; j < n; j++) src[j] = r.SourceMouth[Math.Min(r.SourceMouth.Length - 1, (int)((long)j * r.SourceMouth.Length / Math.Max(1, n)))];
+        _srcLine = Poly(src, n); _tgtLine = Poly(r.TargetMouth, n); _finLine = Poly(r.FinalMouth, n);
+    }
+
+    private async Task Run()
+    {
+        ApplyTone();
+        await Runner.LocalizeAsync(_line, _target);
+        BuildLines();
+    }
+
+    private void TogglePlay() { if (Runner.IsPlaying) Runner.Stop(); else Runner.Play(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(() => { BuildLines(); StateHasChanged(); });
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        Runner.Stop();
+    }
+}

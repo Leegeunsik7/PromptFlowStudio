@@ -1,0 +1,387 @@
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.Gaming
+@using PromptFlowStudio.Services.VTuber
+@implements IDisposable
+@inject RealtimeGameVisionEventExtractor Vision
+@inject LiveGamingCommentaryVoiceEngine Voice
+@inject InteractiveGamingOverlayController Overlay
+@inject VTuberPersonaMemoryEngine Memory
+@inject LiveVTuberBroadcastingBridge Bridge
+
+@*
+    [PromptFlow Studio v16.39.0] 🎮 AI 게이밍 & 코스트리머 스튜디오 — 캡처 소스/영역 · 게임 종목 · 이벤트 감도/해시태그 · V-Tuber 해설자 ·
+    1-Click 코스트리밍(비전 → 해설 TTS → 훈수/예측 오버레이) · 라이브 관제(HUD 판독 · ROI 레이아웃 · 이벤트/해설 로그 · 예측 투표). 서비스(싱글턴) OnChange 구독 + 가동 중 200ms UI 틱.
+*@
+
+<div class="gm-scrim" @onclick="Close">
+    <div class="gm-modal" @onclick:stopPropagation="true">
+        <div class="gm-h">
+            <div>
+                <div class="gm-title">🎮 AI 게이밍 &amp; 코스트리머 스튜디오</div>
+                <div class="gm-sub">게임 화면을 <b>실시간 비전 분석</b>해 킬·클러치·승패를 감지하고, <b>V-Tuber 해설</b>과 <b>훈수·예측 투표 오버레이</b>를 1-Click 으로 송출합니다.</div>
+            </div>
+            <button class="gm-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="gm-bar">
+            <span class="gm-chip @(Vision.IsRunning ? "live" : "")">@(Vision.IsRunning ? "● CAPTURE " + Fps() + "FPS" : "캡처 대기")</span>
+            <span class="gm-chip @(Voice.InSession ? "ok" : "")">@(Voice.InSession ? "해설 ON" : "해설 OFF")</span>
+            <span class="gm-chip @(Overlay.IsRunning ? "ok" : "")">오버레이 @(Overlay.IsRunning ? Overlay.Clients.ToString(CultureInfo.InvariantCulture) : "—")</span>
+            <span class="gm-chip @(Voice.LlmAvailable ? "ok" : "")">@(Voice.LlmAvailable ? "Gemini" : "BCL 해설")</span>
+            <span class="gm-chip @(RealtimeGameVisionEventExtractor.ScreenCaptureSupported ? "ok" : "")">@(RealtimeGameVisionEventExtractor.ScreenCaptureSupported ? "GDI 캡처" : "데모 전용")</span>
+            @if (Overlay.IsRunning)
+            {
+                <span class="gm-mut">게임 오버레이 <code>@(Overlay.Url)</code></span>
+            }
+            @if (Bridge.Overlay.IsRunning)
+            {
+                <span class="gm-mut">자막 오버레이 <code>@(Bridge.Overlay.Url)</code></span>
+            }
+        </div>
+
+        <div class="gm-main">
+            <div class="gm-side">
+                <div class="gm-sec">캡처 소스</div>
+                <div class="gm-row">
+                    <button class="gm-tg @(_source == CaptureSource.Demo ? "on" : "")" @onclick="() => _source = CaptureSource.Demo">🧪 데모 경기</button>
+                    <button class="gm-tg @(_source == CaptureSource.Screen ? "on" : "")" disabled="@(!RealtimeGameVisionEventExtractor.ScreenCaptureSupported)" @onclick="() => _source = CaptureSource.Screen">🖥 화면 캡처</button>
+                </div>
+                @if (_source == CaptureSource.Screen)
+                {
+                    <div class="gm-sec">캡처 영역 (0 = 주 모니터 전체)</div>
+                    <div class="gm-grid4">
+                        <label>X<input class="gm-in" type="number" @bind="_cx" /></label>
+                        <label>Y<input class="gm-in" type="number" @bind="_cy" /></label>
+                        <label>W<input class="gm-in" type="number" @bind="_cw" /></label>
+                        <label>H<input class="gm-in" type="number" @bind="_ch" /></label>
+                    </div>
+                    <div class="gm-note">전체화면 독점 모드는 검은 화면일 수 있어요 — 테두리 없는 창 모드를 권장합니다.</div>
+                }
+                <div class="gm-sec">감지 게임 종목</div>
+                <div class="gm-genres">
+                    @foreach (var p in RealtimeGameVisionEventExtractor.Profiles)
+                    {
+                        var g = p.Genre;
+                        <button class="gm-tg @(_genre == g ? "on" : "")" @onclick="() => SetGenre(g)">@(GenreIcon(g)) @(p.Label)</button>
+                    }
+                </div>
+                <div class="gm-sec">이벤트 감도 <b>@(Pct(_sens))</b></div>
+                <input type="range" min="0" max="1" step="0.05" @bind="_sens" @bind:event="oninput" @bind:after="ApplySens" />
+                <div class="gm-sec">FPS 목표</div>
+                <select class="gm-in" @bind="_fps"><option value="30">30</option><option value="60">60</option><option value="120">120</option></select>
+                <div class="gm-sec">해시태그</div>
+                <input class="gm-in" @bind="_tags" @bind:after="ApplyTags" placeholder="#롤 #클러치 #AI코스트리머" />
+
+                <div class="gm-sec">AI 해설자</div>
+                <select class="gm-in" @bind="_persona">
+                    <option value="">기본 해설자</option>
+                    @foreach (var p in Memory.Personas)
+                    {
+                        <option value="@(p.Id)">@(p.Name)</option>
+                    }
+                </select>
+                <label class="gm-ck"><input type="checkbox" @bind="_useTts" /> TTS 음성</label>
+                <label class="gm-ck"><input type="checkbox" @bind="_useLlm" disabled="@(!Voice.LlmAvailable)" /> Gemini 위트 재작성(1초 예산)</label>
+                <label class="gm-ck"><input type="checkbox" @bind="_autoPoll" /> 매치 시작 시 예측 자동 오픈</label>
+                <div class="gm-row"><span class="gm-mut">쿨다운</span><input class="gm-in w60" type="number" @bind="_cool" /><span class="gm-mut">ms · 잡담</span><input class="gm-in w60" type="number" @bind="_banter" /><span class="gm-mut">초</span></div>
+
+                @if (Vision.IsRunning)
+                {
+                    <button class="gm-btn danger big" @onclick="StopAll">⏹ 코스트리밍 중지</button>
+                }
+                else
+                {
+                    <button class="gm-btn go big" @onclick="StartAll">▶ 1-Click 게이밍 코스트리밍 가동</button>
+                }
+                @if (_msg is not null)
+                {
+                    <div class="gm-note ok">@(_msg)</div>
+                }
+            </div>
+
+            <div class="gm-panel">
+                <div class="gm-grid3">
+                    <div class="gm-card">
+                        <div class="gm-sec">HUD 판독</div>
+                        <div class="gm-hp"><i style="@(HpStyle())"></i></div>
+                        <div class="gm-kv"><span>체력</span><b>@(Pct(_snap.Hp))</b></div>
+                        <div class="gm-kv"><span>K / D / A</span><b>@(_snap.Kills) / @(_snap.Deaths) / @(_snap.Assists)</b></div>
+                        <div class="gm-kv"><span>연속 킬 · 연속 데스</span><b>@(_snap.Streak) · @(_snap.DeathStreak)</b></div>
+                        <div class="gm-kv"><span>미니맵 위험</span><b>@(Pct(_snap.Danger))</b></div>
+                        <div class="gm-kv"><span>상태</span><b>@(RealtimeGameVisionEventExtractor.KindLabel(_snap.Phase))</b></div>
+                        <div class="gm-kv"><span>분석</span><b>@(_snap.AnalyzeMs.ToString("0.00", CultureInfo.InvariantCulture))ms · @(_snap.Frames)f</b></div>
+                    </div>
+                    <div class="gm-card">
+                        <div class="gm-sec">ROI 레이아웃 · @(Vision.Profile.Label)</div>
+                        <svg viewBox="0 0 160 90" class="gm-roi">
+                            <rect x="0" y="0" width="160" height="90" fill="#0b1020" />
+                            @foreach (var (name, r, col) in Rois())
+                            {
+                                <g>
+                                    <rect x="@(F(r.X * 160))" y="@(F(r.Y * 90))" width="@(F(r.W * 160))" height="@(F(r.H * 90))" fill="none" stroke="@(col)" stroke-width="0.8" />
+                                    <text x="@(F(r.X * 160 + 1))" y="@(F(r.Y * 90 + 5))" fill="@(col)" font-size="4">@(name)</text>
+                                </g>
+                            }
+                        </svg>
+                        <div class="gm-mut">체력바 · K/D/A(OCR) · 미니맵 · 승패 배너</div>
+                    </div>
+                    <div class="gm-card">
+                        <div class="gm-sec">AI 훈수 · 동료 아바타</div>
+                        @if (Overlay.Tip is { } tip)
+                        {
+                            <div class="gm-tip">@(tip.Icon) @(tip.Text)</div>
+                        }
+                        <div class="gm-comp"><span>@(Overlay.Companion.Emote)</span><b>@(Overlay.Companion.Say)</b><i>@(Overlay.Companion.Anchor)</i></div>
+                        <div class="gm-kv"><span>해설</span><b>@(Voice.Fired)건 · 음성 @(Voice.Voiced)</b></div>
+                        <div class="gm-kv"><span>지연(최근/평균/최대)</span><b class="@(Voice.LastLatencyMs > 1000 ? "bad" : "")">@(Voice.LastLatencyMs) / @(Voice.AvgLatencyMs.ToString("0", CultureInfo.InvariantCulture)) / @(Voice.MaxLatencyMs)ms</b></div>
+                        <div class="gm-kv"><span>코얼레싱</span><b>@(Voice.Coalesced)</b></div>
+                    </div>
+                </div>
+
+                <div class="gm-grid2">
+                    <div class="gm-card">
+                        <div class="gm-sec">🗳 시청자 승패 예측 · @(PhaseLabel(Overlay.Phase))</div>
+                        <div class="gm-row"><input class="gm-in grow" @bind="_question" /><button class="gm-btn sm" @onclick="() => Overlay.OpenPoll(_question)">열기</button><button class="gm-btn sm" @onclick="Overlay.LockPoll">마감</button><button class="gm-btn sm" @onclick="() => Overlay.Resolve(true)">승리 정산</button><button class="gm-btn sm" @onclick="() => Overlay.Resolve(false)">패배 정산</button></div>
+                        <div class="gm-poll"><i class="w" style="@(PollStyle(true))">승 @(Pct(Overlay.WinPct))</i><i class="l" style="@(PollStyle(false))">패 @(Pct(1 - Overlay.WinPct))</i></div>
+                        <div class="gm-row"><span class="gm-mut">@(Overlay.WinVotes)표 / @(Overlay.LoseVotes)표</span><input class="gm-in w100" @bind="_voter" /><button class="gm-btn sm" @onclick="() => TestVote(true)">!승</button><button class="gm-btn sm" @onclick="() => TestVote(false)">!패</button></div>
+                        @if (Overlay.Leaderboard.Count > 0)
+                        {
+                            <div class="gm-sec">적중 포인트</div>
+                            @foreach (var kv in Overlay.Leaderboard)
+                            {
+                                <div class="gm-kv"><span>@(kv.Key)</span><b>@(kv.Value)P</b></div>
+                            }
+                        }
+                    </div>
+                    <div class="gm-card">
+                        <div class="gm-sec">테스트 이벤트 주입</div>
+                        <div class="gm-row">
+                            @foreach (var k in _injectKinds)
+                            {
+                                var kind = k;
+                                <button class="gm-btn sm" disabled="@(!Voice.InSession)" @onclick="() => Inject(kind)">@(RealtimeGameVisionEventExtractor.KindLabel(kind))</button>
+                            }
+                        </div>
+                        <div class="gm-sec">이벤트 로그</div>
+                        <div class="gm-log">
+                            @for (var i = 0; i < _evCount; i++)
+                            {
+                                var e = _events[i];
+                                <div class="gm-ev"><b>@(F(e.AtMs / 1000.0))s</b><span>@(RealtimeGameVisionEventExtractor.KindLabel(e.Kind))</span><i>@(e.Kills)/@(e.Deaths)/@(e.Assists) · HP @(Pct(e.Hp))</i></div>
+                            }
+                        </div>
+                    </div>
+                </div>
+
+                <div class="gm-card">
+                    <div class="gm-sec">🎙 실시간 해설</div>
+                    <div class="gm-log">
+                        @foreach (var l in Voice.Recent)
+                        {
+                            <div class="gm-line"><b>@(l.LatencyMs)ms</b><span>@(l.Text)</span><i>@(l.Source)</i></div>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="gm-f">
+            <span class="gm-mut">@(Voice.LastAction ?? Overlay.LastAction ?? Vision.LastAction ?? "대기")</span>
+            <button class="gm-btn" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .gm-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .gm-modal { width: min(1280px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .gm-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #22d3ee 12%, var(--card)), color-mix(in srgb, #a78bfa 14%, var(--card))); }
+    .gm-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .gm-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .gm-sub b { color: var(--text-primary); }
+    .gm-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .gm-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .gm-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .gm-chip.ok { color: #4ade80; } .gm-chip.live { color: #fff; background: #ef4444; border-color: #ef4444; }
+    .gm-main { display: grid; grid-template-columns: 290px 1fr; min-height: 0; flex: 1; overflow: hidden; }
+    .gm-side { border-right: 1px solid var(--line); padding: 12px; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+    .gm-panel { padding: 12px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .gm-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); margin: 2px 0; } .gm-sec b { color: #22d3ee; }
+    .gm-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .gm-genres { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+    .gm-grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; } .gm-grid4 label { font: 10px var(--mono); color: var(--text-muted); display: flex; flex-direction: column; }
+    .gm-grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; } .gm-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .gm-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 5px; }
+    .gm-tg { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-secondary); border-radius: 8px; padding: 6px 8px; cursor: pointer; }
+    .gm-tg.on { color: var(--text-primary); border-color: #22d3ee; box-shadow: 0 0 0 1px #22d3ee inset; } .gm-tg:disabled { opacity: .45; cursor: not-allowed; }
+    .gm-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; min-width: 0; }
+    .gm-in.grow { flex: 1; min-width: 140px; } .gm-in.w60 { width: 64px; } .gm-in.w100 { width: 100px; }
+    .gm-ck { font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 6px; }
+    .gm-kv { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--text-muted); } .gm-kv b { color: var(--text-primary); font-family: var(--mono); } .gm-kv b.bad { color: #f87171; }
+    .gm-hp { height: 10px; border-radius: 6px; background: #1e293b; overflow: hidden; } .gm-hp i { display: block; height: 100%; transition: width .15s linear; }
+    .gm-roi { width: 100%; border-radius: 8px; }
+    .gm-tip { font-size: 12.5px; font-weight: 700; color: var(--text-primary); background: color-mix(in srgb, #38bdf8 14%, var(--card)); border-radius: 8px; padding: 6px 8px; }
+    .gm-comp { display: flex; align-items: center; gap: 8px; font-size: 12px; } .gm-comp span { font-size: 28px; } .gm-comp b { color: var(--text-primary); } .gm-comp i { font: 10px var(--mono); color: var(--text-muted); font-style: normal; margin-left: auto; }
+    .gm-poll { display: flex; height: 22px; border-radius: 7px; overflow: hidden; font: 800 11px var(--mono); }
+    .gm-poll i { display: flex; align-items: center; justify-content: center; font-style: normal; color: #fff; transition: width .3s; white-space: nowrap; overflow: hidden; } .gm-poll .w { background: #22c55e; } .gm-poll .l { background: #ef4444; }
+    .gm-log { display: flex; flex-direction: column; gap: 3px; max-height: 210px; overflow-y: auto; }
+    .gm-ev, .gm-line { display: grid; grid-template-columns: 58px 1fr auto; gap: 8px; align-items: center; font-size: 12px; color: var(--text-secondary); border-bottom: 1px solid var(--line); padding: 2px 0; }
+    .gm-ev b, .gm-line b { font: 10px var(--mono); color: var(--text-muted); } .gm-ev i, .gm-line i { font: 10px var(--mono); color: #a78bfa; font-style: normal; }
+    .gm-mut { font-size: 11px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; } .gm-mut code { font: 11px var(--mono); color: #22d3ee; user-select: all; }
+    .gm-note { font-size: 11.5px; color: var(--text-secondary); } .gm-note.ok { color: #4ade80; }
+    .gm-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); } .gm-f .gm-mut { margin-right: auto; }
+    .gm-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .gm-btn.sm { padding: 3px 8px; font-size: 11px; } .gm-btn.big { padding: 10px; font-size: 13px; margin-top: 6px; }
+    .gm-btn.go { background: linear-gradient(135deg,#22d3ee,#a78bfa); color: #fff; border: 0; } .gm-btn.danger { color: #f87171; border-color: #f87171; }
+    .gm-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 900px) { .gm-main { grid-template-columns: 1fr; } .gm-grid3, .gm-grid2 { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly GameEventKind[] _injectKinds = { GameEventKind.Kill, GameEventKind.MultiKill, GameEventKind.Clutch, GameEventKind.Death, GameEventKind.Victory, GameEventKind.Defeat };
+    private readonly GameEvent[] _events = new GameEvent[30];
+    private int _evCount, _cx, _cy, _cw, _ch, _fps = 60, _cool = 2500, _banter = 20;
+    private double _sens = 0.5;
+    private bool _useTts = true, _useLlm, _autoPoll = true;
+    private string _persona = "", _tags = "", _question = "이번 판 승리할까요?", _voter = "시청자1";
+    private string? _msg;
+    private GameGenre _genre = GameGenre.LoL;
+    private CaptureSource _source = CaptureSource.Demo;
+    private GameStateSnapshot _snap;
+    private CancellationTokenSource? _ui;
+
+    protected override void OnInitialized()
+    {
+        Vision.OnChange += OnServiceChanged;
+        Voice.OnChange += OnServiceChanged;
+        Overlay.OnChange += OnServiceChanged;
+        _genre = Vision.Profile.Genre;
+        _sens = Vision.Sensitivity;
+        _tags = Overlay.Hashtags;
+        _autoPoll = Overlay.AutoPoll;
+        _persona = Voice.PersonaId ?? Memory.Personas.FirstOrDefault()?.Id ?? "";
+        if (Vision.IsRunning) { _source = Vision.Options.Source; StartUi(); }
+        Refresh();
+    }
+
+    private static string F(double v) => v.ToString("0.##", CultureInfo.InvariantCulture);
+    private static string Pct(double v) => Math.Round(v * 100).ToString("0", CultureInfo.InvariantCulture) + "%";
+    private string Fps() => _snap.Fps.ToString("0", CultureInfo.InvariantCulture);
+
+    private static string GenreIcon(GameGenre g) => g switch { GameGenre.LoL => "⚔", GameGenre.Valorant => "🎯", GameGenre.Fps => "🔫", _ => "🐉" };
+
+    private static string PhaseLabel(PollPhase p) => p switch { PollPhase.Open => "투표 중", PollPhase.Locked => "마감", PollPhase.Resolved => "정산 완료", _ => "대기" };
+
+    private string HpStyle()
+    {
+        var hp = Math.Clamp(_snap.Hp, 0, 1);
+        var col = hp < 0.25 ? "#ef4444" : hp < 0.5 ? "#f59e0b" : "#22c55e";
+        return "width:" + F(hp * 100) + "%;background:" + col;
+    }
+
+    private string PollStyle(bool win) => "width:" + F((win ? Overlay.WinPct : 1 - Overlay.WinPct) * 100) + "%";
+
+    private (string Name, RoiF Roi, string Color)[] Rois()
+    {
+        var p = Vision.Profile;
+        return new[] { ("HP", p.Health, "#22c55e"), ("KDA", p.Kda, "#fde047"), ("MAP", p.Minimap, "#38bdf8"), ("BANNER", p.Banner, "#f472b6") };
+    }
+
+    private void SetGenre(GameGenre g)
+    {
+        _genre = g;
+        if (Vision.IsRunning) Vision.SetProfile(g);
+    }
+
+    private void ApplySens() => Vision.Sensitivity = _sens;
+
+    private void ApplyTags() => Overlay.Hashtags = _tags.Trim();
+
+    private void StartAll()
+    {
+        Overlay.AutoPoll = _autoPoll;
+        Overlay.Hashtags = _tags.Trim();
+        Vision.Start(new CaptureOptions(_source, _genre, _cx, _cy, Math.Max(0, _cw), Math.Max(0, _ch), _fps, _sens));
+        Voice.Start(string.IsNullOrEmpty(_persona) ? null : _persona, new CommentaryOptions(_useLlm && Voice.LlmAvailable, _useTts, 1000, Math.Clamp(_cool, 500, 15000), Math.Clamp(_banter, 0, 300)));
+        try { Overlay.Start(); }
+        catch (Exception ex) { Program.Log("GamingStudio.Overlay", ex); _msg = "⚠ 오버레이 포트 사용 중 — 해설/캡처만 가동"; }
+        if (_autoPoll && Overlay.Phase is PollPhase.Idle or PollPhase.Resolved) Overlay.OpenPoll(_question);
+        _msg ??= "🔴 코스트리밍 가동 — OBS 브라우저 소스에 게임/자막 오버레이 URL 을 추가하세요.";
+        StartUi();
+    }
+
+    private void StopAll()
+    {
+        Voice.Stop();
+        Overlay.Stop();
+        Vision.Stop();
+        Bridge.Stop();
+        StopUi();
+        _msg = "⏹ 코스트리밍 중지";
+        Refresh();
+    }
+
+    private void Inject(GameEventKind k)
+    {
+        var s = Vision.Snapshot();
+        Voice.Inject(new GameEvent(k, Vision.NowMs, k == GameEventKind.Clutch ? 0.12f : s.Hp, s.Kills, s.Deaths, s.Assists, (byte)(k == GameEventKind.MultiKill ? 3 : 1), 1f));
+    }
+
+    private void TestVote(bool win)
+    {
+        var id = string.IsNullOrWhiteSpace(_voter) ? "시청자" : _voter.Trim();
+        _msg = Overlay.Vote(id, win) ? "🗳 " + id + " → " + (win ? "승" : "패") : "⚠ 투표 불가(마감/중복)";
+    }
+
+    private void Refresh()
+    {
+        _snap = Vision.Snapshot();
+        _evCount = Vision.CopyRecent(_events);
+    }
+
+    private void StartUi()
+    {
+        if (_ui is not null) return;
+        var cts = new CancellationTokenSource();
+        _ui = cts;
+        _ = UiLoopAsync(cts.Token);
+    }
+
+    private void StopUi()
+    {
+        var cts = Interlocked.Exchange(ref _ui, null);
+        if (cts is null) return;
+        try { cts.Cancel(); } catch (ObjectDisposedException) { }
+        cts.Dispose();
+    }
+
+    private async Task UiLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(200));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                if (!Vision.IsRunning) continue;
+                Refresh();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("GamingStudio.Ui", ex); }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Vision.OnChange -= OnServiceChanged;
+        Voice.OnChange -= OnServiceChanged;
+        Overlay.OnChange -= OnServiceChanged;
+        StopUi();
+    }
+}

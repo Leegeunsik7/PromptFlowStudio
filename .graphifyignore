@@ -1,0 +1,10 @@
+**/bin/
+**/obj/
+**/publish/
+**/release/
+*.log
+*.trx
+*.zip
+
+# MCP 격리 설치(npm ci 산출물)
+tools/mcp/node_modules/

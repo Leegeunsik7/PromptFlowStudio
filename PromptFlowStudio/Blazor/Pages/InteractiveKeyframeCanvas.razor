@@ -1,0 +1,342 @@
+@implements IDisposable
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.Integration
+@inject CanvasMaskingService Masking
+@inject ILocalMediaService Media
+@inject LiveSessionSyncBridge Bridge
+
+@* [PromptFlow Studio v16.21.0] 🖌️ 인터랙티브 키프레임 & 인페인팅 마스크 캔버스 — 영상/이미지 위 브러시 마스킹 · 바운딩 박스 · 키프레임 변환 · 실시간 미리보기.
+   문서 상태는 CanvasMaskingService(싱글턴) 소유 — 이 컴포넌트는 포인터 입력 위임 + OnChange 구독 렌더. 데스크톱 전용(모바일 링크 제외 폴더). *@
+
+<div class="kc">
+    <div class="kc-tools">
+        <label class="kc-up">
+            <InputFile class="kc-file" OnChange="OnMediaPicked" accept="image/png,image/jpeg,image/webp,video/mp4,video/webm,video/quicktime" />
+            <span>🎞️ @(Masking.MediaPath is null ? "영상/이미지 불러오기" : System.IO.Path.GetFileName(Masking.MediaPath))</span>
+        </label>
+        <select class="kc-in" @bind="_aspect" @bind:after="ApplyAspect">
+            <option value="0">16:9 (640×360)</option>
+            <option value="1">9:16 (360×640)</option>
+            <option value="2">1:1 (512×512)</option>
+        </select>
+        <label class="kc-sl">브러시 <b>@(_radiusPct.ToString("0", CultureInfo.InvariantCulture))</b>
+            <input type="range" min="1" max="12" step="0.5" @bind="_radiusPct" @bind:event="oninput" /></label>
+        <label class="kc-opt"><input type="checkbox" @bind="_erase" /> 지우개</label>
+        <button class="kc-btn" @onclick="Undo" disabled="@(Masking.StrokeCount == 0)">↶ 되돌리기</button>
+        <button class="kc-btn" @onclick="ClearMask" disabled="@(Masking.StrokeCount == 0)">🗑️ 지우기</button>
+    </div>
+
+    <div class="kc-stage" style="width:@(Px(CW))px;height:@(Px(CH))px"
+         @onpointerdown="OnDown" @onpointermove="OnMove" @onpointerup="OnUp" @onpointerleave="OnUp">
+        @if (_frameUrl is not null) { <img class="kc-bg" src="@_frameUrl" alt="" /> }
+        else if (_mediaUrl is not null && _isVideo) { <video class="kc-bg" src="@_mediaUrl" muted preload="metadata"></video> }
+        else if (_mediaUrl is not null) { <img class="kc-bg" src="@_mediaUrl" alt="" /> }
+        <svg class="kc-svg" width="@Px(CW)" height="@Px(CH)" viewBox="0 0 @Px(CW) @Px(CH)">
+            <defs>
+                <mask id="kc-m" maskUnits="userSpaceOnUse" x="0" y="0" width="@Px(CW)" height="@Px(CH)">
+                    <rect x="0" y="0" width="@Px(CW)" height="@Px(CH)" fill="black" />
+                    <g transform="@TransformAttr(_tf)">
+                        @foreach (var s in Masking.Strokes)
+                        {
+                            <polyline points="@Points(s.Points)" fill="none" stroke="@(s.Erase ? "black" : "white")" stroke-width="@Px(s.Radius * CW * 2)" stroke-linecap="round" stroke-linejoin="round" />
+                        }
+                        @if (Masking.ActivePoints is { } ap)
+                        {
+                            <polyline points="@Points(ap)" fill="none" stroke="@(_erase ? "black" : "white")" stroke-width="@Px(_radiusPct / 100 * CW * 2)" stroke-linecap="round" stroke-linejoin="round" />
+                        }
+                    </g>
+                </mask>
+            </defs>
+            <rect x="0" y="0" width="@Px(CW)" height="@Px(CH)" fill="#ff2e88" fill-opacity="@Px(0.5 * _tf.Opacity)" mask="url(#kc-m)" />
+            @if (!Masking.LastBox.IsEmpty)
+            {
+                var b = Masking.LastBox;
+                <g transform="@TransformAttr(_tf)">
+                    <rect x="@Px(b.X * Sx)" y="@Px(b.Y * Sy)" width="@Px(b.W * Sx)" height="@Px(b.H * Sy)" fill="none" stroke="#22d3ee" stroke-width="1.5" stroke-dasharray="5 3" />
+                </g>
+            }
+        </svg>
+    </div>
+
+    <div class="kc-time">
+        <span class="kc-t">⏱ @(_time.ToString("0.00", CultureInfo.InvariantCulture))s</span>
+        <div class="kc-track">
+            <input type="range" min="0" max="@Px(_duration)" step="0.01" @bind="TimeValue" @bind:event="oninput" />
+            @foreach (var k in Masking.Track.Keys)
+            {
+                <button class="kc-key @(Math.Abs(k.Time - _time) < 0.01 ? "on" : null)" style="left:@(Px(k.Time / Math.Max(0.01, _duration) * 100))%" @onclick="() => TimeValue = k.Time" title="@(k.Time.ToString("0.00", CultureInfo.InvariantCulture))s">◆</button>
+            }
+        </div>
+        <label class="kc-dur">길이 <input type="number" min="1" max="60" step="0.5" @bind="_duration" />s</label>
+        <button class="kc-btn" @onclick="TogglePlay">@(_playing ? "⏸ 정지" : "▶ 미리보기")</button>
+    </div>
+
+    <div class="kc-kf">
+        <label>X 이동 <b>@(_kDx.ToString("0.00", CultureInfo.InvariantCulture))</b><input type="range" min="-0.5" max="0.5" step="0.01" @bind="_kDx" @bind:event="oninput" /></label>
+        <label>Y 이동 <b>@(_kDy.ToString("0.00", CultureInfo.InvariantCulture))</b><input type="range" min="-0.5" max="0.5" step="0.01" @bind="_kDy" @bind:event="oninput" /></label>
+        <label>배율 <b>@(_kScale.ToString("0.00", CultureInfo.InvariantCulture))</b><input type="range" min="0.25" max="3" step="0.01" @bind="_kScale" @bind:event="oninput" /></label>
+        <label>회전 <b>@(_kRot.ToString("0", CultureInfo.InvariantCulture))°</b><input type="range" min="-180" max="180" step="1" @bind="_kRot" @bind:event="oninput" /></label>
+        <label>불투명 <b>@(_kOpacity.ToString("0.00", CultureInfo.InvariantCulture))</b><input type="range" min="0" max="1" step="0.05" @bind="_kOpacity" @bind:event="oninput" /></label>
+        <select class="kc-in" @bind="_kEase">
+            <option value="@KeyEase.Linear">선형</option>
+            <option value="@KeyEase.EaseInOut">이즈 인/아웃</option>
+            <option value="@KeyEase.Hold">홀드</option>
+        </select>
+    </div>
+    <div class="kc-tools">
+        <button class="kc-btn pri" @onclick="SetKey">◆ 키프레임 설정</button>
+        <button class="kc-btn" @onclick="RemoveKey" disabled="@(Masking.Track.Count == 0)">◇ 키 삭제</button>
+        <button class="kc-btn" @onclick="TrackAsync" disabled="@(_busy || !_isVideo || Masking.LastBox.IsEmpty || !Masking.FfmpegAvailable)" title="마스크 박스를 영상 프레임 간 SAD 추적해 이동 키프레임 자동 생성">🎯 박스 추적</button>
+        <button class="kc-btn" @onclick="FrameAsync" disabled="@(_busy || !_isVideo || !Masking.FfmpegAvailable)">🖼️ 현재 프레임</button>
+        <button class="kc-btn pri" @onclick="ExportAsync" disabled="@(_busy || Masking.StrokeCount == 0)">💾 마스크 내보내기</button>
+        <span class="kc-note">@(_note ?? ("스트로크 " + Masking.StrokeCount.ToString(CultureInfo.InvariantCulture) + " · 키 " + Masking.Track.Count.ToString(CultureInfo.InvariantCulture) + (Masking.LastBox.IsEmpty ? "" : " · 박스 " + (Masking.LastBox.Coverage * 100).ToString("0.0", CultureInfo.InvariantCulture) + "%")))</span>
+    </div>
+</div>
+
+<style>
+    .kc { display: flex; flex-direction: column; gap: 8px; }
+    .kc-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .kc-up { position: relative; font-size: 12px; padding: 6px 10px; border: 1.5px dashed var(--line); border-radius: 8px; cursor: pointer; color: var(--text-secondary); }
+    .kc-file { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+    .kc-in { background: var(--card-2); border: 1px solid var(--line); border-radius: 7px; padding: 5px 7px; color: var(--text-primary); font-size: 12px; }
+    .kc-sl, .kc-kf label { display: flex; flex-direction: column; font-size: 11px; color: var(--text-secondary); }
+    .kc-sl b, .kc-kf b { color: var(--text-primary); }
+    .kc-sl input, .kc-kf input { accent-color: #ff2e88; }
+    .kc-opt { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-secondary); }
+    .kc-btn { font-size: 12px; font-weight: 700; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); cursor: pointer; }
+    .kc-btn.pri { background: linear-gradient(135deg, #ff2e88, var(--flow-violet)); color: #fff; border: none; }
+    .kc-btn:disabled { opacity: .45; cursor: not-allowed; }
+    .kc-stage { position: relative; max-width: 100%; background: repeating-conic-gradient(#27272a 0 25%, #18181b 0 50%) 0 0 / 20px 20px; border-radius: 10px; overflow: hidden; touch-action: none; cursor: crosshair; user-select: none; }
+    .kc-bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+    .kc-svg { position: absolute; inset: 0; pointer-events: none; }
+    .kc-time { display: flex; align-items: center; gap: 10px; }
+    .kc-t { font: 700 12px var(--mono); color: var(--text-primary); min-width: 64px; }
+    .kc-track { position: relative; flex: 1; padding-top: 14px; }
+    .kc-track input { width: 100%; accent-color: #22d3ee; }
+    .kc-key { position: absolute; top: 0; transform: translateX(-50%); background: none; border: none; color: #f59e0b; font-size: 12px; cursor: pointer; padding: 0; line-height: 1; }
+    .kc-key.on { color: #ff2e88; }
+    .kc-dur { font-size: 11px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; }
+    .kc-dur input { width: 52px; background: var(--card-2); border: 1px solid var(--line); border-radius: 6px; color: var(--text-primary); padding: 3px 5px; }
+    .kc-kf { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; align-items: end; }
+    .kc-note { font-size: 11.5px; color: var(--text-muted); }
+</style>
+
+@code {
+    /// <summary>마스크 PNG 내보내기 완료(경로) — 노드 에디터가 ControlNet 노드에 결선.</summary>
+    [Parameter] public EventCallback<string> OnMaskExported { get; set; }
+
+    private const double CanvasMax = 640;
+    private int _aspect;
+    private double _radiusPct = 4;
+    private bool _erase, _drawing, _isVideo, _playing, _busy;
+    private string? _mediaUrl, _frameUrl, _note;
+    private double _time, _duration = 5;
+    private double _kDx, _kDy, _kScale = 1, _kRot, _kOpacity = 1;
+    private KeyEase _kEase = KeyEase.Linear;
+    private MaskTransform _tf = MaskTransform.Identity;
+    private CancellationTokenSource? _playCts;
+    private readonly CancellationTokenSource _life = new();
+
+    private double CW => Masking.Width >= Masking.Height ? CanvasMax : CanvasMax * Masking.Width / Masking.Height;
+    private double CH => Masking.Width >= Masking.Height ? CanvasMax * Masking.Height / Masking.Width : CanvasMax;
+    private double Sx => CW / Masking.Width;
+    private double Sy => CH / Masking.Height;
+
+    private double TimeValue
+    {
+        get => _time;
+        set
+        {
+            _time = Math.Clamp(value, 0, _duration);
+            _tf = Masking.Evaluate(_time);
+            _kDx = _tf.Dx; _kDy = _tf.Dy; _kScale = _tf.Scale; _kRot = _tf.Rotation; _kOpacity = _tf.Opacity;
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        Masking.OnChange += OnMaskChanged;
+        _tf = Masking.Evaluate(0);
+        if (Masking.MediaPath is { } p) { _mediaUrl = Media.ToPlaybackUrl(p); _isVideo = IsVideoPath(p); }
+    }
+
+    public void Dispose()
+    {
+        Masking.OnChange -= OnMaskChanged;
+        StopPlay();
+        _life.Cancel();
+        _life.Dispose();
+    }
+
+    private void OnMaskChanged() => _ = InvokeAsync(() => { _tf = Masking.Evaluate(_time); StateHasChanged(); });
+
+    private void ApplyAspect()
+    {
+        var (w, h) = _aspect switch { 1 => (360, 640), 2 => (512, 512), _ => (640, 360) };
+        Masking.SetMedia(Masking.MediaPath, w, h);
+    }
+
+    private MaskPoint ToNorm(PointerEventArgs e) => new((float)(e.OffsetX / CW), (float)(e.OffsetY / CH));
+
+    private void OnDown(PointerEventArgs e)
+    {
+        _drawing = true;
+        Masking.BeginStroke(ToNorm(e), (float)(_radiusPct / 100), _erase);
+    }
+
+    private void OnMove(PointerEventArgs e)
+    {
+        var p = ToNorm(e);
+        if (Bridge.IsListening) Bridge.PublishCursor(p.X, p.Y, _drawing);
+        if (_drawing) Masking.AddPoint(p);
+    }
+
+    private void OnUp(PointerEventArgs e)
+    {
+        if (!_drawing) return;
+        _drawing = false;
+        if (Masking.EndStroke() is not null && Bridge.IsListening) Bridge.Publish(LiveSyncTypes.Mask, Masking.ToJson());
+    }
+
+    private void Undo() { if (Masking.Undo()) PublishMask(); }
+    private void ClearMask() { Masking.ClearMask(); PublishMask(); }
+
+    private void SetKey()
+    {
+        if (Masking.SetKeyframe(new MaskKeyframe(Math.Round(_time, 3), (float)_kDx, (float)_kDy, (float)_kScale, (float)_kRot, (float)_kOpacity, _kEase)))
+        {
+            _note = "◆ " + _time.ToString("0.00", CultureInfo.InvariantCulture) + "s 키프레임 설정";
+            PublishKeys();
+        }
+    }
+
+    private void RemoveKey()
+    {
+        if (Masking.RemoveKeyframe(Math.Round(_time, 3))) { _note = "◇ 키프레임 삭제"; PublishKeys(); }
+        else _note = "현재 시각에 키프레임이 없습니다.";
+    }
+
+    private void PublishMask() { if (Bridge.IsListening) Bridge.Publish(LiveSyncTypes.Mask, Masking.ToJson()); }
+    private void PublishKeys() { if (Bridge.IsListening) Bridge.Publish(LiveSyncTypes.Keyframes, Masking.ToJson()); }
+
+    private void TogglePlay()
+    {
+        if (_playing) { StopPlay(); return; }
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(_life.Token);
+        Interlocked.Exchange(ref _playCts, cts)?.Dispose();
+        _playing = true;
+        _ = PlayLoopAsync(cts.Token);
+    }
+
+    private void StopPlay()
+    {
+        _playing = false;
+        var c = Interlocked.Exchange(ref _playCts, null);
+        if (c is null) return;
+        try { c.Cancel(); } catch (ObjectDisposedException) { }
+        c.Dispose();
+    }
+
+    private async Task PlayLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(33));
+            var start = _time >= _duration ? 0 : _time;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                var t = start + sw.Elapsed.TotalSeconds;
+                if (t > _duration) { sw.Restart(); start = 0; t = 0; }
+                await InvokeAsync(() => { TimeValue = t; StateHasChanged(); });
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("KeyframeCanvas.Play", ex); }
+    }
+
+    private async Task TrackAsync()
+    {
+        _busy = true;
+        _note = "🎯 박스 추적 중…";
+        try
+        {
+            var n = await Masking.TrackAcrossAsync(_time, _duration, 8, _life.Token);
+            _note = n > 0 ? "🎯 추적 키프레임 " + n.ToString(CultureInfo.InvariantCulture) + "개 생성" : "⚠ 추적 실패(가림·장면 전환 또는 ffmpeg 오류)";
+            if (n > 0) PublishKeys();
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task FrameAsync()
+    {
+        _busy = true;
+        try
+        {
+            var p = await Masking.ExtractFrameAsync(_time, System.IO.Path.Combine(Media.MediaRoot, "_canvas", "frames"), _life.Token);
+            if (p is not null) { _frameUrl = Media.ToPlaybackUrl(p) + "?v=" + DateTime.Now.Ticks.ToString(CultureInfo.InvariantCulture); _note = null; }
+            else _note = "⚠ 프레임 추출 실패";
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task ExportAsync()
+    {
+        _busy = true;
+        try
+        {
+            var p = await Masking.ExportAsync(System.IO.Path.Combine(Media.MediaRoot, "_canvas", "masks"), _time, 3, _life.Token);
+            if (p is null) { _note = "⚠ 마스크 내보내기 실패"; return; }
+            _note = "💾 " + System.IO.Path.GetFileName(p);
+            if (OnMaskExported.HasDelegate) await OnMaskExported.InvokeAsync(p);
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task OnMediaPicked(InputFileChangeEventArgs e)
+    {
+        const long max = 500L * 1024 * 1024;
+        var f = e.File;
+        if (f.Size > max) { _note = "❌ 파일이 너무 큽니다(최대 500MB)."; return; }
+        try
+        {
+            var dir = System.IO.Path.Combine(Media.MediaRoot, "_uploads", "canvas");
+            System.IO.Directory.CreateDirectory(dir);
+            var ext = System.IO.Path.GetExtension(f.Name);
+            var path = System.IO.Path.Combine(dir, Guid.NewGuid().ToString("N") + (string.IsNullOrWhiteSpace(ext) ? ".png" : ext));
+            await using (var src = f.OpenReadStream(max))
+            await using (var dst = new System.IO.FileStream(path, System.IO.FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.None, 81920, System.IO.FileOptions.Asynchronous))
+                await src.CopyToAsync(dst);
+            Masking.SetMedia(path, Masking.Width, Masking.Height);
+            _mediaUrl = Media.ToPlaybackUrl(path);
+            _isVideo = IsVideoPath(path);
+            _frameUrl = null;
+            _note = "🎞️ " + f.Name;
+        }
+        catch (Exception ex) { Program.Log("KeyframeCanvas.Upload", ex); _note = "❌ 불러오기 실패: " + ex.Message; }
+    }
+
+    private static bool IsVideoPath(string p)
+    {
+        var ext = System.IO.Path.GetExtension(p).ToLowerInvariant();
+        return ext is ".mp4" or ".webm" or ".mov";
+    }
+
+    private string Points(IReadOnlyList<MaskPoint> pts)
+    {
+        var sb = new System.Text.StringBuilder(pts.Count * 14);
+        foreach (var p in pts)
+            sb.Append((p.X * CW).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append((p.Y * CH).ToString("0.#", CultureInfo.InvariantCulture)).Append(' ');
+        return sb.ToString();
+    }
+
+    private string TransformAttr(MaskTransform t)
+    {
+        var cx = CW / 2;
+        var cy = CH / 2;
+        return "translate(" + Px(cx + t.Dx * CW) + " " + Px(cy + t.Dy * CH) + ") rotate(" + Px(t.Rotation) + ") scale(" + Px(t.Scale) + ") translate(" + Px(-cx) + " " + Px(-cy) + ")";
+    }
+
+    private static string Px(double v) => v.ToString("0.###", CultureInfo.InvariantCulture);
+}

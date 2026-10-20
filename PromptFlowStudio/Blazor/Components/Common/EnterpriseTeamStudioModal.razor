@@ -1,0 +1,429 @@
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.Enterprise
+@implements IDisposable
+@inject CloudRenderFarmDispatcherService Farm
+@inject TeamCollaborationSessionBridge Team
+@inject C2paContentProvenanceEngine C2pa
+
+@* [PromptFlow Studio v16.27.0] 🏢 엔터프라이즈 팀 & 렌더 팜 — 클라우드 GPU 노드 관제 게이지 · Split-Merge 분산 렌더 · 협업 참여자 아바타 바
+   · 컷별 승인/피드백 · C2PA 인증서 발급/서명/검증. 상태는 서비스(싱글턴) 소유 — OnChange 구독 + InvokeAsync(StateHasChanged). *@
+
+<div class="et-scrim" @onclick="Close">
+    <div class="et-modal" @onclick:stopPropagation="true">
+        <div class="et-h">
+            <div>
+                <div class="et-title">🏢 엔터프라이즈 팀 &amp; 렌더 팜</div>
+                <div class="et-sub">고부하 컷을 클라우드 GPU 노드로 분할 렌더하고(장애 시 로컬 폴백), 팀원과 컷별 리뷰·승인을 진행한 뒤
+                    최종 영상에 <b>C2PA 서명 매니페스트 + 비가시 워터마크</b>를 결속합니다.</div>
+            </div>
+            <button class="et-x" @onclick="Close">✕</button>
+        </div>
+
+        @* ── 참여자 아바타 바 ── *@
+        <div class="et-avatars">
+            @foreach (var m in Team.Members())
+            {
+                <span class="et-av @(m.Online ? "on" : "")" style="background:@(m.Color)" title="@(MemberTitle(m))">@(m.Initials)<i>@(m.Role == TeamRole.Owner ? "👑" : m.Role == TeamRole.Editor ? "✎" : "👁")</i></span>
+            }
+            <span class="et-mut">@(Team.Mode == TeamBridgeMode.Hosting ? "🛰 호스트 · " + Team.Endpoint : Team.Mode == TeamBridgeMode.Connected ? "🔗 접속 · " + Team.Endpoint : "오프라인(로컬 리뷰)") · 나: @(Team.Display) (@(TeamCollaborationSessionBridge.RoleLabel(Team.Role)))</span>
+        </div>
+
+        <div class="et-tabs">
+            <button class="@(_tab == 0 ? "on" : "")" @onclick="() => _tab = 0">☁️ 렌더 팜</button>
+            <button class="@(_tab == 1 ? "on" : "")" @onclick="() => _tab = 1">👥 리뷰 &amp; 승인</button>
+            <button class="@(_tab == 2 ? "on" : "")" @onclick="() => _tab = 2">🔐 팀 세션</button>
+            <button class="@(_tab == 3 ? "on" : "")" @onclick="() => _tab = 3">🔏 C2PA</button>
+        </div>
+
+        <div class="et-body">
+            @if (_tab == 0)
+            {
+                <div class="et-row">
+                    <select class="et-in" @bind="_prov">
+                        <option value="@CloudProvider.Aws">AWS</option><option value="@CloudProvider.Gcp">GCP</option>
+                        <option value="@CloudProvider.Azure">Azure</option><option value="@CloudProvider.Custom">Custom</option>
+                    </select>
+                    <input class="et-in grow" @bind="_nodeUrl" placeholder="https://gpu-node.example.com (렌더 에이전트)" />
+                    <input class="et-in w100" @bind="_nodeRegion" placeholder="리전" />
+                    <button class="et-btn" @onclick="AddNode">➕ 노드</button>
+                    <button class="et-btn" disabled="@Busy" @onclick="ProbeAsync">🩺 헬스 체크</button>
+                </div>
+                <div class="et-note">토큰 @(Farm.TokenConfigured ? "✅ PFS_RENDER_FARM_TOKEN" : "⚠ 미설정(무인증 노드만)") · 오토스케일 웹훅 @(Farm.ScalerConfigured ? "✅" : "미설정(권고값만)") · 권고 노드 @(Farm.LastDesiredNodes) · ffmpeg @(Farm.FfmpegAvailable ? "✅" : "없음")</div>
+                <div class="et-grid">
+                    @foreach (var n in Farm.Nodes)
+                    {
+                        var util = Math.Clamp(n.Utilization, 0, 1);
+                        var load = n.Slots > 0 ? Math.Clamp((double)n.Inflight / n.Slots, 0, 1) : 0;
+                        var cls = n.State switch { RenderNodeState.Online => "ok", RenderNodeState.Busy => "busy", RenderNodeState.Degraded => "warn", RenderNodeState.Offline => "bad", _ => "" };
+                        <div class="et-node @cls">
+                            <svg viewBox="0 0 100 60" class="et-gauge">
+                                <path d="M10 55 A40 40 0 0 1 90 55" stroke="var(--line)" stroke-width="9" fill="none" />
+                                <path d="M10 55 A40 40 0 0 1 90 55" stroke="@(util > 0.85 ? "#f43f5e" : util > 0.6 ? "#f59e0b" : "#22c55e")" stroke-width="9" fill="none" pathLength="100" stroke-dasharray="@((util * 100).ToString("0.#", CultureInfo.InvariantCulture)) 100" />
+                                <g><text x="50" y="52" text-anchor="middle" class="et-gv">@((util * 100).ToString("0", CultureInfo.InvariantCulture))%</text></g>
+                            </svg>
+                            <div class="et-nm">@(CloudRenderFarmDispatcherService.ProviderLabel(n.Provider)) · @(n.Region.Length > 0 ? n.Region : "-")</div>
+                            <div class="et-mut">@(n.Gpu) · 슬롯 @(n.Inflight)/@(n.Slots) · @(n.LatencyMs.ToString("0", CultureInfo.InvariantCulture))ms</div>
+                            <div class="et-bar"><div style="width:@((load * 100).ToString("0", CultureInfo.InvariantCulture))%"></div></div>
+                            <div class="et-mut">@(n.State) · 완료 @(n.Completed)@(n.LastError is null ? "" : " · " + n.LastError)</div>
+                            <button class="et-btn sm" disabled="@Busy" @onclick="() => Farm.RemoveNode(n.Id)">✕</button>
+                        </div>
+                    }
+                    <div class="et-node ok">
+                        <div class="et-nm">💻 로컬 GPU/CPU</div>
+                        <div class="et-mut">폴백 워커 · NVENC → x264</div>
+                        <div class="et-mut">로컬 처리 @(Farm.LocalChunks) · 페일오버 @(Farm.Failovers)</div>
+                    </div>
+                </div>
+                <div class="et-row">
+                    <span class="et-sec">프리셋</span>
+                    <select class="et-in" @bind="_preset" disabled="@Farm.IsRunning">
+                        <option value="1080">1080p · 30fps</option><option value="2160">4K · 60fps</option>
+                    </select>
+                    <button class="et-btn go" disabled="@(Busy || CompletedCuts == 0 || !Farm.FfmpegAvailable)" @onclick="StartFarm">☁️ 분산 렌더 시작 (완성 컷 @(CompletedCuts)개)</button>
+                    @if (Farm.IsRunning) { <button class="et-btn" @onclick="Farm.Cancel">중지</button> }
+                </div>
+                @if (Farm.TotalChunks > 0)
+                {
+                    <div class="et-prog"><div class="et-pbar" style="width:@((Farm.Progress * 100).ToString("0.#", CultureInfo.InvariantCulture))%"></div>
+                        <span>청크 @(Farm.DoneChunks)/@(Farm.TotalChunks) · 진행 중 @(Farm.ActiveChunks) · 원격 @(Farm.RemoteChunks) · 로컬 @(Farm.LocalChunks)</span></div>
+                }
+                @if (Farm.LastResult is { } fr) { <div class="et-note @(fr.Ok ? "ok" : "bad")">@(fr.Ok ? "✅" : "⚠") @(fr.Message)@(fr.OutputPath is null ? "" : " · " + fr.OutputPath)</div> }
+            }
+            else if (_tab == 1)
+            {
+                var ids = CutIds();
+                var sum = Team.Summary(ids);
+                <div class="et-row">
+                    <span class="et-chip ok">승인 @(sum.Approved)</span><span class="et-chip bad">수정 요청 @(sum.Changes)</span>
+                    <span class="et-chip">대기 @(sum.Pending)</span><span class="et-chip">미해결 코멘트 @(sum.OpenComments)</span>
+                    <span class="et-sec">필요 승인 수</span>
+                    <input class="et-in w56" type="number" min="1" max="10" value="@(Team.RequiredApprovals())" disabled="@(Team.Role != TeamRole.Owner)" @onchange="e => SetPolicy(e.Value?.ToString())" />
+                    @if (Team.AllApproved(ids)) { <span class="et-chip ok">🎉 전 컷 승인 완료</span> }
+                </div>
+                @for (var i = 0; i < Project.Scenes.Count; i++)
+                {
+                    var s = Project.Scenes[i];
+                    var no = i + 1;
+                    var cut = Team.CutOf(s.Id);
+                    var st = cut?.Status ?? CutReviewStatus.Pending;
+                    <div class="et-cut @(st == CutReviewStatus.Approved ? "ok" : st == CutReviewStatus.ChangesRequested ? "bad" : "")">
+                        <div class="et-row">
+                            <b>컷 @(no)</b>
+                            <span class="et-chip @(st == CutReviewStatus.Approved ? "ok" : st == CutReviewStatus.ChangesRequested ? "bad" : "")">@(st == CutReviewStatus.Approved ? "✅ 승인" : st == CutReviewStatus.ChangesRequested ? "✏️ 수정 요청" : "⏳ 대기") @(cut?.Approvers.Count ?? 0)/@(Team.RequiredApprovals())</span>
+                            <span class="et-mut et-pr">@(s.Prompt)</span>
+                            <button class="et-btn sm" disabled="@(!TeamCollaborationSessionBridge.Can(Team.Role, "approve"))" @onclick="@(() => ActAsync(s.Id, "approve"))">✅ 승인</button>
+                            <button class="et-btn sm" disabled="@(!TeamCollaborationSessionBridge.Can(Team.Role, "edit"))" title="컷을 수정했음을 알리고 기존 승인을 무효화" @onclick="@(() => ActAsync(s.Id, "edit"))">🛠 수정 반영</button>
+                        </div>
+                        @if (cut is not null)
+                        {
+                            foreach (var c in cut.Comments)
+                            {
+                                <div class="et-cm @(c.Resolved ? "done" : "") @(c.IsChangeRequest ? "chg" : "")">
+                                    <span class="et-av xs" style="background:@(TeamCollaborationSessionBridge.ColorOf(c.UserId))">@(c.Display.Length > 1 ? c.Display[..2] : c.Display)</span>
+                                    <span class="et-tc">@(c.Timecode.ToString("0.0", CultureInfo.InvariantCulture))s</span>
+                                    <span class="et-ct">@(c.Text)</span>
+                                    @if (!c.Resolved) { <button class="et-btn sm" @onclick="@(() => ActAsync(s.Id, "resolve", refId: c.Id))">☑</button> }
+                                </div>
+                            }
+                        }
+                        <div class="et-row">
+                            <input class="et-in w56" type="number" min="0" step="0.5" @bind="_tc" title="타임코드(초)" />
+                            <input class="et-in grow" @bind="_draft[no - 1 < _draft.Length ? no - 1 : 0]" placeholder="피드백 코멘트…" />
+                            <button class="et-btn sm" @onclick="() => CommentAsync(s.Id, no - 1, false)">💬</button>
+                            <button class="et-btn sm" disabled="@(!TeamCollaborationSessionBridge.Can(Team.Role, "changes"))" @onclick="() => CommentAsync(s.Id, no - 1, true)">✏️ 수정 요청</button>
+                        </div>
+                    </div>
+                }
+            }
+            else if (_tab == 2)
+            {
+                <div class="et-row">
+                    <span class="et-sec">신원</span>
+                    <input class="et-in w140" @bind="_tenant" placeholder="tenant" disabled="@(Team.Mode == TeamBridgeMode.Connected)" />
+                    <input class="et-in w140" @bind="_user" placeholder="user-id" disabled="@(Team.Mode == TeamBridgeMode.Connected)" />
+                    <input class="et-in w140" @bind="_display" placeholder="표시 이름" disabled="@(Team.Mode == TeamBridgeMode.Connected)" />
+                    <button class="et-btn" disabled="@(Team.Mode == TeamBridgeMode.Connected)" @onclick="SetIdentity">적용(Owner)</button>
+                </div>
+                <div class="et-row">
+                    <span class="et-sec">🛰 호스트</span>
+                    <input class="et-in w56" type="number" @bind="_port" disabled="@(Team.Mode != TeamBridgeMode.Offline)" />
+                    @if (Team.Mode == TeamBridgeMode.Offline)
+                    {
+                        <button class="et-btn go" @onclick="StartHost">세션 열기</button>
+                    }
+                    else { <button class="et-btn" @onclick="Team.Disconnect">세션 종료</button> }
+                    <span class="et-mut">연결 @(Team.ConnectionCount) · 수신 @(Team.ReceivedCount) · 권한 거부 @(Team.DeniedCount) · 레이트 제한 @(Team.RateLimitedCount)</span>
+                </div>
+                @if (Team.Mode == TeamBridgeMode.Hosting)
+                {
+                    <div class="et-row">
+                        <span class="et-sec">✉ 초대</span>
+                        <input class="et-in w140" @bind="_inviteUser" placeholder="user-id" />
+                        <input class="et-in w140" @bind="_inviteName" placeholder="표시 이름" />
+                        <select class="et-in" @bind="_inviteRole"><option value="@TeamRole.Reviewer">Reviewer</option><option value="@TeamRole.Editor">Editor</option><option value="@TeamRole.Owner">Owner</option></select>
+                        <button class="et-btn" @onclick="Invite">토큰 발급(24h)</button>
+                    </div>
+                    @if (_invite is not null) { <textarea class="et-in et-tok" readonly>@(_invite)</textarea> }
+                    <div class="et-note">원격 팀원은 TLS 리버스 프록시(wss://) 경유로 접속하세요. 토큰은 HMAC 서명 · 역할은 토큰에서만 결정됩니다.</div>
+                }
+                <div class="et-row">
+                    <span class="et-sec">🔗 참가</span>
+                    <input class="et-in grow" @bind="_joinUrl" placeholder="wss://team.example.com/team/ (로컬: ws://localhost:8790/team/)" disabled="@(Team.Mode != TeamBridgeMode.Offline)" />
+                    <input class="et-in grow" @bind="_joinToken" placeholder="초대 토큰" disabled="@(Team.Mode != TeamBridgeMode.Offline)" />
+                    <button class="et-btn go" disabled="@(Team.Mode != TeamBridgeMode.Offline)" @onclick="JoinAsync">접속</button>
+                </div>
+                @if (Team.LastError is not null) { <div class="et-note bad">⚠ @(Team.LastError)</div> }
+            }
+            else
+            {
+                var cert = C2pa.Certificate;
+                <div class="et-row">
+                    <span class="et-sec">🪪 서명 인증서</span>
+                    @if (cert is not null)
+                    {
+                        <span class="et-chip ok">@(cert.GetNameInfo(System.Security.Cryptography.X509Certificates.X509NameType.SimpleName, false))</span>
+                        <span class="et-mut">ES256 · 만료 @(cert.NotAfter.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)) · SHA-1 @(cert.Thumbprint[..12])… · 자체 서명(C2PA 신뢰 목록 미등록)</span>
+                    }
+                    else { <span class="et-chip">미발급</span> }
+                    <button class="et-btn" @onclick="() => IssueCert(false)">발급/로드</button>
+                    <button class="et-btn" @onclick="() => IssueCert(true)">재발급</button>
+                </div>
+                <div class="et-note">AI 생성 출처(trainedAlgorithmicMedia) · 컷 편집 이력 · 프롬프트 해시 · 64비트 워터마크 ID 를 서명 매니페스트(<b>.c2pa.json</b>)로 기록하고,
+                    같은 ID 를 영상 휘도에 보이지 않게 확산 삽입합니다. 팀 승인 상태가 이력에 포함됩니다.</div>
+                <div class="et-row">
+                    <button class="et-btn go" disabled="@(Busy || string.IsNullOrWhiteSpace(Project.FinalVideoPath) || !C2pa.FfmpegAvailable)" @onclick="ProtectAsync">🔏 최종 영상 서명 + 워터마크</button>
+                    <button class="et-btn" disabled="@(Busy || _lastProtected is null)" @onclick="VerifyAsync">🔍 검증</button>
+                    <span class="et-mut">서명 @(C2pa.SignedCount) · 검증 @(C2pa.VerifiedCount) · 실패 @(C2pa.FailedCount)</span>
+                </div>
+                @if (C2pa.IsBusy)
+                {
+                    <div class="et-prog"><div class="et-pbar" style="width:@((C2pa.Progress * 100).ToString("0", CultureInfo.InvariantCulture))%"></div><span>워터마크 인젝션 @((C2pa.Progress * 100).ToString("0", CultureInfo.InvariantCulture))%</span></div>
+                }
+                @if (_verify is { } v)
+                {
+                    <div class="et-note @(v.Valid ? "ok" : "bad")">@(v.Message) · 서명자 @(v.Signer ?? "-") · WM 점수 @(v.WatermarkScore.ToString("0.0", CultureInfo.InvariantCulture))</div>
+                }
+            }
+            @if (_msg is not null) { <div class="et-note">@(_msg)</div> }
+        </div>
+
+        <div class="et-f">
+            <span class="et-mut">@(Farm.LastAction ?? Team.LastAction ?? C2pa.LastAction ?? "대기")</span>
+            @if (_cts is not null) { <button class="et-btn" @onclick="Cancel">취소</button> }
+            <button class="et-btn" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .et-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .et-modal { width: min(1100px, 96vw); max-height: 92vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.4); overflow: hidden; }
+    .et-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+    .et-title { font-size: 16px; font-weight: 900; color: var(--text-primary); }
+    .et-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .et-sub b, .et-note b { color: var(--text-primary); }
+    .et-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .et-avatars { display: flex; align-items: center; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+    .et-av { position: relative; width: 30px; height: 30px; border-radius: 50%; color: #fff; font: 800 11px Pretendard,'Malgun Gothic',sans-serif; display: inline-flex; align-items: center; justify-content: center; opacity: .45; }
+    .et-av.on { opacity: 1; box-shadow: 0 0 0 2px var(--card), 0 0 0 4px #22c55e; }
+    .et-av i { position: absolute; right: -4px; bottom: -4px; font-style: normal; font-size: 10px; }
+    .et-av.xs { width: 20px; height: 20px; font-size: 9px; opacity: 1; flex: none; }
+    .et-tabs { display: flex; gap: 4px; padding: 8px 18px 0; border-bottom: 1px solid var(--line); }
+    .et-tabs button { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; border: 0; background: none; color: var(--text-muted); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
+    .et-tabs button.on { color: var(--text-primary); border-bottom-color: #0ea5e9; }
+    .et-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .et-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .et-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .et-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .et-chip.ok { color: #4ade80; } .et-chip.bad { color: #f87171; }
+    .et-mut { font-size: 11px; color: var(--text-muted); }
+    .et-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 5px 7px; }
+    .et-in.grow { flex: 1; min-width: 160px; } .et-in.w140 { width: 140px; } .et-in.w100 { width: 100px; } .et-in.w56 { width: 60px; }
+    .et-tok { width: 100%; height: 54px; font: 11px var(--mono); resize: none; }
+    .et-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+    .et-node { position: relative; border: 1px solid var(--line); border-radius: 12px; padding: 8px; display: flex; flex-direction: column; gap: 3px; }
+    .et-node.ok { border-color: color-mix(in srgb, #22c55e 45%, var(--line)); } .et-node.busy { border-color: #f59e0b; }
+    .et-node.warn { border-color: #fbbf24; } .et-node.bad { border-color: #f87171; opacity: .75; }
+    .et-node .sm { position: absolute; top: 6px; right: 6px; }
+    .et-gauge { width: 100px; height: 60px; align-self: center; }
+    .et-gv { font: 800 14px var(--mono); fill: var(--text-primary); }
+    .et-nm { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .et-bar { height: 5px; border-radius: 3px; background: var(--bg); overflow: hidden; } .et-bar div { height: 100%; background: #0ea5e9; }
+    .et-prog { position: relative; height: 20px; border-radius: 10px; background: var(--bg); overflow: hidden; }
+    .et-pbar { position: absolute; inset: 0 auto 0 0; background: linear-gradient(90deg,#0ea5e9,#22c55e); transition: width .2s; }
+    .et-prog span { position: relative; font: 700 10.5px var(--mono); padding-left: 10px; line-height: 20px; }
+    .et-cut { border: 1px solid var(--line); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 5px; }
+    .et-cut.ok { border-color: color-mix(in srgb, #22c55e 50%, var(--line)); } .et-cut.bad { border-color: color-mix(in srgb, #f87171 60%, var(--line)); }
+    .et-pr { flex: 1; min-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .et-cm { display: flex; align-items: center; gap: 6px; font-size: 12px; padding-left: 10px; }
+    .et-cm.chg .et-ct { color: #fbbf24; } .et-cm.done { opacity: .5; } .et-cm.done .et-ct { text-decoration: line-through; }
+    .et-tc { font: 700 10.5px var(--mono); color: #0ea5e9; } .et-ct { flex: 1; color: var(--text-primary); white-space: pre-wrap; }
+    .et-note { font-size: 12px; color: var(--text-secondary); } .et-note.ok { color: #4ade80; } .et-note.bad { color: #f87171; }
+    .et-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }
+    .et-f .et-mut { margin-right: auto; }
+    .et-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .et-btn.sm { padding: 3px 8px; font-size: 11px; }
+    .et-btn.go { background: linear-gradient(135deg,#0ea5e9,#22c55e); color: #fff; border: 0; }
+    .et-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 720px) { .et-grid { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter, EditorRequired] public StoryboardProject Project { get; set; } = default!;
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<string> OnReveal { get; set; }
+
+    private int _tab, _port = 8790;
+    private string? _msg, _invite, _lastProtected;
+    private string _nodeUrl = "", _nodeRegion = "", _preset = "1080", _tenant = "studio", _user = "owner", _display = "Owner";
+    private string _inviteUser = "", _inviteName = "", _joinUrl = "", _joinToken = "";
+    private CloudProvider _prov = CloudProvider.Aws;
+    private TeamRole _inviteRole = TeamRole.Reviewer;
+    private double _tc;
+    private string[] _draft = Array.Empty<string>();
+    private ProvenanceVerification? _verify;
+    private CancellationTokenSource? _cts;
+
+    private bool Busy => _cts is not null || Farm.IsRunning || C2pa.IsBusy;
+
+    private int CompletedCuts
+    {
+        get
+        {
+            var n = 0;
+            foreach (var s in Project.Scenes) if (!string.IsNullOrWhiteSpace(s.LocalPath) && File.Exists(s.LocalPath)) n++;
+            return n;
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        Farm.OnChange += OnServiceChanged;
+        Team.OnChange += OnServiceChanged;
+        C2pa.OnChange += OnServiceChanged;
+        _tenant = Team.Tenant; _user = Team.UserId; _display = Team.Display;
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (_draft.Length != Math.Max(1, Project.Scenes.Count)) _draft = new string[Math.Max(1, Project.Scenes.Count)];
+    }
+
+    private static string MemberTitle(TeamMember m) => m.Display + " · " + TeamCollaborationSessionBridge.RoleLabel(m.Role) + (m.Online ? "" : " · 오프라인");
+
+    private List<string> CutIds()
+    {
+        var ids = new List<string>(Project.Scenes.Count);
+        foreach (var s in Project.Scenes) ids.Add(s.Id);
+        return ids;
+    }
+
+    private void AddNode()
+    {
+        _msg = Farm.AddNode(new RenderNode { Provider = _prov, Endpoint = _nodeUrl.Trim().TrimEnd('/'), Region = _nodeRegion.Trim() })
+            ? "➕ 노드 등록 — 🩺 헬스 체크로 GPU/슬롯을 확인하세요." : "⚠ 노드 URL 은 https://(또는 로컬 http) 주소여야 하며 중복/상한(32) 불가입니다.";
+        if (_msg.StartsWith("➕", StringComparison.Ordinal)) _nodeUrl = "";
+    }
+
+    private Task ProbeAsync() => RunAsync(ct => Farm.ProbeAllAsync(ct));
+
+    private void StartFarm()
+    {
+        var preset = _preset == "2160" ? FarmPreset.Uhd60 : new FarmPreset();
+        var root = !string.IsNullOrWhiteSpace(Project.FinalVideoPath) ? Path.GetDirectoryName(Path.GetFullPath(Project.FinalVideoPath))!
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "PromptFlowStudio");
+        var output = Path.Combine(root, "farm_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture) + ".mp4");
+        _msg = Farm.StartJob(Project, output, preset) ? "☁️ 분산 렌더 시작 — 백그라운드에서 진행됩니다(모달을 닫아도 계속)." : "⚠ 이미 실행 중입니다.";
+    }
+
+    private async Task ActAsync(string cutId, string type, string? text = null, string? refId = null)
+    {
+        var r = await Team.ActAsync(type, cutId, text, _tc, refId);
+        _msg = r.Ok ? null : "⛔ " + r.Reason;
+    }
+
+    private async Task CommentAsync(string cutId, int idx, bool changes)
+    {
+        if ((uint)idx >= (uint)_draft.Length || string.IsNullOrWhiteSpace(_draft[idx])) { _msg = "⚠ 코멘트를 입력하세요."; return; }
+        await ActAsync(cutId, changes ? "changes" : "comment", _draft[idx]);
+        if (_msg is null) _draft[idx] = "";
+    }
+
+    private Task SetPolicy(string? v) => int.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) ? Team.ActAsync("policy", n: Math.Clamp(n, 1, 10)) : Task.CompletedTask;
+
+    private void StartHost() => _msg = Team.StartHost(_port) ? "🛰 세션 열림 · " + Team.Endpoint : "⚠ " + Team.LastError;
+
+    private void SetIdentity()
+    {
+        _msg = Team.SetIdentity(_tenant.Trim(), _user.Trim(), _display, TeamRole.Owner) ? "👤 신원 적용" : "⚠ tenant/user 는 영문·숫자·_-.@ 1~64자";
+    }
+
+    private void Invite()
+    {
+        _invite = Team.CreateInvite(_inviteUser.Trim(), _inviteName, _inviteRole, TimeSpan.FromHours(24));
+        _msg = _invite is null ? "⚠ Owner 호스트만 발급 가능 · user-id 형식 확인" : "✉ 초대 토큰 발급 — 안전한 채널로 전달하세요.";
+    }
+
+    private Task JoinAsync() => RunAsync(async ct =>
+    {
+        var ok = await Team.ConnectAsync(_joinUrl.Trim(), _joinToken.Trim(), ct);
+        _msg = ok ? "🔗 접속 완료" : "⚠ " + Team.LastError;
+    });
+
+    private void IssueCert(bool force)
+    {
+        try
+        {
+            var c = C2pa.EnsureCertificate(Team.Tenant + " PromptFlow Signer", force);
+            _msg = "🪪 인증서 준비 · " + c.GetNameInfo(System.Security.Cryptography.X509Certificates.X509NameType.SimpleName, false);
+        }
+        catch (Exception ex) { Program.Log("EnterpriseStudio.Cert", ex); _msg = "⚠ 인증서 발급 실패: " + ex.Message; }
+    }
+
+    private Task ProtectAsync()
+    {
+        var req = C2paContentProvenanceEngine.RequestFromProject(Project, Team.Tenant, Team.Display, Team.AllApproved(CutIds()));
+        var input = Project.FinalVideoPath!;
+        return RunAsync(async ct =>
+        {
+            var r = await C2pa.ProtectAsync(input, req, null, ct);
+            _msg = (r.Ok ? "🔏 " : "⚠ ") + r.Message + (r.VideoPath is null ? "" : " · " + r.VideoPath);
+            if (r.Ok && r.VideoPath is not null) { _lastProtected = r.VideoPath; await OnReveal.InvokeAsync(r.VideoPath); }
+        });
+    }
+
+    private Task VerifyAsync() => RunAsync(async ct => { _verify = await C2pa.Verify(_lastProtected!, null, ct); });
+
+    private async Task RunAsync(Func<CancellationToken, Task> work)
+    {
+        var cts = new CancellationTokenSource();
+        if (Interlocked.CompareExchange(ref _cts, cts, null) is not null) { cts.Dispose(); return; }
+        try { await work(cts.Token); }
+        catch (OperationCanceledException) { _msg = "⚠ 취소됨"; }
+        catch (Exception ex) { Program.Log("EnterpriseStudio.Run", ex); _msg = "⚠ 실패: " + ex.Message; }
+        finally
+        {
+            Interlocked.CompareExchange(ref _cts, null, cts);
+            cts.Dispose();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void Cancel()
+    {
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
+    private Task Close() => _cts is not null || C2pa.IsBusy ? Task.CompletedTask : OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Farm.OnChange -= OnServiceChanged;
+        Team.OnChange -= OnServiceChanged;
+        C2pa.OnChange -= OnServiceChanged;
+        Cancel();   // 진행 중 작업은 RunAsync finally 에서 CTS 정리 · 렌더 팜 잡은 서비스 소유(계속 진행)
+    }
+}

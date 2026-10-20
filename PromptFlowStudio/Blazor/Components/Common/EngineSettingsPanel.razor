@@ -1,0 +1,227 @@
+@implements IDisposable
+@using PromptFlowStudio.Services.Engines
+@using PromptFlowStudio.Services.Platform
+@inject EngineConfigService Engines
+@inject PromptFlowStudio.Services.Wan.VideoEngineSelector VideoEngines
+@inject IFilePickerService Picker
+
+@* [PromptFlow Studio] AI 엔진 관리 패널 — 4대 오픈소스 엔진(Kokoro/Real-ESRGAN/Faster-Whisper/LatentSync + 대체 엔진)의
+   실행 파일 경로·인자를 UI 에서 설정/진단. 저장은 EngineConfigService(engines.json)로 영속 + 재시작 없이 즉시 반영(OnChange).
+   ⚠ 상태는 EngineConfigService(싱글턴)에 있고, 편집 행(_rows)은 컴포넌트가 소유. OnChange 구독으로 뱃지 갱신. *@
+
+<div class="es">
+    <div class="es-head">
+        <div>
+            <h2 class="es-t">🤖 AI 엔진 설정</h2>
+            <p class="es-d">각 오픈소스 AI 엔진의 <b>실행 파일 경로</b>와 <b>기본 인자</b>를 지정합니다. 모두 로컬 실행(무API) · 저장 시 <b>재시작 없이</b> 즉시 반영됩니다.</p>
+        </div>
+        <button class="es-save" @onclick="SaveAll" disabled="@_saving">@(_saving ? "저장 중…" : "💾 엔진 설정 저장")</button>
+    </div>
+
+    <div class="es-note">
+        저장 위치: <code>@Engines.FilePath</code>
+        @if (Engines.SavedAt is { } t) { <span>· 최근 저장 @t.ToString("yyyy-MM-dd HH:mm")</span> }
+        <br />앱 폴더 <code>appsettings.json</code> 에도 가능하면 함께 기록됩니다(읽기전용이면 위 파일만 사용).
+    </div>
+
+    @* 비디오 생성 엔진 선택(플러그인 추상화) *@
+    <div class="es-videoeng">
+        <span class="es-ve-lbl">🎬 비디오 생성 엔진</span>
+        <select class="es-ve-sel" value="@Engines.VideoEngineKey" @onchange="OnVideoEngineChange">
+            @foreach (var e in VideoEngines.All)
+            {
+                <option value="@e.Key">@e.DisplayName @(e.Enabled ? "" : "(미구성)")</option>
+            }
+        </select>
+        <span class="es-ve-hint">기본은 Alibaba Wan 2.1. 로컬 CLI 엔진은 아래 [로컬 비디오 CLI] 경로 지정 후 선택하세요.</span>
+    </div>
+
+    <div class="es-grid">
+        @foreach (var row in _rows)
+        {
+            var b = Badge(row);
+            <div class="es-card" @key="row.Key">
+                <div class="es-card-h">
+                    <span class="es-ic">@row.Icon</span>
+                    <div class="es-name"><b>@row.Name</b><span>@row.Category</span></div>
+                    <span class="es-badge @b.Cls">@b.Dot @b.Text</span>
+                </div>
+                <p class="es-hint">@row.Note</p>
+
+                <label class="es-lbl">실행 파일 경로 (.exe)
+                    @if (!string.IsNullOrEmpty(row.BundlePath)) { <span class="es-lbl-sub">· 기본 번들 자동 감지됨(입력 없이 작동)</span> }
+                </label>
+                <div class="es-pathrow">
+                    <input class="es-in mono" @bind="row.Exe" @bind:event="oninput" spellcheck="false"
+                           placeholder="@PathPlaceholder(row)" title="@(row.BundlePath ?? "")" />
+                    <button class="es-browse" @onclick="() => Browse(row)" title="파일 찾기">📁 찾기</button>
+                </div>
+
+                <label class="es-lbl">기본 실행 인자 (Args)
+                    <span class="es-lbl-sub">{in} {out} {outdir} {text} {textfile} {voice} {scale} {video} {audio} 치환</span>
+                </label>
+                <input class="es-in mono" @bind="row.Args" @bind:event="oninput" spellcheck="false" placeholder="공백으로 구분된 인자 템플릿" />
+
+                <div class="es-testrow">
+                    <button class="es-test" @onclick="() => Test(row)" disabled="@row.Testing">
+                        @(row.Testing ? "테스트 중…" : "🔍 연결 테스트")
+                    </button>
+                    @if (row.Msg is { Length: > 0 })
+                    {
+                        <span class="es-testmsg @(row.Ok == true ? "ok" : row.Ok == false ? "bad" : "")">@row.Msg</span>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+
+    @if (_toast is { Length: > 0 }) { <div class="es-toast">@_toast</div> }
+</div>
+
+<style>
+    .es{color:var(--ink,#e6eefc)}
+    .es-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:10px}
+    .es-t{font-size:17px;font-weight:800;margin:0 0 4px;color:var(--ink,#f1f6ff)}
+    .es-d{font-size:12.5px;color:var(--sub,#93a3b8);margin:0;line-height:1.6;max-width:640px} .es-d b{color:var(--ink,#e6eefc)}
+    .es-save{flex:0 0 auto;appearance:none;border:0;cursor:pointer;font-family:inherit;font-size:13.5px;font-weight:800;color:#fff;padding:11px 18px;border-radius:12px;background:linear-gradient(135deg,#8b7bff,#6d5efc);box-shadow:0 8px 22px rgba(124,108,255,.3)}
+    .es-save:hover:not(:disabled){filter:brightness(1.06)} .es-save:disabled{opacity:.5;cursor:not-allowed}
+    .es-note{font-size:11.5px;color:var(--sub,#93a3b8);line-height:1.7;margin-bottom:16px}
+    .es-note code{font:600 11px var(--mono,monospace);color:var(--accent,#fbbf24);background:color-mix(in srgb,var(--accent,#f59e0b) 9%,transparent);padding:1px 6px;border-radius:5px}
+
+    .es-videoeng{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px;padding:12px 14px;border-radius:12px;background:color-mix(in srgb,var(--accent,#f59e0b) 8%,var(--card,#111a2e));border:1px solid color-mix(in srgb,var(--accent,#f59e0b) 30%,var(--line,rgba(148,163,184,.2)))}
+    .es-ve-lbl{font:800 13px inherit;color:var(--ink,#e6eefc)}
+    .es-ve-sel{border-radius:9px;border:1px solid var(--line,rgba(148,163,184,.28));background:rgba(8,13,24,.55);color:var(--ink,#e6eefc);padding:8px 11px;font-size:12.5px;font-family:inherit}
+    .es-ve-sel:focus{outline:none;border-color:var(--accent,#f59e0b)}
+    .es-ve-hint{flex:1;min-width:200px;font-size:11px;color:var(--sub,#93a3b8);line-height:1.5}
+    .es-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px}
+    .es-card{border:1px solid var(--line,rgba(148,163,184,.18));border-radius:14px;background:var(--card,#111a2e);padding:15px 16px;display:flex;flex-direction:column;gap:9px}
+    .es-card-h{display:flex;align-items:center;gap:10px}
+    .es-ic{font-size:22px;line-height:1}
+    .es-name{display:flex;flex-direction:column;line-height:1.25;flex:1;min-width:0}
+    .es-name b{font-size:14px;font-weight:800;color:var(--ink,#f1f6ff)}
+    .es-name span{font-size:11px;color:var(--sub,#93a3b8)}
+    .es-badge{flex:0 0 auto;font:700 11px var(--mono,monospace);padding:4px 9px;border-radius:999px;border:1px solid var(--line,rgba(148,163,184,.25));white-space:nowrap}
+    .es-badge.ok{color:#34d399;border-color:color-mix(in srgb,#10b981 45%,transparent);background:color-mix(in srgb,#10b981 10%,transparent)}
+    .es-badge.bad{color:#f87171;border-color:color-mix(in srgb,#dc2626 45%,transparent);background:color-mix(in srgb,#dc2626 10%,transparent)}
+    .es-badge.warn{color:#fbbf24;border-color:color-mix(in srgb,#f59e0b 45%,transparent);background:color-mix(in srgb,#f59e0b 10%,transparent)}
+    .es-badge.muted{color:var(--sub,#93a3b8)}
+    .es-hint{font-size:11px;color:var(--sub,#8ea0b6);line-height:1.55;margin:0 0 2px}
+
+    .es-lbl{font-size:11.5px;font-weight:700;color:var(--sub,#aab6c9);margin-top:2px}
+    .es-lbl-sub{font-weight:600;color:var(--sub,#6b7688);font-size:10px}
+    .es-in{width:100%;box-sizing:border-box;background:rgba(8,13,24,.55);border:1px solid var(--line,rgba(148,163,184,.25));border-radius:10px;padding:9px 11px;color:var(--ink,#e6eefc);font-size:12.5px;font-family:inherit;outline:none}
+    .es-in.mono{font-family:var(--mono,ui-monospace,monospace);font-size:11.5px}
+    .es-in:focus{border-color:var(--accent,#f59e0b);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent,#f59e0b) 15%,transparent)}
+    .es-pathrow{display:flex;gap:7px}
+    .es-browse{flex:0 0 auto;appearance:none;cursor:pointer;font-family:inherit;font-size:12px;font-weight:700;color:var(--ink,#e6eefc);background:rgba(148,163,184,.12);border:1px solid var(--line,rgba(148,163,184,.28));border-radius:10px;padding:0 12px}
+    .es-browse:hover{border-color:var(--accent,#f59e0b);color:var(--accent,#fbbf24)}
+
+    .es-testrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:3px}
+    .es-test{appearance:none;cursor:pointer;font-family:inherit;font-size:12px;font-weight:700;color:var(--accent,#fbbf24);background:transparent;border:1px solid color-mix(in srgb,var(--accent,#f59e0b) 40%,var(--line,rgba(148,163,184,.3)));border-radius:9px;padding:7px 12px}
+    .es-test:hover:not(:disabled){background:color-mix(in srgb,var(--accent,#f59e0b) 10%,transparent)}
+    .es-test:disabled{opacity:.55;cursor:not-allowed}
+    .es-testmsg{font-size:11px;line-height:1.4;color:var(--sub,#93a3b8);flex:1;min-width:0}
+    .es-testmsg.ok{color:#34d399} .es-testmsg.bad{color:#f87171}
+
+    .es-toast{position:sticky;bottom:8px;margin-top:16px;padding:11px 15px;border-radius:11px;font-size:13px;font-weight:700;color:var(--ink,#e6eefc);background:var(--card,#111a2e);border:1px solid var(--accent,#f59e0b);box-shadow:0 10px 30px rgba(0,0,0,.3)}
+</style>
+
+@code {
+    private sealed class Row
+    {
+        public string Key { get; set; } = "";
+        public string Name { get; set; } = "";
+        public string Category { get; set; } = "";
+        public string Icon { get; set; } = "";
+        public string Note { get; set; } = "";
+        public string Exe { get; set; } = "";
+        public string Args { get; set; } = "";
+        public bool Testing { get; set; }
+        public bool? Ok { get; set; }
+        public string Msg { get; set; } = "";
+        /// <summary>앱번들/로컬앱데이터 Tools 에서 자동 발견된 경로(placeholder 연한 표시용). 없으면 null.</summary>
+        public string? BundlePath { get; set; }
+    }
+
+    private List<Row> _rows = new();
+    private bool _saving;
+    private string? _toast;
+    private System.Threading.Timer? _toastTimer;
+
+    protected override void OnInitialized()
+    {
+        Engines.OnChange += OnEngChange;
+        Load();
+    }
+
+    public void Dispose()
+    {
+        Engines.OnChange -= OnEngChange;
+        _toastTimer?.Dispose();
+    }
+
+    private void OnEngChange() => InvokeAsync(StateHasChanged);
+
+    private void OnVideoEngineChange(ChangeEventArgs e)
+        => Engines.SetVideoEngine(e.Value?.ToString() ?? "Wan");
+
+    private void Load() => _rows = EngineConfigService.Descriptors.Select(d => new Row
+    {
+        Key = d.Key, Name = d.Name, Category = d.Category, Icon = d.Icon, Note = d.Note,
+        Exe = Engines.Exe(d.Key), Args = Engines.ArgsLine(d.Key),
+        BundlePath = Engines.BundleHint(d.Key),   // Tools\ 자동 발견 경로(placeholder 연한 표시)
+    }).ToList();
+
+    // 상태 뱃지(3구분): 테스트 결과 우선 → CliPathResolver 해석 출처(사용자 지정/기본 번들) → 미설치.
+    private (string Dot, string Text, string Cls) Badge(Row r)
+    {
+        if (r.Ok == true) return ("🟢", "연결됨 (테스트 성공)", "ok");
+        if (r.Ok == false) return ("🔴", "오류", "bad");
+        var res = Engines.ResolveDetailed(r.Key, r.Exe);   // 편집 중 값(r.Exe) 반영 · 비었으면 저장값
+        if (!res.Found) return ("🔴", "미설치", "bad");
+        return res.Source == CliSource.Custom
+            ? ("🟢", "연결 완료 (사용자 지정)", "ok")
+            : ("🟢", "연결 완료 (기본 번들)", "ok");
+    }
+
+    /// <summary>input placeholder — 번들 자동 발견 시 그 경로를 연하게 안내(사용자 미입력이어도 작동함을 명시).</summary>
+    private static string PathPlaceholder(Row r)
+        => string.IsNullOrEmpty(r.BundlePath) ? "실행 파일 경로 (비우면 비활성)" : $"기본 번들 자동 감지: {r.BundlePath}";
+
+    private void Browse(Row r)
+    {
+        var p = Picker.PickFile($"{r.Name} 실행 파일 선택", "실행 파일 (*.exe)|*.exe|모든 파일 (*.*)|*.*");
+        if (!string.IsNullOrEmpty(p)) { r.Exe = p; r.Ok = null; r.Msg = ""; }
+    }
+
+    private async Task Test(Row r)
+    {
+        r.Testing = true; r.Ok = null; r.Msg = ""; StateHasChanged();
+        try
+        {
+            var res = await Engines.TestPathAsync(r.Key, r.Exe, CancellationToken.None);
+            r.Ok = res.Ok; r.Msg = res.Message;
+        }
+        catch (Exception ex) { r.Ok = false; r.Msg = ex.Message; }
+        finally { r.Testing = false; StateHasChanged(); }
+    }
+
+    private void SaveAll()
+    {
+        _saving = true;
+        try
+        {
+            var ok = Engines.SaveAll(_rows.Select(r => (r.Key, r.Exe, r.Args)));
+            ShowToast(ok ? "💾 엔진 설정 저장됨 — 재시작 없이 적용되었습니다." : "❌ 저장 실패(로그를 확인하세요).");
+        }
+        finally { _saving = false; }
+    }
+
+    private void ShowToast(string msg)
+    {
+        _toast = msg;
+        _toastTimer?.Dispose();
+        _toastTimer = new System.Threading.Timer(_ => { _toast = null; _ = InvokeAsync(StateHasChanged); },
+            null, 6000, System.Threading.Timeout.Infinite);
+    }
+}

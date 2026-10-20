@@ -1,0 +1,330 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.InfluencerLive
+@using PromptFlowStudio.Services.AvatarActing
+@using PromptFlowStudio.Services.VerticalTranscode
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject VirtualInfluencerLiveStudioRunner Runner
+
+@* [PromptFlow Studio v17.61.0] 🎙️ 버추얼 인플루언서 라이브 스튜디오 — 채팅 피드 · 후원 리액션 큐 · 인게이지먼트 속도 그래프 · 자동 숏폼 클립 · 비속어 차단 로그. *@
+<div class="vil-scrim" @onclick="Close">
+    <div class="vil-modal" @onclick:stopPropagation="true">
+        <div class="vil-h">
+            <div>
+                <div class="vil-title">🎙️ 버추얼 인플루언서 라이브 스튜디오 @(Runner.IsRunning ? "· 🔴 ON AIR" : null) @(Runner.HypeActive ? "· 🔥 HYPE" : null)</div>
+                <div class="vil-sub"><b>채팅 리액션 트리거</b>가 WebSocket/HTTP 채팅(NDJSON · IRCv3)을 무할당 파싱해 후원 · 질문 · 칭찬 · 유머 의도를 µs 단위로 분류하고, v17.60 연기 디렉터에 감사 인사 · 하트 · 생각 손짓을 100 ms 안에 선점 디스패치합니다. <b>하이라이트 클리핑 합성기</b>는 채팅 속도와 음성 RMS 가 평소의 250 % 를 넘는 순간을 잡아 직전 15~30 s 롤링 버퍼를 9:16 fMP4(v17.52 모션 자막 · v17.49 인코더)로 즉시 잘라 v17.51 옴니채널로 보냅니다. <b>세이프티 가드</b>는 누출 버킷 · 레이드 감지 · 다국어 비속어 정규화로 유해 채팅의 반응과 클립 편입을 차단합니다.</div>
+            </div>
+            <button class="vil-x" @onclick="Close">✕</button>
+        </div>
+        <div class="vil-bar">
+            <button class="vil-btn @(Runner.IsRunning ? "on" : "go")" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 방송 정지" : "🔴 ON AIR")</button>
+            <button class="vil-btn" disabled="@Runner.IsRunning" @onclick="Runner.Step">⏭ 1 프레임</button>
+            <span class="vil-sep"></span>
+            <button class="vil-btn @(Runner.DemoChat ? "on" : null)" @onclick="() => Runner.SetDemoChat(!Runner.DemoChat)">💬 데모 채팅</button>
+            <label class="vil-lbl">평소 @(F1(Runner.ChatRate)) msg/s</label>
+            <input class="vil-rng" type="range" min="0" max="200" value="@((int)(Runner.ChatRate * 10))" @oninput="OnRate" />
+            <button class="vil-btn hot" @onclick="Runner.TriggerHype">🔥 하이프 버스트</button>
+            <button class="vil-btn @(Runner.RaidMode ? "bad" : null)" @onclick="() => Runner.SetRaid(!Runner.RaidMode)">🌊 스팸 레이드</button>
+            <button class="vil-btn" @onclick="() => Runner.InjectToxic(6)">🤬 비속어 혼입</button>
+            <button class="vil-btn" @onclick="Runner.InjectBotFlood">🤖 봇 플러드</button>
+        </div>
+        <div class="vil-bar">
+            <button class="vil-btn @(Runner.Guard.Enabled ? "on" : null)" @onclick="() => Runner.SetGuard(!Runner.Guard.Enabled)">🛡 세이프티 가드</button>
+            <button class="vil-btn @(Runner.Clipper.Enabled ? "on" : null)" @onclick="() => Runner.SetClipping(!Runner.Clipper.Enabled)">✂ 자동 클리핑</button>
+            <button class="vil-btn" disabled="@(Runner.Clipper.State != ClipJobState.Idle)" @onclick="() => Runner.ClipNow()">✂ 지금 클립</button>
+            <button class="vil-btn @(Runner.AutoPublish ? "on" : null)" disabled="@(!Runner.OmniLinked)" @onclick="() => Runner.SetAutoPublish(!Runner.AutoPublish)">🚀 자동 배포</button>
+            <span class="vil-sep"></span>
+            @for (var p = 0; p < 3; p++)
+            {
+                var bit = 1 << p;
+                <button class="vil-btn pf @((Runner.PublishMask & bit) != 0 ? "on" : null)" @onclick="() => Runner.SetPublishMask(Runner.PublishMask ^ bit)">@(PlatformLabel(p))</button>
+            }
+            <span class="vil-sep"></span>
+            <span class="vil-chip">@(Runner.Clipper.Width)×@(Runner.Clipper.Height) · @(Runner.Clipper.Kbps) kbps · @(LiveEngagementHighlightClippingSynthesizer.CaptureFps) fps</span>
+        </div>
+        <div class="vil-main">
+            <div class="vil-col">
+                <div class="vil-card">
+                    <div class="vil-sec">🎞 4D 가우시안 아바타 × 3DGS 무대 · 9:16 추적 크롭</div>
+                    <div class="vil-stage">
+                        <img class="vil-view" src="@(_img)" alt="influencer live" />
+                        <svg class="vil-ov" viewBox="0 0 320 192" preserveAspectRatio="none">
+                            <rect x="@(F1(Math.Clamp(Runner.CropX - 54f, 0f, 212f)))" y="0" width="108" height="192" />
+                        </svg>
+                        @if (Runner.Acting.Gesture.Speaking)
+                        {
+                            <div class="vil-say">🗣 @(Runner.Chat.LastLine.ToString())</div>
+                        }
+                    </div>
+                    <div class="vil-kv">제스처 <b>@(RealtimeLlmTextToGestureTransformer.ClassName(Runner.Acting.Gesture.Current.Class))</b> · 유인가 @(F2(Runner.Acting.Gesture.Current.Valence)) · RMS @(F3(Runner.Rms)) · 프레임 <b class="@(Runner.LastTickMs < 16.7 ? "ok" : "warn")">@(F2(Runner.LastTickMs))</b> ms</div>
+                </div>
+                <div class="vil-card">
+                    <div class="vil-sec">💬 실시간 채팅 피드 · 수신 @(Runner.Chat.Received.ToString("N0", CultureInfo.InvariantCulture)) · 통과 @(Runner.Chat.Accepted.ToString("N0", CultureInfo.InvariantCulture)) · 좋아요 @(Runner.LikesTotal.ToString("N0", CultureInfo.InvariantCulture))</div>
+                    <div class="vil-feed">
+                        @for (var i = 0; i < Math.Min(16, Runner.Chat.MessageCount); i++)
+                        {
+                            var m = Runner.Chat.Message(i);
+                            <div class="vil-msg @(m.Verdict != ChatSafetyVerdict.Clean ? "blk" : "i" + ((int)m.Intent).ToString(CultureInfo.InvariantCulture))">
+                                <b>@(Runner.Chat.MessageUser(i).ToString())</b>
+                                <span class="t">@(m.Verdict != ChatSafetyVerdict.Clean ? "••• 차단된 메시지" : Runner.Chat.MessageText(i).ToString())</span>
+                                @if (m.Amount > 0) { <span class="amt">₩@(m.Amount.ToString("N0", CultureInfo.InvariantCulture))</span> }
+                                <i>@(m.Verdict != ChatSafetyVerdict.Clean ? ChatSpamToxicitySafetyGuard.VerdictName(m.Verdict) : RealtimeViewerChatReactionTriggerEngine.IntentName(m.Intent))@(m.Reacted ? " ⚡" : null)</i>
+                            </div>
+                        }
+                    </div>
+                    <div class="vil-send">
+                        <input class="vil-in u" placeholder="닉네임" @bind="_user" />
+                        <input class="vil-in" placeholder="채팅 입력(예: 이 노래 뭐예요? / ㅋㅋ 최고)" @bind="_text" @bind:event="oninput" />
+                        <input class="vil-in a" type="number" min="0" placeholder="후원 ₩" @bind="_amount" />
+                        <button class="vil-btn go" @onclick="Send">✉ 전송</button>
+                    </div>
+                    <div class="vil-kv">분류 @(F1(Runner.Chat.LastClassifyUs)) µs(최대 @(F1(Runner.Chat.MaxClassifyUs)) / 5 000) · 파싱 @(F1(Runner.Chat.LastIngestUs)) µs · 파싱 오류 @(Runner.Chat.ParseErrors) · 후원 합계 ₩@(Runner.Chat.DonationTotal.ToString("N0", CultureInfo.InvariantCulture))</div>
+                </div>
+            </div>
+            <div class="vil-col">
+                <div class="vil-card">
+                    <div class="vil-sec">⚡ 후원 · 질문 리액션 큐 (트리거 ≤ 100 ms)</div>
+                    <div class="vil-meter"><div class="@(Runner.Chat.MaxTriggerMs <= RealtimeViewerChatReactionTriggerEngine.BudgetMs ? "ok" : "warn")" style="width:@(Pct((float)(Runner.Chat.LastTriggerMs / 100.0)))%"></div><span>트리거 @(F1(Runner.Chat.LastTriggerMs)) ms · 최대 @(F1(Runner.Chat.MaxTriggerMs)) ms / 100 ms</span></div>
+                    <div class="vil-counters">
+                        <div><b>@(Runner.Chat.QueueCount)</b><span>대기 큐</span></div>
+                        <div><b>@(Runner.Chat.CuesDispatched)</b><span>디스패치</span></div>
+                        <div><b>@(Runner.Chat.CuesStale)</b><span>지연 폐기</span></div>
+                        <div><b>@(Runner.Chat.BlockedReactions)</b><span>반응 차단</span></div>
+                    </div>
+                    <div class="vil-reacts">
+                        @for (var i = 0; i < Math.Min(6, Runner.ReactedCount); i++)
+                        {
+                            var c = Runner.Reacted(i);
+                            <div class="vil-react i@(((int)c.Intent).ToString(CultureInfo.InvariantCulture))"><b>@(RealtimeViewerChatReactionTriggerEngine.IntentName(c.Intent))</b><span>@(RealtimeViewerChatReactionTriggerEngine.GestureName(c.Gesture)) · @(RealtimeLlmTextToGestureTransformer.ClassName(c.ActingClass))</span>@if (c.Amount > 0) {<span>₩@(c.Amount.ToString("N0", CultureInfo.InvariantCulture))</span>}<i>@((c.DispatchedMs - c.ReceivedMs).ToString(CultureInfo.InvariantCulture)) ms</i></div>
+                        }
+                    </div>
+                </div>
+                <div class="vil-card">
+                    <div class="vil-sec">📈 인게이지먼트 속도 · 스파이크 감지(≥ 250 %)</div>
+                    <svg class="vil-graph" viewBox="0 0 600 80" preserveAspectRatio="none">
+                        <polyline class="th" points="@(Series(2))" />
+                        <polyline class="vel" points="@(Series(0))" />
+                        <polyline class="rms" points="@(Series(1))" />
+                    </svg>
+                    <div class="vil-kv grid2">
+                        <div>채팅 속도 <b>@(F1(Runner.Clipper.ChatVelocity))</b>/분 · 평소 @(F1(Runner.Clipper.BaselineChat)) · <b class="@(Runner.Clipper.ChatRatio >= LiveEngagementHighlightClippingSynthesizer.SpikeRatio ? "hot" : null)">@(Pct0(Runner.Clipper.ChatRatio))%</b></div>
+                        <div>음성 RMS <b>@(F3(Runner.Clipper.ShortRms))</b> · 평소 @(F3(Runner.Clipper.BaselineRms)) · <b class="@(Runner.Clipper.RmsRatio >= LiveEngagementHighlightClippingSynthesizer.SpikeRatio ? "hot" : null)">@(Pct0(Runner.Clipper.RmsRatio))%</b></div>
+                        <div>좋아요 @(F1(Runner.Clipper.LikeVelocity))/분 · @(Pct0(Runner.Clipper.LikeRatio))%</div>
+                        <div>상태 <b>@(StateName(Runner.Clipper.State))</b>@(Runner.Clipper.State == ClipJobState.Encoding ? " " + Pct0((float)Runner.Clipper.Progress) + "%" : null) · @(Runner.Clipper.Warm ? "평소치 확정" : "워밍업")</div>
+                        <div>스파이크 @(Runner.Clipper.Spikes) · 레이드 억제 @(Runner.Clipper.SuppressedByRaid) · 거부 @(Runner.Clipper.Rejected)</div>
+                        <div>오염 프레임 @(Runner.Clipper.TaintedFrames) · 스냅숏 @(F1(Runner.Clipper.LastSnapshotMs)) ms · 합성 @(F1(Runner.Clipper.LastStepMs)) ms</div>
+                    </div>
+                    @if (Runner.Clipper.State == ClipJobState.Encoding)
+                    {
+                        <div class="vil-meter"><div class="ok" style="width:@(Pct((float)Runner.Clipper.Progress))%"></div><span>9:16 합성 · @(RealtimeHardwareVerticalTranscoderEngine.BackendName(Runner.Clipper.Encoder.Backend)) · @(F1(Runner.Clipper.Encoder.LastEncodeMs)) ms/프레임</span></div>
+                    }
+                </div>
+                <div class="vil-card">
+                    <div class="vil-sec">🎞 자동 생성 숏폼 클립 (@(Runner.Clipper.ClipsMade) · 배포 @(Runner.Published))</div>
+                    @if (Runner.Clipper.ClipCount == 0)
+                    {
+                        <div class="vil-empty">하이프 버스트(🔥)를 누르거나 실제 반응 급증을 기다리면 15~30 s 하이라이트가 자동 생성됩니다.</div>
+                    }
+                    <div class="vil-clips">
+                        @for (var i = 0; i < Runner.Clipper.ClipCount; i++)
+                        {
+                            var c = Runner.Clipper.Clip(i);
+                            if (c is null) continue;
+                            var id = c.Id;
+                            <div class="vil-clip @(c.Published ? "pub" : null)">
+                                <div class="hd"><b>#@(id) · @(F1(c.DurationSec)) s</b><span>@(c.Width)×@(c.Height) · @(F2(c.Bytes / 1048576.0)) MB · 점수 @(F1(c.Score))</span></div>
+                                <div class="cap">“@(c.Caption)”</div>
+                                <div class="ft">
+                                    <span>채팅 @(Pct0(c.ChatRatio))% · RMS @(Pct0(c.RmsRatio))% · @(RealtimeHardwareVerticalTranscoderEngine.BackendName(c.Backend))</span>
+                                    <button class="vil-btn sm go" disabled="@(!Runner.OmniLinked)" @onclick="() => Runner.PublishClip(id)">🚀 배포</button>
+                                    <button class="vil-btn sm" @onclick="() => Save(id)">💾 다운로드</button>
+                                    <button class="vil-btn sm" @onclick="() => Runner.RemoveClip(id)">🗑</button>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                    @if (_saved is not null) { <div class="vil-kv">💾 @(_saved)</div> }
+                </div>
+                <div class="vil-card">
+                    <div class="vil-sec">🛡 비속어 · 도배 차단 로그</div>
+                    <div class="vil-counters six">
+                        <div><b>@(Runner.Guard.Count(ChatSafetyVerdict.Toxic))</b><span>비속어</span></div>
+                        <div><b>@(Runner.Guard.Count(ChatSafetyVerdict.BotFlood))</b><span>봇 격리</span></div>
+                        <div><b>@(Runner.Guard.Count(ChatSafetyVerdict.Spam))</b><span>도배</span></div>
+                        <div><b>@(Runner.Guard.Count(ChatSafetyVerdict.Raid))</b><span>레이드</span></div>
+                        <div><b>@(Runner.Guard.Shadowbanned)</b><span>섀도우밴</span></div>
+                        <div><b class="@(Runner.Guard.RaidActive(Runner.NowMs) ? "hot" : "ok")">@(Runner.Guard.RaidActive(Runner.NowMs) ? "레이드" : "정상")</b><span>채널</span></div>
+                    </div>
+                    <div class="vil-log">
+                        @for (var i = 0; i < Math.Min(8, Runner.Guard.LogCount); i++)
+                        {
+                            var e = Runner.Guard.Log(i);
+                            <div><i>@(ChatSpamToxicitySafetyGuard.VerdictName(e.Verdict))</i><b>@(Runner.Guard.LogUserText(i).ToString())</b><span>@(Mask(Runner.Guard.LogBody(i)))</span></div>
+                        }
+                    </div>
+                    <div class="vil-kv">판정 @(F1(Runner.Guard.LastInspectUs)) µs · 최대 @(F1(Runner.Guard.MaxInspectUs)) µs · 검사 @(Runner.Guard.Inspected.ToString("N0", CultureInfo.InvariantCulture)) · 차단 @(Runner.Guard.Blocked.ToString("N0", CultureInfo.InvariantCulture))</div>
+                    <div class="vil-act">@(Runner.LastAction ?? "대기") · @(Runner.Clipper.LastEvent ?? "")</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .vil-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .vil-modal { width: min(1320px, 96vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
+    .vil-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #ef4444 16%, var(--card)), color-mix(in srgb, #ec4899 14%, var(--card))); }
+    .vil-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .vil-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .vil-sub b { color: var(--text-primary); }
+    .vil-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .vil-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .vil-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .vil-btn:disabled { opacity: .45; cursor: default; }
+    .vil-btn.on { background: color-mix(in srgb, #ef4444 22%, var(--card)); border-color: #ef4444; }
+    .vil-btn.pf.on { background: color-mix(in srgb, #8b5cf6 24%, var(--card)); border-color: #8b5cf6; }
+    .vil-btn.bad { background: #7f1d1d; border-color: #ef4444; color: #fff; }
+    .vil-btn.hot { background: linear-gradient(90deg, #f97316, #ef4444); color: #fff; border: none; }
+    .vil-btn.go { background: #ef4444; color: #fff; border: none; }
+    .vil-btn.sm { font-size: 11px; padding: 3px 8px; }
+    .vil-sep { width: 1px; height: 20px; background: var(--line); margin: 0 4px; }
+    .vil-lbl { font-size: 11px; color: var(--text-secondary); }
+    .vil-rng { width: 110px; }
+    .vil-chip { font: 700 11px var(--mono); padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .vil-main { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 14px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .vil-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .vil-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); min-width: 0; }
+    .vil-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .vil-stage { position: relative; width: 100%; aspect-ratio: 320 / 192; }
+    .vil-view, .vil-ov { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 8px; }
+    .vil-view { image-rendering: pixelated; background: #05070c; }
+    .vil-ov rect { fill: none; stroke: #fbbf24; stroke-width: 1.2; stroke-dasharray: 4 3; }
+    .vil-say { position: absolute; left: 8px; right: 8px; bottom: 8px; font-size: 12px; font-weight: 700; color: #fff; background: rgba(0,0,0,.6); padding: 4px 8px; border-radius: 6px; }
+    .vil-feed { display: flex; flex-direction: column; gap: 2px; height: 300px; overflow-y: auto; }
+    .vil-msg { display: grid; grid-template-columns: 92px 1fr auto auto; gap: 6px; align-items: center; font-size: 11px; padding: 3px 6px; border-radius: 5px; background: #0f172a; }
+    .vil-msg b { color: #93c5fd; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .vil-msg .t { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .vil-msg .amt { font: 800 11px var(--mono); color: #fde047; }
+    .vil-msg i { font-style: normal; font-size: 10px; color: var(--text-muted); }
+    .vil-msg.i1 { background: color-mix(in srgb, #eab308 22%, #0f172a); } .vil-msg.i2 { background: color-mix(in srgb, #0ea5e9 16%, #0f172a); }
+    .vil-msg.i3 { background: color-mix(in srgb, #ec4899 14%, #0f172a); } .vil-msg.i4 { background: color-mix(in srgb, #22c55e 14%, #0f172a); }
+    .vil-msg.blk { background: color-mix(in srgb, #ef4444 18%, #0f172a); } .vil-msg.blk .t { color: var(--text-muted); font-style: italic; }
+    .vil-send { display: grid; grid-template-columns: 90px 1fr 90px auto; gap: 6px; margin-top: 8px; }
+    .vil-in { font-size: 12px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: #0f172a; color: var(--text-primary); min-width: 0; }
+    .vil-kv { font-size: 11px; color: var(--text-secondary); margin-top: 6px; }
+    .vil-kv.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+    .vil-kv b.ok, .vil-counters b.ok { color: #22c55e; } .vil-kv b.warn { color: #f59e0b; } .vil-kv b.hot, .vil-counters b.hot { color: #ef4444; }
+    .vil-meter { position: relative; height: 18px; border-radius: 6px; background: #0f172a; overflow: hidden; margin: 6px 0 8px; }
+    .vil-meter div { height: 100%; } .vil-meter div.ok { background: #22c55e; } .vil-meter div.warn { background: #ef4444; }
+    .vil-meter span { position: absolute; inset: 0; font: 700 10px var(--mono); color: #fff; display: flex; align-items: center; justify-content: center; }
+    .vil-counters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .vil-counters.six { grid-template-columns: repeat(6, 1fr); }
+    .vil-counters div { display: flex; flex-direction: column; align-items: center; padding: 6px; border-radius: 8px; background: #0f172a; }
+    .vil-counters b { font: 800 15px var(--mono); color: var(--text-primary); }
+    .vil-counters span { font-size: 10px; color: var(--text-muted); }
+    .vil-reacts { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; }
+    .vil-react { display: grid; grid-template-columns: 70px 1fr auto auto; gap: 8px; font-size: 11px; padding: 4px 6px; border-radius: 6px; background: #0f172a; color: var(--text-secondary); }
+    .vil-react b { color: var(--text-primary); } .vil-react i { font: 700 10px var(--mono); font-style: normal; color: #22c55e; }
+    .vil-react.i1 { border-left: 3px solid #eab308; } .vil-react.i2 { border-left: 3px solid #0ea5e9; } .vil-react.i3 { border-left: 3px solid #ec4899; } .vil-react.i4 { border-left: 3px solid #22c55e; }
+    .vil-graph { width: 100%; height: 80px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; display: block; }
+    .vil-graph polyline { fill: none; stroke-width: 1.6; }
+    .vil-graph .vel { stroke: #ef4444; } .vil-graph .rms { stroke: #22d3ee; } .vil-graph .th { stroke: #fbbf24; stroke-dasharray: 6 4; opacity: .7; }
+    .vil-empty { font-size: 11px; color: var(--text-muted); padding: 8px 0; }
+    .vil-clips { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+    .vil-clip { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: #0f172a; }
+    .vil-clip.pub { border-color: #8b5cf6; }
+    .vil-clip .hd { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-primary); } .vil-clip .hd span { font: 600 10px var(--mono); color: var(--text-muted); }
+    .vil-clip .cap { font-size: 11px; color: #fde047; margin: 3px 0; }
+    .vil-clip .ft { display: flex; gap: 6px; align-items: center; font-size: 10px; color: var(--text-muted); } .vil-clip .ft span { flex: 1; }
+    .vil-log { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
+    .vil-log div { display: grid; grid-template-columns: 82px 96px 1fr; gap: 6px; font-size: 10px; padding: 3px 6px; border-radius: 5px; background: color-mix(in srgb, #ef4444 12%, #0f172a); color: var(--text-secondary); }
+    .vil-log i { font-style: normal; color: #fca5a5; } .vil-log b { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .vil-log span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .vil-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+    @@media (max-width: 900px) { .vil-main { grid-template-columns: 1fr; } .vil-counters.six { grid-template-columns: repeat(3, 1fr); } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly byte[] _bmp = new byte[AvatarActingDirectorStudioRunner.PreviewBytes];
+    private System.Threading.Timer? _timer;
+    private string _img = "";
+    private string _user = "me";
+    private string _text = "";
+    private int _amount;
+    private string? _saved;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        if (!Runner.IsRunning) Runner.Step();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("InfluencerLive.Modal.Timer", ex); }
+        }, null, 150, 150);
+    }
+
+    protected override bool ShouldRender()
+    {
+        Runner.Acting.WritePreviewBmp(_bmp);
+        _img = "data:image/bmp;base64," + Convert.ToBase64String(_bmp);
+        return true;
+    }
+
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static string Pct(float v) => Math.Clamp(v * 100.0, 0, 100).ToString("0.#", CultureInfo.InvariantCulture);
+    private static string Pct0(float v) => float.IsFinite(v) ? (v * 100f).ToString("0", CultureInfo.InvariantCulture) : "—";
+    private static string PlatformLabel(int p) => p switch { 0 => "📸 Reels", 1 => "▶ Shorts", _ => "🎵 TikTok" };
+    private static string StateName(ClipJobState s) => s switch { ClipJobState.Armed => "🔥 무장(포스트롤)", ClipJobState.Encoding => "✂ 합성 중", _ => "감시" };
+    private static string Mask(ReadOnlySpan<char> s) => s.Length <= 2 ? "**" : s[0] + new string('*', Math.Min(12, s.Length - 1));
+
+    private string Series(int kind)
+    {
+        var c = Runner.Clipper;
+        var n = c.SeriesCount;
+        if (n < 2) return "";
+        var max = 30.0;
+        for (var i = 0; i < n; i++) max = Math.Max(max, Math.Max(c.VelocitySeries(i), c.BaselineSeries(i) * LiveEngagementHighlightClippingSynthesizer.SpikeRatio));
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            var v = kind switch { 0 => c.VelocitySeries(k) / max, 1 => c.RmsSeries(k) / 0.4, _ => Math.Max(c.BaselineSeries(k), LiveEngagementHighlightClippingSynthesizer.ChatFloor) * LiveEngagementHighlightClippingSynthesizer.SpikeRatio / max };
+            sb.Append((600.0 * i / (n - 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append((78 - 76 * Math.Clamp(v, 0, 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void OnRate(ChangeEventArgs e) { if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetChatRate(v / 10f); }
+
+    private void Send()
+    {
+        if (string.IsNullOrWhiteSpace(_text)) return;
+        Runner.SendChat(_user, _text, _amount);
+        _text = ""; _amount = 0;
+    }
+
+    private void Save(int id) => _saved = Runner.SaveClip(id) ?? "저장 실패";
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else { Runner.Prepare(); Runner.Start(); }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

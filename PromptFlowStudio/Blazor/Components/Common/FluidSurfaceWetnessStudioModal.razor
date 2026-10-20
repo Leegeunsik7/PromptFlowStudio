@@ -1,0 +1,217 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.FluidWetness
+@using PromptFlowStudio.Services.Garment
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject FluidWetnessStudioRunner Runner
+
+@* [PromptFlow Studio v17.19.0] 💧 AI 다상 유체 습윤 & 액적 스튜디오 — 피부 수분 맵(피막 µm 히트맵 · 젖은 피부 미리보기 · 노출/땀샘) · 액적 활주 자취 · 비/땀 강도 슬라이더 · 직물 포화도 미터(+300%) · 젖은 모발 클러스터링/흡착 · 의상 점성 흡착. *@
+
+<div class="wet-scrim" @onclick="Close">
+    <div class="wet-modal" @onclick:stopPropagation="true">
+        <div class="wet-h">
+            <div>
+                <div class="wet-title">💧 AI 다상 유체 습윤 &amp; 액적 스튜디오</div>
+                <div class="wet-sub"><b>습윤 엔진</b>이 v17.17 피부 UV @(MultiphaseSurfaceWetnessCapillaryEngine.W)² 격자에서 땀샘 분비 · 비 노출 · 증발 · 보존형 피막 확산(SIMD)을 풀고, v17.16 의상 직물에 워시번 흡수 · 위킹 · 레이어 간 침투로 무게(최대 +300%)와 암전을 만듭니다. <b>액적 합성기</b>는 접촉각 히스테리시스(전진 @(F0(D.AdvancingDeg))° · 후진 @(F0(D.RecedingDeg))°)로 땀/빗/눈물 방울을 고정·활주시키고, <b>가드</b>는 젖은 모발의 모세관 클러스터링 · 이마/목 흡착과 젖은 의상의 점성 흡착(펄럭임 억제)을 처리합니다.</div>
+            </div>
+            <button class="wet-x" @onclick="Close">✕</button>
+        </div>
+        <div class="wet-bar">
+            <button class="wet-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 가동")</button>
+            <button class="wet-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="wet-btn @(Runner.Scenario ? "on" : null)" @onclick="() => Runner.SetScenario(!Runner.Scenario)">🎬 날씨 시나리오</button>
+            <button class="wet-btn" @onclick="Runner.Dry">🔥 전체 건조</button>
+            <span class="wet-chip">@(Runner.Weather) · 비 @(F1(Runner.CurrentRain)) mm/h · 땀 @(F2(Runner.CurrentSweat)) µm/s</span>
+            <span class="wet-chip">틱 @(F2(Runner.LastTickMs)) ms · 피막 @(F0(W.LastSkinUs)) µs · 직물 @(F0(W.LastGarmentUs)) µs · 액적 @(F0(D.LastUpdateUs)) µs · @(W.Path)</span>
+            <span class="wet-chip @(Runner.Garment.Guard.BodyPenetrationResidualMm < 1f ? "ok" : "warn")">의상 관통 잔차 @(F2(Runner.Garment.Guard.BodyPenetrationResidualMm)) mm</span>
+        </div>
+        <div class="wet-main">
+            <div class="wet-col">
+                <div class="wet-card">
+                    <div class="wet-sec">🗺 피부 수분 맵
+                        <button class="wet-btn sm @(Runner.MapView == 0 ? "on" : null)" @onclick="() => Runner.MapView = 0">피막 µm</button>
+                        <button class="wet-btn sm @(Runner.MapView == 1 ? "on" : null)" @onclick="() => Runner.MapView = 1">젖은 피부</button>
+                        <button class="wet-btn sm @(Runner.MapView == 2 ? "on" : null)" @onclick="() => Runner.MapView = 2">노출/땀샘</button>
+                    </div>
+                    <div class="wet-maps">
+                        <img src="data:image/bmp;base64,@(Runner.MapBase64())" alt="moisture" />
+                        <img src="data:image/bmp;base64,@(Runner.GarmentBase64())" alt="garment" />
+                    </div>
+                    <div class="wet-legend"><i class="dry"></i>건조 <i class="mid"></i>20 µm <i class="sat"></i>≥ 40 µm · 점 = 액적(노랑 땀 · 흰 비 · 분홍 눈물) · 하늘 줄기 = 활주 자취(3 s)</div>
+                    <div class="wet-kv">평균 피막 <b>@(F1(W.SkinMeanUm)) µm</b> · 최대 @(F0(W.SkinMaxUm)) µm · 젖은 면적 <b>@(F0(W.SkinWetFraction * 100))%</b> · 증발 @(F1(W.EvaporatedUm)) µm · 유출 @(F2(W.RunoffGrams)) g</div>
+                    <svg class="wet-ser" viewBox="0 0 360 60" preserveAspectRatio="none">
+                        <polyline class="sk" points="@(Series(Runner.SkinSeries, 40, 60))" /><polyline class="ms" points="@(Series(i => Runner.MassSeries(i) - 1f, 3, 60))" /><polyline class="dr" points="@(Series(Runner.DropSeries, 300, 60))" />
+                    </svg>
+                    <div class="wet-legend"><i class="sk"></i>피막 평균(0–40 µm) <i class="ms"></i>코트 증량(0–300%) <i class="dr"></i>액적 수(0–300)</div>
+                </div>
+
+                <div class="wet-card">
+                    <div class="wet-sec">🌧 비 · 땀 · 환경</div>
+                    <div class="wet-ctl">
+                        <label class="wet-sl">강우 <b>@(F1(Runner.RainMmH)) mm/h</b><input type="range" min="0" max="100" step="1" value="@(F0(Runner.RainMmH))" @onchange="e => Runner.SetRain((float)Num(e, 0))" /></label>
+                        <label class="wet-sl">땀 강도 <b>@(F2(Runner.SweatIntensity))</b><input type="range" min="0" max="1" step="0.05" value="@(F2(Runner.SweatIntensity))" @onchange="e => Runner.SetSweat((float)Num(e, 0.2))" /></label>
+                    </div>
+                    <div class="wet-ctl">
+                        <label class="wet-sl">습도 <b>@(F0(Runner.Humidity * 100))%</b><input type="range" min="0" max="1" step="0.05" value="@(F2(Runner.Humidity))" @onchange="e => Runner.SetHumidity((float)Num(e, 0.6))" /></label>
+                        <label class="wet-sl">기온 <b>@(F0(Runner.Temperature)) °C</b><input type="range" min="-10" max="45" step="1" value="@(F0(Runner.Temperature))" @onchange="e => Runner.SetTemperature((float)Num(e, 22))" /></label>
+                        <button class="wet-btn sm @(D.Tears ? "on" : null)" @onclick="() => Runner.SetTears(!D.Tears)">😢 눈물</button>
+                    </div>
+                    <div class="wet-kv">심박 <b>@(F0(Runner.Vascular.Bpm)) bpm</b> · 분노 @(F2(Runner.Vascular.Anger)) · 긴장 @(F2(Runner.Vascular.Tension)) → 땀 분비 · 눈물 유발 @(F2(Runner.TearDrive))</div>
+                </div>
+
+                <div class="wet-card">
+                    <div class="wet-sec">💧 액적 활주(접촉각 히스테리시스)</div>
+                    <div class="wet-kv">활성 <b>@(D.Count)</b> · 활주 <b>@(D.SlidingCount)</b> · 생성 @(D.Spawned) · 병합 @(D.Merges) · 낙하 @(D.Drips) · 최대 속도 @(F0(D.MaxSpeedMm)) mm/s · 총 부피 @(F1(D.TotalVolume)) µL · 자취 @(D.StreakCount)</div>
+                    <div class="wet-ctl">
+                        <label class="wet-sl">전진각 <b>@(F0(D.AdvancingDeg))°</b><input type="range" min="60" max="130" step="1" value="@(F0(D.AdvancingDeg))" @onchange="e => D.AdvancingDeg = (float)Num(e, 95)" /></label>
+                        <label class="wet-sl">후진각 <b>@(F0(D.RecedingDeg))°</b><input type="range" min="20" max="120" step="1" value="@(F0(D.RecedingDeg))" @onchange="e => D.RecedingDeg = MathF.Min((float)Num(e, 65), D.AdvancingDeg)" /></label>
+                        <label class="wet-sl">젖은 자취 히스테리시스 <b>× @(F2(D.WetHysteresisFactor))</b><input type="range" min="0.1" max="1" step="0.05" value="@(F2(D.WetHysteresisFactor))" @onchange="e => D.WetHysteresisFactor = (float)Num(e, 0.5)" /></label>
+                    </div>
+                    <div class="wet-kv">임계 부피(수직 · 건조): 보유력 = γ·w·(cos θᵣ − cos θₐ) = 중력 → <b>@(F1(CriticalUl())) µL</b> 이상 활주</div>
+                </div>
+            </div>
+
+            <div class="wet-col">
+                <div class="wet-card">
+                    <div class="wet-sec">🧵 직물 포화도 미터</div>
+                    @for (var l = 2; l >= 0; l--)
+                    {
+                        var li = l;
+                        var preset = Runner.Garment.Draping.LayerPreset((GarmentLayer)li);
+                        <div class="wet-meter">
+                            <span class="nm">@(GarmentDynamicsStudioRunner.LayerName((GarmentLayer)li)) · @(AnisotropicFabricDrapingWrinkleSynthesizer.Presets[(int)preset].Name)</span>
+                            <span class="bar"><i style="width:@(F0(W.LayerSaturation(li) * 100))%"></i><em style="left:@(F0(W.LayerMaxSaturation(li) * 100))%"></em></span>
+                            <span class="v">S @(F0(W.LayerSaturation(li) * 100))% · 증량 <b>+@(F0((W.LayerMassRatio(li) - 1f) * 100))%</b> / 최대 +@(F0(MultiphaseSurfaceWetnessCapillaryEngine.Capacity[(int)preset] * 100))% · 굽힘 × @(F2(Gd.LayerBendScale(li)))</span>
+                        </div>
+                        <div class="wet-ctl">
+                            @for (var p = 0; p < 4; p++)
+                            {
+                                var pi = p;
+                                <button class="wet-btn sm @((int)preset == pi ? "on" : null)" @onclick="() => Runner.SetFabric((GarmentLayer)li, (FabricPreset)pi)">@(AnisotropicFabricDrapingWrinkleSynthesizer.Presets[pi].Name)</button>
+                            }
+                        </div>
+                    }
+                    <div class="wet-atlas"><img src="data:image/bmp;base64,@(Runner.AtlasBase64())" alt="atlas" /></div>
+                    <div class="wet-legend"><span>포화도 아틀라스(가로 = 둘레 각 · 세로 = 높이 · 외곽 레이어 가중)</span></div>
+                </div>
+
+                <div class="wet-card">
+                    <div class="wet-sec">🛡 젖은 섬유 장력 · 점성 흡착 가드
+                        <button class="wet-btn sm @(Gd.HairCapillary ? "on" : null)" @onclick="() => Runner.SetHairCapillary(!Gd.HairCapillary)">모세관 클러스터링</button>
+                        <button class="wet-btn sm @(Gd.HairAdhesion ? "on" : null)" @onclick="() => Runner.SetHairAdhesion(!Gd.HairAdhesion)">이마/목 흡착</button>
+                        <button class="wet-btn sm @(Gd.GarmentAdhesion ? "on" : null)" @onclick="() => Runner.SetGarmentAdhesion(!Gd.GarmentAdhesion)">의상 점성 흡착</button>
+                    </div>
+                    <div class="wet-kv">모발 수분 <b>@(F0(Gd.HairWetMean * 100))%</b> · 모끝 간격 <b>@(F1(Gd.TipSpreadMm)) mm</b> · 액체 다리 @(Gd.BridgePairs) · 최대 인력 @(F1(Gd.MaxBridgeAccel)) m/s² · 흡착 입자 @(Gd.HairAdhered) · 모발 관통 잔차 @(F2(Runner.Garment.HairGuard.ResidualPenetrationMm)) mm</div>
+                    <div class="wet-kv">의상 흡착 <b>@(Gd.GarmentAdhered)</b> · 펄럭임 <b>@(F3(Gd.FlutterMm)) mm/틱</b> · 코트 이격 @(F2(Gd.OuterStandOffMm)) mm</div>
+                    <svg class="wet-ser" viewBox="0 0 360 60" preserveAspectRatio="none">
+                        <polyline class="hw" points="@(Series(Runner.HairSeries, 1, 60))" /><polyline class="fl" points="@(Series(Runner.FlutterSeries, 1, 60))" />
+                    </svg>
+                    <div class="wet-legend"><i class="hw"></i>모발 수분(0–1) <i class="fl"></i>펄럭임(0–1 mm/틱)</div>
+                    <div class="wet-ctl">
+                        <label class="wet-sl">모세관 이득 <b>@(F0(Gd.CapillaryGain))</b><input type="range" min="0" max="120" step="5" value="@(F0(Gd.CapillaryGain))" @onchange="e => Gd.CapillaryGain = (float)Num(e, 40)" /></label>
+                        <label class="wet-sl">점성 감쇠 <b>@(F2(Gd.ViscousDamping))</b><input type="range" min="0" max="1" step="0.05" value="@(F2(Gd.ViscousDamping))" @onchange="e => Gd.ViscousDamping = (float)Num(e, 0.8)" /></label>
+                    </div>
+                </div>
+                <div class="wet-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .wet-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .wet-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .wet-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #0ea5e9 15%, var(--card)), color-mix(in srgb, #14b8a6 13%, var(--card))); }
+    .wet-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .wet-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .wet-sub b { color: var(--text-primary); }
+    .wet-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .wet-bar { display: flex; flex-wrap: wrap; gap: 6px 10px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .wet-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; } .wet-btn:disabled { opacity: .4; cursor: default; }
+    .wet-btn.sm { font-size: 10px; padding: 2px 8px; } .wet-btn.on { background: color-mix(in srgb, #0ea5e9 22%, transparent); border-color: #38bdf8; }
+    .wet-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .wet-chip.ok { border-color: #22c55e; color: #86efac; } .wet-chip.warn { border-color: #eab308; color: #fde68a; }
+    .wet-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .wet-sl b { font-family: var(--mono); color: var(--text-primary); } .wet-sl input { width: 100px; }
+    .wet-main { display: grid; grid-template-columns: 1.1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .wet-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .wet-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .wet-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .wet-ctl { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+    .wet-maps { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; } .wet-maps img { width: 100%; aspect-ratio: 1 / 1; object-fit: contain; image-rendering: pixelated; background: #030712; border-radius: 8px; }
+    .wet-atlas img { width: 100%; height: 150px; image-rendering: pixelated; border-radius: 8px; background: #030712; }
+    .wet-ser { width: 100%; height: 60px; background: #030712; border-radius: 6px; }
+    .wet-ser polyline { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; } .wet-ser .sk { stroke: #38bdf8; } .wet-ser .ms { stroke: #f59e0b; } .wet-ser .dr { stroke: #e2e8f0; } .wet-ser .hw { stroke: #a78bfa; } .wet-ser .fl { stroke: #f472b6; }
+    .wet-meter { display: grid; grid-template-columns: 170px 1fr; gap: 2px 10px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .wet-meter .nm { font-weight: 700; color: var(--text-primary); } .wet-meter .v { grid-column: 2; font-family: var(--mono); } .wet-meter .v b { color: #38bdf8; }
+    .wet-meter .bar { position: relative; height: 12px; background: #0f172a; border-radius: 6px; overflow: hidden; }
+    .wet-meter .bar i { display: block; height: 100%; background: linear-gradient(90deg, #0369a1, #38bdf8, #e0f2fe); border-radius: 6px; transition: width .2s; }
+    .wet-meter .bar em { position: absolute; top: 0; bottom: 0; width: 2px; background: #f59e0b; }
+    .wet-legend, .wet-kv { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11px; color: var(--text-secondary); align-items: center; } .wet-kv b { color: var(--text-primary); }
+    .wet-legend i { display: inline-block; width: 10px; height: 8px; border-radius: 2px; margin-right: 2px; }
+    .wet-legend .dry { background: #0a0f2e; } .wet-legend .mid { background: #4f9fd8; } .wet-legend .sat { background: #e0f2fe; }
+    .wet-legend .sk { background: #38bdf8; } .wet-legend .ms { background: #f59e0b; } .wet-legend .dr { background: #e2e8f0; } .wet-legend .hw { background: #a78bfa; } .wet-legend .fl { background: #f472b6; }
+    .wet-note { font-size: 11px; color: var(--text-muted); word-break: break-all; }
+    @@media (max-width: 1250px) { .wet-main { grid-template-columns: 1fr; } .wet-maps { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+
+    private MultiphaseSurfaceWetnessCapillaryEngine W => Runner.Wet;
+    private MicroDropletSlidingAdhesionSynthesizer D => Runner.Drops;
+    private WetFiberTensionGarmentAdherenceGuard Gd => Runner.Guard;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("FluidWetness.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    /// <summary>수직 건조 피부 임계 부피(이분 탐색 · 보유력 = 중력).</summary>
+    private double CriticalUl()
+    {
+        float lo = 0.1f, hi = 200f;
+        for (var k = 0; k < 40; k++)
+        {
+            var mid = 0.5f * (lo + hi);
+            if (MicroDropletSlidingAdhesionSynthesizer.GravityTangential(mid, 1f) > MicroDropletSlidingAdhesionSynthesizer.Retention(mid, D.AdvancingDeg, D.RecedingDeg, 1f)) hi = mid; else lo = mid;
+        }
+        return hi;
+    }
+
+    private string Series(Func<int, float> f, double max, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (FluidWetnessStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - 2 - (h - 4) * Math.Clamp(f(i) / max, 0, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step60() { for (var i = 0; i < FluidWetnessStudioRunner.Hz; i++) Runner.Step(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중 갱신은 250 ms 타이머가 처리 — 정지 상태 변경만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

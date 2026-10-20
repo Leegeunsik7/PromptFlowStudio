@@ -1,0 +1,396 @@
+@page "/analytics"
+@implements IDisposable
+@using System.Globalization
+@using System.Text
+@using PromptFlowStudio.Services.Telemetry
+@inject ProductionCostTrackerService Cost
+@inject SystemHardwareTelemetryMonitor Hw
+@inject QueueResourceGovernor Gov
+@inject BatchProductionQueueService Queue
+@inject PromptFlowStudio.Services.Studio.StudioFolderLinkService FolderLink
+@inject NavigationManager Nav
+
+@* [PromptFlow Studio v16.18.0] 📊 생산성 & 비용 대시보드 — AI 비용/토큰 원장 · 예산 한도 · VRAM/RAM/CPU 텔레메트리 · 플랫폼/테마 효율 · CSV/JSON 리포트.
+   상태는 ProductionCostTrackerService / SystemHardwareTelemetryMonitor(싱글턴) 소유 — 이 페이지는 OnChange 구독 + 500ms 스로틀 InvokeAsync(StateHasChanged) 로만 갱신. *@
+
+<PageTitle>PromptFlow Studio · 생산성 & 비용 대시보드</PageTitle>
+
+<div class="pa">
+    <header class="pa-head">
+        <div class="pa-navrow">
+            <button class="pa-back" @onclick='() => Nav.NavigateTo("batch")'>← 대량 양산</button>
+            <button class="pa-back" @onclick='() => Nav.NavigateTo("")'>홈</button>
+        </div>
+        <div class="pa-titlerow">
+            <h1 class="pa-title">📊 생산성 &amp; 비용 <span class="pa-title-g">대시보드</span></h1>
+            <span class="pa-state @StateCss(Cost.State)">@StateLabel(Cost.State)</span>
+            @if (Queue.IsBudgetPaused) { <span class="pa-state bad">⏸ 배치 큐 예산 일시정지</span> }
+        </div>
+        <p class="pa-sub">Wan 2.1 · Gemini · ElevenLabs 호출 비용을 <b>요금표 기반 추정</b>으로 실시간 집계합니다. 예산 한도에 도달하면 <b>신규 영상 생성이 자동 일시정지</b>됩니다.</p>
+    </header>
+
+    @* ── KPI ── *@
+    <div class="pa-kpis">
+        <div class="pa-kpi"><span>생성 클립</span><b>@Cost.TotalClips.ToString("N0", CultureInfo.InvariantCulture)</b><small>Wan 제출 성공</small></div>
+        <div class="pa-kpi"><span>생산 작업</span><b>@Cost.ProductionCount.ToString("N0", CultureInfo.InvariantCulture)</b><small>배치 완료/실패 포함</small></div>
+        <div class="pa-kpi"><span>누적 비용</span><b>$@ProductionCostTrackerService.Usd(Cost.TotalUsd)</b><small>전체 기간</small></div>
+        <div class="pa-kpi"><span>오늘</span><b>$@ProductionCostTrackerService.Usd(Cost.TodayUsd)</b><small>@(_daily > 0 ? "한도 $" + _daily.ToString("0", CultureInfo.InvariantCulture) : "한도 없음")</small></div>
+        <div class="pa-kpi"><span>이번 달</span><b>$@ProductionCostTrackerService.Usd(Cost.MonthUsd)</b><small>@(_monthly > 0 ? "한도 $" + _monthly.ToString("0", CultureInfo.InvariantCulture) : "한도 없음")</small></div>
+        <div class="pa-kpi"><span>차단된 요청</span><b>@Cost.BlockedRequests.ToString(CultureInfo.InvariantCulture)</b><small>예산 초과 거부</small></div>
+    </div>
+
+    <div class="pa-grid">
+        @* ── 예산 한도 ── *@
+        <section class="pa-card">
+            <h2 class="pa-h2">💸 예산 한도 (Budget Cap)</h2>
+            <label class="pa-slider">
+                <span>일간 한도 <b>@(_daily > 0 ? "$" + _daily.ToString("0", CultureInfo.InvariantCulture) : "무제한")</b></span>
+                <input type="range" min="0" max="200" step="1" value="@_daily" @onchange="OnDailyChanged" />
+            </label>
+            <div class="pa-bar"><div class="pa-bar-f @BarCss(Ratio(Cost.TodayUsd, _daily))" style="width:@(Pct(Ratio(Cost.TodayUsd, _daily)))%"></div></div>
+            <label class="pa-slider">
+                <span>월간 한도 <b>@(_monthly > 0 ? "$" + _monthly.ToString("0", CultureInfo.InvariantCulture) : "무제한")</b></span>
+                <input type="range" min="0" max="3000" step="10" value="@_monthly" @onchange="OnMonthlyChanged" />
+            </label>
+            <div class="pa-bar"><div class="pa-bar-f @BarCss(Ratio(Cost.MonthUsd, _monthly))" style="width:@(Pct(Ratio(Cost.MonthUsd, _monthly)))%"></div></div>
+            <label class="pa-opt"><input type="checkbox" checked="@_enforce" @onchange="OnEnforceChanged" /> 한도 도달 시 신규 영상 생성 자동 일시정지</label>
+            <div class="pa-note">0 = 무제한 · 한도의 80% 에서 경고 · 한도 상향/해제 또는 날짜·월이 바뀌면 자동 재개됩니다.</div>
+        </section>
+
+        @* ── 하드웨어 텔레메트리 ── *@
+        <section class="pa-card">
+            <h2 class="pa-h2">🌡️ 하드웨어 텔레메트리 <span class="pa-pres @PresCss(Hw.Pressure)">@PresLabel(Hw.Pressure)</span></h2>
+            <div class="pa-gauges">
+                @Gauge("CPU", Hw.CpuEwma / 100.0, "프로세스")
+                @Gauge("RAM", Hw.RamEwma, Hw.Latest is { } l1 ? Gb(l1.RamUsedMb) + " / " + Gb(l1.RamTotalMb) : "—")
+                @Gauge("VRAM", Hw.VramEwma ?? 0, Hw.Latest is { VramTotalMb: { } vt, VramUsedMb: { } vu } ? Gb((long)vu) + " / " + Gb((long)vt) : "GPU 미탐지")
+            </div>
+            <svg class="pa-spark" viewBox="0 0 240 48" preserveAspectRatio="none">
+                <polyline points="@_ramPts" fill="none" stroke="#38bdf8" stroke-width="1.5" />
+                <polyline points="@_vramPts" fill="none" stroke="#e879f9" stroke-width="1.5" />
+            </svg>
+            <div class="pa-legend"><span class="ram">● RAM</span><span class="vram">● VRAM</span><span>최근 @(_histCount)샘플</span></div>
+            <div class="pa-stats">
+                <span>⏱ 컷당 평균 <b>@Sec(Hw.AverageCutSeconds)</b></span>
+                <span>최소 @Sec(Hw.MinCutSeconds) · 최대 @Sec(Hw.MaxCutSeconds) · @(Hw.CutsMeasured)컷</span>
+                <span>⚙️ 동시 @(Gov.ActiveCount)/@(Gov.CurrentLimit)@(Gov.PressureCap > 0 ? " (OOM 상한 " + Gov.PressureCap.ToString(CultureInfo.InvariantCulture) + ")" : "")</span>
+                <span>📦 대기 @(Queue.Count(BatchStage.Queued))건 · ETA @Eta(Hw.EstimateRemaining(Queue.Count(BatchStage.Queued) * 6))</span>
+            </div>
+            @if (Hw.PressureSignals > 0)
+            {
+                <div class="pa-note warn">최근 OOM 신호: @Hw.LastSignal.Reason → 권장 동시성 @Hw.LastSignal.SuggestedConcurrency (총 @(Hw.PressureSignals)회)</div>
+            }
+        </section>
+    </div>
+
+    <div class="pa-grid">
+        @* ── 서비스별 비용 ── *@
+        <section class="pa-card">
+            <h2 class="pa-h2">🧾 서비스별 비용</h2>
+            <table class="pa-tbl">
+                <thead><tr><th>서비스</th><th>호출</th><th>비용</th><th>비중</th></tr></thead>
+                <tbody>
+                    @foreach (var s in Services)
+                    {
+                        var usd = Cost.ServiceUsd(s);
+                        <tr @key="s"><td>@ProductionCostTrackerService.LabelOf(s)</td><td>@Cost.ServiceCalls(s)</td><td>$@ProductionCostTrackerService.Usd(usd)</td><td>@Pct(Ratio(usd, Cost.TotalUsd))%</td></tr>
+                    }
+                </tbody>
+            </table>
+            <svg class="pa-spark days" viewBox="0 0 240 48" preserveAspectRatio="none">
+                @for (var i = 0; i < _days.Length; i++)
+                {
+                    var h = _dayMax > 0 ? Math.Max(1, _days[i] / _dayMax * 46) : 1;
+                    <rect x="@((i * 8).ToString(CultureInfo.InvariantCulture))" y="@((48 - h).ToString("0.#", CultureInfo.InvariantCulture))" width="6" height="@(h.ToString("0.#", CultureInfo.InvariantCulture))" rx="1" fill="#a78bfa" />
+                }
+            </svg>
+            <div class="pa-legend"><span>최근 30일 일별 비용 · 최대 $@ProductionCostTrackerService.Usd(_dayMax)</span></div>
+        </section>
+
+        @* ── 플랫폼/테마 효율 ── *@
+        <section class="pa-card">
+            <h2 class="pa-h2">🎯 생산 비용 효율
+                <span class="pa-tabs">
+                    <button class="@(!_byTheme ? "on" : null)" @onclick="ShowPlatform">플랫폼별</button>
+                    <button class="@(_byTheme ? "on" : null)" @onclick="ShowTheme">테마별</button>
+                </span>
+            </h2>
+            @if (_buckets.Count == 0)
+            {
+                <div class="pa-note">아직 배치 생산 기록이 없습니다 — 대량 양산 허브에서 작업을 실행하면 집계됩니다.</div>
+            }
+            else
+            {
+                <table class="pa-tbl">
+                    <thead><tr><th>@(_byTheme ? "테마" : "플랫폼")</th><th>작업</th><th>성공률</th><th>클립</th><th>비용</th><th>성공당</th></tr></thead>
+                    <tbody>
+                        @for (var i = 0; i < _buckets.Count && i < 12; i++)
+                        {
+                            var b = _buckets[i];
+                            <tr @key="b.Key"><td>@b.Key</td><td>@b.Count</td><td>@Pct(b.SuccessRate)%</td><td>@b.Clips</td><td>$@ProductionCostTrackerService.Usd(b.Usd)</td><td>$@ProductionCostTrackerService.Usd(b.UsdPerSuccess)</td></tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </section>
+    </div>
+
+    @* ── 최근 원장 + 리포트 ── *@
+    <section class="pa-card">
+        <h2 class="pa-h2">📜 최근 호출 원장
+            <span class="pa-actions">
+                <button class="pa-btn" @onclick="ExportCsv">⬇ CSV 리포트</button>
+                <button class="pa-btn" @onclick="ExportJson">⬇ JSON 리포트</button>
+                <button class="pa-btn ghost" @onclick="() => _ratesOpen = !_ratesOpen">⚙ 요금표</button>
+            </span>
+        </h2>
+        @if (_toast is not null) { <div class="pa-note ok">@_toast</div> }
+        @if (_ratesOpen)
+        {
+            <div class="pa-rates">
+                <label>DashScope Plus $/초 <input type="number" step="0.001" min="0" @bind="_rates.DashScopePlusPerSecond" /></label>
+                <label>DashScope Turbo $/초 <input type="number" step="0.001" min="0" @bind="_rates.DashScopeTurboPerSecond" /></label>
+                <label>SiliconFlow $/건 <input type="number" step="0.01" min="0" @bind="_rates.SiliconFlowPerVideo" /></label>
+                <label>Custom Wan $/초 <input type="number" step="0.001" min="0" @bind="_rates.CustomWanPerSecond" /></label>
+                <label>Gemini 입력 $/1M토큰 <input type="number" step="0.01" min="0" @bind="_rates.GeminiInputPerMTokens" /></label>
+                <label>Gemini 출력 $/1M토큰 <input type="number" step="0.01" min="0" @bind="_rates.GeminiOutputPerMTokens" /></label>
+                <label>ElevenLabs $/1K자 <input type="number" step="0.01" min="0" @bind="_rates.ElevenLabsPer1kChars" /></label>
+                <button class="pa-btn" @onclick="SaveRates">💾 요금표 저장</button>
+            </div>
+        }
+        <table class="pa-tbl">
+            <thead><tr><th>시각</th><th>서비스</th><th>수량</th><th>비용</th><th>모델</th><th>작업</th></tr></thead>
+            <tbody>
+                @foreach (var e in _recent)
+                {
+                    <tr><td>@e.At.ToLocalTime().ToString("MM-dd HH:mm:ss", CultureInfo.InvariantCulture)</td><td>@ProductionCostTrackerService.LabelOf(e.Service)</td><td>@Qty(e)</td><td>$@ProductionCostTrackerService.Usd(e.Usd)</td><td>@e.Model</td><td>@e.Tag</td></tr>
+                }
+                @if (_recent.Count == 0) { <tr><td colspan="6" class="pa-empty">기록된 호출이 없습니다.</td></tr> }
+            </tbody>
+        </table>
+    </section>
+</div>
+
+<style>
+    .pa { padding: 6px 8px 48px; width: 100%; box-sizing: border-box; display: flex; flex-direction: column; gap: 14px; }
+    .pa-navrow { display: flex; gap: 14px; }
+    .pa-back { font: 700 12px/1 var(--mono); color: var(--text-muted); background: none; border: none; cursor: pointer; padding: 4px 0; }
+    .pa-back:hover { color: var(--text-primary); }
+    .pa-titlerow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+    .pa-title { font-size: 22px; font-weight: 900; margin: 0; color: var(--text-primary); }
+    .pa-title-g { background: linear-gradient(135deg, var(--flow-violet), var(--flow-magenta)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .pa-sub { font-size: 12.5px; color: var(--text-secondary); margin: 6px 0 0; } .pa-sub b { color: var(--text-primary); }
+    .pa-state { font: 800 11px var(--mono); padding: 5px 10px; border-radius: 999px; border: 1px solid var(--line); }
+    .pa-state.ok { color: #059669; background: color-mix(in srgb, #10b981 13%, transparent); }
+    .pa-state.warn { color: #b45309; background: color-mix(in srgb, #f59e0b 15%, transparent); }
+    .pa-state.bad { color: #dc2626; background: color-mix(in srgb, #ef4444 14%, transparent); }
+    .pa-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+    .pa-kpi { display: flex; flex-direction: column; gap: 3px; padding: 12px 14px; border-radius: 14px; background: var(--card); border: 1px solid var(--line); }
+    .pa-kpi span { font: 700 10.5px var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); }
+    .pa-kpi b { font-size: 20px; font-weight: 900; color: var(--text-primary); }
+    .pa-kpi small { font-size: 11px; color: var(--text-secondary); }
+    .pa-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; }
+    .pa-card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+    .pa-h2 { font-size: 14px; font-weight: 900; margin: 0; color: var(--text-primary); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .pa-slider { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--text-secondary); }
+    .pa-slider b { color: var(--text-primary); } .pa-slider input { width: 100%; accent-color: var(--accent); }
+    .pa-bar { height: 8px; border-radius: 6px; background: var(--card-2); overflow: hidden; }
+    .pa-bar-f { height: 100%; background: linear-gradient(90deg, #10b981, #22d3ee); transition: width .3s; }
+    .pa-bar-f.warn { background: linear-gradient(90deg, #f59e0b, #f97316); } .pa-bar-f.bad { background: linear-gradient(90deg, #ef4444, #dc2626); }
+    .pa-opt { display: flex; align-items: center; gap: 6px; font: 700 12px inherit; color: var(--text-secondary); }
+    .pa-note { font-size: 11.5px; color: var(--text-muted); line-height: 1.45; }
+    .pa-note.warn { color: #b45309; } .pa-note.ok { color: #059669; font-weight: 700; }
+    .pa-gauges { display: flex; justify-content: space-around; gap: 8px; flex-wrap: wrap; }
+    .pa-gauge { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 11px; color: var(--text-secondary); }
+    .pa-gauge svg { width: 84px; height: 84px; }
+    .pa-gauge b { font-size: 12px; color: var(--text-primary); }
+    .pa-pres { font: 800 10.5px var(--mono); padding: 3px 8px; border-radius: 999px; }
+    .pa-pres.ok { color: #059669; background: color-mix(in srgb, #10b981 13%, transparent); }
+    .pa-pres.warn { color: #b45309; background: color-mix(in srgb, #f59e0b 15%, transparent); }
+    .pa-pres.bad { color: #dc2626; background: color-mix(in srgb, #ef4444 14%, transparent); }
+    .pa-spark { width: 100%; height: 48px; background: var(--card-2); border-radius: 8px; }
+    .pa-legend { display: flex; gap: 12px; font: 600 10.5px var(--mono); color: var(--text-muted); }
+    .pa-legend .ram { color: #38bdf8; } .pa-legend .vram { color: #e879f9; }
+    .pa-stats { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--text-secondary); } .pa-stats b { color: var(--text-primary); }
+    .pa-tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .pa-tbl th { text-align: left; font: 700 10.5px var(--mono); text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); padding: 6px 8px; border-bottom: 1px solid var(--line); }
+    .pa-tbl td { padding: 6px 8px; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); color: var(--text-primary); }
+    .pa-empty { text-align: center; color: var(--text-muted) !important; }
+    .pa-tabs { display: inline-flex; gap: 4px; margin-left: auto; }
+    .pa-tabs button { font: 700 11px inherit; padding: 4px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; }
+    .pa-tabs button.on { border-color: var(--accent); color: var(--text-primary); }
+    .pa-actions { display: inline-flex; gap: 6px; margin-left: auto; }
+    .pa-btn { font: 800 12px inherit; padding: 7px 12px; border-radius: 10px; cursor: pointer; border: none; color: #fff; background: linear-gradient(135deg, var(--flow-violet), var(--flow-magenta)); }
+    .pa-btn.ghost { background: var(--card-2); color: var(--text-secondary); border: 1px solid var(--line); }
+    .pa-rates { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; align-items: end; }
+    .pa-rates label { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--text-secondary); }
+    .pa-rates input { font: 600 12px var(--mono); padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); }
+</style>
+
+@code {
+    private static readonly CostService[] Services = { CostService.DashScope, CostService.SiliconFlow, CostService.WanCustom, CostService.Gemini, CostService.ElevenLabs };
+    private readonly HardwareSample[] _hist = new HardwareSample[SystemHardwareTelemetryMonitor.HistorySize];
+    private readonly StringBuilder _sb = new(2048);
+    private int _histCount;
+    private string _ramPts = "", _vramPts = "";
+    private double[] _days = new double[30];
+    private double _dayMax;
+    private double _daily, _monthly;
+    private bool _enforce = true;
+    private bool _byTheme;
+    private bool _ratesOpen;
+    private CostRateCard _rates = new();
+    private List<CostBucket> _buckets = new();
+    private IReadOnlyList<CostEntry> _recent = Array.Empty<CostEntry>();
+    private string? _toast;
+    private long _lastRender;
+    private int _renderQueued;
+
+    protected override void OnInitialized()
+    {
+        var b = Cost.Budget;
+        _daily = b.DailyCapUsd; _monthly = b.MonthlyCapUsd; _enforce = b.Enforce;
+        _rates = Cost.Rates;
+        Refresh();
+        Cost.OnChange += OnLiveChanged;
+        Hw.OnChange += OnLiveChanged;
+        Gov.OnChange += OnLiveChanged;
+        Hw.Start(TimeSpan.FromSeconds(2));
+    }
+
+    // 렌더 직전 파생 데이터 갱신(스파크라인 문자열은 재사용 StringBuilder · 이력은 고정 버퍼 복사).
+    private void Refresh()
+    {
+        _histCount = Hw.CopyHistory(_hist);
+        _ramPts = Points(false);
+        _vramPts = Points(true);
+        _days = Cost.DailySeries(30);
+        _dayMax = 0;
+        foreach (var d in _days) if (d > _dayMax) _dayMax = d;
+        _buckets = Cost.Buckets(_byTheme);
+        _recent = Cost.RecentEntries(20);
+    }
+
+    protected override void OnParametersSet() => Refresh();
+
+    private string Points(bool vram)
+    {
+        _sb.Clear();
+        if (_histCount < 2) return "";
+        var step = 240.0 / (SystemHardwareTelemetryMonitor.HistorySize - 1);
+        var x0 = 240 - step * (_histCount - 1);
+        for (var i = 0; i < _histCount; i++)
+        {
+            double r;
+            if (vram) { if (_hist[i].VramUsedRatio is { } v) r = v; else continue; }
+            else r = _hist[i].RamUsedRatio;
+            if (_sb.Length > 0) _sb.Append(' ');
+            _sb.Append((x0 + step * i).ToString("0.#", CultureInfo.InvariantCulture)).Append(',')
+               .Append((47 - r * 46).ToString("0.#", CultureInfo.InvariantCulture));
+        }
+        return _sb.ToString();
+    }
+
+    // 백그라운드 콜백 → 500ms 스로틀 렌더(대기 중 1건만).
+    private void OnLiveChanged()
+    {
+        try
+        {
+            if (System.Threading.Interlocked.Exchange(ref _renderQueued, 1) == 1) return;
+            var wait = 500 - (Environment.TickCount64 - System.Threading.Interlocked.Read(ref _lastRender));
+            _ = RenderSoonAsync(wait > 0 ? (int)wait : 0);
+        }
+        catch (Exception ex) { Program.Log("AnalyticsHub.OnChange", ex); }
+    }
+
+    private async Task RenderSoonAsync(int delayMs)
+    {
+        try
+        {
+            if (delayMs > 0) await Task.Delay(delayMs);
+            System.Threading.Interlocked.Exchange(ref _lastRender, Environment.TickCount64);
+            System.Threading.Interlocked.Exchange(ref _renderQueued, 0);
+            await InvokeAsync(() => { Refresh(); StateHasChanged(); });
+        }
+        catch (ObjectDisposedException) { /* 페이지 이탈 */ }
+        catch (Exception ex) { Program.Log("AnalyticsHub.Render", ex); }
+    }
+
+    private void OnDailyChanged(ChangeEventArgs e) { if (TryNum(e, out var v)) { _daily = v; ApplyBudget(); } }
+    private void OnMonthlyChanged(ChangeEventArgs e) { if (TryNum(e, out var v)) { _monthly = v; ApplyBudget(); } }
+    private void OnEnforceChanged(ChangeEventArgs e) { _enforce = e.Value is true; ApplyBudget(); }
+    private void ApplyBudget() { Cost.UpdateBudget(_daily, _monthly, _enforce); Refresh(); }
+
+    private static bool TryNum(ChangeEventArgs e, out double v)
+        => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+
+    private void ShowPlatform() { _byTheme = false; Refresh(); }
+    private void ShowTheme() { _byTheme = true; Refresh(); }
+
+    private void SaveRates()
+    {
+        Cost.UpdateRates(_rates);
+        _rates = Cost.Rates;
+        _toast = "💾 요금표를 저장했습니다(이후 호출부터 적용).";
+    }
+
+    private void ExportCsv() => Export("csv");
+    private void ExportJson() => Export("json");
+
+    private void Export(string ext)
+    {
+        try
+        {
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "PromptFlowStudio", "Reports");
+            var path = Path.Combine(dir, "analytics_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture) + "." + ext);
+            if (ext == "csv") Cost.ExportCsv(path); else Cost.ExportJson(path);
+            _toast = "✅ " + Path.GetFileName(path) + " 저장됨";
+            FolderLink.Reveal(path);
+        }
+        catch (Exception ex) { Program.Log("AnalyticsHub.Export", ex); _toast = "⚠ 리포트 저장 실패: " + ex.Message; }
+    }
+
+    private RenderFragment Gauge(string label, double ratio, string detail) => __builder =>
+    {
+        var r = Math.Clamp(double.IsNaN(ratio) ? 0 : ratio, 0, 1);
+        var dash = (r * 213.6).ToString("0.#", CultureInfo.InvariantCulture);
+        var color = r >= 0.9 ? "#ef4444" : r >= 0.75 ? "#f59e0b" : "#22d3ee";
+        <div class="pa-gauge">
+            <svg viewBox="0 0 84 84">
+                <circle cx="42" cy="42" r="34" fill="none" stroke="var(--card-2)" stroke-width="8" />
+                <circle cx="42" cy="42" r="34" fill="none" stroke="@color" stroke-width="8" stroke-linecap="round"
+                        stroke-dasharray="@(dash) 213.6" transform="rotate(-90 42 42)" />
+                <g><text x="42" y="47" text-anchor="middle" font-size="15" font-weight="800" fill="currentColor">@(Pct(r))%</text></g>
+            </svg>
+            <b>@label</b>
+            <span>@detail</span>
+        </div>
+    };
+
+    private static double Ratio(double v, double cap) => cap > 0 ? v / cap : 0;
+    private static string Pct(double r) => (Math.Clamp(r, 0, 9.99) * 100).ToString("0", CultureInfo.InvariantCulture);
+    private static string BarCss(double r) => r >= 1 ? "bad" : r >= 0.8 ? "warn" : "";
+    private static string Gb(long mb) => (mb / 1024.0).ToString("0.0", CultureInfo.InvariantCulture) + "GB";
+    private static string Sec(double s) => s <= 0 ? "—" : s.ToString("0.0", CultureInfo.InvariantCulture) + "초";
+    private static string Eta(TimeSpan t) => t <= TimeSpan.Zero ? "—" : t.TotalHours >= 1 ? ((int)t.TotalHours).ToString(CultureInfo.InvariantCulture) + "시간 " + t.Minutes.ToString(CultureInfo.InvariantCulture) + "분" : Math.Max(1, (int)Math.Ceiling(t.TotalMinutes)).ToString(CultureInfo.InvariantCulture) + "분";
+    private static string StateCss(BudgetState s) => s switch { BudgetState.Ok => "ok", BudgetState.Warning => "warn", _ => "bad" };
+    private static string StateLabel(BudgetState s) => s switch { BudgetState.Ok => "✅ 예산 정상", BudgetState.Warning => "⚠️ 예산 80% 도달", _ => "⛔ 예산 한도 도달 — 생성 일시정지" };
+    private static string PresCss(MemoryPressure p) => p switch { MemoryPressure.Normal => "ok", MemoryPressure.Elevated => "warn", _ => "bad" };
+    private static string PresLabel(MemoryPressure p) => p switch { MemoryPressure.Normal => "정상", MemoryPressure.Elevated => "메모리 압박", _ => "OOM 위험" };
+
+    private static string Qty(in CostEntry e) => e.Unit switch
+    {
+        CostUnit.Seconds => e.Quantity.ToString("0.#", CultureInfo.InvariantCulture) + "초",
+        CostUnit.Tokens => e.InputTokens.ToString("N0", CultureInfo.InvariantCulture) + "→" + e.OutputTokens.ToString("N0", CultureInfo.InvariantCulture) + " tok",
+        CostUnit.Characters => e.Quantity.ToString("N0", CultureInfo.InvariantCulture) + "자",
+        _ => e.Quantity.ToString("0", CultureInfo.InvariantCulture) + "건",
+    };
+
+    public void Dispose()
+    {
+        Cost.OnChange -= OnLiveChanged;
+        Hw.OnChange -= OnLiveChanged;
+        Gov.OnChange -= OnLiveChanged;
+        Hw.Stop();
+    }
+}

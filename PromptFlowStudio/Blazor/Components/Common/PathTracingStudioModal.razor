@@ -1,0 +1,259 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.PathTracing
+@implements IDisposable
+@inject PathTracingStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.74.0] ✨ AI 신경망 패스 트레이싱 & 디노이저 스튜디오 — 노이즈/디노이즈/AOV 미리보기 · SPP 슬라이더 · 디노이저 강도 게이지 ·
+    볼류메트릭 안개(밀도·알베도·이방성)/3DGS 연기 컨트롤 · 태양 고도 · 출력 배율 · MaterialX 재질 편집/프롬프트 프리셋/진단 · .mtlx 내보내기.
+*@
+
+<div class="pts-scrim" @onclick="Close">
+    <div class="pts-modal" @onclick:stopPropagation="true">
+        <div class="pts-h">
+            <div>
+                <div class="pts-title">✨ AI 신경망 패스 트레이싱 &amp; 디노이저 스튜디오</div>
+                <div class="pts-sub"><b>OpenUSD · 3DGS</b> 장면을 서브서피스 산란 · 안개/연기 <b>볼류메트릭 경로 추적</b>으로 렌더하고, 1~4 SPP 노이즈 프레임을
+                    모션 벡터 · 깊이 · 법선으로 <b>잔상 없이 시공간 디노이즈 · 업스케일</b>합니다. 재질은 <b>MaterialX standard_surface</b> BSDF 입니다.</div>
+            </div>
+            <button class="pts-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="pts-bar">
+            <button class="pts-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 렌더 정지" : "▶ 실시간 렌더")</button>
+            <button class="pts-btn @(Runner.Orbit ? "on" : null)" @onclick="() => Runner.Orbit = !Runner.Orbit">🎥 궤도 카메라 @(Runner.Orbit ? "ON" : "OFF")</button>
+            <button class="pts-btn" @onclick="ExportMtlx">💾 .mtlx 내보내기</button>
+            <span class="pts-chip">프레임 @(Runner.Frame)</span>
+            <span class="pts-chip">렌더 @(F1(Runner.Tracer.LastRenderMs))ms · 디노이즈 @(F1(Runner.Denoiser.LastMs))ms</span>
+            <span class="pts-chip">누적 @(Runner.Tracer.AccumulatedFrames)프레임</span>
+            <span class="pts-chip">PSNR @(F1(Runner.PsnrNoisy)) → @(F1(Runner.PsnrDenoised))dB</span>
+            <span class="pts-chip">가림 해제 @(Pct(Runner.Denoiser.DisocclusionRatio)) · 이력 @(F1(Runner.Denoiser.MeanHistoryLength))</span>
+            <span class="pts-chip">SIMD @(VolumetricPathTracingLightTransportEngine.SimdLanes)레인</span>
+        </div>
+
+        <div class="pts-main">
+            <div class="pts-col">
+                <div class="pts-card">
+                    <div class="pts-sec">🖼 렌더 비교 — @(Runner.Tracer.Width)×@(Runner.Tracer.Height) → @(Runner.Denoiser.OutputWidth)×@(Runner.Denoiser.OutputHeight)</div>
+                    <div class="pts-pair">
+                        <div class="pts-img">@if (_img[0] is { } a) { <img src="@a" /> }<span>@(Runner.Spp) SPP 노이즈</span></div>
+                        <div class="pts-img">@if (_img[1] is { } b) { <img src="@b" /> }<span>디노이즈 + 업스케일</span></div>
+                    </div>
+                    <div class="pts-aov">
+                        @for (var k = 0; k < AovChannels.Length; k++)
+                        {
+                            var ch = AovChannels[k];
+                            <div class="pts-img sm">@if (_img[ch] is { } c) { <img src="@c" /> }<span>@(AovLabel(ch))</span></div>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="pts-col">
+                <div class="pts-card">
+                    <div class="pts-sec">🎛 샘플링 · 디노이저</div>
+                    <div class="pts-gauge-row">
+                        <svg class="pts-gauge" viewBox="-60 -58 120 70">
+                            <path d="M-48,0 A48,48 0 0 1 48,0" class="bg" />
+                            <path d="@GaugeArc(Runner.DenoiseStrength)" class="val" />
+                            <g><text x="0" y="-8" class="v">@(F0(Runner.DenoiseStrength * 100))%</text></g>
+                            <g><text x="0" y="8" class="l">디노이저 강도 · À-trous @(Runner.Denoiser.Iterations)회</text></g>
+                        </svg>
+                        <div class="pts-sliders">
+                            <label class="pts-slider"><span>SPP <b>@(Runner.Spp)</b></span><input type="range" min="1" max="16" step="1" value="@(Runner.Spp)" @onchange="e => Runner.Spp = (int)P(e)" /></label>
+                            <label class="pts-slider"><span>디노이저 강도 <b>@(F2(Runner.DenoiseStrength))</b></span><input type="range" min="0" max="1" step="0.05" value="@(F2(Runner.DenoiseStrength))" @onchange="e => Runner.DenoiseStrength = P(e)" /></label>
+                            <label class="pts-slider"><span>최대 바운스 <b>@(Runner.MaxBounces)</b></span><input type="range" min="1" max="12" step="1" value="@(Runner.MaxBounces)" @onchange="e => Runner.MaxBounces = (int)P(e)" /></label>
+                        </div>
+                    </div>
+                    <div class="pts-row">
+                        <span class="pts-note">출력 배율</span>
+                        @foreach (var s in new[] { 1, 2, 4 })
+                        {
+                            var sc = s;
+                            <button class="pts-btn @(Runner.OutputScale == sc ? "on" : null)" @onclick="() => Runner.OutputScale = sc">×@(sc)</button>
+                        }
+                        <span class="pts-note">4K = 렌더 960×540 × 4 (현재 미리보기는 160×90)</span>
+                    </div>
+                </div>
+
+                <div class="pts-card">
+                    <div class="pts-sec">🌫 볼류메트릭 매질 · 조명</div>
+                    <label class="pts-slider"><span>안개 밀도 σt <b>@(F2(Runner.FogDensity))</b>/m</span><input type="range" min="0" max="0.6" step="0.01" value="@(F2(Runner.FogDensity))" @onchange="e => Runner.FogDensity = P(e)" /></label>
+                    <label class="pts-slider"><span>안개 알베도 <b>@(F2(Runner.FogAlbedo))</b></span><input type="range" min="0" max="1" step="0.05" value="@(F2(Runner.FogAlbedo))" @onchange="e => Runner.FogAlbedo = P(e)" /></label>
+                    <label class="pts-slider"><span>위상 이방성 g <b>@(F2(Runner.FogAnisotropy))</b></span><input type="range" min="-0.9" max="0.9" step="0.05" value="@(F2(Runner.FogAnisotropy))" @onchange="e => Runner.FogAnisotropy = P(e)" /></label>
+                    <label class="pts-slider"><span>3DGS 연기 밀도 <b>@(F2(Runner.SmokeDensity))</b>×</span><input type="range" min="0" max="4" step="0.1" value="@(F2(Runner.SmokeDensity))" @onchange="e => Runner.SmokeDensity = P(e)" /></label>
+                    <label class="pts-slider"><span>태양 고도 <b>@(F0(Runner.SunElevation))°</b></span><input type="range" min="2" max="89" step="1" value="@(F0(Runner.SunElevation))" @onchange="e => Runner.SunElevation = P(e)" /></label>
+                </div>
+
+                <div class="pts-card">
+                    <div class="pts-sec">🎨 MaterialX 재질</div>
+                    <div class="pts-mats">
+                        @for (var i = 0; i < Runner.Materials.Count; i++)
+                        {
+                            var idx = i; var m = Runner.Materials.Get(i);
+                            <button class="pts-mat @(idx == _sel ? "on" : null)" @onclick="() => Select(idx)"><i style="background:@(Rgb(m.BaseColor))"></i>@(Runner.Materials.Name(idx))</button>
+                        }
+                    </div>
+                    @if (_sel >= 0 && _sel < Runner.Materials.Count)
+                    {
+                        <div class="pts-edit">
+                            <label class="pts-slider"><span>금속도 <b>@(F2(_edit.Metallic))</b></span><input type="range" min="0" max="1" step="0.05" value="@(F2(_edit.Metallic))" @onchange="e => { _edit.Metallic = P(e); Apply(); }" /></label>
+                            <label class="pts-slider"><span>거칠기 <b>@(F2(_edit.Roughness))</b></span><input type="range" min="0" max="1" step="0.01" value="@(F2(_edit.Roughness))" @onchange="e => { _edit.Roughness = P(e); Apply(); }" /></label>
+                            <label class="pts-slider"><span>서브서피스 <b>@(F2(_edit.Subsurface))</b> · 반경 @(F2(_edit.SubsurfaceRadius))m</span><input type="range" min="0" max="1" step="0.05" value="@(F2(_edit.Subsurface))" @onchange="e => { _edit.Subsurface = P(e); Apply(); }" /></label>
+                            <label class="pts-slider"><span>IOR <b>@(F2(_edit.Ior))</b></span><input type="range" min="1" max="2.5" step="0.01" value="@(F2(_edit.Ior))" @onchange="e => { _edit.Ior = P(e); Apply(); }" /></label>
+                        </div>
+                        <div class="pts-row">
+                            <input class="pts-in" @bind="_prompt" placeholder="예: 반짝이는 금 / 옥 / 피부 / 양초 왁스 / 네온 조명" />
+                            <button class="pts-btn on" @onclick="ApplyPrompt">🧠 프롬프트 → 재질</button>
+                        </div>
+                        @if (_diag is not null)
+                        {
+                            <div class="pts-note">방향 반사율 수직 @(F2(_diag.AlbedoNormal)) · 비스듬 @(F2(_diag.AlbedoGrazing))</div>
+                            @foreach (var issue in _diag.Issues)
+                            {
+                                <div class="pts-warn">⚠ @issue</div>
+                            }
+                            @if (_diag.Issues.Count == 0)
+                            {
+                                <div class="pts-ok">✓ 물리적으로 타당한 재질</div>
+                            }
+                        }
+                    }
+                </div>
+                <div class="pts-note">@(Runner.LastAction ?? "대기") @(_export is null ? "" : " · " + _export)</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .pts-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .pts-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .pts-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f59e0b 18%, var(--card)), color-mix(in srgb, #6366f1 16%, var(--card))); }
+    .pts-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .pts-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .pts-sub b { color: var(--text-primary); }
+    .pts-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .pts-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .pts-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .pts-btn.on { background: color-mix(in srgb, #f59e0b 24%, transparent); border-color: #f59e0b; }
+    .pts-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .pts-main { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .pts-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .pts-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .pts-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); }
+    .pts-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .pts-aov { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+    .pts-img { position: relative; aspect-ratio: 16 / 9; background: #020617; border-radius: 8px; overflow: hidden; border: 1px solid #334155; }
+    .pts-img img { width: 100%; height: 100%; object-fit: cover; image-rendering: pixelated; display: block; }
+    .pts-img > span { position: absolute; left: 6px; bottom: 4px; font: 800 11px var(--mono); color: #fff; text-shadow: 0 1px 2px #000; }
+    .pts-img.sm > span { font-size: 9.5px; }
+    .pts-gauge-row { display: grid; grid-template-columns: 150px 1fr; gap: 10px; align-items: center; }
+    .pts-gauge .bg { fill: none; stroke: #1e293b; stroke-width: 10; } .pts-gauge .val { fill: none; stroke: #f59e0b; stroke-width: 10; stroke-linecap: round; }
+    .pts-gauge .v { font: 800 15px var(--mono); fill: var(--text-primary); text-anchor: middle; } .pts-gauge .l { font-size: 7.5px; fill: var(--text-muted); text-anchor: middle; }
+    .pts-sliders { display: flex; flex-direction: column; gap: 6px; }
+    .pts-slider { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--text-secondary); }
+    .pts-slider b { color: var(--text-primary); font-family: var(--mono); } .pts-slider input { width: 100%; accent-color: #f59e0b; }
+    .pts-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .pts-in { flex: 1; min-width: 160px; font-size: 12px; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .pts-mats { display: flex; flex-wrap: wrap; gap: 4px; }
+    .pts-mat { font-size: 11px; padding: 3px 8px; border-radius: 7px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; display: flex; gap: 5px; align-items: center; }
+    .pts-mat i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; } .pts-mat.on { border-color: #f59e0b; background: color-mix(in srgb, #f59e0b 16%, transparent); }
+    .pts-edit { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; }
+    .pts-warn { font-size: 11px; color: #fdba74; } .pts-ok { font-size: 11px; color: #86efac; }
+    .pts-note { font-size: 11px; color: var(--text-muted); }
+    @@media (max-width: 1200px) { .pts-main { grid-template-columns: 1fr; } .pts-aov { grid-template-columns: repeat(3, 1fr); } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly int[] AovChannels = { 2, 3, 4, 6, 5 };
+    private readonly string?[] _img = new string?[7];
+    private int _sel = -1, _tick;
+    private PbrMaterial _edit;
+    private MaterialDiagnosis? _diag;
+    private string _prompt = "";
+    private string? _export;
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        if (Runner.Frame == 0) Runner.TickOnce();
+        Refresh(true);
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(() => { Refresh(++_tick % 4 == 0); StateHasChanged(); }); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("PathTrace.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string Pct(float v) => (Math.Clamp(v, 0f, 1f) * 100f).ToString("0", CultureInfo.InvariantCulture) + "%";
+    private static float P(ChangeEventArgs e) => float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0;
+    private static string Rgb(System.Numerics.Vector3 c) =>
+        "rgb(" + F0(Math.Clamp(c.X, 0f, 1f) * 255) + "," + F0(Math.Clamp(c.Y, 0f, 1f) * 255) + "," + F0(Math.Clamp(c.Z, 0f, 1f) * 255) + ")";
+    private static string AovLabel(int ch) => ch switch { 2 => "알베도", 3 => "법선", 4 => "깊이", 5 => "누적 참조", _ => "모션 벡터" };
+
+    private static string GaugeArc(float v)
+    {
+        var a = MathF.PI * (1 - Math.Clamp(v, 0.001f, 1f));
+        return "M-48,0 A48,48 0 0 1 " + F1(MathF.Cos(a) * 48) + "," + F1(-MathF.Sin(a) * 48);
+    }
+
+    private void Refresh(bool aov)
+    {
+        _img[0] = Uri(Runner.SnapshotBmp(0));
+        _img[1] = Uri(Runner.SnapshotBmp(1));
+        if (!aov && _img[2] is not null) return;
+        foreach (var ch in AovChannels) _img[ch] = Uri(Runner.SnapshotBmp(ch));
+    }
+
+    private static string Uri(byte[] bmp) => "data:image/bmp;base64," + Convert.ToBase64String(bmp);
+
+    private void Select(int i)
+    {
+        _sel = i;
+        _edit = Runner.Materials.Get(i);
+        _diag = Runner.Materials.Diagnose(i);
+    }
+
+    private void Apply()
+    {
+        if (_sel < 0) return;
+        Runner.SetMaterial(_sel, _edit);
+        _diag = Runner.Materials.Diagnose(_sel);
+    }
+
+    private void ApplyPrompt()
+    {
+        if (_sel < 0 || !Runner.ApplyPrompt(_sel, _prompt)) return;
+        Select(_sel);
+    }
+
+    private void ExportMtlx()
+    {
+        try { _export = System.IO.Path.GetFileName(Runner.ExportMtlx()); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _export = "내보내기 실패: " + ex.Message;
+            PromptFlowStudio.Program.Log("PathTrace.ExportMtlx", ex);
+        }
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

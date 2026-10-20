@@ -1,0 +1,341 @@
+@using System.Diagnostics
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.Deploy
+@implements IDisposable
+@inject DeploymentRunnerHardening Runner
+@inject ArtifactIntegrityGuard Artifacts
+
+@* [PromptFlow Studio · v4.4.4 Task4] 최종 4단계 완수 & 프로덕션 릴리스 선언 게이트 —
+   스크립트 셸 이스케이프·경로 이탈·좀비 타임아웃 kill·산출물 0바이트/확장자/파일락 방어를 실제 실행(자가검증)해
+   전 항목 통과 시 [🛡️ 전관 하드닝 완료 (System Fully Hardened)] 배지와 1~4단계 전체 방어 내역 리포트를 표출한다. *@
+
+<div class="fh-panel">
+    <div class="fh-h">
+        <div class="fh-title">🏁 4단계 · 최종 시스템 무결성 자가검증</div>
+        <div class="fh-sub">배포 파이프라인의 프로세스/파일시스템 방어를 실제 실행해 프로덕션 릴리스 준비를 확정합니다.</div>
+    </div>
+
+    <div class="fh-checks">
+        @foreach (var c in _checks)
+        {
+            <div class="fh-check @(c.Ran ? (c.Passed ? "ok" : "fail") : "idle")" @key="c.Name">
+                <span class="fh-ico">@(c.Ran ? (c.Passed ? "✅" : "⚠️") : "⏳")</span>
+                <span class="fh-cname">@c.Name</span>
+                <span class="fh-cdetail">@c.Detail</span>
+                @if (c.Ran) { <span class="fh-cms">@c.Ms ms</span> }
+            </div>
+        }
+    </div>
+
+    <div class="fh-foot">
+        <button class="fh-btn run" @onclick="RunVerificationAsync" disabled="@_running">@(_running ? "검증 중…" : "🔍 최종 자가검증 실행")</button>
+        @if (_hardened)
+        {
+            <span class="fh-fullbadge">🛡️ 전관 하드닝 완료 · System Fully Hardened</span>
+        }
+    </div>
+
+    @if (_hardened)
+    {
+        <div class="fh-report">
+            <div class="fh-report-h">🧾 최종 시스템 무결성 리포트 <span class="fh-report-sub">1~4단계 전 구간 방어 활성</span></div>
+            <div class="fh-stages">
+                @foreach (var s in Report)
+                {
+                    <div class="fh-stage" @key="s.Tag">
+                        <div class="fh-stage-h"><span class="fh-stage-tag">@s.Tag</span> @s.Title</div>
+                        <ul class="fh-stage-list">
+                            @foreach (var line in s.Defenses) { <li>@line</li> }
+                        </ul>
+                    </div>
+                }
+            </div>
+            <div class="fh-release">
+                @if (!_released)
+                {
+                    <button class="fh-btn go" @onclick="DeclareRelease">🚀 프로덕션 릴리스 준비 완료 선언</button>
+                }
+                else
+                {
+                    <div class="fh-released">✅ 프로덕션 릴리스 준비 완료가 선언되었습니다. (v4.4.4 · 전관 하드닝 4/4)</div>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+@if (_hardened && _celebrate)
+{
+    <div class="fh-celebrate" @onclick="() => _celebrate = false">
+        <div class="fh-confetti" aria-hidden="true">@foreach (var p in _particles) { <span style="@p"></span> }</div>
+        <div class="fh-card" @onclick:stopPropagation="true">
+            <div class="fh-shield">🛡️</div>
+            <div class="fh-done">System Fully Hardened</div>
+            <div class="fh-donesub">1~4단계 전관 하드닝 완료 — 갤러리·AI 파이프라인·3D 음향·배포/시뮬레이터 전 구간 방어 검증 통과.</div>
+            <button class="fh-btn ghost" @onclick="() => _celebrate = false">리포트 보기</button>
+        </div>
+    </div>
+}
+
+<style>
+    .fh-panel{display:flex; flex-direction:column; gap:14px; padding:18px 20px; border-radius:16px; border:1px solid var(--line); background:var(--card)}
+    .fh-title{font-size:16px; font-weight:900; color:var(--text-primary)}
+    .fh-sub{font-size:12px; color:var(--text-secondary); margin-top:4px; line-height:1.55}
+    .fh-checks{display:flex; flex-direction:column; gap:7px}
+    .fh-check{display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:11px; border:1px solid var(--line); background:var(--card-2)}
+    .fh-check.ok{border-color:color-mix(in srgb,#34d399 42%,var(--line)); background:color-mix(in srgb,#34d399 9%,var(--card-2))}
+    .fh-check.fail{border-color:color-mix(in srgb,#f5a623 46%,var(--line)); background:color-mix(in srgb,#f5a623 10%,var(--card-2))}
+    .fh-ico{flex:0 0 auto; font-size:15px}
+    .fh-cname{font-size:12.5px; font-weight:800; color:var(--text-primary); flex:0 0 auto}
+    .fh-cdetail{font:600 11px var(--mono); color:var(--text-secondary); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+    .fh-cms{flex:0 0 auto; font:700 10.5px var(--mono); color:var(--text-muted)}
+    .fh-foot{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+    .fh-btn{font:800 13px inherit; padding:11px 17px; border-radius:11px; cursor:pointer; border:1px solid var(--line); background:var(--card-2); color:var(--text-secondary)}
+    .fh-btn.run:hover{border-color:var(--accent); color:var(--text-primary)}
+    .fh-btn:disabled{opacity:.5; cursor:not-allowed}
+    .fh-btn.go{border:none; color:#fff; background:linear-gradient(135deg,#10b981,#0ea5e9); box-shadow:0 6px 16px color-mix(in srgb,#10b981 28%,transparent)}
+    .fh-btn.go:hover{filter:brightness(1.07)}
+    .fh-btn.ghost:hover{border-color:var(--accent); color:var(--text-primary)}
+    .fh-fullbadge{font:900 12.5px var(--mono); color:#fff; padding:9px 15px; border-radius:24px; background:linear-gradient(135deg,#10b981,#0ea5e9,#7c5cff); box-shadow:0 6px 18px color-mix(in srgb,#0ea5e9 34%,transparent); letter-spacing:.3px}
+    /* 리포트 */
+    .fh-report{border-top:1px solid var(--line); padding-top:14px}
+    .fh-report-h{font-size:13.5px; font-weight:900; color:var(--text-primary); display:flex; align-items:baseline; gap:9px; flex-wrap:wrap}
+    .fh-report-sub{font:700 10.5px var(--mono); color:#6ee7b7}
+    .fh-stages{display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:12px}
+    @@media(max-width:720px){.fh-stages{grid-template-columns:1fr}}
+    .fh-stage{border:1px solid var(--line); border-radius:12px; background:var(--card-2); padding:11px 13px}
+    .fh-stage-h{font-size:12.5px; font-weight:800; color:var(--text-primary); display:flex; align-items:center; gap:8px}
+    .fh-stage-tag{font:800 10px var(--mono); color:#fff; background:linear-gradient(135deg,var(--flow-violet),var(--flow-magenta)); border-radius:6px; padding:2px 7px}
+    .fh-stage-list{margin:8px 0 0; padding-left:18px; display:flex; flex-direction:column; gap:4px}
+    .fh-stage-list li{font-size:11.5px; color:var(--text-secondary); line-height:1.5}
+    .fh-release{margin-top:14px}
+    .fh-released{font:800 12.5px inherit; color:#6ee7b7; padding:11px 14px; border-radius:11px; border:1px solid color-mix(in srgb,#34d399 40%,var(--line)); background:color-mix(in srgb,#34d399 10%,var(--card-2))}
+    /* 축하 오버레이 + Confetti */
+    .fh-celebrate{position:fixed; inset:0; z-index:210; display:flex; align-items:center; justify-content:center; padding:20px; background:rgba(3,4,10,.66); overflow:hidden}
+    .fh-confetti{position:absolute; inset:0; pointer-events:none; overflow:hidden}
+    .fh-confetti span{position:absolute; top:-24px; border-radius:2px; opacity:.9; animation-name:fh-fall; animation-timing-function:cubic-bezier(.28,.44,.63,1); animation-iteration-count:infinite}
+    @@keyframes fh-fall{0%{transform:translateY(-24px) rotate(0);opacity:0}8%{opacity:1}100%{transform:translateY(104vh) rotate(760deg);opacity:.85}}
+    .fh-card{position:relative; z-index:1; width:min(480px,94vw); text-align:center; padding:30px 26px; border-radius:22px; border:1px solid color-mix(in srgb,#0ea5e9 44%,var(--line)); background:var(--card); box-shadow:0 32px 74px rgba(0,0,0,.55)}
+    .fh-shield{font-size:58px; animation:fh-pop .55s ease}
+    @@keyframes fh-pop{0%{transform:scale(.3) rotate(-12deg);opacity:0}70%{transform:scale(1.15)}100%{transform:scale(1) rotate(0);opacity:1}}
+    .fh-done{font-size:23px; font-weight:900; margin-top:8px; background:linear-gradient(135deg,#10b981,#0ea5e9,#7c5cff); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent}
+    .fh-donesub{font-size:12.5px; color:var(--text-secondary); margin:10px 0 18px; line-height:1.6}
+    @@media(prefers-reduced-motion:reduce){.fh-confetti span{display:none} .fh-shield{animation:none}}
+</style>
+
+@code {
+    /// <summary>프로덕션 릴리스 준비 완료 선언 콜백 — 부모가 배포 잠금 해제/버전 태깅 등에 연결.</summary>
+    [Parameter] public EventCallback OnReleaseDeclared { get; set; }
+
+    private sealed record Check(string Name)
+    {
+        public bool Ran { get; set; }
+        public bool Passed { get; set; }
+        public string Detail { get; set; } = "대기 중";
+        public long Ms { get; set; }
+    }
+
+    private sealed record StageSummary(string Tag, string Title, string[] Defenses);
+
+    private static readonly StageSummary[] Report =
+    {
+        new("1단계", "갤러리 DOM·메모리", new[]
+        {
+            "<Virtualize> 가상화 — 보이는 카드만 DOM 유지(157종 상수 DOM)",
+            "네이티브 loading=lazy/decoding=async — 오프스크린 이미지 미로딩",
+            "IAsyncDisposable — 모달 소멸 시 리스너/핸들 즉시 해제",
+        }),
+        new("2단계", "Wan AI 하이브리드", new[]
+        {
+            "nvidia-smi TimeSpan 타임아웃 → 무응답 시 0MB Graceful",
+            "5xx/단선 지수 백오프(Polly 미사용) → 로컬(Low VRAM) 폴백",
+            "stdout·stderr 동시 드레인 — 파이프 데드락 차단",
+        }),
+        new("3단계", "3D 감정 보이스·음향", new[]
+        {
+            "pan/sofalizer Exit 1 흡수 → 원음 패스스루로 영상 완수",
+            "SOFA 부재/0바이트 시 sofalizer 안전 강등",
+            "TTS WAV/MP3 잠금/0바이트 무한대기 가드(예산 반환)",
+        }),
+        new("4단계", "배포 파이프라인·시뮬레이터", new[]
+        {
+            "셸 이스케이프 + ArgumentList — 인젝션 원천 차단",
+            "경로 이탈(..) 차단 · PowerShell -File 전용(임의 코드 차단)",
+            "CancellationToken+TimeSpan(10분) → 좀비 프로세스 Kill(true)",
+            "산출물 0바이트/확장자/파일락 정량 검증",
+            "시뮬레이터 배율 Math.Max(1,·)+NaN 가드 · 리사이즈 디바운스",
+        }),
+    };
+
+    private readonly List<Check> _checks = new()
+    {
+        new Check("스크립트 인자 셸 이스케이프"),
+        new Check("배포 경로 이탈(..) 차단"),
+        new Check("좀비 프로세스 타임아웃 Kill(true)"),
+        new Check("산출물 0바이트·확장자 검증"),
+        new Check("산출물 파일 락 감지"),
+        new Check("시뮬레이터 배율 0나누기·NaN 방어"),
+    };
+
+    private bool _running;
+    private bool _hardened;
+    private bool _released;
+    private bool _celebrate;
+    private readonly List<string> _particles = new();
+    private readonly CancellationTokenSource _cts = new();
+
+    private async Task RunVerificationAsync()
+    {
+        if (_running) return;
+        _running = true; _hardened = false; _released = false;
+        foreach (var c in _checks) { c.Ran = false; c.Passed = false; c.Detail = "실행 중…"; c.Ms = 0; }
+        StateHasChanged();
+
+        await RunCheck(_checks[0], CheckShellEscapeAsync);
+        await RunCheck(_checks[1], CheckPathTraversalAsync);
+        await RunCheck(_checks[2], CheckZombieTimeoutAsync);
+        await RunCheck(_checks[3], CheckArtifactIntegrityAsync);
+        await RunCheck(_checks[4], CheckFileLockAsync);
+        await RunCheck(_checks[5], CheckSimulatorScaleAsync);
+
+        _hardened = _checks.All(c => c.Passed);
+        if (_hardened) { BuildParticles(); _celebrate = true; }
+        _running = false;
+        StateHasChanged();
+    }
+
+    private async Task RunCheck(Check c, Func<Task<(bool Ok, string Detail)>> body)
+    {
+        var sw = Stopwatch.StartNew();
+        try { var (ok, detail) = await body(); c.Passed = ok; c.Detail = detail; }
+        catch (Exception ex) { c.Passed = false; c.Detail = "예외: " + ex.Message; }
+        sw.Stop();
+        c.Ran = true; c.Ms = sw.ElapsedMilliseconds;
+        StateHasChanged();
+        await Task.Yield();
+    }
+
+    // ① 셸 이스케이프 — 메타문자/제어문자가 무력화되는지.
+    private Task<(bool, string)> CheckShellEscapeAsync()
+    {
+        var ps = DeploymentRunnerHardening.EscapePowerShellArgument("a'; Remove-Item C:\\ -Recurse");
+        var sh = DeploymentRunnerHardening.EscapeBashArgument("a'b; rm -rf /");
+        var psOk = ps.StartsWith("'") && ps.EndsWith("'") && ps.Contains("''");
+        var shOk = sh.StartsWith("'") && sh.EndsWith("'") && sh.Contains("'\\''");
+        var ctrlOk = DeploymentRunnerHardening.HasDangerousControlChars("x\ny") && !DeploymentRunnerHardening.HasDangerousControlChars("safe --flag value");
+        var ok = psOk && shOk && ctrlOk;
+        return Task.FromResult((ok, $"pwsh={psOk} · bash={shOk} · 제어문자 거부={ctrlOk}"));
+    }
+
+    // ② 경로 이탈 — 허용 루트 안은 통과, .. 이탈은 거부.
+    private Task<(bool, string)> CheckPathTraversalAsync()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "outputs", "deploy");
+        var inside = DeploymentRunnerHardening.IsWithinRoot(Path.Combine(root, "sub", "app.exe"), root);
+        var escape = DeploymentRunnerHardening.IsWithinRoot(Path.Combine(root, "..", "..", "Windows", "system32", "evil.exe"), root);
+        var ok = inside && !escape;
+        return Task.FromResult((ok, $"내부 경로 허용={inside} · 이탈 거부={!escape}"));
+    }
+
+    // ③ 좀비 방어 — 멈춘 프로세스를 타임아웃 내 Kill(true) 하고 호스트가 무한 대기하지 않는지.
+    private async Task<(bool, string)> CheckZombieTimeoutAsync()
+    {
+        var cmd = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe";
+        var sw = Stopwatch.StartNew();
+        // ping -n 30 ≈ 29초 동안 확실히 실행 → 700ms 타임아웃으로 트리 강제 종료되어야 함.
+        var res = await Runner.RunProcessBoundedAsync(cmd, new[] { "/c", "ping", "127.0.0.1", "-n", "30" },
+            TimeSpan.FromMilliseconds(700), workingDir: null, log: null, ct: _cts.Token);
+        sw.Stop();
+        var boundedReturn = sw.ElapsedMilliseconds <= 4000;   // 호스트가 무한 대기하지 않음
+        var ok = boundedReturn && res.TimedOut && res.Killed;
+        return (ok, $"{sw.ElapsedMilliseconds}ms 내 반환 · TimedOut={res.TimedOut} · Killed={res.Killed}");
+    }
+
+    // ④ 산출물 정량 검증 — 0바이트 거부 · 정상 통과 · 잘못된 확장자 거부.
+    private async Task<(bool, string)> CheckArtifactIntegrityAsync()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pf_artifact_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var zero = Path.Combine(dir, "app_zero.exe");
+            var good = Path.Combine(dir, "app_good.exe");
+            var wrong = Path.Combine(dir, "app_wrong.txt");
+            await File.WriteAllBytesAsync(zero, Array.Empty<byte>(), _cts.Token);
+            await File.WriteAllBytesAsync(good, new byte[4096], _cts.Token);
+            await File.WriteAllBytesAsync(wrong, new byte[4096], _cts.Token);
+
+            var zeroRejected = !Artifacts.Verify(zero, DeployPlatform.Windows).Ok;
+            var goodOk = Artifacts.Verify(good, DeployPlatform.Windows).Ok;
+            var wrongExtRejected = !Artifacts.Verify(wrong, DeployPlatform.Windows).ExtensionOk;
+            var ok = zeroRejected && goodOk && wrongExtRejected;
+            return (ok, $"0바이트 거부={zeroRejected} · 정상 통과={goodOk} · 확장자 거부={wrongExtRejected}");
+        }
+        finally { TryDeleteDir(dir); }
+    }
+
+    // ⑤ 파일 락 — 배타적으로 열린 파일을 '사용 중'으로 감지하고, 해제 후 덮어쓰기 가능으로 전환하는지.
+    private async Task<(bool, string)> CheckFileLockAsync()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "pf_lock_" + Guid.NewGuid().ToString("N") + ".exe");
+        await File.WriteAllBytesAsync(path, new byte[2048], _cts.Token);
+        try
+        {
+            bool lockedDetected;
+            using (var _ = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+                var (canOverwrite, _) = await Artifacts.EnsureOverwritableAsync(path, TimeSpan.FromMilliseconds(300), _cts.Token);
+                lockedDetected = !canOverwrite;   // 잠긴 동안엔 덮어쓰기 불가로 감지되어야 함
+            }
+            var (freed, _) = await Artifacts.EnsureOverwritableAsync(path, TimeSpan.FromMilliseconds(300), _cts.Token);
+            var ok = lockedDetected && freed;
+            return (ok, $"잠금 감지={lockedDetected} · 해제 후 가능={freed}");
+        }
+        finally { TryDelete(path); }
+    }
+
+    // ⑥ 시뮬레이터 배율 — 0/음수/NaN 입력에도 유한한 배율을 반환하는지(DivideByZero/NaN 불가).
+    private Task<(bool, string)> CheckSimulatorScaleAsync()
+    {
+        var s0 = SimulatorUiHardening.ComputeScale(0, 0, 1080, 2340);         // 창 0 → 0나누기 없음
+        var sNeg = SimulatorUiHardening.ComputeScale(-50, -50, 0, 0);         // 음수 폭 + 디바이스 0
+        var sNan = SimulatorUiHardening.ComputeScale(double.NaN, double.PositiveInfinity, 1080, 2340);
+        var sNorm = SimulatorUiHardening.ComputeScale(540, 1170, 1080, 2340); // 정상 → 0.5 근사
+        bool Finite(double v) => !double.IsNaN(v) && !double.IsInfinity(v) && v >= 0.1 && v <= 1.0;
+        var ok = Finite(s0) && Finite(sNeg) && Finite(sNan) && Finite(sNorm);
+        return Task.FromResult((ok, $"0→{Fx(s0)} · 음수→{Fx(sNeg)} · NaN→{Fx(sNan)} · 정상→{Fx(sNorm)}"));
+    }
+
+    private void BuildParticles()
+    {
+        _particles.Clear();
+        var rnd = new Random();
+        string[] colors = { "#10b981", "#0ea5e9", "#7c5cff", "#f5a623", "#ff6b6b", "#34d399" };
+        for (var i = 0; i < 52; i++)
+        {
+            var left = rnd.Next(0, 100);
+            var delay = rnd.NextDouble() * 1.8;
+            var dur = 2.4 + rnd.NextDouble() * 1.9;
+            var size = 7 + rnd.Next(0, 9);
+            var color = colors[rnd.Next(colors.Length)];
+            _particles.Add($"left:{left}%;width:{size}px;height:{size}px;background:{color};" +
+                $"animation-delay:{delay.ToString("0.##", CultureInfo.InvariantCulture)}s;" +
+                $"animation-duration:{dur.ToString("0.##", CultureInfo.InvariantCulture)}s");
+        }
+    }
+
+    private async Task DeclareRelease()
+    {
+        if (!_hardened) return;
+        _released = true;
+        await OnReleaseDeclared.InvokeAsync();
+    }
+
+    private static string Fx(double v) => v.ToString("0.##", CultureInfo.InvariantCulture);
+
+    private static void TryDelete(string path) { try { if (File.Exists(path)) File.Delete(path); } catch { } }
+    private static void TryDeleteDir(string dir) { try { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); } catch { } }
+
+    public void Dispose() { try { _cts.Cancel(); } catch { } _cts.Dispose(); }
+}

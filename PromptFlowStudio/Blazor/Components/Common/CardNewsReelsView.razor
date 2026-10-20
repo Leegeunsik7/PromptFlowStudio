@@ -1,0 +1,158 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Media
+@using PromptFlowStudio.Services.SocialMedia
+@inject CardNewsReelsGenerator Gen
+@inject InstagramReelsService Ig
+@implements IDisposable
+
+@* ── v17.30.1: 카드뉴스 9:16 릴스 — Hook · 본문 3 · CTA 프리뷰 → MP4 합성 → Instagram Reels 발행(컨테이너 → FINISHED 폴링 → media_publish) ── *@
+<div class="gth-v17301-card hud-panel hud-gpu @(_genOk || Ig.Stage == ReelsPublishStage.Published ? "ok" : Ig.Stage == ReelsPublishStage.Failed ? "err" : null)">
+    <div class="gth-v17301-h">🎴 카드뉴스 릴스
+        <span class="gth-v17301-be">@(Gen.IsAvailable ? "ffmpeg 준비" : "ffmpeg 없음 · HTML 폴백") · IG @(Ig.IsConfigured ? "자격 OK" : "자격 미구성")</span>
+    </div>
+    <div class="gth-v17301-form">
+        <input placeholder="Hook" @bind="_hook" />
+        <input placeholder="Hook 보조 문구" @bind="_hookSub" />
+        @for (var i = 0; i < 3; i++)
+        {
+            var k = i;
+            <input placeholder="@("본문 " + (k + 1).ToString(CultureInfo.InvariantCulture) + " 제목")" @bind="_bodyTitle[k]" />
+            <input placeholder="@("본문 " + (k + 1).ToString(CultureInfo.InvariantCulture) + " 내용")" @bind="_bodyText[k]" />
+        }
+        <input placeholder="CTA" @bind="_cta" />
+        <input placeholder="CTA 요약" @bind="_ctaSub" />
+    </div>
+    <div class="gth-v17301-pv">
+        @for (var i = 0; i < 5; i++)
+        {
+            var (t, b) = SlideText(i);
+            <div class="gth-v17301-slide @(i is 0 or 4 ? "hook" : null)">
+                <i></i><b>@(t)</b><span>@(b)</span><em>@(CardNewsReelsGenerator.PageLabel(i, 5))</em>
+            </div>
+        }
+    </div>
+    <div class="gth-v17301-row">
+        <button class="gth-v17301-btn" disabled="@(_generating)" @onclick="GenerateAsync">@(_generating ? "합성 중 " + Pct(_genProgress) : "▶ MP4 생성")</button>
+        <label class="gth-v17301-chk"><input type="checkbox" @bind="_consent" /> 공개 게시 동의</label>
+        <button class="gth-v17301-btn" disabled="@(Ig.IsBusy || !_consent || _lastVideo is null)" @onclick="PublishFileAsync">📲 파일 발행</button>
+    </div>
+    <div class="gth-v17301-row">
+        <input class="gth-v17301-url" placeholder="공개 HTTPS video_url(선택)" @bind="_videoUrl" />
+        <button class="gth-v17301-btn" disabled="@(Ig.IsBusy || !_consent)" @onclick="PublishUrlAsync">URL 발행</button>
+    </div>
+    <div class="gth-v17301-bar"><div style="width:@(Pct(Ig.Progress))"></div></div>
+    <div class="gth-v17301-st">IG @(StageLabel(Ig.Stage)) · @(Ig.LastMessage)@(Ig.LastMediaId is { } mid ? " · media " + mid : "")</div>
+    @if (_genMessage is { } gm)
+    {
+        <div class="gth-v17301-act @(_genOk ? null : "warn")">@(gm)</div>
+    }
+</div>
+
+<style>
+    .gth-v17301-card { padding: 8px 10px; margin-bottom: 8px; }
+    .gth-v17301-h { font-weight: 600; display: flex; justify-content: space-between; gap: 8px; }
+    .gth-v17301-be { font-weight: 400; color: var(--hud-text-muted, #94A3B8); font-size: .85em; }
+    .gth-v17301-form { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin: 6px 0; }
+    .gth-v17301-form input, .gth-v17301-url { font-size: .8em; padding: 2px 6px; min-width: 0; }
+    .gth-v17301-pv { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+    .gth-v17301-slide { aspect-ratio: 9 / 16; background: #0F172A; color: #fff; border-radius: 4px; padding: 8% 9%; position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-start; font-size: .58em; }
+    .gth-v17301-slide.hook { justify-content: center; }
+    .gth-v17301-slide i { width: 22%; height: 3px; background: #38BDF8; margin-bottom: 6px; }
+    .gth-v17301-slide b { font-size: 1.35em; line-height: 1.25; margin-bottom: 6px; word-break: keep-all; }
+    .gth-v17301-slide span { color: #CBD5E1; line-height: 1.4; word-break: keep-all; }
+    .gth-v17301-slide em { position: absolute; right: 9%; bottom: 6%; color: #38BDF8; font-style: normal; }
+    .gth-v17301-row { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
+    .gth-v17301-url { flex: 1; }
+    .gth-v17301-btn { font-size: .8em; padding: 2px 8px; }
+    .gth-v17301-chk { font-size: .8em; display: flex; gap: 4px; align-items: center; }
+    .gth-v17301-bar { height: 4px; background: rgba(148, 163, 184, .25); border-radius: 2px; margin-top: 6px; overflow: hidden; }
+    .gth-v17301-bar div { height: 100%; background: var(--hud-ok, #34D399); transition: width .2s; }
+    .gth-v17301-st { font-size: .8em; margin-top: 4px; color: var(--hud-text-muted, #94A3B8); }
+    .gth-v17301-act { font-size: .8em; margin-top: 4px; }
+    .gth-v17301-act.warn { color: var(--hud-warn, #FBBF24); }
+</style>
+
+@code {
+    private string _hook = "", _hookSub = "", _cta = "", _ctaSub = "", _videoUrl = "";
+    private readonly string[] _bodyTitle = new string[3];
+    private readonly string[] _bodyText = new string[3];
+    private bool _generating, _genOk, _consent;
+    private double _genProgress;
+    private string? _genMessage, _lastVideo;
+    private CancellationTokenSource? _cts;
+
+    protected override void OnInitialized() => Ig.OnChange += OnIgChanged;
+
+    private void OnIgChanged() => _ = InvokeAsync(StateHasChanged);
+
+    private (string Title, string Body) SlideText(int i) => i switch
+    {
+        0 => (_hook, _hookSub),
+        4 => (_cta, _ctaSub),
+        _ => (_bodyTitle[i - 1] ?? "", _bodyText[i - 1] ?? ""),
+    };
+
+    private CardNewsDeck BuildDeck()
+    {
+        var bodies = new CardNewsSlide[3];
+        for (var i = 0; i < 3; i++) bodies[i] = new CardNewsSlide(CardNewsSlideKind.Body, _bodyTitle[i] ?? "", _bodyText[i] ?? "");
+        var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "PromptFlow", "CardNews");
+        var file = "reels_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture) + ".mp4";
+        return new CardNewsDeck(_hook, _hookSub, bodies, _cta, _ctaSub, Path.Combine(dir, file));
+    }
+
+    private async Task GenerateAsync()
+    {
+        if (_generating) return;
+        _generating = true; _genOk = false; _genProgress = 0; _genMessage = null;
+        _cts?.Dispose();
+        _cts = new CancellationTokenSource();
+        try
+        {
+            var prog = new Progress<double>(p => { _genProgress = p; _ = InvokeAsync(StateHasChanged); });
+            var r = await Gen.GenerateAsync(BuildDeck(), prog, _cts.Token);
+            _genOk = r.Ok;
+            if (r.Ok) _lastVideo = r.VideoPath;
+            var path = r.VideoPath ?? r.HtmlPath;
+            _genMessage = r.Message + (path is null ? "" : " · " + path);
+        }
+        catch (Exception ex) { _genMessage = "생성 실패: " + ex.Message; }
+        finally { _generating = false; }
+    }
+
+    private async Task PublishFileAsync()
+    {
+        if (_lastVideo is null) return;
+        try { await Ig.PublishFileAsync(_lastVideo, Caption(), _consent); }
+        catch (Exception ex) { _genMessage = "발행 실패: " + ex.Message; }
+    }
+
+    private async Task PublishUrlAsync()
+    {
+        try { await Ig.PublishFromUrlAsync(_videoUrl, Caption()); }
+        catch (Exception ex) { _genMessage = "발행 실패: " + ex.Message; }
+    }
+
+    private string Caption() => string.IsNullOrWhiteSpace(_ctaSub) ? _hook : _hook + "\n\n" + _ctaSub;
+
+    private static string Pct(double v) => (Math.Clamp(v, 0, 1) * 100).ToString("0", CultureInfo.InvariantCulture) + "%";
+
+    private static string StageLabel(ReelsPublishStage s) => s switch
+    {
+        ReelsPublishStage.CreatingContainer => "컨테이너 생성",
+        ReelsPublishStage.Uploading => "업로드",
+        ReelsPublishStage.Polling => "처리 대기",
+        ReelsPublishStage.Publishing => "게시 중",
+        ReelsPublishStage.Published => "게시 완료",
+        ReelsPublishStage.Failed => "실패",
+        ReelsPublishStage.Canceled => "취소",
+        _ => "대기",
+    };
+
+    public void Dispose()
+    {
+        Ig.OnChange -= OnIgChanged;
+        _cts?.Cancel();
+        _cts?.Dispose();
+    }
+}

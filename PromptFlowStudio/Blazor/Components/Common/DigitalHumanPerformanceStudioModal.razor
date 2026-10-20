@@ -1,0 +1,371 @@
+@using System.Globalization
+@using System.Numerics
+@using System.Text
+@using PromptFlowStudio.Services.DigitalHuman
+@implements IDisposable
+@inject DigitalHumanPerformanceStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.82.0] 👤 AI 디지털 휴먼 & 신경망 표정 스튜디오 — 3DGS 얼굴 뷰포트(궤도 · SSS 셰이딩 · 안구/동공) ·
+    대사 연기(감정선 · 비짐) · ARKit 52 블렌드셰이프 웨이트 모니터 · FLAME 정체성 β · SSS 피부 룩 슬라이더 · 안구 시선 추적 비주얼라이저.
+*@
+
+<div class="dhp-scrim" @onclick="Close">
+    <div class="dhp-modal" @onclick:stopPropagation="true">
+        <div class="dhp-h">
+            <div>
+                <div class="dhp-title">👤 AI 디지털 휴먼 &amp; 신경망 표정 스튜디오</div>
+                <div class="dhp-sub"><b>ARKit 52</b> 블렌드셰이프 + FLAME 턱 관절을 근육 동역학(활성 · 연조직 스프링 · 길항 억제)으로 SIMD 합성하고, 피부 <b>SSS</b>(Burley 확산 · 2-발색단) ·
+                    모공/표정 주름을 3DGS 스플랫에 실시간 셰이딩하며, 대사 감정선에 감응하는 <b>시선 단속 · 깜빡임 · 동공</b>을 가드합니다.</div>
+            </div>
+            <button class="dhp-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="dhp-bar">
+            <button class="dhp-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 연기")</button>
+            <button class="dhp-btn" @onclick="Step" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="dhp-btn" @onclick="Runner.NewTake">🎬 새 테이크</button>
+            @foreach (var p in Presets)
+            {
+                <button class="dhp-btn @(Runner.Face.Preset == p ? "on" : null)" @onclick="() => Runner.SetPreset(p)">@(PresetIcon(p)) @(DigitalHumanPerformanceStudioRunner.PresetName(p))</button>
+            }
+            <span class="dhp-chip @(Runner.Face.LastStepMs + Runner.Skin.LastShadeMs < 16.6 ? "ok" : "warn")">표정 @(F2(Runner.Face.LastStepMs)) ms · SSS @(F2(Runner.Skin.LastShadeMs)) ms</span>
+            <span class="dhp-chip">활성 셰이프 @(Runner.Face.ActiveShapes)/52 · 스플랫 @(Runner.Splats.Count)</span>
+        </div>
+
+        <div class="dhp-main">
+            <div class="dhp-col">
+                <div class="dhp-card">
+                    <div class="dhp-sec">🎥 3DGS 얼굴 뷰포트 — 궤도 @(F0(_yaw))°
+                        <input type="range" min="-70" max="70" value="@(F0(_yaw))" @oninput="OnYaw" class="dhp-yaw" />
+                    </div>
+                    <svg class="dhp-vp" viewBox="0 0 @(VW) @(VH)">
+                        @{ var n = Collect(); }
+                        @for (var k = 0; k < n; k++)
+                        {
+                            var i = _idx[k]; var p = Proj(Runner.Splats.Position(i)); var c = Runner.Splats.BaseColor(i);
+                            var eye = i >= NeuralFacialMuscleSimulator.VertexCount;
+                            <circle cx="@(F1(p.X))" cy="@(F1(p.Y))" r="@(F2(Math.Clamp((eye ? 0.0021f : 0.0034f) * Focal / p.Z, 0.8f, 9f)))" style="fill:@(Rgb(c.X, c.Y, c.Z))" />
+                        }
+                    </svg>
+                    <div class="dhp-kv">
+                        <span>감정 <b>@(Runner.Emotion.Label)</b> · V @(F2(Runner.Gaze.Valence)) · A @(F2(Runner.Gaze.Arousal)) · F @(F2(Runner.Gaze.Fear))</span>
+                        <span>비짐 <b>@(Runner.Face.CurrentViseme)</b></span>
+                        <span>턱 <b>@(F1(Runner.Face.JawAngle * 180f / MathF.PI))°</b></span>
+                        <span>최대 변위 <b>@(F1(Runner.Face.MaxDisplacement * 1000f)) mm</b></span>
+                    </div>
+                </div>
+
+                <div class="dhp-card">
+                    <div class="dhp-sec">🎙 대사 연기 — 감정선 → 표정 · 시선 · 립싱크</div>
+                    <div class="dhp-row">
+                        <input class="dhp-in" @bind="_line" placeholder="예: 정말 고마워요, 오늘 너무 행복해요!" />
+                        <button class="dhp-btn on" @onclick="() => Runner.Perform(_line)">연기</button>
+                    </div>
+                    <div class="dhp-script">
+                        @foreach (var s in DigitalHumanPerformanceStudioRunner.DefaultScript)
+                        {
+                            <button class="dhp-ln" @onclick="() => Runner.Perform(s)">@s</button>
+                        }
+                    </div>
+                    @if (Runner.Line is { } ln && Runner.Cursor < ln.Length)
+                    {
+                        <div class="dhp-say">@(ln[..Runner.Cursor])<b>@(ln[Runner.Cursor])</b><span>@(ln[(Runner.Cursor + 1)..])</span></div>
+                    }
+                </div>
+
+                <div class="dhp-card">
+                    <div class="dhp-sec">🧴 SSS 피부 룩 — 에너지 오차 @(Runner.Skin.EnergyError.ToString("0.0E0", CultureInfo.InvariantCulture)) · 주름 활성 @(F3(Runner.Skin.WrinkleActivity))</div>
+                    <div class="dhp-row">
+                        @foreach (var l in Looks)
+                        {
+                            <button class="dhp-btn @(Runner.Skin.Look == l ? "on" : null)" @onclick="() => Runner.SetLook(l)">@(PhotorealisticMicroSkinSssSynthesizer.LookName(l))</button>
+                        }
+                    </div>
+                    <div class="dhp-sl">
+                        <label>멜라닌 <b>@(F2(Runner.Skin.Melanin))</b><input type="range" min="0" max="100" value="@(F0(Runner.Skin.Melanin * 100))" @onchange="e => SetSkin(e, v => Runner.Skin.Melanin = v / 100f)" /></label>
+                        <label>헤모글로빈 <b>@(F2(Runner.Skin.Hemoglobin))</b><input type="range" min="0" max="100" value="@(F0(Runner.Skin.Hemoglobin * 100))" @onchange="e => SetSkin(e, v => Runner.Skin.Hemoglobin = v / 100f)" /></label>
+                        <label>산란 반경 <b>@(F1(Runner.Skin.ScatterMm)) mm</b><input type="range" min="5" max="120" value="@(F0(Runner.Skin.ScatterMm * 10))" @onchange="e => SetSkin(e, v => Runner.Skin.ScatterMm = v / 10f)" /></label>
+                        <label>반투명 <b>@(F2(Runner.Skin.Translucency))</b><input type="range" min="0" max="100" value="@(F0(Runner.Skin.Translucency * 100))" @onchange="e => SetSkin(e, v => Runner.Skin.Translucency = v / 100f)" /></label>
+                        <label>모공 밀도 <b>@(F2(Runner.Skin.PoreDensity))</b><input type="range" min="0" max="100" value="@(F0(Runner.Skin.PoreDensity * 100))" @onchange="e => SetSkin(e, v => Runner.Skin.PoreDensity = v / 100f)" /></label>
+                        <label>모공 깊이 <b>@(F2(Runner.Skin.PoreDepth))</b><input type="range" min="0" max="100" value="@(F0(Runner.Skin.PoreDepth * 100))" @onchange="e => SetSkin(e, v => Runner.Skin.PoreDepth = v / 100f)" /></label>
+                        <label>주름 깊이 <b>@(F2(Runner.Skin.WrinkleDepth))</b><input type="range" min="0" max="100" value="@(F0(Runner.Skin.WrinkleDepth * 100))" @onchange="e => SetSkin(e, v => Runner.Skin.WrinkleDepth = v / 100f)" /></label>
+                        <label>유분 <b>@(F2(Runner.Skin.Oiliness))</b><input type="range" min="0" max="100" value="@(F0(Runner.Skin.Oiliness * 100))" @onchange="e => SetSkin(e, v => Runner.Skin.Oiliness = v / 100f)" /></label>
+                        <label>거칠기 <b>@(F2(Runner.Skin.Roughness))</b><input type="range" min="10" max="100" value="@(F0(Runner.Skin.Roughness * 100))" @onchange="e => SetSkin(e, v => Runner.Skin.Roughness = v / 100f)" /></label>
+                    </div>
+                    <div class="dhp-split">
+                        <svg class="dhp-prof" viewBox="0 0 130 60" preserveAspectRatio="none">
+                            <polyline points="@Kernel(Runner.Skin.KernelR)" class="kr" />
+                            <polyline points="@Kernel(Runner.Skin.KernelG)" class="kg" />
+                            <polyline points="@Kernel(Runner.Skin.KernelB)" class="kb" />
+                        </svg>
+                        <div class="dhp-kv col">
+                            <span>확산 프로파일(Burley · R &gt; G &gt; B) · 격자 @(F1(Runner.Skin.GridSpacingMm)) mm</span>
+                            <span>평균 알베도 <b>@(F2(Runner.Skin.MeanAlbedo.X)) / @(F2(Runner.Skin.MeanAlbedo.Y)) / @(F2(Runner.Skin.MeanAlbedo.Z))</b></span>
+                            @{ var m = Runner.Skin.ToPbrMaterial(); }
+                            <span>경로 추적 재질 <b>SSS @(F2(m.Subsurface)) · r @(F1(m.SubsurfaceRadius * 1000f)) mm · IOR @(F2(m.Ior))</b></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="dhp-col">
+                <div class="dhp-card">
+                    <div class="dhp-sec">👁 안구 시선 추적 — @(TargetName(Runner.Gaze.CurrentTarget)) @(Runner.Gaze.InSaccade ? "· 단속 중" : "")
+                        <span class="dhp-mini">카메라 X <input type="range" min="-100" max="100" value="@(F0(Runner.CameraPosition.X * 100))" @onchange="OnCam" /></span>
+                        <span class="dhp-mini">휘도 <input type="range" min="0" max="400" value="@(F0(MathF.Log10(Runner.Gaze.Luminance) * 100 + 200))" @onchange="OnLum" /></span>
+                    </div>
+                    <div class="dhp-split">
+                        <svg class="dhp-gz" viewBox="0 0 @(GW) @(GH)">
+                            <rect x="@(F1(GX(-AutonomousDigitalHumanGazeGuard.YawLimit)))" y="@(F1(GY(AutonomousDigitalHumanGazeGuard.PitchUpLimit)))" width="@(F1(GX(AutonomousDigitalHumanGazeGuard.YawLimit) - GX(-AutonomousDigitalHumanGazeGuard.YawLimit)))" height="@(F1(GY(-AutonomousDigitalHumanGazeGuard.PitchDownLimit) - GY(AutonomousDigitalHumanGazeGuard.PitchUpLimit)))" class="lim" />
+                            <line x1="0" y1="@(F1(GY(0)))" x2="@(GW)" y2="@(F1(GY(0)))" class="ax" /><line x1="@(F1(GX(0)))" y1="0" x2="@(F1(GX(0)))" y2="@(GH)" class="ax" />
+                            @for (var t = 0; t < Runner.Gaze.TargetCount; t++)
+                            {
+                                AutonomousDigitalHumanGazeGuard.AnglesTo(Runner.Gaze.TargetPosition(t), out var ty, out var tp, out _);
+                                var cur = t == Runner.Gaze.CurrentTarget;
+                                if (Runner.Gaze.TargetIsCamera(t))
+                                {
+                                    <rect x="@(F1(GX(ty) - 5))" y="@(F1(GY(tp) - 5))" width="10" height="10" class="cam @(cur ? "cur" : null)" />
+                                }
+                                else
+                                {
+                                    <circle cx="@(F1(GX(ty)))" cy="@(F1(GY(tp)))" r="@(F1(3 + 3 * Runner.Gaze.TargetSalience(t)))" class="aud @(cur ? "cur" : null)" />
+                                }
+                            }
+                            <polyline points="@Trail()" class="trail" />
+                            <line x1="@(F1(GX(Runner.Gaze.HeadYaw)))" y1="@(F1(GY(Runner.Gaze.HeadPitch) - 8))" x2="@(F1(GX(Runner.Gaze.HeadYaw)))" y2="@(F1(GY(Runner.Gaze.HeadPitch) + 8))" class="head" />
+                            <circle cx="@(F1(GX(Runner.Gaze.GazeYaw)))" cy="@(F1(GY(Runner.Gaze.GazePitch)))" r="@(F1(2 + Runner.Gaze.PupilMm * 0.7f))" class="gaze" style="fill-opacity:@(F2(1 - 0.8 * Runner.Gaze.Blink))" />
+                        </svg>
+                        <div class="dhp-kv col">
+                            <span>시선 <b>@(F1(Runner.Gaze.GazeYaw))° / @(F1(Runner.Gaze.GazePitch))°</b> · 머리 <b>@(F1(Runner.Gaze.HeadYaw))°</b></span>
+                            <span>눈(L/R) <b>@(F1(Runner.Gaze.EyeYawLeft))° / @(F1(Runner.Gaze.EyeYawRight))°</b> · 초점 @(F2(Runner.Gaze.FocusDistance)) m</span>
+                            <span>단속 <b>@(Runner.Gaze.Saccades)</b> · 미세 <b>@(Runner.Gaze.Microsaccades)</b></span>
+                            <span>최근 진폭 <b>@(F1(Runner.Gaze.LastAmplitude))°</b> · @(F0(Runner.Gaze.LastDuration * 1000)) ms · 최고 @(F0(Runner.Gaze.LastPeakVelocity))°/s</span>
+                            <span>깜빡임 <b>@(Runner.Gaze.Blinks)</b> · @(F1(Runner.Gaze.BlinkRatePerMin))/분</span>
+                            <span>동공 <b>@(F2(Runner.Gaze.PupilMm)) mm</b> · 휘도 @(F0(Runner.Gaze.Luminance)) cd/m²</span>
+                            <span>카메라 응시 <b>@(F0(Runner.Gaze.CameraContactRatio * 100))%</b></span>
+                            <span>가드: 한계 이관 <b>@(Runner.Gaze.Clamps)</b> · 고착 해제 <b>@(Runner.Gaze.StareBreaks)</b> · 폭주 @(Runner.Gaze.VergenceClamps)</span>
+                        </div>
+                    </div>
+                    <svg class="dhp-spark" viewBox="0 0 @(AutonomousDigitalHumanGazeGuard.HistoryLen) 40" preserveAspectRatio="none">
+                        <polyline points="@Spark(0)" class="blink" />
+                        <polyline points="@Spark(1)" class="pupil" />
+                    </svg>
+                    <div class="dhp-axis"><span>깜빡임(눈꺼풀 닫힘)</span><span>동공 지름 2–8 mm</span></div>
+                </div>
+
+                <div class="dhp-card">
+                    <div class="dhp-sec">📊 ARKit 블렌드셰이프 웨이트 — 교정 @(F2(Runner.Face.CorrectiveWeight(0))) / @(F2(Runner.Face.CorrectiveWeight(1))) / @(F2(Runner.Face.CorrectiveWeight(2)))</div>
+                    <div class="dhp-bs">
+                        @for (var k = 0; k < NeuralFacialMuscleSimulator.ShapeCount; k++)
+                        {
+                            var s = (ArkitBlendshape)k; var w = Runner.Face.Weight(s); var tg = Runner.Face.Target(s);
+                            <div class="dhp-b @(w > 0.01f ? "act" : null)">
+                                <span class="nm">@(NeuralFacialMuscleSimulator.Name(k))</span>
+                                <span class="tr"><i style="width:@(F1(w * 100))%"></i><u style="left:@(F1(tg * 100))%"></u></span>
+                                <span class="v">@(F2(w))</span>
+                            </div>
+                        }
+                    </div>
+                    <div class="dhp-row">
+                        <select class="dhp-in sm" @bind="_manual">
+                            @for (var k = 0; k < NeuralFacialMuscleSimulator.ShapeCount; k++)
+                            {
+                                <option value="@k">@(NeuralFacialMuscleSimulator.Name(k))</option>
+                            }
+                        </select>
+                        <input type="range" min="0" max="100" value="@(F0(Runner.Face.Layer(FaceLayer.Manual, (ArkitBlendshape)_manual) * 100))" @onchange="OnManual" class="dhp-yaw" />
+                        <button class="dhp-btn" @onclick="Runner.ClearManual">↺ 수동 초기화</button>
+                    </div>
+                </div>
+
+                <div class="dhp-card">
+                    <div class="dhp-sec">🧬 FLAME 정체성 β(±2.5σ)</div>
+                    <div class="dhp-sl four">
+                        @for (var k = 0; k < NeuralFacialMuscleSimulator.IdentityCount; k++)
+                        {
+                            var kk = k;
+                            <label>@(NeuralFacialMuscleSimulator.IdentityName(k)) <b>@(F1(Runner.Face.Identity(k)))</b><input type="range" min="-250" max="250" value="@(F0(Runner.Face.Identity(k) * 100))" @onchange="e => OnIdentity(kk, e)" /></label>
+                        }
+                    </div>
+                </div>
+                <div class="dhp-note">@(Runner.LastAction ?? "대기") · @(Runner.Gaze.LastAction ?? "")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .dhp-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .dhp-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .dhp-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f472b6 16%, var(--card)), color-mix(in srgb, #a78bfa 16%, var(--card))); }
+    .dhp-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .dhp-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .dhp-sub b { color: var(--text-primary); }
+    .dhp-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .dhp-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .dhp-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .dhp-btn:disabled { opacity: .4; cursor: default; } .dhp-btn.on { background: color-mix(in srgb, #f472b6 24%, transparent); border-color: #f472b6; }
+    .dhp-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .dhp-chip.ok { border-color: #22c55e; color: #86efac; } .dhp-chip.warn { border-color: #f97316; color: #fdba74; }
+    .dhp-main { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .dhp-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .dhp-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .dhp-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .dhp-yaw { flex: 1; min-width: 120px; } .dhp-mini { font: 600 10.5px var(--mono); color: var(--text-muted); display: flex; gap: 4px; align-items: center; } .dhp-mini input { width: 90px; }
+    .dhp-vp { width: 100%; aspect-ratio: 1; max-height: 520px; background: radial-gradient(ellipse at 50% 40%, #27272a, #09090b); border-radius: 10px; }
+    .dhp-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .dhp-in { flex: 1; min-width: 200px; font-size: 12px; padding: 6px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); } .dhp-in.sm { flex: 0 0 180px; min-width: 0; }
+    .dhp-script { display: flex; flex-direction: column; gap: 4px; }
+    .dhp-ln { text-align: left; font-size: 11.5px; padding: 4px 8px; border-radius: 6px; border: 1px dashed var(--line); background: transparent; color: var(--text-secondary); cursor: pointer; }
+    .dhp-say { font-size: 14px; color: var(--text-muted); padding: 6px 8px; border-radius: 8px; background: color-mix(in srgb, #f472b6 8%, transparent); } .dhp-say b { color: #f9a8d4; font-size: 16px; } .dhp-say span { opacity: .55; }
+    .dhp-sl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 10px; } .dhp-sl.four { grid-template-columns: repeat(4, 1fr); }
+    .dhp-sl label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-secondary); } .dhp-sl b { font-family: var(--mono); color: var(--text-primary); }
+    .dhp-split { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }
+    .dhp-prof { width: 100%; height: 90px; background: #09090b; border-radius: 8px; } .dhp-prof polyline { fill: none; stroke-width: 1.4; }
+    .dhp-prof .kr { stroke: #f87171; } .dhp-prof .kg { stroke: #4ade80; } .dhp-prof .kb { stroke: #60a5fa; }
+    .dhp-gz { width: 100%; aspect-ratio: 4 / 3; background: #0b1020; border-radius: 8px; }
+    .dhp-gz .lim { fill: rgba(167,139,250,.06); stroke: #6d28d9; stroke-dasharray: 3 3; stroke-width: .8; } .dhp-gz .ax { stroke: #1e293b; stroke-width: .6; }
+    .dhp-gz .cam { fill: #fbbf24; fill-opacity: .55; } .dhp-gz .aud { fill: #38bdf8; fill-opacity: .45; } .dhp-gz .cur { stroke: #fff; stroke-width: 1.4; fill-opacity: .9; }
+    .dhp-gz .trail { fill: none; stroke: #f472b6; stroke-width: .9; stroke-opacity: .7; } .dhp-gz .gaze { fill: #f9a8d4; stroke: #fff; stroke-width: .8; } .dhp-gz .head { stroke: #a3e635; stroke-width: 2; }
+    .dhp-spark { width: 100%; height: 44px; background: #09090b; border-radius: 8px; } .dhp-spark polyline { fill: none; stroke-width: 1; } .dhp-spark .blink { stroke: #f472b6; } .dhp-spark .pupil { stroke: #a78bfa; }
+    .dhp-bs { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 12px; max-height: 330px; overflow-y: auto; }
+    .dhp-b { display: grid; grid-template-columns: 128px 1fr 34px; gap: 6px; align-items: center; font: 600 10px var(--mono); color: var(--text-muted); }
+    .dhp-b.act { color: var(--text-primary); } .dhp-b .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .dhp-b .v { text-align: right; }
+    .dhp-b .tr { position: relative; height: 7px; border-radius: 4px; background: color-mix(in srgb, var(--line) 70%, transparent); overflow: hidden; }
+    .dhp-b .tr i { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, #a78bfa, #f472b6); } .dhp-b .tr u { position: absolute; top: 0; bottom: 0; width: 2px; background: #fde68a; }
+    .dhp-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; color: var(--text-secondary); } .dhp-kv b { color: var(--text-primary); font-family: var(--mono); }
+    .dhp-kv.col { flex-direction: column; gap: 4px; }
+    .dhp-axis { display: flex; justify-content: space-between; font: 600 10px var(--mono); color: var(--text-muted); }
+    .dhp-note { font-size: 11px; color: var(--text-muted); }
+    @@media (max-width: 1200px) { .dhp-main { grid-template-columns: 1fr; } .dhp-sl, .dhp-sl.four { grid-template-columns: 1fr 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int VW = 480, VH = 480, GW = 240, GH = 180;
+    private const float Focal = 1050f;
+    private static readonly FacePreset[] Presets = { FacePreset.Neutral, FacePreset.Joy, FacePreset.Sadness, FacePreset.Anger, FacePreset.Surprise, FacePreset.Fear, FacePreset.Disgust };
+    private static readonly SkinLook[] Looks = { SkinLook.Natural, SkinLook.Fair, SkinLook.Deep, SkinLook.Oily, SkinLook.Aged };
+    private float _yaw = 18f;
+    private string? _line;
+    private int _manual = (int)ArkitBlendshape.JawOpen;
+    private System.Threading.Timer? _timer;
+    private Vector3 _eye, _f, _r, _u;
+    private readonly int[] _idx = new int[NeuralFacialMuscleSimulator.VertexCount + 2 * DigitalHumanPerformanceStudioRunner.EyePoints];
+    private readonly float[] _depth = new float[NeuralFacialMuscleSimulator.VertexCount + 2 * DigitalHumanPerformanceStudioRunner.EyePoints];
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        UpdateCamera();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("DigitalHuman.Modal.Timer", ex); }
+        }, null, 200, 200);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+
+    private static string PresetIcon(FacePreset p) => p switch
+    {
+        FacePreset.Joy => "😊", FacePreset.Sadness => "😢", FacePreset.Anger => "😠", FacePreset.Surprise => "😲", FacePreset.Fear => "😨", FacePreset.Disgust => "🤢", _ => "😐",
+    };
+
+    private string TargetName(int t) => t < 0 ? "시선 회피" : Runner.Gaze.TargetIsCamera(t) ? "🎥 카메라 응시" : "👥 관객 " + t.ToString(CultureInfo.InvariantCulture);
+
+    private void UpdateCamera()
+    {
+        var a = _yaw * MathF.PI / 180f;
+        var target = new Vector3(0f, -0.005f, 0.02f);
+        _eye = target + new Vector3(MathF.Sin(a) * 0.55f, 0.03f, MathF.Cos(a) * 0.55f);
+        _f = Vector3.Normalize(target - _eye); _r = Vector3.Normalize(Vector3.Cross(_f, Vector3.UnitY)); _u = Vector3.Cross(_r, _f);
+    }
+
+    private Vector3 Proj(Vector3 p)
+    {
+        var d = p - _eye; var z = Vector3.Dot(d, _f);
+        if (z < 0.05f) return new Vector3(-100, -100, 1f);
+        return new Vector3(VW * 0.5f + Focal * Vector3.Dot(d, _r) / z, VH * 0.5f - Focal * Vector3.Dot(d, _u) / z, z);
+    }
+
+    /// <summary>가시 스플랫(후면 컬링) 수집 + 깊이 정렬(먼 것 → 가까운 것 · 선할당 버퍼).</summary>
+    private int Collect()
+    {
+        var sc = Runner.Splats; var n = Math.Min(sc.Count, _idx.Length); var m = 0;
+        for (var i = 0; i < n; i++)
+        {
+            var p = sc.Position(i);
+            if (i < NeuralFacialMuscleSimulator.VertexCount)
+            {
+                if (Vector3.Dot(Runner.Face.Normal(i), _eye - p) <= 0f) continue;
+            }
+            else if (sc.Opacity[i] < 0.08f) continue;
+            _idx[m] = i; _depth[m] = -Vector3.Dot(p - _eye, _f); m++;
+        }
+        Array.Sort(_depth, _idx, 0, m);
+        return m;
+    }
+
+    private static string Rgb(float r, float g, float b) =>
+        "rgb(" + ((int)(Math.Clamp(r, 0f, 1f) * 255f)).ToString(CultureInfo.InvariantCulture) + "," + ((int)(Math.Clamp(g, 0f, 1f) * 255f)).ToString(CultureInfo.InvariantCulture) + "," + ((int)(Math.Clamp(b, 0f, 1f) * 255f)).ToString(CultureInfo.InvariantCulture) + ")";
+
+    private static float GX(float yaw) => GW * 0.5f + yaw / 45f * GW * 0.5f;
+    private static float GY(float pitch) => GH * 0.5f - pitch / 35f * GH * 0.5f;
+
+    private string Trail()
+    {
+        var sb = new StringBuilder();
+        for (var k = 0; k < AutonomousDigitalHumanGazeGuard.HistoryLen; k++)
+            sb.Append(F1(GX(Runner.Gaze.HistoryYaw(k)))).Append(',').Append(F1(GY(Runner.Gaze.HistoryPitch(k)))).Append(' ');
+        return sb.ToString();
+    }
+
+    private string Spark(int kind)
+    {
+        var sb = new StringBuilder();
+        for (var k = 0; k < AutonomousDigitalHumanGazeGuard.HistoryLen; k++)
+        {
+            var y = kind == 0 ? 38f - 34f * Runner.Gaze.HistoryBlink(k) : 38f - 34f * Math.Clamp((Runner.Gaze.HistoryPupil(k) - 2f) / 6f, 0f, 1f);
+            sb.Append(k.ToString(CultureInfo.InvariantCulture)).Append(',').Append(F1(y)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private static string Kernel(ReadOnlySpan<float> k)
+    {
+        var max = 0f; foreach (var x in k) max = MathF.Max(max, x);
+        var sb = new StringBuilder();
+        for (var t = 0; t < k.Length; t++)
+            sb.Append(F1(5 + t * 120f / (k.Length - 1))).Append(',').Append(F1(56 - 50 * k[t] / MathF.Max(max, 1e-6f))).Append(' ');
+        return sb.ToString();
+    }
+
+    private static bool TryF(ChangeEventArgs e, out float v) => float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+
+    private void OnYaw(ChangeEventArgs e) { if (TryF(e, out var v)) { _yaw = v; UpdateCamera(); } }
+    private void OnCam(ChangeEventArgs e) { if (TryF(e, out var v)) Runner.SetCameraOffset(v / 100f); }
+    private void OnLum(ChangeEventArgs e) { if (TryF(e, out var v)) Runner.SetLuminance(MathF.Pow(10f, (v - 200f) / 100f)); }
+    private void OnManual(ChangeEventArgs e) { if (TryF(e, out var v)) Runner.SetManual((ArkitBlendshape)_manual, v / 100f); }
+    private void OnIdentity(int k, ChangeEventArgs e) { if (TryF(e, out var v)) Runner.SetIdentity(k, v / 100f); }
+    private void SetSkin(ChangeEventArgs e, Action<float> apply) { if (TryF(e, out var v)) apply(v); }
+
+    private void Step() { for (var k = 0; k < DigitalHumanPerformanceStudioRunner.Hz; k++) Runner.TickOnce(); }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

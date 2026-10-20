@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>UIDeviceFamily</key>
+	<array><integer>1</integer><integer>2</integer></array> <!-- iPhone + iPad -->
+	<key>MinimumOSVersion</key>
+	<string>15.0</string>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array><string>arm64</string></array>
+	<key>UISupportedInterfaceOrientations</key>
+	<array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationPortraitUpsideDown</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
+
+	<!-- v4.2 iOS 권한 사용 목적(App Store 심사 필수) -->
+	<key>NSCameraUsageDescription</key>
+	<string>AR 현장 정비 뷰어와 사옥/설비 즉석 촬영으로 홍보 영상 소스를 등록합니다.</string>
+	<!-- v5.0: CoreNFC 현장 태그 리딩(엔타이틀먼트 Entitlements.plist 와 함께 필요) -->
+	<key>NFCReaderUsageDescription</key>
+	<string>현장 설비의 NFC 태그를 읽어 설비 프로필·BLE 연결·전용 스토리보드를 즉시 불러옵니다.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>음성 지시(오프라인 NLU) 및 나레이션 녹음에 사용합니다.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>갤러리 사진을 영상 소스로 불러옵니다.</string>
+</dict>
+</plist>

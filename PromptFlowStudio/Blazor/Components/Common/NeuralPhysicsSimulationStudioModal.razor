@@ -1,0 +1,337 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.ContinuumPhysics
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject ContinuumPhysicsStudioRunner Runner
+
+@* [PromptFlow Studio v17.26.0] ⚛ AI 실시간 뉴럴 물리 & 연속체 역학 스튜디오 — 폰 미제스 응력 히트맵(정면/평면) · 콜라이더 SDF · 소성 표면 메쉬 · 보로노이 파편 · 재질 프리셋 · 총 에너지 보존 그래프. *@
+
+<div class="nps-scrim" @onclick="Close">
+    <div class="nps-modal" @onclick:stopPropagation="true">
+        <div class="nps-h">
+            <div>
+                <div class="nps-title">⚛️ AI 실시간 뉴럴 물리 &amp; 연속체 역학 스튜디오</div>
+                <div class="nps-sub"><b>MPM 엔진</b>이 입자 @(E.Count)개를 @(RealtimeMpmContinuumPhysicsEngine.N)³ 격자와 2차 B-스플라인 APIC(P2G/G2P)로 주고받으며 신-후크 탄성(젤리 · 유리)과 헨키 변형 기반 드루커-프라거(모래) · 폰 미제스(점토 · 금속) 소성을 계산합니다. <b>파괴 합성기</b>는 임계 변형 에너지를 넘는 충격점에서 3D 보로노이 분할로 파편을 링버퍼에 인스턴싱하고 표면 메쉬의 영구 찌그러짐을 추적하며, <b>가드</b>는 v17.11 골격 · v17.13 검지 · v17.24 햅틱 프록시 · v17.25 원격 해머 SDF 비침투 투영과 CFL 하위 단계 · 해밀토니안 에너지 클램프로 발산을 막습니다.</div>
+            </div>
+            <button class="nps-x" @onclick="Close">✕</button>
+        </div>
+        <div class="nps-bar">
+            <button class="nps-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 가동")</button>
+            <button class="nps-btn" @onclick="Step30" disabled="@Runner.IsRunning">⏭ 0.5초</button>
+            <button class="nps-btn" @onclick="Runner.Respawn">↺ 재생성</button>
+            <button class="nps-btn @(G.Enabled ? "on" : null)" @onclick="() => Runner.SetGuard(!G.Enabled)">🛡 가드</button>
+            <button class="nps-btn @(G.ParticleProjection ? "on" : null)" @onclick="() => Runner.SetProjection(!G.ParticleProjection)">📐 SDF 투영</button>
+            <button class="nps-btn @(G.EnergyClamp ? "on" : null)" @onclick="() => Runner.SetEnergyClamp(!G.EnergyClamp)">⚖ 에너지 클램프</button>
+            <button class="nps-btn @(F.Enabled ? "on" : null)" @onclick="() => Runner.SetFracture(!F.Enabled)">💥 파괴</button>
+            <button class="nps-btn @(E.UseSimd ? "on" : null)" @onclick="() => Runner.SetSimd(!E.UseSimd)">⚡ SIMD</button>
+            <button class="nps-btn @(Runner.AutoLoop ? "on" : null)" @onclick="ToggleLoop">🔁 반복</button>
+            <span class="nps-chip @(Runner.LastTickMs <= 16.7 ? "ok" : "warn")">프레임 @(F2(Runner.LastTickMs)) ms(최대 @(F1(Runner.MaxTickMs))) · 하위 단계 @(E.LastSubsteps) × Δt @(F2(E.LastDt * 1e4)) ×10⁻⁴ s</span>
+            <span class="nps-chip">시뮬 @(F2(E.SimTime)) s · @(F2(Runner.TimeScale))× · 반복 @(Runner.Loops)</span>
+        </div>
+        <div class="nps-main">
+            <div class="nps-col">
+                <div class="nps-card">
+                    <div class="nps-sec">🌡 폰 미제스 응력 히트맵 · 정면(x–y) / 평면(x–z) · 최대 <b>@(F1(_vmMax))</b> · 표면 메쉬 · 파편 AABB · 콜라이더 SDF</div>
+                    <div class="nps-views">
+                        <svg class="nps-view" viewBox="0 0 300 300">
+                            @for (var b = 0; b < Bins * Bins; b++)
+                            {
+                                if (_front[b] > 0f)
+                                {
+                                    <rect x="@(F1(b % Bins * Cell))" y="@(F1(300 - (b / Bins + 1) * Cell))" width="@(F1(Cell))" height="@(F1(Cell))" fill="@(Heat(_front[b] / _vmScale))" />
+                                }
+                            }
+                            <line class="floor" x1="0" y1="@(F1(FY(RealtimeMpmContinuumPhysicsEngine.Floor)))" x2="300" y2="@(F1(FY(RealtimeMpmContinuumPhysicsEngine.Floor)))" />
+                            @for (var v = 0; v < ProceduralFracturePlasticDeformationSynthesizer.Vertices; v += 2)
+                            {
+                                var p = F.Vertex(v);
+                                <circle class="vx @(F.Inward(v) > 0.005f ? "dent" : null)" cx="@(F1(FX(p.X)))" cy="@(F1(FY(p.Y)))" r="1.3" />
+                            }
+                            @for (var s = 1; s < ProceduralFracturePlasticDeformationSynthesizer.Ring; s++)
+                            {
+                                var fi = F.Fragment(s);
+                                if (fi.Live && fi.Count > 0)
+                                {
+                                    <rect class="frag" x="@(F1(FX(fi.Min.X)))" y="@(F1(FY(fi.Max.Y)))" width="@(F1(Math.Max(1f, (fi.Max.X - fi.Min.X) * Scale)))" height="@(F1(Math.Max(1f, (fi.Max.Y - fi.Min.Y) * Scale)))" />
+                                }
+                            }
+                            @for (var c = 0; c < NonPenetrationEnergyConservationPhysicsGuard.Colliders; c++)
+                            {
+                                var a = G.ColliderA(c);
+                                var bb = G.ColliderB(c);
+                                <line class="col c@(c)" x1="@(F1(FX(a.X)))" y1="@(F1(FY(a.Y)))" x2="@(F1(FX(bb.X)))" y2="@(F1(FY(bb.Y)))" stroke-width="@(F1(2 * G.ColliderRadius(c) * Scale))" />
+                            }
+                        </svg>
+                        <svg class="nps-view" viewBox="0 0 300 300">
+                            @for (var b = 0; b < Bins * Bins; b++)
+                            {
+                                if (_top[b] > 0f)
+                                {
+                                    <rect x="@(F1(b % Bins * Cell))" y="@(F1(b / Bins * Cell))" width="@(F1(Cell))" height="@(F1(Cell))" fill="@(Heat(_top[b] / _vmScale))" />
+                                }
+                            }
+                            @for (var s = 1; s < ProceduralFracturePlasticDeformationSynthesizer.Ring; s++)
+                            {
+                                var fi = F.Fragment(s);
+                                if (fi.Live && fi.Count > 0)
+                                {
+                                    <rect class="frag" x="@(F1(FX(fi.Min.X)))" y="@(F1(FZ(fi.Min.Z)))" width="@(F1(Math.Max(1f, (fi.Max.X - fi.Min.X) * Scale)))" height="@(F1(Math.Max(1f, (fi.Max.Z - fi.Min.Z) * Scale)))" />
+                                }
+                            }
+                            @for (var c = 0; c < NonPenetrationEnergyConservationPhysicsGuard.Colliders; c++)
+                            {
+                                var a = G.ColliderA(c);
+                                var bb = G.ColliderB(c);
+                                <line class="col c@(c)" x1="@(F1(FX(a.X)))" y1="@(F1(FZ(a.Z)))" x2="@(F1(FX(bb.X)))" y2="@(F1(FZ(bb.Z)))" stroke-width="@(F1(2 * G.ColliderRadius(c) * Scale))" />
+                            }
+                        </svg>
+                    </div>
+                    <div class="nps-scale"><span>0</span><i></i><span>@(F1(_vmScale)) (τ<sub>vM</sub>)</span></div>
+                    <div class="nps-legend"><i class="c0l"></i>@(NonPenetrationEnergyConservationPhysicsGuard.Names[0]) <i class="c1l"></i>@(NonPenetrationEnergyConservationPhysicsGuard.Names[1]) <i class="c2l"></i>@(NonPenetrationEnergyConservationPhysicsGuard.Names[2]) <i class="c3l"></i>@(NonPenetrationEnergyConservationPhysicsGuard.Names[3]) <i class="vxl"></i>표면 정점 <i class="dentl"></i>찌그러짐 &gt; 5 mm <i class="fragl"></i>파편</div>
+                </div>
+
+                <div class="nps-card">
+                    <div class="nps-sec">🧪 재질 프리셋</div>
+                    <div class="nps-mats">
+                        @for (var m = 0; m < ContinuumMaterials.Count; m++)
+                        {
+                            var mat = (ContinuumMaterial)m;
+                            <button class="nps-mat @(E.Material == mat ? "on" : null)" @onclick="() => Runner.SetMaterial(mat)">
+                                <b>@(MatIcon(mat)) @(ContinuumMaterials.Names[m])</b>
+                                <span>E @(F0(ContinuumMaterials.YoungModulus(mat))) · ν @(F2(ContinuumMaterials.Poisson(mat)))</span>
+                                <span>@(MatModel(mat))</span>
+                            </button>
+                        }
+                    </div>
+                    <div class="nps-ctl">
+                        <label class="nps-sl">🔨 해머 <b>@(F1(G.HammerSpeed)) m/s</b><input type="range" min="0.5" max="12" step="0.5" value="@(F1(G.HammerSpeed))" @onchange="e => Runner.SetHammerSpeed((float)Num(e, 4))" /></label>
+                        <label class="nps-sl">⏱ 시간 배율 <b>@(F2(Runner.TimeScale))×</b><input type="range" min="0.1" max="1" step="0.05" value="@(F2(Runner.TimeScale))" @onchange="e => Runner.SetTimeScale((float)Num(e, 0.35))" /></label>
+                        <label class="nps-sl">💥 ψ<sub>c</sub> <b>@(F1(F.CriticalEnergy))</b><input type="range" min="1" max="50" step="1" value="@(F0(F.CriticalEnergy))" @onchange="e => Runner.SetCriticalEnergy((float)Num(e, 15))" /></label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="nps-col">
+                <div class="nps-card">
+                    <div class="nps-sec">⚡ 총 에너지 보존 그래프(운동 · 탄성 · ΔPE · 총합 H) · 최근 4 s</div>
+                    <svg class="nps-ser" viewBox="0 0 360 110" preserveAspectRatio="none">
+                        <line class="zero" x1="0" y1="@(F1(EY(0)))" x2="360" y2="@(F1(EY(0)))" />
+                        <polyline class="ke" points="@(Series(0))" /><polyline class="ee" points="@(Series(1))" /><polyline class="pe" points="@(Series(2))" /><polyline class="h" points="@(Series(3))" />
+                    </svg>
+                    <div class="nps-legend"><i class="kel"></i>운동 <i class="eel"></i>탄성 V·ψ <i class="pel"></i>중력 ΔPE <i class="hl"></i>총 H(±@(F2(_eScale * 1000)) mJ)</div>
+                    <div class="nps-stats">
+                        <span><b>@(F2(E.KineticEnergy * 1000))</b>운동(mJ)</span><span><b>@(F2(E.ElasticEnergy * 1000))</b>탄성(mJ)</span><span><b>@(F2(E.MaxSpeed))</b>최대 속도(m/s)</span>
+                        <span><b>@(F2(G.InjectedJ * 1000))</b>콜라이더 주입(mJ)</span><span><b class="@(G.SpuriousJ > 0.01 ? "warn" : null)">@(F2(G.SpuriousJ * 1000))</b>허위 에너지(mJ)</span><span><b>@(F2(G.RemovedJ * 1000))</b>클램프 제거(mJ)</span>
+                    </div>
+                </div>
+
+                <div class="nps-card">
+                    <div class="nps-sec">🛡 비침투 SDF · 에너지 발산 가드 @(G.Enabled ? "ON" : "OFF")</div>
+                    <div class="nps-stats">
+                        <span><b class="@(G.Penetrations > 0 ? "bad" : "ok")">@(G.Penetrations)</b>침투 입자(최대 @(G.MaxPenetrations))</span><span><b>@(F1(G.MaxPenetrationMm))</b>최대 침투(mm)</span><span><b>@(G.Projections)</b>SDF 투영</span>
+                        <span><b>@(G.EnergyClamps)</b>해밀토니안 클램프</span><span><b>@(G.VelocityClamps)</b>1셀 속도 클램프</span><span><b class="@(E.Diverged > 0 ? "bad" : "ok")">@(E.Diverged)</b>발산 복구</span>
+                        <span><b>@(G.DilatedFrames)</b>시간 확장 프레임</span><span><b>@(F2(E.LastStepMs))</b>MPM(ms)</span><span><b>@(E.Substeps)</b>누적 하위 단계</span>
+                    </div>
+                    <div class="nps-ctl"><button class="nps-btn sm" @onclick="Runner.ResetMetrics">↺ 지표 초기화</button></div>
+                </div>
+
+                <div class="nps-card">
+                    <div class="nps-sec">💥 보로노이 파괴 · 소성 변형</div>
+                    <div class="nps-stats">
+                        <span><b>@(F.Events)</b>파괴 이벤트</span><span><b>@(F.LiveFragments)</b>파편 인스턴스(@(ProceduralFracturePlasticDeformationSynthesizer.Ring) 링)</span><span><b>@(F.CrackParticles)</b>균열 입자</span>
+                        <span><b class="@(F.DentMm > 10 ? "warn" : null)">@(F1(F.DentMm))</b>찌그러짐(mm · 최대 @(F1(F.MaxDentMm)))</span><span><b>@(F2(E.MeanPlasticStrain))</b>평균 소성 변형</span><span><b>@(F1(F.MaxStrainEnergy))</b>ψ 최대(최고 @(F1(F.PeakEnergy)))</span>
+                    </div>
+                    <svg class="nps-ser sm" viewBox="0 0 360 50" preserveAspectRatio="none">
+                        <polyline class="dent" points="@(DentSeries())" />
+                    </svg>
+                    <div class="nps-legend"><i class="dentl"></i>표면 찌그러짐(0–@(F0(_dScale)) mm) · 재활용 슬롯 @(F.Recycled) · 마지막 충격 (@(F2(F.LastImpact.X)), @(F2(F.LastImpact.Y)), @(F2(F.LastImpact.Z)))</div>
+                </div>
+                <div class="nps-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .nps-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .nps-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .nps-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f97316 14%, var(--card)), color-mix(in srgb, #6366f1 12%, var(--card))); }
+    .nps-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .nps-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .nps-sub b { color: var(--text-primary); }
+    .nps-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .nps-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .nps-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .nps-btn:disabled { opacity: .45; cursor: default; }
+    .nps-btn.sm { font-size: 11px; padding: 3px 8px; }
+    .nps-btn.on { background: color-mix(in srgb, #f97316 22%, var(--card)); border-color: #f97316; }
+    .nps-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .nps-chip.ok { border-color: #22c55e; color: #22c55e; }
+    .nps-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .nps-main { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .nps-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .nps-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+    .nps-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .nps-ctl { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
+    .nps-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); }
+    .nps-sl b { font-family: var(--mono); color: var(--text-primary); }
+    .nps-views { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .nps-view { width: 100%; aspect-ratio: 1; background: #030712; border-radius: 8px; }
+    .nps-view .floor { stroke: #475569; stroke-width: 1; stroke-dasharray: 4 3; }
+    .nps-view .vx { fill: #94a3b8; }
+    .nps-view .vx.dent { fill: #f472b6; }
+    .nps-view .frag { fill: none; stroke: #e2e8f0; stroke-width: .8; stroke-dasharray: 2 2; }
+    .nps-view .col { stroke-linecap: round; stroke-opacity: .55; }
+    .nps-view .c0 { stroke: #f87171; } .nps-view .c1 { stroke: #fbbf24; } .nps-view .c2 { stroke: #fde68a; } .nps-view .c3 { stroke: #22d3ee; }
+    .nps-scale { display: flex; align-items: center; gap: 8px; font: 600 10px var(--mono); color: var(--text-muted); }
+    .nps-scale i { flex: 1; height: 8px; border-radius: 4px; background: linear-gradient(90deg, rgb(20,40,120), rgb(40,200,200), rgb(240,220,60), rgb(255,60,40)); }
+    .nps-mats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+    .nps-mat { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; text-align: left; padding: 7px 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--text-secondary); cursor: pointer; font-size: 10.5px; }
+    .nps-mat b { font-size: 12px; color: var(--text-primary); }
+    .nps-mat.on { border-color: #f97316; background: color-mix(in srgb, #f97316 16%, var(--card)); }
+    .nps-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 10px; font-size: 10.5px; color: var(--text-muted); }
+    .nps-stats span { display: flex; flex-direction: column; gap: 1px; }
+    .nps-stats b { font: 800 13px var(--mono); color: var(--text-primary); }
+    .nps-stats b.ok { color: #22c55e; } .nps-stats b.warn { color: #f59e0b; } .nps-stats b.bad { color: #ef4444; }
+    .nps-ser { width: 100%; height: 110px; background: #030712; border-radius: 6px; }
+    .nps-ser.sm { height: 50px; }
+    .nps-ser polyline { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+    .nps-ser .zero { stroke: #334155; stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .nps-ser .ke { stroke: #38bdf8; } .nps-ser .ee { stroke: #a78bfa; } .nps-ser .pe { stroke: #4ade80; } .nps-ser .h { stroke: #fbbf24; stroke-width: 2.2; } .nps-ser .dent { stroke: #f472b6; }
+    .nps-legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; line-height: 1.45; color: var(--text-secondary); align-items: center; min-width: 0; overflow-wrap: anywhere; }
+    .nps-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 3px; }
+    .nps-legend .c0l { background: #f87171; } .nps-legend .c1l { background: #fbbf24; } .nps-legend .c2l { background: #fde68a; } .nps-legend .c3l { background: #22d3ee; }
+    .nps-legend .vxl { background: #94a3b8; } .nps-legend .dentl { background: #f472b6; } .nps-legend .fragl { background: transparent; border: 1px dashed #e2e8f0; }
+    .nps-legend .kel { background: #38bdf8; } .nps-legend .eel { background: #a78bfa; } .nps-legend .pel { background: #4ade80; } .nps-legend .hl { background: #fbbf24; }
+    .nps-note { font-size: 11px; color: var(--text-muted); word-break: break-all; }
+    @@media (max-width: 1100px) { .nps-main { grid-template-columns: 1fr; } .nps-mats { grid-template-columns: repeat(3, 1fr); } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int Bins = 24;
+    private const float Scale = 500f, Cell = 300f / Bins, X0 = 0.2f, Extent = 0.6f;
+    private readonly float[] _front = new float[Bins * Bins], _top = new float[Bins * Bins];
+    private float _vmMax, _vmScale = 1f, _eScale = 1e-3f, _dScale = 10f;
+    private System.Threading.Timer? _timer;
+    private RealtimeMpmContinuumPhysicsEngine E => Runner.Engine;
+    private NonPenetrationEnergyConservationPhysicsGuard G => Runner.Guard;
+    private ProceduralFracturePlasticDeformationSynthesizer F => Runner.Fracture;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        Bin();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("ContinuumPhysics.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    /// <summary>렌더 직전 응력 히트맵 비닝(빈별 최대 폰 미제스) · 축척 갱신(첫 렌더는 OnInitialized).</summary>
+    protected override bool ShouldRender() { Bin(); return true; }
+
+    private void Bin()
+    {
+        Array.Clear(_front); Array.Clear(_top);
+        var max = 0f;
+        for (var i = 0; i < E.Count; i++)
+        {
+            var p = E.Position(i);
+            var vm = E.Damage(i) >= 1f ? 0.001f : E.VonMises(i) + 0.001f;
+            if (!float.IsFinite(vm)) continue;
+            int bx = (int)((p.X - X0) / Extent * Bins), by = (int)((p.Y - RealtimeMpmContinuumPhysicsEngine.Floor) / Extent * Bins), bz = (int)((p.Z - X0) / Extent * Bins);
+            if (bx < 0 || bx >= Bins) continue;
+            if (by >= 0 && by < Bins) { var f = by * Bins + bx; if (vm > _front[f]) _front[f] = vm; }
+            if (bz >= 0 && bz < Bins) { var t = bz * Bins + bx; if (vm > _top[t]) _top[t] = vm; }
+            if (vm > max) max = vm;
+        }
+        _vmMax = max;
+        _vmScale = Math.Max(1f, 0.85f * _vmScale + 0.15f * max);
+        var e = 1e-4f;
+        var d = 10f;
+        for (var i = 0; i < Runner.SeriesCount; i++)
+        {
+            e = Math.Max(e, Math.Max(Math.Abs(Runner.TotalSeries(i)), Math.Max(Runner.KineticSeries(i), Math.Max(Runner.ElasticSeries(i), Math.Abs(Runner.PotentialSeries(i))))));
+            d = Math.Max(d, Runner.DentSeries(i));
+        }
+        _eScale = float.IsFinite(e) ? e * 1.1f : 1f;
+        _dScale = float.IsFinite(d) ? d * 1.1f : 10f;
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    private static float FX(float x) => (x - X0) * Scale;
+    private static float FY(float y) => 300f - (y - RealtimeMpmContinuumPhysicsEngine.Floor) * Scale;
+    private static float FZ(float z) => (z - X0) * Scale;
+    private float EY(double v) => (float)(55 - 52 * Math.Clamp(v / _eScale, -1, 1));
+
+    private static string MatIcon(ContinuumMaterial m) => m switch { ContinuumMaterial.Jelly => "🍮", ContinuumMaterial.Glass => "🪟", ContinuumMaterial.Clay => "🏺", ContinuumMaterial.Sand => "⏳", _ => "🔩" };
+    private static string MatModel(ContinuumMaterial m) => m switch { ContinuumMaterial.Jelly => "신-후크 탄성", ContinuumMaterial.Glass => "신-후크 + 보로노이 파괴", ContinuumMaterial.Clay => "폰 미제스 완전 소성", ContinuumMaterial.Sand => "드루커-프라거 30°", _ => "폰 미제스 + 경화" };
+
+    private static string Heat(float t)
+    {
+        t = Math.Clamp(t, 0f, 1f);
+        float r, g, b;
+        if (t < 0.33f) { var u = t / 0.33f; r = 20 + 20 * u; g = 40 + 160 * u; b = 120 + 80 * u; }
+        else if (t < 0.66f) { var u = (t - 0.33f) / 0.33f; r = 40 + 200 * u; g = 200 + 20 * u; b = 200 - 140 * u; }
+        else { var u = (t - 0.66f) / 0.34f; r = 240 + 15 * u; g = 220 - 160 * u; b = 60 - 20 * u; }
+        return "rgb(" + ((int)r).ToString(CultureInfo.InvariantCulture) + "," + ((int)g).ToString(CultureInfo.InvariantCulture) + "," + ((int)b).ToString(CultureInfo.InvariantCulture) + ")";
+    }
+
+    private string Series(int kind)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+        {
+            double v = kind switch { 0 => Runner.KineticSeries(i), 1 => Runner.ElasticSeries(i), 2 => Runner.PotentialSeries(i), _ => Runner.TotalSeries(i) };
+            sb.Append(F1(360.0 * (n - 1 - i) / (ContinuumPhysicsStudioRunner.SeriesLen - 1))).Append(',').Append(F1(EY(v))).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private string DentSeries()
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (ContinuumPhysicsStudioRunner.SeriesLen - 1))).Append(',').Append(F1(48 - 46 * Math.Clamp(Runner.DentSeries(i) / _dScale, 0, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void ToggleLoop() => Runner.AutoLoop = !Runner.AutoLoop;
+
+    private void Step30()
+    {
+        for (var i = 0; i < ContinuumPhysicsStudioRunner.Hz / 2; i++) Runner.Step();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중 갱신은 250 ms 타이머가 처리 — 정지 상태 변경만 즉시 반영.</summary>
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

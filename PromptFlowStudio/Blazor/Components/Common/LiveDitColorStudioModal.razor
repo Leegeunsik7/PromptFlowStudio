@@ -1,0 +1,346 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.ColorScience
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject LiveDitColorStudioRunner Runner
+
+@*
+    [PromptFlow Studio v17.10.0] 🎨 AI 라이브 DIT 컬러 사이언스 스튜디오 — 3-Way 컬러 휠(Lift/Gamma/Gain → ASC CDL) · 표시 뷰포트(False Color 오버레이) ·
+    RGB 퍼레이드 · 벡터스코프 · ACES 2.0 출력(사면체 3D LUT 33/65 · 분석) · LED 스펙트럼 메타메리즘 보정 · 색역 압축 가드.
+*@
+
+<div class="dit-scrim" @onclick="Close">
+    <div class="dit-modal" @onclick:stopPropagation="true">
+        <div class="dit-h">
+            <div>
+                <div class="dit-title">🎨 AI 라이브 DIT 컬러 사이언스 스튜디오</div>
+                <div class="dit-sub"><b>ACES 엔진</b>이 ACES2065-1 · ACEScg · ACEScc · ACEScct · Rec.709/2020 을 SIMD 3×3 행렬로 변환하고 ACES 2.0 출력 변환을 33³/65³ 사면체 3D LUT 로 실시간 샘플링합니다.
+                    <b>CDL 합성기</b>는 3-Way 휠을 ASC CDL(Slope · Offset · Power · Saturation)로 ACEScct 에 서브 ms 적용하고 퍼레이드 · 벡터스코프 · False Color 를 무할당 순환 버퍼에 합성하며,
+                    <b>메타메리즘 가드</b>는 LED 월 협대역 스펙트럼과 키 조명 간 카메라 조건등색 불일치를 분광 역산으로 보정하고 광색역 변환 시 클리핑을 ACES RGC 롤오프로 막습니다. 카메라·LED 는 인프로세스 시뮬레이션입니다.</div>
+            </div>
+            <button class="dit-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="dit-bar">
+            <button class="dit-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ DIT 가동")</button>
+            <button class="dit-btn" @onclick="Step24" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="dit-btn @(Runner.Motion ? "on" : null)" @onclick="() => Runner.Motion = !Runner.Motion">🎥 플레이트 모션</button>
+            <label class="dit-sl">노출 <b>@(F2(Runner.ExposureStops)) st</b><input type="range" min="-3" max="3" step="0.1" value="@(F1(Runner.ExposureStops))" @onchange="e => Runner.ExposureStops = (float)Num(e, 0)" /></label>
+            <select class="dit-sel" value="@(Runner.LutMode)" @onchange="e => Runner.SetLutMode((int)Num(e, 0))">
+                <option value="0">출력: 분석 경로</option><option value="33">출력: 3D LUT 33³</option><option value="65">출력: 3D LUT 65³</option>
+            </select>
+            <select class="dit-sel" value="@(E.Monitor == AcesSpace.Rec2020 ? "2020" : "709")" @onchange="e => Runner.SetMonitor(Num(e, 709) > 1000 ? AcesSpace.Rec2020 : AcesSpace.Rec709)">
+                <option value="709">모니터 Rec.709</option><option value="2020">모니터 Rec.2020</option>
+            </select>
+            <span class="dit-chip">틱 @(Runner.Tick) · @(F1(Runner.LastTickMs)) ms · CDL @(F0(S.LastCdlUs)) · @(Runner.LutMode > 0 ? "LUT " + F0(E.LastLutUs) : "표시 " + F0(E.LastDisplayUs)) · 가드 @(F0(G.LastGuardUs)) · 스코프 @(F0(S.LastScopeUs)) µs</span>
+            <span class="dit-chip @(S.LastCdlUs < 1000 ? "ok" : "warn")">CDL @(S.LastCdlUs < 1000 ? "서브 ms" : "≥ 1 ms")</span>
+            <span class="dit-chip @(G.DeltaEAfter < 2 ? "ok" : "warn")">ΔE @(F2(G.DeltaEBefore)) → @(F2(G.DeltaEAfter))</span>
+        </div>
+
+        <div class="dit-main">
+            <div class="dit-col">
+                <div class="dit-card">
+                    <div class="dit-sec">🎞 표시 뷰포트 (ACES 2.0 SDR · @(E.Monitor == AcesSpace.Rec2020 ? "Rec.2020" : "Rec.709"))
+                        <button class="dit-btn sm @(Runner.FalseColor ? "on" : null)" @onclick="() => Runner.FalseColor = !Runner.FalseColor">False Color</button>
+                        <button class="dit-btn sm @(S.Bypass ? "stop" : null)" @onclick="() => Runner.SetBypass(!S.Bypass)">CDL 바이패스</button>
+                    </div>
+                    <div class="dit-vp"><img src="data:image/bmp;base64,@(Runner.MonitorBase64(Runner.FalseColor ? 1 : 0))" alt="display" /></div>
+                    @if (Runner.FalseColor)
+                    {
+                        <div class="dit-legend fc"><i class="z1"></i>크러시 &lt;2.5 <i class="z2"></i>언더 &lt;10 <i class="z3"></i>18% 그레이 38–46 <i class="z4"></i>스킨 52–62 <i class="z5"></i>니어 클립 93+ <i class="z6"></i>클립 99+ IRE</div>
+                    }
+                    <div class="dit-kv">평균 <b>@(F1(S.AvgIre)) IRE</b> · 피크 @(F1(S.PeakIre)) · 18% 그레이 <b>@(F1(Runner.MidGrayIre))</b> · 스킨(키) @(F1(Runner.SkinKeyIre)) / 스킨(LED) @(F1(Runner.SkinLedIre)) ·
+                        클립 <b>@(F2(S.ClipPct))%</b> · 크러시 @(F2(S.CrushPct))% · 글린트 @(F1(Runner.GlintPeak)) lin</div>
+                    <svg class="dit-spark" viewBox="0 0 360 50" preserveAspectRatio="none">
+                        <polyline class="ire" points="@(Series(Runner.IreSeries, 100, 50))" />
+                        <polyline class="cdl" points="@(Series(Runner.CdlUsSeries, 1000, 50))" />
+                    </svg>
+                    <div class="dit-legend"><i class="ire"></i>평균 IRE(0–100) <i class="cdl"></i>CDL µs(0–1000)</div>
+                </div>
+
+                <div class="dit-card">
+                    <div class="dit-sec">🎡 3-Way 컬러 휠 → ASC CDL
+                        <button class="dit-btn sm" @onclick="Runner.ResetGrade">↺ 초기화</button>
+                    </div>
+                    <div class="dit-wheels">
+                        @for (var w = 0; w < 3; w++)
+                        {
+                            var wi = w;
+                            ref readonly var wh = ref S.Wheel(wi);
+                            <div class="dit-wheel">
+                                <div class="lab">@(WheelName(wi))</div>
+                                <div class="disc" @onclick="e => WheelClick(wi, e)">
+                                    <span class="puck" style="left:@(F1(55 + wh.X * 55))px;top:@(F1(55 - wh.Y * 55))px"></span>
+                                </div>
+                                <input type="range" min="@(WheelMin(wi))" max="@(WheelMax(wi))" step="@(wi == 0 ? "0.005" : "0.01")" value="@(F3(wh.Master))" @onchange="e => Runner.SetWheel(wi, S.Wheel(wi).X, S.Wheel(wi).Y, (float)Num(e, wi == 0 ? 0 : 1))" />
+                                <div class="mv">@(wi == 0 ? F3(wh.Master) : F2(wh.Master)) · (@(F2(wh.X)), @(F2(wh.Y)))</div>
+                            </div>
+                        }
+                    </div>
+                    <div class="dit-ctl">
+                        <label class="dit-sl">채도 <b>@(F2(S.Cdl.Saturation))</b><input type="range" min="0" max="2" step="0.01" value="@(F2(S.Cdl.Saturation))" @onchange="e => Runner.SetSaturation((float)Num(e, 1))" /></label>
+                        <button class="dit-btn sm @(S.UsePowLut ? "on" : null)" @onclick="() => S.UsePowLut = !S.UsePowLut">파워 1D LUT</button>
+                    </div>
+                    <div class="dit-kv mono">Slope @(F3(S.Cdl.SlopeR)) @(F3(S.Cdl.SlopeG)) @(F3(S.Cdl.SlopeB)) · Offset @(F3(S.Cdl.OffsetR)) @(F3(S.Cdl.OffsetG)) @(F3(S.Cdl.OffsetB)) · Power @(F3(S.Cdl.PowerR)) @(F3(S.Cdl.PowerG)) @(F3(S.Cdl.PowerB)) · Sat @(F3(S.Cdl.Saturation))</div>
+                </div>
+            </div>
+
+            <div class="dit-col">
+                <div class="dit-card">
+                    <div class="dit-sec">📈 RGB 퍼레이드 · 벡터스코프 (4프레임 잔상)</div>
+                    <div class="dit-scopes">
+                        <div class="dit-par">
+                            <img src="data:image/bmp;base64,@(Runner.MonitorBase64(2))" alt="parade" />
+                            <svg viewBox="0 0 288 100" preserveAspectRatio="none">
+                                <line class="gr" x1="0" x2="288" y1="0" y2="0" /><line class="gr" x1="0" x2="288" y1="25" y2="25" /><line class="gr" x1="0" x2="288" y1="50" y2="50" /><line class="gr" x1="0" x2="288" y1="75" y2="75" />
+                                <line class="gr" x1="96" x2="96" y1="0" y2="100" /><line class="gr" x1="192" x2="192" y1="0" y2="100" />
+                            </svg>
+                        </div>
+                        <div class="dit-vec">
+                            <img src="data:image/bmp;base64,@(Runner.MonitorBase64(3))" alt="vectorscope" />
+                            <svg viewBox="-64 -64 128 128">
+                                <circle class="gr" cx="0" cy="0" r="63" /><circle class="gr" cx="0" cy="0" r="32" />
+                                <line class="skin" x1="0" y1="0" x2="@(F1(-63 * Math.Cos(SkinAngle)))" y2="@(F1(-63 * Math.Sin(SkinAngle)))" />
+                                @for (var t = 0; t < 6; t++)
+                                {
+                                    Target(t, out var tx, out var ty);
+                                    <g><rect class="tg" x="@(F1(tx - 3))" y="@(F1(ty - 3))" width="6" height="6" /></g>
+                                }
+                            </svg>
+                        </div>
+                    </div>
+                    <div class="dit-legend"><span>퍼레이드: 0/25/50/75/100 IRE 눈금 · R | G | B</span><span>벡터스코프: 75% 타깃 R·Mg·B·Cy·G·Yl · 스킨 라인</span></div>
+                </div>
+
+                <div class="dit-card">
+                    <div class="dit-sec">💡 LED 스펙트럼 메타메리즘
+                        <button class="dit-btn sm @(G.CorrectionEnabled ? "on" : null)" @onclick="() => Runner.SetCorrection(!G.CorrectionEnabled)">분광 보정</button>
+                        <button class="dit-btn sm @(G.CameraMatchedDrive ? "on" : null)" @onclick="() => Runner.SetDriveMode(!G.CameraMatchedDrive)">@(G.CameraMatchedDrive ? "📷 카메라 역산 구동" : "👁 눈 기준 구동")</button>
+                        <span class="dit-chip @(G.WallWhiteDeltaE < 1 ? "ok" : "bad")">월 화이트 ΔE @(F2(G.WallWhiteDeltaE))</span>
+                    </div>
+                    <svg class="dit-spec" viewBox="0 0 400 100" preserveAspectRatio="none">
+                        <polyline class="key" points="@(Spectrum(-1))" />
+                        <polyline class="lr" points="@(Spectrum(0))" /><polyline class="lg" points="@(Spectrum(1))" /><polyline class="lb" points="@(Spectrum(2))" />
+                        <polyline class="sr" points="@(Spectrum(10))" /><polyline class="sg" points="@(Spectrum(11))" /><polyline class="sb" points="@(Spectrum(12))" />
+                    </svg>
+                    <div class="dit-legend"><i class="key"></i>키 @(F0(G.KeyCct)) K 흑체 <i class="lr"></i><i class="lg"></i><i class="lb"></i>LED @(F0(G.LedPeakR))/@(F0(G.LedPeakG))/@(F0(G.LedPeakB)) nm <i class="ss"></i>카메라 분광 감도 · 380–780 nm</div>
+                    <svg class="dit-de" viewBox="0 0 360 60" preserveAspectRatio="none">
+                        @for (var p = 0; p < LedSpectralMetamerismGamutClippingGuard.Patches; p++)
+                        {
+                            var x0 = p * 20 + 2;
+                            <g>
+                                <rect class="pc" x="@(x0)" y="52" width="16" height="8" fill="@(PatchCss(p))" />
+                                <rect class="b0" x="@(x0)" y="@(F1(50 - Bar(G.PatchDeltaEBefore(p))))" width="7" height="@(F1(Bar(G.PatchDeltaEBefore(p))))" />
+                                <rect class="b1" x="@(x0 + 8)" y="@(F1(50 - Bar(G.PatchDeltaEAfter(p))))" width="7" height="@(F1(Bar(G.PatchDeltaEAfter(p))))" />
+                            </g>
+                        }
+                    </svg>
+                    <div class="dit-legend"><i class="b0"></i>LED 스필 ΔE*ab(보정 전) <i class="b1"></i>보정 후 · 패치 18종(0–12)</div>
+                    <div class="dit-ctl">
+                        <label class="dit-sl">키 CCT <b>@(F0(G.KeyCct)) K</b><input type="range" min="2700" max="7500" step="100" value="@(F0(G.KeyCct))" @onchange="e => Runner.SetKeyCct((float)Num(e, 5600))" /></label>
+                    </div>
+                    <div class="dit-kv">구동 R/G/B <b>@(F3(G.DriveR)) / @(F3(G.DriveG)) / @(F3(G.DriveB))</b> · ΔE 평균 <b>@(F2(G.DeltaEBefore)) → @(F2(G.DeltaEAfter))</b> · 최대 @(F2(G.DeltaEMaxBefore)) → @(F2(G.DeltaEMaxAfter)) · 역산 @(F0(G.LastSolveUs)) µs</div>
+                </div>
+
+                <div class="dit-card">
+                    <div class="dit-sec">🛡 색역 클리핑 가드 (ACES RGC 롤오프)
+                        <button class="dit-btn sm @(G.GuardEnabled ? "on" : null)" @onclick="() => Runner.SetGuard(!G.GuardEnabled)">가드</button>
+                        <span class="dit-chip @(G.LastResidual == 0 ? "ok" : "bad")">잔여 클립 @(G.LastResidual) px</span>
+                        <span class="dit-chip">색역 밖 @(G.LastOutOfGamut) px</span>
+                    </div>
+                    <div class="dit-gamut">
+                        <svg viewBox="0 0 240 270">
+                            <polyline class="locus" points="@(Locus())" />
+                            <polygon class="ap1" points="@(Tri(0.713, 0.293, 0.165, 0.830, 0.128, 0.044))" />
+                            <polygon class="r2020" points="@(Tri(0.708, 0.292, 0.170, 0.797, 0.131, 0.046))" />
+                            <polygon class="r709" points="@(Tri(0.64, 0.33, 0.30, 0.60, 0.15, 0.06))" />
+                            @for (var j = 0; j < 3; j++)
+                            {
+                                G.LedXy(j, out var lx, out var ly);
+                                <g><circle class="led" cx="@(F1(lx * 300))" cy="@(F1(270 - ly * 300))" r="3.5" /></g>
+                            }
+                        </svg>
+                        <div class="dit-ctl col">
+                            <label class="dit-sl">임계 × <b>@(F2(G.ThresholdScale))</b><input type="range" min="0.5" max="1.15" step="0.01" value="@(F2(G.ThresholdScale))" @onchange="e => Runner.SetThreshold((float)Num(e, 1))" /></label>
+                            <div class="dit-kv mono">thr C/M/Y @(F3(G.Params.ThrC)) / @(F3(G.Params.ThrM)) / @(F3(G.Params.ThrY))</div>
+                            <div class="dit-kv mono">lim C/M/Y @(F3(G.Params.LimC)) / @(F3(G.Params.LimM)) / @(F3(G.Params.LimY))</div>
+                            <div class="dit-kv mono">AP1 최대 거리 @(F3(G.MaxDistC)) / @(F3(G.MaxDistM)) / @(F3(G.MaxDistY))</div>
+                            <div class="dit-kv">누적 색역 밖 @(G.OutOfGamutPixels) · 압축 @(G.CompressedPixels) · 잔여 @(G.ResidualClipPixels)</div>
+                            <div class="dit-legend"><i class="ap1"></i>AP1 <i class="r2020"></i>Rec.2020 <i class="r709"></i>Rec.709 <i class="led"></i>LED 원색</div>
+                        </div>
+                    </div>
+                    <svg class="dit-spark" viewBox="0 0 360 40" preserveAspectRatio="none">
+                        <polyline class="oog" points="@(Series(Runner.OutOfGamutSeries, LiveDitColorStudioRunner.N * 0.25, 40))" />
+                    </svg>
+                </div>
+                <div class="dit-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .dit-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .dit-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .dit-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #ec4899 14%, var(--card)), color-mix(in srgb, #14b8a6 13%, var(--card))); }
+    .dit-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .dit-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .dit-sub b { color: var(--text-primary); }
+    .dit-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .dit-bar { display: flex; flex-wrap: wrap; gap: 6px 10px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .dit-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; } .dit-btn:disabled { opacity: .4; cursor: default; }
+    .dit-btn.sm { font-size: 10px; padding: 2px 8px; } .dit-btn.on { background: color-mix(in srgb, #ec4899 22%, transparent); border-color: #f472b6; } .dit-btn.stop { background: #7f1d1d; border-color: #ef4444; color: #fff; }
+    .dit-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .dit-chip.ok { border-color: #22c55e; color: #86efac; } .dit-chip.bad { border-color: #ef4444; color: #fca5a5; } .dit-chip.warn { border-color: #eab308; color: #fde68a; }
+    .dit-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .dit-sl b { font-family: var(--mono); color: var(--text-primary); } .dit-sl input { width: 80px; }
+    .dit-sel { font-size: 11px; background: transparent; color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+    .dit-main { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .dit-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .dit-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .dit-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .dit-vp { width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 8px; overflow: hidden; }
+    .dit-vp img, .dit-par img, .dit-vec img { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+    .dit-wheels { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; justify-items: center; }
+    .dit-wheel { display: flex; flex-direction: column; align-items: center; gap: 4px; } .dit-wheel .lab { font-weight: 800; font-size: 11px; color: var(--text-primary); }
+    .dit-wheel .disc { position: relative; width: 110px; height: 110px; border-radius: 50%; cursor: crosshair; border: 2px solid #334155;
+        background: radial-gradient(circle, #6b7280 0%, rgba(107,114,128,.55) 30%, transparent 72%), conic-gradient(#f00 -13deg, #f0f 40deg, #00f 95deg, #0ff 167deg, #0f0 220deg, #ff0 275deg, #f00 347deg); }
+    .dit-wheel .puck { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: #fff; border: 2px solid #111827; pointer-events: none; }
+    .dit-wheel input { width: 110px; } .dit-wheel .mv { font: 600 10px var(--mono); color: var(--text-secondary); }
+    .dit-ctl { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; } .dit-ctl.col { flex-direction: column; align-items: flex-start; }
+    .dit-scopes { display: grid; grid-template-columns: 2.25fr 1fr; gap: 8px; }
+    .dit-par, .dit-vec { position: relative; background: #000; border-radius: 8px; overflow: hidden; border: 2px solid #334155; }
+    .dit-par { aspect-ratio: 288 / 128; } .dit-vec { aspect-ratio: 1 / 1; }
+    .dit-par svg, .dit-vec svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    .dit-par .gr, .dit-vec .gr { fill: none; stroke: rgba(148,163,184,.4); stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .dit-vec .tg { fill: none; stroke: #facc15; stroke-width: 1; vector-effect: non-scaling-stroke; } .dit-vec .skin { stroke: #fb923c; stroke-width: 1; stroke-dasharray: 3 2; vector-effect: non-scaling-stroke; }
+    .dit-spark { width: 100%; height: 50px; background: #030712; border-radius: 6px; }
+    .dit-spark polyline { fill: none; stroke-width: 1.4; vector-effect: non-scaling-stroke; } .dit-spark .ire { stroke: #e5e7eb; } .dit-spark .cdl { stroke: #f472b6; } .dit-spark .oog { stroke: #f97316; }
+    .dit-spec { width: 100%; height: 90px; background: #030712; border-radius: 6px; }
+    .dit-spec polyline { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; } .dit-spec .key { stroke: #f8fafc; }
+    .dit-spec .lr { stroke: #ef4444; } .dit-spec .lg { stroke: #22c55e; } .dit-spec .lb { stroke: #3b82f6; }
+    .dit-spec .sr, .dit-spec .sg, .dit-spec .sb { stroke-dasharray: 4 3; stroke-width: 1; } .dit-spec .sr { stroke: #fca5a5; } .dit-spec .sg { stroke: #86efac; } .dit-spec .sb { stroke: #93c5fd; }
+    .dit-de { width: 100%; height: 60px; background: #030712; border-radius: 6px; } .dit-de .b0 { fill: #ef4444; } .dit-de .b1 { fill: #22c55e; }
+    .dit-gamut { display: grid; grid-template-columns: 200px 1fr; gap: 10px; align-items: center; }
+    .dit-gamut svg { width: 200px; height: 225px; background: #030712; border-radius: 8px; }
+    .dit-gamut .locus { fill: none; stroke: #e5e7eb; stroke-width: 1.2; } .dit-gamut .ap1 { fill: none; stroke: #a78bfa; stroke-width: 1.2; stroke-dasharray: 4 2; }
+    .dit-gamut .r2020 { fill: rgba(20,184,166,.12); stroke: #14b8a6; stroke-width: 1.2; } .dit-gamut .r709 { fill: rgba(236,72,153,.12); stroke: #ec4899; stroke-width: 1.2; } .dit-gamut .led { fill: #facc15; stroke: #111827; }
+    .dit-legend, .dit-kv { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11px; color: var(--text-secondary); align-items: center; } .dit-kv b { color: var(--text-primary); }
+    .dit-legend i { display: inline-block; width: 10px; height: 8px; border-radius: 2px; }
+    .dit-legend .ire { background: #e5e7eb; } .dit-legend .cdl { background: #f472b6; } .dit-legend .key { background: #f8fafc; } .dit-legend .lr { background: #ef4444; } .dit-legend .lg { background: #22c55e; } .dit-legend .lb { background: #3b82f6; }
+    .dit-legend .ss { background: repeating-linear-gradient(90deg, #93c5fd 0 3px, transparent 3px 5px); } .dit-legend .b0 { background: #ef4444; } .dit-legend .b1 { background: #22c55e; }
+    .dit-legend .ap1 { background: #a78bfa; } .dit-legend .r2020 { background: #14b8a6; } .dit-legend .r709 { background: #ec4899; } .dit-legend .led { background: #facc15; }
+    .dit-legend.fc .z1 { background: #8c00bf; } .dit-legend.fc .z2 { background: #1a59ff; } .dit-legend.fc .z3 { background: #33d940; } .dit-legend.fc .z4 { background: #ff8cbf; } .dit-legend.fc .z5 { background: #fff21a; } .dit-legend.fc .z6 { background: #ff1a1a; }
+    .dit-note { font-size: 11px; color: var(--text-muted); word-break: break-all; } .mono { font-family: var(--mono); }
+    @@media (max-width: 1200px) { .dit-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+
+    private RealtimeAcesColorTransformEngine E => Runner.Engine;
+    private OnSetLiveDitGradingColorDecisionSynthesizer S => Runner.Synth;
+    private LedSpectralMetamerismGamutClippingGuard G => Runner.Guard;
+
+    /// <summary>스킨 톤 라인(벡터스코프 · Cb/Cr 평면 약 123°).</summary>
+    private static readonly double SkinAngle = Math.PI * 123.0 / 180.0;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("LiveDitColor.Modal.Timer", ex); }
+        }, null, 300, 300);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    private static string WheelName(int w) => w switch { 0 => "Lift (Offset)", 1 => "Gamma (Power)", _ => "Gain (Slope)" };
+    private static string WheelMin(int w) => w == 0 ? "-0.1" : "0.5";
+    private static string WheelMax(int w) => w == 0 ? "0.1" : "2";
+
+    private void WheelClick(int w, MouseEventArgs e)
+    {
+        float x = (float)((e.OffsetX - 55) / 55.0), y = (float)(-(e.OffsetY - 55) / 55.0);
+        Runner.SetWheel(w, x, y, S.Wheel(w).Master);
+    }
+
+    /// <summary>75% 컬러 바 타깃(Cb/Cr → SVG · 반경 63 = |0.5|).</summary>
+    private static void Target(int t, out double x, out double y)
+    {
+        double r = t is 0 or 1 or 5 ? 0.75 : 0, g = t is 3 or 4 or 5 ? 0.75 : 0, b = t is 1 or 2 or 3 ? 0.75 : 0;   // R · Mg · B · Cy · G · Yl
+        var l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        double cb = (b - l) / 1.8556, cr = (r - l) / 1.5748;
+        x = cb * 126; y = -cr * 126;
+    }
+
+    private string PatchCss(int p)
+    {
+        float r = G.PatchRef(p, 0), g = G.PatchRef(p, 1), b = G.PatchRef(p, 2);
+        E.Matrix(AcesSpace.AcesCg, AcesSpace.Rec709).Transform(ref r, ref g, ref b);
+        return "rgb(" + F0(Math.Clamp(AcesColorMath.Bt1886Inverse(r) * 255, 0, 255)) + "," + F0(Math.Clamp(AcesColorMath.Bt1886Inverse(g) * 255, 0, 255)) + "," + F0(Math.Clamp(AcesColorMath.Bt1886Inverse(b) * 255, 0, 255)) + ")";
+    }
+
+    private static double Bar(float de) => Math.Clamp(de / 12.0, 0, 1) * 48;
+
+    /// <summary>스펙트럼 폴리라인(-1 키 · 0–2 LED · 10–12 카메라 SSF · 각 최대 1 정규화).</summary>
+    private string Spectrum(int which)
+    {
+        const int n = LedSpectralMetamerismGamutClippingGuard.Samples;
+        var mx = 1e-9f;
+        for (var i = 0; i < n; i++) mx = MathF.Max(mx, Sample(which, i));
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+            sb.Append(F1(400.0 * i / (n - 1))).Append(',').Append(F1(98 - 94 * Sample(which, i) / mx)).Append(' ');
+        return sb.ToString();
+    }
+
+    private float Sample(int which, int i) => which < 0 ? G.KeySpectrum(i) : which < 10 ? G.LedSpectrum(which, i) : G.CameraSsf(which - 10, i);
+
+    private string Locus()
+    {
+        var sb = new System.Text.StringBuilder(LedSpectralMetamerismGamutClippingGuard.Samples * 12);
+        for (var i = 0; i < LedSpectralMetamerismGamutClippingGuard.Samples - 12; i++)
+        {
+            G.LocusXy(i, out var x, out var y);
+            sb.Append(F1(x * 300)).Append(',').Append(F1(270 - y * 300)).Append(' ');
+        }
+        G.LocusXy(0, out var x0, out var y0);
+        sb.Append(F1(x0 * 300)).Append(',').Append(F1(270 - y0 * 300));
+        return sb.ToString();
+    }
+
+    private static string Tri(double rx, double ry, double gx, double gy, double bx, double by) =>
+        F1(rx * 300) + "," + F1(270 - ry * 300) + " " + F1(gx * 300) + "," + F1(270 - gy * 300) + " " + F1(bx * 300) + "," + F1(270 - by * 300);
+
+    private string Series(Func<int, float> f, double max, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (LiveDitColorStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - 2 - (h - 4) * Math.Clamp(f(i) / max, 0, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step24() { for (var i = 0; i < LiveDitColorStudioRunner.Hz; i++) Runner.Step(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중(8 Hz 이벤트)은 300 ms 타이머가 처리 — 정지 상태 액션만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

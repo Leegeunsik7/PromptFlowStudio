@@ -1,0 +1,113 @@
+@using PromptFlowStudio.Services.Wan
+@inject ILocalMediaService Media
+
+@* [PromptFlow Studio v5.7.1] Long-to-Shorts 스마트 재구성 뷰 — 파일 경로/URL → 9:16 하이라이트 세그먼트 → 스토리보드 컷 + Project.Gallery 자동 배치.
+   ILocalMediaService(가상호스트/임포트 폴더)는 모바일 포함 공용 등록 → 주입 안전(데스크톱 전용 아님). *@
+
+<div class="sxv">
+    <div class="sxv-h">
+        <span class="sxv-t">🎬 Long → Shorts 스마트 재구성</span>
+        <span class="sxv-sub">30초+ 파일/URL → 9:16 하이라이트 컷 자동 분할·크롭</span>
+    </div>
+    <div class="sxv-row">
+        <input class="sxv-in" @bind="_source" @bind:event="oninput" placeholder="비디오 파일 경로 또는 https:// 링크" disabled="@_busy" />
+        <select class="sxv-dur" @bind="_durationSec" disabled="@_busy" title="원본 길이(세그먼트 분할 기준)">
+            <option value="30">30초</option>
+            <option value="45">45초</option>
+            <option value="60">60초</option>
+            <option value="90">90초</option>
+        </select>
+        <button class="sxv-go" @onclick="Reconstruct" disabled="@(_busy || string.IsNullOrWhiteSpace(_source))">
+            @(_busy ? "재구성 중…" : "✂️ 재구성")
+        </button>
+    </div>
+    @if (_msg is not null) { <div class="sxv-msg">@_msg</div> }
+    @if (_segments.Count > 0)
+    {
+        <div class="sxv-strip">
+            @foreach (var s in _segments)
+            {
+                <div class="sxv-card" @key="s.Index" title="@s.ReframeParams">
+                    <img class="sxv-thumb" src="@s.FrameUrl" alt="@s.Title" />
+                    <span class="sxv-card-t">@s.Title</span>
+                </div>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public StoryboardProject Project { get; set; } = default!;
+    /// <summary>컷/갤러리 배치 후 부모 재렌더 통지(선택).</summary>
+    [Parameter] public EventCallback OnChanged { get; set; }
+    /// <summary>v5.7.3: 커스텀 FFmpeg 경로(부모 Storyboard 가 Prefs.FfmpegBinaryPath 전달 · 모바일 무주입 유지).</summary>
+    [Parameter] public string? FfmpegPath { get; set; }
+
+    private string _source = "";
+    private string _durationSec = "30";
+    private bool _busy;
+    private string? _msg;
+    private List<ShortsSegment> _segments = new();
+
+    private async Task Reconstruct()
+    {
+        if (_busy || string.IsNullOrWhiteSpace(_source)) return;
+        _busy = true; _msg = null; StateHasChanged();
+        try
+        {
+            var src = _source.Trim();
+            var dir = System.IO.Path.Combine(Media.MediaRoot, "imports");
+            var dur = double.TryParse(_durationSec, out var d) ? d : 30.0;
+            var segs = await LongToShortsConverter.ImportAndReconstructAsync(src, dir, dur);
+
+            // v5.7.2: 로컬 파일이면 FFmpeg 실프레임으로 승격(파일 부재/모바일/ffmpeg 미설치 → 스텁 DataURL 자동 폴백).
+            var isLocalFile = !src.StartsWith("http", StringComparison.OrdinalIgnoreCase) && System.IO.File.Exists(src);
+            var frameDir = System.IO.Path.Combine(dir, "frames");
+            var placed = new List<ShortsSegment>();
+            foreach (var s in segs)
+            {
+                var frameUrl = isLocalFile
+                    ? await FfmpegFrameExtractor.ExtractKeyframeAsync(src, s.StartSec, frameDir, FfmpegPath, Media.ToPlaybackUrl)   // 커스텀 경로 우선 → 실프레임 → 가상호스트 URL
+                    : s.FrameUrl;                                                                                                     // URL/모바일 → 스텁 프리뷰
+                placed.Add(s with { FrameUrl = frameUrl });
+                Project.Scenes.Add(new StoryboardScene
+                {
+                    Mode = SceneMode.ImageToVideo,
+                    Prompt = $"{s.ReframeParams} · 구간 {s.StartSec:F0}s~{s.EndSec:F0}s",
+                    PosterUrl = frameUrl,
+                    ThumbUrl = frameUrl,
+                    Status = SceneStatus.Pending,
+                });
+                Project.Gallery.Insert(0, new GalleryAsset
+                {
+                    Url = frameUrl, Kind = GalleryAssetKind.Image, Label = s.Title,
+                    CreatedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                });
+            }
+            _segments = placed;
+            _msg = $"✅ {placed.Count}개 9:16 숏츠 컷 배치" + (isLocalFile ? " · FFmpeg 실프레임 추출 시도" : " · URL/스텁 프리뷰");
+            if (OnChanged.HasDelegate) await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex) { _msg = "⚠ 재구성 오류: " + ex.Message; }
+        finally { _busy = false; }
+    }
+}
+
+<style>
+    .sxv { border: 1px solid color-mix(in srgb, #38bdf8 30%, var(--line)); border-radius: 12px; padding: 10px 12px; margin: 4px 0 8px;
+        background: linear-gradient(160deg, color-mix(in srgb, #38bdf8 8%, var(--card)), var(--card)); }
+    .sxv-h { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+    .sxv-t { font: 800 12.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .sxv-sub { font: 600 10px var(--mono); color: var(--text-muted); }
+    .sxv-row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .sxv-in { flex: 1; min-width: 180px; min-height: 38px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); padding: 0 12px; font: 600 12px var(--mono); outline: none; }
+    .sxv-in:focus { border-color: #38bdf8; }
+    .sxv-dur { min-height: 38px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); padding: 0 10px; font: 700 12px Pretendard,'Malgun Gothic',sans-serif; }
+    .sxv-go { min-height: 38px; padding: 0 16px; border-radius: 10px; border: none; cursor: pointer; color: #04121c; font: 800 12.5px Pretendard,'Malgun Gothic',sans-serif; background: linear-gradient(135deg,#38bdf8,#22d3ee); }
+    .sxv-go:disabled { opacity: .5; cursor: not-allowed; }
+    .sxv-msg { font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: #7dd3fc; margin-top: 8px; word-break: keep-all; line-height: 1.5; }
+    .sxv-strip { display: flex; gap: 8px; overflow-x: auto; margin-top: 10px; padding-bottom: 4px; }
+    .sxv-card { flex: 0 0 132px; display: flex; flex-direction: column; gap: 4px; }
+    .sxv-thumb { width: 132px; aspect-ratio: 16/9; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); background: #000; }
+    .sxv-card-t { font: 600 9.5px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-secondary); line-height: 1.35; word-break: keep-all; }
+</style>

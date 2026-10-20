@@ -1,0 +1,608 @@
+@using System.Globalization
+@inject SerialLicenseService Serial
+@inject MemberRegistryService Members
+@inject SiteEmailOtpService Otp
+@inject MemberDirectorySyncService Sync
+@implements IDisposable
+
+@* [PromptFlowStudio] 정밀 5단계 회원가입 Wizard — 약관·인적정보·계정보안·사업장 프로필/주소·완료 (Pure Blazor/CSS).
+   모니터링/스마트팜/PLAI/UAV/Stock와 동일 구조 · PromptFlowStudio 전용(이머랄드 · 오프라인 주소 · 데모 OTP 폴백). *@
+@if (Visible)
+{
+    <div class="reg-scrim">
+        <div class="reg-modal" @onclick:stopPropagation="true">
+            <div class="reg-head">
+                <div class="reg-brand"><span class="reg-leaf">🎬</span><b>PromptFlow Studio</b> 신규 회원가입</div>
+                <button class="reg-x" @onclick="RequestClose" aria-label="닫기">✕</button>
+            </div>
+
+            <div class="reg-steps">
+                @for (int i = 1; i <= 5; i++)
+                {
+                    var s = i;
+                    <div class="reg-step @(s == _step ? "cur" : s < _step ? "done" : null)">
+                        <span class="reg-step-n">@(s < _step ? "✓" : s.ToString())</span>
+                        <span class="reg-step-l">@StepLabel(s)</span>
+                    </div>
+                    if (i < 5) { <div class="reg-step-bar @(i < _step ? "done" : null)"></div> }
+                }
+            </div>
+
+            <div class="reg-body">
+                @if (IsBootstrap)
+                {
+                    <div class="reg-bootstrap">🛡️ <b>최초 사용자 등록</b> — 이 계정은 <b>관리자(Admin)</b> 권한으로 생성됩니다 <span>(라이선스 키 불필요)</span></div>
+                }
+                @if (_step == 1)
+                {
+                    <div class="reg-sec-t">📜 약관 동의</div>
+                    <label class="reg-agree-all">
+                        <input type="checkbox" checked="@_agreeAll" @onchange="ToggleAll" />
+                        <span><b>전체 동의하기</b> — 필수 및 선택 항목에 모두 동의합니다.</span>
+                    </label>
+                    <div class="reg-agree-list">
+                        <label class="reg-agree"><input type="checkbox" checked="@_agreeTos" @onchange="e => { _agreeTos = (bool)e.Value!; SyncAll(); }" /><span><em class="req">[필수]</em> PromptFlow Studio 서비스 이용약관</span></label>
+                        <label class="reg-agree"><input type="checkbox" checked="@_agreePrivacy" @onchange="e => { _agreePrivacy = (bool)e.Value!; SyncAll(); }" /><span><em class="req">[필수]</em> 개인정보 수집 및 이용 동의</span></label>
+                        <label class="reg-agree"><input type="checkbox" checked="@_agreeLocation" @onchange="e => { _agreeLocation = (bool)e.Value!; SyncAll(); }" /><span><em class="opt">[선택]</em> 제품 업데이트·기능 알림 수신 동의</span></label>
+                    </div>
+                }
+                else if (_step == 2)
+                {
+                    <div class="reg-sec-t">👤 기본 인적 정보</div>
+                    @if (Serial.EnforcementOn && !IsBootstrap)
+                    {
+                        <div class="reg-field"><label>라이선스 키 <span class="reg-req">*</span> <span class="reg-req-tag">필수</span></label>
+                            <input class="reg-in" placeholder="XXXX-XXXX-XXXX-XXXX" value="@_regLicKey" @oninput="OnLicInput" spellcheck="false" style="letter-spacing:.06em;font-family:'Roboto Mono',Consolas,monospace" />
+                            @if (_licState == "master") { <div class="reg-mailsent">🔑 마스터 키 확인 — <b>관리자 권한</b>으로 가입됩니다(키 소진 없음).</div> }
+                            else if (_licState == "valid") { <div class="reg-mailsent">✅ 유효한 미사용 키입니다.</div> }
+                            else if (_licState == "used") { <div class="reg-bad">❌ 이미 사용된 키입니다. 다른 키를 입력하세요.</div> }
+                            else if (_licState == "invalid") { <div class="reg-bad">❌ 존재하지 않는 키입니다. 관리자에게 발급받으세요.</div> }
+                            else { <div class="reg-hint">관리자에게 발급받은 시리얼 키(XXXX-XXXX-XXXX-XXXX)를 입력하세요.</div> }
+                        </div>
+                    }
+                    <div class="reg-field"><label>이름 <span class="reg-req">*</span></label><input class="reg-in" placeholder="예: 홍길동" @bind="_name" @bind:event="onchange" /></div>
+                    <div class="reg-field"><label>생년월일 <span class="reg-req">*</span></label>
+                        <input class="reg-in" type="date" min="1900-01-01" max="2099-12-31" value="@_birth" @onchange="e => _birth = e.Value?.ToString() ?? string.Empty" />
+                        @if (_birth.Length > 0 && !BirthValid) { <div class="reg-bad" style="margin-top:6px">생년월일 조건 — 연도 1900~2099 · 월 01~12 · 일 01~31 범위여야 합니다.</div> }
+                    </div>
+                    <div class="reg-field"><label>성별 <span class="reg-req">*</span></label>
+                        <div class="reg-radio">
+                            <button class="reg-radio-btn @(_gender == "M" ? "on" : null)" @onclick='() => _gender = "M"'>남성</button>
+                            <button class="reg-radio-btn @(_gender == "F" ? "on" : null)" @onclick='() => _gender = "F"'>여성</button>
+                        </div>
+                    </div>
+                    <div class="reg-field"><label>이메일 <span class="reg-req">*</span> <span class="reg-req-tag">본인인증 필수</span></label>
+                        <div class="reg-inline">
+                            <input class="reg-in" placeholder="아이디" value="@_email" @oninput="OnEmailInput" disabled="@_emailVerified" />
+                            <span class="reg-at">@@</span>
+                            <select class="reg-sel" value="@_emailDomain" @onchange="OnDomainChange" disabled="@_emailVerified">
+                                @foreach (var d in EmailDomains) { <option value="@d">@d</option> }
+                                <option value="@CustomDomainKey">직접 입력</option>
+                            </select>
+                            <button class="reg-sub-btn" @onclick="SendEmailCode" disabled="@(_emailVerified || _emailSending || !IsEmailValid)">@(_emailSending ? "발송 중…" : _emailCodeSent ? "재발송" : "인증메일 발송")</button>
+                        </div>
+                        @if (IsCustomDomain)
+                        {
+                            <input class="reg-in" style="margin-top:7px" placeholder="회사 도메인 직접 입력 (예: angtec.com)" value="@_customDomain" @oninput="OnCustomDomainInput" disabled="@_emailVerified" spellcheck="false" inputmode="url" />
+                        }
+                        @if (_emailSendError is not null) { <div class="reg-bad">❌ @_emailSendError</div> }
+                        @if (_emailCodeSent && !_emailVerified)
+                        {
+                            <div class="reg-inline" style="margin-top:7px">
+                                <input class="reg-in code-in" placeholder="6자리 인증번호" value="@_emailCodeInput" @oninput="OnCodeInput" maxlength="6" inputmode="numeric" />
+                                <span class="reg-countdown @(_remain <= 30 ? "danger" : null)">@CountdownText</span>
+                                <button class="reg-sub-btn ok" @onclick="VerifyEmail" disabled="@(_remain <= 0 || _emailCodeInput.Length < 6)">인증 확인</button>
+                            </div>
+                            @if (_demoMode)
+                            {
+                                <div class="reg-testcode">📮 데모 모드(이메일 미구성) — 아래 인증번호를 입력하세요: <b>@_emailCode</b>
+                                    <span class="reg-tc-sub">appsettings <code>Smtp</code> 구성 시 실제 메일로 발송됩니다.</span>
+                                </div>
+                            }
+                            else if (_remain <= 0) { <div class="reg-bad">⏱️ 인증 시간이 만료되었습니다. [재발송] 후 다시 시도해 주세요.</div> }
+                            else if (_verifyError) { <div class="reg-bad">❌ 인증번호가 일치하지 않습니다. 다시 확인해 주세요.</div> }
+                            else { <div class="reg-mailsent">📧 <b>@FullEmail</b> 로 인증번호를 발송했습니다. 메일함(스팸함 포함)을 확인해 주세요.</div> }
+                        }
+                        @if (_emailVerified) { <div class="reg-lockbadge">✅ @FullEmail 이메일 인증 완료 <span class="reg-lock-ic">🔒</span></div> }
+                    </div>
+                    <div class="reg-field"><label>휴대전화번호 <span class="reg-req">*</span></label>
+                        <input class="reg-in" placeholder="010-1234-5678" value="@_phone" @oninput="OnPhoneInput" maxlength="13" inputmode="numeric" />
+                    </div>
+                }
+                else if (_step == 3)
+                {
+                    <div class="reg-sec-t">🔐 계정 보안 설정</div>
+                    <div class="reg-field"><label>사용자 ID <span class="reg-req">*</span></label>
+                        <div class="reg-inline">
+                            <input class="reg-in" placeholder="영문/숫자 4자 이상" value="@_userId" @oninput="e => { _userId = e.Value?.ToString() ?? string.Empty; _idState = null; }" />
+                            <button class="reg-sub-btn" @onclick="CheckId" disabled="@(_userId.Length < 4)">중복 확인</button>
+                        </div>
+                        @if (_idState == "ok") { <div class="reg-ok">✅ 사용 가능한 아이디입니다.</div> }
+                        else if (_idState == "taken") { <div class="reg-bad">❌ 이미 가입된 아이디입니다. 다른 아이디를 입력하세요.</div> }
+                    </div>
+                    <div class="reg-field"><label>비밀번호 <span class="reg-req">*</span></label>
+                        <input class="reg-in" type="password" placeholder="영문·숫자·특수문자 조합 8자 이상" value="@_pw" @oninput="e => _pw = e.Value?.ToString() ?? string.Empty" />
+                        @if (_pw.Length > 0)
+                        {
+                            <div class="reg-pw-meter"><div class="reg-pw-bar @PwClass" style="width:@PwPct%"></div></div>
+                            <div class="reg-pw-lbl @PwClass">비밀번호 강도: @PwLabel</div>
+                            <div class="reg-pw-reqs">
+                                <span class="@(PwLen ? "ok" : "no")">@(PwLen ? "✓" : "○") 8자 이상</span>
+                                <span class="@(PwLetter ? "ok" : "no")">@(PwLetter ? "✓" : "○") 영문</span>
+                                <span class="@(PwDigit ? "ok" : "no")">@(PwDigit ? "✓" : "○") 숫자</span>
+                                <span class="@(PwSpecial ? "ok" : "no")">@(PwSpecial ? "✓" : "○") 특수문자</span>
+                            </div>
+                        }
+                    </div>
+                    <div class="reg-field"><label>비밀번호 확인 <span class="reg-req">*</span></label>
+                        <input class="reg-in" type="password" placeholder="비밀번호 재입력" value="@_pwConfirm" @oninput="e => _pwConfirm = e.Value?.ToString() ?? string.Empty" />
+                        @if (_pwConfirm.Length > 0)
+                        {
+                            @if (_pw == _pwConfirm) { <div class="reg-ok">✅ 비밀번호가 일치합니다.</div> }
+                            else { <div class="reg-bad">❌ 비밀번호가 일치하지 않습니다.</div> }
+                        }
+                    </div>
+                }
+                else if (_step == 4)
+                {
+                    <div class="reg-sec-t">🎬 스튜디오 프로필·주소</div>
+                    <div class="reg-field"><label>주소 <span class="reg-req">*</span></label>
+                        <div class="reg-inline">
+                            <input class="reg-in" style="max-width:120px" placeholder="우편번호" value="@_zip" readonly />
+                            <button class="reg-sub-btn" @onclick="() => _postcodeOpen = true">🔍 주소 검색</button>
+                        </div>
+                        <input class="reg-in" style="margin-top:7px" placeholder="기본 주소 (주소 검색 시 자동 입력)" value="@_addr" readonly />
+                        <input class="reg-in" @ref="_detailRef" style="margin-top:7px" placeholder="상세주소 (동/층/호 등)" @bind="_addrDetail" @bind:event="onchange" />
+                    </div>
+                    <div class="reg-field"><label>회사/사업자명 <span class="reg-opt-tag">(선택)</span></label><input class="reg-in" placeholder='예: (주)에이앤지테크 · 개인사업자' @bind="_farmName" @bind:event="onchange" /></div>
+                    <div class="reg-field"><label>작업 분야 <span class="reg-opt-tag">(선택)</span></label>
+                        <select class="reg-sel wide" value="@_crop" @onchange="e => _crop = e.Value?.ToString() ?? string.Empty">
+                            @foreach (var c in Crops) { <option value="@c">@c</option> }
+                            <option value="@CustomDomainKey">직접 입력</option>
+                        </select>
+                        @if (_crop == CustomDomainKey) { <input class="reg-in" style="margin-top:7px" placeholder="작업 분야 직접 입력" @bind="_cropCustom" @bind:event="onchange" spellcheck="false" /> }
+                    </div>
+                    <div class="reg-field"><label>직무·역할 <span class="reg-opt-tag">(선택)</span></label>
+                        <select class="reg-sel wide" value="@_facility" @onchange="e => _facility = e.Value?.ToString() ?? string.Empty">
+                            @foreach (var f in Facilities) { <option value="@f">@f</option> }
+                            <option value="@CustomDomainKey">직접 입력</option>
+                        </select>
+                        @if (_facility == CustomDomainKey) { <input class="reg-in" style="margin-top:7px" placeholder="직무·역할 직접 입력" @bind="_facilityCustom" @bind:event="onchange" spellcheck="false" /> }
+                    </div>
+                }
+                else
+                {
+                    <div class="reg-done">
+                        <div class="reg-done-ico">🎉</div>
+                        <div class="reg-done-t">회원가입이 완료되었습니다!</div>
+                        <div class="reg-done-s">가입이 완료되었습니다, <b>@_name</b>님. 발급된 아이디로 <b>로그인</b>하여 PromptFlow Studio 를 시작하세요.</div>
+                        <div class="reg-member">
+                            <div class="reg-member-l">회원 고유 식별 번호</div>
+                            <div class="reg-member-id">@_memberId</div>
+                        </div>
+                        <div class="reg-summary">
+                            <div><span>사용자 ID</span><b>@_userId</b></div>
+                            <div><span>회사/사업자명</span><b>@(_farmName.Length > 0 ? _farmName : "-")</b></div>
+                            <div><span>주소</span><b>@(_addr.Length > 0 ? _addr : "-")</b></div>
+                        </div>
+                        <div class="reg-done-note">🔐 로그인 화면에서 아이디가 자동 입력됩니다. 비밀번호만 입력하면 로그인됩니다.</div>
+                        @if (_grantedAdmin)
+                        {
+                            <div class="reg-done-note" style="border-color:rgba(52,211,153,.45);color:#6ee7b7">🛡️ <b>관리자(Admin)</b> 권한이 부여되었습니다. 로그인 후 [관리자 설정 › 라이선스 관리]에서 다른 사용자에게 줄 키를 발급하세요.</div>
+                        }
+                    </div>
+                }
+            </div>
+
+            <div class="reg-foot">
+                @if (_step is > 1 and < 5)
+                {
+                    <button class="reg-nav prev" @onclick="Prev">← 이전</button>
+                }
+                <span class="reg-foot-sp"></span>
+                @if (_step < 4)
+                {
+                    <button class="reg-nav next" @onclick="Next" disabled="@(!CanNext)">다음 →</button>
+                }
+                else if (_step == 4)
+                {
+                    <button class="reg-nav next" @onclick="Submit" disabled="@(!CanNext)">✅ 가입 완료</button>
+                }
+                else
+                {
+                    <button class="reg-nav go" @onclick="Finish">로그인 화면으로 →</button>
+                }
+            </div>
+        </div>
+    </div>
+
+    <PostcodeSearchModal Visible="_postcodeOpen" OnSelect="OnAddressPicked" OnClose="() => _postcodeOpen = false" />
+
+    @if (_toast is not null) { <div class="reg-toast">@_toast</div> }
+
+    @if (_confirmClose)
+    {
+        <div class="reg-confirm-scrim">
+            <div class="reg-confirm">
+                <div class="reg-confirm-t">⚠️ 회원가입을 취소하시겠습니까?</div>
+                <div class="reg-confirm-s">작성 중인 내용이 모두 삭제됩니다.</div>
+                <div class="reg-confirm-actions">
+                    <button class="reg-confirm-no" @onclick="() => _confirmClose = false">계속 작성</button>
+                    <button class="reg-confirm-yes" @onclick="ConfirmClose">나가기</button>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+<style>
+    .reg-scrim { position: fixed; inset: 0; z-index: 6100; background: rgba(5,9,18,.78); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); display: flex; align-items: flex-start; justify-content: center; padding: 5vh 18px; overflow-y: auto; animation: regFade .18s ease; }
+    @@keyframes regFade { from { opacity: 0; } to { opacity: 1; } }
+    .reg-modal { width: min(560px, 96vw); background: linear-gradient(168deg, #131d33, #0a1120); border: 1px solid rgba(245,158,11,.34); border-radius: 18px; box-shadow: 0 30px 84px rgba(0,0,0,.66), 0 0 34px rgba(217,119,6,.16); color: #d6e6df; overflow: hidden; animation: regPop .24s cubic-bezier(.2,.9,.3,1.2); }
+    @@keyframes regPop { from { opacity: 0; transform: translateY(-12px) scale(.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+    .reg-head { display: flex; align-items: center; justify-content: space-between; padding: 15px 20px; border-bottom: 1px solid rgba(255,255,255,.06); background: linear-gradient(90deg, rgba(245,158,11,.16), transparent); }
+    .reg-brand { font-size: .98rem; color: #d6e6df; } .reg-brand b { color: #34d399; } .reg-leaf { margin-right: 5px; }
+    .reg-x { background: rgba(255,255,255,.08); color: #fff; border: none; border-radius: 8px; width: 28px; height: 28px; font-weight: 800; cursor: pointer; }
+    .reg-steps { display: flex; align-items: center; padding: 14px 18px 4px; }
+    .reg-step { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 0 0 auto; }
+    .reg-step-n { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: .72rem; font-weight: 800; color: #8ca79d; background: rgba(255,255,255,.05); border: 1.5px solid rgba(255,255,255,.14); }
+    .reg-step.cur .reg-step-n { color: #1a1204; background: #fbbf24; border-color: #fbbf24; box-shadow: 0 0 0 3px rgba(245,158,11,.28); }
+    .reg-step.done .reg-step-n { color: #34d399; background: rgba(245,158,11,.14); border-color: rgba(245,158,11,.5); }
+    .reg-step-l { font-size: .56rem; font-weight: 700; color: #8ca79d; white-space: nowrap; }
+    .reg-step.cur .reg-step-l { color: #34d399; }
+    .reg-step-bar { flex: 1; height: 2px; background: rgba(255,255,255,.1); margin: -14px 4px 0; }
+    .reg-step-bar.done { background: rgba(245,158,11,.5); }
+    .reg-body { padding: 8px 22px 6px; min-height: 240px; }
+    .reg-sec-t { font-size: 1rem; font-weight: 800; margin: 8px 0 14px; color: #edf6f2; }
+    .reg-agree-all { display: flex; align-items: center; gap: 9px; padding: 12px 14px; background: rgba(245,158,11,.1); border: 1px solid rgba(245,158,11,.34); border-radius: 11px; cursor: pointer; font-size: .86rem; }
+    .reg-agree-list { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+    .reg-agree { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-radius: 9px; cursor: pointer; font-size: .82rem; color: #bfd6cd; }
+    .reg-agree:hover { background: rgba(255,255,255,.03); }
+    .reg-agree .req { color: #fbbf24; font-style: normal; font-weight: 800; margin-right: 4px; }
+    .reg-agree .opt { color: #34d399; font-style: normal; font-weight: 800; margin-right: 4px; }
+    .reg-agree input[type=checkbox], .reg-agree-all input[type=checkbox] { accent-color: #f59e0b; width: 16px; height: 16px; cursor: pointer; flex: 0 0 auto; }
+    .reg-field { margin-bottom: 13px; } .reg-field > label { display: block; font-size: .72rem; font-weight: 800; color: #34d399; margin-bottom: 6px; }
+    .reg-hint { font-size: .72rem; color: #8ca79d; margin-top: 6px; }
+    .reg-bootstrap { margin: 2px 0 14px; padding: 11px 14px; border-radius: 11px; font-size: .84rem; line-height: 1.5; color: #6ee7b7; background: rgba(52,211,153,.12); border: 1px solid rgba(52,211,153,.45); }
+    .reg-bootstrap b { color: #a7f3d0; }
+    .reg-bootstrap span { color: #8ca79d; font-size: .74rem; }
+    .reg-in { width: 100%; box-sizing: border-box; background: rgba(8,16,13,.6); border: 1px solid rgba(245,158,11,.26); border-radius: 10px; padding: 10px 12px; color: #e6f2ee; font-size: .88rem; outline: none; font-variant-numeric: tabular-nums; }
+    .reg-in:focus { border-color: #f59e0b; box-shadow: 0 0 0 3px rgba(245,158,11,.2); }
+    .reg-in[readonly] { opacity: .8; }
+    .reg-inline { display: flex; align-items: center; gap: 7px; min-width: 0; }
+    .reg-inline > .reg-in { min-width: 0; flex: 1 1 auto; }
+    .reg-at { color: #8ca79d; font-weight: 800; }
+    .reg-sel { background: rgba(8,16,13,.6); border: 1px solid rgba(245,158,11,.26); border-radius: 10px; padding: 10px 12px; color: #e6f2ee; font-size: .86rem; cursor: pointer; color-scheme: dark; }
+    .reg-sel.wide { width: 100%; }
+    .reg-sel option { background: #131d33; color: #e6f2ee; }
+    .reg-radio { display: flex; gap: 8px; }
+    .reg-radio-btn { flex: 1; padding: 10px; border-radius: 10px; font-weight: 700; font-size: .85rem; color: #a7c0b7; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.14); cursor: pointer; }
+    .reg-radio-btn.on { color: #1a1204; background: #fbbf24; border-color: #fbbf24; }
+    .reg-sub-btn { flex: 0 0 auto; padding: 10px 13px; border-radius: 10px; font-weight: 800; font-size: .78rem; color: #34d399; background: rgba(245,158,11,.14); border: 1px solid rgba(245,158,11,.42); cursor: pointer; white-space: nowrap; }
+    .reg-sub-btn.ok { color: #1a1204; background: #fbbf24; border-color: #fbbf24; }
+    .reg-sub-btn:disabled { opacity: .4; cursor: not-allowed; }
+    .reg-ok { font-size: .76rem; color: #34d399; margin-top: 6px; font-weight: 700; }
+    .reg-bad { font-size: .76rem; color: #f87171; margin-top: 6px; font-weight: 700; }
+    .reg-testcode { margin-top: 8px; padding: 9px 13px; border-radius: 10px; background: rgba(251,191,36,.16); border: 1px solid rgba(251,191,36,.55); display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: .84rem; font-weight: 800; color: #fde68a; }
+    .reg-testcode b { font-family: 'Roboto Mono', Consolas, monospace; font-size: 1.12rem; color: #fcd34d; letter-spacing: .14em; }
+    .reg-testcode .reg-tc-sub { font-size: .66rem; font-weight: 700; color: #cbb488; }
+    .reg-testcode .reg-tc-sub code { font-family: 'Roboto Mono', Consolas, monospace; color: #fde68a; }
+    .reg-mailsent { margin-top: 8px; padding: 9px 13px; border-radius: 10px; background: rgba(52,211,153,.12); border: 1px solid rgba(52,211,153,.42); font-size: .8rem; font-weight: 700; color: #6ee7b7; }
+    .reg-mailsent b { color: #a7f3d0; font-family: 'Roboto Mono', Consolas, monospace; }
+    .reg-req-tag { font-weight: 800; color: #fbbf24; font-size: .62rem; margin-left: 4px; }
+    .reg-opt-tag { font-weight: 700; color: #8ca79d; font-size: .64rem; margin-left: 4px; }
+    .reg-req { color: #f87171; font-weight: 900; font-size: .95rem; margin-left: 1px; }
+    .reg-pw-meter { height: 6px; border-radius: 4px; background: rgba(255,255,255,.08); overflow: hidden; margin: 8px 0 5px; }
+    .reg-pw-bar { height: 100%; border-radius: 4px; transition: width .3s ease, background .3s ease; }
+    .reg-pw-bar.weak { background: #f87171; } .reg-pw-bar.mid { background: #fbbf24; } .reg-pw-bar.strong { background: #f59e0b; }
+    .reg-pw-lbl { font-size: .74rem; font-weight: 800; }
+    .reg-pw-lbl.weak { color: #f87171; } .reg-pw-lbl.mid { color: #fcd34d; } .reg-pw-lbl.strong { color: #34d399; }
+    .reg-pw-reqs { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; }
+    .reg-pw-reqs span { font-size: .72rem; font-weight: 700; transition: color .2s ease; }
+    .reg-pw-reqs .ok { color: #34d399; }
+    .reg-pw-reqs .no { color: #8ca79d; }
+    .reg-done { text-align: center; padding: 14px 6px; }
+    .reg-done-ico { font-size: 3.2rem; animation: regBurst .6s cubic-bezier(.2,.9,.3,1.5); }
+    @@keyframes regBurst { 0% { transform: scale(.2) rotate(-20deg); opacity: 0; } 60% { transform: scale(1.15) rotate(6deg); } 100% { transform: scale(1) rotate(0); opacity: 1; } }
+    .reg-done-t { font-size: 1.2rem; font-weight: 800; color: #34d399; margin: 8px 0 5px; }
+    .reg-done-s { font-size: .84rem; color: #a7c0b7; } .reg-done-s b { color: #edf6f2; }
+    .reg-member { margin: 16px auto; max-width: 320px; padding: 13px; background: rgba(245,158,11,.12); border: 1px solid rgba(245,158,11,.38); border-radius: 12px; }
+    .reg-member-l { font-size: .66rem; font-weight: 800; color: #34d399; letter-spacing: .04em; }
+    .reg-member-id { font-family: 'Roboto Mono', Consolas, monospace; font-size: 1.15rem; font-weight: 800; color: #34d399; margin-top: 4px; letter-spacing: .03em; }
+    .reg-summary { max-width: 340px; margin: 0 auto; display: flex; flex-direction: column; gap: 5px; text-align: left; }
+    .reg-summary > div { display: flex; justify-content: space-between; font-size: .8rem; padding: 5px 0; border-bottom: 1px dashed rgba(255,255,255,.08); }
+    .reg-summary span { color: #8ca79d; } .reg-summary b { color: #edf6f2; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .reg-foot { display: flex; align-items: center; gap: 8px; padding: 14px 22px 18px; border-top: 1px solid rgba(255,255,255,.06); }
+    .reg-foot-sp { flex: 1; }
+    .reg-nav { border: none; border-radius: 11px; padding: 11px 20px; font-weight: 800; font-size: .88rem; cursor: pointer; transition: filter .15s ease, transform .1s ease; }
+    .reg-nav.prev { background: rgba(255,255,255,.06); color: #bfd6cd; border: 1px solid rgba(255,255,255,.14); }
+    .reg-nav.next, .reg-nav.go { color: #1a1204; background: linear-gradient(135deg, #fbbf24, #d97706); box-shadow: 0 6px 18px rgba(217,119,6,.34); }
+    .reg-nav.next:hover:not(:disabled), .reg-nav.go:hover { filter: brightness(1.06); }
+    .reg-nav:active:not(:disabled) { transform: scale(.98); }
+    .reg-nav:disabled { opacity: .4; cursor: not-allowed; }
+    .reg-modal, .reg-body { contain: layout; }
+    .reg-body .reg-in, .reg-body .reg-sel { box-sizing: border-box; max-width: 100%; }
+    .reg-countdown { flex: 0 0 auto; font-variant-numeric: tabular-nums; font-weight: 800; font-size: .82rem; color: #34d399; min-width: 48px; text-align: center; }
+    .reg-countdown.danger { color: #f87171; }
+    .reg-lockbadge { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; padding: 7px 12px; border-radius: 9px; font-size: .8rem; font-weight: 800; color: #6ee7b7; background: rgba(52,211,153,.12); border: 1px solid rgba(52,211,153,.42); }
+    .reg-lock-ic { font-size: .82rem; }
+    .reg-toast { position: fixed; top: 22px; left: 50%; transform: translateX(-50%); z-index: 6400; max-width: min(520px, 92vw);
+        background: linear-gradient(135deg, #0e3b34, #12564b); color: #eafff8; border: 1px solid rgba(245,158,11,.5); border-radius: 12px;
+        padding: 13px 18px; font-size: .86rem; font-weight: 700; box-shadow: 0 16px 44px rgba(0,0,0,.55), 0 0 0 3px rgba(245,158,11,.16);
+        animation: regToast .3s cubic-bezier(.2,.9,.3,1.3); }
+    @@keyframes regToast { from { opacity: 0; transform: translate(-50%, -14px); } to { opacity: 1; transform: translate(-50%, 0); } }
+    .reg-done-note { margin-top: 14px; font-size: .76rem; color: #34d399; background: rgba(245,158,11,.1); border: 1px solid rgba(245,158,11,.24); border-radius: 10px; padding: 9px 12px; }
+    .reg-confirm-scrim { position: fixed; inset: 0; z-index: 6500; background: rgba(5,9,18,.64); display: flex; align-items: center; justify-content: center; padding: 20px; animation: regFade .15s ease; }
+    .reg-confirm { width: min(360px, 92vw); background: linear-gradient(168deg, #131d33, #0a1120); border: 1px solid rgba(251,191,36,.4); border-radius: 16px; padding: 22px; box-shadow: 0 26px 60px rgba(0,0,0,.6); text-align: center; }
+    .reg-confirm-t { font-size: 1.02rem; font-weight: 900; color: #fcd34d; }
+    .reg-confirm-s { font-size: .82rem; color: #a7c0b7; margin: 8px 0 18px; }
+    .reg-confirm-actions { display: flex; gap: 9px; }
+    .reg-confirm-no, .reg-confirm-yes { flex: 1; padding: 11px; border-radius: 10px; font-weight: 800; font-size: .86rem; cursor: pointer; border: none; }
+    .reg-confirm-no { color: #bfd6cd; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.14); }
+    .reg-confirm-yes { color: #2a1206; background: linear-gradient(135deg, #fcd34d, #f59e0b); }
+</style>
+
+@code {
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public EventCallback<RegisterResult> OnComplete { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    public sealed record RegisterResult(string UserId, string Password, string MemberId);
+
+    private static readonly string[] EmailDomains = { "naver.com", "gmail.com", "daum.net", "kakao.com", "hanmail.net", "nate.com" };
+    private static readonly string[] Crops = { "영상 제작", "광고·마케팅", "미디어·콘텐츠", "교육·이러닝", "게임·엔터테인먼트", "기타" };
+    private static readonly string[] Facilities = { "크리에이터", "디렉터·PD", "마케터", "기획자", "개발자" };
+    private static readonly string[] TakenIds = { "admin", "operator", "viewer", "test", "root", "manager", "gslee", "studio", "promptflow" };
+
+    private int _step = 1;
+
+    private bool _agreeAll, _agreeTos, _agreePrivacy, _agreeLocation;
+    private string _regLicKey = "";
+    private string? _licState;   // "master" / "valid" / "used" / "invalid" / null
+    private bool _grantedAdmin;  // 가입 결과 관리자 권한 부여 여부(완료 화면 안내용)
+    /// <summary>원장이 비어 있으면 최초 가입자 — 키 없이 관리자 통과(락아웃 방지).</summary>
+    private bool IsBootstrap => Members.Count == 0;
+    private void OnLicInput(ChangeEventArgs e)
+    {
+        _regLicKey = e.Value?.ToString() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(_regLicKey)) { _licState = null; return; }
+        if (Serial.IsMasterKey(_regLicKey)) { _licState = "master"; return; }   // 비상 마스터 키
+        var c = Serial.Check(_regLicKey);
+        _licState = !c.Exists ? "invalid" : (c.Unused ? "valid" : "used");
+    }
+
+    private string _name = "", _birth = "", _gender = "", _phone = "";
+    private bool _emailCodeSent, _emailVerified, _verifyError, _emailSending, _demoMode;
+    private string? _emailSendError;
+    private string _emailCode = "", _emailCodeInput = "";
+    private string PhoneDigits => new string(_phone.Where(char.IsDigit).ToArray());
+    private bool BirthValid => System.Text.RegularExpressions.Regex.IsMatch(
+        _birth, @"^(19|20)\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$");
+    private int _remain;
+    private System.Threading.Timer? _otpTimer;
+    private string? _toast;
+    private System.Threading.Timer? _toastTimer;
+    private bool _confirmClose;
+    private string _email = "", _emailDomain = "naver.com";
+    private const string CustomDomainKey = "__custom__";
+    private string _customDomain = "";
+    private string _userId = "", _pw = "", _pwConfirm = "";
+    private string? _idState;
+    private string _zip = "", _addr = "", _addrDetail = "", _farmName = "", _crop = "영상 제작", _facility = "크리에이터";
+    private string _cropCustom = "", _facilityCustom = "";
+    private string EffectiveCrop => _crop == CustomDomainKey ? _cropCustom.Trim() : _crop;
+    private string EffectiveFacility => _facility == CustomDomainKey ? _facilityCustom.Trim() : _facility;
+    private bool _postcodeOpen;
+    private ElementReference _detailRef;
+    private string _memberId = "";
+
+    private static string StepLabel(int s) => s switch { 1 => "약관", 2 => "정보", 3 => "계정", 4 => "프로필", _ => "완료" };
+
+    private void ToggleAll(ChangeEventArgs e)
+    {
+        _agreeAll = (bool)(e.Value ?? false);
+        _agreeTos = _agreePrivacy = _agreeLocation = _agreeAll;
+    }
+    private void SyncAll() => _agreeAll = _agreeTos && _agreePrivacy && _agreeLocation;
+
+    private bool IsCustomDomain => _emailDomain == CustomDomainKey;
+    private string EffectiveDomain => (IsCustomDomain ? _customDomain : _emailDomain).Trim();
+    private string FullEmail => $"{_email.Trim()}@{EffectiveDomain}";
+    private bool IsEmailValid => _email.Trim().Length > 0 && !_email.Contains(' ')
+                              && EffectiveDomain.Length > 0 && EffectiveDomain.Contains('.') && !EffectiveDomain.Contains(' ');
+    private string CountdownText => $"{_remain / 60:D2}:{_remain % 60:D2}";
+
+    private void ResetSendState()
+    {
+        if (!_emailVerified) { _emailCodeSent = false; _demoMode = false; _emailSendError = null; StopOtpTimer(); _remain = 0; }
+    }
+    private void OnEmailInput(ChangeEventArgs e) { _email = e.Value?.ToString() ?? string.Empty; ResetSendState(); }
+    private void OnDomainChange(ChangeEventArgs e) { _emailDomain = e.Value?.ToString() ?? "naver.com"; ResetSendState(); }
+    private void OnCustomDomainInput(ChangeEventArgs e) { _customDomain = e.Value?.ToString() ?? string.Empty; ResetSendState(); }
+    private void OnPhoneInput(ChangeEventArgs e)
+    {
+        var d = new string((e.Value?.ToString() ?? string.Empty).Where(char.IsDigit).Take(11).ToArray());
+        _phone = FormatPhone(d);
+    }
+    private static string FormatPhone(string d)
+    {
+        if (d.Length < 4) return d;
+        if (d.Length < 8) return $"{d[..3]}-{d[3..]}";
+        if (d.Length <= 10) return $"{d[..3]}-{d[3..6]}-{d[6..]}";
+        return $"{d[..3]}-{d[3..7]}-{d[7..11]}";
+    }
+    private void OnCodeInput(ChangeEventArgs e)
+    {
+        _emailCodeInput = new string((e.Value?.ToString() ?? string.Empty).Where(char.IsDigit).Take(6).ToArray());
+        _verifyError = false;
+    }
+
+    private async Task SendEmailCode()
+    {
+        if (!IsEmailValid || _emailVerified || _emailSending) return;
+        _emailSendError = null;
+        _emailCode = Random.Shared.Next(100000, 1000000).ToString(CultureInfo.InvariantCulture);
+        _emailCodeInput = ""; _verifyError = false; _emailCodeSent = false; _demoMode = false;
+        _emailSending = true;
+        await InvokeAsync(StateHasChanged);
+        var to = FullEmail;
+        var res = await Otp.SendOtpAsync(to, _emailCode);
+        _emailSending = false;
+        if (res.Sent)
+        {
+            _emailCodeSent = true; _demoMode = false; _remain = 180; StartOtpTimer();
+            ShowToast($"📧 인증번호를 {to} 로 발송했습니다. 메일함(스팸함 포함)을 확인해 주세요.", 8000);
+        }
+        else if (res.Demo)
+        {
+            _emailCodeSent = true; _demoMode = true; _remain = 180; StartOtpTimer();
+            ShowToast($"📮 데모 모드 — 화면의 인증번호를 입력해 주세요. (이메일 미구성)", 6000);
+        }
+        else
+        {
+            _emailSendError = "인증 메일 발송에 실패했습니다. 이메일 주소를 확인하거나 관리자에게 문의하세요." + (string.IsNullOrWhiteSpace(res.Error) ? "" : $" ({res.Error})");
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+    private void StartOtpTimer()
+    {
+        _otpTimer?.Dispose();
+        _otpTimer = new System.Threading.Timer(_ =>
+        {
+            if (_remain > 0) _remain--;
+            if (_remain <= 0) StopOtpTimer();
+            _ = InvokeAsync(StateHasChanged);
+        }, null, 1000, 1000);
+    }
+    private void StopOtpTimer() { _otpTimer?.Dispose(); _otpTimer = null; }
+
+    private void VerifyEmail()
+    {
+        if (_remain <= 0) { _verifyError = true; return; }
+        if (_emailCodeInput.Trim() == _emailCode)
+        {
+            _emailVerified = true; _verifyError = false;
+            StopOtpTimer();
+            ShowToast($"✅ {FullEmail} 이메일 본인인증이 완료되었습니다.", 3500);
+        }
+        else _verifyError = true;
+    }
+
+    private void ShowToast(string msg, int ms)
+    {
+        _toast = msg;
+        _toastTimer?.Dispose();
+        _toastTimer = new System.Threading.Timer(_ => { _toast = null; _ = InvokeAsync(StateHasChanged); }, null, ms, System.Threading.Timeout.Infinite);
+    }
+
+    private void CheckId()
+    {
+        var id = _userId.Trim();
+        if (id.Length < 4) return;
+        bool taken = TakenIds.Contains(id, StringComparer.OrdinalIgnoreCase) || Members.Exists(id);
+        _idState = taken ? "taken" : "ok";
+    }
+    private bool PwLen => _pw.Length >= 8;
+    private bool PwLetter => _pw.Any(char.IsLetter);
+    private bool PwDigit => _pw.Any(char.IsDigit);
+    private bool PwSpecial => _pw.Any(c => !char.IsLetterOrDigit(c));
+    private bool PwOk => PwLen && PwLetter && PwDigit && PwSpecial;
+    private string PwClass => !PwOk ? "weak" : (_pw.Length >= 12 ? "strong" : "mid");
+    private string PwLabel => !PwOk ? "요건 미충족" : (_pw.Length >= 12 ? "안전" : "보통");
+    private int PwPct => !PwOk ? Math.Clamp(_pw.Length * 6, 8, 45) : (_pw.Length >= 12 ? 100 : 72);
+
+    private async Task OnAddressPicked(PostcodeSearchModal.PostcodeResult a)
+    {
+        _zip = a.Zip; _addr = a.Road; _postcodeOpen = false;
+        await InvokeAsync(StateHasChanged);
+        try { await _detailRef.FocusAsync(); } catch { /* 포커스 실패 무시 */ }
+    }
+
+    private bool CanNext => _step switch
+    {
+        1 => _agreeTos && _agreePrivacy,
+        2 => _name.Trim().Length > 0 && BirthValid && !string.IsNullOrEmpty(_gender)
+             && _emailVerified && PhoneDigits.Length >= 10
+             && (!Serial.EnforcementOn || IsBootstrap || _licState == "valid" || _licState == "master"),
+        3 => _idState == "ok" && PwOk && _pw == _pwConfirm,
+        4 => !string.IsNullOrEmpty(_zip),
+        _ => true,
+    };
+
+    private void Next() { if (CanNext && _step < 4) _step++; }
+    private void Prev() { if (_step > 1) _step--; }
+
+    private void Submit()
+    {
+        if (!CanNext) return;
+        _memberId = $"SITE-USER-{DateTime.Now:yyyy}-{DateTime.Now:MMdd}";
+        var req = new MemberRegisterRequest(
+            _userId, _pw, _name, _birth,
+            _gender == "M" ? "남성" : _gender == "F" ? "여성" : "-",
+            FullEmail, _phone, _regLicKey.Trim(), _memberId,
+            _farmName, _zip, _addr, _addrDetail, EffectiveCrop, EffectiveFacility);
+        try
+        {
+            var wasBootstrap = Members.Count == 0;
+            var isMaster = Serial.EnforcementOn && Serial.IsMasterKey(_regLicKey);
+            var res = Members.RegisterFull(req);   // 최초 가입자면 내부에서 자동 Admin
+            if (res.Ok)
+            {
+                // 마스터 키 가입은 관리자 권한 부여(원장이 비어있지 않아 자동승격 대상이 아닐 때).
+                if (isMaster && res.Role != "Admin") Members.SetRole(_userId, "Admin");
+                _grantedAdmin = res.Role == "Admin" || isMaster || wasBootstrap;
+
+                // 라이선스 소진은 <일반 유효키>일 때만 — 부트스트랩/마스터는 소진하지 않는다.
+                if (Serial.EnforcementOn && !wasBootstrap && !isMaster && _licState == "valid")
+                    Serial.MarkUsed(_regLicKey.Trim(), FullEmail);
+                // 중앙 명부(구글 시트)로 <프로필만> 전송 — 비밀번호 제외 · best-effort · fire-and-forget.
+                //   전송 실패(오프라인·미구성)해도 가입 완료 화면은 그대로 뜬다.
+                var fullAddr = string.Join(" ", new[]
+                {
+                    _zip.Length > 0 ? $"({_zip})" : "", _addr, _addrDetail
+                }.Where(s => !string.IsNullOrWhiteSpace(s)));
+                _ = Sync.PushAsync(new MemberDirectoryEntry(
+                    _userId, _name, FullEmail, _phone, _farmName, fullAddr, _regLicKey.Trim(), _memberId,
+                    DateTime.Now.ToString("yyyy-MM-dd HH:mm")));
+            }
+        }
+        catch { /* 저장 실패해도 완료 화면 표시 */ }
+        _step = 5;
+    }
+
+    private async Task Finish()
+    {
+        if (OnComplete.HasDelegate) await OnComplete.InvokeAsync(new RegisterResult(_userId, _pw, _memberId));
+    }
+
+    private async Task Close() { if (OnClose.HasDelegate) await OnClose.InvokeAsync(); }
+
+    private Task RequestClose()
+    {
+        if (_step == 5) return Close();
+        _confirmClose = true;
+        return Task.CompletedTask;
+    }
+    private async Task ConfirmClose()
+    {
+        _confirmClose = false;
+        ResetForm();
+        await Close();
+    }
+    private void ResetForm()
+    {
+        StopOtpTimer(); _toastTimer?.Dispose(); _toast = null;
+        _step = 1;
+        _agreeAll = _agreeTos = _agreePrivacy = _agreeLocation = false;
+        _regLicKey = ""; _licState = null; _grantedAdmin = false;
+        _name = _birth = _gender = _phone = "";
+        _emailCodeSent = _emailVerified = _verifyError = _emailSending = _demoMode = false;
+        _emailCode = _emailCodeInput = ""; _remain = 0; _emailSendError = null;
+        _email = ""; _emailDomain = "naver.com"; _customDomain = "";
+        _userId = _pw = _pwConfirm = ""; _idState = null;
+        _zip = _addr = _addrDetail = _farmName = ""; _crop = "영상 제작"; _facility = "크리에이터"; _cropCustom = _facilityCustom = "";
+        _memberId = "";
+    }
+
+    public void Dispose() { _otpTimer?.Dispose(); _toastTimer?.Dispose(); }
+}

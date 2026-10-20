@@ -1,0 +1,1571 @@
+@inherits LayoutComponentBase
+@using PromptFlowStudio.Shared.Sim
+@inject SessionState Session
+@inject Microsoft.Extensions.Configuration.IConfiguration Cfg
+@inject NavigationManager Nav
+@inject PromptFlowStudio.Services.Help.HelpState Help
+@inject PromptFlowStudio.Services.Ui.UserPreferenceService Prefs
+@inject PromptFlowStudio.Services.Ui.CommandPaletteService Palette
+@inject PromptFlowStudio.Services.Ui.StudioNavigationService StudioNav
+@inject PromptFlowStudio.Services.Ui.ThemeService Theme
+@inject PromptFlowStudio.Services.Ui.SidebarGuideService SideGuide
+@inject PromptFlowStudio.Services.Storyboard.BatchProductionService Batch
+@inject IJSRuntime JS
+@inject PromptFlowStudio.Services.Wan.IWanPromptBoosterService Booster
+@implements IDisposable
+
+@* ★ [회원 로그인 게이트 + 사이드바] BlazorWebView 는 항상 인터랙티브라 레이아웃에서 직접 세션 판독(정적 SSR 트릭 불요).
+   미인증 시 shell 을 숨기고 /login 으로. Auth:RequireLogin=false 로 해제 가능. *@
+@* ★ [커스텀 테마 엔진] 활성 테마의 색상 토큰을 :root 오버라이드로 주입(JS 불요). 활성 없으면 빈 문자열.
+     ⚠ 값은 ThemeService.SafeColor 로 검증됨(스타일 주입 차단). data-theme(light/dark) 시스템과 공존. *@
+<style id="pf-theme">@((MarkupString)Theme.ActiveCss)</style>
+
+@if (_pass)
+{
+    @* 드로어 토글 — 1000px 이하에서만 보인다(CSS 가 제어).
+       현장은 태블릿을 들고 다닌다. 사이드바가 250px 를 상시 먹으면
+       10인치 화면에서 히트맵이 2열로 찌그러진다. *@
+    <button type="button" class="drawer-btn" @onclick="ToggleDrawer"
+            aria-label="메뉴 열기" aria-expanded="@(_drawer ? "true" : "false")">☰</button>
+
+    <div class="app-shell @(_drawer ? "drawer-open" : "") @(_sideCollapsed ? "side-collapsed" : "")"
+         @onkeydown="OnShellKey" tabindex="-1">
+
+        @if (_drawer)
+        {
+            @* 스크림 — 바깥을 누르면 닫힌다. 모바일에서 가장 자연스러운 닫기 동작이다. *@
+            <div class="drawer-scrim" @onclick="CloseDrawer" aria-hidden="true"></div>
+        }
+
+        <aside class="sidebar">
+            <div class="side-brand">
+                @*  공급사 마크(ANG). 로그인 화면과 같은 규칙이다.
+                    ⚠ .side-logo 타일은 sidebar-light 에서도 어두운 그라데이션을
+                      유지하므로(app.css 가 배경을 따로 정의) 흰 마크 하나로 충분하다. *@
+                <div class="side-logo">
+                    <img class="side-ang" src="img/ang_logo_w.png" alt="" aria-hidden="true" draggable="false" />
+                </div>
+                <div><div class="side-name">PromptFlow Studio</div><div class="side-tag">PROMPT · FLOW · VIDEO</div></div>
+            </div>
+            @* 메뉴를 고르면 드로어를 닫는다 — 모바일에서 안 닫히면 본문이 안 보인다 *@
+            <nav class="nav" @onclick="CloseDrawer" @onmouseleave="HideSideGuide">
+                <div class="nav-grp">스튜디오</div>
+                <div class="navw" @onmouseenter='e => ShowSideGuide("", e.ClientY)'>
+                    <NavLink class="nav-item" href="" accesskey="0" Match="NavLinkMatch.All">
+                        <span class="ic">🎬</span><span class="nav-t" title="워크스페이스">워크스페이스</span><span class="nav-kbd">Alt+0</span>
+                    </NavLink>
+                </div>
+
+                @* 생성 워크플로우 — 모든 단계가 실제 페이지로 연결됨. *@
+                <div class="nav-grp">생성 워크플로우</div>
+                <div class="navw" @onmouseenter='e => ShowSideGuide("workspace", e.ClientY)'><NavLink class="nav-item" href="workspace"><span class="ic">✍️</span><span class="nav-t" title="프롬프트 입력">프롬프트 입력</span></NavLink></div>
+                <div class="navw" @onmouseenter='e => ShowSideGuide("storyboard", e.ClientY)'><NavLink class="nav-item" href="storyboard"><span class="ic">🎞️</span><span class="nav-t" title="스토리보드">스토리보드</span></NavLink></div>
+                <div class="navw" @onmouseenter='e => ShowSideGuide("batch", e.ClientY)'><NavLink class="nav-item" href="batch"><span class="ic">🏭</span><span class="nav-t" title="대량 양산">대량 양산</span></NavLink></div>
+                <div class="navw" @onmouseenter='e => ShowSideGuide("analytics", e.ClientY)'><NavLink class="nav-item" href="analytics"><span class="ic">📊</span><span class="nav-t" title="생산성 &amp; 비용 대시보드">생산성 &amp; 비용</span></NavLink></div>
+                <div class="navw" @onmouseenter='e => ShowSideGuide("live-studio", e.ClientY)'><NavLink class="nav-item" href="live-studio"><span class="ic">📺</span><span class="nav-t" title="24/7 AI 라이브 스튜디오">24/7 AI 라이브 스튜디오</span></NavLink></div>
+                <div class="navw" @onmouseenter='e => ShowSideGuide("brand-studio", e.ClientY)'><NavLink class="nav-item" href="brand-studio"><span class="ic">🛍️</span><span class="nav-t" title="커머셜 브랜드 스튜디오">커머셜 브랜드 스튜디오</span></NavLink></div>
+                <div class="navw" @onmouseenter='e => ShowSideGuide("motion", e.ClientY)'><NavLink class="nav-item" href="motion"><span class="ic">🎥</span><span class="nav-t" title="모션·카메라">모션·카메라</span></NavLink></div>
+                <div class="navw" @onmouseenter='e => ShowSideGuide("queue", e.ClientY)'><NavLink class="nav-item" href="queue"><span class="ic">⏳</span><span class="nav-t" title="렌더링 큐">렌더링 큐</span></NavLink></div>
+                <div class="navw" @onmouseenter='e => ShowSideGuide("gallery", e.ClientY)'><NavLink class="nav-item" href="gallery"><span class="ic">🖼️</span><span class="nav-t" title="갤러리">갤러리</span></NavLink></div>
+                @* v5.8.2: AI 15초 컷다운 — 15~30초 원본을 15초 숏폼으로 자동 재단(신규 사이드 메뉴 · 갤러리 다음). *@
+                <div class="navw" @onmouseenter='e => ShowSideGuide("ai-cutdown", e.ClientY)'><NavLink class="nav-item" href="ai-cutdown"><span class="ic">✂️</span><span class="nav-t" title="AI 15초 컷다운">AI 15초 컷다운</span></NavLink></div>
+                @* v5.6.2: 노드 오케스트레이터(구글 Flow 대체 코어) 정식 라우트 — 갤러리 다음. *@
+                <div class="navw" @onmouseenter='e => ShowSideGuide("flow", e.ClientY)'><NavLink class="nav-item" href="flow"><span class="ic">🕹️</span><span class="nav-t" title="노드 오케스트레이터">노드 오케스트레이터</span></NavLink></div>
+                <div class="navw" @onmouseenter='e => ShowSideGuide("node-studio", e.ClientY)'><NavLink class="nav-item" href="node-studio"><span class="ic">🧩</span><span class="nav-t" title="비주얼 노드 플로우 스튜디오">비주얼 노드 플로우</span></NavLink></div>
+                @* v5.3.2: 모바일 시뮬레이터 — PC 우측에 디바이스 프레임을 슬라이딩 토글(라우팅 아님). *@
+                <div class="navw" @onmouseenter='e => ShowSideGuide("mobile-sim", e.ClientY)'><button type="button" class='nav-item nav-btn @(_showMobileSim ? "on" : null)' @onclick="ToggleMobileSim"><span class="ic">📱</span><span class="nav-t" title="모바일 시뮬레이터">모바일 시뮬레이터</span></button></div>
+                @* v6.2.0: 글로벌 관제 — 데스크톱 전용 우측 슬라이딩 관제 대시보드(라우팅 아님 · 모바일 라우터와 무간섭). *@
+                <div class="navw" @onmouseenter='e => ShowSideGuide("observability", e.ClientY)'><button type="button" class='nav-item nav-btn @(_showObservability ? "on" : null)' @onclick="ToggleObservability"><span class="ic">📊</span><span class="nav-t" title="글로벌 관제">글로벌 관제</span></button></div>
+                @* v7.0.0: AI 멀티트랙 타임라인 — 데스크톱 전용 우측 슬라이딩 NLE 스튜디오(라우팅 아님 · 모바일 라우터 무간섭). *@
+                <div class="navw" @onmouseenter='e => ShowSideGuide("timeline", e.ClientY)'><button type="button" class='nav-item nav-btn @(_showTimeline ? "on" : null)' @onclick="ToggleTimeline"><span class="ic">🎬</span><span class="nav-t" title="AI 타임라인">AI 타임라인</span></button></div>
+
+                @* v17.50.1: 6대 도메인 아코디언 — 스튜디오 모달 진입점 전량(StudioCatalog). 검색어 입력 시 전 카테고리 펼침 필터. *@
+                <div class="nav-grp">스튜디오 모듈</div>
+                <div class="nav-acc-search"><input type="search" placeholder="🔎 스튜디오 검색" @bind="_navFilter" @bind:event="oninput" aria-label="스튜디오 검색" /></div>
+                @for (var ci = 0; ci < StudioCatalog.Categories.Length; ci++)
+                {
+                    var cat = ci;
+                    var hits = NavFiltering ? StudioCatalog.CountMatches(cat, _navFilter) : StudioCatalog.CountIn(cat);
+                    if (NavFiltering && hits == 0) continue;
+                    var open = _openCats[cat] || NavFiltering;
+                    <button type="button" class="nav-acc @(open ? "open" : null)" aria-expanded="@(open ? "true" : "false")" @onclick="() => ToggleCat(cat)">
+                        <span class="nav-acc-t">@StudioCatalog.Categories[cat]</span><span class="nav-acc-n">@hits</span><span class="nav-acc-c" aria-hidden="true">▸</span>
+                    </button>
+                    @if (open)
+                    {
+                        <div class="nav-acc-body">
+                            @foreach (var e in StudioCatalog.Entries)
+                            {
+                                if (e.Category != cat || NavFiltering && !StudioCatalog.Matches(e, _navFilter)) continue;
+                                var key = e.Key;
+                                <button type="button" class='nav-item nav-btn nav-sub @(IsStudioOpen(key) ? "on" : null)' title="@e.Title" @onclick="() => OpenStudio(key)"><span class="ic">@e.Icon</span><span class="nav-t">@e.Title</span></button>
+                            }
+                        </div>
+                    }
+                }
+                @if (NavFiltering && NavMatchTotal() == 0)
+                {
+                    <div class="nav-acc-empty">일치하는 스튜디오가 없습니다</div>
+                }
+
+                <div class="nav-grp">시스템</div>
+                @* 사용자 설정 — 테마 등 이 PC 운용 환경(관리자 비밀번호 불요, 모든 사용자). *@
+                <div class="navw" @onmouseenter='e => ShowSideGuide("user-settings", e.ClientY)'><NavLink class="nav-item" href="user-settings"><span class="ic">🎚️</span><span class="nav-t" title="사용자 설정">사용자 설정</span></NavLink></div>
+                @* 회원·라이선스·메일·설치PC 관리는 <관리자 설정> 탭으로 통합(관리자 비밀번호 게이트). *@
+                <div class="navw" @onmouseenter='e => ShowSideGuide("settings", e.ClientY)'><NavLink class="nav-item" href="settings"><span class="ic">⚙️</span><span class="nav-t" title="관리자 설정">관리자 설정</span></NavLink></div>
+                @* v5.3.4: 중복 메뉴 [원클릭 앱 제작] 제거 — 배포는 [관리자 설정 ▸ 보안·배포] 탭으로 일원화. *@
+            </nav>
+
+            @* ══ 화면 옵션 위젯 ═══════════════════════════════════════════════
+               ⚠ 테마는 문서 루트의 data-theme 하나로만 갈린다(app.css 토큰이
+                 :root[data-theme] 를 본다). 여기서 별도 클래스를 만들지 않는다 —
+                 진실이 둘이 되면 한쪽만 바뀌어 화면이 어긋난다.
+               ⚠ 모션 끄기는 OS 의 prefers-reduced-motion 과 <별개>다.
+                 OS 설정은 그대로 존중하고, 둘 중 하나라도 켜지면 멈춘다. *@
+            <div class="side-opt" role="group" aria-label="화면 옵션">
+                @foreach (var o in _sideOpts)
+                {
+                    <div class="side-opt-r" @key="o.Key">
+                        <span class="side-opt-l">
+                            <span aria-hidden="true">@o.Icon</span>@o.Label
+                        </span>
+                        <div class="side-opt-b" role="group" aria-label="@o.Label">
+                            <button type="button"
+                                    class="@($"sopt {(o.On() ? "" : "on")}")"
+                                    aria-pressed="@(o.On() ? "false" : "true")"
+                                    @onclick="() => SetOpt(o.Key, false)">@o.OffText</button>
+                            <button type="button"
+                                    class="@($"sopt {(o.On() ? "on" : "")}")"
+                                    aria-pressed="@(o.On() ? "true" : "false")"
+                                    @onclick="() => SetOpt(o.Key, true)">@o.OnText</button>
+                        </div>
+                    </div>
+                }
+            </div>
+
+            @* 커스텀 테마 엔진 진입 — 좌측 하단 테마 영역. *@
+            <button type="button" class="side-theme-btn" @onclick="() => _themeEditor = true"
+                    title="브랜드/장르 색상으로 UI 전체를 커스텀">
+                🎨 커스텀 테마 제작@(Theme.Active is { } a ? $" · {a.Name}" : "")
+            </button>
+
+            <div class="side-foot">
+                <div class="side-ava">@Avatar</div>
+                <div class="side-um">
+                    <div class="side-un">@(Session.Display.Length > 0 ? Session.Display : "게스트")</div>
+                    <div class="side-ue">@Session.User · @RoleKo</div>
+                </div>
+                @* 도움말은 상단 헤더의 [도움말 F1] 가 단독 진입점이다.
+                   사이드바의 보조 도움말 버튼은 중복이라 제거했다(단축키 F1·Alt+H 는 그대로 동작). *@
+                <button class="side-out" title="로그아웃" @onclick="Logout">⏻</button>
+            </div>
+        </aside>
+        <main class="content">
+            @* ═══════════════════════════════════════════════════════════════
+               상단 헤더 툴바
+
+               ⚠ 이 레이아웃에는 원래 상단 바가 없었다. 도움말 버튼이 사이드바
+                 맨 아래 프로필 상자 안에 묻혀 있어 아무도 못 찾았다.
+                 관제 화면에서 '도움이 필요한 순간' 은 대개 경보가 떠 있는
+                 순간이고, 그때 사용자의 시선은 화면 위쪽에 있다.
+
+               ⚠ sticky 로 붙인다. 본문이 스크롤돼도 도움말이 항상 손에 닿아야
+                 한다. .content 가 overflow:auto 라 sticky 가 그 안에서 동작한다.
+               ═══════════════════════════════════════════════════════════════ *@
+            <header class="topbar" role="banner">
+                <div class="topbar-where">
+                    @if (Here is { } h)
+                    {
+                        <span class="topbar-ic" aria-hidden="true">@h.Icon</span>
+                        <span class="topbar-t">@h.Title</span>
+                    }
+                </div>
+
+                <div class="topbar-tools">
+                    @* v17.50.1: 스튜디오 트리거 98개는 좌측 사이드바 6대 카테고리로 이관 — 헤더는 트랜스포트 바(타임코드 · 레이턴시 · 메모리/GPU · 피크)만. *@
+                    <MasterTransportBar OnToggleSidebar="ToggleSidebar" SidebarCollapsed="_sideCollapsed" />
+                    <div class="topbar-brand" title="ANG Technology">
+                        <img class="ang-mark ang-w" src="img/ang_logo_w.png"
+                             alt="" aria-hidden="true" draggable="false" />
+                        <img class="ang-mark ang-b" src="img/ang_logo_b.png"
+                             alt="" aria-hidden="true" draggable="false" />
+                        <span class="ang-name">ANG&nbsp;Technology</span>
+                    </div>
+                </div>
+            </header>
+
+            @* v13.0.1: 페이지 1개의 미처리 예외가 사이드바/헤더까지 셸 전체를 붕괴시키지 않도록 격리. 다른 메뉴로 이동하면 자동 복구. *@
+            <div class="content-body">
+                <ErrorBoundary @ref="_pageBoundary">
+                    <ChildContent>@Body</ChildContent>
+                    <ErrorContent Context="fault">
+                        <div role="alert" style="display:flex;flex-direction:column;gap:8px;margin:24px;padding:16px 18px;border:1px solid #E53935;border-radius:10px;background:rgba(229,57,53,.08);">
+                            <b>⚠ 이 화면에서 오류가 발생해 격리했습니다.</b>
+                            <span>다른 메뉴는 정상 동작합니다. (@(fault.GetType().Name))</span>
+                            <button type="button" style="align-self:flex-start;padding:6px 14px;border-radius:6px;border:1px solid currentColor;background:transparent;color:inherit;cursor:pointer;" @onclick="RecoverPage">다시 시도</button>
+                        </div>
+                    </ErrorContent>
+                </ErrorBoundary>
+            </div>
+        </main>
+
+        @* ⚠ 앱 전체에서 딱 하나만 둔다. 페이지마다 두면 F1 이 여러 개를 동시에 연다.
+           전역 단축키(F1 · ?)는 이 컴포넌트가 document 리스너로 직접 등록한다 —
+           Blazor 의 @@onkeydown 은 포커스가 shell 안에 있을 때만 발동해서
+           "언제든 열린다"를 보장하지 못한다. *@
+        @* 앱 전체에서 딱 하나. 열림 상태는 HelpState 서비스가 들고 있으므로
+           페이지 안의 미니 아이콘도 같은 드로어를 연다. *@
+        <HelpDrawer />
+        @* 앱 전체에서 하나. 명령 목록은 CommandPaletteService 가 들고 있다. *@
+        <CommandPalette />
+
+        @* v5.3.2: 모바일 시뮬레이터 — 우측 슬라이딩 오버레이(순수 CSS transition)로 공용 디바이스 프레임(Shared.Sim.MobileSimulatorSidePane) 노출.
+           사이드바 [📱 모바일 시뮬레이터] 토글로 열고, 스크림/✕ 로 닫으면 내부 컴포넌트가 언마운트되어 리소스 해제. *@
+        <div class="mss-scrim @(_showMobileSim ? "on" : null)" @onclick="CloseMobileSim" aria-hidden="true"></div>
+        <div class="mss-slide @(_showMobileSim ? "open" : null) @(_simFullscreen ? "fullscreen-mode" : null)" role="dialog" aria-modal="true" aria-label="모바일 시뮬레이터"
+             tabindex="-1" @ref="_mssRef" @onkeydown="OnMssKey">
+            <div class="mss-slide-head">
+                <span class="mss-slide-t">📱 모바일 시뮬레이터</span>
+                <button type="button" class="mss-slide-x" @onclick="CloseMobileSim" title="닫기">✕</button>
+            </div>
+            <div class="mss-slide-body">
+                @if (_showMobileSim)
+                {
+                    <MobileSimulatorSidePane Open="true" PaneW="360" PaneH="700" OnFullscreenChanged="OnSimFullscreen">
+                        <MobileStudioDeck Project="_simProject" OnBoostPrompt="BoostViaHost"
+                                          ThemeNames="_mobileThemeNames" ActiveThemeName="@Theme.Active?.Name" OnApplyTheme="ApplyMobileTheme" />
+                    </MobileSimulatorSidePane>
+                }
+            </div>
+        </div>
+
+        @* v6.2.0: 글로벌 관제 HUD — 우측 슬라이딩 오버레이(데스크톱 전용 · 모바일 시뮬과 독립 · GlobalTelemetryHudView 는 열릴 때만 마운트). *@
+        <div class="obs-scrim @(_showObservability ? "on" : null)" @onclick="CloseObservability" aria-hidden="true"></div>
+        <div class="obs-slide @(_showObservability ? "open" : null)" role="dialog" aria-modal="true" aria-label="글로벌 관제"
+             tabindex="-1" @onkeydown="OnObsKey">
+            <div class="obs-slide-head">
+                <span class="obs-slide-t">📊 글로벌 관제</span>
+                <button type="button" class="obs-slide-x" @onclick="CloseObservability" title="닫기">✕</button>
+            </div>
+            <div class="obs-slide-body">
+                @if (_showObservability)
+                {
+                    <GlobalTelemetryHudView />
+                    @if (_masterSuite) { <MasterSuiteStudioModal OnClose="() => _masterSuite = false" /> }
+                }
+            </div>
+        </div>
+
+        @* v7.0.0: AI 멀티트랙 타임라인 — 우측 슬라이딩 오버레이(데스크톱 전용 · 열릴 때만 마운트). *@
+        <div class="obs-scrim @(_showTimeline ? "on" : null)" @onclick="CloseTimeline" aria-hidden="true"></div>
+        <div class="obs-slide amt-slide @(_showTimeline ? "open" : null)" role="dialog" aria-modal="true" aria-label="AI 타임라인"
+             tabindex="-1" @onkeydown="OnTimelineKey">
+            <div class="obs-slide-head">
+                <span class="obs-slide-t">🎬 AI 멀티트랙 타임라인</span>
+                <button type="button" class="obs-slide-x" @onclick="CloseTimeline" title="닫기">✕</button>
+            </div>
+            <div class="obs-slide-body">
+                @if (_showTimeline)
+                {
+                    <AiMultiTrackStudioView />
+                }
+            </div>
+        </div>
+
+        @* 사이드바 메뉴 호버 가이드 툴팁(글래스). *@
+        <SidebarTooltip Guide="_sideGuide" TopPx="_sideGuideTop" />
+
+        @* 커스텀 테마 에디터 모달(라이브 프리뷰). *@
+        @if (_themeEditor)
+        {
+            <ThemeEditorModal OnClose="() => _themeEditor = false" />
+        }
+        @if (_agency)
+        {
+            <VirtualIdolAgencyStudioModal OnClose="() => _agency = false" />
+        }
+        @if (_live)
+        {
+            <LiveBroadcastStudioModal OnClose="() => _live = false" />
+        }
+        @if (_usd)
+        {
+            <OpenUsdSpatialStudioModal OnClose="() => _usd = false" />
+        }
+        @if (_twinData)
+        {
+            <DigitalTwinSyntheticStudioModal OnClose="() => _twinData = false" />
+        }
+        @if (_pathTrace)
+        {
+            <PathTracingStudioModal OnClose="() => _pathTrace = false" />
+        }
+        @if (_mocap)
+        {
+            <NeuralMotionCaptureStudioModal OnClose="() => _mocap = false" />
+        }
+        @if (_autoEdit)
+        {
+            <AutonomousEditorialStudioModal OnClose="() => _autoEdit = false" />
+        }
+        @if (_vpMaster)
+        {
+            <VirtualProductionMasteringStudioModal OnClose="() => _vpMaster = false" />
+        }
+        @if (_genVfx)
+        {
+            <GenerativeVfxStudioModal OnClose="() => _genVfx = false" />
+        }
+        @if (_digitalHuman)
+        {
+            <DigitalHumanPerformanceStudioModal OnClose="() => _digitalHuman = false" />
+        }
+        @if (_hairCloth)
+        {
+            <NeuralHairClothStudioModal OnClose="() => _hairCloth = false" />
+        }
+        @if (_genEnv)
+        {
+            <GenerativeEnvironmentStudioModal OnClose="() => _genEnv = false" />
+        }
+        @if (_cinemato)
+        {
+            <NeuralCinematographyStudioModal OnClose="() => _cinemato = false" />
+        }
+        @if (_filmScore)
+        {
+            <FilmScoreStudioModal OnClose="() => _filmScore = false" />
+        }
+        @if (_videoDiffusion)
+        {
+            <LatentVideoDiffusionStudioModal OnClose="() => _videoDiffusion = false" />
+        }
+        @if (_continuity)
+        {
+            <ScriptContinuityStudioModal OnClose="() => _continuity = false" />
+        }
+        @if (_lipSyncDub)
+        {
+            <NeuralLipSyncDubbingStudioModal OnClose="() => _lipSyncDub = false" />
+        }
+        @if (_contentSecurity)
+        {
+            <ContentSecurityStudioModal OnClose="() => _contentSecurity = false" />
+        }
+        @if (_twinWorld)
+        {
+            <DigitalTwinWorldStudioModal OnClose="() => _twinWorld = false" />
+        }
+        @if (_holoTele)
+        {
+            <HolographicTelepresenceStudioModal OnClose="() => _holoTele = false" />
+        }
+        @if (_roboMoco)
+        {
+            <RoboticMoCoStudioModal OnClose="() => _roboMoco = false" />
+        }
+        @if (_neuralCdn)
+        {
+            <NeuralCodecEdgeCdnStudioModal OnClose="() => _neuralCdn = false" />
+        }
+        @if (_arenaNet)
+        {
+            <VirtualArenaNetcodeStudioModal OnClose="() => _arenaNet = false" />
+        }
+        @if (_crowdSim)
+        {
+            <MassiveCrowdStudioModal OnClose="() => _crowdSim = false" />
+        }
+        @if (_masterCtl)
+        {
+            <BroadcastMasterControlStudioModal OnClose="() => _masterCtl = false" />
+        }
+        @if (_arGfx)
+        {
+            <BroadcastArGraphicsStudioModal OnClose="() => _arGfx = false" />
+        }
+        @if (_deflicker)
+        {
+            <TemporalDeflickerStudioModal OnClose="() => _deflicker = false" />
+        }
+        @if (_matting)
+        {
+            <SemanticMattingStudioModal OnClose="() => _matting = false" />
+        }
+        @if (_icvfxWall)
+        {
+            <IcvfxLedWallStudioModal OnClose="() => _icvfxWall = false" />
+        }
+        @if (_gfWall)
+        {
+            <GenlockFrustumLedWallStudioModal OnClose="() => _gfWall = false" />
+        }
+        @if (_camTrack)
+        {
+            <CameraTrackingStudioModal OnClose="() => _camTrack = false" />
+        }
+        @if (_setExt)
+        {
+            <VirtualSetExtensionStudioModal OnClose="() => _setExt = false" />
+        }
+        @if (_reels)
+        {
+            <ViralReelsStudioModal OnClose="() => _reels = false" />
+        }
+        @if (_graphApi)
+        {
+            <GraphApiBridgeStudioModal OnClose="() => _graphApi = false" />
+        }
+        @if (_vtc)
+        {
+            <VerticalTranscoderStudioModal OnClose="() => _vtc = false" />
+        }
+        @* v17.50.1: 스토리보드 툴바 전용이던 자기완결 스튜디오 15종을 레이아웃으로 이관(사이드바 진입). *@
+        @if (_directorOpen)
+        {
+            <AutonomousDirectorStudioModal OnClose="() => _directorOpen = false" />
+        }
+        @if (_multiEngineOpen)
+        {
+            <MultiEngineStudioModal OnClose="() => _multiEngineOpen = false" />
+        }
+        @if (_virtualLiveOpen)
+        {
+            <VirtualLiveBroadcastingStudioModal OnClose="() => _virtualLiveOpen = false" />
+        }
+        @if (_liveDubOpen)
+        {
+            <MultilingualDubbingLipSyncStudioModal OnClose="() => _liveDubOpen = false" />
+        }
+        @if (_motionMatchOpen)
+        {
+            <NeuralMotionMatchingStudioModal OnClose="() => _motionMatchOpen = false" />
+        }
+        @if (_visualQaOpen)
+        {
+            <HeadlessVisualQaStudioModal OnClose="() => _visualQaOpen = false" />
+        }
+        @if (_contactLocoOpen)
+        {
+            <ContactLocomotionStudioModal OnClose="() => _contactLocoOpen = false" />
+        }
+        @if (_dexManipOpen)
+        {
+            <DexterousManipulationStudioModal OnClose="() => _dexManipOpen = false" />
+        }
+        @if (_ragdollOpen)
+        {
+            <NeuralRagdollStudioModal OnClose="() => _ragdollOpen = false" />
+        }
+        @if (_foleyOpen)
+        {
+            <ProceduralFoleyStudioModal OnClose="() => _foleyOpen = false" />
+        }
+        @if (_cineDirectorOpen)
+        {
+            <CinematicDirectorStudioModal OnClose="() => _cineDirectorOpen = false" />
+        }
+        @if (_narrativeOpen)
+        {
+            <NarrativeTimelineStudioModal OnClose="() => _narrativeOpen = false" />
+        }
+        @if (_stageLightOpen)
+        {
+            <IntelligentStageLightingStudioModal OnClose="() => _stageLightOpen = false" />
+        }
+        @if (_pyroOpen)
+        {
+            <NeuralVfxPyrotechnicsStudioModal OnClose="() => _pyroOpen = false" />
+        }
+        @if (_lensOpen)
+        {
+            <CinematicLensOpticsStudioModal OnClose="() => _lensOpen = false" />
+        }
+        @if (_streamGateway)
+        {
+            <StreamGatewayClipperStudioModal OnClose="() => _streamGateway = false" />
+        }
+        @if (_influencerLive)
+        {
+            <VirtualInfluencerLiveStudioModal OnClose="() => _influencerLive = false" />
+        }
+        @if (_acting)
+        {
+            <AvatarActingDirectorStudioModal OnClose="() => _acting = false" />
+        }
+        @if (_clothHair)
+        {
+            <GaussianClothHairStudioModal OnClose="() => _clothHair = false" />
+        }
+        @if (_faceHand)
+        {
+            <GaussianFacialHandStudioModal OnClose="() => _faceHand = false" />
+        }
+        @if (_dqAvatar)
+        {
+            <DualQuaternionGaussianAvatarStudioModal OnClose="() => _dqAvatar = false" />
+        }
+        @if (_gsShadow)
+        {
+            <GaussianSplatRelightingStudioModal OnClose="() => _gsShadow = false" />
+        }
+        @if (_gsEnv)
+        {
+            <GaussianSplatVirtualEnvironmentStudioModal OnClose="() => _gsEnv = false" />
+        }
+        @if (_rhythmMv)
+        {
+            <RhythmActionMvStudioModal OnClose="() => _rhythmMv = false" />
+        }
+        @if (_beatSync)
+        {
+            <BeatSyncAudioMixStudioModal OnClose="() => _beatSync = false" />
+        }
+        @if (_motionType)
+        {
+            <MotionOverlayStudioModal OnClose="() => _motionType = false" />
+        }
+        @if (_omni)
+        {
+            <OmniChannelEngagementStudioModal OnClose="() => _omni = false" />
+        }
+        @if (_igLoop)
+        {
+            <ViralLoopAutomationStudioModal OnClose="() => _igLoop = false" />
+        }
+        @if (_ditColor)
+        {
+            <LiveDitColorStudioModal OnClose="() => _ditColor = false" />
+        }
+        @if (_markerlessMocap)
+        {
+            <MarkerlessMocapStudioModal OnClose="() => _markerlessMocap = false" />
+        }
+        @if (_facialPerf)
+        {
+            <FacialPerformanceStudioModal OnClose="() => _facialPerf = false" />
+        }
+        @if (_dexHand)
+        {
+            <DexterousHandStudioModal OnClose="() => _dexHand = false" />
+        }
+        @if (_anatTissue)
+        {
+            <AnatomicalTissueStudioModal OnClose="() => _anatTissue = false" />
+        }
+        @if (_hairGroom)
+        {
+            <HairDynamicsGroomingStudioModal OnClose="() => _hairGroom = false" />
+        }
+        @if (_garment)
+        {
+            <GarmentDynamicsDrapingStudioModal OnClose="() => _garment = false" />
+        }
+        @if (_skinSss)
+        {
+            <SkinSssHemodynamicsStudioModal OnClose="() => _skinSss = false" />
+        }
+        @if (_voice)
+        {
+            <NeuralVoiceVocalTractStudioModal OnClose="() => _voice = false" />
+        }
+        @if (_cinematography)
+        {
+            <CinematographyStudioModal OnClose="() => _cinematography = false" />
+        }
+        @if (_xrStream)
+        {
+            <SpatialComputingXrStudioModal OnClose="() => _xrStream = false" />
+        }
+        @if (_weather)
+        {
+            <AtmosphericWeatherStudioModal OnClose="() => _weather = false" />
+        }
+        @if (_genWorld)
+        {
+            <GenerativeWorldStudioModal OnClose="() => _genWorld = false" />
+        }
+        @if (_neuralPhys)
+        {
+            <NeuralPhysicsSimulationStudioModal OnClose="() => _neuralPhys = false" />
+        }
+        @if (_neuralTele)
+        {
+            <NeuralHolographicTelepresenceStudioModal OnClose="() => _neuralTele = false" />
+        }
+        @if (_haptics)
+        {
+            <SpatialHapticsStudioModal OnClose="() => _haptics = false" />
+        }
+        @if (_acoustics)
+        {
+            <SpatialAcousticsStudioModal OnClose="() => _acoustics = false" />
+        }
+        @if (_gaussian)
+        {
+            <GaussianAvatarStudioModal OnClose="() => _gaussian = false" />
+        }
+        @if (_wetness)
+        {
+            <FluidSurfaceWetnessStudioModal OnClose="() => _wetness = false" />
+        }
+        @if (_spatialSlam)
+        {
+            <SpatialSlamStudioModal OnClose="() => _spatialSlam = false" />
+        }
+        @if (_spatialComputing)
+        {
+            <SpatialComputingStudioModal OnClose="() => _spatialComputing = false" />
+        }
+        @if (_gpuSwarm)
+        {
+            <GpuClusterSwarmStudioModal OnClose="() => _gpuSwarm = false" />
+        }
+        @if (_enterpriseSla)
+        {
+            <EnterpriseSlaStudioModal OnClose="() => _enterpriseSla = false" />
+        }
+        @if (_liveTelemetry)
+        {
+            <LiveTelemetryStudioModal OnClose="() => _liveTelemetry = false" />
+        }
+        @if (_selfHeal)
+        {
+            <RealUiSelfHealingStudioModal OnClose="() => _selfHeal = false" />
+        }
+        @if (_cloudVerify)
+        {
+            <CloudVerificationStudioModal OnClose="() => _cloudVerify = false" />
+        }
+        @if (_crewStudio)
+        {
+            <MultiAgentCrewStudioModal OnClose="() => _crewStudio = false" />
+        }
+        @if (_iCinema)
+        {
+            <InteractiveCinemaStudioModal OnClose="() => _iCinema = false" />
+        }
+        @if (_holo)
+        {
+            <HolographicTeleportationStudioModal OnClose="() => _holo = false" />
+        }
+        @if (_spatialAudio)
+        {
+            <SpatialAudioStudioModal OnClose="() => _spatialAudio = false" />
+        }
+        @if (_nexus)
+        {
+            <OmniModalNexusMasterStudioModal OnClose="() => _nexus = false" />
+        }
+        @if (_localization)
+        {
+            <GlobalLocalizationStudioModal OnClose="() => _localization = false" />
+        }
+        @if (_federation)
+        {
+            <MultiAgentFederationStudioModal OnClose="() => _federation = false" />
+        }
+        @if (_sreGrid)
+        {
+            <GlobalOperationsGridStudioModal OnClose="() => _sreGrid = false" />
+        }
+        @if (_release)
+        {
+            <EnterpriseProductionReleaseStudioModal OnClose="() => _release = false" />
+        }
+        @if (_lowSpec)
+        {
+            <LowSpecPerformanceStudioModal OnClose="() => _lowSpec = false" />
+        }
+        @if (_edgeSwarm)
+        {
+            <EdgeSwarmStudioModal OnClose="() => _edgeSwarm = false" />
+        }
+        @if (_hwAccel)
+        {
+            <HardwareAccelerationStudioModal OnClose="() => _hwAccel = false" />
+        }
+        @if (_synergy)
+        {
+            <MasterStudioSynergyDashboardModal OnClose="() => _synergy = false" />
+        }
+        @if (_spatialXr)
+        {
+            <SpatialXrStudioModal OnClose="() => _spatialXr = false" />
+        }
+        @if (_icvfx)
+        {
+            <IcvfxVirtualProductionStudioModal OnClose="() => _icvfx = false" />
+        }
+        @if (_gsplat)
+        {
+            <GaussianSplattingStudioModal OnClose="() => _gsplat = false" />
+        }
+        @if (_bci)
+        {
+            <BciNeuroStudioModal OnClose="() => _bci = false" />
+        }
+        @if (_teleport)
+        {
+            <VolumetricTeleportationStudioModal OnClose="() => _teleport = false" />
+        }
+        @if (_world4d)
+        {
+            <GenerativeWorldModelStudioModal OnClose="() => _world4d = false" />
+        }
+        @if (_sovereign)
+        {
+            <SovereignCloudStudioModal OnClose="() => _sovereign = false" />
+        }
+        @if (_globalOps)
+        {
+            <GlobalOperationsMasterStudioModal OnClose="() => _globalOps = false" />
+        }
+        @if (_hardening)
+        {
+            <SystemHardeningDashboardModal OnClose="() => _hardening = false" />
+        }
+        @if (_empire)
+        {
+            <MediaEmpireMasterStudioModal OnClose="() => _empire = false" />
+        }
+        @if (_podcast)
+        {
+            <PodcastStudioModal OnClose="() => _podcast = false" />
+        }
+        @if (_commerce)
+        {
+            <LiveCommerceStudioModal OnClose="() => _commerce = false" />
+        }
+        @if (_a11y)
+        {
+            <AccessibilityStudioModal OnClose="() => _a11y = false" />
+        }
+        @if (_edutech)
+        {
+            <EduTechStudioModal OnClose="() => _edutech = false" />
+        }
+        @if (_sports)
+        {
+            <SportsBroadcastingStudioModal OnClose="() => _sports = false" />
+        }
+        @if (_newsroom)
+        {
+            <NewsroomStudioModal OnClose="() => _newsroom = false" />
+        }
+        @if (_mcr)
+        {
+            <McrControlRoomStudioModal OnClose="() => _mcr = false" />
+        }
+        @if (_mam)
+        {
+            <EnterpriseMamStudioModal OnClose="() => _mam = false" />
+        }
+        @if (_cinema)
+        {
+            <CinematicUniverseStudioModal OnClose="() => _cinema = false" />
+        }
+        @if (_xrStage)
+        {
+            <SpatialXrStageStudioModal OnClose="() => _xrStage = false" />
+        }
+        @if (_gaming)
+        {
+            <GamingCoStreamerStudioModal OnClose="() => _gaming = false" />
+        }
+
+        @* 종합 시작 가이드 모달. *@
+        @if (_helpModal)
+        {
+            <HelpModal OnClose="() => _helpModal = false" />
+        }
+
+        @* 전역 오류 모달(사용자 친화적 문구) — 앱 전체에서 하나. *@
+        <ErrorModal />
+    </div>
+}
+
+<style>
+    /* v17.50.1 6대 도메인 아코디언 · 사이드바 접기 */
+    .app-shell.side-collapsed > .sidebar, .app-shell.side-collapsed .sidebar { display: none; }
+    .nav-acc-search { padding: 2px 12px 6px; }
+    .nav-acc-search input { width: 100%; box-sizing: border-box; font-size: 12px; padding: 6px 9px; border-radius: 8px; border: 1px solid var(--line, #223047); background: var(--card-2, #1a2436); color: var(--text-primary, #e6eefc); }
+    .nav-acc { display: flex; align-items: center; gap: 6px; width: calc(100% - 16px); margin: 2px 8px; padding: 7px 10px; border-radius: 9px; border: none; cursor: pointer; text-align: left;
+        background: color-mix(in srgb, var(--accent, #7c6cff) 7%, transparent); color: var(--text-primary, #e6eefc); font: 800 12px inherit; }
+    .nav-acc:hover { background: color-mix(in srgb, var(--accent, #7c6cff) 16%, transparent); }
+    .nav-acc-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .nav-acc-n { font: 700 10px var(--mono, monospace); color: var(--text-muted, #6b7a90); padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line, #223047); }
+    .nav-acc-c { transition: transform .15s; color: var(--text-muted, #6b7a90); will-change: transform; }
+    .nav-acc.open .nav-acc-c { transform: rotate(90deg); }
+    /* v17.63.0 펼침 애니메이션 — 컴포지터 전용(opacity/transform) · contain 으로 사이드바 전체 리플로 차단. */
+    .nav-acc-body { margin: 2px 0 6px 14px; border-left: 1px solid var(--line, #223047); contain: layout paint style; animation: nav-acc-in .14s ease-out; }
+    @@keyframes nav-acc-in { from { opacity: 0; transform: translateY(-4px); } }
+    @@media (prefers-reduced-motion: reduce) { .nav-acc-body { animation: none; } .nav-acc-c { transition: none; } }
+    .nav-acc-empty { margin: 4px 12px 8px; padding: 8px 10px; font-size: 12px; color: var(--text-muted, #6b7a90); border: 1px dashed var(--line, #223047); border-radius: 8px; text-align: center; }
+    .nav-item.nav-sub { font-size: 12px; padding-top: 5px; padding-bottom: 5px; }
+    .nav-item.nav-sub .nav-t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .side-theme-btn { margin: 4px 12px 8px; padding: 9px 12px; border-radius: 10px; cursor: pointer; font: 700 12px inherit;
+        color: var(--text-primary, #e6eefc); background: color-mix(in srgb, var(--accent, #7c6cff) 14%, var(--card-2, #1a2436));
+        border: 1px solid color-mix(in srgb, var(--accent, #7c6cff) 40%, var(--line, #223047)); text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .side-theme-btn:hover { border-color: var(--accent, #7c6cff); filter: brightness(1.06); }
+    /* v5.3.2: 사이드바 버튼을 NavLink(.nav-item)와 동일하게 보이도록 리셋(순수 CSS). */
+    .nav-btn { appearance: none; background: none; border: none; width: 100%; text-align: left; font: inherit; cursor: pointer; }
+    .nav-btn.on { color: var(--accent, #7c6cff); }
+    /* v5.6.3: 현재 라우트 활성 항목 네온 하이라이트(PC 사이드바 · 모바일 드로어 .mnd-item.active 와 톤 동기화).
+       NavLink 가 라우트 일치 시 .active 를 자동 부여(LocationChanged 기반). */
+    .sidebar .nav-item.active { background: color-mix(in srgb, var(--accent-2, #22d3ee) 16%, var(--side-active, rgba(124,108,255,.16)));
+        box-shadow: inset 3px 0 0 var(--accent-2, #22d3ee), 0 0 14px color-mix(in srgb, var(--accent-2, #22d3ee) 40%, transparent);
+        border: 1px solid color-mix(in srgb, var(--accent-2, #22d3ee) 45%, transparent); }
+    /* v5.3.2: 모바일 시뮬레이터 우측 슬라이딩 오버레이(외부 UI 라이브러리 0 · CSS transform transition). */
+    .mss-scrim { position: fixed; inset: 0; z-index: var(--z-drawer-scrim); background: rgba(3,4,10,.45); opacity: 0; pointer-events: none; transition: opacity .25s ease; }
+    .mss-scrim.on { opacity: 1; pointer-events: auto; }
+    .mss-slide { position: fixed; top: 0; right: 0; z-index: var(--z-drawer-panel); height: 100vh; width: min(440px, 96vw); display: flex; flex-direction: column;
+        background: var(--card, #111a2e); border-left: 1px solid var(--line, #223047); box-shadow: -14px 0 44px rgba(0,0,0,.45);
+        transform: translateX(100%); transition: transform .28s cubic-bezier(.22,.61,.36,1); }
+    .mss-slide.open { transform: translateX(0); }
+    .mss-slide-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--line, #223047); flex: 0 0 auto; }
+    .mss-slide-t { font: 900 14px inherit; color: var(--text-primary, #e6eefc); }
+    .mss-slide-x { border: none; background: none; color: var(--text-muted, #93a3b8); font-size: 15px; cursor: pointer; width: 30px; height: 30px; border-radius: 8px; }
+    .mss-slide-x:hover { background: var(--card-2, #1a2436); color: var(--text-primary, #e6eefc); }
+    /* v5.3.4: 화면 해상도에 맞춰 가변 · 콘텐츠가 길어도 잘리지 않고 세로 스크롤(max-height 90vh · flex). */
+    .mss-slide-body { flex: 1; min-height: 0; max-height: 90vh; overflow-y: auto; overflow-x: hidden; padding: 14px; }
+    /* v5.6.5: 전체화면 모드 — 슬라이드 오버레이의 transform(= 자식 position:fixed 의 containing block)을 제거해
+       내부 .msp.fullscreen(position:fixed; inset:0)이 440px 패널이 아니라 뷰포트 전체를 정확히 점유하도록 교정한다.
+       이 transform:none 이 우측 쏠림·짤림·검은 배경 쏠림 버그의 근본 해결점이며, z-index:9999 로 최상단 레이어를 보장한다. */
+    .mss-slide.fullscreen-mode { position: fixed !important; inset: 0 !important; top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important;
+        width: 100vw !important; height: 100vh !important; max-width: none !important; transform: none !important; z-index: 9999 !important;
+        border-left: none !important; box-shadow: none !important; background: transparent !important; }
+    .mss-slide.fullscreen-mode .mss-slide-head { display: none !important; }
+    .mss-slide.fullscreen-mode .mss-slide-body { flex: 1 1 auto !important; height: 100vh !important; max-height: 100vh !important; padding: 0 !important; overflow: hidden !important; }
+    /* v6.2.0: 글로벌 관제 우측 슬라이딩 오버레이(모바일 시뮬과 동일 패턴 · 더 넓은 대시보드 폭). */
+    .obs-scrim { position: fixed; inset: 0; z-index: var(--z-drawer-scrim); background: rgba(3,4,10,.45); opacity: 0; pointer-events: none; transition: opacity .25s ease; }
+    .obs-scrim.on { opacity: 1; pointer-events: auto; }
+    .obs-slide { position: fixed; top: 0; right: 0; z-index: var(--z-drawer-panel); height: 100vh; width: min(560px, 96vw); display: flex; flex-direction: column;
+        background: var(--card, #111a2e); border-left: 1px solid var(--line, #223047); box-shadow: -14px 0 44px rgba(0,0,0,.45);
+        transform: translateX(100%); transition: transform .28s cubic-bezier(.22,.61,.36,1); }
+    .obs-slide.open { transform: translateX(0); }
+    .obs-slide-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--line, #223047); flex: 0 0 auto; }
+    .obs-slide-t { font: 900 14px inherit; color: var(--text-primary, #e6eefc); }
+    .obs-slide-x { border: none; background: none; color: var(--text-muted, #93a3b8); font-size: 15px; cursor: pointer; width: 30px; height: 30px; border-radius: 8px; }
+    .obs-slide-x:hover { background: var(--card-2, #1a2436); color: var(--text-primary, #e6eefc); }
+    .obs-slide-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 16px; }
+    /* v7.0.0: AI 타임라인은 NLE 특성상 더 넓게. */
+    .obs-slide.amt-slide { width: min(820px, 98vw); }
+</style>
+
+@code {
+    private bool _pass;
+    private ErrorBoundary? _pageBoundary;
+
+    // 내비게이션(새 Body) = 격리 해제. 오류 화면에 머무르는 동안 같은 페이지 재시도는 RecoverPage.
+    protected override void OnParametersSet() => _pageBoundary?.Recover();
+    private void RecoverPage() => _pageBoundary?.Recover();
+    private bool _drawer;
+    private bool _themeEditor;   // 커스텀 테마 에디터 모달 열림
+    private bool _helpModal;     // 종합 시작 가이드 모달 열림
+    private bool _masterSuite;   // v16.30.0 헤더 👑 마스터 스튜디오 모달
+    private bool _sovereign; // v16.53.0 헤더 🏰 AI 소버린 클라우드 & 양자 금고 스튜디오
+    private bool _edgeSwarm; // v16.64.0 헤더 🌐 AI 에지 스웜 & 글로벌 메시 스튜디오
+    private bool _lowSpec; // v16.65.0 헤더 ⚡ AI 저사양 초고성능 최적화 스튜디오
+    private bool _release; // v16.66.0 헤더 🚀 AI 엔터프라이즈 상용 릴리스 스튜디오
+    private bool _sreGrid; // v16.67.0 헤더 🌐 AI 글로벌 가동률 & SRE 관제 스튜디오
+    private bool _federation; // v16.68.0 헤더 🤖 AI 멀티 에이전트 연합 & 지식 그래프 스튜디오
+    private bool _localization; // v16.69.0 헤더 🗣 AI 글로벌 로컬라이제이션 & 더빙 스튜디오
+    private bool _nexus; // v16.70.0 헤더 🌌 AI 옴니모달 넥서스 마스터 스튜디오
+    private bool _live; // v16.71.0 헤더 📺 AI 자율 라이브 방송 & 스트리밍 스튜디오
+    private bool _usd; // v16.72.0 헤더 🪐 AI OpenUSD & 제너레이티브 월드 스튜디오
+    private bool _hairCloth; // v16.83.0 헤더 💇 AI 신경망 헤어 & 의상 다이내믹스 스튜디오
+    private bool _genEnv; // v16.84.0 헤더 🌦️ AI 제너레이티브 환경 & 미세 기상 스튜디오
+    private bool _cinemato; // v16.85.0 헤더 🎥 AI 신경망 시네마토그래피 & 구도 스튜디오
+    private bool _filmScore; // v16.86.0 헤더 🎼 AI 제너레이티브 영화 음악 & 사운드 디자인 스튜디오
+    private bool _videoDiffusion; // v16.87.0 헤더 🎬 AI 비디오 디퓨전 & 시공간 일관성 스튜디오
+    private bool _continuity; // v16.88.0 헤더 📜 AI 자율 스크립트 연속성 & 씬 정합성 스튜디오
+    private bool _lipSyncDub; // v16.89.0 헤더 🌐 AI 글로벌 로컬라이제이션 & 신경망 립싱크 스튜디오
+    private bool _contentSecurity; // v16.90.0 헤더 🛡️ AI 콘텐츠 보안 & 디지털 저작권 스튜디오
+    private bool _twinWorld; // v16.99.0 헤더 🌐 AI 실시간 디지털 트윈 & 옴니버스 월드 스튜디오
+    private bool _holoTele; // v17.00.0 헤더 🔮 AI 홀로그래픽 텔레프레전스 & AGI 디렉터 스튜디오
+    private bool _roboMoco; // v17.01.0 헤더 🤖 AI 로보틱 MoCo & 물리 스테이지 스튜디오
+    private bool _neuralCdn; // v17.02.0 헤더 📡 AI 신경망 코덱 & 글로벌 에지 CDN 스튜디오
+    private bool _arenaNet; // v17.03.0 헤더 🏟️ AI 가상 아레나 & 롤백 넷코드 스튜디오
+    private bool _crowdSim; // v17.04.0 헤더 👥 AI 대규모 군중 시뮬레이션 스튜디오
+    private bool _masterCtl; // v17.05.0 헤더 📺 AI 방송 비전 스위처 & 마스터 컨트롤 스튜디오
+    private bool _arGfx; // v17.06.0 헤더 📐 AI 방송 AR 그래픽 & 텔레스트레이션 스튜디오
+    private bool _deflicker; // v17.07.0 헤더 ✨ AI 시공간 디플리커 & 텍스처 피닝 스튜디오
+    private bool _matting; // v17.08.0 헤더 🎭 AI 시맨틱 매팅 & 가상 세트 융합 스튜디오
+    private bool _ditColor; // v17.10.0 헤더 🎨 AI 라이브 DIT 컬러 사이언스 스튜디오
+    private bool _markerlessMocap; // v17.11.0 헤더 🏃 AI 무마커 모션 캡처 & 리타게팅 스튜디오
+    private bool _facialPerf; // v17.12.0 헤더 🗣️ AI 페이셜 퍼포먼스 & Audio2Face 스튜디오
+    private bool _dexHand; // v17.13.0 헤더 🖐️ AI 덱스터러스 핸드 & 소품 접촉 스튜디오
+    private bool _anatTissue; // v17.14.0 헤더 💪 AI 해부학 근육 & 연조직 스튜디오
+    private bool _hairGroom; // v17.15.0 헤더 💇 AI 헤어 동역학 & 뉴럴 그루밍 스튜디오
+    private bool _garment; // v17.16.0 헤더 👗 AI 다층 의상 동역학 & 드레이핑 스튜디오
+    private bool _skinSss; // v17.17.0 헤더 🧬 AI 피부 SSS & 미세 혈류 스튜디오
+    private bool _voice; // v17.18.0 헤더 🎙️ AI 뉴럴 음성 & 성도 음향 스튜디오
+    private bool _cinematography; // v17.21.0 헤더 🎥 AI 시네마토그래피 & 카메라 디렉터 스튜디오
+    private bool _xrStream; // v17.22.0 헤더 🥽 AI 공간 컴퓨팅 & WebXR 스트리밍 스튜디오
+    private bool _weather; // v17.28.0 헤더 ⛈️ AI 대기 기상 & 미기후 스튜디오
+    private bool _genWorld; // v17.27.0 헤더 🌍 AI 생성형 월드 확장 스튜디오
+    private bool _neuralPhys; // v17.26.0 헤더 ⚛️ AI 실시간 뉴럴 물리 & 연속체 역학 스튜디오
+    private bool _neuralTele; // v17.25.0 헤더 🌐 AI 홀로그래픽 텔레프레전스 스튜디오
+    private bool _haptics; // v17.24.0 헤더 🧤 AI 6DoF 공간 햅틱 스튜디오
+    private bool _acoustics; // v17.23.0 헤더 🎧 AI 6DoF 공간 음향 & 광선 추적 스튜디오
+    private bool _gaussian; // v17.20.0 헤더 🔮 AI 4D 가우시안 아바타 스튜디오
+    private bool _wetness; // v17.19.0 헤더 💧 AI 다층 유체 습윤 & 액적 스튜디오
+    private bool _icvfxWall; // v17.09.0 헤더 🎬 AI 인카메라 VFX LED 월 & 젠록 스튜디오
+    private bool _gfWall; // v17.44.0 헤더 🖥️ AI ICVFX LED 월 관제 스튜디오
+    private bool _camTrack; // v17.45.0 헤더 📐 AI 카메라 트래킹 스튜디오
+    private bool _directorOpen, _multiEngineOpen, _virtualLiveOpen, _liveDubOpen, _motionMatchOpen, _visualQaOpen, _contactLocoOpen, _dexManipOpen, _ragdollOpen, _foleyOpen, _cineDirectorOpen, _narrativeOpen, _stageLightOpen, _pyroOpen, _lensOpen; // v17.50.1 스토리보드 → 레이아웃 이관 스튜디오 15종
+    private bool _sideCollapsed; // v17.50.1 트랜스포트 바 ☰ 사이드바 접기
+    private readonly bool[] _openCats = new bool[6];
+    private string _navFilter = "";
+
+    private void ToggleSidebar() => _sideCollapsed = !_sideCollapsed;
+    // v17.63.0 공백뿐인 검색어는 필터 아님(이전: 전 카테고리 펼침 + 0건 표시) · 0건 카테고리 숨김.
+    private bool NavFiltering => !string.IsNullOrWhiteSpace(_navFilter);
+    private int NavMatchTotal() { var n = 0; for (var c = 0; c < StudioCatalog.Categories.Length; c++) n += StudioCatalog.CountMatches(c, _navFilter); return n; }
+    private void ToggleCat(int c) { if (NavFiltering) { _navFilter = ""; _openCats[c] = true; return; } _openCats[c] = !_openCats[c]; }
+
+    /// <summary>v17.50.1 사이드바 카탈로그 디스패치 — 레이아웃 플래그 설정 · <c>sb:</c> 는 스토리보드로 위임.</summary>
+    private void OpenStudio(string key)
+    {
+        CloseDrawer();
+        if (key.StartsWith("sb:", StringComparison.Ordinal)) { StudioNav.Request(key[3..]); Nav.NavigateTo("storyboard"); return; }
+        if (key == "@palette") { Palette.Open(); return; }
+        if (key == "@help") { OpenHelp(); return; }
+        // v17.63.0 단일 활성 스튜디오 — 스크림 z-index(112~118)가 버전별 고정이라 드로어(z 1200)로 두 번째 모달을 열면
+        // DOM 순서상 앞선 모달 뒤에 깔려 클릭 불가였다. 새 모달을 열기 전에 열린 카탈로그 스튜디오를 모두 닫는다.
+        foreach (var e in StudioCatalog.Entries) if (e.Key != key && IsStudioOpen(e.Key)) SetStudio(e.Key, false);
+        SetStudio(key, true);
+    }
+
+    /// <summary>v17.63.0 카탈로그 키 → 레이아웃 플래그 설정/해제(OpenStudio 단일 활성 처리 공용).</summary>
+    private void SetStudio(string key, bool on)
+    {
+        switch (key)
+        {
+            case "_masterSuite": _masterSuite = on; break;
+            case "_live": _live = on; break;
+            case "_usd": _usd = on; break;
+            case "_twinData": _twinData = on; break;
+            case "_pathTrace": _pathTrace = on; break;
+            case "_mocap": _mocap = on; break;
+            case "_cinematography": _cinematography = on; break;
+            case "_weather": _weather = on; break;
+            case "_genWorld": _genWorld = on; break;
+            case "_neuralPhys": _neuralPhys = on; break;
+            case "_neuralTele": _neuralTele = on; break;
+            case "_haptics": _haptics = on; break;
+            case "_acoustics": _acoustics = on; break;
+            case "_xrStream": _xrStream = on; break;
+            case "_gaussian": _gaussian = on; break;
+            case "_wetness": _wetness = on; break;
+            case "_voice": _voice = on; break;
+            case "_skinSss": _skinSss = on; break;
+            case "_garment": _garment = on; break;
+            case "_hairGroom": _hairGroom = on; break;
+            case "_anatTissue": _anatTissue = on; break;
+            case "_dexHand": _dexHand = on; break;
+            case "_facialPerf": _facialPerf = on; break;
+            case "_markerlessMocap": _markerlessMocap = on; break;
+            case "_ditColor": _ditColor = on; break;
+            case "_icvfxWall": _icvfxWall = on; break;
+            case "_gfWall": _gfWall = on; break;
+            case "_camTrack": _camTrack = on; break;
+            case "_setExt": _setExt = on; break;
+            case "_reels": _reels = on; break;
+            case "_graphApi": _graphApi = on; break;
+            case "_vtc": _vtc = on; break;
+            case "_igLoop": _igLoop = on; break;
+            case "_omni": _omni = on; break;
+            case "_streamGateway": _streamGateway = on; break;
+            case "_influencerLive": _influencerLive = on; break;
+            case "_acting": _acting = on; break;
+            case "_clothHair": _clothHair = on; break;
+            case "_faceHand": _faceHand = on; break;
+            case "_dqAvatar": _dqAvatar = on; break;
+            case "_gsShadow": _gsShadow = on; break;
+            case "_gsEnv": _gsEnv = on; break;
+            case "_rhythmMv": _rhythmMv = on; break;
+            case "_beatSync": _beatSync = on; break;
+            case "_motionType": _motionType = on; break;
+            case "_matting": _matting = on; break;
+            case "_deflicker": _deflicker = on; break;
+            case "_arGfx": _arGfx = on; break;
+            case "_masterCtl": _masterCtl = on; break;
+            case "_crowdSim": _crowdSim = on; break;
+            case "_arenaNet": _arenaNet = on; break;
+            case "_neuralCdn": _neuralCdn = on; break;
+            case "_roboMoco": _roboMoco = on; break;
+            case "_holoTele": _holoTele = on; break;
+            case "_twinWorld": _twinWorld = on; break;
+            case "_spatialSlam": _spatialSlam = on; break;
+            case "_spatialComputing": _spatialComputing = on; break;
+            case "_gpuSwarm": _gpuSwarm = on; break;
+            case "_enterpriseSla": _enterpriseSla = on; break;
+            case "_liveTelemetry": _liveTelemetry = on; break;
+            case "_selfHeal": _selfHeal = on; break;
+            case "_cloudVerify": _cloudVerify = on; break;
+            case "_crewStudio": _crewStudio = on; break;
+            case "_contentSecurity": _contentSecurity = on; break;
+            case "_lipSyncDub": _lipSyncDub = on; break;
+            case "_continuity": _continuity = on; break;
+            case "_videoDiffusion": _videoDiffusion = on; break;
+            case "_filmScore": _filmScore = on; break;
+            case "_cinemato": _cinemato = on; break;
+            case "_genEnv": _genEnv = on; break;
+            case "_hairCloth": _hairCloth = on; break;
+            case "_digitalHuman": _digitalHuman = on; break;
+            case "_genVfx": _genVfx = on; break;
+            case "_vpMaster": _vpMaster = on; break;
+            case "_autoEdit": _autoEdit = on; break;
+            case "_iCinema": _iCinema = on; break;
+            case "_holo": _holo = on; break;
+            case "_spatialAudio": _spatialAudio = on; break;
+            case "_nexus": _nexus = on; break;
+            case "_localization": _localization = on; break;
+            case "_federation": _federation = on; break;
+            case "_sreGrid": _sreGrid = on; break;
+            case "_release": _release = on; break;
+            case "_lowSpec": _lowSpec = on; break;
+            case "_edgeSwarm": _edgeSwarm = on; break;
+            case "_hwAccel": _hwAccel = on; break;
+            case "_synergy": _synergy = on; break;
+            case "_spatialXr": _spatialXr = on; break;
+            case "_icvfx": _icvfx = on; break;
+            case "_gsplat": _gsplat = on; break;
+            case "_bci": _bci = on; break;
+            case "_teleport": _teleport = on; break;
+            case "_world4d": _world4d = on; break;
+            case "_sovereign": _sovereign = on; break;
+            case "_globalOps": _globalOps = on; break;
+            case "_hardening": _hardening = on; break;
+            case "_empire": _empire = on; break;
+            case "_podcast": _podcast = on; break;
+            case "_commerce": _commerce = on; break;
+            case "_a11y": _a11y = on; break;
+            case "_edutech": _edutech = on; break;
+            case "_sports": _sports = on; break;
+            case "_newsroom": _newsroom = on; break;
+            case "_mcr": _mcr = on; break;
+            case "_mam": _mam = on; break;
+            case "_cinema": _cinema = on; break;
+            case "_xrStage": _xrStage = on; break;
+            case "_gaming": _gaming = on; break;
+            case "_agency": _agency = on; break;
+            case "_helpModal": _helpModal = on; break;
+            case "L_directorOpen": _directorOpen = on; break;
+            case "L_multiEngineOpen": _multiEngineOpen = on; break;
+            case "L_virtualLiveOpen": _virtualLiveOpen = on; break;
+            case "L_liveDubOpen": _liveDubOpen = on; break;
+            case "L_motionMatchOpen": _motionMatchOpen = on; break;
+            case "L_visualQaOpen": _visualQaOpen = on; break;
+            case "L_contactLocoOpen": _contactLocoOpen = on; break;
+            case "L_dexManipOpen": _dexManipOpen = on; break;
+            case "L_ragdollOpen": _ragdollOpen = on; break;
+            case "L_foleyOpen": _foleyOpen = on; break;
+            case "L_cineDirectorOpen": _cineDirectorOpen = on; break;
+            case "L_narrativeOpen": _narrativeOpen = on; break;
+            case "L_stageLightOpen": _stageLightOpen = on; break;
+            case "L_pyroOpen": _pyroOpen = on; break;
+            case "L_lensOpen": _lensOpen = on; break;
+        }
+    }
+
+    private bool IsStudioOpen(string key) => key switch
+    {
+        "_masterSuite" => _masterSuite,
+        "_live" => _live,
+        "_usd" => _usd,
+        "_twinData" => _twinData,
+        "_pathTrace" => _pathTrace,
+        "_mocap" => _mocap,
+        "_cinematography" => _cinematography,
+        "_weather" => _weather,
+        "_genWorld" => _genWorld,
+        "_neuralPhys" => _neuralPhys,
+        "_neuralTele" => _neuralTele,
+        "_haptics" => _haptics,
+        "_acoustics" => _acoustics,
+        "_xrStream" => _xrStream,
+        "_gaussian" => _gaussian,
+        "_wetness" => _wetness,
+        "_voice" => _voice,
+        "_skinSss" => _skinSss,
+        "_garment" => _garment,
+        "_hairGroom" => _hairGroom,
+        "_anatTissue" => _anatTissue,
+        "_dexHand" => _dexHand,
+        "_facialPerf" => _facialPerf,
+        "_markerlessMocap" => _markerlessMocap,
+        "_ditColor" => _ditColor,
+        "_icvfxWall" => _icvfxWall,
+        "_gfWall" => _gfWall,
+        "_camTrack" => _camTrack,
+        "_setExt" => _setExt,
+        "_reels" => _reels,
+        "_graphApi" => _graphApi,
+        "_vtc" => _vtc,
+        "_igLoop" => _igLoop,
+        "_omni" => _omni,
+        "_streamGateway" => _streamGateway,
+        "_influencerLive" => _influencerLive,
+        "_acting" => _acting,
+        "_clothHair" => _clothHair,
+        "_faceHand" => _faceHand,
+        "_dqAvatar" => _dqAvatar,
+        "_gsShadow" => _gsShadow,
+        "_gsEnv" => _gsEnv,
+        "_rhythmMv" => _rhythmMv,
+        "_beatSync" => _beatSync,
+        "_motionType" => _motionType,
+        "_matting" => _matting,
+        "_deflicker" => _deflicker,
+        "_arGfx" => _arGfx,
+        "_masterCtl" => _masterCtl,
+        "_crowdSim" => _crowdSim,
+        "_arenaNet" => _arenaNet,
+        "_neuralCdn" => _neuralCdn,
+        "_roboMoco" => _roboMoco,
+        "_holoTele" => _holoTele,
+        "_twinWorld" => _twinWorld,
+        "_spatialSlam" => _spatialSlam,
+        "_spatialComputing" => _spatialComputing,
+        "_gpuSwarm" => _gpuSwarm,
+        "_enterpriseSla" => _enterpriseSla,
+        "_liveTelemetry" => _liveTelemetry,
+        "_selfHeal" => _selfHeal,
+        "_cloudVerify" => _cloudVerify,
+        "_crewStudio" => _crewStudio,
+        "_contentSecurity" => _contentSecurity,
+        "_lipSyncDub" => _lipSyncDub,
+        "_continuity" => _continuity,
+        "_videoDiffusion" => _videoDiffusion,
+        "_filmScore" => _filmScore,
+        "_cinemato" => _cinemato,
+        "_genEnv" => _genEnv,
+        "_hairCloth" => _hairCloth,
+        "_digitalHuman" => _digitalHuman,
+        "_genVfx" => _genVfx,
+        "_vpMaster" => _vpMaster,
+        "_autoEdit" => _autoEdit,
+        "_iCinema" => _iCinema,
+        "_holo" => _holo,
+        "_spatialAudio" => _spatialAudio,
+        "_nexus" => _nexus,
+        "_localization" => _localization,
+        "_federation" => _federation,
+        "_sreGrid" => _sreGrid,
+        "_release" => _release,
+        "_lowSpec" => _lowSpec,
+        "_edgeSwarm" => _edgeSwarm,
+        "_hwAccel" => _hwAccel,
+        "_synergy" => _synergy,
+        "_spatialXr" => _spatialXr,
+        "_icvfx" => _icvfx,
+        "_gsplat" => _gsplat,
+        "_bci" => _bci,
+        "_teleport" => _teleport,
+        "_world4d" => _world4d,
+        "_sovereign" => _sovereign,
+        "_globalOps" => _globalOps,
+        "_hardening" => _hardening,
+        "_empire" => _empire,
+        "_podcast" => _podcast,
+        "_commerce" => _commerce,
+        "_a11y" => _a11y,
+        "_edutech" => _edutech,
+        "_sports" => _sports,
+        "_newsroom" => _newsroom,
+        "_mcr" => _mcr,
+        "_mam" => _mam,
+        "_cinema" => _cinema,
+        "_xrStage" => _xrStage,
+        "_gaming" => _gaming,
+        "_agency" => _agency,
+        "_helpModal" => _helpModal,
+        "L_directorOpen" => _directorOpen,
+        "L_multiEngineOpen" => _multiEngineOpen,
+        "L_virtualLiveOpen" => _virtualLiveOpen,
+        "L_liveDubOpen" => _liveDubOpen,
+        "L_motionMatchOpen" => _motionMatchOpen,
+        "L_visualQaOpen" => _visualQaOpen,
+        "L_contactLocoOpen" => _contactLocoOpen,
+        "L_dexManipOpen" => _dexManipOpen,
+        "L_ragdollOpen" => _ragdollOpen,
+        "L_foleyOpen" => _foleyOpen,
+        "L_cineDirectorOpen" => _cineDirectorOpen,
+        "L_narrativeOpen" => _narrativeOpen,
+        "L_stageLightOpen" => _stageLightOpen,
+        "L_pyroOpen" => _pyroOpen,
+        "L_lensOpen" => _lensOpen,
+        _ => false,
+    };
+
+    private bool _streamGateway; // v17.62.0 사이드바 📜 각본 & 타임라인 ▸ 🛰️ 스트림 게이트웨이 & 클리퍼 스튜디오(32 MB 압축 NAL 링 · 무손실 1080p 리먹스 · Twitch/YouTube/치지직 게이트웨이 · 백오프/배압)
+    private bool _influencerLive; // v17.61.0 사이드바 📜 각본 & 타임라인 ▸ 🎙️ 버추얼 인플루언서 라이브 스튜디오(채팅 리액션 트리거 · 하이라이트 9:16 즉시 클리핑 · 도배/비속어 가드)
+    private bool _acting; // v17.60.0 사이드바 🎭 디지털 휴먼 ▸ 🎬 아바타 자율 연기 디렉터 스튜디오(텍스트-투-제스처 · FABRIK 상지 IK · 관절 한계 가드)
+    private bool _clothHair; // v17.59.0 사이드바 🎭 디지털 휴먼 ▸ 👗 가우시안 클로스 & 헤어 피직스 스튜디오(PBD 직물/헤어 · 공기역학 · 신장/CCD 가드)
+    private bool _faceHand; // v17.58.0 사이드바 🎭 디지털 휴먼 ▸ 😊 가우시안 페이셜 & 핑거 스튜디오(ARKit 52 델타 · 20 관절 핑거 DQS)
+    private bool _dqAvatar; // v17.57.0 사이드바 🎭 디지털 휴먼 ▸ 🧬 4D 가우시안 아바타 스튜디오(DQS · 셀프 섀도우)
+    private bool _gsShadow; // v17.56.0 사이드바 🎬 가상 프로덕션 ▸ 🌓 3DGS 섀도우 & 릴라이팅 스튜디오
+    private bool _gsEnv; // v17.55.0 사이드바 🎬 가상 프로덕션 ▸ 🌌 3D 가우시안 스플래팅 스튜디오
+    private bool _rhythmMv; // v17.54.0 사이드바 🎬 가상 프로덕션 ▸ 🎬 MV 리듬 액션 스튜디오
+    private bool _beatSync; // v17.53.0 사이드바 💡 무대 연출 ▸ 🎵 비트 동기화 & 오디오 더킹 스튜디오
+    private bool _motionType; // v17.52.0 사이드바 🎬 가상 프로덕션 ▸ 🔤 9:16 모션 타이포그래피 스튜디오
+    private bool _omni; // v17.51.0 사이드바 📸 소셜 ▸ 🌐 옴니채널 크로스 배포 & 댓글 스튜디오
+    private bool _igLoop; // v17.50.0 헤더/사이드 📸 인스타그램 ▸ 🚀 AI 24/7 바이럴 오토메이션 스튜디오
+    private bool _vtc; // v17.49.0 헤더 🎞️ AI 9:16 하드웨어 트랜스코더 스튜디오
+    private bool _graphApi; // v17.48.0 헤더 🔗 AI 인스타그램 API 연동 스튜디오
+    private bool _reels; // v17.47.0 헤더 📱 AI 릴스 바이럴 리믹스 스튜디오
+    private bool _setExt; // v17.46.0 헤더 🏛️ AI 세트 확장 & 크로마 블렌딩 스튜디오
+    private bool _spatialSlam; // v16.98.0 헤더 🗺️ AI 신경망 공간 SLAM & 3D 환경 재구성 스튜디오
+    private bool _spatialComputing; // v16.97.0 헤더 🥽 AI 공간 컴퓨팅 & WebXR 스튜디오
+    private bool _gpuSwarm; // v16.96.0 헤더 ⚡ AI 분산 GPU 클러스터 & 렌더 스웜 스튜디오
+    private bool _enterpriseSla; // v16.95.0 헤더 🛡️ AI 엔터프라이즈 SLA & 무중단 복구 스튜디오
+    private bool _liveTelemetry; // v16.94.0 헤더 📊 AI 실시간 텔레메트리 & 자율 튜닝 스튜디오
+    private bool _selfHeal; // v16.93.0 헤더 🛠️ AI 실시간 DOM UI 구동 & 소스 자동 수정 스튜디오
+    private bool _cloudVerify; // v16.92.0 헤더 🔍 AI 클라우드 소스 검증 & UI 인터랙티브 검사 스튜디오
+    private bool _crewStudio; // v16.91.0 헤더 🎬 AI 멀티에이전트 프로덕션 크루 스튜디오
+    private bool _digitalHuman; // v16.82.0 헤더 👤 AI 디지털 휴먼 & 신경망 표정 스튜디오
+    private bool _genVfx; // v16.81.0 헤더 💥 AI 제너레이티브 VFX & 파티클 스튜디오
+    private bool _vpMaster; // v16.80.0 헤더 🎬 AI 가상 프로덕션 & 마스터링 스튜디오
+    private bool _autoEdit; // v16.79.0 헤더 ✂️ AI 자율 편집 & 몽타주 조립 스튜디오
+    private bool _iCinema; // v16.78.0 헤더 🎬 AI 인터랙티브 시네마 & 서사 분기 스튜디오
+    private bool _holo; // v16.77.0 헤더 📡 AI 홀로그래픽 텔레포테이션 & 3D 텔레프레젠스 스튜디오
+    private bool _spatialAudio; // v16.76.0 헤더 🎧 AI 공간 오디오 & 음향 레이트레이싱 스튜디오
+    private bool _mocap; // v16.75.0 헤더 💃 AI 신경망 마커리스 모션 캡처 스튜디오
+    private bool _pathTrace; // v16.74.0 헤더 ✨ AI 신경망 패스 트레이싱 & 디노이저 스튜디오
+    private bool _twinData; // v16.73.0 헤더 ♊ AI 디지털 트윈 & 합성 데이터 스튜디오
+    private bool _hwAccel; // v16.63.0 헤더 ⚡ AI 하드웨어 가속 & 분산 렌더링 스튜디오
+    private bool _synergy; // v16.62.0 헤더 ⚡ AI 기존 기능 심층 강화 & 멀티 엔진 관제 스튜디오
+    private bool _spatialXr; // v16.61.0 헤더 🥽 AI 공간 XR 메타버스 & 홀로그램 스튜디오
+    private bool _icvfx; // v16.59.0 헤더 🎬 AI ICVFX 가상 제작 & 자율 디렉터 스튜디오
+    private bool _gsplat; // v16.58.0 헤더 🧊 AI 3DGS & NeRF 실시간 스튜디오
+    private bool _bci; // v16.56.0 헤더 🧠 AI BCI & 바이오피드백 스튜디오
+    private bool _teleport; // v16.55.0 헤더 📡 AI 볼류메트릭 텔레포테이션 스튜디오
+    private bool _world4d; // v16.54.0 헤더 🌐 AI 4D 월드 모델 & 신경망 비디오 스튜디오
+    private bool _globalOps; // v16.52.0 헤더 🌐 글로벌 SLA & 운용 총괄 스튜디오
+    private bool _hardening; // v16.51.0 헤더 🛡️ 엔터프라이즈 시스템 하드닝 스튜디오
+    private bool _empire; // v16.50.0 헤더 👑 AI 미디어 제국 & 옴니채널 마스터 스튜디오
+    private bool _podcast; // v16.49.0 헤더 🎙️ AI 팟캐스트 & 토크쇼 스튜디오
+    private bool _commerce; // v16.48.0 헤더 🛍️ AI 라이브 커머스 & 쇼퍼테인먼트 스튜디오
+    private bool _a11y; // v16.47.0 헤더 🤟 AI 유니버설 접근성 & 배리어프리 스튜디오
+    private bool _edutech; // v16.46.0 헤더 🎓 AI 에듀테크 & 이러닝 스튜디오
+    private bool _sports; // v16.45.0 헤더 ⚽ AI 스포츠 중계 & 멀티캠 스튜디오
+    private bool _newsroom;      // v16.44.0 헤더 📰 AI 자율 뉴스룸 스튜디오
+    private bool _mcr;           // v16.43.0 헤더 📺 AI 자율 주행 MCR & SSAI 스튜디오
+    private bool _mam;           // v16.42.0 헤더 🗄️ 엔터프라이즈 MAM & 글로벌 CDN 스튜디오
+    private bool _cinema;        // v16.41.0 헤더 📽️ AI 시네마틱 유니버스 & 프랜차이즈 스튜디오
+    private bool _xrStage;       // v16.40.0 헤더 🥽 AI 공간 XR & 홀로그램 스테이지
+    private bool _gaming;        // v16.39.0 헤더 🎮 AI 게이밍 & 코스트리머 스튜디오
+    private bool _agency;        // v16.38.0 헤더 🌟 버추얼 아이돌 에이전시 모달
+    private bool _showMobileSim; // v5.3.2 모바일 시뮬레이터 사이드 패널 열림
+    private bool _simFullscreen; // v5.6.5 시뮬레이터 전체화면(오버레이 transform 제약 해제 트리거)
+    private bool _showObservability; // v6.2.0 글로벌 관제 HUD 오버레이 열림
+    private bool _showTimeline;       // v7.0.0 AI 멀티트랙 타임라인 오버레이 열림
+    private readonly PromptFlowStudio.Services.Storyboard.StoryboardProject _simProject = new(); // 시뮬레이터 미리보기 데모 프로젝트
+    private ElementReference _mssRef;   // v5.3.3 모바일 시뮬레이터 오버레이(열릴 때 포커스 이동 대상)
+    private bool _focusMss;             // 열림 시 1회 포커스 이동 플래그
+
+    // 사이드바 메뉴 호버 가이드 툴팁
+    private PromptFlowStudio.Services.Ui.SidebarGuide? _sideGuide;
+    private double _sideGuideTop;
+    private void ShowSideGuide(string route, double clientY) { _sideGuide = SideGuide.Get(route); _sideGuideTop = clientY; }
+    private void HideSideGuide() => _sideGuide = null;
+
+
+    /// <summary>
+    /// 도움말 열기.
+    /// ⚠ F1 · ? 는 HelpDrawer 가 document 레벨에서 직접 잡는다. 여기 것은
+    ///   버튼 클릭과 Alt+H 용이다 — 일부 원격데스크톱·키오스크 환경에서
+    ///   F1 이 호스트에 먹히는 경우를 대비한 보조 경로다.
+    /// </summary>
+    /// <summary>
+    /// 전역 명령 등록 — 10개 메뉴 이동 + 화면 설정 + 도움말.
+    ///
+    /// <para>
+    /// ⚠ 위험한 명령은 여기 넣지 않는다. E-Stop '발동' 이 팔레트에 있으면
+    ///   타자 몇 글자와 Enter 로 전 로봇이 선다. 무장(Arm)까지만 두고,
+    ///   실제 정지는 800ms 길게 누르기라는 물리적 확인을 거치게 한다.
+    /// </para>
+    ///
+    /// <para>
+    /// ⚠ 화면별 명령(예: 카메라 개별 이동)은 각 페이지가
+    ///   <c>Palette.RegisterRange</c> 로 자기 것을 등록하고, 떠날 때
+    ///   <c>UnregisterPrefix</c> 로 걷어 간다. 여기 있는 건 어디서나
+    ///   쓰는 것뿐이다.
+    /// </para>
+    /// </summary>
+    private void RegisterCommands()
+    {
+        // ── 메뉴 이동 ── (실제 라우트만; 생성 워크플로우 단계는 준비 중이라 팔레트 제외)
+        var menus = new (string Route, string Icon, string Title, string[] Kw)[]
+        {
+            ("",             "🎬", "워크스페이스",   new[] { "home", "studio", "홈", "스튜디오", "워크스페이스", "대시보드" }),
+            ("workspace",    "✍️", "프롬프트 입력",   new[] { "workspace", "프롬프트", "생성", "t2v", "i2v", "영상", "텍스트" }),
+            ("storyboard",   "🎞️", "스토리보드",     new[] { "storyboard", "스토리보드", "컷", "장면", "연쇄" }),
+            ("batch",        "🏭", "대량 양산",      new[] { "batch", "대량", "양산", "배치", "공장", "csv", "일괄", "factory" }),
+            ("motion",       "🎥", "모션·카메라",    new[] { "motion", "모션", "카메라", "팬", "줌", "드론", "프리셋" }),
+            ("queue",        "⏳", "렌더링 큐",       new[] { "queue", "렌더", "큐", "진행률", "대기", "작업" }),
+            ("gallery",      "🖼️", "갤러리",          new[] { "gallery", "갤러리", "미디어", "영상목록", "저장" }),
+            ("user-settings","🎚️", "사용자 설정",     new[] { "임계값", "테마", "밀도", "화면", "표시", "환경", "사용자", "user" }),
+            ("settings",     "⚙️", "관리자 설정",     new[] { "설정", "관리자", "계정", "권한", "라이선스", "만료", "회원", "rbac", "메일", "smtp", "설치" }),
+        };
+
+        foreach (var m in menus)
+        {
+            var route = m.Route;
+            Palette.Register(new PaletteCommand(
+                Id: "nav." + (route.Length == 0 ? "home" : route),
+                Group: "이동",
+                Icon: m.Icon,
+                Title: m.Title + " 열기",
+                Hint: "/" + route,
+                Keywords: m.Kw,
+                Run: () => { Nav.NavigateTo(route); return Task.CompletedTask; }));
+        }
+
+        // ── 화면 설정 ──
+        Palette.Register(new PaletteCommand(
+            "ui.theme", "화면", "🌗", "테마 전환 (다크 ↔ 라이트)", null,
+            new[] { "theme", "dark", "light", "밝기", "야간" },
+            async () =>
+            {
+                var next = Prefs.Get(UserPreferenceService.Keys.Theme) == "dark" ? "light" : "dark";
+                Prefs.Set(UserPreferenceService.Keys.Theme, next);
+                await ApplyDisplayOpts();
+            }));
+
+        Palette.Register(new PaletteCommand(
+            "ui.density", "화면", "▤", "목록 밀도 전환 (컴팩트 ↔ 여유)", null,
+            new[] { "density", "compact", "행", "간격" },
+            () =>
+            {
+                var next = Prefs.Get(UserPreferenceService.Keys.Density) == "compact" ? "comfortable" : "compact";
+                Prefs.Set(UserPreferenceService.Keys.Density, next);
+                return Task.CompletedTask;
+            }));
+
+        Palette.Register(new PaletteCommand(
+            "ui.sound", "화면", "🔊", "경보 음향 켜기/끄기", null,
+            new[] { "sound", "mute", "소리", "알림", "음성" },
+            () =>
+            {
+                Prefs.SetBool(UserPreferenceService.Keys.SoundAlert,
+                              !Prefs.GetBool(UserPreferenceService.Keys.SoundAlert));
+                return Task.CompletedTask;
+            }));
+
+        Palette.Register(new PaletteCommand(
+            "ui.reset", "화면", "↺", "화면 설정 기본값으로 되돌리기",
+            "밀도·테마·핀 등 이 PC 의 화면 설정만 초기화",
+            new[] { "reset", "초기화", "원복", "기본값" },
+            async () => { Prefs.Reset(); await ApplyDisplayOpts(); })
+            { IsSensitive = true });
+
+        // ── 화면(방송 스튜디오 모드) ──
+        Palette.Register(new PaletteCommand(
+            "ui.broadcast", "화면", "📡", "방송 스튜디오 모드 켜기/끄기", null,
+            new[] { "broadcast", "studio", "방송", "스튜디오", "네온", "글래스" },
+            async () =>
+            {
+                Prefs.IsBroadcast = !Prefs.IsBroadcast;
+                try { await JS.InvokeVoidAsync("siteMaticUi.setRootFlag", "broadcast", Prefs.IsBroadcast); } catch (Exception) { }
+            }));
+
+        // ── 렌더링 제어 ──
+        Palette.Register(new PaletteCommand(
+            "render.pause", "렌더", "⏸️", "대량 렌더링 일시정지", "진행 중 항목 완료 후 멈춤",
+            new[] { "pause", "일시정지", "멈춤", "렌더", "배치" },
+            () => { Batch.Pause(); return Task.CompletedTask; })
+            { CanRun = () => Batch.IsRunning && !Batch.PauseRequested && !Batch.IsPaused });
+        Palette.Register(new PaletteCommand(
+            "render.resume", "렌더", "▶️", "대량 렌더링 재개", null,
+            new[] { "resume", "재개", "계속", "시작", "렌더", "배치" },
+            () => { Batch.Resume(); return Task.CompletedTask; })
+            { CanRun = () => Batch.IsPaused || Batch.PauseRequested });
+
+        // ── 도움말 ──
+        Palette.Register(new PaletteCommand(
+            "help.open", "도움말", "📖", "현재 화면 도움말 열기", "F1",
+            new[] { "help", "사용법", "매뉴얼", "안내" },
+            () => { Help.Open(); return Task.CompletedTask; }));
+
+        // ── 세션 ──
+        Palette.Register(new PaletteCommand(
+            "session.logout", "계정", "⏻", "로그아웃", null,
+            new[] { "logout", "나가기", "종료" },
+            () => { Session.SignOut(); Nav.NavigateTo("login"); return Task.CompletedTask; })
+            { IsSensitive = true });
+    }
+
+    private void OpenHelp() => Help.Toggle();
+
+    /// <summary>상단바에 표시할 현재 화면 이름 — 도움말 목차를 그대로 쓴다.</summary>
+    private PromptFlowStudio.Services.Help.HelpTopic? Here
+        => PromptFlowStudio.Services.Help.HelpContent.ForPath(Nav.ToBaseRelativePath(Nav.Uri));
+
+    private void ToggleDrawer() { _drawer = !_drawer; }
+    private void CloseDrawer() { if (_drawer) _drawer = false; }
+    private void ToggleMobileSim() { _showMobileSim = !_showMobileSim; if (_showMobileSim) _focusMss = true; else _simFullscreen = false; }   // v5.3.2 토글 + v5.3.3 포커스 예약
+    // v5.6.5: 시뮬레이터를 닫을 때 전체화면 상태도 함께 해제(다음 오픈은 도킹 모드로 시작).
+    private void CloseMobileSim() { _showMobileSim = false; _simFullscreen = false; }
+    // v5.6.5: 자식 패널(MobileSimulatorSidePane)의 전체화면 토글 통지 → 오버레이 컨테이너 transform 제약 해제.
+    private void OnSimFullscreen(bool fs) => _simFullscreen = fs;
+
+    // v6.2.0: 글로벌 관제 오버레이 토글/닫기 + Esc 접근성.
+    private void ToggleObservability() => _showObservability = !_showObservability;
+    private void CloseObservability() => _showObservability = false;
+    private void OnObsKey(KeyboardEventArgs e) { if (e.Key == "Escape") CloseObservability(); }
+
+    // v7.0.0: AI 타임라인 오버레이 토글/닫기 + Esc.
+    private void ToggleTimeline() => _showTimeline = !_showTimeline;
+    private void CloseTimeline() => _showTimeline = false;
+    private void OnTimelineKey(KeyboardEventArgs e) { if (e.Key == "Escape") CloseTimeline(); }
+
+    // v6.2.x: 모바일 시뮬 → PC 공용 테마 위임. 내장 프리셋 4종을 칩으로 노출, 선택 시 전역 ThemeService 적용(폰 프레임 즉시 재테마).
+    private IReadOnlyList<string> _mobileThemeNames => PromptFlowStudio.Services.Ui.ThemeService.BuiltIns.Select(b => b.Name).ToList();
+    private void ApplyMobileTheme(string name) => Theme.ApplyByName(string.IsNullOrWhiteSpace(name) ? null : name);
+
+    // v5.7.6: 모바일 시뮬 → 호스트 LLM 부스터 브리지. 데스크톱 전용 IWanPromptBoosterService(동기)를 태스크로 실행,
+    //   1초 초과/실패/빈 결과 시 BCL 휴리스틱으로 완만 디그레이드(Graceful Degradation). 모바일 컴포넌트는 델리게이트만 받음(무주입).
+    private async Task<string> BoostViaHost(string prompt)
+    {
+        try
+        {
+            var boostTask = Task.Run(() => Booster.Boost(prompt));
+            if (await Task.WhenAny(boostTask, Task.Delay(1000)) == boostTask)
+            {
+                var boosted = await boostTask;
+                if (!string.IsNullOrWhiteSpace(boosted)) return boosted;
+            }
+        }
+        catch (Exception) { /* 원격/부스터 실패 → BCL 폴백 */ }
+        return PromptFlowStudio.Services.Wan.WanPromptCompiler.EnhancePromptHeuristic(prompt);
+    }
+    // v5.3.3: 오버레이 키보드 접근성 — Esc 로 닫기(패널이 포커스를 가진 동안 발동).
+    private void OnMssKey(KeyboardEventArgs e) { if (e.Key == "Escape") CloseMobileSim(); }
+
+    /// <summary>
+    /// 전역 단축키. Alt+0 워크스페이스, Alt+H 도움말, Esc 로 드로어 닫기.
+    /// </summary>
+    private void OnShellKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") { CloseDrawer(); return; }
+        if (!e.AltKey) return;
+
+        // Alt+H — 도움말
+        if (e.Key is "h" or "H") { OpenHelp(); return; }
+
+        // Alt+0 — 워크스페이스(홈)
+        if (e.Key == "0") { CloseDrawer(); Nav.NavigateTo(""); }
+    }
+    private string Avatar => Session.Display.Length > 0 ? Session.Display[..1] : "S";
+    private string RoleKo => Session.Role switch { "Admin" => "관리자", "Operator" => "운영자", _ => "뷰어" };
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // v5.3.3: 모바일 시뮬레이터가 열리면 오버레이로 키보드 포커스를 이동(접근성). 매 렌더 상단에서 1회만.
+        if (_focusMss && _showMobileSim)
+        {
+            _focusMss = false;
+            try { await _mssRef.FocusAsync(); } catch { /* 렌더 경합/미마운트 무시 */ }
+        }
+
+        if (!firstRender) return;
+
+        // 저장된 설정을 메모리로 끌어온 뒤 테마를 실제로 적용한다.
+        // ⚠ 이 두 줄이 없으면 환경 설정의 테마 선택이 아무 효과도 내지 않는다.
+        await Prefs.InitAsync(JS);
+        await ApplyDisplayOpts();
+        StateHasChanged();
+    }
+
+    /// <summary>사이드바 화면 옵션 1행.</summary>
+    private sealed record SideOpt(
+        string Key, string Icon, string Label,
+        string OffText, string OnText, Func<bool> On);
+
+    private SideOpt[] _sideOpts => new[]
+    {
+        new SideOpt("theme",   "🎨", "테마",     "다크", "라이트", () => Prefs.IsThemeLight),
+        new SideOpt("sidebar", "📚", "사이드바", "다크", "라이트", () => Prefs.IsSidebarLight),
+        // ⚠ 모션은 <켜기가 기본>이다. 끄기를 기본으로 두면 처음 쓰는 사람은
+        //   이 제품이 정적인 화면인 줄 안다.
+        new SideOpt("motion",  "🎬", "모션",     "정지", "켜기",   () => !Prefs.IsMotionDisabled),
+        // 방송 스튜디오 시네마틱 테마(글래스모피즘·네온) — 기본 ON.
+        new SideOpt("broadcast","📡", "스튜디오", "표준", "방송",   () => Prefs.IsBroadcast),
+    };
+
+    private void SetOpt(string key, bool on)
+    {
+        switch (key)
+        {
+            case "theme": Prefs.IsThemeLight = on; break;
+            case "sidebar": Prefs.IsSidebarLight = on; break;
+            // 버튼의 '켜기' 가 눌리면 <비활성화 해제>다. 부호가 뒤집힌다.
+            case "motion": Prefs.IsMotionDisabled = !on; break;
+            case "broadcast": Prefs.IsBroadcast = on; break;
+        }
+        _ = ApplyDisplayOpts();
+    }
+
+    /// <summary>
+    /// 화면 옵션을 문서 루트에 반영한다.
+    /// ⚠ 테마는 data-theme, 나머지는 클래스다. 섞지 않는다.
+    /// </summary>
+    private async Task ApplyDisplayOpts()
+    {
+        await ApplyTheme();
+        try
+        {
+            await JS.InvokeVoidAsync("siteMaticUi.setRootFlag", "sidebar-light", Prefs.IsSidebarLight);
+            await JS.InvokeVoidAsync("siteMaticUi.setRootFlag", "motion-off", Prefs.IsMotionDisabled);
+            await JS.InvokeVoidAsync("siteMaticUi.setRootFlag", "broadcast", Prefs.IsBroadcast);
+        }
+        catch (Exception) { /* 화면 옵션 때문에 앱이 죽으면 안 된다 */ }
+    }
+
+    private async Task ApplyTheme()
+    {
+        try { await JS.InvokeVoidAsync("siteMaticUi.setTheme", Prefs.Get(UserPreferenceService.Keys.Theme)); }
+        catch (Exception) { /* 테마 때문에 앱이 죽으면 안 된다 */ }
+    }
+
+    protected override void OnInitialized()
+    {
+        Session.OnChange += OnCh;
+        Prefs.OnChange += OnCh;
+        Theme.OnChange += OnCh;   // 커스텀 테마 변경 시 <style> 재렌더(라이브 반영)
+        RegisterCommands();
+        // ⚠ 이게 없으면 F1 으로 열었을 때 헤더 버튼의 aria-expanded 가
+        //   "false" 로 남는다. 스크린리더는 대화상자가 열린 줄 모른다.
+        Help.OnChange += OnCh;
+        var require = !string.Equals(Cfg["Auth:RequireLogin"], "false", StringComparison.OrdinalIgnoreCase);
+        if (require && !Session.IsAuthenticated)
+        {
+            var path = new Uri(Nav.Uri).AbsolutePath.Trim('/');
+            if (!string.Equals(path, "login", StringComparison.OrdinalIgnoreCase))
+            {
+                Nav.NavigateTo("login");
+                return;
+            }
+        }
+        _pass = true;
+    }
+
+    private void Logout()
+    {
+        Session.SignOut();
+        Nav.NavigateTo("login");
+    }
+
+    private void OnCh() => InvokeAsync(StateHasChanged);
+    public void Dispose()
+    {
+        Session.OnChange -= OnCh;
+        Help.OnChange -= OnCh;
+        Prefs.OnChange -= OnCh;
+        Theme.OnChange -= OnCh;
+    }
+}

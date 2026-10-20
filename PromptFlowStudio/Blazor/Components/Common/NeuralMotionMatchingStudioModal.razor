@@ -1,0 +1,361 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.MotionMatching
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject NeuralMotionMatchingStudioRunner Runner
+
+@* [PromptFlow Studio v17.33.0] 🏃 AI 뉴럴 모션 매칭 & 생체역학 스튜디오 — 3D 골격 뷰어 · 궤적 예측 호 · 접지력/ZMP · 검색 비용 모니터. *@
+
+<div class="nmm-scrim" @onclick="Close">
+    <div class="nmm-modal" @onclick:stopPropagation="true">
+        <div class="nmm-h">
+            <div>
+                <div class="nmm-title">🏃 AI 뉴럴 모션 매칭 &amp; 생체역학 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null)</div>
+                <div class="nmm-sub"><b>모션 매칭 엔진</b>이 @(Db.Frames.ToString("N0", CultureInfo.InvariantCulture))프레임 DB에서 1초 예측 궤적과 발·골반 속도 특징을 AABB 가지치기 SIMD L2로 검색해 관성 블렌딩으로 전환하고, <b>IK 합성기</b>가 지형 레이캐스트 법선에 발을 맞춘 뒤 골반·척추를 전신 FABRIK과 ZMP 균형으로 보정합니다. <b>생체역학 가드</b>는 접지 구간 발 위치를 락해 풋스케이팅을 막고 무릎·팔꿈치 과신전과 각속도 급발산을 가동 범위(ROM) 안으로 클램프합니다.</div>
+            </div>
+            <button class="nmm-x" @onclick="Close">✕</button>
+        </div>
+        <div class="nmm-bar">
+            <button class="nmm-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 시작")</button>
+            <button class="nmm-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="nmm-btn @(Runner.Autopilot ? "on" : null)" @onclick="() => Runner.SetAutopilot(!Runner.Autopilot)">🤖 자동 조종</button>
+            <button class="nmm-btn @(Runner.Engine.Inertialize ? "on" : null)" @onclick="() => Runner.SetInertialization(!Runner.Engine.Inertialize)">〰 관성 블렌딩</button>
+            <button class="nmm-btn @(Runner.Ik.Enabled ? "on" : null)" @onclick="() => Runner.SetIk(!Runner.Ik.Enabled)">🦵 지형 IK</button>
+            <button class="nmm-btn @(Runner.Ik.BalanceEnabled ? "on" : null)" @onclick="() => Runner.SetBalance(!Runner.Ik.BalanceEnabled)">⚖ ZMP 균형</button>
+            <button class="nmm-btn @(Runner.Guard.Enabled ? "on" : null)" @onclick="() => Runner.SetGuard(!Runner.Guard.Enabled)">🛡 가드</button>
+            <button class="nmm-btn warn" @onclick="Runner.Reverse">↩ 급반전</button>
+            <button class="nmm-btn" @onclick="Runner.ResetCharacter">⟲ 원점</button>
+            <button class="nmm-btn" @onclick="Runner.ResetMetrics">↺ 지표</button>
+            <span class="nmm-chip @(Runner.LastTickMs <= 16.7 ? "ok" : "warn")">프레임 @(F2(Runner.LastTickMs)) ms(최대 @(F1(Runner.MaxTickMs))) · IK @(F0(Runner.Ik.LastSolveUs)) µs</span>
+        </div>
+        <div class="nmm-bar">
+            <span class="nmm-lbl">지형</span>
+            @foreach (var k in Terrains)
+            {
+                var t = k;
+                <button class="nmm-btn @(Runner.Terrain == t ? "on" : null)" @onclick="() => Runner.SetTerrain(t)">@(NeuralMotionMatchingStudioRunner.TerrainName(t))</button>
+            }
+            <span class="nmm-lbl">노면</span>
+            @foreach (var k in Surfaces)
+            {
+                var s = k;
+                <button class="nmm-btn @(Runner.Profile.Kind == s ? "on" : null)" @onclick="() => Runner.SetSurface(s)">@(SurfaceProfile.Name(s))</button>
+            }
+            <button class="nmm-btn" @onclick="() => Runner.SyncWeather()">☁ v17.28 기상 연동</button>
+        </div>
+        <div class="nmm-main">
+            <div class="nmm-col">
+                <div class="nmm-card">
+                    <div class="nmm-sec">🦴 3D 골격 기구학 뷰어 · @(Runner.SegmentLabel) · 목표 @(F1(Runner.DesiredSpeed)) m/s(상한 @(F1(Runner.SpeedCap)))</div>
+                    <svg class="nmm-view" viewBox="-200 -150 400 260">@((MarkupString)SceneSvg())</svg>
+                    <div class="nmm-viewbar">
+                        <span class="nmm-lbl">카메라 방위</span><input type="range" min="-180" max="180" step="5" value="@(F0(_camYaw))" @oninput="e => _camYaw = (float)Num(e, 35)" />
+                        <span class="nmm-legend"><i class="arc"></i>예측 궤적(1 s) <i class="mt"></i>DB 매칭 궤적 <i class="zmp"></i>ZMP <i class="com"></i>CoM <i class="lock"></i>접지 락</span>
+                    </div>
+                    <div class="nmm-pad">
+                        <span class="nmm-lbl">수동 입력</span>
+                        <button class="nmm-btn" @onclick="() => Input(0)">⬆ 북</button>
+                        <button class="nmm-btn" @onclick="() => Input(90)">➡ 동</button>
+                        <button class="nmm-btn" @onclick="() => Input(180)">⬇ 남</button>
+                        <button class="nmm-btn" @onclick="() => Input(-90)">⬅ 서</button>
+                        <input type="range" min="0" max="5" step="0.1" value="@(F1(_speed))" @oninput="e => _speed = (float)Num(e, 1.4)" /><span class="nmm-mut">@(F1(_speed)) m/s</span>
+                        <button class="nmm-btn" @onclick="() => Runner.SetInput(_lastDir, 0f)">⏹ 정지</button>
+                    </div>
+                </div>
+                <div class="nmm-card">
+                    <div class="nmm-sec">🔎 모션 매칭 검색 · 클립 @(Db.Clip(Runner.Engine.CurrentClip).Name) · 프레임 @(Runner.Engine.CurrentFrame)</div>
+                    <div class="nmm-kv grid">
+                        <div>최근 비용 <b>@(F2(Runner.Engine.LastCost))</b> / 현재 @(F2(Runner.Engine.CurrentCost))</div>
+                        <div>검색 <b class="@(Runner.Engine.LastSearchUs < 1000 ? "ok" : "warn")">@(F0(Runner.Engine.LastSearchUs)) µs</b>(최대 @(F0(Runner.Engine.MaxSearchUs)))</div>
+                        <div>평가 프레임 <b>@(Runner.Engine.LastEvaluated)</b> / 후보 @(Db.Candidates.ToString("N0", CultureInfo.InvariantCulture)) · 가지치기 @(F1(Runner.Engine.PruneRatio * 100))%</div>
+                        <div>검색 @(Runner.Engine.Searches) · 전환 <b>@(Runner.Engine.Transitions)</b> · 관성 오프셋 @(F1(Runner.Engine.OffsetMagnitude * 100)) cm</div>
+                        <div>2차 차분(팝) <b>@(F1(Runner.Engine.LastJerk * 1000)) mm</b>(최대 @(F1(Runner.Engine.MaxJerk * 1000)))</div>
+                        <div>DB 클립 @(Db.ClipCount) · 구축 @(F0(Db.BuildMs)) ms</div>
+                    </div>
+                    <svg class="nmm-spark" viewBox="0 0 360 80" preserveAspectRatio="none">
+                        <polyline class="cost" points="@(Series(0, 20))" />
+                        <polyline class="us" points="@(Series(1, 1000))" />
+                    </svg>
+                    <div class="nmm-legend2"><span class="cost">■ 매칭 비용</span><span class="us">■ 검색 µs(1 ms 만점)</span></div>
+                </div>
+            </div>
+            <div class="nmm-col">
+                <div class="nmm-card">
+                    <div class="nmm-sec">⚖ 발바닥 접지력 · ZMP 오프셋</div>
+                    <div class="nmm-forces">
+                        @for (var s = 0; s < 2; s++)
+                        {
+                            var f = s == 0 ? Runner.Ik.ForceL : Runner.Ik.ForceR;
+                            <div class="nmm-force">
+                                <div class="nmm-fbar"><div class="@(Runner.Guard.IsLocked(s) ? "lock" : null)" style="height:@(F0(Math.Min(100, f / 14)))%"></div></div>
+                                <b>@(F0(f)) N</b><span>@(s == 0 ? "왼발" : "오른발") @(Runner.Guard.IsLocked(s) ? "🔒" : null)</span>
+                            </div>
+                        }
+                        <svg class="nmm-zmp" viewBox="-60 -60 120 120">@((MarkupString)ZmpSvg())</svg>
+                        <div class="nmm-kv">
+                            <div>ZMP 오프셋 <b class="@(Runner.Ik.ZmpOffset <= 0.01f ? "ok" : "warn")">@(F1(Runner.Ik.ZmpOffset * 100)) cm</b> @(Runner.Ik.ZmpOffset <= 0 ? "(지지 다각형 내부)" : "(외부)")</div>
+                            <div>지지 내 비율 <b>@(F1(Runner.Ik.ZmpInsideRatio * 100))%</b> · 최대 이탈 @(F1(Runner.Ik.MaxZmpOutside * 100)) cm</div>
+                            <div>균형 이동 @(F1(new Vector2(Runner.Ik.BalanceShift.X, Runner.Ik.BalanceShift.Z).Length() * 100)) cm · 골반 Δy @(F1(Runner.Ik.PelvisOffset.Y * 100)) cm</div>
+                            <div>척추 전경 @(F1(Runner.Ik.SpineLeanDeg))° · FABRIK @(Runner.Ik.LastIterations)회 · 오차 @(F2(Runner.Ik.LastIkErrorMm)) mm</div>
+                            <div>필요 마찰 <b class="@(Runner.Ik.RequiredFriction <= Runner.Profile.Friction ? "ok" : "warn")">@(F2(Runner.Ik.RequiredFriction))</b> / μ @(F2(Runner.Profile.Friction)) · 미끄럼 위험 @(Runner.Ik.SlipRiskFrames)</div>
+                            <div>발 정렬 오차 @(F1(Runner.Ik.FootAlignDeg))° · 관통 @(F1(Runner.Ik.LastPenetration * 100)) cm(최대 @(F1(Runner.Ik.MaxPenetration * 100)))</div>
+                        </div>
+                    </div>
+                    <svg class="nmm-spark" viewBox="0 0 360 80" preserveAspectRatio="none">
+                        <polyline class="fl" points="@(Series(2, 1400))" />
+                        <polyline class="fr" points="@(Series(3, 1400))" />
+                        <polyline class="zo" points="@(Series(4, 0.2))" />
+                    </svg>
+                    <div class="nmm-legend2"><span class="fl">■ 왼발 N</span><span class="fr">■ 오른발 N</span><span class="zo">■ ZMP 오프셋(±20 cm)</span></div>
+                </div>
+                <div class="nmm-card">
+                    <div class="nmm-sec">🛡 생체역학 가드 · @(Runner.Guard.Enabled ? "ON" : "OFF")</div>
+                    <div class="nmm-kv grid">
+                        <div>풋스케이팅 <b class="@(Runner.Guard.RecentSkatingCmPerSec < 2 ? "ok" : "warn")">@(F2(Runner.Guard.RecentSkatingCmPerSec)) cm/s</b>(누적 @(F2(Runner.Guard.SkatingCmPerSec)))</div>
+                        <div>접지 락 @(Runner.Guard.Locks) · 해제 @(Runner.Guard.Releases)(도달 @(Runner.Guard.ReachReleases))</div>
+                        <div>무릎 굴곡 L <b>@(F0(Runner.Guard.KneeFlexDeg(0)))°</b> · R <b>@(F0(Runner.Guard.KneeFlexDeg(1)))°</b>(ROM 4~150°)</div>
+                        <div>과신전 검출 <b>@(Runner.Guard.HyperExtDetected)</b> · 교정 @(Runner.Guard.HyperExtClamped) · 잔존 <b class="@(Runner.Guard.HyperExtRemaining == 0 ? "ok" : "warn")">@(Runner.Guard.HyperExtRemaining)</b></div>
+                        <div>각속도 최대 전 @(F1(Runner.Guard.MaxOmegaPre)) → 후 <b>@(F1(Runner.Guard.MaxOmegaPost))</b> rad/s · 클램프 @(Runner.Guard.OmegaClamps)</div>
+                        <div>뼈 길이 오차 전 @(F1(Runner.Guard.MaxBoneErrPreMm)) → 후 <b>@(F2(Runner.Guard.MaxBoneErrPostMm))</b> mm · 팔꿈치 @(Runner.Guard.ElbowFixes)</div>
+                    </div>
+                    <svg class="nmm-spark" viewBox="0 0 360 80" preserveAspectRatio="none">
+                        <polyline class="sk" points="@(Series(5, 10))" />
+                    </svg>
+                    <div class="nmm-legend2"><span class="sk">■ 풋스케이팅 cm/s(10 만점)</span></div>
+                </div>
+                <div class="nmm-act">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .nmm-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .nmm-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .nmm-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #22c55e 14%, var(--card)), color-mix(in srgb, #0ea5e9 12%, var(--card))); }
+    .nmm-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .nmm-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .nmm-sub b { color: var(--text-primary); }
+    .nmm-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .nmm-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .nmm-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .nmm-btn:disabled { opacity: .45; cursor: default; }
+    .nmm-btn.on { background: color-mix(in srgb, #22c55e 20%, var(--card)); border-color: #22c55e; }
+    .nmm-btn.warn { border-color: #f59e0b; }
+    .nmm-lbl { font-size: 11px; color: var(--text-muted); font-weight: 700; margin-left: 4px; }
+    .nmm-mut { font-size: 11px; color: var(--text-muted); }
+    .nmm-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .nmm-chip.ok { border-color: #22c55e; color: #22c55e; } .nmm-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .nmm-main { display: grid; grid-template-columns: 1.2fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .nmm-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .nmm-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); }
+    .nmm-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .nmm-view { width: 100%; aspect-ratio: 400 / 260; background: radial-gradient(circle at 50% 20%, #1e293b, #020617); border-radius: 8px; }
+    .nmm-view .gr { stroke: #334155; stroke-width: .6; fill: none; }
+    .nmm-view .bone { stroke: #e2e8f0; stroke-width: 3.2; stroke-linecap: round; }
+    .nmm-view .bone.l { stroke: #38bdf8; } .nmm-view .bone.r { stroke: #f472b6; } .nmm-view .bone.sp { stroke: #a3e635; }
+    .nmm-view .jt { fill: #f8fafc; }
+    .nmm-view .arc { stroke: #facc15; stroke-width: 2; fill: none; stroke-dasharray: 4 3; }
+    .nmm-view .mt { stroke: #22d3ee; stroke-width: 1.6; fill: none; }
+    .nmm-view .hull { fill: rgba(34,197,94,.18); stroke: #22c55e; stroke-width: 1; }
+    .nmm-view .zmp { fill: #ef4444; } .nmm-view .com { fill: #f59e0b; } .nmm-view .lock { fill: none; stroke: #22c55e; stroke-width: 2; }
+    .nmm-view .cl { stroke: #f59e0b; stroke-width: .8; stroke-dasharray: 2 2; }
+    .nmm-viewbar, .nmm-pad { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+    .nmm-legend { font-size: 10px; color: var(--text-muted); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .nmm-legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 2px; }
+    .nmm-legend i.arc { background: #facc15; } .nmm-legend i.mt { background: #22d3ee; } .nmm-legend i.zmp { background: #ef4444; } .nmm-legend i.com { background: #f59e0b; } .nmm-legend i.lock { background: #22c55e; }
+    .nmm-kv { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px; }
+    .nmm-kv.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+    .nmm-kv b { color: var(--text-primary); } .nmm-kv b.ok { color: #22c55e; } .nmm-kv b.warn { color: #f59e0b; }
+    .nmm-spark { width: 100%; height: 64px; margin-top: 8px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; }
+    .nmm-spark polyline { fill: none; stroke-width: 1.5; }
+    .nmm-spark .cost, .nmm-legend2 .cost { stroke: #a78bfa; color: #a78bfa; } .nmm-spark .us, .nmm-legend2 .us { stroke: #38bdf8; color: #38bdf8; }
+    .nmm-spark .fl, .nmm-legend2 .fl { stroke: #38bdf8; color: #38bdf8; } .nmm-spark .fr, .nmm-legend2 .fr { stroke: #f472b6; color: #f472b6; }
+    .nmm-spark .zo, .nmm-legend2 .zo { stroke: #ef4444; color: #ef4444; } .nmm-spark .sk, .nmm-legend2 .sk { stroke: #f59e0b; color: #f59e0b; }
+    .nmm-legend2 { display: flex; gap: 12px; font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+    .nmm-forces { display: grid; grid-template-columns: 54px 54px 120px 1fr; gap: 10px; align-items: center; }
+    .nmm-force { display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 10px; color: var(--text-muted); }
+    .nmm-force b { font: 700 11px var(--mono); color: var(--text-primary); }
+    .nmm-fbar { width: 26px; height: 110px; border-radius: 6px; border: 1px solid var(--line); display: flex; align-items: flex-end; overflow: hidden; }
+    .nmm-fbar div { width: 100%; background: linear-gradient(0deg, #0ea5e9, #6366f1); transition: height .1s; }
+    .nmm-fbar div.lock { background: linear-gradient(0deg, #16a34a, #22c55e); }
+    .nmm-zmp { width: 120px; height: 120px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 8px; }
+    .nmm-zmp .hull { fill: rgba(34,197,94,.22); stroke: #22c55e; stroke-width: 1.2; } .nmm-zmp .zmp { fill: #ef4444; } .nmm-zmp .com { fill: #f59e0b; } .nmm-zmp .ax { stroke: #334155; stroke-width: .6; }
+    .nmm-act { font-size: 11px; color: var(--text-muted); }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly TerrainKind[] Terrains = { TerrainKind.Flat, TerrainKind.Ramp, TerrainKind.Stairs, TerrainKind.Bumps, TerrainKind.NeuralWorld };
+    private static readonly GroundSurface[] Surfaces = { GroundSurface.Dry, GroundSurface.Wet, GroundSurface.Snow, GroundSurface.Mud };
+    private static readonly (int A, int B, string C)[] Bones =
+    {
+        (0, 1, "sp"), (1, 2, "sp"), (2, 3, "sp"), (0, 4, "l"), (4, 5, "l"), (5, 6, "l"), (6, 7, "l"), (0, 8, "r"), (8, 9, "r"), (9, 10, "r"), (10, 11, "r"),
+        (2, 12, "l"), (12, 13, "l"), (13, 14, "l"), (2, 15, "r"), (15, 16, "r"), (16, 17, "r"),
+    };
+    private System.Threading.Timer? _timer;
+    private readonly Vector3[] _pose = new Vector3[BipedSkeleton.Count], _arc = new Vector3[NeuralMotionMatchingStudioRunner.ArcPoints], _match = new Vector3[3];
+    private readonly Vector2[] _hull = new Vector2[9];
+    private readonly float[] _grid = new float[NeuralMotionMatchingStudioRunner.Grid * NeuralMotionMatchingStudioRunner.Grid];
+    private int _hullN;
+    private float _camYaw = 35f, _speed = 1.4f, _lastDir;
+    private Vector3 _zmp, _com, _root;
+    private Vector2 _gridC;
+
+    private MotionDatabase Db => Runner.Engine.Database;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        Snapshot();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(() => { Snapshot(); StateHasChanged(); }); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("MotionMatching.Modal.Timer", ex); }
+        }, null, 100, 100);
+    }
+
+    private void Snapshot()
+    {
+        Runner.CopyPose(_pose); Runner.CopyArc(_arc); Runner.CopyMatch(_match); Runner.CopyGrid(_grid);
+        _hullN = Runner.CopyHull(_hull);
+        _zmp = Runner.ZmpPoint; _com = Runner.ComPoint; _root = Runner.RootPoint; _gridC = Runner.GridCenter;
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    /// <summary>궤도 카메라 원근 투영(대상 = 루트 · 피치 22° · 거리 5.5 m).</summary>
+    private Vector2 P(Vector3 w)
+    {
+        var yaw = _camYaw * MathF.PI / 180f; const float pitch = 0.38f, dist = 5.5f;
+        var d = w - new Vector3(_root.X, _pose[0].Y - 0.25f, _root.Z);
+        float cy = MathF.Cos(yaw), sy = MathF.Sin(yaw);
+        var x = d.X * cy - d.Z * sy; var z = d.X * sy + d.Z * cy;
+        float cp = MathF.Cos(pitch), sp = MathF.Sin(pitch);
+        var y = d.Y * cp - z * sp; var zz = d.Y * sp + z * cp + dist;
+        var f = 290f / MathF.Max(zz, 0.3f);
+        return new Vector2(x * f, -y * f);
+    }
+
+    private string SceneSvg()
+    {
+        var sb = new System.Text.StringBuilder(6000);
+        const int n = NeuralMotionMatchingStudioRunner.Grid; const float st = NeuralMotionMatchingStudioRunner.GridStep;
+        for (var j = 0; j < n; j++)
+        {
+            sb.Append("<polyline class=\"gr\" points=\"");
+            for (var i = 0; i < n; i++) AppendPt(sb, P(new Vector3(_gridC.X + (i - n / 2) * st, _grid[j * n + i], _gridC.Y + (j - n / 2) * st)));
+            sb.Append("\"/><polyline class=\"gr\" points=\"");
+            for (var i = 0; i < n; i++) AppendPt(sb, P(new Vector3(_gridC.X + (j - n / 2) * st, _grid[i * n + j], _gridC.Y + (i - n / 2) * st)));
+            sb.Append("\"/>");
+        }
+        if (_hullN >= 3)
+        {
+            sb.Append("<polygon class=\"hull\" points=\"");
+            for (var i = 0; i < _hullN; i++) AppendPt(sb, P(new Vector3(_hull[i].X, _zmp.Y + 0.005f, _hull[i].Y)));
+            sb.Append("\"/>");
+        }
+        sb.Append("<polyline class=\"arc\" points=\"");
+        AppendPt(sb, P(new Vector3(_root.X, _zmp.Y, _root.Z)));
+        for (var i = 0; i < _arc.Length; i++) AppendPt(sb, P(_arc[i] + new Vector3(0f, 0.02f, 0f)));
+        sb.Append("\"/><polyline class=\"mt\" points=\"");
+        AppendPt(sb, P(new Vector3(_root.X, _zmp.Y, _root.Z)));
+        for (var i = 0; i < 3; i++) AppendPt(sb, P(_match[i] + new Vector3(0f, 0.04f, 0f)));
+        sb.Append("\"/>");
+        foreach (var (a, b, c) in Bones)
+        {
+            var p = P(_pose[a]); var q = P(_pose[b]);
+            sb.Append("<line class=\"bone ").Append(c).Append("\" x1=\"").Append(F1(p.X)).Append("\" y1=\"").Append(F1(p.Y)).Append("\" x2=\"").Append(F1(q.X)).Append("\" y2=\"").Append(F1(q.Y)).Append("\"/>");
+        }
+        var hd = P(_pose[3]);
+        sb.Append("<circle class=\"jt\" cx=\"").Append(F1(hd.X)).Append("\" cy=\"").Append(F1(hd.Y)).Append("\" r=\"7\"/>");
+        for (var s = 0; s < 2; s++)
+            if (Runner.Guard.IsLocked(s))
+            {
+                var a = P(_pose[s == 0 ? 6 : 10]);
+                sb.Append("<circle class=\"lock\" cx=\"").Append(F1(a.X)).Append("\" cy=\"").Append(F1(a.Y)).Append("\" r=\"6\"/>");
+            }
+        var cm = P(_com); var cg = P(new Vector3(_com.X, _zmp.Y, _com.Z)); var zp = P(_zmp);
+        sb.Append("<line class=\"cl\" x1=\"").Append(F1(cm.X)).Append("\" y1=\"").Append(F1(cm.Y)).Append("\" x2=\"").Append(F1(cg.X)).Append("\" y2=\"").Append(F1(cg.Y)).Append("\"/>");
+        sb.Append("<circle class=\"com\" cx=\"").Append(F1(cm.X)).Append("\" cy=\"").Append(F1(cm.Y)).Append("\" r=\"4\"/>");
+        sb.Append("<circle class=\"zmp\" cx=\"").Append(F1(zp.X)).Append("\" cy=\"").Append(F1(zp.Y)).Append("\" r=\"4\"/>");
+        return sb.ToString();
+    }
+
+    private static void AppendPt(System.Text.StringBuilder sb, Vector2 p) => sb.Append(F1(p.X)).Append(',').Append(F1(p.Y)).Append(' ');
+
+    /// <summary>탑뷰 지지 다각형 · ZMP · CoM(루트 중심 · 1 px = 1 cm · 진행 방향 위).</summary>
+    private string ZmpSvg()
+    {
+        var sb = new System.Text.StringBuilder(800);
+        sb.Append("<line class=\"ax\" x1=\"-60\" y1=\"0\" x2=\"60\" y2=\"0\"/><line class=\"ax\" x1=\"0\" y1=\"-60\" x2=\"0\" y2=\"60\"/>");
+        var h = Runner.RootHeading;
+        Vector2 T(float x, float z)
+        {
+            var d = new Vector3(x - _root.X, 0f, z - _root.Z);
+            return new Vector2(Vector3.Dot(d, BipedSkeleton.Right(h)) * 100f, -Vector3.Dot(d, BipedSkeleton.Forward(h)) * 100f);
+        }
+        if (_hullN >= 3)
+        {
+            sb.Append("<polygon class=\"hull\" points=\"");
+            for (var i = 0; i < _hullN; i++) AppendPt(sb, T(_hull[i].X, _hull[i].Y));
+            sb.Append("\"/>");
+        }
+        var c = T(_com.X, _com.Z); var z = T(_zmp.X, _zmp.Z);
+        sb.Append("<circle class=\"com\" cx=\"").Append(F1(Math.Clamp(c.X, -58, 58))).Append("\" cy=\"").Append(F1(Math.Clamp(c.Y, -58, 58))).Append("\" r=\"3\"/>");
+        sb.Append("<circle class=\"zmp\" cx=\"").Append(F1(Math.Clamp(z.X, -58, 58))).Append("\" cy=\"").Append(F1(Math.Clamp(z.Y, -58, 58))).Append("\" r=\"3.5\"/>");
+        return sb.ToString();
+    }
+
+    private string Series(int kind, double full)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+        {
+            double v = kind switch { 0 => Runner.CostSeries(i), 1 => Runner.SearchUsSeries(i), 2 => Runner.ForceLSeries(i), 3 => Runner.ForceRSeries(i), 4 => Runner.ZmpSeries(i), _ => Runner.SkateSeries(i) };
+            if (!double.IsFinite(v)) v = 0;
+            var y = kind == 4 ? 40 - 38 * Math.Clamp(v / full, -1, 1) : 78 - 76 * Math.Clamp(v / full, 0, 1);
+            sb.Append(F1(360.0 * (n - 1 - i) / (NeuralMotionMatchingStudioRunner.SeriesLen - 1))).Append(',').Append(F1(y)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void Input(float deg)
+    {
+        _lastDir = deg;
+        Runner.SetInput(deg, _speed);
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void Step60()
+    {
+        for (var i = 0; i < NeuralMotionMatchingStudioRunner.Hz; i++) Runner.Step();
+        Snapshot();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중 갱신은 100 ms 타이머가 처리 — 정지 상태 변경만 즉시 반영.</summary>
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(() => { Snapshot(); StateHasChanged(); });
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

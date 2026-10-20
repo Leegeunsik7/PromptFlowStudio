@@ -1,0 +1,303 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.VirtualArena
+@implements IDisposable
+@inject VirtualArenaNetcodeStudioRunner Runner
+
+@*
+    [PromptFlow Studio v17.03.0] 🏟️ AI 가상 아레나 & 롤백 넷코드 스튜디오 — 동시접속 엔티티 히트맵(64×64 공간 해시 · 시청자 FoV 원뿔) ·
+    롤백 틱 뎁스 모니터(히스토그램 · 예측 프레임 · 재시뮬 · 디싱크 대조) · 네트워크 RTT/지터/드롭 시뮬레이터 · 클록 동기/데드 레커닝 가드.
+*@
+
+<div class="van-scrim" @onclick="Close">
+    <div class="van-modal" @onclick:stopPropagation="true">
+        <div class="van-h">
+            <div>
+                <div class="van-title">🏟️ AI 가상 아레나 &amp; 롤백 넷코드 스튜디오</div>
+                <div class="van-sub"><b>롤백 엔진</b>은 4 피어 볼 아레나를 정수 고정소수 물리로 결정론 실행하며, 늦게 온 입력이 예측과 다르면 링버퍼 스냅샷으로 되감아 현재 프레임까지 재시뮬레이션합니다.
+                    <b>AOI 합성기</b>는 수만 엔티티를 공간 해시 그리드로 나눠 시청자별 시야각 · 거리 · 우선순위 누적으로 바이트 예산 안에서만 송신하고,
+                    <b>가드</b>는 NTP형 핑과 PI 루프로 클록 드리프트를 보정한 뒤 원격 아바타를 에르미트 보간 · 데드 레커닝 · 오차 수렴으로 순간이동 없이 그립니다. 피어 · 관객 · 네트워크는 인프로세스 시뮬레이션입니다.</div>
+            </div>
+            <button class="van-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="van-bar">
+            <button class="van-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 아레나 가동")</button>
+            <button class="van-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <label class="van-sl">RTT <b>@(F0(Runner.RttMs)) ms</b><input type="range" min="0" max="400" step="10" value="@(F0(Runner.RttMs))" @onchange="e => Runner.RttMs = (float)Num(e, 80)" /></label>
+            <label class="van-sl">지터 <b>@(F0(Runner.JitterMs)) ms</b><input type="range" min="0" max="40" step="1" value="@(F0(Runner.JitterMs))" @onchange="e => Runner.JitterMs = (float)Num(e, 6)" /></label>
+            <label class="van-sl">드롭 <b>@(F1(Runner.LossPct))%</b><input type="range" min="0" max="30" step="0.5" value="@(F1(Runner.LossPct))" @onchange="e => Runner.LossPct = (float)Num(e, 2)" /></label>
+            <label class="van-sl">입력 지연 <b>@(R.InputDelay) f</b><input type="range" min="0" max="4" step="1" value="@(R.InputDelay)" @onchange="e => Runner.SetInputDelay((int)Num(e, 0))" /></label>
+            <button class="van-btn @(Runner.SpikeActive ? "warn" : null)" @onclick="Runner.Spike">📈 지연 스파이크</button>
+            <button class="van-btn @(Runner.StormActive ? "warn" : null)" @onclick="Runner.Storm">🌩 드롭 폭풍</button>
+            <button class="van-btn @(A.RushActive ? "warn" : null)" @onclick="Runner.FlashMob">👥 플래시몹</button>
+            <button class="van-btn" @onclick="Runner.ClockJump">⏰ 클록 점프</button>
+            <label class="van-sl">엔티티 <b>@(A.Count)</b><input type="range" min="1000" max="@(MassiveSpatialInterestManagementSynthesizer.MaxEntities)" step="1000" value="@(A.Count)" @onchange="e => A.Count = (int)Num(e, 20000)" /></label>
+            <span class="van-chip">틱 @(Runner.Tick) · @(F2(Runner.LastTickMs)) ms · 롤백 @(F0(R.LastAdvanceUs)) µs (최대 @(F0(R.MaxAdvanceUs))) · AOI @(F0(A.LastUpdateUs)) µs · 가드 @(F0(G.LastStepUs)) µs</span>
+        </div>
+
+        <div class="van-main">
+            <div class="van-col">
+                <div class="van-card">
+                    <div class="van-sec">🗺 동시접속 엔티티 히트맵 <span class="van-kv">@(A.Count) 엔티티 · 64×64 셀(4 m) · 최대 셀 @(A.MaxCellCount) · 그리드 @(F0(A.LastGridUs)) µs · 필터 @(F0(A.LastFilterUs)) µs</span></div>
+                    <div class="van-mapwrap">
+                        <svg class="van-heat" viewBox="0 0 256 256" preserveAspectRatio="xMidYMid meet" shape-rendering="crispEdges">
+                            @for (var cz = 0; cz < MassiveSpatialInterestManagementSynthesizer.Grid; cz += 2)
+                            {
+                                for (var cx = 0; cx < MassiveSpatialInterestManagementSynthesizer.Grid; cx += 2)
+                                {
+                                    var n = A.CellCountAt(cx, cz) + A.CellCountAt(cx + 1, cz) + A.CellCountAt(cx, cz + 1) + A.CellCountAt(cx + 1, cz + 1);
+                                    if (n == 0) continue;
+                                    <rect x="@(cx * 4)" y="@(cz * 4)" width="8" height="8" fill="@(Heat(n))" />
+                                }
+                            }
+                            <circle class="stage" cx="128" cy="128" r="@(F1(MassiveSpatialInterestManagementSynthesizer.StageRadius))" />
+                            @for (var v = 0; v < MassiveSpatialInterestManagementSynthesizer.MaxViewers; v++)
+                            {
+                                <path class="cone @(v == _viewer ? "sel" : null)" d="@(Cone(v))" />
+                                <circle class="vw @(v == 0 ? "me" : null)" cx="@(F1(A.ViewerX(v)))" cy="@(F1(A.ViewerZ(v)))" r="3" />
+                            }
+                        </svg>
+                        <div class="van-vlist">
+                            @for (var v = 0; v < MassiveSpatialInterestManagementSynthesizer.MaxViewers; v++)
+                            {
+                                var vv = v;
+                                <button class="van-vrow @(v == _viewer ? "on" : null)" @onclick="() => _viewer = vv">
+                                    <b>@(MassiveSpatialInterestManagementSynthesizer.ViewerNames[v])</b>
+                                    <span class="mono">가시 @(A.Visible(v)) · 송신 @(A.Sent(v)) · @(A.Bytes(v))/@(A.Budget(v)) B</span>
+                                </button>
+                            }
+                        </div>
+                    </div>
+                    <div class="van-kv">
+                        <span>선택 시청자: FoV @(F0(A.ViewerFovDeg(_viewer)))° · 반경 @(F0(A.ViewerRadius(_viewer))) m · 셀 순회 @(A.CellsVisited(_viewer)) · 원뿔 컬링 @(A.CellsCulled(_viewer))</span>
+                        <span>근 @(A.NearSent(_viewer)) × @(MassiveSpatialInterestManagementSynthesizer.NearBytes) B · 중 @(A.MidSent(_viewer)) × @(MassiveSpatialInterestManagementSynthesizer.MidBytes) B · 원 @(A.FarSent(_viewer)) × @(MassiveSpatialInterestManagementSynthesizer.FarBytes) B</span>
+                        <label class="van-sl">예산 <b>@(A.Budget(_viewer)) B/틱</b><input type="range" min="200" max="6000" step="100" value="@(A.Budget(_viewer))" @onchange="e => A.SetBudget(_viewer, (int)Num(e, 1400))" /></label>
+                    </div>
+                    <div class="van-meter">
+                        <div><span>AOI 대역폭 절감</span><div class="bar"><i class="ok" style="width:@(F1(Math.Max(0, A.Savings) * 100))%"></i></div><b>@(F1(A.Savings * 100))%</b></div>
+                    </div>
+                    <div class="van-kv">전 시청자 @(F0(A.TotalKbps)) kbps(@(A.TotalBytesPerTick) B/틱 · @(F0(A.TickHz)) Hz) · 무필터 브로드캐스트 @(F0(A.NaiveBytesPerTick * 8.0 * A.TickHz / 1e6)) Mbps</div>
+                </div>
+
+                <div class="van-card">
+                    <div class="van-sec">⏱ 클록 동기 &amp; 모션 예측 <span class="van-chip @(Math.Abs(G.ClockErrorMs) < 1 ? "ok" : "bad")">클록 오차 @(F2(G.ClockErrorMs)) ms</span></div>
+                    <div class="van-two">
+                        <svg class="van-tracks" viewBox="0 0 40 40" preserveAspectRatio="xMidYMid meet">
+                            <rect class="box" x="0" y="0" width="40" height="40" />
+                            @for (var t = 0; t < ClientSpatialPredictionClockSyncGuard.Tracks; t++)
+                            {
+                                <g>
+                                    <circle class="tr" cx="@(F2(G.TruthX(t)))" cy="@(F2(G.TruthZ(t)))" r="0.5" />
+                                    <circle class="nv" cx="@(F2(G.NaiveX(t)))" cy="@(F2(G.NaiveZ(t)))" r="0.45" />
+                                    <circle class="gd" cx="@(F2(G.VisualX(t)))" cy="@(F2(G.VisualZ(t)))" r="0.6" />
+                                </g>
+                            }
+                        </svg>
+                        <div class="van-kv col">
+                            <span>RTT 추정 <b>@(F1(G.RttEstimateMs)) ms</b> · 지터 <b>@(F1(G.JitterMs)) ms</b></span>
+                            <span>드리프트 실제 @(F0(G.TrueDriftPpm)) ppm · 추정 <b>@(F0(G.DriftEstimatePpm)) ppm</b></span>
+                            <span>스텝 재동기 @(G.ClockSteps) · 단조 위반 @(G.MonotonicViolations) · 핑 @(G.PingsAnswered)/@(G.PingsSent)</span>
+                            <span>보간 지연 <b>@(F0(G.InterpDelayMs)) ms</b> · 외삽/홀드 @(F1(G.ExtrapolationRatio * 100))%</span>
+                            <span>순간이동 팝 가드 <b>@(G.GuardPops)</b> vs 나이브 <b>@(G.NaivePops)</b> · 스냅 @(G.Snaps) · 수렴 보정 @(G.Corrections)</span>
+                            <span>위치 오차 가드 <b>@(F2(G.MeanErrorM)) m</b> vs 나이브 @(F2(G.NaiveErrorM)) m</span>
+                            <span>스냅샷 @(G.SnapshotsReceived)/@(G.SnapshotsSent) · 손실 @(G.SnapshotsLost) · 지각 폐기 @(G.LateDrops)</span>
+                        </div>
+                    </div>
+                    <div class="van-legend"><i class="tr"></i>서버 진실 <i class="nv"></i>나이브(최신 스냅샷) <i class="gd"></i>가드(보간 · 외삽 · 수렴) · 가드는 보간 지연만큼 과거를 매끄럽게 표시</div>
+                    <svg class="van-spark" viewBox="0 0 360 60" preserveAspectRatio="none">
+                        <line class="mid" x1="0" y1="30" x2="360" y2="30" />
+                        <polyline class="ck" points="@(Series(i => Runner.ClockSeries(i) + 5f, 10, 60))" />
+                    </svg>
+                    <div class="van-legend"><i class="ck"></i>클록 오차(±5 ms · 중앙 = 0)</div>
+                </div>
+            </div>
+
+            <div class="van-col">
+                <div class="van-card">
+                    <div class="van-sec">⏪ 롤백 틱 뎁스 모니터 <span class="van-chip @(Runner.Desyncs == 0 ? "ok" : "bad")">디싱크 @(Runner.Desyncs) / 대조 @(Runner.SyncChecks)</span></div>
+                    <div class="van-two">
+                        <svg class="van-arena" viewBox="0 0 32 32" preserveAspectRatio="xMidYMid meet">
+                            <rect class="box" x="0" y="0" width="32" height="32" />
+                            <line class="goal" x1="0.1" y1="12" x2="0.1" y2="20" /><line class="goal" x1="31.9" y1="12" x2="31.9" y2="20" />
+                            @for (var b = 0; b < DeterministicRollbackNetcodeEngine.Balls; b++)
+                            {
+                                <circle class="ball t@(R.BallTouch(b) + 1)" cx="@(F2(R.BallX(b)))" cy="@(F2(32 - R.BallY(b)))" r="0.35" />
+                            }
+                            @for (var p = 0; p < R.Players; p++)
+                            {
+                                <circle class="pl p@(p) @(R.PlayerDashing(p) ? "dash" : null)" cx="@(F2(R.PlayerX(p)))" cy="@(F2(32 - R.PlayerY(p)))" r="0.6" />
+                            }
+                        </svg>
+                        <div class="van-hist">
+                            @{ var maxH = 1L; for (var d = 0; d < R.DepthBuckets; d++) maxH = Math.Max(maxH, R.DepthCount(d)); }
+                            @for (var d = 0; d < R.DepthBuckets; d++)
+                            {
+                                var h = R.DepthCount(d);
+                                <div class="hc"><i style="height:@(F1(h > 0 ? Math.Max(2, Math.Log(1 + h) / Math.Log(1 + maxH) * 100) : 0))%" class="@(d >= DeterministicRollbackNetcodeEngine.MaxPrediction - 2 ? "hot" : d >= 6 ? "warm" : null)"></i><span>@(d.ToString(CultureInfo.InvariantCulture) + (d == R.DepthBuckets - 1 ? "+" : ""))</span></div>
+                            }
+                        </div>
+                    </div>
+                    <div class="van-legend">왼쪽: 로컬 피어 화면(P0 청 · 원격 P1~P3 · 볼 색 = 마지막 터치) · 오른쪽: 프레임당 롤백 깊이 분포(로그 스케일)</div>
+                    <div class="van-kv">
+                        <span>프레임 <b>@(R.Current)</b> · 확정 @(R.ConfirmedFrame) · 예측 중 <b>@(R.PredictedFrames)</b>/@(R.PredictionLimit)</span>
+                        <span>롤백 @(R.Rollbacks) · 재시뮬 @(R.ResimFrames) 프레임 · 최근 깊이 @(R.LastRollbackDepth) · 최대 @(R.MaxRollbackDepth) · 오예측 @(R.Mispredictions) · 정지 @(R.Stalls)</span>
+                        <span>점수 @for (var p = 0; p < R.Players; p++) { <b class="sc p@(p)">P@(p) @(R.Score(p))</b> } · 체크섬 <span class="mono">@(R.CurrentChecksum.ToString("X8", CultureInfo.InvariantCulture))</span></span>
+                        <span>입력 패킷 @(Runner.InputPacketsSent) · 손실 @(Runner.InputPacketsLost) · 수신 프레임 P1 @(R.ReceivedFrame(1)) P2 @(R.ReceivedFrame(2)) P3 @(R.ReceivedFrame(3))</span>
+                    </div>
+                    <svg class="van-spark" viewBox="0 0 360 60" preserveAspectRatio="none">
+                        <polyline class="dp" points="@(Series(i => Runner.DepthSeries(i), DeterministicRollbackNetcodeEngine.MaxPrediction, 60))" />
+                        <polyline class="pr" points="@(Series(i => Runner.PredictedSeries(i), DeterministicRollbackNetcodeEngine.MaxPrediction, 60))" />
+                    </svg>
+                    <div class="van-legend"><i class="dp"></i>롤백 깊이(0~12 프레임) <i class="pr"></i>예측 중 프레임</div>
+                </div>
+
+                <div class="van-card">
+                    <div class="van-sec">📶 네트워크 시뮬레이터 <span class="van-kv">유효 RTT @(F0(Runner.EffectiveRttMs)) ms · 유효 드롭 @(F1(Runner.EffectiveLoss * 100))%@(Runner.SpikeActive ? " · 스파이크" : null)@(Runner.StormActive ? " · 폭풍" : null)</span></div>
+                    <svg class="van-spark" viewBox="0 0 360 60" preserveAspectRatio="none">
+                        <polyline class="rt" points="@(Series(i => Runner.RttSeries(i), 500, 60))" />
+                        <polyline class="kb" points="@(Series(i => Runner.KbpsSeries(i), Math.Max(1, MaxKbps()), 60))" />
+                    </svg>
+                    <div class="van-legend"><i class="rt"></i>측정 RTT(0~500 ms) <i class="kb"></i>AOI 송신 kbps(자동 스케일)</div>
+                </div>
+                <div class="van-note">@(Runner.Action ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .van-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .van-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .van-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #10b981 16%, var(--card)), color-mix(in srgb, #ec4899 12%, var(--card))); }
+    .van-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .van-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .van-sub b { color: var(--text-primary); }
+    .van-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .van-bar { display: flex; flex-wrap: wrap; gap: 6px 10px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .van-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; } .van-btn:disabled { opacity: .4; cursor: default; }
+    .van-btn.on { background: color-mix(in srgb, #10b981 24%, transparent); border-color: #34d399; } .van-btn.warn { background: color-mix(in srgb, #eab308 24%, transparent); border-color: #facc15; }
+    .van-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .van-chip.ok { border-color: #22c55e; color: #86efac; } .van-chip.bad { border-color: #ef4444; color: #fca5a5; }
+    .van-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .van-sl b { font-family: var(--mono); color: var(--text-primary); } .van-sl input { width: 90px; }
+    .van-main { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .van-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .van-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .van-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .van-mapwrap { display: grid; grid-template-columns: 1fr 230px; gap: 10px; }
+    .van-heat { width: 100%; height: 300px; background: #030712; border-radius: 10px; }
+    .van-heat .stage { fill: none; stroke: #f472b6; stroke-width: 1; stroke-dasharray: 3 2; }
+    .van-heat .cone { fill: rgba(56,189,248,.07); stroke: rgba(56,189,248,.45); stroke-width: .6; } .van-heat .cone.sel { fill: rgba(250,204,21,.16); stroke: #facc15; stroke-width: 1; }
+    .van-heat .vw { fill: #38bdf8; stroke: #0f172a; stroke-width: .8; } .van-heat .vw.me { fill: #f472b6; }
+    .van-vlist { display: flex; flex-direction: column; gap: 4px; }
+    .van-vrow { text-align: left; display: flex; flex-direction: column; gap: 1px; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-secondary); cursor: pointer; font-size: 11px; }
+    .van-vrow b { color: var(--text-primary); } .van-vrow.on { border-color: #facc15; background: color-mix(in srgb, #facc15 10%, transparent); }
+    .van-two { display: grid; grid-template-columns: 260px 1fr; gap: 10px; align-items: start; }
+    .van-tracks, .van-arena { width: 100%; height: 260px; background: #030712; border-radius: 10px; }
+    .van-tracks .box, .van-arena .box { fill: #0b1220; stroke: #334155; stroke-width: .15; }
+    .van-tracks .tr { fill: none; stroke: #94a3b8; stroke-width: .12; } .van-tracks .nv { fill: #ef4444; opacity: .75; } .van-tracks .gd { fill: #22c55e; opacity: .85; }
+    .van-arena .goal { stroke: #f472b6; stroke-width: .3; } .van-arena .ball { fill: #64748b; } .van-arena .ball.t1 { fill: #38bdf8; } .van-arena .ball.t2 { fill: #f97316; } .van-arena .ball.t3 { fill: #a855f7; } .van-arena .ball.t4 { fill: #eab308; }
+    .van-arena .pl { stroke: #0f172a; stroke-width: .12; } .van-arena .pl.p0 { fill: #38bdf8; } .van-arena .pl.p1 { fill: #f97316; } .van-arena .pl.p2 { fill: #a855f7; } .van-arena .pl.p3 { fill: #eab308; }
+    .van-arena .pl.dash { stroke: #fff; stroke-width: .25; }
+    .sc.p0 { color: #38bdf8; } .sc.p1 { color: #f97316; } .sc.p2 { color: #a855f7; } .sc.p3 { color: #eab308; }
+    .van-hist { display: flex; align-items: flex-end; gap: 3px; height: 260px; padding: 4px; background: #030712; border-radius: 10px; }
+    .van-hist .hc { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; gap: 2px; }
+    .van-hist .hc i { display: block; width: 100%; background: #22c55e; border-radius: 3px 3px 0 0; } .van-hist .hc i.warm { background: #eab308; } .van-hist .hc i.hot { background: #ef4444; }
+    .van-hist .hc span { font: 600 9px var(--mono); color: var(--text-muted); }
+    .van-legend { display: flex; flex-wrap: wrap; gap: 8px; font-size: 10px; color: var(--text-muted); align-items: center; } .van-legend i { display: inline-block; width: 10px; height: 8px; border-radius: 2px; }
+    .van-legend .tr { border: 1px solid #94a3b8; } .van-legend .nv { background: #ef4444; } .van-legend .gd { background: #22c55e; }
+    .van-legend .ck { background: #38bdf8; } .van-legend .dp { background: #f97316; } .van-legend .pr { background: #a78bfa; } .van-legend .rt { background: #f59e0b; } .van-legend .kb { background: #22c55e; }
+    .van-spark { width: 100%; height: 60px; background: #030712; border-radius: 6px; } .van-spark polyline { fill: none; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+    .van-spark .mid { stroke: #334155; stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .van-spark .ck { stroke: #38bdf8; } .van-spark .dp { stroke: #f97316; } .van-spark .pr { stroke: #a78bfa; } .van-spark .rt { stroke: #f59e0b; } .van-spark .kb { stroke: #22c55e; }
+    .van-meter > div { display: grid; grid-template-columns: 130px 1fr 60px; gap: 8px; align-items: center; font-size: 11px; color: var(--text-secondary); } .van-meter b { font-family: var(--mono); color: var(--text-primary); text-align: right; }
+    .van-meter .bar { height: 8px; background: #1f2937; border-radius: 4px; overflow: hidden; } .van-meter .bar i { display: block; height: 100%; background: #22c55e; }
+    .van-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; font-weight: 500; color: var(--text-secondary); align-items: center; } .van-kv b { color: var(--text-primary); }
+    .van-kv.col { flex-direction: column; align-items: flex-start; gap: 5px; }
+    .van-note { font-size: 11px; color: var(--text-muted); word-break: break-all; } .mono { font-family: var(--mono); }
+    @@media (max-width: 1200px) { .van-main { grid-template-columns: 1fr; } .van-mapwrap, .van-two { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+    private int _viewer;
+    private static readonly string[] HeatHex = BuildHeat();
+
+    private DeterministicRollbackNetcodeEngine R => Runner.Rollback;
+    private MassiveSpatialInterestManagementSynthesizer A => Runner.Aoi;
+    private ClientSpatialPredictionClockSyncGuard G => Runner.Guard;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Arena.Modal.Timer", ex); }
+        }, null, 300, 300);
+    }
+
+    /// <summary>열 지도 64단계(남색 → 청록 → 노랑 → 빨강).</summary>
+    private static string[] BuildHeat()
+    {
+        var h = new string[64];
+        for (var i = 0; i < 64; i++)
+        {
+            var t = i / 63.0;
+            double r, g, b;
+            if (t < 0.33) { var u = t / 0.33; r = 20; g = 40 + 140 * u; b = 90 + 110 * u; }
+            else if (t < 0.66) { var u = (t - 0.33) / 0.33; r = 20 + 230 * u; g = 180 + 40 * u; b = 200 - 170 * u; }
+            else { var u = (t - 0.66) / 0.34; r = 250; g = 220 - 170 * u; b = 30; }
+            h[i] = "#" + ((int)r).ToString("X2", CultureInfo.InvariantCulture) + ((int)g).ToString("X2", CultureInfo.InvariantCulture) + ((int)b).ToString("X2", CultureInfo.InvariantCulture);
+        }
+        return h;
+    }
+
+    private string Heat(int n) => HeatHex[Math.Clamp((int)(Math.Log(1 + n) / Math.Log(1 + Math.Max(4, A.MaxCellCount * 4)) * 63), 0, 63)];
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    /// <summary>시청자 FoV 원뿔(부채꼴) 경로 — 360° 는 원.</summary>
+    private string Cone(int v)
+    {
+        double x = A.ViewerX(v), z = A.ViewerZ(v), r = A.ViewerRadius(v), yaw = A.ViewerYaw(v), half = A.ViewerFovDeg(v) * Math.PI / 360.0;
+        if (half >= Math.PI - 1e-3)
+            return "M " + F1(x - r) + " " + F1(z) + " a " + F1(r) + " " + F1(r) + " 0 1 0 " + F1(2 * r) + " 0 a " + F1(r) + " " + F1(r) + " 0 1 0 " + F1(-2 * r) + " 0";
+        double x1 = x + r * Math.Cos(yaw - half), z1 = z + r * Math.Sin(yaw - half), x2 = x + r * Math.Cos(yaw + half), z2 = z + r * Math.Sin(yaw + half);
+        return "M " + F1(x) + " " + F1(z) + " L " + F1(x1) + " " + F1(z1) + " A " + F1(r) + " " + F1(r) + " 0 " + (half > Math.PI / 2 ? "1" : "0") + " 1 " + F1(x2) + " " + F1(z2) + " Z";
+    }
+
+    private float MaxKbps()
+    {
+        var m = 0f;
+        for (var i = 0; i < Runner.SeriesCount; i++) m = Math.Max(m, Runner.KbpsSeries(i));
+        return m * 1.1f;
+    }
+
+    private string Series(Func<int, float> f, double max, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (VirtualArenaNetcodeStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - 2 - (h - 4) * Math.Clamp(f(i) / max, 0, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step60() { for (var i = 0; i < VirtualArenaNetcodeStudioRunner.Hz; i++) Runner.Step(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중(10 Hz 이벤트)은 300 ms 타이머가 처리 — 정지 상태 액션만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

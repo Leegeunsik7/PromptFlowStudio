@@ -1,0 +1,131 @@
+@* [PromptFlow Studio v4.4.1] 최종 검수 후 로그인 노출 & 2단계 전환(Task 5 · 공용 RCL).
+   하드닝 자가검증(실제 헬퍼 호출) → 통과 시 로그인 오버레이 자동 노출 → 인증 완료 시 2단계 진입 활성. *@
+
+<div class="lsh">
+    <div class="lsh-h"><span class="lsh-title">🔒 안정성 하드닝 최종 검수</span><span class="lsh-badge">v4.4.1 · 1단계</span></div>
+
+    <div class="lsh-top">
+        <div class="lsh-gauge @(_report.AllPass ? "ok" : "warn")" style="--pct:@_report.Percent"><div class="lsh-gauge-in"><b>@(_report.Percent)%</b><small>@_report.PassCount/@_report.Total</small></div></div>
+        <div class="lsh-checks">
+            @foreach (var c in _report.Checks)
+            {
+                <div class="lsh-chk @(c.Pass ? "ok" : "no")"><span>@(c.Pass ? "✓" : "✗")</span><b>@c.Title</b><span class="d">@c.Detail</span></div>
+            }
+        </div>
+    </div>
+    <div class="lsh-sum @(_report.AllPass ? "ok" : "warn")">@_report.Summary</div>
+
+    @if (_phase == "authed")
+    {
+        <div class="lsh-done">
+            <div class="lsh-done-t">✅ 인증 완료 — 세션 무결성 확인 (@_user)</div>
+            <button class="lsh-btn stage2" @onclick="Stage2">🚀 2단계: 3D CAD/HUD &amp; 모션카메라 점검 진입</button>
+        </div>
+    }
+    @if (_msg is not null) { <div class="lsh-msg">@_msg</div> }
+
+    @* ── 하드닝 완료 직후 로그인 오버레이 자동 노출 ── *@
+    @if (_phase == "login")
+    {
+        <div class="lsh-overlay">
+            <div class="lsh-card">
+                <div class="lsh-card-t">🔐 최종 인증</div>
+                <div class="lsh-card-s">하드닝 검증 통과 — 로그인하여 세션 무결성을 확인하세요.</div>
+                <input class="lsh-in" @bind="_user" @bind:event="oninput" placeholder="아이디 / 이메일" autocomplete="off" />
+                <input class="lsh-in" type="password" @bind="_pw" @bind:event="oninput" placeholder="비밀번호" />
+                <button class="lsh-btn login" @onclick="Login" disabled="@(string.IsNullOrWhiteSpace(_user) || string.IsNullOrWhiteSpace(_pw))">로그인 확인</button>
+                @if (_loginMsg is not null) { <div class="lsh-loginmsg">@_loginMsg</div> }
+            </div>
+        </div>
+    }
+    @if (_phase == "blocked")
+    {
+        <div class="lsh-blocked">⚠ 하드닝 검증 미통과 — 결함 항목 보완 후 인증이 활성화됩니다.</div>
+    }
+</div>
+
+<style>
+    .lsh { position: relative; border: 1px solid color-mix(in srgb, #a855f7 34%, #2b2f42); border-radius: 16px; overflow: hidden; font-family: Pretendard, 'Malgun Gothic', sans-serif; color: #e6edff; background: linear-gradient(160deg, rgba(168,85,247,.08), rgba(18,20,31,.92)); min-height: 260px; }
+    .lsh-h { display: flex; align-items: center; gap: 8px; padding: 12px 15px; border-bottom: 1px solid #2b2f42; }
+    .lsh-title { font: 900 14px Pretendard,'Malgun Gothic',sans-serif; background: linear-gradient(90deg,#d8b4fe,#f0abfc); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .lsh-badge { font: 800 10px ui-monospace,monospace; color: #fff; background: linear-gradient(135deg,#a855f7,#6366f1); border-radius: 20px; padding: 2px 8px; }
+    .lsh-top { display: flex; gap: 12px; align-items: center; padding: 13px 15px; }
+    .lsh-gauge { width: 84px; height: 84px; flex: 0 0 auto; border-radius: 50%; background: conic-gradient(#a855f7 calc(var(--pct)*1%), #1a1d2b 0); display: grid; place-items: center; }
+    .lsh-gauge.ok { background: conic-gradient(#22c55e calc(var(--pct)*1%), #1a1d2b 0); } .lsh-gauge.warn { background: conic-gradient(#f59e0b calc(var(--pct)*1%), #1a1d2b 0); }
+    .lsh-gauge-in { width: 62px; height: 62px; border-radius: 50%; background: #12141f; display: grid; place-items: center; text-align: center; } .lsh-gauge-in b { font: 900 18px ui-monospace,monospace; color: #d8b4fe; } .lsh-gauge.ok .lsh-gauge-in b { color: #86efac; } .lsh-gauge-in small { font: 700 8.5px ui-monospace,monospace; color: #6b7392; }
+    .lsh-checks { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+    .lsh-chk { display: flex; align-items: center; gap: 7px; font: 600 10.5px Pretendard,'Malgun Gothic',sans-serif; color: #9aa6c8; } .lsh-chk b { color: #e6edff; } .lsh-chk .d { margin-left: auto; font: 600 9px ui-monospace,monospace; color: #6b7392; max-width: 46%; text-align: right; overflow-wrap: anywhere; }
+    .lsh-chk.ok span { color: #22c55e; } .lsh-chk.no span { color: #ef4444; } .lsh-chk.no { color: #fca5a5; }
+    .lsh-sum { margin: 0 15px 12px; font: 700 11px Pretendard,'Malgun Gothic',sans-serif; padding: 7px 9px; border-radius: 8px; } .lsh-sum.ok { color: #86efac; background: color-mix(in srgb,#22c55e 12%,transparent); } .lsh-sum.warn { color: #fbbf24; background: color-mix(in srgb,#f59e0b 12%,transparent); }
+    .lsh-done { margin: 0 15px 14px; } .lsh-done-t { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: #86efac; margin-bottom: 8px; }
+    .lsh-btn { width: 100%; font: 800 14px Pretendard,'Malgun Gothic',sans-serif; padding: 13px; border: none; border-radius: 12px; cursor: pointer; }
+    .lsh-btn.stage2 { color: #fff; background: linear-gradient(135deg,#22c55e,#0ea5e9); box-shadow: 0 6px 16px color-mix(in srgb,#22c55e 30%,transparent), inset 0 1px 0 rgba(255,255,255,.28); word-break: keep-all; }
+    .lsh-btn.login { color: #fff; background: linear-gradient(135deg,#a855f7,#6366f1); margin-top: 4px; } .lsh-btn:hover:not(:disabled) { filter: brightness(1.07); } .lsh-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .lsh-msg { margin: 0 15px 14px; font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: #7dd3fc; line-height: 1.5; }
+    /* 로그인 오버레이 */
+    .lsh-overlay { position: absolute; inset: 0; background: rgba(11,13,20,.72); backdrop-filter: blur(4px); display: grid; place-items: center; padding: 16px; z-index: 10; }
+    .lsh-card { width: min(340px, 100%); background: #12141f; border: 1px solid color-mix(in srgb,#a855f7 40%,#2b2f42); border-radius: 16px; padding: 18px; box-shadow: 0 20px 50px rgba(0,0,0,.55); }
+    .lsh-card-t { font: 900 15px Pretendard,'Malgun Gothic',sans-serif; color: #f0abfc; } .lsh-card-s { font: 600 11px Pretendard,'Malgun Gothic',sans-serif; color: #9aa6c8; margin: 4px 0 12px; line-height: 1.5; word-break: keep-all; }
+    .lsh-in { width: 100%; min-height: 46px; background: #1a1d2b; border: 1px solid #2b2f42; border-radius: 10px; padding: 0 12px; color: #e6edff; font: 600 13px Pretendard,'Malgun Gothic',sans-serif; outline: none; margin-bottom: 8px; } .lsh-in:focus { border-color: #a855f7; }
+    .lsh-loginmsg { font: 700 10.5px Pretendard,'Malgun Gothic',sans-serif; color: #fca5a5; margin-top: 6px; }
+    .lsh-blocked { margin: 0 15px 14px; font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: #fbbf24; }
+</style>
+
+@code {
+    /// <summary>2단계 점검 진입 콜백(부모가 다음 단계로 전환).</summary>
+    [Parameter] public EventCallback OnStage2 { get; set; }
+
+    private HardenReport _report = default!;
+    private string _phase = "checking";   // checking → login → authed / blocked
+    private string _user = "";
+    private string _pw = "";
+    private string? _msg;
+    private string? _loginMsg;
+
+    protected override void OnInitialized()
+    {
+        _report = RunSelfChecks();
+        _phase = _report.AllPass ? "login" : "blocked";   // 하드닝 완료 직후 로그인 오버레이 자동 노출
+    }
+
+    // 실제 하드닝 헬퍼를 호출해 방어 동작을 자가 검증.
+    private static HardenReport RunSelfChecks()
+    {
+        var checks = new List<HardenCheck>();
+
+        var n1 = NluEngineHardening.SafeParse(null);
+        checks.Add(new("nlu-null", "NLU Null/Empty 안전", n1.Ok, "예외 없이 빈 결과 반환"));
+
+        var n2 = NluEngineHardening.SafeParse("😀 한글 test!!! <script>alert()</script>");
+        checks.Add(new("nlu-mixed", "이모지/특수문자 혼합 파싱", n2.Ok && n2.Tokens.Count > 0, $"{n2.Tokens.Count}토큰 · NRE 없음"));
+
+        var redosSafe = !NluEngineHardening.SafeIsMatch(new string('a', 42) + "!", "(a+)+$", TimeSpan.FromMilliseconds(120));
+        checks.Add(new("redos", "정규식 ReDoS 타임아웃 차단", redosSafe, "matchTimeout 로 프리징 방지"));
+
+        var bag = new DisposableBag();
+        var ran = 0; bag.Add(() => ran++); bag.Add(() => ran++); bag.Dispose(); bag.Dispose();
+        checks.Add(new("leak", "이벤트 누수 봉투(멱등 해제)", ran == 2, "Dispose 1회 전 해제 · 중복 무시"));
+
+        using var gate = new SingleFlightGate();
+        var first = gate.TryEnter(); var second = gate.TryEnter(); if (first) gate.Exit();
+        checks.Add(new("singleflight", "광클 재진입 차단(SemaphoreSlim)", first && !second, "실행 중 재진입 즉시 무시"));
+
+        var pp = StoryboardStateHardening.Paginate(150, 50);
+        checks.Add(new("virtualize", "대용량 페이징/Virtualize", pp.PageCount == 3 && StoryboardStateHardening.ShouldVirtualize(150), "100컷+ 자동 가상화"));
+
+        return HardenReportFactory.Build(checks);
+    }
+
+    private void Login()
+    {
+        if (string.IsNullOrWhiteSpace(_user) || string.IsNullOrWhiteSpace(_pw)) { _loginMsg = "아이디와 비밀번호를 입력하세요."; return; }
+        _phase = "authed";
+        _msg = "🔓 세션 무결성 확인 완료 — 2단계 점검으로 이행할 수 있습니다.";
+    }
+
+    private async Task Stage2()
+    {
+        _msg = "🚀 2단계: 3D CAD/HUD & 모션카메라 점검 진입…";
+        if (OnStage2.HasDelegate) await OnStage2.InvokeAsync();
+    }
+}

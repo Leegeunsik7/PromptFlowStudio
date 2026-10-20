@@ -1,0 +1,263 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.StrandHair
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject HairGroomingStudioRunner Runner
+
+@*
+    [PromptFlow Studio v17.15.0] 💇 AI 헤어 동역학 & 뉴럴 그루밍 스튜디오 — 스트랜드 3D 뷰포트(Marschner 소프트웨어 렌더) · 마슈너 광택/스펙큘러 조절 ·
+    바람 반응성 · 모발 뭉침(Clump) 밀도 · 그루밍(길이 · 빗질 · 컬) · 신체 SDF 관통 가드.
+*@
+
+<div class="hair-scrim" @onclick="Close">
+    <div class="hair-modal" @onclick:stopPropagation="true">
+        <div class="hair-h">
+            <div>
+                <div class="hair-title">💇 AI 헤어 동역학 &amp; 뉴럴 그루밍 스튜디오</div>
+                <div class="hair-sub"><b>PBD 엔진</b>이 가이드 @(E.G)가닥(16 입자)의 신장 · 굽힘 · 비틀림 · 형상 · LRA · DFTL 제약을 가이드=SIMD 레인으로 풀고, 가이드당 @(E.C)개 자식을 뭉침 · 컬 · 잔머리 확산으로 생성해 총 <b>@(E.StrandCount.ToString("N0", CultureInfo.InvariantCulture))</b> 가닥을 매 프레임 갱신합니다.
+                    <b>Marschner 합성기</b>는 R · TT · TRT 로브(큐티클 기울기 · 거칠기 · 멜라닌 흡수)로 쉐이딩하고 v16.84 기류 · 정전기 · 습도를 외력/뭉침으로 합성하며,
+                    <b>가드</b>는 두피 강체 변환에 모근을 서브스텝 보간 고정하고 두개 · 목 · 쇄골 · 어깨 · 의상 SDF 관통을 가이드/자식 모두 투영합니다. 연기자는 인프로세스 시뮬레이션입니다.</div>
+            </div>
+            <button class="hair-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="hair-bar">
+            <button class="hair-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 헤어 가동")</button>
+            <button class="hair-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="hair-btn @(Runner.ScenarioEnabled ? "on" : null)" @onclick="() => Runner.ScenarioEnabled = !Runner.ScenarioEnabled">🎬 시나리오</button>
+            <span class="hair-chip">단계 @(Runner.Phase) · 머리 @(F0(Runner.HeadAngularSpeedDeg))°/s</span>
+            <span class="hair-chip">틱 @(Runner.Tick) · @(F2(Runner.LastTickMs)) ms · PBD @(F0(E.LastSolveUs)) · 충돌 @(F0(Gd.LastCollideUs)) · 자식 @(F0(E.LastChildUs)) · 자식 충돌 @(F0(Gd.LastChildUs)) · 기류 @(F0(Sh.LastAeroUs)) µs · @(E.EffectivePath)</span>
+            <span class="hair-chip @(Runner.LastTickMs < 16.7 ? "ok" : "warn")">@(Runner.LastTickMs < 16.7 ? "60 FPS 예산 내" : "예산 초과")</span>
+        </div>
+
+        <div class="hair-main">
+            <div class="hair-col">
+                <div class="hair-card">
+                    <div class="hair-sec">🎥 스트랜드 3D 뷰포트 <span class="hair-dim">가이드 @(E.G) + 자식 표본 · 표시 @(Runner.DrawnStrands.ToString("N0", CultureInfo.InvariantCulture)) 가닥</span>
+                        <button class="hair-btn sm @(E.ChildrenEnabled ? "on" : null)" @onclick="() => Runner.SetChildren(!E.ChildrenEnabled)">👶 자식 스트랜드</button>
+                    </div>
+                    <div class="hair-vp"><img src="data:image/bmp;base64,@(Runner.RenderBase64(_maxStrands))" alt="hair viewport" /></div>
+                    <div class="hair-ctl">
+                        <label class="hair-sl">카메라 <b>@(F0(Runner.CameraYawDeg))°</b><input type="range" min="-180" max="180" step="5" value="@(F0(Runner.CameraYawDeg))" @onchange="e => Runner.CameraYawDeg = (float)Num(e, 35)" /></label>
+                        <label class="hair-sl">광원 <b>@(F0(Runner.LightYawDeg))°</b><input type="range" min="-180" max="180" step="5" value="@(F0(Runner.LightYawDeg))" @onchange="e => Runner.LightYawDeg = (float)Num(e, 40)" /></label>
+                        <label class="hair-sl">표시 가닥 <b>@(_maxStrands)</b><input type="range" min="500" max="8000" step="500" value="@(_maxStrands)" @onchange="e => _maxStrands = (int)Num(e, 3000)" /></label>
+                    </div>
+                    <div class="hair-kv">스트랜드 <b>@(E.StrandCount.ToString("N0", CultureInfo.InvariantCulture))</b> · 자식 정점 @(E.ChildVertexCount.ToString("N0", CultureInfo.InvariantCulture)) · 신장 오차 평균 <b>@(F3(E.MeanStretchError * 100))%</b> 최대 @(F1(E.MaxStretchError * 100))% · 모끝 지연 @(F0(Runner.TipLagMm)) mm</div>
+                    <svg class="hair-spark" viewBox="0 0 360 50" preserveAspectRatio="none">
+                        <polyline class="tip" points="@(Series(Runner.TipLagSeries, 200, 50))" />
+                        <polyline class="ms" points="@(Series(Runner.TickMsSeries, 16.7, 50))" />
+                    </svg>
+                    <div class="hair-legend"><i class="tip"></i>모끝 관성 지연(0–200 mm) <i class="ms"></i>틱 ms(0–16.7)</div>
+                </div>
+
+                <div class="hair-card">
+                    <div class="hair-sec">🛡 두피 모근 앵커 · 신체 SDF 관통 가드
+                        <button class="hair-btn sm @(Gd.CollisionEnabled ? "on" : null)" @onclick="() => Runner.SetCollision(!Gd.CollisionEnabled)">신체 충돌</button>
+                        <button class="hair-btn sm @(Gd.ChildCollision ? "on" : null)" @onclick="() => Runner.SetChildCollision(!Gd.ChildCollision)">자식 투영</button>
+                        <button class="hair-btn sm @(Gd.InterpolateAnchor ? "on" : null)" @onclick="() => Gd.InterpolateAnchor = !Gd.InterpolateAnchor">서브스텝 앵커 보간</button>
+                        <span class="hair-chip @(Gd.RootErrorMm < 0.01f ? "ok" : "bad")">모근 오차 @(F3(Gd.RootErrorMm)) mm</span>
+                    </div>
+                    <div class="hair-bodies">
+                        @for (var b = 0; b < ScalpRootAnchorBodyPenetrationGuard.Bodies; b++)
+                        {
+                            <span class="hair-chip @(Gd.Body(b).Cloth ? "cloth" : null)">@(Gd.Body(b).Name) r @(F0(Gd.BodyRadius(b) * 1000)) mm</span>
+                        }
+                    </div>
+                    <div class="hair-ctl">
+                        <label class="hair-sl">의상 두께 <b>@(F1(Gd.ClothThickness * 1000)) mm</b><input type="range" min="0" max="20" step="0.5" value="@(F1(Gd.ClothThickness * 1000))" @onchange="e => Gd.ClothThickness = (float)Num(e, 5) * 0.001f" /></label>
+                        <label class="hair-sl">마찰 μ <b>@(F2(Gd.Friction))</b><input type="range" min="0" max="1" step="0.05" value="@(F2(Gd.Friction))" @onchange="e => Gd.Friction = (float)Num(e, 0.3)" /></label>
+                    </div>
+                    <div class="hair-kv">가이드 관통 원시 <b>@(F1(Gd.RawPenetrationMm)) mm</b> → 잔여 <b>@(F2(Gd.ResidualPenetrationMm)) mm</b> · 접촉 @(Gd.Contacts) · 자식 관통 <b>@(Gd.ChildPenetrationsBefore.ToString("N0", CultureInfo.InvariantCulture)) → @(Gd.ChildPenetrationsAfter)</b> (후보 @(Gd.ChildCandidates.ToString("N0", CultureInfo.InvariantCulture)))</div>
+                    <svg class="hair-spark" viewBox="0 0 360 50" preserveAspectRatio="none">
+                        <polyline class="raw" points="@(Series(Runner.RawPenSeries, 20, 50))" />
+                        <polyline class="res" points="@(Series(Runner.ResidualPenSeries, 20, 50))" />
+                    </svg>
+                    <div class="hair-legend"><i class="raw"></i>원시 관통(0–20 mm) <i class="res"></i>가드 후 잔여</div>
+                </div>
+            </div>
+
+            <div class="hair-col">
+                <div class="hair-card">
+                    <div class="hair-sec">✨ Marschner 쉐이더 · 광택/스펙큘러</div>
+                    <div class="hair-ctl">
+                        <label class="hair-sl">큐티클 α <b>@(F1(Sh.CuticleTiltDeg))°</b><input type="range" min="0" max="10" step="0.5" value="@(F1(Sh.CuticleTiltDeg))" @onchange="e => Sh.CuticleTiltDeg = (float)Num(e, 3)" /></label>
+                        <label class="hair-sl">거칠기 β <b>@(F1(Sh.RoughnessDeg))°</b><input type="range" min="2" max="20" step="0.5" value="@(F1(Sh.RoughnessDeg))" @onchange="e => Sh.RoughnessDeg = (float)Num(e, 7)" /></label>
+                        <label class="hair-sl">스펙큘러 <b>@(F2(Sh.SpecularGain))</b><input type="range" min="0" max="3" step="0.05" value="@(F2(Sh.SpecularGain))" @onchange="e => Sh.SpecularGain = (float)Num(e, 1)" /></label>
+                        <label class="hair-sl">글린트 <b>@(F2(Sh.GlintGain))</b><input type="range" min="0" max="2" step="0.05" value="@(F2(Sh.GlintGain))" @onchange="e => Sh.GlintGain = (float)Num(e, 0.4)" /></label>
+                        <label class="hair-sl">유멜라닌 <b>@(F2(Sh.Eumelanin))</b><input type="range" min="0" max="4" step="0.05" value="@(F2(Sh.Eumelanin))" @onchange="e => Sh.Eumelanin = (float)Num(e, 1.3)" /></label>
+                        <label class="hair-sl">페오멜라닌 <b>@(F2(Sh.Pheomelanin))</b><input type="range" min="0" max="3" step="0.05" value="@(F2(Sh.Pheomelanin))" @onchange="e => Sh.Pheomelanin = (float)Num(e, 0.2)" /></label>
+                        <span class="hair-swatch" style="background:@(Css(Sh.BaseColor))"></span>
+                    </div>
+                    <div class="hair-lobes">
+                        <svg viewBox="0 0 240 110" preserveAspectRatio="none">
+                            <line class="ax" x1="120" y1="0" x2="120" y2="110" />
+                            <polyline class="r" points="@(Lobe(0))" /><polyline class="tt" points="@(Lobe(1))" /><polyline class="trt" points="@(Lobe(2))" />
+                        </svg>
+                        <svg viewBox="0 0 240 110" preserveAspectRatio="none">
+                            <polyline class="r" points="@(Azi(0))" /><polyline class="tt" points="@(Azi(1))" /><polyline class="trt" points="@(Azi(2))" />
+                        </svg>
+                    </div>
+                    <div class="hair-legend"><i class="r"></i>R(α_R @(F1(Sh.ShiftR / MarschnerHairScatteringAerodynamicsSynthesizer.Deg))°) <i class="tt"></i>TT(@(F1(Sh.ShiftTT / MarschnerHairScatteringAerodynamicsSynthesizer.Deg))°) <i class="trt"></i>TRT(@(F1(Sh.ShiftTRT / MarschnerHairScatteringAerodynamicsSynthesizer.Deg))°) · 좌: 종방향 M(θh −90…90°) · 우: 방위 N(φ 0…360° · G 채널)</div>
+                    <div class="hair-kv">σa = (@(F2(Sh.SigmaA.X)), @(F2(Sh.SigmaA.Y)), @(F2(Sh.SigmaA.Z))) · η @(F2(Sh.Eta)) · F₀ @(F3(MarschnerHairScatteringAerodynamicsSynthesizer.Fresnel(Sh.Eta, 1f)))</div>
+                </div>
+
+                <div class="hair-card">
+                    <div class="hair-sec">🌬 바람 반응성 · 정전기 · 습도 뭉침 <span class="hair-dim">v16.84 기상 엔진 · 링버퍼 @(Sh.RingCount)/@(MarschnerHairScatteringAerodynamicsSynthesizer.Ring)</span>
+                        <button class="hair-btn sm @(Sh.WindEnabled ? "on" : null)" @onclick="() => Sh.WindEnabled = !Sh.WindEnabled">바람</button>
+                    </div>
+                    <div class="hair-ctl">
+                        <label class="hair-sl">풍속 <b>@(F1(_wind)) m/s</b><input type="range" min="0" max="15" step="0.5" value="@(F1(_wind))" @onchange="e => { _wind = (float)Num(e, 3); ApplyWeather(); }" /></label>
+                        <label class="hair-sl">풍향 <b>@(F0(_yaw))°</b><input type="range" min="0" max="360" step="15" value="@(F0(_yaw))" @onchange="e => { _yaw = (float)Num(e, 90); ApplyWeather(); }" /></label>
+                        <label class="hair-sl">습도 <b>@(F2(_hum))</b><input type="range" min="0" max="1" step="0.05" value="@(F2(_hum))" @onchange="e => { _hum = (float)Num(e, 0.45); ApplyWeather(); }" /></label>
+                        <label class="hair-sl">바람 반응성 <b>@(F2(Sh.WindResponse))</b><input type="range" min="0" max="3" step="0.05" value="@(F2(Sh.WindResponse))" @onchange="e => Sh.WindResponse = (float)Num(e, 1)" /></label>
+                        <label class="hair-sl">정전기 <b>@(F2(Sh.Static))</b><input type="range" min="0" max="1.5" step="0.05" value="@(F2(Sh.Static))" @onchange="e => Sh.Static = (float)Num(e, 0.2)" /></label>
+                    </div>
+                    <div class="hair-kv">머리 높이 바람 <b>@(F1(Sh.WindAtHead.Length())) m/s</b> · 돌풍 RMS @(F2(Sh.GustRms)) · 최대 항력 @(F1(Sh.MaxDragAccel)) m/s² · 정전기 반발 쌍 @(Sh.RepelPairs) · 모끝 간격 @(F0(Sh.MeanTipSpreadMm)) mm · 습도(상태) @(F2(Sh.Humidity))</div>
+                    <svg class="hair-spark" viewBox="0 0 360 50" preserveAspectRatio="none">
+                        <polyline class="wind" points="@(Series(Runner.WindSeries, 12, 50))" />
+                        <polyline class="clump" points="@(Series(Runner.ClumpSeries, 1, 50))" />
+                    </svg>
+                    <div class="hair-legend"><i class="wind"></i>머리 높이 풍속(0–12 m/s) <i class="clump"></i>뭉침 강도(0–1)</div>
+                </div>
+
+                <div class="hair-card">
+                    <div class="hair-sec">🪮 뉴럴 그루밍 · 클럼프 밀도</div>
+                    <div class="hair-ctl">
+                        <label class="hair-sl">길이 <b>@(F2(E.Length)) m</b><input type="range" min="0.08" max="0.45" step="0.01" value="@(F2(E.Length))" @onchange="e => Runner.SetLength((float)Num(e, 0.3))" /></label>
+                        <label class="hair-sl">빗질 <b>@(F2(E.Comb))</b><input type="range" min="0" max="1.5" step="0.05" value="@(F2(E.Comb))" @onchange="e => Runner.SetComb((float)Num(e, 0.6))" /></label>
+                        <label class="hair-sl">클럼프 밀도 <b>@(E.ClumpCount)</b><input type="range" min="1" max="32" step="1" value="@(E.ClumpCount)" @onchange="e => Runner.SetClumpCount((int)Num(e, 6))" /></label>
+                        <label class="hair-sl">뭉침 기본 <b>@(F2(Sh.ClumpBase))</b><input type="range" min="0" max="1" step="0.05" value="@(F2(Sh.ClumpBase))" @onchange="e => Sh.ClumpBase = (float)Num(e, 0.5)" /></label>
+                        <label class="hair-sl">컬 <b>@(F1(E.CurlAmp * 1000)) mm</b><input type="range" min="0" max="15" step="0.5" value="@(F1(E.CurlAmp * 1000))" @onchange="e => Runner.SetCurl((float)Num(e, 0))" /></label>
+                        <label class="hair-sl">굽힘 <b>@(F2(E.BendStiffness))</b><input type="range" min="0" max="1" step="0.05" value="@(F2(E.BendStiffness))" @onchange="e => Runner.SetStiffness((float)Num(e, 0.3), E.TorsionStiffness)" /></label>
+                        <label class="hair-sl">비틀림 <b>@(F2(E.TorsionStiffness))</b><input type="range" min="0" max="1" step="0.05" value="@(F2(E.TorsionStiffness))" @onchange="e => Runner.SetStiffness(E.BendStiffness, (float)Num(e, 0.12))" /></label>
+                    </div>
+                    <div class="hair-kv">뭉침 강도 <b>@(F2(E.ClumpStrength))</b> · 모끝 클럼프 응집 <b>@(F1(E.ClumpTightnessMm())) mm</b> · 잔머리 확산 @(F1(E.Frizz * 1000)) mm · 자식 원판 @(F0(E.Spread * 1000)) mm</div>
+                </div>
+                <div class="hair-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .hair-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .hair-modal { width: min(1680px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .hair-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #a16207 14%, var(--card)), color-mix(in srgb, #7c3aed 12%, var(--card))); }
+    .hair-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .hair-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .hair-sub b { color: var(--text-primary); }
+    .hair-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .hair-bar { display: flex; flex-wrap: wrap; gap: 6px 10px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .hair-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; } .hair-btn:disabled { opacity: .4; cursor: default; }
+    .hair-btn.sm { font-size: 10px; padding: 2px 8px; } .hair-btn.on { background: color-mix(in srgb, #a16207 24%, transparent); border-color: #eab308; }
+    .hair-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .hair-chip.ok { border-color: #22c55e; color: #86efac; } .hair-chip.bad { border-color: #ef4444; color: #fca5a5; } .hair-chip.warn { border-color: #eab308; color: #fde68a; } .hair-chip.cloth { border-color: #3b82f6; color: #93c5fd; }
+    .hair-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .hair-sl b { font-family: var(--mono); color: var(--text-primary); } .hair-sl input { width: 90px; }
+    .hair-dim { font-size: 11px; font-weight: 500; color: var(--text-muted); }
+    .hair-main { display: grid; grid-template-columns: 1fr 1.05fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .hair-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .hair-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .hair-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .hair-ctl, .hair-bodies { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+    .hair-vp { width: 100%; display: flex; justify-content: center; background: #05070d; border-radius: 10px; }
+    .hair-vp img { width: min(100%, 420px); aspect-ratio: 280 / 340; image-rendering: auto; }
+    .hair-swatch { display: inline-block; width: 28px; height: 14px; border-radius: 4px; border: 1px solid var(--line); }
+    .hair-lobes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .hair-lobes svg { width: 100%; height: 110px; background: #030712; border-radius: 6px; }
+    .hair-lobes polyline { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; } .hair-lobes .ax { stroke: rgba(148,163,184,.3); }
+    .hair-lobes .r, .hair-legend .r { stroke: #f8fafc; background: #f8fafc; } .hair-lobes .tt, .hair-legend .tt { stroke: #f59e0b; background: #f59e0b; } .hair-lobes .trt, .hair-legend .trt { stroke: #ec4899; background: #ec4899; }
+    .hair-spark { width: 100%; height: 50px; background: #030712; border-radius: 6px; }
+    .hair-spark polyline { fill: none; stroke-width: 1.4; vector-effect: non-scaling-stroke; } .hair-spark .tip { stroke: #22d3ee; } .hair-spark .ms { stroke: #a3e635; }
+    .hair-spark .raw { stroke: #f97316; } .hair-spark .res { stroke: #22c55e; } .hair-spark .wind { stroke: #60a5fa; } .hair-spark .clump { stroke: #e879f9; }
+    .hair-legend, .hair-kv { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11px; color: var(--text-secondary); align-items: center; } .hair-kv b { color: var(--text-primary); }
+    .hair-legend i { display: inline-block; width: 10px; height: 8px; border-radius: 2px; margin-right: 2px; }
+    .hair-legend .tip { background: #22d3ee; } .hair-legend .ms { background: #a3e635; } .hair-legend .raw { background: #f97316; } .hair-legend .res { background: #22c55e; } .hair-legend .wind { background: #60a5fa; } .hair-legend .clump { background: #e879f9; }
+    .hair-note { font-size: 11px; color: var(--text-muted); word-break: break-all; }
+    @@media (max-width: 1250px) { .hair-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+    private int _maxStrands = 3000;
+    private float _wind = 3f, _yaw = 90f, _hum = 0.45f;
+
+    private StrandHairPbdDynamicsEngine E => Runner.Engine;
+    private ScalpRootAnchorBodyPenetrationGuard Gd => Runner.Guard;
+    private MarschnerHairScatteringAerodynamicsSynthesizer Sh => Runner.Shader;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("StrandHair.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+    private static string Css(Vector3 c) => "rgb(" + F0(Math.Clamp(Math.Pow(c.X, 1 / 2.2) * 255, 0, 255)) + "," + F0(Math.Clamp(Math.Pow(c.Y, 1 / 2.2) * 255, 0, 255)) + "," + F0(Math.Clamp(Math.Pow(c.Z, 1 / 2.2) * 255, 0, 255)) + ")";
+
+    private void ApplyWeather() => Runner.SetWeather(_wind, _yaw, _hum);
+
+    /// <summary>종방향 로브 M(θh) 곡선(0 = R · 1 = TT · 2 = TRT · 각 최대 정규화).</summary>
+    private string Lobe(int which)
+    {
+        var sb = new System.Text.StringBuilder(181 * 12);
+        float mx = 1e-9f;
+        for (var d = -90; d <= 90; d++) mx = MathF.Max(mx, M(which, d * MarschnerHairScatteringAerodynamicsSynthesizer.Deg));
+        for (var d = -90; d <= 90; d++)
+            sb.Append(F1((d + 90) * 240.0 / 180)).Append(',').Append(F1(106 - 100 * M(which, d * MarschnerHairScatteringAerodynamicsSynthesizer.Deg) / mx)).Append(' ');
+        return sb.ToString();
+    }
+
+    private float M(int which, float th) => which == 0 ? Sh.LongitudinalR(th) : which == 1 ? Sh.LongitudinalTT(th) : Sh.LongitudinalTRT(th);
+
+    /// <summary>방위 로브 N(φ) 곡선(G 채널 · 각 최대 정규화).</summary>
+    private string Azi(int which)
+    {
+        var sb = new System.Text.StringBuilder(181 * 12);
+        float mx = 1e-9f;
+        for (var d = 0; d <= 360; d += 2) mx = MathF.Max(mx, Nz(which, d));
+        for (var d = 0; d <= 360; d += 2)
+            sb.Append(F1(d * 240.0 / 360)).Append(',').Append(F1(106 - 100 * Nz(which, d) / mx)).Append(' ');
+        return sb.ToString();
+    }
+
+    private float Nz(int which, int d)
+    {
+        var p = d * MarschnerHairScatteringAerodynamicsSynthesizer.Deg;
+        return which == 0 ? Sh.AzimuthalR(p, 0.2f) : which == 1 ? Sh.AzimuthalTT(p, 0.2f).Y : Sh.AzimuthalTRT(p, 0.2f).Y;
+    }
+
+    private string Series(Func<int, float> f, double max, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (HairGroomingStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - 2 - (h - 4) * Math.Clamp(f(i) / max, 0, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step60() { for (var i = 0; i < HairGroomingStudioRunner.Hz; i++) Runner.Step(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중(10 Hz 이벤트)은 250 ms 타이머가 처리 — 정지 상태 액션만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

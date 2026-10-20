@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+	<application android:allowBackup="true" android:icon="@mipmap/appicon" android:roundIcon="@mipmap/appicon_round"
+	             android:supportsRtl="true" android:hardwareAccelerated="true" android:largeHeap="true">
+		<!-- v4.1 24/7 현장 모니터 포그라운드 서비스 -->
+	</application>
+
+	<!-- v4.0 캡처 · 네트워크 -->
+	<uses-permission android:name="android.permission.CAMERA" />
+	<uses-permission android:name="android.permission.RECORD_AUDIO" />
+	<uses-permission android:name="android.permission.INTERNET" />
+	<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+	<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+	<uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+	<uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+	<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+	<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+
+	<!-- v4.1 수퍼차지드: 생체인증 · 햅틱 · 24/7 포그라운드 서비스 · 알림 · BLE -->
+	<uses-permission android:name="android.permission.VIBRATE" />
+	<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+	<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+	<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+	<!-- v5.0 모바일 초격차: NFC 현장 태그 · 고샘플링 센서(자이로 60Hz+ · Android 12+ HIGH_SAMPLING_RATE_SENSORS) -->
+	<uses-permission android:name="android.permission.NFC" />
+	<uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
+
+	<uses-feature android:name="android.hardware.camera" android:required="false" />
+	<uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+	<uses-feature android:name="android.hardware.microphone" android:required="false" />
+	<!-- v5.0: NFC 현장 태그(설비 태깅) — 없는 기기도 설치 허용(required=false) -->
+	<uses-feature android:name="android.hardware.nfc" android:required="false" />
+</manifest>

@@ -1,0 +1,305 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Sovereign
+@using PromptFlowStudio.Services.Sovereign.Pqc
+@implements IDisposable
+@inject SovereignMediaCloudConfidentialMesh Mesh
+@inject PostQuantumMediaVaultEngine Vault
+@inject MultiTenantStudioGovernanceEngine Gov
+@inject SovereignCloudOrchestrator Orch
+
+@*
+    [PromptFlow Studio v16.53.0] 🏰 AI 소버린 클라우드 & 양자 금고 스튜디오 — 기밀 연산 Enclave 가동/증명 상태(TEE · 관할 · 측정값 · 세션) · PQC 키/교환/서명 현황 ·
+    테넌트 리소스 격리 매트릭스(쿼터 · 침범 시도 히트맵) · 정책 판정 시뮬레이터 · 감사 로그 · PQ 원장 검증 · 1-Click 양자 보안 암호화 봉인. 서비스 OnChange 구독.
+*@
+
+<div class="sv-scrim" @onclick="Close">
+    <div class="sv-modal" @onclick:stopPropagation="true">
+        <div class="sv-h">
+            <div>
+                <div class="sv-title">🏰 AI 소버린 클라우드 &amp; 양자 금고 스튜디오</div>
+                <div class="sv-sub">데이터 주권 관할의 <b>증명된 Enclave</b>에서만 암호화 상태로 연산하고, 자산·워터마크·원장을 <b>ML-KEM-768 + ML-DSA-65</b>(FIPS 203/204 · ECDH/ECDSA 하이브리드)로 봉인하며, <b>테넌트 경계·쿼터</b>를 Zero-Trust 로 강제합니다.</div>
+            </div>
+            <button class="sv-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="sv-bar">
+            <span class="sv-chip ok">증명 @(Mesh.AttestationsOk) · 실패 @(Mesh.AttestationsFailed)</span>
+            <span class="sv-chip">기밀 세션 @(Mesh.OpenSessions) · 프레임 @(Mesh.FramesProcessed) · @(Kb(Mesh.BytesProcessed))KB</span>
+            <span class="sv-chip @(Mesh.SovereigntyBlocks > 0 ? "hot" : "")">주권 차단 @(Mesh.SovereigntyBlocks)</span>
+            <span class="sv-chip">PQ 봉인 @(Vault.Sealed) · 열기 @(Vault.Opened) · KEM @(Vault.KemExchanges) · 서명 @(Vault.Signatures)</span>
+            <span class="sv-chip @(Vault.TamperDetected > 0 ? "hot" : "ok")">변조 검출 @(Vault.TamperDetected)</span>
+            <span class="sv-chip">정책 허용 @(Gov.Allowed) · 거부 @(Gov.Denied) · 침범 차단 @(Gov.CrossTenantBlocked) · 쿼터 거부 @(Gov.QuotaDenied)</span>
+        </div>
+
+        <div class="sv-main">
+            <div class="sv-col">
+                <div class="sv-card">
+                    <div class="sv-sec">🔒 1-Click 양자 보안 암호화 봉인</div>
+                    <div class="sv-row">
+                        <select class="sv-in" @bind="_tenant" @bind:after="PickActor">
+                            @for (var t = 0; t < Gov.TenantCount; t++)
+                            {
+                                <option value="@(t)">@(Gov.TenantName(t))</option>
+                            }
+                        </select>
+                        <select class="sv-in" @bind="_actor">
+                            @for (var s = 0; s < Gov.SubjectCount; s++)
+                            {
+                                <option value="@(s)">@(Gov.SubjectName(s)) (@(Gov.TenantName(Gov.SubjectTenant(s))))</option>
+                            }
+                        </select>
+                        <label class="sv-ck"><input type="checkbox" @bind="_mfa" /> MFA 인증</label>
+                        <button class="sv-btn go" disabled="@(_busy || Gov.TenantCount == 0)" @onclick="SealNow">@(_busy ? "봉인 중…" : "🔒 1-Click 양자 봉인")</button>
+                    </div>
+                    <div class="sv-log sm">
+                        @foreach (var i in Orch.LastRun)
+                        {
+                            <div class="sv-ev @(i.Ok ? "ok" : "bad")"><b>@(i.Ok ? "✅" : "⛔") @(i.Stage)</b><span>@(i.Name) — @(i.Detail)</span><i>@(i.Envelope > 0 ? Kb(i.Envelope) + "KB" : "")</i></div>
+                        }
+                    </div>
+                    <div class="sv-mut">@(Orch.LastSummary ?? "정책 → 쿼터 → 관할 Enclave 기밀 렌더 → ML-KEM/ML-DSA 하이브리드 봉인 → 왕복 검증 → 워터마크 → PQ 원장")</div>
+                </div>
+
+                <div class="sv-card">
+                    <div class="sv-sec">🧱 기밀 연산 Enclave</div>
+                    <div class="sv-grid">
+                        @for (var i = 0; i < Mesh.EnclaveCount; i++)
+                        {
+                            var idx = i;
+                            <div class="sv-enc s@((int)Mesh.State(idx))">
+                                <b>@(Mesh.EnclaveName(idx))</b>
+                                <span>@(SovereignMediaCloudConfidentialMesh.ProviderLabel(Mesh.EnclaveProvider(idx))) · @(Mesh.EnclaveJurisdiction(idx))</span>
+                                <span>@(SovereignMediaCloudConfidentialMesh.StateLabel(Mesh.State(idx)))@(Mesh.ModelLoaded(idx) ? " · 모델 언봉인" : "") · 세션 @(Mesh.ActiveSessions(idx))/@(Mesh.Capacity(idx)) · 프레임 @(Mesh.EnclaveFrames(idx))</span>
+                                <i title="@(Mesh.MeasurementHex(idx))">MR @(Mesh.MeasurementHex(idx)[..16])…</i>
+                                <div class="sv-row">
+                                    <button class="sv-btn sm" @onclick="() => Reattest(idx)">재증명</button>
+                                    <button class="sv-btn sm warn" @onclick="() => Tamper(idx)">코드 변조 시뮬</button>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                    <div class="sv-row">
+                        <span class="sv-mut">거주 관할 배치 테스트</span>
+                        @foreach (var j in Enum.GetValues<Jurisdiction>())
+                        {
+                            var jj = j;
+                            <button class="sv-btn sm" @onclick="() => PlaceTest(jj)">@(jj)</button>
+                        }
+                    </div>
+                    <div class="sv-mut">⚠ 하드웨어 TEE 미결선 — 소프트웨어 Enclave 시뮬레이션(증명 프로토콜 · 주권 정책 · 암호 채널은 실구현). 실 SGX/TDX/SEV-SNP/Nitro Quote 검증기로 교체 가능한 결선점.</div>
+                </div>
+            </div>
+
+            <div class="sv-col">
+                <div class="sv-card">
+                    <div class="sv-sec">🔑 PQC 키 교환 · 서명 현황</div>
+                    @if (Vault.Current is { } k)
+                    {
+                        <div class="sv-kv"><span>현재 키</span><b>@(k.Id)</b></div>
+                        <div class="sv-kv"><span>ML-KEM-768 ek</span><b>@(k.KemEk.Length)B · ct @(MlKem768.CiphertextSize)B</b></div>
+                        <div class="sv-kv"><span>ML-DSA-65 pk</span><b>@(k.DsaPk.Length)B · sig @(MlDsa65.SignatureSize)B</b></div>
+                        <div class="sv-kv"><span>하이브리드</span><b>+ ECDH P-384 · ECDSA P-384 · AES-256-GCM</b></div>
+                        <div class="sv-kv"><span>개인키 보관</span><b>AES-GCM 래핑(KEK = DPAPI/환경변수)</b></div>
+                    }
+                    <div class="sv-row">
+                        <button class="sv-btn sm" @onclick="Rotate">🔄 키 회전</button>
+                        <button class="sv-btn sm" disabled="@(Vault.Ledger.Count == 0)" @onclick="VerifyLedger">📜 PQ 원장 검증(@(Vault.Ledger.Count))</button>
+                        <button class="sv-btn sm" @onclick="SelfTest">🧪 PQC 자가 테스트</button>
+                    </div>
+                    <div class="sv-mut">키 @(Vault.Keys.Count)세트(은퇴 키는 열기/검증 전용) · 봉인 누계 @(Kb(Vault.SealedBytes))KB@(_vaultMsg is null ? "" : " · " + _vaultMsg)</div>
+                </div>
+
+                <div class="sv-card">
+                    <div class="sv-sec">🏢 테넌트 리소스 격리 매트릭스</div>
+                    <table class="sv-tbl">
+                        <tr><th>테넌트</th><th>GPU</th><th>RAM</th><th>NET</th>
+                            @for (var t = 0; t < Gov.TenantCount; t++) { <th title="@(Gov.TenantName(t))">→@(Gov.TenantJurisdiction(t))</th> }
+                        </tr>
+                        @for (var t = 0; t < Gov.TenantCount; t++)
+                        {
+                            var u = Gov.Usage(t);
+                            var from = t;
+                            <tr>
+                                <td>@(Gov.TenantName(t))</td>
+                                <td>@(u.Gpu)/@(u.GpuLimit)</td><td>@(u.Ram / 1024)/@(u.RamLimit / 1024)G</td><td>@(u.Net)/@(u.NetLimit)</td>
+                                @for (var to = 0; to < Gov.TenantCount; to++)
+                                {
+                                    var b = Gov.Breaches(from, to);
+                                    <td class="@(from == to ? "self" : b > 0 ? "hot" : "")">@(from == to ? "■" : b.ToString(CultureInfo.InvariantCulture))</td>
+                                }
+                            </tr>
+                        }
+                    </table>
+                    <div class="sv-mut">행 = 요청 테넌트 · 열 = 대상 테넌트 · 숫자 = 차단된 침범 시도</div>
+                </div>
+
+                <div class="sv-card">
+                    <div class="sv-sec">⚖ 정책 판정 시뮬레이터</div>
+                    <div class="sv-row">
+                        <select class="sv-in" @bind="_simSubject">
+                            @for (var s = 0; s < Gov.SubjectCount; s++) { <option value="@(s)">@(Gov.SubjectName(s))@(Gov.IsQuarantined(s) ? " ⛔" : "")</option> }
+                        </select>
+                        <select class="sv-in" @bind="_simAction">
+                            @foreach (var a in Enum.GetValues<AssetAction>()) { <option value="@(a)">@(MultiTenantStudioGovernanceEngine.ActionLabel(a))</option> }
+                        </select>
+                        <select class="sv-in" @bind="_simAsset">
+                            @for (var a = 0; a < Gov.AssetCount; a++) { <option value="@(a)">@(Gov.AssetName(a)) [@(Gov.AssetClassification(a))]</option> }
+                        </select>
+                        <select class="sv-in" @bind="_simRegion">
+                            @foreach (var j in Enum.GetValues<Jurisdiction>()) { <option value="@(j)">@(j)</option> }
+                        </select>
+                        <button class="sv-btn sm" disabled="@(Gov.SubjectCount == 0)" @onclick="Simulate">판정</button>
+                    </div>
+                    @if (_sim is { } d)
+                    {
+                        <div class="sv-mut @(d.Allowed ? "okt" : "badt")">@(d.Allowed ? "✅ 허용" : "⛔ 거부 · " + MultiTenantStudioGovernanceEngine.ReasonLabel(d.Reason))@(d.CrossTenant ? " · 교차 테넌트" : "")</div>
+                    }
+                    <div class="sv-log sm">
+                        @for (var k2 = _auditN - 1; k2 >= 0 && k2 >= _auditN - 12; k2--)
+                        {
+                            var a = _audit[k2];
+                            <div class="sv-ev @(a.Allowed ? "ok" : "bad")"><b>@(a.Allowed ? "허용" : "거부")</b><span>@(Gov.SubjectName(a.Subject)) · @(MultiTenantStudioGovernanceEngine.ActionLabel(a.Action)) · @(Gov.AssetName(a.Asset))</span><i>@(a.Allowed ? "" : MultiTenantStudioGovernanceEngine.ReasonLabel(a.Reason))</i></div>
+                        }
+                    </div>
+                    <div class="sv-mut">감사 체인 헤드 @(Gov.AuditHeadHex[..16])… · 판정 @(Gov.Decisions)</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="sv-f">
+            <span class="sv-mut">@(_msg ?? Vault.LastAction ?? Mesh.LastAction ?? Gov.LastAction ?? "대기")</span>
+            <button class="sv-btn" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .sv-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .sv-modal { width: min(1480px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .sv-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #4f46e5 16%, var(--card)), color-mix(in srgb, #0f766e 14%, var(--card))); }
+    .sv-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .sv-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .sv-sub b { color: var(--text-primary); }
+    .sv-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .sv-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .sv-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); } .sv-chip.ok { color: #4ade80; } .sv-chip.hot { color: #fff; background: #f97316; border-color: #f97316; }
+    .sv-main { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 12px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .sv-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .sv-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .sv-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .sv-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .sv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 6px; }
+    .sv-enc { border: 1px solid var(--line); border-left: 4px solid #64748b; border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--text-secondary); }
+    .sv-enc b { color: var(--text-primary); font-size: 12px; } .sv-enc i { font: 10px var(--mono); font-style: normal; color: var(--text-muted); }
+    .sv-enc.s1 { border-left-color: #22c55e; } .sv-enc.s2 { border-left-color: #ef4444; background: color-mix(in srgb, #ef4444 8%, var(--card)); } .sv-enc.s3 { border-left-color: #7f1d1d; }
+    .sv-kv { display: grid; grid-template-columns: 120px 1fr; gap: 6px; font-size: 11.5px; } .sv-kv span { color: var(--text-muted); } .sv-kv b { font: 600 11px var(--mono); color: var(--text-primary); word-break: break-all; }
+    .sv-tbl { width: 100%; border-collapse: collapse; font: 11px var(--mono); } .sv-tbl th, .sv-tbl td { border: 1px solid var(--line); padding: 3px 5px; text-align: center; color: var(--text-secondary); }
+    .sv-tbl td:first-child { text-align: left; font-family: Pretendard,'Malgun Gothic',sans-serif; } .sv-tbl td.self { color: #334155; } .sv-tbl td.hot { background: #7f1d1d; color: #fecaca; font-weight: 800; }
+    .sv-log { display: flex; flex-direction: column; gap: 2px; max-height: 200px; overflow-y: auto; } .sv-log.sm { max-height: 150px; }
+    .sv-ev { display: grid; grid-template-columns: 90px 1fr 110px; gap: 6px; font-size: 11px; color: var(--text-secondary); } .sv-ev b { font: 10px var(--mono); } .sv-ev i { font: 10px var(--mono); font-style: normal; text-align: right; color: var(--text-muted); }
+    .sv-ev.ok b { color: #4ade80; } .sv-ev.bad b { color: #f87171; }
+    .sv-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; max-width: 220px; }
+    .sv-ck { font-size: 11.5px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; }
+    .sv-mut { font-size: 11px; color: var(--text-muted); word-break: break-all; } .sv-mut.okt { color: #4ade80; font-weight: 700; } .sv-mut.badt { color: #f87171; font-weight: 700; }
+    .sv-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); } .sv-f .sv-mut { margin-right: auto; }
+    .sv-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .sv-btn.sm { padding: 3px 8px; font-size: 11px; } .sv-btn.go { background: linear-gradient(135deg,#4f46e5,#0f766e); color: #fff; border: 0; } .sv-btn.warn { color: #fb923c; border-color: #fb923c; } .sv-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 1100px) { .sv-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly AccessDecision[] _audit = new AccessDecision[64];
+    private int _auditN, _tenant, _actor, _simSubject, _simAsset;
+    private AssetAction _simAction = AssetAction.Read;
+    private Jurisdiction _simRegion = Jurisdiction.KR;
+    private AccessDecision? _sim;
+    private bool _mfa = true, _busy;
+    private string? _msg, _vaultMsg;
+    private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+
+    private long Now => _clock.ElapsedMilliseconds + 1;
+
+    protected override void OnInitialized()
+    {
+        Mesh.OnChange += OnServiceChanged;
+        Vault.OnChange += OnServiceChanged;
+        Gov.OnChange += OnServiceChanged;
+        _ = BootstrapAsync();
+    }
+
+    private async Task BootstrapAsync()
+    {
+        try { await Task.Run(() => Orch.Bootstrap(Now)); PickActor(); Refresh(); await InvokeAsync(StateHasChanged); }
+        catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or InvalidOperationException) { _msg = "⚠ 부트스트랩 실패 · " + ex.Message; }
+    }
+
+    private void PickActor() { var a = Orch.ActorOf(_tenant); if (a >= 0) _actor = a; }
+
+    private async Task SealNow()
+    {
+        _busy = true;
+        try
+        {
+            var t = _tenant; var s = _actor; var mfa = _mfa;
+            await Task.Run(() => Orch.OneClickQuantumSeal(t, s, mfa, Now));
+            _msg = Orch.LastSummary;
+        }
+        catch (Exception ex) when (ex is System.Security.Cryptography.CryptographicException or InvalidOperationException) { _msg = "⚠ 봉인 실패 · " + ex.Message; }
+        finally { _busy = false; Refresh(); }
+    }
+
+    private void Reattest(int i) => Mesh.Attest(i, Now);
+
+    private void Tamper(int i) { Mesh.UpdateEnclaveCode(i, "pfs-render-enclave-patched", "16.53.0-unsigned"); Mesh.Attest(i, Now); }
+
+    private void PlaceTest(Jurisdiction j)
+    {
+        var (v, s, e) = Mesh.Place(j, Now);
+        _msg = j + " → " + SovereignMediaCloudConfidentialMesh.VerdictLabel(v) + (e >= 0 ? " · " + Mesh.EnclaveName(e) : "");
+        if (s >= 0) Mesh.CloseSession(s);
+    }
+
+    private async Task Rotate() { await Task.Run(() => Vault.RotateKeys(DateTimeOffset.UtcNow)); }
+
+    private async Task VerifyLedger()
+    {
+        var bad = await Task.Run(() => Vault.VerifyLedger(Vault.Ledger));
+        _vaultMsg = bad < 0 ? "✅ PQ 원장 무결성 확인" : "❌ #" + (bad + 1).ToString(CultureInfo.InvariantCulture) + " 위변조";
+    }
+
+    private async Task SelfTest()
+    {
+        _vaultMsg = await Task.Run(() =>
+        {
+            var (ek, dk) = MlKem768.GenerateKeyPair();
+            var (ss, ct) = MlKem768.Encapsulate(ek);
+            var ok1 = MlKem768.Decapsulate(dk, ct).AsSpan().SequenceEqual(ss);
+            var (pk, sk) = MlDsa65.GenerateKeyPair();
+            var sig = MlDsa65.Sign(sk, "pfs-selftest"u8);
+            var ok2 = MlDsa65.Verify(pk, "pfs-selftest"u8, sig) && !MlDsa65.Verify(pk, "pfs-selftesT"u8, sig);
+            return ok1 && ok2 ? "✅ ML-KEM/ML-DSA 자가 테스트 통과" : "❌ PQC 자가 테스트 실패";
+        });
+    }
+
+    private void Simulate()
+    {
+        _sim = Gov.Authorize(_simSubject, _simAction, _simAsset, new AccessContext(_simRegion, _mfa, Now));
+        Refresh();
+    }
+
+    private void Refresh() => _auditN = Gov.CopyAudit(_audit);
+
+    private static string Kb(long b) => (b / 1024.0).ToString("0.0", CultureInfo.InvariantCulture);
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(() => { Refresh(); StateHasChanged(); });
+
+    public void Dispose()
+    {
+        Mesh.OnChange -= OnServiceChanged;
+        Vault.OnChange -= OnServiceChanged;
+        Gov.OnChange -= OnServiceChanged;
+    }
+}

@@ -1,0 +1,228 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.GaussianFaceHand
+@using PromptFlowStudio.Services.DigitalHuman
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject GaussianFacialHandStudioRunner Runner
+
+@* [PromptFlow Studio v17.58.0] 😊 가우시안 페이셜 & 핑거 스튜디오 — ARKit 52 표정 슬라이더 · 표정/음소 프리셋 · 손가락 굴곡 프리셋 · 찢어짐 미터 · 관통 가드 카운터. *@
+<div class="gfh-scrim" @onclick="Close">
+    <div class="gfh-modal" @onclick:stopPropagation="true">
+        <div class="gfh-h">
+            <div>
+                <div class="gfh-title">😊 가우시안 페이셜 & 핑거 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null) · @(Runner.Points.ToString("N0", CultureInfo.InvariantCulture)) 가우시안</div>
+                <div class="gfh-sub"><b>페이셜 블렌드쉐이프 엔진</b>이 안면 15 000 가우시안에 ARKit 52 표정 델타(Δμ · ΔΣ)를 SIMD 로 선형 중첩하고 음소 링버퍼로 입술 개폐와 치아 차폐를 갱신합니다. <b>핑거 합성기</b>는 양손 20 관절을 v17.57 DQS 손 분절에 결합해 손가락 10 000 가우시안을 스키닝하고 핀치 시 접촉면을 압축합니다. <b>기하 가드</b>는 입술 이음매 1.5 cm 초과 구멍을 인력 보간으로 메우고, 안구 · 구강 내부 돌출과 손가락 상호 관통을 SDF 밀어내기로 차단합니다.</div>
+            </div>
+            <button class="gfh-x" @onclick="Close">✕</button>
+        </div>
+        <div class="gfh-bar">
+            <button class="gfh-btn @(Runner.IsRunning ? "on" : "go")" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 재생")</button>
+            <button class="gfh-btn" disabled="@Runner.IsRunning" @onclick="Runner.Step">⏭ 1 프레임</button>
+            <span class="gfh-sep"></span>
+            @for (var e = 0; e < 6; e++)
+            {
+                <button class="gfh-btn pre @(Runner.Expression == (FaceExpression)e ? "on" : null)" @onclick="_expr[e]">@(GaussianFacialHandStudioRunner.ExpressionName((FaceExpression)e))</button>
+            }
+            <button class="gfh-btn @(Runner.UseDubbing ? "on" : null)" disabled="@(!Runner.DubbingAvailable)" @onclick="() => Runner.SetDubbing(!Runner.UseDubbing)">🎙 v17.32 더빙 음소</button>
+        </div>
+        <div class="gfh-bar">
+            @for (var p = 0; p < 8; p++)
+            {
+                <button class="gfh-btn pre @(Runner.HandPose == (HandPreset)p ? "on" : null)" @onclick="_hand[p]">@(DexterousHandGaussianSkinningSynthesizer.PresetName((HandPreset)p))</button>
+            }
+            <span class="gfh-sep"></span>
+            <button class="gfh-btn @(Runner.Guard?.FaceEnabled != false ? "on" : null)" @onclick="() => Runner.SetFaceGuard(Runner.Guard?.FaceEnabled == false)">🛡 안면 가드</button>
+            <button class="gfh-btn @(Runner.Guard?.FingerEnabled != false ? "on" : null)" @onclick="() => Runner.SetFingerGuard(Runner.Guard?.FingerEnabled == false)">🛡 손가락 가드</button>
+            <button class="gfh-btn @(Runner.Hands?.ContactEnabled != false ? "on" : null)" @onclick="() => Runner.SetContact(Runner.Hands?.ContactEnabled == false)">🤏 접촉면</button>
+            <button class="gfh-btn @(Runner.Glitch ? "on" : null)" @onclick="() => Runner.SetGlitch(!Runner.Glitch)">💥 과장 발화 주입</button>
+            <button class="gfh-btn @(_overlay ? "on" : null)" @onclick="() => _overlay = !_overlay">🦴 손가락 오버레이</button>
+        </div>
+        <div class="gfh-main">
+            <div class="gfh-col">
+                <div class="gfh-card">
+                    <div class="gfh-sec">🎞 페이셜 · 핑거 가우시안 프리뷰 320×192</div>
+                    <div class="gfh-stage">
+                        <img class="gfh-view" src="@(_img)" alt="gaussian face hand" />
+                        @if (_overlay && Runner.Hands is { } hd)
+                        {
+                            <svg class="gfh-bones" viewBox="0 0 320 192" preserveAspectRatio="none">
+                                @for (var b = 0; b < DexterousHandGaussianSkinningSynthesizer.FingerBones; b++)
+                                {
+                                    if (Runner.Project(hd.CapsuleA(b), out var x0, out var y0) && Runner.Project(hd.CapsuleB(b), out var x1, out var y1))
+                                    {
+                                        <g><line x1="@(F1(x0))" y1="@(F1(y0))" x2="@(F1(x1))" y2="@(F1(y1))" /><circle cx="@(F1(x1))" cy="@(F1(y1))" r="1.3" /></g>
+                                    }
+                                }
+                            </svg>
+                        }
+                    </div>
+                </div>
+                <div class="gfh-card">
+                    <div class="gfh-sec">🎚 주요 ARKit 표정 슬라이더(수동 · 프리셋/음소와 최대값 합성)</div>
+                    <div class="gfh-sliders">
+                        @for (var s = 0; s < GaussianFacialHandStudioRunner.SliderShapes.Length; s++)
+                        {
+                            var k = GaussianFacialHandStudioRunner.SliderShapes[s];
+                            <label>@(GaussianFacialHandStudioRunner.SliderName(k))</label>
+                            <input type="range" min="0" max="100" value="@((int)(Runner.Manual(k) * 100))" @oninput="_slide[s]" />
+                            <span class="gfh-chip">@(F2(Runner.Weight(k)))</span>
+                        }
+                    </div>
+                    <button class="gfh-btn" @onclick="Runner.ClearManual">↺ 슬라이더 초기화</button>
+                </div>
+            </div>
+            <div class="gfh-col">
+                <div class="gfh-card">
+                    <div class="gfh-sec">📊 블렌드쉐이프 · 핑거 DQS</div>
+                    <div class="gfh-kv grid2">
+                        <div>프레임 <b class="@(Runner.LastTickMs < 16.7 ? "ok" : "warn")">@(F2(Runner.LastTickMs))</b> ms · 최대 @(F2(Runner.MaxTickMs))</div>
+                        <div>활성 표정 <b>@(Runner.Face?.ActiveShapes ?? 0)</b>/52 · 레인 @((Runner.Face?.BlendedLanes ?? 0).ToString("N0", CultureInfo.InvariantCulture))</div>
+                        <div>블렌드 @(F2((Runner.Face?.LastBlendUs ?? 0) / 1000)) ms · 커밋 @(F2((Runner.Face?.LastCommitUs ?? 0) / 1000)) ms</div>
+                        <div>개구도 @(F2(Runner.Face?.Aperture ?? 0)) · 치아 노출 @(F2(Runner.Face?.InteriorOpacity ?? 0))</div>
+                        <div>음소 <b>@(PromptFlowStudio.Services.LiveDubbing.RealtimeNeuralVoiceCloningDubbingEngine.Name(Runner.Timeline.Current))</b> → @(PromptFlowStudio.Services.LiveDubbing.RealtimeNeuralVoiceCloningDubbingEngine.Name(Runner.Timeline.Next)) · 대기 @(Runner.Timeline.Pending)</div>
+                        <div>손 스키닝 @(F2((Runner.Hands?.LastStepUs ?? 0) / 1000)) ms · 가우시안 @((Runner.Hands?.Count ?? 0).ToString("N0", CultureInfo.InvariantCulture))</div>
+                        <div>핀치 접촉 <b>@(Runner.Hands?.ActiveContacts ?? 0)</b> · 압축 스플랫 @(Runner.Hands?.ContactSplats ?? 0)</div>
+                        <div>접촉 침투 @(F2(Runner.Hands?.FramePenetrationMm ?? 0)) mm · 최고 @(F2(Runner.Hands?.PeakPenetrationMm ?? 0))</div>
+                    </div>
+                </div>
+                <div class="gfh-card">
+                    <div class="gfh-sec">🛡 안면 찢어짐 · 내부 SDF · 손가락 관통 가드</div>
+                    <div class="gfh-meter"><div class="@((Runner.Guard?.TearMeter ?? 0) < 1f ? "ok" : "warn")" style="width:@(Pct(Runner.Guard?.TearMeter ?? 0))%"></div><span>찢어짐 미터 @(F2(Runner.Guard?.FrameMaxGapMm ?? 0)) / 15 mm</span></div>
+                    <div class="gfh-counters">
+                        <div><b>@((Runner.Guard?.TearHoles ?? 0).ToString("N0", CultureInfo.InvariantCulture))</b><span>구멍 메움</span></div>
+                        <div><b>@((Runner.Guard?.Protrusions ?? 0).ToString("N0", CultureInfo.InvariantCulture))</b><span>내부 돌출 복귀</span></div>
+                        <div><b>@((Runner.Guard?.FingerPenetrations ?? 0).ToString("N0", CultureInfo.InvariantCulture))</b><span>관통 밀어냄</span></div>
+                        <div><b class="@((Runner.Guard?.Defects ?? 0) == 0 ? "ok" : "warn")">@((Runner.Guard?.Defects ?? 0).ToString("N0", CultureInfo.InvariantCulture))</b><span>잔여 결함</span></div>
+                    </div>
+                    <div class="gfh-kv">이음매 쌍 @(Runner.Guard?.SeamPairs ?? 0) · 손가락 쌍 시험 @(Runner.Guard?.PairsTested ?? 0)/@(Runner.Guard?.FingerPairs ?? 0) · 관통 깊이 @(F2(Runner.Guard?.FrameFingerDepthMm ?? 0)) mm · Σ 복구 @(Runner.Guard?.CovFixes ?? 0)</div>
+                    <svg class="gfh-graph" viewBox="0 0 600 60" preserveAspectRatio="none">
+                        <line class="lim" x1="0" x2="600" y1="30" y2="30" />
+                        <polyline class="ms" points="@(Series(0))" />
+                        <polyline class="te" points="@(Series(1))" />
+                        <polyline class="pe" points="@(Series(2))" />
+                    </svg>
+                    <div class="gfh-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .gfh-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .gfh-modal { width: min(1280px, 96vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
+    .gfh-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f59e0b 16%, var(--card)), color-mix(in srgb, #ec4899 14%, var(--card))); }
+    .gfh-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .gfh-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .gfh-sub b { color: var(--text-primary); }
+    .gfh-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .gfh-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .gfh-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .gfh-btn:disabled { opacity: .45; cursor: default; }
+    .gfh-btn.on { background: color-mix(in srgb, #f59e0b 22%, var(--card)); border-color: #f59e0b; }
+    .gfh-btn.pre.on { background: color-mix(in srgb, #ec4899 24%, var(--card)); border-color: #ec4899; }
+    .gfh-btn.go { background: #f59e0b; color: #fff; border: none; }
+    .gfh-sep { width: 1px; height: 20px; background: var(--line); margin: 0 4px; }
+    .gfh-chip { font: 700 11px var(--mono); padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); text-align: center; }
+    .gfh-main { display: grid; grid-template-columns: 1.1fr 1fr; gap: 12px; padding: 14px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .gfh-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .gfh-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); min-width: 0; }
+    .gfh-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .gfh-stage { position: relative; width: 100%; aspect-ratio: 320 / 192; }
+    .gfh-view, .gfh-bones { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 8px; }
+    .gfh-view { image-rendering: pixelated; background: #05070c; }
+    .gfh-bones line { stroke: #22d3ee; stroke-width: 0.8; opacity: .9; }
+    .gfh-bones circle { fill: #f472b6; }
+    .gfh-sliders { display: grid; grid-template-columns: auto 1fr 52px; gap: 4px 10px; align-items: center; font-size: 11px; color: var(--text-secondary); margin-bottom: 8px; }
+    .gfh-sliders input { width: 100%; }
+    .gfh-kv { font-size: 11px; color: var(--text-secondary); margin-top: 6px; }
+    .gfh-kv.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+    .gfh-kv b.ok, .gfh-counters b.ok { color: #22c55e; } .gfh-kv b.warn, .gfh-counters b.warn { color: #f59e0b; }
+    .gfh-meter { position: relative; height: 18px; border-radius: 6px; background: #0f172a; overflow: hidden; margin-bottom: 8px; }
+    .gfh-meter div { height: 100%; } .gfh-meter div.ok { background: #22c55e; } .gfh-meter div.warn { background: #ef4444; }
+    .gfh-meter span { position: absolute; inset: 0; font: 700 10px var(--mono); color: #fff; display: flex; align-items: center; justify-content: center; }
+    .gfh-counters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .gfh-counters div { display: flex; flex-direction: column; align-items: center; padding: 6px; border-radius: 8px; background: #0f172a; }
+    .gfh-counters b { font: 800 16px var(--mono); color: var(--text-primary); }
+    .gfh-counters span { font-size: 10px; color: var(--text-muted); }
+    .gfh-graph { width: 100%; height: 60px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; display: block; margin-top: 8px; }
+    .gfh-graph polyline { fill: none; stroke-width: 1.6; }
+    .gfh-graph .ms { stroke: #f59e0b; } .gfh-graph .te { stroke: #ec4899; } .gfh-graph .pe { stroke: #22d3ee; }
+    .gfh-graph .lim { stroke: #ef4444; stroke-dasharray: 6 4; }
+    .gfh-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+    @@media (max-width: 860px) { .gfh-main { grid-template-columns: 1fr; } .gfh-counters { grid-template-columns: 1fr 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly byte[] _bmp = new byte[GaussianFacialHandStudioRunner.PreviewBytes];
+    private System.Threading.Timer? _timer;
+    private string _img = "";
+    private bool _overlay = true;
+    private Action[] _expr = Array.Empty<Action>(), _hand = Array.Empty<Action>();
+    private Action<ChangeEventArgs>[] _slide = Array.Empty<Action<ChangeEventArgs>>();
+
+    protected override void OnInitialized()
+    {
+        _expr = new Action[6];
+        for (var e = 0; e < 6; e++) { var ex = (FaceExpression)e; _expr[e] = () => Runner.SetExpression(ex); }
+        _hand = new Action[8];
+        for (var p = 0; p < 8; p++) { var hp = (HandPreset)p; _hand[p] = () => Runner.SetHandPreset(hp); }
+        _slide = new Action<ChangeEventArgs>[GaussianFacialHandStudioRunner.SliderShapes.Length];
+        for (var s = 0; s < _slide.Length; s++) { var k = GaussianFacialHandStudioRunner.SliderShapes[s]; _slide[s] = e => { if (TryInt(e, out var v)) Runner.SetManual(k, v / 100f); }; }
+        Runner.OnChange += OnServiceChanged;
+        if (!Runner.IsRunning) Runner.Step();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("FaceHand.Modal.Timer", ex); }
+        }, null, 120, 120);
+    }
+
+    protected override bool ShouldRender()
+    {
+        Runner.WritePreviewBmp(_bmp);
+        _img = "data:image/bmp;base64," + Convert.ToBase64String(_bmp);
+        return true;
+    }
+
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string Pct(float meter) => Math.Clamp(meter * 66.7, 0, 100).ToString("0.#", CultureInfo.InvariantCulture);
+
+    private string Series(int kind)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            var v = kind switch { 0 => Runner.FrameMsSeries(k) / 33.4, 1 => Runner.TearSeries(k) / 2.0, _ => Runner.PenetrationSeries(k) / 10.0 };
+            sb.Append((600.0 * i / (n - 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append((58 - 56 * Math.Clamp(v, 0, 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private static bool TryInt(ChangeEventArgs e, out int v) => int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out v);
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

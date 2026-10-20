@@ -1,0 +1,310 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.LedVolume
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject IcvfxLedWallStudioRunner Runner
+
+@*
+    [PromptFlow Studio v17.09.0] 🎬 AI 인카메라 VFX LED 월 & 젠록 스튜디오 — LED 볼륨 토폴로지(곡률/크기/피치) · 내부/외부 프러스텀 분할 오버레이 ·
+    패널별 Kooima 뷰포트 · 1:1 모아레 루페(OLPF · 피사계 심도) · PTP/SMPTE 2059 젠록 위상 지터 게이지 · 롤링 셔터 타임라인.
+*@
+
+<div class="icv-scrim" @onclick="Close">
+    <div class="icv-modal" @onclick:stopPropagation="true">
+        <div class="icv-h">
+            <div>
+                <div class="icv-title">🎬 AI 인카메라 VFX LED 월 &amp; 젠록 스튜디오</div>
+                <div class="icv-sub"><b>오프액시스 엔진</b>이 FreeD 카메라 자세를 LED 파이프라인 지연만큼 2차 예측하고, 렌즈 ST 맵 경계의 역왜곡 탄젠트로 내부 프러스텀을 잡아 패널별 Kooima 비대칭 투영과 LED 마스크를 SIMD로 계산합니다.
+                    <b>모아레 합성기</b>는 LED 발광 격자를 광학 저역(OLPF + 착란원)으로 샘플링 전에 감쇠시키고 외부 프러스텀은 저해상 환경 맵으로 채우며,
+                    <b>젠록 가드</b>는 IEEE 1588 PTP로 렌더 · LED 프로세서 · 카메라를 서브 µs 정렬해 LED 래치를 롤링 셔터 블랭킹 갭에 고정합니다. 카메라·LED·네트워크는 인프로세스 시뮬레이션입니다.</div>
+            </div>
+            <button class="icv-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="icv-bar">
+            <button class="icv-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ ICVFX 가동")</button>
+            <button class="icv-btn" @onclick="Step24" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="icv-btn @(Runner.Motion ? "on" : null)" @onclick="() => Runner.Motion = !Runner.Motion">🎥 크레인 이동</button>
+            <label class="icv-sl">속도 <b>@(F1(Runner.MotionSpeed))×</b><input type="range" min="0.2" max="4" step="0.1" value="@(F1(Runner.MotionSpeed))" @onchange="e => Runner.MotionSpeed = (float)Num(e, 1)" /></label>
+            <span class="icv-chip">틱 @(Runner.Tick) · @(F1(Runner.LastTickMs)) ms · Kooima @(F1(E.KooimaUs)) · 마스크 @(F0(E.MaskUs)) · 월 @(F0(S.WallUs)) · 피드 @(F0(S.FeedUs)) · 루페 @(F0(S.LoupeUs)) µs</span>
+            <span class="icv-chip @(Runner.ParallaxPx < 2 ? "ok" : Runner.ParallaxPx < 8 ? "warn" : "bad")">시차 @(F1(Runner.ParallaxPx)) px UHD</span>
+            <span class="icv-chip @(S.Coverage > 0.999f ? "ok" : "bad")">내부 커버리지 @(F1(S.Coverage * 100))%</span>
+        </div>
+
+        <div class="icv-main">
+            <div class="icv-col">
+                <div class="icv-card">
+                    <div class="icv-sec">🎞 카메라 피드 · 프러스텀 분할 오버레이
+                        <button class="icv-btn sm @(_overlay ? "on" : null)" @onclick="() => _overlay = !_overlay">오버레이</button>
+                        <span class="icv-kv"><i class="in"></i>내부 <i class="fe"></i>페더 <i class="ou"></i>외부</span></div>
+                    <div class="icv-vp"><img src="data:image/bmp;base64,@(Runner.MonitorBase64(_overlay ? 0 : 1))" alt="feed" /></div>
+                    <div class="icv-ctl">
+                        <button class="icv-btn sm @(E.Predict ? "on" : null)" @onclick="() => E.Predict = !E.Predict">2차 예측</button>
+                        <button class="icv-btn sm @(E.DistortionCompensation ? "on" : null)" @onclick="() => E.DistortionCompensation = !E.DistortionCompensation">왜곡 역보정</button>
+                        <label class="icv-sl">지연 <b>@(E.LatencyFrames)f</b><input type="range" min="0" max="8" step="1" value="@(E.LatencyFrames)" @onchange="e => E.LatencyFrames = (int)Num(e, 3)" /></label>
+                        <label class="icv-sl">오버스캔 <b>@(F0(E.OverscanPct))%</b><input type="range" min="0" max="30" step="1" value="@(F0(E.OverscanPct))" @onchange="e => E.OverscanPct = (float)Num(e, 10)" /></label>
+                        <label class="icv-sl">페더 <b>@(F0(E.FeatherPct))%</b><input type="range" min="0" max="15" step="1" value="@(F0(E.FeatherPct))" @onchange="e => E.FeatherPct = (float)Num(e, 4)" /></label>
+                        <button class="icv-btn sm @(Runner.AutoZoom ? "on" : null)" @onclick="() => Runner.AutoZoom = !Runner.AutoZoom">🔭 자동 줌</button>
+                        <label class="icv-sl">FOV <b>@(F0(Runner.ZoomFov))°</b><input type="range" min="12" max="68" step="1" value="@(F0(Runner.ZoomFov))" @onchange="e => Runner.ZoomFov = (float)Num(e, 40)" disabled="@Runner.AutoZoom" /></label>
+                    </div>
+                    <div class="icv-kv">FOV <b>@(F1(Runner.Truth.HFovDeg))°</b> · K1 @(F3(Runner.Truth.K1)) · 역보정 반각 +@(F2(E.CompensationGainPct))% · 카메라 @(F2(Runner.CameraSpeed)) m/s ·
+                        시차 최대 @(F1(Runner.ParallaxMaxPx)) px (@(Runner.ParallaxPoints)점) · FreeD @(E.Packets) · 불량 @(E.BadPackets)</div>
+                    <svg class="icv-spark" viewBox="0 0 360 50" preserveAspectRatio="none">
+                        <polyline class="pa" points="@(Series(Runner.ParallaxSeries, 30, 50))" />
+                        <polyline class="mo" points="@(Series(Runner.MoireSeries, 0.3, 50))" />
+                    </svg>
+                    <div class="icv-legend"><i class="pa"></i>시차(0–30 px UHD) <i class="mo"></i>모아레 지수(0–0.3)</div>
+                </div>
+
+                <div class="icv-card">
+                    <div class="icv-sec">🧱 LED 볼륨 토폴로지 · 내부 프러스텀 맵
+                        <span class="icv-kv">@(T.Panels)패널 · @(T.LedColumns)×@(T.LedRows) LED · 활성 렌더 노드 <b>@(E.VisiblePanels)</b> · 내부 @(F2(E.InnerLedPixels / 1e6)) MP</span></div>
+                    <div class="icv-map">
+                        <img src="data:image/bmp;base64,@(Runner.MonitorBase64(2))" alt="map" />
+                        <svg viewBox="0 0 @(T.MapW) @(LedVolumeTopology.Rows)" preserveAspectRatio="none">
+                            @for (var i = 0; i < T.Panels; i++)
+                            {
+                                if (!E.PanelVisible(i)) continue;
+                                var vp = E.Viewport(i);
+                                var cpx = T.Chord / (T.PitchMm * 1e-3) / LedVolumeTopology.ColsPerPanel;
+                                var rpx = T.HeightM / (T.PitchMm * 1e-3) / LedVolumeTopology.Rows;
+                                <rect class="vp" x="@(F2(i * LedVolumeTopology.ColsPerPanel + vp.X0 / cpx))" y="@(F2(vp.Y0 / rpx))" width="@(F2((vp.X1 - vp.X0) / cpx))" height="@(F2((vp.Y1 - vp.Y0) / rpx))" />
+                            }
+                        </svg>
+                    </div>
+                    <div class="icv-topo">
+                        <svg viewBox="-10 -10 20 14" preserveAspectRatio="xMidYMid meet">
+                            <polyline class="wall" points="@(WallPlan())" />
+                            <polyline class="fr" points="@(FrustumPlan())" />
+                            <circle class="cam" cx="@(F2(Runner.Shown.Eye.X))" cy="@(F2(-Runner.Shown.Eye.Z))" r="0.25" />
+                        </svg>
+                        <div class="icv-ctl col">
+                            <label class="icv-sl">반경 <b>@(F1(T.RadiusM)) m</b><input type="range" min="3" max="14" step="0.5" value="@(F1(T.RadiusM))" @onchange="e => Topo(r: (float)Num(e, 6))" /></label>
+                            <label class="icv-sl">곡면 각도 <b>@(F0(T.ArcDeg))°</b><input type="range" min="40" max="270" step="5" value="@(F0(T.ArcDeg))" @onchange="e => Topo(a: (float)Num(e, 160))" /></label>
+                            <label class="icv-sl">높이 <b>@(F1(T.HeightM)) m</b><input type="range" min="2" max="8" step="0.5" value="@(F1(T.HeightM))" @onchange="e => Topo(h: (float)Num(e, 4.5))" /></label>
+                            <label class="icv-sl">패널 폭 <b>@(F2(T.PanelWidthM)) m</b><input type="range" min="0.25" max="1" step="0.05" value="@(F2(T.PanelWidthM))" @onchange="e => Topo(pw: (float)Num(e, 0.5))" /></label>
+                            <label class="icv-sl">피치 <b>@(F1(T.PitchMm)) mm</b><input type="range" min="1.2" max="8" step="0.1" value="@(F1(T.PitchMm))" @onchange="e => Topo(p: (float)Num(e, 2.6))" /></label>
+                        </div>
+                    </div>
+                    <div class="icv-kv mono">패널 #@(_panel) Kooima l/r/b/t = @(F3(E.Left(_panel))) / @(F3(E.RightE(_panel))) / @(F3(E.Bottom(_panel))) / @(F3(E.Top(_panel))) · d = @(F2(E.Distance(_panel))) m
+                        <input type="range" min="0" max="@(T.Panels - 1)" step="1" value="@(_panel)" @onchange="e => _panel = Math.Clamp((int)Num(e, 0), 0, T.Panels - 1)" /></div>
+                </div>
+            </div>
+
+            <div class="icv-col">
+                <div class="icv-card">
+                    <div class="icv-sec">🔍 1:1 모아레 루페 (UHD 센서 중앙 128×72)
+                        <button class="icv-btn sm @(S.AutoOlpf ? "on" : null)" @onclick="() => S.AutoOlpf = !S.AutoOlpf">자동 OLPF</button>
+                        <span class="icv-chip @(S.MoireIndex < 0.02f ? "ok" : S.MoireIndex < 0.06f ? "warn" : "bad")">모아레 @(F3(S.MoireIndex)) (원 @(F3(S.MoireIndexRaw)))</span>
+                        @if (S.GridResolved) { <span class="icv-chip bad">LED 격자 가시</span> }
+                    </div>
+                    <div class="icv-split">
+                        <div class="icv-mon"><div class="lab">루페 1:1</div><img src="data:image/bmp;base64,@(Runner.MonitorBase64(3))" alt="loupe" /></div>
+                        <div class="icv-mon"><div class="lab">외부 프러스텀 환경 맵 32×16</div><img src="data:image/bmp;base64,@(Runner.MonitorBase64(4))" alt="env" /></div>
+                    </div>
+                    <div class="icv-ctl">
+                        <label class="icv-sl">포커스 <b>@(F1(S.FocusM)) m</b><input type="range" min="0.8" max="15" step="0.1" value="@(F1(S.FocusM))" @onchange="e => S.FocusM = (float)Num(e, 6)" /></label>
+                        <label class="icv-sl">T-stop <b>@(F1(S.TStop))</b><input type="range" min="1.4" max="16" step="0.1" value="@(F1(S.TStop))" @onchange="e => S.TStop = (float)Num(e, 8)" /></label>
+                        <label class="icv-sl">필팩터 <b>@(F2(S.FillFactor))</b><input type="range" min="0.2" max="1" step="0.05" value="@(F2(S.FillFactor))" @onchange="e => S.FillFactor = (float)Num(e, 0.4)" /></label>
+                        <label class="icv-sl">수동 OLPF <b>@(F2(S.ManualOlpfPx)) px</b><input type="range" min="0" max="3" step="0.05" value="@(F2(S.ManualOlpfPx))" @onchange="e => S.ManualOlpfPx = (float)Num(e, 0)" disabled="@S.AutoOlpf" /></label>
+                        <label class="icv-sl">외부 게인 <b>@(F2(S.OuterGain))</b><input type="range" min="0" max="1.5" step="0.05" value="@(F2(S.OuterGain))" @onchange="e => S.OuterGain = (float)Num(e, 0.85)" /></label>
+                    </div>
+                    <div class="icv-kv">결상 피치 <b>@(F2(S.ImagedPitchPx)) px</b> · 월 거리 @(F2(S.WallDistanceM)) m · 초점 거리 @(F1(S.FocalMm)) mm · 착란원 <b>@(F2(S.CocPx)) px</b> · OLPF σ <b>@(F2(S.OlpfSigmaPx)) px</b> · 총 σ @(F2(S.TotalSigmaPx)) · MTF@@Nyq <b>@(F0(S.MtfNyquist * 100))%</b></div>
+                </div>
+
+                <div class="icv-card">
+                    <div class="icv-sec">⏱ PTP 젠록 (IEEE 1588 · SMPTE 2059)
+                        <span class="icv-chip @(StateCls(G.State))">@(StateName(G.State))</span>
+                        <button class="icv-btn sm @(G.GenlockEnabled ? "on" : null)" @onclick="() => Runner.SetGenlock(!G.GenlockEnabled)">젠록</button>
+                        <button class="icv-btn sm @(G.GuardEnabled ? "on" : null)" @onclick="() => Runner.SetGuard(!G.GuardEnabled)">티어링 가드</button>
+                        <button class="icv-btn sm @(G.GrandmasterOnline ? null : "stop")" @onclick="Runner.ToggleGrandmaster">🛰 GM @(G.GrandmasterOnline ? "정상" : "소실")</button>
+                        <button class="icv-btn sm" @onclick="Runner.InjectRenderSpike">🐢 렌더 스파이크</button>
+                    </div>
+                    <div class="icv-gl">
+                        <div class="icv-gauge">
+                            <svg viewBox="0 0 180 104">
+                                <path class="bg" d="M 15 95 A 75 75 0 0 1 165 95" />
+                                <path class="fg @(G.JitterRmsNs < 1000 ? null : G.JitterRmsNs < 100_000 ? "warn" : "bad")" d="@(Arc(Math.Clamp(Math.Log10(Math.Max(1, G.JitterRmsNs)) / 7.0, 0, 1)))" />
+                                <line class="tol" x1="@(F1(90 - 75 * Math.Cos(Math.PI * 3 / 7)))" y1="@(F1(95 - 75 * Math.Sin(Math.PI * 3 / 7)))" x2="@(F1(90 - 60 * Math.Cos(Math.PI * 3 / 7)))" y2="@(F1(95 - 60 * Math.Sin(Math.PI * 3 / 7)))" />
+                            </svg>
+                            <div class="gv"><b>@(Ns(G.JitterRmsNs))</b><span>위상 지터 RMS (로그 · 1 µs 눈금)</span></div>
+                        </div>
+                        <div class="icv-devs">
+                            @for (var d = 0; d < PtpGenlockPhaseSyncTearingGuard.Devices; d++)
+                            {
+                                ref readonly var dv = ref G.Device(d);
+                                <div class="dev"><b>@(DevName(d))</b> <span class="icv-chip sm @(StateCls(dv.State))">@(StateName(dv.State))</span>
+                                    오프셋 <b>@(Ns(Math.Abs(dv.TrueOffsetNs)))</b> · 측정 @(Ns(Math.Abs(dv.MeasNs))) · 경로 @(Ns(dv.DelayNs)) · 보정 @(F1(dv.AdjPpb / 1000)) ppm · 수용 @(dv.Accepted)/거부 @(dv.Rejected)</div>
+                            }
+                        </div>
+                    </div>
+                    <svg class="icv-tl" viewBox="0 0 400 46" preserveAspectRatio="none">
+                        <polygon class="exp" points="@(ExposurePoly())" />
+                        <line class="tgt" x1="@(F1(Tx(G.TargetLatchNs)))" x2="@(F1(Tx(G.TargetLatchNs)))" y1="0" y2="46" />
+                        <line class="latch @(G.LastTear ? "bad" : null)" x1="@(F1(Tx(G.LatchPhaseNs)))" x2="@(F1(Tx(G.LatchPhaseNs)))" y1="0" y2="46" />
+                    </svg>
+                    <div class="icv-legend"><i class="exp"></i>롤링 셔터 노출(행 0→2159) <i class="tgt"></i>래치 목표(블랭킹 갭 중앙) <i class="latch"></i>LED 래치 · 프레임 41.708 ms</div>
+                    <div class="icv-ctl">
+                        <label class="icv-sl">셔터 <b>@(F1(G.ShutterAngle))°</b> → @(F2(G.EffectiveShutter))°<input type="range" min="2" max="270" step="0.1" value="@(F1(G.ShutterAngle))" @onchange="e => G.ShutterAngle = (float)Num(e, 172.8)" /></label>
+                        <button class="icv-btn sm @(G.AutoShutter ? "on" : null)" @onclick="() => G.AutoShutter = !G.AutoShutter">PWM 스냅</button>
+                        <select class="icv-sel" value="@(F0(G.LedRefreshHz))" @onchange="e => G.LedRefreshHz = (float)Num(e, 7680)">
+                            <option value="1920">LED 1920 Hz</option><option value="3840">LED 3840 Hz</option><option value="7680">LED 7680 Hz</option><option value="15360">LED 15360 Hz</option>
+                        </select>
+                        <label class="icv-sl">리드아웃 <b>@(F1(G.ReadoutNs / 1e6)) ms</b><input type="range" min="4" max="24" step="0.5" value="@(F1(G.ReadoutNs / 1e6))" @onchange="e => G.ReadoutNs = Num(e, 12) * 1e6" /></label>
+                    </div>
+                    <div class="icv-kv">위상 오차 <b>@(Ns(Math.Abs(G.PhaseErrorNs)))</b> · 안전 갭 @(F2(G.SafeGapNs / 1e6)) ms · 블랙 밴드 <b>@(F3(G.BandDepthPct))%</b> ·
+                        티어링 <b>@(G.Tears)</b> · 드롭 @(G.Drops) · 반복 @(G.Repeats) (보류 @(G.HeldSwaps)) · 스텝 @(G.Steps) · PDV 거부 @(G.Rejected)</div>
+                </div>
+                <div class="icv-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .icv-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .icv-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .icv-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f97316 15%, var(--card)), color-mix(in srgb, #6366f1 12%, var(--card))); }
+    .icv-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .icv-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .icv-sub b { color: var(--text-primary); }
+    .icv-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .icv-bar { display: flex; flex-wrap: wrap; gap: 6px 10px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .icv-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; } .icv-btn:disabled { opacity: .4; cursor: default; }
+    .icv-btn.sm { font-size: 10px; padding: 2px 8px; } .icv-btn.on { background: color-mix(in srgb, #f97316 24%, transparent); border-color: #fb923c; } .icv-btn.stop { background: #7f1d1d; border-color: #ef4444; color: #fff; }
+    .icv-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); } .icv-chip.sm { font-size: 9px; padding: 1px 6px; }
+    .icv-chip.ok { border-color: #22c55e; color: #86efac; } .icv-chip.bad { border-color: #ef4444; color: #fca5a5; } .icv-chip.warn { border-color: #eab308; color: #fde68a; }
+    .icv-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .icv-sl b { font-family: var(--mono); color: var(--text-primary); } .icv-sl input { width: 80px; }
+    .icv-sel { font-size: 11px; background: transparent; color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+    .icv-main { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .icv-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .icv-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .icv-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .icv-vp { width: 100%; aspect-ratio: 16 / 9; background: #000; border-radius: 8px; overflow: hidden; }
+    .icv-vp img, .icv-mon img, .icv-map img { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+    .icv-map { position: relative; width: 100%; aspect-ratio: 5 / 1; background: #000; border-radius: 8px; overflow: hidden; }
+    .icv-map svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; } .icv-map .vp { fill: none; stroke: #22d3ee; stroke-width: .4; vector-effect: non-scaling-stroke; }
+    .icv-topo { display: grid; grid-template-columns: 220px 1fr; gap: 10px; align-items: center; }
+    .icv-topo svg { width: 220px; height: 150px; background: #030712; border-radius: 8px; }
+    .icv-topo .wall { fill: none; stroke: #f97316; stroke-width: .25; } .icv-topo .fr { fill: rgba(34,211,238,.15); stroke: #22d3ee; stroke-width: .08; } .icv-topo .cam { fill: #f8fafc; }
+    .icv-split { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .icv-mon { position: relative; aspect-ratio: 16 / 9; background: #000; border-radius: 8px; overflow: hidden; border: 2px solid #334155; }
+    .icv-mon .lab { position: absolute; top: 0; left: 0; right: 0; font: 800 10px var(--mono); color: #fff; background: rgba(0,0,0,.6); padding: 2px 6px; }
+    .icv-ctl { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; } .icv-ctl.col { flex-direction: column; align-items: flex-start; }
+    .icv-spark { width: 100%; height: 50px; background: #030712; border-radius: 6px; }
+    .icv-spark polyline { fill: none; stroke-width: 1.4; vector-effect: non-scaling-stroke; } .icv-spark .pa { stroke: #ef4444; } .icv-spark .mo { stroke: #a78bfa; }
+    .icv-gl { display: grid; grid-template-columns: 190px 1fr; gap: 10px; align-items: center; }
+    .icv-gauge { display: flex; flex-direction: column; align-items: center; } .icv-gauge svg { width: 180px; height: 104px; }
+    .icv-gauge .bg { fill: none; stroke: #1f2937; stroke-width: 10; } .icv-gauge .fg { fill: none; stroke: #22c55e; stroke-width: 10; stroke-linecap: round; } .icv-gauge .fg.warn { stroke: #eab308; } .icv-gauge .fg.bad { stroke: #ef4444; }
+    .icv-gauge .tol { stroke: #f8fafc; stroke-width: 2; } .icv-gauge .gv { display: flex; flex-direction: column; align-items: center; font-size: 10px; color: var(--text-muted); } .icv-gauge .gv b { font: 800 15px var(--mono); color: var(--text-primary); }
+    .icv-devs { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text-secondary); } .icv-devs b { color: var(--text-primary); }
+    .icv-tl { width: 100%; height: 46px; background: #030712; border-radius: 6px; }
+    .icv-tl .exp { fill: rgba(99,102,241,.45); stroke: #818cf8; stroke-width: .6; vector-effect: non-scaling-stroke; } .icv-tl .tgt { stroke: #22c55e; stroke-width: 1.5; stroke-dasharray: 3 2; vector-effect: non-scaling-stroke; }
+    .icv-tl .latch { stroke: #facc15; stroke-width: 2.5; vector-effect: non-scaling-stroke; } .icv-tl .latch.bad { stroke: #ef4444; }
+    .icv-legend, .icv-kv { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11px; color: var(--text-secondary); align-items: center; } .icv-kv b { color: var(--text-primary); }
+    .icv-legend i, .icv-kv i { display: inline-block; width: 10px; height: 8px; border-radius: 2px; }
+    .icv-legend .pa { background: #ef4444; } .icv-legend .mo { background: #a78bfa; } .icv-legend .exp { background: #6366f1; } .icv-legend .tgt { background: #22c55e; } .icv-legend .latch { background: #facc15; }
+    .icv-kv .in { background: #94a3b8; } .icv-kv .fe { background: #eab308; } .icv-kv .ou { background: #d946ef; }
+    .icv-note { font-size: 11px; color: var(--text-muted); word-break: break-all; } .mono { font-family: var(--mono); }
+    @@media (max-width: 1200px) { .icv-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+    private bool _overlay = true;
+    private int _panel = 16;
+
+    private InnerFrustumOffAxisProjectionEngine E => Runner.Engine;
+    private LedWallMoireSuppressionSynthesizer S => Runner.Synth;
+    private PtpGenlockPhaseSyncTearingGuard G => Runner.Genlock;
+    private LedVolumeTopology T => Runner.Topology;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("IcvfxLedWall.Modal.Timer", ex); }
+        }, null, 300, 300);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+    private static string Ns(double ns) => ns < 1000 ? F0(ns) + " ns" : ns < 1e6 ? F2(ns / 1000) + " µs" : F2(ns / 1e6) + " ms";
+
+    private static string DevName(int d) => d switch { 0 => "🖥 렌더 노드", 1 => "🟧 LED 프로세서", _ => "🎥 카메라" };
+    private static string StateName(PtpState s) => s switch { PtpState.Locked => "LOCKED", PtpState.Acquiring => "획득 중", PtpState.Holdover => "HOLDOVER", _ => "UNLOCKED" };
+    private static string StateCls(PtpState s) => s switch { PtpState.Locked => "ok", PtpState.Unlocked => "bad", _ => "warn" };
+
+    private void Topo(float? r = null, float? a = null, float? h = null, float? pw = null, float? p = null)
+    {
+        Runner.SetTopology(r ?? T.RadiusM, a ?? T.ArcDeg, h ?? T.HeightM, pw ?? T.PanelWidthM, p ?? T.PitchMm);
+        _panel = Math.Clamp(_panel, 0, T.Panels - 1);
+    }
+
+    private string WallPlan()
+    {
+        var sb = new System.Text.StringBuilder(T.Panels * 16);
+        for (var i = 0; i <= T.Panels; i++)
+        {
+            var pt = T.Point(T.Theta0(i), 0);
+            sb.Append(F2(pt.X)).Append(',').Append(F2(-pt.Z)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private string FrustumPlan()
+    {
+        ref readonly var s = ref Runner.Shown;
+        var sb = new System.Text.StringBuilder(64);
+        var a = s.F - s.R * s.TanX; var b = s.F + s.R * s.TanX;
+        float ta = T.Intersect(s.Eye, a, out _, out _, out _, out var t1) ? t1 : 6f, tb = T.Intersect(s.Eye, b, out _, out _, out _, out var t2) ? t2 : 6f;
+        var pa = s.Eye + a * ta; var pb = s.Eye + b * tb;
+        sb.Append(F2(s.Eye.X)).Append(',').Append(F2(-s.Eye.Z)).Append(' ').Append(F2(pa.X)).Append(',').Append(F2(-pa.Z)).Append(' ').Append(F2(pb.X)).Append(',').Append(F2(-pb.Z));
+        return sb.ToString();
+    }
+
+    private static double Tx(double ns) => Math.Clamp(ns / PtpGenlockPhaseSyncTearingGuard.FramePeriodNs, 0, 1) * 400;
+
+    private string ExposurePoly()
+    {
+        var e = G.ExposureNs; var r = G.ReadoutNs;
+        return F1(Tx(0)) + ",2 " + F1(Tx(e)) + ",2 " + F1(Tx(r + e)) + ",44 " + F1(Tx(r)) + ",44";
+    }
+
+    private static string Arc(double frac)
+    {
+        var ang = Math.PI * Math.Clamp(frac, 0.001, 1);
+        return "M 15 95 A 75 75 0 0 1 " + F1(90 - 75 * Math.Cos(ang)) + " " + F1(95 - 75 * Math.Sin(ang));
+    }
+
+    private string Series(Func<int, float> f, double max, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (IcvfxLedWallStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - 2 - (h - 4) * Math.Clamp(f(i) / max, 0, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step24() { for (var i = 0; i < IcvfxLedWallStudioRunner.Hz; i++) Runner.Step(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중(8 Hz 이벤트)은 300 ms 타이머가 처리 — 정지 상태 액션만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

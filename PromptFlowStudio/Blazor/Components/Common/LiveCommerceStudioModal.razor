@@ -1,0 +1,347 @@
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.Commerce
+@using PromptFlowStudio.Services.Spatial
+@implements IDisposable
+@inject LiveCommerceInventoryOrderBridge Bridge
+@inject AiLiveShowHostEngine Host
+@inject ShoppertainmentOverlayEngine Overlay
+@inject ShoppertainmentShowRunner Runner
+
+@*
+    [PromptFlow Studio v16.48.0] 🛍️ AI 라이브 커머스 & 쇼퍼테인먼트 스튜디오 — 방송 합성 프리뷰(타임세일 · 구매 토스트 · 3D 회전 카드 · QR · 쿠폰) · 상품 목록/실시간 주문 텔레메트리 ·
+    쇼호스트 톤/에너지 조절 · 시청자 채팅 시뮬레이터 · 타임세일 수동 파이어링 · 커머스 API 연동 설정 · 1-Click 방송 시작. 서비스 OnChange 구독 + 방송 중 150ms UI 틱.
+*@
+
+<div class="lc-scrim" @onclick="Close">
+    <div class="lc-modal" @onclick:stopPropagation="true">
+        <div class="lc-h">
+            <div>
+                <div class="lc-title">🛍️ AI 라이브 커머스 &amp; 쇼퍼테인먼트 스튜디오</div>
+                <div class="lc-sub">상품 DB 기반 <b>AI 쇼호스트</b>가 세일즈 멘트·Q&amp;A를 자율 진행하고, <b>실시간 재고/주문</b>에 반응하며 <b>타임세일 · 구매 알림 · 3D 상품 · 구매 QR</b> 오버레이를 송출합니다.</div>
+            </div>
+            <button class="lc-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="lc-bar">
+            <span class="lc-chip @(Runner.IsLive ? "live" : "")">@(Runner.IsLive ? "● ON AIR" : "OFF AIR")</span>
+            <span class="lc-chip">주문 @(Bridge.Orders) · @(Bridge.Units)개</span>
+            <span class="lc-chip">매출 @(AiLiveShowHostEngine.Won(Bridge.Revenue))</span>
+            <span class="lc-chip @(Bridge.Surge ? "hot" : "")">분당 @(Bridge.OrdersPerMinute)건@(Bridge.Surge ? " 🔥폭주" : "")</span>
+            <span class="lc-chip">거절 @(Bridge.Rejected)</span>
+            <span class="lc-chip @(Host.LlmAvailable ? "ok" : "")">🎙 @(Host.LlmAvailable ? "Gemini 톤" : "BCL") · 멘트 @(Host.LinesSpoken) · 답변 @(Host.Answers)</span>
+        </div>
+
+        <div class="lc-main">
+            <div class="lc-col">
+                <div class="lc-player">
+                    @if (_frameUrl is not null)
+                    {
+                        <img class="lc-screen" src="@(_frameUrl)" alt="방송 프리뷰" />
+                    }
+                    else
+                    {
+                        <div class="lc-screen lc-empty">🛍️ 1-Click 쇼퍼테인먼트 방송을 시작하면 합성 화면이 표시됩니다.</div>
+                    }
+                </div>
+                <div class="lc-row">
+                    @if (!Runner.IsLive)
+                    {
+                        <button class="lc-btn go" @onclick="StartShow">🛍️ 1-Click 쇼퍼테인먼트 방송 시작</button>
+                    }
+                    else
+                    {
+                        <button class="lc-btn danger" @onclick="StopShow">⏹ 방송 종료</button>
+                    }
+                    <label class="lc-ck"><input type="checkbox" checked="@(Runner.DemoTraffic)" @onchange="ToggleDemo" /> 데모 주문</label>
+                    <label class="lc-ck">초당 <input type="range" min="0" max="6" step="0.2" value="@(F1(Runner.DemoOrdersPerSec))" @oninput="SetRate" /> @(F1(Runner.DemoOrdersPerSec))</label>
+                </div>
+                <div class="lc-card">
+                    <div class="lc-sec">⚡ 타임세일 &amp; 쿠폰</div>
+                    <div class="lc-row">
+                        <select class="lc-in" @bind="_saleSec">
+                            <option value="30">30초</option><option value="60">1분</option><option value="180">3분</option><option value="600">10분</option>
+                        </select>
+                        <input class="lc-in w90" type="number" @bind="_extraPct" title="추가 할인 %" /> %
+                        <button class="lc-btn fire" disabled="@(Host.CurrentSlot < 0)" @onclick="FireSale">⚡ 타임세일 파이어</button>
+                        @if (Overlay.SaleActive(Runner.NowMs))
+                        {
+                            <span class="lc-mut">남은 @(F0(Overlay.SaleRemainingMs(Runner.NowMs) / 1000))초</span>
+                            <button class="lc-btn sm" @onclick="Overlay.StopTimeSale">중지</button>
+                        }
+                    </div>
+                    <div class="lc-row">
+                        <input class="lc-in w120" @bind="_coupon" placeholder="쿠폰 코드" />
+                        <input class="lc-in w90" type="number" @bind="_couponPct" /> %
+                        <button class="lc-btn sm" @onclick="ApplyCoupon">🎟 쿠폰 적용</button>
+                    </div>
+                    @if (Overlay.QrUrl is not null)
+                    {
+                        <div class="lc-mut">QR v@(Overlay.Qr!.Version) · @(Overlay.QrUrl)</div>
+                    }
+                </div>
+                <div class="lc-card">
+                    <div class="lc-sec">💬 시청자 채팅 시뮬레이터</div>
+                    <div class="lc-row">
+                        <input class="lc-in w90" @bind="_viewer" placeholder="닉네임" />
+                        <input class="lc-in grow" @bind="_chat" @bind:event="oninput" placeholder="예: 민감한 피부도 쓸 수 있나요?" />
+                        <button class="lc-btn go" disabled="@(string.IsNullOrWhiteSpace(_chat))" @onclick="SendChat">전송</button>
+                    </div>
+                    <div class="lc-row">
+                        @foreach (var s in Samples)
+                        {
+                            <button class="lc-btn sm" @onclick="_sample[Array.IndexOf(Samples, s)]">@(s)</button>
+                        }
+                    </div>
+                    <div class="lc-mut">대기 질문 @(Host.QueueLength) · 병합 @(Host.MergedQuestions) · 드롭 @(Host.DroppedQuestions)</div>
+                </div>
+            </div>
+
+            <div class="lc-col">
+                <div class="lc-card">
+                    <div class="lc-sec">📦 등록 상품 · 실시간 주문</div>
+                    @for (var i = 0; i < Bridge.ProductCount; i++)
+                    {
+                        var p = Bridge.Product(i);
+                        var st = Bridge.StockOf(i);
+                        var pct = Math.Clamp(st / (double)Math.Max(1, p.InitialStock), 0, 1);
+                        <div class="lc-prod @(i == Host.CurrentSlot ? "on" : "") @(st <= 0 ? "out" : "")">
+                            <i style="background:#@(p.Color.ToString("X6", CultureInfo.InvariantCulture))"></i>
+                            <div class="lc-pn"><b>@(p.Name)</b><span>@(AiLiveShowHostEngine.Won(p.SalePrice ?? p.Price)) · 판매 @(Bridge.SoldOf(i)) · 잔여 @(st)@(st <= 0 ? " 품절" : st <= p.LowStockThreshold ? " 임박" : "")</span>
+                                <div class="lc-gauge"><div style="width:@(F0(pct * 100))%;background:@(st <= p.LowStockThreshold ? "#ef4444" : "#22c55e")"></div></div></div>
+                            <button class="lc-btn sm" disabled="@(st <= 0 || !Host.IsLive)" @onclick="_switch[Math.Min(i, _switch.Length - 1)]">▶ 소개</button>
+                        </div>
+                    }
+                    @if (Bridge.ProductCount == 0)
+                    {
+                        <button class="lc-btn" @onclick="LoadDemo">🧪 데모 카탈로그 불러오기</button>
+                    }
+                </div>
+
+                <div class="lc-card">
+                    <div class="lc-sec">🎙 AI 쇼호스트</div>
+                    <div class="lc-row">
+                        <input class="lc-in w120" @bind="Host.HostName" />
+                        <select class="lc-in" @bind="Host.Tone">
+                            <option value="Energetic">에너지</option><option value="Friendly">친근</option><option value="Premium">프리미엄</option><option value="Humorous">유머</option>
+                        </select>
+                        <label class="lc-ck">에너지 <input type="range" min="0" max="1" step="0.05" value="@(F2(Host.Energy))" @oninput="SetEnergy" /> @(F0(Host.Energy * 100))%</label>
+                        <label class="lc-ck"><input type="checkbox" @bind="Host.UseLlm" /> Gemini</label>
+                        <label class="lc-ck"><input type="checkbox" @bind="Host.Speak" /> 아바타 발화</label>
+                    </div>
+                    <div class="lc-log">
+                        @foreach (var l in Host.History.Reverse().Take(14))
+                        {
+                            <div class="lc-line k@((int)l.Kind)"><b>@(AiLiveShowHostEngine.KindLabel(l.Kind))</b><span>@(l.Text)</span><i>@(l.Source)</i></div>
+                        }
+                    </div>
+                </div>
+
+                <div class="lc-card">
+                    <div class="lc-sec">🔌 커머스 API 연동</div>
+                    <div class="lc-row">
+                        <select class="lc-in" @bind="Bridge.Provider">
+                            <option value="Shopify">Shopify</option><option value="WooCommerce">WooCommerce</option><option value="CustomRest">REST API</option>
+                        </select>
+                        <input class="lc-in grow" @bind="Bridge.BaseUrl" placeholder="https://store.example.com/" />
+                        <button class="lc-btn sm" disabled="@(_busy)" @onclick="Poll">🔄 재고 동기</button>
+                    </div>
+                    <div class="lc-mut">자격 증명은 환경변수(@(LiveCommerceInventoryOrderBridge.ShopifyTokenVar) · @(LiveCommerceInventoryOrderBridge.WooKeyVar)/@(LiveCommerceInventoryOrderBridge.WooSecretVar) · @(LiveCommerceInventoryOrderBridge.CustomKeyVar)) · 웹훅 HMAC 검증 @(Bridge.Webhooks)건 / 거부 @(Bridge.BadSignatures)건@(Bridge.InBackoff ? " · ⏳ 백오프" : "")</div>
+                    <div class="lc-log sm">
+                        @for (var i = 0; i < _evN; i++)
+                        {
+                            var e = _ev[i];
+                            <div class="lc-ev"><b>@(EvLabel(e.Kind))</b><span>@(e.Slot >= 0 && e.Slot < Bridge.ProductCount ? Bridge.Product(e.Slot).Name : "—")</span><i>@(e.Kind == CommerceEventKind.Order ? LiveCommerceInventoryOrderBridge.MaskBuyer(e.Buyer) + " ×" + e.Qty.ToString(CultureInfo.InvariantCulture) : "잔여 " + e.Remaining.ToString(CultureInfo.InvariantCulture))</i></div>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="lc-f">
+            <span class="lc-mut">@(_msg ?? Host.LastAction ?? Overlay.LastAction ?? Bridge.LastAction ?? "대기")</span>
+            <button class="lc-btn" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .lc-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .lc-modal { width: min(1400px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .lc-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #db2777 14%, var(--card)), color-mix(in srgb, #f59e0b 12%, var(--card))); }
+    .lc-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .lc-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .lc-sub b { color: var(--text-primary); }
+    .lc-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .lc-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .lc-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); } .lc-chip.ok { color: #4ade80; } .lc-chip.hot { color: #fff; background: #f97316; border-color: #f97316; }
+    .lc-chip.live { color: #fff; background: #dc2626; border-color: #dc2626; animation: lc-pulse 1.2s infinite; }
+    @@keyframes lc-pulse { 50% { opacity: .6; } }
+    .lc-main { display: grid; grid-template-columns: 1.2fr 1fr; gap: 12px; padding: 12px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .lc-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .lc-player { border-radius: 10px; overflow: hidden; background: #000; border: 2px solid #db2777; }
+    .lc-screen { width: 100%; aspect-ratio: 16 / 9; display: block; } .lc-empty { display: flex; align-items: center; justify-content: center; color: #94a3b8; font-size: 13px; background: radial-gradient(circle, #3b0a24, #0b1220); }
+    .lc-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .lc-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .lc-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .lc-prod { display: grid; grid-template-columns: 10px 1fr auto; gap: 8px; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; } .lc-prod.on { border-color: #db2777; } .lc-prod.out { opacity: .55; }
+    .lc-prod > i { width: 10px; height: 34px; border-radius: 3px; } .lc-pn { display: flex; flex-direction: column; gap: 2px; min-width: 0; } .lc-pn b { font-size: 12.5px; color: var(--text-primary); } .lc-pn span { font: 10.5px var(--mono); color: var(--text-muted); }
+    .lc-gauge { height: 5px; background: #1f2937; border-radius: 3px; overflow: hidden; } .lc-gauge div { height: 100%; }
+    .lc-log { display: flex; flex-direction: column; gap: 2px; max-height: 210px; overflow-y: auto; } .lc-log.sm { max-height: 120px; }
+    .lc-line { display: grid; grid-template-columns: 54px 1fr 50px; gap: 6px; font-size: 11.5px; color: var(--text-secondary); border-bottom: 1px solid var(--line); padding: 2px 0; } .lc-line b { font: 10px var(--mono); color: #f9a8d4; } .lc-line i { font: 10px var(--mono); font-style: normal; color: var(--text-muted); }
+    .lc-line.k6, .lc-line.k5 { background: color-mix(in srgb, #ef4444 12%, var(--card)); } .lc-line.k4 { background: color-mix(in srgb, #38bdf8 10%, var(--card)); }
+    .lc-ev { display: grid; grid-template-columns: 50px 1fr 90px; gap: 6px; font-size: 11px; color: var(--text-secondary); } .lc-ev b { font: 10px var(--mono); color: var(--text-muted); } .lc-ev i { font: 10px var(--mono); font-style: normal; }
+    .lc-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; } .lc-in.grow { flex: 1; min-width: 140px; } .lc-in.w90 { width: 70px; } .lc-in.w120 { width: 120px; }
+    .lc-ck { font-size: 11.5px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; }
+    .lc-mut { font-size: 11px; color: var(--text-muted); word-break: break-all; }
+    .lc-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); } .lc-f .lc-mut { margin-right: auto; }
+    .lc-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .lc-btn.sm { padding: 3px 8px; font-size: 11px; } .lc-btn.go { background: linear-gradient(135deg,#db2777,#f59e0b); color: #fff; border: 0; } .lc-btn.danger { color: #f87171; border-color: #f87171; } .lc-btn.fire { background: #ef4444; color: #fff; border: 0; } .lc-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 1050px) { .lc-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly string[] Samples = { "얼마예요?", "재고 남았나요?", "사이즈 옵션 뭐 있어요?", "쿠폰 있나요?", "민감한 피부도 쓸 수 있나요?", "살게요!" };
+    private readonly Action[] _sample = new Action[Samples.Length];
+    private readonly Action[] _switch = new Action[LiveCommerceInventoryOrderBridge.MaxProducts];
+    private readonly byte[] _rgba = new byte[ShoppertainmentShowRunner.FrameW * ShoppertainmentShowRunner.FrameH * 4], _rgb = new byte[ShoppertainmentShowRunner.FrameW * ShoppertainmentShowRunner.FrameH * 3];
+    private readonly CommerceEvent[] _ev = new CommerceEvent[12];
+    private int _evN, _extraPct = 10, _couponPct = 5;
+    private string _saleSec = "60", _viewer = "시청자1";
+    private string? _frameUrl, _msg, _chat, _coupon = "LIVE5";
+    private bool _busy;
+    private CancellationTokenSource? _ui;
+
+    protected override void OnInitialized()
+    {
+        for (var i = 0; i < _sample.Length; i++) { var t = Samples[i]; _sample[i] = () => { _chat = t; SendChat(); }; }
+        for (var i = 0; i < _switch.Length; i++) { var s = i; _switch[i] = () => Host.SwitchTo(s, Runner.NowMs); }
+        Bridge.OnChange += OnServiceChanged;
+        Host.OnChange += OnServiceChanged;
+        Overlay.OnChange += OnServiceChanged;
+        if (Bridge.ProductCount == 0) LoadDemo();
+        Refresh();
+        if (Runner.IsLive) StartUi();
+    }
+
+    private void LoadDemo() { foreach (var p in AiLiveShowHostEngine.DemoCatalog()) Bridge.AddProduct(p); }
+
+    private void StartShow()
+    {
+        try
+        {
+            Host.CouponCode = _coupon; Host.CouponPercent = _couponPct;
+            Runner.Start();
+            Overlay.SetCoupon(_coupon, _couponPct);
+            _msg = null;
+            StartUi();
+        }
+        catch (InvalidOperationException ex) { _msg = "⚠ " + ex.Message; }
+    }
+
+    private void StopShow() { Runner.Stop(); StopUi(); Refresh(); }
+
+    private void FireSale()
+    {
+        var slot = Host.CurrentSlot;
+        if (slot < 0) return;
+        var p = Bridge.Product(slot);
+        var basePrice = p.SalePrice ?? p.Price;
+        var price = Math.Round(basePrice * (100 - Math.Clamp(_extraPct, 0, 90)) / 100m, 0);
+        var sec = double.TryParse(_saleSec, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 60;
+        Overlay.StartTimeSale(Runner.NowMs, sec, price);
+        Host.IngestChat("운영자", "타임세일 가격 얼마예요?", Runner.NowMs);
+    }
+
+    private void ApplyCoupon()
+    {
+        Host.CouponCode = string.IsNullOrWhiteSpace(_coupon) ? null : _coupon.Trim();
+        Host.CouponPercent = Math.Clamp(_couponPct, 0, 90);
+        Overlay.SetCoupon(Host.CouponCode, Host.CouponPercent);
+        if (Host.CurrentSlot >= 0) Overlay.SetProduct(Bridge.Product(Host.CurrentSlot), Bridge.StockOf(Host.CurrentSlot), Host.CouponCode);
+    }
+
+    private void SendChat()
+    {
+        if (string.IsNullOrWhiteSpace(_chat)) return;
+        var intent = Host.IngestChat(_viewer, _chat, Runner.NowMs);
+        _msg = "💬 " + _chat + " → " + intent + (Host.IsLive ? "" : " (방송 시작 후 답변)");
+        _chat = null;
+    }
+
+    private async Task Poll()
+    {
+        _busy = true;
+        try { var n = await Bridge.PollInventoryAsync(Runner.NowMs); _msg = n >= 0 ? "🔄 재고 " + n.ToString(CultureInfo.InvariantCulture) + "건 동기" : "⚠ " + (Bridge.LastAction ?? "동기 실패"); }
+        finally { _busy = false; }
+    }
+
+    private void ToggleDemo(ChangeEventArgs e) => Runner.DemoTraffic = e.Value is true;
+    private void SetRate(ChangeEventArgs e) => Runner.DemoOrdersPerSec = double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 1;
+    private void SetEnergy(ChangeEventArgs e) => Host.Energy = float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : 0.7f;
+
+    private void Refresh()
+    {
+        _evN = Bridge.CopyEvents(_ev);
+        if (Runner.Frames > 0)
+        {
+            Runner.CopyFrame(_rgba);
+            for (int i = 0, j = 0; i < _rgb.Length; i += 3, j += 4) { _rgb[i] = _rgba[j]; _rgb[i + 1] = _rgba[j + 1]; _rgb[i + 2] = _rgba[j + 2]; }
+            _frameUrl = SpatialImageCodec.BmpDataUrl(_rgb, ShoppertainmentShowRunner.FrameW, ShoppertainmentShowRunner.FrameH);
+        }
+    }
+
+    private static string EvLabel(CommerceEventKind k) => k switch
+    {
+        CommerceEventKind.Order => "🛒 주문", CommerceEventKind.LowStock => "⚠ 임박", CommerceEventKind.SoldOut => "⛔ 품절", CommerceEventKind.Restock => "♻ 입고",
+        CommerceEventKind.SurgeStart => "🔥 폭주", CommerceEventKind.SurgeEnd => "🧊 진정", _ => "✖ 거절",
+    };
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+
+    private void StartUi()
+    {
+        if (_ui is not null) return;
+        var cts = new CancellationTokenSource();
+        _ui = cts;
+        _ = UiLoopAsync(cts.Token);
+    }
+
+    private void StopUi()
+    {
+        var cts = Interlocked.Exchange(ref _ui, null);
+        if (cts is null) return;
+        try { cts.Cancel(); } catch (ObjectDisposedException) { }
+        cts.Dispose();
+    }
+
+    private async Task UiLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(150));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                Refresh();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("CommerceStudio.Ui", ex); }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Bridge.OnChange -= OnServiceChanged;
+        Host.OnChange -= OnServiceChanged;
+        Overlay.OnChange -= OnServiceChanged;
+        StopUi();
+    }
+}

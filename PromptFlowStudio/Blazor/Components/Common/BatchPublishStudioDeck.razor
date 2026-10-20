@@ -1,0 +1,171 @@
+@using PromptFlowStudio.Services.Trade
+@using PromptFlowStudio.Services.Media
+@implements IDisposable
+@inject ScriptPolishEnhancer Polish
+@inject ClientBrandingPresetService Brands
+@inject PreExportQaSentinel Qa
+@inject MultiPlatformRenderEngine MultiRender
+@inject ThumbnailCaptureService Thumb
+@inject ILocalMediaService Media
+@inject PromptFlowStudio.Services.Ui.StudioMemoryAudit MemAudit
+
+@* [PromptFlow Studio] v3.3.0 대량 배포 & QA 검수 제어반 — 대본 폴리싱 · 브랜드 스위처 · QA 게이지 · 8대 플랫폼 자동 검수 내보내기. *@
+
+<div class="bp">
+    <div class="bp-h"><span class="bp-title">🚀 대량 배포 &amp; QA 검수</span><span class="bp-badge">v3.3.0</span></div>
+    <div class="bp-grid">
+        @* ── ① 대본 폴리싱 ── *@
+        <div class="bp-card">
+            <div class="bp-ct">✍️ AI 대본 폴리싱 &amp; 컷 확장</div>
+            <textarea class="bp-ta" placeholder="원문 대본 입력 → 도입·전개·위기·결말 서사 구조로 자동 확장" @bind="_script" disabled="@Disabled"></textarea>
+            <button class="bp-btn" @onclick="RunPolish" disabled="@(Disabled || string.IsNullOrWhiteSpace(_script))">✨ 폴리싱 &amp; 컷 적용</button>
+            @if (_polishMsg is not null) { <div class="bp-sub">@_polishMsg</div> }
+        </div>
+
+        @* ── ② 브랜드 프로필 스위처 ── *@
+        <div class="bp-card">
+            <div class="bp-ct">🎨 클라이언트 브랜드 프로필</div>
+            <select class="bp-select" @onchange="OnBrand" disabled="@Disabled">
+                <option value="">— 브랜드 프로필 선택 —</option>
+                @foreach (var b in Brands.Profiles)
+                {
+                    <option value="@b.Id">@b.Name · @b.NeonColor · 엠보싱 @b.EmbossDepth</option>
+                }
+            </select>
+            @if (_brandMsg is not null) { <div class="bp-sub">@_brandMsg</div> }
+            <div class="bp-swatches">
+                @foreach (var b in Brands.Profiles.Take(4))
+                {
+                    <span class="bp-swatch" style="--c:@NeonHex(b.NeonColor)" title="@b.Name">@b.Name</span>
+                }
+            </div>
+        </div>
+
+        @* ── ③ QA 검수 게이지 ── *@
+        <div class="bp-card @(_qa is { Pass: false } ? "bad" : null)">
+            <div class="bp-ct">🛡️ 배포 전 QA 센티널 <button class="bp-mini" @onclick="RunQa" disabled="@(_busy || !HasMaster)">검수 실행</button></div>
+            @if (_qa is { } qa)
+            {
+                <div class="bp-qa">
+                    <div class="bp-qled @(qa.Pass ? "ok" : "no")">@(qa.Pass ? "PASS" : "BLOCK")</div>
+                    <div class="bp-qmetrics">
+                        <div class="bp-qm @(qa.AudioClip ? "warn" : null)">🔊 피크 @qa.PeakDbfs dBFS · 클립 @(Math.Round(qa.ClipRatio * 100, 2))%</div>
+                        <div class="bp-qm @(qa.HasBlack ? "warn" : null)">🎞️ 블랙 @qa.BlackFrames/@qa.SampleFrames 프레임</div>
+                    </div>
+                </div>
+                @foreach (var iss in qa.Issues) { <div class="bp-issue">⚠️ @iss</div> }
+            }
+            else { <div class="bp-sub">@(HasMaster ? "최종 영상 QA 검수 대기" : "먼저 영상을 병합/생성하세요.")</div> }
+        </div>
+
+        @* ── ④ 8대 플랫폼 자동 검수 내보내기 ── *@
+        <div class="bp-card">
+            <div class="bp-ct">📤 전 플랫폼 배포</div>
+            <button class="bp-btn go" @onclick="BatchExport" disabled="@(_busy || Disabled || !HasMaster)">
+                @(_busy ? "검수·내보내기 중…" : "🚀 8대 플랫폼 자동 검수 내보내기")
+            </button>
+            <div class="bp-sub">@(_exportMsg ?? "QA 통과 시에만 8대 플랫폼 일괄 배출 + 썸네일 포착")</div>
+            <div class="bp-timing">
+                @foreach (var w in UploadTimingAdvisor.Windows.Take(4))
+                {
+                    <div class="bp-tw"><span class="bp-tw-p">@w.Icon @w.Name</span><span class="bp-tw-t">@w.BestTimesKst</span></div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .bp { border: 1px solid color-mix(in srgb,#22c55e 28%,var(--line)); border-radius: 16px; overflow: hidden; background: linear-gradient(160deg, color-mix(in srgb,#22c55e 7%,rgba(18,20,31,.72)), rgba(18,20,31,.85)); backdrop-filter: blur(16px) saturate(140%); -webkit-backdrop-filter: blur(16px) saturate(140%); }
+    .bp-h { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb,#22c55e 13%,transparent), transparent 60%); }
+    .bp-title { font: 900 14px var(--mono); } .bp-badge { font: 700 10px var(--mono); color: #86efac; background: color-mix(in srgb,#22c55e 15%,transparent); border: 1px solid color-mix(in srgb,#22c55e 38%,var(--line)); border-radius: 20px; padding: 2px 8px; }
+    .bp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 14px 16px; }
+    .bp-card { border: 1px solid var(--line); border-radius: 13px; background: rgba(26,29,43,.6); padding: 12px; display: flex; flex-direction: column; gap: 9px; }
+    .bp-card.bad { border-color: color-mix(in srgb,#ef4444 50%,var(--line)); box-shadow: 0 0 0 1px color-mix(in srgb,#ef4444 30%,transparent) inset; }
+    .bp-ct { font: 800 12px var(--mono); display: flex; align-items: center; gap: 7px; }
+    .bp-mini { margin-left: auto; font: 700 10px var(--mono); color: #86efac; background: color-mix(in srgb,#22c55e 12%,transparent); border: 1px solid color-mix(in srgb,#22c55e 34%,var(--line)); border-radius: 8px; padding: 3px 9px; cursor: pointer; }
+    .bp-ta { width: 100%; box-sizing: border-box; min-height: 72px; resize: vertical; background: #12141f; border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; color: var(--text-primary); font: 600 11.5px var(--mono); }
+    .bp-ta:focus { outline: none; border-color: #22c55e; }
+    .bp-select { width: 100%; box-sizing: border-box; background: #12141f; border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; color: var(--text-primary); font: 600 12px var(--mono); }
+    .bp-btn { font: 800 12.5px var(--mono); padding: 10px 14px; border: none; border-radius: 10px; color: #fff; cursor: pointer; background: linear-gradient(135deg,#0ea5e9,#6366f1); }
+    .bp-btn.go { background: linear-gradient(135deg,#22c55e,#16a34a); }
+    .bp-btn:disabled { opacity: .45; cursor: not-allowed; } .bp-btn:hover:not(:disabled) { filter: brightness(1.08); }
+    .bp-sub { font: 600 10.5px var(--mono); color: var(--text-muted); line-height: 1.4; }
+    .bp-swatches { display: flex; gap: 6px; flex-wrap: wrap; } .bp-swatch { font: 700 9.5px var(--mono); color: var(--text-secondary); border: 1px solid var(--c); box-shadow: 0 0 0 1px color-mix(in srgb,var(--c) 30%,transparent) inset; border-radius: 8px; padding: 3px 8px; }
+    .bp-qa { display: flex; align-items: center; gap: 12px; }
+    .bp-qled { font: 900 13px var(--mono); border-radius: 8px; padding: 8px 12px; } .bp-qled.ok { color: #86efac; background: color-mix(in srgb,#22c55e 16%,transparent); border: 1px solid #22c55e; } .bp-qled.no { color: #fca5a5; background: color-mix(in srgb,#ef4444 16%,transparent); border: 1px solid #ef4444; }
+    .bp-qmetrics { display: flex; flex-direction: column; gap: 4px; } .bp-qm { font: 700 10.5px var(--mono); color: var(--text-secondary); } .bp-qm.warn { color: #fca5a5; }
+    .bp-issue { font: 600 10px var(--mono); color: #fca5a5; }
+    .bp-timing { display: flex; flex-direction: column; gap: 3px; margin-top: 2px; } .bp-tw { display: flex; justify-content: space-between; font: 600 9.5px var(--mono); } .bp-tw-p { color: var(--text-secondary); } .bp-tw-t { color: var(--text-muted); }
+    @@media (max-width: 720px) { .bp-grid { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter, EditorRequired] public StoryboardProject Project { get; set; } = default!;
+    [Parameter] public bool Disabled { get; set; }
+
+    private long _memToken;
+    private string _script = "";
+    private string? _polishMsg, _brandMsg, _exportMsg;
+    private QaReport? _qa;
+    private bool _busy;
+
+    private bool HasMaster => !string.IsNullOrWhiteSpace(Project.FinalVideoPath) && System.IO.File.Exists(Project.FinalVideoPath);
+
+    protected override void OnInitialized()
+    {
+        _memToken = MemAudit.Track("BatchPublishStudioDeck");
+        Brands.OnChange += OnSvc;
+    }
+    private void OnSvc() => InvokeAsync(StateHasChanged);
+
+    private void RunPolish()
+    {
+        var result = Polish.Polish(_script, targetCuts: 6);
+        if (!result.HasData) { _polishMsg = "⚠ 폴리싱할 대본이 없습니다."; return; }
+        var n = Polish.ApplyToProject(Project, result);
+        _polishMsg = $"✅ {n}컷 적용 · {result.Summary}";
+    }
+
+    private void OnBrand(ChangeEventArgs e)
+    {
+        var id = e.Value?.ToString() ?? "";
+        var b = Brands.Get(id);
+        if (b is null) { _brandMsg = null; return; }
+        _brandMsg = "🎨 " + Brands.ApplyToProject(Project, b).Summary;
+    }
+
+    private async Task RunQa()
+    {
+        if (!HasMaster) return;
+        _busy = true; try { _qa = await Qa.AnalyzeAsync(Project.FinalVideoPath!); } finally { _busy = false; }
+    }
+
+    private async Task BatchExport()
+    {
+        if (!HasMaster) return;
+        _busy = true; _exportMsg = "🛡️ QA 검수 중…"; StateHasChanged();
+        try
+        {
+            _qa = await Qa.AnalyzeAsync(Project.FinalVideoPath!);
+            if (!_qa.Pass) { _exportMsg = "⛔ QA 차단 — 배포 취소: " + _qa.Message; return; }
+
+            _exportMsg = "✅ QA 통과 → 8대 플랫폼 배출 중…"; StateHasChanged();
+            var dir = System.IO.Path.Combine(Media.MediaRoot, Project.Id);
+            var (w, h) = StoryboardProject.ParseResolution(Project.ExportResolution);
+            var platforms = MultiPlatformRenderEngine.Specs.Select(s => s.Platform).ToList();
+            var mr = await MultiRender.RenderAllAsync(Project.FinalVideoPath!, dir, w, h, platforms, maxParallel: 2);
+            await Thumb.CaptureAsync(Project.FinalVideoPath!, System.IO.Path.Combine(dir, "thumbnail.png"), w, h);
+            _exportMsg = $"✅ QA 통과 · {mr.Message} · 썸네일 포착 완료";
+        }
+        catch (Exception ex) { _exportMsg = "⚠ " + ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private static string NeonHex(string? key) => (key ?? "").ToLowerInvariant() switch
+    {
+        "magenta" => "#d946ef", "gold" => "#f5c451", "emerald" => "#10b981", _ => "#22d3ee",
+    };
+
+    public void Dispose() { Brands.OnChange -= OnSvc; MemAudit.Release(_memToken); }
+}

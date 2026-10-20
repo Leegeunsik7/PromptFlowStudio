@@ -1,0 +1,249 @@
+@using PromptFlowStudio.Services.Account
+@inject JusoAddressService Juso
+@implements IDisposable
+
+@* [PromptFlowStudio] 우편번호·주소검색 모달 — 승인키 있으면 행안부 도로명주소 검색 API(실시간 전국), 없으면 내장 모의 DB 폴백. 앰버/틸 테마. *@
+@if (Visible)
+{
+    <div class="pcs-scrim">
+        <div class="pcs-modal" @onclick:stopPropagation="true">
+            <div class="pcs-head">
+                <div class="pcs-title">📮 주소 검색</div>
+                <button class="pcs-x" @onclick="Close" aria-label="닫기">✕</button>
+            </div>
+
+            <div class="pcs-searchbar">
+                <span class="pcs-search-ico">🔍</span>
+                @* 언컨트롤드 입력(value 재바인딩 제거) — 한글 IME 조합 중 값 리셋 방지 *@
+                <input class="pcs-search-in" @key="_searchEpoch" placeholder="도로명·지번·건물명 검색 (예: 배곧1로, 판교, 코엑스, 부산대학교)"
+                       @oninput="OnInput" autofocus />
+                @if (!string.IsNullOrEmpty(_query))
+                {
+                    <button class="pcs-clear" @onclick="ClearQuery">✕</button>
+                }
+            </div>
+
+            <div class="pcs-mode">
+                <button class="pcs-mode-btn @(_mode == "road" ? "on" : null)" @onclick='() => _mode = "road"'>도로명주소</button>
+                <button class="pcs-mode-btn @(_mode == "jibun" ? "on" : null)" @onclick='() => _mode = "jibun"'>지번주소</button>
+                <span class="pcs-count">@CountLabel()</span>
+            </div>
+
+            <div class="pcs-list">
+                @if (string.IsNullOrWhiteSpace(_query))
+                {
+                    <div class="pcs-hint">💡 도로명·동·건물명을 입력하면 @(_online ? "행안부 전국 도로명주소에서 실시간" : "내장 주소록에서") 검색됩니다. (예: <b>배곧1로</b>, <b>판교</b>, <b>코엑스</b>, <b>부산대학교</b>)</div>
+                }
+                else if (_searching)
+                {
+                    <div class="pcs-hint">🔎 "@_query" 검색 중…</div>
+                }
+                else
+                {
+                    var rows = Rows();
+                    if (rows.Count == 0)
+                    {
+                        <div class="pcs-empty">🔎 "@_query" 검색 결과가 없습니다. 다른 키워드를 입력해 보세요.</div>
+                    }
+                    foreach (var a in rows)
+                    {
+                        <button class="pcs-item" @onclick="() => Pick(a)">
+                            <span class="pcs-zip">@a.Zip</span>
+                            <div class="pcs-addr">
+                                <div class="pcs-road">@Highlight(_mode == "road" ? a.Road : a.Jibun) @if (!string.IsNullOrEmpty(a.Building)) { <span class="pcs-bldg">@a.Building</span> }</div>
+                                <div class="pcs-alt">@(_mode == "road" ? "[지번] " + a.Jibun : "[도로명] " + a.Road)</div>
+                            </div>
+                        </button>
+                    }
+                }
+            </div>
+
+            <div class="pcs-foot">@(_online ? "※ 행정안전부 도로명주소 검색 API(실시간 전국)." : "※ 내장 모의 주소록 DB(오프라인).") 주소 선택 시 우편번호·기본주소가 자동 입력됩니다.</div>
+        </div>
+    </div>
+}
+
+<style>
+    .pcs-scrim { position: fixed; inset: 0; z-index: 6200; background: rgba(5,9,18,.76); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); display: flex; align-items: flex-start; justify-content: center; padding-top: 8vh; animation: pcsFade .18s ease; }
+    @@keyframes pcsFade { from { opacity: 0; } to { opacity: 1; } }
+    .pcs-modal { width: min(560px, 94vw); max-height: 82vh; display: flex; flex-direction: column; background: linear-gradient(180deg, #131d33, #0a1120); border: 1px solid rgba(245,158,11,.32); border-radius: 16px; box-shadow: 0 30px 80px rgba(0,0,0,.65), 0 0 30px rgba(217,119,6,.16); overflow: hidden; animation: pcsPop .24s cubic-bezier(.2,.9,.3,1.2); }
+    @@keyframes pcsPop { from { opacity: 0; transform: translateY(-10px) scale(.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+    .pcs-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; background: linear-gradient(90deg, rgba(245,158,11,.16), transparent); border-bottom: 1px solid rgba(255,255,255,.06); }
+    .pcs-title { font-weight: 800; font-size: 1.02rem; color: #dcece6; }
+    .pcs-x { background: rgba(255,255,255,.08); color: #fff; border: none; border-radius: 8px; width: 28px; height: 28px; font-weight: 800; cursor: pointer; }
+    .pcs-searchbar { display: flex; align-items: center; gap: 8px; margin: 14px 16px 8px; padding: 9px 12px; background: rgba(8,16,13,.6); border: 1px solid rgba(245,158,11,.28); border-radius: 11px; }
+    .pcs-search-ico { font-size: .95rem; }
+    .pcs-search-in { flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: #e6f2ee; font-size: .92rem; box-sizing: border-box; }
+    .pcs-clear { background: none; border: none; color: #8ca79d; cursor: pointer; font-weight: 800; }
+    .pcs-mode { display: flex; align-items: center; gap: 7px; margin: 0 16px 8px; }
+    .pcs-mode-btn { font-size: .74rem; font-weight: 700; color: #a7c0b7; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.12); border-radius: 9999px; padding: 4px 12px; cursor: pointer; }
+    .pcs-mode-btn.on { color: #1a1204; background: #fbbf24; border-color: #fbbf24; }
+    .pcs-count { margin-left: auto; font-size: .72rem; font-weight: 700; color: #34d399; }
+    .pcs-list { flex: 1; overflow-y: auto; padding: 4px 10px 10px; }
+    .pcs-hint, .pcs-empty { padding: 22px 14px; text-align: center; font-size: .84rem; color: #a7c0b7; line-height: 1.6; }
+    .pcs-hint b { color: #34d399; }
+    .pcs-item { width: 100%; display: flex; align-items: center; gap: 12px; padding: 11px 12px; margin: 4px 0; border: 1px solid rgba(255,255,255,.06); background: rgba(255,255,255,.02); border-radius: 11px; cursor: pointer; text-align: left; transition: background .12s ease, border-color .12s ease, transform .1s ease; }
+    .pcs-item:hover { background: rgba(245,158,11,.12); border-color: rgba(245,158,11,.44); }
+    .pcs-item:active { transform: scale(.99); }
+    .pcs-zip { font-family: 'Roboto Mono', Consolas, monospace; font-weight: 800; font-size: .82rem; color: #34d399; background: rgba(245,158,11,.14); border: 1px solid rgba(245,158,11,.34); border-radius: 8px; padding: 5px 9px; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+    .pcs-addr { min-width: 0; }
+    .pcs-road { font-size: .88rem; font-weight: 700; color: #e6f2ee; }
+    .pcs-road mark { background: rgba(245,158,11,.34); color: #eafff8; border-radius: 3px; padding: 0 1px; }
+    .pcs-bldg { display: inline-block; margin-left: 6px; font-size: .7rem; font-weight: 700; color: #34d399; background: rgba(245,158,11,.1); border: 1px solid rgba(245,158,11,.3); border-radius: 6px; padding: 1px 7px; vertical-align: middle; }
+    .pcs-alt { font-size: .72rem; color: #8ca79d; margin-top: 2px; }
+    .pcs-foot { font-size: .68rem; color: #6f8a80; padding: 9px 16px 13px; border-top: 1px solid rgba(255,255,255,.05); }
+    .pcs-modal { contain: layout; }
+    .pcs-searchbar { min-width: 0; }
+    .pcs-search-in { min-width: 0; box-sizing: border-box; }
+</style>
+
+@code {
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public EventCallback<PostcodeResult> OnSelect { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    public sealed record PostcodeResult(string Zip, string Road, string Jibun, string Building);
+
+    private string _query = "";
+    private string _mode = "road";
+    private int _searchEpoch;
+
+    // ── 온라인(행안부 API) 모드 상태 ──
+    private bool _online;
+    private bool _searching;
+    private string _apiMsg = "";
+    private List<PostcodeResult> _apiRows = new();
+    // v13.0.1: 이전 `new Timer(async _ => await RunSearch(term))` 는 TimerCallback 에 붙은 async void 람다라 주소 API 예외·
+    //   파기 후 렌더러 경합 예외가 스레드풀로 재던져져 프로세스가 종료됐다 → SafeDebouncer(예외 격리 + 이전 예약 원자 취소).
+    private PromptFlowStudio.Services.Ui.SafeDebouncer? _debounce;
+
+    protected override void OnInitialized()
+    {
+        _online = Juso.Enabled;
+        _debounce = new PromptFlowStudio.Services.Ui.SafeDebouncer(ex => _ = ReportSearchFaultAsync(ex));
+    }
+
+    // 내장 모의 주소록 DB — 승인키가 없을 때(오프라인)만 쓰는 폴백.
+    private static readonly PostcodeResult[] Db =
+    {
+        new("15073", "경기 시흥시 배곧1로 291", "경기 시흥시 정왕동 1771-1", "한국공학대학교"),
+        new("15073", "경기 시흥시 배곧1로 47", "경기 시흥시 배곧동 224", ""),
+        new("15011", "경기 시흥시 서울대학로 173", "경기 시흥시 배곧동 242", "서울대학교 시흥캠퍼스"),
+        new("06164", "서울 강남구 테헤란로 521", "서울 강남구 삼성동 159-1", "파르나스타워"),
+        new("06236", "서울 강남구 강남대로 382", "서울 강남구 역삼동 825", "메리츠타워"),
+        new("06132", "서울 강남구 봉은사로 524", "서울 강남구 삼성동 154", "코엑스(COEX)"),
+        new("04524", "서울 중구 세종대로 110", "서울 중구 태평로1가 31", "서울특별시청"),
+        new("07327", "서울 영등포구 여의대로 108", "서울 영등포구 여의도동 23", "파크원타워"),
+        new("07326", "서울 영등포구 국제금융로 10", "서울 영등포구 여의도동 23", "서울국제금융센터(IFC)"),
+        new("13529", "경기 성남시 분당구 판교역로 235", "경기 성남시 분당구 삼평동 681", "에이치스퀘어"),
+        new("13494", "경기 성남시 분당구 대왕판교로 660", "경기 성남시 분당구 삼평동 621", "유스페이스"),
+        new("16419", "경기 수원시 영통구 광교중앙로 145", "경기 수원시 영통구 이의동 1330", "수원컨벤션센터"),
+        new("18448", "경기 화성시 삼성전자로 1", "경기 화성시 반월동 산1", "삼성전자 화성캠퍼스"),
+        new("21999", "인천 연수구 컨벤시아대로 165", "인천 연수구 송도동 24-5", "송도컨벤시아"),
+        new("30128", "세종특별자치시 한누리대로 2130", "세종특별자치시 보람동 692", "세종특별자치시청"),
+        new("34051", "대전 유성구 엑스포로 107", "대전 유성구 도룡동 4", "대전컨벤션센터(DCC)"),
+        new("34126", "대전 유성구 대학로 291", "대전 유성구 구성동 373-1", "KAIST"),
+        new("35208", "대전 서구 둔산로 100", "대전 서구 둔산동 1420", "대전광역시청"),
+        new("48058", "부산 해운대구 센텀중앙로 55", "부산 해운대구 우동 1500", "센텀시티"),
+        new("46241", "부산 금정구 부산대학로63번길 2", "부산 금정구 장전동 30", "부산대학교"),
+        new("41911", "대구 중구 공평로 88", "대구 중구 동인동1가 2", "대구광역시청"),
+        new("61947", "광주 서구 내방로 111", "광주 서구 치평동 1200", "광주광역시청"),
+        new("44538", "울산 중구 종가로 340", "울산 중구 성안동 산188", "한국동서발전"),
+        new("52851", "경남 진주시 동진로 155", "경남 진주시 충무공동 750", "한국항공우주산업(KAI)"),
+        new("54896", "전북 전주시 덕진구 백제대로 567", "전북 전주시 덕진구 덕진동1가 1268-10", "전북대학교"),
+        new("63309", "제주 제주시 첨단로 242", "제주 제주시 영평동 2181", "카카오 제주오피스"),
+        new("24341", "강원특별자치도 춘천시 중앙로 1", "강원 춘천시 봉의동 15", "강원특별자치도청"),
+    };
+
+    private void OnInput(ChangeEventArgs e)
+    {
+        _query = e.Value?.ToString() ?? "";
+        if (_online) DebounceSearch();   // 오프라인은 Filtered()가 마크업에서 즉시 반영
+    }
+    private void ClearQuery() { _query = ""; _apiRows = new(); _apiMsg = ""; _searching = false; _searchEpoch++; }
+
+    private void DebounceSearch()
+    {
+        var term = _query;
+        // 검색 본문은 렌더러 디스패처에서 실행(_query/_apiRows 를 스레드풀에서 만지던 경합 제거). 예외는 SafeDebouncer 가 포착.
+        _debounce?.Schedule(TimeSpan.FromMilliseconds(350), _ => InvokeAsync(() => RunSearch(term)));
+    }
+
+    // 검색 실패를 화면 메시지로만 알린다(파기 후면 무시) - 이 메서드 자체도 예외를 밖으로 내보내지 않는다.
+    private async Task ReportSearchFaultAsync(Exception ex)
+    {
+        Program.Log("PostcodeSearchModal.Search", ex);
+        if (_debounce is null || _debounce.IsDisposed) return;
+        try
+        {
+            await InvokeAsync(() =>
+            {
+                _searching = false;
+                _apiRows = new();
+                _apiMsg = "주소 검색 실패 — 잠시 후 다시 시도하세요. (" + ex.GetType().Name + ")";
+                StateHasChanged();
+            });
+        }
+        catch (Exception) { /* 렌더러 종료 경합 - 표시 불가, 프로세스 보호 우선 */ }
+    }
+
+    private async Task RunSearch(string term)
+    {
+        if (!string.Equals(term, _query, StringComparison.Ordinal)) return;   // 최신 입력만
+        if (string.IsNullOrWhiteSpace(term)) { _apiRows = new(); _apiMsg = ""; await InvokeAsync(StateHasChanged); return; }
+        _searching = true; await InvokeAsync(StateHasChanged);
+        var resp = await Juso.SearchAsync(term, 1);
+        if (!string.Equals(term, _query, StringComparison.Ordinal)) return;   // 응답 전 입력이 또 바뀌면 폐기
+        _apiRows = resp.Ok
+            ? resp.Results.Select(r => new PostcodeResult(r.Zip, r.Road, r.Jibun, r.Building)).ToList()
+            : new();
+        _apiMsg = resp.Message;
+        _searching = false;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private List<PostcodeResult> Rows() => _online ? _apiRows : Filtered();
+    private string CountLabel()
+    {
+        if (string.IsNullOrWhiteSpace(_query)) return "";
+        if (_online) return _searching ? "검색 중…" : (string.IsNullOrEmpty(_apiMsg) ? $"{_apiRows.Count}건" : _apiMsg);
+        return $"{Filtered().Count}건";
+    }
+
+    public void Dispose() => _debounce?.Dispose();
+
+    private static string Squash(string s) => s.Replace(" ", "");
+    private static string StripNo(string s)
+    {
+        int i = s.Length;
+        while (i > 0 && (char.IsDigit(s[i - 1]) || s[i - 1] == ' ' || s[i - 1] == '-')) i--;
+        return s[..i];
+    }
+
+    private List<PostcodeResult> Filtered()
+    {
+        var q = _query.Trim();
+        if (string.IsNullOrEmpty(q)) return new List<PostcodeResult>();
+        var qs = Squash(q);
+        var qCore = Squash(StripNo(q));
+        return Db.Where(a => Squash(a.Road).Contains(qs, StringComparison.OrdinalIgnoreCase)
+                          || Squash(a.Jibun).Contains(qs, StringComparison.OrdinalIgnoreCase)
+                          || a.Zip.Contains(qs, StringComparison.OrdinalIgnoreCase)
+                          || Squash(a.Building).Contains(qs, StringComparison.OrdinalIgnoreCase)
+                          || (qCore.Length >= 2 && Squash(StripNo(a.Road)).Contains(qCore, StringComparison.OrdinalIgnoreCase))).ToList();
+    }
+
+    private MarkupString Highlight(string text)
+    {
+        var q = _query.Trim();
+        if (string.IsNullOrEmpty(q)) return (MarkupString)Esc(text);
+        int i = text.IndexOf(q, StringComparison.OrdinalIgnoreCase);
+        if (i < 0) return (MarkupString)Esc(text);
+        return (MarkupString)(Esc(text[..i]) + "<mark>" + Esc(text.Substring(i, q.Length)) + "</mark>" + Esc(text[(i + q.Length)..]));
+    }
+
+    private static string Esc(string s) => s.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
+
+    private async Task Pick(PostcodeResult a) { if (OnSelect.HasDelegate) await OnSelect.InvokeAsync(a); }
+    private async Task Close() { if (OnClose.HasDelegate) await OnClose.InvokeAsync(); }
+}

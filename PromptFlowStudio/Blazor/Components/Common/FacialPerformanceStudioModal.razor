@@ -1,0 +1,354 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.DigitalHuman
+@using PromptFlowStudio.Services.FacialPerformance
+@using PromptFlowStudio.Services.Localization.Dubbing
+@using Microsoft.AspNetCore.Components.Web
+@using Viseme = PromptFlowStudio.Services.DigitalHuman.Viseme
+@implements IDisposable
+@inject FacialPerformanceStudioRunner Runner
+
+@*
+    [PromptFlow Studio v17.12.0] 🗣️ AI 페이셜 퍼포먼스 & Audio2Face 스튜디오 — 3D 와이어프레임 페이스 마스크(468) · 52 ARKit 블렌드셰이프 미터 ·
+    오디오 파형 · 비짐 타임라인 · 포먼트 모음 차트 · MFCC · 생체 시선/깜빡임 가드.
+*@
+
+<div class="fpc-scrim" @onclick="Close">
+    <div class="fpc-modal" @onclick:stopPropagation="true">
+        <div class="fpc-h">
+            <div>
+                <div class="fpc-title">🗣️ AI 페이셜 퍼포먼스 &amp; Audio2Face 스튜디오</div>
+                <div class="fpc-sub"><b>블렌드셰이프 엔진</b>이 카메라 피드의 468 얼굴 랜드마크에서 헤드 포즈(Horn 사원수 정렬)를 제거하고 52 ARKit 가중치를 상자 제약 최소제곱(SIMD 투영 · 활성 집합 뉴턴)으로 역산합니다.
+                    <b>Audio2Face</b>는 마이크 48 kHz 를 10 ms 홉마다 FFT · 멜/MFCC · LPC 포먼트로 분석해 음소(A E I O U · P/B/M · F)를 입 모양으로 서브 ms 변환하며,
+                    <b>생체 시선 가드</b>는 동공 기반 시선을 주 시퀀스 속도로 제한하고 Dead-Eye 를 감지하면 미세 홱보기 · 드리프트 · 떨림 · 무의식 깜빡임을 주입합니다. 배우·카메라·마이크는 인프로세스 시뮬레이션입니다.</div>
+            </div>
+            <button class="fpc-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="fpc-bar">
+            <button class="fpc-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 캡처 가동")</button>
+            <button class="fpc-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="fpc-btn @(Runner.Motion ? "on" : null)" @onclick="() => Runner.Motion = !Runner.Motion">🎬 연기</button>
+            <button class="fpc-btn @(Runner.HeadMotion ? "on" : null)" @onclick="() => Runner.HeadMotion = !Runner.HeadMotion">🙆 헤드 모션</button>
+            <select class="fpc-sel" value="@((int)Runner.Mouth)" @onchange="e => Runner.SetMouthSource((MouthSource)(int)Num(e, 2))">
+                <option value="0">입: 카메라 역산</option><option value="1">입: Audio2Face</option><option value="2">입: 융합</option>
+            </select>
+            <label class="fpc-sl">오디오 가중 <b>@(F2(Runner.AudioBlend))</b><input type="range" min="0" max="1" step="0.05" value="@(F2(Runner.AudioBlend))" @onchange="e => Runner.AudioBlend = (float)Num(e, 0.5)" /></label>
+            <label class="fpc-sl">검출 노이즈 <b>@(F1(Runner.NoiseMm)) mm</b><input type="range" min="0" max="2" step="0.1" value="@(F1(Runner.NoiseMm))" @onchange="e => Runner.NoiseMm = (float)Num(e, 0.3)" /></label>
+            <button class="fpc-btn sm @(Runner.CameraOccluded ? "stop" : null)" @onclick="() => Runner.SetOccluded(!Runner.CameraOccluded)">🚫 얼굴 소실</button>
+            <span class="fpc-chip">틱 @(Runner.Tick) · @(F2(Runner.LastTickMs)) ms · @(E.Path) 역산 @(F0(E.LastSolveUs)) µs(포즈 @(F0(E.LastPoseUs)) · 투영 @(F0(E.LastProjectUs))) · A2F 홉 @(F0(A.LastHopUs)) µs · 가드 @(F0(G.LastGuardUs)) µs</span>
+            <span class="fpc-chip @(A.AvgHopUs < 1000 ? "ok" : "warn")">A2F @(A.AvgHopUs < 1000 ? "서브 ms" : "≥ 1 ms") · 평균 @(F0(A.AvgHopUs)) / 최대 @(F0(A.MaxHopUs)) µs · 지연 @(F1(A.AlgorithmicLatencyMs)) ms</span>
+        </div>
+
+        <div class="fpc-main">
+            <div class="fpc-col">
+                <div class="fpc-card">
+                    <div class="fpc-sec">🎭 3D 와이어프레임 페이스 마스크 <span class="fpc-dim">468 랜드마크 · 최종 52 가중치 재구성</span>
+                        <span class="fpc-chip @(Runner.FaceLost ? "bad" : "ok")">@(Runner.FaceLost ? "얼굴 소실 — 오디오 폴백" : "추적 중")</span>
+                    </div>
+                    <div class="fpc-face">
+                        <svg viewBox="0 0 320 400">
+                            @for (var e = 0; e < NeuralFacialLandmarkBlendshapeEngine.Edges.Length; e += 2)
+                            {
+                                var a = P(Runner.Preview(NeuralFacialLandmarkBlendshapeEngine.Edges[e])); var b = P(Runner.Preview(NeuralFacialLandmarkBlendshapeEngine.Edges[e + 1]));
+                                <line class="@(e >= NeuralFacialLandmarkBlendshapeEngine.FeatureEdgeStart ? "ft" : "gr")" x1="@(F1(a.X))" y1="@(F1(a.Y))" x2="@(F1(b.X))" y2="@(F1(b.Y))" />
+                            }
+                            @for (var s = 0; s < 2; s++)
+                            {
+                                var c = P(Runner.Preview(NeuralFacialLandmarkBlendshapeEngine.IrisBase + s * 5));
+                                <g><circle class="iris" cx="@(F1(c.X))" cy="@(F1(c.Y))" r="4" /></g>
+                            }
+                        </svg>
+                        <div class="fpc-ctl col">
+                            <label class="fpc-sl">회전 <b>@(F0(_yaw))°</b><input type="range" min="-80" max="80" step="5" value="@(F0(_yaw))" @oninput="e => _yaw = Num(e, 20)" /></label>
+                            <div class="fpc-kv">헤드 요/피치/롤 <b>@(F1(E.HeadYawDeg))° / @(F1(E.HeadPitchDeg))° / @(F1(E.HeadRollDeg))°</b></div>
+                            <div class="fpc-kv">거리 스케일 @(F3(E.HeadScale)) · 앵커 @(E.AnchorCount)점</div>
+                            <div class="fpc-kv">랜드마크 잔차 <b>@(F2(E.ResidualMm)) mm</b> · 하강 @(E.LastSweeps) · 뉴턴 @(E.LastNewton)</div>
+                            <div class="fpc-kv">카메라 MAE <b>@(F3(Runner.CameraMae))</b> · A2F 입 MAE <b>@(F3(Runner.A2fMouthMae))</b> · 최종 입 MAE <b>@(F3(Runner.FinalMouthMae))</b></div>
+                            <svg class="fpc-spark" viewBox="0 0 360 50" preserveAspectRatio="none">
+                                <polyline class="cam" points="@(Series(Runner.CameraMaeSeries, 0.2, 50))" />
+                                <polyline class="a2f" points="@(Series(Runner.A2fMaeSeries, 0.2, 50))" />
+                                <polyline class="fin" points="@(Series(Runner.FinalMaeSeries, 0.2, 50))" />
+                            </svg>
+                            <div class="fpc-legend"><i class="cam"></i>카메라 <i class="a2f"></i>A2F 입 <i class="fin"></i>최종 입 (MAE 0–0.2)</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="fpc-card">
+                    <div class="fpc-sec">🎙 오디오 파형 · 음소(Viseme) 매핑
+                        <span class="fpc-chip vis v@((int)A.Viseme)">@(VisName(A.Viseme))</span>
+                        <span class="fpc-dim">참값 @(Runner.TruthPhone) · 정확도 @(F0(Runner.VisemeAccuracy * 100))%</span>
+                        <label class="fpc-sl">조음 <b>@(F2(A.Articulation))</b><input type="range" min="0" max="1.5" step="0.05" value="@(F2(A.Articulation))" @onchange="e => Runner.SetArticulation((float)Num(e, 1))" /></label>
+                    </div>
+                    <svg class="fpc-wave" viewBox="0 0 360 60" preserveAspectRatio="none"><path d="@(Wave())" /></svg>
+                    <svg class="fpc-strip" viewBox="0 0 240 14" preserveAspectRatio="none">
+                        @for (var i = 0; i < A.HistoryCount; i++)
+                        {
+                            <rect class="v@((int)A.VisemeHistory(i))" x="@(239 - i)" y="0" width="1" height="14" />
+                        }
+                    </svg>
+                    <div class="fpc-legend">@for (var v = 0; v < 8; v++) { <span><i class="v@(v)"></i>@(VisName((Viseme)v))</span> } <span class="fpc-dim">비짐 타임라인 2.4 s(우 = 최신)</span></div>
+                    <div class="fpc-audio">
+                        <svg class="fpc-vowel" viewBox="0 0 240 170">
+                            @for (var v = 0; v < 5; v++)
+                            {
+                                var vx = FX(AudioToFaceVisemeMotionSynthesizer.VowelF2[v]); var vy = FY(AudioToFaceVisemeMotionSynthesizer.VowelF1[v]);
+                                <g><circle class="ctr v@(v + 1)" cx="@(F1(vx))" cy="@(F1(vy))" r="9" /><text x="@(F1(vx))" y="@(F1(vy + 3.5))">@(VisName((Viseme)(v + 1)))</text></g>
+                            }
+                            <polyline class="trail" points="@(Trail())" />
+                            <circle class="cur" cx="@(F1(FX(A.F2)))" cy="@(F1(FY(A.F1)))" r="4" />
+                        </svg>
+                        <div class="fpc-ctl col">
+                            <div class="fpc-kv">F1 <b>@(F0(A.F1)) Hz</b> · F2 <b>@(F0(A.F2)) Hz</b> · 중심 @(F0(A.CentroidHz)) Hz · ZCR @(F2(A.Zcr))</div>
+                            <div class="fpc-kv">RMS <b>@(F1(A.RmsDb)) dB</b> · 피크 @(F1(A.PeakDb)) dB · 진폭 @(F2(A.Amplitude)) · 홉 @(A.Hops)</div>
+                            <svg class="fpc-env" viewBox="0 0 200 50" preserveAspectRatio="none"><polyline points="@(Env())" /></svg>
+                            <div class="fpc-dim">LPC 12차 포락 0–4 kHz</div>
+                            <svg class="fpc-mfcc" viewBox="0 0 130 40" preserveAspectRatio="none">
+                                @for (var n = 1; n < AudioToFaceVisemeMotionSynthesizer.MfccCount; n++)
+                                {
+                                    var m = Math.Clamp(A.Mfcc(n) / 40.0, -1, 1);
+                                    <rect class="@(m >= 0 ? "p" : "n")" x="@(n * 10 - 8)" y="@(F1(m >= 0 ? 20 - m * 19 : 20))" width="8" height="@(F1(Math.Abs(m) * 19))" />
+                                }
+                            </svg>
+                            <div class="fpc-dim">MFCC c1–c12 (26 멜 · DCT-II)</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="fpc-col">
+                <div class="fpc-card">
+                    <div class="fpc-sec">🎚 52 ARKit 블렌드셰이프 실시간 미터 <span class="fpc-dim">막대 = 최종 · │ = 참값 · ◆ = 카메라 역산</span></div>
+                    <div class="fpc-meters">
+                        @for (var k = 0; k < NeuralFacialLandmarkBlendshapeEngine.K; k++)
+                        {
+                            <div class="fpc-m @(Group(k))">
+                                <span class="nm">@(NeuralFacialMuscleSimulator.Name(k))</span>
+                                <span class="bar"><span class="fill" style="width:@(F1(Runner.Final(k) * 100))%"></span><span class="gt" style="left:@(F1(Runner.Truth(k) * 100))%"></span><span class="cam" style="left:@(F1(Runner.Camera(k) * 100))%"></span></span>
+                                <span class="v">@(F2(Runner.Final(k)))</span>
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                <div class="fpc-card">
+                    <div class="fpc-sec">👁 생체 시선 · 미세 홱보기 · 무의식 깜빡임 가드
+                        <button class="fpc-btn sm @(G.Enabled ? "on" : null)" @onclick="() => Runner.SetGuard(!G.Enabled)">가드</button>
+                        <button class="fpc-btn sm @(G.ForceInject ? "on" : null)" @onclick="() => Runner.SetForceInject(!G.ForceInject)">주입 강제</button>
+                        <button class="fpc-btn sm @(Runner.DeadEyedActor ? "on" : null)" @onclick="() => Runner.SetDeadEyed(!Runner.DeadEyedActor)">😐 Dead-Eye 배우</button>
+                        <span class="fpc-chip @(G.DeadEyes ? "warn" : "ok")">@(G.DeadEyes ? "Dead-Eye 감지 → 주입 " + F0(G.InjectionLevel * 100) + "%" : "생체 시선 정상")</span>
+                    </div>
+                    <div class="fpc-eyes">
+                        @for (var e = 0; e < 2; e++)
+                        {
+                            var yaw = G.Yaw(e); var pitch = G.Pitch(e); var blink = e == 0 ? G.BlinkL : G.BlinkR;
+                            <div class="fpc-eye">
+                                <svg viewBox="-50 -30 100 60">
+                                    <ellipse class="sclera" cx="0" cy="0" rx="46" ry="26" />
+                                    <circle class="irs" cx="@(F1(Math.Sin(yaw * Math.PI / 180) * 60))" cy="@(F1(-Math.Sin(pitch * Math.PI / 180) * 60))" r="13" />
+                                    <circle class="pup" cx="@(F1(Math.Sin(yaw * Math.PI / 180) * 60))" cy="@(F1(-Math.Sin(pitch * Math.PI / 180) * 60))" r="5" />
+                                    <rect class="lid" x="-50" y="-30" width="100" height="@(F1(blink * 60))" />
+                                </svg>
+                                <div class="fpc-kv">@(e == 0 ? "왼눈" : "오른눈") 요 <b>@(F1(yaw))°</b> 피치 <b>@(F1(pitch))°</b> · 깜빡임 @(F2(blink))</div>
+                            </div>
+                        }
+                    </div>
+                    <div class="fpc-kv">깜빡임 <b>@(F1(G.BlinkRatePerMin)) /분</b> (주입 @(G.InjectedBlinks)) · 미세 홱보기 <b>@(F2(G.MicrosaccadePerS)) /s</b> (주입 @(G.InjectedMicrosaccades) · 최근 @(F2(G.LastMicrosaccadeDeg))°) ·
+                        피크 속도 @(F0(G.PeakVelocityDegS))°/s · 이향 @(F1(G.VergenceDeg))° · 시선 σ @(F2(G.GazeStdDeg))° · 깜빡임 공백 @(F1(G.SinceBlinkS)) s</div>
+                    <div class="fpc-ctl">
+                        <label class="fpc-sl">깜빡임 간격 <b>@(F1(G.BlinkIntervalS)) s</b><input type="range" min="2" max="8" step="0.5" value="@(F1(G.BlinkIntervalS))" @onchange="e => G.BlinkIntervalS = (float)Num(e, 4)" /></label>
+                        <label class="fpc-sl">홱보기 <b>@(F1(G.MicrosaccadeRate)) /s</b><input type="range" min="0.2" max="3" step="0.1" value="@(F1(G.MicrosaccadeRate))" @onchange="e => G.MicrosaccadeRate = (float)Num(e, 1.4)" /></label>
+                        <button class="fpc-btn sm @(G.SaccadeLimit ? "on" : null)" @onclick="() => G.SaccadeLimit = !G.SaccadeLimit">주 시퀀스 제한</button>
+                    </div>
+                    <svg class="fpc-spark" viewBox="0 0 360 50" preserveAspectRatio="none">
+                        <polyline class="gz" points="@(SeriesSigned(Runner.GazeSeries, 15, 50))" />
+                        <polyline class="bl" points="@(Series(Runner.BlinkSeries, 1, 50))" />
+                    </svg>
+                    <div class="fpc-legend"><i class="gz"></i>왼눈 요(±15°) <i class="bl"></i>깜빡임(0–1)</div>
+                </div>
+                <div class="fpc-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .fpc-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .fpc-modal { width: min(1680px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .fpc-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #a855f7 14%, var(--card)), color-mix(in srgb, #f43f5e 12%, var(--card))); }
+    .fpc-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .fpc-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .fpc-sub b { color: var(--text-primary); }
+    .fpc-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .fpc-bar { display: flex; flex-wrap: wrap; gap: 6px 10px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .fpc-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; } .fpc-btn:disabled { opacity: .4; cursor: default; }
+    .fpc-btn.sm { font-size: 10px; padding: 2px 8px; } .fpc-btn.on { background: color-mix(in srgb, #a855f7 22%, transparent); border-color: #c084fc; } .fpc-btn.stop { background: #7f1d1d; border-color: #ef4444; color: #fff; }
+    .fpc-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .fpc-chip.ok { border-color: #22c55e; color: #86efac; } .fpc-chip.bad { border-color: #ef4444; color: #fca5a5; } .fpc-chip.warn { border-color: #eab308; color: #fde68a; }
+    .fpc-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .fpc-sl b { font-family: var(--mono); color: var(--text-primary); } .fpc-sl input { width: 80px; }
+    .fpc-sel { font-size: 11px; background: transparent; color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+    .fpc-dim { font-size: 11px; font-weight: 500; color: var(--text-muted); }
+    .fpc-main { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .fpc-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .fpc-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .fpc-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .fpc-ctl { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; } .fpc-ctl.col { flex-direction: column; align-items: stretch; }
+    .fpc-face { display: grid; grid-template-columns: 260px 1fr; gap: 12px; align-items: start; }
+    .fpc-face > svg { width: 260px; height: 325px; background: radial-gradient(ellipse at 50% 40%, #1e1b4b, #020617); border-radius: 12px; }
+    .fpc-face .gr { stroke: rgba(167,139,250,.28); stroke-width: .7; } .fpc-face .ft { stroke: #f0abfc; stroke-width: 1.4; } .fpc-face .iris { fill: #22d3ee; }
+    .fpc-spark { width: 100%; height: 50px; background: #030712; border-radius: 6px; }
+    .fpc-spark polyline { fill: none; stroke-width: 1.4; vector-effect: non-scaling-stroke; } .fpc-spark .cam { stroke: #60a5fa; } .fpc-spark .a2f { stroke: #f472b6; } .fpc-spark .fin { stroke: #a3e635; }
+    .fpc-spark .gz { stroke: #22d3ee; } .fpc-spark .bl { stroke: #fbbf24; }
+    .fpc-wave { width: 100%; height: 60px; background: #030712; border-radius: 6px; } .fpc-wave path { fill: none; stroke: #c084fc; stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .fpc-strip { width: 100%; height: 14px; border-radius: 4px; background: #030712; }
+    .v0 { fill: #475569; background: #475569; } .v1 { fill: #ef4444; background: #ef4444; } .v2 { fill: #f97316; background: #f97316; } .v3 { fill: #eab308; background: #eab308; }
+    .v4 { fill: #22c55e; background: #22c55e; } .v5 { fill: #3b82f6; background: #3b82f6; } .v6 { fill: #a855f7; background: #a855f7; } .v7 { fill: #ec4899; background: #ec4899; }
+    .fpc-chip.vis { color: #fff; border: none; }
+    .fpc-audio { display: grid; grid-template-columns: 240px 1fr; gap: 10px; align-items: start; }
+    .fpc-vowel { width: 240px; height: 170px; background: #030712; border-radius: 8px; }
+    .fpc-vowel .ctr { fill-opacity: .35; } .fpc-vowel text { fill: #f8fafc; font-size: 10px; font-weight: 800; text-anchor: middle; }
+    .fpc-vowel .trail { fill: none; stroke: rgba(248,250,252,.35); stroke-width: 1; } .fpc-vowel .cur { fill: #fff; stroke: #a855f7; stroke-width: 2; }
+    .fpc-env { width: 100%; height: 50px; background: #030712; border-radius: 6px; } .fpc-env polyline { fill: none; stroke: #f472b6; stroke-width: 1.3; vector-effect: non-scaling-stroke; }
+    .fpc-mfcc { width: 100%; height: 40px; background: #030712; border-radius: 6px; } .fpc-mfcc .p { fill: #a3e635; } .fpc-mfcc .n { fill: #60a5fa; }
+    .fpc-meters { display: grid; grid-template-columns: repeat(2, 1fr); gap: 2px 14px; }
+    .fpc-m { display: grid; grid-template-columns: 128px 1fr 34px; gap: 6px; align-items: center; font-size: 10px; }
+    .fpc-m .nm { color: var(--text-secondary); font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .fpc-m .v { font-family: var(--mono); color: var(--text-primary); text-align: right; }
+    .fpc-m .bar { position: relative; height: 8px; background: #1e293b; border-radius: 4px; overflow: hidden; }
+    .fpc-m .fill { position: absolute; left: 0; top: 0; bottom: 0; background: #a855f7; } .fpc-m.eye .fill { background: #22d3ee; } .fpc-m.jaw .fill { background: #f97316; } .fpc-m.mouth .fill { background: #f43f5e; } .fpc-m.brow .fill { background: #eab308; }
+    .fpc-m .gt { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: #f8fafc; }
+    .fpc-m .cam { position: absolute; top: 1px; width: 6px; height: 6px; margin-left: -3px; background: #60a5fa; transform: rotate(45deg); }
+    .fpc-eyes { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .fpc-eye svg { width: 100%; height: 90px; background: #0f172a; border-radius: 10px; }
+    .fpc-eye .sclera { fill: #f1f5f9; } .fpc-eye .irs { fill: #0e7490; } .fpc-eye .pup { fill: #020617; } .fpc-eye .lid { fill: #c4a484; }
+    .fpc-legend, .fpc-kv { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11px; color: var(--text-secondary); align-items: center; } .fpc-kv b { color: var(--text-primary); }
+    .fpc-legend i { display: inline-block; width: 10px; height: 8px; border-radius: 2px; margin-right: 3px; }
+    .fpc-legend .cam { background: #60a5fa; } .fpc-legend .a2f { background: #f472b6; } .fpc-legend .fin { background: #a3e635; } .fpc-legend .gz { background: #22d3ee; } .fpc-legend .bl { background: #fbbf24; }
+    .fpc-note { font-size: 11px; color: var(--text-muted); word-break: break-all; }
+    @@media (max-width: 1250px) { .fpc-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+    private double _yaw = 20;
+
+    private NeuralFacialLandmarkBlendshapeEngine E => Runner.Engine;
+    private AudioToFaceVisemeMotionSynthesizer A => Runner.A2F;
+    private BiologicalEyeGazeMicroTremorGuard G => Runner.Guard;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("FacialPerformance.Modal.Timer", ex); }
+        }, null, 200, 200);
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    private static string VisName(Viseme v) => v switch { Viseme.Rest => "휴지", Viseme.M => "P/B/M", Viseme.F => "F/V", _ => v.ToString() };
+
+    private static string? Group(int k)
+    {
+        var b = (ArkitBlendshape)k;
+        return b switch
+        {
+            <= ArkitBlendshape.BrowOuterUpRight => "brow",
+            >= ArkitBlendshape.EyeBlinkLeft and <= ArkitBlendshape.EyeWideRight => "eye",
+            >= ArkitBlendshape.JawForward and <= ArkitBlendshape.JawRight => "jaw",
+            >= ArkitBlendshape.MouthClose and <= ArkitBlendshape.MouthUpperUpRight => "mouth",
+            _ => null,
+        };
+    }
+
+    /// <summary>요 회전 정사영(정규 좌표 m → 화면).</summary>
+    private Vector2 P(Vector3 p)
+    {
+        var y = (float)(_yaw * Math.PI / 180);
+        float c = MathF.Cos(y), s = MathF.Sin(y);
+        var x = p.X * c + p.Z * s;
+        return new Vector2(160 + x * 1500, 190 - p.Y * 1500);
+    }
+
+    private static double FX(float f2) => 12 + Math.Clamp((2600 - f2) / 2000.0, 0, 1) * 216;
+    private static double FY(float f1) => 12 + Math.Clamp((f1 - 200) / 700.0, 0, 1) * 146;
+
+    private string Trail()
+    {
+        var n = Math.Min(40, A.HistoryCount);
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+        {
+            if (A.VisemeHistory(i) is Viseme.Rest or Viseme.F) continue;
+            sb.Append(F1(FX(A.F2History(i)))).Append(',').Append(F1(FY(A.F1History(i)))).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private string Wave()
+    {
+        const int cols = 300, per = AudioToFaceVisemeMotionSynthesizer.WaveLen / cols;
+        var sb = new System.Text.StringBuilder(cols * 24);
+        for (var c = 0; c < cols; c++)
+        {
+            float mn = 0, mx = 0;
+            for (var k = 0; k < per; k++) { var v = A.WaveSample((cols - 1 - c) * per + k); mn = MathF.Min(mn, v); mx = MathF.Max(mx, v); }
+            var x = F1(c * 360.0 / cols);
+            sb.Append(c == 0 ? 'M' : 'L').Append(x).Append(',').Append(F1(30 - Math.Clamp(mx * 60, -29, 29))).Append('L').Append(x).Append(',').Append(F1(30 - Math.Clamp(mn * 60, -29, 29)));
+        }
+        return sb.ToString();
+    }
+
+    private string Env()
+    {
+        float mx = -1e9f, mn = 1e9f;
+        for (var f = 0; f < AudioToFaceVisemeMotionSynthesizer.EnvBins; f++) { mx = MathF.Max(mx, A.Envelope(f)); mn = MathF.Min(mn, A.Envelope(f)); }
+        var span = MathF.Max(1f, mx - mn);
+        var sb = new System.Text.StringBuilder(AudioToFaceVisemeMotionSynthesizer.EnvBins * 12);
+        for (var f = 0; f < AudioToFaceVisemeMotionSynthesizer.EnvBins; f++)
+            sb.Append(F1(f)).Append(',').Append(F1(48 - 46 * (A.Envelope(f) - mn) / span)).Append(' ');
+        return sb.ToString();
+    }
+
+    private string Series(Func<int, float> f, double max, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (FacialPerformanceStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - 2 - (h - 4) * Math.Clamp(f(i) / max, 0, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private string SeriesSigned(Func<int, float> f, double max, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (FacialPerformanceStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h / 2 - (h / 2 - 2) * Math.Clamp(f(i) / max, -1, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step60() { for (var i = 0; i < FacialPerformanceStudioRunner.Hz; i++) Runner.Step(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중(10 Hz 이벤트)은 200 ms 타이머가 처리 — 정지 상태 액션만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

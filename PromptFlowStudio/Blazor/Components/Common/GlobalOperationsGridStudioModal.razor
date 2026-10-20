@@ -1,0 +1,341 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Sre
+@implements IDisposable
+@inject GlobalOperationsGridStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.67.0] 🌐 AI 글로벌 가동률 & SRE 관제 스튜디오 — Five-Nines 대시보드 · 리전/노드 그리드 맵 · 다중 창 번 레이트 게이지 ·
+    1-Click 자율 복구 스위치 · 결함 주입(크래시/리전 장애/급증/누수/GC/런어웨이) · 노드 텔레메트리 스파크라인 · 격리 이벤트(반응 μs).
+*@
+
+<div class="sre-scrim" @onclick="Close">
+    <div class="sre-modal" @onclick:stopPropagation="true">
+        <div class="sre-h">
+            <div>
+                <div class="sre-title">🌐 AI 글로벌 가동률 &amp; SRE 관제 스튜디오</div>
+                <div class="sre-sub"><b>5개 리전 15개 노드</b>의 장애를 AI SRE 에이전트가 <b>30ms 안에 감지·페일오버</b>하고, 오류 예산 <b>번 레이트</b>에 따라
+                    저우선 트래픽 셰이핑과 예비 용량을 자율 조절해 <b>99.999%</b> 가용률을 지킵니다.</div>
+            </div>
+            <button class="sre-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="sre-bar">
+            <span class="sre-chip @(Runner.IsRunning ? "ok" : null)">@(Runner.IsRunning ? "● 라이브" : "○ 정지") · 시뮬 @(Dur(G.ClockMs))</span>
+            <span class="sre-chip">제어 틱 @(G.Ticks) · 배속 ×@(Runner.TimeScale)</span>
+            <span class="sre-chip">페일오버 @(G.Failovers) · 드레인 @(G.Drains) · 재시작 @(G.Restarts) · OOM @(G.OomCrashes)</span>
+            <span class="sre-chip">격리 @(R.Isolations) · 해제 @(R.Releases) · 반응 @(F1(R.LastReactionMicros))μs (최대 @(F1(R.MaxReactionMicros)))</span>
+            <span class="sre-chip @(D.FreezeDeploys ? "hot" : "ok")">@(D.FreezeDeploys ? "🧊 배포 동결" : "🚢 배포 허용")</span>
+        </div>
+
+        <div class="sre-main">
+            <div class="sre-col">
+                <div class="sre-card sre-hero">
+                    <div class="sre-avail @(G.Availability >= B.Slo ? "ok" : "bad")">
+                        <b>@(AvailPct(G.Availability))</b>
+                        <span>누적 가용률 · @(F2(G.Nines)) nines · 목표 @(AvailPct(B.Slo))</span>
+                    </div>
+                    <div class="sre-kpis">
+                        <span><b>@(Big(G.GoodRequests))</b>정상 요청</span>
+                        <span><b class="@(G.BadRequests > 0 ? "hot" : null)">@(Big(G.BadRequests))</b>오류 요청</span>
+                        <span><b>@(Big(G.ShapedRequests))</b>셰이핑(저우선)</span>
+                        <span><b>@(F1(G.MeanRouteLatencyMs))ms</b>평균 라우트 지연</span>
+                    </div>
+                    <button class="sre-heal @(G.AutoHeal ? "on" : null)" @onclick="() => G.AutoHeal = !G.AutoHeal">
+                        @(G.AutoHeal ? "🛡 자율 복구 ON — 페일오버 · 격리 드레인 · 셰이핑 · 예비 용량" : "⏸ 자율 복구 OFF (수동 운영) — 눌러서 켜기")
+                    </button>
+                    <div class="sre-row">
+                        <button class="sre-btn @(Runner.IsRunning ? "on" : null)" @onclick="Toggle">@(Runner.IsRunning ? "⏸ 정지" : "▶ 라이브")</button>
+                        <button class="sre-btn sm" @onclick="Step">⏭ 1초 진행</button>
+                        <label class="sre-slider">배속 ×@(Runner.TimeScale)<input type="range" min="1" max="120" value="@Runner.TimeScale" @oninput="OnScale" /></label>
+                    </div>
+                    <svg class="sre-spark" viewBox="0 0 240 50" preserveAspectRatio="none">
+                        <polyline class="n" points="@_ninesSpark" />
+                        <polyline class="b" points="@_burnSpark" />
+                    </svg>
+                    <div class="sre-legend"><span class="n">━ nines(0~9)</span><span class="b">━ 30s 번 레이트(로그)</span></div>
+                </div>
+
+                <div class="sre-card">
+                    <div class="sre-sec">🗺 글로벌 노드 그리드</div>
+                    <svg class="sre-map" viewBox="0 0 400 220">
+                        @for (var a = 0; a < AutonomousAiSreGridAgent.Regions; a++)
+                        {
+                            for (var b = a + 1; b < AutonomousAiSreGridAgent.Regions; b++)
+                            {
+                                if (AutonomousAiSreGridAgent.LatencyBetween(a, b) > 160) continue;
+                                <line x1="@F0(MX(a))" y1="@F0(MY(a))" x2="@F0(MX(b))" y2="@F0(MY(b))" class="sre-wan" />
+                            }
+                        }
+                        @for (var r = 0; r < AutonomousAiSreGridAgent.Regions; r++)
+                        {
+                            var rx = MX(r); var ry = MY(r);
+                            <g>
+                                <circle cx="@F0(rx)" cy="@F0(ry)" r="26" class="sre-region @(G.IsRegionOut(r) ? "out" : null)" />
+                                <text x="@F0(rx)" y="@F0(ry - 31)" class="sre-rt">@(AutonomousAiSreGridAgent.RegionNames[r])@(G.SurgeOf(r) > 1 ? " ×" + F1(G.SurgeOf(r)) : "")</text>
+                                <text x="@F0(rx)" y="@F0(ry + 40)" class="sre-ra">@(AvailPct(G.RegionAvailability(r)))</text>
+                            </g>
+                            @for (var k = 0; k < AutonomousAiSreGridAgent.NodesPerRegion; k++)
+                            {
+                                var st = G.StatusOf(r * AutonomousAiSreGridAgent.NodesPerRegion + k);
+                                <g>
+                                    <circle cx="@F0(rx - 13 + k * 13)" cy="@F0(ry)" r="5.5" class="sre-node @(NodeClass(st))" />
+                                </g>
+                            }
+                        }
+                    </svg>
+                    <div class="sre-legend"><span class="g">● 정상</span><span class="y">● 고부하</span><span class="o">● 격리</span><span class="r">● 크래시</span><span class="d">● 드레인</span></div>
+                </div>
+            </div>
+
+            <div class="sre-col">
+                <div class="sre-card">
+                    <div class="sre-row sre-between">
+                        <span class="sre-sec">🔥 번 레이트 · 오류 예산</span>
+                        <span class="sre-sev s@((int)D.Severity)">@(BurnRateAndErrorBudgetOptimizer.SeverityLabel(D.Severity))</span>
+                    </div>
+                    <div class="sre-gauges">
+                        @foreach (var (label, val, thr) in Gauges())
+                        {
+                            <div class="sre-gauge">
+                                <svg viewBox="0 0 100 60">
+                                    <path d="M8,52 A42,42 0 0 1 92,52" class="bg" />
+                                    <path d="M8,52 A42,42 0 0 1 92,52" class="fg" style="stroke-dasharray:@(F1(132 * GaugeFrac(val))) 200; stroke:@(val >= thr ? "#ef4444" : val >= 1 ? "#eab308" : "#22c55e")" />
+                                    <g><text x="50" y="48" class="v">@(F1(val))×</text></g>
+                                </svg>
+                                <span>@label · 임계 @(F1(thr))×</span>
+                            </div>
+                        }
+                    </div>
+                    <div class="sre-budget"><i style="width:@(Pc((float)D.BudgetRemaining)); background:@(D.BudgetRemaining < 0.25 ? "#ef4444" : "#22c55e")"></i></div>
+                    <div class="sre-note">잔여 오류 예산(1h 창) <b>@(Pc((float)D.BudgetRemaining))</b> · 30일 허용 다운타임 @(F1(B.AllowedDowntimeSecondsPer30d))s
+                        · 저우선 수용 @(Pc(D.AdmissionRatio)) · 예비 용량 +@(Pc(D.ReserveRatio)) · 전조 @(B.Precursors) · 저속 @(B.SlowAlerts) · 고속 @(B.FastAlerts)</div>
+                </div>
+
+                <div class="sre-card">
+                    <div class="sre-sec">💣 결함 주입</div>
+                    <div class="sre-row">
+                        <select class="sre-sel" @bind="_node">
+                            @for (var n = 0; n < AutonomousAiSreGridAgent.Nodes; n++)
+                            {
+                                <option value="@n">@(AutonomousAiSreGridAgent.NodeName(n))</option>
+                            }
+                        </select>
+                        <button class="sre-btn sm hot" @onclick="() => G.CrashNode(_node)">💥 크래시</button>
+                        <button class="sre-btn sm" @onclick="() => G.InjectLeak(_node)">💧 누수</button>
+                        <button class="sre-btn sm" @onclick="() => G.InjectGcStorm(_node)">🌀 GC 폭주</button>
+                        <button class="sre-btn sm" @onclick="() => G.InjectRunaway(_node)">🔥 런어웨이</button>
+                    </div>
+                    <div class="sre-row">
+                        <select class="sre-sel" @bind="_region">
+                            @for (var r = 0; r < AutonomousAiSreGridAgent.Regions; r++)
+                            {
+                                <option value="@r">@(AutonomousAiSreGridAgent.RegionNames[r])</option>
+                            }
+                        </select>
+                        <button class="sre-btn sm hot" @onclick="() => G.RegionOutage(_region, !G.IsRegionOut(_region))">@(G.IsRegionOut(_region) ? "🌤 리전 복구" : "🌩 리전 장애")</button>
+                        <button class="sre-btn sm" @onclick="() => G.Surge(_region, 6f, 60_000)">📈 트래픽 ×6 (60s)</button>
+                    </div>
+                </div>
+
+                <div class="sre-card">
+                    <div class="sre-row sre-between">
+                        <span class="sre-sec">📡 노드 텔레메트리 · 이상 반응기</span>
+                        <select class="sre-sel" @bind="_viewNode">
+                            @for (var n = 0; n < AutonomousAiSreGridAgent.Nodes; n++)
+                            {
+                                <option value="@n">@(AutonomousAiSreGridAgent.NodeName(n))</option>
+                            }
+                        </select>
+                    </div>
+                    <div class="sre-metrics">
+                        @for (var m = 0; m < GlobalEdgeTelemetryAnomalyReactor.Metrics; m++)
+                        {
+                            <div class="sre-metric m@(m)">
+                                <span>@(MetricNames[m]) <b>@(Pc(R.Latest(_viewNode, (TelemetryMetric)m)))</b></span>
+                                <svg viewBox="0 0 64 20" preserveAspectRatio="none"><polyline points="@_metricSpark[m]" /></svg>
+                            </div>
+                        }
+                    </div>
+                    <div class="sre-events">
+                        @for (var i = 0; i < _evCount; i++)
+                        {
+                            var e = _events[i];
+                            <div>#@(e.Seq) <b>@(GlobalEdgeTelemetryAnomalyReactor.KindLabel(e.Kind))</b> · @(AutonomousAiSreGridAgent.NodeName(e.Node)) · @(Dur(e.AtMs)) · 반응 @(F1(e.ReactionMicros))μs</div>
+                        }
+                    </div>
+                </div>
+                @if ((G.LastAction ?? B.LastAction) is { } act)
+                {
+                    <div class="sre-note">@act</div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .sre-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .sre-modal { width: min(1560px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .sre-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #0ea5e9 18%, var(--card)), color-mix(in srgb, #22c55e 14%, var(--card))); }
+    .sre-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .sre-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .sre-sub b { color: var(--text-primary); }
+    .sre-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .sre-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); }
+    .sre-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .sre-chip.ok { color: #22c55e; border-color: #22c55e; }
+    .sre-chip.hot { color: #f97316; border-color: #f97316; }
+    .sre-main { display: grid; grid-template-columns: 1.1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .sre-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .sre-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .sre-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); }
+    .sre-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .sre-between { justify-content: space-between; }
+    .sre-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .sre-btn.on { background: color-mix(in srgb, #0ea5e9 22%, transparent); border-color: #0ea5e9; }
+    .sre-btn.hot { background: color-mix(in srgb, #ef4444 20%, transparent); border-color: #ef4444; }
+    .sre-btn.sm { font-size: 11px; padding: 3px 8px; }
+    .sre-sel { font-size: 12px; padding: 4px 6px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .sre-avail { display: flex; flex-direction: column; }
+    .sre-avail b { font: 900 34px var(--mono); color: #22c55e; letter-spacing: -1px; }
+    .sre-avail.bad b { color: #f97316; }
+    .sre-avail span { font-size: 11px; color: var(--text-muted); }
+    .sre-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .sre-kpis span { display: flex; flex-direction: column; font-size: 10.5px; color: var(--text-muted); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+    .sre-kpis b { font: 800 13px var(--mono); color: var(--text-primary); }
+    .sre-kpis b.hot { color: #f97316; }
+    .sre-heal { font-size: 14px; font-weight: 900; padding: 12px; border-radius: 12px; border: 2px solid #64748b; background: transparent; color: var(--text-primary); cursor: pointer; }
+    .sre-heal.on { border-color: #22c55e; background: linear-gradient(90deg, color-mix(in srgb, #22c55e 28%, transparent), color-mix(in srgb, #0ea5e9 24%, transparent)); animation: sre-pulse 1.6s ease-in-out infinite; }
+    @@keyframes sre-pulse { 50% { box-shadow: 0 0 16px color-mix(in srgb, #22c55e 50%, transparent); } }
+    .sre-slider { display: flex; gap: 6px; align-items: center; font: 700 11px var(--mono); color: var(--text-secondary); }
+    .sre-slider input { accent-color: #0ea5e9; }
+    .sre-spark { width: 100%; height: 50px; background: color-mix(in srgb, #0f172a 50%, transparent); border-radius: 6px; }
+    .sre-spark polyline { fill: none; stroke-width: 1.5; }
+    .sre-spark .n { stroke: #22c55e; } .sre-spark .b { stroke: #f97316; }
+    .sre-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 10.5px; color: var(--text-muted); }
+    .sre-legend .n, .sre-legend .g { color: #22c55e; } .sre-legend .b, .sre-legend .o { color: #f97316; } .sre-legend .y { color: #eab308; } .sre-legend .r { color: #ef4444; } .sre-legend .d { color: #64748b; }
+    .sre-map { width: 100%; aspect-ratio: 20 / 11; background: color-mix(in srgb, #0f172a 60%, transparent); border-radius: 10px; border: 1px solid var(--line); }
+    .sre-wan { stroke: #0ea5e9; stroke-opacity: .35; stroke-width: 1.5; stroke-dasharray: 4 3; }
+    .sre-region { fill: color-mix(in srgb, #0ea5e9 12%, transparent); stroke: #0ea5e9; stroke-width: 1.5; }
+    .sre-region.out { fill: color-mix(in srgb, #ef4444 22%, transparent); stroke: #ef4444; }
+    .sre-rt { fill: var(--text-primary); font-size: 9.5px; font-weight: 800; text-anchor: middle; }
+    .sre-ra { fill: var(--text-muted); font: 700 8.5px var(--mono); text-anchor: middle; }
+    .sre-node { stroke: #0f172a; stroke-width: 1; fill: #22c55e; }
+    .sre-node.hi { fill: #eab308; } .sre-node.iso { fill: #f97316; } .sre-node.dead { fill: #ef4444; } .sre-node.drain { fill: #64748b; }
+    .sre-sev { font: 800 11px var(--mono); padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); }
+    .sre-sev.s0 { color: #22c55e; border-color: #22c55e; } .sre-sev.s1 { color: #eab308; border-color: #eab308; } .sre-sev.s2 { color: #f97316; border-color: #f97316; } .sre-sev.s3 { color: #ef4444; border-color: #ef4444; }
+    .sre-gauges { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .sre-gauge { display: flex; flex-direction: column; align-items: center; font-size: 10.5px; color: var(--text-muted); }
+    .sre-gauge svg { width: 100%; max-width: 140px; }
+    .sre-gauge path { fill: none; stroke-width: 9; stroke-linecap: round; }
+    .sre-gauge .bg { stroke: color-mix(in srgb, var(--line) 80%, transparent); }
+    .sre-gauge .v { fill: var(--text-primary); font: 900 12px var(--mono); text-anchor: middle; }
+    .sre-budget { height: 8px; border-radius: 4px; background: color-mix(in srgb, var(--line) 70%, transparent); overflow: hidden; }
+    .sre-budget i { display: block; height: 100%; }
+    .sre-metrics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+    .sre-metric { border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; font-size: 10.5px; color: var(--text-muted); }
+    .sre-metric b { color: var(--text-primary); font-family: var(--mono); }
+    .sre-metric svg { width: 100%; height: 26px; }
+    .sre-metric polyline { fill: none; stroke-width: 1.2; }
+    .sre-metric.m0 polyline { stroke: #0ea5e9; } .sre-metric.m1 polyline { stroke: #a855f7; } .sre-metric.m2 polyline { stroke: #22c55e; } .sre-metric.m3 polyline { stroke: #f97316; }
+    .sre-events { max-height: 120px; overflow-y: auto; font: 10.5px var(--mono); color: #f97316; display: flex; flex-direction: column; gap: 2px; }
+    .sre-events b { color: var(--text-primary); }
+    .sre-note { font-size: 11px; color: var(--text-muted); }
+    .sre-note b { color: var(--text-primary); }
+    @@media (max-width: 1200px) { .sre-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly string[] MetricNames = { "CPU", "VRAM", "Network", "GC" };
+    private readonly float[] _nines = new float[GlobalOperationsGridStudioRunner.HistoryLength], _burn = new float[GlobalOperationsGridStudioRunner.HistoryLength];
+    private readonly float[] _mh = new float[GlobalEdgeTelemetryAnomalyReactor.History];
+    private readonly string[] _metricSpark = { "", "", "", "" };
+    private readonly IsolationEvent[] _events = new IsolationEvent[10];
+    private int _evCount, _node, _region, _viewNode;
+    private string _ninesSpark = "", _burnSpark = "";
+    private long _shownSeq = -1;
+    private System.Threading.Timer? _timer;
+
+    private AutonomousAiSreGridAgent G => Runner.Grid;
+    private BurnRateAndErrorBudgetOptimizer B => G.Budget;
+    private GlobalEdgeTelemetryAnomalyReactor R => G.Reactor;
+    private BudgetDecision D => B.Current;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        G.OnChange += OnServiceChanged;
+        B.OnChange += OnServiceChanged;
+        R.OnChange += OnServiceChanged;
+        if (Runner.FrameSeq == 0) Runner.TickOnce(1000.0 / GlobalOperationsGridStudioRunner.TickHz);
+        Refresh();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { if (Runner.FrameSeq != _shownSeq) _ = InvokeAsync(() => { Refresh(); StateHasChanged(); }); }
+            catch (ObjectDisposedException) { }
+        }, null, 250, 250);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) ? "—" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string Pc(float v) => (Math.Clamp(v, 0f, 1f) * 100f).ToString("0", CultureInfo.InvariantCulture) + "%";
+    private static string AvailPct(double a) => (a * 100).ToString("0.0000", CultureInfo.InvariantCulture) + "%";
+    private static string Big(double v) => v >= 1e9 ? F2(v / 1e9) + "B" : v >= 1e6 ? F2(v / 1e6) + "M" : v >= 1e3 ? F1(v / 1e3) + "K" : F0(v);
+    private static string Dur(double ms) { var s = ms / 1000; return s >= 3600 ? F1(s / 3600) + "h" : s >= 60 ? F1(s / 60) + "m" : F1(s) + "s"; }
+    private static float MX(int r) => 20 + AutonomousAiSreGridAgent.RegionX[r] * 360;
+    private static float MY(int r) => 10 + AutonomousAiSreGridAgent.RegionY[r] * 200;
+    private static double GaugeFrac(double burn) => Math.Clamp(Math.Log10(1 + burn) / Math.Log10(1 + 50), 0, 1);
+
+    private (string, double, double)[] Gauges() => new[]
+    {
+        ("30s", D.BurnShort, BurnRateAndErrorBudgetOptimizer.FastBurn),
+        ("5m", D.BurnMid, BurnRateAndErrorBudgetOptimizer.FastBurn),
+        ("1h", D.BurnLong, BurnRateAndErrorBudgetOptimizer.SlowBurn),
+    };
+
+    private static string NodeClass(SreNodeStatus s) =>
+        !s.Alive ? "dead" : s.Isolated ? "iso" : s.Drained ? "drain" : s.Load / s.Capacity > 0.85f ? "hi" : "";
+
+    private void Refresh()
+    {
+        _shownSeq = Runner.FrameSeq;
+        var n = Runner.CopyHistory(_nines, _burn);
+        var sb = new System.Text.StringBuilder();
+        for (var i = 0; i < n; i++) sb.Append(F1(i * 240.0 / Math.Max(1, n - 1))).Append(',').Append(F1(48 - _nines[i] / 9.0 * 44)).Append(' ');
+        _ninesSpark = sb.ToString(); sb.Clear();
+        for (var i = 0; i < n; i++) sb.Append(F1(i * 240.0 / Math.Max(1, n - 1))).Append(',').Append(F1(48 - GaugeFrac(_burn[i]) * 44)).Append(' ');
+        _burnSpark = sb.ToString();
+        for (var m = 0; m < GlobalEdgeTelemetryAnomalyReactor.Metrics; m++)
+        {
+            sb.Clear();
+            var c = R.CopyHistory(_viewNode, (TelemetryMetric)m, _mh);
+            for (var i = 0; i < c; i++) sb.Append(F1(i * 64.0 / Math.Max(1, c - 1))).Append(',').Append(F1(19 - Math.Clamp(_mh[i], 0f, 1f) * 18)).Append(' ');
+            _metricSpark[m] = sb.ToString();
+        }
+        _evCount = R.CopyEvents(_events);
+    }
+
+    private void Toggle() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step() { for (var i = 0; i < 100; i++) G.Tick(GlobalOperationsGridStudioRunner.SubstepMs); Runner.TickOnce(0); Refresh(); }
+
+    private void OnScale(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var s)) Runner.TimeScale = s;
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(() => { Refresh(); StateHasChanged(); });
+
+    public void Dispose()
+    {
+        _timer?.Dispose();
+        Runner.OnChange -= OnServiceChanged;
+        G.OnChange -= OnServiceChanged;
+        B.OnChange -= OnServiceChanged;
+        R.OnChange -= OnServiceChanged;
+    }
+}

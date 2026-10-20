@@ -1,0 +1,210 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.SkinnedSplatAvatar
+@using PromptFlowStudio.Services.NeuralRagdoll
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject DualQuaternionGaussianAvatarStudioRunner Runner
+
+@* [PromptFlow Studio v17.57.0] 🧬 4D 가우시안 아바타 스튜디오(DQS) — 본 스켈레톤 오버레이 · 바인드 포인트 · 셀프 섀도우 농도 · 체적 가드 카운터 · v17.33/v17.37 소스. *@
+<div class="dqa-scrim" @onclick="Close">
+    <div class="dqa-modal" @onclick:stopPropagation="true">
+        <div class="dqa-h">
+            <div>
+                <div class="dqa-title">🧬 4D 가우시안 아바타 스튜디오 · DQS @(Runner.IsRunning ? "· ▶ 60 Hz" : null) · @(Runner.Points.ToString("N0", CultureInfo.InvariantCulture)) 가우시안</div>
+                <div class="dqa-sub"><b>DQS 스키닝 엔진</b>이 래그돌 24 관절 분절마다 듀얼 쿼터니언을 4 본 가중 블렌드해 가우시안 중심(μ' = Rμ + t)과 공분산(Σ' = RΣRᵀ)을 SIMD 로 재계산합니다(LBS 비교 시 비틀린 관절이 캔디 래퍼처럼 수축). <b>셀프 섀도우 합성기</b>는 계층 캡슐 프록시 + 광원 뎁스 맵으로 목 · 겨드랑이 · 관절 접힘부의 자체 그림자를 만들고, <b>체적 가드</b>는 det(Σ) 비가 0.5~2.5× 를 벗어난 스플랫을 바인드 체적으로 복원합니다.</div>
+            </div>
+            <button class="dqa-x" @onclick="Close">✕</button>
+        </div>
+        <div class="dqa-bar">
+            <button class="dqa-btn @(Runner.IsRunning ? "on" : "go")" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 재생")</button>
+            <button class="dqa-btn" disabled="@Runner.IsRunning" @onclick="Runner.Step">⏭ 1 프레임</button>
+            <span class="dqa-sep"></span>
+            @for (var m = 0; m < 6; m++)
+            {
+                var mo = (AvatarMotion)m;
+                var dis = mo == AvatarMotion.MotionMatching && !Runner.MotionAvailable || mo == AvatarMotion.Ragdoll && !Runner.RagdollAvailable;
+                <button class="dqa-btn pre @(Runner.Motion == mo ? "on" : null)" disabled="@dis" @onclick="() => Runner.SetMotion(mo)">@(DualQuaternionGaussianAvatarStudioRunner.MotionName(mo))</button>
+            }
+        </div>
+        <div class="dqa-bar">
+            @foreach (var p in DualQuaternionGaussianAvatarStudioRunner.PointPresets)
+            {
+                var c = p;
+                <button class="dqa-btn pre @(Runner.PointTarget == c ? "on" : null)" @onclick="() => Runner.SetPoints(c)">@((c / 1000).ToString(CultureInfo.InvariantCulture))K</button>
+            }
+            <span class="dqa-sep"></span>
+            <button class="dqa-btn @(Runner.UseDqs ? "on" : null)" @onclick="() => Runner.SetDqs(!Runner.UseDqs)">@(Runner.UseDqs ? "🧬 DQS" : "📐 LBS")</button>
+            <button class="dqa-btn @(Runner.ShowBones ? "on" : null)" @onclick="() => Runner.ShowBones = !Runner.ShowBones">🦴 본 오버레이</button>
+            <button class="dqa-btn @(Runner.Guard.Enabled ? "on" : null)" @onclick="() => Runner.SetGuard(!Runner.Guard.Enabled)">🛡 체적 가드</button>
+            <button class="dqa-btn @(Runner.Glitch ? "on" : null)" @onclick="() => Runner.SetGlitch(!Runner.Glitch)">💥 글리치 주입</button>
+            <button class="dqa-btn @(Runner.SelfShadow?.Enabled != false ? "on" : null)" @onclick="() => Runner.SetSelfShadow(Runner.SelfShadow?.Enabled == false)">🌗 셀프 섀도우</button>
+            <label class="dqa-lbl">농도</label>
+            <input class="dqa-rng" type="range" min="0" max="100" value="@((int)(Runner.ShadowOpacity * 100))" @oninput="OnOpacity" />
+            <span class="dqa-chip">@(F2(Runner.ShadowOpacity))</span>
+            <label class="dqa-lbl">광원 방위</label>
+            <input class="dqa-rng" type="range" min="-314" max="314" value="@(_az)" @oninput="OnAz" />
+        </div>
+        <div class="dqa-main">
+            <div class="dqa-card">
+                <div class="dqa-sec">🎞 스킨드 가우시안 프리뷰 320×192</div>
+                <div class="dqa-stage">
+                    <img class="dqa-view" src="@(_img)" alt="dqs gaussian avatar" />
+                    @if (Runner.ShowBones)
+                    {
+                        <svg class="dqa-bones" viewBox="0 0 320 192" preserveAspectRatio="none">
+                            @for (var j = 1; j < RagdollSkeleton.Count; j++)
+                            {
+                                var pa = RagdollSkeleton.Parent[j];
+                                if (Runner.ProjectJoint(j, out var x1, out var y1) && Runner.ProjectJoint(pa, out var x0, out var y0))
+                                {
+                                    <line x1="@(F1(x0))" y1="@(F1(y0))" x2="@(F1(x1))" y2="@(F1(y1))" />
+                                    <circle cx="@(F1(x1))" cy="@(F1(y1))" r="1.6" />
+                                }
+                            }
+                        </svg>
+                    }
+                </div>
+            </div>
+            <div class="dqa-col">
+                <div class="dqa-card">
+                    <div class="dqa-sec">📊 스키닝 · 셀프 섀도우</div>
+                    <div class="dqa-kv grid2">
+                        <div>바인드 포인트 <b>@(Runner.Points.ToString("N0", CultureInfo.InvariantCulture))</b> · 분절 23</div>
+                        <div>프레임 <b class="@(Runner.LastTickMs < 16.7 ? "ok" : "warn")">@(F2(Runner.LastTickMs))</b> ms · 최대 @(F2(Runner.MaxTickMs))</div>
+                        <div>스키닝 @(F2((Runner.Skinning?.LastSkinUs ?? 0) / 1000)) ms · 워커 @((Runner.Skinning?.Workers ?? 0) + 1)</div>
+                        <div>셀프 섀도우 @(F2((Runner.SelfShadow?.LastComputeUs ?? 0) / 1000)) ms</div>
+                        <div>캡슐 시험 @((Runner.SelfShadow?.CapsuleTests ?? 0).ToString("N0", CultureInfo.InvariantCulture)) · 후보 @((Runner.SelfShadow?.Candidates ?? 0).ToString("N0", CultureInfo.InvariantCulture))</div>
+                        <div>그림자 포인트 @((Runner.SelfShadow?.Shadowed ?? 0).ToString("N0", CultureInfo.InvariantCulture)) · 평균 차폐 @(F2(Runner.SelfShadow?.MeanOcclusion ?? 0))</div>
+                        <div>DQ 폴백 @(Runner.Skinning?.FallbackBlends ?? 0) · 가시 스플랫 @((Runner.Raster?.Visible ?? 0).ToString("N0", CultureInfo.InvariantCulture))</div>
+                        <div>렌더 @(F2((Runner.Raster?.LastFrameMs ?? 0)))</div>
+                    </div>
+                </div>
+                <div class="dqa-card">
+                    <div class="dqa-sec">🛡 체적 보존 가드(det 비 0.5~2.5×)</div>
+                    <div class="dqa-counters">
+                        <div><b>@(Runner.Guard.Exploded.ToString("N0", CultureInfo.InvariantCulture))</b><span>폭발 클램프</span></div>
+                        <div><b>@(Runner.Guard.Squashed.ToString("N0", CultureInfo.InvariantCulture))</b><span>찌그러짐 클램프</span></div>
+                        <div><b>@(Runner.Guard.NaNFixes.ToString("N0", CultureInfo.InvariantCulture))</b><span>비유한 복구</span></div>
+                        <div><b class="@(Runner.Guard.OnAirViolations == 0 ? "ok" : "warn")">@(Runner.Guard.OnAirViolations.ToString("N0", CultureInfo.InvariantCulture))</b><span>방송 위반</span></div>
+                    </div>
+                    <div class="dqa-kv">프레임 det 비 @(F2(Runner.Guard.FrameMinRatio)) ~ @(F2(Runner.Guard.FrameMaxRatio)) · 최고 @(F2(Runner.Guard.PeakRatio)) · 이번 프레임 클램프 @(Runner.Guard.FrameClamps)</div>
+                    <svg class="dqa-graph" viewBox="0 0 600 60" preserveAspectRatio="none">
+                        <line class="lim" x1="0" x2="600" y1="30" y2="30" />
+                        <polyline class="ms" points="@(Series(0))" />
+                        <polyline class="cl" points="@(Series(1))" />
+                    </svg>
+                    <div class="dqa-act">@(Runner.LastAction ?? "대기")</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .dqa-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .dqa-modal { width: min(1280px, 96vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
+    .dqa-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #ec4899 16%, var(--card)), color-mix(in srgb, #8b5cf6 14%, var(--card))); }
+    .dqa-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .dqa-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .dqa-sub b { color: var(--text-primary); }
+    .dqa-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .dqa-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .dqa-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .dqa-btn:disabled { opacity: .45; cursor: default; }
+    .dqa-btn.on { background: color-mix(in srgb, #ec4899 22%, var(--card)); border-color: #ec4899; }
+    .dqa-btn.pre.on { background: color-mix(in srgb, #8b5cf6 24%, var(--card)); border-color: #8b5cf6; }
+    .dqa-btn.go { background: #ec4899; color: #fff; border: none; }
+    .dqa-sep { width: 1px; height: 20px; background: var(--line); margin: 0 4px; }
+    .dqa-lbl { font-size: 12px; color: var(--text-secondary); }
+    .dqa-rng { width: 100px; }
+    .dqa-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .dqa-main { display: grid; grid-template-columns: 1.1fr 1fr; gap: 12px; padding: 14px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .dqa-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .dqa-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); min-width: 0; }
+    .dqa-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .dqa-stage { position: relative; width: 100%; aspect-ratio: 320 / 192; }
+    .dqa-view, .dqa-bones { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 8px; }
+    .dqa-view { image-rendering: pixelated; background: #05070c; }
+    .dqa-bones line { stroke: #22d3ee; stroke-width: 0.9; opacity: .9; }
+    .dqa-bones circle { fill: #f472b6; }
+    .dqa-kv { font-size: 11px; color: var(--text-secondary); margin-top: 6px; }
+    .dqa-kv.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+    .dqa-kv b.ok, .dqa-counters b.ok { color: #22c55e; } .dqa-kv b.warn, .dqa-counters b.warn { color: #f59e0b; }
+    .dqa-counters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .dqa-counters div { display: flex; flex-direction: column; align-items: center; padding: 6px; border-radius: 8px; background: #0f172a; }
+    .dqa-counters b { font: 800 16px var(--mono); color: var(--text-primary); }
+    .dqa-counters span { font-size: 10px; color: var(--text-muted); }
+    .dqa-graph { width: 100%; height: 60px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; display: block; margin-top: 8px; }
+    .dqa-graph polyline { fill: none; stroke-width: 1.6; }
+    .dqa-graph .ms { stroke: #f59e0b; } .dqa-graph .cl { stroke: #ec4899; }
+    .dqa-graph .lim { stroke: #ef4444; stroke-dasharray: 6 4; }
+    .dqa-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+    @@media (max-width: 860px) { .dqa-main { grid-template-columns: 1fr; } .dqa-counters { grid-template-columns: 1fr 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly byte[] _bmp = new byte[DualQuaternionGaussianAvatarStudioRunner.PreviewBytes];
+    private System.Threading.Timer? _timer;
+    private string _img = "";
+    private int _az;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        if (!Runner.IsRunning) Runner.Step();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("DqAvatar.Modal.Timer", ex); }
+        }, null, 120, 120);
+    }
+
+    protected override bool ShouldRender()
+    {
+        Runner.WritePreviewBmp(_bmp);
+        _img = "data:image/bmp;base64," + Convert.ToBase64String(_bmp);
+        return true;
+    }
+
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+
+    private string Series(int kind)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            var v = kind == 0 ? Runner.FrameMsSeries(k) / 33.4 : Math.Min(Runner.ClampSeries(k) / 400.0, 1.0);
+            sb.Append((600.0 * i / (n - 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append((58 - 56 * Math.Clamp(v, 0, 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private static bool TryInt(ChangeEventArgs e, out int v) => int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out v);
+    private void OnOpacity(ChangeEventArgs e) { if (TryInt(e, out var v)) Runner.SetShadowOpacity(v / 100f); }
+    private void OnAz(ChangeEventArgs e) { if (TryInt(e, out var v)) { _az = v; Runner.SetLightAzimuth(v / 100f); } }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

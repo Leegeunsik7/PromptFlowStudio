@@ -1,0 +1,398 @@
+@using PromptFlowStudio.Services.Help
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+@inject HelpState Help
+@implements IDisposable
+
+@* ═══════════════════════════════════════════════════════════════════════════
+   메뉴별 도움말 드로어
+
+   ⚠ 컨텐츠는 여기에 없다. Services/Help/HelpContent.cs 에 있고
+     331건의 단위 테스트가 붙어 있다(라우트 실재 여부·5대 항목 충족·용어 검사).
+     문구를 고칠 일이 있으면 그 파일을 고치십시오.
+
+   ⚠ 이 컴포넌트는 MainLayout 안에 한 번만 놓는다. 페이지마다 두면
+     F1 이 여러 개의 드로어를 동시에 연다.
+
+   ⚠ 첫 렌더 비용: 10개 항목 × 5개 절을 처음부터 DOM 에 올리면 앱 시작이
+     느려진다. 그렇다고 열 때마다 만들면 닫힘 애니메이션이 재생되지 않는다
+     (요소가 사라져 버린다). 그래서 '한 번이라도 연 뒤에는 DOM 에 남긴다'.
+   ══════════════════════════════════════════════════════════════════════════ *@
+
+@if (_mounted)
+{
+    @* 배경 — 바깥을 누르면 닫힌다. 드로어보다 먼저 그려 z-index 를 낮춘다. *@
+    <div class="help-scrim @(_open ? "on" : "")" @onclick="Close" aria-hidden="true"></div>
+
+    <aside id="sm-help-drawer"
+           class="help-dr @(_open ? "on" : "")"
+           role="dialog" aria-modal="true" aria-label="사용자 도움말"
+           @onkeydown="OnKey">
+
+        <header class="help-h">
+            <div class="help-h-t">
+                <span class="help-h-ic" aria-hidden="true">📖</span>
+                <h2 class="help-h-n">사용자 도움말</h2>
+                <button type="button" class="help-x" @onclick="Close" aria-label="도움말 닫기">✕</button>
+            </div>
+
+            <div class="help-search">
+                <span class="help-search-ic" aria-hidden="true">🔍</span>
+                <input type="search" class="help-search-i"
+                       data-help-autofocus
+                       placeholder="기능·용어로 찾기 (예: 쓰러짐, 라이선스, 크레인)"
+                       aria-label="도움말 검색"
+                       value="@_query"
+                       @oninput="OnSearch" />
+                @if (!string.IsNullOrEmpty(_query))
+                {
+                    <button type="button" class="help-search-x" @onclick="ClearSearch"
+                            aria-label="검색어 지우기">✕</button>
+                }
+            </div>
+
+            @* ⚠ aria-live 는 이 한 줄에만 건다. 본문 전체에 걸면 아코디언을
+               펼칠 때마다 스크린리더가 문서를 통째로 다시 읽는다. *@
+            <div class="help-live" aria-live="polite">
+                @if (!string.IsNullOrEmpty(_query))
+                {
+                    <span>검색 결과 @Visible.Count 건</span>
+                }
+                else if (_current is not null)
+                {
+                    <span>현재 화면: <b>@_current.Title</b> · 아래에 펼쳐져 있습니다</span>
+                }
+                else
+                {
+                    <span>메뉴를 골라 펼쳐 보십시오</span>
+                }
+            </div>
+        </header>
+
+        <div class="help-body">
+            @if (Visible.Count == 0)
+            {
+                <div class="help-empty">
+                    <b>‘@_query’</b> 에 해당하는 내용이 없습니다.<br />
+                    <span>기능 이름(예: <i>크레인</i>, <i>안전모</i>) 이나 화면에 보이는 배지 이름으로 찾아보십시오.</span>
+                </div>
+            }
+
+            @foreach (var t in Visible)
+            {
+                var open = IsExpanded(t);
+                var isNow = _current is not null && t.Route == _current.Route;
+
+                <section class="help-item @(isNow ? "now" : "")" @key="t.Route">
+                    <h3 class="help-item-h">
+                        <button type="button" class="help-acc"
+                                aria-expanded="@(open ? "true" : "false")"
+                                aria-controls="@($"help-p-{Slug(t.Route)}")"
+                                @onclick="() => Toggle(t)">
+                            <span class="help-acc-ic" aria-hidden="true">@t.Icon</span>
+                            <span class="help-acc-t">@t.Title</span>
+                            @if (isNow)
+                            {
+                                <span class="help-now">현재 화면</span>
+                            }
+                            <span class="help-acc-x @(open ? "on" : "")" aria-hidden="true">⌄</span>
+                        </button>
+                    </h3>
+
+                    @if (open)
+                    {
+                        <div class="help-p" id="@($"help-p-{Slug(t.Route)}")">
+
+                            <div class="help-sec">
+                                <div class="help-sec-h"><span aria-hidden="true">📌</span> 한 줄 요약</div>
+                                <p class="help-lead">@t.Overview</p>
+                            </div>
+
+                            <div class="help-sec">
+                                <div class="help-sec-h"><span aria-hidden="true">👤</span> 주요 이용 대상 · 권한</div>
+                                <ul class="help-ul">
+                                    @foreach (var r in t.Roles)
+                                    {
+                                        <li>@((MarkupString)Emph(r))</li>
+                                    }
+                                </ul>
+                            </div>
+
+                            <div class="help-sec">
+                                <div class="help-sec-h"><span aria-hidden="true">🚀</span> 3단계 핵심 사용법</div>
+                                <ol class="help-steps">
+                                    @foreach (var (s, i) in t.Steps.Select((s, i) => (s, i)))
+                                    {
+                                        <li @key="i">
+                                            <span class="help-step-n" aria-hidden="true">@(i + 1)</span>
+                                            <span class="help-step-t">@((MarkupString)Emph(s))</span>
+                                        </li>
+                                    }
+                                </ol>
+                            </div>
+
+                            <div class="help-sec">
+                                <div class="help-sec-h"><span aria-hidden="true">🚦</span> 경보 · 배지 읽는 법</div>
+                                <ul class="help-ind">
+                                    @foreach (var ind in t.Indicators)
+                                    {
+                                        <li @key="ind.Label">
+                                            <span class="b @Badge(ind.Tone) help-ind-b">@ind.Label</span>
+                                            <span class="help-ind-m">@((MarkupString)Emph(ind.Meaning))</span>
+                                        </li>
+                                    }
+                                </ul>
+                            </div>
+
+                            <div class="help-sec help-act">
+                                <div class="help-sec-h danger">
+                                    <span aria-hidden="true">🚨</span> 비상 시 현장 조치 수칙
+                                </div>
+                                <ul class="help-ul">
+                                    @foreach (var a in t.Protocol)
+                                    {
+                                        <li>@((MarkupString)Emph(a))</li>
+                                    }
+                                </ul>
+                            </div>
+
+                            @if (t.Caveat is { } cav)
+                            {
+                                @* ⚠ 한계는 접어 두지 않고 항상 펼쳐 둔다.
+                                   시스템이 못 하는 일을 모르면 현장이 그걸 믿고 기다린다. *@
+                                <div class="help-caveat">
+                                    <span class="help-caveat-ic" aria-hidden="true">⚠</span>
+                                    <span>@((MarkupString)Emph(cav))</span>
+                                </div>
+                            }
+
+                            <div class="help-go">
+                                <button type="button" class="btn btn-sm" @onclick="() => GoTo(t)">
+                                    이 화면으로 이동 →
+                                </button>
+                            </div>
+                        </div>
+                    }
+                </section>
+            }
+        </div>
+
+        <footer class="help-f">
+            <kbd class="help-kbd">F1</kbd> 또는 <kbd class="help-kbd">?</kbd> 로 언제든 열고,
+            <kbd class="help-kbd">Esc</kbd> 로 닫습니다.
+        </footer>
+    </aside>
+}
+
+@code {
+    // ⚠ 열림 상태의 정본은 HelpState 다. 이 필드는 그 사본이며,
+    //   구독 콜백에서만 갱신한다. 두 곳에서 각자 판단하면 반드시 어긋난다.
+    private bool _open;
+    private bool _mounted;          // 한 번이라도 연 적이 있는가 (첫 렌더 비용 회피)
+    private string _query = "";
+    private HelpTopic? _current;
+    private readonly HashSet<string> _expanded = new();
+    private DotNetObjectReference<HelpDrawer>? _self;
+    private bool _pendingTrap;
+    private bool _disposed;
+
+    // ── 수명주기 ─────────────────────────────────────────────────────────────
+    protected override void OnInitialized()
+    {
+        Nav.LocationChanged += OnNav;
+        Help.OnChange += OnHelpState;
+        _open = Help.IsOpen;
+        SyncCurrent();
+    }
+
+    /// <summary>상태 서비스가 바뀌면 열고 닫는다. 실제 전환은 전부 여기를 지난다.</summary>
+    private void OnHelpState() => InvokeAsync(async () =>
+    {
+        if (_disposed) return;
+        var next = Help.IsOpen;
+        if (next == _open) return;
+
+        _open = next;
+        if (_open)
+        {
+            _mounted = true;
+            _pendingTrap = true;
+            SyncCurrent();
+            StateHasChanged();
+        }
+        else
+        {
+            _query = "";
+            StateHasChanged();
+            await SafeJs("siteMaticHelp.release", true);   // 원래 포커스로 되돌린다
+        }
+    });
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _self = DotNetObjectReference.Create(this);
+            await SafeJs("siteMaticHelp.register", _self);
+        }
+
+        // ⚠ 포커스 트랩은 요소가 실제로 DOM 에 그려진 뒤에만 걸 수 있다.
+        //   Open() 안에서 바로 호출하면 아직 없는 요소를 찾아 조용히 실패한다.
+        if (_pendingTrap && _open)
+        {
+            _pendingTrap = false;
+            await SafeJs("siteMaticHelp.trap", "sm-help-drawer");
+        }
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        Nav.LocationChanged -= OnNav;
+        Help.OnChange -= OnHelpState;
+        // ⚠ 여기서는 JS 를 부르지 않는다. 창이 닫히는 중이면 JS 런타임이 이미
+        //   없어 예외가 나고, Dispose 안의 예외는 삼켜지지 않는다.
+        _self?.Dispose();
+        _self = null;
+    }
+
+    private void OnNav(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+    {
+        SyncCurrent();
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>현재 URL 에 맞는 도움말을 고르고 자동으로 펼친다.</summary>
+    private void SyncCurrent()
+    {
+        var rel = Nav.ToBaseRelativePath(Nav.Uri);
+        var next = HelpContent.ForPath(rel);
+        if (next is null) { _current = null; return; }
+
+        // 이전 화면의 자동 펼침은 접는다 — 사용자가 직접 편 것은 그대로 둔다.
+        if (_current is not null && _current.Route != next.Route)
+            _expanded.Remove(_current.Route);
+
+        _current = next;
+        _expanded.Add(next.Route);
+    }
+
+    // ── 열기/닫기 ────────────────────────────────────────────────────────────
+    //  ⚠ 여기서 직접 _open 을 만지지 않는다. 전부 HelpState 를 거쳐
+    //    OnHelpState 한 곳으로 모인다 — 헤더 버튼·미니 아이콘·F1·ESC 가
+    //    각자 다른 경로로 상태를 바꾸면 어느 순간 반드시 어긋난다.
+    public void Open() => Help.Open();
+    public void Toggle() => Help.Toggle();
+    private void Close() => Help.Close();
+
+    /// <summary>document 레벨 단축키(F1 · ?)에서 호출된다.</summary>
+    [JSInvokable]
+    public Task OnHotkey(string key)
+    {
+        if (_disposed) return Task.CompletedTask;
+        return InvokeAsync(Help.Toggle);
+    }
+
+    private void OnKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape") Close();
+    }
+
+    // ── 검색 · 아코디언 ──────────────────────────────────────────────────────
+    private IReadOnlyList<HelpTopic> Visible
+    {
+        get
+        {
+            var hits = HelpContent.All.Where(t => t.Matches(_query)).ToList();
+            // 현재 화면을 항상 맨 위로. 검색 중이어도 결과에 있으면 위로 올린다.
+            if (_current is not null)
+            {
+                var i = hits.FindIndex(t => t.Route == _current.Route);
+                if (i > 0)
+                {
+                    var c = hits[i];
+                    hits.RemoveAt(i);
+                    hits.Insert(0, c);
+                }
+            }
+            return hits;
+        }
+    }
+
+    private void OnSearch(ChangeEventArgs e)
+    {
+        _query = e.Value?.ToString() ?? "";
+        // 검색 중에는 결과를 전부 펼쳐 준다 — 찾은 뒤 또 눌러야 하면 번거롭다.
+        if (!string.IsNullOrWhiteSpace(_query))
+            foreach (var t in HelpContent.All.Where(t => t.Matches(_query)))
+                _expanded.Add(t.Route);
+    }
+
+    private void ClearSearch()
+    {
+        _query = "";
+        _expanded.Clear();
+        if (_current is not null) _expanded.Add(_current.Route);
+    }
+
+    private bool IsExpanded(HelpTopic t) => _expanded.Contains(t.Route);
+
+    private void Toggle(HelpTopic t)
+    {
+        if (!_expanded.Remove(t.Route)) _expanded.Add(t.Route);
+    }
+
+    private void GoTo(HelpTopic t)
+    {
+        Help.Close();
+        Nav.NavigateTo(t.Route);
+    }
+
+    // ── 표시 도우미 ──────────────────────────────────────────────────────────
+    private static string Badge(HelpTone tone) => tone switch
+    {
+        HelpTone.Safe => "b-ok",
+        HelpTone.Warn => "b-warn",
+        HelpTone.Danger => "b-danger",
+        HelpTone.Info => "b-info",
+        _ => "b-mute",      // 판정보류 — 회색. 노랑(주의)과 절대 섞지 않는다.
+    };
+
+    private static string Slug(string route)
+        => string.IsNullOrEmpty(route) ? "home" : route.Replace('/', '-');
+
+    /// <summary>
+    /// `**굵게**` 만 태그로 바꾼다.
+    ///
+    /// <para>
+    /// ⚠ 원문을 먼저 HTML 이스케이프한 뒤에 태그를 넣는다. 순서를 바꾸면
+    ///   컨텐츠에 들어간 &lt; 가 그대로 마크업이 되어 화면이 깨진다.
+    ///   컨텐츠는 우리가 쓰지만, 그 전제에 기대는 코드는 언젠가 무너진다.
+    /// </para>
+    /// </summary>
+    private static string Emph(string raw)
+    {
+        var s = System.Net.WebUtility.HtmlEncode(raw);
+        var sb = new System.Text.StringBuilder(s.Length + 32);
+        var i = 0; var openTag = true;
+        while (i < s.Length)
+        {
+            if (i + 1 < s.Length && s[i] == '*' && s[i + 1] == '*')
+            {
+                sb.Append(openTag ? "<b>" : "</b>");
+                openTag = !openTag;
+                i += 2;
+                continue;
+            }
+            sb.Append(s[i++]);
+        }
+        if (!openTag) sb.Append("</b>");    // 짝이 안 맞으면 닫아 준다
+        return sb.ToString();
+    }
+
+    private async Task SafeJs(string fn, params object?[] args)
+    {
+        try { await JS.InvokeVoidAsync(fn, args); }
+        catch (Exception) { /* 프리렌더·창 종료 중 — 도움말 때문에 앱이 죽으면 안 된다 */ }
+    }
+}

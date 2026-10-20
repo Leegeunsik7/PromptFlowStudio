@@ -1,0 +1,353 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Twin
+@implements IDisposable
+@inject DigitalTwinStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.73.0] ♊ AI 디지털 트윈 & 합성 데이터 스튜디오 — 트윈 노드 동기화 모니터(온라인 · 지연 · 동기 오차 · 가상 편집 → 물리 명령) ·
+    현장 탑다운 맵(라이다 빔) · 센서 메트릭 스트림 · PID 피드백 루프 · 합성 데이터 렌더 큐 · RGB/깊이/세그 + 박스 미리보기 · 라벨링 스펙트럼 · 데이터셋 기록.
+*@
+
+<div class="dts-scrim" @onclick="Close">
+    <div class="dts-modal" @onclick:stopPropagation="true">
+        <div class="dts-h">
+            <div>
+                <div class="dts-title">♊ AI 디지털 트윈 &amp; 합성 데이터 스튜디오</div>
+                <div class="dts-sub">실세계 <b>IoT · 카메라 · 센서</b> 포즈/환경 패킷을 지연 보상해 <b>OpenUSD · 3DGS</b> 씬 그래프와 양방향 동기화하고, 가상 센서 메트릭으로 <b>PID 피드백 루프</b>를 닫으며,
+                    조명 · 날씨 · 카메라를 랜덤화한 <b>RGB · 깊이 · 세그멘테이션 · 박스</b> 합성 데이터셋을 자동 생성합니다.</div>
+            </div>
+            <button class="dts-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="dts-bar">
+            <button class="dts-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 트윈 루프 정지" : "▶ 트윈 루프 가동")</button>
+            <button class="dts-btn @(Runner.Exporting ? "on" : null)" @onclick="() => Runner.SetExport(!Runner.Exporting)">@(Runner.Exporting ? "💾 데이터셋 기록 중" : "💾 데이터셋 기록")</button>
+            <span class="dts-chip">프레임 @(Runner.Frame)</span>
+            <span class="dts-chip">노드 @(Runner.Twin.OnlineCount)/@(Runner.Twin.NodeCount)</span>
+            <span class="dts-chip">지연 P50 @(F0(Runner.Twin.LatencyPercentile(0.5f)))ms · P95 @(F0(Runner.Twin.LatencyPercentile(0.95f)))ms</span>
+            <span class="dts-chip">수신 @(Runner.Twin.Accepted) · 역순 @(Runner.Twin.Stale) · 손실 @(Runner.LostPackets) · CRC @(Runner.Twin.CrcErrors)</span>
+            <span class="dts-chip">명령 @(Runner.Twin.CommandsSent)</span>
+            <label class="dts-chip">손실률 <input type="range" min="0" max="20" step="1" value="@(F0(Runner.LossRate * 100))" @onchange="OnLoss" /> @(F0(Runner.LossRate * 100))%</label>
+        </div>
+
+        <div class="dts-main">
+            <div class="dts-col">
+                <div class="dts-card">
+                    <div class="dts-sec">🛰 트윈 노드 동기화 모니터</div>
+                    <table class="dts-tbl">
+                        <thead><tr><th>노드</th><th>상태</th><th>지연</th><th>동기 오차</th><th>가상 위치</th><th>패킷</th><th>환경</th></tr></thead>
+                        <tbody>
+                            @for (var i = 0; i < Runner.Twin.NodeCount; i++)
+                            {
+                                var p = Runner.Twin.Filtered(i);
+                                <tr class="@(Runner.Twin.IsOnline(i) ? "ok" : "bad")">
+                                    <td>@(Runner.Twin.Label(i))</td>
+                                    <td>@(Runner.Twin.IsOnline(i) ? "● 온라인" : "○ 오프라인")</td>
+                                    <td>@(F0(Runner.Twin.LastLatencyMs(i)))ms</td>
+                                    <td>@(F1(Runner.Twin.SyncError(i) * 100))cm</td>
+                                    <td>(@(F1(p.X)), @(F1(p.Y)), @(F1(p.Z)))</td>
+                                    <td>@(Runner.Twin.PacketsOf(i))</td>
+                                    <td>@(float.IsNaN(Runner.Twin.Temperature(i)) ? "—" : F1(Runner.Twin.Temperature(i)) + "°C · " + F0(Runner.Twin.Humidity(i)) + "%")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                    <div class="dts-row">
+                        <span class="dts-note">가상 편집(USD) → 물리 명령:</span>
+                        <button class="dts-btn" @onclick="() => Nudge(-1, 0)">◀ 로봇</button>
+                        <button class="dts-btn" @onclick="() => Nudge(1, 0)">로봇 ▶</button>
+                        <button class="dts-btn" @onclick="() => Nudge(0, -1)">▲ 로봇</button>
+                        <button class="dts-btn" @onclick="() => Nudge(0, 1)">로봇 ▼</button>
+                        <button class="dts-btn @(Runner.RobotFollow ? "on" : null)" @onclick="() => Runner.RobotFollow = !Runner.RobotFollow">🤖 자율 추종 @(Runner.RobotFollow ? "ON" : "OFF")</button>
+                    </div>
+                    <svg class="dts-map" viewBox="-12 -12 24 24">
+                        <rect x="-12" y="-12" width="24" height="24" class="bg" />
+                        @for (var i = 0; i < Runner.Scene.Count; i++)
+                        {
+                            var c = Runner.Scene.Position(i); var h = Runner.Scene.Half(i); var col = Runner.Scene.Color(i);
+                            <g>
+                                @if (Runner.Scene.Shape[i] == (byte)SimShape.Sphere)
+                                {
+                                    <circle cx="@(F2(c.X))" cy="@(F2(c.Z))" r="@(F2(h.X))" fill="@(Rgb(col))" />
+                                }
+                                else
+                                {
+                                    <rect x="@(F2(c.X - h.X))" y="@(F2(c.Z - h.Z))" width="@(F2(h.X * 2))" height="@(F2(h.Z * 2))" fill="@(Rgb(col))" />
+                                }
+                            </g>
+                        }
+                        @if (Runner.Sensors.HasValue(Runner.LidarSensor))
+                        {
+                            var o = Runner.Scene.Position(Runner.Sensors.AttachedTo(Runner.LidarSensor));
+                            var beams = Runner.Sensors.BeamsOf(Runner.LidarSensor);
+                            for (var k = 0; k < beams.Length; k += 2)
+                            {
+                                var a = k * MathF.Tau / beams.Length;
+                                <line x1="@(F2(o.X))" y1="@(F2(o.Z))" x2="@(F2(o.X + MathF.Cos(a) * beams[k]))" y2="@(F2(o.Z + MathF.Sin(a) * beams[k]))" class="beam" />
+                            }
+                        }
+                        <circle cx="@(F2(Runner.LampPosition.X))" cy="@(F2(Runner.LampPosition.Z))" r="@(F2(0.3f + Runner.LampLux1m / 20000f))" class="lamp" />
+                    </svg>
+                    <div class="dts-note">탑다운 가상 공간 24m · 라이다 빔(로봇) · 램프 원 크기 = 조광 출력</div>
+                </div>
+
+                <div class="dts-card">
+                    <div class="dts-sec">📡 센서 메트릭 스트림 · 피드백 루프</div>
+                    <div class="dts-sens">
+                        @for (var s = 0; s < Runner.Sensors.SensorCount; s++)
+                        {
+                            <span><b>@(Runner.Sensors.HasValue(s) ? F2(Runner.Sensors.LastValue(s)) : "—")</b>@(Runner.Sensors.SensorName(s)) <em>@(Unit(Runner.Sensors.KindOf(s))) · 지연 @(F0(Runner.Sensors.LatencyMs(s)))ms · 게시 @(Runner.Sensors.Published(s)) · 드롭 @(Runner.Sensors.Dropped(s))</em></span>
+                        }
+                    </div>
+                    @for (var l = 0; l < Runner.Sensors.LoopCount; l++)
+                    {
+                        var loop = l;
+                        <div class="dts-loop @(Runner.Sensors.Settled(loop) ? "ok" : null)">
+                            <div><b>@(Runner.Sensors.LoopName(loop))</b> @(Runner.Sensors.Settled(loop) ? "✓ 안착" : Runner.Sensors.LoopEnabled(loop) ? "조정 중" : "비활성")</div>
+                            <div class="dts-note">오차 @(F2(Runner.Sensors.Error(loop))) · 출력 @(F2(Runner.Sensors.Output(loop))) · IAE @(F1(Runner.Sensors.Iae(loop)))</div>
+                            @if (loop == Runner.LampLoop)
+                            {
+                                <input type="range" min="100" max="1200" step="10" value="@(F0(Runner.Sensors.Setpoint(loop)))" @onchange="e => SetSp(loop, e)" />
+                            }
+                            else
+                            {
+                                <input type="range" min="1" max="8" step="0.5" value="@(F1(Runner.Sensors.Setpoint(loop)))" @onchange="e => SetSp(loop, e)" />
+                            }
+                        </div>
+                    }
+                    <div class="dts-log">
+                        @for (var i = 0; i < _recentN && i < 8; i++)
+                        {
+                            var r = _recent[i];
+                            <div>#@(r.Seq) · @(Runner.Sensors.SensorName(r.Sensor)) = @(F2(r.Value)) <em>@(F2(r.TimeMicros / 1e6))s</em></div>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="dts-col">
+                <div class="dts-card">
+                    <div class="dts-sec">🧪 합성 데이터 렌더 큐</div>
+                    <div class="dts-row">
+                        <input class="dts-in" @bind="_jobName" placeholder="작업 이름" />
+                        <input class="dts-num" type="number" min="1" max="10000" @bind="_jobCount" />
+                        <input class="dts-num" type="number" @bind="_jobSeed" />
+                        <button class="dts-btn on" @onclick="Enqueue">＋ 큐 등록</button>
+                    </div>
+                    <div class="dts-row">
+                        @for (var w = 0; w < 6; w++)
+                        {
+                            var bit = w;
+                            <label class="dts-tg"><input type="checkbox" checked="@((_mask & (1 << bit)) != 0)" @onchange="e => ToggleWeather(bit, e.Value is true)" /> @(WeatherLabel((SimWeather)bit))</label>
+                        }
+                    </div>
+                    @for (var j = 0; j < Runner.Generator.JobCount; j++)
+                    {
+                        var done = Runner.Generator.JobDone(j); var total = Runner.Generator.JobTotal(j);
+                        <div class="dts-job"><i style="width:@(F0(100.0 * done / Math.Max(1, total)))%"></i><span>@(Runner.Generator.JobName(j)) · 시드 @(Runner.Generator.JobSeed(j))</span><b>@(done)/@(total)</b></div>
+                    }
+                    <div class="dts-note">렌더 @(F2(Runner.Generator.LastRenderMs))ms/장 · 해시 @(Runner.Generator.DatasetHash.ToString("X16", CultureInfo.InvariantCulture))@(Runner.ExportRoot is null ? "" : " · " + Runner.ExportRoot)</div>
+                </div>
+
+                <div class="dts-card">
+                    <div class="dts-sec">🖼 최근 샘플 — @(WeatherLabel(_cond.Weather)) · 태양 @(F0(_cond.SunElevationDeg))° · @(F0(_cond.ColorTempK))K · 카메라 @(F0(_cond.CamYawDeg))°/@(F0(_cond.CamPitchDeg))° · @(F1(_cond.CamDistance))m · @(Runner.Generator.LastSplit)</div>
+                    <div class="dts-prev">
+                        @for (var ch = 0; ch < 3; ch++)
+                        {
+                            var idx = ch;
+                            <div class="dts-img">
+                                @if (_img[idx] is { } src) { <img src="@src" /> }
+                                @if (idx == 0)
+                                {
+                                    <svg viewBox="0 0 @(NeuralSyntheticDataGeneratorEngine.W) @(NeuralSyntheticDataGeneratorEngine.H)" preserveAspectRatio="none">
+                                        @foreach (var b in _boxes)
+                                        {
+                                            <g>
+                                                <rect x="@(b.X0)" y="@(b.Y0)" width="@(b.X1 - b.X0 + 1)" height="@(b.Y1 - b.Y0 + 1)" class="@(b.Occlusion > 0.5f ? "occ" : null)" />
+                                                <text x="@(b.X0 + 1)" y="@(Math.Max(5, b.Y0 - 1))">@(ClassName(b.Class))</text>
+                                            </g>
+                                        }
+                                    </svg>
+                                }
+                                <span>@(idx == 0 ? "RGB + 박스" : idx == 1 ? "깊이" : "세그멘테이션")</span>
+                            </div>
+                        }
+                    </div>
+                    <table class="dts-tbl">
+                        <thead><tr><th>#</th><th>클래스</th><th>박스</th><th>픽셀</th><th>가림</th><th>깊이</th></tr></thead>
+                        <tbody>
+                            @foreach (var b in _boxes)
+                            {
+                                <tr><td>@(b.Instance)</td><td>@(ClassName(b.Class))</td><td>@(b.X0),@(b.Y0)–@(b.X1),@(b.Y1)@(b.Truncated ? " ✂" : "")</td><td>@(b.Pixels)/@(b.AmodalPixels)</td><td>@(Pct(b.Occlusion))</td><td>@(F1(b.Depth))m</td></tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="dts-card">
+                    <div class="dts-sec">📊 데이터셋 라벨링 스펙트럼 — 샘플 @(Runner.Generator.Samples) · 박스 @(Runner.Generator.BoxesLabeled)</div>
+                    <div class="dts-spec">
+                        <div>
+                            <em>클래스</em>
+                            @for (var c = 1; c < SyntheticScene.ClassNames.Length; c++)
+                            {
+                                <div class="bar"><span>@(SyntheticScene.ClassNames[c])</span><i style="width:@(Share(Runner.Generator.ClassCount(c), Runner.Generator.BoxesLabeled))%"></i><b>@(Runner.Generator.ClassCount(c))</b></div>
+                            }
+                        </div>
+                        <div>
+                            <em>날씨 · 조명</em>
+                            @for (var w = 0; w < 6; w++)
+                            {
+                                <div class="bar"><span>@(WeatherLabel((SimWeather)w))</span><i style="width:@(Share(Runner.Generator.WeatherCount((SimWeather)w), Runner.Generator.Samples))%"></i><b>@(Runner.Generator.WeatherCount((SimWeather)w))</b></div>
+                            }
+                        </div>
+                        <div>
+                            <em>가림률 · 분할</em>
+                            @for (var o = 0; o < NeuralSyntheticDataGeneratorEngine.OcclusionBins; o++)
+                            {
+                                <div class="bar"><span>@(o * 20)–@(o * 20 + 20)%</span><i style="width:@(Share(Runner.Generator.OcclusionCount(o), Runner.Generator.BoxesLabeled))%"></i><b>@(Runner.Generator.OcclusionCount(o))</b></div>
+                            }
+                            <div class="dts-note">train @(Runner.Generator.SplitCount(DatasetSplit.Train)) · val @(Runner.Generator.SplitCount(DatasetSplit.Val)) · test @(Runner.Generator.SplitCount(DatasetSplit.Test))</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="dts-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .dts-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .dts-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .dts-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #06b6d4 18%, var(--card)), color-mix(in srgb, #f59e0b 14%, var(--card))); }
+    .dts-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .dts-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .dts-sub b { color: var(--text-primary); }
+    .dts-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .dts-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .dts-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .dts-btn.on { background: color-mix(in srgb, #06b6d4 24%, transparent); border-color: #06b6d4; }
+    .dts-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); display: inline-flex; gap: 4px; align-items: center; }
+    .dts-chip input { width: 70px; accent-color: #06b6d4; }
+    .dts-main { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .dts-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .dts-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .dts-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); }
+    .dts-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .dts-in { flex: 1; min-width: 120px; font-size: 12px; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .dts-num { width: 84px; font: 12px var(--mono); padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .dts-tg { font-size: 11px; color: var(--text-secondary); display: flex; gap: 3px; align-items: center; padding: 2px 6px; border: 1px solid var(--line); border-radius: 7px; }
+    .dts-tbl { width: 100%; border-collapse: collapse; font-size: 11px; color: var(--text-secondary); }
+    .dts-tbl th { text-align: left; font-weight: 700; color: var(--text-muted); border-bottom: 1px solid var(--line); padding: 3px 4px; }
+    .dts-tbl td { padding: 3px 4px; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); font-family: var(--mono); }
+    .dts-tbl tr.ok td:nth-child(2) { color: #86efac; } .dts-tbl tr.bad td:nth-child(2) { color: #fca5a5; }
+    .dts-map { width: 100%; max-height: 300px; border-radius: 10px; }
+    .dts-map .bg { fill: #0b1220; } .dts-map .beam { stroke: #22d3ee; stroke-width: .04; opacity: .55; } .dts-map .lamp { fill: none; stroke: #facc15; stroke-width: .08; }
+    .dts-sens { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .dts-sens span { display: flex; flex-direction: column; font-size: 11px; color: var(--text-secondary); padding: 5px 7px; border: 1px solid color-mix(in srgb, var(--line) 60%, transparent); border-radius: 8px; }
+    .dts-sens b { font: 800 14px var(--mono); color: var(--text-primary); } .dts-sens em { font-style: normal; font-size: 10px; color: var(--text-muted); }
+    .dts-loop { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font-size: 11.5px; color: var(--text-secondary); }
+    .dts-loop b { color: var(--text-primary); } .dts-loop.ok { border-color: #22c55e; } .dts-loop input { width: 100%; accent-color: #06b6d4; }
+    .dts-log { font: 11px var(--mono); color: var(--text-secondary); max-height: 120px; overflow-y: auto; } .dts-log em { font-style: normal; color: var(--text-muted); }
+    .dts-job { position: relative; display: flex; justify-content: space-between; font-size: 11.5px; color: var(--text-primary); padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+    .dts-job i { position: absolute; left: 0; top: 0; bottom: 0; background: color-mix(in srgb, #06b6d4 22%, transparent); z-index: 0; } .dts-job span, .dts-job b { position: relative; z-index: 1; } .dts-job b { font-family: var(--mono); }
+    .dts-prev { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .dts-img { position: relative; aspect-ratio: 4 / 3; background: #020617; border-radius: 8px; overflow: hidden; border: 1px solid #334155; }
+    .dts-img img, .dts-img svg { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+    .dts-img svg rect { fill: none; stroke: #22c55e; stroke-width: .8; } .dts-img svg rect.occ { stroke: #f97316; stroke-dasharray: 2 1; }
+    .dts-img svg text { font-size: 5px; fill: #bbf7d0; }
+    .dts-img > span { position: absolute; left: 5px; bottom: 3px; font: 800 10px var(--mono); color: #fff; text-shadow: 0 1px 2px #000; }
+    .dts-spec { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .dts-spec em { font-style: normal; font-size: 11px; font-weight: 700; color: var(--text-muted); }
+    .dts-spec .bar { position: relative; display: flex; justify-content: space-between; font-size: 10.5px; color: var(--text-secondary); padding: 2px 5px; margin-top: 3px; border-radius: 4px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+    .dts-spec .bar i { position: absolute; left: 0; top: 0; bottom: 0; background: color-mix(in srgb, #f59e0b 26%, transparent); z-index: 0; }
+    .dts-spec .bar span, .dts-spec .bar b { position: relative; z-index: 1; } .dts-spec .bar b { font-family: var(--mono); color: var(--text-primary); }
+    .dts-note { font-size: 11px; color: var(--text-muted); }
+    @@media (max-width: 1200px) { .dts-main { grid-template-columns: 1fr; } .dts-spec { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly string?[] _img = new string?[3];
+    private readonly SensorSample[] _recent = new SensorSample[8];
+    private BoxLabel[] _boxes = Array.Empty<BoxLabel>();
+    private SampleConditions _cond;
+    private int _recentN, _tick, _lastSampleShown = -1;
+    private string _jobName = "dataset";
+    private int _jobCount = 200;
+    private ulong _jobSeed = 1673;
+    private byte _mask = 0x3F;
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        Refresh();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(() => { _tick++; Refresh(); StateHasChanged(); }); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Twin.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string Pct(float v) => (Math.Clamp(v, 0f, 1f) * 100f).ToString("0", CultureInfo.InvariantCulture) + "%";
+    private static string Share(long n, long total) => total > 0 ? (100.0 * n / total).ToString("0", CultureInfo.InvariantCulture) : "0";
+    private static string Rgb(System.Numerics.Vector3 c) =>
+        "rgb(" + F0(Math.Clamp(c.X, 0f, 1f) * 255) + "," + F0(Math.Clamp(c.Y, 0f, 1f) * 255) + "," + F0(Math.Clamp(c.Z, 0f, 1f) * 255) + ")";
+    private static string ClassName(byte c) => c < SyntheticScene.ClassNames.Length ? SyntheticScene.ClassNames[c] : "?";
+    private static string WeatherLabel(SimWeather w) => w switch
+    {
+        SimWeather.Clear => "맑음", SimWeather.Overcast => "흐림", SimWeather.Fog => "안개", SimWeather.Rain => "비", SimWeather.Snow => "눈", _ => "야간",
+    };
+    private static string Unit(SensorKind k) => k switch { SensorKind.Lidar => "m(최근접)", SensorKind.Lux => "lux", SensorKind.Range => "m", _ => "m/s²" };
+
+    private void Refresh()
+    {
+        _recentN = Runner.Sensors.CopyRecent(_recent);
+        var key = (int)(Runner.Generator.Samples & 0x7FFFFFFF);
+        if (key == _lastSampleShown && _img[0] is not null) return;
+        _lastSampleShown = key;
+        _boxes = Runner.Generator.Labels.ToArray();
+        _cond = Runner.Generator.LastConditions;
+        for (var ch = 0; ch < 3; ch++) _img[ch] = "data:image/bmp;base64," + Convert.ToBase64String(Runner.Generator.SnapshotBmp(ch));
+    }
+
+    private void OnLoss(ChangeEventArgs e)
+    {
+        if (float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) Runner.LossRate = Math.Clamp(v / 100f, 0f, 0.5f);
+    }
+
+    private void SetSp(int loop, ChangeEventArgs e)
+    {
+        if (float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) Runner.Sensors.SetSetpoint(loop, v);
+    }
+
+    private void Nudge(float dx, float dz) => Runner.NudgeVirtual(DigitalTwinStudioRunner.RobotId, dx, dz);
+
+    private void ToggleWeather(int bit, bool on) => _mask = on ? (byte)(_mask | (1 << bit)) : (byte)(_mask & ~(1 << bit));
+
+    private void Enqueue()
+    {
+        if (_mask == 0) _mask = 0x3F;
+        Runner.EnqueueJob(_jobName, Math.Clamp(_jobCount, 1, 10_000), _jobSeed, _mask);
+        if (!Runner.IsRunning) Runner.Start();
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

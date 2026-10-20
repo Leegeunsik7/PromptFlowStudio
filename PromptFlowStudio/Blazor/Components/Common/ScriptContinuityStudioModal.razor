@@ -1,0 +1,304 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.Continuity
+@using PromptFlowStudio.Services.Mocap
+@implements IDisposable
+@inject ScriptContinuityStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.88.0] 📜 AI 자율 스크립트 연속성 & 씬 정합성 스튜디오 — 세트 평면도(기준 고스트 vs 현재 · 액션 라인 · 카메라) ·
+    연속성 위반 경고 타임라인 · 현재 컷 위반 목록 · 스토리 바이블 정합성 카드(규칙 편집/충돌) · 자동 보정 채널 토글 · 점수 게이지.
+*@
+
+<div class="scs-scrim" @onclick="Close">
+    <div class="scs-modal" @onclick:stopPropagation="true">
+        <div class="scs-h">
+            <div>
+                <div class="scs-title">📜 AI 자율 스크립트 연속성 &amp; 씬 정합성 스튜디오</div>
+                <div class="scs-sub">컷마다 <b>소품 위치 · 조명 · 의상 · 상처/메이크업 · 포즈 · 180° 축</b> 연속성을 검증하고, <b>스토리 바이블</b>(캐릭터 설정 · 장소 기상 · 시대 소품 · 타임라인 · 태양 고도)과 대조하며,
+                    위반을 OpenUSD 트랜스폼 · 3DGS · 컬러 룩 · VFX 밀도로 자동 보정해 잔차를 재검증합니다. 매칭은 학습 모델이 아닌 규칙 기반입니다.</div>
+            </div>
+            <button class="scs-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="scs-bar">
+            <button class="scs-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 감독")</button>
+            <button class="scs-btn" @onclick="Runner.StepShot" disabled="@Runner.IsRunning">⏭ 다음 컷</button>
+            <button class="scs-btn" @onclick="Runner.NewShot">🎬 새 씬</button>
+            <button class="scs-btn @(Runner.InjectErrors ? "on" : null)" @onclick="() => Runner.InjectErrors = !Runner.InjectErrors">💉 오류 주입</button>
+            <button class="scs-btn @(Runner.AutoCorrect ? "on" : null)" @onclick="() => Runner.AutoCorrect = !Runner.AutoCorrect">🛠 자동 보정</button>
+            <button class="scs-btn @(Runner.AsyncVerify ? "on" : null)" @onclick="() => Runner.AsyncVerify = !Runner.AsyncVerify">⚡ 비동기 검증</button>
+            <span class="scs-chip">샷 @(Runner.Shot) · 씬 @(Runner.Scene) · @(CutName(Runner.Cut)) · @(ScriptContinuityStudioRunner.PlanName(Runner.PlanIndex))</span>
+            <span class="scs-chip">검증 @(F2(E.LastVerifyMs)) · 바이블 @(F2(B.LastDiagnoseMs)) · 보정 @(F2(G.LastStepMs)) ms</span>
+            <span class="scs-chip">비동기 완료 @(E.AsyncCompleted) · 드롭 @(E.AsyncDropped)</span>
+        </div>
+
+        <div class="scs-main">
+            <div class="scs-col">
+                <div class="scs-card">
+                    <div class="scs-sec">🗺 세트 평면도 — 기준(이전 샷 끝) 고스트 ↔ 현재 · 액션 라인 · 카메라 <span class="scs-prog"><i style="width:@(F0(Runner.ShotProgress * 100))%"></i></span></div>
+                    <svg class="scs-plan" viewBox="-3 -2.2 6 4.4">
+                        <rect x="-3" y="-2.2" width="6" height="4.4" class="floor" />
+                        @{ var R = Runner.Reference; var C = Runner.Current; }
+                        <line x1="@(F2(R.Joint(0, MocapSkeleton.Pelvis).X * 1.6f))" y1="@(F2(-R.Joint(0, MocapSkeleton.Pelvis).Z))" x2="@(F2(R.Joint(1, MocapSkeleton.Pelvis).X * 1.6f))" y2="@(F2(-R.Joint(1, MocapSkeleton.Pelvis).Z))" class="axis" />
+                        @for (var i = 0; i < ScriptContinuityStudioRunner.Props; i++)
+                        {
+                            var rp = R.Prop(i); var cp = C.Prop(i);
+                            if (R.PropPresent[i]) { <rect x="@(F2(rp.X - 0.09f))" y="@(F2(-rp.Z - 0.09f))" width="0.18" height="0.18" class="ghost" /> }
+                            if (C.PropPresent[i])
+                            {
+                                <rect x="@(F2(cp.X - 0.08f))" y="@(F2(-cp.Z - 0.08f))" width="0.16" height="0.16" class="@(Vector3.Distance(rp, cp) > E.PropTolerance ? "prop bad" : "prop")" />
+                                if (Vector3.Distance(rp, cp) > E.PropTolerance) { <line x1="@(F2(cp.X))" y1="@(F2(-cp.Z))" x2="@(F2(rp.X))" y2="@(F2(-rp.Z))" class="fix" /> }
+                            }
+                            <g><text x="@(F2(cp.X + 0.12f))" y="@(F2(-cp.Z + 0.04f))" class="lb">@(ScriptContinuityStudioRunner.PropName(i))</text></g>
+                        }
+                        @for (var c = 0; c < 2; c++)
+                        {
+                            for (var k = 0; k < ContinuityViolationBones; k++)
+                            {
+                                var (ja, jb) = Bone(k);
+                                var pa = C.Joint(c, ja); var pb = C.Joint(c, jb);
+                                <line x1="@(F2(pa.X))" y1="@(F2(-pa.Z - pa.Y * 0.25f))" x2="@(F2(pb.X))" y2="@(F2(-pb.Z - pb.Y * 0.25f))" class="@(c == 0 ? "bone a" : "bone b")" />
+                            }
+                            var head = C.Joint(c, MocapSkeleton.Head);
+                            <g><text x="@(F2(head.X - 0.15f))" y="@(F2(-head.Z - head.Y * 0.25f - 0.12f))" class="nm">@(ScriptContinuityStudioRunner.CharName(c))</text></g>
+                        }
+                        <circle cx="@(F2(R.Camera.X))" cy="@(F2(-R.Camera.Z))" r="0.1" class="camr" />
+                        <circle cx="@(F2(C.Camera.X))" cy="@(F2(-C.Camera.Z))" r="0.12" class="camc" />
+                    </svg>
+                    <div class="scs-kv">
+                        <span>키 라이트 <b>@(F0(C.ColorTempK)) K</b> (기준 @(F0(R.ColorTempK))) · 강도 @(F2(C.Intensity))</span>
+                        <span>젖음 미나 <b>@(F2(C.Wetness[0]))</b> / 기준 @(F2(R.Wetness[0]))</span>
+                        <span>흉터 <b>@(C.Mark(0, 0).Present ? (C.Mark(0, 0).Offset.X >= 0f ? "왼뺨" : "오른뺨") : "없음")</b></span>
+                        <span>강수 @(F1(C.Precipitation)) mm/h</span>
+                        <span>보정 룩 EV @(F2(G.CorrectionLook.Exposure)) · 슬로프 @(F2(G.CorrectionLook.Slope.X))/@(F2(G.CorrectionLook.Slope.Y))/@(F2(G.CorrectionLook.Slope.Z))</span>
+                    </div>
+                </div>
+
+                <div class="scs-card">
+                    <div class="scs-sec">⏱ 연속성 위반 경고 타임라인 — 샷별 보정 전 → 후 위반 스코어</div>
+                    <svg class="scs-tl" viewBox="0 0 @(TlW) 92" preserveAspectRatio="none">
+                        @{ var n = Math.Min(Runner.RecordCount, MaxCols); var cw = (float)TlW / MaxCols; }
+                        @for (var k = 0; k < n; k++)
+                        {
+                            var r = Runner.Record(n - 1 - k); var x = k * cw;
+                            var hb = r.ScoreBefore * 0.5f; var ha = r.ScoreAfter * 0.5f;
+                            <rect x="@(F1(x + 2))" y="@(F1(54 - hb))" width="@(F1(cw * 0.42f))" height="@(F1(hb))" class="before" />
+                            <rect x="@(F1(x + 2 + cw * 0.45f))" y="@(F1(54 - ha))" width="@(F1(cw * 0.42f))" height="@(F1(ha))" class="after" />
+                            for (var cat = 0; cat < 6; cat++)
+                            {
+                                if ((r.CategoryMask & (1 << cat)) == 0) continue;
+                                <circle cx="@(F1(x + cw * 0.5f))" cy="@(F1(60 + cat * 5.2f))" r="2" style="fill:@(CatColor(cat))" />
+                            }
+                            if (r.BibleConflicts > 0) { <circle cx="@(F1(x + cw * 0.5f))" cy="@(F1(60 + 5 * 5.2f))" r="2.2" style="fill:@(CatColor(5))" /> }
+                            <g><text x="@(F1(x + cw * 0.5f))" y="91" class="sn">@(r.Shot)</text></g>
+                        }
+                    </svg>
+                    <div class="scs-kv">
+                        <span><i class="lg" style="background:#f97316"></i>보정 전</span><span><i class="lg" style="background:#22c55e"></i>보정 후 잔차</span>
+                        @for (var cat = 0; cat < 6; cat++) { <span><i class="lg dot" style="background:@(CatColor(cat))"></i>@(CatName(cat))</span> }
+                    </div>
+                </div>
+            </div>
+
+            <div class="scs-col">
+                <div class="scs-card">
+                    <div class="scs-sec">🎯 현재 컷 — 연속성 @(F0(E.ContinuityScore)) · 바이블 정합성 @(F0(B.CoherenceScore))</div>
+                    <div class="scs-split">
+                        <svg class="scs-gauge" viewBox="0 0 120 70">
+                            <path d="M10,60 A50,50 0 0 1 110,60" class="trk" />
+                            <path d="@Arc(E.ContinuityScore)" class="val @(E.ContinuityScore >= 80 ? "hi" : E.ContinuityScore >= 50 ? "mid" : "lo")" />
+                            <g><text x="60" y="56" class="num">@(F0(E.ContinuityScore))</text></g>
+                            <g><text x="60" y="68" class="cap">연속성 점수</text></g>
+                        </svg>
+                        <div class="scs-list">
+                            @if (E.LastViolationCount == 0) { <span class="ok">✔ 위반 없음</span> }
+                            @for (var i = 0; i < Math.Min(E.LastViolationCount, 10); i++)
+                            {
+                                var v = E.LastViolation(i);
+                                <span><i class="lg dot" style="background:@(CatColor(RealtimeScriptSupervisorContinuityEngine.Category(v.Kind)))"></i><b>@(RealtimeScriptSupervisorContinuityEngine.KindName(v.Kind))</b> @(Entity(v)) · 심각도 @(F2(v.Severity))@(v.Kind == ViolationKind.StoryBible ? "" : " · " + F2(v.Magnitude))</span>
+                            }
+                        </div>
+                    </div>
+                </div>
+
+                <div class="scs-card">
+                    <div class="scs-sec">📖 스토리 바이블 정합성 — 캐릭터 @(B.CharacterCount) · 장소 @(B.LocationCount) · 시대 @(B.EraCount) · 규칙 @(B.RuleCount)@(B.ParseErrors > 0 ? " · 파싱 오류 " + B.ParseErrors.ToString(CultureInfo.InvariantCulture) : "")</div>
+                    <div class="scs-bible">
+                        @for (var i = 0; i < B.CharacterCount; i++)
+                        {
+                            var sh = B.Sheet(i);
+                            <div class="sheet">
+                                <b>👤 @(B.NameOf(B.CharacterId(i)))</b>
+                                <span>머리 @(B.NameOf(sh.Hair)) · 흉터 @(B.NameOf(sh.Scar)) · 주손 @(B.NameOf(sh.Hand))</span>
+                                <span>의상 @(B.NameOf(sh.Wardrobe)) · 안경 @(sh.Glasses < 0 ? "—" : sh.Glasses == 1 ? "있음" : "없음")@(sh.DeathScene < int.MaxValue ? " · 사망 씬 " + sh.DeathScene.ToString(CultureInfo.InvariantCulture) : "")</span>
+                            </div>
+                        }
+                        @for (var i = 0; i < B.LocationCount; i++)
+                        {
+                            var lr = B.LocationRule(i);
+                            <div class="sheet loc"><b>📍 @(B.NameOf(B.LocationId(i)))</b><span>비 @(lr.NoRain ? "불가" : "가능") · 눈 @(lr.NoSnow ? "불가" : "가능") · 기온 @(F0(lr.TMin))..@(F0(lr.TMax)) °C</span></div>
+                        }
+                    </div>
+                    <div class="scs-list">
+                        @if (B.ConflictCount == 0) { <span class="ok">✔ 세계관 충돌 없음</span> }
+                        @for (var i = 0; i < B.ConflictCount; i++)
+                        {
+                            var cf = B.Conflict(i);
+                            <span class="bad">⚠ <b>@(NeuralSceneCoherenceStoryBibleMatcher.KindName(cf.Kind))</b> 씬 @(cf.Scene) · @(ConflictDetail(cf))</span>
+                        }
+                    </div>
+                    <textarea class="scs-ta" @bind="_bible" rows="6"></textarea>
+                    <div class="scs-row">
+                        <button class="scs-btn on" @onclick="() => Runner.LoadBible(_bible)">📖 바이블 적용</button>
+                        <button class="scs-btn" @onclick="() => _bible = ScriptContinuityStudioRunner.DefaultBible">↺ 기본값</button>
+                    </div>
+                </div>
+
+                <div class="scs-card">
+                    <div class="scs-sec">🛠 자동 보정 피드백 — 적용 @(G.Applied) · 수동 검토 @(G.ManualReviews) · 잔차 @(F3(G.LastResidual))</div>
+                    <div class="scs-row">
+                        @foreach (var ch in Channels)
+                        {
+                            <button class="scs-btn @(G.On(ch) ? "on" : null)" @onclick="() => G.Enabled ^= ch">@(ChannelName(ch))</button>
+                        }
+                    </div>
+                    <div class="scs-kv">
+                        <span>소품 Δ <b>@(F2(G.PropCorrectionM)) m</b> · USD 쓰기 @(G.UsdWrites) · 3DGS 이동 @(G.SplatMoves)</span>
+                        <span>조명 Δ <b>@(F1(G.LightCorrectionDeg))°</b> · 포즈 Δ @(F2(G.PoseCorrectionM)) m · 마크 복원 @(G.MarksRestored)</span>
+                        <span>VFX 강수 목표 <b>@(F1(G.VfxDensityTarget)) mm/h</b></span>
+                    </div>
+                    <div class="scs-sl">
+                        <label>보정 τ <b>@(F2(G.Tau)) s</b><input type="range" min="2" max="200" value="@(F0(G.Tau * 100))" @onchange="e => SetF(e, v => G.Tau = v / 100f)" /></label>
+                        <label>소품 상한 <b>@(F1(G.MaxPropShift)) m</b><input type="range" min="1" max="50" value="@(F0(G.MaxPropShift * 10))" @onchange="e => SetF(e, v => G.MaxPropShift = v / 10f)" /></label>
+                        <label>소품 허용 <b>@(F0(E.PropTolerance * 100)) cm</b><input type="range" min="1" max="20" value="@(F0(E.PropTolerance * 100))" @onchange="e => SetF(e, v => E.PropTolerance = v / 100f)" /></label>
+                    </div>
+                </div>
+                <div class="scs-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .scs-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .scs-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .scs-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f59e0b 16%, var(--card)), color-mix(in srgb, #64748b 18%, var(--card))); }
+    .scs-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .scs-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .scs-sub b { color: var(--text-primary); }
+    .scs-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .scs-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .scs-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .scs-btn:disabled { opacity: .4; cursor: default; } .scs-btn.on { background: color-mix(in srgb, #f59e0b 24%, transparent); border-color: #fbbf24; }
+    .scs-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .scs-main { display: grid; grid-template-columns: 1.1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .scs-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .scs-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .scs-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .scs-prog { flex: 1; min-width: 80px; height: 5px; background: #1f2937; border-radius: 3px; overflow: hidden; } .scs-prog i { display: block; height: 100%; background: #fbbf24; }
+    .scs-plan { width: 100%; aspect-ratio: 6 / 4.4; border-radius: 10px; }
+    .scs-plan .floor { fill: #0b1020; } .scs-plan .axis { stroke: #f472b6; stroke-width: .025; stroke-dasharray: .08 .06; }
+    .scs-plan .ghost { fill: none; stroke: #94a3b8; stroke-width: .02; stroke-dasharray: .04 .03; } .scs-plan .prop { fill: #a3a3a3; } .scs-plan .prop.bad { fill: #ef4444; }
+    .scs-plan .fix { stroke: #22c55e; stroke-width: .02; } .scs-plan .lb { font: 600 .11px var(--mono); fill: #94a3b8; } .scs-plan .nm { font: 800 .14px var(--mono); fill: #e5e7eb; }
+    .scs-plan .bone { stroke-width: .035; stroke-linecap: round; } .scs-plan .bone.a { stroke: #f87171; } .scs-plan .bone.b { stroke: #60a5fa; }
+    .scs-plan .camr { fill: none; stroke: #94a3b8; stroke-width: .02; } .scs-plan .camc { fill: #fde047; }
+    .scs-tl { width: 100%; height: 120px; background: #0b1020; border-radius: 8px; } .scs-tl .before { fill: #f97316; } .scs-tl .after { fill: #22c55e; } .scs-tl .sn { font: 600 6px var(--mono); fill: #64748b; text-anchor: middle; }
+    .lg { display: inline-block; width: 12px; height: 6px; margin-right: 4px; vertical-align: middle; border-radius: 2px; } .lg.dot { width: 8px; height: 8px; border-radius: 50%; }
+    .scs-split { display: grid; grid-template-columns: 170px 1fr; gap: 12px; align-items: start; }
+    .scs-gauge { width: 170px; height: 100px; } .scs-gauge .trk { fill: none; stroke: #1f2937; stroke-width: 10; stroke-linecap: round; }
+    .scs-gauge .val { fill: none; stroke-width: 10; stroke-linecap: round; } .scs-gauge .val.hi { stroke: #22c55e; } .scs-gauge .val.mid { stroke: #f59e0b; } .scs-gauge .val.lo { stroke: #ef4444; }
+    .scs-gauge .num { font: 900 20px var(--mono); fill: var(--text-primary); text-anchor: middle; } .scs-gauge .cap { font: 600 8px var(--mono); fill: var(--text-muted); text-anchor: middle; }
+    .scs-list { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-secondary); } .scs-list b { color: var(--text-primary); }
+    .scs-list .ok { color: #86efac; } .scs-list .bad { color: #fca5a5; }
+    .scs-bible { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .scs-bible .sheet { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--text-secondary); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+    .scs-bible .sheet b { color: var(--text-primary); } .scs-bible .sheet.loc { border-style: dashed; }
+    .scs-ta { width: 100%; font: 11px var(--mono); padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); resize: vertical; }
+    .scs-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .scs-sl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 10px; }
+    .scs-sl label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-secondary); } .scs-sl b { font-family: var(--mono); color: var(--text-primary); }
+    .scs-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; color: var(--text-secondary); align-items: center; } .scs-kv b { color: var(--text-primary); font-family: var(--mono); }
+    .scs-note { font-size: 11px; color: var(--text-muted); }
+    @@media (max-width: 1200px) { .scs-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int TlW = 400, MaxCols = 24;
+    private static readonly CorrectionChannel[] Channels = { CorrectionChannel.Props, CorrectionChannel.Light, CorrectionChannel.Wardrobe, CorrectionChannel.Marks, CorrectionChannel.Pose, CorrectionChannel.Vfx };
+    private static readonly int ContinuityViolationBones = MocapSkeleton.Body - 1;
+    private string _bible = "";
+    private System.Threading.Timer? _timer;
+
+    private RealtimeScriptSupervisorContinuityEngine E => Runner.Engine;
+    private NeuralSceneCoherenceStoryBibleMatcher B => Runner.Bible;
+    private AutomaticContinuityCorrectionGuard G => Runner.Guard;
+
+    protected override void OnInitialized()
+    {
+        _bible = Runner.BibleText;
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Continuity.Modal.Timer", ex); }
+        }, null, 200, 200);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+
+    private static (int, int) Bone(int k) => (MocapSkeleton.Parent[k + 1], k + 1);
+    private static string CutName(CutKind c) => c switch { CutKind.Continuous => "연속 컷", CutKind.TimeJump => "시간 경과", _ => "중립" };
+    private static string CatName(int c) => c switch { 0 => "소품", 1 => "조명", 2 => "의상", 3 => "상처/메이크업", 4 => "포즈/축", _ => "바이블" };
+    private static string CatColor(int c) => c switch { 0 => "#a3a3a3", 1 => "#fde047", 2 => "#60a5fa", 3 => "#f472b6", 4 => "#34d399", _ => "#c084fc" };
+    private static string ChannelName(CorrectionChannel c) => c switch
+    {
+        CorrectionChannel.Props => "📦 소품·USD·3DGS", CorrectionChannel.Light => "💡 조명·LUT", CorrectionChannel.Wardrobe => "👗 의상", CorrectionChannel.Marks => "🩹 상처", CorrectionChannel.Pose => "🦴 포즈", _ => "🌧 VFX",
+    };
+
+    private string Entity(in ContinuityViolation v) => v.Kind switch
+    {
+        <= ViolationKind.PropAppeared => ScriptContinuityStudioRunner.PropName(v.Entity),
+        ViolationKind.StoryBible => NeuralSceneCoherenceStoryBibleMatcher.KindName((BibleConflictKind)v.Entity),
+        >= ViolationKind.WoundMissing and <= ViolationKind.WoundAppeared => ScriptContinuityStudioRunner.CharName(v.Entity / ContinuitySnapshot.MaxMarks),
+        _ => v.Entity >= 0 ? ScriptContinuityStudioRunner.CharName(v.Entity) : "",
+    };
+
+    private string ConflictDetail(in BibleConflict c) => c.Kind switch
+    {
+        BibleConflictKind.CharacterHair or BibleConflictKind.CharacterScar or BibleConflictKind.CharacterHandedness or BibleConflictKind.CharacterWardrobe =>
+            B.NameOf(c.Subject) + ": " + B.NameOf((int)c.Observed) + " ≠ 설정 " + B.NameOf((int)c.Expected),
+        BibleConflictKind.DeadCharacter => B.NameOf(c.Subject) + " 사망 씬 " + F0(c.Expected),
+        BibleConflictKind.EraProp => B.NameOf(c.Subject),
+        BibleConflictKind.WeatherForbidden => B.NameOf(c.Subject) + " 강수 " + F1(c.Observed) + " mm/h",
+        BibleConflictKind.SunMismatch or BibleConflictKind.NightSun => "관측 " + F1(c.Observed) + "° vs 천문 " + F1(c.Expected) + "°",
+        _ => F2(c.Observed) + " vs " + F2(c.Expected),
+    };
+
+    private static string Arc(float score)
+    {
+        var a = MathF.PI * (1f - Math.Clamp(score, 0f, 100f) / 100f);
+        float x = 60f + 50f * MathF.Cos(a), y = 60f - 50f * MathF.Sin(a);
+        return "M10,60 A50,50 0 0 1 " + F1(x) + "," + F1(y);
+    }
+
+    private static bool TryF(ChangeEventArgs e, out float v) => float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+    private void SetF(ChangeEventArgs e, Action<float> apply) { if (TryF(e, out var v)) apply(v); }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

@@ -1,0 +1,351 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.Mocap
+@using PromptFlowStudio.Services.MarkerlessMocap
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject MarkerlessMocapStudioRunner Runner
+
+@*
+    [PromptFlow Studio v17.11.0] 🏃 AI 무마커 모션 캡처 & 리타게팅 스튜디오 — 3D 스켈레톤 뷰포트(실측 · 가드 · 대상 리그) · 멀티뷰 카메라 앵커 매핑 ·
+    발 지면 밀착도 인디케이터 · 관절 떨림 억제 슬라이더 · ROM/자가 관통 가드 · 에피폴라 게이트.
+*@
+
+<div class="mlm-scrim" @onclick="Close">
+    <div class="mlm-modal" @onclick:stopPropagation="true">
+        <div class="mlm-h">
+            <div>
+                <div class="mlm-title">🏃 AI 무마커 모션 캡처 &amp; 리타게팅 스튜디오</div>
+                <div class="mlm-sub"><b>삼각측량 엔진</b>이 동기화된 @(Runner.CameraCount)대 카메라의 2D 관절을 에피폴라 게이트(과반 뷰 일치)와 재투영 합의로 걸러 관절을 SIMD 레인으로 묶은 DLT 정규방정식으로 3D 복원하고,
+                    <b>가드</b>는 가림·오검출 튐을 예측 유지로 막고 One Euro 필터로 떨림을 억제한 뒤 생체역학 가동 범위(ROM)와 몸통/다리 캡슐 자가 관통을 차단합니다.
+                    <b>리타게팅 합성기</b>는 디지털 휴먼(v16.82)·OpenUSD 캐릭터 리그 비율로 변환하고 지면 접촉을 감지해 발 밀림·지면 관통을 FABRIK 으로 보정합니다. 연기자·카메라는 인프로세스 시뮬레이션입니다.</div>
+            </div>
+            <button class="mlm-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="mlm-bar">
+            <button class="mlm-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 캡처 가동")</button>
+            <button class="mlm-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="mlm-btn @(Runner.Motion ? "on" : null)" @onclick="() => Runner.Motion = !Runner.Motion">🎬 연기 모션</button>
+            <select class="mlm-sel" value="@(Runner.CameraCount)" @onchange="e => Runner.SetCameraCount((int)Num(e, 4))">
+                @for (var n = 2; n <= MarkerlessMultiViewPoseTriangulationEngine.MaxViews; n++)
+                {
+                    <option value="@(n)">카메라 @(n)대</option>
+                }
+            </select>
+            <label class="mlm-sl">노이즈 σ <b>@(F1(Runner.NoisePx)) px</b><input type="range" min="0" max="8" step="0.5" value="@(F1(Runner.NoisePx))" @onchange="e => Runner.NoisePx = (float)Num(e, 1.5)" /></label>
+            <label class="mlm-sl">튐 <b>@(F1(Runner.SpikeRate * 100))%</b><input type="range" min="0" max="0.08" step="0.005" value="@(F3(Runner.SpikeRate))" @onchange="e => Runner.SpikeRate = (float)Num(e, 0.01)" /></label>
+            <button class="mlm-btn sm @(Runner.InjectOcclusion ? "on" : null)" @onclick="() => Runner.InjectOcclusion = !Runner.InjectOcclusion">가림 주입</button>
+            <button class="mlm-btn sm @(Runner.InjectPenetration ? "on" : null)" @onclick="() => Runner.InjectPenetration = !Runner.InjectPenetration">관통 주입</button>
+            <button class="mlm-btn sm @(Runner.InjectRom ? "on" : null)" @onclick="() => Runner.InjectRom = !Runner.InjectRom">과신전 주입</button>
+            <span class="mlm-chip">틱 @(Runner.Tick) · @(F2(Runner.LastTickMs)) ms · @(E.Path) DLT @(F0(E.LastSolveUs)) · 에피폴라 @(F0(E.LastEpipolarUs)) · 가드 @(F0(G.LastGuardUs)) · 리타겟 @(F0(R.LastRetargetUs)) µs</span>
+            <span class="mlm-chip @(Runner.LastTickMs < 16.7 ? "ok" : "warn")">@(Runner.LastTickMs < 16.7 ? "60 FPS 예산 내" : "예산 초과")</span>
+        </div>
+
+        <div class="mlm-main">
+            <div class="mlm-col">
+                <div class="mlm-card">
+                    <div class="mlm-sec">🧍 3D 스켈레톤 뷰포트 <span class="mlm-dim">실측(가드) | 대상 리그 · @(R.Rig.Name)</span>
+                        <button class="mlm-btn sm @(_showRaw ? "on" : null)" @onclick="() => _showRaw = !_showRaw">원시 DLT 점</button>
+                        <button class="mlm-btn sm @(_showGt ? "on" : null)" @onclick="() => _showGt = !_showGt">참값</button>
+                    </div>
+                    <svg class="mlm-vp" viewBox="0 0 640 380">
+                        @for (var gx = -6; gx <= 6; gx++)
+                        {
+                            var g0 = P(new Vector3(gx * 0.25f, 0, -1.2f), 0); var g1 = P(new Vector3(gx * 0.25f, 0, 1.2f), 0);
+                            var h0 = P(new Vector3(-1.5f, 0, gx * 0.2f), 0); var h1 = P(new Vector3(1.5f, 0, gx * 0.2f), 0);
+                            <g><line class="grid" x1="@(F1(g0.X))" y1="@(F1(g0.Y))" x2="@(F1(g1.X))" y2="@(F1(g1.Y))" /><line class="grid" x1="@(F1(h0.X))" y1="@(F1(h0.Y))" x2="@(F1(h1.X))" y2="@(F1(h1.Y))" /></g>
+                        }
+                        @if (G.MaxPenetrationMm > 0.5f)
+                        {
+                            var tc = P(Vector3.Lerp(G.Out(MocapSkeleton.Spine1), G.Out(MocapSkeleton.Neck), 0.5f), -SrcX);
+                            <circle class="pen" cx="@(F1(tc.X))" cy="@(F1(tc.Y))" r="@(F1(KinematicJointLimitBonePenetrationGuard.TorsoRadius * G.Scale * _zoom))" />
+                        }
+                        @for (var j = 1; j < MocapSkeleton.Body; j++)
+                        {
+                            var pj = MocapSkeleton.Parent[j];
+                            if (_showGt)
+                            {
+                                var t0 = P(Runner.Truth(pj), -SrcX); var t1 = P(Runner.Truth(j), -SrcX);
+                                <g><line class="gt" x1="@(F1(t0.X))" y1="@(F1(t0.Y))" x2="@(F1(t1.X))" y2="@(F1(t1.Y))" /></g>
+                            }
+                            var a0 = P(G.Out(pj), -SrcX); var a1 = P(G.Out(j), -SrcX);
+                            var b0 = P(R.Out(pj), DstX); var b1 = P(R.Out(j), DstX);
+                            <g>
+                                <line class="src @(G.Clamped(j) ? "rom" : null)" x1="@(F1(a0.X))" y1="@(F1(a0.Y))" x2="@(F1(a1.X))" y2="@(F1(a1.Y))" />
+                                <line class="dst" x1="@(F1(b0.X))" y1="@(F1(b0.Y))" x2="@(F1(b1.X))" y2="@(F1(b1.Y))" />
+                            </g>
+                        }
+                        @for (var j = 0; j < MocapSkeleton.Body; j++)
+                        {
+                            var a = P(G.Out(j), -SrcX);
+                            <g><circle class="jt @(G.Held(j) ? "held" : null)" cx="@(F1(a.X))" cy="@(F1(a.Y))" r="@(G.Held(j) ? "4" : "2.4")" /></g>
+                            if (_showRaw && E.Valid(j))
+                            {
+                                var r = P(E.Joint(j), -SrcX);
+                                <g><circle class="raw" cx="@(F1(r.X))" cy="@(F1(r.Y))" r="1.8" /></g>
+                            }
+                        }
+                        @for (var s = 0; s < 2; s++)
+                        {
+                            var lp = P(new Vector3(R.LockPosition(s).X, 0, R.LockPosition(s).Z), DstX);
+                            if (R.Contact(s))
+                            {
+                                <g><ellipse class="lock" cx="@(F1(lp.X))" cy="@(F1(lp.Y))" rx="11" ry="4" /></g>
+                            }
+                        }
+                        <g><text class="lab" x="@(F1(P(new Vector3(0, 2.0f, 0), -SrcX).X))" y="18">실측 → 가드 (s @(F2(G.Scale)))</text></g>
+                        <g><text class="lab" x="@(F1(P(new Vector3(0, 2.0f, 0), DstX).X))" y="18">리타게팅 → 발 고정</text></g>
+                    </svg>
+                    <div class="mlm-ctl">
+                        <label class="mlm-sl">회전 <b>@(F0(_yaw))°</b><input type="range" min="-180" max="180" step="5" value="@(F0(_yaw))" @oninput="e => _yaw = Num(e, 25)" /></label>
+                        <label class="mlm-sl">부감 <b>@(F0(_pitch))°</b><input type="range" min="0" max="60" step="5" value="@(F0(_pitch))" @oninput="e => _pitch = Num(e, 12)" /></label>
+                        <select class="mlm-sel" value="@((int)R.Preset)" @onchange="e => Runner.SetPreset((MocapRigPreset)(int)Num(e, 0))">
+                            <option value="0">@(BiomechanicalSkeletonRetargetingSynthesizer.PresetName(MocapRigPreset.DigitalHuman))</option>
+                            <option value="1">@(BiomechanicalSkeletonRetargetingSynthesizer.PresetName(MocapRigPreset.OpenUsdHero))</option>
+                            <option value="2">@(BiomechanicalSkeletonRetargetingSynthesizer.PresetName(MocapRigPreset.OpenUsdStylized))</option>
+                        </select>
+                    </div>
+                    <div class="mlm-legend"><i class="src"></i>가드 출력 <i class="rom"></i>ROM 클램프 뼈 <i class="held"></i>예측 유지 관절 <i class="raw"></i>원시 DLT <i class="gt"></i>참값 <i class="dst"></i>대상 리그 <i class="lock"></i>발 락</div>
+                    <div class="mlm-kv">MPJPE 원시 <b>@(F1(Runner.MpjpeRawMm)) mm</b> → 가드 <b>@(F1(Runner.MpjpeGuardMm)) mm</b> · 재투영 <b>@(F2(E.MeanReprojPx)) px</b> · 에피폴라 평균 @(F1(E.MeanEpipolarPx)) px ·
+                        유효 관절 @(E.ValidJoints)/@(MocapSkeleton.Body) · 게이트 제외 <b>@(E.GatedObservations)</b> · @(Runner.OcclusionActive ? "⚠ 가림 이벤트(CAM 1 다리 좌우 스왑 · CAM 2 손 소실)" : "가림 없음")</div>
+                    <svg class="mlm-spark" viewBox="0 0 360 50" preserveAspectRatio="none">
+                        <polyline class="raw" points="@(Series(Runner.MpjpeRawSeries, 150, 50))" />
+                        <polyline class="grd" points="@(Series(Runner.MpjpeGuardSeries, 150, 50))" />
+                        <polyline class="rep" points="@(Series(Runner.ReprojSeries, 10, 50))" />
+                    </svg>
+                    <div class="mlm-legend"><i class="raw"></i>MPJPE 원시(0–150 mm) <i class="grd"></i>MPJPE 가드 <i class="rep"></i>재투영 px(0–10)</div>
+                </div>
+
+                <div class="mlm-card">
+                    <div class="mlm-sec">🦶 발 지면 밀착도 · 발 밀림 방지
+                        <button class="mlm-btn sm @(R.FootLock ? "on" : null)" @onclick="() => Runner.SetFootLock(!R.FootLock)">발 고정 FABRIK</button>
+                        <button class="mlm-btn sm @(R.GroundClamp ? "on" : null)" @onclick="() => Runner.SetGroundClamp(!R.GroundClamp)">지면 클램프</button>
+                        <span class="mlm-chip @(R.GroundPenetrationMm < 1 ? "ok" : "bad")">지면 관통 @(F1(R.GroundPenetrationRawMm)) → @(F1(R.GroundPenetrationMm)) mm</span>
+                    </div>
+                    <div class="mlm-feet">
+                        @for (var s = 0; s < 2; s++)
+                        {
+                            <div class="mlm-foot @(R.Contact(s) ? "on" : null)">
+                                <div class="lab">@(s == 0 ? "왼발" : "오른발") · @(R.Contact(s) ? "접지 🔒" : "스윙")</div>
+                                <div class="bar"><span style="width:@(F0(R.ContactConfidence(s) * 100))%"></span></div>
+                                <div class="mlm-kv">밀착도 <b>@(F0(R.ContactConfidence(s) * 100))%</b> · 락 가중 @(F2(R.LockWeight(s))) · 발목 높이 @(F0((R.Out(s == 0 ? MocapSkeleton.LAnkle : MocapSkeleton.RAnkle).Y - R.AnkleGround) * 1000)) mm</div>
+                            </div>
+                        }
+                    </div>
+                    <div class="mlm-kv">발 밀림 <b>@(F0(R.FootSlideRawMmS)) → @(F0(R.FootSlideMmS)) mm/s</b> · 골반 하강 @(F1(R.PelvisDropMm)) mm · FABRIK 반복 @(R.FabrikIterations) · 뼈 길이 오차 @(F2(R.BoneLengthErrorMm)) mm · 골반 높이 @(F2(R.Rig.PelvisHeight)) m</div>
+                    <svg class="mlm-spark" viewBox="0 0 360 40" preserveAspectRatio="none">
+                        <polyline class="raw" points="@(Series(Runner.SlideRawSeries, 300, 40))" />
+                        <polyline class="grd" points="@(Series(Runner.SlideSeries, 300, 40))" />
+                    </svg>
+                    <div class="mlm-legend"><i class="raw"></i>접지 중 발 수평 속도(보정 전 · 0–300 mm/s) <i class="grd"></i>보정 후</div>
+                </div>
+            </div>
+
+            <div class="mlm-col">
+                <div class="mlm-card">
+                    <div class="mlm-sec">📷 멀티뷰 카메라 앵커 매핑
+                        <button class="mlm-btn sm @(E.EpipolarGate ? "on" : null)" @onclick="() => Runner.SetEpipolarGate(!E.EpipolarGate)">에피폴라 · 재투영 게이트</button>
+                        <span class="mlm-dim">카메라 클릭 = 피드 차단/복구</span>
+                    </div>
+                    <div class="mlm-anchor">
+                        <svg viewBox="-4 -4 8 8">
+                            <circle class="ring" cx="0" cy="0" r="3.4" />
+                            <circle class="actor" cx="@(F2(G.Out(0).X))" cy="@(F2(-G.Out(0).Z))" r="0.22" />
+                            @for (var v = 0; v < Runner.CameraCount; v++)
+                            {
+                                var vi = v;
+                                var c = E.Camera(v);
+                                var on = E.CameraEnabled(v);
+                                var fl = c.Position + Vector3.Transform(c.Forward, Quaternion.CreateFromAxisAngle(Vector3.UnitY, 0.45f)) * 1.1f;
+                                var fr = c.Position + Vector3.Transform(c.Forward, Quaternion.CreateFromAxisAngle(Vector3.UnitY, -0.45f)) * 1.1f;
+                                <g class="cam @(on ? (E.CameraInliers(v) > MocapSkeleton.Body * 0.8 ? "ok" : "warn") : "off")" @onclick="() => Runner.ToggleCamera(vi)">
+                                    <polygon points="@(F2(c.Position.X)),@(F2(-c.Position.Z)) @(F2(fl.X)),@(F2(-fl.Z)) @(F2(fr.X)),@(F2(-fr.Z))" />
+                                    <text x="@(F2(c.Position.X * 1.12f))" y="@(F2(-c.Position.Z * 1.12f + 0.12f))">@(v + 1)</text>
+                                </g>
+                            }
+                        </svg>
+                        <div class="mlm-views">
+                            @for (var v = 0; v < Runner.CameraCount; v++)
+                            {
+                                var vi = v;
+                                <div class="mlm-view @(E.CameraEnabled(v) ? null : "off")" @onclick="() => Runner.ToggleCamera(vi)">
+                                    <svg viewBox="0 0 1280 720">
+                                        @for (var j = 1; j < MocapSkeleton.Body; j++)
+                                        {
+                                            var pj = MocapSkeleton.Parent[j];
+                                            if (E.ObservedConfidence(v, j) >= E.MinConfidence && E.ObservedConfidence(v, pj) >= E.MinConfidence)
+                                            {
+                                                <g><line x1="@(F0(E.ObservedU(v, pj)))" y1="@(F0(E.ObservedV(v, pj)))" x2="@(F0(E.ObservedU(v, j)))" y2="@(F0(E.ObservedV(v, j)))" /></g>
+                                            }
+                                        }
+                                        @for (var j = 0; j < MocapSkeleton.Body; j++)
+                                        {
+                                            if (E.ObservedConfidence(v, j) < E.MinConfidence) continue;
+                                            <g><circle class="@(E.Weight(v, j) > 0 ? "ok" : "gated")" cx="@(F0(E.ObservedU(v, j)))" cy="@(F0(E.ObservedV(v, j)))" r="@(E.Weight(v, j) > 0 ? "9" : "18")" /></g>
+                                        }
+                                    </svg>
+                                    <div class="cap">CAM @(v + 1) · @(E.CameraInliers(v))/@(E.CameraObservations(v)) · @(F1(E.CameraReprojPx(v))) px</div>
+                                </div>
+                            }
+                        </div>
+                    </div>
+                    <div class="mlm-legend"><i class="ok"></i>DLT 투입 관측 <i class="gated"></i>게이트 제외(에피폴라/재투영 불일치) <i class="off"></i>비활성 카메라 · 링 반경 3.4 m · @(MarkerlessMocapStudioRunner.CamW)×@(MarkerlessMocapStudioRunner.CamH)</div>
+                    <div class="mlm-ctl">
+                        <label class="mlm-sl">게이트 임계 <b>@(F0(E.GateThresholdPx)) px</b><input type="range" min="4" max="40" step="1" value="@(F0(E.GateThresholdPx))" @onchange="e => E.GateThresholdPx = (float)Num(e, 12)" /></label>
+                    </div>
+                </div>
+
+                <div class="mlm-card">
+                    <div class="mlm-sec">🦴 관절 떨림 억제 · ROM · 자가 관통 가드
+                        <button class="mlm-btn sm @(G.SpikeGate ? "on" : null)" @onclick="() => Runner.SetSpikeGate(!G.SpikeGate)">튐/가림 게이트</button>
+                        <button class="mlm-btn sm @(G.RomGuard ? "on" : null)" @onclick="() => Runner.SetRomGuard(!G.RomGuard)">ROM 락</button>
+                        <button class="mlm-btn sm @(G.PenetrationGuard ? "on" : null)" @onclick="() => Runner.SetPenetrationGuard(!G.PenetrationGuard)">관통 차단</button>
+                    </div>
+                    <div class="mlm-ctl">
+                        <label class="mlm-sl wide">떨림 억제 <b>@(F2(G.Smoothing))</b><input type="range" min="0" max="1" step="0.05" value="@(F2(G.Smoothing))" @onchange="e => Runner.SetSmoothing((float)Num(e, 0.5))" /></label>
+                        <span class="mlm-chip">One Euro fmin @(F2(G.MinCutoffHz)) Hz · β @(F1(G.Beta))</span>
+                        <span class="mlm-chip @(G.JitterOutMm < G.JitterInMm * 0.5f ? "ok" : "warn")">떨림 @(F2(G.JitterInMm)) → @(F2(G.JitterOutMm)) mm</span>
+                    </div>
+                    <svg class="mlm-spark" viewBox="0 0 360 40" preserveAspectRatio="none">
+                        <polyline class="raw" points="@(Series(Runner.JitterInSeries, 10, 40))" />
+                        <polyline class="grd" points="@(Series(Runner.JitterOutSeries, 10, 40))" />
+                    </svg>
+                    <div class="mlm-legend"><i class="raw"></i>입력 떨림(2차 차분 · 0–10 mm) <i class="grd"></i>가드 출력</div>
+                    <div class="mlm-kv">예측 유지 <b>@(G.HeldJoints)</b> 관절 · 튐 거부 누적 @(G.SpikesRejected) · ROM 클램프 <b>@(G.RomClamped)</b> (누적 @(G.RomClampTotal)) · 실측 스케일 @(F3(G.Scale))</div>
+                    <div class="mlm-kv">자가 관통 <b>@(F1(G.MaxPenetrationMm)) → @(F1(G.ResidualPenetrationMm)) mm</b> · 해소 @(G.PenetrationsFixed) · 이벤트 누적 @(G.PenetrationTotal) ·
+                        주입 관통 @(F0(Runner.PenetrationEvent * 100))% · 과신전 @(F0(Runner.RomEvent * 100))%</div>
+                    <div class="mlm-joints">
+                        @for (var j = 0; j < MocapSkeleton.Body; j++)
+                        {
+                            <span class="@(G.Held(j) ? "held" : G.Clamped(j) ? "rom" : null)" title="@(MocapSkeleton.Names[j]) · 재투영 @(F1(E.ReprojPx(j))) px · 뷰 @(E.InlierViews(j))">@(MocapSkeleton.Names[j])</span>
+                        }
+                    </div>
+                </div>
+                <div class="mlm-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .mlm-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .mlm-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .mlm-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #22d3ee 14%, var(--card)), color-mix(in srgb, #f97316 13%, var(--card))); }
+    .mlm-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .mlm-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .mlm-sub b { color: var(--text-primary); }
+    .mlm-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .mlm-bar { display: flex; flex-wrap: wrap; gap: 6px 10px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .mlm-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; } .mlm-btn:disabled { opacity: .4; cursor: default; }
+    .mlm-btn.sm { font-size: 10px; padding: 2px 8px; } .mlm-btn.on { background: color-mix(in srgb, #22d3ee 22%, transparent); border-color: #22d3ee; }
+    .mlm-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .mlm-chip.ok { border-color: #22c55e; color: #86efac; } .mlm-chip.bad { border-color: #ef4444; color: #fca5a5; } .mlm-chip.warn { border-color: #eab308; color: #fde68a; }
+    .mlm-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .mlm-sl b { font-family: var(--mono); color: var(--text-primary); } .mlm-sl input { width: 80px; } .mlm-sl.wide input { width: 160px; }
+    .mlm-sel { font-size: 11px; background: transparent; color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+    .mlm-dim { font-size: 11px; font-weight: 500; color: var(--text-muted); }
+    .mlm-main { display: grid; grid-template-columns: 1.15fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .mlm-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .mlm-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .mlm-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .mlm-ctl { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+    .mlm-vp { width: 100%; aspect-ratio: 640 / 380; background: radial-gradient(ellipse at 50% 85%, #0f172a, #020617); border-radius: 10px; }
+    .mlm-vp .grid { stroke: rgba(148,163,184,.18); stroke-width: 1; }
+    .mlm-vp .src { stroke: #22d3ee; stroke-width: 3; stroke-linecap: round; } .mlm-vp .src.rom { stroke: #facc15; }
+    .mlm-vp .dst { stroke: #fb923c; stroke-width: 4; stroke-linecap: round; } .mlm-vp .gt { stroke: rgba(226,232,240,.35); stroke-width: 1.5; stroke-dasharray: 3 3; }
+    .mlm-vp .jt { fill: #e0f2fe; } .mlm-vp .jt.held { fill: #f43f5e; } .mlm-vp .raw { fill: #ef4444; }
+    .mlm-vp .lock { fill: rgba(34,197,94,.35); stroke: #22c55e; stroke-width: 1.5; } .mlm-vp .pen { fill: rgba(244,63,94,.12); stroke: #f43f5e; stroke-dasharray: 4 3; }
+    .mlm-vp .lab { fill: #94a3b8; font-size: 12px; text-anchor: middle; }
+    .mlm-spark { width: 100%; height: 50px; background: #030712; border-radius: 6px; }
+    .mlm-spark polyline { fill: none; stroke-width: 1.4; vector-effect: non-scaling-stroke; } .mlm-spark .raw { stroke: #f87171; } .mlm-spark .grd { stroke: #22d3ee; } .mlm-spark .rep { stroke: #a3e635; }
+    .mlm-feet { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .mlm-foot { border: 1px solid var(--line); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 5px; } .mlm-foot.on { border-color: #22c55e; }
+    .mlm-foot .lab { font-weight: 800; font-size: 12px; color: var(--text-primary); }
+    .mlm-foot .bar { height: 10px; border-radius: 6px; background: #1e293b; overflow: hidden; } .mlm-foot .bar span { display: block; height: 100%; background: linear-gradient(90deg, #f59e0b, #22c55e); }
+    .mlm-anchor { display: grid; grid-template-columns: 200px 1fr; gap: 10px; align-items: start; }
+    .mlm-anchor > svg { width: 200px; height: 200px; background: #030712; border-radius: 10px; }
+    .mlm-anchor .ring { fill: none; stroke: rgba(148,163,184,.3); stroke-width: .03; stroke-dasharray: .1 .08; } .mlm-anchor .actor { fill: #22d3ee; }
+    .mlm-anchor .cam { cursor: pointer; } .mlm-anchor .cam polygon { stroke-width: .04; } .mlm-anchor .cam text { font-size: .38px; fill: #e2e8f0; text-anchor: middle; }
+    .mlm-anchor .cam.ok polygon { fill: rgba(34,197,94,.3); stroke: #22c55e; } .mlm-anchor .cam.warn polygon { fill: rgba(234,179,8,.3); stroke: #eab308; } .mlm-anchor .cam.off polygon { fill: rgba(100,116,139,.2); stroke: #64748b; }
+    .mlm-views { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px; }
+    .mlm-view { border: 1px solid #334155; border-radius: 8px; overflow: hidden; cursor: pointer; background: #020617; } .mlm-view.off { opacity: .35; }
+    .mlm-view svg { width: 100%; aspect-ratio: 16 / 9; display: block; } .mlm-view line { stroke: rgba(34,211,238,.55); stroke-width: 6; }
+    .mlm-view circle.ok { fill: #22c55e; } .mlm-view circle.gated { fill: none; stroke: #f43f5e; stroke-width: 6; }
+    .mlm-view .cap { font: 600 10px var(--mono); color: var(--text-secondary); padding: 2px 6px; }
+    .mlm-joints { display: flex; flex-wrap: wrap; gap: 4px; } .mlm-joints span { font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .mlm-joints span.held { border-color: #f43f5e; color: #fda4af; } .mlm-joints span.rom { border-color: #facc15; color: #fde68a; }
+    .mlm-legend, .mlm-kv { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11px; color: var(--text-secondary); align-items: center; } .mlm-kv b { color: var(--text-primary); }
+    .mlm-legend i { display: inline-block; width: 10px; height: 8px; border-radius: 2px; }
+    .mlm-legend .src { background: #22d3ee; } .mlm-legend .rom { background: #facc15; } .mlm-legend .held { background: #f43f5e; } .mlm-legend .raw { background: #f87171; } .mlm-legend .gt { background: rgba(226,232,240,.5); }
+    .mlm-legend .dst { background: #fb923c; } .mlm-legend .lock { background: #22c55e; } .mlm-legend .grd { background: #22d3ee; } .mlm-legend .rep { background: #a3e635; }
+    .mlm-legend .ok { background: #22c55e; } .mlm-legend .gated { border: 2px solid #f43f5e; } .mlm-legend .off { background: #64748b; }
+    .mlm-note { font-size: 11px; color: var(--text-muted); word-break: break-all; }
+    @@media (max-width: 1200px) { .mlm-main { grid-template-columns: 1fr; } .mlm-anchor { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const float SrcX = 0.85f, DstX = 0.85f;
+    private System.Threading.Timer? _timer;
+    private double _yaw = 25, _pitch = 12;
+    private float _zoom = 150f;
+    private bool _showRaw = true, _showGt;
+
+    private MarkerlessMultiViewPoseTriangulationEngine E => Runner.Engine;
+    private KinematicJointLimitBonePenetrationGuard G => Runner.Guard;
+    private BiomechanicalSkeletonRetargetingSynthesizer R => Runner.Retarget;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("MarkerlessMocap.Modal.Timer", ex); }
+        }, null, 200, 200);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    /// <summary>궤도 정사영(골반 중심 · 화면 X 오프셋 = 좌/우 패널). 원점 = 각 스켈레톤 골반 수평 위치.</summary>
+    private Vector2 P(Vector3 w, float panel)
+    {
+        var root = panel < 0 ? G.Out(0) : R.Out(0);
+        var p = new Vector3(w.X - root.X, w.Y, w.Z - root.Z);
+        float yaw = (float)(_yaw * Math.PI / 180), pitch = (float)(_pitch * Math.PI / 180);
+        float cy = MathF.Cos(yaw), sy = MathF.Sin(yaw), cp = MathF.Cos(pitch), sp = MathF.Sin(pitch);
+        var x = p.X * cy + p.Z * sy;
+        var z = -p.X * sy + p.Z * cy;
+        var y = p.Y * cp + z * sp;
+        return new Vector2(320 + panel * 190 + x * _zoom, 345 - y * _zoom);
+    }
+
+    private string Series(Func<int, float> f, double max, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (MarkerlessMocapStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - 2 - (h - 4) * Math.Clamp(f(i) / max, 0, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step60() { for (var i = 0; i < MarkerlessMocapStudioRunner.Hz; i++) Runner.Step(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중(10 Hz 이벤트)은 200 ms 타이머가 처리 — 정지 상태 액션만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

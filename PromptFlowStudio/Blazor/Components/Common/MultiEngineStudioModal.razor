@@ -1,0 +1,269 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.MultiEngine
+@implements IDisposable
+@inject GenerativeVideoMultiEngineRouter Router
+@inject PluginExtensionMarketplaceFramework Plugins
+@inject IServiceProvider Services
+
+@* [PromptFlow Studio v16.29.0] ⚡ 차세대 AI 멀티 엔진 루터 — 엔진별 품질/속도/비용 벤치마크 칩 · 라우팅 가중 슬라이더 · 예산/지연 제약
+   · 라우팅 미리보기 · 프롬프트 방언 미리보기 · 플러그인 목록(신뢰/활성/리로드). 상태는 서비스(싱글턴) 소유 — OnChange 구독 + InvokeAsync(StateHasChanged). *@
+
+<div class="me-scrim" @onclick="Close">
+    <div class="me-modal" @onclick:stopPropagation="true">
+        <div class="me-h">
+            <div>
+                <div class="me-title">⚡ 차세대 AI 멀티 엔진 루터</div>
+                <div class="me-sub">해상도·장르·예산·속도 요구에 맞춰 Wan 2.1 · Sora 2 · Luma · Runway · 로컬 GPU · 플러그인 엔진 중 최적 엔진을 고르고, 실패 시 다음 엔진으로 자동 전환합니다.
+                    활성 엔진을 <b>⚡ 멀티 엔진 루터</b>로 지정하면 스토리보드 생성 전체가 라우팅됩니다.</div>
+            </div>
+            <button class="me-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="me-tabs">
+            <button class="@(_tab == 0 ? "on" : "")" @onclick="() => _tab = 0">🎛 라우팅</button>
+            <button class="@(_tab == 1 ? "on" : "")" @onclick="() => _tab = 1">🔤 프롬프트 방언</button>
+            <button class="@(_tab == 2 ? "on" : "")" @onclick="() => _tab = 2">🧩 플러그인 @(Plugins.Plugins.Count)</button>
+        </div>
+
+        <div class="me-body">
+            @if (_tab == 0)
+            {
+                <div class="me-row">
+                    <span class="me-chip @(IsRouterActive ? "ok" : "")">활성 엔진: @(EngineCfg?.VideoEngineKey ?? "-")</span>
+                    @if (!IsRouterActive && EngineCfg is not null) { <button class="me-btn go" @onclick="ActivateRouter">⚡ 루터를 활성 엔진으로</button> }
+                    <span class="me-mut">라우팅 @(Router.Routed)회 · 장애 조치 @(Router.Failovers)회 · 추정 지출 $@(Router.EstimatedSpendUsd.ToString("0.00", CultureInfo.InvariantCulture))</span>
+                </div>
+                <div class="me-grid">
+                    @foreach (var b in Router.Benchmarks())
+                    {
+                        <div class="me-eng @(b.Enabled ? "" : "off") @(b.CircuitOpen ? "bad" : "") @(Router.LastDecision?.EngineKey == b.Key ? "pick" : "")">
+                            <div class="me-row">
+                                <b>@(b.DisplayName)</b>
+                                <label class="me-sw"><input type="checkbox" checked="@Router.IsEngineEnabled(b.Key)" @onchange="e => Router.SetEngineEnabled(b.Key, e.Value is true)" /><span></span></label>
+                            </div>
+                            <div class="me-chips">
+                                <span class="me-chip q">품질 @((b.Quality * 100).ToString("0", CultureInfo.InvariantCulture))</span>
+                                <span class="me-chip s">속도 @(b.SecondsPerClipSecond.ToString("0.#", CultureInfo.InvariantCulture))s/s</span>
+                                <span class="me-chip c">$@(b.UsdPerSecond.ToString("0.00", CultureInfo.InvariantCulture))/s</span>
+                                <span class="me-chip">성공 @((b.SuccessRate * 100).ToString("0", CultureInfo.InvariantCulture))%</span>
+                            </div>
+                            <div class="me-mut">@(b.Enabled ? (b.CircuitOpen ? "⛔ 서킷 오픈" : "✅ 사용 가능") : "키/설정 없음 또는 꺼짐") · @(b.Source) · 시도 @(b.Attempts)/성공 @(b.Successes)</div>
+                            @if (b.LastError is not null) { <div class="me-err">@(b.LastError)</div> }
+                            <button class="me-btn sm" @onclick="() => Pin(b.Key)">@(Router.PinnedEngine == b.Key ? "📌 고정 해제" : "📌 고정")</button>
+                        </div>
+                    }
+                </div>
+                <div class="me-sliders">
+                    <label>품질 <input type="range" min="0" max="100" value="@Pct(Router.Weights.Quality)" @oninput="e => SetW(0, e.Value)" /> <b>@Pct(Router.Weights.Quality)</b></label>
+                    <label>속도 <input type="range" min="0" max="100" value="@Pct(Router.Weights.Speed)" @oninput="e => SetW(1, e.Value)" /> <b>@Pct(Router.Weights.Speed)</b></label>
+                    <label>비용 <input type="range" min="0" max="100" value="@Pct(Router.Weights.Cost)" @oninput="e => SetW(2, e.Value)" /> <b>@Pct(Router.Weights.Cost)</b></label>
+                </div>
+                <div class="me-row">
+                    <label class="me-mut">장르
+                        <select class="me-in" value="@Router.DefaultGenre" @onchange="SetGenre">
+                            @foreach (var g in Genres) { <option value="@g">@g</option> }
+                        </select></label>
+                    <label class="me-mut">클립 예산 $ <input class="me-in w64" type="number" min="0" step="0.1" @bind="Budget" /></label>
+                    <label class="me-mut">지연 한도 초 <input class="me-in w64" type="number" min="0" step="10" @bind="Latency" /></label>
+                    <label class="me-mut">미리보기 해상도
+                        <select class="me-in" @bind="_size"><option value="720*1280">720×1280</option><option value="1280*720">1280×720</option><option value="1920*1080">1920×1080</option></select></label>
+                    <label class="me-mut"><input type="checkbox" @bind="_hasImage" /> 참조 이미지</label>
+                </div>
+                var d = Router.Decide(Preview());
+                <div class="me-note @(d is null ? "bad" : "ok")">
+                    @if (d is null) { <span>⚠ 조건을 만족하는 활성 엔진이 없습니다 — API 키(OPENAI_API_KEY · LUMAAI_API_KEY · RUNWAYML_API_SECRET) 또는 Wan 설정을 확인하세요.</span> }
+                    else { <span>🎯 @(d.Reason) · 장애 조치 순서: @(string.Join(" → ", d.Ranking))</span> }
+                </div>
+            }
+            else if (_tab == 1)
+            {
+                <textarea class="me-in me-ta" @bind="_prompt" @bind:event="oninput" placeholder="표준 연출 프롬프트 (예: 아기가 공원에서 웃는다, slow dolly-in, golden hour, cinematic, warm --no blur)"></textarea>
+                var spec = GenerativePromptTranspilerEngine.Parse(_prompt);
+                <div class="me-row">
+                    <span class="me-chip">피사체: @(spec.Subject)</span>
+                    <span class="me-chip">카메라: @(spec.Camera ?? "-")</span><span class="me-chip">조명: @(spec.Lighting ?? "-")</span>
+                    <span class="me-chip">스타일: @(spec.Style ?? "-")</span><span class="me-chip">무드: @(spec.Mood ?? "-")</span>
+                    <span class="me-chip">네거티브: @(spec.Negative ?? "-")</span>
+                </div>
+                @foreach (var dialect in new[] { PromptDialect.WanTags, PromptDialect.SoraNarrative, PromptDialect.RunwayCamera, PromptDialect.LumaConcise })
+                {
+                    var t = GenerativePromptTranspilerEngine.Emit(spec, dialect, _prompt);
+                    <div class="me-dia">
+                        <div class="me-row"><b>@(DialectLabel(dialect))</b><span class="me-mut">@(t.Prompt.Length)/@(t.MaxLength)자@(t.Truncated ? " · 절단됨" : "")</span></div>
+                        <div class="me-pt">@(t.Prompt)</div>
+                        @if (t.Negative is not null) { <div class="me-mut">negative: @(t.Negative)</div> }
+                    </div>
+                }
+            }
+            else
+            {
+                <div class="me-row">
+                    <button class="me-btn" @onclick="Scan">🔄 다시 검색</button>
+                    <label class="me-mut"><input type="checkbox" checked="@Plugins.HotReloadEnabled" @onchange="ToggleHot" /> 핫 리로드(폴더 감시)</label>
+                    <span class="me-mut">폴더: @(Plugins.Root) · 로드 @(Plugins.LoadCount) · 언로드 @(Plugins.UnloadCount)</span>
+                    <button class="me-btn sm" @onclick="() => _showSdk = !_showSdk">📘 SDK 안내</button>
+                </div>
+                @if (_showSdk)
+                {
+                    <div class="me-note">
+                        <b>Open SDK</b> — PromptFlowStudio.dll 참조 후 <code>PromptFlowStudio.Plugins.Sdk</code> 의 <code>IVideoEnginePlugin</code> · <code>IVideoFilterPlugin</code> · <code>ISubtitleTemplatePlugin</code> 를 구현(기본 생성자),
+                        <code>{폴더}/{id}/plugin.json</code>(id · name · version · kind=engine|filter|subtitle · assembly · type)과 DLL 을 두세요.
+                        코드 없는 <b>선언형</b> 플러그인은 filterTemplate(<code>eq=saturation={sat}</code> + params) 또는 assStyle 만으로 동작합니다.
+                        DLL 은 SHA-256 신뢰 승인 후에만 로드되며 같은 프로세스에서 실행되므로 신뢰할 수 있는 개발자의 플러그인만 승인하세요.
+                    </div>
+                }
+                <table class="me-tbl">
+                    <tr><th>플러그인</th><th>종류</th><th>버전</th><th>상태</th><th>형식</th><th>활성</th><th></th></tr>
+                    @foreach (var p in Plugins.Plugins)
+                    {
+                        <tr class="@(p.Status == PluginStatus.Loaded ? "ok" : p.Status is PluginStatus.Faulted or PluginStatus.Untrusted ? "bad" : "")">
+                            <td><b>@(p.Manifest.Name)</b><div class="me-mut">@(p.Manifest.Id)@(p.Manifest.Author is null ? "" : " · " + p.Manifest.Author)</div></td>
+                            <td>@(p.Manifest.Kind)</td>
+                            <td>@(p.Manifest.Version)</td>
+                            <td>@(StatusLabel(p.Status))@(p.LastError is null ? "" : " · " + p.LastError)</td>
+                            <td>@(p.IsDeclarative ? "선언형" : "DLL " + (p.Sha256 is null ? "" : p.Sha256[..10] + "…"))</td>
+                            <td><label class="me-sw"><input type="checkbox" checked="@p.Enabled" @onchange="e => Plugins.SetEnabled(p.Manifest.Id, e.Value is true)" /><span></span></label></td>
+                            <td>
+                                @if (p.Status == PluginStatus.Untrusted) { <button class="me-btn sm" @onclick="() => Plugins.Trust(p.Manifest.Id)">🔐 신뢰 승인</button> }
+                                else if (!p.IsDeclarative && p.Sha256 is not null && Plugins.IsTrusted(p.Sha256)) { <button class="me-btn sm" @onclick="() => Plugins.Untrust(p.Manifest.Id)">신뢰 해제</button> }
+                                <button class="me-btn sm" @onclick="() => Plugins.Reload(p.Manifest.Id)">♻</button>
+                            </td>
+                        </tr>
+                    }
+                </table>
+                @if (Plugins.Plugins.Count == 0) { <div class="me-note">설치된 플러그인이 없습니다.</div> }
+            }
+            @if (_msg is not null) { <div class="me-note">@(_msg)</div> }
+        </div>
+
+        <div class="me-f">
+            <span class="me-mut">@(Router.LastAction ?? Plugins.LastAction ?? "대기")</span>
+            <button class="me-btn" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .me-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .me-modal { width: min(1100px, 96vw); max-height: 92vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.4); overflow: hidden; }
+    .me-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+    .me-title { font-size: 16px; font-weight: 900; color: var(--text-primary); }
+    .me-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .me-sub b, .me-note b { color: var(--text-primary); }
+    .me-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .me-tabs { display: flex; gap: 4px; padding: 8px 18px 0; border-bottom: 1px solid var(--line); }
+    .me-tabs button { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; border: 0; background: none; color: var(--text-muted); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
+    .me-tabs button.on { color: var(--text-primary); border-bottom-color: #f59e0b; }
+    .me-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .me-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .me-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
+    .me-eng { border: 1px solid var(--line); border-radius: 12px; padding: 9px; display: flex; flex-direction: column; gap: 5px; }
+    .me-eng b { flex: 1; font-size: 12.5px; color: var(--text-primary); }
+    .me-eng.off { opacity: .55; } .me-eng.bad { border-color: #f87171; } .me-eng.pick { border-color: #f59e0b; box-shadow: 0 0 0 2px color-mix(in srgb, #f59e0b 35%, transparent); }
+    .me-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+    .me-chip { font: 700 10.5px var(--mono); padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .me-chip.ok { color: #4ade80; } .me-chip.q { color: #a78bfa; } .me-chip.s { color: #38bdf8; } .me-chip.c { color: #fbbf24; }
+    .me-mut { font-size: 11px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; }
+    .me-err { font-size: 10.5px; color: #f87171; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .me-sliders { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--text-secondary); }
+    .me-sliders label { display: inline-flex; align-items: center; gap: 6px; } .me-sliders b { font: 700 11px var(--mono); color: var(--text-primary); width: 26px; }
+    .me-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; }
+    .me-in.w64 { width: 64px; } .me-ta { width: 100%; min-height: 70px; resize: vertical; }
+    .me-sw { position: relative; display: inline-flex; cursor: pointer; }
+    .me-sw input { display: none; }
+    .me-sw span { width: 34px; height: 18px; border-radius: 9px; background: var(--line); position: relative; transition: background .2s; }
+    .me-sw span::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: left .2s; }
+    .me-sw input:checked + span { background: #22c55e; } .me-sw input:checked + span::after { left: 18px; }
+    .me-dia { border: 1px solid var(--line); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+    .me-dia b { font-size: 12px; color: var(--text-primary); }
+    .me-pt { font: 12px var(--mono); color: var(--text-primary); white-space: pre-wrap; word-break: break-word; }
+    .me-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+    .me-tbl th, .me-tbl td { border-bottom: 1px solid var(--line); padding: 4px 6px; text-align: left; vertical-align: top; }
+    .me-tbl tr.ok td { color: #4ade80; } .me-tbl tr.bad td { color: #f87171; }
+    .me-note { font-size: 12px; color: var(--text-secondary); line-height: 1.5; } .me-note.ok { color: #4ade80; } .me-note.bad { color: #f87171; }
+    .me-note code { font: 11px var(--mono); }
+    .me-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }
+    .me-f .me-mut { margin-right: auto; }
+    .me-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .me-btn.sm { padding: 3px 8px; font-size: 11px; align-self: flex-start; }
+    .me-btn.go { background: linear-gradient(135deg,#f59e0b,#ef4444); color: #fff; border: 0; }
+    @@media (max-width: 720px) { .me-grid { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly string[] Genres = { "general", "cinematic", "realistic", "story", "anime", "baby", "product", "nature", "action" };
+    private int _tab;
+    private string? _msg;
+    private string _size = "720*1280";
+    private bool _hasImage, _showSdk;
+    private string _prompt = "아기가 공원에서 웃는다, slow dolly-in, golden hour, cinematic, warm --no blur, text";
+
+    private PromptFlowStudio.Services.Engines.EngineConfigService? EngineCfg => Services.GetService(typeof(PromptFlowStudio.Services.Engines.EngineConfigService)) as PromptFlowStudio.Services.Engines.EngineConfigService;
+
+    private bool IsRouterActive => EngineCfg?.VideoEngineKey == Router.Key;
+
+    private double Budget { get => Router.BudgetPerClipUsd; set => Router.BudgetPerClipUsd = Math.Max(0, value); }
+    private double Latency { get => Router.MaxLatencySeconds; set => Router.MaxLatencySeconds = Math.Max(0, value); }
+
+    protected override void OnInitialized()
+    {
+        Router.OnChange += OnServiceChanged;
+        Plugins.OnChange += OnServiceChanged;
+    }
+
+    private static string Pct(double v) => ((int)Math.Round(v * 100)).ToString(CultureInfo.InvariantCulture);
+
+    private void SetW(int which, object? value)
+    {
+        if (!double.TryParse(value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+        v = Math.Clamp(v / 100.0, 0, 1);
+        var w = Router.Weights;
+        Router.Weights = which switch { 0 => w with { Quality = v }, 1 => w with { Speed = v }, _ => w with { Cost = v } };
+    }
+
+    private RoutingRequest Preview()
+    {
+        var (w, h) = GenerativeVideoMultiEngineRouter.ParseSize(_size);
+        return new RoutingRequest(w, h, 30, 5, Router.DefaultGenre, Router.BudgetPerClipUsd, Router.MaxLatencySeconds, _hasImage);
+    }
+
+    private void SetGenre(ChangeEventArgs e) => Router.DefaultGenre = e.Value?.ToString() ?? "general";
+
+    private void Pin(string key) => Router.PinnedEngine = Router.PinnedEngine == key ? null : key;
+
+    private void ActivateRouter()
+    {
+        try { EngineCfg?.SetVideoEngine(Router.Key); _msg = "⚡ 활성 엔진을 멀티 엔진 루터로 전환했습니다."; }
+        catch (Exception ex) { Program.Log("MultiEngine.Activate", ex); _msg = "⚠ 전환 실패: " + ex.Message; }
+    }
+
+    private void Scan() { var n = Plugins.ScanAndLoad(); _msg = "🔄 " + n.ToString(CultureInfo.InvariantCulture) + "개 로드"; }
+
+    private void ToggleHot(ChangeEventArgs e)
+    {
+        if (e.Value is true) Plugins.EnableHotReload(); else Plugins.DisableHotReload();
+    }
+
+    private static string DialectLabel(PromptDialect d) => d switch
+    {
+        PromptDialect.WanTags => "Wan 2.1 · 태그 조합형", PromptDialect.SoraNarrative => "Sora 2 · 디테일 문장형",
+        PromptDialect.RunwayCamera => "Runway Gen-3 · 카메라 키워드형", PromptDialect.LumaConcise => "Luma · 간결 자연어", _ => "원문",
+    };
+
+    private static string StatusLabel(PluginStatus s) => s switch
+    {
+        PluginStatus.Loaded => "✅ 로드됨", PluginStatus.Untrusted => "🔐 승인 필요", PluginStatus.Disabled => "꺼짐", PluginStatus.Faulted => "⚠ 장애", _ => "발견",
+    };
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Router.OnChange -= OnServiceChanged;
+        Plugins.OnChange -= OnServiceChanged;
+    }
+}

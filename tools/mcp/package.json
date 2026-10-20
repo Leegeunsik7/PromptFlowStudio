@@ -1,0 +1,11 @@
+{
+  "name": "promptflowstudio-mcp-tools",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PromptFlow Studio 개발용 MCP 서버 격리 설치 - 하위 의존까지 package-lock.json 으로 고정(npm ci 전용).",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@playwright/mcp": "0.0.83",
+    "chrome-devtools-mcp": "1.10.1"
+  }
+}

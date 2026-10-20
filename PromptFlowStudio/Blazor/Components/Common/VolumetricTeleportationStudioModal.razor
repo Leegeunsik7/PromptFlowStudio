@@ -1,0 +1,366 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.Teleport
+@implements IDisposable
+@inject AiVolumetricTeleportationMeshEncoder Enc
+@inject SpatialAudioVisualBeamformingEngine Beam
+@inject HolographicTelepresenceRelayBridge Relay
+
+@*
+    [PromptFlow Studio v16.55.0] 📡 AI 볼류메트릭 텔레포테이션 스튜디오 — 홀로그램 메시 노이즈 감도 · 압축/패킷 통계 · 수신 디바이스 좌표 프리뷰 ·
+    공간 빔포밍 위상 지향 각도/모드/귀 타깃 · 폴라 빔 패턴 · 평면 배치도 · 디바이스 접속 현황(링크 · 시계 동기 · 지연 · 표시/지연 프레임).
+*@
+
+<div class="tp-scrim" @onclick="Close">
+    <div class="tp-modal" @onclick:stopPropagation="true">
+        <div class="tp-h">
+            <div>
+                <div class="tp-title">📡 AI 볼류메트릭 텔레포테이션 스튜디오</div>
+                <div class="tp-sub">실사 인물/트윈을 <b>동적 홀로그램 메시</b>로 압축해 <b>Vision Pro · Quest 3 · WebXR · 홀로그램 디스플레이</b> 간 50ms 예산으로 쌍방향 중계하고, 시청자 귀/눈 위치로 <b>음향·광선을 공간 집속</b>합니다.</div>
+            </div>
+            <button class="tp-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="tp-bar">
+            <span class="tp-chip @(Relay.IsRunning ? "ok" : null)">@(Relay.IsRunning ? "● 중계 중" : "○ 정지")</span>
+            <span class="tp-chip">디바이스 @(Relay.ConnectedCount) · 양방향 @(Relay.BidirectionalPairs)쌍</span>
+            <span class="tp-chip @(Relay.WithinBudget ? "ok" : Relay.FramesLate > 0 ? "hot" : null)">p50 @(F1(Relay.P50Ms)) · p95 @(F1(Relay.P95Ms)) / @(F0(Relay.LatencyBudgetMs))ms</span>
+            <span class="tp-chip">표시 @(Relay.FramesPresented) · 지연 @(Relay.FramesLate)</span>
+            <span class="tp-chip">FEC 복원 @(Relay.FecRecovered) · 손실 @(Relay.PacketsLost) · PLI @(Relay.KeyRequests)</span>
+            <span class="tp-chip">압축 @(F1((float)Enc.CompressionRatio))× · @(Enc.LastBytes)B</span>
+            <span class="tp-chip">빔 대비 @(F1(Beam.LastContrastDb))dB</span>
+        </div>
+
+        <div class="tp-main">
+            <div class="tp-col">
+                <div class="tp-card">
+                    <div class="tp-sec">🧊 홀로그램 메시 인코더 @(Enc.HasTwin ? "· 디지털 트윈" : "· 절차 인체(트윈 미생성)")</div>
+                    <label class="tp-lab">노이즈 감도 <b>@(F2(Enc.NoiseSensitivity))</b> · 데드존 @(F1(Enc.NoiseThresholdMeters * 1000f))mm</label>
+                    <input type="range" min="0" max="1" step="0.05" value="@(F2(Enc.NoiseSensitivity))" @oninput="OnNoise" />
+                    <label class="tp-lab">키프레임 간격 <b>@(Enc.KeyInterval)</b>프레임</label>
+                    <input type="range" min="10" max="240" step="10" value="@(Enc.KeyInterval)" @oninput="OnKeyInterval" />
+                    <label class="tp-lab">센서 노이즈 <b>@(F1(Relay.SensorNoiseMeters * 1000f))</b>mm</label>
+                    <input type="range" min="0" max="5" step="0.5" value="@(F1(Relay.SensorNoiseMeters * 1000f))" @oninput="OnSensor" />
+                    <div class="tp-kv">
+                        <span>프레임</span><b>@(Enc.Frames) (키 @(Enc.KeyFrames))</b>
+                        <span>정점/삼각형</span><b>@(Enc.LastVertices) / @(Enc.LastTriangles)</b>
+                        <span>패킷</span><b>@(Enc.Packets)</b>
+                        <span>인코딩</span><b>@(F1((float)Enc.LastEncodeMicros))µs</b>
+                        <span>억제 떨림</span><b>@(Enc.SuppressedJitter)</b>
+                        <span>스파이크 보류</span><b>@(Enc.SpikesHeld)</b>
+                    </div>
+                </div>
+                <div class="tp-card">
+                    <div class="tp-sec">👁 수신 프리뷰 · @(PreviewLabel)</div>
+                    <div class="tp-row">
+                        <select class="tp-sel" @bind="_rx">
+                            @for (var i = 0; i < HolographicTelepresenceRelayBridge.MaxPeers; i++)
+                            {
+                                if (Relay.Peer(i) is { Connected: true } p) { <option value="@(i)">수신 @(i) · @(p.Profile.Label)</option> }
+                            }
+                        </select>
+                        <select class="tp-sel" @bind="_tx">
+                            @for (var i = 0; i < HolographicTelepresenceRelayBridge.MaxPeers; i++)
+                            {
+                                if (Relay.Peer(i) is { Connected: true } p) { <option value="@(i)">송신 @(i) · @(p.Profile.Label)</option> }
+                            }
+                        </select>
+                    </div>
+                    <svg class="tp-holo" viewBox="-1 -1 2 2" preserveAspectRatio="xMidYMid meet">
+                        <rect x="-1" y="-1" width="2" height="2" fill="#020617" />
+                        @for (var i = 0; i < _pvCount; i += 2)
+                        {
+                            <circle cx="@(F3(_pvX[i]))" cy="@(F3(_pvY[i]))" r="0.012" fill="#38bdf8" opacity="0.8" />
+                        }
+                    </svg>
+                </div>
+            </div>
+
+            <div class="tp-col">
+                <div class="tp-card">
+                    <div class="tp-sec">🎯 공간 빔포밍 · @(Beam.ElementCount)소자 @(F0(Beam.ElementSpacing * 100f))cm</div>
+                    <div class="tp-row">
+                        <button class="tp-btn @(Beam.Mode == BeamSteerMode.TrackViewer ? "on" : null)" @onclick="() => SetMode(BeamSteerMode.TrackViewer)">👤 시청자 추종</button>
+                        <button class="tp-btn @(Beam.Mode == BeamSteerMode.ManualAngle ? "on" : null)" @onclick="() => SetMode(BeamSteerMode.ManualAngle)">🧭 수동 지향</button>
+                        <select class="tp-sel" @bind="EarTarget">
+                            <option value="@(BeamEarTarget.Center)">머리 중심</option>
+                            <option value="@(BeamEarTarget.Left)">왼쪽 귀</option>
+                            <option value="@(BeamEarTarget.Right)">오른쪽 귀</option>
+                        </select>
+                    </div>
+                    <label class="tp-lab">위상 지향 각도 <b>@(F0(Beam.ManualSteerDeg))°</b> · 현재 조향 @(F1(Beam.LastSteerDeg))°</label>
+                    <input type="range" min="-80" max="80" step="1" value="@(F0(Beam.ManualSteerDeg))" @oninput="OnSteer" />
+                    <label class="tp-lab">지연 보상 예측 <b>@(F0(Beam.PredictionMs))</b>ms</label>
+                    <input type="range" min="0" max="80" step="5" value="@(F0(Beam.PredictionMs))" @oninput="OnPredict" />
+                    <svg class="tp-polar" viewBox="-110 -105 220 115">
+                        @for (var r = 1; r <= 4; r++)
+                        {
+                            <path d="@(Arc(r * 25f))" fill="none" stroke="#334155" stroke-width="0.6" />
+                        }
+                        <path d="@(PatternPath())" fill="rgba(56,189,248,.25)" stroke="#38bdf8" stroke-width="1.2" />
+                        <line x1="0" y1="0" x2="@(F1(MathF.Sin(Beam.LastSteerDeg * MathF.PI / 180f) * 100f))" y2="@(F1(-MathF.Cos(Beam.LastSteerDeg * MathF.PI / 180f) * 100f))" stroke="#f472b6" stroke-width="1" stroke-dasharray="3 2" />
+                        <g><text x="-104" y="6" class="tp-svgt">-90°</text></g>
+                        <g><text x="92" y="6" class="tp-svgt">+90°</text></g>
+                        <g><text x="-6" y="-97" class="tp-svgt">0°</text></g>
+                    </svg>
+                    <div class="tp-kv">
+                        <span>활성 빔</span><b>@(Beam.BeamsActive) / @(SpatialAudioVisualBeamformingEngine.MaxBeams)</b>
+                        <span>추적 시청자</span><b>@(Beam.ViewersActive)</b>
+                        <span>홀로 집속 이득</span><b>@(F3(Beam.LastHoloGain))</b>
+                        <span>틱</span><b>@(F1((float)Beam.LastTickMicros))µs</b>
+                    </div>
+                </div>
+                <div class="tp-card">
+                    <div class="tp-sec">🗺 평면 배치(상면도 · 스피커 배열 z=0)</div>
+                    <svg class="tp-map" viewBox="-3 -0.4 6 4">
+                        <rect x="-3" y="-0.4" width="6" height="4" fill="#0b1220" />
+                        @for (var i = 0; i < Beam.ElementCount; i++)
+                        {
+                            var e = Beam.Element(i);
+                            <rect x="@(F3(e.X - 0.02f))" y="-0.05" width="0.04" height="0.08" fill="#facc15" />
+                        }
+                        @for (var b = 0; b < SpatialAudioVisualBeamformingEngine.MaxBeams; b++)
+                        {
+                            if (!Beam.BeamActive(b)) continue;
+                            var f = Beam.BeamFocus(b);
+                            <line x1="0" y1="0" x2="@(F3(f.X))" y2="@(F3(f.Z))" stroke="@(BeamColor(b))" stroke-width="0.02" opacity="0.7" />
+                        }
+                        @for (var s = 0; s < SpatialAudioVisualBeamformingEngine.MaxViewers; s++)
+                        {
+                            var v = Beam.Viewer(s);
+                            if (!v.Active) continue;
+                            <circle cx="@(F3(v.Head.X))" cy="@(F3(v.Head.Z))" r="0.09" fill="none" stroke="@(BeamColor(Math.Max(0, v.Track)))" stroke-width="0.025" />
+                            <circle cx="@(F3(v.LeftEar.X))" cy="@(F3(v.LeftEar.Z))" r="0.025" fill="#a3e635" />
+                            <circle cx="@(F3(v.RightEar.X))" cy="@(F3(v.RightEar.Z))" r="0.025" fill="#f97316" />
+                            <g><text x="@(F3(v.Head.X + 0.12f))" y="@(F3(v.Head.Z + 0.04f))" class="tp-svgm">#@(v.Id) T@(v.Track)</text></g>
+                        }
+                    </svg>
+                </div>
+            </div>
+
+            <div class="tp-col">
+                <div class="tp-card">
+                    <div class="tp-sec">🛰 텔레프레젠스 중계 · 지연 예산 @(F0(Relay.LatencyBudgetMs))ms</div>
+                    <div class="tp-row">
+                        @if (Relay.IsRunning)
+                        {
+                            <button class="tp-btn hot" @onclick="Relay.Stop">⏹ 중계 정지</button>
+                        }
+                        else
+                        {
+                            <button class="tp-btn on" @onclick="Relay.Start">▶ 실시간 중계 시작</button>
+                        }
+                        <button class="tp-btn" disabled="@(Relay.IsRunning)" @onclick="Simulate">⏩ 3초 시뮬</button>
+                        <button class="tp-btn" @onclick="Enc.ResetStats">♻ 통계</button>
+                    </div>
+                    <div class="tp-row">
+                        @foreach (var k in Kinds)
+                        {
+                            var kind = k;
+                            <button class="tp-btn sm" @onclick="() => Add(kind)">＋ @(XrDeviceProfile.For(kind).Label)</button>
+                        }
+                    </div>
+                    <div class="tp-budget"><i style="width:@(F0(Math.Min(100f, Relay.P95Ms / Math.Max(1f, Relay.LatencyBudgetMs) * 100f)))%" class="@(Relay.WithinBudget ? null : "over")"></i></div>
+                </div>
+                @for (var i = 0; i < HolographicTelepresenceRelayBridge.MaxPeers; i++)
+                {
+                    if (Relay.Peer(i) is not { Connected: true } p) continue;
+                    var idx = i;
+                    <div class="tp-card tp-dev">
+                        <div class="tp-dev-h">
+                            <b>@(DeviceIcon(p.Profile.Kind)) @(p.Profile.Label)</b>
+                            <span class="tp-mut">@(p.Profile.Runtime) · @(p.Profile.DisplayFps)Hz · @(p.Profile.Views)뷰</span>
+                            <button class="tp-x sm" title="접속 해제" @onclick="() => Relay.Disconnect(idx)">⏏</button>
+                        </div>
+                        <div class="tp-kv">
+                            <span>링크 ↑/↓</span><b>@(F0(p.UpMs))/@(F0(p.DownMs))ms ±@(F1(p.JitterMs)) · 손실 @(F1(p.LossRate * 100f))%</b>
+                            <span>시계 동기</span><b>오프셋 @(F1((float)(p.EstimatedOffsetMicros / 1000.0)))ms · RTT @(F1((float)(p.RttMicros / 1000.0)))ms</b>
+                            <span>최근 지연</span><b class="@(p.LastLatencyMs > Relay.LatencyBudgetMs ? "bad" : "good")">@(F1(p.LastLatencyMs))ms</b>
+                            <span>표시/지연</span><b>@(p.FramesPresented) / @(p.FramesLate)</b>
+                            <span>송신</span><b>@(p.FramesSent)f · @(F0((float)p.SendKbps))kbps · 적응 +@(F1(p.AdaptiveThreshold * 1000f))mm</b>
+                            <span>PLI/디코드 실패</span><b>@(p.KeyRequests) / @(p.DecodeFailures)</b>
+                        </div>
+                        <label class="tp-lab">패킷 손실 <b>@(F1(p.LossRate * 100f))%</b></label>
+                        <input type="range" min="0" max="10" step="0.5" value="@(F1(p.LossRate * 100f))" @oninput="e => OnLoss(idx, e)" />
+                    </div>
+                }
+                <div class="tp-act">@(Relay.LastAction ?? Beam.LastAction ?? Enc.LastAction ?? "텔레포테이션 대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .tp-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .tp-modal { width: min(1520px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .tp-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #06b6d4 18%, var(--card)), color-mix(in srgb, #ec4899 12%, var(--card))); }
+    .tp-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .tp-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .tp-sub b { color: var(--text-primary); }
+    .tp-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .tp-x.sm { font-size: 14px; margin-left: auto; }
+    .tp-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); }
+    .tp-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .tp-chip.ok { color: #22c55e; border-color: #22c55e; }
+    .tp-chip.hot { color: #f97316; border-color: #f97316; }
+    .tp-main { display: grid; grid-template-columns: 1fr 1.1fr 1.1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .tp-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .tp-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 6px; }
+    .tp-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); }
+    .tp-lab { font-size: 11px; color: var(--text-secondary); }
+    .tp-lab b { color: var(--text-primary); font-family: var(--mono); }
+    .tp-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .tp-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .tp-btn.on { background: color-mix(in srgb, #06b6d4 25%, transparent); border-color: #06b6d4; }
+    .tp-btn.hot { background: color-mix(in srgb, #f97316 22%, transparent); border-color: #f97316; }
+    .tp-btn.sm { font-size: 11px; padding: 3px 8px; }
+    .tp-btn:disabled { opacity: .45; cursor: default; }
+    .tp-sel { font-size: 12px; padding: 4px 6px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .tp-kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 11px; }
+    .tp-kv span { color: var(--text-muted); }
+    .tp-kv b { font-family: var(--mono); color: var(--text-primary); font-weight: 600; }
+    .tp-kv b.good { color: #22c55e; }
+    .tp-kv b.bad { color: #ef4444; }
+    .tp-holo { width: 100%; height: 240px; border-radius: 10px; }
+    .tp-polar { width: 100%; height: 150px; }
+    .tp-map { width: 100%; height: 220px; border-radius: 10px; }
+    .tp-svgt { font-size: 7px; fill: #94a3b8; }
+    .tp-svgm { font-size: 0.13px; fill: #e2e8f0; }
+    .tp-budget { height: 8px; border-radius: 999px; background: var(--line); overflow: hidden; }
+    .tp-budget i { display: block; height: 100%; background: #22c55e; transition: width .2s; }
+    .tp-budget i.over { background: #ef4444; }
+    .tp-dev-h { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 12px; }
+    .tp-mut { font-size: 11px; color: var(--text-muted); }
+    .tp-act { font-size: 11px; color: var(--text-muted); font-family: var(--mono); padding: 4px 2px; }
+    @@media (max-width: 1100px) { .tp-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly XrDeviceKind[] Kinds = { XrDeviceKind.VisionPro, XrDeviceKind.Quest3, XrDeviceKind.WebXr, XrDeviceKind.HologramDisplay };
+    private static readonly string[] BeamColors = { "#38bdf8", "#f472b6", "#a3e635", "#facc15" };
+    private readonly float[] _pattern = new float[91];
+    private readonly float[] _pv = new float[TeleportMeshFrame.MaxVertices * 3];
+    private readonly float[] _pvX = new float[TeleportMeshFrame.MaxVertices], _pvY = new float[TeleportMeshFrame.MaxVertices];
+    private int _pvCount, _rx = 3, _tx;
+    private System.Threading.Timer? _timer;
+
+    private BeamEarTarget EarTarget { get => Beam.EarTarget; set => Beam.EarTarget = value; }
+
+    private string PreviewLabel => Relay.Peer(_rx) is { } r ? r.Profile.Runtime : "수신 디바이스 없음";
+
+    protected override void OnInitialized()
+    {
+        Enc.OnChange += OnServiceChanged;
+        Beam.OnChange += OnServiceChanged;
+        Relay.OnChange += OnServiceChanged;
+        if (Relay.ConnectedCount == 0) Relay.ConnectDefaultMesh();
+        RefreshPreview();
+        _timer = new System.Threading.Timer(_ => { if (Relay.IsRunning) _ = InvokeAsync(() => { RefreshPreview(); StateHasChanged(); }); }, null, 250, 250);
+    }
+
+    private static string F0(float v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(float v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(float v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(float v) => v.ToString("0.###", CultureInfo.InvariantCulture);
+    private static string BeamColor(int b) => BeamColors[b % BeamColors.Length];
+
+    private static string DeviceIcon(XrDeviceKind k) => k switch
+    {
+        XrDeviceKind.VisionPro => "🥽",
+        XrDeviceKind.Quest3 => "🎮",
+        XrDeviceKind.WebXr => "🌐",
+        _ => "🔮",
+    };
+
+    private static float Parse(ChangeEventArgs e, float fallback)
+        => float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    private void OnNoise(ChangeEventArgs e) => Enc.NoiseSensitivity = Parse(e, Enc.NoiseSensitivity);
+    private void OnKeyInterval(ChangeEventArgs e) => Enc.KeyInterval = (int)Parse(e, Enc.KeyInterval);
+    private void OnSensor(ChangeEventArgs e) => Relay.SensorNoiseMeters = Parse(e, Relay.SensorNoiseMeters * 1000f) / 1000f;
+    private void OnSteer(ChangeEventArgs e) => Beam.ManualSteerDeg = Parse(e, Beam.ManualSteerDeg);
+    private void OnPredict(ChangeEventArgs e) => Beam.PredictionMs = Parse(e, Beam.PredictionMs);
+
+    private void OnLoss(int idx, ChangeEventArgs e)
+    {
+        if (Relay.Peer(idx) is not { } p) return;
+        Relay.SetLink(idx, p.UpMs, p.DownMs, p.JitterMs, Parse(e, p.LossRate * 100f) / 100f);
+    }
+
+    private void SetMode(BeamSteerMode m)
+    {
+        Beam.Mode = m;
+        Beam.Tick(Relay.NowMicros);
+    }
+
+    private void Add(XrDeviceKind k)
+    {
+        Relay.Connect(k, 10f, 10f, 2f, 0.01f, Random.Shared.NextInt64(-5_000_000, 5_000_000));
+        RefreshPreview();
+    }
+
+    private void Simulate()
+    {
+        Relay.RunSimulated(3_000_000);
+        RefreshPreview();
+    }
+
+    /// <summary>수신 디바이스 좌표계 원격 메시 → 정면 정사영(-1..1).</summary>
+    private void RefreshPreview()
+    {
+        var n = Relay.PresentToDevice(_rx, _tx == _rx ? (_rx == 0 ? 1 : 0) : _tx, _pv);
+        if (n == 0) { _pvCount = 0; return; }
+        float minX = float.MaxValue, maxX = float.MinValue, minY = float.MaxValue, maxY = float.MinValue;
+        for (var i = 0; i < n; i++)
+        {
+            minX = MathF.Min(minX, _pv[i * 3]); maxX = MathF.Max(maxX, _pv[i * 3]);
+            minY = MathF.Min(minY, _pv[i * 3 + 1]); maxY = MathF.Max(maxY, _pv[i * 3 + 1]);
+        }
+        var scale = 1.8f / MathF.Max(1e-3f, MathF.Max(maxX - minX, maxY - minY));
+        float cx = (minX + maxX) * 0.5f, cy = (minY + maxY) * 0.5f;
+        for (var i = 0; i < n; i++)
+        {
+            _pvX[i] = (_pv[i * 3] - cx) * scale;
+            _pvY[i] = -(_pv[i * 3 + 1] - cy) * scale;
+        }
+        _pvCount = n;
+    }
+
+    private static string Arc(float r)
+        => "M " + F1(-r) + " 0 A " + F1(r) + " " + F1(r) + " 0 0 1 " + F1(r) + " 0";
+
+    private string PatternPath()
+    {
+        Beam.BeamPattern(Beam.Mode == BeamSteerMode.ManualAngle ? 0 : FirstActiveBeam(), 2000f, 3f, _pattern);
+        var sb = new System.Text.StringBuilder(_pattern.Length * 16);
+        sb.Append("M 0 0");
+        for (var k = 0; k < _pattern.Length; k++)
+        {
+            var deg = -90f + 180f * k / (_pattern.Length - 1);
+            var r = Math.Clamp((_pattern[k] + 30f) / 30f, 0f, 1f) * 100f;
+            var rad = deg * MathF.PI / 180f;
+            sb.Append(" L ").Append(F1(MathF.Sin(rad) * r)).Append(' ').Append(F1(-MathF.Cos(rad) * r));
+        }
+        return sb.Append(" Z").ToString();
+    }
+
+    private int FirstActiveBeam()
+    {
+        for (var b = 0; b < SpatialAudioVisualBeamformingEngine.MaxBeams; b++) if (Beam.BeamActive(b)) return b;
+        return 0;
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(() => { RefreshPreview(); StateHasChanged(); });
+
+    public void Dispose()
+    {
+        _timer?.Dispose();
+        Enc.OnChange -= OnServiceChanged;
+        Beam.OnChange -= OnServiceChanged;
+        Relay.OnChange -= OnServiceChanged;
+    }
+}

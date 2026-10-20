@@ -1,0 +1,254 @@
+name: Multi-Platform Release Pipeline
+
+# [PromptFlow Studio v10.0.0-LTS · LTS-10.0.3] 멀티플랫폼 CI/CD 릴리스 파이프라인.
+#  ▸ Windows(net8.0-windows 자체완결 단일파일) · Android(net8.0-android) · iOS(net8.0-ios 시뮬레이터 대상 컴파일 게이트) ·
+#    macOS/Mac Catalyst(선택적 · TargetFrameworks 에 net8.0-maccatalyst 가 선언된 경우에만 자동 활성 · 부재 시 Graceful 스킵)
+#    4개 플랫폼 잡을 병렬 실행하고, 전 잡이 -warnaserror(0경고/0오류) 게이트를 통과해야 한다.
+#  ▸ 각 잡 산출물은 SHA-256 체크섬과 함께 아티팩트로 업로드되고, 태그 푸시(v*) 시 collect 잡이 전체를 모아
+#    통합 SHA256SUMS.txt 매니페스트를 생성해 단일 GitHub Release 로 게시한다(제약: 외부 서명/스토어 배포는
+#    release.yml/store-deploy.yml 이 전담 — 이 파이프라인은 빌드 정합성 검증 + 체크섬 + 아티팩트 수집 전용).
+#  ⚠ 이 저장소는 `.github` 가 레포 루트와 `PromptFlowStudio/` 하위에 중복 존재(과거 리포 재구성 잔재).
+#    CLAUDE.md 가 명시하는 현재 유효 규약은 "레포 루트 기준 PromptFlowStudio/PromptFlowStudio.csproj" 이므로
+#    이 워크플로는 레포 루트에 위치하고 그 경로 규약을 따른다.
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_VERSION: '8.0.x'
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+
+jobs:
+  # ── ① Windows 데스크톱: net8.0-windows 자체완결 단일파일 Release ────────────────────────────
+  windows-desktop:
+    name: Windows (net8.0-windows · self-contained · warn=error)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore PromptFlowStudio/PromptFlowStudio.csproj
+
+      - name: Build (Release · 0 경고/0 오류 강제)
+        run: dotnet build PromptFlowStudio/PromptFlowStudio.csproj -c Release --no-restore -warnaserror
+
+      - name: Publish (win-x64 self-contained single file)
+        run: |
+          dotnet publish PromptFlowStudio/PromptFlowStudio.csproj -c Release -r win-x64 --self-contained true `
+            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+            -o artifacts/windows
+
+      - name: SHA-256 체크섬 생성
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts/windows | Out-Null
+          Get-ChildItem artifacts/windows -File | ForEach-Object {
+            $h = Get-FileHash $_.FullName -Algorithm SHA256
+            "$($h.Hash.ToLower())  $($_.Name)" | Add-Content artifacts/windows/CHECKSUMS.sha256
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: promptflow-windows-x64
+          path: artifacts/windows/**
+          if-no-files-found: error
+
+  # ── ② Android: net8.0-android Release 빌드(컴파일 게이트) + 퍼블리시 산출물 체크섬 ──────────
+  android:
+    name: Android (net8.0-android · warn=error)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Setup JDK 17 (Microsoft OpenJDK · MAUI Android 요구)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'microsoft'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 34 packages
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Install MAUI Android workload
+        run: dotnet workload install maui-android
+
+      - name: Restore
+        run: dotnet restore PromptFlowStudio.Mobile/PromptFlowStudio.Mobile.csproj
+
+      - name: Build (net8.0-android · Release · 0 경고/0 오류 강제)
+        run: dotnet build PromptFlowStudio.Mobile/PromptFlowStudio.Mobile.csproj -f net8.0-android -c Release --no-restore -warnaserror
+
+      - name: Publish (unsigned APK/AAB · CI 검증용)
+        run: |
+          dotnet publish PromptFlowStudio.Mobile/PromptFlowStudio.Mobile.csproj -f net8.0-android -c Release `
+            -o artifacts/android
+
+      - name: SHA-256 체크섬 생성
+        shell: bash
+        run: |
+          mkdir -p artifacts/android
+          cd artifacts/android
+          find . -maxdepth 1 -type f \( -iname '*.apk' -o -iname '*.aab' \) -exec sha256sum {} \; > CHECKSUMS.sha256 || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: promptflow-android
+          path: artifacts/android/**
+          if-no-files-found: warn
+
+  # ── ③ iOS: net8.0-ios 시뮬레이터 대상 컴파일 게이트(서명 불필요 · 스토어 서명 배포는 store-deploy.yml 전담) ──
+  ios:
+    name: iOS (net8.0-ios · simulator · warn=error)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Install MAUI iOS workload
+        run: dotnet workload install maui-ios
+
+      - name: Restore
+        run: dotnet restore PromptFlowStudio.Mobile/PromptFlowStudio.Mobile.csproj
+
+      # 시뮬레이터 RID 로 빌드해 Apple 개발자 서명 없이 -warnaserror 컴파일 정합성만 검증(체크섬 대상 아님).
+      - name: Build (net8.0-ios · iossimulator-arm64 · Release · 0 경고/0 오류 강제)
+        run: |
+          dotnet build PromptFlowStudio.Mobile/PromptFlowStudio.Mobile.csproj -f net8.0-ios -c Release --no-restore -warnaserror `
+            -p:RuntimeIdentifier=iossimulator-arm64 -p:BuildIpa=false -p:CodesignRequireProvisioningProfile=false
+
+  # ── ④ macOS(Mac Catalyst): TargetFrameworks 에 net8.0-maccatalyst 선언 시에만 활성(부재 시 Graceful 스킵) ──
+  macos-maccatalyst:
+    name: macOS (Mac Catalyst · conditional)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: TargetFrameworks 확인 — net8.0-maccatalyst 부재 시 Graceful 스킵
+        id: check
+        shell: bash
+        run: |
+          if grep -q "net8.0-maccatalyst" PromptFlowStudio.Mobile/PromptFlowStudio.Mobile.csproj; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::net8.0-maccatalyst 가 TargetFrameworks 에 없어 macOS 빌드를 스킵합니다(Graceful — 결선점: PromptFlowStudio.Mobile.csproj + Platforms/MacCatalyst 스캐폴딩 추가 시 자동 활성)."
+          fi
+
+      - name: Install MAUI MacCatalyst workload
+        if: steps.check.outputs.present == 'true'
+        run: dotnet workload install maui-maccatalyst
+
+      - name: Restore
+        if: steps.check.outputs.present == 'true'
+        run: dotnet restore PromptFlowStudio.Mobile/PromptFlowStudio.Mobile.csproj
+
+      - name: Build (net8.0-maccatalyst · Release · 0 경고/0 오류 강제)
+        if: steps.check.outputs.present == 'true'
+        run: dotnet build PromptFlowStudio.Mobile/PromptFlowStudio.Mobile.csproj -f net8.0-maccatalyst -c Release --no-restore -warnaserror
+
+  # ── ⑤ NuGet 패키지: Shared RCL(PromptFlowStudio.Shared) 팩 산출물 ──────────────────────────
+  shared-nuget-pack:
+    name: NuGet Pack (PromptFlowStudio.Shared)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore PromptFlowStudio.Shared/PromptFlowStudio.Shared.csproj
+
+      - name: Build (Release · 0 경고/0 오류 강제)
+        run: dotnet build PromptFlowStudio.Shared/PromptFlowStudio.Shared.csproj -c Release --no-restore -warnaserror
+
+      - name: Pack
+        run: dotnet pack PromptFlowStudio.Shared/PromptFlowStudio.Shared.csproj -c Release --no-build -o artifacts/nuget
+
+      - name: SHA-256 체크섬 생성
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts/nuget | Out-Null
+          Get-ChildItem artifacts/nuget -Filter *.nupkg | ForEach-Object {
+            $h = Get-FileHash $_.FullName -Algorithm SHA256
+            "$($h.Hash.ToLower())  $($_.Name)" | Add-Content artifacts/nuget/CHECKSUMS.sha256
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: promptflow-shared-nuget
+          path: artifacts/nuget/**
+          if-no-files-found: warn
+
+  # ── ⑥ 수집: 전 플랫폼 아티팩트 + 통합 체크섬 매니페스트, 태그 푸시 시 단일 GitHub Release 게시 ──────
+  collect:
+    name: Collect Artifacts & Publish Release
+    needs: [ windows-desktop, android, ios, macos-maccatalyst, shared-nuget-pack ]
+    if: always() && needs.windows-desktop.result == 'success' && needs.android.result == 'success' && needs.ios.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: collected
+
+      - name: 통합 SHA256SUMS.txt 매니페스트 생성
+        shell: bash
+        run: |
+          cd collected
+          find . -type f ! -name 'SHA256SUMS.txt' -exec sha256sum {} \; > ../SHA256SUMS.txt
+          mv ../SHA256SUMS.txt .
+
+      - name: Upload combined manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-manifest
+          path: collected/SHA256SUMS.txt
+
+      - name: Create GitHub Release (태그 푸시 시에만)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            collected/**/*
+          generate_release_notes: true

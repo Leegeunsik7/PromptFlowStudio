@@ -1,0 +1,368 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.CinematicDirector
+@using PromptFlowStudio.Services.NarrativeTimeline
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject NarrativeTimelineStudioRunner Runner
+
+@* [PromptFlow Studio v17.40.0] 📜 AI 각본 내러티브 타임라인 스튜디오 — 멀티트랙 시퀀서 · 긴장 커브 · 분기 트리 · 타임코드 셔틀 · 블로킹 · 연속성 가드. *@
+
+<div class="ntm-scrim" @onclick="Close">
+    <div class="ntm-modal" @onclick:stopPropagation="true">
+        <div class="ntm-h">
+            <div>
+                <div class="ntm-title">📜 AI 각본 내러티브 타임라인 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null)</div>
+                <div class="ntm-sub"><b>시퀀서</b>가 Fountain 각본(씬 헤더 · 비트 · 지문 · 대사 · 분기점)을 무할당 토크나이저로 파싱해 Script/Actor/Camera/Foley/Voice 5 트랙에 스케줄하고 v17.32 음성 · v17.38 폴리 · v17.39 카메라로 디스패치합니다. <b>드라마투르기 합성기</b>가 긴장도 아크로 표정·템포·조명 무드와 두 배우의 프록세믹스 블로킹을 만들고, <b>연속성 가드</b>가 관객 투표/감독 인터럽트 분기 시 포즈를 관성 보간하고 음성을 페이드해 하드 컷을 막습니다.</div>
+            </div>
+            <button class="ntm-x" @onclick="Close">✕</button>
+        </div>
+        <div class="ntm-bar">
+            <button class="ntm-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 시작")</button>
+            <button class="ntm-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="ntm-btn" @onclick="Runner.Rewind">⏮ 처음</button>
+            <span class="ntm-tc">@(Timecode(Runner.NowS))</span>
+            @foreach (var rate in Rates)
+            {
+                var rv = rate;
+                <button class="ntm-btn @(MathF.Abs(Runner.Rate - rv) < 1e-3f ? "on" : null)" @onclick="() => Runner.SetRate(rv)">@(rv == 0f ? "⏸" : F1(rv) + "×")</button>
+            }
+            <button class="ntm-btn @(Runner.Guard.Enabled ? "on" : null)" @onclick="() => Runner.SetGuard(!Runner.Guard.Enabled)">🛡 연속성 가드</button>
+            <button class="ntm-btn" @onclick="Runner.ResetMetrics">↺ 지표</button>
+            <span class="ntm-chip @(Runner.LastTickMs <= 16.7 ? "ok" : "warn")">프레임 @(F2(Runner.LastTickMs)) ms(최대 @(F1(Runner.MaxTickMs))) · 파싱 @(F0(Runner.Sequencer.LastParseUs)) µs · 스케줄 @(F0(Runner.Sequencer.LastScheduleUs)) µs</span>
+        </div>
+        <div class="ntm-main">
+            <div class="ntm-col">
+                <div class="ntm-card">
+                    <div class="ntm-sec">🎞 멀티트랙 시퀀서 · 섹션 <b>@(Sec(Runner.Sequencer.ScheduledSection))</b> · 씬 @(Runner.SceneIndex + 1) · 🔴 @(RealtimeCinematicShotFramingEngine.Name((DirectorCam)Runner.Program)) · 발화 @(Runner.Sequencer.Fired) · 최대 지연 @(F1(Runner.Sequencer.MaxLatenessMs)) ms</div>
+                    <svg class="ntm-tracks" viewBox="0 0 1000 190" preserveAspectRatio="none">@((MarkupString)TracksSvg())</svg>
+                    <div class="ntm-now">
+                        @if (Runner.CurrentLineToken >= 0)
+                        {
+                            var spk = Runner.Sequencer.Token(Runner.CurrentLineToken).Actor;
+                            <span class="a@(spk == 1 ? 1 : 0)">🎙 @(spk >= 0 ? new string(Runner.Sequencer.CastName(spk)) : "—")</span>
+                            <span>@(new string(Runner.Sequencer.Text(Runner.CurrentLineToken)))</span>
+                        }
+                        else
+                        {
+                            <span>대기</span>
+                        }
+                    </div>
+                </div>
+                <div class="ntm-card">
+                    <div class="ntm-sec">📈 긴장도 아크(실선 = 합성 · 점선 = 목표) · 현재 <b>@(F2(Runner.Arc.Tension))</b> · @(DramaturgyEmotionalArcBlockingSynthesizer.PhaseName(Runner.Arc.Phase)) · 최고 @(F2(Runner.Arc.PeakTension))</div>
+                    <svg class="ntm-arc" viewBox="0 0 600 110" preserveAspectRatio="none">
+                        <line class="g" x1="0" y1="22" x2="600" y2="22" /><line class="g" x1="0" y1="55" x2="600" y2="55" /><line class="g" x1="0" y1="88" x2="600" y2="88" />
+                        <polyline class="goal" points="@(ArcSeries(true))" />
+                        <polyline class="t" points="@(ArcSeries(false))" />
+                    </svg>
+                    <div class="ntm-kv grid">
+                        <div>표정 강도 <b>@(F2(Runner.Output(6)))</b> / <b>@(F2(Runner.Output(7)))</b></div>
+                        <div>발화 템포 <b>@(F2(Runner.Arc.Tempo))×</b> · 펄스 @(F2(Runner.Arc.Pulse))</div>
+                        <div>조명 무드 <b>@(F0(Runner.Arc.LightK)) K</b> · 키/필 @(F1(Runner.Arc.KeyFill)):1</div>
+                        <div>친밀도 <b>@(F2(Runner.Arc.Affinity))</b> → @(F2(Runner.Arc.AffinityGoal)) · 비트 T @(F2(Runner.Arc.BeatTension))</div>
+                    </div>
+                </div>
+                <div class="ntm-card">
+                    <div class="ntm-sec">📝 각본(Fountain) — 씬 @(Runner.Sequencer.SceneCount) · 배역 @(Runner.Sequencer.CastCount) · 토큰 @(Runner.Sequencer.TokenCount) · 분기 @(Runner.Sequencer.BranchCount)</div>
+                    <textarea class="ntm-src" @bind="_script" spellcheck="false"></textarea>
+                    <div class="ntm-row"><button class="ntm-btn" @onclick="Apply">📥 각본 적용</button><button class="ntm-btn" @onclick="ResetScript">↺ 기본 각본</button></div>
+                </div>
+            </div>
+            <div class="ntm-col">
+                <div class="ntm-card">
+                    <div class="ntm-sec">🌳 인터랙티브 분기 트리 @(Runner.VoteOpen ? "· 🗳 관객 투표 " + F1(Runner.VoteLeftS) + " s" : null)</div>
+                    <div class="ntm-tree">
+                        @for (var s = 0; s < Runner.Sequencer.SectionCount; s++)
+                        {
+                            var sec = s;
+                            var cur = Runner.Sequencer.ScheduledSection == sec;
+                            <div class="ntm-node @(cur ? "cur" : null) @(OnPath(sec) ? "path" : null) @(sec == 0 ? "root" : null)">
+                                <b>@(sec == 0 ? "◆ 메인" : "↳ " + Sec(sec))</b>
+                                @if (sec > 0)
+                                {
+                                    <button class="ntm-mini" @onclick="() => Runner.DirectorBranch(sec)">🎬 감독 전환</button>
+                                }
+                            </div>
+                        }
+                    </div>
+                    @for (var b = 0; b < Runner.Sequencer.BranchCount; b++)
+                    {
+                        var br = b;
+                        var pending = Runner.Sequencer.PendingBranch == br && Runner.VoteOpen;
+                        <div class="ntm-branch @(pending ? "open" : null)">
+                            <span>?? 분기점 @(br + 1)</span>
+                            @for (var k = 0; k < Runner.Sequencer.BranchOptionCount(br); k++)
+                            {
+                                var opt = k;
+                                <button class="ntm-btn" disabled="@(!pending)" @onclick="() => Runner.CastVote(opt, 1)">🗳 @(Sec(Runner.Sequencer.BranchOption(br, opt))) @(pending ? "· " + Runner.Votes(opt) : null)</button>
+                            }
+                            <button class="ntm-btn" disabled="@(!pending)" @onclick="Crowd">👥 관객 50 표 시뮬</button>
+                        </div>
+                    }
+                    <div class="ntm-path">경로: @((MarkupString)PathText())</div>
+                </div>
+                <div class="ntm-card">
+                    <div class="ntm-sec">🧍 무대 블로킹 · 간격 <b>@(F2(Runner.Arc.Distance)) m</b>(@(DramaturgyEmotionalArcBlockingSynthesizer.ZoneName(Runner.Arc.Zone))) · 목표 @(F2(Runner.Arc.GoalDistance)) m @(Runner.Arc.Mover >= 0 ? "· 이동 " + new string(Runner.Sequencer.CastName(Runner.Arc.Mover)) : null)</div>
+                    <svg class="ntm-stage" viewBox="-4 -2.4 8 4.8">@((MarkupString)StageSvg())</svg>
+                </div>
+                <div class="ntm-card">
+                    <div class="ntm-sec">🛡 분기 연속성 가드 @(Runner.Guard.Enabled ? "ON" : "OFF(계측만)") @(Runner.Guard.Blending ? "· 관성 보간 " + F0(Runner.Guard.BlendProgress * 100) + "%" : null)</div>
+                    <div class="ntm-kv grid">
+                        <div>하드 컷 <b class="@(Runner.Guard.HardCuts == 0 ? "ok" : "warn")">@(Runner.Guard.HardCuts)</b> 프레임 · 포즈 @(Runner.Guard.PoseHardCuts)</div>
+                        <div>오디오 팝 <b class="@(Runner.Guard.AudioPops == 0 ? "ok" : "warn")">@(Runner.Guard.AudioPops)</b> · 최대 계단 @(F3(Runner.Guard.MaxSwitchStep))</div>
+                        <div>분기 전이 @(Runner.Guard.Transitions) · 편집 컷 @(Runner.Guard.EditorialCuts) · 감독 @(Runner.DirectorInterrupts)</div>
+                        <div>최근 오프셋 @(F2(Runner.Guard.LastOffset)) · 보간 @(F2(Runner.Guard.BlendDurationS)) s</div>
+                        <div>최대 프레임 변화비 @(F2(Runner.Guard.MaxStepRatio)) · 포즈 @(F3(Runner.Guard.MaxPoseStep)) m</div>
+                        <div>DC 보정 @(Runner.Guard.AudioCorrections) · 경계 @(Runner.Guard.AudioBoundaries)</div>
+                        <div>대사 @(Runner.LinesSpoken) · 컷 @(Runner.CameraCuts) · 폴리 @(Runner.FoleyStrikes) · 발소리 @(Runner.Footsteps)</div>
+                        <div>음성 @(F0(Runner.LevelSeries(0, 0))) / @(F0(Runner.LevelSeries(1, 0))) dBFS · 폴리 @(F0(Runner.FoleySeries(0))) dBFS</div>
+                    </div>
+                </div>
+                <div class="ntm-act">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .ntm-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .ntm-modal { width: min(1680px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .ntm-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #a855f7 12%, var(--card)), color-mix(in srgb, #f59e0b 12%, var(--card))); }
+    .ntm-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .ntm-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .ntm-sub b { color: var(--text-primary); }
+    .ntm-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .ntm-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .ntm-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .ntm-btn:disabled { opacity: .45; cursor: default; }
+    .ntm-btn.on { background: color-mix(in srgb, #22c55e 20%, var(--card)); border-color: #22c55e; }
+    .ntm-mini { font-size: 10px; padding: 2px 6px; border-radius: 6px; border: 1px solid #f59e0b; background: none; color: var(--text-primary); cursor: pointer; margin-left: 6px; }
+    .ntm-tc { font: 800 15px var(--mono); padding: 3px 10px; border-radius: 8px; background: #020617; color: #facc15; letter-spacing: .5px; }
+    .ntm-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .ntm-chip.ok { border-color: #22c55e; color: #22c55e; } .ntm-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .ntm-main { display: grid; grid-template-columns: 1.35fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .ntm-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .ntm-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); }
+    .ntm-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .ntm-tracks { width: 100%; height: 190px; background: #020617; border-radius: 8px; display: block; }
+    .ntm-tracks .ln { stroke: #1e293b; stroke-width: 1; } .ntm-tracks .ph { stroke: #ef4444; stroke-width: 2; } .ntm-tracks .br { stroke: #facc15; stroke-width: 2; stroke-dasharray: 5 4; }
+    .ntm-tracks .lb { font: 700 11px sans-serif; fill: #94a3b8; } .ntm-tracks .ev { font: 600 9px sans-serif; fill: #e2e8f0; }
+    .ntm-tracks .k0 { fill: #a855f7; } .ntm-tracks .k1 { fill: #22c55e; } .ntm-tracks .k2 { fill: #ef4444; } .ntm-tracks .k3 { fill: #f59e0b; } .ntm-tracks .k4 { fill: #3b82f6; }
+    .ntm-tracks .done { opacity: .35; }
+    .ntm-now { display: flex; gap: 8px; font-size: 12px; color: var(--text-secondary); margin-top: 6px; min-height: 18px; }
+    .ntm-now .a0 { color: #f97316; font-weight: 800; } .ntm-now .a1 { color: #3b82f6; font-weight: 800; }
+    .ntm-arc { width: 100%; height: 110px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; }
+    .ntm-arc polyline { fill: none; } .ntm-arc .t { stroke: #f43f5e; stroke-width: 2; } .ntm-arc .goal { stroke: #94a3b8; stroke-width: 1; stroke-dasharray: 4 3; } .ntm-arc .g { stroke: #1e293b; stroke-width: .8; }
+    .ntm-src { width: 100%; height: 150px; font: 11px var(--mono); background: #020617; color: #e2e8f0; border: 1px solid var(--line); border-radius: 8px; padding: 8px; resize: vertical; box-sizing: border-box; }
+    .ntm-row { display: flex; gap: 6px; margin-top: 6px; }
+    .ntm-tree { display: flex; flex-wrap: wrap; gap: 6px; }
+    .ntm-node { font-size: 12px; padding: 6px 10px; border-radius: 10px; border: 1px solid var(--line); color: var(--text-secondary); display: flex; align-items: center; }
+    .ntm-node.root { border-style: dashed; } .ntm-node.path { border-color: #a855f7; color: var(--text-primary); } .ntm-node.cur { background: color-mix(in srgb, #a855f7 22%, var(--card)); box-shadow: 0 0 10px rgba(168,85,247,.4); }
+    .ntm-branch { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--text-muted); margin-top: 8px; padding: 6px; border-radius: 8px; }
+    .ntm-branch.open { background: color-mix(in srgb, #facc15 14%, var(--card)); color: var(--text-primary); }
+    .ntm-path { font-size: 11px; color: var(--text-muted); margin-top: 6px; } .ntm-path b { color: #a855f7; }
+    .ntm-stage { width: 100%; aspect-ratio: 5 / 3; background: radial-gradient(circle at 50% 50%, #1e1b4b, #020617); border-radius: 8px; }
+    .ntm-stage .fl { stroke: #1e293b; stroke-width: .02; } .ntm-stage .z { fill: none; stroke-width: .02; stroke-dasharray: .08 .06; }
+    .ntm-stage .z0 { stroke: #f43f5e; } .ntm-stage .z1 { stroke: #f59e0b; } .ntm-stage .z2 { stroke: #22c55e; }
+    .ntm-stage .t0 { fill: none; stroke: rgba(249,115,22,.5); stroke-width: .03; } .ntm-stage .t1 { fill: none; stroke: rgba(59,130,246,.5); stroke-width: .03; }
+    .ntm-stage .a0 { fill: #f97316; } .ntm-stage .a1 { fill: #3b82f6; } .ntm-stage .src { fill: none; stroke: #e2e8f0; stroke-width: .02; stroke-dasharray: .05 .05; }
+    .ntm-stage .gz { stroke: #facc15; stroke-width: .035; }
+    .ntm-stage text { font: 700 .2px sans-serif; fill: #cbd5e1; }
+    .ntm-kv { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px; }
+    .ntm-kv.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+    .ntm-kv b { color: var(--text-primary); } .ntm-kv b.ok { color: #22c55e; } .ntm-kv b.warn { color: #f59e0b; }
+    .ntm-act { font-size: 11px; color: var(--text-muted); }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly float[] Rates = { 0f, 0.5f, 1f, 2f };
+    private const double WindowS = 24.0;
+    private System.Threading.Timer? _timer;
+    private string _script = NarrativeTimelineStudioRunner.DefaultScript;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("NarrativeTimeline.Modal.Timer", ex); }
+        }, null, 100, 100);
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static string P(float v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+
+    private static string Timecode(double s)
+    {
+        if (s < 0) s = 0;
+        var f = (long)Math.Floor(s * NarrativeTimelineStudioRunner.Hz);
+        var fr = f % NarrativeTimelineStudioRunner.Hz; var sec = f / NarrativeTimelineStudioRunner.Hz;
+        return (sec / 3600).ToString("00", CultureInfo.InvariantCulture) + ":" + (sec / 60 % 60).ToString("00", CultureInfo.InvariantCulture) + ":" + (sec % 60).ToString("00", CultureInfo.InvariantCulture) + ":" + fr.ToString("00", CultureInfo.InvariantCulture);
+    }
+
+    private string Sec(int i) => i < 0 || i >= Runner.Sequencer.SectionCount ? "—" : i == 0 ? "메인" : new string(Runner.Sequencer.SectionName(i));
+
+    private bool OnPath(int sec)
+    {
+        for (var i = 0; i < Runner.PathCount; i++) if (Runner.PathSection(i) == sec) return true;
+        return false;
+    }
+
+    private string PathText()
+    {
+        var sb = new System.Text.StringBuilder(128);
+        for (var i = 0; i < Runner.PathCount; i++)
+        {
+            if (i > 0) sb.Append(" → ");
+            sb.Append("<b>").Append(System.Net.WebUtility.HtmlEncode(Sec(Runner.PathSection(i)))).Append("</b>");
+        }
+        return sb.ToString();
+    }
+
+    private string Label(in TimelineEvent e)
+    {
+        var seq = Runner.Sequencer;
+        switch (e.Track)
+        {
+            case TimelineTrack.Camera: return e.Param switch { 0 => "M", 1 => "A", 2 => "B", _ => "ACT" };
+            case TimelineTrack.Actor: return RealtimeScriptToScreenTimelineSequencerEngine.MotionName((ActorMotion)e.Param);
+            case TimelineTrack.Foley: return PromptFlowStudio.Services.ProceduralFoley.FoleyMaterials.Name((PromptFlowStudio.Services.ProceduralFoley.FoleyMaterial)e.Param);
+            case TimelineTrack.Voice: return e.Actor >= 0 ? new string(seq.CastName(e.Actor)) : "—";
+            default:
+                return (ScriptTokenKind)e.Param switch { ScriptTokenKind.Scene => "SCENE", ScriptTokenKind.Beat => "BEAT", ScriptTokenKind.Branch => "??", ScriptTokenKind.Transition => "TR", _ => "ACT" };
+        }
+    }
+
+    private string TracksSvg()
+    {
+        var sb = new System.Text.StringBuilder(12000);
+        var seq = Runner.Sequencer;
+        var now = Runner.NowS;
+        var t0 = Math.Max(seq.ScheduleStartS, now - WindowS * 0.25);
+        const double x0 = 70, w = 930;
+        double X(double t) => x0 + (t - t0) / WindowS * w;
+        for (var k = 0; k < RealtimeScriptToScreenTimelineSequencerEngine.Tracks; k++)
+        {
+            var y = 8 + k * 36;
+            var tr = (TimelineTrack)k;
+            sb.Append("<line class=\"ln\" x1=\"0\" y1=\"").Append(y + 32).Append("\" x2=\"1000\" y2=\"").Append(y + 32).Append("\"/>");
+            sb.Append("<text class=\"lb\" x=\"6\" y=\"").Append(y + 20).Append("\">").Append(RealtimeScriptToScreenTimelineSequencerEngine.TrackName(tr)).Append("</text>");
+            for (var i = 0; i < seq.EventCount(tr); i++)
+            {
+                var e = seq.Event(tr, i);
+                var a = X(e.StartS); var b = X(e.StartS + Math.Max(e.DurS, 0.12f));
+                if (b < x0 || a > 1000) continue;
+                a = Math.Max(a, x0);
+                var done = i < seq.Cursor(tr) && e.StartS + e.DurS < now;
+                sb.Append("<rect class=\"k").Append(k).Append(done ? " done" : "").Append("\" x=\"").Append(F1(a)).Append("\" y=\"").Append(y + 4).Append("\" width=\"").Append(F1(Math.Max(2, b - a - 1))).Append("\" height=\"24\" rx=\"3\"/>");
+                if (b - a > 22) sb.Append("<text class=\"ev\" x=\"").Append(F1(a + 3)).Append("\" y=\"").Append(y + 20).Append("\">").Append(System.Net.WebUtility.HtmlEncode(Label(in e))).Append("</text>");
+            }
+        }
+        if (seq.PendingBranch >= 0)
+        {
+            var xb = X(seq.ScheduleEndS);
+            if (xb >= x0 && xb <= 1000) sb.Append("<line class=\"br\" x1=\"").Append(F1(xb)).Append("\" y1=\"0\" x2=\"").Append(F1(xb)).Append("\" y2=\"190\"/>");
+        }
+        var xp = X(now);
+        sb.Append("<line class=\"ph\" x1=\"").Append(F1(xp)).Append("\" y1=\"0\" x2=\"").Append(F1(xp)).Append("\" y2=\"190\"/>");
+        return sb.ToString();
+    }
+
+    private string ArcSeries(bool goal)
+    {
+        var arc = Runner.Arc;
+        var n = arc.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 14);
+        for (var i = n - 1; i >= 0; i--)
+        {
+            var v = goal ? arc.GoalSeries(i) : arc.TensionSeries(i);
+            sb.Append(F1(600.0 * (DramaturgyEmotionalArcBlockingSynthesizer.Series - 1 - i) / (DramaturgyEmotionalArcBlockingSynthesizer.Series - 1))).Append(',').Append(F1(104 - 99 * v)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private string StageSvg()
+    {
+        var sb = new System.Text.StringBuilder(9000);
+        for (var i = -4; i <= 4; i++) sb.Append("<line class=\"fl\" x1=\"").Append(i).Append("\" y1=\"-2.4\" x2=\"").Append(i).Append("\" y2=\"2.4\"/>");
+        for (var i = -2; i <= 2; i++) sb.Append("<line class=\"fl\" x1=\"-4\" y1=\"").Append(i).Append("\" x2=\"4\" y2=\"").Append(i).Append("\"/>");
+        var p0 = new Vector2(Runner.Output(0), Runner.Output(1));
+        var p1 = new Vector2(Runner.Output(2), Runner.Output(3));
+        // 프록세믹스 링(배우 0 기준 · 친밀/개인/사회)
+        var radii = new[] { DramaturgyEmotionalArcBlockingSynthesizer.Intimate, DramaturgyEmotionalArcBlockingSynthesizer.Personal, DramaturgyEmotionalArcBlockingSynthesizer.Social };
+        for (var z = 0; z < 3; z++)
+            sb.Append("<circle class=\"z z").Append(z).Append("\" cx=\"").Append(P(p0.X)).Append("\" cy=\"").Append(P(p0.Y)).Append("\" r=\"").Append(P(radii[z])).Append("\"/>");
+        var arc = Runner.Arc;
+        for (var a = 0; a < 2; a++)
+        {
+            if (arc.TrailCount < 2) break;
+            sb.Append("<polyline class=\"t").Append(a).Append("\" points=\"");
+            for (var i = arc.TrailCount - 1; i >= 0; i--) { var q = arc.TrailPoint(a, i); sb.Append(P(q.X)).Append(',').Append(P(q.Y)).Append(' '); }
+            sb.Append("\"/>");
+        }
+        // 가드 OFF 비교용: 소스(점선) vs 출력(실체)
+        if (Runner.Guard.Blending)
+            for (var a = 0; a < 2; a++)
+                sb.Append("<circle class=\"src\" cx=\"").Append(P(Runner.Source(a * 2))).Append("\" cy=\"").Append(P(Runner.Source(a * 2 + 1))).Append("\" r=\".16\"/>");
+        for (var a = 0; a < 2; a++)
+        {
+            var p = a == 0 ? p0 : p1;
+            var yaw = Runner.Output(4 + a);
+            var expr = Runner.Output(6 + a);
+            sb.Append("<circle class=\"a").Append(a).Append("\" cx=\"").Append(P(p.X)).Append("\" cy=\"").Append(P(p.Y)).Append("\" r=\"").Append(P(0.14f + 0.06f * expr)).Append("\"/>");
+            sb.Append("<line class=\"gz\" x1=\"").Append(P(p.X)).Append("\" y1=\"").Append(P(p.Y)).Append("\" x2=\"").Append(P(p.X + MathF.Cos(yaw) * 0.45f)).Append("\" y2=\"").Append(P(p.Y + MathF.Sin(yaw) * 0.45f)).Append("\"/>");
+            if (a < Runner.Sequencer.CastCount)
+                sb.Append("<g><text x=\"").Append(P(p.X - 0.2f)).Append("\" y=\"").Append(P(p.Y - 0.3f)).Append("\">").Append(System.Net.WebUtility.HtmlEncode(new string(Runner.Sequencer.CastName(a)))).Append("</text></g>");
+        }
+        return sb.ToString();
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void Step60()
+    {
+        for (var i = 0; i < NarrativeTimelineStudioRunner.Hz; i++) Runner.Step();
+    }
+
+    private void Crowd()
+    {
+        var b = Runner.Sequencer.PendingBranch;
+        if (b < 0) return;
+        var n = Runner.Sequencer.BranchOptionCount(b);
+        var rnd = Random.Shared;
+        for (var i = 0; i < 50; i++) Runner.CastVote(Math.Min(n - 1, (int)(n * Math.Pow(rnd.NextDouble(), 1.4))), 1);
+    }
+
+    private void Apply() => Runner.LoadScript(_script ?? "");
+
+    private void ResetScript()
+    {
+        _script = NarrativeTimelineStudioRunner.DefaultScript;
+        Runner.LoadScript(_script);
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

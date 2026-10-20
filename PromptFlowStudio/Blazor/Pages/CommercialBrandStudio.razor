@@ -1,0 +1,437 @@
+@page "/brand-studio"
+@implements IDisposable
+@using System.Globalization
+@using System.Threading
+@inject CommercialBrandCampaignService Campaign
+@inject SmartThemeRecommender Themes
+@inject ILocalMediaService Media
+@inject PromptFlowStudio.Services.Studio.StudioFolderLinkService FolderLink
+@inject NavigationManager Nav
+
+@* [PromptFlow Studio v16.19.0] 🛍️ 커머셜 브랜드 스튜디오 — 협찬 제품 누끼 + 테마 장면 합성 + 로고/PPL/CTA 오버레이 + Gemini CM 카피 → 1-Click 광고 비디오.
+   상태는 CommercialBrandCampaignService(싱글턴) 소유 — 이 페이지는 OnChange 구독 + InvokeAsync(StateHasChanged) 로만 갱신, 이탈 시 CTS 취소·해제. *@
+
+<PageTitle>PromptFlow Studio · 커머셜 브랜드 스튜디오</PageTitle>
+
+<div class="cb">
+    <header class="cb-head">
+        <div class="cb-navrow">
+            <button class="cb-back" @onclick='() => Nav.NavigateTo("batch")'>← 대량 양산</button>
+            <button class="cb-back" @onclick='() => Nav.NavigateTo("")'>홈</button>
+        </div>
+        <div class="cb-titlerow">
+            <h1 class="cb-title">🛍️ 커머셜 <span class="cb-title-g">브랜드 스튜디오</span></h1>
+            <span class="cb-state @(Campaign.IsAvailable ? "ok" : "bad")">@(Campaign.IsAvailable ? "ffmpeg 준비됨" : "ffmpeg 없음")</span>
+            <span class="cb-state @(Campaign.AiEnabled ? "ok" : "warn")">@(Campaign.AiEnabled ? "Gemini 카피" : "로컬 템플릿 카피")</span>
+        </div>
+        <p class="cb-sub">아동용품·브랜드 협찬 제품 사진을 <b>자동 누끼 + 장면 조명 매칭</b>으로 테마 영상에 합성하고, <b>로고 워터마크 · PPL 고지 · CTA</b>를 세이프존에 배치해 광고 비디오를 출력합니다.</p>
+    </header>
+
+    <div class="cb-grid">
+        @* ① 자산 *@
+        <section class="cb-card">
+            <h2 class="cb-h2">① 제품 · 로고 · 장면</h2>
+            <label class="cb-drop">
+                <InputFile class="cb-file" OnChange="OnProductPicked" accept="image/png,image/jpeg,image/webp" disabled="@_running" />
+                <span>📦 제품 사진 @(_productPath is null ? "업로드(PNG/JPG/WebP · 15MB)" : "· " + System.IO.Path.GetFileName(_productPath))</span>
+            </label>
+            <label class="cb-drop">
+                <InputFile class="cb-file" OnChange="OnLogoPicked" accept="image/png,image/webp,image/jpeg" disabled="@_running" />
+                <span>🏷️ 브랜드 로고 @(_logoPath is null ? "(선택 · 투명 PNG 권장)" : "· " + System.IO.Path.GetFileName(_logoPath))</span>
+            </label>
+            @if (_logoPath is not null) { <button class="cb-link" @onclick="() => _logoPath = null">로고 제거</button> }
+            <label class="cb-drop">
+                <InputFile class="cb-file" OnChange="OnScenesPicked" accept="video/mp4,video/quicktime,video/webm" multiple disabled="@_running" />
+                <span>🎞️ 테마 장면 영상 추가(MP4 · 최대 12개)</span>
+            </label>
+            @if (_scenes.Count > 0)
+            {
+                <ul class="cb-list">
+                    @foreach (var sc in _scenes)
+                    {
+                        <li @key="sc"><span>@System.IO.Path.GetFileName(sc)</span><button class="cb-link" disabled="@_running" @onclick="() => _scenes.Remove(sc)">✕</button></li>
+                    }
+                </ul>
+            }
+            <div class="cb-row">
+                <input class="cb-in" placeholder="테마 검색(204+ · 예: 목욕, 캠핑, 크리스마스)" @bind="_themeQuery" @bind:event="oninput" />
+            </div>
+            <select class="cb-in" @bind="SelectedThemeKey">
+                <option value="">— 테마 선택(조명·배치 추천) —</option>
+                @foreach (var t in FilteredThemes())
+                {
+                    <option @key="t.Key" value="@t.Key">@t.Emoji @t.Title</option>
+                }
+            </select>
+            @if (_theme is not null)
+            {
+                var cine = ThemeCinematicsCatalog.For(_theme);
+                <div class="cb-note">💡 @(cine.LightingLabel) · 권장 배치 @(AnchorLabel(SponsorVideoCompositorService.SuggestAnchor(cine)))</div>
+            }
+        </section>
+
+        @* ② 브리프 · 카피 *@
+        <section class="cb-card">
+            <h2 class="cb-h2">② 제품 브리프 · AI 카피</h2>
+            <input class="cb-in" placeholder="캠페인 이름" @bind="_name" />
+            <div class="cb-row">
+                <input class="cb-in" placeholder="브랜드" @bind="_brand" />
+                <input class="cb-in" placeholder="제품명" @bind="_product" />
+            </div>
+            <textarea class="cb-in cb-ta" placeholder="제품 특징(한 줄에 하나 · 최대 8)" @bind="_features"></textarea>
+            <input class="cb-in" placeholder="타깃(예: 6~24개월 아기 부모)" @bind="_audience" />
+            <div class="cb-row">
+                <select class="cb-in" @bind="_duration">
+                    <option value="@AdDuration.Sec15">15초 CM</option>
+                    <option value="@AdDuration.Sec30">30초 CM</option>
+                </select>
+                <select class="cb-in" @bind="_tone">
+                    @foreach (var tn in Enum.GetValues<AdTone>()) { <option value="@tn">@CommercialAdScriptAiGenerator.ToneLabel(tn)</option> }
+                </select>
+            </div>
+            <label class="cb-opt"><input type="checkbox" @bind="_useAi" /> Gemini AI 사용(실패 시 로컬 템플릿)</label>
+            <button class="cb-btn" disabled="@(_running || _scripting)" @onclick="GenerateScriptAsync">@(_scripting ? "생성 중…" : "✍️ CM 카피 · 징글 생성")</button>
+            @if (_script is not null)
+            {
+                <div class="cb-script">
+                    <div class="cb-hl">@_script.Headline</div>
+                    <div class="cb-meta">@(_script.Message) · 🎵 @(_script.Bgm.Mood) @(_script.Bgm.Bpm)BPM · @(_script.Bgm.Instruments)</div>
+                    <div class="cb-meta">🎶 징글: @(_script.Bgm.Jingle) · 🗣 @(_script.NarrationTone)</div>
+                    <table class="cb-tb">
+                        <tbody>
+                            @foreach (var ln in _script.Lines)
+                            {
+                                <tr><td>@(ln.Start.ToString("0.0", CultureInfo.InvariantCulture))s</td><td>@ln.Narration</td><td class="cb-os">@ln.OnScreen</td></tr>
+                            }
+                        </tbody>
+                    </table>
+                    <div class="cb-meta">CTA: <b>@_script.Cta</b></div>
+                    @foreach (var nt in _script.ComplianceNotes) { <div class="cb-note @(nt.StartsWith('⚠') ? "warn" : null)">@nt</div> }
+                </div>
+            }
+        </section>
+
+        @* ③ 오버레이 · 출력 *@
+        <section class="cb-card">
+            <h2 class="cb-h2">③ 로고 · CTA · 출력</h2>
+            <div class="cb-row">
+                <select class="cb-in" @bind="_preset">
+                    <option value="0">9:16 숏폼 1080×1920</option>
+                    <option value="1">1:1 피드 1080×1080</option>
+                    <option value="2">16:9 유튜브 1920×1080</option>
+                </select>
+                <select class="cb-in" @bind="_anchor">
+                    @foreach (var an in Enum.GetValues<ProductAnchor>()) { <option value="@an">@AnchorLabel(an)</option> }
+                </select>
+            </div>
+            <label class="cb-slider">제품 크기 <b>@((_scale * 100).ToString("0", CultureInfo.InvariantCulture))%</b>
+                <input type="range" min="0.15" max="0.7" step="0.01" @bind="_scale" @bind:event="oninput" /></label>
+            <label class="cb-slider">로고 불투명도 <b>@((_logoOpacity * 100).ToString("0", CultureInfo.InvariantCulture))%</b>
+                <input type="range" min="0.2" max="1" step="0.05" @bind="_logoOpacity" @bind:event="oninput" /></label>
+            <label class="cb-opt"><input type="checkbox" @bind="_ppl" /> PPL 고지 「유료 광고 포함」 표시(권장)</label>
+            <div class="cb-row">
+                <input class="cb-in" placeholder="CTA 문구" @bind="_cta" />
+                <input class="cb-color" type="color" @bind="_ctaColor" />
+            </div>
+            <label class="cb-opt"><input type="checkbox" @bind="_useScriptCta" /> AI 카피의 CTA 문구 우선 사용</label>
+            <div class="cb-row">
+                <button class="cb-btn ghost" disabled="@(_running || _productPath is null)" @onclick="PreviewCutoutAsync">✂️ 누끼 미리보기</button>
+                <button class="cb-btn" disabled="@(_running || !Campaign.IsAvailable)" @onclick="RunCampaignAsync">🎬 1-Click 광고 비디오 출력</button>
+            </div>
+            @if (_running)
+            {
+                <div class="cb-bar"><div class="cb-bar-f" style="width:@(_pct.ToString(CultureInfo.InvariantCulture))%"></div></div>
+                <div class="cb-note">@_stage <button class="cb-link" @onclick="Cancel">취소</button></div>
+            }
+            @if (_cutoutUrl is not null)
+            {
+                <div class="cb-cutout"><img src="@_cutoutUrl" alt="제품 누끼" /></div>
+                <div class="cb-note">@_cutoutNote</div>
+            }
+            @if (_toast is not null) { <div class="cb-note ok">@_toast</div> }
+        </section>
+    </div>
+
+    <section class="cb-card">
+        <h2 class="cb-h2">📁 캠페인 이력 <small>(@(Campaign.TotalCampaigns)건 · 장면 @(Campaign.TotalScenes)개)</small>
+            @if (Campaign.History.Count > 0) { <button class="cb-link" @onclick="Campaign.ClearHistory">비우기</button> }</h2>
+        @if (Campaign.History.Count == 0) { <div class="cb-note">아직 출력한 캠페인이 없습니다.</div> }
+        else
+        {
+            <table class="cb-tb">
+                <thead><tr><th>시각</th><th>캠페인</th><th>결과</th><th>내용</th><th></th></tr></thead>
+                <tbody>
+                    @foreach (var h in Campaign.History)
+                    {
+                        <tr @key="h.Id">
+                            <td>@h.At.ToString("MM-dd HH:mm", CultureInfo.InvariantCulture)</td>
+                            <td>@h.Name</td>
+                            <td><span class="cb-state @(h.Ok ? "ok" : "bad")">@(h.Ok ? "✅ " + h.Succeeded.ToString(CultureInfo.InvariantCulture) + "편" : "실패")</span></td>
+                            <td class="cb-msg">@h.Message</td>
+                            <td>@if (h.OutputFolder is not null) { <button class="cb-link" @onclick="() => FolderLink.Reveal(h.OutputFolder)">폴더 열기</button> }</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+</div>
+
+<style>
+    .cb { padding: 6px 8px 48px; width: 100%; box-sizing: border-box; display: flex; flex-direction: column; gap: 14px; }
+    .cb-navrow { display: flex; gap: 14px; }
+    .cb-back { font: 700 12px/1 var(--mono); color: var(--text-muted); background: none; border: none; cursor: pointer; padding: 4px 0; }
+    .cb-back:hover { color: var(--text-primary); }
+    .cb-titlerow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+    .cb-title { font-size: 22px; font-weight: 900; margin: 0; color: var(--text-primary); }
+    .cb-title-g { background: linear-gradient(135deg, #ff4f8b, var(--flow-violet)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .cb-sub { font-size: 12.5px; color: var(--text-secondary); margin: 6px 0 0; }
+    .cb-sub b { color: var(--text-primary); }
+    .cb-state { font: 800 11px var(--mono); padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); }
+    .cb-state.ok { color: #059669; background: color-mix(in srgb, #10b981 13%, transparent); }
+    .cb-state.warn { color: #b45309; background: color-mix(in srgb, #f59e0b 15%, transparent); }
+    .cb-state.bad { color: #dc2626; background: color-mix(in srgb, #ef4444 14%, transparent); }
+    .cb-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+    .cb-card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; display: flex; flex-direction: column; gap: 9px; }
+    .cb-h2 { font-size: 14px; font-weight: 900; margin: 0; color: var(--text-primary); display: flex; align-items: center; gap: 8px; }
+    .cb-h2 small { font-weight: 600; color: var(--text-muted); font-size: 11px; }
+    .cb-drop { position: relative; border: 1.5px dashed var(--line); border-radius: 10px; padding: 11px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
+    .cb-drop:hover { border-color: #ff4f8b; }
+    .cb-file { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+    .cb-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; color: var(--text-secondary); }
+    .cb-list li { display: flex; justify-content: space-between; gap: 6px; }
+    .cb-row { display: flex; gap: 8px; align-items: center; }
+    .cb-in { flex: 1; min-width: 0; background: var(--card-2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; color: var(--text-primary); font-size: 12.5px; }
+    .cb-ta { min-height: 76px; resize: vertical; }
+    .cb-color { width: 42px; height: 32px; border: none; background: none; cursor: pointer; }
+    .cb-opt { display: flex; align-items: center; gap: 6px; font: 700 12px inherit; color: var(--text-secondary); }
+    .cb-slider { display: flex; flex-direction: column; font-size: 12px; color: var(--text-secondary); }
+    .cb-slider b { color: var(--text-primary); }
+    .cb-slider input { width: 100%; accent-color: #ff4f8b; }
+    .cb-btn { flex: 1; background: linear-gradient(135deg, #ff4f8b, var(--flow-violet)); color: #fff; border: none; border-radius: 10px; padding: 9px 12px; font-weight: 800; font-size: 12.5px; cursor: pointer; }
+    .cb-btn.ghost { background: var(--card-2); color: var(--text-primary); border: 1px solid var(--line); }
+    .cb-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .cb-link { background: none; border: none; color: var(--accent); font-size: 11.5px; font-weight: 700; cursor: pointer; padding: 0 4px; }
+    .cb-note { font-size: 11.5px; color: var(--text-muted); line-height: 1.45; }
+    .cb-note.warn { color: #b45309; }
+    .cb-note.ok { color: #059669; font-weight: 700; }
+    .cb-script { display: flex; flex-direction: column; gap: 5px; border-top: 1px solid var(--line); padding-top: 8px; }
+    .cb-hl { font-size: 14px; font-weight: 900; color: var(--text-primary); }
+    .cb-meta { font-size: 11.5px; color: var(--text-secondary); }
+    .cb-tb { width: 100%; border-collapse: collapse; font-size: 11.5px; color: var(--text-secondary); }
+    .cb-tb th, .cb-tb td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    .cb-os { color: #ff4f8b; font-weight: 700; white-space: nowrap; }
+    .cb-msg { max-width: 420px; }
+    .cb-bar { height: 8px; border-radius: 999px; background: var(--card-2); overflow: hidden; }
+    .cb-bar-f { height: 100%; background: linear-gradient(90deg, #ff4f8b, #a855f7); transition: width .3s; }
+    .cb-cutout { border-radius: 10px; overflow: hidden; background: repeating-conic-gradient(#d4d4d8 0 25%, #fafafa 0 50%) 0 0 / 18px 18px; display: flex; justify-content: center; }
+    .cb-cutout img { max-width: 100%; max-height: 240px; object-fit: contain; }
+    @@media (max-width: 720px) { .cb-row { flex-wrap: wrap; } }
+</style>
+
+@code {
+    private string? _productPath, _logoPath, _cutoutUrl, _cutoutNote, _toast, _stage;
+    private readonly List<string> _scenes = new();
+    private string _themeQuery = "";
+    private BabyThemeDef? _theme;
+    private IReadOnlyList<BabyThemeDef>? _allThemes;
+    private string _name = "신제품 런칭", _brand = "", _product = "", _features = "", _audience = "";
+    private AdDuration _duration = AdDuration.Sec15;
+    private AdTone _tone = AdTone.Warm;
+    private bool _useAi = true, _ppl = true, _useScriptCta = true, _running, _scripting;
+    private int _preset;
+    private ProductAnchor _anchor = ProductAnchor.BottomRight;
+    private double _scale = 0.38, _logoOpacity = 0.85;
+    private string _cta = "지금 만나 보세요", _ctaColor = "#ff4f8b";
+    private CommercialAdScript? _script;
+    private int _pct;
+    private CancellationTokenSource? _cts;
+
+    private string SelectedThemeKey
+    {
+        get => _theme?.Key ?? "";
+        set
+        {
+            _theme = null;
+            foreach (var t in AllThemes()) if (t.Key == value) { _theme = t; break; }
+            if (_theme is not null) _anchor = SponsorVideoCompositorService.SuggestAnchor(ThemeCinematicsCatalog.For(_theme));
+        }
+    }
+
+    protected override void OnInitialized() => Campaign.OnChange += OnCampaignChanged;
+
+    public void Dispose()
+    {
+        Campaign.OnChange -= OnCampaignChanged;
+        var c = Interlocked.Exchange(ref _cts, null);
+        if (c is not null) { try { c.Cancel(); } catch (ObjectDisposedException) { } c.Dispose(); }
+    }
+
+    private void OnCampaignChanged() => _ = InvokeAsync(StateHasChanged);
+
+    private IReadOnlyList<BabyThemeDef> AllThemes()
+    {
+        if (_allThemes is null)
+        {
+            try { _allThemes = Themes.AllThemes; }
+            catch (Exception ex) { Program.Log("BrandStudio.Themes", ex); _allThemes = Array.Empty<BabyThemeDef>(); }
+        }
+        return _allThemes;
+    }
+
+    private List<BabyThemeDef> FilteredThemes()
+    {
+        var q = _themeQuery.Trim();
+        var list = new List<BabyThemeDef>(60);
+        if (_theme is not null) list.Add(_theme);
+        foreach (var t in AllThemes())
+        {
+            if (list.Count >= 60) break;
+            if (ReferenceEquals(t, _theme)) continue;
+            if (q.Length == 0 || t.Title.Contains(q, StringComparison.OrdinalIgnoreCase) || t.Key.Contains(q, StringComparison.OrdinalIgnoreCase)
+                || t.Hook.Contains(q, StringComparison.OrdinalIgnoreCase)) list.Add(t);
+        }
+        return list;
+    }
+
+    private (int W, int H) Resolution() => _preset switch { 1 => (1080, 1080), 2 => (1920, 1080), _ => (1080, 1920) };
+
+    private AdProductBrief Brief()
+    {
+        var feats = new List<string>(CommercialAdScriptAiGenerator.MaxFeatures);
+        foreach (var line in _features.Split('\n'))
+        {
+            var f = line.Trim();
+            if (f.Length > 0) feats.Add(f);
+            if (feats.Count >= CommercialAdScriptAiGenerator.MaxFeatures) break;
+        }
+        string? cat = null;
+        if (_theme is not null) cat = _theme.Title;
+        return new AdProductBrief(_product, _brand, feats, string.IsNullOrWhiteSpace(_audience) ? null : _audience, cat);
+    }
+
+    private BrandOverlaySpec Overlay() => new(_logoPath, _ppl ? "유료 광고 포함" : null, string.IsNullOrWhiteSpace(_cta) ? null : _cta,
+        SponsorVideoCompositorService.Hex(_ctaColor), _logoOpacity);
+
+    private ThemeLighting? Lighting() => _theme is null ? null : ThemeCinematicsCatalog.For(_theme).Lighting;
+
+    private async Task GenerateScriptAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_product)) { _toast = "⚠ 제품명을 입력하세요."; return; }
+        _scripting = true;
+        _toast = null;
+        try { _script = await Campaign.Scripts.GenerateAsync(Brief(), _duration, _tone, _useAi); }
+        catch (Exception ex) { Program.Log("BrandStudio.Script", ex); _toast = "⚠ 카피 생성 실패: " + ex.Message; }
+        finally { _scripting = false; }
+    }
+
+    private async Task PreviewCutoutAsync()
+    {
+        if (_productPath is null) return;
+        var ct = BeginRun("✂️ 누끼 추출 중…");
+        try
+        {
+            var outPng = System.IO.Path.Combine(Media.MediaRoot, "_brand", "preview", "cutout_" + DateTime.Now.Ticks.ToString(CultureInfo.InvariantCulture) + ".png");
+            var r = await Campaign.Segmenter.SegmentAsync(_productPath, outPng, _scenes.Count > 0 ? _scenes[0] : null, Lighting(), null, 0.6, ct);
+            if (r.Ok && r.CutoutPath is not null) { _cutoutUrl = Media.ToPlaybackUrl(r.CutoutPath); _cutoutNote = "✅ " + r.Message; }
+            else { _cutoutUrl = null; _toast = "⚠ " + r.Message; }
+        }
+        finally { EndRun(); }
+    }
+
+    private async Task RunCampaignAsync()
+    {
+        if (_productPath is null) { _toast = "⚠ 제품 사진을 먼저 업로드하세요."; return; }
+        if (_scenes.Count == 0) { _toast = "⚠ 테마 장면 영상을 1개 이상 추가하세요."; return; }
+        var ct = BeginRun("🛍️ 캠페인 준비 중…");
+        try
+        {
+            var (w, h) = Resolution();
+            var root = System.IO.Path.Combine(Media.MediaRoot, "_brand",
+                "Brand_" + CommercialBrandCampaignService.Safe(_name) + "_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture));
+            var req = new BrandCampaignRequest(_name, _productPath, _scenes.ToArray(), Brief(), Overlay(), _duration, _tone, w, h, _anchor, _scale,
+                Lighting(), _useAi, _useScriptCta, root, _script);
+            var progress = new Progress<PostProductionProgress>(p => { _pct = p.Percent; _stage = p.Stage; _ = InvokeAsync(StateHasChanged); });
+            var r = await Campaign.RunAsync(req, progress, ct);
+            _toast = (r.Ok ? "✅ " : "⚠ ") + r.Message;
+            if (r.Script is not null) _script = r.Script;
+            if (r.CutoutPath is not null && System.IO.File.Exists(r.CutoutPath)) _cutoutUrl = Media.ToPlaybackUrl(r.CutoutPath);
+        }
+        finally { EndRun(); }
+    }
+
+    private CancellationToken BeginRun(string stage)
+    {
+        _running = true;
+        _pct = 0;
+        _stage = stage;
+        _toast = null;
+        var next = new CancellationTokenSource();
+        var prev = Interlocked.Exchange(ref _cts, next);
+        if (prev is not null) { try { prev.Cancel(); } catch (ObjectDisposedException) { } prev.Dispose(); }
+        return next.Token;
+    }
+
+    private void EndRun()
+    {
+        _running = false;
+        var mine = Volatile.Read(ref _cts);
+        if (mine is not null && Interlocked.CompareExchange(ref _cts, null, mine) == mine) mine.Dispose();
+    }
+
+    private void Cancel()
+    {
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
+    private async Task OnProductPicked(InputFileChangeEventArgs e)
+    {
+        var p = await SaveUploadAsync(e.File, "product", 15L * 1024 * 1024, ".png");
+        if (p is not null) { _productPath = p; _cutoutUrl = null; }
+    }
+
+    private async Task OnLogoPicked(InputFileChangeEventArgs e)
+    {
+        var p = await SaveUploadAsync(e.File, "logo", 8L * 1024 * 1024, ".png");
+        if (p is not null) _logoPath = p;
+    }
+
+    private async Task OnScenesPicked(InputFileChangeEventArgs e)
+    {
+        foreach (var f in e.GetMultipleFiles(12))
+        {
+            if (_scenes.Count >= 12) { _toast = "⚠ 장면은 최대 12개까지 추가할 수 있습니다."; break; }
+            var p = await SaveUploadAsync(f, "scenes", 500L * 1024 * 1024, ".mp4");
+            if (p is not null && !_scenes.Contains(p)) _scenes.Add(p);
+        }
+    }
+
+    private async Task<string?> SaveUploadAsync(IBrowserFile file, string kind, long maxSize, string defaultExt)
+    {
+        if (file.Size > maxSize) { _toast = "❌ 파일이 너무 큽니다: " + file.Name; return null; }
+        try
+        {
+            var dir = System.IO.Path.Combine(Media.MediaRoot, "_uploads", "brand", kind);
+            System.IO.Directory.CreateDirectory(dir);
+            var name = file.Name;
+            foreach (var c in System.IO.Path.GetInvalidFileNameChars()) name = name.Replace(c, '_');
+            if (string.IsNullOrWhiteSpace(System.IO.Path.GetExtension(name))) name += defaultExt;
+            var path = System.IO.Path.Combine(dir, name);
+            await using (var src = file.OpenReadStream(maxSize))
+            await using (var dst = new System.IO.FileStream(path, System.IO.FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.None, 81920, System.IO.FileOptions.Asynchronous))
+                await src.CopyToAsync(dst);
+            return path;
+        }
+        catch (Exception ex) { Program.Log("BrandStudio.Upload", ex); _toast = "❌ 업로드 실패: " + ex.Message; return null; }
+    }
+
+    private static string AnchorLabel(ProductAnchor a) => a switch
+    {
+        ProductAnchor.BottomLeft => "좌하단",
+        ProductAnchor.BottomCenter => "하단 중앙",
+        ProductAnchor.Center => "중앙",
+        ProductAnchor.Right => "우측",
+        ProductAnchor.Left => "좌측",
+        _ => "우하단",
+    };
+}

@@ -1,0 +1,179 @@
+@page "/flow"
+@using PromptFlowStudio.Services.Flow
+@implements IDisposable
+@inject UserPreferenceService Prefs
+@inject NavigationManager Nav
+
+@* [PromptFlow Studio v5.6.2·v5.6.3] 노드 오케스트레이터 정식 페이지 + 상단 통합 툴바(저장/불러오기/템플릿/초기화 + 라이브 상태).
+   TrueFlowCanvas 를 @ref 로 제어(엔진 소유는 캔버스 · 페이지는 파일 작업·상태 표시). *@
+
+<PageTitle>PromptFlow Studio · 노드 오케스트레이터</PageTitle>
+
+<div class="fo">
+    <header class="fo-head">
+        <h1 class="fo-title">🕹️ 노드 <span class="fo-title-g">오케스트레이터</span></h1>
+        <p class="fo-sub">DAG 위상 정렬 기반 비동기 노드 그래프 + Wan 3.0 실행기 · 📸 키프레임 → I2V 루프 · 🎞️ 롱폼 병합 · 🔄 N회 무인 체인.</p>
+    </header>
+
+    @* 통합 툴바 — 저장/불러오기/템플릿 프리셋/초기화 + 라이브 상태 인디케이터 *@
+    <div class="fo-toolbar">
+        <div class="fo-tb-actions">
+            <button class="fo-btn" @onclick="Save">💾 저장</button>
+            <button class="fo-btn" @onclick="Load">📂 불러오기</button>
+            <select class="fo-preset" @bind="_preset" @bind:after="ApplyPreset" title="템플릿 프리셋 배치">
+                <option value="">📚 템플릿 프리셋…</option>
+                @foreach (var t in ChainTemplateLibrary.All)
+                {
+                    <option value="@t.Key">@t.Emoji @t.Name (@(t.Segments)컷)</option>
+                }
+            </select>
+            <button class="fo-btn danger" @onclick="Clear">🗑️ 초기화</button>
+        </div>
+        <div class="fo-tb-status">
+            <span class="fo-stat">노드 <b>@(_canvas?.NodeCount ?? 0)</b></span>
+            <span class="fo-stat">연결 <b>@(_canvas?.ConnCount ?? 0)</b></span>
+            <span class="fo-stat @(Running ? "run" : "idle")">@(Running ? "● Running" : "○ Idle")</span>
+
+            @* v5.6.5 · Task1: 가드레일 퀵 컨트롤 — 클릭 시 인라인 팝오버(On/Off + Soft/Balanced/Strict) · 즉시 영속 *@
+            <div class="fo-guard">
+                <button class="fo-guard-btn @(GuardOn ? "on" : "off")" @onclick="ToggleGuardMenu" title="AI 품질/정체성 가드레일 퀵 제어(UserSettings 와 동기화)">
+                    🛡️ 가드레일: @(GuardOn ? $"On · {GuardPreset}" : "Off")
+                </button>
+                @if (_guardOpen)
+                {
+                    <div class="fo-guard-scrim" @onclick="() => _guardOpen = false"></div>
+                    <div class="fo-guard-pop" @onclick:stopPropagation="true">
+                        <div class="fo-guard-row">
+                            <span class="fo-guard-lbl">전역 품질 가드레일</span>
+                            <button class="fo-guard-sw @(GuardOn ? "on" : null)" role="switch" aria-checked="@(GuardOn ? "true" : "false")" @onclick="ToggleGuard" title="On/Off">
+                                <span class="fo-guard-knob"></span>
+                            </button>
+                        </div>
+                        @if (GuardOn)
+                        {
+                            <div class="fo-guard-seg">
+                                @foreach (var p in GuardPresets)
+                                {
+                                    <button class="fo-guard-p @(GuardPreset == p ? "on" : null)" @onclick="() => SetGuardPreset(p)" @key="p">@p</button>
+                                }
+                            </div>
+                            <div class="fo-guard-note">@PresetDesc(GuardPreset)</div>
+                            @* v5.6.6 · Task3: 커스텀 코어 인라인 즉석 편집(사용자 설정 이동 불필요 · 즉시 영속) *@
+                            <div class="fo-guard-cwrap">
+                                <label class="fo-guard-clbl">✏️ 커스텀 코어 <span>(입력 시 프리셋 대신 사용)</span></label>
+                                <textarea class="fo-guard-cta" rows="2" @bind="Prefs.CustomQualityPrompt" @bind:event="oninput"
+                                          placeholder="예: keep original face identity, subtle cinematic motion"></textarea>
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="fo-guard-off">🔓 원본 프롬프트 100% 통과 — 시스템 개입 0 (완전 수동 제어)</div>
+                        }
+                        <button class="fo-guard-more" @onclick='() => Nav.NavigateTo("user-settings")'>⚙️ 사용자 설정에서 커스텀 편집 →</button>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+
+    <div class="fo-canvas">
+        <TrueFlowCanvas @ref="_canvas" Project="_project" OnStateChanged="OnCanvasState" CompactToolbar="true"
+                        GuardEnabled="GuardOn" GuardPreset="GuardPreset" GuardCustom="@Prefs.CustomQualityPrompt" />
+    </div>
+</div>
+
+<style>
+    .fo { padding: 6px 8px 40px; width: 100%; box-sizing: border-box; }
+    .fo-head { margin-bottom: 10px; }
+    .fo-title { font-size: 26px; font-weight: 900; letter-spacing: -.4px; color: var(--text-primary); margin: 0 0 6px; display: flex; align-items: center; gap: 8px; }
+    .fo-title-g { background: linear-gradient(90deg, #a78bfa, #22d3ee); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .fo-sub { font-size: 13px; color: var(--text-secondary); margin: 0; line-height: 1.55; word-break: keep-all; }
+    .fo-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 12px 0; padding: 10px 12px;
+        border: 1px solid color-mix(in srgb, #7c5cff 28%, var(--line)); border-radius: 12px; background: color-mix(in srgb, #7c5cff 6%, var(--card)); }
+    .fo-tb-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .fo-btn { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; min-height: 38px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; }
+    .fo-btn:hover { border-color: #7c5cff; color: var(--text-primary); }
+    .fo-btn.danger:hover { border-color: #ef4444; color: #fca5a5; }
+    .fo-preset { min-height: 38px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); font: 700 12px Pretendard,'Malgun Gothic',sans-serif; cursor: pointer; }
+    .fo-preset:focus { outline: none; border-color: #7c5cff; }
+    .fo-tb-status { display: flex; align-items: center; gap: 10px; font: 700 11px var(--mono); color: var(--text-muted); }
+    .fo-stat b { color: var(--text-primary); }
+    .fo-stat.run { color: #f5c451; } .fo-stat.idle { color: #6ee7b7; }
+    .fo-canvas { max-width: 1280px; }
+    /* v5.6.5 가드레일 퀵 컨트롤 + 인라인 팝오버(순수 CSS · 외부 JS 0) */
+    .fo-guard { position: relative; }
+    .fo-guard-btn { font: 800 11px Pretendard,'Malgun Gothic',sans-serif; min-height: 32px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--line); cursor: pointer; white-space: nowrap; }
+    .fo-guard-btn.on { color: #052e16; background: linear-gradient(135deg,#34d399,#22d3ee); border-color: transparent; }
+    .fo-guard-btn.off { color: #fbbf24; background: color-mix(in srgb,#f59e0b 12%,var(--card-2)); border-color: color-mix(in srgb,#f59e0b 45%,var(--line)); }
+    .fo-guard-scrim { position: fixed; inset: 0; z-index: 40; }
+    .fo-guard-pop { position: absolute; right: 0; top: calc(100% + 6px); z-index: 41; width: 260px; padding: 12px; border-radius: 12px;
+        border: 1px solid color-mix(in srgb,#22d3ee 30%,var(--line)); background: var(--card); box-shadow: 0 14px 40px rgba(0,0,0,.45); display: flex; flex-direction: column; gap: 9px; }
+    .fo-guard-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .fo-guard-lbl { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .fo-guard-sw { position: relative; width: 42px; height: 24px; border-radius: 999px; border: 1px solid var(--line); background: var(--card-2); cursor: pointer; padding: 0; transition: background .15s; }
+    .fo-guard-sw.on { background: linear-gradient(135deg,#34d399,#22d3ee); border-color: transparent; }
+    .fo-guard-knob { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: left .15s; }
+    .fo-guard-sw.on .fo-guard-knob { left: 20px; }
+    .fo-guard-seg { display: flex; gap: 5px; }
+    .fo-guard-p { flex: 1; min-height: 30px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; font: 800 10.5px Pretendard,'Malgun Gothic',sans-serif; }
+    .fo-guard-p.on { color: #fff; background: linear-gradient(135deg,#7c5cff,#22d3ee); border-color: transparent; }
+    .fo-guard-note { font: 600 10px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); line-height: 1.5; word-break: keep-all; }
+    .fo-guard-custom { font: 700 10px Pretendard,'Malgun Gothic',sans-serif; color: #a78bfa; }
+    .fo-guard-cwrap { display: flex; flex-direction: column; gap: 4px; }
+    .fo-guard-clbl { font: 700 10px Pretendard,'Malgun Gothic',sans-serif; color: #a78bfa; } .fo-guard-clbl span { color: var(--text-muted); font-weight: 600; }
+    .fo-guard-cta { width: 100%; box-sizing: border-box; resize: vertical; background: var(--card-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; color: var(--text-primary); font: 600 10.5px Pretendard,'Malgun Gothic',sans-serif; line-height: 1.5; outline: none; }
+    .fo-guard-cta:focus { border-color: #7c5cff; }
+    .fo-guard-off { font: 700 10.5px Pretendard,'Malgun Gothic',sans-serif; color: #fbbf24; background: color-mix(in srgb,#f59e0b 10%,transparent); border: 1px solid color-mix(in srgb,#f59e0b 26%,var(--line)); border-radius: 8px; padding: 8px 10px; line-height: 1.5; word-break: keep-all; }
+    .fo-guard-more { font: 700 10px Pretendard,'Malgun Gothic',sans-serif; color: var(--accent-2, #22d3ee); background: none; border: none; text-align: left; cursor: pointer; padding: 2px 0; }
+    .fo-guard-more:hover { text-decoration: underline; }
+</style>
+
+@code {
+    // 노드 그래프 전용 스크래치 프로젝트(해상도/씬 메타 → Wan 요청 규격). 갤러리 자산은 GalleryAutoSaveService 가 세션 공유.
+    private readonly StoryboardProject _project = new();
+    private TrueFlowCanvas? _canvas;
+    private string _preset = "";
+
+    private bool Running => _canvas?.IsRunning ?? false;
+
+    private void OnCanvasState() => StateHasChanged();   // 엔진 OnChanged → 라이브 상태 갱신
+
+    // ── v5.6.5 · Task1: 가드레일 퀵 컨트롤 (단일 진실 = UserPreferenceService · UserSettings 와 양방향 동기화) ──
+    private bool _guardOpen;
+    private bool GuardOn => Prefs.EnableGlobalQualityGuardrail;
+    private QualityGuardrailPreset GuardPreset => Prefs.QualityGuardrailPreset;
+    private static readonly QualityGuardrailPreset[] GuardPresets =
+        { QualityGuardrailPreset.Soft, QualityGuardrailPreset.Balanced, QualityGuardrailPreset.Strict };
+
+    private void ToggleGuardMenu() => _guardOpen = !_guardOpen;
+    private void ToggleGuard() => Prefs.EnableGlobalQualityGuardrail = !Prefs.EnableGlobalQualityGuardrail;   // 즉시 영속 + OnChange
+    private void SetGuardPreset(QualityGuardrailPreset p) => Prefs.QualityGuardrailPreset = p;                 // 즉시 영속 + OnChange
+
+    private static string PresetDesc(QualityGuardrailPreset p) => p switch
+    {
+        QualityGuardrailPreset.Soft => "최소 개입 — 1:1 아이덴티티 + 부드러운 모션",
+        QualityGuardrailPreset.Strict => "최대 — 해부학·프레임 일관성·워핑 차단",
+        _ => "권장 — 정체성 + 자연 모션 균형",
+    };
+
+    // 설정이 어디서 바뀌든(UserSettings 포함) 툴바 표시를 실시간 동기화.
+    protected override void OnInitialized() => Prefs.OnChange += OnPrefsChanged;
+    private void OnPrefsChanged() => InvokeAsync(StateHasChanged);
+    public void Dispose() => Prefs.OnChange -= OnPrefsChanged;
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (firstRender) StateHasChanged();   // @ref(_canvas) 세팅 후 초기 상태 인디케이터 반영
+    }
+
+    private async Task Save() { if (_canvas is not null) await _canvas.SaveGraph(); }
+    private void Load() => _canvas?.LoadGraph();
+    private void Clear() => _canvas?.ClearGraph();
+
+    private void ApplyPreset()
+    {
+        var t = ChainTemplateLibrary.Get(_preset);
+        if (t is not null) _canvas?.ApplyTemplate(t);
+        _preset = "";   // 셀렉트를 플레이스홀더로 복귀(동일 프리셋 재선택 가능)
+    }
+}

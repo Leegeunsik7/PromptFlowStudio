@@ -1,0 +1,406 @@
+@using System.Globalization
+@using System.Text
+@using PromptFlowStudio.Services.Storyboard
+@using PromptFlowStudio.Services.Virtual
+@implements IDisposable
+@inject CinematicCameraMotionControlEngine CameraRig
+@inject AiChromaKeyingAndRelightingEngine Chroma
+@inject UnrealEngine5LiveStagingBridge Bridge
+
+@*
+    [PromptFlow Studio v16.32.0] 🎬 AI 버추얼 프로덕션 & UE5 스튜디오 — OSC 카메라 트래킹 · UE 대상/헬스 · 실시간 프레임 수신 · 크로마키/리라이팅 프리뷰 ·
+    시네마틱 카메라 궤적(탑/사이드 뷰 · 컷 인젝션 · UE 뷰포트 스트리밍) · 1-Click 라이브 스테이징 · 스테이징 패키지.
+    (v16.59.0 작업 중 동명 파일 덮어쓰기 사고 → 빌드 산출물 DLL 디컴파일로 마크업/로직 복원)
+*@
+
+<div class="vp-scrim" @onclick="Close">
+    <div class="vp-modal" @onclick:stopPropagation="true">
+        <div class="vp-h">
+            <div><div class="vp-title">🎬 AI 버추얼 프로덕션 &amp; UE5 스튜디오</div>
+                <div class="vp-sub">언리얼 엔진 5 / ComfyUI 3D 스테이지와 <b>OSC 카메라 트래킹</b>을 동기화하고, 그린스크린 피사체를 <b>스마트 키잉 + 조명 매칭</b>으로 가상 배경에 합성하며,
+                    대본·무드에 맞는 <b>시네마틱 카메라 리그 궤적</b>을 생성해 영상 생성과 UE 뷰포트에 주입합니다.</div></div>
+            <button class="vp-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="vp-bar">
+            <span class="vp-chip @(Bridge.UeOscLiveNow ? "ok" : Bridge.IsListening ? "warn" : "")">UE OSC @(Bridge.UeOscLiveNow ? "수신 중" : Bridge.IsListening ? "대기(" + Bridge.ListenPort.ToString(CultureInfo.InvariantCulture) + ")" : "꺼짐")</span>
+            <span class="vp-chip @(Bridge.TargetEndpoint is null ? "" : "ok")">UE 대상 @(Bridge.TargetEndpoint ?? "미설정")</span>
+            <span class="vp-chip @(Bridge.UeRemoteOnline == true ? "ok" : Bridge.UeRemoteOnline == false ? "bad" : "")">UE Remote @(OnlineLabel(Bridge.UeRemoteOnline))</span>
+            <span class="vp-chip @(Bridge.ComfyOnline == true ? "ok" : Bridge.ComfyOnline == false ? "bad" : "")">ComfyUI @(OnlineLabel(Bridge.ComfyOnline))</span>
+            <span class="vp-chip @(Bridge.IngestRunning ? "ok" : "")">프레임 @(Bridge.IngestRunning ? Bridge.IngestFps.ToString("0.0", CultureInfo.InvariantCulture) + "fps" : "꺼짐")</span>
+            <span class="vp-mut">패킷 @(Bridge.Packets) · 송신 @(Bridge.SentPackets) · 키잉 @(Chroma.FramesKeyed) · 궤적 @(CameraRig.Plans)</span>
+        </div>
+
+        <div class="vp-tabs">
+            <button class="@(_tab == 0 ? "on" : "")" @onclick="() => _tab = 0">🔌 UE5 · ComfyUI 연결</button>
+            <button class="@(_tab == 1 ? "on" : "")" @onclick="() => _tab = 1">🟩 크로마키 · 리라이팅</button>
+            <button class="@(_tab == 2 ? "on" : "")" @onclick="() => _tab = 2">🎥 카메라 궤적</button>
+            <button class="@(_tab == 3 ? "on" : "")" @onclick="() => _tab = 3">🚀 라이브 스테이징</button>
+        </div>
+
+        <div class="vp-body">
+            @if (_tab == 0)
+            {
+                <div class="vp-sec">OSC 카메라 트래킹 (UE5 → PromptFlow · /pfs/camera x y z(cm) pitch yaw roll fov)</div>
+                <div class="vp-row">
+                    <label class="vp-mut">수신 포트 <input class="vp-in w80" type="number" min="1" max="65535" @bind="_listenPort" /></label>
+                    <label class="vp-mut"><input type="checkbox" @bind="_allowRemote" /> 원격 호스트 허용</label>
+                    <button class="vp-btn sm" disabled="@Bridge.IsListening" @onclick="Listen">📡 수신 시작</button>
+                    <button class="vp-btn sm" disabled="@(!Bridge.IsListening)" @onclick="Bridge.StopListening">중지</button>
+                    <label class="vp-mut">UE 호스트 <input class="vp-in w140" @bind="_ueHost" /></label>
+                    <label class="vp-mut">포트 <input class="vp-in w80" type="number" min="1" max="65535" @bind="_uePort" /></label>
+                    <button class="vp-btn sm" @onclick="Target">🎯 대상 설정</button>
+                </div>
+                var latest = Bridge.Latest;
+                <div class="vp-grid">
+                    <div class="vp-m"><b>@(latest.X.ToString("0.00", CultureInfo.InvariantCulture)), @(latest.Y.ToString("0.00", CultureInfo.InvariantCulture)), @(latest.Z.ToString("0.00", CultureInfo.InvariantCulture))</b><span>위치 x,y,z (m)</span></div>
+                    <div class="vp-m"><b>@(latest.Pan.ToString("0.0", CultureInfo.InvariantCulture))° / @(latest.Tilt.ToString("0.0", CultureInfo.InvariantCulture))° / @(latest.Roll.ToString("0.0", CultureInfo.InvariantCulture))°</b><span>팬 / 틸트 / 롤</span></div>
+                    <div class="vp-m"><b>@(latest.Fov.ToString("0.0", CultureInfo.InvariantCulture))°</b><span>FOV</span></div>
+                    <div class="vp-m"><b>@(Bridge.PacketIntervalMs.ToString("0.0", CultureInfo.InvariantCulture))ms ± @(Bridge.JitterMs.ToString("0.0", CultureInfo.InvariantCulture))</b><span>간격 / 지터</span></div>
+                    <div class="vp-m"><b>@(Bridge.Messages) / @(Bridge.UnknownMessages)</b><span>메시지 / 미인식</span></div>
+                </div>
+                <div class="vp-sec">헬스 체크</div>
+                <div class="vp-row">
+                    <label class="vp-mut">ComfyUI <input class="vp-in w220" @bind="_comfyUrl" /></label>
+                    <label class="vp-mut">UE Remote Control <input class="vp-in w220" @bind="_ueRemote" /></label>
+                    <button class="vp-btn sm" disabled="@(_cts is not null)" @onclick="ProbeAsync">🩺 연결 확인</button>
+                </div>
+                <div class="vp-sec">실시간 프레임 수신 (ndi://소스명 · rtsp:// · srt:// · udp:// · rtmp:// · 파일)</div>
+                <div class="vp-row">
+                    <input class="vp-in w320" placeholder="rtsp://127.0.0.1:8554/ue5" @bind="_ingest" />
+                    <button class="vp-btn sm" disabled="@Bridge.IngestRunning" @onclick="StartIngest">📺 수신 시작</button>
+                    <button class="vp-btn sm" disabled="@(!Bridge.IngestRunning)" @onclick="Bridge.StopIngest">중지</button>
+                    <span class="vp-mut">시퀀스 @(Bridge.FrameSeq) · NDI 는 libndi_newtek 포함 ffmpeg 빌드 필요</span>
+                </div>
+            }
+            else if (_tab == 1)
+            {
+                <div class="vp-row">
+                    <label class="vp-mut">그린스크린 전경 <input class="vp-in w260" placeholder="피사체 영상/사진" @bind="_fg" /></label>
+                    <label class="vp-mut">가상 배경 <input class="vp-in w260" placeholder="UE 렌더/배경 이미지·영상" @bind="_bg" /></label>
+                    <label class="vp-mut">시각 <input class="vp-in w60" type="number" step="0.1" min="0" @bind="_t" /></label>
+                    <button class="vp-btn sm" disabled="@(_cts is not null)" @onclick="PreviewAsync">🔎 프리뷰</button>
+                    <button class="vp-btn sm" disabled="@(!Bridge.IngestRunning)" @onclick="KeyLive">📺 라이브 프레임 키잉</button>
+                </div>
+                <div class="vp-row">
+                    <label class="vp-mut"><input type="checkbox" @bind="_autoKey" @bind:after="ApplyKey" /> 스마트 키 자동 검출</label>
+                    <label class="vp-mut">감도 @(_sim.ToString("0.00", CultureInfo.InvariantCulture)) <input type="range" min="0.02" max="0.6" step="0.01" @bind="_sim" @bind:after="ApplyKey" /></label>
+                    <label class="vp-mut">부드러움 @(_smooth.ToString("0.00", CultureInfo.InvariantCulture)) <input type="range" min="0.01" max="0.4" step="0.01" @bind="_smooth" @bind:after="ApplyKey" /></label>
+                    <label class="vp-mut">스필 @(_spill.ToString("0.00", CultureInfo.InvariantCulture)) <input type="range" min="0" max="1" step="0.05" @bind="_spill" @bind:after="ApplyKey" /></label>
+                    <label class="vp-mut">수축 @(_choke) <input type="range" min="0" max="2" step="1" @bind="_choke" @bind:after="ApplyKey" /></label>
+                    <label class="vp-mut">페더 @(_feather) <input type="range" min="0" max="4" step="1" @bind="_feather" @bind:after="ApplyKey" /></label>
+                    <label class="vp-mut">리라이팅 @(_relight.ToString("0.00", CultureInfo.InvariantCulture)) <input type="range" min="0" max="1" step="0.05" @bind="_relight" @bind:after="ApplyKey" /></label>
+                    <label class="vp-mut">라이트 랩 @(_wrap.ToString("0.00", CultureInfo.InvariantCulture)) <input type="range" min="0" max="1" step="0.05" @bind="_wrap" @bind:after="ApplyKey" /></label>
+                </div>
+                @if (Chroma.LastPreview is { } pv)
+                {
+                    <div class="vp-grid2">
+                        <div><div class="vp-sec">알파 매트</div><img class="vp-img" src="@pv.MatteDataUrl" alt="matte" /></div>
+                        <div><div class="vp-sec">리라이팅 합성</div><img class="vp-img" src="@pv.CompositeDataUrl" alt="composite" /></div>
+                    </div>
+                    <div class="vp-mut">
+                        <span class="vp-sw" style="@("background:" + pv.Stats.Key.Hex)"></span> 키 @(pv.Stats.Key.Hex)@(pv.Stats.Key.IsBlue ? " (블루)" : " (그린)")
+                        · 전경 @((pv.Stats.Coverage * 100f).ToString("0", CultureInfo.InvariantCulture))%
+                        · 배경 광원 균형 X @(pv.Stats.Background.BalanceX.ToString("+0.00;-0.00", CultureInfo.InvariantCulture)) / Y @(pv.Stats.Background.BalanceY.ToString("+0.00;-0.00", CultureInfo.InvariantCulture))
+                        · @(pv.Stats.Milliseconds.ToString("0.0", CultureInfo.InvariantCulture))ms/프레임
+                    </div>
+                }
+                else
+                {
+                    <div class="vp-empty">전경·배경 경로를 지정하고 [🔎 프리뷰]를 누르세요.</div>
+                }
+            }
+            else if (_tab == 2)
+            {
+                <div class="vp-row">
+                    <textarea class="vp-in vp-ta" placeholder="씬 대본 / 프롬프트" @bind="_script"></textarea>
+                </div>
+                <div class="vp-row">
+                    <label class="vp-mut">무드 <input class="vp-in w160" placeholder="웅장, 긴장, chase…" @bind="_mood" /></label>
+                    <button class="vp-btn sm go" @onclick="Suggest">🤖 자동 추천 생성</button>
+                    <label class="vp-mut">프리셋
+                        <select class="vp-in" @bind="_preset">
+                            @foreach (var p in Enum.GetValues<CameraRigPreset>())
+                            {
+                                <option value="@p">@CinematicCameraMotionControlEngine.Label(p)</option>
+                            }
+                        </select>
+                    </label>
+                    <label class="vp-mut">길이(초) <input class="vp-in w60" type="number" min="1" max="120" step="0.5" @bind="_dur" /></label>
+                    <label class="vp-mut">강도 @(_intensity.ToString("0.0", CultureInfo.InvariantCulture)) <input type="range" min="0.2" max="2" step="0.1" @bind="_intensity" /></label>
+                    <button class="vp-btn sm" @onclick="Generate">🎥 생성</button>
+                </div>
+                @if (CameraRig.LastPlan is { } plan)
+                {
+                    <div class="vp-grid2">
+                        <div><div class="vp-sec">탑 뷰 (x · z)</div>
+                            <svg class="vp-svg" viewBox="0 0 300 180">
+                                <rect width="300" height="180" fill="#06080e"></rect>
+                                <circle cx="150" cy="40" r="6" fill="#f59e0b"></circle>
+                                <g><text x="160" y="44" fill="#fcd34d" font-size="9">피사체</text></g>
+                                <polyline points="@Path2D(plan, top: true)" fill="none" stroke="#22d3ee" stroke-width="2" />
+                            </svg>
+                        </div>
+                        <div><div class="vp-sec">사이드 뷰 (z · y)</div>
+                            <svg class="vp-svg" viewBox="0 0 300 180">
+                                <rect width="300" height="180" fill="#06080e"></rect>
+                                <line x1="0" y1="150" x2="300" y2="150" stroke="#1e2d3d"></line>
+                                <polyline points="@Path2D(plan, top: false)" fill="none" stroke="#ec4899" stroke-width="2" />
+                            </svg>
+                        </div>
+                    </div>
+                    <div class="vp-mut">@CinematicCameraMotionControlEngine.Label(plan.Preset) · @(plan.LensMm.ToString("0", CultureInfo.InvariantCulture))mm@(plan.Anamorphic ? " · 2.39:1 아나모픽" : "") · 키 @(plan.Keyframes.Length) · @(plan.Rationale)</div>
+                    <div class="vp-mono">“@(plan.PromptPhrase)”</div>
+                    <div class="vp-row">
+                        <button class="vp-btn sm" disabled="@(Project is null)" @onclick="() => Inject(auto: false)">💉 전 컷 인젝션(현재 프리셋)</button>
+                        <button class="vp-btn sm" disabled="@(Project is null)" @onclick="() => Inject(auto: true)">💉 컷별 자동 추천 인젝션</button>
+                        <button class="vp-btn sm" disabled="@(Bridge.TargetEndpoint is null || Bridge.IsPlayingPath)" @onclick="StreamAsync">▶ UE 뷰포트 스트리밍</button>
+                        <button class="vp-btn sm" disabled="@(!Bridge.IsPlayingPath)" @onclick="Bridge.StopCameraPath">■ 중지</button>
+                        @if (Bridge.IsPlayingPath)
+                        {
+                            <span class="vp-mut">@((Bridge.PlayProgress * 100.0).ToString("0", CultureInfo.InvariantCulture))%</span>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <div class="vp-empty">대본/무드로 자동 추천하거나 프리셋을 골라 생성하세요.</div>
+                }
+            }
+            else
+            {
+                <div class="vp-row">
+                    <label class="vp-mut">출력 폴더 <input class="vp-in w320" @bind="_outDir" /></label>
+                    <label class="vp-mut">이름 <input class="vp-in w160" @bind="_name" /></label>
+                </div>
+                <div class="vp-mut">라이브 스테이징: OSC 수신(@_listenPort) → UE 대상(@_ueHost:@_uePort) → @(string.IsNullOrWhiteSpace(_ingest) ? "프레임 수신 생략" : "프레임 수신 " + _ingest) → 카메라 궤적 60Hz 스트리밍</div>
+                <div class="vp-mut">패키지: camera_path.json/csv(UE cm·도) @(string.IsNullOrWhiteSpace(_fg) || string.IsNullOrWhiteSpace(_bg) ? "" : "+ keyed.mp4(크로마키 합성)") + manifest.json(SHA-256)</div>
+                @if (_pkg is { } pkg)
+                {
+                    <div class="vp-note @(pkg.Ok ? "ok" : "bad")">@(pkg.Ok ? "📦" : "⚠") @pkg.Message@(pkg.Folder is { } folder ? " · " + folder : "")</div>
+                }
+            }
+        </div>
+
+        <div class="vp-f">
+            <span class="vp-mut">@(_msg ?? Bridge.LastAction ?? Chroma.LastAction ?? CameraRig.LastAction ?? "대기 중")</span>
+            @if (_cts is not null)
+            {
+                <button class="vp-btn" @onclick="Cancel">■ 취소</button>
+            }
+            <button class="vp-btn" disabled="@(_cts is not null)" @onclick="ExportAsync">📦 스테이징 패키지</button>
+            <button class="vp-btn go" disabled="@(_cts is not null || Bridge.IsPlayingPath)" @onclick="LiveStagingAsync">🚀 1-Click 버추얼 라이브 스테이징</button>
+            <button class="vp-btn" disabled="@(_cts is not null)" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .vp-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .vp-modal { width: min(1180px, 97vw); max-height: 93vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .vp-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #22c55e 12%, var(--card)), color-mix(in srgb, #6366f1 8%, var(--card))); }
+    .vp-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .vp-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .vp-sub b { color: var(--text-primary); }
+    .vp-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .vp-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .vp-tabs { display: flex; gap: 4px; padding: 8px 18px 0; border-bottom: 1px solid var(--line); }
+    .vp-tabs button { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; border: 0; background: none; color: var(--text-muted); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
+    .vp-tabs button.on { color: var(--text-primary); border-bottom-color: #22c55e; }
+    .vp-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .vp-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .vp-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .vp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 6px; }
+    .vp-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .vp-m { border: 1px solid var(--line); border-radius: 10px; padding: 7px; display: flex; flex-direction: column; gap: 2px; }
+    .vp-m b { font: 700 12px var(--mono); color: var(--text-primary); } .vp-m span { font-size: 10.5px; color: var(--text-muted); }
+    .vp-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .vp-chip.ok { color: #4ade80; } .vp-chip.bad { color: #f87171; } .vp-chip.warn { color: #fbbf24; }
+    .vp-mut { font-size: 11px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+    .vp-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; }
+    .vp-in.w60 { width: 60px; } .vp-in.w80 { width: 80px; } .vp-in.w140 { width: 140px; } .vp-in.w160 { width: 160px; } .vp-in.w220 { width: 220px; } .vp-in.w260 { width: 260px; } .vp-in.w320 { width: 320px; }
+    .vp-ta { width: 100%; min-height: 64px; resize: vertical; font-family: inherit; }
+    .vp-img { width: 100%; border-radius: 10px; border: 1px solid var(--line); background: #06080e; }
+    .vp-svg { width: 100%; border-radius: 10px; border: 1px solid var(--line); }
+    .vp-sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--line); }
+    .vp-empty { font-size: 12px; color: var(--text-muted); padding: 24px; text-align: center; border: 1px dashed var(--line); border-radius: 10px; }
+    .vp-mono { font: 11px var(--mono); color: var(--text-secondary); }
+    .vp-note { font-size: 12px; color: var(--text-secondary); } .vp-note.ok { color: #4ade80; } .vp-note.bad { color: #f87171; }
+    .vp-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }
+    .vp-f .vp-mut { margin-right: auto; }
+    .vp-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .vp-btn.sm { padding: 3px 8px; font-size: 11px; }
+    .vp-btn.go { background: linear-gradient(135deg,#22c55e,#6366f1); color: #fff; border: 0; }
+    .vp-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 820px) { .vp-grid2 { grid-template-columns: 1fr; } .vp-in.w320 { width: 200px; } }
+</style>
+
+@code {
+    [Parameter] public StoryboardProject? Project { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private int _tab;
+    private int _listenPort = 8000, _uePort = 8001, _choke, _feather;
+    private bool _allowRemote, _autoKey;
+    private double _t, _dur = 5.0;
+    private float _sim, _smooth, _spill, _relight, _wrap, _intensity = 1f;
+    private string _ueHost = "127.0.0.1", _comfyUrl = "", _ueRemote = "", _ingest = "", _fg = "", _bg = "", _script = "", _mood = "", _outDir = "", _name = "virtual_stage";
+    private string? _msg;
+    private CameraRigPreset _preset = CameraRigPreset.DollyIn;
+    private StagingPackageResult? _pkg;
+    private CancellationTokenSource? _cts;
+
+    private static string OnlineLabel(bool? v) => v switch { null => "미확인", true => "연결", _ => "오프라인" };
+
+    protected override void OnInitialized()
+    {
+        Bridge.OnChange += OnServiceChanged;
+        Chroma.OnChange += OnServiceChanged;
+        CameraRig.OnChange += OnServiceChanged;
+        var k = Chroma.Settings;
+        _sim = k.Similarity; _smooth = k.Smoothness; _spill = k.Spill; _choke = k.Choke; _feather = k.Feather; _relight = k.Relight; _wrap = k.LightWrap; _autoKey = k.AutoKey;
+        _comfyUrl = Bridge.ComfyUrl;
+        _ueRemote = Bridge.UeRemoteUrl;
+        _ingest = Bridge.IngestSource ?? "";
+        if (Bridge.ListenPort > 0) _listenPort = Bridge.ListenPort;
+        _fg = Project?.FinalVideoPath ?? "";
+        _script = Project is { Scenes.Count: > 0 } p ? p.Scenes[0].Prompt : "";
+        _outDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "PromptFlow Virtual");
+        if (CameraRig.LastPlan is { } plan) { _preset = plan.Preset; _dur = plan.DurationSec; _intensity = plan.Intensity; }
+    }
+
+    private void Listen() => _msg = Bridge.StartListening(_listenPort, _allowRemote) ? null : "⚠ 포트 바인드 실패(사용 중?)";
+
+    private void Target() => _msg = Bridge.ConfigureTarget(_ueHost.Trim(), _uePort) ? null : "⚠ UE 대상 주소를 확인하세요.";
+
+    private void StartIngest() => _msg = Bridge.StartIngest(_ingest) ? null : "⚠ 프레임 수신 시작 실패(소스/ffmpeg 확인)";
+
+    private Task ProbeAsync() => RunAsync(async ct =>
+    {
+        Bridge.ComfyUrl = _comfyUrl.Trim();
+        Bridge.UeRemoteUrl = _ueRemote.Trim();
+        var c = await Bridge.ProbeComfyAsync(ct);
+        var u = await Bridge.ProbeUnrealRemoteAsync(ct);
+        _msg = "🩺 ComfyUI " + (c ? "연결" : "오프라인") + " · UE Remote " + (u ? "연결" : "오프라인");
+    });
+
+    private void ApplyKey()
+    {
+        ApplyKeySettingsOnly();
+        Chroma.RebuildPreview();
+    }
+
+    private Task PreviewAsync() => RunAsync(async ct =>
+    {
+        ApplyKeySettingsOnly();
+        _msg = await Chroma.PreviewAsync(_fg.Trim(), _bg.Trim(), _t, ct) is null ? "⚠ 프리뷰 실패(경로/ffmpeg 확인)" : null;
+    });
+
+    private void ApplyKeySettingsOnly()
+        => Chroma.Settings = new KeySettings(_sim, _smooth, _spill, _choke, _feather, _relight, _wrap, _autoKey, Chroma.Settings.Manual).Clamp();
+
+    private void KeyLive()
+    {
+        ApplyKeySettingsOnly();
+        var buf = new byte[1920 * 1080 * 3];
+        if (Bridge.TryCopyLatestFrame(buf, out var w, out var h) == 0) { _msg = "⚠ 아직 수신된 프레임이 없습니다."; return; }
+        Chroma.LiveForeground(buf.AsSpan(0, w * h * 3).ToArray(), w, h);
+        _msg = null;
+    }
+
+    private void Suggest() => _preset = CameraRig.GenerateFor(_script, _mood, _dur, _intensity).Preset;
+
+    private void Generate() => CameraRig.Generate(_preset, _dur, _intensity, CinematicCameraMotionControlEngine.StableSeed(_script));
+
+    private void Inject(bool auto)
+        => _msg = "💉 " + CameraRig.ApplyToProject(Project, auto ? null : _preset, string.IsNullOrWhiteSpace(_mood) ? null : _mood, _intensity).ToString(CultureInfo.InvariantCulture)
+            + "컷에 카메라 리그 구문 주입(이미 카메라 지시가 있는 컷은 유지)";
+
+    private Task StreamAsync()
+    {
+        if (CameraRig.LastPlan is not { } plan) return Task.CompletedTask;
+        return RunAsync(async ct =>
+        {
+            var f = await Bridge.PlayCameraPathAsync(plan, 60.0, ct);
+            _msg = f < 0 ? "⚠ UE 대상이 없습니다." : null;
+        });
+    }
+
+    private Task LiveStagingAsync()
+    {
+        var plan = CameraRig.LastPlan ?? CameraRig.GenerateFor(_script, _mood, _dur, _intensity);
+        if (Bridge.ListenPort == 0 && !Bridge.StartListening(_listenPort, _allowRemote)) { _msg = "⚠ OSC 포트 바인드 실패"; return Task.CompletedTask; }
+        _tab = 3;
+        return RunAsync(async ct =>
+        {
+            var text = await Bridge.StartLiveStagingAsync(plan, _ueHost.Trim(), _uePort, string.IsNullOrWhiteSpace(_ingest) || Bridge.IngestRunning ? null : _ingest.Trim(), ct);
+            _msg = "🎬 " + text;
+        });
+    }
+
+    private Task ExportAsync()
+    {
+        var plan = CameraRig.LastPlan ?? CameraRig.GenerateFor(_script, _mood, _dur, _intensity);
+        ApplyKeySettingsOnly();
+        _tab = 3;
+        return RunAsync(async ct =>
+        {
+            _pkg = await Bridge.ExportStagingPackageAsync(_outDir.Trim(), _name, plan, string.IsNullOrWhiteSpace(_fg) ? null : _fg.Trim(), string.IsNullOrWhiteSpace(_bg) ? null : _bg.Trim(), ct);
+            _msg = null;
+        });
+    }
+
+    private static string Path2D(CameraRigPlan plan, bool top)
+    {
+        var inv = CultureInfo.InvariantCulture;
+        float minA = float.MaxValue, maxA = float.MinValue, minB = float.MaxValue, maxB = float.MinValue;
+        foreach (var k in plan.Keyframes)
+        {
+            var a = top ? k.X : k.Z; var b = top ? k.Z : k.Y;
+            minA = MathF.Min(minA, a); maxA = MathF.Max(maxA, a); minB = MathF.Min(minB, b); maxB = MathF.Max(maxB, b);
+        }
+        var scale = 120f / MathF.Max(1f, MathF.Max(maxA - minA, maxB - minB));
+        var sb = new StringBuilder(plan.Keyframes.Length * 14);
+        foreach (var k in plan.Keyframes)
+        {
+            float px, py;
+            if (top) { px = 150f + k.X * scale; py = 40f + (3f - k.Z) * scale; }
+            else { px = 40f + (k.Z - minA) * scale; py = 150f - (k.Y - MathF.Min(0f, minB)) * scale; }
+            sb.Append(Math.Clamp(px, 0f, 300f).ToString("0.#", inv)).Append(',').Append(Math.Clamp(py, 0f, 180f).ToString("0.#", inv)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private async Task RunAsync(Func<CancellationToken, Task> work)
+    {
+        var cts = new CancellationTokenSource();
+        if (Interlocked.CompareExchange(ref _cts, cts, null) is not null) { cts.Dispose(); return; }
+        try { await work(cts.Token); }
+        catch (OperationCanceledException) { _msg = "⚠ 취소됨"; }
+        catch (Exception ex) { Program.Log("VirtualStudio.Run", ex); _msg = "⚠ 실패: " + ex.Message; }
+        finally
+        {
+            Interlocked.CompareExchange(ref _cts, null, cts);
+            cts.Dispose();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void Cancel()
+    {
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+        Bridge.StopCameraPath();
+    }
+
+    private Task Close() => _cts is not null ? Task.CompletedTask : OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Bridge.OnChange -= OnServiceChanged;
+        Chroma.OnChange -= OnServiceChanged;
+        CameraRig.OnChange -= OnServiceChanged;
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+}

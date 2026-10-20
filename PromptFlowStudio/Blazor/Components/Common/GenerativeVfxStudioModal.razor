@@ -1,0 +1,289 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.GenerativeVfx
+@implements IDisposable
+@inject GenerativeVfxStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.81.0] 💥 AI 제너레이티브 VFX & 파티클 스튜디오 — 파티클 유체 3D 뷰포트(궤도 카메라 · 지형 · 캐릭터 3DGS 프록시 · 물방울/파편) ·
+    점성/표면장력 슬라이더 · 프롬프트 → 이벤트 · 볼륨 연기 밀도 프리셋 + 볼륨 렌더/광 투과율 · 표면 젖음 맵.
+*@
+
+<div class="gvx-scrim" @onclick="Close">
+    <div class="gvx-modal" @onclick:stopPropagation="true">
+        <div class="gvx-h">
+            <div>
+                <div class="gvx-title">💥 AI 제너레이티브 VFX &amp; 파티클 스튜디오</div>
+                <div class="gvx-sub">대규모 파티클 <b>액체/가스</b>의 점성 · 표면장력을 SIMD 이중 밀도 완화로 실시간 추적하고, 프롬프트 이벤트로 <b>폭발 · 굴뚝 연기 · 안개 · 화염</b> 볼륨을 절차 생성해
+                    광 <b>투과율</b>을 계산하며, OpenUSD 지형 · 캐릭터 <b>3DGS</b> 표면 충돌로 파편 · 물방울 비산 · <b>젖음</b> 피드백을 연동합니다.</div>
+            </div>
+            <button class="gvx-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="gvx-bar">
+            <button class="gvx-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 시뮬레이션")</button>
+            <button class="gvx-btn" @onclick="Step" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="gvx-btn" @onclick="Runner.NewShot">🎬 새 샷</button>
+            <label class="gvx-tg"><input type="checkbox" checked="@Runner.NozzleOn" @onchange="e => Runner.SetNozzle(e.Value is true)" /> 물줄기</label>
+            <label class="gvx-tg"><input type="checkbox" checked="@Runner.Fluid.NeuralClosure" @onchange="e => Runner.SetNeural(e.Value is true)" /> 신경망 에디 점성</label>
+            <span class="gvx-chip">입자 @(Runner.Fluid.Count) / @(Runner.Fluid.Capacity) (액체 @(Runner.Fluid.LiquidCount) · 가스 @(Runner.Fluid.GasCount))</span>
+            <span class="gvx-chip @(Runner.Fluid.LastStepMs < 16.6 ? "ok" : "warn")">유체 @(F1(Runner.Fluid.LastStepMs)) ms · 볼륨 @(F1(Runner.Volume.LastStepMs)) ms</span>
+            <span class="gvx-chip">이웃 @(F1(Runner.Fluid.MeanNeighbors)) · ρ/ρ₀ @(F2(Runner.Fluid.MeanDensity / Runner.Fluid.RestDensity))</span>
+        </div>
+
+        <div class="gvx-main">
+            <div class="gvx-col">
+                <div class="gvx-card">
+                    <div class="gvx-sec">🌊 파티클 유체 3D 뷰포트 — 궤도 @(F0(_yaw))°
+                        <input type="range" min="-180" max="180" value="@(F0(_yaw))" @oninput="OnYaw" class="gvx-yaw" />
+                    </div>
+                    <svg class="gvx-vp" viewBox="0 0 @(VW) @(VH)">
+                        @for (var k = -4; k <= 4; k++)
+                        {
+                            var a = Proj(new Vector3(k * 0.5f, H(k * 0.5f, -2f), -2f)); var b = Proj(new Vector3(k * 0.5f, H(k * 0.5f, 2f), 2f));
+                            var c = Proj(new Vector3(-2f, H(-2f, k * 0.5f), k * 0.5f)); var d = Proj(new Vector3(2f, H(2f, k * 0.5f), k * 0.5f));
+                            <g>
+                                <line x1="@(F1(a.X))" y1="@(F1(a.Y))" x2="@(F1(b.X))" y2="@(F1(b.Y))" class="grid" />
+                                <line x1="@(F1(c.X))" y1="@(F1(c.Y))" x2="@(F1(d.X))" y2="@(F1(d.Y))" class="grid" />
+                            </g>
+                        }
+                        @for (var k = 0; k < Runner.Guard.ProxyCount; k++)
+                        {
+                            var p = Proj(Runner.Guard.ProxyCenter(k)); var w = Runner.Guard.ProxyWetness(k);
+                            <circle cx="@(F1(p.X))" cy="@(F1(p.Y))" r="@(F1(Runner.Guard.ProxyRadius(k) * Scale / p.Z))" class="proxy" style="fill-opacity:@(F2(0.25 + 0.45 * w))" />
+                        }
+                        @{ var n = Runner.Fluid.Count; var stride = Math.Max(1, n / MaxDots); }
+                        @for (var i = 0; i < n; i += stride)
+                        {
+                            var p = Proj(Runner.Fluid.Position(i));
+                            if (p.Z < 0.1f) continue;
+                            var gas = Runner.Fluid.Phase[i] == (byte)FluidPhase.Gas;
+                            <circle cx="@(F1(p.X))" cy="@(F1(p.Y))" r="@(F2(Math.Clamp(0.05f * Scale / p.Z, 1f, 4f)))" style="fill:@(gas ? "rgba(203,213,225,.35)" : SpeedColor(Runner.Fluid.Velocity(i).Length()))" />
+                        }
+                        @for (var i = 0; i < InteractiveVfxCollisionSplashGuard.MaxDroplets; i += 2)
+                        {
+                            if (!Runner.Guard.DropletAlive(i)) continue;
+                            var p = Proj(Runner.Guard.Droplet(i));
+                            <circle cx="@(F1(p.X))" cy="@(F1(p.Y))" r="1" class="drop" />
+                        }
+                        @for (var i = 0; i < InteractiveVfxCollisionSplashGuard.MaxDebris; i++)
+                        {
+                            if (!Runner.Guard.DebrisAlive(i)) continue;
+                            var p = Proj(Runner.Guard.DebrisPosition(i)); var s = Math.Max(1.5f, Runner.Guard.DebrisSize(i) * Scale / p.Z);
+                            <rect x="@(F1(p.X - s / 2))" y="@(F1(p.Y - s / 2))" width="@(F1(s))" height="@(F1(s))" class="debris" />
+                        }
+                        @{ var nz = Proj(GenerativeVfxStudioRunner.NozzlePosition); }
+                        <circle cx="@(F1(nz.X))" cy="@(F1(nz.Y))" r="4" class="nozzle" />
+                    </svg>
+                    <div class="gvx-kv">
+                        <span>최대 속도 <b>@(F2(Runner.Fluid.MaxSpeed)) m/s</b></span>
+                        <span>운동 E <b>@(F3(Runner.Fluid.KineticEnergy))</b></span>
+                        <span>3DGS 레이어 <b>@(Runner.FluidSplats.Count)</b> 스플랫</span>
+                        <span>최대 스텝 <b>@(F1(Runner.Fluid.MaxStepMs)) ms</b></span>
+                    </div>
+                    <div class="gvx-sl">
+                        <label>점성 σ <b>@(F2(Runner.Fluid.Viscosity))</b><input type="range" min="0" max="800" value="@(F0(Runner.Fluid.Viscosity * 100))" @onchange="OnVisc" /></label>
+                        <label>표면장력 <b>@(F2(Runner.Fluid.SurfaceTension))</b><input type="range" min="0" max="800" value="@(F0(Runner.Fluid.SurfaceTension * 100))" @onchange="OnSt" /></label>
+                    </div>
+                </div>
+
+                <div class="gvx-card">
+                    <div class="gvx-sec">💧 충돌 · 비산 · 젖음 — 지형 @(Runner.Guard.TerrainContacts) · 캐릭터 @(Runner.Guard.ProxyContacts) · 비산 @(Runner.Guard.Splashes)</div>
+                    <div class="gvx-split">
+                        <svg class="gvx-wet" viewBox="0 0 @(WN) @(WN)" preserveAspectRatio="none">
+                            @for (var z = 0; z < WN; z++)
+                            {
+                                for (var x = 0; x < WN; x++)
+                                {
+                                    var w = Runner.Guard.Wetness(x * 2, z * 2);
+                                    <rect x="@x" y="@z" width="1.04" height="1.04" style="fill:@(WetColor(w))" />
+                                }
+                            }
+                        </svg>
+                        <div class="gvx-kv col">
+                            <span>젖음 커버리지 <b>@(F0(Runner.Guard.WetCoverage * 100))%</b></span>
+                            <span>물방울 생성 <b>@(Runner.Guard.DropletsSpawned)</b> · 활성 <b>@(Runner.Guard.DropletCount)</b></span>
+                            <span>파편 <b>@(Runner.Guard.DebrisCount)</b> / @(Runner.Guard.DebrisSpawned)</span>
+                            <span>최대 충돌 속도 <b>@(F2(Runner.Guard.MaxImpactSpeed)) m/s</b></span>
+                            <span>관통 <b>@(Runner.Guard.Penetrations)</b></span>
+                            @for (var k = 0; k < Math.Min(3, Runner.Guard.ImpactCount); k++)
+                            {
+                                var ev = Runner.Guard.Impact(k);
+                                <span class="ev">@(ev.Kind == PromptFlowStudio.Services.OpenUsd.ImpactKind.Body ? "🧍" : "⛰") @(F2(ev.Time))s · E @(F1(ev.Energy)) · (@(F1(ev.X)), @(F1(ev.Z)))</span>
+                            }
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="gvx-col">
+                <div class="gvx-card">
+                    <div class="gvx-sec">✨ 프롬프트 / 시나리오 이벤트</div>
+                    <div class="gvx-row">
+                        <input class="gvx-in" @bind="_prompt" placeholder="예: 거대한 폭발 뒤 굴뚝 연기와 짙은 안개" />
+                        <button class="gvx-btn on" @onclick="Fire">발동</button>
+                    </div>
+                    <div class="gvx-row">
+                        <button class="gvx-btn" @onclick="() => Runner.Trigger(VfxEventKind.Explosion, new Vector3(0.3f, 0f, -0.2f))">💥 폭발</button>
+                        <button class="gvx-btn" @onclick="() => Runner.Trigger(VfxEventKind.Chimney, new Vector3(-1.2f, 0f, -1.2f))">🏭 굴뚝 연기</button>
+                        <button class="gvx-btn" @onclick="() => Runner.Trigger(VfxEventKind.Fog, Vector3.Zero)">🌫 안개</button>
+                        <button class="gvx-btn" @onclick="() => Runner.Trigger(VfxEventKind.Fire, new Vector3(-0.8f, 0f, 0.9f))">🔥 화염</button>
+                        <button class="gvx-btn" @onclick="Runner.Volume.StopContinuous">⏹ 지속 정지</button>
+                    </div>
+                </div>
+
+                <div class="gvx-card">
+                    <div class="gvx-sec">🔥 볼륨 렌더 — 평균 투과율 @(F2(Runner.Volume.MeanTransmittance)) · 최고 온도 @(F1(Runner.Volume.MaxTemperature)) · 이미터 @(Runner.Volume.ActiveEmitters)</div>
+                    <div class="gvx-split">
+                        <svg class="gvx-vol" viewBox="0 0 @(Runner.Volume.N) @(Runner.Volume.N)" preserveAspectRatio="none">
+                            @for (var i = 0; i < Runner.Volume.ImageR.Length; i++)
+                            {
+                                <rect x="@(i % Runner.Volume.N)" y="@(i / Runner.Volume.N)" width="1.04" height="1.04" style="fill:@(VolColor(i))" />
+                            }
+                        </svg>
+                        <svg class="gvx-vol" viewBox="0 0 @(Runner.Volume.N) @(Runner.Volume.N)" preserveAspectRatio="none">
+                            @{ var vn = Runner.Volume.N; var zc = vn / 2; }
+                            @for (var y = 0; y < vn; y++)
+                            {
+                                for (var x = 0; x < vn; x++)
+                                {
+                                    var t = Runner.Volume.LightTransmittance[(zc * vn + y) * vn + x];
+                                    <rect x="@x" y="@(vn - 1 - y)" width="1.04" height="1.04" style="fill:@(LightColor(t))" />
+                                }
+                            }
+                        </svg>
+                    </div>
+                    <div class="gvx-axis"><span>시점(−Z) 볼륨 렌더 · 흑체 방출</span><span>중앙 단면 광 투과율(Beer–Lambert)</span></div>
+                    <div class="gvx-row">
+                        @foreach (var p in Presets)
+                        {
+                            <button class="gvx-btn @(Runner.Volume.Preset == p ? "on" : null)" @onclick="() => Runner.SetPreset(p)">@(VolumetricFireSmokeAtmosphericSynthesizer.PresetName(p))</button>
+                        }
+                    </div>
+                    <div class="gvx-kv">
+                        <span>소광 σ <b>@(F1(Runner.Volume.Extinction)) /m</b></span>
+                        <span>알베도 <b>@(F2(Runner.Volume.Albedo))</b></span>
+                        <span>총 밀도 <b>@(F2(Runner.Volume.TotalDensity))</b></span>
+                        <span>광 계산 <b>@(F2(Runner.Volume.LastLightMs)) ms</b></span>
+                        <span>발산 <b>@(F3(Runner.Volume.MaxDivergence))</b></span>
+                        <span>이벤트 <b>@(Runner.Volume.Events)</b> · 최근 @(VolumetricFireSmokeAtmosphericSynthesizer.EventName(Runner.Volume.LastEvent))</span>
+                    </div>
+                </div>
+                <div class="gvx-note">@(Runner.LastAction ?? "대기") · @(Runner.Guard.LastAction ?? "")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .gvx-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .gvx-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .gvx-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f97316 18%, var(--card)), color-mix(in srgb, #0ea5e9 16%, var(--card))); }
+    .gvx-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .gvx-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .gvx-sub b { color: var(--text-primary); }
+    .gvx-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .gvx-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .gvx-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .gvx-btn:disabled { opacity: .4; cursor: default; } .gvx-btn.on { background: color-mix(in srgb, #f97316 24%, transparent); border-color: #f97316; }
+    .gvx-tg { font-size: 11.5px; color: var(--text-secondary); display: flex; gap: 4px; align-items: center; font-weight: 600; }
+    .gvx-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .gvx-chip.ok { border-color: #22c55e; color: #86efac; } .gvx-chip.warn { border-color: #f97316; color: #fdba74; }
+    .gvx-main { display: grid; grid-template-columns: 1.25fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .gvx-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .gvx-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .gvx-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .gvx-yaw { flex: 1; min-width: 120px; }
+    .gvx-vp { width: 100%; aspect-ratio: 16 / 9; background: radial-gradient(ellipse at 50% 30%, #1e293b, #020617); border-radius: 10px; }
+    .gvx-vp .grid { stroke: #334155; stroke-width: .6; } .gvx-vp .proxy { fill: #f472b6; stroke: #f9a8d4; stroke-width: .5; }
+    .gvx-vp .drop { fill: #bae6fd; } .gvx-vp .debris { fill: #a16207; stroke: #fde68a; stroke-width: .4; } .gvx-vp .nozzle { fill: #38bdf8; stroke: #e0f2fe; stroke-width: 1; }
+    .gvx-sl { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; } .gvx-sl label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-secondary); } .gvx-sl b { font-family: var(--mono); color: var(--text-primary); }
+    .gvx-split { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }
+    .gvx-wet, .gvx-vol { width: 100%; aspect-ratio: 1; border-radius: 8px; background: #020617; }
+    .gvx-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .gvx-in { flex: 1; min-width: 200px; font-size: 12px; padding: 6px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .gvx-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; color: var(--text-secondary); } .gvx-kv b { color: var(--text-primary); font-family: var(--mono); }
+    .gvx-kv.col { flex-direction: column; gap: 4px; } .gvx-kv .ev { font: 600 10.5px var(--mono); color: var(--text-muted); }
+    .gvx-axis { display: flex; justify-content: space-between; font: 600 10px var(--mono); color: var(--text-muted); }
+    .gvx-note { font-size: 11px; color: var(--text-muted); }
+    @@media (max-width: 1200px) { .gvx-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int VW = 640, VH = 360, MaxDots = 1400, WN = 32;
+    private const float Scale = 520f;
+    private static readonly VolumePreset[] Presets = { VolumePreset.ThinHaze, VolumePreset.DenseSmoke, VolumePreset.ToxicSmoke, VolumePreset.Steam };
+    private float _yaw = 25f;
+    private string? _prompt;
+    private System.Threading.Timer? _timer;
+    private Vector3 _eye, _f, _r, _u;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        UpdateCamera();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Vfx.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+    private float H(float x, float z) => Runner.Terrain.HeightAt(x, z);
+
+    private void UpdateCamera()
+    {
+        var a = _yaw * MathF.PI / 180f;
+        var target = new Vector3(0f, 0.7f, 0f);
+        _eye = target + new Vector3(MathF.Sin(a) * 5.2f, 2.4f, MathF.Cos(a) * 5.2f);
+        _f = Vector3.Normalize(target - _eye); _r = Vector3.Normalize(Vector3.Cross(_f, Vector3.UnitY)); _u = Vector3.Cross(_r, _f);
+    }
+
+    /// <summary>월드 → 화면(X, Y) + 깊이(Z).</summary>
+    private Vector3 Proj(Vector3 p)
+    {
+        var d = p - _eye; var z = Vector3.Dot(d, _f);
+        if (z < 0.1f) return new Vector3(-100, -100, 0f);
+        return new Vector3(VW * 0.5f + Scale * Vector3.Dot(d, _r) / z, VH * 0.5f - Scale * Vector3.Dot(d, _u) / z, z);
+    }
+
+    private static string Rgb(float r, float g, float b) =>
+        "rgb(" + ((int)(Math.Clamp(r, 0f, 1f) * 255f)).ToString(CultureInfo.InvariantCulture) + "," + ((int)(Math.Clamp(g, 0f, 1f) * 255f)).ToString(CultureInfo.InvariantCulture) + "," + ((int)(Math.Clamp(b, 0f, 1f) * 255f)).ToString(CultureInfo.InvariantCulture) + ")";
+
+    private static string SpeedColor(float s) { var t = Math.Clamp(s / 4f, 0f, 1f); return Rgb(0.1f + 0.85f * t, 0.45f + 0.5f * t, 0.95f); }
+    private static string WetColor(float w) => Rgb(0.32f - 0.22f * w, 0.26f - 0.12f * w, 0.2f + 0.45f * w);
+    private static string LightColor(float t) => Rgb(t, t * 0.95f, t * 0.85f);
+
+    private string VolColor(int i)
+    {
+        var v = Runner.Volume; var t = v.ImageTransmittance[i];
+        // 배경(하늘 그라디언트) 위 합성
+        var y = i / v.N / (float)v.N;
+        return Rgb(v.ImageR[i] + t * (0.08f + 0.1f * y), v.ImageG[i] + t * (0.12f + 0.1f * y), v.ImageB[i] + t * (0.22f + 0.15f * y));
+    }
+
+    private void OnYaw(ChangeEventArgs e) { if (float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) { _yaw = v; UpdateCamera(); } }
+    private void OnVisc(ChangeEventArgs e) { if (float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) Runner.SetViscosity(v / 100f); }
+    private void OnSt(ChangeEventArgs e) { if (float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) Runner.SetSurfaceTension(v / 100f); }
+    private void Fire() => Runner.TriggerPrompt(_prompt);
+
+    private void Step() { for (var k = 0; k < GenerativeVfxStudioRunner.Hz; k++) Runner.TickOnce(); }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

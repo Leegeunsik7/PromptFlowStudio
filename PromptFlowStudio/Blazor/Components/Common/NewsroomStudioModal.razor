@@ -1,0 +1,383 @@
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.Newsroom
+@using PromptFlowStudio.Services.VTuber
+@implements IDisposable
+@inject RealtimeNewsFeedFactCheckEngine Feed
+@inject DualAiNewsAnchorGenerator Anchor
+@inject NewsMotionGraphicsOverlayEngine Gfx
+@inject LiveVTuberBroadcastingBridge Bridge
+
+@*
+    [PromptFlow Studio v16.44.0] 📰 AI 자율 뉴스룸 스튜디오 — 피드 소스/웹훅 · 실시간 속보 리스트(등급 · 신뢰도) · 팩트체크 인스펙터(출처 · 플래그 · Gemini 2차 검증) ·
+    듀얼 앵커 대본/텔레프롬프터 편집기 · 그래픽 프리뷰(Lower-Third · 티커 · 인포그래픽 합성) · 1-Click 라이브 속보 방송. 서비스 OnChange 구독 + 방송 중 120ms UI 틱.
+*@
+
+<div class="nr-scrim" @onclick="Close">
+    <div class="nr-modal" @onclick:stopPropagation="true">
+        <div class="nr-h">
+            <div>
+                <div class="nr-title">📰 AI 자율 뉴스룸 스튜디오</div>
+                <div class="nr-sub">실시간 속보를 <b>수집·교차 검증</b>해 신뢰도를 산출하고, <b>메인 앵커 × 현장 리포터</b> 대화형 대본과 <b>방송 그래픽</b>으로 1-Click 라이브 속보를 진행합니다.</div>
+            </div>
+            <button class="nr-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="nr-bar">
+            <span class="nr-chip @(Feed.IsRunning ? "ok" : "")">@(Feed.IsRunning ? "📡 수집 중" : "수집 대기")</span>
+            <span class="nr-chip">기사 @(Feed.ItemCount) · 스토리 @(Feed.Stories.Count) · 중복 @(Feed.Duplicates)</span>
+            <span class="nr-chip @(Feed.LlmAvailable ? "ok" : "")">@(Feed.LlmAvailable ? "Gemini 팩트체크" : "BCL 교차 검증")</span>
+            <span class="nr-chip @(Anchor.OnAir ? "live" : "")">@(Anchor.OnAir ? "● ON AIR" : "OFF AIR")</span>
+            @if (Gfx.ServerRunning)
+            {
+                <span class="nr-mut">그래픽 오버레이 <code>@(Gfx.Url)</code></span>
+            }
+            @if (Feed.WebhookPort > 0)
+            {
+                <span class="nr-mut">웹훅 <code>POST http://127.0.0.1:@(Feed.WebhookPort)/webhook</code></span>
+            }
+        </div>
+
+        <div class="nr-main">
+            <div class="nr-col">
+                <div class="nr-card">
+                    <div class="nr-row">
+                        <div class="nr-sec">실시간 속보 피드</div>
+                        <button class="nr-btn sm" @onclick="SeedDemo">🧪 데모 속보</button>
+                        @if (!Feed.IsRunning)
+                        {
+                            <button class="nr-btn sm" @onclick="StartFeed">▶ 수집</button>
+                        }
+                        else
+                        {
+                            <button class="nr-btn sm" @onclick="Feed.Stop">⏹</button>
+                        }
+                    </div>
+                    <div class="nr-row">
+                        <input class="nr-in grow" @bind="_srcName" placeholder="소스 이름" />
+                        <select class="nr-in" @bind="_srcKind">
+                            @foreach (var k in Enum.GetValues<FeedKind>())
+                            {
+                                <option value="@(k)">@(k)</option>
+                            }
+                        </select>
+                    </div>
+                    <div class="nr-row">
+                        <input class="nr-in grow" @bind="_srcUrl" placeholder="RSS/Atom 또는 JSON API URL" />
+                        <input class="nr-in w50" type="number" step="0.1" min="0" max="1" @bind="_srcRep" title="평판" />
+                        <button class="nr-btn sm" disabled="@(string.IsNullOrWhiteSpace(_srcUrl))" @onclick="AddSource">➕</button>
+                    </div>
+                    <div class="nr-note">소스 @(Feed.Sources.Count)개 · @(string.Join(" · ", Feed.Sources.Select(s => s.Name + (Feed.InBackoff(s.Name) ? "(백오프)" : ""))))</div>
+                    <div class="nr-list">
+                        @foreach (var st in Feed.Stories)
+                        {
+                            var s = st;
+                            <div class="nr-story @(_sel == s ? "on" : "")" @onclick="() => Select(s)">
+                                <b class="g@((int)s.Grade)">@(RealtimeNewsFeedFactCheckEngine.GradeLabel(s.Grade))</b>
+                                <span>@(s.Lead.Title)</span>
+                                <i class="@(ScoreClass(s.Score))">@(s.Score)%</i>
+                                <em>@(s.IndependentSources)출처 · @(s.Lead.Category)</em>
+                            </div>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="nr-col">
+                <div class="nr-card">
+                    <div class="nr-sec">팩트체크 검증 인스펙터</div>
+                    @if (_sel is { } st2)
+                    {
+                        <div class="nr-kv"><span>판정</span><b>@(RealtimeNewsFeedFactCheckEngine.VerdictLabel(st2.Verdict))</b></div>
+                        <div class="nr-kv"><span>신뢰도</span><b>@(st2.Score)% (BCL @(st2.AlgoScore)@(st2.LlmScore is { } l ? " · AI " + l.ToString(CultureInfo.InvariantCulture) : ""))</b></div>
+                        <div class="nr-meter"><i style="width:@(st2.Score)%;background:@(st2.Score >= 80 ? "#22c55e" : st2.Score >= 60 ? "#84cc16" : st2.Score >= 40 ? "#f59e0b" : "#ef4444")"></i></div>
+                        <div class="nr-kv"><span>플래그</span><b>@(RealtimeNewsFeedFactCheckEngine.FlagText(st2.Flags))</b></div>
+                        @if (!string.IsNullOrEmpty(st2.LlmReason))
+                        {
+                            <div class="nr-note">🤖 @(st2.LlmReason)</div>
+                        }
+                        <div class="nr-sources">
+                            @foreach (var it in st2.Items)
+                            {
+                                <div class="nr-src"><b>@(it.Source)</b><i>@(it.Kind) · 평판 @(it.Reputation.ToString("0.00", CultureInfo.InvariantCulture))</i><span>@(it.Title)</span></div>
+                            }
+                        </div>
+                        <div class="nr-row">
+                            <button class="nr-btn sm" disabled="@(!Feed.LlmAvailable || _busy)" @onclick="LlmCheck">🤖 Gemini 2차 검증</button>
+                            <button class="nr-btn sm" disabled="@_busy" @onclick="WriteScript">📝 앵커 대본 생성</button>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="nr-note">좌측 피드에서 스토리를 선택하세요.</div>
+                    }
+                </div>
+
+                <div class="nr-card">
+                    <div class="nr-row">
+                        <div class="nr-sec">앵커 프롬프트 · 텔레프롬프터</div>
+                        <input class="nr-in w90" @bind="_anchorName" @bind:after="ApplyNames" title="앵커" />
+                        <input class="nr-in w90" @bind="_reporterName" @bind:after="ApplyNames" title="리포터" />
+                    </div>
+                    <textarea class="nr-ta" rows="2" @bind="_style" @bind:after="ApplyStyle" placeholder="앵커 스타일 프롬프트"></textarea>
+                    <textarea class="nr-ta" rows="7" @bind="_editor" placeholder="앵커: … / 리포터: … 형식"></textarea>
+                    <div class="nr-row">
+                        <button class="nr-btn sm" disabled="@(_sel is null || string.IsNullOrWhiteSpace(_editor))" @onclick="ApplyEditor">✍ 편집 적용</button>
+                        <label class="nr-ck"><input type="checkbox" @bind="_useTts" @bind:after="ApplyStyle" /> TTS 음성</label>
+                        <label class="nr-ck"><input type="checkbox" @bind="_blockFalse" @bind:after="ApplyStyle" /> 허위 → 팩트체크 코너</label>
+                    </div>
+                    @if (Anchor.Current is { } sc)
+                    {
+                        <div class="nr-prompter">
+                            @for (var i = 0; i < sc.Lines.Count; i++)
+                            {
+                                var l = sc.Lines[i];
+                                <div class="nr-pl @(i == Anchor.CurrentLine ? "now" : i < Anchor.CurrentLine ? "done" : "")"><b>@(l.Speaker)</b><span>@(l.Text)</span><i>@(l.Duration.ToString("0.0", CultureInfo.InvariantCulture))s</i></div>
+                            }
+                        </div>
+                        <div class="nr-mut">@(sc.Source) · @(sc.Lines.Count)줄 · @(sc.TotalSeconds.ToString("0", CultureInfo.InvariantCulture))초</div>
+                    }
+                </div>
+            </div>
+
+            <div class="nr-col">
+                <div class="nr-card">
+                    <div class="nr-sec">방송 그래픽 프리뷰</div>
+                    <img class="nr-preview" src="@(_preview)" alt="preview" />
+                    <div class="nr-row">
+                        <button class="nr-btn sm" @onclick="RenderPreview">🔄 프리뷰</button>
+                        @if (!Gfx.ServerRunning)
+                        {
+                            <button class="nr-btn sm" @onclick="() => Gfx.StartServer()">📺 OBS 오버레이 ON</button>
+                        }
+                        else
+                        {
+                            <button class="nr-btn sm" @onclick="Gfx.StopServer">OFF</button>
+                        }
+                    </div>
+                    <div class="nr-note">합성 프레임 @(Gfx.Frames) · 텍스트 마스크 캐시 @(Gfx.CachedMasks)</div>
+                </div>
+                @if (!Anchor.OnAir)
+                {
+                    <button class="nr-btn go big" disabled="@(_sel is null || _busy)" @onclick="GoLiveAsync">🔴 1-Click 라이브 속보 방송</button>
+                }
+                else
+                {
+                    <button class="nr-btn danger big" @onclick="Anchor.StopPerformance">⏹ 방송 중단</button>
+                }
+            </div>
+        </div>
+
+        <div class="nr-f">
+            <span class="nr-mut">@(_msg ?? Anchor.LastAction ?? Gfx.LastAction ?? Feed.LastAction ?? "뉴스룸 대기")</span>
+            <button class="nr-btn" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .nr-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .nr-modal { width: min(1400px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .nr-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #d7263d 12%, var(--card)), color-mix(in srgb, #1d4e89 16%, var(--card))); }
+    .nr-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .nr-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .nr-sub b { color: var(--text-primary); }
+    .nr-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .nr-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .nr-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .nr-chip.ok { color: #4ade80; } .nr-chip.live { color: #fff; background: #dc2626; border-color: #dc2626; animation: nr-pulse 1.2s infinite; }
+    @@keyframes nr-pulse { 50% { opacity: .6; } }
+    .nr-main { display: grid; grid-template-columns: 1fr 1.1fr 1fr; gap: 12px; padding: 12px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .nr-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .nr-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .nr-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .nr-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .nr-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; min-width: 0; } .nr-in.grow { flex: 1; } .nr-in.w50 { width: 56px; } .nr-in.w90 { width: 90px; }
+    .nr-ta { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 6px; resize: vertical; }
+    .nr-ck { font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 5px; }
+    .nr-list { display: flex; flex-direction: column; gap: 3px; max-height: 470px; overflow-y: auto; }
+    .nr-story { display: grid; grid-template-columns: 74px 1fr 42px; grid-template-rows: auto auto; gap: 2px 6px; font-size: 12px; color: var(--text-primary); border-bottom: 1px solid var(--line); padding: 5px 2px; cursor: pointer; }
+    .nr-story.on { background: color-mix(in srgb, #1d4e89 18%, var(--card)); } .nr-story em { grid-column: 2 / 4; font: 10px var(--mono); font-style: normal; color: var(--text-muted); }
+    .nr-story b { font: 800 9.5px var(--mono); color: #fff; border-radius: 4px; padding: 2px 4px; text-align: center; height: fit-content; }
+    .g0 { background: #1d4e89; } .g1 { background: #f28c28; } .g2 { background: #d7263d; } .g3 { background: #7b2cbf; }
+    .nr-story i { font: 800 11px var(--mono); font-style: normal; text-align: right; } .s-hi { color: #22c55e; } .s-mid { color: #f59e0b; } .s-lo { color: #ef4444; }
+    .nr-kv { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--text-muted); } .nr-kv b { color: var(--text-primary); font-family: var(--mono); text-align: right; }
+    .nr-meter { height: 8px; border-radius: 6px; background: #1e293b; overflow: hidden; } .nr-meter i { display: block; height: 100%; }
+    .nr-sources { display: flex; flex-direction: column; gap: 3px; max-height: 160px; overflow-y: auto; }
+    .nr-src { display: grid; grid-template-columns: 90px 1fr; gap: 1px 6px; font-size: 11.5px; color: var(--text-secondary); border-left: 3px solid var(--line); padding-left: 6px; } .nr-src b { color: var(--text-primary); } .nr-src i { font: 10px var(--mono); font-style: normal; } .nr-src span { grid-column: 1 / 3; }
+    .nr-prompter { display: flex; flex-direction: column; gap: 3px; max-height: 220px; overflow-y: auto; background: #050816; border-radius: 8px; padding: 6px; }
+    .nr-pl { display: grid; grid-template-columns: 56px 1fr 34px; gap: 6px; font-size: 12.5px; color: #94a3b8; } .nr-pl b { color: #38bdf8; font-size: 11px; } .nr-pl i { font: 10px var(--mono); font-style: normal; }
+    .nr-pl.now { color: #fff; font-weight: 700; background: #1d4e8966; border-radius: 4px; } .nr-pl.done { opacity: .45; }
+    .nr-preview { width: 100%; aspect-ratio: 16 / 9; border-radius: 8px; background: #111; object-fit: contain; }
+    .nr-note { font-size: 11.5px; color: var(--text-secondary); }
+    .nr-mut { font-size: 11px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; } .nr-mut code { font: 11px var(--mono); color: #38bdf8; user-select: all; }
+    .nr-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); } .nr-f .nr-mut { margin-right: auto; }
+    .nr-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .nr-btn.sm { padding: 3px 8px; font-size: 11px; } .nr-btn.big { padding: 12px; font-size: 14px; }
+    .nr-btn.go { background: linear-gradient(135deg,#d7263d,#1d4e89); color: #fff; border: 0; } .nr-btn.danger { color: #f87171; border-color: #f87171; }
+    .nr-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 1100px) { .nr-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int PW = 640, PH = 360;
+    private readonly byte[] _frame = new byte[PW * PH * 4];
+    private NewsStory? _sel;
+    private string _srcName = "", _srcUrl = "", _editor = "", _style = "", _anchorName = "", _reporterName = "", _preview = "";
+    private double _srcRep = 0.7;
+    private FeedKind _srcKind = FeedKind.Rss;
+    private bool _busy, _useTts = true, _blockFalse = true;
+    private string? _msg;
+    private CancellationTokenSource? _ui;
+    private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+
+    protected override void OnInitialized()
+    {
+        Feed.OnChange += OnServiceChanged;
+        Anchor.OnChange += OnServiceChanged;
+        Gfx.OnChange += OnServiceChanged;
+        _style = Anchor.StylePrompt; _anchorName = Anchor.AnchorName; _reporterName = Anchor.ReporterName; _useTts = Anchor.UseTts; _blockFalse = Anchor.BlockFalse;
+        RenderPreview();
+        if (Anchor.OnAir) StartUi();
+    }
+
+    private void SeedDemo() { Feed.SeedDemo(); _sel ??= Feed.Stories.FirstOrDefault(); if (_sel is not null) Select(_sel); }
+    private void StartFeed() => Feed.Start();
+
+    private void AddSource()
+    {
+        Feed.AddSource(new FeedSource(string.IsNullOrWhiteSpace(_srcName) ? "Feed " + (Feed.Sources.Count + 1).ToString(CultureInfo.InvariantCulture) : _srcName.Trim(), _srcUrl.Trim(), _srcKind, (float)Math.Clamp(_srcRep, 0, 1)));
+        _srcUrl = ""; _srcName = "";
+    }
+
+    private void Select(NewsStory s)
+    {
+        _sel = s;
+        Gfx.ApplyStory(s, Feed.Stories, _clock.Elapsed.TotalSeconds);
+        RenderPreview();
+    }
+
+    private void ApplyNames() { Anchor.AnchorName = _anchorName; Anchor.ReporterName = _reporterName; }
+    private void ApplyStyle() { Anchor.StylePrompt = _style; Anchor.UseTts = _useTts; Anchor.BlockFalse = _blockFalse; }
+
+    private async Task LlmCheck()
+    {
+        if (_sel is not { } s) return;
+        _busy = true;
+        try { _msg = await Feed.LlmVerifyAsync(s) ? "🤖 Gemini 검증 반영 · " + s.Score.ToString(CultureInfo.InvariantCulture) + "%" : "Gemini 응답 없음 — BCL 점수 유지"; }
+        finally { _busy = false; }
+    }
+
+    private async Task WriteScript()
+    {
+        if (_sel is not { } s) return;
+        _busy = true;
+        try
+        {
+            var sc = await Anchor.GenerateAsync(s);
+            _editor = DualAiNewsAnchorGenerator.ToEditorText(sc);
+        }
+        finally { _busy = false; }
+    }
+
+    private void ApplyEditor() { if (_sel is { } s) { Anchor.ApplyEdit(s, _editor); _msg = "✍ 편집 대본 적용"; } }
+
+    private async Task GoLiveAsync()
+    {
+        if (_sel is not { } s) return;
+        _busy = true;
+        try
+        {
+            if (!Gfx.ServerRunning) Gfx.StartServer();
+            if (!Bridge.IsRunning) Bridge.Start();
+            var sc = Anchor.Current is { } c && c.StoryTitle == s.Lead.Title ? c : await Anchor.GenerateAsync(s);
+            _editor = DualAiNewsAnchorGenerator.ToEditorText(sc);
+            Gfx.ApplyStory(s, Feed.Stories, _clock.Elapsed.TotalSeconds);
+            StartUi();
+            _busy = false;
+            var n = await Anchor.PerformAsync(sc);
+            _msg = "📺 방송 " + n.ToString(CultureInfo.InvariantCulture) + "/" + sc.Lines.Count.ToString(CultureInfo.InvariantCulture) + "줄 진행";
+        }
+        catch (Exception ex) when (ex is System.Net.Sockets.SocketException or IOException or InvalidOperationException)
+        {
+            Program.Log("Newsroom.GoLive", ex);
+            _msg = "⚠ 방송 실패: " + ex.Message;
+        }
+        finally { _busy = false; StopUi(); RenderPreview(); }
+    }
+
+    private void RenderPreview()
+    {
+        for (var y = 0; y < PH; y++)
+            for (var x = 0; x < PW; x++)
+            {
+                var o = (y * PW + x) * 4;
+                _frame[o] = (byte)(30 + x * 40 / PW); _frame[o + 1] = (byte)(40 + y * 50 / PH); _frame[o + 2] = (byte)(70 + (x + y) % 40); _frame[o + 3] = 255;
+            }
+        Gfx.Render(_frame, PW, PH, PW * 4, _clock.Elapsed.TotalSeconds);
+        _preview = "data:image/bmp;base64," + Convert.ToBase64String(ToBmp(_frame, PW, PH));
+    }
+
+    private static byte[] ToBmp(byte[] rgba, int w, int h)
+    {
+        var size = 54 + w * h * 3;
+        var b = new byte[size];
+        b[0] = (byte)'B'; b[1] = (byte)'M';
+        BitConverter.GetBytes(size).CopyTo(b, 2);
+        BitConverter.GetBytes(54).CopyTo(b, 10);
+        BitConverter.GetBytes(40).CopyTo(b, 14);
+        BitConverter.GetBytes(w).CopyTo(b, 18);
+        BitConverter.GetBytes(h).CopyTo(b, 22);
+        b[26] = 1; b[28] = 24;
+        var p = 54;
+        for (var y = h - 1; y >= 0; y--)
+            for (var x = 0; x < w; x++) { var o = (y * w + x) * 4; b[p++] = rgba[o + 2]; b[p++] = rgba[o + 1]; b[p++] = rgba[o]; }
+        return b;
+    }
+
+    private static string ScoreClass(int s) => s >= 70 ? "s-hi" : s >= 40 ? "s-mid" : "s-lo";
+
+    private void StartUi()
+    {
+        if (_ui is not null) return;
+        var cts = new CancellationTokenSource();
+        _ui = cts;
+        _ = UiLoopAsync(cts.Token);
+    }
+
+    private void StopUi()
+    {
+        var cts = Interlocked.Exchange(ref _ui, null);
+        if (cts is null) return;
+        try { cts.Cancel(); } catch (ObjectDisposedException) { }
+        cts.Dispose();
+    }
+
+    private async Task UiLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                RenderPreview();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("Newsroom.Ui", ex); }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Feed.OnChange -= OnServiceChanged;
+        Anchor.OnChange -= OnServiceChanged;
+        Gfx.OnChange -= OnServiceChanged;
+        StopUi();
+    }
+}

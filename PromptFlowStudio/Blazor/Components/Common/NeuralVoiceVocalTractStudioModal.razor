@@ -1,0 +1,298 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.NeuralVoice
+@using PromptFlowStudio.Services.Localization.Dubbing
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject NeuralVoiceStudioRunner Runner
+
+@*
+    [PromptFlow Studio v17.18.0] 🎙️ AI 뉴럴 음성 & 성도 음향 스튜디오 — 성도 튜브 단면적 비주얼라이저(구강 + 비강) · F1–F4 포먼트 스펙트로그램 ·
+    감정 억양(Pitch/Energy) 곡선 · 음색 모핑 · 소프트 니 리미터 · 표시 시각 립싱크 락.
+*@
+
+<div class="nvc-scrim" @onclick="Close">
+    <div class="nvc-modal" @onclick:stopPropagation="true">
+        <div class="nvc-h">
+            <div>
+                <div class="nvc-title">🎙️ AI 뉴럴 음성 &amp; 성도 음향 스튜디오</div>
+                <div class="nvc-sub"><b>음성 엔진</b>이 대사를 음소로 바꾸고 v17.00 AGI 디렉터 · v17.17 혈류 감정(분노 · 기쁨 · 긴장 · 수줍음 · 심박)으로 F0 · 속도 · 에너지 · 개방률 운율을 만들어 48 kHz 를 @(F2(V.ChunkMs)) ms 청크로 스트리밍합니다.
+                    <b>성도 합성기</b>는 켈리-록바움 전력 정규화 도파관(@(T.Sections) 구간 · @(F1(T.TractLengthCm)) cm · 2× 과표본 · SIMD 산란)에 로젠버그 성문 펄스 · 비강 3-포트 · 마찰/파열 잡음 · 호흡을 합성하고,
+                    <b>가드</b>는 표시 시각 기준으로 립싱크를 샘플 정밀 락하며 P/B/T 팝 필터와 룩어헤드 소프트 니 리미터로 디지털 오버플로를 막습니다. (운율은 절차 모델 · 오디오 장치 출력 없음)</div>
+            </div>
+            <button class="nvc-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="nvc-bar">
+            <button class="nvc-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 음성 가동")</button>
+            <button class="nvc-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="nvc-btn @(Runner.DirectorEmotion ? "on" : null)" @onclick="() => Runner.DirectorEmotion = !Runner.DirectorEmotion">🎬 디렉터/혈류 감정</button>
+            <button class="nvc-btn @(Runner.AutoLines ? "on" : null)" @onclick="() => Runner.AutoLines = !Runner.AutoLines">📜 비트 대사</button>
+            <span class="nvc-chip">틱 @(Runner.Tick) · @(F2(Runner.LastTickMs)) ms · 청크 @(F0(V.LastChunkUs)) µs / @(F0(V.ChunkMs * 1000)) µs · 가드 @(F0(G.LastProcessUs)) µs · @(T.Path)</span>
+            <span class="nvc-chip @(G.AlgorithmicLatencyMs < 10 ? "ok" : "warn")">알고리즘 지연 @(F2(G.AlgorithmicLatencyMs)) ms</span>
+        </div>
+
+        <div class="nvc-main">
+            <div class="nvc-col">
+                <div class="nvc-card">
+                    <div class="nvc-sec">🗨 대사 · 음소 <span class="nvc-dim">현재 @(RealtimeNeuralVoiceSynthesisEngine.Name(V.Current)) · @(V.CurrentIndex)/@(V.PhoneCount) · 발화 @(V.LinesSpoken)</span></div>
+                    <div class="nvc-line">@(Runner.CurrentLine)</div>
+                    <div class="nvc-phones">
+                        @for (var i = 0; i < Math.Min(V.PhoneCount, 64); i++)
+                        {
+                            <span class="@(i == V.CurrentIndex ? "cur" : null)">@(RealtimeNeuralVoiceSynthesisEngine.Name(V.PhoneAt(i)))</span>
+                        }
+                    </div>
+                    <div class="nvc-ctl">
+                        @for (var l = 0; l < NeuralVoiceStudioRunner.Lines.Length; l++)
+                        {
+                            var li = l;
+                            <button class="nvc-btn sm @(Runner.LineIndex == li ? "on" : null)" @onclick="() => Runner.SayLine(li)">대사 @(li + 1)</button>
+                        }
+                    </div>
+                    <div class="nvc-ctl">
+                        <input class="nvc-in" value="@_text" @onchange="e => _text = e.Value?.ToString() ?? string.Empty" placeholder="직접 대사 입력(한글/영문)" />
+                        <button class="nvc-btn sm" @onclick="() => Runner.Say(_text)">🗣 말하기</button>
+                    </div>
+                </div>
+
+                <div class="nvc-card">
+                    <div class="nvc-sec">🫁 성도 튜브 단면적 <span class="nvc-dim">성문 → 입술 · 연구개 @(F2(T.VelumArea)) cm² · 폐쇄 @(F0(T.ClosureDepth * 100))%</span></div>
+                    <svg class="nvc-tube" viewBox="0 0 520 150" preserveAspectRatio="none">
+                        <line class="axis" x1="0" y1="75" x2="520" y2="75" />
+                        <path class="oral" d="@(TubePath())" />
+                        @if (T.VelumArea > 0.01f)
+                        {
+                            <path class="nasal" d="@(NasalPath())" />
+                        }
+                        <line class="velum" x1="@(F1(SecX(BiomechanicalVocalTractResonanceSynthesizer.VelumIndex)))" y1="20" x2="@(F1(SecX(BiomechanicalVocalTractResonanceSynthesizer.VelumIndex)))" y2="130" />
+                        @if (T.FricationSection >= 0)
+                        {
+                            <circle class="fric" cx="@(F1(SecX(T.FricationSection)))" cy="75" r="@(F1(3 + 40 * (T.FricationAmp + T.BurstAmp)))" />
+                        }
+                    </svg>
+                    <div class="nvc-legend"><i class="oral"></i>구강 면적(√A 반경 · 최대 8 cm²) <i class="nasal"></i>비강 결합 <i class="velum"></i>연구개 <i class="fric"></i>마찰/버스트 잡음원</div>
+                    <div class="nvc-kv">F1 <b>@(F0(T.Formant(0)))</b> · F2 <b>@(F0(T.Formant(1)))</b> · F3 @(F0(T.Formant(2))) · F4 @(F0(T.Formant(3))) Hz · F0 <b>@(F0(V.CurrentF0)) Hz</b> · 유성 @(F2(T.Voicing)) · 폐압 @(F2(T.LungPressure)) · OQ @(F2(T.OpenQuotient)) · 지터 @(F1(T.Jitter * 100))%</div>
+                </div>
+
+                <div class="nvc-card">
+                    <div class="nvc-sec">📈 포먼트 스펙트로그램(0–5 kHz · 흰 점 = 해석 F1–F4)</div>
+                    <div class="nvc-spec"><img src="data:image/bmp;base64,@(Runner.SpectrogramBase64())" alt="spectrogram" /></div>
+                    <svg class="nvc-wave" viewBox="0 0 400 60" preserveAspectRatio="none"><path d="@(Wave())" /></svg>
+                </div>
+            </div>
+
+            <div class="nvc-col">
+                <div class="nvc-card">
+                    <div class="nvc-sec">🎭 감정 억양(Pitch · Energy) <span class="nvc-chip">기준 F0 @(F0(V.BaseF0)) Hz · 속도 × @(F2(V.RateFactor)) · 심박 @(F0(V.Emotion.Bpm))</span></div>
+                    <svg class="nvc-pros" viewBox="0 0 600 90" preserveAspectRatio="none">
+                        <polyline class="f0" points="@(Prosody(true))" /><polyline class="en" points="@(Prosody(false))" />
+                    </svg>
+                    <div class="nvc-legend"><i class="f0"></i>F0(50–400 Hz · 1 ms 제어 · 최근 0.6 s) <i class="en"></i>에너지(폐압)</div>
+                    <div class="nvc-emo">
+                        <span>분노 <b>@(F2(V.Emotion.Anger))</b><i class="an" style="width:@(F0(V.Emotion.Anger * 100))%"></i></span>
+                        <span>기쁨 <b>@(F2(V.Emotion.Joy))</b><i class="jo" style="width:@(F0(V.Emotion.Joy * 100))%"></i></span>
+                        <span>긴장 <b>@(F2(V.Emotion.Tension))</b><i class="te" style="width:@(F0(V.Emotion.Tension * 100))%"></i></span>
+                        <span>수줍음 <b>@(F2(V.Emotion.Shyness))</b><i class="sh" style="width:@(F0(V.Emotion.Shyness * 100))%"></i></span>
+                    </div>
+                    <div class="nvc-ctl">
+                        <button class="nvc-btn sm" @onclick="() => Runner.SetManualEmotion(0.9f, 0f, 0.2f, 0f)">😠 분노</button>
+                        <button class="nvc-btn sm" @onclick="() => Runner.SetManualEmotion(0f, 0.9f, 0f, 0f)">😄 기쁨</button>
+                        <button class="nvc-btn sm" @onclick="() => Runner.SetManualEmotion(0f, 0f, 0.9f, 0f)">😰 긴장</button>
+                        <button class="nvc-btn sm" @onclick="() => Runner.SetManualEmotion(0f, 0.2f, 0f, 0.8f)">😳 수줍음</button>
+                        <button class="nvc-btn sm" @onclick="() => Runner.SetManualEmotion(0f, 0.2f, 0f, 0f)">😐 평정</button>
+                    </div>
+                    <div class="nvc-ctl">
+                        <label class="nvc-sl">속도 <b>× @(F2(V.SpeedScale))</b><input type="range" min="0.5" max="2" step="0.05" value="@(F2(V.SpeedScale))" @onchange="e => V.SpeedScale = (float)Num(e, 1)" /></label>
+                        <label class="nvc-sl">음높이 <b>× @(F2(V.PitchScale))</b><input type="range" min="0.5" max="2" step="0.05" value="@(F2(V.PitchScale))" @onchange="e => V.PitchScale = (float)Num(e, 1)" /></label>
+                    </div>
+                </div>
+
+                <div class="nvc-card">
+                    <div class="nvc-sec">🧬 음색 모핑</div>
+                    <div class="nvc-ctl">
+                        @for (var a = 0; a < 3; a++)
+                        {
+                            var ai = a;
+                            <button class="nvc-btn sm @((int)V.Primary == ai ? "on" : null)" @onclick="() => Runner.SetSpeakers((SpeakerPreset)ai, V.Secondary, V.Morph)">1차 @(SpeakerName(ai))</button>
+                        }
+                        @for (var b = 0; b < 3; b++)
+                        {
+                            var bi = b;
+                            <button class="nvc-btn sm @((int)V.Secondary == bi ? "on" : null)" @onclick="() => Runner.SetSpeakers(V.Primary, (SpeakerPreset)bi, V.Morph)">2차 @(SpeakerName(bi))</button>
+                        }
+                        <label class="nvc-sl">α <b>@(F2(V.Morph))</b><input type="range" min="0" max="1" step="0.05" value="@(F2(V.Morph))" @onchange="e => Runner.SetSpeakers(V.Primary, V.Secondary, (float)Num(e, 0))" /></label>
+                    </div>
+                    <div class="nvc-kv">성도 길이 <b>@(F1(T.TractLengthCm)) cm</b>(@(T.Sections) 구간) · 기준 F0 @(F0(V.BaseF0)) Hz</div>
+                </div>
+
+                <div class="nvc-card">
+                    <div class="nvc-sec">🛡 립싱크 지연 락 · 파열음 리미터
+                        <button class="nvc-btn sm @(G.LatencyLock ? "on" : null)" @onclick="() => G.LatencyLock = !G.LatencyLock">지연 락</button>
+                        <button class="nvc-btn sm @(G.PopFilter ? "on" : null)" @onclick="() => G.PopFilter = !G.PopFilter">팝 필터</button>
+                        <button class="nvc-btn sm @(G.LimiterEnabled ? "on" : null)" @onclick="() => G.LimiterEnabled = !G.LimiterEnabled">소프트 니 리미터</button>
+                    </div>
+                    <div class="nvc-kv">오디오 지연 Lₐ <b>@(F2(G.AudioLatencyMs)) ms</b>(청크 + 룩어헤드 + 장치 @(F0(G.DeviceBufferMs))) · 영상 Lᵥ @(F1(G.VideoLatencyMs)) ms · 락 오차 <b>@(F3(G.LockErrorMs)) ms</b> · 비보정 @(F2(G.NaiveErrorMs)) ms · v17.12 A2F 분석 지연 @(F1(G.A2fLagMs)) ms</div>
+                    <div class="nvc-mouth">
+                        @for (var s = 0; s < GenerativeNeuralLipSyncSynthesizer.Shapes; s++)
+                        {
+                            <span title="@(GenerativeNeuralLipSyncSynthesizer.ShapeName(s))"><i style="height:@(F0(G.Weight(s) * 100))%"></i></span>
+                        }
+                    </div>
+                    <div class="nvc-legend"><span>입 셰이프 15(락 시각 평가) · A2F 비짐 @(Runner.A2F.Viseme)</span></div>
+                    <div class="nvc-ctl">
+                        <label class="nvc-sl">입력 이득 <b>@(F2(G.InputGain))</b><input type="range" min="0.2" max="4" step="0.05" value="@(F2(G.InputGain))" @onchange="e => G.InputGain = (float)Num(e, 1)" /></label>
+                        <label class="nvc-sl">임계 <b>@(F1(G.ThresholdDb)) dB</b><input type="range" min="-12" max="0" step="0.5" value="@(F1(G.ThresholdDb))" @onchange="e => G.ThresholdDb = (float)Num(e, -1)" /></label>
+                        <label class="nvc-sl">니 <b>@(F1(G.KneeDb)) dB</b><input type="range" min="0" max="12" step="0.5" value="@(F1(G.KneeDb))" @onchange="e => G.KneeDb = (float)Num(e, 6)" /></label>
+                        <label class="nvc-sl">장치 버퍼 <b>@(F0(G.DeviceBufferMs)) ms</b><input type="range" min="0" max="80" step="1" value="@(F0(G.DeviceBufferMs))" @onchange="e => G.DeviceBufferMs = (float)Num(e, 20)" /></label>
+                        <button class="nvc-btn sm" @onclick="G.ResetMeters">계측 초기화</button>
+                    </div>
+                    <div class="nvc-kv">원시 피크 <b>@(F1(G.RawPeakDb)) dBFS</b> · 출력 피크 <b>@(F2(G.OutputPeakDb)) dBFS</b> · 오버 @(G.RawOvers) → <b>@(G.OutputOvers)</b> · 이득 감소 @(F1(G.GainReductionDb)) dB(최대 @(F1(G.MaxGainReductionDb))) · 팝 창 @(G.PopWindows)</div>
+                    <svg class="nvc-pros" viewBox="0 0 360 50" preserveAspectRatio="none"><polyline class="gr" points="@(Series(Runner.GainReductionSeries, 20, 50))" /></svg>
+                    <div class="nvc-legend"><i class="gr"></i>이득 감소(0–20 dB)</div>
+                </div>
+                <div class="nvc-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .nvc-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .nvc-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .nvc-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #0ea5e9 13%, var(--card)), color-mix(in srgb, #a855f7 13%, var(--card))); }
+    .nvc-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .nvc-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .nvc-sub b { color: var(--text-primary); }
+    .nvc-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .nvc-bar { display: flex; flex-wrap: wrap; gap: 6px 10px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .nvc-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; } .nvc-btn:disabled { opacity: .4; cursor: default; }
+    .nvc-btn.sm { font-size: 10px; padding: 2px 8px; } .nvc-btn.on { background: color-mix(in srgb, #0ea5e9 22%, transparent); border-color: #38bdf8; }
+    .nvc-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .nvc-chip.ok { border-color: #22c55e; color: #86efac; } .nvc-chip.warn { border-color: #eab308; color: #fde68a; }
+    .nvc-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .nvc-sl b { font-family: var(--mono); color: var(--text-primary); } .nvc-sl input { width: 90px; }
+    .nvc-in { flex: 1; min-width: 200px; font-size: 12px; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); }
+    .nvc-dim { font-size: 11px; font-weight: 500; color: var(--text-muted); }
+    .nvc-main { display: grid; grid-template-columns: 1.1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .nvc-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .nvc-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .nvc-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .nvc-ctl { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+    .nvc-line { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+    .nvc-phones { display: flex; flex-wrap: wrap; gap: 3px; } .nvc-phones span { font: 600 10px var(--mono); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .nvc-phones span.cur { background: #0ea5e9; color: #fff; border-color: #0ea5e9; }
+    .nvc-tube { width: 100%; height: 150px; background: #030712; border-radius: 8px; }
+    .nvc-tube .axis { stroke: rgba(148,163,184,.25); stroke-dasharray: 3 3; } .nvc-tube .oral { fill: rgba(244,114,182,.35); stroke: #f472b6; stroke-width: 1.5; }
+    .nvc-tube .nasal { fill: rgba(56,189,248,.25); stroke: #38bdf8; stroke-width: 1.2; } .nvc-tube .velum { stroke: #facc15; stroke-dasharray: 4 3; } .nvc-tube .fric { fill: rgba(250,204,21,.5); }
+    .nvc-spec img { width: 100%; height: 190px; image-rendering: pixelated; border-radius: 8px; }
+    .nvc-wave { width: 100%; height: 60px; background: #030712; border-radius: 6px; } .nvc-wave path { fill: none; stroke: #38bdf8; stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .nvc-pros { width: 100%; height: 90px; background: #030712; border-radius: 6px; }
+    .nvc-pros polyline { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; } .nvc-pros .f0 { stroke: #f472b6; } .nvc-pros .en { stroke: #a3e635; } .nvc-pros .gr { stroke: #f97316; }
+    .nvc-emo { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; font-size: 11px; color: var(--text-secondary); }
+    .nvc-emo span { display: flex; flex-direction: column; gap: 3px; } .nvc-emo b { color: var(--text-primary); font-family: var(--mono); }
+    .nvc-emo i { display: block; height: 8px; border-radius: 4px; } .nvc-emo .an { background: #dc2626; } .nvc-emo .jo { background: #facc15; } .nvc-emo .te { background: #94a3b8; } .nvc-emo .sh { background: #f472b6; }
+    .nvc-mouth { display: grid; grid-template-columns: repeat(15, 1fr); gap: 3px; height: 50px; align-items: end; }
+    .nvc-mouth span { height: 100%; display: flex; align-items: flex-end; background: #0f172a; border-radius: 3px; } .nvc-mouth i { display: block; width: 100%; background: linear-gradient(0deg, #f472b6, #fb7185); border-radius: 3px; }
+    .nvc-legend, .nvc-kv { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11px; color: var(--text-secondary); align-items: center; } .nvc-kv b { color: var(--text-primary); }
+    .nvc-legend i { display: inline-block; width: 10px; height: 8px; border-radius: 2px; margin-right: 2px; }
+    .nvc-legend .oral { background: #f472b6; } .nvc-legend .nasal { background: #38bdf8; } .nvc-legend .velum { background: #facc15; } .nvc-legend .fric { background: #fde047; }
+    .nvc-legend .f0 { background: #f472b6; } .nvc-legend .en { background: #a3e635; } .nvc-legend .gr { background: #f97316; }
+    .nvc-note { font-size: 11px; color: var(--text-muted); word-break: break-all; }
+    @@media (max-width: 1250px) { .nvc-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+    private string _text = "Peter, bring the big blue bag back!";
+
+    private BiomechanicalVocalTractResonanceSynthesizer T => Runner.Tract;
+    private RealtimeNeuralVoiceSynthesisEngine V => Runner.Voice;
+    private AcousticVisualLatencyPlosiveGuard G => Runner.Guard;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("NeuralVoice.Modal.Timer", ex); }
+        }, null, 200, 200);
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+    private static string SpeakerName(int s) => s == 1 ? "여성" : s == 2 ? "아동" : "남성";
+
+    private double SecX(int i) => 10 + i * 500.0 / Math.Max(1, T.Sections - 1);
+
+    private string TubePath()
+    {
+        var n = T.Sections;
+        var sb = new System.Text.StringBuilder(n * 30);
+        for (var i = 0; i < n; i++) { var r = Math.Sqrt(Math.Max(0, T.Area[i]) / 8.0) * 55; sb.Append(i == 0 ? 'M' : 'L').Append(F1(SecX(i))).Append(',').Append(F1(75 - r)); }
+        for (var i = n - 1; i >= 0; i--) { var r = Math.Sqrt(Math.Max(0, T.Area[i]) / 8.0) * 55; sb.Append('L').Append(F1(SecX(i))).Append(',').Append(F1(75 + r)); }
+        sb.Append('Z');
+        return sb.ToString();
+    }
+
+    private string NasalPath()
+    {
+        var x0 = SecX(BiomechanicalVocalTractResonanceSynthesizer.VelumIndex);
+        var w = Math.Sqrt(T.VelumArea / 8.0) * 40;
+        return "M" + F1(x0) + ",20 L" + F1(x0 + 260) + ",8 L" + F1(x0 + 260) + "," + F1(8 + w) + " L" + F1(x0 + w) + "," + F1(20 + w) + "Z";
+    }
+
+    private string Wave()
+    {
+        const int cols = 400, per = 4;
+        var sb = new System.Text.StringBuilder(cols * 24);
+        for (var c = 0; c < cols; c++)
+        {
+            float mn = 0, mx = 0;
+            for (var k = 0; k < per; k++) { var v = Runner.Sample((cols - 1 - c) * per + k); mn = MathF.Min(mn, v); mx = MathF.Max(mx, v); }
+            sb.Append(c == 0 ? 'M' : 'L').Append(c).Append(',').Append(F1(30 - Math.Clamp(mx * 28, -29, 29))).Append('L').Append(c).Append(',').Append(F1(30 - Math.Clamp(mn * 28, -29, 29)));
+        }
+        return sb.ToString();
+    }
+
+    private string Prosody(bool f0)
+    {
+        var n = V.ProsodyCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+        {
+            double y = f0 ? (V.F0Sample(i) <= 0 ? 88 : 88 - 84 * Math.Clamp((V.F0Sample(i) - 50) / 350.0, 0, 1)) : 88 - 84 * Math.Clamp(V.EnergySample(i) / 2.0, 0, 1);
+            sb.Append(F1((n - 1 - i) * 600.0 / (RealtimeNeuralVoiceSynthesisEngine.ProsodyRing - 1))).Append(',').Append(F1(y)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private string Series(Func<int, float> f, double max, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (NeuralVoiceStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - 2 - (h - 4) * Math.Clamp(f(i) / max, 0, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step60() { for (var i = 0; i < NeuralVoiceStudioRunner.Hz; i++) Runner.Step(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중(10 Hz 이벤트)은 200 ms 타이머가 처리 — 정지 상태 액션만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

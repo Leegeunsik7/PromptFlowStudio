@@ -1,0 +1,273 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.WorldExpansion
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject GenerativeWorldStudioRunner Runner
+
+@* [PromptFlow Studio v17.27.0] 🌍 AI 생성형 월드 확장 스튜디오 — 프롬프트 입력 · 확장 반경 슬라이더 · 타일 LoD 미니맵 · 인페인팅 결과/마스크 뷰어 · 가우시안 메모리 풀 점유율 그래프 · 팝핑/이음새 지표. *@
+
+<div class="gwx-scrim" @onclick="Close">
+    <div class="gwx-modal" @onclick:stopPropagation="true">
+        <div class="gwx-h">
+            <div>
+                <div class="gwx-title">🌍 AI 생성형 월드 확장 &amp; 4D 인페인팅 스튜디오</div>
+                <div class="gwx-sub"><b>월드 확장 엔진</b>이 v17.21 시네마틱 카메라의 예측 궤적을 따라 Instant-NGP 스타일 해시 그리드(@(GenerativeNeuralWorldExpansionEngine.Levels) 레벨) + 소형 MLP 로 지형 · v17.20 형식 가우시안을 타일 단위로 생성하고, <b>LoD 가드</b>는 고정 풀(@(G.Pool.Capacity) 가우시안 · @(F0(G.Pool.Bytes / 1024f)) KB)을 옥트리 LoD 예산으로 지키며 알파-디졸브로 팝핑을 막습니다. <b>인페인팅 합성기</b>는 v17.11 액터 제거 · v17.26 파괴 크레이터 구멍을 심도 유도 양방향 푸시-풀과 SH 재조명 · 4 프레임 링버퍼 재투영으로 메웁니다.</div>
+            </div>
+            <button class="gwx-x" @onclick="Close">✕</button>
+        </div>
+        <div class="gwx-bar">
+            <button class="gwx-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 가동")</button>
+            <button class="gwx-btn" @onclick="Step30" disabled="@Runner.IsRunning">⏭ 0.5초</button>
+            <button class="gwx-btn @(G.Enabled ? "on" : null)" @onclick="() => Runner.SetGuard(!G.Enabled)">🛡 LoD 가드</button>
+            <button class="gwx-btn @(G.Prediction ? "on" : null)" @onclick="() => Runner.SetPrediction(!G.Prediction)">🔮 궤적 예측</button>
+            <button class="gwx-btn @(P.Enabled ? "on" : null)" @onclick="() => Runner.SetInpaint(!P.Enabled)">🩹 인페인팅</button>
+            <button class="gwx-btn @(P.DepthGuided ? "on" : null)" @onclick="() => Runner.SetDepthGuided(!P.DepthGuided)">🧭 심도 유도</button>
+            <button class="gwx-btn @(P.Temporal ? "on" : null)" @onclick="() => Runner.SetTemporal(!P.Temporal)">⏳ 4D 링버퍼</button>
+            <button class="gwx-btn @(P.RemoveActor ? "on" : null)" @onclick="() => Runner.SetRemoveActor(!P.RemoveActor)">🧍 액터 제거</button>
+            <button class="gwx-btn @(E.UseSimd ? "on" : null)" @onclick="() => Runner.SetSimd(!E.UseSimd)">⚡ SIMD</button>
+            <span class="gwx-chip @(Runner.LastTickMs <= 16.7 ? "ok" : "warn")">프레임 @(F2(Runner.LastTickMs)) ms(최대 @(F1(Runner.MaxTickMs))) · 렌더 @(F2(P.LastRenderUs / 1000)) · 인페인팅 @(F2(P.LastInpaintUs / 1000)) ms</span>
+            <span class="gwx-chip">시뮬 @(F1(Runner.SimTime)) s · 생성 @(G.Generated) 타일 · 평가 @(E.Evaluations)</span>
+        </div>
+        <div class="gwx-main">
+            <div class="gwx-col">
+                <div class="gwx-card">
+                    <div class="gwx-sec">✍ 실시간 프롬프트 → 스타일 <b>@(E.Style.Name)</b> · 시드 0x@(E.Seed.ToString("X8", CultureInfo.InvariantCulture)) · 에포크 @(E.Epoch)</div>
+                    <div class="gwx-prompt">
+                        <input type="text" value="@_prompt" @oninput="e => _prompt = e.Value?.ToString() ?? string.Empty" @onkeydown="OnPromptKey" placeholder="예: 붉은 용암이 흐르는 화산 지대" />
+                        <button class="gwx-btn on" @onclick="ApplyPrompt">생성</button>
+                    </div>
+                    <div class="gwx-presets">
+                        @foreach (var ex in Examples)
+                        {
+                            var v = ex;
+                            <button class="gwx-btn sm" @onclick="() => { _prompt = v; ApplyPrompt(); }">@(v)</button>
+                        }
+                    </div>
+                    <div class="gwx-ctl">
+                        <label class="gwx-sl">📏 확장 반경 <b>@(F0(G.Radius)) m</b><input type="range" min="16" max="240" step="8" value="@(F0(G.Radius))" @onchange="e => Runner.SetRadius((float)Num(e, 80))" /></label>
+                        <label class="gwx-sl">🎥 속도 <b>@(F1(Runner.Speed)) m/s</b><input type="range" min="0" max="30" step="1" value="@(F0(Runner.Speed))" @onchange="e => Runner.SetSpeed((float)Num(e, 6))" /></label>
+                        <label class="gwx-sl">🌫 디졸브 <b>@(G.FadeFrames)f</b><input type="range" min="0" max="60" step="2" value="@(G.FadeFrames)" @onchange="e => Runner.SetFadeFrames((int)Num(e, 24))" /></label>
+                        <label class="gwx-sl">⚙ 생성 예산 <b>@(G.GenBudget)/f</b><input type="range" min="1" max="32" step="1" value="@(G.GenBudget)" @onchange="e => Runner.SetGenBudget((int)Num(e, 12))" /></label>
+                    </div>
+                </div>
+
+                <div class="gwx-card">
+                    <div class="gwx-sec">🗺 타일 LoD 미니맵(카메라 중심 ±@(F0(MapHalf)) m · 예측 궤적) · L0 @(G.LodTiles(0)) · L1 @(G.LodTiles(1)) · L2 @(G.LodTiles(2)) · L3 @(G.LodTiles(3))</div>
+                    <svg class="gwx-map" viewBox="0 0 300 300">
+                        @for (var i = 0; i < DynamicOctreeLoDAntiPoppingGuard.MaxTiles; i++)
+                        {
+                            if (!G.TileLive(i)) continue;
+                            var mx = MX(G.TileX(i) * GenerativeNeuralWorldExpansionEngine.TileSize);
+                            var my = MY(G.TileZ(i) * GenerativeNeuralWorldExpansionEngine.TileSize + GenerativeNeuralWorldExpansionEngine.TileSize);
+                            if (mx < -TilePx || mx > 300 || my < -TilePx || my > 300) continue;
+                            <rect class="l@(G.TileLod(i)) @(G.TileLeaving(i) ? "out" : null)" x="@(F1(mx))" y="@(F1(my))" width="@(F1(TilePx))" height="@(F1(TilePx))" fill-opacity="@(F2(0.25 + 0.75 * G.TileAlpha(i)))" />
+                        }
+                        <circle class="rad" cx="150" cy="150" r="@(F1(G.Radius * MapScale))" />
+                        @for (var c = 0; c < G.CraterCount; c++)
+                        {
+                            var cr = G.Crater(c);
+                            <circle class="crater" cx="@(F1(MX(cr.X)))" cy="@(F1(MY(cr.Z)))" r="@(F1(Math.Max(2f, cr.W * MapScale)))" />
+                        }
+                        <polyline class="pred" points="@(PredPoints())" />
+                        <polygon class="cam" points="@(CamPoints())" />
+                    </svg>
+                    <div class="gwx-legend"><i class="l0"></i>L0 16² <i class="l1"></i>L1 8² <i class="l2"></i>L2 4² <i class="l3"></i>L3 2² <i class="outl"></i>이탈(페이드아웃) <i class="predl"></i>예측 궤적 1.5 s <i class="crl"></i>v17.26 크레이터</div>
+                </div>
+            </div>
+
+            <div class="gwx-col">
+                <div class="gwx-card">
+                    <div class="gwx-sec">🩹 4D 인페인팅 결과 · 마스크 뷰어 · 구멍 @(P.HolePixels) px(액터 @(P.ActorPixels) · 크레이터 @(P.CraterPixels))</div>
+                    <div class="gwx-imgs">
+                        <img src="@_imgColor" alt="인페인팅 결과" />
+                        <img src="@_imgMask" alt="인페인팅 마스크" />
+                    </div>
+                    <div class="gwx-legend"><i class="mact"></i>액터 제거 영역 <i class="mcr"></i>크레이터 <i class="mgap"></i>LoD 틈 · 이음새 오차 <b>@(F2(P.SeamError * 100))%</b> · 깜빡임 @(F2(P.Flicker * 100))% · 시간 재투영 @(P.TemporalHits) px · 피라미드 @(P.PyramidLevels) 레벨</div>
+                </div>
+
+                <div class="gwx-card">
+                    <div class="gwx-sec">💾 가우시안 메모리 풀 점유율 · 생성/팝 그래프(4 s)</div>
+                    <svg class="gwx-ser" viewBox="0 0 360 90" preserveAspectRatio="none">
+                        <line class="bud" x1="0" y1="@(F1(88 - 86 * DynamicOctreeLoDAntiPoppingGuard.BudgetFraction))" x2="360" y2="@(F1(88 - 86 * DynamicOctreeLoDAntiPoppingGuard.BudgetFraction))" />
+                        <polyline class="occ" points="@(Series(0, 100, 90))" /><polyline class="gen" points="@(Series(1, Math.Max(1, G.GenBudget), 90))" /><polyline class="pop" points="@(Series(2, 1, 90))" />
+                    </svg>
+                    <div class="gwx-legend"><i class="occl"></i>점유율(0–100 %) <i class="budl"></i>예산 @(F0(DynamicOctreeLoDAntiPoppingGuard.BudgetFraction * 100))% <i class="genl"></i>프레임 생성 수 <i class="popl"></i>시야 알파 단계(0–1)</div>
+                    <div class="gwx-stats">
+                        <span><b class="@(G.Occupancy > DynamicOctreeLoDAntiPoppingGuard.BudgetFraction ? "warn" : "ok")">@(F1(G.Occupancy * 100))%</b>점유(최고 @(F1(G.PeakOccupancy * 100))%)</span><span><b>@(G.LiveGaussians)</b>가우시안 · @(G.LiveTiles) 타일</span><span><b>@(F2(G.LodBias))</b>LoD 바이어스</span>
+                        <span><b class="@(G.PopsInView > 0 ? "bad" : "ok")">@(G.PopsInView)</b>시야 팝</span><span><b>@(F2(G.MaxAlphaStep))</b>최대 알파 단계</span><span><b class="@(G.Dropped > 0 ? "bad" : null)">@(G.Dropped)</b>누락(풀 고갈)</span>
+                        <span><b>@(G.Crossfades)</b>교차 디졸브</span><span><b>@(G.PendingTiles)</b>대기 타일</span><span><b class="@(G.LateInView > 0 ? "warn" : null)">@(G.LateInView)</b>예측 지연(근거리 생성)</span>
+                    </div>
+                    <div class="gwx-ctl"><button class="gwx-btn sm" @onclick="Runner.ResetMetrics">↺ 지표 초기화</button></div>
+                </div>
+                <div class="gwx-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .gwx-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .gwx-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .gwx-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #22c55e 14%, var(--card)), color-mix(in srgb, #0ea5e9 12%, var(--card))); }
+    .gwx-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .gwx-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .gwx-sub b { color: var(--text-primary); }
+    .gwx-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .gwx-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .gwx-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .gwx-btn:disabled { opacity: .45; cursor: default; }
+    .gwx-btn.sm { font-size: 11px; padding: 3px 8px; }
+    .gwx-btn.on { background: color-mix(in srgb, #22c55e 22%, var(--card)); border-color: #22c55e; }
+    .gwx-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .gwx-chip.ok { border-color: #22c55e; color: #22c55e; }
+    .gwx-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .gwx-main { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .gwx-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .gwx-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+    .gwx-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .gwx-prompt { display: flex; gap: 6px; }
+    .gwx-prompt input { flex: 1; font-size: 13px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .gwx-presets { display: flex; flex-wrap: wrap; gap: 4px; }
+    .gwx-ctl { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
+    .gwx-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); }
+    .gwx-sl b { font-family: var(--mono); color: var(--text-primary); }
+    .gwx-map { width: 100%; max-width: 420px; aspect-ratio: 1; align-self: center; background: #030712; border-radius: 8px; }
+    .gwx-map rect { stroke: #030712; stroke-width: .4; }
+    .gwx-map .l0, .gwx-legend .l0 { fill: #22c55e; background: #22c55e; } .gwx-map .l1, .gwx-legend .l1 { fill: #0ea5e9; background: #0ea5e9; }
+    .gwx-map .l2, .gwx-legend .l2 { fill: #8b5cf6; background: #8b5cf6; } .gwx-map .l3, .gwx-legend .l3 { fill: #475569; background: #475569; }
+    .gwx-map .out { stroke: #f87171; stroke-width: .8; }
+    .gwx-map .rad { fill: none; stroke: #fbbf24; stroke-dasharray: 4 3; stroke-width: 1; }
+    .gwx-map .crater { fill: #ef4444; fill-opacity: .7; }
+    .gwx-map .pred { fill: none; stroke: #f472b6; stroke-width: 2; }
+    .gwx-map .cam { fill: #fff; }
+    .gwx-imgs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .gwx-imgs img { width: 100%; aspect-ratio: 16 / 9; image-rendering: pixelated; border-radius: 6px; background: #030712; }
+    .gwx-ser { width: 100%; height: 90px; background: #030712; border-radius: 6px; }
+    .gwx-ser polyline { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+    .gwx-ser .bud { stroke: #f59e0b; stroke-dasharray: 4 3; stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .gwx-ser .occ { stroke: #22c55e; stroke-width: 2; } .gwx-ser .gen { stroke: #0ea5e9; } .gwx-ser .pop { stroke: #f472b6; }
+    .gwx-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 10px; font-size: 10.5px; color: var(--text-muted); }
+    .gwx-stats span { display: flex; flex-direction: column; gap: 1px; }
+    .gwx-stats b { font: 800 13px var(--mono); color: var(--text-primary); }
+    .gwx-stats b.ok { color: #22c55e; } .gwx-stats b.warn { color: #f59e0b; } .gwx-stats b.bad { color: #ef4444; }
+    .gwx-legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; line-height: 1.45; color: var(--text-secondary); align-items: center; min-width: 0; overflow-wrap: anywhere; }
+    .gwx-legend b { color: var(--text-primary); }
+    .gwx-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 3px; }
+    .gwx-legend .outl { background: transparent; border: 1px solid #f87171; } .gwx-legend .predl { background: #f472b6; } .gwx-legend .crl { background: #ef4444; }
+    .gwx-legend .mact { background: rgb(255,77,191); } .gwx-legend .mcr { background: rgb(255,38,26); } .gwx-legend .mgap { background: rgb(255,153,26); }
+    .gwx-legend .occl { background: #22c55e; } .gwx-legend .budl { background: #f59e0b; } .gwx-legend .genl { background: #0ea5e9; } .gwx-legend .popl { background: #f472b6; }
+    .gwx-note { font-size: 11px; color: var(--text-muted); word-break: break-all; }
+    @@media (max-width: 1100px) { .gwx-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const float MapHalf = 120f, MapScale = 150f / MapHalf, TilePx = GenerativeNeuralWorldExpansionEngine.TileSize * MapScale;
+    static readonly string[] Examples = { "안개 낀 침엽수 숲", "황량한 사막 모래 언덕", "눈 덮인 빙하 계곡", "붉은 용암 화산 지대", "네온 도시 거리" };
+    private string _prompt = string.Empty;
+    private string _imgColor = string.Empty, _imgMask = string.Empty;
+    private System.Threading.Timer? _timer;
+    private GenerativeNeuralWorldExpansionEngine E => Runner.Engine;
+    private DynamicOctreeLoDAntiPoppingGuard G => Runner.Guard;
+    private GaussianDepthInpaintingSeamlessSynthesizer P => Runner.Inpaint;
+
+    protected override void OnInitialized()
+    {
+        _prompt = E.Prompt;
+        Runner.OnChange += OnServiceChanged;
+        RefreshImages();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(() => { RefreshImages(); StateHasChanged(); }); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("WorldExpansion.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private void RefreshImages()
+    {
+        _imgColor = "data:image/bmp;base64," + Convert.ToBase64String(Runner.EncodeBmp(false));
+        _imgMask = "data:image/bmp;base64," + Convert.ToBase64String(Runner.EncodeBmp(true));
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    // 미니맵: 카메라 중심 · 화면 위 = 카메라 전방(+z 를 위로 · 회전 없음)
+    private float MX(float x) => 150f + (x - Runner.Camera.Position.X) * MapScale;
+    private float MY(float z) => 150f - (z - Runner.Camera.Position.Z) * MapScale;
+
+    private string PredPoints()
+    {
+        var c = Runner.Camera;
+        var sb = new System.Text.StringBuilder(96);
+        for (var k = 0; k <= 6; k++)
+        {
+            var p = c.Predict(k * 0.25f);
+            sb.Append(F1(MX(p.X))).Append(',').Append(F1(MY(p.Z))).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private string CamPoints()
+    {
+        var c = Runner.Camera;
+        var f = new Vector2(MathF.Sin(c.Yaw), -MathF.Cos(c.Yaw));
+        var s = new Vector2(-f.Y, f.X);
+        var o = new Vector2(150f, 150f);
+        Vector2 a = o + f * 9f, b = o - f * 4f + s * 5f, d = o - f * 4f - s * 5f;
+        return F1(a.X) + "," + F1(a.Y) + " " + F1(b.X) + "," + F1(b.Y) + " " + F1(d.X) + "," + F1(d.Y);
+    }
+
+    private string Series(int kind, double full, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+        {
+            double v = kind switch { 0 => Runner.OccupancySeries(i), 1 => Runner.GenSeries(i), _ => Runner.AlphaStepSeries(i) };
+            sb.Append(F1(360.0 * (n - 1 - i) / (GenerativeWorldStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - 2 - (h - 4) * Math.Clamp(v / full, 0, 1))).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void ApplyPrompt()
+    {
+        if (!string.IsNullOrWhiteSpace(_prompt)) Runner.SetPrompt(_prompt);
+    }
+
+    private void OnPromptKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") ApplyPrompt();
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void Step30()
+    {
+        for (var i = 0; i < GenerativeWorldStudioRunner.Hz / 2; i++) Runner.Step();
+        RefreshImages();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중 갱신은 250 ms 타이머가 처리 — 정지 상태 변경만 즉시 반영.</summary>
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(() => { RefreshImages(); StateHasChanged(); });
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

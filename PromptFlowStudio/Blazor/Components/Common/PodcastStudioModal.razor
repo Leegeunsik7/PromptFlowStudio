@@ -1,0 +1,411 @@
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.Podcast
+@using PromptFlowStudio.Services.Spatial
+@implements IDisposable
+@inject MultiAgentTalkshowConversationOrchestrator Talk
+@inject AutonomousPodcastVideoMultiCamEngine Cam
+@inject InteractiveAudienceAgendaInterventionEngine Audience
+@inject PodcastStudioShowRunner Runner
+
+@*
+    [PromptFlow Studio v16.49.0] 🎙️ AI 팟캐스트 & 토크쇼 스튜디오 — 토론 주제/포맷/아젠다 · 패널 라인업(페르소나·입장) 설정 · 자동 멀티캠 프리뷰(현재 화자 자막) ·
+    발화자 뷰포트 인스펙터(레벨·노이즈 플로어·음성 판정·발화 시간) · 수동 컷 · 시청자 질문 채택 모니터 · 하이라이트 · 1-Click 자율 녹화/송출(세션 패키지 내보내기).
+    서비스 OnChange 구독 + 방송 중 120ms UI 틱.
+*@
+
+<div class="pc-scrim" @onclick="Close">
+    <div class="pc-modal" @onclick:stopPropagation="true">
+        <div class="pc-h">
+            <div>
+                <div class="pc-title">🎙️ AI 팟캐스트 &amp; 토크쇼 스튜디오</div>
+                <div class="pc-sub"><b>AI MC</b>의 진행 아래 <b>2~4명의 AI 패널</b>이 페르소나를 유지하며 찬반 토론·인터뷰를 자율 진행하고, <b>액티브 스피커 멀티캠</b>이 샷을 자동 전환하며 <b>시청자 기습 질문</b>을 토론 아젠다로 채택합니다.</div>
+            </div>
+            <button class="pc-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="pc-bar">
+            <span class="pc-chip @(Runner.IsLive ? "live" : "")">@(Runner.IsLive ? (Runner.Recording ? "● REC · ON AIR" : "● ON AIR") : "OFF AIR")</span>
+            <span class="pc-chip">⏱ @(PodcastStudioShowRunner.Timecode(Runner.ElapsedMs, '.'))</span>
+            <span class="pc-chip">쟁점 @(Math.Max(0, Talk.AgendaIndex + 1))/@(Talk.Agenda.Count)</span>
+            <span class="pc-chip">발화 @(Talk.LinesSpoken)</span>
+            <span class="pc-chip ok">🎥 @(AutonomousPodcastVideoMultiCamEngine.ShotLabel(Cam.Shot)) · 컷 @(Cam.CutsTotal)</span>
+            <span class="pc-chip">✂ 하이라이트 @(Cam.ClipCount)</span>
+            <span class="pc-chip">🙋 채택 @(Audience.Adopted) · 대기 @(Audience.PendingCount) · 스팸 @(Audience.SpamBlocked)</span>
+            <span class="pc-chip @(Talk.LlmAvailable ? "ok" : "")">🧠 @(Talk.LlmAvailable ? "Gemini 페르소나" : "BCL 템플릿") · @(Talk.LlmLines)</span>
+        </div>
+
+        <div class="pc-main">
+            <div class="pc-col">
+                <div class="pc-player">
+                    @if (_frameUrl is not null)
+                    {
+                        <img class="pc-screen" src="@(_frameUrl)" alt="멀티캠 프리뷰" />
+                        @if (Talk.Current is { } cur && Runner.IsLive)
+                        {
+                            <div class="pc-subt"><b style="color:#@(Talk.Agent(cur.Speaker).Color.ToString("X6", CultureInfo.InvariantCulture))">@(Talk.Agent(cur.Speaker).Name)</b> @(cur.Text)</div>
+                        }
+                    }
+                    else
+                    {
+                        <div class="pc-screen pc-empty">🎙️ 1-Click 자율 팟캐스트를 시작하면 멀티캠 합성 화면이 표시됩니다.</div>
+                    }
+                </div>
+                <div class="pc-row">
+                    @if (!Runner.IsLive)
+                    {
+                        <button class="pc-btn go" @onclick="StartShow">🎙️ 1-Click 자율 팟캐스트 녹화/송출</button>
+                    }
+                    else
+                    {
+                        <button class="pc-btn danger" @onclick="StopShow">⏹ 종료</button>
+                    }
+                    <label class="pc-ck"><input type="checkbox" checked="@(Runner.Recording)" @onchange="ToggleRec" /> 녹화(세션 패키지)</label>
+                    <label class="pc-ck"><input type="checkbox" checked="@(Runner.DemoAudience)" @onchange="ToggleDemo" /> 데모 시청자</label>
+                    <button class="pc-btn sm" disabled="@(Talk.LinesSpoken == 0)" @onclick="Export">💾 내보내기</button>
+                </div>
+
+                <div class="pc-card">
+                    <div class="pc-sec">🔍 발화자 뷰포트 인스펙터</div>
+                    @for (var i = 0; i < Talk.AgentCount; i++)
+                    {
+                        var a = Talk.Agent(i);
+                        var lv = Math.Clamp(Cam.Level(i) * 400, 0, 100);
+                        var on = Cam.Shot != PodcastShot.Wide && (Cam.SubjectA == i || Cam.SubjectB == i);
+                        <div class="pc-seat @(on ? "on" : "") @(Cam.IsVoice(i) ? "talk" : "")">
+                            <i style="background:#@(a.Color.ToString("X6", CultureInfo.InvariantCulture))"></i>
+                            <div class="pc-sn"><b>@(a.Name)</b><span>@(MultiAgentTalkshowConversationOrchestrator.PersonaLabel(a.Persona)) · @(MultiAgentTalkshowConversationOrchestrator.StanceLabel(a.Stance)) · @(a.TurnsTaken)회 · @(F1(a.SpokenSeconds))초</span></div>
+                            <div class="pc-meter"><div style="width:@(F0(lv))%"></div></div>
+                            <span class="pc-mut">@(Cam.IsVoice(i) ? "🗣" : "·") 플로어 @(F3(Cam.NoiseFloor(i)))</span>
+                            <button class="pc-btn sm" disabled="@(!Runner.IsLive)" @onclick="_single[i]">단독</button>
+                        </div>
+                    }
+                    <div class="pc-row">
+                        <label class="pc-ck"><input type="checkbox" checked="@(Cam.AutoSwitch)" @onchange="ToggleAuto" /> 자동 스위칭</label>
+                        <button class="pc-btn sm" disabled="@(!Runner.IsLive)" @onclick="CutWide">와이드</button>
+                        <span class="pc-mut">홀드 @(F0(Cam.SpeakerChangeHoldMs))ms · 무음 와이드 @(F0(Cam.SilenceWideMs))ms · 독백 리액션 @(F0(Cam.MonologueMs / 1000))초</span>
+                    </div>
+                    <div class="pc-log sm">
+                        @for (var k = 0; k < _cutN; k++)
+                        {
+                            var c = _cuts[k];
+                            <div class="pc-ev"><b>@(PodcastStudioShowRunner.Timecode(c.TimeMs - Runner.StartMs, '.'))</b><span>@(AutonomousPodcastVideoMultiCamEngine.ShotLabel(c.Shot))</span><i>@(SeatName(c.A))@(c.B >= 0 ? " ↔ " + SeatName(c.B) : "")</i></div>
+                        }
+                    </div>
+                </div>
+
+                <div class="pc-card">
+                    <div class="pc-sec">✂ 하이라이트 클립</div>
+                    <div class="pc-log sm">
+                        @foreach (var h in Cam.Clips.Reverse())
+                        {
+                            <div class="pc-ev"><b>@(AutonomousPodcastVideoMultiCamEngine.ReasonLabel(h.Reason))</b><span>@(PodcastStudioShowRunner.Timecode(h.StartMs - Runner.StartMs, '.')) → @(PodcastStudioShowRunner.Timecode(h.EndMs - Runner.StartMs, '.'))</span><i>@(SeatName(h.Speaker))</i></div>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="pc-col">
+                <div class="pc-card">
+                    <div class="pc-sec">🧩 토론 주제 · 패널 라인업</div>
+                    <div class="pc-row">
+                        <input class="pc-in grow" @bind="_topic" disabled="@(Runner.IsLive)" placeholder="토론 주제" />
+                        <select class="pc-in" @bind="_format" disabled="@(Runner.IsLive)">
+                            <option value="Debate">찬반 토론</option><option value="Interview">인플루언서 인터뷰</option><option value="Roundtable">라운드테이블</option>
+                        </select>
+                    </div>
+                    <textarea class="pc-in pc-ta" @bind="_agenda" disabled="@(Runner.IsLive)" placeholder="쟁점(줄 단위)"></textarea>
+                    @for (var i = 0; i < _lineup.Count; i++)
+                    {
+                        var a = _lineup[i];
+                        var idx = i;
+                        <div class="pc-lu">
+                            <span class="pc-tag">@(i == 0 ? "MC" : "P" + i.ToString(CultureInfo.InvariantCulture))</span>
+                            <input class="pc-in w90" @bind="a.Name" disabled="@(Runner.IsLive)" />
+                            <input class="pc-in w120" @bind="a.Title" disabled="@(Runner.IsLive)" placeholder="직함" />
+                            @if (i > 0)
+                            {
+                                <select class="pc-in" @bind="a.Persona" disabled="@(Runner.IsLive)">
+                                    <option value="Expert">지식인</option><option value="Critic">비판가</option><option value="Humorist">유머</option><option value="Optimist">낙관론자</option><option value="Influencer">인플루언서</option>
+                                </select>
+                                <select class="pc-in" @bind="a.Stance" disabled="@(Runner.IsLive)">
+                                    <option value="Pro">찬성</option><option value="Con">반대</option><option value="Neutral">중립</option>
+                                </select>
+                                <button class="pc-btn sm" disabled="@(Runner.IsLive || _lineup.Count <= 3)" @onclick="() => RemovePanel(idx)">✕</button>
+                            }
+                        </div>
+                    }
+                    <div class="pc-row">
+                        <button class="pc-btn sm" disabled="@(Runner.IsLive || _lineup.Count >= MultiAgentTalkshowConversationOrchestrator.MaxAgents)" @onclick="AddPanel">＋ 패널 추가</button>
+                        <button class="pc-btn sm" disabled="@(Runner.IsLive)" @onclick="ResetDemo">🧪 데모 라인업</button>
+                        <label class="pc-ck">MC 개입 <input class="pc-in w60" type="number" min="1" max="6" @bind="Talk.McEvery" /> 턴</label>
+                        <label class="pc-ck">쟁점당 <input class="pc-in w60" type="number" min="2" max="20" @bind="Talk.ExchangesPerAgenda" /> 발언</label>
+                        <label class="pc-ck"><input type="checkbox" @bind="Talk.UseLlm" /> Gemini</label>
+                    </div>
+                </div>
+
+                <div class="pc-card">
+                    <div class="pc-sec">💬 대화 흐름</div>
+                    <div class="pc-log">
+                        @foreach (var l in Talk.History.Reverse().Take(16))
+                        {
+                            <div class="pc-line k@((int)l.Kind)"><b>@(MultiAgentTalkshowConversationOrchestrator.KindLabel(l.Kind))</b><span><em>@(Talk.Agent(l.Speaker).Name)</em> @(l.Text)</span><i>@(l.Source)</i></div>
+                        }
+                    </div>
+                </div>
+
+                <div class="pc-card">
+                    <div class="pc-sec">🙋 시청자 질문 채택 모니터</div>
+                    <div class="pc-row">
+                        <input class="pc-in w90" @bind="_viewer" placeholder="닉네임" />
+                        <input class="pc-in grow" @bind="_chat" @bind:event="oninput" placeholder="예: AI 그림의 저작권은 누구에게 있나요?" />
+                        <input class="pc-in w60" type="number" @bind="_donation" title="후원(원)" />
+                        <button class="pc-btn go" disabled="@(string.IsNullOrWhiteSpace(_chat))" @onclick="SendChat">전송</button>
+                    </div>
+                    <div class="pc-row">
+                        <label class="pc-ck"><input type="checkbox" checked="@(Audience.AutoAdopt)" @onchange="ToggleAdopt" /> MC 자동 채택</label>
+                        <span class="pc-mut">임계 @(F2(Audience.AdoptThreshold)) · 간격 @(F0(Audience.MinGapMs / 1000))초 · 수신 @(Audience.Received) · 병합 @(Audience.Merged)</span>
+                    </div>
+                    <div class="pc-log sm">
+                        @foreach (var q in Audience.Pending.OrderByDescending(x => x.Score))
+                        {
+                            var id = q.Id;
+                            <div class="pc-q">
+                                <b>@(InteractiveAudienceAgendaInterventionEngine.KindLabel(q.Kind))</b>
+                                <span>@(q.Viewer): @(q.Text)</span>
+                                <i>점수 @(F2(q.Score)) · 관련 @(F2(q.Relevance)) · 👍@(q.Votes)</i>
+                                <button class="pc-btn sm" disabled="@(!Talk.IsLive)" @onclick="() => Adopt(id)">채택</button>
+                                <button class="pc-btn sm" @onclick="() => Audience.Reject(id, Runner.NowMs)">✕</button>
+                            </div>
+                        }
+                    </div>
+                    <div class="pc-log sm">
+                        @foreach (var q in Audience.Decided.Reverse().Take(6))
+                        {
+                            <div class="pc-ev"><b>@(InteractiveAudienceAgendaInterventionEngine.StatusLabel(q.Status))</b><span>@(q.Viewer): @(q.Text)</span><i>@(q.Target > 0 && q.Target < Talk.AgentCount ? "→ " + Talk.Agent(q.Target).Name : "")</i></div>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="pc-f">
+            <span class="pc-mut">@(_msg ?? Talk.LastAction ?? Audience.LastAction ?? Cam.LastAction ?? "대기")</span>
+            <button class="pc-btn" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .pc-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .pc-modal { width: min(1440px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .pc-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #7c3aed 16%, var(--card)), color-mix(in srgb, #0ea5e9 12%, var(--card))); }
+    .pc-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .pc-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .pc-sub b { color: var(--text-primary); }
+    .pc-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .pc-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .pc-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); } .pc-chip.ok { color: #4ade80; }
+    .pc-chip.live { color: #fff; background: #dc2626; border-color: #dc2626; animation: pc-pulse 1.2s infinite; }
+    @@keyframes pc-pulse { 50% { opacity: .6; } }
+    .pc-main { display: grid; grid-template-columns: 1.15fr 1fr; gap: 12px; padding: 12px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .pc-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .pc-player { position: relative; border-radius: 10px; overflow: hidden; background: #000; border: 2px solid #7c3aed; }
+    .pc-screen { width: 100%; aspect-ratio: 16 / 9; display: block; } .pc-empty { display: flex; align-items: center; justify-content: center; color: #94a3b8; font-size: 13px; background: radial-gradient(circle, #2e1065, #0b1220); }
+    .pc-subt { position: absolute; left: 6%; right: 6%; bottom: 4%; font-size: 12.5px; line-height: 1.45; color: #f8fafc; background: rgba(2,6,23,.72); padding: 5px 9px; border-radius: 6px; text-align: center; }
+    .pc-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .pc-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .pc-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .pc-seat { display: grid; grid-template-columns: 10px 1fr 90px 92px auto; gap: 8px; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; } .pc-seat.on { border-color: #7c3aed; } .pc-seat.talk { background: color-mix(in srgb, #22c55e 9%, var(--card)); }
+    .pc-seat > i { width: 10px; height: 30px; border-radius: 3px; } .pc-sn { display: flex; flex-direction: column; gap: 2px; min-width: 0; } .pc-sn b { font-size: 12.5px; color: var(--text-primary); } .pc-sn span { font: 10.5px var(--mono); color: var(--text-muted); }
+    .pc-meter { height: 6px; background: #1f2937; border-radius: 3px; overflow: hidden; } .pc-meter div { height: 100%; background: linear-gradient(90deg,#22c55e,#facc15,#ef4444); }
+    .pc-lu { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; } .pc-tag { font: 800 10px var(--mono); color: #c4b5fd; width: 24px; }
+    .pc-log { display: flex; flex-direction: column; gap: 2px; max-height: 230px; overflow-y: auto; } .pc-log.sm { max-height: 120px; }
+    .pc-line { display: grid; grid-template-columns: 44px 1fr 46px; gap: 6px; font-size: 11.5px; color: var(--text-secondary); border-bottom: 1px solid var(--line); padding: 2px 0; } .pc-line b { font: 10px var(--mono); color: #c4b5fd; } .pc-line em { font-style: normal; font-weight: 700; color: var(--text-primary); } .pc-line i { font: 10px var(--mono); font-style: normal; color: var(--text-muted); }
+    .pc-line.k6 { background: color-mix(in srgb, #ef4444 10%, var(--card)); } .pc-line.k9, .pc-line.k10 { background: color-mix(in srgb, #38bdf8 12%, var(--card)); } .pc-line.k8 { background: color-mix(in srgb, #f59e0b 10%, var(--card)); }
+    .pc-ev { display: grid; grid-template-columns: 74px 1fr 110px; gap: 6px; font-size: 11px; color: var(--text-secondary); } .pc-ev b { font: 10px var(--mono); color: var(--text-muted); } .pc-ev i { font: 10px var(--mono); font-style: normal; }
+    .pc-q { display: grid; grid-template-columns: 52px 1fr 150px auto auto; gap: 6px; align-items: center; font-size: 11px; color: var(--text-secondary); border-bottom: 1px solid var(--line); padding: 2px 0; } .pc-q b { font: 10px var(--mono); } .pc-q i { font: 10px var(--mono); font-style: normal; color: var(--text-muted); }
+    .pc-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; } .pc-in.grow { flex: 1; min-width: 140px; } .pc-in.w60 { width: 56px; } .pc-in.w90 { width: 86px; } .pc-in.w120 { width: 116px; }
+    .pc-ta { min-height: 58px; resize: vertical; font-family: inherit; }
+    .pc-ck { font-size: 11.5px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; }
+    .pc-mut { font-size: 11px; color: var(--text-muted); word-break: break-all; }
+    .pc-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); } .pc-f .pc-mut { margin-right: auto; }
+    .pc-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .pc-btn.sm { padding: 3px 8px; font-size: 11px; } .pc-btn.go { background: linear-gradient(135deg,#7c3aed,#0ea5e9); color: #fff; border: 0; } .pc-btn.danger { color: #f87171; border-color: #f87171; } .pc-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 1050px) { .pc-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly Action[] _single = new Action[MultiAgentTalkshowConversationOrchestrator.MaxAgents];
+    private readonly byte[] _rgba = new byte[PodcastStudioShowRunner.FrameW * PodcastStudioShowRunner.FrameH * 4], _rgb = new byte[PodcastStudioShowRunner.FrameW * PodcastStudioShowRunner.FrameH * 3];
+    private readonly CamCut[] _cuts = new CamCut[10];
+    private readonly List<TalkAgent> _lineup = new();
+    private int _cutN;
+    private decimal _donation;
+    private string _topic = "", _agenda = "", _viewer = "시청자1";
+    private TalkFormat _format;
+    private string? _frameUrl, _msg, _chat;
+    private bool _wasLive;
+    private CancellationTokenSource? _ui;
+
+    protected override void OnInitialized()
+    {
+        for (var i = 0; i < _single.Length; i++) { var s = i; _single[i] = () => { Cam.AutoSwitch = false; Cam.Cut(Runner.NowMs, PodcastShot.Single, s, -1); }; }
+        LoadFromService();
+        Talk.OnChange += OnServiceChanged;
+        Cam.OnChange += OnServiceChanged;
+        Audience.OnChange += OnServiceChanged;
+        Refresh();
+        if (Runner.IsLive) { _wasLive = true; StartUi(); }
+    }
+
+    private void LoadFromService()
+    {
+        _topic = Talk.Topic; _format = Talk.Format; _agenda = string.Join('\n', Talk.Agenda);
+        _lineup.Clear();
+        for (var i = 0; i < Talk.AgentCount; i++) _lineup.Add(Clone(Talk.Agent(i)));
+    }
+
+    private static TalkAgent Clone(TalkAgent a) => new() { Name = a.Name, Title = a.Title, Persona = a.Persona, Stance = a.Stance, Keywords = a.Keywords, Color = a.Color, PitchHz = a.PitchHz };
+
+    private static readonly uint[] Palette = { 0x22C55E, 0xEC4899, 0x14B8A6, 0x8B5CF6 };
+
+    private void AddPanel()
+    {
+        var n = _lineup.Count;
+        _lineup.Add(new TalkAgent { Name = "패널" + n.ToString(CultureInfo.InvariantCulture), Title = "인플루언서", Persona = PanelPersona.Influencer, Stance = TalkStance.Neutral, Color = Palette[n % Palette.Length], PitchHz = 135 + 18 * n, Keywords = new[] { "구독자", "콘텐츠", "트렌드", "현장" } });
+    }
+
+    private void RemovePanel(int i) { if (i > 0 && _lineup.Count > 3) _lineup.RemoveAt(i); }
+
+    private void ResetDemo()
+    {
+        _topic = MultiAgentTalkshowConversationOrchestrator.DemoTopic;
+        _agenda = string.Join('\n', MultiAgentTalkshowConversationOrchestrator.DemoAgenda);
+        _format = TalkFormat.Debate;
+        _lineup.Clear(); _lineup.AddRange(MultiAgentTalkshowConversationOrchestrator.DemoLineup());
+    }
+
+    private void StartShow()
+    {
+        try
+        {
+            Talk.Configure(_lineup.Select(Clone).ToList());
+            Talk.Topic = _topic.Trim();
+            Talk.Format = _format;
+            Talk.Agenda.Clear();
+            foreach (var line in _agenda.Split('\n'))
+                if (line.Trim().Length > 0) Talk.Agenda.Add(line.Trim());
+            Audience.Clear();
+            Cam.AutoSwitch = true;
+            Runner.Start();
+            _msg = null; _wasLive = true;
+            StartUi();
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException) { _msg = "⚠ " + ex.Message; }
+    }
+
+    private void StopShow() { Runner.Stop(); Finish(); }
+
+    private void Finish()
+    {
+        _wasLive = false;
+        StopUi();
+        if (Runner.Recording && Talk.LinesSpoken > 0) Export();
+        Refresh();
+    }
+
+    private void Export()
+    {
+        try
+        {
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "PromptFlowStudio", "Podcast", DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture));
+            var path = Runner.ExportSession(dir, Runner.StartMs);
+            _msg = "💾 세션 패키지 · " + path;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { _msg = "⚠ 내보내기 실패 · " + ex.Message; }
+    }
+
+    private void SendChat()
+    {
+        if (string.IsNullOrWhiteSpace(_chat)) return;
+        var kind = Audience.Ingest(_viewer, _chat, Runner.NowMs, Math.Max(0, _donation));
+        _msg = InteractiveAudienceAgendaInterventionEngine.KindLabel(kind) + " · " + _chat;
+        _chat = null; _donation = 0;
+    }
+
+    private void Adopt(int id) => _msg = Audience.Adopt(id, Runner.NowMs) ? null : "⚠ 채택 불가(방송 중 · 개입 대기열 확인)";
+
+    private void CutWide() { Cam.AutoSwitch = false; Cam.Cut(Runner.NowMs, PodcastShot.Wide, -1, -1); }
+
+    private void ToggleAuto(ChangeEventArgs e) => Cam.AutoSwitch = e.Value is true;
+    private void ToggleRec(ChangeEventArgs e) => Runner.Recording = e.Value is true;
+    private void ToggleDemo(ChangeEventArgs e) => Runner.DemoAudience = e.Value is true;
+    private void ToggleAdopt(ChangeEventArgs e) => Audience.AutoAdopt = e.Value is true;
+
+    private string SeatName(int i) => i >= 0 && i < Talk.AgentCount ? Talk.Agent(i).Name : "전체";
+
+    private void Refresh()
+    {
+        _cutN = Cam.CopyCuts(_cuts);
+        if (Runner.Frames > 0)
+        {
+            Runner.CopyFrame(_rgba);
+            for (int i = 0, j = 0; i < _rgb.Length; i += 3, j += 4) { _rgb[i] = _rgba[j]; _rgb[i + 1] = _rgba[j + 1]; _rgb[i + 2] = _rgba[j + 2]; }
+            _frameUrl = SpatialImageCodec.BmpDataUrl(_rgb, PodcastStudioShowRunner.FrameW, PodcastStudioShowRunner.FrameH);
+        }
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+
+    private void StartUi()
+    {
+        if (_ui is not null) return;
+        var cts = new CancellationTokenSource();
+        _ui = cts;
+        _ = UiLoopAsync(cts.Token);
+    }
+
+    private void StopUi()
+    {
+        var cts = Interlocked.Exchange(ref _ui, null);
+        if (cts is null) return;
+        try { cts.Cancel(); } catch (ObjectDisposedException) { }
+        cts.Dispose();
+    }
+
+    private async Task UiLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(120));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                Refresh();
+                await InvokeAsync(() =>
+                {
+                    if (_wasLive && !Runner.IsLive) Finish();
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("PodcastStudio.Ui", ex); }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Talk.OnChange -= OnServiceChanged;
+        Cam.OnChange -= OnServiceChanged;
+        Audience.OnChange -= OnServiceChanged;
+        StopUi();
+    }
+}

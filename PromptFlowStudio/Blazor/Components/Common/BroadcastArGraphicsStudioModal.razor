@@ -1,0 +1,293 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.ArGraphics
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject BroadcastArGraphicsStudioRunner Runner
+
+@*
+    [PromptFlow Studio v17.06.0] 📐 AI 방송 AR 그래픽 & 텔레스트레이션 스튜디오 — FreeD 트래킹 캘리브레이션 뷰포트(랜드마크 관측/투영 · 렌즈 표) ·
+    온에어 AR 프리셋(Lower Third · Telestrator · Player Card) · Key/Fill 분할 뷰어 · Key/Fill 가드 · ST 2110-40 ANC(자막 · 타임코드 · FreeD 메타데이터).
+*@
+
+<div class="arg-scrim" @onclick="Close">
+    <div class="arg-modal" @onclick:stopPropagation="true">
+        <div class="arg-h">
+            <div>
+                <div class="arg-title">📐 AI 방송 AR 그래픽 &amp; 텔레스트레이션 스튜디오</div>
+                <div class="arg-sub"><b>트래킹 엔진</b>이 FreeD D1 패킷(팬/틸트/롤 · 위치 · 줌/포커스 엔코더)을 체크섬 검증 · SIMD 역직렬화하고 렌즈 표로 FOV · K1/K2 방사 왜곡 ST 맵을 실시간 갱신합니다.
+                    <b>AR 합성기</b>는 v16.98 SLAM 바닥 평면에 고정된 선수 링 · 궤적 · 거리 · 전술 화살표 · 텔레스트레이터를 렌즈 왜곡 그대로 투영하고 선수 실루엣으로 가립니다.
+                    <b>가드</b>는 Key/Fill 프리멀티/스트레이트 합성 규칙 · 합법 레벨 · 타이틀 세이프를 지키며 자막/타임코드/트래킹 메타데이터를 SMPTE ST 2110-40 ANC로 같은 프레임에 패킹합니다. 카메라·경기는 인프로세스 시뮬레이션입니다.</div>
+            </div>
+            <button class="arg-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="arg-bar">
+            <button class="arg-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ AR 가동")</button>
+            <button class="arg-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <span class="arg-sep">프리셋</span>
+            <button class="arg-btn" @onclick="Runner.PresetLowerThird">🟦 Lower Third</button>
+            <button class="arg-btn" @onclick="Runner.PresetTelestrator">✏ Telestrator</button>
+            <button class="arg-btn" @onclick="Runner.PresetPlayerCard">🪪 Player Card</button>
+            <button class="arg-btn @(G.KeyerOn ? "on" : "stop")" @onclick="Runner.Take">DSK @(G.KeyerOn ? "ON" : "OFF") @(F0(G.Gain * 100))%</button>
+            <span class="arg-chip">틱 @(Runner.Tick) · @(F1(Runner.LastTickMs)) ms · 피드 @(F0(A.FeedUs)) · AR @(F0(A.RenderUs)) · 합성 @(F0(G.CompositeUs)) · 디코드 @(F1(T.LastDecodeUs)) µs</span>
+            <span class="arg-chip @(Runner.AlignErrorPx < 1 ? "ok" : Runner.AlignErrorPx < 3 ? "warn" : "bad")">정합 오차 @(F2(Runner.AlignErrorPx)) px (최대 @(F1(Runner.AlignMaxPx)))</span>
+        </div>
+
+        <div class="arg-main">
+            <div class="arg-col">
+                <div class="arg-card">
+                    <div class="arg-sec">🎯 FreeD 트래킹 캘리브레이션 뷰포트
+                        <span class="arg-kv">클릭 = 텔레스트레이터(지면 고정) · <i class="ob"></i>피드 관측 <i class="pr"></i>트래킹 투영 · 랜드마크 @(Runner.VisibleLandmarks)</span></div>
+                    <div class="arg-vp" @onclick="OnViewportClick">
+                        <img src="data:image/bmp;base64,@(Runner.MonitorBase64(3))" alt="PGM+AR" />
+                        <svg viewBox="0 0 @(A.Width) @(A.Height)" preserveAspectRatio="none">
+                            @for (var i = 0; i < BroadcastArGraphicsStudioRunner.Landmarks; i++)
+                            {
+                                if (!Runner.LandmarkSeen(i)) continue;
+                                var o = Runner.LandmarkObserved(i);
+                                var has = T.Camera.Project(Runner.Landmark(i), out var pu, out var pv);
+                                <g><circle class="ob" cx="@(F1(o.X))" cy="@(F1(o.Y))" r="1.6" />
+                                @if (has) { <line class="pr" x1="@(F1(pu - 1.5))" y1="@(F1(pv))" x2="@(F1(pu + 1.5))" y2="@(F1(pv))" /><line class="pr" x1="@(F1(pu))" y1="@(F1(pv - 1.5))" x2="@(F1(pu))" y2="@(F1(pv + 1.5))" /> }</g>
+                            }
+                            <rect class="safe" x="@(A.Width / 20)" y="@(A.Height / 20)" width="@(A.Width - A.Width / 10)" height="@(A.Height - A.Height / 10)" />
+                        </svg>
+                    </div>
+                    <div class="arg-ctl">
+                        <button class="arg-btn" @onclick="Calibrate">📏 랜드마크 캘리브레이션</button>
+                        <button class="arg-btn stop" @onclick="Runner.Miscalibrate">🔧 마운트/렌즈 오차 주입</button>
+                        <button class="arg-btn" @onclick="() => _newStroke = true">✏ 새 획</button>
+                        <button class="arg-btn" @onclick="Runner.ClearStrokes">🧽 지우기 (@(A.StrokePoints))</button>
+                        <label class="arg-sl">트래킹 지연 <b>@(T.TrackingDelayFrames)f</b><input type="range" min="0" max="8" step="1" value="@(T.TrackingDelayFrames)" @onchange="e => Runner.SetTrackingDelay((int)Num(e, 3))" /></label>
+                        <label class="arg-sl">비디오 지연 <b>@(Runner.VideoDelayFrames)f</b><input type="range" min="0" max="8" step="1" value="@(Runner.VideoDelayFrames)" @onchange="e => Runner.SetVideoDelay((int)Num(e, 3))" /></label>
+                        <button class="arg-btn @(Runner.AutoZoom ? "on" : null)" @onclick="() => Runner.AutoZoom = !Runner.AutoZoom">🔭 자동 줌</button>
+                        <label class="arg-sl">FOV <b>@(F1(Runner.ZoomFov))°</b><input type="range" min="6" max="60" step="1" value="@(F0(Runner.ZoomFov))" @onchange="e => Runner.ZoomFov = (float)Num(e, 30)" disabled="@Runner.AutoZoom" /></label>
+                    </div>
+                    <div class="arg-kv">보정값 팬 <b>@(F2(T.PanOffset))°</b> / 실측 @(F2(Runner.TruePanOffset))° · 틸트 <b>@(F2(T.TiltOffset))°</b> / @(F2(Runner.TrueTiltOffset))° · FOV 스케일 <b>@(F2(T.FovScale * 100))%</b> / @(F2(Runner.TrueFovScale * 100))% · RMS @(F2(T.CalibrationRmsPx)) px (@(T.CalibrationPoints)점 · @(T.Calibrations)회)</div>
+                    <svg class="arg-spark" viewBox="0 0 360 50" preserveAspectRatio="none">
+                        <polyline class="al" points="@(Series(Runner.AlignSeries, 6, 50))" />
+                        <polyline class="fv" points="@(Series(Runner.FovSeries, 60, 50))" />
+                    </svg>
+                    <div class="arg-legend"><i class="al"></i>정합 오차(0–6 px) <i class="fv"></i>트래킹 FOV(0–60°)</div>
+                </div>
+
+                <div class="arg-card">
+                    <div class="arg-sec">🔭 FreeD D1 · 렌즈 왜곡</div>
+                    <div class="arg-hex mono">@(Hex())</div>
+                    <div class="arg-kv">팬 <b>@(F2(T.Current.Pan))°</b> · 틸트 <b>@(F2(T.Current.Tilt))°</b> · 롤 <b>@(F2(T.Current.Roll))°</b> · 위치 <b>@(F1(T.Current.X)), @(F1(T.Current.Y)), @(F1(T.Current.Z)) m</b> · 줌 <b>@(T.Current.Zoom)</b> · 포커스 <b>@(T.Current.Focus)</b></div>
+                    <div class="arg-kv">FOV <b>@(F2(T.Camera.HFovDeg))°</b> · K1 <b>@(T.Camera.K1.ToString("0.0000", CultureInfo.InvariantCulture))</b> · K2 <b>@(T.Camera.K2.ToString("0.0000", CultureInfo.InvariantCulture))</b> · 모서리 변위 <b>@(F1(T.Camera.CornerShiftPx)) px</b> · ST 맵 재계산 @(T.Camera.GridRebuilds) (@(F1(T.Camera.LastGridUs)) µs) · 패킷 @(T.Packets) · 불량 @(T.BadPackets) · 자세 결손 @(T.MissingPoses)</div>
+                    <svg class="arg-lens" viewBox="0 0 360 80" preserveAspectRatio="none">
+                        <polyline class="fov" points="@(LensCurve(0))" />
+                        <polyline class="k1" points="@(LensCurve(1))" />
+                        <line class="cur" x1="@(F1(T.Current.Zoom / 65535.0 * 360))" x2="@(F1(T.Current.Zoom / 65535.0 * 360))" y1="0" y2="80" />
+                    </svg>
+                    <div class="arg-legend"><i class="fov"></i>FOV(줌 엔코더) <i class="k1"></i>K1 방사 왜곡 <i class="cur"></i>현재 줌 · 지면 평면 @(Runner.FloorPlane >= 0 ? "SLAM 바닥 #" + Runner.FloorPlane : "없음") · 경사 @(F2(Runner.GroundTiltDeg))°</div>
+                </div>
+            </div>
+
+            <div class="arg-col">
+                <div class="arg-card">
+                    <div class="arg-sec">🎨 온에어 AR 레이어
+                        <select class="arg-sel" value="@(A.Selected)" @onchange="e => Runner.Select((int)Num(e, 0))">
+                            @for (var p = 0; p < OnAirArTelestrationSportsTelemetrySynthesizer.Players; p++) { <option value="@p">@(OnAirArTelestrationSportsTelemetrySynthesizer.Numbers[p]) @(OnAirArTelestrationSportsTelemetrySynthesizer.Names[p])</option> }
+                        </select>
+                        ↔
+                        <select class="arg-sel" value="@(A.Second)" @onchange="e => Runner.SelectSecond((int)Num(e, 6))">
+                            @for (var p = 0; p < OnAirArTelestrationSportsTelemetrySynthesizer.Players; p++) { <option value="@p">@(OnAirArTelestrationSportsTelemetrySynthesizer.Numbers[p]) @(OnAirArTelestrationSportsTelemetrySynthesizer.Names[p])</option> }
+                        </select></div>
+                    <div class="arg-layers">
+                        @foreach (var l in AllLayers)
+                        {
+                            var ll = l;
+                            <button class="arg-btn sm @((A.Layers & ll) != 0 ? "on" : null)" @onclick="() => Runner.Toggle(ll)">@(LayerName(ll))</button>
+                        }
+                    </div>
+                    <div class="arg-ctl">
+                        <input class="arg-in" @bind="_caption" placeholder="자막(ASCII · CEA-608)" maxlength="48" />
+                        <button class="arg-btn" @onclick="SendCaption">💬 자막 송출</button>
+                        <span class="arg-kv">키 커버리지 <b>@(F1(A.KeyCoverage * 100))%</b> · 선분 @(A.DrawnSegments) · 가림 픽셀 @(A.OccludedPixels) · 속도 <b>@(F1(A.Speed(A.Selected))) km/h</b> · 최고 @(F1(A.TopSpeed(A.Selected))) · 이동 @(F0(A.Distance(A.Selected))) m</span>
+                    </div>
+                </div>
+
+                <div class="arg-card">
+                    <div class="arg-sec">🔲 Key / Fill 분할 뷰어
+                        <span class="arg-sep">Fill 출력</span>
+                        <button class="arg-btn sm @(A.Output == FillMode.Premultiplied ? "on" : null)" @onclick="() => Runner.SetOutput(FillMode.Premultiplied)">프리멀티</button>
+                        <button class="arg-btn sm @(A.Output == FillMode.Straight ? "on" : null)" @onclick="() => Runner.SetOutput(FillMode.Straight)">스트레이트</button>
+                        <span class="arg-sep">가드 기대</span>
+                        <button class="arg-btn sm @(G.Expected == FillMode.Premultiplied ? "on" : null)" @onclick="() => Runner.SetExpected(FillMode.Premultiplied)">프리멀티</button>
+                        <button class="arg-btn sm @(G.Expected == FillMode.Straight ? "on" : null)" @onclick="() => Runner.SetExpected(FillMode.Straight)">스트레이트</button>
+                        <button class="arg-btn sm @(G.AutoCorrect ? "on" : null)" @onclick="() => G.AutoCorrect = !G.AutoCorrect">자동 교정</button>
+                        <button class="arg-btn sm @(G.BroadcastSafe ? "on" : null)" @onclick="() => G.BroadcastSafe = !G.BroadcastSafe">16–235</button>
+                    </div>
+                    <div class="arg-split">
+                        <div class="arg-mon"><div class="lab">FILL</div><img src="data:image/bmp;base64,@(Runner.MonitorBase64(1))" alt="FILL" /></div>
+                        <div class="arg-mon"><div class="lab">KEY</div><img src="data:image/bmp;base64,@(Runner.MonitorBase64(2))" alt="KEY" /></div>
+                        <div class="arg-mon"><div class="lab">PGM 피드(실측 카메라)</div><img src="data:image/bmp;base64,@(Runner.MonitorBase64(0))" alt="FEED" /></div>
+                        <div class="arg-mon"><div class="lab">가림 매트</div><img src="data:image/bmp;base64,@(Runner.MonitorBase64(4))" alt="MATTE" /></div>
+                    </div>
+                    <div class="arg-kv">
+                        <span class="arg-chip @(G.LastFault == KeyFillFault.None ? "ok" : "warn")">@(FaultName(G.LastFault))</span>
+                        위반 픽셀 <b>@(G.LastViolations)</b> (누적 @(G.Violations)) · 클램프 @(G.ClampedPixels) · 모드 불일치 교정 <b>@(G.Corrected)</b> · 비합법 레벨 @(G.IllegalLevels) · 타이틀 세이프 위반 <b>@(G.TitleSafeViolations)</b>
+                    </div>
+                </div>
+
+                <div class="arg-card">
+                    <div class="arg-sec">📡 SMPTE ST 2110-40 ANC
+                        <span class="arg-chip @(G.AncErrors == 0 && G.SyncErrors == 0 ? "ok" : "bad")">패킷 @(G.AncPackets) · 오류 @(G.AncErrors) · 동기 오류 @(G.SyncErrors)</span></div>
+                    <div class="arg-kv">ANC @(G.AncCount)개/프레임(ATC · CEA-708 CDP · FreeD) · @(G.AncBytes) B · TC <b>@(Tc(G.LastTimecode))</b> · CC 쌍 @(G.CaptionPairs) · 메타 자세 @(G.RxPoses) (팬 @(F2(G.RxPose.Pan))°)</div>
+                    <div class="arg-cc">수신 자막: <b>@(new string(G.RxCaption))</b></div>
+                    <div class="arg-hex mono">@(AncHex())</div>
+                </div>
+                <div class="arg-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .arg-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .arg-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .arg-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #0ea5e9 15%, var(--card)), color-mix(in srgb, #eab308 12%, var(--card))); }
+    .arg-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .arg-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .arg-sub b { color: var(--text-primary); }
+    .arg-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .arg-bar { display: flex; flex-wrap: wrap; gap: 6px 10px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .arg-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; } .arg-btn:disabled { opacity: .4; cursor: default; }
+    .arg-btn.sm { font-size: 10px; padding: 2px 8px; } .arg-btn.on { background: color-mix(in srgb, #0ea5e9 24%, transparent); border-color: #38bdf8; } .arg-btn.stop { background: #7f1d1d; border-color: #ef4444; color: #fff; }
+    .arg-sep { font-size: 10px; color: var(--text-muted); font-weight: 700; }
+    .arg-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .arg-chip.ok { border-color: #22c55e; color: #86efac; } .arg-chip.bad { border-color: #ef4444; color: #fca5a5; } .arg-chip.warn { border-color: #eab308; color: #fde68a; }
+    .arg-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); } .arg-sl b { font-family: var(--mono); color: var(--text-primary); } .arg-sl input { width: 80px; }
+    .arg-sel, .arg-in { font-size: 11px; background: transparent; color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; } .arg-in { width: 240px; }
+    .arg-main { display: grid; grid-template-columns: 540px 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .arg-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .arg-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .arg-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .arg-vp { position: relative; width: 512px; height: 288px; background: #000; border-radius: 8px; overflow: hidden; cursor: crosshair; }
+    .arg-vp img, .arg-mon img { width: 100%; height: 100%; display: block; }
+    .arg-vp svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    .arg-vp .ob { fill: none; stroke: #22c55e; stroke-width: .6; } .arg-vp .pr { stroke: #ef4444; stroke-width: .6; } .arg-vp .safe { fill: none; stroke: rgba(255,255,255,.35); stroke-width: .4; stroke-dasharray: 2 2; }
+    .arg-ctl { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+    .arg-layers { display: flex; flex-wrap: wrap; gap: 4px 6px; }
+    .arg-split { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .arg-mon { position: relative; aspect-ratio: 16 / 9; background: #000; border-radius: 8px; overflow: hidden; border: 2px solid #334155; }
+    .arg-mon .lab { position: absolute; top: 0; left: 0; right: 0; font: 800 10px var(--mono); color: #fff; background: rgba(0,0,0,.6); padding: 2px 6px; }
+    .arg-spark, .arg-lens { width: 100%; height: 50px; background: #030712; border-radius: 6px; } .arg-lens { height: 80px; }
+    .arg-spark polyline, .arg-lens polyline { fill: none; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+    .arg-spark .al { stroke: #ef4444; } .arg-spark .fv { stroke: #38bdf8; } .arg-lens .fov { stroke: #38bdf8; } .arg-lens .k1 { stroke: #f59e0b; } .arg-lens .cur { stroke: #f472b6; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+    .arg-legend, .arg-kv { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 11px; color: var(--text-secondary); align-items: center; } .arg-kv b { color: var(--text-primary); }
+    .arg-legend i, .arg-kv i { display: inline-block; width: 10px; height: 8px; border-radius: 2px; }
+    .arg-legend .al { background: #ef4444; } .arg-legend .fv, .arg-legend .fov { background: #38bdf8; } .arg-legend .k1 { background: #f59e0b; } .arg-legend .cur { background: #f472b6; } .arg-kv .ob { background: #22c55e; } .arg-kv .pr { background: #ef4444; }
+    .arg-hex { font-size: 10px; color: #93c5fd; word-break: break-all; background: #030712; border-radius: 6px; padding: 6px; }
+    .arg-cc { font-size: 12px; color: var(--text-secondary); } .arg-cc b { color: #fde68a; font-family: var(--mono); }
+    .arg-note { font-size: 11px; color: var(--text-muted); word-break: break-all; } .mono { font-family: var(--mono); }
+    @@media (max-width: 1200px) { .arg-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly ArLayer[] AllLayers = { ArLayer.Rings, ArLayer.Trail, ArLayer.Tags, ArLayer.Distance, ArLayer.Arrow, ArLayer.Offside, ArLayer.Telestrator, ArLayer.LowerThird, ArLayer.PlayerCard, ArLayer.ScoreBug, ArLayer.CrowdHud };
+    private readonly char[] _tc = new char[PromptFlowStudio.Services.MasterControl.SmpteTimecode.Length];
+    private System.Threading.Timer? _timer;
+    private string _caption = "";
+    private bool _newStroke = true;
+
+    private FreeDTrackingProtocolLensDistortionEngine T => Runner.Tracking;
+    private OnAirArTelestrationSportsTelemetrySynthesizer A => Runner.Ar;
+    private AncillaryDataKeyFillGraphicsCompositingGuard G => Runner.Guard;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("ArGraphics.Modal.Timer", ex); }
+        }, null, 300, 300);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+
+    private static string LayerName(ArLayer l) => l switch
+    {
+        ArLayer.Rings => "◯ 선수 링", ArLayer.Trail => "〰 공 궤적", ArLayer.Tags => "🏷 이름표", ArLayer.Distance => "📏 거리", ArLayer.Arrow => "➡ 전술 화살표", ArLayer.Offside => "⎯ 오프사이드",
+        ArLayer.Telestrator => "✏ 텔레스트레이터", ArLayer.LowerThird => "🟦 로어 서드", ArLayer.PlayerCard => "🪪 플레이어 카드", ArLayer.ScoreBug => "🔢 스코어", _ => "👥 군중 HUD",
+    };
+
+    private static string FaultName(KeyFillFault f) => f switch { KeyFillFault.None => "Key/Fill 정상", KeyFillFault.FillExceedsKey => "Fill > Key 클램프", _ => "스트레이트→프리멀티 불일치 교정" };
+
+    private string Tc(long frame)
+    {
+        if (frame < 0) return "--:--:--:--";
+        var n = PromptFlowStudio.Services.MasterControl.SmpteTimecode.Format(frame, 60, _tc);
+        return new string(_tc, 0, n);
+    }
+
+    private string Hex()
+    {
+        var p = T.LastPacket;
+        var sb = new System.Text.StringBuilder(p.Length * 3);
+        for (var i = 0; i < p.Length; i++) sb.Append(p[i].ToString("X2", CultureInfo.InvariantCulture)).Append(i is 1 or 10 or 19 or 25 or 27 ? " │ " : " ");
+        return sb.ToString();
+    }
+
+    private string AncHex()
+    {
+        var p = G.LastAncPacket;
+        var n = Math.Min(p.Length, 64);
+        var sb = new System.Text.StringBuilder(n * 3 + 8);
+        for (var i = 0; i < n; i++) sb.Append(p[i].ToString("X2", CultureInfo.InvariantCulture)).Append(i == 11 || i == 19 ? " │ " : " ");
+        if (p.Length > n) sb.Append('…');
+        return sb.ToString();
+    }
+
+    private string LensCurve(int which)
+    {
+        var sb = new System.Text.StringBuilder(64 * 12);
+        for (var i = 0; i <= 64; i++)
+        {
+            var z = (int)(i / 64.0 * FreeDTrackingProtocolLensDistortionEngine.MaxZoom);
+            T.LensAt(z, 0, out var fov, out var k1, out _);
+            var y = which == 0 ? 78 - fov / 65.0 * 76 : 40 - k1 / 0.13 * 38;
+            sb.Append(F1(i / 64.0 * 360)).Append(',').Append(F1(y)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private string Series(Func<int, float> f, double max, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(360.0 * (n - 1 - i) / (BroadcastArGraphicsStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - 2 - (h - 4) * Math.Clamp(f(i) / max, 0, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private void OnViewportClick(MouseEventArgs e)
+    {
+        Runner.Stroke((float)(e.OffsetX * A.Width / 512.0), (float)(e.OffsetY * A.Height / 288.0), _newStroke);
+        _newStroke = false;
+    }
+
+    private void Calibrate() => Runner.Calibrate();
+    private void SendCaption() { if (!string.IsNullOrWhiteSpace(_caption)) Runner.SetCaption(_caption); }
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step60() { for (var i = 0; i < BroadcastArGraphicsStudioRunner.Hz; i++) Runner.Step(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중(10 Hz 이벤트)은 300 ms 타이머가 처리 — 정지 상태 액션만 즉시 반영.</summary>
+    private void OnServiceChanged() { if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged); }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

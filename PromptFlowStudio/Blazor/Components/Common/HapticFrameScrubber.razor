@@ -1,0 +1,278 @@
+@using System.Threading
+@implements IDisposable
+@inject PromptFlowStudio.Shared.Haptics.IHapticEngine Haptic
+@inject PromptFlowStudio.Services.Ui.StudioMemoryAudit MemAudit
+
+@* [PromptFlow Studio v5.4 · Task4] 온디바이스 초저지연 프레임 스크러버 & 햅틱 타임라인 — 순수 Blazor + CSS(외부 SDK 0).
+   ▸ Wan 3.0 생성 컷을 60fps 조그-셔틀로 스크러빙(하단 썸존 타임라인 · 델타 드래그).
+   ▸ 주요 AI Keyframe(씬 경계) 통과 시 강한 진동, 0.5초 눈금마다 가벼운 틱 → 감각적 정밀 편집.
+   ▸ v4.4.4 하드닝: PeriodicTimer + CancellationToken 재생 루프 · IDisposable 멱등 해제(타이머/토큰 릭 방어) · NaN/0분모 방어. *@
+
+<div class="hfs">
+    <div class="hfs-h">
+        <span class="hfs-title">🎞️ 햅틱 프레임 스크러버</span>
+        <span class="hfs-badge">@Fps fps · @Total 프레임</span>
+    </div>
+
+    @* ── 현재 프레임 프리뷰 ── *@
+    <div class="hfs-screen">
+        <div class="hfs-scene">씬 @(CurScene + 1)/@SceneCount · @StatusIcon(CurStatus)</div>
+        <div class="hfs-frameno">@TimeCode(_frame) <span class="hfs-kf @(OnKeyframe ? "on" : null)">@(OnKeyframe ? "◆ KEYFRAME" : "")</span></div>
+        <div class="hfs-prompt">@CurPrompt</div>
+        <div class="hfs-scan" style="left:@F(Progress)%"></div>
+    </div>
+
+    @* ── 조그-셔틀 트랜스포트 ── *@
+    <div class="hfs-transport">
+        <button class="hfs-jog" @onclick="PrevKey" title="이전 키프레임">⏮</button>
+        <button class="hfs-jog" @onclick="() => Nudge(-1)" title="1프레임 뒤로">◀</button>
+        <button class="hfs-play" @onclick="TogglePlay" title="재생/일시정지">@(_playing ? "⏸" : "▶")</button>
+        <button class="hfs-jog" @onclick="() => Nudge(1)" title="1프레임 앞으로">▶</button>
+        <button class="hfs-jog" @onclick="NextKey" title="다음 키프레임">⏭</button>
+    </div>
+
+    <div class="hfs-speeds">
+        @foreach (var s in Speeds)
+        {
+            <button class="hfs-spd @(Math.Abs(_speed - s) < 0.01 ? "on" : null)" @onclick="() => SetSpeed(s)" @key="s">@FormatSpeed(s)</button>
+        }
+    </div>
+
+    @* ── 썸존 타임라인(하단 · 델타 드래그 스크럽) ── *@
+    <div class="hfs-timeline">
+        <div class="hfs-track" @onpointerdown="ScrubDown" @onpointermove="ScrubMove" @onpointerup="ScrubUp" @onpointerleave="ScrubUp" @onpointercancel="ScrubUp">
+            <div class="hfs-fill" style="width:@F(Progress)%"></div>
+            @for (var k = 0; k < SceneCount; k++)
+            {
+                var pos = SceneCount <= 1 ? 0.0 : (k * 100.0 / SceneCount);
+                <div class="hfs-tick" style="left:@F(pos)%" title="키프레임 @(k + 1)"></div>
+            }
+            <div class="hfs-handle" style="left:@F(Progress)%"><div class="hfs-handle-grip"></div></div>
+        </div>
+        <div class="hfs-thumbhint">👍 썸존 — 좌우로 밀어 60fps 스크럽 · 키프레임에서 진동</div>
+    </div>
+
+    @if (_msg is not null) { <div class="hfs-msg">@_msg</div> }
+</div>
+
+<style>
+    .hfs { border: 1px solid color-mix(in srgb, #f5c451 30%, var(--line)); border-radius: 16px; overflow: hidden; font-family: Pretendard, 'Malgun Gothic', sans-serif;
+        background: linear-gradient(160deg, color-mix(in srgb, #f5c451 8%, rgba(11,13,20,.9)), rgba(11,13,20,.96)); }
+    .hfs-h { display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-bottom: 1px solid color-mix(in srgb, #f5c451 22%, var(--line)); }
+    .hfs-title { font: 900 13.5px Pretendard,'Malgun Gothic',sans-serif; background: linear-gradient(90deg, #fde68a, #f5c451); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .hfs-badge { margin-left: auto; font: 800 10px var(--mono); color: var(--text-muted); border: 1px solid var(--line); background: var(--card-2); border-radius: 20px; padding: 3px 9px; }
+    /* 프리뷰 */
+    .hfs-screen { position: relative; margin: 13px 14px; padding: 13px; min-height: 96px; border-radius: 12px; overflow: hidden;
+        background: linear-gradient(135deg, #0b1020, #161a2e); border: 1px solid color-mix(in srgb, #f5c451 24%, var(--line)); }
+    .hfs-scene { font: 800 10px var(--mono); color: #fde68a; }
+    .hfs-frameno { margin-top: 5px; font: 900 22px var(--mono); color: #fff; display: flex; align-items: center; gap: 10px; letter-spacing: .04em; }
+    .hfs-kf { font: 800 9px var(--mono); color: #0b0d14; background: transparent; border-radius: 5px; padding: 2px 0; transition: all .1s; }
+    .hfs-kf.on { background: #f5c451; padding: 2px 7px; box-shadow: 0 0 12px #f5c451; }
+    .hfs-prompt { margin-top: 6px; font: 600 11px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-secondary); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .hfs-scan { position: absolute; top: 0; bottom: 0; width: 2px; background: #f5c451; box-shadow: 0 0 10px #f5c451; transform: translateX(-1px); }
+    /* 트랜스포트 */
+    .hfs-transport { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 4px 14px; }
+    .hfs-jog { width: 48px; height: 44px; font-size: 16px; border-radius: 11px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; }
+    .hfs-jog:hover { border-color: #f5c451; color: var(--text-primary); }
+    .hfs-play { width: 62px; height: 46px; font-size: 20px; border-radius: 12px; border: none; color: #1a1206; background: linear-gradient(135deg, #fde68a, #f5c451); cursor: pointer; box-shadow: 0 5px 14px color-mix(in srgb, #f5c451 34%, transparent); }
+    .hfs-play:hover { filter: brightness(1.06); }
+    .hfs-speeds { display: flex; justify-content: center; gap: 6px; padding: 8px 14px 4px; }
+    .hfs-spd { font: 800 11px var(--mono); padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; min-height: 34px; }
+    .hfs-spd.on { color: #1a1206; border-color: transparent; background: linear-gradient(135deg, #fde68a, #f5c451); }
+    /* 타임라인 */
+    .hfs-timeline { padding: 8px 14px 14px; }
+    .hfs-track { position: relative; height: 46px; border-radius: 12px; background: #0b0d14; border: 1px solid var(--line); touch-action: none; user-select: none; -webkit-user-select: none; cursor: ew-resize; overflow: hidden; }
+    .hfs-fill { position: absolute; top: 0; bottom: 0; left: 0; background: linear-gradient(90deg, color-mix(in srgb, #f5c451 34%, transparent), color-mix(in srgb, #f5c451 12%, transparent)); }
+    .hfs-tick { position: absolute; top: 0; bottom: 0; width: 2px; background: color-mix(in srgb, #f5c451 55%, transparent); }
+    .hfs-tick::after { content: "◆"; position: absolute; top: -1px; left: -4px; font-size: 8px; color: #f5c451; }
+    .hfs-handle { position: absolute; top: 0; bottom: 0; width: 0; }
+    .hfs-handle-grip { position: absolute; top: 50%; left: 0; width: 20px; height: 34px; transform: translate(-50%, -50%); border-radius: 7px; background: linear-gradient(135deg, #fde68a, #f5c451); box-shadow: 0 0 12px color-mix(in srgb, #f5c451 60%, transparent); border: 1px solid #fff6; }
+    .hfs-thumbhint { text-align: center; font: 600 10px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); margin-top: 7px; word-break: keep-all; }
+    .hfs-msg { margin: 0 14px 14px; padding: 8px 12px; border-radius: 10px; background: var(--card); border: 1px solid color-mix(in srgb, #f5c451 28%, var(--line)); font: 700 11px Pretendard,'Malgun Gothic',sans-serif; color: #fde68a; word-break: keep-all; }
+</style>
+
+@code {
+    /// <summary>스크러빙 대상 프로젝트(선택) — 씬 = 키프레임 세그먼트. null 이면 데모 6씬.</summary>
+    [Parameter] public StoryboardProject? Project { get; set; }
+
+    private const int Fps = 60;
+    private const int FramesPerScene = 72;      // 1.2초/씬 @60fps
+    private static readonly double[] Speeds = { 0.5, 1.0, 2.0 };
+
+    private double _framePos;                    // 실수 프레임 위치(부드러운 배속)
+    private int _frame;                          // 표시용 정수 프레임
+    private double _speed = 1.0;
+    private bool _playing;
+    private string? _msg;
+
+    // 스크럽/재생 상태
+    private bool _scrubbing;
+    private double _lastX;
+    private int _lastTickBucket;
+    private int _lastScene;
+
+    private PeriodicTimer? _timer;
+    private CancellationTokenSource? _cts;
+    private bool _disposed;
+    private long _memToken;
+
+    private int SceneCount => Math.Max(Project?.Scenes?.Count ?? 0, 0) is var c && c > 0 ? c : 6;
+    private int Total => Math.Max(SceneCount * FramesPerScene, 1);
+    private int CurScene => Math.Clamp(_frame / FramesPerScene, 0, SceneCount - 1);
+    private bool OnKeyframe => _frame % FramesPerScene == 0;   // 씬 경계 = 키프레임
+    private double Progress => Total <= 1 ? 0 : Math.Clamp(_frame * 100.0 / (Total - 1), 0, 100);
+
+    private StoryboardScene? CurSceneObj => Project?.Scenes is { Count: > 0 } s && CurScene < s.Count ? s[CurScene] : null;
+    private SceneStatus CurStatus => CurSceneObj?.Status ?? SceneStatus.Pending;
+    private string CurPrompt
+    {
+        get
+        {
+            var p = CurSceneObj?.Prompt;
+            if (!string.IsNullOrWhiteSpace(p)) return p!.Length > 120 ? p[..120] + "…" : p;
+            return $"데모 씬 {CurScene + 1} — Wan 3.0 생성 컷 프리뷰(프로젝트 연결 시 실제 프롬프트 표시).";
+        }
+    }
+
+    protected override void OnInitialized() => _memToken = MemAudit.Track("HapticFrameScrubber");
+
+    private void TogglePlay() { if (_playing) Stop(); else Play(); }
+
+    private void Play()
+    {
+        if (_playing) return;
+        if (_frame >= Total - 1) SetFrame(0);      // 끝에서 재생 시 처음으로
+        _playing = true;
+        _cts = new CancellationTokenSource();
+        _timer = new PeriodicTimer(TimeSpan.FromMilliseconds(1000.0 / Fps));
+        _ = PlayLoopAsync(_cts.Token);
+        _msg = null;
+    }
+
+    private void Stop()
+    {
+        _playing = false;
+        try { _cts?.Cancel(); } catch { }
+        _timer?.Dispose(); _timer = null;
+    }
+
+    private async Task PlayLoopAsync(CancellationToken ct)
+    {
+        var timer = _timer;
+        if (timer is null) return;
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+            {
+                if (_disposed || ct.IsCancellationRequested) break;
+                Advance(_speed);                       // 배속만큼 전진
+                if (_frame >= Total - 1) { await InvokeAsync(Stop); await SafeRender(); break; }
+                await SafeRender();
+            }
+        }
+        catch (OperationCanceledException) { /* 정상 종료 */ }
+        catch (ObjectDisposedException) { /* 타이머 해제 경합 — 무시 */ }
+    }
+
+    private Task SafeRender()
+    {
+        if (_disposed) return Task.CompletedTask;
+        return InvokeAsync(StateHasChanged);
+    }
+
+    // ── 프레임 전진/설정(햅틱 트리거 공통 경로) ──
+    private void Advance(double delta)
+    {
+        var target = Math.Clamp(_framePos + delta, 0, Total - 1);
+        SetFramePos(target);
+    }
+
+    private void Nudge(int frames)
+    {
+        if (_playing) Stop();
+        SetFramePos(Math.Clamp(_framePos + frames, 0, Total - 1));
+    }
+
+    private void SetFrame(int f) => SetFramePos(Math.Clamp(f, 0, Total - 1));
+
+    private void SetFramePos(double pos)
+    {
+        var newFrame = (int)Math.Round(Math.Clamp(pos, 0, Total - 1));
+        var prevScene = _frame / FramesPerScene;
+        _framePos = pos;
+        _frame = newFrame;
+
+        // 키프레임(씬 경계) 통과 → 강한 진동. 그 외 0.5초 눈금 → 가벼운 틱.
+        var newScene = _frame / FramesPerScene;
+        if (newScene != _lastScene) { _lastScene = newScene; Haptic.Play(HapticEvent.HwLimit); }
+        else
+        {
+            var bucket = _frame / (Fps / 2);   // 0.5초 버킷
+            if (bucket != _lastTickBucket) { _lastTickBucket = bucket; Haptic.Play(HapticEvent.SimTouch); }
+        }
+    }
+
+    private void PrevKey()
+    {
+        if (_playing) Stop();
+        var key = ((CurScene) - (OnKeyframe ? 1 : 0));
+        SetFrame(Math.Max(key, 0) * FramesPerScene);
+        _msg = $"⏮ 키프레임 {Math.Max(CurScene, 0) + 1}";
+    }
+
+    private void NextKey()
+    {
+        if (_playing) Stop();
+        var next = Math.Min(CurScene + 1, SceneCount - 1);
+        SetFrame(next * FramesPerScene);
+        _msg = $"⏭ 키프레임 {next + 1}";
+    }
+
+    private void SetSpeed(double s) { _speed = s; _msg = $"셔틀 {FormatSpeed(s)}"; }
+
+    // ── 썸존 델타 스크럽 ──
+    private void ScrubDown(PointerEventArgs e) { if (_playing) Stop(); _scrubbing = true; _lastX = e.ClientX; }
+    private void ScrubMove(PointerEventArgs e)
+    {
+        if (!_scrubbing) return;
+        var dx = e.ClientX - _lastX;
+        _lastX = e.ClientX;
+        var framesPerPx = Total / 320.0;             // 폰 폭(~320px) 전체 드래그 ≈ 전체 타임라인
+        SetFramePos(Math.Clamp(_framePos + dx * framesPerPx, 0, Total - 1));
+    }
+    private void ScrubUp(PointerEventArgs e) => _scrubbing = false;
+
+    // ── 표시 헬퍼 ──
+    private string TimeCode(int frame)
+    {
+        var totalSec = frame / (double)Fps;
+        var mm = (int)(totalSec / 60);
+        var ss = (int)(totalSec % 60);
+        var ff = frame % Fps;
+        return $"{mm:00}:{ss:00}:{ff:00}";
+    }
+
+    private static string FormatSpeed(double s) => s == 1.0 ? "1×" : (s.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + "×");
+
+    private static string StatusIcon(SceneStatus s) => s switch
+    {
+        SceneStatus.Completed => "✅ 완료",
+        SceneStatus.Generating => "⏳ 생성중",
+        SceneStatus.Downloading => "⬇️ 다운로드",
+        SceneStatus.Failed => "⚠️ 실패",
+        SceneStatus.Canceled => "⏹ 취소",
+        _ => "· 대기",
+    };
+
+    private static string F(double v) => (double.IsNaN(v) || double.IsInfinity(v) ? 0 : v).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+
+    public void Dispose()
+    {
+        if (_disposed) return;   // 멱등
+        _disposed = true;
+        try { _cts?.Cancel(); } catch { }
+        _timer?.Dispose(); _timer = null;
+        _cts?.Dispose(); _cts = null;
+        MemAudit.Release(_memToken);
+    }
+}

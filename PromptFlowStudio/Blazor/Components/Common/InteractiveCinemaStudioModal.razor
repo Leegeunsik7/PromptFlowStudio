@@ -1,0 +1,324 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.Cinema
+@implements IDisposable
+@inject InteractiveCinemaStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.78.0] 🎬 AI 인터랙티브 시네마 & 서사 분기 스튜디오 — 실시간 시나리오 분기 트리카드(도달 확률 · 예측/진입 노드) ·
+    관객 감정 벡터 레이더(융합 vs 노드 설계 무드) · 선택지 확률/시선/투표/의도 · 1-Click 감독 개입 스위치 · 트랜지션 블렌딩 모니터 · 관객 반응 입력.
+*@
+
+<div class="icn-scrim" @onclick="Close">
+    <div class="icn-modal" @onclick:stopPropagation="true">
+        <div class="icn-h">
+            <div>
+                <div class="icn-title">🎬 AI 인터랙티브 시네마 &amp; 서사 분기 스튜디오</div>
+                <div class="icn-sub">관객의 <b>BCI 뇌파 · 시선 · 음성/텍스트 · 투표</b>를 6차원 감정 벡터로 융합해 시나리오 그래프의 다음 씬을 실시간 결정하고,
+                    <b>4D 스플랫 · 영상 · 공간 오디오</b>를 프레임 드롭/팝 노이즈 없이 크로스페이드로 교체합니다.</div>
+            </div>
+            <button class="icn-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="icn-bar">
+            <button class="icn-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 상영 정지" : "▶ 실시간 상영")</button>
+            <button class="icn-btn" @onclick="Step">⏭ 1초</button>
+            <button class="icn-btn" @onclick="Runner.Engine.Restart">⏮ 처음부터</button>
+            <button class="icn-btn @(Runner.Engine.DirectorHold ? "warn" : null)" @onclick="() => Runner.SetHold(!Runner.Engine.DirectorHold)">@(Runner.Engine.DirectorHold ? "✋ 감독 개입 중 — 해제" : "🎛 감독 개입 모드")</button>
+            <label class="icn-tg"><input type="checkbox" checked="@Runner.VirtualAudience" @onchange="e => Runner.VirtualAudience = e.Value is true" /> 가상 관객</label>
+            @foreach (var p in Enum.GetValues<AudiencePersona>())
+            {
+                var persona = p;
+                <button class="icn-btn sm @(Runner.Persona == persona ? "on" : null)" @onclick="() => Runner.Persona = persona">@(PersonaLabel(persona))</button>
+            }
+            <span class="icn-chip">결정 @(F0(Runner.Engine.LastDecisionMicros))µs · 프리페치 @(Runner.Engine.PrefetchHits)/@(Runner.Engine.PrefetchHits + Runner.Engine.PrefetchMisses)</span>
+            <span class="icn-chip @(Runner.Guard.Pops == 0 ? "ok" : "warn")">팝 @(Runner.Guard.Pops) · 예산 초과 @(Runner.Guard.OverBudgetFrames) · 프레임 @(Runner.FramesProduced)</span>
+        </div>
+
+        <div class="icn-main">
+            <div class="icn-col">
+                <div class="icn-card">
+                    <div class="icn-sec">🌳 시나리오 분기 트리 — 현재 <b>@(Cur.Name)</b> · 샷 @(ShotLabel()) · @(F1(Runner.Engine.Playhead))/@(F0(Cur.DurationSec))s @(Runner.Engine.InDecisionWindow ? "· 🎯 결정 창" : "")</div>
+                    <svg class="icn-tree" viewBox="0 0 800 @(F0(TreeHeight()))" preserveAspectRatio="xMinYMin meet">
+                        @for (var i = 0; i < Runner.Engine.EdgeCount; i++)
+                        {
+                            var e = Runner.Engine.Edge(i);
+                            var a = Runner.Engine.Node(e.From); var b = Runner.Engine.Node(e.To);
+                            if (b.LayoutX <= a.LayoutX) continue;
+                            var x1 = NX(a) + 150; var y1 = NY(a) + 24; var x2 = NX(b); var y2 = NY(b) + 24;
+                            <path d="M@(F0(x1)),@(F0(y1)) C@(F0(x1 + 30)),@(F0(y1)) @(F0(x2 - 30)),@(F0(y2)) @(F0(x2)),@(F0(y2))" class="edge @(e.Taken > 0 ? "taken" : null) @(e.From == Runner.Engine.CurrentNode ? "live" : null)" />
+                        }
+                        @for (var i = 0; i < Runner.Engine.NodeCount; i++)
+                        {
+                            var n = Runner.Engine.Node(i); var idx = i;
+                            var cls = idx == Runner.Engine.CurrentNode ? "cur" : idx == Runner.IncomingNode ? "in" : idx == Runner.Engine.PredictedNode ? "pred" : null;
+                            var c = InteractiveCinemaStudioRunner.MoodColor(n.Mood);
+                            <g>
+                                <rect x="@(F0(NX(n)))" y="@(F0(NY(n)))" width="150" height="48" rx="8" class="node @cls" style="stroke-opacity:@(F2(0.35f + 0.65f * n.Reach))" />
+                                <rect x="@(F0(NX(n)))" y="@(F0(NY(n)))" width="6" height="48" rx="3" style="fill:@(Rgb(c))" />
+                                <text x="@(F0(NX(n) + 12))" y="@(F0(NY(n) + 19))" class="nm">@(n.Ending ? "🏁 " : "")@(n.Name)</text>
+                                <text x="@(F0(NX(n) + 12))" y="@(F0(NY(n) + 37))" class="meta">도달 @(F0(n.Reach * 100))% · 방문 @(n.Visits) · @(n.Act)막</text>
+                            </g>
+                        }
+                    </svg>
+                    <div class="icn-legend"><span><i class="cur"></i>현재</span><span><i class="pred"></i>예측(프리페치)</span><span><i class="in"></i>진입 중</span><span><i class="taken"></i>지나온 간선</span></div>
+                </div>
+
+                <div class="icn-card">
+                    <div class="icn-sec">🎞 무단절 트랜지션 블렌딩 @(Runner.Guard.Active ? "· 진행 중" : "· 대기")</div>
+                    <div class="icn-blend">
+                        <svg viewBox="0 0 @(GridW) @(GridH)" class="icn-frame" preserveAspectRatio="none">
+                            @for (var y = 0; y < GridH; y++)
+                            {
+                                for (var x = 0; x < GridW; x++)
+                                {
+                                    <rect x="@x" y="@y" width="1.02" height="1.02" style="fill:@(Pixel(x, y))" />
+                                }
+                            }
+                        </svg>
+                        <svg viewBox="-2.4 -3.8 4.8 3.6" class="icn-splat">
+                            @for (var i = 0; i < Runner.Blended.Count; i += 2)
+                            {
+                                var p = Runner.Blended.Position(i);
+                                <circle cx="@(F2(p.X))" cy="@(F2(-p.Y))" r="0.05" style="fill:@(Rgb(Runner.Blended.BaseColor(i)));opacity:@(F2(Runner.Blended.Opacity[i]))" />
+                            }
+                        </svg>
+                    </div>
+                    <div class="icn-meter"><span>비디오</span><i style="width:@(F0(Runner.Guard.VideoWeight * 100))%"></i><b>@(F0(Runner.Guard.VideoWeight * 100))%</b></div>
+                    <div class="icn-meter"><span>오디오</span><i style="width:@(F0(Runner.Guard.AudioWeight * 100))%"></i><b>@(F0(Runner.Guard.AudioWeight * 100))%</b></div>
+                    <div class="icn-kv">
+                        <span>블렌드 <b>@(F2(Runner.Guard.LastBlendMs))ms</b></span>
+                        <span>영교차 대기 <b>@(Runner.Guard.LastZeroCrossWait)smp</b></span>
+                        <span>라우드니스 정합 <b>×@(F2(Runner.Guard.LoudnessMatch))</b></span>
+                        <span>최대 초과 기울기 <b>@(F3(Runner.Guard.MaxExcessSlope))</b></span>
+                        <span>출력 <b>@(Db(Runner.Rms))</b></span>
+                    </div>
+                    <div class="icn-hist">
+                        @for (var k = 0; k < Math.Min(6, Runner.Engine.HistoryCount); k++)
+                        {
+                            var h = Runner.Engine.History(k);
+                            <div><em>@(F1(h.AtSec))s</em> @(Runner.Engine.Node(h.From).Name) → <b>@(Runner.Engine.Node(h.To).Name)</b> <span>@(TriggerLabel(h.Trigger)) · @(F0(h.Probability * 100))% · @(h.PrefetchHit ? "프리페치 적중" : "온디맨드")</span></div>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="icn-col">
+                <div class="icn-card">
+                    <div class="icn-sec">🧠 관객 감정 벡터 — 우세 <b>@(NeuralChoiceTreeEmotionEvaluator.EmotionNames[(int)Runner.Evaluator.Dominant])</b> · 발산 @(F2(Runner.Evaluator.Divergence))</div>
+                    <svg class="icn-radar" viewBox="-1.35 -1.25 2.7 2.5">
+                        @for (var r = 1; r <= 4; r++)
+                        {
+                            <polygon points="@(Ring(r / 4f))" class="ring" />
+                        }
+                        @for (var d = 0; d < NeuralChoiceTreeEmotionEvaluator.Dim; d++)
+                        {
+                            var p = Axis(d, 1f); var lp = Axis(d, 1.17f);
+                            <g>
+                                <line x1="0" y1="0" x2="@(F3(p.X))" y2="@(F3(p.Y))" class="axis" />
+                                <text x="@(F3(lp.X))" y="@(F3(lp.Y + 0.04f))">@(NeuralChoiceTreeEmotionEvaluator.EmotionNames[d])</text>
+                            </g>
+                        }
+                        <polygon points="@(Poly(Cur.Mood))" class="mood" />
+                        <polygon points="@(Poly(Runner.Evaluator.Fused))" class="fused" />
+                    </svg>
+                    <div class="icn-legend"><span><i class="fused"></i>관객 융합</span><span><i class="mood"></i>노드 설계 무드</span></div>
+                    <div class="icn-kv">
+                        @for (var m = 0; m < NeuralChoiceTreeEmotionEvaluator.Modalities; m++)
+                        {
+                            <span>@(NeuralChoiceTreeEmotionEvaluator.ModalityNames[m]) <b>@(F2(Runner.Evaluator.ModalityConfidence((AudienceModality)m)))</b></span>
+                        }
+                        <span>사카드 <b>@(F1(Runner.Evaluator.SaccadeRate))/s</b></span>
+                        <span>이벤트 <b>@(Runner.Engine.EventsProcessed)</b></span>
+                    </div>
+                </div>
+
+                <div class="icn-card">
+                    <div class="icn-sec">🔀 분기 확률 · 1-Click 수동 개입</div>
+                    @if (Cur.OutCount == 0)
+                    {
+                        <div class="icn-note">🏁 엔딩 — 종료 후 프롤로그로 재시작합니다.</div>
+                    }
+                    @for (var k = 0; k < Cur.OutCount; k++)
+                    {
+                        var e = Runner.Engine.Edge(Cur.Out[k]); var ch = k;
+                        var ok = Runner.Evaluator.IsEligible(ch);
+                        <div class="icn-choice @(ok ? null : "lock")">
+                            <div class="hd"><b>@(e.Label)</b> → @(Runner.Engine.Node(e.To).Name) @(ok ? "" : "🔒 조건 미충족")</div>
+                            <div class="bar"><i style="width:@(F0(Runner.Evaluator.Probability(ch) * 100))%"></i><em>@(F0(Runner.Evaluator.Probability(ch) * 100))%</em></div>
+                            <div class="ft">
+                                <span>시선 @(F0(Runner.Evaluator.GazeShare(ch) * 100))%</span>
+                                <span>투표 @(F0(Runner.Evaluator.Votes(ch)))</span>
+                                <span>의도 @(F0(Runner.Evaluator.IntentShare(ch) * 100))%</span>
+                                <span>적합 @(F2(Runner.Evaluator.Feature(ch, 0)))</span>
+                                <button class="icn-btn sm" disabled="@(!ok)" @onclick="() => Runner.Engine.PushVote(ch)">🗳 투표</button>
+                                <button class="icn-btn sm go" @onclick="() => Runner.Override(ch)">⚡ 지금 분기</button>
+                            </div>
+                        </div>
+                    }
+                </div>
+
+                <div class="icn-card">
+                    <div class="icn-sec">💬 관객 반응 입력</div>
+                    <div class="icn-row">
+                        <input class="icn-in" placeholder="예: 무서워 도망쳐! / 동료를 구해줘" @bind="_text" @bind:event="oninput" @onkeydown="OnKey" />
+                        <label class="icn-tg"><input type="checkbox" @bind="_voice" /> 음성(STT)</label>
+                        <button class="icn-btn" @onclick="Send">보내기</button>
+                    </div>
+                </div>
+                <div class="icn-note">@(Runner.Engine.LastAction ?? "대기") · @(Runner.LastAction ?? "") · 실 카메라/마이크/BCI 장치 미결선 시 가상 관객 사용</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .icn-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .icn-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .icn-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f43f5e 16%, var(--card)), color-mix(in srgb, #f59e0b 14%, var(--card))); }
+    .icn-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .icn-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .icn-sub b { color: var(--text-primary); }
+    .icn-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .icn-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .icn-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .icn-btn.sm { font-size: 11px; padding: 3px 8px; } .icn-btn:disabled { opacity: .4; cursor: default; }
+    .icn-btn.on { background: color-mix(in srgb, #f43f5e 22%, transparent); border-color: #f43f5e; } .icn-btn.warn { border-color: #f59e0b; color: #fcd34d; background: color-mix(in srgb, #f59e0b 16%, transparent); }
+    .icn-btn.go { border-color: #f43f5e; color: #fda4af; }
+    .icn-tg { font-size: 11.5px; color: var(--text-secondary); display: flex; gap: 4px; align-items: center; font-weight: 600; }
+    .icn-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .icn-chip.ok { border-color: #22c55e; color: #86efac; } .icn-chip.warn { border-color: #f97316; color: #fdba74; }
+    .icn-main { display: grid; grid-template-columns: 1.25fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .icn-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .icn-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .icn-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .icn-tree { width: 100%; background: #0b1020; border-radius: 10px; }
+    .icn-tree .edge { fill: none; stroke: #334155; stroke-width: 2; } .icn-tree .edge.taken { stroke: #f59e0b; stroke-width: 3; } .icn-tree .edge.live { stroke: #f43f5e; stroke-dasharray: 6 4; }
+    .icn-tree .node { fill: #111827; stroke: #64748b; stroke-width: 2; } .icn-tree .node.cur { fill: #3b0d1a; stroke: #f43f5e; stroke-width: 3; }
+    .icn-tree .node.pred { stroke: #38bdf8; stroke-dasharray: 5 3; } .icn-tree .node.in { fill: #0c2a3a; stroke: #22d3ee; stroke-width: 3; }
+    .icn-tree .nm { font-size: 13px; font-weight: 800; fill: #f1f5f9; } .icn-tree .meta { font-size: 10.5px; fill: #94a3b8; font-family: var(--mono); }
+    .icn-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 10.5px; color: var(--text-muted); }
+    .icn-legend i { display: inline-block; width: 14px; height: 4px; margin-right: 4px; vertical-align: middle; border-radius: 2px; }
+    .icn-legend i.cur { background: #f43f5e; } .icn-legend i.pred { background: #38bdf8; } .icn-legend i.in { background: #22d3ee; } .icn-legend i.taken { background: #f59e0b; }
+    .icn-legend i.fused { background: #22d3ee; } .icn-legend i.mood { background: #e879f9; }
+    .icn-blend { display: grid; grid-template-columns: 1.6fr 1fr; gap: 8px; }
+    .icn-frame { width: 100%; aspect-ratio: 16 / 9; border-radius: 8px; } .icn-splat { width: 100%; aspect-ratio: 4.8 / 3.6; background: #050914; border-radius: 8px; }
+    .icn-meter { display: grid; grid-template-columns: 50px 1fr 44px; gap: 6px; align-items: center; font: 700 11px var(--mono); color: var(--text-secondary); }
+    .icn-meter i { display: block; height: 8px; background: linear-gradient(90deg, #f43f5e, #f59e0b); border-radius: 4px; } .icn-meter b { color: var(--text-primary); }
+    .icn-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; color: var(--text-secondary); } .icn-kv b { color: var(--text-primary); font-family: var(--mono); }
+    .icn-hist div { font-size: 11px; color: var(--text-secondary); padding: 2px 0; border-bottom: 1px dashed var(--line); }
+    .icn-hist em { font-style: normal; font-family: var(--mono); color: var(--text-muted); } .icn-hist b { color: var(--text-primary); } .icn-hist span { color: var(--text-muted); font-size: 10.5px; }
+    .icn-radar { width: 100%; max-width: 360px; align-self: center; }
+    .icn-radar .ring { fill: none; stroke: #334155; stroke-width: .008; } .icn-radar .axis { stroke: #334155; stroke-width: .008; }
+    .icn-radar text { font-size: .1px; fill: #cbd5e1; text-anchor: middle; }
+    .icn-radar .fused { fill: rgba(34,211,238,.25); stroke: #22d3ee; stroke-width: .02; } .icn-radar .mood { fill: none; stroke: #e879f9; stroke-width: .015; stroke-dasharray: .05 .03; }
+    .icn-choice { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; }
+    .icn-choice.lock { opacity: .55; } .icn-choice .hd { font-size: 12px; color: var(--text-secondary); } .icn-choice .hd b { color: var(--text-primary); }
+    .icn-choice .bar { position: relative; height: 14px; background: #0f172a; border-radius: 4px; overflow: hidden; }
+    .icn-choice .bar i { display: block; height: 100%; background: linear-gradient(90deg, #f43f5e, #f59e0b); }
+    .icn-choice .bar em { position: absolute; right: 6px; top: 0; font: 700 10.5px var(--mono); font-style: normal; color: #f8fafc; }
+    .icn-choice .ft { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font: 600 10.5px var(--mono); color: var(--text-muted); }
+    .icn-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .icn-in { flex: 1; min-width: 200px; font-size: 12px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .icn-note { font-size: 11px; color: var(--text-muted); }
+    @@media (max-width: 1200px) { .icn-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int GridW = 24, GridH = 14;
+    private string _text = "";
+    private bool _voice;
+    private System.Threading.Timer? _timer;
+
+    private NarrativeNode Cur => Runner.Engine.Node(Math.Max(0, Runner.Engine.CurrentNode));
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Cinema.Modal.Timer", ex); }
+        }, null, 200, 200);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static string Db(float rms) => F0(20 * MathF.Log10(MathF.Max(rms, 1e-6f))) + " dBFS";
+    private static string Rgb(Vector3 c) => "rgb(" + F0(Math.Clamp(c.X, 0f, 1f) * 255) + "," + F0(Math.Clamp(c.Y, 0f, 1f) * 255) + "," + F0(Math.Clamp(c.Z, 0f, 1f) * 255) + ")";
+    private static string PersonaLabel(AudiencePersona p) => p switch { AudiencePersona.ThrillSeeker => "🎢 스릴 추구", AudiencePersona.Empath => "💗 공감형", _ => "🔭 탐험형" };
+    private static string TriggerLabel(BranchTrigger t) => t switch { BranchTrigger.Override => "감독 개입", BranchTrigger.Audience => "관객 의도", BranchTrigger.Vote => "투표", BranchTrigger.Restart => "재시작", _ => "감정 확률" };
+
+    private static float NX(NarrativeNode n) => 12 + n.LayoutX * 195;
+    private static float NY(NarrativeNode n) => 12 + n.LayoutY * 64;
+
+    private float TreeHeight()
+    {
+        var rows = 1f;
+        for (var i = 0; i < Runner.Engine.NodeCount; i++) rows = MathF.Max(rows, Runner.Engine.Node(i).LayoutY + 1);
+        return 24 + rows * 64;
+    }
+
+    private string ShotLabel()
+    {
+        var s = Runner.Engine.CurrentShot;
+        if (s < 0) return "-";
+        var shot = Cur.Shots[s];
+        return (s + 1).ToString(CultureInfo.InvariantCulture) + "/" + Cur.Shots.Length.ToString(CultureInfo.InvariantCulture) + " " + shot.Camera;
+    }
+
+    private string Pixel(int gx, int gy)
+    {
+        var f = Runner.Frame;
+        var x = gx * InteractiveCinemaStudioRunner.FrameW / GridW; var y = gy * InteractiveCinemaStudioRunner.FrameH / GridH;
+        var o = (y * InteractiveCinemaStudioRunner.FrameW + x) * 3;
+        return "rgb(" + f[o].ToString(CultureInfo.InvariantCulture) + "," + f[o + 1].ToString(CultureInfo.InvariantCulture) + "," + f[o + 2].ToString(CultureInfo.InvariantCulture) + ")";
+    }
+
+    private static Vector2 Axis(int d, float r)
+    {
+        var a = -MathF.PI / 2 + d * 2 * MathF.PI / NeuralChoiceTreeEmotionEvaluator.Dim;
+        return new Vector2(MathF.Cos(a) * r, MathF.Sin(a) * r);
+    }
+
+    private static string Ring(float r)
+    {
+        var sb = new System.Text.StringBuilder(128);
+        for (var d = 0; d < NeuralChoiceTreeEmotionEvaluator.Dim; d++) { var p = Axis(d, r); sb.Append(F3(p.X)).Append(',').Append(F3(p.Y)).Append(' '); }
+        return sb.ToString();
+    }
+
+    private static string Poly(ReadOnlySpan<float> v)
+    {
+        var sb = new System.Text.StringBuilder(128);
+        for (var d = 0; d < NeuralChoiceTreeEmotionEvaluator.Dim; d++) { var p = Axis(d, Math.Clamp(v[d], 0.02f, 1f)); sb.Append(F3(p.X)).Append(',').Append(F3(p.Y)).Append(' '); }
+        return sb.ToString();
+    }
+
+    private void Step() { if (!Runner.IsRunning) for (var k = 0; k < InteractiveCinemaStudioRunner.Hz; k++) Runner.TickOnce(); }
+
+    private void Send()
+    {
+        Runner.SubmitText(_text.Trim(), _voice);
+        _text = "";
+    }
+
+    private void OnKey(KeyboardEventArgs e) { if (e.Key == "Enter") Send(); }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

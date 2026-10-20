@@ -1,0 +1,110 @@
+@using PromptFlowStudio.Services.Account
+@inject LicenseService License
+
+@* [PromptFlowStudio] 발급 라이선스 관리 패널 — 환경 설정 > 라이선스 탭.
+
+   ⚠ 회원 관리 화면에서 이곳으로 옮겼다. 두 화면에 같은 표가 있으면
+     한쪽만 고쳐지고 다른 쪽이 낡는다. 실제로 설치 PC 표가 그렇게
+     회원 화면과 환경 설정 양쪽에 중복돼 있었다.
+
+   ⚠ 회원별 [🔑 라이선스] 발급 버튼은 <회원 관리에 그대로 둔다>.
+     그건 '이 사람에게 발급' 이라 회원 맥락에 속하고,
+     여기는 '발급된 것들의 목록' 이라 시스템 맥락이다.          *@
+
+    <div class="ua-card">
+        <div class="ua-ch"><h3 class="ua-ct">🪪 발급 라이선스 관리</h3><span class="ua-cs">발급 @(_issued.Count)건 · 이 PC <b>@(License.IsIssuerMachine ? "발급자(자동 통과)" : "수령자")</b><button class="ua-rf" @onclick="RefreshLic" title="새로고침">↻</button></span></div>
+        @if (_issued.Count == 0)
+        {
+            <div class="ua-empty">아직 발급한 라이선스가 없습니다. <b>PromptFlow 라이선스 발급기(PromptFlowKeyGen)</b>로 발급하거나, 위 회원의 <b>[🔑 라이선스]</b> 버튼으로 발급하면 여기에 표시됩니다.</div>
+        }
+        else
+        {
+            <div class="ua-wrap">
+                <table class="ua-tbl">
+                    <thead><tr><th>대상</th><th>발급일</th><th>만료</th><th>상태</th><th>관리</th></tr></thead>
+                    <tbody>
+                        @foreach (var r in _issued)
+                        {
+                            var st = License.VerifyKey(r.Key);
+                            <tr>
+                                <td class="ua-id">@r.Licensee</td>
+                                <td class="ua-mono">@Ymd(r.IssuedAt)</td>
+                                <td class="ua-mono">@(string.IsNullOrEmpty(r.Expiry) ? "무기한" : Ymd(r.Expiry))</td>
+                                <td><span class="ua-bdg @(st.Valid ? "ok" : "bad")">@(st.Valid ? "유효" : st.Reason)</span></td>
+                                <td class="ua-acts">
+                                    <button class="ua-b" @onclick="() => ToggleKey(r.Id)">@(_shownKeyId == r.Id ? "닫기" : "키 보기")</button>
+                                    <button class="ua-b acc" @onclick="() => BeginExtend(r)">📅 연장</button>
+                                    <button class="ua-b del" @onclick="() => RemoveIssued(r.Id)">삭제</button>
+                                </td>
+                            </tr>
+                            @if (_shownKeyId == r.Id)
+                            {
+                                <tr class="ua-subrow"><td colspan="5"><textarea class="ua-out" rows="2" readonly onclick="this.select()">@r.Key</textarea></td></tr>
+                            }
+                            @if (_extendId == r.Id)
+                            {
+                                <tr class="ua-subrow"><td colspan="5">
+                                    <div class="ua-le">
+                                        <span class="ua-note">새 만료일</span>
+                                        <input type="date" min="2024-01-01" max="2099-12-31" value="@_extendDate" @onchange="e => _extendDate = e.Value?.ToString() ?? string.Empty" />
+                                        <button class="ua-b acc" @onclick="() => DoExtend(r)">🔁 연장 재발급</button>
+                                        <button class="ua-b" @onclick="() => { _extendId = null; _extendedKey = null; }">취소</button>
+                                    </div>
+                                    @if (_extendedKey is not null)
+                                    {
+                                        <textarea class="ua-out" rows="2" readonly onclick="this.select()">@_extendedKey</textarea>
+                                    }
+                                </td></tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <div class="ua-empty" style="padding-top:10px">※ '삭제'는 이 관리 장부에서만 제거합니다. 이미 배포된 키를 무효화하려면 <b>만료일</b>을 설정해 재발급하세요.</div>
+        }
+        <div class="ua-path">🔒 @License.RegistryPath</div>
+    </div>
+
+@code {
+    private List<LicenseRecord> _issued = new();
+    private string? _shownKeyId, _extendId, _extendedKey;
+    private string _extendDate = "";
+
+    protected override void OnInitialized() => RefreshLic();
+
+    private void RefreshLic() => _issued = License.ListIssued();
+
+    private void ToggleKey(string id) { _shownKeyId = _shownKeyId == id ? null : id; _extendId = null; }
+
+    /// <summary>
+    /// 목록에서 제거.
+    /// ⚠ 목록에서 지워도 <b>이미 배포된 키는 계속 동작한다.</b> 라이선스는
+    ///   오프라인 전자서명 방식이라 서버에 문의하지 않기 때문이다.
+    ///   못 쓰게 하려면 만료일을 앞당겨 <b>재발급</b>해야 한다.
+    /// </summary>
+    private void RemoveIssued(string id)
+    {
+        License.RemoveIssued(id);
+        if (_shownKeyId == id) _shownKeyId = null;
+        if (_extendId == id) _extendId = null;
+        RefreshLic();
+    }
+
+    private void BeginExtend(LicenseRecord r)
+    {
+        _extendId = r.Id;
+        _extendDate = string.IsNullOrEmpty(r.Expiry) ? "" : Ymd(r.Expiry);
+        _extendedKey = null; _shownKeyId = null;
+    }
+
+    private void DoExtend(LicenseRecord r)
+    {
+        DateTime? exp = (!string.IsNullOrWhiteSpace(_extendDate) && DateTime.TryParse(_extendDate, out var d))
+            ? d : null;
+        _extendedKey = License.IssueLicense(r.Licensee, exp);
+        RefreshLic();
+    }
+
+    private static string Ymd(string? s)
+        => (s is not null && s.Length == 8) ? $"{s[..4]}-{s.Substring(4, 2)}-{s.Substring(6, 2)}" : (s ?? "");
+}

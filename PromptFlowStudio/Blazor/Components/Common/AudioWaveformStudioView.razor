@@ -1,0 +1,198 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Wan
+
+@* [PromptFlow Studio v6.0.2] 오디오 파형 스튜디오 — WAV/MP3 트랙의 볼륨 엔벨로프를 CSS Flex-bar 로 시각화 + 컷 분할 마커(터치 드래그) 조정 → 컷별 립싱크 프롬프트 자동 주입.
+   ⚠ 무주입(모바일 안전 · 제2헌장): [Parameter]/EventCallback 만. 순수 BCL 분석(AudioWaveformAnalyzer) + Pure CSS3(외부 Canvas/JS 오디오 라이브러리 0 · 제약사항 2). *@
+
+<div class="aws">
+    <div class="aws-head">
+        <span class="aws-title">🎼 오디오 파형 스튜디오</span>
+        <span class="aws-badge">@(_track.DurationSec > 0 ? $"{Fmt(_track.DurationSec)}s · {_plan.CutCount}컷" : "트랙 없음")</span>
+    </div>
+
+    @* ── 업로드(가상 스텁: 순수 BCL 모의 엔벨로프 생성 · WebAudio 불가 환경 보장) ── *@
+    <div class="aws-upload">
+        <button type="button" class="aws-up-btn" @onclick="UploadStubTrack">🎵 오디오 트랙 업로드</button>
+        <span class="aws-up-name">@_track.FileName</span>
+    </div>
+
+    @if (_track.DurationSec <= 0)
+    {
+        <div class="aws-empty">오디오 트랙을 업로드하면 볼륨 파형이 표시되고, 강도에 따라 컷별 립싱크 수식어가 자동 주입됩니다.</div>
+    }
+    else
+    {
+        @* ── 파형(CSS Flex bar · 컷 밴드 색상 · 스로틀 transition) ── *@
+        <div class="aws-wave">
+            @for (var i = 0; i < _track.Buckets; i++)
+            {
+                var v = _track.Envelope[i];
+                var frac = _track.Buckets <= 1 ? 0 : i / (double)(_track.Buckets - 1);
+                var cut = CutIndexAt(frac);
+                <span class="aws-bar cut@(cut % 4)" style="height:@Pct(v)" @key="i"></span>
+            }
+
+            @* 컷 분할 마커(내부 경계 · 탭하여 선택 → 하단 슬라이더로 이동) *@
+            @foreach (var (b, mi) in _boundaries.Select((b, i) => (b, i)))
+            {
+                <button type="button" class="aws-marker @(mi == _selMarker ? "sel" : null)"
+                        style="left:@Pct(b)" @onclick="() => _selMarker = mi" @key="mi"
+                        title="컷 경계 @(mi + 1)">▲</button>
+            }
+        </div>
+
+        @* 컷 수 스테퍼 + 선택 마커 터치 드래그(네이티브 range = 폭 측정 불필요) *@
+        <div class="aws-ctl">
+            <div class="aws-cutn">
+                <button type="button" class="aws-step" @onclick="() => SetCutCount(_plan.CutCount - 1)" disabled="@(_plan.CutCount <= 1)">－</button>
+                <span class="aws-cutn-lbl">@(_plan.CutCount)컷</span>
+                <button type="button" class="aws-step" @onclick="() => SetCutCount(_plan.CutCount + 1)" disabled="@(_plan.CutCount >= 8)">＋</button>
+            </div>
+            @if (_selMarker >= 0 && _selMarker < _boundaries.Count)
+            {
+                <input class="aws-slider" type="range" min="1" max="99" step="1"
+                       value="@((_boundaries[_selMarker] * 100).ToString("0", CultureInfo.InvariantCulture))"
+                       @oninput="OnMarkerDrag" title="컷 경계 이동" />
+            }
+            else { <span class="aws-hint">마커(▲)를 탭하면 이 슬라이더로 컷 경계를 이동합니다.</span> }
+        </div>
+
+        @* ── 컷별 자동 프롬프트 주입 결과 ── *@
+        <div class="aws-cuts">
+            @foreach (var c in _plan.Cuts)
+            {
+                <div class="aws-cut dyn-@DynClass(c.Dynamic)" @key="c.Index">
+                    <div class="aws-cut-top">
+                        <span class="aws-cut-no">컷 #@c.Index</span>
+                        <span class="aws-cut-tc">@c.TimecodeLabel</span>
+                        <span class="aws-cut-dyn">@DynLabel(c.Dynamic) · @Pct(c.Intensity)</span>
+                    </div>
+                    <code class="aws-cut-mod">@c.LipSyncModifier</code>
+                </div>
+            }
+        </div>
+
+        <button type="button" class="aws-apply" @onclick="ApplySync">➕ 립싱크 컷 프롬프트 주입 (@(_plan.CutCount)컷)</button>
+    }
+
+    @if (_msg is not null) { <div class="aws-msg">@_msg</div> }
+</div>
+
+@code {
+    /// <summary>확정된 보컬 싱크 계획을 부모(MobileStudioDeck)로 전달 — 초안 립싱크 수식어 + 컷 오버라이드 결선.</summary>
+    [Parameter] public EventCallback<VocalSyncPlan> OnApplySync { get; set; }
+
+    private AudioTrackInfo _track = AudioTrackInfo.Empty;
+    private VocalSyncPlan _plan = VocalSyncPlan.Empty;
+    private List<double> _boundaries = new();   // 내부 컷 경계(0~1 프랙션 · 오름차순)
+    private int _selMarker = -1;                 // 선택된 마커 인덱스(-1=없음)
+    private string? _msg;
+    private int _stubSeq;                        // 스텁 업로드 시 샘플명 순환
+
+    private static readonly string[] StubSamples =
+    {
+        "vocal_demo_verse.wav", "chorus_hook_128bpm.mp3", "ballad_bridge_slow.wav", "kpop_title_track.mp3",
+    };
+
+    // 가상 업로드 — 순수 BCL 모의 엔벨로프(파일명 시드 · 재현 가능). 실제 파일 경로가 있으면 AnalyzeFile 로 실측 가능.
+    private void UploadStubTrack()
+    {
+        var name = StubSamples[_stubSeq % StubSamples.Length];
+        _stubSeq++;
+        _track = AudioWaveformAnalyzer.Mock(name, 0, AudioWaveformAnalyzer.DefaultBuckets);
+        SetCutCount(4);   // 기본 4컷 균등 분할 → 경계 초기화 + 계획 재산출
+        _msg = $"🎵 «{name}» 분석 완료 — 볼륨 엔벨로프 {_track.Buckets}포인트 · {Fmt(_track.DurationSec)}초.";
+    }
+
+    // 컷 수 변경 → 균등 경계 재생성 후 계획 재산출.
+    private void SetCutCount(int n)
+    {
+        n = Math.Clamp(n, 1, 8);
+        _boundaries = new List<double>();
+        for (var i = 1; i < n; i++) _boundaries.Add(i / (double)n);
+        _selMarker = _boundaries.Count > 0 ? Math.Clamp(_selMarker, 0, _boundaries.Count - 1) : -1;
+        Rebuild();
+    }
+
+    // 선택 마커 터치 드래그 → 이웃 경계 사이로 클램프(빈 컷 방지 · 최소 2% 간격).
+    private void OnMarkerDrag(ChangeEventArgs e)
+    {
+        if (_selMarker < 0 || _selMarker >= _boundaries.Count) return;
+        if (!double.TryParse(e.Value?.ToString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var pct)) return;
+        var f = Math.Clamp(pct / 100.0, 0.02, 0.98);
+        var lo = _selMarker > 0 ? _boundaries[_selMarker - 1] + 0.02 : 0.02;
+        var hi = _selMarker < _boundaries.Count - 1 ? _boundaries[_selMarker + 1] - 0.02 : 0.98;
+        _boundaries[_selMarker] = Math.Clamp(f, lo, hi);
+        Rebuild();
+    }
+
+    private void Rebuild() => _plan = VocalSyncNode.PlanFromBoundaries(_track, _boundaries);
+
+    private async Task ApplySync()
+    {
+        if (_plan.CutCount == 0) return;
+        if (OnApplySync.HasDelegate) await OnApplySync.InvokeAsync(_plan);
+        _msg = $"✅ {_plan.CutCount}개 컷 립싱크 수식어를 생성 파이프라인에 주입했습니다 — 하단 생성 닥으로 렌더하세요.";
+    }
+
+    // 특정 진행 프랙션(0~1)이 몇 번째 컷에 속하는지(파형 바 색상 밴드).
+    private int CutIndexAt(double frac)
+    {
+        var idx = 0;
+        foreach (var b in _boundaries) { if (frac >= b) idx++; else break; }
+        return idx;
+    }
+
+    // ── 표시 유틸(로캘 독립) ──
+    private static string Pct(double v01) => (Math.Clamp(v01, 0, 1) * 100).ToString("0.#", CultureInfo.InvariantCulture) + "%";
+    private static string Fmt(double s) => s.ToString("0.#", CultureInfo.InvariantCulture);
+    private static string DynClass(VocalDynamic d) => d switch { VocalDynamic.Energetic => "hi", VocalDynamic.Calm => "lo", _ => "mid" };
+    private static string DynLabel(VocalDynamic d) => d switch { VocalDynamic.Energetic => "🔥 고조", VocalDynamic.Calm => "🌙 잔잔", _ => "🎵 중간" };
+}
+
+<style>
+    .aws { display: flex; flex-direction: column; gap: 12px; background: #0f1422; border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 14px; color: #fff; font-family: Pretendard,'Malgun Gothic',sans-serif; }
+    .aws-head { display: flex; align-items: center; justify-content: space-between; }
+    .aws-title { font: 800 13px Pretendard,'Malgun Gothic',sans-serif; }
+    .aws-badge { font: 700 9.5px ui-monospace,monospace; color: #a855f7; background: rgba(168,85,247,0.14); padding: 3px 9px; border-radius: 10px; }
+    .aws-upload { display: flex; align-items: center; gap: 10px; }
+    .aws-up-btn { flex: 0 0 auto; font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: #04121c; background: linear-gradient(135deg,#a855f7,#38bdf8); border: none; border-radius: 12px; padding: 10px 14px; cursor: pointer; }
+    .aws-up-btn:active { transform: scale(0.97); }
+    .aws-up-name { flex: 1; min-width: 0; font: 600 10.5px ui-monospace,monospace; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .aws-empty { font: 600 11.5px Pretendard,'Malgun Gothic',sans-serif; color: #64748b; padding: 20px 6px; text-align: center; line-height: 1.6; word-break: keep-all; border: 1px dashed rgba(255,255,255,0.1); border-radius: 12px; }
+
+    /* 파형(Flex bar) — 컷 밴드 4색 순환 · 마커 오버레이 기준 컨테이너 */
+    .aws-wave { position: relative; display: flex; align-items: flex-end; gap: 2px; height: 92px; padding: 6px 4px; background: #06080e; border-radius: 12px; overflow: hidden; }
+    .aws-bar { flex: 1 1 0; min-width: 0; border-radius: 2px 2px 0 0; transition: height .18s ease; background: #334155; }
+    .aws-bar.cut0 { background: linear-gradient(180deg,#38bdf8,#0ea5e9); }
+    .aws-bar.cut1 { background: linear-gradient(180deg,#a855f7,#7c3aed); }
+    .aws-bar.cut2 { background: linear-gradient(180deg,#34d399,#059669); }
+    .aws-bar.cut3 { background: linear-gradient(180deg,#f5c451,#f59e0b); }
+    .aws-marker { position: absolute; top: 0; bottom: 0; transform: translateX(-50%); width: 18px; padding: 0; border: none; background: none; color: #fff; font-size: 11px; line-height: 1; cursor: pointer;
+        display: flex; align-items: flex-start; justify-content: center; }
+    .aws-marker::before { content: ""; position: absolute; top: 12px; bottom: 0; width: 2px; background: rgba(255,255,255,0.55); box-shadow: 0 0 6px rgba(255,255,255,0.5); }
+    .aws-marker.sel { color: #f5c451; }
+    .aws-marker.sel::before { background: #f5c451; box-shadow: 0 0 8px #f5c451; }
+
+    .aws-ctl { display: flex; align-items: center; gap: 12px; }
+    .aws-cutn { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
+    .aws-step { width: 32px; height: 32px; border-radius: 9px; border: 1px solid rgba(255,255,255,0.12); background: #161d2f; color: #e2e8f0; font: 800 15px ui-monospace,monospace; cursor: pointer; }
+    .aws-step:disabled { opacity: .4; cursor: not-allowed; }
+    .aws-cutn-lbl { font: 800 11px ui-monospace,monospace; color: #7dd3fc; min-width: 34px; text-align: center; }
+    .aws-slider { flex: 1; min-width: 0; accent-color: #f5c451; }
+    .aws-hint { flex: 1; font: 600 9.5px Pretendard,'Malgun Gothic',sans-serif; color: #64748b; word-break: keep-all; }
+
+    /* 컷별 립싱크 수식어 */
+    .aws-cuts { display: flex; flex-direction: column; gap: 7px; max-height: 210px; overflow-y: auto; }
+    .aws-cut { border: 1px solid rgba(255,255,255,0.08); border-left-width: 3px; border-radius: 10px; background: #0b0f19; padding: 8px 10px; display: flex; flex-direction: column; gap: 5px; }
+    .aws-cut.dyn-hi { border-left-color: #f5654b; } .aws-cut.dyn-mid { border-left-color: #38bdf8; } .aws-cut.dyn-lo { border-left-color: #64748b; }
+    .aws-cut-top { display: flex; align-items: center; gap: 8px; }
+    .aws-cut-no { font: 800 10px ui-monospace,monospace; color: #cbd5e1; }
+    .aws-cut-tc { font: 700 9.5px ui-monospace,monospace; color: #7dd3fc; }
+    .aws-cut-dyn { margin-left: auto; font: 700 9.5px Pretendard,'Malgun Gothic',sans-serif; color: #94a3b8; }
+    .aws-cut.dyn-hi .aws-cut-dyn { color: #fca5a5; }
+    .aws-cut-mod { font: 600 10px ui-monospace,monospace; color: #a7f3d0; background: rgba(52,211,153,0.07); border-radius: 7px; padding: 6px 8px; line-height: 1.45; word-break: break-word; }
+    .aws-apply { font: 800 13px Pretendard,'Malgun Gothic',sans-serif; color: #fff; background: linear-gradient(135deg,#a855f7,#38bdf8); border: none; border-radius: 14px; padding: 12px; cursor: pointer; }
+    .aws-apply:active { transform: scale(0.99); }
+    .aws-msg { font: 700 10.5px Pretendard,'Malgun Gothic',sans-serif; color: #6ee7b7; background: rgba(52,211,153,0.08); border: 1px solid color-mix(in srgb,#34d399 26%,rgba(255,255,255,0.08)); border-radius: 9px; padding: 8px 11px; line-height: 1.5; word-break: keep-all; }
+</style>

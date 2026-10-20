@@ -1,0 +1,21 @@
+@* [PromptFlow Studio] 메뉴 전용 [❓] 도움말 뱃지 — 페이지 제목 옆에 배치, 클릭 시 해당 메뉴의 MenuHelpModal(탭)을 연다. 자체 모달 상태. *@
+
+<button class="mhb" @onclick:stopPropagation="true" @onclick="() => _open = true" title="이 메뉴 도움말" aria-label="메뉴 도움말">❓</button>
+
+@if (_open)
+{
+    <MenuHelpModal MenuKey="@MenuKey" OnClose="() => _open = false" />
+}
+
+<style>
+    .mhb { flex: 0 0 auto; width: 20px; height: 20px; padding: 0; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary);
+        border-radius: 50%; font-size: 11px; line-height: 1; cursor: pointer; display: inline-grid; place-items: center; vertical-align: middle; }
+    .mhb:hover { border-color: var(--accent); color: var(--text-primary); }
+</style>
+
+@code {
+    /// <summary>메뉴 키(GranularHelpService.Keys).</summary>
+    [Parameter] public string MenuKey { get; set; } = "";
+
+    private bool _open;
+}

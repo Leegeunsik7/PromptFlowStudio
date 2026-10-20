@@ -1,0 +1,274 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.OpticalInertialTracking
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject CameraTrackingStudioRunner Runner
+
+@* [PromptFlow Studio v17.45.0] 📐 AI 카메라 트래킹 스튜디오 — 6DoF 뷰어 · FreeD 패킷 레이트/손실 게이지 · 렌더 지연 예측 오프셋 · 잔차 그래프 · 오클루전 가드. *@
+
+<div class="ctm-scrim" @onclick="Close">
+    <div class="ctm-modal" @onclick:stopPropagation="true">
+        <div class="ctm-h">
+            <div>
+                <div class="ctm-title">📐 AI 카메라 트래킹 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null)</div>
+                <div class="ctm-sub"><b>융합 엔진</b>이 1000 Hz FreeD D1(29 바이트) UDP 패킷을 무할당 스팬으로 디코딩하고 광학 포즈와 카메라 IMU 가속도/자이로를 12 차원 EKF(Vector&lt;double&gt; 행 커널)로 결합해 드리프트 없는 6DoF 좌표를 산출합니다. <b>예측 합성기</b>는 v17.44 LED 월 렌더 지연(16.7~33.3 ms)만큼 3차 테일러로 미래 포즈를 선제 예측하고 에르미트 재표본화로 인너 프러스텀 Swim 을 상쇄합니다. <b>가드</b>는 마커 가림 · 패킷 유실 시 관성 데드레커닝 · 가속도 에르미트 클램프로 튐을 차단하고 복구 시 팝핑을 지수 스무딩합니다.</div>
+            </div>
+            <button class="ctm-x" @onclick="Close">✕</button>
+        </div>
+        <div class="ctm-bar">
+            <button class="ctm-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 시작")</button>
+            <button class="ctm-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            @for (var m = 0; m < 4; m++)
+            {
+                var mv = (CameraRigMove)m;
+                <button class="ctm-btn pre @(Runner.Move == mv ? "on" : null)" @onclick="() => Runner.SetMove(mv)">@(CameraTrackingStudioRunner.MoveName(mv))</button>
+            }
+            <button class="ctm-btn @(Runner.Engine.FuseImu ? "on" : null)" @onclick="() => Runner.SetImu(!Runner.Engine.FuseImu)">🧭 IMU 융합</button>
+            <button class="ctm-btn @(Runner.Predictor.Enabled ? "on" : null)" @onclick="() => Runner.SetPrediction(!Runner.Predictor.Enabled)">⏩ 지연 예측</button>
+            <button class="ctm-btn @(Runner.Guard.Enabled ? "on" : null)" @onclick="() => Runner.SetGuard(!Runner.Guard.Enabled)">🛡 오클루전 가드</button>
+            <button class="ctm-btn det" @onclick="() => Runner.Occlude(30)">🙈 마커 가림 0.5초</button>
+            <button class="ctm-btn det" @onclick="() => Runner.Glitch(2)">⚡ 마커 스왑 튐</button>
+            <button class="ctm-btn" @onclick="Runner.ResetMetrics">↺ 지표</button>
+            <span class="ctm-chip @(Runner.LastTickMs < 16.7 ? "ok" : "warn")">프레임 @(F2(Runner.LastTickMs)) ms · EKF 예측 @(F1(Runner.Engine.LastPredictUs)) µs</span>
+        </div>
+        <div class="ctm-bar">
+            <label class="ctm-lbl">📉 패킷 손실</label>
+            <input class="ctm-rng" type="range" min="0" max="60" value="@((int)Runner.LossPct)" @oninput="OnLoss" />
+            <span class="ctm-chip">@(F0(Runner.LossPct))%</span>
+            <label class="ctm-lbl">⏱ 렌더 지연</label>
+            <input class="ctm-rng" type="range" min="0" max="50" step="0.1" value="@(Runner.RenderLatencyMs.ToString("0.0", CultureInfo.InvariantCulture))" @oninput="OnLatency" />
+            <span class="ctm-chip">@(F1(Runner.RenderLatencyMs)) ms · 측정 @(F1(Runner.Predictor.MeasuredLatencyMs)) ms</span>
+            <label class="ctm-lbl">⏩ 예측 오프셋</label>
+            <input class="ctm-rng" type="range" min="0" max="50" step="0.1" value="@(Runner.Predictor.PredictionMs.ToString("0.0", CultureInfo.InvariantCulture))" @oninput="OnOffset" />
+            <span class="ctm-chip">@(Runner.Predictor.PredictionMs > 0 ? "수동 " + F1(Runner.Predictor.PredictionMs) : "자동 " + F1(Runner.Predictor.HorizonMs)) ms</span>
+        </div>
+        <div class="ctm-main">
+            <div class="ctm-col">
+                <div class="ctm-card">
+                    <div class="ctm-sec">🎥 6DoF 카메라 — <b class="@(StateCls)">@(StateName)</b> @(Runner.Occluded ? "· 🙈 가림" : null) · 오차 <b class="@(Runner.TrackErrMm < 3.0 ? "ok" : "warn")">@(F2(Runner.TrackErrMm))</b> mm · 최대 @(F2(Runner.MaxTrackErrMm)) mm · σ @(F2(Runner.Engine.PosSigmaMm)) mm</div>
+                    <div class="ctm-dof">
+                        <div><span>X</span><b>@(F3(Runner.OutPos.X))</b><i>m</i></div>
+                        <div><span>Y</span><b>@(F3(Runner.OutPos.Y))</b><i>m</i></div>
+                        <div><span>Z</span><b>@(F3(Runner.OutPos.Z))</b><i>m</i></div>
+                        <div><span>Pan</span><b>@(F2(Deg(Runner.OutEuler.X)))</b><i>°</i></div>
+                        <div><span>Tilt</span><b>@(F2(Deg(Runner.OutEuler.Y)))</b><i>°</i></div>
+                        <div><span>Roll</span><b>@(F2(Deg(Runner.OutEuler.Z)))</b><i>°</i></div>
+                    </div>
+                    <div class="ctm-sec gap">🗺 탑다운 궤적(X–Z) — 실측 · 융합 출력 · 예측(+@(F1(Runner.Predictor.HorizonMs)) ms)</div>
+                    <svg class="ctm-top" viewBox="-2.4 0 4.8 3.4">@((MarkupString)TopSvg())</svg>
+                    <div class="ctm-legend"><span class="tr">━ 실측</span><span class="ou">━ 융합 출력</span><span class="pr">● 예측</span></div>
+                </div>
+                <div class="ctm-card">
+                    <div class="ctm-sec">⏩ 시차 Swim — 상쇄 전 <b class="warn">@(F2(Runner.Predictor.SwimRawAvg))</b> px → 후 <b class="@(Runner.Predictor.SwimPredAvg < 1.0 ? "ok" : "warn")">@(F2(Runner.Predictor.SwimPredAvg))</b> px · 감소 <b>@(F1(Runner.Predictor.ReductionPct))%</b> · 보상 @(F2(Runner.Predictor.CompensationPx)) px</div>
+                    <svg class="ctm-graph" viewBox="0 0 600 90" preserveAspectRatio="none">
+                        <polyline class="sr" points="@(Series(2))" />
+                        <polyline class="sp" points="@(Series(3))" />
+                    </svg>
+                    <div class="ctm-legend"><span class="sr">━ Swim 원시(0~20 px)</span><span class="sp">━ Swim 예측</span></div>
+                </div>
+            </div>
+            <div class="ctm-col">
+                <div class="ctm-card">
+                    <div class="ctm-sec">📡 FreeD UDP — 레이트 <b class="@(Runner.Engine.PacketRateHz > 900 ? "ok" : "warn")">@(F0(Runner.Engine.PacketRateHz))</b> Hz · 손실 <b class="@(Runner.Engine.LossRate < 0.05 ? "ok" : "warn")">@(F1(Runner.Engine.LossRate * 100.0))%</b></div>
+                    <svg class="ctm-gauge" viewBox="0 0 100 22">
+                        <rect class="bg" x="0" y="2" width="100" height="7" />
+                        <rect class="rate" x="0" y="2" width="@(P(Math.Clamp(Runner.Engine.PacketRateHz / 10.0, 0.0, 100.0)))" height="7" />
+                        <rect class="bg" x="0" y="13" width="100" height="7" />
+                        <rect class="loss" x="0" y="13" width="@(P(Math.Clamp(Runner.Engine.LossRate * 100.0 / 0.6, 0.0, 100.0)))" height="7" />
+                    </svg>
+                    <div class="ctm-kv grid">
+                        <div>수신 @(Runner.Engine.PacketsOk) / 송신 @(Runner.PacketsSent)</div>
+                        <div>체크섬 오류 <b class="@(Runner.Engine.ChecksumErrors == 0 ? "ok" : "warn")">@(Runner.Engine.ChecksumErrors)</b> · 형식 @(Runner.Engine.Malformed)</div>
+                        <div>카메라 ID @(Runner.Engine.LastSample.CameraId) · Zoom 0x@(Runner.Engine.LastSample.Zoom.ToString("X6", CultureInfo.InvariantCulture))</div>
+                        <div>Focus 0x@(Runner.Engine.LastSample.Focus.ToString("X6", CultureInfo.InvariantCulture)) · 원시 오차 @(F2(Runner.RawErrMm)) mm</div>
+                    </div>
+                </div>
+                <div class="ctm-card">
+                    <div class="ctm-sec">📈 EKF 잔차 — 위치 <b>@(F2(Runner.Engine.ResidualMm))</b> mm · 각 @(F3(Runner.Engine.ResidualDeg))° · NIS @(F1(Runner.Engine.Nis))</div>
+                    <svg class="ctm-graph" viewBox="0 0 600 90" preserveAspectRatio="none">
+                        <polyline class="rs" points="@(Series(0))" />
+                        <polyline class="er" points="@(Series(1))" />
+                        <polyline class="ls" points="@(Series(4))" />
+                    </svg>
+                    <div class="ctm-legend"><span class="rs">━ 잔차(0~10 mm)</span><span class="er">━ 추적 오차</span><span class="ls">━ 손실률</span></div>
+                    <div class="ctm-kv grid">
+                        <div>갱신 @(Runner.Engine.Updates) · 기각 <b class="@(Runner.Engine.Rejected == 0 ? "ok" : "warn")">@(Runner.Engine.Rejected)</b> · 재획득 @(Runner.Engine.Reacquisitions)</div>
+                        <div>속도 @(F2(Runner.Engine.Velocity.Length())) m/s · 각속도 @(F1(Deg(Runner.Engine.AngularRate.Length())))°/s</div>
+                    </div>
+                </div>
+                <div class="ctm-card">
+                    <div class="ctm-sec">🛡 오클루전 · 유실 가드 — @(Runner.Guard.Enabled ? "ON" : "OFF · 원시 FreeD 홀드") · 블렌드 @(F2(Runner.Guard.LastBlend))</div>
+                    <div class="ctm-kv grid">
+                        <div>데드레커닝 연속 <b>@(Runner.Guard.DeadReckonStreak)</b> · 최대 @(Runner.Guard.MaxDeadReckonStreak) / @(TrackerOcclusionPacketLossJitterGuard.MaxDeadReckonFrames)</div>
+                        <div>누적 DR @(Runner.Guard.DeadReckonFrames) 프레임 · Lost @(Runner.Guard.LostEvents)</div>
+                        <div>복구 @(Runner.Guard.Recoveries) · 최대 복구 스텝 @(F2(Runner.Guard.MaxRecoveryStepMm)) mm</div>
+                        <div>튐 @(Runner.Guard.Glitches) · 클램프 @(Runner.Guard.ClampEvents) · 스텝 @(F2(Runner.Guard.LastStepMm)) mm</div>
+                    </div>
+                    <div class="ctm-act">@(Runner.LastAction ?? "대기")</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .ctm-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .ctm-modal { width: min(1560px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .ctm-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #10b981 16%, var(--card)), color-mix(in srgb, #3b82f6 12%, var(--card))); }
+    .ctm-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .ctm-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .ctm-sub b { color: var(--text-primary); }
+    .ctm-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .ctm-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .ctm-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .ctm-btn:disabled { opacity: .45; cursor: default; }
+    .ctm-btn.on { background: color-mix(in srgb, #22c55e 20%, var(--card)); border-color: #22c55e; }
+    .ctm-btn.pre.on { background: color-mix(in srgb, #10b981 24%, var(--card)); border-color: #34d399; }
+    .ctm-btn.det { background: linear-gradient(120deg, #0ea5e9, #6366f1); color: #fff; border-color: #6366f1; }
+    .ctm-lbl { font-size: 12px; color: var(--text-secondary); display: flex; gap: 4px; align-items: center; }
+    .ctm-rng { width: 120px; }
+    .ctm-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .ctm-chip.ok { border-color: #22c55e; color: #22c55e; } .ctm-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .ctm-main { display: grid; grid-template-columns: 1.2fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .ctm-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .ctm-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); }
+    .ctm-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .ctm-sec.gap { margin-top: 10px; }
+    .ctm-sec b.ok, .ctm-kv b.ok { color: #22c55e; } .ctm-sec b.warn, .ctm-kv b.warn { color: #f59e0b; }
+    .ctm-dof { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+    .ctm-dof div { background: #0f172a; border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; }
+    .ctm-dof span { font-size: 10px; color: #94a3b8; } .ctm-dof b { font: 800 15px var(--mono); color: #34d399; } .ctm-dof i { font-size: 10px; color: #64748b; font-style: normal; }
+    .ctm-top { width: 100%; height: 240px; background: #020617; border-radius: 6px; display: block; }
+    .ctm-top polyline { fill: none; stroke-width: .025; } .ctm-top .tr { stroke: #f8fafc; stroke-dasharray: .05 .04; } .ctm-top .ou { stroke: #34d399; }
+    .ctm-top .pr { fill: #f472b6; } .ctm-top .cam { fill: #34d399; } .ctm-top .ax { stroke: #34d399; stroke-width: .02; }
+    .ctm-top text { fill: #94a3b8; font-size: .12px; }
+    .ctm-gauge { width: 100%; height: 50px; display: block; }
+    .ctm-gauge .bg { fill: #1e293b; } .ctm-gauge .rate { fill: #22c55e; } .ctm-gauge .loss { fill: #ef4444; }
+    .ctm-graph { width: 100%; height: 90px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; margin-top: 6px; }
+    .ctm-graph polyline { fill: none; stroke-width: 1.6; }
+    .ctm-graph .rs, .ctm-legend .rs { stroke: #facc15; color: #facc15; } .ctm-graph .er, .ctm-legend .er { stroke: #34d399; color: #34d399; } .ctm-graph .ls, .ctm-legend .ls { stroke: #ef4444; color: #ef4444; }
+    .ctm-graph .sr, .ctm-legend .sr { stroke: #f59e0b; color: #f59e0b; } .ctm-graph .sp, .ctm-legend .sp { stroke: #22d3ee; color: #22d3ee; }
+    .ctm-legend { display: flex; gap: 12px; font-size: 10px; margin-top: 3px; }
+    .ctm-legend .tr { color: #f8fafc; } .ctm-legend .ou { color: #34d399; } .ctm-legend .pr { color: #f472b6; }
+    .ctm-kv { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px; }
+    .ctm-kv.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; margin-top: 6px; }
+    .ctm-kv b { color: var(--text-primary); }
+    .ctm-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+
+    private string StateName => Runner.Guard.State switch
+    {
+        TrackGuardState.Tracking => "TRACKING",
+        TrackGuardState.DeadReckoning => "데드레커닝",
+        TrackGuardState.Recovering => "복구 중",
+        _ => "LOST",
+    };
+
+    private string? StateCls => Runner.Guard.State == TrackGuardState.Tracking ? "ok" : "warn";
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        Runner.Step();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("CameraTracking.Modal.Timer", ex); }
+        }, null, 100, 100);
+    }
+
+    private static double Deg(double rad) => rad * (180.0 / Math.PI);
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static string P(double v) => v.ToString("0.####", CultureInfo.InvariantCulture);
+
+    private string TopSvg()
+    {
+        var n = Runner.SeriesCount;
+        var sb = new System.Text.StringBuilder(n * 40 + 512);
+        if (n >= 2)
+        {
+            sb.Append("<polyline class=\"tr\" points=\"");
+            for (var i = n - 1; i >= 0; i--) { var v = Runner.TruthTrail(i); sb.Append(P(v.X)).Append(',').Append(P(v.Y)).Append(' '); }
+            sb.Append("\"/><polyline class=\"ou\" points=\"");
+            for (var i = n - 1; i >= 0; i--) { var v = Runner.OutTrail(i); sb.Append(P(v.X)).Append(',').Append(P(v.Y)).Append(' '); }
+            sb.Append("\"/>");
+        }
+        var c = Runner.OutPos; var pan = Runner.OutEuler.X;
+        var tip = new Vector2(c.X + 0.35f * MathF.Sin(pan), c.Z - 0.35f * MathF.Cos(pan));
+        sb.Append("<line class=\"ax\" x1=\"").Append(P(c.X)).Append("\" y1=\"").Append(P(c.Z)).Append("\" x2=\"").Append(P(tip.X)).Append("\" y2=\"").Append(P(tip.Y)).Append("\"/>");
+        sb.Append("<circle class=\"cam\" cx=\"").Append(P(c.X)).Append("\" cy=\"").Append(P(c.Z)).Append("\" r=\"0.06\"/>");
+        var pp = Runner.Predictor.PredPos;
+        sb.Append("<circle class=\"pr\" cx=\"").Append(P(pp.X)).Append("\" cy=\"").Append(P(pp.Z)).Append("\" r=\"0.035\"/>");
+        sb.Append("<g><text x=\"-2.3\" y=\"0.18\">FreeD 1000 Hz · EKF 12D · 60 fps</text></g>");
+        return sb.ToString();
+    }
+
+    private string Series(int which)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            float y = which switch
+            {
+                0 => 88f - 86f * Math.Clamp(Runner.ResidualSeries(k) / 10f, 0f, 1f),
+                1 => 88f - 86f * Math.Clamp(Runner.ErrorSeries(k) / 10f, 0f, 1f),
+                2 => 88f - 86f * Math.Clamp(Runner.SwimRawSeries(k) / 20f, 0f, 1f),
+                3 => 88f - 86f * Math.Clamp(Runner.SwimPredSeries(k) / 20f, 0f, 1f),
+                _ => 88f - 86f * Math.Clamp(Runner.LossSeries(k), 0f, 1f),
+            };
+            sb.Append(P(600f * i / (n - 1))).Append(',').Append(P(y)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void OnLoss(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetLoss(v);
+    }
+
+    private void OnLatency(ChangeEventArgs e)
+    {
+        if (double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) Runner.SetRenderLatency(v);
+    }
+
+    private void OnOffset(ChangeEventArgs e)
+    {
+        if (double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) Runner.SetPredictionOffset(v < 1.0 ? 0.0 : v);
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void Step60()
+    {
+        for (var i = 0; i < CameraTrackingStudioRunner.Hz; i++) Runner.Step();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

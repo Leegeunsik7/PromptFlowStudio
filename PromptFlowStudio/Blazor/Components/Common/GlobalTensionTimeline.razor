@@ -1,0 +1,15 @@
+@* [PromptFlow Studio] 전체 스토리보드 텐션 타임라인 — v2.2.0부터 시네마틱 네온 스플라인 그래프(CinematicTensionGraph)로 위임.
+   기존 호출부(Project/BgmDucking/OnCutClick) 호환을 위한 얇은 래퍼(API 무변경). *@
+
+<CinematicTensionGraph Project="Project" BgmDucking="BgmDucking" OnCutClick="OnCutClick" VideoElementId="VideoElementId" />
+
+@code {
+    /// <summary>대상 프로젝트.</summary>
+    [Parameter] public StoryboardProject Project { get; set; } = default!;
+    /// <summary>BGM 덕킹 표시 조건(프로젝트에 BGM + 오디오 덕킹 ON).</summary>
+    [Parameter] public bool BgmDucking { get; set; }
+    /// <summary>컷 점 클릭 콜백(0-based 컷 인덱스) — 부모가 해당 컷 카드로 스크롤/하이라이트.</summary>
+    [Parameter] public EventCallback<int> OnCutClick { get; set; }
+    /// <summary>최종 영상 요소 id(플레이헤드 동기화용).</summary>
+    [Parameter] public string? VideoElementId { get; set; }
+}

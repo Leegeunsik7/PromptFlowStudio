@@ -1,0 +1,306 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.Pyrotechnics
+@using PromptFlowStudio.Services.StageLighting
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject NeuralVfxPyrotechnicsStudioRunner Runner
+@inject IntelligentStageLightingStudioRunner Stage
+
+@* [PromptFlow Studio v17.42.0] 🔥 AI 뉴럴 특수효과 & 파이로 스튜디오 — 볼류메트릭 복셀 뷰어 · 파이로 프리셋 · Detonate · 파티클 버짓 · 발광 포인트 라이트 · 수치 가드. *@
+
+<div class="pym-scrim" @onclick="Close">
+    <div class="pym-modal" @onclick:stopPropagation="true">
+        <div class="pym-h">
+            <div>
+                <div class="pym-title">🔥 AI 뉴럴 특수효과 &amp; 파이로 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null)</div>
+                <div class="pym-sub"><b>연소 유체 엔진</b>이 32³ 복셀에서 온도 · 연료 · 매연 이류와 부력 · 보텍스 컨파인먼트 · 연소 팽창 압력 투영(SIMD Jacobi)을 60 fps로 풀고, <b>스파크 합성기</b>가 65,536 슬롯 링버퍼에서 탄도 스파크를 방출해 흑체 광도 클러스터를 v17.41 무대 조명의 동적 포인트 라이트와 바닥 반사광으로 주입합니다. <b>버짓 가드</b>는 연쇄 폭발 시 가시도 점수 하위 파티클을 정확히 초과분만 가지치기하고, 복셀 NaN/Inf · CFL · 열역학 에너지 발산을 즉시 클램프합니다.</div>
+            </div>
+            <button class="pym-x" @onclick="Close">✕</button>
+        </div>
+        <div class="pym-bar">
+            <button class="pym-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 시작")</button>
+            <button class="pym-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            @for (var p = 0; p < RealtimeNeuralCombustionFluidEngine.Presets.Length; p++)
+            {
+                var pv = (PyroPreset)p;
+                <button class="pym-btn pre p@(p) @(Runner.Preset == pv ? "on" : null)" @onclick="() => Runner.SetPreset(pv)">@(PresetIcon(pv)) @(NeuralVfxPyrotechnicsStudioRunner.PresetName(pv))</button>
+            }
+            <button class="pym-btn det" @onclick="Runner.Detonate">💥 Detonate</button>
+            <button class="pym-btn @(Runner.Guard.Enabled ? "on" : null)" @onclick="() => Runner.SetGuard(!Runner.Guard.Enabled)">🛡 가드</button>
+            <button class="pym-btn" @onclick="Runner.ResetSim">↺ 시뮬</button>
+            <button class="pym-btn" @onclick="Runner.ResetMetrics">↺ 지표</button>
+            <span class="pym-chip @(Runner.LastTickMs <= 16.7 ? "ok" : "warn")">프레임 @(F2(Runner.LastTickMs)) ms(최대 @(F1(Runner.MaxTickMs))) · 유체 @(F0(Runner.Fluid.LastStepUs)) µs · 스파크 @(F0(Runner.Synth.LastStepUs)) µs · 발광 @(F0(Runner.Synth.LastLightUs)) µs · 가드 @(F0(Runner.Guard.LastSanitizeUs)) µs</span>
+        </div>
+        <div class="pym-bar">
+            <label class="pym-lbl">🎯 버짓</label>
+            @foreach (var b in Budgets)
+            {
+                var bv = b;
+                <button class="pym-btn sm @(Runner.Guard.Budget == bv ? "on" : null)" @onclick="() => Runner.SetBudget(bv)">@(bv.ToString("N0", CultureInfo.InvariantCulture))</button>
+            }
+            <label class="pym-lbl"><input type="checkbox" checked="@Runner.LightsToStage" @onchange="OnStage" /> 💡 v17.41 무대 조명 주입 @(Runner.StageLinked ? null : "(미연결)")</label>
+            <label class="pym-lbl">🧭 궤도</label>
+            <input class="pym-rng" type="range" min="-180" max="180" value="@(_yawDeg)" @oninput="OnYaw" />
+            <span class="pym-chip">@(_yawDeg)° · @(Runner.PhysicsLinked ? "v17.26 파괴 자동 점화 " + Runner.PhysicsDetonations : "v17.26 미연결")</span>
+        </div>
+        <div class="pym-main">
+            <div class="pym-col">
+                <div class="pym-card">
+                    <div class="pym-sec">🌋 볼류메트릭 연기/화염 복셀 뷰어 — 32³ · 최고 <b>@(F0(Runner.Fluid.MaxTempK)) K</b> · 연소 셀 @(Runner.Fluid.BurningCells) · 매연 셀 @(Runner.Fluid.SmokeCells) · 스파크 표시 @(_shown)</div>
+                    <svg class="pym-view" viewBox="-4 -8 8 8" preserveAspectRatio="xMidYMid meet">@((MarkupString)ViewSvg())</svg>
+                </div>
+                <div class="pym-card">
+                    <div class="pym-sec">🪞 바닥(씬 표면) 반사 조도 — 16×16 램버트 · 최대 <b>@(F0(Runner.Synth.MaxFloorLux))</b> lux · 포인트 라이트 @(Runner.Synth.LightCount)</div>
+                    <svg class="pym-floor" viewBox="-4 -4 8 8">@((MarkupString)FloorSvg())</svg>
+                </div>
+            </div>
+            <div class="pym-col">
+                <div class="pym-card">
+                    <div class="pym-sec">✨ 활성 파티클 — <b class="@(Runner.Synth.Overflows == 0 ? "ok" : "warn")">@(Runner.Synth.Live.ToString("N0", CultureInfo.InvariantCulture))</b> / @(Runner.Guard.Budget.ToString("N0", CultureInfo.InvariantCulture)) · LOD × @(F2(Runner.Guard.EmissionScale))</div>
+                    <div class="pym-meter"><div class="fill" style="width:@(P(100f * Math.Clamp(Runner.Synth.Live / (float)Runner.Guard.Budget, 0f, 1f)))%"></div><div class="knee" style="left:@(P(100f * VfxParticleBudgetEnergyExplosionGuard.LodKnee))%"></div></div>
+                    <svg class="pym-graph" viewBox="0 0 600 90" preserveAspectRatio="none">
+                        <polyline class="lv" points="@(Series(0))" />
+                        <polyline class="tk" points="@(Series(1))" />
+                        <polyline class="cd" points="@(Series(2))" />
+                    </svg>
+                    <div class="pym-legend"><span class="lv">━ 활성(0~65,536)</span><span class="tk">━ 최고 온도(0~6000 K)</span><span class="cd">━ 발광 광도(로그)</span></div>
+                    <div class="pym-kv grid">
+                        <div>최대 @(Runner.Synth.PeakLive.ToString("N0", CultureInfo.InvariantCulture)) · 고수위 @(Runner.Synth.HighWater.ToString("N0", CultureInfo.InvariantCulture))</div>
+                        <div>방출 @(Runner.Synth.Emitted.ToString("N0", CultureInfo.InvariantCulture)) · 요청 @(Runner.Guard.Requested.ToString("N0", CultureInfo.InvariantCulture))</div>
+                        <div>가지치기 <b>@(Runner.Guard.Pruned.ToString("N0", CultureInfo.InvariantCulture))</b>(@(Runner.Guard.PruneEvents)회 · @(F0(Runner.Guard.LastPruneUs)) µs)</div>
+                        <div>링 덮어쓰기 <b class="@(Runner.Synth.Overflows == 0 ? "ok" : "warn")">@(Runner.Synth.Overflows)</b> · 버스트 클램프 @(Runner.Guard.ClampedEmits)</div>
+                        <div>평균 스파크 @(F0(Runner.Synth.MeanSparkK)) K · @(F0(Runner.Synth.SparkCandela)) cd</div>
+                        <div>점화 @(Runner.Detonations) · 충격파 r @(F1(Runner.Synth.ShockRadius)) m</div>
+                    </div>
+                </div>
+                <div class="pym-card">
+                    <div class="pym-sec">🛡 수치 발산 가드 @(Runner.Guard.Enabled ? "ON" : "OFF") — 에너지 비 <b class="@(Runner.Guard.LastEnergyRatio <= 1f + VfxParticleBudgetEnergyExplosionGuard.EnergyTolerance ? "ok" : "warn")">@(F3(Runner.Guard.LastEnergyRatio))</b>(최대 @(F2(Runner.Guard.MaxEnergyRatio)))</div>
+                    <div class="pym-kv grid">
+                        <div>NaN/Inf 수리 <b class="@(Runner.Guard.NanRepairs == 0 ? "ok" : "warn")">@(Runner.Guard.NanRepairs)</b></div>
+                        <div>범위 클램프 @(Runner.Guard.RangeClamps) · CFL @(Runner.Guard.SpeedClamps)</div>
+                        <div>에너지 보존 클램프 <b>@(Runner.Guard.EnergyClamps)</b></div>
+                        <div>열 Σθ @(F0(Runner.Fluid.ThermalEnergy)) · 운동 @(F0(Runner.Fluid.KineticEnergy))</div>
+                        <div>최대 속도 @(F1(Runner.Fluid.MaxSpeed)) m/s · 와도 @(F2(Runner.Fluid.MeanVorticity))</div>
+                        <div>연소 @(F2(Runner.Fluid.BurnPerSec))/s · 연료 @(F1(Runner.Fluid.FuelMass)) · 매연 @(F1(Runner.Fluid.SmokeMass))</div>
+                    </div>
+                </div>
+                <div class="pym-card">
+                    <div class="pym-sec">💡 동적 포인트 라이트 → v17.41 무대 조명 — 배우 조도 A <b>@(F0(Stage.Engine.PointLux0))</b> · B <b>@(F0(Stage.Engine.PointLux1))</b> lux · 수신 @(Stage.Engine.PointLightCount)</div>
+                    <table class="pym-tbl">
+                        <tr><th>#</th><th>원천</th><th>위치(m)</th><th>광도 cd</th><th>파티클</th></tr>
+                        @for (var i = 0; i < Runner.Synth.LightCount; i++)
+                        {
+                            var l = Runner.Synth.Light(i);
+                            <tr>
+                                <td><span class="sw" style="background:@(Css(l.Color))"></span>@(i)</td>
+                                <td>@(l.Sparks == 0 ? "🔥 화염" : "✨ 클러스터")</td>
+                                <td>@(F1(l.Position.X)), @(F1(l.Position.Y)), @(F1(l.Position.Z))</td>
+                                <td>@(F0(l.Candela))</td>
+                                <td>@(l.Sparks)</td>
+                            </tr>
+                        }
+                    </table>
+                    <div class="pym-act">@(Runner.LastAction ?? "대기")</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .pym-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .pym-modal { width: min(1680px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .pym-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f97316 16%, var(--card)), color-mix(in srgb, #a855f7 12%, var(--card))); }
+    .pym-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .pym-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .pym-sub b { color: var(--text-primary); }
+    .pym-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .pym-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .pym-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .pym-btn.sm { font-size: 10px; padding: 3px 6px; }
+    .pym-btn:disabled { opacity: .45; cursor: default; }
+    .pym-btn.on { background: color-mix(in srgb, #22c55e 20%, var(--card)); border-color: #22c55e; }
+    .pym-btn.pre.p0.on { background: color-mix(in srgb, #f59e0b 26%, var(--card)); border-color: #f59e0b; }
+    .pym-btn.pre.p1.on { background: color-mix(in srgb, #dc2626 28%, var(--card)); border-color: #ef4444; }
+    .pym-btn.pre.p2.on { background: color-mix(in srgb, #a855f7 26%, var(--card)); border-color: #22d3ee; }
+    .pym-btn.pre.p3.on { background: color-mix(in srgb, #facc15 24%, var(--card)); border-color: #facc15; }
+    .pym-btn.det { background: linear-gradient(120deg, #b91c1c, #f97316); color: #fff; border-color: #f97316; }
+    .pym-lbl { font-size: 12px; color: var(--text-secondary); display: flex; gap: 4px; align-items: center; }
+    .pym-rng { width: 160px; }
+    .pym-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .pym-chip.ok { border-color: #22c55e; color: #22c55e; } .pym-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .pym-main { display: grid; grid-template-columns: 1.2fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .pym-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .pym-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); }
+    .pym-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .pym-sec b.ok, .pym-kv b.ok { color: #22c55e; } .pym-sec b.warn, .pym-kv b.warn { color: #f59e0b; }
+    .pym-view { width: 100%; height: 440px; background: #000; border-radius: 8px; display: block; }
+    .pym-floor { width: 100%; height: 220px; background: #020617; border-radius: 8px; display: block; }
+    .pym-view .sh { fill: none; stroke: rgba(255,255,255,.55); } .pym-view .fl { stroke: #334155; stroke-width: .02; }
+    .pym-view .pl, .pym-floor .pl { fill: none; stroke: #f8fafc; stroke-width: .03; }
+    .pym-meter { position: relative; height: 12px; border-radius: 6px; background: #0f172a; border: 1px solid #1e293b; overflow: hidden; }
+    .pym-meter .fill { height: 100%; background: linear-gradient(90deg, #f59e0b, #ef4444); }
+    .pym-meter .knee { position: absolute; top: 0; bottom: 0; width: 2px; background: #22d3ee; }
+    .pym-graph { width: 100%; height: 90px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; margin-top: 6px; }
+    .pym-graph polyline { fill: none; stroke-width: 1.6; }
+    .pym-graph .lv, .pym-legend .lv { stroke: #f97316; color: #f97316; } .pym-graph .tk, .pym-legend .tk { stroke: #f43f5e; color: #f43f5e; } .pym-graph .cd, .pym-legend .cd { stroke: #facc15; color: #facc15; }
+    .pym-legend { display: flex; gap: 12px; font-size: 10px; margin-top: 3px; }
+    .pym-kv { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px; }
+    .pym-kv.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; margin-top: 6px; }
+    .pym-kv b { color: var(--text-primary); }
+    .pym-tbl { width: 100%; border-collapse: collapse; font: 11px var(--mono); color: var(--text-secondary); margin-top: 4px; }
+    .pym-tbl th { text-align: left; font-weight: 800; color: var(--text-primary); border-bottom: 1px solid var(--line); padding: 2px 4px; }
+    .pym-tbl td { padding: 2px 4px; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }
+    .pym-tbl .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: middle; border: 1px solid #334155; }
+    .pym-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int Res = 32;
+    private static readonly int[] Budgets = { 8192, 16384, 32768, 65536 };
+    private readonly float[] _rgb = new float[Res * Res * 3];
+    private System.Threading.Timer? _timer;
+    private int _yawDeg, _shown;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Pyro.Modal.Timer", ex); }
+        }, null, 100, 100);
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static string P(float v) => v.ToString("0.###", CultureInfo.InvariantCulture);
+
+    private static string PresetIcon(PyroPreset p) => p switch { PyroPreset.Campfire => "🏕", PyroPreset.MassiveExplosion => "💣", PyroPreset.SciFiPlasma => "🟣", _ => "⛲" };
+
+    private static string Css(Vector3 c) => "rgb(" + ((int)(Math.Clamp(c.X, 0f, 1f) * 255f)).ToString(CultureInfo.InvariantCulture) + "," + ((int)(Math.Clamp(c.Y, 0f, 1f) * 255f)).ToString(CultureInfo.InvariantCulture) + "," + ((int)(Math.Clamp(c.Z, 0f, 1f) * 255f)).ToString(CultureInfo.InvariantCulture) + ")";
+
+    private string ViewSvg()
+    {
+        var yaw = _yawDeg * MathF.PI / 180f;
+        Runner.RenderView(yaw, _rgb, Res);
+        var right = new Vector3(MathF.Cos(yaw), 0f, MathF.Sin(yaw));
+        const float cell = RealtimeNeuralCombustionFluidEngine.Extent / Res;
+        var sb = new System.Text.StringBuilder(64 * 1024);
+        for (var py = 0; py < Res; py++)
+        for (var px = 0; px < Res; px++)
+        {
+            var o = (py * Res + px) * 3;
+            var c = new Vector3(_rgb[o], _rgb[o + 1], _rgb[o + 2]);
+            if (c.X + c.Y + c.Z < 0.02f) continue;
+            sb.Append("<rect x=\"").Append(P(-4f + px * cell)).Append("\" y=\"").Append(P(-8f + py * cell)).Append("\" width=\"").Append(P(cell + 0.01f)).Append("\" height=\"").Append(P(cell + 0.01f))
+              .Append("\" fill=\"").Append(Css(c)).Append("\"/>");
+        }
+        sb.Append("<line class=\"fl\" x1=\"-4\" y1=\"0\" x2=\"4\" y2=\"0\"/>");
+        var s = Runner.Synth;
+        var hi = s.HighWater;
+        var stride = Math.Max(1, hi / 1500);
+        _shown = 0;
+        for (var i = 0; i < hi; i += stride)
+        {
+            if (s.Life(i) <= 0f) continue;
+            var p = s.Position(i);
+            var u = Vector3.Dot(p, right);
+            if (u < -4f || u > 4f || p.Y > 8f) continue;
+            var k = s.HeatK(i);
+            sb.Append("<circle cx=\"").Append(P(u)).Append("\" cy=\"").Append(P(-p.Y)).Append("\" r=\"0.035\" fill=\"").Append(Css(RealtimeNeuralCombustionFluidEngine.FlameColor(k, Runner.Spec.Plasma))).Append("\" fill-opacity=\"")
+              .Append(P(Math.Clamp((k - 700f) / 1500f, 0.15f, 1f))).Append("\"/>");
+            _shown++;
+        }
+        if (s.ShockStrength > 0f)
+        {
+            sb.Append("<circle class=\"sh\" cx=\"").Append(P(Vector3.Dot(s.ShockOrigin, right))).Append("\" cy=\"").Append(P(-s.ShockOrigin.Y)).Append("\" r=\"").Append(P(s.ShockRadius))
+              .Append("\" stroke-width=\"").Append(P(0.02f + 0.08f * s.ShockStrength)).Append("\"/>");
+        }
+        for (var i = 0; i < s.LightCount; i++)
+        {
+            ref readonly var l = ref s.Light(i);
+            sb.Append("<circle class=\"pl\" cx=\"").Append(P(Vector3.Dot(l.Position, right))).Append("\" cy=\"").Append(P(-l.Position.Y)).Append("\" r=\"").Append(P(0.08f + 0.04f * MathF.Log10(1f + l.Candela))).Append("\"/>");
+        }
+        return sb.ToString();
+    }
+
+    private string FloorSvg()
+    {
+        var s = Runner.Synth;
+        var f = s.FloorIrradiance;
+        var max = MathF.Max(s.MaxFloorLux, 1f);
+        const int n = ProceduralSparkPyrotechnicsSynthesizer.FloorRes;
+        const float cell = RealtimeNeuralCombustionFluidEngine.Extent / n;
+        var sb = new System.Text.StringBuilder(16 * 1024);
+        for (var z = 0; z < n; z++)
+        for (var x = 0; x < n; x++)
+        {
+            var o = (z * n + x) * 3;
+            var c = new Vector3(f[o], f[o + 1], f[o + 2]) / max;
+            sb.Append("<rect x=\"").Append(P(-4f + x * cell)).Append("\" y=\"").Append(P(-4f + z * cell)).Append("\" width=\"").Append(P(cell + 0.01f)).Append("\" height=\"").Append(P(cell + 0.01f))
+              .Append("\" fill=\"").Append(Css(new Vector3(MathF.Sqrt(c.X), MathF.Sqrt(c.Y), MathF.Sqrt(c.Z)))).Append("\"/>");
+        }
+        for (var i = 0; i < s.LightCount; i++)
+        {
+            ref readonly var l = ref s.Light(i);
+            sb.Append("<circle class=\"pl\" cx=\"").Append(P(l.Position.X)).Append("\" cy=\"").Append(P(l.Position.Z)).Append("\" r=\"0.12\"/>");
+        }
+        return sb.ToString();
+    }
+
+    private string Series(int which)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            float v = which switch
+            {
+                0 => Runner.LiveSeries(k) / ProceduralSparkPyrotechnicsSynthesizer.Capacity,
+                1 => Runner.TempSeries(k) / 6000f,
+                _ => MathF.Log10(1f + Runner.CandelaSeries(k)) / 5f,
+            };
+            sb.Append(P(600f * i / (n - 1))).Append(',').Append(P(88f - 86f * Math.Clamp(v, 0f, 1f))).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void OnYaw(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) _yawDeg = v;
+    }
+
+    private void OnStage(ChangeEventArgs e) => Runner.SetLightsToStage(e.Value is bool b && b);
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void Step60()
+    {
+        for (var i = 0; i < NeuralVfxPyrotechnicsStudioRunner.Hz; i++) Runner.Step();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

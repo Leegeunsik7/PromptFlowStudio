@@ -1,0 +1,324 @@
+﻿@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.ContactLocomotion
+@using PromptFlowStudio.Services.MotionMatching
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject ContactLocomotionStudioRunner Runner
+
+@* [PromptFlow Studio v17.35.0] 🪜 AI 접촉 로코모션 & 계단 보행 스튜디오 — 발자국 착지 예측 궤적 · 단차 프로파일 · 경사/챌판 게이지 · ZMP 동적 안정성 그래프. *@
+
+<div class="clm-scrim" @onclick="Close">
+    <div class="clm-modal" @onclick:stopPropagation="true">
+        <div class="clm-h">
+            <div>
+                <div class="clm-title">🪜 AI 접촉 로코모션 &amp; 계단 보행 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null)</div>
+                <div class="clm-sub"><b>발 배치 엔진</b>이 전방 3 m를 3 레인 볼류메트릭 레이캐스트로 스캔해 디딤판·챌판을 찾고 다음 4보 착지를 최소 비용 격자 탐색으로 계획하며, <b>계단 합성기</b>가 보폭을 디딤판 깊이에 맞춘 속도로 스윙 클리어런스·재접지·발끝 롤링을 합성합니다. <b>ZMP 동적 안정 가드</b>는 측정과 같은 접지 창의 지지 영역 안에서 LIPM/DCM으로 CoM을 재계획하고, 편차는 포착 스텝으로 다음 착지에 흡수하며 팔 흔들림·체간 피치로 각운동량을 조정합니다.</div>
+            </div>
+            <button class="clm-x" @onclick="Close">✕</button>
+        </div>
+        <div class="clm-bar">
+            <button class="clm-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 시작")</button>
+            <button class="clm-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="clm-btn @(Runner.Synth.PlannerEnabled ? "on" : null)" @onclick="() => Runner.SetPlanner(!Runner.Synth.PlannerEnabled)">👣 발 배치 계획</button>
+            <button class="clm-btn @(Runner.Synth.Enabled ? "on" : null)" @onclick="() => Runner.SetSynth(!Runner.Synth.Enabled)">🪜 계단 합성</button>
+            <button class="clm-btn @(Runner.Synth.SpeedAdapt ? "on" : null)" @onclick="() => Runner.SetSpeedAdapt(!Runner.Synth.SpeedAdapt)">🐢 계단 속도 정합</button>
+            <button class="clm-btn @(Runner.Stability.Enabled ? "on" : null)" @onclick="() => Runner.SetStability(!Runner.Stability.Enabled)">⚖ ZMP 동적 안정</button>
+            <button class="clm-btn @(Runner.Stability.AngularMomentumEnabled ? "on" : null)" @onclick="() => Runner.SetAngular(!Runner.Stability.AngularMomentumEnabled)">🌀 각운동량</button>
+            <button class="clm-btn" @onclick="Runner.ResetMetrics">↺ 지표</button>
+            <span class="clm-chip @(Runner.LastTickMs <= 16.7 ? "ok" : "warn")">프레임 @(F2(Runner.LastTickMs)) ms · 발 배치 @(F0(Runner.Planner.LastUs)) µs · 가드 @(F0(Runner.Stability.LastUs)) µs</span>
+        </div>
+        <div class="clm-bar">
+            <span class="clm-lbl">지형</span>
+            @foreach (var k in Terrains)
+            {
+                var t = k;
+                <button class="clm-btn @(Runner.Motion.Terrain == t ? "on" : null)" @onclick="() => Runner.SetTerrain(t)">@(NeuralMotionMatchingStudioRunner.TerrainName(t))</button>
+            }
+            <span class="clm-lbl">보행</span>
+            <button class="clm-btn @(Runner.HeadingDeg == 90f ? "on" : null)" @onclick="() => Runner.SetWalk(90f, _speed)">➡ 동(+x)</button>
+            <button class="clm-btn @(Runner.HeadingDeg == -90f ? "on" : null)" @onclick="() => Runner.SetWalk(-90f, _speed)">⬅ 서(−x)</button>
+            <input type="range" min="0.3" max="2.5" step="0.1" value="@(F1(_speed))" @oninput="e => _speed = (float)Num(e, 1.2)" @onchange="() => Runner.SetWalk(Runner.HeadingDeg, _speed)" /><span class="clm-mut">입력 @(F1(_speed)) m/s · 실제 @(F2(Runner.Motion.Engine.RootVelocity.Length())) m/s @(float.IsFinite(Runner.Synth.StairSpeed) ? "· 계단 정합 " + F2(Runner.Synth.StairSpeed) + " m/s" : null)</span>
+        </div>
+        <div class="clm-main">
+            <div class="clm-col">
+                <div class="clm-card">
+                    <div class="clm-sec">👣 3D 발자국 착지 예측 궤적(탑뷰 · 진행 방향 위) · 다음 착지 @(Runner.Synth.PlannedSide == 0 ? "왼발" : "오른발") @(Runner.Synth.PlannedFrames)프레임 후 · 디딤판 안전 @(F0(Runner.Planner.SafeRatio * 100))%</div>
+                    <svg class="clm-top" viewBox="-110 -270 220 330">@((MarkupString)TopSvg())</svg>
+                    <div class="clm-legend"><i class="pl"></i>계획 4보 <i class="tr"></i>착지 이력 <i class="ed"></i>단차 모서리 <i class="hl"></i>지지 다각형 <i class="zm"></i>ZMP <i class="cm"></i>CoM</div>
+                </div>
+                <div class="clm-card">
+                    <div class="clm-sec">📐 단차 프로파일(측면 · 전방 −0.25 ~ 2.75 m) · 모서리 @(_edgeN)개 · @(Runner.Planner.Direction > 0 ? "▲ 상승" : Runner.Planner.Direction < 0 ? "▼ 하강" : "▬ 평탄")</div>
+                    <svg class="clm-side" viewBox="-30 -150 330 190">@((MarkupString)SideSvg())</svg>
+                </div>
+            </div>
+            <div class="clm-col">
+                <div class="clm-card">
+                    <div class="clm-sec">🧭 계단 기하 · 보행 게이지</div>
+                    <div class="clm-gauges">
+                        <svg class="clm-gauge" viewBox="-60 -60 120 72">@((MarkupString)Gauge(Runner.Planner.SlopeDeg / 45f, true))<text x="0" y="-8">@(F1(Runner.Planner.SlopeDeg))°</text><text class="s" x="0" y="8">경사각</text></svg>
+                        <svg class="clm-gauge" viewBox="-60 -60 120 72">@((MarkupString)Gauge(Runner.Planner.RiserHeight / 0.3f, true))<text x="0" y="-8">@(F1(Runner.Planner.RiserHeight * 100)) cm</text><text class="s" x="0" y="8">챌판 높이</text></svg>
+                        <svg class="clm-gauge" viewBox="-60 -60 120 72">@((MarkupString)Gauge(Runner.Planner.TreadDepth / 0.6f, true))<text x="0" y="-8">@(F1(Runner.Planner.TreadDepth * 100)) cm</text><text class="s" x="0" y="8">디딤판 깊이</text></svg>
+                        <svg class="clm-gauge" viewBox="-60 -60 120 72">@((MarkupString)Gauge(Runner.Synth.KneeFlexStanceDeg / 90f, true))<text x="0" y="-8">@(F0(Runner.Synth.KneeFlexStanceDeg))°</text><text class="s" x="0" y="8">접지 무릎 굴곡</text></svg>
+                        <svg class="clm-gauge" viewBox="-60 -60 120 72">@((MarkupString)Gauge(MathF.Max(Runner.Synth.ToeOffNowDeg(0), Runner.Synth.ToeOffNowDeg(1)) / StairTraversalParkourMotionSynthesizer.ToeOffDeg, true))<text x="0" y="-8">@(F0(MathF.Max(Runner.Synth.ToeOffNowDeg(0), Runner.Synth.ToeOffNowDeg(1))))°</text><text class="s" x="0" y="8">발끝 롤링</text></svg>
+                        <svg class="clm-gauge" viewBox="-60 -60 120 72">@((MarkupString)Gauge(Runner.Stability.StairRatio, Runner.Stability.StairRatio >= 0.95f))<text x="0" y="-8">@(F1(Runner.Stability.StairRatio * 100)) %</text><text class="s" x="0" y="8">계단 ZMP 안정</text></svg>
+                    </div>
+                </div>
+                <div class="clm-card">
+                    <div class="clm-sec">📈 ZMP 지지 다각형 내 동적 안정성(최근 1 s 비율 · 4 s 창) · 목표 95 %</div>
+                    <svg class="clm-spark" viewBox="0 0 360 100" preserveAspectRatio="none">
+                        <line class="goal" x1="0" y1="@(F1(98 - 96 * 0.95))" x2="360" y2="@(F1(98 - 96 * 0.95))" />
+                        <polyline class="rt" points="@(Series(true))" />
+                        <polyline class="of" points="@(Series(false))" />
+                    </svg>
+                    <div class="clm-legend2"><span class="rt">■ 지지 내 비율(%)</span><span class="of">■ ZMP 오프셋(±10 cm · 위 = 외부)</span><span class="goal">┄ 95 %</span></div>
+                    <div class="clm-kv grid">
+                        <div>계단 ZMP 지지 내 <b class="@(Runner.Stability.StairRatio >= 0.95f ? "ok" : "warn")">@(F1(Runner.Stability.StairRatio * 100))%</b>(@(Runner.Stability.StairFrames) 프레임)</div>
+                        <div>단일 지지기 <b>@(F1(Runner.Stability.SingleSupportRatio * 100))%</b> · 평지 @(F1(Runner.Stability.FlatRatio * 100))%</div>
+                        <div>v17.34 계단 가드 동일 지표 @(F1(Runner.Motion.StairBalance.StairRatio * 100))% · 최대 이탈 @(F1(Runner.Stability.StairMaxOutsideCm)) cm</div>
+                        <div>지지 포화 @(Runner.Stability.SaturatedFrames) · DCM 장벽 @(Runner.Stability.BarrierFrames) · 재동기 @(Runner.Stability.Resets)</div>
+                        <div>LIPM ω <b>@(F2(Runner.Stability.Omega))</b> /s · 궤도 에너지 @(F2(Runner.Stability.OrbitalEnergy)) J/kg</div>
+                        <div>CoM 실현 잔차 @(F2(Runner.Stability.ResidualMm)) mm(최대 @(F1(Runner.Stability.MaxResidualMm))) · 골반 보정 @(F1(new Vector2(Runner.Stability.Correction.X, Runner.Stability.Correction.Z).Length() * 100)) cm</div>
+                        <div>포착 스텝 편차 @(F1(Runner.Stability.CaptureOffset.Length() * 100)) cm · 착지 보정 @(F1(Runner.Synth.AppliedDelta(Runner.Synth.PlannedSide) * 100)) cm</div>
+                        <div>팔 흔들림 이득 <b>@(F2(Runner.Stability.ArmGain))</b> · 요 각운동량 상쇄 @(F0(Runner.Stability.YawCancel * 100))%</div>
+                        <div>체간 피치 @(F1(Runner.Stability.TorsoPitchDeg))° · |L| @(F2(Runner.Stability.AngularMomentum.Length())) kg·m²/s</div>
+                        <div>평탄 착지 @(F0(Runner.Synth.FlatLandingRatio * 100))% · 발끝 최소 여유 @(Runner.Synth.MinToeClearanceCm < 1e6f ? F1(Runner.Synth.MinToeClearanceCm) + " cm" : "—")</div>
+                        <div>관통 최대 @(F1(Runner.Motion.Ik.MaxPenetration * 100)) cm · 과신전 잔존 @(Runner.Motion.Guard.HyperExtRemaining)</div>
+                        <div>풋스케이팅 @(F2(Runner.Motion.Guard.RecentSkatingCmPerSec)) cm/s · 계단 웅크림 @(F0(Runner.Synth.Crouch * 100)) cm</div>
+                    </div>
+                </div>
+                <div class="clm-act">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .clm-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .clm-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .clm-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f59e0b 14%, var(--card)), color-mix(in srgb, #22c55e 12%, var(--card))); }
+    .clm-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .clm-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .clm-sub b { color: var(--text-primary); }
+    .clm-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .clm-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .clm-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .clm-btn:disabled { opacity: .45; cursor: default; }
+    .clm-btn.on { background: color-mix(in srgb, #22c55e 20%, var(--card)); border-color: #22c55e; }
+    .clm-lbl { font-size: 11px; color: var(--text-muted); font-weight: 700; margin-left: 4px; }
+    .clm-mut { font-size: 11px; color: var(--text-muted); }
+    .clm-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .clm-chip.ok { border-color: #22c55e; color: #22c55e; } .clm-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .clm-main { display: grid; grid-template-columns: 1fr 1.1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .clm-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .clm-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); }
+    .clm-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .clm-top { width: 100%; max-height: 420px; background: radial-gradient(circle at 50% 70%, #1e293b, #020617); border-radius: 8px; }
+    .clm-side { width: 100%; background: linear-gradient(180deg, #0b1220, #020617); border-radius: 8px; }
+    .clm-top .ed, .clm-side .ed { stroke: #f59e0b; stroke-width: .8; stroke-dasharray: 3 2; }
+    .clm-top .pl { fill: none; stroke-width: 1.6; } .clm-top .pl.l, .clm-side .fl.l { stroke: #38bdf8; } .clm-top .pl.r, .clm-side .fl.r { stroke: #f472b6; }
+    .clm-top .tr.l { fill: rgba(56,189,248,.35); } .clm-top .tr.r { fill: rgba(244,114,182,.35); }
+    .clm-top .hl { fill: rgba(34,197,94,.2); stroke: #22c55e; stroke-width: 1; }
+    .clm-top .zm, .clm-side .zm { fill: #ef4444; } .clm-top .cm, .clm-side .cm { fill: #f59e0b; } .clm-top .zr { fill: none; stroke: #fde68a; stroke-width: 1; }
+    .clm-top .ax { stroke: #334155; stroke-width: .5; } .clm-top text, .clm-side text { fill: #e2e8f0; font: 700 8px var(--mono); }
+    .clm-side .pf { fill: rgba(148,163,184,.18); stroke: #94a3b8; stroke-width: 1.2; }
+    .clm-side .fl { stroke-width: 3; stroke-linecap: round; }
+    .clm-side .bone { stroke: #e2e8f0; stroke-width: 2; stroke-linecap: round; }
+    .clm-legend { font-size: 10px; color: var(--text-muted); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+    .clm-legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 2px; }
+    .clm-legend i.pl { background: #38bdf8; } .clm-legend i.tr { background: #f472b6; } .clm-legend i.ed { background: #f59e0b; } .clm-legend i.hl { background: #22c55e; } .clm-legend i.zm { background: #ef4444; } .clm-legend i.cm { background: #f59e0b; }
+    .clm-gauges { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .clm-gauge { width: 100%; }
+    .clm-gauge .bg { fill: none; stroke: #1e293b; stroke-width: 9; } .clm-gauge .fg { fill: none; stroke-width: 9; stroke-linecap: round; }
+    .clm-gauge .fg.ok { stroke: #22c55e; } .clm-gauge .fg.warn { stroke: #f59e0b; }
+    .clm-gauge text { fill: var(--text-primary); font: 800 13px var(--mono); text-anchor: middle; } .clm-gauge text.s { font: 700 9px sans-serif; fill: var(--text-muted); }
+    .clm-spark { width: 100%; height: 90px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; }
+    .clm-spark polyline { fill: none; stroke-width: 1.5; }
+    .clm-spark .rt, .clm-legend2 .rt { stroke: #22c55e; color: #22c55e; } .clm-spark .of, .clm-legend2 .of { stroke: #ef4444; color: #ef4444; }
+    .clm-spark .goal { stroke: #facc15; stroke-width: 1; stroke-dasharray: 4 3; } .clm-legend2 .goal { color: #facc15; }
+    .clm-legend2 { display: flex; gap: 12px; font-size: 11px; color: var(--text-muted); margin: 4px 0 8px; }
+    .clm-kv { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px; }
+    .clm-kv.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+    .clm-kv b { color: var(--text-primary); } .clm-kv b.ok { color: #22c55e; } .clm-kv b.warn { color: #f59e0b; }
+    .clm-act { font-size: 11px; color: var(--text-muted); }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly TerrainKind[] Terrains = { TerrainKind.Stairs, TerrainKind.Flat, TerrainKind.Ramp, TerrainKind.Bumps };
+    private static readonly (int A, int B)[] Bones = { (0, 1), (1, 2), (2, 3), (0, 4), (4, 5), (5, 6), (6, 7), (0, 8), (8, 9), (9, 10), (10, 11), (2, 12), (12, 13), (13, 14), (2, 15), (15, 16), (16, 17) };
+    private System.Threading.Timer? _timer;
+    private readonly Footstep[] _plan = new Footstep[ProceduralFootstepPlacementEngine.Steps];
+    private readonly Vector3[] _trail = new Vector3[ContactLocomotionStudioRunner.Trail], _pose = new Vector3[BipedSkeleton.Count];
+    private readonly byte[] _trailSide = new byte[ContactLocomotionStudioRunner.Trail];
+    private readonly float[] _prof = new float[ContactLocomotionStudioRunner.Samples], _edges = new float[ProceduralFootstepPlacementEngine.MaxEdges];
+    private readonly Vector2[] _hull = new Vector2[9];
+    private int _planN, _trailN, _edgeN, _hullN;
+    private Vector3 _root, _scan;
+    private float _heading, _speed = 1.2f;
+    private Vector2 _zmp, _zmpRef, _com;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _speed = Runner.Speed;
+        Snapshot();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(() => { Snapshot(); StateHasChanged(); }); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("ContactLocomotion.Modal.Timer", ex); }
+        }, null, 100, 100);
+    }
+
+    private void Snapshot()
+    {
+        _planN = Runner.CopyPlan(_plan); _trailN = Runner.CopyTrail(_trail, _trailSide);
+        Runner.CopyProfile(_prof); _edgeN = Runner.CopyEdges(_edges); _hullN = Runner.CopyHull(_hull); Runner.CopyPose(_pose);
+        Runner.Frame(out _root, out _heading, out _scan, out _zmp, out _zmpRef, out _com);
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+    private static void Pt(System.Text.StringBuilder sb, Vector2 p) => sb.Append(F1(p.X)).Append(',').Append(F1(p.Y)).Append(' ');
+
+    /// <summary>탑뷰(루트 중심 · 진행 방향 위 · 1 m = 100).</summary>
+    private Vector2 T(float x, float z)
+    {
+        var d = new Vector3(x - _root.X, 0f, z - _root.Z);
+        return new Vector2(Vector3.Dot(d, BipedSkeleton.Right(_heading)) * 100f, -Vector3.Dot(d, BipedSkeleton.Forward(_heading)) * 100f);
+    }
+
+    private void Foot(System.Text.StringBuilder sb, Vector3 a, string cls)
+    {
+        var f = BipedSkeleton.Forward(_heading); var r = BipedSkeleton.Right(_heading);
+        sb.Append("<polygon class=\"").Append(cls).Append("\" points=\"");
+        Pt(sb, T(a.X - f.X * 0.07f - r.X * 0.045f, a.Z - f.Z * 0.07f - r.Z * 0.045f));
+        Pt(sb, T(a.X - f.X * 0.07f + r.X * 0.045f, a.Z - f.Z * 0.07f + r.Z * 0.045f));
+        Pt(sb, T(a.X + f.X * 0.17f + r.X * 0.045f, a.Z + f.Z * 0.17f + r.Z * 0.045f));
+        Pt(sb, T(a.X + f.X * 0.17f - r.X * 0.045f, a.Z + f.Z * 0.17f - r.Z * 0.045f));
+        sb.Append("\"/>");
+    }
+
+    private string TopSvg()
+    {
+        var sb = new System.Text.StringBuilder(4000);
+        sb.Append("<line class=\"ax\" x1=\"-110\" y1=\"0\" x2=\"110\" y2=\"0\"/><line class=\"ax\" x1=\"0\" y1=\"-270\" x2=\"0\" y2=\"60\"/>");
+        var f = BipedSkeleton.Forward(_heading); var rt = BipedSkeleton.Right(_heading);
+        for (var i = 0; i < _edgeN; i++)
+        {
+            var e = _scan + f * _edges[i];
+            var a = T(e.X - rt.X * 0.5f, e.Z - rt.Z * 0.5f); var b = T(e.X + rt.X * 0.5f, e.Z + rt.Z * 0.5f);
+            sb.Append("<line class=\"ed\" x1=\"").Append(F1(a.X)).Append("\" y1=\"").Append(F1(a.Y)).Append("\" x2=\"").Append(F1(b.X)).Append("\" y2=\"").Append(F1(b.Y)).Append("\"/>");
+        }
+        for (var i = 0; i < _trailN; i++) Foot(sb, _trail[i], _trailSide[i] == 0 ? "tr l" : "tr r");
+        if (_hullN >= 3)
+        {
+            sb.Append("<polygon class=\"hl\" points=\"");
+            for (var i = 0; i < _hullN; i++) Pt(sb, T(_hull[i].X, _hull[i].Y));
+            sb.Append("\"/>");
+        }
+        for (var i = 0; i < _planN; i++)
+        {
+            var s = _plan[i];
+            Foot(sb, s.Position, s.Side == 0 ? "pl l" : "pl r");
+            var c = T(s.Position.X + f.X * 0.05f, s.Position.Z + f.Z * 0.05f);
+            sb.Append("<text x=\"").Append(F1(c.X - 3)).Append("\" y=\"").Append(F1(c.Y + 3)).Append("\">").Append(i + 1).Append(s.EdgeSafe ? "" : "!").Append("</text>");
+        }
+        var cm = T(_com.X, _com.Y); var zm = T(_zmp.X, _zmp.Y); var zr = T(_zmpRef.X, _zmpRef.Y);
+        sb.Append("<circle class=\"cm\" cx=\"").Append(F1(cm.X)).Append("\" cy=\"").Append(F1(cm.Y)).Append("\" r=\"4\"/>");
+        sb.Append("<circle class=\"zr\" cx=\"").Append(F1(zr.X)).Append("\" cy=\"").Append(F1(zr.Y)).Append("\" r=\"4\"/>");
+        sb.Append("<circle class=\"zm\" cx=\"").Append(F1(zm.X)).Append("\" cy=\"").Append(F1(zm.Y)).Append("\" r=\"3.5\"/>");
+        return sb.ToString();
+    }
+
+    /// <summary>측면(진행축 거리 × 높이 · 1 m = 100 · 스캔 원점 높이 기준).</summary>
+    private string SideSvg()
+    {
+        var sb = new System.Text.StringBuilder(4000);
+        var y0 = _prof[(int)(ProceduralFootstepPlacementEngine.Back / ProceduralFootstepPlacementEngine.Res)];
+        Vector2 S(float along, float h) => new(along * 100f, -(h - y0) * 100f);
+        sb.Append("<polygon class=\"pf\" points=\"");
+        Pt(sb, S(ProceduralFootstepPlacementEngine.Along(0), y0 - 0.4f));
+        for (var i = 0; i < _prof.Length; i++) Pt(sb, S(ProceduralFootstepPlacementEngine.Along(i), _prof[i]));
+        Pt(sb, S(ProceduralFootstepPlacementEngine.Along(_prof.Length - 1), y0 - 0.4f));
+        sb.Append("\"/>");
+        var f = BipedSkeleton.Forward(_heading);
+        for (var i = 0; i < _edgeN; i++)
+        {
+            var x = F1(_edges[i] * 100f);
+            sb.Append("<line class=\"ed\" x1=\"").Append(x).Append("\" y1=\"-150\" x2=\"").Append(x).Append("\" y2=\"40\"/>");
+        }
+        float Al(Vector3 w) => Vector3.Dot(w - _scan, f);
+        foreach (var (a, b) in Bones)
+        {
+            var p = S(Al(_pose[a]), _pose[a].Y); var q = S(Al(_pose[b]), _pose[b].Y);
+            sb.Append("<line class=\"bone\" x1=\"").Append(F1(p.X)).Append("\" y1=\"").Append(F1(p.Y)).Append("\" x2=\"").Append(F1(q.X)).Append("\" y2=\"").Append(F1(q.Y)).Append("\"/>");
+        }
+        for (var i = 0; i < _planN; i++)
+        {
+            var s = _plan[i];
+            var g = s.Position.Y - BipedSkeleton.AnkleH;
+            var a = S(s.Along - 0.07f, g); var b = S(s.Along + 0.17f, g);
+            sb.Append("<line class=\"fl ").Append(s.Side == 0 ? "l" : "r").Append("\" x1=\"").Append(F1(a.X)).Append("\" y1=\"").Append(F1(a.Y - 2)).Append("\" x2=\"").Append(F1(b.X)).Append("\" y2=\"").Append(F1(b.Y - 2)).Append("\"/>");
+            sb.Append("<text x=\"").Append(F1(a.X + 8)).Append("\" y=\"").Append(F1(a.Y - 6)).Append("\">").Append(i + 1).Append("</text>");
+        }
+        var cm = S(Vector3.Dot(new Vector3(_com.X - _scan.X, 0f, _com.Y - _scan.Z), f), BipedSkeleton.CenterOfMass(_pose).Y);
+        sb.Append("<circle class=\"cm\" cx=\"").Append(F1(cm.X)).Append("\" cy=\"").Append(F1(cm.Y)).Append("\" r=\"3.5\"/>");
+        return sb.ToString();
+    }
+
+    private static string Gauge(float v, bool ok)
+    {
+        v = Math.Clamp(float.IsFinite(v) ? v : 0f, 0f, 1f);
+        var a = MathF.PI * (1f - v);
+        var x = 46f * MathF.Cos(a); var y = -46f * MathF.Sin(a);
+        var sb = new System.Text.StringBuilder(240);
+        sb.Append("<path class=\"bg\" d=\"M -46 0 A 46 46 0 0 1 46 0\"/>");
+        if (v > 0.001f) sb.Append("<path class=\"fg ").Append(ok ? "ok" : "warn").Append("\" d=\"M -46 0 A 46 46 0 0 1 ").Append(F1(x)).Append(' ').Append(F1(y)).Append("\"/>");
+        return sb.ToString();
+    }
+
+    private string Series(bool ratio)
+    {
+        var n = Runner.Stability.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+        {
+            double v = ratio ? Runner.Stability.RatioSeries(i) : Runner.Stability.OffsetSeries(i);
+            if (!double.IsFinite(v)) v = 0;
+            var y = ratio ? 98 - 96 * Math.Clamp(v, 0, 1) : 50 - 48 * Math.Clamp(v / 0.1, -1, 1);
+            sb.Append(F1(360.0 * (n - 1 - i) / (ZmpDynamicStabilityAngularMomentumGuard.Series - 1))).Append(',').Append(F1(y)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void Step60()
+    {
+        for (var i = 0; i < NeuralMotionMatchingStudioRunner.Hz; i++) Runner.Step();
+        Snapshot();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중 갱신은 100 ms 타이머가 처리 — 정지 상태 변경만 즉시 반영.</summary>
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(() => { Snapshot(); StateHasChanged(); });
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

@@ -1,0 +1,59 @@
+@implements IDisposable
+@inject IAutoUpdateService Updater
+
+@* [PromptFlow Studio] 자동 업데이트 뱃지 — 상단 툴바 등에 <UpdateBadge /> 로 배치.
+   앱 진입 시 1회 확인(fire-and-forget), 새 버전이 있으면 🎁 버튼 노출 · 클릭 시 다운로드→무음 설치→재시작. *@
+
+@if (Updater.Enabled && (Updater.UpdateAvailable || Updater.IsDownloading))
+{
+    <div class="upd">
+        @if (Updater.IsDownloading)
+        {
+            <span class="upd-badge dl" title="@Updater.Status">⬇ 업데이트 @Updater.DownloadPercent%</span>
+        }
+        else
+        {
+            <button class="upd-badge go" @onclick="() => _showModal = true" title="릴리스 노트 보기 · 새 버전 설치">
+                🎁 새 업데이트 @Updater.LatestVersion
+            </button>
+        }
+    </div>
+}
+
+@* 🎁 클릭 시: 즉시 다운로드가 아니라 릴리스 노트 모달을 먼저 띄워 선택하게 한다. *@
+@if (_showModal && Updater.UpdateAvailable && !Updater.IsDownloading)
+{
+    <ReleaseNotesModal OnClose="CloseModal" />
+}
+
+<style>
+    .upd { display: inline-flex; align-items: center; }
+    .upd-badge { font: 700 11px var(--mono, monospace); border-radius: 999px; padding: 5px 11px; border: 1px solid var(--line); white-space: nowrap; }
+    .upd-badge.go { cursor: pointer; color: #fff; border: none;
+        background: linear-gradient(135deg, var(--flow-magenta, #d946ef), var(--flow-violet, #8b5cf6));
+        box-shadow: 0 6px 16px color-mix(in srgb, var(--flow-magenta, #d946ef) 30%, transparent); animation: upd-pulse 2s ease-in-out infinite; }
+    .upd-badge.go:hover { filter: brightness(1.08); }
+    .upd-badge.dl { color: var(--accent-2, #22d3ee); border-color: color-mix(in srgb, var(--flow-cyan, #22d3ee) 45%, var(--line)); }
+    @@keyframes upd-pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+    @@media (prefers-reduced-motion: reduce) { .upd-badge.go { animation: none; } }
+</style>
+
+@code {
+    private bool _showModal;
+
+    protected override void OnInitialized()
+    {
+        Updater.OnChange += OnChanged;
+        _ = Updater.CheckAsync();   // fire-and-forget(세션 1회 · 렌더 블로킹 없음)
+    }
+
+    public void Dispose() => Updater.OnChange -= OnChanged;
+
+    private void OnChanged()
+    {
+        if (Updater.IsDownloading) _showModal = false;   // 다운로드 시작되면 모달 닫힘(뱃지 ⬇ 로 전환)
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void CloseModal() => _showModal = false;
+}

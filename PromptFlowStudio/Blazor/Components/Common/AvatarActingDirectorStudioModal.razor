@@ -1,0 +1,261 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.AvatarActing
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject AvatarActingDirectorStudioRunner Runner
+
+@* [PromptFlow Studio v17.60.0] 🎬 아바타 자율 연기 디렉터 스튜디오 — 대사 감정/제스처 타임라인 · 성향 프리셋 · IK 지연 미터 · 관절 클램프 카운터. *@
+<div class="aad-scrim" @onclick="Close">
+    <div class="aad-modal" @onclick:stopPropagation="true">
+        <div class="aad-h">
+            <div>
+                <div class="aad-title">🎬 아바타 자율 연기 디렉터 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null) · @(Runner.Points.ToString("N0", CultureInfo.InvariantCulture)) 가우시안</div>
+                <div class="aad-sub"><b>텍스트-투-제스처 트랜스포머</b>가 대사 어절의 핵심어와 억양 피크를 셀프 어텐션으로 읽어 지시 · 감정 · 비트 수동작과 유인가/각성도를 추론합니다. <b>연기 IK 합성기</b>는 손 목표를 FABRIK 상지 3 본으로 풀고 v17.33 무대 보행 하체와 분리 블렌딩하며, v17.58 표정 · 손가락 릭을 감정 오프셋으로 구동합니다. <b>관절 한계 가드</b>는 스윙-트위스트 분해로 고개 180° · 손목 꺾임 · 팔꿈치 과신전 같은 환각 자세를 해부학 가동 범위 안으로 되돌립니다.</div>
+            </div>
+            <button class="aad-x" @onclick="Close">✕</button>
+        </div>
+        <div class="aad-bar">
+            <button class="aad-btn @(Runner.IsRunning ? "on" : "go")" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 재생")</button>
+            <button class="aad-btn" disabled="@Runner.IsRunning" @onclick="Runner.Step">⏭ 1 프레임</button>
+            <span class="aad-sep"></span>
+            @for (var p = 0; p < 3; p++)
+            {
+                <button class="aad-btn pre @(Runner.Persona == (ActingPersona)p ? "on" : null)" @onclick="_persona[p]">@(AvatarActingDirectorStudioRunner.PersonaName((ActingPersona)p))</button>
+            }
+            <span class="aad-sep"></span>
+            <button class="aad-btn @(Runner.UseScript ? "on" : null)" disabled="@(!Runner.ScriptAvailable)" @onclick="() => Runner.SetScript(!Runner.UseScript)">📜 v17.40 각본 대사</button>
+            <button class="aad-btn @(Runner.UseDubbing ? "on" : null)" disabled="@(!Runner.DubbingAvailable)" @onclick="() => Runner.SetDubbing(!Runner.UseDubbing)">🎙 v17.32 운율</button>
+        </div>
+        <div class="aad-bar">
+            <button class="aad-btn @(Runner.Guard.Enabled ? "on" : null)" @onclick="() => Runner.SetGuard(!Runner.Guard.Enabled)">🛡 관절 한계 가드</button>
+            <button class="aad-btn @(Runner.Guard.SlewEnabled ? "on" : null)" @onclick="() => Runner.SetSlew(!Runner.Guard.SlewEnabled)">🛡 각속도 슬루</button>
+            <button class="aad-btn @(Runner.Ik.IkEnabled ? "on" : null)" @onclick="() => Runner.SetIk(!Runner.Ik.IkEnabled)">🦾 FABRIK IK</button>
+            <button class="aad-btn @(Runner.Walk ? "on" : null)" @onclick="() => Runner.SetWalk(!Runner.Walk)">🚶 무대 보행</button>
+            <button class="aad-btn @(Runner.Gesture.Hallucinate ? "on" : null)" @onclick="() => Runner.SetHallucination(!Runner.Gesture.Hallucinate)">💥 LLM 환각 주입</button>
+            <button class="aad-btn @(_overlay ? "on" : null)" @onclick="() => _overlay = !_overlay">🎯 IK 목표 오버레이</button>
+        </div>
+        <div class="aad-main">
+            <div class="aad-col">
+                <div class="aad-card">
+                    <div class="aad-sec">🎞 자율 연기 가우시안 프리뷰 320×192</div>
+                    <div class="aad-stage">
+                        <img class="aad-view" src="@(_img)" alt="avatar acting" />
+                        @if (_overlay)
+                        {
+                            <svg class="aad-ov" viewBox="0 0 320 192" preserveAspectRatio="none">
+                                @for (var s = 0; s < 2; s++)
+                                {
+                                    if (Runner.Project(Runner.Ik.Target(s), out var tx, out var ty) && Runner.Project(Runner.Ik.IkHand(s), out var hx, out var hy))
+                                    {
+                                        <g><line x1="@(F1(hx))" y1="@(F1(hy))" x2="@(F1(tx))" y2="@(F1(ty))" /><circle class="t" cx="@(F1(tx))" cy="@(F1(ty))" r="2.4" /><circle cx="@(F1(hx))" cy="@(F1(hy))" r="1.4" /></g>
+                                    }
+                                }
+                            </svg>
+                        }
+                    </div>
+                </div>
+                <div class="aad-card">
+                    <div class="aad-sec">🗣 대사 입력 · 감정/제스처 타임라인</div>
+                    <div class="aad-say">
+                        <input class="aad-in" placeholder="대사를 입력하세요(예: 여러분 모두 함께! / 저는 거절합니다)" @bind="_text" @bind:event="oninput" />
+                        <button class="aad-btn go" @onclick="SayText">🗣 말하기</button>
+                    </div>
+                    <div class="aad-tl">
+                        @for (var k = Math.Max(Runner.Gesture.FirstIndex, Runner.Gesture.CurrentIndex - 9); k <= Math.Min(Runner.Gesture.TokensTotal - 1, Runner.Gesture.CurrentIndex + 6); k++)
+                        {
+                            var tk = Runner.Gesture.TokenAt(k);
+                            <div class="aad-tok @(k == Runner.Gesture.CurrentIndex ? "cur" : null) @(tk.Inferred ? "c" + ((int)tk.Class).ToString(CultureInfo.InvariantCulture) : "pend")">
+                                <b>@(Runner.Gesture.TokenText(k).ToString())</b>
+                                <span>@(tk.Inferred ? RealtimeLlmTextToGestureTransformer.ClassName(tk.Class) : "…")</span>
+                                <i style="width:@(Pct(tk.Inferred ? (tk.Valence + 1f) * 0.5f : 0.5f))%" class="v"></i>
+                                <i style="width:@(Pct(tk.Inferred ? tk.Arousal : 0f))%" class="a"></i>
+                            </div>
+                        }
+                    </div>
+                    <div class="aad-kv">현재 <b>@(RealtimeLlmTextToGestureTransformer.ClassName(Runner.Gesture.Current.Class))</b> · 강도 @(F2(Runner.Gesture.Current.Intensity)) · 유인가 @(F2(Runner.Gesture.Current.Valence)) · 각성도 @(F2(Runner.Gesture.Current.Arousal)) · 비트 @(Runner.Gesture.Beats) · 추론 @(Runner.Gesture.Inferences) · 대사 @(Runner.Gesture.Lines) 줄</div>
+                </div>
+            </div>
+            <div class="aad-col">
+                <div class="aad-card">
+                    <div class="aad-sec">⏱ IK 솔버 · 레이어 블렌딩</div>
+                    <div class="aad-meter"><div class="@(Runner.Ik.LastIkUs < 500 ? "ok" : "warn")" style="width:@(Pct((float)(Runner.Ik.LastIkUs / 1000.0)))%"></div><span>FABRIK @(F1(Runner.Ik.LastIkUs)) µs / 1 ms · 최대 @(F1(Runner.Ik.MaxIkUs)) µs</span></div>
+                    <div class="aad-kv grid2">
+                        <div>프레임 <b class="@(Runner.LastTickMs < 16.7 ? "ok" : "warn")">@(F2(Runner.LastTickMs))</b> ms · 최대 @(F2(Runner.MaxTickMs))</div>
+                        <div>반복 L @(Runner.Ik.IkIterations(0)) · R @(Runner.Ik.IkIterations(1)) · 오차 R @(F1(Runner.Ik.IkError(1) * 1000f)) mm</div>
+                        <div>손 도달 오차 L @(F1(Runner.HandErrorL * 1000f)) · R @(F1(Runner.HandErrorR * 1000f)) mm</div>
+                        <div>트랜스포머 추론 @(F1(Runner.Gesture.LastInferUs)) µs · 대기 토큰 @(Runner.Gesture.Pending)</div>
+                        <div>연기 가중치 L @(F2(Runner.Gesture.Current.LeftWeight)) · R @(F2(Runner.Gesture.Current.RightWeight))</div>
+                        <div>보행 @(F2(Runner.Walk ? Runner.WalkSpeed : 0f)) m/s · 도달 불가 @(Runner.Ik.Unreachable)</div>
+                    </div>
+                    <div class="aad-sliders">
+                        <label>연기 가중치</label>
+                        <input type="range" min="0" max="100" value="@((int)(Runner.Ik.ActingWeight * 100))" @oninput="OnWeight" />
+                        <span class="aad-chip">@(F2(Runner.Ik.ActingWeight))</span>
+                        <label>보행 속도</label>
+                        <input type="range" min="0" max="250" value="@((int)(Runner.WalkSpeed * 100))" @oninput="OnWalk" />
+                        <span class="aad-chip">@(F2(Runner.WalkSpeed)) m/s</span>
+                    </div>
+                </div>
+                <div class="aad-card">
+                    <div class="aad-sec">🦴 해부학 관절 한계 가드(스윙-트위스트)</div>
+                    <div class="aad-counters">
+                        <div><b>@(Runner.Guard.Clamps.ToString("N0", CultureInfo.InvariantCulture))</b><span>클램프 발동</span></div>
+                        <div><b>@(F1(Runner.Guard.PeakExcessDeg))°</b><span>최대 이탈(전)</span></div>
+                        <div><b class="@(Runner.Guard.ResidualJoints == 0 ? "ok" : "warn")">@(F2(Runner.Guard.ResidualDeg))°</b><span>잔여 이탈(후)</span></div>
+                        <div><b>@(Runner.Gesture.Hallucinations.ToString("N0", CultureInfo.InvariantCulture))</b><span>환각 프레임</span></div>
+                    </div>
+                    <div class="aad-joints">
+                        @foreach (var j in BiomechanicalJointLimitSafetyGuard.Joints)
+                        {
+                            <div class="@(Runner.Guard.Excess(j) > 0f ? "hit" : null)"><span>@(BiomechanicalJointLimitSafetyGuard.JointName(j))</span><b>@(Runner.Guard.Hits(j))</b></div>
+                        }
+                    </div>
+                    <div class="aad-kv">슬루 @(Runner.Guard.SlewClamps) · 비유한 복구 @(Runner.Guard.NanFixes) · 가드 @(F1(Runner.Guard.LastGuardUs)) µs · 안면/손가락 결함 @(Runner.FaceHandGuard?.Defects ?? 0)</div>
+                    <svg class="aad-graph" viewBox="0 0 600 60" preserveAspectRatio="none">
+                        <line class="lim" x1="0" x2="600" y1="30" y2="30" />
+                        <polyline class="ms" points="@(Series(0))" />
+                        <polyline class="ik" points="@(Series(1))" />
+                        <polyline class="cl" points="@(Series(2))" />
+                    </svg>
+                    <div class="aad-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .aad-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .aad-modal { width: min(1280px, 96vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
+    .aad-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f97316 16%, var(--card)), color-mix(in srgb, #8b5cf6 14%, var(--card))); }
+    .aad-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .aad-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .aad-sub b { color: var(--text-primary); }
+    .aad-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .aad-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .aad-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .aad-btn:disabled { opacity: .45; cursor: default; }
+    .aad-btn.on { background: color-mix(in srgb, #f97316 22%, var(--card)); border-color: #f97316; }
+    .aad-btn.pre.on { background: color-mix(in srgb, #8b5cf6 24%, var(--card)); border-color: #8b5cf6; }
+    .aad-btn.go { background: #f97316; color: #fff; border: none; }
+    .aad-sep { width: 1px; height: 20px; background: var(--line); margin: 0 4px; }
+    .aad-chip { font: 700 11px var(--mono); padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); text-align: center; }
+    .aad-main { display: grid; grid-template-columns: 1.1fr 1fr; gap: 12px; padding: 14px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .aad-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .aad-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); min-width: 0; }
+    .aad-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .aad-stage { position: relative; width: 100%; aspect-ratio: 320 / 192; }
+    .aad-view, .aad-ov { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 8px; }
+    .aad-view { image-rendering: pixelated; background: #05070c; }
+    .aad-ov line { stroke: #fbbf24; stroke-width: 0.8; stroke-dasharray: 2 2; }
+    .aad-ov circle { fill: #22d3ee; } .aad-ov circle.t { fill: none; stroke: #f97316; stroke-width: 1; }
+    .aad-say { display: flex; gap: 6px; margin-bottom: 8px; }
+    .aad-in { flex: 1; font-size: 12px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: #0f172a; color: var(--text-primary); }
+    .aad-tl { display: flex; flex-wrap: wrap; gap: 4px; }
+    .aad-tok { position: relative; display: flex; flex-direction: column; padding: 4px 6px 7px; border-radius: 6px; background: #0f172a; border: 1px solid var(--line); min-width: 54px; }
+    .aad-tok b { font-size: 11px; color: var(--text-primary); } .aad-tok span { font-size: 9px; color: var(--text-muted); }
+    .aad-tok i { position: absolute; left: 0; height: 2px; } .aad-tok i.v { bottom: 2px; background: #22c55e; } .aad-tok i.a { bottom: 0; background: #ef4444; }
+    .aad-tok.cur { border-color: #f97316; box-shadow: 0 0 0 1px #f97316; } .aad-tok.pend { opacity: .55; }
+    .aad-tok.c2, .aad-tok.c3 { background: color-mix(in srgb, #0ea5e9 18%, #0f172a); } .aad-tok.c4 { background: color-mix(in srgb, #22c55e 18%, #0f172a); }
+    .aad-tok.c5 { background: color-mix(in srgb, #ef4444 18%, #0f172a); } .aad-tok.c6 { background: color-mix(in srgb, #f59e0b 18%, #0f172a); } .aad-tok.c7 { background: color-mix(in srgb, #a855f7 18%, #0f172a); }
+    .aad-sliders { display: grid; grid-template-columns: auto 1fr 76px; gap: 4px 10px; align-items: center; font-size: 11px; color: var(--text-secondary); margin-top: 8px; }
+    .aad-sliders input { width: 100%; }
+    .aad-kv { font-size: 11px; color: var(--text-secondary); margin-top: 6px; }
+    .aad-kv.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+    .aad-kv b.ok, .aad-counters b.ok { color: #22c55e; } .aad-kv b.warn, .aad-counters b.warn { color: #f59e0b; }
+    .aad-meter { position: relative; height: 18px; border-radius: 6px; background: #0f172a; overflow: hidden; margin-bottom: 8px; }
+    .aad-meter div { height: 100%; } .aad-meter div.ok { background: #22c55e; } .aad-meter div.warn { background: #ef4444; }
+    .aad-meter span { position: absolute; inset: 0; font: 700 10px var(--mono); color: #fff; display: flex; align-items: center; justify-content: center; }
+    .aad-counters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .aad-counters div { display: flex; flex-direction: column; align-items: center; padding: 6px; border-radius: 8px; background: #0f172a; }
+    .aad-counters b { font: 800 16px var(--mono); color: var(--text-primary); }
+    .aad-counters span { font-size: 10px; color: var(--text-muted); }
+    .aad-joints { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin-top: 8px; }
+    .aad-joints div { display: flex; justify-content: space-between; font-size: 10px; padding: 3px 5px; border-radius: 5px; background: #0f172a; color: var(--text-secondary); }
+    .aad-joints div.hit { background: color-mix(in srgb, #ef4444 30%, #0f172a); color: #fff; }
+    .aad-graph { width: 100%; height: 60px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; display: block; margin-top: 8px; }
+    .aad-graph polyline { fill: none; stroke-width: 1.6; }
+    .aad-graph .ms { stroke: #f97316; } .aad-graph .ik { stroke: #22d3ee; } .aad-graph .cl { stroke: #ef4444; }
+    .aad-graph .lim { stroke: #ef4444; stroke-dasharray: 6 4; opacity: .5; }
+    .aad-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+    @@media (max-width: 860px) { .aad-main { grid-template-columns: 1fr; } .aad-counters { grid-template-columns: 1fr 1fr; } .aad-joints { grid-template-columns: repeat(3, 1fr); } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly byte[] _bmp = new byte[AvatarActingDirectorStudioRunner.PreviewBytes];
+    private System.Threading.Timer? _timer;
+    private string _img = "";
+    private string _text = "";
+    private bool _overlay = true;
+    private Action[] _persona = Array.Empty<Action>();
+
+    protected override void OnInitialized()
+    {
+        _persona = new Action[3];
+        for (var p = 0; p < 3; p++) { var ap = (ActingPersona)p; _persona[p] = () => Runner.SetPersona(ap); }
+        Runner.OnChange += OnServiceChanged;
+        if (!Runner.IsRunning) Runner.Step();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Acting.Modal.Timer", ex); }
+        }, null, 120, 120);
+    }
+
+    protected override bool ShouldRender()
+    {
+        Runner.WritePreviewBmp(_bmp);
+        _img = "data:image/bmp;base64," + Convert.ToBase64String(_bmp);
+        return true;
+    }
+
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string Pct(float v) => Math.Clamp(v * 100.0, 0, 100).ToString("0.#", CultureInfo.InvariantCulture);
+
+    private string Series(int kind)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            var v = kind switch { 0 => Runner.FrameMsSeries(k) / 33.4, 1 => Runner.IkUsSeries(k) / 1000.0, _ => Runner.ClampSeries(k) / 12.0 };
+            sb.Append((600.0 * i / (n - 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append((58 - 56 * Math.Clamp(v, 0, 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private static bool TryInt(ChangeEventArgs e, out int v) => int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out v);
+
+    private void OnWeight(ChangeEventArgs e) { if (TryInt(e, out var v)) Runner.SetActingWeight(v / 100f); }
+    private void OnWalk(ChangeEventArgs e) { if (TryInt(e, out var v)) Runner.SetWalkSpeed(v / 100f); }
+
+    private void SayText()
+    {
+        Runner.Say(_text);
+        _text = "";
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

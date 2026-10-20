@@ -1,0 +1,323 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.OpenUsd
+@implements IDisposable
+@inject OpenUsdSpatialStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.72.0] 🪐 AI OpenUSD & 제너레이티브 월드 스튜디오 — OpenUSD 레이어 트리(슬롯 뮤트 · 합성 스테이지 프림) ·
+    프롬프트 → 절차적 월드(시밀러리티 시드 · 시드 스펙트럼 슬라이더 · 시드 고정) · 물리 시뮬레이션 토글(강체/천/유체) · 음향 반사 탭/RT60 · USDA/USDZ 내보내기.
+*@
+
+<div class="usd-scrim" @onclick="Close">
+    <div class="usd-modal" @onclick:stopPropagation="true">
+        <div class="usd-h">
+            <div>
+                <div class="usd-title">🪐 AI OpenUSD &amp; 제너레이티브 월드 스튜디오</div>
+                <div class="usd-sub"><b>.usda · .usdc · .usdz</b> 레이어를 실시간 합성해 <b>3DGS 입자 · 4D 월드</b>에 바인딩하고, 프롬프트로 <b>지형 · 바이옴 · 광원 · 자산</b>을 절차 생성하며, <b>강체 · 천 · 유체</b> 물리와 음향 반사를 SIMD로 시뮬레이션합니다.</div>
+            </div>
+            <button class="usd-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="usd-bar">
+            <button class="usd-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 시뮬레이션 정지" : "▶ 시뮬레이션 가동")</button>
+            <button class="usd-btn" @onclick="Runner.ResetPhysics">↺ 물리 리셋</button>
+            <button class="usd-btn" @onclick="Runner.DropBall">⚾ 구 투하</button>
+            <button class="usd-btn" @onclick="Export">💾 USDA/USDZ 내보내기</button>
+            <span class="usd-chip">프레임 @(Runner.Frame)</span>
+            <span class="usd-chip">타임코드 @(F1(Runner.TimeCode % 192f))</span>
+            <span class="usd-chip">스플랫 @(Runner.SplatCount)</span>
+            <span class="usd-chip">물리 @(F2(Runner.Physics.LastStepMs))ms</span>
+            <span class="usd-chip">SIMD @(NeuralPhysicsCollisionSimulator.SimdLanes)레인@(NeuralPhysicsCollisionSimulator.Avx2 ? " · AVX2" : "")</span>
+        </div>
+
+        <div class="usd-main">
+            <div class="usd-col">
+                <div class="usd-card">
+                    <div class="usd-sec">🌍 제너레이티브 월드</div>
+                    <div class="usd-row">
+                        <input class="usd-in" @bind="_prompt" @bind:event="oninput" @onkeydown="OnPromptKey" placeholder="예: 안개 낀 설원과 산맥, 새벽 / volcanic island at sunset" />
+                        <button class="usd-btn on" @onclick="Generate">생성</button>
+                    </div>
+                    <div class="usd-row">
+                        <label class="usd-note">시나리오 시드 <input class="usd-num" type="number" @bind="_scenario" /></label>
+                        <button class="usd-btn @(Runner.Generator.SeedLocked ? "on" : null)" @onclick="Runner.ToggleSeedLock">@(Runner.Generator.SeedLocked ? "🔒 시드 고정됨" : "🔓 시드 고정")</button>
+                        <span class="usd-chip">시드 @(Runner.Generator.Seed.ToString("X16", CultureInfo.InvariantCulture))</span>
+                    </div>
+                    <div class="usd-slider">
+                        <span>시드 스펙트럼 <b>@(F3(Runner.Generator.Spectrum))</b> · 같은 특성(시밀러리티 키 @(Runner.Generator.SimilarityKey.ToString("X8", CultureInfo.InvariantCulture).Substring(0, 8)))의 변주</span>
+                        <input type="range" min="0" max="1000" step="1" value="@(F0(Runner.Generator.Spectrum * 1000))" @onchange="OnSpectrum" />
+                    </div>
+                    <div class="usd-map">
+                        @if (_map is not null)
+                        {
+                            <img src="@_map" alt="월드 탑다운 맵" />
+                        }
+                        <span>96m × 96m · 우세 @(BiomeLabel(Runner.Generator.DominantBiome)) · 자산 @(Runner.Generator.AssetCount)</span>
+                    </div>
+                    <div class="usd-traits">
+                        @for (var i = 0; i < WorldTraits.Count; i++)
+                        {
+                            var v = _traits[i];
+                            <div class="usd-trait"><span>@(TraitLabel(i))</span><i style="width:@(F0(v * 100))%"></i><b>@(F2(v))</b></div>
+                        }
+                    </div>
+                    <div class="usd-light">
+                        <span class="sw" style="background:@(Rgb(_light.SunColor.X, _light.SunColor.Y, _light.SunColor.Z))"></span>
+                        태양 고도 <b>@(F0(MathF.Asin(Math.Clamp(_light.SunDir.Y, -1f, 1f)) * 180f / MathF.PI))°</b> · 앰비언트 <b>@(F2(_light.Ambient))</b> · 안개 <b>@(F2(_light.Fog))</b>
+                    </div>
+                    <div class="usd-legend">
+                        @for (var b = 0; b < 9; b++)
+                        {
+                            var c = GenerativeWorldProceduralEngine.BiomeColor((Biome)b);
+                            <span><i style="background:@(Rgb(c.X, c.Y, c.Z))"></i>@(BiomeLabel((Biome)b)) @(Pct(_hist[b], _histTotal))</span>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="usd-col">
+                <div class="usd-card">
+                    <div class="usd-sec">📚 OpenUSD 레이어 스택 <em>(위 = 강함)</em></div>
+                    @for (var s = 0; s < OpenUsdSpatialAssetCompositorEngine.MaxLayers; s++)
+                    {
+                        var layer = Runner.Compositor.Layer(s);
+                        if (layer is null) continue;
+                        var slot = s;
+                        var muted = Runner.Compositor.IsMuted(slot);
+                        <div class="usd-layer @(muted ? "muted" : null)">
+                            <label><input type="checkbox" checked="@(!muted)" @onchange="e => Runner.MuteLayer(slot, !(e.Value is true))" /> <b>@(layer.Identifier)</b></label>
+                            <span>슬롯 @(slot) · 프림 @(layer.Count) · 포인트 @(layer.PointCount)</span>
+                        </div>
+                    }
+                    <div class="usd-tree">
+                        @foreach (var row in _tree)
+                        {
+                            <div class="@(row.Defined ? null : "over") @(row.Visible ? null : "hid")" style="padding-left:@(row.Depth * 12)px">
+                                <span class="ic">@(TypeIcon(row.Type))</span>@(row.Name)
+                                <em>@(row.Note)</em>
+                            </div>
+                        }
+                        @if (_treeMore > 0)
+                        {
+                            <div class="usd-note">… 외 @(_treeMore)개 프림</div>
+                        }
+                    </div>
+                    <div class="usd-note">합성 @(Runner.Compositor.Composes) · 평가 @(Runner.Compositor.Evaluations) · 3DGS 바인딩 @(Runner.Compositor.LastBoundGaussians)</div>
+                </div>
+
+                <div class="usd-card">
+                    <div class="usd-sec">⚛ 물리 · 충돌 · 음향</div>
+                    <div class="usd-row">
+                        <label class="usd-tg"><input type="checkbox" checked="@Runner.PhysicsOn" @onchange="e => Runner.PhysicsOn = e.Value is true" /> 물리</label>
+                        <label class="usd-tg"><input type="checkbox" checked="@Runner.Physics.RigidEnabled" @onchange="e => Runner.Physics.RigidEnabled = e.Value is true" /> 강체</label>
+                        <label class="usd-tg"><input type="checkbox" checked="@Runner.Physics.ClothEnabled" @onchange="e => Runner.Physics.ClothEnabled = e.Value is true" /> 천</label>
+                        <label class="usd-tg"><input type="checkbox" checked="@Runner.Physics.FluidEnabled" @onchange="e => Runner.Physics.FluidEnabled = e.Value is true" /> 유체</label>
+                        <label class="usd-tg"><input type="checkbox" checked="@Runner.TerrainSplats" @onchange="e => Runner.TerrainSplats = e.Value is true" /> 지형 스플랫</label>
+                    </div>
+                    <div class="usd-stats">
+                        <span><b>@(Runner.BodyCount)</b>강체</span>
+                        <span><b>@(Runner.Physics.Contacts)</b>접촉</span>
+                        <span><b>@(F2(Runner.Physics.KineticEnergy()))J</b>운동 에너지</span>
+                        <span><b>@(Pct(Runner.Physics.ClothMaxStretch()))</b>천 최대 신장</span>
+                        <span><b>@(F2(Runner.Physics.RestDensity / 1000f))k</b>유체 ρ₀</span>
+                        <span><b>@(Runner.Physics.ImpactCount)</b>임팩트</span>
+                    </div>
+                    <div class="usd-sec sm">🔊 반사 탭 @(Runner.Physics.TapCount) · 패치 @(Runner.Physics.PatchCount) · RT60 @(F2(Runner.Physics.Rt60))s</div>
+                    <svg class="usd-ir" viewBox="0 0 300 60" preserveAspectRatio="none">
+                        <line x1="0" y1="58" x2="300" y2="58" class="ax" />
+                        <line x1="2" y1="58" x2="2" y2="4" class="direct" />
+                        @for (var t = 0; t < Runner.Physics.TapCount; t++)
+                        {
+                            var tap = Runner.Physics.Tap(t);
+                            var x = 2 + Math.Clamp(tap.DelayMs, 0f, 60f) * 4.9f;
+                            <line x1="@(F1(x))" y1="58" x2="@(F1(x))" y2="@(F1(58 - Math.Clamp(tap.Gain, 0f, 1f) * 54))" class="tap" />
+                        }
+                    </svg>
+                    <div class="usd-note">0–60ms 초기 반사(직접음 대비 이득) · 지면 바이옴 흡음률 반영 · 임팩트 @(_impN)건</div>
+                    <div class="usd-log">
+                        @for (var i = 0; i < _impN && i < 6; i++)
+                        {
+                            var ev = _imp[i];
+                            <div>@(F2(ev.Time))s · @(ImpactLabel(ev.Kind)) · @(F2(ev.Energy))J <em>(@(F1(ev.X)), @(F1(ev.Y)), @(F1(ev.Z)))</em></div>
+                        }
+                    </div>
+                </div>
+                <div class="usd-note">@(Runner.LastAction ?? "대기") @(_export is null ? "" : " · " + _export)</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .usd-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .usd-modal { width: min(1500px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .usd-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #8b5cf6 18%, var(--card)), color-mix(in srgb, #10b981 14%, var(--card))); }
+    .usd-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .usd-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .usd-sub b { color: var(--text-primary); }
+    .usd-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .usd-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .usd-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .usd-btn.on { background: color-mix(in srgb, #8b5cf6 24%, transparent); border-color: #8b5cf6; }
+    .usd-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .usd-main { display: grid; grid-template-columns: 1.1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .usd-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .usd-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .usd-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); } .usd-sec em { font-style: normal; font-weight: 500; color: var(--text-muted); font-size: 11px; }
+    .usd-sec.sm { font-size: 12px; }
+    .usd-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .usd-in { flex: 1; min-width: 180px; font-size: 12px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .usd-num { width: 90px; font: 12px var(--mono); padding: 3px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .usd-slider { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--text-secondary); }
+    .usd-slider b { color: var(--text-primary); font-family: var(--mono); } .usd-slider input { width: 100%; accent-color: #8b5cf6; }
+    .usd-map { position: relative; aspect-ratio: 1 / 1; max-height: 380px; background: #020617; border-radius: 10px; overflow: hidden; border: 1px solid #334155; }
+    .usd-map img { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; display: block; }
+    .usd-map span { position: absolute; left: 8px; bottom: 6px; font: 800 11px var(--mono); color: #fff; text-shadow: 0 1px 2px #000; }
+    .usd-traits { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px 10px; }
+    .usd-trait { position: relative; display: flex; justify-content: space-between; font-size: 10.5px; color: var(--text-secondary); padding: 2px 5px; border-radius: 4px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+    .usd-trait i { position: absolute; left: 0; top: 0; bottom: 0; background: color-mix(in srgb, #10b981 24%, transparent); z-index: 0; }
+    .usd-trait span, .usd-trait b { position: relative; z-index: 1; } .usd-trait b { font-family: var(--mono); color: var(--text-primary); }
+    .usd-light { font-size: 11px; color: var(--text-muted); } .usd-light b { color: var(--text-primary); font-family: var(--mono); }
+    .usd-light .sw, .usd-legend i { display: inline-block; width: 11px; height: 11px; border-radius: 3px; vertical-align: -1px; margin-right: 4px; }
+    .usd-legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 10.5px; color: var(--text-secondary); }
+    .usd-layer { display: flex; justify-content: space-between; align-items: center; font-size: 11.5px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; color: var(--text-secondary); }
+    .usd-layer b { color: var(--text-primary); font-family: var(--mono); } .usd-layer.muted { opacity: .5; }
+    .usd-tree { max-height: 260px; overflow-y: auto; font: 11px var(--mono); color: var(--text-primary); border: 1px solid color-mix(in srgb, var(--line) 60%, transparent); border-radius: 8px; padding: 6px; }
+    .usd-tree div { white-space: nowrap; } .usd-tree .ic { display: inline-block; width: 18px; } .usd-tree em { font-style: normal; color: var(--text-muted); margin-left: 6px; }
+    .usd-tree .over { color: #fbbf24; } .usd-tree .hid { opacity: .45; text-decoration: line-through; }
+    .usd-tg { font-size: 11.5px; color: var(--text-secondary); display: flex; gap: 3px; align-items: center; padding: 3px 7px; border: 1px solid var(--line); border-radius: 7px; }
+    .usd-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+    .usd-stats span { display: flex; flex-direction: column; font-size: 10.5px; color: var(--text-muted); padding: 5px 7px; border: 1px solid color-mix(in srgb, var(--line) 60%, transparent); border-radius: 8px; }
+    .usd-stats b { font: 800 13px var(--mono); color: var(--text-primary); }
+    .usd-ir { width: 100%; height: 70px; background: #020617; border-radius: 8px; }
+    .usd-ir .ax { stroke: #334155; stroke-width: 1; } .usd-ir .direct { stroke: #f8fafc; stroke-width: 2; } .usd-ir .tap { stroke: #a78bfa; stroke-width: 1.5; }
+    .usd-log { font: 11px var(--mono); color: var(--text-secondary); max-height: 96px; overflow-y: auto; } .usd-log em { font-style: normal; color: var(--text-muted); }
+    .usd-note { font-size: 11px; color: var(--text-muted); }
+    @@media (max-width: 1200px) { .usd-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly record struct TreeRow(int Depth, string Name, UsdPrimType Type, bool Defined, bool Visible, string Note);
+
+    private const int TreeMax = 60;
+    private readonly List<TreeRow> _tree = new();
+    private readonly int[] _hist = new int[9];
+    private readonly ImpactEvent[] _imp = new ImpactEvent[8];
+    private int _treeMore, _histTotal, _impN, _tick;
+    private WorldTraits _traits;
+    private WorldLight _light;
+    private string _prompt = "";
+    private ulong _scenario;
+    private string? _map, _export;
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        _prompt = Runner.Generator.Prompt;
+        Runner.OnChange += OnServiceChanged;
+        Refresh(true);
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(() => { Refresh(++_tick % 4 == 0); StateHasChanged(); }); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Usd.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static string Pct(float v) => (Math.Clamp(v, 0f, 9.99f) * 100f).ToString("0.0", CultureInfo.InvariantCulture) + "%";
+    private static string Pct(int n, int total) => total > 0 ? (100.0 * n / total).ToString("0", CultureInfo.InvariantCulture) + "%" : "0%";
+    private static string Rgb(float r, float g, float b) =>
+        "rgb(" + F0(Math.Clamp(r, 0f, 1f) * 255) + "," + F0(Math.Clamp(g, 0f, 1f) * 255) + "," + F0(Math.Clamp(b, 0f, 1f) * 255) + ")";
+
+    private static string TraitLabel(int i) => i switch
+    {
+        0 => "기온", 1 => "습도", 2 => "거칠기", 3 => "수위", 4 => "태양 고도", 5 => "태양 방위", 6 => "안개", 7 => "자산 밀도", _ => "화산성",
+    };
+    private static string BiomeLabel(Biome b) => b switch
+    {
+        Biome.Ocean => "바다", Biome.Beach => "해변", Biome.Desert => "사막", Biome.Grassland => "초원", Biome.Forest => "숲",
+        Biome.Taiga => "타이가", Biome.Snow => "설원", Biome.Mountain => "산악", _ => "화산",
+    };
+    private static string TypeIcon(UsdPrimType t) => t switch
+    {
+        UsdPrimType.Xform => "⊕", UsdPrimType.Scope => "▣", UsdPrimType.Sphere => "●", UsdPrimType.Cube => "■", UsdPrimType.Points => "∴", UsdPrimType.DistantLight => "☀", _ => "○",
+    };
+    private static string ImpactLabel(ImpactKind k) => k switch { ImpactKind.Ground => "지면", ImpactKind.Body => "강체", ImpactKind.Cloth => "천", _ => "유체" };
+
+    private void Refresh(bool map)
+    {
+        _traits = Runner.Generator.Traits;
+        _light = Runner.Generator.Light;
+        Runner.Generator.BiomeHistogram(_hist);
+        _histTotal = 0;
+        foreach (var h in _hist) _histTotal += h;
+        _impN = Runner.Physics.CopyImpacts(_imp);
+        BuildTree();
+        if (map) _map = "data:image/bmp;base64," + Convert.ToBase64String(Runner.SnapshotBmp());
+    }
+
+    private void BuildTree()
+    {
+        _tree.Clear();
+        var c = Runner.Compositor;
+        var st = c.Stage;
+        var n = st.Count;
+        for (var i = 0; i < n && _tree.Count < TreeMax; i++)
+        {
+            var path = st.Path(i);
+            var depth = 0;
+            foreach (var ch in path) if (ch == '/') depth++;
+            var s = c.State(i);
+            var note = st.SampleCount(i) > 0 ? "⏱ " + st.SampleCount(i).ToString(CultureInfo.InvariantCulture) + " 샘플"
+                : st.IsRigid(i) ? "강체 " + F1(st.MassOf(i)) + "kg"
+                : st.TypeOf(i) == UsdPrimType.Points ? st.PointsOf(i).Length / 3 + " pts"
+                : !s.Defined ? "over" : "";
+            _tree.Add(new TreeRow(depth - 1, new string(st.NameOf(i)), st.TypeOf(i), s.Defined, s.Visible, note));
+        }
+        _treeMore = Math.Max(0, n - _tree.Count);
+    }
+
+    private void Generate()
+    {
+        if (string.IsNullOrWhiteSpace(_prompt)) return;
+        Runner.Generate(_prompt.Trim(), _scenario);
+        Refresh(true);
+    }
+
+    private void OnPromptKey(KeyboardEventArgs e) { if (e.Key == "Enter") Generate(); }
+
+    private void OnSpectrum(ChangeEventArgs e)
+    {
+        if (!float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+        Runner.SetSpectrum(v / 1000f);
+        Refresh(true);
+    }
+
+    private void Export()
+    {
+        try { _export = System.IO.Path.GetFileName(Runner.Export()); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            _export = "내보내기 실패: " + ex.Message;
+            PromptFlowStudio.Program.Log("Usd.Export", ex);
+        }
+    }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

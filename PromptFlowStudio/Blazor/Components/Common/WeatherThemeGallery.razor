@@ -1,0 +1,128 @@
+@using PromptFlowStudio.Services.Weather
+
+@* [PromptFlow Studio · v5.8.1] 날씨/환경 테마 갤러리 — B2B 백과사전(B2bCorporateGalleryModal)과 동일한 2단 필터 +
+   반응형 카드 그리드 UX로 재정돈. 기후(1차 탭) × 시간대(2차 세그먼트) 필터 + 48종 카드 그리드.
+   ▸ Virtualize 제거: 다중 컬럼 그리드는 Virtualize 의 단일열 높이 가정과 맞지 않아 B2B 와 동일하게 순수 @foreach(45~48종 규모는 가상화 불필요). *@
+
+<div class="wg-wrap">
+    <div class="wg-head">
+        <span class="wg-badge">@Filtered.Count / @(WeatherThemeCatalog.All.Count)종</span>
+        <div class="wg-cats">
+            <button class="wg-cat @(_climate is null ? "on" : null)" @onclick="() => SetClimate(null)">전체</button>
+            @foreach (var c in _climates)
+            {
+                <button class="wg-cat @(_climate == c ? "on" : null)" style="--neon:@WeatherThemeCatalog.NeonColor(c)" @onclick="() => SetClimate(c)" @key="c">
+                    @WeatherThemeCatalog.ClimateEmoji(c) @WeatherThemeCatalog.ClimateLabel(c)
+                </button>
+            }
+        </div>
+    </div>
+
+    <div class="wg-fmt">
+        <div class="wg-seg">
+            <button class="wg-segbtn @(_time is null ? "on" : null)" @onclick="() => SetTime(null)">🕒 전체 시간대</button>
+            @foreach (var t in _times)
+            {
+                <button class="wg-segbtn @(_time == t ? "on" : null)" @onclick="() => SetTime(t)" @key="t">@WeatherThemeCatalog.TimeLabel(t)</button>
+            }
+        </div>
+        <span class="wg-fmt-note">강도(약·보통·강) 3단계는 카드 태그로 표시됩니다.</span>
+    </div>
+
+    @if (Filtered.Count == 0)
+    {
+        <div class="wg-empty">표시할 날씨 테마가 없습니다.</div>
+    }
+    else
+    {
+        <div class="wg-grid">
+            @foreach (var p in Filtered)
+            {
+                <div class="wg-card" style="--neon:@WeatherThemeCatalog.NeonColor(p.Climate)" @key="p.Key">
+                    <div class="wg-thumb">
+                        @if (!string.IsNullOrWhiteSpace(p.ImageUrl))
+                        {
+                            <img src="@p.ImageUrl" alt="@p.Title" loading="lazy" decoding="async" width="44" height="44" draggable="false" />
+                        }
+                        else
+                        {
+                            <span class="wg-emoji">@p.Emoji</span>
+                        }
+                    </div>
+                    <div class="wg-meta">
+                        <div class="wg-name">@p.Title</div>
+                        <div class="wg-hook">@p.Hook</div>
+                        <div class="wg-tags">
+                            <span class="wg-tag">@WeatherThemeCatalog.TimeLabel(p.TimeOfDay)</span>
+                            <span class="wg-tag">@WeatherThemeCatalog.TierLabel(p.Intensity)</span>
+                        </div>
+                    </div>
+                    <button class="wg-pick" @onclick="() => OnPick.InvokeAsync(p)" title="이 날씨 테마 적용">적용</button>
+                </div>
+            }
+        </div>
+    }
+</div>
+
+<style>
+    .wg-wrap{display:flex; flex-direction:column; gap:10px; min-height:0}
+    .wg-head{display:flex; align-items:center; gap:12px; flex-wrap:wrap}
+    .wg-badge{font:700 10.5px var(--mono); color:#7dd3fc; background:color-mix(in srgb,#7dd3fc 12%,transparent); border:1px solid color-mix(in srgb,#7dd3fc 30%,var(--line)); border-radius:20px; padding:3px 9px; flex:0 0 auto}
+    .wg-cats{display:inline-flex; gap:6px; flex-wrap:wrap}
+    .wg-cat{--neon:#7dd3fc; font:800 12px inherit; padding:7px 13px; border-radius:10px; border:1px solid var(--line); background:var(--card-2); color:var(--text-secondary); cursor:pointer; transition:border-color .12s, box-shadow .12s}
+    .wg-cat:hover{border-color:var(--neon); color:var(--text-primary)}
+    .wg-cat.on{color:#04121c; border-color:transparent; background:linear-gradient(135deg,var(--neon),color-mix(in srgb,var(--neon) 55%,#fff)); box-shadow:0 4px 16px color-mix(in srgb,var(--neon) 40%,transparent)}
+    /* 2차 세그먼트(시간대) — B2B 기업/장비 백과사전(.bg-seg/.bg-segbtn)과 동일한 필 그룹 스타일 */
+    .wg-fmt{display:flex; align-items:center; gap:12px; flex-wrap:wrap}
+    .wg-seg{display:inline-flex; background:var(--card-2); border:1px solid var(--line); border-radius:12px; padding:3px; gap:3px; flex-wrap:wrap}
+    .wg-segbtn{font:800 11.5px inherit; padding:7px 12px; border-radius:9px; border:none; background:none; color:var(--text-secondary); cursor:pointer}
+    .wg-segbtn.on{color:#fff; background:linear-gradient(135deg,#0ea5e9,#6366f1)}
+    .wg-fmt-note{font-size:11px; color:var(--text-muted)}
+    .wg-empty{font:600 12px var(--mono); color:var(--text-muted); padding:36px 8px; text-align:center}
+    /* 반응형 카드 그리드(B2B .bg-grid.resp 와 동일 골격 + 기후별 네온 강조 유지) */
+    .wg-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(212px,1fr)); gap:10px; align-content:start; max-height:min(60vh,620px); overflow-y:auto; padding-right:4px}
+    .wg-card{--neon:#7dd3fc; display:flex; flex-direction:column; gap:8px; box-sizing:border-box; padding:12px;
+        border-radius:14px; border:1px solid color-mix(in srgb,var(--neon) 32%,var(--line));
+        background:linear-gradient(150deg, color-mix(in srgb,var(--neon) 12%,rgba(18,20,31,.72)), rgba(18,20,31,.86));
+        backdrop-filter:blur(14px) saturate(150%); -webkit-backdrop-filter:blur(14px) saturate(150%);
+        box-shadow:0 8px 26px rgba(0,0,0,.3), inset 0 1px 0 color-mix(in srgb,var(--neon) 26%,transparent); transition:border-color .14s, box-shadow .14s, transform .14s}
+    .wg-card:hover{border-color:color-mix(in srgb,var(--neon) 70%,var(--line)); box-shadow:0 12px 34px color-mix(in srgb,var(--neon) 26%,transparent); transform:translateY(-1px)}
+    .wg-thumb{position:relative; flex:0 0 auto; width:44px; height:44px; border-radius:11px; overflow:hidden; display:grid; place-items:center;
+        background:radial-gradient(circle at 35% 28%, color-mix(in srgb,var(--neon) 45%,transparent), transparent 62%), linear-gradient(145deg,#0d1020,#161a2e);
+        border:1px solid color-mix(in srgb,var(--neon) 40%,rgba(255,255,255,.12))}
+    .wg-thumb img{width:44px; height:44px; object-fit:cover; display:block}
+    .wg-emoji{font-size:22px; filter:drop-shadow(0 0 8px color-mix(in srgb,var(--neon) 60%,transparent))}
+    .wg-meta{flex:1; min-width:0; display:flex; flex-direction:column; gap:5px}
+    .wg-name{font-size:13px; font-weight:800; color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+    .wg-hook{font-size:11px; color:color-mix(in srgb,var(--neon) 78%,var(--text-secondary)); line-height:1.4; overflow:hidden; text-overflow:ellipsis; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical}
+    .wg-tags{display:inline-flex; gap:5px; flex-wrap:wrap}
+    .wg-tag{font:700 9.5px var(--mono); color:var(--text-muted); background:var(--card); border:1px solid var(--line); border-radius:20px; padding:2px 8px}
+    .wg-pick{margin-top:auto; font:800 12px inherit; padding:8px 12px; border-radius:10px; border:none; color:#04121c; cursor:pointer;
+        background:linear-gradient(135deg,var(--neon),color-mix(in srgb,var(--neon) 60%,#fff)); box-shadow:0 4px 14px color-mix(in srgb,var(--neon) 40%,transparent)}
+    .wg-pick:hover{filter:brightness(1.08)}
+    @@media(max-width:640px){.wg-grid{grid-template-columns:1fr 1fr}}
+</style>
+
+@code {
+    /// <summary>날씨 테마 카드 [적용] 콜백 — 부모가 project.Weather 반영 + WeatherEngine 로 프롬프트/앰비언스 구성.</summary>
+    [Parameter] public EventCallback<WeatherPreset> OnPick { get; set; }
+    /// <summary>초기 카테고리(null=전체 · 또는 특정 기후).</summary>
+    [Parameter] public WeatherClimate? InitialClimate { get; set; }
+
+    private static readonly WeatherClimate[] _climates = Enum.GetValues<WeatherClimate>();
+    private static readonly WeatherTimeOfDay[] _times = Enum.GetValues<WeatherTimeOfDay>();
+
+    private WeatherClimate? _climate;
+    private WeatherTimeOfDay? _time;
+
+    protected override void OnInitialized() => _climate = InitialClimate;
+
+    private List<WeatherPreset> Filtered =>
+        WeatherThemeCatalog.All
+            .Where(p => _climate is null || p.Climate == _climate)
+            .Where(p => _time is null || p.TimeOfDay == _time)
+            .ToList();
+
+    private void SetClimate(WeatherClimate? c) => _climate = c;
+    private void SetTime(WeatherTimeOfDay? t) => _time = t;
+}

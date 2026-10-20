@@ -1,0 +1,141 @@
+@using PromptFlowStudio.Services.Integration
+@using PromptFlowStudio.Services.Mobile
+@implements IDisposable
+
+@* [PromptFlow Studio v6.1.0] B2B Webhook 발송 로그 & 대상 관리 — 완공 비디오 이벤트가 외부 엔드포인트로 서명 발송되는 현황을 실시간 표출.
+   ⚠ 무주입(모바일 안전 · 제2헌장): WebhookDispatcher 는 부모에서 [Parameter] 로 수신. OnChange 는 백그라운드 발송 스레드 → InvokeAsync(StateHasChanged) 마샬링(제3헌장). *@
+
+<div class="whl">
+    <div class="whl-head">
+        <span class="whl-title">🔗 B2B Webhook 발송 로그</span>
+        <span class="whl-badge">대기 @(Dispatcher?.QueuedCount ?? 0) · ✓@(Dispatcher?.TotalDelivered ?? 0) · ✗@(Dispatcher?.TotalFailed ?? 0)</span>
+    </div>
+
+    @* 대상 엔드포인트 등록(HMAC-SHA256 서명 POST) *@
+    <div class="whl-form">
+        <input class="whl-in" @bind="_newUrl" @bind:event="oninput" placeholder="엔드포인트 URL (예: https://hooks.acme.com/pf)" inputmode="url" @onkeydown="OnKey" />
+        <button class="whl-add" @onclick="AddTarget" disabled="@string.IsNullOrWhiteSpace(_newUrl)">＋ 대상</button>
+    </div>
+    @if (_formMsg is not null) { <div class="whl-formmsg @(_formOk ? "ok" : "err")">@_formMsg</div> }
+
+    @if (Dispatcher is not null && Dispatcher.Targets.Count > 0)
+    {
+        <div class="whl-targets">
+            @foreach (var t in Dispatcher.Targets)
+            {
+                <span class="whl-chip" @key="t"><span class="whl-chip-u">@t</span><button class="whl-chip-x" @onclick="() => Dispatcher!.RemoveTarget(t)">✕</button></span>
+            }
+        </div>
+    }
+    else
+    {
+        <div class="whl-note">대상 미구성 — 이벤트는 로컬 로그에만 보관됩니다(발송 없음). 위에서 엔드포인트를 등록하세요.</div>
+    }
+
+    @* 실시간 발송 로그 *@
+    <div class="whl-log">
+        @if (Dispatcher is null || Dispatcher.RecentDeliveries.Count == 0)
+        {
+            <div class="whl-empty">아직 발송된 이벤트가 없습니다. GPU 분산·대량 양산·파이프라인 완공 시 <b>video.completed</b> 이벤트가 자동 발화됩니다.</div>
+        }
+        else
+        {
+            @foreach (var d in Dispatcher.RecentDeliveries)
+            {
+                <div class="whl-row @StatusClass(d.Status)" @key="d.Id + d.TargetUrl">
+                    <span class="whl-row-st">@StatusIcon(d.Status)</span>
+                    <div class="whl-row-mid">
+                        <div class="whl-row-top"><span class="whl-ev">@d.EventType</span><span class="whl-tgt">@Trunc(d.TargetUrl, 34)</span></div>
+                        <div class="whl-row-sub">
+                            <span>@d.CreatedAt.ToLocalTime().ToString("HH:mm:ss")</span>
+                            @if (d.Attempts > 0) { <span>· 시도 @d.Attempts</span> }
+                            @if (d.HttpStatus is { } hc) { <span>· HTTP @hc</span> }
+                            <span>· sig @d.SignatureShort…</span>
+                        </div>
+                        @if (!string.IsNullOrWhiteSpace(d.Error)) { <div class="whl-err">@d.Error</div> }
+                    </div>
+                </div>
+            }
+        }
+    </div>
+</div>
+
+@code {
+    /// <summary>Webhook 디스패처(관찰 가능 싱글턴) — 부모(MobileStudioDeck)가 [Parameter] 로 주입(모바일 무주입 원칙).</summary>
+    [Parameter, EditorRequired] public WebhookDispatcher Dispatcher { get; set; } = default!;
+
+    private string _newUrl = "";
+    private string? _formMsg;
+    private bool _formOk;
+
+    protected override void OnInitialized()
+    {
+        if (Dispatcher is not null) Dispatcher.OnChange += OnDispatcherChanged;
+    }
+
+    private void OnDispatcherChanged() => InvokeAsync(StateHasChanged);
+
+    private void OnKey(KeyboardEventArgs e) { if (e.Key is "Enter" or "NumpadEnter") AddTarget(); }
+
+    private void AddTarget()
+    {
+        var url = (_newUrl ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(url)) return;
+        if (Dispatcher.AddTarget(url)) { _formOk = true; _formMsg = $"✅ «{url}» 등록 — 완공 이벤트가 HMAC 서명 후 발송됩니다."; _newUrl = ""; }
+        else { _formOk = false; _formMsg = "⚠ 유효하지 않거나 이미 등록된 URL 입니다 (http/https/ws/wss)."; }
+    }
+
+    private static string StatusClass(WebhookDeliveryStatus s) => s switch
+    {
+        WebhookDeliveryStatus.Delivered => "ok",
+        WebhookDeliveryStatus.Delivering => "run",
+        WebhookDeliveryStatus.Failed => "err",
+        _ => "queued",
+    };
+
+    private static string StatusIcon(WebhookDeliveryStatus s) => s switch
+    {
+        WebhookDeliveryStatus.Delivered => "✅",
+        WebhookDeliveryStatus.Delivering => "📤",
+        WebhookDeliveryStatus.Failed => "❌",
+        _ => "⏳",
+    };
+
+    private static string Trunc(string s, int n) => (s ?? "").Length <= n ? (s ?? "") : s![..n] + "…";
+
+    public void Dispose()
+    {
+        if (Dispatcher is not null) Dispatcher.OnChange -= OnDispatcherChanged;
+    }
+}
+
+<style>
+    .whl { display: flex; flex-direction: column; gap: 11px; font-family: Pretendard,'Malgun Gothic',sans-serif; }
+    .whl-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .whl-title { font: 900 14px Pretendard,'Malgun Gothic',sans-serif; background: linear-gradient(90deg,#a855f7,#7dd3fc); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .whl-badge { margin-left: auto; font: 700 10px var(--mono); color: var(--text-muted); background: var(--card-2); border: 1px solid var(--line); border-radius: 12px; padding: 3px 10px; }
+    .whl-form { display: flex; gap: 8px; }
+    .whl-in { flex: 1; min-width: 0; min-height: 44px; background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 0 12px; color: var(--text-primary); font: 700 12px var(--mono); outline: none; }
+    .whl-in:focus { border-color: #a855f7; }
+    .whl-add { flex: 0 0 auto; min-height: 44px; padding: 0 14px; border: none; border-radius: 12px; cursor: pointer; font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: #fff; background: linear-gradient(135deg,#a855f7,#7dd3fc); white-space: nowrap; }
+    .whl-add:disabled { opacity: .5; cursor: not-allowed; }
+    .whl-formmsg { font: 700 10.5px Pretendard,'Malgun Gothic',sans-serif; padding: 7px 10px; border-radius: 8px; line-height: 1.5; word-break: break-all; }
+    .whl-formmsg.ok { color: #6ee7b7; background: color-mix(in srgb,#34d399 10%,transparent); border: 1px solid color-mix(in srgb,#34d399 30%,var(--line)); }
+    .whl-formmsg.err { color: #fca5a5; background: color-mix(in srgb,#ef4444 10%,transparent); border: 1px solid color-mix(in srgb,#ef4444 34%,var(--line)); }
+    .whl-targets { display: flex; flex-wrap: wrap; gap: 6px; }
+    .whl-chip { display: inline-flex; align-items: center; gap: 6px; font: 700 10px var(--mono); color: #c4b5fd; background: color-mix(in srgb,#a855f7 12%,transparent); border: 1px solid color-mix(in srgb,#a855f7 30%,var(--line)); border-radius: 10px; padding: 4px 6px 4px 10px; }
+    .whl-chip-u { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .whl-chip-x { border: none; background: none; color: #fca5a5; cursor: pointer; font-size: 11px; }
+    .whl-note, .whl-empty { font: 600 11px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-muted); line-height: 1.6; word-break: keep-all; padding: 12px; border: 1px dashed var(--line); border-radius: 11px; background: rgba(11,13,20,.4); }
+    .whl-empty b { color: #c4b5fd; }
+    .whl-log { display: flex; flex-direction: column; gap: 7px; max-height: 320px; overflow-y: auto; }
+    .whl-row { display: flex; gap: 9px; padding: 9px 11px; border-radius: 11px; border: 1px solid var(--line); border-left-width: 3px; background: rgba(18,20,31,.6); }
+    .whl-row.ok { border-left-color: #34d399; } .whl-row.run { border-left-color: #f5c451; } .whl-row.err { border-left-color: #ef4444; } .whl-row.queued { border-left-color: var(--text-muted); }
+    .whl-row-st { flex: 0 0 auto; font-size: 14px; }
+    .whl-row-mid { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+    .whl-row-top { display: flex; align-items: baseline; gap: 8px; }
+    .whl-ev { font: 800 11px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .whl-tgt { flex: 1; min-width: 0; font: 600 9.5px var(--mono); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .whl-row-sub { font: 600 9px var(--mono); color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 4px; }
+    .whl-err { font: 600 9.5px Pretendard,'Malgun Gothic',sans-serif; color: #fca5a5; word-break: break-all; line-height: 1.4; }
+</style>

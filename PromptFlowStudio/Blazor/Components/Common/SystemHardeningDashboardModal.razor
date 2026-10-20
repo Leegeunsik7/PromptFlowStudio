@@ -1,0 +1,387 @@
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.Hardening
+@implements IDisposable
+@inject ZeroAllocHotPathProfilingGuard Guard
+@inject EnterpriseE2eSystemHealthAuditor Auditor
+@inject ProductionReleaseDeploymentPackager Packager
+
+@*
+    [PromptFlow Studio v16.51.0] 🛡️ 엔터프라이즈 시스템 하드닝 스튜디오 — 모듈별 핫패스 할당 히트맵(32 윈도) · 위반 사이트/SIMD 우회 토글 · SIMD 스윕 ·
+    E2E 통합 진단 스펙트럼(분류 × 결과) · DI 패리티 · 트림/AOT IL 분석 · 6타깃 publish 계획 · 1-Click 상용 패키지 빌드(서명 매니페스트 · 검증).
+    서비스 OnChange 구독 + 500ms UI 틱(모달 열린 동안 1초 샘플러 가동).
+*@
+
+<div class="hd-scrim" @onclick="Close">
+    <div class="hd-modal" @onclick:stopPropagation="true">
+        <div class="hd-h">
+            <div>
+                <div class="hd-title">🛡️ 엔터프라이즈 시스템 하드닝 스튜디오</div>
+                <div class="hd-sub"><b>@(Guard.SiteCount)개 모듈</b> 핫패스 할당/GC를 실시간 계측해 위반 시 <b>SIMD 무할당 경로</b>로 우회하고, <b>E2E 교차 진단</b>으로 DI·UI·폴백·복구를 1초 내 점검하며, <b>트림/AOT 분석</b>과 <b>서명 릴리스 번들</b>을 생성합니다.</div>
+            </div>
+            <button class="hd-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="hd-bar">
+            <span class="hd-chip ok">SIMD @(SimdKernels.ActivePath)</span>
+            <span class="hd-chip">계측 @(Guard.InstrumentedCount)/@(Guard.SiteCount)</span>
+            <span class="hd-chip @(Guard.TotalViolations > 0 ? "hot" : "")">핫패스 위반 @(Guard.TotalViolations) · 사이트 @(Guard.ViolatingSites)</span>
+            <span class="hd-chip">ZeroGc 위반 @(Guard.ZeroGcViolations)</span>
+            <span class="hd-chip">프로세스 할당 @(Mb(Guard.ProcessAllocBytesPerSec))MB/s</span>
+            <span class="hd-chip">GC @(GC.CollectionCount(0))/@(GC.CollectionCount(1))/@(GC.CollectionCount(2))</span>
+            @if (Auditor.Last is { } lr)
+            {
+                <span class="hd-chip @(lr.Healthy ? "ok" : "hot")">E2E @(lr.Results.Count)항목 · 실패 @(lr.Count(AuditOutcome.Fail)) · 복구 @(lr.Fixed) · @(F0(lr.ElapsedMs))ms</span>
+            }
+        </div>
+
+        <div class="hd-main">
+            <div class="hd-col">
+                <div class="hd-card">
+                    <div class="hd-sec">🔥 모듈 메모리 할당 히트맵 <span class="hd-mut">행 = 모듈 · 열 = 1초 윈도(우측 최신) · 샘플 @(Guard.Samples)</span></div>
+                    <svg class="hd-heat" viewBox="0 0 @(ZeroAllocHotPathProfilingGuard.Windows * 10 + 150) @(Guard.SiteCount * 7)" preserveAspectRatio="none">
+                        @for (var s = 0; s < Guard.SiteCount; s++)
+                        {
+                            var site = s;
+                            var st = Guard.Stats(site);
+                            <g>
+                                <text x="0" y="@(site * 7 + 6)" font-size="6" fill="@(st.Violations > 0 ? "#f87171" : st.Instrumented ? "#e2e8f0" : "#64748b")">@(Short(Guard.SiteName(site)))@(st.Bypassed ? " ⚡" : "")</text>
+                            </g>
+                            @for (var w = 0; w < ZeroAllocHotPathProfilingGuard.Windows; w++)
+                            {
+                                var age = ZeroAllocHotPathProfilingGuard.Windows - 1 - w;
+                                <rect x="@(150 + w * 10)" y="@(site * 7)" width="9.4" height="6.4" fill="@(HeatColor(Guard.Heat(site, age), st.Instrumented))" />
+                            }
+                        }
+                    </svg>
+                    <div class="hd-row">
+                        <label class="hd-ck"><input type="checkbox" checked="@(Guard.Sampling)" @onchange="ToggleSampling" /> 1초 백그라운드 샘플러</label>
+                        <label class="hd-ck">우회 임계 <input class="hd-in w60" type="number" min="1" max="20" @bind="Guard.BypassThreshold" /> 회</label>
+                        <button class="hd-btn sm" @onclick="Sweep">⚡ SIMD 핫패스 스윕</button>
+                        <button class="hd-btn sm" @onclick="Guard.ResetStats">초기화</button>
+                    </div>
+                    <div class="hd-log sm">
+                        @foreach (var st in Enumerable.Range(0, Guard.SiteCount).Select(Guard.Stats).Where(x => x.Instrumented).OrderByDescending(x => x.Bytes).Take(10))
+                        {
+                            var site = st.Site;
+                            <div class="hd-ev"><b>@(st.Name)</b><span>호출 @(st.Calls) · 누적 @(Kb(st.Bytes))KB · 최대 @(st.MaxBytes)B · GC @(st.Gen0)/@(st.Gen1)/@(st.Gen2) · 위반 @(st.Violations)@(st.Bypassed ? " · 우회 " + st.Rerouted.ToString(CultureInfo.InvariantCulture) : "")</span>
+                                <button class="hd-btn sm" @onclick="() => ToggleBypass(site)">@(st.Bypassed ? "우회 해제" : "SIMD 우회")</button></div>
+                        }
+                    </div>
+                    <div class="hd-mut">@(Guard.LastWarning ?? "인라인 경고 없음") · @(_sweepMsg)</div>
+                </div>
+
+                <div class="hd-card">
+                    <div class="hd-sec">🩺 E2E 통합 진단 스펙트럼</div>
+                    <div class="hd-row">
+                        <button class="hd-btn go" disabled="@(_auditing)" @onclick="RunAudit">@(_auditing ? "진단 중…" : "🩺 E2E 진단 실행")</button>
+                        <label class="hd-ck"><input type="checkbox" @bind="Auditor.AutoFix" /> 자동 픽스 주입</label>
+                        <label class="hd-ck">예산 <input class="hd-in w60" type="number" min="100" max="10000" step="100" @bind="Auditor.BudgetMs" /> ms</label>
+                        <span class="hd-mut">등록 서비스 @(Auditor.RegisteredCount) · 실행 @(Auditor.Runs) · 누적 픽스 @(Auditor.FixesApplied)</span>
+                    </div>
+                    @if (Auditor.Last is { } rep)
+                    {
+                        @foreach (var c in Enum.GetValues<AuditCategory>())
+                        {
+                            var total = rep.Results.Count(r => r.Category == c);
+                            if (total == 0) continue;
+                            <div class="hd-spec">
+                                <span>@(EnterpriseE2eSystemHealthAuditor.AuditCategoryLabel(c))</span>
+                                <div>
+                                    @foreach (var o in Enum.GetValues<AuditOutcome>())
+                                    {
+                                        var n = rep.Count(c, o);
+                                        if (n == 0) continue;
+                                        <i class="o@((int)o)" style="width:@(F1(n * 100.0 / total))%" title="@(OutcomeLabel(o)) @(n)"></i>
+                                    }
+                                </div>
+                                <b>@(rep.Count(c, AuditOutcome.Pass) + rep.Count(c, AuditOutcome.Fixed))/@(total)</b>
+                            </div>
+                        }
+                        <div class="hd-log sm">
+                            @foreach (var r in rep.Results.Where(r => r.Outcome is AuditOutcome.Fail or AuditOutcome.Fixed or AuditOutcome.Warn).Take(40))
+                            {
+                                <div class="hd-ev"><b class="o@((int)r.Outcome)t">@(OutcomeLabel(r.Outcome))</b><span>[@(EnterpriseE2eSystemHealthAuditor.AuditCategoryLabel(r.Category))] @(r.Target) — @(r.Detail)</span></div>
+                            }
+                        </div>
+                    }
+                    @if (_parity is { } pr)
+                    {
+                        <div class="hd-mut">DI 패리티(소스) · 공유 @(pr.Shared) · 데스크톱 전용 @(pr.DesktopOnly.Count) · 모바일 전용 @(pr.MobileOnly.Count)@(pr.MobileOnly.Count > 0 ? " (" + string.Join(", ", pr.MobileOnly.Take(5)) + ")" : "")</div>
+                    }
+                </div>
+            </div>
+
+            <div class="hd-col">
+                <div class="hd-card">
+                    <div class="hd-sec">✂ Native AOT · 트리밍 호환성</div>
+                    <div class="hd-row">
+                        <button class="hd-btn sm" disabled="@(_analyzing)" @onclick="Analyze">@(_analyzing ? "IL 분석 중…" : "🔍 IL 트림/AOT 분석")</button>
+                        @if (Packager.LastTrim is { } tr)
+                        {
+                            <span class="hd-chip @(tr.Trim == TrimVerdict.Safe ? "ok" : "hot")">트림 @(ProductionReleaseDeploymentPackager.VerdictLabel(tr.Trim))</span>
+                            <span class="hd-chip @(tr.Aot == TrimVerdict.Safe ? "ok" : "hot")">AOT @(ProductionReleaseDeploymentPackager.VerdictLabel(tr.Aot))</span>
+                            <span class="hd-mut">메서드 @(tr.Methods) · 호출 @(tr.CallSites) · RUC @(tr.UnreferencedCode) · RDC @(tr.DynamicCode) · 리플렉션 @(tr.Reflection) · @(F0(tr.ElapsedMs))ms</span>
+                        }
+                    </div>
+                    @if (Packager.LastTrim is { } t2)
+                    {
+                        <div class="hd-log sm">
+                            @foreach (var b in t2.PlatformBlockers)
+                            {
+                                <div class="hd-ev"><b class="o2t">차단</b><span>@(b)</span></div>
+                            }
+                            @foreach (var kv in t2.TopApis)
+                            {
+                                <div class="hd-ev"><b>@(kv.Value)회</b><span>@(kv.Key)</span></div>
+                            }
+                        </div>
+                    }
+                </div>
+
+                <div class="hd-card">
+                    <div class="hd-sec">📦 상용 릴리스 타깃</div>
+                    @foreach (var t in Enum.GetValues<ReleaseTarget>())
+                    {
+                        var plan = Packager.Plan(t, _repo ?? AppContext.BaseDirectory);
+                        <div class="hd-tg @(plan.Feasible ? "ok" : "no")">
+                            <b>@(ProductionReleaseDeploymentPackager.TargetLabel(t))</b>
+                            <span>@(plan.Rid) · @(plan.Artifact)@(plan.Trimmed ? " · 트림" : "")@(plan.Aot ? " · AOT" : "")</span>
+                            <i>@(plan.Feasible ? "빌드 가능" : string.Join(" / ", plan.Blockers))</i>
+                        </div>
+                    }
+                    <div class="hd-row">
+                        <button class="hd-btn go" disabled="@(Packager.Busy || _building)" @onclick="BuildPackage">@(_building ? "패키징 중…" : "🏗 1-Click 상용 패키지 빌드")</button>
+                        <label class="hd-ck"><input type="checkbox" @bind="_realPublish" disabled="@(_repo is null)" /> 실 dotnet publish(win-x64)</label>
+                        <button class="hd-btn sm" disabled="@(Packager.LastBundle is null)" @onclick="VerifyBundle">🔏 번들 검증</button>
+                    </div>
+                    <div class="hd-mut">@(_repo is null ? "레포 루트 미발견 — 현재 실행 폴더를 번들링합니다(BCL 폴백)." : "레포 " + _repo) · 번들 @(Packager.Bundles) · 검증 @(Packager.Verified) · 변조 검출 @(Packager.TamperDetected)</div>
+                    @if (Packager.LastBundle is { } lb)
+                    {
+                        <div class="hd-mut">📦 @(lb.ZipPath) · @(lb.Files)파일 · @(Mb(lb.Bytes))MB · sig @(lb.Signature[..16])…</div>
+                    }
+                    <div class="hd-log sm mono">
+                        @foreach (var l in LogTail())
+                        {
+                            <div>@(l)</div>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="hd-f">
+            <span class="hd-mut">@(_msg ?? Packager.LastAction ?? Auditor.LastAction ?? "대기")</span>
+            <button class="hd-btn" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .hd-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .hd-modal { width: min(1480px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .hd-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #0ea5e9 14%, var(--card)), color-mix(in srgb, #10b981 12%, var(--card))); }
+    .hd-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .hd-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .hd-sub b { color: var(--text-primary); }
+    .hd-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .hd-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .hd-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); } .hd-chip.ok { color: #4ade80; } .hd-chip.hot { color: #fff; background: #f97316; border-color: #f97316; }
+    .hd-main { display: grid; grid-template-columns: 1.2fr 1fr; gap: 12px; padding: 12px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .hd-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .hd-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .hd-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .hd-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
+    .hd-heat { width: 100%; height: 360px; background: #0b1220; border-radius: 6px; }
+    .hd-spec { display: grid; grid-template-columns: 80px 1fr 60px; gap: 6px; align-items: center; font-size: 11px; color: var(--text-secondary); } .hd-spec b { font: 10.5px var(--mono); text-align: right; }
+    .hd-spec > div { display: flex; height: 10px; border-radius: 4px; overflow: hidden; background: #1f2937; } .hd-spec i { display: block; height: 100%; }
+    .o0 { background: #22c55e; } .o1 { background: #facc15; } .o2 { background: #ef4444; } .o3 { background: #38bdf8; } .o4 { background: #64748b; }
+    .o0t { color: #4ade80 !important; } .o1t { color: #facc15 !important; } .o2t { color: #f87171 !important; } .o3t { color: #38bdf8 !important; }
+    .hd-log { display: flex; flex-direction: column; gap: 2px; max-height: 210px; overflow-y: auto; } .hd-log.sm { max-height: 150px; } .hd-log.mono div { font: 10px var(--mono); color: var(--text-muted); white-space: pre-wrap; word-break: break-all; }
+    .hd-ev { display: grid; grid-template-columns: 130px 1fr auto; gap: 6px; align-items: center; font-size: 11px; color: var(--text-secondary); } .hd-ev b { font: 10px var(--mono); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .hd-tg { display: grid; grid-template-columns: 170px 1fr; gap: 2px 8px; border: 1px solid var(--line); border-left: 4px solid #22c55e; border-radius: 6px; padding: 4px 8px; font-size: 11px; } .hd-tg.no { border-left-color: #ef4444; }
+    .hd-tg b { color: var(--text-primary); } .hd-tg span { font: 10.5px var(--mono); color: var(--text-muted); } .hd-tg i { grid-column: 1 / -1; font-style: normal; color: var(--text-secondary); font-size: 10.5px; }
+    .hd-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; } .hd-in.w60 { width: 64px; }
+    .hd-ck { font-size: 11.5px; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; }
+    .hd-mut { font-size: 11px; color: var(--text-muted); word-break: break-all; font-weight: 400; }
+    .hd-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); } .hd-f .hd-mut { margin-right: auto; }
+    .hd-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .hd-btn.sm { padding: 3px 8px; font-size: 11px; } .hd-btn.go { background: linear-gradient(135deg,#0ea5e9,#10b981); color: #fff; border: 0; } .hd-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 1100px) { .hd-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly List<string> _log = new();
+    private (List<string> DesktopOnly, List<string> MobileOnly, int Shared)? _parity;
+    private string? _repo, _msg, _sweepMsg;
+    private bool _auditing, _analyzing, _building, _realPublish;
+    private CancellationTokenSource? _ui;
+
+    private static readonly HotPathBody<SweepState> AllocBody = static (ref SweepState s, Span<float> _) =>
+    {
+        var tmp = new float[s.Src.Length];                                                                  // 의도적 미세 할당(기존 경로 재현)
+        for (var i = 0; i < tmp.Length; i++) tmp[i] = s.Src[i] * s.Gain + s.Bias[i];
+        s.Peak = SimdKernels.MaxAbsScalar(tmp);
+    };
+
+    private static readonly HotPathBody<SweepState> SimdBody = static (ref SweepState s, Span<float> scratch) =>
+    {
+        var buf = scratch[..s.Src.Length];
+        SimdKernels.ScaleAdd(s.Src, s.Gain, s.Bias, buf);
+        s.Peak = SimdKernels.MaxAbs(buf);
+    };
+
+    private struct SweepState { public float[] Src, Bias; public float Gain, Peak; }
+
+    protected override void OnInitialized()
+    {
+        _repo = ProductionReleaseDeploymentPackager.FindRepoRoot(AppContext.BaseDirectory);
+        Guard.OnChange += OnServiceChanged;
+        Auditor.OnChange += OnServiceChanged;
+        Packager.OnChange += OnServiceChanged;
+        Packager.OnLog += OnLog;
+        Guard.StartSampling();
+        LoadParity();
+        StartUi();
+    }
+
+    private void LoadParity()
+    {
+        if (_repo is null) return;
+        try
+        {
+            var d = File.ReadAllText(Path.Combine(_repo, "PromptFlowStudio", "MainForm.cs"));
+            var m = File.ReadAllText(Path.Combine(_repo, "PromptFlowStudio.Mobile", "MauiProgram.cs"));
+            _parity = EnterpriseE2eSystemHealthAuditor.CompareRegistrations(d, m);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { _parity = null; }
+    }
+
+    private void ToggleSampling(ChangeEventArgs e) { if (e.Value is true) Guard.StartSampling(); else Guard.StopSampling(); }
+
+    private void ToggleBypass(int site) { if (Guard.IsBypassed(site)) Guard.DisableBypass(site); else Guard.EnableBypass(site); }
+
+    private void Sweep()
+    {
+        const int Site = 51, N = 4096;
+        var rng = new Random(51);
+        var st = new SweepState { Src = new float[N], Bias = new float[N], Gain = 0.75f };
+        for (var i = 0; i < N; i++) { st.Src[i] = (float)(rng.NextDouble() * 2 - 1); st.Bias[i] = (float)(rng.NextDouble() * 0.1); }
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var k = 0; k < 200; k++) Guard.Execute(Site, ref st, AllocBody, SimdBody);
+        var bytes = GC.GetAllocatedBytesForCurrentThread() - before;
+        var s = Guard.Stats(Site);
+        _sweepMsg = "스윕 200회 · 할당 " + Kb(bytes) + "KB · 위반 " + s.Violations.ToString(CultureInfo.InvariantCulture) + " · 우회 " + s.Rerouted.ToString(CultureInfo.InvariantCulture) + "회 · 피크 " + st.Peak.ToString("0.000", CultureInfo.InvariantCulture);
+    }
+
+    private async Task RunAudit()
+    {
+        _auditing = true;
+        try { await Task.Run(Auditor.Run); _msg = null; LoadParity(); }
+        catch (Exception ex) when (ex is InvalidOperationException or AggregateException) { _msg = "⚠ 진단 실패 · " + ex.Message; }
+        finally { _auditing = false; }
+    }
+
+    private async Task Analyze()
+    {
+        _analyzing = true;
+        try { await Task.Run(() => Packager.AnalyzeTrimCompatibility(typeof(ProductionReleaseDeploymentPackager).Assembly)); }
+        finally { _analyzing = false; }
+    }
+
+    private async Task BuildPackage()
+    {
+        _building = true; lock (_log) _log.Clear();
+        try
+        {
+            if (Packager.LastTrim is null) await Task.Run(() => Packager.AnalyzeTrimCompatibility(typeof(ProductionReleaseDeploymentPackager).Assembly));
+            var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
+            var outDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "PromptFlowStudio", "Release");
+            var source = AppContext.BaseDirectory;
+            if (_realPublish && _repo is not null)
+            {
+                var plan = Packager.Plan(ReleaseTarget.WinX64, _repo);
+                OnLog("▶ dotnet " + string.Join(' ', plan.Arguments));
+                var code = await Packager.RunPublishAsync(plan);
+                var pubDir = plan.Arguments[^1];
+                if (code == 0 && Directory.Exists(pubDir)) source = pubDir;
+                else OnLog("[폴백] publish 실패(코드 " + code.ToString(CultureInfo.InvariantCulture) + ") → 현재 실행 폴더 번들");
+            }
+            var zip = Path.Combine(outDir, "PromptFlowStudio_" + Packager.Version + "_win-x64_" + stamp + ".zip");
+            var res = await Task.Run(() => Packager.Bundle(ReleaseTarget.WinX64, source, zip));
+            var v = await Task.Run(() => Packager.Verify(res.ZipPath));
+            _msg = (v.Ok ? "✅ " : "❌ ") + "상용 패키지 · " + res.ZipPath + " · " + v.Reason;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or InvalidDataException) { _msg = "⚠ 패키징 실패 · " + ex.Message; }
+        finally { _building = false; }
+    }
+
+    private async Task VerifyBundle()
+    {
+        if (Packager.LastBundle is not { } b) return;
+        try { var v = await Task.Run(() => Packager.Verify(b.ZipPath)); _msg = (v.Ok ? "✅ " : "❌ ") + v.Reason; }
+        catch (Exception ex) when (ex is IOException or InvalidDataException) { _msg = "⚠ 검증 실패 · " + ex.Message; }
+    }
+
+    private string[] LogTail() { lock (_log) return _log.Skip(Math.Max(0, _log.Count - 30)).Reverse().ToArray(); }
+
+    private void OnLog(string s)
+    {
+        lock (_log) { _log.Add(s); if (_log.Count > 400) _log.RemoveAt(0); }
+    }
+
+    private static string HeatColor(long bytes, bool instrumented)
+    {
+        if (!instrumented) return "#1e293b";
+        if (bytes <= 0) return "#14532d";
+        var lv = Math.Clamp(Math.Log10(bytes) / 6, 0, 1);
+        var r = (int)(250 * lv + 120 * (1 - lv)); var g = (int)(200 * (1 - lv) + 40 * lv);
+        return "rgb(" + r.ToString(CultureInfo.InvariantCulture) + "," + g.ToString(CultureInfo.InvariantCulture) + ",40)";
+    }
+
+    private static string Short(string s) => s.Length > 24 ? s[..24] : s;
+    private static string OutcomeLabel(AuditOutcome o) => o switch { AuditOutcome.Pass => "통과", AuditOutcome.Warn => "경고", AuditOutcome.Fail => "실패", AuditOutcome.Fixed => "복구", _ => "생략" };
+    private static string Mb(double b) => (b / 1048576.0).ToString("0.0", CultureInfo.InvariantCulture);
+    private static string Kb(long b) => (b / 1024.0).ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+
+    private void StartUi()
+    {
+        if (_ui is not null) return;
+        var cts = new CancellationTokenSource();
+        _ui = cts;
+        _ = UiLoopAsync(cts.Token);
+    }
+
+    private void StopUi()
+    {
+        var cts = Interlocked.Exchange(ref _ui, null);
+        if (cts is null) return;
+        try { cts.Cancel(); } catch (ObjectDisposedException) { }
+        cts.Dispose();
+    }
+
+    private async Task UiLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(500));
+        try { while (await timer.WaitForNextTickAsync(ct)) await InvokeAsync(StateHasChanged); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("HardeningStudio.Ui", ex); }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Guard.OnChange -= OnServiceChanged;
+        Auditor.OnChange -= OnServiceChanged;
+        Packager.OnChange -= OnServiceChanged;
+        Packager.OnLog -= OnLog;
+        Guard.StopSampling();
+        StopUi();
+    }
+}

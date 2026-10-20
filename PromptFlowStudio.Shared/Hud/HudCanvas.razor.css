@@ -1,0 +1,37 @@
+/* CSS Isolation — 이 컴포넌트 전용(b-xxxx 스코프). 색은 전역 --hud-* 토큰(hud-theme.css)만 참조, 미로드 시 폴백값. */
+.hud-canvas {
+    position: relative;
+    width: 100%;
+    border-radius: var(--hud-radius, 8px);
+    background: var(--hud-surface-sunken, #020617);
+    border: 1px solid var(--hud-border, #1E293B);
+    overflow: hidden;
+    /* 합성 레이어 승격 + 레이아웃/페인트 격리 — 부모 HUD 재렌더가 캔버스 래스터를 무효화하지 않게 */
+    contain: strict;
+    transform: translateZ(0);
+    will-change: transform;
+}
+
+.hud-canvas canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    --hud-accent: var(--hud-accent-c, #34D399);
+    --hud-accent-2: var(--hud-accent-2-c, #38BDF8);
+}
+
+.hud-canvas.fallback {
+    background: repeating-linear-gradient(90deg, var(--hud-grid, rgba(148,163,184,.18)) 0 1px, transparent 1px 12px),
+                var(--hud-surface-sunken, #020617);
+}
+
+.hud-canvas-label {
+    position: absolute;
+    top: 3px;
+    left: 6px;
+    font: 600 10px/1 var(--mono, ui-monospace, Consolas, monospace);
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--hud-text-muted, #94A3B8);
+    pointer-events: none;
+}

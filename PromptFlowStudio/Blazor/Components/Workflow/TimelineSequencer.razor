@@ -1,0 +1,157 @@
+@* [PromptFlow Studio v15.9.0] 멀티 컷 타임라인 시퀀서 — Wan 2.1 단일 컷 한계 보완.
+   좌: 클립 팔레트(퀵갤러리) → 트랙으로 드래그(또는 클릭 추가) · 트랙 내 드래그 재정렬 · 컷 경계 트랜지션(✂ Cut / ◐ Fade) 토글.
+   무주입(모바일 안전 · 파라미터/콜백만). 핸들러는 슬롯 상한만큼 OnInitialized 1회 생성(렌더 클로저 0). *@
+
+<div class="tls">
+    <div class="tls-head">
+        <span class="tls-title">🎬 멀티 컷 타임라인</span>
+        <span class="tls-meta">@(_track.Count)/@(MaxCuts)컷 · Fade @(FadeCount)</span>
+        <button type="button" class="tls-btn ghost" @onclick="Clear" disabled="@(_track.Count == 0 || Busy)">비우기</button>
+        <button type="button" class="tls-btn" @onclick="Merge" disabled="@(_track.Count < 2 || Busy)">@(Busy ? "병합 중…" : "⛓ 타임라인 병합")</button>
+    </div>
+
+    <div class="tls-palette">
+        @if (Clips is null || Clips.Count == 0)
+        {
+            <span class="tls-empty">생성된 클립이 없습니다 — 영상을 만들면 여기에 표시됩니다.</span>
+        }
+        else
+        {
+            var pn = Math.Min(Clips.Count, MaxPalette);
+            for (var i = 0; i < pn; i++)
+            {
+                var c = Clips[i];
+                <div class="tls-chip" draggable="true" title="@c.Path" @ondragstart="_paletteDrag[i]" @onclick="_paletteAdd[i]">
+                    <span class="tls-chip-ic">🎞️</span><span class="tls-chip-t">@c.Name</span>
+                </div>
+            }
+        }
+    </div>
+
+    <div class="tls-track" @ondragover:preventDefault="true" @ondrop="DropAtEnd">
+        @if (_track.Count == 0)
+        {
+            <span class="tls-empty">클립을 이곳으로 끌어다 놓으세요 (최소 2컷 병합)</span>
+        }
+        @for (var i = 0; i < _track.Count; i++)
+        {
+            var cut = _track[i];
+            if (i > 0)
+            {
+                <button type="button" class="tls-tr @(cut.FadeIn ? "fade" : "cut")" title="컷 경계 트랜지션 전환" @onclick="_toggleTr[i]">
+                    @(cut.FadeIn ? "◐ Fade" : "✂ Cut")
+                </button>
+            }
+            <div class="tls-cut @(_dragTrack == i ? "drag" : null)" draggable="true"
+                 @ondragstart="_trackDrag[i]" @ondragover:preventDefault="true" @ondrop="_trackDrop[i]" @ondrop:stopPropagation="true">
+                <span class="tls-cut-n">@(i + 1)</span>
+                <span class="tls-cut-t" title="@cut.Path">@cut.Name</span>
+                <button type="button" class="tls-x" title="컷 제거" @onclick="_remove[i]">✕</button>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    /// <summary>타임라인 컷 1개 — <see cref="FadeIn"/>=true 면 직전 컷과 크로스페이드, false 면 하드 컷.</summary>
+    public sealed record TimelineCut(string Path, string Name, bool FadeIn);
+
+    public const int MaxCuts = 12;
+    private const int MaxPalette = 12;
+
+    [Parameter] public IReadOnlyList<MediaItem>? Clips { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public EventCallback<IReadOnlyList<TimelineCut>> OnMerge { get; set; }
+
+    private readonly List<TimelineCut> _track = new(MaxCuts);
+    private int _dragPalette = -1, _dragTrack = -1;
+
+    private Action[] _paletteDrag = Array.Empty<Action>(), _paletteAdd = Array.Empty<Action>();
+    private Action[] _trackDrag = Array.Empty<Action>(), _trackDrop = Array.Empty<Action>(), _remove = Array.Empty<Action>(), _toggleTr = Array.Empty<Action>();
+
+    private int FadeCount
+    {
+        get { var n = 0; for (var i = 1; i < _track.Count; i++) if (_track[i].FadeIn) n++; return n; }
+    }
+
+    protected override void OnInitialized()
+    {
+        _paletteDrag = new Action[MaxPalette]; _paletteAdd = new Action[MaxPalette];
+        for (var i = 0; i < MaxPalette; i++)
+        {
+            var idx = i;
+            _paletteDrag[i] = () => { _dragPalette = idx; _dragTrack = -1; };
+            _paletteAdd[i] = () => InsertFromPalette(idx, _track.Count);
+        }
+        _trackDrag = new Action[MaxCuts]; _trackDrop = new Action[MaxCuts]; _remove = new Action[MaxCuts]; _toggleTr = new Action[MaxCuts];
+        for (var i = 0; i < MaxCuts; i++)
+        {
+            var idx = i;
+            _trackDrag[i] = () => { _dragTrack = idx; _dragPalette = -1; };
+            _trackDrop[i] = () => DropAt(idx);
+            _remove[i] = () => { if (idx < _track.Count) _track.RemoveAt(idx); };
+            _toggleTr[i] = () => { if (idx < _track.Count) _track[idx] = _track[idx] with { FadeIn = !_track[idx].FadeIn }; };
+        }
+    }
+
+    private void DropAtEnd() => DropAt(_track.Count);
+
+    private void DropAt(int at)
+    {
+        if (_dragPalette >= 0) InsertFromPalette(_dragPalette, at);
+        else if ((uint)_dragTrack < (uint)_track.Count)
+        {
+            var moved = _track[_dragTrack];
+            _track.RemoveAt(_dragTrack);
+            if (at > _dragTrack) at--;
+            _track.Insert(Math.Clamp(at, 0, _track.Count), moved);
+        }
+        _dragPalette = -1; _dragTrack = -1;
+    }
+
+    private void InsertFromPalette(int paletteIndex, int at)
+    {
+        if (Clips is null || (uint)paletteIndex >= (uint)Clips.Count || _track.Count >= MaxCuts) return;
+        var c = Clips[paletteIndex];
+        _track.Insert(Math.Clamp(at, 0, _track.Count), new TimelineCut(c.Path, c.Name, FadeIn: true));
+    }
+
+    private void Clear() => _track.Clear();
+
+    private async Task Merge()
+    {
+        if (_track.Count < 2 || Busy || !OnMerge.HasDelegate) return;
+        await OnMerge.InvokeAsync(_track.ToArray());
+    }
+}
+
+<style>
+    .tls{margin-top:14px;padding:14px 16px;border-radius:16px;color:#e2e8f0;
+        background:linear-gradient(180deg,rgba(30,24,60,.55),rgba(12,9,26,.62));backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+        border:1px solid rgba(124,108,255,.26);box-shadow:0 14px 40px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.05)}
+    .tls-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+    .tls-title{font-weight:800;font-size:14px}
+    .tls-meta{font:700 11px/1 'Roboto Mono',Consolas,monospace;color:#94a3b8;margin-right:auto}
+    .tls-btn{padding:7px 14px;border-radius:10px;border:0;cursor:pointer;font-weight:800;font-size:12px;color:#fff;
+        background:linear-gradient(135deg,#22d3ee,#7c6cff);box-shadow:0 6px 18px rgba(124,108,255,.35)}
+    .tls-btn.ghost{background:transparent;border:1px solid rgba(124,108,255,.35);color:#c4b5fd;box-shadow:none}
+    .tls-btn:disabled{opacity:.45;cursor:not-allowed}
+    .tls-palette{display:flex;gap:8px;overflow-x:auto;padding-bottom:8px;margin-bottom:10px;border-bottom:1px dashed rgba(148,163,184,.2)}
+    .tls-chip{flex:0 0 auto;display:flex;align-items:center;gap:6px;max-width:180px;padding:6px 10px;border-radius:10px;cursor:grab;
+        background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);font-size:12px}
+    .tls-chip:hover{border-color:rgba(34,211,238,.6)}
+    .tls-chip-t,.tls-cut-t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .tls-track{display:flex;align-items:center;gap:6px;min-height:64px;padding:10px;border-radius:12px;overflow-x:auto;
+        background:rgba(6,8,14,.55);border:1px solid rgba(34,211,238,.18);box-shadow:inset 0 0 22px rgba(34,211,238,.06)}
+    .tls-cut{flex:0 0 auto;display:flex;align-items:center;gap:8px;width:150px;padding:10px;border-radius:10px;cursor:grab;
+        background:linear-gradient(180deg,rgba(124,108,255,.22),rgba(34,211,238,.1));border:1px solid rgba(124,108,255,.4);font-size:12px}
+    .tls-cut.drag{opacity:.5}
+    .tls-cut-n{flex:0 0 auto;width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-weight:800;font-size:11px;background:#7c6cff}
+    .tls-cut-t{flex:1}
+    .tls-x{border:0;background:transparent;color:#94a3b8;cursor:pointer;font-size:12px}
+    .tls-x:hover{color:#f87171}
+    .tls-tr{flex:0 0 auto;padding:4px 8px;border-radius:999px;cursor:pointer;font:800 10px/1 'Roboto Mono',Consolas,monospace;border:1px solid}
+    .tls-tr.fade{color:#67e8f9;border-color:rgba(34,211,238,.5);background:rgba(34,211,238,.1);box-shadow:0 0 10px rgba(34,211,238,.3)}
+    .tls-tr.cut{color:#fca5a5;border-color:rgba(248,113,113,.45);background:rgba(248,113,113,.08)}
+    .tls-empty{font-size:12px;color:#64748b}
+</style>

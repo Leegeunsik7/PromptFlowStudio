@@ -1,0 +1,307 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.ViralLoop
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject ViralLoopAutomationStudioRunner Runner
+
+@* [PromptFlow Studio v17.50.0] 🚀 AI 24/7 바이럴 오토메이션 스튜디오 — Top Chart 카드 · 원클릭 리메이크&발행 · 단계 레일 · 24/7 캘린더 · 자가 튜닝 차트. *@
+
+<div class="vla-scrim" @onclick="Close">
+    <div class="vla-modal" @onclick:stopPropagation="true">
+        <div class="vla-h">
+            <div>
+                <div class="vla-title">🚀 AI 24/7 바이럴 오토메이션 스튜디오 @(Runner.IsRunning ? "· ▶ 루프" : null) · @(Clock(9)) KST</div>
+                <div class="vla-sub"><b>큐레이션</b>이 v17.47 트렌드 피드와 v17.48 Graph API 인기 릴스를 카테고리별로 랭킹하고, <b>스케줄러</b>가 분해(v17.47) → 스튜디오 합성(v17.32/43/46) → GPU 인코딩(v17.49) → Meta 업로드(v17.48)를 자동 조율해 지역 골든아워에 발행합니다. <b>피드백 가드</b>는 1·6·24 시간 인사이트로 후킹 문구와 스타일 프리셋을 베이지안(Thompson) 자가 튜닝하고, 노출 급감(섀도우밴 징후) 시 큐를 동결합니다 — 재개는 48 시간 쿨다운 후 사람이 결정합니다.</div>
+            </div>
+            <button class="vla-x" @onclick="Close">✕</button>
+        </div>
+        @if (Runner.Feedback.IsFrozen)
+        {
+            <div class="vla-freeze">⛔ 큐 동결 — 1 h 조회가 기준선의 @(F0(Runner.Feedback.LastRatio * 100))% · 쿨다운 종료 @(ViralLoopAutomationStudioRunner.Clock(Runner.Feedback.CooldownUntilTicks, 9)) KST
+                <button class="vla-btn" @onclick="() => Runner.Resume()" disabled="@(!Runner.Feedback.CanResume(Runner.NowTicks))">▶ 검토 후 재개</button></div>
+        }
+        <div class="vla-bar">
+            <button class="vla-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 루프 시작")</button>
+            <button class="vla-btn" @onclick="StepHour" disabled="@Runner.IsRunning">⏭ +1 시간</button>
+            <button class="vla-btn @(Runner.Auto ? "on" : null)" @onclick="() => Runner.SetAuto(!Runner.Auto)" disabled="@Runner.Feedback.IsFrozen">🤖 24/7 자율</button>
+            <button class="vla-btn @(Runner.RealClock ? "on" : null)" @onclick="() => Runner.SetRealClock(!Runner.RealClock)">@(Runner.RealClock ? "🕒 실시간" : "⏩ 가속(1 틱 = 1 분)")</button>
+            @for (var r = 0; r < Autonomous247ReelsSchedulerSynthesizer.RegionNames.Length; r++)
+            {
+                var reg = (LoopRegion)r;
+                <button class="vla-btn pre @(Runner.Region == reg ? "on" : null)" @onclick="() => Runner.SetRegion(reg)">@(Autonomous247ReelsSchedulerSynthesizer.RegionNames[r])</button>
+            }
+            <button class="vla-btn stop" @onclick="Runner.EmergencyStop">🛑 긴급 정지</button>
+            <span class="vla-chip">발행 24h @(Runner.Scheduler.PublishedSince(Runner.NowTicks - TimeSpan.TicksPerDay))/@(Runner.Scheduler.DailyCap) · 대기 @(Runner.Scheduler.Pending) · 완료 @(Runner.Scheduler.Completed) · 실패 @(Runner.Scheduler.FailedJobs)</span>
+        </div>
+        <div class="vla-main">
+            <div class="vla-col">
+                <div class="vla-card">
+                    <div class="vla-sec">🔥 Top Chart — @(_cat < 0 ? "전체" : RealtimeViralTrendCurationEngine.CategoryNames[_cat]) · 링 @(Runner.Curation.Count)/@(RealtimeViralTrendCurationEngine.Cap) <button class="vla-btn mini" @onclick="Runner.RefreshCuration">⟳</button></div>
+                    <div class="vla-tabs">
+                        <button class="vla-tab @(_cat < 0 ? "on" : null)" @onclick="() => _cat = -1">전체</button>
+                        @for (var c = 0; c < RealtimeViralTrendCurationEngine.Categories; c++)
+                        {
+                            var cc = c;
+                            <button class="vla-tab @(_cat == cc ? "on" : null)" @onclick="() => _cat = cc">@(RealtimeViralTrendCurationEngine.CategoryNames[c])</button>
+                        }
+                    </div>
+                    <div class="vla-cards">
+                        @for (var i = 0; i < ChartCount(); i++)
+                        {
+                            var slot = ChartSlot(i);
+                            var it = Runner.Curation.Item(slot);
+                            <div class="vla-rc @(it.State == CurationState.New ? null : "used")">
+                                <div class="rk">#@(i + 1)</div>
+                                <div class="bd">
+                                    <div class="t">@(it.Source == CurationSource.GraphApi ? "📸 IG" : "📈 피드") · @(RealtimeViralTrendCurationEngine.CategoryName(it.Category)) · @(it.Id % 1000000)</div>
+                                    <div class="m">👁 @(K(it.Views)) · 🔁 @(K(it.Shares)) · ❤ @(K(it.Likes)) · 💬 @(K(it.Comments)) · ⚡ @(K((long)it.Score))</div>
+                                </div>
+                                <button class="vla-btn go" disabled="@(it.State != CurationState.New || Runner.Feedback.IsFrozen)" @onclick="() => Runner.RemakeAndPublish(slot)">@(it.State == CurationState.New ? "⚡ 리메이크 & 발행" : StateName(it.State))</button>
+                            </div>
+                        }
+                    </div>
+                </div>
+            </div>
+            <div class="vla-col">
+                <div class="vla-card">
+                    <div class="vla-sec">🛤 파이프라인 레일</div>
+                    @for (var j = 0; j < Autonomous247ReelsSchedulerSynthesizer.Cap; j++)
+                    {
+                        var job = Runner.Scheduler.Job(j);
+                        if (job.Stage is LoopJobStage.Empty or LoopJobStage.Canceled || job.Stage == LoopJobStage.Published && job.Checkpoint >= 3) continue;
+                        var jj = j;
+                        <div class="vla-job">
+                            <div class="hd">@(job.SourceId % 1000000) · @(RealtimeViralTrendCurationEngine.CategoryName(job.Category)) · @(Autonomous247ReelsSchedulerSynthesizer.RegionNames[(int)job.Region]) · 훅 @(job.Hook + 1) · @(EngagementFeedbackSelfTuningGuard.StylePresets[job.Style].Name)
+                                @if (job.Stage < LoopJobStage.Published) { <button class="vla-btn mini" @onclick="() => Runner.CancelJob(jj)">✕</button> }</div>
+                            <div class="rail">
+                                @for (var s = 0; s < 4; s++)
+                                {
+                                    var st = RailState(job, s);
+                                    <div class="node @(st)"><span>@(RailName(s))</span><div class="bar"><div style="width:@(P(RailFill(job, s) * 100))%"></div></div></div>
+                                }
+                            </div>
+                            <div class="ft">@(Autonomous247ReelsSchedulerSynthesizer.StageName(job.Stage))@(job.Stage == LoopJobStage.Scheduled ? " → " + ViralLoopAutomationStudioRunner.Clock(job.DueTicks, 9) + " KST" : null)@(job.Stage == LoopJobStage.Published ? " · 피드백 " + job.Checkpoint + "/3 · 보상 " + F2(job.Reward) : null)@(job.Stage == LoopJobStage.Failed ? " · " + Runner.Scheduler.LastError : null)</div>
+                        </div>
+                    }
+                </div>
+                <div class="vla-card">
+                    <div class="vla-sec">🗓 24/7 스케줄 캘린더 — 7 일 × 24 h(KST) · 🟨 @(Autonomous247ReelsSchedulerSynthesizer.RegionNames[(int)Runner.Region]) 골든아워</div>
+                    <svg class="vla-cal" viewBox="0 0 248 72">@((MarkupString)CalendarSvg())</svg>
+                    <div class="vla-legend"><span class="g">■ 골든아워</span><span class="s">● 예약</span><span class="p">● 게시</span><span class="n">│ 현재</span></div>
+                </div>
+            </div>
+            <div class="vla-col">
+                <div class="vla-card">
+                    <div class="vla-sec">🧠 자가 튜닝 — 가드 <b class="@(Runner.Feedback.State == LoopGuardState.Active ? "ok" : "warn")">@(EngagementFeedbackSelfTuningGuard.StateName(Runner.Feedback.State))</b> · 관측 @(Runner.Feedback.Observations) · VFX 강도 @(F2(Runner.Feedback.AdaptiveVfx))</div>
+                    <div class="vla-arms">
+                        @for (var h = 0; h < EngagementFeedbackSelfTuningGuard.Hooks; h++)
+                        {
+                            <div class="arm"><span class="lb" title="@(EngagementFeedbackSelfTuningGuard.HookTemplates[h])">훅 @(h + 1)</span><div class="bar"><div style="width:@(P(Runner.Feedback.HookMean(h) * 100))%"></div></div><span class="v">@(F2(Runner.Feedback.HookMean(h))) · n @(F0(Runner.Feedback.HookPulls(h)))</span></div>
+                        }
+                        @for (var s = 0; s < EngagementFeedbackSelfTuningGuard.Styles; s++)
+                        {
+                            <div class="arm st"><span class="lb">@(EngagementFeedbackSelfTuningGuard.StylePresets[s].Name)</span><div class="bar"><div style="width:@(P(Runner.Feedback.StyleMean(s) * 100))%"></div></div><span class="v">@(F2(Runner.Feedback.StyleMean(s)))</span></div>
+                        }
+                    </div>
+                    <svg class="vla-graph" viewBox="0 0 600 90" preserveAspectRatio="none">
+                        <line class="lim" x1="0" x2="600" y1="@(P(88 - 86 * 0.25))" y2="@(P(88 - 86 * 0.25))" />
+                        <polyline class="rw" points="@(Series(0))" />
+                        <polyline class="ra" points="@(Series(1))" />
+                    </svg>
+                    <div class="vla-legend"><span class="rw">━ 보상(완청·참여)</span><span class="ra">━ 1 h 조회/기준선(0~2)</span><span class="lim">┄ 동결 임계 0.25</span></div>
+                    <div class="vla-kv">
+                        <div>기준선 1 h 조회 @(F0(Runner.Feedback.Baseline1h)) · 게시 @(Runner.Feedback.BaselinePosts) · 섀도우 점수 <b class="@(Runner.Feedback.ShadowScore < 0.5f ? "ok" : "warn")">@(F2(Runner.Feedback.ShadowScore))</b></div>
+                        <div>최근 완청률 @(F0(Runner.Feedback.LastCompletion * 100))% · 경고 @(Runner.Feedback.Warnings) · 동결 @(Runner.Feedback.Freezes) · 이월 @(Runner.Scheduler.Rescheduled)</div>
+                    </div>
+                    <div class="vla-act">IP 전환 · 탐지 회피는 제공하지 않습니다. 원작 크레딧과 v17.47 오리지널리티 검증을 통과한 리믹스만 발행됩니다.</div>
+                    <div class="vla-act">@(Runner.LastAction ?? "대기")</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .vla-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .vla-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .vla-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f43f5e 14%, var(--card)), color-mix(in srgb, #a855f7 14%, var(--card)), color-mix(in srgb, #f59e0b 10%, var(--card))); }
+    .vla-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .vla-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .vla-sub b { color: var(--text-primary); }
+    .vla-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .vla-freeze { display: flex; gap: 12px; align-items: center; padding: 8px 18px; background: color-mix(in srgb, #ef4444 22%, var(--card)); color: var(--text-primary); font-weight: 800; font-size: 13px; }
+    .vla-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .vla-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .vla-btn:disabled { opacity: .45; cursor: default; }
+    .vla-btn.on { background: color-mix(in srgb, #a855f7 22%, var(--card)); border-color: #a855f7; }
+    .vla-btn.pre.on { background: color-mix(in srgb, #f59e0b 22%, var(--card)); border-color: #fbbf24; }
+    .vla-btn.stop { border-color: #ef4444; color: #ef4444; }
+    .vla-btn.go { background: linear-gradient(90deg, #f43f5e, #a855f7); color: #fff; border: none; white-space: nowrap; }
+    .vla-btn.mini { font-size: 10px; padding: 1px 6px; margin-left: 6px; }
+    .vla-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .vla-main { display: grid; grid-template-columns: 1.05fr 1.1fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .vla-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .vla-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); }
+    .vla-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .vla-sec b.ok, .vla-kv b.ok { color: #22c55e; } .vla-sec b.warn, .vla-kv b.warn { color: #f59e0b; }
+    .vla-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; }
+    .vla-tab { font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--text-secondary); cursor: pointer; }
+    .vla-tab.on { background: color-mix(in srgb, #f43f5e 22%, var(--card)); color: var(--text-primary); border-color: #f43f5e; }
+    .vla-cards { display: flex; flex-direction: column; gap: 6px; max-height: 560px; overflow-y: auto; }
+    .vla-rc { display: grid; grid-template-columns: 34px 1fr auto; gap: 8px; align-items: center; padding: 7px 8px; border-radius: 10px; border: 1px solid var(--line); background: color-mix(in srgb, var(--card) 85%, #000); }
+    .vla-rc.used { opacity: .55; }
+    .vla-rc .rk { font: 900 14px var(--mono); color: #f43f5e; text-align: center; }
+    .vla-rc .t { font-size: 12px; font-weight: 800; color: var(--text-primary); }
+    .vla-rc .m { font: 11px var(--mono); color: var(--text-secondary); }
+    .vla-job { border: 1px solid var(--line); border-radius: 10px; padding: 6px 8px; margin-bottom: 6px; }
+    .vla-job .hd, .vla-job .ft { font-size: 11px; color: var(--text-secondary); }
+    .vla-job .rail { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 5px 0; }
+    .vla-job .node span { font-size: 10px; color: var(--text-muted); }
+    .vla-job .node .bar { height: 6px; border-radius: 999px; background: #1e293b; overflow: hidden; }
+    .vla-job .node .bar div { height: 100%; background: #64748b; }
+    .vla-job .node.cur .bar div { background: linear-gradient(90deg, #f43f5e, #a855f7); } .vla-job .node.done .bar div { background: #22c55e; } .vla-job .node.fail .bar div { background: #ef4444; }
+    .vla-job .node.cur span { color: var(--text-primary); font-weight: 800; }
+    .vla-cal { width: 100%; height: 150px; display: block; background: #0b1220; border-radius: 6px; }
+    .vla-cal text { fill: #94a3b8; font-size: 4px; }
+    .vla-arms { display: flex; flex-direction: column; gap: 3px; }
+    .vla-arms .arm { display: grid; grid-template-columns: 110px 1fr 70px; gap: 6px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .vla-arms .bar { height: 7px; border-radius: 999px; background: #1e293b; overflow: hidden; }
+    .vla-arms .bar div { height: 100%; background: #f43f5e; } .vla-arms .st .bar div { background: #a855f7; }
+    .vla-arms .lb { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .vla-graph { width: 100%; height: 90px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; margin-top: 8px; }
+    .vla-graph polyline { fill: none; stroke-width: 1.6; } .vla-graph .lim { stroke: #ef4444; stroke-dasharray: 6 4; }
+    .vla-graph .rw, .vla-legend .rw { stroke: #22c55e; color: #22c55e; } .vla-graph .ra, .vla-legend .ra { stroke: #f59e0b; color: #f59e0b; }
+    .vla-legend { display: flex; gap: 12px; font-size: 10px; margin-top: 3px; color: var(--text-muted); }
+    .vla-legend .g { color: #facc15; } .vla-legend .s { color: #38bdf8; } .vla-legend .p { color: #22c55e; } .vla-legend .lim { color: #ef4444; }
+    .vla-kv { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
+    .vla-kv b { color: var(--text-primary); }
+    .vla-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+    private int _cat = -1;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        if (!Runner.IsRunning) Runner.Step();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("ViralLoop.Modal.Timer", ex); }
+        }, null, 300, 300);
+    }
+
+    private string Clock(int off) => ViralLoopAutomationStudioRunner.Clock(Runner.NowTicks, off);
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string P(double v) => Math.Clamp(v, 0, 600).ToString("0.###", CultureInfo.InvariantCulture);
+    private static string K(long v) => v >= 1_000_000 ? (v / 1e6).ToString("0.0", CultureInfo.InvariantCulture) + "M" : v >= 1000 ? (v / 1e3).ToString("0.0", CultureInfo.InvariantCulture) + "K" : v.ToString(CultureInfo.InvariantCulture);
+    private static string StateName(CurationState s) => s switch { CurationState.Queued => "⏳ 대기열", CurationState.InPipeline => "⚙ 진행 중", CurationState.Published => "✅ 게시됨", CurationState.Skipped => "건너뜀", _ => "" };
+    private int ChartCount() => _cat < 0 ? Runner.Curation.TopCount : Runner.Curation.RankCount((CurationCategory)_cat);
+    private int ChartSlot(int i) => _cat < 0 ? Runner.Curation.Top(i) : Runner.Curation.Ranked((CurationCategory)_cat, i);
+    private static string RailName(int s) => s switch { 0 => "인제스트", 1 => "합성", 2 => "인코딩", _ => "게시" };
+
+    private static string? RailState(LoopJob j, int s)
+    {
+        if (j.Stage == LoopJobStage.Failed) return "fail";
+        var cur = j.Stage switch { LoopJobStage.Queued or LoopJobStage.Ingest => 0, LoopJobStage.Render => 1, LoopJobStage.Encode => 2, LoopJobStage.Scheduled or LoopJobStage.Upload => 3, _ => 4 };
+        return s < cur ? "done" : s == cur ? "cur" : null;
+    }
+
+    private static double RailFill(LoopJob j, int s)
+    {
+        var st = RailState(j, s);
+        return st == "done" ? 1 : st == "cur" ? (j.Stage is LoopJobStage.Queued or LoopJobStage.Scheduled ? 0.05 : j.StageProgress) : st == "fail" ? 1 : 0;
+    }
+
+    /// <summary>7 일 × 24 h 그리드(KST) — 골든아워 음영 · 예약/게시 점 · 현재 시각 선.</summary>
+    private string CalendarSvg()
+    {
+        const int x0 = 20, cw = 9, rh = 9;
+        var off = 9 * TimeSpan.TicksPerHour;
+        var now = Runner.NowTicks;
+        var day0 = (now + off) - (now + off) % TimeSpan.TicksPerDay - off;
+        var (gs, ge) = Autonomous247ReelsSchedulerSynthesizer.GoldenWindow(Runner.Region);
+        var sb = new System.Text.StringBuilder(4096);
+        for (var d = 0; d < 7; d++)
+        {
+            var y = 4 + d * rh;
+            sb.Append("<g><text x=\"0\" y=\"").Append(P(y + 6)).Append("\">").Append(new DateTime(day0 + off + d * TimeSpan.TicksPerDay).ToString("MM/dd", CultureInfo.InvariantCulture)).Append("</text></g>");
+            for (var h = 0; h < 24; h++)
+            {
+                var t = day0 + d * TimeSpan.TicksPerDay + h * TimeSpan.TicksPerHour;
+                var golden = Autonomous247ReelsSchedulerSynthesizer.InGolden(Runner.Region, t);
+                sb.Append("<rect x=\"").Append(P(x0 + h * cw)).Append("\" y=\"").Append(P(y)).Append("\" width=\"").Append(cw - 1).Append("\" height=\"").Append(rh - 1)
+                  .Append("\" fill=\"").Append(golden ? "rgba(250,204,21,.28)" : "rgba(148,163,184,.08)").Append("\" rx=\"1\"/>");
+            }
+        }
+        for (var h = 0; h < 24; h += 3) sb.Append("<g><text x=\"").Append(P(x0 + h * cw)).Append("\" y=\"70\">").Append(h).Append("</text></g>");
+        for (var j = 0; j < Autonomous247ReelsSchedulerSynthesizer.Cap; j++)
+        {
+            var job = Runner.Scheduler.Job(j);
+            long t; string color;
+            if (job.Stage is LoopJobStage.Scheduled or LoopJobStage.Upload) { t = job.DueTicks; color = "#38bdf8"; }
+            else if (job.Stage == LoopJobStage.Published) { t = job.PublishedTicks; color = "#22c55e"; }
+            else continue;
+            Dot(sb, t, day0, color);
+        }
+        var nd = (now - day0) / (double)TimeSpan.TicksPerDay;
+        if (nd >= 0 && nd < 7)
+        {
+            var hh = (nd - Math.Floor(nd)) * 24;
+            var y = 4 + (int)nd * rh;
+            sb.Append("<line x1=\"").Append(P(x0 + hh * cw)).Append("\" x2=\"").Append(P(x0 + hh * cw)).Append("\" y1=\"").Append(P(y)).Append("\" y2=\"").Append(P(y + rh - 1)).Append("\" stroke=\"#f43f5e\" stroke-width=\"0.8\"/>");
+        }
+        return sb.ToString();
+
+        static void Dot(System.Text.StringBuilder sb, long t, long day0, string color)
+        {
+            var nd = (t - day0) / (double)TimeSpan.TicksPerDay;
+            if (nd < 0 || nd >= 7) return;
+            var hh = (nd - Math.Floor(nd)) * 24;
+            sb.Append("<circle cx=\"").Append(P(20 + hh * 9)).Append("\" cy=\"").Append(P(4 + (int)nd * 9 + 4)).Append("\" r=\"2.2\" fill=\"").Append(color).Append("\"/>");
+        }
+    }
+
+    private string Series(int which)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            var v = which == 0 ? Runner.RewardSeries(k) : Runner.RatioSeries(k) / 2f;
+            sb.Append(P(600.0 * i / (n - 1))).Append(',').Append(P(88 - 86 * Math.Clamp(v, 0, 1))).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void StepHour()
+    {
+        var n = (int)Math.Ceiling(60 / Runner.SimMinutesPerTick);
+        for (var i = 0; i < n; i++) Runner.Step();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}

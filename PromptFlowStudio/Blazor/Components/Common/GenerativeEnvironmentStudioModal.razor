@@ -1,0 +1,381 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.Atmosphere
+@using PromptFlowStudio.Services.OpenUsd
+@implements IDisposable
+@inject GenerativeEnvironmentStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.84.0] 🌦️ AI 제너레이티브 환경 & 미세 기상 스튜디오 — 3D 뷰포트(산란 하늘 · 셰이딩 지형 · 강수 입자 · 번개) ·
+    태양 고도각 컨트롤러(수동/NOAA 시계) · 강수량/운량/기온/바람/안개/뇌우 슬라이더 · 표면 습윤도/적설 스펙트럼 · 물 수지 · 프롬프트.
+*@
+
+<div class="ges-scrim" @onclick="Close">
+    <div class="ges-modal" @onclick:stopPropagation="true">
+        <div class="ges-h">
+            <div>
+                <div class="ges-title">🌦️ AI 제너레이티브 환경 &amp; 미세 기상 스튜디오</div>
+                <div class="ges-sub"><b>Rayleigh/Mie</b> 대기 단일 산란(투과율 LUT · SIMD)으로 태양/달 고도각에 연동된 하늘 · 안개 광색을 산출하고, <b>미세 기상</b>(강우/눈 입자 · 회전 돌풍 · 운량 · 번개)을
+                    합성해 OpenUSD 지형 · 3DGS · 캐릭터 표면의 <b>습윤/적설</b> 재질(거칠기 · 반사율)을 물 수지 보존 하에 오버레이합니다.</div>
+            </div>
+            <button class="ges-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="ges-bar">
+            <button class="ges-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 시뮬레이션")</button>
+            <button class="ges-btn" @onclick="Step" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="ges-btn" @onclick="Runner.NewShot">🎬 새 샷</button>
+            <button class="ges-btn" @onclick="Runner.SyncWorld">🗺 월드 동기화</button>
+            <span class="ges-chip @(Runner.LastTickMs < 16.6 ? "ok" : "warn")">프레임 @(F1(Runner.LastTickMs)) ms</span>
+            <span class="ges-chip">대기 @(F2(At.LastUpdateMs)) · 기상 @(F2(Wx.LastStepMs)) · 습윤 @(F2(Runner.Wet.LastStepMs)) · 셰이딩 @(F2(Runner.LastShadeMs)) ms</span>
+            <span class="ges-chip">3DGS @(Runner.Splats.Count)</span>
+        </div>
+
+        <div class="ges-main">
+            <div class="ges-col">
+                <div class="ges-card">
+                    <div class="ges-sec">🎥 3D 뷰포트 — 태양 @(F1(Runner.SunElevation))° / @(F0(Runner.SunAzimuth))° · @(DynamicMicroWeatherSimulatorEngine.KindName(Wx.Kind)) @(F1(Wx.State.Precipitation)) mm/h</div>
+                    <svg class="ges-vp" viewBox="0 0 @(VW) @(VH)">
+                        @{ UpdateCamera(); }
+                        @for (var j = 0; j < SkyRows; j++)
+                        {
+                            for (var i = 0; i < SkyCols; i++)
+                            {
+                                var dir = Ray((i + 0.5f) * VW / SkyCols, (j + 0.5f) * VH / SkyRows);
+                                if (dir.Y < -0.02f) continue;
+                                <rect x="@(F1(i * (float)VW / SkyCols))" y="@(F1(j * (float)VH / SkyRows))" width="@(F1(VW / (float)SkyCols + 0.6f))" height="@(F1(VH / (float)SkyRows + 0.6f))" style="fill:@(Disp(At.SampleSky(dir)))" />
+                            }
+                        }
+                        @{ var sp = Proj(_eye + At.SunDirection * 1000f); var mp = Proj(_eye + At.MoonDirection * 1000f); }
+                        @if (At.SunDirection.Y > -0.02f && sp.Z > 0f)
+                        {
+                            <circle cx="@(F1(sp.X))" cy="@(F1(sp.Y))" r="9" class="sun" style="fill:@(Disp(At.SunIrradiance * 40f));opacity:@(F2(1f - 0.9f * At.CloudCoverage))" />
+                        }
+                        @if (At.MoonDirection.Y > -0.02f && mp.Z > 0f)
+                        {
+                            <circle cx="@(F1(mp.X))" cy="@(F1(mp.Y))" r="6" class="moon" style="opacity:@(F2((0.25f + 0.75f * At.NightFactor) * (1f - 0.8f * At.CloudCoverage)))" />
+                        }
+                        @for (var j = EnvironmentalBiomeWetnessGuard.N - 2; j >= 0; j--)
+                        {
+                            for (var i = 0; i < EnvironmentalBiomeWetnessGuard.N - 1; i++)
+                            {
+                                @Cell(j * EnvironmentalBiomeWetnessGuard.N + i)
+                            }
+                        }
+                        @{ var nP = Wx.ActiveParticles; var pst = Math.Max(1, nP / MaxDrops); }
+                        @for (var k = 0; k < nP; k += pst)
+                        {
+                            var p = Runner.BoxCenter + Wx.Position(k); var a = Proj(p);
+                            if (a.Z <= 0f || a.X < 0 || a.X > VW || a.Y < 0 || a.Y > VH) continue;
+                            if (Wx.ParticleKind(k) == PrecipKind.Snow)
+                            {
+                                <circle cx="@(F1(a.X))" cy="@(F1(a.Y))" r="@(F1(Math.Clamp(0.05f * Focal / a.Z, 0.6f, 3f)))" class="flake" />
+                            }
+                            else
+                            {
+                                var b = Proj(p - Wx.Velocity(k) * 0.05f);
+                                <line x1="@(F1(a.X))" y1="@(F1(a.Y))" x2="@(F1(b.X))" y2="@(F1(b.Y))" class="drop" />
+                            }
+                        }
+                        @if (Wx.FlashIntensity > 0.02f)
+                        {
+                            <rect x="0" y="0" width="@(VW)" height="@(VH)" class="flash" style="opacity:@(F2(Math.Min(0.6f, Wx.FlashIntensity * 0.5f)))" />
+                            <polyline points="@Bolt()" class="bolt" style="opacity:@(F2(Math.Min(1f, Wx.FlashIntensity * 2f)))" />
+                        }
+                    </svg>
+                    <div class="ges-kv">
+                        <span>조도 <b>@(F0(At.GroundLux)) lx</b></span>
+                        <span>가시거리 <b>@(Dist(At.Visibility))</b></span>
+                        <span>노출 <b>×@(Sci(At.Exposure))</b></span>
+                        <span>갓 레이 <b>@(F2(At.GodRayStrength))</b></span>
+                        <span>야간 <b>@(F2(At.NightFactor))</b></span>
+                        <span>파이어플라이 클램프 @(Runner.FireflyClamps)</span>
+                    </div>
+                </div>
+
+                <div class="ges-card">
+                    <div class="ges-sec">✨ 프롬프트 · 시나리오 — 기상 · 시간대</div>
+                    <div class="ges-row">
+                        <input class="ges-in" @bind="_prompt" placeholder="예: 천둥 번개 치는 폭우 속 석양 / a foggy blizzard at night" />
+                        <button class="ges-btn on" @onclick="() => Runner.TriggerPrompt(_prompt)">적용</button>
+                    </div>
+                    <div class="ges-row">
+                        <button class="ges-btn" @onclick="() => Preset(0f, 0.1f, 20f, 0f, 0f)">☀ 맑음</button>
+                        <button class="ges-btn" @onclick="() => Preset(8f, 0.9f, 12f, 0f, 0f)">🌧 비</button>
+                        <button class="ges-btn" @onclick="() => Preset(35f, 1f, 16f, 0.9f, 0f)">⛈ 뇌우</button>
+                        <button class="ges-btn" @onclick="() => Preset(4f, 0.95f, -5f, 0f, 0.2f)">❄ 눈</button>
+                        <button class="ges-btn" @onclick="() => Preset(0f, 0.3f, 7f, 0f, 0.85f)">🌫 안개</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="ges-col">
+                <div class="ges-card">
+                    <div class="ges-sec">☀ 태양 고도각 컨트롤러 — @(Runner.ClockMode ? "NOAA 시계 " + F1(Runner.Hour) + "시 · 위도 " + F1(Runner.Latitude) + "°" : "수동")</div>
+                    <div class="ges-split">
+                        <div>
+                            <svg class="ges-dome" viewBox="0 0 @(At_NAz * 6) @(At_NEl * 6)" preserveAspectRatio="none">
+                                @for (var d = 0; d < AtmosphericScatteringLightingEngine.Directions; d++)
+                                {
+                                    var ii = d % At_NAz; var jj = d / At_NAz;
+                                    <rect x="@(ii * 6)" y="@((At_NEl - 1 - jj) * 6)" width="6.4" height="6.4" style="fill:@(Disp(At.Sky(d)))" />
+                                }
+                                @{ var se = Runner.SunElevation; var sa = Runner.SunAzimuth; }
+                                @if (se > 0f)
+                                {
+                                    <circle cx="@(F1(sa / 360f * At_NAz * 6))" cy="@(F1((1f - MathF.Sqrt(se / 90f)) * At_NEl * 6))" r="3" class="sunmk" />
+                                }
+                            </svg>
+                            <div class="ges-axis"><span>N</span><span>E</span><span>S</span><span>W</span><span>N</span></div>
+                        </div>
+                        <div class="ges-kv col">
+                            <span>직사광 <b style="color:@(Disp(At.SunIrradiance * 3f))">■</b> @(F3(At.SunIrradiance.X)) / @(F3(At.SunIrradiance.Y)) / @(F3(At.SunIrradiance.Z))</span>
+                            <span>천정 <b style="color:@(Disp(At.ZenithColor))">■</b> · 지평선 <b style="color:@(Disp(At.HorizonColor))">■</b> · 안개 <b style="color:@(Disp(At.FogColor))">■</b></span>
+                            <span>연무 배율 <b>@(F2(At.Haze))</b> · LUT 재구축 @(At.LutBuilds)</span>
+                            <span>달 위상 <b>@(F2(Runner.MoonPhase))</b> · 달빛 @(Sci(At.MoonLight.Y))</span>
+                        </div>
+                    </div>
+                    <div class="ges-sl">
+                        <label>고도각 <b>@(F1(Runner.SunElevation))°</b><input type="range" min="-20" max="90" step="0.5" value="@(F1(Runner.SunElevation))" @oninput="e => SetF(e, v => Runner.SetSun(v, Runner.SunAzimuth))" /></label>
+                        <label>방위 <b>@(F0(Runner.SunAzimuth))°</b><input type="range" min="0" max="359" value="@(F0(Runner.SunAzimuth))" @oninput="e => SetF(e, v => Runner.SetSun(Runner.SunElevation, v))" /></label>
+                        <label>시계 <b>@(F1(Runner.Hour))시</b><input type="range" min="0" max="24" step="0.1" value="@(F1(Runner.Hour))" @oninput="e => SetF(e, v => Runner.SetClock(v, Runner.DayOfYear, Runner.Latitude))" /></label>
+                        <label>연중 일 <b>@(Runner.DayOfYear)</b><input type="range" min="1" max="365" value="@(Runner.DayOfYear)" @onchange="e => SetF(e, v => Runner.SetClock(Runner.Hour, (int)v, Runner.Latitude))" /></label>
+                        <label>위도 <b>@(F1(Runner.Latitude))°</b><input type="range" min="-66" max="66" step="0.5" value="@(F1(Runner.Latitude))" @onchange="e => SetF(e, v => Runner.SetClock(Runner.Hour, Runner.DayOfYear, v))" /></label>
+                        <label>달 위상 <b>@(F2(Runner.MoonPhase))</b><input type="range" min="0" max="100" value="@(F0(Runner.MoonPhase * 100))" @onchange="e => SetF(e, v => Runner.SetMoonPhase(v / 100f))" /></label>
+                    </div>
+                    <div class="ges-row">
+                        <button class="ges-btn" @onclick="() => Runner.SetSun(3f, 75f)">🌅 일출</button>
+                        <button class="ges-btn" @onclick="() => Runner.SetClock(12.5f, Runner.DayOfYear, Runner.Latitude)">🌞 정오</button>
+                        <button class="ges-btn" @onclick="() => Runner.SetSun(2f, 290f)">🌇 석양</button>
+                        <button class="ges-btn" @onclick="() => Runner.SetSun(-4f, 295f)">🌆 황혼</button>
+                        <button class="ges-btn" @onclick="() => { Runner.SetClock(23.5f, Runner.DayOfYear, Runner.Latitude); Runner.SetMoonPhase(0.5f); }">🌕 밤</button>
+                        <button class="ges-btn @(Runner.AutoTime ? "on" : null)" @onclick="ToggleAuto">⏱ 시간 흐름 ×@(F1(Runner.TimeSpeed * 3600f / 60f))분/초</button>
+                    </div>
+                </div>
+
+                <div class="ges-card">
+                    <div class="ges-sec">🌧 미세 기상 — @(DynamicMicroWeatherSimulatorEngine.KindName(Wx.Kind)) · 입자 @(Wx.ActiveParticles) · 번개 @(Wx.LightningStrikes)회</div>
+                    <div class="ges-sl">
+                        <label>강수량 <b>@(F1(T.Precipitation)) mm/h</b><input type="range" min="0" max="600" value="@(F0(T.Precipitation * 10))" @onchange="e => SetF(e, v => Runner.SetPrecipitation(v / 10f))" /></label>
+                        <label>운량 <b>@(F0(T.CloudCoverage * 100))%</b><input type="range" min="0" max="100" value="@(F0(T.CloudCoverage * 100))" @onchange="e => SetF(e, v => Runner.SetCloudCoverage(v / 100f))" /></label>
+                        <label>기온 <b>@(F1(T.Temperature)) °C</b><input type="range" min="-20" max="35" step="0.5" value="@(F1(T.Temperature))" @onchange="e => SetF(e, v => Runner.SetTemperature(v))" /></label>
+                        <label>풍속 <b>@(F1(T.WindSpeed)) m/s</b><input type="range" min="0" max="250" value="@(F0(T.WindSpeed * 10))" @onchange="e => SetF(e, v => Runner.SetWind(v / 10f, T.WindYawDeg))" /></label>
+                        <label>풍향 <b>@(F0(T.WindYawDeg))°</b><input type="range" min="0" max="359" value="@(F0(T.WindYawDeg))" @onchange="e => SetF(e, v => Runner.SetWind(T.WindSpeed, v))" /></label>
+                        <label>안개 <b>@(F0(T.Fog * 100))%</b><input type="range" min="0" max="100" value="@(F0(T.Fog * 100))" @onchange="e => SetF(e, v => Runner.SetFog(v / 100f))" /></label>
+                        <label>뇌우 <b>@(F0(T.Storm * 100))%</b><input type="range" min="0" max="100" value="@(F0(T.Storm * 100))" @onchange="e => SetF(e, v => Runner.SetStorm(v / 100f))" /></label>
+                    </div>
+                    <div class="ges-split">
+                        <svg class="ges-cloud" viewBox="0 0 @(CloudView) @(CloudView)">
+                            @for (var cj = 0; cj < DynamicMicroWeatherSimulatorEngine.CloudN; cj += 2)
+                            {
+                                for (var ci = 0; ci < DynamicMicroWeatherSimulatorEngine.CloudN; ci += 2)
+                                {
+                                    var cv = Wx.CloudField[cj * DynamicMicroWeatherSimulatorEngine.CloudN + ci];
+                                    <rect x="@(ci * 4)" y="@(cj * 4)" width="8.2" height="8.2" style="fill:#e2e8f0;opacity:@(F2(cv * 0.9f))" />
+                                }
+                            }
+                            @for (var gj = 0; gj < DynamicMicroWeatherSimulatorEngine.GridN; gj += 3)
+                            {
+                                for (var gi = 0; gi < DynamicMicroWeatherSimulatorEngine.GridN; gi += 3)
+                                {
+                                    var gw = Wx.GridWind(gi, gj); float cx = (gi + 0.5f) * 8f, cy = CloudView - (gj + 0.5f) * 8f;
+                                    <line x1="@(F1(cx))" y1="@(F1(cy))" x2="@(F1(cx + gw.X * 0.9f))" y2="@(F1(cy - gw.Z * 0.9f))" class="wind" />
+                                }
+                            }
+                        </svg>
+                        <div class="ges-kv col">
+                            <span>실측 운량 <b>@(F0(Wx.CloudCover * 100))%</b> · 광학 깊이 τ @(F1(Wx.CloudOpticalDepth))</span>
+                            <span>상대습도 <b>@(F0(Wx.RelativeHumidity * 100))%</b> · 이슬점 @(F1(Wx.DewPoint)) °C</span>
+                            <span>강설 비 <b>@(F2(Wx.SnowFraction))</b> · 평균 입경 @(F2(Wx.MeanDropDiameter)) mm</span>
+                            <span>지면 충돌 <b>@(F0(Wx.ImpactsPerSecond))/s</b> · 돌풍 @(F2(Wx.Gust))</span>
+                            <span>안개 <b>@(F2(Wx.FogAmount))</b> · σ @(Sci(Wx.FogExtinction)) m⁻¹</span>
+                            <span>섬광 <b>@(F2(Wx.FlashIntensity))</b> · 천둥 지연 @(F1(Wx.ThunderDelay)) s (@(Dist(Wx.LastStrikeDistance)))</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="ges-card">
+                    <div class="ges-sec">💧 표면 습윤도 &amp; 적설 스펙트럼 — 가속 ×@(F0(Runner.Wet.TimeScale))</div>
+                    <div class="ges-split">
+                        <div>
+                            <svg class="ges-spec" viewBox="0 0 @(EnvironmentalBiomeWetnessGuard.Bins * 20) 60" preserveAspectRatio="none">
+                                @{ var wh = Runner.Wet.WetHistogram; var shh = Runner.Wet.SnowHistogram; var hm = 1; for (var k = 0; k < wh.Length; k++) hm = Math.Max(hm, Math.Max(wh[k], shh[k])); }
+                                @for (var k = 0; k < EnvironmentalBiomeWetnessGuard.Bins; k++)
+                                {
+                                    var h1 = 56f * MathF.Sqrt(wh[k] / (float)hm); var h2 = 56f * MathF.Sqrt(shh[k] / (float)hm);
+                                    <rect x="@(k * 20 + 1)" y="@(F1(58 - h1))" width="8" height="@(F1(h1))" class="wet" />
+                                    <rect x="@(k * 20 + 10)" y="@(F1(58 - h2))" width="8" height="@(F1(h2))" class="snow" />
+                                }
+                            </svg>
+                            <div class="ges-axis"><span>건조 0</span><span>■ 습윤 · ■ 적설</span><span>1 포화</span></div>
+                            <div class="ges-bars">
+                                <span>피부</span><i style="width:@(F0(Runner.Wet.SkinWetness * 100))%"></i>
+                                <span>의상</span><i style="width:@(F0(Runner.Wet.ClothWetness * 100))%"></i>
+                                <span>헤어</span><i style="width:@(F0(Runner.Wet.HairWetness * 100))%"></i>
+                                <span>어깨 눈</span><i class="sn" style="width:@(F0(Runner.Wet.CharacterSnow * 100))%"></i>
+                            </div>
+                        </div>
+                        <div class="ges-kv col">
+                            <span>평균 습윤 <b>@(F0(Runner.Wet.MeanWetness * 100))%</b> · 웅덩이 @(F2(Runner.Wet.MeanPuddle)) mm</span>
+                            <span>적설 <b>@(F1(Runner.Wet.MeanSnowDepth * 100)) cm</b> (최대 @(F1(Runner.Wet.MaxSnowDepth * 100))) · 피복 @(F0(Runner.Wet.SnowCoverage * 100))%</span>
+                            <span>증발 <b>@(F2(Runner.Wet.EvaporationMmH)) mm/h</b> · 결빙 위험 @(F0(Runner.Wet.IceRisk * 100))%</span>
+                            <span>풍성 강우 비 <b>@(F2(Runner.Wet.WindDrivenRatio))</b></span>
+                            <span>물 수지 유입 <b>@(F0(Runner.Wet.TotalIn))</b> = 증발 @(F0(Runner.Wet.TotalEvaporated)) + 침투 @(F0(Runner.Wet.TotalInfiltrated)) + 유출 @(F0(Runner.Wet.TotalRunoff)) + 저류 @(F0(Runner.Wet.Stored))</span>
+                            <span>가드 NaN @(Runner.Wet.NanGuards) · 클램프 @(Runner.Wet.Clamps)</span>
+                            <label class="ges-lab">시간 가속 <input type="range" min="1" max="600" value="@(F0(Runner.Wet.TimeScale))" @onchange="e => SetF(e, v => Runner.Wet.TimeScale = v)" /></label>
+                        </div>
+                    </div>
+                </div>
+                <div class="ges-note">@(Runner.LastAction ?? Wx.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .ges-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .ges-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .ges-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #38bdf8 18%, var(--card)), color-mix(in srgb, #f59e0b 14%, var(--card))); }
+    .ges-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .ges-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .ges-sub b { color: var(--text-primary); }
+    .ges-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .ges-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .ges-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .ges-btn:disabled { opacity: .4; cursor: default; } .ges-btn.on { background: color-mix(in srgb, #38bdf8 24%, transparent); border-color: #38bdf8; }
+    .ges-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .ges-chip.ok { border-color: #22c55e; color: #86efac; } .ges-chip.warn { border-color: #f97316; color: #fdba74; }
+    .ges-main { display: grid; grid-template-columns: 1.15fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .ges-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .ges-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .ges-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .ges-vp { width: 100%; aspect-ratio: 16 / 10; background: #020617; border-radius: 10px; }
+    .ges-vp .drop { stroke: #cbd5e1; stroke-width: .7; stroke-opacity: .55; } .ges-vp .flake { fill: #f8fafc; fill-opacity: .9; }
+    .ges-vp .flash { fill: #e0e7ff; } .ges-vp .bolt { fill: none; stroke: #f5f3ff; stroke-width: 2.2; }
+    .ges-vp .moon { fill: #e2e8f0; } .ges-vp .sun { filter: drop-shadow(0 0 8px #fde68a); }
+    .ges-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .ges-in { flex: 1; min-width: 200px; font-size: 12px; padding: 6px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .ges-lab { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-secondary); }
+    .ges-sl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 10px; }
+    .ges-sl label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-secondary); } .ges-sl b { font-family: var(--mono); color: var(--text-primary); }
+    .ges-split { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }
+    .ges-dome { width: 100%; height: 96px; border-radius: 8px; background: #020617; } .ges-dome .sunmk { fill: none; stroke: #fde047; stroke-width: 1.5; }
+    .ges-cloud { width: 100%; max-width: 190px; aspect-ratio: 1; background: #0f172a; border-radius: 8px; } .ges-cloud .wind { stroke: #2dd4bf; stroke-width: 1.2; stroke-linecap: round; }
+    .ges-spec { width: 100%; height: 90px; background: #020617; border-radius: 8px; } .ges-spec .wet { fill: #38bdf8; } .ges-spec .snow { fill: #e2e8f0; }
+    .ges-bars { display: grid; grid-template-columns: 52px 1fr; gap: 4px 8px; align-items: center; font-size: 11px; color: var(--text-secondary); margin-top: 6px; }
+    .ges-bars i { display: block; height: 7px; border-radius: 4px; background: #38bdf8; min-width: 2px; } .ges-bars i.sn { background: #e2e8f0; }
+    .ges-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; color: var(--text-secondary); } .ges-kv b { color: var(--text-primary); font-family: var(--mono); }
+    .ges-kv.col { flex-direction: column; gap: 4px; }
+    .ges-axis { display: flex; justify-content: space-between; font: 600 10px var(--mono); color: var(--text-muted); }
+    .ges-note { font-size: 11px; color: var(--text-muted); }
+    @@media (max-width: 1200px) { .ges-main { grid-template-columns: 1fr; } .ges-sl { grid-template-columns: 1fr 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int VW = 640, VH = 400, SkyCols = 40, SkyRows = 20, MaxDrops = 500, CloudView = 128;
+    private const int At_NAz = AtmosphericScatteringLightingEngine.NAz, At_NEl = AtmosphericScatteringLightingEngine.NEl;
+    private const float Focal = 520f;
+    private string? _prompt;
+    private System.Threading.Timer? _timer;
+    private Vector3 _eye, _f, _r, _u;
+
+    private AtmosphericScatteringLightingEngine At => Runner.Atmosphere;
+    private DynamicMicroWeatherSimulatorEngine Wx => Runner.Weather;
+    private WeatherScenario T => Runner.Weather.Target;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Environment.Modal.Timer", ex); }
+        }, null, 200, 200);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string F3(double v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static string Sci(double v) => v.ToString("0.0E0", CultureInfo.InvariantCulture);
+    private static string Dist(float m) => m >= 1000f ? F1(m / 1000f) + " km" : F0(m) + " m";
+
+    private static string Rgb(float r, float g, float b) =>
+        "rgb(" + ((int)(Math.Clamp(r, 0f, 1f) * 255f)).ToString(CultureInfo.InvariantCulture) + "," + ((int)(Math.Clamp(g, 0f, 1f) * 255f)).ToString(CultureInfo.InvariantCulture) + "," + ((int)(Math.Clamp(b, 0f, 1f) * 255f)).ToString(CultureInfo.InvariantCulture) + ")";
+
+    private string Disp(Vector3 radiance) { var d = At.ToDisplay(radiance); return Rgb(d.X, d.Y, d.Z); }
+
+    private void UpdateCamera()
+    {
+        _eye = Runner.Eye;
+        _f = Vector3.Normalize(Runner.LookTarget - _eye); _r = Vector3.Normalize(Vector3.Cross(Vector3.UnitY, _f)); _u = Vector3.Cross(_f, _r);
+    }
+
+    private Vector3 Ray(float sx, float sy) => Vector3.Normalize(_f + _r * ((sx - VW * 0.5f) / Focal) + _u * ((VH * 0.5f - sy) / Focal));
+
+    private Vector3 Proj(Vector3 p)
+    {
+        var d = p - _eye; var z = Vector3.Dot(d, _f);
+        if (z < 0.05f) return new Vector3(-100, -100, -1f);
+        return new Vector3(VW * 0.5f + Focal * Vector3.Dot(d, _r) / z, VH * 0.5f - Focal * Vector3.Dot(d, _u) / z, z);
+    }
+
+    private Vector3 CellPos(int c)
+    {
+        var h = Runner.Wet.Height(c);
+        return EnvironmentalBiomeWetnessGuard.CellCenter(c, Runner.Wet.BiomeOf(c) == Biome.Ocean ? MathF.Max(h, 0f) : h);
+    }
+
+    private RenderFragment Cell(int c) => __builder =>
+    {
+        const int N = EnvironmentalBiomeWetnessGuard.N;
+        var a = Proj(CellPos(c)); var b = Proj(CellPos(c + 1)); var d = Proj(CellPos(c + N + 1)); var e = Proj(CellPos(c + N));
+        if (a.Z <= 0f || b.Z <= 0f || d.Z <= 0f || e.Z <= 0f) return;
+        var pts = F1(a.X) + "," + F1(a.Y) + " " + F1(b.X) + "," + F1(b.Y) + " " + F1(d.X) + "," + F1(d.Y) + " " + F1(e.X) + "," + F1(e.Y);
+        var col = Rgb(Runner.TerrainR[c], Runner.TerrainG[c], Runner.TerrainB[c]);
+        <polygon points="@pts" style="fill:@(col);stroke:@(col);stroke-width:.5" />
+    };
+
+    private string Bolt()
+    {
+        var sb = new System.Text.StringBuilder();
+        var bx = Wx.BoltX; var by = Wx.BoltY;
+        var horizonY = Proj(_eye + new Vector3(_f.X, 0f, _f.Z) * 1000f).Y;
+        for (var k = 0; k < bx.Length; k++)
+            sb.Append(F1(bx[k] * VW)).Append(',').Append(F1(by[k] * MathF.Max(horizonY, 40f))).Append(' ');
+        return sb.ToString();
+    }
+
+    private void Preset(float precip, float cloud, float temp, float storm, float fog)
+    {
+        var s = Runner.Weather.Target;
+        s.Precipitation = precip; s.CloudCoverage = cloud; s.Temperature = temp; s.Storm = storm; s.Fog = fog;
+        s.Humidity = precip > 0f || fog > 0.5f ? 0.92f : 0.45f;
+        Runner.SetScenario(s);
+    }
+
+    private static bool TryF(ChangeEventArgs e, out float v) => float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out v);
+    private void SetF(ChangeEventArgs e, Action<float> apply) { if (TryF(e, out var v)) apply(v); }
+
+    private void ToggleAuto()
+    {
+        if (!Runner.ClockMode) Runner.SetClock(Runner.Hour, Runner.DayOfYear, Runner.Latitude);
+        Runner.AutoTime = !Runner.AutoTime;
+    }
+
+    private void Step() { for (var k = 0; k < GenerativeEnvironmentStudioRunner.Hz; k++) Runner.TickOnce(); }
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

@@ -1,0 +1,215 @@
+@inject PromptFlowStudio.Services.Ui.ThemeService Theme
+@inject PromptFlowStudio.Services.Platform.IClipboardService Clipboard
+
+@* [PromptFlow Studio] 커스텀 테마 에디터 — 프리셋 선택 + CSS 변수 컬러 피커(라이브 프리뷰) + 저장/내보내기/불러오기.
+   색상 변경은 Theme.Preview 로 앱 전체에 즉시 반영(비영속). [저장] 시 themes.json 영속. 닫기/취소 시 프리뷰 해제(복원). *@
+
+<div class="te-scrim" @onclick="Cancel">
+    <div class="te" @onclick:stopPropagation="true">
+        <div class="te-head">
+            <span class="te-title">🎨 커스텀 테마 제작</span>
+            <button class="te-x" @onclick="Cancel" title="닫기(변경 취소)">✕</button>
+        </div>
+
+        <div class="te-body">
+            @* 프리셋 + 내 테마 *@
+            <div class="te-sec-lbl">프리셋 · 내 테마</div>
+            <div class="te-presets">
+                @foreach (var t in Theme.All)
+                {
+                    <button class="te-chip @(Theme.Active?.Name == t.Name ? "on" : null)" @onclick="() => SelectTheme(t)" @key="t.Name">
+                        <span class="te-sw" style="background:@t.Colors.Accent"></span>
+                        <span class="te-sw" style="background:@t.Colors.Bg"></span>
+                        @t.Name @(t.BuiltIn ? "" : "★")
+                    </button>
+                }
+                <button class="te-chip ghost" @onclick="UseDefault" title="커스텀 해제 — 기본(다크/라이트) 테마">🌗 기본</button>
+            </div>
+
+            @* 컬러 피커 그리드 *@
+            <div class="te-sec-lbl">색상 (변경 시 앱 전체 실시간 반영)</div>
+            <div class="te-grid">
+                @foreach (var f in Fields)
+                {
+                    <label class="te-field" @key="f.Label">
+                        <span class="te-fl">@f.Label</span>
+                        <span class="te-pick">
+                            <input type="color" value="@f.Get()" @oninput="e => OnColor(f.Set, e)" />
+                            <span class="te-hex">@f.Get()</span>
+                        </span>
+                    </label>
+                }
+            </div>
+
+            @* 저장/입출력 *@
+            <div class="te-save">
+                <input class="te-name" @bind="_name" @bind:event="oninput" maxlength="40" placeholder="테마 이름 (예: 내 브랜드 다크)" />
+                <button class="te-btn go" @onclick="Save" disabled="@string.IsNullOrWhiteSpace(_name)">⭐ 내 테마로 저장</button>
+            </div>
+            <div class="te-io">
+                <button class="te-btn" @onclick="Export">📤 테마 파일 내보내기</button>
+                <div class="te-import">
+                    📥 테마 파일 불러오기
+                    <InputFile class="te-import-in" OnChange="Import" accept=".json,application/json" />
+                </div>
+                @if (SelectedCustom is { } sc)
+                {
+                    <button class="te-btn del" @onclick="() => DeleteCurrent(sc)">🗑 이 테마 삭제</button>
+                }
+            </div>
+
+            @if (_msg is { Length: > 0 }) { <div class="te-msg">@_msg</div> }
+        </div>
+    </div>
+</div>
+
+<style>
+    .te-scrim { position: fixed; inset: 0; z-index: 320; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 24px; }
+    .te { width: 100%; max-width: 560px; max-height: 88vh; display: flex; flex-direction: column; background: var(--card, #161922); border: 1px solid var(--line, #2d3342); border-radius: 16px; box-shadow: 0 30px 80px rgba(0,0,0,.55); overflow: hidden; }
+    .te-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--line, #2d3342); }
+    .te-title { font-size: 15px; font-weight: 900; color: var(--text-primary, #eef1f7); }
+    .te-x { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line, #2d3342); background: var(--card-2, #1e222e); color: var(--text-secondary, #aab2c5); cursor: pointer; }
+    .te-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+    .te-sec-lbl { font: 700 11px var(--mono, monospace); color: var(--text-muted, #6b7488); margin-top: 6px; }
+
+    .te-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+    .te-chip { display: inline-flex; align-items: center; gap: 5px; font: 700 11.5px inherit; color: var(--text-secondary, #aab2c5); background: var(--card-2, #1e222e); border: 1px solid var(--line, #2d3342); border-radius: 999px; padding: 5px 11px 5px 7px; cursor: pointer; }
+    .te-chip:hover { border-color: var(--accent, #8b5cf6); color: var(--text-primary, #eef1f7); }
+    .te-chip.on { border-color: var(--accent, #8b5cf6); color: var(--text-primary, #eef1f7); background: color-mix(in srgb, var(--accent, #8b5cf6) 14%, var(--card-2, #1e222e)); }
+    .te-chip.ghost { color: var(--text-muted, #6b7488); }
+    .te-sw { width: 11px; height: 11px; border-radius: 3px; border: 1px solid rgba(255,255,255,.25); }
+
+    .te-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 12px; }
+    .te-field { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--text-secondary, #aab2c5); }
+    .te-fl { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .te-pick { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+    .te-pick input[type=color] { width: 34px; height: 26px; padding: 0; border: 1px solid var(--line, #2d3342); border-radius: 6px; background: none; cursor: pointer; }
+    .te-hex { font: 600 10px var(--mono, monospace); color: var(--text-muted, #6b7488); width: 56px; }
+
+    .te-save { display: flex; gap: 8px; margin-top: 8px; }
+    .te-name { flex: 1; min-width: 0; background: var(--card-2, #1e222e); border: 1px solid var(--line, #2d3342); border-radius: 10px; padding: 9px 11px; color: var(--text-primary, #eef1f7); font-size: 12.5px; font-family: inherit; }
+    .te-name:focus { outline: none; border-color: var(--accent, #8b5cf6); }
+    .te-io { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+    .te-btn { font: 700 12px inherit; padding: 9px 13px; border-radius: 10px; border: 1px solid var(--line, #2d3342); background: var(--card-2, #1e222e); color: var(--text-secondary, #aab2c5); cursor: pointer; }
+    .te-btn:hover:not(:disabled) { border-color: var(--accent, #8b5cf6); color: var(--text-primary, #eef1f7); }
+    .te-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .te-btn.go { color: #fff; border: none; background: linear-gradient(135deg, var(--flow-violet, #8b5cf6), var(--accent, #8b5cf6)); }
+    .te-btn.del { color: #f87171; }
+    .te-import { position: relative; overflow: hidden; font: 700 12px inherit; padding: 9px 13px; border-radius: 10px; border: 1px solid var(--line, #2d3342); background: var(--card-2, #1e222e); color: var(--text-secondary, #aab2c5); cursor: pointer; }
+    .te-import:hover { border-color: var(--accent, #8b5cf6); color: var(--text-primary, #eef1f7); }
+    .te-import-in { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+    .te-msg { margin-top: 8px; font-size: 11.5px; color: var(--accent-2, #22d3ee); line-height: 1.5; }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly Draft _draft = new();
+    private string _name = "";
+    private string? _msg;
+
+    protected override void OnInitialized()
+    {
+        // 현재 활성 테마(있으면)를 드래프트 시작점으로. 없으면 Classic Dark.
+        var start = Theme.Active ?? ThemeService.BuiltIns[0];
+        _draft.Load(start.Colors);
+        _name = start.BuiltIn ? "" : start.Name;
+    }
+
+    private AppTheme? SelectedCustom => Theme.Custom.FirstOrDefault(t => t.Name == _name);
+
+    private void SelectTheme(AppTheme t)
+    {
+        Theme.Apply(t);                 // 즉시 적용(영속)
+        _draft.Load(t.Colors);          // 드래프트로 로드(추가 편집 가능)
+        _name = t.BuiltIn ? "" : t.Name;
+        _msg = $"'{t.Name}' 적용됨. 색을 바꾸면 실시간 미리보기 됩니다.";
+    }
+
+    private void UseDefault()
+    {
+        Theme.Apply(null);              // 커스텀 해제 → 기본(data-theme) 시스템
+        _msg = "기본 테마로 되돌렸습니다.";
+    }
+
+    private void OnColor(Action<string> set, ChangeEventArgs e)
+    {
+        set(e.Value?.ToString() ?? "");
+        Theme.Preview(_draft.ToColors());   // 라이브 프리뷰(비영속)
+    }
+
+    private void Save()
+    {
+        var t = Theme.SaveCustom(_name, _draft.ToColors());
+        _name = t.Name;
+        _msg = $"⭐ '{t.Name}' 저장 및 적용됨.";
+    }
+
+    private void Export()
+    {
+        var t = new AppTheme(string.IsNullOrWhiteSpace(_name) ? "custom-theme" : _name, _draft.ToColors());
+        var path = Theme.ExportToFile(t);
+        var copied = Clipboard.SetText(Theme.ExportJson(t));
+        _msg = path is not null
+            ? $"📤 내보냄 — {path}" + (copied ? " (JSON 클립보드 복사됨)" : "")
+            : (copied ? "📤 테마 JSON 을 클립보드에 복사했습니다." : "❌ 내보내기 실패");
+    }
+
+    private async Task Import(InputFileChangeEventArgs e)
+    {
+        if (e.File is null) return;
+        try
+        {
+            using var sr = new StreamReader(e.File.OpenReadStream(256 * 1024));
+            var json = await sr.ReadToEndAsync();
+            var (ok, msg, theme) = Theme.ImportJson(json);
+            if (ok && theme is not null) { _draft.Load(theme.Colors); _name = theme.Name; }
+            _msg = (ok ? "📥 " : "❌ ") + msg;
+        }
+        catch (Exception ex) { _msg = "❌ 불러오기 실패: " + ex.Message; }
+    }
+
+    private void DeleteCurrent(AppTheme t)
+    {
+        Theme.DeleteCustom(t.Name);
+        _name = "";
+        _msg = $"🗑 '{t.Name}' 삭제됨.";
+    }
+
+    private async Task Cancel()
+    {
+        Theme.ClearPreview();           // 미저장 프리뷰 취소 → 영속 활성 복원
+        await OnClose.InvokeAsync();
+    }
+
+    // ── 컬러 필드 매핑(라벨 ↔ 드래프트 프로퍼티) ──
+    private List<(string Label, Func<string> Get, Action<string> Set)> Fields => new()
+    {
+        ("배경",        () => _draft.Bg,         v => _draft.Bg = v),
+        ("카드 배경",   () => _draft.Card,       v => _draft.Card = v),
+        ("보조 배경",   () => _draft.Card2,      v => _draft.Card2 = v),
+        ("테두리",      () => _draft.Line,       v => _draft.Line = v),
+        ("기본 텍스트", () => _draft.TextMain,   v => _draft.TextMain = v),
+        ("보조 텍스트", () => _draft.TextSub,    v => _draft.TextSub = v),
+        ("흐린 텍스트", () => _draft.TextMuted,  v => _draft.TextMuted = v),
+        ("강조색",      () => _draft.Accent,     v => _draft.Accent = v),
+        ("강조 호버",   () => _draft.AccentHover,v => _draft.AccentHover = v),
+        ("보조 강조",   () => _draft.Accent2,    v => _draft.Accent2 = v),
+    };
+
+    private sealed class Draft
+    {
+        public string Bg = "#0a0f1a", Card = "#111a2e", Card2 = "#0d1524", Line = "#223047",
+            TextMain = "#f8fafc", TextSub = "#cbd5e1", TextMuted = "#94a3b8",
+            Accent = "#7c6cff", AccentHover = "#f472b6", Accent2 = "#22d3ee";
+
+        public ThemeColors ToColors() => new(Bg, Card, Card2, Line, TextMain, TextSub, TextMuted, Accent, AccentHover, Accent2);
+
+        public void Load(ThemeColors c)
+        {
+            Bg = c.Bg; Card = c.Card; Card2 = c.Card2; Line = c.Line;
+            TextMain = c.TextMain; TextSub = c.TextSub; TextMuted = c.TextMuted;
+            Accent = c.Accent; AccentHover = c.AccentHover; Accent2 = c.Accent2;
+        }
+    }
+}

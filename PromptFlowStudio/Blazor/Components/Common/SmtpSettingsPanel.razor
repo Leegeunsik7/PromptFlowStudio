@@ -1,0 +1,214 @@
+@inject SmtpConfigService Cfg
+@inject SmtpEmailService SmtpEmail
+@implements IDisposable
+
+@* [PromptFlowStudio] 메일(SMTP) 발송 설정 — 로컬 AES-256-GCM 암호화 저장 + 테스트 발송. 환경설정 › 메일 탭에 마운트.
+   모니터링 오토메이션(SoundStack) SmtpSettingsPanel 이식본 — PromptFlowStudio 앰버/슬레이트 테마 토큰. *@
+<section class="sm-card">
+    <div class="sm-head">
+        <span class="sm-ico">📧</span>
+        <div class="sm-hgrow">
+            <div class="sm-title">메일(SMTP) 발송 설정</div>
+            <div class="sm-desc">이메일 본인인증·통보 실발송 서버를 화면에서 설정 — 파일 직접 수정 없이 로컬 <b>AES-256-GCM 암호화</b> 저장 · 재시작 불필요</div>
+        </div>
+        <span class="sm-live @(SmtpEmail.Enabled ? "on" : "off")">@(SmtpEmail.Enabled ? "● 실발송 활성" : "○ 데모 모드")</span>
+    </div>
+
+    <div class="sm-grid">
+        <div class="sm-row toggle">
+            <div class="sm-lbl">실제 메일 발송 활성화 <span class="sm-sub">OFF 면 인증코드를 화면에 표시(데모)</span></div>
+            <button type="button" class="sm-switch @(_enabled ? "on" : null)" @onclick="() => _enabled = !_enabled">
+                <span class="sm-knob"></span>
+                <span class="sm-switch-txt">@(_enabled ? "ON" : "OFF")</span>
+            </button>
+        </div>
+
+        <div class="sm-row">
+            <label class="sm-lbl" for="sm-host">SMTP 서버 호스트</label>
+            <input id="sm-host" class="sm-in" @bind="_host" @bind:event="onchange" list="sm-hosts" placeholder="smtp.naver.com" spellcheck="false" autocomplete="off" />
+            <datalist id="sm-hosts">
+                <option value="smtp.naver.com"></option>
+                <option value="smtp.gmail.com"></option>
+                <option value="smtp.office365.com"></option>
+                <option value="mail.angtec.com"></option>
+            </datalist>
+        </div>
+
+        <div class="sm-row">
+            <label class="sm-lbl" for="sm-port">포트 번호 <span class="sm-sub">587 STARTTLS · 465 SSL</span></label>
+            <input id="sm-port" class="sm-in narrow" type="number" min="1" max="65535" @bind="_port" list="sm-ports" />
+            <datalist id="sm-ports">
+                <option value="587" label="587 STARTTLS"></option>
+                <option value="465" label="465 SSL"></option>
+                <option value="25" label="25 Plain"></option>
+            </datalist>
+        </div>
+
+        <div class="sm-row">
+            <label class="sm-lbl" for="sm-from">보내는 사람 이메일 <span class="sm-sub">메일의 From 주소(전체 이메일)</span></label>
+            <input id="sm-from" class="sm-in" @bind="_from" @bind:event="onchange" placeholder="safety@angtec.com" spellcheck="false" autocomplete="off" />
+        </div>
+
+        <div class="sm-row">
+            <label class="sm-lbl" for="sm-user">SMTP 로그인 아이디 <span class="sm-sub">네이버=아이디만 · 비우면 이메일과 동일</span></label>
+            <input id="sm-user" class="sm-in" @bind="_user" @bind:event="onchange" placeholder="(비우면 보내는 사람과 동일)" spellcheck="false" autocomplete="off" />
+        </div>
+
+        <div class="sm-row">
+            <label class="sm-lbl" for="sm-pass">앱 비밀번호 / SMTP 암호</label>
+            <input id="sm-pass" class="sm-in" type="password" @bind="_pass" @bind:event="onchange" placeholder="••••••••••••••••" autocomplete="new-password" />
+            <div class="sm-hint">구글: 2단계 인증 → <b>앱 비밀번호</b>(16자리, 공백 자동 제거). 저장 시 이 값은 <b>AES-256-GCM</b>으로 암호화되어 이 PC에만 보관됩니다(타 PC 복호화 불가).</div>
+        </div>
+
+        <div class="sm-row">
+            <label class="sm-lbl" for="sm-testto">테스트 수신 메일 <span class="sm-sub">비우면 보내는 사람에게 발송</span></label>
+            <input id="sm-testto" class="sm-in" @bind="_testTo" @bind:event="onchange" placeholder="gslee@angtec.com" spellcheck="false" autocomplete="off" />
+        </div>
+    </div>
+
+    @if (HostFromMismatch)
+    {
+        <div class="sm-toast bad" style="margin:0 0 12px">
+            ⚠ 호스트(<b>@_host</b>)와 보내는 사람 도메인(<b>@FromDomain</b>)이 서로 다릅니다 —
+            네이버 계정은 호스트를 <b>smtp.naver.com</b>, 지메일은 <b>smtp.gmail.com</b>+지메일 주소로 맞춰야 인증됩니다.
+            (네이버는 <b>메일 환경설정 → POP3/SMTP 사용</b>을 켜고 발급된 비밀번호를 사용하세요.)
+        </div>
+    }
+    <div class="sm-actions">
+        <button class="sm-btn save" @onclick="SaveAsync" disabled="@_busy">💾 메일 설정 저장</button>
+        <button class="sm-btn test" @onclick="TestAsync" disabled="@_busy">@(_testing ? "⚡ 발송 중…" : "⚡ 테스트 메일 발송")</button>
+        @if (_savedAt is not null) { <span class="sm-savedat">최근 저장: @_savedAt</span> }
+    </div>
+    <div class="sm-path">🔒 저장 위치: <span>@Cfg.FilePath</span></div>
+
+    @if (_toast is not null)
+    {
+        <div class="sm-toast @(_toastOk ? "ok" : "bad")">@_toast</div>
+    }
+</section>
+
+<style>
+    .sm-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 14px; position: relative; }
+    .sm-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+    .sm-ico { width: 42px; height: 42px; flex: 0 0 auto; display: grid; place-items: center; font-size: 20px; border-radius: 11px; background: color-mix(in srgb, var(--accent) 12%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); }
+    .sm-hgrow { min-width: 0; flex: 1; }
+    .sm-title { font-size: 15px; font-weight: 800; color: var(--ink); }
+    .sm-desc { font-size: 11.5px; color: var(--sub); margin-top: 2px; line-height: 1.5; } .sm-desc b { color: var(--accent); }
+    .sm-live { font-size: .74rem; font-weight: 800; padding: .3rem .7rem; border-radius: 999px; white-space: nowrap; }
+    .sm-live.on { color: var(--up); background: color-mix(in srgb, var(--up) 14%, transparent); border: 1px solid color-mix(in srgb, var(--up) 45%, transparent); }
+    .sm-live.off { color: var(--sub); background: color-mix(in srgb, var(--sub) 12%, transparent); border: 1px solid color-mix(in srgb, var(--sub) 35%, transparent); }
+    .sm-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; }
+    @@media (max-width: 760px) { .sm-grid { grid-template-columns: 1fr; } }
+    .sm-row { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    .sm-row.toggle { grid-column: 1 / -1; flex-direction: row; align-items: center; justify-content: space-between; background: var(--card-2); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; }
+    .sm-lbl { font-size: .78rem; font-weight: 800; color: var(--ink); }
+    .sm-sub { font-size: .66rem; font-weight: 600; color: var(--sub); margin-left: 6px; }
+    .sm-in { width: 100%; box-sizing: border-box; background: var(--card-2); border: 1px solid var(--field-line, var(--line)); border-radius: 10px; padding: 9px 12px; color: var(--ink); font-size: .86rem; outline: none; font-family: inherit; font-variant-numeric: tabular-nums; }
+    .sm-in:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+    .sm-in.narrow { max-width: 220px; }
+    .sm-hint { font-size: .68rem; color: var(--sub); line-height: 1.5; } .sm-hint b { color: var(--accent); }
+    .sm-switch { position: relative; display: inline-flex; align-items: center; width: 92px; height: 34px; border-radius: 999px; cursor: pointer; border: 1px solid var(--line); background: var(--card-2); transition: background .2s ease, border-color .2s ease; padding: 0; }
+    .sm-switch.on { background: linear-gradient(135deg, var(--accent), var(--accent-2)); border-color: var(--accent); }
+    .sm-knob { position: absolute; left: 4px; width: 26px; height: 26px; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(0,0,0,.35); transition: left .2s cubic-bezier(.2,.9,.3,1.2); }
+    .sm-switch.on .sm-knob { left: 62px; }
+    .sm-switch-txt { position: absolute; font-size: .68rem; font-weight: 900; letter-spacing: .05em; color: var(--accent-ink, #1a1204); left: 14px; opacity: 0; transition: opacity .2s ease; }
+    .sm-switch.on .sm-switch-txt { opacity: 1; }
+    .sm-switch:not(.on) .sm-switch-txt { left: auto; right: 12px; opacity: .7; color: var(--sub); }
+    .sm-actions { display: flex; align-items: center; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+    .sm-btn { border: none; border-radius: 11px; padding: 10px 18px; font-weight: 800; font-size: .86rem; cursor: pointer; transition: filter .15s ease, transform .1s ease; font-family: inherit; }
+    .sm-btn.save { color: var(--accent-ink, #1a1204); background: linear-gradient(135deg, var(--accent-2), var(--accent)); box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 30%, transparent); }
+    .sm-btn.test { color: var(--up); background: color-mix(in srgb, var(--up) 14%, transparent); border: 1px solid color-mix(in srgb, var(--up) 50%, transparent); }
+    .sm-btn:hover:not(:disabled) { filter: brightness(1.06); } .sm-btn:active:not(:disabled) { transform: scale(.98); }
+    .sm-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .sm-savedat { font-size: .72rem; color: var(--sub); font-weight: 700; }
+    .sm-path { margin-top: 10px; font-size: .68rem; color: var(--sub); word-break: break-all; } .sm-path span { font-family: var(--mono); color: var(--sub); }
+    .sm-toast { margin-top: 14px; padding: 12px 16px; border-radius: 11px; font-size: .84rem; font-weight: 700; }
+    .sm-toast.ok { color: var(--up); background: color-mix(in srgb, var(--up) 12%, transparent); border: 1px solid color-mix(in srgb, var(--up) 42%, transparent); }
+    .sm-toast.bad { color: var(--down); background: color-mix(in srgb, var(--down) 12%, transparent); border: 1px solid color-mix(in srgb, var(--down) 42%, transparent); }
+</style>
+
+@code {
+    private bool _enabled;
+    private string _host = "smtp.naver.com";
+    private int _port = 587;
+    private string _from = "";
+    private string _user = "";
+    private string _pass = "";
+    private string _testTo = "";
+
+    private bool _busy, _testing;
+    private string? _savedAt;
+    private string? _toast;
+    private bool _toastOk;
+    private System.Threading.Timer? _toastTimer;
+
+    // 보내는 사람 이메일의 도메인(예: naver.com).
+    private string FromDomain
+    {
+        get { var f = _from ?? ""; return f.Contains('@') ? f.Split('@')[^1].Trim().ToLowerInvariant() : ""; }
+    }
+
+    // 호스트와 계정 도메인이 어긋나면 인증 실패 가능성이 높다(예: smtp.gmail.com + @naver.com).
+    private bool HostFromMismatch
+    {
+        get
+        {
+            var h = (_host ?? "").Trim().ToLowerInvariant();
+            var fd = FromDomain;
+            if (h.Length == 0 || fd.Length < 3 || !fd.Contains('.')) return false;
+            var parts = fd.Split('.');
+            var sld = parts[^2];   // naver / gmail / angtec ...
+            return sld.Length >= 2 && !h.Contains(sld);
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        // 저장본이 있으면 그대로, 없으면 appsettings 폴백값으로 프리필.
+        var saved = Cfg.LoadSaved();
+        var eff = saved ?? Cfg.GetEffective();
+        _enabled = eff.Enabled;
+        _host = string.IsNullOrWhiteSpace(eff.Host) ? "smtp.naver.com" : eff.Host;
+        _port = eff.Port > 0 ? eff.Port : 587;
+        _from = eff.From;
+        _user = eff.User;
+        _pass = eff.AppPassword;
+        _testTo = _from;
+        if (Cfg.SavedAt is { } dt) _savedAt = dt.ToString("MM-dd HH:mm:ss");
+    }
+
+    private async Task SaveAsync()
+    {
+        _busy = true;
+        await InvokeAsync(StateHasChanged);
+        var ok = Cfg.Save(new SmtpConfig(_enabled, _host ?? "", _port, _from ?? "", _pass ?? "") { User = _user ?? "" });
+        _busy = false;
+        if (ok) _savedAt = DateTime.Now.ToString("MM-dd HH:mm:ss");
+        ShowToast(ok
+            ? "💾 메일 설정이 로컬 암호화 저장소에 저장되었습니다. (재시작 없이 즉시 반영)"
+            : "❌ 메일 설정 저장에 실패했습니다.", ok);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task TestAsync()
+    {
+        _testing = true; _busy = true;
+        await InvokeAsync(StateHasChanged);
+        // 저장 여부와 무관하게 현재 입력값으로 실연결 테스트(활성화 강제 true).
+        var cfg = new SmtpConfig(true, _host ?? "", _port, _from ?? "", _pass ?? "") { User = _user ?? "" };
+        var (ok, msg) = await SmtpEmail.SendTestAsync(cfg, _testTo);
+        _testing = false; _busy = false;
+        ShowToast(msg, ok);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void ShowToast(string msg, bool ok)
+    {
+        _toast = msg; _toastOk = ok;
+        _toastTimer?.Dispose();
+        _toastTimer = new System.Threading.Timer(_ => { _toast = null; _ = InvokeAsync(StateHasChanged); },
+            null, 7000, System.Threading.Timeout.Infinite);
+    }
+
+    public void Dispose() => _toastTimer?.Dispose();
+}

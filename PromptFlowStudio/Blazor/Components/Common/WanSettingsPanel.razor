@@ -1,0 +1,137 @@
+@inject IWanConfigService Cfg
+@inject IWanApiService Wan
+@implements IDisposable
+
+@* [PromptFlow Studio] 영상(Wan) API 설정 — appsettings 직접 수정 없이 화면에서 API Key/BaseUrl 을 저장(config.json).
+   저장 즉시 IWanConfigService 스냅샷이 교체되어 재시작 없이 WanApiService.Enabled=true 로 전환된다.
+   메일(SMTP) 패널과 동일 UX 컨벤션 — 관리자 설정 › 영상(Wan) 탭에 마운트. *@
+<section class="wc-card">
+    <div class="wc-head">
+        <span class="wc-ico">🎬</span>
+        <div class="wc-hgrow">
+            <div class="wc-title">영상 생성(Wan 2.1) API 설정</div>
+            <div class="wc-desc">알리바바 통의만상 DashScope API 키를 화면에서 설정 — 파일 직접 수정 없이 로컬 저장 · <b>재시작 불필요</b></div>
+        </div>
+        <span class="wc-live @(Wan.Enabled ? "on" : "off")">@(Wan.Enabled ? "● 연결됨" : "○ 미설정")</span>
+    </div>
+
+    <div class="wc-grid">
+        <div class="wc-row wide">
+            <label class="wc-lbl" for="wc-key">API Key <span class="wc-sub">DashScope 콘솔에서 발급한 sk- 키</span></label>
+            <div class="wc-keywrap">
+                <input id="wc-key" class="wc-in" type="@(_show ? "text" : "password")" @bind="_apiKey" @bind:event="oninput"
+                       placeholder="sk-xxxxxxxxxxxxxxxxxxxxxxxx" spellcheck="false" autocomplete="off" />
+                <button type="button" class="wc-eye" title="@(_show ? "숨기기" : "보기")" @onclick="() => _show = !_show">
+                    @(_show ? "🙈" : "👁")
+                </button>
+            </div>
+            <div class="wc-hint">키는 <b>@Cfg.FilePath</b> 에 저장됩니다(이 사용자 프로필 전용).</div>
+        </div>
+
+        <div class="wc-row wide">
+            <label class="wc-lbl" for="wc-url">엔드포인트(지역) <span class="wc-sub">⚠ 모델·키·엔드포인트는 같은 지역이어야 합니다</span></label>
+            <select id="wc-url" class="wc-in" @bind="_baseUrl">
+                <option value="https://dashscope-intl.aliyuncs.com">글로벌(싱가포르) — dashscope-intl.aliyuncs.com</option>
+                <option value="https://dashscope.aliyuncs.com">중국 본토(베이징) — dashscope.aliyuncs.com</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="wc-actions">
+        <button class="wc-btn save" @onclick="SaveAsync" disabled="@_busy">💾 저장하기</button>
+        <button class="wc-btn test" @onclick="TestAsync" disabled="@_busy">@(_testing ? "⚡ 확인 중…" : "⚡ API 연결 테스트")</button>
+        @if (_savedAt is not null) { <span class="wc-savedat">최근 저장: @_savedAt</span> }
+    </div>
+
+    @if (_toast is not null)
+    {
+        <div class="wc-toast @(_toastOk ? "ok" : "bad")">@_toast</div>
+    }
+</section>
+
+<style>
+    .wc-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 14px; position: relative; }
+    .wc-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+    .wc-ico { width: 42px; height: 42px; flex: 0 0 auto; display: grid; place-items: center; font-size: 20px; border-radius: 11px; background: color-mix(in srgb, var(--accent) 12%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); }
+    .wc-hgrow { min-width: 0; flex: 1; }
+    .wc-title { font-size: 15px; font-weight: 800; color: var(--ink); }
+    .wc-desc { font-size: 11.5px; color: var(--sub); margin-top: 2px; line-height: 1.5; } .wc-desc b { color: var(--accent); }
+    .wc-live { font-size: .74rem; font-weight: 800; padding: .3rem .7rem; border-radius: 999px; white-space: nowrap; }
+    .wc-live.on { color: var(--up); background: color-mix(in srgb, var(--up) 14%, transparent); border: 1px solid color-mix(in srgb, var(--up) 45%, transparent); }
+    .wc-live.off { color: var(--sub); background: color-mix(in srgb, var(--sub) 12%, transparent); border: 1px solid color-mix(in srgb, var(--sub) 35%, transparent); }
+    .wc-grid { display: grid; grid-template-columns: 1fr; gap: 14px 20px; }
+    .wc-row { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    .wc-lbl { font-size: .78rem; font-weight: 800; color: var(--ink); }
+    .wc-sub { font-size: .66rem; font-weight: 600; color: var(--sub); margin-left: 6px; }
+    .wc-in { width: 100%; box-sizing: border-box; background: var(--card-2); border: 1px solid var(--field-line, var(--line)); border-radius: 10px; padding: 9px 12px; color: var(--ink); font-size: .86rem; outline: none; font-family: inherit; }
+    .wc-in:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+    .wc-keywrap { position: relative; display: flex; align-items: center; }
+    .wc-keywrap .wc-in { padding-right: 44px; font-family: var(--mono, monospace); letter-spacing: .02em; }
+    .wc-eye { position: absolute; right: 6px; width: 32px; height: 32px; border: 0; background: transparent; cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .wc-eye:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+    .wc-hint { font-size: .68rem; color: var(--sub); line-height: 1.5; word-break: break-all; } .wc-hint b { color: var(--sub); font-family: var(--mono, monospace); }
+    .wc-actions { display: flex; align-items: center; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+    .wc-btn { border: none; border-radius: 11px; padding: 10px 18px; font-weight: 800; font-size: .86rem; cursor: pointer; transition: filter .15s ease, transform .1s ease; font-family: inherit; }
+    .wc-btn.save { color: var(--accent-ink, #1a1204); background: linear-gradient(135deg, var(--accent-2), var(--accent)); box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 30%, transparent); }
+    .wc-btn.test { color: var(--up); background: color-mix(in srgb, var(--up) 14%, transparent); border: 1px solid color-mix(in srgb, var(--up) 50%, transparent); }
+    .wc-btn:hover:not(:disabled) { filter: brightness(1.06); } .wc-btn:active:not(:disabled) { transform: scale(.98); }
+    .wc-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .wc-savedat { font-size: .72rem; color: var(--sub); font-weight: 700; }
+    .wc-toast { margin-top: 14px; padding: 12px 16px; border-radius: 11px; font-size: .84rem; font-weight: 700; line-height: 1.5; }
+    .wc-toast.ok { color: var(--up); background: color-mix(in srgb, var(--up) 12%, transparent); border: 1px solid color-mix(in srgb, var(--up) 42%, transparent); }
+    .wc-toast.bad { color: var(--down); background: color-mix(in srgb, var(--down) 12%, transparent); border: 1px solid color-mix(in srgb, var(--down) 42%, transparent); }
+</style>
+
+@code {
+    private string _apiKey = "";
+    private string _baseUrl = "https://dashscope-intl.aliyuncs.com";
+    private bool _show;
+
+    private bool _busy, _testing;
+    private string? _savedAt;
+    private string? _toast;
+    private bool _toastOk;
+    private System.Threading.Timer? _toastTimer;
+
+    protected override void OnInitialized()
+    {
+        // 저장본이 있으면 그대로 프리필(키는 password 형태라 기본 숨김).
+        _apiKey = Cfg.ApiKey;
+        _baseUrl = string.IsNullOrWhiteSpace(Cfg.BaseUrl) ? _baseUrl : Cfg.BaseUrl;
+        if (Cfg.SavedAt is { } dt) _savedAt = dt.ToString("MM-dd HH:mm:ss");
+    }
+
+    private async Task SaveAsync()
+    {
+        _busy = true;
+        await InvokeAsync(StateHasChanged);
+        var ok = Cfg.Save(_apiKey, _baseUrl);   // 성공 시 OnConfigChanged 발행 → 서비스/UI 즉시 반영
+        _busy = false;
+        if (ok) _savedAt = DateTime.Now.ToString("MM-dd HH:mm:ss");
+        ShowToast(ok
+            ? "💾 API 키가 저장되었습니다. 재시작 없이 즉시 활성화됩니다 — 이제 새 프로젝트를 시작할 수 있어요."
+            : "❌ 저장에 실패했습니다. 로그(shell.log)를 확인하세요.", ok);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task TestAsync()
+    {
+        _testing = true; _busy = true;
+        await InvokeAsync(StateHasChanged);
+        // 저장 여부와 무관하게 현재 입력값으로 인증만 확인(영상 생성/과금 없음).
+        var (ok, msg) = await Wan.ValidateKeyAsync(_apiKey, _baseUrl);
+        _testing = false; _busy = false;
+        ShowToast(msg, ok);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void ShowToast(string msg, bool ok)
+    {
+        _toast = msg; _toastOk = ok;
+        _toastTimer?.Dispose();
+        _toastTimer = new System.Threading.Timer(_ => { _toast = null; _ = InvokeAsync(StateHasChanged); },
+            null, 7000, System.Threading.Timeout.Infinite);
+    }
+
+    public void Dispose() => _toastTimer?.Dispose();
+}

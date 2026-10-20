@@ -1,0 +1,181 @@
+@using System.Globalization
+@using System.Threading
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+@* [PromptFlow Studio · v4.4.4 Task3] 모바일 시뮬레이터 레이아웃 락 & 연산 방어 —
+   ▸ 배율 계산에 Math.Max(1,·) 하한 + NaN/Infinity 가드로 창을 극단적으로 줄여도 DivideByZeroException/NaN 이 발생하지 않는다.
+   ▸ ResizeObserver/윈도우 리사이즈를 디바운스(기본 120ms)해 초당 수십 회 재렌더(Layout Thrashing·Resize Observer Loop)를 방지한다. *@
+
+<div class="sim-wrap">
+    <div class="sim-bar">
+        <span class="sim-title">📱 디바이스 시뮬레이터</span>
+        <div class="sim-devs">
+            @foreach (var d in Devices)
+            {
+                <button class="sim-dev @(_device.Name == d.Name ? "on" : null)" @onclick="() => SetDevice(d)" @key="d.Name">@d.Name</button>
+            }
+        </div>
+        <span class="sim-scale" title="렌더링 배율(하한·NaN 가드 적용)">×@Fx(_scale)</span>
+    </div>
+
+    <div class="sim-stage" @ref="_stageRef">
+        @* 프레임은 '스케일된' 크기를 차지하고, 내부 스크린은 논리 해상도(디바이스 px)를 transform:scale 로 축소 렌더 *@
+        <div class="sim-frame" style="width:@(Fx(_device.Width * _scale))px;height:@(Fx(_device.Height * _scale))px">
+            <div class="sim-screen" style="width:@(_device.Width)px;height:@(_device.Height)px;transform:scale(@Fx(_scale));transform-origin:top left">
+                @if (ChildContent is not null) { @ChildContent }
+                else
+                {
+                    <div class="sim-placeholder">
+                        <div class="sim-ph-title">@_device.Name</div>
+                        <div class="sim-ph-dim">@_device.Width × @_device.Height</div>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+
+    <div class="sim-foot">
+        <label class="sim-ctl">뷰포트 폭
+            <input type="range" min="40" max="1600" step="10" value="@Fx(_viewportW)" @oninput="OnManualWidth" />
+        </label>
+        <span class="sim-dim">@(_device.Width)×@(_device.Height) → @(Fx(_device.Width * _scale))×@(Fx(_device.Height * _scale))</span>
+    </div>
+</div>
+
+<style>
+    .sim-wrap{display:flex; flex-direction:column; gap:12px; min-height:0}
+    .sim-bar{display:flex; align-items:center; gap:10px; flex-wrap:wrap}
+    .sim-title{font-size:14px; font-weight:900; color:var(--text-primary)}
+    .sim-devs{display:inline-flex; gap:5px; flex-wrap:wrap}
+    .sim-dev{font:800 11.5px inherit; padding:6px 11px; border-radius:9px; border:1px solid var(--line); background:var(--card-2); color:var(--text-secondary); cursor:pointer}
+    .sim-dev:hover{border-color:var(--accent); color:var(--text-primary)}
+    .sim-dev.on{color:#fff; border-color:transparent; background:linear-gradient(135deg,#10b981,#0ea5e9)}
+    .sim-scale{margin-left:auto; font:700 11px var(--mono); color:var(--accent-2); background:color-mix(in srgb,var(--accent-2) 12%,transparent); border:1px solid color-mix(in srgb,var(--accent-2) 30%,var(--line)); border-radius:20px; padding:3px 10px}
+    /* 스테이지: 시뮬레이터가 놓이는 무대(가용 폭 측정 대상) */
+    .sim-stage{display:flex; justify-content:center; align-items:flex-start; min-height:220px; max-height:min(60vh,620px); overflow:auto; padding:14px; border-radius:14px; border:1px solid var(--line); background:repeating-linear-gradient(45deg,var(--card-2),var(--card-2) 10px,var(--card) 10px,var(--card) 20px)}
+    .sim-frame{flex:0 0 auto; position:relative; border-radius:14px; background:#05070c; box-shadow:0 12px 34px rgba(0,0,0,.5), inset 0 0 0 6px #11151d; overflow:hidden}
+    .sim-screen{background:#0b0d14; overflow:hidden}
+    .sim-placeholder{width:100%; height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; color:#6ee7b7}
+    .sim-ph-title{font:900 44px Pretendard,'Malgun Gothic',sans-serif}
+    .sim-ph-dim{font:700 26px var(--mono); color:var(--text-muted)}
+    .sim-foot{display:flex; align-items:center; gap:14px; flex-wrap:wrap}
+    .sim-ctl{display:flex; align-items:center; gap:9px; font:700 11.5px inherit; color:var(--text-secondary)}
+    .sim-ctl input[type=range]{width:min(260px,52vw)}
+    .sim-dim{font:700 10.5px var(--mono); color:var(--text-muted)}
+</style>
+
+@code {
+    /// <summary>시뮬레이터 화면 안에 렌더할 실제 UI(선택). 없으면 디바이스 플레이스홀더를 표시.</summary>
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    /// <summary>리사이즈 디바운스 지연(ms). 이 시간 동안 조용해야 1회 재렌더 — 초당 수십 회 재렌더 방지.</summary>
+    [Parameter] public int DebounceMs { get; set; } = 120;
+
+    /// <summary>시뮬레이션 디바이스(논리 해상도) 프리셋.</summary>
+    public sealed record SimDevice(string Name, int Width, int Height);
+
+    private static readonly SimDevice[] Devices =
+    {
+        new("Galaxy S26", 1080, 2340),
+        new("iPhone 16", 1179, 2556),
+        new("Pixel", 1080, 2400),
+        new("Tablet", 1600, 2560),
+    };
+
+    private SimDevice _device = Devices[0];
+    private double _viewportW = 360;   // 무대 가용 폭(JS 측정 또는 슬라이더)
+    private double _viewportH = 720;
+    private double _scale = 0.3;
+
+    private ElementReference _stageRef;
+    private DotNetObjectReference<SimulatorUiHardening>? _selfRef;
+    private Timer? _debounce;
+    private volatile bool _disposed;
+    private bool _jsObserved;
+
+    /// <summary>
+    /// 가용 폭·높이를 디바이스 논리 해상도에 맞추는 배율을 계산한다(순수 · 테스트 대상).
+    ///   ▸ 디바이스 폭/높이에 <c>Math.Max(1, ·)</c> 하한 → 0 나누기 불가.
+    ///   ▸ 가용 치수도 하한 보정 + 결과의 NaN/Infinity/≤0 을 최후 방어해 항상 [0.1 … maxScale] 로 clamp.
+    /// </summary>
+    public static double ComputeScale(double availableWidth, double availableHeight, int deviceWidth, int deviceHeight, double maxScale = 1.0)
+    {
+        var aw = SafeDim(availableWidth);
+        var ah = SafeDim(availableHeight);
+        var dw = Math.Max(1, deviceWidth);    // ⚠ 0/음수 방어 — DivideByZero 원천 차단
+        var dh = Math.Max(1, deviceHeight);
+        var s = Math.Min(aw / dw, ah / dh);
+        if (double.IsNaN(s) || double.IsInfinity(s) || s <= 0) s = 0.1;   // 최후 방어(NaN/∞)
+        var cap = double.IsNaN(maxScale) || maxScale < 0.1 ? 0.1 : maxScale;
+        return Math.Clamp(s, 0.1, cap);
+    }
+
+    private static double SafeDim(double v) => double.IsNaN(v) || double.IsInfinity(v) || v < 1 ? 1 : v;
+
+    protected override void OnInitialized()
+    {
+        // 디바운스 타이머 — 리사이즈 폭주를 한 번의 재렌더로 코얼레싱.
+        _debounce = new Timer(_ =>
+        {
+            if (_disposed) return;
+            try { _ = InvokeAsync(() => { if (_disposed) return; Recompute(); StateHasChanged(); }); }
+            catch { /* 디스포즈 경합 — 무시 */ }
+        }, null, Timeout.Infinite, Timeout.Infinite);
+        Recompute();
+    }
+
+    private void Recompute() => _scale = ComputeScale(_viewportW, _viewportH, _device.Width, _device.Height);
+
+    private void ScheduleRecompute() => _debounce?.Change(Math.Max(0, DebounceMs), Timeout.Infinite);   // 매 이벤트마다 리셋 → 디바운스
+
+    private void SetDevice(SimDevice d) { _device = d; Recompute(); }
+
+    private void OnManualWidth(ChangeEventArgs e)
+    {
+        if (double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var w))
+        {
+            _viewportW = w;
+            _viewportH = w * 2.0;   // 슬라이더는 폭만 — 세로는 2:1 근사(스테이지 스크롤로 흡수)
+            ScheduleRecompute();     // ⚠ 즉시 재렌더 아님 — 디바운스로 코얼레싱(Layout Thrashing 방지)
+        }
+    }
+
+    /// <summary>JS(ResizeObserver/window.resize)가 무대 실제 치수를 통지 — 디바운스로 흡수.</summary>
+    [JSInvokable]
+    public void OnViewportResize(double width, double height)
+    {
+        _viewportW = width;
+        _viewportH = height;
+        ScheduleRecompute();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        // 무대 크기를 관찰하는 JS 헬퍼가 있으면 등록(디바운스는 C# 쪽에서 수행) — 없으면 슬라이더로 동작(Graceful).
+        try
+        {
+            _selfRef ??= DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("promptflowSim.observe", _stageRef, _selfRef);
+            _jsObserved = true;
+        }
+        catch (JSException) { /* 헬퍼 미탑재 — 슬라이더 수동 제어로 동작(정상) */ }
+        catch (Exception) { /* WebView 준비 전 — 무시 */ }
+    }
+
+    private static string Fx(double v)
+        => (double.IsNaN(v) || double.IsInfinity(v) ? 0 : v).ToString("0.##", CultureInfo.InvariantCulture);
+
+    /// <summary>⏹️ 소멸 즉시 — 디바운스 타이머 · JS 옵서버 · DotNetRef 해제(리스너/타이머 누수 0).</summary>
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        if (_debounce is not null) { try { await _debounce.DisposeAsync(); } catch { } }
+        if (_jsObserved)
+        {
+            try { await JS.InvokeVoidAsync("promptflowSim.unobserve", _stageRef); }
+            catch { /* WebView 종료 중 — 무시 */ }
+        }
+        _selfRef?.Dispose();
+    }
+}

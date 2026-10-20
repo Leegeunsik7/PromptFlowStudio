@@ -1,0 +1,357 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.SpatialHaptics
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject SpatialHapticsStudioRunner Runner
+
+@* [PromptFlow Studio v17.24.0] 🧤 AI 6DoF 공간 햅틱 스튜디오 — 접촉 정면/측면 뷰 · 3D 접촉력(법선/마찰) 게이지 · 6DoF 렌치 · 20–1000 Hz 진동 스펙트로그램 · 재질 강성/점성 슬라이더 · 수동성/버징 가드. *@
+
+<div class="shs-scrim" @onclick="Close">
+    <div class="shs-modal" @onclick:stopPropagation="true">
+        <div class="shs-h">
+            <div>
+                <div class="shs-title">🧤 AI 6DoF 공간 햅틱 &amp; 역각 피드백 스튜디오</div>
+                <div class="shs-sub"><b>역각 엔진</b>이 v17.13 손가락 끝 5개와 v17.22 XR 컨트롤러 팁(HIP 6)을 1 kHz 서브사이클로 액터 의상 · 피부 · 소품(구 @(RealtimeKinestheticForceFeedbackEngine.Spheres)개)에 갓-오브젝트 프록시로 구속하고, 켈빈-보이트 점탄성 법선력 + 마찰 원뿔 접선력을 SIMD 로 계산합니다. <b>진동 합성기</b>는 직물 미세 파장 · 젖음 윤활 · PPG 맥동을 @(VibrotactileMicroTextureSynthesizer.Fs) Hz 로 합성하고, <b>가드</b>는 60 Hz 장면 1차 홀드 · 수동성 관측/제어(POPC) · 슬루/포화 · 버징 댐핑으로 모터를 보호합니다.</div>
+            </div>
+            <button class="shs-x" @onclick="Close">✕</button>
+        </div>
+        <div class="shs-bar">
+            <button class="shs-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 가동")</button>
+            <button class="shs-btn" @onclick="Step30" disabled="@Runner.IsRunning">⏭ 0.5초</button>
+            <button class="shs-btn @(E.HandMotion ? "on" : null)" @onclick="() => Runner.SetHandMotion(!E.HandMotion)">✋ 손 시나리오</button>
+            <button class="shs-btn @(Runner.Breathing ? "on" : null)" @onclick="() => Runner.SetBreathing(!Runner.Breathing)">🫁 호흡</button>
+            <button class="shs-btn @(G.Enabled ? "on" : null)" @onclick="() => Runner.SetGuard(!G.Enabled)">🛡 가드</button>
+            <button class="shs-btn @(G.FirstOrderHold ? "on" : null)" @onclick="() => Runner.SetFoh(!G.FirstOrderHold)">📈 FOH 보간</button>
+            <button class="shs-btn @(V.Enabled ? "on" : null)" @onclick="() => Runner.SetVibro(!V.Enabled)">〰 진동</button>
+            <button class="shs-btn @(V.PulseEnabled ? "on" : null)" @onclick="() => Runner.SetPulse(!V.PulseEnabled)">❤ 맥동</button>
+            <button class="shs-btn @(E.UseSimd ? "on" : null)" @onclick="() => Runner.SetSimd(!E.UseSimd)">⚡ SIMD</button>
+            <span class="shs-chip @(Runner.LastTickMs <= 16.7 ? "ok" : "warn")">프레임 @(F2(Runner.LastTickMs)) ms · 서브사이클 @(Runner.LastSubSteps)회 · 1 ms 당 @(F1(E.LastSubStepUs)) µs(최대 @(F1(E.MaxSubStepUs)))</span>
+            <span class="shs-chip">누적 @(E.SubSteps) 서브사이클 · 접촉 @(E.ActiveContacts)/@(SpatialHapticsStudioRunner.Hips)</span>
+        </div>
+        <div class="shs-main">
+            <div class="shs-col">
+                <div class="shs-card">
+                    <div class="shs-sec">🧍 접촉 장면(정면 x–y · 측면 z–y) · ● HIP ○ 프록시 → 힘(@(F0(PxPerN)) px/N)</div>
+                    <div class="shs-views">
+                        <svg class="shs-view" viewBox="0 0 300 300">
+                            @for (var s = 0; s < RealtimeKinestheticForceFeedbackEngine.Spheres; s++)
+                            {
+                                var c = E.SphereCenter(s);
+                                if (c.Y > 0f)
+                                {
+                                    <circle class="sp @(MatClass(E.SphereMaterial(s)))" cx="@(FX(c.X))" cy="@(FY(c.Y))" r="@(F1(E.SphereRadius(s) * Scale))" />
+                                }
+                            }
+                            @for (var i = 0; i < SpatialHapticsStudioRunner.Hips; i++)
+                            {
+                                var ct = E.Contact(i);
+                                var p = E.DevicePosition(i);
+                                if (ct.InContact)
+                                {
+                                    <circle class="px" cx="@(FX(ct.Proxy.X))" cy="@(FY(ct.Proxy.Y))" r="3.5" />
+                                    <line class="fv" x1="@(FX(p.X))" y1="@(FY(p.Y))" x2="@(F1(Sx(p.X) + ct.Force.X * PxPerN))" y2="@(F1(Sy(p.Y) - ct.Force.Y * PxPerN))" />
+                                }
+                                <circle class="hip @(i == 5 ? "ctl" : null) @(ct.InContact ? "on" : null)" cx="@(FX(p.X))" cy="@(FY(p.Y))" r="3" />
+                            }
+                        </svg>
+                        <svg class="shs-view" viewBox="0 0 300 300">
+                            @for (var s = 0; s < RealtimeKinestheticForceFeedbackEngine.Spheres; s++)
+                            {
+                                var c = E.SphereCenter(s);
+                                if (c.Y > 0f)
+                                {
+                                    <circle class="sp @(MatClass(E.SphereMaterial(s)))" cx="@(FZ(c.Z))" cy="@(FY(c.Y))" r="@(F1(E.SphereRadius(s) * Scale))" />
+                                }
+                            }
+                            @for (var i = 0; i < SpatialHapticsStudioRunner.Hips; i++)
+                            {
+                                var ct = E.Contact(i);
+                                var p = E.DevicePosition(i);
+                                if (ct.InContact)
+                                {
+                                    <circle class="px" cx="@(FZ(ct.Proxy.Z))" cy="@(FY(ct.Proxy.Y))" r="3.5" />
+                                    <line class="fv" x1="@(FZ(p.Z))" y1="@(FY(p.Y))" x2="@(F1(Sz(p.Z) + ct.Force.Z * PxPerN))" y2="@(F1(Sy(p.Y) - ct.Force.Y * PxPerN))" />
+                                }
+                                <circle class="hip @(i == 5 ? "ctl" : null) @(ct.InContact ? "on" : null)" cx="@(FZ(p.Z))" cy="@(FY(p.Y))" r="3" />
+                            }
+                        </svg>
+                    </div>
+                    <div class="shs-legend"><i class="m0"></i>피부 <i class="m1"></i>실크 <i class="m2"></i>면 <i class="m3"></i>데님 <i class="m4"></i>가죽 <i class="m5"></i>소품 <i class="hipl"></i>손가락 HIP <i class="ctll"></i>XR 컨트롤러 <i class="fvl"></i>접촉력</div>
+                </div>
+
+                <div class="shs-card">
+                    <div class="shs-sec">📏 3D 접촉력 게이지(법선 Fn · 마찰 Ft · 0–@(F0(G.ForceMax)) N)</div>
+                    <div class="shs-gauges">
+                        @for (var i = 0; i < SpatialHapticsStudioRunner.Hips; i++)
+                        {
+                            var ct = E.Contact(i);
+                            <div class="nm">@(RealtimeKinestheticForceFeedbackEngine.HipNames[i])</div>
+                            <div class="bars">
+                                <span class="bar fn"><i style="width:@(Pct(ct.NormalForce / G.ForceMax))"></i></span>
+                                <span class="bar ft"><i style="width:@(Pct(ct.FrictionForce / G.ForceMax))"></i></span>
+                            </div>
+                            <div class="v">@(F2(ct.NormalForce)) / @(F2(ct.FrictionForce)) N</div>
+                            <div class="st">@(ct.InContact ? HapticMaterials.Names[(int)ct.Material] : "—") @(ct.InContact ? (ct.Sticking ? "· 고착" : "· 미끄럼") : null) @(ct.InContact ? "· δ " + F2(ct.Penetration * 1000) + " mm · " + F0(ct.SlideSpeed * 1000) + " mm/s" : null)</div>
+                        }
+                    </div>
+                    <div class="shs-wrench">
+                        <span>F<sub>x</sub> <b>@(F2(E.WrenchForce.X))</b></span><span>F<sub>y</sub> <b>@(F2(E.WrenchForce.Y))</b></span><span>F<sub>z</sub> <b>@(F2(E.WrenchForce.Z))</b> N</span>
+                        <span>τ<sub>x</sub> <b>@(F1(E.WrenchTorque.X * 1000))</b></span><span>τ<sub>y</sub> <b>@(F1(E.WrenchTorque.Y * 1000))</b></span><span>τ<sub>z</sub> <b>@(F1(E.WrenchTorque.Z * 1000))</b> mN·m</span>
+                    </div>
+                    <svg class="shs-ser" viewBox="0 0 360 80" preserveAspectRatio="none">
+                        <polyline class="fn" points="@(Series(0, 6, 80))" /><polyline class="ft" points="@(Series(1, 6, 80))" />
+                    </svg>
+                    <div class="shs-legend"><i class="fnl"></i>평균 법선력 <i class="ftl"></i>평균 마찰력(0–6 N · 4 s)</div>
+                </div>
+            </div>
+
+            <div class="shs-col">
+                <div class="shs-card">
+                    <div class="shs-sec">🌈 진동 촉각 스펙트로그램(20–1000 Hz · @(VibrotactileMicroTextureSynthesizer.Cols) 프레임) · 피크 <b>@(F0(V.PeakHz)) Hz</b> · RMS @(F2(V.Rms))</div>
+                    <svg class="shs-gram" viewBox="0 0 @(VibrotactileMicroTextureSynthesizer.Cols * 5) @(VibrotactileMicroTextureSynthesizer.Bins * 5)" preserveAspectRatio="none">
+                        @for (var c = 0; c < V.ColumnCount; c++)
+                        {
+                            var x = (VibrotactileMicroTextureSynthesizer.Cols - 1 - c) * 5;
+                            for (var b = 0; b < VibrotactileMicroTextureSynthesizer.Bins; b++)
+                            {
+                                <rect x="@(x)" y="@((VibrotactileMicroTextureSynthesizer.Bins - 1 - b) * 5)" width="5" height="5" fill="@(Heat(V.Gram(c, b)))" />
+                            }
+                        }
+                    </svg>
+                    <div class="shs-spec">
+                        @for (var b = 0; b < VibrotactileMicroTextureSynthesizer.Bins; b++)
+                        {
+                            <div class="col" title="@(F0(V.BinHz(b))) Hz"><i style="height:@(Pct((Db(V.Magnitude(b)) + 60) / 60))"></i></div>
+                        }
+                    </div>
+                    <div class="shs-axis"><span>20 Hz</span><span>100 Hz</span><span>1 kHz</span></div>
+                    <svg class="shs-ser sm" viewBox="0 0 360 50" preserveAspectRatio="none">
+                        <polyline class="vb" points="@(ScopePoints())" />
+                    </svg>
+                    <div class="shs-kv">스틱-슬립 클릭 @(V.Clicks) · 맥동 버스트 @(V.Bursts) · 샘플 @(V.Samples) · 피크 @(F2(V.Peak)) · 심박 @(F0(Runner.Bpm)) bpm · PPG @(F2(Runner.PulseValue))</div>
+                </div>
+
+                <div class="shs-card">
+                    <div class="shs-sec">🎚 재질 강성 k(N/m) · 점성 c(N·s/m) · 마찰 μ</div>
+                    <div class="shs-mats">
+                        @for (var m = 0; m < HapticMaterials.Count; m++)
+                        {
+                            var mat = (HapticMaterial)m;
+                            <div class="nm"><i class="@(MatClass(mat))"></i>@(HapticMaterials.Names[m])</div>
+                            <label>k <b>@(F0(E.Stiffness(mat)))</b><input type="range" min="100" max="8000" step="100" value="@(F0(E.Stiffness(mat)))" @onchange="e => Runner.SetStiffness(mat, (float)Num(e, E.Stiffness(mat)))" /></label>
+                            <label>c <b>@(F1(E.Damping(mat)))</b><input type="range" min="0" max="10" step="0.1" value="@(F1(E.Damping(mat)))" @onchange="e => Runner.SetDamping(mat, (float)Num(e, E.Damping(mat)))" /></label>
+                            <div class="mu">μ @(F2(E.EffectiveFriction(mat)))</div>
+                        }
+                    </div>
+                    <div class="shs-ctl">
+                        <label class="shs-sl">의상
+                            <select @onchange="OnGarment">
+                                @foreach (var gm in Garments)
+                                {
+                                    <option value="@((int)gm)" selected="@(E.Garment == gm)">@(HapticMaterials.Names[(int)gm])</option>
+                                }
+                            </select>
+                        </label>
+                        <label class="shs-sl">젖음 <b>@(F0(E.Wetness * 100))%</b><input type="range" min="0" max="1" step="0.05" value="@(F2(E.Wetness))" @onchange="e => Runner.SetWetness((float)Num(e, 0))" /></label>
+                        <label class="shs-sl">심박 <b>@(F0(Runner.Bpm))</b><input type="range" min="40" max="180" step="1" value="@(F0(Runner.Bpm))" @onchange="e => Runner.SetBpm((float)Num(e, 72))" /></label>
+                        <label class="shs-sl">F<sub>max</sub> <b>@(F1(G.ForceMax)) N</b><input type="range" min="1" max="20" step="0.5" value="@(F1(G.ForceMax))" @onchange="e => Runner.SetForceMax((float)Num(e, 8))" /></label>
+                    </div>
+                </div>
+
+                <div class="shs-card">
+                    <div class="shs-sec">🛡 듀얼 레이트 수동성 · 버징 가드 @(G.Enabled ? "ON" : "OFF") · POPC @(G.PassivityControl ? "ON" : "OFF")</div>
+                    <svg class="shs-ser" viewBox="0 0 360 80" preserveAspectRatio="none">
+                        <polyline class="en" points="@(Series(2, EnergyScale(), 80))" /><polyline class="bz" points="@(Series(3, 6, 80))" />
+                    </svg>
+                    <div class="shs-legend"><i class="enl"></i>누적 생성 에너지(0–@(F1(EnergyScale())) mJ) <i class="bzl"></i>버징 포트 수(0–6)</div>
+                    <div class="shs-ports">
+                        @for (var i = 0; i < SpatialHapticsStudioRunner.Hips; i++)
+                        {
+                            <span class="@(G.Buzzing(i) ? "warn" : null)">@(RealtimeKinestheticForceFeedbackEngine.HipNames[i]) W @(F2(G.Energy(i) * 1000)) mJ · α @(F1(G.Alpha(i)))</span>
+                        }
+                    </div>
+                    <div class="shs-kv">생성 에너지 <b class="@(G.GeneratedJ > 0.05 ? "warn" : null)">@(F2(G.GeneratedJ * 1000)) mJ</b> · 소산 @(F2(G.DissipatedJ * 1000)) mJ · PC 작동 @(G.PcActivations) · 포화 @(G.Saturations) · 슬루 제한 @(G.SlewLimited) · 버징 @(G.BuzzEvents)회(@(G.BuzzSamples) ms) · 최대 원시 @(F2(G.MaxRawForce)) N → 출력 @(F2(G.MaxOutForce)) N</div>
+                    <div class="shs-ctl">
+                        <button class="shs-btn sm @(G.PassivityControl ? "on" : null)" @onclick="() => Runner.SetPopc(!G.PassivityControl)">⚖ POPC</button>
+                        <button class="shs-btn sm" @onclick="Runner.ResetMetrics">↺ 지표 초기화</button>
+                    </div>
+                </div>
+                <div class="shs-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .shs-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .shs-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .shs-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #f472b6 14%, var(--card)), color-mix(in srgb, #38bdf8 12%, var(--card))); }
+    .shs-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .shs-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .shs-sub b { color: var(--text-primary); }
+    .shs-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .shs-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .shs-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .shs-btn:disabled { opacity: .45; cursor: default; }
+    .shs-btn.sm { font-size: 11px; padding: 3px 8px; }
+    .shs-btn.on { background: color-mix(in srgb, #f472b6 22%, var(--card)); border-color: #f472b6; }
+    .shs-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .shs-chip.ok { border-color: #22c55e; color: #22c55e; }
+    .shs-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .shs-main { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .shs-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .shs-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+    .shs-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .shs-ctl { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
+    .shs-sl { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); }
+    .shs-sl b { font-family: var(--mono); color: var(--text-primary); }
+    .shs-sl select { font-size: 11px; background: var(--card); color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 1px 4px; }
+    .shs-views { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .shs-view { width: 100%; aspect-ratio: 1; background: #030712; border-radius: 8px; }
+    .shs-view .sp { fill-opacity: .55; stroke-width: 1; }
+    .shs-view .m0 { fill: #fca5a5; stroke: #fecaca; } .shs-view .m1 { fill: #d946ef; stroke: #f0abfc; } .shs-view .m2 { fill: #e7e5e4; stroke: #fafaf9; }
+    .shs-view .m3 { fill: #3b82f6; stroke: #93c5fd; } .shs-view .m4 { fill: #92400e; stroke: #d97706; } .shs-view .m5 { fill: #a3a3a3; stroke: #e5e5e5; }
+    .shs-view .hip { fill: #fbbf24; } .shs-view .hip.ctl { fill: #22d3ee; } .shs-view .hip.on { stroke: #fff; stroke-width: 1.2; }
+    .shs-view .px { fill: none; stroke: #4ade80; stroke-width: 1.4; }
+    .shs-view .fv { stroke: #f87171; stroke-width: 2; }
+    .shs-gauges { display: grid; grid-template-columns: 72px 1fr 92px; gap: 3px 8px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .shs-gauges .nm { font-weight: 800; color: var(--text-primary); }
+    .shs-gauges .v { font-family: var(--mono); text-align: right; color: var(--text-primary); }
+    .shs-gauges .st { grid-column: 1 / -1; font-size: 10px; color: var(--text-muted); margin: -2px 0 3px 80px; }
+    .shs-gauges .bars { display: flex; flex-direction: column; gap: 2px; }
+    .shs-gauges .bar { position: relative; height: 7px; background: #0f172a; border-radius: 4px; overflow: hidden; }
+    .shs-gauges .bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; transition: width .15s; }
+    .shs-gauges .bar.fn i { background: linear-gradient(90deg, #be123c, #f87171); }
+    .shs-gauges .bar.ft i { background: linear-gradient(90deg, #0369a1, #38bdf8); }
+    .shs-wrench { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px 10px; font-size: 11px; color: var(--text-secondary); }
+    .shs-wrench b { font-family: var(--mono); color: var(--text-primary); }
+    .shs-gram { width: 100%; height: 150px; background: #030712; border-radius: 6px; }
+    .shs-spec { display: grid; grid-template-columns: repeat(24, 1fr); gap: 2px; height: 48px; align-items: end; }
+    .shs-spec .col { position: relative; height: 100%; background: #0f172a; border-radius: 2px; overflow: hidden; }
+    .shs-spec .col i { position: absolute; left: 0; right: 0; bottom: 0; background: linear-gradient(0deg, #7c3aed, #f472b6); }
+    .shs-axis { display: flex; justify-content: space-between; font: 600 10px var(--mono); color: var(--text-muted); }
+    .shs-ser { width: 100%; height: 80px; background: #030712; border-radius: 6px; }
+    .shs-ser.sm { height: 50px; }
+    .shs-ser polyline { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+    .shs-ser .fn { stroke: #f87171; } .shs-ser .ft { stroke: #38bdf8; } .shs-ser .vb { stroke: #f472b6; } .shs-ser .en { stroke: #fbbf24; } .shs-ser .bz { stroke: #a78bfa; }
+    .shs-mats { display: grid; grid-template-columns: 96px 1fr 1fr 56px; gap: 4px 10px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .shs-mats .nm { font-weight: 800; color: var(--text-primary); display: flex; align-items: center; gap: 5px; }
+    .shs-mats .nm i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
+    .shs-mats label { display: flex; align-items: center; gap: 5px; }
+    .shs-mats label b { font-family: var(--mono); color: var(--text-primary); min-width: 34px; }
+    .shs-mats input { flex: 1; min-width: 60px; }
+    .shs-mats .mu { font-family: var(--mono); color: var(--text-muted); }
+    .shs-ports { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 3px 10px; font: 600 10.5px var(--mono); color: var(--text-secondary); }
+    .shs-ports .warn { color: #f59e0b; }
+    .shs-legend, .shs-kv { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; line-height: 1.45; color: var(--text-secondary); align-items: center; min-width: 0; overflow-wrap: anywhere; }
+    .shs-kv b { color: var(--text-primary); }
+    .shs-kv b.warn { color: #f59e0b; }
+    .shs-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 3px; }
+    .shs-legend .m0, .shs-mats .m0 { background: #fca5a5; } .shs-legend .m1, .shs-mats .m1 { background: #d946ef; } .shs-legend .m2, .shs-mats .m2 { background: #e7e5e4; }
+    .shs-legend .m3, .shs-mats .m3 { background: #3b82f6; } .shs-legend .m4, .shs-mats .m4 { background: #92400e; } .shs-legend .m5, .shs-mats .m5 { background: #a3a3a3; }
+    .shs-legend .hipl { background: #fbbf24; } .shs-legend .ctll { background: #22d3ee; } .shs-legend .fvl { background: #f87171; }
+    .shs-legend .fnl { background: #f87171; } .shs-legend .ftl { background: #38bdf8; } .shs-legend .enl { background: #fbbf24; } .shs-legend .bzl { background: #a78bfa; }
+    .shs-note { font-size: 11px; color: var(--text-muted); word-break: break-all; }
+    @@media (max-width: 1100px) { .shs-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const float Scale = 330f, PxPerN = 8f;
+    static readonly HapticMaterial[] Garments = { HapticMaterial.Silk, HapticMaterial.Cotton, HapticMaterial.Denim, HapticMaterial.Leather };
+    private System.Threading.Timer? _timer;
+    private RealtimeKinestheticForceFeedbackEngine E => Runner.Engine;
+    private VibrotactileMicroTextureSynthesizer V => Runner.Vibro;
+    private DualRatePassivityAntiBuzzingGuard G => Runner.Guard;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("SpatialHaptics.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string Pct(double v) => (Math.Clamp(double.IsFinite(v) ? v : 0, 0, 1) * 100).ToString("0.##", CultureInfo.InvariantCulture) + "%";
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+    private static double Db(double v) => 20 * Math.Log10(Math.Max(v, 1e-6));
+    private static string MatClass(HapticMaterial m) => "m" + ((int)m).ToString(CultureInfo.InvariantCulture);
+
+    // 정면: x −0.45..0.45 · y 0.9..1.8 / 측면: z −0.1..0.8
+    private static float Sx(float x) => 150f + x * Scale;
+    private static float Sz(float z) => (z + 0.1f) * Scale;
+    private static float Sy(float y) => 300f - (y - 0.88f) * Scale;
+    private static string FX(float x) => F1(Sx(x));
+    private static string FZ(float z) => F1(Sz(z));
+    private static string FY(float y) => F1(Sy(y));
+
+    private static string Heat(float db)
+    {
+        var t = Math.Clamp((db + 60f) / 60f, 0f, 1f);
+        var r = (int)(255 * Math.Clamp(t * 1.6f, 0f, 1f));
+        var g = (int)(255 * Math.Clamp(t * 1.6f - 0.6f, 0f, 1f));
+        var b = (int)(255 * Math.Clamp(0.35f + 0.9f * t - 1.2f * t * t, 0f, 1f));
+        return "rgb(" + r.ToString(CultureInfo.InvariantCulture) + "," + g.ToString(CultureInfo.InvariantCulture) + "," + b.ToString(CultureInfo.InvariantCulture) + ")";
+    }
+
+    private double EnergyScale() => Math.Max(1.0, G.GeneratedJ * 1000 * 1.2);
+
+    private string Series(int kind, double full, double h)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+        {
+            double v = kind switch { 0 => Runner.NormalSeries(i), 1 => Runner.FrictionSeries(i), 2 => Runner.EnergySeries(i), _ => Runner.BuzzSeries(i) };
+            sb.Append(F1(360.0 * (n - 1 - i) / (SpatialHapticsStudioRunner.SeriesLen - 1))).Append(',').Append(F1(h - 2 - (h - 4) * Math.Clamp(v / full, 0, 1))).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private string ScopePoints()
+    {
+        const int n = 400;
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++) sb.Append(F1(360.0 * i / (n - 1))).Append(',').Append(F1(25 - 23 * Math.Clamp(V.Sample(n - 1 - i), -1, 1))).Append(' ');
+        return sb.ToString();
+    }
+
+    private void OnGarment(ChangeEventArgs e)
+    {
+        var v = (int)Num(e, (int)E.Garment);
+        if (v >= 0 && v < HapticMaterials.Count) Runner.SetGarment((HapticMaterial)v);
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void Step30()
+    {
+        for (var i = 0; i < SpatialHapticsStudioRunner.Hz / 2; i++) Runner.Step();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    /// <summary>가동 중 갱신은 250 ms 타이머가 처리 — 정지 상태 변경만 즉시 반영.</summary>
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

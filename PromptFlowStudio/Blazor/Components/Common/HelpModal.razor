@@ -1,0 +1,103 @@
+@* [PromptFlow Studio] 종합 사용 가이드 모달 — 빠른 시작 4단계 + FAQ. 순수 정적 콘텐츠(외부 NuGet 0). *@
+
+<div class="hm-scrim" @onclick="Close">
+    <div class="hm" @onclick:stopPropagation="true">
+        <div class="hm-head">
+            <span class="hm-title">📘 PromptFlow Studio 시작 가이드</span>
+            <button class="hm-x" @onclick="Close" title="닫기">✕</button>
+        </div>
+
+        <div class="hm-body">
+            <div class="hm-sec">🚀 빠른 시작 4단계</div>
+            <div class="hm-steps">
+                @foreach (var (i, s) in Steps.Select((s, i) => (i + 1, s)))
+                {
+                    <div class="hm-step" @key="i">
+                        <div class="hm-step-n">@i</div>
+                        <div>
+                            <div class="hm-step-t">@s.Icon @s.Title</div>
+                            <div class="hm-step-d">@s.Desc</div>
+                        </div>
+                    </div>
+                }
+            </div>
+
+            <div class="hm-sec">💡 자주 묻는 질문 (FAQ)</div>
+            <div class="hm-faqs">
+                @foreach (var (q, i) in Faqs.Select((f, i) => (f, i)))
+                {
+                    <div class="hm-faq @(_open == i ? "on" : null)" @key="i">
+                        <button class="hm-q" @onclick="() => Toggle(i)">
+                            <span>Q. @q.Q</span><span class="hm-caret">@(_open == i ? "▾" : "▸")</span>
+                        </button>
+                        @if (_open == i)
+                        {
+                            <div class="hm-a">A. @q.A</div>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+
+        <div class="hm-foot">
+            <span class="hm-ver">v1.1.0 · 로컬 AI 미디어 파이프라인</span>
+            <button class="hm-btn" @onclick="Close">시작하기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .hm-scrim { position: fixed; inset: 0; z-index: 340; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 24px; }
+    .hm { width: 100%; max-width: 620px; max-height: 88vh; display: flex; flex-direction: column; background: var(--card, #161922); border: 1px solid var(--line, #2d3342); border-radius: 18px; box-shadow: 0 30px 80px rgba(0,0,0,.55); overflow: hidden; }
+    .hm-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--line, #2d3342); }
+    .hm-title { font-size: 16px; font-weight: 900; color: var(--text-primary, #eef1f7); }
+    .hm-x { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line, #2d3342); background: var(--card-2, #1e222e); color: var(--text-secondary, #aab2c5); cursor: pointer; }
+    .hm-body { padding: 16px 20px; overflow-y: auto; }
+    .hm-sec { font: 800 13px var(--mono, monospace); color: var(--accent-2, #22d3ee); margin: 6px 0 10px; }
+
+    .hm-steps { display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; }
+    .hm-step { display: flex; gap: 12px; align-items: flex-start; padding: 11px 13px; border-radius: 12px; background: var(--card-2, #1e222e); border: 1px solid var(--line, #2d3342); }
+    .hm-step-n { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font: 900 13px var(--mono, monospace); color: #fff; background: linear-gradient(135deg, var(--flow-violet, #8b5cf6), var(--flow-magenta, #d946ef)); }
+    .hm-step-t { font-size: 13.5px; font-weight: 800; color: var(--text-primary, #eef1f7); }
+    .hm-step-d { font-size: 12.5px; color: var(--text-secondary, #aab2c5); line-height: 1.55; margin-top: 3px; }
+
+    .hm-faqs { display: flex; flex-direction: column; gap: 6px; }
+    .hm-faq { border: 1px solid var(--line, #2d3342); border-radius: 10px; overflow: hidden; }
+    .hm-q { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--card-2, #1e222e); border: none; padding: 11px 13px; cursor: pointer; text-align: left; font: 700 13px inherit; color: var(--text-primary, #eef1f7); }
+    .hm-q:hover { color: var(--accent-2, #22d3ee); }
+    .hm-caret { color: var(--text-muted, #6b7488); font-size: 11px; }
+    .hm-a { padding: 0 13px 12px; font-size: 12.5px; line-height: 1.6; color: var(--text-secondary, #aab2c5); }
+
+    .hm-foot { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-top: 1px solid var(--line, #2d3342); }
+    .hm-ver { font: 600 11px var(--mono, monospace); color: var(--text-muted, #6b7488); }
+    .hm-btn { border: none; border-radius: 11px; padding: 10px 20px; font-weight: 800; font-size: 13px; cursor: pointer; color: #fff; background: linear-gradient(135deg, var(--flow-violet, #8b5cf6), var(--accent, #8b5cf6)); }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+    private int _open = 0;
+
+    private void Toggle(int i) => _open = _open == i ? -1 : i;
+    private Task Close() => OnClose.InvokeAsync();
+
+    private sealed record Step(string Icon, string Title, string Desc);
+    private sealed record Faq(string Q, string A);
+
+    private static readonly Step[] Steps =
+    {
+        new("📝", "대본 작성", "주제 한 줄 또는 전체 대본을 입력하고 [🪄 원클릭 숏츠 대본 자동 생성]을 누르면 3~5개 컷(프롬프트·나레이션·카메라)이 자동 구성됩니다."),
+        new("⚓", "앵커 지정", "대표 캐릭터/스타일 이미지를 [⚓ 메인 캐릭터/스타일 앵커]로 등록하면 모든 컷의 인물 외모와 그림체가 일관되게 유지됩니다(I2V)."),
+        new("🤖", "AI 파이프라인 연동", "나레이션(TTS)·자막·오디오 덕킹·립싱크·4K 업스케일을 켜면 [Wan → 립싱크 → 업스케일 → 병합·번인] 순서로 자동 후처리됩니다."),
+        new("📱", "숏츠 출력", "세로 해상도로 병합한 뒤 [💾 내보내기]로 저장하고, [📺 유튜브 메타데이터]로 제목·설명·해시태그, [🖼️ 커버]로 썸네일까지 1클릭 생성하세요."),
+    };
+
+    private static readonly Faq[] Faqs =
+    {
+        new("AI 엔진을 꼭 설치해야 하나요?", "아니요. Wan API 키만 있으면 기본 영상 생성은 동작합니다. 4K 업스케일·립싱크·오프라인 TTS·자막 추출은 선택 엔진을 설치했을 때만 활성화됩니다(관리자 설정 › 🤖 AI 엔진)."),
+        new("자막이 흐릿하게 나와요.", "[🚀 4K 업스케일(병합 전)]을 켜면 컷을 먼저 업스케일한 뒤 자막을 번인하므로 4K 해상도에서 폰트가 선명합니다."),
+        new("배경음악이 나레이션을 덮어요.", "[🔊 BGM 자동 덕킹]을 켜면 나레이션 대사가 나오는 구간에서 BGM 음량이 자동으로 낮아집니다(방송용 믹싱)."),
+        new("영상 URL이 만료됐다고 나와요.", "Wan 생성 결과는 24시간 시한부입니다. 생성 즉시 로컬에 자동 저장되며, 앵커 이미지도 12시간 캐시 후 자동으로 재업로드됩니다."),
+        new("UI 색상을 바꾸고 싶어요.", "좌측 하단 [🎨 커스텀 테마 제작]에서 프리셋(다크/사이버펑크/골드/슬레이트)을 고르거나 색상을 직접 지정하면 앱 전체에 실시간으로 반영됩니다."),
+        new("한글 자막 폰트가 안 나와요.", "시스템에 한글 폰트가 없으면 %LocalAppData%\\PromptFlowStudio\\Fonts\\ 에 폰트(.ttf)를 넣어 두면 번인에 자동 사용됩니다."),
+    };
+}

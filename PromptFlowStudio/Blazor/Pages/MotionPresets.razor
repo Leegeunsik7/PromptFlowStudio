@@ -1,0 +1,184 @@
+@page "/motion"
+@implements IDisposable
+@inject PromptDraftService Draft
+@inject CustomPresetService Presets
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+@* [PromptFlow Studio] 모션·카메라 — 카메라 워크/스타일/모션 프롬프트를 시각적으로 조합해 복사하거나 워크스페이스로 전달. *@
+
+<PageTitle>PromptFlow Studio · 모션·카메라</PageTitle>
+
+<div class="mo">
+    <header class="mo-head">
+        <h1 class="mo-title">모션·<span class="mo-title-g">카메라</span> <MenuHelpBadge MenuKey="@GranularHelpService.Keys.MotionCamera" /></h1>
+        <p class="mo-sub">칩을 눌러 카메라 워크·스타일·모션을 조합하세요 — 프롬프트에 그대로 붙일 영문 스니펫이 만들어집니다.</p>
+    </header>
+
+    <div style="margin:12px 0;"><StudioMonitorHeader EngineReady="true" /></div>
+    <div style="margin:0 0 16px;"><CameraMotionVisualizer /></div>
+
+    <div class="mo-grid">
+        <section class="mo-cats">
+            @foreach (var grp in Groups)
+            {
+                <div class="mo-grp" @key="grp.Title">
+                    <div class="mo-grp-t">@grp.Title</div>
+                    <div class="mo-chips">
+                        @foreach (var c in grp.Chips)
+                        {
+                            var on = _combo.Contains(c.Snippet);
+                            <button class="mo-chip @(on ? "on" : null)" @onclick="() => Toggle(c.Snippet)" title="@c.Snippet" @key="c.Snippet">
+                                <span class="mo-chip-ic">@c.Icon</span>
+                                <span class="mo-chip-l">@c.Label</span>
+                            </button>
+                        }
+                    </div>
+                </div>
+            }
+        </section>
+
+        <aside class="mo-side">
+            <div class="mo-card">
+                <div class="mo-card-h">조합 미리보기 <span class="mo-count">@_combo.Count</span></div>
+                <div class="mo-preview">@(_combo.Count == 0 ? "칩을 선택하면 여기에 조합됩니다." : string.Join(", ", _combo))</div>
+                <div class="mo-actions">
+                    <button class="mo-btn" disabled="@(_combo.Count == 0)" @onclick="CopyAsync">📋 복사</button>
+                    <button class="mo-btn go" disabled="@(_combo.Count == 0)" @onclick="SendToWorkspace">→ 워크스페이스로</button>
+                    <button class="mo-btn ghost" disabled="@(_combo.Count == 0)" @onclick="Clear">초기화</button>
+                </div>
+                @if (_toast is not null) { <div class="mo-toast">@_toast</div> }
+            </div>
+            <div class="mo-card">
+                <div class="mo-card-h">⭐ 내 즐겨찾기</div>
+                <div class="mo-save">
+                    <input class="mo-name" @bind="_presetName" @bind:event="oninput" placeholder="프리셋 이름" maxlength="40" />
+                    <button class="mo-btn go" disabled="@(_combo.Count == 0 || string.IsNullOrWhiteSpace(_presetName))" @onclick="SavePreset">⭐ 저장</button>
+                </div>
+                @if (_favs.Count == 0)
+                {
+                    <div class="mo-fav-empty">저장된 프리셋이 없습니다. 조합 후 이름을 지어 저장하세요.</div>
+                }
+                else
+                {
+                    <div class="mo-favs">
+                        @foreach (var f in _favs)
+                        {
+                            <div class="mo-fav" @key="f.Id">
+                                <button class="mo-fav-apply" @onclick="() => Apply(f)" title="@f.Snippet">
+                                    <span class="mo-fav-name">@f.Name</span>
+                                    <span class="mo-fav-snip">@f.Snippet</span>
+                                </button>
+                                <button class="mo-fav-del" @onclick="() => Presets.Remove(f.Id)" title="삭제">✕</button>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+
+            <div class="mo-tip">💡 팁: 카메라 1개 + 스타일 1~2개 + 모션 1개 정도가 자연스럽습니다. 선택 순서대로 조합됩니다.</div>
+        </aside>
+    </div>
+</div>
+
+<style>
+    .mo { padding: 6px 8px 48px; width: 100%; box-sizing: border-box; }
+    .mo-head { margin-bottom: 18px; }
+    .mo-title { font-size: 26px; font-weight: 900; letter-spacing: -.4px; color: var(--text-primary); margin: 0 0 6px; }
+    .mo-title-g { background: linear-gradient(90deg, var(--flow-violet), var(--flow-cyan)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .mo-sub { font-size: 13.5px; color: var(--text-secondary); margin: 0; }
+
+    .mo-grid { display: grid; grid-template-columns: 1fr 320px; gap: 16px; align-items: start; }
+    @@media (max-width: 900px) { .mo-grid { grid-template-columns: 1fr; } }
+
+    .mo-cats { display: flex; flex-direction: column; gap: 18px; }
+    .mo-grp-t { font-size: 13px; font-weight: 800; color: var(--text-primary); margin-bottom: 10px; }
+    .mo-chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+    .mo-chip { display: flex; align-items: center; gap: 8px; padding: 11px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); color: var(--text-secondary); cursor: pointer; font-family: inherit; text-align: left; transition: border-color .14s, transform .1s, background .14s; }
+    .mo-chip:hover { border-color: color-mix(in srgb, var(--flow-violet) 55%, var(--line)); transform: translateY(-2px); }
+    .mo-chip.on { border-color: transparent; background: linear-gradient(135deg, color-mix(in srgb, var(--flow-violet) 30%, var(--card)), var(--card)); box-shadow: inset 0 0 0 1.5px var(--flow-violet); color: var(--text-primary); }
+    .mo-chip-ic { font-size: 17px; }
+    .mo-chip-l { font-size: 12.5px; font-weight: 700; }
+
+    .mo-side { display: flex; flex-direction: column; gap: 12px; position: sticky; top: 8px; }
+    .mo-card { border: 1px solid var(--line); border-radius: 16px; background: var(--card); padding: 16px; }
+    .mo-card-h { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 800; color: var(--text-primary); margin-bottom: 10px; }
+    .mo-count { font: 700 10px var(--mono); color: #fff; background: var(--flow-violet); border-radius: 999px; padding: 2px 8px; }
+    .mo-preview { min-height: 84px; border-radius: 10px; background: var(--card-2); border: 1px solid var(--line); padding: 11px 13px; font: 500 12.5px/1.6 var(--mono); color: var(--text-secondary); word-break: break-word; }
+    .mo-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+    .mo-btn { border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); border-radius: 10px; padding: 8px 12px; font-size: 12.5px; font-weight: 700; cursor: pointer; font-family: inherit; }
+    .mo-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--text-primary); }
+    .mo-btn.go { border: none; color: #fff; background: linear-gradient(135deg, var(--flow-violet), var(--accent)); }
+    .mo-btn:disabled { opacity: .45; cursor: not-allowed; }
+    .mo-toast { margin-top: 10px; font-size: 12px; color: #10b981; }
+    .mo-tip { font-size: 11.5px; color: var(--text-muted); line-height: 1.6; padding: 0 4px; }
+
+    .mo-save { display: flex; gap: 8px; margin-bottom: 10px; }
+    .mo-name { flex: 1; min-width: 0; background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 11px; color: var(--text-primary); font-size: 12.5px; font-family: inherit; }
+    .mo-name:focus { outline: none; border-color: var(--accent); }
+    .mo-fav-empty { font-size: 11.5px; color: var(--text-muted); padding: 6px 2px; }
+    .mo-favs { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+    .mo-fav { display: flex; align-items: stretch; gap: 4px; }
+    .mo-fav-apply { flex: 1; min-width: 0; text-align: left; background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 11px; cursor: pointer; font-family: inherit; display: flex; flex-direction: column; gap: 2px; }
+    .mo-fav-apply:hover { border-color: var(--flow-violet); }
+    .mo-fav-name { font-size: 12px; font-weight: 800; color: var(--text-primary); }
+    .mo-fav-snip { font: 500 10px var(--mono); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mo-fav-del { flex: 0 0 auto; width: 30px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-muted); border-radius: 10px; cursor: pointer; font-size: 12px; }
+    .mo-fav-del:hover { color: #ef4444; border-color: #ef4444; }
+</style>
+
+@code {
+    private static readonly (string Title, PromptChip[] Chips)[] Groups =
+    {
+        ("🎥 카메라 워크",   PromptPresets.Camera),
+        ("🎨 스타일 · 무드", PromptPresets.Style),
+        ("🌊 모션 · 시간",   PromptPresets.Motion),
+    };
+
+    private readonly List<string> _combo = new();
+    private string _presetName = "";
+    private List<CustomPreset> _favs = new();
+    private string? _toast;
+    private System.Threading.Timer? _toastTimer;
+
+    protected override void OnInitialized() { Presets.OnChange += OnFavsChanged; _favs = Presets.List(); }
+    public void Dispose() { Presets.OnChange -= OnFavsChanged; _toastTimer?.Dispose(); }
+    private void OnFavsChanged() { _favs = Presets.List(); _ = InvokeAsync(StateHasChanged); }
+
+    private void Toggle(string snippet) { if (!_combo.Remove(snippet)) _combo.Add(snippet); }
+    private void Clear() => _combo.Clear();
+
+    private void SavePreset()
+    {
+        if (_combo.Count == 0 || string.IsNullOrWhiteSpace(_presetName)) return;
+        Presets.Save(_presetName, string.Join(", ", _combo));
+        _presetName = "";
+        Toast("⭐ 프리셋을 저장했습니다.");
+    }
+
+    private void Apply(CustomPreset p)
+    {
+        _combo.Clear();
+        _combo.AddRange(p.Snippet.Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries));
+        Toast($"'{p.Name}' 프리셋을 적용했습니다.");
+    }
+
+    private async Task CopyAsync()
+    {
+        try { await JS.InvokeVoidAsync("navigator.clipboard.writeText", string.Join(", ", _combo)); Toast("📋 클립보드에 복사됨"); }
+        catch { Toast("복사 실패 — 수동으로 선택/복사하세요."); }
+    }
+
+    private void SendToWorkspace()
+    {
+        Draft.Send(string.Join(", ", _combo));   // 워크스페이스가 진입 시 프롬프트에 이어붙임
+        Nav.NavigateTo("workspace");
+    }
+
+    private void Toast(string msg)
+    {
+        _toast = msg;
+        _toastTimer?.Dispose();
+        _toastTimer = new System.Threading.Timer(_ => { _toast = null; _ = InvokeAsync(StateHasChanged); }, null, 3000, System.Threading.Timeout.Infinite);
+    }
+}

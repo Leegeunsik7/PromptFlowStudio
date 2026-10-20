@@ -1,0 +1,214 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.SplatRelighting
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject GaussianSplatRelightingStudioRunner Runner
+
+@* [PromptFlow Studio v17.56.0] 🌓 3DGS 섀도우 & 릴라이팅 스튜디오 — 농도/부드러움/반사 강도 · 뎁스 맵 미니 프리뷰 · 환경광 게이지 · 가드 · 결선. *@
+<div class="gsr-scrim" @onclick="Close">
+    <div class="gsr-modal" @onclick:stopPropagation="true">
+        <div class="gsr-h">
+            <div>
+                <div class="gsr-title">🌓 3DGS 섀도우 &amp; 릴라이팅 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null) · @(Runner.SplatCount.ToString("N0", CultureInfo.InvariantCulture)) 스플랫</div>
+                <div class="gsr-sub"><b>섀도우 엔진</b>이 키 라이트에서 배우(15 구 · 6DoF 보행) 뎁스 맵을 만들고 v17.55 스플랫마다 PCSS 블로커 탐색 → SIMD PCF 로 접지 그림자와 원근 반음영을 입힙니다. <b>릴라이팅 합성기</b>는 배우 주변 가우시안 방사휘도를 링버퍼로 역추출해 앰비언트 · 림 · 바운스 · 색온도를 디지털 휴먼 셰이더와 DIT 에 주입합니다. <b>가드</b>는 슬로프 바이어스로 아크네/피터 패닝을 막고 그림자 연산이 3.5 ms 를 넘으면 PCF 반경을 즉시 줄입니다.</div>
+            </div>
+            <button class="gsr-x" @onclick="Close">✕</button>
+        </div>
+        <div class="gsr-bar">
+            <button class="gsr-btn @(Runner.IsRunning ? "on" : "go")" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 재생")</button>
+            <button class="gsr-btn" disabled="@Runner.IsRunning" @onclick="Runner.Step">⏭ 1 프레임</button>
+            <button class="gsr-btn @(Runner.Shadow.Enabled ? "on" : null)" @onclick="() => Runner.SetShadows(!Runner.Shadow.Enabled)">🌓 그림자</button>
+            <button class="gsr-btn @(Runner.ShadowGuard.Enabled ? "on" : null)" @onclick="() => Runner.SetGuard(!Runner.ShadowGuard.Enabled)">🛡 바이어스 · 3.5 ms 가드</button>
+            <span class="gsr-sep"></span>
+            <label class="gsr-lbl">농도</label>
+            <input class="gsr-rng" type="range" min="0" max="100" value="@((int)(Runner.Shadow.Opacity * 100))" @oninput="OnOpacity" />
+            <span class="gsr-chip">@(F2(Runner.Shadow.Opacity))</span>
+            <label class="gsr-lbl">부드러움</label>
+            <input class="gsr-rng" type="range" min="0" max="300" value="@((int)(Runner.Shadow.Softness * 100))" @oninput="OnSoft" />
+            <span class="gsr-chip">×@(F2(Runner.Shadow.Softness))</span>
+        </div>
+        <div class="gsr-bar">
+            <label class="gsr-lbl">환경 반사</label>
+            <input class="gsr-rng" type="range" min="0" max="200" value="@((int)(Runner.Relight.Gain * 100))" @oninput="OnRefl" />
+            <span class="gsr-chip">×@(F2(Runner.Relight.Gain))</span>
+            <label class="gsr-lbl">PCF 반경</label>
+            <input class="gsr-rng" type="range" min="1" max="12" value="@(Runner.ShadowGuard.UserRadius)" @oninput="OnRadius" />
+            <span class="gsr-chip">@(Runner.ShadowGuard.RadiusCap)/@(Runner.ShadowGuard.UserRadius)</span>
+            <label class="gsr-lbl">바이어스</label>
+            <input class="gsr-rng" type="range" min="0" max="400" value="@((int)(Runner.ShadowGuard.BiasScale * 10))" @oninput="OnBias" />
+            <span class="gsr-chip">×@(F1(Runner.ShadowGuard.BiasScale))</span>
+            <label class="gsr-lbl">보행</label>
+            <input class="gsr-rng" type="range" min="0" max="150" value="@((int)(Runner.ActorSpeed * 100))" @oninput="OnSpeed" />
+        </div>
+        <div class="gsr-bar">
+            <button class="gsr-btn @(Runner.LinkHuman ? "on" : null)" disabled="@(!Runner.HumanAvailable)" @onclick="() => Runner.SetLinkHuman(!Runner.LinkHuman)">🧑 디지털 휴먼 셰이더</button>
+            <button class="gsr-btn @(Runner.LinkAvatar ? "on" : null)" disabled="@(!Runner.AvatarAvailable)" @onclick="() => Runner.SetLinkAvatar(!Runner.LinkAvatar)">🦴 DQS 골격 그림자</button>
+            <button class="gsr-btn @(Runner.LinkDit ? "on" : null)" disabled="@(!Runner.DitAvailable)" @onclick="() => Runner.SetLinkDit(!Runner.LinkDit)">🎨 DIT 키 CCT</button>
+            <button class="gsr-btn @(Runner.LinkLights ? "on" : null)" disabled="@(!Runner.LightsAvailable)" @onclick="() => Runner.SetLinkLights(!Runner.LinkLights)">💡 v17.41 키 픽스처</button>
+            <span class="gsr-chip">셰이더 주입 @(Runner.HumanPushes) · DIT @(Runner.DitPushes)</span>
+        </div>
+        <div class="gsr-main">
+            <div class="gsr-card">
+                <div class="gsr-sec">🎞 합성 프리뷰 320×192</div>
+                <img class="gsr-view" src="@(_img)" alt="3DGS shadow preview" />
+            </div>
+            <div class="gsr-col">
+                <div class="gsr-card row">
+                    <div>
+                        <div class="gsr-sec">🗺 광원 뎁스 맵(256² → 128²) · 주황 = 배우</div>
+                        <img class="gsr-depth" src="@(_depthImg)" alt="light depth map" />
+                    </div>
+                    <div class="gsr-kv">
+                        <div>빌드 @(F2(Runner.Shadow.LastBuildUs / 1000)) ms</div>
+                        <div>PCF @(F2(Runner.Shadow.LastPcfUs / 1000)) ms</div>
+                        <div>그림자 <b class="@(Runner.Shadow.LastShadowMs <= Runner.ShadowGuard.BudgetMs ? "ok" : "warn")">@(F2(Runner.Shadow.LastShadowMs))</b> / @(F1(Runner.ShadowGuard.BudgetMs)) ms</div>
+                        <div>평가 @(Runner.Shadow.Evaluations.ToString("N0", CultureInfo.InvariantCulture)) · 통과 @(Runner.Shadow.SkippedSplats.ToString("N0", CultureInfo.InvariantCulture))</div>
+                        <div>그림자 스플랫 @(Runner.Shadow.ShadowedSplats.ToString("N0", CultureInfo.InvariantCulture))</div>
+                        <div>축소 @(Runner.ShadowGuard.Downscales) · 복원 @(Runner.ShadowGuard.Restores)</div>
+                        <div>바이어스 상한 @(Runner.ShadowGuard.BiasClamps.ToString("N0", CultureInfo.InvariantCulture))</div>
+                    </div>
+                </div>
+                <div class="gsr-card">
+                    <div class="gsr-sec">💡 스플랫 환경광 → 배우(역추출 링 @(Runner.Relight.Samples)/@(SplatEnvironmentMutualRelightingSynthesizer.Ring))</div>
+                    <div class="gsr-meter"><span class="lbl">반사</span><div class="track"><div class="fill lum" style="width:@(Pct(Runner.Relight.Luminance * Runner.Relight.Gain))%"></div></div><b>@(F2(Runner.Relight.Luminance * Runner.Relight.Gain))</b></div>
+                    <div class="gsr-sw">
+                        <span><i style="background:@(Css(Runner.Relight.Ambient * 3f))"></i>앰비언트</span>
+                        <span><i style="background:@(Css(Runner.Relight.Rim * 1.5f))"></i>림</span>
+                        <span><i style="background:@(Css(Runner.Relight.Bounce * 2f))"></i>바운스</span>
+                        <span><i style="background:@(Css(Runner.KeyColor * 0.8f))"></i>키</span>
+                        <span class="cct">@(F0(Runner.Relight.CctK)) K</span>
+                    </div>
+                    <svg class="gsr-graph" viewBox="0 0 600 60" preserveAspectRatio="none">
+                        <line class="lim" x1="0" x2="600" y1="@(F1(58 - 56 * 3.5 / 7))" y2="@(F1(58 - 56 * 3.5 / 7))" />
+                        <polyline class="sh" points="@(Series(0))" />
+                        <polyline class="lu" points="@(Series(1))" />
+                    </svg>
+                    <div class="gsr-act">프레임 @(F2(Runner.LastTickMs)) ms · 가시 @(Runner.VisibleSplats.ToString("N0", CultureInfo.InvariantCulture)) · @(Runner.LastAction ?? "대기")</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .gsr-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .gsr-modal { width: min(1280px, 96vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
+    .gsr-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #475569 22%, var(--card)), color-mix(in srgb, #f59e0b 12%, var(--card))); }
+    .gsr-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .gsr-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .gsr-sub b { color: var(--text-primary); }
+    .gsr-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .gsr-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .gsr-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .gsr-btn:disabled { opacity: .45; cursor: default; }
+    .gsr-btn.on { background: color-mix(in srgb, #f59e0b 22%, var(--card)); border-color: #f59e0b; }
+    .gsr-btn.go { background: #f59e0b; color: #111; border: none; }
+    .gsr-sep { width: 1px; height: 20px; background: var(--line); margin: 0 4px; }
+    .gsr-lbl { font-size: 12px; color: var(--text-secondary); }
+    .gsr-rng { width: 100px; }
+    .gsr-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .gsr-main { display: grid; grid-template-columns: 1.1fr 1fr; gap: 12px; padding: 14px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .gsr-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .gsr-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); min-width: 0; }
+    .gsr-card.row { display: flex; gap: 12px; }
+    .gsr-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .gsr-view { width: 100%; aspect-ratio: 320 / 192; border-radius: 8px; image-rendering: pixelated; background: #05070c; display: block; }
+    .gsr-depth { width: 160px; height: 160px; border-radius: 6px; image-rendering: pixelated; background: #000; display: block; }
+    .gsr-kv { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 4px; }
+    .gsr-kv b.ok { color: #22c55e; } .gsr-kv b.warn { color: #f59e0b; }
+    .gsr-meter { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 11px; color: var(--text-secondary); }
+    .gsr-meter .lbl { width: 40px; font-weight: 700; }
+    .gsr-meter b { width: 50px; text-align: right; font: 700 11px var(--mono); color: var(--text-primary); }
+    .gsr-meter .track { position: relative; flex: 1; height: 12px; border-radius: 6px; background: #1e293b; overflow: hidden; }
+    .gsr-meter .fill.lum { height: 100%; background: linear-gradient(90deg, #f59e0b, #fde68a); transition: width .1s linear; }
+    .gsr-sw { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: var(--text-secondary); align-items: center; margin: 6px 0; }
+    .gsr-sw i { display: inline-block; width: 14px; height: 14px; border-radius: 4px; margin-right: 4px; vertical-align: middle; border: 1px solid var(--line); }
+    .gsr-sw .cct { font: 700 11px var(--mono); color: var(--text-primary); }
+    .gsr-graph { width: 100%; height: 60px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; display: block; }
+    .gsr-graph polyline { fill: none; stroke-width: 1.6; }
+    .gsr-graph .sh { stroke: #f59e0b; } .gsr-graph .lu { stroke: #38bdf8; }
+    .gsr-graph .lim { stroke: #ef4444; stroke-dasharray: 6 4; }
+    .gsr-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+    @@media (max-width: 860px) { .gsr-main { grid-template-columns: 1fr; } .gsr-card.row { flex-direction: column; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly byte[] _bmp = new byte[GaussianSplatRelightingStudioRunner.PreviewBytes];
+    private readonly byte[] _dbmp = new byte[GaussianSplatRelightingStudioRunner.DepthPreviewBytes];
+    private System.Threading.Timer? _timer;
+    private string _img = "", _depthImg = "";
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        if (!Runner.IsRunning) Runner.Step();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("SplatRelight.Modal.Timer", ex); }
+        }, null, 120, 120);
+    }
+
+    protected override bool ShouldRender()
+    {
+        Runner.WritePreviewBmp(_bmp);
+        Runner.WriteDepthBmp(_dbmp);
+        _img = "data:image/bmp;base64," + Convert.ToBase64String(_bmp);
+        _depthImg = "data:image/bmp;base64," + Convert.ToBase64String(_dbmp);
+        return true;
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string Pct(float v) => (Math.Clamp(v, 0f, 1f) * 100f).ToString("0.#", CultureInfo.InvariantCulture);
+
+    private static string Css(System.Numerics.Vector3 c)
+    {
+        static string B(float v) => ((int)Math.Clamp(MathF.Sqrt(MathF.Max(v, 0f)) * 255f, 0f, 255f)).ToString(CultureInfo.InvariantCulture);
+        return "rgb(" + B(c.X) + "," + B(c.Y) + "," + B(c.Z) + ")";
+    }
+
+    private string Series(int kind)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            var v = kind == 0 ? Runner.ShadowMsSeries(k) / 7.0 : Runner.LumSeries(k);
+            sb.Append((600.0 * i / (n - 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append((58 - 56 * Math.Clamp(v, 0, 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private static bool TryInt(ChangeEventArgs e, out int v) => int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out v);
+    private void OnOpacity(ChangeEventArgs e) { if (TryInt(e, out var v)) Runner.SetOpacity(v / 100f); }
+    private void OnSoft(ChangeEventArgs e) { if (TryInt(e, out var v)) Runner.SetSoftness(v / 100f); }
+    private void OnRefl(ChangeEventArgs e) { if (TryInt(e, out var v)) Runner.SetReflection(v / 100f); }
+    private void OnRadius(ChangeEventArgs e) { if (TryInt(e, out var v)) Runner.SetPcfRadius(v); }
+    private void OnBias(ChangeEventArgs e) { if (TryInt(e, out var v)) Runner.SetBiasScale(v / 10f); }
+    private void OnSpeed(ChangeEventArgs e) { if (TryInt(e, out var v)) Runner.SetActorSpeed(v / 100f); }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

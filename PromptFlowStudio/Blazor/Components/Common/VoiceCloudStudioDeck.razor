@@ -1,0 +1,222 @@
+@using PromptFlowStudio.Services.Voice
+@using PromptFlowStudio.Services.Cloud
+@implements IDisposable
+@inject VoiceAiDirectorEngine Director
+@inject VoiceEditHistoryLabeler History
+@inject MultiTenantCloudSyncService Cloud
+@inject StoryboardJobManager Jobs
+@inject IJSRuntime JS
+@inject PromptFlowStudio.Services.Ui.StudioMemoryAudit MemAudit
+
+@* [PromptFlow Studio] v2.9.0 보이스 & 클라우드 제어반 — 음성 파형 · 명령 이력 · 멀티 테넌트 동기화 상태. *@
+
+<div class="vcs">
+    <div class="vcs-h"><span class="vcs-title">🎙️ 보이스 AI 감독 & 클라우드</span><span class="vcs-badge">v2.9.0</span></div>
+
+    <div class="vcs-grid">
+        @* ── ① 음성 입력 + 스펙트럼 ── *@
+        <div class="vcs-card">
+            <div class="vcs-ct">🎙️ 음성 명령 <span class="vcs-live @(_listening ? "on" : null)">@(_listening ? "LISTENING" : "OFF")</span></div>
+            <div class="vcs-spectrum" id="vcs-bars">
+                @for (var i = 0; i < 14; i++) { <span class="vcs-bar @(_listening ? "live" : null)"></span> }
+            </div>
+            <button class="vcs-btn mic @(_listening ? "on" : null)" @onclick="ToggleMic" disabled="@Disabled">
+                @(_listening ? "⏹ 마이크 끄기" : "🎤 마이크 켜기")
+            </button>
+            <div class="vcs-manual">
+                <input class="vcs-input" placeholder="명령 직접 입력 (예: 3번 컷 카메라 오르빗)" @bind="_manual" @bind:event="oninput" disabled="@Disabled" />
+                <button class="vcs-btn sm" @onclick="RunManual" disabled="@(Disabled || string.IsNullOrWhiteSpace(_manual))">실행</button>
+            </div>
+            @if (_lastText is not null) { <div class="vcs-last">🗣️ "@_lastText"</div> }
+        </div>
+
+        @* ── ② 인식 명령 이력 ── *@
+        <div class="vcs-card">
+            <div class="vcs-ct">📜 명령 이력 <span class="vcs-cnt">@History.Entries.Count</span></div>
+            <div class="vcs-hist">
+                @if (History.Entries.Count == 0) { <div class="vcs-empty">아직 실행된 음성 명령이 없습니다.</div> }
+                @foreach (var e in History.Recent(6))
+                {
+                    <div class="vcs-hrow @(e.Ok ? null : "fail")">
+                        <span class="vcs-hlabel">@e.Label</span>
+                        <span class="vcs-hmsg">@e.Message</span>
+                    </div>
+                }
+            </div>
+        </div>
+
+        @* ── ③ 멀티 테넌트 클라우드 동기화 ── *@
+        <div class="vcs-card wide">
+            <div class="vcs-ct">
+                ☁️ 멀티 테넌트 클라우드
+                <span class="vcs-sync @SyncClass">@SyncIcon @Cloud.State</span>
+            </div>
+            @if (!Cloud.Configured)
+            {
+                <div class="vcs-cfg">
+                    <input class="vcs-input" placeholder="Tenant ID (예: acme-corp)" @bind="_tenantId" disabled="@Disabled" />
+                    <select class="vcs-input" @bind="_role" disabled="@Disabled">
+                        <option value="Creator">Creator</option><option value="Director">Director</option><option value="Admin">Admin</option>
+                    </select>
+                    <input class="vcs-input" placeholder="Cloud API Key" @bind="_apiKey" type="password" disabled="@Disabled" />
+                    <input class="vcs-input" placeholder="Base URL (https://…)" @bind="_baseUrl" disabled="@Disabled" />
+                    <button class="vcs-btn" @onclick="Configure" disabled="@(Disabled || string.IsNullOrWhiteSpace(_tenantId))">테넌트 연결</button>
+                </div>
+            }
+            else
+            {
+                <div class="vcs-tenant">
+                    <span class="vcs-chip">🏢 @Cloud.Context!.TenantId</span>
+                    <span class="vcs-chip">👤 @Cloud.Context.Role</span>
+                    <span class="vcs-chip">v@Project.SyncVersion</span>
+                    @if (Cloud.Lock is { } lk) { <span class="vcs-chip lock">🔒 @lk.Owner</span> }
+                </div>
+                <div class="vcs-msg">@Cloud.LastMessage</div>
+                <div class="vcs-cloud-btns">
+                    <button class="vcs-btn sm" @onclick="Pull" disabled="@Disabled">⬇ Pull</button>
+                    <button class="vcs-btn sm" @onclick="Lock" disabled="@(Disabled || !MultiTenantCloudSyncService.CanAcquireLock(Cloud.Context.Role))" title="@(MultiTenantCloudSyncService.CanAcquireLock(Cloud.Context.Role) ? "" : "Director 이상")">🔒 잠금</button>
+                    <button class="vcs-btn sm go" @onclick="Push" disabled="@(Disabled || !MultiTenantCloudSyncService.CanPublish(Cloud.Context.Role))" title="@(MultiTenantCloudSyncService.CanPublish(Cloud.Context.Role) ? "" : "Director 이상")">⬆ Push</button>
+                </div>
+            }
+        </div>
+    </div>
+</div>
+
+<style>
+    .vcs { border: 1px solid color-mix(in srgb,#8b5cf6 30%,var(--line)); border-radius: 16px; overflow: hidden;
+        background: linear-gradient(160deg, color-mix(in srgb,#8b5cf6 8%,rgba(18,20,31,.72)), rgba(18,20,31,.85)); backdrop-filter: blur(16px) saturate(140%); -webkit-backdrop-filter: blur(16px) saturate(140%); }
+    .vcs-h { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb,#8b5cf6 13%,transparent), transparent 60%); }
+    .vcs-title { font: 900 14px var(--mono); } .vcs-badge { font: 700 10px var(--mono); color: #c4b5fd; background: color-mix(in srgb,#8b5cf6 16%,transparent); border: 1px solid color-mix(in srgb,#8b5cf6 40%,var(--line)); border-radius: 20px; padding: 2px 8px; }
+    .vcs-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 14px 16px; }
+    .vcs-card { border: 1px solid var(--line); border-radius: 13px; background: rgba(26,29,43,.6); padding: 12px; display: flex; flex-direction: column; gap: 10px; } .vcs-card.wide { grid-column: 1/-1; }
+    .vcs-ct { font: 800 12px var(--mono); display: flex; align-items: center; gap: 7px; }
+    .vcs-live { font: 800 9px var(--mono); color: var(--text-muted); border: 1px solid var(--line); border-radius: 20px; padding: 1px 8px; }
+    .vcs-live.on { color: #86efac; border-color: #22c55e; animation: vcs-blink 1s ease-in-out infinite; }
+    @@keyframes vcs-blink { 50% { opacity: .5; } }
+    .vcs-spectrum { display: flex; align-items: flex-end; gap: 3px; height: 60px; padding: 6px 4px; background: #0b0d14; border: 1px solid var(--line); border-radius: 10px; }
+    .vcs-bar { flex: 1; height: 8%; border-radius: 3px 3px 0 0; background: linear-gradient(180deg,#c4b5fd,#8b5cf6); opacity: .35; transition: height .08s linear; }
+    .vcs-bar.live { opacity: 1; }
+    .vcs-btn { font: 800 12.5px var(--mono); padding: 10px 14px; border: none; border-radius: 10px; color: #fff; cursor: pointer; background: linear-gradient(135deg,#7c3aed,#8b5cf6); }
+    .vcs-btn.mic.on { background: linear-gradient(135deg,#dc2626,#ef4444); } .vcs-btn.sm { padding: 8px 12px; font-size: 11.5px; } .vcs-btn.go { background: linear-gradient(135deg,#0ea5e9,#8b5cf6); }
+    .vcs-btn:disabled { opacity: .45; cursor: not-allowed; } .vcs-btn:hover:not(:disabled) { filter: brightness(1.08); }
+    .vcs-manual { display: flex; gap: 7px; } .vcs-manual .vcs-input { flex: 1; }
+    .vcs-input { background: #12141f; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; color: var(--text-primary); font: 600 11.5px var(--mono); box-sizing: border-box; }
+    .vcs-input:focus { outline: none; border-color: #8b5cf6; }
+    .vcs-last { font: 600 10.5px var(--mono); color: #c4b5fd; }
+    .vcs-cnt { margin-left: auto; font: 700 10px var(--mono); color: var(--text-muted); background: #12141f; border: 1px solid var(--line); border-radius: 20px; padding: 1px 8px; }
+    .vcs-hist { display: flex; flex-direction: column; gap: 5px; max-height: 150px; overflow-y: auto; }
+    .vcs-empty { font: 600 10.5px var(--mono); color: var(--text-muted); padding: 8px 0; }
+    .vcs-hrow { display: flex; flex-direction: column; gap: 1px; padding: 6px 9px; border-radius: 8px; background: #12141f; border-left: 3px solid #22c55e; }
+    .vcs-hrow.fail { border-left-color: #ef4444; }
+    .vcs-hlabel { font: 800 10.5px var(--mono); color: var(--text-primary); } .vcs-hmsg { font: 600 9.5px var(--mono); color: var(--text-muted); }
+    .vcs-sync { margin-left: auto; font: 800 10px var(--mono); border-radius: 20px; padding: 2px 9px; }
+    .vcs-sync.s-synced { color: #86efac; background: color-mix(in srgb,#22c55e 15%,transparent); } .vcs-sync.s-sync { color: #7dd3fc; background: color-mix(in srgb,#0ea5e9 15%,transparent); }
+    .vcs-sync.s-lock { color: #fca5a5; background: color-mix(in srgb,#ef4444 15%,transparent); } .vcs-sync.s-conf { color: #fbbf24; background: color-mix(in srgb,#f59e0b 15%,transparent); } .vcs-sync.s-off { color: var(--text-muted); background: #12141f; }
+    .vcs-cfg { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; } .vcs-cfg .vcs-btn { grid-column: 1/-1; }
+    .vcs-tenant { display: flex; gap: 6px; flex-wrap: wrap; } .vcs-chip { font: 700 10px var(--mono); color: var(--text-secondary); background: #12141f; border: 1px solid var(--line); border-radius: 8px; padding: 4px 9px; } .vcs-chip.lock { color: #fca5a5; border-color: color-mix(in srgb,#ef4444 40%,var(--line)); }
+    .vcs-msg { font: 600 10.5px var(--mono); color: var(--text-muted); }
+    .vcs-cloud-btns { display: flex; gap: 7px; justify-content: flex-end; }
+    @@media (max-width: 720px) { .vcs-grid { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter, EditorRequired] public StoryboardProject Project { get; set; } = default!;
+    [Parameter] public bool Disabled { get; set; }
+
+    private DotNetObjectReference<VoiceCloudStudioDeck>? _ref;
+    private bool _listening;
+    private string _manual = "";
+    private string? _lastText;
+
+    private string _tenantId = "", _apiKey = "", _baseUrl = "https://cloud.promptflow.studio/api";
+    private string _role = "Creator";
+
+    private string SyncClass => Cloud.State switch
+    {
+        SyncState.Synced => "s-synced", SyncState.Syncing => "s-sync", SyncState.RemoteLocked => "s-lock",
+        SyncState.Conflict => "s-conf", _ => "s-off",
+    };
+    private string SyncIcon => Cloud.State switch
+    {
+        SyncState.Synced => "✅", SyncState.Syncing => "🔄", SyncState.RemoteLocked => "🔒", SyncState.Conflict => "⚠️", _ => "☁️",
+    };
+
+    private long _memToken;
+
+    protected override void OnInitialized()
+    {
+        _memToken = MemAudit.Track("VoiceCloudStudioDeck");   // v3.1.0 누수 감사 추적
+        History.OnChange += OnSvc;
+        Cloud.OnChange += OnSvc;
+    }
+    private void OnSvc() => InvokeAsync(StateHasChanged);
+
+    private async Task ToggleMic()
+    {
+        if (_listening) { await JS.InvokeVoidAsync("pfVoice.stop"); _listening = false; return; }
+        _ref ??= DotNetObjectReference.Create(this);
+        try
+        {
+            _listening = await JS.InvokeAsync<bool>("pfVoice.start", _ref, "vcs-bars");
+            if (_listening) await Play(VoiceFeedbackSynthesizer.Ack());
+        }
+        catch { _listening = false; }
+    }
+
+    /// <summary>Web Speech 인식 결과 콜백(JS → .NET).</summary>
+    [JSInvokable]
+    public async Task OnVoiceText(string text) => await ExecuteText(text);
+
+    private async Task RunManual() { var t = _manual; _manual = ""; await ExecuteText(t); }
+
+    private async Task ExecuteText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+        _lastText = text;
+        var cmds = Director.ParseMultiple(text);
+        bool anyOk = false, anyFail = false;
+        foreach (var c in cmds)
+        {
+            var res = Director.Apply(c, Project);
+            History.Record(c, res);
+            anyOk |= res.Ok; anyFail |= !res.Ok;
+            switch (res.Action)
+            {
+                case VoiceActionKind.StartGeneration:
+                case VoiceActionKind.Merge:
+                    if (!Jobs.IsRunning && !Jobs.IsMerging) _ = Jobs.StartAsync(Project);
+                    break;
+                case VoiceActionKind.StopGeneration:
+                    Jobs.Cancel();
+                    break;
+            }
+        }
+        await Play(anyOk ? VoiceFeedbackSynthesizer.Success() : VoiceFeedbackSynthesizer.Error());
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task Play(byte[] wav)
+    {
+        try { await JS.InvokeVoidAsync("pfVoice.play", VoiceFeedbackSynthesizer.ToDataUri(wav)); } catch { }
+    }
+
+    private void Configure()
+    {
+        var role = Enum.TryParse<TenantRole>(_role, out var r) ? r : TenantRole.Creator;
+        Cloud.Configure(new TenantContext(_tenantId.Trim(), "me", role, _apiKey, _baseUrl.Trim()));
+        Project.TenantId = _tenantId.Trim();
+    }
+
+    private async Task Push() => await Cloud.PushAsync(Project);
+    private async Task Pull() => await Cloud.PullAsync(Project.Id);
+    private async Task Lock() => await Cloud.AcquireLockAsync(Project);
+
+    public void Dispose()
+    {
+        History.OnChange -= OnSvc;
+        Cloud.OnChange -= OnSvc;
+        if (_listening) { try { _ = JS.InvokeVoidAsync("pfVoice.stop"); } catch { } }
+        _ref?.Dispose();
+        MemAudit.Release(_memToken);   // v3.1.0 누수 감사 해제
+    }
+}

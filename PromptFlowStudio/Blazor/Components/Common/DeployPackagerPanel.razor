@@ -1,0 +1,199 @@
+@using PromptFlowStudio.Services.Deploy
+@inject PromptFlowStudio.Services.Deploy.PromptFlowPackagerService Packager
+@inject PromptFlowStudio.Services.Deploy.DeploymentRunnerHardening Runner
+@implements IDisposable
+
+@* [PromptFlow Studio] 보안 배포 · 올인원 인스톨러 & 단일 EXE 패키징 집행 — PromptFlowPackagerService 를 구독해 실시간 로그 스트리밍.
+   모니터링 오토메이션(SoundStack) → SiteMatic 계보 이식본 — 순수 .NET 파이프라인(3단계). *@
+<section class="pk-card">
+    <div class="pk-head">
+        <span class="pk-ico">🚀</span>
+        <div class="pk-hgrow">
+            <div class="pk-title">보안 배포 · 올인원 인스톨러 &amp; 단일 EXE</div>
+            <div class="pk-desc">버튼 한 번으로 <b>단일 EXE 퍼블리시 → 페이로드 번들 → Inno Setup 인스톨러</b>를 순차 집행합니다. Inno Setup 미설치 시 단일 EXE 폴더로 안전 폴백.</div>
+        </div>
+    </div>
+
+    <div class="pk-steps">
+        <div class="pk-step"><span class="pk-n">1</span><div><b>단일 EXE 퍼블리시</b><span>런타임 내장 self-contained · PublishSingleFile</span></div></div>
+        <div class="pk-arrow">→</div>
+        <div class="pk-step"><span class="pk-n">2</span><div><b>페이로드 번들</b><span>PromptFlowStudio.exe + appsettings + wwwroot + 아이콘</span></div></div>
+        <div class="pk-arrow">→</div>
+        <div class="pk-step"><span class="pk-n">3</span><div><b>인스톨러 컴파일</b><span>Inno Setup · WebView2 런타임 자동 보장</span></div></div>
+    </div>
+
+    <div class="pk-note">🔧 이 기능은 <b>소스 + .NET SDK 가 설치된 발급자(개발) PC</b> 전용입니다. 배포 수령 PC 에는 소스가 없어 자동으로 스킵됩니다. 산출물은 <b>바탕화면</b>에 생성됩니다.</div>
+
+    @* v5.3.2: 빌드 타깃 선택(토글) — Windows EXE / Android APK / iOS IPA *@
+    <div class="pk-targets" role="group" aria-label="빌드 타깃 선택">
+        <button class="pk-seg @(_target == Target.Windows ? "on" : null)" @onclick="() => _target = Target.Windows" disabled="@_isBuilding">💻 Windows EXE</button>
+        <button class="pk-seg @(_target == Target.Android ? "on" : null)" @onclick="() => _target = Target.Android" disabled="@_isBuilding">🤖 Android APK</button>
+        <button class="pk-seg @(_target == Target.Ios ? "on" : null)" @onclick="() => _target = Target.Ios" disabled="@_isBuilding">🍎 iOS IPA</button>
+    </div>
+
+    <div class="pk-actions">
+        <button class="pk-btn" @onclick="RunSelectedAsync" disabled="@_isBuilding">
+            @(_isBuilding ? "⏳ 패키징 진행 중…" : $"🚀 {TargetLabel} 패키징 집행")
+        </button>
+        @if (!_isBuilding && _done)
+        {
+            <span class="pk-badge @(_ok ? "ok" : "bad")">@(_ok ? "✓ 산출 완료" : "✗ 산출 실패")</span>
+        }
+    </div>
+
+    @* 플랫폼별 단독 실행 버튼(전면 노출) — 하드닝된 스크립트 러너로 즉시 패키징(타임아웃 10분·트리 kill). *@
+    <div class="pk-quick">
+        <button class="pk-btn droid" @onclick="RunAndroidAsync" disabled="@_isBuilding">🚀 Android APK 즉시 패키징</button>
+        <button class="pk-btn ios" @onclick="RunIosAsync" disabled="@_isBuilding">🍎 iOS IPA 즉시 패키징</button>
+    </div>
+
+    @if (_lines.Count > 0)
+    {
+        <pre class="pk-console">@string.Join("\n", _lines)</pre>
+    }
+
+    @if (_done && _ok && Packager.LastOutputPath is { } outp)
+    {
+        <div class="pk-result">📦 산출물: <span>@outp</span></div>
+    }
+</section>
+
+<style>
+    .pk-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius, 14px); padding: 16px 18px; margin-bottom: 14px; }
+    .pk-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+    .pk-ico { width: 42px; height: 42px; flex: 0 0 auto; display: grid; place-items: center; font-size: 20px; border-radius: 11px; background: color-mix(in srgb, var(--accent) 12%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); }
+    .pk-hgrow { min-width: 0; flex: 1; }
+    .pk-title { font-size: 15px; font-weight: 800; color: var(--ink); }
+    .pk-desc { font-size: 11.5px; color: var(--sub); margin-top: 2px; line-height: 1.5; } .pk-desc b { color: var(--accent); }
+    .pk-steps { display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+    .pk-step { flex: 1 1 160px; display: flex; align-items: center; gap: 10px; background: var(--card-2, rgba(148,163,184,.06)); border: 1px solid var(--line); border-radius: 11px; padding: 10px 12px; }
+    .pk-step .pk-n { width: 24px; height: 24px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 7px; font-weight: 800; font-size: 12px; color: #fff; background: linear-gradient(135deg, var(--accent-2, #8b7bff), var(--accent, #6d5efc)); }
+    .pk-step b { display: block; font-size: 12.5px; color: var(--ink); } .pk-step span { display: block; font-size: 10.5px; color: var(--sub); margin-top: 2px; }
+    .pk-arrow { display: grid; place-items: center; color: var(--sub); font-weight: 800; }
+    @@media (max-width: 720px) { .pk-arrow { display: none; } }
+    .pk-note { font-size: 11.5px; color: var(--sub); background: color-mix(in srgb, var(--warn, #f59e0b) 8%, transparent); border: 1px dashed color-mix(in srgb, var(--warn, #f59e0b) 40%, transparent); border-radius: 10px; padding: 10px 13px; line-height: 1.55; margin-bottom: 14px; } .pk-note b { color: var(--ink); }
+    .pk-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .pk-btn { border: none; border-radius: 11px; padding: 11px 20px; font-weight: 800; font-size: .9rem; cursor: pointer; color: #fff; background: linear-gradient(135deg, var(--accent-2, #8b7bff), var(--accent, #6d5efc)); box-shadow: 0 6px 18px color-mix(in srgb, var(--accent, #6d5efc) 30%, transparent); transition: filter .15s ease, transform .1s ease; font-family: inherit; }
+    .pk-btn:hover:not(:disabled) { filter: brightness(1.06); } .pk-btn:active:not(:disabled) { transform: scale(.98); }
+    .pk-btn:disabled { opacity: .55; cursor: not-allowed; }
+    /* v5.3.2: 빌드 타깃 토글 + 플랫폼별 단독 버튼 */
+    .pk-targets { display: inline-flex; gap: 4px; background: var(--card-2, rgba(148,163,184,.06)); border: 1px solid var(--line); border-radius: 11px; padding: 4px; margin-bottom: 12px; flex-wrap: wrap; }
+    .pk-seg { appearance: none; border: none; background: none; cursor: pointer; font: 800 12px inherit; color: var(--sub, #93a3b8); padding: 8px 14px; border-radius: 8px; }
+    .pk-seg:hover:not(:disabled) { color: var(--ink, #e6eefc); }
+    .pk-seg.on { color: #fff; background: linear-gradient(135deg, var(--accent-2, #8b7bff), var(--accent, #6d5efc)); }
+    .pk-seg:disabled { opacity: .5; cursor: not-allowed; }
+    .pk-quick { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+    .pk-btn.droid { background: linear-gradient(135deg, #3ddc84, #12a150); box-shadow: 0 6px 18px color-mix(in srgb, #12a150 30%, transparent); }
+    .pk-btn.ios { background: linear-gradient(135deg, #a1a1aa, #52525b); box-shadow: 0 6px 18px color-mix(in srgb, #52525b 30%, transparent); }
+    .pk-badge { font-size: 12px; font-weight: 800; padding: 5px 12px; border-radius: 999px; }
+    .pk-badge.ok { color: var(--up, #22c55e); background: color-mix(in srgb, var(--up, #22c55e) 14%, transparent); border: 1px solid color-mix(in srgb, var(--up, #22c55e) 45%, transparent); }
+    .pk-badge.bad { color: var(--down, #ef4444); background: color-mix(in srgb, var(--down, #ef4444) 14%, transparent); border: 1px solid color-mix(in srgb, var(--down, #ef4444) 45%, transparent); }
+    .pk-console { margin-top: 14px; max-height: 340px; overflow: auto; background: #070d17; border: 1px solid var(--line); border-radius: 11px; padding: 12px 14px; color: #cbd6e6; font-family: var(--mono, ui-monospace, Consolas, monospace); font-size: 11.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+    .pk-result { margin-top: 12px; font-size: 12.5px; font-weight: 700; color: var(--up, #22c55e); background: color-mix(in srgb, var(--up, #22c55e) 10%, transparent); border: 1px solid color-mix(in srgb, var(--up, #22c55e) 40%, transparent); border-radius: 10px; padding: 10px 13px; word-break: break-all; } .pk-result span { font-family: var(--mono, ui-monospace, Consolas, monospace); }
+</style>
+
+@code {
+    private const string Version = "5.3.2";                 // 패키징 버전 태그
+    private enum Target { Windows, Android, Ios }
+    private Target _target = Target.Windows;
+    private string TargetLabel => _target switch { Target.Android => "Android APK", Target.Ios => "iOS IPA", _ => "Windows EXE" };
+
+    private readonly List<string> _lines = new();
+    private bool _isBuilding, _done, _ok;
+
+    protected override void OnInitialized() => Packager.OnLogReceived += OnLog;
+
+    private void OnLog(string line)
+    {
+        // 임의 스레드(빌드 스레드풀/프로세스 드레인)에서 호출 — UI 스레드로 마샬링해 안전하게 갱신.
+        lock (_lines) { _lines.Add(line); if (_lines.Count > 600) _lines.RemoveRange(0, _lines.Count - 600); }
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private Task RunSelectedAsync() => _target switch
+    {
+        Target.Android => RunAndroidAsync(),
+        Target.Ios => RunIosAsync(),
+        _ => LaunchBuildAsync(),
+    };
+
+    // ── 💻 Windows EXE(기존 순수 .NET 파이프라인) ──
+    private async Task LaunchBuildAsync()
+    {
+        if (_isBuilding) return;
+        _isBuilding = true; _done = false; _ok = false;
+        lock (_lines) _lines.Clear();
+        await InvokeAsync(StateHasChanged);
+        try { _ok = await Packager.ExecuteSecurePublishAsync(); }
+        catch (Exception ex) { OnLog($"❌ 예외: {ex.Message}"); _ok = false; }
+        finally { _isBuilding = false; _done = true; await InvokeAsync(StateHasChanged); }
+    }
+
+    // ── 🤖 Android APK(하드닝된 스크립트 러너로 build-android-apk.ps1 실행) ──
+    private Task RunAndroidAsync()
+        => RunScriptTargetAsync("Android APK", ScriptShell.PowerShell, "build-android-apk.ps1", new[] { "-Version", Version });
+
+    // ── 🍎 iOS IPA(macOS + Xcode 필요 · Windows 는 Graceful 안내) ──
+    private async Task RunIosAsync()
+    {
+        if (_isBuilding) return;
+        _isBuilding = true; _done = false; _ok = false;
+        lock (_lines) _lines.Clear();
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            OnLog("🍎 iOS IPA 패키징 — iOS 빌드는 macOS + Xcode 가 필요합니다(Windows 개발 PC 에서는 빌드 불가).");
+            OnLog("   macOS 에서 scripts/package-all.sh --target ios 를 실행하세요.");
+            var sh = ResolveScript("package-all.sh");
+            if (sh is not null)
+            {
+                OnLog("   bash 감지 시도 — 비-macOS 환경에서는 Graceful 실패로 종료됩니다.");
+                var res = await Runner.RunScriptAsync(ScriptShell.Bash, sh, new[] { "--target", "ios", "--version", Version },
+                    allowedRoot: null, timeout: TimeSpan.FromMinutes(10), log: OnLog);
+                _ok = res.Ok;
+                if (!res.Ok) OnLog("⚠ 결과: " + res.Message);
+            }
+            else { OnLog("   (package-all.sh 미발견 — macOS 빌드 환경에서 실행 필요)"); _ok = false; }
+        }
+        catch (Exception ex) { OnLog($"❌ 예외: {ex.Message}"); _ok = false; }
+        finally { _isBuilding = false; _done = true; await InvokeAsync(StateHasChanged); }
+    }
+
+    // 스크립트 타깃 공용 실행 — 하드닝 러너(셸 이스케이프·경로검증·타임아웃10분·트리 kill)로 구동, 로그 스트리밍.
+    private async Task RunScriptTargetAsync(string label, ScriptShell shell, string scriptName, string[] args)
+    {
+        if (_isBuilding) return;
+        _isBuilding = true; _done = false; _ok = false;
+        lock (_lines) _lines.Clear();
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var script = ResolveScript(scriptName);
+            if (script is null) { OnLog($"❌ {scriptName} 를 찾지 못했습니다 — 소스가 있는 개발 PC 에서 실행하세요."); _ok = false; return; }
+            OnLog($"🚀 {label} 패키징 시작 — {System.IO.Path.GetFileName(script)} (pwsh 권장 · 타임아웃 10분)");
+            var res = await Runner.RunScriptAsync(shell, script, args, allowedRoot: null, timeout: TimeSpan.FromMinutes(10), log: OnLog);
+            _ok = res.Ok;
+            if (!res.Ok) OnLog($"⚠ 결과: {res.Message}{(res.TimedOut ? " (타임아웃 → 트리 종료)" : "")}");
+        }
+        catch (Exception ex) { OnLog($"❌ 예외: {ex.Message}"); _ok = false; }
+        finally { _isBuilding = false; _done = true; await InvokeAsync(StateHasChanged); }
+    }
+
+    // 실행 폴더에서 상위로 거슬러 scripts/{name} 을 탐색(개발 PC 전용 · 없으면 null).
+    private static string? ResolveScript(string name)
+    {
+        try
+        {
+            var dir = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
+            for (int i = 0; i < 8 && dir is not null; i++, dir = dir.Parent)
+            {
+                var cand = System.IO.Path.Combine(dir.FullName, "scripts", name);
+                if (System.IO.File.Exists(cand)) return cand;
+            }
+        }
+        catch { /* 접근 실패 → null */ }
+        return null;
+    }
+
+    public void Dispose() => Packager.OnLogReceived -= OnLog;
+}

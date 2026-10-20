@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8" />
+    <!-- 갤럭시 S26 울트라/DeX 반응형: viewport-fit=cover 로 노치/펀치홀 대응 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>PromptFlow Studio</title>
+    <base href="/" />
+    <!-- 기존 데스크톱 글래스모피즘 스타일 재사용(csproj 에서 ../PromptFlowStudio/wwwroot 링크 복사) -->
+    <link rel="stylesheet" href="css/app.css" />
+    <link rel="stylesheet" href="_pfs/hud-theme.css" />
+    <link rel="stylesheet" href="_pfs/PromptFlowStudio.Shared.bundle.scp.css" />
+    <style>
+        html, body { margin: 0; height: 100%; background: #0b0d14; color: #e6edff; overscroll-behavior: none; }
+        /* DeX/모바일 공통 안전영역 패딩 */
+        .pfs-mobile-root { min-height: 100dvh; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); box-sizing: border-box; }
+        .pfs-m-top { font: 900 15px Pretendard,'Malgun Gothic',sans-serif; padding: 12px 14px; } .pfs-m-top span { color: #6ee7b7; font-weight: 600; font-size: 11px; }
+        .pfs-m-body { padding: 0 12px 24px; }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div style="padding:24px;font-family:Pretendard,'Malgun Gothic',sans-serif">로딩 중…</div>
+    </div>
+    <div id="blazor-error-ui" style="display:none">문제가 발생했습니다. <a href="" class="reload">새로고침</a></div>
+    <script src="_framework/blazor.webview.js" autostart="false"></script>
+</body>
+</html>

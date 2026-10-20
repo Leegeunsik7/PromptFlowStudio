@@ -1,0 +1,248 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.GaussianClothHair
+@using PromptFlowStudio.Services.SkinnedSplatAvatar
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject GaussianClothHairStudioRunner Runner
+
+@* [PromptFlow Studio v17.59.0] 👗 가우시안 클로스 & 헤어 피직스 스튜디오 — 원단 프리셋 · 헤어 강성 · 풍속/풍향/난류 · 회전/이동 · 신장/CCD 가드 카운터. *@
+<div class="gch-scrim" @onclick="Close">
+    <div class="gch-modal" @onclick:stopPropagation="true">
+        <div class="gch-h">
+            <div>
+                <div class="gch-title">👗 가우시안 클로스 & 헤어 피직스 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null) · @(Runner.Points.ToString("N0", CultureInfo.InvariantCulture)) 동역학 가우시안</div>
+                <div class="gch-sub"><b>PBD 동역학 엔진</b>이 스커트 격자 960 입자와 헤어 160 가닥 × 12 노드를 SIMD 베를레 + Gauss-Seidel 거리/굽힘 구속으로 풀고, 의상 20 000 · 헤어 15 000 가우시안 공분산을 변형 접선과 스트랜드 흐름 방향으로 정렬합니다. <b>공기역학 합성기</b>는 바람 난류와 캐릭터 상대 유속으로 항력/양력을 걸고 24 관절 캡슐에 마찰 · 반발 충돌을 적용합니다. <b>안전 가드</b>는 신장률 110 % 를 강제 구속하고 프레임 저하 시 스윕 구 CCD 로 터널링을 진입 쪽으로 되돌립니다.</div>
+            </div>
+            <button class="gch-x" @onclick="Close">✕</button>
+        </div>
+        <div class="gch-bar">
+            <button class="gch-btn @(Runner.IsRunning ? "on" : "go")" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 재생")</button>
+            <button class="gch-btn" disabled="@Runner.IsRunning" @onclick="Runner.Step">⏭ 1 프레임</button>
+            <button class="gch-btn" @onclick="Runner.ResetCloth">↺ 휴지 배치</button>
+            <span class="gch-sep"></span>
+            @for (var m = 0; m < GaussianClothHairStudioRunner.Motions.Length; m++)
+            {
+                <button class="gch-btn pre @(Runner.Motion == GaussianClothHairStudioRunner.Motions[m] ? "on" : null)" @onclick="_motion[m]">@(GaussianClothHairStudioRunner.MotionName(GaussianClothHairStudioRunner.Motions[m]))</button>
+            }
+            <span class="gch-sep"></span>
+            @for (var f = 0; f < 3; f++)
+            {
+                <button class="gch-btn fab @(Runner.Physics.Fabric == (FabricPreset)f ? "on" : null)" @onclick="_fabric[f]">@(RealtimeGaussianClothHairPhysicsEngine.FabricName((FabricPreset)f))</button>
+            }
+        </div>
+        <div class="gch-bar">
+            <button class="gch-btn @(Runner.Guard.StrainEnabled ? "on" : null)" @onclick="() => Runner.SetStrainGuard(!Runner.Guard.StrainEnabled)">🛡 신장 110 % 클램프</button>
+            <button class="gch-btn @(Runner.Guard.CcdEnabled ? "on" : null)" @onclick="() => Runner.SetCcdGuard(!Runner.Guard.CcdEnabled)">🛡 스윕 CCD</button>
+            <button class="gch-btn @(Runner.Aero.CollisionEnabled ? "on" : null)" @onclick="() => Runner.SetCollision(!Runner.Aero.CollisionEnabled)">🧍 신체 충돌</button>
+            <button class="gch-btn @(Runner.UseWeather ? "on" : null)" disabled="@(!Runner.WeatherAvailable)" @onclick="() => Runner.SetWeather(!Runner.UseWeather)">⛈ v17.28 기상 바람</button>
+            <button class="gch-btn @(Runner.Glitch ? "on" : null)" @onclick="() => Runner.SetGlitch(!Runner.Glitch)">💥 고속 회전 · 프레임 저하 주입</button>
+            <button class="gch-btn @(_overlay ? "on" : null)" @onclick="() => _overlay = !_overlay">🦴 캡슐 오버레이</button>
+        </div>
+        <div class="gch-main">
+            <div class="gch-col">
+                <div class="gch-card">
+                    <div class="gch-sec">🎞 클로스 · 헤어 가우시안 프리뷰 320×192</div>
+                    <div class="gch-stage">
+                        <img class="gch-view" src="@(_img)" alt="gaussian cloth hair" />
+                        @if (_overlay)
+                        {
+                            <svg class="gch-bones" viewBox="0 0 320 192" preserveAspectRatio="none">
+                                @for (var c = 0; c < AerodynamicWindBodyCollisionSynthesizer.Capsules; c++)
+                                {
+                                    if (Runner.Project(Runner.Aero.CapsuleA(c), out var x0, out var y0) && Runner.Project(Runner.Aero.CapsuleB(c), out var x1, out var y1))
+                                    {
+                                        <g><line x1="@(F1(x0))" y1="@(F1(y0))" x2="@(F1(x1))" y2="@(F1(y1))" /><circle cx="@(F1(x1))" cy="@(F1(y1))" r="1.3" /></g>
+                                    }
+                                }
+                            </svg>
+                        }
+                    </div>
+                </div>
+                <div class="gch-card">
+                    <div class="gch-sec">🎚 헤어 강성 · 바람 벡터 · 모션 제어</div>
+                    <div class="gch-sliders">
+                        <label>헤어 강성</label>
+                        <input type="range" min="0" max="100" value="@((int)(Runner.Physics.HairStiffness * 100))" @oninput="OnStiff" />
+                        <span class="gch-chip">@(F2(Runner.Physics.HairStiffness))</span>
+                        <label>풍속</label>
+                        <input type="range" min="0" max="150" value="@((int)(Runner.Aero.WindSpeed * 10))" disabled="@Runner.UseWeather" @oninput="OnWind" />
+                        <span class="gch-chip">@(F1(Runner.Aero.WindSpeed)) m/s</span>
+                        <label>풍향</label>
+                        <input type="range" min="0" max="359" value="@((int)Runner.Aero.WindDirDeg)" disabled="@Runner.UseWeather" @oninput="OnDir" />
+                        <span class="gch-chip">@(F1(Runner.Aero.WindDirDeg))°</span>
+                        <label>난류</label>
+                        <input type="range" min="0" max="100" value="@((int)(Runner.Aero.Turbulence * 100))" disabled="@Runner.UseWeather" @oninput="OnTurb" />
+                        <span class="gch-chip">@(F2(Runner.Aero.Turbulence))</span>
+                        <label>회전 속도</label>
+                        <input type="range" min="-100" max="100" value="@((int)(Runner.SpinRate * 10))" @oninput="OnSpin" />
+                        <span class="gch-chip">@(F1(Runner.SpinRate)) rad/s</span>
+                        <label>이동 속도</label>
+                        <input type="range" min="0" max="60" value="@((int)(Runner.MoveSpeed * 10))" @oninput="OnMove" />
+                        <span class="gch-chip">@(F1(Runner.MoveSpeed)) m/s</span>
+                        <label>PBD 반복</label>
+                        <input type="range" min="1" max="24" value="@(Runner.Iterations)" @oninput="OnIter" />
+                        <span class="gch-chip">@(Runner.Iterations)</span>
+                    </div>
+                </div>
+            </div>
+            <div class="gch-col">
+                <div class="gch-card">
+                    <div class="gch-sec">📊 PBD 솔버 · 공기역학</div>
+                    <div class="gch-kv grid2">
+                        <div>프레임 <b class="@(Runner.LastTickMs < 16.7 ? "ok" : "warn")">@(F2(Runner.LastTickMs))</b> ms · 최대 @(F2(Runner.MaxTickMs))</div>
+                        <div>PBD @(F2(Runner.Physics.LastStepUs / 1000)) ms · 하위 단계 @(Runner.Physics.Substeps) · 반복 @(Runner.Iterations)</div>
+                        <div>공분산 정렬 @(F2(Runner.Physics.LastSplatUs / 1000)) ms · 가드 @(F2(Runner.Guard.LastGuardUs / 1000)) ms</div>
+                        <div>원단 <b>@(Runner.Physics.Material.Name)</b> · @(F2(Runner.Physics.Material.Density)) kg/m² · μ @(F2(Runner.Physics.Material.Friction))</div>
+                        <div>몸 속도 @(F2(Runner.Aero.BodyVelocity.Length())) m/s · 가속 @(F1(Runner.Aero.BodyAccel.Length())) m/s²</div>
+                        <div>상대 유속 최고 @(F1(Runner.Aero.PeakApparentWind)) m/s · 공력 가속 @(F1(Runner.Aero.FrameMaxAccel)) m/s²</div>
+                        <div>유효 난류 @(F2(Runner.Aero.EffectiveTurbulence)) · 캡슐 접촉 <b>@(Runner.Aero.FrameContacts)</b></div>
+                        <div>입자 @(RealtimeGaussianClothHairPhysicsEngine.Particles.ToString("N0", CultureInfo.InvariantCulture)) · 구속 @(Runner.Physics.ConstraintCount.ToString("N0", CultureInfo.InvariantCulture)) · 고정 @(Runner.Physics.PinCount)</div>
+                    </div>
+                </div>
+                <div class="gch-card">
+                    <div class="gch-sec">🛡 신장 변형률 클램프 · 스윕 구 CCD 침투 가드</div>
+                    <div class="gch-meter"><div class="@(Runner.Guard.FramePeakStrain <= StrainLimitPenetrationGuard.MaxStrain ? "ok" : "warn")" style="width:@(Pct(Runner.Guard.FramePeakStrain))%"></div><span>신장률 @(F1((Runner.Guard.FramePeakStrain - 1f) * 100f)) % → 가드 후 @(F1((Runner.Guard.FrameMaxStrain - 1f) * 100f)) % / 한계 10 %</span></div>
+                    <div class="gch-counters">
+                        <div><b>@(Runner.Guard.OverStretchFixes.ToString("N0", CultureInfo.InvariantCulture))</b><span>과신장 구속</span></div>
+                        <div><b>@(Runner.Guard.Tunnels.ToString("N0", CultureInfo.InvariantCulture))</b><span>터널링 차단</span></div>
+                        <div><b class="@(Runner.Guard.Penetrations == 0 ? "ok" : "warn")">@(Runner.Guard.Penetrations.ToString("N0", CultureInfo.InvariantCulture))</b><span>캡슐 침투</span></div>
+                        <div><b class="@(Runner.Guard.Defects == 0 ? "ok" : "warn")">@(Runner.Guard.Defects.ToString("N0", CultureInfo.InvariantCulture))</b><span>잔여 결함</span></div>
+                    </div>
+                    <div class="gch-kv">침투율 @(F2(Runner.Guard.PenetrationRate * 100f)) % · CCD 스윕 @(Runner.Guard.CcdSweeps) · 접촉 우선 신장 @(Runner.Guard.ContactStretch) · 최고 신장 @(F1((Runner.Guard.PeakStrain - 1f) * 100f)) % · 비유한 복구 @(Runner.Guard.NanFixes)@(Runner.LastHitch ? " · ⚡ 히치 프레임" : null)</div>
+                    <svg class="gch-graph" viewBox="0 0 600 60" preserveAspectRatio="none">
+                        <line class="lim" x1="0" x2="600" y1="30" y2="30" />
+                        <polyline class="ms" points="@(Series(0))" />
+                        <polyline class="st" points="@(Series(1))" />
+                        <polyline class="tu" points="@(Series(2))" />
+                    </svg>
+                    <div class="gch-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .gch-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .gch-modal { width: min(1280px, 96vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
+    .gch-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #a855f7 16%, var(--card)), color-mix(in srgb, #06b6d4 14%, var(--card))); }
+    .gch-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .gch-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .gch-sub b { color: var(--text-primary); }
+    .gch-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .gch-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .gch-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .gch-btn:disabled { opacity: .45; cursor: default; }
+    .gch-btn.on { background: color-mix(in srgb, #a855f7 22%, var(--card)); border-color: #a855f7; }
+    .gch-btn.pre.on { background: color-mix(in srgb, #06b6d4 24%, var(--card)); border-color: #06b6d4; }
+    .gch-btn.fab.on { background: color-mix(in srgb, #ec4899 24%, var(--card)); border-color: #ec4899; }
+    .gch-btn.go { background: #a855f7; color: #fff; border: none; }
+    .gch-sep { width: 1px; height: 20px; background: var(--line); margin: 0 4px; }
+    .gch-chip { font: 700 11px var(--mono); padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); text-align: center; }
+    .gch-main { display: grid; grid-template-columns: 1.1fr 1fr; gap: 12px; padding: 14px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .gch-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .gch-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); min-width: 0; }
+    .gch-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .gch-stage { position: relative; width: 100%; aspect-ratio: 320 / 192; }
+    .gch-view, .gch-bones { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 8px; }
+    .gch-view { image-rendering: pixelated; background: #05070c; }
+    .gch-bones line { stroke: #22d3ee; stroke-width: 0.8; opacity: .75; }
+    .gch-bones circle { fill: #c084fc; }
+    .gch-sliders { display: grid; grid-template-columns: auto 1fr 76px; gap: 4px 10px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .gch-sliders input { width: 100%; }
+    .gch-kv { font-size: 11px; color: var(--text-secondary); margin-top: 6px; }
+    .gch-kv.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+    .gch-kv b.ok, .gch-counters b.ok { color: #22c55e; } .gch-kv b.warn, .gch-counters b.warn { color: #f59e0b; }
+    .gch-meter { position: relative; height: 18px; border-radius: 6px; background: #0f172a; overflow: hidden; margin-bottom: 8px; }
+    .gch-meter div { height: 100%; } .gch-meter div.ok { background: #22c55e; } .gch-meter div.warn { background: #ef4444; }
+    .gch-meter span { position: absolute; inset: 0; font: 700 10px var(--mono); color: #fff; display: flex; align-items: center; justify-content: center; }
+    .gch-counters { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .gch-counters div { display: flex; flex-direction: column; align-items: center; padding: 6px; border-radius: 8px; background: #0f172a; }
+    .gch-counters b { font: 800 16px var(--mono); color: var(--text-primary); }
+    .gch-counters span { font-size: 10px; color: var(--text-muted); }
+    .gch-graph { width: 100%; height: 60px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; display: block; margin-top: 8px; }
+    .gch-graph polyline { fill: none; stroke-width: 1.6; }
+    .gch-graph .ms { stroke: #a855f7; } .gch-graph .st { stroke: #ec4899; } .gch-graph .tu { stroke: #22d3ee; }
+    .gch-graph .lim { stroke: #ef4444; stroke-dasharray: 6 4; }
+    .gch-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+    @@media (max-width: 860px) { .gch-main { grid-template-columns: 1fr; } .gch-counters { grid-template-columns: 1fr 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly byte[] _bmp = new byte[GaussianClothHairStudioRunner.PreviewBytes];
+    private System.Threading.Timer? _timer;
+    private string _img = "";
+    private bool _overlay = true;
+    private Action[] _motion = Array.Empty<Action>(), _fabric = Array.Empty<Action>();
+
+    protected override void OnInitialized()
+    {
+        _motion = new Action[GaussianClothHairStudioRunner.Motions.Length];
+        for (var m = 0; m < _motion.Length; m++) { var mo = GaussianClothHairStudioRunner.Motions[m]; _motion[m] = () => Runner.SetMotion(mo); }
+        _fabric = new Action[3];
+        for (var f = 0; f < 3; f++) { var fp = (FabricPreset)f; _fabric[f] = () => Runner.SetFabric(fp); }
+        Runner.OnChange += OnServiceChanged;
+        if (!Runner.IsRunning) Runner.Step();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("ClothHair.Modal.Timer", ex); }
+        }, null, 120, 120);
+    }
+
+    protected override bool ShouldRender()
+    {
+        Runner.WritePreviewBmp(_bmp);
+        _img = "data:image/bmp;base64," + Convert.ToBase64String(_bmp);
+        return true;
+    }
+
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string Pct(float strain) => Math.Clamp((strain - 1f) * 500.0, 0, 100).ToString("0.#", CultureInfo.InvariantCulture);
+
+    private string Series(int kind)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            var v = kind switch { 0 => Runner.FrameMsSeries(k) / 33.4, 1 => Runner.StrainSeries(k) / 20.0, _ => Runner.TunnelSeries(k) / 50.0 };
+            sb.Append((600.0 * i / (n - 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append((58 - 56 * Math.Clamp(v, 0, 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private static bool TryInt(ChangeEventArgs e, out int v) => int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out v);
+
+    private void OnStiff(ChangeEventArgs e) { if (TryInt(e, out var v)) Runner.SetHairStiffness(v / 100f); }
+    private void OnWind(ChangeEventArgs e) { if (TryInt(e, out var v)) Runner.SetWind(v / 10f); }
+    private void OnDir(ChangeEventArgs e) { if (TryInt(e, out var v)) Runner.SetWindDir(v); }
+    private void OnTurb(ChangeEventArgs e) { if (TryInt(e, out var v)) Runner.SetTurbulence(v / 100f); }
+    private void OnSpin(ChangeEventArgs e) { if (TryInt(e, out var v)) Runner.SetSpin(v / 10f); }
+    private void OnMove(ChangeEventArgs e) { if (TryInt(e, out var v)) Runner.SetMoveSpeed(v / 10f); }
+    private void OnIter(ChangeEventArgs e) { if (TryInt(e, out var v)) Runner.SetIterations(v); }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

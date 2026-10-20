@@ -1,0 +1,48 @@
+<project_milestone_proposal>
+  <system_context>
+    [프로젝트 현재 마일스톤 — v9.6.0 Finalized]
+    - 프로젝트: PromptFlow Studio v9.6.0 — 자율 뉴럴 메모리 · 양자 내성 신원 연합 · 실시간 이상 감지
+    - 상태: Finalized (2026-09-24) · Release -warnaserror 0 오류 / 0 경고
+    - 기반 버전: v9.5.0 Finalized (Adaptive Neural Director, Edge Consensus Mesh, Zero-Trust Governance Auditor)
+    - 기술 스택: .NET 8 Blazor Hybrid (`PromptFlowStudio.Shared`) / Pure C# BCL (외부 NuGet 0)
+  </system_context>
+
+  <completed_objectives>
+    <task id="v9.6.1" status="done">
+      <name>자율 뉴럴 메모리 스트리머</name>
+      <target_path>PromptFlowStudio/Services/Inference/AutonomousNeuralMemoryStreamer.cs</target_path>
+      <result>익명 MMF 64KB 페이지 아레나 텐서 상주, Channel 디스크립터 제로카피 스트리밍, LRU 콜드 강등·ArrayPool 스필, 청크 체인 체크섬 비트 플립 검출. MMF 불가 시 Pooled 강등.</result>
+    </task>
+
+    <task id="v9.6.2" status="done">
+      <name>양자 내성 신원 연합</name>
+      <target_path>PromptFlowStudio/Services/Integration/QuantumIdentityFederation.cs</target_path>
+      <result>ECDSA P-384 + ML-DSA-65(HMAC-SHA512 결선점 스텁) 하이브리드 서명 교차 클러스터 토큰 교환. 신뢰 번들·양 서명·만료·jti 재생·수신자·mTLS cnf 바인딩·피어 어테스테이션·ZTNA 포스처/스코프 축소.</result>
+    </task>
+
+    <task id="v9.6.3" status="done">
+      <name>실시간 이상 감지 센티널</name>
+      <target_path>PromptFlowStudio/Services/Agents/RealTimeAnomalySentinel.cs</target_path>
+      <result>무할당 링버퍼·EWMA z-score(흡수 전 기준선)·선형회귀 추세 투영 사전 경보. Critical 시 세션 격리·대기 세션 자율 교체, 소진 시 스로틀링.</result>
+    </task>
+
+    <task id="v9.6.4" status="done">
+      <name>DI 등록, HUD 결선 및 Release 0/0 빌드 검증</name>
+      <target_path>PromptFlowStudio/MainForm.cs, PromptFlowStudio.Mobile/MauiProgram.cs, PromptFlowStudio/Blazor/Components/Common/GlobalTelemetryHudView.razor</target_path>
+      <result>싱글턴 3종 양 DI 등록 + HUD 🧠/🔐/🚨 3카드(gth-v96) · 고빈도 이벤트 OnLiveChanged 분리 · Release -warnaserror 0/0.</result>
+    </task>
+  </completed_objectives>
+
+  <runtime_certification>
+    <line>[v9.6.2] 정상 교환 Granted · 재생/탈취/PQC 위조/미신뢰/포스처/페이로드 변조/형식/키 회전/만료 10케이스 전량 거부</line>
+    <line>[v9.6.3] 과부하 Early→Warn→Critical 자율 교체 · 대기 소진 스로틀링 · 지연 z-스파이크 Warn · Ingest 10k 할당 0B</line>
+  </runtime_certification>
+
+  <token_and_execution_guardrails>
+    <rule id="1">No English Thinking/Planning: 영어 사고 과정 및 계획 문장을 출력하지 말고 Command/Code만 즉시 실행하십시오.</rule>
+    <rule id="2">Surgical Diff Only: 전체 파일 재출력 금지, 변경된 클래스/메서드 단위만 수정하십시오.</rule>
+    <rule id="3">Build Gate: dotnet build -c Release -warnaserror 0 오류 / 0 경고 정합성을 사수하십시오.</rule>
+  </token_and_execution_guardrails>
+
+  <next_milestone>v9.7.0 — 미정</next_milestone>
+</project_milestone_proposal>

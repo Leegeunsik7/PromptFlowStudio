@@ -1,0 +1,453 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Synergy
+@implements IDisposable
+@inject DeepCrossEngineSynergyOrchestrator Bus
+@inject EngineHyperAccelerationOptimizer Hyper
+@inject EnhancedScriptToScreenDirector Dir
+@inject PromptFlowStudio.Services.Neuro.BciNeuroStudioRunner BciRunner
+@inject PromptFlowStudio.Services.Icvfx.VirtualProductionStudioRunner VpRunner
+@inject PromptFlowStudio.Services.Neural3d.GaussianSplattingStudioRunner GsRunner
+@inject PromptFlowStudio.Services.World.WorldModelStudioRunner WorldRunner
+
+@*
+    [PromptFlow Studio v16.62.0] ⚡ AI 기존 기능 심층 강화 & 멀티 엔진 관제 스튜디오 — 시너지 버스 데이터 흐름 그래프 · 라우트 토글 · 채널 미터/주입 ·
+    엔진별 처리 성능(FPS·지연) · 원클릭 하이퍼 가속 토글/벤치 · 대본 → 숏/OST/폴리/일관성 검수.
+*@
+
+<div class="msd-scrim" @onclick="Close">
+    <div class="msd-modal" @onclick:stopPropagation="true">
+        <div class="msd-h">
+            <div>
+                <div class="msd-title">⚡ AI 기존 기능 심층 강화 &amp; 멀티 엔진 관제 스튜디오</div>
+                <div class="msd-sub"><b>BCI · ICVFX · 3DGS · 4D 월드 · 대본 디렉터</b>를 단일 시너지 버스로 묶어 감정/비주얼 파라미터를 실시간 교차 전달하고,
+                    <b>SIMD 하이퍼 가속</b>(비트 동일)과 <b>Script-to-Screen</b> 자율 연출을 한 화면에서 관제합니다.</div>
+            </div>
+            <button class="msd-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="msd-bar">
+            <span class="msd-chip @(Bus.IsRunning ? "ok" : null)">@(Bus.IsRunning ? "● 버스 가동" : "○ 버스 정지") · 틱 @(Bus.Ticks) · 커밋 @(Bus.Commits)</span>
+            <span class="msd-chip @(Bus.TickMicros < 1000 ? "ok" : "hot")">지연 @(F1((float)Bus.TickMicros))μs · 최대 @(F1((float)Bus.MaxTickMicros))μs</span>
+            <span class="msd-chip">플래시 @(Bus.Flashes)/거부 @(Bus.FlashVetoes) · 의도 @(IntentLabel(Bus.CurrentIntent)) · 전환 @(Bus.IntentChanges)</span>
+            <span class="msd-chip @(EngineHyperAccelerationOptimizer.Enabled ? "ok" : null)">⚡ @(EngineHyperAccelerationOptimizer.Enabled ? "하이퍼 " + EngineHyperAccelerationOptimizer.Isa : "스칼라") · 커널 @(EngineHyperAccelerationOptimizer.KernelCalls)</span>
+            @if (Dir.Last is { } d0)
+            {
+                <span class="msd-chip">🎞 숏 @(Dir.CurrentShot + 1)/@(d0.Shots.Count) · 긴장 @(F2(Dir.CurrentTension))</span>
+            }
+        </div>
+
+        <div class="msd-main">
+            <div class="msd-col">
+                <div class="msd-card">
+                    <div class="msd-row msd-between">
+                        <span class="msd-sec">🔗 엔진 간 실시간 데이터 흐름</span>
+                        <span class="msd-row">
+                            <button class="msd-btn @(Bus.IsRunning ? "on" : null)" @onclick="ToggleBus">@(Bus.IsRunning ? "⏸ 버스 정지" : "▶ 버스 가동")</button>
+                            <button class="msd-btn sm" @onclick="StepBus">⏭ 1틱</button>
+                            <button class="msd-btn sm" @onclick="Bus.LoadDefaultRoutes">↺ 기본 라우트</button>
+                        </span>
+                    </div>
+                    <svg class="msd-graph" viewBox="0 0 360 240">
+                        @for (var i = 0; i < Bus.RouteCount; i++)
+                        {
+                            var r = Bus.RouteAt(i);
+                            var path = EdgePath(DeepCrossEngineSynergyOrchestrator.OwnerOf(r.Src), DeepCrossEngineSynergyOrchestrator.OwnerOf(r.Dst), i);
+                            var act = Bus.ActivityOf(i);
+                            <path d="@path" class="msd-edge @(r.Enabled ? (Bus.IsRunning ? "live" : null) : "off")" stroke="@(r.Gain < 0 ? "#f97316" : "#06b6d4")"
+                                  stroke-width="@F2(0.8f + act * 4f)" stroke-opacity="@F2(r.Enabled ? 0.35f + act * 0.65f : 0.15f)" />
+                        }
+                        @foreach (var n in Nodes)
+                        {
+                            var (x, y) = Pos(n);
+                            <g>
+                                <circle cx="@F0(x)" cy="@F0(y)" r="22" class="msd-node @(Bus.Attached(n) ? "on" : null)" />
+                                <text x="@F0(x)" y="@F0(y + 4)" class="msd-node-t">@(DeepCrossEngineSynergyOrchestrator.NodeLabel(n))</text>
+                            </g>
+                        }
+                    </svg>
+                    <div class="msd-legend"><span class="pos">━ 정(+) 이득</span><span class="neg">━ 부(−) 피드백</span><span>굵기 = 흐름 활성도</span></div>
+                    <div class="msd-routes">
+                        @for (var i = 0; i < Bus.RouteCount; i++)
+                        {
+                            var idx = i;
+                            var r = Bus.RouteAt(i);
+                            <label class="msd-route @(r.Enabled ? null : "off")">
+                                <input type="checkbox" checked="@r.Enabled" @onchange="e => Bus.SetRouteEnabled(idx, e.Value is true)" />
+                                <span>@(DeepCrossEngineSynergyOrchestrator.Label(r.Src)) → @(DeepCrossEngineSynergyOrchestrator.Label(r.Dst))</span>
+                                <em>×@(F2(r.Gain)) · @(F2(Bus.FlowOf(i))) · ⚡@(Bus.PulsesOf(i))</em>
+                            </label>
+                        }
+                    </div>
+                </div>
+
+                <div class="msd-card">
+                    <div class="msd-sec">📶 버스 채널</div>
+                    <div class="msd-meters">
+                        @foreach (var s in Signals)
+                        {
+                            var v = Bus[s];
+                            <div class="msd-meter @(DeepCrossEngineSynergyOrchestrator.IsSink(s) ? "sink" : null)">
+                                <span>@(DeepCrossEngineSynergyOrchestrator.Label(s))</span>
+                                <div class="msd-mbar"><i style="width:@(P(DeepCrossEngineSynergyOrchestrator.Normalize(s, v)))"></i></div>
+                                <em>@(F2(v))</em>
+                            </div>
+                        }
+                    </div>
+                    <div class="msd-sec">🎚 감정 주입(3초 홀드)</div>
+                    <div class="msd-row">
+                        <button class="msd-btn sm" @onclick="() => Spike(SynergySignal.BciFear, 0.95f)">😱 공포 피크</button>
+                        <button class="msd-btn sm" @onclick="() => Spike(SynergySignal.BciArousal, 0.95f)">🔥 과흥분</button>
+                        <button class="msd-btn sm" @onclick="() => Spike(SynergySignal.BciArousal, 0.15f)">😌 진정</button>
+                        <button class="msd-btn sm" @onclick="() => Spike(SynergySignal.BciEngagement, 1f)">🎯 몰입</button>
+                        <button class="msd-btn sm" @onclick="Bus.ClearInjections">✕ 해제</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="msd-col">
+                <div class="msd-card">
+                    <div class="msd-row msd-between">
+                        <span class="msd-sec">📊 모듈별 처리 성능</span>
+                        <span class="msd-row">
+                            <button class="msd-btn sm" @onclick="StartAll">▶ 전체 가동</button>
+                            <button class="msd-btn sm" @onclick="StopAll">⏸ 전체 정지</button>
+                        </span>
+                    </div>
+                    <table class="msd-tbl">
+                        <thead><tr><th>엔진</th><th>상태</th><th>FPS</th><th>프레임</th><th>지표</th></tr></thead>
+                        <tbody>
+                            <tr><td>🧠 BCI 바이오</td><td>@(Dot(BciRunner.IsRunning))</td><td>@(F1(_fps[0]))</td><td>@(BciRunner.FrameSeq)</td><td>관객 @(BciRunner.Audience)</td></tr>
+                            <tr><td>🎬 ICVFX</td><td>@(Dot(VpRunner.IsRunning))</td><td>@(F1(_fps[1]))</td><td>@(VpRunner.FrameSeq)</td><td>커버리지 @(P(VpRunner.InCameraCoverage))</td></tr>
+                            <tr><td>🧊 3DGS</td><td>@(Dot(GsRunner.IsRunning))</td><td>@(F1(_fps[2]))</td><td>@(GsRunner.FrameSeq)</td><td>추적 @(F2((float)GsRunner.TrackErrorMm))mm</td></tr>
+                            <tr><td>🌐 4D 월드</td><td>@(Dot(WorldRunner.IsPlaying))</td><td>@(F1(_fps[3]))</td><td>@(WorldRunner.FrameSeq)</td><td>@(WorldRunner.Last is null ? "미생성" : "생성됨")</td></tr>
+                            <tr><td>🔗 시너지 버스</td><td>@(Dot(Bus.IsRunning))</td><td>@(F1(_fps[4]))</td><td>@(Bus.Ticks)</td><td>배속 쓰기 @(Bus.TimeScaleWrites) · 광원 @(Bus.LightCommits)</td></tr>
+                        </tbody>
+                    </table>
+                    <div class="msd-sec">⏱ 버스 단계 지연(μs · EWMA)</div>
+                    @foreach (var (label, us) in Stages())
+                    {
+                        <div class="msd-meter">
+                            <span>@label</span>
+                            <div class="msd-mbar"><i style="width:@(P((float)Math.Min(1.0, us / Math.Max(1.0, Bus.TickMicros))))"></i></div>
+                            <em>@(F1((float)us))</em>
+                        </div>
+                    }
+                </div>
+
+                <div class="msd-card">
+                    <div class="msd-row msd-between">
+                        <span class="msd-sec">⚡ 하이퍼 가속 &amp; 메모리 가드</span>
+                        <button class="msd-btn @(EngineHyperAccelerationOptimizer.Enabled ? "on" : null)" @onclick="ToggleHyper">@(EngineHyperAccelerationOptimizer.Enabled ? "⚡ ON" : "OFF")</button>
+                    </div>
+                    <div class="msd-note">ISA <b>@(EngineHyperAccelerationOptimizer.Isa)</b> · 레인 @(EngineHyperAccelerationOptimizer.LaneFloats) float · 결과 비트 동일(토글 무손실)</div>
+                    <div class="msd-row">
+                        <button class="msd-btn sm" disabled="@_benching" @onclick="RunBench">🏁 벤치(480×270)</button>
+                        <button class="msd-btn sm" disabled="@_benching" @onclick="RunBenchHd">🏁 벤치(1920×1080)</button>
+                    </div>
+                    @if (Hyper.Last is { } hb)
+                    {
+                        <table class="msd-tbl">
+                            <thead><tr><th>커널</th><th>스칼라</th><th>가속</th><th>배속</th><th>비트</th><th>할당</th></tr></thead>
+                            <tbody>
+                                @foreach (var k in hb.Kernels)
+                                {
+                                    <tr><td>@k.Name</td><td>@(F2((float)k.ScalarMs))ms</td><td>@(F2((float)k.AcceleratedMs))ms</td>
+                                        <td class="@(k.Speedup >= 1.3 ? "good" : "bad")">×@(F1((float)k.Speedup))</td><td>@(k.BitExact ? "✔" : "✖")</td><td>@(k.AllocatedBytes)B</td></tr>
+                                }
+                            </tbody>
+                        </table>
+                        <div class="msd-note">@(hb.Width)×@(hb.Height) · GC 수집 Δ Gen0 @(hb.Gen0) / Gen1 @(hb.Gen1) / Gen2 @(hb.Gen2) · 총 할당 @(hb.TotalAllocated)B</div>
+                    }
+                    @if (Hyper.LastAction is { } ha)
+                    {
+                        <div class="msd-note">@ha</div>
+                    }
+                </div>
+            </div>
+
+            <div class="msd-col">
+                <div class="msd-card">
+                    <div class="msd-row msd-between">
+                        <span class="msd-sec">🎞 Script-to-Screen 자율 디렉터</span>
+                        <span class="msd-row">
+                            <button class="msd-btn sm" @onclick="Analyze">🔍 분석·조립</button>
+                            <button class="msd-btn sm" disabled="@(Dir.Last is null)" @onclick="ApplyIcvfx">🎬 ICVFX 적재</button>
+                            <button class="msd-btn sm" disabled="@(Dir.Last is null)" @onclick="CopyShotList">📄 TSV</button>
+                        </span>
+                    </div>
+                    <textarea class="msd-script" @bind="_script" rows="7"></textarea>
+                    @if (Dir.Last is { } d)
+                    {
+                        <div class="msd-row">
+                            <span class="msd-chip @(d.ConsistencyScore >= 80 ? "ok" : "hot")">일관성 @(F0(d.ConsistencyScore))점</span>
+                            <span class="msd-chip">씬 @(d.Scenes) · 숏 @(d.Shots.Count) · @(F1((float)d.Duration))s</span>
+                            <span class="msd-chip">폴리 @(d.Foley.Count) · 박자 동기 @(d.SyncedFoley)</span>
+                            <span class="msd-chip">@(F1((float)d.Millis))ms</span>
+                        </div>
+                        <div class="msd-sec">👥 캐릭터 연속성 고정</div>
+                        @foreach (var c in d.Cast)
+                        {
+                            <div class="msd-cast"><b>@c.Name</b><em>@c.LookTag</em><span>대사 @(c.Lines) · 숏 @(c.Shots)</span></div>
+                        }
+                        <div class="msd-sec">🎵 OST 큐</div>
+                        <div class="msd-row">
+                            @foreach (var m in d.Music)
+                            {
+                                <span class="msd-cue @(m.Minor ? "minor" : null)">@(F1((float)m.Start))s · @m.Mood · @(m.Bpm)BPM</span>
+                            }
+                        </div>
+                        <div class="msd-sec">🎬 숏 리스트</div>
+                        <div class="msd-shots">
+                            @foreach (var s in d.Shots)
+                            {
+                                <div class="msd-shot @(s.Index == Dir.CurrentShot ? "cur" : null)">
+                                    <span class="no">#@(s.Index + 1)</span>
+                                    <span class="tr">@(EnhancedScriptToScreenDirector.Label(s.Transition))</span>
+                                    <span class="sz">@s.Size @(s.LensMm)mm</span>
+                                    <span class="tb"><i style="width:@(P(s.Tension))"></i></span>
+                                    <span class="du">@(F1((float)s.Duration))s</span>
+                                    <span class="tx" title="@s.Text">@s.Text</span>
+                                </div>
+                            }
+                        </div>
+                        <div class="msd-sec">🔎 비주얼 일관성 검수 (@d.Issues.Count)</div>
+                        <div class="msd-issues">
+                            @foreach (var iss in d.Issues)
+                            {
+                                <div class="msd-issue @(iss.AutoFixed ? "fixed" : "open")">#@(iss.Shot + 1) @(EnhancedScriptToScreenDirector.Label(iss.Kind)) · @iss.Detail @(iss.AutoFixed ? "· 자동 보정" : "· 확인 필요")</div>
+                            }
+                        </div>
+                    }
+                    @if (_message is not null)
+                    {
+                        <div class="msd-note">@_message</div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .msd-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .msd-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .msd-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #eab308 18%, var(--card)), color-mix(in srgb, #06b6d4 16%, var(--card))); }
+    .msd-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .msd-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .msd-sub b { color: var(--text-primary); }
+    .msd-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .msd-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); }
+    .msd-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .msd-chip.ok { color: #22c55e; border-color: #22c55e; }
+    .msd-chip.hot { color: #f97316; border-color: #f97316; }
+    .msd-main { display: grid; grid-template-columns: 1.15fr 1fr 1.2fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .msd-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .msd-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .msd-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); }
+    .msd-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .msd-between { justify-content: space-between; }
+    .msd-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .msd-btn.on { background: color-mix(in srgb, #eab308 24%, transparent); border-color: #eab308; }
+    .msd-btn.sm { font-size: 11px; padding: 3px 8px; }
+    .msd-btn:disabled { opacity: .45; cursor: default; }
+    .msd-graph { width: 100%; aspect-ratio: 3 / 2; background: color-mix(in srgb, #0f172a 60%, transparent); border-radius: 10px; border: 1px solid var(--line); }
+    .msd-edge { fill: none; }
+    .msd-edge.live { stroke-dasharray: 6 5; animation: msd-flow .9s linear infinite; }
+    .msd-edge.off { stroke-dasharray: 2 4; }
+    .msd-node { fill: var(--card); stroke: var(--line); stroke-width: 1.5; }
+    .msd-node.on { stroke: #eab308; stroke-width: 2.5; }
+    .msd-node-t { fill: var(--text-primary); font-size: 9px; font-weight: 800; text-anchor: middle; }
+    @@keyframes msd-flow { to { stroke-dashoffset: -11; } }
+    .msd-legend { display: flex; gap: 10px; font-size: 10.5px; color: var(--text-muted); }
+    .msd-legend .pos { color: #06b6d4; } .msd-legend .neg { color: #f97316; }
+    .msd-routes { display: flex; flex-direction: column; gap: 2px; max-height: 180px; overflow-y: auto; }
+    .msd-route { display: flex; gap: 6px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .msd-route em { margin-left: auto; font-style: normal; font-family: var(--mono); color: var(--text-muted); font-size: 10.5px; }
+    .msd-route.off { opacity: .5; }
+    .msd-meters { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 10px; }
+    .msd-meter { display: grid; grid-template-columns: 92px 1fr 46px; gap: 6px; align-items: center; font-size: 10.5px; color: var(--text-secondary); }
+    .msd-meter em { font-style: normal; font-family: var(--mono); text-align: right; color: var(--text-muted); }
+    .msd-meter.sink span { color: #eab308; }
+    .msd-mbar { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--line) 70%, transparent); overflow: hidden; }
+    .msd-mbar i { display: block; height: 100%; background: linear-gradient(90deg, #06b6d4, #eab308); }
+    .msd-tbl { width: 100%; border-collapse: collapse; font-size: 11px; }
+    .msd-tbl th, .msd-tbl td { padding: 3px 5px; border-bottom: 1px solid var(--line); text-align: left; color: var(--text-secondary); }
+    .msd-tbl th { color: var(--text-muted); font-weight: 700; }
+    .msd-tbl td.good { color: #22c55e; font-weight: 800; } .msd-tbl td.bad { color: #f97316; font-weight: 800; }
+    .msd-note { font-size: 11px; color: var(--text-muted); }
+    .msd-note b { color: var(--text-primary); }
+    .msd-script { width: 100%; font: 12px var(--mono); padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); resize: vertical; }
+    .msd-cast { display: flex; gap: 8px; align-items: baseline; font-size: 11.5px; color: var(--text-secondary); }
+    .msd-cast em { font-style: normal; font-family: var(--mono); font-size: 10.5px; color: #67e8f9; }
+    .msd-cast span { margin-left: auto; color: var(--text-muted); }
+    .msd-cue { font-size: 10.5px; padding: 2px 7px; border-radius: 999px; border: 1px solid #22c55e; color: #22c55e; }
+    .msd-cue.minor { border-color: #a855f7; color: #c084fc; }
+    .msd-shots { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow-y: auto; }
+    .msd-shot { display: grid; grid-template-columns: 30px 56px 84px 50px 38px 1fr; gap: 6px; align-items: center; font-size: 10.5px; color: var(--text-secondary); padding: 2px 4px; border-radius: 6px; }
+    .msd-shot.cur { background: color-mix(in srgb, #eab308 18%, transparent); }
+    .msd-shot .no, .msd-shot .du { font-family: var(--mono); color: var(--text-muted); }
+    .msd-shot .tr { color: #67e8f9; font-weight: 700; }
+    .msd-shot .tb { height: 5px; border-radius: 3px; background: color-mix(in srgb, var(--line) 70%, transparent); overflow: hidden; }
+    .msd-shot .tb i { display: block; height: 100%; background: linear-gradient(90deg, #22c55e, #ef4444); }
+    .msd-shot .tx { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .msd-issues { display: flex; flex-direction: column; gap: 2px; max-height: 140px; overflow-y: auto; }
+    .msd-issue { font-size: 10.5px; padding: 2px 6px; border-radius: 6px; }
+    .msd-issue.fixed { color: #22c55e; background: color-mix(in srgb, #22c55e 8%, transparent); }
+    .msd-issue.open { color: #f97316; background: color-mix(in srgb, #f97316 10%, transparent); }
+    @@media (max-width: 1200px) { .msd-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly SynergyNode[] Nodes = Enum.GetValues<SynergyNode>();
+    private static readonly SynergySignal[] Signals = Enum.GetValues<SynergySignal>();
+
+    private readonly float[] _fps = new float[5];
+    private readonly long[] _lastSeq = new long[5];
+    private long _lastStamp;
+    private string _script = EnhancedScriptToScreenDirector.DemoScript;
+    private string? _message;
+    private bool _benching;
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        Bus.OnChange += OnServiceChanged;
+        Hyper.OnChange += OnServiceChanged;
+        Dir.OnChange += OnServiceChanged;
+        if (Dir.Last is null) Dir.Analyze(_script);
+        else _script = Dir.Script;
+        SampleFps();
+        _timer = new System.Threading.Timer(_ => _ = InvokeAsync(() => { SampleFps(); StateHasChanged(); }), null, 500, 500);
+    }
+
+    private static string F0(float v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(float v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(float v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string P(float v) => (v * 100f).ToString("0.#", CultureInfo.InvariantCulture) + "%";
+    private static string Dot(bool on) => on ? "● 가동" : "○ 정지";
+
+    private static string IntentLabel(PromptFlowStudio.Services.Neuro.DirectorIntent i) => i switch
+    {
+        PromptFlowStudio.Services.Neuro.DirectorIntent.Thrill => "스릴",
+        PromptFlowStudio.Services.Neuro.DirectorIntent.Calm => "진정",
+        _ => "균형",
+    };
+
+    private static (float X, float Y) Pos(SynergyNode n) => n switch
+    {
+        SynergyNode.Script => (180f, 34f),
+        SynergyNode.Bci => (58f, 104f),
+        SynergyNode.Icvfx => (302f, 104f),
+        SynergyNode.Splat3d => (104f, 206f),
+        _ => (256f, 206f),
+    };
+
+    /// <summary>노드 간 곡선(평행 라우트 분리 오프셋) · 동일 노드는 루프.</summary>
+    private static string EdgePath(SynergyNode a, SynergyNode b, int i)
+    {
+        var (x1, y1) = Pos(a);
+        var (x2, y2) = Pos(b);
+        if (a == b)
+        {
+            var o = 8f + (i % 3) * 6f;
+            return "M" + F1(x1 - 12) + "," + F1(y1 - 18) + " C" + F1(x1 - 40 - o) + "," + F1(y1 - 60 - o) + " " + F1(x1 + 40 + o) + "," + F1(y1 - 60 - o) + " " + F1(x1 + 12) + "," + F1(y1 - 18);
+        }
+        float dx = x2 - x1, dy = y2 - y1;
+        var len = MathF.Max(1f, MathF.Sqrt(dx * dx + dy * dy));
+        float nx = -dy / len, ny = dx / len;
+        var off = 14f + (i % 4) * 9f;
+        float sx = x1 + dx / len * 22f, sy = y1 + dy / len * 22f, ex = x2 - dx / len * 22f, ey = y2 - dy / len * 22f;
+        float cx = (x1 + x2) * 0.5f + nx * off, cy = (y1 + y2) * 0.5f + ny * off;
+        return "M" + F1(sx) + "," + F1(sy) + " Q" + F1(cx) + "," + F1(cy) + " " + F1(ex) + "," + F1(ey);
+    }
+
+    private IEnumerable<(string, double)> Stages()
+    {
+        yield return ("샘플", Bus.SampleMicros);
+        yield return ("전파", Bus.PropagateMicros);
+        yield return ("적용", Bus.ApplyMicros);
+        yield return ("전체", Bus.TickMicros);
+    }
+
+    private void SampleFps()
+    {
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        Span<long> seq = stackalloc long[5];
+        seq[0] = BciRunner.FrameSeq; seq[1] = VpRunner.FrameSeq; seq[2] = GsRunner.FrameSeq; seq[3] = WorldRunner.FrameSeq; seq[4] = Bus.Ticks;
+        if (_lastStamp != 0)
+        {
+            var sec = (now - _lastStamp) / (double)System.Diagnostics.Stopwatch.Frequency;
+            if (sec > 0) for (var i = 0; i < 5; i++) _fps[i] = (float)(Math.Max(0, seq[i] - _lastSeq[i]) / sec);
+        }
+        for (var i = 0; i < 5; i++) _lastSeq[i] = seq[i];
+        _lastStamp = now;
+    }
+
+    private void ToggleBus() { if (Bus.IsRunning) Bus.Stop(); else Bus.Start(); }
+
+    private void StepBus() { Bus.TickOnce(1.0 / DeepCrossEngineSynergyOrchestrator.TickHz); Bus.Commit(); }
+
+    private void Spike(SynergySignal s, float v)
+    {
+        Bus.Inject(s, v, 3f);
+        if (!Bus.IsRunning) StepBus();
+        _message = "🎚 " + DeepCrossEngineSynergyOrchestrator.Label(s) + " = " + F2(v) + " 주입(3초)";
+    }
+
+    private void StartAll()
+    {
+        BciRunner.Start(); VpRunner.Start(); GsRunner.Start();
+        if (WorldRunner.Last is not null) WorldRunner.StartPlayback();
+        Bus.Start();
+        _message = WorldRunner.Last is null ? "▶ 전체 가동 — 4D 월드는 생성 후 재생 가능" : "▶ 전체 엔진 + 시너지 버스 가동";
+    }
+
+    private void StopAll()
+    {
+        Bus.Stop(); BciRunner.Stop(); VpRunner.Stop(); GsRunner.Stop(); WorldRunner.StopPlayback();
+        _message = "⏸ 전체 정지";
+    }
+
+    private void ToggleHyper() => Hyper.SetEnabled(!EngineHyperAccelerationOptimizer.Enabled);
+
+    private Task RunBench() => Bench(480, 270);
+    private Task RunBenchHd() => Bench(1920, 1080);
+
+    private async Task Bench(int w, int h)
+    {
+        if (_benching) return;
+        _benching = true;
+        try { await Task.Run(() => Hyper.Benchmark(w, h, w > 1000 ? 3 : 7)); }
+        catch (Exception ex) when (ex is OutOfMemoryException or InvalidOperationException) { _message = "❌ 벤치 실패: " + ex.Message; }
+        finally { _benching = false; }
+    }
+
+    private void Analyze()
+    {
+        if (string.IsNullOrWhiteSpace(_script)) { _message = "❌ 대본이 비어 있습니다"; return; }
+        var d = Dir.Analyze(_script);
+        _message = Dir.LastAction ?? ("🎞 " + d.Shots.Count.ToString(CultureInfo.InvariantCulture) + "숏");
+    }
+
+    private void ApplyIcvfx() => _message = "🎬 ICVFX 디렉터 " + Dir.ApplyToIcvfx(VpRunner.Director).ToString(CultureInfo.InvariantCulture) + "비트 적재";
+
+    private void CopyShotList()
+    {
+        var tsv = Dir.ExportShotList();
+        _message = "📄 숏 리스트 " + tsv.Length.ToString(CultureInfo.InvariantCulture) + "자 생성(TSV) — 아래 미리보기: " + (tsv.Length > 120 ? tsv[..120] + "…" : tsv);
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        _timer?.Dispose();
+        Bus.OnChange -= OnServiceChanged;
+        Hyper.OnChange -= OnServiceChanged;
+        Dir.OnChange -= OnServiceChanged;
+    }
+}

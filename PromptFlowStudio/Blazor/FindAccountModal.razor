@@ -1,0 +1,254 @@
+@inject MemberRegistryService Members
+@inject PromptFlowStudio.Services.Account.SiteEmailOtpService Otp
+
+@* [PromptFlowStudio] 아이디·비밀번호 찾기 — 로그인 화면에서 진입. 배포 사용자가 <본인 PC>에서 셀프 복구.
+   아이디 찾기(이름+연락처) · 비밀번호 재설정(아이디 → 가입 이메일 인증번호(OTP) → [인증 확인] → 새 비밀번호).
+   ⚠ 인증 확인 전에는 새 비밀번호 칸이 비활성, 인증 완료 시 활성화. 새 비밀번호는 회원가입과 동일 강도(8자·영문·숫자·특수문자). *@
+@if (Visible)
+{
+    <div class="fa-scrim" @onclick="Close">
+        <div class="fa-modal" @onclick:stopPropagation="true">
+            <div class="fa-head">
+                <div class="fa-title">🔑 아이디 · 비밀번호 찾기</div>
+                <button class="fa-x" @onclick="Close" aria-label="닫기">✕</button>
+            </div>
+
+            <div class="fa-tabs">
+                <button class="fa-tab @(_tab == 0 ? "on" : null)" @onclick="() => SwitchTab(0)">아이디 찾기</button>
+                <button class="fa-tab @(_tab == 1 ? "on" : null)" @onclick="() => SwitchTab(1)">비밀번호 재설정</button>
+            </div>
+
+            <div class="fa-body">
+                @if (_tab == 0)
+                {
+                    <div class="fa-desc">가입 시 입력한 <b>이름 · 연락처</b>로 아이디를 찾습니다.</div>
+                    <label class="fa-lbl">이름</label>
+                    <input class="fa-in" @bind="_name" @bind:event="oninput" placeholder="홍길동" />
+                    <label class="fa-lbl">연락처</label>
+                    <input class="fa-in" @bind="_phone" @bind:event="oninput" placeholder="010-0000-0000" @onkeydown="OnKey" />
+                    <button class="fa-btn" @onclick="DoFindId">아이디 찾기</button>
+
+                    @if (_idResult is { Length: > 0 })
+                    {
+                        <div class="fa-result">
+                            가입된 아이디: <b>@_idResult</b>
+                            <div class="fa-result-sub">비밀번호를 잊으셨다면 위 <b>비밀번호 재설정</b> 탭에서 재설정하세요.</div>
+                        </div>
+                    }
+                }
+                else
+                {
+                    <div class="fa-desc">아이디를 입력하면 <b>가입 이메일로 인증번호</b>를 보냅니다. 인증 확인 후 새 비밀번호를 설정합니다.</div>
+                    <label class="fa-lbl">아이디</label>
+                    <div class="fa-otp-row">
+                        <input class="fa-in" @bind="_rid" @bind:event="oninput" placeholder="USER ID" disabled="@_otpSent" @onkeydown="OnKey" />
+                        <button class="fa-otp-btn" @onclick="SendResetOtp" disabled="@_otpSending">@(_otpSending ? "발송 중…" : _otpSent ? "재발송" : "인증번호 받기")</button>
+                    </div>
+
+                    @if (_otpSent)
+                    {
+                        <label class="fa-lbl">인증번호 <span class="fa-hint">메일로 받은 6자리 · 3분 이내</span></label>
+                        <div class="fa-otp-row">
+                            <input class="fa-in" @bind="_otpInput" @bind:event="oninput" placeholder="000000" inputmode="numeric" maxlength="6" disabled="@_otpVerified" @onkeydown="OnKey" />
+                            <button class="fa-otp-btn ok" @onclick="VerifyOtp" disabled="@_otpVerified">@(_otpVerified ? "✓ 인증됨" : "인증 확인")</button>
+                        </div>
+
+                        <label class="fa-lbl">새 비밀번호 <span class="fa-hint">영문·숫자·특수문자 8자 이상</span></label>
+                        <input class="fa-in" type="password" @bind="_npw" @bind:event="oninput" placeholder="영문·숫자·특수문자 조합 8자 이상" disabled="@(!_otpVerified)" />
+                        @if (_otpVerified && _npw.Length > 0)
+                        {
+                            <div class="fa-pw-meter"><div class="fa-pw-bar @PwClass" style="width:@PwPct%"></div></div>
+                            <div class="fa-pw-lbl @PwClass">비밀번호 강도: @PwLabel</div>
+                            <div class="fa-pw-reqs">
+                                <span class="@(PwLen ? "ok" : "no")">@(PwLen ? "✓" : "○") 8자 이상</span>
+                                <span class="@(PwLetter ? "ok" : "no")">@(PwLetter ? "✓" : "○") 영문</span>
+                                <span class="@(PwDigit ? "ok" : "no")">@(PwDigit ? "✓" : "○") 숫자</span>
+                                <span class="@(PwSpecial ? "ok" : "no")">@(PwSpecial ? "✓" : "○") 특수문자</span>
+                            </div>
+                        }
+
+                        <label class="fa-lbl">새 비밀번호 확인</label>
+                        <input class="fa-in" type="password" @bind="_npw2" @bind:event="oninput" placeholder="비밀번호 재입력" disabled="@(!_otpVerified)" @onkeydown="OnKey" />
+                        @if (_otpVerified && _npw2.Length > 0)
+                        {
+                            @if (_npw == _npw2) { <div class="fa-match ok">✅ 비밀번호가 일치합니다.</div> }
+                            else { <div class="fa-match bad">❌ 비밀번호가 일치하지 않습니다.</div> }
+                        }
+
+                        <button class="fa-btn" @onclick="DoReset" disabled="@(!(_otpVerified && PwOk && _npw == _npw2))">비밀번호 재설정</button>
+                    }
+                }
+
+                @if (_msg is { Length: > 0 })
+                {
+                    <div class="fa-msg @(_ok ? "ok" : "bad")">@_msg</div>
+                }
+            </div>
+
+            <div class="fa-foot">🔒 계정은 이 PC 에 안전 보관됩니다. 본인 확인이 어려우면 관리자에게 문의하세요.</div>
+        </div>
+    </div>
+}
+
+<style>
+    .fa-scrim { position: fixed; inset: 0; z-index: 6300; background: rgba(5,9,18,.78); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); display: flex; align-items: flex-start; justify-content: center; padding-top: 9vh; }
+    .fa-modal { width: min(420px, 94vw); display: flex; flex-direction: column; background: linear-gradient(180deg, #131d33, #0a1120); border: 1px solid rgba(245,158,11,.32); border-radius: 16px; box-shadow: 0 30px 80px rgba(0,0,0,.65); overflow: hidden; animation: faPop .22s cubic-bezier(.2,.9,.3,1.2); max-height: 90vh; }
+    @@keyframes faPop { from { opacity: 0; transform: translateY(-10px) scale(.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+    .fa-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; background: linear-gradient(90deg, rgba(245,158,11,.16), transparent); border-bottom: 1px solid rgba(255,255,255,.06); }
+    .fa-title { font-weight: 800; font-size: 1rem; color: #f1f6ff; }
+    .fa-x { background: rgba(255,255,255,.08); color: #fff; border: none; border-radius: 8px; width: 28px; height: 28px; font-weight: 800; cursor: pointer; }
+    .fa-tabs { display: flex; gap: 6px; padding: 12px 16px 0; }
+    .fa-tab { flex: 1; appearance: none; border: 0; background: rgba(255,255,255,.04); color: #93a3b8; cursor: pointer; font-family: inherit; font-size: 13px; font-weight: 700; padding: 10px; border-radius: 10px 10px 0 0; border-bottom: 2px solid transparent; }
+    .fa-tab.on { color: #fbbf24; background: rgba(245,158,11,.12); border-bottom-color: #fbbf24; }
+    .fa-body { padding: 14px 18px 6px; overflow-y: auto; }
+    .fa-desc { font-size: 12px; color: #93a3b8; line-height: 1.6; margin-bottom: 12px; } .fa-desc b { color: #fcd34d; }
+    .fa-lbl { display: block; font-size: 12px; font-weight: 600; color: #b6c2d6; margin: 12px 0 6px; }
+    .fa-hint { font-size: 10.5px; font-weight: 600; color: #7c8aa5; margin-left: 6px; }
+    .fa-in { width: 100%; box-sizing: border-box; background: rgba(8,13,24,.6); border: 1px solid rgba(245,158,11,.2); border-radius: 10px; padding: 11px 13px; color: #f1f6ff; font-size: 14px; font-family: inherit; outline: none; }
+    .fa-in:focus { border-color: #f59e0b; box-shadow: 0 0 0 3px rgba(245,158,11,.15); }
+    .fa-in:disabled { opacity: .5; cursor: not-allowed; }
+    .fa-otp-row { display: flex; gap: 8px; align-items: center; }
+    .fa-otp-row .fa-in { flex: 1; }
+    .fa-otp-btn { flex: 0 0 auto; white-space: nowrap; padding: 11px 14px; border-radius: 10px; border: 1px solid rgba(245,158,11,.4); background: rgba(245,158,11,.12); color: #fcd34d; font-family: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+    .fa-otp-btn:hover:not(:disabled) { background: rgba(245,158,11,.2); } .fa-otp-btn:disabled { opacity: .6; cursor: default; }
+    .fa-otp-btn.ok { border-color: rgba(34,197,94,.5); background: rgba(34,197,94,.14); color: #86efac; }
+    .fa-btn { width: 100%; margin-top: 16px; padding: 13px; border-radius: 12px; border: 0; cursor: pointer; font-family: inherit; font-size: 14.5px; font-weight: 800; color: #1a1204; background: linear-gradient(135deg, #fbbf24, #f59e0b); box-shadow: 0 8px 22px rgba(245,158,11,.3); }
+    .fa-btn:hover:not(:disabled) { filter: brightness(1.06); } .fa-btn:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
+    .fa-pw-meter { height: 6px; border-radius: 4px; background: rgba(255,255,255,.08); overflow: hidden; margin: 8px 0 5px; }
+    .fa-pw-bar { height: 100%; border-radius: 4px; transition: width .3s ease, background .3s ease; }
+    .fa-pw-bar.weak { background: #f87171; } .fa-pw-bar.mid { background: #fbbf24; } .fa-pw-bar.strong { background: #f59e0b; }
+    .fa-pw-lbl { font-size: .74rem; font-weight: 800; }
+    .fa-pw-lbl.weak { color: #f87171; } .fa-pw-lbl.mid { color: #fcd34d; } .fa-pw-lbl.strong { color: #34d399; }
+    .fa-pw-reqs { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; }
+    .fa-pw-reqs span { font-size: .72rem; font-weight: 700; transition: color .2s ease; }
+    .fa-pw-reqs .ok { color: #34d399; } .fa-pw-reqs .no { color: #8ca79d; }
+    .fa-match { margin-top: 7px; font-size: 12px; font-weight: 700; } .fa-match.ok { color: #34d399; } .fa-match.bad { color: #fca5a5; }
+    .fa-result { margin-top: 14px; padding: 12px 14px; border-radius: 10px; background: rgba(34,197,94,.12); border: 1px solid rgba(34,197,94,.4); color: #86efac; font-size: 13.5px; }
+    .fa-result b { color: #f1f6ff; font-family: 'Roboto Mono', Consolas, monospace; }
+    .fa-result-sub { margin-top: 6px; font-size: 11.5px; color: #93a3b8; } .fa-result-sub b { color: #fcd34d; font-family: inherit; }
+    .fa-msg { margin-top: 14px; padding: 10px 13px; border-radius: 9px; font-size: 12.5px; font-weight: 700; line-height: 1.5; }
+    .fa-msg.ok { color: #4ade80; background: rgba(34,197,94,.12); border: 1px solid rgba(34,197,94,.4); }
+    .fa-msg.bad { color: #fca5a5; background: rgba(248,113,113,.12); border: 1px solid rgba(248,113,113,.35); }
+    .fa-foot { font-size: 11px; color: #6f8a80; padding: 12px 18px 14px; border-top: 1px solid rgba(255,255,255,.05); margin-top: 8px; }
+</style>
+
+@code {
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    /// <summary>복구 성공(비밀번호 재설정) 시 로그인 화면에 채울 아이디를 넘긴다.</summary>
+    [Parameter] public EventCallback<string> OnResolved { get; set; }
+
+    private int _tab;
+    private string _name = "", _phone = "";   // 아이디 찾기
+    private string _rid = "", _npw = "", _npw2 = "";
+    private string? _idResult;
+    private string? _msg;
+    private bool _ok;
+
+    // ── 이메일 인증(OTP) 재설정 상태 ──
+    private bool _otpSent, _otpSending, _otpVerified;
+    private string _otpCode = "", _otpInput = "", _otpEmailMasked = "";
+    private DateTime _otpAt;
+
+    // ── 새 비밀번호 강도(회원가입과 동일 규칙) ──
+    private bool PwLen => _npw.Length >= 8;
+    private bool PwLetter => _npw.Any(char.IsLetter);
+    private bool PwDigit => _npw.Any(char.IsDigit);
+    private bool PwSpecial => _npw.Any(c => !char.IsLetterOrDigit(c));
+    private bool PwOk => PwLen && PwLetter && PwDigit && PwSpecial;
+    private string PwClass => !PwOk ? "weak" : (_npw.Length >= 12 ? "strong" : "mid");
+    private string PwLabel => !PwOk ? "요건 미충족" : (_npw.Length >= 12 ? "안전" : "보통");
+    private int PwPct => !PwOk ? Math.Clamp(_npw.Length * 6, 8, 45) : (_npw.Length >= 12 ? 100 : 72);
+
+    private void SwitchTab(int t) { _tab = t; _msg = null; _idResult = null; ResetOtp(); }
+    private void ResetOtp() { _otpSent = false; _otpVerified = false; _otpCode = ""; _otpInput = ""; _otpEmailMasked = ""; _npw = _npw2 = ""; }
+
+    private void DoFindId()
+    {
+        _msg = null; _idResult = null;
+        var res = Members.FindId(_name, _phone);
+        if (res.Ok) { _idResult = res.MaskedId; _ok = true; }
+        else { _msg = res.Message; _ok = false; }
+    }
+
+    // 1단계 — 아이디의 가입 이메일로 인증번호 발송.
+    private async Task SendResetOtp()
+    {
+        _msg = null;
+        var id = _rid.Trim();
+        if (id.Length < 1) { _msg = "아이디를 입력하세요."; _ok = false; return; }
+        var email = Members.GetEmail(id);
+        if (email is null) { _msg = "존재하지 않는 아이디입니다."; _ok = false; return; }
+        if (string.IsNullOrWhiteSpace(email)) { _msg = "이 계정에 등록된 이메일이 없어 이메일 인증을 쓸 수 없습니다. 관리자에게 문의하세요."; _ok = false; return; }
+
+        _otpSending = true;
+        try
+        {
+            _otpCode = System.Security.Cryptography.RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
+            var res = await Otp.SendOtpAsync(email, _otpCode);
+            if (res.Error is { Length: > 0 }) { _msg = "인증 메일 발송 실패: " + res.Error; _ok = false; return; }
+            _otpSent = true; _otpVerified = false; _otpAt = DateTime.Now; _otpInput = "";
+            _otpEmailMasked = MaskEmail(email);
+            _ok = true;
+            _msg = res.Demo
+                ? $"📮 SMTP 미구성 데모 모드 — 인증번호: {_otpCode} (3분 이내 · [인증 확인])"
+                : $"📧 {_otpEmailMasked} 로 인증번호를 보냈습니다. 메일함(스팸함 포함)을 확인하세요.";
+        }
+        finally { _otpSending = false; }
+    }
+
+    // 2단계 — 인증번호 확인(별도). 통과해야 새 비밀번호 칸이 활성화된다.
+    private void VerifyOtp()
+    {
+        _msg = null;
+        if (!_otpSent) { _msg = "먼저 인증번호를 받으세요."; _ok = false; return; }
+        if ((DateTime.Now - _otpAt).TotalMinutes > 3) { _msg = "인증번호가 만료됐습니다. 재발송하세요."; _ok = false; _otpSent = false; return; }
+        if (_otpInput.Trim() != _otpCode) { _msg = "인증번호가 일치하지 않습니다."; _ok = false; return; }
+        _otpVerified = true; _ok = true;
+        _msg = "✅ 인증이 확인됐습니다. 새 비밀번호를 입력하세요.";
+    }
+
+    // 3단계 — 인증 완료 + 강도 충족 시 새 비밀번호 설정.
+    private async Task DoReset()
+    {
+        _msg = null;
+        if (!_otpVerified) { _msg = "먼저 [인증 확인]을 완료하세요."; _ok = false; return; }
+        if (!PwOk) { _msg = "새 비밀번호가 요건(영문·숫자·특수문자 8자 이상)을 충족하지 않습니다."; _ok = false; return; }
+        if (_npw != _npw2) { _msg = "새 비밀번호가 서로 일치하지 않습니다."; _ok = false; return; }
+
+        if (Members.SetPasswordForId(_rid.Trim(), _npw))
+        {
+            _ok = true;
+            _msg = $"✅ '{_rid.Trim()}' 비밀번호가 재설정되었습니다. 새 비밀번호로 로그인하세요.";
+            var id = _rid.Trim();
+            ResetOtp();
+            if (OnResolved.HasDelegate) await OnResolved.InvokeAsync(id);
+        }
+        else { _ok = false; _msg = "재설정에 실패했습니다(잠긴 계정이거나 오류). 관리자에게 문의하세요."; }
+    }
+
+    private void OnKey(KeyboardEventArgs e)
+    {
+        if (e.Key != "Enter") return;
+        if (_tab == 0) { DoFindId(); return; }
+        if (!_otpSent) { _ = SendResetOtp(); return; }
+        if (!_otpVerified) { VerifyOtp(); return; }
+        _ = DoReset();
+    }
+
+    private static string MaskEmail(string email)
+    {
+        var at = email.IndexOf('@');
+        if (at <= 0) return "***";
+        var local = email[..at];
+        var domain = email[at..];
+        var shown = local.Length <= 2 ? local[..1] : local[..2];
+        return shown + new string('*', Math.Max(1, local.Length - shown.Length)) + domain;
+    }
+
+    private async Task Close()
+    {
+        _msg = null; _idResult = null; ResetOtp();
+        if (OnClose.HasDelegate) await OnClose.InvokeAsync();
+    }
+}

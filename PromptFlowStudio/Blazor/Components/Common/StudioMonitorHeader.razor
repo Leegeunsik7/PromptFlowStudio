@@ -1,0 +1,41 @@
+@* [PromptFlow Studio] 스튜디오 라이브 시그널 헤더 — 방송용 LED 상태 뱃지(ON AIR / REC 4K / ENGINE) + 선택적 VU 미터. 순수 CSS. *@
+
+<div class="smh" role="status" aria-label="스튜디오 라이브 시그널">
+    <span class="smh-led live"><i></i>LIVE ON AIR</span>
+    <span class="smh-led rec"><i></i>REC · 4K UHD · 60FPS</span>
+    <span class="smh-led rdy @(EngineReady ? "ok" : "wait")"><i></i>@EngineText</span>
+    @if (ShowVu)
+    {
+        <span class="smh-vu"><LiveVuMeter Active="@VuActive" Count="16" MediaElementId="@MediaElementId" /></span>
+    }
+</div>
+
+<style>
+    .smh { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .smh-led { display: inline-flex; align-items: center; gap: 7px; font: 800 10px/1 var(--mono); letter-spacing: .08em; color: #e5edff;
+        padding: 6px 11px; border-radius: 999px; background: rgba(8,10,20,.55); border: 1px solid rgba(255,255,255,.12); backdrop-filter: blur(6px); white-space: nowrap; }
+    .smh-led i { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+    .smh-led.live { border-color: color-mix(in srgb, #ef4444 45%, transparent); }
+    .smh-led.live i { background: #ef4444; box-shadow: 0 0 8px 1px #ef4444; animation: smh-blink 1.1s steps(1) infinite; }
+    .smh-led.rec i { background: #d946ef; box-shadow: 0 0 8px 1px #d946ef; animation: smh-pulse 1.6s ease-in-out infinite; }
+    .smh-led.rdy.ok { border-color: color-mix(in srgb, #10b981 45%, transparent); }
+    .smh-led.rdy.ok i { background: #10b981; box-shadow: 0 0 8px 1px #10b981; animation: smh-pulse 2.2s ease-in-out infinite; }
+    .smh-led.rdy.wait i { background: #f59e0b; box-shadow: 0 0 8px 1px #f59e0b; animation: smh-pulse 1.2s ease-in-out infinite; }
+    .smh-vu { display: inline-flex; }
+    @@keyframes smh-blink { 0%,50% { opacity: 1; } 51%,100% { opacity: .25; } }
+    @@keyframes smh-pulse { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
+    @@media (prefers-reduced-motion: reduce) { .smh-led i { animation: none !important; } }
+</style>
+
+@code {
+    /// <summary>Wan 2.1 엔진 준비됨(녹색) / 대기(황색).</summary>
+    [Parameter] public bool EngineReady { get; set; } = true;
+    /// <summary>VU 미터 표시 여부.</summary>
+    [Parameter] public bool ShowVu { get; set; } = true;
+    /// <summary>VU 미터 활성(재생 반응) — 기본 true(장식용 상시 활성). MediaElementId 지정 시 무시(실제 진폭 반응).</summary>
+    [Parameter] public bool VuActive { get; set; } = true;
+    /// <summary>VU 미터를 바인딩할 미디어 요소 id — 지정 시 Web Audio 물리 반응.</summary>
+    [Parameter] public string? MediaElementId { get; set; }
+
+    private string EngineText => EngineReady ? "WAN 2.1 ENGINE READY" : "ENGINE STANDBY";
+}

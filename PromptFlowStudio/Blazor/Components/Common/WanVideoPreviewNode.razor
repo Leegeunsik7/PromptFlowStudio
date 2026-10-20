@@ -1,0 +1,137 @@
+@using PromptFlowStudio.Services.Wan
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+@* [PromptFlow Studio v5.5.1 · Task1] Wan 비디오 인라인 프리뷰 노드 카드 내부 컴포넌트 — 순수 HTML5 <video> + BCL(외부 Video SDK 0).
+   ▸ 상위 Wan 노드의 WanVideoRef(video_url·job_id·status)를 받아 노드 카드 안에서 즉시 재생.
+   ▸ 헤더 컨트롤: 재생/일시정지 · 60fps 프레임 탐색(◀▶) · 루프 토글. 생성 중/버퍼링은 스피너.
+   ▸ 재생/프레임 시크는 ./flow-video.js(ES 모듈 · frame-accurate). 모듈 로드 실패 시 네이티브 controls 폴백. *@
+
+<div class="wvp" @onpointerdown:stopPropagation="true">
+    <div class="wvp-ctl">
+        <button class="wvp-b" @onclick="TogglePlay" disabled="@(!CanControl)" title="재생/일시정지">@(_playing ? "⏸" : "▶")</button>
+        <button class="wvp-b" @onclick="() => Step(-1)" disabled="@(!CanControl)" title="이전 프레임">⏮</button>
+        <button class="wvp-b" @onclick="() => Step(1)" disabled="@(!CanControl)" title="다음 프레임">⏭</button>
+        <button class="wvp-b @(_loop ? "on" : null)" @onclick="() => _loop = !_loop" title="루프 재생">🔁</button>
+        <button class="wvp-b" @onclick="ExtractFrame" disabled="@(!CanControl)" title="현재 프레임 추출 → I2V 믹싱 노드 생성">📸</button>
+        <span class="wvp-fr">@FrameLabel</span>
+    </div>
+    <div class="wvp-stage">
+        @if (CanControl)
+        {
+            <video @ref="_video" class="wvp-video" src="@Video!.VideoUrl" loop="@_loop" controls playsinline preload="metadata"
+                   @onloadeddata="OnLoaded" @ontimeupdate="OnTime" @onplay="() => _playing = true" @onpause="() => _playing = false"
+                   @onplaying="() => _buffering = false" @onwaiting="() => _buffering = true" @onended="OnEnded"></video>
+            @if (_buffering) { <div class="wvp-spin"></div> }
+        }
+        else if (HasVideo)
+        {
+            @* 이미지 URL(로컬 스텁 모의 샘플/포스터) *@
+            <img class="wvp-video" src="@Video!.VideoUrl" alt="mock sample" />
+            <div class="wvp-badge">🧪 모의 샘플</div>
+        }
+        else if (BaseSample is not null)
+        {
+            @* 렌더 전 베이스 샘플(대표 레퍼런스) *@
+            <img class="wvp-video" src="@BaseSample" alt="base sample" />
+            <div class="wvp-badge base">👁️ 베이스 샘플</div>
+        }
+        else
+        {
+            <div class="wvp-gen">
+                @if (Video is null || Video.Status is not ("failed" or "error")) { <div class="wvp-spin"></div> }
+                <div class="wvp-gen-t">@StatusText</div>
+            </div>
+        }
+    </div>
+</div>
+
+<style>
+    .wvp { width: 100%; height: 100%; display: flex; flex-direction: column; gap: 4px; font-family: Pretendard, 'Malgun Gothic', sans-serif; overflow: hidden; }
+    .wvp-ctl { display: flex; align-items: center; gap: 3px; flex: 0 0 auto; }
+    .wvp-b { min-width: 26px; height: 24px; padding: 0 5px; font-size: 12px; border-radius: 6px; border: 1px solid #2b2f42; background: #12141f; color: #cbd5e1; cursor: pointer; }
+    .wvp-b:hover:not(:disabled) { border-color: #7c5cff; color: #fff; }
+    .wvp-b:disabled { opacity: .4; cursor: not-allowed; }
+    .wvp-b.on { border-color: #34d399; color: #34d399; }
+    .wvp-fr { margin-left: auto; font: 700 9px ui-monospace, monospace; color: #7dd3fc; }
+    .wvp-stage { position: relative; flex: 1; min-height: 0; display: grid; place-items: center; background: #05070c; border: 1px solid #1e2233; border-radius: 8px; overflow: hidden; }
+    .wvp-video { width: 100%; height: 100%; object-fit: contain; background: #000; border-radius: 7px; }
+    .wvp-badge { position: absolute; top: 6px; left: 6px; font: 800 8.5px Pretendard,'Malgun Gothic',sans-serif; color: #fde68a; background: rgba(0,0,0,.6); border-radius: 6px; padding: 2px 6px; }
+    .wvp-badge.base { color: #c4b5fd; }
+    .wvp-gen { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 8px; text-align: center; }
+    .wvp-gen-t { font: 700 10px Pretendard, 'Malgun Gothic', sans-serif; color: #93a3b8; word-break: keep-all; line-height: 1.4; }
+    .wvp-spin { width: 26px; height: 26px; border-radius: 50%; border: 3px solid rgba(124,92,255,.25); border-top-color: #7c5cff; animation: wvpSpin .8s linear infinite; }
+    .wvp-stage .wvp-spin { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); }
+    @@keyframes wvpSpin { to { transform: rotate(360deg); } }
+    .wvp-stage .wvp-spin { animation: wvpSpin .8s linear infinite; }
+</style>
+
+@code {
+    /// <summary>상위 Wan 노드가 전달한 비디오 참조(video_url·job_id·status). null 이면 대기.</summary>
+    [Parameter] public WanVideoRef? Video { get; set; }
+    /// <summary>이 프리뷰가 속한 FlowNode Id — 키프레임 추출 페이로드에 실어 부모(캔버스)가 I2V 노드를 생성.</summary>
+    [Parameter] public string? NodeId { get; set; }
+    /// <summary>[v5.5.2] 📸 프레임 추출 통지 — 부모가 I2V 믹싱 노드를 동적 생성/연결.</summary>
+    [Parameter] public EventCallback<KeyframeExtractPayload> OnKeyframeExtracted { get; set; }
+
+    /// <summary>추출된 키프레임 페이로드 — 소스 노드 Id · JPEG data URL · 시각(초) · 프레임 번호(@60fps).</summary>
+    public sealed record KeyframeExtractPayload(string NodeId, string DataUrl, double TimeSec, int Frame);
+
+    private ElementReference _video;
+    private IJSObjectReference? _mod;
+    private bool _loop = true;
+    private bool _playing;
+    private bool _buffering;
+    private double _cur;
+    private string? _lastUrl;
+
+    /// <summary>[v5.6] 렌더 전 베이스 샘플(대표 레퍼런스 data URL) — 영상이 아직 없을 때 노드 카드에 미리 표시.</summary>
+    [Parameter] public string? BaseSample { get; set; }
+
+    private bool HasVideo => Video?.HasVideo == true;
+    private bool CanControl => HasVideo && !WanSampleFactory.IsImageUrl(Video?.VideoUrl);   // 실제 <video> 재생/제어 가능(모의 이미지 제외)
+    private string FrameLabel => CanControl ? $"f{(int)Math.Round(_cur * 60)}" : "";
+    private string StatusText => Video is null ? "대기 중 — 상위 노드 실행 필요"
+        : Video.Status switch
+        {
+            "queued" => "📥 오프라인 큐 적재 — 네트워크 복구 시 생성",
+            "failed" or "error" => "⚠ Wan 생성 실패",
+            _ => "⏳ Wan 3.0 생성 중…",
+        };
+
+    protected override void OnParametersSet()
+    {
+        var url = Video?.VideoUrl;
+        if (url != _lastUrl) { _lastUrl = url; _cur = 0; _playing = false; _buffering = HasVideo; }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_mod is null)
+        {
+            try { _mod = await JS.InvokeAsync<IJSObjectReference>("import", "./flow-video.js"); }
+            catch { /* 모듈 로드 실패 → 네이티브 <video controls> 폴백 */ }
+        }
+    }
+
+    private async Task TogglePlay() { if (_mod is null || !CanControl) return; try { await _mod.InvokeVoidAsync("toggle", _video); } catch { } }
+    private async Task Step(int frames) { if (_mod is null || !CanControl) return; try { _cur = await _mod.InvokeAsync<double>("step", _video, frames / 60.0); } catch { } }
+    private async Task OnLoaded() { _buffering = false; if (_mod is not null) { try { await _mod.InvokeAsync<double>("duration", _video); } catch { } } }
+    private async Task OnTime() { if (_mod is not null && HasVideo) { try { _cur = await _mod.InvokeAsync<double>("now", _video); } catch { } } }
+    private void OnEnded() => _playing = false;
+
+    // 📸 현재 프레임 캡처 → data URL → 부모에 통지(I2V 믹싱 노드 생성)
+    private async Task ExtractFrame()
+    {
+        if (_mod is null || !CanControl || !OnKeyframeExtracted.HasDelegate) return;
+        string? dataUrl = null;
+        try { dataUrl = await _mod.InvokeAsync<string?>("grab", _video); } catch { }
+        if (string.IsNullOrEmpty(dataUrl)) return;
+        await OnKeyframeExtracted.InvokeAsync(new KeyframeExtractPayload(NodeId ?? "", dataUrl!, _cur, (int)Math.Round(_cur * 60)));
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_mod is not null) { try { await _mod.DisposeAsync(); } catch { } _mod = null; }
+    }
+}

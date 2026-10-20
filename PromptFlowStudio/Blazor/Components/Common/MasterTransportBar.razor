@@ -1,0 +1,118 @@
+@using System.Globalization
+@implements IDisposable
+@inject PromptFlowStudio.Services.VerticalTranscode.VerticalTranscoderStudioRunner VtRun
+@inject PromptFlowStudio.Services.SetExtension.VirtualSetExtensionStudioRunner SxRun
+@inject PromptFlowStudio.Services.LensOptics.CinematicLensOpticsStudioRunner LoRun
+@inject PromptFlowStudio.Services.ViralReels.ViralReelsStudioRunner VrRun
+
+@* [PromptFlow Studio v17.50.1] 글로벌 트랜스포트 바 — 사이드바 토글 · 마스터 타임코드 셔틀 · 렌더 레이턴시 · 메모리/GPU 게이지 · 마스터 피크 미터.
+   자체 250 ms 타이머로 이 컴포넌트만 재렌더(레이아웃 전체 StateHasChanged 폭주 방지). *@
+
+<div class="mtb">
+    <button type="button" class="mtb-ham @(SidebarCollapsed ? "off" : null)" aria-label="사이드바 접기/펼치기" title="사이드바 접기/펼치기" @onclick="OnToggleSidebar">☰</button>
+    <div class="mtb-transport" role="group" aria-label="마스터 트랜스포트">
+        <button type="button" class="mtb-btn" title="처음으로" @onclick="Rewind">⏮</button>
+        <button type="button" class="mtb-btn play @(_playing ? "on" : null)" title="@(_playing ? "일시정지" : "재생")" @onclick="TogglePlay">@(_playing ? "⏸" : "▶")</button>
+        <button type="button" class="mtb-btn" title="정지" @onclick="Stop">⏹</button>
+        <span class="mtb-tc" title="마스터 타임코드(30 fps)">@(Timecode())</span>
+    </div>
+    <div class="mtb-meter" title="실행 중 스튜디오 러너의 최대 틱 처리 시간">
+        <span class="lb">RENDER</span><b class="@(_latency < 16.7 ? "ok" : _latency < 33.4 ? "mid" : "hot")">@(_latency > 0 ? _latency.ToString("0.0", CultureInfo.InvariantCulture) + " ms" : "idle")</b>
+    </div>
+    <div class="mtb-gauge" title="관리 힙 / 프로세스 작업 집합">
+        <span class="lb">MEM</span>
+        <span class="bar"><span style="width:@(P(_memPct))%"></span></span>
+        <b>@((_workingSet / 1048576.0).ToString("0", CultureInfo.InvariantCulture)) MB</b>
+    </div>
+    <div class="mtb-gauge" title="v17.49 하드웨어 인코더 점유율(GPU 인코더 미사용 시 —)">
+        <span class="lb">GPU ENC</span>
+        <span class="bar gpu"><span style="width:@(P(_gpu))%"></span></span>
+        <b>@(_gpuActive ? _gpu.ToString("0", CultureInfo.InvariantCulture) + "%" : "—")</b>
+    </div>
+    <div class="mtb-peak" title="마스터 버스(직결 합성 믹스) 피크 dBFS">
+        <span class="lb">PEAK</span>
+        <span class="bar"><span class="lvl @(_peakDb > -1 ? "clip" : _peakDb > -6 ? "warm" : null)" style="width:@(P(DbPct(_peakDb)))%"></span><span class="hold" style="left:@(P(DbPct(_holdDb)))%"></span></span>
+        <b>@(_peakDb <= -60 ? "-∞" : _peakDb.ToString("0.0", CultureInfo.InvariantCulture)) dB</b>
+    </div>
+</div>
+
+<style>
+    .mtb { display: flex; align-items: center; gap: 14px; flex-wrap: nowrap; min-width: 0; font-size: 11px; color: var(--text-secondary, #9fb0c8); }
+    .mtb .lb { font: 800 9px var(--mono, monospace); letter-spacing: .08em; color: var(--text-muted, #6b7a90); margin-right: 5px; }
+    .mtb b { font: 700 11px var(--mono, monospace); color: var(--text-primary, #e6eefc); }
+    .mtb b.ok { color: #22c55e; } .mtb b.mid { color: #f59e0b; } .mtb b.hot { color: #ef4444; }
+    .mtb-ham { width: 30px; height: 28px; border-radius: 8px; border: 1px solid var(--line, #223047); background: transparent; color: var(--text-primary, #e6eefc); cursor: pointer; font-size: 15px; }
+    .mtb-ham.off { background: color-mix(in srgb, var(--accent, #7c6cff) 20%, transparent); }
+    .mtb-transport { display: flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 10px; background: color-mix(in srgb, var(--card-2, #1a2436) 85%, #000); border: 1px solid var(--line, #223047); }
+    .mtb-btn { width: 26px; height: 24px; border-radius: 6px; border: none; background: transparent; color: var(--text-primary, #e6eefc); cursor: pointer; font-size: 12px; }
+    .mtb-btn:hover { background: color-mix(in srgb, var(--accent, #7c6cff) 18%, transparent); }
+    .mtb-btn.play.on { color: #22c55e; }
+    .mtb-tc { font: 800 14px var(--mono, monospace); color: #fbbf24; letter-spacing: .04em; margin-left: 6px; min-width: 104px; }
+    .mtb-meter, .mtb-gauge, .mtb-peak { display: flex; align-items: center; white-space: nowrap; }
+    .mtb .bar { position: relative; display: inline-block; width: 64px; height: 7px; border-radius: 999px; background: #1e293b; overflow: hidden; margin-right: 6px; }
+    .mtb .bar > span { position: absolute; left: 0; top: 0; bottom: 0; background: #38bdf8; }
+    .mtb .bar.gpu > span { background: #a855f7; }
+    .mtb-peak .bar { width: 90px; }
+    .mtb-peak .lvl { background: linear-gradient(90deg, #22c55e, #84cc16 70%, #f59e0b 90%); }
+    .mtb-peak .lvl.warm { background: linear-gradient(90deg, #22c55e, #f59e0b); } .mtb-peak .lvl.clip { background: #ef4444; }
+    .mtb-peak .hold { width: 2px; background: #f8fafc; left: 0; }
+    @@media (max-width: 1100px) { .mtb-gauge, .mtb-peak { display: none; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnToggleSidebar { get; set; }
+    [Parameter] public bool SidebarCollapsed { get; set; }
+
+    private const int Fps = 30;
+    private readonly System.Diagnostics.Stopwatch _clock = new();
+    private System.Threading.Timer? _timer;
+    private bool _playing, _gpuActive;
+    private double _latency, _memPct, _gpu, _peakDb = -90, _holdDb = -90;
+    private long _workingSet, _holdAt;
+
+    protected override void OnInitialized()
+    {
+        Sample();
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { Sample(); _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("MasterTransportBar.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private void Sample()
+    {
+        double lat = 0;
+        if (VtRun.IsRunning) lat = Math.Max(lat, VtRun.LastTickMs);
+        if (SxRun.IsRunning) lat = Math.Max(lat, SxRun.LastTickMs);
+        if (LoRun.IsRunning) lat = Math.Max(lat, LoRun.LastTickMs);
+        if (VrRun.IsRunning) lat = Math.Max(lat, VrRun.LastTickMs);
+        _latency = lat;
+        var gc = GC.GetGCMemoryInfo();
+        _workingSet = Environment.WorkingSet;
+        _memPct = gc.TotalAvailableMemoryBytes > 0 ? 100.0 * _workingSet / gc.TotalAvailableMemoryBytes : 0;
+        _gpuActive = VtRun.Engine.Backend == PromptFlowStudio.Services.VerticalTranscode.TranscodeBackend.MediaFoundationHardware && VtRun.State == PromptFlowStudio.Services.VerticalTranscode.TranscodeSessionState.Recording;
+        _gpu = _gpuActive ? Math.Min(VtRun.Guard.Occupancy, 100) : 0;
+        var peak = VtRun.Synth.AudioPeak;
+        var db = peak > 1e-6f ? 20 * Math.Log10(peak) : -90;
+        _peakDb = Math.Max(db, _peakDb - 3);
+        var now = Environment.TickCount64;
+        if (db >= _holdDb || now - _holdAt > 1500) { _holdDb = db; _holdAt = now; }
+    }
+
+    private string Timecode()
+    {
+        var t = _clock.Elapsed;
+        var f = (int)(t.TotalSeconds * Fps) % Fps;
+        return ((int)t.TotalHours).ToString("00", CultureInfo.InvariantCulture) + ":" + t.Minutes.ToString("00", CultureInfo.InvariantCulture) + ":" + t.Seconds.ToString("00", CultureInfo.InvariantCulture) + ":" + f.ToString("00", CultureInfo.InvariantCulture);
+    }
+
+    private static double DbPct(double db) => Math.Clamp((db + 60) / 60 * 100, 0, 100);
+    private static string P(double v) => Math.Clamp(v, 0, 100).ToString("0.#", CultureInfo.InvariantCulture);
+
+    private void TogglePlay() { if (_playing) _clock.Stop(); else _clock.Start(); _playing = !_playing; }
+    private void Stop() { _clock.Reset(); _playing = false; }
+    private void Rewind() { var run = _playing; _clock.Reset(); if (run) _clock.Start(); }
+
+    public void Dispose() => _timer?.Dispose();
+}

@@ -1,0 +1,246 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.BeatSync
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject BeatSyncAudioMixStudioRunner Runner
+
+@* [PromptFlow Studio v17.53.0] 🎵 비트 동기화 & 오디오 더킹 스튜디오 — 파형 · 비트 온셋 마커 · 게인 리덕션 미터 · LUFS 게이지 · 더킹 깊이 · v17.52/v17.39/v17.49 결선. *@
+<div class="bsm-scrim" @onclick="Close">
+    <div class="bsm-modal" @onclick:stopPropagation="true">
+        <div class="bsm-h">
+            <div>
+                <div class="bsm-title">🎵 비트 동기화 &amp; 오디오 더킹 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null) · @(F1(Runner.TimeSec))s</div>
+                <div class="bsm-sub"><b>비트 트래커</b>가 BGM 1024 점 FFT 스펙트럼 플럭스로 온셋 · BPM(60~180) · 다운비트를 추정하고, <b>사이드체인 더커</b>는 보컬 RMS가 −32 dBFS를 넘으면 BGM만 15 ms 어택 / 250 ms 릴리스로 감쇄합니다(폴리는 보존). <b>가드</b>는 300 Hz~3 kHz 마스킹 노치 · 위상 보정 · −14 LUFS 정규화 · −1 dBTP 트루 피크 천장을 유지합니다.</div>
+            </div>
+            <button class="bsm-x" @onclick="Close">✕</button>
+        </div>
+        <div class="bsm-bar">
+            <button class="bsm-btn @(Runner.IsRunning ? "on" : "go")" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 재생")</button>
+            <span class="bsm-sep"></span>
+            @foreach (var bpm in Tempos)
+            {
+                var b = bpm;
+                <button class="bsm-btn pre @(!Runner.Bgm.HasWav && Math.Abs(Runner.Bgm.Bpm - b) < 0.5 ? "on" : null)" @onclick="() => Runner.SetTempo(b)">🥁 @(F0(b))</button>
+            }
+            <input class="bsm-path" placeholder="BGM WAV 경로" @bind="_wav" />
+            <button class="bsm-btn" @onclick="LoadWav">📂 로드</button>
+            <button class="bsm-btn" disabled="@(!Runner.Bgm.HasWav)" @onclick="Runner.ClearWav">절차적 BGM</button>
+        </div>
+        <div class="bsm-bar">
+            <button class="bsm-btn @(Runner.Ducker.Enabled ? "on" : null)" @onclick="() => Runner.SetDucking(!Runner.Ducker.Enabled)">🎙 더킹</button>
+            <label class="bsm-lbl">깊이</label>
+            <input class="bsm-rng" type="range" min="-24" max="-6" step="1" value="@((int)Runner.Ducker.DepthDb)" @oninput="OnDepth" />
+            <span class="bsm-chip">@(F0(Runner.Ducker.DepthDb)) dB</span>
+            <button class="bsm-btn @(Runner.Guard.Normalize ? "on" : null)" @onclick="() => Runner.SetNormalize(!Runner.Guard.Normalize)">📏 −14 LUFS</button>
+            <button class="bsm-btn @(Runner.Guard.MaskingGuard ? "on" : null)" @onclick="() => Runner.SetMasking(!Runner.Guard.MaskingGuard)">🎚 마스킹 노치</button>
+            <button class="bsm-btn @(Runner.TestVoice ? "on" : null)" @onclick="() => Runner.TestVoice = !Runner.TestVoice">🗣 테스트 보컬</button>
+            <span class="bsm-sep"></span>
+            <button class="bsm-btn @(Runner.SyncWords ? "on" : null)" disabled="@(!Runner.MotionLinked)" @onclick="() => Runner.SetSyncWords(!Runner.SyncWords)">🔤 v17.52 단어 스냅</button>
+            <button class="bsm-btn @(Runner.SyncCuts ? "on" : null)" disabled="@(!Runner.DirectorLinked)" @onclick="() => Runner.SetSyncCuts(!Runner.SyncCuts)">🎬 v17.39 컷 양자화</button>
+            <button class="bsm-btn @(Runner.AttachedToEncoder ? "on" : null)" disabled="@(!Runner.EncoderLinked)" @onclick="() => Runner.AttachEncoder(!Runner.AttachedToEncoder)">🎞 v17.49 인코딩 결선</button>
+        </div>
+        <div class="bsm-main">
+            <div class="bsm-card wide">
+                <div class="bsm-sec">〰 마스터 파형 · 비트 마커(최근 5 s) — <span class="beat">│ 비트</span> <span class="down">┃ 다운비트</span> <span class="onset">╎ 온셋</span></div>
+                <svg class="bsm-wave" viewBox="0 0 600 120" preserveAspectRatio="none">
+                    <line class="mid" x1="0" x2="600" y1="60" y2="60" />
+                    <polygon class="wf" points="@(WavePoints())" />
+                    @for (var i = 0; i < Runner.Tracker.OnsetCount; i++)
+                    {
+                        var x = MarkerX(Runner.Tracker.OnsetTime(i));
+                        if (x >= 0)
+                        {
+                            <line class="onset" x1="@(F1(x))" x2="@(F1(x))" y1="100" y2="120" />
+                        }
+                    }
+                    @for (var i = 0; i < Runner.Tracker.EventCount; i++)
+                    {
+                        var ev = Runner.Tracker.Event(i);
+                        var x = MarkerX(ev.TimeSec);
+                        if (x >= 0)
+                        {
+                            <line class="@(ev.Downbeat ? "down" : "beat")" x1="@(F1(x))" x2="@(F1(x))" y1="0" y2="@(ev.Downbeat ? "120" : "96")" />
+                        }
+                    }
+                </svg>
+                <div class="bsm-kv grid4">
+                    <div>BPM <b class="@(Runner.Tracker.Locked ? "ok" : "warn")">@(F1(Runner.Tracker.Bpm))</b> @(Runner.Tracker.Locked ? "🔒" : "…") 신뢰 @(F2(Runner.Tracker.Confidence))</div>
+                    <div>비트 @(Runner.Tracker.Beats) · 스냅 @(Runner.Tracker.Snaps) · 온셋 @(Runner.Tracker.Onsets)</div>
+                    <div>다운비트 슬롯 @(Runner.Tracker.DownbeatSlot + 1)/4 · 플럭스 @(F1(Runner.Tracker.LastFlux))</div>
+                    <div>단어 스냅 @(Runner.WordsSnapped) · 블록 @(F0(Runner.LastBlockUs)) µs</div>
+                </div>
+            </div>
+            <div class="bsm-card">
+                <div class="bsm-sec">🎙 보컬 vs BGM 게인 리덕션</div>
+                <div class="bsm-meter"><span class="lbl">보컬</span><div class="track"><div class="fill voice" style="width:@(Pct((Runner.Ducker.VoiceDbfs + 60f) / 60f))%"></div><div class="thr" style="left:@(Pct(28f / 60f))%"></div></div><b>@(F1(Runner.Ducker.VoiceDbfs)) dBFS</b></div>
+                <div class="bsm-meter"><span class="lbl">GR</span><div class="track"><div class="fill gr" style="width:@(Pct(Runner.Ducker.GainReductionDb / 24f))%"></div><div class="thr" style="left:@(Pct(-Runner.Ducker.DepthDb / 24f))%"></div></div><b>−@(F1(Runner.Ducker.GainReductionDb)) dB</b></div>
+                <div class="bsm-kv">@(Runner.Ducker.VoiceActive ? "🎙 발화 중" : "무음") · 최대 GR @(F1(Runner.Ducker.MaxGainReductionDb)) dB · 어택 @(F0(Runner.Ducker.AttackMs)) / 릴리스 @(F0(Runner.Ducker.ReleaseMs)) ms</div>
+                <div class="bsm-kv">마스킹: 보컬 대역 @(F1(Runner.Guard.VoiceBandDb)) · BGM 대역 @(F1(Runner.Guard.BgmBandDb)) dB → 노치 −@(F1(Runner.Guard.NotchDb)) dB</div>
+            </div>
+            <div class="bsm-card">
+                <div class="bsm-sec">📏 라우드니스 (목표 −14 LUFS ±0.5 · −1 dBTP)</div>
+                <div class="bsm-meter"><span class="lbl">S</span><div class="track"><div class="fill lu @(Math.Abs(Runner.Guard.Output.ShortTermLufs + 14f) <= 1f ? "ok" : null)" style="width:@(Pct((Runner.Guard.Output.ShortTermLufs + 30f) / 24f))%"></div><div class="thr tgt" style="left:@(Pct(16f / 24f))%"></div></div><b>@(F1(Runner.Guard.Output.ShortTermLufs))</b></div>
+                <div class="bsm-meter"><span class="lbl">M</span><div class="track"><div class="fill lu" style="width:@(Pct((Runner.Guard.Output.MomentaryLufs + 30f) / 24f))%"></div><div class="thr tgt" style="left:@(Pct(16f / 24f))%"></div></div><b>@(F1(Runner.Guard.Output.MomentaryLufs))</b></div>
+                <div class="bsm-kv grid2">
+                    <div>통합 <b class="@(Math.Abs(Runner.Guard.Output.IntegratedLufs + 14f) <= LoudnessNormalizationPhaseGuard.Tolerance ? "ok" : "warn")">@(F1(Runner.Guard.Output.IntegratedLufs))</b> LUFS</div>
+                    <div>메이크업 @(F1(Runner.Guard.MakeupDb)) dB</div>
+                    <div>트루 피크 @(F2(Runner.Guard.TruePeakDbtp)) · 최대 <b class="@(Runner.Guard.MaxTruePeakDbtp <= LoudnessNormalizationPhaseGuard.CeilingDbtp ? "ok" : "warn")">@(F2(Runner.Guard.MaxTruePeakDbtp))</b> dBTP</div>
+                    <div>클립 <b class="@(Runner.Guard.Limiter.HardClipsOut == 0 ? "ok" : "warn")">@(Runner.Guard.Limiter.HardClipsOut)</b> · 비상 @(Runner.Guard.OverCeilingBlocks)</div>
+                    <div>L/R 상관 @(F2(Runner.Guard.Correlation)) · 사이드 ×@(F2(Runner.Guard.SideScale))</div>
+                    <div>위상 보정 @(Runner.Guard.PhaseFixBlocks) · 노치 @(Runner.Guard.NotchBlocks)</div>
+                </div>
+            </div>
+            <div class="bsm-card wide">
+                <div class="bsm-sec">📈 최근 4 s — <span class="grc">GR dB(0~24)</span> · <span class="luc">숏텀 LUFS(−30~−6)</span></div>
+                <svg class="bsm-graph" viewBox="0 0 600 80" preserveAspectRatio="none">
+                    <line class="tgt" x1="0" x2="600" y1="@(F1(80 - 80 * 16 / 24.0))" y2="@(F1(80 - 80 * 16 / 24.0))" />
+                    <polyline class="gr" points="@(Series(true))" />
+                    <polyline class="lu" points="@(Series(false))" />
+                </svg>
+                <div class="bsm-act">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .bsm-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .bsm-modal { width: min(1180px, 96vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
+    .bsm-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #22d3ee 16%, var(--card)), color-mix(in srgb, #a855f7 12%, var(--card))); }
+    .bsm-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .bsm-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .bsm-sub b { color: var(--text-primary); }
+    .bsm-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .bsm-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .bsm-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .bsm-btn:disabled { opacity: .45; cursor: default; }
+    .bsm-btn.on { background: color-mix(in srgb, #22d3ee 22%, var(--card)); border-color: #22d3ee; }
+    .bsm-btn.pre.on { background: color-mix(in srgb, #a855f7 22%, var(--card)); border-color: #a855f7; }
+    .bsm-btn.go { background: #22d3ee; color: #111; border: none; }
+    .bsm-sep { width: 1px; height: 20px; background: var(--line); margin: 0 4px; }
+    .bsm-lbl { font-size: 12px; color: var(--text-secondary); }
+    .bsm-rng { width: 140px; }
+    .bsm-path { flex: 1; min-width: 160px; font-size: 12px; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .bsm-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .bsm-main { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 14px 18px; min-height: 0; flex: 1; overflow-y: auto; }
+    .bsm-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); min-width: 0; }
+    .bsm-card.wide { grid-column: 1 / -1; }
+    .bsm-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .bsm-sec .beat { color: #22d3ee; } .bsm-sec .down { color: #f43f5e; } .bsm-sec .onset { color: #facc15; }
+    .bsm-sec .grc { color: #f43f5e; } .bsm-sec .luc { color: #22d3ee; }
+    .bsm-wave, .bsm-graph { width: 100%; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; display: block; }
+    .bsm-wave { height: 120px; }
+    .bsm-graph { height: 80px; }
+    .bsm-wave .mid { stroke: var(--line); }
+    .bsm-wave .wf { fill: color-mix(in srgb, #22d3ee 45%, transparent); stroke: none; }
+    .bsm-wave .beat { stroke: #22d3ee; stroke-width: 1.2; opacity: .8; }
+    .bsm-wave .down { stroke: #f43f5e; stroke-width: 2.4; }
+    .bsm-wave .onset { stroke: #facc15; stroke-width: 1; opacity: .7; }
+    .bsm-graph polyline { fill: none; stroke-width: 1.6; }
+    .bsm-graph .gr { stroke: #f43f5e; }
+    .bsm-graph .lu { stroke: #22d3ee; }
+    .bsm-graph .tgt { stroke: #22c55e; stroke-dasharray: 6 4; }
+    .bsm-meter { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 11px; color: var(--text-secondary); }
+    .bsm-meter .lbl { width: 34px; font-weight: 700; }
+    .bsm-meter b { width: 86px; text-align: right; font: 700 11px var(--mono); color: var(--text-primary); }
+    .bsm-meter .track { position: relative; flex: 1; height: 12px; border-radius: 6px; background: #1e293b; overflow: hidden; }
+    .bsm-meter .fill { height: 100%; transition: width .1s linear; }
+    .bsm-meter .fill.voice { background: #a855f7; }
+    .bsm-meter .fill.gr { background: #f43f5e; }
+    .bsm-meter .fill.lu { background: #f59e0b; }
+    .bsm-meter .fill.lu.ok { background: #22c55e; }
+    .bsm-meter .thr { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; opacity: .8; }
+    .bsm-meter .thr.tgt { background: #22c55e; }
+    .bsm-kv { font-size: 11px; color: var(--text-secondary); margin-top: 6px; }
+    .bsm-kv.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+    .bsm-kv.grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px 12px; }
+    .bsm-kv b.ok { color: #22c55e; }
+    .bsm-kv b.warn { color: #f59e0b; }
+    .bsm-act { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+    @@media (max-width: 760px) { .bsm-main { grid-template-columns: 1fr; } .bsm-kv.grid4 { grid-template-columns: 1fr 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly double[] Tempos = { 96, 120, 150 };
+    private System.Threading.Timer? _timer;
+    private string _wav = "";
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("BeatSync.Modal.Timer", ex); }
+        }, null, 120, 120);
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string Pct(float v) => (Math.Clamp(v, 0f, 1f) * 100f).ToString("0.#", CultureInfo.InvariantCulture);
+
+    /// <summary>트래커 시계 기준 경과 → 파형 x(우측 = 현재 · 블록 800 = 2 px). 창 밖이면 −1.</summary>
+    private double MarkerX(double t)
+    {
+        var age = (Runner.Tracker.TimeSec - t) * 48000.0 / BeatSyncAudioMixStudioRunner.Block;
+        var x = 600 - age * 600.0 / BeatSyncAudioMixStudioRunner.WaveBins;
+        return x is >= 0 and <= 600 ? x : -1;
+    }
+
+    private string WavePoints()
+    {
+        var n = Runner.WaveCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 24);
+        var step = 600.0 / BeatSyncAudioMixStudioRunner.WaveBins;
+        for (var i = n - 1; i >= 0; i--) sb.Append((600 - i * step).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append((60 - 58 * Math.Clamp(Runner.WaveMax(i), -1f, 1f)).ToString("0.#", CultureInfo.InvariantCulture)).Append(' ');
+        for (var i = 0; i < n; i++) sb.Append((600 - i * step).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append((60 - 58 * Math.Clamp(Runner.WaveMin(i), -1f, 1f)).ToString("0.#", CultureInfo.InvariantCulture)).Append(' ');
+        return sb.ToString();
+    }
+
+    private string Series(bool gr)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var k = n - 1 - i;
+            var v = gr ? Runner.GrSeries(k) / 24.0 : (Runner.LufsSeries(k) + 30.0) / 24.0;
+            sb.Append((600.0 * i / (n - 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append((78 - 76 * Math.Clamp(v, 0, 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void OnDepth(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetDepth(v);
+    }
+
+    private void LoadWav()
+    {
+        if (!string.IsNullOrWhiteSpace(_wav)) Runner.LoadWav(_wav.Trim().Trim('"'));
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

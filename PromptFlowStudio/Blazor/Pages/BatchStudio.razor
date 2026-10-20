@@ -1,0 +1,535 @@
+@page "/batch"
+@implements IDisposable
+@inject BatchProductionService Batch
+@inject IWanConfigService Cfg
+@inject ILocalMediaService Media
+@inject IVideoExportService Export
+@inject NavigationManager Nav
+
+@* [PromptFlow Studio] 대량 양산 배치 팩토리 — CSV/TXT 대량 입력을 큐로 받아 백그라운드에서 한 편씩 순차 양산.
+   상태는 BatchProductionService(싱글턴)가 보유, 이 컴포넌트는 OnChange 구독 후 InvokeAsync(StateHasChanged)로만 갱신. *@
+
+<PageTitle>PromptFlow Studio · 대량 양산</PageTitle>
+
+<div class="bt">
+    <header class="bt-head">
+        <div class="bt-navrow">
+            <button class="bt-back" @onclick='() => Nav.NavigateTo("storyboard")'>← 스토리보드</button>
+            <button class="bt-back" @onclick='() => Nav.NavigateTo("")'>홈</button>
+            <button class="bt-back" @onclick='() => Nav.NavigateTo("analytics")'>📊 생산성 &amp; 비용 대시보드</button>
+            <button class="bt-back" @onclick='() => Nav.NavigateTo("brand-studio")'>🛍️ 커머셜 브랜드 스튜디오</button>
+        </div>
+        <div class="bt-titlerow">
+            <h1 class="bt-title">대량 양산 <span class="bt-title-g">배치 팩토리</span> <MenuHelpBadge MenuKey="@GranularHelpService.Keys.MassProduction" /></h1>
+            <span class="bt-ff @(Batch.Enabled ? "ok" : "off")">@(Batch.Enabled ? "● 엔진 준비됨" : "○ 엔진 미구성")</span>
+        </div>
+        <p class="bt-sub">CSV·TXT 로 <b>수십 편</b>의 숏츠를 한 번에 대기열에 올리고, 백그라운드에서 <b>한 편씩 자동</b>으로 양산합니다 — 대본 분석 → 컷 생성/병합 → 커버 → 메타데이터.</p>
+    </header>
+
+    <div style="margin:12px 0 16px;"><StudioMonitorHeader EngineReady="true" /></div>
+
+    @* 엑셀식 배치 그리드 — 셀 수정·검증·CSV/JSON 임포트 후 일괄 큐 등록(공유 배치 큐) *@
+    <div style="margin:0 0 16px;"><MassProductionGrid /></div>
+
+    @* v16.16.0 대량 생산 허브 — 테마 다중 선택 일괄 큐 · 우선순위 · 일시정지/재개 · 재시도 · 자원 거버너 *@
+    <BatchProductionHub />
+
+    @if (!Batch.Enabled)
+    {
+        <div class="bt-warn">
+            ⚠ 생성 엔진이 구성되지 않았습니다. <button class="bt-warn-link" @onclick='() => Nav.NavigateTo("settings")'>관리자 설정</button> 에서 API 키/엔진을 먼저 등록하세요.
+        </div>
+    }
+
+    <div class="bt-grid">
+        @* ── 좌: 입력/옵션 ── *@
+        <section class="bt-panel">
+            <h2 class="bt-h2">① 대량 입력</h2>
+
+            @* 파일 드롭존(CSV/TXT) *@
+            <div class="bt-drop">
+                <InputFile class="bt-drop-input" OnChange="OnFilePicked" accept=".csv,.txt,text/csv,text/plain"
+                           disabled="@Batch.IsRunning" />
+                <div class="bt-drop-hint">
+                    📄 CSV / TXT 파일 <span>(드래그 앤 드롭 · 클릭)</span>
+                    <div class="bt-drop-sub">한 줄 = 한 편 · <code>제목,대본</code> 또는 대본만</div>
+                </div>
+            </div>
+
+            @* 직접 붙여넣기 *@
+            <label class="bt-lbl">직접 붙여넣기 <span class="bt-sub2">한 줄에 한 편씩 (제목,대본 · 탭/콤마 구분)</span></label>
+            <textarea class="bt-ta" @bind="_paste" @bind:event="oninput" rows="4" disabled="@Batch.IsRunning"
+                      placeholder="예)&#10;우주 고양이의 모험,깊은 우주를 여행하는 용감한 고양이 이야기&#10;해변의 아침,잔잔한 파도와 일출의 힐링 풍경"></textarea>
+            <div class="bt-inline">
+                <button class="bt-tbtn" @onclick="AddFromPaste" disabled="@(Batch.IsRunning || string.IsNullOrWhiteSpace(_paste))">＋ 대기열에 추가</button>
+                @if (_addedNote is not null) { <span class="bt-note">@_addedNote</span> }
+            </div>
+
+            @* v5.6.5: 생성 전 예상 첫 프레임 시뮬레이터 — 붙여넣은 대본 기반 정체성 프리뷰 *@
+            <FirstFramePreviewDeck Prompt="@_paste" MotionStyle="대량 양산" />
+
+            <div class="bt-divider"></div>
+
+            <h2 class="bt-h2">② 공통 양산 옵션</h2>
+            <div class="bt-opts">
+                <div class="bt-optrow">
+                    <label class="bt-lbl">해상도</label>
+                    <select class="bt-sel" @bind="_resolution" disabled="@Batch.IsRunning">
+                        @foreach (var (val, label) in StoryboardProject.ResolutionPresets)
+                        {
+                            <option value="@val">@label</option>
+                        }
+                    </select>
+                </div>
+                <div class="bt-optrow">
+                    <label class="bt-lbl">컷 수 / 편</label>
+                    <select class="bt-sel" @bind="_cutCount" disabled="@Batch.IsRunning">
+                        <option value="3">3컷</option>
+                        <option value="4">4컷</option>
+                        <option value="5">5컷</option>
+                    </select>
+                </div>
+                <div class="bt-optrow">
+                    <label class="bt-lbl">템포 배속</label>
+                    <select class="bt-sel" @bind="_speedStr" disabled="@Batch.IsRunning">
+                        @foreach (var (val, label) in StoryboardProject.SpeedPresets)
+                        {
+                            <option value="@Inv(val)">@label</option>
+                        }
+                    </select>
+                </div>
+            </div>
+
+            <div class="bt-checks">
+                <label class="bt-chk"><input type="checkbox" @bind="_fade" disabled="@Batch.IsRunning" /> <span>부드러운 전환(페이드)</span></label>
+                <label class="bt-chk"><input type="checkbox" @bind="_smartSfx" disabled="@Batch.IsRunning" /> <span>🔊 스마트 사운드 FX</span></label>
+                <label class="bt-chk"><input type="checkbox" @bind="_autoCover" disabled="@Batch.IsRunning" /> <span>🖼️ 커버 썸네일 자동</span></label>
+                <label class="bt-chk"><input type="checkbox" @bind="_autoMeta" disabled="@Batch.IsRunning" /> <span>🏷️ 메타데이터 자동</span></label>
+                <label class="bt-chk"><input type="checkbox" @bind="_offlineTts" disabled="@Batch.IsRunning" /> <span>🎙️ 오프라인 TTS 우선</span></label>
+            </div>
+
+            @* 브랜드 워터마크(전 항목 공통) *@
+            <div class="bt-wm">
+                <label class="bt-lbl">🏷️ 브랜드 워터마크 <span class="bt-sub2">전 항목 우측 상단 로고(투명 PNG 권장 · 선택)</span></label>
+                @if (_watermarkPath is not null)
+                {
+                    <div class="bt-wm-has">
+                        <img class="bt-wm-img" src="@_watermarkThumb" alt="워터마크" />
+                        <button class="bt-x" @onclick="ClearWatermark" disabled="@Batch.IsRunning" title="워터마크 해제">✕</button>
+                    </div>
+                }
+                else
+                {
+                    <div class="bt-drop mini">
+                        <InputFile class="bt-drop-input" OnChange="OnWatermarkPicked" accept="image/png,image/webp,image/jpeg" disabled="@Batch.IsRunning" />
+                        <div class="bt-drop-hint">🏷️ 로고 이미지 <span>(클릭/드래그)</span></div>
+                    </div>
+                }
+            </div>
+        </section>
+
+        @* ── 우: 대기열 + 진행 ── *@
+        <section class="bt-panel">
+            <div class="bt-quehead">
+                <h2 class="bt-h2">③ 대기열 <span class="bt-count">@(Batch.TotalCount)편</span></h2>
+                <div class="bt-quetools">
+                    <button class="bt-mini" @onclick="Batch.ClearFinished" disabled="@(Batch.CompletedCount + Batch.FailedCount == 0)">완료 항목 정리</button>
+                    <button class="bt-mini danger" @onclick="Batch.ClearAll" disabled="@(Batch.IsRunning || Batch.TotalCount == 0)">전체 비우기</button>
+                </div>
+            </div>
+
+            @if (Batch.IsRunning || Batch.OverallPercent > 0)
+            {
+                <div class="bt-overall">
+                    <div class="bt-overall-top">
+                        <span>@(Batch.StatusMessage ?? "진행 중…")</span>
+                        <span class="bt-overall-pct">@Batch.OverallPercent%</span>
+                    </div>
+                    <div class="bt-bar"><div class="bt-bar-f" style="width:@(Batch.OverallPercent)%"></div></div>
+                    <div class="bt-overall-sum">✅ 완료 @Batch.CompletedCount · ❌ 실패 @Batch.FailedCount · ⏳ 대기 @Batch.QueuedCount</div>
+                </div>
+            }
+
+            @if (Batch.TotalCount == 0)
+            {
+                <div class="bt-empty">
+                    <div class="bt-empty-ic">🏭</div>
+                    <div class="bt-empty-t">대기열이 비어 있습니다</div>
+                    <div class="bt-empty-s">왼쪽에서 CSV/TXT 를 올리거나 대본을 붙여넣어 대량으로 추가하세요.</div>
+                </div>
+            }
+            else
+            {
+                <div class="bt-list">
+                    @foreach (var (item, i) in Batch.Items.Select((x, idx) => (x, idx)))
+                    {
+                        <div class="bt-item @(item.Status == BatchItemStatus.Running ? "run" : null)" @key="item.Id">
+                            <div class="bt-item-h">
+                                <span class="bt-item-no">@(i + 1)</span>
+                                <span class="bt-item-title" title="@item.Script">@(string.IsNullOrWhiteSpace(item.Title) ? "(무제)" : item.Title)</span>
+                                <span class="bt-badge @Cls(item.Status)">@Label(item.Status)</span>
+                                @if (item.Status == BatchItemStatus.Queued && !Batch.IsRunning)
+                                {
+                                    <button class="bt-x" @onclick="() => Batch.Remove(item.Id)" title="제거">✕</button>
+                                }
+                            </div>
+
+                            @if (item.Status == BatchItemStatus.Running)
+                            {
+                                <div class="bt-item-prog">
+                                    <div class="bt-bar sm"><div class="bt-bar-f" style="width:@(item.Percent)%"></div></div>
+                                    <span class="bt-item-st">@item.StatusText</span>
+                                </div>
+                            }
+                            else if (item.Status == BatchItemStatus.Completed)
+                            {
+                                <div class="bt-item-done">
+                                    @if (item.CoverPath is not null)
+                                    {
+                                        <img class="bt-thumb" src="@(Media.ToPlaybackUrl(item.CoverPath) + "?v=" + item.Id)" alt="커버" />
+                                    }
+                                    <div class="bt-item-links">
+                                        <span class="bt-ok">✅ 완료</span>
+                                        <button class="bt-mini" @onclick="() => ExportItem(item)">⬇ 내보내기</button>
+                                        @if (item.MetadataPath is not null) { <span class="bt-tag">🏷️ 메타데이터 저장됨</span> }
+                                    </div>
+                                </div>
+                            }
+                            else if (item.Status is BatchItemStatus.Failed or BatchItemStatus.Skipped)
+                            {
+                                <div class="bt-item-err">@(item.Error ?? item.StatusText)</div>
+                            }
+                            else
+                            {
+                                <div class="bt-item-preview">@Trunc(item.Script)</div>
+                            }
+                        </div>
+                    }
+                </div>
+            }
+
+            @* ── 실행 컨트롤 ── *@
+            <div class="bt-actions">
+                @if (!Batch.IsRunning)
+                {
+                    <button class="bt-go" @onclick="Start" disabled="@(!Batch.Enabled || Batch.QueuedCount == 0)">▶️ 일괄 대량 양산 시작</button>
+                }
+                else
+                {
+                    @if (Batch.IsPaused)
+                    {
+                        <button class="bt-go" @onclick="Batch.Resume">▶️ 재개</button>
+                    }
+                    else
+                    {
+                        <button class="bt-pause" @onclick="Batch.Pause" disabled="@Batch.PauseRequested">@(Batch.PauseRequested ? "⏸️ 정지 예약됨…" : "⏸️ 일시정지")</button>
+                    }
+                    <button class="bt-cancel" @onclick="Batch.Cancel">■ 취소</button>
+                }
+            </div>
+        </section>
+    </div>
+
+    @if (_toast is not null)
+    {
+        <div class="bt-toast">@_toast</div>
+    }
+</div>
+
+<style>
+    .bt { padding: 6px 8px 48px; width: 100%; box-sizing: border-box; }
+    .bt-head { margin-bottom: 14px; }
+    .bt-navrow { display: flex; gap: 6px; margin-bottom: 8px; }
+    .bt-back { font: 700 12px/1 var(--mono); color: var(--text-muted); background: none; border: none; cursor: pointer; padding: 4px 0; }
+    .bt-back:hover { color: var(--accent); }
+    .bt-titlerow { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .bt-title { font-size: 26px; font-weight: 900; letter-spacing: -.4px; color: var(--text-primary); margin: 0; }
+    .bt-title-g { background: linear-gradient(90deg, var(--flow-violet), var(--flow-magenta)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .bt-sub { font-size: 13px; color: var(--text-secondary); margin: 8px 0 0; } .bt-sub b { color: var(--text-primary); }
+    .bt-ff { font: 700 10.5px var(--mono); border-radius: 999px; padding: 4px 10px; border: 1px solid var(--line); }
+    .bt-ff.ok { color: #10b981; border-color: color-mix(in srgb, #10b981 45%, var(--line)); }
+    .bt-ff.off { color: var(--text-muted); }
+
+    .bt-warn { margin: 12px 0; padding: 12px 16px; border-radius: 12px; font-size: 12.5px; line-height: 1.6;
+        border: 1px solid color-mix(in srgb, #f5a623 45%, var(--line)); background: color-mix(in srgb, #f5a623 10%, var(--card)); color: var(--text-secondary); }
+    .bt-warn-link { font: 700 12.5px inherit; color: var(--accent-2); background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline; }
+
+    .bt-grid { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1.15fr); gap: 16px; align-items: start; }
+    @@media (max-width: 900px) { .bt-grid { grid-template-columns: 1fr; } }
+    .bt-panel { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; }
+    .bt-h2 { font-size: 14px; font-weight: 800; color: var(--text-primary); margin: 0 0 12px; }
+    .bt-count { font: 800 11px var(--mono); color: var(--accent-2); margin-left: 6px; }
+
+    .bt-drop { position: relative; border: 1.5px dashed var(--line); border-radius: 12px; padding: 20px 14px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s; background: var(--card-2); }
+    .bt-drop:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--card-2)); }
+    .bt-drop.mini { padding: 12px; }
+    .bt-drop-input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+    .bt-drop-hint { font-size: 13px; font-weight: 700; color: var(--text-secondary); } .bt-drop-hint span { font-weight: 500; color: var(--text-muted); }
+    .bt-drop-sub { font-size: 11px; color: var(--text-muted); margin-top: 5px; font-weight: 500; } .bt-drop-sub code { font-family: var(--mono); color: var(--accent-2); }
+
+    .bt-lbl { display: block; font-size: 12px; font-weight: 700; color: var(--text-secondary); margin: 14px 0 6px; }
+    .bt-sub2 { font-weight: 500; color: var(--text-muted); }
+    .bt-ta { width: 100%; box-sizing: border-box; background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; color: var(--text-primary); font-size: 12.5px; font-family: inherit; line-height: 1.6; resize: vertical; }
+    .bt-ta:focus { outline: none; border-color: var(--accent); }
+    .bt-inline { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+    .bt-note { font-size: 11.5px; color: #10b981; font-weight: 700; }
+
+    .bt-tbtn { font: 700 12.5px inherit; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; }
+    .bt-tbtn:hover:not(:disabled) { border-color: var(--accent); color: var(--text-primary); } .bt-tbtn:disabled { opacity: .45; cursor: not-allowed; }
+
+    .bt-divider { height: 1px; background: var(--line); margin: 18px 0; }
+
+    .bt-opts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    @@media (max-width: 560px) { .bt-opts { grid-template-columns: 1fr; } }
+    .bt-optrow { display: flex; flex-direction: column; gap: 5px; }
+    .bt-optrow .bt-lbl { margin: 0; }
+    .bt-sel { border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); padding: 8px 10px; font-size: 12.5px; font-family: inherit; }
+    .bt-sel:focus { outline: none; border-color: var(--accent); }
+
+    .bt-checks { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 14px; }
+    .bt-chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text-secondary); cursor: pointer; }
+    .bt-chk input { accent-color: var(--accent); }
+
+    .bt-wm { margin-top: 6px; }
+    .bt-wm-has { display: inline-flex; align-items: center; gap: 8px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--card-2); }
+    .bt-wm-img { height: 40px; max-width: 120px; object-fit: contain; border-radius: 4px; background: repeating-conic-gradient(#8884 0% 25%, transparent 0% 50%) 0/12px 12px; }
+
+    .bt-quehead { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+    .bt-quehead .bt-h2 { margin: 0; }
+    .bt-quetools { display: flex; gap: 6px; }
+    .bt-mini { font: 700 11px inherit; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; }
+    .bt-mini:hover:not(:disabled) { border-color: var(--accent); color: var(--text-primary); } .bt-mini:disabled { opacity: .4; cursor: not-allowed; }
+    .bt-mini.danger:hover:not(:disabled) { border-color: #ef4444; color: #ef4444; }
+
+    .bt-overall { background: var(--card-2); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+    .bt-overall-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); font-weight: 700; }
+    .bt-overall-pct { font: 800 13px var(--mono); color: var(--accent-2); }
+    .bt-overall-sum { font-size: 11.5px; color: var(--text-muted); margin-top: 8px; font-weight: 600; }
+
+    .bt-bar { height: 8px; background: var(--line); border-radius: 999px; overflow: hidden; margin-top: 8px; }
+    .bt-bar.sm { height: 6px; margin-top: 0; }
+    .bt-bar-f { height: 100%; background: linear-gradient(90deg, var(--flow-violet), var(--flow-magenta)); border-radius: 999px; transition: width .3s; }
+
+    .bt-empty { text-align: center; padding: 40px 16px; color: var(--text-muted); }
+    .bt-empty-ic { font-size: 34px; opacity: .6; }
+    .bt-empty-t { font-size: 14px; font-weight: 800; color: var(--text-secondary); margin-top: 8px; }
+    .bt-empty-s { font-size: 12px; margin-top: 4px; }
+
+    .bt-list { display: flex; flex-direction: column; gap: 8px; max-height: 420px; overflow-y: auto; padding-right: 2px; }
+    .bt-item { border: 1px solid var(--line); border-radius: 11px; padding: 10px 12px; background: var(--card-2); }
+    .bt-item.run { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
+    .bt-item-h { display: flex; align-items: center; gap: 8px; }
+    .bt-item-no { font: 800 11px var(--mono); color: var(--text-muted); min-width: 18px; }
+    .bt-item-title { flex: 1; min-width: 0; font-size: 13px; font-weight: 700; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .bt-badge { font: 800 10px var(--mono); border-radius: 999px; padding: 3px 8px; border: 1px solid var(--line); white-space: nowrap; }
+    .bt-badge.q { color: var(--text-muted); }
+    .bt-badge.r { color: #fff; border-color: transparent; background: linear-gradient(135deg, var(--flow-violet), var(--flow-magenta)); }
+    .bt-badge.ok { color: #10b981; border-color: color-mix(in srgb, #10b981 45%, var(--line)); background: color-mix(in srgb, #10b981 10%, transparent); }
+    .bt-badge.bad { color: #ef4444; border-color: color-mix(in srgb, #ef4444 45%, var(--line)); background: color-mix(in srgb, #ef4444 10%, transparent); }
+    .bt-badge.skip { color: #f5a623; border-color: color-mix(in srgb, #f5a623 45%, var(--line)); background: color-mix(in srgb, #f5a623 10%, transparent); }
+    .bt-x { flex: 0 0 auto; width: 24px; height: 24px; border: none; background: none; color: var(--text-muted); cursor: pointer; border-radius: 6px; font-size: 12px; }
+    .bt-x:hover { background: color-mix(in srgb, #ef4444 15%, transparent); color: #ef4444; }
+
+    .bt-item-preview { font-size: 11.5px; color: var(--text-muted); margin-top: 6px; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+    .bt-item-prog { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+    .bt-item-prog .bt-bar { flex: 1; }
+    .bt-item-st { font: 700 10.5px var(--mono); color: var(--accent-2); white-space: nowrap; }
+    .bt-item-done { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+    .bt-thumb { height: 46px; border-radius: 6px; border: 1px solid var(--line); }
+    .bt-item-links { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .bt-ok { font-size: 12px; font-weight: 700; color: #10b981; }
+    .bt-tag { font: 700 10px var(--mono); color: var(--text-muted); }
+    .bt-item-err { font-size: 11.5px; color: #ef4444; margin-top: 6px; line-height: 1.5; }
+
+    .bt-actions { display: flex; gap: 8px; margin-top: 14px; }
+    .bt-go { flex: 1; font: 800 13.5px inherit; padding: 12px; border-radius: 12px; border: none; color: #fff; cursor: pointer;
+        background: linear-gradient(135deg, var(--flow-violet), var(--flow-magenta)); box-shadow: 0 6px 18px color-mix(in srgb, var(--flow-magenta) 28%, transparent); }
+    .bt-go:hover:not(:disabled) { filter: brightness(1.07); } .bt-go:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
+    .bt-pause { flex: 1; font: 800 13px inherit; padding: 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); cursor: pointer; }
+    .bt-pause:hover:not(:disabled) { border-color: #f5a623; color: #f5a623; } .bt-pause:disabled { opacity: .6; }
+    .bt-cancel { font: 800 13px inherit; padding: 12px 18px; border-radius: 12px; border: 1px solid color-mix(in srgb, #ef4444 45%, var(--line)); background: none; color: #ef4444; cursor: pointer; }
+    .bt-cancel:hover { background: color-mix(in srgb, #ef4444 12%, transparent); }
+
+    .bt-toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); z-index: 90; background: var(--card); border: 1px solid var(--line);
+        color: var(--text-primary); padding: 11px 18px; border-radius: 12px; font-size: 12.5px; font-weight: 600; box-shadow: 0 12px 32px rgba(0,0,0,.32); max-width: 82vw; }
+</style>
+
+@code {
+    // ── 옵션 상태 ──
+    private string _resolution = "1080x1920";
+    private int _cutCount = 5;
+    private string _speedStr = "1";
+    private bool _fade;
+    private bool _smartSfx;
+    private bool _autoCover = true;
+    private bool _autoMeta = true;
+    private bool _offlineTts;
+    private string? _watermarkPath;
+    private string? _watermarkThumb;
+
+    private string _paste = "";
+    private string? _addedNote;
+    private string? _toast;
+    private System.Threading.Timer? _toastTimer;
+
+    protected override void OnInitialized()
+    {
+        Batch.OnChange += OnStateChanged;
+        Batch.OnCompleted += OnBatchCompleted;
+        Cfg.OnConfigChanged += OnStateChanged;
+    }
+
+    private void OnStateChanged() => InvokeAsync(StateHasChanged);
+    private void OnBatchCompleted() => InvokeAsync(() =>
+    {
+        ShowToast($"🏭 대량 양산 종료 — 성공 {Batch.CompletedCount} · 실패 {Batch.FailedCount}");
+        StateHasChanged();
+    });
+
+    // ── 입력 ──
+    private async Task OnFilePicked(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file is null) return;
+        const long maxSize = 5L * 1024 * 1024;   // 5MB
+        if (file.Size > maxSize) { ShowToast("❌ 파일이 너무 큽니다(최대 5MB)."); return; }
+        try
+        {
+            string text;
+            await using (var s = file.OpenReadStream(maxSize))
+            using (var reader = new System.IO.StreamReader(s, System.Text.Encoding.UTF8))
+                text = await reader.ReadToEndAsync();
+
+            var added = Batch.ImportFromText(text);
+            _addedNote = added > 0 ? $"＋{added}편 추가됨" : null;
+            ShowToast(added > 0 ? $"📄 {file.Name} — {added}편을 대기열에 추가했습니다." : "추가할 항목을 찾지 못했습니다(빈 파일).");
+        }
+        catch (Exception ex) { ShowToast("❌ 파일 읽기 실패: " + ex.Message); }
+    }
+
+    private void AddFromPaste()
+    {
+        var added = Batch.ImportFromText(_paste);
+        if (added > 0)
+        {
+            _paste = "";
+            _addedNote = $"＋{added}편 추가됨";
+            ShowToast($"＋ {added}편을 대기열에 추가했습니다.");
+        }
+        else ShowToast("추가할 항목을 찾지 못했습니다.");
+    }
+
+    // ── 실행 ──
+    private async Task Start()
+    {
+        var opt = new BatchOptions
+        {
+            Resolution = _resolution,
+            CutCount = _cutCount,
+            Speed = ParseSpeed(_speedStr),
+            Fade = _fade,
+            SmartSfx = _smartSfx,
+            AutoCover = _autoCover,
+            AutoMetadata = _autoMeta,
+            UseOfflineTts = _offlineTts,
+            WatermarkPath = _watermarkPath,
+        };
+        await Batch.StartAsync(opt);
+    }
+
+    private async Task ExportItem(BatchItem item)
+    {
+        if (item.FinalVideoPath is null) return;
+        try
+        {
+            var saved = await Export.ExportAsync(item.FinalVideoPath, item.Title);
+            ShowToast(saved is not null ? $"✅ 내보내기 — {saved}" : "내보내기를 취소했습니다.");
+        }
+        catch (Exception ex) { ShowToast("❌ 내보내기 실패: " + ex.Message); }
+    }
+
+    // ── 워터마크 ──
+    private async Task OnWatermarkPicked(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file is null) return;
+        const long maxSize = 8L * 1024 * 1024;
+        if (file.Size > maxSize) { ShowToast("❌ 워터마크 이미지가 너무 큽니다(최대 8MB)."); return; }
+        try
+        {
+            var dir = System.IO.Path.Combine(Media.MediaRoot, "_uploads", "watermark");
+            System.IO.Directory.CreateDirectory(dir);
+            var name = SanitizeFileName(file.Name);
+            if (string.IsNullOrWhiteSpace(System.IO.Path.GetExtension(name))) name += ".png";
+            var savePath = System.IO.Path.Combine(dir, name);
+
+            await using (var src = file.OpenReadStream(maxSize))
+            await using (var dst = new System.IO.FileStream(savePath, System.IO.FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.None, 81920, System.IO.FileOptions.Asynchronous))
+                await src.CopyToAsync(dst);
+
+            _watermarkPath = savePath;
+            _watermarkThumb = Media.ToPlaybackUrl(savePath) + "?v=" + DateTime.Now.Ticks;
+            ShowToast($"🏷️ 워터마크 등록됨 — {name}");
+        }
+        catch (Exception ex) { ShowToast("❌ 워터마크 추가 실패: " + ex.Message); }
+    }
+
+    private void ClearWatermark()
+    {
+        _watermarkPath = null;
+        _watermarkThumb = null;
+    }
+
+    // ── 유틸 ──
+    private static string Inv(double d) => d.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    private static double ParseSpeed(string s) =>
+        double.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : 1.0;
+
+    private static string SanitizeFileName(string n)
+    {
+        foreach (var c in System.IO.Path.GetInvalidFileNameChars()) n = n.Replace(c, '_');
+        return n;
+    }
+
+    private static string Trunc(string s)
+    {
+        s = (s ?? "").Replace('\n', ' ').Replace('\r', ' ').Trim();
+        return s.Length <= 120 ? s : s[..120] + "…";
+    }
+
+    private static string Label(BatchItemStatus s) => s switch
+    {
+        BatchItemStatus.Queued => "대기",
+        BatchItemStatus.Running => "생성중",
+        BatchItemStatus.Completed => "완료",
+        BatchItemStatus.Failed => "실패",
+        BatchItemStatus.Skipped => "건너뜀",
+        _ => "",
+    };
+
+    private static string Cls(BatchItemStatus s) => s switch
+    {
+        BatchItemStatus.Queued => "q",
+        BatchItemStatus.Running => "r",
+        BatchItemStatus.Completed => "ok",
+        BatchItemStatus.Failed => "bad",
+        BatchItemStatus.Skipped => "skip",
+        _ => "q",
+    };
+
+    private void ShowToast(string msg)
+    {
+        _toast = msg;
+        _toastTimer?.Dispose();
+        _toastTimer = new System.Threading.Timer(_ => InvokeAsync(() => { _toast = null; StateHasChanged(); }), null, 3600, System.Threading.Timeout.Infinite);
+        StateHasChanged();
+    }
+
+    public void Dispose()
+    {
+        Batch.OnChange -= OnStateChanged;
+        Batch.OnCompleted -= OnBatchCompleted;
+        Cfg.OnConfigChanged -= OnStateChanged;
+        _toastTimer?.Dispose();
+    }
+}

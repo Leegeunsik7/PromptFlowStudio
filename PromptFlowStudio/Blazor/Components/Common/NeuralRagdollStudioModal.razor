@@ -1,0 +1,349 @@
+@using System.Globalization
+@using System.Numerics
+@using PromptFlowStudio.Services.NeuralRagdoll
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject NeuralRagdollStudioRunner Runner
+
+@* [PromptFlow Studio v17.37.0] 🤸 AI 신경망 래그돌 & 충격 복원 스튜디오 — 3D 캡슐/조인트 히트박스 · 충격 임펄스 인젝터 · 전신 모터 강성 · 기립 상태 머신 · 지지 반발력 · 가드. *@
+
+<div class="nrm-scrim" @onclick="Close">
+    <div class="nrm-modal" @onclick:stopPropagation="true">
+        <div class="nrm-h">
+            <div>
+                <div class="nrm-title">🤸 AI 신경망 래그돌 &amp; 충격 복원 스튜디오 @(Runner.IsRunning ? "· ▶ 60 Hz" : null)</div>
+                <div class="nrm-sub"><b>하이브리드 래그돌 엔진</b>이 v17.33 모션 매칭 자세를 24 관절 캡슐 몸체로 옮겨 관절별 전환 가중(충격 에너지 · 그래프 거리 감쇠)으로 키네마틱과 XPBD 물리를 섞고 암시적 PD 모터로 자세를 유지하며, <b>복원 합성기</b>가 섭동 DCM 으로 전도를 판정해 골반 쿼터니언으로 누움/엎드림을 판독하고 통나무 굴림 → 손 짚기 → 네발 → 한쪽 무릎 → 기립을 순차 지지 반발력과 함께 합성합니다. <b>특이점 가드</b>는 관절 한계 · 무릎 굽힘 평면 뒤집힘 · 척추 비틀림 · 각속도 폭주 · 해밀토니안 발산을 차단합니다.</div>
+            </div>
+            <button class="nrm-x" @onclick="Close">✕</button>
+        </div>
+        <div class="nrm-bar">
+            <button class="nrm-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 시작")</button>
+            <button class="nrm-btn" @onclick="Step60" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="nrm-btn @(Runner.Guard.Enabled ? "on" : null)" @onclick="() => Runner.SetGuard(!Runner.Guard.Enabled)">🛡 특이점 · 에너지 가드</button>
+            <button class="nrm-btn @(Runner.AutoImpulse ? "on" : null)" @onclick="() => Runner.SetAutoImpulse(!Runner.AutoImpulse)">🤖 자동 충격</button>
+            <button class="nrm-btn" @onclick="Runner.ResetCharacter">⟲ 원점</button>
+            <button class="nrm-btn" @onclick="Runner.ResetMetrics">↺ 지표</button>
+            <span class="nrm-chip @(Runner.LastTickMs <= 16.7 ? "ok" : "warn")">프레임 @(F2(Runner.LastTickMs)) ms(최대 @(F1(Runner.MaxTickMs))) · 물리 @(F0(Runner.Engine.LastUs)) µs</span>
+        </div>
+        <div class="nrm-states">
+            @foreach (var s in States)
+            {
+                <span class="nrm-st @(R.State == s ? "on" : null)">@(FullBodyImpactFallAndRecoverySynthesizer.StateName(s))</span>
+            }
+            <span class="nrm-mut">자세 <b>@(FullBodyImpactFallAndRecoverySynthesizer.PostureName(R.LastPosture))</b> · 굴림 @(F0(R.RollDeg))° · 판독 @(F1(R.LastClassifyUs)) µs</span>
+        </div>
+        <div class="nrm-states">
+            @for (var i = 0; i < FullBodyImpactFallAndRecoverySynthesizer.SequenceLength; i++)
+            {
+                var on = R.State == RecoveryState.GetUp && R.PhaseIndex == i;
+                var done = R.State == RecoveryState.GetUp && R.PhaseIndex > i || R.State == RecoveryState.BlendOut;
+                <span class="nrm-ph @(on ? "on" : done ? "done" : null)">@(FullBodyImpactFallAndRecoverySynthesizer.SequenceLabel(i))</span>
+            }
+            <span class="nrm-prog"><i style="width:@(F1(R.Progress * 100))%"></i></span>
+        </div>
+        <div class="nrm-main">
+            <div class="nrm-col">
+                <div class="nrm-card">
+                    <div class="nrm-sec">🦴 3D 래그돌 캡슐 · 조인트 히트박스(클릭 = 충격 부위) · 색 = 물리 가중 · 점선 = 목표 자세</div>
+                    <svg class="nrm-view" viewBox="-200 -150 400 260">
+                        @((MarkupString)GroundSvg())
+                        @for (var j = 1; j < RagdollSkeleton.Count; j++)
+                        {
+                            var a = P(_tgt[RagdollSkeleton.Parent[j]]); var b = P(_tgt[j]);
+                            <line class="tg" x1="@(F1(a.X))" y1="@(F1(a.Y))" x2="@(F1(b.X))" y2="@(F1(b.Y))" />
+                        }
+                        @for (var j = 1; j < RagdollSkeleton.Count; j++)
+                        {
+                            var a = P(_pose[RagdollSkeleton.Parent[j]]); var b = P(_pose[j]);
+                            var wpx = Width(_pose[j], RagdollSkeleton.BoneRadius[j]);
+                            <line class="cap" style="stroke:@(Hue(_w[j]));stroke-width:@(F1(wpx))px" x1="@(F1(a.X))" y1="@(F1(a.Y))" x2="@(F1(b.X))" y2="@(F1(b.Y))" />
+                        }
+                        @for (var j = 0; j < RagdollSkeleton.Count; j++)
+                        {
+                            var jj = (RagdollJoint)j;
+                            var c = P(_pose[j]);
+                            <g>
+                                <circle class="hb @(_part == jj ? "sel" : null) @(_g[j] ? "gnd" : null)" cx="@(F1(c.X))" cy="@(F1(c.Y))" r="@(_part == jj ? "5" : "3.2")" @onclick="() => _part = jj"><title>@(RagdollSkeleton.Name(jj)) · w @(F2(_w[j]))</title></circle>
+                            </g>
+                        }
+                        @{
+                            var com = Runner.ComPoint; var zmp = Runner.ZmpPoint;
+                            var cp = P(new Vector3(com.X, 0f, com.Z)); var zp = P(new Vector3(zmp.X, 0f, zmp.Y));
+                        }
+                        <circle class="com" cx="@(F1(cp.X))" cy="@(F1(cp.Y))" r="3.5" />
+                        @if (R.State == RecoveryState.GetUp || R.State == RecoveryState.Roll)
+                        {
+                            <circle class="zmp" cx="@(F1(zp.X))" cy="@(F1(zp.Y))" r="3" />
+                            @for (var i = 0; i < FullBodyImpactFallAndRecoverySynthesizer.SupportCount; i++)
+                            {
+                                if (_f[i] <= 1f) continue;
+                                var p0 = _tgt[FullBodyImpactFallAndRecoverySynthesizer.SupportJoint(i)]; p0.Y = 0f;
+                                var a = P(p0); var b = P(p0 + new Vector3(0f, MathF.Min(_f[i], 900f) * 0.0006f, 0f));
+                                <line class="grf" x1="@(F1(a.X))" y1="@(F1(a.Y))" x2="@(F1(b.X))" y2="@(F1(b.Y))" />
+                            }
+                        }
+                    </svg>
+                    <div class="nrm-viewbar">
+                        <span class="nrm-lbl">카메라</span><input type="range" min="-180" max="180" step="5" value="@(F0(_camYaw))" @oninput="e => _camYaw = (float)Num(e, 35)" />
+                        <span class="nrm-lbl">확대</span><input type="range" min="0.6" max="2.5" step="0.1" value="@(F2(_zoom))" @oninput="e => _zoom = (float)Num(e, 1)" />
+                        <span class="nrm-legend"><i class="k"></i>키네마틱 <i class="p"></i>물리 <i class="g"></i>지면 접촉 <i class="f"></i>지지 반발력 <i class="z"></i>ZMP</span>
+                    </div>
+                </div>
+                <div class="nrm-card">
+                    <div class="nrm-sec">💥 외부 충격 임펄스 인젝터 · 부위 <b>@(RagdollSkeleton.Name(_part))</b></div>
+                    <div class="nrm-inj">
+                        <span class="nrm-lbl">크기 @(F0(_mag)) N·s</span><input type="range" min="5" max="600" step="5" value="@(F0(_mag))" @oninput="e => _mag = (float)Num(e, 160)" />
+                        <span class="nrm-lbl">방위 @(F0(_az))°</span><input type="range" min="-180" max="180" step="15" value="@(F0(_az))" @oninput="e => _az = (float)Num(e, 0)" />
+                        <span class="nrm-lbl">고도 @(F0(_el))°</span><input type="range" min="-30" max="60" step="5" value="@(F0(_el))" @oninput="e => _el = (float)Num(e, 10)" />
+                        <button class="nrm-btn warn" @onclick="Inject">💥 충격 주입</button>
+                    </div>
+                    <div class="nrm-inj">
+                        <button class="nrm-btn sm" @onclick="() => Preset(RagdollJoint.Chest, 20, 90)">가벼운 측면 타격 20</button>
+                        <button class="nrm-btn sm" @onclick="() => Preset(RagdollJoint.Chest, 160, 0)">등 뒤 밀침 160(엎드림)</button>
+                        <button class="nrm-btn sm" @onclick="() => Preset(RagdollJoint.Chest, 160, 180)">정면 밀침 160(누움)</button>
+                        <button class="nrm-btn sm" @onclick="() => Preset(RagdollJoint.Head, 60, 180)">머리 충격 60</button>
+                        <button class="nrm-btn sm warn" @onclick="() => Preset(RagdollJoint.RHand, 600, 90)">극단 손 600</button>
+                    </div>
+                    <div class="nrm-inj">
+                        <span class="nrm-lbl">전신 모터 강성 × @(F2(Runner.Engine.Stiffness))</span><input type="range" min="0.2" max="2" step="0.05" value="@(F2(Runner.Engine.Stiffness))" @onchange="e => Runner.SetStiffness((float)Num(e, 1))" />
+                        <span class="nrm-lbl">보행 @(F1(Runner.WalkSpeed)) m/s</span><input type="range" min="0" max="2.5" step="0.1" value="@(F1(Runner.WalkSpeed))" @onchange="e => Runner.SetWalk((float)Num(e, 1.2))" />
+                    </div>
+                </div>
+            </div>
+            <div class="nrm-col">
+                <div class="nrm-card">
+                    <div class="nrm-sec">⚖ 전환 가중 w(0 = 키네마틱 · 1 = 물리) · 평균 @(F0(Runner.Engine.MeanWeight * 100))% · 동적 @(Runner.Engine.DynamicCount)/24 · 충격 @(F1(Runner.Engine.LastImpactJ)) J</div>
+                    <div class="nrm-wgrid">
+                        @for (var j = 0; j < RagdollSkeleton.Count; j++)
+                        {
+                            <span class="nrm-w" title="@(RagdollSkeleton.Name((RagdollJoint)j))"><i style="width:@(F0(_w[j] * 100))%;background:@(Hue(_w[j]))"></i><em>@(RagdollSkeleton.Name((RagdollJoint)j))</em></span>
+                        }
+                    </div>
+                </div>
+                <div class="nrm-card">
+                    <div class="nrm-sec">🦶 순차 지지 반발력(N) · ZMP @(R.ZmpInside ? "지지 다각형 내" : "밖") · 기립 안정 @(F1(R.StablePct))% · 최대 @(F0(R.MaxSupportN)) N</div>
+                    <div class="nrm-meters">
+                        @for (var i = 0; i < FullBodyImpactFallAndRecoverySynthesizer.SupportCount; i++)
+                        {
+                            <div class="nrm-m"><div class="nrm-mbar"><div class="@(_f[i] > 400f ? "hot" : null)" style="height:@(F0(Math.Min(100, _f[i] / 7.0)))%"></div></div><b>@(F0(_f[i]))</b><span>@(FullBodyImpactFallAndRecoverySynthesizer.SupportName(i))</span></div>
+                        }
+                    </div>
+                    <div class="nrm-mut">지지 순서: @(OrderText())</div>
+                </div>
+                <div class="nrm-card">
+                    <div class="nrm-sec">📈 운동 에너지(J) · 평균 물리 가중 · 최대 각속도 · 4 s</div>
+                    <svg class="nrm-spark" viewBox="0 0 360 80" preserveAspectRatio="none">
+                        <polyline class="ke" points="@(Series(0))" />
+                        <polyline class="w" points="@(Series(1))" />
+                        <polyline class="om" points="@(Series(2))" />
+                    </svg>
+                    <div class="nrm-legend2"><span class="ke">■ KE(800 J 만점)</span><span class="w">■ 물리 가중</span><span class="om">■ 각속도(60 rad/s 만점)</span></div>
+                </div>
+                <div class="nrm-card">
+                    <div class="nrm-sec">🛡 관절 특이점 · 각속도 · 해밀토니안 가드 @(Runner.Guard.Enabled ? "ON" : "OFF(관측만)")</div>
+                    <div class="nrm-kv grid">
+                        <div>한계 초과 <b class="@(Runner.Guard.LimitExcessDeg < 10f ? "ok" : "warn")">@(F1(Runner.Guard.LimitExcessDeg))°</b>(최대 @(F1(Runner.Guard.MaxLimitExcessDeg))°) · 교정 @(Runner.Guard.LimitClamps)</div>
+                        <div>무릎 뒤집힘 @(Runner.Guard.Flipped)(최대 @(Runner.Guard.MaxFlipped)) · 복귀 @(Runner.Guard.HingeFlips)</div>
+                        <div>척추 비틀림 @(F0(Runner.Guard.TwistDeg))°(최대 @(F0(Runner.Guard.MaxTwistDeg))°) · 교정 @(Runner.Guard.TwistClamps)</div>
+                        <div>각속도 <b class="@(Runner.Guard.MaxOmega <= 46f ? "ok" : "warn")">@(F1(Runner.Guard.PeakOmega))</b>(최대 @(F1(Runner.Guard.MaxOmega))) rad/s · 상한 @(Runner.Guard.OmegaClamps) · 변화율 @(Runner.Guard.RateClamps)</div>
+                        <div>H 비 @(F2(Runner.Guard.EnergyRatio))(최대 @(F2(Runner.Guard.MaxEnergyRatio))) · 감쇠 @(Runner.Guard.EnergyClamps)회 · @(F0(Runner.Guard.RemovedJ)) J</div>
+                        <div>본 신장 @(F1(Runner.Engine.StretchPct))%(최대 @(F1(Runner.Engine.MaxStretchPct))) · 비유한 @(Runner.Guard.NonFiniteFrames) · 롤백 @(Runner.Guard.Rollbacks)</div>
+                        <div>전도 @(R.Falls) · 기립 @(R.GetUps) · 피격 반응 @(R.HitReactions) · 굴림 @(R.Rolls)</div>
+                        <div>누움 @(R.FaceUps) · 엎드림 @(R.FaceDowns) · 측와위 @(R.Sides) · 최근 기립 @(F1(R.LastGetUpSeconds)) s</div>
+                    </div>
+                </div>
+                <div class="nrm-act">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .nrm-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .nrm-modal { width: min(1640px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .nrm-h { display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #fb923c 14%, var(--card)), color-mix(in srgb, #818cf8 12%, var(--card))); }
+    .nrm-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .nrm-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .nrm-sub b { color: var(--text-primary); }
+    .nrm-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; height: 32px; width: 32px; }
+    .nrm-bar, .nrm-states { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px; border-bottom: 1px solid var(--line); align-items: center; }
+    .nrm-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); cursor: pointer; }
+    .nrm-btn.sm { font-size: 10px; padding: 3px 7px; }
+    .nrm-btn:disabled { opacity: .45; cursor: default; }
+    .nrm-btn.on { background: color-mix(in srgb, #22c55e 20%, var(--card)); border-color: #22c55e; }
+    .nrm-btn.warn { border-color: #f59e0b; }
+    .nrm-st, .nrm-ph { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .nrm-st.on { color: #fff; background: #f97316; border-color: #f97316; }
+    .nrm-ph.on { color: #fff; background: #6366f1; border-color: #6366f1; } .nrm-ph.done { color: #22c55e; border-color: #22c55e; }
+    .nrm-prog { width: 160px; height: 8px; border-radius: 4px; background: #1e293b; overflow: hidden; display: inline-block; }
+    .nrm-prog i { display: block; height: 100%; background: linear-gradient(90deg, #6366f1, #22c55e); }
+    .nrm-lbl { font-size: 11px; color: var(--text-muted); font-weight: 700; margin-left: 4px; }
+    .nrm-mut { font-size: 11px; color: var(--text-muted); }
+    .nrm-mut b { color: var(--text-primary); }
+    .nrm-chip { font: 700 11px var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .nrm-chip.ok { border-color: #22c55e; color: #22c55e; } .nrm-chip.warn { border-color: #f59e0b; color: #f59e0b; }
+    .nrm-main { display: grid; grid-template-columns: 1.15fr 1fr; gap: 12px; padding: 12px 18px 16px; min-height: 0; flex: 1; overflow-y: auto; }
+    .nrm-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .nrm-card { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: color-mix(in srgb, var(--card) 92%, #000); }
+    .nrm-sec { font-size: 12px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+    .nrm-view { width: 100%; aspect-ratio: 400 / 260; background: radial-gradient(circle at 50% 20%, #1e293b, #020617); border-radius: 8px; }
+    .nrm-view .fl { stroke: #334155; stroke-width: .6; }
+    .nrm-view .tg { stroke: rgba(148,163,184,.45); stroke-width: 1; stroke-dasharray: 3 2; }
+    .nrm-view .cap { stroke-linecap: round; opacity: .9; }
+    .nrm-view .hb { fill: #e2e8f0; stroke: #0f172a; stroke-width: .8; cursor: pointer; } .nrm-view .hb.gnd { fill: #22c55e; } .nrm-view .hb.sel { fill: #f59e0b; }
+    .nrm-view .com { fill: none; stroke: #f472b6; stroke-width: 1.4; } .nrm-view .zmp { fill: #facc15; }
+    .nrm-view .grf { stroke: #22d3ee; stroke-width: 2; stroke-linecap: round; }
+    .nrm-viewbar, .nrm-inj { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+    .nrm-legend { font-size: 10px; color: var(--text-muted); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .nrm-legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 2px; }
+    .nrm-legend i.k { background: hsl(210 85% 60%); } .nrm-legend i.p { background: hsl(0 85% 60%); } .nrm-legend i.g { background: #22c55e; } .nrm-legend i.f { background: #22d3ee; } .nrm-legend i.z { background: #facc15; }
+    .nrm-wgrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+    .nrm-w { position: relative; height: 16px; border-radius: 4px; background: #1e293b; overflow: hidden; }
+    .nrm-w i { position: absolute; inset: 0 auto 0 0; opacity: .75; }
+    .nrm-w em { position: relative; font: 700 9px var(--mono); font-style: normal; color: #f8fafc; padding-left: 4px; line-height: 16px; }
+    .nrm-meters { display: grid; grid-template-columns: repeat(14, 1fr); gap: 4px; align-items: end; }
+    .nrm-m { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 9px; color: var(--text-muted); text-align: center; }
+    .nrm-m b { font: 700 10px var(--mono); color: var(--text-primary); }
+    .nrm-mbar { width: 16px; height: 80px; border-radius: 5px; border: 1px solid var(--line); display: flex; align-items: flex-end; overflow: hidden; }
+    .nrm-mbar div { width: 100%; background: linear-gradient(0deg, #0891b2, #22d3ee); } .nrm-mbar div.hot { background: linear-gradient(0deg, #ea580c, #f59e0b); }
+    .nrm-spark { width: 100%; height: 64px; background: color-mix(in srgb, var(--card) 80%, #000); border-radius: 6px; }
+    .nrm-spark polyline { fill: none; stroke-width: 1.5; }
+    .nrm-spark .ke, .nrm-legend2 .ke { stroke: #f97316; color: #f97316; } .nrm-spark .w, .nrm-legend2 .w { stroke: #818cf8; color: #818cf8; } .nrm-spark .om, .nrm-legend2 .om { stroke: #22c55e; color: #22c55e; }
+    .nrm-legend2 { display: flex; gap: 12px; font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+    .nrm-kv { font-size: 11px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px; }
+    .nrm-kv.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; }
+    .nrm-kv b { color: var(--text-primary); } .nrm-kv b.ok { color: #22c55e; } .nrm-kv b.warn { color: #f59e0b; }
+    .nrm-act { font-size: 11px; color: var(--text-muted); }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly RecoveryState[] States = { RecoveryState.Locomotion, RecoveryState.HitReaction, RecoveryState.Falling, RecoveryState.Roll, RecoveryState.GetUp, RecoveryState.BlendOut };
+    private const int N = RagdollSkeleton.Count, S = FullBodyImpactFallAndRecoverySynthesizer.SupportCount;
+    private System.Threading.Timer? _timer;
+    private readonly Vector3[] _pose = new Vector3[N], _tgt = new Vector3[N];
+    private readonly float[] _w = new float[N], _f = new float[S];
+    private readonly bool[] _g = new bool[N];
+    private RagdollJoint _part = RagdollJoint.Chest;
+    private float _camYaw = 35f, _zoom = 1f, _mag = 160f, _az, _el = 10f;
+    private Vector3 _focus;
+
+    private FullBodyImpactFallAndRecoverySynthesizer R => Runner.Recovery;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("NeuralRagdoll.Modal.Timer", ex); }
+        }, null, 100, 100);
+    }
+
+    protected override void OnParametersSet() => Pull();
+
+    protected override bool ShouldRender() { Pull(); return true; }
+
+    private void Pull()
+    {
+        Runner.CopyPose(_pose); Runner.CopyTarget(_tgt); Runner.CopyWeights(_w, _g); Runner.CopySupport(_f);
+        var c = Runner.ComPoint;
+        _focus = new Vector3(c.X, 0.8f, c.Z);
+    }
+
+    private static string F0(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "0" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(double v) => double.IsNaN(v) || double.IsInfinity(v) ? "—" : v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static double Num(ChangeEventArgs e, double fallback) => double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
+    private static string Hue(float w) => "hsl(" + F0(210 * (1 - Math.Clamp(w, 0f, 1f))) + " 85% 60%)";
+
+    /// <summary>궤도 카메라 원근 투영(대상 = CoM · 피치 20°).</summary>
+    private Vector2 P(Vector3 w)
+    {
+        var yaw = _camYaw * MathF.PI / 180f; const float pitch = 0.35f;
+        var d = w - _focus;
+        float cy = MathF.Cos(yaw), sy = MathF.Sin(yaw);
+        var x = d.X * cy - d.Z * sy; var z = d.X * sy + d.Z * cy;
+        float cp = MathF.Cos(pitch), sp = MathF.Sin(pitch);
+        var y = d.Y * cp - z * sp; var zz = d.Y * sp + z * cp + 4.2f / _zoom;
+        var f = 330f / MathF.Max(zz, 0.15f);
+        return new Vector2(x * f, -y * f);
+    }
+
+    private float Width(Vector3 at, float r)
+    {
+        var a = P(at); var b = P(at + new Vector3(0f, r, 0f));
+        return MathF.Max(1.5f, 2f * MathF.Abs(b.Y - a.Y));
+    }
+
+    private string GroundSvg()
+    {
+        var sb = new System.Text.StringBuilder(4000);
+        var cx = MathF.Round(_focus.X * 2f) / 2f; var cz = MathF.Round(_focus.Z * 2f) / 2f;
+        for (var i = -5; i <= 5; i++)
+        {
+            Ln(sb, P(new Vector3(cx + i * 0.5f, 0f, cz - 2.5f)), P(new Vector3(cx + i * 0.5f, 0f, cz + 2.5f)));
+            Ln(sb, P(new Vector3(cx - 2.5f, 0f, cz + i * 0.5f)), P(new Vector3(cx + 2.5f, 0f, cz + i * 0.5f)));
+        }
+        return sb.ToString();
+    }
+
+    private static void Ln(System.Text.StringBuilder sb, Vector2 a, Vector2 b) =>
+        sb.Append("<line class=\"fl\" x1=\"").Append(F1(a.X)).Append("\" y1=\"").Append(F1(a.Y)).Append("\" x2=\"").Append(F1(b.X)).Append("\" y2=\"").Append(F1(b.Y)).Append("\"/>");
+
+    private string OrderText()
+    {
+        var n = R.OrderCount;
+        if (n == 0) return "—";
+        var sb = new System.Text.StringBuilder(n * 10);
+        for (var i = 0; i < n; i++) { if (i > 0) sb.Append(" → "); sb.Append(FullBodyImpactFallAndRecoverySynthesizer.SupportName(R.OrderAt(i))); }
+        return sb.ToString();
+    }
+
+    private string Series(int kind)
+    {
+        var n = Runner.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+        {
+            double v = kind == 0 ? Runner.KineticSeries(i) / 800.0 : kind == 1 ? Runner.WeightSeries(i) : Runner.OmegaSeries(i) / 60.0;
+            if (!double.IsFinite(v)) v = 0;
+            sb.Append(F1(360.0 * (n - 1 - i) / (NeuralRagdollStudioRunner.Series - 1))).Append(',').Append(F1(78 - 76 * Math.Clamp(v, 0, 1))).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void Inject() => Runner.InjectImpulse(_part, _mag, _az, _el);
+
+    private void Preset(RagdollJoint part, float mag, float az)
+    {
+        _part = part; _mag = mag; _az = az; _el = 10f;
+        Runner.InjectImpulse(part, mag, az, 10f);
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private void Step60()
+    {
+        for (var i = 0; i < NeuralRagdollStudioRunner.Hz; i++) Runner.Step();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

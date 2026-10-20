@@ -1,0 +1,442 @@
+@using System.Globalization
+@using System.Threading
+@using PromptFlowStudio.Services.Sound
+@implements IDisposable
+@inject AiGenerativeFoleySoundscapeEngine Foley
+@inject AudioStemSeparationAndMixingEngine Mixer
+@inject DolbyAtmosSpatialAudioMapper Atmos
+
+@* [PromptFlow Studio v16.33.0] 🎧 AI 사운드 디자인 & Dolby Atmos 스튜디오 — 모션/대본 기반 Foley SFX 파형 타임라인(이벤트 마커 · 영상 인젝션)
+   · 4-스템 분리(BCL HPSS/Demucs) 페이더·뮤트/솔로·3밴드 EQ·오토 덕킹·LUFS · 3D 공간 오디오 오브젝트/스피커 노드 시각화(5.1/7.1.4)
+   · 1-Click 마스터링(스테레오 · 바이노럴 · 5.1 · 7.1.4 · ADM BWF · 영상 먹싱). 상태는 서비스(싱글턴) 소유 — OnChange 구독. *@
+
+<div class="sd-scrim" @onclick="Close">
+    <div class="sd-modal" @onclick:stopPropagation="true">
+        <div class="sd-h">
+            <div>
+                <div class="sd-title">🎧 AI 사운드 디자인 &amp; Dolby Atmos 스튜디오</div>
+                <div class="sd-sub">영상의 <b>모션 벡터</b>와 대본 키워드로 발자국·문·바람·웃음 등 <b>Foley 효과음</b>을 타임코드에 생성하고, 음원을 <b>보컬/BGM/드럼/SFX 4-스템</b>으로 분리해 밸런싱한 뒤
+                    피사체 위치 기반 <b>Dolby Atmos 오브젝트</b>로 바이노럴·5.1·7.1.4·ADM BWF 마스터를 만듭니다.</div>
+            </div>
+            <button class="sd-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="sd-bar">
+            <label class="sd-mut">소스 <input class="sd-in w320" @bind="_src" placeholder="영상/오디오 경로" /></label>
+            <span class="sd-chip @(Foley.FfmpegAvailable ? "ok" : "bad")">ffmpeg @(Foley.FfmpegAvailable ? "준비" : "없음")</span>
+            <span class="sd-chip @(Mixer.DemucsAvailable ? "ok" : "")">@(Mixer.DemucsAvailable ? "Demucs 준비" : "Demucs 없음 → BCL HPSS")</span>
+            <span class="sd-mut">Foley @(Foley.GeneratedEvents) · 스템 @(Mixer.Stems?.Method ?? "—") · 오브젝트 @(Atmos.ObjectCount) · 마스터 @(Atmos.Masters)</span>
+        </div>
+
+        <div class="sd-tabs">
+            <button class="@(_tab == 0 ? "on" : "")" @onclick="() => _tab = 0">🔊 Foley 타임라인</button>
+            <button class="@(_tab == 1 ? "on" : "")" @onclick="() => _tab = 1">🎚 스템 믹서</button>
+            <button class="@(_tab == 2 ? "on" : "")" @onclick="() => _tab = 2">🛰 3D 공간 오디오</button>
+            <button class="@(_tab == 3 ? "on" : "")" @onclick="() => _tab = 3">🏁 마스터링 내보내기</button>
+        </div>
+
+        <div class="sd-body">
+            @if (_tab == 0)
+            {
+                <div class="sd-row">
+                    <textarea class="sd-in sd-ta" @bind="_text" placeholder="장면 대본/키워드(예: 비 오는 밤 계단을 걷다 문을 닫는다)"></textarea>
+                </div>
+                <div class="sd-row">
+                    <button class="sd-btn sm go" disabled="@(_cts is not null || Foley.IsBusy)" @onclick="GenerateFoleyAsync">🔍 모션 분석 &amp; Foley 생성</button>
+                    <button class="sd-btn sm" disabled="@(_cts is not null || Foley.LastPlan is null)" @onclick="InjectFoleyAsync">💉 영상에 SFX 인젝션</button>
+                    <span class="sd-mut">키워드: @(AiGenerativeFoleySoundscapeEngine.MaskLabel(AiGenerativeFoleySoundscapeEngine.DetectKeywords(_text)))</span>
+                </div>
+                @if (Foley.LastPlan is { } plan)
+                {
+                    var dur = Math.Max(0.1, plan.Duration);
+                    <svg class="sd-wave" viewBox="0 0 1000 160" preserveAspectRatio="none">
+                        <rect width="1000" height="160" fill="#06080e" />
+                        <path d="@(Wave(_foleyPeaks, 1000, 110, 60))" stroke="#38bdf8" stroke-width="1" />
+                        <polyline points="@(Motion(plan.MotionEnergy, 1000, 150, 30))" fill="none" stroke="#a3e635" stroke-width="1" opacity="0.7" />
+                        @foreach (var e in plan.Events)
+                        {
+                            var x = (e.Start / dur * 1000).ToString("0.#", CultureInfo.InvariantCulture);
+                            var w = Math.Max(2, e.Duration / dur * 1000).ToString("0.#", CultureInfo.InvariantCulture);
+                            <rect x="@x" y="2" width="@w" height="10" fill="@(KindColor(e.Kind))" opacity="0.85"><title>@(AiGenerativeFoleySoundscapeEngine.Label(e.Kind)) @(e.Start.ToString("0.00", CultureInfo.InvariantCulture))s</title></rect>
+                        }
+                    </svg>
+                    <div class="sd-legend">
+                        @foreach (var k in Enum.GetValues<FoleyKind>())
+                        {
+                            var cnt = 0;
+                            foreach (var e in plan.Events) if (e.Kind == k) cnt++;
+                            if (cnt == 0) continue;
+                            <span><i style="background:@(KindColor(k))"></i>@(AiGenerativeFoleySoundscapeEngine.Label(k)) @(cnt)</span>
+                        }
+                        <span class="sd-mut">· 초록선 = 모션 에너지 · @(dur.ToString("0.0", CultureInfo.InvariantCulture))초</span>
+                    </div>
+                }
+                else
+                {
+                    <div class="sd-empty">소스 영상과 대본 키워드로 Foley 를 생성하세요.</div>
+                }
+            }
+            else if (_tab == 1)
+            {
+                <div class="sd-row">
+                    <button class="sd-btn sm go" disabled="@(_cts is not null || Mixer.IsBusy)" @onclick="LoadStemsAsync">🎚 오디오 로드 &amp; 스템 분리</button>
+                    <label class="sd-mut"><input type="checkbox" @bind="_duck" @bind:after="ApplyMix" /> 오토 덕킹</label>
+                    <label class="sd-mut">깊이 @(_duckDepth.ToString("0", CultureInfo.InvariantCulture))dB <input type="range" min="0" max="24" step="1" @bind="_duckDepth" @bind:after="ApplyMix" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                    <label class="sd-mut">목표 @(_target.ToString("0", CultureInfo.InvariantCulture)) LUFS <input type="range" min="-24" max="-9" step="1" @bind="_target" @bind:after="ApplyMix" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                    <button class="sd-btn sm" disabled="@(Mixer.Stems is null)" @onclick="RunMix">🎛 믹스 계산</button>
+                </div>
+                @if (Mixer.Stems is { } st)
+                {
+                    <div class="sd-strips">
+                        @for (var i = 0; i < 4; i++)
+                        {
+                            var k = i;
+                            var c = _ch[k];
+                            <div class="sd-strip">
+                                <b>@(AudioStemSeparationAndMixingEngine.Label((StemKind)k))</b>
+                                <svg class="sd-mini" viewBox="0 0 200 40" preserveAspectRatio="none"><path d="@(Wave(_stemPeaks[k], 200, 20, 18))" stroke="@(StemColor(k))" stroke-width="1" /></svg>
+                                <label class="sd-mut">게인 @(c.GainDb.ToString("+0;-0;0", CultureInfo.InvariantCulture))dB <input type="range" min="-24" max="12" step="0.5" value="@(c.GainDb.ToString(CultureInfo.InvariantCulture))" @onchange="e => SetCh(k, _ch[k] with { GainDb = F(e.Value) })" /></label>
+                                <label class="sd-mut">저 @(c.LowDb.ToString("+0;-0;0", CultureInfo.InvariantCulture)) <input type="range" min="-12" max="12" step="1" value="@(c.LowDb.ToString(CultureInfo.InvariantCulture))" @onchange="e => SetCh(k, _ch[k] with { LowDb = F(e.Value) })" /></label>
+                                <label class="sd-mut">중 @(c.MidDb.ToString("+0;-0;0", CultureInfo.InvariantCulture)) <input type="range" min="-12" max="12" step="1" value="@(c.MidDb.ToString(CultureInfo.InvariantCulture))" @onchange="e => SetCh(k, _ch[k] with { MidDb = F(e.Value) })" /></label>
+                                <label class="sd-mut">고 @(c.HighDb.ToString("+0;-0;0", CultureInfo.InvariantCulture)) <input type="range" min="-12" max="12" step="1" value="@(c.HighDb.ToString(CultureInfo.InvariantCulture))" @onchange="e => SetCh(k, _ch[k] with { HighDb = F(e.Value) })" /></label>
+                                <div class="sd-row">
+                                    <button class="sd-btn sm @(c.Mute ? "on" : "")" @onclick="() => SetCh(k, _ch[k] with { Mute = !_ch[k].Mute })">M</button>
+                                    <button class="sd-btn sm @(c.Solo ? "on" : "")" @onclick="() => SetCh(k, _ch[k] with { Solo = !_ch[k].Solo })">S</button>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                    <div class="sd-mut">@(st.Method) · @((st.Length / (double)st.Rate).ToString("0.0", CultureInfo.InvariantCulture))초 · @(st.Rate)Hz</div>
+                    @if (Mixer.LastReport is { } rp)
+                    {
+                        <div class="sd-note ok">🎛 입력 @(rp.PreLufs.ToString("0.0", CultureInfo.InvariantCulture)) → @(rp.IntegratedLufs.ToString("0.0", CultureInfo.InvariantCulture)) LUFS · 보정 @(rp.AppliedGainDb.ToString("+0.0;-0.0", CultureInfo.InvariantCulture))dB · 피크 @(rp.PeakDb.ToString("0.0", CultureInfo.InvariantCulture)) dBFS · 덕킹 @(rp.DuckedSeconds.ToString("0.0", CultureInfo.InvariantCulture))초</div>
+                    }
+                }
+                else
+                {
+                    <div class="sd-empty">[🎚 오디오 로드 &amp; 스템 분리]로 소스 오디오를 4-스템으로 분리하세요.</div>
+                }
+            }
+            else if (_tab == 2)
+            {
+                <div class="sd-row">
+                    <label class="sd-mut"><input type="radio" name="sd-lay" checked="@(_layout == SpatialAudioLayout.Surround51)" @onchange="() => _layout = SpatialAudioLayout.Surround51" /> 5.1</label>
+                    <label class="sd-mut"><input type="radio" name="sd-lay" checked="@(_layout == SpatialAudioLayout.Surround714)" @onchange="() => _layout = SpatialAudioLayout.Surround714" /> 7.1.4 Atmos</label>
+                    <button class="sd-btn sm go" disabled="@(Foley.LastPlan is null)" @onclick="MapObjects">🛰 Foley → 오브젝트 매핑</button>
+                    <button class="sd-btn sm" disabled="@(Atmos.ObjectCount == 0)" @onclick="Atmos.ClearObjects">초기화</button>
+                    <label class="sd-mut">시각 @(_t.ToString("0.0", CultureInfo.InvariantCulture))초 <input type="range" min="0" max="@(Math.Max(1, Foley.LastPlan?.Duration ?? 10).ToString("0.#", CultureInfo.InvariantCulture))" step="0.1" @bind="_t" @bind:event="oninput" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                </div>
+                var spk = DolbyAtmosSpatialAudioMapper.LayoutOf(_layout);
+                var objs = Atmos.Objects;
+                <svg class="sd-room" viewBox="-120 -120 240 240">
+                    <rect x="-110" y="-110" width="220" height="220" rx="10" fill="#06080e" stroke="#1e2d3d" />
+                    <line x1="-90" y1="-110" x2="90" y2="-110" stroke="#fbbf24" stroke-width="3" />
+                    <circle cx="0" cy="0" r="5" fill="#94a3b8" />
+                    @foreach (var s in spk)
+                    {
+                        if (s.Lfe) continue;
+                        var az = s.Az * MathF.PI / 180f;
+                        var rr = s.El > 0 ? 55f : 95f;
+                        var sx = (-MathF.Sin(az) * rr).ToString("0.#", CultureInfo.InvariantCulture);
+                        var sy = (-MathF.Cos(az) * rr).ToString("0.#", CultureInfo.InvariantCulture);
+                        <g>
+                            <rect x="@sx" y="@sy" width="10" height="10" transform="translate(-5,-5)" fill="@(s.El > 0 ? "#a78bfa" : "#475569")" />
+                            <text x="@sx" y="@sy" dy="16" fill="#94a3b8" font-size="7" text-anchor="middle">@(s.Label)</text>
+                        </g>
+                    }
+                    @for (var i = 0; i < objs.Count; i++)
+                    {
+                        var p = DolbyAtmosSpatialAudioMapper.PositionAt(objs[i].Path, _t);
+                        var ox = (p.X * 100).ToString("0.#", CultureInfo.InvariantCulture);
+                        var oy = (-p.Y * 100).ToString("0.#", CultureInfo.InvariantCulture);
+                        var orad = (6 + (p.Z + 1) * 5).ToString("0.#", CultureInfo.InvariantCulture);
+                        <g>
+                            <circle cx="@ox" cy="@oy" r="@orad" fill="#ec489966" stroke="#ec4899" />
+                            <text x="@ox" y="@oy" dy="-10" fill="#fbcfe8" font-size="7" text-anchor="middle">@(objs[i].Name)</text>
+                        </g>
+                    }
+                </svg>
+                <table class="sd-tbl">
+                    <thead><tr><th>오브젝트</th><th>X · Y · Z</th><th>지문</th><th>주 스피커</th></tr></thead>
+                    <tbody>
+                        @foreach (var o in objs)
+                        {
+                            var p = DolbyAtmosSpatialAudioMapper.PositionAt(o.Path, _t);
+                            <tr>
+                                <td>@(o.Name)</td>
+                                <td class="sd-mono">@(p.X.ToString("0.00", CultureInfo.InvariantCulture)) · @(p.Y.ToString("0.00", CultureInfo.InvariantCulture)) · @(p.Z.ToString("0.00", CultureInfo.InvariantCulture))</td>
+                                <td class="sd-mono">@(o.Fingerprint.Length > 12 ? o.Fingerprint[..12] : o.Fingerprint)…</td>
+                                <td>@(TopSpeaker(p, spk))</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+                @if (objs.Count == 0)
+                {
+                    <div class="sd-empty">Foley 를 생성한 뒤 오브젝트로 매핑하세요(비=상공 · 바람=상층 · 발자국=바닥).</div>
+                }
+            }
+            else
+            {
+                <div class="sd-row">
+                    <label class="sd-mut"><input type="checkbox" @bind="_optFoley" /> Foley 포함</label>
+                    <label class="sd-mut"><input type="checkbox" @bind="_optBin" /> 바이노럴</label>
+                    <label class="sd-mut"><input type="checkbox" @bind="_opt51" /> 5.1</label>
+                    <label class="sd-mut"><input type="checkbox" @bind="_opt714" /> 7.1.4</label>
+                    <label class="sd-mut"><input type="checkbox" @bind="_optAdm" /> ADM BWF(Atmos)</label>
+                    <label class="sd-mut"><input type="checkbox" @bind="_optMux" /> 영상 먹싱</label>
+                </div>
+                <div class="sd-row">
+                    <label class="sd-mut">출력 폴더 <input class="sd-in w320" @bind="_outDir" /></label>
+                    <label class="sd-mut">이름 <input class="sd-in w160" @bind="_name" /></label>
+                </div>
+                <div class="sd-prog"><div class="sd-pbar" style="width:@((Atmos.Progress * 100).ToString("0.#", CultureInfo.InvariantCulture))%"></div><span>@((Atmos.Progress * 100).ToString("0", CultureInfo.InvariantCulture))%</span></div>
+                @if (Atmos.LastResult is { } mr)
+                {
+                    <div class="sd-note @(mr.Ok ? "ok" : "bad")">@(mr.Ok ? "🏁" : "⚠") @(mr.Message)@(mr.Folder is { } fo ? " · " + fo : "")</div>
+                    <ul class="sd-files">
+                        @foreach (var f in mr.Files) { <li>@(Path.GetFileName(f))</li> }
+                    </ul>
+                }
+            }
+        </div>
+
+        <div class="sd-f">
+            <span class="sd-mut">@(_msg ?? Atmos.LastAction ?? Mixer.LastAction ?? Foley.LastAction ?? "대기 중")</span>
+            @if (_cts is not null)
+            {
+                <button class="sd-btn" @onclick="Cancel">■ 취소</button>
+            }
+            <button class="sd-btn go" disabled="@(_cts is not null || Atmos.IsBusy)" @onclick="MasterAsync">🏁 1-Click 오디오 마스터링</button>
+            <button class="sd-btn" disabled="@(_cts is not null)" @onclick="Close">닫기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .sd-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .sd-modal { width: min(1180px, 97vw); max-height: 93vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .sd-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #38bdf8 12%, var(--card)), color-mix(in srgb, #ec4899 8%, var(--card))); }
+    .sd-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .sd-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .sd-sub b { color: var(--text-primary); }
+    .sd-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
+    .sd-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 18px; border-bottom: 1px solid var(--line); }
+    .sd-tabs { display: flex; gap: 4px; padding: 8px 18px 0; border-bottom: 1px solid var(--line); }
+    .sd-tabs button { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; border: 0; background: none; color: var(--text-muted); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
+    .sd-tabs button.on { color: var(--text-primary); border-bottom-color: #38bdf8; }
+    .sd-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .sd-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .sd-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .sd-chip.ok { color: #4ade80; } .sd-chip.bad { color: #f87171; }
+    .sd-mut { font-size: 11px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+    .sd-in { font-size: 12px; background: var(--bg); color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 4px 6px; }
+    .sd-in.w160 { width: 160px; } .sd-in.w320 { width: 320px; }
+    .sd-ta { width: 100%; min-height: 54px; resize: vertical; font-family: inherit; }
+    .sd-wave { width: 100%; height: 160px; border-radius: 10px; border: 1px solid var(--line); }
+    .sd-legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--text-secondary); }
+    .sd-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; }
+    .sd-strips { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .sd-strip { border: 1px solid var(--line); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+    .sd-strip b { font-size: 12px; color: var(--text-primary); }
+    .sd-mini { width: 100%; height: 40px; background: #06080e; border-radius: 6px; }
+    .sd-room { width: 100%; max-width: 420px; align-self: center; }
+    .sd-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+    .sd-tbl th, .sd-tbl td { border-bottom: 1px solid var(--line); padding: 3px 6px; text-align: left; }
+    .sd-mono { font: 10.5px var(--mono); }
+    .sd-empty { font-size: 12px; color: var(--text-muted); padding: 24px; text-align: center; border: 1px dashed var(--line); border-radius: 10px; }
+    .sd-prog { position: relative; height: 22px; border-radius: 11px; background: var(--bg); overflow: hidden; }
+    .sd-pbar { position: absolute; inset: 0 auto 0 0; background: linear-gradient(90deg,#38bdf8,#ec4899); transition: width .2s; }
+    .sd-prog span { position: relative; font: 700 11px var(--mono); padding-left: 10px; line-height: 22px; }
+    .sd-files { margin: 0; padding-left: 18px; font: 11px var(--mono); color: var(--text-secondary); }
+    .sd-note { font-size: 12px; color: var(--text-secondary); } .sd-note.ok { color: #4ade80; } .sd-note.bad { color: #f87171; }
+    .sd-f { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }
+    .sd-f .sd-mut { margin-right: auto; }
+    .sd-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
+    .sd-btn.sm { padding: 3px 8px; font-size: 11px; }
+    .sd-btn.on { background: #38bdf8; color: #001018; }
+    .sd-btn.go { background: linear-gradient(135deg,#38bdf8,#ec4899); color: #fff; border: 0; }
+    .sd-btn:disabled { opacity: .45; cursor: not-allowed; }
+    @@media (max-width: 820px) { .sd-strips { grid-template-columns: repeat(2, 1fr); } .sd-in.w320 { width: 200px; } }
+</style>
+
+@code {
+    [Parameter] public StoryboardProject? Project { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private int _tab;
+    private double _t;
+    private float _duckDepth = 9, _target = -14;
+    private bool _duck = true, _optFoley = true, _optBin = true, _opt51 = true, _opt714 = true, _optAdm = true, _optMux = true;
+    private string _src = "", _text = "", _outDir = "", _name = "sound_master";
+    private string? _msg;
+    private SpatialAudioLayout _layout = SpatialAudioLayout.Surround714;
+    private StemChannel[] _ch = { StemChannel.Unity, StemChannel.Unity, StemChannel.Unity, StemChannel.Unity };
+    private float[] _foleyPeaks = Array.Empty<float>();
+    private readonly float[][] _stemPeaks = { Array.Empty<float>(), Array.Empty<float>(), Array.Empty<float>(), Array.Empty<float>() };
+    private CancellationTokenSource? _cts;
+
+    protected override void OnInitialized()
+    {
+        Foley.OnChange += OnServiceChanged;
+        Mixer.OnChange += OnServiceChanged;
+        Atmos.OnChange += OnServiceChanged;
+        var s = Mixer.Settings;
+        _ch = (StemChannel[])s.Channels.Clone();
+        _duck = s.Ducking; _duckDepth = s.DuckDepthDb; _target = s.TargetLufs;
+        _src = Project?.FinalVideoPath ?? Mixer.SourcePath ?? "";
+        _text = AiGenerativeFoleySoundscapeEngine.SceneText(Project);
+        _outDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyMusic), "PromptFlow Sound");
+        if (!string.IsNullOrWhiteSpace(Project?.Title)) _name = Project.Title;
+        RefreshPeaks();
+    }
+
+    private static string KindColor(FoleyKind k) => k switch
+    {
+        FoleyKind.Footstep => "#f59e0b", FoleyKind.DoorSlam => "#ef4444", FoleyKind.Wind => "#94a3b8", FoleyKind.Laughter => "#facc15",
+        FoleyKind.Rain => "#60a5fa", FoleyKind.Whoosh => "#22d3ee", FoleyKind.Impact => "#f43f5e", _ => "#a78bfa",
+    };
+
+    private static string StemColor(int k) => k switch { 0 => "#f472b6", 1 => "#38bdf8", 2 => "#f59e0b", _ => "#a3e635" };
+
+    private static float F(object? v) => float.TryParse(v?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var f) ? f : 0f;
+
+    private static string Wave(float[] peaks, int w, int mid, int half)
+    {
+        if (peaks.Length == 0) return "";
+        var ci = CultureInfo.InvariantCulture;
+        var max = 1e-6f;
+        foreach (var p in peaks) max = MathF.Max(max, p);
+        var sb = new System.Text.StringBuilder(peaks.Length * 18);
+        for (var i = 0; i < peaks.Length; i++)
+        {
+            var x = (i + 0.5f) * w / peaks.Length;
+            var a = peaks[i] / max * half;
+            sb.Append('M').Append(x.ToString("0.#", ci)).Append(',').Append((mid - a).ToString("0.#", ci)).Append('V').Append((mid + a).ToString("0.#", ci));
+        }
+        return sb.ToString();
+    }
+
+    private static string Motion(float[] energy, int w, int baseY, int h)
+    {
+        if (energy.Length == 0) return "";
+        var ci = CultureInfo.InvariantCulture;
+        var max = 1e-6f;
+        foreach (var e in energy) max = MathF.Max(max, e);
+        var sb = new System.Text.StringBuilder(energy.Length * 12);
+        for (var i = 0; i < energy.Length; i++)
+            sb.Append(((float)i * w / Math.Max(1, energy.Length - 1)).ToString("0.#", ci)).Append(',').Append((baseY - energy[i] / max * h).ToString("0.#", ci)).Append(' ');
+        return sb.ToString();
+    }
+
+    private static string TopSpeaker(AtmosKeyframe p, SpeakerDef[] spk)
+    {
+        Span<float> g = stackalloc float[16];
+        DolbyAtmosSpatialAudioMapper.PanGains(p.X, p.Y, p.Z, spk, g);
+        var best = 0;
+        for (var i = 1; i < spk.Length; i++) if (g[i] > g[best]) best = i;
+        return spk[best].Label + " " + (g[best] * 100).ToString("0", CultureInfo.InvariantCulture) + "%";
+    }
+
+    private void RefreshPeaks()
+    {
+        if (Foley.LastPlan is { } p)
+        {
+            var mono = new float[p.Left.Length];
+            for (var i = 0; i < mono.Length; i++) mono[i] = (p.Left[i] + p.Right[i]) * 0.5f;
+            _foleyPeaks = SoundDsp.Peaks(mono, 500);
+        }
+        if (Mixer.Stems is { } st)
+            for (var k = 0; k < 4; k++) _stemPeaks[k] = SoundDsp.Peaks(st.Left[k], 200);
+    }
+
+    private Task GenerateFoleyAsync() => RunAsync(async ct =>
+    {
+        var plan = await Foley.GenerateAsync(_src.Trim(), _text, ct);
+        _msg = plan is null ? "⚠ Foley 생성 실패(경로/ffmpeg 확인)" : null;
+        RefreshPeaks();
+    });
+
+    private Task InjectFoleyAsync() => RunAsync(async ct =>
+    {
+        if (Foley.LastPlan is not { } p) return;
+        Directory.CreateDirectory(_outDir);
+        var wav = Path.Combine(_outDir, "foley_sfx.wav");
+        SoundDsp.WriteStereoWav(wav, p.Left, p.Right, p.Rate);
+        var outV = Path.Combine(_outDir, Path.GetFileNameWithoutExtension(_src) + "_foley.mp4");
+        _msg = await Foley.InjectAsync(_src.Trim(), wav, outV, ct) is { } o ? "💉 " + o : "⚠ 인젝션 실패(ffmpeg/원본 확인)";
+    });
+
+    private Task LoadStemsAsync() => RunAsync(async ct =>
+    {
+        var st = await Mixer.LoadAsync(_src.Trim(), ct);
+        _msg = st is null ? "⚠ 스템 분리 실패(오디오 트랙/ffmpeg 확인)" : null;
+        if (st is not null) Mixer.MixCurrent();
+        RefreshPeaks();
+    });
+
+    private void SetCh(int k, StemChannel c)
+    {
+        _ch[k] = c;
+        ApplyMix();
+    }
+
+    private void ApplyMix() => Mixer.Settings = Mixer.Settings with { Channels = (StemChannel[])_ch.Clone(), Ducking = _duck, DuckDepthDb = _duckDepth, TargetLufs = _target };
+
+    private Task RunMix()
+    {
+        ApplyMix();
+        return RunAsync(ct => Task.Run(() => Mixer.MixCurrent(), ct));
+    }
+
+    private void MapObjects()
+    {
+        if (Foley.LastPlan is { } p) Atmos.MapFromFoley(p);
+    }
+
+    private Task MasterAsync()
+    {
+        ApplyMix();
+        _tab = 3;
+        var opt = new MasterOptions(_optBin, _opt51, _opt714, _optAdm, _optMux);
+        return RunAsync(async ct =>
+        {
+            var r = await Atmos.MasterAsync(_src.Trim(), _outDir.Trim(), _name, _text, _optFoley, opt, ct);
+            _msg = null;
+            if (!r.Ok) _msg = "⚠ " + r.Message;
+            RefreshPeaks();
+        });
+    }
+
+    private async Task RunAsync(Func<CancellationToken, Task> work)
+    {
+        var cts = new CancellationTokenSource();
+        if (Interlocked.CompareExchange(ref _cts, cts, null) is not null) { cts.Dispose(); return; }
+        try { await work(cts.Token); }
+        catch (OperationCanceledException) { _msg = "⚠ 취소됨"; }
+        catch (Exception ex) { Program.Log("SoundStudio.Run", ex); _msg = "⚠ 실패: " + ex.Message; }
+        finally
+        {
+            Interlocked.CompareExchange(ref _cts, null, cts);
+            cts.Dispose();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void Cancel()
+    {
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
+    private Task Close() => _cts is not null ? Task.CompletedTask : OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Foley.OnChange -= OnServiceChanged;
+        Mixer.OnChange -= OnServiceChanged;
+        Atmos.OnChange -= OnServiceChanged;
+        try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+}

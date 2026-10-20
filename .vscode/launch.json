@@ -1,0 +1,16 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "PromptFlowStudio (Desktop)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-desktop",
+            "program": "${workspaceFolder}/PromptFlowStudio/bin/Debug/net8.0-windows/PromptFlowStudio.exe",
+            "args": [],
+            "cwd": "${workspaceFolder}/PromptFlowStudio/bin/Debug/net8.0-windows",
+            "console": "internalConsole",
+            "stopAtEntry": false
+        }
+    ]
+}

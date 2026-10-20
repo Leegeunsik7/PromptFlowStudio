@@ -1,0 +1,295 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.LiveTelemetry
+@implements IDisposable
+@inject LiveTelemetryStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.94.0] 📊 AI 실시간 텔레메트리 & 자율 튜닝 스튜디오 — µs 프로브 차트/통계 · CPU/힙/할당률 시계열 · GC 세대 점유 ·
+    셀프 튜닝 게이지(버퍼 청크 · SIMD 폭 · 스레드 풀 최소) · 결정 로그 · 델타 OTA 노드(동기화 · 장애 주입 · 롤백).
+*@
+
+<div class="ltm-scrim" @onclick="Close">
+    <div class="ltm-modal" @onclick:stopPropagation="true">
+        <div class="ltm-h">
+            <div>
+                <div class="ltm-title">📊 AI 실시간 텔레메트리 &amp; 자율 튜닝 스튜디오</div>
+                <div class="ltm-sub">핫패스 프로브를 <b>µs 단위 무할당 링</b>으로 수집(SIMD 통계 · log₂ 히스토그램 p95)하고, GC 세대 · CPU · 스레드 풀 · UI 렌더 스태킹을 추적합니다.
+                    <b>셀프 튜닝</b>은 ArrayPool 청크 크기 · SIMD 폭 · 스레드 풀 최소 워커를 실측 피드백으로 재조정하고, 스튜디오 실측 p95를 실행 가드 비용에 반영합니다.
+                    <b>델타 OTA</b>는 4 KB 블록 해시 델타를 샌드박스 에지 노드에 원자 교체로 배포하고 헬스 실패 시 체크포인트로 롤백합니다.</div>
+            </div>
+            <button class="ltm-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="ltm-bar">
+            <button class="ltm-btn @(Runner.IsRunning ? "on" : null)" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 수집 시작")</button>
+            <button class="ltm-btn" @onclick="Step" disabled="@Runner.IsRunning">⏭ 1초</button>
+            <button class="ltm-btn @(Runner.Workload ? "on" : null)" @onclick="ToggleWorkload">⚙ 적응 워크로드</button>
+            <button class="ltm-btn @(S.AutoTune ? "on" : null)" @onclick="ToggleAuto">🎛 자율 튜닝</button>
+            <button class="ltm-btn @(S.ApplyThreadPool ? "warn" : null)" @onclick="TogglePool">🧵 스레드 풀 실적용</button>
+            <button class="ltm-btn @(S.ApplyCostFeedback ? "on" : null)" @onclick="ToggleCost">🚦 가드 비용 피드백</button>
+            <button class="ltm-btn" @onclick="Calibrate">⚡ SIMD 재측정</button>
+            <span class="ltm-chip">틱 @(F3(Runner.LastTickMs)) ms · 표본 @(P.Samples) · 게이지 @(Runner.GaugesBound)</span>
+            <span class="ltm-chip">FPS @(F0(P.RenderFps)) · 렌더 @(P.RenderCount) · 스택 @(P.RenderStacks)</span>
+        </div>
+
+        <div class="ltm-main">
+            <div class="ltm-col">
+                <div class="ltm-card">
+                    <div class="ltm-sec">📈 런타임 시계열 (12 s) <span class="ltm-kv">CPU @(Pct(L.CpuLoad)) · 힙 @(F1(L.HeapMb)) MB · 할당 @(F1(L.AllocMbPerSec)) MB/s · TP @(L.ThreadPoolThreads) · 대기 @(L.PendingWork)</span></div>
+                    <svg class="ltm-chart" viewBox="0 0 360 110" preserveAspectRatio="none">
+                        <polyline class="cpu" points="@(SeriesPoints(0))" />
+                        <polyline class="heap" points="@(SeriesPoints(1))" />
+                        <polyline class="alloc" points="@(SeriesPoints(2))" />
+                    </svg>
+                    <div class="ltm-legend"><i class="cpu"></i>CPU(0~100%) <i class="heap"></i>힙(상대) <i class="alloc"></i>할당률(상대)</div>
+                    <div class="ltm-gen">
+                        <span><b>@(Mb(P.Gen0Bytes))</b>Gen0</span><span><b>@(Mb(P.Gen1Bytes))</b>Gen1</span><span><b>@(Mb(P.Gen2Bytes))</b>Gen2</span><span><b>@(Mb(P.LohBytes))</b>LOH</span>
+                        <span><b>@(GcLine())</b>GC Δ(0/1/2)/표본</span>
+                    </div>
+                </div>
+
+                <div class="ltm-card">
+                    <div class="ltm-sec">⏱ µs 병목 프로파일 <span class="ltm-kv">예산 @(F1(S.BottleneckBudgetUs / 1000f)) ms · 병목 @(BottleneckName())</span></div>
+                    <div class="ltm-probes">
+                        <div class="hd"><span>프로브</span><span>평균</span><span>p95</span><span>최대</span><span>추이</span></div>
+                        @for (var i = 0; i < P.Count; i++)
+                        {
+                            var st = P.Stats(i);
+                            if (st.Count == 0) continue;
+                            var slot = i;
+                            <div class="rw @(slot == S.BottleneckSlot ? "hot" : null)">
+                                <span class="nm">@(P.IsGauge(slot) ? "◇ " : "◆ ")@(P.Name(slot))</span>
+                                <span class="mono">@(Us(st.MeanUs))</span>
+                                <span class="mono">@(Us(st.P95Us))</span>
+                                <span class="mono">@(Us(st.MaxUs))</span>
+                                <svg class="spark" viewBox="0 0 120 20" preserveAspectRatio="none"><polyline points="@(ProbePoints(slot))" /></svg>
+                            </div>
+                        }
+                    </div>
+                    <div class="ltm-note">◆ 능동 프로브(Measure 스코프) · ◇ 러너 지연 게이지(LastTickMs 등) — 실행 중인 스튜디오만 표본이 쌓입니다.</div>
+                </div>
+            </div>
+
+            <div class="ltm-col">
+                <div class="ltm-card">
+                    <div class="ltm-sec">🎛 셀프 튜닝 게이지 <span class="ltm-kv">결정 @(S.Decisions) · 비용 갱신 @(S.CostUpdates)</span></div>
+                    <div class="ltm-gauges">
+                        @Gauge("버퍼 청크", S.ChunkBytes / 1024d, 4, 4096, " KB", true)
+                        @Gauge("SIMD 폭", S.SimdLanes, 1, 16, " 레인", false)
+                        @Gauge("스레드 풀 최소", S.MinWorkerThreads, 1, Environment.ProcessorCount * 4, "", false)
+                        @Gauge("미스율", S.Rents == 0 ? 0 : 100d * S.Misses / S.Rents, 0, 100, "%", false)
+                        @Gauge("낭비율", S.WasteRatio * 100d, 0, 100, "%", false)
+                    </div>
+                    <div class="ltm-kv">SIMD 커널 ns: 스칼라 @(Ns(0)) · V128 @(Ns(1)) · V@(System.Numerics.Vector<float>.Count * 32) @(Ns(2)) · 권고 청크 @(S.RecommendedChunk() / 1024) KB · TP 원값 @(S.OriginalMinWorkerThreads)</div>
+                    <label class="ltm-sl">병목 예산 <b>@(F1(S.BottleneckBudgetUs / 1000f)) ms</b>
+                        <input type="range" min="1" max="33" step="0.5" value="@(F1(S.BottleneckBudgetUs / 1000f))" @onchange="SetBudget" />
+                    </label>
+                    <div class="ltm-log">
+                        @for (var i = 0; i < DecShown; i++)
+                        {
+                            var d = S.Log(i);
+                            <div class="ln k@((int)d.Knob)"><span class="mono">t@(d.Tick)</span><b>@(AutonomousPerformanceSelfTuningSynthesizer.KnobNames[(int)d.Knob])</b><span class="mono">@(F1(d.From)) → @(F1(d.To))</span><span>@(d.Reason)</span></div>
+                        }
+                    </div>
+                </div>
+
+                <div class="ltm-card">
+                    <div class="ltm-sec">☁↔🖥 델타 OTA 배포 <span class="ltm-chip @(O.IsSigned ? "ok" : null)">@(O.IsSigned ? "HMAC 서명" : "무서명(해시 검증)")</span>
+                        <span class="ltm-kv">릴리스 v@(Runner.ReleaseVersion) · 배포 @(O.TotalDeploys) · 롤백 @(O.TotalRollbacks) · 거부 @(O.TotalRejected)</span></div>
+                    <div class="ltm-row">
+                        <button class="ltm-btn" @onclick="Runner.EnsureSandbox" disabled="@Runner.OtaBusy">🗂 샌드박스 준비</button>
+                        <button class="ltm-btn" @onclick="Runner.PublishNext" disabled="@Runner.OtaBusy">☁ 다음 릴리스 게시</button>
+                        <button class="ltm-btn prim" @onclick="Runner.SyncAll" disabled="@Runner.OtaBusy">⇅ 전 노드 델타 동기화</button>
+                    </div>
+                    @if (O.LastPackage is not null)
+                    {
+                        <div class="ltm-kv">최근 델타: 파일 @(O.LastPackage.Files.Count) · 블록 @(O.LastPackage.ChangedBlocks)/@(O.LastPackage.TotalBlocks) · @(Kb(O.LastPackage.PayloadBytes)) / @(Kb(O.LastPackage.TotalBytes))</div>
+                    }
+                    <div class="ltm-nodes">
+                        @for (var i = 0; i < O.NodeCount; i++)
+                        {
+                            var n = O.Node(i);
+                            var idx = i;
+                            <div class="nd o@((int)n.LastOutcome)">
+                                <div class="nh"><b>@(n.Name)</b><span class="mono">v@(n.Version ?? "—")</span><span>@(n.LastOutcome)</span></div>
+                                <div class="ltm-kv">배포 @(n.Deploys) · 롤백 @(n.Rollbacks) · 수신 @(Kb(n.BytesReceived)) · 체크포인트 @(n.Checkpoints.Count) · @(F1(n.LastMs)) ms</div>
+                                @if (n.LastError is not null)
+                                {
+                                    <div class="er">@(n.LastError)</div>
+                                }
+                                <div class="ltm-row">
+                                    <label class="ck"><input type="checkbox" checked="@n.InjectFault" @onchange="e => SetFault(idx, e)" /> 헬스 장애 주입</label>
+                                    <button class="ltm-btn sm" @onclick="() => Runner.Rollback(idx)" disabled="@(Runner.OtaBusy || n.Checkpoints.Count == 0)">↺ 롤백</button>
+                                </div>
+                            </div>
+                        }
+                        @if (O.NodeCount == 0)
+                        {
+                            <div class="ltm-note">노드 없음 — 🗂 샌드박스 준비.</div>
+                        }
+                    </div>
+                    <div class="ltm-note mono">@(Runner.OtaRoot)</div>
+                </div>
+                <div class="ltm-note">@(Runner.LastAction ?? "대기")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .ltm-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .ltm-modal { width: min(1600px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .ltm-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #14b8a6 16%, var(--card)), color-mix(in srgb, #6366f1 14%, var(--card))); }
+    .ltm-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .ltm-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; } .ltm-sub b { color: var(--text-primary); }
+    .ltm-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .ltm-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); align-items: center; }
+    .ltm-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .ltm-btn.sm { font-size: 10px; padding: 2px 8px; } .ltm-btn:disabled { opacity: .4; cursor: default; }
+    .ltm-btn.on { background: color-mix(in srgb, #14b8a6 24%, transparent); border-color: #2dd4bf; } .ltm-btn.warn { background: color-mix(in srgb, #f97316 26%, transparent); border-color: #fb923c; }
+    .ltm-btn.prim { background: color-mix(in srgb, #6366f1 24%, transparent); border-color: #818cf8; }
+    .ltm-chip { font: 700 11px var(--mono); padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); } .ltm-chip.ok { border-color: #22c55e; color: #86efac; }
+    .ltm-main { display: grid; grid-template-columns: 1.1fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .ltm-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .ltm-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .ltm-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .ltm-chart { width: 100%; height: 130px; background: #030712; border-radius: 8px; }
+    .ltm-chart polyline, .spark polyline { fill: none; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+    .ltm-chart .cpu { stroke: #2dd4bf; } .ltm-chart .heap { stroke: #818cf8; } .ltm-chart .alloc { stroke: #f472b6; } .spark polyline { stroke: #fbbf24; }
+    .ltm-legend { display: flex; gap: 10px; font-size: 10px; color: var(--text-muted); align-items: center; } .ltm-legend i { display: inline-block; width: 12px; height: 3px; }
+    .ltm-legend .cpu { background: #2dd4bf; } .ltm-legend .heap { background: #818cf8; } .ltm-legend .alloc { background: #f472b6; }
+    .ltm-gen { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; } .ltm-gen span { display: flex; flex-direction: column; font-size: 10px; color: var(--text-muted); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; }
+    .ltm-gen b { font: 800 13px var(--mono); color: var(--text-primary); }
+    .ltm-probes { display: flex; flex-direction: column; gap: 2px; max-height: 360px; overflow-y: auto; }
+    .ltm-probes .hd, .ltm-probes .rw { display: grid; grid-template-columns: 1fr 70px 70px 70px 120px; gap: 6px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .ltm-probes .hd { font-weight: 800; color: var(--text-muted); font-size: 10px; } .ltm-probes .rw.hot { background: color-mix(in srgb, #ef4444 14%, transparent); border-radius: 4px; }
+    .ltm-probes .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .spark { width: 120px; height: 20px; background: #0b1020; border-radius: 3px; }
+    .ltm-gauges { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+    .ltm-gauge { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 10px; color: var(--text-muted); }
+    .ltm-gauge svg { width: 84px; height: 50px; } .ltm-gauge .tr { fill: none; stroke: #1f2937; stroke-width: 7; } .ltm-gauge .vl { fill: none; stroke: #2dd4bf; stroke-width: 7; stroke-linecap: round; }
+    .ltm-gauge b { font: 800 12px var(--mono); color: var(--text-primary); }
+    .ltm-sl { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-secondary); } .ltm-sl b { font-family: var(--mono); color: var(--text-primary); } .ltm-sl input { flex: 1; }
+    .ltm-log { display: flex; flex-direction: column; gap: 3px; max-height: 180px; overflow-y: auto; }
+    .ltm-log .ln { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; color: var(--text-secondary); border-left: 3px solid #475569; padding: 2px 6px; } .ltm-log b { color: var(--text-primary); }
+    .ltm-log .k0 { border-color: #818cf8; } .ltm-log .k1 { border-color: #2dd4bf; } .ltm-log .k2 { border-color: #fbbf24; } .ltm-log .k4 { border-color: #ef4444; }
+    .ltm-nodes { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+    .ltm-nodes .nd { border: 1px solid var(--line); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+    .ltm-nodes .o1 { border-color: #22c55e; } .ltm-nodes .o2 { border-color: #f59e0b; } .ltm-nodes .o3, .ltm-nodes .o4 { border-color: #ef4444; }
+    .ltm-nodes .nh { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--text-secondary); } .ltm-nodes .nh b { color: var(--text-primary); }
+    .ltm-nodes .er { font-size: 11px; color: #fca5a5; } .ltm-nodes .ck { display: flex; gap: 4px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .ltm-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .ltm-kv { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11px; font-weight: 500; color: var(--text-secondary); align-items: center; }
+    .ltm-note { font-size: 11px; color: var(--text-muted); } .mono { font-family: var(--mono); }
+    @@media (max-width: 1200px) { .ltm-main { grid-template-columns: 1fr; } .ltm-gauges { grid-template-columns: repeat(3, 1fr); } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+
+    private RealtimeTelemetryBottleneckProfilerEngine P => Runner.Profiler;
+    private AutonomousPerformanceSelfTuningSynthesizer S => Runner.Synth;
+    private HybridCloudEdgeDeploymentRecoveryGuard O => Runner.Ota;
+    private RuntimeSample L => P.Latest;
+    private int DecShown => Math.Min(S.LogCount, 40);
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Telemetry.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string F0(double v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F3(double v) => v.ToString("0.000", CultureInfo.InvariantCulture);
+    private static string Pct(float v) => (v * 100f).ToString("0", CultureInfo.InvariantCulture) + "%";
+    private static string Mb(long b) => (b / (1024d * 1024d)).ToString("0.0", CultureInfo.InvariantCulture);
+    private static string Kb(long b) => (b / 1024d).ToString("0.#", CultureInfo.InvariantCulture) + " KB";
+    private static string Us(float us) => us >= 1000f ? (us / 1000f).ToString("0.00", CultureInfo.InvariantCulture) + " ms" : us.ToString("0.0", CultureInfo.InvariantCulture) + " µs";
+    private string Ns(int k) => S.SimdNs(k) >= double.MaxValue / 2 || S.SimdNs(k) <= 0 ? "—" : F0(S.SimdNs(k));
+    private string GcLine() => L.Gen0.ToString(CultureInfo.InvariantCulture) + "/" + L.Gen1.ToString(CultureInfo.InvariantCulture) + "/" + L.Gen2.ToString(CultureInfo.InvariantCulture);
+    private string BottleneckName() => S.BottleneckSlot >= 0 ? P.Name(S.BottleneckSlot) + " (" + Us(S.BottleneckP95Us) + ")" : "없음";
+
+    /// <summary>시계열 폴리라인(0 = CPU 0..1 · 1 = 힙 상대 · 2 = 할당률 상대).</summary>
+    private string SeriesPoints(int kind)
+    {
+        var n = P.SeriesCount;
+        if (n < 2) return "";
+        var max = 1e-6;
+        if (kind > 0) for (var i = 0; i < n; i++) max = Math.Max(max, Val(kind, P.Series(i)));
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = n - 1; i >= 0; i--)
+        {
+            var x = 360d * (n - 1 - i) / (RealtimeTelemetryBottleneckProfilerEngine.SeriesLen - 1);
+            var v = kind == 0 ? Val(0, P.Series(i)) : Val(kind, P.Series(i)) / max;
+            sb.Append(F1(x)).Append(',').Append(F1(105 - 100 * Math.Clamp(v, 0, 1))).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private static double Val(int kind, RuntimeSample s) => kind switch { 0 => s.CpuLoad, 1 => s.HeapMb, _ => s.AllocMbPerSec };
+
+    private string ProbePoints(int slot)
+    {
+        var n = P.SeriesCount;
+        if (n < 2) return "";
+        var max = 1e-3;
+        for (var i = 0; i < n; i++) max = Math.Max(max, P.ProbeSeries(slot, i));
+        var sb = new System.Text.StringBuilder(n * 10);
+        for (var i = n - 1; i >= 0; i--)
+            sb.Append(F1(120d * (n - 1 - i) / Math.Max(1, n - 1))).Append(',').Append(F1(19 - 18 * P.ProbeSeries(slot, i) / max)).Append(' ');
+        return sb.ToString();
+    }
+
+    private RenderFragment Gauge(string name, double v, double min, double max, string unit, bool log) => __builder =>
+    {
+        var t = log ? (Math.Log2(Math.Max(v, min)) - Math.Log2(min)) / (Math.Log2(max) - Math.Log2(min)) : (v - min) / Math.Max(1e-9, max - min);
+        t = Math.Clamp(t, 0, 1);
+        var a = Math.PI * (1 - t);
+        var x = 42 + 34 * Math.Cos(a); var y = 44 - 34 * Math.Sin(a);
+        <div class="ltm-gauge">
+            <svg viewBox="0 0 84 50">
+                <path class="tr" d="M 8 44 A 34 34 0 0 1 76 44" />
+                <path class="vl" d="M 8 44 A 34 34 0 0 1 @(F1(x)) @(F1(y))" />
+            </svg>
+            <b>@(F0(v))@(unit)</b>
+            <span>@name</span>
+        </div>
+    };
+
+    private void ToggleRun() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step() { for (var k = 0; k < LiveTelemetryStudioRunner.Hz; k++) Runner.TickOnce(); }
+    private void ToggleWorkload() => Runner.Workload = !Runner.Workload;
+    private void ToggleAuto() => S.AutoTune = !S.AutoTune;
+    private void ToggleCost() => S.ApplyCostFeedback = !S.ApplyCostFeedback;
+    private void Calibrate() => S.CalibrateSimd();
+
+    private void TogglePool()
+    {
+        S.ApplyThreadPool = !S.ApplyThreadPool;
+        if (!S.ApplyThreadPool) S.RestoreThreadPool();
+    }
+
+    private void SetBudget(ChangeEventArgs e)
+    {
+        if (float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var ms)) S.BottleneckBudgetUs = Math.Clamp(ms, 1f, 33f) * 1000f;
+    }
+
+    private void SetFault(int i, ChangeEventArgs e) => O.Node(i).InjectFault = e.Value is true;
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+        Runner.Stop();
+    }
+}

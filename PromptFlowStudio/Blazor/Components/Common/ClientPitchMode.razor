@@ -1,0 +1,41 @@
+@* [PromptFlow Studio] v3.2.0 B2B 바이어 미팅 전용 피치 모드 — 골드-사이버 전체화면 발표 셸(ClientPitchDeck 호스트 · Esc 종료). *@
+
+<div class="cpm" tabindex="0" @ref="_root" @onkeydown="OnKey">
+    <div class="cpm-h">
+        <div class="cpm-title">🎬 B2B 바이어 피치 모드 <span class="cpm-badge">FULLSCREEN · F11</span></div>
+        <div class="cpm-proj">@(string.IsNullOrWhiteSpace(Project.Title) ? "PromptFlow Studio" : Project.Title)</div>
+        <button class="cpm-x" @onclick="OnCloseClick" title="종료 (Esc)">✕ 종료</button>
+    </div>
+    <div class="cpm-body">
+        <ClientPitchDeck Project="Project" />
+    </div>
+    <div class="cpm-foot">PromptFlow Studio · 실시간 인터랙티브 시연 — 렌더링 대기 없이 즉석 발표 · 옵션 조정 후 [승인]으로 스토리보드 반영</div>
+</div>
+
+<style>
+    .cpm { position: fixed; inset: 0; z-index: 200; outline: none; overflow-y: auto; padding: 22px 28px 28px;
+        background: radial-gradient(120% 80% at 85% -10%, color-mix(in srgb,#f5c451 16%,transparent), transparent 55%), radial-gradient(120% 80% at 10% 110%, color-mix(in srgb,#0ea5e9 16%,transparent), transparent 55%), #0b0d14; }
+    .cpm-h { display: flex; align-items: center; gap: 14px; padding-bottom: 16px; border-bottom: 1px solid color-mix(in srgb,#f5c451 22%,var(--line)); margin-bottom: 18px; }
+    .cpm-title { font: 900 20px var(--mono); background: linear-gradient(90deg,#fde68a,#f5c451); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .cpm-badge { font: 800 10px var(--mono); color: #1a1206; background: linear-gradient(135deg,#fde68a,#f5c451); border-radius: 20px; padding: 3px 10px; -webkit-text-fill-color: #1a1206; }
+    .cpm-proj { font: 700 13px var(--mono); color: var(--text-secondary); margin-left: auto; }
+    .cpm-x { font: 800 12.5px var(--mono); color: var(--text-secondary); background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 9px 15px; cursor: pointer; }
+    .cpm-x:hover { border-color: #ef4444; color: #fca5a5; }
+    .cpm-body { max-width: 1120px; margin: 0 auto; }
+    .cpm-foot { max-width: 1120px; margin: 20px auto 0; text-align: center; font: 600 11px var(--mono); color: var(--text-muted); }
+</style>
+
+@code {
+    [Parameter, EditorRequired] public StoryboardProject Project { get; set; } = default!;
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private ElementReference _root;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender) { try { await _root.FocusAsync(); } catch { } }   // Esc 키 수신 위해 포커스
+    }
+
+    private async Task OnKey(KeyboardEventArgs e) { if (e.Key == "Escape") await OnCloseClick(); }
+    private async Task OnCloseClick() => await OnClose.InvokeAsync();
+}

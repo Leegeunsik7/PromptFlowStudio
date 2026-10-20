@@ -1,0 +1,88 @@
+@* [PromptFlow Studio] SmartTooltip — 자동 보정 항목에 마우스 호버 시 "무슨 결함을 어떻게 보정했는가"를 보여주는 시네마틱 툴팁(순수 CSS 호버 · 외부 라이브러리 0). *@
+
+<span class="stt">
+    <span class="stt-anchor">@ChildContent</span>
+    <span class="stt-pop" role="tooltip">
+        <span class="stt-head">
+            <span class="stt-ic">@Icon</span>
+            <span class="stt-deficit">@Deficit</span>
+        </span>
+        <span class="stt-flow">
+            <span class="stt-tag bad">결함</span>
+            <span class="stt-arrow">➜</span>
+            <span class="stt-tag fix">보정</span>
+            <span class="stt-fix">@Fix</span>
+        </span>
+        @if (!string.IsNullOrWhiteSpace(Detail))
+        {
+            <span class="stt-detail">@Detail</span>
+        }
+        @if (!string.IsNullOrWhiteSpace(Status))
+        {
+            <span class="stt-status">@Status</span>
+        }
+    </span>
+</span>
+
+<style>
+    .stt { position: relative; display: inline-flex; width: 100%; }
+    .stt-anchor { display: block; width: 100%; }
+
+    .stt-pop {
+        position: absolute; left: 0; bottom: calc(100% + 10px); z-index: 60;
+        width: max(240px, 100%); box-sizing: border-box;
+        display: flex; flex-direction: column; gap: 7px;
+        padding: 12px 14px; border-radius: 13px;
+        background: color-mix(in srgb, #111a2e 74%, transparent);
+        backdrop-filter: blur(16px) saturate(1.2); -webkit-backdrop-filter: blur(16px) saturate(1.2);
+        border: 1px solid rgba(255,255,255,.14);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.08), 0 20px 48px rgba(0,0,0,.55);
+        opacity: 0; visibility: hidden; transform: translateY(6px) scale(.98);
+        transition: opacity .16s ease, transform .16s ease, visibility .16s;
+        pointer-events: none;
+    }
+    .stt:hover .stt-pop, .stt:focus-within .stt-pop { opacity: 1; visibility: visible; transform: translateY(0) scale(1); }
+
+    /* 아래쪽 화살표 */
+    .stt-pop::after {
+        content: ""; position: absolute; left: 22px; bottom: -6px; width: 11px; height: 11px;
+        transform: rotate(45deg);
+        background: color-mix(in srgb, #111a2e 74%, transparent);
+        border-right: 1px solid rgba(255,255,255,.14); border-bottom: 1px solid rgba(255,255,255,.14);
+    }
+
+    .stt-head { display: flex; align-items: center; gap: 8px; }
+    .stt-ic { font-size: 16px; line-height: 1; filter: drop-shadow(0 0 6px rgba(124,108,255,.5)); }
+    .stt-deficit { font: 800 12.5px var(--mono, ui-monospace, monospace); color: var(--text-primary, #e6edff); }
+
+    .stt-flow { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+    .stt-tag { font: 800 8.5px var(--mono, ui-monospace, monospace); letter-spacing: .04em; padding: 2px 6px; border-radius: 999px; }
+    .stt-tag.bad { color: #ff9aa8; border: 1px solid #ef444455; background: #ef44441a; }
+    .stt-tag.fix { color: #7ef0c6; border: 1px solid #10b98155; background: #10b9811a; }
+    .stt-arrow { color: var(--text-muted, #6b7392); font-size: 11px; }
+    .stt-fix { font: 700 11.5px var(--mono, ui-monospace, monospace); color: var(--accent-2, #22d3ee); flex: 1 1 100%; }
+
+    .stt-detail { font-size: 11px; line-height: 1.55; color: var(--text-secondary, #9aa6c8); }
+    .stt-status {
+        font: 700 10.5px var(--mono, ui-monospace, monospace); color: #ffd66b;
+        padding-top: 6px; border-top: 1px dashed rgba(255,255,255,.12);
+    }
+
+    /* 모바일/좁은 폭 — 툴팁이 화면을 넘지 않게 폭 제한 */
+    @@media (max-width: 560px) { .stt-pop { width: min(280px, 86vw); } }
+</style>
+
+@code {
+    /// <summary>툴팁을 띄울 앵커(스위치/칩 등).</summary>
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    /// <summary>결함 아이콘(이모지).</summary>
+    [Parameter] public string Icon { get; set; } = "✨";
+    /// <summary>어떤 결함인지(한 줄).</summary>
+    [Parameter] public string Deficit { get; set; } = "";
+    /// <summary>어떻게 보정하는지(한 줄).</summary>
+    [Parameter] public string Fix { get; set; } = "";
+    /// <summary>보정 원리 상세(선택).</summary>
+    [Parameter] public string? Detail { get; set; }
+    /// <summary>실시간 상태(선택 · 쿨다운 남은 시간 등).</summary>
+    [Parameter] public string? Status { get; set; }
+}

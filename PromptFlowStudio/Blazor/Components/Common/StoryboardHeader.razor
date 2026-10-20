@@ -1,0 +1,53 @@
+@* [PromptFlow Studio] 스토리보드 상단 백과사전 버튼 그룹 — [👶 아기 테마] 옆에 [🏢 B2B 기업/장비] 독립 버튼을 전면 배치. *@
+
+<button class="sb-tbtn wiz" @onclick="OnOpenBaby" disabled="@Disabled"
+        title="17대 카테고리 100+ 아기 숏츠 테마 — 테마 + 포맷만 고르면 대본·프롬프트·키네틱·텐션·폴리 자동 완성">
+    👶 아기 테마 백과사전
+</button>
+<button class="sb-tbtn wiz hyper" @onclick="OnOpenHyper" disabled="@Disabled"
+        title="초개인화 아기 하이퍼 스튜디오 — 아트 텍스처 믹서·이름/D+Day 각인·5단계 감정 아크·4K 성장 기념 카드 (테마 적용 후 재합성)">
+    ✨ 아기 하이퍼 스튜디오
+</button>
+<button class="sb-tbtn wiz wthr" @onclick="OnOpenWeather" disabled="@Disabled"
+        title="기후(맑음·비·눈·안개)×시간대×강도 48종 날씨/환경 테마 — 시네마틱 프롬프트 + 입체 앰비언스 자동 구성">
+    ☁️ 날씨/환경 테마
+</button>
+<button class="sb-tbtn wiz b2b" @onclick="OnOpenB2b" disabled="@Disabled"
+        title="B2B 전용 — 기업 브랜딩·중장비·스마트팩토리·제품 + 자동차 ADAS/AEBS/HLA/R&D + 사옥 기반 AI 홍보">
+    🏢 B2B 기업/장비 백과사전
+</button>
+<button class="sb-tbtn wiz pitch" @onclick="OnOpenPitch" disabled="@Disabled"
+        title="B2B 바이어 미팅 전용 발표 모드 — CAD 3D·텔레메트리 HUD·사옥 3색 조명 즉시 시연 + 스펙시트 PDF (전체화면)">
+    🎬 B2B 피치 모드 <span class="sb-f11">F11</span>
+</button>
+
+<style>
+    /* B2B 버튼은 블루-인디고 톤으로 아기(바이올렛)와 시각 구분 */
+    .sb-tbtn.wiz.b2b { background: linear-gradient(135deg, #0ea5e9, #6366f1); box-shadow: 0 6px 16px color-mix(in srgb, #6366f1 26%, transparent); }
+    .sb-tbtn.wiz.b2b:hover:not(:disabled) { filter: brightness(1.08); }
+    /* 피치 모드는 골드-사이버 톤(프리미엄 발표) */
+    .sb-tbtn.wiz.pitch { background: linear-gradient(135deg, #f5c451, #b8860b); color: #1a1206; box-shadow: 0 6px 16px color-mix(in srgb, #f5c451 30%, transparent); }
+    .sb-tbtn.wiz.pitch:hover:not(:disabled) { filter: brightness(1.06); }
+    /* 아기 하이퍼는 마젠타-바이올렛 톤(초개인화 프리미엄 · 하이퍼 덱과 색 연계) */
+    .sb-tbtn.wiz.hyper { background: linear-gradient(135deg, #a855f7, #ec4899); box-shadow: 0 6px 16px color-mix(in srgb, #ec4899 28%, transparent); }
+    .sb-tbtn.wiz.hyper:hover:not(:disabled) { filter: brightness(1.07); }
+    /* 날씨/환경은 스카이-틸 톤(기상 무드) */
+    .sb-tbtn.wiz.wthr { background: linear-gradient(135deg, #38bdf8, #22d3ee); color: #04121c; box-shadow: 0 6px 16px color-mix(in srgb, #38bdf8 30%, transparent); }
+    .sb-tbtn.wiz.wthr:hover:not(:disabled) { filter: brightness(1.06); }
+    .sb-f11 { font: 800 9px var(--mono); background: rgba(0,0,0,.22); border-radius: 5px; padding: 1px 5px; margin-left: 3px; }
+</style>
+
+@code {
+    /// <summary>[👶 아기 테마 백과사전] 클릭.</summary>
+    [Parameter] public EventCallback OnOpenBaby { get; set; }
+    /// <summary>[✨ 아기 하이퍼 스튜디오] 클릭 — 초개인화 전용 모달(테마 백과사전에서 분리).</summary>
+    [Parameter] public EventCallback OnOpenHyper { get; set; }
+    /// <summary>[🏢 B2B 기업/장비 백과사전] 클릭.</summary>
+    [Parameter] public EventCallback OnOpenB2b { get; set; }
+    /// <summary>[☁️ 날씨/환경 테마] 클릭 — 기후/시간대/강도 테마 갤러리.</summary>
+    [Parameter] public EventCallback OnOpenWeather { get; set; }
+    /// <summary>[🎬 B2B 피치 모드] 클릭 — 바이어 미팅 전용 전체화면 발표.</summary>
+    [Parameter] public EventCallback OnOpenPitch { get; set; }
+    /// <summary>생성/병합 중 잠금.</summary>
+    [Parameter] public bool Disabled { get; set; }
+}

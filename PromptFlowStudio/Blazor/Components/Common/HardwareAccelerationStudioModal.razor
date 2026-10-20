@@ -1,0 +1,455 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Hardware
+@implements IDisposable
+@inject HardwareAccelerationStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.63.0] ⚡ AI 하드웨어 가속 & 분산 렌더링 스튜디오 — DirectPath 공유 메모리 페이지 히트맵 + GPU VRAM(nvidia-smi) ·
+    렌더 노드 팜 모니터(타일 소유 맵 · 장애/스트래글러 주입) · 하드웨어 인코더 스위처(NVENC/AMF/QSV/소프트웨어/Null) · Zero-Copy 벤치.
+*@
+
+<div class="hwa-scrim" @onclick="Close">
+    <div class="hwa-modal" @onclick:stopPropagation="true">
+        <div class="hwa-h">
+            <div>
+                <div class="hwa-title">⚡ AI 하드웨어 가속 &amp; 분산 렌더링 스튜디오</div>
+                <div class="hwa-sub"><b>분산 렌더 노드 팜</b>이 타일을 나눠 렌더해 <b>DirectPath 공유 메모리</b>에 바로 조립하고(복사 0),
+                    같은 페이지를 <b>NVENC/AMF/QuickSync</b> 하드웨어 인코더로 넘겨 CPU 부하를 최소화합니다.</div>
+            </div>
+            <button class="hwa-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="hwa-bar">
+            <span class="hwa-chip @(Runner.IsRunning ? "ok" : null)">@(Runner.IsRunning ? "● 라이브" : "○ 정지") · #@(Runner.FrameSeq) · @(Runner.Width)×@(Runner.Height)</span>
+            <span class="hwa-chip @(F.Last.Complete ? "ok" : "hot")">조립 @(F1(F.LastLatencyMs))ms (EWMA @(F1(F.LatencyEwmaMs))) · 최대 타일 @(F1(F.LastMaxTileMs))ms</span>
+            <span class="hwa-chip">타일 @(F.TileCount) · 재발행 @(F.TotalReissued) · 미완 프레임 @(F.IncompleteFrames)</span>
+            @if (D.Arena is { } ar)
+            {
+                <span class="hwa-chip ok">DirectPath 제자리 @(Mb(ar.ZeroCopyBytes)) · 복사 @(Mb(ar.CopiedBytes))</span>
+            }
+            <span class="hwa-chip @(E.IsRunning ? "ok" : null)">🎞 @(E.IsRunning ? E.ActiveEncoder.Length > 0 ? E.ActiveEncoder : "null" : "인코더 대기") · @(F1((float)E.FpsAchieved))fps · 드롭 @(E.Dropped)</span>
+        </div>
+
+        <div class="hwa-main">
+            <div class="hwa-col">
+                <div class="hwa-card">
+                    <div class="hwa-row hwa-between">
+                        <span class="hwa-sec">🖼 조립 프레임 · 타일 소유 맵</span>
+                        <span class="hwa-row">
+                            <button class="hwa-btn @(Runner.IsRunning ? "on" : null)" @onclick="Toggle">@(Runner.IsRunning ? "⏸ 정지" : "▶ 라이브")</button>
+                            <button class="hwa-btn sm" @onclick="Step">⏭ 1프레임</button>
+                        </span>
+                    </div>
+                    <div class="hwa-stage">
+                        @if (_frameUrl is not null)
+                        {
+                            <img class="hwa-frame" src="@_frameUrl" alt="farm frame" />
+                        }
+                        @if (_showTiles)
+                        {
+                            <div class="hwa-tiles" style="grid-template-columns: repeat(@(F.TilesX), 1fr); grid-template-rows: repeat(@(F.TilesY), 1fr);">
+                                @for (var i = 0; i < _ownerCount; i++)
+                                {
+                                    var o = _owners[i];
+                                    <div class="hwa-tile" style="background:@(o == 0 ? "rgba(239,68,68,.55)" : NodeColor(o - 1, 0.28f))"></div>
+                                }
+                            </div>
+                        }
+                    </div>
+                    <div class="hwa-row">
+                        <label class="hwa-chk"><input type="checkbox" @bind="_showTiles" /> 타일 오버레이</label>
+                        <span class="hwa-lbl">해상도</span>
+                        <select class="hwa-sel" value="@ResKey" @onchange="OnRes">
+                            @foreach (var (k, w, h) in Resolutions)
+                            {
+                                <option value="@k">@k (@(w)×@(h))</option>
+                            }
+                        </select>
+                        <span class="hwa-lbl">그리드</span>
+                        <select class="hwa-sel" value="@(F.TilesX + "x" + F.TilesY)" @onchange="OnGrid">
+                            <option value="4x3">4×3</option><option value="8x6">8×6</option><option value="12x8">12×8</option><option value="16x12">16×12</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="hwa-card">
+                    <div class="hwa-row hwa-between">
+                        <span class="hwa-sec">🛰 렌더 노드 팜</span>
+                        <span class="hwa-row">
+                            <button class="hwa-btn sm" @onclick="AddLocal">➕ 로컬</button>
+                            <button class="hwa-btn sm" @onclick="AddRemote">➕ 원격(루프백)</button>
+                            <button class="hwa-btn sm" @onclick="AddSlowRemote">🐢 느린 원격</button>
+                            <button class="hwa-btn sm" @onclick="F.ReviveAll">♻ 복구</button>
+                        </span>
+                    </div>
+                    <table class="hwa-tbl">
+                        <thead><tr><th></th><th>노드</th><th>상태</th><th>몫</th><th>타일</th><th>투기</th><th>타일 지연</th><th></th></tr></thead>
+                        <tbody>
+                            @foreach (var n in _nodes)
+                            {
+                                var id = n.Id;
+                                <tr class="@(n.Online ? null : "off")">
+                                    <td><i class="hwa-dot" style="background:@(NodeColor(n.Id, 1f))"></i></td>
+                                    <td>@n.Name<em>@(n.Kind == RenderNodeKind.Remote ? " · " + n.Endpoint : " · 제자리")</em></td>
+                                    <td>@(n.Online ? "● 온라인" : "✖ 오프라인")</td>
+                                    <td><div class="hwa-mbar"><i style="width:@(P(n.Share))"></i></div></td>
+                                    <td>@n.Tiles</td>
+                                    <td>@n.Stolen</td>
+                                    <td>@(F2((float)(n.TileMicrosEwma / 1000.0)))ms</td>
+                                    <td><button class="hwa-btn sm" @onclick="() => Remove(id)">✕</button></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                    <div class="hwa-row">
+                        <button class="hwa-btn sm hot" disabled="@(_server is null)" @onclick="StallRemote">⚠ 원격 장애 주입</button>
+                        <span class="hwa-note">스트래글러 하한 @(F1((float)F.StragglerFloorMs))ms · 원격 타임아웃 400ms → 오프라인 · 타일 즉시 재배정</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="hwa-col">
+                <div class="hwa-card">
+                    <div class="hwa-row hwa-between">
+                        <span class="hwa-sec">🔥 DirectPath 메모리 히트맵</span>
+                        <button class="hwa-btn sm" @onclick="Bench">🏁 Zero-Copy 벤치</button>
+                    </div>
+                    @if (D.Arena is { } a)
+                    {
+                        <div class="hwa-note">@(a.Backing == DirectPathBacking.SharedMemory ? "공유 메모리(MMF)" : "4KB 정렬 네이티브") · @(Mb(a.TotalBytes)) · 슬롯 @(a.SlotCount)×@(Mb(a.SlotBytes))
+                            · @(a.PageLocked ? "🔒 페이지 잠금(VirtualLock)" : "페이지 잠금 실패/미지원") · 회수 @(a.Reclaimed)</div>
+                        <div class="hwa-heat">
+                            @for (var p = 0; p < a.HeatPages && p < 512; p++)
+                            {
+                                <i style="background:@(Heat(a.PageHeat[p], _heatMax))" title="@(p * 64)KB"></i>
+                            }
+                        </div>
+                        <div class="hwa-row">
+                            @for (var s = 0; s < a.SlotCount; s++)
+                            {
+                                var st = a.StateOf(s);
+                                <span class="hwa-slot s@(st)">슬롯 @s · @(SlotLabel(st)) · #@(a.SequenceOf(s))</span>
+                            }
+                        </div>
+                    }
+                    <div class="hwa-sec">🎮 GPU / VRAM</div>
+                    @if (Runner.Gpu.Name is { } gname)
+                    {
+                        <div class="hwa-note"><b>@gname</b> · VRAM @(Runner.Gpu.MemUsedMb)/@(Runner.Gpu.MemTotalMb)MB · GPU @(Runner.Gpu.UtilGpu)% · 인코더 @(Runner.Gpu.UtilEncoder)%</div>
+                        <div class="hwa-mbar big"><i style="width:@(P(Runner.Gpu.MemTotalMb > 0 ? Runner.Gpu.MemUsedMb / (float)Runner.Gpu.MemTotalMb : 0))"></i></div>
+                    }
+                    else
+                    {
+                        <div class="hwa-note">nvidia-smi 미탐지 — D3D12 @(D.GpuD3d12Capable ? "가용" : "불가") · GPU 호스트 메모리 등록 @(D.GpuRegistered ? "완료" : "미결선(IGpuHostMemoryInterop)")</div>
+                    }
+                    @if (D.LastBench is { } b)
+                    {
+                        <table class="hwa-tbl">
+                            <thead><tr><th>경로</th><th>@(b.Frames)프레임</th><th>복사 바이트</th></tr></thead>
+                            <tbody>
+                                <tr><td>레거시(스테이징 → 복사 → 소비자 복사)</td><td>@(F1((float)b.CopyPathMs))ms</td><td>@(Mb(b.CopyPathBytesCopied))</td></tr>
+                                <tr><td>DirectPath(제자리 렌더 · 직접 소비)</td><td>@(F1((float)b.ZeroCopyPathMs))ms</td><td>@(Mb(b.ZeroCopyBytesCopied)) · 할당 @(b.ZeroCopyAllocated)B</td></tr>
+                            </tbody>
+                        </table>
+                    }
+                </div>
+
+                <div class="hwa-card">
+                    <div class="hwa-row hwa-between">
+                        <span class="hwa-sec">🎞 하드웨어 인코더 스위처</span>
+                        <button class="hwa-btn sm" disabled="@_probing" @onclick="Probe">@(_probing ? "탐지 중…" : "🔍 탐지")</button>
+                    </div>
+                    <div class="hwa-row">
+                        @foreach (var v in Vendors)
+                        {
+                            var vv = v;
+                            <button class="hwa-btn sm @(_vendor == v ? "on" : null) @(Verified(v) ? "lit" : null)" @onclick="() => _vendor = vv">@(HardwareVideoEncoderOffloader.Label(v))</button>
+                        }
+                    </div>
+                    <div class="hwa-row">
+                        <span class="hwa-lbl">코덱</span>
+                        @foreach (var c in Codecs)
+                        {
+                            var cc = c;
+                            <button class="hwa-btn sm @(_codec == c ? "on" : null)" @onclick="() => _codec = cc">@c</button>
+                        }
+                        <label class="hwa-chk"><input type="checkbox" @bind="_toFile" /> 파일 출력</label>
+                    </div>
+                    @if (E.Capabilities is { } caps)
+                    {
+                        <div class="hwa-caps">
+                            @foreach (var c in caps)
+                            {
+                                <span class="hwa-cap @(c.Verified ? "ok" : c.Listed ? "warn" : null)" title="@(c.Error)">@c.FfmpegName</span>
+                            }
+                        </div>
+                    }
+                    <div class="hwa-row">
+                        <button class="hwa-btn @(E.IsRunning ? "hot" : "on")" @onclick="ToggleEncode">@(E.IsRunning ? "⏹ 인코딩 종료" : "⏺ 인코딩 시작")</button>
+                        <span class="hwa-note">변환 @(F1((float)E.ConvertMicros))μs · 파이프 @(F1((float)E.WriteMicros))μs · 무복사 핸드오프 @(E.ZeroCopyFrames)</span>
+                    </div>
+                    @if (E.LastReport is { } rep)
+                    {
+                        <div class="hwa-note">@rep.Encoder · @(rep.Frames)프레임 · @(F1((float)rep.Seconds))s · @(rep.OutputBytes / 1024)KB · ffmpeg CPU @(F0((float)rep.EncoderCpuMs))ms · 변환 @(F2((float)rep.ConvertMsPerFrame))ms/프레임 @(rep.Note is null ? "" : "· " + rep.Note)</div>
+                        @if (_lastOutput is not null)
+                        {
+                            <div class="hwa-note">📁 @_lastOutput</div>
+                        }
+                    }
+                    @foreach (var l in E.RecentLog())
+                    {
+                        <div class="hwa-log">@l</div>
+                    }
+                </div>
+                @if (_message is not null)
+                {
+                    <div class="hwa-note">@_message</div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .hwa-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .hwa-modal { width: min(1560px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .hwa-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #22c55e 16%, var(--card)), color-mix(in srgb, #f97316 14%, var(--card))); }
+    .hwa-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .hwa-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .hwa-sub b { color: var(--text-primary); }
+    .hwa-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .hwa-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); }
+    .hwa-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .hwa-chip.ok { color: #22c55e; border-color: #22c55e; }
+    .hwa-chip.hot { color: #f97316; border-color: #f97316; }
+    .hwa-main { display: grid; grid-template-columns: 1.35fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .hwa-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .hwa-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .hwa-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); }
+    .hwa-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .hwa-between { justify-content: space-between; }
+    .hwa-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .hwa-btn.on { background: color-mix(in srgb, #22c55e 22%, transparent); border-color: #22c55e; }
+    .hwa-btn.lit { box-shadow: inset 0 0 0 1px #22c55e; }
+    .hwa-btn.hot { background: color-mix(in srgb, #ef4444 20%, transparent); border-color: #ef4444; }
+    .hwa-btn.sm { font-size: 11px; padding: 3px 8px; }
+    .hwa-btn:disabled { opacity: .45; cursor: default; }
+    .hwa-sel { font-size: 12px; padding: 4px 6px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .hwa-lbl { font-size: 11px; color: var(--text-muted); }
+    .hwa-chk { font-size: 11px; color: var(--text-secondary); display: flex; gap: 4px; align-items: center; }
+    .hwa-stage { position: relative; width: 100%; aspect-ratio: 16 / 9; border-radius: 8px; overflow: hidden; background: #000; border: 1px solid var(--line); }
+    .hwa-frame { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+    .hwa-tiles { position: absolute; inset: 0; display: grid; }
+    .hwa-tile { border: 1px solid rgba(255,255,255,.12); }
+    .hwa-tbl { width: 100%; border-collapse: collapse; font-size: 11px; }
+    .hwa-tbl th, .hwa-tbl td { padding: 3px 5px; border-bottom: 1px solid var(--line); text-align: left; color: var(--text-secondary); }
+    .hwa-tbl th { color: var(--text-muted); font-weight: 700; }
+    .hwa-tbl td em { font-style: normal; color: var(--text-muted); font-size: 10px; }
+    .hwa-tbl tr.off td { opacity: .5; }
+    .hwa-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+    .hwa-mbar { height: 6px; min-width: 60px; border-radius: 3px; background: color-mix(in srgb, var(--line) 70%, transparent); overflow: hidden; }
+    .hwa-mbar.big { height: 10px; }
+    .hwa-mbar i { display: block; height: 100%; background: linear-gradient(90deg, #22c55e, #f97316); }
+    .hwa-note { font-size: 11px; color: var(--text-muted); }
+    .hwa-note b { color: var(--text-primary); }
+    .hwa-heat { display: grid; grid-template-columns: repeat(32, 1fr); gap: 1px; }
+    .hwa-heat i { display: block; aspect-ratio: 1; border-radius: 2px; }
+    .hwa-slot { font: 700 10.5px var(--mono); padding: 2px 6px; border-radius: 6px; border: 1px solid var(--line); color: var(--text-muted); }
+    .hwa-slot.s1 { color: #f97316; border-color: #f97316; } .hwa-slot.s2 { color: #22c55e; border-color: #22c55e; } .hwa-slot.s3 { color: #06b6d4; border-color: #06b6d4; }
+    .hwa-caps { display: flex; flex-wrap: wrap; gap: 4px; }
+    .hwa-cap { font: 10.5px var(--mono); padding: 1px 6px; border-radius: 6px; border: 1px solid var(--line); color: var(--text-muted); opacity: .6; }
+    .hwa-cap.ok { color: #22c55e; border-color: #22c55e; opacity: 1; }
+    .hwa-cap.warn { color: #f97316; border-color: #f97316; opacity: 1; }
+    .hwa-log { font: 10.5px var(--mono); color: #fca5a5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    @@media (max-width: 1200px) { .hwa-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly (string Key, int W, int H)[] Resolutions = [("360p", 640, 360), ("720p", 1280, 720), ("1080p", 1920, 1080), ("4K", 3840, 2160), ("8K", 7680, 4320)];
+    private static readonly HwVendor[] Vendors = [HwVendor.Auto, HwVendor.Nvenc, HwVendor.Amf, HwVendor.QuickSync, HwVendor.Software, HwVendor.Null];
+    private static readonly HwCodec[] Codecs = [HwCodec.H264, HwCodec.Hevc, HwCodec.Av1];
+
+    private readonly byte[] _frame = new byte[HardwareAccelerationStudioRunner.PreviewW * HardwareAccelerationStudioRunner.PreviewH * 3];
+    private readonly byte[] _owners = new byte[DistributedRenderFarmSyncEngine.MaxTiles];
+    private RenderNodeStatus[] _nodes = Array.Empty<RenderNodeStatus>();
+    private RenderNodeServer? _server;
+    private string? _frameUrl, _message, _lastOutput;
+    private bool _showTiles = true, _probing, _toFile = true;
+    private HwVendor _vendor = HwVendor.Auto;
+    private HwCodec _codec = HwCodec.H264;
+    private int _ownerCount, _heatMax = 1, _gpuTick;
+    private long _shownSeq = -1;
+    private System.Threading.Timer? _timer;
+
+    private HardwareZeroCopyDirectPathPipeline D => Runner.DirectPath;
+    private DistributedRenderFarmSyncEngine F => Runner.Farm;
+    private HardwareVideoEncoderOffloader E => Runner.Encoder;
+
+    private string ResKey { get { foreach (var (k, w, h) in Resolutions) if (w == Runner.Width && h == Runner.Height) return k; return "360p"; } }
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        E.OnChange += OnServiceChanged;
+        D.OnChange += OnServiceChanged;
+        Runner.EnsureReady();
+        if (Runner.FrameSeq == 0) Runner.TickOnce(1.0 / HardwareAccelerationStudioRunner.TickHz);
+        Refresh();
+        _ = RefreshGpu();
+        _timer = new System.Threading.Timer(_ => _ = InvokeAsync(() =>
+        {
+            if (++_gpuTick % 8 == 0) _ = RefreshGpu();
+            if (Runner.FrameSeq != _shownSeq) Refresh();
+            StateHasChanged();
+        }), null, 250, 250);
+    }
+
+    private static string F0(float v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(float v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string P(float v) => (Math.Clamp(v, 0f, 1f) * 100f).ToString("0.#", CultureInfo.InvariantCulture) + "%";
+    private static string Mb(long b) => b >= 1L << 30 ? (b / (double)(1L << 30)).ToString("0.00", CultureInfo.InvariantCulture) + "GB" : (b / (double)(1 << 20)).ToString("0.0", CultureInfo.InvariantCulture) + "MB";
+    private static string SlotLabel(int s) => s switch { 0 => "빈", 1 => "쓰기", 2 => "준비", 3 => "읽기", _ => "?" };
+
+    private static string NodeColor(int id, float alpha)
+    {
+        var hue = (id * 67 + 140) % 360;
+        return "hsla(" + hue.ToString(CultureInfo.InvariantCulture) + ",80%,55%," + alpha.ToString("0.00", CultureInfo.InvariantCulture) + ")";
+    }
+
+    private static string Heat(int v, int max)
+    {
+        var k = max > 0 ? Math.Clamp(v / (float)max, 0f, 1f) : 0f;
+        var hue = (int)(220 - 220 * k);
+        return "hsl(" + hue.ToString(CultureInfo.InvariantCulture) + ",85%," + (18 + (int)(40 * k)).ToString(CultureInfo.InvariantCulture) + "%)";
+    }
+
+    private bool Verified(HwVendor v)
+    {
+        if (E.Capabilities is not { } caps) return false;
+        foreach (var c in caps) if (c.Vendor == v && c.Codec == _codec && c.Verified) return true;
+        return false;
+    }
+
+    private void Refresh()
+    {
+        _shownSeq = Runner.FrameSeq;
+        Runner.CopyPreview(_frame);
+        _frameUrl = PromptFlowStudio.Services.Spatial.SpatialImageCodec.BmpDataUrl(_frame, HardwareAccelerationStudioRunner.PreviewW, HardwareAccelerationStudioRunner.PreviewH);
+        _ownerCount = Runner.CopyOwners(_owners);
+        _nodes = F.Snapshot();
+        if (D.Arena is { } a) { var m = 1; foreach (var h in a.PageHeat) if (h > m) m = h; _heatMax = m; }
+    }
+
+    private async Task RefreshGpu()
+    {
+        try { await Runner.RefreshGpuAsync(); } catch (InvalidOperationException) { }
+    }
+
+    private void Toggle() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+
+    private void Step() { Runner.TickOnce(1.0 / HardwareAccelerationStudioRunner.TickHz); Refresh(); }
+
+    private void OnRes(ChangeEventArgs e)
+    {
+        foreach (var (k, w, h) in Resolutions)
+        {
+            if (k != e.Value?.ToString()) continue;
+            if (E.IsRunning) { _message = "⚠ 인코딩 중에는 해상도 변경 불가"; return; }
+            Runner.SetResolution(w, h);
+            _message = w >= 3840 ? "⚠ " + k + " 레이트레이스는 CPU 노드로 실시간 미보장 — 노드 추가/그리드 확대 권장" : null;
+            if (!Runner.IsRunning) Step();
+            return;
+        }
+    }
+
+    private void OnGrid(ChangeEventArgs e)
+    {
+        var s = e.Value?.ToString() ?? "8x6";
+        var i = s.IndexOf('x');
+        if (i > 0 && int.TryParse(s[..i], out var tx) && int.TryParse(s[(i + 1)..], out var ty)) F.SetGrid(tx, ty);
+        if (!Runner.IsRunning) Step();
+    }
+
+    private void AddLocal() { F.AddLocal(new RayTracedStudioScene()); _nodes = F.Snapshot(); }
+
+    private void AddRemote()
+    {
+        var (_, srv) = F.AddLoopbackRemote(new RayTracedStudioScene());
+        _server = srv;
+        _nodes = F.Snapshot();
+    }
+
+    private void AddSlowRemote()
+    {
+        var (_, srv) = F.AddLoopbackRemote(new RayTracedStudioScene(), "원격-느림");
+        srv.ExtraDelayMs = 25;
+        _server = srv;
+        _nodes = F.Snapshot();
+        _message = "🐢 타일당 +25ms 노드 추가 — 스트래글러 투기 재발행 관찰";
+    }
+
+    private void StallRemote()
+    {
+        if (_server is null) return;
+        _server.Stall = true;
+        _message = "⚠ 원격 :" + _server.Port + " 응답 중단 — 타임아웃 후 오프라인·재배정";
+    }
+
+    private void Remove(int id) { F.RemoveNode(id); _nodes = F.Snapshot(); }
+
+    private void Bench()
+    {
+        var ras = new PromptFlowStudio.Services.Neural3d.AiGaussianSplattingRasterizerEngine();
+        var scene = new PromptFlowStudio.Services.Neural3d.GaussianScene();
+        for (var i = 0; i < 4000; i++)
+        {
+            var a = i * 0.0157f; var r = 0.4f + (i % 50) * 0.02f;
+            scene.Add(new System.Numerics.Vector3(MathF.Cos(a) * r, (i % 37) * 0.03f, MathF.Sin(a) * r), System.Numerics.Quaternion.Identity, new System.Numerics.Vector3(0.03f),
+                0.8f, new System.Numerics.Vector3((i % 7) / 7f, (i % 11) / 11f, (i % 13) / 13f));
+        }
+        var running = Runner.IsRunning;
+        Runner.Stop();
+        var cam = PromptFlowStudio.Services.Neural3d.SplatCamera.Orbit(new System.Numerics.Vector3(0, 0.5f, 0), 30, 20, 3f, 55f, Runner.Width, Runner.Height);
+        var b = D.Benchmark(ras, scene, cam, 8);
+        _message = "🏁 복사 경로 " + Mb(b.CopyPathBytesCopied) + " → DirectPath " + Mb(b.ZeroCopyBytesCopied);
+        if (running) Runner.Start();
+    }
+
+    private async Task Probe()
+    {
+        _probing = true;
+        try
+        {
+            var caps = await E.ProbeAsync(force: true);
+            var hw = 0; foreach (var c in caps) if (c.Verified && c.Vendor != HwVendor.Software) hw++;
+            _message = E.FfmpegAvailable ? "🔍 하드웨어 인코더 " + hw + "종 실검증" : "ffmpeg 미탐지 — Null 싱크만 사용 가능";
+        }
+        catch (OperationCanceledException) { _message = "탐지 취소"; }
+        finally { _probing = false; }
+    }
+
+    private void ToggleEncode()
+    {
+        if (E.IsRunning) { E.Stop(); return; }
+        _lastOutput = _toFile ? Path.Combine(Path.GetTempPath(), "PromptFlowStudio", "hwenc", "farm_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture)
+            + (_codec == HwCodec.H264 ? ".mp4" : ".mkv")) : null;
+        var v = E.Start(new EncoderSessionOptions(Runner.Width, Runner.Height, HardwareAccelerationStudioRunner.TickHz, _vendor, _codec, 0, DirectPathFormat.Rgb24, _lastOutput));
+        if (v == HwVendor.Null) _lastOutput = null;
+        if (!Runner.IsRunning) Runner.Start();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(() => { Refresh(); StateHasChanged(); });
+
+    public void Dispose()
+    {
+        _timer?.Dispose();
+        Runner.OnChange -= OnServiceChanged;
+        E.OnChange -= OnServiceChanged;
+        D.OnChange -= OnServiceChanged;
+    }
+}

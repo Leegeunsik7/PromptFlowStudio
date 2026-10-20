@@ -1,0 +1,163 @@
+@inject MultiPlatformSafeZoneService SafeZones
+
+@* [PromptFlow Studio] 멀티 플랫폼 세이프존 오버레이 — 미리보기 영상 위에 선택 플랫폼(숏츠/릴스/틱톡)의 실제 UI(우측 반응 레일·하단 제목/계정/사운드)를
+   반투명 목업 + 위험영역 가이드로 겹쳐, 자막·뱃지가 실제로 어디에 번인될지 시각화한다. 마커 위치는 VideoMergeService 병합 Y-앵커(MultiPlatformSafeZoneService)와 동일.
+   순수 오버레이(pointer-events:none) — 아래 영상 컨트롤 방해 없음. Platform=None 이면 오버레이 생략(자식만 표시). *@
+
+<div class="szo-w">
+    @ChildContent
+
+    @if (Platform != SafePlatform.None)
+    {
+        <div class="szo-ov" aria-hidden="true" style="@AccentVar">
+            @* 위험영역: 상단 여백 + 하단 UI 밴드(안전 밴드 밖) *@
+            <div class="szo-danger szo-top" style="@($"height:{Pct(Zone.TopPct)}")"><span>상단 여백</span></div>
+            <div class="szo-danger szo-bot" style="@($"height:{Pct(1 - Zone.BottomPct)}")"><span>@BottomDangerLabel</span></div>
+            <div class="szo-danger szo-right"><span>반응 버튼</span></div>
+
+            @* 안전 밴드 외곽(초록 점선) *@
+            <div class="szo-safe" style="@($"top:{Pct(Zone.TopPct)}; bottom:{Pct(1 - Zone.BottomPct)}")"></div>
+
+            @* 실제 번인 위치 마커 — 병합 Y-앵커와 동일(뱃지=상단, 자막=하단) *@
+            <div class="szo-mark szo-mark-badge" style="@($"top:{Pct(BadgeTop)}")"><span>🏷️ 뱃지 위치</span></div>
+            <div class="szo-mark szo-mark-cap" style="@($"bottom:{Pct(CaptionBottom)}")"><span>💬 자막 위치</span></div>
+
+            @* 우측 반응 레일(플랫폼별) *@
+            <div class="szo-rail">
+                @foreach (var ic in Rail)
+                {
+                    <div class="szo-ic @(ic.Highlight ? "hl" : null) @(ic.Disc ? "disc" : null)">
+                        <span class="szo-gl">@ic.Glyph</span>
+                        @if (!string.IsNullOrEmpty(ic.Label)) { <small>@ic.Label</small> }
+                    </div>
+                }
+            </div>
+
+            @* 하단 제목·계정·사운드 목업 *@
+            <div class="szo-bottom">
+                <div class="szo-handle">@(string.IsNullOrWhiteSpace(Handle) ? "@내채널" : Handle)</div>
+                @if (!string.IsNullOrWhiteSpace(Caption))
+                {
+                    <div class="szo-cap">@Caption</div>
+                }
+                <div class="szo-sound"><span class="szo-note">🎵</span><span>@SoundLabel</span></div>
+            </div>
+
+            <div class="szo-badge">@Zone.Icon @Zone.Label · 안전 @Pct(Zone.TopPct)~@Pct(Zone.BottomPct)</div>
+        </div>
+    }
+</div>
+
+<style>
+    .szo-w { position: relative; display: block; line-height: 0; }
+    .szo-w > :not(.szo-ov) { display: block; width: 100%; }
+    .szo-ov { position: absolute; inset: 0; pointer-events: none; z-index: 4; font-family: var(--mono, system-ui); line-height: 1.2; border-radius: inherit; overflow: hidden; }
+
+    /* 위험영역(반투명 빨강 + 점선 라벨) */
+    .szo-danger { position: absolute; left: 0; right: 0; background: rgba(239,68,68,.14); }
+    .szo-danger span { position: absolute; left: 8px; font-size: 9px; font-weight: 800; color: #fff; background: rgba(239,68,68,.85); padding: 2px 7px; border-radius: 999px; }
+    .szo-top { top: 0; border-bottom: 1.5px dashed rgba(239,68,68,.7); } .szo-top span { top: 6px; }
+    .szo-bot { bottom: 0; border-top: 1.5px dashed rgba(239,68,68,.7); } .szo-bot span { bottom: 6px; }
+    .szo-right { top: 28%; bottom: 12%; left: auto; right: 0; width: 18%; background: rgba(239,68,68,.10); border-left: 1.5px dashed rgba(239,68,68,.55); }
+    .szo-right span { top: 50%; left: 50%; transform: translate(-50%,-50%); white-space: nowrap; }
+
+    /* 안전 밴드 외곽 */
+    .szo-safe { position: absolute; left: 2.5%; right: 20%; border: 1.5px solid rgba(16,185,129,.7); border-radius: 10px; box-shadow: 0 0 0 100vmax rgba(0,0,0,0) inset; }
+
+    /* 실제 번인 위치 마커(가로 라인) */
+    .szo-mark { position: absolute; left: 2.5%; right: 20%; height: 0; border-top: 2px dashed var(--szo-accent, #8b5cf6); }
+    .szo-mark span { position: absolute; right: 0; transform: translateY(-115%); font-size: 9px; font-weight: 800; color: #fff; background: var(--szo-accent, #8b5cf6); padding: 2px 7px; border-radius: 999px; white-space: nowrap; }
+    .szo-mark-cap span { transform: translateY(6%); }
+
+    /* 우측 반응 레일 */
+    .szo-rail { position: absolute; right: 3.5%; bottom: 13%; display: flex; flex-direction: column; align-items: center; gap: 6%; }
+    .szo-ic { display: flex; flex-direction: column; align-items: center; gap: 3px; color: #fff; filter: drop-shadow(0 1px 3px rgba(0,0,0,.7)); }
+    .szo-gl { width: 38px; height: 38px; border-radius: 50%; background: rgba(255,255,255,.16); display: flex; align-items: center; justify-content: center; font-size: 18px; }
+    .szo-ic.hl .szo-gl { background: var(--szo-accent, #ef4444); }
+    .szo-ic small { font-size: 9px; font-weight: 700; }
+    .szo-ic.disc .szo-gl { width: 34px; height: 34px; border-radius: 9px; background: rgba(0,0,0,.55); border: 2px solid rgba(255,255,255,.85); animation: szo-spin 3.5s linear infinite; }
+
+    /* 하단 목업 */
+    .szo-bottom { position: absolute; left: 4%; right: 20%; bottom: 4.5%; color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,.85); }
+    .szo-handle { font-size: 13px; font-weight: 900; margin-bottom: 5px; }
+    .szo-cap { font-size: 11.5px; font-weight: 600; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .szo-sound { display: flex; align-items: center; gap: 6px; margin-top: 7px; font-size: 10.5px; font-weight: 700; opacity: .95; overflow: hidden; white-space: nowrap; }
+    .szo-note { animation: szo-bob 1.4s ease-in-out infinite; }
+
+    .szo-badge { position: absolute; top: 8px; left: 8px; font-size: 10px; font-weight: 800; color: #fff; background: var(--szo-accent, #8b5cf6); padding: 4px 9px; border-radius: 999px; box-shadow: 0 4px 12px rgba(0,0,0,.4); }
+
+    @@keyframes szo-spin { to { transform: rotate(360deg); } }
+    @@keyframes szo-bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
+    @@media (prefers-reduced-motion: reduce) { .szo-ic.disc .szo-gl, .szo-note { animation: none; } }
+</style>
+
+@code {
+    /// <summary>세이프존 대상 플랫폼. None 이면 오버레이 생략.</summary>
+    [Parameter] public SafePlatform Platform { get; set; } = SafePlatform.None;
+    /// <summary>감쌀 미디어(보통 &lt;video&gt;).</summary>
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    /// <summary>목업 채널 핸들(기본 "@내채널").</summary>
+    [Parameter] public string? Handle { get; set; }
+    /// <summary>목업 제목/캡션(비면 숨김).</summary>
+    [Parameter] public string? Caption { get; set; }
+
+    private MultiPlatformSafeZoneService.SafeZone Zone => SafeZones.Get(Platform);
+    private double CaptionBottom => MultiPlatformSafeZoneService.CaptionBottomFraction(Platform);   // 자막 하단 마진(병합 Y-앵커와 동일)
+    private double BadgeTop => MultiPlatformSafeZoneService.BadgeTopFraction(Platform);              // 뱃지 상단 위치(병합 Y-앵커와 동일)
+
+    private static string Pct(double f) => (f * 100).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + "%";
+
+    private sealed record RailIcon(string Glyph, string? Label, bool Highlight = false, bool Disc = false);
+
+    private IReadOnlyList<RailIcon> Rail => Platform switch
+    {
+        SafePlatform.YouTubeShorts => new RailIcon[] { new("＋", "구독", Highlight: true), new("♥", "좋아요"), new("💬", "댓글"), new("↪", "공유"), new("⋯", null), new("🎵", null, Disc: true) },
+        SafePlatform.InstagramReels => new RailIcon[] { new("♥", "좋아요"), new("💬", "댓글"), new("↪", "공유"), new("🔖", null), new("⋯", null), new("🎵", null, Disc: true) },
+        SafePlatform.TikTok => new RailIcon[] { new("＋", "팔로우", Highlight: true), new("♥", "좋아요"), new("💬", "댓글"), new("🔖", "저장"), new("↪", "공유"), new("🎵", null, Disc: true) },
+        SafePlatform.NaverClip => new RailIcon[] { new("＋", "구독", Highlight: true), new("♥", "좋아요"), new("💬", "댓글"), new("↪", "공유"), new("🎵", null, Disc: true) },
+        SafePlatform.KarrotStory => new RailIcon[] { new("♥", "공감", Highlight: true), new("💬", "댓글"), new("↪", "공유") },
+        SafePlatform.Xiaohongshu => new RailIcon[] { new("♥", "좋아요", Highlight: true), new("🔖", "컬렉션"), new("💬", "댓글"), new("↪", "공유") },
+        SafePlatform.Pinterest => new RailIcon[] { new("📌", "저장", Highlight: true), new("↪", "공유"), new("⋯", null) },
+        SafePlatform.Chzzk => new RailIcon[] { new("＋", "구독", Highlight: true), new("♥", "좋아요"), new("💬", "댓글"), new("↪", "공유"), new("🎵", null, Disc: true) },
+        _ => Array.Empty<RailIcon>(),
+    };
+
+    private string BottomDangerLabel => Platform switch
+    {
+        SafePlatform.YouTubeShorts => "제목·사운드",
+        SafePlatform.InstagramReels => "계정명·캡션",
+        SafePlatform.TikTok => "계정·음악",
+        SafePlatform.NaverClip => "제목·출처",
+        SafePlatform.KarrotStory => "동네·계정·공감",
+        SafePlatform.Xiaohongshu => "노트 제목·계정",
+        SafePlatform.Pinterest => "핀 제목·저장",
+        SafePlatform.Chzzk => "스트리머·클립 제목",
+        _ => "하단 UI",
+    };
+
+    private string SoundLabel => Platform switch
+    {
+        SafePlatform.YouTubeShorts => "원본 오디오",
+        SafePlatform.InstagramReels => "오디오 - 원본",
+        SafePlatform.TikTok => "사용된 음악 · 원본 사운드",
+        SafePlatform.NaverClip => "오디오 · 원본",
+        SafePlatform.KarrotStory => "오디오",
+        SafePlatform.Xiaohongshu => "原声 · 원본 사운드",
+        SafePlatform.Pinterest => "오디오",
+        SafePlatform.Chzzk => "클립 사운드",
+        _ => "오디오",
+    };
+
+    private string AccentVar => "--szo-accent:" + Platform switch
+    {
+        SafePlatform.YouTubeShorts => "#ef4444",
+        SafePlatform.InstagramReels => "#d946ef",
+        SafePlatform.TikTok => "#22d3ee",
+        SafePlatform.NaverClip => "#22c55e",
+        SafePlatform.KarrotStory => "#f97316",
+        SafePlatform.Xiaohongshu => "#f43f5e",
+        SafePlatform.Pinterest => "#e11d48",
+        SafePlatform.Chzzk => "#06e6a8",
+        _ => "#8b5cf6",
+    } + ";";
+}

@@ -1,0 +1,1053 @@
+@page "/workspace"
+@using System.Globalization
+@using PromptFlowStudio.Services.AI
+@using PromptFlowStudio.Blazor.Components.Workflow
+@implements IDisposable
+@inject WanJobState State
+@inject ILocalMediaService Media
+@inject IMediaLibraryService Library
+@inject IWanConfigService Cfg
+@inject IVideoMergeService Merge
+@inject PromptDraftService Draft
+@inject PromptFlowStudio.Services.Platform.ErrorDialogService Errors
+@inject NavigationManager Nav
+@inject PromptFlowStudio.Services.AI.Wan.LiveStreamVirtualCamPipe VirtualCam
+@inject IJSRuntime JS
+@inject AiAudioDrivenLipSyncService LipAi
+@inject AiVoiceoverTtsService Tts
+@inject EpisodicStorySeriesBuilder SeriesBuilder
+
+@* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
+   상태는 WanJobState(싱글턴)에 있고, 이 컴포넌트는 OnChange 를 구독해 InvokeAsync(StateHasChanged)로만 갱신한다.
+   ⚠ 생성은 fire-and-forget(_ = State.StartAsync)로 시작 — 버튼 핸들러가 수 분간 블록되지 않게 한다. *@
+
+<PageTitle>PromptFlow Studio · 새 프로젝트</PageTitle>
+
+<div class="ws">
+    <header class="ws-head">
+        <div class="ws-navrow">
+            <button class="ws-back" @onclick='() => Nav.NavigateTo("")'>← 워크스페이스</button>
+            <button class="ws-back" @onclick='() => Nav.NavigateTo("storyboard")'>🎬 스토리보드(여러 컷) →</button>
+        </div>
+        <h1 class="ws-title">새 프로젝트 <span class="ws-title-g">텍스트 → 영상</span>
+            <span class="ws-accel @AccelClass" title="Wan 2.1 엔진 상태">⚡ WAN 2.1 · @AccelLabel</span></h1>
+        <p class="ws-sub">프롬프트를 입력하면 통의만상(Wan 2.1)이 5초 영상을 생성합니다.</p>
+    </header>
+
+    @if (!State.Enabled)
+    {
+        <div class="ws-warn">
+            ⚠ Wan API 키가 아직 구성되지 않았습니다.
+            <button class="ws-warn-link" @onclick='() => Nav.NavigateTo("settings")'>관리자 설정 › 영상(Wan)</button>
+            에서 API 키를 등록하면 <b>재시작 없이 즉시</b> 여기서 생성할 수 있습니다.
+        </div>
+    }
+
+    <section class="ws-grid">
+        @* ── ① 입력 ── *@
+        <div class="ws-card">
+            <div class="ws-card-h">
+                <span>① 프롬프트 입력</span>
+                @if (_imagePath is not null && _lastImagePath is not null) { <span class="ws-mode">🎯 첫·끝 프레임 보간(kf2v)</span> }
+                else if (_imagePath is not null) { <span class="ws-mode">🖼️ 이미지→영상(i2v)</span> }
+            </div>
+
+            @* ── 참조 이미지(선택) — 있으면 i2v 로 분기 · 드래그&드롭 + 클릭 ── *@
+            <div class="ws-drop @(_imagePreview is not null ? "has" : "")">
+                @if (_imagePreview is null)
+                {
+                    <InputFile class="ws-drop-input" OnChange="OnImagePicked"
+                               accept="image/png,image/jpeg,image/webp,image/bmp" disabled="@State.IsBusy" />
+                    <div class="ws-drop-hint">
+                        <span class="ws-drop-ic">🖼️</span>
+                        <span>참조 이미지 <b>드래그</b> 또는 <b>클릭</b>해서 업로드</span>
+                        <span class="ws-drop-sub">(선택) 이미지를 넣으면 <b>이미지→영상(i2v)</b>로 생성됩니다</span>
+                    </div>
+                }
+                else
+                {
+                    <img class="ws-thumb" src="@_imagePreview" alt="참조 이미지" />
+                    <div class="ws-thumb-meta">
+                        <span class="ws-thumb-name" title="@_imageName">@_imageName</span>
+                        <button class="ws-thumb-x" @onclick="ClearImage" disabled="@State.IsBusy" title="이미지 제거">✕</button>
+                    </div>
+                }
+            </div>
+
+            @* v16.5.0 🎯 끝 프레임(Last Frame) 슬롯 — 첫 프레임과 함께 넣으면 두 키프레임 보간으로 모션 동선을 고정 *@
+            @if (_imagePath is not null)
+            {
+                <div class="ws-drop @(_lastImagePreview is not null ? "has" : "")">
+                    @if (_lastImagePreview is null)
+                    {
+                        <InputFile class="ws-drop-input" OnChange="OnLastImagePicked"
+                                   accept="image/png,image/jpeg,image/webp,image/bmp" disabled="@State.IsBusy" />
+                        <div class="ws-drop-hint">
+                            <span class="ws-drop-ic">🏁</span>
+                            <span>끝 프레임(Last Frame) <b>드래그</b> 또는 <b>클릭</b></span>
+                            <span class="ws-drop-sub">(선택) 위 이미지=첫 프레임 · 이 이미지=끝 프레임으로 <b>보간 생성</b>됩니다</span>
+                        </div>
+                    }
+                    else
+                    {
+                        <img class="ws-thumb" src="@_lastImagePreview" alt="끝 프레임" />
+                        <div class="ws-thumb-meta">
+                            <span class="ws-thumb-name" title="@_lastImageName">🏁 @_lastImageName</span>
+                            <button class="ws-thumb-x" @onclick="ClearLastImage" disabled="@State.IsBusy" title="끝 프레임 제거">✕</button>
+                        </div>
+                    }
+                </div>
+            }
+            @if (_imgError is not null) { <div class="ws-imgerr">⚠ @_imgError</div> }
+
+            <textarea class="ws-ta" @bind="_prompt" @bind:event="oninput"
+                      placeholder="@(_imagePath is null ? "예) 노을 지는 해변을 천천히 걷는 골든리트리버, 시네마틱, 부드러운 카메라 팬" : "예) 카메라가 천천히 줌인, 머리카락이 바람에 날림 (i2v는 움직임 위주로 · 프롬프트 선택)")"
+                      maxlength="800" disabled="@State.IsBusy"></textarea>
+            <div class="ws-row">
+                <label class="ws-lbl">해상도
+                    <select class="ws-sel" @bind="_size" disabled="@State.IsBusy">
+                        <option value="1280*720">가로 1280×720 (16:9)</option>
+                        <option value="720*1280">세로 720×1280 (9:16)</option>
+                        <option value="960*960">정사각 960×960 (1:1)</option>
+                    </select>
+                </label>
+                <span class="ws-count">@(_prompt?.Length ?? 0)/800</span>
+            </div>
+            @* v15.6.0 🎥 Wan 2.1 시네마틱 카메라 & 그래픽 스타일 — 그룹 배타 결합(재클릭 0B) *@
+            <div class="ws-zen">
+                <div class="ws-zen-h">🎥 Wan 2.1 카메라 & 스타일 스튜디오</div>
+                @{ var camOn = WanCameraStyleStudio.ActiveIndex(_prompt, WanCameraStyleStudio.Cameras); var styOn = WanCameraStyleStudio.ActiveIndex(_prompt, WanCameraStyleStudio.Styles); }
+                <div class="ws-zen-l">카메라 모션</div>
+                <div class="ws-zen-g cam">
+                    @for (var i = 0; i < _zenCam.Length; i++)
+                    {
+                        var z = WanCameraStyleStudio.Cameras[i];
+                        <button class="ws-zen-chip @(camOn == i ? "on" : null)" @onclick="_zenCam[i]" disabled="@State.IsBusy" title="@z.Snippet" @key="z.Label"><span>@z.Icon</span>@z.Label</button>
+                    }
+                </div>
+                <div class="ws-zen-l">그래픽 스타일</div>
+                <div class="ws-zen-g sty">
+                    @for (var i = 0; i < _zenSty.Length; i++)
+                    {
+                        var z = WanCameraStyleStudio.Styles[i];
+                        <button class="ws-zen-chip @(styOn == i ? "on" : null)" @onclick="_zenSty[i]" disabled="@State.IsBusy" title="@z.Snippet" @key="z.Label"><span>@z.Icon</span>@z.Label</button>
+                    }
+                </div>
+            </div>
+            @* v5.6.5·v5.6.6: 생성 전 예상 첫 프레임 + 참조(i2v) 이미지 앵커 대조(정체성 드리프트 사전검증) *@
+            <FirstFramePreviewDeck Prompt="@_prompt" AnchorImageUrl="@_imagePreview" Size="@_size" CanStart="@CanStart" OnStartGenerate="Start" />
+            <div class="ws-actions">
+                @if (State.IsBusy)
+                {
+                    <button class="ws-btn ghost" @onclick="State.Cancel">■ 취소</button>
+                }
+                else
+                {
+                    <button class="ws-btn" disabled="@(!CanStart)" @onclick="Start">✨ 생성 시작</button>
+                }
+            </div>
+        </div>
+
+        @* ── ② 진행 / 결과 ── *@
+        <div class="ws-card">
+            <div class="ws-card-h">
+                <span>② 🎬 라이브 비디오 캔버스</span>
+                <span class="ws-badge @PhaseClass">@PhaseLabel</span>
+            </div>
+
+            @if (State.Phase == WanJobPhase.Idle)
+            {
+                <div class="ws-empty">
+                    <div class="ws-empty-ic">🎬</div>
+                    <div>왼쪽에 프롬프트를 입력하고 <b>생성 시작</b>을 누르세요.</div>
+                    <button class="ws-empty-card" @onclick='() => Nav.NavigateTo("storyboard")'>🪄 여러 컷을 한 번에 — 대본 자동 생성 →</button>
+                </div>
+            }
+            else if (State.Phase == WanJobPhase.Completed && State.VideoUrl is not null)
+            {
+                @* 로컬 성공 시 가상호스트 URL(디스크 직접 스트리밍), 실패 시 원격 URL — 어느 쪽이든 <video>가 바로 재생 *@
+                @if (IsPortrait && _safeZone)
+                {
+                    <div class="ws-video-wrap portrait">
+                        <ShortsSafeZone Caption="@_prompt">
+                            <video class="ws-video" src="@ShownVideoUrl" controls autoplay loop muted preload="auto"></video>
+                        </ShortsSafeZone>
+                    </div>
+                }
+                else if (IsPortrait)
+                {
+                    <div class="ws-video-wrap portrait">
+                        <video class="ws-video" src="@ShownVideoUrl" controls autoplay loop muted preload="auto"></video>
+                    </div>
+                }
+                else
+                {
+                    <video class="ws-video" src="@ShownVideoUrl" controls autoplay loop muted preload="auto"></video>
+                }
+                <div class="ws-done">
+                    @if (IsPortrait)
+                    {
+                        <label class="ws-sztog" title="유튜브 숏츠 UI 가림 영역 미리보기">
+                            <input type="checkbox" @bind="_safeZone" />
+                            <span>🛡️ 숏츠 UI 가이드</span>
+                        </label>
+                    }
+                    @if (State.IsLocal)
+                    {
+                        <span class="ws-src ok">💾 로컬 저장됨</span>
+                        <button class="ws-btn ghost sm" @onclick="ToggleReverse" disabled="@_reversing"
+                                title="FFmpeg -vf reverse — 재생성 과금 없이 모션 방향만 반전">@(IsShowingReversed ? "↩ 원본 보기" : "🔄 영상 반전")</button>
+                        @if (_reverseMsg is { Length: > 0 })
+                        {
+                            <span class="ws-hint">@_reverseMsg</span>
+                        }
+                        <button class="ws-btn ghost sm" @onclick="State.Reset">＋ 새로 만들기</button>
+                        <span class="ws-hint" title="@State.LocalPath">@ShortPath(State.LocalPath)</span>
+                        <label class="ws-sztog" title="@AudioSfxEngine.GenerateAudioPrompt(State.LastPrompt)">
+                            <input type="checkbox" @bind="_autoFoley" />
+                            <span>🔊 Auto-Foley</span>
+                        </label>
+                        @if (_foleyMsg is { Length: > 0 })
+                        {
+                            <span class="ws-hint">@_foleyMsg</span>
+                        }
+                    }
+                    else
+                    {
+                        <span class="ws-src warn">☁ 원격 재생(24h)</span>
+                        <a class="ws-btn sm" href="@State.RemoteUrl" target="_blank" rel="noopener">↗ 원본 열기</a>
+                        <button class="ws-btn ghost sm" @onclick="State.Reset">＋ 새로 만들기</button>
+                        <span class="ws-hint">※ 로컬 저장 실패로 원격 링크 재생 중 — 24시간 후 만료됩니다.</span>
+                    }
+                </div>
+                @if (_lipOn && State.IsLocal)
+                {
+                    <div class="ws-lip">
+                        <input class="ws-lip-in" @bind="_lipText" @bind:event="oninput" maxlength="200" disabled="@_lipBusy"
+                               placeholder="👄 나레이션 대사 — TTS 음성으로 합성해 입모양을 맞춥니다" />
+                        <button class="ws-btn sm" @onclick="RealignLipSyncAsync" disabled="@(_lipBusy || string.IsNullOrWhiteSpace(_lipText) || !LipAi.IsAvailable)"
+                                title="@(AiAudioDrivenLipSyncService.LabelOf(LipAi.PreferredBackend))">@(_lipBusy ? "⏳ 처리 중…" : "🔁 1-Click 오디오-립싱크 재정렬")</button>
+                        @if (_lipMsg is { Length: > 0 }) { <span class="ws-hint">@_lipMsg</span> }
+                        @if (_lipUrl is not null) { <video class="ws-lip-vid" src="@_lipUrl" controls preload="metadata"></video> }
+                    </div>
+                }
+            }
+            else if (State.Phase is WanJobPhase.Failed or WanJobPhase.Canceled)
+            {
+                <div class="ws-err">⚠ @(PromptFlowStudio.Services.Platform.ErrorDialogService.CleanMessage(State.Error ?? State.StatusText))</div>
+                <div class="ws-done">
+                    <button class="ws-btn ghost sm" @onclick="State.Reset">다시 시도</button>
+                    <button class="ws-btn ghost sm" @onclick='() => Errors.Show(State.Error ?? State.StatusText)'>🔎 해결 방법</button>
+                </div>
+            }
+            else
+            {
+                <div class="ws-prog">
+                    <div class="ws-bar"><div class="ws-bar-f" style="width:@(State.Percent)%"></div></div>
+                    <div class="ws-prog-t">@State.StatusText</div>
+                    <div class="ws-prog-m">
+                        <span>@State.Percent%</span>
+                        <span>경과 @($"{State.Elapsed.TotalSeconds:0}")초</span>
+                        @if (State.TaskId is not null)
+                        {
+                            <span class="ws-tid">task @Short(State.TaskId)</span>
+                        }
+                    </div>
+                </div>
+            }
+
+            @* v15.4.1 MMF 라이브 프레임 캔버스 — 파이프 시퀀스가 전진할 때만 그린다(최대 ~60FPS) *@
+            <div class="ws-live">
+                <canvas id="ws-live" class="ws-live-cv" width="128" height="128"></canvas>
+                <span class="ws-live-badge @(_liveSignal ? "on" : null)">@(_liveSignal ? "● LIVE · MMF" : "○ 프레임 신호 대기")</span>
+            </div>
+
+            @* v15.4.0 ⚙️ Wan 2.1 파라미터 튜너 · 🍼 아기 디테일 복원 스위치 · 📊 미니 텔레메트리 바 *@
+            <div class="ws-tune">
+                <div class="ws-tune-h">⚙️ Wan 2.1 파라미터 튜너 <button class="ws-more inl" @onclick="_canvas.Reset" disabled="@State.IsBusy">기본값</button></div>
+                <label class="ws-tune-r"><span>Inference Steps</span><b>@_canvas.Steps</b>
+                    <input type="range" min="@LiveVideoCanvasStudio.MinSteps" max="@LiveVideoCanvasStudio.MaxSteps" step="1" @bind="_canvas.Steps" @bind:event="oninput" disabled="@State.IsBusy" /></label>
+                <label class="ws-tune-r"><span>CFG Scale</span><b>@_canvas.CfgLabel</b>
+                    <input type="range" min="1" max="15" step="0.5" @bind="_canvas.CfgScale" @bind:event="oninput" @bind:culture="CultureInfo.InvariantCulture" disabled="@State.IsBusy" /></label>
+                <label class="ws-tune-r"><span>Motion Bucket</span><b>@_canvas.MotionBucket</b>
+                    <input type="range" min="@LiveVideoCanvasStudio.MinMotion" max="@LiveVideoCanvasStudio.MaxMotion" step="1" @bind="_canvas.MotionBucket" @bind:event="oninput" disabled="@State.IsBusy" /></label>
+                <div class="ws-tune-seed">
+                    <label class="ws-sztog"><input type="checkbox" @bind="_canvas.SeedPinned" disabled="@State.IsBusy" /><span>📌 Seed 핀</span></label>
+                    <input class="ws-sel ws-seed" type="number" min="0" @bind="_canvas.Seed" disabled="@(State.IsBusy || !_canvas.SeedPinned)" />
+                    <button class="ws-btn ghost sm" @onclick="RollSeed" disabled="@(State.IsBusy || !_canvas.SeedPinned)" title="새 시드">🎲</button>
+                </div>
+                <div class="ws-tune-h">🍼 아기 디테일 복원 스위치</div>
+                <div class="ws-tune-sw">
+                    <label class="ws-sztog"><input type="checkbox" @bind="_canvas.FaceSharpen" disabled="@State.IsBusy" /><span>👶 Baby Face Sharpener</span></label>
+                    <label class="ws-sztog"><input type="checkbox" @bind="_canvas.Interpolate60" disabled="@State.IsBusy" /><span>🎞️ 60FPS 모션 보간</span></label>
+                </div>
+                <div class="ws-tele" title="튜너 값은 로컬 CLI 엔진에 전달되며, 클라우드(DashScope)는 Seed 만 반영합니다.">
+                    <span class="ws-tele-l">📊</span>
+                    <div class="ws-tele-bar"><div class="ws-tele-f" style="width:@(State.Percent)%"></div></div>
+                    <span class="ws-tele-t">@_canvas.Summary</span>
+                </div>
+            </div>
+        </div>
+
+        @* ── ③ 퀵 위젯 레일 ── *@
+        <aside class="ws-rail">
+            <div class="ws-w">
+                <div class="ws-w-h">⚡ 프롬프트·모션 템플릿</div>
+                <div class="ws-chips">
+                    @foreach (var c in RailChips)
+                    {
+                        <button class="ws-chip" @onclick="() => AddChip(c.Snippet)" disabled="@State.IsBusy" title="@c.Snippet" @key="c.Snippet">
+                            <span>@c.Icon</span> @c.Label
+                        </button>
+                    }
+                </div>
+                <button class="ws-more" @onclick='() => Nav.NavigateTo("motion")'>더 많은 모션·카메라 →</button>
+
+                <div class="ws-baby">
+                    <div class="ws-baby-h">👶 아기 스튜디오 울티메이트 매트릭스</div>
+                    <div class="ws-baby-tabs">
+                        @for (var t = 0; t < BabyTabNames.Length; t++)
+                        {
+                            <button class="ws-baby-tab @(_babyTab == t ? "on" : null)" @onclick="_babyTabSel[t]" @key="BabyTabNames[t]">@BabyTabNames[t]</button>
+                        }
+                    </div>
+                    <div class="ws-chips">
+                        @{ var cat = BabyCatalog(_babyTab); var acts = _babyActs[_babyTab]; }
+                        @for (var i = 0; i < acts.Length; i++)
+                        {
+                            var b = cat[i];
+                            <button class="ws-chip ws-chip-baby @(_babyTab == 2 ? "mod" : null)" @onclick="acts[i]" disabled="@State.IsBusy" title="@b.Snippet" @key="b.Label">
+                                <span>@b.Icon</span> @b.Label
+                            </button>
+                        }
+                    </div>
+                    <div class="ws-baby-neg">
+                        <div class="ws-baby-neg-h">🛡️ 네거티브 (Wan 2.1)
+                            @if (_baby.GuardActive) { <span class="ws-baby-guard">얼굴 보호 ON</span> }
+                        </div>
+                        <textarea class="ws-ta ws-ta-neg" @bind="_baby.NegativePrompt" @bind:event="oninput" maxlength="500"
+                                  placeholder="피하고 싶은 요소(선택) — 아기 테마 클릭 시 얼굴 보호 문구가 자동 결합됩니다" disabled="@State.IsBusy"></textarea>
+                    </div>
+                    <div class="ws-emo">
+                        <div class="ws-baby-neg-h">👶 피사체 Identity 고정
+                            @if (_idLockOn && SelectedProfile is not null) { <span class="ws-baby-guard">🔒 @SelectedProfile.Name · 앵커 @(SelectedProfile.Anchors.Count)</span> }
+                        </div>
+                        <div class="ws-chips">
+                            <select class="ws-lip-in" @bind="_idProfileId" disabled="@State.IsBusy">
+                                <option value="">— 캐릭터 선택 —</option>
+                                @foreach (var cp in SeriesBuilder.Profiles) { <option value="@cp.Id">@cp.Name</option> }
+                            </select>
+                            <label class="ws-sztog"><input type="checkbox" @bind="_idLockOn" disabled="@(State.IsBusy || SelectedProfile is null)" /><span>고정 켜기</span></label>
+                            <button class="ws-chip" @onclick="() => _characterOpen = true" disabled="@State.IsBusy">👶 캐릭터 스튜디오</button>
+                        </div>
+                        @if (_idScoreText is not null) { <span class="ws-hint">@_idScoreText</span> }
+                    </div>
+                    @if (_characterOpen)
+                    {
+                        <CharacterStudioModal OnClose="CloseCharacterStudio" />
+                    }
+                    <div class="ws-emo">
+                        <label class="ws-sztog" title="@(LipAi.AiAvailable ? AiAudioDrivenLipSyncService.LabelOf(LipAi.PreferredBackend) : "AI 립싱크 엔진 미구성 — FFmpeg 프레임 보정(오디오 정렬)만 가능")">
+                            <input type="checkbox" @bind="_lipOn" />
+                            <span>👄 AI 정밀 립싱크 켜기</span>
+                        </label>
+                        <div class="ws-chips">
+                            @foreach (var ep in WorkspaceEmotions)
+                            {
+                                <button class="ws-chip @(_emotion == ep ? "on" : null)" disabled="@State.IsBusy" @key="ep"
+                                        @onclick="() => _emotion = _emotion == ep ? FacialEmotion.Neutral : ep">@FacialEmotionPuppeteerEngine.LabelOf(ep)</button>
+                            }
+                        </div>
+                        @if (_emotion != FacialEmotion.Neutral)
+                        {
+                            <label class="ws-emo-int">표정 강도 <b>@((_emotionIntensity * 100).ToString("0", CultureInfo.InvariantCulture))%</b>
+                                <input type="range" min="0.2" max="1" step="0.05" @bind="_emotionIntensity" @bind:event="oninput" disabled="@State.IsBusy" /></label>
+                            <span class="ws-baby-guard">얼굴 보호 ON · 표정만 변화</span>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="ws-w ws-gem">
+                <div class="ws-w-h">✨ 제미나이 AI 추천 스튜디오</div>
+                <button class="ws-gem-enh" @onclick="_geminiEnhance" disabled="@State.IsBusy" title="@GeminiRecommendationMatrix.QualityTokens">🪄 AI 문장 자동 강화</button>
+                <div class="ws-gem-h">🌟 제미나이 픽 프리셋</div>
+                <div class="ws-chips">
+                    @for (var i = 0; i < _geminiPick.Length; i++)
+                    {
+                        var g = GeminiRecommendationMatrix.Picks[i];
+                        <button class="ws-chip ws-chip-gem" @onclick="_geminiPick[i]" disabled="@State.IsBusy" title="@g.Snippet" @key="g.Label">
+                            <span>@g.Icon</span> @g.Label
+                        </button>
+                    }
+                </div>
+            </div>
+
+            <div class="ws-w">
+                <div class="ws-w-h">🕒 최근 미디어 <button class="ws-more inl" @onclick='() => Nav.NavigateTo("gallery")'>전체 갤러리</button></div>
+                @if (_recent.Count == 0)
+                {
+                    <div class="ws-w-empty">아직 생성된 영상이 없습니다.</div>
+                }
+                else
+                {
+                    <div class="ws-tiles">
+                        @foreach (var m in _recent)
+                        {
+                            @if (m.PosterUrl is not null)
+                            {
+                                <img class="ws-tile" src="@m.PosterUrl" alt="@m.Name" loading="lazy" @key="m.Path" />
+                            }
+                            else
+                            {
+                                <video class="ws-tile" src="@m.PlaybackUrl" muted preload="metadata" controls @key="m.Path"></video>
+                            }
+                        }
+                    </div>
+                }
+            </div>
+
+            <div class="ws-w">
+                <div class="ws-w-h">📊 API · 시스템</div>
+                <div class="ws-mon">
+                    <div class="ws-mon-r"><span>Wan API</span><span class="ws-dot @(Cfg.IsConfigured ? "ok" : "off")">@(Cfg.IsConfigured ? "● 연결됨" : "○ 미설정")</span></div>
+                    <div class="ws-mon-r"><span>FFmpeg 병합</span><span class="ws-dot @(Merge.IsAvailable ? "ok" : "off")">@(Merge.IsAvailable ? "● 감지됨" : "○ 없음")</span></div>
+                    <div class="ws-mon-r"><span>저장소 여유</span><span class="ws-mon-v">@FreeSpace</span></div>
+                </div>
+            </div>
+        </aside>
+    </section>
+
+    @* v15.9.0 멀티 컷 타임라인 — 퀵갤러리 클립을 드래그해 순서/트랜지션 지정 후 ffmpeg 병합(Fade=xfade 500ms · Cut=하드 컷). *@
+    <TimelineSequencer Clips="_recent" Busy="_timelineBusy" OnMerge="MergeTimelineAsync" />
+    @if (_timelineMsg is { Length: > 0 })
+    {
+        <div class="ws-hint" style="margin-top:6px">@_timelineMsg</div>
+    }
+</div>
+
+<style>
+    .ws { padding: 6px 8px 48px; width: 100%; box-sizing: border-box; }
+    .ws-head { margin-bottom: 18px; }
+    .ws-navrow { display: flex; gap: 14px; margin-bottom: 4px; }
+    .ws-back { font: 700 12px/1 var(--mono); color: var(--text-muted); background: none; border: none; cursor: pointer; padding: 0 0 10px; }
+    .ws-back:hover { color: var(--accent); }
+    .ws-title { font-size: 28px; font-weight: 900; letter-spacing: -.4px; color: var(--text-primary); margin: 0 0 6px; }
+    .ws-title-g { background: linear-gradient(90deg, var(--flow-violet), var(--flow-cyan)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .ws-sub { font-size: 13.5px; color: var(--text-secondary); margin: 0; }
+
+    .ws-warn { margin: 14px 0; padding: 12px 16px; border-radius: 12px; font-size: 12.5px; line-height: 1.6;
+        border: 1px solid color-mix(in srgb, #f5a623 45%, var(--line)); background: color-mix(in srgb, #f5a623 10%, var(--card)); color: var(--text-secondary); }
+    .ws-warn code { font: 600 11.5px var(--mono); color: var(--accent-2); }
+    .ws-warn-link { font: 700 12.5px inherit; color: var(--accent-2); background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline; }
+    .ws-warn-link:hover { color: var(--text-primary); }
+
+    /* v15.5.0 픽셀 정렬: 3칼럼을 같은 행 높이로 늘려(stretch) 상·하단 수평선 일치, 각 칼럼은 height:100% · min-height:0 */
+    .ws-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1.15fr) 300px; gap: 16px; margin-top: 16px; align-items: stretch; }
+    .ws-grid > .ws-card, .ws-grid > .ws-rail { height: 100%; min-height: 0; box-sizing: border-box; }
+    @@media (max-width: 1180px) { .ws-grid { grid-template-columns: 1fr 1fr; } .ws-rail { grid-column: 1 / -1; } }
+    @@media (max-width: 860px) { .ws-grid { grid-template-columns: 1fr; } }
+
+    .ws-card { border: 1px solid var(--line); border-radius: 18px; background: var(--card); padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+    .ws-card-h { display: flex; align-items: center; justify-content: space-between; font-size: 13.5px; font-weight: 800; color: var(--text-primary); }
+
+    .ws-ta { width: 100%; min-height: 160px; resize: vertical; border-radius: 12px; border: 1px solid var(--line); background: var(--card-2);
+        color: var(--text-primary); padding: 12px 14px; font-size: 13.5px; line-height: 1.6; font-family: inherit; }
+    .ws-ta:focus { outline: none; border-color: var(--accent); }
+    .ws-ta:disabled { opacity: .6; }
+
+    .ws-row { display: flex; align-items: end; justify-content: space-between; gap: 12px; }
+    .ws-lbl { font-size: 11.5px; color: var(--text-muted); display: flex; flex-direction: column; gap: 5px; }
+    .ws-sel { border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); padding: 8px 10px; font-size: 13px; }
+    .ws-count { font: 600 11px var(--mono); color: var(--text-muted); }
+
+    /* ── 참조 이미지 드롭존 ── */
+    .ws-mode { font: 700 10px var(--mono); color: var(--accent-2); border: 1px solid color-mix(in srgb, var(--flow-cyan) 45%, var(--line)); border-radius: 999px; padding: 3px 9px; }
+    .ws-drop { position: relative; border: 1.5px dashed var(--line); border-radius: 12px; background: var(--card-2); min-height: 92px; display: flex; align-items: center; justify-content: center; overflow: hidden; transition: border-color .15s, background .15s; }
+    .ws-drop:hover { border-color: var(--accent); background: color-mix(in srgb, var(--flow-violet) 6%, var(--card-2)); }
+    .ws-drop.has { border-style: solid; min-height: auto; padding: 10px; }
+    .ws-drop-input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+    .ws-drop-input:disabled { cursor: not-allowed; }
+    .ws-drop-hint { display: flex; flex-direction: column; align-items: center; gap: 3px; text-align: center; padding: 14px; pointer-events: none; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
+    .ws-drop-ic { font-size: 26px; opacity: .6; }
+    .ws-drop-hint b { color: var(--text-secondary); }
+    .ws-drop-sub { font-size: 11px; color: var(--text-muted); } .ws-drop-sub b { color: var(--accent-2); }
+    .ws-thumb { max-height: 168px; max-width: 100%; border-radius: 8px; display: block; }
+    .ws-thumb-meta { position: absolute; right: 8px; top: 8px; display: flex; align-items: center; gap: 8px; }
+    .ws-thumb-name { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 10.5px var(--mono); color: #fff; background: rgba(0,0,0,.55); padding: 3px 8px; border-radius: 999px; }
+    .ws-thumb-x { width: 26px; height: 26px; border-radius: 50%; border: none; background: rgba(0,0,0,.6); color: #fff; cursor: pointer; font-size: 12px; line-height: 1; }
+    .ws-thumb-x:hover:not(:disabled) { background: #ef4444; } .ws-thumb-x:disabled { opacity: .5; cursor: not-allowed; }
+    .ws-imgerr { font-size: 11.5px; color: #ef4444; }
+
+    .ws-actions { display: flex; gap: 10px; }
+    .ws-btn { font-size: 13.5px; font-weight: 800; padding: 11px 18px; border-radius: 12px; border: none; color: #fff; cursor: pointer;
+        background: linear-gradient(135deg, var(--flow-violet), var(--accent)); box-shadow: 0 8px 22px color-mix(in srgb, var(--flow-violet) 28%, transparent); text-decoration: none; }
+    .ws-btn:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
+    .ws-btn.sm { font-size: 12.5px; padding: 9px 14px; }
+    .ws-btn.ghost { background: var(--card-2); color: var(--text-secondary); border: 1px solid var(--line); box-shadow: none; }
+    .ws-btn.ghost:hover { border-color: var(--accent); color: var(--text-primary); }
+
+    .ws-badge { font: 700 10px/1 var(--mono); letter-spacing: .06em; border-radius: 999px; padding: 5px 10px; border: 1px dashed var(--line); color: var(--text-muted); }
+    .ws-badge.run { color: var(--accent-2); border-style: solid; border-color: color-mix(in srgb, var(--flow-cyan) 45%, var(--line)); }
+    .ws-badge.ok { color: #10b981; border-style: solid; border-color: color-mix(in srgb, #10b981 45%, var(--line)); }
+    .ws-badge.bad { color: #ef4444; border-style: solid; border-color: color-mix(in srgb, #ef4444 45%, var(--line)); }
+
+    .ws-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 8px;
+        min-height: 220px; color: var(--text-muted); font-size: 13px; line-height: 1.7; }
+    .ws-empty-ic { font-size: 44px; opacity: .5; }
+    .ws-empty b { color: var(--text-secondary); }
+    .ws-empty-card { margin-top: 6px; padding: 9px 16px; border-radius: 999px; cursor: pointer; font: 700 12px inherit; color: var(--accent-2);
+        background: color-mix(in srgb, var(--flow-cyan) 8%, var(--card-2)); border: 1px solid color-mix(in srgb, var(--flow-cyan) 30%, var(--line)); }
+    .ws-empty-card:hover { border-color: var(--accent-2); color: var(--text-primary); }
+
+    .ws-prog { display: flex; flex-direction: column; gap: 10px; min-height: 220px; justify-content: center; }
+    .ws-bar { height: 10px; border-radius: 999px; background: var(--card-2); border: 1px solid var(--line); overflow: hidden; }
+    .ws-bar-f { height: 100%; border-radius: 999px; transition: width .5s ease;
+        background: linear-gradient(90deg, var(--flow-violet), var(--flow-cyan), var(--flow-magenta)); background-size: 200% 100%; animation: ws-flow 2.4s linear infinite; }
+    .ws-prog-t { font-size: 13.5px; font-weight: 700; color: var(--text-primary); }
+    .ws-prog-m { display: flex; gap: 14px; font: 600 11px var(--mono); color: var(--text-muted); }
+    .ws-tid { opacity: .7; }
+
+    .ws-video { width: 100%; border-radius: 12px; background: #000; border: 1px solid var(--line); }
+    /* 세로(쇼츠) 결과 — 카드에서 과대 확대 방지(중앙 정렬 · 폭 캡) */
+    .ws-video-wrap.portrait { max-width: 300px; margin: 0 auto; }
+    .ws-video-wrap.portrait .ws-video { width: 100%; height: auto; }
+    .ws-sztog { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font: 700 11px var(--mono); color: var(--text-secondary); margin-right: auto; }
+    .ws-sztog input { accent-color: var(--flow-violet); }
+    .ws-done { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .ws-hint { font: 600 11px var(--mono); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; }
+    .ws-src { font: 700 11px var(--mono); border-radius: 999px; padding: 5px 10px; border: 1px solid var(--line); white-space: nowrap; }
+    .ws-src.ok { color: #10b981; border-color: color-mix(in srgb, #10b981 45%, var(--line)); }
+    .ws-src.warn { color: #f5a623; border-color: color-mix(in srgb, #f5a623 45%, var(--line)); }
+    .ws-err { padding: 14px 16px; border-radius: 12px; font-size: 13px; line-height: 1.6; min-height: 120px; display: flex; align-items: center;
+        border: 1px solid color-mix(in srgb, #ef4444 45%, var(--line)); background: color-mix(in srgb, #ef4444 10%, var(--card)); color: var(--text-secondary); }
+
+    /* ── 퀵 위젯 레일 ── */
+    .ws-rail { display: flex; flex-direction: column; gap: 14px; }
+    .ws-rail > .ws-w:last-child { flex: 1 1 auto; }   /* 마지막 위젯이 남은 높이를 채워 레일 하단선 = 카드 하단선 */
+    @@media (max-width: 1180px) and (min-width: 861px) { .ws-rail { flex-direction: row; align-items: stretch; } .ws-rail .ws-w { flex: 1; } }
+    .ws-w { border: 1px solid var(--line); border-radius: 16px; background: var(--card); padding: 14px; }
+    .ws-w-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; font-weight: 800; color: var(--text-primary); margin-bottom: 10px; }
+    .ws-w-empty { font-size: 11.5px; color: var(--text-muted); padding: 8px 2px; }
+    .ws-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .ws-chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 700; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; font-family: inherit; }
+    .ws-chip:hover:not(:disabled) { border-color: var(--flow-violet); color: var(--text-primary); }
+    .ws-chip:disabled { opacity: .5; cursor: not-allowed; }
+    .ws-baby { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); }
+    .ws-baby-h { font-size: 11.5px; font-weight: 800; color: var(--text-primary); margin-bottom: 8px; }
+    .ws-chip-baby { background: linear-gradient(135deg, rgba(244,114,182,.12), rgba(167,139,250,.12)); }
+    .ws-chip-baby.mod { background: linear-gradient(135deg, rgba(56,189,248,.12), rgba(167,139,250,.12)); }
+    .ws-baby-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+    .ws-baby-tab { flex: 1; font: 700 10.5px inherit; padding: 5px 4px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-muted); cursor: pointer; font-family: inherit; }
+    .ws-baby-tab.on { color: var(--text-primary); border-color: rgba(244,114,182,.6); background: rgba(244,114,182,.12); }
+    .ws-baby-neg { margin-top: 10px; }
+    .ws-baby-neg-h { display: flex; align-items: center; justify-content: space-between; font-size: 11px; font-weight: 800; color: var(--text-secondary); margin-bottom: 5px; }
+    .ws-emo { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+    .ws-emo .ws-chip.on { border-color: var(--flow-magenta); color: var(--flow-magenta); background: color-mix(in srgb, var(--flow-magenta) 12%, var(--card-2)); }
+    .ws-emo-int { display: flex; flex-direction: column; font-size: 11.5px; color: var(--text-secondary); }
+    .ws-emo-int b { color: var(--text-primary); }
+    .ws-emo-int input { accent-color: var(--flow-magenta); }
+    .ws-lip { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    .ws-lip-in { flex: 1; min-width: 220px; background: var(--card-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 9px; color: var(--text-primary); font-size: 12px; }
+    .ws-lip-vid { width: 100%; max-height: 260px; border-radius: 10px; background: #000; }
+    .ws-baby-guard { font: 700 9.5px var(--mono); color: #10b981; border: 1px solid color-mix(in srgb, #10b981 45%, var(--line)); border-radius: 999px; padding: 2px 7px; }
+    .ws-ta-neg { min-height: 64px; font-size: 11.5px; padding: 8px 10px; }
+    .ws-live { position: relative; border-radius: 12px; overflow: hidden; background: #000; border: 1px solid var(--line); aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center; }
+    .ws-live-cv { height: 100%; max-width: 100%; image-rendering: auto; }
+    .ws-live-badge { position: absolute; left: 8px; top: 8px; font: 700 10px var(--mono); color: var(--text-muted); background: rgba(0,0,0,.55); padding: 3px 8px; border-radius: 999px; }
+    .ws-live-badge.on { color: #ef4444; }
+    /* v15.6.0 다크 글래스모피즘 + 네온 액센트(테마 변수 기반 — 라이트 테마에서도 카드 대비 유지) */
+    .ws-card, .ws-w { background: color-mix(in srgb, var(--card) 82%, transparent); backdrop-filter: blur(14px) saturate(140%); -webkit-backdrop-filter: blur(14px) saturate(140%);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 10px 30px rgba(0,0,0,.22); transition: border-color .2s, box-shadow .2s; }
+    .ws-card:hover, .ws-w:hover { border-color: color-mix(in srgb, var(--flow-cyan) 35%, var(--line)); box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 0 18px color-mix(in srgb, var(--flow-cyan) 14%, transparent), 0 10px 30px rgba(0,0,0,.22); }
+    .ws-accel { display: inline-flex; align-items: center; vertical-align: middle; margin-left: 10px; font: 800 10px/1 var(--mono); letter-spacing: .06em; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .ws-accel.ready { color: #22d3ee; border-color: color-mix(in srgb, #22d3ee 55%, var(--line)); box-shadow: 0 0 12px color-mix(in srgb, #22d3ee 35%, transparent); }
+    .ws-accel.run { color: #a78bfa; border-color: color-mix(in srgb, #a78bfa 60%, var(--line)); box-shadow: 0 0 14px color-mix(in srgb, #a78bfa 45%, transparent); animation: ws-glow 1.6s ease-in-out infinite; }
+    @@keyframes ws-glow { 50% { box-shadow: 0 0 22px color-mix(in srgb, #a78bfa 65%, transparent); } }
+    .ws-zen { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 12px; border: 1px solid color-mix(in srgb, var(--flow-cyan) 25%, var(--line)); background: color-mix(in srgb, var(--card-2) 70%, transparent); }
+    .ws-zen-h { font-size: 12px; font-weight: 800; color: var(--text-primary); }
+    .ws-zen-l { font: 700 10px var(--mono); letter-spacing: .05em; color: var(--text-muted); }
+    .ws-zen-g { display: grid; gap: 6px; }
+    .ws-zen-g.cam { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .ws-zen-g.sty { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); }
+    .ws-zen-chip { display: flex; align-items: center; justify-content: center; gap: 5px; min-height: 30px; padding: 5px 8px; border-radius: 9px; border: 1px solid var(--line); background: var(--card-2);
+        color: var(--text-secondary); font: 700 11px inherit; font-family: inherit; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: border-color .15s, box-shadow .15s, color .15s; }
+    .ws-zen-chip:hover:not(:disabled) { color: var(--text-primary); border-color: color-mix(in srgb, var(--flow-cyan) 55%, var(--line)); }
+    .ws-zen-chip.on { color: var(--text-primary); border-color: var(--flow-cyan); box-shadow: 0 0 12px color-mix(in srgb, var(--flow-cyan) 45%, transparent), inset 0 0 8px color-mix(in srgb, var(--flow-cyan) 18%, transparent); }
+    .ws-zen-chip:disabled { opacity: .5; cursor: not-allowed; }
+    @@media (prefers-reduced-motion: reduce) { .ws-accel.run { animation: none; } }
+    .ws-tune { margin-top: auto; border-top: 1px dashed var(--line); padding-top: 14px; display: flex; flex-direction: column; gap: 12px; }
+    .ws-tune-h { display: flex; align-items: center; justify-content: space-between; min-height: 20px; font-size: 12px; font-weight: 800; color: var(--text-primary); }
+    .ws-tune-r { display: grid; grid-template-columns: minmax(0, 1fr) 44px; align-items: center; gap: 4px 10px; font-size: 11.5px; color: var(--text-secondary); }
+    .ws-tune-r b { font: 700 11px var(--mono); color: var(--accent-2); text-align: right; font-variant-numeric: tabular-nums; }
+    .ws-tune-r input[type=range] { grid-column: 1 / -1; width: 100%; margin: 0; accent-color: var(--flow-violet); }
+    .ws-tune-seed { display: grid; grid-template-columns: minmax(0, 1fr) 120px 36px; align-items: center; gap: 8px; }
+    .ws-tune-seed .ws-btn.sm { padding: 6px 0; text-align: center; }
+    .ws-seed { width: 120px; padding: 6px 8px; }
+    .ws-tune-sw { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; }
+    .ws-tune-sw .ws-sztog { margin-right: 0; padding: 7px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); }
+    .ws-tele { display: grid; grid-template-columns: 16px 64px minmax(0, 1fr); align-items: center; gap: 10px; padding: 8px 12px; border-radius: 10px; background: var(--card-2); border: 1px solid var(--line); }
+    .ws-tele-bar { width: 64px; height: 6px; border-radius: 999px; background: var(--card); overflow: hidden; }
+    .ws-tele-f { height: 100%; background: linear-gradient(90deg, var(--flow-violet), var(--flow-cyan)); transition: width .5s ease; }
+    .ws-tele-t { font: 600 10.5px var(--mono); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+    @@media (max-width: 860px) { .ws-tune-sw { grid-template-columns: 1fr; } }
+    .ws-gem { border-color: color-mix(in srgb, #60a5fa 35%, var(--line)); }
+    .ws-gem-enh { width: 100%; font: 800 12px inherit; font-family: inherit; padding: 9px 12px; border-radius: 10px; border: none; color: #fff; cursor: pointer;
+        background: linear-gradient(135deg, #4f8cff, #a78bfa, #f472b6); }
+    .ws-gem-enh:disabled { opacity: .45; cursor: not-allowed; }
+    .ws-gem-h { font-size: 11px; font-weight: 800; color: var(--text-secondary); margin: 10px 0 6px; }
+    .ws-chip-gem { background: linear-gradient(135deg, rgba(79,140,255,.12), rgba(244,114,182,.12)); }
+    .ws-more { margin-top: 10px; background: none; border: none; color: var(--accent-2); font: 700 11.5px inherit; cursor: pointer; padding: 0; }
+    .ws-more.inl { margin: 0; font-size: 10.5px; }
+    .ws-more:hover { text-decoration: underline; }
+    .ws-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .ws-tile { width: 100%; aspect-ratio: 16/9; object-fit: cover; border-radius: 8px; background: #000; border: 1px solid var(--line); }
+    .ws-mon { display: flex; flex-direction: column; gap: 8px; }
+    .ws-mon-r { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--text-secondary); }
+    .ws-dot { font: 700 11px var(--mono); } .ws-dot.ok { color: #10b981; } .ws-dot.off { color: var(--text-muted); }
+    .ws-mon-v { font: 700 11px var(--mono); color: var(--text-primary); }
+
+    @@keyframes ws-flow { to { background-position: 200% 0; } }
+    @@media (prefers-reduced-motion: reduce) { .ws-bar-f { animation: none; } }
+</style>
+
+@code {
+    private string _prompt = "";
+    private string _size = "1280*720";
+    private bool _safeZone = true;   // 숏츠 세이프존 오버레이(세로 결과일 때만 표시)
+
+    /// <summary>선택 해상도가 세로(쇼츠) 비율인지 — "가로*세로"에서 세로가 더 크면 true.</summary>
+    private bool IsPortrait
+    {
+        get { var p = _size.Split('*', 'x', 'X'); return p.Length == 2 && int.TryParse(p[0], out var w) && int.TryParse(p[1], out var h) && h > w; }
+    }
+
+    // ── 우측 레일(퀵 위젯) ──
+    private IReadOnlyList<MediaItem> _recent = Array.Empty<MediaItem>();
+    private static PromptChip[] RailChips => PromptPresets.Camera;
+    private string FreeSpace => MediaLibraryService.FormatBytes(Library.FreeSpaceBytes());
+    private void AddChip(string snippet)
+        => _prompt = string.IsNullOrWhiteSpace(_prompt) ? snippet : _prompt.TrimEnd().TrimEnd(',') + ", " + snippet;
+
+    // v15.2.0/v15.2.1 아기 스튜디오 매트릭스: 핸들러 델리게이트를 인스턴스당 1회만 만들어 렌더마다 클로저 생성 없음.
+    //   테마 클릭 → 정적 리터럴 참조 대입(0B) + 얼굴 보호 네거티브 CAS 결합, 모디파이어 클릭 → span 결합(결과 문자열 1회).
+    private static readonly string[] BabyTabNames = { "🍼 감성 성장", "🧚 몽환 동화", "🎥 모디파이어" };
+    private static PromptChip[] BabyCatalog(int tab) => tab switch
+    {
+        0 => BabyStudioMatrix.Growth,
+        1 => BabyStudioMatrix.Fantasy,
+        _ => BabyStudioMatrix.Modifiers,
+    };
+    private readonly BabyStudioSession _baby = new();
+    private int _babyTab;
+    private Action[][] _babyActs = { Array.Empty<Action>(), Array.Empty<Action>(), Array.Empty<Action>() };
+    private Action[] _babyTabSel = Array.Empty<Action>();
+    private void BuildBabyInjectors()
+    {
+        var tabs = new Action[BabyTabNames.Length];
+        var acts = new Action[BabyTabNames.Length][];
+        for (var t = 0; t < tabs.Length; t++)
+        {
+            var tab = t;
+            tabs[t] = () => _babyTab = tab;
+            var src = BabyCatalog(t);
+            var arr = new Action[src.Length];
+            for (var i = 0; i < arr.Length; i++)
+            {
+                var idx = i;
+                arr[i] = tab == 2
+                    ? () => _prompt = BabyStudioMatrix.AppendModifier(_prompt, idx)
+                    : () => { _prompt = _baby.ApplyTheme(src, idx, _prompt); _canvas.FaceSharpen = true; };
+            }
+            acts[t] = arr;
+        }
+        _babyTabSel = tabs;
+        _babyActs = acts;
+    }
+
+    // v15.4.0 라이브 캔버스 튜너: 값 필드만 갱신(클램프), 요약 문자열은 변경 후 첫 렌더에서만 생성.
+    private readonly LiveVideoCanvasStudio _canvas = new();
+    private void RollSeed() => _canvas.Seed = Random.Shared.Next();
+
+    // v15.6.0 Wan 2.1 카메라·스타일: 그룹 배타 결합 핸들러 1회 생성 · 가속 배지는 리터럴만.
+    private Action[] _zenCam = Array.Empty<Action>();
+    private Action[] _zenSty = Array.Empty<Action>();
+    private void BuildZenInjectors()
+    {
+        var cam = new Action[WanCameraStyleStudio.Cameras.Length];
+        for (var i = 0; i < cam.Length; i++) { var idx = i; cam[i] = () => _prompt = WanCameraStyleStudio.ApplyCamera(_prompt, idx); }
+        var sty = new Action[WanCameraStyleStudio.Styles.Length];
+        for (var i = 0; i < sty.Length; i++) { var idx = i; sty[i] = () => _prompt = WanCameraStyleStudio.ApplyStyle(_prompt, idx); }
+        _zenCam = cam;
+        _zenSty = sty;
+    }
+    private string AccelClass => !State.Enabled ? "off" : State.IsBusy ? "run" : "ready";
+    private string AccelLabel => !State.Enabled ? "OFFLINE" : State.IsBusy ? "RENDERING" : "READY";
+
+    // v15.3.0 제미나이 AI 추천: 강화(누적 1회)·픽(참조 교체) 핸들러도 인스턴스당 1회 생성.
+    private Action _geminiEnhance = static () => { };
+    private Action[] _geminiPick = Array.Empty<Action>();
+    private void BuildGeminiInjectors()
+    {
+        _geminiEnhance = () => _prompt = GeminiRecommendationMatrix.EnhancePromptWithGemini(_prompt);
+        var arr = new Action[GeminiRecommendationMatrix.Picks.Length];
+        for (var i = 0; i < arr.Length; i++)
+        {
+            var idx = i;
+            arr[i] = () => _prompt = GeminiRecommendationMatrix.InjectPick(idx, _prompt);
+        }
+        _geminiPick = arr;
+    }
+
+    private string? _alertedError;   // v16.3.1: 같은 실패로 팝업 반복 방지
+
+    // ── 참조 이미지(i2v) ──
+    private string? _imagePath;      // 백엔드 업로드용 로컬 경로(있으면 i2v)
+    private string? _imageName;      // 표시용 원본 파일명
+    private string? _imagePreview;   // 썸네일 src(가상호스트 URL)
+    private string? _imgError;
+
+    // ── v16.5.0 끝 프레임(Last Frame) — 첫 프레임과 함께면 kf2v 보간 ──
+    private string? _lastImagePath, _lastImageName, _lastImagePreview;
+
+    // ── v16.5.0 🔄 영상 반전(FFmpeg -vf reverse) — 반전본은 원본 LocalPath 단위로 캐시 · 토글 ──
+    private string? _reversedFor, _reversedUrl, _reverseMsg;
+    private bool _reversing, _showReversed;
+
+    // ── v16.22.0 피사체 Identity 고정 ──
+    private string _idProfileId = "";
+    private bool _idLockOn, _characterOpen;
+    private string? _idScoreText, _idScoredFor;
+
+    private CharacterProfile? SelectedProfile => SeriesBuilder.FindProfile(_idProfileId);
+
+    private CharacterLockSnapshot? IdentityLockOf()
+    {
+        if (SelectedProfile is not { } p) return null;
+        var probe = new StoryboardProject();
+        EpisodicStorySeriesBuilder.Propagate(probe, p);
+        return probe.CharacterLock;
+    }
+
+    private void CloseCharacterStudio()
+    {
+        _characterOpen = false;
+        if (SelectedProfile is null && SeriesBuilder.Profiles.Count > 0) _idProfileId = SeriesBuilder.Profiles[0].Id;
+    }
+
+    private async Task ScoreIdentityAsync(string videoPath)
+    {
+        try
+        {
+            if (SelectedProfile is not { HasFace: true } p) { _idScoreText = "정합성: 프로필 얼굴 특징 없음"; return; }
+            var s = await SeriesBuilder.Identity.ScoreAsync(p, videoPath, _mediaCts.Token);
+            _idScoreText = s.Verdict == IdentityVerdict.Unknown ? "정합성 측정 실패(ffmpeg 확인)"
+                : "👶 정합성 " + s.Confidence.ToString("0.0", CultureInfo.InvariantCulture) + "% · " + CharacterIdentityLockService.VerdictLabel(s.Verdict)
+                  + (s.Verdict == IdentityVerdict.Lost ? " — 재생성 권장" : "");
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("Workspace.IdentityScore", ex); _idScoreText = "정합성 측정 오류"; }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    // ── v16.20.0 AI 정밀 립싱크 & 미세 표정 ──
+    private static readonly FacialEmotion[] WorkspaceEmotions = { FacialEmotion.HappySmile, FacialEmotion.Curious, FacialEmotion.Surprised, FacialEmotion.Giggle, FacialEmotion.Pout };
+    private FacialEmotion _emotion;
+    private double _emotionIntensity = FacialEmotionPuppeteerEngine.DefaultIntensity;
+    private bool _lipOn, _lipBusy;
+    private string _lipText = "";
+    private string? _lipMsg, _lipUrl;
+
+    /// <summary>대사 TTS → 오케스트레이터(원격 API → LatentSync → FFmpeg 프레임 보정) · 결과는 별도 파일(원본 유지).</summary>
+    private async Task RealignLipSyncAsync()
+    {
+        if (_lipBusy || State.LocalPath is not { } src || string.IsNullOrWhiteSpace(_lipText)) return;
+        _lipBusy = true;
+        _lipUrl = null;
+        _lipMsg = "🎙️ 나레이션 합성 중…";
+        try
+        {
+            var ct = _mediaCts.Token;
+            var audio = await Tts.SynthesizeAsync(_lipText, NarrationTone.FairyTale, 1.0, TtsProvider.Auto, ct);
+            if (audio is null) { _lipMsg = "⚠ 나레이션 합성 실패(TTS 엔진/네트워크 확인)"; return; }
+            var dir = Path.GetDirectoryName(src) ?? Media.MediaRoot;
+            var output = Path.Combine(dir, Path.GetFileNameWithoutExtension(src) + "_lipsync.mp4");
+            var status = new Progress<string>(s => { _lipMsg = s; _ = InvokeAsync(StateHasChanged); });
+            var r = await LipAi.SyncAsync(new AudioLipSyncRequest(src, audio, output, _lipText + " " + (_prompt ?? ""), _emotion, _emotionIntensity), status, ct);
+            if (r.Ok && r.OutputPath is not null)
+            {
+                _lipUrl = Media.ToPlaybackUrl(r.OutputPath) + "?v=" + DateTime.Now.Ticks.ToString(CultureInfo.InvariantCulture);
+                _lipMsg = "✅ " + r.Message + " · 음소 " + r.Visemes.Count.ToString(CultureInfo.InvariantCulture) + "구간";
+            }
+            else _lipMsg = "⚠ " + r.Message;
+        }
+        catch (OperationCanceledException) { _lipMsg = "취소됨"; }
+        catch (Exception ex) { Program.Log("Workspace.LipSync", ex); _lipMsg = "⚠ 립싱크 실패: " + ex.Message; }
+        finally { _lipBusy = false; }
+    }
+    private bool IsShowingReversed => _showReversed && _reversedUrl is not null && string.Equals(_reversedFor, State.LocalPath, StringComparison.Ordinal);
+    private string? ShownVideoUrl => IsShowingReversed ? _reversedUrl : State.VideoUrl;
+
+    private async Task ToggleReverse()
+    {
+        if (_reversing || State.LocalPath is not { } src) return;
+        if (_reversedUrl is not null && string.Equals(_reversedFor, src, StringComparison.Ordinal)) { _showReversed = !_showReversed; return; }
+        _reversing = true;
+        _reverseMsg = "🔄 반전 중…";
+        try
+        {
+            var r = await VideoReverseService.ReverseAsync(src);
+            if (r.Ok && r.OutputPath is not null)
+            {
+                _reversedFor = src;
+                _reversedUrl = Media.ToPlaybackUrl(r.OutputPath);
+                _showReversed = true;
+                _reverseMsg = "✅ 반전 완료 · " + r.ElapsedMs.ToString(CultureInfo.InvariantCulture) + "ms";
+            }
+            else _reverseMsg = "⚠ " + r.Message;
+        }
+        finally { _reversing = false; }
+    }
+
+    // t2v 는 프롬프트 필수, i2v 는 이미지가 있으면 프롬프트 없이도 시작 가능.
+    private bool CanStart => State.Enabled && !State.IsBusy
+        && (!string.IsNullOrWhiteSpace(_prompt) || !string.IsNullOrWhiteSpace(_imagePath));
+
+    private void Start()
+    {
+        if (!CanStart) return;
+        // v16.20.0 미세 표정 퍼핏 — 표정 구문·정체성 유지·얼굴 보호 네거티브 비영속 주입(Neutral 은 원문 그대로).
+        // v16.22.0 피사체 Identity 고정 — 프로필 정체성/의상/스타일 구문(비영속) · 얼굴 사진 I2V(사용자 이미지 우선) · 프로필 시드(핀 우선).
+        var idLock = _idLockOn ? IdentityLockOf() : null;
+        var (lockedPrompt, lockedNeg) = idLock is null ? (_prompt, _baby.NegativePrompt) : EpisodicStorySeriesBuilder.ComposeScenePrompt(_prompt, _baby.NegativePrompt, idLock);
+        var emo = FacialEmotionPuppeteerEngine.Apply(lockedPrompt, lockedNeg, _emotion, _emotionIntensity);
+        var faceRef = idLock?.FaceImagePath is { } fp && File.Exists(fp) ? fp : null;
+        var req = new WanVideoRequest
+        {
+            Prompt = emo.Prompt,
+            Size = _size,
+            ImagePath = _imagePath ?? faceRef,   // null → t2v · 존재 → i2v(백엔드가 업로드→img_url 바인딩)
+            LastFramePath = _imagePath is null ? null : _lastImagePath,   // v16.5.0: 첫+끝 → kf2v 보간
+            NegativePrompt = emo.Negative,           // 비어 있으면 서비스가 필드 생략
+            Seed = _canvas.EffectiveSeed ?? (idLock is { Seed: > 0 } ? idLock.Seed : null),   // 핀 해제 시 프로필 시드 → 없으면 서버 랜덤
+            Tuning = _canvas.Snapshot(),             // 값 형식 스냅숏(0B)
+        };
+        _ = State.StartAsync(req);    // fire-and-forget — 진행은 OnChange 로 반영된다.
+    }
+
+    /// <summary>이미지 선택/드롭 — 원본을 미디어 폴더에 저장(백엔드 업로드용)하고 가상호스트 썸네일을 만든다.</summary>
+    private async Task OnImagePicked(InputFileChangeEventArgs e)
+    {
+        if (await SaveUploadAsync(e.File) is not { } savePath) return;
+        _imagePath = savePath;
+        _imageName = e.File.Name;
+        _imagePreview = Media.ToPlaybackUrl(savePath);   // base64 불필요 — 가상호스트에서 직접
+    }
+
+    /// <summary>v16.5.0: 끝 프레임 선택/드롭 — 첫 프레임과 같은 저장 경로 규칙.</summary>
+    private async Task OnLastImagePicked(InputFileChangeEventArgs e)
+    {
+        if (await SaveUploadAsync(e.File) is not { } savePath) return;
+        _lastImagePath = savePath;
+        _lastImageName = e.File.Name;
+        _lastImagePreview = Media.ToPlaybackUrl(savePath);
+    }
+
+    /// <summary>업로드 이미지를 미디어 루트의 _uploads 에 저장하고 경로를 돌려준다(실패 시 null + _imgError).</summary>
+    private async Task<string?> SaveUploadAsync(IBrowserFile? file)
+    {
+        if (file is null) return null;
+        _imgError = null;
+        const long maxSize = PromptFlowStudio.Services.Wan.WanApiService.MaxUploadImageBytes;   // v16.3.1: 32MB(고해상도 원본 허용)
+        if (file.Size > maxSize) { _imgError = "이미지가 너무 큽니다(최대 32MB)."; return null; }
+
+        try
+        {
+            // 원본을 미디어 루트의 _uploads 에 저장 → ImagePath. 미디어 루트는 가상호스트로 매핑돼 썸네일도 디스크 직접 재생.
+            var dir = Path.Combine(Media.MediaRoot, "_uploads");
+            Directory.CreateDirectory(dir);
+            var ext = Path.GetExtension(file.Name);
+            if (string.IsNullOrWhiteSpace(ext)) ext = ".png";
+            var savePath = Path.Combine(dir, $"{Guid.NewGuid():N}{ext}");
+
+            await using (var src = file.OpenReadStream(maxSize))
+            await using (var dst = new FileStream(savePath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous))
+                await src.CopyToAsync(dst);
+            return savePath;
+        }
+        catch (Exception ex) { _imgError = "이미지 로드 실패: " + ex.Message; return null; }
+    }
+
+    /// <summary>참조 이미지 제거(임시 파일 정리 · best-effort).</summary>
+    private void ClearImage()
+    {
+        try { if (!string.IsNullOrEmpty(_imagePath) && File.Exists(_imagePath)) File.Delete(_imagePath); } catch { /* 무시 */ }
+        _imagePath = null; _imageName = null; _imagePreview = null; _imgError = null;
+        ClearLastImage();   // v16.5.0: 첫 프레임이 없으면 끝 프레임도 무의미
+    }
+
+    /// <summary>v16.5.0: 끝 프레임 제거(임시 파일 정리 · best-effort).</summary>
+    private void ClearLastImage()
+    {
+        try { if (!string.IsNullOrEmpty(_lastImagePath) && File.Exists(_lastImagePath)) File.Delete(_lastImagePath); } catch { /* 무시 */ }
+        _lastImagePath = null; _lastImageName = null; _lastImagePreview = null;
+    }
+
+    // ── OnChange 구독: 상태 변화를 UI 로. 폴링 스레드에서 오므로 InvokeAsync 로 마샬링 ──
+    protected override void OnInitialized()
+    {
+        State.OnChange += OnStateChanged;
+        BuildBabyInjectors();
+        BuildGeminiInjectors();
+        BuildZenInjectors();
+        var d = Draft.Consume();   // 모션프리셋(/motion)에서 전달된 스니펫 흡수
+        if (!string.IsNullOrWhiteSpace(d)) _prompt = d;
+        _recent = Library.List(6);
+    }
+    public void Dispose()
+    {
+        State.OnChange -= OnStateChanged;
+        var cts = Interlocked.Exchange(ref _liveCts, null);
+        if (cts is not null) { cts.Cancel(); cts.Dispose(); }
+        _mediaCts.Cancel(); _mediaCts.Dispose();
+    }
+
+    // ── v15.9.0 Wan 2.1 Gap-Filler: Auto-Foley(무음 보완) + 멀티 컷 타임라인 병합(단일 컷 보완). 실패는 원본 유지(Graceful) ──
+    private readonly FfmpegAudioMuxer _muxer = new();
+    private readonly CancellationTokenSource _mediaCts = new();
+    private bool _autoFoley = true;
+    private string? _foleyDoneFor;
+    private string _foleyMsg = "", _timelineMsg = "";
+    private bool _timelineBusy;
+
+    private async Task RunAutoFoleyAsync(string videoPath, string? prompt)
+    {
+        try
+        {
+            _foleyMsg = "🔊 Auto-Foley 병합 중…";
+            await InvokeAsync(StateHasChanged);
+            var r = await AudioSfxEngine.AutoFoleyAsync(_muxer, videoPath, prompt, _mediaCts.Token);
+            _foleyMsg = r.Applied ? "🔊 오디오 트랙 병합 완료 · " + Path.GetFileName(r.OutputPath) : "🔇 " + r.Message;
+            if (r.Applied) _recent = Library.List(6);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (ObjectDisposedException) { /* 페이지 이탈 */ }
+        catch (Exception ex) { Program.Log("Workspace.AutoFoley", ex); }
+    }
+
+    private async Task MergeTimelineAsync(IReadOnlyList<TimelineSequencer.TimelineCut> cuts)
+    {
+        if (_timelineBusy || cuts.Count < 2) return;
+        _timelineBusy = true;
+        _timelineMsg = "⛓ 타임라인 병합 중…";
+        try
+        {
+            if (!Merge.IsAvailable) { _timelineMsg = "ffmpeg 미탐지 — 타임라인 병합을 건너뜁니다."; return; }
+            var paths = new string[cuts.Count];
+            var trans = new VideoTransition?[cuts.Count - 1];
+            for (var i = 0; i < cuts.Count; i++)
+            {
+                paths[i] = cuts[i].Path;
+                if (i > 0) trans[i - 1] = cuts[i].FadeIn ? new VideoTransition("fade", 500) : null;
+            }
+            var p = _size.Split('*', 'x', 'X');
+            var w = p.Length == 2 && int.TryParse(p[0], out var pw) ? pw : 1280;
+            var h = p.Length == 2 && int.TryParse(p[1], out var ph) ? ph : 720;
+            var dir = Path.GetDirectoryName(paths[0]) ?? Library.MediaRoot;
+            var outPath = Path.Combine(dir, "timeline_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture) + ".mp4");
+            var r = await Merge.MergeAsync(paths, outPath, w, h, ct: _mediaCts.Token, transitions: trans);
+            _timelineMsg = r.Ok ? "✅ 타임라인 병합 완료 · " + Path.GetFileName(outPath) : "⚠ " + r.Message;
+            if (r.Ok) _recent = Library.List(6);
+        }
+        catch (OperationCanceledException) { /* 페이지 이탈 */ }
+        catch (Exception ex) { Program.Log("Workspace.Timeline", ex); _timelineMsg = "⚠ 타임라인 병합 실패 — 원본 클립은 그대로 유지됩니다."; }
+        finally { _timelineBusy = false; }
+    }
+
+    // ── v15.4.1 MMF 라이브 캔버스: 16ms 틱 폴링 → 새 시퀀스만 JS 캔버스로 전달. 리더 복사는 0B, interop 마샬링은 프레임당 1회 ──
+    private LiveCanvasFrameReader? _live;
+    private CancellationTokenSource? _liveCts;
+    private bool _liveSignal;
+    private Func<Task>? _liveDraw;
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (!firstRender) return;
+        var live = _live = new LiveCanvasFrameReader(VirtualCam);
+        var draw = _liveDraw = () => JS.InvokeVoidAsync("pfsLiveCanvas.draw", "ws-live", live.Width, live.Height, live.Frame).AsTask();
+        var cts = _liveCts = new CancellationTokenSource();
+        _ = LiveLoopAsync(live, draw, cts.Token);
+    }
+
+    private async Task LiveLoopAsync(LiveCanvasFrameReader reader, Func<Task> draw, CancellationToken ct)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(16));
+            while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+            {
+                try
+                {
+                    if (!reader.TryPoll()) continue;
+                    await InvokeAsync(draw).ConfigureAwait(false);
+                    if (!_liveSignal) { _liveSignal = true; await InvokeAsync(StateHasChanged).ConfigureAwait(false); }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (JSDisconnectedException) { return; }
+                catch (ObjectDisposedException) { return; }
+                catch (Exception ex) { Program.Log("Workspace.LiveCanvas", ex); }
+            }
+        }
+        catch (OperationCanceledException) { /* 페이지 이탈 */ }
+    }
+    private void OnStateChanged()
+    {
+        // v16.3.1: 업로드/네트워크 실패는 1회 안내 팝업 + [다시 시도](동일 입력으로 재시작). 원문 XML 은 서비스 단에서 이미 정화.
+        if (State.Phase == WanJobPhase.Failed && State.Error is { } err && !ReferenceEquals(err, _alertedError)
+            && PromptFlowStudio.Services.Platform.ErrorDialogService.IsUploadOrNetworkFailure(err))
+        {
+            _alertedError = err;
+            Errors.Show(err, () => { State.Reset(); Start(); });
+        }
+        if (State.Phase == WanJobPhase.Completed) _recent = Library.List(6);   // 새 결과를 퀵갤러리에 반영
+        // v16.22.0 고정 캐릭터 정합성 — 완료 영상 1회 측정(fire-and-forget · 내부 예외 격리).
+        if (State.Phase == WanJobPhase.Completed && _idLockOn && State.IsLocal && State.LocalPath is { } idp && !string.Equals(_idScoredFor, idp, StringComparison.Ordinal))
+        {
+            _idScoredFor = idp;
+            _ = ScoreIdentityAsync(idp);
+        }
+        else _foleyMsg = "";
+        // v15.9.0: 로컬 저장 완료 영상 1회만 Auto-Foley(fire-and-forget · 내부 예외 격리).
+        if (State.Phase == WanJobPhase.Completed && _autoFoley && State.IsLocal && State.LocalPath is { } lp && !string.Equals(_foleyDoneFor, lp, StringComparison.Ordinal))
+        {
+            _foleyDoneFor = lp;
+            _ = RunAutoFoleyAsync(lp, State.LastPrompt);
+        }
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private string PhaseLabel => State.Phase switch
+    {
+        WanJobPhase.Submitting => "제출 중",
+        WanJobPhase.Queued     => "대기열",
+        WanJobPhase.Rendering  => "렌더링",
+        WanJobPhase.Downloading => "다운로드",
+        WanJobPhase.Completed  => "완료",
+        WanJobPhase.Failed     => "실패",
+        WanJobPhase.Canceled   => "취소됨",
+        _                      => "대기",
+    };
+
+    private string PhaseClass => State.Phase switch
+    {
+        WanJobPhase.Completed => "ok",
+        WanJobPhase.Failed or WanJobPhase.Canceled => "bad",
+        WanJobPhase.Idle => "",
+        _ => "run",
+    };
+
+    private static string Short(string id) => id.Length <= 10 ? id : id[..8] + "…";
+
+    private static string ShortPath(string? p)
+        => string.IsNullOrEmpty(p) ? "" : (p.Length <= 48 ? p : "…" + p[^46..]);
+}

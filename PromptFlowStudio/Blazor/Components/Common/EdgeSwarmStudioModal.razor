@@ -1,0 +1,355 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Edge
+@implements IDisposable
+@inject EdgeSwarmStudioRunner Runner
+
+@*
+    [PromptFlow Studio v16.64.0] 🌐 AI 에지 스웜 & 글로벌 메시 스튜디오 — 스웜/메시 토폴로지(경로·백업·링크 이용률) · 메시 레이턴시 히트맵(RTT) ·
+    노드 침묵/링크 단절 주입(무단절 우회) · 플로우 ABR · 온디바이스 AI 에이전트(정제·장면 그래프·캐릭터 일관성) 토글.
+*@
+
+<div class="esw-scrim" @onclick="Close">
+    <div class="esw-modal" @onclick:stopPropagation="true">
+        <div class="esw-h">
+            <div>
+                <div class="esw-title">🌐 AI 에지 스웜 &amp; 글로벌 메시 스튜디오</div>
+                <div class="esw-sub"><b>데스크톱 · 모바일 · 에지 PoP</b>를 P2P 스웜으로 묶어 렌더/추론/인코드 부하를 자율 분배하고,
+                    <b>서브프레임 컷스루 메시</b>로 시청자까지 초저지연 전송합니다. AI 정제는 <b>클라우드 없이 온디바이스</b>로 수행합니다.</div>
+            </div>
+            <button class="esw-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="esw-bar">
+            <span class="esw-chip @(Runner.IsRunning ? "ok" : null)">@(Runner.IsRunning ? "● 라이브" : "○ 정지") · #@(Runner.FrameSeq)</span>
+            <span class="esw-chip @(L.Delivered ? "ok" : "hot")">E2E @(F1(L.LatencyMs))ms · 저장후전달 @(F1(L.StoreForwardMs))ms · @(L.Hops)홉</span>
+            <span class="esw-chip">ABR @(L.BitrateKbps)kbps · 조각 @(L.Fragments) · 손실 @(L.Lost)</span>
+            <span class="esw-chip">스웜 배정 @(S.Dispatched) · 완료 @(S.CompletedTotal) · 대기 @(S.PendingTasks) · 재큐 @(S.Requeued)</span>
+            <span class="esw-chip @(M.SeamlessSwitches > 0 ? "ok" : null)">무단절 전환 @(M.SeamlessSwitches) · 트랜스파일 @(M.Transpiles)</span>
+            <span class="esw-chip ok">☁ 클라우드 호출 @(A.CloudCalls)</span>
+        </div>
+
+        <div class="esw-main">
+            <div class="esw-col">
+                <div class="esw-card">
+                    <div class="esw-row esw-between">
+                        <span class="esw-sec">🗺 스웜 · 메시 토폴로지</span>
+                        <span class="esw-row">
+                            <button class="esw-btn @(Runner.IsRunning ? "on" : null)" @onclick="Toggle">@(Runner.IsRunning ? "⏸ 정지" : "▶ 라이브")</button>
+                            <button class="esw-btn sm" @onclick="Step">⏭ 1틱</button>
+                        </span>
+                    </div>
+                    <svg class="esw-map" viewBox="0 0 400 240">
+                        @for (var a = 0; a < M.NodeCount; a++)
+                        {
+                            for (var b = a + 1; b < M.NodeCount; b++)
+                            {
+                                if (!M.HasLink(a, b)) continue;
+                                var (x1, y1) = P(a); var (x2, y2) = P(b);
+                                var u = Math.Max(M.LinkUtilization(a, b), M.LinkUtilization(b, a));
+                                <line x1="@F0(x1)" y1="@F0(y1)" x2="@F0(x2)" y2="@F0(y2)" class="esw-link @(OnPath(a, b, _path, _pathLen) ? "path" : OnPath(a, b, _backup, _backupLen) ? "bk" : null)"
+                                      stroke="@(UtilColor(u))" />
+                            }
+                        }
+                        @for (var n = 0; n < M.NodeCount; n++)
+                        {
+                            var (x, y) = P(n);
+                            <g>
+                                <circle cx="@F0(x)" cy="@F0(y)" r="@(M.RoleOf(n) == MeshRole.Viewer ? 9 : 11)" class="esw-node @(M.IsAlive(n) ? null : "dead") r@((int)M.RoleOf(n))" />
+                                <text x="@F0(x)" y="@F0(y + 22)" class="esw-node-t">@(Short(M.NameOf(n)))</text>
+                            </g>
+                        }
+                    </svg>
+                    <div class="esw-legend"><span class="p">━ 1차 경로</span><span class="b">┅ 백업(노드 분리)</span><span>링크 색 = 이용률</span><span>✖ 이탈 노드</span></div>
+                    <div class="esw-row">
+                        <span class="esw-lbl">링크 단절</span>
+                        <select class="esw-sel" @bind="_cutKey">
+                            @for (var a = 0; a < M.NodeCount; a++)
+                                for (var b = a + 1; b < M.NodeCount; b++)
+                                    if (M.HasLink(a, b))
+                                    {
+                                        <option value="@(a + "-" + b)">@(Short(M.NameOf(a))) ↔ @(Short(M.NameOf(b)))</option>
+                                    }
+                        </select>
+                        <button class="esw-btn sm hot" @onclick="CutLink">✂ 단절</button>
+                        <span class="esw-lbl">혼잡</span>
+                        <button class="esw-btn sm" @onclick="Congest">📉 1차 링크 용량 1/20</button>
+                    </div>
+                </div>
+
+                <div class="esw-card">
+                    <div class="esw-sec">🔥 메시 레이턴시 히트맵 (측정 RTT ms)</div>
+                    <table class="esw-heat">
+                        <thead><tr><th></th>@for (var b = 0; b < M.NodeCount; b++) { <th>@(Abbr(M.NameOf(b)))</th> }</tr></thead>
+                        <tbody>
+                            @for (var a = 0; a < M.NodeCount; a++)
+                            {
+                                <tr>
+                                    <th>@(Abbr(M.NameOf(a)))</th>
+                                    @for (var b = 0; b < M.NodeCount; b++)
+                                    {
+                                        var rtt = M.MeasuredRttMs(a, b);
+                                        <td style="background:@(double.IsNaN(rtt) ? "transparent" : HeatColor(rtt))">@(double.IsNaN(rtt) ? "" : F0((float)rtt))</td>
+                                    }
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                    <div class="esw-sec">📈 E2E 지연 이력</div>
+                    <svg class="esw-spark" viewBox="0 0 240 40" preserveAspectRatio="none"><polyline points="@_spark" /></svg>
+                </div>
+            </div>
+
+            <div class="esw-col">
+                <div class="esw-card">
+                    <div class="esw-sec">🐝 스웜 노드 (SWR1 하트비트 · SIMD 배정)</div>
+                    <table class="esw-tbl">
+                        <thead><tr><th>노드</th><th>상태</th><th>몫</th><th>큐</th><th>완료</th><th>배터리</th><th>열</th><th></th></tr></thead>
+                        <tbody>
+                            @foreach (var n in _nodes)
+                            {
+                                var id = n.Id;
+                                <tr class="@(n.Online ? null : "off")">
+                                    <td>@(RoleIcon(n.Role)) @n.Name</td>
+                                    <td>@(n.Online ? Runner.IsSilenced(n.Id) ? "🔇 침묵" : "● 온라인" : "✖ 이탈")</td>
+                                    <td><div class="esw-mbar"><i style="width:@(Pc(n.Share))"></i></div></td>
+                                    <td>@n.Queue</td>
+                                    <td>@n.Completed</td>
+                                    <td>@(Pc(n.Battery))</td>
+                                    <td>@(Pc(n.Thermal))</td>
+                                    <td><button class="esw-btn sm @(Runner.IsSilenced(id) ? "on" : null)" @onclick="() => Runner.Silence(id, !Runner.IsSilenced(id))">@(Runner.IsSilenced(id) ? "🔊" : "🔇")</button></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                    <div class="esw-note">배정 @(F1((float)S.ScheduleMicros))μs · 하트비트 @(S.Heartbeats) · 불량 @(S.BadPackets) · 이탈 @(S.Evicted) — 침묵 1.5s 후 이탈 · 작업 재큐 · 메시 우회</div>
+                </div>
+
+                <div class="esw-card">
+                    <div class="esw-sec">📡 미디어 플로우 (ABR)</div>
+                    @foreach (var f in _flows)
+                    {
+                        <div class="esw-flow">
+                            <b>@(Short(M.NameOf(f.Source))) → @(Short(M.NameOf(f.Dest)))</b>
+                            <span>@(f.BitrateKbps)kbps (래더 @(f.Rung + 1)/@(RealtimeGlobalMediaMeshRouter.Ladder.Length))</span>
+                            <span>경로 @(F1((float)f.PathLatencyMs))ms · 병목 @(F1((float)f.PathBandwidthMbps))Mbps · @(f.Hops)홉</span>
+                            <span>@(f.HasBackup ? "🛟 백업 준비" : "⚠ 백업 없음") · 우회 @(f.Reroutes) · 손실 @(f.Lost)</span>
+                        </div>
+                    }
+                </div>
+
+                <div class="esw-card">
+                    <div class="esw-row esw-between">
+                        <span class="esw-sec">🤖 온디바이스 AI 에이전트</span>
+                        <label class="esw-tog"><input type="checkbox" checked="@A.Enabled" @onchange="e => A.Enabled = e.Value is true" /> 온디바이스 추론 @(A.Enabled ? "ON" : "OFF")</label>
+                    </div>
+                    <div class="esw-note">백엔드 <b>@(A.Backend)</b> · DirectML @(A.DirectMlCapable ? "가용" : "불가") · 증류 @(A.DistillSteps) · 고속 점수 @(F1((float)A.FastScoreMicros))μs</div>
+                    <textarea class="esw-in" rows="3" @bind="_prompt"></textarea>
+                    <input class="esw-in" @bind="_chars" placeholder="캐릭터: 하린=빨간 코트, 도윤" />
+                    <button class="esw-btn on" @onclick="RunAgent">⚙ 로컬 정제 · 장면 그래프 분석</button>
+                    @if (A.Last is { } r)
+                    {
+                        <div class="esw-note">@(r.OnDevice ? "온디바이스" : "우회") · @(F1((float)r.Millis))ms · 객체 @r.Entities · 관계 @r.Relations · 이벤트 @r.Events · 이슈 @(r.Issues)(보정 @(r.AutoFixed))
+                            · 품질 @(Pc(r.QualityBefore)) → @(Pc(r.QualityAfter)) · 교사 @(F2(r.TeacherAcceptance)) / 학생 @(F2(r.StudentScore))</div>
+                        <div class="esw-out">@r.Refined</div>
+                        @foreach (var c in r.Characters)
+                        {
+                            <div class="esw-char"><i style="background:@c.PaletteHex"></i><b>@c.Name</b><em>@c.LockToken</em><span>@(c.Look ?? "")</span></div>
+                        }
+                    }
+                    @if (_consistency is not null)
+                    {
+                        <div class="esw-note">@_consistency</div>
+                    }
+                </div>
+                @if (_message is not null)
+                {
+                    <div class="esw-note">@_message</div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .esw-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 20px; }
+    .esw-modal { width: min(1560px, 97vw); max-height: 94vh; display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .esw-h { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); background: linear-gradient(120deg, color-mix(in srgb, #3b82f6 18%, var(--card)), color-mix(in srgb, #10b981 14%, var(--card))); }
+    .esw-title { font-size: 17px; font-weight: 900; color: var(--text-primary); }
+    .esw-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
+    .esw-sub b { color: var(--text-primary); }
+    .esw-x { background: none; border: none; color: var(--text-muted); font-size: 18px; cursor: pointer; border-radius: 8px; }
+    .esw-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-bottom: 1px solid var(--line); }
+    .esw-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
+    .esw-chip.ok { color: #22c55e; border-color: #22c55e; }
+    .esw-chip.hot { color: #f97316; border-color: #f97316; }
+    .esw-main { display: grid; grid-template-columns: 1.2fr 1fr; gap: 14px; padding: 14px 20px; min-height: 0; flex: 1; overflow-y: auto; }
+    .esw-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .esw-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .esw-sec { font-weight: 800; font-size: 13px; color: var(--text-primary); }
+    .esw-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .esw-between { justify-content: space-between; }
+    .esw-btn { font-size: 12px; font-weight: 700; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); cursor: pointer; }
+    .esw-btn.on { background: color-mix(in srgb, #3b82f6 22%, transparent); border-color: #3b82f6; }
+    .esw-btn.hot { background: color-mix(in srgb, #ef4444 20%, transparent); border-color: #ef4444; }
+    .esw-btn.sm { font-size: 11px; padding: 3px 8px; }
+    .esw-sel, .esw-in { font-size: 12px; padding: 4px 6px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); }
+    .esw-in { width: 100%; resize: vertical; }
+    .esw-lbl { font-size: 11px; color: var(--text-muted); }
+    .esw-map { width: 100%; aspect-ratio: 5 / 3; background: color-mix(in srgb, #0f172a 60%, transparent); border-radius: 10px; border: 1px solid var(--line); }
+    .esw-link { stroke-width: 2; stroke-opacity: .55; }
+    .esw-link.path { stroke-width: 5; stroke-opacity: 1; stroke-dasharray: 8 4; animation: esw-flow .8s linear infinite; }
+    .esw-link.bk { stroke-width: 3; stroke-opacity: .9; stroke-dasharray: 2 4; }
+    @@keyframes esw-flow { to { stroke-dashoffset: -12; } }
+    .esw-node { fill: var(--card); stroke: #3b82f6; stroke-width: 2.5; }
+    .esw-node.r1 { stroke: #a855f7; } .esw-node.r2 { stroke: #10b981; } .esw-node.r3 { stroke: #eab308; } .esw-node.r4 { stroke: #f472b6; }
+    .esw-node.dead { stroke: #ef4444; fill: color-mix(in srgb, #ef4444 30%, var(--card)); stroke-dasharray: 3 2; }
+    .esw-node-t { fill: var(--text-secondary); font-size: 9px; font-weight: 700; text-anchor: middle; }
+    .esw-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 10.5px; color: var(--text-muted); }
+    .esw-legend .p { color: #22c55e; } .esw-legend .b { color: #eab308; }
+    .esw-heat { border-collapse: collapse; font: 10px var(--mono); width: 100%; }
+    .esw-heat th { color: var(--text-muted); font-weight: 700; padding: 2px 3px; }
+    .esw-heat td { text-align: center; padding: 3px 2px; color: #0b1020; border: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }
+    .esw-spark { width: 100%; height: 40px; background: color-mix(in srgb, #0f172a 50%, transparent); border-radius: 6px; }
+    .esw-spark polyline { fill: none; stroke: #22c55e; stroke-width: 1.5; }
+    .esw-tbl { width: 100%; border-collapse: collapse; font-size: 11px; }
+    .esw-tbl th, .esw-tbl td { padding: 3px 5px; border-bottom: 1px solid var(--line); text-align: left; color: var(--text-secondary); }
+    .esw-tbl th { color: var(--text-muted); font-weight: 700; }
+    .esw-tbl tr.off td { opacity: .5; }
+    .esw-mbar { height: 6px; min-width: 50px; border-radius: 3px; background: color-mix(in srgb, var(--line) 70%, transparent); overflow: hidden; }
+    .esw-mbar i { display: block; height: 100%; background: linear-gradient(90deg, #3b82f6, #10b981); }
+    .esw-note { font-size: 11px; color: var(--text-muted); }
+    .esw-note b { color: var(--text-primary); }
+    .esw-flow { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--text-secondary); border-left: 3px solid #3b82f6; padding-left: 8px; }
+    .esw-flow b { color: var(--text-primary); }
+    .esw-tog { font-size: 11px; color: var(--text-secondary); display: flex; gap: 4px; align-items: center; }
+    .esw-out { font-size: 11px; color: #67e8f9; background: color-mix(in srgb, #06b6d4 10%, transparent); border-radius: 8px; padding: 6px 8px; max-height: 110px; overflow-y: auto; }
+    .esw-char { display: flex; gap: 8px; align-items: center; font-size: 11px; color: var(--text-secondary); }
+    .esw-char i { width: 14px; height: 14px; border-radius: 4px; display: inline-block; }
+    .esw-char em { font-style: normal; font-family: var(--mono); color: #c4b5fd; font-size: 10.5px; }
+    @@media (max-width: 1200px) { .esw-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private readonly int[] _path = new int[RealtimeGlobalMediaMeshRouter.MaxNodes], _backup = new int[RealtimeGlobalMediaMeshRouter.MaxNodes];
+    private readonly float[] _hist = new float[120];
+    private int _pathLen, _backupLen;
+    private SwarmNodeStatus[] _nodes = Array.Empty<SwarmNodeStatus>();
+    private MeshFlowStatus[] _flows = Array.Empty<MeshFlowStatus>();
+    private string _spark = "";
+    private string _prompt = "빨간 공이 나무 탁자 위에서 굴러 떨어져 바닥에서 튕긴다. 노을빛 실내, 느린 달리 인";
+    private string _chars = "하린=빨간 코트, 도윤=검은 재킷";
+    private string? _cutKey, _message, _consistency;
+    private long _shownSeq = -1;
+    private System.Threading.Timer? _timer;
+
+    private AiEdgeSwarmNodeOrchestrator S => Runner.Swarm;
+    private RealtimeGlobalMediaMeshRouter M => Runner.Mesh;
+    private EdgeAutonomousAiAgentEngine A => Runner.Agent;
+    private MeshDelivery L => Runner.LastDelivery;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        S.OnChange += OnServiceChanged;
+        M.OnChange += OnServiceChanged;
+        A.OnChange += OnServiceChanged;
+        if (Runner.FrameSeq == 0) Runner.TickOnce(1.0 / EdgeSwarmStudioRunner.TickHz);
+        Refresh();
+        _timer = new System.Threading.Timer(_ => { if (Runner.FrameSeq != _shownSeq) _ = InvokeAsync(() => { Refresh(); StateHasChanged(); }); }, null, 250, 250);
+    }
+
+    private static string F0(float v) => v.ToString("0", CultureInfo.InvariantCulture);
+    private static string F1(double v) => double.IsNaN(v) ? "—" : v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string F2(float v) => v.ToString("0.00", CultureInfo.InvariantCulture);
+    private static string Pc(float v) => (Math.Clamp(v, 0f, 1f) * 100f).ToString("0", CultureInfo.InvariantCulture) + "%";
+    private static string Short(string s) { var i = s.IndexOf('-'); return i >= 0 ? s[(i + 1)..] : s; }
+    private static string Abbr(string s) { var t = Short(s); return t.Length > 3 ? t[..3] : t; }
+    private static string RoleIcon(MeshRole r) => r switch { MeshRole.Desktop => "🖥", MeshRole.Mobile => "📱", MeshRole.CloudEdge => "☁", MeshRole.Viewer => "👁", _ => "📡" };
+
+    private (float X, float Y) P(int n) { var (x, y) = M.PositionOf(n); return (20 + x * 360, 20 + y * 200); }
+
+    private static bool OnPath(int a, int b, int[] p, int len)
+    {
+        for (var i = 0; i + 1 < len; i++) if ((p[i] == a && p[i + 1] == b) || (p[i] == b && p[i + 1] == a)) return true;
+        return false;
+    }
+
+    private static string UtilColor(float u)
+    {
+        var k = Math.Clamp(u, 0f, 1f);
+        var hue = (int)(140 - 140 * k);
+        return "hsl(" + hue.ToString(CultureInfo.InvariantCulture) + ",80%,55%)";
+    }
+
+    private static string HeatColor(double ms)
+    {
+        var k = Math.Clamp(ms / 250.0, 0, 1);
+        var hue = (int)(140 - 140 * k);
+        return "hsl(" + hue.ToString(CultureInfo.InvariantCulture) + ",75%,62%)";
+    }
+
+    private void Refresh()
+    {
+        _shownSeq = Runner.FrameSeq;
+        _pathLen = M.CopyPath(Runner.Flow, _path);
+        _backupLen = M.CopyPath(Runner.Flow, _backup, backup: true);
+        _nodes = S.Snapshot();
+        _flows = M.Flows();
+        var n = Runner.CopyLatencyHistory(_hist);
+        float max = 1; for (var i = 0; i < n; i++) max = MathF.Max(max, _hist[i]);
+        var sb = new System.Text.StringBuilder();
+        for (var i = 0; i < n; i++) sb.Append(F1(i * 240.0 / Math.Max(1, n - 1))).Append(',').Append(F1(38 - _hist[i] / max * 34)).Append(' ');
+        _spark = sb.ToString();
+    }
+
+    private void Toggle() { if (Runner.IsRunning) Runner.Stop(); else Runner.Start(); }
+    private void Step() { Runner.TickOnce(1.0 / EdgeSwarmStudioRunner.TickHz); Refresh(); }
+
+    private void CutLink()
+    {
+        var k = _cutKey;
+        if (k is null) { for (var a = 0; a < M.NodeCount && k is null; a++) for (var b = a + 1; b < M.NodeCount; b++) if (M.HasLink(a, b)) { k = a + "-" + b; break; } }
+        if (k is null) return;
+        var i = k.IndexOf('-');
+        if (i <= 0 || !int.TryParse(k[..i], out var a2) || !int.TryParse(k[(i + 1)..], out var b2)) return;
+        M.Unlink(a2, b2);
+        _cutKey = null;
+        _message = "✂ " + Short(M.NameOf(a2)) + " ↔ " + Short(M.NameOf(b2)) + " 단절 — 영향 플로우 백업 경로 즉시 전환";
+        if (!Runner.IsRunning) Step();
+    }
+
+    private void Congest()
+    {
+        if (_pathLen < 2) return;
+        var a = _path[0]; var b = _path[1];
+        var cap = M.EstimatedKbps(a, b) / 1000f;
+        M.SetCapacity(a, b, Math.Max(0.5, cap / 20));
+        _message = "📉 " + Short(M.NameOf(a)) + " → " + Short(M.NameOf(b)) + " 용량 1/20 — ABR 스텝다운 · 혼잡 비용 재트랜스파일 관찰";
+    }
+
+    private void RunAgent()
+    {
+        var list = new List<string>();
+        foreach (var c in _chars.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) list.Add(c);
+        var r = A.Process(_prompt, list);
+        _consistency = null;
+        if (r.Characters.Count > 0 && r.Characters[0].Look is { } look)
+            _consistency = "🧬 " + r.Characters[0].Name + " 외형 일관성(동일 묘사 재확인) " + F2(EdgeAutonomousAiAgentEngine.LookConsistency(look, look))
+                + " · 변경 묘사 대비 " + F2(EdgeAutonomousAiAgentEngine.LookConsistency(look, "파란 드레스"));
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(() => { Refresh(); StateHasChanged(); });
+
+    public void Dispose()
+    {
+        _timer?.Dispose();
+        Runner.OnChange -= OnServiceChanged;
+        S.OnChange -= OnServiceChanged;
+        M.OnChange -= OnServiceChanged;
+        A.OnChange -= OnServiceChanged;
+    }
+}

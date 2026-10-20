@@ -1,0 +1,59 @@
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+@* [PromptFlow Studio] 스튜디오 16-세그먼트 VU 미터.
+   ▸ MediaElementId 지정 시 <b>Web Audio API</b>(AnalyserNode)로 실제 사운드 진폭에 물리 반응(audio-analyzer.js 가 rAF 로 세그먼트 구동).
+   ▸ 미지정/실패(미지원·자동재생 정책)면 CSS 폴백 애니메이션(Active). 순수 BCL + JS Interop. *@
+
+<div id="@_meterId" class="vu @(Active ? "live" : "idle")" role="img" aria-label="오디오 VU 미터" title="@(Active ? "재생 중" : "정지")">
+    @for (var i = 0; i < Count; i++)
+    {
+        <span class="vu-seg @Color(i)" style="animation-delay:@(Delay(i))ms" @key="i"></span>
+    }
+</div>
+
+<style>
+    .vu { display: inline-flex; align-items: flex-end; gap: 2px; height: 20px; padding: 2px 4px; border-radius: 6px;
+        background: rgba(0,0,0,.35); border: 1px solid var(--line); }
+    .vu-seg { width: 3.5px; height: 16%; border-radius: 1px; opacity: .3; transition: opacity .2s; }
+    .vu-seg.green { background: #10b981; } .vu-seg.amber { background: #f59e0b; } .vu-seg.red { background: #ef4444; }
+    .vu.live .vu-seg { animation: vu-bounce .8s ease-in-out infinite; opacity: 1; }
+    .vu.idle .vu-seg { height: 14%; opacity: .28; }
+    /* Web Audio 구동 중(JS 가 height/opacity 직접 세팅) — CSS 애니메이션 정지 */
+    .vu[data-js] .vu-seg { animation: none !important; opacity: 1; transition: height .05s linear, opacity .05s linear; }
+    /* 클리핑(음량 과다 ≥0.96) — 붉은 발광 경고 */
+    .vu[data-clip] { border-color: #ef4444; box-shadow: 0 0 0 1px #ef4444, 0 0 10px rgba(239,68,68,.55); animation: vu-clip .5s steps(1) infinite; }
+    @@keyframes vu-clip { 0%,50% { box-shadow: 0 0 0 1px #ef4444, 0 0 10px rgba(239,68,68,.55); } 51%,100% { box-shadow: 0 0 0 1px #ef4444, 0 0 3px rgba(239,68,68,.3); } }
+    @@keyframes vu-bounce { 0%,100% { height: 18%; opacity: .5; } 50% { height: 92%; opacity: 1; } }
+    @@media (prefers-reduced-motion: reduce) { .vu.live .vu-seg { animation: none; height: 55%; } }
+</style>
+
+@code {
+    /// <summary>재생 중(반응) 여부 — CSS 폴백 모드에서만 의미(부모가 &lt;video&gt; @@onplay/@@onpause 로 바인딩).</summary>
+    [Parameter] public bool Active { get; set; } = true;
+    /// <summary>세그먼트 수(기본 16).</summary>
+    [Parameter] public int Count { get; set; } = 16;
+    /// <summary>바인딩할 미디어 요소 id — 지정 시 Web Audio 물리 반응(실제 사운드 진폭). null 이면 CSS 폴백.</summary>
+    [Parameter] public string? MediaElementId { get; set; }
+
+    private readonly string _meterId = "vu-" + Guid.NewGuid().ToString("N")[..8];
+    private bool _started;
+
+    // 클래식 VU 색상대: 하위=녹색, 상위 2=적색, 그 아래 3=황색.
+    private string Color(int i) => i >= Count - 2 ? "red" : i >= Count - 5 ? "amber" : "green";
+    private static int Delay(int i) => (i * 57) % 420;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || string.IsNullOrWhiteSpace(MediaElementId) || _started) return;
+        _started = true;
+        try { await JS.InvokeVoidAsync("pfAudio.start", _meterId, MediaElementId); }
+        catch { /* Web Audio 실패 → CSS 폴백 유지(Graceful) */ }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (!_started) return;
+        try { await JS.InvokeVoidAsync("pfAudio.stop", _meterId); } catch { }
+    }
+}
