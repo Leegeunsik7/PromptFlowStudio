@@ -274,6 +274,7 @@
 @inject PromptFlowStudio.Services.RetentionOptimizer.ViralRetentionOptimizerStudioRunner RtoRun
 @inject PromptFlowStudio.Services.SmartPublishing.SmartPublishingSchedulerStudioRunner SpsRun
 @inject PromptFlowStudio.Services.VisualHooks.KineticVisualHookStudioRunner KvhRun
+@inject PromptFlowStudio.Services.KineticBRoll.KineticTypographyBRollStudioRunner KbrRun
 @inject PromptFlowStudio.Services.SkinnedSplatAvatar.DualQuaternionGaussianAvatarStudioRunner DqAvRun
 @inject PromptFlowStudio.Services.AgentFederation.RealtimeSpatiotemporalKnowledgeGraph FedKg
 @inject PromptFlowStudio.Services.AgentFederation.ZeroTrustInterAgentConsensusResolver FedCons
@@ -993,6 +994,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.78.0: 키네틱 자막 & B-Roll — 단어 윈도우 · 인서트 · 캐시 절감 · 예산 ── *@
+    <div class="gth-v1778">
+        <div class="gth-v96-card pid @(KbrRun.Cache.OverBudget == 0 && KbrRun.Cache.Savings >= 0.3 ? "ok" : null)">
+            <div class="gth-v96-h"><b>🎬 키네틱 자막 & B-Roll</b>
+                <span class="gth-v96-be">@(PromptFlowStudio.Services.KineticBRoll.WordByWordKineticSubtitleEngine.PresetName(KbrRun.Preset))@(KbrRun.Running ? " · ▶" : null)@(KbrRun.Cache.Degraded ? " · 저비용" : null)</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(KbrRun.Subtitles.WordCount)</b><span>단어</span></span>
+                <span class="gth-v96-m"><b>@(KbrRun.BRoll.Count)</b><span>B-Roll</span></span>
+                <span class="gth-v96-m"><b>@((KbrRun.Cache.Savings * 100).ToString("0", System.Globalization.CultureInfo.InvariantCulture))%</b><span>캐시 절감</span></span>
+                <span class="gth-v96-m"><b class="@(KbrRun.Cache.OverBudget > 0 ? "warn" : null)">@(KbrRun.Cache.OverBudget)</b><span>예산 초과</span></span>
+            </div>
+            <div class="gth-v96-act">@(KbrRun.LastAction ?? "대기")</div>
+        </div>
+    </div>
     @* ── v17.77.0: 키네틱 비주얼 훅 — 펀치 줌 · 셰이크 · 스티커 · 세이프존 시프트 ── *@
     <div class="gth-v1777">
         <div class="gth-v96-card pid @(KvhRun.Zoom.HeadClips == 0 && KvhRun.OverBudget == 0 ? "ok" : null)">
@@ -5598,6 +5614,7 @@
         VtRun.OnChange += OnSwarmChanged; // v17.49.0 (10 Hz → 250 ms 스로틀)
         VlRun.OnChange += OnSwarmChanged; // v17.50.0 (3.3 Hz)
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
+        KbrRun.OnChange += OnSwarmChanged; // v17.78.0 (재생 10 Hz → 250 ms 스로틀)
         KvhRun.OnChange += OnSwarmChanged; // v17.77.0 (재생 10 Hz → 250 ms 스로틀)
         SpsRun.OnChange += OnSwarmChanged; // v17.76.0 (예약/발행/SFX 이벤트 → 250 ms 스로틀)
         RtoRun.OnChange += OnSwarmChanged; // v17.75.0 (폴링/승격/진단 이벤트 → 250 ms 스로틀)
@@ -5973,6 +5990,7 @@
         VtRun.OnChange -= OnSwarmChanged;
         VlRun.OnChange -= OnSwarmChanged;
         OcRun.OnChange -= OnSwarmChanged;
+        KbrRun.OnChange -= OnSwarmChanged;
         KvhRun.OnChange -= OnSwarmChanged;
         SpsRun.OnChange -= OnSwarmChanged;
         RtoRun.OnChange -= OnSwarmChanged;

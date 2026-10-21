@@ -1,0 +1,173 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.KineticBRoll
+@implements IDisposable
+@inject KineticTypographyBRollStudioRunner Runner
+
+@* [PromptFlow Studio v17.78.0] 🎬 키네틱 자막 & B-Roll 스튜디오 — 9:16 미리보기 · 하이라이트 프리셋 선택기 · 단어 윈도우 · 키워드 B-Roll 인서트 타임라인 · 프레임 캐시 게이지. *@
+<div class="kbr-scrim" @onclick="Close">
+    <div class="kbr-modal" @onclick:stopPropagation="true">
+        <div class="kbr-h">
+            <div>
+                <div class="kbr-title">🎬 키네틱 자막 & B-Roll 스튜디오 @(Runner.Running ? "· ▶ 재생 중" : null) @(Runner.HooksLinked ? "· 🔗 v17.77 세이프존" : null)</div>
+                <div class="kbr-sub">자막을 문장째 띄우지 않고 <b>2~3단어씩 크게</b> 보여주며, 지금 말하는 단어만 <b>1.15배로 튀어 오르고 형광색</b>으로 켜집니다(지나간 단어는 회색).
+                    대본에서 <b>돈 · 자동차 · AI · 폭발 · 스마트폰 · 매출</b> 같은 단어를 찾아 그 순간 <b>1.5~2.5초짜리 B-Roll</b>(3D 소품 클로즈업 · 상단 분할 화면 · PiP 팝업 · 얼굴 클로즈업 앵글)을 자동으로 끼워 넣습니다.
+                    한 번 그린 배경과 글자는 <b>프레임 캐시</b>에 보관해 다시 그리지 않으므로 60fps 예산(16.7ms)을 지킵니다.</div>
+            </div>
+            <button class="kbr-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="kbr-bar">
+            <button class="kbr-btn hot" @onclick="Rebuild">🎬 대본 분석 & 인서트 재구성</button>
+            <button class="kbr-btn @(Runner.Running ? "on" : null)" @onclick="Toggle">@(Runner.Running ? "⏸ 정지" : "▶ 재생")</button>
+            <span class="kbr-sep"></span>
+            @foreach (var p in Presets)
+            {
+                var pp = p;
+                <button class="kbr-btn sm pre p@((int)pp) @(Runner.Preset == pp ? "on" : null)" @onclick="() => Runner.SetPreset(pp)">@(WordByWordKineticSubtitleEngine.PresetName(pp))</button>
+            }
+        </div>
+
+        <div class="kbr-main">
+            <div class="kbr-card pv">
+                <div class="kbr-sec">📱 9:16 미리보기 · @((KineticTypographyBRollStudioRunner.FrameMs(Runner.Frame) / 1000).ToString("0.00", CultureInfo.InvariantCulture))초</div>
+                <img class="kbr-frame" src="@(Runner.PreviewDataUri())" alt="미리보기" />
+                <input class="kbr-range" type="range" min="0" max="@(Runner.TotalFrames - 1)" value="@(Runner.Frame)" @oninput="OnSeek" />
+                <div class="kbr-kv">
+                    <span>단어 @(Runner.LastWords)</span>
+                    <span class="@(Runner.Subtitles.ActiveScaleNow > 1.001f ? "hl" : null)">활성 @(Runner.Subtitles.ActiveScaleNow.ToString("0.00", CultureInfo.InvariantCulture))×</span>
+                    <span class="@(Runner.LastInsert >= 0 ? "hl" : null)">@(Runner.LastInsert >= 0 ? DynamicBRollInsertSynthesizer.LayoutName(Runner.BRoll.At(Runner.LastInsert).Layout) : "원샷")</span>
+                    <span>@(Runner.LastFrameUs.ToString("0", CultureInfo.InvariantCulture)) µs</span>
+                </div>
+            </div>
+
+            <div class="kbr-card">
+                <div class="kbr-sec">🔤 단어 윈도우 (청크 @(Runner.Subtitles.ChunkCount) · 최대 @(WordByWordKineticSubtitleEngine.WindowWords)단어)</div>
+                <div class="kbr-words">
+                    @{ var act = Runner.Subtitles.ActiveWord; var colors = WordByWordKineticSubtitleEngine.PresetColors[(int)Runner.Preset]; }
+                    @for (var i = 0; i < Runner.Subtitles.WordCount; i++)
+                    {
+                        var st = Runner.Subtitles.StateOf(i, act);
+                        var c = Runner.Subtitles.ColorOf(i, act);
+                        <span class="w s@((int)st) @(i > 0 && Runner.Subtitles.Slot(i).Chunk != Runner.Subtitles.Slot(i - 1).Chunk ? "brk" : null)" style="color:#@((c & 0xFFFFFF).ToString("X6", CultureInfo.InvariantCulture))">@(Runner.Subtitles.Timeline.WordText(i).ToString())</span>
+                    }
+                </div>
+                <div class="kbr-kv">활성 @(Hex(colors[0])) / @(Hex(colors[1])) · 다음 @(Hex(colors[2])) · 지나감(그레이) @(Hex(colors[3])) · 단어 전환 @(Runner.Subtitles.WordSwitches) · 세이프존 @(Runner.Subtitles.LastVerdict)</div>
+
+                <div class="kbr-sec sm">🎞️ B-Roll 인서트 타임라인 (키워드 @(Runner.HitCount) · 예약 @(Runner.BRoll.Count) · 기각 @(Runner.BRoll.Rejected))</div>
+                @{ var total = Math.Max(1f, Runner.TotalFrames * 1000f / KineticTypographyBRollStudioRunner.Fps); }
+                <svg class="kbr-tl" viewBox="0 0 400 60" preserveAspectRatio="none">
+                    <line x1="0" x2="400" y1="30" y2="30" class="ax" />
+                    @for (var i = 0; i < Runner.Subtitles.WordCount; i++)
+                    {
+                        var wd = Runner.Subtitles.Timeline.Word(i);
+                        <rect x="@((wd.StartMs / total * 400).ToString("0.0", CultureInfo.InvariantCulture))" y="44" width="@(Math.Max(0.6f, (wd.EndMs - wd.StartMs) / total * 400).ToString("0.0", CultureInfo.InvariantCulture))" height="10" class="wd @(i == act ? "on" : null)" />
+                    }
+                    @for (var i = 0; i < Runner.BRoll.Count; i++)
+                    {
+                        var b = Runner.BRoll.At(i);
+                        var x = b.StartMs / total * 400; var wdt = b.DurationMs / total * 400;
+                        <g>
+                            <rect x="@(x.ToString("0.0", CultureInfo.InvariantCulture))" y="6" width="@(wdt.ToString("0.0", CultureInfo.InvariantCulture))" height="20" rx="3" class="ins l@((int)b.Layout) @(i == Runner.LastInsert ? "on" : null)" />
+                            <text x="@((x + 2).ToString("0.0", CultureInfo.InvariantCulture))" y="19" class="lbl">@(DynamicBRollInsertSynthesizer.KindIcon(b.Kind)) @(DynamicBRollInsertSynthesizer.KindName(b.Kind))</text>
+                        </g>
+                    }
+                    <line x1="@((KineticTypographyBRollStudioRunner.FrameMs(Runner.Frame) / total * 400).ToString("0.0", CultureInfo.InvariantCulture))" x2="@((KineticTypographyBRollStudioRunner.FrameMs(Runner.Frame) / total * 400).ToString("0.0", CultureInfo.InvariantCulture))" y1="0" y2="60" class="ph" />
+                </svg>
+                @for (var i = 0; i < Math.Min(6, Runner.BRoll.Count); i++)
+                {
+                    var b = Runner.BRoll.At(i);
+                    <div class="kbr-item @(i == Runner.LastInsert ? "on" : null)">
+                        <b>@(DynamicBRollInsertSynthesizer.KindIcon(b.Kind)) @(b.Word >= 0 ? Runner.Subtitles.Timeline.WordText(b.Word).ToString() : DynamicBRollInsertSynthesizer.KindName(b.Kind))</b>
+                        <span>@((b.StartMs / 1000).ToString("0.00", CultureInfo.InvariantCulture))s · @((b.DurationMs / 1000).ToString("0.0", CultureInfo.InvariantCulture))s · @(DynamicBRollInsertSynthesizer.LayoutName(b.Layout)) · J @(b.LeadMs.ToString("0", CultureInfo.InvariantCulture))ms</span>
+                    </div>
+                }
+            </div>
+
+            <div class="kbr-card">
+                <div class="kbr-sec">🧊 프레임 캐시 & 16.7ms 가드</div>
+                @{ var sv = Runner.Cache.Savings; var hitRate = Runner.Cache.SpriteHits + Runner.Cache.SpriteMisses == 0 ? 0 : (double)Runner.Cache.SpriteHits / (Runner.Cache.SpriteHits + Runner.Cache.SpriteMisses); }
+                <div class="kbr-gauge"><span>래스터 절감</span><div class="bar"><i style="width:@((sv * 100).ToString("0", CultureInfo.InvariantCulture))%" class="@(sv < 0.3 ? "warn" : null)"></i></div><b>@((sv * 100).ToString("0", CultureInfo.InvariantCulture))%</b></div>
+                <div class="kbr-gauge"><span>스프라이트 적중</span><div class="bar"><i style="width:@((hitRate * 100).ToString("0", CultureInfo.InvariantCulture))%"></i></div><b>@((hitRate * 100).ToString("0", CultureInfo.InvariantCulture))%</b></div>
+                @{ var fb = Math.Min(1.0, Runner.LastFrameUs / ZeroAllocRenderFrameCacheGuard.BudgetUs); }
+                <div class="kbr-gauge"><span>프레임 예산</span><div class="bar"><i style="width:@((fb * 100).ToString("0", CultureInfo.InvariantCulture))%" class="@(fb >= 1 ? "warn" : null)"></i></div><b>@((Runner.LastFrameUs / 1000).ToString("0.00", CultureInfo.InvariantCulture))ms</b></div>
+                <div class="kbr-kv">스프라이트 상주 @(Runner.Cache.SpritesResident)/@(ZeroAllocRenderFrameCacheGuard.SpriteSlots) · 축출 @(Runner.Cache.SpriteEvictions) · 배경 적중 @(Runner.Cache.FrameHits)/미스 @(Runner.Cache.FrameMisses)</div>
+                <div class="kbr-kv">예산 초과 @(Runner.Cache.OverBudget)/@(Runner.Cache.Frames) · 최대 @((Runner.Cache.MaxFrameUs / 1000).ToString("0.00", CultureInfo.InvariantCulture))ms · @(Runner.Cache.Degraded ? "⚠ 저비용 모드" : "정상 품질") · 진입 @(Runner.Cache.DegradeEntries)</div>
+                <div class="kbr-sec sm">🔎 감지 통계</div>
+                <div class="kbr-kv">토큰 @(Runner.BRoll.TokensScanned) · 사전 적중 @(Runner.BRoll.KeywordHits) · 금액 정규식 @(Runner.BRoll.RegexHits) · 스캔 @(Runner.BRoll.LastScanUs.ToString("0", CultureInfo.InvariantCulture)) µs</div>
+                <div class="kbr-kv">믹싱 @(Runner.BRoll.Composited) 프레임 · 마지막 @(Runner.BRoll.LastCompositeUs.ToString("0", CultureInfo.InvariantCulture)) µs</div>
+            </div>
+        </div>
+        <div class="kbr-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+    </div>
+</div>
+
+<style>
+    .kbr-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .kbr-modal { width: min(1320px, 96vw); max-height: 94vh; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); padding: 14px 16px; color: var(--text-primary); }
+    .kbr-h { display: flex; justify-content: space-between; gap: 12px; } .kbr-title { font-size: 17px; font-weight: 800; } .kbr-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .kbr-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .kbr-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; } .kbr-sep { flex: 1; }
+    .kbr-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .kbr-btn.sm { font-size: 11px; padding: 4px 8px; } .kbr-btn.hot { border-color: #f97316; } .kbr-btn.on { background: color-mix(in srgb, #38bdf8 25%, #1e293b); border-color: #38bdf8; }
+    .kbr-btn.pre.p0 { color: #ffe600; } .kbr-btn.pre.p1 { color: #00f0ff; } .kbr-btn.pre.p2 { color: #f8fafc; }
+    .kbr-main { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.3fr) minmax(0, 0.9fr); gap: 10px; }
+    .kbr-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; } .kbr-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 8px; } .kbr-sec.sm { margin-top: 10px; font-size: 12px; }
+    .kbr-card.pv { display: flex; flex-direction: column; align-items: center; }
+    .kbr-frame { width: 100%; max-width: 270px; aspect-ratio: 9 / 16; image-rendering: pixelated; border-radius: 8px; border: 1px solid #1e293b; background: #000; }
+    .kbr-range { width: 100%; max-width: 270px; margin-top: 6px; }
+    .kbr-kv { font-size: 10.5px; color: var(--text-muted); margin: 4px 0 6px; display: flex; flex-wrap: wrap; gap: 8px; } .kbr-kv .hl { color: #fde047; font-weight: 700; }
+    .kbr-words { display: flex; flex-wrap: wrap; gap: 4px; background: #05070c; border-radius: 6px; padding: 8px; font-weight: 800; font-size: 13px; }
+    .kbr-words .w { padding: 1px 3px; border-radius: 4px; } .kbr-words .w.s1 { transform: scale(1.15); background: rgba(255,255,255,.08); } .kbr-words .w.brk { margin-left: 8px; border-left: 1px dashed #334155; padding-left: 7px; }
+    .kbr-tl { width: 100%; height: 90px; background: #05070c; border-radius: 6px; display: block; }
+    .kbr-tl .ax { stroke: #1e293b; stroke-width: .5; } .kbr-tl .wd { fill: #475569; } .kbr-tl .wd.on { fill: #fde047; } .kbr-tl .lbl { font-size: 7px; fill: #f8fafc; } .kbr-tl .ph { stroke: #f43f5e; stroke-width: 1; }
+    .kbr-tl .ins { opacity: .75; } .kbr-tl .ins.on { opacity: 1; stroke: #fff; stroke-width: .8; }
+    .ins.l0 { fill: #2563eb; } .ins.l1 { fill: #16a34a; } .ins.l2 { fill: #ea580c; } .ins.l3 { fill: #9333ea; }
+    .kbr-item { display: flex; justify-content: space-between; font-size: 11px; padding: 3px 0; border-bottom: 1px dashed #1e293b; } .kbr-item span { color: var(--text-muted); } .kbr-item.on b { color: #fde047; }
+    .kbr-gauge { display: grid; grid-template-columns: 86px 1fr auto; gap: 6px; align-items: center; font-size: 11.5px; margin-top: 4px; } .kbr-gauge b { font: 700 11px var(--mono); color: #fde047; }
+    .kbr-gauge .bar { height: 10px; background: #111827; border-radius: 999px; overflow: hidden; } .kbr-gauge .bar i { display: block; height: 100%; background: #22c55e; } .kbr-gauge .bar i.warn { background: #ef4444; }
+    .kbr-act { font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+    @@media (max-width: 1100px) { .kbr-main { grid-template-columns: 1fr 1fr; } }
+    @@media (max-width: 760px) { .kbr-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly HormoziPreset[] Presets = { HormoziPreset.HormoziYellow, HormoziPreset.NeonCyber, HormoziPreset.MinimalWhite };
+    private System.Threading.Timer? _timer;
+
+    private static string Hex(uint c) => "#" + (c & 0xFFFFFF).ToString("X6", CultureInfo.InvariantCulture);
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("KineticBRoll.Modal.Timer", ex); }
+        }, null, 1000, 1000);
+    }
+
+    private void Rebuild()
+    {
+        try { Runner.BuildTimeline(); Runner.RenderFrame(Runner.Frame); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("KineticBRoll.Modal.Rebuild", ex); }
+    }
+
+    private void OnSeek(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var f)) Runner.Seek(f);
+    }
+
+    private void Toggle() { if (Runner.Running) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}

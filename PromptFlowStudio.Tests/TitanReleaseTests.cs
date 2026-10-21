@@ -42,6 +42,7 @@ using Vps = PromptFlowStudio.Services.VisualPolish;
 using Rto = PromptFlowStudio.Services.RetentionOptimizer;
 using Sps = PromptFlowStudio.Services.SmartPublishing;
 using Vh = PromptFlowStudio.Services.VisualHooks;
+using Kbr = PromptFlowStudio.Services.KineticBRoll;
 using Nw = PromptFlowStudio.Services.Newsroom;
 using Spt = PromptFlowStudio.Services.Sports;
 using V3 = System.Numerics.Vector3;
@@ -32270,7 +32271,7 @@ public sealed class KineticVisualHookIsolatedTests
 
         // ── HOOK-5b: 카탈로그 · HUD · 레이아웃 · DI · 모달 렌더 · 구독 해제 · 디스크 I/O 0 ──
         Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_visualHooks" && en.Category == 4);
-        Assert.Equal(153, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        Assert.True(PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length >= 153);
         var root = RepoRoot();
         var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
         var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
@@ -32451,5 +32452,281 @@ public sealed class KineticVisualHookIsolatedTests
         Assert.True(dst.AsSpan().SequenceEqual(src), "비활성 원본");
         var shAlloc = AllocationProbe.MinAllocated(() => { for (var f = 55; f < 130; f++) sh.Apply(src, dst, W, H, f); });
         Assert.True(shAlloc == 0 && sh.ShakenFrames >= 8, "셰이크 할당 " + shAlloc);
+    }
+}
+
+/// <summary>v17.78.0 키네틱 자막 &amp; B-Roll — 단어 윈도우 · 활성 1.15× 바운스/형광 틴트 · 지나간 단어 그레이 · 키워드 해시/정규식 감지 · 1.5~2.5 s 인서트 · 4 레이아웃 믹싱 · 프레임 캐시 30 %+ 절감 · 무할당 · UI 결선(벽시계 → 비병렬).</summary>
+[Collection("TimingSensitivePerformance")]   // 프레임/스캔 µs · 예산 가드 계측 → 비병렬
+public sealed class HormoziKineticBRollIsolatedTests
+{
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+
+    [Fact]
+    public async Task HormoziSubtitle_And_DynamicBRoll_Check()
+    {
+        SubtitleChecks();
+        BRollDetectAndScheduleChecks();
+        BRollCompositeChecks();
+        CacheGuardChecks();
+
+        // ── BROLL-4a: 러너 — 타임라인 · 무할당 프레임 · 래스터 절감 ≥ 30 % · 16.7 ms · v17.77 세이프존 동기화 ──
+        var run = new Kbr.KineticTypographyBRollStudioRunner();
+        Assert.True(run.Subtitles.WordCount >= 15 && run.HitCount >= 6 && run.BRoll.Count >= 3 && run.TotalFrames > 300, "타임라인 단어 " + run.Subtitles.WordCount + " 키워드 " + run.HitCount + " B-Roll " + run.BRoll.Count);
+        run.RenderAll();
+        run.Cache.ResetStats();
+        var frameUs = new double[run.TotalFrames];
+        for (var f = 0; f < run.TotalFrames; f++) { run.RenderFrame(f); frameUs[f] = run.LastFrameUs; }
+        var withCache = run.Cache.RasterOpsSpent;
+        Assert.True(run.Cache.Savings >= 0.30 && run.Cache.FrameHits == run.TotalFrames && run.Cache.SpriteMisses == 0, "캐시 절감 " + run.Cache.Savings + " 배경 " + run.Cache.FrameHits + " 미스 " + run.Cache.SpriteMisses);
+        Array.Sort(frameUs);
+        Assert.True(frameUs[frameUs.Length / 2] < Kbr.ZeroAllocRenderFrameCacheGuard.BudgetUs, "프레임 중앙값 " + frameUs[frameUs.Length / 2] + " µs");
+        var renderAlloc = AllocationProbe.MinAllocated(() => { for (var f = 0; f < run.TotalFrames; f += 3) run.RenderFrame(f); });
+        Assert.True(renderAlloc == 0, "렌더 루프 할당 " + renderAlloc);
+        run.Cache.Enabled = false; run.Cache.ResetStats();
+        for (var f = 0; f < run.TotalFrames; f++) run.RenderFrame(f);
+        var without = run.Cache.RasterOpsSpent;
+        run.Cache.Enabled = true; run.Cache.Clear();
+        Assert.True(withCache <= without * 0.70, "래스터 사이클 " + withCache + " vs 무캐시 " + without);
+        var sawInsert = false; var sawWords = false;
+        for (var f = 0; f < run.TotalFrames; f += 4) { run.RenderFrame(f); sawInsert |= run.LastInsert >= 0; sawWords |= run.LastWords > 0; }
+        Assert.True(sawInsert && sawWords);
+        run.SetPreset(Kbr.HormoziPreset.NeonCyber);
+        Assert.True(run.Preset == Kbr.HormoziPreset.NeonCyber && run.PreviewDataUri().StartsWith("data:image/png;base64,", StringComparison.Ordinal) && ReferenceEquals(run.PreviewDataUri(), run.PreviewDataUri()));
+        var f0 = run.Frame;
+        run.Start();
+        for (var k = 0; k < 40 && run.Frame == f0; k++) await Task.Delay(25);
+        run.Stop();
+        Assert.True(run.Frame != f0 && !run.Running, "재생 진행");
+        run.Dispose();
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(run));
+        var hooks = new Vh.KineticVisualHookStudioRunner();
+        hooks.Guard.Targets = Vh.ReelsPlatforms.YouTubeShorts;
+        var linked = new Kbr.KineticTypographyBRollStudioRunner(hooks);
+        Assert.True(linked.HooksLinked && linked.SafeZone.Targets == Vh.ReelsPlatforms.YouTubeShorts);
+        linked.Dispose(); hooks.Dispose();
+
+        // ── BROLL-4b: 카탈로그 · HUD · 레이아웃 · DI · 모달 렌더 · 구독 해제 · 디스크 I/O 0 ──
+        Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_brollSubtitles" && en.Category == 4);
+        Assert.Equal(154, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        var root = RepoRoot();
+        var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
+        var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
+        var mainForm = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "MainForm.cs"));
+        var maui = File.ReadAllText(Path.Combine(root, "PromptFlowStudio.Mobile", "MauiProgram.cs"));
+        Assert.True(hud.IndexOf("gth-v1778", StringComparison.Ordinal) is > 0 and var i1778 && i1778 < hud.IndexOf("gth-v1777", StringComparison.Ordinal) && hud.Contains("KbrRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("KbrRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<KineticTypographyBRollStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_brollSubtitles\"", StringComparison.Ordinal) && layout.Contains("\"_brollSubtitles\" =>", StringComparison.Ordinal));
+        Assert.True(mainForm.Contains("KineticBRoll.KineticTypographyBRollStudioRunner(sp)", StringComparison.Ordinal) && maui.Contains("KineticBRoll.KineticTypographyBRollStudioRunner(sp)", StringComparison.Ordinal));
+        foreach (var src in Directory.GetFiles(Path.Combine(root, "PromptFlowStudio", "Services", "KineticBRoll"), "*.cs"))
+        {
+            var text = File.ReadAllText(src);
+            Assert.True(!text.Contains("File.", StringComparison.Ordinal) && !text.Contains("FileStream", StringComparison.Ordinal) && !text.Contains("Directory.", StringComparison.Ordinal), "디스크 I/O " + Path.GetFileName(src));
+        }
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = sp.GetService(typeof(Kbr.KineticTypographyBRollStudioRunner))!;
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.KineticTypographyBRollStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("kbr-scrim", StringComparison.Ordinal) && html.Contains("kbr-tl", StringComparison.Ordinal) && html.Contains("data:image/png;base64,", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+
+    private static void SubtitleChecks()
+    {
+        // ── BROLL-1a: 단어 윈도우(≤ 3 단어 · 세이프 폭) · 활성 단어 탐색 · 스프링 바운스 1.15× ──
+        const int W = 216, H = 384;
+        var guard = new Vh.ReelsUiSafeZoneReframingGuard();
+        var cache = new Kbr.ZeroAllocRenderFrameCacheGuard();
+        var eng = new Kbr.WordByWordKineticSubtitleEngine(new PromptFlowStudio.Services.MotionTypography.SdfGlyphAtlas(), cache) { SafeZone = guard };
+        eng.SetScript("지금 바로 돈 버는 진짜 비밀 공개합니다 끝까지 보세요", PromptFlowStudio.Services.MotionTypography.TypoLang.Ko, 0);
+        eng.Relayout(W, 26f);
+        Assert.Equal(9, eng.WordCount);
+        var perChunk = new int[eng.ChunkCount];
+        for (var i = 0; i < eng.WordCount; i++) { perChunk[eng.Slot(i).Chunk]++; if (i > 0) Assert.True(eng.Slot(i).Chunk >= eng.Slot(i - 1).Chunk); }
+        for (var c = 0; c < eng.ChunkCount; c++) Assert.True(perChunk[c] is >= 1 and <= Kbr.WordByWordKineticSubtitleEngine.WindowWords && eng.ChunkWidth(c) <= guard.SafeRect.W * W + 0.5f, "청크 " + c + " 단어 " + perChunk[c] + " 폭 " + eng.ChunkWidth(c));
+        Assert.True(eng.ChunkCount >= 3, "청크 수 " + eng.ChunkCount);
+        var tl = eng.Timeline;
+        Assert.True(eng.ActiveAt(tl.Word(0).StartMs - 1) == -1 && eng.ActiveAt(tl.Word(2).StartMs + 1) == 2 && eng.ActiveAt((tl.Word(2).EndMs + tl.Word(3).StartMs) * 0.5f) == 2 && eng.ActiveAt(tl.Word(8).EndMs + Kbr.WordByWordKineticSubtitleEngine.HoldAfterMs + 1) == -1, "활성 탐색");
+        Assert.Equal(1f, Kbr.WordByWordKineticSubtitleEngine.ActiveScaleAt(0));
+        float peak = 0; for (var ms = 0f; ms < 400; ms += 1) peak = MathF.Max(peak, Kbr.WordByWordKineticSubtitleEngine.ActiveScaleAt(ms));
+        Assert.True(peak > 1.16f && peak < 1.22f && Math.Abs(Kbr.WordByWordKineticSubtitleEngine.ActiveScaleAt(400) - 1.15f) < 0.003f, "바운스 피크 " + peak);
+
+        // ── BROLL-1b: 활성 = 형광 틴트 · 지나간 = 그레이 · 다음 = 흰색 · 프리셋 전환 · 세이프존 시프트 ──
+        var frame = new uint[W * H];
+        int Count(uint color) { var n = 0; foreach (var p in frame) if ((p & 0xFFFFFF) == (color & 0xFFFFFF)) n++; return n; }
+        int CountIn(int word, uint color)   // 단어 슬롯 열 범위 안 정확 일치 픽셀(AA 회색 혼입 배제)
+        {
+            var x0 = (int)(eng.LastBlock.X * W + eng.Slot(word).SlotX); var x1 = Math.Min(W, x0 + (int)(eng.Slot(word).WidthPx * Kbr.WordByWordKineticSubtitleEngine.ActiveScale));
+            var n = 0; for (var y = 0; y < H; y++) for (var x = Math.Max(0, x0); x < x1; x++) if ((frame[y * W + x] & 0xFFFFFF) == (color & 0xFFFFFF)) n++; return n;
+        }
+        var t1 = tl.Word(1).StartMs + 300;
+        Array.Fill(frame, 0xFF000000u);
+        Assert.True(eng.Render(frame, W, H, t1) == perChunk[0] && eng.ActiveWord == 1 && Math.Abs(eng.ActiveScaleNow - 1.15f) < 0.01f, "윈도우 렌더 " + eng.ActiveWord);
+        var colors = Kbr.WordByWordKineticSubtitleEngine.PresetColors[0];
+        var green = CountIn(1, colors[1]); var gray = CountIn(0, colors[3]); var grayInActive = CountIn(1, colors[3]); var yellow = Count(colors[0]);
+        var white = perChunk[0] >= 3 ? CountIn(2, colors[2]) : 99;
+        Assert.True(green > 30 && gray > 30 && grayInActive == 0 && yellow == 0 && white > 30 && CountIn(0, colors[1]) == 0, "틴트 녹 " + green + " 회 " + gray + " 백 " + white + " 황 " + yellow);
+        Assert.True((colors[3] >> 16 & 0xFF) == (colors[3] >> 8 & 0xFF) && (colors[3] >> 8 & 0xFF) == (colors[3] & 0xFF), "그레이스케일");
+        Assert.True(eng.StateOf(0, 1) == Kbr.KineticWordState.Past && eng.StateOf(1, 1) == Kbr.KineticWordState.Active && eng.StateOf(2, 1) == Kbr.KineticWordState.Upcoming);
+        Array.Fill(frame, 0xFF000000u);
+        eng.Render(frame, W, H, tl.Word(0).StartMs + 300);
+        Assert.True(CountIn(0, colors[0]) > 30 && CountIn(0, colors[3]) == 0 && CountIn(1, colors[2]) > 30 && Count(colors[1]) == 0, "첫 단어 노랑 " + CountIn(0, colors[0]) + " 회 " + CountIn(0, colors[3]));
+        eng.Preset = Kbr.HormoziPreset.NeonCyber;
+        Array.Fill(frame, 0xFF000000u); eng.Render(frame, W, H, t1);
+        Assert.True(Count(Kbr.WordByWordKineticSubtitleEngine.PresetColors[1][1]) > 30 && Count(colors[1]) == 0, "네온 사이버");
+        eng.Preset = Kbr.HormoziPreset.HormoziYellow;
+        // 스프라이트 풀: 재렌더 = 적중만 · 재래스터 0
+        var misses = cache.SpriteMisses; var spent = cache.RasterOpsSpent;
+        for (var k = 0; k < 10; k++) { Array.Fill(frame, 0xFF000000u); eng.Render(frame, W, H, t1 + k * 2); }   // 같은 청크 안(활성 단어 불변)
+        Assert.True(cache.SpriteMisses == misses && cache.RasterOpsSpent == spent && cache.SpriteHits > 20, "스프라이트 적중 " + cache.SpriteHits + " 미스 " + cache.SpriteMisses + "/" + misses + " 소비 " + cache.RasterOpsSpent + "/" + spent);
+        eng.AnchorY = 0.92f;
+        eng.Render(frame, W, H, t1);
+        Assert.True(eng.LastVerdict == Vh.ReframeVerdict.Shifted && eng.LastBlock.Bottom <= guard.SafeRect.Bottom + 1e-4f, "세이프존 " + eng.LastVerdict);
+        eng.AnchorY = 0.64f;
+        for (var i = 0; i < eng.WordCount; i++) eng.Render(frame, W, H, tl.Word(i).StartMs + 50);   // 전 단어 워밍
+        var subAlloc = AllocationProbe.MinAllocated(() => { for (var ms = 0f; ms < tl.TotalMs; ms += 16.7f) { eng.Render(frame, W, H, ms); eng.Render(frame, W, H, ms, nearest: true); } });
+        Assert.True(subAlloc == 0 && eng.WordSwitches >= 9, "자막 할당 " + subAlloc + " 전환 " + eng.WordSwitches);
+    }
+
+    private static void BRollDetectAndScheduleChecks()
+    {
+        // ── BROLL-2a: 해시 사전 · 조사/어미 제거 · 금액 정규식 · 오탐 억제 ──
+        var b = new Kbr.DynamicBRollInsertSynthesizer();
+        (string Tok, Kbr.BRollKind Kind)[] pos = { ("돈을", Kbr.BRollKind.Money), ("자동차가", Kbr.BRollKind.Car), ("AI로", Kbr.BRollKind.Ai), ("폭발했습니다", Kbr.BRollKind.Explosion), ("3억원", Kbr.BRollKind.Money), ("$500", Kbr.BRollKind.Money), ("매출로", Kbr.BRollKind.Chart), ("스마트폰으로", Kbr.BRollKind.Phone), ("Tesla", Kbr.BRollKind.Car) };
+        foreach (var (tok, kind) in pos) Assert.True(b.TryClassify(tok, out var k, out var wgt) && k == kind && wgt > 0, "감지 " + tok);
+        foreach (var neg in new[] { "air", "안녕하세요", "오늘은", "12", "" }) Assert.False(b.TryClassify(neg, out _, out _), "오탐 " + neg);
+        Assert.True(b.RegexHits == 2);
+        var hits = new Kbr.BRollHit[32];
+        var script = Kbr.KineticTypographyBRollStudioRunner.DemoScript;
+        var n = b.Detect(script, hits);
+        Assert.True(n >= 6 && hits[0].Kind == Kbr.BRollKind.Ai && hits[0].Word == 0 && script.AsSpan(hits[0].CharStart, hits[0].CharLength).SequenceEqual("AI로"), "대본 감지 " + n);
+        var scanAlloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 200; k++) b.Detect(script, hits); });
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        for (var k = 0; k < 500; k++) b.Detect(script, hits);
+        var perScanUs = sw.Elapsed.TotalMilliseconds * 1000 / 500;
+        Assert.True(scanAlloc == 0 && perScanUs < 2_000, "스캔 할당 " + scanAlloc + " · " + perScanUs + " µs/회");   // ≥ 500 회/초
+        // 스트림: 조각 경계에 걸친 토큰 이월
+        var st = new Kbr.DynamicBRollInsertSynthesizer();
+        Assert.Equal(0, st.PushText("오늘은 자동", 0));
+        Assert.Equal(1, st.PushText("차가 도착", 500));
+        Assert.True(st.Count == 1 && st.At(0).Kind == Kbr.BRollKind.Car && st.StreamHits == 1);
+        Assert.Equal(0, st.EndStream(600));
+        var pushAlloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 100; k++) st.PushText("그리고 이것은 정말 놀라운 이야기 ", k * 100f); });
+        Assert.True(pushAlloc == 0, "스트림 할당 " + pushAlloc);
+
+        // ── BROLL-2b: 스케줄 — J 리드 120 ms · 1.5~2.5 s · 600 ms 간격 · 겹침 기각 ──
+        var s = new Kbr.DynamicBRollInsertSynthesizer();
+        Assert.True(s.Schedule(0, 1000, 5000, Kbr.BRollKind.Money, 1f) && Math.Abs(s.At(0).StartMs - 880) < 1e-3f && Math.Abs(s.At(0).DurationMs - 2500) < 1e-3f && Math.Abs(s.At(0).LeadMs - 120) < 1e-3f);
+        Assert.False(s.Schedule(1, 2000, 0, Kbr.BRollKind.Car, 1f));
+        Assert.False(s.Schedule(2, 3900, 0, Kbr.BRollKind.Car, 0f));   // 3780 < 3380 + 600
+        Assert.True(s.Schedule(3, 4200, 0, Kbr.BRollKind.Car, 0f) && Math.Abs(s.At(1).DurationMs - 1500) < 1e-3f && s.At(1).Layout == Kbr.BRollLayout.TopSplit);
+        Assert.True(s.Rejected == 2 && s.ActiveAt(900) == 0 && s.ActiveAt(3500) == -1 && s.ActiveAt(4100) == 1);
+        Assert.True(Kbr.DynamicBRollInsertSynthesizer.Envelope(s.At(0), 880) == 0f && Kbr.DynamicBRollInsertSynthesizer.Envelope(s.At(0), 2000) == 1f);
+        var typo = new PromptFlowStudio.Services.MotionTypography.RealtimeWordByWordMotionTypographyEngine(new PromptFlowStudio.Services.MotionTypography.SdfGlyphAtlas());
+        typo.SetCaption(script, PromptFlowStudio.Services.MotionTypography.TypoLang.Ko, 200);
+        var tl = new Kbr.DynamicBRollInsertSynthesizer();
+        Assert.True(tl.ScheduleFromTimeline(typo) >= 3, "타임라인 인서트 " + tl.Count);
+        for (var i = 0; i < tl.Count; i++)
+        {
+            ref readonly var ins = ref tl.At(i);
+            Assert.True(ins.DurationMs is >= 1500f - 0.5f and <= 2500f + 0.5f && ins.Word >= 0 && Math.Abs(ins.StartMs - (typo.Word(ins.Word).StartMs - ins.LeadMs)) < 1e-3f, "인서트 " + i + " " + ins.DurationMs);
+            if (i > 0) Assert.True(ins.StartMs - tl.At(i - 1).EndMs >= Kbr.DynamicBRollInsertSynthesizer.MinGapMs - 1e-3f, "간격 " + i);
+        }
+    }
+
+    private static void BRollCompositeChecks()
+    {
+        // ── BROLL-2c: 4 레이아웃 믹싱 · 크로스페이드 · PiP 세이프존 · 3DGS 소품 결정적 · 무할당 ──
+        const int W = 216, H = 384;
+        var guard = new Vh.ReelsUiSafeZoneReframingGuard();
+        var b = new Kbr.DynamicBRollInsertSynthesizer { SafeZone = guard };
+        b.Configure(W, H);
+        var kinds = new[] { Kbr.BRollKind.Explosion, Kbr.BRollKind.Car, Kbr.BRollKind.Money, Kbr.BRollKind.Emphasis };
+        for (var i = 0; i < kinds.Length; i++) Assert.True(b.Schedule(i, 1000 + i * 4000, 5000, kinds[i], 1f));
+        Assert.True(b.At(0).Layout == Kbr.BRollLayout.FullCut && b.At(1).Layout == Kbr.BRollLayout.TopSplit && b.At(2).Layout == Kbr.BRollLayout.Pip && b.At(3).Layout == Kbr.BRollLayout.AngleCut);
+        var src = new uint[W * H];
+        for (var y = 0; y < H; y++) for (var x = 0; x < W; x++) src[y * W + x] = 0xFF000000u | (uint)(x & 0xFF) << 8 | (uint)(y & 0xFF);
+        var frame = new uint[W * H];
+        int Diff() { var d = 0; for (var i = 0; i < frame.Length; i++) if (frame[i] != src[i]) d++; return d; }
+        long Mag() { long m = 0; for (var i = 0; i < frame.Length; i++) { uint p = frame[i], q = src[i]; m += Math.Abs((int)((p >> 16) & 0xFF) - (int)((q >> 16) & 0xFF)) + Math.Abs((int)((p >> 8) & 0xFF) - (int)((q >> 8) & 0xFF)) + Math.Abs((int)(p & 0xFF) - (int)(q & 0xFF)); } return m; }
+        src.AsSpan().CopyTo(frame);
+        Assert.Equal(-1, b.Composite(frame, W, H, 500));
+        Assert.Equal(0, Diff());
+        for (var i = 0; i < kinds.Length; i++)
+        {
+            var mid = b.At(i).StartMs + 1000;
+            src.AsSpan().CopyTo(frame);
+            Assert.Equal(i, b.Composite(frame, W, H, mid));
+            var d = Diff(); var mag = Mag();
+            switch (b.At(i).Layout)
+            {
+                case Kbr.BRollLayout.FullCut: Assert.True(d > W * H * 9 / 10, "풀 컷 " + d); break;
+                case Kbr.BRollLayout.TopSplit:
+                    Assert.True(frame[(H / 2) * W + 5] == 0xFFFFFFFFu && d > W * H / 2, "스플릿 " + d);
+                    Assert.True(frame[(H / 2 + 10) * W + 7] == src[((int)(b.Face.Cy * H) - H / 4 + 10) * W + 7], "하단 화자 밴드");
+                    break;
+                case Kbr.BRollLayout.Pip:
+                {
+                    Assert.True(d > 2000 && d < W * H / 3 && frame[0] == src[0] && frame[(H - 1) * W] == src[(H - 1) * W], "PiP " + d);
+                    int x0 = W, y0 = H, x1 = 0, y1 = 0;
+                    for (var y = 0; y < H; y++) for (var x = 0; x < W; x++) if (frame[y * W + x] != src[y * W + x]) { x0 = Math.Min(x0, x); y0 = Math.Min(y0, y); x1 = Math.Max(x1, x + 1); y1 = Math.Max(y1, y + 1); }
+                    var sr = guard.SafeRect;
+                    Assert.True(x0 >= sr.X * W - 3 && x1 <= sr.Right * W + 3 && y0 >= sr.Y * H - 3 && y1 <= sr.Bottom * H + 3, "PiP 세이프존 " + x0 + "," + y0 + "-" + x1 + "," + y1);
+                    break;
+                }
+                default: Assert.True(d > W * H / 2, "멀티 앵글 " + d); break;
+            }
+            // 크로스페이드: 시작 직후는 원본에 가깝고 중간은 완전 인서트
+            src.AsSpan().CopyTo(frame);
+            b.Composite(frame, W, H, b.At(i).StartMs + 10);
+            Assert.True(Mag() < mag / 4, "페이드 인 " + i);
+        }
+        var p1 = new Kbr.ProceduralSplatPropBRollSource(); var p2 = new Kbr.ProceduralSplatPropBRollSource();
+        var a1 = new uint[W * H]; var a2 = new uint[W * H];
+        p1.Render(Kbr.BRollKind.Car, 700, a1, W, H, false); p2.Render(Kbr.BRollKind.Car, 700, a2, W, H, false);
+        Assert.True(a1.AsSpan().SequenceEqual(a2), "소품 결정적");
+        p2.Render(Kbr.BRollKind.Ai, 700, a2, W, H, false);
+        Assert.False(a1.AsSpan().SequenceEqual(a2));
+        p2.Render(Kbr.BRollKind.Car, 1400, a2, W, H, false);
+        Assert.False(a1.AsSpan().SequenceEqual(a2), "궤도 회전");
+        var compAlloc = AllocationProbe.MinAllocated(() => { for (var t = 0f; t < 17000; t += 50) { src.AsSpan().CopyTo(frame); b.Composite(frame, W, H, t); b.Composite(frame, W, H, t, lowCost: true); } });
+        Assert.True(compAlloc == 0 && b.Composited > 100, "믹싱 할당 " + compAlloc);
+    }
+
+    private static void CacheGuardChecks()
+    {
+        // ── BROLL-3: 스프라이트 LRU · 묘비 탐사 · 프레임 링 · 예산 저비용 모드 진입/복귀 ──
+        var c = new Kbr.ZeroAllocRenderFrameCacheGuard();
+        Assert.True(Kbr.ZeroAllocRenderFrameCacheGuard.Key("돈", 1) != Kbr.ZeroAllocRenderFrameCacheGuard.Key("돈", 2) && Kbr.ZeroAllocRenderFrameCacheGuard.Key("돈", 1) != 0);
+        for (var i = 0; i < Kbr.ZeroAllocRenderFrameCacheGuard.SpriteSlots; i++)
+        {
+            Assert.False(c.TryGetSprite((ulong)(1000 + i), out _));
+            var s = c.AcquireSprite((ulong)(1000 + i), 40, 30);
+            c.Fill(s)[0] = (byte)i; c.CommitSprite(s, 100);
+        }
+        Assert.True(c.SpritesResident == Kbr.ZeroAllocRenderFrameCacheGuard.SpriteSlots && c.TryGetSprite(1000, out var s0) && c.Fill(s0)[0] == 0);   // 1000 최근 사용
+        var ev = c.AcquireSprite(9999, 300, 100);
+        Assert.True(c.SpriteEvictions == 1 && c.SpriteWidth(ev) == Kbr.ZeroAllocRenderFrameCacheGuard.SpriteMaxW && c.SpriteHeight(ev) == Kbr.ZeroAllocRenderFrameCacheGuard.SpriteMaxH && !c.TryGetSprite(1001, out _), "LRU 축출");
+        for (var i = 2; i < Kbr.ZeroAllocRenderFrameCacheGuard.SpriteSlots; i++) Assert.True(c.TryGetSprite((ulong)(1000 + i), out var si) && c.Fill(si)[0] == (byte)i, "묘비 이후 탐사 " + i);
+        Assert.True(c.RasterOpsSaved >= 100 * 47);
+        c.Configure(16, 8);
+        Assert.False(c.TryGetFrame(7, out _));
+        var fr = c.AcquireFrame(7); fr.Fill(0xFF123456u); c.CommitFrame(128);
+        Assert.True(c.TryGetFrame(7, out var got) && got[5] == 0xFF123456u && c.FrameHits == 1);
+        var lookupAlloc = AllocationProbe.MinAllocated(() => { for (var i = 0; i < 1000; i++) { c.TryGetSprite((ulong)(1000 + i % 60), out _); c.TryGetFrame(7, out _); } });
+        Assert.True(lookupAlloc == 0, "캐시 조회 할당 " + lookupAlloc);
+        // 예산: 3 연속 초과 → 저비용 · 30 연속 여유 → 복귀
+        for (var k = 0; k < Kbr.ZeroAllocRenderFrameCacheGuard.DegradeAfter; k++)
+        {
+            c.BeginFrame();
+            var spin = System.Diagnostics.Stopwatch.StartNew(); while (spin.Elapsed.TotalMilliseconds < 18) { }
+            c.EndFrame();
+        }
+        Assert.True(c.Degraded && c.DegradeEntries == 1 && c.OverBudget >= 3, "저비용 진입");
+        for (var k = 0; k < Kbr.ZeroAllocRenderFrameCacheGuard.RecoverAfter; k++) { c.BeginFrame(); c.EndFrame(); }
+        Assert.False(c.Degraded, "복귀");
     }
 }
