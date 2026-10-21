@@ -34,6 +34,7 @@ using BMc = PromptFlowStudio.Services.BroadcastMcr;
 using Shw = PromptFlowStudio.Services.Showrunner;
 using Lcm = PromptFlowStudio.Services.LiveShowroom;
 using L2R = PromptFlowStudio.Services.LiveToReels;
+using SM = PromptFlowStudio.Services.StationMaster;
 using Nw = PromptFlowStudio.Services.Newsroom;
 using Spt = PromptFlowStudio.Services.Sports;
 using V3 = System.Numerics.Vector3;
@@ -30542,6 +30543,232 @@ public sealed class LiveToReelsFactoryIsolatedTests
         var runner = sp.GetService(typeof(L2R.LiveToReelsFactoryStudioRunner))!;
         var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.LiveToReelsFactoryStudioModal), sp);
         Assert.True(html.Length > 500 && html.Contains("ltr-scrim", StringComparison.Ordinal) && html.Contains("바이럴 지수", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+}
+
+/// <summary>v17.70.0 24/7 방송국 — EPG 링 편성 · MCR 무블랙 디졸브 · 베이지안 자가진화 · 50 ms 무중단 페일오버 회귀(벽시계 프레임 주기 → 비병렬).</summary>
+[Collection("TimingSensitivePerformance")]   // 벽시계 33 ms 프레임 주기 · 50 ms 전환 게이트 → 비병렬
+public sealed class MasterStationIsolatedTests
+{
+    private sealed class Sink : SM.IStandbyFrameSink
+    {
+        public int Frames;
+        public void OnStandbyFrame(ReadOnlySpan<byte> rgb, long frame) { if (rgb.Length == SM.ZeroDowntimeFailoverDisasterGuard.FrameBytes) Frames++; }
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+
+    [Fact]
+    public async Task MasterStation_EpgAndFailover_Check()
+    {
+        // ── STAT-1a: EPG 링 — 24 h = 1440 분 · 연속 · 프리롤 → Take · +1440 재순환 · 트래픽 대체 · 연장 원복 · 무할당 ──
+        var epg = new SM.MasterStationEpgSchedulerEngine();
+        epg.LoadDefaultDay(7 * 60);
+        Assert.True(epg.Count == 12 && epg.TotalMinutes() == 1440 && epg.Contiguous() && epg.MinuteOfDay == 420 && epg.OnAir == SM.StationProgramKind.Talkshow, "편성 " + epg.Count + " " + epg.TotalMinutes() + " " + epg.MinuteOfDay);
+        var ev = epg.Step(60 * 60_000 - 1_000, 0.1f);   // 07:59:59 → 08:00 커머스 프리롤(트래픽 0.1 < 0.25 → 대체 토크쇼)
+        Assert.True(ev == SM.EpgEvent.Preroll && epg.PrerollKind == SM.StationProgramKind.Talkshow && epg.AltSwaps == 1);
+        ev = epg.Step(1_500, 0.1f);
+        Assert.True(ev == SM.EpgEvent.Take && epg.OnAir == SM.StationProgramKind.Talkshow && epg.Current.Kind == SM.StationProgramKind.LiveCommerce && epg.Current.Aired == SM.StationProgramKind.Talkshow && epg.MinuteOfDay == 480);
+        Assert.True(epg.Count == 12 && epg.At(11).StartMin == epg.At(0).StartMin - 120 + 1440 && epg.Contiguous(), "재순환");
+        // 연장: 커머스(08~10) 종료 1 분 전 트래픽 0.95 → +15 분 · 다음(콘서트 90 → 75)
+        epg.Step(119 * 60_000 - 500, 0.5f);
+        ev = epg.Step(100, 0.95f);
+        Assert.True(ev == SM.EpgEvent.Extended && epg.Current.DurMin == 135 && epg.Next.DurMin == 75 && epg.Next.StartMin == epg.Current.EndMin && epg.TotalMinutes() == 1440 && epg.Contiguous());
+        long takes = 0, prerolls = 0; var lastPre = false; var orphan = 0;
+        var epgAlloc = AllocationProbe.MinAllocated(() =>
+        {
+            for (var i = 0; i < 2 * 86_400; i++)   // 48 h · 1 s 스텝
+            {
+                var m = epg.MinuteOfDay;
+                var traffic = 0.12f + 0.78f * MathF.Max(0f, MathF.Sin(MathF.PI * ((m + 1080) % 1440) / 1080f));
+                var e = epg.Step(1_000, traffic);
+                if (e == SM.EpgEvent.Preroll) { prerolls++; lastPre = true; }
+                else if (e == SM.EpgEvent.Take) { takes++; if (!lastPre) orphan++; lastPre = false; }
+            }
+        }, 1);
+        Assert.True(epgAlloc == 0, "EPG 스텝 할당 " + epgAlloc);
+        Assert.True(takes >= 24 && takes <= 25 && orphan == 0 && prerolls == takes && epg.DaysRolled >= 2 && epg.TotalMinutes() == 1440 && epg.Contiguous(),
+            "48 h 테이크 " + takes + " 프리롤 " + prerolls + " 고아 " + orphan + " 일 " + epg.DaysRolled + " 총 " + epg.TotalMinutes());
+        for (var kk = 0; kk < 4; kk++) Assert.True(epg.AiredBy((SM.StationProgramKind)kk) >= 2, "편성 종류 " + kk);
+
+        // ── STAT-2: 자가진화 — 성공 계수 단조 · Thompson 팔 → 숨은 선호 수렴 · 적용값 · 무효 거부 · 무할당 ──
+        var good = new SM.ReelPerformance { Views = 50_000, Shares = 2_500, Completion = 0.8f, Sentiment = 0.7f };
+        var bad = good; bad.Completion = 0.2f; bad.Sentiment = -0.5f; bad.Shares = 50;
+        Assert.True(SM.ClosedLoopViralFeedbackSelfEvolutionSynthesizer.SuccessCoefficient(in good) > 0.8f && SM.ClosedLoopViralFeedbackSelfEvolutionSynthesizer.SuccessCoefficient(in bad) < 0.35f);
+        var evo = new SM.ClosedLoopViralFeedbackSelfEvolutionSynthesizer();
+        var aud = new SM.SimulatedReelAudienceModel();
+        Assert.True(Math.Abs(evo.Wpm - 150) < 0.01f && Math.Abs(evo.BgmEnergy - 0.6f) < 1e-4f);
+        var nan = good; nan.Completion = float.NaN;
+        var noArms = new SM.EvoArms();
+        Assert.False(evo.Ingest(in nan, in noArms));
+        float early = 0, late = 0;
+        for (var i = 0; i < 240; i++)
+        {
+            var arms = evo.Arms;
+            var m = aud.Respond(i, in arms);
+            Assert.True(evo.Ingest(in m, in arms));
+            if (i < 30) early += evo.LastSuccess / 30; else if (i >= 210) late += evo.LastSuccess / 30;
+        }
+        for (var p = 0; p < 4; p++)
+        {
+            var ep = (SM.EvoParam)p;
+            Assert.True(evo.BestLevel(ep) == aud.Preferred(ep), SM.ClosedLoopViralFeedbackSelfEvolutionSynthesizer.ParamName(ep) + " 최선 " + evo.BestLevel(ep) + " ≠ 선호 " + aud.Preferred(ep));
+            var target = SM.ClosedLoopViralFeedbackSelfEvolutionSynthesizer.Level(ep, aud.Preferred(ep));
+            var span = Math.Abs(SM.ClosedLoopViralFeedbackSelfEvolutionSynthesizer.Level(ep, 4) - SM.ClosedLoopViralFeedbackSelfEvolutionSynthesizer.Level(ep, 0));
+            Assert.True(Math.Abs(evo.Applied(ep) - target) < span * 0.15f, "적용 " + ep + " " + evo.Applied(ep) + " vs " + target);
+        }
+        Assert.True(late > early + 0.15f && evo.Wpm > 160 && evo.BgmEnergy > 0.8f, "성공 " + early + " → " + late + " WPM " + evo.Wpm + " BGM " + evo.BgmEnergy);
+        var evoAlloc = AllocationProbe.MinAllocated(() => { for (var i = 0; i < 50; i++) { var a = evo.Arms; var m = aud.Respond(i, in a); evo.Ingest(in m, in a); } });
+        Assert.True(evoAlloc == 0 && evo.MaxIngestUs < 2_000, "섭취 할당 " + evoAlloc + " · " + evo.MaxIngestUs + " µs");
+
+        // ── STAT-3a: 예비 루프 베이크 — v17.55 3DGS 48 f 핑퐁(움직임) + SDF 안내 자막 ──
+        var talk = new PromptFlowStudio.Services.Talkshow.MultiAvatarTalkshowStudioRunner(1500);
+        var mcr = new BMc.BroadcastMcrStudioRunner(talk, envSplats: 30_000, bodySplats: 10_000, faceSplats: 2_000);   // 경량 장면 — 33 ms×3 실측 드롭 감시가 테스트 부하로 오탐하지 않도록
+        var st = new SM.MasterStationNetworkStudioRunner(mcr);
+        st.Attach();
+        var fo = st.Failover;
+        Assert.True(fo.Baked && !fo.BakeFallback && ReferenceEquals(mcr.Mcr.Standby, fo), "베이크 " + fo.Baked + " 폴백 " + fo.BakeFallback);
+        int Yellow(ReadOnlySpan<byte> f) { var n = 0; for (var y = SM.ZeroDowntimeFailoverDisasterGuard.H - 62; y < SM.ZeroDowntimeFailoverDisasterGuard.H; y++) for (var x = 0; x < SM.ZeroDowntimeFailoverDisasterGuard.W; x++) { var o = (y * SM.ZeroDowntimeFailoverDisasterGuard.W + x) * 3; if (f[o] > 200 && f[o + 1] > 170 && f[o + 2] < 120) n++; } return n; }
+        long Diff(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b) { long d = 0; for (var i = 0; i < a.Length; i += 3) d += Math.Abs(a[i] - b[i]); return d; }
+        Assert.True(Yellow(fo.LoopFrame(0)) > 60 && Yellow(fo.LoopFrame(30)) > 60 && Diff(fo.LoopFrame(0), fo.LoopFrame(12)) > 20_000 && SM.MasterStationNetworkStudioRunner.Luma(fo.LoopFrame(10)) > 15,
+            "자막 " + Yellow(fo.LoopFrame(0)) + " 움직임 " + Diff(fo.LoopFrame(0), fo.LoopFrame(12)));
+
+        // ── STAT-1b: MCR 결선 — 프리롤 PVW → 경계 Mix 30 f · 블랙 0 · 프레임 연속 · 레이어 무할당 ──
+        fo.Enabled = false;
+        mcr.Prepare();
+        for (var i = 0; i < 40; i++) st.Step();
+        var v0 = mcr.Mcr.VideoFrames; var mix0 = mcr.Mcr.Mixes; var t0 = st.Epg.Takes;
+        st.SkipToNextBoundary(1_000);
+        for (var i = 0; i < 120; i++) st.Step();
+        Assert.True(st.Epg.Takes == t0 + 1 && st.SeamlessTakes == 1 && st.BlackFrames == 0 && mcr.Mcr.Mixes >= mix0 + 1 && mcr.Mcr.VideoFrames == v0 + 120 && st.MinTransitionLuma > 8f && st.Active == st.Epg.OnAir,
+            "디졸브 " + st.SeamlessTakes + " 블랙 " + st.BlackFrames + " 최소 휘도 " + st.MinTransitionLuma + " 프레임 " + (mcr.Mcr.VideoFrames - v0) + " · " + st.Summary());
+        long layerAlloc = long.MaxValue;
+        for (var w = 0; w < 3 && layerAlloc != 0; w++)
+        {
+            st.SkipToNextBoundary(300);
+            for (var i = 0; i < 3; i++) st.Step();
+            GC.Collect(); GC.WaitForPendingFinalizers();
+            var a0 = GC.GetAllocatedBytesForCurrentThread();
+            for (var i = 0; i < 40; i++) mcr.Step();   // 경계 Take 포함
+            layerAlloc = Math.Min(layerAlloc, GC.GetAllocatedBytesForCurrentThread() - a0);
+            for (var i = 0; i < 40; i++) st.Step();
+        }
+        Assert.True(layerAlloc == 0 && st.BlackFrames == 0 && st.SeamlessTakes >= 2, "편성 전환 MCR 틱 할당 " + layerAlloc + " · 디졸브 " + st.SeamlessTakes);
+        // 콘서트(10:00~11:30): AutoDirect OFF · 2 박 비트 컷
+        st.SeekMinute(10 * 60 + 30);
+        for (var i = 0; i < 200; i++) st.Step();
+        Assert.True(st.Active == SM.StationProgramKind.RhythmConcert && !mcr.AutoDirect && st.BeatCuts >= 2, "콘서트 " + st.Active + " 컷 " + st.BeatCuts);
+        st.SeekMinute(13 * 60 + 30);
+        st.Step();
+        Assert.True(st.Active == SM.StationProgramKind.Talkshow && mcr.AutoDirect);
+        // 자가진화 → 토크쇼 발화 속도 적용
+        st.SimulateFeedback(60);
+        Assert.True(Math.Abs(talk.Gesture(0).RateScale - st.Evolution.SpeechRate) < 1e-4f && st.Evolution.Ingested == 60);
+
+        // ── STAT-3b: 페일오버 4 종 — 50 ms 내 전환 100 % · 스탠바이 = 예비 루프 · 복구 디졸브 ──
+        fo.Enabled = true; fo.HoldMs = 250;
+        var sw = Stopwatch.StartNew(); var next = 0.0;
+        void Paced(int frames)
+        {
+            for (var i = 0; i < frames; i++)
+            {
+                next += 1000.0 / 60;
+                while (sw.Elapsed.TotalMilliseconds < next) Thread.SpinWait(200);
+                st.Step();
+            }
+        }
+        void Settle()
+        {
+            fo.HoldMs = 250;   // 실측 정체 재트립 백오프(× 2) 누적 초기화 — 복구 경로 자체를 검증
+            for (var i = 0; i < 1200 && fo.State != SM.FailoverState.Normal; i++) { if (i % 120 == 119) fo.HoldMs = 250; Paced(1); }
+            Assert.True(fo.State == SM.FailoverState.Normal, "복구 대기 " + fo.State + " " + fo.ActiveCauses + Diag());
+        }
+        string Diag() { var t = " | 전환 " + fo.Switches + " 드롭 " + fo.FrameDropTrips + " LLM " + fo.LlmTimeouts + " 망 " + fo.NetworkTrips + " 행 " + fo.HangTrips + " 상태 " + fo.State + " 원인 " + fo.ActiveCauses + " 최대주기 " + fo.MaxFramePeriodMs.ToString("0.0") + " ["; for (var q = fo.IncidentCount - 1; q >= 0; q--) t += fo.IncidentAt(q).Cause + ":" + fo.IncidentAt(q).SwitchMs.ToString("0.0") + " "; return t + "]"; }
+        next = sw.Elapsed.TotalMilliseconds; Paced(20);
+        // 오탐 금지: 드롭 트립은 실측 33 ms 초과 주기가 있을 때만(테스트 머신 실측 정체는 정당한 트립)
+        Assert.True(fo.FrameDropTrips == 0 || fo.MaxFramePeriodMs > SM.ZeroDowntimeFailoverDisasterGuard.SlowFrameMs, "평상시 오탐 " + fo.LastCause + Diag());
+        Settle();
+        // 시나리오 검증: 해당 원인 트립 +1 · 그 전환 ≤ 50 ms · 스탠바이 무장(동시 실측 장애가 끼어들어도 전 전환 50 ms 계약은 최종 전환율로 검증)
+        void Expect(long tripsBefore, long tripsAfter, string what)
+        {
+            Assert.True(tripsAfter >= tripsBefore + 1 && fo.StandbyEngaged && fo.LastSwitchMs <= 50, what + " 트립 " + tripsBefore + "→" + tripsAfter + " 전환 " + fo.LastSwitchMs + " ms" + Diag());
+        }
+        // ① 프레임 드롭: 45 ms × 4 → 3 연속 관측 즉시 같은 틱 스탠바이
+        var sb0 = mcr.Mcr.StandbyFrames; var d0 = fo.FrameDropTrips;
+        st.SimulateRenderStall(4, 45);
+        for (var i = 0; i < 4; i++) st.Step();
+        next = sw.Elapsed.TotalMilliseconds;
+        Expect(d0, fo.FrameDropTrips, "프레임 드롭");
+        Assert.True(mcr.Mcr.StandbyFrames > sb0 && mcr.Mcr.StandbyWeight == 256);
+        var k = (int)((mcr.Mcr.VideoFrames - 1) % (2 * SM.ZeroDowntimeFailoverDisasterGuard.LoopFrames - 2)); if (k >= SM.ZeroDowntimeFailoverDisasterGuard.LoopFrames) k = 2 * SM.ZeroDowntimeFailoverDisasterGuard.LoopFrames - 2 - k;
+        Assert.True(mcr.Mcr.ProgramOut.SequenceEqual(fo.LoopFrame(k)), "PGM = 예비 루프");
+        // 스탠바이 중 MCR 틱 무할당(주 장면 갱신 생략 경로)
+        var sbAlloc = AllocationProbe.MinAllocated(() => { for (var i = 0; i < 10; i++) mcr.Step(); });
+        Assert.True(sbAlloc == 0, "스탠바이 틱 할당 " + sbAlloc);
+        next = sw.Elapsed.TotalMilliseconds;
+        Settle();
+        Assert.True(fo.Recoveries >= 1 && st.LastLuma > 8f, "복구 " + fo.Recoveries + Diag());
+        // ② LLM 지연 800 ms → 500 ms 초과 시점부터 50 ms 내 · 응답 후 복구
+        var l0 = fo.LlmTimeouts;
+        st.SimulateLlmLatency(800);
+        st.SkipToNextBoundary(1_500);
+        for (var i = 0; i < 90 && fo.LlmTimeouts == l0; i++) Paced(1);
+        Paced(2);
+        Expect(l0, fo.LlmTimeouts, "LLM");
+        for (var i = 0; i < 60 && fo.LlmPending; i++) Paced(1);
+        Assert.False(fo.LlmPending);
+        Settle();
+        st.SimulateLlmLatency(0);
+        // ③ 네트워크 순단 0.5 s
+        var n0 = fo.NetworkTrips;
+        st.SimulateNetworkOutage(0.5);
+        Paced(2);
+        Expect(n0, fo.NetworkTrips, "순단");
+        Settle();
+        // ④ 렌더 정지(행) 150 ms → 워치독 직송
+        var sink = new Sink(); fo.HangSink = sink;
+        fo.StartWatchdog();
+        Paced(10);
+        var h0 = fo.HangTrips;
+        Thread.Sleep(150);
+        next = sw.Elapsed.TotalMilliseconds;
+        Expect(h0, fo.HangTrips, "행");
+        Assert.True(sink.Frames >= 3, "직송 " + sink.Frames);
+        Settle();
+        fo.StopWatchdog();
+        Assert.True(fo.OnTimeRatio == 1.0 && fo.Switches >= 4 && fo.OnTimeSwitches == fo.Switches && fo.MaxSwitchMs <= 50 && fo.Recoveries >= 4 && fo.State == SM.FailoverState.Normal && fo.IncidentCount >= 4,
+            "전환율 " + fo.OnTimeRatio + " 최대 " + fo.MaxSwitchMs + " 복구 " + fo.Recoveries + Diag());
+
+        // ── 60 fps 예산(편성 레이어 결선) ──
+        fo.Enabled = false;
+        var tk = new double[60]; var lu = new double[60]; var med = double.MaxValue; var lmed = double.MaxValue;
+        for (var attempt = 0; attempt < 5 && (med >= 16.7 || lmed >= 1_000); attempt++)
+        {
+            if (attempt > 0) Thread.Sleep(150);
+            for (var i = 0; i < 60; i++) { mcr.Step(); tk[i] = mcr.LastTickMs; lu[i] = st.LastLayerUs; }
+            Array.Sort(tk); med = Math.Min(med, tk[30]); Array.Sort(lu); lmed = Math.Min(lmed, lu[30]);
+        }
+        Assert.True(med < 16.7 && lmed < 1_000, "중앙 틱 " + med + " ms · 레이어 중앙 " + lmed + " µs (최대 " + st.MaxLayerUs + ")");
+        st.Dispose(); mcr.Dispose(); talk.Dispose();
+
+        // ── STAT-4: 카탈로그 · HUD · 레이아웃 · 모달 렌더 · 구독 해제 ──
+        Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, e => e.Key == "_stationMaster" && e.Category == 0);
+        var root = RepoRoot();
+        var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
+        var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
+        Assert.True(hud.IndexOf("gth-v1770", StringComparison.Ordinal) is > 0 and var i1770 && i1770 < hud.IndexOf("gth-v1769", StringComparison.Ordinal) && hud.Contains("StnRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("StnRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<MasterStationNetworkStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_stationMaster\"", StringComparison.Ordinal) && layout.Contains("\"_stationMaster\" =>", StringComparison.Ordinal));
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = sp.GetService(typeof(SM.MasterStationNetworkStudioRunner))!;
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.MasterStationNetworkStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("msn-scrim", StringComparison.Ordinal) && html.Contains("EPG", StringComparison.Ordinal), "모달 렌더 " + html.Length);
         Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
     }

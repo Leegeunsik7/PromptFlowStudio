@@ -1,0 +1,225 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.StationMaster
+@using PromptFlowStudio.Services.BroadcastMcr
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject MasterStationNetworkStudioRunner Runner
+
+@* [PromptFlow Studio v17.70.0] 📡 24/7 방송국 마스터 편성 센터 — 24 h EPG 타임라인 · 자가진화 파라미터 게이지 · 재난 페일오버 헬스. *@
+<div class="msn-scrim" @onclick="Close">
+    <div class="msn-modal" @onclick:stopPropagation="true">
+        <div class="msn-h">
+            <div>
+                <div class="msn-title">📡 24/7 방송국 마스터 편성 센터 @(Runner.IsRunning ? "· ▶ ON-AIR" : null) · @(MasterStationNetworkStudioRunner.Hhmm(Runner.Epg.MinuteOfDay)) · @(MasterStationEpgSchedulerEngine.KindIcon(Runner.Active)) @(MasterStationEpgSchedulerEngine.KindName(Runner.Active))</div>
+                <div class="msn-sub"><b>EPG 편성 엔진</b>이 토크쇼(v17.65) · 라이브 커머스(v17.68) · 리듬 액션 콘서트(v17.54) · 릴스 리뷰(v17.69)를 24 시간 링 타임테이블로 순환하며, 시청자 트래픽에 따라 대체 편성 · 연장을 결정하고 경계마다 v17.66 MCR Mix 디졸브로 블랙 프레임 없이 교체합니다.
+                    <b>자가진화 합성기</b>는 릴스 성과(완청률 · 공유 · 댓글 감성)를 베이지안 팔에 섭취해 발화 속도 · BGM 텐션 · 물리 개입 주기 · 타임세일 간격을 적응시키고, <b>무중단 페일오버 가드</b>는 LLM 지연 · 프레임 드롭 · 네트워크 순단 · 렌더 정지를 감지하면 50 ms 안에 예비 3DGS 앰비언트 루프와 안내 자막으로 우회 송출합니다.</div>
+            </div>
+            <button class="msn-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="msn-bar">
+            <button class="msn-btn @(Runner.IsRunning ? "on" : "go")" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 24/7 송출")</button>
+            <button class="msn-btn" @onclick="() => Runner.SkipToNextBoundary(2500)">⏭ 다음 편성</button>
+            @foreach (var sp in Speeds)
+            {
+                var s = sp;
+                <button class="msn-btn sm @(Math.Abs(Runner.Speed - s) < 0.5 ? "on" : null)" @onclick="() => Runner.SetSpeed(s)">×@(s.ToString("0", CultureInfo.InvariantCulture))</button>
+            }
+            <span class="msn-sep"></span>
+            <label class="msn-lbl">트래픽 <input type="range" min="-1" max="100" step="1" value="@(float.IsNaN(Runner.TrafficOverride) ? "-1" : (Runner.TrafficOverride * 100).ToString("0", CultureInfo.InvariantCulture))" @onchange="OnTraffic" /> <b>@(float.IsNaN(Runner.TrafficOverride) ? "자동 " + Pct(Runner.Traffic) : Pct(Runner.TrafficOverride))%</b></label>
+        </div>
+
+        <div class="msn-card">
+            <div class="msn-sec">🗓️ 24 시간 EPG 타임라인</div>
+            <div class="msn-epg">
+                @for (var i = 0; i < Runner.Epg.Count; i++)
+                {
+                    var sl = Runner.Epg.At(i);
+                    var start = (int)(sl.StartMin % MasterStationEpgSchedulerEngine.DayMin);
+                    var w = sl.DurMin / 14.4;
+                    var left = start / 14.4;
+                    if (left + w > 100) w = 100 - left;
+                    <div class="msn-slot k@((int)(i == 0 ? sl.Aired : sl.Kind)) @(i == 0 ? "air" : null)" style="left:@(F1(left))%;width:@(F1(w))%" title="@(MasterStationNetworkStudioRunner.Hhmm(start)) @(Title(sl.Title))">@(MasterStationEpgSchedulerEngine.KindIcon(i == 0 ? sl.Aired : sl.Kind))</div>
+                }
+                <div class="msn-now" style="left:@(F1(Runner.Epg.MinuteOfDay / 14.4))%"></div>
+            </div>
+            <div class="msn-axis">@for (var h = 0; h < 24; h += 3) { <span style="left:@(F1(h * 60 / 14.4))%">@(h.ToString("00", CultureInfo.InvariantCulture)):00</span> }</div>
+            <div class="msn-next">
+                @for (var i = 0; i < Math.Min(5, Runner.Epg.Count); i++)
+                {
+                    var sl = Runner.Epg.At(i);
+                    <div class="@(i == 0 ? "air" : null)">
+                        <b>@(MasterStationNetworkStudioRunner.Hhmm((int)(sl.StartMin % 1440)))</b>
+                        <span>@(MasterStationEpgSchedulerEngine.KindIcon(i == 0 ? sl.Aired : sl.Kind)) @(Title(sl.Title))@(i == 0 && sl.Aired != sl.Kind ? " → 대체 " + MasterStationEpgSchedulerEngine.KindName(sl.Aired) : null)@(sl.Extensions > 0 ? " · +15분 연장" : null)</span>
+                        <em>@(sl.DurMin)분@(i == 0 ? " · 잔여 " + F0(Runner.Epg.RemainingMs / 60000.0) + "분" : null)</em>
+                    </div>
+                }
+            </div>
+            <div class="msn-kpis">
+                <span><b>@(Runner.Epg.Takes)</b>편성 전환</span>
+                <span><b class="@(Runner.BlackFrames > 0 ? "bad" : "ok")">@(Runner.BlackFrames)</b>블랙 프레임</span>
+                <span><b>@(Runner.SeamlessTakes)</b>무결 디졸브</span>
+                <span><b>@(Runner.Epg.AltSwaps)</b>트래픽 대체</span>
+                <span><b>@(Runner.Epg.Extensions)</b>연장</span>
+                <span><b>@(Runner.BeatCuts)</b>비트 컷</span>
+            </div>
+        </div>
+
+        <div class="msn-main">
+            <div class="msn-card">
+                <div class="msn-sec">🧬 자가진화 파라미터 (섭취 @(Runner.Evolution.Ingested) · 평균 성공 @(F2(Runner.Evolution.MeanSuccess)))</div>
+                @foreach (var p in Params)
+                {
+                    <div class="msn-gauge">
+                        <span>@(ClosedLoopViralFeedbackSelfEvolutionSynthesizer.ParamName(p))</span>
+                        <i><em style="width:@(Pct(Runner.Evolution.Normalized(p)))%"></em></i>
+                        <b>@(ParamText(p))</b>
+                        <small>팔 @(Runner.Evolution.Arms[(int)p] + 1)/5</small>
+                    </div>
+                }
+                <svg class="msn-plot" viewBox="0 0 600 60" preserveAspectRatio="none"><polyline points="@SuccessPoints()" /></svg>
+                <div class="msn-row">
+                    <button class="msn-btn sm" @onclick="() => Runner.SimulateFeedback(10)">🧪 릴 성과 10건 섭취</button>
+                    <button class="msn-btn sm" @onclick="Runner.Evolution.Reset">♻ 사후 분포 초기화</button>
+                    <span class="msn-dim">물리 드롭 @(Runner.PhysicsDrops) · 타임세일 @(Runner.TimeSales) · 애드리브 @(Runner.Adlibs)</span>
+                </div>
+            </div>
+
+            <div class="msn-card">
+                <div class="msn-sec">🛡 재난 페일오버 헬스</div>
+                <div class="msn-state s@((int)Runner.Failover.State)">@(ZeroDowntimeFailoverDisasterGuard.StateName(Runner.Failover.State))@(Runner.Failover.ActiveCauses != FailoverCause.None ? " · " + ZeroDowntimeFailoverDisasterGuard.CauseName(Runner.Failover.ActiveCauses) : null)</div>
+                <div class="msn-split">
+                    <div class="msn-view">@if (_standby.Length > 0) { <img src="@_standby" alt="예비 루프" /> }</div>
+                    <div class="msn-kpis two">
+                        <span><b class="@(Runner.Failover.OnTimeRatio < 1 ? "bad" : "ok")">@(Pct((float)Runner.Failover.OnTimeRatio))%</b>50 ms 내 전환율</span>
+                        <span><b>@(Runner.Failover.Switches)</b>페일오버</span>
+                        <span><b class="@(Runner.Failover.MaxSwitchMs > 50 ? "bad" : null)">@(F1(Runner.Failover.MaxSwitchMs))</b>최대 전환 ms</span>
+                        <span><b>@(Runner.Failover.Recoveries)</b>복구</span>
+                        <span><b class="@(Runner.Failover.LlmPending && Runner.Failover.LlmAgeMs > 300 ? "bad" : null)">@(F0(Runner.Failover.LlmAgeMs))</b>LLM 대기 ms</span>
+                        <span><b>@(F1(Runner.Failover.LastFramePeriodMs))</b>프레임 주기 ms</span>
+                    </div>
+                </div>
+                <div class="msn-row">
+                    <button class="msn-btn sm hot" @onclick="() => Runner.SimulateLlmLatency(Runner.Templates.SimulatedLatencyMs > 0 ? 0 : 800)">🧠 LLM 지연 @(Runner.Templates.SimulatedLatencyMs > 0 ? "해제" : "800ms")</button>
+                    <button class="msn-btn sm hot" @onclick="() => Runner.SimulateRenderStall(4, 45)">🐢 프레임 드롭</button>
+                    <button class="msn-btn sm hot" @onclick="() => Runner.SimulateNetworkOutage(3)">📶 네트워크 순단</button>
+                    <button class="msn-btn sm @(Runner.Failover.ActiveCauses.HasFlag(FailoverCause.Manual) ? "on" : null)" @onclick="() => Runner.SetManualStandby(!Runner.Failover.ActiveCauses.HasFlag(FailoverCause.Manual))">🛟 수동 스탠바이</button>
+                </div>
+                <div class="msn-log">
+                    @for (var i = 0; i < Math.Min(6, Runner.Failover.IncidentCount); i++)
+                    {
+                        var e = Runner.Failover.IncidentAt(i);
+                        <div class="@(e.OnTime ? null : "late")"><i>@(ZeroDowntimeFailoverDisasterGuard.CauseName(e.Cause))</i><span>전환 @(F1(e.SwitchMs)) ms · 지속 @(e.DurationMs > 0 ? F1(e.DurationMs / 1000) + " s" : "진행 중")</span></div>
+                    }
+                </div>
+            </div>
+        </div>
+        <div class="msn-act">@(Runner.LastAction ?? "대기") · @(Runner.LastLine is { } ln ? "🎙 “" + ln + "”" : null)</div>
+    </div>
+</div>
+
+<style>
+    .msn-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .msn-modal { width: min(1300px, 96vw); max-height: 94vh; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); padding: 14px 16px; color: var(--text-primary); }
+    .msn-h { display: flex; justify-content: space-between; gap: 12px; } .msn-title { font-size: 17px; font-weight: 800; } .msn-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .msn-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .msn-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 10px 0; }
+    .msn-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .msn-btn.go { border-color: #22c55e; } .msn-btn.on { background: color-mix(in srgb, #0ea5e9 28%, #1e293b); border-color: #0ea5e9; } .msn-btn.hot { border-color: #f97316; } .msn-btn.sm { padding: 3px 8px; font-size: 11px; }
+    .msn-sep { flex: 1; } .msn-lbl { display: flex; gap: 6px; align-items: center; font-size: 11px; color: var(--text-muted); } .msn-lbl b { font: 700 11px var(--mono); color: var(--text-primary); }
+    .msn-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-bottom: 10px; }
+    .msn-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 8px; }
+    .msn-epg { position: relative; height: 34px; background: #05070c; border-radius: 6px; overflow: hidden; }
+    .msn-slot { position: absolute; top: 3px; bottom: 3px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 12px; opacity: .8; border-right: 1px solid #05070c; overflow: hidden; }
+    .msn-slot.k0 { background: #6366f1; } .msn-slot.k1 { background: #ec4899; } .msn-slot.k2 { background: #f59e0b; } .msn-slot.k3 { background: #8b5cf6; } .msn-slot.k4 { background: #334155; } .msn-slot.air { opacity: 1; box-shadow: inset 0 0 0 2px #fde047; }
+    .msn-now { position: absolute; top: 0; bottom: 0; width: 2px; background: #ef4444; box-shadow: 0 0 6px #ef4444; }
+    .msn-axis { position: relative; height: 14px; font: 9.5px var(--mono); color: var(--text-muted); } .msn-axis span { position: absolute; transform: translateX(-2px); }
+    .msn-next { display: flex; flex-direction: column; gap: 3px; margin: 6px 0 8px; } .msn-next div { display: grid; grid-template-columns: 52px 1fr auto; gap: 8px; font-size: 11.5px; background: #0f172a; border-radius: 5px; padding: 3px 8px; }
+    .msn-next div.air { border-left: 3px solid #fde047; } .msn-next b { font-family: var(--mono); } .msn-next em { font-style: normal; color: var(--text-muted); font-size: 10.5px; }
+    .msn-kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; } .msn-kpis.two { grid-template-columns: repeat(2, 1fr); }
+    .msn-kpis span { display: flex; flex-direction: column; font-size: 10px; color: var(--text-muted); background: #0f172a; border-radius: 6px; padding: 5px 7px; } .msn-kpis b { font: 800 14px var(--mono); color: var(--text-primary); } .msn-kpis .bad { color: #f87171; } .msn-kpis .ok { color: #86efac; }
+    .msn-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+    .msn-gauge { display: grid; grid-template-columns: 96px 1fr 96px 52px; gap: 6px; align-items: center; font-size: 11.5px; margin-bottom: 5px; }
+    .msn-gauge i { display: block; height: 9px; background: #1e293b; border-radius: 5px; overflow: hidden; } .msn-gauge em { display: block; height: 100%; background: linear-gradient(90deg, #22d3ee, #a78bfa); transition: width .3s; }
+    .msn-gauge b { font: 700 11px var(--mono); text-align: right; } .msn-gauge small { font-size: 10px; color: var(--text-muted); }
+    .msn-plot { width: 100%; height: 60px; background: #05070c; border-radius: 6px; margin-top: 4px; } .msn-plot polyline { fill: none; stroke: #34d399; stroke-width: 1.5; }
+    .msn-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; } .msn-dim { font-size: 10.5px; color: var(--text-muted); }
+    .msn-state { font-size: 12.5px; font-weight: 700; padding: 6px 8px; border-radius: 6px; margin-bottom: 8px; } .msn-state.s0 { background: rgba(34,197,94,.12); color: #86efac; } .msn-state.s1 { background: rgba(239,68,68,.16); color: #fca5a5; } .msn-state.s2 { background: rgba(250,204,21,.14); color: #fde68a; }
+    .msn-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; } .msn-view { border-radius: 6px; overflow: hidden; background: #05070c; aspect-ratio: 5 / 3; } .msn-view img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .msn-log { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; } .msn-log div { display: grid; grid-template-columns: 90px 1fr; gap: 6px; font-size: 11px; background: #0f172a; border-radius: 5px; padding: 3px 6px; border-left: 3px solid #22c55e; }
+    .msn-log div.late { border-left-color: #ef4444; } .msn-log i { font-style: normal; font-weight: 700; } .msn-log span { color: var(--text-muted); }
+    .msn-act { font-size: 11px; color: var(--text-muted); }
+    @@media (max-width: 960px) { .msn-main, .msn-split { grid-template-columns: 1fr; } .msn-kpis { grid-template-columns: repeat(3, 1fr); } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly double[] Speeds = { 1, 60, 600 };
+    private static readonly EvoParam[] Params = { EvoParam.SpeechRate, EvoParam.BgmEnergy, EvoParam.PhysicsInterval, EvoParam.TimeSaleInterval };
+    private System.Threading.Timer? _timer;
+    private string _standby = "";
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        if (Runner.Failover.Baked)
+        {
+            var bmp = new byte[BroadcastMcrStudioRunner.PreviewBytes];
+            BroadcastMcrMasterControlSynthesizer.WriteBmp(Runner.Failover.LoopFrame(0), bmp);
+            _standby = "data:image/bmp;base64," + Convert.ToBase64String(bmp);
+        }
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Station.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string F0(double v) => double.IsFinite(v) ? v.ToString("0", CultureInfo.InvariantCulture) : "—";
+    private static string F1(double v) => double.IsFinite(v) ? v.ToString("0.0", CultureInfo.InvariantCulture) : "—";
+    private static string F2(double v) => double.IsFinite(v) ? v.ToString("0.00", CultureInfo.InvariantCulture) : "—";
+    private static string Pct(float v) => Math.Clamp(v * 100.0, 0, 100).ToString("0", CultureInfo.InvariantCulture);
+    private static string Title(short t) => MasterStationEpgSchedulerEngine.Titles[Math.Clamp((int)t, 0, MasterStationEpgSchedulerEngine.Titles.Length - 1)];
+
+    private string ParamText(EvoParam p) => p switch
+    {
+        EvoParam.SpeechRate => F0(Runner.Evolution.Wpm) + " WPM",
+        EvoParam.BgmEnergy => F0(Runner.Evolution.BgmEnergy * 100) + "% · " + F0(Runner.Evolution.BgmBpm),
+        EvoParam.PhysicsInterval => F0(Runner.Evolution.PhysicsIntervalSec) + " s",
+        _ => F0(Runner.Evolution.TimeSaleIntervalSec / 60) + " 분",
+    };
+
+    private string SuccessPoints()
+    {
+        var n = Runner.Evolution.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+            sb.Append((600.0 * i / (n - 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append((58 - 56 * Runner.Evolution.SuccessSeries(n - 1 - i)).ToString("0.#", CultureInfo.InvariantCulture)).Append(' ');
+        return sb.ToString();
+    }
+
+    private void OnTraffic(ChangeEventArgs e)
+    {
+        if (float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) Runner.SetTrafficOverride(v < 0 ? float.NaN : v / 100f);
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}

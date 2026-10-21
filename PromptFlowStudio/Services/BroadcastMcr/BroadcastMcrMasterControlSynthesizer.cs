@@ -11,6 +11,16 @@ public interface IMcrProgramOverlay
     void Apply(Span<byte> rgb, int width, int height, long frame);
 }
 
+/// <summary>v17.70 무재해 스탠바이 소스(예비 3DGS 앰비언트 루프 + 안내 자막) — 프레임당 1 회 가중치(0~256) 진행 · 256 = 주 렌더 생략 전면 대체(무할당).</summary>
+public interface IMcrStandbySource
+{
+    /// <summary>전면 대체(가중치 256) 무장 상태 — MCR 러너가 주 장면 갱신을 생략.</summary>
+    bool Engaged { get; }
+    int NextWeight(long frame);
+    void Write(Span<byte> rgb, long frame);
+    void Blend(Span<byte> rgb, int w256, long frame);
+}
+
 /// <summary>
 /// [PromptFlow Studio v17.66.0] 방송 주조정실(MCR) PGM/PVW 이중 버스 &amp; 트랜지션 합성기(60 fps · 무할당 핫패스).
 ///   ▸ 소스 5: v17.65/v17.39 4 캠(마스터 투샷 · OTS A · OTS B · 액션 바스트/리액션) + PPL 제품 인서트 캠 — 통합 3DGS 컴포지터가 버스별 RGB24 렌더.
@@ -48,6 +58,10 @@ public sealed class BroadcastMcrMasterControlSynthesizer : IDisposable
     public ref readonly SplatCamera Camera(int s) => ref _cam[s];
     public float MasterGain { get; set; } = 1f;
     public IMcrProgramOverlay? Overlay { get; set; }
+    /// <summary>v17.70 무재해 스탠바이 버스 — 가중치 256 이면 PGM/PVW 렌더 생략(예비 루프만 · 송출 연속), 0~255 = 복귀 디졸브.</summary>
+    public IMcrStandbySource? Standby { get; set; }
+    public long StandbyFrames { get; private set; }
+    public int StandbyWeight { get; private set; }
     public bool Mute { get; set; }
     public float PeakL { get; private set; }
     public float RmsL { get; private set; }
@@ -155,6 +169,8 @@ public sealed class BroadcastMcrMasterControlSynthesizer : IDisposable
     public void Frame(UnifiedGaussianSceneCompositorEngine comp)
     {
         var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+        var sb = Standby; var sw = sb?.NextWeight(_frames) ?? 0; StandbyWeight = sw;
+        if (sw >= 256) { sb!.Write(_out, _frames); StandbyFrames++; FinishFrame(t0); return; }
         comp.Render(in _cam[_pgm], _pgmBuf); PgmRenders++;
         if (_transitioning || _pvwStale || _frames % PvwDivider == 0) { comp.Render(in _cam[_pvw], _pvwBuf); PvwRenders++; _pvwStale = false; }
         if (_transitioning)
@@ -171,7 +187,13 @@ public sealed class BroadcastMcrMasterControlSynthesizer : IDisposable
             }
         }
         else _pgmBuf.AsSpan().CopyTo(_out);
+        if (sw > 0) { sb!.Blend(_out, sw, _frames); StandbyFrames++; }
         Overlay?.Apply(_out, W, H, _frames);
+        FinishFrame(t0);
+    }
+
+    private void FinishFrame(long t0)
+    {
         PullAudio();
         ToNv12(_out, _y, _uv);
         if (_enc is { IsOpen: true } enc) enc.EncodeFrame(_y, _uv, _l, _r);

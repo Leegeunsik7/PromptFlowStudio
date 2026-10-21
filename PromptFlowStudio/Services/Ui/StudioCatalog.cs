@@ -22,6 +22,7 @@ public static class StudioCatalog
 
     public static readonly StudioEntry[] Entries =
     {
+        new("_stationMaster", "📡", "24/7 방송국 마스터 편성 센터", 0),
         new("_showrunner", "🎪", "AI 자율 쇼러너 & 인터랙티브 스튜디오", 0),
         new("_bcastMcr", "🎛️", "브로드캐스트 주조정실(MCR) 스튜디오", 0),
         new("_gsShadow", "🌓", "3DGS 섀도우 & 릴라이팅 스튜디오", 0),

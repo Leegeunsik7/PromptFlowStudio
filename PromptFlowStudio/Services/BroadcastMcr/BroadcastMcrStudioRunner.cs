@@ -217,9 +217,11 @@ public sealed class BroadcastMcrStudioRunner : IDisposable
         comp.SetProp(Ppl.Position, true);
         Layer?.Step(comp, in Mcr.Camera(Mcr.Program), NowMs, Dt);
         for (var li = 0; li < _extra.Length; li++) _extra[li]?.Step(comp, in Mcr.Camera(Mcr.Program), NowMs, Dt);
-        comp.Update();
+        // v17.70 스탠바이 전면 대체 중 = 주 장면 갱신 · 디렉팅 생략(전환 경로 최단 · 렌더 부하 소거)
+        var standby = Mcr.Standby is { Engaged: true };
+        if (!standby) comp.Update();
         // ⑤ 쇼러너 긴급 클로즈업 큐(최우선 · 진행 중 트랜지션은 즉시 종료 후 컷) → 자동 디렉팅
-        if (_cue >= 0)
+        if (_cue >= 0 && !standby)
         {
             var src = _cueSource;
             Mcr.AbortTransition();
@@ -228,7 +230,7 @@ public sealed class BroadcastMcrStudioRunner : IDisposable
             LastCueLatencyFrames = Tick - _cueTick; CueCuts++;
             _cue = -1; _holdUntil = Tick + CueHoldFrames; _lastLive = talk.Guard.LiveCam;
         }
-        if (AutoDirect && !Mcr.Transitioning && Tick >= _holdUntil)
+        if (AutoDirect && !standby && !Mcr.Transitioning && Tick >= _holdUntil)
         {
             var live = talk.Guard.LiveCam;
             if (live != _lastLive)

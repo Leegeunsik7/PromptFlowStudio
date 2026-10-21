@@ -81,6 +81,9 @@ public sealed class RealtimeLlmTextToGestureTransformer
     public bool Hallucinate { get; set; }
     public ref readonly GestureFrame Current => ref _frame;
     public ReadOnlySpan<float> FaceOffsets => _face;
+    /// <summary>v17.70 발화 속도 배율(1 = 기본 ≈ 300 음절/분 · v17.70 자가진화 WPM 적응) — 0.6~1.6 클램프 · 다음 줄부터 적용.</summary>
+    public float RateScale { get => _rate; set => _rate = Math.Clamp(value, 0.6f, 1.6f); }
+    private float _rate = 1f;
     public double Clock => _clock;
     public double ScheduleEndS => _schedEnd;
     public int Pending => (int)(_tokTail - _tokHead);
@@ -168,13 +171,13 @@ public sealed class RealtimeLlmTextToGestureTransformer
             tk.CharStart = (int)(_charHead % CharRing); tk.CharLen = w.Length; tk.Line = _lines;
             _charHead += w.Length;
             var syl = 0; foreach (var c in w) if (char.IsLetterOrDigit(c)) syl++;
-            tk.OnsetS = t; tk.DurS = MathF.Max(1, syl) * SyllableS;
+            tk.OnsetS = t; tk.DurS = MathF.Max(1, syl) * SyllableS / RateScale;
             var pos = count > 1 ? k / (float)(count - 1) : 0f;
             var emph = Lexicon(w, out _);
             tk.PlanPitch = 0.4f - 0.5f * pos + 0.9f * emph + (k == count - 1 && question ? 0.9f : 0f);
             tk.PlanEnergy = 0.5f + 0.6f * emph + (exclaim ? 0.35f : 0f) - 0.2f * pos;
             tk.LineEnd = k == count - 1;
-            t += tk.DurS + TokenGapS;
+            t += tk.DurS + TokenGapS / RateScale;
             _tokTail++; added++; k++;
         }
         _schedEnd = t + LineGapS; _lines++;
