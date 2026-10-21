@@ -1,0 +1,200 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.SemanticChat
+@using PromptFlowStudio.Services.BroadcastMcr
+@using PromptFlowStudio.Services.StreamGateway
+@using PromptFlowStudio.Services.InfluencerLive
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject SemanticChatWeatherStudioRunner Runner
+
+@* [PromptFlow Studio v17.72.0] 🌩️ 시맨틱 채팅 & 날씨 엔진 스튜디오 — 통합 채팅창 · 4 차원 군중 감성 레이더 · 날씨/조명 오버라이드 · PGM 미리보기. *@
+<div class="scw-scrim" @onclick="Close">
+    <div class="scw-modal" @onclick:stopPropagation="true">
+        <div class="scw-h">
+            <div>
+                <div class="scw-title">🌩️ 시맨틱 채팅 & 날씨 엔진 스튜디오 @(Runner.IsRunning ? "· ▶ MCR 60 Hz" : null) · @(ChatDrivenVolumetricWeatherEngine.PresetIcon(Runner.Weather.Dominant)) @(ChatDrivenVolumetricWeatherEngine.PresetName(Runner.Weather.Dominant))</div>
+                <div class="scw-sub"><b>통합 애그리게이터</b>가 Twitch · YouTube · 치지직 채팅을 잠금 없는 단일 링으로 병합하고 초당 1,000건을 넘으면 일반 메시지를 비율 셰딩합니다. <b>시맨틱 분석기</b>는 v17.61 금칙어 · 도배 · 레이드 가드로 악성 채팅을 블라인드하고, 최근 5초 감성(열광 · 즐거움 · 슬픔 · 분노)을 0~1 벡터로 산출합니다.
+                    <b>날씨 엔진</b>은 이 벡터로 3DGS 방사휘도(틴트 · 네온 · 번개 섬광)와 안개 · 비 · 폭죽 파티클을 1.5초 평활 트랜지션으로 바꿉니다.</div>
+            </div>
+            <button class="scw-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="scw-bar">
+            <button class="scw-btn @(Runner.IsRunning ? "on" : "go")" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 시작")</button>
+            <button class="scw-btn @(Runner.LinkGateway ? "on" : null)" disabled="@(!Runner.GatewayAvailable)" @onclick="() => Runner.SetLinkGateway(!Runner.LinkGateway)">🔗 v17.62 실채팅</button>
+            <span class="scw-lbl">군중 시뮬</span>
+            @foreach (var e in Emotions)
+            {
+                var em = e;
+                <button class="scw-btn sm" @onclick="() => Runner.SetCrowd(em, _rate)">@(SemanticSentimentToxicityAnalyzer.EmotionIcon(em)) @(SemanticSentimentToxicityAnalyzer.EmotionName(em))</button>
+            }
+            <button class="scw-btn sm" @onclick="() => Runner.SetCrowd(null, _rate)">🎲 혼합</button>
+            <button class="scw-btn sm" @onclick="() => Runner.SetCrowd(CrowdEmotion.Hype, 1500)">🌊 1,500/s 스파이크</button>
+            <button class="scw-btn sm" @onclick="Runner.StopCrowd">⏹</button>
+            <span class="scw-sep"></span>
+            <label class="scw-lbl">속도 <input type="range" min="10" max="1200" step="10" value="@(_rate.ToString("0", CultureInfo.InvariantCulture))" @onchange="OnRate" /> <b>@(_rate.ToString("0", CultureInfo.InvariantCulture))/s</b></label>
+        </div>
+
+        <div class="scw-main">
+            <div class="scw-col">
+                <div class="scw-card">
+                    <div class="scw-sec">💬 크로스 플랫폼 통합 채팅 (@(Runner.Analyzer.MessagesPerSec.ToString("0", CultureInfo.InvariantCulture)) msg/s)</div>
+                    <div class="scw-feed">
+                        @for (var i = 0; i < Math.Min(18, Runner.Analyzer.FeedCount); i++)
+                        {
+                            var f = Runner.Analyzer.Feed(i);
+                            <div class="@(f.Verdict != ChatSafetyVerdict.Clean ? "blind" : null)">
+                                <i class="p@((int)f.Platform)">@(PlatformTag(f.Platform))</i>
+                                <b>@(Runner.Analyzer.FeedUserText(i).ToString())</b>
+                                <span>@(Runner.Analyzer.FeedBody(i).ToString())</span>
+                                <em>@(f.Verdict != ChatSafetyVerdict.Clean ? "🚫 " + ChatSpamToxicitySafetyGuard.VerdictName(f.Verdict) : f.Emotion >= 0 ? SemanticSentimentToxicityAnalyzer.EmotionIcon((CrowdEmotion)f.Emotion) : "·")@(f.Amount > 0 ? " 💰" : null)</em>
+                            </div>
+                        }
+                    </div>
+                    <div class="scw-kpis">
+                        <span><b>@(Runner.Aggregator.Accepted.ToString("N0", CultureInfo.InvariantCulture))</b>병합</span>
+                        <span><b class="@(Runner.Aggregator.Shed > 0 ? "warn" : null)">@(Runner.Aggregator.Shed.ToString("N0", CultureInfo.InvariantCulture))</b>밸브 셰딩</span>
+                        <span><b class="@(Runner.Analyzer.Blinded > 0 ? "warn" : null)">@(Runner.Analyzer.Blinded)</b>블라인드</span>
+                        <span><b>@((Runner.Aggregator.Occupancy * 100).ToString("0", CultureInfo.InvariantCulture))%</b>링 점유</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="scw-col">
+                <div class="scw-card">
+                    <div class="scw-sec">🎯 4차원 군중 감성 레이더 (5 s · 강도 @(Runner.Analyzer.Intensity.ToString("0.0", CultureInfo.InvariantCulture))/s · 독성 @((Runner.Analyzer.ToxicityRatio * 100).ToString("0", CultureInfo.InvariantCulture))%)</div>
+                    <div class="scw-radar">
+                        <svg viewBox="-110 -110 220 220">
+                            <polygon points="0,-90 90,0 0,90 -90,0" class="g" />
+                            <polygon points="0,-45 45,0 0,45 -45,0" class="g" />
+                            <line x1="0" y1="-90" x2="0" y2="90" class="g" /><line x1="-90" y1="0" x2="90" y2="0" class="g" />
+                            <polygon points="@RadarPoints()" class="v" />
+                            <g><text x="0" y="-96" text-anchor="middle">🔥 @(Pct(Runner.Vector.Hype))</text></g>
+                            <g><text x="96" y="4" text-anchor="start">😊 @(Pct(Runner.Vector.Joy))</text></g>
+                            <g><text x="0" y="106" text-anchor="middle">😢 @(Pct(Runner.Vector.Sadness))</text></g>
+                            <g><text x="-96" y="4" text-anchor="end">😡 @(Pct(Runner.Vector.Anger))</text></g>
+                        </svg>
+                        <div class="scw-view">@if (_pgm.Length > 0) { <img src="@_pgm" alt="PGM" /> } else { <div class="ph">▶ 시작 후 PGM 미리보기</div> }</div>
+                    </div>
+                </div>
+
+                <div class="scw-card">
+                    <div class="scw-sec">🎛 날씨 · 조명 오버라이드 @(Runner.Weather.Override is null ? "(🤖 감성 자동)" : "(강제)")</div>
+                    <div class="scw-row">
+                        <button class="scw-btn sm @(Runner.Weather.Override is null ? "on" : null)" @onclick="() => Runner.SetOverride(null)">🤖 자동</button>
+                        @foreach (var p in Presets)
+                        {
+                            var pp = p;
+                            <button class="scw-btn sm @(Runner.Weather.Override == pp ? "on" : null)" @onclick="() => Runner.SetOverride(pp, _intensity)">@(ChatDrivenVolumetricWeatherEngine.PresetIcon(pp)) @(ChatDrivenVolumetricWeatherEngine.PresetName(pp))</button>
+                        }
+                    </div>
+                    <div class="scw-row">
+                        <label class="scw-lbl">강도 <input type="range" min="0" max="100" value="@((_intensity * 100).ToString("0", CultureInfo.InvariantCulture))" @onchange="OnIntensity" /> <b>@((_intensity * 100).ToString("0", CultureInfo.InvariantCulture))%</b></label>
+                        <label class="scw-lbl">트랜지션 <input type="range" min="2" max="60" value="@((Runner.Weather.TransitionSec * 10).ToString("0", CultureInfo.InvariantCulture))" @onchange="OnTransition" /> <b>@(Runner.Weather.TransitionSec.ToString("0.0", CultureInfo.InvariantCulture)) s</b></label>
+                    </div>
+                    <div class="scw-params">
+                        <span>노출 <b>@(Runner.Weather.Current.Exposure.ToString("0.00", CultureInfo.InvariantCulture))</b></span>
+                        <span>네온 <b>@(Pct(Runner.Weather.Current.Neon))</b></span>
+                        <span>폭죽 <b>@(Runner.Weather.ActiveSparks)</b></span>
+                        <span>비 <b>@(Pct(Runner.Weather.Current.Rain))</b></span>
+                        <span>안개 <b>@(Pct(Runner.Weather.Current.Fog))</b></span>
+                        <span>번개 <b>@(Runner.Weather.Bolts)</b></span>
+                        <span>레이어 <b class="@(Runner.MaxLayerUs > 2000 ? "warn" : null)">@(Runner.LastLayerUs.ToString("0", CultureInfo.InvariantCulture)) µs</b></span>
+                        <span>MCR <b class="@(Runner.Mcr.LastTickMs > 16.7 ? "warn" : null)">@(Runner.Mcr.LastTickMs.ToString("0.0", CultureInfo.InvariantCulture)) ms</b></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="scw-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+    </div>
+</div>
+
+<style>
+    .scw-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .scw-modal { width: min(1300px, 96vw); max-height: 94vh; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); padding: 14px 16px; color: var(--text-primary); }
+    .scw-h { display: flex; justify-content: space-between; gap: 12px; } .scw-title { font-size: 17px; font-weight: 800; } .scw-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .scw-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .scw-bar, .scw-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; } .scw-sep { flex: 1; }
+    .scw-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .scw-btn.go { border-color: #22c55e; } .scw-btn.on { background: color-mix(in srgb, #a855f7 28%, #1e293b); border-color: #a855f7; } .scw-btn.sm { padding: 3px 8px; font-size: 11px; } .scw-btn:disabled { opacity: .45; cursor: default; }
+    .scw-lbl { display: flex; gap: 5px; align-items: center; font-size: 11px; color: var(--text-muted); } .scw-lbl b { font: 700 11px var(--mono); color: var(--text-primary); }
+    .scw-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 10px; } .scw-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .scw-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; } .scw-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 8px; }
+    .scw-feed { display: flex; flex-direction: column; gap: 2px; height: 360px; overflow-y: auto; }
+    .scw-feed div { display: grid; grid-template-columns: 34px 82px 1fr auto; gap: 6px; align-items: center; font-size: 11.5px; background: #0f172a; border-radius: 5px; padding: 3px 6px; }
+    .scw-feed div.blind { opacity: .6; border-left: 3px solid #ef4444; } .scw-feed b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #cbd5e1; } .scw-feed span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .scw-feed i { font-style: normal; font: 700 9.5px var(--mono); text-align: center; border-radius: 4px; padding: 1px 0; } .scw-feed i.p0 { background: #6d28d9; } .scw-feed i.p1 { background: #b91c1c; } .scw-feed i.p2 { background: #047857; }
+    .scw-feed em { font-style: normal; font-size: 11px; }
+    .scw-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 8px; } .scw-kpis span { display: flex; flex-direction: column; font-size: 10px; color: var(--text-muted); background: #0f172a; border-radius: 6px; padding: 5px 7px; }
+    .scw-kpis b { font: 800 14px var(--mono); color: var(--text-primary); } .scw-kpis .warn, .scw-params .warn { color: #fb923c; }
+    .scw-radar { display: grid; grid-template-columns: 220px 1fr; gap: 10px; align-items: center; } .scw-radar svg { width: 220px; height: 220px; }
+    .scw-radar .g { fill: none; stroke: #334155; stroke-width: 1; } .scw-radar .v { fill: rgba(168,85,247,.35); stroke: #c084fc; stroke-width: 2; } .scw-radar text { fill: #e2e8f0; font-size: 11px; }
+    .scw-view { border-radius: 8px; overflow: hidden; background: #05070c; aspect-ratio: 5 / 3; } .scw-view img { width: 100%; height: 100%; object-fit: cover; display: block; } .scw-view .ph { display: flex; align-items: center; justify-content: center; height: 100%; font-size: 12px; color: var(--text-muted); }
+    .scw-params { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; } .scw-params span { font-size: 10.5px; color: var(--text-muted); background: #0f172a; border-radius: 5px; padding: 3px 6px; } .scw-params b { font-family: var(--mono); color: var(--text-primary); }
+    .scw-act { font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+    @@media (max-width: 960px) { .scw-main, .scw-radar { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly CrowdEmotion[] Emotions = { CrowdEmotion.Hype, CrowdEmotion.Joy, CrowdEmotion.Sadness, CrowdEmotion.Anger };
+    private static readonly WeatherPreset[] Presets = { WeatherPreset.Clear, WeatherPreset.NeonFireworks, WeatherPreset.GoldenBloom, WeatherPreset.RainFog, WeatherPreset.RedStorm };
+    private readonly byte[] _bmp = new byte[BroadcastMcrStudioRunner.PreviewBytes];
+    private System.Threading.Timer? _timer;
+    private string _pgm = "";
+    private float _rate = 120f, _intensity = 1f;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("SemanticChat.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    protected override bool ShouldRender()
+    {
+        if (Runner.Mcr.Compositor is not null && Runner.Mcr.Mcr.VideoFrames > 0)
+        {
+            Runner.Mcr.WritePreviews();
+            Runner.Mcr.CopyPreview(true, _bmp);
+            _pgm = "data:image/bmp;base64," + Convert.ToBase64String(_bmp);
+        }
+        return true;
+    }
+
+    private static string Pct(float v) => Math.Clamp(v * 100.0, 0, 100).ToString("0", CultureInfo.InvariantCulture) + "%";
+    private static string PlatformTag(ChatPlatform p) => p switch { ChatPlatform.Twitch => "TW", ChatPlatform.YouTube => "YT", _ => "CZ" };
+
+    private string RadarPoints()
+    {
+        var v = Runner.Vector;
+        static string F(float x) => x.ToString("0.#", CultureInfo.InvariantCulture);
+        return "0," + F(-90 * v.Hype) + " " + F(90 * v.Joy) + ",0 0," + F(90 * v.Sadness) + " " + F(-90 * v.Anger) + ",0";
+    }
+
+    private void OnRate(ChangeEventArgs e) { if (float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) { _rate = v; Runner.Simulator.RatePerSec = v; } }
+    private void OnIntensity(ChangeEventArgs e) { if (float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) { _intensity = v / 100f; if (Runner.Weather.Override is { } p) Runner.SetOverride(p, _intensity); } }
+    private void OnTransition(ChangeEventArgs e) { if (float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) Runner.Weather.TransitionSec = v / 10f; }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}

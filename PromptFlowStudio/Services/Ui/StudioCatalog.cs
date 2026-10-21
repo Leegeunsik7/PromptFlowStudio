@@ -53,6 +53,7 @@ public static class StudioCatalog
         new("sb:_spatialOpen", "🥽", "공간 비디오 & Vision Pro 스튜디오 (스토리보드)", 0),
         new("sb:_virtualOpen", "🎬", "AI 버추얼 프로덕션 & UE5 스튜디오 (스토리보드)", 0),
         new("sb:_vfxOpen", "✨", "AI VFX 조명 & 8K 업스케일 스튜디오 (스토리보드)", 0),
+        new("_semanticWeather", "🌩️", "시맨틱 채팅 & 날씨 엔진 스튜디오", 1),
         new("_mocap", "💃", "AI 신경망 마커리스 모션 캡처 스튜디오", 1),
         new("_talkshow", "👥", "멀티 아바타 토크쇼 스튜디오", 1),
         new("_acting", "🎬", "아바타 자율 연기 디렉터 스튜디오", 1),

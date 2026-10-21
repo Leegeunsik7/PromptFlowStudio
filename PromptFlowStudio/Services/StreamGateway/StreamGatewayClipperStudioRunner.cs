@@ -113,6 +113,8 @@ public sealed class StreamGatewayClipperStudioRunner : IDisposable
     public IChatDispatchTarget? CommandTap { get; set; }
     /// <summary>v17.68 라이브 커머스 결제 탭(`!buy` · 후원 금액) — 세이프티 통과 채팅만.</summary>
     public IChatDispatchTarget? CommerceTap { get; set; }
+    /// <summary>v17.72 전체 채팅 탭(통합 애그리게이터 · 판정 전 원문 · 무할당).</summary>
+    public IChatDispatchTarget? ChatTap { get; set; }
     public bool TapTranscoder { get; private set; }
     public bool AutoClip { get; private set; } = true;
     public bool AutoPublish { get; private set; }
@@ -168,6 +170,7 @@ public sealed class StreamGatewayClipperStudioRunner : IDisposable
 
         public bool Deliver(ChatPlatform platform, ReadOnlySpan<char> user, ReadOnlySpan<char> text, int amount, ChatRole role, long nowMs)
         {
+            _r.ChatTap?.Deliver(platform, user, text, amount, role, nowMs);
             var v = _r.Chat.Accept(user, text, amount, _r.NowMs);
             ref var e = ref _e[_head];
             e.Platform = platform; e.Role = role; e.Verdict = v; e.Amount = amount;
