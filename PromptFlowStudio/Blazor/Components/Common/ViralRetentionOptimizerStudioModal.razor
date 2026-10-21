@@ -1,0 +1,235 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.RetentionOptimizer
+@using PromptFlowStudio.Services.Publisher
+@using PromptFlowStudio.Services.VisualPolish
+@implements IDisposable
+@inject ViralRetentionOptimizerStudioRunner Runner
+
+@* [PromptFlow Studio v17.75.0] 📈 릴스 유지율 & A/B 최적화 스튜디오 — 훅 데드에어 트리밍 전후 파형 · A/B 승자 상태 · 플랫폼별 유지 곡선 · EPG 역피드백. *@
+<div class="vro-scrim" @onclick="Close">
+    <div class="vro-modal" @onclick:stopPropagation="true">
+        <div class="vro-h">
+            <div>
+                <div class="vro-title">📈 릴스 유지율 & A/B 최적화 스튜디오 @(Runner.Simulated ? "· 🧪 시뮬레이터" : "· 🔴 실 계정") @(Runner.Running ? "· ▶ 자동 진행" : null)</div>
+                <div class="vro-sub"><b>훅 오토-트리머</b>가 클립 첫 3초를 0.1초 단위로 훑어 말하기 전 정적(−30 dBFS 이하 + 움직임 정지)을 잘라내고, 큰 소리와 큰 제스처가 겹치는 순간이 0.5초 안에 터지도록 앞으로 당깁니다.
+                    <b>A/B 프로모터</b>는 제목 2종 × 썸네일 2종을 5분마다 집계해 95% 확신이 서면 승자를 YouTube 영상에 바로 반영하고, <b>진단 가드</b>는 완청률 35% 미만 클립의 이탈 지점을 찾아 다음 방송의 말 속도 · 컷 주기 · BGM 더킹을 자동 보정합니다.</div>
+            </div>
+            <button class="vro-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="vro-bar">
+            <button class="vro-btn hot" disabled="@(Runner.Trimming)" @onclick="Trim">✂️ 샘플 훅 트리밍 @(Runner.Trimming ? "⏳" : null)</button>
+            <button class="vro-btn go" disabled="@(!Runner.Simulated)" @onclick="Deploy">🚀 A/B 2×2 배포</button>
+            <button class="vro-btn" @onclick="() => Step(300)">⏩ +5분</button>
+            <button class="vro-btn" @onclick="() => Step(3600)">⏩ +1시간</button>
+            <button class="vro-btn @(Runner.Running ? "on" : null)" @onclick="Toggle">@(Runner.Running ? "⏸ 정지" : "▶ 자동 진행")</button>
+            <span class="vro-sep"></span>
+            <span class="vro-dim">가상 시각 @(DateTimeOffset.FromUnixTimeSeconds(Runner.SimNow).ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture)) · 폴링 @(Runner.Promoter.PollsDone) · 요청 @(Runner.Promoter.MetricRequests)</span>
+        </div>
+
+        <div class="vro-main">
+            <div class="vro-card">
+                <div class="vro-sec">✂️ 첫 3초 훅 오토-트리밍 전후</div>
+                <svg class="vro-wave" viewBox="0 0 400 70" preserveAspectRatio="none">
+                    <line x1="0" x2="400" y1="@(DbY(-30))" y2="@(DbY(-30))" class="thr" />
+                    @for (var c = 0; c < Runner.BeforeN; c++)
+                    {
+                        var x = c * 10; var h = 70 - DbY(Runner.BeforeDb[c]);
+                        <rect x="@(x.ToString(CultureInfo.InvariantCulture))" y="@((70 - h).ToString("0.0", CultureInfo.InvariantCulture))" width="8" height="@(h.ToString("0.0", CultureInfo.InvariantCulture))" class="@(KindClass(Runner.BeforeKind[c]))" />
+                    }
+                </svg>
+                <div class="vro-kv">전(원본) · 회색 = 데드에어 · 주황 = 자극 · 점선 = −30 dBFS</div>
+                <svg class="vro-wave" viewBox="0 0 400 70" preserveAspectRatio="none">
+                    <line x1="@(5 * 10)" x2="@(5 * 10)" y1="0" y2="70" class="dl" />
+                    @for (var c = 0; c < Runner.AfterN; c++)
+                    {
+                        var x = c * 10; var h = 70 - DbY(Runner.AfterDb[c]);
+                        <rect x="@(x.ToString(CultureInfo.InvariantCulture))" y="@((70 - h).ToString("0.0", CultureInfo.InvariantCulture))" width="8" height="@(h.ToString("0.0", CultureInfo.InvariantCulture))" class="@(Runner.AfterDb[c] > -12 ? "st" : "kp")" />
+                    }
+                </svg>
+                <div class="vro-kv">후(트리밍) · 세로선 = 0.5초 자극 마감</div>
+                @{ var tr = Runner.Trimmer.Last; }
+                @if (tr.Ok)
+                {
+                    <div class="vro-stats">
+                        <span><b>@(tr.TrimmedMs)</b> ms 절삭</span>
+                        <span><b>@(tr.DeadChunks)</b> 데드 청크</span>
+                        <span><b>@(tr.StimulusOutMs >= 0 ? tr.StimulusOutMs + " ms" : "—")</b> 첫 자극</span>
+                        <span><b>@(tr.Segments)</b> 구간@(tr.ColdOpen ? " · 콜드 오픈" : null)</span>
+                    </div>
+                    <div class="vro-kv">@(tr.SourceMs) → @(tr.OutDurationMs) ms · 0 프레임 컷 재부호화 @(Runner.TrimFrames) f · @((Runner.TrimmedMp4Bytes / 1024).ToString(CultureInfo.InvariantCulture)) KB · 계획 @(tr.PlanUs.ToString("0", CultureInfo.InvariantCulture)) µs</div>
+                }
+                else
+                {
+                    <div class="vro-empty">“샘플 훅 트리밍”으로 전후 파형을 비교해 보세요.</div>
+                }
+            </div>
+
+            <div class="vro-card">
+                <div class="vro-sec">🧪 A/B 승자 자동 프로모터 · 추적 @(Runner.Promoter.Active) · 승격 @(Runner.Promoter.Promotions)</div>
+                @if (Runner.Promoter.Count == 0)
+                {
+                    <div class="vro-empty">추적 중인 실험이 없습니다 — “A/B 2×2 배포” 후 시간을 진행하세요.</div>
+                }
+                @for (var i = Runner.Promoter.Count - 1; i >= 0 && i >= Runner.Promoter.Count - 6; i--)
+                {
+                    var t = Runner.Promoter.At(i);
+                    if (t is null) continue;
+                    <div class="vro-test">
+                        <div class="vro-th">
+                            <b>@(t.Platform == SocialPlatform.YouTube ? "▶ YT" : "◎ IG") 릴 #@(t.ReelId)</b>
+                            <span class="vro-badge @(PhaseClass(t.Phase))">@(LiveMetricTrackerAndAbPromoterSynthesizer.PhaseName(t.Phase))</span>
+                        </div>
+                        <div class="vro-cells">
+                            @for (var c = 0; c < TrackedAbTest.Cells; c++)
+                            {
+                                var m = t.Metrics[c]; var win = t.TitleWinner is { } tw && t.ThumbWinner is { } hw && TrackedAbTest.CellOf(tw, hw) == c;
+                                <div class="vro-cell @(win ? "win" : null)"><i>제목@(TrackedAbTest.TitleOf(c))·썸@(TrackedAbTest.ThumbOf(c))</i><b>@((m.Ctr * 100).ToString("0.00", CultureInfo.InvariantCulture))%</b><span>@(m.Impressions) 노출 · @(m.AvgViewSec.ToString("0.0", CultureInfo.InvariantCulture))s</span></div>
+                            }
+                        </div>
+                        <div class="vro-kv">P(제목B) @((t.PTitleB * 100).ToString("0", CultureInfo.InvariantCulture))% · P(썸네일B) @((t.PThumbB * 100).ToString("0", CultureInfo.InvariantCulture))% · 폴링 @(t.Polls)@(t.RemotePatched ? " · ✔ 원격 반영" : null)</div>
+                        @if (t.TitleWinner is { } w)
+                        {
+                            <div class="vro-wt">🏆 @(t.Pair.Get(w).Title)</div>
+                        }
+                        @if (t.Note is { } note)
+                        {
+                            <div class="vro-kv">@note</div>
+                        }
+                    </div>
+                }
+            </div>
+
+            <div class="vro-card">
+                <div class="vro-sec">📉 플랫폼별 시청 유지 곡선 @(Runner.CurveReel > 0 ? "· 릴 #" + Runner.CurveReel : null)</div>
+                <svg class="vro-curve" viewBox="0 0 300 120" preserveAspectRatio="none">
+                    <line x1="0" x2="300" y1="@(CurveY(0.35f))" y2="@(CurveY(0.35f))" class="thr" />
+                    <g><text x="4" y="@((CurveY(0.35f) - 3).ToString("0", CultureInfo.InvariantCulture))" class="lbl">35%</text></g>
+                    @if (Runner.YtCurveN > 1)
+                    {
+                        <polyline points="@(Points(Runner.YtCurve, Runner.YtCurveN))" class="yt" />
+                    }
+                    @if (Runner.IgCurveN > 1)
+                    {
+                        <polyline points="@(Points(Runner.IgCurve, Runner.IgCurveN))" class="ig" />
+                    }
+                    @if (Runner.Guard.Count > 0 && Runner.Guard.At(0).DropSec > 0 && Runner.YtCurveN > 1)
+                    {
+                        var dx = Runner.Guard.At(0).DropSec * 300.0 / (Runner.YtCurveN - 1);
+                        <line x1="@(dx.ToString("0.0", CultureInfo.InvariantCulture))" x2="@(dx.ToString("0.0", CultureInfo.InvariantCulture))" y1="0" y2="120" class="drop" />
+                    }
+                </svg>
+                <div class="vro-kv"><span class="sw yt"></span>YouTube(Analytics) <span class="sw ig"></span>Instagram(평균 시청 추정) · 빨간 세로선 = 이탈 급증 지점</div>
+                <div class="vro-sec sm">🩺 자가 진단 & EPG 역피드백 · 보정 @(Runner.Guard.Applied)회</div>
+                @for (var i = 0; i < Math.Min(4, Runner.Guard.Count); i++)
+                {
+                    var d = Runner.Guard.At(i);
+                    <div class="vro-diag @(d.Verdict == DiagnosisVerdict.Underperforming ? "bad" : null)">
+                        <b>#@(d.ReelId) @(UnderperformingClipSelfDiagnosisGuard.VerdictName(d.Verdict))</b> 완청 @((d.Completion * 100).ToString("0", CultureInfo.InvariantCulture))%
+                        @if (d.Verdict == DiagnosisVerdict.Underperforming)
+                        {
+                            <span> · @(UnderperformingClipSelfDiagnosisGuard.CauseName(d.Cause)) · @(d.DropSec)s 지점 @(d.Applied ? "· ✔ 반영" : "· 보류")</span>
+                        }
+                    </div>
+                }
+                <div class="vro-gauges">
+                    <span>발화 <b>@((Runner.Guard.SpeechBias * 100).ToString("+0;-0;0", CultureInfo.InvariantCulture))%</b></span>
+                    <span>컷 주기 <b>@(Runner.Guard.TargetCutIntervalSec.ToString("0.0", CultureInfo.InvariantCulture))s</b> (@(Runner.Guard.CutBiasSec.ToString("+0.0;-0.0;0", CultureInfo.InvariantCulture)))</span>
+                    <span>더킹 <b>@(Runner.Guard.DuckBiasDb.ToString("+0;-0;0", CultureInfo.InvariantCulture)) dB</b></span>
+                    <span>BGM <b>@(Runner.Guard.BgmBias.ToString("+0.00;-0.00;0", CultureInfo.InvariantCulture))</b></span>
+                </div>
+                <div class="vro-kv">@(Runner.StationLinked ? "v17.70 방송국 결선" : "방송국 미결선") · @(Runner.DuckerLinked ? "더킹 결선" : "더킹 미결선")</div>
+            </div>
+        </div>
+        <div class="vro-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+    </div>
+</div>
+
+<style>
+    .vro-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .vro-modal { width: min(1320px, 96vw); max-height: 94vh; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); padding: 14px 16px; color: var(--text-primary); }
+    .vro-h { display: flex; justify-content: space-between; gap: 12px; } .vro-title { font-size: 17px; font-weight: 800; } .vro-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .vro-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .vro-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; } .vro-sep { flex: 1; } .vro-dim { font-size: 11px; color: var(--text-muted); }
+    .vro-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .vro-btn.go { border-color: #22c55e; } .vro-btn.hot { border-color: #f97316; } .vro-btn.on { background: color-mix(in srgb, #38bdf8 25%, #1e293b); border-color: #38bdf8; } .vro-btn:disabled { opacity: .45; cursor: default; }
+    .vro-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(0, 1fr); gap: 10px; }
+    .vro-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; } .vro-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 8px; } .vro-sec.sm { margin-top: 10px; font-size: 12px; }
+    .vro-wave { width: 100%; height: 70px; background: #05070c; border-radius: 6px; display: block; }
+    .vro-wave rect.kp { fill: #60a5fa; } .vro-wave rect.dead { fill: #475569; } .vro-wave rect.st { fill: #f97316; } .vro-wave .thr, .vro-curve .thr { stroke: #94a3b8; stroke-dasharray: 3 3; stroke-width: 1; } .vro-wave .dl { stroke: #22c55e; stroke-width: 1.5; }
+    .vro-kv { font-size: 10.5px; color: var(--text-muted); margin: 4px 0 6px; }
+    .vro-empty { font-size: 12px; color: var(--text-muted); padding: 12px 2px; }
+    .vro-stats, .vro-gauges { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; margin-top: 6px; } .vro-stats span, .vro-gauges span { font-size: 11px; background: #0f172a; border-radius: 6px; padding: 4px 6px; color: var(--text-muted); } .vro-stats b, .vro-gauges b { color: #fde047; font: 700 12px var(--mono); }
+    .vro-test { background: #0f172a; border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin-bottom: 8px; }
+    .vro-th { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+    .vro-badge { font-size: 10.5px; border-radius: 999px; padding: 1px 8px; background: #1e293b; } .vro-badge.col { color: #93c5fd; border: 1px solid #3b82f6; } .vro-badge.pro { color: #fdba74; border: 1px solid #f97316; } .vro-badge.win { color: #86efac; border: 1px solid #22c55e; } .vro-badge.inc { color: #cbd5e1; border: 1px solid #64748b; } .vro-badge.fail { color: #fca5a5; border: 1px solid #ef4444; }
+    .vro-cells { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin: 6px 0; } .vro-cell { background: #111827; border-radius: 6px; padding: 4px; text-align: center; border: 1px solid transparent; } .vro-cell.win { border-color: #22c55e; }
+    .vro-cell i { display: block; font-size: 9.5px; color: var(--text-muted); font-style: normal; } .vro-cell b { display: block; font: 700 12px var(--mono); color: #e2e8f0; } .vro-cell span { font-size: 9px; color: var(--text-muted); }
+    .vro-wt { font-size: 12px; font-weight: 700; color: #fde047; }
+    .vro-curve { width: 100%; height: 130px; background: #05070c; border-radius: 6px; display: block; } .vro-curve polyline { fill: none; stroke-width: 2; } .vro-curve .yt { stroke: #ef4444; } .vro-curve .ig { stroke: #e879f9; } .vro-curve .drop { stroke: #f87171; stroke-width: 1; stroke-dasharray: 2 2; } .vro-curve .lbl { fill: #94a3b8; font-size: 9px; }
+    .sw { display: inline-block; width: 10px; height: 3px; margin: 0 3px 2px 6px; } .sw.yt { background: #ef4444; } .sw.ig { background: #e879f9; }
+    .vro-diag { font-size: 11px; color: var(--text-muted); padding: 3px 0; border-bottom: 1px dashed #1e293b; } .vro-diag.bad b { color: #fca5a5; }
+    .vro-act { font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+    @@media (max-width: 1100px) { .vro-main { grid-template-columns: 1fr 1fr; } }
+    @@media (max-width: 760px) { .vro-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Retention.Modal.Timer", ex); }
+        }, null, 500, 500);
+    }
+
+    private static float DbY(float db) => 70f - Math.Clamp((db + 60f) / 60f, 0.02f, 1f) * 70f;
+
+    private static float CurveY(float v) => 120f - Math.Clamp(v, 0f, 1f) * 116f;
+
+    private static string KindClass(HookChunkKind k) => k switch { HookChunkKind.DeadAir => "dead", HookChunkKind.Stimulus => "st", _ => "kp" };
+
+    private static string PhaseClass(AbTestPhase p) => p switch
+    {
+        AbTestPhase.Collecting => "col", AbTestPhase.Promoting => "pro", AbTestPhase.Promoted => "win", AbTestPhase.Inconclusive => "inc", _ => "fail",
+    };
+
+    private static string Points(float[] v, int n)
+    {
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            if (i > 0) sb.Append(' ');
+            sb.Append((i * 300.0 / (n - 1)).ToString("0.0", CultureInfo.InvariantCulture)).Append(',').Append(CurveY(v[i]).ToString("0.0", CultureInfo.InvariantCulture));
+        }
+        return sb.ToString();
+    }
+
+    private void Trim() => Runner.TrimSample();
+
+    private void Deploy() => Runner.DeployDemo();
+
+    private async Task Step(long sec)
+    {
+        try { await Runner.StepAsync(sec); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("Retention.Modal.Step", ex); }
+    }
+
+    private void Toggle() { if (Runner.Running) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}

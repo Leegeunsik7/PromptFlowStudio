@@ -178,6 +178,15 @@ public sealed class ClosedLoopViralFeedbackSelfEvolutionSynthesizer
         return k;
     }
 
+    /// <summary>v17.75 외부 진단 보정 — 적용값을 레벨 범위 안에서 가산 이동(무할당 · 이후 섭취의 EMA 가 사후 평균으로 서서히 복귀).</summary>
+    public float Nudge(EvoParam p, float delta)
+    {
+        float lo = Level(p, 0), hi = Level(p, Levels - 1);
+        var i = (int)p;
+        _applied[i] = Math.Clamp(_applied[i] + delta, MathF.Min(lo, hi), MathF.Max(lo, hi));
+        return _applied[i];
+    }
+
     /// <summary>탐색 없는 최선(사후 평균 최대) 팔.</summary>
     public int BestLevel(EvoParam p)
     {

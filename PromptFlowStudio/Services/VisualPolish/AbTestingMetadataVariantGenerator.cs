@@ -113,10 +113,13 @@ public sealed class AbTestingMetadataVariantGenerator
     public void RecordClick(AbVariantPair p, AbVariant v, long n = 1) { if (v == AbVariant.A) p.ClicksA += n; else p.ClicksB += n; }
 
     /// <summary>P(CTR_B &gt; CTR_A) — 베타(1+클릭, 1+미클릭) 사후 정규 근사.</summary>
-    public static double ProbabilityBBeatsA(AbVariantPair p)
+    public static double ProbabilityBBeatsA(AbVariantPair p) => ProbabilityBBeatsA(p.ClicksA, p.ImpressionsA, p.ClicksB, p.ImpressionsB);
+
+    /// <summary>v17.75 계수 직접 판정(요인 주변합 · 무할당).</summary>
+    public static double ProbabilityBBeatsA(long clicksA, long impressionsA, long clicksB, long impressionsB)
     {
         static (double M, double V) Beta(long c, long n) { double a = 1 + c, b = 1 + Math.Max(0, n - c), s = a + b; return (a / s, a * b / (s * s * (s + 1))); }
-        var (ma, va) = Beta(p.ClicksA, p.ImpressionsA); var (mb, vb) = Beta(p.ClicksB, p.ImpressionsB);
+        var (ma, va) = Beta(clicksA, impressionsA); var (mb, vb) = Beta(clicksB, impressionsB);
         var z = (mb - ma) / Math.Sqrt(Math.Max(va + vb, 1e-12));
         return 0.5 * (1 + Erf(z / Math.Sqrt(2)));
     }

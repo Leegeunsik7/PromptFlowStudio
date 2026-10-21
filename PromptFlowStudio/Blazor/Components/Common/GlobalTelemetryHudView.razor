@@ -271,6 +271,7 @@
 @inject PromptFlowStudio.Services.SemanticChat.SemanticChatWeatherStudioRunner ScwRun
 @inject PromptFlowStudio.Services.Autopilot.ZeroTouchAutopilotStudioRunner ApRun
 @inject PromptFlowStudio.Services.VisualPolish.ReelsVisualPolishStudioRunner VpRun
+@inject PromptFlowStudio.Services.RetentionOptimizer.ViralRetentionOptimizerStudioRunner RtoRun
 @inject PromptFlowStudio.Services.SkinnedSplatAvatar.DualQuaternionGaussianAvatarStudioRunner DqAvRun
 @inject PromptFlowStudio.Services.AgentFederation.RealtimeSpatiotemporalKnowledgeGraph FedKg
 @inject PromptFlowStudio.Services.AgentFederation.ZeroTrustInterAgentConsensusResolver FedCons
@@ -990,6 +991,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.75.0: 유지율 & A/B — 훅 트리밍 · 승격 · 저성과 진단 · EPG 보정 ── *@
+    <div class="gth-v1775">
+        <div class="gth-v96-card pid @(RtoRun.Promoter.Promotions > 0 && RtoRun.Promoter.PromoteFailures == 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>📈 유지율 & A/B</b>
+                <span class="gth-v96-be">추적 @(RtoRun.Promoter.Active)@(RtoRun.Simulated ? " · 시뮬" : null)@(RtoRun.Running ? " · ▶" : null)</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(RtoRun.Trimmer.Last.TrimmedMs)</b><span>훅 절삭 ms</span></span>
+                <span class="gth-v96-m"><b>@(RtoRun.Promoter.Promotions)</b><span>승격</span></span>
+                <span class="gth-v96-m"><b class="@(RtoRun.Guard.Underperformers > 0 ? "warn" : null)">@(RtoRun.Guard.Underperformers)</b><span>저성과</span></span>
+                <span class="gth-v96-m"><b>@(RtoRun.Guard.Applied)</b><span>EPG 보정</span></span>
+            </div>
+            <div class="gth-v96-act">@(RtoRun.LastAction ?? "대기")</div>
+        </div>
+    </div>
     @* ── v17.74.0: 비주얼 폴리시 — 감정 피크 · 썸네일 · 번-인 · A/B ── *@
     <div class="gth-v1774">
         <div class="gth-v96-card pid @(VpRun.Polished > 0 && VpRun.Motion.Last.OverBudget == 0 ? "ok" : null)">
@@ -5550,6 +5566,7 @@
         VtRun.OnChange += OnSwarmChanged; // v17.49.0 (10 Hz → 250 ms 스로틀)
         VlRun.OnChange += OnSwarmChanged; // v17.50.0 (3.3 Hz)
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
+        RtoRun.OnChange += OnSwarmChanged; // v17.75.0 (폴링/승격/진단 이벤트 → 250 ms 스로틀)
         VpRun.OnChange += OnSwarmChanged; // v17.74.0 (폴리시 완료 이벤트 → 250 ms 스로틀)
         ApRun.OnChange += OnSwarmChanged; // v17.73.0 (단계 전이 · 1 Hz → 250 ms 스로틀)
         ScwRun.OnChange += OnSwarmChanged; // v17.72.0 (MCR 16 f → 250 ms 스로틀)
@@ -5922,6 +5939,7 @@
         VtRun.OnChange -= OnSwarmChanged;
         VlRun.OnChange -= OnSwarmChanged;
         OcRun.OnChange -= OnSwarmChanged;
+        RtoRun.OnChange -= OnSwarmChanged;
         VpRun.OnChange -= OnSwarmChanged;
         ApRun.OnChange -= OnSwarmChanged;
         ScwRun.OnChange -= OnSwarmChanged;

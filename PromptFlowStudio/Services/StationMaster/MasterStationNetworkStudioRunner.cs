@@ -120,6 +120,10 @@ public sealed class MasterStationNetworkStudioRunner : IMcrSceneLayer, IDisposab
     public float MinTransitionLuma { get; private set; } = float.MaxValue;
     public float LastLuma { get; private set; }
     public long BeatCuts { get; private set; }
+    /// <summary>v17.75 컷 전환 주기(s) 보정 — 0 = 2 박(BGM 템포 추종 · 기존 동작).</summary>
+    public double CutIntervalSec { get; set; }
+    /// <summary>현재 유효 컷 주기(s).</summary>
+    public double EffectiveCutIntervalSec => CutIntervalSec > 0 ? CutIntervalSec : 2 * 60.0 / Evolution.BgmBpm;
     public long PhysicsDrops { get; private set; }
     public long TimeSales { get; private set; }
     public long Adlibs { get; private set; }
@@ -293,7 +297,7 @@ public sealed class MasterStationNetworkStudioRunner : IMcrSceneLayer, IDisposab
         if (_active == StationProgramKind.RhythmConcert && !mcr.Transitioning && !Failover.StandbyEngaged)
         {
             var bpm = Evolution.BgmBpm;
-            var every = Math.Max(12, (int)(2 * 60.0 / bpm * BroadcastMcrStudioRunner.Hz));
+            var every = Math.Max(12, (int)((CutIntervalSec > 0 ? CutIntervalSec : 2 * 60.0 / bpm) * BroadcastMcrStudioRunner.Hz));
             if (++_beatFrame % every == 0) { mcr.SetPreview((mcr.Program + 1) % 4); if (mcr.Take(McrTransition.Cut)) BeatCuts++; }
         }
         // 쇼러너 물리 개입(자가진화 주기)

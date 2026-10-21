@@ -39,6 +39,7 @@ using Pub = PromptFlowStudio.Services.Publisher;
 using Scw = PromptFlowStudio.Services.SemanticChat;
 using Ap = PromptFlowStudio.Services.Autopilot;
 using Vps = PromptFlowStudio.Services.VisualPolish;
+using Rto = PromptFlowStudio.Services.RetentionOptimizer;
 using Nw = PromptFlowStudio.Services.Newsroom;
 using Spt = PromptFlowStudio.Services.Sports;
 using V3 = System.Numerics.Vector3;
@@ -31784,6 +31785,219 @@ public sealed class ReelsVisualPolishIsolatedTests
         var runner = sp.GetService(typeof(Vps.ReelsVisualPolishStudioRunner))!;
         var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.ReelsVisualPolishStudioModal), sp);
         Assert.True(html.Length > 500 && html.Contains("rvp-scrim", StringComparison.Ordinal) && html.Contains("rvp-bar", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+}
+
+/// <summary>v17.75.0 유지율 &amp; A/B 최적화 — 훅 데드에어 트리밍(무할당 · 콜드 오픈 · 0 프레임 컷) · 2×2 A/B 폴링/승격(재시도 · 클릭베이트 가드) · 저성과 진단 → EPG 역피드백 · UI 결선(벽시계 재부호화 → 비병렬).</summary>
+[Collection("TimingSensitivePerformance")]   // 관리 H.264 재부호화 · 벽시계 백오프 → 비병렬
+public sealed class ViralRetentionOptimizerIsolatedTests
+{
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+
+    private static double Mad(byte[] a, byte[] b) { long d = 0; for (var i = 0; i < a.Length; i += 3) d += Math.Abs(a[i] - b[i]); return d / (a.Length / 3.0); }
+
+    [Fact]
+    public async Task RetentionOptimizer_And_AbPromoter_Check()
+    {
+        // ── RET-1a: 샘플 훅 — 선행 묵음 0.8 s · 중간 묵음 · 1.8 s 자극 → 데드에어 절삭 + 콜드 오픈 ──
+        const int Sr = 48000;
+        var pcm = new short[(int)(3.5 * Sr)];
+        Rto.ViralRetentionOptimizerStudioRunner.SynthesizeHookPcm(pcm, Sr);
+        var w52 = new float[105 * 52]; var gesture = new float[105];
+        Rto.ViralRetentionOptimizerStudioRunner.SynthesizeFaceMotion(w52, gesture, 30);
+        var tr = new Rto.ViralHookDeadAirAutoTrimmerEngine();
+        tr.ScanAudio(pcm, Sr);
+        tr.ScanFaceMotion(w52, 52, 30, gesture);
+        var plan = tr.Plan();
+        Assert.True(tr.Chunks == 35 && tr.ClipMs == 3500 && tr.RmsDb(0) < -50 && tr.RmsDb(10) > -30 && tr.PeakDb(19) > -12 && tr.Motion(3) < 0.01f && tr.Motion(20) > 0.35f, "스캔 " + tr.RmsDb(0) + " " + tr.RmsDb(10) + " " + tr.PeakDb(19) + " " + tr.Motion(20));
+        for (var c = 0; c < 8; c++) Assert.Equal(Rto.HookChunkKind.DeadAir, tr.Kind(c));
+        Assert.True(tr.Kind(16) == Rto.HookChunkKind.DeadAir && tr.Kind(17) == Rto.HookChunkKind.DeadAir && tr.Kind(18) == Rto.HookChunkKind.Stimulus && tr.Kind(10) == Rto.HookChunkKind.Keep && tr.Kind(32) == Rto.HookChunkKind.Keep, "판정");
+        Assert.True(plan.Ok && plan.ColdOpen && plan.StimulusSrcMs == 1800 && plan.StimulusOutMs == 0 && plan.TrimmedMs >= 1000 && plan.OutDurationMs == plan.SourceMs - plan.TrimmedMs && plan.Segments >= 3,
+            "계획 " + plan);
+        Assert.True(tr.Segment(0).SrcStartMs == 1800 && tr.Segment(0).DurMs == 500 && tr.SourceMsAt(0) == 1800 && tr.SourceMsAt(499) == 2299 && tr.SourceMsAt(500) == 800 && tr.Segment(tr.SegmentCount - 1).SrcEndMs == 3500, "EDL");
+        long segSum = 0; for (var i = 0; i < tr.SegmentCount; i++) segSum += tr.Segment(i).DurMs;
+        Assert.Equal(plan.OutDurationMs, segSum);
+        // 오디오 스플라이스: 첫 구간 = 원본 1.8 s 그대로 · 접합부 페이드 인(0) · 두 번째 구간 = 원본 0.8 s
+        var dst = new short[pcm.Length];
+        var outFrames = tr.SpliceAudio(pcm, Sr, 1, dst);
+        Assert.True(outFrames == plan.OutDurationMs * Sr / 1000 && dst[200] == pcm[1800 * 48 + 200] && dst[24000] == 0 && dst[24000 + 500] == pcm[800 * 48 + 500], "스플라이스 " + outFrames);
+        var trimAlloc = AllocationProbe.MinAllocated(() => { tr.ScanAudio(pcm, Sr); tr.ScanFaceMotion(w52, 52, 30, gesture); tr.Plan(); tr.SpliceAudio(pcm, Sr, 1, dst); tr.SourceMsAt(700); });
+        Assert.True(trimAlloc == 0, "스캔/계획/스플라이스 할당 " + trimAlloc);
+        // 짧은 호흡(100 ms 단일 묵음) 보존 · 모션 미측정 = 오디오 단독 판정 · 자극 없음
+        var breath = new short[Sr];
+        for (var i = 0; i < breath.Length; i++) { var ch = i / 4800; breath[i] = ch is 0 or 4 ? (short)0 : (short)(3000 * Math.Sin(i * 0.03)); }
+        var tb = new Rto.ViralHookDeadAirAutoTrimmerEngine();
+        tb.ScanAudio(breath, Sr);
+        var pb = tb.Plan();
+        Assert.True(tb.Kind(0) == Rto.HookChunkKind.DeadAir && tb.Kind(4) == Rto.HookChunkKind.Keep && pb.TrimmedMs == 100 && pb.StimulusSrcMs == -1 && !pb.ColdOpen && pb.Segments == 1, "호흡 보존 " + pb);
+        // ── RET-1b: 0 프레임 컷 영상 재부호화 — 출력 프레임 = 원본 EDL 프레임 ──
+        tr.ScanAudio(pcm, Sr); tr.ScanFaceMotion(w52, 52, 30, gesture); plan = tr.Plan();
+        const int W = 216, H = 384;
+        var enc = new Ap.HardwareSubtitleBurnInEngine(W, H) { Enabled = false };
+        using var clip = new Vt.SegmentedChunkStream();
+        Assert.Equal(105, enc.BurnReel(new Ap.GradientFrameSource(), 3.5, 30, clip, 3000, allowMf: false));
+        clip.Position = 0;
+        using var trimmed = new Vt.SegmentedChunkStream();
+        var tf = tr.RenderVideo(clip, trimmed);
+        Assert.True(tf == (int)Math.Round(plan.OutDurationMs * 30 / 1000.0) && trimmed.Length > 1000, "재부호화 " + tf);
+        clip.Position = 0;
+        using (var map = Rto.TrimmedClipFrameSource.TryOpen(clip, tr))
+        {
+            Assert.NotNull(map);
+            Assert.True(map!.SourceFrame(0, 30) == 54 && map.SourceFrame(15, 30) == 24 && map.SourceFrame(14, 30) == 68, "프레임 매핑 " + map.SourceFrame(0, 30) + " " + map.SourceFrame(15, 30) + " " + map.SourceFrame(14, 30));
+        }
+        trimmed.Position = 0; clip.Position = 0;
+        var dOut = new Vps.HardwareVideoDemuxFrameDecoder { PreferHardware = false }; var dSrc = new Vps.HardwareVideoDemuxFrameDecoder { PreferHardware = false };
+        Assert.True(dOut.Open(trimmed) && dSrc.Open(clip) && dOut.FrameCount == tf, "디코드 " + dOut.LastError);
+        var y0 = new byte[W * H]; var uv0 = new byte[W * H / 2]; var ys = new byte[W * H]; var ys54 = new byte[W * H]; var uvs = new byte[W * H / 2];
+        Assert.True(dOut.NextFrame(y0, uv0) && dSrc.NextFrame(ys, uvs) && dSrc.Seek(54, ys54, uvs) && dSrc.NextFrame(ys54, uvs));
+        Assert.True(Mad(y0, ys54) * 3 < Mad(y0, ys), "콜드 오픈 첫 프레임 = 원본 54 · " + Mad(y0, ys54) + " vs " + Mad(y0, ys));
+        dOut.Dispose(); dSrc.Dispose();
+
+        // ── RET-2: 2×2 A/B 폴링 · 95 % 승격 · videos.update/thumbnails.set · 재시도 · 결론 없음 · 클릭베이트 · IG ──
+        long now = 1_760_000_000;
+        var sim = new Rto.SimulatedRetentionAnalyticsServer(() => now);
+        var key = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+        using var vault = new Pub.OAuthTokenVault(Path.Combine(Path.GetTempPath(), "pfs_ret_test_" + Guid.NewGuid().ToString("N") + ".bin"), () => (byte[])key.Clone());
+        vault.Store(Pub.SocialPlatform.YouTube, "ya29.ret-test", "", long.MaxValue / 4, now);
+        vault.Store(Pub.SocialPlatform.Instagram, "IGQV.ret-test", "", long.MaxValue / 4, now);
+        sim.Issue(Pub.SocialPlatform.YouTube, "ya29.ret-test"u8); sim.Issue(Pub.SocialPlatform.Instagram, "IGQV.ret-test"u8);
+        using var gw = new Pub.SocialMediaApiGatewayEngine(sim, vault) { UnixNow = () => now };
+        var ab = new Vps.AbTestingMetadataVariantGenerator();
+        var ctx = new Pub.ShortformContext { Caption = "직격 리액션", KeyLine = "이게 진짜 된다고?", Cause = 1, Peak = 93, Hits = 5, DurationSec = 24 };
+        using var promoter = new Rto.LiveMetricTrackerAndAbPromoterSynthesizer(gw, ab) { UnixNow = () => now, RetryBaseMs = 1 };
+        byte[] Png(byte r) { var rgb = new byte[16 * 16 * 3]; Array.Fill(rgb, r); using var ms = new MemoryStream(); Vps.PeakEmotion3dgsThumbnailSynthesizer.EncodePng(rgb, 16, 16, ms); return ms.ToArray(); }
+        var thA = Png(40); var thB = Png(220);
+        Rto.TrackedAbTest Make(int reel, Pub.SocialPlatform p, double[] ctr, double[] avg, Vps.AbVariantPair pair)
+        {
+            var vid = (p == Pub.SocialPlatform.YouTube ? "ytV" : "1790") + reel;
+            sim.Register(vid, 0.05, 9, 1500, now, 24, 0.32, 0.45, 0.30);
+            var t = new Rto.TrackedAbTest { ReelId = reel, Platform = p, VideoId = vid, Pair = pair, ThumbA = thA, ThumbB = thB, DurationSec = 24, DeployedAtUnix = now };
+            for (var c = 0; c < 4; c++) { t.CellIds[c] = vid + "c" + c; sim.Register(t.CellIds[c], ctr[c], avg[c], 1200, now, 24); }
+            return t;
+        }
+        var pair1 = ab.Generate(1, ctx, Vps.ThumbnailMood.Surprise);
+        var t1 = Make(1, Pub.SocialPlatform.YouTube, new[] { 0.040, 0.052, 0.060, 0.072 }, new[] { 10.0, 10.5, 11.0, 11.5 }, pair1);
+        Assert.True(promoter.Track(t1) && !promoter.Track(t1) && promoter.Duplicates == 1, "등록/중복 차단");
+        Assert.Equal(0, await promoter.TickAsync());   // 5 분 미도래 = 폴링 0
+        var ticks = 0;
+        while (t1.Phase == Rto.AbTestPhase.Collecting && ticks++ < 24) { now += 300; await promoter.TickAsync(); }
+        Assert.True(t1.Phase == Rto.AbTestPhase.Promoted && t1.TitleWinner == Vps.AbVariant.B && t1.ThumbWinner == Vps.AbVariant.B && t1.PTitleB >= 0.95 && t1.PThumbB >= 0.95 && t1.Polls == ticks, "승격 " + t1.Phase + " " + t1.PTitleB + "/" + t1.PThumbB + " · " + t1.Note);
+        Assert.True(now - t1.DeployedAtUnix <= Rto.LiveMetricTrackerAndAbPromoterSynthesizer.WindowSec && t1.Metrics[3].Impressions > 0 && Math.Abs(t1.Metrics[3].Ctr - 0.072) < 0.002 && Math.Abs(t1.Metrics[2].AvgViewSec - 11) < 0.01, "수집 " + t1.Metrics[3].Ctr);
+        Assert.True(sim.Updates == 1 && sim.LastUpdatedId == "ytV1" && sim.LastUpdatedTitle == pair1.B.Title && sim.LastTagCount == 5 && sim.ThumbnailSets == 1 && sim.LastThumbBytes == thB.Length && t1.RemotePatched && pair1.Chosen == Vps.AbVariant.B && sim.Unauthorized == 0 && sim.Rejects == 0,
+            "원격 반영 " + sim.LastReject + " · " + sim.LastUpdatedTitle);
+        // 요청 단위 재시도(503 × 2 → 3 번째 성공) · 실험 단위 재시도(승격 PUT 4 회 연속 실패 → 60 s 후 재시도 성공)
+        var pair2 = ab.Generate(2, ctx, Vps.ThumbnailMood.Joy);
+        var t2 = Make(2, Pub.SocialPlatform.YouTube, new[] { 0.06, 0.06, 0.03, 0.03 }, new[] { 10.0, 10.0, 10.0, 10.0 }, pair2);
+        Assert.True(promoter.Track(t2));
+        now += 300; sim.FailNext(503, 2);
+        var retries0 = promoter.Retries; var fails0 = promoter.MetricFailures;
+        await promoter.TickAsync();
+        Assert.True(promoter.Retries - retries0 == 2 && promoter.MetricFailures == fails0 && t2.Metrics[0].Impressions > 0, "요청 재시도 " + (promoter.Retries - retries0));
+        var clicks2 = new long[] { 330, 270, 165, 135 };
+        for (var c = 0; c < 4; c++) t2.Metrics[c] = new Rto.AbCellMetrics { Impressions = 5000, Clicks = clicks2[c], Views = clicks2[c], AvgViewSec = 10 };
+        promoter.Evaluate(t2, now);
+        Assert.True(t2.Phase == Rto.AbTestPhase.Promoting && t2.TitleWinner == Vps.AbVariant.A && t2.ThumbWinner == Vps.AbVariant.A && t2.PTitleB < 0.05, "판정 A " + t2.PTitleB + " " + t2.PThumbB + " " + t2.Phase);
+        sim.FailNext(503, 4);
+        await promoter.TickAsync();
+        Assert.True(t2.Phase == Rto.AbTestPhase.Promoting && promoter.PromoteFailures == 1 && t2.NextRetryUnix > now && !t2.TitlePatched, "승격 실패 보류 " + t2.Phase);
+        now += 120; await promoter.TickAsync();
+        Assert.True(t2.Phase == Rto.AbTestPhase.Promoted && sim.LastUpdatedId == "ytV2" && sim.LastUpdatedTitle == pair2.A.Title && t2.PromoteAttempts == 2, "재시도 승격 " + t2.Note);
+        // 결론 없음(동률) · 클릭베이트 가드(제목 B CTR 우세 · 시청 급감) · IG(기록 전용)
+        var t3 = Make(3, Pub.SocialPlatform.YouTube, new[] { 0.05, 0.05, 0.05, 0.05 }, new[] { 10.0, 10.0, 10.0, 10.0 }, ab.Generate(3, ctx, Vps.ThumbnailMood.Calm));
+        var t4 = Make(4, Pub.SocialPlatform.YouTube, new[] { 0.04, 0.04, 0.08, 0.08 }, new[] { 12.0, 12.0, 5.0, 5.0 }, ab.Generate(4, ctx, Vps.ThumbnailMood.Hype));
+        var t5 = Make(5, Pub.SocialPlatform.Instagram, new[] { 0.10, 0.10, 0.16, 0.16 }, new[] { 8.0, 8.0, 8.5, 8.5 }, ab.Generate(5, ctx, Vps.ThumbnailMood.Joy));
+        Assert.True(promoter.Track(t3) && promoter.Track(t4) && promoter.Track(t5));
+        var updates0 = sim.Updates;
+        for (var k = 0; k < 26 && (t3.Phase == Rto.AbTestPhase.Collecting || t4.Phase == Rto.AbTestPhase.Collecting || t5.Phase == Rto.AbTestPhase.Collecting); k++) { now += 300; await promoter.TickAsync(); }
+        Assert.True(t3.Phase == Rto.AbTestPhase.Inconclusive && t4.Phase == Rto.AbTestPhase.Inconclusive && (t4.Note ?? "").Contains("클릭베이트", StringComparison.Ordinal) && sim.Updates == updates0, "결론 없음/클릭베이트 " + t3.Phase + " " + t4.Phase + " " + t4.Note);
+        Assert.True(t5.Phase == Rto.AbTestPhase.Promoted && t5.TitleWinner == Vps.AbVariant.B && !t5.RemotePatched && (t5.Note ?? "").Contains("IG", StringComparison.Ordinal) && t5.Metrics[2].Impressions > 0 && Math.Abs(t5.Metrics[2].AvgViewSec - 8.5) < 0.01, "IG " + t5.Phase + " " + t5.Note);
+        Assert.True(promoter.Inconclusives == 2 && promoter.Promotions == 3 && promoter.Active == 0, "집계 " + promoter.Inconclusives + "/" + promoter.Promotions);
+        // 유지 곡선 수집 · 무할당 판독
+        var ratio = new float[100];
+        Assert.Equal(100, await promoter.FetchRetentionAsync(Pub.SocialPlatform.YouTube, "ytV1", t1.DeployedAtUnix, ratio));
+        Assert.True(Math.Abs(ratio[49] - Rto.SimulatedRetentionAnalyticsServer.RetentionAt(0.5, 24, 0.32, 0.45, 0.30)) < 1e-3 && ratio[0] > ratio[99] && ratio[99] < 0.35f, "곡선 " + ratio[49] + " " + ratio[99]);
+        var json = "{\"rows\":[[1234,4.5,56,12.25]]}"u8.ToArray(); var cm = new Rto.AbCellMetrics();
+        var parseAlloc = AllocationProbe.MinAllocated(() => { Rto.LiveMetricTrackerAndAbPromoterSynthesizer.ParseYtMetrics(json, ref cm); Rto.LiveMetricTrackerAndAbPromoterSynthesizer.ParseRetention("{\"rows\":[[0.01,0.98],[0.02,0.95]]}"u8, ratio); });
+        Assert.True(parseAlloc == 0 && cm.Impressions == 1234 && cm.Clicks == 56 && cm.Views == 56 && Math.Abs(cm.AvgViewSec - 12.25) < 1e-9 && Math.Abs(ratio[1] - 0.95f) < 1e-6, "판독 할당 " + parseAlloc);
+        promoter.Start(5); Assert.True(promoter.Running); promoter.Stop(); Assert.False(promoter.Running);
+
+        // ── RET-3: 저성과 진단 → EPG 역피드백(세이프티) ──
+        var guard = new Rto.UnderperformingClipSelfDiagnosisGuard();
+        var evo = new SM.ClosedLoopViralFeedbackSelfEvolutionSynthesizer();
+        var ducker = new Bs.VoiceActivatedSidechainDuckingSynthesizer();
+        var ratioCurve = new float[100];
+        for (var k = 0; k < 100; k++) ratioCurve[k] = (float)Rto.SimulatedRetentionAnalyticsServer.RetentionAt((k + 1) / 100.0, 24, 0.32, 0.45, 0.30);
+        var curve = new float[30];
+        var cn = Rto.UnderperformingClipSelfDiagnosisGuard.ResampleToSeconds(ratioCurve, 24, curve);
+        Assert.True(cn == 25 && curve[0] == 1f && Math.Abs(curve[24] - ratioCurve[99]) < 1e-5, "재표본 " + cn + " " + curve[24]);
+        var feat = new Rto.ClipSecondFeature[25];
+        for (var s = 0; s < 25; s++) { var ex = s >= 7 && s <= 14; feat[s] = new Rto.ClipSecondFeature { SpeechWpm = ex ? 118 : 165, BgmDuckDb = -12, SecSinceCut = ex ? s - 6 : s % 3, Motion = ex ? 0.2f : 0.45f }; }
+        var dep = now; var at = dep + 3600;
+        var d1 = guard.Diagnose(11, Pub.SocialPlatform.YouTube, curve.AsSpan(0, cn), feat, 500, dep, at);
+        Assert.True(d1.Verdict == Rto.DiagnosisVerdict.Underperforming && d1.Completion < 0.35f && d1.Cause == Rto.DropCause.BoringExplainer && d1.DropSec is >= 9 and <= 13 && d1.SpeechDelta == 0.10f && d1.CutDeltaSec == -0.5f, "진단 " + d1.Verdict + " " + d1.Cause + " @" + d1.DropSec + " 완청 " + d1.Completion);
+        var diagAlloc = AllocationProbe.MinAllocated(() => guard.Diagnose(11, Pub.SocialPlatform.YouTube, curve.AsSpan(0, cn), feat, 500, dep, at));
+        Assert.True(diagAlloc == 0 && guard.At(0).Verdict == Rto.DiagnosisVerdict.Duplicate, "진단 할당 " + diagAlloc);
+        // 중복 진단은 반영 대상 아님 → 새 가드에 원 진단 기록 후 반영
+        guard = new Rto.UnderperformingClipSelfDiagnosisGuard { BaseCutIntervalSec = 2.4 };
+        guard.Diagnose(11, Pub.SocialPlatform.YouTube, curve.AsSpan(0, cn), feat, 500, dep, at);
+        var sp0 = evo.SpeechRate;
+        Assert.True(guard.ApplyTo(evo, ducker, at) && Math.Abs(evo.SpeechRate - sp0 * 1.10f) < 1e-4 && guard.CutBiasSec == -0.5f && Math.Abs(guard.TargetCutIntervalSec - 1.9) < 1e-6 && ducker.DepthDb == -14f, "반영 " + evo.SpeechRate + " " + guard.TargetCutIntervalSec);
+        Assert.False(guard.ApplyTo(evo, ducker, at + 1000));   // 이미 반영
+        var duckFeat = (Rto.ClipSecondFeature[])feat.Clone(); for (var s = 0; s < 25; s++) duckFeat[s].BgmDuckDb = -20;
+        var d2 = guard.Diagnose(12, Pub.SocialPlatform.YouTube, curve.AsSpan(0, cn), duckFeat, 800, dep, at + 60);
+        Assert.True(d2.Cause == Rto.DropCause.BgmOverDucked && !guard.ApplyTo(evo, ducker, at + 60) && guard.Throttled == 1, "쿨다운 " + d2.Cause);
+        Assert.True(guard.ApplyTo(evo, ducker, at + 400) && ducker.DepthDb == -11f && Math.Abs(guard.BgmBias - 0.05f) < 1e-6 && guard.Applied == 2, "더킹 보정 " + ducker.DepthDb);
+        var healthy = new float[25]; for (var s = 0; s < 25; s++) healthy[s] = 1f - s * 0.012f;
+        Assert.Equal(Rto.DiagnosisVerdict.Healthy, guard.Diagnose(13, Pub.SocialPlatform.YouTube, healthy, feat, 900, dep, at).Verdict);
+        Assert.Equal(Rto.DiagnosisVerdict.Stale, guard.Diagnose(14, Pub.SocialPlatform.YouTube, curve.AsSpan(0, cn), feat, 900, dep, dep + 4 * 3600).Verdict);
+        Assert.Equal(Rto.DiagnosisVerdict.InsufficientData, guard.Diagnose(15, Pub.SocialPlatform.YouTube, curve.AsSpan(0, cn), feat, 40, dep, at).Verdict);
+        var hook = new float[25]; for (var s = 0; s < 25; s++) hook[s] = s == 0 ? 1f : 0.35f - s * 0.005f;
+        Assert.Equal(Rto.DropCause.WeakHook, guard.Diagnose(16, Pub.SocialPlatform.YouTube, hook, feat, 900, dep, at).Cause);
+        for (var r = 0; r < 5; r++) { guard.Diagnose(20 + r, Pub.SocialPlatform.YouTube, curve.AsSpan(0, cn), feat, 900, dep, at + 1000 + r * 400); guard.ApplyTo(evo, ducker, at + 1000 + r * 400); }
+        Assert.True(guard.SpeechBias <= Rto.UnderperformingClipSelfDiagnosisGuard.MaxSpeech + 1e-6f && guard.CutBiasSec >= Rto.UnderperformingClipSelfDiagnosisGuard.MinCutDelta - 1e-6f && guard.Clamped > 0 && guard.TargetCutIntervalSec >= 1.0, "누적 한계 " + guard.SpeechBias + " " + guard.CutBiasSec);
+        var lv = SM.ClosedLoopViralFeedbackSelfEvolutionSynthesizer.Level(SM.EvoParam.SpeechRate, SM.ClosedLoopViralFeedbackSelfEvolutionSynthesizer.Levels - 1);
+        Assert.True(evo.SpeechRate <= lv + 1e-5f && evo.Nudge(SM.EvoParam.SpeechRate, 10f) == lv, "Nudge 클램프");
+
+        // ── RET-4a: 러너 — 샘플 트리밍 · 데모 배포 → 승격 · 1 h 후 진단 → 방송국 컷/자가진화 반영 ──
+        var talk = new PromptFlowStudio.Services.Talkshow.MultiAvatarTalkshowStudioRunner(1500);
+        var mcr = new BMc.BroadcastMcrStudioRunner(talk, envSplats: 30_000, bodySplats: 10_000, faceSplats: 2_000);
+        var st = new SM.MasterStationNetworkStudioRunner(mcr);
+        Assert.True(st.CutIntervalSec == 0 && Math.Abs(st.EffectiveCutIntervalSec - 120.0 / st.Evolution.BgmBpm) < 1e-9, "기본 컷 주기 = 2 박");
+        var run = new Rto.ViralRetentionOptimizerStudioRunner(station: st);
+        var rr = run.RunSampleTrim();
+        Assert.True(rr.ColdOpen && run.TrimFrames > 60 && run.BeforeN == 35 && run.AfterN == (rr.OutDurationMs + 99) / 100 && run.AfterDb[0] > -12 && run.TrimmedMp4Bytes > 0, "러너 트리밍 " + rr);
+        Assert.True(run.Simulated && run.DeployDemo() && run.Promoter.Count == 2);
+        var stSpeech0 = st.Evolution.SpeechRate;
+        for (var k = 0; k < 24 && run.Guard.Diagnosed == 0; k++) await run.StepAsync();
+        var ytT = run.Promoter.At(0)!;
+        Assert.True(run.Promoter.PollsDone >= 12 && run.Guard.Underperformers == 1 && run.Guard.Applied == 1 && run.YtCurveN == 25 && run.IgCurveN == 25 && run.CurveReel == ytT.ReelId, "러너 진단 " + run.Summary() + " · " + run.LastAction);
+        Assert.True(Math.Abs(st.CutIntervalSec - run.Guard.TargetCutIntervalSec) < 1e-9 && st.CutIntervalSec < 120.0 / st.Evolution.BgmBpm && st.Evolution.SpeechRate > stSpeech0, "방송국 반영 " + st.CutIntervalSec + " " + st.Evolution.SpeechRate);
+        for (var k = 0; k < 24 && run.Promoter.Active > 0; k++) await run.StepAsync();
+        Assert.True(run.Promoter.Active == 0 && run.Simulator.Rejects == 0 && run.Simulator.Unauthorized == 0, "러너 A/B 종료 " + run.Simulator.LastReject);
+        run.Dispose(); st.Dispose(); mcr.Dispose(); talk.Dispose();
+
+        // ── RET-4b: 카탈로그 · HUD · 레이아웃 · DI · 모달 렌더 · 구독 해제 ──
+        Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_retentionAb" && en.Category == 4);
+        var root = RepoRoot();
+        var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
+        var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
+        var mainForm = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "MainForm.cs"));
+        var maui = File.ReadAllText(Path.Combine(root, "PromptFlowStudio.Mobile", "MauiProgram.cs"));
+        Assert.True(hud.IndexOf("gth-v1775", StringComparison.Ordinal) is > 0 and var i1775 && i1775 < hud.IndexOf("gth-v1774", StringComparison.Ordinal) && hud.Contains("RtoRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("RtoRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<ViralRetentionOptimizerStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_retentionAb\"", StringComparison.Ordinal) && layout.Contains("\"_retentionAb\" =>", StringComparison.Ordinal));
+        Assert.True(mainForm.Contains("RetentionOptimizer.ViralRetentionOptimizerStudioRunner(sp)", StringComparison.Ordinal) && maui.Contains("RetentionOptimizer.ViralRetentionOptimizerStudioRunner(sp)", StringComparison.Ordinal));
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = sp.GetService(typeof(Rto.ViralRetentionOptimizerStudioRunner))!;
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.ViralRetentionOptimizerStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("vro-scrim", StringComparison.Ordinal) && html.Contains("vro-bar", StringComparison.Ordinal), "모달 렌더 " + html.Length);
         Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
     }
