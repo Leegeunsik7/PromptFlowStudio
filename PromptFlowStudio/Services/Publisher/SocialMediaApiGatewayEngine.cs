@@ -250,6 +250,9 @@ public sealed class SocialMediaApiGatewayEngine : IDisposable
     private readonly SocialUploadPhase[] _phase = new SocialUploadPhase[2];
     private readonly float[] _progress = new float[2];
     private readonly string?[] _lastId = new string?[2], _lastError = new string?[2];
+    private readonly int[] _lastStatus = new int[2], _lastRetryAfter = new int[2];
+    private readonly byte[][] _lastBody = { new byte[512], new byte[512] };
+    private readonly int[] _lastBodyLen = new int[2];
     private int _idLen, _uriLen;
     private string? _pkceVerifier;
 
@@ -275,6 +278,16 @@ public sealed class SocialMediaApiGatewayEngine : IDisposable
     public float Progress(SocialPlatform p) => _progress[(int)p];
     public string? LastMediaId(SocialPlatform p) => _lastId[(int)p];
     public string? LastError(SocialPlatform p) => _lastError[(int)p];
+    /// <summary>v17.73 마지막 업로드 HTTP 상태 · Retry-After · 오류 본문(쿼터 가드 분류용).</summary>
+    public int LastStatus(SocialPlatform p) => _lastStatus[(int)p];
+    public int LastRetryAfterSec(SocialPlatform p) => _lastRetryAfter[(int)p];
+    public ReadOnlySpan<byte> LastErrorBody(SocialPlatform p) => _lastBody[(int)p].AsSpan(0, _lastBodyLen[(int)p]);
+
+    private void RecordStatus(SocialPlatform p, int st)
+    {
+        _lastStatus[(int)p] = st; _lastRetryAfter[(int)p] = _call.Resp.RetryAfterSec;
+        var b = _call.Resp.BodySpan; var k = Math.Min(b.Length, 512); b[..k].CopyTo(_lastBody[(int)p]); _lastBodyLen[(int)p] = k;
+    }
     public long ChunksSent { get; private set; }
     public long BytesSent { get; private set; }
     public double LastHeaderUs { get; private set; }
@@ -461,6 +474,7 @@ public sealed class SocialMediaApiGatewayEngine : IDisposable
             for (var attempt = 0; attempt <= MaxRetries && id is null; attempt++)
             {
                 var (st, mid) = p == SocialPlatform.YouTube ? await YouTubeAsync(media, meta, ct).ConfigureAwait(false) : await InstagramAsync(media, meta, ct).ConfigureAwait(false);
+                RecordStatus(p, st);
                 if (mid is not null) { id = mid; break; }
                 if (st == 401 && attempt == 0) { if (await RefreshAsync(p, ct).ConfigureAwait(false)) continue; err = "401 · 갱신 실패"; break; }
                 if (st is 0 or 429 or >= 500) { err = "HTTP " + st; await Task.Delay(Math.Min(8_000, 250 << attempt), ct).ConfigureAwait(false); continue; }
@@ -730,6 +744,17 @@ public sealed class SimulatedSocialApiServer : IGraphTransport
     public long Published { get; private set; }
     public long Rejects { get; private set; }
     public int FailNextChunkWith { get; set; }
+    /// <summary>v17.73 업로드 개시 요청 강제 응답(쿼터/레이트 주입) — 플랫폼 · 상태 · 본문 · 남은 횟수.</summary>
+    public SocialPlatform ForcePlatform { get; set; }
+    public int ForceStatus { get; set; }
+    public string ForceBody { get; set; } = "";
+    public int ForceCount { get; set; }
+    private int Forced(SocialPlatform p, GraphResponseBuffer r)
+    {
+        if (ForceCount <= 0 || ForcePlatform != p) return 0;
+        ForceCount--; var n = Encoding.UTF8.GetBytes(ForceBody, r.Body); r.Length = n; r.RetryAfterSec = ForceStatus == 429 ? 1 : 0;
+        return ForceStatus;
+    }
     public string? LastTitle { get; private set; }
     public string? LastCaption { get; private set; }
     public int LastTagCount { get; private set; }
@@ -803,6 +828,7 @@ public sealed class SimulatedSocialApiServer : IGraphTransport
             return Rotate(SocialPlatform.Instagram, r, SocialMediaApiGatewayEngine.MetaTokenSec);
         }
         // ── YouTube ──
+        if (url.SequenceEqual(SocialMediaApiGatewayEngine.YtMultipartUrl) || url.SequenceEqual(SocialMediaApiGatewayEngine.YtResumableUrl)) { var f = Forced(SocialPlatform.YouTube, r); if (f != 0) return f; }
         if (url.SequenceEqual(SocialMediaApiGatewayEngine.YtMultipartUrl))
         {
             if (!Authorized(SocialPlatform.YouTube, headers)) return Body(r, 401, "{\"error\":{\"code\":401}}"u8);
@@ -860,6 +886,7 @@ public sealed class SimulatedSocialApiServer : IGraphTransport
             var path = url[SocialMediaApiGatewayEngine.GraphBase.Length..];
             if (path.EndsWith("/media"u8) && m == GraphHttpMethod.Post)
             {
+                var fi = Forced(SocialPlatform.Instagram, r); if (fi != 0) return fi;
                 var ctype = GraphBytes.Header(headers, "Content-Type"u8);
                 if (!ctype.StartsWith("multipart/form-data; boundary="u8)) return Reject(r, 400, "ig ctype");
                 if (Field(body, "media_type"u8).SequenceEqual("REELS"u8) == false || !Field(body, "upload_type"u8).SequenceEqual("resumable"u8)) return Reject(r, 400, "ig fields");

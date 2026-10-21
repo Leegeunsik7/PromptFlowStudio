@@ -1,17 +1,19 @@
 # Current Project Status
-- Active Milestone: v17.72.0 완료 (Complete) — AI 통합 시맨틱 채팅 애그리게이터 & 채팅 주도형 날씨 엔진
+- Active Milestone: v17.73.0 완료 (Complete) — AI 제로-터치 오토파일럿 하드닝 & 자율 프로덕션 스튜디오
 - Build Status: Desktop Release -warnaserror 0/0 · Mobile net8.0-ios Release -warnaserror 0/0 · net8.0-android 미검증(SDK/JDK 미설치)
-- Test Suite: 480/480 PASS × 1회(Release · MaxCpuCount=2 · 사용자 지시로 1회 기준 · 신규 1)
-- Sidebar: 7대 카테고리 · 148 엔트리
+- Test Suite: 481/481 PASS × 1회(Release · MaxCpuCount=2 · 1회 기준 정책 · 신규 1) — 직전 2회 시도는 외부 부하 하 기존 타이밍 테스트(LiveCommerce 중앙 틱 · P2P 5 ms) 각 1건 실패 · 단독 통과
+- Sidebar: 7대 카테고리 · 149 엔트리
 - Updated At: 2026-10-21 (KST)
 
 ## Completed Deliverables
-- CHAT-0: v17.71 체크포인트 커밋 `c93b336`
-- CHAT-1: `SemanticChat/UnifiedCrossPlatformChatAggregator` — v17.62 게이트웨이 `ChatTap` · Vyukov MPSC 4096 링(잠금 0) · 정규화(제로폭/제어/공백) · 1 000/s 초과 비율 셰딩 · 75 % 테일 드롭 · 우선(후원/모더레이터) 레인
-- CHAT-2: `SemanticSentimentToxicityAnalyzer` — v17.61 톡시시티 가드 재사용(블라인드 ●) · 감성 사전(한/영/이모지 · 부정어 전치/후치 반전) · 5 s 창 4D 정규화 벡터 · 레이드(합창)는 표시만 블라인드 · 감성 반영(승인된 정책)
-- CHAT-3: `ChatDrivenVolumetricWeatherEngine` — 감성 → 프리셋 가중 혼합 · 1.5 s 지수 평활 · 3DGS 방사휘도 변조 체인(v17.56 그림자 → 틴트/네온/번개) · PGM 안개/비/폭죽/번개 오버레이 체인(→ v17.68 배너)
-- CHAT-4: `SemanticChatWeatherStudioRunner` + `SemanticChatWeatherStudioModal`(`scw-`) · 카탈로그 `_semanticWeather`(카테고리 1) · HUD `gth-v1772` · DI · `CrowdChatSimulator`
-- CHAT-5: `SemanticChat_And_WeatherEngine_Check`(TimingSensitive) · 기존 테스트 하드닝(v17.68 레이어 초과 = 측정 창 단위 · v17.70 트래픽 고정 · BroadcastMcr 실패 진단)
+- AUTO-0: v17.72 체크포인트 커밋 `d84a9e2`(v17.73 편집 분리 커밋)
+- AUTO-1: `Autopilot/HardwareSubtitleBurnInEngine` — v17.49 트랜스코더 NV12 백버퍼 제자리 SDF 하드서브(`IVideoFrameOverlay` · 외부 프로세스 0) · 큐/단어 전환 시에만 재래스터 · 세이프 존 감사 · `BurnReel`(MCR PGM 9:16 업스케일 · 그라데이션 소스 → MF GPU/관리 폴백 → fMP4) · 1080×1920 무할당
+- AUTO-2: `SmartPlatformQuotaResilienceGuard` — YT 10 000 유닛(업로드 1 600 · 태평양 자정 리셋) · IG 50/일 · 200/h · TikTok 15/일 회계 · 403 quotaExceeded/429/Graph 4·17·32·613/5xx/401 분류 · 지수 백오프+지터 · Retry-After · 로컬 재시도 큐(256) · TikTok 우회 · 무할당
+- AUTO-3: `RemoteCreatorTelemetryDispatcher` — `Channel<int>` 슬롯 풀 비차단 발행(무할당 · 포화 드롭 · 2 s 병합) · Discord embed / Telegram HTML JSON 직접 조립 · 429/5xx 재시도 · 시크릿 GraphSecretSlot · 환경변수
+- AUTO-4: `ZeroTouchAutopilotMasterEngine` — 기획→방송→반응→클립→번-인→쿼터 라우팅 업로드→알림→쿨다운 폐루프 FSM(10 Hz 무할당) · 페일오버/비상 애드리브 감시 · 재시도 큐 펌프 · 자가 치유
+- AUTO-5: `ZeroTouchAutopilotStudioRunner` + `ZeroTouchAutopilotStudioModal`(`ztp-`) · 카탈로그 `_autopilot`(카테고리 4) · HUD `gth-v1773` · DI · 게이트웨이 `LastStatus/LastErrorBody` · 시뮬레이터 쿼터 주입
+- AUTO-6: `ZeroTouchAutopilot_And_BurnInGuard_Check`(TimingSensitive)
 
 ## Pending
-- 외부 CPU 경합(타 세션 테스트 · VS Code · 보안 에이전트) 시 3DGS 16.7 ms 프레임 게이트 간헐 실패 — 2회 연속 재확인 · Android 빌드 · iOS 실기기 · GUI 육안
+- 실 계정 · 실 웹훅 연동 검증 · TikTok 은 v17.69 업로드 가드(시뮬 업링크) 경유 · 번-인은 PGM 정지 화면 소스(클립 프레임 디코더 부재)
+- 외부 CPU 경합 시 기존 타이밍 테스트 간헐 실패 · Android 빌드 · iOS 실기기 · GUI 육안

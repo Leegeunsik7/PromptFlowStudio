@@ -269,6 +269,7 @@
 @inject PromptFlowStudio.Services.StationMaster.MasterStationNetworkStudioRunner StnRun
 @inject PromptFlowStudio.Services.Publisher.OmniChannelPublisherStudioRunner PubRun
 @inject PromptFlowStudio.Services.SemanticChat.SemanticChatWeatherStudioRunner ScwRun
+@inject PromptFlowStudio.Services.Autopilot.ZeroTouchAutopilotStudioRunner ApRun
 @inject PromptFlowStudio.Services.SkinnedSplatAvatar.DualQuaternionGaussianAvatarStudioRunner DqAvRun
 @inject PromptFlowStudio.Services.AgentFederation.RealtimeSpatiotemporalKnowledgeGraph FedKg
 @inject PromptFlowStudio.Services.AgentFederation.ZeroTrustInterAgentConsensusResolver FedCons
@@ -988,6 +989,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.73.0: 제로-터치 오토파일럿 — 단계 · 사이클 · 업로드 · 재시도 큐 · 알림 ── *@
+    <div class="gth-v1773">
+        <div class="gth-v96-card pid @(ApRun.Engaged && ApRun.Engine.Faults == 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>🤖 오토파일럿</b>
+                <span class="gth-v96-be">@(PromptFlowStudio.Services.Autopilot.ZeroTouchAutopilotMasterEngine.StageIcon(ApRun.Engine.Stage)) @(PromptFlowStudio.Services.Autopilot.ZeroTouchAutopilotMasterEngine.StageName(ApRun.Engine.Stage))@(ApRun.Engaged ? null : " · OFF")</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(ApRun.Engine.Cycles)</b><span>사이클</span></span>
+                <span class="gth-v96-m"><b>@(ApRun.Engine.Published)</b><span>업로드</span></span>
+                <span class="gth-v96-m"><b class="@(ApRun.Quota.QueueDepth > 0 ? "warn" : null)">@(ApRun.Quota.QueueDepth)</b><span>재시도 큐</span></span>
+                <span class="gth-v96-m"><b>@(ApRun.Telemetry.Sent)</b><span>웹훅</span></span>
+            </div>
+            <div class="gth-v96-act">@(ApRun.LastAction ?? "대기")</div>
+        </div>
+    </div>
     @* ── v17.72.0: 시맨틱 채팅 & 날씨 — 감성 · 날씨 · 병합 · 블라인드 ── *@
     <div class="gth-v1772">
         <div class="gth-v96-card pid @(ScwRun.LayerFrames > 0 && ScwRun.Mcr.FramesOverBudget == 0 ? "ok" : null)">
@@ -5518,6 +5534,7 @@
         VtRun.OnChange += OnSwarmChanged; // v17.49.0 (10 Hz → 250 ms 스로틀)
         VlRun.OnChange += OnSwarmChanged; // v17.50.0 (3.3 Hz)
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
+        ApRun.OnChange += OnSwarmChanged; // v17.73.0 (단계 전이 · 1 Hz → 250 ms 스로틀)
         ScwRun.OnChange += OnSwarmChanged; // v17.72.0 (MCR 16 f → 250 ms 스로틀)
         PubRun.OnChange += OnSwarmChanged; // v17.71.0 (이벤트 구동 → 250 ms 스로틀)
         StnRun.OnChange += OnSwarmChanged; // v17.70.0 (이벤트 구동 → 250 ms 스로틀)
@@ -5888,6 +5905,7 @@
         VtRun.OnChange -= OnSwarmChanged;
         VlRun.OnChange -= OnSwarmChanged;
         OcRun.OnChange -= OnSwarmChanged;
+        ApRun.OnChange -= OnSwarmChanged;
         ScwRun.OnChange -= OnSwarmChanged;
         PubRun.OnChange -= OnSwarmChanged;
         StnRun.OnChange -= OnSwarmChanged;

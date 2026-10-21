@@ -37,6 +37,7 @@ using L2R = PromptFlowStudio.Services.LiveToReels;
 using SM = PromptFlowStudio.Services.StationMaster;
 using Pub = PromptFlowStudio.Services.Publisher;
 using Scw = PromptFlowStudio.Services.SemanticChat;
+using Ap = PromptFlowStudio.Services.Autopilot;
 using Nw = PromptFlowStudio.Services.Newsroom;
 using Spt = PromptFlowStudio.Services.Sports;
 using V3 = System.Numerics.Vector3;
@@ -31283,6 +31284,243 @@ public sealed class SemanticChatWeatherIsolatedTests
         var runner = sp.GetService(typeof(Scw.SemanticChatWeatherStudioRunner))!;
         var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.SemanticChatWeatherStudioModal), sp);
         Assert.True(html.Length > 500 && html.Contains("scw-scrim", StringComparison.Ordinal) && html.Contains("<svg viewBox=\"-110 -110 220 220\">", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+}
+
+/// <summary>v17.73.0 제로-터치 오토파일럿 — GPU 하드서브 번-인 · 스마트 쿼터 격리/우회/재시도 · 웹훅 텔레메트리 · 폐루프 FSM 회귀(벽시계 → 비병렬).</summary>
+[Collection("TimingSensitivePerformance")]   // 벽시계 번-인 예산 · 백오프 시계 → 비병렬
+public sealed class ZeroTouchAutopilotIsolatedTests
+{
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+
+    [Fact]
+    public async Task ZeroTouchAutopilot_And_BurnInGuard_Check()
+    {
+        // ── AUTO-1a: 하드서브 번-인 — 큐 구간에만 세이프 존 안 휘도 변화 · 큐 밖 원본 보존 · 1080×1920 무할당 · 60 fps 예산 ──
+        var burn = new Ap.HardwareSubtitleBurnInEngine(1080, 1920);
+        Assert.True(burn.AddCue(500, 2_500, "채팅창 폭발 이 순간 놓치면 후회") && burn.AddCue(2_600, 4_000, "레전드 직격 리액션"));
+        var y = new byte[1080 * 1920]; var uv = new byte[1080 * 1920 / 2];
+        var src = new Ap.GradientFrameSource();
+        var orig = new byte[y.Length];
+        long Diff(int x0, int y0, int x1, int y1) { long d = 0; for (var py = y0; py < y1; py++) for (var px = x0; px < x1; px++) d += Math.Abs(y[py * 1080 + px] - orig[py * 1080 + px]); return d; }
+        src.Render(10, 60, y, uv, 1080, 1920); y.CopyTo(orig, 0);
+        burn.Apply(y, uv, 1080, 1920, 10, 60);   // 166 ms — 큐 전
+        Assert.True(y.AsSpan().SequenceEqual(orig) && burn.ActiveCue == -1, "큐 전 원본 보존");
+        src.Render(90, 60, y, uv, 1080, 1920); y.CopyTo(orig, 0);
+        burn.Apply(y, uv, 1080, 1920, 90, 60);   // 1 500 ms — 큐 0
+        var box = burn.LastBox;
+        Assert.True(burn.ActiveCue == 0 && !box.IsEmpty && burn.LastBoxSafe && burn.Guard.Safe.Contains(box), "번-인 박스 " + box.X + "," + box.Y + " " + box.W + "×" + box.H);
+        Assert.True(Diff(box.X, box.Y, box.Right, box.Bottom) > 100_000 && Diff(0, 0, 1080, Math.Max(0, box.Y - 8)) == 0, "자막 영역만 변화");
+        src.Render(270, 60, y, uv, 1080, 1920); y.CopyTo(orig, 0);
+        burn.Apply(y, uv, 1080, 1920, 270, 60);  // 4 500 ms — 큐 후
+        Assert.True(y.AsSpan().SequenceEqual(orig) && burn.ActiveCue == -1);
+        // 무할당 + 예산(큐 진입 · 단어 전환 포함 120 프레임)
+        burn.Apply(y, uv, 1080, 1920, 30, 60);
+        var applyUs = new double[120];
+        var burnAlloc = AllocationProbe.MinAllocated(() => { for (var f = 0; f < 120; f++) { burn.Apply(y, uv, 1080, 1920, 30 + f, 60); applyUs[f] = burn.LastApplyUs; } });
+        Array.Sort(applyUs);
+        Assert.True(burnAlloc == 0, "번-인 할당 " + burnAlloc);
+        Assert.True(applyUs[60] < 4_000 && burn.Rasters < burn.BurnedFrames, "번-인 중앙 " + applyUs[60] + " µs · 래스터 " + burn.Rasters + "/" + burn.BurnedFrames);
+        // 자동 큐 분할
+        Assert.True(burn.SetCaptionTrack("첫 문장입니다. 두번째 문장도 있어요! 마지막?".AsSpan(), 6_000) == 3 && burn.Cue(2).EndMs <= 6_000 && burn.Cue(0).StartMs >= 300 && new string(burn.CueText(1)) == "두번째 문장도 있어요!");
+        // 크기 불일치 → 건너뜀
+        var small = new byte[100]; burn.Apply(small, small, 10, 10, 0, 60);
+        Assert.True(burn.Mismatched == 1);
+
+        // ── AUTO-1b: 번-인 릴 사출 — 프레임 소스 → 번-인 → v17.49 트랜스코더(관리 폴백) → fMP4 규격 · 자막 각인 ──
+        var reelBurn = new Ap.HardwareSubtitleBurnInEngine(270, 480);
+        reelBurn.SetCaptionTrack("자막 번인 테스트. 두번째 줄".AsSpan(), 2_000, 100);
+        using var outS = new PromptFlowStudio.Services.VerticalTranscode.SegmentedChunkStream();
+        var frames = reelBurn.BurnReel(new Ap.GradientFrameSource(), 2.0, 30, outS, 2000, allowMf: false);
+        Assert.True(frames == 60 && reelBurn.BurnedFrames >= 50 && reelBurn.LastBackend!.Length > 0 && outS.Length > 1000, "릴 " + frames + " 번인 " + reelBurn.BurnedFrames + " 크기 " + outS.Length);
+        outS.Position = 0;
+        Assert.True(Gb.Mp4Probe.TryProbe(outS, out var spec) && spec.Width == 270 && spec.Height == 480 && Math.Abs(spec.DurationSec - 2f) < 0.05f, "프로브 " + spec.Width + "×" + spec.Height + " " + spec.DurationSec);
+        // MCR PGM 업스케일 소스(320×192 → 9:16 크롭) — 좌우 반반 색 → 중앙 크롭 경계
+        var pgm = new byte[320 * 192 * 3];
+        for (var py = 0; py < 192; py++) for (var px = 0; px < 320; px++) { var o = (py * 320 + px) * 3; var right = px >= 160; pgm[o] = right ? (byte)230 : (byte)20; pgm[o + 1] = 40; pgm[o + 2] = right ? (byte)30 : (byte)220; }
+        var ps = new Ap.McrProgramFrameSource(); ps.Capture(pgm);
+        var y2 = new byte[270 * 480]; var uv2 = new byte[270 * 480 / 2];
+        ps.Render(0, 30, y2, uv2, 270, 480);
+        Assert.True(uv2[(240 / 2) * 270 + 20] > 150 && uv2[(240 / 2) * 270 + 250] < 110, "좌측 청색(U↑) · 우측 적색(U↓)");
+        var pgmAlloc = AllocationProbe.MinAllocated(() => ps.Render(1, 30, y2, uv2, 270, 480));
+        Assert.Equal(0, pgmAlloc);
+
+        // ── AUTO-2: 스마트 쿼터 — YT 403 quotaExceeded → 자정 격리 · IG 429 → 지수 백오프+지터 · TikTok 우회 · 재시도 큐 · 무할당 ──
+        long now = 1_760_000_000_000;
+        var q = new Ap.SmartPlatformQuotaResilienceGuard { Clock = () => now };
+        Assert.True(q.Remaining(Ap.PublishTarget.YouTube) == 10_000 && q.Available(Ap.PublishTarget.YouTube));
+        for (var i = 0; i < 6; i++) Assert.Equal(Ap.TargetHealth.Healthy, q.Observe(Ap.PublishTarget.YouTube, 200));
+        Assert.True(q.Remaining(Ap.PublishTarget.YouTube) == 400 && !q.Available(Ap.PublishTarget.YouTube) && q.Health(Ap.PublishTarget.YouTube) == Ap.TargetHealth.QuotaExhausted, "회계 소진 " + q.Remaining(Ap.PublishTarget.YouTube));
+        var q2 = new Ap.SmartPlatformQuotaResilienceGuard { Clock = () => now };
+        var h = q2.Observe(Ap.PublishTarget.YouTube, 403, "{\"error\":{\"errors\":[{\"reason\":\"quotaExceeded\"}],\"code\":403}}"u8);
+        var reset = Ap.SmartPlatformQuotaResilienceGuard.NextYouTubeReset(now);
+        Assert.True(h == Ap.TargetHealth.QuotaExhausted && q2.BlockedUntil(Ap.PublishTarget.YouTube) == reset && reset > now && reset - now <= 86_400_000 && q2.Remaining(Ap.PublishTarget.YouTube) == 0);
+        // IG 429 · Graph code 4 · Retry-After · 연속 실패 지수 증가(지터 범위)
+        var d0 = 0L;
+        for (var k = 1; k <= 5; k++)
+        {
+            q2.Observe(Ap.PublishTarget.Instagram, 429, default, 0);
+            var wait = q2.BlockedUntil(Ap.PublishTarget.Instagram) - now;
+            var cap = Math.Min(Ap.SmartPlatformQuotaResilienceGuard.MaxBackoffMs, Ap.SmartPlatformQuotaResilienceGuard.BaseBackoffMs << (k - 1));
+            Assert.True(wait >= cap / 2 && wait <= cap, "백오프 " + k + " " + wait + " ≤ " + cap);
+            if (k == 5) d0 = wait;
+        }
+        Assert.True(q2.Health(Ap.PublishTarget.Instagram) == Ap.TargetHealth.RateLimited && q2.RateHits(Ap.PublishTarget.Instagram) == 5 && d0 >= 16_000);
+        Assert.Equal(Ap.TargetHealth.RateLimited, q2.Observe(Ap.PublishTarget.Instagram, 400, "{\"error\":{\"message\":\"(#4) limit\",\"code\":4}}"u8));
+        q2.Observe(Ap.PublishTarget.Instagram, 429, default, 600);
+        Assert.True(q2.BlockedUntil(Ap.PublishTarget.Instagram) - now >= 600_000, "Retry-After 존중");
+        Assert.Equal(Ap.TargetHealth.AuthError, q2.Observe(Ap.PublishTarget.TikTok, 401));
+        q2.ClearAuthError(Ap.PublishTarget.TikTok);
+        // 라우팅: YT(소진) · IG(리밋) 요청 → 둘 다 큐 격리 · TikTok 우회
+        var go = q2.Route(77, 0b011, 0b100, out var rr);
+        Assert.True(go == 0b100 && rr == 0b100 && q2.QueueDepth == 2 && q2.Rerouted(Ap.PublishTarget.TikTok) == 1, "라우팅 " + go + " 큐 " + q2.QueueDepth);
+        Assert.True(q2.Route(77, 0b011, 0b100, out _) == 0b100 && q2.QueueDepth == 2, "같은 릴 · 플랫폼 중복 격리 금지");
+        var due = new Ap.QuotaRetryItem[4];   // async 메서드 — 배열(테스트 측)
+        Assert.Equal(0, q2.PumpDue(due));
+        now = q2.BlockedUntil(Ap.PublishTarget.Instagram) + 1;
+        var nd = q2.PumpDue(due);
+        Assert.True(nd == 1 && due[0].Target == Ap.PublishTarget.Instagram && due[0].ReelId == 77 && q2.QueueDepth == 1, "IG 도래 " + nd);
+        Assert.True(q2.Requeue(in due[0]) && q2.QueueDepth == 2);
+        now = reset + 1;
+        Assert.True(q2.Available(Ap.PublishTarget.YouTube) && q2.Remaining(Ap.PublishTarget.YouTube) == 10_000, "자정 리셋");
+        var qAlloc = AllocationProbe.MinAllocated(() =>
+        {
+            for (var i = 0; i < 200; i++) { q2.Observe(Ap.PublishTarget.TikTok, i % 7 == 0 ? 503 : 200); q2.Route(1000 + i, 0b111, 0b100, out _); q2.PumpDue(due); }
+        });
+        Assert.Equal(0, qAlloc);
+
+        // ── AUTO-3: 웹훅 디스패처 — 무할당 비차단 발행 · Discord/Telegram JSON 규격 · 429 재시도 · 병합 · 시크릿 비노출 ──
+        var hooks = new Ap.SimulatedWebhookServer();
+        using var tele = new Ap.RemoteCreatorTelemetryDispatcher(hooks);
+        Assert.False(tele.SetDiscord("http://evil.example/hook"));
+        Assert.True(tele.SetDiscord("https://discord.com/api/webhooks/123/SECRET-TOKEN-ABC") && tele.SetTelegram("123456789:AAH-SECRET-BOT-TOKEN-xyz", "-1001234") && tele.DiscordEnabled && tele.TelegramEnabled);
+        Assert.DoesNotContain("SECRET-TOKEN", tele.DiscordMasked, StringComparison.Ordinal);
+        Assert.True(tele.Publish(Ap.CreatorAlertKind.Failover, Ap.AlertSeverity.Critical, "MCR \"스탠바이\" <루프> & 안내"));
+        Assert.False(tele.Publish(Ap.CreatorAlertKind.Failover, Ap.AlertSeverity.Critical, "중복"));   // 2 s 병합
+        Assert.True(tele.Merged == 1);
+        hooks.RateLimitNext = 1;
+        Assert.Equal(1, await tele.FlushAsync());
+        Assert.True(hooks.Discord.Count == 1 && hooks.Telegram.Count == 1 && tele.Sent == 2 && tele.Retries == 1 && tele.RateLimited == 1, "발송 " + tele.Sent + " 재시도 " + tele.Retries);
+        using (var dj = System.Text.Json.JsonDocument.Parse(hooks.Discord[0]))
+        {
+            var emb = dj.RootElement.GetProperty("embeds")[0];
+            Assert.True(emb.GetProperty("description").GetString() == "MCR \"스탠바이\" <루프> & 안내" && emb.GetProperty("color").GetInt32() == 0xEF4444 && emb.GetProperty("title").GetString()!.Contains("페일오버", StringComparison.Ordinal));
+        }
+        using (var tj = System.Text.Json.JsonDocument.Parse(hooks.Telegram[0]))
+        {
+            Assert.True(tj.RootElement.GetProperty("chat_id").GetString() == "-1001234" && tj.RootElement.GetProperty("parse_mode").GetString() == "HTML");
+            var txt = tj.RootElement.GetProperty("text").GetString()!;
+            Assert.True(txt.StartsWith("<b>", StringComparison.Ordinal) && txt.Contains("&lt;루프&gt; &amp; 안내", StringComparison.Ordinal), "HTML 이스케이프 " + txt);
+        }
+        Assert.True(hooks.LastUrl!.Contains("/sendMessage", StringComparison.Ordinal) && hooks.Discord[0].IndexOf("SECRET", StringComparison.Ordinal) < 0);
+        // 무할당 발행(방송 스레드) · 채널 포화 → 드롭(차단 0)
+        var pubAlloc = AllocationProbe.MinAllocated(() => { for (var i = 0; i < 50; i++) tele.Publish(Ap.CreatorAlertKind.ReelPublished, Ap.AlertSeverity.Success, "업로드 성공", i, i); });
+        Assert.True(pubAlloc == 0, "발행 할당 " + pubAlloc);
+        var sw = Stopwatch.StartNew();
+        for (var i = 0; i < 400; i++) tele.Publish(Ap.CreatorAlertKind.ReelPublished, Ap.AlertSeverity.Success, "포화", i, i);
+        Assert.True(sw.ElapsedMilliseconds < 200 && tele.Dropped > 0, "포화 비차단 " + sw.ElapsedMilliseconds + " ms · 드롭 " + tele.Dropped);
+        // 백그라운드 펌프 배출
+        tele.Start();
+        var swp = Stopwatch.StartNew();
+        while (swp.ElapsedMilliseconds < 10_000 && tele.Pending > 0) await Task.Delay(20);
+        await tele.StopAsync();
+        Assert.True(tele.Pending == 0 && hooks.Discord.Count > 100, "펌프 " + hooks.Discord.Count);
+
+        // ── AUTO-4: 폐루프 FSM 종단 — 반응 → 클립 → 번-인 → 쿼터 라우팅(YT 소진 · IG 성공 · TikTok 우회) → 알림 → 쿨다운 → 재기획 · 재시도 큐 회복 ──
+        var tmp = Path.Combine(Path.GetTempPath(), "pf_v1773_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var factory = new L2R.LiveToReelsFactoryStudioRunner();
+            factory.UseSyntheticSource(4);
+            var pub = new Pub.OmniChannelPublisherStudioRunner(factory, null, root: tmp, simulate: true);
+            pub.ConnectSimulated(Pub.SocialPlatform.YouTube); pub.ConnectSimulated(Pub.SocialPlatform.Instagram);
+            pub.Gateway.ChunkSize = 1024 * 1024;
+            var hooks2 = new Ap.SimulatedWebhookServer();
+            var ap = new Ap.ZeroTouchAutopilotStudioRunner(null, factory, pub, null, null, hooks2);
+            ap.Telemetry.SetDiscord("https://discord.com/api/webhooks/1/x");
+            var e = ap.Engine;
+            long clock = 1_000;
+            e.Clock = () => clock; ap.Quota.Clock = () => 1_760_000_000_000 + clock;
+            ap.Telemetry.Clock = () => clock * 10;   // 병합 창 회피
+            e.BroadcastMinMs = 1_000; e.ReactTimeoutMs = 5_000; e.CooldownMs = 500; e.MaxBurnSec = 3; e.BurnFps = 15; e.AllowMediaFoundation = false;
+            e.RequestMask = 0b011; e.RerouteMask = 0b100;
+            ap.BurnIn.Resize(180, 320);
+            // YT 쿼터 소진 주입(403 quotaExceeded 1 회)
+            pub.Simulator.ForcePlatform = Pub.SocialPlatform.YouTube; pub.Simulator.ForceStatus = 403; pub.Simulator.ForceCount = 1;
+            pub.Simulator.ForceBody = "{\"error\":{\"code\":403,\"errors\":[{\"reason\":\"quotaExceeded\",\"domain\":\"youtube.quota\"}]}}";
+            e.Enable();
+            Assert.Equal(Ap.AutopilotStage.Planning, e.Stage);
+            async Task Run(Func<bool> until, int maxTicks)
+            {
+                for (var i = 0; i < maxTicks && !until(); i++) { clock += 100; e.Tick(); if (e.TaskRunning) await Task.Delay(10); }
+            }
+            await Run(() => e.Stage == Ap.AutopilotStage.Reacting, 50);
+            Assert.True(e.StageEntries(Ap.AutopilotStage.Broadcasting) == 1 && factory.IsRunning, "방송 " + e.Stage);
+            // 시청자 반응 → 클라이맥스 릴(동기 생성)
+            var req = new L2R.ClimaxClipRequest { Id = 1, StartMs = 0, EndMs = 4_000, Peak = 94, Cause = L2R.ClimaxCause.Physics };
+            factory.ProcessRequest(in req);
+            await Run(() => e.Stage == Ap.AutopilotStage.Cooldown || e.Stage == Ap.AutopilotStage.Notifying, 3_000);
+            Assert.True(e.Faults == 0, "FSM 장애 " + e.LastError);
+            var b = e.Burned(e.CurrentReel)!;
+            Assert.True(b is not null && b.Frames == 45 && b.Meta.Title.Contains("#Shorts", StringComparison.Ordinal), "번-인 릴 " + b?.Frames);
+            b.Media.Position = 0;
+            Assert.True(Gb.Mp4Probe.TryProbe(b.Media, out var bs) && bs.Width == 180 && bs.Height == 320);
+            Assert.True((b.PublishedMask & 0b010) != 0 && (b.PublishedMask & 0b001) == 0 && ap.Quota.Health(Ap.PublishTarget.YouTube) == Ap.TargetHealth.QuotaExhausted && ap.Quota.QueueDepth == 1,
+                "게시 마스크 " + b.PublishedMask + " YT " + ap.Quota.Health(Ap.PublishTarget.YouTube) + " 큐 " + ap.Quota.QueueDepth);
+            Assert.True(e.Published >= 1 && pub.Simulator.Published == 1);
+            // 다음 사이클: YT 격리 중 → TikTok 우회
+            await Run(() => e.Stage == Ap.AutopilotStage.Reacting, 100);
+            Assert.True(e.Cycles == 1 && e.StageEntries(Ap.AutopilotStage.Planning) == 2);
+            var req2 = new L2R.ClimaxClipRequest { Id = 2, StartMs = 0, EndMs = 4_000, Peak = 91, Cause = L2R.ClimaxCause.Chat };
+            factory.ProcessRequest(in req2);
+            await Run(() => e.Stage == Ap.AutopilotStage.Cooldown, 3_000);
+            var b2 = e.Burned(e.CurrentReel)!;
+            Assert.True((b2.PublishedMask & 0b100) != 0 && (b2.PublishedMask & 0b010) != 0 && ap.Quota.Rerouted(Ap.PublishTarget.TikTok) >= 1 && ap.Quota.QueueDepth == 2, "우회 마스크 " + b2.PublishedMask + " 큐 " + ap.Quota.QueueDepth);
+            // 쿼터 리셋(자정) → 재시도 큐 펌프 → YT 재업로드 2 건
+            clock += 86_400_000;
+            for (var i = 0; i < 40 && ap.Quota.QueueDepth > 0; i++) { clock += 100; e.Tick(); await Task.Delay(20); }
+            for (var i = 0; i < 100 && e.RetryUploads < 2; i++) { clock += 100; e.Tick(); await Task.Delay(30); }
+            Assert.True(e.RetryUploads == 2 && ap.Quota.QueueDepth == 0 && (b.PublishedMask & 0b001) != 0 && (b2.PublishedMask & 0b001) != 0, "재시도 " + e.RetryUploads + " 큐 " + ap.Quota.QueueDepth);
+            // 반응 타임아웃 → 수동 하이라이트(자가 진행)
+            await Run(() => e.Stage == Ap.AutopilotStage.Reacting, 200);
+            var forced0 = e.ForcedClips;
+            await Run(() => e.ForcedClips > forced0, 200);
+            Assert.True(e.ForcedClips == forced0 + 1);
+            // 알림: 쿼터 소진 · 업로드 성공 · 오토파일럿
+            await ap.Telemetry.FlushAsync();
+            var all = string.Join("\n", hooks2.Discord);
+            Assert.True(all.Contains("쿼터 소진", StringComparison.Ordinal) && all.Contains("업로드 성공", StringComparison.Ordinal) && hooks2.Discord.Count >= 5, "알림 " + hooks2.Discord.Count);
+            // 정상 단계(방송/반응 대기) 틱 무할당
+            // 정상 상태 측정 전: 진행 중 클립/패키징 소진(전이 = 로그 문자열 할당은 측정 대상 아님)
+            for (var i = 0; i < 300 && (factory.PendingRequests > 0 || (factory.Reel(0) is { } r0 && r0.Phase is L2R.FactoryReelPhase.Clipping or L2R.FactoryReelPhase.Packaging)); i++) await Task.Delay(20);
+            e.BroadcastMinMs = long.MaxValue; e.ReactTimeoutMs = long.MaxValue;
+            e.Disable(); e.Enable();
+            await Run(() => e.Stage == Ap.AutopilotStage.Broadcasting, 20);
+            var tickAlloc = AllocationProbe.MinAllocated(() => { for (var i = 0; i < 100; i++) { clock += 100; e.Tick(); } });
+            Assert.True(tickAlloc == 0 && e.Stage == Ap.AutopilotStage.Broadcasting && e.MaxTickUs < 5_000, "FSM 틱 할당 " + tickAlloc + " · " + e.Stage + " · " + e.MaxTickUs + " µs");
+            e.Disable();
+            ap.Dispose(); pub.Dispose(); factory.Dispose();
+        }
+        finally { try { Directory.Delete(tmp, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+
+        // ── AUTO-5: 카탈로그 · HUD · 레이아웃 · 모달 렌더 · 구독 해제 ──
+        Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_autopilot" && en.Category == 4);
+        var root = RepoRoot();
+        var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
+        var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
+        Assert.True(hud.IndexOf("gth-v1773", StringComparison.Ordinal) is > 0 and var i1773 && i1773 < hud.IndexOf("gth-v1772", StringComparison.Ordinal) && hud.Contains("ApRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("ApRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<ZeroTouchAutopilotStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_autopilot\"", StringComparison.Ordinal) && layout.Contains("\"_autopilot\" =>", StringComparison.Ordinal));
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = sp.GetService(typeof(Ap.ZeroTouchAutopilotStudioRunner))!;
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.ZeroTouchAutopilotStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("ztp-scrim", StringComparison.Ordinal) && html.Contains("ztp-switch", StringComparison.Ordinal) && html.Contains("ztp-flow", StringComparison.Ordinal), "모달 렌더 " + html.Length);
         Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
     }

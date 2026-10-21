@@ -1,0 +1,170 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Autopilot
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject ZeroTouchAutopilotStudioRunner Runner
+
+@* [PromptFlow Studio v17.73.0] 🤖 제로-터치 자율 오토파일럿 콕핏 — 마스터 스위치 · 파이프라인 플로 트래커 · 플랫폼 쿼터 게이지 · 웹훅 설정. *@
+<div class="ztp-scrim" @onclick="Close">
+    <div class="ztp-modal" @onclick:stopPropagation="true">
+        <div class="ztp-h">
+            <div>
+                <div class="ztp-title">🤖 제로-터치 자율 오토파일럿 콕핏 · @(ZeroTouchAutopilotMasterEngine.StageIcon(Runner.Engine.Stage)) @(ZeroTouchAutopilotMasterEngine.StageName(Runner.Engine.Stage)) · 사이클 @(Runner.Engine.Cycles)</div>
+                <div class="ztp-sub"><b>마스터 엔진</b>이 기획(v17.71 추천) → 3DGS 방송(v17.70/66) → 시청자 반응(v17.67 · v17.72) → 클라이맥스 클립(v17.69) → GPU 하드서브 번-인 → 옴니채널 업로드 → 웹훅 알림을 하나의 폐루프 상태 머신으로 24시간 순환합니다.
+                    <b>쿼터 가드</b>는 YouTube 403 quotaExceeded · Instagram 429 를 감지하면 해당 플랫폼을 로컬 재시도 큐로 격리해 지수 백오프로 재시도하고 정상 플랫폼으로 우회하며, <b>텔레메트리 디스패처</b>는 페일오버 · 비상 애드리브 · 업로드 결과를 Discord/Telegram 으로 비동기 발송합니다.</div>
+            </div>
+            <button class="ztp-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="ztp-master @(Runner.Engaged ? "on" : null)">
+            <button class="ztp-switch" @onclick="Toggle"><i></i></button>
+            <div><b>@(Runner.Engaged ? "오토파일럿 작동 중" : "오토파일럿 꺼짐")</b><span>@(Runner.Summary())</span></div>
+            <label class="ztp-lbl"><input type="checkbox" checked="@(Runner.Engine.BroadcastMinMs < 60_000)" @onchange="OnDemo" /> 데모 타이밍</label>
+        </div>
+
+        <div class="ztp-card">
+            <div class="ztp-sec">🗺️ 파이프라인 플로 트래커</div>
+            <div class="ztp-flow">
+                @foreach (var s in Flow)
+                {
+                    var st = s;
+                    var cur = Runner.Engine.Stage == st;
+                    <div class="ztp-node @(cur ? "cur" : Runner.Engine.StageEntries(st) > 0 ? "done" : null)">
+                        <i>@(ZeroTouchAutopilotMasterEngine.StageIcon(st))</i>
+                        <b>@(ZeroTouchAutopilotMasterEngine.StageName(st))</b>
+                        <span>@(cur ? (Runner.Engine.StageAgeMs / 1000).ToString("0.0", CultureInfo.InvariantCulture) + " s" : Runner.Engine.StageEntries(st) > 0 ? "×" + Runner.Engine.StageEntries(st) : "—")</span>
+                    </div>
+                }
+            </div>
+            <div class="ztp-kpis">
+                <span><b>@(Runner.Engine.Published)</b>업로드</span>
+                <span><b>@(Runner.Engine.RetryUploads)</b>재시도 성공</span>
+                <span><b>@(Runner.Engine.ForcedClips)</b>수동 클립</span>
+                <span><b class="@(Runner.Engine.Faults > 0 ? "warn" : null)">@(Runner.Engine.Faults)</b>자가 치유</span>
+                <span><b>@(Runner.BurnIn.Reels)</b>번-인 릴</span>
+                <span><b>@(Runner.BurnIn.LastBackend ?? "—")</b>인코더</span>
+            </div>
+            @if (Runner.Engine.LastError is { } err) { <div class="ztp-err">⚠ @err</div> }
+        </div>
+
+        <div class="ztp-main">
+            <div class="ztp-card">
+                <div class="ztp-sec">📊 플랫폼 잔여 API 쿼터 (재시도 큐 @(Runner.Quota.QueueDepth))</div>
+                @foreach (var t in Targets)
+                {
+                    var tt = t;
+                    var h = Runner.Quota.Health(tt);
+                    <div class="ztp-quota">
+                        <span>@(SmartPlatformQuotaResilienceGuard.TargetName(tt))</span>
+                        <i><em class="h@((int)h)" style="width:@((Runner.Quota.RemainingRatio(tt) * 100).ToString("0", CultureInfo.InvariantCulture))%"></em></i>
+                        <b>@(Runner.Quota.Remaining(tt).ToString("N0", CultureInfo.InvariantCulture))/@(SmartPlatformQuotaResilienceGuard.Capacity(tt).ToString("N0", CultureInfo.InvariantCulture))</b>
+                        <small class="h@((int)h)">@(SmartPlatformQuotaResilienceGuard.HealthName(h))@(h != TargetHealth.Healthy && Runner.Quota.BlockedUntil(tt) > 0 && Runner.Quota.BlockedUntil(tt) < long.MaxValue ? " · " + Wait(Runner.Quota.BlockedUntil(tt)) : null)</small>
+                    </div>
+                }
+                <div class="ztp-row">
+                    <label class="ztp-lbl"><input type="checkbox" checked="@((Runner.Engine.RequestMask & 1) != 0)" @onchange="e => Mask(0, e)" /> YouTube</label>
+                    <label class="ztp-lbl"><input type="checkbox" checked="@((Runner.Engine.RequestMask & 2) != 0)" @onchange="e => Mask(1, e)" /> Instagram</label>
+                    <label class="ztp-lbl"><input type="checkbox" checked="@((Runner.Engine.RequestMask & 4) != 0)" @onchange="e => Mask(2, e)" /> TikTok</label>
+                    <span class="ztp-dim">우회: TikTok</span>
+                </div>
+            </div>
+
+            <div class="ztp-card">
+                <div class="ztp-sec">📣 웹훅 알림 (발송 @(Runner.Telemetry.Sent) · 실패 @(Runner.Telemetry.Failed) · 대기 @(Runner.Telemetry.Pending))</div>
+                <div class="ztp-hook"><b>Discord</b><em class="@(Runner.Telemetry.DiscordEnabled ? "on" : null)">@(Runner.Telemetry.DiscordEnabled ? "연동 " + Runner.Telemetry.DiscordMasked : "미설정")</em></div>
+                <div class="ztp-row"><input class="ztp-in" type="password" placeholder="https://discord.com/api/webhooks/…" @bind="_discord" /><button class="ztp-btn sm" @onclick="SaveDiscord">저장</button><button class="ztp-btn sm" @onclick="Runner.Telemetry.ClearDiscord">해제</button></div>
+                <div class="ztp-hook"><b>Telegram</b><em class="@(Runner.Telemetry.TelegramEnabled ? "on" : null)">@(Runner.Telemetry.TelegramEnabled ? "연동 " + Runner.Telemetry.TelegramMasked : "미설정")</em></div>
+                <div class="ztp-row"><input class="ztp-in" type="password" placeholder="봇 토큰 123456:ABC…" @bind="_tgToken" /><input class="ztp-in sm" placeholder="chat_id" @bind="_tgChat" /><button class="ztp-btn sm" @onclick="SaveTelegram">저장</button></div>
+                <div class="ztp-row"><button class="ztp-btn sm" @onclick="TestAlert">🔔 테스트 알림</button>@if (Runner.Telemetry.LastError is { } we) { <span class="ztp-err">@we</span> }</div>
+            </div>
+        </div>
+
+        <div class="ztp-card">
+            <div class="ztp-sec">📜 오토파일럿 로그</div>
+            <div class="ztp-log">
+                @for (var i = 0; i < Math.Min(8, Runner.Engine.LogCount); i++)
+                {
+                    var l = Runner.Engine.Log(i);
+                    <div><i>@(ZeroTouchAutopilotMasterEngine.StageIcon(l.Stage))</i><span>@(l.Text)</span></div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .ztp-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .ztp-modal { width: min(1300px, 96vw); max-height: 94vh; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); padding: 14px 16px; color: var(--text-primary); }
+    .ztp-h { display: flex; justify-content: space-between; gap: 12px; } .ztp-title { font-size: 17px; font-weight: 800; } .ztp-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .ztp-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .ztp-master { display: flex; align-items: center; gap: 14px; margin: 12px 0; padding: 12px; border-radius: 12px; background: #0b1220; border: 1px solid var(--line); }
+    .ztp-master.on { border-color: #22c55e; box-shadow: 0 0 0 1px #22c55e inset; } .ztp-master > div { flex: 1; display: flex; flex-direction: column; } .ztp-master b { font-size: 15px; } .ztp-master span { font-size: 11px; color: var(--text-muted); }
+    .ztp-switch { width: 64px; height: 34px; border-radius: 17px; border: 0; background: #334155; position: relative; cursor: pointer; } .ztp-switch i { position: absolute; top: 4px; left: 4px; width: 26px; height: 26px; border-radius: 50%; background: #e2e8f0; transition: left .2s; }
+    .ztp-master.on .ztp-switch { background: #16a34a; } .ztp-master.on .ztp-switch i { left: 34px; }
+    .ztp-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-top: 10px; } .ztp-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 8px; }
+    .ztp-flow { display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; }
+    .ztp-node { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 4px; border-radius: 8px; background: #0f172a; border: 1px solid var(--line); text-align: center; position: relative; }
+    .ztp-node i { font-style: normal; font-size: 20px; } .ztp-node b { font-size: 10.5px; } .ztp-node span { font: 600 10px var(--mono); color: var(--text-muted); }
+    .ztp-node.done { border-color: #334155; } .ztp-node.cur { border-color: #22d3ee; box-shadow: 0 0 10px rgba(34,211,238,.35); background: color-mix(in srgb, #22d3ee 12%, #0f172a); }
+    .ztp-kpis { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin-top: 8px; } .ztp-kpis span { display: flex; flex-direction: column; font-size: 10px; color: var(--text-muted); background: #0f172a; border-radius: 6px; padding: 5px 7px; }
+    .ztp-kpis b { font: 800 13px var(--mono); color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .ztp-kpis .warn { color: #fb923c; }
+    .ztp-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+    .ztp-quota { display: grid; grid-template-columns: 110px 1fr 100px 120px; gap: 6px; align-items: center; font-size: 11.5px; margin-bottom: 6px; }
+    .ztp-quota i { display: block; height: 9px; background: #1e293b; border-radius: 5px; overflow: hidden; } .ztp-quota em { display: block; height: 100%; background: #22c55e; } .ztp-quota em.h1, .ztp-quota em.h2 { background: #f59e0b; } .ztp-quota em.h3, .ztp-quota em.h4 { background: #ef4444; }
+    .ztp-quota b { font: 600 10.5px var(--mono); text-align: right; } .ztp-quota small { font-size: 10.5px; color: #86efac; } .ztp-quota small.h1, .ztp-quota small.h2 { color: #fcd34d; } .ztp-quota small.h3, .ztp-quota small.h4 { color: #fca5a5; }
+    .ztp-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; } .ztp-lbl { display: flex; gap: 4px; align-items: center; font-size: 11px; color: var(--text-muted); } .ztp-dim { font-size: 10.5px; color: var(--text-muted); }
+    .ztp-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; font-size: 12px; cursor: pointer; } .ztp-btn.sm { padding: 3px 8px; font-size: 11px; }
+    .ztp-in { flex: 1; min-width: 140px; background: #0f172a; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 4px 7px; font-size: 11.5px; } .ztp-in.sm { flex: 0 0 110px; min-width: 0; }
+    .ztp-hook { display: flex; justify-content: space-between; font-size: 12px; margin-top: 6px; } .ztp-hook em { font-style: normal; font-size: 10.5px; color: var(--text-muted); } .ztp-hook em.on { color: #86efac; }
+    .ztp-err { font-size: 11px; color: #f87171; margin-top: 6px; }
+    .ztp-log { display: flex; flex-direction: column; gap: 3px; } .ztp-log div { display: grid; grid-template-columns: 24px 1fr; gap: 6px; font-size: 11.5px; background: #0f172a; border-radius: 5px; padding: 3px 6px; } .ztp-log i { font-style: normal; }
+    @@media (max-width: 960px) { .ztp-main { grid-template-columns: 1fr; } .ztp-flow { grid-template-columns: repeat(4, 1fr); } .ztp-kpis { grid-template-columns: repeat(3, 1fr); } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly AutopilotStage[] Flow = { AutopilotStage.Planning, AutopilotStage.Broadcasting, AutopilotStage.Reacting, AutopilotStage.Clipping, AutopilotStage.BurningIn, AutopilotStage.Publishing, AutopilotStage.Notifying, AutopilotStage.Cooldown };
+    private static readonly PublishTarget[] Targets = { PublishTarget.YouTube, PublishTarget.Instagram, PublishTarget.TikTok };
+    private System.Threading.Timer? _timer;
+    private string _discord = "", _tgToken = "", _tgChat = "";
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Autopilot.Modal.Timer", ex); }
+        }, null, 500, 500);
+    }
+
+    private string Wait(long untilMs)
+    {
+        var s = (untilMs - Runner.Quota.Clock()) / 1000.0;
+        return s <= 0 ? "재시도 가능" : s >= 3600 ? (s / 3600).ToString("0.0", CultureInfo.InvariantCulture) + " h" : s >= 60 ? (s / 60).ToString("0", CultureInfo.InvariantCulture) + " 분" : s.ToString("0", CultureInfo.InvariantCulture) + " s";
+    }
+
+    private void Toggle() => Runner.SetMaster(!Runner.Engaged);
+    private void OnDemo(ChangeEventArgs e) => Runner.SetDemoTiming(e.Value is bool b && b);
+
+    private void Mask(int bit, ChangeEventArgs e)
+    {
+        var on = e.Value is bool b && b;
+        Runner.Engine.RequestMask = on ? Runner.Engine.RequestMask | (1 << bit) : Runner.Engine.RequestMask & ~(1 << bit);
+    }
+
+    private void SaveDiscord() { if (_discord.Length > 0 && Runner.Telemetry.SetDiscord(_discord)) _discord = ""; }
+    private void SaveTelegram() { if (_tgToken.Length > 0 && Runner.Telemetry.SetTelegram(_tgToken, _tgChat)) { _tgToken = ""; _tgChat = ""; } }
+    private void TestAlert() { Runner.Telemetry.Start(); Runner.Telemetry.Publish(CreatorAlertKind.Info, AlertSeverity.Info, "PromptFlow 오토파일럿 테스트 알림"); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}
