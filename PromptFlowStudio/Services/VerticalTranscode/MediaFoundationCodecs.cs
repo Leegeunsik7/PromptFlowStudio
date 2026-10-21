@@ -185,17 +185,18 @@ internal sealed unsafe class MfTransform : IDisposable
             while (_needInput == 0 && Environment.TickCount64 < deadline) { Thread.Sleep(1); Pump(sink); }
             if (_needInput == 0) { LastHr = Mf.MF_E_NOTACCEPTING; return false; }
             _needInput--;
-            LastHr = Mf.ProcessInput(_t, sample);
+            var ah = LastHr = Mf.ProcessInput(_t, sample);
             Pump(sink);
+            if (ah >= 0) Inputs++;
+            return ah >= 0;
         }
-        else
-        {
-            LastHr = Mf.ProcessInput(_t, sample);
-            if (LastHr == Mf.MF_E_NOTACCEPTING) { Drain(sink, 64); LastHr = Mf.ProcessInput(_t, sample); }
-            Drain(sink, 64);
-        }
-        if (LastHr >= 0) Inputs++;
-        return LastHr >= 0;
+        // v17.74: 수락 여부 = ProcessInput 결과(후속 Drain 의 NEED_MORE_INPUT 은 정상 — 이전엔 LastHr 덮어써 false 오보)
+        var hr = Mf.ProcessInput(_t, sample);
+        if (hr == Mf.MF_E_NOTACCEPTING) { Drain(sink, 64); hr = Mf.ProcessInput(_t, sample); }
+        LastHr = hr;
+        Drain(sink, 64);
+        if (hr >= 0) Inputs++;
+        return hr >= 0;
     }
 
     public void Finish(IMfSampleSink sink)
@@ -412,6 +413,8 @@ public sealed class MfH264Decoder : IDisposable
     {
         if (!OperatingSystem.IsWindows() || !Mf.Ensure()) return null;
         if (Mf.CoCreateInstance(Mf.CLSID_H264Dec, IntPtr.Zero, 1, Mf.IID_Transform, out var t) < 0) return null;
+        // v17.74 저지연 모드 — 입력 1 개당 출력 1 개(DPB 지연 배출 억제 · 실패 무시)
+        if (Mf.Attributes(t, out var attrs) >= 0) { Mf.SetU32(attrs, Mf.LOW_LATENCY, 1); Mf.Release(attrs); }
         var x = new MfTransform(t, async: false);
         var i = Mf.NewType(Mf.MediaTypeVideo, Mf.H264);
         Mf.SetU64(i, Mf.MT_FRAME_SIZE, (ulong)w << 32 | (uint)h); Mf.SetU64(i, Mf.MT_FRAME_RATE, (ulong)fps << 32 | 1u); Mf.SetU32(i, Mf.MT_INTERLACE, 2);

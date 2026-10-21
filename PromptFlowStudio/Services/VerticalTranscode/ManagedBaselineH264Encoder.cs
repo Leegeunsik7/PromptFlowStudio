@@ -52,11 +52,11 @@ public sealed class ManagedBaselineH264Encoder
 {
     public const int MinQp = 10, MaxQp = 51;
     // CAVLC 표(ISO/IEC 14496-10 표 9-5 · 9-7 · 9-8 · 9-9 · 9-10) — nC 0..1 열 · 크로마 DC(nC = −1) 열.
-    private static ReadOnlySpan<byte> CtLen => new byte[] { 1, 0, 0, 0, 6, 2, 0, 0, 8, 6, 3, 0, 9, 8, 7, 5, 10, 9, 8, 6, 11, 10, 9, 7, 13, 11, 10, 8, 13, 13, 11, 9, 13, 13, 13, 10 };
-    private static ReadOnlySpan<byte> CtBits => new byte[] { 1, 0, 0, 0, 5, 1, 0, 0, 7, 4, 1, 0, 7, 6, 5, 3, 7, 6, 5, 3, 7, 6, 5, 4, 15, 6, 5, 4, 11, 14, 5, 4, 8, 10, 13, 4 };
-    private static ReadOnlySpan<byte> CdcLen => new byte[] { 2, 0, 0, 0, 6, 1, 0, 0, 6, 6, 3, 0, 6, 7, 7, 6, 6, 8, 8, 7 };
-    private static ReadOnlySpan<byte> CdcBits => new byte[] { 1, 0, 0, 0, 7, 1, 0, 0, 4, 6, 1, 0, 3, 3, 2, 5, 2, 3, 2, 0 };
-    private static ReadOnlySpan<byte> TzLen => new byte[]
+    internal static ReadOnlySpan<byte> CtLen => new byte[] { 1, 0, 0, 0, 6, 2, 0, 0, 8, 6, 3, 0, 9, 8, 7, 5, 10, 9, 8, 6, 11, 10, 9, 7, 13, 11, 10, 8, 13, 13, 11, 9, 13, 13, 13, 10 };
+    internal static ReadOnlySpan<byte> CtBits => new byte[] { 1, 0, 0, 0, 5, 1, 0, 0, 7, 4, 1, 0, 7, 6, 5, 3, 7, 6, 5, 3, 7, 6, 5, 4, 15, 6, 5, 4, 11, 14, 5, 4, 8, 10, 13, 4 };
+    internal static ReadOnlySpan<byte> CdcLen => new byte[] { 2, 0, 0, 0, 6, 1, 0, 0, 6, 6, 3, 0, 6, 7, 7, 6, 6, 8, 8, 7 };
+    internal static ReadOnlySpan<byte> CdcBits => new byte[] { 1, 0, 0, 0, 7, 1, 0, 0, 4, 6, 1, 0, 3, 3, 2, 5, 2, 3, 2, 0 };
+    internal static ReadOnlySpan<byte> TzLen => new byte[]
     {
         1, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 9,
         3, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 6, 6, 6, 6, 0,
@@ -67,7 +67,7 @@ public sealed class ManagedBaselineH264Encoder
         6, 5, 3, 3, 3, 2, 3, 4, 3, 6, 0, 0, 0, 0, 0, 0,
         6, 4, 5, 3, 2, 2, 3, 3, 6, 0, 0, 0, 0, 0, 0, 0,
     };
-    private static ReadOnlySpan<byte> TzBits => new byte[]
+    internal static ReadOnlySpan<byte> TzBits => new byte[]
     {
         1, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 1,
         7, 6, 5, 4, 3, 5, 4, 3, 2, 3, 2, 3, 2, 1, 0, 0,
@@ -78,9 +78,9 @@ public sealed class ManagedBaselineH264Encoder
         1, 1, 5, 4, 3, 3, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0,
         1, 1, 1, 3, 3, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0,
     };
-    private static ReadOnlySpan<byte> CTzLen => new byte[] { 1, 2, 3, 3, 1, 2, 2, 0, 1, 1, 0, 0 };
-    private static ReadOnlySpan<byte> CTzBits => new byte[] { 1, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0 };
-    private static ReadOnlySpan<byte> RunLen => new byte[]
+    internal static ReadOnlySpan<byte> CTzLen => new byte[] { 1, 2, 3, 3, 1, 2, 2, 0, 1, 1, 0, 0 };
+    internal static ReadOnlySpan<byte> CTzBits => new byte[] { 1, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0 };
+    internal static ReadOnlySpan<byte> RunLen => new byte[]
     {
         1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         1, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -90,7 +90,7 @@ public sealed class ManagedBaselineH264Encoder
         2, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0,
         3, 3, 3, 3, 3, 3, 3, 4, 5, 6, 7, 8, 9, 10, 11,
     };
-    private static ReadOnlySpan<byte> RunBits => new byte[]
+    internal static ReadOnlySpan<byte> RunBits => new byte[]
     {
         1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -101,10 +101,10 @@ public sealed class ManagedBaselineH264Encoder
         7, 6, 5, 4, 3, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1,
     };
     /// <summary>4×4 지그재그 스캔 → 래스터(행 × 4 + 열).</summary>
-    private static ReadOnlySpan<byte> Zig => new byte[] { 0, 1, 4, 8, 5, 2, 3, 6, 9, 12, 13, 10, 7, 11, 14, 15 };
-    private static ReadOnlySpan<byte> QpC => new byte[] { 29, 30, 31, 32, 32, 33, 34, 34, 35, 35, 36, 36, 37, 37, 37, 38, 38, 38, 39, 39, 39, 39 };
-    private static readonly ushort[] Mf0 = { 13107, 11916, 10082, 9362, 8192, 7282 };
-    private static ReadOnlySpan<byte> V0 => new byte[] { 10, 11, 13, 14, 16, 18 };
+    internal static ReadOnlySpan<byte> Zig => new byte[] { 0, 1, 4, 8, 5, 2, 3, 6, 9, 12, 13, 10, 7, 11, 14, 15 };
+    internal static ReadOnlySpan<byte> QpC => new byte[] { 29, 30, 31, 32, 32, 33, 34, 34, 35, 35, 36, 36, 37, 37, 37, 38, 38, 38, 39, 39, 39, 39 };
+    internal static readonly ushort[] Mf0 = { 13107, 11916, 10082, 9362, 8192, 7282 };
+    internal static ReadOnlySpan<byte> V0 => new byte[] { 10, 11, 13, 14, 16, 18 };
 
     private readonly byte[] _recY, _recU, _recV, _rbsp;
     private int _idrId, _frameNum;
@@ -323,7 +323,7 @@ public sealed class ManagedBaselineH264Encoder
         }
     }
 
-    private static void Hadamard4(Span<int> m)
+    internal static void Hadamard4(Span<int> m)
     {
         Span<int> t = stackalloc int[16];
         for (var r = 0; r < 4; r++)

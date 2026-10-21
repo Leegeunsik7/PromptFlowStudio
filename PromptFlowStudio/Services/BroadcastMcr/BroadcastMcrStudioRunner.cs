@@ -99,6 +99,9 @@ public sealed class BroadcastMcrStudioRunner : IDisposable
     public long FramesOverBudget { get; private set; }
     public string? LastAction { get; private set; }
     public int EnvSplats => _envSplats;
+    /// <summary>v17.74 썸네일 컴포지터 동일 밀도 재생성용.</summary>
+    public int BodySplats => _bodySplats;
+    public int FaceSplats => _faceSplats;
     public int SeriesCount => _sN;
     private int Idx(int i) => (_sHead - 1 - i + 2 * Hist) % Hist;
     public float FrameMsSeries(int i) => _msS[Idx(i)];

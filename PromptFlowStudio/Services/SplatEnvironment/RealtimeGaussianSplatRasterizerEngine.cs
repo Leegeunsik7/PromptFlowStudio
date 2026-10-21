@@ -146,7 +146,8 @@ public sealed class RealtimeGaussianSplatRasterizerEngine : IDisposable
         ref readonly var cam = ref _jCam;
         var e = cam.Position; var F = cam.Forward; var R = cam.Right; var U = cam.Up;
         float tanH = cam.TanHalfH, tanV = cam.TanHalfV;
-        float fx = W * 0.5f / tanH, fy = H * 0.5f / tanV, limX = 1.3f * tanH, limY = 1.3f * tanV;
+        float fx = W * 0.5f / tanH, fy = H * 0.5f / tanV, limX = 1.3f * cam.CullTanHalfH, limY = 1.3f * cam.CullTanHalfV;
+        float cu = W * 0.5f + cam.ShiftX, cv = H * 0.5f + cam.ShiftY;   // v17.74 오프축 주점(기본 = 중심)
         var lodD2 = guard.LodDistance * guard.LodDistance; var farS2 = guard.LodLevel > 0 ? guard.FarScale * guard.FarScale : 1f;
         var basis = _wBasis.AsSpan(w * 16, 16);
         var mod = Modulator;
@@ -162,7 +163,7 @@ public sealed class RealtimeGaussianSplatRasterizerEngine : IDisposable
             if (tz < cam.Near) { offscreen++; continue; }
             var tx = Vector3.Dot(d, R); var ty = Vector3.Dot(d, U);
             var iz = 1f / tz;
-            var u = W * 0.5f + fx * tx * iz; var v = H * 0.5f - fy * ty * iz;
+            var u = cu + fx * tx * iz; var v = cv - fy * ty * iz;
             var cx = Math.Clamp(tx * iz, -limX, limX) * tz; var cy = Math.Clamp(ty * iz, -limY, limY) * tz;
             var T0 = fx * iz * R - fx * cx * iz * iz * F;
             var T1 = -fy * iz * U + fy * cy * iz * iz * F;

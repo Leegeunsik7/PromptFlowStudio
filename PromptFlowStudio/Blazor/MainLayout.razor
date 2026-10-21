@@ -493,6 +493,10 @@
         {
             <VirtualInfluencerLiveStudioModal OnClose="() => _influencerLive = false" />
         }
+        @if (_visualPolish)
+        {
+            <ReelsVisualPolishStudioModal OnClose="() => _visualPolish = false" />
+        }
         @if (_autopilot)
         {
             <ZeroTouchAutopilotStudioModal OnClose="() => _autopilot = false" />
@@ -1024,6 +1028,7 @@
             case "_talkshow": _talkshow = on; break;
             case "_bcastMcr": _bcastMcr = on; break;
             case "_showrunner": _showrunner = on; break;
+            case "_visualPolish": _visualPolish = on; break;
             case "_autopilot": _autopilot = on; break;
             case "_semanticWeather": _semanticWeather = on; break;
             case "_omniPublisher": _omniPublisher = on; break;
@@ -1164,6 +1169,7 @@
         "_talkshow" => _talkshow,
         "_bcastMcr" => _bcastMcr,
         "_showrunner" => _showrunner,
+        "_visualPolish" => _visualPolish,
         "_autopilot" => _autopilot,
         "_semanticWeather" => _semanticWeather,
         "_omniPublisher" => _omniPublisher,
@@ -1264,6 +1270,7 @@
     private bool _globalDub; // v17.64.0 사이드바 🌍 글로벌 & 로컬라이제이션 ▸ 🗣️ 실시간 다국어 더빙 스튜디오(스트리밍 번역 ≤ 200 ms · 다국어 음색 유지 합성 · 플랫폼별 언어 트랙 · ARKit 가우시안 립싱크 < 50 ms)
     private bool _streamGateway; // v17.62.0 사이드바 📜 각본 & 타임라인 ▸ 🛰️ 스트림 게이트웨이 & 클리퍼 스튜디오(32 MB 압축 NAL 링 · 무손실 1080p 리먹스 · Twitch/YouTube/치지직 게이트웨이 · 백오프/배압)
     private bool _influencerLive; // v17.61.0 사이드바 📜 각본 & 타임라인 ▸ 🎙️ 버추얼 인플루언서 라이브 스튜디오(채팅 리액션 트리거 · 하이라이트 9:16 즉시 클리핑 · 도배/비속어 가드)
+    private bool _visualPolish; // v17.74.0 사이드바 📸 소셜 & 바이럴 ▸ 🎨 릴스 비주얼 폴리시(fMP4 디먹스 · MF/관리 H.264 디코드 · 동적 하드서브 · 3DGS 골든 프레임 1080×1920 썸네일 · A/B 타이틀)
     private bool _autopilot; // v17.73.0 사이드바 📸 소셜 & 바이럴 ▸ 🤖 제로-터치 오토파일럿(폐루프 FSM · GPU 하드서브 번-인 · 쿼터 재시도 큐 · Discord/Telegram 웹훅)
     private bool _semanticWeather; // v17.72.0 사이드바 🎭 디지털 휴먼 ▸ 🌩️ 시맨틱 채팅 & 날씨(통합 채팅 MPSC 링 · 1k/s 밸브 · 감성 4D · 톡시시티 블라인드 · 3DGS 날씨/조명)
     private bool _omniPublisher; // v17.71.0 사이드바 📸 소셜 & 바이럴 ▸ 📱 AI 옴니채널 퍼블리셔 & QoL(OAuth2 AES-GCM 볼트 · YT/IG 실 업로드 · AI 제목/해시태그 · 1-Click 프리셋)

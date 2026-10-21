@@ -38,6 +38,7 @@ using SM = PromptFlowStudio.Services.StationMaster;
 using Pub = PromptFlowStudio.Services.Publisher;
 using Scw = PromptFlowStudio.Services.SemanticChat;
 using Ap = PromptFlowStudio.Services.Autopilot;
+using Vps = PromptFlowStudio.Services.VisualPolish;
 using Nw = PromptFlowStudio.Services.Newsroom;
 using Spt = PromptFlowStudio.Services.Sports;
 using V3 = System.Numerics.Vector3;
@@ -31521,6 +31522,268 @@ public sealed class ZeroTouchAutopilotIsolatedTests
         var runner = sp.GetService(typeof(Ap.ZeroTouchAutopilotStudioRunner))!;
         var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.ZeroTouchAutopilotStudioModal), sp);
         Assert.True(html.Length > 500 && html.Contains("ztp-scrim", StringComparison.Ordinal) && html.Contains("ztp-switch", StringComparison.Ordinal) && html.Contains("ztp-flow", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+}
+
+/// <summary>v17.74.0 비주얼 폴리시 — fMP4/MP4 디먹스 · H.264 디코드(관리 비트 동일 · MF 하드웨어) · 동적 하드서브 번-인 예산 · 3DGS 골든 프레임 타일 썸네일 · A/B 회귀(벽시계 → 비병렬).</summary>
+[Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 번-인 프레임 예산 → 비병렬
+public sealed class ReelsVisualPolishIsolatedTests
+{
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+
+    [Fact]
+    public async Task VideoDemux_And_ThumbnailSynthesis_Check()
+    {
+        // ── THUMB-1a: 실 H.264 fMP4(관리 인코더 · 움직이는 그라데이션) → 디먹스 표 · Annex-B · 관리 디코더 = 인코더 재구성 비트 동일 ──
+        const int W = 216, H = 384;
+        var enc = new Ap.HardwareSubtitleBurnInEngine(W, H) { Enabled = false };
+        using var clip = new Vt.SegmentedChunkStream();
+        Assert.Equal(60, enc.BurnReel(new Ap.GradientFrameSource(), 2.0, 30, clip, 3000, allowMf: false));
+        var dmx = new Vps.Mp4H264Demuxer();
+        Assert.True(dmx.Open(clip), "디먹스 " + dmx.LastError);
+        Assert.True(dmx.Fragmented && dmx.Count == 60 && dmx.Width == W && dmx.Height == H && dmx.Timescale == 30_000 && Math.Abs(dmx.Fps - 30) < 0.01 && dmx.KeyFrames >= 2 && dmx.Sps.Length > 4 && dmx.Pps.Length > 0,
+            "표 " + dmx.Count + " " + dmx.Width + "×" + dmx.Height + " ts " + dmx.Timescale + " key " + dmx.KeyFrames);
+        var au0 = dmx.ReadAnnexB(0).ToArray();
+        Assert.True(au0[4] == 0x67 && au0.AsSpan().IndexOf(new byte[] { 0, 0, 0, 1, 0x68 }) > 0, "키프레임 = SPS/PPS 선행");
+        var demuxAlloc = AllocationProbe.MinAllocated(() => { for (var i = 0; i < 60; i++) dmx.ReadAnnexB(i); });
+        Assert.True(demuxAlloc == 0, "디먹스 판독 할당 " + demuxAlloc);
+        var openAlloc = AllocationProbe.MinAllocated(() => dmx.Open(clip));
+        Assert.True(openAlloc == 0, "재개방(표 재구축) 할당 " + openAlloc);
+        // 관리 디코더 = 같은 입력 프레임을 관리 인코더로 직접 부호화한 재구성과 비트 동일(첫 2 프레임)
+        var src = new Ap.GradientFrameSource();
+        var mdec = new Vps.ManagedBaselineH264Decoder();
+        var refEnc = new Vt.ManagedBaselineH264Encoder(W, H, 30) { Qp = 30 };
+        var y = new byte[W * H]; var uv = new byte[W * H / 2]; var oy = new byte[W * H]; var ouv = new byte[W * H / 2]; var buf = new byte[refEnc.MaxFrameBytes];
+        var mismatch = 0;
+        for (var f = 0; f < 3; f++)
+        {
+            src.Render(f, 30, y, uv, W, H);
+            var n = refEnc.EncodeIdr(y, uv, buf);
+            Assert.True(mdec.Decode(buf.AsSpan(0, n), f) == 1 && mdec.TryTake(oy, ouv), "디코드 " + mdec.LastError);
+            for (var j = 0; j < H; j++) for (var i = 0; i < W; i++) if (oy[j * W + i] != refEnc.ReconY[j * refEnc.PadW + i]) mismatch++;
+            for (var j = 0; j < H / 2; j++) for (var i = 0; i < W / 2; i++) { if (ouv[j * W + 2 * i] != refEnc.ReconU[j * refEnc.PadW / 2 + i]) mismatch++; if (ouv[j * W + 2 * i + 1] != refEnc.ReconV[j * refEnc.PadW / 2 + i]) mismatch++; }
+        }
+        Assert.True(mismatch == 0, "관리 디코더 비트 불일치 " + mismatch);
+        Assert.True(mdec.Decode(buf.AsSpan(0, refEnc.EncodeSkip(buf)), 9) == 1 && mdec.TryTake(oy, ouv) && mdec.SkipFrames == 1, "P_Skip");
+        var decAlloc = AllocationProbe.MinAllocated(() => { var k = refEnc.EncodeIdr(y, uv, buf); mdec.Decode(buf.AsSpan(0, k), 0); mdec.TryTake(oy, ouv); });
+        Assert.True(decAlloc == 0, "관리 디코드 할당 " + decAlloc);
+        // 프레임 엔진: 관리 경로(하드웨어 미사용) 전 프레임 순차 복원 · 움직임(프레임 간 차) · RGBA 변환 무할당
+        var fe = new Vps.HardwareVideoDemuxFrameDecoder { PreferHardware = false };
+        Assert.True(fe.Open(clip) && fe.Backend == Vps.VideoDecoderBackend.ManagedBaseline, "프레임 엔진 " + fe.LastError);
+        var prev = new byte[W * H]; long motion = 0; var frames = 0;
+        while (fe.NextFrame(oy, ouv)) { if (frames > 0) for (var i = 0; i < W * H; i += 7) motion += Math.Abs(oy[i] - prev[i]); oy.CopyTo(prev, 0); frames++; }
+        Assert.True(frames == 60 && motion > 100_000, "순차 복원 " + frames + " 움직임 " + motion);
+        var rgba = new byte[W * H * 4];
+        Vps.HardwareVideoDemuxFrameDecoder.ToRgba32(oy, ouv, W, H, rgba);
+        Assert.True(rgba[3] == 255 && AllocationProbe.MinAllocated(() => Vps.HardwareVideoDemuxFrameDecoder.ToRgba32(oy, ouv, W, H, rgba)) == 0);
+        fe.Rewind();
+        var feAlloc = AllocationProbe.MinAllocated(() => { for (var i = 0; i < 10; i++) fe.NextFrame(oy, ouv); });
+        Assert.True(feAlloc == 0, "프레임 엔진 할당 " + feAlloc);
+        Assert.True(fe.Seek(45, oy, ouv) && fe.NextFrame(oy, ouv) && fe.Position == 46);
+        fe.Dispose();
+        // 가짜 비트스트림(v17.69 합성 클립) → 관리 디코더 거부
+        using (var fake = L2R.LiveToReelsFactoryStudioRunner.SyntheticClip(1))
+        using (var fe2 = new Vps.HardwareVideoDemuxFrameDecoder { PreferHardware = false })
+            Assert.True(!fe2.Open(fake) && fe2.LastError is { Length: > 0 }, "가짜 거부 " + fe2.LastError);   // SPS 단계 또는 디코드 단계 거부
+        // MF 하드웨어 경로(Windows) — 디코드 프레임 = 관리 경로와 동일
+        if (OperatingSystem.IsWindows())
+        {
+            using var hw = new Vps.HardwareVideoDemuxFrameDecoder { PreferHardware = true };
+            Assert.True(hw.Open(clip) && hw.Backend == Vps.VideoDecoderBackend.MediaFoundation, "MF " + hw.LastError);
+            using var sw = new Vps.HardwareVideoDemuxFrameDecoder { PreferHardware = false };
+            sw.Open(clip);
+            var hy = new byte[W * H]; var huv = new byte[W * H / 2]; var diff = 0; var hf = 0;
+            while (hw.NextFrame(hy, huv)) { Assert.True(sw.NextFrame(oy, ouv)); for (var i = 0; i < W * H; i++) if (hy[i] != oy[i]) diff++; hf++; }
+            Assert.True(hf == 60 && diff == 0, "MF ↔ 관리 " + hf + " 프레임 · 불일치 " + diff);
+        }
+
+        // ── THUMB-1b: 진행형 MP4(v17.69 패키저 출력 · stbl 표) 디먹스 → 원본 fMP4 와 동일 샘플 ──
+        var pk = new L2R.LiveToReelsPackagingPipelineSynthesizer();
+        using var prog = new Vt.SegmentedChunkStream();
+        Assert.True(pk.Package(clip, new L2R.ReelsPackageSpec { Caption = "", IncludeBgmHook = false }, prog), "패키징 " + pk.LastFailure);
+        var dp = new Vps.Mp4H264Demuxer();
+        Assert.True(dp.Open(prog) && !dp.Fragmented && dp.Count == 60 && dp.KeyFrames == dmx.KeyFrames, "진행형 " + dp.LastError + " " + dp.Count);
+        for (var i = 0; i < 60; i += 7) Assert.True(dp.ReadAnnexB(i).SequenceEqual(dmx.ReadAnnexB(i)), "샘플 " + i);
+
+        // ── THUMB-2: 동적 모션 하드서브 — 실 영상 프레임 위 자막 · 큐 밖 원본 프레임 보존 · 프레임당(디코드 + 번-인 + 인코드) 16.7 ms ──
+        var motion2 = new Vps.DynamicMotionSubtitleBurnInSynthesizer { PreferHardwareDecode = false, AllowMediaFoundationEncode = false };
+        using var burned = new Vt.SegmentedChunkStream();
+        var res = motion2.Burn(clip, "움직이는 영상 위 자막. 두번째 문장도 번인".AsSpan(), burned);
+        Assert.True(res.Ok && res.Frames == 60 && res.Width == W && res.Height == H && res.Decoder == Vps.VideoDecoderBackend.ManagedBaseline && motion2.BurnIn.BurnedFrames > 30, "번-인 " + res.Error);
+        Assert.True(res.MedianFrameMs < 16.7 && res.P95FrameMs < 33, "프레임 예산 중앙 " + res.MedianFrameMs + " p95 " + res.P95FrameMs + " 최대 " + res.MaxFrameMs);
+        // 결과 디코드: 자막 구간 프레임 ≠ 원본 · 첫 프레임(큐 전) = 원본 · 원본 움직임 유지
+        using (var rb = new Vps.HardwareVideoDemuxFrameDecoder { PreferHardware = false })
+        using (var ro = new Vps.HardwareVideoDemuxFrameDecoder { PreferHardware = false })
+        {
+            Assert.True(rb.Open(burned) && ro.Open(clip) && rb.FrameCount == 60);
+            var by = new byte[W * H]; var buv = new byte[W * H / 2]; long capDiff = 0, firstDiff = 0, burnedMotion = 0; var pby = new byte[W * H];
+            for (var f = 0; f < 60; f++)
+            {
+                Assert.True(rb.NextFrame(by, buv) && ro.NextFrame(oy, ouv));
+                long d = 0; for (var i = 0; i < W * H; i++) d += Math.Abs(by[i] - oy[i]);
+                if (f == 0) firstDiff = d; if (f == 30) capDiff = d;
+                if (f > 0) for (var i = 0; i < W * H; i += 7) burnedMotion += Math.Abs(by[i] - pby[i]);
+                by.CopyTo(pby, 0);
+            }
+            Assert.True(firstDiff == 0 && capDiff > 20_000 && burnedMotion > 100_000, "번-인 결과 첫 " + firstDiff + " 자막 " + capDiff + " 움직임 " + burnedMotion);
+        }
+        // 1080×1920 실시간 예산(디코드 + 리샘플 0 + 번-인) — 원본 1080×1920 클립 1 s
+        var hiEnc = new Ap.HardwareSubtitleBurnInEngine(1080, 1920) { Enabled = false };
+        using var hiClip = new Vt.SegmentedChunkStream();
+        hiEnc.BurnReel(new Ap.GradientFrameSource(), 1.0, 30, hiClip, 6000, allowMf: false);
+        using (var hs = Vps.DecodedClipFrameSource.TryOpen(hiClip, preferHardware: false)!)
+        {
+            var hb = new Ap.HardwareSubtitleBurnInEngine(1080, 1920);
+            hb.SetCaptionTrack("1080p 실시간 자막 번인 예산 검증".AsSpan(), 1000, 0);
+            var hy = new byte[1080 * 1920]; var huv = new byte[1080 * 1920 / 2]; var ms = new double[30];
+            for (var f = 0; f < 30; f++)
+            {
+                var t0 = Stopwatch.GetTimestamp();
+                hs.Render(f, 30, hy, huv, 1080, 1920);
+                hb.Apply(hy, huv, 1080, 1920, f, 30);
+                ms[f] = (Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency;
+            }
+            Array.Sort(ms);
+            Assert.True(ms[15] < 16.7 && hs.Decoded == 30 && hs.Direct >= 28, "1080p 디코드 + 번-인 중앙 " + ms[15] + " ms · 직접 " + hs.Direct + " · 디코드 " + hs.LastRenderUs + " µs · 번인 " + hb.LastApplyUs + " µs");
+            var hiAlloc = AllocationProbe.MinAllocated(() => { hs.Render(29, 30, hy, huv, 1080, 1920); hb.Apply(hy, huv, 1080, 1920, 29, 30); });
+            Assert.True(hiAlloc == 0, "1080p 번-인 경로 할당 " + hiAlloc);
+        }
+        // 리샘플(클립 ≠ 출력 크기)
+        var rs = new byte[100 * 160]; var rsuv = new byte[100 * 80];
+        Vps.DecodedClipFrameSource.Resample(oy, ouv, W, H, rs, rsuv, 100, 160);
+        Assert.True(AllocationProbe.MinAllocated(() => Vps.DecodedClipFrameSource.Resample(oy, ouv, W, H, rs, rsuv, 100, 160)) == 0);
+
+        // ── THUMB-3a: 골든 프레임 선별 — 표정 점수(미소 · 입벌림 · 눈) · 1 s 버킷 · 창 내 최고 · 무할당 ──
+        var trk = new Vps.PeakEmotionFrameTracker();
+        var w52 = new float[52];
+        w52[(int)PromptFlowStudio.Services.DigitalHuman.ArkitBlendshape.MouthSmileLeft] = 0.8f; w52[(int)PromptFlowStudio.Services.DigitalHuman.ArkitBlendshape.MouthSmileRight] = 0.6f;
+        w52[(int)PromptFlowStudio.Services.DigitalHuman.ArkitBlendshape.JawOpen] = 0.5f; w52[(int)PromptFlowStudio.Services.DigitalHuman.ArkitBlendshape.EyeWideLeft] = 0.4f;
+        Assert.Equal(0.7f + 0.5f + 0.2f, Vps.PeakEmotionFrameTracker.FaceScore(w52), 3);
+        var cam = PromptFlowStudio.Services.SplatEnvironment.SplatCamera.LookAt(new V3(0, 1.4f, 3.2f), new V3(0, 1.2f, 0), 40f, 320f / 192f);
+        void Feed(long t, float smile, int avatar)
+        {
+            var c = trk.Current; c.Avatars = 2; Array.Clear(c.Face);
+            c.Face[avatar * 52 + (int)PromptFlowStudio.Services.DigitalHuman.ArkitBlendshape.MouthSmileLeft] = smile;
+            c.Face[avatar * 52 + (int)PromptFlowStudio.Services.DigitalHuman.ArkitBlendshape.MouthSmileRight] = smile;
+            c.Seat[0] = new V3(-0.6f, 0, 0); c.Seat[1] = new V3(0.6f, 0, 0);
+            trk.Observe(t, in cam);
+        }
+        for (var t = 0L; t < 40_000; t += 50) Feed(t, 0.1f + 0.05f * MathF.Sin(t * 0.001f), 0);
+        Feed(12_340, 0.95f, 1);   // 창 1 피크
+        Feed(31_500, 0.99f, 0);   // 창 밖(더 높음)
+        var g = new Vps.GoldenFrameSnapshot();
+        Assert.True(trk.TryGolden(5_000, 25_000, g) && g.AtMs == 12_340 && g.PeakAvatar == 1 && Math.Abs(g.FaceScore - 0.95f) < 1e-4f, "골든 " + g.AtMs + " 아바타 " + g.PeakAvatar);
+        Assert.True(trk.TryGolden(25_000, 40_000, g) && g.AtMs == 31_500);
+        Assert.False(trk.TryGolden(100_000, 120_000, g));
+        trk.Boost(2f); Feed(18_000, 0.2f, 0);
+        Assert.True(trk.TryGolden(5_000, 25_000, g) && g.AtMs == 18_000 && g.Boost >= 2f, "피격/환호 부스트 우선");
+        var trkAlloc = AllocationProbe.MinAllocated(() => { for (var t = 50_000L; t < 52_000; t += 16) Feed(t, 0.3f, 0); });
+        Assert.True(trkAlloc == 0, "추적 할당 " + trkAlloc);
+
+        // ── THUMB-3b: 오프축 타일 = 단일 렌더와 동일 기하(이음매 무단차) · 1080×1920 타일 썸네일 · 글로우 · 헤드라인 · PNG ──
+        var talk = new PromptFlowStudio.Services.Talkshow.MultiAvatarTalkshowStudioRunner(1500);
+        var mcr = new BMc.BroadcastMcrStudioRunner(talk, envSplats: 30_000, bodySplats: 10_000, faceSplats: 2_000);
+        var vp = new Vps.ReelsVisualPolishStudioRunner(mcr);
+        vp.Attach();
+        mcr.Prepare();
+        for (var i = 0; i < 30; i++) mcr.Step();
+        Assert.True(vp.Tracker.Frames >= 30 && vp.Tracker.MaxStepUs < 2_000, "MCR 레이어 " + vp.Tracker.Frames + " · " + vp.Tracker.MaxStepUs + " µs");
+        var layerAlloc = AllocationProbe.MinAllocated(() => { for (var i = 0; i < 10; i++) mcr.Step(); });
+        Assert.True(layerAlloc == 0, "MCR + 추적 레이어 할당 " + layerAlloc);
+        // 타일 기하: 9:16 전체 카메라 1 장(대칭) 의 u 좌표 = 타일 렌더 u + 타일 원점(투영식 검증)
+        var baseCam = mcr.Mcr.Camera(mcr.Mcr.Program);
+        var tcam = Vps.PeakEmotion3dgsThumbnailSynthesizer.TileCamera(in baseCam, 2, 7, 1f);
+        var pW = baseCam.Position + baseCam.Forward * 3f + baseCam.Right * 0.31f - baseCam.Up * 0.42f;
+        var d3 = pW - baseCam.Position; float tz = V3.Dot(d3, baseCam.Forward), tx = V3.Dot(d3, baseCam.Right), ty = V3.Dot(d3, baseCam.Up);
+        var tanV = MathF.Tan(baseCam.VFovDeg * MathF.PI / 360f); var fy = 1920 * 0.5f / tanV;
+        float uFull = 540 + fy * tx / tz, vFull = 960 - fy * ty / tz;
+        var tfy = 192 * 0.5f / tcam.TanHalfV; var tfx = 320 * 0.5f / tcam.TanHalfH;
+        float uT = 160 + tcam.ShiftX + tfx * tx / tz, vT = 96 + tcam.ShiftY - tfy * ty / tz;
+        Assert.True(Math.Abs(uT + 2 * 320 - uFull) < 0.01f && Math.Abs(vT + 7 * 192 - vFull) < 0.01f && Math.Abs(tfx - tfy) < 0.01f, "타일 투영 " + uT + "," + vT + " vs " + uFull + "," + vFull);
+        // 렌더: 오프축 타일 1 장 = 대칭 카메라 렌더의 해당 영역(0 오프셋 타일 = 원본과 비트 동일)
+        var comp = mcr.Compositor!;
+        var full = new byte[320 * 192 * 3]; var tile = new byte[320 * 192 * 3];
+        var sym = baseCam; comp.Render(in sym, full);
+        var zero = baseCam; zero.ShiftX = 0; zero.ShiftY = 0; comp.Render(in zero, tile);
+        Assert.True(full.AsSpan().SequenceEqual(tile), "주점 이동 0 = 기존 렌더 비트 동일");
+        // 골든 프레임 → 썸네일
+        var now = vp.Tracker.Clock();
+        vp.Tracker.Boost(1.2f); mcr.Step();
+        var pr = vp.Polish(7, now - 30_000, now + 1_000, clip, new Pub.ShortformContext { Caption = "직격 리액션", KeyLine = "이게 진짜 된다고?", Cause = 1, Peak = 93, Hits = 5, DurationSec = 2 });
+        Assert.True(pr.HasGolden && pr.Png is not null && vp.Thumbs.LastTiles == Vps.PeakEmotion3dgsThumbnailSynthesizer.Cols * Vps.PeakEmotion3dgsThumbnailSynthesizer.Rows, "썸네일 " + pr.Note);
+        Assert.True(pr.Png!.AsSpan(0, 8).SequenceEqual(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }) && System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(pr.Png.AsSpan(16)) == 1080 && System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(pr.Png.AsSpan(20)) == 1920);
+        // PNG 무결성: IDAT 해제 → 원본 RGB 재구성(Sub 필터 역) 일치
+        var idat = pr.Png.AsSpan().IndexOf("IDAT"u8);
+        var idLen = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(pr.Png.AsSpan(idat - 4));
+        Assert.Equal(Vps.PeakEmotion3dgsThumbnailSynthesizer.Crc32("IDAT"u8, pr.Png.AsSpan(idat + 4, idLen)), System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(pr.Png.AsSpan(idat + 4 + idLen)));
+        using (var zs = new System.IO.Compression.ZLibStream(new MemoryStream(pr.Png, idat + 4, idLen), System.IO.Compression.CompressionMode.Decompress))
+        {
+            var raw = new byte[(1080 * 3 + 1) * 1920]; var got = 0; int k2;
+            while ((k2 = zs.Read(raw, got, raw.Length - got)) > 0) got += k2;
+            Assert.Equal(raw.Length, got);
+            var rgb = vp.Thumbs.Rgb.ToArray(); var bad = 0; var rec = new byte[1080 * 3];
+            for (var yy = 0; yy < 1920; yy += 97)
+            {
+                var ro = yy * (1080 * 3 + 1);
+                for (var i = 0; i < 1080 * 3; i++) rec[i] = (byte)(raw[ro + i + 1] + (i >= 3 ? rec[i - 3] : 0));
+                if (!rec.AsSpan().SequenceEqual(rgb.AsSpan(yy * 1080 * 3, 1080 * 3))) bad++;
+            }
+            Assert.Equal(0, bad);
+        }
+        // 콘텐츠: 상단 헤드라인(노랑 텍스트 픽셀) · 중앙 피사체 글로우 · 하단 비네트
+        var thumb = vp.Thumbs.Rgb.ToArray(); int yellow = 0; long centerLum = 0, edgeLum = 0;
+        for (var yy = 150; yy < 700; yy += 2) for (var xx = 0; xx < 1080; xx += 2) { var o = (yy * 1080 + xx) * 3; if (thumb[o] > 220 && thumb[o + 1] > 190 && thumb[o + 2] < 90) yellow++; }
+        for (var yy = 1000; yy < 1100; yy++) for (var xx = 0; xx < 1080; xx += 4) { var o = (yy * 1080 + xx) * 3; if (xx > 340 && xx < 740) centerLum += thumb[o + 2]; else edgeLum += thumb[o + 2]; }
+        Assert.True(yellow > 2_000 && vp.Thumbs.LastEdgeMean > 0.001f, "헤드라인 노랑 " + yellow + " · 엣지 " + vp.Thumbs.LastEdgeMean);
+        Assert.True(pr.Burn.Ok && pr.BurnedMp4 is not null && pr.Ab is not null);
+        // 플레이어 미리보기
+        var bmp = new byte[Vps.PeakEmotion3dgsThumbnailSynthesizer.PreviewBytes(Vps.ReelsVisualPolishStudioRunner.PreviewW, Vps.ReelsVisualPolishStudioRunner.PreviewH)];
+        Assert.True(vp.PlayerFrame(7, 0, bmp) && vp.PlayerFrame(7, 1, bmp) && vp.PlayerFrame(7, 40, bmp) && bmp[0] == (byte)'B');
+
+        // ── THUMB-4: A/B — 호기심/정보형 · 정규화 · 분위기 · CTR 베타 판정 ──
+        var ab = new Vps.AbTestingMetadataVariantGenerator();
+        var ctx = new Pub.ShortformContext { Caption = "직격 리액션", KeyLine = "이게 진짜 된다고?", Cause = 1, Peak = 93, Hits = 5, DurationSec = 18, Product = "네오폰 X 울트라", Category = Pub.ProductCategory.Tech };
+        var pair = ab.Generate(42, ctx, Vps.ThumbnailMood.Surprise);
+        Assert.True(pair.A.Title.Contains('?') && pair.A.Title.EndsWith("#Shorts", StringComparison.Ordinal) && pair.A.Title.Length <= 100, "A " + pair.A.Title);
+        Assert.True(pair.B.Title.Contains("네오폰", StringComparison.Ordinal) && pair.B.Title.Contains("방법", StringComparison.Ordinal) && pair.B.Title.EndsWith("#Shorts", StringComparison.Ordinal), "B " + pair.B.Title);
+        Assert.True(pair.A.TagCount == 5 && pair.B.TagCount == 5 && pair.A.Tags.Take(5).Any(t => Vps.AbTestingMetadataVariantGenerator.CuriosityTags.Contains(t)) && pair.B.Tags.Take(5).Any(t => Vps.AbTestingMetadataVariantGenerator.InfoTags.Contains(t)));
+        Assert.True(pair.A.Tags.Take(5).Distinct().Count() == 5 && pair.A.Title != pair.B.Title && ab.Find(42) == pair && ab.Count == 1);
+        var gJoy = new Vps.GoldenFrameSnapshot { Avatars = 1 }; gJoy.Face[(int)PromptFlowStudio.Services.DigitalHuman.ArkitBlendshape.MouthSmileLeft] = 0.9f; gJoy.Face[(int)PromptFlowStudio.Services.DigitalHuman.ArkitBlendshape.MouthSmileRight] = 0.9f;
+        var gSur = new Vps.GoldenFrameSnapshot { Avatars = 1 }; gSur.Face[(int)PromptFlowStudio.Services.DigitalHuman.ArkitBlendshape.JawOpen] = 0.9f;
+        Assert.True(Vps.AbTestingMetadataVariantGenerator.MoodOf(gJoy) == Vps.ThumbnailMood.Joy && Vps.AbTestingMetadataVariantGenerator.MoodOf(gSur) == Vps.ThumbnailMood.Surprise && Vps.AbTestingMetadataVariantGenerator.MoodOf(null) == Vps.ThumbnailMood.Calm);
+        ab.RecordImpression(pair, Vps.AbVariant.A, 100); ab.RecordImpression(pair, Vps.AbVariant.B, 100);
+        Assert.Null(ab.Decide(pair));   // 최소 노출 미달
+        ab.RecordImpression(pair, Vps.AbVariant.A, 900); ab.RecordImpression(pair, Vps.AbVariant.B, 900);
+        ab.RecordClick(pair, Vps.AbVariant.A, 40); ab.RecordClick(pair, Vps.AbVariant.B, 85);
+        Assert.True(Vps.AbTestingMetadataVariantGenerator.ProbabilityBBeatsA(pair) > 0.99 && ab.Decide(pair) == Vps.AbVariant.B && pair.Chosen == Vps.AbVariant.B, "CTR 판정 " + Vps.AbTestingMetadataVariantGenerator.ProbabilityBBeatsA(pair));
+        var tie = ab.Generate(43, ctx, Vps.ThumbnailMood.Joy);
+        ab.RecordImpression(tie, Vps.AbVariant.A, 1000); ab.RecordImpression(tie, Vps.AbVariant.B, 1000); ab.RecordClick(tie, Vps.AbVariant.A, 50); ab.RecordClick(tie, Vps.AbVariant.B, 52);
+        Assert.Null(ab.Decide(tie));
+        vp.Dispose(); mcr.Dispose(); talk.Dispose();
+
+        // ── 오토파일럿 결선: 디코드 가능 릴 = 동적 모션 번-인 ──
+        var apEngine = new Ap.ZeroTouchAutopilotStudioRunner();
+        Assert.True(apEngine.Engine.MotionBurnIn);
+        apEngine.Dispose();
+
+        // ── THUMB-5: 카탈로그 · HUD · 레이아웃 · 모달 렌더 · 구독 해제 ──
+        Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_visualPolish" && en.Category == 4);
+        var root = RepoRoot();
+        var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
+        var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
+        Assert.True(hud.IndexOf("gth-v1774", StringComparison.Ordinal) is > 0 and var i1774 && i1774 < hud.IndexOf("gth-v1773", StringComparison.Ordinal) && hud.Contains("VpRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("VpRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<ReelsVisualPolishStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_visualPolish\"", StringComparison.Ordinal) && layout.Contains("\"_visualPolish\" =>", StringComparison.Ordinal));
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = sp.GetService(typeof(Vps.ReelsVisualPolishStudioRunner))!;
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.ReelsVisualPolishStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("rvp-scrim", StringComparison.Ordinal) && html.Contains("rvp-bar", StringComparison.Ordinal), "모달 렌더 " + html.Length);
         Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
     }

@@ -91,6 +91,9 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
     public double MaxBurnSec { get; set; } = 15;
     public int BurnFps { get; set; } = 30;
     public bool AllowMediaFoundation { get; set; } = true;
+    /// <summary>v17.74 동적 모션 번-인 — 릴 클립 디코드 가능 시 실제 영상 프레임 위 자막(불가 = PGM 정지 화면 폴백).</summary>
+    public bool MotionBurnIn { get; set; } = true;
+    public long MotionBurns { get; private set; }
     public long StageEntries(AutopilotStage s) => _stageCount[(int)s];
     public double StageLastMs(AutopilotStage s) => _stageMs[(int)s];
     public double StageAgeMs => Clock() - _enteredAt;
@@ -283,10 +286,12 @@ public sealed class ZeroTouchAutopilotMasterEngine : IDisposable
             else { meta.Title = reel.Caption + " #Shorts"; meta.Description = reel.Caption; }
             var output = new SegmentedChunkStream();
             int frames;
+            using var clip = MotionBurnIn && reel.Media is { } m ? VisualPolish.DecodedClipFrameSource.TryOpen(m) : null;
+            if (clip is not null) MotionBurns++;
             lock (BurnIn)
             {
                 BurnIn.SetCaptionTrack((meta.Title + ". " + meta.Description).AsSpan(), (float)(dur * 1000));
-                frames = BurnIn.BurnReel(src, dur, BurnFps, output, 6000, AllowMediaFoundation);
+                frames = BurnIn.BurnReel(clip ?? src, dur, BurnFps, output, 6000, AllowMediaFoundation);
             }
             if (frames == 0) { output.Dispose(); throw new InvalidOperationException("트랜스코더 열기 실패"); }
             output.Position = 0;

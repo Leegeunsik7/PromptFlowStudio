@@ -105,7 +105,7 @@ public sealed class SplatFrustumCullingVramBudgetGuard
     {
         Total = s.Count; CulledOpacity = CulledFrustum = CulledLod = CulledCapacity = FarSplats = 0;
         _s = s; _e = cam.Position; _f = cam.Forward; _r = cam.Right; _u = cam.Up;
-        _tanH = cam.TanHalfH; _tanV = cam.TanHalfV; _near = cam.Near; _far = cam.Far;
+        _tanH = cam.CullTanHalfH; _tanV = cam.CullTanHalfV; _near = cam.Near; _far = cam.Far;   // v17.74 오프축 타일 = 보수적 확장
         // 측면 평면 법선 보정(3σ 구가 평면을 넘는지 — z·tan + m·√(1+tan²))
         _secH = MathF.Sqrt(1f + _tanH * _tanH); _secV = MathF.Sqrt(1f + _tanV * _tanV);
         _keyScale = 65535f / MathF.Max(_far - _near, 1e-3f);

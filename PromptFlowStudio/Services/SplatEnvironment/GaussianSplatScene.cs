@@ -6,9 +6,14 @@ public struct SplatCamera
 {
     public Vector3 Position, Forward, Right, Up;
     public float VFovDeg, Aspect, Near, Far;
+    /// <summary>v17.74 오프축 주점 이동(래스터 픽셀 · 기본 0 = 대칭 절두체) — 고해상도 타일 렌더(1080×1920 = 320×192 타일 × 40).</summary>
+    public float ShiftX, ShiftY;
 
     public readonly float TanHalfV => MathF.Tan(VFovDeg * (MathF.PI / 360f));
     public readonly float TanHalfH => TanHalfV * Aspect;
+    /// <summary>컬링용 보수적 반화각 — 주점 이동분만큼 대칭 확장(이동 0 = 원값).</summary>
+    public readonly float CullTanHalfH => TanHalfH * (1f + 2f * MathF.Abs(ShiftX) / RealtimeGaussianSplatRasterizerEngine.W);
+    public readonly float CullTanHalfV => TanHalfV * (1f + 2f * MathF.Abs(ShiftY) / RealtimeGaussianSplatRasterizerEngine.H);
 
     public static SplatCamera LookAt(Vector3 eye, Vector3 target, float vfovDeg, float aspect, float near = 0.1f, float far = 200f)
     {

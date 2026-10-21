@@ -270,6 +270,7 @@
 @inject PromptFlowStudio.Services.Publisher.OmniChannelPublisherStudioRunner PubRun
 @inject PromptFlowStudio.Services.SemanticChat.SemanticChatWeatherStudioRunner ScwRun
 @inject PromptFlowStudio.Services.Autopilot.ZeroTouchAutopilotStudioRunner ApRun
+@inject PromptFlowStudio.Services.VisualPolish.ReelsVisualPolishStudioRunner VpRun
 @inject PromptFlowStudio.Services.SkinnedSplatAvatar.DualQuaternionGaussianAvatarStudioRunner DqAvRun
 @inject PromptFlowStudio.Services.AgentFederation.RealtimeSpatiotemporalKnowledgeGraph FedKg
 @inject PromptFlowStudio.Services.AgentFederation.ZeroTrustInterAgentConsensusResolver FedCons
@@ -989,6 +990,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.74.0: 비주얼 폴리시 — 감정 피크 · 썸네일 · 번-인 · A/B ── *@
+    <div class="gth-v1774">
+        <div class="gth-v96-card pid @(VpRun.Polished > 0 && VpRun.Motion.Last.OverBudget == 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>🎨 비주얼 폴리시</b>
+                <span class="gth-v96-be">피크 @(VpRun.Tracker.LastFaceScore.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture))@(VpRun.Attached ? null : " · 미결선")@(VpRun.Busy ? " · ⏳" : null)</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(VpRun.Polished)</b><span>폴리시</span></span>
+                <span class="gth-v96-m"><b>@(VpRun.Thumbs.Renders)</b><span>썸네일</span></span>
+                <span class="gth-v96-m"><b class="@(VpRun.Motion.Last.OverBudget > 0 ? "warn" : null)">@(VpRun.Motion.Last.Ok ? VpRun.Motion.Last.MedianFrameMs.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) : "—")</b><span>번-인 ms/f</span></span>
+                <span class="gth-v96-m"><b>@(VpRun.Ab.Generated)</b><span>A/B</span></span>
+            </div>
+            <div class="gth-v96-act">@(VpRun.LastAction ?? "대기")</div>
+        </div>
+    </div>
     @* ── v17.73.0: 제로-터치 오토파일럿 — 단계 · 사이클 · 업로드 · 재시도 큐 · 알림 ── *@
     <div class="gth-v1773">
         <div class="gth-v96-card pid @(ApRun.Engaged && ApRun.Engine.Faults == 0 ? "ok" : null)">
@@ -5534,6 +5550,7 @@
         VtRun.OnChange += OnSwarmChanged; // v17.49.0 (10 Hz → 250 ms 스로틀)
         VlRun.OnChange += OnSwarmChanged; // v17.50.0 (3.3 Hz)
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
+        VpRun.OnChange += OnSwarmChanged; // v17.74.0 (폴리시 완료 이벤트 → 250 ms 스로틀)
         ApRun.OnChange += OnSwarmChanged; // v17.73.0 (단계 전이 · 1 Hz → 250 ms 스로틀)
         ScwRun.OnChange += OnSwarmChanged; // v17.72.0 (MCR 16 f → 250 ms 스로틀)
         PubRun.OnChange += OnSwarmChanged; // v17.71.0 (이벤트 구동 → 250 ms 스로틀)
@@ -5905,6 +5922,7 @@
         VtRun.OnChange -= OnSwarmChanged;
         VlRun.OnChange -= OnSwarmChanged;
         OcRun.OnChange -= OnSwarmChanged;
+        VpRun.OnChange -= OnSwarmChanged;
         ApRun.OnChange -= OnSwarmChanged;
         ScwRun.OnChange -= OnSwarmChanged;
         PubRun.OnChange -= OnSwarmChanged;

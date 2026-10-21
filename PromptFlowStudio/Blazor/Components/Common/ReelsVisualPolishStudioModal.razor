@@ -1,0 +1,187 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.VisualPolish
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject ReelsVisualPolishStudioRunner Runner
+
+@* [PromptFlow Studio v17.74.0] 🎨 릴스 비주얼 폴리시 & 썸네일 팩토리 — 골든 프레임 썸네일 · A/B 타이틀 비교 · 동적 자막 번-인 플레이어. *@
+<div class="rvp-scrim" @onclick="Close">
+    <div class="rvp-modal" @onclick:stopPropagation="true">
+        <div class="rvp-h">
+            <div>
+                <div class="rvp-title">🎨 릴스 비주얼 폴리시 & 썸네일 팩토리 @(Runner.Busy ? "· ⏳ 처리 중" : null) · 폴리시 @(Runner.Polished)</div>
+                <div class="rvp-sub"><b>감정 피크 추적기</b>가 방송 중 아바타 표정(미소 · 입벌림 · 눈 크게)과 피격/환호를 1초 버킷으로 기록하고, 릴 구간의 골든 프레임을 <b>3DGS 1080×1920 타일 렌더</b>로 다시 그려 네온 글로우와 후킹 헤드라인을 입힌 썸네일(PNG)을 만듭니다.
+                    <b>디먹서/디코더</b>는 fMP4·MP4 의 H.264 를 메모리에서 꺼내 Media Foundation 하드웨어(또는 관리 디코더)로 복원하고, 그 <b>움직이는 영상 위에 SDF 자막을 프레임마다 번-인</b>합니다. 제목은 호기심형 A 와 정보형 B 로 나뉘어 CTR 로 승자를 고릅니다.</div>
+            </div>
+            <button class="rvp-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="rvp-bar">
+            <button class="rvp-btn @(Runner.Attached ? "on" : "go")" @onclick="Runner.Attach">🔗 MCR 피크 추적 @(Runner.Attached ? "ON" : "결선")</button>
+            <button class="rvp-btn hot" disabled="@(Runner.Busy)" @onclick="PolishLatest">🎨 최신 릴 폴리시</button>
+            <button class="rvp-btn" disabled="@(Runner.Busy)" @onclick="PolishSample">🧪 샘플 클립 폴리시</button>
+            <span class="rvp-sep"></span>
+            <span class="rvp-dim">현재 표정 피크 @(Runner.Tracker.LastFaceScore.ToString("0.00", CultureInfo.InvariantCulture)) · 최고 @(Runner.Tracker.BestScore.ToString("0.00", CultureInfo.InvariantCulture))</span>
+        </div>
+
+        @if (Runner.Count == 0)
+        {
+            <div class="rvp-empty">아직 폴리시된 릴이 없습니다 — MCR 피크 추적을 결선하고 방송 후 “최신 릴 폴리시”를 누르거나 샘플 클립으로 시험해 보세요.</div>
+        }
+        else
+        {
+            var p = Runner.At(Math.Clamp(_sel, 0, Runner.Count - 1))!;
+            <div class="rvp-tabs">
+                @for (var i = 0; i < Runner.Count; i++)
+                {
+                    var idx = i; var q = Runner.At(i);
+                    if (q is null) continue;
+                    <button class="rvp-btn sm @(idx == _sel ? "on" : null)" @onclick="() => Select(idx)">#@(q.ReelId)</button>
+                }
+            </div>
+            <div class="rvp-main">
+                <div class="rvp-card">
+                    <div class="rvp-sec">🖼️ 골든 프레임 썸네일 @(p.HasGolden ? "· 점수 " + p.Golden.Score.ToString("0.00", CultureInfo.InvariantCulture) : null)</div>
+                    <div class="rvp-thumb">@if (_thumb.Length > 0) { <img src="@_thumb" alt="썸네일" /> } else { <div class="ph">@(p.Note ?? "썸네일 없음")</div> }</div>
+                    <div class="rvp-kv">@(p.Png is null ? "—" : "PNG " + (p.Png.Length / 1024).ToString(CultureInfo.InvariantCulture) + " KB · 1080×1920 · 타일 " + Runner.Thumbs.LastTiles + " · " + p.ThumbMs.ToString("0", CultureInfo.InvariantCulture) + " ms")</div>
+                    @if (p.HasGolden)
+                    {
+                        <div class="rvp-kv">분위기 @(AbTestingMetadataVariantGenerator.MoodName(p.Ab?.Mood ?? ThumbnailMood.Calm)) · 표정 @(p.Golden.FaceScore.ToString("0.00", CultureInfo.InvariantCulture)) · 부스트 @(p.Golden.Boost.ToString("0.00", CultureInfo.InvariantCulture)) · 아바타 @(p.Golden.PeakAvatar + 1)</div>
+                    }
+                </div>
+
+                <div class="rvp-card">
+                    <div class="rvp-sec">🎬 동적 자막 번-인 플레이어 @(p.Burn.Ok ? "· " + p.Burn.Decoder + " → " + p.Burn.Encoder : null)</div>
+                    <div class="rvp-thumb">@if (_frame.Length > 0) { <img src="@_frame" alt="번-인 프레임" /> } else { <div class="ph">@(p.Burn.Ok ? "▶ 재생" : p.Burn.Error ?? "번-인 영상 없음")</div> }</div>
+                    @if (p.Burn.Ok)
+                    {
+                        <div class="rvp-row">
+                            <button class="rvp-btn sm" @onclick="TogglePlay">@(_playing ? "⏸" : "▶")</button>
+                            <input type="range" min="0" max="@(Math.Max(0, p.Burn.Frames - 1))" value="@_pos" @onchange="OnSeek" />
+                            <span class="rvp-dim">@_pos / @p.Burn.Frames</span>
+                        </div>
+                        <div class="rvp-kv">@(p.Burn.Width)×@(p.Burn.Height) · @(p.Burn.Fps) fps · 프레임 중앙 @(p.Burn.MedianFrameMs.ToString("0.0", CultureInfo.InvariantCulture)) ms · p95 @(p.Burn.P95FrameMs.ToString("0.0", CultureInfo.InvariantCulture)) · 16.7 ms 초과 @(p.Burn.OverBudget)</div>
+                    }
+                </div>
+
+                <div class="rvp-card">
+                    <div class="rvp-sec">🧪 A/B 타이틀 비교 @(p.Ab?.Chosen is { } ch ? "· 확정 " + ch : null)</div>
+                    @if (p.Ab is { } ab)
+                    {
+                        @foreach (var v in Variants)
+                        {
+                            var vv = v; var m = ab.Get(vv);
+                            <div class="rvp-var @(ab.Chosen == vv ? "chosen" : null)">
+                                <div class="rvp-vh"><b>@(vv == AbVariant.A ? "A · 호기심형" : "B · 정보형")</b><span>CTR @(((vv == AbVariant.A ? ab.CtrA : ab.CtrB) * 100).ToString("0.0", CultureInfo.InvariantCulture))%</span></div>
+                                <div class="rvp-vt">@m.Title</div>
+                                <div class="rvp-vd">@m.Description</div>
+                                <div class="rvp-tags">@for (var t = 0; t < m.TagCount; t++) { <span>@m.Tags[t]</span> }</div>
+                                <button class="rvp-btn sm" @onclick="() => Runner.Choose(p.ReelId, vv)">✔ 이 변형 사용</button>
+                            </div>
+                        }
+                        <div class="rvp-kv">P(B &gt; A) = @((AbTestingMetadataVariantGenerator.ProbabilityBBeatsA(ab) * 100).ToString("0", CultureInfo.InvariantCulture))% · 노출 @(ab.ImpressionsA)/@(ab.ImpressionsB)</div>
+                    }
+                </div>
+            </div>
+        }
+        <div class="rvp-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+    </div>
+</div>
+
+<style>
+    .rvp-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .rvp-modal { width: min(1300px, 96vw); max-height: 94vh; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); padding: 14px 16px; color: var(--text-primary); }
+    .rvp-h { display: flex; justify-content: space-between; gap: 12px; } .rvp-title { font-size: 17px; font-weight: 800; } .rvp-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .rvp-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .rvp-bar, .rvp-row, .rvp-tabs { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; } .rvp-sep { flex: 1; } .rvp-dim { font-size: 11px; color: var(--text-muted); }
+    .rvp-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .rvp-btn.go { border-color: #22c55e; } .rvp-btn.hot { border-color: #f97316; } .rvp-btn.on { background: color-mix(in srgb, #f472b6 25%, #1e293b); border-color: #f472b6; } .rvp-btn.sm { padding: 3px 8px; font-size: 11px; } .rvp-btn:disabled { opacity: .45; cursor: default; }
+    .rvp-empty { font-size: 12px; color: var(--text-muted); padding: 18px 4px; }
+    .rvp-main { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 10px; }
+    .rvp-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; } .rvp-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 8px; }
+    .rvp-thumb { aspect-ratio: 9 / 16; background: #05070c; border-radius: 8px; overflow: hidden; } .rvp-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; image-rendering: auto; }
+    .rvp-thumb .ph { display: flex; align-items: center; justify-content: center; height: 100%; font-size: 12px; color: var(--text-muted); text-align: center; padding: 8px; }
+    .rvp-kv { font-size: 10.5px; color: var(--text-muted); margin-top: 6px; }
+    .rvp-row input[type=range] { flex: 1; }
+    .rvp-var { background: #0f172a; border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin-bottom: 8px; } .rvp-var.chosen { border-color: #22c55e; box-shadow: 0 0 0 1px #22c55e inset; }
+    .rvp-vh { display: flex; justify-content: space-between; font-size: 12px; } .rvp-vh span { font: 700 11px var(--mono); color: #86efac; }
+    .rvp-vt { font-size: 13px; font-weight: 700; margin: 4px 0; color: #fde047; } .rvp-vd { font-size: 11px; color: var(--text-muted); }
+    .rvp-tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; } .rvp-tags span { font-size: 10.5px; background: #1e293b; border-radius: 999px; padding: 1px 8px; color: #93c5fd; }
+    .rvp-act { font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+    @@media (max-width: 1100px) { .rvp-main { grid-template-columns: 1fr 1fr; } }
+    @@media (max-width: 760px) { .rvp-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly AbVariant[] Variants = { AbVariant.A, AbVariant.B };
+    private System.Threading.Timer? _timer;
+    private readonly byte[] _bmp = new byte[PeakEmotion3dgsThumbnailSynthesizer.PreviewBytes(ReelsVisualPolishStudioRunner.PreviewW, ReelsVisualPolishStudioRunner.PreviewH)];
+    private string _thumb = "", _frame = "";
+    private int _sel, _pos, _shownReel = -1;
+    private bool _playing;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try
+            {
+                if (_playing) _ = InvokeAsync(() => { Advance(); StateHasChanged(); });
+                else _ = InvokeAsync(StateHasChanged);
+            }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("VisualPolish.Modal.Timer", ex); }
+        }, null, 100, 100);
+    }
+
+    protected override bool ShouldRender()
+    {
+        var p = Runner.Count > 0 ? Runner.At(Math.Clamp(_sel, 0, Runner.Count - 1)) : null;
+        if (p is not null && p.ReelId != _shownReel)
+        {
+            _shownReel = p.ReelId; _pos = 0; _frame = ""; _playing = false;
+            _thumb = p.PreviewBmp is { } b ? "data:image/bmp;base64," + Convert.ToBase64String(b) : "";
+        }
+        return true;
+    }
+
+    private void Select(int i) { _sel = i; _shownReel = -1; }
+
+    private void Advance()
+    {
+        var p = Runner.At(Math.Clamp(_sel, 0, Runner.Count - 1));
+        if (p is null || !p.Burn.Ok) { _playing = false; return; }
+        if (Runner.PlayerFrame(p.ReelId, _pos, _bmp)) _frame = "data:image/bmp;base64," + Convert.ToBase64String(_bmp);
+        _pos = (_pos + 3) % Math.Max(1, p.Burn.Frames);
+    }
+
+    private void TogglePlay() => _playing = !_playing;
+
+    private void OnSeek(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) { _pos = v; _playing = false; Advance(); }
+    }
+
+    private void PolishLatest() => Runner.PolishLatest();
+
+    private void PolishSample()
+    {
+        var clip = Runner.CreateSampleClip();
+        var now = Runner.Tracker.Clock();
+        if (Runner.Start(0, now - 30_000, now, clip, new PromptFlowStudio.Services.Publisher.ShortformContext { Caption = "샘플 하이라이트", KeyLine = "이 장면 진짜 대박이죠?", Cause = 1, Peak = 90, Hits = 6, DurationSec = 3 }))
+            _ = Runner.WaitAsync().ContinueWith(_ => clip.Dispose(), TaskScheduler.Default);
+        else clip.Dispose();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}
