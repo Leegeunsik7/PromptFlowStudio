@@ -265,6 +265,7 @@
 @inject PromptFlowStudio.Services.BroadcastMcr.BroadcastMcrStudioRunner BmcRun
 @inject PromptFlowStudio.Services.Showrunner.InteractiveShowrunnerStudioRunner ShwRun
 @inject PromptFlowStudio.Services.LiveShowroom.LiveCommerceStudioRunner VlcRun
+@inject PromptFlowStudio.Services.LiveToReels.LiveToReelsFactoryStudioRunner LtrRun
 @inject PromptFlowStudio.Services.SkinnedSplatAvatar.DualQuaternionGaussianAvatarStudioRunner DqAvRun
 @inject PromptFlowStudio.Services.AgentFederation.RealtimeSpatiotemporalKnowledgeGraph FedKg
 @inject PromptFlowStudio.Services.AgentFederation.ZeroTrustInterAgentConsensusResolver FedCons
@@ -984,6 +985,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.69.0: 라이브-투-릴스 팩토리 — 바이럴 지수 · 릴 큐 · 업로드 속도 · 스로틀링 · 라이브 드롭 ── *@
+    <div class="gth-v1769">
+        <div class="gth-v96-card pid @(LtrRun.Guard.Link.LiveDropEvents == 0 && LtrRun.FramesOverBudget == 0 && LtrRun.PackFailures == 0 && LtrRun.Packaged > 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>🏭 라이브-투-릴스</b>
+                <span class="gth-v96-be">지수 @(LtrRun.Detector.Index.ToString("0", System.Globalization.CultureInfo.InvariantCulture))@(LtrRun.Detector.Armed ? " · 🔥 클라이맥스" : null)@(LtrRun.Guard.Throttling ? " · ⚠ 스로틀링" : null)</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(LtrRun.Packaged)</b><span>릴 생성</span></span>
+                <span class="gth-v96-m"><b>@(LtrRun.Published)</b><span>배포 완료</span></span>
+                <span class="gth-v96-m"><b class="@(LtrRun.Guard.Throttling ? "warn" : "acc")">@((LtrRun.Guard.RateKbps / 1000).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture))</b><span>업로드 Mbps</span></span>
+                <span class="gth-v96-m"><b class="@(LtrRun.Guard.Link.LiveDropEvents + LtrRun.FramesOverBudget > 0 ? "warn" : null)">@(LtrRun.Guard.Link.LiveDropEvents + LtrRun.FramesOverBudget)</b><span>라이브 드롭</span></span>
+            </div>
+            <div class="gth-v96-act">@(LtrRun.LastAction ?? "대기")</div>
+        </div>
+    </div>
     @* ── v17.68.0: 버추얼 라이브 커머스 — 판매액 · 재고 · 리액션 지연 · 심의 차단 · 가격 정합 ── *@
     <div class="gth-v1768">
         <div class="gth-v96-card pid @(!VlcRun.Banner.PriceBlocked && VlcRun.Sales.MaxReactionMs <= 100f && VlcRun.LayerOverBudget == 0 && VlcRun.LayerFrames > 0 ? "ok" : null)">
@@ -5454,6 +5470,7 @@
         VtRun.OnChange += OnSwarmChanged; // v17.49.0 (10 Hz → 250 ms 스로틀)
         VlRun.OnChange += OnSwarmChanged; // v17.50.0 (3.3 Hz)
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
+        LtrRun.OnChange += OnSwarmChanged; // v17.69.0 (이벤트 구동 → 250 ms 스로틀)
         VlcRun.OnChange += OnSwarmChanged; // v17.68.0 (10 Hz → 250 ms 스로틀)
         ShwRun.OnChange += OnSwarmChanged; // v17.67.0 (10 Hz → 250 ms 스로틀)
         BmcRun.OnChange += OnSwarmChanged; // v17.66.0 (10 Hz → 250 ms 스로틀)
@@ -5820,6 +5837,7 @@
         VtRun.OnChange -= OnSwarmChanged;
         VlRun.OnChange -= OnSwarmChanged;
         OcRun.OnChange -= OnSwarmChanged;
+        LtrRun.OnChange -= OnSwarmChanged;
         VlcRun.OnChange -= OnSwarmChanged;
         ShwRun.OnChange -= OnSwarmChanged;
         BmcRun.OnChange -= OnSwarmChanged;

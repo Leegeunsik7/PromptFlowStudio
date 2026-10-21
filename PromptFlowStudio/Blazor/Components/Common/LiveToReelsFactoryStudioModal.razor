@@ -1,0 +1,231 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.LiveToReels
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject LiveToReelsFactoryStudioRunner Runner
+
+@* [PromptFlow Studio v17.69.0] 🏭 라이브-투-릴스 자동 팩토리 — 실시간 바이럴 지수 그래프 · 릴스 큐 카드 · 플랫폼별 업로드 진행률 · 네트워크 스로틀링 상태. *@
+<div class="ltr-scrim" @onclick="Close">
+    <div class="ltr-modal" @onclick:stopPropagation="true">
+        <div class="ltr-h">
+            <div>
+                <div class="ltr-title">🏭 라이브-투-릴스 자동 팩토리 @(Runner.IsRunning ? "· ▶ 60 Hz 감지" : null) · 바이럴 지수 @(F0(Runner.Detector.Index))</div>
+                <div class="ltr-sub"><b>클라이맥스 감지 엔진</b>이 채팅 유입(v17.62) · 물리 피격(v17.67) · 구매/품절(v17.68)을 1 초 슬라이딩 윈도우로 합산해 바이럴 지수를 산출하고, 임계값을 넘으면 빌드업을 포함한 15~30 초 구간을 무손실 클리퍼에 디스패치합니다.
+                    <b>패키징 합성기</b>는 재인코딩 없이 SDF 자막(세이프 존) · 비트 드롭 BGM 훅 · 다국어 더빙 트랙을 단일 MP4로 리먹스하고, <b>배압 가드</b>는 라이브 송출 대역을 1 순위로 보장하며 Instagram · YouTube · TikTok 업로드를 최저 우선순위 워커에서 동적으로 스로틀링합니다.</div>
+            </div>
+            <button class="ltr-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="ltr-bar">
+            <button class="ltr-btn @(Runner.IsRunning ? "on" : "go")" @onclick="ToggleRun">@(Runner.IsRunning ? "⏸ 정지" : "▶ 시작")</button>
+            <button class="ltr-btn hot" @onclick="() => Runner.InjectSpike(3f)">🔥 복합 스파이크</button>
+            <button class="ltr-btn" @onclick="() => Runner.ManualClip(20)">✂ 수동 하이라이트</button>
+            <button class="ltr-btn @(Runner.SimTraffic ? "on" : null)" @onclick="() => Runner.SetSimTraffic(!Runner.SimTraffic)">🧪 평상시 채팅</button>
+            <button class="ltr-btn @(Runner.AutoPublish ? "on" : null)" @onclick="() => Runner.SetAutoPublish(!Runner.AutoPublish)">🚀 자동 배포</button>
+            <button class="ltr-btn @(Runner.LinkDubbing ? "on" : null)" disabled="@(!Runner.DubbingAvailable)" @onclick="() => Runner.SetLinkDubbing(!Runner.LinkDubbing)">🌍 v17.64 더빙</button>
+            <button class="ltr-btn @(Runner.LinkOmni ? "on" : null)" disabled="@(!Runner.OmniAvailable)" @onclick="() => Runner.SetLinkOmni(!Runner.LinkOmni)">🔗 v17.51 핸드오프</button>
+            <span class="ltr-sep"></span>
+            <label class="ltr-lbl">임계 <input class="ltr-in" type="range" min="60" max="95" step="1" value="@(F0(Runner.Detector.Threshold))" @onchange="OnThreshold" /> <b>@(F0(Runner.Detector.Threshold))</b></label>
+            <label class="ltr-lbl">업링크 <input class="ltr-in" type="range" min="2000" max="50000" step="1000" value="@(F0(Runner.Guard.CapacityKbps))" @onchange="OnCapacity" /> <b>@(F1(Runner.Guard.CapacityKbps / 1000))</b> Mbps</label>
+        </div>
+
+        <div class="ltr-main">
+            <div class="ltr-col">
+                <div class="ltr-card">
+                    <div class="ltr-sec">📈 실시간 바이럴 지수 (60 s)</div>
+                    <svg class="ltr-plot" viewBox="0 0 600 120" preserveAspectRatio="none">
+                        <line x1="0" x2="600" y1="@(F1(Y(Runner.Detector.Threshold)))" y2="@(F1(Y(Runner.Detector.Threshold)))" class="thr" />
+                        <polyline points="@IndexPoints()" class="idx" />
+                    </svg>
+                    <div class="ltr-comps">
+                        <div><span>💬 채팅</span><i style="width:@(Pct(Runner.Detector.ChatScore))%"></i><b>@(F0(Runner.Detector.ChatPerSec))/s</b></div>
+                        <div><span>💥 피격</span><i class="ph" style="width:@(Pct(Runner.Detector.PhysicsScore))%"></i><b>@(F0(Runner.Detector.HitsPerSec))/s</b></div>
+                        <div><span>🛒 구매</span><i class="cm" style="width:@(Pct(Runner.Detector.CommerceScore))%"></i><b>@(F0(Runner.Detector.UnitsPerSec))/s</b></div>
+                    </div>
+                    <div class="ltr-kpis">
+                        <span><b class="@(Runner.Detector.Armed ? "hot" : null)">@(F0(Runner.Detector.Index))</b>바이럴 지수</span>
+                        <span><b>@(Runner.Detector.Triggers)</b>클라이맥스</span>
+                        <span><b>@(F1(Runner.Detector.Baseline))</b>채팅 기저선/s</span>
+                        <span><b class="@(Runner.Detector.MaxStepUs > 500 ? "bad" : null)">@(F0(Runner.Detector.MaxStepUs))</b>감지 µs</span>
+                    </div>
+                    @if (Runner.Detector.EventCount > 0)
+                    {
+                        <div class="ltr-events">
+                            @for (var i = 0; i < Math.Min(5, Runner.Detector.EventCount); i++)
+                            {
+                                var e = Runner.Detector.Event(i);
+                                <div><b>#@(e.Id)</b><span>@(RealtimeViralClimaxDetectorEngine.CauseName(e.Cause)) · 피크 @(F0(e.Peak)) · @(F1(e.Seconds))s 구간</span></div>
+                            }
+                        </div>
+                    }
+                </div>
+
+                <div class="ltr-card">
+                    <div class="ltr-sec">🌐 네트워크 배압 세이프티 가드</div>
+                    <div class="ltr-net @(Runner.Guard.Throttling ? "thr" : "ok")">@(Runner.Guard.Throttling ? "⚠ 스로틀링 — 라이브 송출 대역 우선" : "✔ 정상 — 라이브 대역 보장")</div>
+                    <div class="ltr-kpis">
+                        <span><b>@(F1(Runner.Guard.LiveKbps / 1000))</b>라이브 Mbps(1순위)</span>
+                        <span><b>@(F1(Runner.Guard.BudgetKbps / 1000))</b>업로드 예산 Mbps</span>
+                        <span><b class="@(Runner.Guard.Throttling ? "hot" : null)">@(F1(Runner.Guard.RateKbps / 1000))</b>업로드 속도 Mbps</span>
+                        <span><b class="@(Runner.Guard.QueueDelayMs > NonBlockingOmnichannelPublishingGuard.TargetDelayMs ? "bad" : null)">@(F0(Runner.Guard.QueueDelayMs))</b>큐 지연 ms</span>
+                        <span><b>@(Runner.Guard.Throttles)</b>감속</span>
+                        <span><b>@(Runner.Guard.Yields)</b>MCR 양보</span>
+                        <span><b class="@(Runner.Guard.Link.LiveDropEvents > 0 ? "bad" : null)">@(Runner.Guard.Link.LiveDropEvents)</b>라이브 드롭</span>
+                        <span><b class="@(Runner.FramesOverBudget > 0 ? "bad" : null)">@(Runner.FramesOverBudget)</b>MCR &gt;16.7ms</span>
+                    </div>
+                    <svg class="ltr-plot sm" viewBox="0 0 600 60" preserveAspectRatio="none"><polyline points="@RatePoints()" class="rate" /></svg>
+                </div>
+            </div>
+
+            <div class="ltr-col">
+                <div class="ltr-card">
+                    <div class="ltr-sec">🎞️ 릴스 큐 (@(Runner.ReelCount) · 대기 @(Runner.PendingRequests))</div>
+                    @if (Runner.ReelCount == 0)
+                    {
+                        <div class="ltr-empty">아직 생성된 릴이 없습니다 — 🔥 복합 스파이크 또는 ✂ 수동 하이라이트로 시작하세요.</div>
+                    }
+                    <div class="ltr-reels">
+                        @for (var i = 0; i < Runner.ReelCount; i++)
+                        {
+                            var r = Runner.Reel(i);
+                            if (r is null) continue;
+                            var rid = r.Id;
+                            <div class="ltr-reel @(PhaseCss(r.Phase))">
+                                <div class="ltr-rh"><b>#@(r.Id) @(PhaseName(r.Phase))</b><span>@(RealtimeViralClimaxDetectorEngine.CauseName(r.Request.Cause)) · 피크 @(F0(r.Request.Peak))</span></div>
+                                <div class="ltr-cap">“@(r.Caption)”</div>
+                                <div class="ltr-meta">@(F1(r.DurationSec))s · @(r.Tracks)트랙 · 더빙 @(r.DubTracks) · 자막 @(r.Cues)큐 @(r.CaptionSafe ? "✔세이프" : "⚠세이프") · @(F0(r.Bytes / 1024.0))KB · 패키징 @(F1(r.PackMs))ms</div>
+                                @if (r.Job is { } job)
+                                {
+                                    @for (var k = 0; k < job.Legs.Length; k++)
+                                    {
+                                        var l = job.Legs[k];
+                                        <div class="ltr-leg"><span>@(NonBlockingOmnichannelPublishingGuard.PlatformName(l.Platform))</span><i><em style="width:@(Pct(l.Progress))%"></em></i><b>@(Pct(l.Progress))% · @(NonBlockingOmnichannelPublishingGuard.PhaseName(l.Phase))</b></div>
+                                    }
+                                }
+                                @if (r.Failure is not null) { <div class="ltr-fail">⚠ @(r.Failure)</div> }
+                                <div class="ltr-row">
+                                    <button class="ltr-btn sm" disabled="@(r.Media is null || r.Phase is FactoryReelPhase.Publishing or FactoryReelPhase.Published)" @onclick="() => Runner.PublishReel(rid)">🚀 배포</button>
+                                    <button class="ltr-btn sm" disabled="@(r.Media is null)" @onclick="() => Runner.SaveReel(rid)">💾 저장</button>
+                                    <button class="ltr-btn sm" disabled="@(r.Phase == FactoryReelPhase.Publishing)" @onclick="() => Runner.RemoveReel(rid)">🗑</button>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+                <div class="ltr-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .ltr-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .ltr-modal { width: min(1300px, 96vw); max-height: 94vh; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); padding: 14px 16px; color: var(--text-primary); }
+    .ltr-h { display: flex; justify-content: space-between; gap: 12px; } .ltr-title { font-size: 17px; font-weight: 800; } .ltr-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .ltr-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .ltr-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 10px 0; }
+    .ltr-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .ltr-btn.go { border-color: #22c55e; } .ltr-btn.on { background: color-mix(in srgb, #8b5cf6 28%, #1e293b); border-color: #8b5cf6; } .ltr-btn.hot { border-color: #f97316; } .ltr-btn:disabled { opacity: .45; cursor: default; } .ltr-btn.sm { padding: 3px 8px; font-size: 11px; }
+    .ltr-sep { flex: 1; } .ltr-lbl { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-muted); } .ltr-lbl b { font: 700 11px var(--mono); color: var(--text-primary); } .ltr-in { width: 110px; }
+    .ltr-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+    .ltr-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+    .ltr-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+    .ltr-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 8px; }
+    .ltr-plot { width: 100%; height: 120px; background: #05070c; border-radius: 8px; } .ltr-plot.sm { height: 60px; margin-top: 8px; }
+    .ltr-plot .idx { fill: none; stroke: #f472b6; stroke-width: 2; } .ltr-plot .thr { stroke: #f97316; stroke-dasharray: 6 4; stroke-width: 1; } .ltr-plot .rate { fill: none; stroke: #38bdf8; stroke-width: 1.5; }
+    .ltr-comps { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; } .ltr-comps div { display: grid; grid-template-columns: 64px 1fr 56px; align-items: center; gap: 6px; font-size: 11px; }
+    .ltr-comps i { display: block; height: 8px; border-radius: 4px; background: #f472b6; transition: width .2s; } .ltr-comps i.ph { background: #facc15; } .ltr-comps i.cm { background: #34d399; } .ltr-comps b { font: 700 11px var(--mono); text-align: right; }
+    .ltr-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; } .ltr-kpis span { display: flex; flex-direction: column; font-size: 10px; color: var(--text-muted); background: #0f172a; border-radius: 6px; padding: 5px 7px; }
+    .ltr-kpis b { font: 800 14px var(--mono); color: var(--text-primary); } .ltr-kpis .bad { color: #f87171; } .ltr-kpis .hot { color: #fb923c; }
+    .ltr-events { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; font-size: 11px; } .ltr-events div { display: flex; gap: 6px; } .ltr-events b { font-family: var(--mono); color: #f472b6; } .ltr-events span { color: var(--text-muted); }
+    .ltr-net { font-size: 12px; font-weight: 700; padding: 6px 8px; border-radius: 6px; margin-bottom: 8px; } .ltr-net.ok { background: rgba(34,197,94,.12); color: #86efac; } .ltr-net.thr { background: rgba(249,115,22,.15); color: #fdba74; }
+    .ltr-empty { font-size: 11.5px; color: var(--text-muted); padding: 10px 0; }
+    .ltr-reels { display: flex; flex-direction: column; gap: 8px; max-height: 560px; overflow-y: auto; }
+    .ltr-reel { border: 1px solid var(--line); border-left: 3px solid #64748b; border-radius: 8px; padding: 8px; background: #0f172a; } .ltr-reel.ready { border-left-color: #38bdf8; } .ltr-reel.pub { border-left-color: #a78bfa; } .ltr-reel.done { border-left-color: #22c55e; } .ltr-reel.fail { border-left-color: #ef4444; }
+    .ltr-rh { display: flex; justify-content: space-between; font-size: 12px; } .ltr-rh span { color: var(--text-muted); font-size: 11px; }
+    .ltr-cap { font-size: 12px; color: #fde047; margin: 4px 0; } .ltr-meta { font-size: 10.5px; color: var(--text-muted); }
+    .ltr-leg { display: grid; grid-template-columns: 110px 1fr 110px; gap: 6px; align-items: center; font-size: 10.5px; margin-top: 4px; } .ltr-leg i { display: block; height: 7px; background: #1e293b; border-radius: 4px; overflow: hidden; } .ltr-leg em { display: block; height: 100%; background: #8b5cf6; }
+    .ltr-leg b { font: 600 10.5px var(--mono); text-align: right; } .ltr-fail { font-size: 11px; color: #f87171; margin-top: 4px; }
+    .ltr-row { display: flex; gap: 6px; margin-top: 6px; } .ltr-act { font-size: 11px; color: var(--text-muted); }
+    @@media (max-width: 960px) { .ltr-main { grid-template-columns: 1fr; } .ltr-kpis { grid-template-columns: repeat(2, 1fr); } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("LiveToReels.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string F0(double v) => double.IsFinite(v) ? v.ToString("0", CultureInfo.InvariantCulture) : "—";
+    private static string F1(double v) => double.IsFinite(v) ? v.ToString("0.0", CultureInfo.InvariantCulture) : "—";
+    private static string Pct(float v) => Math.Clamp(v * 100.0, 0, 100).ToString("0", CultureInfo.InvariantCulture);
+    private static double Y(float index) => 118 - 116 * Math.Clamp(index, 0f, 100f) / 100f;
+
+    private static string PhaseName(FactoryReelPhase p) => p switch
+    {
+        FactoryReelPhase.Clipping => "클립 추출", FactoryReelPhase.Packaging => "패키징", FactoryReelPhase.Ready => "준비 완료", FactoryReelPhase.Publishing => "배포 중", FactoryReelPhase.Published => "배포 완료", _ => "실패",
+    };
+
+    private static string? PhaseCss(FactoryReelPhase p) => p switch
+    {
+        FactoryReelPhase.Ready => "ready", FactoryReelPhase.Publishing => "pub", FactoryReelPhase.Published => "done", FactoryReelPhase.Failed => "fail", _ => null,
+    };
+
+    private string IndexPoints()
+    {
+        var n = Runner.Detector.SeriesCount;
+        if (n < 2) return "";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+            sb.Append((600.0 * i / (n - 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append(Y(Runner.Detector.IndexSeries(n - 1 - i)).ToString("0.#", CultureInfo.InvariantCulture)).Append(' ');
+        return sb.ToString();
+    }
+
+    private string RatePoints()
+    {
+        var n = Runner.Guard.SeriesCount;
+        if (n < 2) return "";
+        var max = 1f; for (var i = 0; i < n; i++) max = MathF.Max(max, Runner.Guard.RateSeries(i));
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+            sb.Append((600.0 * i / (n - 1)).ToString("0.#", CultureInfo.InvariantCulture)).Append(',').Append((58 - 56 * Runner.Guard.RateSeries(n - 1 - i) / max).ToString("0.#", CultureInfo.InvariantCulture)).Append(' ');
+        return sb.ToString();
+    }
+
+    private void OnThreshold(ChangeEventArgs e)
+    {
+        if (float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) Runner.SetThreshold(v);
+    }
+
+    private void OnCapacity(ChangeEventArgs e)
+    {
+        if (double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) Runner.SetCapacity(v);
+    }
+
+    private void ToggleRun()
+    {
+        if (Runner.IsRunning) Runner.Stop(); else Runner.Start();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged()
+    {
+        if (!Runner.IsRunning) _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}
