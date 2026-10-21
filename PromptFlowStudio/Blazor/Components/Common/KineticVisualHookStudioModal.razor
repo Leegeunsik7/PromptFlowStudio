@@ -1,0 +1,211 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.VisualHooks
+@implements IDisposable
+@inject KineticVisualHookStudioRunner Runner
+
+@* [PromptFlow Studio v17.77.0] ⚡ 키네틱 비주얼 훅 & 세이프존 스튜디오 — 9:16 프레임 미리보기 · 세이프존 가이드 토글 · 펀치 줌 강도 · 절차적 스티커 프리뷰 · 훅 타임라인. *@
+<div class="kvh-scrim" @onclick="Close">
+    <div class="kvh-modal" @onclick:stopPropagation="true">
+        <div class="kvh-h">
+            <div>
+                <div class="kvh-title">⚡ 키네틱 비주얼 훅 & 세이프존 스튜디오 @(Runner.Running ? "· ▶ 재생 중" : null) @(Runner.UsedLinkedSfx ? "· 🔗 v17.76 SFX 연동" : null)</div>
+                <div class="kvh-sub">말이 강해지는 순간·비트 드롭·효과음에 맞춰 화면을 <b>1.12~1.25배로 순간 확대(펀치 줌)</b>하되 얼굴을 중심으로 잡아 머리가 잘리지 않게 합니다.
+                    임팩트/차칭 효과음엔 <b>3~5프레임 ±4px 흔들림 + 외곽 암전/골드 플래시</b>를 넣고, 키워드(돈·진짜·불·사랑…)엔 이미지 파일 없이 수학 곡선으로 그린 <b>통통 튀는 스티커</b>를 띄웁니다.
+                    자막·스티커가 릴스/틱톡 버튼과 캡션(상단 15% · 하단 22% · 우측 18%)에 가리면 <b>세이프존 가드</b>가 자동으로 안쪽으로 옮깁니다.</div>
+            </div>
+            <button class="kvh-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="kvh-bar">
+            <button class="kvh-btn hot" @onclick="Rebuild">⚡ 훅 타임라인 재구성</button>
+            <button class="kvh-btn @(Runner.Running ? "on" : null)" @onclick="Toggle">@(Runner.Running ? "⏸ 정지" : "▶ 재생")</button>
+            <button class="kvh-btn @(Runner.ShowSafeZone ? "on" : null)" @onclick="ToggleSafe">📐 세이프존 가이드 @(Runner.ShowSafeZone ? "ON" : "OFF")</button>
+            <span class="kvh-sep"></span>
+            @foreach (var p in Platforms)
+            {
+                var pp = p;
+                <button class="kvh-btn sm @(Runner.Guard.Targets == pp ? "on" : null)" @onclick="() => Runner.SetPlatforms(pp)">@(PlatformLabel(pp))</button>
+            }
+        </div>
+
+        <div class="kvh-main">
+            <div class="kvh-card pv">
+                <div class="kvh-sec">🎬 9:16 미리보기 · 프레임 @(Runner.Frame)/@(KineticVisualHookStudioRunner.TotalFrames - 1)</div>
+                <img class="kvh-frame" src="@(Runner.PreviewDataUri())" alt="미리보기" />
+                <input class="kvh-range" type="range" min="0" max="@(KineticVisualHookStudioRunner.TotalFrames - 1)" value="@(Runner.Frame)" @oninput="OnSeek" />
+                <div class="kvh-kv">
+                    <span class="@(Runner.LastScale > 1.001f ? "hl" : null)">줌 @(Runner.LastScale.ToString("0.000", CultureInfo.InvariantCulture))×</span>
+                    <span class="@(Runner.LastShake ? "hl" : null)">셰이크 @(Runner.LastShake ? "ON" : "—")</span>
+                    <span>스티커 @(Runner.LastStickers)</span>
+                    <span>@(Runner.LastFrameUs.ToString("0", CultureInfo.InvariantCulture)) µs</span>
+                </div>
+            </div>
+
+            <div class="kvh-card">
+                <div class="kvh-sec">🔍 펀치 줌 강도 · 훅 타임라인 (@((KineticVisualHookStudioRunner.DurationMs / 1000).ToString(CultureInfo.InvariantCulture))초 · 60 fps)</div>
+                <div class="kvh-slider">
+                    <span>약</span>
+                    <input type="range" min="0" max="100" value="@((int)(Runner.Zoom.Strength * 100))" @onchange="OnStrength" />
+                    <span>강</span>
+                    <b>@(KineticZoomPunchCutEngine.ScaleFor(Runner.Zoom.Strength).ToString("0.00", CultureInfo.InvariantCulture))× 최대</b>
+                </div>
+                <svg class="kvh-tl" viewBox="0 0 360 120" preserveAspectRatio="none">
+                    <line x1="0" x2="360" y1="40" y2="40" class="ax" />
+                    <line x1="0" x2="360" y1="78" y2="78" class="ax" />
+                    <line x1="0" x2="360" y1="110" y2="110" class="ax" />
+                    @for (var f = 0; f < KineticVisualHookStudioRunner.TotalFrames; f += 2)
+                    {
+                        var s = Runner.Zoom.ScaleAt(f);
+                        if (s <= 1.0001f) continue;
+                        var hgt = (s - 1f) / (KineticZoomPunchCutEngine.MaxScale - 1f) * 34;
+                        <rect x="@(f.ToString(CultureInfo.InvariantCulture))" y="@((40 - hgt).ToString("0.0", CultureInfo.InvariantCulture))" width="2" height="@(hgt.ToString("0.0", CultureInfo.InvariantCulture))" class="zm" />
+                    }
+                    @for (var i = 0; i < Runner.Zoom.Count; i++)
+                    {
+                        var z = Runner.Zoom.At(i);
+                        <g>
+                            <text x="@((z.Frame + 1).ToString(CultureInfo.InvariantCulture))" y="8" class="lbl">@(KineticZoomPunchCutEngine.SourceName(z.Source))</text>
+                        </g>
+                    }
+                    @for (var i = 0; i < Runner.Shake.Count; i++)
+                    {
+                        var e = Runner.Shake.At(i);
+                        <rect x="@(e.Frame.ToString(CultureInfo.InvariantCulture))" y="56" width="@(Math.Max(2, (int)e.Frames).ToString(CultureInfo.InvariantCulture))" height="22" class="@(e.Flash == ImpactFlash.Dark ? "sk" : "sg")" />
+                    }
+                    @for (var i = 0; i < ProceduralVectorStickerOverlaySynthesizer.Cap; i++)
+                    {
+                        var st = Runner.Stickers.Instance(i);
+                        if (!st.Live) continue;
+                        <rect x="@(st.BornFrame.ToString(CultureInfo.InvariantCulture))" y="88" width="@(ProceduralVectorStickerOverlaySynthesizer.LifeFrames.ToString(CultureInfo.InvariantCulture))" height="22" rx="3" class="stk k@((int)st.Kind)" />
+                    }
+                    <line x1="@(Runner.Frame.ToString(CultureInfo.InvariantCulture))" x2="@(Runner.Frame.ToString(CultureInfo.InvariantCulture))" y1="0" y2="120" class="ph" />
+                </svg>
+                <div class="kvh-kv">위 = 줌 배율(펀치 @(Runner.Zoom.Count)건 · 병합 @(Runner.Zoom.Merged)) · 중간 = 셰이크(검정 임팩트 / 금색 차칭) · 아래 = 스티커 수명</div>
+                <div class="kvh-kv">스마트 피벗: 안면 중심 고정 · 헤드룸 보정 @(Runner.Zoom.HeadGuardCorrections) · 머리 잘림 @(Runner.Zoom.HeadClips) · 최대 변위 ±@(Runner.Shake.MaxOffsetPx)px</div>
+            </div>
+
+            <div class="kvh-card">
+                <div class="kvh-sec">✨ 절차적 벡터 스티커 (외부 이미지 0 · 디스크 읽기 @(Runner.Stickers.DiskReads))</div>
+                <div class="kvh-stk">
+                    @foreach (var k in Kinds)
+                    {
+                        var kk = k;
+                        <div class="cell"><img src="@(Runner.StickerDataUri(kk))" alt="@(ProceduralVectorStickerOverlaySynthesizer.KindName(kk))" /><span>@(ProceduralVectorStickerOverlaySynthesizer.KindIcon(kk)) @(ProceduralVectorStickerOverlaySynthesizer.KindName(kk))</span></div>
+                    }
+                </div>
+                <svg class="kvh-spring" viewBox="0 0 144 60" preserveAspectRatio="none">
+                    <line x1="0" x2="144" y1="20" y2="20" class="ax" />
+                    <polyline class="sp" points="@(SpringPoints)" />
+                </svg>
+                <div class="kvh-kv">스프링-댐퍼 등장 곡선(@(ProceduralVectorStickerOverlaySynthesizer.OmegaHz.ToString("0.0", CultureInfo.InvariantCulture)) Hz · ζ @(ProceduralVectorStickerOverlaySynthesizer.Zeta.ToString("0.00", CultureInfo.InvariantCulture)) · 오버슈트 @(ProceduralVectorStickerOverlaySynthesizer.PeakOvershoot.ToString("0.00", CultureInfo.InvariantCulture))×) · 스폰 @(Runner.Stickers.Spawned) · 세이프존 재배치 @(Runner.Stickers.Reframed)</div>
+                <div class="kvh-sec sm">📐 세이프존 (@(ReelsUiSafeZoneReframingGuard.PlatformName(Runner.Guard.Targets)))</div>
+                @{ var m = Runner.Guard.Active; }
+                <div class="kvh-zone">
+                    <span>상단 <b>@(Pct(m.Top))</b></span><span>하단 <b>@(Pct(m.Bottom))</b></span><span>우측 <b>@(Pct(m.Right))</b></span><span>좌측 <b>@(Pct(m.Left))</b></span>
+                </div>
+                <div class="kvh-kv">자막(v17.74 하단 기본 위치) → <b class="@(Runner.CaptionVerdict == ReframeVerdict.Inside ? null : "hl")">@(KineticVisualHookStudioRunner.VerdictName(Runner.CaptionVerdict))</b> · Y @(Pct(KineticVisualHookStudioRunner.CaptionRequested.Y)) → @(Pct(Runner.Caption.Y))</div>
+                <div class="kvh-kv">검사 @(Runner.Guard.Checks) · 시프트 @(Runner.Guard.Shifts) · 축소 @(Runner.Guard.Shrinks) · 분리 @(Runner.Guard.Separations)</div>
+            </div>
+        </div>
+        <div class="kvh-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+    </div>
+</div>
+
+<style>
+    .kvh-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .kvh-modal { width: min(1320px, 96vw); max-height: 94vh; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); padding: 14px 16px; color: var(--text-primary); }
+    .kvh-h { display: flex; justify-content: space-between; gap: 12px; } .kvh-title { font-size: 17px; font-weight: 800; } .kvh-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .kvh-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .kvh-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; } .kvh-sep { flex: 1; }
+    .kvh-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .kvh-btn.sm { font-size: 11px; padding: 4px 8px; } .kvh-btn.hot { border-color: #f97316; } .kvh-btn.on { background: color-mix(in srgb, #38bdf8 25%, #1e293b); border-color: #38bdf8; }
+    .kvh-main { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr) minmax(0, 1fr); gap: 10px; }
+    .kvh-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; } .kvh-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 8px; } .kvh-sec.sm { margin-top: 10px; font-size: 12px; }
+    .kvh-card.pv { display: flex; flex-direction: column; align-items: center; }
+    .kvh-frame { width: 100%; max-width: 270px; aspect-ratio: 9 / 16; image-rendering: pixelated; border-radius: 8px; border: 1px solid #1e293b; background: #000; }
+    .kvh-range { width: 100%; max-width: 270px; margin-top: 6px; }
+    .kvh-kv { font-size: 10.5px; color: var(--text-muted); margin: 4px 0 6px; display: flex; flex-wrap: wrap; gap: 8px; } .kvh-kv .hl, .kvh-kv b.hl { color: #fde047; font-weight: 700; }
+    .kvh-slider { display: grid; grid-template-columns: auto 1fr auto auto; gap: 6px; align-items: center; font-size: 11px; color: var(--text-muted); } .kvh-slider b { font: 700 11px var(--mono); color: #fde047; }
+    .kvh-tl { width: 100%; height: 170px; background: #05070c; border-radius: 6px; display: block; margin-top: 8px; }
+    .kvh-tl .ax { stroke: #1e293b; stroke-width: .5; } .kvh-tl .zm { fill: #38bdf8; } .kvh-tl .lbl { font-size: 6px; fill: #94a3b8; }
+    .kvh-tl .sk { fill: #e2e8f0; opacity: .85; } .kvh-tl .sg { fill: #fbbf24; } .kvh-tl .stk { opacity: .55; } .kvh-tl .ph { stroke: #f43f5e; stroke-width: 1; }
+    .stk.k0 { fill: #22c55e; } .stk.k1 { fill: #facc15; } .stk.k2 { fill: #e2e8f0; } .stk.k3 { fill: #f97316; } .stk.k4 { fill: #f43f5e; }
+    .kvh-stk { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; } .kvh-stk .cell { display: flex; flex-direction: column; align-items: center; background: #0f172a; border-radius: 6px; padding: 4px; }
+    .kvh-stk img { width: 48px; height: 48px; } .kvh-stk span { font-size: 10px; color: var(--text-muted); }
+    .kvh-spring { width: 100%; height: 70px; background: #05070c; border-radius: 6px; display: block; margin-top: 8px; } .kvh-spring .ax { stroke: #334155; stroke-dasharray: 2 2; stroke-width: .5; } .kvh-spring .sp { fill: none; stroke: #f472b6; stroke-width: 1.2; }
+    .kvh-zone { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; } .kvh-zone span { font-size: 11px; background: #0f172a; border-radius: 6px; padding: 3px 6px; } .kvh-zone b { font-family: var(--mono); color: #fca5a5; }
+    .kvh-act { font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+    @@media (max-width: 1100px) { .kvh-main { grid-template-columns: 1fr 1fr; } }
+    @@media (max-width: 760px) { .kvh-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly StickerKind[] Kinds = { StickerKind.Money, StickerKind.Exclaim, StickerKind.Skull, StickerKind.Fire, StickerKind.Heart };
+    private static readonly ReelsPlatforms[] Platforms = { ReelsPlatforms.InstagramReels | ReelsPlatforms.TikTok, ReelsPlatforms.InstagramReels, ReelsPlatforms.TikTok, ReelsPlatforms.YouTubeShorts, ReelsPlatforms.All };
+    private static readonly string SpringPoints = BuildSpring();
+    private System.Threading.Timer? _timer;
+
+    private static string BuildSpring()
+    {
+        var sb = new System.Text.StringBuilder();
+        for (var f = 0; f <= ProceduralVectorStickerOverlaySynthesizer.LifeFrames * 2; f++)
+        {
+            var s = ProceduralVectorStickerOverlaySynthesizer.SpringScale(f);
+            sb.Append(f.ToString(CultureInfo.InvariantCulture)).Append(',').Append((60 - s * 40).ToString("0.0", CultureInfo.InvariantCulture)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private static string PlatformLabel(ReelsPlatforms p) => p switch
+    {
+        ReelsPlatforms.InstagramReels => "◎ 릴스",
+        ReelsPlatforms.TikTok => "♪ 틱톡",
+        ReelsPlatforms.YouTubeShorts => "▶ 쇼츠",
+        ReelsPlatforms.All => "전체",
+        _ => "릴스+틱톡",
+    };
+
+    private static string Pct(float v) => (v * 100).ToString("0", CultureInfo.InvariantCulture) + "%";
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("VisualHooks.Modal.Timer", ex); }
+        }, null, 1000, 1000);
+    }
+
+    private void Rebuild()
+    {
+        try { Runner.BuildTimeline(); Runner.RenderFrame(Runner.Frame); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("VisualHooks.Modal.Rebuild", ex); }
+    }
+
+    private void OnSeek(ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var f)) Runner.Seek(f);
+    }
+
+    private void OnStrength(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetStrength(v / 100f);
+    }
+
+    private void ToggleSafe() => Runner.ToggleSafeZone();
+
+    private void Toggle() { if (Runner.Running) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}

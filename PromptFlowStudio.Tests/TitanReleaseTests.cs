@@ -41,6 +41,7 @@ using Ap = PromptFlowStudio.Services.Autopilot;
 using Vps = PromptFlowStudio.Services.VisualPolish;
 using Rto = PromptFlowStudio.Services.RetentionOptimizer;
 using Sps = PromptFlowStudio.Services.SmartPublishing;
+using Vh = PromptFlowStudio.Services.VisualHooks;
 using Nw = PromptFlowStudio.Services.Newsroom;
 using Spt = PromptFlowStudio.Services.Sports;
 using V3 = System.Numerics.Vector3;
@@ -32209,5 +32210,246 @@ public sealed class SmartPublishingSchedulerIsolatedTests
             for (var i = 0; i < 200; i++) { sch3.Enqueue(1000 + i, baseT + i * 3600L, Sps.PublishPlatforms.YouTube, Sps.GoldenRegions.All, 0, false, null, baseT); while (sch3.TakeDue(baseT + 400L * 86_400, out var p)) sch3.Record(in p, baseT, true); }
         });
         Assert.True(cycleAlloc == 0 && sch3.Count == 0, "순환 할당 " + cycleAlloc + " 잔여 " + sch3.Count);
+    }
+}
+
+/// <summary>v17.77.0 키네틱 비주얼 훅 &amp; 세이프존 — 0 프레임 오차 펀치 줌 · 스마트 피벗 헤드룸 · 세이프존 시프트/분리 · 절차적 벡터 스티커(디스크 I/O 0) · 스프링 바운스 · 3~5 프레임 셰이크 비네트 · 무할당 · UI 결선(벽시계 → 비병렬).</summary>
+[Collection("TimingSensitivePerformance")]   // 프레임 µs 계측 → 비병렬
+public sealed class KineticVisualHookIsolatedTests
+{
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+
+    [Fact]
+    public async Task KineticVisualHook_And_SafeZone_Check()
+    {
+        ZoomPunchChecks();
+        SafeZoneChecks();
+        StickerChecks();
+        ShakeVignetteChecks();
+
+        // ── HOOK-5a: 러너 — 타임라인 결선 · 자막 세이프존 시프트 · 무할당 60 fps 프레임 · 미리보기 ──
+        var run = new Vh.KineticVisualHookStudioRunner();
+        Assert.True(run.Hook.Last.Ok && run.Hook.Last.StimulusOutMs == 300 && run.Hook.Last.TrimmedMs >= 500, "훅 분석 " + run.Hook.Last);
+        var hookFrame = false; for (var i = 0; i < run.Zoom.Count; i++) if (run.Zoom.At(i).Frame == 18) hookFrame = true;
+        Assert.True(hookFrame && run.Zoom.Count >= 5 && run.Shake.Count >= 2 && run.Stickers.Spawned >= 5 && !run.UsedLinkedSfx, "타임라인 펀치 " + run.Zoom.Count + " 셰이크 " + run.Shake.Count + " 스티커 " + run.Stickers.Spawned);
+        Assert.True(run.CaptionVerdict == Vh.ReframeVerdict.Shifted && run.Guard.IsSafe(run.Caption) && Math.Abs(run.Caption.W - Vh.KineticVisualHookStudioRunner.CaptionRequested.W) < 1e-6f, "자막 시프트 " + run.CaptionVerdict);
+        var pf = run.Zoom.At(0).Frame;
+        run.RenderFrame(pf);
+        Assert.True(Math.Abs(run.LastScale - run.Zoom.At(0).PeakScale) < 1e-6f && run.LastScale >= Vh.KineticZoomPunchCutEngine.MinScale, "펀치 프레임 배율 " + run.LastScale);
+        var frameUs = new double[Vh.KineticVisualHookStudioRunner.TotalFrames];
+        for (var f = 0; f < frameUs.Length; f++) { run.RenderFrame(f); frameUs[f] = run.LastFrameUs; }
+        Array.Sort(frameUs);
+        Assert.True(frameUs[frameUs.Length / 2] < Vh.KineticVisualHookStudioRunner.BudgetUs, "프레임 중앙값 " + frameUs[frameUs.Length / 2] + " µs");
+        var renderAlloc = AllocationProbe.MinAllocated(() => { for (var f = 0; f < 120; f++) run.RenderFrame(f); });
+        Assert.True(renderAlloc == 0, "프레임 할당 " + renderAlloc);
+        var uri = run.PreviewDataUri();
+        Assert.True(uri.StartsWith("data:image/png;base64,", StringComparison.Ordinal) && ReferenceEquals(uri, run.PreviewDataUri()) && run.StickerDataUri(Vh.StickerKind.Fire).Length > 200, "미리보기 PNG");
+        run.SetStrength(0f);
+        Assert.True(Math.Abs(run.Zoom.At(0).PeakScale - Vh.KineticZoomPunchCutEngine.MinScale) < 1e-5f || run.Zoom.At(0).PeakScale <= Vh.KineticZoomPunchCutEngine.MinScale + 1e-5f);
+        run.SetPlatforms(Vh.ReelsPlatforms.YouTubeShorts);
+        Assert.True(Math.Abs(run.Guard.Active.Bottom - 0.20f) < 1e-6f && run.Guard.IsSafe(run.Caption));
+        var f0 = run.Frame;
+        run.Start();
+        for (var k = 0; k < 40 && run.Frame == f0; k++) await Task.Delay(25);
+        run.Stop();
+        Assert.True(run.Frame != f0 && !run.Running, "재생 진행");
+        run.Dispose();
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(run));
+        // v17.76 SFX 실제 큐 연동
+        var sps = new Sps.SmartPublishingSchedulerStudioRunner(simulate: true);
+        sps.BuildSfxPreview();
+        var linked = new Vh.KineticVisualHookStudioRunner(sps);
+        var hits = 0; for (var i = 0; i < sps.Sfx.CueCount; i++) if (sps.Sfx.Cue(i).Kind is Sps.ViralSfxKind.Impact or Sps.ViralSfxKind.Chaching) hits++;
+        Assert.True(linked.UsedLinkedSfx && linked.Shake.Count == hits && hits >= 2, "SFX 연동 셰이크 " + linked.Shake.Count + "/" + hits);
+        linked.Dispose(); sps.Dispose();
+
+        // ── HOOK-5b: 카탈로그 · HUD · 레이아웃 · DI · 모달 렌더 · 구독 해제 · 디스크 I/O 0 ──
+        Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_visualHooks" && en.Category == 4);
+        Assert.Equal(153, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        var root = RepoRoot();
+        var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
+        var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
+        var mainForm = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "MainForm.cs"));
+        var maui = File.ReadAllText(Path.Combine(root, "PromptFlowStudio.Mobile", "MauiProgram.cs"));
+        Assert.True(hud.IndexOf("gth-v1777", StringComparison.Ordinal) is > 0 and var i1777 && i1777 < hud.IndexOf("gth-v1776", StringComparison.Ordinal) && hud.Contains("KvhRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("KvhRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<KineticVisualHookStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_visualHooks\"", StringComparison.Ordinal) && layout.Contains("\"_visualHooks\" =>", StringComparison.Ordinal));
+        Assert.True(mainForm.Contains("VisualHooks.KineticVisualHookStudioRunner(sp)", StringComparison.Ordinal) && maui.Contains("VisualHooks.KineticVisualHookStudioRunner(sp)", StringComparison.Ordinal));
+        foreach (var src in Directory.GetFiles(Path.Combine(root, "PromptFlowStudio", "Services", "VisualHooks"), "*.cs"))
+        {
+            var text = File.ReadAllText(src);
+            Assert.True(!text.Contains("File.", StringComparison.Ordinal) && !text.Contains("FileStream", StringComparison.Ordinal) && !text.Contains("Directory.", StringComparison.Ordinal), "디스크 I/O " + Path.GetFileName(src));
+        }
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = sp.GetService(typeof(Vh.KineticVisualHookStudioRunner))!;
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.KineticVisualHookStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("kvh-scrim", StringComparison.Ordinal) && html.Contains("kvh-tl", StringComparison.Ordinal) && html.Contains("data:image/png;base64,", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+
+    private static void ZoomPunchChecks()
+    {
+        // ── HOOK-1a: 정수 프레임 양자화 · 0 프레임 오차 즉시 컷 · 유지/복귀 · 강도 사상 · 근접 병합 ──
+        var z = new Vh.KineticZoomPunchCutEngine { Strength = 1f };
+        Assert.True(Vh.KineticZoomPunchCutEngine.FrameOf(1000) == 60 && Vh.KineticZoomPunchCutEngine.FrameOf(16.7) == 1 && Vh.KineticZoomPunchCutEngine.FrameOf(3600) == 216);
+        Assert.True(z.AddPunch(1000, 1f, Vh.ZoomPunchSource.Hook));
+        Assert.True(z.ScaleAt(59) == 1f && z.ScaleAt(60) == Vh.KineticZoomPunchCutEngine.MaxScale && z.ScaleAt(60 + Vh.KineticZoomPunchCutEngine.HoldFrames - 1) == Vh.KineticZoomPunchCutEngine.MaxScale, "즉시 컷 " + z.ScaleAt(60));
+        var prev = z.ScaleAt(60 + Vh.KineticZoomPunchCutEngine.HoldFrames - 1);
+        for (var f = 60 + Vh.KineticZoomPunchCutEngine.HoldFrames; f < 60 + Vh.KineticZoomPunchCutEngine.HoldFrames + Vh.KineticZoomPunchCutEngine.ReleaseFrames; f++) { var s = z.ScaleAt(f); Assert.True(s < prev && s >= 1f, "복귀 단조 " + f); prev = s; }
+        Assert.Equal(1f, z.ScaleAt(60 + Vh.KineticZoomPunchCutEngine.HoldFrames + Vh.KineticZoomPunchCutEngine.ReleaseFrames));
+        Assert.True(Math.Abs(Vh.KineticZoomPunchCutEngine.ScaleFor(0f) - 1.12f) < 1e-6f && Math.Abs(Vh.KineticZoomPunchCutEngine.ScaleFor(1f) - 1.25f) < 1e-6f);
+        z.Strength = 0.5f;
+        Assert.False(z.AddPunch(1100, 1f, Vh.ZoomPunchSource.Keyword));   // 6 프레임 차 → 병합(약한 쪽 무시)
+        Assert.True(z.Merged == 1 && z.Count == 1 && z.At(0).Source == Vh.ZoomPunchSource.Hook);
+        // v17.54 컷 · v17.76 SFX · v17.75 훅 수집
+        var cuts = new[] { new PromptFlowStudio.Services.RhythmAction.RhythmCutEvent { PresentSec = 2.0, Reason = PromptFlowStudio.Services.RhythmAction.RhythmCutReason.Beat },
+                           new PromptFlowStudio.Services.RhythmAction.RhythmCutEvent { PresentSec = 3.6, Reason = PromptFlowStudio.Services.RhythmAction.RhythmCutReason.Drop },
+                           new PromptFlowStudio.Services.RhythmAction.RhythmCutEvent { PresentSec = 4.4, Reason = PromptFlowStudio.Services.RhythmAction.RhythmCutReason.Accent } };
+        Assert.Equal(2, z.CollectCuts(cuts));
+        var sfx = new Sps.ProceduralViralSoundFxSynthesizer();
+        sfx.AddCue(5500, Sps.ViralSfxKind.Impact); sfx.AddCue(2500, Sps.ViralSfxKind.Pop);
+        Assert.Equal(1, z.CollectSfx(sfx));
+        int Find(long frame) { for (var i = 0; i < z.Count; i++) if (z.At(i).Frame == frame) return i; return -1; }
+        Assert.True(Find(216) >= 0 && z.At(Find(216)).Source == Vh.ZoomPunchSource.BeatDrop && Find(264) >= 0 && Find(330) >= 0 && Find(150) < 0, "수집 프레임");
+        for (var i = 1; i < z.Count; i++) Assert.True(z.At(i).Frame > z.At(i - 1).Frame, "정렬");
+        var hook = new Rto.ViralHookDeadAirAutoTrimmerEngine();
+        var pcm = new short[Vh.KineticVisualHookStudioRunner.HookFs * 3];
+        Vh.KineticVisualHookStudioRunner.SynthesizeHookPcm(pcm);
+        hook.ScanAudio(pcm, Vh.KineticVisualHookStudioRunner.HookFs); hook.Plan();
+        var zh = new Vh.KineticZoomPunchCutEngine();
+        Assert.True(zh.CollectHook(hook) == 1 && zh.At(0).Frame == Vh.KineticZoomPunchCutEngine.FrameOf(hook.Last.StimulusOutMs) && zh.At(0).Source == Vh.ZoomPunchSource.Hook, "훅 펀치 " + hook.Last.StimulusOutMs);
+
+        // ── HOOK-1b: 스마트 피벗 — 안면 중심 화면 위치 불변 · 정수리 헤드룸 가드(잘림 0) ──
+        const int W = 216, H = 384;
+        var pv = new Vh.KineticZoomPunchCutEngine();
+        pv.SetFace(new Vh.HookBox(0.40f, 0.40f, 0.20f, 0.20f));
+        pv.CropFor(1.25f, W, H, out var x0, out var y0, out var cw, out var ch);
+        Assert.True(Math.Abs((W * 0.5f - x0) * 1.25f - W * 0.5f) < 1e-3f && Math.Abs((H * 0.5f - y0) * 1.25f - H * 0.5f) < 1e-3f && Math.Abs(cw - W / 1.25f) < 1e-3f, "피벗 고정");
+        pv.SetFace(new Vh.HookBox(0.42f, 0.02f, 0.16f, 0.15f));
+        pv.CropFor(1.25f, W, H, out _, out var yTop, out _, out _);
+        Assert.True(yTop <= 0.02f * H && pv.HeadClips == 0 && pv.HeadGuardCorrections >= 1, "헤드룸 " + yTop);
+        // 이미지: 안면 중심 마커 픽셀 → 줌 후 동일 위치 유지 · 프레임 = 0xFF 불투명
+        var src = new uint[W * H]; Array.Fill(src, 0xFF202020u);
+        var dst = new uint[W * H];
+        pv.SetFace(new Vh.HookBox(0.40f, 0.40f, 0.20f, 0.20f));
+        for (var y = H / 2 - 2; y < H / 2 + 2; y++) for (var x = W / 2 - 2; x < W / 2 + 2; x++) src[y * W + x] = 0xFFFFFFFFu;
+        pv.Strength = 1f; pv.AddPunch(0, 1f, Vh.ZoomPunchSource.Manual);
+        Assert.Equal(Vh.KineticZoomPunchCutEngine.MaxScale, pv.Apply(src, dst, W, H, 0));
+        Assert.True((dst[(H / 2) * W + W / 2] & 0xFF) > 0xC0 && (dst[10 * W + 10] & 0xFF) == 0x20 && Vh.KineticZoomPunchCutEngine.Lerp(0xFF123456u, 0xFF123456u, 77) == 0xFF123456u, "피벗 이미지");
+        var bright = 0; foreach (var p in dst) if ((p & 0xFF) > 0x80) bright++;
+        Assert.True(bright > 16 && bright < 40, "확대 마커 " + bright);
+        var applyAlloc = AllocationProbe.MinAllocated(() => { for (var f = 0; f < 40; f++) pv.Apply(src, dst, W, H, f); z.ScaleAt(100); });
+        Assert.True(applyAlloc == 0, "줌 적용 할당 " + applyAlloc);
+    }
+
+    private static void SafeZoneChecks()
+    {
+        // ── HOOK-2: 릴스/틱톡 세이프존(상 15 · 하 22 · 우 18 %) · 중심축 시프트 · 축소 · 자막-스티커 분리 · 무할당 ──
+        var g = new Vh.ReelsUiSafeZoneReframingGuard();
+        var safe = g.SafeRect;
+        Assert.True(Math.Abs(safe.Y - 0.15f) < 1e-6f && Math.Abs(safe.Bottom - 0.78f) < 1e-6f && Math.Abs(safe.Right - 0.82f) < 1e-6f, "세이프 사각형");
+        var inside = new Vh.HookBox(0.2f, 0.3f, 0.3f, 0.1f);
+        Assert.True(g.Clamp(ref inside) == Vh.ReframeVerdict.Inside && inside.X == 0.2f && inside.Y == 0.3f);
+        var cap = new Vh.HookBox(0.08f, 0.80f, 0.76f, 0.09f);
+        Assert.True(g.Clamp(ref cap) == Vh.ReframeVerdict.Shifted && g.IsSafe(cap) && Math.Abs(cap.Bottom - 0.78f) < 1e-6f && Math.Abs(cap.Right - 0.82f) < 1e-6f && Math.Abs(cap.W - 0.76f) < 1e-6f, "자막 시프트 " + cap.Y);
+        var right = new Vh.HookBox(0.75f, 0.4f, 0.2f, 0.1f);
+        Assert.True(g.Clamp(ref right) == Vh.ReframeVerdict.Shifted && Math.Abs(right.Right - 0.82f) < 1e-6f && right.Y == 0.4f, "우측 레일 회피");
+        var huge = new Vh.HookBox(0f, 0f, 1f, 1f);
+        Assert.True(g.Clamp(ref huge) == Vh.ReframeVerdict.Shrunk && g.IsSafe(huge), "축소");
+        var boxes = new[] { new Vh.HookBox(0.10f, 0.70f, 0.70f, 0.08f), new Vh.HookBox(0.40f, 0.72f, 0.18f, 0.10f), new Vh.HookBox(0.70f, 0.05f, 0.25f, 0.12f) };
+        var kinds = new[] { Vh.OverlayKind.Caption, Vh.OverlayKind.Sticker, Vh.OverlayKind.Badge };
+        Assert.True(g.ClampAll(boxes, kinds) >= 3 && g.Separations >= 1, "분리 " + g.Separations);
+        for (var i = 0; i < boxes.Length; i++) Assert.True(g.IsSafe(boxes[i]), "안전 " + i);
+        Assert.False(boxes[1].Intersects(in boxes[0]));
+        g.Targets = Vh.ReelsPlatforms.All;
+        Assert.True(Math.Abs(g.Active.Right - 0.18f) < 1e-6f && Math.Abs(g.Active.Top - 0.15f) < 1e-6f);
+        g.Targets = Vh.ReelsPlatforms.YouTubeShorts;
+        Assert.True(Math.Abs(g.Active.Top - 0.12f) < 1e-6f && Math.Abs(g.Active.Right - 0.16f) < 1e-6f);
+        g.Targets = Vh.ReelsPlatforms.InstagramReels | Vh.ReelsPlatforms.TikTok;
+        var work = new Vh.HookBox[3];
+        var clampAlloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 200; k++) { work[0] = cap; work[1] = right; work[2] = huge; g.ClampAll(work, kinds); } });
+        Assert.True(clampAlloc == 0 && g.LastClampUs < 1_000, "클램프 할당 " + clampAlloc + " · " + g.LastClampUs + " µs");
+    }
+
+    private static void StickerChecks()
+    {
+        // ── HOOK-3a: 절차적 벡터 스프라이트 5 종 — 결정적 · 투명 모서리 · AA 가장자리 · 상호 구별 ──
+        const int S = Vh.ProceduralVectorStickerOverlaySynthesizer.Size;
+        var st = new Vh.ProceduralVectorStickerOverlaySynthesizer();
+        var twin = new Vh.ProceduralVectorStickerOverlaySynthesizer();
+        for (var k = 0; k < Vh.ProceduralVectorStickerOverlaySynthesizer.Kinds; k++)
+        {
+            var spr = st.Sprite((Vh.StickerKind)k);
+            int opaque = 0, partial = 0;
+            foreach (var p in spr) { var a = p >> 24; if (a == 255) opaque++; else if (a > 0) partial++; }
+            Assert.True(spr.SequenceEqual(twin.Sprite((Vh.StickerKind)k)) && (spr[0] >> 24) == 0 && (spr[S * S - 1] >> 24) == 0 && opaque > S * S / 8 && partial > 20, "스프라이트 " + k + " 불투명 " + opaque + " AA " + partial);
+            for (var j = 0; j < k; j++) Assert.False(spr.SequenceEqual(st.Sprite((Vh.StickerKind)j)), "구별 " + k + "/" + j);
+        }
+        var heart = st.Sprite(Vh.StickerKind.Heart)[S / 2 * S + S / 2];
+        Assert.True(heart >> 24 == 255 && ((heart >> 16) & 0xFF) > 0xC0, "하트 중심 " + heart.ToString("X8"));
+        Assert.True(Vh.ProceduralVectorStickerOverlaySynthesizer.TryClassify("대박이다", out var km) && km == Vh.StickerKind.Money && Vh.ProceduralVectorStickerOverlaySynthesizer.TryClassify("LOL", out var ks) && ks == Vh.StickerKind.Skull && !Vh.ProceduralVectorStickerOverlaySynthesizer.TryClassify("안녕", out _));
+
+        // ── HOOK-3b: 스프링-댐퍼 바운스(해석해) · 오버슈트 · 정착 ──
+        Assert.Equal(0f, Vh.ProceduralVectorStickerOverlaySynthesizer.SpringScale(0));
+        float peak = 0; for (var f = 0.0; f < 60; f += 0.05) peak = MathF.Max(peak, Vh.ProceduralVectorStickerOverlaySynthesizer.SpringScale(f));
+        Assert.True(Math.Abs(peak - Vh.ProceduralVectorStickerOverlaySynthesizer.PeakOvershoot) < 2e-3f && peak > 1.25f && Math.Abs(Vh.ProceduralVectorStickerOverlaySynthesizer.SpringScale(Vh.ProceduralVectorStickerOverlaySynthesizer.LifeFrames) - 1f) < 0.05f, "스프링 피크 " + peak);
+
+        // ── HOOK-3c: 세이프존 스폰 · 렌더 · 수명 · 무할당 ──
+        var g = new Vh.ReelsUiSafeZoneReframingGuard();
+        st.Guard = g;
+        var idx = st.Spawn(Vh.StickerKind.Fire, 0.95f, 0.9f, 0.24f, 0);
+        var pk = st.Instance(idx).Box.Inflate(Vh.ProceduralVectorStickerOverlaySynthesizer.PeakOvershoot);
+        Assert.True(st.Reframed == 1 && g.IsSafe(pk), "스폰 세이프존 " + pk.Right + "," + pk.Bottom);
+        st.Spawn(Vh.StickerKind.Heart, 0.4f, 0.4f, 0.24f, 0);
+        const int W = 216, H = 384;
+        var dst = new uint[W * H]; Array.Fill(dst, 0xFF000000u);
+        Assert.Equal(2, st.Render(dst, W, H, 10));
+        var lit = 0; foreach (var p in dst) if (p != 0xFF000000u) lit++;
+        Assert.True(lit > 1500, "렌더 픽셀 " + lit);
+        Assert.True(st.LiveCount(10) == 2 && st.LiveCount(Vh.ProceduralVectorStickerOverlaySynthesizer.LifeFrames) == 0 && st.Render(dst, W, H, Vh.ProceduralVectorStickerOverlaySynthesizer.LifeFrames) == 0 && st.DiskReads == 0);
+        var stAlloc = AllocationProbe.MinAllocated(() => { for (var f = 0; f < 60; f++) st.Render(dst, W, H, f); });
+        Assert.True(stAlloc == 0, "스티커 할당 " + stAlloc);
+    }
+
+    private static void ShakeVignetteChecks()
+    {
+        // ── HOOK-4a: SFX 트리거(임팩트 5 · 차칭 3 프레임) · ±4 px · 결정적 ──
+        var sh = new Vh.AudioReactiveScreenShakeVignetteFilter();
+        Assert.False(sh.Trigger(500, Sps.ViralSfxKind.Pop));
+        Assert.True(sh.Trigger(1000, Sps.ViralSfxKind.Impact) && sh.Trigger(2000, Sps.ViralSfxKind.Chaching));
+        Assert.True(Vh.AudioReactiveScreenShakeVignetteFilter.ImpactFrames == 5 && Vh.AudioReactiveScreenShakeVignetteFilter.ChachingFrames == 3);   // 83 ms · 50 ms
+        var twin = new Vh.AudioReactiveScreenShakeVignetteFilter(); twin.Trigger(1000, Sps.ViralSfxKind.Impact); twin.Trigger(2000, Sps.ViralSfxKind.Chaching);
+        int active = 0;
+        for (long f = 55; f < 130; f++)
+        {
+            var on = sh.Sample(f, out var dx, out var dy, out var fl, out var kind);
+            twin.Sample(f, out var dx2, out var dy2, out _, out _);
+            var expect = f is >= 60 and < 65 || f is >= 120 and < 123;
+            Assert.True(on == expect && dx == dx2 && dy == dy2, "셰이크 구간 " + f);
+            if (!on) continue;
+            active++;
+            Assert.True(Math.Abs(dx) <= 4 && Math.Abs(dy) <= 4 && (dx != 0 || dy != 0) && fl > 0 && kind == (f < 100 ? Vh.ImpactFlash.Dark : Vh.ImpactFlash.Gold), "변위 " + dx + "," + dy);
+        }
+        Assert.Equal(8, active);
+
+        // ── HOOK-4b: 비네트 암전/골드 플래시 · 비활성 프레임 원본 유지 · 무할당 ──
+        const int W = 216, H = 384;
+        sh.Configure(W, H);
+        var src = new uint[W * H]; Array.Fill(src, 0xFF808080u);
+        var dst = new uint[W * H];
+        Assert.True(sh.Apply(src, dst, W, H, 60));
+        var corner = dst[0]; var center = dst[H / 2 * W + W / 2];
+        Assert.True((corner & 0xFF) < 0x30 && center == 0xFF808080u && sh.MaxOffsetPx is >= 1 and <= 4, "암전 비네트 " + corner.ToString("X8"));
+        Assert.True(sh.Apply(src, dst, W, H, 120));
+        Assert.True(((dst[0] >> 16) & 0xFF) > 0xE0 && (dst[0] & 0xFF) < 0x70, "골드 플래시 " + dst[0].ToString("X8"));
+        Assert.False(sh.Apply(src, dst, W, H, 90));
+        Assert.True(dst.AsSpan().SequenceEqual(src), "비활성 원본");
+        var shAlloc = AllocationProbe.MinAllocated(() => { for (var f = 55; f < 130; f++) sh.Apply(src, dst, W, H, f); });
+        Assert.True(shAlloc == 0 && sh.ShakenFrames >= 8, "셰이크 할당 " + shAlloc);
     }
 }

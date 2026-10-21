@@ -788,6 +788,7 @@ public static class MauiProgram
         builder.Services.AddSingleton<PromptFlowStudio.Services.OpticalInertialTracking.CameraTrackingStudioRunner>(); // v17.45.0 AI 카메라 트래킹 스튜디오
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.BroadcastMcr.BroadcastMcrStudioRunner(sp));
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.Showrunner.InteractiveShowrunnerStudioRunner(sp));
+        builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.VisualHooks.KineticVisualHookStudioRunner(sp)); // v17.77.0 키네틱 비주얼 훅 & 세이프존
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.SmartPublishing.SmartPublishingSchedulerStudioRunner(sp)); // v17.76.0 스마트 배포 캘린더 & SFX
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.RetentionOptimizer.ViralRetentionOptimizerStudioRunner(sp)); // v17.75.0 릴스 유지율 & A/B 최적화
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.VisualPolish.ReelsVisualPolishStudioRunner(sp)); // v17.74.0 릴스 비주얼 폴리시 & 썸네일 팩토리
