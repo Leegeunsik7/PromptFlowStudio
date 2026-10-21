@@ -1,0 +1,182 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.SmartPublishing
+@implements IDisposable
+@inject SmartPublishingSchedulerStudioRunner Runner
+
+@* [PromptFlow Studio v17.76.0] 📅 스마트 배포 캘린더 & SFX 스튜디오 — 절차적 효과음 타임라인 파형 · 주간 골든타임 예약 캘린더 · 플랫폼 일일 쿼터 게이지. *@
+<div class="sps-scrim" @onclick="Close">
+    <div class="sps-modal" @onclick:stopPropagation="true">
+        <div class="sps-h">
+            <div>
+                <div class="sps-title">📅 스마트 배포 캘린더 & SFX 스튜디오 @(Runner.Simulated ? "· 🧪 가상 시계" : "· 🔴 실시간") @(Runner.Running ? "· ▶ 자동 진행" : null)</div>
+                <div class="sps-sub"><b>사운드 FX 합성기</b>가 녹음 파일 없이 휘쉬(컷 전환) · 팝(자막 등장) · 임팩트(드롭/감정 피크) · 차칭(구매)을 직접 만들어, 자막·컷·구매 시각에 맞춰 BGM 위에 얹습니다.
+                    완성된 릴스는 바로 올리지 않고 <b>한국 18~21시 · 미국 동부 12~14시 · 영국 19~21시</b> 골든타임에 맞춰 예약되며, <b>쿼터 가드</b>가 채널당 45분 간격과 YouTube 하루 10,000 유닛 · Instagram 하루 50건 한도를 지키도록 겹치는 예약을 다음 슬롯으로 미룹니다(A/B 승자 우선).</div>
+            </div>
+            <button class="sps-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="sps-bar">
+            <button class="sps-btn hot" @onclick="BuildSfx">🔊 SFX 타임라인 합성</button>
+            <button class="sps-btn go" @onclick="Demo">📅 데모 8건 예약</button>
+            <button class="sps-btn" @onclick="() => Step(900)">⏩ +15분</button>
+            <button class="sps-btn" @onclick="() => Step(6 * 3600)">⏩ +6시간</button>
+            <button class="sps-btn @(Runner.Running ? "on" : null)" @onclick="Toggle">@(Runner.Running ? "⏸ 정지" : "▶ 자동 진행")</button>
+            <span class="sps-sep"></span>
+            <span class="sps-dim">현재 @(SmartPublishingSchedulerStudioRunner.Kst(Runner.Now)) KST · 예약 @(Runner.Scheduler.Count) · 지연 @(Runner.Scheduler.Deferrals) · 발행 @(Runner.Dispatched)</span>
+        </div>
+
+        <div class="sps-main">
+            <div class="sps-card">
+                <div class="sps-sec">🔊 효과음 타임라인 파형 (@(SmartPublishingSchedulerStudioRunner.PreviewSec)초)</div>
+                <svg class="sps-wave" viewBox="0 0 240 100" preserveAspectRatio="none">
+                    <line x1="0" x2="240" y1="50" y2="50" class="mid" />
+                    @if (Runner.PreviewReady)
+                    {
+                        @for (var c = 0; c < SmartPublishingSchedulerStudioRunner.WaveCols; c++)
+                        {
+                            var bed = Runner.BedMax[c] * 46;
+                            <line x1="@(c.ToString(CultureInfo.InvariantCulture))" x2="@(c.ToString(CultureInfo.InvariantCulture))" y1="@((50 - Runner.WaveMax[c] * 46).ToString("0.0", CultureInfo.InvariantCulture))" y2="@((50 - Runner.WaveMin[c] * 46).ToString("0.0", CultureInfo.InvariantCulture))" class="mx" />
+                            <line x1="@(c.ToString(CultureInfo.InvariantCulture))" x2="@(c.ToString(CultureInfo.InvariantCulture))" y1="@((50 - bed).ToString("0.0", CultureInfo.InvariantCulture))" y2="@((50 + bed).ToString("0.0", CultureInfo.InvariantCulture))" class="bed" />
+                        }
+                        @for (var i = 0; i < Runner.Sfx.CueCount; i++)
+                        {
+                            var q = Runner.Sfx.Cue(i);
+                            var x = q.TimeMs / (SmartPublishingSchedulerStudioRunner.PreviewSec * 1000.0) * 240;
+                            if (x > 240) continue;
+                            <g>
+                                <line x1="@(x.ToString("0.0", CultureInfo.InvariantCulture))" x2="@(x.ToString("0.0", CultureInfo.InvariantCulture))" y1="0" y2="100" class="cue k@((int)q.Kind)" />
+                                <text x="@((x + 1).ToString("0.0", CultureInfo.InvariantCulture))" y="@(9 + (int)q.Kind * 8)" class="lbl">@(ProceduralViralSoundFxSynthesizer.KindIcon(q.Kind))</text>
+                            </g>
+                        }
+                    }
+                </svg>
+                <div class="sps-kv">회색 = BGM/보컬 원본 · 청록 = SFX 믹싱 결과 · 세로선 = 큐(💨 휘쉬 · 🫧 팝 · 💥 임팩트 · 💰 차칭)</div>
+                <div class="sps-legend">
+                    @foreach (var k in Kinds)
+                    {
+                        var kk = k; var n = 0;
+                        for (var i = 0; i < Runner.Sfx.CueCount; i++) if (Runner.Sfx.Cue(i).Kind == kk) n++;
+                        <span class="k@((int)kk)">@(ProceduralViralSoundFxSynthesizer.KindIcon(kk)) @(ProceduralViralSoundFxSynthesizer.KindName(kk)) <b>@n</b> · @((ProceduralViralSoundFxSynthesizer.LengthSamples[(int)kk] / 48).ToString(CultureInfo.InvariantCulture)) ms</span>
+                    }
+                </div>
+                <div class="sps-kv">믹싱 @(Runner.PreviewMixUs.ToString("0", CultureInfo.InvariantCulture)) µs · 억제(쿨다운) @(Runner.Sfx.Suppressed) · 리미터 @(Runner.Sfx.LimitedSamples) 샘플</div>
+            </div>
+
+            <div class="sps-card">
+                <div class="sps-sec">🗓️ 주간 골든타임 예약 캘린더 (KST)</div>
+                @{ var cal = Runner.Calendar(); var mid = Runner.KstMidnight(); }
+                <div class="sps-cal">
+                    <div class="hd"></div>
+                    @for (var d = 0; d < SmartPublishingSchedulerStudioRunner.CalendarDays; d++)
+                    {
+                        <div class="hd">@(DateTimeOffset.FromUnixTimeSeconds(mid + d * 86_400L).ToOffset(TimeSpan.FromHours(9)).ToString("MM/dd", CultureInfo.InvariantCulture))</div>
+                    }
+                    @for (var h = 0; h < 24; h++)
+                    {
+                        var gm = SmartPublishingSchedulerStudioRunner.GoldenMaskAtKstHour(h);
+                        <div class="hr">@(h.ToString("00", CultureInfo.InvariantCulture))</div>
+                        @for (var d = 0; d < SmartPublishingSchedulerStudioRunner.CalendarDays; d++)
+                        {
+                            var n = cal[d * 24 + h];
+                            <div class="cell g@(gm) @(n > 0 ? "res" : null)">@(n > 0 ? n.ToString(CultureInfo.InvariantCulture) : null)</div>
+                        }
+                    }
+                </div>
+                <div class="sps-kv"><span class="sw g1"></span>아시아 <span class="sw g2"></span>북미 <span class="sw g4"></span>유럽 · 숫자 = 예약 건수</div>
+            </div>
+
+            <div class="sps-card">
+                <div class="sps-sec">⛽ 플랫폼 일일 쿼터 소진 예측</div>
+                @{ var now = Runner.Now; var yt = Runner.Guard.YtGauge(now); var ig = Runner.Guard.IgGauge(now); }
+                <div class="sps-gauge"><span>▶ YouTube</span><div class="bar"><i style="width:@((yt * 100).ToString("0", CultureInfo.InvariantCulture))%" class="@(yt > 0.85f ? "warn" : null)"></i></div><b>@(Runner.Guard.ProjectedYtUnits(MultiChannelQuotaDistributionGuard.YtDayOf(now)))/@(MultiChannelQuotaDistributionGuard.YtDailyUnits)</b></div>
+                <div class="sps-kv">업로드 1건 = @(Runner.Guard.YtUploadCost) 유닛 · 하루 최대 @(Runner.Guard.YtUploadsPerDay)건(예비 @(MultiChannelQuotaDistributionGuard.YtReserveUnits) 유닛) · 오늘 소비 @(Runner.Guard.YtUsedToday)</div>
+                <div class="sps-gauge"><span>◎ Instagram</span><div class="bar"><i style="width:@((ig * 100).ToString("0", CultureInfo.InvariantCulture))%" class="@(ig > 0.85f ? "warn" : null)"></i></div><b>@(Runner.Guard.ProjectedIgPosts(now))/@(MultiChannelQuotaDistributionGuard.IgPosts24h)</b></div>
+                <div class="sps-kv">24시간 롤링 게시 · 호출 버킷 @(Runner.Guard.IgTokens.ToString("0", CultureInfo.InvariantCulture))/@(MultiChannelQuotaDistributionGuard.IgCallsPerHour) · 최소 간격 @(Runner.Guard.MinGapSec / 60)분</div>
+                <div class="sps-sec sm">⏭️ 다음 예약</div>
+                @for (var i = 0; i < Math.Min(7, Runner.Scheduler.Count); i++)
+                {
+                    var p = Runner.Scheduler.At(i);
+                    <div class="sps-item @(p.Deferred ? "def" : null) @(p.AbWinner ? "win" : null)">
+                        <b>#@(p.ReelId)</b> @(p.State == ScheduledState.Queued ? GlobalGoldenHourPublishingScheduler.RegionFlag(p.SlotRegion) + " " + SmartPublishingSchedulerStudioRunner.Kst(p.SlotUnix) : "배치 불가")
+                        <span>@(p.Platforms == PublishPlatforms.Both ? "YT+IG" : p.Platforms == PublishPlatforms.YouTube ? "YT" : "IG")@(p.AbWinner ? " · 🏆" : null)@(p.Deferred ? " · 지연" : null)</span>
+                    </div>
+                }
+                <div class="sps-kv">거부(간격 @(Runner.Guard.GapRejects) · 쿼터 @(Runner.Guard.QuotaRejects)) · 재큐 @(Runner.Requeues) · A/B 승격 @(Runner.AbPromotions)</div>
+            </div>
+        </div>
+        <div class="sps-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+    </div>
+</div>
+
+<style>
+    .sps-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .sps-modal { width: min(1320px, 96vw); max-height: 94vh; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); padding: 14px 16px; color: var(--text-primary); }
+    .sps-h { display: flex; justify-content: space-between; gap: 12px; } .sps-title { font-size: 17px; font-weight: 800; } .sps-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .sps-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .sps-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; } .sps-sep { flex: 1; } .sps-dim { font-size: 11px; color: var(--text-muted); }
+    .sps-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .sps-btn.go { border-color: #22c55e; } .sps-btn.hot { border-color: #f97316; } .sps-btn.on { background: color-mix(in srgb, #38bdf8 25%, #1e293b); border-color: #38bdf8; }
+    .sps-main { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 0.9fr); gap: 10px; }
+    .sps-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; } .sps-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 8px; } .sps-sec.sm { margin-top: 10px; font-size: 12px; }
+    .sps-wave { width: 100%; height: 150px; background: #05070c; border-radius: 6px; display: block; }
+    .sps-wave .mid { stroke: #1e293b; stroke-width: .5; } .sps-wave .mx { stroke: #2dd4bf; stroke-width: 1; } .sps-wave .bed { stroke: #64748b; stroke-width: 1; opacity: .7; }
+    .sps-wave .cue { stroke-width: .6; stroke-dasharray: 2 2; } .sps-wave .lbl { font-size: 7px; }
+    .k0 { stroke: #93c5fd; color: #93c5fd; } .k1 { stroke: #f0abfc; color: #f0abfc; } .k2 { stroke: #f87171; color: #f87171; } .k3 { stroke: #fde047; color: #fde047; }
+    .sps-legend { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; margin: 6px 0; } .sps-legend span { font-size: 11px; background: #0f172a; border-radius: 6px; padding: 3px 6px; } .sps-legend b { font-family: var(--mono); }
+    .sps-kv { font-size: 10.5px; color: var(--text-muted); margin: 4px 0 6px; }
+    .sps-cal { display: grid; grid-template-columns: 24px repeat(7, 1fr); gap: 1px; font-size: 9px; }
+    .sps-cal .hd { text-align: center; color: var(--text-muted); padding-bottom: 2px; } .sps-cal .hr { color: var(--text-muted); text-align: right; padding-right: 3px; line-height: 11px; }
+    .sps-cal .cell { height: 11px; background: #111827; border-radius: 2px; text-align: center; line-height: 11px; color: #0b1220; font-weight: 800; }
+    .sps-cal .g1, .sw.g1 { background: #1e3a8a; } .sps-cal .g2, .sw.g2 { background: #14532d; } .sps-cal .g4, .sw.g4 { background: #7c2d12; } .sps-cal .g6 { background: linear-gradient(90deg, #14532d 50%, #7c2d12 50%); } .sps-cal .g3, .sps-cal .g5, .sps-cal .g7 { background: #3730a3; }
+    .sps-cal .cell.res { background: #fde047; }
+    .sw { display: inline-block; width: 10px; height: 8px; margin: 0 3px 0 6px; border-radius: 2px; }
+    .sps-gauge { display: grid; grid-template-columns: 82px 1fr auto; gap: 6px; align-items: center; font-size: 11.5px; margin-top: 4px; } .sps-gauge b { font: 700 11px var(--mono); color: #fde047; }
+    .sps-gauge .bar { height: 10px; background: #111827; border-radius: 999px; overflow: hidden; } .sps-gauge .bar i { display: block; height: 100%; background: #22c55e; } .sps-gauge .bar i.warn { background: #ef4444; }
+    .sps-item { display: flex; justify-content: space-between; font-size: 11px; padding: 3px 0; border-bottom: 1px dashed #1e293b; } .sps-item span { color: var(--text-muted); } .sps-item.def b { color: #fdba74; } .sps-item.win b { color: #86efac; }
+    .sps-act { font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+    @@media (max-width: 1100px) { .sps-main { grid-template-columns: 1fr 1fr; } }
+    @@media (max-width: 760px) { .sps-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly ViralSfxKind[] Kinds = { ViralSfxKind.Whoosh, ViralSfxKind.Pop, ViralSfxKind.Impact, ViralSfxKind.Chaching };
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("SmartPublishing.Modal.Timer", ex); }
+        }, null, 1000, 1000);
+    }
+
+    private void BuildSfx()
+    {
+        try { Runner.BuildSfxPreview(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("SmartPublishing.Modal.Sfx", ex); }
+    }
+
+    private void Demo() => Runner.ScheduleDemoBatch();
+
+    private async Task Step(long sec)
+    {
+        try { await Runner.StepAsync(sec); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("SmartPublishing.Modal.Step", ex); }
+    }
+
+    private void Toggle() { if (Runner.Running) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}

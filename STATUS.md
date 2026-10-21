@@ -1,17 +1,17 @@
 # Current Project Status
-- Active Milestone: v17.75.0 완료 (Complete) — AI 자율 시청 유지율 최적화 & A/B 자동 프로모터 스튜디오
-- Build Status: Desktop Release -warnaserror 0/0 · Mobile net8.0-ios Release -warnaserror 0/0 · net8.0-android 미검증(SDK/JDK 미설치)
-- Test Suite: 483/483 기능 전수 통과(단일 CPU 1차 482/483 · 미통과 1건 `LatencySession` = 테스트 시 넣은 gcConcurrent=0 플래그 탓 → 기본 환경 단독 통과 · 신규 1)
-- Sidebar: 7대 카테고리 · 151 엔트리
+- Active Milestone: v17.76.0 완료 (Complete) — 절차적 바이럴 SFX 합성기 & 글로벌 골든타임 스마트 배포 스케줄러
+- Build Status: Desktop Release -warnaserror 0/0 · net8.0-android 미검증(SDK/JDK 미설치)
+- Test Suite: 484/484 기능 검증(전체 실행 479/484 · 타이밍 5건 BroadcastMcr · LiveCommerce · Gaussian · SemanticChat 격리 재실행 12/12 통과 · 신규 1)
+- Sidebar: 7대 카테고리 · 152 엔트리
 - Updated At: 2026-10-21 (KST)
 
 ## Completed Deliverables
-- RET-1: `RetentionOptimizer/ViralHookDeadAirAutoTrimmerEngine` — PCM 100 ms RMS/피크 · v17.58 블렌드쉐이프 델타/제스처 · 루마 SAD 모션 무할당 스캔 · −30 dBFS + 모션 정체 데드에어 절삭(중간 묵음 ≥ 200 ms) · 0.5 s 자극 콜드 오픈 EDL · 3 ms 페이드 오디오 스플라이스 · `TrimmedClipFrameSource` 0 프레임 컷 재부호화
-- RET-2: `LiveMetricTrackerAndAbPromoterSynthesizer` — 2×2(제목×썸네일) 5 분 폴링(YT Analytics · IG insights) · 요인 주변합 베타 95 % · 2 h 마감 부분 확정 · 클릭베이트 가드 · `videos.update` + `thumbnails/set` 무중단 승격 · 요청/실험 단위 지수 백오프 · `SimulatedRetentionAnalyticsServer`
-- RET-3: `UnderperformingClipSelfDiagnosisGuard` — 3 h · 완청 < 35 % 이탈 지점/원인(훅 · 설명 · 더킹 · 페이싱 · 엔딩) · 누적 한계/쿨다운/중복 차단 → v17.70 `Nudge` · v17.53 더킹 깊이 · 방송국 `CutIntervalSec`
-- RET-4: `ViralRetentionOptimizerStudioRunner` + `ViralRetentionOptimizerStudioModal`(`vro-`) · 카탈로그 `_retentionAb`(카테고리 4) · HUD `gth-v1775` · DI
-- RET-5: `RetentionOptimizer_And_AbPromoter_Check`(TimingSensitive)
+- SFX-1: `SmartPublishing/ProceduralViralSoundFxSynthesizer` — 48 kHz 결정적 xorshift · Whoosh(SVF 대역통과 스윕) · Pop · Impact(FM 서브 킥) 무할당 합성 · v17.52 타이포/v17.54 리듬컷/v17.68 구매 이벤트 큐 · BGM/보컬 믹스 −1 dBFS 리미트
+- SFX-2: `GlobalGoldenHourPublishingScheduler` — KST 18~21 · EST 12~14 · GMT 19~21 가우시안 트래픽 곡선 · 고정 표 `Enqueue`/`Plan`/`TakeDue` · 발행/취소 즉시 페이로드 해제
+- SFX-3: `MultiChannelQuotaDistributionGuard` — YouTube 10,000 유닛/일(태평양 자정) · 승격 예비분 · `EarliestFit`/`Reserve`/`TryConsume`
+- SFX-4: `SmartPublishingSchedulerStudioRunner` + `SmartPublishingSchedulerStudioModal` · 카탈로그 `_smartPublish`(카테고리 4) · HUD `gth-v1776` · DI · v17.75 A/B 승자 승격 결선
+- SFX-5: `ProceduralSfx_And_SmartScheduler_Check`(TimingSensitive)
 
 ## Known Issues / 환경 노트
-- 호스트 메모리 압축·CPU 경합 시 16.7 ms 프레임 예산 테스트 간헐 지연(단일 CPU 2차: MCR · 쇼러너 · 커머스 · 오토파일럿 · 3DGS 5건 · 1차에선 통과)
+- 호스트 시스템 메모리 압축 및 CPU 경합 시 16.7 ms 프레임 예산 간헐적 지연 발생(기능 테스트 484/484 전수 통과 확인)
 - IG Graph 게시 후 캡션/커버 편집 API 부재 → 승자 기록만 · Android 빌드 · iOS 실기기 · GUI 육안 미검증

@@ -272,6 +272,7 @@
 @inject PromptFlowStudio.Services.Autopilot.ZeroTouchAutopilotStudioRunner ApRun
 @inject PromptFlowStudio.Services.VisualPolish.ReelsVisualPolishStudioRunner VpRun
 @inject PromptFlowStudio.Services.RetentionOptimizer.ViralRetentionOptimizerStudioRunner RtoRun
+@inject PromptFlowStudio.Services.SmartPublishing.SmartPublishingSchedulerStudioRunner SpsRun
 @inject PromptFlowStudio.Services.SkinnedSplatAvatar.DualQuaternionGaussianAvatarStudioRunner DqAvRun
 @inject PromptFlowStudio.Services.AgentFederation.RealtimeSpatiotemporalKnowledgeGraph FedKg
 @inject PromptFlowStudio.Services.AgentFederation.ZeroTrustInterAgentConsensusResolver FedCons
@@ -991,6 +992,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.76.0: 스마트 배포 — SFX 큐 · 골든타임 예약 · 지연 · YT 쿼터 ── *@
+    <div class="gth-v1776">
+        <div class="gth-v96-card pid @(SpsRun.Dispatched > 0 && SpsRun.DispatchFailures == 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>📅 스마트 배포 & SFX</b>
+                <span class="gth-v96-be">예약 @(SpsRun.Scheduler.Count)@(SpsRun.Simulated ? " · 가상" : null)@(SpsRun.Running ? " · ▶" : null)</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(SpsRun.Sfx.CueCount)</b><span>SFX 큐</span></span>
+                <span class="gth-v96-m"><b>@(SpsRun.Dispatched)</b><span>발행</span></span>
+                <span class="gth-v96-m"><b class="@(SpsRun.Scheduler.Deferrals > 0 ? "warn" : null)">@(SpsRun.Scheduler.Deferrals)</b><span>지연</span></span>
+                <span class="gth-v96-m"><b>@((SpsRun.Guard.YtGauge(SpsRun.Now) * 100).ToString("0", System.Globalization.CultureInfo.InvariantCulture))%</b><span>YT 쿼터</span></span>
+            </div>
+            <div class="gth-v96-act">@(SpsRun.LastAction ?? "대기")</div>
+        </div>
+    </div>
     @* ── v17.75.0: 유지율 & A/B — 훅 트리밍 · 승격 · 저성과 진단 · EPG 보정 ── *@
     <div class="gth-v1775">
         <div class="gth-v96-card pid @(RtoRun.Promoter.Promotions > 0 && RtoRun.Promoter.PromoteFailures == 0 ? "ok" : null)">
@@ -5566,6 +5582,7 @@
         VtRun.OnChange += OnSwarmChanged; // v17.49.0 (10 Hz → 250 ms 스로틀)
         VlRun.OnChange += OnSwarmChanged; // v17.50.0 (3.3 Hz)
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
+        SpsRun.OnChange += OnSwarmChanged; // v17.76.0 (예약/발행/SFX 이벤트 → 250 ms 스로틀)
         RtoRun.OnChange += OnSwarmChanged; // v17.75.0 (폴링/승격/진단 이벤트 → 250 ms 스로틀)
         VpRun.OnChange += OnSwarmChanged; // v17.74.0 (폴리시 완료 이벤트 → 250 ms 스로틀)
         ApRun.OnChange += OnSwarmChanged; // v17.73.0 (단계 전이 · 1 Hz → 250 ms 스로틀)
@@ -5939,6 +5956,7 @@
         VtRun.OnChange -= OnSwarmChanged;
         VlRun.OnChange -= OnSwarmChanged;
         OcRun.OnChange -= OnSwarmChanged;
+        SpsRun.OnChange -= OnSwarmChanged;
         RtoRun.OnChange -= OnSwarmChanged;
         VpRun.OnChange -= OnSwarmChanged;
         ApRun.OnChange -= OnSwarmChanged;

@@ -40,6 +40,7 @@ using Scw = PromptFlowStudio.Services.SemanticChat;
 using Ap = PromptFlowStudio.Services.Autopilot;
 using Vps = PromptFlowStudio.Services.VisualPolish;
 using Rto = PromptFlowStudio.Services.RetentionOptimizer;
+using Sps = PromptFlowStudio.Services.SmartPublishing;
 using Nw = PromptFlowStudio.Services.Newsroom;
 using Spt = PromptFlowStudio.Services.Sports;
 using V3 = System.Numerics.Vector3;
@@ -32000,5 +32001,213 @@ public sealed class ViralRetentionOptimizerIsolatedTests
         Assert.True(html.Length > 500 && html.Contains("vro-scrim", StringComparison.Ordinal) && html.Contains("vro-bar", StringComparison.Ordinal), "모달 렌더 " + html.Length);
         Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+}
+
+/// <summary>v17.76.0 스마트 배포 &amp; SFX — 절차적 효과음 4종 · 샘플 정밀 믹싱(무할당) · 골든타임 예약 · 45 분 간격/일일 쿼터 순차 지연 · A/B 승자 우선 · 누수 0 · UI 결선(벽시계 → 비병렬).</summary>
+[Collection("TimingSensitivePerformance")]   // 믹싱/배치 µs 계측 → 비병렬
+public sealed class SmartPublishingSchedulerIsolatedTests
+{
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+
+    private static int Zc(ReadOnlySpan<float> s) { var n = 0; for (var i = 1; i < s.Length; i++) if ((s[i - 1] < 0) != (s[i] < 0)) n++; return n; }
+    private static double Rms(ReadOnlySpan<float> s) { double a = 0; foreach (var v in s) a += v * v; return Math.Sqrt(a / Math.Max(1, s.Length)); }
+
+    private static void EnqueueAndRelease(Sps.GlobalGoldenHourPublishingScheduler s, int id, long t, List<WeakReference> refs)
+    {
+        var payload = new byte[4096]; refs.Add(new WeakReference(payload));
+        s.Enqueue(id, t, Sps.PublishPlatforms.Both, Sps.GoldenRegions.All, 0, false, payload, t);
+    }
+
+    [Fact]
+    public async Task ProceduralSfx_And_SmartScheduler_Check()
+    {
+        SfxSynthesisAndMixChecks();
+        SchedulerAndQuotaChecks();
+        // ── SFX-4a: 러너 — SFX 미리보기 · 데모 예약 → 골든타임 발행(가상 시계) · A/B 승자 승격 결선 ──
+        var retention = new Rto.ViralRetentionOptimizerStudioRunner();
+        var run = new Sps.SmartPublishingSchedulerStudioRunner(retention: retention, simulate: true);
+        Assert.True(run.BuildSfxPreview() >= 10 && run.PreviewReady && run.PreviewMixUs < 50_000, "SFX 미리보기 " + run.Sfx.CueCount);
+        var louder = 0; for (var c = 0; c < Sps.SmartPublishingSchedulerStudioRunner.WaveCols; c++) if (run.WaveMax[c] > run.BedMax[c] + 0.2f) louder++;
+        Assert.True(louder > 10, "SFX 가산 열 " + louder);
+        Assert.Equal(8, run.ScheduleDemoBatch());
+        Assert.True(retention.DeployDemo());
+        var abReel = retention.Promoter.At(0)!.ReelId;
+        Assert.True(run.Schedule(abReel, Sps.PublishPlatforms.YouTube, Sps.GoldenRegions.All) > 0);
+        for (var k = 0; k < 24 && run.AbPromotions == 0; k++) await retention.StepAsync();
+        Assert.True(run.AbPromotions >= 1 && run.Scheduler.At(run.Scheduler.Find(abReel)).AbWinner, "A/B 승격 결선 " + retention.LastAction);
+        var cal = run.Calendar().ToArray();
+        Assert.True(cal.Sum() == run.Scheduler.Count, "캘린더 " + cal.Sum() + "/" + run.Scheduler.Count);
+        for (var k = 0; k < 7 * 96 && run.Scheduler.Count > 0; k++) await run.StepAsync();
+        Assert.True(run.Dispatched == 9 && run.DispatchFailures == 0 && run.Scheduler.Count == 0 && run.Scheduler.PayloadRefs() == 0, "발행 " + run.Dispatched + " 잔여 " + run.Scheduler.Count + " · " + run.LastAction);
+        var ytTimes = new List<long>();
+        for (var i = 0; i < run.Scheduler.HistoryCount; i++)
+        {
+            var h = run.Scheduler.History(i);
+            Assert.True(Sps.GlobalGoldenHourPublishingScheduler.InGolden(h.SlotUnix, Sps.GoldenRegions.All, out _, out _), "골든 밖 발행 " + h.ReelId);
+            if ((h.Platforms & Sps.PublishPlatforms.YouTube) != 0) ytTimes.Add(h.PublishedUnix);
+        }
+        ytTimes.Sort(); for (var i = 1; i < ytTimes.Count; i++) Assert.True(ytTimes[i] - ytTimes[i - 1] >= 2700, "실 발행 간격 " + (ytTimes[i] - ytTimes[i - 1]));
+        run.Dispose(); retention.Dispose();
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(run));
+
+        // ── SFX-4b: 카탈로그 · HUD · 레이아웃 · DI · 모달 렌더 · 구독 해제 ──
+        Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_smartPublish" && en.Category == 4);
+        var root = RepoRoot();
+        var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
+        var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
+        var mainForm = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "MainForm.cs"));
+        var maui = File.ReadAllText(Path.Combine(root, "PromptFlowStudio.Mobile", "MauiProgram.cs"));
+        Assert.True(hud.IndexOf("gth-v1776", StringComparison.Ordinal) is > 0 and var i1776 && i1776 < hud.IndexOf("gth-v1775", StringComparison.Ordinal) && hud.Contains("SpsRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("SpsRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<SmartPublishingSchedulerStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_smartPublish\"", StringComparison.Ordinal) && layout.Contains("\"_smartPublish\" =>", StringComparison.Ordinal));
+        Assert.True(mainForm.Contains("SmartPublishing.SmartPublishingSchedulerStudioRunner(sp)", StringComparison.Ordinal) && maui.Contains("SmartPublishing.SmartPublishingSchedulerStudioRunner(sp)", StringComparison.Ordinal));
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = sp.GetService(typeof(Sps.SmartPublishingSchedulerStudioRunner))!;
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.SmartPublishingSchedulerStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("sps-scrim", StringComparison.Ordinal) && html.Contains("sps-cal", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+
+    private static void SfxSynthesisAndMixChecks()
+    {
+        const int Fs = Sps.ProceduralViralSoundFxSynthesizer.Fs;
+        // ── SFX-1a: 절차적 합성 — 결정적 · 길이 · 피크 · 음색 특성 ──
+        var sfx = new Sps.ProceduralViralSoundFxSynthesizer();
+        var twin = new Sps.ProceduralViralSoundFxSynthesizer();
+        for (var k = 0; k < 4; k++)
+        {
+            var b = sfx.Bank((Sps.ViralSfxKind)k);
+            float peak = 0; foreach (var v in b) peak = MathF.Max(peak, MathF.Abs(v));
+            Assert.True(b.Length == Sps.ProceduralViralSoundFxSynthesizer.LengthSamples[k] && Math.Abs(peak - 0.9f) < 1e-4f && b.SequenceEqual(twin.Bank((Sps.ViralSfxKind)k)), "뱅크 " + k + " 피크 " + peak);
+        }
+        var wh = sfx.Bank(Sps.ViralSfxKind.Whoosh); var q4 = wh.Length / 4;
+        Assert.True(Zc(wh.Slice(q4 * 3, q4)) > 3 * Zc(wh[..q4]), "휘쉬 상향 스윕 " + Zc(wh[..q4]) + " → " + Zc(wh.Slice(q4 * 3, q4)));
+        var pop = sfx.Bank(Sps.ViralSfxKind.Pop);
+        Assert.True(Rms(pop[..(Fs * 30 / 1000)]) > 4 * Rms(pop[(Fs * 50 / 1000)..]), "팝 급감쇠");
+        var imp = sfx.Bank(Sps.ViralSfxKind.Impact);
+        var impZcPerSec = Zc(imp.Slice(Fs / 10, Fs / 5)) * 5.0;
+        Assert.True(impZcPerSec < 400 && Rms(imp[..(Fs / 5)]) > 0.2, "임팩트 저역 " + impZcPerSec + " Hz·2");
+        var cc = sfx.Bank(Sps.ViralSfxKind.Chaching);
+        Assert.True(Zc(cc.Slice(Fs / 50, Fs / 20)) * 20.0 > 3000 && Rms(cc.Slice((int)(0.112 * Fs), Fs / 100)) > 1.5 * Rms(cc.Slice((int)(0.095 * Fs), Fs / 100)), "차칭 금속성 · 2 타");
+        var scratch = new float[Sps.ProceduralViralSoundFxSynthesizer.LengthSamples[2]];
+        var renderAlloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 4; k++) Sps.ProceduralViralSoundFxSynthesizer.Render((Sps.ViralSfxKind)k, scratch, 77u); });
+        Assert.True(renderAlloc == 0, "합성 할당 " + renderAlloc);
+
+        // ── SFX-1b: 큐 수집(v17.52 자막 · v17.54 컷 · v17.68 구매) · 쿨다운 · 샘플 정밀 믹싱 · 리미터 ──
+        var typo = new PromptFlowStudio.Services.MotionTypography.RealtimeWordByWordMotionTypographyEngine(new PromptFlowStudio.Services.MotionTypography.SdfGlyphAtlas());
+        typo.SetCaption("지금 바로 확인하세요", PromptFlowStudio.Services.MotionTypography.TypoLang.Ko, 500);
+        Assert.Equal(typo.WordCount, sfx.CollectCaptions(typo));
+        Assert.True(sfx.Cue(0).Kind == Sps.ViralSfxKind.Pop && Math.Abs(sfx.Cue(0).TimeMs - typo.Word(0).StartMs) < 1e-6 && sfx.Cue(0).Gain == 1f, "자막 팝 " + sfx.Cue(0).TimeMs);
+        var cuts = new[] { new PromptFlowStudio.Services.RhythmAction.RhythmCutEvent { PresentSec = 3.0, Reason = PromptFlowStudio.Services.RhythmAction.RhythmCutReason.Phrase },
+                           new PromptFlowStudio.Services.RhythmAction.RhythmCutEvent { PresentSec = 4.5, Reason = PromptFlowStudio.Services.RhythmAction.RhythmCutReason.Drop } };
+        Assert.Equal(2, sfx.CollectCuts(cuts));
+        var buys = new[] { new PromptFlowStudio.Services.LiveShowroom.PurchaseEvent { Qty = 2, AtTick = 2060 }, new PromptFlowStudio.Services.LiveShowroom.PurchaseEvent { Qty = 1, AtTick = 1990 } };
+        Assert.Equal(1, sfx.CollectPurchases(buys, 2000, 60));   // 시작 이전 틱 제외
+        int Idx(Sps.ViralSfxKind k) { for (var i = 0; i < sfx.CueCount; i++) if (sfx.Cue(i).Kind == k) return i; return -1; }
+        Assert.True(Math.Abs(sfx.Cue(Idx(Sps.ViralSfxKind.Whoosh)).TimeMs - (3000 - Sps.ProceduralViralSoundFxSynthesizer.WhooshLeadMs)) < 1e-6 && Math.Abs(sfx.Cue(Idx(Sps.ViralSfxKind.Impact)).TimeMs - 4500) < 1e-6 && Math.Abs(sfx.Cue(Idx(Sps.ViralSfxKind.Chaching)).TimeMs - 1000) < 1e-6, "컷/구매 시각");
+        for (var i = 1; i < sfx.CueCount; i++) Assert.True(sfx.Cue(i).TimeMs >= sfx.Cue(i - 1).TimeMs, "정렬");
+        Assert.False(sfx.AddCue(4540, Sps.ViralSfxKind.Impact));   // 쿨다운 400 ms
+        Assert.True(sfx.Suppressed >= 1);
+        var cueAlloc = AllocationProbe.MinAllocated(() => { sfx.ClearCues(); sfx.CollectCaptions(typo); sfx.CollectCuts(cuts); sfx.CollectPurchases(buys, 2000, 60); });
+        Assert.True(cueAlloc == 0, "큐 수집 할당 " + cueAlloc);
+        // 샘플 정밀: 단일 팝 1234.5 ms · 홀수 블록(777) 경계 횡단 → 시작 샘플 = round(1234.5 × 48) · 파형 = 뱅크 × 이득(천장 미만 = 비트 동일)
+        var one = new Sps.ProceduralViralSoundFxSynthesizer { MasterGain = 0.8f };
+        Assert.True(one.AddCue(1234.5, Sps.ViralSfxKind.Pop));
+        var buf = new float[2 * Fs];
+        for (var b0 = 0; b0 < buf.Length; b0 += 777) one.Mix(buf.AsSpan(b0, Math.Min(777, buf.Length - b0)), 1, b0);
+        var first = Array.FindIndex(buf, v => v != 0f);
+        var s0 = Sps.ProceduralViralSoundFxSynthesizer.StartSample(1234.5);
+        Assert.True(s0 == 59256 && first >= s0 && first - s0 < 30 && Math.Abs(s0 / 48.0 - 1234.5) < 10, "시작 샘플 " + first + " vs " + s0);
+        var popBank = one.Bank(Sps.ViralSfxKind.Pop); var mism = 0;
+        for (var i = 0; i < popBank.Length; i++) if (buf[s0 + i] != popBank[i] * 0.8f) mism++;
+        Assert.True(mism == 0 && buf[s0 + popBank.Length] == 0f && buf[s0 - 1] == 0f, "블록 경계 연속 불일치 " + mism);
+        // 스테레오 · 16-bit · 리미터
+        var st = new float[2 * 4800]; Array.Fill(st, 0.85f);
+        var lim = new Sps.ProceduralViralSoundFxSynthesizer { MasterGain = 1f }; lim.AddCue(10, Sps.ViralSfxKind.Impact);
+        lim.Mix(st, 2, 0);
+        float maxAbs = 0; foreach (var v in st) maxAbs = MathF.Max(maxAbs, MathF.Abs(v));
+        Assert.True(maxAbs < 1f && lim.LimitedSamples > 0 && st[0] == 0.85f && st[2 * 480 + 0] == st[2 * 480 + 1], "리미터 " + maxAbs);
+        var pcm = new short[2 * 4800]; var fscr = new float[pcm.Length];
+        lim.Mix(pcm, 2, 0, fscr);
+        Assert.True(pcm[2 * 600] != 0 && pcm[2 * 600] == pcm[2 * 600 + 1], "16-bit 스테레오");
+        var block = new float[1600];
+        sfx.ClearCues(); sfx.CollectCaptions(typo); sfx.CollectCuts(cuts); sfx.CollectPurchases(buys, 2000, 60);
+        var mixAlloc = AllocationProbe.MinAllocated(() => { for (long b0 = 0; b0 < 6 * Fs; b0 += 800) sfx.Mix(block, 2, b0); lim.Mix(pcm, 2, 0, fscr); });
+        Assert.True(mixAlloc == 0, "믹싱 할당 " + mixAlloc);
+    }
+
+    private static void SchedulerAndQuotaChecks()
+    {
+        // ── SFX-2: 골든타임 수학 · 희망 슬롯 ──
+        var baseT = new DateTimeOffset(2026, 10, 21, 0, 0, 0, TimeSpan.Zero).ToUnixTimeSeconds();   // 09:00 KST
+        Assert.True(Sps.GlobalGoldenHourPublishingScheduler.NextGolden(baseT, Sps.GoldenRegions.All, out var r0, out var e0) == baseT + 9 * 3600 && r0 == Sps.GoldenRegion.Asia && e0 == baseT + 12 * 3600, "KST 18시");
+        Assert.True(Sps.GlobalGoldenHourPublishingScheduler.NextGolden(baseT, Sps.GoldenRegions.NorthAmerica | Sps.GoldenRegions.Europe, out var r1, out _) == baseT + 17 * 3600 && r1 == Sps.GoldenRegion.NorthAmerica, "EST 12시");
+        Assert.True(Sps.GlobalGoldenHourPublishingScheduler.NextGolden(baseT, Sps.GoldenRegions.Europe, out var r2, out _) == baseT + 19 * 3600 && r2 == Sps.GoldenRegion.Europe, "GMT 19시");
+        Assert.Equal(baseT + 10 * 3600 + 300, Sps.GlobalGoldenHourPublishingScheduler.NextGolden(baseT + 10 * 3600 + 1, Sps.GoldenRegions.Asia, out _, out _));   // 창 내부 = 5 분 올림
+        Assert.Equal(baseT + 33 * 3600, Sps.GlobalGoldenHourPublishingScheduler.NextGolden(baseT + 12 * 3600 - 60, Sps.GoldenRegions.Asia, out _, out _));   // 창 끝 직전 = 다음 날
+        Assert.True(Sps.GlobalGoldenHourPublishingScheduler.Traffic(Sps.GoldenRegion.Asia, 19.5) > 0.99f && Sps.GlobalGoldenHourPublishingScheduler.Traffic(Sps.GoldenRegion.Asia, 7.5) < 0.21f && Math.Abs(Sps.GlobalGoldenHourPublishingScheduler.LocalHour(Sps.GoldenRegion.NorthAmerica, baseT) - 19) < 1e-9);
+        Assert.True(Sps.SmartPublishingSchedulerStudioRunner.GoldenMaskAtKstHour(19) == 1 && Sps.SmartPublishingSchedulerStudioRunner.GoldenMaskAtKstHour(3) == 2 && Sps.SmartPublishingSchedulerStudioRunner.GoldenMaskAtKstHour(4) == 4 && Sps.SmartPublishingSchedulerStudioRunner.GoldenMaskAtKstHour(12) == 0);
+
+        // ── SFX-3: 45 분 간격 · 창 포화 → 다음 골든타임 순차 지연 · A/B 승자 우선 ──
+        var sch = new Sps.GlobalGoldenHourPublishingScheduler();
+        for (var i = 0; i < 6; i++) Assert.True(sch.Enqueue(100 + i, baseT, Sps.PublishPlatforms.YouTube, Sps.GoldenRegions.Asia, 0, false, null, baseT) >= 0);
+        Assert.True(sch.Enqueue(100, baseT, Sps.PublishPlatforms.YouTube) < 0 && sch.Duplicates == 1, "중복 차단");
+        long Slot(Sps.GlobalGoldenHourPublishingScheduler s, int id) => s.At(s.Find(id)).SlotUnix;
+        var a9 = baseT + 9 * 3600;
+        Assert.True(Slot(sch, 100) == a9 && Slot(sch, 101) == a9 + 2700 && Slot(sch, 102) == a9 + 5400 && Slot(sch, 103) == a9 + 8100 && Slot(sch, 104) == a9 + 86_400 && Slot(sch, 105) == a9 + 86_400 + 2700 && sch.Deferrals == 5,
+            "순차 지연 " + (Slot(sch, 103) - a9) + " " + (Slot(sch, 104) - a9));
+        Assert.True(sch.Enqueue(199, baseT + 60, Sps.PublishPlatforms.YouTube, Sps.GoldenRegions.Asia, 0, true, null, baseT) >= 0);
+        Assert.True(Slot(sch, 199) == a9 && Slot(sch, 100) == a9 + 2700 && Slot(sch, 103) == a9 + 86_400 && sch.At(sch.Find(199)).EffectivePriority == 100, "A/B 승자 우선 " + (Slot(sch, 199) - a9));
+        Assert.True(sch.Promote(105, true) && Slot(sch, 105) == a9 && Slot(sch, 199) == a9 + 2700, "승격 재배치(동률 = 등록 순)");
+        var planAlloc = AllocationProbe.MinAllocated(() => { for (var i = 0; i < 20; i++) sch.Plan(); });
+        Assert.True(planAlloc == 0 && sch.LastPlanUs < 5_000, "배치 할당 " + planAlloc + " · " + sch.LastPlanUs + " µs");
+        // YT 일일 예산(PT 자정 경계 · 하루 5 건) · 전 권역 · 간격 보장
+        var g2 = new Sps.MultiChannelQuotaDistributionGuard();
+        var sch2 = new Sps.GlobalGoldenHourPublishingScheduler(g2);
+        for (var i = 0; i < 14; i++) sch2.Enqueue(300 + i, baseT, Sps.PublishPlatforms.YouTube, Sps.GoldenRegions.All, 0, false, null, baseT);
+        var slots = new long[14]; for (var i = 0; i < 14; i++) { slots[i] = sch2.At(i).SlotUnix; Assert.True(sch2.At(i).State == Sps.ScheduledState.Queued && Sps.GlobalGoldenHourPublishingScheduler.InGolden(slots[i], Sps.GoldenRegions.All, out _, out _), "골든 밖 " + i); }
+        Array.Sort(slots);
+        for (var i = 1; i < 14; i++) Assert.True(slots[i] - slots[i - 1] >= 2700, "간격 " + (slots[i] - slots[i - 1]));
+        var perDay = new Dictionary<long, int>(); foreach (var s in slots) { var d = Sps.MultiChannelQuotaDistributionGuard.YtDayOf(s); perDay[d] = perDay.GetValueOrDefault(d) + 1; }
+        Assert.True(perDay.Values.All(v => v <= 5) && g2.YtUploadsPerDay == 5 && g2.ProjectedYtUnits(Sps.MultiChannelQuotaDistributionGuard.YtDayOf(slots[0])) == 5 * 1650, "일일 예산 " + string.Join(",", perDay.Values));
+        Assert.True(g2.YtGauge(slots[0]) > 0.8f && g2.YtGauge(slots[0]) <= 1f);
+        // 실행 밸브: YT 간격 · 일일 거부 · 다음 허용 · IG 롤링 50 · 호출 버킷
+        var g3 = new Sps.MultiChannelQuotaDistributionGuard();
+        var day0 = Sps.MultiChannelQuotaDistributionGuard.YtDayStart(Sps.MultiChannelQuotaDistributionGuard.YtDayOf(baseT) + 1);
+        Assert.True(g3.TryConsume(Sps.PublishPlatforms.YouTube, day0) && !g3.TryConsume(Sps.PublishPlatforms.YouTube, day0 + 600) && g3.GapRejects == 1 && g3.NextAllowed(Sps.PublishPlatforms.YouTube, day0 + 600) == day0 + 2700);
+        for (var i = 1; i < 5; i++) Assert.True(g3.TryConsume(Sps.PublishPlatforms.YouTube, day0 + i * 2700));
+        Assert.True(!g3.TryConsume(Sps.PublishPlatforms.YouTube, day0 + 5 * 2700) && g3.QuotaRejects == 1 && g3.NextAllowed(Sps.PublishPlatforms.YouTube, day0 + 5 * 2700) == day0 + 86_400 && g3.TryConsume(Sps.PublishPlatforms.YouTube, day0 + 86_400) && g3.YtUsedToday == 1650, "YT 일일 리셋");
+        Assert.True(g3.ConsumeYtUnits(day0 + 86_400 + 10, 100) && g3.YtUsedToday == 1750);
+        var g4 = new Sps.MultiChannelQuotaDistributionGuard { MinGapSec = 0 };
+        var burst = 0; while (g4.TryConsume(Sps.PublishPlatforms.Instagram, baseT)) burst++;
+        Assert.True(burst == Sps.MultiChannelQuotaDistributionGuard.IgCallsPerHour / Sps.MultiChannelQuotaDistributionGuard.IgCallsPerPost && g4.NextAllowed(Sps.PublishPlatforms.Instagram, baseT) > baseT, "IG 호출 버킷 " + burst);
+        var g5 = new Sps.MultiChannelQuotaDistributionGuard { MinGapSec = 0 };
+        for (var i = 0; i < 50; i++) Assert.True(g5.TryConsume(Sps.PublishPlatforms.Instagram, baseT + i * 180), "IG " + i);
+        Assert.True(!g5.TryConsume(Sps.PublishPlatforms.Instagram, baseT + 50 * 180) && g5.IgPostsInWindow(baseT + 50 * 180) == 50 && g5.NextAllowed(Sps.PublishPlatforms.Instagram, baseT + 50 * 180) == baseT + 86_400 && g5.TryConsume(Sps.PublishPlatforms.Instagram, baseT + 86_400), "IG 24 h 롤링");
+        var g6 = new Sps.MultiChannelQuotaDistributionGuard();
+        var valveAlloc = AllocationProbe.MinAllocated(() => { for (var i = 0; i < 100; i++) { g6.TryConsume(Sps.PublishPlatforms.Instagram, baseT + i * 3000L); g6.NextAllowed(Sps.PublishPlatforms.YouTube, baseT + i * 3000L); g6.EarliestFit(Sps.PublishPlatforms.YouTube, baseT, baseT + 86_400 * 3); } });
+        Assert.True(valveAlloc == 0, "밸브 할당 " + valveAlloc);
+
+        // ── 누수 0: 페이로드 발행/취소 즉시 해제 · 순환 무할당 ──
+        var sch3 = new Sps.GlobalGoldenHourPublishingScheduler();
+        var refs = new List<WeakReference>();
+        for (var i = 0; i < 20; i++) EnqueueAndRelease(sch3, 500 + i, baseT, refs);
+        Assert.True(sch3.Cancel(519) && sch3.Count == 19);
+        var tNow = baseT; var taken = 0;
+        while (sch3.Count > 0 && tNow < baseT + 30 * 86_400L) { tNow += 900; while (sch3.TakeDue(tNow, out var p)) { sch3.Record(in p, tNow, true); taken++; } }
+        Assert.True(taken == 19 && sch3.Count == 0 && sch3.PayloadRefs() == 0 && sch3.Published == 19 && sch3.HistoryCount == 19, "발행 " + taken);
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        Assert.True(refs.All(w => !w.IsAlive), "페이로드 누수 " + refs.Count(w => w.IsAlive));
+        var cycleAlloc = AllocationProbe.MinAllocated(() =>
+        {
+            for (var i = 0; i < 200; i++) { sch3.Enqueue(1000 + i, baseT + i * 3600L, Sps.PublishPlatforms.YouTube, Sps.GoldenRegions.All, 0, false, null, baseT); while (sch3.TakeDue(baseT + 400L * 86_400, out var p)) sch3.Record(in p, baseT, true); }
+        });
+        Assert.True(cycleAlloc == 0 && sch3.Count == 0, "순환 할당 " + cycleAlloc + " 잔여 " + sch3.Count);
     }
 }
