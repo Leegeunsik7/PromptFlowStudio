@@ -13,6 +13,12 @@ namespace PromptFlowStudio.Services.Talkshow;
 ///   ▸ 틱: 제스처 Tick → VAD/EOU → 턴테이킹 FSM(인계 150~300 ms · 오버랩/데드락 가드) → 상호 시선/경청 리액션 → 안면 블렌드 → v17.39 멀티캠 컷 · 프레이밍.
 ///   ▸ 데모 각본: 인사 → 소개 → 게스트 바지인(거부) → 동시 요청(호스트 우선) → 침묵 데드락(호스트 강제 인계) → 마무리 · 자동 반복.
 /// </summary>
+/// <summary>v17.68 발화 직전 텍스트 필터(광고 심의 등) — 원문 → dst(치환) · 반환 = 기록 길이(−1 = 발화 차단) · 무할당.</summary>
+public interface ITalkLineFilter
+{
+    int Filter(int avatar, ReadOnlySpan<char> line, Span<char> dst);
+}
+
 public sealed class MultiAvatarTalkshowStudioRunner : IDisposable
 {
     public const int Hz = 60, Hist = 240, MaxAgents = RealtimeTurnTakingFsmEngine.MaxAgents, FaceSplats = 2500, LineCap = 256;
@@ -48,7 +54,8 @@ public sealed class MultiAvatarTalkshowStudioRunner : IDisposable
     private readonly double[] _uttEnd = new double[MaxAgents], _turnClock = new double[MaxAgents], _extVoiceUntil = new double[MaxAgents];
     private readonly bool[] _question = new bool[MaxAgents], _spoken = new bool[Script.Length], _bargeUsed = new bool[Script.Length];
     private readonly char[][] _custom = new char[MaxAgents][];
-    private readonly int[] _customLen = new int[MaxAgents], _addr = new int[MaxAgents], _line = { -1, -1, -1 };
+    private readonly int[] _customLen = new int[MaxAgents], _addr = new int[MaxAgents], _line = { -1, -1, -1 }, _saidLen = new int[MaxAgents];
+    private readonly char[][] _said = { new char[LineCap * 2], new char[LineCap * 2], new char[LineCap * 2] };
     private readonly float[] _w = new float[RealtimeGaussianFacialBlendshapeEngine.K];
     private readonly float[] _msS = new float[Hist], _gapS = new float[Hist];
     private int _sHead, _sN, _filler, _active = 3, _requested = -1;
@@ -87,6 +94,11 @@ public sealed class MultiAvatarTalkshowStudioRunner : IDisposable
     public Vector3 Seat(int a) => _seat[a];
     public int SeatRank(int a) => _rank[a];
     public int Active => _active;
+    /// <summary>v17.68 발화 필터 — 대본 · 애드리브 · 커스텀 대사 모두 통과.</summary>
+    public ITalkLineFilter? LineFilter { get; set; }
+    public long FilteredLines { get; private set; }
+    public long BlockedLines { get; private set; }
+    private readonly char[] _filtered = new char[LineCap * 2];
     public bool AutoScript { get; private set; } = true;
     public bool IsRunning => _running;
     public long Tick => Interlocked.Read(ref _tick);
@@ -104,7 +116,7 @@ public sealed class MultiAvatarTalkshowStudioRunner : IDisposable
     public float GapSeries(int i) => _gapS[Idx(i)];
     public static string Name(int a) => (uint)a < (uint)DefaultNames.Length ? DefaultNames[a] : "—";
     /// <summary>현재 대사(UI · 비핫패스).</summary>
-    public string CurrentLine(int a) => _line[a] >= 0 ? Script[_line[a]].Text : _line[a] == -2 ? new string(_custom[a], 0, _customLen[a]) : "";
+    public string CurrentLine(int a) => _saidLen[a] > 0 ? new string(_said[a], 0, _saidLen[a]) : "";
 
     // ══════════════════════ 제어(비핫패스) ══════════════════════
     public void SetActive(int n)
@@ -170,7 +182,7 @@ public sealed class MultiAvatarTalkshowStudioRunner : IDisposable
     private void ResetShow()
     {
         Array.Clear(_spoken); Array.Clear(_bargeUsed);
-        for (var a = 0; a < MaxAgents; a++) { _tr[a].Interrupt(); _line[a] = -1; _customLen[a] = 0; _extVoiceUntil[a] = 0; }
+        for (var a = 0; a < MaxAgents; a++) { _tr[a].Interrupt(); _line[a] = -1; _customLen[a] = 0; _saidLen[a] = 0; _extVoiceUntil[a] = 0; }
         Fsm.Reset(NowMs); _requested = -1; _loopPending = false;
     }
 
@@ -211,7 +223,14 @@ public sealed class MultiAvatarTalkshowStudioRunner : IDisposable
             if (k >= 0) { _spoken[k] = true; _line[a] = k; _addr[a] = Script[k].Addressee < _active ? Script[k].Addressee : (a == 0 ? 1 : 0); text = Script[k].Text; }
             else { _line[a] = -3; text = Fillers[_filler++ % Fillers.Length]; _addr[a] = Fsm.LastSpeaker >= 0 && Fsm.LastSpeaker != a ? Fsm.LastSpeaker : (a == 0 ? 1 : 0); }
         }
+        if (LineFilter is { } lf)
+        {
+            var n = lf.Filter(a, text, _filtered);
+            if (n < 0) { BlockedLines++; text = "음, 이 부분은 다시 정확히 확인해서 말씀드릴게요."; }
+            else if (n != text.Length || !text.SequenceEqual(_filtered.AsSpan(0, n))) { FilteredLines++; text = _filtered.AsSpan(0, n); }
+        }
         _question[a] = text.IndexOf('?') >= 0;
+        var sl = Math.Min(text.Length, _said[a].Length); text[..sl].CopyTo(_said[a]); _saidLen[a] = sl;   // 실제 발화(심의 필터 후) — UI 표시용
         tr.Enqueue(text);
         if (_line[a] == -2) _customLen[a] = 0;
         _uttEnd[a] = tr.ScheduleEndS - RealtimeLlmTextToGestureTransformer.LineGapS;

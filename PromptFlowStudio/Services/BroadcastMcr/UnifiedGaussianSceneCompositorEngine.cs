@@ -28,7 +28,7 @@ public sealed class SplatShadowChain : ISplatRadianceModulator
 public sealed class UnifiedGaussianSceneCompositorEngine : IDisposable
 {
     public const int W = RealtimeGaussianSplatRasterizerEngine.W, H = RealtimeGaussianSplatRasterizerEngine.H, FrameBytes = W * H * 3;
-    public const int DefaultEnv = 300_000, DefaultBody = 30_000, DefaultFace = 6_000, DeskSplats = 6_000, PropSplats = 1_200, MaxAvatars = 3, ViewerSplats = 12_000;
+    public const int DefaultEnv = 300_000, DefaultBody = 30_000, DefaultFace = 6_000, DeskSplats = 6_000, PropSplats = 1_200, MaxAvatars = 3, ViewerSplats = 12_000, ProductSplats = 50_000;
     public const float DeskTop = 0.74f, DeskRadius = 0.46f, PropRadius = 0.055f, PropHeight = 0.17f;
     public static readonly Vector3 DeskCenter = new(0f, DeskTop, 1.0f);
     public static readonly Vector3 PropColor = new(0.86f, 0.08f, 0.10f), PropBand = new(0.95f, 0.95f, 0.92f);
@@ -40,6 +40,8 @@ public sealed class UnifiedGaussianSceneCompositorEngine : IDisposable
     private readonly int[] _bodyStart = new int[MaxAvatars], _faceStart = new int[MaxAvatars];
     private readonly Vector3[] _root = new Vector3[MaxAvatars];
     private readonly float[] _yaw = new float[MaxAvatars], _headYaw = new float[MaxAvatars], _headPitch = new float[MaxAvatars];
+    private readonly Quaternion[] _armLocal = new Quaternion[MaxAvatars * 4];
+    private readonly bool[] _armSet = new bool[MaxAvatars];
     private readonly Vector3[] _propLocal, _propA, _propB, _propN;
     private readonly Vector3[] _propRgb;
     private readonly Vector3 _fx, _fy, _fz, _faceC;
@@ -51,7 +53,7 @@ public sealed class UnifiedGaussianSceneCompositorEngine : IDisposable
     {
         _avatars = Math.Clamp(avatars, 1, MaxAvatars);
         faceSplats = Math.Max(faceSplats, RealtimeGaussianFacialBlendshapeEngine.Interior + 2000);
-        Scene = new GaussianSplatScene(envSplats + DeskSplats + _avatars * (bodySplats + faceSplats) + PropSplats + ViewerSplats);
+        Scene = new GaussianSplatScene(envSplats + DeskSplats + _avatars * (bodySplats + faceSplats) + PropSplats + ViewerSplats + ProductSplats);
         Scene.Generate(envSplats, 0x1766u, centerpiece: false);
         _envEnd = Scene.Count;
         BuildDesk();
@@ -84,6 +86,7 @@ public sealed class UnifiedGaussianSceneCompositorEngine : IDisposable
         _propLocal = new Vector3[PropSplats]; _propA = new Vector3[PropSplats]; _propB = new Vector3[PropSplats]; _propN = new Vector3[PropSplats]; _propRgb = new Vector3[PropSplats];
         BuildProp();
         ViewerStart = Scene.Reserve(ViewerSplats);
+        ProductStart = Scene.Reserve(ProductSplats);
         _propPos = DeskCenter + new Vector3(0.22f, 0f, 0.08f);
         Shadows = new SplatShadowChain(_shadow) { Active = _avatars };
         // 통합 씬(세트 + 아바타 3 + 소품 ≈ 40만)은 v17.55 기본 상한(7)보다 많은 워커로 블렌딩 · 투영을 분할(코어 − 1 · 최대 15)
@@ -105,6 +108,8 @@ public sealed class UnifiedGaussianSceneCompositorEngine : IDisposable
     public int PropStart => _propStart;
     /// <summary>v17.67 시청자 인터랙티브 물리 프롭 슬롯(불투명도 0 = 조기 컬링).</summary>
     public int ViewerStart { get; }
+    /// <summary>v17.68 핸드헬드 3DGS 상품 슬롯(최대 5만 · 불투명도 0 = 조기 컬링).</summary>
+    public int ProductStart { get; }
     public int Merged => Scene.Count;
     public int BodyStart(int a) => _bodyStart[a];
     public int FaceStart(int a) => _faceStart[a];
@@ -112,6 +117,12 @@ public sealed class UnifiedGaussianSceneCompositorEngine : IDisposable
     public bool PropVisible => _propVisible;
     public RealtimeGaussianFacialBlendshapeEngine Face(int a) => _face[a];
     public ReadOnlySpan<Vector3> Joints(int a) => _fk[a].Positions;
+    /// <summary>관절 전역 회전(FK) — v17.68 손목 · 손바닥 상품 앵커.</summary>
+    public Quaternion JointRotation(int a, int joint) => _fk[a].Global(joint);
+    /// <summary>몸통 기준 정면 · 위 · 오른쪽(휴식 자세 · 몸 yaw 미적용).</summary>
+    public Vector3 BodyForward => _fz;
+    public Vector3 BodyUp => _fy;
+    public Vector3 BodyRight => _fx;
     public ReadOnlySpan<Vector4> Spheres(int a) => _shadow[a].ActorSpheres;
     public Vector3 HeadPosition(int a) => _fk[a].Positions[(int)RagdollJoint.Head];
     public Vector3 Root(int a) => _root[a];
@@ -120,8 +131,8 @@ public sealed class UnifiedGaussianSceneCompositorEngine : IDisposable
     public double MaxRenderMs { get; private set; }
     public long Renders { get; private set; }
 
-    /// <summary>원본 인덱스 → 영역(0 세트 · 1 데스크 · 2 아바타 · 3 PPL 소품 · 4 시청자 프롭).</summary>
-    public int RegionOf(int i) => i < _envEnd ? 0 : i < _deskEnd ? 1 : i < AvatarEnd ? 2 : i < ViewerStart ? 3 : 4;
+    /// <summary>원본 인덱스 → 영역(0 세트 · 1 데스크 · 2 아바타 · 3 PPL 소품 · 4 시청자 프롭 · 5 핸드헬드 상품).</summary>
+    public int RegionOf(int i) => i < _envEnd ? 0 : i < _deskEnd ? 1 : i < AvatarEnd ? 2 : i < ViewerStart ? 3 : i < ProductStart ? 4 : 5;
 
     // ══════════════════════ 정적 영역 ══════════════════════
     private void BuildDesk()
@@ -182,6 +193,16 @@ public sealed class UnifiedGaussianSceneCompositorEngine : IDisposable
 
     public void SetFaceWeights(int a, ReadOnlySpan<float> w52) => _face[a].SetWeights(w52);
 
+    /// <summary>v17.68 팔 로컬 회전(L 어깨 · L 팔꿈치 · R 어깨 · R 팔꿈치) — 상품 들기 · 박수 · 엄지척. 해제는 <see cref="ClearArmPose"/>.</summary>
+    public void SetArmPose(int a, Quaternion lShoulder, Quaternion lElbow, Quaternion rShoulder, Quaternion rElbow)
+    {
+        var o = a * 4;
+        _armLocal[o] = lShoulder; _armLocal[o + 1] = lElbow; _armLocal[o + 2] = rShoulder; _armLocal[o + 3] = rElbow;
+        _armSet[a] = true;
+    }
+
+    public void ClearArmPose(int a) => _armSet[a] = false;
+
     public void SetProp(Vector3 basePosition, bool visible) { _propPos = basePosition; _propVisible = visible; }
 
     public void SetKeyLight(Vector3 position) { for (var a = 0; a < _avatars; a++) _shadow[a].LightPosition = position; }
@@ -197,6 +218,12 @@ public sealed class UnifiedGaussianSceneCompositorEngine : IDisposable
             fk.ClearLocal();
             fk.SetLocal((int)RagdollJoint.Neck, Quaternion.CreateFromAxisAngle(Vector3.UnitY, _headYaw[a] * 0.6f) * Quaternion.CreateFromAxisAngle(Vector3.UnitX, -_headPitch[a] * 0.5f));
             fk.SetLocal((int)RagdollJoint.Head, Quaternion.CreateFromAxisAngle(Vector3.UnitY, _headYaw[a] * 0.4f) * Quaternion.CreateFromAxisAngle(Vector3.UnitX, -_headPitch[a] * 0.5f));
+            if (_armSet[a])
+            {
+                var ao = a * 4;
+                fk.SetLocal((int)RagdollJoint.LShoulder, _armLocal[ao]); fk.SetLocal((int)RagdollJoint.LElbow, _armLocal[ao + 1]);
+                fk.SetLocal((int)RagdollJoint.RShoulder, _armLocal[ao + 2]); fk.SetLocal((int)RagdollJoint.RElbow, _armLocal[ao + 3]);
+            }
             fk.Root = _root[a]; fk.Yaw = _yaw[a];
             fk.Solve(0f, body);
             body.Skin(BodyGuard);

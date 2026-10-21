@@ -32,6 +32,7 @@ using Mm = PromptFlowStudio.Services.Mam;
 using Mc = PromptFlowStudio.Services.Mcr;
 using BMc = PromptFlowStudio.Services.BroadcastMcr;
 using Shw = PromptFlowStudio.Services.Showrunner;
+using Lcm = PromptFlowStudio.Services.LiveShowroom;
 using Nw = PromptFlowStudio.Services.Newsroom;
 using Spt = PromptFlowStudio.Services.Sports;
 using V3 = System.Numerics.Vector3;
@@ -17234,9 +17235,8 @@ class "Proto"
         Assert.Contains(nL, assign);
         // 무할당: Probe · Plan · Observe · Normalize
         for (var k = 0; k < 20; k++) { topo.Probe(); lb.Plan(W, H); lb.Observe(8, 8, 16, 16, nL, tick); lb.NormalizeCostMap(); }
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var k = 0; k < 200; k++) { topo.Probe(); lb.Plan(W, H); lb.Observe(8, 8, 16, 16, nL, tick); lb.NormalizeCostMap(); }
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+        // 최소 할당(반복 측정) — 병렬 부하 중 티어드 JIT/OSR 재컴파일의 일시 할당을 배제(저장소 AllocationProbe 관례)
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var k = 0; k < 200; k++) { topo.Probe(); lb.Plan(W, H); lb.Observe(8, 8, 16, 16, nL, tick); lb.NormalizeCostMap(); } }));
 
         // ── GPUSWARM-3: 분산 조립 = 단일 RenderFrame 비트 일치 · 제로카피/블릿 · 무통보/명시 단절 페일백 ──
         var pt = Gs.PathTraceSwarmWorkload.CreateDemo(64, 36);
@@ -18093,6 +18093,7 @@ class "Proto"
             for (var i = 0; i < 6; i++) { while (!enc.Submit(rgb)) Thread.SpinWait(50); }
         }));
         Assert.True(dp.RenderSplats(ras, scene, cam, opt) > 0);
+        Assert.True(SpinWait.SpinUntil(() => enc.Written >= 7, 3000));   // 앞선 7 프레임 기록 완료(링 여유) 후 제출 — 병렬 부하 시 링 포화 드롭 경합 제거
         var hs = arena.AcquireRead(newest: true);
         Assert.True(enc.SubmitSlot(arena, hs));
         Assert.True(SpinWait.SpinUntil(() => arena.StateOf(hs) == 0, 3000));          // 인코더가 공유 슬롯 소비 후 반납
@@ -29953,11 +29954,11 @@ public sealed class BroadcastMcrIsolatedTests
         var run = new BMc.BroadcastMcrStudioRunner(talk, envSplats: 300_000, bodySplats: 30_000, faceSplats: 4_000);
         run.Prepare();
         var comp = run.Compositor!;
-        Assert.True(comp.EnvEnd == 300_000 && comp.Avatars == 3 && comp.Merged == comp.ViewerStart + BMc.UnifiedGaussianSceneCompositorEngine.ViewerSplats && comp.ViewerStart == comp.PropStart + BMc.UnifiedGaussianSceneCompositorEngine.PropSplats && comp.Merged >= 390_000, "병합 " + comp.Merged);
+        Assert.True(comp.EnvEnd == 300_000 && comp.Avatars == 3 && comp.Merged == comp.ProductStart + BMc.UnifiedGaussianSceneCompositorEngine.ProductSplats && comp.ProductStart == comp.ViewerStart + BMc.UnifiedGaussianSceneCompositorEngine.ViewerSplats && comp.ViewerStart == comp.PropStart + BMc.UnifiedGaussianSceneCompositorEngine.PropSplats && comp.Merged >= 390_000, "병합 " + comp.Merged);
         for (var i = 0; i < 30; i++) run.Step();
         var r = comp.Raster;
         var keys = r.SortedKeys; var idx = r.SortedIndices;
-        var regions = new int[5];
+        var regions = new int[6];
         for (var k = 0; k < idx.Length; k++) { regions[comp.RegionOf(idx[k])]++; if (k > 0) Assert.True(keys[k] >= keys[k - 1], "정렬 " + k); }
         Assert.True(regions[0] > 10_000 && regions[2] > 5_000 && r.Visible < comp.Merged, "큐 혼합 " + string.Join("/", regions) + " 가시 " + r.Visible);
         // 차폐: 정면 카메라 — 호스트 머리 픽셀은 아바타가 덮어 배경 투과율 ≈ 0 · 머리 위 하늘은 투과
@@ -30161,6 +30162,164 @@ public sealed class InteractiveShowrunnerIsolatedTests
         }
         Assert.True(med < 16.7, "중앙 틱 " + med + " ms · " + info);
         run.Dispose(); mcr.Dispose(); talk.Dispose();
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+}
+
+/// <summary>v17.68.0 버추얼 라이브 커머스 — 상품 손목 앵커 · 360° 쇼케이스 · 세일즈 FSM · 광고 심의 · 가격 정합성 회귀(벽시계 레이어 예산 → 비병렬).</summary>
+[Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 레이어/틱 게이트 → 비병렬
+public sealed class LiveCommerceIsolatedTests
+{
+    private sealed class OutProbe : Lcm.ISalesPitchOutput
+    {
+        public readonly System.Collections.Generic.List<string> Lines = new();
+        public Lcm.HoldPose LastPose; public bool ShowcaseOn;
+        public bool Say(ReadOnlySpan<char> line) { Lines.Add(line.ToString()); return true; }
+        public void Gesture(Lcm.HoldPose pose, float seconds) => LastPose = pose;
+        public void Showcase(bool on) => ShowcaseOn = on;
+    }
+
+    [Fact]
+    public void LiveCommerce_SalesPitch_And_Compliance_Check()
+    {
+        // ── COMM-3a: 금지어 — 공백 · 대소문자 변형 탐지 · 치환 · 차단 100 % ──
+        var cg = new Lcm.EcommerceAdComplianceSafetyGuard();
+        var dst = new char[512];
+        string[] replaceCases = { "이 크림은 국내 유일 제품이에요", "100 % 보장 해드립니다", "아토피 완치 효과", "세계최초 기술", "GUARANTEED quality", "무조건 빠져요", "부작용 없는 순한 제품" };
+        foreach (var c in replaceCases)
+        {
+            var n = cg.Filter(0, c, dst);
+            var outText = new string(dst, 0, n);
+            Assert.True(n > 0 && Lcm.EcommerceAdComplianceSafetyGuard.FirstViolation(outText) < 0, c + " → " + outText);
+        }
+        Assert.Equal("이 크림은 차별화된 제품이에요", new string(dst, 0, cg.Filter(0, "이 크림은 국내 유일 제품이에요", dst)));
+        Assert.Equal(-1, cg.Filter(0, "이 영양제는 암 치료 에 좋아요", dst));
+        Assert.Equal(-1, cg.Filter(0, "의약품 수준의 효과", dst));
+        var clean = cg.Filter(0, "오늘 특가로 만나보세요!", dst);
+        Assert.Equal("오늘 특가로 만나보세요!", new string(dst, 0, clean));
+        Assert.True(cg.Replaced == 8 && cg.Blocked == 2 && cg.LogCount == 10, "치환 " + cg.Replaced + " 차단 " + cg.Blocked);
+
+        // ── COMM-3b: 가격 정합성 ──
+        Assert.Equal(Lcm.PriceVerdict.Ok, Lcm.EcommerceAdComplianceSafetyGuard.CheckPrice(129_000, 89_000, 31));
+        Assert.Equal(Lcm.PriceVerdict.Ok, Lcm.EcommerceAdComplianceSafetyGuard.CheckPrice(10_000, 6_650, 34));   // floor 33.5 → 33 · round 34 둘 다 허용
+        Assert.Equal(Lcm.PriceVerdict.PercentMismatch, Lcm.EcommerceAdComplianceSafetyGuard.CheckPrice(129_000, 89_000, 50));
+        Assert.Equal(Lcm.PriceVerdict.SaleNotBelowList, Lcm.EcommerceAdComplianceSafetyGuard.CheckPrice(10_000, 12_000, 0));
+        Assert.Equal(Lcm.PriceVerdict.TotalMismatch, Lcm.EcommerceAdComplianceSafetyGuard.CheckPrice(10_000, 8_000, 20, 3, 25_000));
+        Assert.Equal(Lcm.PriceVerdict.Invalid, Lcm.EcommerceAdComplianceSafetyGuard.CheckPrice(0, 0, 10));
+        foreach (var p in Lcm.LiveCommerceStudioRunner.Catalog)
+            Assert.True(Lcm.EcommerceAdComplianceSafetyGuard.CheckPrice(p.ListPrice, p.SalePrice, p.DisplayedPercent) == Lcm.PriceVerdict.Ok, p.Name);
+
+        // ── COMM-2a: 세일즈 FSM 단독 — 구매 합산 · 재고 · 품절 임박 · 품절 · 품절 후 거부 · 타이머 종료 ──
+        var fsm = new Lcm.LiveSalesPitchReactionSynthesizer();
+        var o = new OutProbe();
+        fsm.Load(Lcm.LiveCommerceStudioRunner.Catalog[0] with { Stock = 20 });
+        fsm.Start(o); fsm.StartTimeSale(o, 180);
+        Assert.Contains("3분 특가", o.Lines[^1], StringComparison.Ordinal);
+        fsm.OfferPurchase("김철수", 2, 178_000); fsm.OfferPurchase("이영희", 1, 89_000);
+        fsm.Step(o);
+        Assert.True(fsm.Stock == 17 && fsm.Orders == 2 && fsm.Revenue == 267_000, "재고 " + fsm.Stock);
+        Assert.Contains("김철수님 외 1분", o.Lines[^1], StringComparison.Ordinal);
+        Assert.Contains("3개 구매 감사합니다", o.Lines[^1], StringComparison.Ordinal);
+        Assert.True(o.LastPose is Lcm.HoldPose.Clap or Lcm.HoldPose.ThumbsUp);
+        fsm.OfferPurchase("박민수", 15, 0); fsm.Step(o); fsm.Step(o);
+        Assert.True(fsm.Stock == 2 && fsm.LowStock && o.Lines.Exists(l => l.Contains("품절 임박", StringComparison.Ordinal)), "임박 " + fsm.Stock);
+        fsm.OfferPurchase("최지우", 5, 0); fsm.Step(o);
+        Assert.True(fsm.SoldOut && fsm.Stock == 0 && fsm.UnitsSold == 20 && o.Lines[^1].Contains("품절", StringComparison.Ordinal), "품절 " + o.Lines[^1]);
+        fsm.OfferPurchase("늦은사람", 1, 0); fsm.Step(o);
+        Assert.Equal(1, fsm.Refused);
+        var f2 = new Lcm.LiveSalesPitchReactionSynthesizer(); var o2 = new OutProbe();
+        f2.Load(Lcm.LiveCommerceStudioRunner.Catalog[2]); f2.StartTimeSale(o2, 1f);
+        for (var i = 0; i < 62; i++) f2.Step(o2);
+        Assert.True(f2.Phase == Lcm.SalesPhase.Ended && o2.Lines[^1].Contains("종료", StringComparison.Ordinal));
+
+        // ── 통합: MCR(60k 세트 · 3 아바타) + 쇼러너 + 커머스 레이어 ──
+        var talk = new PromptFlowStudio.Services.Talkshow.MultiAvatarTalkshowStudioRunner(1500);
+        var mcr = new BMc.BroadcastMcrStudioRunner(talk, envSplats: 60_000, bodySplats: 20_000, faceSplats: 4_000);
+        var shw = new Shw.InteractiveShowrunnerStudioRunner(mcr);
+        var run = new Lcm.LiveCommerceStudioRunner(mcr);
+        run.Attach();
+        Assert.Same(run.Compliance, talk.LineFilter);
+        mcr.Prepare();
+        run.Select(1);   // 스마트폰 5만 스플랫
+        Assert.Equal(50_000, run.Inspection.SplatCount);
+        run.StartPitch();
+        for (var i = 0; i < 30; i++) run.Step();
+        var comp = mcr.Compositor!;
+        // COMM-1a: 손목 앵커 — 상품 중심이 R 손 관절 앞 손바닥 오프셋 · 들기 포즈로 손이 가슴 높이 앞쪽
+        var j = comp.Joints(0);
+        var hand = j[(int)PromptFlowStudio.Services.NeuralRagdoll.RagdollJoint.RHand]; var chest = j[(int)PromptFlowStudio.Services.NeuralRagdoll.RagdollJoint.Chest];
+        var dHand = System.Numerics.Vector3.Distance(run.Inspection.Center, hand);
+        Assert.True(dHand > 0.03f && dHand < 0.12f && run.Inspection.AnchorErrorMm < 0.01f, "앵커 " + dHand);
+        Assert.True(hand.Y > chest.Y - 0.55f && System.Numerics.Vector3.Distance(hand, chest) < 0.75f, "들기 포즈 " + hand + " / " + chest);
+        var vis = 0; for (var k = 0; k < run.Inspection.SplatCount; k += 97) if (comp.Scene.Opacity[comp.ProductStart + k] > 0.5f) vis++;
+        Assert.True(vis > 400, "상품 스플랫 노출 " + vis);
+        var regions = new int[6]; foreach (var idx in comp.Raster.SortedIndices) regions[comp.RegionOf(idx)]++;
+        // COMM-1b: 쇼케이스 — 인서트 캠 상품 클로즈업 컷 · 360° 회전 · 광택
+        var cu0 = run.CloseUps;
+        run.BeginShowcase();
+        for (var i = 0; i < 4; i++) run.Step();
+        Assert.True(run.CloseUps == cu0 + 1 && mcr.Mcr.Program == 4 && run.Inspection.Showcase, "클로즈업 " + run.CloseUps + " PGM " + mcr.Mcr.Program);
+        var y0 = run.Inspection.Yaw;
+        var specMax = 0f; var specMin = float.MaxValue;
+        for (var i = 0; i < 120; i++) { run.Step(); specMax = MathF.Max(specMax, run.Inspection.PeakSpecular); specMin = MathF.Min(specMin, run.Inspection.PeakSpecular); }
+        // 회전에 따라 하이라이트가 이동(시점 의존 광택) — 프레임별 최대 스페큘러가 변한다
+        Assert.True(run.Inspection.Yaw - y0 > 1.6f && specMax > 0.1f && specMax - specMin > 0.05f, "회전 " + (run.Inspection.Yaw - y0) + " 광택 " + specMin + "~" + specMax);
+        comp.Render(in mcr.Mcr.Camera(4), new byte[BMc.UnifiedGaussianSceneCompositorEngine.FrameBytes]);
+        var prodVisible = 0; foreach (var idx in comp.Raster.SortedIndices) if (comp.RegionOf(idx) == 5) prodVisible++;
+        Assert.True(prodVisible > 5_000, "인서트 캠 상품 가시 " + prodVisible);
+
+        // COMM-2b: 타임세일 + 구매 → 100 ms 내 감사 멘트(FSM 인터럽트 · 화자 = 호스트) · 제스처 · 배너
+        run.StartTimeSale(180);
+        for (var i = 0; i < 5; i++) run.Step();
+        var ad0 = talk.Adlibs;
+        Assert.True(run.Purchase("구매왕", 2));
+        run.Step();
+        Assert.True(talk.Adlibs == ad0 + 1 && talk.Fsm.Holder == 0 && run.Sales.LastReactionMs <= 100f, "리액션 " + run.Sales.LastReactionMs + " ms · 애드리브 " + (talk.Adlibs - ad0));
+        Assert.Contains("구매왕님", talk.CurrentLine(0), StringComparison.Ordinal);
+        Assert.True(run.Inspection.Pose is Lcm.HoldPose.Clap or Lcm.HoldPose.ThumbsUp, "제스처 " + run.Inspection.Pose);
+        Assert.True(run.Banner.DrawnFrames > 0 && run.Banner.LastBannerTop > 0, "배너 " + run.Banner.DrawnFrames);
+        // 배너 픽셀 — 하단 띠가 PGM 출력에 합성(BUY NOW 녹색 버튼 영역)
+        var pgmOut = mcr.Mcr.ProgramOut; var bx = (BMc.UnifiedGaussianSceneCompositorEngine.W - 40) * 3 + (BMc.UnifiedGaussianSceneCompositorEngine.H - 10) * BMc.UnifiedGaussianSceneCompositorEngine.W * 3;
+        Assert.True(pgmOut[bx + 1] > pgmOut[bx] + 40, "CTA 버튼 픽셀 " + pgmOut[bx] + "," + pgmOut[bx + 1]);
+
+        // COMM-3c: 애드리브 · 대본 텍스트 심의 — 토크쇼 발화 필터 경유 치환 · 차단 100 %
+        var rep0 = run.Compliance.Replaced; var blk0 = run.Compliance.Blocked;
+        talk.InjectAdlib(0, "이 폰은 국내 유일 100% 보장 제품!");
+        Assert.True(run.Compliance.Replaced == rep0 + 1 && !talk.CurrentLine(0).Contains("유일", StringComparison.Ordinal), "치환 " + talk.CurrentLine(0));
+        talk.InjectAdlib(0, "이 제품은 암 치료 에도 좋습니다");
+        Assert.True(run.Compliance.Blocked == blk0 + 1 && talk.BlockedLines >= 1 && !talk.CurrentLine(0).Contains("치료", StringComparison.Ordinal), "차단 " + talk.CurrentLine(0));
+        // COMM-3d: 가격 불일치 → 배너 즉시 비노출
+        Assert.False(run.EditPrice(1_590_000, 1_190_000, 40));
+        var b0 = run.Banner.BlockedFrames;
+        run.Step();
+        Assert.True(run.Banner.PriceBlocked && run.Banner.BlockedFrames == b0 + 1 && run.Banner.LastBannerTop < 0);
+        Assert.True(run.EditPrice(1_590_000, 1_190_000, 25));
+        run.Step();
+        Assert.True(!run.Banner.PriceBlocked && run.Banner.LastBannerTop > 0);
+        Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, e => e.Key == "_virtualCommerce" && e.Category == 4);
+
+        // ── 무할당 · 프레임 예산(구매 폭주 + 쇼케이스 5만 스플랫) ──
+        run.BeginShowcase();
+        for (var i = 0; i < 10; i++) run.Step();
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        long alloc = 0;
+        for (var f = 0; f < 120; f++)
+        {
+            run.Purchase("u", 1);   // 문자열 리터럴 · 링 복사(무할당)
+            var a0 = GC.GetAllocatedBytesForCurrentThread();
+            run.Step();
+            if (f >= 30) alloc += GC.GetAllocatedBytesForCurrentThread() - a0;
+        }
+        Assert.True(alloc == 0, "커머스 MCR 틱 할당 " + alloc + " · " + run.Summary());
+        var tk = new double[60]; var med = double.MaxValue;
+        for (var attempt = 0; attempt < 5 && med >= 16.7; attempt++)
+        {
+            if (attempt > 0) Thread.Sleep(150);
+            for (var i = 0; i < 60; i++) { run.Step(); tk[i] = mcr.LastTickMs; }
+            Array.Sort(tk); med = Math.Min(med, tk[30]);
+        }
+        Assert.True(med < 16.7 && run.LayerOverBudget == 0, "중앙 틱 " + med + " ms · 레이어 최대 " + run.MaxLayerMs + " · 상품 " + run.Inspection.LastUs + " µs · " + run.Summary());
+        run.Dispose(); shw.Dispose(); mcr.Dispose(); talk.Dispose();
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
     }
 }

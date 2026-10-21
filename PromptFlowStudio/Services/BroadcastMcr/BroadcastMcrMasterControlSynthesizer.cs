@@ -5,6 +5,12 @@ namespace PromptFlowStudio.Services.BroadcastMcr;
 
 public enum McrTransition : byte { Cut, Mix, Wipe }
 
+/// <summary>v17.68 PGM 그래픽 오버레이(CTA 배너 · 카운트다운) — 송출 RGB24 버스에 NV12 변환 직전 합성(무할당).</summary>
+public interface IMcrProgramOverlay
+{
+    void Apply(Span<byte> rgb, int width, int height, long frame);
+}
+
 /// <summary>
 /// [PromptFlow Studio v17.66.0] 방송 주조정실(MCR) PGM/PVW 이중 버스 &amp; 트랜지션 합성기(60 fps · 무할당 핫패스).
 ///   ▸ 소스 5: v17.65/v17.39 4 캠(마스터 투샷 · OTS A · OTS B · 액션 바스트/리액션) + PPL 제품 인서트 캠 — 통합 3DGS 컴포지터가 버스별 RGB24 렌더.
@@ -41,6 +47,7 @@ public sealed class BroadcastMcrMasterControlSynthesizer : IDisposable
     public ReadOnlySpan<byte> NV12UV => _uv;
     public ref readonly SplatCamera Camera(int s) => ref _cam[s];
     public float MasterGain { get; set; } = 1f;
+    public IMcrProgramOverlay? Overlay { get; set; }
     public bool Mute { get; set; }
     public float PeakL { get; private set; }
     public float RmsL { get; private set; }
@@ -164,6 +171,7 @@ public sealed class BroadcastMcrMasterControlSynthesizer : IDisposable
             }
         }
         else _pgmBuf.AsSpan().CopyTo(_out);
+        Overlay?.Apply(_out, W, H, _frames);
         PullAudio();
         ToNv12(_out, _y, _uv);
         if (_enc is { IsOpen: true } enc) enc.EncodeFrame(_y, _uv, _l, _r);

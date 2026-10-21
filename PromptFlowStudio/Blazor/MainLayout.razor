@@ -493,6 +493,10 @@
         {
             <VirtualInfluencerLiveStudioModal OnClose="() => _influencerLive = false" />
         }
+        @if (_virtualCommerce)
+        {
+            <VirtualLiveCommerceStudioModal OnClose="() => _virtualCommerce = false" />
+        }
         @if (_showrunner)
         {
             <InteractiveShowrunnerStudioModal OnClose="() => _showrunner = false" />
@@ -1000,6 +1004,7 @@
             case "_talkshow": _talkshow = on; break;
             case "_bcastMcr": _bcastMcr = on; break;
             case "_showrunner": _showrunner = on; break;
+            case "_virtualCommerce": _virtualCommerce = on; break;
             case "_clothHair": _clothHair = on; break;
             case "_faceHand": _faceHand = on; break;
             case "_dqAvatar": _dqAvatar = on; break;
@@ -1134,6 +1139,7 @@
         "_talkshow" => _talkshow,
         "_bcastMcr" => _bcastMcr,
         "_showrunner" => _showrunner,
+        "_virtualCommerce" => _virtualCommerce,
         "_clothHair" => _clothHair,
         "_faceHand" => _faceHand,
         "_dqAvatar" => _dqAvatar,
@@ -1228,6 +1234,7 @@
     private bool _globalDub; // v17.64.0 사이드바 🌍 글로벌 & 로컬라이제이션 ▸ 🗣️ 실시간 다국어 더빙 스튜디오(스트리밍 번역 ≤ 200 ms · 다국어 음색 유지 합성 · 플랫폼별 언어 트랙 · ARKit 가우시안 립싱크 < 50 ms)
     private bool _streamGateway; // v17.62.0 사이드바 📜 각본 & 타임라인 ▸ 🛰️ 스트림 게이트웨이 & 클리퍼 스튜디오(32 MB 압축 NAL 링 · 무손실 1080p 리먹스 · Twitch/YouTube/치지직 게이트웨이 · 백오프/배압)
     private bool _influencerLive; // v17.61.0 사이드바 📜 각본 & 타임라인 ▸ 🎙️ 버추얼 인플루언서 라이브 스튜디오(채팅 리액션 트리거 · 하이라이트 9:16 즉시 클리핑 · 도배/비속어 가드)
+    private bool _virtualCommerce; // v17.68.0 사이드바 📸 소셜 & 바이럴 ▸ 🛍️ 버추얼 라이브 커머스(3DGS 상품 손목 앵커 · 360° 쇼케이스 · 세일즈 FSM · 광고 심의 · 가격 정합성)
     private bool _showrunner; // v17.67.0 사이드바 🎬 가상 프로덕션 ▸ 🎪 AI 자율 쇼러너 & 인터랙티브(시청자 물리 프롭 · 피격 애드리브 · MCR 긴급 CU · 스팸 풀링 가드)
     private bool _bcastMcr; // v17.66.0 사이드바 🎬 가상 프로덕션 ▸ 🎛️ 브로드캐스트 주조정실(통합 3DGS 컴포지터 · PGM/PVW Cut/Mix/Wipe · A/V 동기 송출 · PPL 브랜드 가드)
     private bool _talkshow; // v17.65.0 사이드바 🎭 디지털 휴먼 ▸ 👥 멀티 아바타 토크쇼 스튜디오(턴테이킹 FSM · 상호 시선/경청 리액션 · 자동 멀티캠 · 오버랩/데드락 가드)

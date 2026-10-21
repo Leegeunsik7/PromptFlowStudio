@@ -111,6 +111,8 @@ public sealed class StreamGatewayClipperStudioRunner : IDisposable
     public bool LinkInfluencer { get; private set; }
     /// <summary>v17.67 세이프티 통과 채팅 커맨드 탭(쇼러너 `!drop` · `!confetti`) — 자체 소비 경로에서 전달.</summary>
     public IChatDispatchTarget? CommandTap { get; set; }
+    /// <summary>v17.68 라이브 커머스 결제 탭(`!buy` · 후원 금액) — 세이프티 통과 채팅만.</summary>
+    public IChatDispatchTarget? CommerceTap { get; set; }
     public bool TapTranscoder { get; private set; }
     public bool AutoClip { get; private set; } = true;
     public bool AutoPublish { get; private set; }
@@ -173,7 +175,7 @@ public sealed class StreamGatewayClipperStudioRunner : IDisposable
             var c = _c.AsSpan(_head * SocketBackpressureDropoutGuard.SlotChars, SocketBackpressureDropoutGuard.SlotChars);
             user[..e.UserLen].CopyTo(c); text[..e.TextLen].CopyTo(c[SocketBackpressureDropoutGuard.UserCap..]);
             _head = (_head + 1) % Feed; if (_n < Feed) _n++;
-            if (v == ChatSafetyVerdict.Clean && text.Length > 1 && text[0] == '!') _r.CommandTap?.Deliver(platform, user, text, amount, role, nowMs);
+            if (v == ChatSafetyVerdict.Clean && text.Length > 1 && text[0] == '!') { _r.CommandTap?.Deliver(platform, user, text, amount, role, nowMs); _r.CommerceTap?.Deliver(platform, user, text, amount, role, nowMs); }
             return v == ChatSafetyVerdict.Clean;
         }
     }

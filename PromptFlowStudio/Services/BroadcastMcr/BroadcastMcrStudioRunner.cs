@@ -42,7 +42,7 @@ public sealed class BroadcastMcrStudioRunner : IDisposable
     private int _sHead, _sN;
     private long _tick, _lastRouted = -1;
     private DirectorCam _lastLive = (DirectorCam)255;
-    private int _cue = -1;
+    private int _cue = -1, _cueSource = (int)DirectorCam.Action;
     private long _cueTick, _holdUntil;
     public const int CueHoldFrames = 90;
     private double _phase;
@@ -80,6 +80,13 @@ public sealed class BroadcastMcrStudioRunner : IDisposable
     public bool AutoDirect { get; private set; } = true;
     /// <summary>v17.67 장면 레이어(쇼러너 물리 스포너) · 클로즈업 큐 지표.</summary>
     public IMcrSceneLayer? Layer { get; set; }
+    private readonly IMcrSceneLayer?[] _extra = new IMcrSceneLayer?[4];
+    /// <summary>v17.68 추가 장면 레이어(라이브 커머스 등 · 최대 4) — <see cref="Layer"/> 다음 순서로 호출.</summary>
+    public bool AttachLayer(IMcrSceneLayer l) { lock (_gate) { for (var i = 0; i < _extra.Length; i++) if (ReferenceEquals(_extra[i], l)) return true; for (var i = 0; i < _extra.Length; i++) if (_extra[i] is null) { _extra[i] = l; return true; } } return false; }
+    public void DetachLayer(IMcrSceneLayer l) { lock (_gate) for (var i = 0; i < _extra.Length; i++) if (ReferenceEquals(_extra[i], l)) _extra[i] = null; }
+    /// <summary>v17.68 인서트 캠(소스 5) 타깃 재지정 — null 이면 PPL 소품.</summary>
+    public System.Numerics.Vector3? InsertTarget { get; set; }
+    public float InsertDistance { get; set; } = 0.62f;
     public long CueCuts { get; private set; }
     public long LastCueLatencyFrames { get; private set; }
     public double NowMs => Tick * 1000.0 / Hz;
@@ -121,8 +128,15 @@ public sealed class BroadcastMcrStudioRunner : IDisposable
         lock (_gate)
         {
             _talk.Guard.ForceShot(TalkShot.Reaction, avatar, _talk.NowMs);
-            _cue = avatar; _cueTick = Tick;
+            _cue = avatar; _cueTick = Tick; _cueSource = (int)DirectorCam.Action;
         }
+    }
+
+    /// <summary>v17.68 상품 클로즈업 — 인서트 캠(소스 5)을 상품으로 재지정 → 다음 MCR 프레임 PGM 컷 · 자동 디렉팅 보류(무할당 · MCR 틱 스레드 호출 허용).</summary>
+    public void CueInsert(System.Numerics.Vector3 target, float distance = 0.62f)
+    {
+        InsertTarget = target; InsertDistance = Math.Clamp(distance, 0.2f, 3f);
+        _cue = 0; _cueTick = Tick; _cueSource = 4;
     }
 
     public void SetPreview(int s) { lock (_gate) Mcr.SetPreview(s); LastAction = "🟩 PVW ← " + BroadcastMcrMasterControlSynthesizer.SourceName(s); Raise(); }
@@ -194,18 +208,20 @@ public sealed class BroadcastMcrStudioRunner : IDisposable
             var fwd = rig.Forward.LengthSquared() > 0.5f ? rig.Forward : -Vector3.UnitZ;
             Mcr.SetSource(c, SplatCamera.LookAt(rig.Position, rig.Position + fwd, Math.Clamp(rig.VFovDeg, 8f, 80f), Aspect, 0.05f, 120f));
         }
-        var prop = Ppl.Position + new Vector3(0f, UnifiedGaussianSceneCompositorEngine.PropHeight * 0.5f, 0f);
-        Mcr.SetSource(4, SplatCamera.LookAt(prop + new Vector3(0.18f, 0.14f, 0.62f), prop, 30f, Aspect, 0.05f, 120f));
+        var prop = InsertTarget ?? Ppl.Position + new Vector3(0f, UnifiedGaussianSceneCompositorEngine.PropHeight * 0.5f, 0f);
+        var k = InsertDistance / 0.62f;
+        Mcr.SetSource(4, SplatCamera.LookAt(prop + new Vector3(0.18f * k, 0.14f * k, InsertDistance), prop, 30f, Aspect, 0.05f, 120f));
         // ④ PPL 가드(PGM 카메라 기준) → 소품 · 컴포지터 갱신
         Ppl.Collect(comp);
         Ppl.Step(in Mcr.Camera(Mcr.Program), Dt);
         comp.SetProp(Ppl.Position, true);
         Layer?.Step(comp, in Mcr.Camera(Mcr.Program), NowMs, Dt);
+        for (var li = 0; li < _extra.Length; li++) _extra[li]?.Step(comp, in Mcr.Camera(Mcr.Program), NowMs, Dt);
         comp.Update();
         // ⑤ 쇼러너 긴급 클로즈업 큐(최우선 · 진행 중 트랜지션은 즉시 종료 후 컷) → 자동 디렉팅
         if (_cue >= 0)
         {
-            var src = (int)DirectorCam.Action;
+            var src = _cueSource;
             Mcr.AbortTransition();
             Mcr.SetPreview(src);
             if (Mcr.Program != src) Mcr.Take(McrTransition.Cut);
