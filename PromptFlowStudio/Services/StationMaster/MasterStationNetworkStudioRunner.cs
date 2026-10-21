@@ -205,6 +205,21 @@ public sealed class MasterStationNetworkStudioRunner : IMcrSceneLayer, IDisposab
     public void SimulateLlmLatency(int ms) { Templates.SimulatedLatencyMs = Math.Clamp(ms, 0, 5_000); LastAction = ms > 0 ? "🧪 LLM 지연 " + ms.ToString(CultureInfo.InvariantCulture) + " ms 주입" : "🧪 LLM 지연 해제"; Raise(); }
     public void SimulateNetworkOutage(double seconds = 3) { _netRestoreAt = Environment.TickCount64 + (long)(seconds * 1000); Failover.ReportNetwork(false); LastAction = "🧪 네트워크 순단 " + seconds.ToString("0.0", CultureInfo.InvariantCulture) + " s"; Raise(); }
     public void SimulateRenderStall(int frames = 4, double ms = 45) { _stallMs = Math.Clamp(ms, 0, 200); Volatile.Write(ref _stallFrames, Math.Clamp(frames, 0, 600)); LastAction = "🧪 렌더 과부하 " + frames.ToString(CultureInfo.InvariantCulture) + " f × " + ms.ToString("0", CultureInfo.InvariantCulture) + " ms"; Raise(); }
+    /// <summary>v17.71 프리셋/1-Click — 지정 프로그램 즉시 편성(MCR Mix 디졸브 · 활성화는 제어 스레드).</summary>
+    public void CueProgram(StationProgramKind k)
+    {
+        lock (_ctl) Epg.ForceOnAir(k);
+        if (_attached && !Failover.StandbyEngaged)
+        {
+            var src = PreferredSource(k);
+            if (src == _mcr.Mcr.Program) src = (src + 1) % 4;
+            _mcr.SetPreview(src);
+            _mcr.Take(McrTransition.Mix, TransitionFrames);
+        }
+        _takeReq = (int)k;
+        LastAction = "🎬 즉시 편성 · " + MasterStationEpgSchedulerEngine.KindIcon(k) + " " + MasterStationEpgSchedulerEngine.KindName(k); Raise();
+    }
+
     public void SetManualStandby(bool on) { Failover.SetManual(on); LastAction = on ? "🛟 수동 스탠바이" : "↩ 수동 스탠바이 해제"; Raise(); }
 
     /// <summary>시뮬레이션 릴 성과 n 건(현재 팔 · 데모).</summary>

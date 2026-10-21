@@ -125,6 +125,13 @@ public sealed class MasterStationEpgSchedulerEngine
 
     public void SetClockMs(long ms) { _nowMs = ms; }
 
+    /// <summary>v17.71 프리셋 즉시 편성 — 현재 슬롯 송출 종류만 교체(편성표 · 시각 불변 · 다음 슬롯부터 원편성).</summary>
+    public void ForceOnAir(StationProgramKind k)
+    {
+        if (_count == 0) return;
+        _ring[_head].Aired = k; OnAir = k; _prerolled = false; _airedBy[(int)k]++;
+    }
+
     private void Rotate()
     {
         var s = _ring[_head];

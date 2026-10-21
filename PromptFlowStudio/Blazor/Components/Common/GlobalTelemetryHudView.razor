@@ -267,6 +267,7 @@
 @inject PromptFlowStudio.Services.LiveShowroom.LiveCommerceStudioRunner VlcRun
 @inject PromptFlowStudio.Services.LiveToReels.LiveToReelsFactoryStudioRunner LtrRun
 @inject PromptFlowStudio.Services.StationMaster.MasterStationNetworkStudioRunner StnRun
+@inject PromptFlowStudio.Services.Publisher.OmniChannelPublisherStudioRunner PubRun
 @inject PromptFlowStudio.Services.SkinnedSplatAvatar.DualQuaternionGaussianAvatarStudioRunner DqAvRun
 @inject PromptFlowStudio.Services.AgentFederation.RealtimeSpatiotemporalKnowledgeGraph FedKg
 @inject PromptFlowStudio.Services.AgentFederation.ZeroTrustInterAgentConsensusResolver FedCons
@@ -986,6 +987,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.71.0: AI 퍼블리셔 — 계정 연동 · 업로드 · AI 생성 · 1-Click ── *@
+    <div class="gth-v1771">
+        <div class="gth-v96-card pid @(PubRun.Connected(PromptFlowStudio.Services.Publisher.SocialPlatform.YouTube) || PubRun.Connected(PromptFlowStudio.Services.Publisher.SocialPlatform.Instagram) ? "ok" : null)">
+            <div class="gth-v96-h"><b>📱 AI 퍼블리셔</b>
+                <span class="gth-v96-be">YT @(PromptFlowStudio.Services.Publisher.SocialMediaApiGatewayEngine.StateName(PubRun.Gateway.State(PromptFlowStudio.Services.Publisher.SocialPlatform.YouTube))) · IG @(PromptFlowStudio.Services.Publisher.SocialMediaApiGatewayEngine.StateName(PubRun.Gateway.State(PromptFlowStudio.Services.Publisher.SocialPlatform.Instagram)))@(PubRun.Simulated ? " · 🧪" : null)</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(PubRun.Gateway.Uploads(PromptFlowStudio.Services.Publisher.SocialPlatform.YouTube) + PubRun.Gateway.Uploads(PromptFlowStudio.Services.Publisher.SocialPlatform.Instagram))</b><span>업로드</span></span>
+                <span class="gth-v96-m"><b class="@(PubRun.Gateway.Failures(PromptFlowStudio.Services.Publisher.SocialPlatform.YouTube) + PubRun.Gateway.Failures(PromptFlowStudio.Services.Publisher.SocialPlatform.Instagram) > 0 ? "warn" : null)">@(PubRun.Gateway.Failures(PromptFlowStudio.Services.Publisher.SocialPlatform.YouTube) + PubRun.Gateway.Failures(PromptFlowStudio.Services.Publisher.SocialPlatform.Instagram))</b><span>실패</span></span>
+                <span class="gth-v96-m"><b>@(PubRun.Recommender.Generations)</b><span>AI 메타</span></span>
+                <span class="gth-v96-m"><b>@(PubRun.OneClicks)</b><span>1-Click</span></span>
+            </div>
+            <div class="gth-v96-act">@(PubRun.LastAction ?? "대기")</div>
+        </div>
+    </div>
     @* ── v17.70.0: 24/7 방송국 — 편성 · 블랙 프레임 · 자가진화 WPM · 페일오버 50 ms 전환율 ── *@
     <div class="gth-v1770">
         <div class="gth-v96-card pid @(StnRun.BlackFrames == 0 && StnRun.Failover.OnTimeRatio >= 1 && StnRun.Failover.State == PromptFlowStudio.Services.StationMaster.FailoverState.Normal && StnRun.LayerFrames > 0 ? "ok" : null)">
@@ -5486,6 +5502,7 @@
         VtRun.OnChange += OnSwarmChanged; // v17.49.0 (10 Hz → 250 ms 스로틀)
         VlRun.OnChange += OnSwarmChanged; // v17.50.0 (3.3 Hz)
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
+        PubRun.OnChange += OnSwarmChanged; // v17.71.0 (이벤트 구동 → 250 ms 스로틀)
         StnRun.OnChange += OnSwarmChanged; // v17.70.0 (이벤트 구동 → 250 ms 스로틀)
         LtrRun.OnChange += OnSwarmChanged; // v17.69.0 (이벤트 구동 → 250 ms 스로틀)
         VlcRun.OnChange += OnSwarmChanged; // v17.68.0 (10 Hz → 250 ms 스로틀)
@@ -5854,6 +5871,7 @@
         VtRun.OnChange -= OnSwarmChanged;
         VlRun.OnChange -= OnSwarmChanged;
         OcRun.OnChange -= OnSwarmChanged;
+        PubRun.OnChange -= OnSwarmChanged;
         StnRun.OnChange -= OnSwarmChanged;
         LtrRun.OnChange -= OnSwarmChanged;
         VlcRun.OnChange -= OnSwarmChanged;

@@ -493,6 +493,10 @@
         {
             <VirtualInfluencerLiveStudioModal OnClose="() => _influencerLive = false" />
         }
+        @if (_omniPublisher)
+        {
+            <OmniChannelPublisherStudioModal OnClose="() => _omniPublisher = false" />
+        }
         @if (_stationMaster)
         {
             <MasterStationNetworkStudioModal OnClose="() => _stationMaster = false" />
@@ -1012,6 +1016,7 @@
             case "_talkshow": _talkshow = on; break;
             case "_bcastMcr": _bcastMcr = on; break;
             case "_showrunner": _showrunner = on; break;
+            case "_omniPublisher": _omniPublisher = on; break;
             case "_stationMaster": _stationMaster = on; break;
             case "_liveToReels": _liveToReels = on; break;
             case "_virtualCommerce": _virtualCommerce = on; break;
@@ -1149,6 +1154,7 @@
         "_talkshow" => _talkshow,
         "_bcastMcr" => _bcastMcr,
         "_showrunner" => _showrunner,
+        "_omniPublisher" => _omniPublisher,
         "_stationMaster" => _stationMaster,
         "_liveToReels" => _liveToReels,
         "_virtualCommerce" => _virtualCommerce,
@@ -1246,6 +1252,7 @@
     private bool _globalDub; // v17.64.0 사이드바 🌍 글로벌 & 로컬라이제이션 ▸ 🗣️ 실시간 다국어 더빙 스튜디오(스트리밍 번역 ≤ 200 ms · 다국어 음색 유지 합성 · 플랫폼별 언어 트랙 · ARKit 가우시안 립싱크 < 50 ms)
     private bool _streamGateway; // v17.62.0 사이드바 📜 각본 & 타임라인 ▸ 🛰️ 스트림 게이트웨이 & 클리퍼 스튜디오(32 MB 압축 NAL 링 · 무손실 1080p 리먹스 · Twitch/YouTube/치지직 게이트웨이 · 백오프/배압)
     private bool _influencerLive; // v17.61.0 사이드바 📜 각본 & 타임라인 ▸ 🎙️ 버추얼 인플루언서 라이브 스튜디오(채팅 리액션 트리거 · 하이라이트 9:16 즉시 클리핑 · 도배/비속어 가드)
+    private bool _omniPublisher; // v17.71.0 사이드바 📸 소셜 & 바이럴 ▸ 📱 AI 옴니채널 퍼블리셔 & QoL(OAuth2 AES-GCM 볼트 · YT/IG 실 업로드 · AI 제목/해시태그 · 1-Click 프리셋)
     private bool _stationMaster; // v17.70.0 사이드바 🎬 가상 프로덕션 ▸ 📡 24/7 방송국 마스터 편성 센터(EPG 링 · MCR 무블랙 디졸브 · 베이지안 자가진화 · 50 ms 무중단 페일오버)
     private bool _liveToReels; // v17.69.0 사이드바 📸 소셜 & 바이럴 ▸ 🏭 라이브-투-릴스 자동 팩토리(바이럴 클라이맥스 감지 · 무손실 클립 · SDF 자막/BGM 훅/더빙 리먹스 · 3 플랫폼 배압 업로드)
     private bool _virtualCommerce; // v17.68.0 사이드바 📸 소셜 & 바이럴 ▸ 🛍️ 버추얼 라이브 커머스(3DGS 상품 손목 앵커 · 360° 쇼케이스 · 세일즈 FSM · 광고 심의 · 가격 정합성)

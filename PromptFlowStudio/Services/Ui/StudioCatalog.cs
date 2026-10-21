@@ -117,6 +117,7 @@ public static class StudioCatalog
         new("sb:_soundOpen", "🎧", "AI 사운드 디자인 & Dolby Atmos 스튜디오 (스토리보드)", 3),
         new("sb:_screenplayOpen", "📜", "AI 시나리오 & 세계관 스튜디오 (스토리보드)", 3),
         new("sb:_mvOpen", "🎵", "AI 뮤직비디오 & 안무 스튜디오 (스토리보드)", 3),
+        new("_omniPublisher", "📱", "AI 옴니채널 퍼블리셔 & QoL 대시보드", 4),
         new("_liveToReels", "🏭", "라이브-투-릴스 자동 팩토리", 4),
         new("_virtualCommerce", "🛍️", "버추얼 라이브 커머스 스튜디오", 4),
         new("_reels", "📱", "AI 릴스 바이럴 리믹스 스튜디오", 4),

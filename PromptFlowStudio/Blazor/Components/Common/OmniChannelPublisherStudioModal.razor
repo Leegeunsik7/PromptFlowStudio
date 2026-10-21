@@ -1,0 +1,245 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Publisher
+@using PromptFlowStudio.Services.StationMaster
+@using Microsoft.AspNetCore.Components.Web
+@implements IDisposable
+@inject OmniChannelPublisherStudioRunner Runner
+
+@* [PromptFlow Studio v17.71.0] 📱 AI 옴니채널 퍼블리셔 & QoL 대시보드 — 계정 연동 뱃지 · AI 제목/해시태그 편집 · 1-Click 프리셋 런처 · 편성 추천. *@
+<div class="ocp-scrim" @onclick="Close">
+    <div class="ocp-modal" @onclick:stopPropagation="true">
+        <div class="ocp-h">
+            <div>
+                <div class="ocp-title">📱 AI 옴니채널 퍼블리셔 & QoL 대시보드 @(Runner.Simulated ? "· 🧪 시뮬레이터" : "· 🌐 실 API") @(Runner.AutoUpload ? "· 🚀 자동 업로드" : null)</div>
+                <div class="ocp-sub"><b>API 게이트웨이</b>가 YouTube Data API v3(multipart · 재개 업로드)와 Instagram Graph API(Reels 컨테이너 · rupload · 게시)로 릴을 업로드하고, OAuth2 토큰은 AES-GCM으로 봉인한 볼트에 저장해 만료 전에 자동 갱신합니다.
+                    <b>AI 추천기</b>가 핵심 대사와 물리 인터랙션 로그로 제목 · 설명 · 해시태그 5개를 스트리밍 생성하고 다음 24시간 편성을 추천하며, <b>1-Click 프리셋</b>은 방송 세팅부터 자동 업로드까지 버튼 하나로 시작합니다.</div>
+            </div>
+            <button class="ocp-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="ocp-card">
+            <div class="ocp-sec">🚀 1-Click 프리셋 런처 @(Runner.Presets.ActiveName is { } an ? "· 적용: " + an : null)</div>
+            <div class="ocp-presets">
+                @for (var i = 0; i < Runner.Presets.Count; i++)
+                {
+                    var p = Runner.Presets.At(i);
+                    var idx = i;
+                    <button class="ocp-preset @(_sel == i ? "sel" : null)" @onclick="() => _sel = idx">
+                        <i>@(p.Icon)</i><b>@(p.Name)</b>
+                        <span>@(MasterStationEpgSchedulerEngine.KindName(p.Program)) · 아바타 @(p.Avatars) · @(p.BgmBpm.ToString("0", CultureInfo.InvariantCulture)) BPM · @(p.AutoDirect ? "자동 디렉팅" : "비트 컷")</span>
+                    </button>
+                }
+            </div>
+            <div class="ocp-row">
+                <button class="ocp-btn big" @onclick="OneClick">🚀 방송 시작 및 자동 업로드 활성화</button>
+                <button class="ocp-btn" @onclick="ApplyOnly">🎛 프리셋만 적용</button>
+                <button class="ocp-btn" @onclick="Runner.StopAll">⏹ 전체 정지</button>
+                <span class="ocp-sep"></span>
+                <input class="ocp-in" placeholder="새 프리셋 이름" @bind="_presetName" />
+                <button class="ocp-btn sm" @onclick="SavePreset">💾 현재 세팅 저장</button>
+                @if (_sel >= Runner.Presets.Count - (Runner.Presets.Count - CreatorQolPresetManager.BuiltIns.Length) && _sel >= CreatorQolPresetManager.BuiltIns.Length)
+                {
+                    <button class="ocp-btn sm" @onclick="RemovePreset">🗑</button>
+                }
+            </div>
+            @if (Runner.LastChecklist.Count > 0)
+            {
+                <div class="ocp-check">@foreach (var s in Runner.LastChecklist) { <span>@s</span> }</div>
+            }
+        </div>
+
+        <div class="ocp-main">
+            <div class="ocp-card">
+                <div class="ocp-sec">🔐 계정 연동 (OAuth2 · AES-GCM 볼트@(Runner.KeySecure ? " · DPAPI 키" : " · ⚠ 임시 키"))</div>
+                @foreach (var pl in Platforms)
+                {
+                    var p = pl;
+                    var st = Runner.Gateway.State(p);
+                    <div class="ocp-acct">
+                        <b>@(p == SocialPlatform.YouTube ? "▶️" : "📸") @(SocialMediaApiGatewayEngine.PlatformName(p))</b>
+                        <em class="s@((int)st)">@(SocialMediaApiGatewayEngine.StateName(st))</em>
+                        <span>@(Runner.Vault.HasAccess(p) ? "만료 " + Left(Runner.Vault.SecondsLeft(p, Runner.Gateway.UnixNow())) + " · 갱신 " + Runner.Gateway.Refreshes(p) + " · 업로드 " + Runner.Gateway.Uploads(p) : "토큰 없음")</span>
+                        <div class="ocp-row">
+                            @if (Runner.Simulated) { <button class="ocp-btn sm" @onclick="() => Runner.ConnectSimulated(p)">🧪 시뮬 연동</button> }
+                            <button class="ocp-btn sm" @onclick="() => _authUrl = Runner.AuthorizeUrl(p)">🔗 인가 URL</button>
+                            <button class="ocp-btn sm" disabled="@(!Runner.Vault.HasAccess(p))" @onclick="() => Refresh(p)">♻ 갱신</button>
+                            <button class="ocp-btn sm" disabled="@(!Runner.Vault.HasAccess(p))" @onclick="() => Runner.Disconnect(p)">⏏ 해제</button>
+                            <label class="ocp-chk"><input type="checkbox" checked="@(p == SocialPlatform.YouTube ? Runner.UploadYouTube : Runner.UploadInstagram)" @onchange="e => Toggle(p, e)" /> 업로드</label>
+                        </div>
+                        @if (Runner.Gateway.LastError(p) is { } err) { <div class="ocp-err">⚠ @err</div> }
+                    </div>
+                }
+                @if (_authUrl.Length > 0)
+                {
+                    <div class="ocp-auth"><code>@_authUrl</code></div>
+                    <div class="ocp-row">
+                        <input class="ocp-in wide" placeholder="리디렉션 code 붙여넣기" @bind="_code" />
+                        <button class="ocp-btn sm" @onclick="ExchangeCurrent">교환</button>
+                    </div>
+                }
+                <div class="ocp-row">
+                    <button class="ocp-btn @(Runner.AutoUpload ? "on" : null)" @onclick="() => Runner.SetAutoUpload(!Runner.AutoUpload)">🚀 자동 업로드 @(Runner.AutoUpload ? "ON" : "OFF")</button>
+                    <select class="ocp-in" value="@Runner.Privacy" @onchange="OnPrivacy">
+                        <option value="private">비공개</option><option value="unlisted">일부 공개</option><option value="public">공개</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="ocp-card">
+                <div class="ocp-sec">🤖 AI 제목 · 해시태그 (초안 @(Runner.DraftCount) · 생성 @(Runner.Recommender.Generations) · 폴백 @(Runner.Recommender.Fallbacks))</div>
+                @if (Runner.DraftCount == 0)
+                {
+                    <div class="ocp-empty">릴스 팩토리가 클립을 만들면 자동으로 초안이 생성됩니다.</div>
+                    <button class="ocp-btn sm" @onclick="DemoDraft">🧪 샘플 초안 생성</button>
+                }
+                else
+                {
+                    var d = Runner.Draft(Math.Clamp(_draft, 0, Runner.DraftCount - 1))!;
+                    <div class="ocp-row">
+                        @for (var i = 0; i < Math.Min(6, Runner.DraftCount); i++)
+                        {
+                            var di = i; var dd = Runner.Draft(i);
+                            if (dd is null) continue;
+                            <button class="ocp-btn sm @(_draft == i ? "on" : null)" @onclick="() => SelectDraft(di)">#@(dd.ReelId)</button>
+                        }
+                    </div>
+                    <label class="ocp-lbl">제목 <small>@(_title.Length)/100</small></label>
+                    <input class="ocp-in wide" maxlength="100" @bind="_title" />
+                    <label class="ocp-lbl">설명</label>
+                    <textarea class="ocp-ta" rows="3" @bind="_desc"></textarea>
+                    <label class="ocp-lbl">해시태그 (5개)</label>
+                    <input class="ocp-in wide" @bind="_tags" />
+                    <div class="ocp-row">
+                        <button class="ocp-btn sm" @onclick="() => SaveEdit(d.ReelId)">✏ 반영</button>
+                        <button class="ocp-btn sm" @onclick="() => Regenerate(d)">🔄 다시 생성</button>
+                        <button class="ocp-btn sm go" disabled="@(d.Uploading)" @onclick="() => Upload(d.ReelId)">📤 업로드</button>
+                        <span class="ocp-dim">@(Result(d.YouTube)) @(Result(d.Instagram))</span>
+                    </div>
+                }
+            </div>
+        </div>
+
+        <div class="ocp-card">
+            <div class="ocp-sec">📅 다음 24시간 편성 추천</div>
+            <div class="ocp-recs">
+                @for (var i = 0; i < Runner.Recommender.RecommendationCount; i++)
+                {
+                    var r = Runner.Recommender.Recommendation(i);
+                    <div><b>@(r.StartHour.ToString("00", CultureInfo.InvariantCulture)):00</b><span>@(MasterStationEpgSchedulerEngine.KindIcon(r.Kind)) @(MasterStationEpgSchedulerEngine.KindName(r.Kind)) · @(AiContentTrendRecommendationSynthesizer.CategoryName(r.Category)) · “@(AiContentTrendRecommendationSynthesizer.Themes[r.Theme])”</span><em>@((r.Score * 100).ToString("0", CultureInfo.InvariantCulture))</em></div>
+                }
+                <button class="ocp-btn sm" @onclick="() => Runner.RecommendNext()">🔮 추천 갱신</button>
+            </div>
+        </div>
+        <div class="ocp-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+    </div>
+</div>
+
+<style>
+    .ocp-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .ocp-modal { width: min(1300px, 96vw); max-height: 94vh; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); padding: 14px 16px; color: var(--text-primary); }
+    .ocp-h { display: flex; justify-content: space-between; gap: 12px; } .ocp-title { font-size: 17px; font-weight: 800; } .ocp-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .ocp-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .ocp-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-top: 10px; }
+    .ocp-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 8px; }
+    .ocp-presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; }
+    .ocp-preset { display: grid; grid-template-columns: 28px 1fr; gap: 2px 8px; text-align: left; background: #0f172a; border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; color: var(--text-primary); cursor: pointer; }
+    .ocp-preset.sel { border-color: #22d3ee; box-shadow: 0 0 0 1px #22d3ee inset; } .ocp-preset i { grid-row: span 2; font-size: 20px; font-style: normal; } .ocp-preset b { font-size: 12.5px; } .ocp-preset span { font-size: 10px; color: var(--text-muted); }
+    .ocp-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; } .ocp-sep { flex: 1; }
+    .ocp-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .ocp-btn.big { background: linear-gradient(90deg, #0891b2, #7c3aed); border: 0; font-weight: 800; padding: 8px 16px; font-size: 13px; } .ocp-btn.on { background: color-mix(in srgb, #22d3ee 25%, #1e293b); border-color: #22d3ee; }
+    .ocp-btn.go { border-color: #22c55e; } .ocp-btn.sm { padding: 3px 8px; font-size: 11px; } .ocp-btn:disabled { opacity: .45; cursor: default; }
+    .ocp-in { background: #0f172a; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 4px 7px; font-size: 12px; width: 140px; } .ocp-in.wide { width: 100%; box-sizing: border-box; }
+    .ocp-ta { width: 100%; box-sizing: border-box; background: #0f172a; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 5px 7px; font-size: 12px; resize: vertical; }
+    .ocp-lbl { display: block; font-size: 10.5px; color: var(--text-muted); margin-top: 6px; } .ocp-lbl small { float: right; font-family: var(--mono); }
+    .ocp-check { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; } .ocp-check span { font-size: 10.5px; background: #0f172a; border-radius: 5px; padding: 2px 7px; }
+    .ocp-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 10px; }
+    .ocp-acct { background: #0f172a; border-radius: 8px; padding: 7px 9px; margin-bottom: 6px; } .ocp-acct b { font-size: 12.5px; } .ocp-acct span { display: block; font-size: 10.5px; color: var(--text-muted); margin-top: 2px; }
+    .ocp-acct em { float: right; font-style: normal; font-size: 10.5px; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: #334155; } .ocp-acct em.s1 { background: #166534; color: #bbf7d0; } .ocp-acct em.s2, .ocp-acct em.s3 { background: #854d0e; color: #fde68a; } .ocp-acct em.s4 { background: #7f1d1d; color: #fecaca; }
+    .ocp-chk { font-size: 11px; color: var(--text-muted); display: flex; gap: 4px; align-items: center; } .ocp-err { font-size: 10.5px; color: #f87171; margin-top: 4px; }
+    .ocp-auth { margin-top: 6px; background: #05070c; border-radius: 6px; padding: 5px 7px; overflow-x: auto; } .ocp-auth code { font-size: 10px; white-space: nowrap; color: #93c5fd; }
+    .ocp-empty { font-size: 11.5px; color: var(--text-muted); padding: 6px 0; } .ocp-dim { font-size: 10.5px; color: var(--text-muted); }
+    .ocp-recs { display: flex; flex-direction: column; gap: 4px; } .ocp-recs div { display: grid; grid-template-columns: 52px 1fr 40px; gap: 8px; font-size: 11.5px; background: #0f172a; border-radius: 5px; padding: 4px 8px; }
+    .ocp-recs b { font-family: var(--mono); } .ocp-recs em { font-style: normal; font: 700 11px var(--mono); color: #34d399; text-align: right; }
+    .ocp-act { font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+    @@media (max-width: 960px) { .ocp-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly SocialPlatform[] Platforms = { SocialPlatform.YouTube, SocialPlatform.Instagram };
+    private System.Threading.Timer? _timer;
+    private int _sel, _draft, _shownDraft = -1;
+    private string _presetName = "", _authUrl = "", _code = "", _title = "", _desc = "", _tags = "";
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        if (Runner.Recommender.RecommendationCount == 0) Runner.Recommender.Recommend(DateTime.Now.Hour);
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("Publisher.Modal.Timer", ex); }
+        }, null, 500, 500);
+    }
+
+    protected override void OnParametersSet() => SyncDraft();
+
+    protected override bool ShouldRender() { SyncDraft(); return true; }
+
+    private void SyncDraft()
+    {
+        if (Runner.DraftCount == 0) return;
+        var d = Runner.Draft(Math.Clamp(_draft, 0, Runner.DraftCount - 1));
+        if (d is null || d.ReelId == _shownDraft || !d.Generated) return;
+        _shownDraft = d.ReelId; _title = d.Meta.Title; _desc = d.Meta.Description; _tags = d.TagsText;
+    }
+
+    private void SelectDraft(int i) { _draft = i; _shownDraft = -1; SyncDraft(); }
+
+    private static string Left(double sec) => sec <= 0 ? "만료됨" : sec >= 86400 ? (sec / 86400).ToString("0", CultureInfo.InvariantCulture) + "일" : sec >= 3600 ? (sec / 3600).ToString("0.0", CultureInfo.InvariantCulture) + "시간" : (sec / 60).ToString("0", CultureInfo.InvariantCulture) + "분";
+
+    private static string Result(SocialUploadResult? r) => r is not { } v ? "" : (v.Platform == SocialPlatform.YouTube ? "▶️ " : "📸 ") + (v.Ok ? "✅ " + v.MediaId : "⚠ " + v.Error);
+
+    private void OneClick() => Runner.OneClickStart(Runner.Presets.At(Math.Clamp(_sel, 0, Runner.Presets.Count - 1)));
+    private void ApplyOnly() => Runner.Presets.Apply(Runner.Presets.At(Math.Clamp(_sel, 0, Runner.Presets.Count - 1)), Runner);
+    private void SavePreset() { if (!string.IsNullOrWhiteSpace(_presetName)) Runner.SaveCurrentAsPreset(_presetName); }
+    private void RemovePreset() { var p = Runner.Presets.At(_sel); if (!p.BuiltIn) { Runner.Presets.Remove(p.Name); _sel = 0; } }
+
+    private void Toggle(SocialPlatform p, ChangeEventArgs e)
+    {
+        var on = e.Value is bool b && b;
+        if (p == SocialPlatform.YouTube) Runner.UploadYouTube = on; else Runner.UploadInstagram = on;
+    }
+
+    private async Task Refresh(SocialPlatform p) => await Runner.RefreshAsync(p);
+    private Task ExchangeCurrent() => Exchange(_authUrl.Contains("google", StringComparison.Ordinal) ? SocialPlatform.YouTube : SocialPlatform.Instagram);
+    private void OnPrivacy(ChangeEventArgs e) => Runner.Privacy = e.Value?.ToString() ?? "private";
+    private async Task Exchange(SocialPlatform p) { if (_code.Length > 0) { await Runner.ExchangeCodeAsync(p, _code); _code = ""; _authUrl = ""; } }
+
+    private async Task DemoDraft()
+    {
+        await Runner.GenerateDraftAsync(0, new ShortformContext { Caption = "채팅창 폭발 이 순간 놓치면 후회", KeyLine = "여러분 이거 진짜 실화인가요?", Cause = 1, Peak = 92, Hits = 14, HeadHits = 2 });
+        _draft = 0; _shownDraft = -1;
+    }
+
+    private async Task Regenerate(PublishDraft d) { await Runner.GenerateDraftAsync(d.ReelId, d.Context); _shownDraft = -1; }
+    private void SaveEdit(int reelId) { Runner.EditDraft(reelId, _title, _desc, _tags); _shownDraft = -1; }
+
+    private async Task Upload(int reelId)
+    {
+        SaveEdit(reelId);
+        var media = Runner.MediaFor(reelId);
+        if (media is not null) await Runner.UploadDraftAsync(reelId, media);
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}

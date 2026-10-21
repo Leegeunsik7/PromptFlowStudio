@@ -35,6 +35,7 @@ using Shw = PromptFlowStudio.Services.Showrunner;
 using Lcm = PromptFlowStudio.Services.LiveShowroom;
 using L2R = PromptFlowStudio.Services.LiveToReels;
 using SM = PromptFlowStudio.Services.StationMaster;
+using Pub = PromptFlowStudio.Services.Publisher;
 using Nw = PromptFlowStudio.Services.Newsroom;
 using Spt = PromptFlowStudio.Services.Sports;
 using V3 = System.Numerics.Vector3;
@@ -30771,5 +30772,264 @@ public sealed class MasterStationIsolatedTests
         Assert.True(html.Length > 500 && html.Contains("msn-scrim", StringComparison.Ordinal) && html.Contains("EPG", StringComparison.Ordinal), "모달 렌더 " + html.Length);
         Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+}
+
+/// <summary>v17.71.0 AI 옴니채널 퍼블리셔 — OAuth2 AES-GCM 볼트 · YT/IG 업로드 규격 · 자동 갱신 · AI 메타 스트리밍 · 편성 추천 · 1-Click 프리셋 회귀(벽시계 토큰 만료/타임아웃 → 비병렬).</summary>
+[Collection("TimingSensitivePerformance")]   // 1 s LLM 타임아웃 폴백 · 토큰 만료 시계 → 비병렬
+public sealed class OmniChannelPublisherIsolatedTests
+{
+    private sealed class ScriptedLlm : Pub.IContentLlmProvider
+    {
+        public string Text = ""; public int Chunk = 3; public int StallAfterChars = -1;
+        public async Task StreamAsync(ReadOnlyMemory<char> prompt, Pub.IContentTokenSink sink, CancellationToken ct)
+        {
+            for (var i = 0; i < Text.Length; i += Chunk)
+            {
+                if (StallAfterChars >= 0 && i >= StallAfterChars) await Task.Delay(5_000, ct);
+                sink.OnToken(Text.AsSpan(i, Math.Min(Chunk, Text.Length - i)));
+            }
+        }
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+
+    [Fact]
+    public async Task ApiGateway_And_AiRecommender_Check()
+    {
+        var tmp = Path.Combine(Path.GetTempPath(), "pf_v1771_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tmp);
+        try
+        {
+            // ── PUB-1a: OAuth 볼트 — 디스크 봉인(평문 0) · 재로드 · 키 불일치/변조 거부 · 메모리 암호문 ──
+            var key = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+            var vpath = Path.Combine(tmp, "vault", "social_oauth.bin");
+            using (var v1 = new Pub.OAuthTokenVault(vpath, () => (byte[])key.Clone()))
+            {
+                v1.Store(Pub.SocialPlatform.YouTube, "ya29.SECRET-ACCESS-TOKEN-XYZ", "1//SECRET-REFRESH", 2_000_000_000, 1_900_000_000, "UCchan");
+                v1.Store(Pub.SocialPlatform.Instagram, "IGQV.SECRET-LONG-LIVED", "", 2_100_000_000, 1_900_000_000, "1784");
+                Assert.False(v1.MemoryLeaks(Pub.SocialPlatform.YouTube, "SECRET-ACCESS"u8) || v1.MemoryLeaks(Pub.SocialPlatform.YouTube, "SECRET-REFRESH"u8));
+                Assert.True(v1.Save());
+            }
+            var raw = File.ReadAllBytes(vpath);
+            Assert.True(raw.AsSpan().IndexOf("SECRET"u8) < 0 && raw.AsSpan().IndexOf("ya29"u8) < 0 && raw.AsSpan(0, 5).SequenceEqual("PFOV1"u8), "디스크 평문 노출");
+            using (var v2 = new Pub.OAuthTokenVault(vpath, () => (byte[])key.Clone()))
+            {
+                Assert.True(v2.Load());
+                var buf = new byte[256];
+                var n = v2.Access(Pub.SocialPlatform.YouTube).CopyTo(buf);
+                Assert.Equal("ya29.SECRET-ACCESS-TOKEN-XYZ", System.Text.Encoding.UTF8.GetString(buf, 0, n));
+                n = v2.Refresh(Pub.SocialPlatform.YouTube).CopyTo(buf);
+                Assert.Equal("1//SECRET-REFRESH", System.Text.Encoding.UTF8.GetString(buf, 0, n));
+                Assert.True(v2.ExpiresAtUnix(Pub.SocialPlatform.Instagram) == 2_100_000_000 && v2.AccountId(Pub.SocialPlatform.YouTube) == "UCchan" && !v2.HasRefresh(Pub.SocialPlatform.Instagram));
+            }
+            using (var wrong = new Pub.OAuthTokenVault(vpath, () => System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)))
+                Assert.True(!wrong.Load() && wrong.TamperRejects == 1 && !wrong.HasAccess(Pub.SocialPlatform.YouTube), "키 불일치 거부");
+            raw[raw.Length - 3] ^= 0x5A; File.WriteAllBytes(vpath, raw);
+            using (var tampered = new Pub.OAuthTokenVault(vpath, () => (byte[])key.Clone()))
+                Assert.True(!tampered.Load() && tampered.TamperRejects == 1, "변조 거부");
+
+            // ── PUB-1b: 게이트웨이 × 규격 시뮬레이터 — multipart · 재개 청크 · 만료 선갱신 · 401 재시도 · IG 4 단계 ──
+            long clock = 1_900_000_000;
+            var sim = new Pub.SimulatedSocialApiServer(() => clock);
+            using var vault = new Pub.OAuthTokenVault(Path.Combine(tmp, "v2.bin"), () => (byte[])key.Clone());
+            using var gw = new Pub.SocialMediaApiGatewayEngine(sim, vault) { UnixNow = () => clock, InstagramUserId = "17841400000000000", Credential = static _ => null, ChunkSize = 1024 * 1024 };
+            sim.Issue(Pub.SocialPlatform.YouTube, "ya29.sim-initial"u8, clock + 3600, "1//sim-refresh"u8);
+            vault.Store(Pub.SocialPlatform.YouTube, "ya29.sim-initial", "1//sim-refresh", clock + 3600, clock);
+            Assert.Equal(Pub.SocialLinkState.Connected, gw.State(Pub.SocialPlatform.YouTube));
+            var meta = new Pub.SocialPostMetadata { Title = "물리엔진 대참사 \"레전드\" 🔥 #Shorts", Description = "라이브 하이라이트\n두 번째 줄", Privacy = "unlisted" };
+            meta.Tags[0] = "#쇼츠"; meta.Tags[1] = "#토크쇼"; meta.TagCount = 2;
+            using var small = L2R.LiveToReelsFactoryStudioRunner.SyntheticClip(3);
+            var smallBytes = new byte[small.Length]; small.ReadAt(0, smallBytes);
+            Assert.True(small.Length <= Pub.SocialMediaApiGatewayEngine.MultipartMax);
+            sim.ExpectMedia(smallBytes);
+            var r1 = await gw.UploadAsync(Pub.SocialPlatform.YouTube, small, meta);
+            Assert.True(r1.Ok && r1.MediaId == "ytSimMulti01" && sim.MultipartUploads == 1 && sim.LastTitle == meta.Title && r1.Refreshes == 0, "multipart " + r1.Error + " · " + sim.LastReject);
+            using var big = L2R.LiveToReelsFactoryStudioRunner.SyntheticClip(24);
+            var bigBytes = new byte[big.Length]; big.ReadAt(0, bigBytes);
+            Assert.True(big.Length > Pub.SocialMediaApiGatewayEngine.MultipartMax);
+            sim.ExpectMedia(bigBytes);
+            var c0 = sim.ResumableChunks;
+            var r2 = await gw.UploadAsync(Pub.SocialPlatform.YouTube, big, meta);
+            var expectChunks = (big.Length + 1024 * 1024 - 1) / (1024 * 1024);
+            Assert.True(r2.Ok && r2.MediaId == "ytSimResume01" && sim.ResumableChunks - c0 == expectChunks && gw.Progress(Pub.SocialPlatform.YouTube) == 1f, "재개 " + r2.Error + " 청크 " + (sim.ResumableChunks - c0) + "/" + expectChunks + " · " + sim.LastReject);
+            // 일시 장애(503) → 지수 백오프 재시도로 완주
+            sim.FailNextChunkWith = 503;
+            var r3 = await gw.UploadAsync(Pub.SocialPlatform.YouTube, big, meta);
+            Assert.True(r3.Ok, "503 재시도 " + r3.Error);
+            // 만료 4 분 전 → 업로드 전 선갱신(refresh_token) → 볼트 봉인 · 서버 토큰 일치
+            clock += 3600 - 240;
+            Assert.Equal(Pub.SocialLinkState.Expiring, gw.State(Pub.SocialPlatform.YouTube));
+            sim.ExpectMedia(smallBytes);
+            var saves0 = vault.Saves;
+            var r4 = await gw.UploadAsync(Pub.SocialPlatform.YouTube, small, meta);
+            var tb = new byte[128]; var tn = vault.Access(Pub.SocialPlatform.YouTube).CopyTo(tb);
+            Assert.True(r4.Ok && r4.Refreshes == 1 && sim.Refreshes == 1 && vault.Saves == saves0 + 1 && tb.AsSpan(0, tn).SequenceEqual(sim.CurrentToken(Pub.SocialPlatform.YouTube)) && gw.State(Pub.SocialPlatform.YouTube) == Pub.SocialLinkState.Connected,
+                "선갱신 " + r4.Error + " 갱신 " + r4.Refreshes);
+            // 서버측 토큰 폐기(타 기기 재발급) → 401 → 갱신 → 1 회 재시도 성공
+            sim.Issue(Pub.SocialPlatform.YouTube, "ya29.revoked-elsewhere"u8, clock + 3600, "1//sim-refresh"u8);
+            var u0 = sim.Unauthorized;
+            var r5 = await gw.UploadAsync(Pub.SocialPlatform.YouTube, small, meta);
+            Assert.True(r5.Ok && r5.Refreshes == 1 && sim.Unauthorized == u0 + 1, "401 재시도 " + r5.Error);
+            // 리프레시 토큰 무효 → 실패 · 재인증 필요
+            sim.Issue(Pub.SocialPlatform.YouTube, "ya29.x"u8, clock + 3600, "1//other"u8);
+            var r6 = await gw.UploadAsync(Pub.SocialPlatform.YouTube, small, meta);
+            Assert.True(!r6.Ok && gw.Failures(Pub.SocialPlatform.YouTube) == 1, "무효 refresh " + r6.Error);
+            // 제목 100 자 초과 → 서버 거부(규격 검증)
+            sim.Issue(Pub.SocialPlatform.YouTube, "ya29.ok"u8, clock + 3600, "1//sim-refresh"u8); vault.Store(Pub.SocialPlatform.YouTube, "ya29.ok", "1//sim-refresh", clock + 3600, clock);
+            var longMeta = new Pub.SocialPostMetadata { Title = new string('가', 101) };
+            var r7 = await gw.UploadAsync(Pub.SocialPlatform.YouTube, small, longMeta);
+            Assert.True(!r7.Ok && sim.LastReject!.StartsWith("title length", StringComparison.Ordinal));
+            // Instagram: 미연동 → 거부 · 연동 → 컨테이너(multipart/form-data) → rupload 청크 → 폴링 → 게시
+            var ri0 = await gw.UploadAsync(Pub.SocialPlatform.Instagram, small, meta);
+            Assert.True(!ri0.Ok && ri0.Error == "계정 미연동");
+            sim.Issue(Pub.SocialPlatform.Instagram, "IGQV.sim-initial"u8, clock + 60L * 86400);
+            vault.Store(Pub.SocialPlatform.Instagram, "IGQV.sim-initial", "", clock + 60L * 86400, clock);
+            meta.Tags[2] = "#물리엔진"; meta.Tags[3] = "#버추얼휴먼"; meta.Tags[4] = "#실시간반응"; meta.TagCount = 5;
+            sim.ExpectMedia(bigBytes);
+            var ri = await gw.UploadAsync(Pub.SocialPlatform.Instagram, big, meta);
+            Assert.True(ri.Ok && ri.MediaId == "18000000000000042" && sim.IgChunks == expectChunks && sim.Published == 1 && sim.LastTagCount == 6 &&   /* 제목 #Shorts + 태그 5 */ sim.LastCaption!.StartsWith(meta.Title, StringComparison.Ordinal),
+                "IG " + ri.Error + " · " + sim.LastReject + " 청크 " + sim.IgChunks);
+            // IG 장기 토큰 만료 임박 → ig_refresh_token 재교환
+            clock += 60L * 86400 - 100;
+            sim.ExpectMedia(smallBytes);
+            var ri2 = await gw.UploadAsync(Pub.SocialPlatform.Instagram, small, meta);
+            Assert.True(ri2.Ok && ri2.Refreshes == 1 && gw.Refreshes(Pub.SocialPlatform.Instagram) == 1, "IG 갱신 " + ri2.Error);
+            // PKCE 인가 URL(크리덴셜 미설정 → 빈 client_id · 로그/URL 에 시크릿 없음)
+            var au = gw.BuildAuthorizeUrl(Pub.SocialPlatform.YouTube);
+            Assert.True(au.StartsWith(Pub.SocialMediaApiGatewayEngine.GoogleAuthorizeUrl, StringComparison.Ordinal) && au.Contains("code_challenge_method=S256", StringComparison.Ordinal) && au.Contains("youtube.upload", StringComparison.Ordinal));
+            // 무할당: 인증 헤더 복호화 조립 · JSON 이스케이프 · 슬롯 재암호화
+            var hdr = new byte[2048]; var jbuf = new byte[4096];
+            var hdrAlloc = AllocationProbe.MinAllocated(() =>
+            {
+                for (var i = 0; i < 100; i++)
+                {
+                    var hn = 0; gw.WriteAuthHeader(Pub.SocialPlatform.YouTube, hdr, ref hn);
+                    var jn = 0; Pub.MultipartBodyWriter.JsonString(jbuf, ref jn, "제목 \"따옴표\" #Shorts 🔥");
+                    System.Security.Cryptography.CryptographicOperations.ZeroMemory(hdr.AsSpan(0, hn));
+                }
+            });
+            Assert.True(hdrAlloc == 0 && gw.LastHeaderUs < 500, "헤더 조립 할당 " + hdrAlloc + " · " + gw.LastHeaderUs + " µs");
+            var hn2 = 0; gw.WriteAuthHeader(Pub.SocialPlatform.YouTube, hdr, ref hn2);
+            Assert.Equal("Authorization: Bearer ya29.ok\r\n", System.Text.Encoding.ASCII.GetString(hdr, 0, hn2));
+
+            // ── PUB-2a: AI 메타 — 로컬 폴백 생성 · 정책 정규화 · 프롬프트 문맥 ──
+            var rec = new Pub.AiContentTrendRecommendationSynthesizer();
+            var ctx = new Pub.ShortformContext { KeyLine = "여러분 이거 진짜 실화인가요?", Caption = "직격 리액션", Cause = 1, Peak = 96, Hits = 14, HeadHits = 2, Confetti = 3, Program = SM.StationProgramKind.Talkshow, Category = Pub.ProductCategory.Tech };
+            Assert.True(await rec.GenerateAsync(ctx));
+            var title = new string(rec.Title);
+            Assert.True(rec.Fallbacks == 1 && title.Length <= 100 && title.Contains("#Shorts", StringComparison.Ordinal) && title.Contains("헤드샷", StringComparison.Ordinal) && rec.TagCount == 5, "폴백 제목 " + title + " 태그 " + rec.TagCount);
+            var tagSet = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < rec.TagCount; i++) { var t = new string(rec.Tag(i)); Assert.True(t[0] == '#' && t.Length <= 30 && !t.Contains(' ') && tagSet.Add(t), "태그 " + t); }
+            Assert.True(new string(rec.Description).Contains("실화인가요", StringComparison.Ordinal) && new string(rec.Description).Contains("14회", StringComparison.Ordinal));
+            var prompt = new string(rec.Prompt);
+            Assert.True(prompt.Contains("피격 14회", StringComparison.Ordinal) && prompt.Contains("헤드샷 2회", StringComparison.Ordinal) && prompt.Contains("TAGS:", StringComparison.Ordinal) && prompt.Contains("물리 피격", StringComparison.Ordinal));
+            // ── PUB-2b: 스트리밍 파서 — 1~3 자 토큰 경계 · 다줄 설명 · 태그 부족/중복/특수문자 → 5 개 보충 ──
+            var llm = new ScriptedLlm { Text = "TITLE: 오늘 방송 최고의 1초\nDESC: 첫 문장입니다.\n둘째 문장: 이어집니다.\nTAGS: #쇼츠, 쇼츠 #라이브!! #a b\n", Chunk = 2 };
+            rec.Llm = llm;
+            await rec.GenerateAsync(ctx);
+            Assert.True(rec.Fallbacks == 1 && new string(rec.Title) == "오늘 방송 최고의 1초 #Shorts" && new string(rec.Description) == "첫 문장입니다. 둘째 문장: 이어집니다." && rec.TagCount == 5 && new string(rec.Tag(0)) == "#쇼츠" && new string(rec.Tag(1)) == "#라이브" && new string(rec.Tag(2)) == "#a",
+                "스트림 " + new string(rec.Title) + " | " + new string(rec.Description) + " | " + rec.TagCount + " " + new string(rec.Tag(0)) + new string(rec.Tag(1)) + new string(rec.Tag(2)));
+            llm.Chunk = 1; await rec.GenerateAsync(ctx);
+            Assert.Equal("오늘 방송 최고의 1초 #Shorts", new string(rec.Title));
+            // ── PUB-2c: LLM 지연 → 1 s 타임아웃 · 로컬 폴백 · 받은 제목 [부분 구제] ──
+            rec.TimeoutMs = 300;
+            llm.Text = "TITLE: 지연 LLM 제목\nDESC: 끝나지 않는 설명"; llm.StallAfterChars = 20; llm.Chunk = 4;
+            var sw = Stopwatch.StartNew();
+            await rec.GenerateAsync(ctx);
+            Assert.True(sw.ElapsedMilliseconds < 1_500 && rec.Fallbacks == 2 && new string(rec.Title).StartsWith("지연 LLM 제목", StringComparison.Ordinal) && rec.TagCount == 5 && new string(rec.Description).Contains("실화인가요", StringComparison.Ordinal),
+                "타임아웃 " + sw.ElapsedMilliseconds + " ms · " + new string(rec.Title));
+            // 무할당: 토큰 파서
+            var tokens = "TITLE: 무할당 제목\nDESC: 설명 줄\nTAGS: #a #b #c #d #e\n".ToCharArray();
+            var parseAlloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 50; k++) { rec.Reset(); for (var i = 0; i < tokens.Length; i += 3) rec.OnToken(tokens.AsSpan(i, Math.Min(3, tokens.Length - i))); } });
+            Assert.True(parseAlloc == 0 && rec.TagCount == 5 && rec.MaxTokenUs < 1_000, "파서 할당 " + parseAlloc);
+            // ── PUB-2d: 24 h 편성 추천 — 성과 사후 × 시간대 트래픽 · 중복 회피 · 앰비언트 저트래픽 한정 ──
+            for (var i = 0; i < 40; i++) { rec.RecordOutcome(SM.StationProgramKind.LiveCommerce, Pub.ProductCategory.Beauty, 0.95f); rec.RecordOutcome(SM.StationProgramKind.Talkshow, Pub.ProductCategory.Tech, 0.2f); }
+            Assert.Equal(3, rec.Recommend(9));
+            var top = rec.Recommendation(0);
+            Assert.True(top.Kind == SM.StationProgramKind.LiveCommerce && top.Category == Pub.ProductCategory.Beauty && Pub.AiContentTrendRecommendationSynthesizer.HourTraffic(top.StartHour) > 0.8f, "추천 " + top.Kind + " " + top.Category + " " + top.StartHour + "시");
+            for (var i = 0; i < 3; i++) { var r = rec.Recommendation(i); if (r.Kind == SM.StationProgramKind.Ambient) Assert.True(Pub.AiContentTrendRecommendationSynthesizer.HourTraffic(r.StartHour) <= 0.3f); for (var j = 0; j < i; j++) Assert.True(Math.Abs(rec.Recommendation(j).StartHour - r.StartHour) >= 3); }
+            Assert.True(rec.Recommendation(1).Score <= top.Score && rec.Recommendation(2).Score <= rec.Recommendation(1).Score);
+
+            // ── PUB-3a: 프리셋 매니저 — 내장 4 · 저장/재로드 · 검증 클램프 · 내장 이름 거부 · 손상 복구 ──
+            var ppath = Path.Combine(tmp, "presets", "creator_presets.json");
+            var pm = new Pub.CreatorQolPresetManager(ppath);
+            Assert.True(pm.Count == 4 && pm.Find("라이브 커머스")!.Program == SM.StationProgramKind.LiveCommerce && pm.Find("게임 방송")!.AutoDirect == false);
+            var mine = Pub.CreatorQolPresetManager.Clone(pm.Find("라디오 토크쇼")!, "심야 라디오");
+            mine.BgmBpm = 999; mine.Avatars = 9; mine.Privacy = "everyone";
+            Assert.True(pm.Upsert(mine) && pm.Count == 5);
+            Assert.False(pm.Upsert(Pub.CreatorQolPresetManager.Clone(mine, "게임 방송")));
+            var pm2 = new Pub.CreatorQolPresetManager(ppath);
+            Assert.True(pm2.Load() && pm2.Count == 5);
+            var back = pm2.Find("심야 라디오")!;
+            Assert.True(back.BgmBpm == 200 && back.Avatars == 3 && back.Privacy == "private" && back.Program == SM.StationProgramKind.Talkshow && !back.BuiltIn, "클램프 " + back.BgmBpm + " " + back.Avatars + " " + back.Privacy);
+            Assert.Contains("\"Talkshow\"", File.ReadAllText(ppath), StringComparison.Ordinal);
+            File.WriteAllText(ppath, "{ corrupted");
+            var pm3 = new Pub.CreatorQolPresetManager(ppath);
+            Assert.True(!pm3.Load() && pm3.Count == 4 && pm3.LastError is not null);
+
+            // ── PUB-3b/종단: 릴스 팩토리 → 자동 초안 → 자동 업로드(YT 재개 + IG) · 프리셋 적용(방송국) · 1-Click 체크리스트 ──
+            var factory = new L2R.LiveToReelsFactoryStudioRunner();
+            factory.UseSyntheticSource(20);
+            var talk = new PromptFlowStudio.Services.Talkshow.MultiAvatarTalkshowStudioRunner(1500);
+            var mcr = new BMc.BroadcastMcrStudioRunner(talk, envSplats: 30_000, bodySplats: 10_000, faceSplats: 2_000);
+            var st = new SM.MasterStationNetworkStudioRunner(mcr);
+            var pub = new Pub.OmniChannelPublisherStudioRunner(factory, st, root: tmp, simulate: true);
+            Assert.True(pub.Simulated && !pub.KeySecure);
+            pub.Gateway.ChunkSize = 1024 * 1024;
+            pub.ConnectSimulated(Pub.SocialPlatform.YouTube); pub.ConnectSimulated(Pub.SocialPlatform.Instagram);
+            Assert.True(pub.Connected(Pub.SocialPlatform.YouTube) && pub.Connected(Pub.SocialPlatform.Instagram) && File.Exists(Path.Combine(tmp, "Vault", "social_oauth.bin")));
+            var req = new L2R.ClimaxClipRequest { Id = 1, StartMs = 0, EndMs = 20_000, Peak = 93, Cause = L2R.ClimaxCause.Physics };
+            var reel = factory.ProcessRequest(in req);
+            Assert.True(reel.Media is not null, "릴 " + reel.Failure);
+            pub.SetAutoUpload(true, startWorker: false);   // 워커 대신 결정적 1 회 폴링
+            await pub.PollOnceAsync();
+            var d = pub.FindDraft(reel.Id)!;
+            Assert.True(d is { Generated: true } && d.YouTube is { Ok: true } && d.Instagram is { Ok: true } && pub.AutoUploads == 1 && d.Meta.TagCount == 5 && d.Meta.Title.Contains("#Shorts", StringComparison.Ordinal),
+                "자동 업로드 " + d?.YouTube?.Error + " / " + d?.Instagram?.Error + " · " + pub.Simulator.LastReject);
+            Assert.True(pub.Simulator.ResumableChunks >= 2 && pub.Simulator.Published == 1 && pub.Recommender.Posterior(st.Active, d.Context.Category) > 0.5f);
+            await pub.PollOnceAsync();
+            Assert.Equal(1, pub.AutoUploads);   // 같은 릴 중복 업로드 금지
+            pub.EditDraft(reel.Id, "수정 제목", "수정 설명", "#하나 둘 #둘");
+            Assert.True(d.Meta.Title == "수정 제목" && d.Meta.TagCount == 5 && d.Meta.Tags[0] == "#하나" && d.Meta.Tags[1] == "#둘");
+            // 프리셋 적용 → 방송국(아바타 · 디렉팅 · 보류 · 즉시 편성) · 팩토리 임계 · 업로드 대상
+            var log = pub.Presets.Apply(pub.Presets.Find("라이브 커머스")!, pub);
+            Assert.True(talk.Active == 2 && mcr.AutoDirect && st.Failover.HoldMs == 3_000 && st.Epg.OnAir == SM.StationProgramKind.LiveCommerce && Math.Abs(factory.Detector.Threshold - 85f) < 0.01f && pub.Privacy == "public" && log.Count >= 5, string.Join(" | ", log));
+            st.ControlOnce();
+            Assert.Equal(SM.StationProgramKind.LiveCommerce, st.Active);
+            pub.Presets.Apply(pub.Presets.Find("게임 방송")!, pub);
+            st.ControlOnce();
+            Assert.True(!mcr.AutoDirect && st.Active == SM.StationProgramKind.RhythmConcert && Math.Abs(factory.Detector.Threshold - 80f) < 0.01f && pub.UploadYouTube);
+            // 1-Click(방송국 · 팩토리 가동 → 체크리스트) → 정지
+            var check = pub.OneClickStart(pub.Presets.Find("라디오 토크쇼")!);
+            Assert.True(st.IsRunning && factory.IsRunning && pub.AutoUpload && pub.OneClicks == 1 && check.Count(s => s.StartsWith("✅", StringComparison.Ordinal)) == 3 && !pub.UploadInstagram, string.Join(" | ", check));
+            pub.StopAll();
+            Assert.True(!st.IsRunning && !factory.IsRunning && !pub.AutoUpload);
+            Assert.True(pub.SaveCurrentAsPreset("내 세팅") && pub.Presets.Find("내 세팅")!.Avatars == talk.Active);
+            pub.Dispose(); st.Dispose(); mcr.Dispose(); talk.Dispose(); factory.Dispose();
+
+            // ── PUB-4: 카탈로그 · HUD · 레이아웃 · 모달 렌더 · 구독 해제 ──
+            Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, e => e.Key == "_omniPublisher" && e.Category == 4);
+            var root = RepoRoot();
+            var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
+            var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
+            Assert.True(hud.IndexOf("gth-v1771", StringComparison.Ordinal) is > 0 and var i1771 && i1771 < hud.IndexOf("gth-v1770", StringComparison.Ordinal) && hud.Contains("PubRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("PubRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+            Assert.True(layout.Contains("<OmniChannelPublisherStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_omniPublisher\"", StringComparison.Ordinal) && layout.Contains("\"_omniPublisher\" =>", StringComparison.Ordinal));
+            using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+            var runner = sp.GetService(typeof(Pub.OmniChannelPublisherStudioRunner))!;
+            var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.OmniChannelPublisherStudioModal), sp);
+            Assert.True(html.Length > 500 && html.Contains("ocp-scrim", StringComparison.Ordinal) && html.Contains("방송 시작 및 자동 업로드 활성화", StringComparison.Ordinal) && html.Contains(System.Text.Encodings.Web.HtmlEncoder.Default.Encode("라이브 커머스"), StringComparison.Ordinal), "모달 렌더 " + html.Length);   // 동적 텍스트 = HTML 엔티티 인코딩
+            Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        }
+        finally
+        {
+            try { Directory.Delete(tmp, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        }
     }
 }
