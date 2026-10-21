@@ -275,6 +275,7 @@
 @inject PromptFlowStudio.Services.SmartPublishing.SmartPublishingSchedulerStudioRunner SpsRun
 @inject PromptFlowStudio.Services.VisualHooks.KineticVisualHookStudioRunner KvhRun
 @inject PromptFlowStudio.Services.KineticBRoll.KineticTypographyBRollStudioRunner KbrRun
+@inject PromptFlowStudio.Services.LivePublish.ProductionLivePublisherStudioRunner LpcRun
 @inject PromptFlowStudio.Services.SkinnedSplatAvatar.DualQuaternionGaussianAvatarStudioRunner DqAvRun
 @inject PromptFlowStudio.Services.AgentFederation.RealtimeSpatiotemporalKnowledgeGraph FedKg
 @inject PromptFlowStudio.Services.AgentFederation.ZeroTrustInterAgentConsensusResolver FedCons
@@ -994,6 +995,22 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.79.0: 실제 SNS 라이브 배포 — OAuth 연결 · 토큰 잔여 · 청크 진행 · 안전 모드 · 롤백 ── *@
+    <div class="gth-v1779">
+        @{ var lpcNow = LpcRun.Clock(); var lpcYt = LpcRun.Vault.Account(PromptFlowStudio.Services.LivePublish.LiveProvider.YouTube); var lpcIg = LpcRun.Vault.Account(PromptFlowStudio.Services.LivePublish.LiveProvider.Instagram); }
+        <div class="gth-v96-card pid @(LpcRun.Guard.Stage == PromptFlowStudio.Services.LivePublish.LivePublishStage.Completed ? "ok" : null)">
+            <div class="gth-v96-h"><b>🚀 라이브 배포 콕핏</b>
+                <span class="gth-v96-be">@(LpcRun.Vault.AnyLive ? "LIVE" : "계약 Mock")@(LpcRun.Guard.SafeMode ? " · 🛡 " + LpcRun.Guard.ActivePrivacy : " · ⚡ public")</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="@(lpcYt.IsConnected ? "acc" : "warn")">@(lpcYt.IsConnected ? (lpcYt.SecondsLeft(lpcNow) / 60).ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "분" : "—")</b><span>YT 토큰</span></span>
+                <span class="gth-v96-m"><b class="@(lpcIg.IsConnected ? "acc" : "warn")">@(lpcIg.IsConnected ? (lpcIg.SecondsLeft(lpcNow) / 86400).ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "일" : "—")</b><span>IG 토큰</span></span>
+                <span class="gth-v96-m"><b>@((LpcRun.Uploader.Progress * 100).ToString("0", System.Globalization.CultureInfo.InvariantCulture))%</b><span>청크 @(LpcRun.Uploader.ChunksSent)/@(LpcRun.Uploader.TotalChunks)</span></span>
+                <span class="gth-v96-m"><b class="@(LpcRun.Guard.Aborts > 0 ? "warn" : null)">@(LpcRun.Guard.Rollbacks)</b><span>롤백</span></span>
+            </div>
+            <div class="gth-v96-act">@(PromptFlowStudio.Services.LivePublish.LivePublishingPreflightRollbackGuard.StageName(LpcRun.Guard.Stage)) · @(LpcRun.LastAction ?? "대기")</div>
+        </div>
+    </div>
     @* ── v17.78.0: 키네틱 자막 & B-Roll — 단어 윈도우 · 인서트 · 캐시 절감 · 예산 ── *@
     <div class="gth-v1778">
         <div class="gth-v96-card pid @(KbrRun.Cache.OverBudget == 0 && KbrRun.Cache.Savings >= 0.3 ? "ok" : null)">
@@ -5615,6 +5632,7 @@
         VlRun.OnChange += OnSwarmChanged; // v17.50.0 (3.3 Hz)
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
         KbrRun.OnChange += OnSwarmChanged; // v17.78.0 (재생 10 Hz → 250 ms 스로틀)
+        LpcRun.OnChange += OnSwarmChanged; // v17.79.0 (배포 중 ~3 Hz · 단계 전이 즉시)
         KvhRun.OnChange += OnSwarmChanged; // v17.77.0 (재생 10 Hz → 250 ms 스로틀)
         SpsRun.OnChange += OnSwarmChanged; // v17.76.0 (예약/발행/SFX 이벤트 → 250 ms 스로틀)
         RtoRun.OnChange += OnSwarmChanged; // v17.75.0 (폴링/승격/진단 이벤트 → 250 ms 스로틀)
@@ -5991,6 +6009,7 @@
         VlRun.OnChange -= OnSwarmChanged;
         OcRun.OnChange -= OnSwarmChanged;
         KbrRun.OnChange -= OnSwarmChanged;
+        LpcRun.OnChange -= OnSwarmChanged;
         KvhRun.OnChange -= OnSwarmChanged;
         SpsRun.OnChange -= OnSwarmChanged;
         RtoRun.OnChange -= OnSwarmChanged;

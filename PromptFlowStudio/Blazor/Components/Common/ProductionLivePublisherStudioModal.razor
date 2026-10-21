@@ -1,0 +1,237 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.LivePublish
+@using PromptFlowStudio.Services.GraphBridge
+@implements IDisposable
+@inject ProductionLivePublisherStudioRunner Runner
+
+@* [PromptFlow Studio v17.79.0] 🚀 실제 SNS 라이브 배포 콕핏 — 계정 연결(OAuth2 PKCE) · 토큰 잔여 · 안전 모드 · 청크 전송률 · 프리플라이트 · 롤백. *@
+<div class="lpc-scrim" @onclick="Close">
+    <div class="lpc-modal" @onclick:stopPropagation="true">
+        <div class="lpc-h">
+            <div>
+                <div class="lpc-title">🚀 실제 SNS 라이브 배포 콕핏 @(Runner.Running ? "· ● 루프 가동" : null) @(Runner.Vault.AnyLive ? "· 🌐 LIVE 자격증명" : "· 🧪 계약 Mock")</div>
+                <div class="lpc-sub">YouTube · Instagram 계정을 <b>OAuth2 PKCE</b>로 연결하고, 토큰은 <b>AES-GCM 256</b>으로 암호화해 보관하며 <b>만료 10분 전</b>에 백그라운드에서 자동 갱신합니다.
+                    영상은 <b>256KB~1MB 청크</b>로 나눠 올리고 연결이 끊겨도 <b>서버가 확인한 마지막 바이트부터</b> 이어 올립니다.
+                    업로드 전 <b>9:16 · 30/60fps · 100MB · 44.1/48kHz 스테레오</b> 규격을 검사하고, <b>안전 모드</b>에서는 YouTube를 비공개로 올려 먼저 검수합니다.
+                    저작권 차단·메타데이터 거부가 감지되면 즉시 배포를 멈추고 공개 영상은 비공개로 되돌린 뒤 웹훅 알림을 보냅니다.
+                    (환경변수 <kbd>PROMPTFLOW_YT_CLIENT_ID/SECRET</kbd> · <kbd>PROMPTFLOW_META_APP_ID/SECRET</kbd>가 없으면 계약 Mock으로 동작)</div>
+            </div>
+            <button class="lpc-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="lpc-bar">
+            <button class="lpc-btn hot" disabled="@(Runner.Guard.IsBusy)" @onclick="Deploy">🚀 데모 숏폼 배포</button>
+            <button class="lpc-btn" disabled="@(!Runner.Guard.IsBusy)" @onclick="Runner.Cancel">⏹ 중단</button>
+            <button class="lpc-btn" disabled="@(!Runner.Uploader.HasVideo || Runner.Guard.IsBusy)" @onclick="Runner.Promote">📣 public 승격</button>
+            <button class="lpc-btn" disabled="@(!Runner.Uploader.HasVideo || Runner.Guard.IsBusy)" @onclick="Runner.Rollback">↩ private 롤백</button>
+            <span class="lpc-sep"></span>
+            <button class="lpc-btn @(Runner.Guard.SafeMode ? "safe" : "live")" @onclick="Runner.ToggleSafeMode">@(Runner.Guard.SafeMode ? "🛡 안전 모드 ON" : "⚡ 안전 모드 OFF")</button>
+            <button class="lpc-btn sm @(Runner.Guard.SafePrivacy == SafePrivacy.Private ? "on" : null)" @onclick="() => Runner.SetSafePrivacy(SafePrivacy.Private)">private</button>
+            <button class="lpc-btn sm @(Runner.Guard.SafePrivacy == SafePrivacy.Unlisted ? "on" : null)" @onclick="() => Runner.SetSafePrivacy(SafePrivacy.Unlisted)">unlisted</button>
+            <span class="lpc-sep"></span>
+            @foreach (var t in TargetChoices)
+            {
+                var tt = t;
+                <button class="lpc-btn sm @(Runner.Targets == tt ? "on" : null)" @onclick="() => Runner.Targets = tt">@(TargetName(tt))</button>
+            }
+            <button class="lpc-btn sm @(Runner.Running ? "on" : null)" @onclick="ToggleLoop">@(Runner.Running ? "⏸ 루프" : "▶ 루프")</button>
+        </div>
+
+        <div class="lpc-steps">
+            @foreach (var s in Steps)
+            {
+                var ss = s;
+                <span class="st @(StepClass(ss))">@(LivePublishingPreflightRollbackGuard.StageName(ss))</span>
+            }
+        </div>
+
+        @{ var now = Runner.Clock(); }
+        <div class="lpc-main">
+            <div class="lpc-card">
+                <div class="lpc-sec">🔐 계정 연결 & 토큰 볼트</div>
+                @foreach (var p in Providers)
+                {
+                    var pp = p;
+                    var a = Runner.Vault.Account(pp);
+                    var ttl = Math.Max(1.0, a.ExpiresAt - a.IssuedAt);
+                    var left = a.SecondsLeft(now);
+                    <div class="lpc-acc @(a.IsConnected ? "ok" : null)">
+                        <div class="row"><b>@(pp == LiveProvider.YouTube ? "▶️ YouTube" : "📸 Instagram")</b><span class="bd @(Runner.Vault.IsLive(pp) ? "live" : null)">@(Runner.Vault.ModeName(pp))</span><span class="ph">@(PhaseName(a.Phase))</span></div>
+                        <div class="kv"><span>@(pp == LiveProvider.YouTube ? "채널" : "계정") <b>@(a.ProfileName)</b></span><span>ID <b>@(a.ChannelId)</b></span></div>
+                        <div class="lpc-gauge"><span>토큰 잔여</span><div class="bar"><i style="width:@((left / ttl * 100).ToString("0", CultureInfo.InvariantCulture))%" class="@(left <= ProductionOAuth2TokenVaultGateway.RefreshLeadSec ? "warn" : null)"></i></div><b>@(Remain(left))</b></div>
+                        <div class="kv"><span>토큰 @(Runner.Vault.TokenMasked(pp))</span><span>갱신 @(a.Refreshes) · 실패 @(a.RefreshFailures)</span><span>client @(Runner.Vault.ClientIdMasked(pp))</span></div>
+                        @if (a.LastError is { } err)
+                        {
+                            <div class="er">⚠ @(err)</div>
+                        }
+                        <div class="row">
+                            <button class="lpc-btn sm hot" disabled="@(a.IsConnected || Runner.Vault.InFlight(pp))" @onclick="() => Connect(pp)">🔗 연결(PKCE)</button>
+                            <button class="lpc-btn sm" disabled="@(!a.Access.IsSet)" @onclick="() => Runner.Disconnect(pp)">⏏ 해제</button>
+                        </div>
+                    </div>
+                }
+                <div class="kv">볼트 저장 @(Runner.Vault.VaultSaves) · 복원 @(Runner.Vault.VaultLoads) · 백그라운드 갱신 시도 @(Runner.Vault.BackgroundRefreshAttempts) · state 차단 @(Runner.Vault.StateRejections) · 틱 @(Runner.Vault.LastTickUs.ToString("0.0", CultureInfo.InvariantCulture)) µs</div>
+                @if (Runner.Vault.LastVaultError is { } ve)
+                {
+                    <div class="kv">💾 @(ve)</div>
+                }
+            </div>
+
+            <div class="lpc-card">
+                <div class="lpc-sec">📤 YouTube 이어올리기 — @(ProductionResumableVideoUploaderEngine.PhaseName(Runner.Uploader.Phase))</div>
+                @{ var up = Runner.Uploader; }
+                <div class="lpc-gauge"><span>업로드</span><div class="bar big"><i style="width:@((up.Progress * 100).ToString("0.0", CultureInfo.InvariantCulture))%" class="@(up.Phase == YouTubeUploadPhase.Failed ? "warn" : null)"></i></div><b>@((up.Progress * 100).ToString("0.0", CultureInfo.InvariantCulture))%</b></div>
+                <div class="kv">
+                    <span>청크 @(up.ChunksSent)/@(up.TotalChunks) × @((up.ChunkBytes / 1024).ToString(CultureInfo.InvariantCulture))KB</span>
+                    <span class="hl">전송률 @((up.BytesPerSec / (1024 * 1024)).ToString("0.0", CultureInfo.InvariantCulture)) MB/s</span>
+                    <span>오프셋 @(up.Offset.ToString("N0", CultureInfo.InvariantCulture)) / @(up.FileSize.ToString("N0", CultureInfo.InvariantCulture)) B</span>
+                </div>
+                <div class="kv">
+                    <span>재개 @(up.Resumes) (부분 @(up.PartialResumes))</span><span>세션 재생성 @(up.SessionRestarts)</span><span>HTTP @(up.LastStatus)</span><span>Step @(up.LastStepUs.ToString("0", CultureInfo.InvariantCulture)) µs</span>
+                </div>
+                <div class="kv"><span>공개 범위 요청 <b>@(up.RequestedPrivacy)</b> → 확정 <b>@(up.ConfirmedPrivacy)</b></span><span>videoId <b>@(up.VideoId)</b></span></div>
+                <div class="row">
+                    @foreach (var c in ChunkChoices)
+                    {
+                        var cc = c;
+                        <button class="lpc-btn sm @(up.ChunkBytes == cc ? "on" : null)" disabled="@(up.IsActive)" @onclick="() => up.ChunkBytes = cc">@((cc / 1024).ToString(CultureInfo.InvariantCulture))KB</button>
+                    }
+                </div>
+
+                <div class="lpc-sec sm">📸 Instagram 릴스 — @(ChunkedReelsPublishingDispatcherSynthesizer.PhaseName(up.Reels.Phase))</div>
+                <div class="lpc-gauge"><span>rupload</span><div class="bar"><i style="width:@((up.Reels.Progress * 100).ToString("0", CultureInfo.InvariantCulture))%" class="@(up.Reels.Phase == ReelsPublishPhase.Failed ? "warn" : null)"></i></div><b>@((up.Reels.Progress * 100).ToString("0", CultureInfo.InvariantCulture))%</b></div>
+                <div class="kv"><span>컨테이너 @(up.Reels.ContainerId)</span><span>폴링 @(up.Reels.Polls)</span><span>미디어 @(up.Reels.MediaId)</span><span>발행 @(up.ReelsPublished) · 실패 @(up.ReelsFailed)</span></div>
+                @if (up.LastError is { } ue)
+                {
+                    <div class="er">⚠ YouTube: @(ue) · @(ProductionResumableVideoUploaderEngine.RejectionName(up.Rejection))</div>
+                }
+                @if (up.Reels.LastError is { } re)
+                {
+                    <div class="er">⚠ Instagram: @(re)</div>
+                }
+            </div>
+
+            <div class="lpc-card">
+                <div class="lpc-sec">🛡 프리플라이트 & 롤백 가드</div>
+                @{ var issues = Runner.Guard.LastIssues; }
+                @foreach (var r in Rules)
+                {
+                    var rr = r;
+                    <div class="lpc-rule @((issues & rr.Flag) != 0 ? "bad" : Runner.Guard.PreflightPassed + Runner.Guard.PreflightRejected > 0 ? "good" : null)"><span>@((issues & rr.Flag) != 0 ? "✗" : "✓")</span>@(rr.Text)</div>
+                }
+                <div class="kv"><span>통과 @(Runner.Guard.PreflightPassed)</span><span>차단 @(Runner.Guard.PreflightRejected)</span><span>검사 @(Runner.Guard.LastPreflightUs.ToString("0.0", CultureInfo.InvariantCulture)) µs</span></div>
+                <div class="kv"><span>중단 @(Runner.Guard.Aborts)</span><span>롤백 @(Runner.Guard.Rollbacks)</span><span>승격 @(Runner.Guard.Promotions)</span><span>완료 @(Runner.Guard.Completions)</span></div>
+                <div class="kv"><span>마지막 거부 <b>@(ProductionResumableVideoUploaderEngine.RejectionName(Runner.Guard.LastRejection))</b></span><span>@(Runner.Guard.FailedProvider is { } fp ? ProductionLivePublisherStudioRunner.Label(fp) : "—")</span></div>
+                <div class="kv"><span>🔔 웹훅 알림 @(Runner.Guard.AlertsDispatched) (@(Runner.AlertsShared ? "v17.73 오토파일럿 큐 공유" : "로컬 큐"))</span><span>대기 @(Runner.Alerts.Pending)</span></div>
+                @if (!Runner.Vault.IsLive(LiveProvider.YouTube))
+                {
+                    <div class="lpc-sec sm">🧪 계약 Mock 장애 주입</div>
+                    <div class="row">
+                        <button class="lpc-btn sm" @onclick="Runner.InjectDrop">🔌 청크 단절</button>
+                        <button class="lpc-btn sm @(Runner.Vault.Contract.RejectCopyright ? "on" : null)" @onclick="() => Runner.InjectCopyright(!Runner.Vault.Contract.RejectCopyright)">©️ 저작권 거부</button>
+                    </div>
+                    <div class="kv"><span>단절 @(Runner.Vault.Contract.NetworkDrops)</span><span>오프셋 조회 @(Runner.Vault.Contract.OffsetQueries)</span><span>서버 수신 @(Runner.Vault.Contract.YtReceived.ToString("N0", CultureInfo.InvariantCulture)) B</span><span>서버 공개 범위 @(LivePublishContractSimulator.PrivacyName(Runner.Vault.Contract.YtPrivacy))</span></div>
+                }
+            </div>
+        </div>
+        <div class="lpc-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+    </div>
+</div>
+
+<style>
+    .lpc-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .lpc-modal { width: min(1340px, 96vw); max-height: 94vh; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); padding: 14px 16px; color: var(--text-primary); }
+    .lpc-h { display: flex; justify-content: space-between; gap: 12px; } .lpc-title { font-size: 17px; font-weight: 800; } .lpc-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; } .lpc-sub kbd { font-size: 10.5px; color: #fde047; }
+    .lpc-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .lpc-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; } .lpc-sep { flex: 1; }
+    .lpc-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; font-size: 12px; cursor: pointer; } .lpc-btn:disabled { opacity: .45; cursor: default; }
+    .lpc-btn.sm { font-size: 11px; padding: 4px 8px; } .lpc-btn.hot { border-color: #f97316; } .lpc-btn.on { background: color-mix(in srgb, #38bdf8 25%, #1e293b); border-color: #38bdf8; }
+    .lpc-btn.safe { border-color: #22c55e; color: #86efac; } .lpc-btn.live { border-color: #ef4444; color: #fca5a5; }
+    .lpc-steps { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; } .lpc-steps .st { font-size: 11px; padding: 3px 9px; border-radius: 999px; background: #111827; border: 1px solid #1e293b; color: var(--text-muted); }
+    .lpc-steps .st.on { border-color: #38bdf8; color: #e0f2fe; background: color-mix(in srgb, #38bdf8 20%, #111827); } .lpc-steps .st.done { color: #86efac; border-color: #166534; } .lpc-steps .st.bad { color: #fca5a5; border-color: #991b1b; }
+    .lpc-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 0.9fr); gap: 10px; }
+    .lpc-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; } .lpc-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 8px; } .lpc-sec.sm { margin-top: 10px; font-size: 12px; }
+    .lpc-acc { border: 1px solid #1e293b; border-radius: 8px; padding: 8px; margin-bottom: 8px; } .lpc-acc.ok { border-color: #166534; }
+    .lpc-acc .row, .lpc-card .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 3px 0; }
+    .lpc-acc .bd { font-size: 10px; padding: 1px 6px; border-radius: 999px; background: #312e81; color: #c7d2fe; } .lpc-acc .bd.live { background: #7f1d1d; color: #fecaca; } .lpc-acc .ph { font-size: 10.5px; color: var(--text-muted); margin-left: auto; }
+    .lpc-card .kv { font-size: 10.5px; color: var(--text-muted); margin: 4px 0 6px; display: flex; flex-wrap: wrap; gap: 8px; } .lpc-card .kv b { color: var(--text-primary); } .lpc-card .kv .hl { color: #fde047; font-weight: 700; }
+    .lpc-card .er { font-size: 10.5px; color: #fca5a5; margin: 3px 0; }
+    .lpc-gauge { display: grid; grid-template-columns: 70px 1fr auto; gap: 6px; align-items: center; font-size: 11.5px; margin-top: 4px; } .lpc-gauge b { font: 700 11px var(--mono); color: #fde047; }
+    .lpc-gauge .bar { height: 10px; background: #111827; border-radius: 999px; overflow: hidden; } .lpc-gauge .bar.big { height: 14px; } .lpc-gauge .bar i { display: block; height: 100%; background: #22c55e; transition: width .2s; } .lpc-gauge .bar i.warn { background: #ef4444; }
+    .lpc-rule { font-size: 11.5px; padding: 2px 0; color: var(--text-muted); } .lpc-rule span { display: inline-block; width: 16px; } .lpc-rule.good span { color: #22c55e; } .lpc-rule.bad { color: #fca5a5; } .lpc-rule.bad span { color: #ef4444; }
+    .lpc-act { font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+    @@media (max-width: 1100px) { .lpc-main { grid-template-columns: 1fr 1fr; } }
+    @@media (max-width: 760px) { .lpc-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly LiveProvider[] Providers = { LiveProvider.YouTube, LiveProvider.Instagram };
+    private static readonly LiveTargets[] TargetChoices = { LiveTargets.YouTube, LiveTargets.Instagram, LiveTargets.Both };
+    private static readonly int[] ChunkChoices = { 256 * 1024, 512 * 1024, 1024 * 1024 };
+    private static readonly LivePublishStage[] Steps = { LivePublishStage.UploadingYouTube, LivePublishStage.PublishingInstagram, LivePublishStage.Promoting, LivePublishStage.Completed, LivePublishStage.RolledBack, LivePublishStage.Aborted };
+    private static readonly (PreflightIssue Flag, string Text)[] Rules =
+    {
+        (PreflightIssue.NotMp4, "MP4(ftyp) 컨테이너"), (PreflightIssue.AspectRatio, "종횡비 9:16 (±1%)"), (PreflightIssue.Resolution, "해상도 ≥ 720×1280"),
+        (PreflightIssue.FrameRate, "30 / 60 fps"), (PreflightIssue.FileSize, "용량 ≤ 100 MB"), (PreflightIssue.AudioRate, "오디오 44.1 / 48 kHz"),
+        (PreflightIssue.AudioChannels, "오디오 스테레오 2ch"), (PreflightIssue.Duration, "길이 3~180 초"),
+    };
+    private System.Threading.Timer? _timer;
+
+    private static string TargetName(LiveTargets t) => t == LiveTargets.YouTube ? "▶️ YouTube" : t == LiveTargets.Instagram ? "📸 Instagram" : "▶️+📸 동시";
+
+    private static string PhaseName(LiveAuthPhase p) => p switch
+    {
+        LiveAuthPhase.Exchanging => "토큰 교환 중",
+        LiveAuthPhase.Connected => "연결됨",
+        LiveAuthPhase.Refreshing => "갱신 중",
+        LiveAuthPhase.Expired => "만료",
+        LiveAuthPhase.Failed => "재인증 필요",
+        _ => "미연결",
+    };
+
+    private static string Remain(double sec) => sec <= 0 ? "—" : sec >= 86400 ? (sec / 86400).ToString("0.0", CultureInfo.InvariantCulture) + "일"
+        : ((int)(sec / 60)).ToString(CultureInfo.InvariantCulture) + ":" + ((int)(sec % 60)).ToString("00", CultureInfo.InvariantCulture);
+
+    private string? StepClass(LivePublishStage s)
+    {
+        var cur = Runner.Guard.Stage;
+        if (s == cur) return s is LivePublishStage.RolledBack or LivePublishStage.Aborted ? "bad" : s == LivePublishStage.Completed ? "done" : "on";
+        return cur == LivePublishStage.Completed && s is LivePublishStage.UploadingYouTube or LivePublishStage.PublishingInstagram ? "done" : null;
+    }
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("LivePublish.Modal.Timer", ex); }
+        }, null, 1000, 1000);
+    }
+
+    private void Deploy()
+    {
+        try { if (!Runner.Running) Runner.Start(); Runner.RunDemo(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LivePublish.Modal.Deploy", ex); }
+    }
+
+    private async Task Connect(LiveProvider p)
+    {
+        try { if (!Runner.Running) Runner.Start(); await Runner.ConnectAsync(p); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LivePublish.Modal.Connect", ex); }
+    }
+
+    private void ToggleLoop() { if (Runner.Running) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}

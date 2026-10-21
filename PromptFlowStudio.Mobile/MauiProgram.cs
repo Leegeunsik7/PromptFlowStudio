@@ -789,6 +789,7 @@ public static class MauiProgram
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.BroadcastMcr.BroadcastMcrStudioRunner(sp));
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.Showrunner.InteractiveShowrunnerStudioRunner(sp));
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.KineticBRoll.KineticTypographyBRollStudioRunner(sp)); // v17.78.0 키네틱 자막 & B-Roll
+        builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.LivePublish.ProductionLivePublisherStudioRunner(sp)); // v17.79.0 실제 SNS 라이브 배포(Google/Meta OAuth2 PKCE · AES-GCM 256 볼트 · 만료 10 분 전 논블로킹 갱신 · YouTube Resumable 256 KB~1 MB 청크 + 308/Range 재개 · IG 릴스 컨테이너→rupload→폴링→publish · 프리플라이트 9:16/30·60fps/100MB/44.1·48kHz · 비공개 드라이런 2 단계 커밋 롤백 · v17.73 웹훅 알림)
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.VisualHooks.KineticVisualHookStudioRunner(sp)); // v17.77.0 키네틱 비주얼 훅 & 세이프존
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.SmartPublishing.SmartPublishingSchedulerStudioRunner(sp)); // v17.76.0 스마트 배포 캘린더 & SFX
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.RetentionOptimizer.ViralRetentionOptimizerStudioRunner(sp)); // v17.75.0 릴스 유지율 & A/B 최적화

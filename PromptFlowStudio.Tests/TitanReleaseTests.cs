@@ -43,6 +43,7 @@ using Rto = PromptFlowStudio.Services.RetentionOptimizer;
 using Sps = PromptFlowStudio.Services.SmartPublishing;
 using Vh = PromptFlowStudio.Services.VisualHooks;
 using Kbr = PromptFlowStudio.Services.KineticBRoll;
+using Lp = PromptFlowStudio.Services.LivePublish;
 using Nw = PromptFlowStudio.Services.Newsroom;
 using Spt = PromptFlowStudio.Services.Sports;
 using V3 = System.Numerics.Vector3;
@@ -32512,7 +32513,7 @@ public sealed class HormoziKineticBRollIsolatedTests
 
         // ── BROLL-4b: 카탈로그 · HUD · 레이아웃 · DI · 모달 렌더 · 구독 해제 · 디스크 I/O 0 ──
         Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_brollSubtitles" && en.Category == 4);
-        Assert.Equal(154, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        Assert.True(PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length >= 154);
         var root = RepoRoot();
         var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
         var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
@@ -32728,5 +32729,343 @@ public sealed class HormoziKineticBRollIsolatedTests
         Assert.True(c.Degraded && c.DegradeEntries == 1 && c.OverBudget >= 3, "저비용 진입");
         for (var k = 0; k < Kbr.ZeroAllocRenderFrameCacheGuard.RecoverAfter; k++) { c.BeginFrame(); c.EndFrame(); }
         Assert.False(c.Degraded, "복귀");
+    }
+}
+
+/// <summary>v17.79.0 실제 SNS 라이브 배포 — OAuth2 PKCE(S256 · state CSRF) · 만료 10 분 전 무할당 갱신 · AES-GCM 볼트 영속화/변조 탐지 · YouTube Resumable(308/Range · 단절 후 바이트 오프셋 재개) · IG 릴스 3 단계 · 프리플라이트 · 비공개 드라이런 2 단계 커밋 롤백 · 웹훅 알림 · UI 결선(할당 계측 → 비병렬).</summary>
+[Collection("TimingSensitivePerformance")]   // 무할당 계측 · 업로드 루프 → 비병렬
+public sealed class ProductionLivePublisherIsolatedTests
+{
+    private static readonly Func<string, string?> NoEnv = static _ => null;
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+
+    private static string Query(string url, string key)
+    {
+        foreach (var kv in url[(url.IndexOf('?') + 1)..].Split('&'))
+            if (kv.StartsWith(key + "=", StringComparison.Ordinal)) return Uri.UnescapeDataString(kv[(key.Length + 1)..]);
+        return "";
+    }
+
+    [Fact]
+    public async Task ProductionLivePublisher_And_E2EValidation_Check()
+    {
+        VaultPkceAndRefreshChecks();
+        VaultLiveModeAndPersistenceChecks();
+        ResumableUploadChecks();
+        PreflightAndRollbackChecks();
+
+        // ── LIVE-4: 카탈로그 · HUD · 레이아웃 · DI · 모달 렌더 · 구독 해제 ──
+        Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_liveOAuthPublisher" && en.Category == 4);
+        Assert.Equal(155, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        var root = RepoRoot();
+        var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
+        var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
+        var mainForm = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "MainForm.cs"));
+        var maui = File.ReadAllText(Path.Combine(root, "PromptFlowStudio.Mobile", "MauiProgram.cs"));
+        Assert.True(hud.IndexOf("gth-v1779", StringComparison.Ordinal) is > 0 and var i1779 && i1779 < hud.IndexOf("gth-v1778", StringComparison.Ordinal) && hud.Contains("LpcRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("LpcRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<ProductionLivePublisherStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_liveOAuthPublisher\"", StringComparison.Ordinal) && layout.Contains("\"_liveOAuthPublisher\" =>", StringComparison.Ordinal));
+        Assert.True(mainForm.Contains("LivePublish.ProductionLivePublisherStudioRunner(sp)", StringComparison.Ordinal) && maui.Contains("LivePublish.ProductionLivePublisherStudioRunner(sp)", StringComparison.Ordinal));
+        var gwSrc = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Services", "LivePublish", "ProductionOAuth2TokenVaultGateway.cs"));
+        foreach (var env in new[] { "PROMPTFLOW_YT_CLIENT_ID", "PROMPTFLOW_YT_CLIENT_SECRET", "PROMPTFLOW_META_APP_ID", "PROMPTFLOW_META_APP_SECRET" }) Assert.Contains(env, gwSrc, StringComparison.Ordinal);
+        foreach (var src in Directory.GetFiles(Path.Combine(root, "PromptFlowStudio", "Services", "LivePublish"), "*.cs"))
+        {
+            var text = File.ReadAllText(src);
+            Assert.True(!text.Contains("GOCSPX-", StringComparison.Ordinal) && !System.Text.RegularExpressions.Regex.IsMatch(text, @"EAA[A-Za-z0-9]{24,}|ya29\.[A-Za-z0-9_-]{24,}"), "시크릿 하드코딩 " + Path.GetFileName(src));
+        }
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = sp.GetService(typeof(Lp.ProductionLivePublisherStudioRunner))!;
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.ProductionLivePublisherStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("lpc-scrim", StringComparison.Ordinal) && html.Contains("lpc-gauge", StringComparison.Ordinal) && html.Contains("PKCE", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+
+    private static void VaultPkceAndRefreshChecks()
+    {
+        // ── LIVE-1a: 환경변수 부재 → 계약 Mock · PKCE S256 인가 URL 스키마 ──
+        using var gw = new Lp.ProductionOAuth2TokenVaultGateway(env: NoEnv);
+        Assert.False(gw.IsLive(Lp.LiveProvider.YouTube) || gw.IsLive(Lp.LiveProvider.Instagram) || gw.AnyLive);
+        Assert.Same(gw.Contract, gw.TransportFor(Lp.LiveProvider.YouTube));
+        Assert.Same(gw.Contract, gw.TransportFor(Lp.LiveProvider.Instagram));
+        double now = 1_800_000_000;
+        var url = gw.BeginAuthorization(Lp.LiveProvider.YouTube);
+        Assert.StartsWith(Lp.ProductionOAuth2TokenVaultGateway.GoogleAuthorizeUrl + "?client_id=", url, StringComparison.Ordinal);
+        Assert.Contains("code_challenge_method=S256", url, StringComparison.Ordinal);
+        Assert.Contains("access_type=offline", url, StringComparison.Ordinal);
+        Assert.Contains("youtube.upload", Query(url, "scope"), StringComparison.Ordinal);
+        var chal = Query(url, "code_challenge");
+        Assert.True(chal.Length == 43 && chal.IndexOfAny(new[] { '=', '+', '/' }) < 0, "S256 base64url " + chal);
+        Assert.Equal(22, Query(url, "state").Length);
+        var igUrl = gw.BeginAuthorization(Lp.LiveProvider.Instagram);
+        Assert.True(igUrl.StartsWith(Lp.ProductionOAuth2TokenVaultGateway.MetaAuthorizeUrl, StringComparison.Ordinal) && Query(igUrl, "scope").Contains("instagram_content_publish", StringComparison.Ordinal));
+
+        // ── LIVE-1b: state 위조(CSRF) 차단 · PKCE verifier 불일치 거부 ──
+        var yt = gw.Account(Lp.LiveProvider.YouTube);
+        Assert.True(gw.Contract.Authorize(url, out var code1, out var state1));
+        var forged = (state1[0] == 'A' ? "B" : "A") + state1[1..];
+        Assert.False(gw.CompleteAuthorization(Lp.LiveProvider.YouTube, code1, forged, now));
+        Assert.True(gw.StateRejections == 1 && yt.Phase == Lp.LiveAuthPhase.Failed && !yt.Access.IsSet);
+        var u1 = gw.BeginAuthorization(Lp.LiveProvider.YouTube);
+        var u2 = gw.BeginAuthorization(Lp.LiveProvider.YouTube);
+        Assert.True(gw.Contract.Authorize(u1, out var c1, out _));
+        Assert.True(gw.CompleteAuthorization(Lp.LiveProvider.YouTube, c1, Query(u2, "state"), now));
+        Assert.True(gw.Contract.PkceFailures == 1 && yt.Phase == Lp.LiveAuthPhase.Failed && !yt.Access.IsSet, "PKCE 불일치 " + yt.Phase);
+
+        // ── LIVE-1c: 정상 교환 → 프로필 · 암호문 보관 · Meta 장기 토큰 ──
+        Assert.True(gw.ConnectViaContract(Lp.LiveProvider.YouTube, now), yt.LastError);
+        Assert.True(yt.IsConnected && yt.ChannelId == Lp.LivePublishContractSimulator.YtChannelId && yt.ProfileName == Lp.LivePublishContractSimulator.YtChannelTitle && yt.Refresh.IsSet);
+        Assert.Equal(now + Lp.LivePublishContractSimulator.YtAccessTtl, yt.ExpiresAt, 3);
+        Assert.False(yt.Access.CipherContains("ya29."u8) || yt.Refresh.CipherContains("1//"u8));
+        Assert.False(yt.Verifier.IsSet);
+        Assert.StartsWith("ya29.a", gw.TokenMasked(Lp.LiveProvider.YouTube), StringComparison.Ordinal);
+        var ig = gw.Account(Lp.LiveProvider.Instagram);
+        Assert.True(gw.ConnectViaContract(Lp.LiveProvider.Instagram, now), ig.LastError);
+        Assert.True(ig.IsConnected && ig.IgUserId == Lp.LivePublishContractSimulator.IgUserId && ig.ProfileName == "@" + Lp.LivePublishContractSimulator.IgUsername);
+        Assert.Equal(now + Lp.LivePublishContractSimulator.MetaLongTtl, ig.ExpiresAt, 3);
+        Assert.True(gw.Exchanges == 2 && gw.Contract.TokenExchanges == 2 && gw.Contract.ProfileCalls == 2);
+
+        // ── LIVE-1d: 만료 10 분 전 백그라운드 갱신 · 장애 백오프 · fb_exchange_token ──
+        gw.Tick(now + 100);
+        Assert.Equal(0, gw.Refreshes);
+        var t1 = yt.ExpiresAt - 599;
+        gw.Tick(t1);
+        Assert.True(yt.Refreshes == 1 && yt.IsConnected && Math.Abs(yt.ExpiresAt - (t1 + 3599)) < 1e-3, "갱신 " + yt.Refreshes);
+        gw.Contract.TokenOutageNext = 1;
+        var t2 = yt.ExpiresAt - 300;
+        gw.Tick(t2);
+        Assert.True(yt.RefreshFailures == 1 && yt.IsConnected && !gw.NeedsRefresh(Lp.LiveProvider.YouTube, t2 + 0.1), "백오프 " + yt.RefreshFailures);
+        gw.Tick(t2 + 10);
+        Assert.Equal(2, yt.Refreshes);
+        gw.Tick(ig.ExpiresAt - 500);
+        Assert.True(ig.Refreshes == 1 && ig.IsConnected, "IG 장기 토큰 갱신 " + ig.LastError);
+
+        // ── LIVE-1e: 토큰 파싱 · 갱신 틱 무할당 ──
+        var json = "{\"access_token\":\"ya29.abc\\u002fdef\",\"expires_in\":3599,\"refresh_token\":\"1//0eRT\",\"scope\":\"x\",\"token_type\":\"Bearer\"}"u8.ToArray();
+        var accBuf = new byte[1024]; var rtBuf = new byte[1024];
+        Assert.True(Lp.ProductionOAuth2TokenVaultGateway.TryParseTokenResponse(json, accBuf, out var al, rtBuf, out var rl, out var exp) && al == 12 && rl == 7 && exp == 3599);
+        Assert.True(accBuf.AsSpan(0, al).SequenceEqual("ya29.abc/def"u8));
+        Assert.False(Lp.ProductionOAuth2TokenVaultGateway.TryParseTokenResponse("{\"token_type\":\"Bearer\"}"u8, accBuf, out _, rtBuf, out _, out _));
+        var parseAlloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 200; k++) Lp.ProductionOAuth2TokenVaultGateway.TryParseTokenResponse(json, accBuf, out _, rtBuf, out _, out _); });
+        Assert.True(parseAlloc == 0, "토큰 파싱 할당 " + parseAlloc);
+        gw.Tick(yt.ExpiresAt - 300);
+        var r0 = yt.Refreshes;
+        var tickAlloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 16; k++) gw.Tick(yt.ExpiresAt - 300); });
+        Assert.True(tickAlloc == 0, "갱신 틱 할당 " + tickAlloc);
+        Assert.True(yt.Refreshes - r0 >= 16 && yt.IsConnected);
+
+        // ── LIVE-1f: 리프레시 폐기(invalid_grant) → 재인증 필요 · 토큰 제로화 ──
+        gw.Contract.RevokeYouTubeRefresh();
+        gw.Tick(yt.ExpiresAt - 100);
+        Assert.True(yt.Phase == Lp.LiveAuthPhase.Failed && !yt.Access.IsSet && !yt.Refresh.IsSet && (yt.LastError ?? "").Contains("재인증", StringComparison.Ordinal), "invalid_grant " + yt.LastError);
+    }
+
+    private static void VaultLiveModeAndPersistenceChecks()
+    {
+        // ── LIVE-1g: 환경변수 → LIVE 모드(실 HttpClient 전송) · 플랫폼별 독립 전환 ──
+        var ytId = "1234567890-pf.apps.googleusercontent.com"; var metaId = "987654321012345";
+        var env = new System.Collections.Generic.Dictionary<string, string>
+        {
+            ["PROMPTFLOW_YT_CLIENT_ID"] = ytId, ["PROMPTFLOW_YT_CLIENT_SECRET"] = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(12)),
+            ["PROMPTFLOW_META_APP_ID"] = metaId, ["PROMPTFLOW_META_APP_SECRET"] = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(12)),
+        };
+        Func<string, string?> envF = k => env.TryGetValue(k, out var v) ? v : null;
+        using (var real = new Lp.ProductionOAuth2TokenVaultGateway(env: envF))
+            Assert.True(real.IsLive(Lp.LiveProvider.YouTube) && real.TransportFor(Lp.LiveProvider.YouTube) is PromptFlowStudio.Services.GraphBridge.HttpGraphTransport && real.ModeName(Lp.LiveProvider.Instagram) == "LIVE");
+        using (var half = new Lp.ProductionOAuth2TokenVaultGateway(env: k => k.StartsWith("PROMPTFLOW_YT", StringComparison.Ordinal) ? envF(k) : null))
+            Assert.True(half.IsLive(Lp.LiveProvider.YouTube) && !half.IsLive(Lp.LiveProvider.Instagram) && ReferenceEquals(half.TransportFor(Lp.LiveProvider.Instagram), half.Contract));
+
+        // ── LIVE-1h: LIVE 자격증명 계약 검증 → AES-GCM 볼트 저장/복원 · 평문 부재 · 변조/키 불일치 탐지 ──
+        var sim = new Lp.LivePublishContractSimulator(ytId, env["PROMPTFLOW_YT_CLIENT_SECRET"], metaId, env["PROMPTFLOW_META_APP_SECRET"]);
+        var key = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+        var path = Path.Combine(Path.GetTempPath(), "pf-v1779-" + Guid.NewGuid().ToString("N") + ".pfv");
+        double now = 1_800_000_000;
+        try
+        {
+            using var gw = new Lp.ProductionOAuth2TokenVaultGateway(sim, envF, () => (byte[])key.Clone()) { VaultPath = path };
+            Assert.True(gw.IsLive(Lp.LiveProvider.YouTube) && ReferenceEquals(gw.TransportFor(Lp.LiveProvider.YouTube), sim));
+            Assert.Contains("client_id=" + Uri.EscapeDataString(ytId), gw.BeginAuthorization(Lp.LiveProvider.YouTube), StringComparison.Ordinal);
+            Assert.True(gw.ConnectViaContract(Lp.LiveProvider.YouTube, now), gw.Account(Lp.LiveProvider.YouTube).LastError);
+            Assert.True(gw.ConnectViaContract(Lp.LiveProvider.Instagram, now), gw.Account(Lp.LiveProvider.Instagram).LastError);
+            Assert.True(gw.Dirty && gw.SaveVault() && !gw.Dirty, gw.LastVaultError);
+            var file = File.ReadAllBytes(path);
+            var hdr = new byte[2048];
+            var hn = gw.WriteBearer(Lp.LiveProvider.YouTube, hdr);
+            var tok = hdr.AsSpan(22, hn - 24).ToArray();
+            Assert.True(tok.Length > 20 && file.AsSpan().IndexOf(tok) < 0 && file.AsSpan().IndexOf("PromptFlow Contract"u8) < 0 && BitConverter.ToInt32(file, 0) == Lp.ProductionOAuth2TokenVaultGateway.VaultMagic);
+
+            using var gw3 = new Lp.ProductionOAuth2TokenVaultGateway(sim, envF, () => (byte[])key.Clone()) { VaultPath = path };
+            Assert.True(gw3.LoadVault(now + 60), gw3.LastVaultError);
+            var y3 = gw3.Account(Lp.LiveProvider.YouTube);
+            Assert.True(y3.IsConnected && y3.ChannelId == Lp.LivePublishContractSimulator.YtChannelId && y3.ProfileName == Lp.LivePublishContractSimulator.YtChannelTitle && y3.Refresh.IsSet);
+            var hdr3 = new byte[2048];
+            Assert.True(hdr3.AsSpan(0, gw3.WriteBearer(Lp.LiveProvider.YouTube, hdr3)).SequenceEqual(hdr.AsSpan(0, hn)));
+            Assert.Equal(Lp.LivePublishContractSimulator.IgUserId, gw3.Account(Lp.LiveProvider.Instagram).IgUserId);
+
+            using var gw4 = new Lp.ProductionOAuth2TokenVaultGateway(sim, envF, () => (byte[])key.Clone()) { VaultPath = path };
+            Assert.True(gw4.LoadVault(y3.ExpiresAt + 10));
+            var y4 = gw4.Account(Lp.LiveProvider.YouTube);
+            Assert.Equal(Lp.LiveAuthPhase.Expired, y4.Phase);
+            gw4.Tick(y3.ExpiresAt + 11);
+            Assert.True(y4.IsConnected && y4.Refreshes == 1, "만료 복원 갱신 " + y4.LastError);
+
+            file[^1] ^= 1;
+            File.WriteAllBytes(path, file);
+            using var gw5 = new Lp.ProductionOAuth2TokenVaultGateway(sim, envF, () => (byte[])key.Clone()) { VaultPath = path };
+            Assert.False(gw5.LoadVault(now));
+            Assert.True((gw5.LastVaultError ?? "").Contains("태그", StringComparison.Ordinal) && !gw5.Account(Lp.LiveProvider.YouTube).IsConnected, gw5.LastVaultError);
+            file[^1] ^= 1;
+            File.WriteAllBytes(path, file);
+            using var gw6 = new Lp.ProductionOAuth2TokenVaultGateway(sim, envF, () => System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)) { VaultPath = path };
+            Assert.False(gw6.LoadVault(now));
+            using var gw7 = new Lp.ProductionOAuth2TokenVaultGateway(sim, envF) { VaultPath = path };
+            Assert.False(gw7.SaveVault() || gw7.LoadVault(now));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    private static void ResumableUploadChecks()
+    {
+        using var gw = new Lp.ProductionOAuth2TokenVaultGateway(env: NoEnv);
+        double now = 1_800_000_000;
+        Assert.True(gw.ConnectViaContract(Lp.LiveProvider.YouTube, now));
+        var sim = gw.Contract;
+        using var up = new Lp.ProductionResumableVideoUploaderEngine(gw);
+
+        // ── LIVE-2a: 청크 크기 256 KB 배수 · 256 KB~1 MB 클램프 ──
+        up.ChunkBytes = 300 * 1024; Assert.Equal(256 * 1024, up.ChunkBytes);
+        up.ChunkBytes = 5_000_000; Assert.Equal(1024 * 1024, up.ChunkBytes);
+        up.ChunkBytes = 1; Assert.Equal(256 * 1024, up.ChunkBytes);
+        Assert.Equal(524287, Lp.ProductionResumableVideoUploaderEngine.ParseRangeEnd("bytes=0-524287"u8));
+        Assert.Equal(-1, Lp.ProductionResumableVideoUploaderEngine.ParseRangeEnd(default));
+
+        // ── LIVE-2b: 세션 → 청크 PUT → 4 번째 청크 단절(절반 수신) → bytes */N 조회 → 서버 오프셋부터 재개 → 무결성 ──
+        using var src = Lp.ProductionLivePublisherStudioRunner.BuildDemoMp4(3 * 1024 * 1024 + 777);
+        var fnv = PromptFlowStudio.Services.GraphBridge.SimulatedMetaGraphServer.Fnv(14695981039346656037UL, src.ToArray());
+        sim.DropChunkIndex = 3;
+        Assert.False(up.BeginYouTube(src, "x", "", "secret", now));
+        Assert.True(up.BeginYouTube(src, "테스트 숏폼 \"따옴표\" #Shorts", "설명 줄\n둘째 줄", "private", now, "Shorts,AI"), up.LastError);
+        Assert.Equal(13, up.TotalChunks);
+        for (var k = 0; k < 400 && up.IsActive; k++) { up.Step(now); now += 0.5; }
+        Assert.True(up.Phase == Lp.YouTubeUploadPhase.Completed, "업로드 " + up.Phase + " " + up.LastError);
+        Assert.True(sim.YtReceived == src.Length && sim.YtHash == fnv, "수신 무결성 " + sim.YtReceived);
+        Assert.True(up.Resumes == 1 && up.PartialResumes == 1 && sim.NetworkDrops == 1 && sim.OffsetQueries >= 1 && up.ChunkRetries == 1, "재개 " + up.Resumes + "/" + up.PartialResumes);
+        Assert.True(up.ConfirmedPrivacy == "private" && sim.YtPrivacy == 1 && up.VideoId.StartsWith("PfSimV", StringComparison.Ordinal) && up.Progress == 1 && up.BytesPerSec > 0);
+
+        // ── LIVE-2c: 공개 범위 승격(PUT videos?part=status) ──
+        Assert.True(up.BeginPrivacyUpdate("public", now));
+        for (var k = 0; k < 20 && up.IsActive; k++) up.Step(now);
+        Assert.True(up.ConfirmedPrivacy == "public" && sim.YtPrivacy == 3 && sim.PrivacyUpdates == 1);
+
+        // ── LIVE-2d: 5xx 재시도 → 오프셋 조회 재개 · 메타데이터 거부 분류 ──
+        sim.DropChunkIndex = -1; sim.Fail503Next = 2;
+        Assert.True(up.BeginYouTube(src, "retry", "", "unlisted", now));
+        for (var k = 0; k < 400 && up.IsActive; k++) { up.Step(now); now += 1; }
+        Assert.True(up.Phase == Lp.YouTubeUploadPhase.Completed && up.ChunkRetries == 2 && sim.YtHash == fnv && up.ConfirmedPrivacy == "unlisted", "5xx " + up.Phase + " " + up.ChunkRetries);
+        sim.RejectMetadata = true;
+        Assert.True(up.BeginYouTube(src, "bad", "", "private", now));
+        for (var k = 0; k < 20 && up.IsActive; k++) up.Step(now);
+        Assert.True(up.Phase == Lp.YouTubeUploadPhase.Failed && up.Rejection == Lp.PlatformRejection.Metadata, "메타 거부 " + up.Rejection);
+        sim.RejectMetadata = false;
+
+        // ── LIVE-2e: 청크 전송 핫패스 무할당(256 KB · 1 청크/Step) ──
+        using var big = Lp.ProductionLivePublisherStudioRunner.BuildDemoMp4(8 * 1024 * 1024);
+        up.ChunkBytes = 256 * 1024; up.MaxHopsPerStep = 1;
+        Assert.True(up.BeginYouTube(big, "zero-alloc", "", "private", now));
+        up.Step(now); up.Step(now);
+        var sent0 = up.ChunksSent;
+        var alloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 6; k++) up.Step(now); });
+        Assert.True(alloc == 0, "청크 전송 할당 " + alloc);
+        Assert.True(up.ChunksSent - sent0 >= 6 && up.Phase == Lp.YouTubeUploadPhase.Uploading);
+        for (var k = 0; k < 100 && up.IsActive; k++) up.Step(now);
+        Assert.True(up.Phase == Lp.YouTubeUploadPhase.Completed && up.ChunksSent == 32 && sim.YtReceived == big.Length);
+
+        // ── LIVE-2f: Instagram 릴스 — 볼트 토큰 → 컨테이너 → rupload → status_code 폴링 → media_publish ──
+        Assert.True(gw.ConnectViaContract(Lp.LiveProvider.Instagram, now));
+        var spec = new PromptFlowStudio.Services.GraphBridge.ReelsVideoSpec { Width = 1080, Height = 1920, Fps = 60, DurationSec = 24, Bytes = src.Length };
+        Assert.True(up.BeginInstagram(src, in spec, "캡션 #reels", true, now), up.LastError);
+        for (var k = 0; k < 200 && (up.Reels.IsActive || up.Reels.InFlight); k++) { up.Step(now); now += 1.1; }
+        Assert.True(up.Reels.Phase == PromptFlowStudio.Services.GraphBridge.ReelsPublishPhase.Published && sim.Meta.ReceivedBytes == src.Length && sim.Meta.Published == 1 && up.ReelsPublished == 1 && up.Reels.MediaId != 0, "IG " + up.Reels.Phase + " " + up.Reels.LastError);
+    }
+
+    private static void PreflightAndRollbackChecks()
+    {
+        // ── LIVE-3a: 프리플라이트 규격(무할당) ──
+        var ok = Lp.ProductionLivePublisherStudioRunner.DemoSpec;
+        byte[] head;
+        using (var h = Lp.ProductionLivePublisherStudioRunner.BuildDemoMp4(64)) head = h.ToArray()[..12];
+        Assert.Equal(Lp.PreflightIssue.None, Lp.LivePublishingPreflightRollbackGuard.Validate(in ok, head));
+        var ntsc = ok; ntsc.Fps = 29.97f; ntsc.AudioHz = 44100;
+        Assert.Equal(Lp.PreflightIssue.None, Lp.LivePublishingPreflightRollbackGuard.Validate(in ntsc, head));
+        var bad = ok; bad.Width = 1920; bad.Height = 1080; bad.Fps = 24; bad.Bytes = 150L * 1024 * 1024; bad.AudioHz = 22050; bad.AudioChannels = 1; bad.DurationSec = 400;
+        var f = Lp.LivePublishingPreflightRollbackGuard.Validate(in bad, "xxxxxxxxxxxx"u8);
+        Assert.True(Lp.LivePublishingPreflightRollbackGuard.IssueCount(f) == 8 && Lp.LivePublishingPreflightRollbackGuard.IssueText(f) == "MP4(ftyp) 컨테이너 아님", "위반 " + f);
+        var pfAlloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 1000; k++) _ = Lp.LivePublishingPreflightRollbackGuard.Validate(in ok, head); });
+        Assert.True(pfAlloc == 0, "프리플라이트 할당 " + pfAlloc);
+
+        // ── LIVE-3b: 안전 모드 드라이런 E2E(YouTube private → IG 발행) · 웹훅 알림 ──
+        using var run = new Lp.ProductionLivePublisherStudioRunner(env: NoEnv);
+        double t = 1_800_000_000; long at = 0;
+        run.Clock = () => t; run.Alerts.Clock = () => at;
+        var sim = run.Vault.Contract;
+        Assert.True(run.Guard.SafeMode && run.Targets == Lp.LiveTargets.Both && !run.AlertsShared);
+        Assert.True(run.RunDemo(), run.LastAction);
+        Assert.Equal(Lp.LivePublishStage.UploadingYouTube, run.Guard.Stage);
+        for (var k = 0; k < 600 && run.Guard.IsBusy; k++) { run.Tick(); t += 0.5; }
+        Assert.True(run.Guard.Stage == Lp.LivePublishStage.Completed && sim.YtPrivacy == 1 && sim.Meta.Published == 1 && run.Uploader.ChunksSent == run.Uploader.TotalChunks, "드라이런 " + run.Guard.Stage + " " + run.Guard.LastError);
+        Assert.True(run.Guard.AlertsDispatched >= 1 && run.Alerts.Published >= 1);
+        Assert.True(run.Guard.Promote(t));
+        for (var k = 0; k < 20 && run.Guard.IsBusy; k++) run.Tick();
+        Assert.True(sim.YtPrivacy == 3 && run.Guard.Promotions == 1);
+
+        // ── LIVE-3c: 안전 모드 OFF · IG 실패 → 2 단계 커밋 롤백(YouTube private 유지) · Critical 알림 ──
+        run.ToggleSafeMode();
+        Assert.False(run.Guard.SafeMode);
+        sim.RevokeMeta();
+        at += 10_000;
+        var alerts0 = run.Guard.AlertsDispatched;
+        Assert.True(run.RunDemo(), run.LastAction);
+        for (var k = 0; k < 600 && run.Guard.IsBusy; k++) { run.Tick(); t += 0.5; }
+        Assert.True(run.Guard.Stage == Lp.LivePublishStage.RolledBack && sim.YtPrivacy == 1 && run.Guard.Rollbacks == 1 && run.Guard.FailedProvider == Lp.LiveProvider.Instagram && run.Guard.AlertsDispatched > alerts0, "롤백 " + run.Guard.Stage + " " + run.Guard.LastError);
+
+        // ── LIVE-3d: 재연결 후 라이브 배포 → IG 성공 → public 자동 승격 ──
+        run.Disconnect(Lp.LiveProvider.Instagram);
+        run.ConnectMock(Lp.LiveProvider.Instagram);
+        Assert.True(run.Vault.Account(Lp.LiveProvider.Instagram).IsConnected, run.LastAction);
+        Assert.True(run.RunDemo(), run.LastAction);
+        for (var k = 0; k < 600 && run.Guard.IsBusy; k++) { run.Tick(); t += 0.5; }
+        Assert.True(run.Guard.Stage == Lp.LivePublishStage.Completed && sim.YtPrivacy == 3 && run.Guard.Promotions == 2, "라이브 " + run.Guard.Stage + " " + run.Guard.LastError);
+
+        // ── LIVE-3e: 저작권 차단 → 즉시 중단(IG 미발행) · 알림 ──
+        sim.RejectCopyright = true;
+        at += 10_000;
+        var pub0 = sim.Meta.Published; alerts0 = run.Guard.AlertsDispatched;
+        Assert.True(run.RunDemo());
+        for (var k = 0; k < 600 && run.Guard.IsBusy; k++) { run.Tick(); t += 0.5; }
+        Assert.True(run.Guard.Stage == Lp.LivePublishStage.Aborted && run.Guard.LastRejection == Lp.PlatformRejection.Copyright && run.Guard.FailedProvider == Lp.LiveProvider.YouTube && sim.Meta.Published == pub0 && run.Guard.AlertsDispatched > alerts0, "저작권 " + run.Guard.Stage + " " + run.Guard.LastRejection);
+        sim.RejectCopyright = false;
+
+        // ── LIVE-3f: 프리플라이트 차단 → 업로드 0 · 경고 알림 ──
+        at += 10_000;
+        var init0 = sim.InitCalls; alerts0 = run.Guard.AlertsDispatched;
+        var badSpec = Lp.ProductionLivePublisherStudioRunner.DemoSpec; badSpec.Fps = 24;
+        Assert.False(run.RunDemo(badSpec));
+        Assert.True(run.Guard.LastIssues == Lp.PreflightIssue.FrameRate && sim.InitCalls == init0 && run.Guard.PreflightRejected == 1 && run.Guard.AlertsDispatched > alerts0);
+
+        // ── LIVE-3g: 러너 틱 — 만료 10 분 전 자동 갱신 · 유휴 틱 무할당 ──
+        var yt = run.Vault.Account(Lp.LiveProvider.YouTube);
+        t = yt.ExpiresAt - 300;
+        run.Tick();
+        Assert.True(yt.Refreshes >= 1 && yt.IsConnected);
+        t = yt.ExpiresAt - 900;
+        run.Tick();
+        var runAlloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 50; k++) run.Tick(); });
+        Assert.True(runAlloc == 0, "러너 유휴 틱 할당 " + runAlloc);
+        Assert.Contains("갱신", run.Summary(), StringComparison.Ordinal);
     }
 }

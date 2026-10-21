@@ -42,6 +42,8 @@ public sealed class SimulatedMetaGraphServer : IGraphTransport
     public ulong ReceivedHash => _hash;
     public int LastUsagePct { get; private set; }
     public void RevokeToken() { _tokenHash[0] ^= 0x5A; }
+    /// <summary>v17.79 계약 시뮬레이터 — 외부 OAuth 발급 토큰을 유효 토큰으로 교체(SHA-256 해시만 보관).</summary>
+    public void AcceptToken(ReadOnlySpan<byte> token) => System.Security.Cryptography.SHA256.HashData(token, _tokenHash);
 
     private bool TokenMatches(ReadOnlySpan<byte> presented)
     {

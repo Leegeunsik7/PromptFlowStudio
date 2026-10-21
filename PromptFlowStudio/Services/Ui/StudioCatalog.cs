@@ -119,6 +119,7 @@ public static class StudioCatalog
         new("sb:_screenplayOpen", "📜", "AI 시나리오 & 세계관 스튜디오 (스토리보드)", 3),
         new("sb:_mvOpen", "🎵", "AI 뮤직비디오 & 안무 스튜디오 (스토리보드)", 3),
         new("_brollSubtitles", "🎬", "키네틱 자막 & B-Roll 스튜디오", 4),
+        new("_liveOAuthPublisher", "🚀", "실제 SNS 라이브 배포 콕핏", 4),
         new("_visualHooks", "⚡", "키네틱 비주얼 훅 & 세이프존 스튜디오", 4),
         new("_smartPublish", "📅", "스마트 배포 캘린더 & SFX 스튜디오", 4),
         new("_retentionAb", "📈", "릴스 유지율 & A/B 최적화 스튜디오", 4),
