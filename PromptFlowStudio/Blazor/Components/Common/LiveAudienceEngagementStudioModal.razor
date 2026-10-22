@@ -1,0 +1,332 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.LiveEngagement
+@implements IDisposable
+@inject LiveAudienceEngagementStudioRunner Runner
+
+@* [PromptFlow Studio v17.86.0] 🎉 라이브 시청자 인터랙션 & 위젯 — 투표/퀴즈 생성 · 실시간 득표 게이지 · 후원 골 바 · 골드 파티클 스팅어 · 무할당 1080p 알파 오버레이 계측. *@
+<div class="lae-scrim" @onclick="Close">
+    <div class="lae-modal" @onclick:stopPropagation="true">
+        <div class="lae-h">
+            <div>
+                <div class="lae-title">🎉 라이브 시청자 인터랙션 & 위젯 @(Runner.Running ? "· ● 합성 중" : null)</div>
+                <div class="lae-sub">방송 화면 위에 시청자 참여 위젯을 직접 그려 넣습니다. 채팅에 <b>!1 ~ !4</b>(2 지선다는 <b>!찬성 / !반대</b>)를 입력하면 실시간 투표·퀴즈로 집계되고,
+                    같은 시청자는 한 번만 투표할 수 있습니다. 후원이 쌓이면 화면 하단 목표 게이지가 차오르고, 큰 후원(₩10,000 이상)이나 목표 달성 순간에는 3초 동안 금화와 반짝이가 터집니다.
+                    별도 브라우저 소스 없이 1080p 영상 프레임에 바뀐 영역만 투명 합성하므로 송출 부하가 거의 없습니다.</div>
+            </div>
+            <button class="lae-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="lae-body">
+            <div class="lae-bar">
+                <button class="lae-btn hot" @onclick="ToggleLoop">@(Runner.Running ? "⏸ 합성 정지" : "▶ 합성 시작(60 Hz)")</button>
+                <button class="lae-btn" @onclick="Step">⏭ 1 초 전진</button>
+                <label class="lae-lbl"><input type="checkbox" checked="@(Runner.SimulateAudience)" @onchange="ToggleSim" /> 가상 시청자 투표</label>
+                <label class="lae-lbl">투표율
+                    <input type="range" min="5" max="200" step="5" value="@(Runner.SimVotesPerSec.ToString(CultureInfo.InvariantCulture))" @onchange="SetRate" />
+                    <b>@(Runner.SimVotesPerSec)</b>표/s
+                </label>
+                <span class="lae-sep"></span>
+                <span class="lae-kv">채팅 연동 <b>@(Runner.Restream is null ? "미연결" : "v17.83 옴니 채팅")</b> · 수신 <b>@(Runner.ChatPulled)</b></span>
+                <button class="lae-btn" @onclick="ResetAll">♻ 초기화</button>
+            </div>
+
+            <div class="lae-main">
+                <div class="lae-card">
+                    <div class="lae-sec">🗳️ 투표 · 퀴즈 만들기</div>
+                    <label class="lae-field">질문
+                        <input type="text" value="@(_question)" @onchange="SetQuestion" />
+                    </label>
+                    <label class="lae-lbl">선택지 수
+                        <select value="@(_count.ToString(CultureInfo.InvariantCulture))" @onchange="SetCount">
+                            <option value="2">2</option>
+                            <option value="3">3</option>
+                            <option value="4">4</option>
+                        </select>
+                    </label>
+                    @for (var i = 0; i < _count; i++)
+                    {
+                        var k = i;
+                        <label class="lae-field opt"><span class="lae-dot" style="background:@(Hex(k))"></span>!@(k + 1)@(_count == 2 ? (k == 0 ? " · !찬성" : " · !반대") : null)
+                            <input type="text" value="@(_options[k])" @onchange="e => SetOption(k, e)" />
+                        </label>
+                    }
+                    <div class="lae-bar tight">
+                        <label class="lae-lbl"><input type="checkbox" checked="@(_quiz)" @onchange="ToggleQuiz" /> 퀴즈 모드</label>
+                        @if (_quiz)
+                        {
+                            <label class="lae-lbl">정답
+                                <select value="@(_correct.ToString(CultureInfo.InvariantCulture))" @onchange="SetCorrect">
+                                    @for (var i = 0; i < _count; i++)
+                                    {
+                                        <option value="@(i.ToString(CultureInfo.InvariantCulture))">!@(i + 1)</option>
+                                    }
+                                </select>
+                            </label>
+                        }
+                        <label class="lae-lbl">제한
+                            <select value="@(_seconds.ToString(CultureInfo.InvariantCulture))" @onchange="SetSeconds">
+                                <option value="30">30초</option>
+                                <option value="60">60초</option>
+                                <option value="120">2분</option>
+                                <option value="0">수동 마감</option>
+                            </select>
+                        </label>
+                    </div>
+                    <div class="lae-bar tight">
+                        <button class="lae-btn go" @onclick="StartPoll">🚀 @(_quiz ? "퀴즈" : "투표") 시작</button>
+                        <button class="lae-btn" disabled="@(!Runner.Voting.Open)" @onclick="ClosePoll">⏹ 마감</button>
+                        <button class="lae-btn" disabled="@(Runner.Voting.Mode != VoteMode.Quiz || Runner.Voting.CorrectIndex < 0)" @onclick="Reveal">✅ 정답 공개</button>
+                    </div>
+                    <div class="lae-kv">수락 <b>@(Runner.Voting.Accepted)</b> · 중복 차단 <b class="@(Runner.Voting.Duplicates > 0 ? "okc" : null)">@(Runner.Voting.Duplicates)</b> · 마감 후 <b>@(Runner.Voting.Late)</b> · 미지정 토큰 <b>@(Runner.Voting.Unknown)</b> · 투표자 <b>@(Runner.Voting.VoterCount)</b></div>
+                </div>
+
+                <div class="lae-card">
+                    <div class="lae-sec">📺 오버레이 프리뷰 <span class="lae-kw">1920×1080 · 더티 영역 @(Runner.Compositor.MergedCount)개</span></div>
+                    <div class="lae-stage">
+                        <svg viewBox="0 0 1920 1080" class="lae-svg" preserveAspectRatio="xMidYMid meet">
+                            <rect x="0" y="0" width="1920" height="1080" fill="url(#laeBg)" />
+                            <defs>
+                                <linearGradient id="laeBg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#14205a" /><stop offset="1" stop-color="#506490" /></linearGradient>
+                            </defs>
+                            @for (var i = 0; i < Runner.Compositor.MergedCount; i++)
+                            {
+                                var m = Runner.Compositor.Merged(i);
+                                <rect x="@(m.X)" y="@(m.Y)" width="@(m.W)" height="@(m.H)" fill="none" stroke="#f472b6" stroke-width="3" stroke-dasharray="14 10" opacity=".55" />
+                            }
+                            @if (Runner.Voting.HasPoll)
+                            {
+                                var p = LiveAudienceEngagementStudioRunner.PollPanel;
+                                var rowH = (p.H - 40 - 10 * (Runner.Voting.OptionCount - 1)) / Runner.Voting.OptionCount;
+                                <rect x="@(p.X)" y="@(p.Y)" width="@(p.W)" height="@(p.H)" rx="10" fill="rgba(8,12,24,.75)" />
+                                @for (var i = 0; i < Runner.Voting.OptionCount; i++)
+                                {
+                                    var y = p.Y + 16 + i * (rowH + 10);
+                                    var w = (p.W - 32) * Math.Clamp(Runner.Voting.DisplayPercent(i), 0f, 100f) / 100f;
+                                    var col = Runner.Voting.Revealed ? (i == Runner.Voting.CorrectIndex ? "#22c55e" : "#64748b") : Hex(i);
+                                    <rect x="@(p.X + 16)" y="@(y)" width="@(p.W - 32)" height="@(rowH)" fill="rgba(255,255,255,.16)" />
+                                    <rect x="@(p.X + 16)" y="@(y)" width="@(F(w))" height="@(rowH)" fill="@(col)" />
+                                    <g><text x="@(p.X + 28)" y="@(y + rowH / 2 + 10)" font-size="28" font-weight="800" fill="#fff">!@(i + 1) @(Runner.Voting.Label(i))</text></g>
+                                    <g><text x="@(p.Right - 28)" y="@(y + rowH / 2 + 10)" font-size="28" font-weight="800" fill="#fff" text-anchor="end">@(F(Runner.Voting.DisplayPercent(i)))%</text></g>
+                                }
+                            }
+                            @{ var gb = LiveAudienceEngagementStudioRunner.GoalBar; }
+                            <rect x="@(gb.X)" y="@(gb.Y)" width="@(gb.W)" height="@(gb.H)" rx="8" fill="rgba(8,12,24,.7)" />
+                            <rect x="@(gb.X + 6)" y="@(gb.Y + 6)" width="@(F((gb.W - 12) * Math.Clamp(Runner.Donation.DisplayFill, 0f, 1f)))" height="@(gb.H - 12)" rx="5" fill="@(Runner.Donation.GoalReached ? "#22c55e" : "#fabe1e")" />
+                            <g><text x="@(gb.X + gb.W / 2)" y="@(gb.Y + 33)" font-size="24" font-weight="800" fill="#fff" text-anchor="middle">🎯 ₩@(Runner.Donation.CurrentKrw.ToString("N0", CultureInfo.InvariantCulture)) / ₩@(Runner.Donation.GoalKrw.ToString("N0", CultureInfo.InvariantCulture))</text></g>
+                            @for (var i = 0; i < DonationGoalStingerTrigger.PoolSize; i++)
+                            {
+                                var pt = Runner.Donation.Particle(i);
+                                if (!pt.Alive) continue;
+                                DonationGoalStingerTrigger.Position(pt, out var px, out var py);
+                                <circle cx="@(F(px))" cy="@(F(py))" r="@(F(pt.Size))" fill="@(pt.Kind == StingerParticleKind.Coin ? "#ffc828" : "#fffbe6")" opacity="@(F(DonationGoalStingerTrigger.Alpha(pt)))" />
+                            }
+                        </svg>
+                    </div>
+                    @if (Runner.Voting.HasPoll)
+                    {
+                        <div class="lae-kv">“@(Runner.Voting.Question)” · @(Runner.Voting.Open ? "⏱ " + F(Runner.Voting.RemainingSec) + "s" : Runner.Voting.Revealed ? "정답 공개" : "마감") · 총 <b>@(Runner.Voting.Total)</b>표@(Runner.Voting.Revealed ? " · 정답자 " + Runner.Voting.CorrectVoters.ToString(CultureInfo.InvariantCulture) + "명" : null)</div>
+                    }
+                    else
+                    {
+                        <div class="lae-empty">왼쪽에서 질문과 선택지를 입력하고 🚀 투표 시작을 누르면 화면 상단에 득표 게이지가 나타납니다.</div>
+                    }
+                </div>
+
+                <div class="lae-card">
+                    <div class="lae-sec">💰 후원 골 & 스팅어</div>
+                    <label class="lae-lbl">목표 금액
+                        <select value="@(Runner.Donation.GoalKrw.ToString(CultureInfo.InvariantCulture))" @onchange="SetGoal">
+                            <option value="50000">₩50,000</option>
+                            <option value="100000">₩100,000</option>
+                            <option value="300000">₩300,000</option>
+                            <option value="1000000">₩1,000,000</option>
+                        </select>
+                    </label>
+                    <div class="lae-goal"><i style="width:@(F(Math.Clamp(Runner.Donation.DisplayFill, 0f, 1f) * 100f))%"></i></div>
+                    <div class="lae-kv">누적 <b>₩@(Runner.Donation.CurrentKrw.ToString("N0", CultureInfo.InvariantCulture))</b> · @(F(Runner.Donation.TargetFill * 100f))% @(Runner.Donation.GoalReached ? "· 🎯 달성" : null)</div>
+                    <div class="lae-bar tight">
+                        @foreach (var krw in LiveAudienceEngagementStudioRunner.TestDonationsKrw)
+                        {
+                            var amt = krw;
+                            <button class="lae-btn @(amt >= Runner.Donation.StingerThresholdKrw ? "gold" : null)" @onclick="() => Fire(amt)">💸 ₩@(amt.ToString("N0", CultureInfo.InvariantCulture))</button>
+                        }
+                    </div>
+                    <div class="lae-kv">스팅어 <b>@(Runner.Donation.Stingers)</b>회 · 활성 파티클 <b>@(Runner.Donation.Active)</b> · 최대 <b>@(Runner.Donation.PeakActive)</b> · 잔여 <b>@(F(Runner.Donation.StingerLeftUs / 1e6f))s</b></div>
+                    <div class="lae-kv">최근 후원 <b>@(Runner.Donation.LastDonor.ToString())</b> ₩@(Runner.Donation.LastDonationKrw.ToString("N0", CultureInfo.InvariantCulture)) · 최대 ₩@(Runner.Donation.MaxDonationKrw.ToString("N0", CultureInfo.InvariantCulture))</div>
+
+                    <div class="lae-sec sm">⚙️ 알파 합성기</div>
+                    <div class="lae-grid">
+                        <span>평균 <b>@(Runner.Compositor.AvgUs.ToString("0", CultureInfo.InvariantCulture))µs</b></span>
+                        <span>최대 <b>@(Runner.Compositor.MaxUs.ToString("0", CultureInfo.InvariantCulture))µs</b></span>
+                        <span>예산 초과 <b class="@(Runner.Compositor.OverBudget > 0 ? "warn" : "okc")">@(Runner.Compositor.OverBudget)</b></span>
+                        <span>프레임 <b>@(Runner.Compositor.Frames)</b></span>
+                        <span>블렌드 <b>@((Runner.Compositor.BlendedPixels / 1000.0).ToString("0", CultureInfo.InvariantCulture))K</b>px</span>
+                        <span>더티 <b>@((Runner.Compositor.DirtyRatio * 100f).ToString("0.0", CultureInfo.InvariantCulture))%</b></span>
+                    </div>
+                    <div class="lae-mini">Porter-Duff Over(프리멀티플라이드 RGBA) · 위젯 경계 박스만 국소 합성 · 프레임당 예산 1.5 ms · 핫패스 할당 0</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="lae-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+    </div>
+</div>
+
+<style>
+    .lae-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .lae-modal { width: min(1360px, 96vw); max-height: 94vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); color: var(--text-primary); }
+    .lae-h { position: sticky; top: 0; z-index: 3; flex: 0 0 auto; display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px 8px; background: var(--card); border-bottom: 1px solid var(--line); }
+    .lae-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 10px; }
+    .lae-act { position: sticky; bottom: 0; z-index: 3; flex: 0 0 auto; padding: 8px 16px 14px; background: var(--card); border-top: 1px solid var(--line); font-size: 11px; color: var(--text-muted); }
+    .lae-title { font-size: 17px; font-weight: 800; }
+    .lae-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .lae-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .lae-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 0; }
+    .lae-bar.tight { margin: 6px 0; }
+    .lae-sep { flex: 1; }
+    .lae-lbl { display: inline-flex; gap: 6px; align-items: center; font-size: 11.5px; }
+    .lae-lbl select, .lae-field input { background: #0f172a; color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; font-size: 11.5px; padding: 3px 6px; }
+    .lae-lbl input[type=range] { width: 110px; }
+    .lae-field { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-muted); margin: 5px 0; }
+    .lae-field.opt { flex-direction: row; align-items: center; gap: 6px; }
+    .lae-field.opt input { flex: 1; min-width: 0; }
+    .lae-dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+    .lae-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .lae-btn:disabled { opacity: .45; cursor: default; }
+    .lae-btn.hot { border-color: #f97316; } .lae-btn.go { border-color: #4ade80; font-weight: 700; } .lae-btn.gold { border-color: #facc15; color: #fde047; }
+    .lae-main { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.5fr) minmax(0, .95fr); gap: 10px; margin-top: 10px; }
+    .lae-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-width: 0; }
+    .lae-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
+    .lae-sec.sm { margin-top: 12px; font-size: 11.5px; }
+    .lae-kw { margin-left: auto; font-size: 10.5px; font-weight: 400; color: #f9a8d4; }
+    .lae-kv { font-size: 11px; color: var(--text-muted); margin: 4px 0; }
+    .lae-kv b { font-family: var(--mono); color: var(--text-primary); }
+    .lae-stage { border-radius: 8px; overflow: hidden; background: #000; }
+    .lae-svg { display: block; width: 100%; height: auto; }
+    .lae-empty { font-size: 11px; color: var(--text-muted); padding: 8px; text-align: center; }
+    .lae-goal { height: 12px; background: #1e293b; border-radius: 6px; overflow: hidden; margin: 6px 0; }
+    .lae-goal i { display: block; height: 100%; background: linear-gradient(90deg, #f59e0b, #fde047); transition: width .2s; }
+    .lae-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px 6px; font-size: 10.5px; color: var(--text-muted); }
+    .lae-grid b { font-family: var(--mono); color: var(--text-primary); }
+    .lae-mini { font-size: 10px; color: var(--text-muted); margin-top: 6px; }
+    .warn { color: #fca5a5 !important; } .okc { color: #86efac !important; }
+    @@media (max-width: 1100px) { .lae-main { grid-template-columns: 1fr 1fr; } }
+    @@media (max-width: 760px) { .lae-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly string[] Colors = { "#38bdf8", "#f472b6", "#facc15", "#4ade80" };
+    private readonly string[] _options = { "찬성", "반대", "글쎄요", "모르겠다" };
+    private string _question = "오늘 방송 2부는 게임 vs 토크?";
+    private int _count = 2, _correct, _seconds = 60;
+    private bool _quiz;
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { if (Runner.Running || Runner.Donation.StingerActive) _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("LiveEngagement.Modal.Timer", ex); }
+        }, null, 100, 100);
+    }
+
+    private static string F(float v) => (float.IsFinite(v) ? v : 0f).ToString("0.0", CultureInfo.InvariantCulture);
+
+    private static string Hex(int i) => Colors[Math.Clamp(i, 0, Colors.Length - 1)];
+
+    private void SetQuestion(ChangeEventArgs e) => _question = e.Value?.ToString() ?? "";
+
+    private void SetOption(int i, ChangeEventArgs e) => _options[i] = e.Value?.ToString() ?? "";
+
+    private void SetCount(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var n)) _count = Math.Clamp(n, RealtimeAudienceVotingQuizEngine.MinOptions, RealtimeAudienceVotingQuizEngine.MaxOptions);
+        if (_correct >= _count) _correct = 0;
+    }
+
+    private void SetCorrect(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var n)) _correct = Math.Clamp(n, 0, _count - 1);
+    }
+
+    private void SetSeconds(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var n)) _seconds = Math.Clamp(n, 0, 600);
+    }
+
+    private void ToggleQuiz(ChangeEventArgs e) => _quiz = e.Value is bool b ? b : !_quiz;
+
+    private void ToggleSim(ChangeEventArgs e) => Runner.SimulateAudience = e.Value is bool b ? b : !Runner.SimulateAudience;
+
+    private void SetRate(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var n)) Runner.SimVotesPerSec = Math.Clamp(n, 5, 200);
+    }
+
+    private void SetGoal(ChangeEventArgs e)
+    {
+        try { if (long.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.SetGoal(v); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveEngagement.Modal.Goal", ex); }
+    }
+
+    private void StartPoll()
+    {
+        try
+        {
+            var opts = new string[_count];
+            for (var i = 0; i < _count; i++) opts[i] = _options[i];
+            Runner.CreatePoll(_question, opts, _quiz, _correct, _seconds);
+        }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveEngagement.Modal.Poll", ex); }
+    }
+
+    private void ClosePoll()
+    {
+        try { Runner.ClosePoll(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveEngagement.Modal.Close", ex); }
+    }
+
+    private void Reveal()
+    {
+        try { Runner.RevealQuiz(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveEngagement.Modal.Reveal", ex); }
+    }
+
+    private void Fire(long krw)
+    {
+        try { Runner.FireTestDonation(krw); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveEngagement.Modal.Fire", ex); }
+    }
+
+    private void ToggleLoop()
+    {
+        try { if (Runner.Running) Runner.Stop(); else Runner.Start(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveEngagement.Modal.Loop", ex); }
+    }
+
+    private void Step()
+    {
+        try { Runner.Step(LiveAudienceEngagementStudioRunner.LiveHz); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveEngagement.Modal.Step", ex); }
+    }
+
+    private void ResetAll()
+    {
+        try { Runner.Reset(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveEngagement.Modal.Reset", ex); }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}

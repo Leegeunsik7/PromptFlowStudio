@@ -277,6 +277,7 @@
 @inject PromptFlowStudio.Services.KineticBRoll.KineticTypographyBRollStudioRunner KbrRun
 @inject PromptFlowStudio.Services.LiveClipper.LiveToShortsAutoClipperStudioRunner ClpRun
 @inject PromptFlowStudio.Services.ViralExport.ViralPredictorShortsExportStudioRunner VpeRun
+@inject PromptFlowStudio.Services.LiveEngagement.LiveAudienceEngagementStudioRunner LaeRun
 @inject PromptFlowStudio.Services.LiveRestream.OmniLiveRestreamStudioRunner RstRun
 @inject PromptFlowStudio.Services.MultilingualDubbing.MultilingualDubbingStudioRunner MldRun
 @inject PromptFlowStudio.Services.MatrixSyndication.MatrixSyndicationStudioRunner MtxRun
@@ -1001,6 +1002,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.86.0: 라이브 시청자 인터랙션 & 위젯 — 투표 · 후원 골 · 파티클 · 합성 µs ── *@
+    <div class="gth-v1786">
+        <div class="gth-v96-card pid @(LaeRun.Ticks > 0 && LaeRun.Compositor.OverBudget == 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>🎉 시청자 인터랙션</b>
+                <span class="gth-v96-be">@(LaeRun.Voting.Open ? "투표 중" : LaeRun.Voting.HasPoll ? "마감" : "대기")@(LaeRun.Donation.StingerActive ? " · ✨" : null)</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(LaeRun.Voting.Total)</b><span>표</span></span>
+                <span class="gth-v96-m"><b>@((LaeRun.Donation.TargetFill * 100f).ToString("0", System.Globalization.CultureInfo.InvariantCulture))%</b><span>후원 골</span></span>
+                <span class="gth-v96-m"><b>@(LaeRun.Donation.Active)</b><span>파티클</span></span>
+                <span class="gth-v96-m"><b>@(LaeRun.Compositor.AvgUs.ToString("0", System.Globalization.CultureInfo.InvariantCulture))</b><span>합성 µs</span></span>
+            </div>
+            <div class="gth-v96-act">@(LaeRun.LastAction ?? "대기")</div>
+        </div>
+    </div>
     @* ── v17.85.0: 바이럴 예측 스코어러 & fMP4 익스포터 — 점수 · 등급 · 인출 · 용량 ── *@
     <div class="gth-v1785">
         <div class="gth-v96-card pid @(VpeRun.HasSelection && VpeRun.Score.Priority ? "ok" : null)">
@@ -5728,6 +5744,7 @@
         VlRun.OnChange += OnSwarmChanged; // v17.50.0 (3.3 Hz)
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
         KbrRun.OnChange += OnSwarmChanged; // v17.78.0 (재생 10 Hz → 250 ms 스로틀)
+        LaeRun.OnChange += OnSwarmChanged; // v17.86.0 (합성 60 Hz → 250 ms 스로틀 · 투표/후원 이벤트 즉시)
         VpeRun.OnChange += OnSwarmChanged; // v17.85.0 (분석/인출 이벤트 구동 · 렌더 진행은 모달 250 ms)
         ClpRun.OnChange += OnSwarmChanged; // v17.84.0 (라이브 60 Hz → 250 ms 스로틀 · 펀치/클립/배포 즉시)
         RstRun.OnChange += OnSwarmChanged; // v17.83.0 (송출 60 Hz → 250 ms 스로틀 · 연결/패닉/슈퍼챗 즉시)
@@ -6113,6 +6130,7 @@
         KbrRun.OnChange -= OnSwarmChanged;
         ClpRun.OnChange -= OnSwarmChanged;
         VpeRun.OnChange -= OnSwarmChanged;
+        LaeRun.OnChange -= OnSwarmChanged;
         RstRun.OnChange -= OnSwarmChanged;
         MldRun.OnChange -= OnSwarmChanged;
         MtxRun.OnChange -= OnSwarmChanged;

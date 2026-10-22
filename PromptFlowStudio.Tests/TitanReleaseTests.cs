@@ -50,6 +50,7 @@ using Mld = PromptFlowStudio.Services.MultilingualDubbing;
 using Rst = PromptFlowStudio.Services.LiveRestream;
 using Clp = PromptFlowStudio.Services.LiveClipper;
 using Vpe = PromptFlowStudio.Services.ViralExport;
+using Lae = PromptFlowStudio.Services.LiveEngagement;
 using Nw = PromptFlowStudio.Services.Newsroom;
 using Spt = PromptFlowStudio.Services.Sports;
 using V3 = System.Numerics.Vector3;
@@ -34689,7 +34690,7 @@ public sealed class ViralPredictorShortsExporterIsolatedTests
 
         // ── VPE-4: 카탈로그 161 · HUD · 레이아웃 · DI · 모달 규격 · 디스크 I/O 0 · 모달 렌더 ──
         Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_viralPredictorExport" && en.Category == 4);
-        Assert.Equal(161, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        Assert.True(PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length >= 161);
         var root = RepoRoot();
         var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
         var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
@@ -34740,6 +34741,164 @@ public sealed class ViralPredictorShortsExporterIsolatedTests
         for (var i = 4; i + 4 <= b.Length; i++)
             if (b[i] == fourcc[0] && b[i + 1] == fourcc[1] && b[i + 2] == fourcc[2] && b[i + 3] == fourcc[3]) return i - 4;
         return -1;
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+}
+
+/// <summary>v17.86.0 무할당 알파 오버레이 합성기 · 실시간 투표/퀴즈 · 후원 골/파티클 스팅어 · 콕핏 결선.</summary>
+[Collection("TimingSensitivePerformance")]   // 1080p 합성 µs 계측 · 60 Hz 합성 루프 → 비병렬
+public sealed class LiveAudienceEngagementIsolatedTests
+{
+    [Fact]
+    public async Task LiveAudienceEngagement_And_AlphaOverlay_Check()
+    {
+        // ── ENG-1: Porter-Duff Over 정수 블렌딩 · 국소 영역 · 병합 · 무할당 ──
+        var blue = Lae.ZeroAllocAlphaOverlayCompositorEngine.Rgba(0, 0, 255, 255);
+        var halfRed = Lae.ZeroAllocAlphaOverlayCompositorEngine.Premul(Lae.ZeroAllocAlphaOverlayCompositorEngine.Rgba(255, 0, 0, 128));
+        Assert.Equal(Lae.ZeroAllocAlphaOverlayCompositorEngine.Rgba(128, 0, 0, 128), halfRed);
+        var o = Lae.ZeroAllocAlphaOverlayCompositorEngine.Over(halfRed, blue);
+        Assert.True((o & 0xFF) == 128 && ((o >> 8) & 0xFF) == 0 && ((o >> 16) & 0xFF) is 126 or 127 && o >> 24 == 255, "Over " + o.ToString("X8"));
+        Assert.Equal(blue, Lae.ZeroAllocAlphaOverlayCompositorEngine.Over(0, blue));
+        var c = new Lae.ZeroAllocAlphaOverlayCompositorEngine();
+        var W = Lae.ZeroAllocAlphaOverlayCompositorEngine.Width;
+        var frame = new uint[W * Lae.ZeroAllocAlphaOverlayCompositorEngine.Height];
+        Array.Fill(frame, blue);
+        void Draw()
+        {
+            c.BeginOverlay();
+            c.AddRegion(new Lae.PixelRect(100, 100, 200, 100));
+            c.AddRegion(new Lae.PixelRect(250, 150, 200, 100));   // 겹침 → 병합
+            c.AddRegion(new Lae.PixelRect(1700, 1000, 400, 200));  // 화면 밖 → 클리핑
+            c.FillRect(new Lae.PixelRect(100, 100, 200, 100), halfRed);
+            c.FillCircle(1800, 1040, 20, Lae.ZeroAllocAlphaOverlayCompositorEngine.Rgba(255, 255, 255, 255));
+        }
+        Draw();
+        var px = c.Composite(frame);
+        Assert.True(c.MergedCount == 2 && c.Merged(0).Right <= W && c.Merged(1).Right <= W, "병합 " + c.MergedCount);
+        Assert.True(px > 20_000 && frame[150 * W + 150] == o && frame[150 * W + 50] == blue && frame[1040 * W + 1800] == 0xFFFFFFFFu && frame[600 * W + 900] == blue, "합성 " + px);
+        Assert.True(c.DirtyRatio is > 0f and < 0.1f, "더티 " + c.DirtyRatio);
+        // 다음 프레임: 위젯 제거 → 캔버스 국소 소거
+        c.BeginOverlay(); Array.Fill(frame, blue); c.Composite(frame);
+        Assert.True(frame[150 * W + 150] == blue && c.MergedCount == 0 && c.Canvas[150 * W + 150] == 0);
+        Draw(); c.Composite(frame);
+        var compAlloc = AllocationProbe.MinAllocated(() => { Draw(); c.Composite(frame); });
+        Assert.True(compAlloc == 0, "합성 할당 " + compAlloc);
+
+        // ── ENG-2: 투표 토큰 · 1 인 1 표 · 전각 접두 · 마감 · Lerp 게이지 · 퀴즈 ──
+        var v = new Lae.RealtimeAudienceVotingQuizEngine();
+        Assert.False(v.Configure("짝수?", new[] { "a" }));
+        Assert.True(v.Configure("2부 콘텐츠?", new[] { "게임", "토크" }, seconds: 2));
+        Assert.Equal(Lae.VoteResult.Accepted, v.Ingest("minji", "!1"));
+        Assert.Equal(Lae.VoteResult.Duplicate, v.Ingest("MINJI", "!2"));
+        Assert.Equal(Lae.VoteResult.Accepted, v.Ingest("fox", "!찬성"));
+        Assert.Equal(Lae.VoteResult.Accepted, v.Ingest("owl", "   !반대 ㅋㅋ 무조건"));
+        Assert.Equal(Lae.VoteResult.Accepted, v.Ingest("kim", "！2"));
+        Assert.Equal(Lae.VoteResult.Unknown, v.Ingest("lee", "!5"));
+        Assert.Equal(Lae.VoteResult.Ignored, v.Ingest("lee", "안녕하세요 !1"));
+        Assert.True(v.Total == 4 && v.Votes(0) == 2 && v.Votes(1) == 2 && v.Duplicates == 1 && v.VoterCount == 4 && v.TargetPercent(0) == 50f);
+        v.Tick(16_667);
+        Assert.True(MathF.Abs(v.DisplayPercent(0) - 50f * Lae.RealtimeAudienceVotingQuizEngine.LerpK) < 0.01f, "Lerp " + v.DisplayPercent(0));
+        for (var k = 0; k < 130; k++) v.Tick(16_667);
+        Assert.True(MathF.Abs(v.DisplayPercent(1) - 50f) < 0.05f && !v.Open, "수렴/마감 " + v.DisplayPercent(1));
+        Assert.Equal(Lae.VoteResult.Closed, v.Ingest("late", "!1"));
+        Assert.True(v.Configure("수도는?", new[] { "부산", "서울", "대구", "광주" }, Lae.VoteMode.Quiz, 1, 0));
+        Assert.True(v.Total == 0 && v.Key(0, 1).IsEmpty && v.Key(3, 0).SequenceEqual("!4"));
+        var names = new string[64];
+        for (var k = 0; k < names.Length; k++) { names[k] = "viewer" + k; v.Ingest(names[k], k % 4 == 1 || k % 3 == 0 ? "!2" : "!3"); }
+        Assert.True(v.Leader == 1 && v.Open && v.Reveal() == v.Votes(1) && v.Revealed && !v.Open);
+        Assert.True(v.Configure("q", new[] { "a", "b", "c" }, seconds: 0));
+        var ingestAlloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < names.Length; k++) v.Ingest(names[k], "!3 가즈아"); v.Tick(16_667); v.Render(c, new Lae.PixelRect(560, 40, 800, 220)); });
+        Assert.True(ingestAlloc == 0 && v.Votes(2) == names.Length && v.Duplicates >= names.Length, "투표 할당 " + ingestAlloc);
+
+        // ── ENG-3: 골 바 · 대형 후원 3 s 스팅어 · 자동 소멸 · 무할당 ──
+        var d = new Lae.DonationGoalStingerTrigger();
+        Assert.False(d.OnDonation(5_000, "소액"));
+        Assert.True(d.OnDonation(10_000, "큰손") && d.Active >= Lae.DonationGoalStingerTrigger.BurstCount && d.Stingers == 1 && d.LastDonor.SequenceEqual("큰손"));
+        var peakSeen = 0; var t = 0L;
+        while (d.StingerActive && t < 5_000_000)
+        {
+            d.Tick(16_667); t += 16_667;
+            peakSeen = Math.Max(peakSeen, d.Active);
+            for (var i = 0; i < Lae.DonationGoalStingerTrigger.PoolSize; i++)
+                if (d.Particle(i).Alive) { Assert.True(d.Particle(i).AgeUs <= d.Particle(i).LifeUs); break; }
+        }
+        Assert.True(t is >= 2_950_000 and <= 3_050_000 && d.Active == 0 && d.Spawned == d.Expired && peakSeen > Lae.DonationGoalStingerTrigger.BurstCount, "소멸 " + t + " · " + peakSeen);
+        Assert.True(d.TargetFill == 0.15f && MathF.Abs(d.DisplayFill - 0.15f) < 0.002f && !d.GoalReached, "골 " + d.DisplayFill);
+        Assert.True(!d.OnDonation(9_000, "막타") && d.Stingers == 1);
+        Assert.True(d.OnDonation(76_000, "달성") && d.GoalReached && d.Stingers == 2);   // 목표 달성 동시 스팅어
+        d.Tick(16_667); d.Render(c, new Lae.PixelRect(460, 990, 1000, 48));
+        var stingAlloc = AllocationProbe.MinAllocated(() => { c.BeginOverlay(); d.Tick(16_667); d.Render(c, new Lae.PixelRect(460, 990, 1000, 48)); c.Composite(frame); });
+        Assert.True(stingAlloc == 0, "스팅어 할당 " + stingAlloc);
+
+        // ── ENG-4: 러너 — v17.83 옴니 채팅 링 비파괴 열람 · 1080p 합성 예산 ──
+        using var rst = new Rst.OmniLiveRestreamStudioRunner();
+        using var run = new Lae.LiveAudienceEngagementStudioRunner(rst) { SimulateAudience = false };
+        run.Step();   // 결선 — 과거 채팅 무시
+        Assert.True(run.CreatePoll("2부?", new[] { "게임", "토크" }, false, -1, 60));
+        var irc = System.Text.Encoding.UTF8.GetBytes(
+            "@badge-info=;badges=;color=#9146FF;display-name=fan_a;id=lae1 :fan_a!fan_a@fan_a.tmi.twitch.tv PRIVMSG #promptflow :!1\r\n" +
+            "@badge-info=;badges=;color=#9146FF;display-name=fan_b;id=lae2 :fan_b!fan_b@fan_b.tmi.twitch.tv PRIVMSG #promptflow :!반대 토크 가자\r\n" +
+            "@badge-info=;badges=;color=#9146FF;display-name=fan_a;id=lae3 :fan_a!fan_a@fan_a.tmi.twitch.tv PRIVMSG #promptflow :!2\r\n");
+        rst.Chat.IngestTwitchIrc(irc);
+        rst.InjectSuperChat(3);   // ¥10,000 → ₩ 환산 대형 후원
+        run.Step();
+        Assert.True(run.ChatPulled == 4 && run.ChatVotes == 2 && run.Voting.Duplicates == 1 && run.ChatDonations == 1 && run.Donation.Stingers == 1 && run.Donation.CurrentKrw > 50_000, "채팅 결선 " + run.ChatPulled + "/" + run.ChatVotes + "/" + run.ChatDonations);
+        run.SimulateAudience = true;
+        run.Step(30);
+        Assert.True(run.SimVotes > 5 && run.Voting.Total == 2 + run.SimVotes, "가상 시청자 " + run.SimVotes);
+        Assert.True(FrameComposited(run), "프레임 합성");
+        run.Compositor.ResetStats();
+        var best = double.MaxValue;
+        for (var k = 0; k < 120; k++) { run.Tick(Lae.LiveAudienceEngagementStudioRunner.FrameUs); best = Math.Min(best, run.Compositor.LastUs); }
+        Assert.True(best < Lae.ZeroAllocAlphaOverlayCompositorEngine.BudgetUs, "합성 최소 " + best.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + " µs");
+        var hot = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 10; k++) run.Tick(Lae.LiveAudienceEngagementStudioRunner.FrameUs); });
+        Assert.True(hot == 0, "60 Hz 틱 할당 " + hot);
+        run.Start();
+        await Task.Delay(300);
+        Assert.True(run.Running && run.Ticks > 10);
+        run.Stop();
+        Assert.False(run.Running);
+        run.Reset();
+        Assert.True(run.Voting.Total == 0 && !run.Voting.HasPoll && run.Donation.CurrentKrw == 0 && run.Compositor.Frames == 0);
+
+        // ── ENG-4: 카탈로그 162 · HUD · 레이아웃 · DI · 모달 규격 · I/O 0 · 모달 렌더 ──
+        Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_liveAudienceEngagement" && en.Category == 4);
+        Assert.Equal(162, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        var root = RepoRoot();
+        var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
+        var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
+        var mainForm = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "MainForm.cs"));
+        var maui = File.ReadAllText(Path.Combine(root, "PromptFlowStudio.Mobile", "MauiProgram.cs"));
+        var modalSrc = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "LiveAudienceEngagementStudioModal.razor"));
+        Assert.True(hud.IndexOf("gth-v1786", StringComparison.Ordinal) is > 0 and var i1786 && i1786 < hud.IndexOf("gth-v1785", StringComparison.Ordinal) && hud.Contains("LaeRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("LaeRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<LiveAudienceEngagementStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_liveAudienceEngagement\"", StringComparison.Ordinal) && layout.Contains("\"_liveAudienceEngagement\" =>", StringComparison.Ordinal));
+        Assert.True(mainForm.Contains("LiveEngagement.LiveAudienceEngagementStudioRunner(sp)", StringComparison.Ordinal) && maui.Contains("LiveEngagement.LiveAudienceEngagementStudioRunner(sp)", StringComparison.Ordinal));
+        Assert.True(modalSrc.Contains("@implements IDisposable", StringComparison.Ordinal) && modalSrc.Contains("flex: 1 1 auto; min-height: 0; overflow-y: auto;", StringComparison.Ordinal) && modalSrc.Contains("position: sticky", StringComparison.Ordinal));
+        foreach (var src in Directory.GetFiles(Path.Combine(root, "PromptFlowStudio", "Services", "LiveEngagement"), "*.cs"))
+        {
+            var text = File.ReadAllText(src);
+            Assert.True(!text.Contains("File.", StringComparison.Ordinal) && !text.Contains("HttpClient", StringComparison.Ordinal) && !text.Contains("Process.Start", StringComparison.Ordinal) && !text.Contains("System.Linq", StringComparison.Ordinal), "외부 렌더러 · I/O " + Path.GetFileName(src));
+        }
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = sp.GetService(typeof(Lae.LiveAudienceEngagementStudioRunner))!;
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.LiveAudienceEngagementStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("lae-scrim", StringComparison.Ordinal) && html.Contains("lae-body", StringComparison.Ordinal) && html.Contains("lae-svg", StringComparison.Ordinal) && html.Contains("투표 시작", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+
+    /// <summary>투표 패널 내부 = 소스와 다른 합성 픽셀 · 위젯 밖 = 소스 그대로.</summary>
+    private static bool FrameComposited(Lae.LiveAudienceEngagementStudioRunner run)
+    {
+        var fr = run.Frame; const int W = Lae.ZeroAllocAlphaOverlayCompositorEngine.Width;
+        var pp = Lae.LiveAudienceEngagementStudioRunner.PollPanel;
+        return fr[(pp.Y + 4) * W + pp.X + 4] != Lae.LiveAudienceEngagementStudioRunner.SourcePixel(pp.X + 4, pp.Y + 4) && fr[600 * W + 100] == Lae.LiveAudienceEngagementStudioRunner.SourcePixel(100, 600);
     }
 
     private static string RepoRoot()
