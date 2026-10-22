@@ -809,10 +809,18 @@
  * ========================================================================== */
 (function () {
     'use strict';
-    document.addEventListener('wheel', function (e) {
-        const t = e.target && e.target.closest ? e.target.closest('.topbar-tools') : null;
-        if (!t || t.scrollWidth <= t.clientWidth || Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+    // UI 감사: document 전역 non-passive 휠 리스너는 모든 휠 스크롤을 메인 스레드(Blazor 렌더) 대기로 묶어
+    // 모달/본문 휠이 멈칫·정지하던 원인. 툴바 요소에만 지연 부착(passive pointerover 로 감지 · 재렌더 시 재부착).
+    function onWheel(e) {
+        const t = e.currentTarget;
+        if (t.scrollWidth <= t.clientWidth || Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
         t.scrollLeft += e.deltaY;
         e.preventDefault();
-    }, { passive: false });
+    }
+    document.addEventListener('pointerover', function (e) {
+        const t = e.target && e.target.closest ? e.target.closest('.topbar-tools') : null;
+        if (!t || t.__pfWheel) return;
+        t.__pfWheel = true;
+        t.addEventListener('wheel', onWheel, { passive: false });
+    }, { passive: true });
 })();

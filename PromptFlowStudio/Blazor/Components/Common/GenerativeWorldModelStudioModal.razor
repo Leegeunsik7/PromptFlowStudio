@@ -156,11 +156,11 @@
                 <div class="wm-card">
                     <div class="wm-sec">🎚 물리 시뮬레이션</div>
                     <div class="wm-sl">
-                        <span>중력 @(_gravity.ToString("0.00", CultureInfo.InvariantCulture))</span><input type="range" min="0" max="25" step="0.01" @bind="_gravity" @bind:after="() => Runner.SetPhysics(WorldOpKind.Gravity, _gravity)" />
-                        <span>반발 @(_rest.ToString("0.00", CultureInfo.InvariantCulture))</span><input type="range" min="0" max="0.95" step="0.01" @bind="_rest" @bind:after="() => Runner.SetPhysics(WorldOpKind.Restitution, _rest)" />
-                        <span>마찰 @(_fric.ToString("0.00", CultureInfo.InvariantCulture))</span><input type="range" min="0" max="1.5" step="0.01" @bind="_fric" @bind:after="() => Runner.SetPhysics(WorldOpKind.Friction, _fric)" />
-                        <span>바닥 반사 @(_refl.ToString("0.00", CultureInfo.InvariantCulture))</span><input type="range" min="0" max="0.9" step="0.01" @bind="_refl" @bind:after="() => Runner.SetPhysics(WorldOpKind.Reflectivity, _refl)" />
-                        <span>시간 배속 @(_ts.ToString("0.00", CultureInfo.InvariantCulture))</span><input type="range" min="0.25" max="2" step="0.05" @bind="_ts" @bind:after="() => Runner.SetPhysics(WorldOpKind.TimeScale, _ts)" />
+                        <span>중력 @(_gravity.ToString("0.00", CultureInfo.InvariantCulture))</span><input type="range" min="0" max="25" step="0.01"  @bind:event="oninput" @bind:after="() => Runner.SetPhysics(WorldOpKind.Gravity, _gravity)" />
+                        <span>반발 @(_rest.ToString("0.00", CultureInfo.InvariantCulture))</span><input type="range" min="0" max="0.95" step="0.01"  @bind:event="oninput" @bind:after="() => Runner.SetPhysics(WorldOpKind.Restitution, _rest)" />
+                        <span>마찰 @(_fric.ToString("0.00", CultureInfo.InvariantCulture))</span><input type="range" min="0" max="1.5" step="0.01"  @bind:event="oninput" @bind:after="() => Runner.SetPhysics(WorldOpKind.Friction, _fric)" />
+                        <span>바닥 반사 @(_refl.ToString("0.00", CultureInfo.InvariantCulture))</span><input type="range" min="0" max="0.9" step="0.01"  @bind:event="oninput" @bind:after="() => Runner.SetPhysics(WorldOpKind.Reflectivity, _refl)" />
+                        <span>시간 배속 @(_ts.ToString("0.00", CultureInfo.InvariantCulture))</span><input type="range" min="0.25" max="2" step="0.05"  @bind:event="oninput" @bind:after="() => Runner.SetPhysics(WorldOpKind.TimeScale, _ts)" />
                     </div>
                     <div class="wm-row">
                         <select class="wm-in" @bind="_light" @bind:after="() => Runner.SetLighting(_light)">

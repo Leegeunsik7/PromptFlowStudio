@@ -81,8 +81,8 @@
                 <div class="sd-row">
                     <button class="sd-btn sm go" disabled="@(_cts is not null || Mixer.IsBusy)" @onclick="LoadStemsAsync">🎚 오디오 로드 &amp; 스템 분리</button>
                     <label class="sd-mut"><input type="checkbox" @bind="_duck" @bind:after="ApplyMix" /> 오토 덕킹</label>
-                    <label class="sd-mut">깊이 @(_duckDepth.ToString("0", CultureInfo.InvariantCulture))dB <input type="range" min="0" max="24" step="1" @bind="_duckDepth" @bind:after="ApplyMix" @bind:culture="CultureInfo.InvariantCulture" /></label>
-                    <label class="sd-mut">목표 @(_target.ToString("0", CultureInfo.InvariantCulture)) LUFS <input type="range" min="-24" max="-9" step="1" @bind="_target" @bind:after="ApplyMix" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                    <label class="sd-mut">깊이 @(_duckDepth.ToString("0", CultureInfo.InvariantCulture))dB <input type="range" min="0" max="24" step="1"  @bind:event="oninput" @bind:after="ApplyMix" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                    <label class="sd-mut">목표 @(_target.ToString("0", CultureInfo.InvariantCulture)) LUFS <input type="range" min="-24" max="-9" step="1"  @bind:event="oninput" @bind:after="ApplyMix" @bind:culture="CultureInfo.InvariantCulture" /></label>
                     <button class="sd-btn sm" disabled="@(Mixer.Stems is null)" @onclick="RunMix">🎛 믹스 계산</button>
                 </div>
                 @if (Mixer.Stems is { } st)
@@ -225,7 +225,7 @@
     .sd-tabs { display: flex; gap: 4px; padding: 8px 18px 0; border-bottom: 1px solid var(--line); }
     .sd-tabs button { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; border: 0; background: none; color: var(--text-muted); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
     .sd-tabs button.on { color: var(--text-primary); border-bottom-color: #38bdf8; }
-    .sd-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .sd-body { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overscroll-behavior: contain; padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
     .sd-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     .sd-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
     .sd-chip.ok { color: #4ade80; } .sd-chip.bad { color: #f87171; }

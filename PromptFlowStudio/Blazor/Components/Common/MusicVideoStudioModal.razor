@@ -255,7 +255,7 @@
     .mv-tabs { display: flex; gap: 4px; padding: 8px 18px 0; border-bottom: 1px solid var(--line); }
     .mv-tabs button { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; border: 0; background: none; color: var(--text-muted); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
     .mv-tabs button.on { color: var(--text-primary); border-bottom-color: #f472b6; }
-    .mv-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .mv-body { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overscroll-behavior: contain; padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
     .mv-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     .mv-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); margin: 4px 0; }
     .mv-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }

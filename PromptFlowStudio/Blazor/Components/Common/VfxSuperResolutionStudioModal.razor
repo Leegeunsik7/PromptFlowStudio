@@ -44,10 +44,10 @@
                     <button class="fx-btn sm" @onclick="() => Add(VfxLightKind.Point)">+ 포인트</button>
                     <button class="fx-btn sm" @onclick="() => Add(VfxLightKind.Spot)">+ 스포트</button>
                     <button class="fx-btn sm" @onclick="() => Add(VfxLightKind.Directional)">+ 디렉셔널</button>
-                    <label class="fx-mut">원본 보존 @(_preserve.ToString("0.00", CultureInfo.InvariantCulture)) <input type="range" min="0" max="1" step="0.05" @bind="_preserve" @bind:after="ApplyShading" @bind:culture="CultureInfo.InvariantCulture" /></label>
-                    <label class="fx-mut">앰비언트 @(_ambient.ToString("0.00", CultureInfo.InvariantCulture)) <input type="range" min="0" max="1" step="0.05" @bind="_ambient" @bind:after="ApplyShading" @bind:culture="CultureInfo.InvariantCulture" /></label>
-                    <label class="fx-mut">스페큘러 @(_spec.ToString("0.00", CultureInfo.InvariantCulture)) <input type="range" min="0" max="2" step="0.05" @bind="_spec" @bind:after="ApplyShading" @bind:culture="CultureInfo.InvariantCulture" /></label>
-                    <label class="fx-mut">그림자 @(_shadow.ToString("0.00", CultureInfo.InvariantCulture)) <input type="range" min="0" max="1" step="0.05" @bind="_shadow" @bind:after="ApplyShading" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                    <label class="fx-mut">원본 보존 @(_preserve.ToString("0.00", CultureInfo.InvariantCulture)) <input type="range" min="0" max="1" step="0.05"  @bind:event="oninput" @bind:after="ApplyShading" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                    <label class="fx-mut">앰비언트 @(_ambient.ToString("0.00", CultureInfo.InvariantCulture)) <input type="range" min="0" max="1" step="0.05"  @bind:event="oninput" @bind:after="ApplyShading" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                    <label class="fx-mut">스페큘러 @(_spec.ToString("0.00", CultureInfo.InvariantCulture)) <input type="range" min="0" max="2" step="0.05"  @bind:event="oninput" @bind:after="ApplyShading" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                    <label class="fx-mut">그림자 @(_shadow.ToString("0.00", CultureInfo.InvariantCulture)) <input type="range" min="0" max="1" step="0.05"  @bind:event="oninput" @bind:after="ApplyShading" @bind:culture="CultureInfo.InvariantCulture" /></label>
                 </div>
                 <div class="fx-grid2">
                     <div>
@@ -152,7 +152,7 @@
                     {
                         <label class="fx-mut">시작 <input class="fx-in w60" type="number" min="0" step="0.1" @bind="_slowStart" @bind:culture="CultureInfo.InvariantCulture" /></label>
                         <label class="fx-mut">끝 <input class="fx-in w60" type="number" min="0" step="0.1" @bind="_slowEnd" @bind:culture="CultureInfo.InvariantCulture" /></label>
-                        <label class="fx-mut">배율 @(_factor)x <input type="range" min="2" max="8" step="1" @bind="_factor" /></label>
+                        <label class="fx-mut">배율 @(_factor)x <input type="range" min="2" max="8" step="1"  @bind:event="oninput" /></label>
                     }
                     <button class="fx-btn sm go" disabled="@(_cts is not null)" @onclick="PreviewInterpAsync">🔎 광학 흐름 프리뷰</button>
                 </div>
@@ -216,7 +216,7 @@
     .fx-tabs { display: flex; gap: 4px; padding: 8px 18px 0; border-bottom: 1px solid var(--line); }
     .fx-tabs button { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; border: 0; background: none; color: var(--text-muted); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
     .fx-tabs button.on { color: var(--text-primary); border-bottom-color: #f59e0b; }
-    .fx-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .fx-body { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overscroll-behavior: contain; padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
     .fx-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     .fx-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); margin-bottom: 4px; }
     .fx-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }

@@ -272,8 +272,8 @@
     .cu-tab { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-secondary); border-radius: 8px; padding: 5px 10px; cursor: pointer; }
     .cu-tab.on { color: var(--text-primary); border-color: #f59e0b; box-shadow: 0 0 0 1px #f59e0b inset; }
     .cu-main { display: grid; grid-template-columns: 300px 1fr; min-height: 0; flex: 1; overflow: hidden; }
-    .cu-side { border-right: 1px solid var(--line); padding: 12px; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
-    .cu-panel { padding: 12px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .cu-side { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overscroll-behavior: contain; border-right: 1px solid var(--line); padding: 12px; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+    .cu-panel { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overscroll-behavior: contain; padding: 12px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
     .cu-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); margin: 2px 0; }
     .cu-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
     .cu-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -309,7 +309,7 @@
     .cu-btn.sm { padding: 3px 8px; font-size: 11px; } .cu-btn.big { padding: 10px; font-size: 13px; }
     .cu-btn.go { background: linear-gradient(135deg,#f59e0b,#a78bfa); color: #fff; border: 0; }
     .cu-btn:disabled { opacity: .45; cursor: not-allowed; }
-    @@media (max-width: 900px) { .cu-main { grid-template-columns: 1fr; } .cu-grid2 { grid-template-columns: 1fr; } }
+    @@media (max-width: 900px) { .cu-main { grid-template-columns: 1fr; overflow-y: auto; } .cu-grid2 { grid-template-columns: 1fr; } }
 </style>
 
 @code {

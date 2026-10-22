@@ -140,7 +140,7 @@
                         <div class="sp-card">
                             <b>@(sb.Index + 1). @(sb.Name)</b> <span class="sp-mut">@(sb.Act)막 · @((sb.Position * 100).ToString("0", CultureInfo.InvariantCulture))% · @(sb.Purpose)</span>
                             <textarea class="sp-in sp-ta sm" @bind="sb.Summary"></textarea>
-                            <label class="sp-mut">긴장도 @(sb.Tension) <input type="range" min="0" max="100" @bind="sb.Tension" /></label>
+                            <label class="sp-mut">긴장도 @(sb.Tension) <input type="range" min="0" max="100"  @bind:event="oninput" /></label>
                             <button class="sp-btn sm" @onclick="RewriteFromBeats">↻ 편집 비트로 대본 재작성</button>
                         </div>
                     }
@@ -201,7 +201,7 @@
                     <label class="sp-mut"><input type="checkbox" @bind="_lipSync" /> 화면 속 대사 립싱크</label>
                     <label class="sp-mut"><input type="checkbox" @bind="_matchThemes" /> 테마 시네마틱 매칭</label>
                     <label class="sp-mut"><input type="checkbox" @bind="_append" /> 기존 컷 뒤에 추가</label>
-                    <label class="sp-mut">컷 최대 @(_maxCut.ToString("0", CultureInfo.InvariantCulture))초 <input type="range" min="2" max="15" step="1" @bind="_maxCut" @bind:culture="CultureInfo.InvariantCulture" /></label>
+                    <label class="sp-mut">컷 최대 @(_maxCut.ToString("0", CultureInfo.InvariantCulture))초 <input type="range" min="2" max="15" step="1"  @bind:event="oninput" @bind:culture="CultureInfo.InvariantCulture" /></label>
                     <label class="sp-mut">언어
                         <select class="sp-in" @bind="_lang"><option value="ko">한국어</option><option value="en">English</option><option value="ja">日本語</option><option value="zh">中文</option><option value="de">Deutsch</option></select>
                     </label>
@@ -256,7 +256,7 @@
     .sp-tabs { display: flex; gap: 4px; padding: 8px 18px 0; border-bottom: 1px solid var(--line); }
     .sp-tabs button { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; border: 0; background: none; color: var(--text-muted); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
     .sp-tabs button.on { color: var(--text-primary); border-bottom-color: #a78bfa; }
-    .sp-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .sp-body { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overscroll-behavior: contain; padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
     .sp-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     .sp-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); margin: 4px 0; }
     .sp-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }

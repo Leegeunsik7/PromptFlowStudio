@@ -33380,3 +33380,116 @@ public sealed class ViralVoiceFxIsolatedTests
         return peak;
     }
 }
+
+/// <summary>
+/// UI 전수 감사 회귀 — 전 스튜디오 모달 스크롤 컨테이너 규격 · 구독 컴포넌트 IDisposable · 오버레이 이벤트 투과 · Esc 닫기 · 휠 리스너 범위.
+/// </summary>
+public sealed class UiExhaustiveAuditIsolatedTests
+{
+    private static readonly System.Text.RegularExpressions.Regex ModalPair = new(
+        @"<div class=""([\w-]+)[^""]*""[^>]*@onclick=""[^""]*""[^>]*>\s*<div class=""([\w-]+)[^""]*""[^>]*@onclick:stopPropagation");
+
+    [Fact]
+    public void Modal_Scroll_Containers_Check()
+    {
+        var root = Path.Combine(RepoRoot(), "PromptFlowStudio", "Blazor");
+        int modals = 0, bad = 0;
+        var fails = new System.Text.StringBuilder();
+        foreach (var f in Directory.EnumerateFiles(root, "*.razor", SearchOption.AllDirectories))
+        {
+            var s = File.ReadAllText(f);
+            var m = ModalPair.Match(s);
+            if (!m.Success) continue;
+            modals++;
+            var css = Flat(s);
+            var modal = Rule(css, m.Groups[2].Value);
+            // ① 모달 자체가 스크롤러(max-height + overflow-y) 이거나 ② flex 본문이 flex:1 · min-height:0 · overflow-y 를 갖거나 ③ 소형 고정 대화상자(max-height 미지정 · 내부 스크롤 불요).
+            var selfScroll = modal.Contains("max-height") && (modal.Contains("overflow-y:auto") || modal.Contains("overflow:auto"));
+            var flexBody = System.Text.RegularExpressions.Regex.IsMatch(css, @"\{[^}]*flex:1[^}]*\}") &&
+                           System.Text.RegularExpressions.Regex.IsMatch(css, @"\{(?=[^}]*min-height:0)(?=[^}]*overflow(-y)?:(auto|scroll|hidden))[^}]*\}");
+            var small = !modal.Contains("max-height");
+            if (!(selfScroll || flexBody || small)) { bad++; fails.Append(Path.GetFileName(f)).Append(' '); }
+            // 자체 스크롤 모달은 헤더(✕)가 스크롤에 밀려 사라지지 않아야 한다.
+            if (selfScroll && s.Contains("@onclick=\"Close\">✕") && !css.Contains("position:sticky")) { bad++; fails.Append(Path.GetFileName(f)).Append("(sticky) "); }
+        }
+        Assert.True(modals >= 156, "모달 수 " + modals);
+        Assert.True(bad == 0, fails.ToString());
+    }
+
+    [Fact]
+    public void Subscribing_Components_Implement_IDisposable_Check()
+    {
+        var root = Path.Combine(RepoRoot(), "PromptFlowStudio", "Blazor");
+        var sub = new System.Text.RegularExpressions.Regex(@"[\w\]\)]\.\w+\s*\+=\s*[A-Za-z_]\w*\s*;|new\s+(System\.Threading\.)?(Timer|PeriodicTimer)\b|new\s+System\.Timers\.Timer\b");
+        var fails = new System.Text.StringBuilder();
+        int subscribers = 0;
+        foreach (var f in Directory.EnumerateFiles(root, "*.razor", SearchOption.AllDirectories))
+        {
+            var s = File.ReadAllText(f);
+            if (!sub.IsMatch(s)) continue;
+            subscribers++;
+            if (!System.Text.RegularExpressions.Regex.IsMatch(s, @"@implements\s+(System\.)?I(Async)?Disposable")) fails.Append(Path.GetFileName(f)).Append(' ');
+            // 이벤트 구독은 같은 핸들러로 해제 쌍을 가진다.
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(s, @"([\w.]+\.\w+)\s*\+=\s*([A-Za-z_]\w*)\s*;"))
+                if (!s.Contains(m.Groups[1].Value + " -= " + m.Groups[2].Value)) fails.Append(Path.GetFileName(f)).Append(':').Append(m.Groups[2].Value).Append(' ');
+        }
+        Assert.True(subscribers > 100, "구독 컴포넌트 " + subscribers);
+        Assert.True(fails.Length == 0, fails.ToString());
+    }
+
+    [Fact]
+    public void Overlay_PointerEvents_Esc_And_Wheel_Check()
+    {
+        var web = Path.Combine(RepoRoot(), "PromptFlowStudio");
+        var app = System.Text.RegularExpressions.Regex.Replace(File.ReadAllText(Path.Combine(web, "wwwroot", "app.css")), @"\s+", "");
+        Assert.Contains(".gth[class*=\"card\"]::before,.gth-v93-pane,.gth-v93-empty{pointer-events:none;}", app);
+        Assert.Contains(".sho,.sim-bar{pointer-events:none;}", app);
+        Assert.Contains(".sho>*,.sim-bar>*{pointer-events:auto;}", app);
+        Assert.Contains("overscroll-behavior:contain", app);
+
+        var layout = File.ReadAllText(Path.Combine(web, "Blazor", "MainLayout.razor"));
+        Assert.Contains("CloseOpenStudios(); CloseDrawer();", layout);
+        Assert.Contains(".obs-slide:not(.open), .mss-slide:not(.open) { pointer-events: none; }", layout);
+        // 👑 마스터 스위트는 관제 슬라이드 본문 밖 최상위 렌더.
+        var obsBody = layout.IndexOf("<GlobalTelemetryHudView />", StringComparison.Ordinal);
+        var master = layout.IndexOf("<MasterSuiteStudioModal", StringComparison.Ordinal);
+        Assert.True(obsBody > 0 && master > layout.IndexOf("<ThemeEditorModal", StringComparison.Ordinal));
+
+        var js = File.ReadAllText(Path.Combine(web, "wwwroot", "promptflow.js"));
+        Assert.DoesNotContain("document.addEventListener('wheel'", js);
+        Assert.Contains("t.addEventListener('wheel', onWheel, { passive: false });", js);
+
+        // 경량 슬라이더는 드래그 중 실시간(oninput) 반영.
+        var gw = File.ReadAllText(Path.Combine(web, "Blazor", "Components", "Common", "GenerativeWorldModelStudioModal.razor"));
+        Assert.Equal(5, System.Text.RegularExpressions.Regex.Matches(gw, @"type=""range""[^>]*@bind:event=""oninput""").Count);
+    }
+
+    private static string Flat(string s)
+    {
+        var sb = new System.Text.StringBuilder(s.Length);
+        var i = 0;
+        while (true)
+        {
+            var a = s.IndexOf("<style", i, StringComparison.Ordinal);
+            if (a < 0) { if (i == 0) sb.Append(s); break; }
+            var b = s.IndexOf("</style>", a, StringComparison.Ordinal);
+            if (b < 0) break;
+            sb.Append(s, a, b - a);
+            i = b + 8;
+        }
+        return System.Text.RegularExpressions.Regex.Replace(sb.ToString(), @"\s+", "");
+    }
+
+    private static string Rule(string css, string cls)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(css, @"\." + System.Text.RegularExpressions.Regex.Escape(cls) + @"\{([^}]*)\}");
+        return m.Success ? m.Groups[1].Value : "";
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+}

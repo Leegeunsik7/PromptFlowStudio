@@ -212,7 +212,7 @@
     .cs-tabs { display: flex; gap: 4px; padding: 8px 16px 0; border-bottom: 1px solid var(--line); }
     .cs-tab { border: none; background: none; padding: 8px 12px; font-size: 12.5px; font-weight: 800; color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent; }
     .cs-tab.on { color: var(--text-primary); border-bottom-color: #f472b6; }
-    .cs-body { padding: 14px 18px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .cs-body { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overscroll-behavior: contain; padding: 14px 18px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
     .cs-grid { display: grid; grid-template-columns: 260px 1fr; gap: 16px; }
     .cs-col { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
     .cs-sec { font: 800 11px var(--mono); letter-spacing: .05em; color: var(--text-muted); margin-top: 6px; }

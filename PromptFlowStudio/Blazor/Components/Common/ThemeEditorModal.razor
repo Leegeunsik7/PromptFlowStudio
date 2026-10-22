@@ -69,7 +69,7 @@
     .te-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--line, #2d3342); }
     .te-title { font-size: 15px; font-weight: 900; color: var(--text-primary, #eef1f7); }
     .te-x { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line, #2d3342); background: var(--card-2, #1e222e); color: var(--text-secondary, #aab2c5); cursor: pointer; }
-    .te-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+    .te-body { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overscroll-behavior: contain; padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
     .te-sec-lbl { font: 700 11px var(--mono, monospace); color: var(--text-muted, #6b7488); margin-top: 6px; }
 
     .te-presets { display: flex; flex-wrap: wrap; gap: 6px; }

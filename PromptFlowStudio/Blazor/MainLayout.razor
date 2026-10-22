@@ -251,7 +251,6 @@
                 @if (_showObservability)
                 {
                     <GlobalTelemetryHudView />
-                    @if (_masterSuite) { <MasterSuiteStudioModal OnClose="() => _masterSuite = false" /> }
                 }
             </div>
         </div>
@@ -279,6 +278,11 @@
         @if (_themeEditor)
         {
             <ThemeEditorModal OnClose="() => _themeEditor = false" />
+        }
+        @* UI 감사: 카탈로그 👑 진입점 — 관제 슬라이드(transform → fixed 스크림이 560px 패널에 갇힘) 밖 최상위로 이관. 관제가 닫혀 있으면 열리지도 않던 결함. *@
+        @if (_masterSuite)
+        {
+            <MasterSuiteStudioModal OnClose="() => _masterSuite = false" />
         }
         @if (_agency)
         {
@@ -919,6 +923,8 @@
     .obs-slide-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 16px; }
     /* v7.0.0: AI 타임라인은 NLE 특성상 더 넓게. */
     .obs-slide.amt-slide { width: min(820px, 98vw); }
+    /* UI 감사: 닫힌 슬라이드는 화면 밖이라도 이벤트 대상에서 제외(그림자·전환 중 가장자리 클릭/휠 가로채기 차단). */
+    .obs-slide:not(.open), .mss-slide:not(.open) { pointer-events: none; }
 </style>
 
 @code {
@@ -1004,6 +1010,12 @@
         // DOM 순서상 앞선 모달 뒤에 깔려 클릭 불가였다. 새 모달을 열기 전에 열린 카탈로그 스튜디오를 모두 닫는다.
         foreach (var e in StudioCatalog.Entries) if (e.Key != key && IsStudioOpen(e.Key)) SetStudio(e.Key, false);
         SetStudio(key, true);
+    }
+
+    /// <summary>UI 감사 — Esc 공용: 열린 카탈로그 스튜디오 모달 전량 해제.</summary>
+    private void CloseOpenStudios()
+    {
+        foreach (var e in StudioCatalog.Entries) if (IsStudioOpen(e.Key)) SetStudio(e.Key, false);
     }
 
     /// <summary>v17.63.0 카탈로그 키 → 레이아웃 플래그 설정/해제(OpenStudio 단일 활성 처리 공용).</summary>
@@ -1570,7 +1582,8 @@
     /// </summary>
     private void OnShellKey(KeyboardEventArgs e)
     {
-        if (e.Key == "Escape") { CloseDrawer(); return; }
+        // UI 감사: Esc — 열린 카탈로그 스튜디오 모달을 먼저 닫는다(스크림 클릭 닫기와 일관).
+        if (e.Key == "Escape") { CloseOpenStudios(); CloseDrawer(); return; }
         if (!e.AltKey) return;
 
         // Alt+H — 도움말

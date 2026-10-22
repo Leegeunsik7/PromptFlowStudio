@@ -109,7 +109,7 @@
     .gd-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.5; }
     .gd-sub b { color: var(--text-primary); }
     .gd-x { width: 30px; height: 30px; border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 15px; border-radius: 8px; }
-    .gd-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .gd-body { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overscroll-behavior: contain; padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
     .gd-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .gd-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
     .gd-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }

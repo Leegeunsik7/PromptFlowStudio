@@ -267,12 +267,12 @@
     .ag-chip { font: 700 11px var(--mono); padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-muted); }
     .ag-chip.ok { color: #4ade80; } .ag-chip.live { color: #fff; background: #ef4444; border-color: #ef4444; }
     .ag-main { display: grid; grid-template-columns: 250px 1fr; min-height: 0; flex: 1; overflow: hidden; }
-    .ag-roster { border-right: 1px solid var(--line); padding: 12px; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+    .ag-roster { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overscroll-behavior: contain; border-right: 1px solid var(--line); padding: 12px; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
     .ag-card { text-align: left; border: 1px solid var(--line); background: var(--card); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 2px; cursor: pointer; color: var(--text-secondary); font-size: 11px; }
     .ag-card b { color: var(--text-primary); font-size: 13px; } .ag-card.on { border-color: #f472b6; box-shadow: 0 0 0 1px #f472b6 inset; }
     .ag-live { font: 800 9px var(--mono); color: #fff; background: #ef4444; padding: 1px 5px; border-radius: 4px; font-style: normal; margin-left: 4px; }
     .ag-form { display: flex; flex-direction: column; gap: 5px; }
-    .ag-panel { padding: 12px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .ag-panel { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overscroll-behavior: contain; padding: 12px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
     .ag-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
     .ag-tabs button { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; border: 0; background: none; color: var(--text-muted); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
     .ag-tabs button.on { color: var(--text-primary); border-bottom-color: #f472b6; }
@@ -305,7 +305,7 @@
     .ag-btn { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-primary); border-radius: 8px; padding: 6px 11px; cursor: pointer; }
     .ag-btn.sm { padding: 3px 8px; font-size: 11px; } .ag-btn.go { background: linear-gradient(135deg,#ef4444,#f472b6); color: #fff; border: 0; } .ag-btn.danger { color: #f87171; border-color: #f87171; }
     .ag-btn:disabled { opacity: .45; cursor: not-allowed; }
-    @@media (max-width: 900px) { .ag-main { grid-template-columns: 1fr; } .ag-grid3, .ag-grid2 { grid-template-columns: 1fr; } }
+    @@media (max-width: 900px) { .ag-main { grid-template-columns: 1fr; overflow-y: auto; } .ag-grid3, .ag-grid2 { grid-template-columns: 1fr; } }
 </style>
 
 @code {

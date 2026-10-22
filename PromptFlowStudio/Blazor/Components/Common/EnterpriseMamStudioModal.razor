@@ -250,8 +250,8 @@
     .mm-tab { font: 700 11.5px Pretendard,'Malgun Gothic',sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--text-secondary); border-radius: 8px; padding: 5px 10px; cursor: pointer; }
     .mm-tab.on { color: var(--text-primary); border-color: #14b8a6; box-shadow: 0 0 0 1px #14b8a6 inset; }
     .mm-main { display: grid; grid-template-columns: 300px 1fr; min-height: 0; flex: 1; overflow: hidden; }
-    .mm-side { border-right: 1px solid var(--line); padding: 12px; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
-    .mm-panel { padding: 12px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .mm-side { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overscroll-behavior: contain; border-right: 1px solid var(--line); padding: 12px; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+    .mm-panel { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overscroll-behavior: contain; padding: 12px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
     .mm-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); margin: 2px 0; }
     .mm-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
     .mm-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
@@ -280,7 +280,7 @@
     .mm-btn.sm { padding: 3px 8px; font-size: 11px; } .mm-btn.big { padding: 10px; font-size: 13px; margin-top: 6px; }
     .mm-btn.go { background: linear-gradient(135deg,#14b8a6,#6366f1); color: #fff; border: 0; }
     .mm-btn:disabled { opacity: .45; cursor: not-allowed; }
-    @@media (max-width: 900px) { .mm-main { grid-template-columns: 1fr; } }
+    @@media (max-width: 900px) { .mm-main { grid-template-columns: 1fr; overflow-y: auto; } }
 </style>
 
 @code {

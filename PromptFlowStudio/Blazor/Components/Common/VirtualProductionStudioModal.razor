@@ -127,7 +127,7 @@
                         </select>
                     </label>
                     <label class="vp-mut">길이(초) <input class="vp-in w60" type="number" min="1" max="120" step="0.5" @bind="_dur" /></label>
-                    <label class="vp-mut">강도 @(_intensity.ToString("0.0", CultureInfo.InvariantCulture)) <input type="range" min="0.2" max="2" step="0.1" @bind="_intensity" /></label>
+                    <label class="vp-mut">강도 @(_intensity.ToString("0.0", CultureInfo.InvariantCulture)) <input type="range" min="0.2" max="2" step="0.1"  @bind:event="oninput" /></label>
                     <button class="vp-btn sm" @onclick="Generate">🎥 생성</button>
                 </div>
                 @if (CameraRig.LastPlan is { } plan)
@@ -207,7 +207,7 @@
     .vp-tabs { display: flex; gap: 4px; padding: 8px 18px 0; border-bottom: 1px solid var(--line); }
     .vp-tabs button { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; border: 0; background: none; color: var(--text-muted); padding: 8px 12px; cursor: pointer; border-bottom: 2px solid transparent; }
     .vp-tabs button.on { color: var(--text-primary); border-bottom-color: #22c55e; }
-    .vp-body { padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .vp-body { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overscroll-behavior: contain; padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
     .vp-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     .vp-sec { font: 800 12px Pretendard,'Malgun Gothic',sans-serif; color: var(--text-primary); }
     .vp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 6px; }
