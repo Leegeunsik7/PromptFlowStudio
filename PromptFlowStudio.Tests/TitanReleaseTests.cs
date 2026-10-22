@@ -49,6 +49,7 @@ using Mtx = PromptFlowStudio.Services.MatrixSyndication;
 using Mld = PromptFlowStudio.Services.MultilingualDubbing;
 using Rst = PromptFlowStudio.Services.LiveRestream;
 using Clp = PromptFlowStudio.Services.LiveClipper;
+using Vpe = PromptFlowStudio.Services.ViralExport;
 using Nw = PromptFlowStudio.Services.Newsroom;
 using Spt = PromptFlowStudio.Services.Sports;
 using V3 = System.Numerics.Vector3;
@@ -34362,7 +34363,7 @@ public sealed class LiveToShortsAutoClipperIsolatedTests
 
         // ── CLIP-4: 카탈로그 160 · HUD · 레이아웃 · DI · 모달 규격 · 디스크 I/O 0 · 모달 렌더 ──
         Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_liveAutoClipper" && en.Category == 4);
-        Assert.Equal(160, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        Assert.True(PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length >= 160);
         var root = RepoRoot();
         var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
         var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
@@ -34527,6 +34528,218 @@ public sealed class LiveToShortsAutoClipperIsolatedTests
         Assert.True(alloc == 0, "감지기 할당 " + alloc);
         d.Reset();
         Assert.True(d.Buckets == 0 && d.HistCount == 0 && d.PendingCount == 0);
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+}
+
+/// <summary>v17.85.0 무할당 인메모리 fMP4 엑스포터 · 4 축 바이럴 포텐셜 스코어러 · 고CTR 썸네일/훅 카피 · 콕핏 결선.</summary>
+[Collection("TimingSensitivePerformance")]   // 인출 무할당 계측 · 렌더 ms · 백그라운드 인출 → 비병렬
+public sealed class ViralPredictorShortsExporterIsolatedTests
+{
+    [Fact]
+    public async Task ViralPredictor_And_ShortsExporter_Check()
+    {
+        // ── VPE-1: 저수준 API — Annex-B/ADTS → fMP4(ftyp · moov · moof · mdat) ──
+        var ex = new Vpe.FastShortsMuxingHardwareExporterEngine();
+        var ov = new Vpe.ShortsOverlay { CropX = 900, Caption = 0, CaptionBox = Vh.HookBox.Centered(0.5f, 0.78f, 0.8f, 0.12f), Preset = Kbr.HormoziPreset.HormoziYellow, BounceScale = 1.15f, SpikeMs = 3_000 };
+        var au = new byte[8192]; var aac = new byte[400]; uint seed = 0xABCDu;
+        void Feed(int seconds)
+        {
+            ex.BeginClip();
+            ex.AddVideo(Au(au, false, false, 300, ref seed), 0);   // IDR 이전 P 프레임 — 폐기
+            for (var k = 0; k < seconds * 30; k++)
+            {
+                var pts = 1_000_000L + k * 33_333L;
+                ex.AddVideo(Au(au, k % 60 == 0, k % 60 == 0, k % 60 == 0 ? 2400 : 600, ref seed), pts);
+                if (k % 30 == 0) for (var j = 0; j < 47; j++) ex.AddAudio(Adts(aac, 250, ref seed), pts + j * 21_333L);
+            }
+        }
+        Feed(6);
+        Assert.Equal(Vpe.ExportStatus.Ready, ex.FinishClip(ov, 7));
+        var r = ex.Last;
+        Assert.True(r.VideoSamples == 180 && r.Keyframes == 3 && r.StartsWithIdr && r.AudioSamples == 6 * 47 && r.AudioRate == 48_000 && r.AudioChannels == 2, "샘플 " + r.VideoSamples + "/" + r.AudioSamples);
+        Assert.True(r.DurationUs is > 5_900_000 and < 6_100_000 && r.TextSamples >= 3 && r.SfxSamples == 0 && r.Bytes == ex.Output.Length, "길이 " + r.DurationUs);
+        Assert.True(Vpe.FastShortsMuxingHardwareExporterEngine.TryInspect(ex.Output.Span, out var ins), "ISO BMFF " + ins.TopBoxes);
+        Assert.True(ins.TopBoxes == 4 && ins.Tracks == 3 && ins.Trafs == 3 && ins.Avc1 && ins.AvcC && ins.Clap && ins.Mp4a && ins.Esds && ins.Tx3g && !ins.Ipcm && ins.FirstVideoIdr, "구조 " + ins.Tracks);
+        Assert.True(ins.MajorBrand == Vpe.FastShortsMuxingHardwareExporterEngine.C('i', 's', 'o', 'm') && ins.SampleBytes == ins.MdatPayload && ins.Samples == r.VideoSamples + r.AudioSamples + r.TextSamples, "mdat " + ins.SampleBytes + "/" + ins.MdatPayload);
+        var bytes = ex.Output.ToArray();
+        Assert.Equal(Rst.RtmpWire.Fnv(bytes), r.Hash);
+        using (var st = ex.OpenRead()) Assert.Equal(r.Bytes, st.Length);
+        // clap: 607 × 1080 · 중심 오프셋 = 2·900 + 607 − 1920 (½ px)
+        var clap = IndexOf(bytes, "clap");
+        Assert.True(clap > 0 && System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(bytes.AsSpan(clap + 8)) == Clp.InstantShortsPackagingPipelineGuard.CropW
+            && System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(bytes.AsSpan(clap + 24)) == 2 * 900 + Clp.InstantShortsPackagingPipelineGuard.CropW - 1920, "clap");
+        Assert.True(IndexOf(bytes, "styl") > 0 && IndexOf(bytes, "mehd") > 0 && IndexOf(bytes, "trex") > 0, "자막 styl · mvex");
+        // 손상 바이트 → 검증 실패
+        bytes[IndexOf(bytes, "moof") + 3] ^= 0x40;
+        Assert.False(Vpe.FastShortsMuxingHardwareExporterEngine.TryInspect(bytes, out _));
+        // 효과음 ipcm 트랙
+        ex.IncludeSfxTrack = true;
+        Feed(6);
+        Assert.Equal(Vpe.ExportStatus.Ready, ex.FinishClip(ov, 8));
+        Assert.True(Vpe.FastShortsMuxingHardwareExporterEngine.TryInspect(ex.Output.Span, out var ins2) && ins2.Tracks == 4 && ins2.Ipcm && ex.Last.SfxSamples >= 280 && ex.SfxCueCount >= 5, "SFX " + ex.Last.SfxSamples);
+        ex.IncludeSfxTrack = false;
+        // 무할당 재인출(버퍼 재사용)
+        Feed(6); ex.FinishClip(ov, 9);
+        var muxAlloc = AllocationProbe.MinAllocated(() => { Feed(6); ex.FinishClip(ov, 9); });
+        Assert.True(muxAlloc == 0, "fMP4 인출 할당 " + muxAlloc);
+        // SPS/PPS 부재 → 실패
+        var bare = new Vpe.FastShortsMuxingHardwareExporterEngine();
+        bare.BeginClip();
+        bare.AddVideo(Au(au, true, false, 500, ref seed), 0);
+        Assert.Equal(Vpe.ExportStatus.Failed, bare.FinishClip(ov));
+
+        // ── VPE-2: 4 축 스코어러 — S 급 / C 급 합성 신호 · 60 fps 무할당 ──
+        var sc = new Vpe.AiViralPotentialScoringEngine();
+        void Strong()
+        {
+            sc.Reset();
+            for (var k = 0; k < 25 * 60; k++)
+            {
+                var t = k * 1_000_000L / 60;
+                var ts = t / 1e6f;
+                sc.Push(new Vpe.ViralFrame
+                {
+                    TUs = t, PitchHz = 205f - 55f * MathF.Cos(2f * MathF.PI * ts / 6f), Rms = (int)(ts / 2f) % 2 == 0 ? 0.5f : 0.02f, Motion = 0.5f, Luma = 0.5f,
+                    Emotion = ts % 6f is >= 1.5f and < 4.5f ? Clp.AvatarEmotionTag.Excited : Clp.AvatarEmotionTag.Neutral,
+                    ZoomPunch = k is 30 or 72 or 120, BRollCut = k > 0 && k % 120 == 0 && k / 120 % 2 == 1, Sticker = k > 0 && k % 120 == 0 && k / 120 % 2 == 0,
+                });
+            }
+        }
+        Strong();
+        var s1 = sc.Evaluate();
+        Assert.True(s1.Hook >= 95 && s1.Emotion >= 90 && s1.Visual >= 90 && s1.Loop >= 90, "4 축 " + s1.Hook + "/" + s1.Emotion + "/" + s1.Visual + "/" + s1.Loop);
+        Assert.True(s1.Total >= 90 && s1.Grade == Vpe.ViralGrade.S && s1.Priority && s1.Punches == 3 && s1.InBand >= 9 && s1.PitchSemis > 7, "S 급 " + s1.Total);
+        var pushAlloc = AllocationProbe.MinAllocated(() => { Strong(); sc.Evaluate(); });
+        Assert.True(pushAlloc == 0, "스코어러 할당 " + pushAlloc);
+        sc.Reset();
+        for (var k = 0; k < 20 * 60; k++) sc.Push(new Vpe.ViralFrame { TUs = k * 1_000_000L / 60, PitchHz = 180f, Rms = 0.1f, Motion = 0.2f, Luma = 0.4f });
+        var s2 = sc.Evaluate();
+        Assert.True(s2.Grade == Vpe.ViralGrade.C && !s2.Priority && s2.Hook < 5 && s2.Visual == 0 && s2.Loop > 95, "C 급 " + s2.Total);
+        Assert.True(Vpe.AiViralPotentialScoringEngine.GradeOf(90) == Vpe.ViralGrade.S && Vpe.AiViralPotentialScoringEngine.GradeOf(89.9f) == Vpe.ViralGrade.A
+            && Vpe.AiViralPotentialScoringEngine.GradeOf(70) == Vpe.ViralGrade.B && Vpe.AiViralPotentialScoringEngine.GradeOf(69.9f) == Vpe.ViralGrade.C);
+
+        // ── VPE-3: 썸네일 키프레임 상위 3(1 s 분리) · 훅 카피 3 종 ──
+        var th = new Vpe.HighCtrThumbnailHookGenerator();
+        void Faces()
+        {
+            th.Reset();
+            for (var k = 0; k < 12 * 60; k++)
+            {
+                var t = k * 1_000_000L / 60; var ts = t / 1e6f;
+                var jaw = 0.1f + Peak(ts, 2f, 0.4f) + Peak(ts, 5f, 0.6f) + Peak(ts, 5.6f, 0.7f) + Peak(ts, 9f, 0.5f);
+                th.Push(new Vpe.FaceFrame { TUs = t, JawOpen = jaw, Smile = jaw * 0.8f, Motion = 0.3f });
+            }
+        }
+        Faces();
+        var c0 = th.Candidate(0); var c1 = th.Candidate(1); var c2 = th.Candidate(2);
+        Assert.True(th.Count == 3 && Math.Abs(c0.TUs - 5_600_000) < 120_000 && Math.Abs(c1.TUs - 9_000_000) < 120_000 && Math.Abs(c2.TUs - 2_000_000) < 120_000, "키프레임 " + c0.TUs + "/" + c1.TUs + "/" + c2.TUs);
+        Assert.True(c0.Score > c1.Score && c1.Score > c2.Score && c0.PredictedCtr > c2.PredictedCtr, "점수 순");
+        th.Compose("편의점 신상 라면을 먹방 하다가", 35, 312);
+        Assert.Equal("편의점", th.Keyword.ToString());
+        Assert.True(th.CopyText(0).StartsWith("편의점", StringComparison.Ordinal) && th.CopyText(0).EndsWith("?", StringComparison.Ordinal), th.CopyText(0));
+        Assert.True(th.CopyText(1).Contains("35초", StringComparison.Ordinal) && th.CopyText(1).Contains("312%", StringComparison.Ordinal), th.CopyText(1));
+        Assert.True(th.CopyText(2).StartsWith("⚠️", StringComparison.Ordinal) && th.CopyText(2).Contains("편의점의 충격 반전", StringComparison.Ordinal), th.CopyText(2));
+        th.Compose("진짜 완전 너무", 1, 1);
+        Assert.Equal("이 장면", th.Keyword.ToString());
+        var composeAlloc = AllocationProbe.MinAllocated(() => { Faces(); th.Compose("편의점 신상 라면을 먹방", 30, 250); });
+        Assert.True(composeAlloc == 0, "썸네일/카피 할당 " + composeAlloc);
+
+        // ── VPE-4: 러너 — v17.84 리허설 클립 → 분석 → 링 재슬라이스 fMP4 인출 ──
+        var run = new Vpe.ViralPredictorShortsExportStudioRunner();
+        Assert.False(run.HasSelection);
+        Assert.Equal(Vpe.ExportStatus.Failed, run.ExportNow());
+        Assert.True(run.Rehearse() && run.HasSelection && run.CandidateCount >= 2, "리허설 " + run.CandidateCount);
+        var sel = run.Selected;
+        Assert.True(sel.Manual && sel.Status == Clp.ShortStatus.Ready && run.Score.Frames >= 29 * 60 && run.Score.Total is > 0 and <= 100 && run.Thumbs.Count == 3, "분석 " + run.Score.Total);
+        Assert.True(run.Thumbs.CopyText(1).Contains('%') && run.Analyses == 1, run.Thumbs.CopyText(1));
+        Assert.Equal(Vpe.ExportStatus.Ready, run.ExportNow());
+        var er = run.Exporter.Last;
+        Assert.True(Vpe.FastShortsMuxingHardwareExporterEngine.TryInspect(run.Exporter.Output.Span, out var ins3) && ins3.Tracks == 3 && ins3.FirstVideoIdr, "링 → fMP4");
+        Assert.True(er.ShortId == sel.Id && er.VideoSamples >= sel.VideoFrames - 1 && er.AudioSamples >= sel.AudioFrames - 2 && er.CropX == sel.CropX && Math.Abs(er.DurationUs / 1e6 - sel.Seconds) < 0.2, "인출 " + er.VideoSamples + "/" + sel.VideoFrames);
+        Assert.True(run.Clipper.Ring.TrySlice(sel.StartUs, sel.EndUs, out var slice));
+        var ringOv = Vpe.ShortsOverlay.From(sel);
+        run.Exporter.Export(run.Clipper.Ring, slice, ringOv, sel.Id);
+        var ringAlloc = AllocationProbe.MinAllocated(() => run.Exporter.Export(run.Clipper.Ring, slice, ringOv, sel.Id));
+        Assert.True(ringAlloc == 0, "링 인출 할당 " + ringAlloc);
+        using (var cts = new CancellationTokenSource())
+        {
+            cts.Cancel();
+            Assert.Equal(Vpe.ExportStatus.Cancelled, run.Exporter.Export(run.Clipper.Ring, slice, ringOv, sel.Id, cts.Token));
+        }
+        Assert.Equal(Vpe.ExportStatus.Ready, await run.ExportAsync());
+        Assert.True(run.Progress == 1f && !run.Exporting && run.Exporter.Exports >= 3);
+        var url = run.DownloadUrl();
+        Assert.True(url is not null && url.StartsWith("data:video/mp4;base64,", StringComparison.Ordinal) && ReferenceEquals(url, run.DownloadUrl()) && run.FileName().EndsWith(".mp4", StringComparison.Ordinal));
+        Assert.True(run.DispatchSelected());
+        Assert.False(run.DispatchSelected());
+        Assert.True(run.Select(sel.Id) && run.Analyses == 2);
+        run.Clipper.Reset();
+        Assert.Equal(Vpe.ExportStatus.Expired, run.ExportNow());
+        run.Reset();
+        Assert.False(run.HasSelection);
+        run.Dispose();
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(run));
+
+        // ── VPE-4: 카탈로그 161 · HUD · 레이아웃 · DI · 모달 규격 · 디스크 I/O 0 · 모달 렌더 ──
+        Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_viralPredictorExport" && en.Category == 4);
+        Assert.Equal(161, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        var root = RepoRoot();
+        var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
+        var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
+        var mainForm = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "MainForm.cs"));
+        var maui = File.ReadAllText(Path.Combine(root, "PromptFlowStudio.Mobile", "MauiProgram.cs"));
+        var modalSrc = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "ViralPredictorShortsExportStudioModal.razor"));
+        Assert.True(hud.IndexOf("gth-v1785", StringComparison.Ordinal) is > 0 and var i1785 && i1785 < hud.IndexOf("gth-v1784", StringComparison.Ordinal) && hud.Contains("VpeRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("VpeRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<ViralPredictorShortsExportStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_viralPredictorExport\"", StringComparison.Ordinal) && layout.Contains("\"_viralPredictorExport\" =>", StringComparison.Ordinal));
+        Assert.True(mainForm.Contains("ViralExport.ViralPredictorShortsExportStudioRunner(sp)", StringComparison.Ordinal) && maui.Contains("ViralExport.ViralPredictorShortsExportStudioRunner(sp)", StringComparison.Ordinal));
+        Assert.True(modalSrc.Contains("@implements IDisposable", StringComparison.Ordinal) && modalSrc.Contains("flex: 1 1 auto; min-height: 0; overflow-y: auto;", StringComparison.Ordinal) && modalSrc.Contains("position: sticky", StringComparison.Ordinal));
+        foreach (var src in Directory.GetFiles(Path.Combine(root, "PromptFlowStudio", "Services", "ViralExport"), "*.cs"))
+        {
+            var text = File.ReadAllText(src);
+            Assert.True(!text.Contains("File.", StringComparison.Ordinal) && !text.Contains("FileStream", StringComparison.Ordinal) && !text.Contains("HttpClient", StringComparison.Ordinal) && !text.Contains("Process.Start", StringComparison.Ordinal) && !text.Contains("System.Linq", StringComparison.Ordinal), "디스크 I/O · 외부 프로세스 " + Path.GetFileName(src));
+        }
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = sp.GetService(typeof(Vpe.ViralPredictorShortsExportStudioRunner))!;
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.ViralPredictorShortsExportStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("vpe-scrim", StringComparison.Ordinal) && html.Contains("vpe-body", StringComparison.Ordinal) && html.Contains("vpe-radar", StringComparison.Ordinal) && html.Contains("리허설 클립 생성", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+
+    private static float Peak(float ts, float c, float h) => h * MathF.Exp(-(ts - c) * (ts - c) / 0.08f);
+
+    private static ReadOnlySpan<byte> Au(byte[] buf, bool idr, bool withParams, int size, ref uint seed)
+    {
+        var p = 0;
+        Nal(buf, ref p, 0x09); buf[p++] = 0xF0;
+        if (withParams) { Nal(buf, ref p, 0x67); buf[p++] = 0x64; buf[p++] = 0x00; buf[p++] = 0x28; buf[p++] = 0xAC; Nal(buf, ref p, 0x68); buf[p++] = 0xEE; buf[p++] = 0x3C; buf[p++] = 0x80; }
+        Nal(buf, ref p, idr ? (byte)0x65 : (byte)0x41);
+        for (var end = p + size; p < end; p++) { var b = Rst.RtmpWire.Next(ref seed); buf[p] = b == 0 ? (byte)0x55 : b; }
+        return buf.AsSpan(0, p);
+    }
+
+    private static void Nal(byte[] b, ref int p, byte h) { b[p] = 0; b[p + 1] = 0; b[p + 2] = 0; b[p + 3] = 1; b[p + 4] = h; p += 5; }
+
+    private static ReadOnlySpan<byte> Adts(byte[] a, int raw, ref uint seed)
+    {
+        a[0] = 0xFF; a[1] = 0xF1; a[2] = 0x4C; a[3] = 0x80; a[4] = (byte)((raw + 7) >> 3); a[5] = 0x1F; a[6] = 0xFC;
+        for (var i = 7; i < 7 + raw; i++) { var b = Rst.RtmpWire.Next(ref seed); a[i] = b == 0 ? (byte)0x21 : b; }
+        return a.AsSpan(0, 7 + raw);
+    }
+
+    /// <summary>fourcc 첫 출현 박스 시작(크기 필드) 오프셋.</summary>
+    private static int IndexOf(byte[] b, string fourcc)
+    {
+        for (var i = 4; i + 4 <= b.Length; i++)
+            if (b[i] == fourcc[0] && b[i + 1] == fourcc[1] && b[i + 2] == fourcc[2] && b[i + 3] == fourcc[3]) return i - 4;
+        return -1;
     }
 
     private static string RepoRoot()

@@ -1,17 +1,17 @@
 # Current Project Status
-- Active Milestone: v17.84.0 완료 (Complete) — AI 라이브 → 숏폼 인스턴트 오토 클리퍼 & 클라이맥스 스파이크 감지 스튜디오
+- Active Milestone: v17.85.0 완료 (Complete) — AI 바이럴 예측 스코어러 & 인스턴트 숏폼 MP4 익스포터 스튜디오
 - Build Status: Desktop Release -warnaserror 0/0 · net8.0-ios Release -warnaserror 0/0 · net8.0-android 미검증(SDK/JDK 미설치)
-- Test Suite: 494/496 전량 회귀(단일 CPU · MaxCpuCount=1 · DisableParallelization) + 실패 2 `DistributedGpuCluster_And_CloudRenderingSwarm_Check` · `CloudSourceVerification_And_UiInteractiveTesting_Check` 격리 재실행 2/2 통과(벽시계 하트비트/UI 스텝 타임아웃 타이밍)
-- Sidebar: 7대 카테고리 · 160 엔트리
+- Test Suite: 496/497 전량 회귀(단일 CPU · MaxCpuCount=1 · DisableParallelization) + 실패 1 `DistributedGpuCluster_And_CloudRenderingSwarm_Check` 격리 재실행 1/1 통과(벽시계 하트비트 타이밍)
+- Sidebar: 7대 카테고리 · 161 엔트리
 - Updated At: 2026-10-22 (KST)
 
 ## Completed Deliverables
-- CLIP-1: `LiveClipper/RollingCircularVideoBufferEngine` — 120 s H.264 Annex-B/AAC 바이트 링(지연 1 회 할당) + 16K 프레임/1K IDR 인덱스 링 · 시간/용량 축출 · SPS/PPS 캐시 선행 삽입 → 직전 IDR 슬라이스 · 랩어라운드 2 분할 추출 · 무할당
-- CLIP-2: `MultimodalClimaxSpikeDetector` — 1 s 버킷 채팅 가속(30 s 기준 300 %) · 후원 ₩ · RMS + 2.4 kHz HPF 고역 · Surprise/Excited 급변 → 가중 복합(+시너지) ≥ 0.85 → −20 s/+15 s · 20 s 불응기 · 무할당
-- CLIP-3: `InstantShortsPackagingPipelineGuard` — 핫패스 큐 투입 µs(간섭 0) · BelowNormal 워커 프레임 단위 복사 · IDR 무결성 · v17.77 9:16 크롭/세이프존 · v17.78 호르모지 자막 · v17.76 SFX · 쿼터 가드 예약 → 원클릭 배포 · 링 만료 Expired
-- CLIP-4: `LiveToShortsAutoClipperStudioRunner`(v17.83 `ILiveMediaTap` 송출 직결 · 채팅/슈퍼챗/감정 신호) + `LiveToShortsAutoClipperStudioModal` · 카탈로그 `_liveAutoClipper` · HUD `gth-v1784`(`ClpRun`) · DI 양쪽
-- CLIP-5: `LiveToShortsAutoClipper_And_SpikeDetector_Check`(TimingSensitive) · 크롤러 160 모달 결함 0
+- VPE-1: `ViralExport/FastShortsMuxingHardwareExporterEngine` — 링 슬라이스 Annex-B → AVCC · ADTS → raw AAC + ASC · ftyp/moov(avc1+avcC+clap 607×1080 9:16 크롭+pasp · mp4a+esds · tx3g 키네틱 자막 styl 프리셋/바운스 · ipcm 효과음 선택)/mvex → moof(traf tfhd/tfdt/trun) → mdat · `ReadOnlyMemory<byte>`/`Stream` 공급 · 재인출 0 B · `TryInspect` 무할당 구조 검증 · CTS 취소/링 만료
+- VPE-2: `AiViralPotentialScoringEngine` — 훅(3 s 피치 반음 폭 + 줌 펀치) 35 · 감정(RMS p10–p90 dB + 변곡) 25 · 시각 환기(1.5–2.5 s 적중 + B-Roll/스티커 교차) 20 · 루프(머리/꼬리 0.5 s 유사도) 20 → S/A/B/C · S/A 우선 배포 · 60 fps 무할당
+- VPE-3: `HighCtrThumbnailHookGenerator` — JawOpen/Smile/모션 복합 상위 3 키프레임(1 s 분리) · 대본 키워드 → 의문형/파격 수치/반전 경고 카피 무할당 합성
+- VPE-4: `ViralPredictorShortsExportStudioRunner`(v17.84 클리퍼 완료본 · 리허설 · 백그라운드 인출 · data URL 다운로드 · 우선 배포) + `ViralPredictorShortsExportStudioModal` · 카탈로그 `_viralPredictorExport` · HUD `gth-v1785`(`VpeRun`) · DI 양쪽
+- VPE-5: `ViralPredictor_And_ShortsExporter_Check`(TimingSensitive) · 크롤러 161 모달 결함 0
 
 ## Known Issues / 환경 노트
 - 호스트 CPU 경합 시 타이밍 민감 테스트 간헐 초과 가능(격리 재실행 통과 기조)
-- 클립 패키징은 메타데이터 + Annex-B 바이트 수준(실 9:16 픽셀 리렌더/MP4 먹스 미결선) · 리허설 소스는 합성 비트스트림 · Android 빌드 · GUI 육안 미검증
+- fMP4 영상은 원본 H.264 재사용 + clap 크롭/tx3g 자막 메타 합성(픽셀 번인 재인코딩 미결선) · 바이럴 신호는 클립 메타 기반 합성 · Android 빌드 · GUI 육안 미검증

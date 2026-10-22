@@ -1,0 +1,323 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.LiveClipper
+@using PromptFlowStudio.Services.ViralExport
+@implements IDisposable
+@inject ViralPredictorShortsExportStudioRunner Runner
+
+@* [PromptFlow Studio v17.85.0] 📊 바이럴 예측 스코어러 & MP4 익스포터 — 4 축 레이더 · S/A/B/C 뱃지 · A/B 썸네일 3 종 · 원클릭 fMP4 인메모리 렌더/인출. *@
+<div class="vpe-scrim" @onclick="Close">
+    <div class="vpe-modal" @onclick:stopPropagation="true">
+        <div class="vpe-h">
+            <div>
+                <div class="vpe-title">📊 바이럴 예측 스코어러 & MP4 익스포터 @(Runner.Exporting ? "· ⏳ 렌더 중" : null)</div>
+                <div class="vpe-sub">라이브에서 잘라낸 킬러 클립이 숏폼 알고리즘에서 얼마나 잘 퍼질지 <b>0~100점</b>으로 미리 채점합니다. 첫 3초의 목소리 높낮이·줌 펀치, 감정 기복,
+                    1.5~2.5초마다의 화면 전환, 끝과 시작이 자연스럽게 이어지는지를 함께 보고 <b>S·A·B·C</b> 등급을 매기며 S/A는 우선 배포 대상으로 표시합니다.
+                    썸네일 후보 3장과 훅 문구 3종을 자동으로 만들고, 버튼 한 번으로 디스크에 저장하지 않고 바로 재생 가능한 9:16 MP4(fMP4)를 메모리에서 만들어 내려받을 수 있습니다.</div>
+            </div>
+            <button class="vpe-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="vpe-body">
+            <div class="vpe-bar">
+                <button class="vpe-btn hot" @onclick="Rehearse">🎬 리허설 클립 생성</button>
+                <label class="vpe-lbl">대상 클립
+                    <select value="@(Runner.HasSelection ? Runner.Selected.Id.ToString(CultureInfo.InvariantCulture) : "0")" @onchange="SelectClip">
+                        <option value="0">— 선택 —</option>
+                        @for (var i = 0; i < Runner.Clipper.Packager.ResultCount; i++)
+                        {
+                            var r = Runner.Clipper.Packager.Result(i);
+                            if (!ViralPredictorShortsExportStudioRunner.Usable(r.Status)) continue;
+                            <option value="@(r.Id.ToString(CultureInfo.InvariantCulture))">#@(r.Id) @(r.Manual ? "✋" : "🤖") @(r.Seconds.ToString("0", CultureInfo.InvariantCulture))초</option>
+                        }
+                    </select>
+                </label>
+                <button class="vpe-btn" disabled="@(!Runner.HasSelection)" @onclick="Reanalyze">📊 재분석</button>
+                <span class="vpe-sep"></span>
+                <label class="vpe-lbl"><input type="checkbox" checked="@(Runner.Exporter.IncludeCaptionTrack)" @onchange="ToggleCaption" /> 키네틱 자막 트랙</label>
+                <label class="vpe-lbl"><input type="checkbox" checked="@(Runner.Exporter.IncludeSfxTrack)" @onchange="ToggleSfx" /> 효과음 PCM 트랙</label>
+                <button class="vpe-btn" @onclick="ResetAll">♻ 초기화</button>
+            </div>
+
+            <div class="vpe-main">
+                <div class="vpe-card">
+                    <div class="vpe-sec">🧭 4축 바이럴 지표</div>
+                    @{ var sc = Runner.Score; }
+                    <div class="vpe-radar-wrap">
+                        <svg viewBox="0 0 200 200" width="200" height="200" class="vpe-radar">
+                            <polygon points="100,20 180,100 100,180 20,100" fill="none" stroke="#1e293b" stroke-width="1" />
+                            <polygon points="100,60 140,100 100,140 60,100" fill="none" stroke="#1e293b" stroke-width="1" />
+                            <line x1="100" y1="20" x2="100" y2="180" stroke="#1e293b" /><line x1="20" y1="100" x2="180" y2="100" stroke="#1e293b" />
+                            <polygon points="@(Radar(sc))" fill="#38bdf833" stroke="#38bdf8" stroke-width="2" />
+                            <g><text x="100" y="13" text-anchor="middle" fill="#94a3b8" font-size="9">훅 @(I(sc.Hook))</text></g>
+                            <g><text x="196" y="103" text-anchor="end" fill="#94a3b8" font-size="9">감정 @(I(sc.Emotion))</text></g>
+                            <g><text x="100" y="196" text-anchor="middle" fill="#94a3b8" font-size="9">시각 @(I(sc.Visual))</text></g>
+                            <g><text x="4" y="103" fill="#94a3b8" font-size="9">루프 @(I(sc.Loop))</text></g>
+                        </svg>
+                        <div class="vpe-badge g@(AiViralPotentialScoringEngine.GradeName(sc.Grade))">
+                            <b>@(Runner.HasSelection ? AiViralPotentialScoringEngine.GradeName(sc.Grade) : "-")</b>
+                            <span>@(I(sc.Total))점</span>
+                            @if (sc.Priority)
+                            {
+                                <em>🚩 우선 배포</em>
+                            }
+                        </div>
+                    </div>
+                    <div class="vpe-sig"><span>🎣 훅 리텐션</span><div class="vpe-meter"><i style="width:@(I(sc.Hook))%"></i></div><b>@(sc.PitchSemis.ToString("0.0", CultureInfo.InvariantCulture))st · 펀치 @(sc.Punches)</b></div>
+                    <div class="vpe-sig"><span>🎢 감정 롤러코스터</span><div class="vpe-meter"><i class="emo" style="width:@(I(sc.Emotion))%"></i></div><b>@(sc.RmsRangeDb.ToString("0", CultureInfo.InvariantCulture))dB · 변곡 @(sc.Inflections)</b></div>
+                    <div class="vpe-sig"><span>🎞️ 시각적 환기</span><div class="vpe-meter"><i class="vis" style="width:@(I(sc.Visual))%"></i></div><b>@(sc.InBand)/@(sc.VisualEvents) · 교차 @(sc.Alternations)</b></div>
+                    <div class="vpe-sig"><span>🔁 종결 루프성</span><div class="vpe-meter"><i class="loop" style="width:@(I(sc.Loop))%"></i></div><b>유사 @(sc.LoopSimilarity.ToString("0.00", CultureInfo.InvariantCulture))</b></div>
+                    <div class="vpe-kv">S ≥ 90 · A ≥ 80 · B ≥ 70 · C &lt; 70 · 가중치 훅 35 / 감정 25 / 시각 20 / 루프 20 · 분석 <b>@(Runner.Analyses)</b> · 우선 플래그 <b>@(Runner.PriorityFlags)</b></div>
+                </div>
+
+                <div class="vpe-card">
+                    <div class="vpe-sec">🖼️ A/B 썸네일 & 훅 카피 <span class="vpe-kw">키워드 “@(Runner.Thumbs.Keyword.ToString())”</span></div>
+                    @if (Runner.Thumbs.Count == 0)
+                    {
+                        <div class="vpe-empty">클립을 선택하거나 🎬 리허설 클립을 생성하면 표정이 가장 큰 순간 3장을 골라 드립니다.</div>
+                    }
+                    <div class="vpe-thumbs">
+                        @for (var i = 0; i < Runner.Thumbs.Count; i++)
+                        {
+                            var c = Runner.Thumbs.Candidate(i);
+                            var kind = (HookCopyKind)i;
+                            <div class="vpe-thumb">
+                                <svg viewBox="0 0 90 160" class="vpe-face">
+                                    <rect x="0" y="0" width="90" height="160" fill="@(ThumbBg(i))" />
+                                    <circle cx="45" cy="70" r="30" fill="#fcd9b6" />
+                                    <circle cx="34" cy="62" r="@(F(3f + 2f * c.JawOpen))" fill="#1e293b" /><circle cx="56" cy="62" r="@(F(3f + 2f * c.JawOpen))" fill="#1e293b" />
+                                    <path d="@(Mouth(c))" fill="#7f1d1d" stroke="#450a0a" stroke-width="1" />
+                                    <rect x="4" y="112" width="82" height="42" rx="4" fill="#000000aa" />
+                                    <g><text x="45" y="128" text-anchor="middle" fill="#fde047" font-size="8" font-weight="800">@(Clip(Runner.Thumbs.CopyText(i), 0))</text></g>
+                                    <g><text x="45" y="141" text-anchor="middle" fill="#fde047" font-size="8" font-weight="800">@(Clip(Runner.Thumbs.CopyText(i), 1))</text></g>
+                                </svg>
+                                <div class="vpe-tmeta">
+                                    <div><b>@((char)('A' + i))안</b> · @(HighCtrThumbnailHookGenerator.KindName(kind))</div>
+                                    <div class="vpe-copy">“@(Runner.Thumbs.CopyText(i))”</div>
+                                    <div class="vpe-mini">@((c.TUs / 1e6).ToString("0.0", CultureInfo.InvariantCulture))초 · 입 @(I(c.JawOpen * 100f)) · 미소 @(I(c.Smile * 100f)) · 모션 @(I(c.Motion * 100f))</div>
+                                    <div class="vpe-mini">예상 CTR <b>@((c.PredictedCtr + HighCtrThumbnailHookGenerator.CopyCtrBonus(kind)).ToString("0.0", CultureInfo.InvariantCulture))%</b></div>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                <div class="vpe-card">
+                    <div class="vpe-sec">🎬 fMP4 인메모리 렌더 / 인출</div>
+                    <div class="vpe-bar tight">
+                        <button class="vpe-btn go" disabled="@(!Runner.HasSelection || Runner.Exporting)" @onclick="Export">⬇ 9:16 MP4 렌더 & 인출</button>
+                        <button class="vpe-btn" disabled="@(!Runner.Exporting)" @onclick="Cancel">⏹ 취소</button>
+                        <button class="vpe-btn" disabled="@(!Runner.HasSelection)" @onclick="Dispatch">🚀 우선 배포</button>
+                    </div>
+                    <div class="vpe-prog"><i style="width:@(I(Runner.Progress * 100f))%"></i></div>
+                    @{ var ex = Runner.Exporter.Last; }
+                    <div class="vpe-kv">상태 <b>@(FastShortsMuxingHardwareExporterEngine.StatusName(ex.Status))</b> · 진행 <b>@(I(Runner.Progress * 100f))%</b> · 렌더 <b>@(ex.RenderMs.ToString("0.0", CultureInfo.InvariantCulture))ms</b> · 인출 <b>@(Runner.Exporter.Exports)</b> · 실패 <b>@(Runner.Exporter.Failures)</b></div>
+                    @if (ex.Status == ExportStatus.Ready)
+                    {
+                        <div class="vpe-grid">
+                            <span>크기 <b>@((ex.Bytes / 1048576.0).ToString("0.00", CultureInfo.InvariantCulture))MB</b></span>
+                            <span>길이 <b>@((ex.DurationUs / 1e6).ToString("0.0", CultureInfo.InvariantCulture))s</b></span>
+                            <span>영상 <b>@(ex.VideoSamples)</b> (IDR @(ex.Keyframes))</span>
+                            <span>AAC <b>@(ex.AudioSamples)</b> @(ex.AudioRate / 1000)k</span>
+                            <span>자막 <b>@(ex.TextSamples)</b></span>
+                            <span>효과음 <b>@(ex.SfxSamples)</b></span>
+                            <span>크롭 x <b>@(ex.CropX)</b></span>
+                            <span>FNV <b>@((ex.Hash & 0xFFFFFF).ToString("X6", CultureInfo.InvariantCulture))</b></span>
+                        </div>
+                        <div class="vpe-kv">ISO BMFF 검증 <b class="@(_insp.Valid ? "okc" : "warn")">@(_insp.Valid ? "✓ 통과" : "✗")</b> · 최상위 @(_insp.TopBoxes) 박스 · 트랙 @(_insp.Tracks) · trun 샘플 @(_insp.Samples) · clap @(_insp.Clap ? "✓" : "✗") · tx3g @(_insp.Tx3g ? "✓" : "-") · ipcm @(_insp.Ipcm ? "✓" : "-") · 첫 샘플 IDR @(_insp.FirstVideoIdr ? "✓" : "✗")</div>
+                        <div class="vpe-bar tight">
+                            @if (_url is null)
+                            {
+                                <button class="vpe-btn" @onclick="MakeLink">🔗 다운로드 링크 생성</button>
+                            }
+                            else
+                            {
+                                <a class="vpe-btn go" href="@(_url)" download="@(Runner.FileName())">💾 @(Runner.FileName()) 내려받기</a>
+                            }
+                        </div>
+                    }
+                    <div class="vpe-sec sm">📦 컨테이너 구성</div>
+                    <div class="vpe-mini">ftyp(isom·iso6·iso5·avc1·mp41) → moov[mvhd · avc1+avcC+clap(607×1080 9:16 크롭)+pasp · mp4a+esds · tx3g 키네틱 자막 · ipcm 효과음 · mvex/mehd/trex] → moof[mfhd · traf(tfhd/tfdt/trun)] → mdat · 외부 FFmpeg · 디스크 임시 파일 0</div>
+                    @if (Runner.HasSelection)
+                    {
+                        var s = Runner.Selected;
+                        <div class="vpe-kv">대상 <b>#@(s.Id)</b> @(s.Manual ? "✋ 수동" : "🤖 자동") · <b>@(s.Seconds.ToString("0.0", CultureInfo.InvariantCulture))s</b> · 스파이크 <b>@(s.Score.ToString("0.00", CultureInfo.InvariantCulture))</b> · “@(InstantShortsPackagingPipelineGuard.Captions[Math.Clamp(s.Caption, 0, 3)])” · @(InstantShortsPackagingPipelineGuard.StatusName(s.Status))</div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="vpe-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+    </div>
+</div>
+
+<style>
+    .vpe-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .vpe-modal { width: min(1320px, 96vw); max-height: 94vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); color: var(--text-primary); }
+    .vpe-h { position: sticky; top: 0; z-index: 3; flex: 0 0 auto; display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px 8px; background: var(--card); border-bottom: 1px solid var(--line); }
+    .vpe-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 10px; }
+    .vpe-act { position: sticky; bottom: 0; z-index: 3; flex: 0 0 auto; padding: 8px 16px 14px; background: var(--card); border-top: 1px solid var(--line); font-size: 11px; color: var(--text-muted); }
+    .vpe-title { font-size: 17px; font-weight: 800; }
+    .vpe-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .vpe-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .vpe-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 0; }
+    .vpe-bar.tight { margin: 4px 0 6px; }
+    .vpe-sep { flex: 1; }
+    .vpe-lbl { display: inline-flex; gap: 6px; align-items: center; font-size: 11.5px; }
+    .vpe-lbl select { background: #0f172a; color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; font-size: 11.5px; padding: 2px 6px; }
+    .vpe-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer; text-decoration: none; }
+    .vpe-btn:disabled { opacity: .45; cursor: default; }
+    .vpe-btn.hot { border-color: #f97316; }
+    .vpe-btn.go { border-color: #4ade80; font-weight: 700; }
+    .vpe-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr) minmax(0, 1.05fr); gap: 10px; margin-top: 10px; }
+    .vpe-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-width: 0; }
+    .vpe-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
+    .vpe-sec.sm { margin-top: 10px; font-size: 11.5px; }
+    .vpe-kw { margin-left: auto; font-size: 10.5px; font-weight: 400; color: #fde047; }
+    .vpe-kv { font-size: 11px; color: var(--text-muted); margin: 4px 0; }
+    .vpe-kv b { font-family: var(--mono); color: var(--text-primary); }
+    .vpe-radar-wrap { display: flex; align-items: center; justify-content: center; gap: 10px; }
+    .vpe-radar { flex: 0 0 auto; }
+    .vpe-badge { display: flex; flex-direction: column; align-items: center; min-width: 78px; padding: 8px; border-radius: 12px; border: 2px solid #334155; }
+    .vpe-badge b { font-size: 40px; line-height: 1; font-weight: 900; }
+    .vpe-badge span { font-family: var(--mono); font-size: 13px; margin-top: 2px; }
+    .vpe-badge em { font-style: normal; font-size: 10px; color: #fca5a5; margin-top: 4px; }
+    .vpe-badge.gS { border-color: #f59e0b; color: #fde047; } .vpe-badge.gA { border-color: #4ade80; color: #86efac; }
+    .vpe-badge.gB { border-color: #38bdf8; color: #7dd3fc; } .vpe-badge.gC { border-color: #64748b; color: #cbd5e1; }
+    .vpe-sig { display: grid; grid-template-columns: 104px 1fr 112px; gap: 6px; align-items: center; font-size: 11px; margin: 4px 0; }
+    .vpe-sig b { font-family: var(--mono); text-align: right; font-size: 10.5px; }
+    .vpe-meter { height: 8px; background: #1e293b; border-radius: 4px; overflow: hidden; }
+    .vpe-meter i { display: block; height: 100%; background: #38bdf8; transition: width .2s; }
+    .vpe-meter i.emo { background: #f472b6; } .vpe-meter i.vis { background: #a78bfa; } .vpe-meter i.loop { background: #4ade80; }
+    .vpe-empty { font-size: 11px; color: var(--text-muted); padding: 10px; text-align: center; }
+    .vpe-thumbs { display: flex; flex-direction: column; gap: 6px; }
+    .vpe-thumb { display: flex; gap: 8px; align-items: center; background: #0f172a; border-radius: 8px; padding: 6px; }
+    .vpe-face { flex: 0 0 63px; width: 63px; height: 112px; border-radius: 6px; }
+    .vpe-tmeta { flex: 1; min-width: 0; font-size: 11px; }
+    .vpe-copy { color: #fef08a; font-weight: 700; margin: 2px 0; }
+    .vpe-mini { font-size: 10px; color: var(--text-muted); }
+    .vpe-mini b { font-family: var(--mono); color: #86efac; }
+    .vpe-prog { height: 10px; background: #1e293b; border-radius: 5px; overflow: hidden; }
+    .vpe-prog i { display: block; height: 100%; background: linear-gradient(90deg, #0ea5e9, #4ade80); transition: width .2s; }
+    .vpe-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px 6px; margin-top: 6px; font-size: 10.5px; color: var(--text-muted); }
+    .vpe-grid b { font-family: var(--mono); color: var(--text-primary); }
+    .warn { color: #fca5a5 !important; } .okc { color: #86efac !important; }
+    @@media (max-width: 1100px) { .vpe-main { grid-template-columns: 1fr 1fr; } }
+    @@media (max-width: 760px) { .vpe-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+    private Mp4Inspection _insp;
+    private ulong _inspHash;
+    private string? _url;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { if (Runner.Exporting) _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("ViralExport.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    protected override void OnParametersSet() => Inspect();
+
+    private void Inspect()
+    {
+        var last = Runner.Exporter.Last;
+        if (last.Status != ExportStatus.Ready || last.Hash == _inspHash) return;
+        _inspHash = last.Hash;
+        _url = null;
+        FastShortsMuxingHardwareExporterEngine.TryInspect(Runner.Exporter.Output.Span, out _insp);
+    }
+
+    private static string F(float v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+
+    private static string I(float v) => Math.Clamp(float.IsFinite(v) ? v : 0f, 0f, 100f).ToString("0", CultureInfo.InvariantCulture);
+
+    private static string Radar(in ViralScore s)
+    {
+        static float R(float v) => 80f * Math.Clamp(float.IsFinite(v) ? v : 0f, 0f, 100f) / 100f;
+        return F(100f) + "," + F(100f - R(s.Hook)) + " " + F(100f + R(s.Emotion)) + "," + F(100f) + " " + F(100f) + "," + F(100f + R(s.Visual)) + " " + F(100f - R(s.Loop)) + "," + F(100f);
+    }
+
+    private static string Mouth(in ThumbCandidate c)
+    {
+        var w = 9f + 6f * c.Smile; var h = 2f + 12f * c.JawOpen; var lift = 4f * c.Smile;
+        return "M" + F(45f - w) + " " + F(84f - lift) + " Q45 " + F(84f + h) + " " + F(45f + w) + " " + F(84f - lift) + " Q45 " + F(84f + h * 0.35f) + " " + F(45f - w) + " " + F(84f - lift) + "Z";
+    }
+
+    private static string ThumbBg(int i) => i switch { 0 => "#7c2d12", 1 => "#1e3a8a", _ => "#581c87" };
+
+    private static string Clip(string s, int line)
+    {
+        const int per = 11;
+        if (line == 0) return s.Length <= per ? s : s.Substring(0, per);
+        return s.Length <= per ? "" : s.Length <= per * 2 ? s.Substring(per) : s.Substring(per, per - 1) + "…";
+    }
+
+    private void Rehearse()
+    {
+        try { Runner.Rehearse(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("ViralExport.Modal.Rehearse", ex); }
+    }
+
+    private void SelectClip(ChangeEventArgs e)
+    {
+        try { if (long.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var id) && id > 0) Runner.Select(id); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("ViralExport.Modal.Select", ex); }
+    }
+
+    private void Reanalyze()
+    {
+        try { Runner.Analyze(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("ViralExport.Modal.Analyze", ex); }
+    }
+
+    private async Task Export()
+    {
+        try { await Runner.ExportAsync(); Inspect(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("ViralExport.Modal.Export", ex); }
+    }
+
+    private void Cancel()
+    {
+        try { Runner.CancelExport(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("ViralExport.Modal.Cancel", ex); }
+    }
+
+    private void Dispatch()
+    {
+        try { Runner.DispatchSelected(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("ViralExport.Modal.Dispatch", ex); }
+    }
+
+    private void MakeLink()
+    {
+        try { _url = Runner.DownloadUrl(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("ViralExport.Modal.Link", ex); }
+    }
+
+    private void ResetAll()
+    {
+        try { Runner.Reset(); _url = null; }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("ViralExport.Modal.Reset", ex); }
+    }
+
+    private void ToggleCaption(ChangeEventArgs e) => Runner.Exporter.IncludeCaptionTrack = e.Value is bool b ? b : !Runner.Exporter.IncludeCaptionTrack;
+
+    private void ToggleSfx(ChangeEventArgs e) => Runner.Exporter.IncludeSfxTrack = e.Value is bool b ? b : !Runner.Exporter.IncludeSfxTrack;
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(() => { Inspect(); StateHasChanged(); });
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}
