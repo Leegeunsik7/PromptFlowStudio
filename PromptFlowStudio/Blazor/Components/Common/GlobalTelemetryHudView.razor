@@ -275,6 +275,7 @@
 @inject PromptFlowStudio.Services.SmartPublishing.SmartPublishingSchedulerStudioRunner SpsRun
 @inject PromptFlowStudio.Services.VisualHooks.KineticVisualHookStudioRunner KvhRun
 @inject PromptFlowStudio.Services.KineticBRoll.KineticTypographyBRollStudioRunner KbrRun
+@inject PromptFlowStudio.Services.MultilingualDubbing.MultilingualDubbingStudioRunner MldRun
 @inject PromptFlowStudio.Services.MatrixSyndication.MatrixSyndicationStudioRunner MtxRun
 @inject PromptFlowStudio.Services.ViralVoiceFx.ViralVoiceFxStudioRunner VvfRun
 @inject PromptFlowStudio.Services.LivePublish.ProductionLivePublisherStudioRunner LpcRun
@@ -997,6 +998,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.82.0: 다국어 더빙 & 립싱크 — 트랙 · WSOLA 배율 · A/V 드리프트 · 보정 ── *@
+    <div class="gth-v1782">
+        <div class="gth-v96-card pid @(MldRun.Prepared && Math.Abs(MldRun.Drift.DriftUs) <= PromptFlowStudio.Services.MultilingualDubbing.AudioVisualPhaseDriftGuard.ThresholdUs ? "ok" : null)">
+            <div class="gth-v96-h"><b>🗣️ 다국어 더빙 & 립싱크</b>
+                <span class="gth-v96-be">@(PromptFlowStudio.Services.MultilingualDubbing.MultilingualDubbingTimeStretchEngine.LangFlag(MldRun.SelectedLang)) @(MldRun.Prepared ? MldRun.ClipSec.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "s 컷" : "미준비")@(MldRun.Running ? " · ▶" : null)</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(MldRun.Info(MldRun.Selected).Ratio.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture))×</b><span>WSOLA</span></span>
+                <span class="gth-v96-m"><b class="@(Math.Abs(MldRun.Drift.DriftUs) > PromptFlowStudio.Services.MultilingualDubbing.AudioVisualPhaseDriftGuard.ThresholdUs ? "warn" : null)">@((MldRun.Drift.DriftUs / 1000.0).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture))ms</b><span>A/V 드리프트</span></span>
+                <span class="gth-v96-m"><b>@(MldRun.Drift.Corrections)</b><span>보정</span></span>
+                <span class="gth-v96-m"><b>@(MldRun.After.Dominant)</b><span>비젬</span></span>
+            </div>
+            <div class="gth-v96-act">@(MldRun.LastAction ?? "대기")</div>
+        </div>
+    </div>
     @* ── v17.81.0: 다계정 매트릭스 — 채널 · 예약 · 동결 · 안전 정지 · 시차 ── *@
     <div class="gth-v1781">
         <div class="gth-v96-card pid @(MtxRun.Guard.AwaitingCount == 0 && MtxRun.Router.Published > 0 ? "ok" : null)">
@@ -5664,6 +5680,7 @@
         VlRun.OnChange += OnSwarmChanged; // v17.50.0 (3.3 Hz)
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
         KbrRun.OnChange += OnSwarmChanged; // v17.78.0 (재생 10 Hz → 250 ms 스로틀)
+        MldRun.OnChange += OnSwarmChanged; // v17.82.0 (재생 60 fps → 250 ms 스로틀 · 트랙/주입 즉시)
         MtxRun.OnChange += OnSwarmChanged; // v17.81.0 (프리뷰 250 ms 스로틀 · 예약/동결 즉시)
         VvfRun.OnChange += OnSwarmChanged; // v17.80.0 (라이브 250 ms 스로틀 · 프리셋/FX 즉시)
         LpcRun.OnChange += OnSwarmChanged; // v17.79.0 (배포 중 ~3 Hz · 단계 전이 즉시)
@@ -6043,6 +6060,7 @@
         VlRun.OnChange -= OnSwarmChanged;
         OcRun.OnChange -= OnSwarmChanged;
         KbrRun.OnChange -= OnSwarmChanged;
+        MldRun.OnChange -= OnSwarmChanged;
         MtxRun.OnChange -= OnSwarmChanged;
         VvfRun.OnChange -= OnSwarmChanged;
         LpcRun.OnChange -= OnSwarmChanged;

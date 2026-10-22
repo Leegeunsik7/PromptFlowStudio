@@ -46,6 +46,7 @@ using Kbr = PromptFlowStudio.Services.KineticBRoll;
 using Lp = PromptFlowStudio.Services.LivePublish;
 using Vvf = PromptFlowStudio.Services.ViralVoiceFx;
 using Mtx = PromptFlowStudio.Services.MatrixSyndication;
+using Mld = PromptFlowStudio.Services.MultilingualDubbing;
 using Nw = PromptFlowStudio.Services.Newsroom;
 using Spt = PromptFlowStudio.Services.Sports;
 using V3 = System.Numerics.Vector3;
@@ -33551,7 +33552,7 @@ public sealed class MatrixSyndicationIsolatedTests
 
         // ── MAT-4b: 카탈로그 157 · HUD · 레이아웃 · DI · 우회 경로 0 · 디스크 I/O 0 · 모달 렌더 ──
         Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_matrixSyndication" && en.Category == 4);
-        Assert.Equal(157, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        Assert.True(PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length >= 157);
         var root = RepoRoot();
         var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
         var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
@@ -33722,6 +33723,213 @@ public sealed class MatrixSyndicationIsolatedTests
         Assert.True(alloc == 0, "렌더 할당 " + alloc);
         Assert.True(rd.AvgRenderUs < 250_000, "1080p 렌더 평균 " + rd.AvgRenderUs + " µs");
         run.Dispose();
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+}
+
+/// <summary>v17.82.0 다국어 더빙 타임-스트레치 · 뉴럴 비젬 립싱크 리타게팅 · A/V 위상 드리프트 가드 · 스튜디오 결선.</summary>
+[Collection("TimingSensitivePerformance")]   // WSOLA/비젬 µs 계측 · 60 fps 재생 루프 → 비병렬
+public sealed class MultilingualDubbingLipSyncIsolatedTests
+{
+    private const int Fs = Mld.MultilingualDubbingTimeStretchEngine.Fs;
+
+    [Fact]
+    public async Task MultilingualDubbing_And_LipSync_Check()
+    {
+        WsolaChecks();
+        VisemeChecks();
+        DriftChecks();
+
+        // ── DUB-4a: 러너 — KO 원본 → 음색 추정 → EN/ES/JA 컷 정합 · 무할당 틱 · 점프 1 프레임 복원 · 라이브 ──
+        var run = new Mld.MultilingualDubbingStudioRunner();
+        Assert.False(run.Prepared);
+        run.Prepare();
+        Assert.True(run.Prepared && run.OriginalLength > Fs * 2, "원본 컷 " + run.OriginalLength);
+        Assert.True(Math.Abs(run.Timbre.F0Hz - Mld.MultilingualDubbingStudioRunner.OriginalSpeaker.F0Hz) < 15f, "화자 F0 " + run.Timbre.F0Hz);
+        for (var i = 1; i < Mld.MultilingualDubbingStudioRunner.TrackCount; i++)
+        {
+            var info = run.Info(i);
+            var tag = info.Lang + " raw " + info.RawLength + " req " + info.RequiredRatio + " r " + info.Ratio + " ph " + info.Phonemes;
+            Assert.True(info.Length == run.OriginalLength && info.Phonemes > 10 && info.Ratio >= 0.8f && info.Ratio <= 1.25f, tag);
+            Assert.False(string.IsNullOrWhiteSpace(run.Text(i)), "번역 " + info.Lang);
+            var tf = run.Dubber.AnalyzeTimbre(run.Pcm(i));
+            Assert.True(Math.Abs(tf.F0Hz - run.Timbre.F0Hz) / run.Timbre.F0Hz < 0.2f, "음색 보존 " + tag + " F0 " + tf.F0Hz);
+        }
+        Assert.NotEqual(run.Info(1).RawLength, run.Info(3).RawLength);
+        run.Selected = 1;
+        var seen = new bool[Mld.NeuralVisemeLipSyncRetargeter.VisemeCount]; var jaw = 0f; var close = 0f;
+        var frames = run.OriginalLength / Mld.NeuralVisemeLipSyncRetargeter.FrameSamples - 2;
+        for (var k = 0; k < frames; k++)
+        {
+            run.Tick(Mld.AudioVisualPhaseDriftGuard.FrameUs);
+            if (run.After.Rms > 0.02f) seen[(int)run.After.Dominant] = true;
+            jaw = Math.Max(jaw, run.After.Weight(PromptFlowStudio.Services.DigitalHuman.ArkitBlendshape.JawOpen));
+            close = Math.Max(close, run.After.Weight(PromptFlowStudio.Services.DigitalHuman.ArkitBlendshape.MouthClose));
+        }
+        var kinds = 0; foreach (var s in seen) if (s) kinds++;
+        Assert.True(kinds >= 4 && jaw > 0.2f && close > 0.1f && run.Face.Aperture > -1f, "립 활성 비젬 " + kinds + " jaw " + jaw + " close " + close);
+        Assert.True(run.Drift.Corrections == 0 && Math.Abs(run.Drift.DriftUs) <= Mld.AudioVisualPhaseDriftGuard.ThresholdUs, "정상 재생 드리프트 " + run.Drift.DriftUs);
+        run.Tick(Mld.AudioVisualPhaseDriftGuard.FrameUs);
+        var tickAlloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 3; k++) run.Tick(Mld.AudioVisualPhaseDriftGuard.FrameUs); });
+        Assert.True(tickAlloc == 0, "재생 틱 할당 " + tickAlloc);
+        var c0 = run.Drift.Corrections;
+        run.InjectAudioJump(25);
+        run.Tick(Mld.AudioVisualPhaseDriftGuard.FrameUs);
+        Assert.True(run.Drift.Corrections == c0 + 1 && Math.Abs(run.Drift.DriftUs) < 1000 && run.Drift.LastResyncFrames == 1 && run.Drift.Regressions == 0, "점프 복원 " + run.Drift.DriftUs);
+        Assert.True(run.After.MaxUs < 16_667, "비젬 분석 " + run.After.MaxUs + " µs");
+        run.AudioSkew = 5f;
+        Assert.Equal(Mld.MultilingualDubbingStudioRunner.MaxSkew, run.AudioSkew);
+        run.AudioSkew = 1f;
+        var t0 = run.Ticks;
+        run.Start();
+        for (var k = 0; k < 200 && run.Ticks < t0 + 5; k++) await Task.Delay(25);
+        run.Stop();
+        Assert.True(run.Ticks >= t0 + 5 && !run.Running, "라이브 진행 " + (run.Ticks - t0));
+        Assert.Contains("WSOLA", run.Summary(), StringComparison.Ordinal);
+        run.Dispose();
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(run));
+
+        // ── DUB-4b: 카탈로그 158 · HUD · 레이아웃 · DI · 모달 규격 · 디스크 I/O 0 · 모달 렌더 ──
+        Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_multilingualDubbing" && en.Category == 4);
+        Assert.Equal(158, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        var root = RepoRoot();
+        var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
+        var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
+        var mainForm = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "MainForm.cs"));
+        var maui = File.ReadAllText(Path.Combine(root, "PromptFlowStudio.Mobile", "MauiProgram.cs"));
+        var modalSrc = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "PolyglotDubbingLipSyncStudioModal.razor"));
+        Assert.True(hud.IndexOf("gth-v1782", StringComparison.Ordinal) is > 0 and var i1782 && i1782 < hud.IndexOf("gth-v1781", StringComparison.Ordinal) && hud.Contains("MldRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("MldRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<PolyglotDubbingLipSyncStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_multilingualDubbing\"", StringComparison.Ordinal) && layout.Contains("\"_multilingualDubbing\" =>", StringComparison.Ordinal));
+        Assert.True(mainForm.Contains("MultilingualDubbing.MultilingualDubbingStudioRunner(sp)", StringComparison.Ordinal) && maui.Contains("MultilingualDubbing.MultilingualDubbingStudioRunner(sp)", StringComparison.Ordinal));
+        Assert.True(modalSrc.Contains("@implements IDisposable", StringComparison.Ordinal) && modalSrc.Contains("flex: 1 1 auto; min-height: 0; overflow-y: auto;", StringComparison.Ordinal) && modalSrc.Contains("position: sticky", StringComparison.Ordinal));
+        foreach (var src in Directory.GetFiles(Path.Combine(root, "PromptFlowStudio", "Services", "MultilingualDubbing"), "*.cs"))
+        {
+            var text = File.ReadAllText(src);
+            Assert.True(!text.Contains("File.", StringComparison.Ordinal) && !text.Contains("FileStream", StringComparison.Ordinal) && !text.Contains("HttpClient", StringComparison.Ordinal), "디스크/네트워크 I/O " + Path.GetFileName(src));
+        }
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = sp.GetService(typeof(Mld.MultilingualDubbingStudioRunner))!;
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.PolyglotDubbingLipSyncStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("mld-scrim", StringComparison.Ordinal) && html.Contains("mld-body", StringComparison.Ordinal) && html.Contains("mld-spec-svg", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+
+    private static int ZeroCrossings(ReadOnlySpan<float> x)
+    {
+        var z = 0;
+        for (var i = 1; i < x.Length; i++) if ((x[i] >= 0) != (x[i - 1] >= 0)) z++;
+        return z;
+    }
+
+    private static void WsolaChecks()
+    {
+        var eng = new Mld.MultilingualDubbingTimeStretchEngine();
+        var src = new float[Fs];
+        for (var i = 0; i < src.Length; i++) src[i] = 0.5f * MathF.Sin(2f * MathF.PI * 220f * i / Fs);
+        var dst = new float[Fs * 2];
+        var zSrc = ZeroCrossings(src.AsSpan(2000, Fs - 4000)) / (double)(Fs - 4000);
+        foreach (var r in new[] { 1.25f, 0.8f, 1.1f })
+        {
+            var n = eng.Stretch(src, dst, r);
+            Assert.Equal((int)(Fs * r), n);
+            var mid = dst.AsSpan(2000, n - 4000);
+            var z = ZeroCrossings(mid) / (double)mid.Length;
+            Assert.True(Math.Abs(z - zSrc) / zSrc < 0.03, "피치 보존 r=" + r + " zc " + z + " vs " + zSrc);
+            double e = 0; foreach (var v in mid) e += v * v;
+            var rms = Math.Sqrt(e / mid.Length);
+            Assert.True(rms > 0.3 && rms < 0.42, "에너지 보존 r=" + r + " rms " + rms);
+        }
+        Assert.Equal((int)(Fs * 1.25f), eng.Stretch(src, dst, 2f));
+        Assert.Equal((int)(Fs * 0.8f), eng.Stretch(src, dst, 0.1f));
+        var info = default(Mld.DubTrackInfo);
+        eng.Fit(src, dst, 54_000, ref info);
+        Assert.True(!info.Clamped && info.Length == 54_000 && Math.Abs(info.ResidualMs) < 1 && Math.Abs(info.Ratio - 1.125f) < 1e-3f, "정합 " + info.Ratio + " " + info.ResidualMs);
+        Array.Fill(dst, 1f);
+        eng.Fit(src, dst, 70_000, ref info);
+        Assert.True(info.Clamped && info.Ratio == 1.25f && Math.Abs(info.ResidualMs + 10_000 * 1000.0 / Fs) < 1 && dst[65_000] == 0f && dst[69_999] == 0f, "클램프 잔차 " + info.ResidualMs);
+        Assert.True(eng.Clamps == 1);
+        var stretchAlloc = AllocationProbe.MinAllocated(() => eng.Stretch(src, dst, 1.1f));
+        Assert.True(stretchAlloc == 0, "WSOLA 할당 " + stretchAlloc);
+
+        // 한국어 음절 분해 · 트랙 렌더 무할당 · 음색 추정
+        var ph = new PromptFlowStudio.Services.GlobalDubbing.PhonemeEvent[64];
+        var pn = Mld.MultilingualDubbingTimeStretchEngine.KoreanPhonemes("안녕하세요.", ph);
+        Assert.True(pn >= 8 && ph[0].Ph == PromptFlowStudio.Services.LiveDubbing.LipPhoneme.A && ph[1].Ph == PromptFlowStudio.Services.LiveDubbing.LipPhoneme.N && ph[pn - 1].Ph == PromptFlowStudio.Services.LiveDubbing.LipPhoneme.Rest, "음절 분해 " + pn);
+        var pcm = new float[Mld.MultilingualDubbingTimeStretchEngine.MaxSamples];
+        var speaker = new Mld.SpeakerTimbre(150f, 1.08f);
+        eng.RenderTrack(ph.AsSpan(0, pn), PromptFlowStudio.Services.Localization.Dubbing.DubLanguage.En, speaker, Fs, pcm, out var ti);
+        Assert.True(ti.Length == Fs && ti.RawLength > 0 && ti.Phonemes == pn, "트랙 " + ti.RawLength);
+        var renderAlloc = AllocationProbe.MinAllocated(() => eng.RenderTrack(ph.AsSpan(0, pn), PromptFlowStudio.Services.Localization.Dubbing.DubLanguage.Ja, speaker, Fs, pcm, out _));
+        Assert.True(renderAlloc == 0, "트랙 렌더 할당 " + renderAlloc);
+        var est = eng.AnalyzeTimbre(pcm.AsSpan(0, Fs));
+        Assert.True(Math.Abs(est.F0Hz - 150f) / 150f < 0.2f && est.Formant >= 0.7f && est.Formant <= 1.4f, "음색 추정 " + est.F0Hz + " / " + est.Formant);
+    }
+
+    private static void VisemeChecks()
+    {
+        var eng = new Mld.MultilingualDubbingTimeStretchEngine();
+        var r = new Mld.NeuralVisemeLipSyncRetargeter();
+        var pcm = new float[Fs];
+        var one = new PromptFlowStudio.Services.GlobalDubbing.PhonemeEvent[1];
+        (PromptFlowStudio.Services.LiveDubbing.LipPhoneme P, Mld.DubViseme V)[] cases =
+        {
+            (PromptFlowStudio.Services.LiveDubbing.LipPhoneme.A, Mld.DubViseme.AA),
+            (PromptFlowStudio.Services.LiveDubbing.LipPhoneme.I, Mld.DubViseme.EE),
+            (PromptFlowStudio.Services.LiveDubbing.LipPhoneme.U, Mld.DubViseme.OU),
+            (PromptFlowStudio.Services.LiveDubbing.LipPhoneme.Sz, Mld.DubViseme.S),
+        };
+        foreach (var (p, v) in cases)
+        {
+            one[0].Ph = p; one[0].DurMs = 400f;
+            var n = eng.Synthesize(one, PromptFlowStudio.Services.Localization.Dubbing.DubLanguage.En, pcm);
+            r.Reset();
+            for (var pos = 0; pos + Mld.NeuralVisemeLipSyncRetargeter.FrameSamples <= n / 2; pos += Mld.NeuralVisemeLipSyncRetargeter.FrameSamples) r.Process(pcm, pos, 1f);
+            Assert.True(r.Dominant == v, p + " → " + r.Dominant + " F1 " + r.F1 + " F2 " + r.F2 + " zcr " + r.Zcr + " hf " + r.HfRatio + " rms " + r.Rms);
+        }
+        // 발화 → 무음: 양순 폐쇄 M · MouthClose 상승
+        r.Process(pcm, -1, 1f);
+        Assert.True(r.Dominant == Mld.DubViseme.M && r.Weight(PromptFlowStudio.Services.DigitalHuman.ArkitBlendshape.MouthClose) > 0.2f, "폐쇄 " + r.Dominant);
+        // 모음 AA → JawOpen 수렴 · 보간 계수 0 = 정지(가드 홀드)
+        one[0].Ph = PromptFlowStudio.Services.LiveDubbing.LipPhoneme.A;
+        eng.Synthesize(one, PromptFlowStudio.Services.Localization.Dubbing.DubLanguage.En, pcm);
+        r.Reset();
+        for (var k = 0; k < 10; k++) r.Process(pcm, 4000 + k * 800, 1f);
+        var jaw = r.Weight(PromptFlowStudio.Services.DigitalHuman.ArkitBlendshape.JawOpen);
+        Assert.True(jaw > 0.3f, "JawOpen " + jaw);
+        r.Process(pcm, -1, 0f);
+        Assert.Equal(jaw, r.Weight(PromptFlowStudio.Services.DigitalHuman.ArkitBlendshape.JawOpen));
+        var face = new PromptFlowStudio.Services.GaussianFaceHand.RealtimeGaussianFacialBlendshapeEngine(6000);
+        r.Apply(face);
+        Assert.Equal(jaw, face.Weight(PromptFlowStudio.Services.DigitalHuman.ArkitBlendshape.JawOpen));
+        var alloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 6; k++) r.Process(pcm, 800 * k, 1f); r.Apply(face); });
+        Assert.True(alloc == 0, "비젬 할당 " + alloc);
+    }
+
+    private static void DriftChecks()
+    {
+        const long Dt = Mld.AudioVisualPhaseDriftGuard.FrameUs;
+        var g = new Mld.AudioVisualPhaseDriftGuard();
+        long audio = 0;
+        for (var k = 0; k < 600; k++) { audio += 812; g.Tick(audio, Dt); }   // +1.5 % 오디오 클록 스큐
+        Assert.True(g.Corrections == 0 && g.MaxAbsDriftUs <= Mld.AudioVisualPhaseDriftGuard.ThresholdUs && g.Regressions == 0, "소프트 트림 " + g.MaxAbsDriftUs);
+        audio += 800 + 1200; g.Tick(audio, Dt);   // +25 ms 점프
+        Assert.True(g.Corrections == 1 && Math.Abs(g.DriftUs) < 1000 && g.LastResyncFrames == 1 && g.Rate > 1f && g.Rate <= Mld.AudioVisualPhaseDriftGuard.MaxRate, "가속 복원 " + g.DriftUs + " rate " + g.Rate);
+        var lip = g.LipClockUs;
+        audio += 800 - 1200; g.Tick(audio, Dt);   // −25 ms 점프 → 홀드(역행 없음)
+        Assert.True(g.Corrections == 2 && g.Regressions == 0 && g.LipClockUs >= lip && Math.Abs(g.DriftUs) <= Mld.AudioVisualPhaseDriftGuard.ThresholdUs && g.LastResyncFrames == 1, "감속 복원 " + g.DriftUs);
+        var alloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 60; k++) { audio += 800; g.Tick(audio, Dt); } });
+        Assert.True(alloc == 0, "가드 할당 " + alloc);
+        var off = new Mld.AudioVisualPhaseDriftGuard { Enabled = false };
+        audio = 0;
+        for (var k = 0; k < 600; k++) { audio += 812; off.Tick(audio, Dt); }
+        Assert.True(Math.Abs(off.DriftUs) > Mld.AudioVisualPhaseDriftGuard.ThresholdUs, "가드 OFF 누적 " + off.DriftUs);
     }
 
     private static string RepoRoot()

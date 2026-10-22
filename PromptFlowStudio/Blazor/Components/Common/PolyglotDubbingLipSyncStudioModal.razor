@@ -1,0 +1,241 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.DigitalHuman
+@using PromptFlowStudio.Services.MultilingualDubbing
+@implements IDisposable
+@inject MultilingualDubbingStudioRunner Runner
+
+@* [PromptFlow Studio v17.82.0] 🗣️ AI 다국어 더빙 & 립싱크 — KO 원본 대비 EN/ES/JA 트랙 셀렉터 · WSOLA 컷 정합 표 · 립싱크 전후 입모양 비교 · 실시간 비젬 스펙트로그램 · A/V 드리프트 가드. *@
+<div class="mld-scrim" @onclick="Close">
+    <div class="mld-modal" @onclick:stopPropagation="true">
+        <div class="mld-h">
+            <div>
+                <div class="mld-title">🗣️ AI 다국어 더빙 & 립싱크 스튜디오 @(Runner.Running ? "· ▶ 재생" : null)</div>
+                <div class="mld-sub">한국어 원본 목소리의 <b>높낮이와 음색</b>을 그대로 살린 채 영어·스페인어·일본어로 다시 읽고, 언어마다 달라지는 말 길이를 <b>0.8~1.25배</b> 안에서 늘이거나 줄여 원본 영상 컷 길이에 맞춥니다.
+                    새 음성에서 입 모양(비젬 14종)을 16.7 ms마다 읽어 3D 아바타의 턱·입술을 다시 움직이며, 소리와 입이 <b>15 ms 넘게 어긋나면</b> 화면 끊김 없이 다음 한 프레임 안에 맞춥니다.</div>
+            </div>
+            <button class="mld-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="mld-body">
+            <div class="mld-bar">
+                @for (var i = 0; i < MultilingualDubbingStudioRunner.TrackCount; i++)
+                {
+                    var ti = i; var lang = MultilingualDubbingStudioRunner.TrackLangs[ti];
+                    <button class="mld-btn @(Runner.Selected == ti ? "on" : null)" @onclick="() => Select(ti)">@(MultilingualDubbingTimeStretchEngine.LangFlag(lang)) @(MultilingualDubbingTimeStretchEngine.LangName(lang))</button>
+                }
+                <span class="mld-sep"></span>
+                <button class="mld-btn @(Runner.Running ? "on" : null)" @onclick="Toggle">@(Runner.Running ? "⏸ 정지" : "▶ 립싱크 재생")</button>
+                <button class="mld-btn" @onclick="Step">⏭ 1 프레임</button>
+                <button class="mld-btn hot" @onclick="Rebuild">🔄 더빙 재합성</button>
+            </div>
+            <div class="mld-bar">
+                <label class="mld-lbl"><input type="checkbox" checked="@(Runner.Drift.Enabled)" @onchange="ToggleGuard" /> A/V 드리프트 가드</label>
+                <label class="mld-lbl">오디오 클록 스큐 <input type="range" min="@(MultilingualDubbingStudioRunner.MinSkew.ToString(CultureInfo.InvariantCulture))" max="@(MultilingualDubbingStudioRunner.MaxSkew.ToString(CultureInfo.InvariantCulture))" step="0.001" value="@(Runner.AudioSkew.ToString("0.000", CultureInfo.InvariantCulture))" @oninput="SetSkew" /> <b>@(Runner.AudioSkew.ToString("0.000", CultureInfo.InvariantCulture))×</b></label>
+                <button class="mld-btn" @onclick="() => Jump(25)">🧪 오디오 +25ms 점프</button>
+                <button class="mld-btn" @onclick="() => Jump(-25)">🧪 오디오 −25ms 점프</button>
+            </div>
+
+            <div class="mld-main">
+                <div class="mld-card">
+                    <div class="mld-sec">🎚️ 언어 트랙 · WSOLA 컷 정합</div>
+                    <div class="mld-kv">원본 화자 F0 <b>@(Runner.Timbre.F0Hz.ToString("0", CultureInfo.InvariantCulture))Hz</b> · 포먼트 <b>@(Runner.Timbre.Formant.ToString("0.00", CultureInfo.InvariantCulture))×</b> · 컷 <b>@(Runner.ClipSec.ToString("0.00", CultureInfo.InvariantCulture))s</b></div>
+                    <table class="mld-t">
+                        <thead><tr><th>트랙</th><th>합성</th><th>배율</th><th>잔차</th><th>µs</th></tr></thead>
+                        <tbody>
+                            @for (var i = 0; i < MultilingualDubbingStudioRunner.TrackCount; i++)
+                            {
+                                var info = Runner.Info(i);
+                                <tr class="@(Runner.Selected == i ? "sel" : null) @(info.Clamped ? "clamp" : null)">
+                                    <td>@(MultilingualDubbingTimeStretchEngine.LangFlag(info.Lang)) @(info.Lang)</td>
+                                    <td>@((info.RawLength / (double)MultilingualDubbingTimeStretchEngine.Fs).ToString("0.00", CultureInfo.InvariantCulture))s</td>
+                                    <td>@(info.Ratio.ToString("0.00", CultureInfo.InvariantCulture))×@(info.Clamped ? " ⚠" : null)</td>
+                                    <td>@(info.ResidualMs.ToString("0", CultureInfo.InvariantCulture))ms</td>
+                                    <td>@(info.StretchUs.ToString("0", CultureInfo.InvariantCulture))</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                    <div class="mld-sec sm">📝 @(MultilingualDubbingTimeStretchEngine.LangName(Runner.SelectedLang)) 대본</div>
+                    <div class="mld-txt">@(Runner.Text(Runner.Selected))</div>
+                </div>
+
+                <div class="mld-card">
+                    <div class="mld-sec">👄 립싱크 적용 전 · 후</div>
+                    <div class="mld-mouths">
+                        <div class="mld-mouth">
+                            <svg viewBox="0 0 120 90" width="120" height="90">
+                                <ellipse cx="60" cy="45" rx="@(Rx(Runner.Before))" ry="@(Ry(Runner.Before))" fill="#7f1d1d" stroke="#fca5a5" stroke-width="3" />
+                            </svg>
+                            <span>원본(KO) · @(Runner.Before.Dominant)</span>
+                        </div>
+                        <div class="mld-mouth">
+                            <svg viewBox="0 0 120 90" width="120" height="90">
+                                <ellipse cx="60" cy="45" rx="@(Rx(Runner.After))" ry="@(Ry(Runner.After))" fill="#7f1d1d" stroke="#86efac" stroke-width="3" />
+                            </svg>
+                            <span>@(Runner.SelectedLang) 더빙 · @(Runner.After.Dominant)</span>
+                        </div>
+                    </div>
+                    @foreach (var k in Keys)
+                    {
+                        var key = k;
+                        <div class="mld-w"><span>@(key)</span><i style="width:@(Pct(Runner.Before.Weight(key)))%" class="b"></i><i style="width:@(Pct(Runner.After.Weight(key)))%" class="a"></i></div>
+                    }
+                    <div class="mld-kv">3DGS 개구도 <b>@(Runner.Face.Aperture.ToString("0.00", CultureInfo.InvariantCulture))</b> · 블렌드 <b>@(Runner.Face.LastBlendUs.ToString("0", CultureInfo.InvariantCulture))µs</b> · 분석 <b>@(Runner.After.LastUs.ToString("0", CultureInfo.InvariantCulture))µs</b> · F1/F2 <b>@(Runner.After.F1.ToString("0", CultureInfo.InvariantCulture))/@(Runner.After.F2.ToString("0", CultureInfo.InvariantCulture))</b></div>
+                </div>
+
+                <div class="mld-card">
+                    <div class="mld-sec">⏱️ A/V 위상 드리프트 가드</div>
+                    <div class="mld-state @(Math.Abs(Runner.Drift.DriftUs) <= AudioVisualPhaseDriftGuard.ThresholdUs ? "ok" : "bad")">@((Runner.Drift.DriftUs / 1000.0).ToString("+0.00;-0.00;0.00", CultureInfo.InvariantCulture)) ms</div>
+                    <div class="mld-stats">
+                        <span>보간 계수 <b>@(Runner.Drift.Rate.ToString("0.000", CultureInfo.InvariantCulture))</b></span>
+                        <span>최대 <b>@((Runner.Drift.MaxAbsDriftUs / 1000.0).ToString("0.0", CultureInfo.InvariantCulture))ms</b></span>
+                        <span>보정 <b>@(Runner.Drift.Corrections)</b></span>
+                        <span>복원 프레임 <b>@(Runner.Drift.LastResyncFrames)</b></span>
+                        <span>이월 <b>@(Runner.Drift.Carryovers)</b></span>
+                        <span>역행 <b>@(Runner.Drift.Regressions)</b></span>
+                        <span>틱 <b>@(Runner.Ticks)</b></span>
+                        <span>루프 <b>@(Runner.Loops)</b></span>
+                    </div>
+                    <div class="mld-kv">재생 @((Runner.AudioPos / (double)MultilingualDubbingTimeStretchEngine.Fs).ToString("0.00", CultureInfo.InvariantCulture))s / @(Runner.ClipSec.ToString("0.00", CultureInfo.InvariantCulture))s</div>
+                </div>
+            </div>
+
+            <div class="mld-card mld-spec">
+                <div class="mld-sec">🌈 실시간 비젬 스펙트로그램 (@(MultilingualDubbingStudioRunner.SpecCols) 프레임 · 16.7 ms/열)</div>
+                <div class="mld-spec-row">
+                    <div class="mld-spec-lbl">
+                        @foreach (var v in Visemes) { <div>@(v)</div> }
+                    </div>
+                    <svg viewBox="0 0 @(MultilingualDubbingStudioRunner.SpecCols * 8) @(NeuralVisemeLipSyncRetargeter.VisemeCount * 8)" preserveAspectRatio="none" class="mld-spec-svg">
+                        @for (var c = 0; c < MultilingualDubbingStudioRunner.SpecCols; c++)
+                        {
+                            for (var v = 0; v < NeuralVisemeLipSyncRetargeter.VisemeCount; v++)
+                            {
+                                var s = Runner.Spec(c, v);
+                                if (s == 0) continue;
+                                <rect x="@(c * 8)" y="@(v * 8)" width="8" height="8" fill="#38bdf8" fill-opacity="@((s / 255f).ToString("0.00", CultureInfo.InvariantCulture))" />
+                            }
+                        }
+                    </svg>
+                </div>
+            </div>
+        </div>
+
+        <div class="mld-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+    </div>
+</div>
+
+<style>
+    .mld-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .mld-modal { width: min(1280px, 96vw); max-height: 94vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); color: var(--text-primary); }
+    .mld-h { position: sticky; top: 0; z-index: 3; flex: 0 0 auto; display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px 8px; background: var(--card); border-bottom: 1px solid var(--line); }
+    .mld-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 10px; }
+    .mld-act { position: sticky; bottom: 0; z-index: 3; flex: 0 0 auto; padding: 8px 16px 14px; background: var(--card); border-top: 1px solid var(--line); font-size: 11px; color: var(--text-muted); }
+    .mld-title { font-size: 17px; font-weight: 800; }
+    .mld-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .mld-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .mld-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 0; }
+    .mld-sep { flex: 1; }
+    .mld-lbl { display: inline-flex; gap: 6px; align-items: center; font-size: 11.5px; }
+    .mld-lbl b { font-family: var(--mono); color: #fde047; }
+    .mld-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .mld-btn.hot { border-color: #a855f7; }
+    .mld-btn.on { background: color-mix(in srgb, #38bdf8 25%, #1e293b); border-color: #38bdf8; }
+    .mld-main { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 0.9fr); gap: 10px; margin-top: 10px; }
+    .mld-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
+    .mld-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 6px; }
+    .mld-sec.sm { margin-top: 8px; font-size: 11.5px; }
+    .mld-kv { font-size: 11px; color: var(--text-muted); margin: 4px 0; }
+    .mld-kv b { font-family: var(--mono); color: var(--text-primary); }
+    .mld-t { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+    .mld-t th, .mld-t td { text-align: left; padding: 3px 5px; border-bottom: 1px dashed #1e293b; font-family: var(--mono); }
+    .mld-t tr.sel td { color: #7dd3fc; } .mld-t tr.clamp td { color: #fdba74; }
+    .mld-txt { font-size: 12px; background: #0f172a; border-radius: 6px; padding: 6px 8px; min-height: 36px; line-height: 1.5; }
+    .mld-mouths { display: flex; gap: 12px; justify-content: space-around; }
+    .mld-mouth { display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 11px; background: #fcd9b6; border-radius: 50% 50% 46% 46%; padding: 6px 10px; color: #1f2937; }
+    .mld-w { display: grid; grid-template-columns: 110px 1fr; gap: 2px 6px; align-items: center; font-size: 10.5px; margin-top: 3px; }
+    .mld-w i { grid-column: 2; display: block; height: 4px; border-radius: 2px; }
+    .mld-w i.b { background: #fca5a5; } .mld-w i.a { background: #86efac; }
+    .mld-w span { grid-row: span 2; font-family: var(--mono); color: var(--text-muted); }
+    .mld-state { font-size: 20px; font-weight: 800; padding: 6px 8px; border-radius: 8px; font-family: var(--mono); }
+    .mld-state.ok { background: #052e16; color: #86efac; } .mld-state.bad { background: #450a0a; color: #fca5a5; }
+    .mld-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; margin-top: 8px; }
+    .mld-stats span { font-size: 11px; background: #0f172a; border-radius: 6px; padding: 3px 6px; } .mld-stats b { font-family: var(--mono); }
+    .mld-spec { margin-top: 10px; }
+    .mld-spec-row { display: flex; gap: 6px; }
+    .mld-spec-lbl { display: grid; grid-template-rows: repeat(14, 1fr); font-size: 9.5px; font-family: var(--mono); color: var(--text-muted); height: 168px; }
+    .mld-spec-svg { flex: 1; height: 168px; background: #05070c; border-radius: 6px; }
+    @@media (max-width: 1100px) { .mld-main { grid-template-columns: 1fr 1fr; } }
+    @@media (max-width: 760px) { .mld-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly ArkitBlendshape[] Keys = { ArkitBlendshape.JawOpen, ArkitBlendshape.MouthClose, ArkitBlendshape.MouthPucker, ArkitBlendshape.MouthFunnel, ArkitBlendshape.MouthSmileLeft, ArkitBlendshape.MouthStretchLeft, ArkitBlendshape.MouthRollLower };
+    private static readonly DubViseme[] Visemes = (DubViseme[])Enum.GetValues(typeof(DubViseme));
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        try { Runner.EnsurePrepared(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("MultilingualDubbing.Modal.Prepare", ex); }
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("MultilingualDubbing.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string Rx(NeuralVisemeLipSyncRetargeter r) =>
+        Math.Clamp(30f * (1f + 0.35f * r.Weight(ArkitBlendshape.MouthSmileLeft) + 0.3f * r.Weight(ArkitBlendshape.MouthStretchLeft) - 0.5f * r.Weight(ArkitBlendshape.MouthPucker) - 0.2f * r.Weight(ArkitBlendshape.MouthFunnel)), 8f, 52f).ToString("0.0", CultureInfo.InvariantCulture);
+
+    private static string Ry(NeuralVisemeLipSyncRetargeter r) =>
+        Math.Clamp(2f + 34f * r.Weight(ArkitBlendshape.JawOpen) * (1f - r.Weight(ArkitBlendshape.MouthClose)) + 8f * r.Weight(ArkitBlendshape.MouthFunnel), 1.5f, 40f).ToString("0.0", CultureInfo.InvariantCulture);
+
+    private static string Pct(float w) => Math.Clamp(w * 100f, 0f, 100f).ToString("0", CultureInfo.InvariantCulture);
+
+    private void Select(int track)
+    {
+        try { Runner.Selected = track; }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("MultilingualDubbing.Modal.Select", ex); }
+    }
+
+    private void Rebuild()
+    {
+        try { Runner.Prepare(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("MultilingualDubbing.Modal.Prepare", ex); }
+    }
+
+    private void Step()
+    {
+        try { Runner.EnsurePrepared(); Runner.Tick(AudioVisualPhaseDriftGuard.FrameUs); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("MultilingualDubbing.Modal.Step", ex); }
+    }
+
+    private void Jump(int ms)
+    {
+        try { Runner.InjectAudioJump(ms); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("MultilingualDubbing.Modal.Jump", ex); }
+    }
+
+    private void ToggleGuard(ChangeEventArgs e) => Runner.SetGuard(e.Value is bool b ? b : !Runner.Drift.Enabled);
+
+    private void SetSkew(ChangeEventArgs e)
+    {
+        if (float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) Runner.AudioSkew = v;
+    }
+
+    private void Toggle() { if (Runner.Running) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}
