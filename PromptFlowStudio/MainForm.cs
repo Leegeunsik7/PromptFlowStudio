@@ -23,17 +23,9 @@ namespace PromptFlowStudio;
 /// </summary>
 public sealed class MainForm : Form
 {
-    public MainForm(IConfiguration config)
+    /// <summary>프로덕션 DI 그래프 등록 — 생성자와 헤드리스 UI 크롤러(테스트)가 동일 그래프를 공유한다.</summary>
+    internal static void ConfigureServices(IServiceCollection services, IConfiguration config, Control owner)
     {
-        Text = "PromptFlow Studio — 프롬프트→영상 생성 워크플로우";
-        BackColor = Color.FromArgb(12, 10, 26);
-        StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(1040, 720);
-        ClientSize = new Size(1360, 860);
-        WindowState = FormWindowState.Maximized;
-        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { /* 기본 아이콘 */ }
-
-        var services = new ServiceCollection();
         services.AddWindowsFormsBlazorWebView();
         PromptFlowStudio.Shared.SharedServiceRegistry.RegisterSharedServices(services);   // v4.1 공용 RCL 시임 1줄 통합 등록(데스크톱 폴백)
         services.AddSingleton<PromptFlowStudio.Shared.Cross.IParityProbe, PromptFlowStudio.Services.Cross.DesktopParityProbe>();  // v4.2 데스크톱 실 기능 프로브(기본 프로브 override)
@@ -811,9 +803,9 @@ public sealed class MainForm : Form
         services.AddSingleton<PromptFlowStudio.Services.Telemetry.SystemHardwareTelemetryMonitor>(); // v16.18.0 VRAM/RAM/CPU EWMA · 컷당 렌더 시간 · OOM 징후 → 거버너 동시성 축소
         services.AddSingleton<BatchProductionQueueService>();    // v16.16.0 대량 생산 큐(우선순위·일시정지/재개·개별 취소·재시도·ETA)
         services.AddSingleton<BatchProductionService>();         // 멀티 숏츠 대량 양산 배치 팩토리(CSV/TXT 큐 · 백그라운드 순차 · 커버/메타데이터 · Graceful Skip)
-        services.AddSingleton<IVideoExportService>(new VideoExportService(this)); // 완성 영상 내보내기(SaveFileDialog · this 폼 스레드로 마샬링)
-        services.AddSingleton<IClipboardService>(new ClipboardService(this));     // 클립보드 복사(WinForms Clipboard · STA 폼 스레드로 마샬링)
-        services.AddSingleton<IFilePickerService>(new FilePickerService(this));    // 파일 열기 대화상자(OpenFileDialog · STA 폼 스레드로 마샬링 · 엔진 경로 찾기)
+        services.AddSingleton<IVideoExportService>(new VideoExportService(owner)); // 완성 영상 내보내기(SaveFileDialog · this 폼 스레드로 마샬링)
+        services.AddSingleton<IClipboardService>(new ClipboardService(owner));     // 클립보드 복사(WinForms Clipboard · STA 폼 스레드로 마샬링)
+        services.AddSingleton<IFilePickerService>(new FilePickerService(owner));    // 파일 열기 대화상자(OpenFileDialog · STA 폼 스레드로 마샬링 · 엔진 경로 찾기)
         services.AddSingleton<IYoutubeMetadataService, YoutubeMetadataService>(); // 유튜브 숏츠 메타데이터 자동 생성(제목/설명/해시태그 · BCL 정규식)
         services.AddSingleton<IAutoUpdateService, AutoUpdateService>();           // 자체 자동 업데이트(GitHub Releases · BCL only)
         services.AddSingleton<ErrorDialogService>();                              // 오류 인간화 + 전역 표출(StackTrace 숨김 · 해결 가이드)
@@ -828,6 +820,20 @@ public sealed class MainForm : Form
         services.AddSingleton<PromptFlowStudio.Services.Deploy.PromptFlowPackagerService>();
         services.AddSingleton<PromptFlowStudio.Services.Deploy.DeploymentRunnerHardening>();   // v4.4.4 Task1 배포 스크립트 실행 보안(셸 이스케이프·경로 이탈 차단·CancellationToken+TimeSpan 10분→Kill(true) 좀비 방어)
         services.AddSingleton<PromptFlowStudio.Services.Deploy.ArtifactIntegrityGuard>();       // v4.4.4 Task2 산출물 무결성(존재·0바이트·확장자 정량검증 + IOException 파일락 Graceful 안내)
+    }
+
+    public MainForm(IConfiguration config)
+    {
+        Text = "PromptFlow Studio — 프롬프트→영상 생성 워크플로우";
+        BackColor = Color.FromArgb(12, 10, 26);
+        StartPosition = FormStartPosition.CenterScreen;
+        MinimumSize = new Size(1040, 720);
+        ClientSize = new Size(1360, 860);
+        WindowState = FormWindowState.Maximized;
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { /* 기본 아이콘 */ }
+
+        var services = new ServiceCollection();
+        ConfigureServices(services, config, this);
 
         var sp = services.BuildServiceProvider();
         _services = sp;

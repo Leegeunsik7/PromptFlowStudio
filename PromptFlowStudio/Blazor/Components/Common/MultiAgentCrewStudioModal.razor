@@ -126,7 +126,7 @@
                                 </div>
                                 <span class="val">@(Fmt(k, Crew.DecidedValue(t)))</span>
                                 <button class="ov @(C.IsLocked(t) ? "on" : null)" title="현재 값으로 잠금/해제" @onclick="() => ToggleLock(t)">@(C.IsLocked(t) ? "🔒" : "✋")</button>
-                                <input type="range" min="0" max="100" value="@(F0(d * 100))" @onchange="e => OverrideSlider(t, e)" />
+                                <input type="range" min="0" max="100" value="@(F0((C.IsLocked(t) ? C.LockValue(t) : d) * 100))" @onchange="e => OverrideSlider(t, e)" />
                             </div>
                         }
                     </div>

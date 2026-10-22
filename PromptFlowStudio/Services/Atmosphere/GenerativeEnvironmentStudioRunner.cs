@@ -62,6 +62,9 @@ public sealed class GenerativeEnvironmentStudioRunner : IDisposable
     public Vector3 BoxCenter { get; private set; }
     public float SunElevation => _atmo.SunElevationDeg;
     public float SunAzimuth { get; private set; }
+    /// <summary>슬라이더 설정점 — 수동 모드는 다음 틱 전에도 입력값 즉시 반영(틱 산출값으로 되튕김 방지).</summary>
+    public float SunElevationSetpoint => ClockMode ? SunElevation : _manualElev;
+    public float SunAzimuthSetpoint => ClockMode ? SunAzimuth : _manualAz;
     public double LastTickMs { get; private set; }
     public double LastShadeMs { get; private set; }
     public long FireflyClamps { get; private set; }

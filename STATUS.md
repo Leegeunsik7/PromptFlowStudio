@@ -1,18 +1,22 @@
 # Current Project Status
-- Active Milestone: HOTFIX UI/UX 전수 감사 완료 (Complete) — 156개 카탈로그 모달 인터랙션·스크롤 정상화
-- Build Status: Desktop Release -warnaserror 0/0 · net8.0-ios Release 0/0 · net8.0-android 미검증(SDK/JDK 미설치)
-- Test Suite: 491건 = 484 전량 회귀 통과(Debug) + 타이밍 7건 Release 격리 통과(TimingSensitivePerformance) · 신규 UI 감사 3건
+- Active Milestone: UI-INTERACTIVE-SMOKE-CRAWLER-AND-SWITCH-BINDING-AUDIT (Complete) — 156개 모달 동적 인터랙션 전수 검증
+- Build Status: Desktop Release -warnaserror 0/0 · net8.0-ios Release -warnaserror 0/0 · net8.0-android 미검증(SDK/JDK 미설치)
+- Test Suite: 492건 — Release 단일 스레드 전량 실행 491 통과 + DistributedGpuCluster 1건 부하 타이밍 실패(격리 재실행 3/3 통과)
 - Sidebar: 7대 카테고리 · 156 엔트리
 - Updated At: 2026-10-22 (KST)
 
 ## Completed Deliverables
-- AUDIT-1: 전역 non-passive 휠 리스너 → 툴바 요소 한정(promptflow.js) · 닫힌 관제/모바일 슬라이드·HUD 장식·.sho/.sim-bar 투명 영역 pointer-events 관통 · 모달 overscroll contain(app.css)
-- AUDIT-1: 49개 UI 파일 레이아웃 규격화 — 17개 전체 스크롤 모달 sticky 헤더(✕)/푸터 · 28개 flex 본문 flex:1 1 auto·min-height:0 · 5개 ≤900px 1열 스크롤 · MediaGallery 높이 상한
-- AUDIT-2: ESC 전역 닫기(CloseOpenStudios) · 👑 마스터 스위트 모달 관제 슬라이드 밖 최상위 이관 · 경량 슬라이더 15개 oninput 실시간 바인딩
-- AUDIT-3: 구독 컴포넌트 IDisposable 미구현 0 · 구독/해제 쌍 누락 0 · 백그라운드 직접 StateHasChanged 0
-- AUDIT-4: 커머스 상품 카드 말줄임·minmax(0,1fr) · 9:16 플레이어 11곳 비율 유지 확인 · EPG 결함 없음
-- AUDIT-5: `UiExhaustiveAuditIsolatedTests` 3건(모달 스크롤 규격 168개 · IDisposable · 오버레이/ESC/휠)
+- CRAWL-1: `InteractiveModalCrawlerTests` — BCL Renderer 서브클래스(외부 bUnit 0) · 프로덕션 DI(`MainForm.ConfigureServices` 추출) 실마운트 · onclick/oninput→onchange 실발화 · 빈 람다/값 고정/예외/비동기 예외 판정 · `PFS_CRAWL_ONLY` 키 필터
+- CRAWL-1 실측: 마운트 156/156 · 디스패치 3,869건(스위치 181 · 슬라이더 578 · 버튼 2,839 · 셀렉트 91 · 입력 180) · 정상률 100% · 결함 0 · 비활성 스킵 117
+- CRAWL-2 수정(수정 전 1차 크롤 3,845 디스패치 · 결함 86건 · 마운트 실패 1):
+  - SpatialComputingStudioModal: WebXR 프로브 null → 마운트 NRE 가드
+  - StreamGatewayClipperStudioModal: `@for` 루프 변수 캡처 `_ids[p]` → IndexOutOfRange 3건 교정
+  - IntelligentStageLightingStudioModal: DMX 페이더 64개 · 긴장도 슬라이더 → 파킹/수동 설정점 표시
+  - MultiAgentCrewStudioModal: 오버라이드 슬라이더 10개 → 잠금 값 표시
+  - CinematographyStudioModal: 조리개 → 수동 ManualFStop 표시
+  - GenerativeEnvironmentStudioModal: 태양 고도·방위 → 러너 Setpoint 프로퍼티 결선
 
 ## Known Issues / 환경 노트
-- 호스트 부하(AutoCAD 등 2GB+ 메모리 점유) 시 타이밍 예산 테스트 격리 실행 기조 유지 — 7건(BroadcastMcr·InteractiveShowrunner·LiveCommerce·MasterStation·SemanticChatWeather·ZeroTouchAutopilot·ReelsVisualPolish) Debug 전량 실행 시 예산 초과(HEAD 베이스라인 동일)
-- GUI 육안·실마우스 휠 미검증(정적 감사 + 헤드리스 테스트) · Android 빌드 미검증
+- 호스트 부하 시 타이밍 예산 테스트 격리 실행 기조 유지(DistributedGpuCluster 하트비트 60 ms 포함)
+- 전량 테스트는 메모리 압박 시 `-- RunConfiguration.DisableParallelization=true` 단일 스레드 실행 권장(크롤러 단독 약 6분)
+- GUI 육안·실마우스 미검증(헤드리스 크롤) · Android 빌드 미검증

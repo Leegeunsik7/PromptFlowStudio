@@ -246,7 +246,7 @@
         try
         {
             var r = await JS.InvokeAsync<XrProbe>("pfXr.probe");
-            _probe = !r.Xr ? "navigator.xr 없음(시뮬레이션만)" : r.Vr || r.Ar ? "✔ WebXR immersive " + (r.Vr ? "VR" : "") + (r.Ar ? " AR" : "") : "WebXR 있음 · 헤드셋 없음";
+            _probe = r is null || !r.Xr ? "navigator.xr 없음(시뮬레이션만)" : r.Vr || r.Ar ? "✔ WebXR immersive " + (r.Vr ? "VR" : "") + (r.Ar ? " AR" : "") : "WebXR 있음 · 헤드셋 없음";
         }
         catch (Exception ex) when (ex is JSException or InvalidOperationException or TaskCanceledException) { _probe = "WebXR 브리지 없음(시뮬레이션만)"; }
         StateHasChanged();

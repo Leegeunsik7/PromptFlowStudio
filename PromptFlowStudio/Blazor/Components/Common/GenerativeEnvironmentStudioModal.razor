@@ -136,8 +136,8 @@
                         </div>
                     </div>
                     <div class="ges-sl">
-                        <label>고도각 <b>@(F1(Runner.SunElevation))°</b><input type="range" min="-20" max="90" step="0.5" value="@(F1(Runner.SunElevation))" @oninput="e => SetF(e, v => Runner.SetSun(v, Runner.SunAzimuth))" /></label>
-                        <label>방위 <b>@(F0(Runner.SunAzimuth))°</b><input type="range" min="0" max="359" value="@(F0(Runner.SunAzimuth))" @oninput="e => SetF(e, v => Runner.SetSun(Runner.SunElevation, v))" /></label>
+                        <label>고도각 <b>@(F1(Runner.SunElevation))°</b><input type="range" min="-20" max="90" step="0.5" value="@(F1(Runner.SunElevationSetpoint))" @oninput="e => SetF(e, v => Runner.SetSun(v, Runner.SunAzimuth))" /></label>
+                        <label>방위 <b>@(F0(Runner.SunAzimuth))°</b><input type="range" min="0" max="359" value="@(F0(Runner.SunAzimuthSetpoint))" @oninput="e => SetF(e, v => Runner.SetSun(Runner.SunElevation, v))" /></label>
                         <label>시계 <b>@(F1(Runner.Hour))시</b><input type="range" min="0" max="24" step="0.1" value="@(F1(Runner.Hour))" @oninput="e => SetF(e, v => Runner.SetClock(v, Runner.DayOfYear, Runner.Latitude))" /></label>
                         <label>연중 일 <b>@(Runner.DayOfYear)</b><input type="range" min="1" max="365" value="@(Runner.DayOfYear)" @onchange="e => SetF(e, v => Runner.SetClock(Runner.Hour, (int)v, Runner.Latitude))" /></label>
                         <label>위도 <b>@(F1(Runner.Latitude))°</b><input type="range" min="-66" max="66" step="0.5" value="@(F1(Runner.Latitude))" @onchange="e => SetF(e, v => Runner.SetClock(Runner.Hour, Runner.DayOfYear, v))" /></label>

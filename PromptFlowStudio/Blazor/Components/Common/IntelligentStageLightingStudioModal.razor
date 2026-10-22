@@ -31,7 +31,7 @@
         </div>
         <div class="slm-bar">
             <label class="slm-lbl"><input type="checkbox" checked="@(Runner.TensionOverride < 0f)" @onchange="AutoTension" /> 긴장도 자동(v17.40)</label>
-            <input class="slm-rng" type="range" min="0" max="100" value="@((int)MathF.Round(Runner.Tension * 100f))" disabled="@(Runner.TensionOverride < 0f)" @oninput="OnTension" />
+            <input class="slm-rng" type="range" min="0" max="100" value="@((int)MathF.Round((Runner.TensionOverride >= 0f ? Runner.TensionOverride : Runner.Tension) * 100f))" disabled="@(Runner.TensionOverride < 0f)" @oninput="OnTension" />
             <span class="slm-chip">T <b>@(F2(Runner.Tension))</b> · 절정 @(F2(Runner.Look.Climax))</span>
             <label class="slm-lbl">🌫 안개 σ</label>
             <input class="slm-rng" type="range" min="0" max="100" value="@((int)MathF.Round(Runner.ManualFog / 0.002f))" disabled="@Runner.FogFromWeather" @oninput="OnFog" />
@@ -70,10 +70,12 @@
                         @for (var i = 0; i < 64; i++)
                         {
                             var ch = _page * 64 + i;
-                            var parked = Runner.Engine.Parked(ch) >= 0;
+                            var pv = Runner.Engine.Parked(ch);
+                            var parked = pv >= 0;
+                            var lv = parked ? pv : Runner.Engine.Dmx(ch); // 파킹 값 즉시 반영 — 쇼 정지(틱 없음) 중에도 페이더가 원위치로 튕기지 않음
                             <div class="slm-fd @(parked ? "pk" : null) @(ch < Runner.Engine.UsedChannels ? null : "nu")" title="@(ChannelName(ch)) — 더블클릭 = 파킹 해제" @ondblclick="() => Runner.Park(ch, -1)">
-                                <span class="v">@(Runner.Engine.Dmx(ch))</span>
-                                <input type="range" min="0" max="255" value="@(Runner.Engine.Dmx(ch))" @oninput="e => OnFader(ch, e)" />
+                                <span class="v">@(lv)</span>
+                                <input type="range" min="0" max="255" value="@(lv)" @oninput="e => OnFader(ch, e)" />
                                 <span class="n">@(ch + 1)</span>
                                 <span class="f">@(ChannelShort(ch))</span>
                             </div>

@@ -44,7 +44,7 @@
                                 <div class="kv">백오프 시도 @(Runner.Guard.Attempt(pl)) · 직전 @(F1(Runner.Guard.LastBackoffSec(pl))) s@(s.State == GatewayLinkState.Backoff ? " · 재접속 " + F1(Math.Max(0, s.NextRetryAtMs - GatewayClock.NowMs) / 1000.0) + " s" : null)</div>
                                 <div class="kv ep">@(s.Endpoint)@(s.LastError is { } e ? " · ⚠ " + e : null)</div>
                                 <div class="row">
-                                    <input class="sgc-in" placeholder="@(Hint(pl))" @bind="_ids[p]" />
+                                    <input class="sgc-in" placeholder="@(Hint(pl))" @bind="_ids[(int)pl]" />
                                     <button class="sgc-btn sm go" @onclick="() => ConnectLive(pl)">연결</button>
                                     <button class="sgc-btn sm" @onclick="() => Runner.ConnectSimulated(pl)">시뮬</button>
                                     <button class="sgc-btn sm" @onclick="() => Runner.ForceDrop(pl)">✂ 순단</button>
