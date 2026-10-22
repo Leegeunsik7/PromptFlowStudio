@@ -1,0 +1,387 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.LiveArchive
+@implements IDisposable
+@inject LiveArchiveCloudVaultStudioRunner Runner
+
+@* [PromptFlow Studio v17.87.0] 💾 라이브 클라우드 아카이브 볼트 — 세그먼트 타임라인 · S3/R2/MinIO 버킷 설정/연결 테스트 · 업로드 큐 · 로컬 회수/콜드 티어링. *@
+<div class="lav-scrim" @onclick="Close">
+    <div class="lav-modal" @onclick:stopPropagation="true">
+        <div class="lav-h">
+            <div>
+                <div class="lav-title">💾 라이브 클라우드 아카이브 볼트 @(Runner.Running ? "· ⏺ 녹화 중" : null)</div>
+                <div class="lav-sub">방송 중 송출되는 최종 화면(오버레이 포함)을 <b>@(Runner.SegmentMinutes)분 단위 MP4 파일</b>로 잘라 저장하고, 완성된 파일은 자동으로 클라우드 버킷(AWS S3 · Cloudflare R2 · MinIO)에 올립니다.
+                    파일은 키프레임 경계에서만 나뉘고 2초마다 디스크에 기록되므로 프로그램이 갑자기 꺼져도 이미 저장된 부분은 그대로 재생됩니다.
+                    업로드 속도는 방송 송출을 방해하지 않도록 상한을 두고, 업로드가 끝난 파일은 디스크 여유가 10GB 아래로 떨어지면 오래된 것부터 지웁니다. 오래된 영상은 더 저렴한 보관 등급(IA · Glacier · Deep Archive)으로 자동 전환됩니다.</div>
+            </div>
+            <button class="lav-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="lav-body">
+            <div class="lav-bar">
+                <button class="lav-btn hot" @onclick="ToggleLoop">@(Runner.Running ? "⏸ 녹화 일시정지" : "⏺ 녹화 시작")</button>
+                <button class="lav-btn" disabled="@(Runner.Linked)" @onclick="Advance1">⏩ +1분 (리허설)</button>
+                <button class="lav-btn" disabled="@(Runner.Linked)" @onclick="Advance5">⏩ +5분</button>
+                <button class="lav-btn" @onclick="Cut">✂️ 지금 분할</button>
+                <button class="lav-btn" @onclick="Finish">⏹ 녹화 종료·확정</button>
+                <label class="lav-lbl">세그먼트
+                    <select value="@(Runner.SegmentMinutes.ToString(CultureInfo.InvariantCulture))" @onchange="SetMinutes">
+                        @foreach (var m in LiveArchiveCloudVaultStudioRunner.SegmentMinuteOptions)
+                        {
+                            <option value="@(m.ToString(CultureInfo.InvariantCulture))">@(m)분</option>
+                        }
+                    </select>
+                </label>
+                <label class="lav-lbl"><input type="checkbox" checked="@(Runner.Linked)" disabled="@(!Runner.HasLive)" @onchange="ToggleLink" /> v17.83 송출 결선</label>
+                <label class="lav-lbl"><input type="checkbox" checked="@(Runner.AutoUpload)" @onchange="ToggleUpload" /> 자동 업로드</label>
+                <label class="lav-lbl"><input type="checkbox" checked="@(Runner.AutoPrune)" @onchange="TogglePrune" /> 로컬 자동 회수</label>
+                <span class="lav-sep"></span>
+                <button class="lav-btn" @onclick="ResetAll">♻ 초기화</button>
+            </div>
+
+            <div class="lav-main">
+                <div class="lav-card">
+                    <div class="lav-sec">📼 세그먼트 타임라인 <span class="lav-kw">fMP4 · IDR 정렬 · 조각 단위 실시간 기록</span></div>
+                    <div class="lav-now">
+                        <span>현재 세그먼트 <b>@(Fmt(Runner.Recorder.CurrentSegmentUs / 1e6))s</b> / @(Runner.SegmentMinutes * 60)s</span>
+                        <div class="lav-prog"><i style="width:@(Pct(Runner.Recorder.Recording ? Runner.Recorder.CurrentSegmentUs / (double)Runner.Recorder.SegmentUs : 0))%"></i></div>
+                    </div>
+                    <div class="lav-tl">
+                        @for (var i = Math.Max(Runner.Recorder.FirstIndex, Runner.Recorder.SegmentCount - 24); i < Runner.Recorder.SegmentCount; i++)
+                        {
+                            var s = Runner.Recorder.Segment(i);
+                            <span class="lav-blk @(StateClass(s.State))" style="flex-grow:@(Fmt(Math.Max(1, s.DurationUs / 1e6)))" title="#@(s.Index) @(ZeroAllocLiveSegmentRecordingEngine.StateName(s.State))"></span>
+                        }
+                    </div>
+                    @if (Runner.Recorder.SegmentCount == 0)
+                    {
+                        <div class="lav-empty">⏺ 녹화 시작 또는 ⏩ +1분을 누르면 세그먼트가 여기에 쌓입니다.</div>
+                    }
+                    else
+                    {
+                        <div class="lav-grid-h"><span>#</span><span>길이</span><span>크기</span><span>조각</span><span>상태</span><span>티어</span></div>
+                        @for (var i = Runner.Recorder.SegmentCount - 1; i >= Math.Max(Runner.Recorder.FirstIndex, Runner.Recorder.SegmentCount - 10); i--)
+                        {
+                            var s = Runner.Recorder.Segment(i);
+                            <div class="lav-row">
+                                <span>@(s.Index)</span>
+                                <span>@(Fmt(s.DurationUs / 1e6))s</span>
+                                <span>@(Fmt(s.Bytes / 1048576.0))MB</span>
+                                <span>@(s.Fragments)</span>
+                                <span class="st @(StateClass(s.State))">@(ZeroAllocLiveSegmentRecordingEngine.StateName(s.State))</span>
+                                <span>@(StorageCostLifecycleTieringGuard.TierName(s.Tier))</span>
+                            </div>
+                        }
+                    }
+                    <div class="lav-kv">영상 <b>@(Runner.Recorder.VideoFrames)</b> · 음성 <b>@(Runner.Recorder.AudioFrames)</b> · 조각 <b>@(Runner.Recorder.Fragments)</b> · 기록 <b>@(Fmt(Runner.Recorder.BytesWritten / 1048576.0))MB</b> · 플러시 <b>@(Runner.Recorder.LastFlushUs.ToString("0", CultureInfo.InvariantCulture))µs</b> · IDR 대기 폐기 <b>@(Runner.Recorder.DroppedPreIdr)</b> · 쓰기 실패 <b class="@(Runner.Recorder.WriteFailures > 0 ? "warn" : "okc")">@(Runner.Recorder.WriteFailures)</b></div>
+                    <div class="lav-bar tight">
+                        <button class="lav-btn" @onclick="Recover">🩹 충돌 복구(.part 절단·확정)</button>
+                        <span class="lav-kv">복구 <b>@(Runner.Recorder.Recovered)</b></span>
+                    </div>
+                </div>
+
+                <div class="lav-card">
+                    <div class="lav-sec">☁️ 클라우드 버킷 <span class="lav-kw">SigV4 · 8MB 멀티파트</span></div>
+                    <label class="lav-lbl">제공자
+                        <select value="@(((int)_provider).ToString(CultureInfo.InvariantCulture))" @onchange="SetProvider">
+                            <option value="0">AWS S3</option>
+                            <option value="1">Cloudflare R2</option>
+                            <option value="2">MinIO</option>
+                        </select>
+                    </label>
+                    <label class="lav-field">@(_provider == VaultProvider.CloudflareR2 ? "계정 ID" : "엔드포인트 URL")
+                        <input type="text" value="@(_url)" placeholder="@(_provider == VaultProvider.MinIO ? "http://127.0.0.1:9000" : _provider == VaultProvider.CloudflareR2 ? "account-id" : "(리전 기본)")" @onchange="SetUrl" />
+                    </label>
+                    <div class="lav-two">
+                        <label class="lav-field">버킷<input type="text" value="@(_bucket)" @onchange="SetBucket" /></label>
+                        <label class="lav-field">리전<input type="text" value="@(_region)" @onchange="SetRegion" /></label>
+                    </div>
+                    <div class="lav-two">
+                        <label class="lav-field">액세스 키<input type="text" value="@(_access)" autocomplete="off" @onchange="SetAccess" /></label>
+                        <label class="lav-field">시크릿 키<input type="password" autocomplete="off" placeholder="@(_secret.Length > 0 ? "•••••••• (입력됨)" : "메모리에만 보관")" @onchange="SetSecret" /></label>
+                    </div>
+                    <div class="lav-bar tight">
+                        <label class="lav-lbl"><input type="checkbox" checked="@(_simulate)" @onchange="ToggleSim" /> 시뮬레이터 버킷(리허설)</label>
+                        <button class="lav-btn go" @onclick="Apply">💾 적용</button>
+                        <button class="lav-btn" @onclick="LoadEnv">🔑 환경변수</button>
+                        <button class="lav-btn" @onclick="TestConn">🔌 연결 테스트</button>
+                    </div>
+                    <div class="lav-kv">대상 <b>@(Runner.Gateway.Endpoint?.ToString() ?? "미설정")</b> · @(Runner.Gateway.UseSimulator ? "시뮬레이터" : "실 전송") · 연결 <b class="@(Runner.Gateway.Connected == true ? "okc" : Runner.Gateway.Connected == false ? "warn" : null)">@(Runner.Gateway.Connected switch { true => "정상", false => "실패", _ => "미확인" })</b></div>
+                    @if (_error is not null)
+                    {
+                        <div class="lav-kv warn">@(_error)</div>
+                    }
+
+                    <div class="lav-sec sm">📤 업로드 큐</div>
+                    <div class="lav-kv">@(Runner.Uploading ? "업로드 중 #" + Runner.CurrentUpload.ToString(CultureInfo.InvariantCulture) : "대기") · 큐 <b>@(Runner.QueueCount)</b> · 완료 <b>@(Runner.Uploaded)</b> · 실패 <b class="@(Runner.UploadFailures > 0 ? "warn" : null)">@(Runner.UploadFailures)</b></div>
+                    <div class="lav-prog up"><i style="width:@(Pct(Runner.Gateway.CurrentProgress))%"></i></div>
+                    <div class="lav-kv">@(Fmt(Runner.Gateway.CurrentBytes / 1048576.0)) / @(Fmt(Runner.Gateway.CurrentTotal / 1048576.0)) MB · 파트 <b>@(Runner.Gateway.PartsUploaded)</b> · 재시도 <b>@(Runner.Gateway.Retries)</b> · 중단(Abort) <b>@(Runner.Gateway.Aborts)</b> · 최근 <b>@(Fmt(Runner.Gateway.LastMbps))Mbps</b></div>
+                    <div class="lav-bar tight">
+                        <label class="lav-lbl">대역폭 상한
+                            <input type="range" min="5" max="100" step="5" value="@(Runner.Gateway.Valve.Mbps.ToString("0", CultureInfo.InvariantCulture))" @onchange="SetMbps" />
+                            <b>@(Runner.Gateway.Valve.Mbps.ToString("0", CultureInfo.InvariantCulture))</b>Mbps
+                        </label>
+                        <label class="lav-lbl">파트
+                            <select value="@((Runner.Gateway.PartBytes >> 20).ToString(CultureInfo.InvariantCulture))" @onchange="SetPart">
+                                <option value="8">8MB</option>
+                                <option value="16">16MB</option>
+                                <option value="32">32MB</option>
+                            </select>
+                        </label>
+                        <button class="lav-btn" disabled="@(Runner.UploadFailures == 0)" @onclick="Retry">🔁 실패 재시도</button>
+                    </div>
+                    <div class="lav-mini">스로틀 대기 @(Runner.Gateway.Valve.ThrottledWaits)회 · 서명 @(Runner.Gateway.Signer.Signatures)건 · 시크릿은 저장·로그되지 않습니다(환경변수 @(VaultEndpoint.EnvSecret) 권장)</div>
+                </div>
+
+                <div class="lav-card">
+                    <div class="lav-sec">🧊 수명주기 & 비용</div>
+                    <div class="lav-kv">로컬 여유 <b class="@(Runner.Guard.DiskLow ? "warn" : "okc")">@(Fmt(Runner.FreeBytes / (double)StorageCostLifecycleTieringGuard.GiB))GB</b> · 회수 기준 <b>@(Runner.Guard.MinFreeBytes / StorageCostLifecycleTieringGuard.GiB)GB</b></div>
+                    <div class="lav-prog disk"><i style="width:@(Pct(Math.Min(1.0, StorageCostLifecycleTieringGuard.DefaultMinFree / (double)Math.Max(1, Runner.FreeBytes))))%"></i></div>
+                    <div class="lav-grid">
+                        <span>회수 <b>@(Runner.Guard.Pruned)</b>개</span>
+                        <span>회수량 <b>@(Fmt(Runner.Guard.PrunedBytes / 1048576.0))MB</b></span>
+                        <span>위험 <b class="@(Runner.Guard.AtRisk > 0 ? "warn" : "okc")">@(Runner.Guard.AtRisk)</b></span>
+                        <span>스캔 <b>@(Runner.Guard.Scans)</b></span>
+                        <span>티어 전환 <b>@(Runner.Guard.Transitions)</b></span>
+                        <span>경과 <b>+@(Runner.DayOffset)일</b></span>
+                    </div>
+                    <div class="lav-tiers">
+                        <span class="t0">Hot 0~@(Runner.Guard.IaDays)일</span>
+                        <span class="t1">IA @(Runner.Guard.IaDays)일~</span>
+                        <span class="t2">Glacier @(Runner.Guard.GlacierDays)일~</span>
+                        <span class="t3">Deep @(Runner.Guard.DeepDays)일~</span>
+                    </div>
+                    <div class="lav-bar tight">
+                        <button class="lav-btn" @onclick="Days7">📅 +7일 경과</button>
+                        <button class="lav-btn" @onclick="Days30">📅 +30일</button>
+                        <button class="lav-btn" @onclick="Days90">📅 +90일</button>
+                        <button class="lav-btn" @onclick="ApplyRules">📜 버킷 규칙 적용</button>
+                    </div>
+                    @{ var usd = StorageCostLifecycleTieringGuard.MonthlyUsd(Runner.Recorder, Runner.Gateway.Endpoint?.Provider ?? VaultProvider.AwsS3, out var hot); }
+                    <div class="lav-kv">월 예상 보관비 <b>$@(usd.ToString("0.0000", CultureInfo.InvariantCulture))</b> · 전량 Hot 대비 <b class="okc">@(hot > 0 ? ((1 - usd / hot) * 100).ToString("0", CultureInfo.InvariantCulture) : "0")%</b> 절감</div>
+                    <div class="lav-mini">업로드가 끝난 파일만 지웁니다(미업로드 파일은 디스크 부족이어도 보존 — 위험 카운트 증가). 티어 전환은 오브젝트 태그(@(StorageCostLifecycleTieringGuard.TagKey)) + 버킷 수명주기 규칙으로 클라우드가 수행합니다.</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="lav-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+    </div>
+</div>
+
+<style>
+    .lav-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .lav-modal { width: min(1380px, 96vw); max-height: 94vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); color: var(--text-primary); }
+    .lav-h { position: sticky; top: 0; z-index: 3; flex: 0 0 auto; display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px 8px; background: var(--card); border-bottom: 1px solid var(--line); }
+    .lav-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 10px; }
+    .lav-act { position: sticky; bottom: 0; z-index: 3; flex: 0 0 auto; padding: 8px 16px 14px; background: var(--card); border-top: 1px solid var(--line); font-size: 11px; color: var(--text-muted); }
+    .lav-title { font-size: 17px; font-weight: 800; }
+    .lav-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .lav-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .lav-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 0; }
+    .lav-bar.tight { margin: 6px 0; }
+    .lav-sep { flex: 1; }
+    .lav-lbl { display: inline-flex; gap: 6px; align-items: center; font-size: 11.5px; }
+    .lav-lbl select, .lav-field input { background: #0f172a; color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; font-size: 11.5px; padding: 3px 6px; }
+    .lav-lbl input[type=range] { width: 110px; }
+    .lav-field { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-muted); margin: 5px 0; min-width: 0; }
+    .lav-two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .lav-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .lav-btn:disabled { opacity: .45; cursor: default; }
+    .lav-btn.hot { border-color: #ef4444; } .lav-btn.go { border-color: #4ade80; font-weight: 700; }
+    .lav-main { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1.1fr) minmax(0, .95fr); gap: 10px; margin-top: 10px; }
+    .lav-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-width: 0; }
+    .lav-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
+    .lav-sec.sm { margin-top: 12px; font-size: 11.5px; }
+    .lav-kw { margin-left: auto; font-size: 10.5px; font-weight: 400; color: #7dd3fc; }
+    .lav-kv { font-size: 11px; color: var(--text-muted); margin: 4px 0; }
+    .lav-kv b { font-family: var(--mono); color: var(--text-primary); }
+    .lav-now { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text-muted); }
+    .lav-now b { font-family: var(--mono); color: var(--text-primary); }
+    .lav-prog { height: 10px; background: #1e293b; border-radius: 5px; overflow: hidden; margin: 4px 0; }
+    .lav-prog i { display: block; height: 100%; background: linear-gradient(90deg, #ef4444, #f97316); transition: width .2s; }
+    .lav-prog.up i { background: linear-gradient(90deg, #0ea5e9, #38bdf8); }
+    .lav-prog.disk i { background: linear-gradient(90deg, #22c55e, #facc15, #ef4444); }
+    .lav-tl { display: flex; gap: 2px; height: 22px; margin: 8px 0; background: #111827; border-radius: 6px; padding: 2px; overflow: hidden; }
+    .lav-blk { flex-basis: 0; min-width: 4px; border-radius: 3px; background: #475569; }
+    .lav-blk.rec, .st.rec { background: #ef4444; } .lav-blk.seal, .st.seal { background: #64748b; } .lav-blk.up, .st.up { background: #0ea5e9; }
+    .lav-blk.ok, .st.ok { background: #16a34a; } .lav-blk.prn, .st.prn { background: #155e75; } .lav-blk.fail, .st.fail { background: #b91c1c; } .lav-blk.rcv, .st.rcv { background: #a16207; }
+    .lav-grid-h, .lav-row { display: grid; grid-template-columns: .5fr .9fr .9fr .6fr 1.1fr .9fr; gap: 4px; font-size: 10.5px; padding: 2px 0; }
+    .lav-grid-h { color: var(--text-muted); border-bottom: 1px solid var(--line); }
+    .lav-row { font-family: var(--mono); }
+    .lav-row .st { border-radius: 4px; padding: 0 4px; color: #fff; font-family: inherit; text-align: center; }
+    .lav-empty { font-size: 11px; color: var(--text-muted); padding: 8px; text-align: center; }
+    .lav-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px 6px; font-size: 10.5px; color: var(--text-muted); margin: 6px 0; }
+    .lav-grid b { font-family: var(--mono); color: var(--text-primary); }
+    .lav-tiers { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; font-size: 10px; margin: 6px 0; text-align: center; }
+    .lav-tiers span { padding: 3px 2px; border-radius: 4px; color: #fff; }
+    .lav-tiers .t0 { background: #b45309; } .lav-tiers .t1 { background: #0369a1; } .lav-tiers .t2 { background: #1e40af; } .lav-tiers .t3 { background: #312e81; }
+    .lav-mini { font-size: 10px; color: var(--text-muted); margin-top: 6px; }
+    .warn { color: #fca5a5 !important; } .okc { color: #86efac !important; }
+    @@media (max-width: 1100px) { .lav-main { grid-template-columns: 1fr 1fr; } }
+    @@media (max-width: 760px) { .lav-main { grid-template-columns: 1fr; } .lav-two { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private VaultProvider _provider = VaultProvider.AwsS3;
+    private string _url = "", _bucket = "my-live-archive", _region = "ap-northeast-2", _access = "", _secret = "";
+    private string? _error;
+    private bool _simulate = true;
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { if (Runner.Running || Runner.Uploading) _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("LiveArchive.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string Fmt(double v) => (double.IsFinite(v) ? v : 0).ToString("0.0", CultureInfo.InvariantCulture);
+
+    private static string Pct(double r) => (Math.Clamp(double.IsFinite(r) ? r : 0, 0, 1) * 100).ToString("0.0", CultureInfo.InvariantCulture);
+
+    private static string StateClass(ArchiveSegmentState s) => s switch
+    {
+        ArchiveSegmentState.Recording => "rec", ArchiveSegmentState.Sealed => "seal", ArchiveSegmentState.Uploading => "up", ArchiveSegmentState.Uploaded => "ok",
+        ArchiveSegmentState.Pruned => "prn", ArchiveSegmentState.Recovered => "rcv", _ => "fail",
+    };
+
+    private void SetProvider(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var n)) _provider = (VaultProvider)Math.Clamp(n, 0, 2);
+        if (_provider == VaultProvider.CloudflareR2) _region = "auto";
+    }
+
+    private void SetUrl(ChangeEventArgs e) => _url = e.Value?.ToString()?.Trim() ?? "";
+    private void SetBucket(ChangeEventArgs e) => _bucket = e.Value?.ToString()?.Trim() ?? "";
+    private void SetRegion(ChangeEventArgs e) => _region = e.Value?.ToString()?.Trim() ?? "";
+    private void SetAccess(ChangeEventArgs e) => _access = e.Value?.ToString()?.Trim() ?? "";
+    private void SetSecret(ChangeEventArgs e) => _secret = e.Value?.ToString()?.Trim() ?? "";
+    private void ToggleSim(ChangeEventArgs e) => _simulate = e.Value is bool b ? b : !_simulate;
+
+    private void Apply()
+    {
+        try
+        {
+            var ep = VaultEndpoint.Preset(_provider, _url, _bucket, _region, _access, _secret);
+            _error = Runner.ApplyEndpoint(ep, _simulate) ? null : Runner.LastAction;
+        }
+        catch (Exception ex) { _error = ex.Message; PromptFlowStudio.Program.Log("LiveArchive.Modal.Apply", ex); }
+    }
+
+    private void LoadEnv()
+    {
+        try
+        {
+            var ep = VaultEndpoint.FromEnvironment();
+            if (ep is null) { _error = "환경변수 " + VaultEndpoint.EnvBucket + " / " + VaultEndpoint.EnvAccess + " / " + VaultEndpoint.EnvSecret + " 미설정"; return; }
+            _provider = ep.Provider; _url = ep.ServiceUrl; _bucket = ep.Bucket; _region = ep.Region; _access = ep.AccessKey; _secret = ep.SecretKey;
+            _error = Runner.ApplyEndpoint(ep, _simulate) ? null : Runner.LastAction;
+        }
+        catch (Exception ex) { _error = ex.Message; PromptFlowStudio.Program.Log("LiveArchive.Modal.Env", ex); }
+    }
+
+    private async Task TestConn()
+    {
+        try { await Runner.TestConnectionAsync(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveArchive.Modal.Test", ex); }
+    }
+
+    private void SetMinutes(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var n)) Runner.SetSegmentMinutes(n);
+    }
+
+    private void SetMbps(ChangeEventArgs e)
+    {
+        if (double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) Runner.Gateway.Valve.Mbps = Math.Clamp(v, 5, 100);
+    }
+
+    private void SetPart(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var mb)) Runner.Gateway.SetPartBytes(Math.Clamp(mb, 8, 32) << 20);
+    }
+
+    private void ToggleLink(ChangeEventArgs e)
+    {
+        try { Runner.Linked = e.Value is bool b ? b : !Runner.Linked; }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveArchive.Modal.Link", ex); }
+    }
+
+    private void ToggleUpload(ChangeEventArgs e) => Runner.AutoUpload = e.Value is bool b ? b : !Runner.AutoUpload;
+    private void TogglePrune(ChangeEventArgs e) => Runner.AutoPrune = e.Value is bool b ? b : !Runner.AutoPrune;
+
+    private void ToggleLoop()
+    {
+        try { if (Runner.Running) Runner.Stop(); else Runner.Start(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveArchive.Modal.Loop", ex); }
+    }
+
+    private void Advance1() => Advance(60);
+    private void Advance5() => Advance(300);
+
+    private void Advance(double sec)
+    {
+        try { Runner.Advance(sec); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveArchive.Modal.Advance", ex); }
+    }
+
+    private void Cut()
+    {
+        try { Runner.CutNow(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveArchive.Modal.Cut", ex); }
+    }
+
+    private void Finish()
+    {
+        try { Runner.Finish(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveArchive.Modal.Finish", ex); }
+    }
+
+    private void Recover()
+    {
+        try { Runner.RecoverOrphans(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveArchive.Modal.Recover", ex); }
+    }
+
+    private void Retry()
+    {
+        try { Runner.RetryFailed(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveArchive.Modal.Retry", ex); }
+    }
+
+    private Task Days7() => Tier(7);
+    private Task Days30() => Tier(30);
+    private Task Days90() => Tier(90);
+
+    private async Task Tier(int days)
+    {
+        try { await Runner.ApplyTieringAsync(days); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveArchive.Modal.Tier", ex); }
+    }
+
+    private async Task ApplyRules()
+    {
+        try { await Runner.ApplyBucketLifecycleAsync(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveArchive.Modal.Rules", ex); }
+    }
+
+    private void ResetAll()
+    {
+        try { Runner.Reset(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveArchive.Modal.Reset", ex); }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}

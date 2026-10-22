@@ -51,6 +51,7 @@ using Rst = PromptFlowStudio.Services.LiveRestream;
 using Clp = PromptFlowStudio.Services.LiveClipper;
 using Vpe = PromptFlowStudio.Services.ViralExport;
 using Lae = PromptFlowStudio.Services.LiveEngagement;
+using Lav = PromptFlowStudio.Services.LiveArchive;
 using Nw = PromptFlowStudio.Services.Newsroom;
 using Spt = PromptFlowStudio.Services.Sports;
 using V3 = System.Numerics.Vector3;
@@ -34869,7 +34870,7 @@ public sealed class LiveAudienceEngagementIsolatedTests
 
         // ── ENG-4: 카탈로그 162 · HUD · 레이아웃 · DI · 모달 규격 · I/O 0 · 모달 렌더 ──
         Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_liveAudienceEngagement" && en.Category == 4);
-        Assert.Equal(162, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        Assert.True(PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length >= 162);
         var root = RepoRoot();
         var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
         var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
@@ -34899,6 +34900,236 @@ public sealed class LiveAudienceEngagementIsolatedTests
         var fr = run.Frame; const int W = Lae.ZeroAllocAlphaOverlayCompositorEngine.Width;
         var pp = Lae.LiveAudienceEngagementStudioRunner.PollPanel;
         return fr[(pp.Y + 4) * W + pp.X + 4] != Lae.LiveAudienceEngagementStudioRunner.SourcePixel(pp.X + 4, pp.Y + 4) && fr[600 * W + 100] == Lae.LiveAudienceEngagementStudioRunner.SourcePixel(100, 600);
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+}
+
+/// <summary>v17.87.0 무손실 세그먼트 레코더 · SigV4 멀티클라우드 볼트 · 수명주기 티어링 · 아카이브 콕핏 결선.</summary>
+[Collection("TimingSensitivePerformance")]   // 대역폭 셰이핑 벽시계 계측 · 업로드 워커 → 비병렬
+public sealed class LiveArchiveCloudVaultIsolatedTests
+{
+    private const long FrameUs = 33_334;
+
+    [Fact]
+    public async Task LiveArchiveCloudVault_And_SegmentRecording_Check()
+    {
+        // ── ARC-1: IDR 정렬 분할 · GOP 조각 · 원자 확정 · 무할당 ──
+        var store = new Lav.MemorySegmentStore();
+        var sealedIdx = new List<int>();
+        var rec = new Lav.ZeroAllocLiveSegmentRecordingEngine(store) { SegmentUs = 4_000_000 };
+        rec.OnSealed = sealedIdx.Add;
+        var au = new byte[16 * 1024]; var adts = new byte[400];
+        long pts = 0; var frame = 0;
+        void Feed(Lav.ZeroAllocLiveSegmentRecordingEngine r, double seconds)
+        {
+            var end = pts + (long)(seconds * 1_000_000);
+            var aPts = pts;
+            while (pts < end)
+            {
+                var idr = frame % 60 == 0;
+                r.OnVideo(au.AsSpan(0, Au(au, idr, idr ? 6000 : 2000)), idr, pts);
+                while (aPts <= pts) { r.OnAudio(adts.AsSpan(0, Adts(adts, 360)), aPts); aPts += 21_333; }
+                pts += FrameUs; frame++;
+            }
+        }
+        Feed(rec, 4.5);
+        Assert.True(rec.Recording && rec.SegmentCount == 2 && sealedIdx.Count == 1 && rec.DroppedPreIdr == 0, "분할 " + rec.SegmentCount);
+        Feed(rec, 5.5);
+        rec.Stop();
+        Assert.True(rec.SegmentCount == 3 && sealedIdx.Count == 3 && !rec.Recording && store.Orphans().Length == 0, "확정 " + sealedIdx.Count);
+        for (var i = 0; i < 3; i++)
+        {
+            var s = rec.Segment(i);
+            Assert.True(store.TryGet(s.Name!, out var bytes));
+            Assert.True(s.State == Lav.ArchiveSegmentState.Sealed && s.Name!.EndsWith(".mp4", StringComparison.Ordinal) && bytes.Count == s.Bytes, "세그 " + i);
+            Assert.True(Lav.ZeroAllocLiveSegmentRecordingEngine.TryValidate(bytes, out var frags, out var vs, out var idrFrags) && frags == s.Fragments && idrFrags == frags && vs == s.VideoSamples, "검증 " + i + " " + frags + "/" + idrFrags);
+            if (i < 2) Assert.True(frags == 2 && vs == 120 && Math.Abs(s.DurationUs - 4_000_000) < 50_000 && s.AudioSamples > 180, "4 s 세그 " + s.DurationUs + " a" + s.AudioSamples);
+            Assert.True(Vpe.FastShortsMuxingHardwareExporterEngine.TryInspect(bytes, out var ins) && ins.Mp4a && ins.Esds && ins.Tracks == 2, "fMP4 교차 검증 " + i);
+            var h = 14695981039346656037UL;
+            foreach (var b in bytes) h = (h ^ b) * 1099511628211UL;
+            Assert.Equal(s.Hash, h);
+        }
+        rec.SegmentUs = 3600L * 1_000_000;
+        Feed(rec, 2.1);
+        Feed(rec, 4.0);
+        var recAlloc = AllocationProbe.MinAllocated(() => Feed(rec, 4.0));
+        Assert.True(recAlloc == 0 && rec.Fragments > 8, "녹화 할당 " + recAlloc);
+
+        // 충돌 복구 — 꼬리 절단(.part) → 마지막 완결 조각까지 확정
+        var crashStore = new Lav.MemorySegmentStore();
+        var crash = new Lav.ZeroAllocLiveSegmentRecordingEngine(crashStore) { SegmentUs = 3600L * 1_000_000 };
+        frame = 0; pts = 0;
+        Feed(crash, 6.5);   // 조각 3 개 기록 · 0.5 s 미플러시
+        var part = crashStore.Orphans();
+        Assert.Single(part);
+        Assert.True(crashStore.TryGet(part[0], out var torn));
+        Assert.Equal(torn.Count, Lav.ZeroAllocLiveSegmentRecordingEngine.ValidLength(torn, out var f0));
+        Assert.Equal(3, f0);
+        crashStore.Truncate(part[0], torn.Count - 777);   // 마지막 mdat 찢김
+        var recov = new Lav.ZeroAllocLiveSegmentRecordingEngine(crashStore);
+        Assert.Equal(1, recov.RecoverOrphans());
+        var rs = recov.Segment(0);
+        Assert.True(rs.State == Lav.ArchiveSegmentState.Recovered && rs.Fragments == 2 && crashStore.Orphans().Length == 0 && crashStore.TryGet(rs.Name!, out var fixedSeg)
+            && Lav.ZeroAllocLiveSegmentRecordingEngine.TryValidate(fixedSeg, out var rf, out _, out var ri) && rf == 2 && ri == 2, "복구 " + rs.Fragments);
+
+        // ── ARC-2: SigV4 공식 벡터 · 무할당 서명 · URI 인코딩 · 대역폭 밸브 ──
+        var signer = new Lav.SigV4Signer();
+        var auth = new char[512]; var sig = new char[64];
+        var s3h = new[]
+        {
+            new Lav.SigV4Header("host", "examplebucket.s3.amazonaws.com"), new Lav.SigV4Header("range", "bytes=0-9"),
+            new Lav.SigV4Header("x-amz-content-sha256", Lav.SigV4Signer.EmptySha256), new Lav.SigV4Header("x-amz-date", "20130524T000000Z"),
+        };
+        var alen = signer.Sign("GET", "/test.txt", "", s3h, Lav.SigV4Signer.EmptySha256, "20130524T000000Z", "us-east-1", "s3", "AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", auth, sig);
+        Assert.Equal("f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41", new string(sig));
+        Assert.StartsWith("AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request, SignedHeaders=host;range;x-amz-content-sha256;x-amz-date, Signature=f0e8", new string(auth, 0, alen));
+        var iamH = new[] { new Lav.SigV4Header("content-type", "application/x-www-form-urlencoded; charset=utf-8"), new Lav.SigV4Header("host", "iam.amazonaws.com"), new Lav.SigV4Header("x-amz-date", "20150830T123600Z") };
+        signer.Sign("GET", "/", "Action=ListUsers&Version=2010-05-08", iamH, Lav.SigV4Signer.EmptySha256, "20150830T123600Z", "us-east-1", "iam", "AKIDEXAMPLE", "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", auth, sig);
+        Assert.Equal("5d672d79c15b13162d9279b0855cfba6789a8edb4c82c400e06b5924a6f2b5d7", new string(sig));
+        var signAlloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 20; k++) signer.Sign("GET", "/test.txt", "", s3h, Lav.SigV4Signer.EmptySha256, "20130524T000000Z", "us-east-1", "s3", "AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", auth, sig); });
+        Assert.True(signAlloc == 0, "SigV4 할당 " + signAlloc);
+        Assert.Equal("live/2026/%EC%84%B8%EA%B7%B8%201.mp4", Lav.SigV4Signer.UriEncode("live/2026/세그 1.mp4", true));
+        Assert.Equal("a%2Fb~c", Lav.SigV4Signer.UriEncode("a/b~c", false));
+
+        var valve = new Lav.BandwidthThrottleValve { Mbps = 8 };   // 1 B/µs · 버스트 64 KiB
+        Assert.True(valve.Reserve(65_536, 0) == 0 && valve.Reserve(65_536, 0) == 65_536 && valve.Reserve(1_000, 1_000_000) == 0 && valve.ThrottledWaits == 1);
+        valve.Mbps = 0;
+        Assert.Equal(0, valve.Reserve(1 << 20, 1_000_001));
+
+        // 게이트웨이 — 시뮬레이터 버킷(SigV4 실검증) · 멀티파트 · 재시도 · 태깅 · 수명주기
+        using var gw = new Lav.MultiCloudVaultArchivalGateway(partBytes: 64 * 1024);
+        gw.Valve.Mbps = 0;
+        var secret = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(20));
+        Assert.False(gw.Configure(Lav.VaultEndpoint.Preset(Lav.VaultProvider.AwsS3, "", "Bad_Bucket", "us-east-1", "PFSTESTKEY", secret), out var verr) || verr.Length == 0);
+        var minio = Lav.VaultEndpoint.Preset(Lav.VaultProvider.MinIO, "http://127.0.0.1:9000", "pfs-test", "us-east-1", "PFSTESTKEY", secret);
+        Assert.True(gw.Configure(minio, out _) && await gw.TestConnectionAsync());
+        Assert.DoesNotContain(secret, minio.ToString(), StringComparison.Ordinal);
+        var data = new byte[400_000];
+        new Random(87).NextBytes(data);
+        var up = await gw.UploadAsync(new MemoryStream(data, 0, 200_000), "live/2026/10/22/seg_00000.mp4", Lav.StorageTier.Hot);
+        Assert.True(up.Ok && up.Parts == 4 && up.Bytes == 200_000 && gw.Simulator.SignatureRejects == 0 && gw.Simulator.HashRejects == 0 && gw.Simulator.PendingUploads == 0, "업로드 " + up.Error);
+        Assert.True(gw.Simulator.TryGetObject("live/2026/10/22/seg_00000.mp4", out var obj) && obj.Length == 200_000 && obj.Parts == 4 && obj.StorageClass is null
+            && obj.Sha256 == Lav.SigV4Signer.Sha256Hex(data.AsSpan(0, 200_000)) && obj.Tags.Contains("pfs-tier=hot", StringComparison.Ordinal) && up.ETag!.EndsWith("-4\"", StringComparison.Ordinal), "오브젝트 " + obj?.Tags);
+        gw.Simulator.FailNextParts = 1;
+        var up2 = await gw.UploadAsync(new MemoryStream(data, 0, 70_000), "live/x.mp4", Lav.StorageTier.InfrequentAccess);
+        Assert.True(up2.Ok && up2.Parts == 2 && gw.Retries >= 1, "재시도 " + gw.Retries);
+        Assert.True(await gw.PutTaggingAsync("live/x.mp4", Lav.StorageTier.Glacier) && gw.Simulator.TryGetObject("live/x.mp4", out var ox) && ox.Tags.EndsWith("pfs-tier=glacier", StringComparison.Ordinal));
+        var guard = new Lav.StorageCostLifecycleTieringGuard();
+        var lxml = guard.LifecycleXml(Lav.VaultProvider.AwsS3, "live/");
+        Assert.True(lxml.Contains("<Days>7</Days><StorageClass>STANDARD_IA", StringComparison.Ordinal) && lxml.Contains("<Days>30</Days><StorageClass>GLACIER_IR", StringComparison.Ordinal) && lxml.Contains("DEEP_ARCHIVE", StringComparison.Ordinal));
+        Assert.True(await gw.ApplyLifecycleAsync(lxml) && gw.Simulator.Lifecycle == lxml);
+        // 위조 서명 거부 → 연결 실패
+        gw.Simulator.Provision(Lav.VaultEndpoint.Preset(Lav.VaultProvider.MinIO, "http://127.0.0.1:9000", "pfs-test", "us-east-1", "PFSTESTKEY", secret + "X"));
+        Assert.True(!await gw.TestConnectionAsync() && gw.Simulator.SignatureRejects >= 1 && gw.Connected == false);
+        // AWS 가상 호스트형 · 스토리지 클래스 · 대역폭 셰이핑 벽시계
+        var aws = Lav.VaultEndpoint.Preset(Lav.VaultProvider.AwsS3, "", "pfs-bucket", "ap-northeast-2", "PFSTESTKEY", secret);
+        Assert.True(gw.Configure(aws, out _) && await gw.TestConnectionAsync());
+        gw.Valve.Mbps = 8;
+        var sw = Stopwatch.StartNew();
+        var up3 = await gw.UploadAsync(new MemoryStream(data), "live/throttle.mp4", Lav.StorageTier.Hot);
+        sw.Stop();
+        Assert.True(up3.Ok && sw.ElapsedMilliseconds >= 250 && gw.Valve.ThrottledWaits > 0 && gw.Simulator.TryGetObject("live/throttle.mp4", out var ot) && ot.StorageClass == "STANDARD", "셰이핑 " + sw.ElapsedMilliseconds + " ms");
+
+        // ── ARC-3: 티어 매핑 · 러너 업로드 → 디스크 부족 자동 회수 → 경과일 티어 승격 ──
+        Assert.True(guard.TierFor(3) == Lav.StorageTier.Hot && guard.TierFor(7) == Lav.StorageTier.InfrequentAccess && guard.TierFor(30) == Lav.StorageTier.Glacier && guard.TierFor(95) == Lav.StorageTier.DeepArchive);
+        Assert.True(Lav.StorageCostLifecycleTieringGuard.StorageClass(Lav.VaultProvider.CloudflareR2, Lav.StorageTier.Glacier) == "STANDARD_IA" && Lav.StorageCostLifecycleTieringGuard.StorageClass(Lav.VaultProvider.MinIO, Lav.StorageTier.InfrequentAccess) is null);
+        var rstore = new Lav.MemorySegmentStore(Lav.LiveArchiveCloudVaultStudioRunner.RehearsalFreeBytes);
+        using var run = new Lav.LiveArchiveCloudVaultStudioRunner(null, rstore);
+        run.Gateway.Valve.Mbps = 0;
+        run.Recorder.SegmentUs = 3_900_000;
+        run.Advance(13);
+        await run.DrainUploadsAsync();
+        Assert.True(run.Recorder.SegmentCount == 4 && run.Uploaded == 3 && run.Gateway.Simulator.ObjectCount == 3 && run.UploadFailures == 0, "러너 업로드 " + run.Recorder.SegmentCount + "/" + run.Uploaded + " " + run.LastAction);
+        for (var i = 0; i < 3; i++) Assert.True(run.Recorder.Segment(i).State == Lav.ArchiveSegmentState.Uploaded && run.Recorder.Segment(i).ObjectKey!.StartsWith("live/", StringComparison.Ordinal));
+        var hot = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 20; k++) run.Tick(33_333); });
+        Assert.True(hot == 0, "녹화 틱 할당 " + hot);
+        rstore.SimulatedFreeBytes = Lav.StorageCostLifecycleTieringGuard.DefaultMinFree + 256 * 1024;   // 여유 < 10 GB
+        run.Advance(5);
+        Assert.True(run.Guard.DiskLow && run.Guard.Pruned >= 3 && run.Guard.AtRisk >= 1, "회수 " + run.Guard.Pruned);
+        for (var i = 0; i < 3; i++) Assert.True(run.Recorder.Segment(i).State == Lav.ArchiveSegmentState.Pruned && !rstore.TryGet(run.Recorder.Segment(i).Name!, out _));
+        Assert.True(run.Recorder.Recording && rstore.Count >= 1, "녹화 중 세그먼트 보존");
+        await run.DrainUploadsAsync();
+        Assert.True(await run.ApplyTieringAsync(8) >= 3 && run.Recorder.Segment(0).Tier == Lav.StorageTier.InfrequentAccess);
+        Assert.True(run.Gateway.Simulator.TryGetObject(run.Recorder.Segment(0).ObjectKey!, out var o0) && o0.Tags.EndsWith("infrequent-access", StringComparison.Ordinal));
+        Assert.True(await run.ApplyTieringAsync(31) >= 3 && run.Recorder.Segment(1).Tier == Lav.StorageTier.Glacier && run.Guard.Transitions >= 6);
+        Assert.True(Lav.StorageCostLifecycleTieringGuard.MonthlyUsd(run.Recorder, Lav.VaultProvider.AwsS3, out var hotUsd) < hotUsd && hotUsd > 0);
+        Assert.True(await run.ApplyBucketLifecycleAsync() && run.Gateway.Simulator.Lifecycle is not null);
+        run.Reset();
+        Assert.True(run.Recorder.SegmentCount == 0 && run.Uploaded == 0 && rstore.Count == 0 && run.Gateway.Simulator.ObjectCount == 0);
+
+        // v17.83 송출 탭 체인 — v17.84 클리퍼 탭 보존 전달 · 해제 시 복원
+        using (var rst = new Rst.OmniLiveRestreamStudioRunner())
+        {
+            var lc = new Clp.LiveToShortsAutoClipperStudioRunner(rst);
+            lc.Linked = true;
+            using var lav = new Lav.LiveArchiveCloudVaultStudioRunner(rst, new Lav.MemorySegmentStore()) { AutoUpload = false };
+            lav.Linked = true;
+            Assert.True(ReferenceEquals(rst.MediaTap, lav) && lav.HasLive);
+            rst.UplinkMbps = 40;
+            rst.GoLive();
+            for (var k = 0; k < 60 * 5; k++) rst.Tick(16_667);
+            Assert.True(lav.Recorder.VideoFrames >= 140 && lc.LinkedFrames == lav.Recorder.VideoFrames && lav.Recorder.Recording, "탭 체인 " + lav.Recorder.VideoFrames + "/" + lc.LinkedFrames);
+            lav.Linked = false;
+            Assert.True(ReferenceEquals(rst.MediaTap, lc));
+            lc.Dispose();
+        }
+
+        // ── ARC-4: 카탈로그 163 · HUD · 레이아웃 · DI · 모달 규격 · 외부 SDK 0 · 모달 렌더 ──
+        Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_liveArchiveVault" && en.Category == 4);
+        Assert.Equal(163, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        var root = RepoRoot();
+        var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
+        var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
+        var mainForm = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "MainForm.cs"));
+        var maui = File.ReadAllText(Path.Combine(root, "PromptFlowStudio.Mobile", "MauiProgram.cs"));
+        var modalSrc = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "LiveArchiveCloudVaultStudioModal.razor"));
+        Assert.True(hud.IndexOf("gth-v1787", StringComparison.Ordinal) is > 0 and var i1787 && i1787 < hud.IndexOf("gth-v1786", StringComparison.Ordinal) && hud.Contains("LavRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("LavRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<LiveArchiveCloudVaultStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_liveArchiveVault\"", StringComparison.Ordinal) && layout.Contains("\"_liveArchiveVault\" =>", StringComparison.Ordinal));
+        Assert.True(mainForm.Contains("LiveArchive.LiveArchiveCloudVaultStudioRunner(sp)", StringComparison.Ordinal) && maui.Contains("LiveArchive.LiveArchiveCloudVaultStudioRunner(sp)", StringComparison.Ordinal));
+        Assert.True(modalSrc.Contains("@implements IDisposable", StringComparison.Ordinal) && modalSrc.Contains("flex: 1 1 auto; min-height: 0; overflow-y: auto;", StringComparison.Ordinal) && modalSrc.Contains("position: sticky", StringComparison.Ordinal));
+        foreach (var src in Directory.GetFiles(Path.Combine(root, "PromptFlowStudio", "Services", "LiveArchive"), "*.cs"))
+        {
+            var text = File.ReadAllText(src);
+            Assert.True(!text.Contains("Amazon.", StringComparison.Ordinal) && !text.Contains("Azure.", StringComparison.Ordinal) && !text.Contains("Process.Start", StringComparison.Ordinal) && !text.Contains("System.Linq", StringComparison.Ordinal) && !text.Contains("AKIA", StringComparison.Ordinal), "외부 SDK · 하드코딩 키 " + Path.GetFileName(src));
+        }
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = sp.GetService(typeof(Lav.LiveArchiveCloudVaultStudioRunner))!;
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.LiveArchiveCloudVaultStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("lav-scrim", StringComparison.Ordinal) && html.Contains("lav-body", StringComparison.Ordinal) && html.Contains("연결 테스트", StringComparison.Ordinal) && html.Contains("lav-tl", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+
+    /// <summary>합성 H.264 AU(AUD · IDR 시 SPS/PPS · 슬라이스) — 반환 길이.</summary>
+    private static int Au(byte[] a, bool idr, int size)
+    {
+        var p = 0;
+        Nal(a, ref p, 0x09); a[p++] = 0xF0;
+        if (idr)
+        {
+            Nal(a, ref p, 0x67);
+            a[p++] = 0x64; a[p++] = 0x00; a[p++] = 0x28; a[p++] = 0xAC; a[p++] = 0xD9; a[p++] = 0x40; a[p++] = 0x78; a[p++] = 0x02; a[p++] = 0x27; a[p++] = 0xE5;
+            Nal(a, ref p, 0x68); a[p++] = 0xEE; a[p++] = 0x3C; a[p++] = 0x80;
+        }
+        Nal(a, ref p, idr ? (byte)0x65 : (byte)0x41);
+        var end = p + size;
+        for (; p < end; p++) a[p] = (byte)(0x55 + (p & 0x3F));
+        return p;
+    }
+
+    private static void Nal(byte[] a, ref int p, byte h) { a[p] = 0; a[p + 1] = 0; a[p + 2] = 0; a[p + 3] = 1; a[p + 4] = h; p += 5; }
+
+    private static int Adts(byte[] a, int raw)
+    {
+        a[0] = 0xFF; a[1] = 0xF1; a[2] = 0x4C; a[3] = 0x80; a[4] = (byte)((raw + 7) >> 3); a[5] = 0x1F; a[6] = 0xFC;
+        for (var i = 7; i < 7 + raw; i++) a[i] = (byte)(0x21 + (i & 0x1F));
+        return 7 + raw;
     }
 
     private static string RepoRoot()

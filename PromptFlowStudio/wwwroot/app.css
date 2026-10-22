@@ -106,17 +106,18 @@ a { color: inherit; text-decoration: none; }
 .boot { display: grid; place-items: center; height: 100vh; color: var(--sub); font-weight: 600; letter-spacing: .02em; }
 
 /* ── 앱 셸(사이드바 + 콘텐츠) ── */
-.app-shell { display: grid; grid-template-columns: 250px 1fr; height: 100vh; overflow: hidden; }
+.app-shell { display: grid; grid-template-columns: 250px 1fr; grid-template-rows: minmax(0, 1fr); height: 100vh; overflow: hidden; }
 .content { overflow: auto; background: var(--canvas); }
 
-.sidebar { display: flex; flex-direction: column; background: linear-gradient(180deg, var(--side), var(--side-2)); color: var(--side-ink); border-right: 1px solid rgba(255,255,255,.05); }
+/* 사이드바는 셸 높이에 고정 — min-height:0 이 없으면 스튜디오 목록이 길어질 때 행이 늘어나 .nav 스크롤이 사라지고 하단 메뉴가 잘린다. */
+.sidebar { display: flex; flex-direction: column; min-height: 0; overflow: hidden; background: linear-gradient(180deg, var(--side), var(--side-2)); color: var(--side-ink); border-right: 1px solid rgba(255,255,255,.05); }
 .side-brand { display: flex; align-items: center; gap: 11px; padding: 20px 18px 16px; }
 /* 안전 방패 마크는 인라인 SVG(앰버)다. 어두운 사이드바에서 또렷하도록 다크 타일 위에 얹는다. */
 .side-logo { width: 40px; height: 40px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 11px;
     background: linear-gradient(180deg, #241a4a, #140f2c); border: 1px solid rgba(124,108,255,.45); box-shadow: 0 8px 22px rgba(0,0,0,.32); }
 .side-name { font-size: 16px; font-weight: 900; letter-spacing: -.2px; color: #eef2fb; line-height: 1; }
 .side-tag { font: 700 8.5px/1 var(--mono); letter-spacing: .16em; color: var(--accent-2); margin-top: 5px; }
-.nav { flex: 1; overflow-y: auto; padding: 8px 10px; }
+.nav { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 8px 10px; }
 .nav-grp { font: 700 9.5px/1 var(--mono); letter-spacing: .1em; color: var(--side-sub); text-transform: uppercase; margin: 14px 8px 6px; }
 .nav-item { display: flex; align-items: center; gap: 11px; padding: 10px 12px; border-radius: 10px; color: var(--side-ink); font-size: 13.5px; font-weight: 600; cursor: pointer; transition: background .14s ease, color .14s ease; }
 .nav-item:hover { background: rgba(255,255,255,.05); }
