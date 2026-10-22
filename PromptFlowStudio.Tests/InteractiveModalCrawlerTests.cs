@@ -16,7 +16,7 @@ using Xunit.Abstractions;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>
-/// [PromptFlow Studio] 156 카탈로그 모달 동적 인터랙션 크롤러 — 외부 bUnit 없이 BCL <see cref="Renderer"/> 서브클래스로
+/// [PromptFlow Studio] 157 카탈로그 모달 동적 인터랙션 크롤러 — 외부 bUnit 없이 BCL <see cref="Renderer"/> 서브클래스로
 /// 프로덕션 DI 그래프(<c>MainForm.ConfigureServices</c>)에 실제 마운트 → 렌더 트리의 모든 onclick/onchange/oninput 핸들러를
 /// <see cref="Renderer.DispatchEventAsync"/> 로 실발화 → 예외 · 빈 람다 핸들러 · 값이 고정된 스위치/슬라이더/aria-pressed 토글을 전수 판정.
 /// </summary>
@@ -48,7 +48,7 @@ public class InteractiveModalCrawlerTests
         for (var i = 0; i < stats.Length; i++) stats[i] = new CatStats();
         var defects = new List<string>();
 
-        var only = Environment.GetEnvironmentVariable("PFS_CRAWL_ONLY");   // 디버그 재현용 키 필터(쉼표 구분) — 미설정 = 156 전수
+        var only = Environment.GetEnvironmentVariable("PFS_CRAWL_ONLY");   // 디버그 재현용 키 필터(쉼표 구분) — 미설정 = 157 전수
         foreach (var t in targets)
         {
             if (!string.IsNullOrEmpty(only) && Array.IndexOf(only.Split(','), t.Entry.Key) < 0) continue;

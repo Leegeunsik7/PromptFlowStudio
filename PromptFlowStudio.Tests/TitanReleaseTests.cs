@@ -45,6 +45,7 @@ using Vh = PromptFlowStudio.Services.VisualHooks;
 using Kbr = PromptFlowStudio.Services.KineticBRoll;
 using Lp = PromptFlowStudio.Services.LivePublish;
 using Vvf = PromptFlowStudio.Services.ViralVoiceFx;
+using Mtx = PromptFlowStudio.Services.MatrixSyndication;
 using Nw = PromptFlowStudio.Services.Newsroom;
 using Spt = PromptFlowStudio.Services.Sports;
 using V3 = System.Numerics.Vector3;
@@ -33132,7 +33133,7 @@ public sealed class ViralVoiceFxIsolatedTests
 
         // ── VOICE-4b: 카탈로그 · HUD · 레이아웃 · DI · 모달 렌더 · 구독 해제 · 디스크 I/O 0 ──
         Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_voiceFxStudio" && en.Category == 4);
-        Assert.Equal(156, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        Assert.True(PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length >= 156);
         var root = RepoRoot();
         var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
         var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
@@ -33484,6 +33485,243 @@ public sealed class UiExhaustiveAuditIsolatedTests
     {
         var m = System.Text.RegularExpressions.Regex.Match(css, @"\." + System.Text.RegularExpressions.Regex.Escape(cls) + @"\{([^}]*)\}");
         return m.Success ? m.Groups[1].Value : "";
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+}
+
+/// <summary>v17.81.0 준법형 다계정 매트릭스 · 채널 변형 렌더러 · 계정 건전성 안전 정지 · 스튜디오 결선.</summary>
+[Collection("TimingSensitivePerformance")]   // 1080p 프레임 µs 계측 · 프리뷰 루프 → 비병렬
+public sealed class MatrixSyndicationIsolatedTests
+{
+    private static readonly long T0 = new DateTimeOffset(2026, 10, 22, 0, 0, 0, TimeSpan.Zero).ToUnixTimeSeconds();
+    private const PromptFlowStudio.Services.SmartPublishing.PublishPlatforms Yt = PromptFlowStudio.Services.SmartPublishing.PublishPlatforms.YouTube, Ig = PromptFlowStudio.Services.SmartPublishing.PublishPlatforms.Instagram;
+
+    private static Mtx.ChannelVariantSpec Spec(Mtx.VariantAspect a, Mtx.BrandLogo l, PromptFlowStudio.Services.Localization.Dubbing.DubLanguage lang, float bumper, uint accent)
+        => new() { Aspect = a, Logo = l, SubtitleLang = lang, IntroSec = bumper, OutroSec = bumper, Accent = accent };
+
+    private static Mtx.CompliantMultiAccountMatrixRouterEngine NewRouter()
+    {
+        var r = new Mtx.CompliantMultiAccountMatrixRouterEngine();
+        Assert.Equal(0, r.Register("Main", "@m", Mtx.ChannelTier.Primary, Yt, true, Spec(Mtx.VariantAspect.Vertical916, Mtx.BrandLogo.Ring, PromptFlowStudio.Services.Localization.Dubbing.DubLanguage.Ko, 1f, 0x7C3AED)));
+        Assert.Equal(1, r.Register("Hl", "@h", Mtx.ChannelTier.Sub, Ig, true, Spec(Mtx.VariantAspect.Square11, Mtx.BrandLogo.Hexagon, PromptFlowStudio.Services.Localization.Dubbing.DubLanguage.En, 0.75f, 0xF97316)));
+        Assert.Equal(2, r.Register("Clip", "@c", Mtx.ChannelTier.Clip, Yt, true, Spec(Mtx.VariantAspect.Vertical916, Mtx.BrandLogo.Diamond, PromptFlowStudio.Services.Localization.Dubbing.DubLanguage.Ja, 0.5f, 0x10B981)));
+        return r;
+    }
+
+    [Fact]
+    public async Task CompliantSyndication_And_VariantRenderer_Check()
+    {
+        RouterChecks();
+        GuardChecks();
+        RendererChecks();
+
+        // ── MAT-4a: 러너 — 시드 3 채널 · 분산 예약 · 발행 · 도달 0 주입 → 동결 · 승인 · 라이브 프리뷰 ──
+        var run = new Mtx.MatrixSyndicationStudioRunner();
+        Assert.Equal(3, run.Router.ChannelCount);
+        Assert.Equal(3, run.RouteNext());
+        Assert.True(run.Advance(2 * 1440) == 3 && run.Router.Published == 3, "발행 " + run.Router.Published);
+        run.InjectZeroReach(2, true);
+        Assert.Equal(3, run.RouteNext());
+        run.Advance(2 * 1440);
+        Assert.True(run.Guard.Reason(2) == Mtx.PauseReason.ZeroReach && run.Router.Channel(2).Paused && run.Guard.AlertsDispatched >= 1, "도달 0 동결 " + run.Guard.Reason(2));
+        Assert.Equal(3, run.RouteNext());
+        run.Advance(2 * 1440);
+        Assert.True(run.Router.CountState(2, Mtx.MatrixPostState.Held) == 1 && run.Router.Channel(2).Published == 2 && run.Router.Channel(0).Published == 3 && run.Router.Channel(1).Published == 3, "동결 유지");
+        Assert.Equal(1, run.Approve(2));
+        Assert.True(!run.Router.Channel(2).Paused && !run.ZeroReachInjected(2) && run.Approve(2) == -1);
+        run.SetLogo(0, Mtx.BrandLogo.Hexagon);
+        Assert.Equal(Mtx.BrandLogo.Hexagon, run.Router.Channel(0).Variant.Logo);
+        run.LiveTick();
+        var liveAlloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 3; k++) run.LiveTick(); });
+        Assert.True(liveAlloc == 0, "프리뷰 틱 할당 " + liveAlloc);
+        var f0 = run.LiveFrames;
+        run.Start();
+        for (var k = 0; k < 200 && run.LiveFrames < f0 + 3; k++) await Task.Delay(25);
+        run.Stop();
+        Assert.True(run.LiveFrames >= f0 + 3 && !run.Running, "라이브 진행 " + (run.LiveFrames - f0));
+        Assert.Contains("채널", run.Summary(), StringComparison.Ordinal);
+        run.Dispose();
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(run));
+
+        // ── MAT-4b: 카탈로그 157 · HUD · 레이아웃 · DI · 우회 경로 0 · 디스크 I/O 0 · 모달 렌더 ──
+        Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_matrixSyndication" && en.Category == 4);
+        Assert.Equal(157, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        var root = RepoRoot();
+        var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
+        var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
+        var mainForm = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "MainForm.cs"));
+        var maui = File.ReadAllText(Path.Combine(root, "PromptFlowStudio.Mobile", "MauiProgram.cs"));
+        var modalSrc = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "MultiAccountMatrixStudioModal.razor"));
+        Assert.True(hud.IndexOf("gth-v1781", StringComparison.Ordinal) is > 0 and var i1781 && i1781 < hud.IndexOf("gth-v1780", StringComparison.Ordinal) && hud.Contains("MtxRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("MtxRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<MultiAccountMatrixStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_matrixSyndication\"", StringComparison.Ordinal) && layout.Contains("\"_matrixSyndication\" =>", StringComparison.Ordinal));
+        Assert.True(mainForm.Contains("MatrixSyndication.MatrixSyndicationStudioRunner(sp)", StringComparison.Ordinal) && maui.Contains("MatrixSyndication.MatrixSyndicationStudioRunner(sp)", StringComparison.Ordinal));
+        Assert.True(modalSrc.Contains("@implements IDisposable", StringComparison.Ordinal) && modalSrc.Contains("flex: 1 1 auto; min-height: 0; overflow-y: auto;", StringComparison.Ordinal) && modalSrc.Contains("position: sticky", StringComparison.Ordinal));
+        foreach (var src in Directory.GetFiles(Path.Combine(root, "PromptFlowStudio", "Services", "MatrixSyndication"), "*.cs"))
+        {
+            var text = File.ReadAllText(src);
+            Assert.True(!text.Contains("File.", StringComparison.Ordinal) && !text.Contains("FileStream", StringComparison.Ordinal) && !text.Contains("Directory.", StringComparison.Ordinal), "디스크 I/O " + Path.GetFileName(src));
+            Assert.True(!text.Contains("Random", StringComparison.Ordinal) && !text.Contains("Reroute", StringComparison.OrdinalIgnoreCase) && !text.Contains("Failover", StringComparison.Ordinal), "변조/우회 경로 " + Path.GetFileName(src));
+        }
+        foreach (var t in new[] { typeof(Mtx.CompliantMultiAccountMatrixRouterEngine), typeof(Mtx.AccountHealthSafetyPauseGuard), typeof(Mtx.MatrixSyndicationStudioRunner) })
+            foreach (var m in t.GetMethods())
+                Assert.True(m.Name.IndexOf("Move", StringComparison.Ordinal) < 0 && m.Name.IndexOf("Reassign", StringComparison.Ordinal) < 0 && m.Name.IndexOf("Fingerprint", StringComparison.Ordinal) < 0, "우회 API " + t.Name + "." + m.Name);
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = sp.GetService(typeof(Mtx.MatrixSyndicationStudioRunner))!;
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.MultiAccountMatrixStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("mtx-scrim", StringComparison.Ordinal) && html.Contains("mtx-body", StringComparison.Ordinal) && html.Contains("data:image/bmp", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+
+    private static void RouterChecks()
+    {
+        // ── MAT-1a: 등록 — 미검증 OAuth 거부 · 육안 구별 축 부족 변형 거부 ──
+        var r = NewRouter();
+        Assert.Equal(-1, r.Register("Shadow", "@s", Mtx.ChannelTier.Clip, Yt, false, Spec(Mtx.VariantAspect.Square11, Mtx.BrandLogo.Diamond, PromptFlowStudio.Services.Localization.Dubbing.DubLanguage.Es, 0.6f, 0x123456)));
+        Assert.Equal(-1, r.Register("Twin", "@t", Mtx.ChannelTier.Clip, Yt, true, Spec(Mtx.VariantAspect.Vertical916, Mtx.BrandLogo.Ring, PromptFlowStudio.Services.Localization.Dubbing.DubLanguage.Ko, 1f, 0x7C3AEE)));
+        Assert.True(r.UnverifiedRejects == 1 && r.VariantCollisions == 1 && r.ChannelCount == 3);
+
+        // ── MAT-1b: 1:1 변형 매핑 · 계층 순 · 시차 ≥ 45 분 · 골든타임 · 중복 거부 ──
+        Assert.Equal(3, r.Route(1, T0, T0));
+        var s0 = r.At(r.Find(1, 0)).SlotUnix; var s1 = r.At(r.Find(1, 1)).SlotUnix; var s2 = r.At(r.Find(1, 2)).SlotUnix;
+        Assert.True(s0 < s1 && s1 < s2 && r.MinCrossChannelGap(1) >= 45 * 60, "시차 " + r.MinCrossChannelGap(1));
+        foreach (var s in new[] { s0, s1, s2 }) Assert.True(PromptFlowStudio.Services.SmartPublishing.GlobalGoldenHourPublishingScheduler.InGolden(s, PromptFlowStudio.Services.SmartPublishing.GoldenRegions.All, out _, out _), "골든타임 밖 " + s);
+        Assert.Equal(0, r.Route(1, T0, T0));
+        Assert.Equal(3, r.DuplicateRejects);
+        r.StaggerMinutes = 10; Assert.Equal(45, r.StaggerMinutes);
+        r.StaggerMinutes = 500; Assert.Equal(120, r.StaggerMinutes);
+        Assert.Equal(3, r.Route(2, T0, T0));
+        Assert.True(r.MinCrossChannelGap(2) >= 120 * 60, "120 분 시차 " + r.MinCrossChannelGap(2));
+
+        // ── MAT-1c: 채널별 쿼터 — YT 일 5 건 상한 · 채널 내 45 분 간격 · 예약 무할당 ──
+        r.StaggerMinutes = 45;
+        for (var c = 3; c <= 12; c++) r.Route(c, T0, T0);
+        var next = 100;
+        var alloc = AllocationProbe.MinAllocated(() => { r.Route(next++, T0, T0); r.Route(next++, T0, T0); });
+        Assert.True(alloc == 0, "Route 할당 " + alloc);
+        Assert.True(r.QuotaDeferrals > 0 && r.Unschedulable == 0, "쿼터 지연 " + r.QuotaDeferrals + " 불가 " + r.Unschedulable);
+        for (var ch = 0; ch < 3; ch++)
+            for (var i = 0; i < r.Count; i++)
+            {
+                var a = r.At(i);
+                if (a.Channel != ch) continue;
+                var sameDay = 0;
+                for (var j = 0; j < r.Count; j++)
+                {
+                    var b = r.At(j);
+                    if (b.Channel != ch || j == i) continue;
+                    Assert.True(Math.Abs(b.SlotUnix - a.SlotUnix) >= 45 * 60, "채널 내 간격 " + ch);
+                    if (PromptFlowStudio.Services.SmartPublishing.MultiChannelQuotaDistributionGuard.YtDayOf(b.SlotUnix) == PromptFlowStudio.Services.SmartPublishing.MultiChannelQuotaDistributionGuard.YtDayOf(a.SlotUnix)) sameDay++;
+                }
+                if (r.Channel(ch).Platform == Yt) Assert.True(sameDay + 1 <= r.Channel(ch).Guard.YtUploadsPerDay, "YT 일 상한 " + ch);
+            }
+    }
+
+    private static void GuardChecks()
+    {
+        // ── MAT-3a: 30 분 도달 0 → 해당 계정만 동결 · 웹훅 Critical · 타 채널 불변 ──
+        using var alerts = new PromptFlowStudio.Services.Autopilot.RemoteCreatorTelemetryDispatcher(new PromptFlowStudio.Services.Autopilot.SimulatedWebhookServer());
+        var r = NewRouter();
+        var g = new Mtx.AccountHealthSafetyPauseGuard(r, alerts);
+        r.Route(1, T0, T0); r.Route(2, T0, T0);
+        var s0 = r.At(r.Find(1, 0)).SlotUnix;
+        Assert.True(r.TakeDue(s0, out var idx) && r.At(idx).Channel == 0 && r.At(idx).ContentId == 1);
+        r.MarkPublished(idx, s0, true);
+        Assert.True(g.Track(0, 1, s0));
+        var snap = new (long Slot, Mtx.MatrixPostState State)[r.Count];
+        for (var i = 0; i < r.Count; i++) snap[i] = (r.At(i).SlotUnix, r.At(i).State);
+        Assert.Equal(0, g.Evaluate(s0 + 29 * 60));
+        Assert.Equal(1, g.Evaluate(s0 + 30 * 60));
+        Assert.True(g.Reason(0) == Mtx.PauseReason.ZeroReach && r.Channel(0).Paused && g.AwaitingHuman(0) && g.AlertsDispatched == 1 && alerts.Published >= 1);
+        for (var i = 0; i < r.Count; i++)
+        {
+            var p = r.At(i);
+            Assert.Equal(snap[i].Slot, p.SlotUnix);   // 슬롯 · 채널 불변(재라우팅 없음)
+            if (p.Channel == 0 && snap[i].State == Mtx.MatrixPostState.Scheduled) Assert.Equal(Mtx.MatrixPostState.Held, p.State);
+            if (p.Channel != 0) Assert.Equal(snap[i].State, p.State);
+        }
+        // 동결 채널은 기한이 지나도 꺼내지지 않고 타 채널만 진행 · 장시간 경과해도 자동 해제 없음
+        var far = T0 + 10 * 86_400;
+        var others = 0;
+        while (r.TakeDue(far, out var k)) { Assert.NotEqual(0, r.At(k).Channel); r.MarkPublished(k, far, true); others++; far += 3600; }
+        Assert.True(others >= 1 && r.CountState(0, Mtx.MatrixPostState.Held) == 1, "타 채널 진행 " + others);
+        g.Evaluate(far + 30 * 86_400);
+        Assert.True(r.Channel(0).Paused && g.Reason(0) == Mtx.PauseReason.ZeroReach);
+        // 관리자 승인 → 같은 채널 재개
+        Assert.Equal(1, g.Approve(0));
+        Assert.True(!r.Channel(0).Paused && r.CountState(0, Mtx.MatrixPostState.Scheduled) == 1 && g.Approve(0) == -1 && g.Approvals == 1);
+
+        // ── MAT-3b: 도달 > 0 은 정상 · API 거절(403) 즉시 동결 · 5xx 비동결 · 관리자 취소 = 해당 채널 폐기 ──
+        Assert.True(g.Track(2, 1, T0)); g.ObserveReach(2, 1, 1500);
+        Assert.Equal(0, g.Evaluate(T0 + 31 * 60));
+        Assert.False(g.ReportApi(2, 503, T0));
+        Assert.True(g.ReportApi(1, 403, T0) && g.Reason(1) == Mtx.PauseReason.ApiRejected && r.Channel(1).Paused && g.ApiTrips == 1);
+        Assert.False(g.ReportApi(1, 429, T0));   // 이미 동결 — 중복 알림 없음
+        var before2 = r.CountState(2, Mtx.MatrixPostState.Published) + r.CountState(2, Mtx.MatrixPostState.Scheduled);
+        var cancelled = g.Cancel(1);
+        Assert.True(cancelled >= 0 && r.CountState(1, Mtx.MatrixPostState.Held) == 0 && r.CountState(1, Mtx.MatrixPostState.Scheduled) == 0 && !r.Channel(1).Paused && g.Cancels == 1);
+        Assert.Equal(before2, r.CountState(2, Mtx.MatrixPostState.Published) + r.CountState(2, Mtx.MatrixPostState.Scheduled));
+        Assert.True(g.AlertsDispatched >= 1 && g.Pauses == 2);
+        var evalAlloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 50; k++) g.Evaluate(T0 + k); });
+        Assert.True(evalAlloc == 0, "감시 평가 할당 " + evalAlloc);
+    }
+
+    private static void RendererChecks()
+    {
+        // ── MAT-2: 9:16 / 1:1 블러 패딩 · 범퍼 스팅어 · 로고 · 다국어 자막 · 결정론 · 무할당 ──
+        var run = new Mtx.MatrixSyndicationStudioRunner();
+        var rd = run.Renderer;
+        Assert.Equal(Mtx.MatrixSyndicationStudioRunner.DemoCaption, rd.SubtitleText(0).ToString());
+        Assert.True(rd.SubtitleText(1).ToString() != Mtx.MatrixSyndicationStudioRunner.DemoCaption && rd.SubtitleText(2).ToString() != rd.SubtitleText(1).ToString(), "자막 번역 " + rd.SubtitleText(1).ToString());
+        for (var c = 0; c < 3; c++) Assert.True(rd.SubtitleWidth(c) > 0, "자막 스프라이트 " + c);
+        const int W = Mtx.ChannelVariantMultiFormatRenderer.W;
+        var frame = new byte[Mtx.ChannelVariantMultiFormatRenderer.OutBytes(Mtx.VariantAspect.Vertical916)];
+        var frame2 = new byte[frame.Length];
+        var src = new byte[frame.Length];
+        run.SynthesizeSource(4f);
+        run.Source.CopyTo(src);
+        var spec0 = run.Router.Channel(0).Variant; var spec1 = run.Router.Channel(1).Variant; var spec2 = run.Router.Channel(2).Variant;
+        rd.Render(in spec0, 0, src, frame, 4f, 15f);
+        rd.Render(in spec0, 0, src, frame2, 4f, 15f);
+        Assert.True(frame.AsSpan().SequenceEqual(frame2), "결정론(미세 변조 없음)");
+        // 로고(링 · 우상단) 밝음 · 원본 구간은 그대로
+        var lo = (99 * W + 1030) * 3;
+        Assert.True(frame[lo] > 170 && frame[lo + 1] > 170 && frame[lo + 2] > 170, "로고 " + frame[lo]);
+        var mid = (600 * W + 100) * 3;
+        Assert.True(frame[mid] == src[mid] && frame[mid + 1] == src[mid + 1], "원본 보존");
+        // 1:1 — 1080×1080 · 중앙 띠 = 원본 축소 · 좌우 패딩 = 감광 블러(원본보다 어두움)
+        var sq = new byte[Mtx.ChannelVariantMultiFormatRenderer.OutBytes(Mtx.VariantAspect.Square11)];
+        Assert.Equal(W * 1080 * 3, sq.Length);
+        rd.Render(in spec1, 1, src, sq, 4f, 15f);
+        var pad = (300 * W + 120) * 3; var srcPad = ((420 + 300) * W + 120) * 3;
+        Assert.True(sq[pad + 2] > 0 && sq[pad + 2] < src[srcPad + 2], "블러 패딩 감광 " + sq[pad + 2] + "/" + src[srcPad + 2]);
+        var center = (300 * W + 540) * 3; var srcCenter = (533 * W + 540) * 3;   // 띠 x 540 → 원본 (540−236)×1.7785 ≈ 540 · y 300 → 533
+        Assert.True(Math.Abs(sq[center + 2] - src[srcCenter + 2]) < 24, "콘텐츠 띠 " + sq[center + 2] + "/" + src[srcCenter + 2]);
+        // 범퍼: t=0 → 강조색 스팅어 · 아웃트로 → 다시 덮음
+        rd.Render(in spec0, 0, src, frame, 0f, 15f);
+        var st = (900 * W + 200) * 3;
+        Assert.True(frame[st] >= 0x6A && frame[st] <= 0x7C && frame[st + 2] >= 0xC0, "인트로 스팅어 " + frame[st] + "," + frame[st + 2]);
+        rd.Render(in spec0, 0, src, frame, 14.95f, 15f);
+        Assert.True(frame[st + 2] >= 0xC0 && frame[st] <= 0x7C, "아웃트로 스팅어");
+        // 채널 간 육안 구별: 범퍼 구간 썸네일 차이 ≥ 20 %
+        rd.Render(in spec0, 0, src, frame, 0.3f, 15f);
+        rd.Render(in spec2, 2, src, frame2, 0.3f, 15f);
+        var ta = new byte[108 * 192 * 3]; var tb = new byte[ta.Length];
+        Mtx.ChannelVariantMultiFormatRenderer.Thumbnail(frame, W, 1920, ta, 108, 192);
+        Mtx.ChannelVariantMultiFormatRenderer.Thumbnail(frame2, W, 1920, tb, 108, 192);
+        var diff = 0; for (var i = 0; i < ta.Length; i += 3) if (Math.Abs(ta[i] - tb[i]) + Math.Abs(ta[i + 1] - tb[i + 1]) + Math.Abs(ta[i + 2] - tb[i + 2]) > 30) diff++;
+        Assert.True(diff * 5 >= 108 * 192, "육안 구별 픽셀 " + diff);
+        // 무할당 · 예산
+        var alloc = AllocationProbe.MinAllocated(() => { rd.Render(in spec0, 0, src, frame, 0.2f, 15f); rd.Render(in spec1, 1, src, sq, 7f, 15f); });
+        Assert.True(alloc == 0, "렌더 할당 " + alloc);
+        Assert.True(rd.AvgRenderUs < 250_000, "1080p 렌더 평균 " + rd.AvgRenderUs + " µs");
+        run.Dispose();
     }
 
     private static string RepoRoot()

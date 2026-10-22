@@ -275,6 +275,7 @@
 @inject PromptFlowStudio.Services.SmartPublishing.SmartPublishingSchedulerStudioRunner SpsRun
 @inject PromptFlowStudio.Services.VisualHooks.KineticVisualHookStudioRunner KvhRun
 @inject PromptFlowStudio.Services.KineticBRoll.KineticTypographyBRollStudioRunner KbrRun
+@inject PromptFlowStudio.Services.MatrixSyndication.MatrixSyndicationStudioRunner MtxRun
 @inject PromptFlowStudio.Services.ViralVoiceFx.ViralVoiceFxStudioRunner VvfRun
 @inject PromptFlowStudio.Services.LivePublish.ProductionLivePublisherStudioRunner LpcRun
 @inject PromptFlowStudio.Services.SkinnedSplatAvatar.DualQuaternionGaussianAvatarStudioRunner DqAvRun
@@ -996,6 +997,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.81.0: 다계정 매트릭스 — 채널 · 예약 · 동결 · 안전 정지 · 시차 ── *@
+    <div class="gth-v1781">
+        <div class="gth-v96-card pid @(MtxRun.Guard.AwaitingCount == 0 && MtxRun.Router.Published > 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>🌐 매트릭스 신디케이션</b>
+                <span class="gth-v96-be">@(MtxRun.Router.ChannelCount)채널 · ≥@(MtxRun.Router.StaggerMinutes)분 시차@(MtxRun.Guard.AwaitingCount > 0 ? " · 🛑 확인 대기" : null)</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(MtxRun.Router.CountState(-1, PromptFlowStudio.Services.MatrixSyndication.MatrixPostState.Scheduled))</b><span>예약</span></span>
+                <span class="gth-v96-m"><b>@(MtxRun.Router.Published)</b><span>발행</span></span>
+                <span class="gth-v96-m"><b class="@(MtxRun.Router.CountState(-1, PromptFlowStudio.Services.MatrixSyndication.MatrixPostState.Held) > 0 ? "warn" : null)">@(MtxRun.Router.CountState(-1, PromptFlowStudio.Services.MatrixSyndication.MatrixPostState.Held))</b><span>동결</span></span>
+                <span class="gth-v96-m"><b class="@(MtxRun.Guard.AwaitingCount > 0 ? "warn" : null)">@(MtxRun.Guard.Pauses)</b><span>안전 정지</span></span>
+            </div>
+            <div class="gth-v96-act">@(MtxRun.LastAction ?? "대기")</div>
+        </div>
+    </div>
     @* ── v17.80.0: 바이럴 보이스 FX — 감정 프리셋 · 피치 · FX 수 · 리미터 GR · 클리핑 ── *@
     <div class="gth-v1780">
         <div class="gth-v96-card pid @(VvfRun.Limiter.HardClamps + VvfRun.Limiter.ClippedSamples == 0 && VvfRun.Blocks > 0 ? "ok" : null)">
@@ -5648,6 +5664,7 @@
         VlRun.OnChange += OnSwarmChanged; // v17.50.0 (3.3 Hz)
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
         KbrRun.OnChange += OnSwarmChanged; // v17.78.0 (재생 10 Hz → 250 ms 스로틀)
+        MtxRun.OnChange += OnSwarmChanged; // v17.81.0 (프리뷰 250 ms 스로틀 · 예약/동결 즉시)
         VvfRun.OnChange += OnSwarmChanged; // v17.80.0 (라이브 250 ms 스로틀 · 프리셋/FX 즉시)
         LpcRun.OnChange += OnSwarmChanged; // v17.79.0 (배포 중 ~3 Hz · 단계 전이 즉시)
         KvhRun.OnChange += OnSwarmChanged; // v17.77.0 (재생 10 Hz → 250 ms 스로틀)
@@ -6026,6 +6043,7 @@
         VlRun.OnChange -= OnSwarmChanged;
         OcRun.OnChange -= OnSwarmChanged;
         KbrRun.OnChange -= OnSwarmChanged;
+        MtxRun.OnChange -= OnSwarmChanged;
         VvfRun.OnChange -= OnSwarmChanged;
         LpcRun.OnChange -= OnSwarmChanged;
         KvhRun.OnChange -= OnSwarmChanged;

@@ -1,0 +1,229 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.MatrixSyndication
+@using PromptFlowStudio.Services.Spatial
+@implements IDisposable
+@inject MatrixSyndicationStudioRunner Runner
+
+@* [PromptFlow Studio v17.81.0] 🌐 다계정 매트릭스 & 신디케이션 — 채널 계층 트리 · 9:16 vs 1:1 변형 프리뷰 · 로고 선택 · 시차 예약 큐 · 안전 정지 뱃지/관리자 확인. *@
+<div class="mtx-scrim" @onclick="Close">
+    <div class="mtx-modal" @onclick:stopPropagation="true">
+        <div class="mtx-h">
+            <div>
+                <div class="mtx-title">🌐 다계정 매트릭스 & 신디케이션 @(Runner.Running ? "· ▶ 프리뷰" : null) @(Runner.Guard.AwaitingCount > 0 ? "· 🛑 관리자 확인 대기 " + Runner.Guard.AwaitingCount.ToString(CultureInfo.InvariantCulture) + "계정" : null)</div>
+                <div class="mtx-sub">직접 소유하고 정식 OAuth로 연결한 채널에만, 채널 성격에 맞게 <b>화면비 · 인트로/아웃트로 범퍼 · 로고 · 자막 언어</b>를 눈에 띄게 다르게 편집한 버전을 하나씩 배정합니다.
+                    같은 영상은 채널 사이에 <b>@(Runner.Router.StaggerMinutes)분 이상</b> 간격을 두고 골든타임·쿼터 안에서 예약되며, 게시 30분 뒤 노출이 0이거나 API가 거절하면 그 계정만 즉시 멈추고 관리자에게 알린 뒤 <b>사람이 확인할 때까지</b> 다른 계정으로 돌리지 않고 기다립니다.</div>
+            </div>
+            <button class="mtx-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="mtx-body">
+            <div class="mtx-bar">
+                <button class="mtx-btn hot" @onclick="Route">🌐 새 콘텐츠 분산 예약</button>
+                <button class="mtx-btn" @onclick="() => Advance(30)">⏩ +30분</button>
+                <button class="mtx-btn" @onclick="() => Advance(180)">⏩ +3시간</button>
+                <button class="mtx-btn" @onclick="() => Advance(1440)">⏩ +1일</button>
+                <label class="mtx-lbl">채널 간 시차 <input type="range" min="@(CompliantMultiAccountMatrixRouterEngine.MinStaggerMin)" max="@(CompliantMultiAccountMatrixRouterEngine.MaxStaggerMin)" step="5" value="@(Runner.Router.StaggerMinutes)" @oninput="SetStagger" /> <b>@(Runner.Router.StaggerMinutes)분</b></label>
+                <label class="mtx-lbl"><input type="checkbox" checked="@(Runner.Router.AlignGolden)" @onchange="ToggleGolden" /> 골든타임 정렬</label>
+                <span class="mtx-sep"></span>
+                <button class="mtx-btn @(Runner.Running ? "on" : null)" @onclick="Toggle">@(Runner.Running ? "⏸ 프리뷰 정지" : "▶ 변형 라이브 프리뷰")</button>
+                <span class="mtx-dim">시뮬 시각 @(SimClock())</span>
+            </div>
+
+            <div class="mtx-main">
+                <div class="mtx-card">
+                    <div class="mtx-sec">🌳 채널 계층</div>
+                    @foreach (var tier in Tiers)
+                    {
+                        <div class="mtx-tier">@(CompliantMultiAccountMatrixRouterEngine.TierIcon(tier)) @(CompliantMultiAccountMatrixRouterEngine.TierName(tier))</div>
+                        @for (var i = 0; i < Runner.Router.ChannelCount; i++)
+                        {
+                            var ch = Runner.Router.Channel(i);
+                            if (ch.Tier != tier) continue;
+                            var ci = i;
+                            var reason = Runner.Guard.Reason(ci);
+                            <div class="mtx-ch @(Runner.Selected == ci ? "sel" : null)" @onclick="() => Select(ci)">
+                                <div class="mtx-ch-h"><b>@(ch.Name)</b> <span class="mtx-badge @(reason == PauseReason.None ? "ok" : "stop")">@(reason == PauseReason.None ? "🟢 정상" : "🛑 " + AccountHealthSafetyPauseGuard.ReasonName(reason))</span></div>
+                                <div class="mtx-kv">@(ch.Handle) · @(ch.Platform == PromptFlowStudio.Services.SmartPublishing.PublishPlatforms.YouTube ? "YouTube" : "Instagram") · @(CompliantMultiAccountMatrixRouterEngine.AspectName(ch.Variant.Aspect)) · @(ChannelVariantMultiFormatRenderer.LangName(ch.Variant.SubtitleLang)) · 범퍼 @(ch.Variant.IntroSec.ToString("0.00", CultureInfo.InvariantCulture))s</div>
+                                <div class="mtx-kv">예약 @(Runner.Router.CountState(ci, MatrixPostState.Scheduled)) · 동결 @(Runner.Router.CountState(ci, MatrixPostState.Held)) · 발행 @(ch.Published)</div>
+                            </div>
+                        }
+                    }
+                </div>
+
+                <div class="mtx-card">
+                    <div class="mtx-sec">🎞️ 채널별 변형 프리뷰 (9:16 vs 1:1)</div>
+                    <div class="mtx-prevs">
+                        @for (var i = 0; i < Runner.Router.ChannelCount; i++)
+                        {
+                            var ci = i;
+                            var ch = Runner.Router.Channel(ci);
+                            <div class="mtx-prev @(Runner.Selected == ci ? "sel" : null)" @onclick="() => Select(ci)">
+                                <img class="@(ch.Variant.Aspect == VariantAspect.Vertical916 ? "v" : "s")" src="@(ThumbUrl(ci))" alt="@(ch.Name)" />
+                                <span>@(CompliantMultiAccountMatrixRouterEngine.TierIcon(ch.Tier)) @(CompliantMultiAccountMatrixRouterEngine.AspectName(ch.Variant.Aspect))</span>
+                            </div>
+                        }
+                    </div>
+                    <label class="mtx-lbl">프레임 위치 <input type="range" min="0" max="@(MatrixSyndicationStudioRunner.ClipSec.ToString(CultureInfo.InvariantCulture))" step="0.25" value="@(Runner.PreviewT.ToString("0.00", CultureInfo.InvariantCulture))" @oninput="Scrub" /> <b>@(Runner.PreviewT.ToString("0.0", CultureInfo.InvariantCulture))s</b></label>
+                    @{ var sel = Runner.Router.Channel(SelIndex); }
+                    <div class="mtx-sec sm">🏷️ 로고 선택 — @(sel.Name)</div>
+                    <div class="mtx-bar">
+                        @foreach (var lg in Logos)
+                        {
+                            var l = lg;
+                            <button class="mtx-btn @(sel.Variant.Logo == l ? "on" : null)" @onclick="() => Runner.SetLogo(SelIndex, l)">@(ChannelVariantMultiFormatRenderer.LogoName(l))</button>
+                        }
+                    </div>
+                    <div class="mtx-kv">자막(@(ChannelVariantMultiFormatRenderer.LangName(Runner.Renderer.SubtitleLang(SelIndex)))): “@(Runner.Renderer.SubtitleText(SelIndex).ToString())” · 렌더 @((Runner.Renderer.LastRenderUs / 1000).ToString("0.0", CultureInfo.InvariantCulture))ms · 프레임 @(Runner.Renderer.Frames)</div>
+                </div>
+
+                <div class="mtx-card">
+                    <div class="mtx-sec">🛡️ 계정 건전성 & 안전 정지</div>
+                    @{ var reasonSel = Runner.Guard.Reason(SelIndex); }
+                    <div class="mtx-state @(reasonSel == PauseReason.None ? "ok" : "stop")">@(reasonSel == PauseReason.None ? "🟢 " + sel.Name + " 배포 정상" : "🛑 " + sel.Name + " 동결 — " + AccountHealthSafetyPauseGuard.ReasonName(reasonSel))</div>
+                    @if (reasonSel != PauseReason.None)
+                    {
+                        <div class="mtx-kv">자동 재개·타 계정 우회 없음 · 관리자 확인 필요</div>
+                        <div class="mtx-bar">
+                            <button class="mtx-btn ok" @onclick="() => Runner.Approve(SelIndex)">✅ 승인(같은 채널 재개)</button>
+                            <button class="mtx-btn bad" @onclick="() => Runner.Cancel(SelIndex)">🗑️ 취소(대기분 폐기)</button>
+                        </div>
+                    }
+                    <div class="mtx-sec sm">🧪 점검용 이상 징후 주입</div>
+                    <div class="mtx-bar">
+                        <button class="mtx-btn @(Runner.ZeroReachInjected(SelIndex) ? "on" : null)" @onclick="() => Runner.InjectZeroReach(SelIndex, !Runner.ZeroReachInjected(SelIndex))">📉 도달 0</button>
+                        <button class="mtx-btn @(Runner.RejectInjected(SelIndex) > 0 ? "on" : null)" @onclick="() => Runner.InjectReject(SelIndex, Runner.RejectInjected(SelIndex) > 0 ? 0 : 403)">⛔ API 403</button>
+                    </div>
+                    <div class="mtx-stats">
+                        <span>안전 정지 <b>@(Runner.Guard.Pauses)</b></span>
+                        <span>도달 0 <b>@(Runner.Guard.ZeroReachTrips)</b></span>
+                        <span>API 거절 <b>@(Runner.Guard.ApiTrips)</b></span>
+                        <span>감시 중 <b>@(Runner.Guard.OpenWatches)</b></span>
+                        <span>웹훅 알림 <b>@(Runner.Guard.AlertsDispatched)</b></span>
+                        <span>승인/취소 <b>@(Runner.Guard.Approvals)/@(Runner.Guard.Cancels)</b></span>
+                        <span>중복 거부 <b>@(Runner.Router.DuplicateRejects)</b></span>
+                        <span>쿼터 지연 <b>@(Runner.Router.QuotaDeferrals)</b></span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mtx-card mtx-q">
+                <div class="mtx-sec">🗓️ 시차 분산 예약 큐 (최근 @(Math.Min(QueueRows, Runner.Router.Count))건)</div>
+                <table>
+                    <thead><tr><th>콘텐츠</th><th>채널</th><th>변형</th><th>슬롯(UTC)</th><th>권역</th><th>상태</th></tr></thead>
+                    <tbody>
+                        @for (var k = 0; k < Math.Min(QueueRows, Runner.Router.Count); k++)
+                        {
+                            var p = Runner.Router.At(Runner.Router.Count - 1 - k);
+                            var ch = Runner.Router.Channel(p.Channel);
+                            <tr class="@(p.State.ToString().ToLowerInvariant())">
+                                <td>#@(p.ContentId)</td>
+                                <td>@(CompliantMultiAccountMatrixRouterEngine.TierIcon(ch.Tier)) @(ch.Name)</td>
+                                <td>@(CompliantMultiAccountMatrixRouterEngine.AspectName(ch.Variant.Aspect)) · @(ChannelVariantMultiFormatRenderer.LogoName(ch.Variant.Logo)) · @(ch.Variant.SubtitleLang)</td>
+                                <td>@(DateTimeOffset.FromUnixTimeSeconds(p.SlotUnix).ToString("MM-dd HH:mm", CultureInfo.InvariantCulture))</td>
+                                <td>@(PromptFlowStudio.Services.SmartPublishing.GlobalGoldenHourPublishingScheduler.RegionFlag(p.Region))</td>
+                                <td>@(CompliantMultiAccountMatrixRouterEngine.StateName(p.State))</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="mtx-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+    </div>
+</div>
+
+<style>
+    .mtx-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .mtx-modal { width: min(1320px, 96vw); max-height: 94vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); color: var(--text-primary); }
+    .mtx-h { position: sticky; top: 0; z-index: 3; flex: 0 0 auto; display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px 8px; background: var(--card); border-bottom: 1px solid var(--line); }
+    .mtx-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 10px; }
+    .mtx-act { position: sticky; bottom: 0; z-index: 3; flex: 0 0 auto; padding: 8px 16px 14px; background: var(--card); border-top: 1px solid var(--line); font-size: 11px; color: var(--text-muted); }
+    .mtx-title { font-size: 17px; font-weight: 800; } .mtx-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .mtx-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .mtx-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 0; } .mtx-sep { flex: 1; } .mtx-dim { font-size: 11px; color: var(--text-muted); }
+    .mtx-lbl { display: inline-flex; gap: 6px; align-items: center; font-size: 11.5px; } .mtx-lbl b { font-family: var(--mono); color: #fde047; }
+    .mtx-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .mtx-btn.hot { border-color: #f97316; } .mtx-btn.on { background: color-mix(in srgb, #38bdf8 25%, #1e293b); border-color: #38bdf8; }
+    .mtx-btn.ok { border-color: #22c55e; } .mtx-btn.bad { border-color: #ef4444; }
+    .mtx-main { display: grid; grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.2fr) minmax(0, 0.95fr); gap: 10px; margin-top: 10px; }
+    .mtx-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; } .mtx-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 8px; } .mtx-sec.sm { margin-top: 10px; font-size: 12px; }
+    .mtx-tier { font-size: 11.5px; font-weight: 700; color: #a5b4fc; margin: 8px 0 4px; }
+    .mtx-ch { margin-left: 12px; padding: 6px 8px; border-left: 2px solid #334155; border-radius: 0 6px 6px 0; cursor: pointer; } .mtx-ch.sel { background: #111c33; border-left-color: #38bdf8; }
+    .mtx-ch-h { display: flex; justify-content: space-between; gap: 6px; font-size: 12px; }
+    .mtx-badge { font-size: 10.5px; border-radius: 999px; padding: 1px 7px; } .mtx-badge.ok { background: #052e16; color: #86efac; } .mtx-badge.stop { background: #450a0a; color: #fca5a5; }
+    .mtx-kv { font-size: 10.5px; color: var(--text-muted); margin: 3px 0; }
+    .mtx-prevs { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+    .mtx-prev { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 11px; cursor: pointer; padding: 4px; border-radius: 8px; border: 1px solid transparent; } .mtx-prev.sel { border-color: #38bdf8; }
+    .mtx-prev img { width: 108px; image-rendering: auto; border-radius: 6px; background: #05070c; } .mtx-prev img.v { height: 192px; } .mtx-prev img.s { height: 108px; }
+    .mtx-state { font-size: 14px; font-weight: 800; padding: 6px 8px; border-radius: 8px; } .mtx-state.ok { background: #052e16; color: #86efac; } .mtx-state.stop { background: #450a0a; color: #fca5a5; }
+    .mtx-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; margin-top: 8px; } .mtx-stats span { font-size: 11px; background: #0f172a; border-radius: 6px; padding: 3px 6px; } .mtx-stats b { font-family: var(--mono); }
+    .mtx-q { margin-top: 10px; } .mtx-q table { width: 100%; border-collapse: collapse; font-size: 11.5px; } .mtx-q th, .mtx-q td { text-align: left; padding: 3px 6px; border-bottom: 1px dashed #1e293b; }
+    .mtx-q tr.held td { color: #fca5a5; } .mtx-q tr.published td { color: #86efac; } .mtx-q tr.cancelled td { color: var(--text-muted); text-decoration: line-through; }
+    @@media (max-width: 1100px) { .mtx-main { grid-template-columns: 1fr 1fr; } }
+    @@media (max-width: 760px) { .mtx-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const int QueueRows = 12;
+    private static readonly ChannelTier[] Tiers = { ChannelTier.Primary, ChannelTier.Sub, ChannelTier.Clip };
+    private static readonly BrandLogo[] Logos = { BrandLogo.Ring, BrandLogo.Hexagon, BrandLogo.Diamond };
+    private System.Threading.Timer? _timer;
+
+    private int SelIndex => Math.Clamp(Runner.Selected, 0, Math.Max(0, Runner.Router.ChannelCount - 1));
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("MatrixSyndication.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private string ThumbUrl(int ch) => SpatialImageCodec.BmpDataUrl(Runner.Thumb(ch), MatrixSyndicationStudioRunner.ThumbW, Runner.ThumbH(ch));
+
+    private string SimClock() => DateTimeOffset.FromUnixTimeSeconds(Runner.SimNow).ToString("MM-dd HH:mm 'UTC'", CultureInfo.InvariantCulture);
+
+    private void Select(int ch) { Runner.Selected = ch; }
+
+    private void Route()
+    {
+        try { Runner.RouteNext(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("MatrixSyndication.Modal.Route", ex); }
+    }
+
+    private void Advance(int minutes)
+    {
+        try { Runner.Advance(minutes); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("MatrixSyndication.Modal.Advance", ex); }
+    }
+
+    private void SetStagger(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)) Runner.Router.StaggerMinutes = v;
+    }
+
+    private void ToggleGolden(ChangeEventArgs e) => Runner.Router.AlignGolden = e.Value is bool b ? b : !Runner.Router.AlignGolden;
+
+    private void Scrub(ChangeEventArgs e)
+    {
+        if (!float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return;
+        Runner.PreviewT = Math.Clamp(v, 0f, MatrixSyndicationStudioRunner.ClipSec);
+        Runner.RenderAll();
+    }
+
+    private void Toggle() { if (Runner.Running) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}
