@@ -6,6 +6,13 @@ using PromptFlowStudio.Services.ViralVoiceFx;
 
 namespace PromptFlowStudio.Services.LiveRestream;
 
+/// <summary>v17.84.0 송출 미디어 탭 — 인코더 방출 AU/AAC 를 송출 스레드에서 동기 전달(구현체는 무할당 · 비차단 필수).</summary>
+public interface ILiveMediaTap
+{
+    void OnLiveVideo(ReadOnlySpan<byte> annexB, bool idr);
+    void OnLiveAudio(ReadOnlySpan<byte> aac);
+}
+
 /// <summary>
 /// [PromptFlow Studio v17.83.0] 📡 옴니채널 라이브 RTMPS 콕핏 러너.
 ///   ▸ 송출 틱(<see cref="Tick"/> 무할당): 합성 H.264 Annex-B(AUD · 티어별 SPS/PPS · IDR/P · GOP 2 s · ABR 키프레임 요청 시 강제 IDR) + AAC(ADTS) →
@@ -65,6 +72,8 @@ public sealed class OmniLiveRestreamStudioRunner : IDisposable, ILiveChatReactio
     public float Fps1s { get; private set; }
     public float TargetKbps(int i) => _kbpsNow[i];
     public HoldPose Pose { get; private set; }
+    /// <summary>v17.84.0 라이브 → 숏폼 오토 클리퍼 링버퍼 결선점(null = 미연동).</summary>
+    public ILiveMediaTap? MediaTap { get; set; }
     public float PoseLeftSec => _poseLeftUs / 1e6f;
     public long LastReactionSeq { get; private set; } = -1;
     public long PinnedSeq { get; private set; } = -1;
@@ -307,6 +316,7 @@ public sealed class OmniLiveRestreamStudioRunner : IDisposable, ILiveChatReactio
         var end = Math.Min(a.Length, p + size);
         for (; p < end; p++) { var b = RtmpWire.Next(ref _seed); a[p] = b == 0 ? (byte)0x55 : b; }
         Engine.WriteVideo(a.Slice(0, p), (uint)(_videoIdx * 1000 / Fps));
+        if (MediaTap is { } tap) try { tap.OnLiveVideo(a.Slice(0, p), idr); } catch (Exception ex) { PromptFlowStudio.Program.Log("LiveRestream.Tap", ex); }
         _videoIdx++; VideoFramesOut++;
         _gopPos = (_gopPos + 1) % Gop;
     }
@@ -324,6 +334,7 @@ public sealed class OmniLiveRestreamStudioRunner : IDisposable, ILiveChatReactio
         a[0] = 0xFF; a[1] = 0xF1; a[2] = 0x4C; a[3] = 0x80; a[4] = (byte)((raw + 7) >> 3); a[5] = 0x1F; a[6] = 0xFC; // ADTS(보호 없음)
         for (var i = 7; i < 7 + raw; i++) { var b = RtmpWire.Next(ref _seed); a[i] = b == 0 ? (byte)0x21 : b; }
         Engine.WriteAudio(a.Slice(0, 7 + raw), (uint)(_audioIdx * AacSamples * 1000 / AudioRate));
+        if (MediaTap is { } tap) try { tap.OnLiveAudio(a.Slice(0, 7 + raw)); } catch (Exception ex) { PromptFlowStudio.Program.Log("LiveRestream.Tap", ex); }
         _audioIdx++; AudioFramesOut++;
     }
 

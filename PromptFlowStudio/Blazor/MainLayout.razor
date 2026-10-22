@@ -501,6 +501,10 @@
         {
             <KineticTypographyBRollStudioModal OnClose="() => _brollSubtitles = false" />
         }
+        @if (_liveAutoClipper)
+        {
+            <LiveToShortsAutoClipperStudioModal OnClose="() => _liveAutoClipper = false" />
+        }
         @if (_liveBroadcastRestream)
         {
             <OmniLiveRestreamBroadcastStudioModal OnClose="() => _liveBroadcastRestream = false" />
@@ -1077,6 +1081,7 @@
             case "_bcastMcr": _bcastMcr = on; break;
             case "_showrunner": _showrunner = on; break;
             case "_brollSubtitles": _brollSubtitles = on; break;
+            case "_liveAutoClipper": _liveAutoClipper = on; break;
             case "_liveBroadcastRestream": _liveBroadcastRestream = on; break;
             case "_multilingualDubbing": _multilingualDubbing = on; break;
             case "_matrixSyndication": _matrixSyndication = on; break;
@@ -1227,6 +1232,7 @@
         "_bcastMcr" => _bcastMcr,
         "_showrunner" => _showrunner,
         "_brollSubtitles" => _brollSubtitles,
+        "_liveAutoClipper" => _liveAutoClipper,
         "_liveBroadcastRestream" => _liveBroadcastRestream,
         "_multilingualDubbing" => _multilingualDubbing,
         "_matrixSyndication" => _matrixSyndication,
@@ -1336,6 +1342,7 @@
     private bool _globalDub; // v17.64.0 사이드바 🌍 글로벌 & 로컬라이제이션 ▸ 🗣️ 실시간 다국어 더빙 스튜디오(스트리밍 번역 ≤ 200 ms · 다국어 음색 유지 합성 · 플랫폼별 언어 트랙 · ARKit 가우시안 립싱크 < 50 ms)
     private bool _streamGateway; // v17.62.0 사이드바 📜 각본 & 타임라인 ▸ 🛰️ 스트림 게이트웨이 & 클리퍼 스튜디오(32 MB 압축 NAL 링 · 무손실 1080p 리먹스 · Twitch/YouTube/치지직 게이트웨이 · 백오프/배압)
     private bool _influencerLive; // v17.61.0 사이드바 📜 각본 & 타임라인 ▸ 🎙️ 버추얼 인플루언서 라이브 스튜디오(채팅 리액션 트리거 · 하이라이트 9:16 즉시 클리핑 · 도배/비속어 가드)
+    private bool _liveAutoClipper; // v17.84.0 사이드바 📸 소셜 & 바이럴 ▸ ⚡ 실시간 라이브 킬러클립 오토 클리퍼(120 s 무할당 인메모리 링 · 채팅 300 % 가속/후원/환호 고역/감정 급변 1 s 복합 채점 0.85 → −20 s/+15 s 클립 · 직전 IDR 슬라이스 · BelowNormal 9:16 리프레이밍/호르모지 자막/임팩트 SFX 패키징 · Punch In/Out · 원클릭 배포)
     private bool _liveBroadcastRestream; // v17.83.0 사이드바 📸 소셜 & 바이럴 ▸ 📡 옴니채널 라이브 RTMPS 콕핏(무할당 FLV/RTMP 청크 YouTube/Twitch 제로-카피 동시 송출 · 통합 채팅/슈퍼챗 → 감정·제스처 리액션 · 6/4/2.5 Mbps IDR 정렬 ABR · 긴급 송출 중단)
     private bool _multilingualDubbing; // v17.82.0 사이드바 📸 소셜 & 바이럴 ▸ 🗣️ AI 다국어 더빙 & 립싱크 스튜디오(원본 KO 음색 보존 EN/ES/JA 합성 · WSOLA 0.8~1.25× 컷 정합 · 14 비젬 16.7 ms 분석 → 3DGS 입/턱 블렌드쉐이프 60 fps 리타게팅 · 15 ms A/V 드리프트 1 프레임 복원)
     private bool _matrixSyndication; // v17.81.0 사이드바 📸 소셜 & 바이럴 ▸ 🌐 다계정 매트릭스 & 신디케이션(정규 OAuth2 소유 채널 Primary/Sub/Clip 계층 · 채널별 9:16/1:1 블러 패딩 · 범퍼/로고/다국어 자막 변형 1:1 매핑 · 45~120 분 시차 골든타임/쿼터 분산 · 30 분 도달 0/API 거절 안전 정지 · 웹훅 · 관리자 승인/취소)

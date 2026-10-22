@@ -118,6 +118,7 @@ public static class StudioCatalog
         new("sb:_soundOpen", "🎧", "AI 사운드 디자인 & Dolby Atmos 스튜디오 (스토리보드)", 3),
         new("sb:_screenplayOpen", "📜", "AI 시나리오 & 세계관 스튜디오 (스토리보드)", 3),
         new("sb:_mvOpen", "🎵", "AI 뮤직비디오 & 안무 스튜디오 (스토리보드)", 3),
+        new("_liveAutoClipper", "⚡", "실시간 라이브 킬러클립 오토 클리퍼", 4),
         new("_liveBroadcastRestream", "📡", "옴니채널 라이브 RTMPS 콕핏", 4),
         new("_multilingualDubbing", "🗣️", "AI 다국어 더빙 & 립싱크 스튜디오", 4),
         new("_matrixSyndication", "🌐", "다계정 매트릭스 & 신디케이션", 4),

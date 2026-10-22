@@ -48,6 +48,7 @@ using Vvf = PromptFlowStudio.Services.ViralVoiceFx;
 using Mtx = PromptFlowStudio.Services.MatrixSyndication;
 using Mld = PromptFlowStudio.Services.MultilingualDubbing;
 using Rst = PromptFlowStudio.Services.LiveRestream;
+using Clp = PromptFlowStudio.Services.LiveClipper;
 using Nw = PromptFlowStudio.Services.Newsroom;
 using Spt = PromptFlowStudio.Services.Sports;
 using V3 = System.Numerics.Vector3;
@@ -34058,7 +34059,7 @@ public sealed class OmniLiveRestreamIsolatedTests
 
         // ── RTM-4: 카탈로그 159 · HUD · 레이아웃 · DI · 모달 규격 · 디스크 I/O 0 · 모달 렌더 ──
         Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_liveBroadcastRestream" && en.Category == 4);
-        Assert.Equal(159, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        Assert.True(PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length >= 159);
         var root = RepoRoot();
         var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
         var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
@@ -34225,6 +34226,307 @@ public sealed class OmniLiveRestreamIsolatedTests
         var alloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 20; k++) { g.Sample(1000, 30, now); now += 100_000; g.OnFrame(k % 5 == 0, now); } });
         Assert.True(alloc == 0, "ABR 할당 " + alloc);
         Assert.Equal(Rst.AdaptiveBitrateNetworkCongestionGuard.History, Math.Max(g.HistoryCount, Rst.AdaptiveBitrateNetworkCongestionGuard.History));
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+}
+
+/// <summary>v17.84.0 120 s 무할당 롤링 링버퍼 · 멀티모달 클라이맥스 스파이크 감지 · 저우선순위 숏폼 패키징 가드 · 오토 클리퍼 콕핏 결선.</summary>
+[Collection("TimingSensitivePerformance")]   // 링 기록 µs · 라이브 틱 16.7 ms 예산 · 백그라운드 워커 간섭 계측 → 비병렬
+public sealed class LiveToShortsAutoClipperIsolatedTests
+{
+    private const long Dt = 16_667;
+
+    [Fact]
+    public async Task LiveToShortsAutoClipper_And_SpikeDetector_Check()
+    {
+        RingChecks();
+        DetectorChecks();
+
+        // ── CLIP-2/3: 리허설 러너 — 평시 30 s 무판정 → 하이라이트 → −20 s/+15 s 클립 → 직전 IDR 슬라이스 → 패키징 ──
+        var run = new Clp.LiveToShortsAutoClipperStudioRunner();
+        run.AutoHype = false;
+        for (var k = 0; k < 60 * 30; k++) run.Tick(Dt);
+        Assert.True(run.Detector.Triggers == 0 && run.Detector.PeakScore < Clp.MultimodalClimaxSpikeDetector.Threshold, "평시 오탐 " + run.Detector.PeakScore);
+        Assert.True(run.Ring.SpanUs is > 29_000_000 and <= 30_000_000 && run.Ring.Keyframes >= 14 && run.Ring.HasParams, "링 " + run.Ring.SpanUs);
+        var tickAlloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 6; k++) run.Tick(Dt); });
+        Assert.True(tickAlloc == 0, "라이브 틱 할당 " + tickAlloc);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        for (var k = 0; k < 600; k++) run.Tick(Dt);
+        Assert.True(sw.Elapsed.TotalMilliseconds / 600 < 4, "틱 평균 " + sw.Elapsed.TotalMilliseconds / 600 + " ms");
+
+        var spikeAt = run.NowUs;
+        run.TriggerHype();
+        for (var k = 0; k < 60 * 3; k++) run.Tick(Dt);
+        Assert.True(run.Detector.Triggers == 1 && run.Detector.PendingCount == 1 && run.Packager.Queued == 0, "스파이크 " + run.Detector.Triggers + " 점수 " + run.Detector.PeakScore);
+        var pend = run.Detector.Pending(0);
+        Assert.True(pend.EndUs - pend.StartUs == 35_000_000 && pend.SpikeUs - pend.StartUs == 20_000_000 && Math.Abs(pend.SpikeUs - spikeAt) < 3_000_000, "클립 구간");
+        Assert.True(pend.Score >= 0.85f && pend.Chat > 0.9f && pend.Audio > 0.5f, "복합 " + pend.Score + " chat " + pend.Chat + " audio " + pend.Audio);
+        for (var k = 0; k < 60 * 16; k++) run.Tick(Dt);
+        Assert.True(run.Packager.Queued == 1 && run.ClipsSliced == 1 && run.SliceMisses == 0, "슬라이스 큐 " + run.Packager.Queued);
+        Assert.True(run.Packager.ProcessOne());
+        var r = run.Packager.Result(0);
+        Assert.True(r.Status == Clp.ShortStatus.Ready && r.Decodable && !r.Manual, "패키징 " + r.Status);
+        Assert.True(r.StartUs <= pend.StartUs && pend.StartUs - r.StartUs <= 2_000_000 && r.Seconds is >= 34.5f and <= 37.5f, "직전 IDR 시작 " + r.Seconds);
+        Assert.True(Clp.InstantShortsPackagingPipelineGuard.StartsDecodable(run.Packager.LastClipBytes) && Rst.RtmpWire.Fnv(run.Packager.LastClipBytes) == r.Hash, "클립 바이트 무결성");
+        Assert.True(r.VideoFrames is >= 1040 and <= 1130 && r.AudioFrames > 1600, "프레임 " + r.VideoFrames + "/" + r.AudioFrames);
+        Assert.True(r.CropX >= 0 && r.CropX <= Clp.InstantShortsPackagingPipelineGuard.SrcW - Clp.InstantShortsPackagingPipelineGuard.CropW, "9:16 크롭 " + r.CropX);
+        Assert.True(run.Packager.SafeZone.IsSafe(r.CaptionBox) && r.Verdict != PromptFlowStudio.Services.VisualHooks.ReframeVerdict.Inside, "자막 세이프존 " + r.Verdict);
+        Assert.True(r.Words >= 3 && r.Cues >= 2 + r.Words && r.ImpactPeak > 0.05f && r.BounceScale > 1f, "자막/SFX " + r.Cues + " peak " + r.ImpactPeak);
+
+        // ── CLIP-3: 워커(BelowNormal) 가동 중 라이브 틱 간섭 0 ──
+        run.Packager.StartWorker();
+        Assert.True(run.Packager.WorkerRunning);
+        for (var k = 0; k < 60 * 25; k++) run.Tick(Dt);
+        run.TriggerHype();
+        for (var k = 0; k < 60 * 20; k++) run.Tick(Dt);
+        for (var w = 0; w < 300 && run.Packager.Packaged < 2; w++) Thread.Sleep(10);
+        Assert.True(run.Packager.Packaged == 2 && run.Detector.Triggers == 2, "워커 패키징 " + run.Packager.Packaged + " trig " + run.Detector.Triggers);
+        Assert.True(run.Packager.HotPathInterference == 0 && run.Packager.Dropped == 0, "핫패스 간섭 " + run.Packager.HotPathInterference + " max " + run.Packager.MaxEnqueueUs);
+        run.Packager.StopWorker();
+        Assert.False(run.Packager.WorkerRunning);
+
+        // ── CLIP-4: 수동 Punch In/Out · 즉석 클립 ──
+        run.PunchIn();
+        Assert.True(run.PunchActive);
+        for (var k = 0; k < 60 * 6; k++) run.Tick(Dt);
+        run.PunchOut();
+        Assert.False(run.PunchActive);
+        var m = run.Packager.Result(0);
+        Assert.True(m.Manual && m.Status == Clp.ShortStatus.Ready && m.Decodable && m.Seconds is >= 5.5f and <= 8.5f && m.Caption == 3, "펀치 " + m.Seconds);
+        run.InstantClip();
+        var ic = run.Packager.Result(0);
+        Assert.True(ic.Manual && ic.Decodable && ic.Seconds is >= 29.5f and <= 32.5f, "즉석 " + ic.Seconds);
+
+        // ── 원클릭 배포 — v17.76 쿼터 가드 간격 예약 ──
+        Assert.Equal(4, run.DispatchAll());
+        Assert.Equal(4, run.Packager.Dispatched);
+        long minYt = long.MaxValue, maxYt = 0;
+        for (var i = 0; i < 4; i++)
+        {
+            var d = run.Packager.Result(i);
+            Assert.True(d.Status == Clp.ShortStatus.Dispatched && d.YtAtUnix > 0 && d.IgAtUnix > 0, "배포 " + i);
+            minYt = Math.Min(minYt, d.YtAtUnix); maxYt = Math.Max(maxYt, d.YtAtUnix);
+        }
+        Assert.True(maxYt - minYt >= 3 * run.Packager.Quota.MinGapSec, "배포 간격");
+        Assert.False(run.Dispatch(run.Packager.Result(0).Id));
+
+        // ── 링 만료 — 큐 정체 중 120 s 초과 축출 → Expired(손상 클립 배포 0) ──
+        Assert.True(run.Ring.TrySlice(run.NowUs - 10_000_000, run.NowUs, out var old));
+        Assert.True(run.Packager.TryEnqueue(new Clp.ClimaxClip { Id = 999, SpikeUs = run.NowUs, StartUs = run.NowUs - 10_000_000, EndUs = run.NowUs, Score = 1f }, old, 0.5f));
+        for (var k = 0; k < 60 * 125; k++) run.Tick(Dt);
+        Assert.False(run.Ring.IsResident(old));
+        while (run.Packager.ProcessOne()) { }
+        Assert.True(run.Packager.Expired == 1 && run.Packager.Result(0).Status == Clp.ShortStatus.Expired, "만료 " + run.Packager.Expired);
+        Assert.True(run.Ring.SpanUs is > 119_000_000 and <= Clp.RollingCircularVideoBufferEngine.WindowUs && run.Ring.Evicted > 0, "120 s 창 " + run.Ring.SpanUs);
+        run.DetectorEnabled = false;
+        run.TriggerHype();
+        for (var k = 0; k < 60 * 3; k++) run.Tick(Dt);
+        Assert.Equal(0f, run.Detector.Last.Score);
+        run.DetectorEnabled = true;
+        run.Packager.Preset = PromptFlowStudio.Services.KineticBRoll.HormoziPreset.NeonCyber;
+        run.Reset();
+        Assert.True(run.Ring.Frames == 0 && run.Packager.ResultCount == 0 && run.Detector.Triggers == 0);
+        run.Advance(2);
+        Assert.True(run.Ring.Frames > 100);
+        run.Dispose();
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(run));
+
+        // ── v17.83 연동: 송출 미디어 탭 → 링 직결 · 통합 채팅/슈퍼챗 신호 ──
+        var rst = new Rst.OmniLiveRestreamStudioRunner();
+        var lc = new Clp.LiveToShortsAutoClipperStudioRunner(rst);
+        Assert.True(lc.LinkAvailable);
+        lc.Linked = true;
+        Assert.True(ReferenceEquals(rst.MediaTap, lc) && lc.Ring.MaxKbps == Clp.LiveToShortsAutoClipperStudioRunner.LinkedRingKbps);
+        rst.UplinkMbps = 40;
+        Assert.Equal(2, rst.GoLive());
+        for (var k = 0; k < 60 * 10; k++) { lc.Tick(Dt); rst.Tick(Dt); }
+        Assert.True(lc.LinkedFrames >= 290 && lc.VideoFrames == 0 && lc.Ring.Keyframes >= 4 && lc.ChatTotal > 5, "연동 프레임 " + lc.LinkedFrames + " chat " + lc.ChatTotal);
+        rst.InjectSuperChat(3);
+        lc.Tick(Dt);
+        Assert.True(lc.DonationKrw >= 90_000, "슈퍼챗 신호 " + lc.DonationKrw);
+        lc.InstantClip();
+        var lr = lc.Packager.Result(0);
+        Assert.True(lr.Status == Clp.ShortStatus.Ready && lr.Decodable && lr.VideoFrames >= 270, "연동 클립 " + lr.Status + " " + lr.VideoFrames);
+        lc.Linked = false;
+        Assert.Null(rst.MediaTap);
+        lc.Linked = true;
+        lc.Dispose();
+        Assert.Null(rst.MediaTap);
+        rst.Dispose();
+
+        // ── CLIP-4: 카탈로그 160 · HUD · 레이아웃 · DI · 모달 규격 · 디스크 I/O 0 · 모달 렌더 ──
+        Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_liveAutoClipper" && en.Category == 4);
+        Assert.Equal(160, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        var root = RepoRoot();
+        var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
+        var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
+        var mainForm = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "MainForm.cs"));
+        var maui = File.ReadAllText(Path.Combine(root, "PromptFlowStudio.Mobile", "MauiProgram.cs"));
+        var modalSrc = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "LiveToShortsAutoClipperStudioModal.razor"));
+        Assert.True(hud.IndexOf("gth-v1784", StringComparison.Ordinal) is > 0 and var i1784 && i1784 < hud.IndexOf("gth-v1783", StringComparison.Ordinal) && hud.Contains("ClpRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("ClpRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<LiveToShortsAutoClipperStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_liveAutoClipper\"", StringComparison.Ordinal) && layout.Contains("\"_liveAutoClipper\" =>", StringComparison.Ordinal));
+        Assert.True(mainForm.Contains("LiveClipper.LiveToShortsAutoClipperStudioRunner(sp)", StringComparison.Ordinal) && maui.Contains("LiveClipper.LiveToShortsAutoClipperStudioRunner(sp)", StringComparison.Ordinal));
+        Assert.True(modalSrc.Contains("@implements IDisposable", StringComparison.Ordinal) && modalSrc.Contains("flex: 1 1 auto; min-height: 0; overflow-y: auto;", StringComparison.Ordinal) && modalSrc.Contains("position: sticky", StringComparison.Ordinal));
+        foreach (var src in Directory.GetFiles(Path.Combine(root, "PromptFlowStudio", "Services", "LiveClipper"), "*.cs"))
+        {
+            var text = File.ReadAllText(src);
+            Assert.True(!text.Contains("File.", StringComparison.Ordinal) && !text.Contains("FileStream", StringComparison.Ordinal) && !text.Contains("HttpClient", StringComparison.Ordinal) && !text.Contains("Process.Start", StringComparison.Ordinal), "디스크 I/O · 외부 프로세스 " + Path.GetFileName(src));
+        }
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = sp.GetService(typeof(Clp.LiveToShortsAutoClipperStudioRunner))!;
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.LiveToShortsAutoClipperStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("clp-scrim", StringComparison.Ordinal) && html.Contains("clp-body", StringComparison.Ordinal) && html.Contains("clp-strip", StringComparison.Ordinal) && html.Contains("Punch In", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+
+    private static int Au(byte[] buf, bool idr, bool withParams, int size, ref uint seed)
+    {
+        var p = 0;
+        Nal(buf, ref p, 0x09); buf[p++] = 0xF0;
+        if (withParams) { Nal(buf, ref p, 0x67); buf[p++] = 0x64; buf[p++] = 0x00; buf[p++] = 0x28; buf[p++] = 0xAC; Nal(buf, ref p, 0x68); buf[p++] = 0xEE; buf[p++] = 0x3C; buf[p++] = 0x80; }
+        Nal(buf, ref p, idr ? (byte)0x65 : (byte)0x41);
+        for (var end = p + size; p < end; p++) { var b = Rst.RtmpWire.Next(ref seed); buf[p] = b == 0 ? (byte)0x55 : b; }
+        return p;
+    }
+
+    private static void Nal(byte[] buf, ref int p, byte h) { buf[p] = 0; buf[p + 1] = 0; buf[p + 2] = 0; buf[p + 3] = 1; buf[p + 4] = h; p += 5; }
+
+    private sealed class Feeder
+    {
+        public readonly byte[] AuBuf = new byte[32_768];
+        public readonly byte[] Aac = new byte[300];
+        public uint Seed = 7;
+        public long T;
+        public int Frame;
+
+        public void Second(Clp.RollingCircularVideoBufferEngine rg, int fps, int size)
+        {
+            for (var f = 0; f < fps; f++)
+            {
+                var idr = Frame % fps == 0;
+                var n = Au(AuBuf, idr, idr && Frame == 0, idr ? size * 3 : size, ref Seed);
+                if (rg.WriteVideo(AuBuf.AsSpan(0, n), T) < 0) throw new InvalidOperationException("video write");
+                if ((f & 1) == 0 && rg.WriteAudio(Aac, T + 1) < 0) throw new InvalidOperationException("audio write");
+                T += 1_000_000 / fps; Frame++;
+            }
+        }
+    }
+
+    private static void RingChecks()
+    {
+        // 시간 창 축출 — 150 s 기록 · 1 s GOP · SPS/PPS 는 최초 IDR 에만(이후 슬라이스는 캐시 선행 삽입)
+        var ring = new Clp.RollingCircularVideoBufferEngine(1_200);
+        Assert.False(ring.Allocated);
+        var fd = new Feeder();
+        for (var s = 0; s < 150; s++) fd.Second(ring, 30, 3_000);
+        Assert.True(ring.Allocated && ring.SpanUs is > 119_000_000 and <= 120_000_000 && ring.Evicted > 0 && ring.Keyframes is >= 119 and <= 121, "120 s 창 " + ring.SpanUs + " keys " + ring.Keyframes);
+        var now = fd.T;
+        Assert.True(ring.TrySlice(now - 35_400_000, now - 400_000, out var sl));
+        Assert.True(sl.StartPtsUs <= sl.RequestedStartUs && sl.RequestedStartUs - sl.StartPtsUs < 1_000_000 && sl.PrependParams && sl.Keyframes >= 35, "직전 IDR " + sl.StartPtsUs);
+        Assert.True(ring.Frame(sl.FirstSeq).Key && ring.Frame(sl.FirstSeq).Kind == Clp.MediaKind.Video);
+        var dst = new byte[sl.Bytes];
+        Assert.Equal((int)sl.Bytes, ring.CopyTo(sl, dst));
+        Assert.True(Clp.InstantShortsPackagingPipelineGuard.StartsDecodable(dst), "SPS/PPS 선행 IDR");
+        var byFrame = new byte[sl.Bytes]; var bn = ring.CopyParams(byFrame);
+        for (var q = sl.FirstSeq; q <= sl.LastSeq; q++) bn += ring.CopyFrame(q, byFrame.AsSpan(bn));
+        Assert.True(bn == sl.Bytes && byFrame.AsSpan().SequenceEqual(dst), "프레임 단위 = 연속 추출");
+        Assert.False(ring.TrySlice(now, now - 1, out _));
+        Assert.Equal(-1, ring.WriteVideo(new byte[ring.Capacity / 2], now));
+        Assert.Equal(1, ring.Rejected);
+        fd.Second(ring, 30, 3_000);
+        var alloc = AllocationProbe.MinAllocated(() => fd.Second(ring, 30, 3_000));
+        Assert.True(alloc == 0, "링 기록 할당 " + alloc);
+        Assert.True(ring.MaxWriteUs < 16_667, "기록 " + ring.MaxWriteUs);
+
+        // 용량 축출 + 랩어라운드 — 200 kbps 링에 ~1.4 Mbps 기록 → 창 < 120 s · 경계 걸친 슬라이스 바이트 일치
+        var small = new Clp.RollingCircularVideoBufferEngine(200);
+        var fs = new Feeder();
+        for (var s = 0; s < 40; s++) fs.Second(small, 30, 5_000);
+        Assert.True(small.SpanUs < 30_000_000 && small.Evicted > 0 && small.Fill > 0.8f, "용량 축출 " + small.SpanUs);
+        Assert.True(small.TrySlice(fs.T - 8_000_000, fs.T, out var ws));
+        var wd = new byte[ws.Bytes];
+        Assert.Equal((int)ws.Bytes, small.CopyTo(ws, wd));
+        Assert.True(Clp.InstantShortsPackagingPipelineGuard.StartsDecodable(wd));
+        var wf = new byte[ws.Bytes]; var wn = small.CopyParams(wf);
+        for (var q = ws.FirstSeq; q <= ws.LastSeq; q++) wn += small.CopyFrame(q, wf.AsSpan(wn));
+        Assert.True(wf.AsSpan().SequenceEqual(wd), "랩어라운드 일치");
+        for (var s = 0; s < 30; s++) fs.Second(small, 30, 5_000);
+        Assert.True(!small.IsResident(ws) && small.CopyTo(ws, wd) == -1, "축출된 슬라이스 거부");
+        small.Configure(400);
+        Assert.True(small.Frames == 0 && !small.Allocated && small.MaxKbps == 400);
+    }
+
+    private sealed class Crowd
+    {
+        public readonly float[] Pcm = new float[48_000];
+        private uint _seed = 3;
+
+        public void Second(Clp.MultimodalClimaxSpikeDetector d, int chats, float amp, float hf)
+        {
+            float prev = 0;
+            for (var i = 0; i < Pcm.Length; i++)
+            {
+                _seed ^= _seed << 13; _seed ^= _seed >> 17; _seed ^= _seed << 5;
+                var nz = (_seed & 0xFFFF) / 32768f - 1f; var hi = nz - prev; prev = nz;
+                Pcm[i] = amp * ((1 - hf) * MathF.Sin(2 * MathF.PI * 180 * i / 48_000f) * 0.7f + hf * hi * 0.5f + 0.1f * nz);
+            }
+            d.OnChat(chats);
+            d.OnAudio(Pcm, 48_000);
+        }
+    }
+
+    private static void DetectorChecks()
+    {
+        var d = new Clp.MultimodalClimaxSpikeDetector();
+        var cr = new Crowd();
+        long now = 0;
+        d.Advance(now);
+        for (var s = 0; s < 10; s++) { cr.Second(d, 3, 0.05f, 0.1f); now += 1_000_000; d.Advance(now); }
+        Assert.True(d.Buckets == 10 && d.Triggers == 0 && d.Last.Score < 0.3f && d.Last.HfRatio < 0.2f, "기준선 " + d.Last.Score + " hf " + d.Last.HfRatio);
+
+        // 채팅 2× 만 → 채팅 0.5 · 임계 미달
+        cr.Second(d, 6, 0.05f, 0.1f); now += 1_000_000; d.Advance(now);
+        Assert.True(Math.Abs(d.Last.Chat - 0.5f) < 0.05f && d.Last.Score < 0.85f && d.Triggers == 0, "2× " + d.Last.Chat);
+
+        // 4 신호 동시 폭발
+        d.OnEmotion(Clp.AvatarEmotionTag.Surprise);
+        d.OnDonation(30_000);
+        cr.Second(d, 15, 0.45f, 0.6f); now += 1_000_000;
+        Assert.Equal(1, d.Advance(now));
+        var l = d.Last;
+        Assert.True(l.ChatRatio >= 3f && l.Chat == 1f && l.Donation > 0.8f && l.Audio > 0.8f && l.Emotion == 1f && l.Score >= 0.85f && l.HfRatio > 0.3f, "폭발 " + l.Score + " a " + l.Audio + " hf " + l.HfRatio);
+        Assert.False(d.TryDequeueReady(now, out _));
+        var c = d.Pending(0);
+        Assert.True(c.EndUs - c.StartUs == Clp.MultimodalClimaxSpikeDetector.ClipSec * 1_000_000L && c.SpikeUs - c.StartUs == 20_000_000);
+
+        // 불응기 20 s — 직후 재폭발 억제
+        d.OnEmotion(Clp.AvatarEmotionTag.Neutral); d.OnEmotion(Clp.AvatarEmotionTag.Excited);
+        d.OnDonation(50_000);
+        cr.Second(d, 20, 0.5f, 0.6f); now += 1_000_000; d.Advance(now);
+        Assert.True(d.Triggers == 1 && d.Suppressed == 1, "불응기 " + d.Suppressed);
+        for (var s = 0; s < 14; s++) { cr.Second(d, 3, 0.05f, 0.1f); now += 1_000_000; d.Advance(now); }
+        Assert.True(d.TryDequeueReady(now, out var ready) && ready.Id == c.Id && d.PendingCount == 0, "+15 s 녹화 완료 인출");
+
+        // 수동 · 비활성
+        Assert.True(d.AddManual(now - 5_000_000, now) && d.TryDequeueReady(now, out var man) && man.Manual);
+        Assert.False(d.AddManual(now, now));
+        d.Enabled = false;
+        d.OnDonation(100_000);
+        cr.Second(d, 30, 0.6f, 0.6f); now += 1_000_000; d.Advance(now);
+        Assert.Equal(0f, d.Last.Score);
+        d.Enabled = true;
+        cr.Second(d, 3, 0.05f, 0.1f); now += 1_000_000; d.Advance(now);
+        var alloc = AllocationProbe.MinAllocated(() => { d.OnChat(3); d.OnDonation(1); d.OnEmotion(Clp.AvatarEmotionTag.Happy); d.OnAudio(cr.Pcm.AsSpan(0, 800), 48_000); now += 1_000_000; d.Advance(now); d.OnEmotion(Clp.AvatarEmotionTag.Neutral); });
+        Assert.True(alloc == 0, "감지기 할당 " + alloc);
+        d.Reset();
+        Assert.True(d.Buckets == 0 && d.HistCount == 0 && d.PendingCount == 0);
     }
 
     private static string RepoRoot()

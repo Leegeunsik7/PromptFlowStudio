@@ -275,6 +275,7 @@
 @inject PromptFlowStudio.Services.SmartPublishing.SmartPublishingSchedulerStudioRunner SpsRun
 @inject PromptFlowStudio.Services.VisualHooks.KineticVisualHookStudioRunner KvhRun
 @inject PromptFlowStudio.Services.KineticBRoll.KineticTypographyBRollStudioRunner KbrRun
+@inject PromptFlowStudio.Services.LiveClipper.LiveToShortsAutoClipperStudioRunner ClpRun
 @inject PromptFlowStudio.Services.LiveRestream.OmniLiveRestreamStudioRunner RstRun
 @inject PromptFlowStudio.Services.MultilingualDubbing.MultilingualDubbingStudioRunner MldRun
 @inject PromptFlowStudio.Services.MatrixSyndication.MatrixSyndicationStudioRunner MtxRun
@@ -999,6 +1000,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.84.0: 라이브 → 숏폼 오토 클리퍼 — 링 · 스파이크 스코어 · 클립 · 배포 ── *@
+    <div class="gth-v1784">
+        <div class="gth-v96-card pid @(ClpRun.Packager.Packaged > 0 && ClpRun.Packager.HotPathInterference == 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>⚡ 라이브 킬러클립</b>
+                <span class="gth-v96-be">@(ClpRun.Running ? "감시 중" : "대기")@(ClpRun.Linked ? " · 📡" : null)@(ClpRun.PunchActive ? " · 🔴" : null)</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@((ClpRun.Ring.SpanUs / 1e6).ToString("0", System.Globalization.CultureInfo.InvariantCulture))s</b><span>링</span></span>
+                <span class="gth-v96-m"><b class="@(ClpRun.Detector.Last.Score >= PromptFlowStudio.Services.LiveClipper.MultimodalClimaxSpikeDetector.Threshold ? "warn" : null)">@(ClpRun.Detector.Last.Score.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture))</b><span>스코어</span></span>
+                <span class="gth-v96-m"><b>@(ClpRun.Packager.Packaged)</b><span>클립</span></span>
+                <span class="gth-v96-m"><b>@(ClpRun.Packager.Dispatched)</b><span>배포</span></span>
+            </div>
+            <div class="gth-v96-act">@(ClpRun.LastAction ?? "대기")</div>
+        </div>
+    </div>
     @* ── v17.83.0: 옴니채널 라이브 RTMPS — 송출 · ABR 티어 · 정체 · 채팅/슈퍼챗 ── *@
     <div class="gth-v1783">
         <div class="gth-v96-card pid @(RstRun.Live && RstRun.Abr.CongestionIndex <= PromptFlowStudio.Services.LiveRestream.AdaptiveBitrateNetworkCongestionGuard.DownIndex ? "ok" : null)">
@@ -5696,6 +5712,7 @@
         VlRun.OnChange += OnSwarmChanged; // v17.50.0 (3.3 Hz)
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
         KbrRun.OnChange += OnSwarmChanged; // v17.78.0 (재생 10 Hz → 250 ms 스로틀)
+        ClpRun.OnChange += OnSwarmChanged; // v17.84.0 (라이브 60 Hz → 250 ms 스로틀 · 펀치/클립/배포 즉시)
         RstRun.OnChange += OnSwarmChanged; // v17.83.0 (송출 60 Hz → 250 ms 스로틀 · 연결/패닉/슈퍼챗 즉시)
         MldRun.OnChange += OnSwarmChanged; // v17.82.0 (재생 60 fps → 250 ms 스로틀 · 트랙/주입 즉시)
         MtxRun.OnChange += OnSwarmChanged; // v17.81.0 (프리뷰 250 ms 스로틀 · 예약/동결 즉시)
@@ -6077,6 +6094,7 @@
         VlRun.OnChange -= OnSwarmChanged;
         OcRun.OnChange -= OnSwarmChanged;
         KbrRun.OnChange -= OnSwarmChanged;
+        ClpRun.OnChange -= OnSwarmChanged;
         RstRun.OnChange -= OnSwarmChanged;
         MldRun.OnChange -= OnSwarmChanged;
         MtxRun.OnChange -= OnSwarmChanged;
