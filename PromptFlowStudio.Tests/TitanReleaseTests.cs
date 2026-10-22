@@ -47,6 +47,7 @@ using Lp = PromptFlowStudio.Services.LivePublish;
 using Vvf = PromptFlowStudio.Services.ViralVoiceFx;
 using Mtx = PromptFlowStudio.Services.MatrixSyndication;
 using Mld = PromptFlowStudio.Services.MultilingualDubbing;
+using Rst = PromptFlowStudio.Services.LiveRestream;
 using Nw = PromptFlowStudio.Services.Newsroom;
 using Spt = PromptFlowStudio.Services.Sports;
 using V3 = System.Numerics.Vector3;
@@ -33797,7 +33798,7 @@ public sealed class MultilingualDubbingLipSyncIsolatedTests
 
         // ── DUB-4b: 카탈로그 158 · HUD · 레이아웃 · DI · 모달 규격 · 디스크 I/O 0 · 모달 렌더 ──
         Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_multilingualDubbing" && en.Category == 4);
-        Assert.Equal(158, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        Assert.True(PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length >= 158);
         var root = RepoRoot();
         var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
         var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
@@ -33930,6 +33931,300 @@ public sealed class MultilingualDubbingLipSyncIsolatedTests
         audio = 0;
         for (var k = 0; k < 600; k++) { audio += 812; off.Tick(audio, Dt); }
         Assert.True(Math.Abs(off.DriftUs) > Mld.AudioVisualPhaseDriftGuard.ThresholdUs, "가드 OFF 누적 " + off.DriftUs);
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+}
+
+/// <summary>v17.83.0 RTMPS 멀티-타겟 제로-카피 송출 · 옴니채널 채팅/슈퍼챗 릴레이 · IDR 정렬 ABR 세이프티 가드 · 라이브 콕핏 결선.</summary>
+[Collection("TimingSensitivePerformance")]   // 먹스 µs 계측 · 60 Hz 송출 루프 → 비병렬
+public sealed class OmniLiveRestreamIsolatedTests
+{
+    private const long Dt = 16_667;
+
+    private sealed class Capture : Rst.IRtmpMessageHandler
+    {
+        public readonly List<(byte Type, uint Sid, uint Ts, byte[] Payload)> Messages = new();
+        public void OnMessage(byte type, uint streamId, uint timestamp, ReadOnlySpan<byte> payload) => Messages.Add((type, streamId, timestamp, payload.ToArray()));
+    }
+
+    private sealed class Sink : Rst.ILiveChatReactionSink
+    {
+        public readonly List<(long Seq, Vvf.VoiceEmotion Emo, PromptFlowStudio.Services.LiveShowroom.HoldPose Pose, float Sec)> Calls = new();
+        public bool Record = true;
+        public void OnReaction(in Rst.ChatEvent e, Vvf.VoiceEmotion emotion, PromptFlowStudio.Services.LiveShowroom.HoldPose pose, float seconds) { if (Record) Calls.Add((e.Seq, emotion, pose, seconds)); }
+    }
+
+    [Fact]
+    public async Task MultiPlatformRtmpRestream_And_AdaptiveBitrate_Check()
+    {
+        WireChecks();
+        ChatChecks();
+        AbrChecks();
+
+        // ── RTM-1: 러너 — 핸드셰이크/퍼블리시 → 10 s 무결성 · 제로-카피 분기 · 무할당 틱 ──
+        var run = new Rst.OmniLiveRestreamStudioRunner();
+        run.UplinkMbps = 40;
+        Assert.Equal(2, run.GoLive());
+        Assert.True(run.Live);
+        for (var i = 0; i < Rst.OmniLiveRestreamStudioRunner.TargetCount; i++)
+        {
+            var t = run.Engine.Target(i); var s = run.Server(i);
+            Assert.True(t.State == Rst.RtmpTargetState.Publishing && s.HandshakeOk && s.Publishing && s.MetaData == 1 && t.StreamId == 1, t.Name + " " + t.LastError);
+            Assert.Equal(t.StreamKey, s.StreamKey);
+            Assert.Equal(t.App, s.App);
+        }
+        for (var k = 0; k < 600; k++) run.Tick(Dt);
+        for (var i = 0; i < Rst.OmniLiveRestreamStudioRunner.TargetCount; i++) AssertIntegrity(run, i, 250);
+        Assert.True(run.Engine.Fanouts >= run.VideoFramesOut + run.AudioFramesOut - 4 && run.Engine.ChunkBuilds <= run.Engine.Messages + 4, "제로-카피 분기 " + run.Engine.Fanouts + "/" + run.Engine.ChunkBuilds);
+        Assert.True(run.Abr.Tier == 0 && run.Fps1s >= 28f && run.TotalKbps > 9_000f, "정상 송출 tier " + run.Abr.Tier + " fps " + run.Fps1s + " kbps " + run.TotalKbps);
+        Assert.True(run.Engine.MaxMuxUs < 16_667, "먹스 " + run.Engine.MaxMuxUs + " µs");
+        run.Tick(Dt);
+        var tickAlloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 6; k++) run.Tick(Dt); });
+        Assert.True(tickAlloc == 0, "송출 틱 할당 " + tickAlloc);
+
+        // ── RTM-3: 업링크 7 Mbps 정체 → 6 → 4 → 2.5 Mbps 단계 감쇄(IDR 정렬 · 드롭 0) → 40 Mbps 복구 ──
+        run.UplinkMbps = 7;
+        var reached = 0; long peak = 0;
+        for (var k = 0; k < 60 * 20; k++)
+        {
+            run.Tick(Dt);
+            reached = Math.Max(reached, run.Abr.Tier);
+            peak = Math.Max(peak, Math.Max(run.Server(0).PendingBytes, run.Server(1).PendingBytes));
+        }
+        Assert.True(reached == 2 && run.Abr.Downshifts >= 2 && run.Abr.UnalignedSwitches == 0 && run.ForcedIdr >= 2, "감쇄 tier " + reached + " down " + run.Abr.Downshifts + " forced " + run.ForcedIdr);
+        Assert.True(peak < run.Server(0).QueueCapBytes, "큐 피크 " + peak);
+        for (var i = 0; i < Rst.OmniLiveRestreamStudioRunner.TargetCount; i++) AssertIntegrity(run, i, 600);
+        Assert.True(run.Server(0).VideoSeqHeaders >= 1 + run.Abr.Downshifts && run.Engine.SeqVersion >= 2, "티어 SPS 재선송 " + run.Server(0).VideoSeqHeaders);
+        run.UplinkMbps = 40;
+        for (var k = 0; k < 60 * 16 && run.Abr.Tier != 0; k++) run.Tick(Dt);
+        for (var k = 0; k < 60; k++) run.Tick(Dt);
+        Assert.True(run.Abr.Tier == 0 && run.Abr.Upshifts >= 2 && run.Abr.UnalignedSwitches == 0, "복구 tier " + run.Abr.Tier + " up " + run.Abr.Upshifts);
+        for (var i = 0; i < Rst.OmniLiveRestreamStudioRunner.TargetCount; i++) AssertIntegrity(run, i, 900);
+
+        // ── ABR OFF: 동일 정체에서 큐 무한 적체(가드 효과 대조) ──
+        run.AbrEnabled = false;
+        run.UplinkMbps = 7;
+        for (var k = 0; k < 60 * 4; k++) run.Tick(Dt);
+        Assert.True(run.Abr.Tier == 0 && run.Server(0).PendingBytes > 1_000_000, "ABR OFF 큐 " + run.Server(0).PendingBytes);
+        run.AbrEnabled = true;
+        run.UplinkMbps = 40;
+        for (var k = 0; k < 60; k++) run.Tick(Dt);
+
+        // ── RTM-2: 슈퍼챗/치어 → v17.80 감정 + v17.68 제스처 즉시 ──
+        Assert.True(run.Chat.Total >= 40 && run.Chat.Count(Rst.ChatPlatform.YouTube) > 0 && run.Chat.Count(Rst.ChatPlatform.Twitch) > 0 && run.Chat.Pings > 0, "시뮬 채팅 " + run.Chat.Total);
+        run.InjectSuperChat(3);
+        Assert.True(run.Emotion.Emotion == Vvf.VoiceEmotion.Excited && run.Pose == PromptFlowStudio.Services.LiveShowroom.HoldPose.Clap && run.PinnedSeq == run.Chat.Event(0).Seq && run.Chat.Event(0).AmountKrw == 90_000, "슈퍼챗 리액션 " + run.Pose);
+        Assert.Equal("후원천사", new string(run.Chat.Author(0)));
+        run.InjectCheer();
+        Assert.True(run.Chat.Event(0).Kind == Rst.ChatKind.Bits && run.Chat.Event(0).Importance == 2 && run.Pose == PromptFlowStudio.Services.LiveShowroom.HoldPose.Clap, "치어");
+        Assert.True(run.Chat.MaxReactionUs < 50_000, "리액션 지연 " + run.Chat.MaxReactionUs);
+        for (var k = 0; k < 60 * 4; k++) run.Tick(Dt);
+        Assert.True(run.Pose != PromptFlowStudio.Services.LiveShowroom.HoldPose.Clap || run.PoseLeftSec > 0, "제스처 감쇠");
+
+        // ── 타겟 분리/재합류 — 언퍼블리시 → 재핸드셰이크 → IDR 게이트 합류(깨짐 0) ──
+        run.SetTargetEnabled(1, false);
+        Assert.True(run.Engine.Target(1).State == Rst.RtmpTargetState.Stopped && run.Server(1).Unpublished >= 1);
+        for (var k = 0; k < 30; k++) run.Tick(Dt);
+        run.SetTargetEnabled(1, true);
+        Assert.Equal(Rst.RtmpTargetState.Publishing, run.Engine.Target(1).State);
+        for (var k = 0; k < 60 * 3; k++) run.Tick(Dt);
+        Assert.True(run.Engine.Target(1).Connects == 2 && run.Engine.Target(1).Gated > 0, "재합류 게이트 " + run.Engine.Target(1).Gated);
+        for (var i = 0; i < Rst.OmniLiveRestreamStudioRunner.TargetCount; i++) AssertIntegrity(run, i, 900);
+
+        // ── 긴급 송출 중단 ──
+        run.Panic();
+        Assert.True(!run.Live && run.Engine.PanicCount == 1 && !run.Server(0).Connected && !run.Server(1).Connected && run.Engine.Target(0).State == Rst.RtmpTargetState.Stopped);
+        var frozen = run.VideoFramesOut;
+        run.Tick(Dt);
+        Assert.Equal(frozen, run.VideoFramesOut);
+
+        // ── 라이브 루프 ──
+        var t0 = run.Ticks;
+        run.Start();
+        for (var k = 0; k < 200 && run.Ticks < t0 + 5; k++) await Task.Delay(25);
+        run.Stop();
+        Assert.True(run.Ticks >= t0 + 5 && !run.Running && !run.Live && run.Engine.Target(0).Connects == 2, "라이브 진행 " + (run.Ticks - t0));
+        Assert.Contains("kbps", run.Summary(), StringComparison.Ordinal);
+        run.UplinkMbps = 999; Assert.Equal(Rst.OmniLiveRestreamStudioRunner.MaxUplinkMbps, run.UplinkMbps);
+        run.ExtraRttMs = float.NaN; Assert.Equal(0f, run.ExtraRttMs);
+        run.Dispose();
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(run));
+
+        // ── RTM-4: 카탈로그 159 · HUD · 레이아웃 · DI · 모달 규격 · 디스크 I/O 0 · 모달 렌더 ──
+        Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_liveBroadcastRestream" && en.Category == 4);
+        Assert.Equal(159, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        var root = RepoRoot();
+        var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
+        var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
+        var mainForm = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "MainForm.cs"));
+        var maui = File.ReadAllText(Path.Combine(root, "PromptFlowStudio.Mobile", "MauiProgram.cs"));
+        var modalSrc = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "OmniLiveRestreamBroadcastStudioModal.razor"));
+        Assert.True(hud.IndexOf("gth-v1783", StringComparison.Ordinal) is > 0 and var i1783 && i1783 < hud.IndexOf("gth-v1782", StringComparison.Ordinal) && hud.Contains("RstRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("RstRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<OmniLiveRestreamBroadcastStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_liveBroadcastRestream\"", StringComparison.Ordinal) && layout.Contains("\"_liveBroadcastRestream\" =>", StringComparison.Ordinal));
+        Assert.True(mainForm.Contains("LiveRestream.OmniLiveRestreamStudioRunner(sp)", StringComparison.Ordinal) && maui.Contains("LiveRestream.OmniLiveRestreamStudioRunner(sp)", StringComparison.Ordinal));
+        Assert.True(modalSrc.Contains("@implements IDisposable", StringComparison.Ordinal) && modalSrc.Contains("flex: 1 1 auto; min-height: 0; overflow-y: auto;", StringComparison.Ordinal) && modalSrc.Contains("position: sticky", StringComparison.Ordinal));
+        foreach (var src in Directory.GetFiles(Path.Combine(root, "PromptFlowStudio", "Services", "LiveRestream"), "*.cs"))
+        {
+            var text = File.ReadAllText(src);
+            Assert.True(!text.Contains("File.", StringComparison.Ordinal) && !text.Contains("FileStream", StringComparison.Ordinal) && !text.Contains("HttpClient", StringComparison.Ordinal) && !text.Contains("Process.Start", StringComparison.Ordinal), "디스크 I/O · 외부 프로세스 " + Path.GetFileName(src));
+        }
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = sp.GetService(typeof(Rst.OmniLiveRestreamStudioRunner))!;
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.OmniLiveRestreamBroadcastStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("rst-scrim", StringComparison.Ordinal) && html.Contains("rst-body", StringComparison.Ordinal) && html.Contains("rst-spark", StringComparison.Ordinal) && html.Contains("panic", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+
+    private static void AssertIntegrity(Rst.OmniLiveRestreamStudioRunner run, int i, long minFrames)
+    {
+        var t = run.Engine.Target(i); var s = run.Server(i);
+        var tag = t.Name + " v " + t.VideoFrames + "/" + s.VideoTags + " a " + t.AudioFrames + "/" + s.AudioTags + " key " + s.Keyframes + " glitch " + s.GlitchFrames + " corrupt " + s.CorruptTags + " drops " + t.Drops + " ovf " + s.Overflows + " perr " + s.ProtocolErrors;
+        Assert.True(t.VideoFrames == s.VideoTags && t.AudioFrames == s.AudioTags && t.VideoFrames >= minFrames && s.Keyframes >= 2, tag);
+        Assert.True(t.PayloadHash == s.PayloadHash, "페이로드 해시 " + tag);
+        Assert.True(s.GlitchFrames == 0 && s.CorruptTags == 0 && s.ProtocolErrors == 0 && t.Drops == 0 && s.Overflows == 0, tag);
+        Assert.True(s.VideoSeqHeaders >= 1 && s.AudioSeqHeaders >= 1, "시퀀스 헤더 " + tag);
+    }
+
+    private static void WireChecks()
+    {
+        // 청크 왕복 — fmt0 + fmt3 연속 · 확장 타임스탬프 · SetChunkSize · 1 바이트 분할 투입
+        var payload = new byte[10_000];
+        for (var i = 0; i < payload.Length; i++) payload[i] = (byte)(i * 7 + 3);
+        var buf = new byte[Rst.RtmpWire.MaxChunked(payload.Length, 128) + 64];
+        var n = Rst.RtmpWire.WriteControl(buf, Rst.RtmpWire.TypeSetChunk, 4096, 128);
+        n += Rst.RtmpWire.WriteMessage(buf.AsSpan(n), Rst.RtmpWire.CsidVideo, 0x1234567u, Rst.RtmpWire.TypeVideo, 1, payload, 4096);
+        n += Rst.RtmpWire.WriteMessage(buf.AsSpan(n), Rst.RtmpWire.CsidAudio, 77, Rst.RtmpWire.TypeAudio, 1, payload.AsSpan(0, 300), 4096);
+        var cap = new Capture();
+        var rd = new Rst.RtmpChunkReader();
+        Assert.True(rd.Feed(buf.AsSpan(0, n), cap));
+        Assert.True(cap.Messages.Count == 3 && rd.ChunkSize == 4096, "청크 메시지 " + cap.Messages.Count);
+        Assert.True(cap.Messages[1].Ts == 0x1234567u && cap.Messages[1].Sid == 1 && cap.Messages[1].Payload.AsSpan().SequenceEqual(payload), "확장 TS 왕복");
+        Assert.True(cap.Messages[2].Ts == 77 && cap.Messages[2].Payload.AsSpan().SequenceEqual(payload.AsSpan(0, 300)));
+        var cap2 = new Capture(); var rd2 = new Rst.RtmpChunkReader();
+        for (var i = 0; i < n; i++) rd2.Feed(buf.AsSpan(i, 1), cap2);
+        Assert.True(cap2.Messages.Count == 3 && cap2.Messages[1].Payload.AsSpan().SequenceEqual(payload), "부분 수신 이월");
+
+        // AMF0
+        var amf = new byte[512];
+        var w = new Rst.Amf0Writer(amf);
+        w.Str("connect"u8); w.Num(1); w.ObjStart(); w.Prop("app"u8, "live2".AsSpan()); w.Prop("ver"u8, 3); w.Key("flag"u8); w.Bool(true); w.ObjEnd(); w.Null();
+        var r = new Rst.Amf0Reader(amf.AsSpan(0, w.Pos));
+        Assert.True(r.String(out var name) && name.SequenceEqual("connect"u8) && r.Number(out var txn) && txn == 1);
+        Assert.True(r.FindString("app"u8, out var app) && app.SequenceEqual("live2"u8) && r.Skip() && r.End, "AMF0 왕복");
+
+        // Annex-B · FLV · ADTS
+        byte[] au = { 0, 0, 0, 1, 0x09, 0xF0, 0, 0, 1, 0x67, 0x64, 0x00, 0x28, 0xAC, 0, 0, 0, 1, 0x68, 0xEE, 0x3C, 0x80, 0, 0, 1, 0x65, 0x88, 0x84, 0x21 };
+        var pos = 0; var types = new List<int>();
+        while (Rst.RtmpWire.NextNal(au, ref pos, out var nal)) if (nal.Length > 0) types.Add(nal[0] & 0x1F);
+        Assert.Equal(new[] { 9, 7, 8, 5 }, types);
+        var seq = new byte[64];
+        var sl = Rst.RtmpWire.WriteAvcSequenceHeader(seq, au.AsSpan(9, 5), au.AsSpan(18, 4));
+        Assert.True(sl == 13 + 5 + 3 + 4 && seq[0] == 0x17 && seq[1] == 0 && seq[5] == 1 && seq[6] == 0x64 && seq[8] == 0x28 && seq[10] == 0xE1, "AVC 설정 레코드");
+        var aac = new byte[4];
+        Rst.RtmpWire.WriteAacSequenceHeader(aac, 3, 2);
+        Assert.True(aac[0] == 0xAF && aac[1] == 0 && aac[2] == 0x11 && aac[3] == 0x90, "AAC ASC");
+        byte[] adts = { 0xFF, 0xF1, 0x4C, 0x80, 0x02, 0x1F, 0xFC, 0x21, 0x22 };
+        Assert.Equal(2, Rst.RtmpWire.StripAdts(adts).Length);
+
+        // 핸드셰이크 거부 — 잘못된 버전 → 서버 절단 · 엔진 Failed
+        var srv = new Rst.LoopbackRtmpServerTransport("bad");
+        var bad = new byte[1537]; bad[0] = 6;
+        Assert.Equal(-1, srv.Send(bad));
+        var eng = new Rst.ZeroAllocMultiTargetRtmpStreamerEngine();
+        var idx = eng.AddTarget(new Rst.RtmpTarget("x", Rst.RtmpPlatform.Custom, "app", "rtmps://x/app", "k", srv));
+        Assert.False(eng.Connect(idx, 6000, 160, 200));
+        Assert.Equal(Rst.RtmpTargetState.Failed, eng.Target(idx).State);
+    }
+
+    private static void ChatChecks()
+    {
+        var c = new Rst.OmniLiveChatSuperChatAggregatorEngine();
+        var irc = System.Text.Encoding.UTF8.GetBytes(
+            "@badge-info=;color=#FF0000;display-name=Alice;id=a1 :alice!alice@alice.tmi.twitch.tv PRIVMSG #ch :안녕하세요\r\n" +
+            "@bits=5000;display-name=;id=a2 :bigfan!bigfan@bigfan.tmi.twitch.tv PRIVMSG #ch :Cheer5000 최고!\r\n" +
+            "PING :tmi.twitch.tv\r\n" +
+            "@display-name=Subby;msg-id=resub;id=a3 :tmi.twitch.tv USERNOTICE #ch :6개월!\r\n" +
+            "@display-name=Raider;msg-id=raid :tmi.twitch.tv USERNOTICE #ch\r\n");
+        Assert.Equal(3, c.IngestTwitchIrc(irc));
+        Assert.Equal(1, c.Pings);
+        Assert.True(c.Event(0).Kind == Rst.ChatKind.Membership && c.Event(0).Importance == 2 && new string(c.Author(0)) == "Subby" && new string(c.Text(0)) == "6개월!");
+        Assert.True(c.Event(1).Kind == Rst.ChatKind.Bits && c.Event(1).AmountKrw == 67_500 && c.Event(1).Importance == 3 && new string(c.Author(1)) == "bigfan", "비트 " + c.Event(1).AmountKrw);
+        Assert.True(c.Event(2).Kind == Rst.ChatKind.Chat && new string(c.Author(2)) == "Alice" && new string(c.Text(2)) == "안녕하세요");
+
+        var yt = System.Text.Encoding.UTF8.GetBytes(
+            "{\"kind\":\"youtube#liveChatMessageListResponse\",\"pollingIntervalMillis\":3500,\"nextPageToken\":\"GxYz\",\"pageInfo\":{\"totalResults\":2},\"items\":[" +
+            "{\"id\":\"m1\",\"snippet\":{\"type\":\"textMessageEvent\",\"displayMessage\":\"say \\\"hi\\\" \\uD55C\",\"textMessageDetails\":{\"messageText\":\"say \\\"hi\\\" \\uD55C\"}},\"authorDetails\":{\"displayName\":\"Bob\",\"isChatOwner\":false}}," +
+            "{\"id\":\"m2\",\"snippet\":{\"type\":\"superChatEvent\",\"displayMessage\":\"$20.00 nice\",\"superChatDetails\":{\"amountMicros\":\"20000000\",\"currency\":\"USD\",\"amountDisplayString\":\"$20.00\",\"userComment\":\"nice\",\"tier\":3}},\"authorDetails\":{\"displayName\":\"Carol\"}}]}");
+        Assert.Equal(2, c.IngestYouTubePoll(yt));
+        Assert.True(c.PollIntervalMs == 3500 && c.PageToken.SequenceEqual("GxYz"), "폴링 토큰");
+        Assert.True(c.Event(0).Kind == Rst.ChatKind.SuperChat && c.Event(0).AmountKrw == 27_000 && c.Event(0).Importance == 2 && new string(c.Text(0)) == "nice" && new string(c.Author(0)) == "Carol");
+        Assert.True(new string(c.Text(1)) == "say \"hi\" 한" && c.Event(1).Platform == Rst.ChatPlatform.YouTube, "이스케이프 " + new string(c.Text(1)));
+        Assert.Equal(0, c.IngestYouTubePoll(yt));
+        Assert.Equal(2, c.Duplicates);
+        Assert.Equal(0, c.IngestYouTubePoll("{\"items\":[{\"id\":\"zz\",\"snippet\":{"u8));
+        Assert.Equal(1, c.Malformed);
+        for (var i = 0; i < c.Recent - 1; i++) Assert.True(c.Event(i).Seq == c.Event(i + 1).Seq + 1, "순차 Seq");
+        Assert.Equal(5, c.Count(Rst.ChatPlatform.Twitch) + c.Count(Rst.ChatPlatform.YouTube));
+
+        var sink = new Sink();
+        Assert.Equal(5, c.Drain(sink));
+        Assert.Equal(3, sink.Calls.Count);
+        Assert.True(sink.Calls[0].Emo == Vvf.VoiceEmotion.Excited && sink.Calls[0].Pose == PromptFlowStudio.Services.LiveShowroom.HoldPose.Clap && sink.Calls[0].Sec == 3.5f, "비트 리액션");
+        Assert.True(sink.Calls[1].Pose == PromptFlowStudio.Services.LiveShowroom.HoldPose.ThumbsUp && sink.Calls[1].Sec == 2f, "멤버십 리액션");
+        Assert.True(sink.Calls[2].Pose == PromptFlowStudio.Services.LiveShowroom.HoldPose.Clap && sink.Calls[2].Sec == 2f, "슈퍼챗 리액션");
+        Assert.Equal(Vvf.VoiceEmotion.Funny, Rst.OmniLiveChatSuperChatAggregatorEngine.EmotionFor(1));
+        Assert.Equal(0, c.Drain(sink));
+
+        var one = System.Text.Encoding.UTF8.GetBytes("@display-name=x :x!x@x.tmi.twitch.tv PRIVMSG #ch :spam\r\n");
+        for (var i = 0; i < 300; i++) c.IngestTwitchIrc(one);
+        Assert.True(c.Overruns > 0 && c.Recent == Rst.OmniLiveChatSuperChatAggregatorEngine.Capacity, "링 덮어쓰기 " + c.Overruns);
+        Assert.Equal(Rst.OmniLiveChatSuperChatAggregatorEngine.Capacity, c.Drain(sink));
+
+        sink.Record = false;
+        c.IngestTwitchIrc(irc); c.IngestYouTubePoll(yt); c.Drain(sink);
+        var alloc = AllocationProbe.MinAllocated(() => { c.IngestTwitchIrc(irc); c.IngestYouTubePoll(yt); c.Drain(sink); });
+        Assert.True(alloc == 0, "채팅 수집 할당 " + alloc);
+    }
+
+    private static void AbrChecks()
+    {
+        var g = new Rst.AdaptiveBitrateNetworkCongestionGuard();
+        long now = 0;
+        for (var k = 0; k < 5; k++) { Assert.True(g.Sample(0, 30, now)); now += 100_000; }
+        Assert.False(g.Sample(0, 30, now - 50_000));
+        Assert.True(g.Tier == 0 && g.CongestionIndex == 0f);
+        for (var k = 0; k < 3; k++) { g.Sample(600_000, 30, now); now += 100_000; }
+        Assert.True(g.TargetTier == 1 && g.Tier == 0 && g.KeyframeRequested, "감쇄 예약 " + g.CongestionIndex);
+        Assert.False(g.OnFrame(false, now));
+        Assert.Equal(1, g.DeferredFrames);
+        Assert.True(g.OnFrame(true, now) && g.Tier == 1 && g.Kbps == 4000 && !g.KeyframeRequested);
+        for (var k = 0; k < 5; k++) { g.Sample(600_000, 30, now); now += 100_000; }
+        Assert.Equal(1, g.TargetTier);   // 1 s 홀드
+        for (var k = 0; k < 6; k++) { g.Sample(600_000, 30, now); now += 100_000; }
+        Assert.Equal(2, g.TargetTier);
+        g.OnFrame(true, now);
+        for (var k = 0; k < 10; k++) { g.Sample(600_000, 30, now); now += 100_000; }
+        Assert.True(g.Tier == 2 && !g.SwitchPending, "하한 유지");
+        for (var k = 0; k < 49; k++) { g.Sample(0, 30, now); now += 100_000; }
+        Assert.False(g.SwitchPending);
+        g.Sample(0, 30, now); now += 100_000;
+        Assert.True(g.TargetTier == 1 && g.OnFrame(true, now) && g.Upshifts == 1 && g.UnalignedSwitches == 0);
+        g.Sample(0, 400, now); now += 100_000;
+        Assert.True(g.CongestionIndex > 1f, "RTT 정체 " + g.CongestionIndex);
+        g.Enabled = false;
+        for (var k = 0; k < 10; k++) { g.Sample(900_000, 400, now); now += 100_000; }
+        Assert.False(g.SwitchPending);
+        g.Enabled = true;
+        var alloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 20; k++) { g.Sample(1000, 30, now); now += 100_000; g.OnFrame(k % 5 == 0, now); } });
+        Assert.True(alloc == 0, "ABR 할당 " + alloc);
+        Assert.Equal(Rst.AdaptiveBitrateNetworkCongestionGuard.History, Math.Max(g.HistoryCount, Rst.AdaptiveBitrateNetworkCongestionGuard.History));
     }
 
     private static string RepoRoot()

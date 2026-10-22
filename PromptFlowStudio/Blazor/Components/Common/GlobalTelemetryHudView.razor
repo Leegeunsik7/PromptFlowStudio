@@ -275,6 +275,7 @@
 @inject PromptFlowStudio.Services.SmartPublishing.SmartPublishingSchedulerStudioRunner SpsRun
 @inject PromptFlowStudio.Services.VisualHooks.KineticVisualHookStudioRunner KvhRun
 @inject PromptFlowStudio.Services.KineticBRoll.KineticTypographyBRollStudioRunner KbrRun
+@inject PromptFlowStudio.Services.LiveRestream.OmniLiveRestreamStudioRunner RstRun
 @inject PromptFlowStudio.Services.MultilingualDubbing.MultilingualDubbingStudioRunner MldRun
 @inject PromptFlowStudio.Services.MatrixSyndication.MatrixSyndicationStudioRunner MtxRun
 @inject PromptFlowStudio.Services.ViralVoiceFx.ViralVoiceFxStudioRunner VvfRun
@@ -998,6 +999,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.83.0: 옴니채널 라이브 RTMPS — 송출 · ABR 티어 · 정체 · 채팅/슈퍼챗 ── *@
+    <div class="gth-v1783">
+        <div class="gth-v96-card pid @(RstRun.Live && RstRun.Abr.CongestionIndex <= PromptFlowStudio.Services.LiveRestream.AdaptiveBitrateNetworkCongestionGuard.DownIndex ? "ok" : null)">
+            <div class="gth-v96-h"><b>📡 옴니 라이브 RTMPS</b>
+                <span class="gth-v96-be">@(RstRun.Live ? "ON AIR " + RstRun.Engine.PublishingCount.ToString(System.Globalization.CultureInfo.InvariantCulture) + "/" + PromptFlowStudio.Services.LiveRestream.OmniLiveRestreamStudioRunner.TargetCount.ToString(System.Globalization.CultureInfo.InvariantCulture) : "대기")@(RstRun.Running ? " · ▶" : null)</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@((RstRun.TotalKbps / 1000f).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture))</b><span>Mbps</span></span>
+                <span class="gth-v96-m"><b>@((RstRun.Abr.Kbps / 1000f).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture))M</b><span>ABR 티어</span></span>
+                <span class="gth-v96-m"><b class="@(RstRun.Abr.CongestionIndex > PromptFlowStudio.Services.LiveRestream.AdaptiveBitrateNetworkCongestionGuard.DownIndex ? "warn" : null)">@(RstRun.Abr.CongestionIndex.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture))</b><span>정체</span></span>
+                <span class="gth-v96-m"><b>@(RstRun.Chat.SuperChats)</b><span>슈퍼챗</span></span>
+            </div>
+            <div class="gth-v96-act">@(RstRun.LastAction ?? "대기")</div>
+        </div>
+    </div>
     @* ── v17.82.0: 다국어 더빙 & 립싱크 — 트랙 · WSOLA 배율 · A/V 드리프트 · 보정 ── *@
     <div class="gth-v1782">
         <div class="gth-v96-card pid @(MldRun.Prepared && Math.Abs(MldRun.Drift.DriftUs) <= PromptFlowStudio.Services.MultilingualDubbing.AudioVisualPhaseDriftGuard.ThresholdUs ? "ok" : null)">
@@ -5680,6 +5696,7 @@
         VlRun.OnChange += OnSwarmChanged; // v17.50.0 (3.3 Hz)
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
         KbrRun.OnChange += OnSwarmChanged; // v17.78.0 (재생 10 Hz → 250 ms 스로틀)
+        RstRun.OnChange += OnSwarmChanged; // v17.83.0 (송출 60 Hz → 250 ms 스로틀 · 연결/패닉/슈퍼챗 즉시)
         MldRun.OnChange += OnSwarmChanged; // v17.82.0 (재생 60 fps → 250 ms 스로틀 · 트랙/주입 즉시)
         MtxRun.OnChange += OnSwarmChanged; // v17.81.0 (프리뷰 250 ms 스로틀 · 예약/동결 즉시)
         VvfRun.OnChange += OnSwarmChanged; // v17.80.0 (라이브 250 ms 스로틀 · 프리셋/FX 즉시)
@@ -6060,6 +6077,7 @@
         VlRun.OnChange -= OnSwarmChanged;
         OcRun.OnChange -= OnSwarmChanged;
         KbrRun.OnChange -= OnSwarmChanged;
+        RstRun.OnChange -= OnSwarmChanged;
         MldRun.OnChange -= OnSwarmChanged;
         MtxRun.OnChange -= OnSwarmChanged;
         VvfRun.OnChange -= OnSwarmChanged;

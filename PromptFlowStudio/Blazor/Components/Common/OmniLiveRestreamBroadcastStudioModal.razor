@@ -1,0 +1,292 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.LiveRestream
+@using PromptFlowStudio.Services.ViralVoiceFx
+@implements IDisposable
+@inject OmniLiveRestreamStudioRunner Runner
+
+@* [PromptFlow Studio v17.83.0] 📡 옴니채널 라이브 RTMPS 콕핏 — 플랫폼별 연결 뱃지 · 비트레이트/FPS 게이지 · ABR 티어 사다리 · 통합 채팅 피드 · 긴급 송출 중단. *@
+<div class="rst-scrim" @onclick="Close">
+    <div class="rst-modal" @onclick:stopPropagation="true">
+        <div class="rst-h">
+            <div>
+                <div class="rst-title">📡 옴니채널 라이브 RTMPS 콕핏 @(Runner.Live ? "· 🔴 ON AIR" : null)</div>
+                <div class="rst-sub">하나의 영상·음성 신호를 <b>YouTube Live와 Twitch에 동시에</b> 암호화(RTMPS) 송출합니다. 프레임은 한 번만 포장해 두 플랫폼으로 그대로 나눠 보내며,
+                    인터넷 업로드가 막히면 화면 깨짐 없이 <b>6 → 4 → 2.5 Mbps</b>로 화질을 낮췄다가 회선이 안정되면 다시 올립니다. 두 플랫폼 채팅·슈퍼챗은 한 피드로 모이고, 후원 금액에 따라 아바타가 즉시 감정과 제스처로 반응합니다.</div>
+            </div>
+            <button class="rst-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="rst-body">
+            <div class="rst-bar">
+                <button class="rst-btn @(Runner.Running ? "on" : null)" @onclick="Toggle">@(Runner.Running ? "⏸ 루프 정지" : "▶ 송출 시작")</button>
+                <button class="rst-btn" @onclick="Step">⏭ 1 프레임</button>
+                <button class="rst-btn" @onclick="EndLive">⏹ 정상 종료</button>
+                <span class="rst-sep"></span>
+                <button class="rst-btn panic" @onclick="Panic">🛑 긴급 송출 중단</button>
+            </div>
+            <div class="rst-bar">
+                @for (var i = 0; i < OmniLiveRestreamStudioRunner.TargetCount; i++)
+                {
+                    var ti = i;
+                    <label class="rst-lbl"><input type="checkbox" checked="@(Runner.Engine.Target(ti).Enabled)" @onchange="e => SetTarget(ti, e)" /> @(OmniLiveRestreamStudioRunner.TargetNames[ti])</label>
+                }
+                <label class="rst-lbl"><input type="checkbox" checked="@(Runner.AbrEnabled)" @onchange="ToggleAbr" /> ABR 세이프티 가드</label>
+                <label class="rst-lbl">업링크 <input type="range" min="1" max="40" step="0.5" value="@(Runner.UplinkMbps.ToString("0.0", CultureInfo.InvariantCulture))" @oninput="SetUplink" /> <b>@(Runner.UplinkMbps.ToString("0.0", CultureInfo.InvariantCulture)) Mbps</b></label>
+                <label class="rst-lbl">추가 RTT <input type="range" min="0" max="400" step="10" value="@(Runner.ExtraRttMs.ToString("0", CultureInfo.InvariantCulture))" @oninput="SetRtt" /> <b>@(Runner.ExtraRttMs.ToString("0", CultureInfo.InvariantCulture)) ms</b></label>
+            </div>
+            <div class="rst-bar">
+                <button class="rst-btn" @onclick="() => Super(1)">💸 슈퍼챗 ₩5,000</button>
+                <button class="rst-btn" @onclick="() => Super(2)">💸 슈퍼챗 $20</button>
+                <button class="rst-btn hot" @onclick="() => Super(3)">💎 슈퍼챗 ¥10,000</button>
+                <button class="rst-btn" @onclick="Cheer">💜 Twitch Cheer 1000</button>
+            </div>
+
+            <div class="rst-main">
+                <div class="rst-card">
+                    <div class="rst-sec">🛰️ 플랫폼 송출 상태</div>
+                    @for (var i = 0; i < OmniLiveRestreamStudioRunner.TargetCount; i++)
+                    {
+                        var t = Runner.Engine.Target(i); var s = Runner.Server(i);
+                        <div class="rst-plat">
+                            <div class="rst-plat-h">
+                                <b>@(t.Platform == RtmpPlatform.YouTube ? "▶️" : "🟣") @(t.Name)</b>
+                                <span class="rst-badge @(BadgeClass(t))">@(StateName(t))</span>
+                            </div>
+                            <div class="rst-grid">
+                                <span>전송 <b>@(Runner.TargetKbps(i).ToString("0", CultureInfo.InvariantCulture)) kbps</b></span>
+                                <span>프레임 <b>@(t.VideoFrames)</b></span>
+                                <span>키프레임 <b>@(t.Keyframes)</b></span>
+                                <span>큐 <b>@((s.PendingBytes / 1024.0).ToString("0", CultureInfo.InvariantCulture)) KB</b></span>
+                                <span>RTT <b>@(s.RttMs.ToString("0", CultureInfo.InvariantCulture)) ms</b></span>
+                                <span>게이트 <b>@(t.Gated)</b></span>
+                                <span>드롭 <b class="@(t.Drops > 0 ? "warn" : null)">@(t.Drops)</b></span>
+                                <span>무결성 <b class="@(t.PayloadHash == s.PayloadHash ? "okc" : "warn")">@(t.PayloadHash == s.PayloadHash ? "✓ 일치" : "✗ 불일치")</b></span>
+                            </div>
+                            @if (t.LastError is { Length: > 0 } err)
+                            {
+                                <div class="rst-err">⚠ @(err)</div>
+                            }
+                        </div>
+                    }
+                    <div class="rst-kv">청크 직렬화 <b>@(Runner.Engine.ChunkBuilds)</b> · 제로-카피 분기 <b>@(Runner.Engine.Fanouts)</b> · 먹스 <b>@(Runner.Engine.LastMuxUs.ToString("0", CultureInfo.InvariantCulture))µs</b> · 시퀀스 v<b>@(Runner.Engine.SeqVersion)</b></div>
+                </div>
+
+                <div class="rst-card">
+                    <div class="rst-sec">📈 실시간 비트레이트 · FPS</div>
+                    <div class="rst-gauges">
+                        <svg viewBox="0 0 140 90" width="140" height="90">
+                            <path d="M15 80 A55 55 0 0 1 125 80" fill="none" stroke="#1e293b" stroke-width="10" />
+                            <path d="@(Arc(Runner.TotalKbps / 13000f))" fill="none" stroke="#38bdf8" stroke-width="10" stroke-linecap="round" />
+                            <g><text x="70" y="70" text-anchor="middle" fill="#e2e8f0" font-size="16" font-weight="700">@((Runner.TotalKbps / 1000f).ToString("0.0", CultureInfo.InvariantCulture))</text></g>
+                            <g><text x="70" y="86" text-anchor="middle" fill="#94a3b8" font-size="9">Mbps 합계</text></g>
+                        </svg>
+                        <svg viewBox="0 0 140 90" width="140" height="90">
+                            <path d="M15 80 A55 55 0 0 1 125 80" fill="none" stroke="#1e293b" stroke-width="10" />
+                            <path d="@(Arc(Runner.Fps1s / 60f))" fill="none" stroke="@(Runner.Fps1s >= 29f ? "#4ade80" : "#fbbf24")" stroke-width="10" stroke-linecap="round" />
+                            <g><text x="70" y="70" text-anchor="middle" fill="#e2e8f0" font-size="16" font-weight="700">@(Runner.Fps1s.ToString("0", CultureInfo.InvariantCulture))</text></g>
+                            <g><text x="70" y="86" text-anchor="middle" fill="#94a3b8" font-size="9">FPS</text></g>
+                        </svg>
+                    </div>
+                    <svg viewBox="0 0 240 60" preserveAspectRatio="none" class="rst-spark">
+                        <polyline points="@(Spark(true))" fill="none" stroke="#38bdf8" stroke-width="1.5" />
+                        <polyline points="@(Spark(false))" fill="none" stroke="#f472b6" stroke-width="1.2" />
+                    </svg>
+                    <div class="rst-sec sm">🛡️ ABR 티어 사다리 @(Runner.Abr.SwitchPending ? "· IDR 대기 중" : null)</div>
+                    @for (var k = 0; k < AdaptiveBitrateNetworkCongestionGuard.TierKbps.Length; k++)
+                    {
+                        <div class="rst-tier @(Runner.Abr.Tier == k ? "cur" : null) @(Runner.Abr.TargetTier == k && Runner.Abr.SwitchPending ? "next" : null)">@(AdaptiveBitrateNetworkCongestionGuard.TierName(k))</div>
+                    }
+                    <div class="rst-kv">정체 지수 <b class="@(Runner.Abr.CongestionIndex > AdaptiveBitrateNetworkCongestionGuard.DownIndex ? "warn" : null)">@(Runner.Abr.CongestionIndex.ToString("0.00", CultureInfo.InvariantCulture))</b> · 큐 <b>@(Runner.Abr.QueueMs.ToString("0", CultureInfo.InvariantCulture))ms</b> · RTT <b>@(Runner.Abr.RttMs.ToString("0", CultureInfo.InvariantCulture))ms</b></div>
+                    <div class="rst-kv">감쇄 <b>@(Runner.Abr.Downshifts)</b> · 복구 <b>@(Runner.Abr.Upshifts)</b> · 비정렬 전환 <b>@(Runner.Abr.UnalignedSwitches)</b> · 강제 IDR <b>@(Runner.ForcedIdr)</b></div>
+                </div>
+
+                <div class="rst-card">
+                    <div class="rst-sec">💬 통합 채팅 피드</div>
+                    <div class="rst-avatar">
+                        <span class="rst-emo">@(RealtimeVoiceEmotionShifterEngine.EmotionIcon(Runner.Emotion.Emotion))</span>
+                        <span>아바타 <b>@(RealtimeVoiceEmotionShifterEngine.EmotionName(Runner.Emotion.Emotion))</b> · 제스처 <b>@(Runner.Pose)</b>@(Runner.PoseLeftSec > 0 ? " " + Runner.PoseLeftSec.ToString("0.0", CultureInfo.InvariantCulture) + "s" : null)</span>
+                    </div>
+                    <div class="rst-feed">
+                        @for (var i = 0; i < Math.Min(14, Runner.Chat.Recent); i++)
+                        {
+                            var e = Runner.Chat.Event(i);
+                            <div class="rst-msg @(e.Importance > 0 ? "sc" + e.Importance.ToString(CultureInfo.InvariantCulture) : null)">
+                                <span class="rst-pf">@(OmniLiveChatSuperChatAggregatorEngine.PlatformIcon(e.Platform))</span>
+                                <b>@(new string(Runner.Chat.Author(i)))</b>
+                                @if (e.Kind != ChatKind.Chat)
+                                {
+                                    <span class="rst-amt">@(OmniLiveChatSuperChatAggregatorEngine.KindName(e.Kind))@(e.AmountKrw > 0 ? " ₩" + e.AmountKrw.ToString("#,0", CultureInfo.InvariantCulture) : null)</span>
+                                }
+                                <span>@(new string(Runner.Chat.Text(i)))</span>
+                            </div>
+                        }
+                    </div>
+                    <div class="rst-kv">YouTube <b>@(Runner.Chat.Count(ChatPlatform.YouTube))</b> · Twitch <b>@(Runner.Chat.Count(ChatPlatform.Twitch))</b> · 슈퍼챗 <b>@(Runner.Chat.SuperChats)</b> · 리액션 <b>@(Runner.Chat.Reactions)</b> · 지연 <b>@(Runner.Chat.LastReactionUs.ToString("0", CultureInfo.InvariantCulture))µs</b></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="rst-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+    </div>
+</div>
+
+<style>
+    .rst-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .rst-modal { width: min(1320px, 96vw); max-height: 94vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); color: var(--text-primary); }
+    .rst-h { position: sticky; top: 0; z-index: 3; flex: 0 0 auto; display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px 8px; background: var(--card); border-bottom: 1px solid var(--line); }
+    .rst-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 10px; }
+    .rst-act { position: sticky; bottom: 0; z-index: 3; flex: 0 0 auto; padding: 8px 16px 14px; background: var(--card); border-top: 1px solid var(--line); font-size: 11px; color: var(--text-muted); }
+    .rst-title { font-size: 17px; font-weight: 800; }
+    .rst-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .rst-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .rst-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 0; }
+    .rst-sep { flex: 1; }
+    .rst-lbl { display: inline-flex; gap: 6px; align-items: center; font-size: 11.5px; }
+    .rst-lbl b { font-family: var(--mono); color: #fde047; }
+    .rst-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .rst-btn.hot { border-color: #a855f7; }
+    .rst-btn.on { background: color-mix(in srgb, #38bdf8 25%, #1e293b); border-color: #38bdf8; }
+    .rst-btn.panic { background: #7f1d1d; border-color: #ef4444; font-weight: 800; }
+    .rst-main { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, 1.1fr); gap: 10px; margin-top: 10px; }
+    .rst-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-width: 0; }
+    .rst-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 6px; }
+    .rst-sec.sm { margin-top: 8px; font-size: 11.5px; }
+    .rst-kv { font-size: 11px; color: var(--text-muted); margin: 4px 0; }
+    .rst-kv b { font-family: var(--mono); color: var(--text-primary); }
+    .rst-plat { background: #0f172a; border-radius: 8px; padding: 6px 8px; margin-bottom: 6px; }
+    .rst-plat-h { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+    .rst-badge { font-size: 10.5px; padding: 2px 8px; border-radius: 999px; background: #334155; }
+    .rst-badge.live { background: #b91c1c; color: #fff; } .rst-badge.wait { background: #a16207; } .rst-badge.fail { background: #450a0a; color: #fca5a5; }
+    .rst-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px 6px; margin-top: 4px; font-size: 10.5px; color: var(--text-muted); }
+    .rst-grid b { font-family: var(--mono); color: var(--text-primary); }
+    .warn { color: #fca5a5 !important; } .okc { color: #86efac !important; }
+    .rst-err { font-size: 10.5px; color: #fca5a5; margin-top: 3px; }
+    .rst-gauges { display: flex; justify-content: space-around; }
+    .rst-spark { width: 100%; height: 60px; background: #05070c; border-radius: 6px; margin-top: 4px; }
+    .rst-tier { font-size: 11px; font-family: var(--mono); padding: 3px 8px; border-radius: 6px; margin-top: 3px; background: #0f172a; color: var(--text-muted); }
+    .rst-tier.cur { background: #0c4a6e; color: #e0f2fe; font-weight: 700; } .rst-tier.next { outline: 1px dashed #fbbf24; }
+    .rst-avatar { display: flex; gap: 8px; align-items: center; font-size: 11.5px; background: #0f172a; border-radius: 8px; padding: 4px 8px; }
+    .rst-emo { font-size: 22px; }
+    .rst-feed { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; max-height: 300px; overflow-y: auto; }
+    .rst-msg { font-size: 11.5px; padding: 3px 6px; border-radius: 6px; background: #0f172a; display: flex; gap: 6px; flex-wrap: wrap; align-items: baseline; }
+    .rst-msg.sc1 { background: #1e3a8a; } .rst-msg.sc2 { background: #92400e; } .rst-msg.sc3 { background: #9d174d; box-shadow: 0 0 0 1px #f472b6; }
+    .rst-amt { font-family: var(--mono); color: #fde047; font-size: 10.5px; }
+    .rst-pf { font-size: 11px; }
+    @@media (max-width: 1100px) { .rst-main { grid-template-columns: 1fr 1fr; } }
+    @@media (max-width: 760px) { .rst-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("LiveRestream.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static string StateName(RtmpTarget t) => !t.Enabled ? "비활성" : t.State switch
+    {
+        RtmpTargetState.Publishing => t.WaitingKeyframe ? "IDR 대기" : "LIVE",
+        RtmpTargetState.Handshaking => "핸드셰이크",
+        RtmpTargetState.Connecting => "연결 중",
+        RtmpTargetState.Failed => "실패",
+        RtmpTargetState.Stopped => "종료",
+        _ => "대기",
+    };
+
+    private static string? BadgeClass(RtmpTarget t) => !t.Enabled ? null : t.State switch
+    {
+        RtmpTargetState.Publishing => t.WaitingKeyframe ? "wait" : "live",
+        RtmpTargetState.Failed => "fail",
+        _ => null,
+    };
+
+    private static string Arc(float frac)
+    {
+        var f = Math.Clamp(float.IsFinite(frac) ? frac : 0f, 0.001f, 1f);
+        var a = MathF.PI * (1f - f);
+        var x = 70f + 55f * MathF.Cos(a); var y = 80f - 55f * MathF.Sin(a);
+        return "M15 80 A55 55 0 0 1 " + x.ToString("0.0", CultureInfo.InvariantCulture) + " " + y.ToString("0.0", CultureInfo.InvariantCulture);
+    }
+
+    private string Spark(bool kbps)
+    {
+        var n = Runner.HistCount;
+        if (n < 2) return "0,60 240,60";
+        var sb = new System.Text.StringBuilder(n * 12);
+        for (var i = 0; i < n; i++)
+        {
+            var v = kbps ? Runner.HistKbps(i) / 13000f : Runner.HistFps(i) / 60f;
+            var x = i * 240f / (n - 1); var y = 58f - 56f * Math.Clamp(v, 0f, 1f);
+            sb.Append(x.ToString("0.0", CultureInfo.InvariantCulture)).Append(',').Append(y.ToString("0.0", CultureInfo.InvariantCulture)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void Toggle()
+    {
+        try { if (Runner.Running) Runner.Stop(); else Runner.Start(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveRestream.Modal.Toggle", ex); }
+    }
+
+    private void Step()
+    {
+        try { Runner.Step(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveRestream.Modal.Step", ex); }
+    }
+
+    private void EndLive()
+    {
+        try { Runner.Stop(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveRestream.Modal.Stop", ex); }
+    }
+
+    private void Panic()
+    {
+        try { Runner.Panic(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveRestream.Modal.Panic", ex); }
+    }
+
+    private void Super(int tier)
+    {
+        try { Runner.InjectSuperChat(tier); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveRestream.Modal.SuperChat", ex); }
+    }
+
+    private void Cheer()
+    {
+        try { Runner.InjectCheer(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("LiveRestream.Modal.Cheer", ex); }
+    }
+
+    private void SetTarget(int i, ChangeEventArgs e) => Runner.SetTargetEnabled(i, e.Value is bool b ? b : !Runner.Engine.Target(i).Enabled);
+
+    private void ToggleAbr(ChangeEventArgs e) => Runner.AbrEnabled = e.Value is bool b ? b : !Runner.AbrEnabled;
+
+    private void SetUplink(ChangeEventArgs e)
+    {
+        if (float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) Runner.UplinkMbps = v;
+    }
+
+    private void SetRtt(ChangeEventArgs e)
+    {
+        if (float.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) Runner.ExtraRttMs = v;
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}
