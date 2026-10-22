@@ -497,6 +497,10 @@
         {
             <KineticTypographyBRollStudioModal OnClose="() => _brollSubtitles = false" />
         }
+        @if (_voiceFxStudio)
+        {
+            <ViralVoiceFxStudioModal OnClose="() => _voiceFxStudio = false" />
+        }
         @if (_liveOAuthPublisher)
         {
             <ProductionLivePublisherStudioModal OnClose="() => _liveOAuthPublisher = false" />
@@ -1049,6 +1053,7 @@
             case "_bcastMcr": _bcastMcr = on; break;
             case "_showrunner": _showrunner = on; break;
             case "_brollSubtitles": _brollSubtitles = on; break;
+            case "_voiceFxStudio": _voiceFxStudio = on; break;
             case "_liveOAuthPublisher": _liveOAuthPublisher = on; break;
             case "_visualHooks": _visualHooks = on; break;
             case "_smartPublish": _smartPublish = on; break;
@@ -1195,6 +1200,7 @@
         "_bcastMcr" => _bcastMcr,
         "_showrunner" => _showrunner,
         "_brollSubtitles" => _brollSubtitles,
+        "_voiceFxStudio" => _voiceFxStudio,
         "_liveOAuthPublisher" => _liveOAuthPublisher,
         "_visualHooks" => _visualHooks,
         "_smartPublish" => _smartPublish,
@@ -1300,6 +1306,7 @@
     private bool _globalDub; // v17.64.0 사이드바 🌍 글로벌 & 로컬라이제이션 ▸ 🗣️ 실시간 다국어 더빙 스튜디오(스트리밍 번역 ≤ 200 ms · 다국어 음색 유지 합성 · 플랫폼별 언어 트랙 · ARKit 가우시안 립싱크 < 50 ms)
     private bool _streamGateway; // v17.62.0 사이드바 📜 각본 & 타임라인 ▸ 🛰️ 스트림 게이트웨이 & 클리퍼 스튜디오(32 MB 압축 NAL 링 · 무손실 1080p 리먹스 · Twitch/YouTube/치지직 게이트웨이 · 백오프/배압)
     private bool _influencerLive; // v17.61.0 사이드바 📜 각본 & 타임라인 ▸ 🎙️ 버추얼 인플루언서 라이브 스튜디오(채팅 리액션 트리거 · 하이라이트 9:16 즉시 클리핑 · 도배/비속어 가드)
+    private bool _voiceFxStudio; // v17.80.0 사이드바 📸 소셜 & 바이럴 ▸ 🎙️ 바이럴 보이스 FX & 감정 스튜디오(SOLA 감정 피치/포먼트 0.7~1.4× · [excited]/[whisper]/[serious]/[funny] 50 ms 글라이드 · 전화기/보코더/리버브 펀치/딥 베이스 FX 랙 · 1 ms 룩어헤드 소프트 니 제로-클리핑 리미터 · FFT 스펙트로그램 · GR 미터)
     private bool _liveOAuthPublisher; // v17.79.0 사이드바 📸 소셜 & 바이럴 ▸ 🚀 실제 SNS 라이브 배포 콕핏(Google/Meta OAuth2 PKCE 볼트 · AES-GCM 영속화 · 만료 10 분 전 자동 갱신 · YouTube Resumable 청크 이어올리기 · IG 릴스 3 단계 발행 · 프리플라이트 & 비공개 드라이런 롤백 가드)
     private bool _brollSubtitles; // v17.78.0 사이드바 📸 소셜 & 바이럴 ▸ 🎬 키네틱 자막 & B-Roll(호르모지 단어 단위 하이라이트 1.15× · 옐로우/네온 사이버/미니멀 화이트 프리셋 · 키워드 감응 3DGS 소품/스플릿/PiP/멀티 앵글 B-Roll 1.5~2.5 s · 프레임 캐시 래스터 절감 · 16.7 ms 가드)
     private bool _visualHooks; // v17.77.0 사이드바 📸 소셜 & 바이럴 ▸ ⚡ 키네틱 비주얼 훅 & 세이프존(훅/드롭/SFX/키워드 펀치 줌 1.12~1.25× · 안면 피벗 헤드룸 가드 · 릴스/틱톡 UI 세이프존 자동 시프트 · 절차적 벡터 스티커 스프링 바운스 · 3~5 프레임 셰이크 + 플래시 비네트)

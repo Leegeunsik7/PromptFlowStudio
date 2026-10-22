@@ -44,6 +44,7 @@ using Sps = PromptFlowStudio.Services.SmartPublishing;
 using Vh = PromptFlowStudio.Services.VisualHooks;
 using Kbr = PromptFlowStudio.Services.KineticBRoll;
 using Lp = PromptFlowStudio.Services.LivePublish;
+using Vvf = PromptFlowStudio.Services.ViralVoiceFx;
 using Nw = PromptFlowStudio.Services.Newsroom;
 using Spt = PromptFlowStudio.Services.Sports;
 using V3 = System.Numerics.Vector3;
@@ -28350,9 +28351,9 @@ public sealed class GaussianSplatEnvironmentIsolatedTests
 }
 
 /// <summary>
-/// v17.56.0 3DGS 섀도우 &amp; 상호 릴라이팅 — 상주 워커 풀 병렬 렌더의 60fps/3.5 ms 게이트 · 무할당 단언을 단독 실행(ProcessGcMode).
+/// v17.56.0 3DGS 섀도우 &amp; 상호 릴라이팅 — 상주 워커 풀 병렬 렌더의 60fps/3.5 ms 게이트 · 무할당 단언을 단독 실행(v17.80.0: 부하 환경 플래키 차단 → TimingSensitivePerformance 이전).
 /// </summary>
-[Collection("ProcessGcMode")]
+[Collection("TimingSensitivePerformance")]   // 벽시계 60fps/3.5 ms 워커 풀 게이트 → 비병렬
 public sealed class GaussianSplatRelightingIsolatedTests
 {
     [Fact]
@@ -32762,7 +32763,7 @@ public sealed class ProductionLivePublisherIsolatedTests
 
         // ── LIVE-4: 카탈로그 · HUD · 레이아웃 · DI · 모달 렌더 · 구독 해제 ──
         Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_liveOAuthPublisher" && en.Category == 4);
-        Assert.Equal(155, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        Assert.True(PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length >= 155);
         var root = RepoRoot();
         var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
         var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
@@ -33067,5 +33068,315 @@ public sealed class ProductionLivePublisherIsolatedTests
         var runAlloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 50; k++) run.Tick(); });
         Assert.True(runAlloc == 0, "러너 유휴 틱 할당 " + runAlloc);
         Assert.Contains("갱신", run.Summary(), StringComparison.Ordinal);
+    }
+}
+
+/// <summary>v17.80.0 바이럴 보이스 FX &amp; 감정 스튜디오 — SOLA 피치/포먼트 0.7~1.4× · 태그 파싱 · 50 ms 글라이드 · FX 4 종 · 제로-클리핑 소프트 니 리미터(THD ≤ 0.1 % · 인터샘플 피크 0) · 무할당 · UI 결선(블록 µs 계측 → 비병렬).</summary>
+[Collection("TimingSensitivePerformance")]   // 블록 µs 계측 · 라이브 루프 → 비병렬
+public sealed class ViralVoiceFxIsolatedTests
+{
+    private const int Fs = 48_000;
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+
+    [Fact]
+    public async Task VoiceEmotion_And_ViralVoiceFx_Check()
+    {
+        ShifterChecks();
+        FxRackChecks();
+        LimiterChecks();
+
+        // ── VOICE-4a: 러너 — 데모 대본 태그 4 · 자동 펀치 · 스펙트로그램 · 클리핑 0 ──
+        var run = new Vvf.ViralVoiceFxStudioRunner();
+        Assert.Equal(4, run.ProcessDemo());
+        Assert.True(run.Engine.EmotionChanges == 4 && run.Engine.Emotion == Vvf.VoiceEmotion.Funny && run.Preset == Vvf.VoiceEmotion.Funny && run.Rack.Punches >= 1, "데모 전이 " + run.Engine.EmotionChanges + " 펀치 " + run.Rack.Punches);
+        Assert.True(run.Limiter.HardClamps == 0 && run.Limiter.ClippedSamples == 0);
+        var lit = 0; for (var c = 0; c < Vvf.ViralVoiceFxStudioRunner.SpecCols; c++) for (var b = 0; b < Vvf.ViralVoiceFxStudioRunner.SpecBins; b++) if (run.SpecLevel(c, b) > 0) lit++;
+        Assert.True(lit > 200, "스펙트로그램 점등 " + lit);
+        Assert.True(run.AvgBlockUs < 5_000, "블록 평균 " + run.AvgBlockUs + " µs");
+        // 과부하 체인(입력 ×6 · FX 전부) → 인터샘플 피크 0 · 하드 클램프 0
+        run.InputGain = 6f; run.Rack.Active = Vvf.ViralVoiceFx.All;
+        run.ProcessDemo();
+        var outPk = SamplePeak(run.Output);
+        var tp = TruePeak(run.Output, 0, run.Output.Length);
+        Assert.True(tp < 1.0 && outPk <= Vvf.ZeroClippingFastLimiterGuard.Ceiling + 1e-6f && run.Limiter.HardClamps == 0 && run.Limiter.MaxGainReductionDb > 3f, "과부하 TP " + tp + " 피크 " + outPk + " 클램프 " + run.Limiter.HardClamps + " GR " + run.Limiter.MaxGainReductionDb);
+        run.LiveTick();
+        var liveAlloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 40; k++) run.LiveTick(); });
+        Assert.True(liveAlloc == 0, "라이브 블록 할당 " + liveAlloc);
+        run.SetPreset(Vvf.VoiceEmotion.Whisper);
+        Assert.True(run.Preset == Vvf.VoiceEmotion.Whisper && run.Engine.Gliding && run.Engine.PendingCues == 0);
+        var p0 = run.Rack.Punches; run.Punch();
+        Assert.True(run.Rack.Punches == p0 + 1 && run.Rack.PunchOpen);
+        run.ToggleFx(Vvf.ViralVoiceFx.PhoneEq);
+        Assert.True((run.Rack.Active & Vvf.ViralVoiceFx.PhoneEq) == 0);
+        Assert.False(run.SyncFromChat());
+        var b0 = run.Blocks;
+        run.Start();
+        for (var k = 0; k < 80 && run.Blocks < b0 + 5; k++) await Task.Delay(25);
+        run.Stop();
+        Assert.True(run.Blocks >= b0 + 5 && !run.Running, "라이브 진행 " + (run.Blocks - b0));
+        Assert.Contains("피치", run.Summary(), StringComparison.Ordinal);
+        run.Dispose();
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(run));
+        using (var chat = new Scw.SemanticChatWeatherStudioRunner())
+        {
+            var linked = new Vvf.ViralVoiceFxStudioRunner(chat);
+            Assert.True(linked.ChatLinked && !linked.SyncFromChat());
+            linked.Dispose();
+        }
+
+        // ── VOICE-4b: 카탈로그 · HUD · 레이아웃 · DI · 모달 렌더 · 구독 해제 · 디스크 I/O 0 ──
+        Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_voiceFxStudio" && en.Category == 4);
+        Assert.Equal(156, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        var root = RepoRoot();
+        var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
+        var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
+        var mainForm = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "MainForm.cs"));
+        var maui = File.ReadAllText(Path.Combine(root, "PromptFlowStudio.Mobile", "MauiProgram.cs"));
+        Assert.True(hud.IndexOf("gth-v1780", StringComparison.Ordinal) is > 0 and var i1780 && i1780 < hud.IndexOf("gth-v1779", StringComparison.Ordinal) && hud.Contains("VvfRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("VvfRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<ViralVoiceFxStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_voiceFxStudio\"", StringComparison.Ordinal) && layout.Contains("\"_voiceFxStudio\" =>", StringComparison.Ordinal));
+        Assert.True(mainForm.Contains("ViralVoiceFx.ViralVoiceFxStudioRunner(sp)", StringComparison.Ordinal) && maui.Contains("ViralVoiceFx.ViralVoiceFxStudioRunner(sp)", StringComparison.Ordinal));
+        foreach (var src in Directory.GetFiles(Path.Combine(root, "PromptFlowStudio", "Services", "ViralVoiceFx"), "*.cs"))
+        {
+            var text = File.ReadAllText(src);
+            Assert.True(!text.Contains("File.", StringComparison.Ordinal) && !text.Contains("FileStream", StringComparison.Ordinal) && !text.Contains("Directory.", StringComparison.Ordinal), "디스크 I/O " + Path.GetFileName(src));
+        }
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = sp.GetService(typeof(Vvf.ViralVoiceFxStudioRunner))!;
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.ViralVoiceFxStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("vvx-scrim", StringComparison.Ordinal) && html.Contains("vvx-spec", StringComparison.Ordinal) && html.Contains("vvx-grh", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+
+    private static void ShifterChecks()
+    {
+        // ── VOICE-1a: 인라인 태그 파싱(대소문자 · 한글 별칭 · 미인식 괄호 본문 유지) · 군중 감성 사상 ──
+        Span<Vvf.VoiceEmotionCue> cues = stackalloc Vvf.VoiceEmotionCue[8];
+        var n = Vvf.RealtimeVoiceEmotionShifterEngine.ParseScript("[excited] 와 [WHISPER]비밀 [unknown] [진지]끝", cues, out var plain);
+        Assert.True(n == 3 && plain == 17, "태그 " + n + " 본문 " + plain);
+        Assert.True(cues[0].TextIndex == 0 && cues[0].Emotion == Vvf.VoiceEmotion.Excited && cues[1].TextIndex == 3 && cues[1].Emotion == Vvf.VoiceEmotion.Whisper && cues[2].TextIndex == 16 && cues[2].Emotion == Vvf.VoiceEmotion.Serious);
+        Assert.True(Vvf.RealtimeVoiceEmotionShifterEngine.FromCrowd(Scw.CrowdEmotion.Hype) == Vvf.VoiceEmotion.Excited && Vvf.RealtimeVoiceEmotionShifterEngine.FromCrowd(Scw.CrowdEmotion.Sadness) == Vvf.VoiceEmotion.Whisper);
+        foreach (var e in new[] { Vvf.VoiceEmotion.Excited, Vvf.VoiceEmotion.Whisper, Vvf.VoiceEmotion.Serious, Vvf.VoiceEmotion.Funny })
+        {
+            var p = Vvf.RealtimeVoiceEmotionShifterEngine.ProfileOf(e);
+            Assert.True(p.Pitch is >= 0.7f and <= 1.4f && p.Formant is >= 0.7f and <= 1.4f);
+        }
+
+        // ── VOICE-1b: 50 ms 글라이드(중간값 · 종료값 · 샘플당 계단 ≤ 이론치) ──
+        var eng = new Vvf.RealtimeVoiceEmotionShifterEngine();
+        var buf = new float[Vvf.RealtimeVoiceEmotionShifterEngine.Latency];
+        eng.Process(buf, buf);
+        eng.SetEmotion(Vvf.VoiceEmotion.Excited);
+        var half = new float[Vvf.RealtimeVoiceEmotionShifterEngine.GlideSamples / 2];
+        eng.Process(half, half);
+        Assert.True(eng.Gliding && Math.Abs(eng.Pitch - 1.09f) < 0.002f, "글라이드 중간 " + eng.Pitch);
+        float prev = eng.Pitch, maxStep = 0f;
+        var one = new float[1];
+        for (var i = 0; i < Vvf.RealtimeVoiceEmotionShifterEngine.GlideSamples / 2; i++) { eng.Process(one, one); maxStep = Math.Max(maxStep, Math.Abs(eng.Pitch - prev)); prev = eng.Pitch; }
+        Assert.True(!eng.Gliding && Math.Abs(eng.Pitch - 1.18f) < 1e-5f && Math.Abs(eng.Formant - 1.06f) < 1e-5f && maxStep <= 0.18f / Vvf.RealtimeVoiceEmotionShifterEngine.GlideSamples + 1e-5f, "글라이드 종료 " + eng.Pitch + " 계단 " + maxStep);
+
+        // ── VOICE-1c: SOLA 피치 ×1.25 / ×0.8 → F0 200 → 250 / 160 Hz · 포먼트 독립 ──
+        var src = Harmonic(200, Fs * 3 / 2);
+        foreach (var (ratio, expectHz) in new[] { (1.25f, 250.0), (0.8f, 160.0) })
+        {
+            var e = new Vvf.RealtimeVoiceEmotionShifterEngine();
+            e.SetTarget(new Vvf.VoiceEmotionProfile(ratio, 1f, 0f, 1f));
+            var o = new float[src.Length];
+            e.Process(src, o);
+            var seg = o.AsSpan(o.Length - 24_000);
+            var gNew = Vvf.ProceduralViralVoiceFxRackSynthesizer.Goertzel(seg, expectHz);
+            var gOld = Vvf.ProceduralViralVoiceFxRackSynthesizer.Goertzel(seg, 200);
+            var per = Vvf.RealtimeVoiceEmotionShifterEngine.EstimatePeriod(seg.Slice(4_000, Vvf.RealtimeVoiceEmotionShifterEngine.AnalysisWin + Vvf.RealtimeVoiceEmotionShifterEngine.MaxT0 + 1));
+            Assert.True(gNew > 4 * gOld && Math.Abs(per - Fs / expectHz) <= 3 && Math.Abs(e.DetectedF0 - 200) < 4, "피치 ×" + ratio + " G " + gNew + "/" + gOld + " 주기 " + per + " F0 " + e.DetectedF0);
+        }
+        var voiced = Resonant(200, 1000, Fs * 3 / 2);
+        double c10 = 0, c13 = 0; var per13 = 0;
+        foreach (var fm in new[] { 1f, 1.3f })
+        {
+            var e = new Vvf.RealtimeVoiceEmotionShifterEngine();
+            e.SetTarget(new Vvf.VoiceEmotionProfile(1f, fm, 0f, 1f));
+            var o = new float[voiced.Length];
+            e.Process(voiced, o);
+            var seg = o.AsSpan(o.Length - 24_000);
+            double num = 0, den = 0;
+            for (var h = 1; h * 200 <= 5_000; h++) { var a = Vvf.ProceduralViralVoiceFxRackSynthesizer.Goertzel(seg, h * 200); num += h * 200 * a * a; den += a * a; }
+            if (fm == 1f) c10 = num / den; else { c13 = num / den; per13 = Vvf.RealtimeVoiceEmotionShifterEngine.EstimatePeriod(seg.Slice(4_000, Vvf.RealtimeVoiceEmotionShifterEngine.AnalysisWin + Vvf.RealtimeVoiceEmotionShifterEngine.MaxT0 + 1)); }
+        }
+        Assert.True(c13 > c10 * 1.12 && Math.Abs(per13 - 240) <= 3, "포먼트 중심 " + c10 + " → " + c13 + " 주기 " + per13);
+
+        // ── VOICE-1d: 대본 예약 전이 · PCM16 경로 · 무할당 ──
+        var sc = new Vvf.RealtimeVoiceEmotionShifterEngine();
+        Assert.Equal(2, sc.ScheduleScript("[excited] 하나둘 [serious] 셋넷", 0, 10));
+        var pcm = new short[Fs];
+        for (var i = 0; i < pcm.Length; i++) pcm[i] = (short)(8000 * Math.Sin(2 * Math.PI * 180 * i / Fs));
+        var pcmOut = new short[Fs];
+        sc.Process(pcm, pcmOut);
+        var nz = 0; foreach (var v in pcmOut) if (v != 0) nz++;
+        Assert.True(sc.EmotionChanges == 2 && sc.Emotion == Vvf.VoiceEmotion.Serious && Math.Abs(sc.Pitch - 0.86f) < 1e-5f && nz > Fs / 2 && sc.ClippedSamples == 0, "예약 전이 " + sc.EmotionChanges + " 비영 " + nz);
+        var blk = new float[480];
+        src.AsSpan(0, 480).CopyTo(blk);
+        var alloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 40; k++) eng.Process(blk, blk); });
+        Assert.True(alloc == 0, "시프터 할당 " + alloc);
+    }
+
+    private static void FxRackChecks()
+    {
+        var rack = new Vvf.ProceduralViralVoiceFxRackSynthesizer();
+        // ── VOICE-2a: 전화기 EQ — 1 kHz 통과 · 100 Hz/8 kHz ≥ 18 dB 감쇄 · 경미 새츄레이션(3 차 배음) ──
+        double Band(double hz, double amp)
+        {
+            rack.Reset(); rack.Active = Vvf.ViralVoiceFx.PhoneEq;
+            var s = Sine(hz, amp, Fs / 2); rack.Process(s);
+            return Vvf.ProceduralViralVoiceFxRackSynthesizer.Goertzel(s.AsSpan(Fs / 4), hz);
+        }
+        var g1k = Band(1000, 0.1); var g100 = Band(100, 0.1); var g8k = Band(8000, 0.1);
+        Assert.True(g1k > 0.08 && g100 < g1k / 8 && g8k < g1k / 8, "전화기 EQ 1k " + g1k + " 100 " + g100 + " 8k " + g8k);
+        rack.Reset(); rack.Active = Vvf.ViralVoiceFx.PhoneEq;
+        var hot = Sine(1000, 0.8, Fs / 2); rack.Process(hot);
+        var h3 = Vvf.ProceduralViralVoiceFxRackSynthesizer.Goertzel(hot.AsSpan(Fs / 4), 3000) / Vvf.ProceduralViralVoiceFxRackSynthesizer.Goertzel(hot.AsSpan(Fs / 4), 1000);
+        Assert.True(h3 is > 0.005 and < 0.2, "새츄레이션 3 차 " + h3);
+
+        // ── VOICE-2b: 사이버 보코더 — 300 Hz × 110 Hz 링 → 190/410 Hz 측파대 우세 ──
+        rack.Reset(); rack.Active = Vvf.ViralVoiceFx.CyberVocoder;
+        var vs = Sine(300, 0.3, Fs / 2); rack.Process(vs);
+        var seg = vs.AsSpan(Fs / 4);
+        var s190 = Vvf.ProceduralViralVoiceFxRackSynthesizer.Goertzel(seg, 190); var s410 = Vvf.ProceduralViralVoiceFxRackSynthesizer.Goertzel(seg, 410); var s300 = Vvf.ProceduralViralVoiceFxRackSynthesizer.Goertzel(seg, 300);
+        Assert.True(s190 > s300 && s410 > s300 && s190 > 0.05, "링 측파대 " + s190 + "/" + s410 + " 원음 " + s300);
+
+        // ── VOICE-2c: 리버브 펀치 — 1.2 s 테일(T60) · 펀치 없으면 웻 0 ──
+        static double Rms(ReadOnlySpan<float> x) { double s = 0; foreach (var v in x) s += v * v; return Math.Sqrt(s / x.Length); }
+        rack.Reset(); rack.Active = Vvf.ViralVoiceFx.ReverbPunch;
+        var rv = new float[Fs * 2];
+        Noise(rv.AsSpan(0, Fs / 5), 0.3f);
+        rack.Punch();
+        Assert.True(rack.PunchOpen);
+        rack.Process(rv);
+        var t0 = (int)(0.3 * Fs); var w = Fs / 20;
+        var e0 = Rms(rv.AsSpan(t0, w)); var eMid = Rms(rv.AsSpan(t0 + (int)(0.6 * Fs), w)); var e12 = Rms(rv.AsSpan(t0 + (int)(1.2 * Fs), w));
+        var dMid = 20 * Math.Log10(eMid / e0); var d12 = 20 * Math.Log10(e12 / e0);
+        Assert.True(e0 > 1e-3 && dMid is > -40 and < -15 && d12 is > -75 and < -45 && rack.Punches == 1 && !rack.PunchOpen, "테일 0.6 s " + dMid + " dB · 1.2 s " + d12 + " dB");
+        rack.Reset(); rack.Active = Vvf.ViralVoiceFx.ReverbPunch;
+        var dry = new float[Fs]; Noise(dry.AsSpan(0, Fs / 5), 0.3f); rack.Process(dry);
+        Assert.True(Rms(dry.AsSpan(t0, w)) < 1e-6, "펀치 없음 웻");
+
+        // ── VOICE-2d: 딥 베이스 — 200 Hz → 100 Hz 서브하모닉 ──
+        rack.Reset(); rack.Active = Vvf.ViralVoiceFx.DeepBass;
+        var bs = Sine(200, 0.3, Fs); rack.Process(bs);
+        var sub = Vvf.ProceduralViralVoiceFxRackSynthesizer.Goertzel(bs.AsSpan(Fs / 2), 100);
+        Assert.True(sub > 0.03 && rack.SubLevel > 0.02f, "서브하모닉 " + sub);
+
+        // ── VOICE-2e: FX 전부 무할당 ──
+        rack.Reset(); rack.Active = Vvf.ViralVoiceFx.All; rack.Punch();
+        Assert.Equal(4, rack.ActiveCount);
+        var blk = Sine(220, 0.2, 480);
+        var alloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 40; k++) rack.Process(blk); });
+        Assert.True(alloc == 0, "FX 랙 할당 " + alloc);
+    }
+
+    private static void LimiterChecks()
+    {
+        // ── VOICE-3a: 니 아래(−6 dBFS) 무변형 · 니 위(+6 dBFS) 정상 상태 THD ≤ 0.1 % ──
+        foreach (var amp in new[] { 0.5, 2.0 })
+        {
+            var lim = new Vvf.ZeroClippingFastLimiterGuard();
+            var s = Sine(1000, amp, Fs * 2);
+            lim.Process(s, s);
+            var seg = s.AsSpan(Fs, Fs / 2);
+            var f1 = Vvf.ProceduralViralVoiceFxRackSynthesizer.Goertzel(seg, 1000);
+            double hs = 0; for (var h = 2; h <= 10; h++) { var g = Vvf.ProceduralViralVoiceFxRackSynthesizer.Goertzel(seg, 1000 * h); hs += g * g; }
+            var thd = Math.Sqrt(hs) / f1;
+            var pk = 0f; foreach (var v in seg) pk = Math.Max(pk, Math.Abs(v));
+            Assert.True(thd <= 0.001 && pk <= Vvf.ZeroClippingFastLimiterGuard.Ceiling + 1e-6f && lim.HardClamps == 0, "THD " + amp + " = " + thd + " 피크 " + pk);
+            if (amp < 1) Assert.True(Math.Abs(f1 - 0.5) < 1e-3 && lim.MaxGainReductionDb == 0f, "니 아래 무변형 " + f1);
+            else Assert.True(lim.MaxGainReductionDb > 6f && lim.LimitedSamples > 0, "GR " + lim.MaxGainReductionDb);
+        }
+
+        // ── VOICE-3b: 인터샘플 피크(12 kHz · 45° · 표본 −0.73 dBFS / 트루 +2.3 dBFS) → 출력 트루 피크 < 0 dBFS ──
+        var isp = new float[Fs];
+        for (var i = 0; i < isp.Length; i++) isp[i] = (float)(1.3 * Math.Sin(2 * Math.PI * 12_000 * i / Fs + Math.PI / 4));
+        Assert.True(TruePeak(isp, Fs / 2, 4_000) > 1.25);
+        var l2 = new Vvf.ZeroClippingFastLimiterGuard();
+        l2.Process(isp, isp);
+        var tpOut = TruePeak(isp, Fs / 2, 4_000);
+        Assert.True(tpOut < 1.0 && l2.HardClamps == 0, "ISP 트루 피크 " + tpOut);
+
+        // ── VOICE-3c: 무음 → 급습 +12 dBFS 버스트(룩어헤드 어택 오버슈트 0) · PCM16 포화 0 ──
+        var burst = new float[Fs / 2];
+        for (var i = Fs / 10; i < burst.Length; i++) burst[i] = (float)(4.0 * Math.Sin(2 * Math.PI * 333 * i / Fs) + (i % 97 == 0 ? 2.0 : 0));
+        var l3 = new Vvf.ZeroClippingFastLimiterGuard();
+        var pcm = new short[burst.Length];
+        l3.Process(burst, pcm);
+        var maxS = 0; foreach (var v in pcm) maxS = Math.Max(maxS, Math.Abs((int)v));
+        Assert.True(l3.HardClamps == 0 && l3.ClippedSamples == 0 && maxS <= (int)(Vvf.ZeroClippingFastLimiterGuard.Ceiling * 32768f) + 1 && l3.PeakIn > 3.9f, "버스트 클램프 " + l3.HardClamps + " 최대 " + maxS);
+        var blk = Sine(440, 3.0, 480);
+        var outB = new float[480];
+        var alloc = AllocationProbe.MinAllocated(() => { for (var k = 0; k < 40; k++) l3.Process(blk, outB); });
+        Assert.True(alloc == 0, "리미터 할당 " + alloc);
+    }
+
+    private static float SamplePeak(ReadOnlySpan<float> x) { var pk = 0f; foreach (var v in x) pk = Math.Max(pk, Math.Abs(v)); return pk; }
+
+    // ── 보조: 신호 · 8× 트루 피크 미터(48 탭 Blackman sinc) ──
+    private static float[] Sine(double hz, double amp, int n)
+    {
+        var s = new float[n];
+        for (var i = 0; i < n; i++) s[i] = (float)(amp * Math.Sin(2 * Math.PI * hz * i / Fs));
+        return s;
+    }
+
+    private static float[] Harmonic(double f0, int n)
+    {
+        var s = new float[n];
+        for (var i = 0; i < n; i++) { double v = 0; for (var k = 1; k <= 6; k++) v += 0.3 / k * Math.Sin(2 * Math.PI * f0 * k * i / Fs); s[i] = (float)v; }
+        return s;
+    }
+
+    private static float[] Resonant(double f0, double formant, int n)
+    {
+        var s = new float[n];
+        var r = Math.Exp(-Math.PI * 150 / Fs); var a1 = 2 * r * Math.Cos(2 * Math.PI * formant / Fs); var a2 = -r * r;
+        double y1 = 0, y2 = 0, ph = 0;
+        for (var i = 0; i < n; i++)
+        {
+            ph += f0 / Fs; var pulse = 0.0; if (ph >= 1) { ph -= 1; pulse = 1; }
+            var y = (1 - r) * pulse * 8 + a1 * y1 + a2 * y2; y2 = y1; y1 = y; s[i] = (float)y;
+        }
+        return s;
+    }
+
+    private static void Noise(Span<float> dst, float amp)
+    {
+        uint st = 12345;
+        for (var i = 0; i < dst.Length; i++) { st = st * 1664525u + 1013904223u; dst[i] = ((st >> 8) * (1f / 8388608f) - 1f) * amp; }
+    }
+
+    private static double TruePeak(ReadOnlySpan<float> x, int start, int len)
+    {
+        const int Os = 8, Half = 24;
+        var k = new double[Os * 2 * Half];
+        for (var p = 0; p < Os; p++)
+            for (var j = -Half + 1; j <= Half; j++)
+            {
+                var t = (double)p / Os - j;
+                var sinc = Math.Abs(t) < 1e-12 ? 1 : Math.Sin(Math.PI * t) / (Math.PI * t);
+                var u = (t + Half) / (2.0 * Half);
+                k[p * 2 * Half + j + Half - 1] = sinc * (0.42 - 0.5 * Math.Cos(2 * Math.PI * u) + 0.08 * Math.Cos(4 * Math.PI * u));
+            }
+        double peak = 0;
+        var a = Math.Max(Half, start); var e = Math.Min(x.Length - Half, start + len);
+        for (var n = a; n < e; n++)
+            for (var p = 0; p < Os; p++)
+            {
+                double v = 0; var o = p * 2 * Half;
+                for (var j = -Half + 1; j <= Half; j++) v += x[n + j] * k[o + j + Half - 1];
+                peak = Math.Max(peak, Math.Abs(v));
+            }
+        return peak;
     }
 }

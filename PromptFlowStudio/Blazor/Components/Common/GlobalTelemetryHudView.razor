@@ -275,6 +275,7 @@
 @inject PromptFlowStudio.Services.SmartPublishing.SmartPublishingSchedulerStudioRunner SpsRun
 @inject PromptFlowStudio.Services.VisualHooks.KineticVisualHookStudioRunner KvhRun
 @inject PromptFlowStudio.Services.KineticBRoll.KineticTypographyBRollStudioRunner KbrRun
+@inject PromptFlowStudio.Services.ViralVoiceFx.ViralVoiceFxStudioRunner VvfRun
 @inject PromptFlowStudio.Services.LivePublish.ProductionLivePublisherStudioRunner LpcRun
 @inject PromptFlowStudio.Services.SkinnedSplatAvatar.DualQuaternionGaussianAvatarStudioRunner DqAvRun
 @inject PromptFlowStudio.Services.AgentFederation.RealtimeSpatiotemporalKnowledgeGraph FedKg
@@ -995,6 +996,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.80.0: 바이럴 보이스 FX — 감정 프리셋 · 피치 · FX 수 · 리미터 GR · 클리핑 ── *@
+    <div class="gth-v1780">
+        <div class="gth-v96-card pid @(VvfRun.Limiter.HardClamps + VvfRun.Limiter.ClippedSamples == 0 && VvfRun.Blocks > 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>🎙️ 보이스 FX</b>
+                <span class="gth-v96-be">@(PromptFlowStudio.Services.ViralVoiceFx.RealtimeVoiceEmotionShifterEngine.EmotionIcon(VvfRun.Engine.Emotion)) @(PromptFlowStudio.Services.ViralVoiceFx.RealtimeVoiceEmotionShifterEngine.EmotionName(VvfRun.Engine.Emotion))@(VvfRun.Running ? " · ▶ LIVE" : null)</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">×@(VvfRun.Engine.Pitch.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture))</b><span>피치</span></span>
+                <span class="gth-v96-m"><b>@(VvfRun.Rack.ActiveCount)</b><span>FX</span></span>
+                <span class="gth-v96-m"><b class="@(VvfRun.Limiter.GainReductionDb > 6 ? "warn" : null)">−@(VvfRun.Limiter.GainReductionDb.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture))</b><span>GR dB</span></span>
+                <span class="gth-v96-m"><b class="@(VvfRun.Limiter.HardClamps + VvfRun.Limiter.ClippedSamples > 0 ? "warn" : null)">@(VvfRun.Limiter.HardClamps + VvfRun.Limiter.ClippedSamples)</b><span>클리핑</span></span>
+            </div>
+            <div class="gth-v96-act">@(VvfRun.LastAction ?? "대기")</div>
+        </div>
+    </div>
     @* ── v17.79.0: 실제 SNS 라이브 배포 — OAuth 연결 · 토큰 잔여 · 청크 진행 · 안전 모드 · 롤백 ── *@
     <div class="gth-v1779">
         @{ var lpcNow = LpcRun.Clock(); var lpcYt = LpcRun.Vault.Account(PromptFlowStudio.Services.LivePublish.LiveProvider.YouTube); var lpcIg = LpcRun.Vault.Account(PromptFlowStudio.Services.LivePublish.LiveProvider.Instagram); }
@@ -5632,6 +5648,7 @@
         VlRun.OnChange += OnSwarmChanged; // v17.50.0 (3.3 Hz)
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
         KbrRun.OnChange += OnSwarmChanged; // v17.78.0 (재생 10 Hz → 250 ms 스로틀)
+        VvfRun.OnChange += OnSwarmChanged; // v17.80.0 (라이브 250 ms 스로틀 · 프리셋/FX 즉시)
         LpcRun.OnChange += OnSwarmChanged; // v17.79.0 (배포 중 ~3 Hz · 단계 전이 즉시)
         KvhRun.OnChange += OnSwarmChanged; // v17.77.0 (재생 10 Hz → 250 ms 스로틀)
         SpsRun.OnChange += OnSwarmChanged; // v17.76.0 (예약/발행/SFX 이벤트 → 250 ms 스로틀)
@@ -6009,6 +6026,7 @@
         VlRun.OnChange -= OnSwarmChanged;
         OcRun.OnChange -= OnSwarmChanged;
         KbrRun.OnChange -= OnSwarmChanged;
+        VvfRun.OnChange -= OnSwarmChanged;
         LpcRun.OnChange -= OnSwarmChanged;
         KvhRun.OnChange -= OnSwarmChanged;
         SpsRun.OnChange -= OnSwarmChanged;

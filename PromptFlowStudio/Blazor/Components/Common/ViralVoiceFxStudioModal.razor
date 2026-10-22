@@ -1,0 +1,206 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.ViralVoiceFx
+@implements IDisposable
+@inject ViralVoiceFxStudioRunner Runner
+
+@* [PromptFlow Studio v17.80.0] 🎙️ 바이럴 보이스 FX & 감정 스튜디오 — 감정 프리셋 셀렉터 · FX 랙 토글 · 실시간 FFT 스펙트로그램 · 리미터 GR 미터. *@
+<div class="vvx-scrim" @onclick="Close">
+    <div class="vvx-modal" @onclick:stopPropagation="true">
+        <div class="vvx-h">
+            <div>
+                <div class="vvx-title">🎙️ 바이럴 보이스 FX & 감정 스튜디오 @(Runner.Running ? "· ▶ 라이브" : null) @(Runner.FollowChat ? "· 💬 채팅 감성 추종" : null)</div>
+                <div class="vvx-sub">대본의 <b>[excited] · [whisper] · [serious] · [funny]</b> 태그나 프리셋에 맞춰 목소리의 <b>높이(피치)와 음색(포먼트)</b>를 0.7~1.4배 범위에서 50ms 동안 부드럽게 바꿉니다.
+                    전화기 · 로봇 · 리버브 펀치 · 딥 베이스 효과를 녹음 파일 없이 실시간으로 얹고, 마지막 <b>리미터</b>가 1ms 앞을 미리 보고 소리가 찢어지기 전에 볼륨을 살짝 낮춰 디지털 클리핑을 막습니다.</div>
+            </div>
+            <button class="vvx-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="vvx-bar">
+            @foreach (var e in Emotions)
+            {
+                var ee = e;
+                <button class="vvx-btn emo @(Runner.Engine.Emotion == ee ? "on" : null)" @onclick="() => Runner.SetPreset(ee)">@(RealtimeVoiceEmotionShifterEngine.EmotionIcon(ee)) @(RealtimeVoiceEmotionShifterEngine.EmotionName(ee))</button>
+            }
+            <span class="vvx-sep"></span>
+            @foreach (var f in Fxs)
+            {
+                var ff = f;
+                <button class="vvx-btn fx @((Runner.Rack.Active & ff) != 0 ? "on" : null)" @onclick="() => Runner.ToggleFx(ff)">@(ProceduralViralVoiceFxRackSynthesizer.FxIcon(ff)) @(ProceduralViralVoiceFxRackSynthesizer.FxName(ff))</button>
+            }
+        </div>
+        <div class="vvx-bar">
+            <button class="vvx-btn hot" @onclick="Demo">🎬 데모 대본 처리</button>
+            <button class="vvx-btn" @onclick="Runner.Punch">💥 펀치</button>
+            <button class="vvx-btn @(Runner.Running ? "on" : null)" @onclick="Toggle">@(Runner.Running ? "⏸ 정지" : "▶ 라이브 모니터")</button>
+            @if (Runner.ChatLinked)
+            {
+                <button class="vvx-btn @(Runner.FollowChat ? "on" : null)" @onclick="() => Runner.FollowChat = !Runner.FollowChat">💬 채팅 감성 추종</button>
+            }
+            <span class="vvx-sep"></span>
+            <span class="vvx-dim">블록 @(Runner.AvgBlockUs.ToString("0", CultureInfo.InvariantCulture))µs / 10ms · 부하 @((Runner.Load * 100).ToString("0.0", CultureInfo.InvariantCulture))% · 지연 @((RealtimeVoiceEmotionShifterEngine.Latency * 1000 / RealtimeVoiceEmotionShifterEngine.Fs).ToString(CultureInfo.InvariantCulture))ms</span>
+        </div>
+
+        <div class="vvx-main">
+            <div class="vvx-card">
+                <div class="vvx-sec">🌈 실시간 FFT 스펙트로그램 (512점 · 로그 @(ViralVoiceFxStudioRunner.SpecBins)대역)</div>
+                <svg class="vvx-spec" viewBox="0 0 @(ViralVoiceFxStudioRunner.SpecCols) @(ViralVoiceFxStudioRunner.SpecBins)" preserveAspectRatio="none">
+                    @for (var c = 0; c < ViralVoiceFxStudioRunner.SpecCols; c++)
+                    {
+                        @for (var b = 0; b < ViralVoiceFxStudioRunner.SpecBins; b++)
+                        {
+                            var lv = Runner.SpecLevel(c, b);
+                            if (lv == 0) continue;
+                            <rect x="@(c)" y="@(ViralVoiceFxStudioRunner.SpecBins - 1 - b)" width="1.02" height="1.02" class="l@(lv)" />
+                        }
+                    }
+                </svg>
+                <div class="vvx-kv">아래 = @(Runner.BandHz(0))Hz · 위 = @(Runner.BandHz(ViralVoiceFxStudioRunner.SpecBins))Hz · 오른쪽 = 최신 · 밝을수록 강함</div>
+                <div class="vvx-script">
+                    @foreach (var part in ScriptParts)
+                    {
+                        <span class="@(part.Tag ? "tag" : null)">@(part.Text)</span>
+                    }
+                </div>
+            </div>
+
+            <div class="vvx-card">
+                <div class="vvx-sec">🎚️ 감정 피치 & 포먼트</div>
+                <div class="vvx-emo">@(RealtimeVoiceEmotionShifterEngine.EmotionIcon(Runner.Engine.Emotion)) @(RealtimeVoiceEmotionShifterEngine.EmotionName(Runner.Engine.Emotion)) @(Runner.Engine.Gliding ? "· 글라이드 중" : null)</div>
+                <div class="vvx-gauge"><span>피치</span><div class="bar"><i style="width:@(Ratio(Runner.Engine.Pitch))%"></i></div><b>×@(Runner.Engine.Pitch.ToString("0.00", CultureInfo.InvariantCulture))</b></div>
+                <div class="vvx-gauge"><span>포먼트</span><div class="bar"><i class="fm" style="width:@(Ratio(Runner.Engine.Formant))%"></i></div><b>×@(Runner.Engine.Formant.ToString("0.00", CultureInfo.InvariantCulture))</b></div>
+                <div class="vvx-gauge"><span>숨소리</span><div class="bar"><i class="br" style="width:@((Runner.Engine.Breath * 100).ToString("0", CultureInfo.InvariantCulture))%"></i></div><b>@((Runner.Engine.Breath * 100).ToString("0", CultureInfo.InvariantCulture))%</b></div>
+                <div class="vvx-kv">추정 F0 @(Runner.Engine.DetectedF0.ToString("0", CultureInfo.InvariantCulture))Hz @(Runner.Engine.Voiced ? "(유성)" : "(무성/무음)") · 그레인 @(Runner.Engine.Grains) · 전이 @(Runner.Engine.EmotionChanges) · 대기 큐 @(Runner.Engine.PendingCues)</div>
+                <div class="vvx-sec sm">🎛️ FX 랙</div>
+                @foreach (var f in Fxs)
+                {
+                    var on = (Runner.Rack.Active & f) != 0;
+                    <div class="vvx-fx @(on ? "on" : null)">@(ProceduralViralVoiceFxRackSynthesizer.FxIcon(f)) @(ProceduralViralVoiceFxRackSynthesizer.FxName(f)) <span>@(FxDetail(f))</span></div>
+                }
+            </div>
+
+            <div class="vvx-card">
+                <div class="vvx-sec">🛡️ 리미터 게인 리덕션</div>
+                @{ var gr = Runner.Limiter.GainReductionDb; }
+                <div class="vvx-gr"><div class="bar"><i class="@(gr > 6 ? "warn" : null)" style="width:@(Math.Min(100, gr / 12 * 100).ToString("0", CultureInfo.InvariantCulture))%"></i></div><b>−@(gr.ToString("0.0", CultureInfo.InvariantCulture))dB</b></div>
+                <svg class="vvx-grh" viewBox="0 0 @(ViralVoiceFxStudioRunner.GrHist) 48" preserveAspectRatio="none">
+                    <line x1="0" x2="@(ViralVoiceFxStudioRunner.GrHist)" y1="24" y2="24" class="mid" />
+                    <polyline points="@(GrPoints())" class="gl" />
+                </svg>
+                <div class="vvx-kv">최근 1.2초 블록별 감쇄량(아래로 갈수록 많이 줄임 · 가운데 선 = 6dB)</div>
+                <div class="vvx-stats">
+                    <span>상한 <b>@(ZeroClippingFastLimiterGuard.ThresholdDb.ToString("0.0", CultureInfo.InvariantCulture))dBFS</b></span>
+                    <span>출력 피크 <b>@(Db(Runner.Limiter.PeakOut))dBFS</b></span>
+                    <span>최대 감쇄 <b>@(Runner.Limiter.MaxGainReductionDb.ToString("0.0", CultureInfo.InvariantCulture))dB</b></span>
+                    <span>클리핑 <b class="@(Runner.Limiter.HardClamps + Runner.Limiter.ClippedSamples > 0 ? "bad" : "ok")">@(Runner.Limiter.HardClamps + Runner.Limiter.ClippedSamples)건</b></span>
+                </div>
+                <div class="vvx-kv">룩어헤드 @(ZeroClippingFastLimiterGuard.Lookahead)샘플(1ms) · 소프트 니 @(ZeroClippingFastLimiterGuard.KneeDb.ToString("0", CultureInfo.InvariantCulture))dB · 4× 트루 피크 검출 · 감쇄 샘플 @(Runner.Limiter.LimitedSamples)</div>
+            </div>
+        </div>
+        <div class="vvx-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+    </div>
+</div>
+
+<style>
+    .vvx-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .vvx-modal { width: min(1320px, 96vw); max-height: 94vh; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); padding: 14px 16px; color: var(--text-primary); }
+    .vvx-h { display: flex; justify-content: space-between; gap: 12px; } .vvx-title { font-size: 17px; font-weight: 800; } .vvx-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .vvx-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .vvx-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 0; } .vvx-sep { flex: 1; } .vvx-dim { font-size: 11px; color: var(--text-muted); }
+    .vvx-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .vvx-btn.hot { border-color: #f97316; } .vvx-btn.on { background: color-mix(in srgb, #38bdf8 25%, #1e293b); border-color: #38bdf8; }
+    .vvx-btn.emo.on { background: color-mix(in srgb, #f472b6 28%, #1e293b); border-color: #f472b6; } .vvx-btn.fx.on { background: color-mix(in srgb, #a3e635 22%, #1e293b); border-color: #a3e635; }
+    .vvx-main { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.9fr) minmax(0, 0.95fr); gap: 10px; margin-top: 10px; }
+    .vvx-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; } .vvx-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 8px; } .vvx-sec.sm { margin-top: 10px; font-size: 12px; }
+    .vvx-spec { width: 100%; height: 200px; background: #05070c; border-radius: 6px; display: block; }
+    .vvx-spec .l1 { fill: #1e1b4b; } .vvx-spec .l2 { fill: #3730a3; } .vvx-spec .l3 { fill: #7e22ce; } .vvx-spec .l4 { fill: #c026d3; } .vvx-spec .l5 { fill: #f43f5e; } .vvx-spec .l6 { fill: #fb923c; } .vvx-spec .l7 { fill: #fde047; }
+    .vvx-kv { font-size: 10.5px; color: var(--text-muted); margin: 4px 0 6px; }
+    .vvx-script { font-size: 11.5px; line-height: 1.7; background: #0f172a; border-radius: 6px; padding: 6px 8px; } .vvx-script .tag { color: #f472b6; font-family: var(--mono); font-weight: 700; }
+    .vvx-emo { font-size: 15px; font-weight: 800; margin-bottom: 6px; }
+    .vvx-gauge { display: grid; grid-template-columns: 48px 1fr 52px; gap: 6px; align-items: center; font-size: 11.5px; margin-top: 4px; } .vvx-gauge b { font: 700 11px var(--mono); color: #fde047; text-align: right; }
+    .vvx-gauge .bar, .vvx-gr .bar { height: 10px; background: #111827; border-radius: 999px; overflow: hidden; } .vvx-gauge .bar i, .vvx-gr .bar i { display: block; height: 100%; background: #38bdf8; }
+    .vvx-gauge .bar i.fm { background: #a78bfa; } .vvx-gauge .bar i.br { background: #94a3b8; }
+    .vvx-fx { font-size: 11.5px; padding: 3px 0; border-bottom: 1px dashed #1e293b; color: var(--text-muted); } .vvx-fx.on { color: var(--text-primary); } .vvx-fx span { float: right; font-family: var(--mono); font-size: 10.5px; }
+    .vvx-gr { display: grid; grid-template-columns: 1fr 68px; gap: 8px; align-items: center; } .vvx-gr .bar { height: 16px; } .vvx-gr .bar i { background: #22c55e; } .vvx-gr .bar i.warn { background: #ef4444; } .vvx-gr b { font: 800 14px var(--mono); color: #fde047; text-align: right; }
+    .vvx-grh { width: 100%; height: 90px; background: #05070c; border-radius: 6px; display: block; margin-top: 8px; } .vvx-grh .mid { stroke: #1e293b; stroke-width: .5; } .vvx-grh .gl { fill: none; stroke: #22c55e; stroke-width: 1; }
+    .vvx-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 4px; } .vvx-stats span { font-size: 11px; background: #0f172a; border-radius: 6px; padding: 3px 6px; } .vvx-stats b { font-family: var(--mono); } .vvx-stats b.ok { color: #86efac; } .vvx-stats b.bad { color: #f87171; }
+    .vvx-act { font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+    @@media (max-width: 1100px) { .vvx-main { grid-template-columns: 1fr 1fr; } }
+    @@media (max-width: 760px) { .vvx-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private static readonly VoiceEmotion[] Emotions = { VoiceEmotion.Neutral, VoiceEmotion.Excited, VoiceEmotion.Whisper, VoiceEmotion.Serious, VoiceEmotion.Funny };
+    private static readonly ViralVoiceFx[] Fxs = { ViralVoiceFx.PhoneEq, ViralVoiceFx.CyberVocoder, ViralVoiceFx.ReverbPunch, ViralVoiceFx.DeepBass };
+    private static readonly (string Text, bool Tag)[] ScriptParts = SplitScript(ViralVoiceFxStudioRunner.DemoScript);
+    private System.Threading.Timer? _timer;
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        _timer = new System.Threading.Timer(_ =>
+        {
+            try { _ = InvokeAsync(StateHasChanged); }
+            catch (Exception ex) { PromptFlowStudio.Program.Log("ViralVoiceFx.Modal.Timer", ex); }
+        }, null, 250, 250);
+    }
+
+    private static (string Text, bool Tag)[] SplitScript(string s)
+    {
+        var list = new List<(string, bool)>();
+        var i = 0;
+        while (i < s.Length)
+        {
+            var open = s.IndexOf('[', i);
+            if (open < 0) { list.Add((s[i..], false)); break; }
+            if (open > i) list.Add((s[i..open], false));
+            var close = s.IndexOf(']', open);
+            if (close < 0) { list.Add((s[open..], false)); break; }
+            list.Add((s[open..(close + 1)], true));
+            i = close + 1;
+        }
+        return list.ToArray();
+    }
+
+    private static string Ratio(float r) => ((r - RealtimeVoiceEmotionShifterEngine.MinRatio) / (RealtimeVoiceEmotionShifterEngine.MaxRatio - RealtimeVoiceEmotionShifterEngine.MinRatio) * 100).ToString("0", CultureInfo.InvariantCulture);
+
+    private static string Db(float lin) => lin <= 1e-6f ? "−∞" : (20 * Math.Log10(lin)).ToString("0.0", CultureInfo.InvariantCulture);
+
+    private string FxDetail(ViralVoiceFx f) => f switch
+    {
+        ViralVoiceFx.PhoneEq => "300~3400Hz",
+        ViralVoiceFx.CyberVocoder => ProceduralViralVoiceFxRackSynthesizer.CarrierHz.ToString("0", CultureInfo.InvariantCulture) + "Hz 링",
+        ViralVoiceFx.ReverbPunch => "테일 " + Db(Runner.Rack.TailLevel) + "dB · " + Runner.Rack.Punches.ToString(CultureInfo.InvariantCulture) + "회",
+        _ => "서브 " + Db(Runner.Rack.SubLevel) + "dB",
+    };
+
+    private string GrPoints()
+    {
+        var sb = new System.Text.StringBuilder(ViralVoiceFxStudioRunner.GrHist * 10);
+        for (var i = 0; i < ViralVoiceFxStudioRunner.GrHist; i++)
+        {
+            var y = Math.Min(48f, Runner.GrAt(i) / 12f * 48f);
+            sb.Append(i.ToString(CultureInfo.InvariantCulture)).Append(',').Append(y.ToString("0.0", CultureInfo.InvariantCulture)).Append(' ');
+        }
+        return sb.ToString();
+    }
+
+    private void Demo()
+    {
+        try { Runner.ProcessDemo(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("ViralVoiceFx.Modal.Demo", ex); }
+    }
+
+    private void Toggle() { if (Runner.Running) Runner.Stop(); else Runner.Start(); }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        _timer?.Dispose();
+    }
+}

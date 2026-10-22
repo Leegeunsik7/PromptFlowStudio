@@ -1,18 +1,18 @@
 # Current Project Status
-- Active Milestone: v17.79.0 완료 (Complete) — 프로덕션 OAuth2 라이브 배포 & E2E 퍼블리싱 스튜디오
+- Active Milestone: v17.80.0 완료 (Complete) — AI 자율 음성 감정 & 바이럴 보이스 FX 스튜디오
 - Build Status: Desktop Release -warnaserror 0/0 · net8.0-ios Release 0/0 · net8.0-android 미검증(SDK/JDK 미설치)
-- Test Suite: 486/487 전량 회귀(단일 CPU) + 실패 1 `GaussianSplat_ShadowCasting_And_Relighting_Check` 격리 재실행 통과(부하 타이밍)
-- Sidebar: 7대 카테고리 · 155 엔트리
+- Test Suite: 488/488 전량 회귀 통과(단일 CPU · MaxCpuCount=1 · DisableParallelization)
+- Sidebar: 7대 카테고리 · 156 엔트리
 - Updated At: 2026-10-22 (KST)
 
 ## Completed Deliverables
-- LIVE-1: `LivePublish/LivePublishContractSimulator` — Google OAuth2 · Meta Graph 계약 패리티(`SimulatedMetaGraphServer` 확장)
-- LIVE-2: `ProductionOAuth2TokenVaultGateway` — PKCE S256 · state CSRF · 만료 10 분 전 무할당 갱신 · AES-GCM 볼트 변조 탐지
-- LIVE-3: `ProductionResumableVideoUploaderEngine` — YouTube 308/Range 오프셋 재개 · IG 릴스 3 단계 상태 머신
-- LIVE-4: `LivePublishingPreflightRollbackGuard` — 스펙 검증 · 비공개 드라이런 2 단계 커밋 롤백 · 웹훅 알림
-- LIVE-5: `ProductionLivePublisherStudioRunner` + `ProductionLivePublisherStudioModal` · 카탈로그 `_liveOAuthPublisher` · HUD `gth-v1779` · DI
-- LIVE-6: `ProductionLivePublisher_And_E2EValidation_Check`(TimingSensitive)
+- PRE-0: `GaussianSplat_ShadowCasting_And_Relighting_Check` → TimingSensitivePerformance 컬렉션 이전 · Desktop 0W/0E 확인
+- VOICE-1: `ViralVoiceFx/RealtimeVoiceEmotionShifterEngine` — NCCF 피치 추정 SOLA 피치/포먼트 0.7~1.4× · [excited]/[whisper]/[serious]/[funny] 태그 · 50 ms 글라이드
+- VOICE-2: `ProceduralViralVoiceFxRackSynthesizer` — 전화기 EQ · 링 보코더 · T60 1.2 s 리버브 펀치 · f/2 서브하모닉 딥 베이스
+- VOICE-3: `ZeroClippingFastLimiterGuard` — 1 ms 룩어헤드 · 4× 트루 피크 · 소프트 니 −1 dBFS · THD ≤ 0.1 % · 클램프 0
+- VOICE-4: `ViralVoiceFxStudioRunner` + `ViralVoiceFxStudioModal` · 카탈로그 `_voiceFxStudio` · HUD `gth-v1780` · DI
+- VOICE-5: `VoiceEmotion_And_ViralVoiceFx_Check`(TimingSensitive)
 
 ## Known Issues / 환경 노트
-- 호스트 메모리 압축·CPU 경합 시 프레임/그림자 예산 임계 간헐 초과(격리 재실행 통과)
-- 실제 Google/Meta 계정 라이브 호출 미검증(시뮬레이터 계약만) · Android 빌드 · GUI 육안 미검증
+- 호스트 메모리 압축·CPU 경합 시 타이밍 민감 테스트 간헐 초과 가능(격리 재실행 통과 기조)
+- 실제 마이크 입력·청감 평가 미검증(합성 신호 계측만) · Android 빌드 · GUI 육안 미검증
