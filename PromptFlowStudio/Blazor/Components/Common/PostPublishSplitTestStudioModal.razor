@@ -1,0 +1,234 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.PostPublishSplitTest
+@implements IDisposable
+@inject PostPublishSplitTestStudioRunner Runner
+
+@* [PromptFlow Studio v17.93.0] ⚖️ 포스트-퍼블리시 A/B & 패자 회수기 — A/B 실시간 지표 비교 · 자동 회수 카운트다운 · 수동 강제 승자 · 매트릭스 승격 · 감사 로그. *@
+<div class="pst-scrim" @onclick="Close">
+    <div class="pst-modal" @onclick:stopPropagation="true">
+        <div class="pst-h">
+            <div>
+                <div class="pst-title">⚖️ 포스트-퍼블리시 A/B & 패자 회수기 · @(PostPublishSplitTestingEngine.PhaseName(Runner.Engine.Phase))</div>
+                <div class="pst-sub">같은 클립을 <b>훅 카피 · 썸네일만 다른 A/B 두 버전</b>으로 시간차(또는 다른 채널)로 올리고, 첫 <b>90분 골든타임</b> 동안 5분마다 조회수 · 유속 · 완청률 · 공유수를 비교합니다.
+                    승률이 <b>95%</b>를 넘으면 승자를 확정해 서브 채널 매트릭스 큐로 자동 증폭하고, 골든타임이 끝나면 패자나 <b>시간당 50뷰 · 완청률 35%</b> 미달 영상을 비공개(또는 삭제)로 회수해 채널 추천 지수를 지킵니다.</div>
+            </div>
+            <div class="pst-hr">
+                <span class="pst-badge @(Runner.Engine.HasWinner ? "ok" : null)">@(Runner.Engine.HasWinner ? "🏆 승자 " + PostPublishSplitTestingEngine.VariantName(Runner.Engine.Winner) : "신뢰도 " + PostPublishSplitTestStudioRunner.Pct(Runner.Engine.Confidence))</span>
+                <button class="pst-x" @onclick="Close">✕</button>
+            </div>
+        </div>
+
+        <div class="pst-body">
+            <div class="pst-bar">
+                <button class="pst-btn go" @onclick="Deploy">🚀 A/B 분기 배포</button>
+                <button class="pst-btn" @onclick="Step5">⏩ +5분</button>
+                <button class="pst-btn" @onclick="Step30">⏩ +30분</button>
+                <button class="pst-btn" @onclick="RunToEnd">⏭ 90분 골든타임 완주</button>
+                <label class="pst-lbl">B 시차
+                    <input class="pst-in" type="range" min="@(PostPublishSplitTestStudioRunner.MinStaggerMin)" max="@(PostPublishSplitTestStudioRunner.MaxStaggerMin)" step="5" value="@(Runner.StaggerMinutes.ToString(CultureInfo.InvariantCulture))" @onchange="SetStagger" />
+                    <b>@(Runner.StaggerMinutes)분</b>
+                </label>
+                <span class="pst-sep"></span>
+                <button class="pst-btn" @onclick="ResetAll">♻ 초기화</button>
+            </div>
+            <div class="pst-bar">
+                <button class="pst-btn @(Runner.SplitByChannel ? "on" : null)" aria-pressed="@(Runner.SplitByChannel ? "true" : "false")" @onclick="ToggleChannel">🔀 채널 분리 발행: @(Runner.SplitByChannel ? "ON" : "OFF")</button>
+                <button class="pst-btn @(Runner.BWinsScenario ? "on" : null)" aria-pressed="@(Runner.BWinsScenario ? "true" : "false")" @onclick="ToggleScenario">🧪 B 우세 시나리오: @(Runner.BWinsScenario ? "ON" : "OFF")</button>
+                <button class="pst-btn @(Runner.DeleteMode ? "warn" : null)" aria-pressed="@(Runner.DeleteMode ? "true" : "false")" @onclick="ToggleDelete">🗑️ 즉시 삭제 모드: @(Runner.DeleteMode ? "ON" : "OFF")</button>
+                <span class="pst-sep"></span>
+                <button class="pst-btn pick" @onclick="ForceA">👆 A 강제 승자</button>
+                <button class="pst-btn pick" @onclick="ForceB">👆 B 강제 승자</button>
+            </div>
+
+            <div class="pst-card">
+                <div class="pst-sec">⏳ 자동 회수 카운트다운 <span class="pst-kw">경과 @(PostPublishSplitTestStudioRunner.Mmss(Runner.ElapsedSec)) · 남은 @(PostPublishSplitTestStudioRunner.Mmss(Runner.RemainingSec)) · 기준 @(Runner.Pruner.MinViewsPerHour.ToString("0", CultureInfo.InvariantCulture))뷰/h · 완청 @(PostPublishSplitTestStudioRunner.Pct(Runner.Pruner.MinCompletion))</span></div>
+                <div class="pst-gauge"><div class="pst-fill @(Runner.RemainingSec == 0 ? "end" : null)" style="width:@(GaugePct().ToString("0.0", CultureInfo.InvariantCulture))%"></div></div>
+            </div>
+
+            <div class="pst-main">
+                @for (var c = 0; c < 2; c++)
+                {
+                    var watch = c == 1;
+                    <div class="pst-card">
+                        <div class="pst-sec">@(watch ? "⏱ 누적 시청 시간(분)" : "👁 누적 조회수") <span class="pst-kw"><i class="pst-dot a"></i>A <i class="pst-dot b"></i>B</span></div>
+                        <svg class="pst-chart" viewBox="0 0 300 120" preserveAspectRatio="none">
+                            <polyline class="pst-pa" points="@(Points(SplitVariant.A, watch))" />
+                            <polyline class="pst-pb" points="@(Points(SplitVariant.B, watch))" />
+                        </svg>
+                    </div>
+                }
+            </div>
+
+            <div class="pst-main">
+                @for (var v = 0; v < 2; v++)
+                {
+                    var t = Runner.Engine.Track((SplitVariant)v);
+                    var last = t.Last;
+                    <div class="pst-card @(Runner.Engine.HasWinner && Runner.Engine.Winner == t.Variant ? "win" : t.Pruned ? "pruned" : null)">
+                        <div class="pst-sec">변형 @(PostPublishSplitTestingEngine.VariantName(t.Variant)) <span class="pst-kw">@(t.Pruned ? "🗑️ 회수됨" : Runner.Engine.HasWinner && Runner.Engine.Winner == t.Variant ? "🏆 승자" : "추적")</span></div>
+                        <div class="pst-hook">「@(t.Hook)」 · 썸네일 #@(t.ThumbSlot + 1) · 채널 @(t.Channel)</div>
+                        <div class="pst-grid">
+                            <div class="m"><b>@(last.Views.ToString("N0", CultureInfo.InvariantCulture))</b><i>누적 조회</i></div>
+                            <div class="m"><b>@(t.ViewsPerHour(Runner.SimNow).ToString("0", CultureInfo.InvariantCulture))</b><i>뷰/시간</i></div>
+                            <div class="m"><b>@(PostPublishSplitTestStudioRunner.Pct(last.Completion))</b><i>완청률</i></div>
+                            <div class="m"><b>@(last.Shares)</b><i>공유</i></div>
+                            <div class="m"><b>@(t.Score.ToString("0.000", CultureInfo.InvariantCulture))</b><i>복합 스코어</i></div>
+                            <div class="m"><b>@(t.Count)/@(PostPublishSplitTestingEngine.Capacity)</b><i>표본</i></div>
+                        </div>
+                    </div>
+                }
+            </div>
+
+            <div class="pst-main">
+                <div class="pst-card">
+                    <div class="pst-sec">📜 판정 · 회수 · 승격 로그 <span class="pst-kw">@(Runner.LogCount)건</span></div>
+                    <div class="pst-log">
+                        @if (Runner.LogCount == 0)
+                        {
+                            <div class="pst-mini">아직 기록이 없습니다 — 「🚀 A/B 분기 배포」 후 「⏩ +5분」 또는 「⏭ 90분 골든타임 완주」를 눌러 보세요.</div>
+                        }
+                        @for (var i = 0; i < Runner.LogCount; i++)
+                        {
+                            var line = Runner.Log(i);
+                            <div class="pst-ll @(line.Contains("🗑️", StringComparison.Ordinal) || line.Contains('⛔') ? "bad" : line.Contains("🏆", StringComparison.Ordinal) || line.Contains("📣", StringComparison.Ordinal) ? "ok" : null)">@(line)</div>
+                        }
+                    </div>
+                </div>
+                <div class="pst-card">
+                    <div class="pst-sec">📣 매트릭스 승격 · 🧾 감사</div>
+                    <div class="pst-grid">
+                        <div class="m"><b>@(Runner.Promoter.Promotions)</b><i>승격</i></div>
+                        <div class="m"><b>@(Runner.LastRouted)</b><i>서브 채널 예약</i></div>
+                        <div class="m"><b>@(Runner.Promoter.Duplicates)</b><i>중복 차단</i></div>
+                        <div class="m"><b class="@(Runner.Pruner.Pruned > 0 ? "bad" : null)">@(Runner.Pruner.Pruned)</b><i>자동 회수</i></div>
+                        <div class="m"><b>@(Runner.Gateway.Privates)/@(Runner.Gateway.Deletes)</b><i>비공개/삭제</i></div>
+                        <div class="m"><b>@(Runner.Pruner.Failures)</b><i>회수 실패</i></div>
+                    </div>
+                    @for (var i = 0; i < Runner.Pruner.AuditCount && i < 6; i++)
+                    {
+                        var a = Runner.Pruner.Audit(i);
+                        <div class="pst-out @(a.Ok ? null : "bad")">#@(a.Seq) @(PostPublishSplitTestingEngine.VariantName(a.Variant)) → @(LowPerformanceAutoPrunerEngine.ActionName(a.Action)) · @(LowPerformanceAutoPrunerEngine.ReasonText(a.Reason)) · HTTP @(a.Status)</div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="pst-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+    </div>
+</div>
+
+<style>
+    .pst-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .pst-modal { width: min(1240px, 96vw); max-height: 94vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); color: var(--text-primary); }
+    .pst-h { position: sticky; top: 0; z-index: 3; flex: 0 0 auto; display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px 8px; background: var(--card); border-bottom: 1px solid var(--line); }
+    .pst-hr { display: flex; align-items: flex-start; gap: 8px; }
+    .pst-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 10px; }
+    .pst-act { position: sticky; bottom: 0; z-index: 3; flex: 0 0 auto; padding: 8px 16px 14px; background: var(--card); border-top: 1px solid var(--line); font-size: 11px; color: var(--text-muted); }
+    .pst-title { font-size: 17px; font-weight: 800; }
+    .pst-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .pst-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .pst-badge { white-space: nowrap; font-size: 12px; font-weight: 800; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: #1e293b; }
+    .pst-badge.ok { border-color: #22c55e; background: #14532d; color: #bbf7d0; }
+    .pst-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 0; }
+    .pst-sep { flex: 1; }
+    .pst-lbl { display: inline-flex; gap: 6px; align-items: center; font-size: 11.5px; }
+    .pst-in { accent-color: #a78bfa; }
+    .pst-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .pst-btn.go { border-color: #a78bfa; font-weight: 700; }
+    .pst-btn.on { border-color: #38bdf8; background: #0c4a6e; }
+    .pst-btn.warn { border-color: #f97316; background: #431407; }
+    .pst-btn.pick { border-color: #facc15; }
+    .pst-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-width: 0; margin-top: 10px; }
+    .pst-card.win { border-color: #22c55e; box-shadow: 0 0 0 1px #22c55e inset; }
+    .pst-card.pruned { opacity: .6; border-style: dashed; border-color: #ef4444; }
+    .pst-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .pst-kw { margin-left: auto; font-size: 10.5px; font-weight: 400; color: #c4b5fd; display: inline-flex; align-items: center; gap: 4px; }
+    .pst-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+    .pst-dot.a { background: #38bdf8; } .pst-dot.b { background: #f472b6; }
+    .pst-gauge { height: 12px; border-radius: 999px; background: #1e293b; overflow: hidden; }
+    .pst-fill { height: 100%; background: linear-gradient(90deg, #22c55e, #facc15 70%, #ef4444); transition: width .2s; }
+    .pst-fill.end { background: #ef4444; }
+    .pst-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+    .pst-chart { width: 100%; height: 130px; background: #111827; border-radius: 8px; }
+    .pst-pa, .pst-pb { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; }
+    .pst-pa { stroke: #38bdf8; } .pst-pb { stroke: #f472b6; }
+    .pst-hook { font-size: 11px; color: var(--text-muted); margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pst-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+    .pst-grid .m { background: #111827; border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; }
+    .pst-grid .m b { font-size: 12.5px; } .pst-grid .m b.bad { color: #f87171; }
+    .pst-grid .m i { font-style: normal; font-size: 10px; color: var(--text-muted); }
+    .pst-log { max-height: 240px; overflow-y: auto; font-family: var(--mono); font-size: 10.5px; display: flex; flex-direction: column; gap: 2px; }
+    .pst-ll { padding: 1px 4px; border-radius: 4px; background: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .pst-ll.ok { color: #bbf7d0; } .pst-ll.bad { color: #fecaca; background: #2a0b0b; }
+    .pst-out { margin-top: 6px; padding: 4px 8px; background: #111827; border-radius: 6px; font-size: 10.5px; font-family: var(--mono); }
+    .pst-out.bad { color: #fecaca; background: #2a0b0b; }
+    .pst-mini { font-size: 10px; color: var(--text-muted); margin-top: 6px; }
+    @@media (max-width: 1000px) { .pst-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    protected override void OnInitialized() => Runner.OnChange += OnServiceChanged;
+
+    private void Deploy() => Guard(() => Runner.Deploy(), "Deploy");
+    private void Step5() => Guard(() => Runner.Advance(5), "Step5");
+    private void Step30() => Guard(() => Runner.Advance(30), "Step30");
+    private void RunToEnd() => Guard(Runner.RunToGoldenEnd, "RunToEnd");
+    private void ForceA() => Guard(() => Runner.ForceWinner(SplitVariant.A), "ForceA");
+    private void ForceB() => Guard(() => Runner.ForceWinner(SplitVariant.B), "ForceB");
+    private void ToggleChannel() => Runner.ToggleSplitByChannel();
+    private void ToggleScenario() => Runner.ToggleBWins();
+    private void ToggleDelete() => Runner.ToggleDeleteMode();
+    private void ResetAll() => Runner.Reset();
+
+    private void SetStagger(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var m)) Runner.SetStagger(m);
+    }
+
+    private static void Guard(Action a, string tag)
+    {
+        try { a(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("PostPublishSplitTest.Modal." + tag, ex); }
+    }
+
+    private double GaugePct()
+    {
+        var total = PostPublishSplitTestingEngine.GoldenWindowSec + Runner.Engine.StaggerSec;
+        return total <= 0 ? 0 : Math.Clamp(100.0 * (total - Runner.RemainingSec) / total, 0, 100);
+    }
+
+    /// <summary>폴리라인 좌표 — X = 배포 후 경과(골든타임 + 시차), Y = 두 변형 공통 최대값 정규화.</summary>
+    private string Points(SplitVariant v, bool watch)
+    {
+        var e = Runner.Engine;
+        var t = e.Track(v);
+        if (t.Count == 0) return "0,120";
+        double max = 1;
+        for (var k = 0; k < 2; k++)
+        {
+            var tk = e.Track((SplitVariant)k);
+            for (var i = 0; i < tk.Count; i++) max = Math.Max(max, Y(tk.At(i), watch));
+        }
+        var span = (double)(PostPublishSplitTestingEngine.GoldenWindowSec + e.StaggerSec);
+        var sb = new System.Text.StringBuilder(t.Count * 14);
+        for (var i = 0; i < t.Count; i++)
+        {
+            ref readonly var s = ref t.At(i);
+            var x = 300.0 * (s.TSec - e.StartUnix) / span;
+            var y = 120.0 - 112.0 * Y(s, watch) / max;
+            if (i > 0) sb.Append(' ');
+            sb.Append(x.ToString("0.0", CultureInfo.InvariantCulture)).Append(',').Append(y.ToString("0.0", CultureInfo.InvariantCulture));
+        }
+        return sb.ToString();
+    }
+
+    private static double Y(in SplitMetricSample s, bool watch) => watch ? s.Views * s.Completion * 0.75 : s.Views;   // 시청 시간 ≈ 조회 × 완청률 × 클립 45 s
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Runner.OnChange -= OnServiceChanged;
+}

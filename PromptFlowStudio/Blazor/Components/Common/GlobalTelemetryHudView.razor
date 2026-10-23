@@ -283,6 +283,7 @@
 @inject PromptFlowStudio.Services.OmniViral.OmniViralGrowthStudioRunner OvgRun
 @inject PromptFlowStudio.Services.CopyrightCompliance.CopyrightComplianceStudioRunner CpyRun
 @inject PromptFlowStudio.Services.MasterPipeline.MasterPipelineRealRunnerStudioRunner MrrRun
+@inject PromptFlowStudio.Services.PostPublishSplitTest.PostPublishSplitTestStudioRunner PstRun
 @inject PromptFlowStudio.Services.LiveEngagement.LiveAudienceEngagementStudioRunner LaeRun
 @inject PromptFlowStudio.Services.LiveRestream.OmniLiveRestreamStudioRunner RstRun
 @inject PromptFlowStudio.Services.MultilingualDubbing.MultilingualDubbingStudioRunner MldRun
@@ -1008,6 +1009,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.93.0: 포스트-퍼블리시 A/B & 패자 회수기 — 국면 · 신뢰도 · 남은 골든타임 · 회수/승격 ── *@
+    <div class="gth-v1793">
+        <div class="gth-v96-card pid @(PstRun.Engine.HasWinner ? "ok" : null)">
+            <div class="gth-v96-h"><b>⚖️ A/B 회수기</b>
+                <span class="gth-v96-be">@(PromptFlowStudio.Services.PostPublishSplitTest.PostPublishSplitTestingEngine.PhaseName(PstRun.Engine.Phase))</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(PromptFlowStudio.Services.PostPublishSplitTest.PostPublishSplitTestStudioRunner.Pct(PstRun.Engine.Confidence))</b><span>신뢰도</span></span>
+                <span class="gth-v96-m"><b>@(PromptFlowStudio.Services.PostPublishSplitTest.PostPublishSplitTestStudioRunner.Mmss(PstRun.RemainingSec))</b><span>남은 시간</span></span>
+                <span class="gth-v96-m"><b>@(PstRun.Pruner.Pruned)</b><span>회수</span></span>
+                <span class="gth-v96-m"><b>@(PstRun.Promoter.Promotions)</b><span>승격</span></span>
+            </div>
+            <div class="gth-v96-act">@(PstRun.LastAction ?? "A/B 대기 · 매트릭스 " + (PstRun.MatrixInjected ? "주입" : "로컬"))</div>
+        </div>
+    </div>
     @* ── v17.92.0: 마스터 실러너 E2E 샌드박스 — 실러너 단계 · 체인 µs · 배치 패키지 · 롤백 회수 ── *@
     <div class="gth-v1792">
         <div class="gth-v96-card pid @(MrrRun.Engine.State == PromptFlowStudio.Services.MasterPipeline.RunnerChainState.Completed ? "ok" : null)">
@@ -5841,6 +5857,7 @@
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
         KbrRun.OnChange += OnSwarmChanged; // v17.78.0 (재생 10 Hz → 250 ms 스로틀)
         VrpRun.OnChange += OnSwarmChanged; // v17.88.0 (파이프라인 시작/완료 시점만)
+        PstRun.OnChange += OnSwarmChanged; // v17.93.0 (조작 · 틱 일괄 시점만)
         MrrRun.OnChange += OnSwarmChanged; // v17.92.0 (스테이지 시작 250 ms 스로틀 · 완료/인터락/패키지 즉시)
         CpyRun.OnChange += OnSwarmChanged; // v17.91.0 (재생 헤드 100 ms → 250 ms 스로틀 · 검역 시작/완료 즉시)
         OvgRun.OnChange += OnSwarmChanged; // v17.90.0 (슬라이스 진행 · 100 ms 텔레메트리 → 250 ms 스로틀 · 인터락/완료 즉시)
@@ -6237,6 +6254,7 @@
         OvgRun.OnChange -= OnSwarmChanged;
         CpyRun.OnChange -= OnSwarmChanged;
         MrrRun.OnChange -= OnSwarmChanged;
+        PstRun.OnChange -= OnSwarmChanged;
         NavRun.OnChange -= OnSwarmChanged;
         LavRun.OnChange -= OnSwarmChanged;
         RstRun.OnChange -= OnSwarmChanged;

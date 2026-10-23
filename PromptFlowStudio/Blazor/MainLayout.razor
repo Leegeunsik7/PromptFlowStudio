@@ -508,6 +508,10 @@
         {
             <LiveToShortsAutoClipperStudioModal OnClose="() => _liveAutoClipper = false" />
         }
+        @if (_postPublishSplitTest)
+        {
+            <PostPublishSplitTestStudioModal OnClose="() => _postPublishSplitTest = false" />
+        }
         @if (_realRunnerBatchSandbox)
         {
             <MasterPipelineRealRunnerStudioModal OnClose="() => _realRunnerBatchSandbox = false" />
@@ -1131,6 +1135,7 @@
             case "_liveAutoClipper": _liveAutoClipper = on; break;
             case "_liveArchiveVault": _liveArchiveVault = on; break;
             case "_vodRepurposing": _vodRepurposing = on; break;
+            case "_postPublishSplitTest": _postPublishSplitTest = on; break;
             case "_realRunnerBatchSandbox": _realRunnerBatchSandbox = on; break;
             case "_copyrightCompliance": _copyrightCompliance = on; break;
             case "_omniViralMasterCockpit": _omniViralMasterCockpit = on; break;
@@ -1290,6 +1295,7 @@
         "_liveAutoClipper" => _liveAutoClipper,
         "_liveArchiveVault" => _liveArchiveVault,
         "_vodRepurposing" => _vodRepurposing,
+        "_postPublishSplitTest" => _postPublishSplitTest,
         "_realRunnerBatchSandbox" => _realRunnerBatchSandbox,
         "_copyrightCompliance" => _copyrightCompliance,
         "_omniViralMasterCockpit" => _omniViralMasterCockpit,
@@ -1405,6 +1411,7 @@
     private bool _globalDub; // v17.64.0 사이드바 🌍 글로벌 & 로컬라이제이션 ▸ 🗣️ 실시간 다국어 더빙 스튜디오(스트리밍 번역 ≤ 200 ms · 다국어 음색 유지 합성 · 플랫폼별 언어 트랙 · ARKit 가우시안 립싱크 < 50 ms)
     private bool _streamGateway; // v17.62.0 사이드바 📜 각본 & 타임라인 ▸ 🛰️ 스트림 게이트웨이 & 클리퍼 스튜디오(32 MB 압축 NAL 링 · 무손실 1080p 리먹스 · Twitch/YouTube/치지직 게이트웨이 · 백오프/배압)
     private bool _influencerLive; // v17.61.0 사이드바 📜 각본 & 타임라인 ▸ 🎙️ 버추얼 인플루언서 라이브 스튜디오(채팅 리액션 트리거 · 하이라이트 9:16 즉시 클리핑 · 도배/비속어 가드)
+    private bool _postPublishSplitTest; // v17.93.0 사이드바 📸 소셜 & 바이럴 ▸ ⚖️ 포스트-퍼블리시 A/B & 패자 회수기(v17.85 훅/썸네일 A/B 분기 발행 · 90 분 5 분 간격 무할당 시계열 링 · 베타 사후 P(B>A) ≥ 95 % 승자 · 50 뷰/h · 완청 35 % 미달 자동 비공개/삭제 · v17.81 매트릭스 지터 승격)
     private bool _realRunnerBatchSandbox; // v17.92.0 사이드바 📸 소셜 & 바이럴 ▸ ⚡ 마스터 실러너 E2E 샌드박스(7 실 싱글톤 러너 순차 직결 · 수동 스텝 · 헤드리스 배치 → 쇼츠 MP4 + 카드뉴스 5 + 마크다운 · Content ID 인터락 롤백)
     private bool _copyrightCompliance; // v17.91.0 사이드바 📸 소셜 & 바이럴 ▸ 🛡️ 저작권 검역 & Content ID 가드(16.7 ms 컨스텔레이션 지문 · 모의 상용 음원 DB 해시 투표 위험도 0~100 · ≥ 70 구간 10 ms 타임코드 · 노치/−30 dB 사이드체인 제거 + 로열티 프리 루프 치환 · −14 LUFS · 금칙어 50 종 + 상표 마스킹/비프)
     private bool _omniViralMasterCockpit; // v17.90.0 사이드바 📸 소셜 & 바이럴 ▸ 👑 옴니 바이럴 그로스 마스터 콕핏(원클릭 7 노드 DAG ①클립 → ②스코어 → ③자막/더빙 → ④변형 렌더 → ⑤OAuth2 시차 예약 · ①→⑥아티클 · ④+⑥→⑦볼트 · 인터락 C 등급/토큰 만료 승인 대기 · 4 플랫폼 K-Factor ≥ 1.2 추가 신디케이션)

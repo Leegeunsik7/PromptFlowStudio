@@ -175,6 +175,7 @@ using SG = PromptFlowStudio.Services.StreamGateway;
 using Ovg = PromptFlowStudio.Services.OmniViral;
 using Cpy = PromptFlowStudio.Services.CopyrightCompliance;
 using Mrr = PromptFlowStudio.Services.MasterPipeline;
+using Pst = PromptFlowStudio.Services.PostPublishSplitTest;
 
 namespace PromptFlowStudio.Tests;
 
@@ -35928,11 +35929,11 @@ public sealed class MasterPipelineRealRunnerIsolatedTests
             eng.InjectFaultStage = -1;
         }
 
-        // ── RUN-4: 카탈로그 168 · 도움말 · HUD · 레이아웃 · DI · 모달 규격 · 외부 의존 0 · 모달 렌더 ──
+        // ── RUN-4: 카탈로그 168+ · 도움말 · HUD · 레이아웃 · DI · 모달 규격 · 외부 의존 0 · 모달 렌더 ──
         var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
-        Assert.Equal(168, cat.Length);
+        Assert.True(cat.Length >= 168);   // v17.93.0 이후 카탈로그 증가 허용
         Assert.Contains(cat, en => en.Key == "_realRunnerBatchSandbox" && en.Category == 4 && en.Title == "마스터 실러너 E2E 샌드박스");
-        Assert.Equal(168, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
+        Assert.Equal(cat.Length, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
         Assert.Equal(0, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects());
         Assert.Equal("_realRunnerBatchSandbox", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.ResolveKeyByHeader("⚡ 마스터 실러너 E2E 샌드박스 · ✅ 완료"));
         var root = RepoRoot();
@@ -35961,6 +35962,187 @@ public sealed class MasterPipelineRealRunnerIsolatedTests
         Assert.True(html.Length > 500 && html.Contains("mrr-scrim", StringComparison.Ordinal) && html.Contains("mrr-body", StringComparison.Ordinal) && html.Contains("단일 단계 스텝", StringComparison.Ordinal) && html.Contains("E2E 원클릭 배치 실행", StringComparison.Ordinal) && html.Contains("Injected", StringComparison.Ordinal), "모달 렌더 " + html.Length);
         Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
         Assert.True(e2eMs < 60_000, "E2E " + e2eMs.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + " ms");
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+}
+
+/// <summary>v17.93.0 포스트-퍼블리시 A/B 추적 · 저성과 자동 회수 · 승자 매트릭스 승격 · 관제 콕핏 결선.</summary>
+[Collection("TimingSensitivePerformance")]   // 스레드 할당 바이트 계측(시계열 기록 · 스코어링 · 승격 핸드오프) → 비병렬
+public sealed class PostPublishSplitTestIsolatedTests
+{
+    private const long T0 = 1_800_000_000;
+    private static long Va(long m) => m * 14 + m * m / 8;
+    private static long Vb(long m) => m / 2;
+
+    /// <summary>A/B 표준 시나리오 재생(B 10 분 시차) — 강세 쪽 14 뷰/분 · 완청 58 %, 약세 쪽 0.5 뷰/분 · 완청 27 %.</summary>
+    private static void Play(Pst.PostPublishSplitTestingEngine x, int id, bool aStrong, long until)
+    {
+        x.Deploy(id, "A", 0, 0, "B", 1, 0, T0, 600);
+        for (long now = T0 + 300; now <= until; now += 300)
+        {
+            long ma = (now - T0) / 60, mb = (now - T0 - 600) / 60;
+            x.Record(Pst.SplitVariant.A, now, aStrong ? Va(ma) : Vb(ma), aStrong ? 0.58f : 0.27f, aStrong ? (int)(Va(ma) / 22) : 0);
+            if (mb > 0) x.Record(Pst.SplitVariant.B, now, aStrong ? Vb(mb) : Va(mb), aStrong ? 0.27f : 0.58f, aStrong ? 0 : (int)(Va(mb) / 22));
+            x.Evaluate(now);
+        }
+    }
+
+    [Fact]
+    public async Task PostPublishSplitTest_And_AutoPruner_Check()
+    {
+        // ── PST-1: 분기 배포 · 5 분 폴링 기록 · 거절 규칙 · 95 % 조기 승자 ──
+        var e = new Pst.PostPublishSplitTestingEngine();
+        Assert.False(e.Record(Pst.SplitVariant.A, T0, 10, 0.5f, 0));   // 배포 전 거절
+        Assert.Throws<ArgumentException>(() => e.Deploy(1, "a", 0, 0, "b", 1, 0, T0, 0));   // 같은 채널 · 시차 0
+        e.Deploy(9301, "훅 A", 0, 0, "훅 B", 1, 0, T0, 600);
+        Assert.True(e.Phase == Pst.SplitTestPhase.Tracking && e.GoldenEndUnix == T0 + 600 + 5400 && e.RemainingSec(T0) == 6000 && Pst.PostPublishSplitTestingEngine.Capacity == 19);
+        Assert.False(e.Record(Pst.SplitVariant.B, T0 + 300, 5, 0.3f, 0));   // B 발행 전
+        var decidedAt = -1L;
+        for (long now = T0 + 300; now <= T0 + 6000; now += 300)
+        {
+            var ma = (now - T0) / 60; var mb = (now - T0 - 600) / 60;
+            Assert.True(e.Record(Pst.SplitVariant.A, now, Va(ma), 0.58f, (int)(Va(ma) / 22)) == (now <= T0 + 5400));
+            if (mb > 0) Assert.True(e.Record(Pst.SplitVariant.B, now, Vb(mb), 0.27f, 0));
+            if (e.Evaluate(now) && decidedAt < 0) decidedAt = now;
+        }
+        Assert.False(e.Record(Pst.SplitVariant.B, T0 + 6000, 999, 0.9f, 1));   // 역행/중복 시각
+        Assert.True(decidedAt > 0 && decidedAt < e.GoldenEndUnix && e.HasWinner && e.Winner == Pst.SplitVariant.A && !e.ForcedWinner, "조기 확정 " + decidedAt);
+        Assert.True(e.Confidence >= Pst.PostPublishSplitTestingEngine.WinnerConfidence && e.Track(Pst.SplitVariant.A).Score > e.Track(Pst.SplitVariant.B).Score);
+        Assert.True(e.Phase == Pst.SplitTestPhase.Closed && e.Track(Pst.SplitVariant.A).Count == 18 && e.Track(Pst.SplitVariant.B).Count == 18);
+        Assert.True(e.Track(Pst.SplitVariant.A).At(0).TSec == T0 + 300 && e.Track(Pst.SplitVariant.A).Last.Views == Va(90) && e.Track(Pst.SplitVariant.A).At(17).ViewsPerSec > 0);
+        Assert.InRange(Pst.PostPublishSplitTestingEngine.NormalCdf(1.96), 0.9749, 0.9751);
+        // 기록 · 스코어링 핫패스 무할당(워밍 후)
+        Assert.Equal(0, AllocationProbe.MinAllocated(() =>
+        {
+            e.Deploy(9302, "훅 A", 0, 0, "훅 B", 1, 1, T0, 0);
+            for (long now = T0 + 300; now <= T0 + 5400; now += 300)
+            {
+                var m = (now - T0) / 60;
+                e.Record(Pst.SplitVariant.A, now, m * 9, 0.5f, (int)m);
+                e.Record(Pst.SplitVariant.B, now, m * 10, 0.52f, (int)m);
+                e.Evaluate(now);
+            }
+        }));
+
+        // ── PST-2: 90 분 시점 패자 판정 · 자동 비공개 · 감사 · 중복 차단 · 재시도 · 삭제 모드 ──
+        var gw = new Pst.SimulatedVideoVisibilityGateway();
+        var pr = new Pst.LowPerformanceAutoPrunerEngine(gw);
+        var e2 = new Pst.PostPublishSplitTestingEngine();
+        Play(e2, 9311, true, T0 + 5700);
+        Assert.Equal(0, pr.Evaluate(e2, T0 + 5700));   // 골든타임 전
+        Assert.True(pr.Classify(e2, Pst.SplitVariant.A, T0 + 5700) == Pst.PruneReason.None);
+        Play(e2, 9311, true, T0 + 6000);
+        Assert.Equal(1, pr.Evaluate(e2, T0 + 6000));
+        var ev = pr.Audit(0);
+        Assert.True(ev.Ok && ev.Variant == Pst.SplitVariant.B && ev.Action == Pst.PruneAction.Private && ev.Status == 200 && ev.ContentId == 9311 && ev.Seq == 1, "감사 " + ev.Reason);
+        Assert.True(ev.Reason == (Pst.PruneReason.Loser | Pst.PruneReason.LowVelocity | Pst.PruneReason.LowCompletion) && ev.ViewsPerHour < 50 && ev.Completion < 0.35f);
+        Assert.Contains("저조한 완청률", Pst.LowPerformanceAutoPrunerEngine.ReasonText(ev.Reason), StringComparison.Ordinal);
+        Assert.True(gw.Privates == 1 && gw.Deletes == 0 && e2.Track(Pst.SplitVariant.B).Pruned && !e2.Track(Pst.SplitVariant.A).Pruned);
+        Assert.True(pr.Evaluate(e2, T0 + 6000) == 0 && pr.DuplicateBlocks == 1 && gw.Calls == 1);   // alreadyRegistered 중복 차단
+        // 429/5xx 재시도 → 성공 · 4xx 즉시 실패 · 삭제 모드
+        Play(e2, 9312, false, T0 + 6000);
+        gw.InjectFailures(2, 503);
+        pr.Mode = Pst.PruneAction.Delete;
+        Assert.Equal(1, pr.Evaluate(e2, T0 + 6000));
+        Assert.True(pr.Audit(0).Variant == Pst.SplitVariant.A && pr.Audit(0).Attempts == 3 && pr.Retries == 2 && gw.Deletes == 1 && pr.Audit(0).Action == Pst.PruneAction.Delete);
+        Play(e2, 9313, true, T0 + 6000);
+        gw.InjectFailures(1, 403);
+        Assert.Equal(0, pr.Evaluate(e2, T0 + 6000));
+        Assert.True(!pr.Audit(0).Ok && pr.Audit(0).Status == 403 && pr.Audit(0).Attempts == 1 && pr.Failures == 1 && !e2.Track(Pst.SplitVariant.B).Pruned && pr.AuditCount == 3);
+        Assert.Equal(1, pr.Evaluate(e2, T0 + 6000));   // 실패분은 재평가 시 재시도
+        // 감사 기록 무할당
+        Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 32; i++) { e2.Track(Pst.SplitVariant.B).Pruned = false; pr.Prune(e2, Pst.SplitVariant.B, Pst.PruneReason.LowVelocity, T0 + 6000); } }));
+
+        // ── PST-3: 승자 → v17.81 매트릭스 큐 승격 · 참조 전달 · 중복/상한/누락 차단 · 무할당 ──
+        using var mtx = new PromptFlowStudio.Services.MatrixSyndication.MatrixSyndicationStudioRunner();
+        var promo = new Pst.ViralWinnerSubChannelPromoterGuard(mtx.Router);
+        var mp4 = new byte[4096]; mp4[4] = (byte)'f';
+        var sub = "1\n00:00:00,000 --> 00:00:03,000\n훅".AsMemory();
+        var meta = "{\"hook\":\"A\"}".AsMemory();
+        var asset = new Pst.WinnerMasterAsset(9311, Pst.SplitVariant.A, mp4, sub, meta);
+        var before = mtx.Router.Count;
+        Assert.Equal(Pst.PromoteResult.Promoted, promo.Promote(asset, mtx.SimNow, out var routed));
+        Assert.True(routed > 0 && routed <= mtx.Router.ChannelCount && mtx.Router.Count == before + routed && promo.RoutedPosts == routed, "예약 " + routed);
+        var h = promo.History(0);
+        Assert.True(h.Asset.Mp4.Span == mp4.AsSpan() && h.Asset.Subtitle.Span == sub.Span && h.Asset.Metadata.Span == meta.Span, "참조 전달(복사 0)");
+        Assert.InRange(h.JitterSec, 0, Pst.ViralWinnerSubChannelPromoterGuard.MaxJitterMin * 60);
+        Assert.True(h.ReadyUnix == mtx.SimNow + h.JitterSec && (routed < 2 || mtx.Router.MinCrossChannelGap(9311) >= mtx.Router.StaggerMinutes * 60L));
+        Assert.Equal(Pst.PromoteResult.Duplicate, promo.Promote(asset, mtx.SimNow, out _));
+        Assert.Equal(Pst.PromoteResult.InvalidAsset, promo.Promote(new Pst.WinnerMasterAsset(9399, Pst.SplitVariant.B, ReadOnlyMemory<byte>.Empty, sub, meta), mtx.SimNow, out _));
+        promo.DailyCap = 1;
+        Assert.Equal(Pst.PromoteResult.DailyCap, promo.Promote(new Pst.WinnerMasterAsset(9398, Pst.SplitVariant.A, mp4, sub, meta), mtx.SimNow, out _));
+        Assert.True(promo.Promotions == 1 && promo.Duplicates == 1 && promo.CapBlocks == 1);
+        promo.DailyCap = 10_000;
+        var cid = 20_000;
+        Assert.Equal(0, AllocationProbe.MinAllocated(() =>
+        {
+            mtx.Router.ClearQueue();
+            for (var i = 0; i < 8; i++) promo.Promote(new Pst.WinnerMasterAsset(++cid, Pst.SplitVariant.A, mp4, sub, meta), mtx.SimNow, out _);
+        }));
+        mtx.Router.ClearQueue();
+
+        // ── 러너 E2E: 골든타임 완주 → 승자 승격 + 패자 회수(A 우세 / B 우세) · 강제 승자 ──
+        using (var run = new Pst.PostPublishSplitTestStudioRunner(mtx))
+        {
+            Assert.True(run.MatrixInjected && !run.PredictorInjected);
+            var changes = 0;
+            run.OnChange += () => changes++;
+            var q = mtx.Router.Count;
+            run.RunToGoldenEnd();
+            Assert.True(run.Engine.Phase == Pst.SplitTestPhase.Closed && run.Engine.HasWinner && run.Engine.Winner == Pst.SplitVariant.A && run.RemainingSec == 0, "러너 판정");
+            Assert.True(run.Pruner.Pruned == 1 && run.Engine.Track(Pst.SplitVariant.B).Pruned && run.Gateway.Privates == 1, "러너 회수");
+            Assert.True(run.Promoter.Promotions == 1 && mtx.Router.Count > q && run.LastRouted > 0 && run.LogCount >= 3 && changes > 0);
+            run.ToggleBWins(); run.ToggleDeleteMode(); run.ToggleSplitByChannel();
+            Assert.True(run.BWinsScenario && run.DeleteMode && run.SplitByChannel);
+            run.Deploy();
+            Assert.True(run.Engine.StaggerSec == 0 && run.Engine.Track(Pst.SplitVariant.B).Channel == 1);
+            run.RunToGoldenEnd();
+            Assert.True(run.Engine.Winner == Pst.SplitVariant.B && run.Engine.Track(Pst.SplitVariant.A).Pruned && run.Gateway.Deletes == 1 && run.Promoter.Promotions == 2);
+            run.Reset();
+            run.ForceWinner(Pst.SplitVariant.A);
+            Assert.Equal(Pst.SplitTestPhase.Idle, run.Engine.Phase);
+            run.Advance(5);
+            run.ForceWinner(Pst.SplitVariant.B);
+            Assert.True(run.Engine.ForcedWinner && run.Engine.Winner == Pst.SplitVariant.B && run.Engine.Phase == Pst.SplitTestPhase.Decided && run.Promoter.Promotions == 3);
+            run.SetStagger(99);
+            Assert.Equal(Pst.PostPublishSplitTestStudioRunner.MaxStaggerMin, run.StaggerMinutes);
+        }
+
+        // ── PST-4: 카탈로그 169 · 도움말 · HUD · 레이아웃 · DI · 모달 규격 · 외부 의존 0 · 모달 렌더 ──
+        var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
+        Assert.Equal(169, cat.Length);
+        Assert.Contains(cat, en => en.Key == "_postPublishSplitTest" && en.Category == 4 && en.Title == "포스트-퍼블리시 A/B & 패자 회수기");
+        Assert.Equal(169, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
+        Assert.Equal(0, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects());
+        Assert.Equal("_postPublishSplitTest", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.ResolveKeyByHeader("⚖️ 포스트-퍼블리시 A/B & 패자 회수기 · 추적 중"));
+        var root = RepoRoot();
+        string Src(params string[] p) => File.ReadAllText(Path.Combine(root, Path.Combine(p)));
+        var hud = Src("PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor");
+        var layout = Src("PromptFlowStudio", "Blazor", "MainLayout.razor");
+        var modalSrc = Src("PromptFlowStudio", "Blazor", "Components", "Common", "PostPublishSplitTestStudioModal.razor");
+        Assert.True(hud.IndexOf("gth-v1793", StringComparison.Ordinal) is > 0 and var i1793 && i1793 < hud.IndexOf("gth-v1792", StringComparison.Ordinal) && hud.Contains("PstRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("PstRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<PostPublishSplitTestStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_postPublishSplitTest\"", StringComparison.Ordinal) && layout.Contains("\"_postPublishSplitTest\" =>", StringComparison.Ordinal));
+        Assert.True(Src("PromptFlowStudio", "MainForm.cs").Contains("PostPublishSplitTest.PostPublishSplitTestStudioRunner(sp)", StringComparison.Ordinal) && Src("PromptFlowStudio.Mobile", "MauiProgram.cs").Contains("PostPublishSplitTest.PostPublishSplitTestStudioRunner(sp)", StringComparison.Ordinal));
+        Assert.True(modalSrc.Contains("@implements IDisposable", StringComparison.Ordinal) && modalSrc.Contains("flex: 1 1 auto; min-height: 0; overflow-y: auto;", StringComparison.Ordinal) && modalSrc.Contains("position: sticky", StringComparison.Ordinal) && modalSrc.Contains("aria-pressed", StringComparison.Ordinal));
+        foreach (var src in Directory.GetFiles(Path.Combine(root, "PromptFlowStudio", "Services", "PostPublishSplitTest"), "*.cs"))
+        {
+            var body = File.ReadAllText(src);
+            Assert.True(!body.Contains("System.Linq", StringComparison.Ordinal) && !body.Contains("Process.Start", StringComparison.Ordinal) && !body.Contains("HttpClient", StringComparison.Ordinal) && !body.Contains("File.Write", StringComparison.Ordinal), "외부 의존 · 파일 I/O " + Path.GetFileName(src));
+        }
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = (Pst.PostPublishSplitTestStudioRunner)sp.GetService(typeof(Pst.PostPublishSplitTestStudioRunner))!;
+        Assert.True(runner.MatrixInjected && ReferenceEquals(runner.Matrix, sp.GetService(typeof(PromptFlowStudio.Services.MatrixSyndication.MatrixSyndicationStudioRunner))) && runner.PredictorInjected);
+        runner.Advance(30);
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.PostPublishSplitTestStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("pst-scrim", StringComparison.Ordinal) && html.Contains("pst-body", StringComparison.Ordinal) && html.Contains("A/B 분기 배포", StringComparison.Ordinal) && html.Contains("pst-pa", StringComparison.Ordinal) && html.Contains("강제 승자", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
     }
 
