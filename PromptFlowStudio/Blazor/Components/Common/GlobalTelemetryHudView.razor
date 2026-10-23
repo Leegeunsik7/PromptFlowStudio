@@ -289,6 +289,7 @@
 @inject PromptFlowStudio.Services.TrendJacking.TrendJackingStudioRunner TrjRun
 @inject PromptFlowStudio.Services.ViralCommerce.ViralCommerceAffiliateStudioRunner VcaRun
 @inject PromptFlowStudio.Services.RetentionHeatmap.AudienceRetentionHeatmapStudioRunner ArhRun
+@inject PromptFlowStudio.Services.CompetitorSpy.CompetitorViralSpyStudioRunner SpyRun
 @inject PromptFlowStudio.Services.LiveEngagement.LiveAudienceEngagementStudioRunner LaeRun
 @inject PromptFlowStudio.Services.LiveRestream.OmniLiveRestreamStudioRunner RstRun
 @inject PromptFlowStudio.Services.MultilingualDubbing.MultilingualDubbingStudioRunner MldRun
@@ -1014,6 +1015,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+@* ── v17.99.0: 경쟁 채널 바이럴 스파이 & 역공학 — 300 % 이상치 · 훅 해부 · 대항 기획안 · 표절 차단 · ①단계 전송 ── *@
+    <div class="gth-v1799">
+        <div class="gth-v96-card pid @(SpyRun.Guard.DispatchCount > 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>🕵️ 경쟁 채널 바이럴 스파이</b>
+                <span class="gth-v96-be">최고 지수 @(SpyRun.Detector.TopScore.ToString("0", System.Globalization.CultureInfo.InvariantCulture)) · @(PromptFlowStudio.Services.CompetitorSpy.ViralHookAudiovisualReverseEngineer.PatternNames[(int)SpyRun.Decompiler.Blueprint.Hook])</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(SpyRun.Detector.OutlierCount)</b><span>이상치</span></span>
+                <span class="gth-v96-m"><b>@(SpyRun.ChannelCount)</b><span>벤치마크</span></span>
+                <span class="gth-v96-m"><b>@(SpyRun.Guard.Blocked)</b><span>표절 차단</span></span>
+                <span class="gth-v96-m"><b>@(SpyRun.Guard.DispatchCount)</b><span>①단계 전송</span></span>
+            </div>
+            <div class="gth-v96-act">@(SpyRun.LastAction ?? "경쟁 채널 스캔 대기 · 평상 평균 3배 이상치 → 훅 역공학 → 대항 기획안")</div>
+        </div>
+    </div>
 @* ── v17.98.0: 시청자 유지율 히트맵 & 리에디터 — 이탈 절벽 · 데드존 · 예상 상승 · 리스큐 이관 ── *@
     <div class="gth-v1798">
         <div class="gth-v96-card pid @(ArhRun.Guard.HandoffCount > 0 ? "ok" : null)">
@@ -5939,6 +5955,7 @@
         VrpRun.OnChange += OnSwarmChanged; // v17.88.0 (파이프라인 시작/완료 시점만)
         PstRun.OnChange += OnSwarmChanged; // v17.93.0 (조작 · 틱 일괄 시점만)
         GheRun.OnChange += OnSwarmChanged; // v17.95.0 (조작 · 틱 일괄 시점만)
+        SpyRun.OnChange += OnSwarmChanged; // v17.99.0 (조작 시점만)
         ArhRun.OnChange += OnSwarmChanged; // v17.98.0 (조작 시점만)
         VcaRun.OnChange += OnSwarmChanged; // v17.97.0 (조작 · 트래픽 틱 일괄 시점만)
         TrjRun.OnChange += OnSwarmChanged; // v17.96.0 (조작 · 1 분 틱 일괄 시점만)
@@ -6341,6 +6358,7 @@
         MrrRun.OnChange -= OnSwarmChanged;
         PstRun.OnChange -= OnSwarmChanged;
         GheRun.OnChange -= OnSwarmChanged;
+        SpyRun.OnChange -= OnSwarmChanged;
         ArhRun.OnChange -= OnSwarmChanged;
         VcaRun.OnChange -= OnSwarmChanged;
         TrjRun.OnChange -= OnSwarmChanged;

@@ -1,0 +1,318 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.CompetitorSpy
+@implements IDisposable
+@inject CompetitorViralSpyStudioRunner Runner
+
+@* [PromptFlow Studio v17.99.0] 🕵️ 경쟁 채널 바이럴 스파이 & 역공학 — 벤치마크 그리드 · 300 % 이상치 · 훅 해부도 · 컷/피크 청사진 · 1클릭 대항 기획안 전송. *@
+<div class="spy-scrim" @onclick="Close">
+    <div class="spy-modal" @onclick:stopPropagation="true">
+        <div class="spy-h">
+            <div>
+                <div class="spy-title">🕵️ 경쟁 채널 바이럴 스파이 &amp; 역공학</div>
+                <div class="spy-sub">벤치마크 경쟁 채널의 최근 영상 메트릭을 훑어 <b>평상 평균 대비 300% 이상</b> 튄 이상치를 <b>바이럴 지수(0~100)</b>로 줄 세우고,
+                    도입 3초 <b>훅 유형</b> · 초당 <b>컷 전환</b> · <b>오디오 피크 분산</b>을 역공학한 청사진에서 <b>구조만</b> 빌려 내 페르소나 · 키워드로 대항 기획안을 쓴 뒤,
+                    경쟁 훅과 <b>@(Runner.SimilarityPercent)% 이상</b> 비슷하면 즉시 재합성하고 통과분만 <b>오케스트레이터 ①단계</b>로 보냅니다.</div>
+            </div>
+            <div class="spy-hr">
+                <span class="spy-badge @(Runner.Detector.OutlierCount > 0 ? "ok" : "warn")">📈 이상치 @(Runner.Detector.OutlierCount)</span>
+                <span class="spy-badge @(Runner.Detector.TopScore >= 60 ? "ok" : null)">🔥 최고 지수 @(Runner.Detector.TopScore.ToString("0", CultureInfo.InvariantCulture))</span>
+                <span class="spy-badge @(Runner.Guard.Blocked > 0 ? "bad" : null)">🛡 차단 @(Runner.Guard.Blocked)</span>
+                <span class="spy-badge @(Runner.Guard.DispatchCount > 0 ? "ok" : null)">🚀 전송 @(Runner.Guard.DispatchCount)</span>
+                <button class="spy-x" @onclick="Close">✕</button>
+            </div>
+        </div>
+
+        <div class="spy-body">
+            <div class="spy-bar">
+                <button class="spy-btn go" @onclick="Generate">🚀 대항 기획안 생성 &amp; 파이프라인 전송</button>
+                <label class="spy-lbl">📡 채널
+                    <select class="spy-sel" value="@(_pick.ToString(CultureInfo.InvariantCulture))" @onchange="OnPick">
+                        @for (var i = 0; i < CompetitorViralSpyStudioRunner.ChannelNames.Length; i++)
+                        {
+                            <option value="@(i.ToString(CultureInfo.InvariantCulture))">@(CompetitorViralSpyStudioRunner.ChannelNames[i])@(Runner.IsRegistered(i) ? " ✓" : null)</option>
+                        }
+                    </select>
+                </label>
+                <button class="spy-btn" @onclick="RegisterPick">➕ 등록</button>
+                <span class="spy-sep"></span>
+                <label class="spy-lbl">🎭
+                    <select class="spy-sel" value="@(Runner.Persona.ToString(CultureInfo.InvariantCulture))" @onchange="OnPersona">
+                        @for (var i = 0; i < CompetitorViralSpyStudioRunner.PersonaNames.Length; i++)
+                        {
+                            <option value="@(i.ToString(CultureInfo.InvariantCulture))">@(CompetitorViralSpyStudioRunner.PersonaNames[i])</option>
+                        }
+                    </select>
+                </label>
+                <label class="spy-lbl">🎯
+                    <input class="spy-in" type="text" maxlength="40" aria-label="타깃 키워드" value="@(Runner.Keyword)" @onchange="OnKeyword" />
+                </label>
+                <label class="spy-lbl">🛡 표절 임계 @(Runner.SimilarityPercent)%
+                    <input class="spy-rng" type="range" min="20" max="60" step="5" aria-label="표절 임계" value="@(Runner.SimilarityPercent.ToString(CultureInfo.InvariantCulture))" @oninput="OnLimit" />
+                </label>
+                <button class="spy-btn" @onclick="ResetAll">♻ 초기화</button>
+            </div>
+
+            <div class="spy-main">
+                <div class="spy-card">
+                    <div class="spy-sec">📋 벤치마크 경쟁 채널 <span class="spy-kw">@(Runner.ChannelCount)/@(CompetitorViralSpyStudioRunner.MaxChannels)</span></div>
+                    <div class="spy-grid-h"><span>채널</span><span>평상 평균</span><span>이상치</span><span>최고 지수</span><span></span></div>
+                    @if (Runner.ChannelCount == 0)
+                    {
+                        <div class="spy-mini">등록된 채널이 없습니다 — 「➕ 등록」으로 추가하세요.</div>
+                    }
+                    @for (var i = 0; i < Runner.ChannelCount; i++)
+                    {
+                        var slot = i;
+                        <div class="spy-row @(slot == Runner.SelectedSlot ? "on" : null)" @onclick="() => SelectSlot(slot)">
+                            <span>@(CompetitorViralSpyStudioRunner.ChannelNames[Runner.ChannelPreset(slot)])</span>
+                            <span>@(Views(Runner.SlotMeanViews(slot)))</span>
+                            <span class="@(Runner.SlotOutliers(slot) > 0 ? "acc" : null)">@(Runner.SlotOutliers(slot))</span>
+                            <span>@(Runner.SlotTopScore(slot).ToString("0", CultureInfo.InvariantCulture))</span>
+                            <button class="spy-del" @onclick="() => RemoveSlot(slot)" @onclick:stopPropagation="true" title="등록 해제">🗑</button>
+                        </div>
+                    }
+                    <div class="spy-sec mt">📊 최근 @(Runner.Detector.VideoCount)개 조회수 <span class="spy-kw">@(Runner.SelectedChannelName) · 기준선 ×@(CompetitorViralOutlierSpikeDetectorEngine.SpikeRatio.ToString("0.0", CultureInfo.InvariantCulture))</span></div>
+                    <svg class="spy-bars" viewBox="0 0 @(F(W)) @(F(BH + 14))" role="img" aria-label="최근 영상 조회수">
+                        @for (var v = 0; v < Runner.Views.Length; v++)
+                        {
+                            var h = BarH(Runner.Views[v]);
+                            <rect x="@(F(v * W / Runner.Views.Length + 2))" y="@(F(BH - h))" width="@(F(W / Runner.Views.Length - 4))" height="@(F(h))" class="@(IsOutlier(v) ? "spy-bo" : "spy-bn")" />
+                        }
+                        <line x1="0" x2="@(F(W))" y1="@(F(BH - BarH(Runner.Detector.ChannelMeanViews * CompetitorViralOutlierSpikeDetectorEngine.SpikeRatio)))" y2="@(F(BH - BarH(Runner.Detector.ChannelMeanViews * CompetitorViralOutlierSpikeDetectorEngine.SpikeRatio)))" class="spy-th" />
+                        @for (var v = 0; v < Runner.Views.Length; v++)
+                        {
+                            <g>
+                                <text x="@(F(v * W / Runner.Views.Length + W / Runner.Views.Length / 2))" y="@(F(BH + 11))" class="spy-ax">#@(v + 1)</text>
+                            </g>
+                        }
+                    </svg>
+                </div>
+
+                <div class="spy-card">
+                    <div class="spy-sec">🚨 감지된 이상치 클립 <span class="spy-kw">스캔 @(Runner.Detector.LastAnalyzeUs.ToString("0.0", CultureInfo.InvariantCulture))µs</span></div>
+                    @if (Runner.Detector.OutlierCount == 0)
+                    {
+                        <div class="spy-mini">평상 평균 대비 300% 이상 튄 영상이 없습니다.</div>
+                    }
+                    @for (var k = 0; k < Runner.Detector.OutlierCount; k++)
+                    {
+                        var idx = k;
+                        var o = Runner.Detector.Outlier(idx);
+                        <div class="spy-oc @(idx == Runner.SelectedOutlier ? "on" : null)" @onclick="() => PickOutlier(idx)">
+                            <div class="spy-oc-h"><b>#@(o.Index + 1)</b> <span class="spy-score">@(o.Score.ToString("0", CultureInfo.InvariantCulture))</span> <i>×@(o.ViewsRatio.ToString("0.0", CultureInfo.InvariantCulture)) · 가속 ×@(o.AccelRatio.ToString("0.0", CultureInfo.InvariantCulture))</i></div>
+                            <div class="spy-oc-q">“@(Runner.OutlierHook(idx))”</div>
+                            <div class="spy-oc-m">조회 @(Views(o.Views)) · 완청 @(CompetitorViralSpyStudioRunner.Pct(o.Completion))% · 댓글 @(o.EngagementPerMille.ToString("0.0", CultureInfo.InvariantCulture))‰</div>
+                        </div>
+                    }
+                </div>
+            </div>
+
+            <div class="spy-main">
+                <div class="spy-card">
+                    <div class="spy-sec">🧬 바이럴 훅 해체 다이어그램 <span class="spy-kw">디컴파일 @(Runner.Decompiler.LastDecompileUs.ToString("0.0", CultureInfo.InvariantCulture))µs</span></div>
+                    @if (Runner.SelectedHook is null)
+                    {
+                        <div class="spy-mini">선택된 이상치가 없습니다.</div>
+                    }
+                    else
+                    {
+                        var bp = Runner.Decompiler.Blueprint;
+                        <div class="spy-hook">@(ViralHookAudiovisualReverseEngineer.PatternIcons[(int)bp.Hook]) <b>@(ViralHookAudiovisualReverseEngineer.PatternNames[(int)bp.Hook])</b> · 신뢰도 @(CompetitorViralSpyStudioRunner.Pct(bp.HookConfidence))% <i>“@(Runner.SelectedHook)”</i></div>
+                        @for (var p = 1; p < ViralHookAudiovisualReverseEngineer.PatternCount; p++)
+                        {
+                            var hits = Runner.Decompiler.Hits((HookPattern)p);
+                            <div class="spy-hb"><span>@(ViralHookAudiovisualReverseEngineer.PatternIcons[p]) @(ViralHookAudiovisualReverseEngineer.PatternNames[p])</span><span class="spy-hb-t"><span class="spy-hb-f @(p == (int)bp.Hook ? "on" : null)" style="width:@(Math.Min(100, hits * 25).ToString(CultureInfo.InvariantCulture))%"></span></span><b>@(hits)</b></div>
+                        }
+                        <div class="spy-cuts" title="휘도 컷 타임라인 15s">
+                            @for (var f = 1; f < Runner.Luma.Length; f++)
+                            {
+                                if (MathF.Abs(Runner.Luma[f] - Runner.Luma[f - 1]) >= ViralHookAudiovisualReverseEngineer.CutDelta)
+                                {
+                                    <span class="spy-cut" style="left:@((f * 100.0 / Runner.Luma.Length).ToString("0.00", CultureInfo.InvariantCulture))%"></span>
+                                }
+                            }
+                            <span class="spy-hook3"></span>
+                        </div>
+                        <div class="spy-grid">
+                            <div class="m"><b class="acc">@(bp.CutsPerSec.ToString("0.0", CultureInfo.InvariantCulture))/s</b><i>컷 전환</i></div>
+                            <div class="m"><b>@(bp.AvgShotSec.ToString("0.00", CultureInfo.InvariantCulture))s</b><i>평균 샷</i></div>
+                            <div class="m"><b>@(bp.PeakDispersion.ToString("0.00", CultureInfo.InvariantCulture))</b><i>피크 분산도</i></div>
+                            <div class="m"><b>@(bp.PeakDensityPerSec.ToString("0.0", CultureInfo.InvariantCulture))/s</b><i>피크 밀도</i></div>
+                        </div>
+                    }
+                </div>
+
+                <div class="spy-card">
+                    <div class="spy-sec">✍️ 대항 기획안 · 표절 방어 <span class="spy-kw">판정 @(Runner.Counters > 0 ? CounterViralScriptFormulaSafetyGuard.VerdictName(Runner.Guard.LastVerdict) : "대기")</span></div>
+                    @if (Runner.Guard.Script.IsEmpty)
+                    {
+                        <div class="spy-mini">아직 합성된 기획안이 없습니다 — 「🚀 대항 기획안 생성 &amp; 파이프라인 전송」을 눌러 보세요.</div>
+                    }
+                    else
+                    {
+                        <pre class="spy-script">@(Runner.Guard.Script.ToString())</pre>
+                    }
+                    <div class="spy-grid">
+                        <div class="m"><b class="@(Runner.Guard.LastSimilarity >= Runner.Guard.SimilarityLimit ? "warn" : "acc")">@(CompetitorViralSpyStudioRunner.Pct(Runner.Guard.LastSimilarity))%</b><i>유사도</i></div>
+                        <div class="m"><b>@(CompetitorViralSpyStudioRunner.Pct(Runner.Guard.LastLevenshtein))% · @(CompetitorViralSpyStudioRunner.Pct(Runner.Guard.LastJaccard))%</b><i>Lev · Jaccard</i></div>
+                        <div class="m"><b>@(Runner.Guard.Resynthesized)</b><i>재합성</i></div>
+                        <div class="m"><b class="@(Runner.Guard.Blocked > 0 ? "warn" : null)">@(Runner.Guard.Blocked)</b><i>차단</i></div>
+                    </div>
+                    <div class="spy-pl">①단계 입력 원장</div>
+                    @if (Runner.Guard.DispatchCount == 0)
+                    {
+                        <div class="spy-mini">아직 전송된 대항 기획안이 없습니다.</div>
+                    }
+                    @for (var i = 0; i < Math.Min(5, Runner.Guard.DispatchCount); i++)
+                    {
+                        var d = Runner.Guard.Dispatch(i);
+                        <div class="spy-ed">🚀 #@(d.SourceIndex + 1) @(ViralHookAudiovisualReverseEngineer.PatternNames[(int)d.Hook]) → @(CounterViralScriptFormulaSafetyGuard.TargetName(d.Target)) <i>유사도 @(CompetitorViralSpyStudioRunner.Pct(d.Similarity))% · 시도 @(d.Attempts)</i></div>
+                    }
+                </div>
+            </div>
+
+            <div class="spy-card">
+                <div class="spy-sec">📜 스파이 로그 <span class="spy-kw">@(Runner.LogCount)건</span></div>
+                <div class="spy-log">
+                    @for (var i = 0; i < Runner.LogCount; i++)
+                    {
+                        var line = Runner.Log(i);
+                        <div class="spy-ll @(line.Contains("🛑", StringComparison.Ordinal) ? "bad" : line.Contains("🚀", StringComparison.Ordinal) ? "ok" : null)">@(line)</div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="spy-act">@(Runner.LastAction ?? "대기") · @(Runner.StatusLine())</div>
+    </div>
+</div>
+
+<style>
+    .spy-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .spy-modal { width: min(1240px, 96vw); max-height: 94vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); color: var(--text-primary); }
+    .spy-h { position: sticky; top: 0; z-index: 3; flex: 0 0 auto; display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px 8px; background: var(--card); border-bottom: 1px solid var(--line); }
+    .spy-hr { display: flex; align-items: flex-start; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+    .spy-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 10px; }
+    .spy-act { position: sticky; bottom: 0; z-index: 3; flex: 0 0 auto; padding: 8px 16px 14px; background: var(--card); border-top: 1px solid var(--line); font-size: 11px; color: var(--text-muted); }
+    .spy-title { font-size: 17px; font-weight: 800; }
+    .spy-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .spy-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .spy-badge { white-space: nowrap; font-size: 11.5px; font-weight: 700; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: #1e293b; }
+    .spy-badge.ok { border-color: #22c55e; background: #14532d; color: #bbf7d0; }
+    .spy-badge.warn { border-color: #f59e0b; background: #422006; color: #fde68a; }
+    .spy-badge.bad { border-color: #ef4444; background: #450a0a; color: #fecaca; }
+    .spy-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 0; }
+    .spy-sep { flex: 1; }
+    .spy-lbl { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-muted); }
+    .spy-sel, .spy-in { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font-size: 11.5px; }
+    .spy-in { width: 150px; }
+    .spy-rng { width: 110px; }
+    .spy-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .spy-btn.go { border-color: #a855f7; font-weight: 700; }
+    .spy-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-width: 0; margin-top: 10px; }
+    .spy-sec { font-size: 12.5px; font-weight: 700; margin: 0 0 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .spy-sec.mt { margin-top: 10px; }
+    .spy-kw { margin-left: auto; font-size: 10.5px; font-weight: 400; color: #7dd3fc; }
+    .spy-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+    .spy-grid-h, .spy-row { display: grid; grid-template-columns: minmax(0, 2fr) 1fr .7fr .8fr 28px; gap: 6px; align-items: center; font-size: 11px; padding: 4px 6px; }
+    .spy-grid-h { color: var(--text-muted); font-size: 10px; }
+    .spy-row { background: #111827; border-radius: 6px; margin-top: 3px; cursor: pointer; border: 1px solid transparent; }
+    .spy-row.on { border-color: #a855f7; background: #1e1533; }
+    .spy-row .acc { color: #4ade80; font-weight: 700; }
+    .spy-del { background: none; border: 0; cursor: pointer; font-size: 12px; }
+    .spy-bars { width: 100%; height: 130px; background: #111827; border-radius: 8px; }
+    .spy-bn { fill: #38bdf8; opacity: .7; } .spy-bo { fill: #f43f5e; }
+    .spy-th { stroke: #facc15; stroke-width: 1.2; stroke-dasharray: 4 3; }
+    .spy-ax { fill: var(--text-muted); font-size: 8px; text-anchor: middle; }
+    .spy-oc { background: #111827; border-radius: 8px; padding: 6px 8px; margin-top: 4px; cursor: pointer; border: 1px solid transparent; }
+    .spy-oc.on { border-color: #f43f5e; background: #2a0f1a; }
+    .spy-oc-h { font-size: 11.5px; display: flex; gap: 6px; align-items: center; }
+    .spy-oc-h i { font-style: normal; color: var(--text-muted); font-size: 10px; margin-left: auto; }
+    .spy-score { background: #f43f5e; color: #fff; border-radius: 999px; padding: 0 7px; font-weight: 800; font-size: 11px; }
+    .spy-oc-q { font-size: 11.5px; margin-top: 2px; }
+    .spy-oc-m { font-size: 10px; color: var(--text-muted); }
+    .spy-hook { font-size: 12px; margin-bottom: 6px; }
+    .spy-hook i { font-style: normal; color: var(--text-muted); font-size: 11px; margin-left: 4px; }
+    .spy-hb { display: grid; grid-template-columns: 110px 1fr 20px; gap: 6px; align-items: center; font-size: 10.5px; margin-top: 3px; }
+    .spy-hb-t { height: 8px; background: #111827; border-radius: 4px; overflow: hidden; }
+    .spy-hb-f { display: block; height: 100%; background: #64748b; } .spy-hb-f.on { background: #a855f7; }
+    .spy-cuts { position: relative; height: 18px; margin: 8px 0; background: #111827; border-radius: 6px; overflow: hidden; }
+    .spy-cut { position: absolute; top: 0; bottom: 0; width: 2px; background: #38bdf8; }
+    .spy-hook3 { position: absolute; left: 0; top: 0; bottom: 0; width: 20%; background: rgba(168,85,247,.25); }
+    .spy-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: 6px; }
+    .spy-grid .m { background: #111827; border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; }
+    .spy-grid .m b { font-size: 12px; } .spy-grid .m b.warn { color: #fbbf24; } .spy-grid .m b.acc { color: #4ade80; }
+    .spy-grid .m i { font-style: normal; font-size: 10px; color: var(--text-muted); }
+    .spy-script { white-space: pre-wrap; font-family: var(--mono); font-size: 11px; background: #111827; border-radius: 8px; padding: 8px; margin: 0; }
+    .spy-pl { font-size: 11px; font-weight: 700; margin: 8px 0 3px; }
+    .spy-ed { font-size: 11px; padding: 3px 7px; background: #111827; border-radius: 6px; margin-top: 3px; }
+    .spy-ed i { font-style: normal; color: var(--text-muted); font-size: 10px; margin-left: 4px; }
+    .spy-log { max-height: 180px; overflow-y: auto; font-family: var(--mono); font-size: 10.5px; display: flex; flex-direction: column; gap: 2px; }
+    .spy-ll { padding: 1px 4px; border-radius: 4px; background: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .spy-ll.ok { color: #bbf7d0; } .spy-ll.bad { color: #fecaca; background: #2a0b0b; }
+    .spy-mini { font-size: 10px; color: var(--text-muted); margin-top: 4px; }
+    @@media (max-width: 1000px) { .spy-main { grid-template-columns: 1fr; } .spy-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const float W = 520f, BH = 110f;
+    private int _pick = 2;
+
+    protected override void OnInitialized() => Runner.OnChange += OnServiceChanged;
+
+    private void Generate() => Guard(() => Runner.GenerateAndDispatch(), "Generate");
+    private void RegisterPick() => Guard(() => Runner.Register(_pick), "Register");
+    private void SelectSlot(int slot) => Guard(() => Runner.Select(slot), "Select");
+    private void RemoveSlot(int slot) => Guard(() => Runner.Remove(slot), "Remove");
+    private void PickOutlier(int k) => Guard(() => Runner.SelectOutlierClip(k), "Outlier");
+    private void ResetAll() => Guard(Runner.Reset, "Reset");
+
+    private void OnPick(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var p))
+            _pick = Math.Clamp(p, 0, CompetitorViralSpyStudioRunner.ChannelNames.Length - 1);
+    }
+
+    private void OnPersona(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var p)) Runner.SetPersona(p);
+    }
+
+    private void OnKeyword(ChangeEventArgs e) => Runner.SetKeyword(e.Value?.ToString());
+
+    private void OnLimit(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var t)) Runner.SetSimilarityPercent(t);
+    }
+
+    private bool IsOutlier(int video)
+    {
+        for (var k = 0; k < Runner.Detector.OutlierCount; k++) if (Runner.Detector.Outlier(k).Index == video) return true;
+        return false;
+    }
+
+    private float MaxViews()
+    {
+        var m = Runner.Detector.ChannelMeanViews * CompetitorViralOutlierSpikeDetectorEngine.SpikeRatio;
+        foreach (var v in Runner.Views) if (v > m) m = v;
+        return Math.Max(1f, m * 1.08f);
+    }
+
+    private float BarH(float v) => Math.Clamp(v / MaxViews() * BH, 0f, BH);
+    private static string F(float v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private static string Views(float v) => v >= 10_000f ? (v / 10_000f).ToString("0.0", CultureInfo.InvariantCulture) + "만" : v.ToString("0", CultureInfo.InvariantCulture);
+
+    private static void Guard(Action a, string tag)
+    {
+        try { a(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("CompetitorSpy.Modal." + tag, ex); }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Runner.OnChange -= OnServiceChanged;
+}

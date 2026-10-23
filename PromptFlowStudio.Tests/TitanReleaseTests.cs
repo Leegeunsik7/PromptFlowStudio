@@ -181,6 +181,7 @@ using Ghe = PromptFlowStudio.Services.GoldenHourEngagement;
 using Trj = PromptFlowStudio.Services.TrendJacking;
 using Vca = PromptFlowStudio.Services.ViralCommerce;
 using Arh = PromptFlowStudio.Services.RetentionHeatmap;
+using Spy = PromptFlowStudio.Services.CompetitorSpy;
 
 namespace PromptFlowStudio.Tests;
 
@@ -36750,7 +36751,7 @@ public sealed class SocialTrendJackingIsolatedTests
 
         // ── 카탈로그 · 도움말 결선(172) ──
         var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
-        Assert.Equal(174, cat.Length);
+        Assert.Equal(175, cat.Length);
         Assert.Contains(cat, e => e.Key == "_socialTrendJackingRadar" && e.Category == 4 && e.Title == "실시간 트렌드재킹 & 해시태그 레이더");
         Assert.NotNull(PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Find("_socialTrendJackingRadar"));
         Assert.Equal(cat.Length, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
@@ -36970,7 +36971,7 @@ public sealed class ViralCommerceAffiliateIsolatedTests
 
         // ── 카탈로그 · 도움말 결선(174) ──
         var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
-        Assert.Equal(174, cat.Length);
+        Assert.Equal(175, cat.Length);
         Assert.Contains(cat, e => e.Key == "_viralCommerceAffiliate" && e.Category == 4 && e.Title == "바이럴 커머스 & 제휴 어트리뷰션");
         Assert.NotNull(PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Find("_viralCommerceAffiliate"));
         Assert.Equal(cat.Length, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
@@ -37207,11 +37208,256 @@ public sealed class AudienceRetentionHeatmapIsolatedTests
 
         // ── 카탈로그 · 도움말 결선(174) ──
         var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
-        Assert.Equal(174, cat.Length);
+        Assert.Equal(175, cat.Length);
         Assert.Contains(cat, e => e.Key == "_retentionHeatmapReEditor" && e.Category == 4 && e.Title == "시청자 유지율 히트맵 & 리에디터");
         Assert.NotNull(PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Find("_retentionHeatmapReEditor"));
         Assert.Equal(cat.Length, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
         Assert.Equal(0, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects());
         Assert.Equal("_retentionHeatmapReEditor", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.ResolveKeyByHeader("📉 시청자 유지율 히트맵 & 리에디터"));
+    }
+}
+
+[Collection("TimingSensitivePerformance")]   // 스레드 할당 바이트 계측 · 100 ms 예산(이상치 스캔 · 훅/컷/피크 디컴파일 · 대항 합성/표절 검사) → 비병렬
+public sealed class CompetitorViralSpyIsolatedTests
+{
+    private const long T0 = 1_800_000_000;
+
+    private sealed class OneService : IServiceProvider
+    {
+        private readonly object _svc;
+        public OneService(object svc) => _svc = svc;
+        public object? GetService(Type serviceType) => serviceType.IsInstanceOfType(_svc) ? _svc : null;
+    }
+
+    [Fact]
+    public void CompetitorViralSpy_And_ReverseEngineering_Check()
+    {
+        // ── SPY-1: 중앙값×3 미만 평상 평균 대비 300 % 이상치 · 바이럴 지수 ──
+        var det = new Spy.CompetitorViralOutlierSpikeDetectorEngine();
+        float[] views = { 100, 120, 80, 100, 110, 90, 500, 100, 95, 105, 1000, 100 };
+        var age = new float[12]; Array.Fill(age, 10f);
+        var watch = new float[12]; Array.Fill(watch, 0.5f);
+        var com = new float[12]; com[6] = 5; com[10] = 2;
+        Assert.Equal(2, det.Analyze(views, age, watch, com));
+        Assert.Equal(100f, det.Median);
+        Assert.Equal(10, det.NormalCount);
+        Assert.Equal(100f, det.ChannelMeanViews, 3);
+        Assert.Equal(10f, det.ChannelMeanVelocity, 3);
+        var o0 = det.Outlier(0);
+        Assert.Equal(10, o0.Index);                       // 10× · 가속 10× · 완청 0.5 · 2 ‰ → 78
+        Assert.Equal(10f, o0.ViewsRatio, 3);
+        Assert.Equal(78f, o0.Score, 2);
+        var o1 = det.Outlier(1);
+        Assert.Equal(6, o1.Index);                        // 5× · 가속 5× · 완청 0.5 · 10 ‰ 포화 → 70.43
+        Assert.Equal(10f, o1.EngagementPerMille, 3);
+        Assert.Equal(100f * (0.65f * MathF.Log10(5f) + 0.1f + 0.15f), o1.Score, 2);
+        Assert.Equal(78f, det.TopScore, 2);
+        var flat = new float[12]; Array.Fill(flat, 100f);
+        flat[4] = 299f;
+        Assert.Equal(0, det.Analyze(flat, age, watch, com));   // 2.99× = 미달
+        flat[4] = 300f;
+        Assert.Equal(1, det.Analyze(flat, age, watch, com));   // 정확히 3.0× = 이상치
+        Assert.Equal(4, det.Outlier(0).Index);
+        flat[4] = float.NaN;
+        Assert.Equal(0, det.Analyze(flat, age, watch, com));   // NaN = 0
+        Assert.Equal(0, det.Analyze(views.AsSpan(0, 2), age, watch, com));   // 3 개 미만
+        var many = new float[70]; Array.Fill(many, 50f);
+        Assert.Equal(0, det.Analyze(many, many, many, many));
+        Assert.Equal(6, det.Truncated);
+        Assert.Equal(Spy.CompetitorViralOutlierSpikeDetectorEngine.MaxVideos, det.VideoCount);
+        Assert.Equal(0f, Spy.CompetitorViralOutlierSpikeDetectorEngine.Log10Sat(0.5f));
+        Assert.Equal(1f, Spy.CompetitorViralOutlierSpikeDetectorEngine.Log10Sat(50f));
+
+        // ── SPY-2: 훅 규칙 분류 · 컷 템포 · 오디오 피크 분산 청사진 ──
+        var rev = new Spy.ViralHookAudiovisualReverseEngineer();
+        Assert.Equal(Spy.HookPattern.Question, rev.ClassifyHook("왜 다들 이 방법을 안 쓸까?", out var conf));
+        Assert.Equal(1f, conf);
+        Assert.Equal(3, rev.Hits(Spy.HookPattern.Question));
+        Assert.Equal(Spy.HookPattern.FearWarning, rev.ClassifyHook("이거 모르면 절대 사지 마세요", out _));
+        Assert.Equal(Spy.HookPattern.Reversal, rev.ClassifyHook("다들 맛없다고 했는데 반전이 있었습니다", out _));
+        Assert.Equal(Spy.HookPattern.Curiosity, rev.ClassifyHook("아무도 안 알려준 숨겨진 비밀", out conf));
+        Assert.Equal(3, rev.Hits(Spy.HookPattern.Curiosity));
+        Assert.Equal(Spy.HookPattern.Statement, rev.ClassifyHook("오늘은 기본 루틴을 정리했습니다", out conf));
+        Assert.Equal(0f, conf);
+        Assert.Equal(Spy.HookPattern.FearWarning, rev.ClassifyHook("경고! 사실은 비밀", out conf));   // 3 유형 동점 → 공포/경고 우선
+        Assert.Equal(1f / 3f, conf, 4);
+        Assert.Equal(Spy.HookPattern.Statement, rev.ClassifyHook(new string('가', 48) + " 왜?", out _));   // 도입 48 자 밖 = 무시
+        Assert.Equal(Spy.HookPattern.Question, rev.ClassifyHook("WHY does this work", out _));             // 대소문자 무시
+        var luma = new float[30];
+        for (var i = 0; i < 30; i++) luma[i] = i < 10 ? 0.2f : i < 20 ? 0.8f : 0.3f;
+        Assert.Equal(2, Spy.ViralHookAudiovisualReverseEngineer.CountCuts(luma));
+        luma[11] = 0.2f;                                                                        // 10→11→12 연속 점프 — 2 프레임 간격 미만은 1 회만
+        Assert.Equal(2, Spy.ViralHookAudiovisualReverseEngineer.CountCuts(luma.AsSpan(0, 20)));
+        const int Fs = 8000;
+        var l10 = new float[300];
+        for (var f = 0; f < 300; f++) l10[f] = ((f / 30) & 1) == 0 ? 0.2f : 0.7f;            // 30 프레임마다 컷 → 9 컷
+        var aud = new float[10 * Fs];
+        for (var w = 0; w < 100; w++) Array.Fill(aud, w % 5 == 0 ? 0.9f : 0.1f, w * 800, 800);   // 100 ms 창 중 20 개 강타
+        ref readonly var bp = ref rev.Decompile("경고: 이 실수 하면 후회합니다", l10, 30, aud, Fs);
+        Assert.Equal(Spy.HookPattern.FearWarning, bp.Hook);
+        Assert.Equal(9, bp.CutCount);
+        Assert.Equal(10f, bp.DurationSec, 4);
+        Assert.Equal(0.9f, bp.CutsPerSec, 4);
+        Assert.Equal(1f, bp.AvgShotSec, 4);
+        Assert.Equal(0.26f, bp.MeanPeak, 4);
+        Assert.Equal(0.32f / 0.26f, bp.PeakDispersion, 3);
+        Assert.Equal(20, bp.PeakCount);
+        Assert.Equal(2f, bp.PeakDensityPerSec, 4);
+        Assert.NotEqual(0UL, bp.Fingerprint);
+        var bpCopy = bp;
+
+        // ── SPY-3: 구조 차용 합성 · Levenshtein/Jaccard 표절 방어 · 재합성 · 1 승인 1 커밋 ──
+        Assert.Equal(3, Spy.CounterViralScriptFormulaSafetyGuard.Levenshtein("kitten", "sitting"));
+        Assert.Equal(1f, Spy.CounterViralScriptFormulaSafetyGuard.Similarity("Hello, World!", "hello world", out var lev, out var jac));
+        Assert.Equal(1f, lev); Assert.Equal(1f, jac);
+        Assert.True(Spy.CounterViralScriptFormulaSafetyGuard.Similarity("가나다라", "wxyz", out _, out _) < 0.1f);
+        Assert.Equal(0f, Spy.CounterViralScriptFormulaSafetyGuard.Similarity("", "abc", out _, out _));
+        var g = new Spy.CounterViralScriptFormulaSafetyGuard();
+        var q = bpCopy; q.Hook = Spy.HookPattern.Question;
+        const string Copycat = "에어프라이어, 아직도 이렇게 하세요?";                       // = 의문형 변형 0 그대로
+        Assert.Equal(Spy.CounterVerdict.Approved, g.Compose(in q, "꿀팁 언니", "에어프라이어", Copycat, 0));
+        Assert.True(g.LastAttempts >= 2, "재합성 " + g.LastAttempts);
+        Assert.True(g.LastSimilarity < 0.4f, "유사도 " + g.LastSimilarity);
+        Assert.True(g.Resynthesized >= 1);
+        Assert.NotEqual(0, g.LastVariant);
+        var script = g.Script.ToString();
+        Assert.Contains("[0~3s 훅 · 의문형]", script);
+        Assert.Contains("에어프라이어", script);
+        Assert.Contains("꿀팁 언니 채널에서", script);
+        Assert.Contains("컷 0.9회/초", script);
+        Assert.Contains("피크 2.0/s", script);
+        Assert.DoesNotContain(Copycat, script);
+        Assert.False(g.Commit(Spy.CounterTarget.None, 6, T0));
+        Assert.True(g.Commit(Spy.CounterTarget.Queued, 6, T0));
+        Assert.False(g.Commit(Spy.CounterTarget.Queued, 6, T0));                                   // 1 승인 = 1 커밋
+        Assert.Equal(Spy.CounterVerdict.Duplicate, g.Compose(in q, "꿀팁 언니", "에어프라이어", Copycat, 0));
+        Assert.False(g.Commit(Spy.CounterTarget.Queued, 6, T0));
+        Assert.Equal(Spy.CounterVerdict.EmptyInput, g.Compose(in q, "꿀팁 언니", "   ", Copycat, 0));
+        g.SimilarityLimit = 0f;                                                                     // 모든 변형 ≥ 한계 → 차단
+        Assert.Equal(Spy.CounterVerdict.Plagiarism, g.Compose(in q, "꿀팁 언니", "에어프라이어", Copycat, 0));
+        Assert.Equal(3, g.LastAttempts);
+        Assert.True(g.HookLine.IsEmpty && g.Script.IsEmpty);
+        Assert.False(g.Commit(Spy.CounterTarget.Queued, 6, T0));
+        g.SimilarityLimit = Spy.CounterViralScriptFormulaSafetyGuard.DefaultSimilarityLimit;
+        Assert.Equal(Spy.CounterVerdict.Approved, g.Compose(in q, "", "캠핑 요리", "", 2));            // 빈 페르소나 = 기본값
+        Assert.Contains("우리 채널", g.Script.ToString());
+        Assert.True(g.Commit(Spy.CounterTarget.OrchestratorStage1, 1, T0 + 60));
+        Assert.Equal(2, g.DispatchCount);
+        Assert.Equal(Spy.CounterTarget.OrchestratorStage1, g.Dispatch(0).Target);
+        Assert.Equal(6, g.Dispatch(1).SourceIndex);
+        Assert.True(g.ToOrchestrator == 1 && g.Queued == 1);
+        Assert.Equal(3, g.Blocked);
+        for (var i = 0; i < 10; i++)
+        {
+            Assert.Equal(Spy.CounterVerdict.Approved, g.Compose(in q, "꿀팁 언니", "키워드" + i.ToString(System.Globalization.CultureInfo.InvariantCulture), "", i));
+            g.Commit(Spy.CounterTarget.Queued, i, T0 + i);
+        }
+        Assert.Equal(Spy.CounterViralScriptFormulaSafetyGuard.InboxCap, g.DispatchCount);
+        Assert.Equal(9, g.Dispatch(0).SourceIndex);
+        g.Reset();
+        Assert.Equal(0, g.DispatchCount);
+        Assert.Equal(Spy.CounterViralScriptFormulaSafetyGuard.DefaultSimilarityLimit, g.SimilarityLimit);
+
+        // ── 핫패스 무할당 · 100 ms 예산 ──
+        var hd = new Spy.CompetitorViralOutlierSpikeDetectorEngine();
+        var hr = new Spy.ViralHookAudiovisualReverseEngineer();
+        var hg = new Spy.CounterViralScriptFormulaSafetyGuard();
+        for (var i = 0; i < 2; i++)
+        {
+            hd.Analyze(views, age, watch, com);
+            hg.Compose(in hr.Decompile("왜 다들 이 방법을 안 쓸까?", l10, 30, aud, Fs), "꿀팁 언니", "에어프라이어", Copycat, i);
+            hg.Commit(Spy.CounterTarget.Queued, 0, T0);
+        }
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 10; i++)
+        {
+            hd.Analyze(views, age, watch, com);
+            hg.Compose(in hr.Decompile("왜 다들 이 방법을 안 쓸까?", l10, 30, aud, Fs), "꿀팁 언니", "에어프라이어", Copycat, i);
+            hg.Commit(Spy.CounterTarget.Queued, 0, T0);
+        }
+        var alloc = GC.GetAllocatedBytesForCurrentThread() - before;
+        sw.Stop();
+        Assert.True(alloc == 0, "스파이 핫패스 할당 " + alloc);
+        Assert.True(sw.Elapsed.TotalMilliseconds / 10 < 100, "1 사이클 " + sw.Elapsed.TotalMilliseconds / 10 + " ms");
+        Assert.True(hd.Analyses == 12 && hr.Decompiles == 12 && hg.Composes == 12);
+
+        // ── 러너 E2E: 프리셋 3 채널 → 이상치 → 디컴파일 → 대기열 → 오케스트레이터 ①단계 ──
+        using var run = new Spy.CompetitorViralSpyStudioRunner();
+        var changes = 0;
+        run.OnChange += () => changes++;
+        Assert.Equal(3, run.ChannelCount);
+        Assert.Equal(0, run.SelectedSlot);
+        Assert.Equal(2, run.Detector.OutlierCount);                         // 쿡킹랩: #4 ×6 · #9 ×4
+        Assert.Equal(3, run.Detector.Outlier(0).Index);
+        Assert.Equal(1, run.SlotOutliers(1));                               // 핏블리: ×4.2
+        Assert.Equal(2, run.SlotOutliers(2));                               // 겜잘알: ×3.4 · ×9
+        Assert.Equal(0, run.SelectedOutlier);
+        Assert.True(run.Decompiler.Blueprint.CutCount > 0 && run.Decompiler.Blueprint.PeakCount > 0);
+        Assert.InRange(run.Decompiler.Blueprint.AvgShotSec, 0.7f, 0.9f);    // 샷 0.8 s
+        Assert.Equal(Spy.CounterVerdict.Approved, run.GenerateAndDispatch());
+        Assert.Equal(Spy.CounterTarget.Queued, run.LastTarget);             // DI 없음 → 로컬 대기열
+        Assert.Equal(1, run.Guard.DispatchCount);
+        run.SelectOutlierClip(1);
+        Assert.Equal(1, run.SelectedOutlier);
+        Assert.Equal(8, run.Detector.Outlier(1).Index);
+        run.SetKeyword("   ");
+        Assert.Equal(Spy.CounterVerdict.EmptyInput, run.GenerateAndDispatch());
+        run.SetKeyword("홈카페 라떼");
+        run.SetPersona(9);
+        Assert.Equal(2, run.Persona);
+        run.SetSimilarityPercent(5);
+        Assert.Equal(20, run.SimilarityPercent);
+        Assert.Equal(Spy.CounterVerdict.Approved, run.GenerateAndDispatch());
+        Assert.Contains("홈카페 라떼", run.Guard.Script.ToString());
+        Assert.Contains("웃긴 자취생", run.Guard.Script.ToString());
+        run.Register(4);                                                    // 미니멀 = 이상치 없음
+        Assert.Equal(4, run.ChannelCount);
+        Assert.Equal(3, run.SelectedSlot);
+        Assert.Equal(0, run.Detector.OutlierCount);
+        Assert.Null(run.SelectedHook);
+        Assert.Equal(Spy.CounterVerdict.EmptyInput, run.GenerateAndDispatch());
+        run.Register(4);
+        Assert.Equal(4, run.ChannelCount);                                  // 중복 등록 무시
+        run.Register(2);
+        Assert.Equal(5, run.ChannelCount);
+        Assert.Equal(1, run.Detector.OutlierCount);                         // 테크: #2 ×8
+        run.Register(0);
+        Assert.Equal(5, run.ChannelCount);
+        run.Remove(4);
+        Assert.Equal(4, run.ChannelCount);
+        Assert.Equal(3, run.SelectedSlot);
+        run.Select(1);
+        Assert.Equal(1, run.Detector.OutlierCount);
+        run.Remove(99);
+        Assert.True(changes >= 12);
+        Assert.True(run.LogCount > 5);
+
+        var ovg = new PromptFlowStudio.Services.OmniViral.OmniViralGrowthStudioRunner();
+        try
+        {
+            using var wired = new Spy.CompetitorViralSpyStudioRunner(new OneService(ovg));
+            Assert.Equal(Spy.CounterVerdict.Approved, wired.GenerateAndDispatch());
+            Assert.Equal(Spy.CounterTarget.OrchestratorStage1, wired.LastTarget);
+            Assert.Equal(1, ovg.ExternalInputs);
+            Assert.True(ovg.Context.HighlightSource);
+            var seed = (uint)wired.Guard.LastFingerprint;
+            Assert.Equal(seed == 0 ? 0x9E3779B9u : seed, ovg.Context.Seed);
+            Assert.Equal(Spy.CounterTarget.OrchestratorStage1, wired.Guard.Dispatch(0).Target);
+        }
+        finally { ovg.Dispose(); }
+        run.Reset();
+        Assert.Equal(3, run.ChannelCount);
+        Assert.Equal(0, run.Guard.DispatchCount);
+        Assert.Equal("에어프라이어 요리", run.Keyword);
+
+        // ── 카탈로그 · 도움말 결선(175) ──
+        var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
+        Assert.Equal(175, cat.Length);
+        Assert.Contains(cat, e => e.Key == "_competitorViralSpy" && e.Category == 4 && e.Title == "경쟁 채널 바이럴 스파이 & 역공학");
+        Assert.NotNull(PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Find("_competitorViralSpy"));
+        Assert.Equal(cat.Length, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
+        Assert.Equal(0, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects());
+        Assert.Equal("_competitorViralSpy", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.ResolveKeyByHeader("🕵️ 경쟁 채널 바이럴 스파이 & 역공학"));
     }
 }

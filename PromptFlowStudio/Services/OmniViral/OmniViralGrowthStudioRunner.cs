@@ -101,6 +101,24 @@ public sealed class OmniViralGrowthStudioRunner : IDisposable
         Context.Load(Minutes * 60, Context.Seed, Highlight);
     }
 
+    /// <summary>
+    /// v17.99 외부 ①단계(클립/스크립트) 입력 — 대항 기획안 지문을 시드로 하이라이트 소스 재적재.
+    /// 가동/승인 대기 중이면 컨텍스트를 건드리지 않고 거부(호출측 로컬 대기열 폴백). 반환 = 수락 여부.
+    /// </summary>
+    public bool SubmitStageOneInput(uint seed, string label)
+    {
+        if (Busy || Engine.RunState == PipelineRunState.AwaitingApproval) return false;
+        Highlight = true;
+        _reload = false;
+        Context.Load(Minutes * 60, seed, true);
+        ExternalInputs++;
+        LastAction = "🕵️ ①단계 외부 입력: " + label;
+        Raise(true);
+        return true;
+    }
+
+    public long ExternalInputs { get; private set; }
+
     public void ToggleTokenExpiry()
     {
         SimulateTokenExpiry = !SimulateTokenExpiry;

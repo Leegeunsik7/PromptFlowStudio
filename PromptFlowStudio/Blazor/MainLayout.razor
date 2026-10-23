@@ -512,6 +512,10 @@
         {
             <PostPublishSplitTestStudioModal OnClose="() => _postPublishSplitTest = false" />
         }
+        @if (_competitorViralSpy)
+        {
+            <CompetitorViralSpyStudioModal OnClose="() => _competitorViralSpy = false" />
+        }
         @if (_retentionHeatmapReEditor)
         {
             <AudienceRetentionHeatmapStudioModal OnClose="() => _retentionHeatmapReEditor = false" />
@@ -1157,6 +1161,7 @@
             case "_vodRepurposing": _vodRepurposing = on; break;
             case "_postPublishSplitTest": _postPublishSplitTest = on; break;
             case "_goldenHourEngagement": _goldenHourEngagement = on; break;
+            case "_competitorViralSpy": _competitorViralSpy = on; break;
             case "_retentionHeatmapReEditor": _retentionHeatmapReEditor = on; break;
             case "_viralCommerceAffiliate": _viralCommerceAffiliate = on; break;
             case "_socialTrendJackingRadar": _socialTrendJackingRadar = on; break;
@@ -1322,6 +1327,7 @@
         "_vodRepurposing" => _vodRepurposing,
         "_postPublishSplitTest" => _postPublishSplitTest,
         "_goldenHourEngagement" => _goldenHourEngagement,
+        "_competitorViralSpy" => _competitorViralSpy,
         "_retentionHeatmapReEditor" => _retentionHeatmapReEditor,
         "_viralCommerceAffiliate" => _viralCommerceAffiliate,
         "_socialTrendJackingRadar" => _socialTrendJackingRadar,
@@ -1441,6 +1447,7 @@
     private bool _globalDub; // v17.64.0 사이드바 🌍 글로벌 & 로컬라이제이션 ▸ 🗣️ 실시간 다국어 더빙 스튜디오(스트리밍 번역 ≤ 200 ms · 다국어 음색 유지 합성 · 플랫폼별 언어 트랙 · ARKit 가우시안 립싱크 < 50 ms)
     private bool _streamGateway; // v17.62.0 사이드바 📜 각본 & 타임라인 ▸ 🛰️ 스트림 게이트웨이 & 클리퍼 스튜디오(32 MB 압축 NAL 링 · 무손실 1080p 리먹스 · Twitch/YouTube/치지직 게이트웨이 · 백오프/배압)
     private bool _influencerLive; // v17.61.0 사이드바 📜 각본 & 타임라인 ▸ 🎙️ 버추얼 인플루언서 라이브 스튜디오(채팅 리액션 트리거 · 하이라이트 9:16 즉시 클리핑 · 도배/비속어 가드)
+    private bool _competitorViralSpy; // v17.99.0 사이드바 📸 소셜 & 바이럴 ▸ 🕵️ 경쟁 채널 바이럴 스파이 & 역공학(벤치마크 채널 등록/조회 그리드 · 평상 평균 대비 300 % 이상치 · 바이럴 지수 0~100 · 도입 3 초 훅 해부도 · 컷 템포/오디오 피크 청사진 · 구조만 차용한 대항 기획안 · 유사도 ≥ 40 % 재합성 · 1클릭 오케스트레이터 ①단계 전송)
     private bool _retentionHeatmapReEditor; // v17.98.0 사이드바 📸 소셜 & 바이럴 ▸ 📉 시청자 유지율 히트맵 & 리에디터(초 단위 리텐션 곡선 10 ms 1 s 창 미분 이탈 절벽 적색 히트맵 · 데드존 · 절벽 0.3 s 전 1.15× 줌 펀치 + 임팩트 FX · 데드에어 1.05~1.15× WSOLA 템포 · 재편집 전후 타임라인 · 1클릭 자동 심폐소생 → A/B Variant-R / 매트릭스 이관)
     private bool _viralCommerceAffiliate; // v17.97.0 사이드바 📸 소셜 & 바이럴 ▸ 🛒 바이럴 커머스 & 제휴 어트리뷰션(무할당 대본 엔티티 추출 · 쿠팡 파트너스/아마존 어소시에이트 모의 카탈로그 연관도 × EPC 상위 3 · 8 자리 Base62 pfs.link 숏링크 · 공정위 경제적 이해관계 고지 최상단 주입 · 봇/다중 클릭 차단 · 영상당 3 링크 상한)
     private bool _socialTrendJackingRadar; // v17.96.0 사이드바 📸 소셜 & 바이럴 ▸ 🔥 실시간 트렌드재킹 & 해시태그 레이더(무할당 Span 급상승 피드 파싱 · 분당 가속도 랭킹 · 대본/태그 연관도 0~100 · 골든 ≥ 80 선별 · YouTube 100자 훅 + 핵심 3 태그 · IG 트렌드2/틈새2/메가1 · TikTok 150자 · 무관 < 70 차단 · 동일 태그 4 시간 쿨다운)
