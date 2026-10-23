@@ -24,6 +24,8 @@ public struct TempoSegment
 ///   ▸ 템포: 데드존(지루한 누수 구간) 오디오를 10 ms RMS 프레임으로 스캔해 무음 ≥ 300 ms 데드에어 비율 → 1.05×~1.15× 배속 →
 ///     v17.82 <see cref="MultilingualDubbingTimeStretchEngine.Stretch"/> WSOLA(배율 = 1 / 배속) 로 피치 보존 압축.
 ///   ▸ 리패키징: 단일 재사용 작업 버퍼(원본 복사 → SFX 믹스 → 구간별 복사/WSOLA) · 출력 → 원본 시간 사상으로 비디오 프레임 재타이밍 후 줌 적용.
+///   ▸ [v17.98.1] 비트스트림: <see cref="RemuxInto"/> = 템포 구간 → 90 kHz 워프 절점(WSOLA 출력 시간 맵과 동일) · 펀치 시각 → <see cref="NaluSmartReMuxer"/> GOP 스트림 복사 +
+///     H.264 SPS 크롭 재작성(<see cref="PunchScale"/> 줌 · 재인코딩 0) · PTS/DTS 재타이밍(무할당).
 ///   ▸ 예상 유지율: 절벽 초 낙폭 × (1 − 0.45) · 템포 구간 낙폭 × (1 − 0.35 × (배속 − 1) / 0.15) 시뮬레이션 곡선.
 /// </summary>
 public sealed class MicroPunchDynamicPacingReEditorEngine
@@ -35,7 +37,10 @@ public sealed class MicroPunchDynamicPacingReEditorEngine
     private readonly float[] _pred = new float[AudienceRetentionDropoffDetectorEngine.MaxSec + 1];
     private readonly PunchEdit[] _punch = new PunchEdit[EditCap];
     private readonly TempoSegment[] _tempo = new TempoSegment[EditCap];
-    private int _pn, _tn, _predN, _srcMs;
+    private readonly WarpKnot[] _knots = new WarpKnot[EditCap * 2 + 2];
+    private readonly int[] _punchSrcMs = new int[EditCap];
+    private readonly RemuxCut[] _cut = new RemuxCut[1];
+    private int _pn, _tn, _predN, _srcMs, _kn;
 
     public MicroPunchDynamicPacingReEditorEngine(int maxSec = 60)
     {
@@ -66,6 +71,48 @@ public sealed class MicroPunchDynamicPacingReEditorEngine
     public int LastOutSamples { get; private set; }
     public double LastPlanUs { get; private set; }
     public double LastRepackageUs { get; private set; }
+    public long Remuxes { get; private set; }
+    public double LastRemuxUs { get; private set; }
+    /// <summary>최근 <see cref="RemuxInto"/> 워프 절점(90 kHz · 원본 PTS 원점 기준).</summary>
+    public ReadOnlySpan<WarpKnot> Knots => _knots.AsSpan(0, _kn);
+
+    /// <summary>
+    /// 리에디트 결과를 Annex-B 비트스트림에 적용 — 템포 맵 절점 · 펀치 시각(원점 보정) → <see cref="NaluSmartReMuxer.Remux"/>
+    /// (펀치 GOP = SPS 크롭 <see cref="PunchScale"/>× · 재인코딩 0). <paramref name="mux"/>는 Parse/SetTimestamps 완료 상태. 반환 = 출력 바이트(−1 = 버퍼 부족).
+    /// </summary>
+    public int RemuxInto(NaluSmartReMuxer mux, ReadOnlySpan<byte> src, long originTicks, long frameTicks, Span<byte> dst)
+    {
+        var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+        var originMs = (int)((originTicks * 1000 + NaluSmartReMuxer.Clock - 1) / NaluSmartReMuxer.Clock);
+        BuildKnots(originTicks);
+        for (var i = 0; i < _pn; i++) _punchSrcMs[i] = _punch[i].AtMs + originMs;
+        _cut[0] = new RemuxCut(originMs, originMs + _srcMs);
+        var w = mux.Remux(src, _cut, _knots.AsSpan(0, _kn), frameTicks, dst, _punchSrcMs.AsSpan(0, _pn), PunchScale);
+        Remuxes++;
+        LastRemuxUs = System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMicroseconds;
+        return w;
+    }
+
+    /// <summary>템포 구간 → 리먹서 절점(90 kHz · 원본 PTS 원점 기준) — 비단조 절점 폐기.</summary>
+    private void BuildKnots(long origin)
+    {
+        const long k = NaluSmartReMuxer.Clock / 1000;
+        _kn = 0;
+        _knots[_kn++] = new WarpKnot(origin, origin + OutMsAt(0) * k);
+        for (var i = 0; i < _tn && _kn + 2 < _knots.Length; i++)
+        {
+            ref readonly var t = ref _tempo[i];
+            AddKnot(origin + t.SrcStartMs * k, origin + t.OutStartMs * k);
+            AddKnot(origin + t.SrcEndMs * k, origin + t.OutEndMs * k);
+        }
+        AddKnot(origin + _srcMs * k, origin + OutDurationMs * k);
+    }
+
+    private void AddKnot(long src, long outT)
+    {
+        if (src <= _knots[_kn - 1].Src || outT < _knots[_kn - 1].Out) return;
+        _knots[_kn++] = new WarpKnot(src, outT);
+    }
 
     /// <summary>줌 엔진 가중치 — 강도 1.0 에서 피크 배율 = <see cref="PunchScale"/>.</summary>
     public static float PunchWeight => (PunchScale - KineticZoomPunchCutEngine.MinScale) / (KineticZoomPunchCutEngine.MaxScale - KineticZoomPunchCutEngine.MinScale);

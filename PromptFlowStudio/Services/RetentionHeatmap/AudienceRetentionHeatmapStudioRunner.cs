@@ -34,9 +34,6 @@ public sealed class AudienceRetentionHeatmapStudioRunner : IDisposable
     private readonly uint[] _frame = new uint[VideoW * VideoH];
     private readonly uint[] _frameOut = new uint[VideoW * VideoH];
     private readonly float[] _presetCurve = new float[ClipMaxSec + 1];
-    private readonly WarpKnot[] _knots = new WarpKnot[MicroPunchDynamicPacingReEditorEngine.EditCap * 2 + 2];
-    private readonly int[] _punchMs = new int[MicroPunchDynamicPacingReEditorEngine.EditCap];
-    private readonly RemuxCut[] _cuts = new RemuxCut[1];
     private readonly SyntheticAnnexBStream?[] _streams = new SyntheticAnnexBStream?[PresetNames.Length];
     private byte[] _remuxBuf = Array.Empty<byte>();
     private YouTubeAnalyticsRetentionCollector? _collector;
@@ -188,13 +185,8 @@ public sealed class AudienceRetentionHeatmapStudioRunner : IDisposable
         ReMuxer.SetTimestamps(st.Pts, st.Dts);
         var origin = long.MaxValue;
         foreach (var p in st.Pts) if (p < origin) origin = p;
-        var originMs = (int)((origin * 1000 + NaluSmartReMuxer.Clock - 1) / NaluSmartReMuxer.Clock);
-        var kn = BuildKnots(origin);
-        var pn = Math.Min(ReEditor.PunchCount, _punchMs.Length);
-        for (var i = 0; i < pn; i++) _punchMs[i] = ReEditor.Punch(i).AtMs + originMs;
-        _cuts[0] = new RemuxCut(originMs, originMs + ReEditor.SourceDurationMs);
         if (_remuxBuf.Length < st.Bytes.Length + 4096) _remuxBuf = new byte[st.Bytes.Length + 4096];
-        var w = ReMuxer.Remux(st.Bytes, _cuts, _knots.AsSpan(0, kn), st.FrameTicks, _remuxBuf, _punchMs.AsSpan(0, pn));
+        var w = ReEditor.RemuxInto(ReMuxer, st.Bytes, origin, st.FrameTicks, _remuxBuf);
         Remuxes++;
         if (w <= 0)
         {
@@ -221,32 +213,10 @@ public sealed class AudienceRetentionHeatmapStudioRunner : IDisposable
         EndDriftMs = Math.Abs((ReMuxer.OutEndTicks - o0) * 1000.0 / NaluSmartReMuxer.Clock - OutSamples * 1000.0 / MicroPunchDynamicPacingReEditorEngine.Fs);
         Remuxed = RemuxLosslessFaults == 0;
         LastAction = (Remuxed ? "🎞 무인코딩 리먹스 · " : "🛑 리먹스 검증 실패 · ") + (st.Codec == NalCodec.H264 ? "H.264" : "H.265") + " AU " + Id(ReMuxer.OutCount) +
-                     " · GOP " + Id(ReMuxer.CopiedGops) + " 복사 · 재인코딩 필요 " + Id(ReMuxer.ReencodeGops) + " · A/V 편차 " + MaxAvDesyncMs.ToString("0.00", CultureInfo.InvariantCulture) + " ms";
+                     " · GOP " + Id(ReMuxer.CopiedGops) + " 복사 · SPS 크롭 펀치 " + Id(ReMuxer.ZeroTranscodePunchGops) + " · 재인코딩 필요 " + Id(ReMuxer.ReencodeGops) + " · A/V 편차 " + MaxAvDesyncMs.ToString("0.00", CultureInfo.InvariantCulture) + " ms";
         Push(LastAction);
         Raise();
         return w;
-    }
-
-    /// <summary>리에디트 템포 구간 → 리먹서 절점(90 kHz · 원본 PTS 원점 기준).</summary>
-    private int BuildKnots(long origin)
-    {
-        const long k = NaluSmartReMuxer.Clock / 1000;
-        var n = 0;
-        _knots[n++] = new WarpKnot(origin, origin + ReEditor.OutMsAt(0) * k);
-        for (var i = 0; i < ReEditor.TempoCount && n + 2 < _knots.Length; i++)
-        {
-            ref readonly var t = ref ReEditor.Tempo(i);
-            AddKnot(ref n, origin + t.SrcStartMs * k, origin + t.OutStartMs * k);
-            AddKnot(ref n, origin + t.SrcEndMs * k, origin + t.OutEndMs * k);
-        }
-        AddKnot(ref n, origin + ReEditor.SourceDurationMs * k, origin + ReEditor.OutDurationMs * k);
-        return n;
-    }
-
-    private void AddKnot(ref int n, long src, long outT)
-    {
-        if (src <= _knots[n - 1].Src || outT < _knots[n - 1].Out) return;   // 비단조 절점 폐기(맵 단조성 보장)
-        _knots[n++] = new WarpKnot(src, outT);
     }
 
     /// <summary>가상 시계 전진(시간) — 중복/일일 상한 해제 확인용.</summary>

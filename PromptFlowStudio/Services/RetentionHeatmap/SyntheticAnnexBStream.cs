@@ -4,7 +4,8 @@ namespace PromptFlowStudio.Services.RetentionHeatmap;
 /// [PromptFlow Studio v17.99.1] 🧪 구조 합성 Annex-B 비트스트림(H.264 / H.265) — 리먹서 회귀·소크·스튜디오 데모용.
 ///   ▸ 닫힌 GOP · B 프레임 재정렬(디코딩 순서 ≠ 표시 순서) · 다중 슬라이스 AU · AUD · 접두/접미 SEI · 파라미터 셋(첫 GOP 만 또는 매 GOP).
 ///   ▸ 페이로드는 결정적 의사 난수 + 에뮬레이션 방지 바이트(00 00 → 00 00 03) · RBSP 정지 비트로 끝남.
-///   ▸ NAL 헤더/경계 구조만 규격 준수 — 실제 디코딩 가능한 영상이 아님(UI 에서 "합성" 표기).
+///   ▸ [v17.98.1] H.264 SPS = 규격 비트스트림(High · 1920×1080 크롭 · 스케일링 리스트 · VUI 타이밍) — SPS 크롭 줌 펀치 재작성 대상.
+///   ▸ NAL 헤더/경계 구조(+ H.264 SPS)만 규격 준수 — 실제 디코딩 가능한 영상이 아님(UI 에서 "합성" 표기).
 /// </summary>
 public sealed class SyntheticAnnexBStream
 {
@@ -29,6 +30,7 @@ public sealed class SyntheticAnnexBStream
                 i = anchor + 1;
             }
         }
+        var sps = codec == NalCodec.H264 ? BuildH264Sps(fps) : null;
         var buf = new List<byte>(frames * 400);
         Pts = new long[frames]; Dts = new long[frames];
         var rng = seed | 1u;
@@ -42,7 +44,7 @@ public sealed class SyntheticAnnexBStream
             if (key && (paramsEveryGop || f == 0))
             {
                 if (codec == NalCodec.H265) Nal(buf, Header(codec, 32), 24, ref rng);
-                Nal(buf, Header(codec, codec == NalCodec.H264 ? 7 : 33), 20, ref rng);
+                Nal(buf, Header(codec, codec == NalCodec.H264 ? 7 : 33), 20, ref rng, raw: sps);
                 Nal(buf, Header(codec, codec == NalCodec.H264 ? 8 : 34), 6, ref rng);
             }
             if (key) Nal(buf, Header(codec, codec == NalCodec.H264 ? 6 : 39), 12, ref rng);
@@ -68,13 +70,44 @@ public sealed class SyntheticAnnexBStream
 
     private static uint Next(ref uint r) { r ^= r << 13; r ^= r >> 17; r ^= r << 5; return r; }
 
-    private static void Nal(List<byte> b, ushort header, int payload, ref uint rng, bool aud = false, bool firstSlice = false, bool slice = false)
+    /// <summary>H.264 SPS EBSP(헤더 제외) — High@4.0 · 4:2:0 · 120×68 MB(1920×1088) 하단 크롭 8 → 1080 · 4×4 인트라 Y 스케일링 리스트 · POC 0 · VUI(SAR 1:1 · 타이밍 fps).</summary>
+    public static byte[] BuildH264Sps(int fps)
+    {
+        Span<byte> r = stackalloc byte[64];
+        var w = new RbspBitWriter(r);
+        w.U(100, 8); w.U(0, 8); w.U(40, 8);   // profile_idc · constraint · level_idc
+        w.Ue(0);                               // seq_parameter_set_id
+        w.Ue(1); w.Ue(0); w.Ue(0); w.U1(0);    // chroma_format_idc 4:2:0 · bit_depth 8/8 · qpprime
+        w.U1(1);                               // seq_scaling_matrix_present_flag
+        for (var i = 0; i < 8; i++)
+        {
+            w.U1(i == 0 ? 1u : 0u);
+            if (i == 0) { w.Se(8); for (var j = 1; j < 16; j++) w.Se(j % 3 == 0 ? 1 : 0); }
+        }
+        w.Ue(0); w.Ue(0); w.Ue(2);             // log2_max_frame_num−4 · poc_type 0 · log2_max_poc_lsb−4
+        w.Ue(4); w.U1(0);                      // max_num_ref_frames · gaps
+        w.Ue(119); w.Ue(67);                   // 1920 × 1088
+        w.U1(1); w.U1(1);                      // frame_mbs_only · direct_8x8
+        w.U1(1); w.Ue(0); w.Ue(0); w.Ue(0); w.Ue(4);   // 하단 4 × CropUnitY(2) = 8 → 1080
+        w.U1(1);                               // vui_parameters_present_flag
+        w.U1(1); w.U(1, 8);                    // aspect_ratio_idc 1:1
+        w.U1(0); w.U1(0); w.U1(0);             // overscan · video_signal · chroma_loc
+        w.U1(1); w.U(1, 32); w.U((uint)(fps * 2), 32); w.U1(1);   // timing_info(num_units_in_tick 1 · time_scale 2·fps · fixed)
+        w.U1(0); w.U1(0); w.U1(0); w.U1(0);    // nal_hrd · vcl_hrd · pic_struct · bitstream_restriction
+        var n = w.Trail();
+        Span<byte> e = stackalloc byte[96];
+        var en = H264SpsCropRewriter.Escape(r[..n], e);
+        return e[..en].ToArray();
+    }
+
+    private static void Nal(List<byte> b, ushort header, int payload, ref uint rng, bool aud = false, bool firstSlice = false, bool slice = false, byte[]? raw = null)
     {
         // 4 바이트 / 3 바이트 시작 코드 혼용(첫 NAL 은 4 바이트)
         if (b.Count == 0 || Next(ref rng) % 2 == 0) b.Add(0);
         b.Add(0); b.Add(0); b.Add(1);
         if (header > 0xFF) { b.Add((byte)(header >> 8)); b.Add((byte)header); } else b.Add((byte)header);
         if (aud) { b.Add(0x10); return; }   // primary_pic_type/pic_type + 정지 비트
+        if (raw != null) { b.AddRange(raw); return; }
         int zeros = 0;
         for (var i = 0; i < payload; i++)
         {

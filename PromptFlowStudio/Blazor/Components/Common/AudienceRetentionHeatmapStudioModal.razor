@@ -163,6 +163,7 @@
                     <div class="m"><b>@(Runner.Stream.Codec == NalCodec.H264 ? "H.264" : "H.265")</b><i>합성 클립 @(Runner.Stream.Frames)f</i></div>
                     <div class="m"><b class="@(Runner.Remuxed ? "acc" : Runner.Remuxes > 0 ? "warn" : null)">@(Runner.Remuxes > 0 ? (Runner.RemuxLosslessFaults == 0 ? "무손실" : "불일치 " + Runner.RemuxLosslessFaults) : "—")</b><i>NAL 바이트 검증</i></div>
                     <div class="m"><b>@(Runner.ReMuxer.CopiedGops)</b><i>GOP 스트림 복사</i></div>
+                    <div class="m"><b class="@(Runner.ReMuxer.ZeroTranscodePunchGops > 0 ? "acc" : null)">@(Runner.ReMuxer.ZeroTranscodePunchGops)</b><i>SPS 크롭 펀치(재인코딩 0) · @(Runner.ReMuxer.MaxCropUs.ToString("0.0", CultureInfo.InvariantCulture))µs</i></div>
                     <div class="m"><b class="@(Runner.ReMuxer.ReencodeGops > 0 ? "warn" : null)">@(Runner.ReMuxer.ReencodeGops)</b><i>재인코딩 필요(펀치)</i></div>
                     <div class="m"><b>@(Runner.MaxAvDesyncMs.ToString("0.00", CultureInfo.InvariantCulture))ms</b><i>A/V 편차 · 끝 @(Runner.EndDriftMs.ToString("0.0", CultureInfo.InvariantCulture))ms</i></div>
                 </div>

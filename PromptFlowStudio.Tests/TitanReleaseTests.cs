@@ -37252,6 +37252,36 @@ public sealed class AudienceRetentionHeatmapIsolatedTests
         Assert.Equal(0, run.Guard.HandoffCount);
         Assert.Equal(1, run.Preset);
 
+        // ── v17.98.1 NALU 스마트 리먹서 실결선: 펀치 GOP = SPS 크롭 1.15×(재인코딩 0) · 무손실 · PTS/DTS · 무할당 ──
+        run.SetPreset(0);
+        Assert.True(run.Remux() > 0);
+        Assert.True(run.Remuxed, "faults " + run.RemuxLosslessFaults);
+        Assert.Equal(Arh.NalCodec.H264, run.Stream.Codec);
+        Assert.True(run.ReEditor.PunchCount > 0);
+        Assert.Equal(1, run.ReEditor.Remuxes);
+        Assert.Equal(0, run.ReMuxer.ReencodeGops);
+        Assert.InRange(run.ReMuxer.ZeroTranscodePunchGops, 1, run.ReEditor.PunchCount);
+        Assert.True(run.ReMuxer.CroppedSpsNals >= run.ReMuxer.ZeroTranscodePunchGops);
+        Assert.Equal(1668, run.ReMuxer.Cropper.VisibleW);   // 1920 / 1.15 → CropUnitX 2 정렬
+        Assert.Equal(938, run.ReMuxer.Cropper.VisibleH);    // 1080 / 1.15 → CropUnitY 2 정렬
+        Assert.InRange(run.ReMuxer.Cropper.EffectiveZoom, 1.14f, 1.16f);
+        Assert.InRange(run.MaxAvDesyncMs, 0, 2.0);          // 템포 맵(WSOLA 출력 시간) ↔ 영상 PTS
+        Assert.Equal(0, run.ReMuxer.TimestampRepairs);
+        for (var i = 1; i < run.ReMuxer.OutCount; i++) Assert.True(run.ReMuxer.OutAu(i).Dts > run.ReMuxer.OutAu(i - 1).Dts);
+        for (var i = 0; i < run.ReMuxer.OutCount; i++) Assert.True(run.ReMuxer.OutAu(i).Pts >= run.ReMuxer.OutAu(i).Dts);
+        Assert.Contains("SPS 크롭 펀치", run.LastAction);
+        {
+            var st = run.Stream;
+            var buf = new byte[st.Bytes.Length + 4096];
+            var origin = st.Pts.Min();
+            Assert.Equal(0, AllocationProbe.MinAllocated(() =>
+            {
+                var n = run.ReEditor.RemuxInto(run.ReMuxer, st.Bytes, origin, st.FrameTicks, buf);
+                run.ReMuxer.VerifyLossless(st.Bytes, buf.AsSpan(0, n));
+            }));
+            Assert.InRange(run.ReMuxer.MaxCropUs, 0, 500);  // 웜 상태 SPS 비트 재작성 ≤ 0.5 ms
+        }
+
         // ── 카탈로그 · 도움말 결선(174) ──
         var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
         Assert.Equal(175, cat.Length);

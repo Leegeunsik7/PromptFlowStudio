@@ -288,6 +288,50 @@ public sealed class RetentionIngestRemuxTests
         Assert.InRange(outDurMs, outEnd4 + durMs - 4000 - 5, outEnd4 + durMs - 4000 + 40);
         Assert.Equal(0, m.TimestampRepairs);
 
+        // ── v17.98.1 SPS 크롭 줌 펀치: H.264 = 펀치 GOP(2 · 6) SPS 1.15× 크롭 재작성 → 다음 GOP 원 SPS 복원 · H.265 = 재인코딩 필요 유지 ──
+        var punches = new[] { originMs + 2500, originMs + 2600, originMs + 6100 };
+        var cut1 = new[] { new RemuxCut(originMs, originMs + durMs) };
+        w = m.Remux(st.Bytes, cut1, knots, st.FrameTicks, dst, punches, 1.15f);
+        Assert.Equal(0, m.VerifyLossless(st.Bytes, dst.AsSpan(0, w)));
+        Assert.Equal(frames, m.OutCount);
+        Assert.Equal(0, m.TimestampRepairs);
+        for (var i = 0; i < m.OutCount; i++) Assert.InRange(m.OutAu(i).Pts - NaluSmartReMuxer.Warp(knots, st.Pts[m.OutSourceAu(i)]), -1, 1);
+        if (codec == NalCodec.H264)
+        {
+            Assert.Equal(2, m.ZeroTranscodePunchGops);
+            Assert.Equal(0, m.ReencodeGops);
+            Assert.Equal(2, m.CroppedSpsNals);
+            // 출력 재파싱 → 각 GOP(키 AU) 활성 SPS 표시 창: 펀치 GOP = 1668×938 · 그 외 = 1920×1080
+            var m2 = new NaluSmartReMuxer();
+            m2.Parse(dst.AsSpan(0, w), codec);
+            int curW = 0, curH = 0, g = 0;
+            for (var i = 0; i < m2.NalCount; i++)
+            {
+                ref readonly var u = ref m2.Nal(i);
+                if (u.Type == 7) Assert.True(m2.Cropper.TryReadCrop(dst.AsSpan(u.Offset, u.Length), out curW, out curH));
+                else if (u.Key && u.FirstSlice)
+                {
+                    var punchGop = g == 2 || g == 6;
+                    Assert.Equal(punchGop ? 1668 : 1920, curW);
+                    Assert.Equal(punchGop ? 938 : 1080, curH);
+                    g++;
+                }
+            }
+            Assert.Equal(frames / gop, g);
+            // 크롭 비활성 재기록(zoom 1) = 원문 비트 동일(파서/라이터 왕복 무손실)
+            var spsNal = m.Nal(m.Au(0).FirstNal + 1);
+            Assert.Equal(7, spsNal.Type);
+            var rt = new byte[256];
+            var rn = m.Cropper.Rewrite(st.Bytes.AsSpan(spsNal.Offset, spsNal.Length), 1f, rt);
+            Assert.True(rt.AsSpan(0, rn).SequenceEqual(st.Bytes.AsSpan(spsNal.Offset, spsNal.Length)), "sps round trip");
+        }
+        else
+        {
+            Assert.Equal(2, m.ReencodeGops);
+            Assert.Equal(0, m.ZeroTranscodePunchGops);
+            Assert.True(dst.AsSpan(0, w).SequenceEqual(st.Bytes), "h265 punch keeps bytes");
+        }
+
         // ── 손상 검출: 출력 1 바이트 변조 → 불일치 ──
         dst[w / 2] ^= 0x5A;
         Assert.True(m.VerifyLossless(st.Bytes, dst.AsSpan(0, w)) > 0);
@@ -296,15 +340,17 @@ public sealed class RetentionIngestRemuxTests
         // ── 비단조 맵 거부 ──
         Assert.Throws<ArgumentException>(() => m.Remux(st.Bytes, new[] { new RemuxCut(0, 1000) }, new[] { new WarpKnot(10, 10), new WarpKnot(5, 20) }, st.FrameTicks, dst));
 
-        // ── 무할당: Parse · Remux · Verify ──
-        var cut1 = new[] { new RemuxCut(originMs, originMs + durMs) };
+        // ── 무할당: Parse · Remux(+ SPS 크롭 펀치) · Verify ──
         Assert.Equal(0, AllocationProbe.MinAllocated(() =>
         {
             m.Parse(st.Bytes, codec);
             m.SetTimestamps(st.Pts, st.Dts);
             var n = m.Remux(st.Bytes, cut1, knots, st.FrameTicks, dst);
             m.VerifyLossless(st.Bytes, dst.AsSpan(0, n));
+            n = m.Remux(st.Bytes, cut1, knots, st.FrameTicks, dst, punches, 1.15f);
+            m.VerifyLossless(st.Bytes, dst.AsSpan(0, n));
         }));
+        if (codec == NalCodec.H264) Assert.InRange(m.MaxCropUs, 0, 500);   // 웜 상태 SPS 비트 재작성 ≤ 0.5 ms
     }
 
     // ══════════════════════ 러너 결속 ══════════════════════
@@ -351,7 +397,12 @@ public sealed class RetentionIngestRemuxTests
             Assert.InRange(run.EndDriftMs, 0, 1000.0 / MicroPunchDynamicPacingReEditorEngine.VideoFps);
             Assert.Equal(0, run.ReMuxer.TimestampRepairs);
             if (run.ReEditor.TempoCount > 0) Assert.True(run.ReMuxer.OutEndTicks * 1000 / NaluSmartReMuxer.Clock < run.ReEditor.SourceDurationMs, "tempo shortens " + p);
-            if (run.ReEditor.PunchCount > 0) Assert.InRange(run.ReMuxer.ReencodeGops, 1, run.ReEditor.PunchCount);
+            if (run.ReEditor.PunchCount > 0)
+            {
+                // H.264 = SPS 크롭(재인코딩 0) · H.265 = 재인코딩 필요 정직 보고
+                Assert.InRange(run.ReMuxer.ReencodeGops + run.ReMuxer.ZeroTranscodePunchGops, 1, run.ReEditor.PunchCount);
+                if (p == 1) Assert.Equal(0, run.ReMuxer.ZeroTranscodePunchGops); else Assert.Equal(0, run.ReMuxer.ReencodeGops);
+            }
             _out.WriteLine("preset " + p + " " + run.LastAction + " · 끝 드리프트 " + run.EndDriftMs.ToString("0.00", CultureInfo.InvariantCulture) + " ms · 템포 " + run.ReEditor.TempoCount + " · 펀치 " + run.ReEditor.PunchCount);
         }
         Assert.True(changes > 0);
