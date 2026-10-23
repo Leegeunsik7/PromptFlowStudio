@@ -52,6 +52,7 @@ using Clp = PromptFlowStudio.Services.LiveClipper;
 using Vpe = PromptFlowStudio.Services.ViralExport;
 using Lae = PromptFlowStudio.Services.LiveEngagement;
 using Lav = PromptFlowStudio.Services.LiveArchive;
+using Vrp = PromptFlowStudio.Services.VodRepurposing;
 using Nw = PromptFlowStudio.Services.Newsroom;
 using Spt = PromptFlowStudio.Services.Sports;
 using V3 = System.Numerics.Vector3;
@@ -35082,7 +35083,7 @@ public sealed class LiveArchiveCloudVaultIsolatedTests
 
         // ── ARC-4: 카탈로그 163 · HUD · 레이아웃 · DI · 모달 규격 · 외부 SDK 0 · 모달 렌더 ──
         Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_liveArchiveVault" && en.Category == 4);
-        Assert.Equal(163, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        Assert.True(PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length >= 163);
         var root = RepoRoot();
         var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
         var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
@@ -35130,6 +35131,171 @@ public sealed class LiveArchiveCloudVaultIsolatedTests
         a[0] = 0xFF; a[1] = 0xF1; a[2] = 0x4C; a[3] = 0x80; a[4] = (byte)((raw + 7) >> 3); a[5] = 0x1F; a[6] = 0xFC;
         for (var i = 7; i < 7 + raw; i++) a[i] = (byte)(0x21 + (i & 0x1F));
         return 7 + raw;
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+}
+
+/// <summary>v17.88.0 장문 VOD 챕터 요약 · 마크다운 신디케이터 · 카드뉴스/OG 래스터라이저 · 리퍼포징 콕핏 결선.</summary>
+[Collection("TimingSensitivePerformance")]   // 래스터/파이프라인 벽시계 계측 · 무할당 계측(스레드 할당 바이트) → 비병렬
+public sealed class VodRepurposingIsolatedTests
+{
+    [Fact]
+    public async Task VodRepurposing_And_ArticleSynthesizer_Check()
+    {
+        // ── REP-1: 구어체 정제 · 타임코드 파싱 · 3~7 분 챕터 · 3 줄 요약 · SEO 5 · 무할당 ──
+        var buf = new char[256];
+        var cleaned = new string(buf, 0, Vrp.SpokenFillerFilter.Clean("음, 그니까 오늘 오늘 방송은 어 진짜 재밌었어요!!! ㅋㅋㅋ", buf));
+        Assert.Equal("오늘 방송은 진짜 재밌었어요!", cleaned);
+        var tc = new char[16];
+        Assert.Equal("00:00", new string(tc, 0, Vrp.LongformTranscriptChapterSummarizerEngine.FormatTimecode(0, tc)));
+        Assert.Equal("1:02:05", new string(tc, 0, Vrp.LongformTranscriptChapterSummarizerEngine.FormatTimecode(3_725_000, tc)));
+        var parse = new Vrp.LongformTranscriptChapterSummarizerEngine();
+        Assert.Equal(3, parse.Load("[00:00:05] 안녕하세요 반갑습니다\n00:12 - 두 번째 문장입니다\n1\n00:00:20,500 --> 00:00:24,000\nSRT 자막 문장\n"));
+        Assert.True(parse.Utterance(0).StartMs == 5_000 && parse.Utterance(1).StartMs == 12_000 && parse.Utterance(2).StartMs == 20_500 && parse.Utterance(2).EndMs == 24_000);
+
+        using var vrp = new Vrp.VodRepurposingStudioRunner();
+        Assert.True(vrp.LoadRehearsal(42) > 200);
+        var sum = vrp.Summarizer;
+        Assert.True(sum.FillersRemoved > 0, "추임새 정제 " + sum.FillersRemoved);
+        var chapters = sum.Analyze();
+        Assert.InRange(chapters, 6, 14);
+        Assert.Equal(0, sum.Chapter(0).StartMs);
+        for (var c = 0; c < chapters; c++)
+        {
+            var ch = sum.Chapter(c);
+            var len = ch.EndMs - ch.StartMs;
+            Assert.True(len >= Vrp.LongformTranscriptChapterSummarizerEngine.MinChapterMs - 60_000 && len <= Vrp.LongformTranscriptChapterSummarizerEngine.MaxChapterMs + 60_000, "챕터 " + c + " 길이 " + len);
+            Assert.True(ch.Kw0 >= 0 && ch.Sum0 >= 0 && ch.Best >= 0, "챕터 " + c + " 키워드/요약");
+            if (c > 0) Assert.Equal(sum.Chapter(c - 1).EndMs, ch.StartMs);
+        }
+        Assert.Equal(Vrp.LongformTranscriptChapterSummarizerEngine.SeoCount, sum.SeoKeywordCount);
+        var longTail = 0;
+        for (var i = 0; i < sum.SeoKeywordCount; i++) if (sum.SeoIsLongTail(i)) longTail++;
+        Assert.True(longTail >= 1, "롱테일 " + longTail);
+        var list = new char[8192];
+        var listLen = sum.WriteChapterList(list);
+        var chapterText = new string(list, 0, listLen);
+        Assert.StartsWith("00:00 - ", chapterText, StringComparison.Ordinal);
+        Assert.Equal(chapters, chapterText.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+        // 주제 경계 탐지: 리허설 6 주제 키워드 중 ≥ 4 개가 챕터 제목에 등장
+        var hit = 0;
+        foreach (var kw in new[] { "컷편집", "쇼츠", "장비", "수익화", "질문", "자막", "알고리즘", "마이크" }) if (chapterText.Contains(kw, StringComparison.Ordinal)) hit++;
+        Assert.True(hit >= 4, "챕터 제목 주제 적중 " + hit + "\n" + chapterText);
+        sum.Analyze();
+        var a0 = GC.GetAllocatedBytesForCurrentThread();
+        sum.Analyze();
+        sum.WriteChapterList(list);
+        for (var c = 0; c < chapters; c++) sum.WriteSummary(c, list, "• ");
+        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - a0);
+
+        // ── REP-2: 블로그/뉴스레터 마크다운 · ArrayPool 작성기 무할당 ──
+        using var blog = new Vrp.MarkdownArticleNewsletterSynthesizer();
+        using var news = new Vrp.MarkdownArticleNewsletterSynthesizer();
+        blog.Render(sum, Vrp.ArticleTemplate.Blog);
+        news.Render(sum, Vrp.ArticleTemplate.Newsletter);
+        var bm = blog.Snapshot(); var nm = news.Snapshot();
+        Assert.True(bm.StartsWith("# 🎬 ", StringComparison.Ordinal) && bm.Contains("## 📌 목차", StringComparison.Ordinal) && bm.Contains("## 1️⃣ ", StringComparison.Ordinal) && bm.Contains("### 💡 포인트", StringComparison.Ordinal) && bm.Contains("## 🙌 마무리", StringComparison.Ordinal) && bm.Contains("- `00:00` ", StringComparison.Ordinal), bm[..Math.Min(600, bm.Length)]);
+        Assert.True(nm.StartsWith("# ", StringComparison.Ordinal) && nm.Contains("## 핵심 요약", StringComparison.Ordinal) && nm.Contains("### 주요 내용", StringComparison.Ordinal) && nm.Contains("## 결론", StringComparison.Ordinal) && nm.Contains("**키워드:**", StringComparison.Ordinal) && !nm.Contains("😊", StringComparison.Ordinal));
+        Assert.True(blog.Headings >= chapters + 3 && news.Bullets >= chapters * 2, "구조 H" + blog.Headings + " B" + news.Bullets);
+        foreach (var md in new[] { bm, nm })
+            Assert.True(!md.Contains(" 음 ", StringComparison.Ordinal) && !md.Contains("그니까", StringComparison.Ordinal) && !md.Contains("약간 ", StringComparison.Ordinal), "추임새 잔존");
+        blog.Render(sum, Vrp.ArticleTemplate.Blog);
+        var a1 = GC.GetAllocatedBytesForCurrentThread();
+        blog.Render(sum, Vrp.ArticleTemplate.Blog);
+        news.Render(sum, Vrp.ArticleTemplate.Newsletter);
+        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - a1);
+        Assert.Equal(bm, new string(blog.Markdown));
+
+        // ── REP-3: 파이프라인 → 카드뉴스 5 + OG · PNG 무결성 · 래스터 무할당 ──
+        Assert.True(await vrp.RunAsync());
+        Assert.True(vrp.Runs == 1 && vrp.Failures == 0 && vrp.Chapters.Length == chapters && vrp.SeoKeywords.Length == 5, vrp.LastAction);
+        var ras = vrp.Rasterizer;
+        for (var slot = 0; slot < Vrp.ViralCardNewsOgRasterizerEngine.Slots; slot++)
+        {
+            var og = slot == Vrp.ViralCardNewsOgRasterizerEngine.OgSlot;
+            int w = og ? 1200 : 1080, h = og ? 630 : 1080;
+            var png = ras.Png(slot).ToArray();
+            Assert.True(png.Length > 2000 && png[0] == 0x89 && png[1] == (byte)'P' && png[12] == (byte)'I' && png[15] == (byte)'R', "PNG 시그니처 " + slot);
+            Assert.True(System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(png.AsSpan(16)) == w && System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(png.AsSpan(20)) == h && png[24] == 8 && png[25] == 6, "IHDR " + slot);
+            // IDAT 해제 → 필터 바이트 포함 원본 크기
+            var idatLen = System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(png.AsSpan(33));
+            using var z = new System.IO.Compression.ZLibStream(new MemoryStream(png, 41, idatLen), System.IO.Compression.CompressionMode.Decompress);
+            using var raw = new MemoryStream();
+            z.CopyTo(raw);
+            Assert.Equal(h * (w * 4 + 1), raw.Length);
+            Assert.True(ras.PreviewBytes(slot) > 500 && vrp.PreviewUrl(slot)!.StartsWith("data:image/png;base64,", StringComparison.Ordinal) && !string.IsNullOrEmpty(vrp.SlideText(slot)));
+            using var dl = ras.OpenPng(slot);
+            Assert.Equal(png.Length, dl.Length);
+        }
+        Assert.Equal("card_1_1080.png", Vrp.VodRepurposingStudioRunner.DownloadName(0));
+        Assert.Equal("og_1200x630.png", Vrp.VodRepurposingStudioRunner.DownloadName(Vrp.ViralCardNewsOgRasterizerEngine.OgSlot));
+        // 하이라이트 카드: 중앙 밝은 텍스트 · 하단 어두운 그래디언트
+        const string punch = "쇼츠 알고리즘은 첫 3초 시청 지속률을 가장 중요하게 봐요";
+        ras.Prepare(punch); ras.Prepare("CHAPTER 3 · 12:30"); ras.Prepare("쇼츠 · 알고리즘"); ras.Prepare("LIVE VOD");
+        ras.RenderCard("CHAPTER 3 · 12:30", punch, "쇼츠 · 알고리즘", 2, 5);
+        ras.RenderOg("LIVE VOD", punch, "쇼츠 · 알고리즘");
+        var sw = Stopwatch.StartNew();   // Stopwatch 객체 할당은 계측 구간 밖
+        var a2 = GC.GetAllocatedBytesForCurrentThread();
+        ras.RenderOg("LIVE VOD", punch, "쇼츠 · 알고리즘");
+        ras.RenderCard("CHAPTER 3 · 12:30", punch, "쇼츠 · 알고리즘", 2, 5);
+        var alloc2 = GC.GetAllocatedBytesForCurrentThread() - a2;
+        sw.Stop();
+        Assert.Equal(0, alloc2);
+        Assert.True(sw.ElapsedMilliseconds < 5000, "래스터 " + sw.ElapsedMilliseconds + "ms");
+        Assert.True(ras.LastLines is >= 1 and <= Vrp.ViralCardNewsOgRasterizerEngine.MaxLines);
+        var px = ras.CardRgba.ToArray();
+        int bright = 0, dark = 0;
+        for (var y = 380; y < 700; y++) for (var x = 80; x < 1000; x++) { var o = (y * 1080 + x) * 4; if (px[o] > 220 && px[o + 1] > 200) bright++; }
+        for (var x = 0; x < 1080; x += 4) { var o = (1070 * 1080 + x) * 4; if (px[o] < 60 && px[o + 1] < 60 && px[o + 2] < 70) dark++; }
+        Assert.True(bright > 2000, "중앙 텍스트 픽셀 " + bright);
+        Assert.True(dark > 200, "하단 그래디언트 " + dark);
+        Assert.True(px[3] == 255 && px[^1] == 255);
+
+        // ── v17.87 아카이브 연계: 아카이브 길이 기반 리허설 · 붙여넣은 대본 재실행 ──
+        using (var lav = new Lav.LiveArchiveCloudVaultStudioRunner(null, new Lav.MemorySegmentStore()) { AutoUpload = false })
+        {
+            lav.Advance(660);
+            lav.Finish();
+            using var linked = new Vrp.VodRepurposingStudioRunner(lav);
+            Assert.True(linked.HasArchive && linked.ArchiveMinutes() >= 10, "아카이브 " + linked.ArchiveMinutes());
+            linked.LoadRehearsal();
+            Assert.Contains("아카이브", linked.SourceLabel, StringComparison.Ordinal);
+            Assert.InRange(linked.Summarizer.DurationMs, linked.ArchiveMinutes() * 60_000L - 30_000, linked.ArchiveMinutes() * 60_000L + 30_000);
+            Assert.True(linked.LoadTranscript(chapterText + "\n[00:20:00] 음 마지막으로 정리하면 쇼츠 알고리즘 이 핵심입니다.") > 0 && linked.UserTranscript);
+            Assert.True(await linked.RunAsync() && linked.Chapters.Length >= 1);
+        }
+
+        // ── REP-4: 카탈로그 164 · HUD · 레이아웃 · DI · 모달 규격 · 외부 의존 0 · 모달 렌더 ──
+        Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_vodRepurposing" && en.Category == 4);
+        Assert.Equal(164, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        var root = RepoRoot();
+        var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
+        var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
+        var mainForm = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "MainForm.cs"));
+        var maui = File.ReadAllText(Path.Combine(root, "PromptFlowStudio.Mobile", "MauiProgram.cs"));
+        var modalSrc = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "VodRepurposingStudioModal.razor"));
+        var js = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "wwwroot", "promptflow.js"));
+        Assert.True(hud.IndexOf("gth-v1788", StringComparison.Ordinal) is > 0 and var i1788 && i1788 < hud.IndexOf("gth-v1787", StringComparison.Ordinal) && hud.Contains("VrpRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("VrpRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<VodRepurposingStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_vodRepurposing\"", StringComparison.Ordinal) && layout.Contains("\"_vodRepurposing\" =>", StringComparison.Ordinal));
+        Assert.True(mainForm.Contains("VodRepurposing.VodRepurposingStudioRunner(sp)", StringComparison.Ordinal) && maui.Contains("VodRepurposing.VodRepurposingStudioRunner(sp)", StringComparison.Ordinal));
+        Assert.True(modalSrc.Contains("@implements IDisposable", StringComparison.Ordinal) && modalSrc.Contains("flex: 1 1 auto; min-height: 0; overflow-y: auto;", StringComparison.Ordinal) && modalSrc.Contains("position: sticky", StringComparison.Ordinal) && modalSrc.Contains("siteMaticClip.copy", StringComparison.Ordinal) && js.Contains("window.siteMaticDownload", StringComparison.Ordinal));
+        foreach (var src in Directory.GetFiles(Path.Combine(root, "PromptFlowStudio", "Services", "VodRepurposing"), "*.cs"))
+        {
+            var text = File.ReadAllText(src);
+            Assert.True(!text.Contains("System.Linq", StringComparison.Ordinal) && !text.Contains("Process.Start", StringComparison.Ordinal) && !text.Contains("HttpClient", StringComparison.Ordinal) && !text.Contains("File.Write", StringComparison.Ordinal) && !text.Contains("File.Create", StringComparison.Ordinal), "외부 의존 · 파일 I/O " + Path.GetFileName(src));
+        }
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = sp.GetService(typeof(Vrp.VodRepurposingStudioRunner))!;
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.VodRepurposingStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("vrp-scrim", StringComparison.Ordinal) && html.Contains("vrp-body", StringComparison.Ordinal) && html.Contains("리퍼포징 실행", StringComparison.Ordinal) && html.Contains("원클릭 복사", StringComparison.Ordinal) && html.Contains("vrp-car", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
     }
 
     private static string RepoRoot()

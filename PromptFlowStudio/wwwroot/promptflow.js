@@ -163,6 +163,19 @@
         } catch (e) { return false; }
     }
 
+    /* v17.88.0 인메모리 다운로드 — .NET DotNetStreamReference(PNG 등) → Blob URL → <a download>. 디스크 경유 없음. */
+    window.siteMaticDownload = async function (fileName, streamRef, mime) {
+        try {
+            const buf = await streamRef.arrayBuffer();
+            const url = URL.createObjectURL(new Blob([buf], { type: mime || 'application/octet-stream' }));
+            const a = document.createElement('a');
+            a.href = url; a.download = fileName || 'download'; a.style.display = 'none';
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+            return true;
+        } catch (e) { return false; }
+    };
+
     window.siteMaticClip = {
         copy: async function (text) {
             if (typeof text !== 'string' || text.length === 0) return false;

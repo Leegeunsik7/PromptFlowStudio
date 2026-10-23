@@ -278,6 +278,7 @@
 @inject PromptFlowStudio.Services.LiveClipper.LiveToShortsAutoClipperStudioRunner ClpRun
 @inject PromptFlowStudio.Services.ViralExport.ViralPredictorShortsExportStudioRunner VpeRun
 @inject PromptFlowStudio.Services.LiveArchive.LiveArchiveCloudVaultStudioRunner LavRun
+@inject PromptFlowStudio.Services.VodRepurposing.VodRepurposingStudioRunner VrpRun
 @inject PromptFlowStudio.Services.LiveEngagement.LiveAudienceEngagementStudioRunner LaeRun
 @inject PromptFlowStudio.Services.LiveRestream.OmniLiveRestreamStudioRunner RstRun
 @inject PromptFlowStudio.Services.MultilingualDubbing.MultilingualDubbingStudioRunner MldRun
@@ -1003,6 +1004,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.88.0: VOD 리퍼포징 — 챕터 · SEO · 아티클 길이 · 카드뉴스 ── *@
+    <div class="gth-v1788">
+        <div class="gth-v96-card pid @(VrpRun.Runs > 0 && VrpRun.Failures == 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>📝 VOD 리퍼포징</b>
+                <span class="gth-v96-be">@(VrpRun.Busy ? "변환 중" : VrpRun.Runs > 0 ? "완료" : "대기")</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(VrpRun.Chapters.Length)</b><span>챕터</span></span>
+                <span class="gth-v96-m"><b>@(VrpRun.SeoKeywords.Length)</b><span>SEO</span></span>
+                <span class="gth-v96-m"><b>@(VrpRun.Blog.Length)</b><span>블로그 자</span></span>
+                <span class="gth-v96-m"><b>@(VrpRun.LastPipelineMs.ToString("0", System.Globalization.CultureInfo.InvariantCulture))</b><span>ms</span></span>
+            </div>
+            <div class="gth-v96-act">@(VrpRun.LastAction ?? "대기")</div>
+        </div>
+    </div>
     @* ── v17.87.0: 라이브 클라우드 아카이브 볼트 — 세그먼트 · 업로드 큐 · 업로드 Mbps · 로컬 여유 ── *@
     <div class="gth-v1787">
         <div class="gth-v96-card pid @(LavRun.Recorder.SegmentCount > 0 && LavRun.UploadFailures == 0 && !LavRun.Guard.DiskLow ? "ok" : null)">
@@ -5760,6 +5776,7 @@
         VlRun.OnChange += OnSwarmChanged; // v17.50.0 (3.3 Hz)
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
         KbrRun.OnChange += OnSwarmChanged; // v17.78.0 (재생 10 Hz → 250 ms 스로틀)
+        VrpRun.OnChange += OnSwarmChanged; // v17.88.0 (파이프라인 시작/완료 시점만)
         LavRun.OnChange += OnSwarmChanged; // v17.87.0 (녹화 30 Hz → 250 ms 스로틀 · 확정/업로드/회수 즉시)
         LaeRun.OnChange += OnSwarmChanged; // v17.86.0 (합성 60 Hz → 250 ms 스로틀 · 투표/후원 이벤트 즉시)
         VpeRun.OnChange += OnSwarmChanged; // v17.85.0 (분석/인출 이벤트 구동 · 렌더 진행은 모달 250 ms)
@@ -6148,6 +6165,7 @@
         ClpRun.OnChange -= OnSwarmChanged;
         VpeRun.OnChange -= OnSwarmChanged;
         LaeRun.OnChange -= OnSwarmChanged;
+        VrpRun.OnChange -= OnSwarmChanged;
         LavRun.OnChange -= OnSwarmChanged;
         RstRun.OnChange -= OnSwarmChanged;
         MldRun.OnChange -= OnSwarmChanged;

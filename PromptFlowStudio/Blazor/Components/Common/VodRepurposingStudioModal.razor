@@ -1,0 +1,356 @@
+@using System.Globalization
+@using System.Text
+@using PromptFlowStudio.Services.VodRepurposing
+@implements IDisposable
+@inject VodRepurposingStudioRunner Runner
+@inject IJSRuntime JS
+
+@* [PromptFlow Studio v17.88.0] 📝 VOD 리퍼포징 & 아티클 스튜디오 — 챕터 타임라인 · 마크다운 프리뷰/복사 · 카드뉴스 캐러셀 · OG 배너. *@
+<div class="vrp-scrim" @onclick="Close">
+    <div class="vrp-modal" @onclick:stopPropagation="true">
+        <div class="vrp-h">
+            <div>
+                <div class="vrp-title">📝 VOD 리퍼포징 & 아티클 스튜디오 @(Runner.Busy ? "· ⚙️ 변환 중" : null)</div>
+                <div class="vrp-sub">긴 라이브 다시보기(VOD) 대본을 주제가 바뀌는 지점마다 <b>3~7분 챕터</b>로 나누고, 각 챕터를 3줄로 요약합니다.
+                    요약은 <b>블로그 글</b>(네이버 블로그 · Medium용 친근한 말투)과 <b>뉴스레터</b>(전문적인 말투 · 불릿 중심) 두 가지 마크다운으로 바로 만들어지고, "음", "어" 같은 말버릇과 반복된 단어는 자동으로 지워집니다.
+                    핵심 문장으로는 SNS용 <b>카드뉴스 5장(1080×1080)</b>과 링크 미리보기용 <b>OG 배너(1200×630)</b>를 그려 줍니다. 대본을 붙여넣지 않으면 v17.87 아카이브 길이에 맞춘 리허설 대본으로 시연합니다.</div>
+            </div>
+            <button class="vrp-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="vrp-body">
+            <div class="vrp-bar">
+                <button class="vrp-btn go" disabled="@(Runner.Busy)" @onclick="Run">⚙️ 리퍼포징 실행</button>
+                <label class="vrp-lbl">제목<input class="vrp-in" type="text" value="@(Runner.Title)" placeholder="(비우면 SEO 1위 키워드로 자동)" @onchange="SetTitle" /></label>
+                <span class="vrp-kv">소스 <b>@(Runner.SourceLabel)</b>@(Runner.HasArchive ? " · 아카이브 " + Runner.ArchiveMinutes().ToString(CultureInfo.InvariantCulture) + "분" : null)</span>
+                <span class="vrp-sep"></span>
+                <button class="vrp-btn" @onclick="TogglePaste">📄 대본 붙여넣기</button>
+                <button class="vrp-btn" disabled="@(Runner.Busy)" @onclick="ResetAll">♻ 초기화</button>
+            </div>
+            @if (_paste)
+            {
+                <div class="vrp-paste">
+                    <textarea rows="5" placeholder="[00:00:05] 안녕하세요 오늘 방송은…   또는 SRT 자막 · 타임코드 없는 대본도 가능" @bind="_draft"></textarea>
+                    <div class="vrp-bar tight">
+                        <button class="vrp-btn go" @onclick="LoadPaste">📥 대본 적용</button>
+                        <button class="vrp-btn" @onclick="ClearPaste">↩ 리허설 대본으로</button>
+                    </div>
+                </div>
+            }
+
+            <div class="vrp-card">
+                <div class="vrp-sec">🧭 챕터 타임라인 <span class="vrp-kw">발화 밀도 + 키워드 벡터 낙차 · 3~7분</span></div>
+                @if (Runner.Chapters.Length == 0)
+                {
+                    <div class="vrp-empty">⚙️ 리퍼포징 실행을 누르면 챕터가 여기에 표시됩니다.</div>
+                }
+                else
+                {
+                    var total = Math.Max(1, Runner.Chapters[^1].EndMs);
+                    <div class="vrp-tl">
+                        @foreach (var ch in Runner.Chapters)
+                        {
+                            var c = ch.Index;
+                            <button class="vrp-seg @(c == Runner.SelectedChapter ? "on" : null)" style="flex-grow:@(((ch.EndMs - ch.StartMs) / (double)total * 100).ToString("0.00", CultureInfo.InvariantCulture))" title="@(ch.Timecode) @(ch.Title)" @onclick="() => SelectChapter(c)">@(c + 1)</button>
+                        }
+                    </div>
+                    <div class="vrp-cols">
+                        <div class="vrp-list">
+                            @foreach (var ch in Runner.Chapters)
+                            {
+                                var c = ch.Index;
+                                <div class="vrp-row @(c == Runner.SelectedChapter ? "on" : null)" @onclick="() => SelectChapter(c)">
+                                    <span class="tc">@(ch.Timecode)</span><span class="tt">@(ch.Title)</span><span class="du">@(((ch.EndMs - ch.StartMs) / 60000.0).ToString("0.0", CultureInfo.InvariantCulture))분</span>
+                                </div>
+                            }
+                        </div>
+                        @{ var sel = Runner.Chapters[Math.Clamp(Runner.SelectedChapter, 0, Runner.Chapters.Length - 1)]; }
+                        <div class="vrp-detail">
+                            <div class="vrp-dh">@(sel.Index + 1). @(sel.Title) <span>@(sel.Timecode) ~ @(sel.EndTimecode)</span></div>
+                            <ul>
+                                @foreach (var line in sel.Summary)
+                                {
+                                    <li>@(line)</li>
+                                }
+                            </ul>
+                            <div class="vrp-mini">단어 @(sel.Words) · 발화 밀도 @(sel.Density.ToString("0.0", CultureInfo.InvariantCulture))자/초 · 경계 점수 @(sel.BoundaryScore.ToString("0.00", CultureInfo.InvariantCulture))</div>
+                        </div>
+                    </div>
+                    <div class="vrp-seo">🔎 SEO 롱테일
+                        @foreach (var kw in Runner.SeoKeywords)
+                        {
+                            <span class="chip">@(kw)</span>
+                        }
+                        <button class="vrp-btn sm" @onclick="CopyChapters">📋 유튜브 챕터 복사</button>
+                    </div>
+                }
+            </div>
+
+            <div class="vrp-main">
+                <div class="vrp-card">
+                    <div class="vrp-sec">📰 마크다운 아티클
+                        <span class="vrp-tabs">
+                            <button class="@(Runner.Template == ArticleTemplate.Blog ? "on" : null)" @onclick="UseBlog">블로그</button>
+                            <button class="@(Runner.Template == ArticleTemplate.Newsletter ? "on" : null)" @onclick="UseNewsletter">뉴스레터</button>
+                        </span>
+                        <button class="vrp-btn sm" disabled="@(Runner.Runs == 0)" @onclick="CopyMarkdown">📋 원클릭 복사</button>
+                        <button class="vrp-btn sm" @onclick="ToggleRaw">@(_raw ? "👁 미리보기" : "＃ 원문")</button>
+                    </div>
+                    <div class="vrp-md">
+                        @if (Runner.Runs == 0)
+                        {
+                            <div class="vrp-empty">아직 생성된 아티클이 없습니다.</div>
+                        }
+                        else if (_raw)
+                        {
+                            <pre>@(Runner.Markdown(Runner.Template))</pre>
+                        }
+                        else
+                        {
+                            @(Preview())
+                        }
+                    </div>
+                    <div class="vrp-mini">@(Runner.Template == ArticleTemplate.Blog ? Runner.Blog.Length : Runner.Newsletter.Length)자 · 제목 @(Runner.Template == ArticleTemplate.Blog ? Runner.Blog.Headings : Runner.Newsletter.Headings)개 · 렌더 @((Runner.Template == ArticleTemplate.Blog ? Runner.Blog.LastRenderMs : Runner.Newsletter.LastRenderMs).ToString("0.00", CultureInfo.InvariantCulture))ms@(_copied is not null ? " · " + _copied : null)</div>
+                </div>
+
+                <div class="vrp-card">
+                    <div class="vrp-sec">🖼️ 카드뉴스 & OG 배너 <span class="vrp-kw">인메모리 PNG</span></div>
+                    @{ var slot = Math.Clamp(Runner.SelectedSlide, 0, ViralCardNewsOgRasterizerEngine.Slots - 1); var url = Runner.PreviewUrl(slot); }
+                    <div class="vrp-car @(slot == ViralCardNewsOgRasterizerEngine.OgSlot ? "og" : null)">
+                        <button class="vrp-nav" @onclick="PrevSlide">‹</button>
+                        @if (url is null)
+                        {
+                            <div class="vrp-ph">@(slot == ViralCardNewsOgRasterizerEngine.OgSlot ? "1200×630" : "1080×1080")</div>
+                        }
+                        else
+                        {
+                            <img src="@(url)" alt="slide" />
+                        }
+                        <button class="vrp-nav" @onclick="NextSlide">›</button>
+                    </div>
+                    <div class="vrp-dots">
+                        @for (var i = 0; i < ViralCardNewsOgRasterizerEngine.Slots; i++)
+                        {
+                            var k = i;
+                            <button class="@(k == slot ? "on" : null)" @onclick="() => SelectSlide(k)">@(k == ViralCardNewsOgRasterizerEngine.OgSlot ? "OG" : (k + 1).ToString(CultureInfo.InvariantCulture))</button>
+                        }
+                    </div>
+                    <div class="vrp-kv">@(Runner.SlideText(slot) ?? "—")</div>
+                    <div class="vrp-bar tight">
+                        <button class="vrp-btn" disabled="@(Runner.Rasterizer.PngBytes(slot) == 0)" @onclick="SaveSlide">💾 PNG 다운로드</button>
+                        <button class="vrp-btn" disabled="@(Runner.Runs == 0)" @onclick="SaveAll">💾 전체 다운로드</button>
+                    </div>
+                    <div class="vrp-mini">PNG @((Runner.Rasterizer.PngBytes(slot) / 1024.0).ToString("0", CultureInfo.InvariantCulture))KB · 래스터 @(Runner.LastRasterMs.ToString("0", CultureInfo.InvariantCulture))ms · 글자 크기 @(Runner.Rasterizer.LastFontPx.ToString("0", CultureInfo.InvariantCulture))px · 글리프 @(Runner.Rasterizer.Atlas.Count)</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="vrp-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+    </div>
+</div>
+
+<style>
+    .vrp-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .vrp-modal { width: min(1380px, 96vw); max-height: 94vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); color: var(--text-primary); }
+    .vrp-h { position: sticky; top: 0; z-index: 3; flex: 0 0 auto; display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px 8px; background: var(--card); border-bottom: 1px solid var(--line); }
+    .vrp-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 10px; }
+    .vrp-act { position: sticky; bottom: 0; z-index: 3; flex: 0 0 auto; padding: 8px 16px 14px; background: var(--card); border-top: 1px solid var(--line); font-size: 11px; color: var(--text-muted); }
+    .vrp-title { font-size: 17px; font-weight: 800; }
+    .vrp-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .vrp-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .vrp-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 0; }
+    .vrp-bar.tight { margin: 6px 0; }
+    .vrp-sep { flex: 1; }
+    .vrp-lbl { display: inline-flex; gap: 6px; align-items: center; font-size: 11.5px; }
+    .vrp-in, .vrp-paste textarea { background: #0f172a; color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; font-size: 11.5px; padding: 3px 6px; }
+    .vrp-in { width: 240px; }
+    .vrp-paste textarea { width: 100%; box-sizing: border-box; font-family: var(--mono); margin-top: 8px; resize: vertical; }
+    .vrp-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .vrp-btn.sm { padding: 2px 8px; font-size: 11px; }
+    .vrp-btn:disabled { opacity: .45; cursor: default; }
+    .vrp-btn.go { border-color: #4ade80; font-weight: 700; }
+    .vrp-main { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 10px; margin-top: 10px; }
+    .vrp-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-width: 0; margin-top: 10px; }
+    .vrp-main .vrp-card { margin-top: 0; }
+    .vrp-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .vrp-kw { margin-left: auto; font-size: 10.5px; font-weight: 400; color: #7dd3fc; }
+    .vrp-kv { font-size: 11px; color: var(--text-muted); margin: 4px 0; }
+    .vrp-kv b { color: var(--text-primary); }
+    .vrp-empty { font-size: 11px; color: var(--text-muted); padding: 10px; text-align: center; }
+    .vrp-tl { display: flex; gap: 2px; height: 26px; background: #111827; border-radius: 6px; padding: 2px; overflow: hidden; }
+    .vrp-seg { flex-basis: 0; min-width: 18px; border: 0; border-radius: 4px; background: #334155; color: #e2e8f0; font-size: 10.5px; cursor: pointer; }
+    .vrp-seg:nth-child(even) { background: #475569; }
+    .vrp-seg.on { background: linear-gradient(90deg, #f43f5e, #fb7185); font-weight: 700; }
+    .vrp-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 10px; margin-top: 8px; }
+    .vrp-list { max-height: 200px; overflow-y: auto; }
+    .vrp-row { display: grid; grid-template-columns: 62px 1fr 48px; gap: 6px; font-size: 11px; padding: 3px 4px; border-radius: 4px; cursor: pointer; }
+    .vrp-row:hover { background: #1e293b; } .vrp-row.on { background: #3f1d2b; }
+    .vrp-row .tc { font-family: var(--mono); color: #7dd3fc; } .vrp-row .du { text-align: right; color: var(--text-muted); }
+    .vrp-detail { background: #111827; border-radius: 8px; padding: 8px 10px; font-size: 11.5px; }
+    .vrp-dh { font-weight: 700; } .vrp-dh span { font-family: var(--mono); font-weight: 400; color: var(--text-muted); margin-left: 6px; }
+    .vrp-detail ul { margin: 6px 0; padding-left: 18px; line-height: 1.55; }
+    .vrp-seo { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; font-size: 11px; margin-top: 8px; }
+    .vrp-seo .chip { background: #1e3a5f; color: #bae6fd; border-radius: 10px; padding: 1px 8px; }
+    .vrp-tabs { display: inline-flex; gap: 2px; margin-left: auto; }
+    .vrp-tabs button { background: #1e293b; color: var(--text-muted); border: 1px solid var(--line); padding: 2px 10px; font-size: 11px; cursor: pointer; border-radius: 6px; }
+    .vrp-tabs button.on { color: #fff; border-color: #f43f5e; }
+    .vrp-md { height: 420px; overflow-y: auto; background: #f8fafc; color: #0f172a; border-radius: 8px; padding: 10px 14px; font-size: 13px; line-height: 1.6; }
+    .vrp-md pre { white-space: pre-wrap; font-family: var(--mono); font-size: 11.5px; margin: 0; }
+    .vrp-md h1 { font-size: 20px; margin: 4px 0 8px; } .vrp-md h2 { font-size: 16px; margin: 14px 0 6px; border-bottom: 1px solid #e2e8f0; } .vrp-md h3 { font-size: 13.5px; margin: 10px 0 4px; }
+    .vrp-md blockquote { margin: 6px 0; padding: 4px 10px; border-left: 3px solid #f43f5e; background: #fff1f2; }
+    .vrp-md code { background: #e2e8f0; border-radius: 4px; padding: 0 4px; font-size: 12px; }
+    .vrp-md ul { margin: 4px 0; padding-left: 20px; } .vrp-md p { margin: 6px 0; } .vrp-md hr { border: 0; border-top: 1px solid #cbd5e1; }
+    .vrp-car { display: flex; align-items: center; gap: 6px; }
+    .vrp-car img, .vrp-ph { flex: 1; min-width: 0; aspect-ratio: 1 / 1; border-radius: 8px; object-fit: contain; background: #111827; }
+    .vrp-car.og img, .vrp-car.og .vrp-ph { aspect-ratio: 1200 / 630; }
+    .vrp-ph { display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 12px; }
+    .vrp-nav { background: #1e293b; color: #fff; border: 1px solid var(--line); border-radius: 50%; width: 30px; height: 30px; cursor: pointer; flex: 0 0 auto; }
+    .vrp-dots { display: flex; gap: 4px; justify-content: center; margin: 6px 0; }
+    .vrp-dots button { background: #1e293b; color: var(--text-muted); border: 1px solid var(--line); border-radius: 10px; font-size: 10.5px; padding: 1px 8px; cursor: pointer; }
+    .vrp-dots button.on { color: #fff; border-color: #f43f5e; background: #3f1d2b; }
+    .vrp-mini { font-size: 10px; color: var(--text-muted); margin-top: 6px; }
+    @@media (max-width: 1100px) { .vrp-main, .vrp-cols { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private bool _paste, _raw;
+    private string _draft = "";
+    private string? _copied;
+    private string? _previewSrc;
+    private MarkupString _previewHtml;
+
+    protected override void OnInitialized() => Runner.OnChange += OnServiceChanged;
+
+    private void SetTitle(ChangeEventArgs e) => Runner.Title = e.Value?.ToString()?.Trim() ?? "";
+    private void TogglePaste() => _paste = !_paste;
+    private void ToggleRaw() => _raw = !_raw;
+    private void UseBlog() => Runner.Template = ArticleTemplate.Blog;
+    private void UseNewsletter() => Runner.Template = ArticleTemplate.Newsletter;
+    private void SelectChapter(int c) => Runner.SelectedChapter = c;
+    private void SelectSlide(int k) => Runner.SelectedSlide = k;
+    private void PrevSlide() => Runner.SelectedSlide = (Runner.SelectedSlide + ViralCardNewsOgRasterizerEngine.Slots - 1) % ViralCardNewsOgRasterizerEngine.Slots;
+    private void NextSlide() => Runner.SelectedSlide = (Runner.SelectedSlide + 1) % ViralCardNewsOgRasterizerEngine.Slots;
+
+    private async Task Run()
+    {
+        try { await Runner.RunAsync(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("VodRepurposing.Modal.Run", ex); }
+    }
+
+    private async Task LoadPaste()
+    {
+        try { if (Runner.LoadTranscript(_draft) > 0) { _paste = false; await Runner.RunAsync(); } }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("VodRepurposing.Modal.Paste", ex); }
+    }
+
+    private void ClearPaste()
+    {
+        try { _draft = ""; Runner.LoadTranscript(null); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("VodRepurposing.Modal.Clear", ex); }
+    }
+
+    private async Task CopyMarkdown() => await Copy(Runner.Markdown(Runner.Template), Runner.Template == ArticleTemplate.Blog ? "블로그 마크다운" : "뉴스레터 마크다운");
+
+    private async Task CopyChapters() => await Copy(Runner.ChapterList, "유튜브 챕터");
+
+    private async Task Copy(string text, string what)
+    {
+        try
+        {
+            var ok = await JS.InvokeAsync<bool>("siteMaticClip.copy", text);
+            _copied = ok ? "📋 " + what + " 복사됨" : "⚠️ 클립보드 접근 실패";
+        }
+        catch (Exception ex) { _copied = "⚠️ 복사 실패"; PromptFlowStudio.Program.Log("VodRepurposing.Modal.Copy", ex); }
+    }
+
+    private Task SaveSlide() => Download(Math.Clamp(Runner.SelectedSlide, 0, ViralCardNewsOgRasterizerEngine.Slots - 1));
+
+    private async Task SaveAll()
+    {
+        for (var i = 0; i < ViralCardNewsOgRasterizerEngine.Slots; i++) await Download(i);
+    }
+
+    /// <summary>인메모리 PNG 스트림 → 웹뷰 다운로드(파일 I/O 없음).</summary>
+    private async Task Download(int slot)
+    {
+        if (Runner.Rasterizer.PngBytes(slot) == 0) return;
+        try
+        {
+            using var stream = Runner.Rasterizer.OpenPng(slot);
+            using var data = new DotNetStreamReference(stream, leaveOpen: true);
+            var ok = await JS.InvokeAsync<bool>("siteMaticDownload", VodRepurposingStudioRunner.DownloadName(slot), data, "image/png");
+            _copied = ok ? "💾 " + VodRepurposingStudioRunner.DownloadName(slot) + " 다운로드" : "⚠️ 다운로드 실패";
+        }
+        catch (Exception ex) { _copied = "⚠️ 다운로드 실패"; PromptFlowStudio.Program.Log("VodRepurposing.Modal.Download", ex); }
+    }
+
+    private void ResetAll()
+    {
+        try { Runner.Reset(); _previewSrc = null; _copied = null; }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("VodRepurposing.Modal.Reset", ex); }
+    }
+
+    /// <summary>마크다운 → 경량 HTML(H1~H3 · 목록 · 인용 · 굵게 · 코드 · 구분선) — 원문 HTML 은 인코딩. 같은 원문이면 캐시.</summary>
+    private MarkupString Preview()
+    {
+        var md = Runner.Markdown(Runner.Template);
+        if (ReferenceEquals(md, _previewSrc)) return _previewHtml;
+        var sb = new StringBuilder(md.Length * 2);
+        var inList = false;
+        foreach (var raw in md.Split('\n'))
+        {
+            var line = raw.TrimEnd();
+            var isItem = line.StartsWith("- ", StringComparison.Ordinal);
+            if (inList && !isItem) { sb.Append("</ul>"); inList = false; }
+            if (line.Length == 0) continue;
+            if (line.StartsWith("### ", StringComparison.Ordinal)) { sb.Append("<h3>"); Inline(sb, line[4..]); sb.Append("</h3>"); }
+            else if (line.StartsWith("## ", StringComparison.Ordinal)) { sb.Append("<h2>"); Inline(sb, line[3..]); sb.Append("</h2>"); }
+            else if (line.StartsWith("# ", StringComparison.Ordinal)) { sb.Append("<h1>"); Inline(sb, line[2..]); sb.Append("</h1>"); }
+            else if (line.StartsWith("> ", StringComparison.Ordinal)) { sb.Append("<blockquote>"); Inline(sb, line[2..]); sb.Append("</blockquote>"); }
+            else if (line == "---") sb.Append("<hr/>");
+            else if (isItem) { if (!inList) { sb.Append("<ul>"); inList = true; } sb.Append("<li>"); Inline(sb, line[2..]); sb.Append("</li>"); }
+            else { sb.Append("<p>"); Inline(sb, line); sb.Append("</p>"); }
+        }
+        if (inList) sb.Append("</ul>");
+        _previewSrc = md;
+        _previewHtml = new MarkupString(sb.ToString());
+        return _previewHtml;
+    }
+
+    private static void Inline(StringBuilder sb, string s)
+    {
+        bool bold = false, mono = false, em = false;
+        for (var i = 0; i < s.Length; i++)
+        {
+            var c = s[i];
+            if (c == '\\' && i + 1 < s.Length) { Esc(sb, s[++i]); continue; }
+            if (c == '*' && i + 1 < s.Length && s[i + 1] == '*' && !mono) { sb.Append(bold ? "</b>" : "<b>"); bold = !bold; i++; continue; }
+            if (c == '*' && !mono) { sb.Append(em ? "</i>" : "<i>"); em = !em; continue; }
+            if (c == '`') { sb.Append(mono ? "</code>" : "<code>"); mono = !mono; continue; }
+            Esc(sb, c);
+        }
+        if (mono) sb.Append("</code>");
+        if (em) sb.Append("</i>");
+        if (bold) sb.Append("</b>");
+    }
+
+    private static void Esc(StringBuilder sb, char c)
+    {
+        switch (c)
+        {
+            case '<': sb.Append("&lt;"); break;
+            case '>': sb.Append("&gt;"); break;
+            case '&': sb.Append("&amp;"); break;
+            case '"': sb.Append("&quot;"); break;
+            default: sb.Append(c); break;
+        }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Runner.OnChange -= OnServiceChanged;
+}
