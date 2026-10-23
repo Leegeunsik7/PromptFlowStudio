@@ -172,6 +172,7 @@ using MM = PromptFlowStudio.Services.MotionMatching;
 using QA = PromptFlowStudio.Services.VisualQa;
 using IL = PromptFlowStudio.Services.InfluencerLive;
 using SG = PromptFlowStudio.Services.StreamGateway;
+using Ovg = PromptFlowStudio.Services.OmniViral;
 
 namespace PromptFlowStudio.Tests;
 
@@ -35317,7 +35318,7 @@ public sealed class IntentNavigationIsolatedTests
         var reg = PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries;
 
         // ── NAV-2: 165 카탈로그 1:1 도움말 — 누락 · 빈칸 · 임시 문구 · 끊긴 연관 링크 0 건 ──
-        Assert.Equal(165, cat.Length);
+        Assert.True(cat.Length >= 166);   // v17.90.0 이후 카탈로그 증가 허용
         Assert.Equal(cat.Length, reg.Count);
         var report = new List<string>();
         Assert.True(PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects(report) == 0, string.Join("\n", report));
@@ -35384,7 +35385,7 @@ public sealed class IntentNavigationIsolatedTests
         Assert.True(nav.Searches == 1 && nav.LastSearchUs > 0 && nav.PeakSearchUs >= nav.LastSearchUs);
         nav.NoteOpen(nav.Hit(0).Entry.Key);
         nav.NoteHelp("_intentNavigationHub");
-        Assert.True(nav.Opens == 1 && nav.HelpViews == 1 && changes == 3 && nav.HelpDefects == 0 && nav.HelpCovered == 165);
+        Assert.True(nav.Opens == 1 && nav.HelpViews == 1 && changes == 3 && nav.HelpDefects == 0 && nav.HelpCovered == cat.Length);
         Assert.StartsWith("도움말 · AI 인텐트", nav.LastAction);
         nav.Search("");
         Assert.Equal(0, nav.HitCount);
@@ -35410,6 +35411,216 @@ public sealed class IntentNavigationIsolatedTests
         var hub = Src("PromptFlowStudio", "Blazor", "Components", "Common", "IntentNavigationHubStudioModal.razor");
         Assert.Contains("@implements IDisposable", hub);
         Assert.Contains("@implements IDisposable", Src("PromptFlowStudio", "Blazor", "Components", "Common", "StudioHelpDrawer.razor"));
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+}
+
+/// <summary>v17.90.0 원클릭 7 노드 바이럴 DAG · 인터락 서킷브레이커 · 멀티플랫폼 K-Factor 텔레메트리 · 마스터 콕핏 결선.</summary>
+[Collection("TimingSensitivePerformance")]   // 스레드 할당 바이트 · 100 ms 판정 벽시계 계측 → 비병렬
+public sealed class OmniViralGrowthIsolatedTests
+{
+    [Fact]
+    public async Task OmniViralGrowth_And_MasterOrchestrator_Check()
+    {
+        const long Now = 1_790_000_000_000;
+        var events = new List<Ovg.StageEvent>();
+        void Drain(Ovg.OneClickAutonomousViralOrchestratorEngine en) { while (en.Events.TryRead(out var ev)) events.Add(ev); }
+
+        // ── OVP-1: 7 단계 DAG 완주 · 산출물 · 위상 순서 · 진행 이벤트 ──
+        var eng = new Ovg.OneClickAutonomousViralOrchestratorEngine();
+        var ctx = eng.Context;
+        ctx.Load(600, 7, highlight: true);
+        ctx.RefreshToken(Now);
+        Assert.True(eng.Start());
+        Assert.Equal(Ovg.PipelineRunState.Completed, eng.RunToBoundary());
+        Drain(eng);
+        for (var s = 0; s < 7; s++) Assert.True(ctx.States[s] == Ovg.StageState.Done && ctx.Progress[s] == 100 && ctx.Artifact[s] != 0, "노드 " + s);
+        Assert.Equal(30, ctx.ClipSeconds);
+        Assert.Equal(0, ctx.ClipStartSec % Ovg.ViralPipelineContext.GopSeconds);
+        Assert.InRange(ctx.PeakSec, ctx.ClipStartSec, ctx.ClipEndSec);
+        Assert.True(ctx.Total >= 70 && ctx.Grade >= PromptFlowStudio.Services.ViralExport.ViralGrade.B, "스코어 " + ctx.Total);
+        Assert.True(ctx.Words == 78 && ctx.DubTracks == 3 && ctx.WordStartMs[ctx.Words - 1] > ctx.WordStartMs[1]);
+        for (var p = 0; p < 4; p++)
+        {
+            Assert.True(ctx.VariantBytes[p] > 0 && ctx.VariantSec[p] == 30, "변형 " + p);
+            Assert.Equal(ctx.SlotUnixMs[0] + Ovg.ViralPipelineContext.StaggerMinutes[p] * 60_000L, ctx.SlotUnixMs[p]);
+        }
+        Assert.True(ctx.SlotUnixMs[0] > Now && ctx.SlotUnixMs[0] % 3_600_000 == 0);
+        Assert.True(ctx.ArticleChars == 1320 && ctx.Chapters == 2 && ctx.VaultParts >= 1 && ctx.VaultBytes > ctx.VariantBytes[0]);
+        Assert.Equal(7 * (1 + Ovg.OneClickAutonomousViralOrchestratorEngine.SlicesPerStage), events.Count);
+        var doneAt = new int[7];
+        for (var i = 0; i < events.Count; i++)
+        {
+            Assert.Equal(i + 1, events[i].Seq);
+            if (events[i].State == Ovg.StageState.Done) doneAt[(int)events[i].Stage] = i;
+        }
+        for (var s = 1; s < 7; s++) Assert.True(doneAt[s] > doneAt[0], "① 선행 " + s);
+        Assert.True(doneAt[6] > doneAt[3] && doneAt[6] > doneAt[5] && doneAt[4] > doneAt[3] && doneAt[2] > doneAt[1]);
+
+        // 무할당: 동일 컨텍스트 재실행(캐시 미사용) + 채널 드레인
+        var clipArtifact = ctx.Artifact[0];
+        Assert.True(eng.Start(reuseArtifacts: false));
+        var a0 = GC.GetAllocatedBytesForCurrentThread();
+        eng.RunToBoundary();
+        var drained = 0;
+        while (eng.Events.TryRead(out _)) drained++;
+        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - a0);
+        Assert.True(eng.RunState == Ovg.PipelineRunState.Completed && drained == 77 && ctx.Artifact[0] == clipArtifact);
+
+        // 재실행(캐시) → 7 노드 전부 스킵 = 중복 렌더 0
+        Assert.True(eng.Start());
+        Assert.Equal(Ovg.PipelineRunState.Completed, eng.RunToBoundary());
+        Assert.Equal(7, eng.ReusedStages);
+        for (var s = 0; s < 7; s++) Assert.Equal(Ovg.StageState.Skipped, ctx.States[s]);
+        Drain(eng);
+
+        // ── OVP-3: C 등급 인터락 → 독립 분기(⑥) 진행 · 승인 시 재계산 없이 재개 ──
+        ctx.Load(600, 7, highlight: false);
+        Assert.True(eng.Start());
+        Assert.Equal(Ovg.PipelineRunState.AwaitingApproval, eng.RunToBoundary());
+        Assert.True(ctx.Total < 70 && ctx.Grade == PromptFlowStudio.Services.ViralExport.ViralGrade.C, "평범한 소스 " + ctx.Total);
+        Assert.True(ctx.States[1] == Ovg.StageState.Halted && ctx.States[5] == Ovg.StageState.Done && ctx.States[2] == Ovg.StageState.Pending && ctx.States[6] == Ovg.StageState.Pending);
+        var g = eng.Guard;
+        Assert.True(g.State == Ovg.GuardState.AwaitingApproval && g.Reason == Ovg.HaltReason.LowScore && g.HaltedStage == Ovg.ViralStage.Score);
+        Assert.True(g.CheckpointMask == ((1 << 0) | (1 << 5)) && g.VerifyCheckpoint(ctx));
+        var lowTotal = ctx.Total; var lowClip = ctx.Artifact[0];
+        Assert.False(eng.Start());   // 승인 대기 중 재시작 거부
+        Assert.True(eng.ApproveAndResume());
+        Assert.Equal(Ovg.PipelineRunState.Completed, eng.RunToBoundary());
+        Assert.True(ctx.Total == lowTotal && ctx.Artifact[0] == lowClip && g.VerifyCheckpoint(ctx) && eng.CheckpointReuses >= 2 && g.Approvals == 1);
+
+        // 거부 → 산출물 보존 · 중단
+        ctx.Load(900, 3, highlight: false);
+        eng.Start();
+        eng.RunToBoundary();
+        eng.Abort();
+        Assert.True(eng.RunState == Ovg.PipelineRunState.Aborted && g.Rejections == 1 && ctx.Artifact[0] != 0 && ctx.States[0] == Ovg.StageState.Done);
+
+        // 토큰 만료 → ⑤ 중단 · ⑦ 은 ④+⑥ 으로 완료 · 갱신 승인 시 ⑤ 만 재실행
+        ctx.Load(600, 11, highlight: true);
+        ctx.TokenExpiresUnixMs = ctx.NowUnixMs + 30_000;   // 스큐 60 s 이내 = 만료 취급
+        Assert.True(eng.Start());
+        Assert.Equal(Ovg.PipelineRunState.AwaitingApproval, eng.RunToBoundary());
+        Assert.True(g.Reason == Ovg.HaltReason.TokenExpired && ctx.States[4] == Ovg.StageState.Halted && ctx.States[6] == Ovg.StageState.Done);
+        var variantArt = ctx.Artifact[3];
+        ctx.RefreshToken(Now);
+        Assert.True(eng.ApproveAndResume());
+        Assert.Equal(Ovg.PipelineRunState.Completed, eng.RunToBoundary());
+        Assert.True(ctx.Artifact[3] == variantArt && ctx.SlotUnixMs[0] > 0 && ctx.States[4] == Ovg.StageState.Done);
+
+        // 연속 예외 3 회 → 차단기 개방 · 쿨다운 전 시작 거부
+        var trip = new Ovg.OneClickAutonomousViralOrchestratorEngine();
+        trip.Context.Load(300, 5, true);
+        trip.Context.RefreshToken(Now);
+        trip.InjectFaultStage = 2;
+        Assert.True(trip.Start());
+        Assert.Equal(Ovg.PipelineRunState.AwaitingApproval, trip.RunToBoundary());
+        Assert.Equal(Ovg.HaltReason.StageFault, trip.Guard.Reason);
+        for (var k = 0; k < 2; k++) { trip.InjectFaultStage = 2; trip.ApproveAndResume(); trip.RunToBoundary(); }
+        Assert.True(trip.RunState == Ovg.PipelineRunState.Aborted && trip.Guard.State == Ovg.GuardState.Tripped && trip.Guard.Trips == 1 && trip.Context.States[2] == Ovg.StageState.Failed);
+        Assert.True(trip.Context.States[0] == Ovg.StageState.Done && trip.Context.States[1] == Ovg.StageState.Done && trip.Context.States[5] == Ovg.StageState.Done, "직전 완료 단계 보존");
+        Assert.False(trip.Start());
+        trip.Context.NowUnixMs += 31_000;
+        Assert.True(trip.Start());
+        Assert.Equal(Ovg.PipelineRunState.Completed, trip.RunToBoundary());
+        Assert.True(trip.ReusedStages == 3, "쿨다운 후 ①②⑥ 캐시 재사용 " + trip.ReusedStages);
+
+        // ── OVP-2: API 응답 파싱 · 정규화 · K ≥ 1.2 3 틱 지속 트리거 · 재무장 ──
+        var tel = new Ovg.MultiPlatformGrowthTelemetryAggregator { ClipSeconds = 30 };
+        var yt = "{\"kind\":\"youtube#videoListResponse\",\"items\":[{\"id\":\"abc\",\"statistics\":{\"viewCount\":\"20000\",\"likeCount\":\"1200\",\"commentCount\":\"77\"}}]}"u8.ToArray();
+        var ya = "{\"columnHeaders\":[{\"name\":\"views\",\"columnType\":\"METRIC\"},{\"name\":\"likes\"},{\"name\":\"shares\"},{\"name\":\"averageViewDuration\"}],\"rows\":[[20000,1200,900,24.5]]}"u8.ToArray();
+        var ig = "{\"data\":[{\"name\":\"plays\",\"period\":\"lifetime\",\"values\":[{\"value\":10000}]},{\"name\":\"likes\",\"values\":[{\"value\":800}]},{\"name\":\"shares\",\"values\":[{\"value\":450}]},{\"name\":\"ig_reels_avg_watch_time\",\"values\":[{\"value\":21000}]}]}"u8.ToArray();
+        Assert.True(tel.IngestYouTubeJson(yt) && tel.Views(0) == 20000 && tel.Likes(0) == 1200);
+        Assert.True(tel.IngestYouTubeJson(ya) && tel.Shares(0) == 900 && Math.Abs(tel.WatchSeconds(0) - 24.5) < 1e-9);
+        Assert.True(tel.IngestInstagramJson(ig) && tel.Views(1) == 10000 && tel.Shares(1) == 450 && Math.Abs(tel.WatchSeconds(1) - 21) < 1e-9);
+        Assert.False(tel.IngestYouTubeJson("{\"items\":[{"u8));
+        Assert.False(tel.IngestInstagramJson("{\"data\":[]}"u8));
+        Assert.Equal(2, tel.ParseErrors);
+        Assert.False(tel.Evaluate());
+        Assert.True(tel.KFactor >= 1.2 && tel.TotalViews == 30000 && tel.Index(0) > 50 && tel.Index(1) > 50, "K " + tel.KFactor);
+        Assert.False(tel.Evaluate());
+        Assert.True(tel.Evaluate());   // 3 틱 연속 → 1 회 발화
+        Assert.False(tel.Evaluate());  // 재무장 전 재발화 없음
+        tel.Ingest(0, 40000, 1300, 100, 10); tel.Ingest(1, 20000, 900, 60, 9);
+        Assert.False(tel.Evaluate());
+        Assert.True(tel.KFactor < 1.0);
+        tel.Ingest(0, 50000, 3000, 2500, 25); tel.Ingest(1, 25000, 2000, 1200, 22);
+        tel.Evaluate(); tel.Evaluate();
+        Assert.True(tel.Evaluate() && tel.Triggers == 2);
+        // 무할당 · 100 ms 판정 예산
+        tel.IngestYouTubeJson(ya); tel.IngestInstagramJson(ig); tel.Evaluate();
+        var sw = Stopwatch.StartNew();
+        var a1 = GC.GetAllocatedBytesForCurrentThread();
+        for (var r = 0; r < 1000; r++)
+        {
+            tel.IngestYouTubeJson(ya);
+            tel.IngestInstagramJson(ig);
+            tel.Ingest(2, 5000 + r, 300, 120, 18);
+            tel.Evaluate();
+        }
+        var alloc1 = GC.GetAllocatedBytesForCurrentThread() - a1;
+        sw.Stop();
+        Assert.Equal(0, alloc1);
+        Assert.True(sw.Elapsed.TotalMilliseconds / 1000 < 100, "판정 " + sw.Elapsed.TotalMilliseconds);
+
+        // ── 러너: 원클릭 · 토큰 인터락 승인 · 성장 → 추가 신디케이션 ──
+        using (var run = new Ovg.OmniViralGrowthStudioRunner { SliceDelayMs = 0 })
+        {
+            var changes = 0;
+            run.OnChange += () => Interlocked.Increment(ref changes);
+            Assert.True(await run.RunAsync(), run.LastAction);
+            Assert.True(run.Engine.CompletedCount == 7 && run.Runs == 1 && run.Failures == 0 && run.EventCount == Ovg.OmniViralGrowthStudioRunner.LogSize && changes > 0);
+            Assert.Equal(Ovg.ViralStage.Vault, run.RecentEvent(0).Stage);
+            run.ToggleTokenExpiry();
+            Assert.True(await run.RunAsync());   // 캐시 히트 → ⑤ 포함 전 노드 스킵(토큰 검사 불요)
+            Assert.Equal(7, run.Engine.ReusedStages);
+            run.SetMinutes(20);
+            Assert.False(await run.RunAsync());
+            Assert.True(run.Engine.RunState == Ovg.PipelineRunState.AwaitingApproval && run.Guard.Reason == Ovg.HaltReason.TokenExpired, run.LastAction);
+            Assert.True(await run.Approve(), run.LastAction);
+            Assert.True(!run.SimulateTokenExpiry && run.Engine.CheckpointReuses >= 4);
+            run.Telemetry.ClipSeconds = run.Context.ClipSeconds;
+            for (var t = 0; t < 120 && run.SyndicationWaves == 0; t++) run.TelemetryTick();
+            Assert.True(run.SyndicationWaves >= 1 && run.Telemetry.PeakK >= 1.2, "K " + run.Telemetry.KFactor + " / " + run.Grade());
+            run.SetSource(false);
+            run.Reset();
+            Assert.True(run.Runs == 0 && run.Engine.RunState == Ovg.PipelineRunState.Idle && run.EventCount == 0 && !run.Highlight);
+        }
+
+        // ── OVP-4: 카탈로그 166 · 도움말 · HUD · 레이아웃 · DI · 모달 규격 · 외부 의존 0 · 모달 렌더 ──
+        var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
+        Assert.Equal(166, cat.Length);
+        Assert.Contains(cat, en => en.Key == "_omniViralMasterCockpit" && en.Category == 4 && en.Title == "옴니 바이럴 그로스 마스터 콕핏");
+        Assert.Equal(166, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
+        Assert.Equal(0, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects());
+        Assert.Equal("_omniViralMasterCockpit", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.ResolveKeyByHeader("👑 옴니 바이럴 그로스 마스터 콕핏 · ⚙️ 가동 중"));
+        var root = RepoRoot();
+        string Src(params string[] p) => File.ReadAllText(Path.Combine(root, Path.Combine(p)));
+        var hud = Src("PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor");
+        var layout = Src("PromptFlowStudio", "Blazor", "MainLayout.razor");
+        var modalSrc = Src("PromptFlowStudio", "Blazor", "Components", "Common", "OmniViralGrowthMasterCockpitStudioModal.razor");
+        Assert.True(hud.IndexOf("gth-v1790", StringComparison.Ordinal) is > 0 and var i1790 && i1790 < hud.IndexOf("gth-v1789", StringComparison.Ordinal) && hud.Contains("OvgRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("OvgRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<OmniViralGrowthMasterCockpitStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_omniViralMasterCockpit\"", StringComparison.Ordinal) && layout.Contains("\"_omniViralMasterCockpit\" =>", StringComparison.Ordinal));
+        Assert.True(Src("PromptFlowStudio", "MainForm.cs").Contains("OmniViral.OmniViralGrowthStudioRunner(sp)", StringComparison.Ordinal) && Src("PromptFlowStudio.Mobile", "MauiProgram.cs").Contains("OmniViral.OmniViralGrowthStudioRunner(sp)", StringComparison.Ordinal));
+        Assert.True(modalSrc.Contains("@implements IDisposable", StringComparison.Ordinal) && modalSrc.Contains("flex: 1 1 auto; min-height: 0; overflow-y: auto;", StringComparison.Ordinal) && modalSrc.Contains("position: sticky", StringComparison.Ordinal) && modalSrc.Contains("aria-pressed", StringComparison.Ordinal));
+        foreach (var src in Directory.GetFiles(Path.Combine(root, "PromptFlowStudio", "Services", "OmniViral"), "*.cs"))
+        {
+            var text = File.ReadAllText(src);
+            Assert.True(!text.Contains("System.Linq", StringComparison.Ordinal) && !text.Contains("Process.Start", StringComparison.Ordinal) && !text.Contains("HttpClient", StringComparison.Ordinal) && !text.Contains("File.Write", StringComparison.Ordinal), "외부 의존 · 파일 I/O " + Path.GetFileName(src));
+        }
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = (Ovg.OmniViralGrowthStudioRunner)sp.GetService(typeof(Ovg.OmniViralGrowthStudioRunner))!;
+        Assert.True(runner.LinkedCount == 7, "연동 " + runner.LinkedCount);
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.OmniViralGrowthMasterCockpitStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("ovg-scrim", StringComparison.Ordinal) && html.Contains("ovg-body", StringComparison.Ordinal) && html.Contains("원클릭 전자동 실행", StringComparison.Ordinal) && html.Contains("오토파일럿", StringComparison.Ordinal) && html.Contains("ovg-node", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
     }
 
     private static string RepoRoot()

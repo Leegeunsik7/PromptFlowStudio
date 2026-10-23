@@ -1,0 +1,249 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.OmniViral
+@implements IDisposable
+@inject OmniViralGrowthStudioRunner Runner
+
+@* [PromptFlow Studio v17.90.0] 👑 옴니 바이럴 그로스 마스터 콕핏 — 7 노드 DAG 진행 · 원클릭/오토파일럿 · 인터락 승인 · 통합 성장 메트릭. *@
+<div class="ovg-scrim" @onclick="Close">
+    <div class="ovg-modal" @onclick:stopPropagation="true">
+        <div class="ovg-h">
+            <div>
+                <div class="ovg-title">👑 옴니 바이럴 그로스 마스터 콕핏 @(Runner.Busy ? "· ⚙️ 가동 중" : Runner.Engine.RunState == PipelineRunState.AwaitingApproval ? "· ⏸ 승인 대기" : null)</div>
+                <div class="ovg-sub">영상 하나(또는 라이브 녹화본)를 넣고 버튼 한 번이면 <b>킬러클립 절삭 → 바이럴 스코어링 → 키네틱 자막/더빙 → 플랫폼별 변형 렌더 → OAuth2 시차 예약 → VOD 아티클 → 클라우드 볼트 적재</b> 7단계를 자동으로 이어서 실행합니다.
+                    점수가 70점 미만(C 등급)이거나 업로드 토큰이 만료되면 그 자리에서 멈추고 승인을 기다리며, 이미 끝난 단계의 결과물은 그대로 보존해 다시 렌더하지 않습니다.
+                    배포 후에는 YouTube · Instagram 등 4개 플랫폼의 조회수 · 좋아요 · 공유 · 시청 지속시간을 0.1초마다 모아 <b>K-Factor 1.2 이상</b>이면 추가 배포를 자동으로 겁니다.</div>
+            </div>
+            <button class="ovg-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="ovg-body">
+            <div class="ovg-bar">
+                <button class="ovg-btn go" disabled="@(Runner.Busy)" @onclick="Run">🚀 원클릭 전자동 실행</button>
+                <button class="ovg-btn @(Runner.Autopilot ? "on" : null)" aria-pressed="@(Runner.Autopilot ? "true" : "false")" @onclick="ToggleAutopilot">🤖 오토파일럿 @(Runner.Autopilot ? "ON" : "OFF")</button>
+                <label class="ovg-lbl">소스
+                    <select class="ovg-in" value="@(Runner.Highlight ? "hi" : "flat")" @onchange="SetSource">
+                        <option value="hi">🔥 하이라이트 라이브</option>
+                        <option value="flat">😐 평범한 토크</option>
+                    </select>
+                </label>
+                <label class="ovg-lbl">길이 <b>@(Runner.Minutes)분</b>
+                    <input type="range" min="@(OmniViralGrowthStudioRunner.MinMinutes)" max="@(OmniViralGrowthStudioRunner.MaxMinutes)" step="1" value="@(Runner.Minutes)" @onchange="SetMinutes" />
+                </label>
+                <span class="ovg-sep"></span>
+                <button class="ovg-btn @(Runner.SimulateTokenExpiry ? "warn" : null)" aria-pressed="@(Runner.SimulateTokenExpiry ? "true" : "false")" @onclick="ToggleToken">🧪 토큰 만료 시뮬</button>
+                <button class="ovg-btn" disabled="@(Runner.Busy)" @onclick="ResetAll">♻ 초기화</button>
+            </div>
+
+            <div class="ovg-card">
+                <div class="ovg-sec">🧬 7단계 바이럴 DAG <span class="ovg-kw">⑥ 아티클은 ① 직후 독립 분기 · ⑦ 볼트는 ④+⑥ 합류 · 연동 서브시스템 @(Runner.LinkedCount)/7</span></div>
+                <div class="ovg-dag">
+                    @for (var i = 0; i < OneClickAutonomousViralOrchestratorEngine.StageCount; i++)
+                    {
+                        var st = Runner.Context.States[i];
+                        var pct = Runner.Context.Progress[i];
+                        <div class="ovg-node @(StateClass(st))">
+                            <div class="ovg-nh"><span class="no">@(i + 1)</span> @(OneClickAutonomousViralOrchestratorEngine.StageIcons[i]) @(OneClickAutonomousViralOrchestratorEngine.StageNames[i])</div>
+                            <div class="ovg-pb"><i style="width:@(pct.ToString(CultureInfo.InvariantCulture))%"></i></div>
+                            <div class="ovg-ns"><b>@(StateText(st))</b> · @(pct)% <span>@(OneClickAutonomousViralOrchestratorEngine.StageSources[i])@(Runner.IsLinked(i) ? " 🔗" : null)</span></div>
+                        </div>
+                    }
+                </div>
+                <div class="ovg-mini">진행 @(Runner.Engine.CompletedCount)/7 · 상태 @(RunText(Runner.Engine.RunState)) · 캐시 스킵 @(Runner.Engine.ReusedStages) · 체크포인트 재사용 @(Runner.Engine.CheckpointReuses) · 이벤트 @(Runner.Engine.Published) · @(Runner.LastPipelineMs.ToString("0", CultureInfo.InvariantCulture))ms</div>
+            </div>
+
+            @if (Runner.Engine.RunState == PipelineRunState.AwaitingApproval)
+            {
+                <div class="ovg-halt">
+                    <div><b>⏸ 인터락 — @(OneClickAutonomousViralOrchestratorEngine.StageNames[(int)Runner.Guard.HaltedStage])</b> · @(PipelineSafetyInterlockCircuitBreakerGuard.ReasonText(Runner.Guard.Reason))</div>
+                    <div class="ovg-mini">보존된 완료 단계 @(PopCount(Runner.Guard.CheckpointMask))개 · 체크포인트 @(Runner.Guard.VerifyCheckpoint(Runner.Context) ? "무결" : "변경됨") · 연속 장애 @(Runner.Guard.ConsecutiveFaults)/@(Runner.Guard.TripThreshold)</div>
+                    <div class="ovg-bar tight">
+                        <button class="ovg-btn go" disabled="@(Runner.Busy)" @onclick="Approve">✅ 승인 후 재개@(Runner.Guard.Reason == HaltReason.TokenExpired ? " (토큰 갱신)" : null)</button>
+                        <button class="ovg-btn" disabled="@(Runner.Busy)" @onclick="Reject">⛔ 중단</button>
+                    </div>
+                </div>
+            }
+
+            <div class="ovg-main">
+                <div class="ovg-card">
+                    <div class="ovg-sec">🎯 산출물 요약</div>
+                    <div class="ovg-grid">
+                        <span class="m"><b>@(Runner.Context.ClipStartSec)~@(Runner.Context.ClipEndSec)s</b><i>킬러클립</i></span>
+                        <span class="m"><b class="@(Runner.Context.Total >= PipelineSafetyInterlockCircuitBreakerGuard.DefaultMinScore ? "ok" : "bad")">@(Runner.Grade())</b><i>바이럴 스코어</i></span>
+                        <span class="m"><b>@(Runner.Context.Words) · @(Runner.Context.DubTracks)</b><i>자막 단어 · 더빙</i></span>
+                        <span class="m"><b>@((Sum(Runner.Context.VariantBytes) / 1048576.0).ToString("0.0", CultureInfo.InvariantCulture))MB</b><i>변형 4종</i></span>
+                        <span class="m"><b>@(Runner.Context.ArticleChars)자 · @(Runner.Context.Chapters)장</b><i>아티클</i></span>
+                        <span class="m"><b>@(Runner.Context.VaultParts) 파트</b><i>볼트 8MB</i></span>
+                    </div>
+                    <div class="ovg-mini">훅 @(F0(Runner.Context.Hook)) · 감정 @(F0(Runner.Context.Emotion)) · 시각 @(F0(Runner.Context.Visual)) · 루프 @(F0(Runner.Context.Loop))</div>
+                    <table class="ovg-tb">
+                        <tr><th>플랫폼</th><th>길이</th><th>예약(UTC)</th></tr>
+                        @for (var p = 0; p < ViralPipelineContext.Platforms; p++)
+                        {
+                            var slot = Runner.Context.SlotUnixMs[p];
+                            <tr><td>@(ViralPipelineContext.PlatformNames[p])</td><td>@(Runner.Context.VariantSec[p])s</td><td>@(slot > 0 ? DateTimeOffset.FromUnixTimeMilliseconds(slot).ToString("MM-dd HH:mm", CultureInfo.InvariantCulture) : "—")</td></tr>
+                        }
+                    </table>
+                </div>
+
+                <div class="ovg-card">
+                    <div class="ovg-sec">📡 통합 성장 메트릭
+                        <button class="ovg-btn sm @(Runner.Tracking ? "on" : null)" aria-pressed="@(Runner.Tracking ? "true" : "false")" @onclick="ToggleTracking">@(Runner.Tracking ? "⏹ 추적 정지" : "📡 성장 추적")</button>
+                    </div>
+                    @{ var k = Runner.Telemetry.KFactor; }
+                    <div class="ovg-k">
+                        <div class="ovg-kb"><i class="@(k >= MultiPlatformGrowthTelemetryAggregator.TargetK ? "hit" : null)" style="width:@(Math.Min(100, k / 2 * 100).ToString("0.0", CultureInfo.InvariantCulture))%"></i><s style="left:60%"></s></div>
+                        <span>K-Factor <b>@(k.ToString("0.00", CultureInfo.InvariantCulture))</b> / 목표 1.20 · 피크 @(Runner.Telemetry.PeakK.ToString("0.00", CultureInfo.InvariantCulture)) · 성장 지수 @(Runner.Telemetry.GrowthIndex.ToString("0", CultureInfo.InvariantCulture)) · 신디케이션 웨이브 <b>@(Runner.SyndicationWaves)</b></span>
+                    </div>
+                    <table class="ovg-tb">
+                        <tr><th>플랫폼</th><th>조회</th><th>좋아요</th><th>공유</th><th>지속률</th><th>지수</th><th>K</th></tr>
+                        @for (var p = 0; p < MultiPlatformGrowthTelemetryAggregator.Platforms; p++)
+                        {
+                            var t = Runner.Telemetry;
+                            <tr>
+                                <td>@(ViralPipelineContext.PlatformNames[p])</td><td>@(t.Views(p).ToString("N0", CultureInfo.InvariantCulture))</td><td>@(t.Likes(p).ToString("N0", CultureInfo.InvariantCulture))</td><td>@(t.Shares(p).ToString("N0", CultureInfo.InvariantCulture))</td>
+                                <td>@((t.Retention(p) * 100).ToString("0", CultureInfo.InvariantCulture))%</td><td>@(t.Index(p).ToString("0", CultureInfo.InvariantCulture))</td><td>@(t.K(p).ToString("0.00", CultureInfo.InvariantCulture))</td>
+                            </tr>
+                        }
+                    </table>
+                    <div class="ovg-sec sub">🧾 최근 이벤트</div>
+                    <div class="ovg-log">
+                        @if (Runner.EventCount == 0)
+                        {
+                            <div class="ovg-mini">원클릭 실행을 누르면 단계 이벤트가 여기에 흐릅니다.</div>
+                        }
+                        @for (var i = 0; i < Math.Min(8, Runner.EventCount); i++)
+                        {
+                            var e = Runner.RecentEvent(i);
+                            <div>#@(e.Seq) @(OneClickAutonomousViralOrchestratorEngine.StageIcons[(int)e.Stage]) @(OneClickAutonomousViralOrchestratorEngine.StageNames[(int)e.Stage]) · @(StateText(e.State)) @(e.Percent)%@(e.Fault != StageFault.None ? " · " + e.Fault : null)</div>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="ovg-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+    </div>
+</div>
+
+<style>
+    .ovg-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .ovg-modal { width: min(1380px, 96vw); max-height: 94vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); color: var(--text-primary); }
+    .ovg-h { position: sticky; top: 0; z-index: 3; flex: 0 0 auto; display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px 8px; background: var(--card); border-bottom: 1px solid var(--line); }
+    .ovg-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 10px; }
+    .ovg-act { position: sticky; bottom: 0; z-index: 3; flex: 0 0 auto; padding: 8px 16px 14px; background: var(--card); border-top: 1px solid var(--line); font-size: 11px; color: var(--text-muted); }
+    .ovg-title { font-size: 17px; font-weight: 800; }
+    .ovg-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .ovg-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .ovg-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 0; }
+    .ovg-bar.tight { margin: 6px 0 0; }
+    .ovg-sep { flex: 1; }
+    .ovg-lbl { display: inline-flex; gap: 6px; align-items: center; font-size: 11.5px; }
+    .ovg-in { background: #0f172a; color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; font-size: 11.5px; padding: 3px 6px; }
+    .ovg-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .ovg-btn.sm { padding: 2px 8px; font-size: 11px; margin-left: auto; }
+    .ovg-btn:disabled { opacity: .45; cursor: default; }
+    .ovg-btn.go { border-color: #facc15; font-weight: 700; }
+    .ovg-btn.on { border-color: #4ade80; background: #14532d; }
+    .ovg-btn.warn { border-color: #f97316; background: #431407; }
+    .ovg-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-width: 0; margin-top: 10px; }
+    .ovg-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .ovg-sec.sub { margin-top: 8px; }
+    .ovg-kw { margin-left: auto; font-size: 10.5px; font-weight: 400; color: #7dd3fc; }
+    .ovg-dag { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+    .ovg-node { background: #111827; border: 1px solid #1f2937; border-radius: 8px; padding: 6px; font-size: 11px; position: relative; }
+    .ovg-node:not(:last-child)::after { content: "➔"; position: absolute; right: -9px; top: 8px; color: #64748b; font-size: 10px; }
+    .ovg-node.run { border-color: #38bdf8; box-shadow: 0 0 0 1px #38bdf8 inset; }
+    .ovg-node.done { border-color: #22c55e; }
+    .ovg-node.skip { border-color: #a78bfa; }
+    .ovg-node.halt { border-color: #f59e0b; background: #2a1f05; }
+    .ovg-node.fail { border-color: #ef4444; background: #2a0b0b; }
+    .ovg-nh { font-weight: 700; min-height: 30px; }
+    .ovg-nh .no { display: inline-block; width: 16px; height: 16px; line-height: 16px; text-align: center; border-radius: 50%; background: #334155; font-size: 10px; }
+    .ovg-pb { height: 6px; background: #1e293b; border-radius: 3px; overflow: hidden; margin: 5px 0 3px; }
+    .ovg-pb i { display: block; height: 100%; background: linear-gradient(90deg, #38bdf8, #22c55e); transition: width .2s; }
+    .ovg-ns { font-size: 10.5px; color: var(--text-muted); } .ovg-ns span { float: right; color: #7dd3fc; }
+    .ovg-halt { margin-top: 10px; padding: 10px; border: 1px solid #f59e0b; border-radius: 10px; background: #2a1f05; font-size: 12px; }
+    .ovg-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: 10px; }
+    .ovg-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+    .ovg-grid .m { background: #111827; border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; }
+    .ovg-grid .m b { font-size: 13px; } .ovg-grid .m b.ok { color: #4ade80; } .ovg-grid .m b.bad { color: #f87171; }
+    .ovg-grid .m i { font-style: normal; font-size: 10px; color: var(--text-muted); }
+    .ovg-tb { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 8px; }
+    .ovg-tb th { text-align: left; color: var(--text-muted); font-weight: 600; border-bottom: 1px solid var(--line); padding: 2px 4px; }
+    .ovg-tb td { padding: 2px 4px; border-bottom: 1px solid #111827; font-family: var(--mono); }
+    .ovg-k { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; }
+    .ovg-kb { position: relative; height: 10px; background: #1e293b; border-radius: 5px; overflow: hidden; }
+    .ovg-kb i { display: block; height: 100%; background: #38bdf8; transition: width .2s; } .ovg-kb i.hit { background: #facc15; }
+    .ovg-kb s { position: absolute; top: 0; bottom: 0; width: 2px; background: #f43f5e; }
+    .ovg-log { max-height: 150px; overflow-y: auto; font-size: 10.5px; font-family: var(--mono); color: var(--text-muted); line-height: 1.6; }
+    .ovg-mini { font-size: 10px; color: var(--text-muted); margin-top: 6px; }
+    @@media (max-width: 1100px) { .ovg-dag { grid-template-columns: repeat(4, minmax(0, 1fr)); } .ovg-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    protected override void OnInitialized() => Runner.OnChange += OnServiceChanged;
+
+    private async Task Run()
+    {
+        try { await Runner.RunAsync(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("OmniViral.Modal.Run", ex); }
+    }
+
+    private async Task Approve()
+    {
+        try { await Runner.Approve(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("OmniViral.Modal.Approve", ex); }
+    }
+
+    private void Reject()
+    {
+        try { Runner.Reject(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("OmniViral.Modal.Reject", ex); }
+    }
+
+    private void ToggleAutopilot()
+    {
+        try { Runner.ToggleAutopilot(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("OmniViral.Modal.Autopilot", ex); }
+    }
+
+    private void ToggleToken() => Runner.ToggleTokenExpiry();
+    private void ToggleTracking() => Runner.ToggleTracking();
+    private void SetSource(ChangeEventArgs e) => Runner.SetSource(!string.Equals(e.Value?.ToString(), "flat", StringComparison.Ordinal));
+
+    private void SetMinutes(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var m)) Runner.SetMinutes(m);
+    }
+
+    private void ResetAll() => Runner.Reset();
+
+    private static string F0(float v) => v.ToString("0", CultureInfo.InvariantCulture);
+
+    private static long Sum(long[] a) { long s = 0; foreach (var v in a) s += v; return s; }
+
+    private static int PopCount(int m) => System.Numerics.BitOperations.PopCount((uint)m);
+
+    private static string StateClass(StageState s) => s switch
+    {
+        StageState.Running => "run", StageState.Done => "done", StageState.Skipped => "skip", StageState.Halted => "halt", StageState.Failed => "fail", _ => "",
+    };
+
+    private static string StateText(StageState s) => s switch
+    {
+        StageState.Running => "진행", StageState.Done => "완료", StageState.Skipped => "스킵(캐시)", StageState.Halted => "중단", StageState.Failed => "실패", _ => "대기",
+    };
+
+    private static string RunText(PipelineRunState s) => s switch
+    {
+        PipelineRunState.Running => "가동", PipelineRunState.AwaitingApproval => "승인 대기", PipelineRunState.Completed => "완료", PipelineRunState.Aborted => "중단", _ => "대기",
+    };
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Runner.OnChange -= OnServiceChanged;
+}

@@ -280,6 +280,7 @@
 @inject PromptFlowStudio.Services.LiveArchive.LiveArchiveCloudVaultStudioRunner LavRun
 @inject PromptFlowStudio.Services.VodRepurposing.VodRepurposingStudioRunner VrpRun
 @inject PromptFlowStudio.Services.Ui.IntentNavigationRunner NavRun
+@inject PromptFlowStudio.Services.OmniViral.OmniViralGrowthStudioRunner OvgRun
 @inject PromptFlowStudio.Services.LiveEngagement.LiveAudienceEngagementStudioRunner LaeRun
 @inject PromptFlowStudio.Services.LiveRestream.OmniLiveRestreamStudioRunner RstRun
 @inject PromptFlowStudio.Services.MultilingualDubbing.MultilingualDubbingStudioRunner MldRun
@@ -1005,6 +1006,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.90.0: 옴니 바이럴 마스터 콕핏 — DAG 진행 · 스코어 · K-Factor · 신디케이션 웨이브 ── *@
+    <div class="gth-v1790">
+        <div class="gth-v96-card pid @(OvgRun.Engine.RunState == PromptFlowStudio.Services.OmniViral.PipelineRunState.Completed && OvgRun.Failures == 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>👑 옴니 바이럴 콕핏</b>
+                <span class="gth-v96-be">@(OvgRun.Busy ? "가동 중" : OvgRun.Engine.RunState == PromptFlowStudio.Services.OmniViral.PipelineRunState.AwaitingApproval ? "승인 대기" : OvgRun.Tracking ? "추적 중" : "대기")</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(OvgRun.Engine.CompletedCount)/7</b><span>단계</span></span>
+                <span class="gth-v96-m"><b>@(OvgRun.Context.Total.ToString("0", System.Globalization.CultureInfo.InvariantCulture))</b><span>스코어</span></span>
+                <span class="gth-v96-m"><b>@(OvgRun.Telemetry.KFactor.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture))</b><span>K</span></span>
+                <span class="gth-v96-m"><b>@(OvgRun.SyndicationWaves)</b><span>웨이브</span></span>
+            </div>
+            <div class="gth-v96-act">@(OvgRun.LastAction ?? "원클릭 대기")</div>
+        </div>
+    </div>
     @* ── v17.89.0: AI 인텐트 내비게이션 — 검색 지연 · 열기 · 도움말 커버리지 ── *@
     <div class="gth-v1789">
         <div class="gth-v96-card pid @(NavRun.HelpDefects == 0 ? "ok" : null)">
@@ -5793,6 +5809,7 @@
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
         KbrRun.OnChange += OnSwarmChanged; // v17.78.0 (재생 10 Hz → 250 ms 스로틀)
         VrpRun.OnChange += OnSwarmChanged; // v17.88.0 (파이프라인 시작/완료 시점만)
+        OvgRun.OnChange += OnSwarmChanged; // v17.90.0 (슬라이스 진행 · 100 ms 텔레메트리 → 250 ms 스로틀 · 인터락/완료 즉시)
         NavRun.OnChange += OnSwarmChanged; // v17.89.0 (검색 입력 · 열기 · 도움말 시점만)
         LavRun.OnChange += OnSwarmChanged; // v17.87.0 (녹화 30 Hz → 250 ms 스로틀 · 확정/업로드/회수 즉시)
         LaeRun.OnChange += OnSwarmChanged; // v17.86.0 (합성 60 Hz → 250 ms 스로틀 · 투표/후원 이벤트 즉시)
@@ -6183,6 +6200,7 @@
         VpeRun.OnChange -= OnSwarmChanged;
         LaeRun.OnChange -= OnSwarmChanged;
         VrpRun.OnChange -= OnSwarmChanged;
+        OvgRun.OnChange -= OnSwarmChanged;
         NavRun.OnChange -= OnSwarmChanged;
         LavRun.OnChange -= OnSwarmChanged;
         RstRun.OnChange -= OnSwarmChanged;
