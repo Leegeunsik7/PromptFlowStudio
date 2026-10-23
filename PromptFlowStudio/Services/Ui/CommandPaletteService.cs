@@ -62,6 +62,16 @@ public sealed class CommandPaletteService
 
     public void Toggle() { IsOpen = !IsOpen; OnChange?.Invoke(); }
 
+    /// <summary>v17.89.0 Ctrl+K → 레이아웃의 🧭 인텐트 허브. 구독자(MainLayout)가 없으면(모바일 등) 기존대로 팔레트를 토글한다.</summary>
+    public event Action? IntentHubRequested;
+
+    public void RequestIntentHub()
+    {
+        if (IntentHubRequested is not { } h) { Toggle(); return; }
+        Close();
+        try { h(); } catch (Exception ex) { PromptFlowStudio.Program.Log("Palette.IntentHubRequested", ex); }
+    }
+
     // ── 등록 ─────────────────────────────────────────────────────────────────
     /// <summary>
     /// 명령을 등록한다. 같은 Id 면 덮어쓴다.

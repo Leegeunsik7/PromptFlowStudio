@@ -279,6 +279,7 @@
 @inject PromptFlowStudio.Services.ViralExport.ViralPredictorShortsExportStudioRunner VpeRun
 @inject PromptFlowStudio.Services.LiveArchive.LiveArchiveCloudVaultStudioRunner LavRun
 @inject PromptFlowStudio.Services.VodRepurposing.VodRepurposingStudioRunner VrpRun
+@inject PromptFlowStudio.Services.Ui.IntentNavigationRunner NavRun
 @inject PromptFlowStudio.Services.LiveEngagement.LiveAudienceEngagementStudioRunner LaeRun
 @inject PromptFlowStudio.Services.LiveRestream.OmniLiveRestreamStudioRunner RstRun
 @inject PromptFlowStudio.Services.MultilingualDubbing.MultilingualDubbingStudioRunner MldRun
@@ -1004,6 +1005,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.89.0: AI 인텐트 내비게이션 — 검색 지연 · 열기 · 도움말 커버리지 ── *@
+    <div class="gth-v1789">
+        <div class="gth-v96-card pid @(NavRun.HelpDefects == 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>🧭 인텐트 내비게이션</b>
+                <span class="gth-v96-be">@(NavRun.Query.Length > 0 ? "검색 중" : "대기")</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(NavRun.HitCount)</b><span>추천</span></span>
+                <span class="gth-v96-m"><b>@(NavRun.LastSearchUs.ToString("0", System.Globalization.CultureInfo.InvariantCulture))</b><span>µs</span></span>
+                <span class="gth-v96-m"><b>@(NavRun.Opens)</b><span>열기</span></span>
+                <span class="gth-v96-m"><b>@(NavRun.HelpCovered)/@(PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length)</b><span>도움말</span></span>
+            </div>
+            <div class="gth-v96-act">@(NavRun.LastAction ?? "Ctrl+K 로 목적 검색")</div>
+        </div>
+    </div>
     @* ── v17.88.0: VOD 리퍼포징 — 챕터 · SEO · 아티클 길이 · 카드뉴스 ── *@
     <div class="gth-v1788">
         <div class="gth-v96-card pid @(VrpRun.Runs > 0 && VrpRun.Failures == 0 ? "ok" : null)">
@@ -5777,6 +5793,7 @@
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
         KbrRun.OnChange += OnSwarmChanged; // v17.78.0 (재생 10 Hz → 250 ms 스로틀)
         VrpRun.OnChange += OnSwarmChanged; // v17.88.0 (파이프라인 시작/완료 시점만)
+        NavRun.OnChange += OnSwarmChanged; // v17.89.0 (검색 입력 · 열기 · 도움말 시점만)
         LavRun.OnChange += OnSwarmChanged; // v17.87.0 (녹화 30 Hz → 250 ms 스로틀 · 확정/업로드/회수 즉시)
         LaeRun.OnChange += OnSwarmChanged; // v17.86.0 (합성 60 Hz → 250 ms 스로틀 · 투표/후원 이벤트 즉시)
         VpeRun.OnChange += OnSwarmChanged; // v17.85.0 (분석/인출 이벤트 구동 · 렌더 진행은 모달 250 ms)
@@ -6166,6 +6183,7 @@
         VpeRun.OnChange -= OnSwarmChanged;
         LaeRun.OnChange -= OnSwarmChanged;
         VrpRun.OnChange -= OnSwarmChanged;
+        NavRun.OnChange -= OnSwarmChanged;
         LavRun.OnChange -= OnSwarmChanged;
         RstRun.OnChange -= OnSwarmChanged;
         MldRun.OnChange -= OnSwarmChanged;

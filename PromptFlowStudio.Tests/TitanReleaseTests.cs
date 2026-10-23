@@ -35273,7 +35273,7 @@ public sealed class VodRepurposingIsolatedTests
 
         // ── REP-4: 카탈로그 164 · HUD · 레이아웃 · DI · 모달 규격 · 외부 의존 0 · 모달 렌더 ──
         Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, en => en.Key == "_vodRepurposing" && en.Category == 4);
-        Assert.Equal(164, PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length);
+        Assert.True(PromptFlowStudio.Services.Ui.StudioCatalog.Entries.Length >= 164);   // v17.89.0 이후 카탈로그 증가 허용
         var root = RepoRoot();
         var hud = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor"));
         var layout = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "MainLayout.razor"));
@@ -35296,6 +35296,120 @@ public sealed class VodRepurposingIsolatedTests
         Assert.True(html.Length > 500 && html.Contains("vrp-scrim", StringComparison.Ordinal) && html.Contains("vrp-body", StringComparison.Ordinal) && html.Contains("리퍼포징 실행", StringComparison.Ordinal) && html.Contains("원클릭 복사", StringComparison.Ordinal) && html.Contains("vrp-car", StringComparison.Ordinal), "모달 렌더 " + html.Length);
         Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+}
+
+/// <summary>v17.89.0 무할당 인텐트 검색 엔진 · 165 카탈로그 1:1 도움말 레지스트리 · 허브 모달/도움말 서랍/Ctrl+K/HUD 결선.</summary>
+[Collection("TimingSensitivePerformance")]   // 검색 1 ms 벽시계 게이트 · 스레드 할당 바이트 계측 → 비병렬
+public sealed class IntentNavigationIsolatedTests
+{
+    [Fact]
+    public void IntentNavigation_And_ExhaustiveHelpRegistry_Check()
+    {
+        var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
+        var reg = PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries;
+
+        // ── NAV-2: 165 카탈로그 1:1 도움말 — 누락 · 빈칸 · 임시 문구 · 끊긴 연관 링크 0 건 ──
+        Assert.Equal(165, cat.Length);
+        Assert.Equal(cat.Length, reg.Count);
+        var report = new List<string>();
+        Assert.True(PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects(report) == 0, string.Join("\n", report));
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var h in reg)
+        {
+            Assert.True(keys.Add(h.Key), "중복 도움말 " + h.Key);
+            Assert.NotNull(PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entry(h.Key));
+            Assert.True(h.RoleSummary.Length >= 20, "역할 요약 과소 " + h.Key);
+            for (var s = 0; s < 3; s++) Assert.StartsWith("Step " + (s + 1).ToString(System.Globalization.CultureInfo.InvariantCulture), h.QuickWorkflow[s]);
+            Assert.DoesNotContain(h.Key, h.RelatedMenuIds);
+        }
+        foreach (var e in cat) Assert.NotNull(PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Find(e.Key));
+        Assert.Equal("_vodRepurposing", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.ResolveKeyByHeader("📝 VOD 리퍼포징 & 아티클 스튜디오 · ⚙️ 변환 중"));
+        Assert.Equal("sb:_spatialOpen", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.ResolveKeyByHeader("🥽 공간 비디오 & Vision Pro 스튜디오"));
+        Assert.Null(PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.ResolveKeyByHeader("알 수 없는 대화상자"));
+
+        // ── NAV-1: 주요 자연어 질의 상위 랭킹 정확도 ──
+        var hits = new PromptFlowStudio.Services.Ui.IntentHit[PromptFlowStudio.Services.Ui.CatalogIntentSearchEngine.MaxHits];
+        static bool Any(string t, params string[] w) { foreach (var x in w) if (t.Contains(x, StringComparison.OrdinalIgnoreCase)) return true; return false; }
+        void Expect(string q, params string[] titleWords)
+        {
+            var n = PromptFlowStudio.Services.Ui.CatalogIntentSearchEngine.Search(q, hits);
+            Assert.InRange(n, 3, 5);
+            for (var i = 1; i < n; i++) Assert.True(hits[i - 1].Score >= hits[i].Score, q + " 정렬");
+            Assert.True(Any(hits[0].Entry.Title, titleWords), q + " 1위 = " + hits[0].Entry.Title);
+            var top3 = 0;
+            for (var i = 0; i < 3; i++) if (Any(hits[i].Entry.Title, titleWords)) top3++;
+            Assert.True(top3 >= 2, q + " 상위 3 정확도 " + top3 + " · " + hits[0].Entry.Title + " / " + hits[1].Entry.Title + " / " + hits[2].Entry.Title);
+            Assert.InRange(hits[0].FitPercent, 1, 99);
+            Assert.False(string.IsNullOrEmpty(PromptFlowStudio.Services.Ui.CatalogIntentSearchEngine.DescribeReason(hits[0])));
+        }
+        Expect("자막", "자막", "캡션", "타이포", "더빙", "로컬라이제이션");
+        Expect("송출", "송출", "스트리밍", "스트림", "RTMPS", "게이트웨이", "MCR", "방송");
+        Expect("조명", "조명", "라이팅", "섀도우", "VFX");
+        Expect("더빙", "더빙", "로컬라이제이션", "립싱크");
+        Expect("쇼츠 자막 달기", "숏폼", "쇼츠", "Shorts", "릴스", "자막", "타이포", "클립");
+        Expect("얼굴 립싱크", "페이셜", "립싱크", "아바타", "디지털 휴먼", "더빙");
+        Assert.Equal(0, PromptFlowStudio.Services.Ui.CatalogIntentSearchEngine.Search("   ", hits));
+        Assert.Equal(0, PromptFlowStudio.Services.Ui.CatalogIntentSearchEngine.Search("zzqqxx", hits));
+
+        // 동의어: "캡션"(제목에 없음) → 자막 개념 경유 추천 · "RTMPS" → 송출 개념
+        var nc = PromptFlowStudio.Services.Ui.CatalogIntentSearchEngine.Search("캡션", hits);
+        Assert.True(nc >= 3 && (hits[0].ConceptMask & 1UL) != 0, "캡션 → #자막");
+        nc = PromptFlowStudio.Services.Ui.CatalogIntentSearchEngine.Search("RTMPS", hits);
+        Assert.True(nc >= 1 && (hits[0].ConceptMask & 2UL) != 0, "RTMPS → #송출");
+
+        // ── 무할당 · 1 ms 미만 ──
+        const string Q = "유튜브 라이브하고 싶어 조명 어둡게";
+        for (var w = 0; w < 50; w++) PromptFlowStudio.Services.Ui.CatalogIntentSearchEngine.Search(Q, hits);
+        var a0 = GC.GetAllocatedBytesForCurrentThread();
+        var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+        for (var r = 0; r < 200; r++) PromptFlowStudio.Services.Ui.CatalogIntentSearchEngine.Search(Q, hits);
+        var ms = System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
+        Assert.Equal(0L, GC.GetAllocatedBytesForCurrentThread() - a0);
+        Assert.True(ms / 200 < 1.0, "평균 검색 " + (ms / 200).ToString("0.000", System.Globalization.CultureInfo.InvariantCulture) + " ms");
+
+        // ── 러너(HUD NavRun) ──
+        var nav = new PromptFlowStudio.Services.Ui.IntentNavigationRunner();
+        var changes = 0;
+        nav.OnChange += () => changes++;
+        nav.Search("쇼츠 자막 달기");
+        Assert.InRange(nav.HitCount, 3, 5);
+        Assert.True(nav.Searches == 1 && nav.LastSearchUs > 0 && nav.PeakSearchUs >= nav.LastSearchUs);
+        nav.NoteOpen(nav.Hit(0).Entry.Key);
+        nav.NoteHelp("_intentNavigationHub");
+        Assert.True(nav.Opens == 1 && nav.HelpViews == 1 && changes == 3 && nav.HelpDefects == 0 && nav.HelpCovered == 165);
+        Assert.StartsWith("도움말 · AI 인텐트", nav.LastAction);
+        nav.Search("");
+        Assert.Equal(0, nav.HitCount);
+
+        // ── NAV-3/4: 결선(카탈로그 · 레이아웃 · DI 양쪽 · Ctrl+K · ? 주입 · HUD) ──
+        var root = RepoRoot();
+        string Src(params string[] p) => File.ReadAllText(Path.Combine(root, Path.Combine(p)));
+        Assert.Contains(cat, e => e.Key == "_intentNavigationHub" && e.Category == 5);
+        var layout = Src("PromptFlowStudio", "Blazor", "MainLayout.razor");
+        Assert.Contains("<IntentNavigationHubStudioModal OnClose=", layout);
+        Assert.Contains("case \"_intentNavigationHub\": _intentNavigationHub = on;", layout);
+        Assert.Contains("\"_intentNavigationHub\" => _intentNavigationHub,", layout);
+        Assert.Contains("<StudioHelpDrawer Key=", layout);
+        Assert.Contains("Palette.IntentHubRequested -= OnIntentHotkey;", layout);
+        Assert.Contains("IntentNavigationRunner", Src("PromptFlowStudio", "MainForm.cs"));
+        Assert.Contains("IntentNavigationRunner", Src("PromptFlowStudio.Mobile", "MauiProgram.cs"));
+        var js = Src("PromptFlowStudio", "wwwroot", "promptflow.js");
+        Assert.Contains("invokeMethodAsync('OnIntentHotkey')", js);
+        Assert.Contains("window.siteMaticStudioHelp", js);
+        var hud = Src("PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor");
+        Assert.Contains("gth-v1789", hud);
+        Assert.Contains("NavRun.OnChange -= OnSwarmChanged;", hud);
+        var hub = Src("PromptFlowStudio", "Blazor", "Components", "Common", "IntentNavigationHubStudioModal.razor");
+        Assert.Contains("@implements IDisposable", hub);
+        Assert.Contains("@implements IDisposable", Src("PromptFlowStudio", "Blazor", "Components", "Common", "StudioHelpDrawer.razor"));
     }
 
     private static string RepoRoot()

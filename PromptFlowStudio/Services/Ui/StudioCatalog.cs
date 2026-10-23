@@ -143,6 +143,7 @@ public static class StudioCatalog
         new("_igLoop", "🚀", "AI 24/7 바이럴 오토메이션 스튜디오", 4),
         new("_omni", "🌐", "옴니채널 크로스 배포 & 댓글 스튜디오", 4),
         new("sb:_mediaStudioOpen", "✨", "AI 오토 최적화 미디어 스튜디오 (스토리보드)", 4),
+        new("_intentNavigationHub", "🧭", "AI 인텐트 내비게이션 & 도움말 허브", 5),
         new("@palette", "⚡", "명령 팔레트", 5),
         new("@help", "❓", "사용자 도움말", 5),
         new("_masterSuite", "👑", "마스터 엔터프라이즈 스튜디오", 5),

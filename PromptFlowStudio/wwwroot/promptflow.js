@@ -336,11 +336,11 @@
             window.siteMaticUi.unregister();
             ref = dotNetRef;
             onKey = function (e) {
-                // Ctrl+K / Cmd+K — 어디서든(입력창 안에서도) 연다
+                // Ctrl+K / Cmd+K — 어디서든(입력창 안에서도) 🧭 인텐트 허브(v17.89.0 · 허브 없는 셸은 팔레트로 폴백)
                 if ((e.ctrlKey || e.metaKey) && !e.altKey &&
                     (e.key === 'k' || e.key === 'K')) {
                     e.preventDefault();
-                    ref && ref.invokeMethodAsync('OnPaletteHotkey');
+                    ref && ref.invokeMethodAsync('OnIntentHotkey');
                     return;
                 }
                 // '/' — 타이핑 중이 아닐 때만
@@ -836,4 +836,97 @@
         t.__pfWheel = true;
         t.addEventListener('wheel', onWheel, { passive: false });
     }, { passive: true });
+})();
+
+/* ============================================================================
+ *  siteMaticStudioHelp (v17.89.0) — 스튜디오 모달 헤더 ✕ 좌측에 원형 ? 도움말 버튼 주입
+ *
+ *  ⚠ 164 개 모달 마크업을 일일이 고치지 않는다. 모든 스튜디오 모달은 "*-modal" 컨테이너 +
+ *    "✕" 닫기 버튼 규격을 지키므로, MutationObserver(250 ms 스로틀)가 새 모달의 ✕ 를 찾아
+ *    바로 앞에 ? 를 꽂는다. Blazor 는 논리 자식 배열로 DOM 을 갱신하므로 외래 노드는 무시된다.
+ *  ⚠ ? 클릭 → MainLayout.OnStudioHelpRequested(헤더 제목) → StudioHelpDrawer.
+ *    연관 메뉴 전환 시 closeHost() 가 기억해 둔 ✕ 를 눌러 스토리보드 소유 모달까지 닫는다.
+ * ========================================================================== */
+(function () {
+    'use strict';
+
+    let ref = null, mo = null, host = null, timer = 0;
+    const MODAL = /(^|\s)[a-z0-9]+-modal(\s|$)/;
+
+    function inModal(el) {
+        for (let n = el, d = 0; n && d < 8; n = n.parentElement, d++) {
+            if (typeof n.className === 'string' && MODAL.test(n.className)) return true;
+        }
+        return false;
+    }
+
+    function titleOf(btn) {
+        const h = btn.parentElement;
+        if (!h) return '';
+        const t = h.querySelector('[class$="-title"]');
+        return ((t || h).textContent || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+    }
+
+    function inject(b) {
+        b.__pfHelp = true;
+        const q = document.createElement('button');
+        q.type = 'button';
+        q.className = 'pfh-q';
+        q.textContent = '?';
+        q.title = '이 화면 도움말 (개요 · 핵심 조작 · 작업 순서 · 연관 메뉴)';
+        q.setAttribute('aria-label', '이 화면 도움말');
+        q.__pfFor = b;
+        q.addEventListener('click', function (ev) {
+            ev.stopPropagation();
+            host = b;
+            if (ref) ref.invokeMethodAsync('OnStudioHelpRequested', titleOf(b)).catch(function () { /* 레이아웃 해제 중 */ });
+        });
+        if (getComputedStyle(b).position === 'absolute') {
+            q.classList.add('abs');
+            q.style.top = b.offsetTop + 'px';
+            q.style.left = Math.max(0, b.offsetLeft - 30) + 'px';
+        }
+        b.parentElement.insertBefore(q, b);
+    }
+
+    function scan() {
+        timer = 0;
+        try {
+            document.querySelectorAll('.pfh-q').forEach(function (q) {
+                if (!q.__pfFor || !q.__pfFor.isConnected) q.remove();
+            });
+            document.querySelectorAll('[class*="-modal"] button').forEach(function (b) {
+                if (b.__pfHelp || b.classList.contains('pfh-q')) return;
+                const tx = (b.textContent || '').trim();
+                if (tx !== '✕' && tx !== '×') return;
+                if (!b.parentElement || b.closest('.shd-panel') || !inModal(b)) return;
+                inject(b);
+            });
+        } catch (e) { /* 주입 실패는 도움말만 잃는다 — 앱은 계속 */ }
+    }
+
+    function schedule() { if (!timer) timer = setTimeout(scan, 250); }
+
+    window.siteMaticStudioHelp = {
+        attach: function (dotNetRef) {
+            ref = dotNetRef;
+            if (!mo) {
+                mo = new MutationObserver(schedule);
+                mo.observe(document.body, { childList: true, subtree: true });
+            }
+            schedule();
+            return true;
+        },
+        detach: function () {
+            if (mo) mo.disconnect();
+            mo = null; ref = null; host = null;
+            return true;
+        },
+        closeHost: function () {
+            const b = host;
+            host = null;
+            if (b && b.isConnected) b.click();
+            return true;
+        }
+    };
 })();

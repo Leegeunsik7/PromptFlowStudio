@@ -6,6 +6,7 @@
 @inject PromptFlowStudio.Services.Help.HelpState Help
 @inject PromptFlowStudio.Services.Ui.UserPreferenceService Prefs
 @inject PromptFlowStudio.Services.Ui.CommandPaletteService Palette
+@inject PromptFlowStudio.Services.Ui.IntentNavigationRunner NavRun
 @inject PromptFlowStudio.Services.Ui.StudioNavigationService StudioNav
 @inject PromptFlowStudio.Services.Ui.ThemeService Theme
 @inject PromptFlowStudio.Services.Ui.SidebarGuideService SideGuide
@@ -81,6 +82,8 @@
 
                 @* v17.50.1: 6대 도메인 아코디언 — 스튜디오 모달 진입점 전량(StudioCatalog). 검색어 입력 시 전 카테고리 펼침 필터. *@
                 <div class="nav-grp">스튜디오 모듈</div>
+                @* v17.89.0: 🧭 목적 문장 → 스튜디오 추천 허브(Ctrl+K) — 메뉴 이름을 몰라도 하고 싶은 일로 찾는다. *@
+                <button type="button" class="nav-intent" @onclick="ToggleIntentHub" aria-label="AI 인텐트 내비게이션 열기"><span>🧭 무엇을 하고 싶으세요?</span><kbd>Ctrl+K</kbd></button>
                 <div class="nav-acc-search"><input type="search" placeholder="🔎 스튜디오 검색" @bind="_navFilter" @bind:event="oninput" aria-label="스튜디오 검색" /></div>
                 @for (var ci = 0; ci < StudioCatalog.Categories.Length; ci++)
                 {
@@ -509,6 +512,15 @@
         {
             <VodRepurposingStudioModal OnClose="() => _vodRepurposing = false" />
         }
+        @if (_intentNavigationHub)
+        {
+            <IntentNavigationHubStudioModal OnClose="() => _intentNavigationHub = false" OnOpen="OpenFromHub" OnPalette="OpenPaletteFromHub" />
+        }
+        @* v17.89.0 스튜디오 공통 도움말 서랍 — 모달 헤더 ✕ 좌측 ? (promptflow.js siteMaticStudioHelp) → OnStudioHelpRequested. *@
+        @if (_studioHelpOpen)
+        {
+            <StudioHelpDrawer Key="@_studioHelpKey" HeaderText="@_studioHelpHeader" OnClose="CloseStudioHelp" OnNavigate="SwitchFromHelp" OnHub="OpenHubFromHelp" />
+        }
         @if (_liveArchiveVault)
         {
             <LiveArchiveCloudVaultStudioModal OnClose="() => _liveArchiveVault = false" />
@@ -894,6 +906,13 @@
     .app-shell.side-collapsed > .sidebar, .app-shell.side-collapsed .sidebar { display: none; }
     .nav-acc-search { padding: 2px 12px 6px; }
     .nav-acc-search input { width: 100%; box-sizing: border-box; font-size: 12px; padding: 6px 9px; border-radius: 8px; border: 1px solid var(--line, #223047); background: var(--card-2, #1a2436); color: var(--text-primary, #e6eefc); }
+    /* v17.89.0 🧭 인텐트 허브 진입 버튼 · 모달 헤더 ? 도움말(promptflow.js siteMaticStudioHelp 주입) */
+    .nav-intent { display: flex; align-items: center; justify-content: space-between; gap: 6px; width: calc(100% - 24px); margin: 2px 12px 6px; padding: 7px 10px; border-radius: 8px; border: 1px solid #0ea5e9; background: linear-gradient(90deg, rgba(14,165,233,.18), rgba(34,197,94,.10)); color: var(--text-primary, #e6eefc); font-size: 12px; cursor: pointer; text-align: left; }
+    .nav-intent:hover { background: rgba(14,165,233,.28); }
+    .nav-intent kbd { font-size: 10px; padding: 0 5px; border-radius: 4px; border: 1px solid var(--line, #223047); color: var(--text-muted, #94a3b8); }
+    .pfh-q { flex: 0 0 auto; align-self: flex-start; width: 22px; height: 22px; margin: 1px 8px 0 auto; padding: 0; border-radius: 50%; border: 1px solid #38bdf8; background: rgba(14,165,233,.12); color: #7dd3fc; font-size: 12.5px; font-weight: 800; line-height: 20px; text-align: center; cursor: pointer; }
+    .pfh-q:hover { background: #0369a1; color: #fff; }
+    .pfh-q.abs { position: absolute; margin: 0; z-index: 5; }
     .nav-acc { display: flex; align-items: center; gap: 6px; width: calc(100% - 16px); margin: 2px 8px; padding: 7px 10px; border-radius: 9px; border: none; cursor: pointer; text-align: left;
         background: color-mix(in srgb, var(--accent, #7c6cff) 7%, transparent); color: var(--text-primary, #e6eefc); font: 800 12px inherit; }
     .nav-acc:hover { background: color-mix(in srgb, var(--accent, #7c6cff) 16%, transparent); }
@@ -1100,6 +1119,7 @@
             case "_liveAutoClipper": _liveAutoClipper = on; break;
             case "_liveArchiveVault": _liveArchiveVault = on; break;
             case "_vodRepurposing": _vodRepurposing = on; break;
+            case "_intentNavigationHub": _intentNavigationHub = on; if (on) NavRun.Search(""); break;
             case "_liveAudienceEngagement": _liveAudienceEngagement = on; break;
             case "_viralPredictorExport": _viralPredictorExport = on; break;
             case "_liveBroadcastRestream": _liveBroadcastRestream = on; break;
@@ -1255,6 +1275,7 @@
         "_liveAutoClipper" => _liveAutoClipper,
         "_liveArchiveVault" => _liveArchiveVault,
         "_vodRepurposing" => _vodRepurposing,
+        "_intentNavigationHub" => _intentNavigationHub,
         "_liveAudienceEngagement" => _liveAudienceEngagement,
         "_viralPredictorExport" => _viralPredictorExport,
         "_liveBroadcastRestream" => _liveBroadcastRestream,
@@ -1367,6 +1388,53 @@
     private bool _streamGateway; // v17.62.0 사이드바 📜 각본 & 타임라인 ▸ 🛰️ 스트림 게이트웨이 & 클리퍼 스튜디오(32 MB 압축 NAL 링 · 무손실 1080p 리먹스 · Twitch/YouTube/치지직 게이트웨이 · 백오프/배압)
     private bool _influencerLive; // v17.61.0 사이드바 📜 각본 & 타임라인 ▸ 🎙️ 버추얼 인플루언서 라이브 스튜디오(채팅 리액션 트리거 · 하이라이트 9:16 즉시 클리핑 · 도배/비속어 가드)
     private bool _vodRepurposing; // v17.88.0 사이드바 📸 소셜 & 바이럴 ▸ 📝 VOD 리퍼포징 & 아티클 스튜디오(v17.87 아카이브 VOD 대본 → 발화 밀도/키워드 벡터 낙차 3~7 분 챕터 · 3 줄 요약 · 롱테일 SEO 5 · 블로그/뉴스레터 마크다운 · 1080² 카드뉴스 5 장 + 1200×630 OG 인메모리 PNG)
+    private bool _intentNavigationHub; // v17.89.0 사이드바 ⚙️ 시스템 ▸ 🧭 AI 인텐트 내비게이션 & 도움말 허브(Ctrl+K · 동의어 개념 무할당 검색 → 상위 3~5 추천 · 바로 열기)
+    private bool _studioHelpOpen; // v17.89.0 모달 헤더 ? 도움말 서랍
+    private string? _studioHelpKey, _studioHelpHeader;
+    private DotNetObjectReference<MainLayout>? _selfRef;
+
+    private void ToggleIntentHub()
+    {
+        if (_intentNavigationHub) { _intentNavigationHub = false; return; }
+        _studioHelpOpen = false;
+        OpenStudio("_intentNavigationHub");
+    }
+
+    private void OpenFromHub(string key) { _studioHelpOpen = false; OpenStudio(key); }
+
+    private void OpenPaletteFromHub() { _intentNavigationHub = false; Palette.Open(); }
+
+    private void OnIntentHotkey() => _ = InvokeAsync(() => { ToggleIntentHub(); StateHasChanged(); });
+
+    /// <summary>v17.89.0 JS(? 버튼) → 도움말 서랍. 단일 활성 카탈로그 플래그 우선, 없으면(스토리보드 등) 헤더 제목으로 키 해석.</summary>
+    [JSInvokable]
+    public Task OnStudioHelpRequested(string? header) => InvokeAsync(() =>
+    {
+        string? key = null;
+        foreach (var e in StudioCatalog.Entries) if (IsStudioOpen(e.Key)) { key = e.Key; break; }
+        key ??= StudioCatalogHelpRegistry.ResolveKeyByHeader(header);
+        if (_studioHelpOpen && _studioHelpKey == key) { _studioHelpOpen = false; StateHasChanged(); return; }
+        _studioHelpKey = key;
+        _studioHelpHeader = header;
+        _studioHelpOpen = true;
+        if (key is not null) NavRun.NoteHelp(key);
+        StateHasChanged();
+    });
+
+    private void CloseStudioHelp() => _studioHelpOpen = false;
+
+    /// <summary>연관 메뉴 → 현재 모달(스토리보드 소유 포함)의 ✕ 를 JS 로 눌러 닫고 대상 스튜디오로 전환.</summary>
+    private async Task SwitchFromHelp(string key)
+    {
+        _studioHelpOpen = false;
+        try { await JS.InvokeVoidAsync("siteMaticStudioHelp.closeHost"); }
+        catch (Exception) { /* 호스트 모달이 이미 닫힘 — 전환은 계속 */ }
+        CloseOpenStudios();
+        NavRun.NoteOpen(key);
+        OpenStudio(key);
+    }
+
+    private void OpenHubFromHelp() { _studioHelpOpen = false; OpenStudio("_intentNavigationHub"); }
     private bool _liveArchiveVault; // v17.87.0 사이드바 📸 소셜 & 바이럴 ▸ 💾 라이브 클라우드 아카이브 볼트(v17.83 최종 송출 AU/AAC 탭 체인 → 5/15 분 IDR 정렬 fMP4 세그먼트 · GOP 조각 실시간 moof/mdat 플러시 + .part 충돌 복구 · 순수 SigV4 S3/R2/MinIO 8 MB 멀티파트 · 20 Mbps 셰이핑 · 10 GB 미만 업로드 완료본 자동 회수 · 7/30/90 일 IA/Glacier/Deep 태그 티어링)
     private bool _liveAudienceEngagement; // v17.86.0 사이드바 📸 소셜 & 바이럴 ▸ 🎉 라이브 시청자 인터랙션 & 위젯(무할당 1080p 더티 영역 Porter-Duff 알파 오버레이 · 채팅 !1~!4/!찬성/!반대 실시간 투표/퀴즈 + 1 인 1 표 · 16.7 ms Lerp 게이지 · 후원 골 바 + ₩10,000 ~ 3 s 골드 베지에 파티클 스팅어)
     private bool _viralPredictorExport; // v17.85.0 사이드바 📸 소셜 & 바이럴 ▸ 📊 바이럴 예측 스코어러 & MP4 익스포터(훅/감정/시각 환기/루프 4 축 0~100 · S/A/B/C 우선 배포 · A/B 썸네일 3 종 + 훅 카피 3 종 · 무할당 인메모리 fMP4 9:16 clap 크롭 + tx3g 키네틱 자막 + ipcm 효과음 인출)
@@ -1512,6 +1580,12 @@
                 Run: () => { Nav.NavigateTo(route); return Task.CompletedTask; }));
         }
 
+        // v17.89.0 목적 기반 탐색 — Ctrl+K 와 같은 허브.
+        Palette.Register(new PaletteCommand(
+            "nav.intent", "이동", "🧭", "AI 인텐트 내비게이션 & 도움말 허브", "Ctrl+K",
+            new[] { "intent", "인텐트", "추천", "찾기", "도움말", "메뉴", "목적" },
+            () => { OpenStudio("_intentNavigationHub"); StateHasChanged(); return Task.CompletedTask; }));
+
         // ── 화면 설정 ──
         Palette.Register(new PaletteCommand(
             "ui.theme", "화면", "🌗", "테마 전환 (다크 ↔ 라이트)", null,
@@ -1639,7 +1713,7 @@
     private void OnShellKey(KeyboardEventArgs e)
     {
         // UI 감사: Esc — 열린 카탈로그 스튜디오 모달을 먼저 닫는다(스크림 클릭 닫기와 일관).
-        if (e.Key == "Escape") { CloseOpenStudios(); CloseDrawer(); return; }
+        if (e.Key == "Escape") { _studioHelpOpen = false; CloseOpenStudios(); CloseDrawer(); return; }
         if (!e.AltKey) return;
 
         // Alt+H — 도움말
@@ -1661,6 +1735,14 @@
         }
 
         if (!firstRender) return;
+
+        // v17.89.0 모달 헤더 ? 버튼 주입기(MutationObserver) — 실패해도 앱은 계속.
+        try
+        {
+            _selfRef = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("siteMaticStudioHelp.attach", _selfRef);
+        }
+        catch (Exception) { /* 프리렌더 · 종료 중 */ }
 
         // 저장된 설정을 메모리로 끌어온 뒤 테마를 실제로 적용한다.
         // ⚠ 이 두 줄이 없으면 환경 설정의 테마 선택이 아무 효과도 내지 않는다.
@@ -1726,6 +1808,7 @@
         Prefs.OnChange += OnCh;
         Theme.OnChange += OnCh;   // 커스텀 테마 변경 시 <style> 재렌더(라이브 반영)
         RegisterCommands();
+        Palette.IntentHubRequested += OnIntentHotkey;
         // ⚠ 이게 없으면 F1 으로 열었을 때 헤더 버튼의 aria-expanded 가
         //   "false" 로 남는다. 스크린리더는 대화상자가 열린 줄 모른다.
         Help.OnChange += OnCh;
@@ -1755,5 +1838,8 @@
         Help.OnChange -= OnCh;
         Prefs.OnChange -= OnCh;
         Theme.OnChange -= OnCh;
+        Palette.IntentHubRequested -= OnIntentHotkey;
+        _selfRef?.Dispose();
+        _selfRef = null;
     }
 }

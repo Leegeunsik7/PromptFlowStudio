@@ -1,0 +1,241 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Ui
+@implements IDisposable
+@inject IntentNavigationRunner Nav
+@inject IJSRuntime JS
+
+@* [PromptFlow Studio v17.89.0] 🧭 AI 인텐트 내비게이션 & 도움말 허브 — Ctrl+K 스포트라이트 · 목적 문장 → 상위 3~5 스튜디오 추천(적합도 · 사유 태그 · 바로 열기) · 퀵 필터 · 인라인 사용법. *@
+<div class="inh-scrim" @onclick="Close">
+    <div class="inh-modal" @onclick:stopPropagation="true" @onkeydown="OnKey">
+        <div class="inh-h">
+            <div>
+                <div class="inh-title">🧭 AI 인텐트 내비게이션 & 도움말 허브</div>
+                <div class="inh-sub">하고 싶은 일을 문장으로 적어 보세요(예: <b>"유튜브 라이브하고 싶어"</b> · <b>"쇼츠 자막 달기"</b> · <b>"조명 어둡게 조절"</b>).
+                    @(StudioCatalog.Entries.Length)개 스튜디오의 제목 · 역할 · 동의어(자막 = 캡션 = 호르모지 · 송출 = 스트리밍 = RTMPS …)를 함께 읽어 가장 알맞은 화면을 <b>적합도</b>와 <b>추천 사유</b>로 골라 드립니다.
+                    <b>Enter</b> = 1위 바로 열기 · <b>↑↓</b> 선택 · <b>Esc</b> 닫기 · 열린 스튜디오에서는 헤더의 <b>?</b> 버튼으로 사용법을 볼 수 있습니다.</div>
+            </div>
+            <button class="inh-x" @onclick="Close">✕</button>
+        </div>
+
+        <div class="inh-body">
+            <div class="inh-q">
+                <span class="inh-q-ic" aria-hidden="true">🔎</span>
+                <input id="inh-input" class="inh-q-f" type="text" autocomplete="off" placeholder="무엇을 하고 싶으세요?" aria-label="하고 싶은 일 입력"
+                       value="@(Nav.Query)" @oninput="OnInput" />
+                <span class="inh-q-us">@(Nav.Query.Length == 0 ? "대기" : Nav.LastSearchUs.ToString("0", CultureInfo.InvariantCulture) + " µs")</span>
+            </div>
+
+            <div class="inh-chips" role="group" aria-label="퀵 필터">
+                @foreach (var p in Presets)
+                {
+                    var pp = p;
+                    <button class="inh-chip @(Nav.Query == pp.Query ? "on" : null)" aria-pressed="@(Nav.Query == pp.Query ? "true" : "false")" @onclick="() => Apply(pp.Query)">@(pp.Label)</button>
+                }
+            </div>
+
+            @if (Nav.Query.Trim().Length == 0)
+            {
+                <div class="inh-empty">
+                    <div class="inh-empty-t">처음이신가요?</div>
+                    <div>위 퀵 필터를 누르거나 목적을 입력하면 추천 카드가 나타납니다. 메뉴 이름을 몰라도 <b>"더빙"</b>, <b>"송출"</b>, <b>"얼굴"</b>처럼 하고 싶은 일만 적으면 됩니다.</div>
+                    <div class="inh-cov">📘 도움말 커버리지 <b>@(Nav.HelpCovered)/@(StudioCatalog.Entries.Length)</b> · 누락 @(Nav.HelpDefects)건</div>
+                </div>
+            }
+            else if (Nav.HitCount == 0)
+            {
+                <div class="inh-empty">일치하는 스튜디오가 없습니다. 더 짧은 낱말(예: <b>자막</b>, <b>조명</b>, <b>송출</b>)로 다시 시도해 보세요.</div>
+            }
+            else
+            {
+                <div class="inh-list" role="listbox" aria-label="추천 스튜디오">
+                    @for (var i = 0; i < Nav.HitCount; i++)
+                    {
+                        var idx = i;
+                        var h = Nav.Hit(idx);
+                        var e = h.Entry;
+                        var help = StudioCatalogHelpRegistry.Find(e.Key);
+                        var open = _expanded == e.Key;
+                        <div class="inh-card @(idx == _cursor ? "on" : null)" role="option" aria-selected="@(idx == _cursor ? "true" : "false")" @key="e.Key">
+                            <div class="inh-rank">@(idx + 1)</div>
+                            <div class="inh-main">
+                                <div class="inh-ct"><span class="inh-ic">@(e.Icon)</span><b>@(e.Title)</b><span class="inh-cat">@(StudioCatalog.Categories[e.Category])</span></div>
+                                <div class="inh-fit"><span class="inh-bar"><i style="width:@(h.FitPercent.ToString(CultureInfo.InvariantCulture))%"></i></span><b>@(h.FitPercent)%</b><span>적합도</span></div>
+                                <div class="inh-tags">
+                                    @if (h.TitleHit)
+                                    {
+                                        <span class="inh-tag t">제목 일치</span>
+                                    }
+                                    @for (var b = 0; b < CatalogIntentSearchEngine.ConceptCount; b++)
+                                    {
+                                        if ((h.ConceptMask >> b & 1UL) == 0) continue;
+                                        <span class="inh-tag">#@(CatalogIntentSearchEngine.ConceptName(b))</span>
+                                    }
+                                </div>
+                                @if (help is not null)
+                                {
+                                    <div class="inh-role">@(help.RoleSummary)</div>
+                                    @if (open)
+                                    {
+                                        <div class="inh-how">
+                                            <div class="inh-how-h">핵심 조작</div>
+                                            <ul>@foreach (var c in help.KeyControlsGuide)
+                                                {
+                                                    <li>@(c)</li>
+                                                }</ul>
+                                            <div class="inh-how-h">작업 순서</div>
+                                            <div class="inh-steps">@for (var s = 0; s < help.QuickWorkflow.Length; s++)
+                                                {
+                                                    if (s > 0)
+                                                    {
+                                                        <span class="inh-arrow">➔</span>
+                                                    }
+                                                    <span class="inh-step">@(help.QuickWorkflow[s])</span>
+                                                }</div>
+                                        </div>
+                                    }
+                                }
+                            </div>
+                            <div class="inh-acts">
+                                <button class="inh-btn go" @onclick="() => Open(e.Key)">바로 열기</button>
+                                <button class="inh-btn" aria-pressed="@(open ? "true" : "false")" @onclick="() => ToggleHow(e.Key)">📘 사용법</button>
+                            </div>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+
+        <div class="inh-act">
+            <span>🧭 검색 @(Nav.Searches) · 최대 @(Nav.PeakSearchUs.ToString("0", CultureInfo.InvariantCulture)) µs · 열기 @(Nav.Opens) · 도움말 @(Nav.HelpViews)</span>
+            <span class="inh-sep"></span>
+            @if (OnPalette.HasDelegate)
+            {
+                <button class="inh-btn" @onclick="OpenPalette">⚡ 명령 팔레트(/)</button>
+            }
+            <button class="inh-btn" disabled="@(Nav.Query.Length == 0)" @onclick="Clear">♻ 지우기</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .inh-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: flex-start; justify-content: center; padding-top: 6vh; }
+    .inh-modal { width: min(880px, 96vw); max-height: 88vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); color: var(--text-primary); }
+    .inh-h { position: sticky; top: 0; z-index: 3; flex: 0 0 auto; display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px 8px; background: var(--card); border-bottom: 1px solid var(--line); }
+    .inh-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 10px 16px; }
+    .inh-act { position: sticky; bottom: 0; z-index: 3; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 8px 16px 12px; background: var(--card); border-top: 1px solid var(--line); font-size: 11px; color: var(--text-muted); }
+    .inh-title { font-size: 17px; font-weight: 800; }
+    .inh-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .inh-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .inh-q { display: flex; align-items: center; gap: 8px; background: #0b1220; border: 1px solid #334155; border-radius: 10px; padding: 8px 12px; }
+    .inh-q:focus-within { border-color: #38bdf8; box-shadow: 0 0 0 3px rgba(56,189,248,.18); }
+    .inh-q-ic { font-size: 16px; }
+    .inh-q-f { flex: 1; background: none; border: 0; outline: none; color: var(--text-primary); font-size: 15px; }
+    .inh-q-us { font-family: var(--mono); font-size: 10.5px; color: var(--text-muted); }
+    .inh-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+    .inh-chip { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 14px; font-size: 11.5px; padding: 3px 11px; cursor: pointer; }
+    .inh-chip.on { border-color: #38bdf8; background: #0c2a3d; color: #fff; }
+    .inh-empty { font-size: 12px; color: var(--text-muted); line-height: 1.6; padding: 14px; border: 1px dashed var(--line); border-radius: 10px; }
+    .inh-empty-t { font-weight: 800; color: var(--text-primary); margin-bottom: 4px; }
+    .inh-cov { margin-top: 8px; font-size: 11px; }
+    .inh-list { display: flex; flex-direction: column; gap: 8px; }
+    .inh-card { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: #0f172a; }
+    .inh-card.on { border-color: #38bdf8; box-shadow: 0 0 0 1px rgba(56,189,248,.35); }
+    .inh-rank { flex: 0 0 22px; height: 22px; border-radius: 50%; background: #1e293b; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; }
+    .inh-main { flex: 1; min-width: 0; }
+    .inh-ct { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; }
+    .inh-ic { font-size: 16px; }
+    .inh-cat { font-size: 10.5px; color: var(--text-muted); border: 1px solid var(--line); border-radius: 8px; padding: 0 6px; }
+    .inh-fit { display: flex; align-items: center; gap: 6px; font-size: 11px; margin-top: 4px; color: var(--text-muted); }
+    .inh-fit b { color: #38bdf8; font-family: var(--mono); }
+    .inh-bar { width: 120px; height: 6px; border-radius: 3px; background: #1e293b; overflow: hidden; }
+    .inh-bar i { display: block; height: 100%; background: linear-gradient(90deg, #0ea5e9, #22c55e); }
+    .inh-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+    .inh-tag { font-size: 10.5px; padding: 0 7px; border-radius: 8px; background: #172554; color: #bfdbfe; }
+    .inh-tag.t { background: #14532d; color: #bbf7d0; }
+    .inh-role { font-size: 11.5px; color: var(--text-muted); margin-top: 6px; line-height: 1.5; }
+    .inh-how { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: #0b1220; font-size: 11.5px; line-height: 1.55; }
+    .inh-how ul { margin: 2px 0 6px 16px; padding: 0; }
+    .inh-how-h { font-weight: 800; font-size: 11px; color: #93c5fd; }
+    .inh-steps { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+    .inh-step { background: #1e293b; border-radius: 6px; padding: 2px 6px; }
+    .inh-arrow { color: #38bdf8; }
+    .inh-acts { display: flex; flex-direction: column; gap: 5px; flex: 0 0 auto; }
+    .inh-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; font-size: 11.5px; padding: 4px 10px; cursor: pointer; white-space: nowrap; }
+    .inh-btn.go { background: #0369a1; border-color: #0ea5e9; font-weight: 700; color: #fff; }
+    .inh-btn[aria-pressed="true"] { border-color: #38bdf8; }
+    .inh-btn:disabled { opacity: .45; cursor: default; }
+    .inh-sep { flex: 1; }
+    @@media (max-width: 700px) { .inh-card { flex-wrap: wrap; } .inh-acts { flex-direction: row; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<string> OnOpen { get; set; }
+    [Parameter] public EventCallback OnPalette { get; set; }
+
+    private sealed record Preset(string Label, string Query);
+    private static readonly Preset[] Presets =
+    {
+        new("🧊 3DGS 가상스튜디오", "3DGS 가우시안 스플래팅"),
+        new("🧑 디지털 휴먼", "디지털 휴먼 아바타 립싱크"),
+        new("🎛️ 방송 MCR", "방송 MCR 주조정실 송출"),
+        new("🛍️ 라이브 커머스", "라이브 커머스 쇼핑"),
+        new("📱 숏폼 바이럴", "숏폼 쇼츠 바이럴"),
+    };
+
+    private int _cursor;
+    private string? _expanded;
+    private bool _focus = true;
+
+    protected override void OnInitialized() => Nav.OnChange += OnServiceChanged;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!_focus) return;
+        _focus = false;
+        try { await JS.InvokeVoidAsync("siteMaticUi.focus", "inh-input"); }
+        catch (Exception) { /* 프리렌더 · 헤드리스 — 포커스는 편의 기능 */ }
+    }
+
+    private void OnInput(ChangeEventArgs e) => Apply(e.Value?.ToString() ?? "");
+
+    private void Apply(string q)
+    {
+        _cursor = 0;
+        _expanded = null;
+        Nav.Search(q);
+    }
+
+    private void Clear() => Apply("");
+
+    private void ToggleHow(string key)
+    {
+        _expanded = _expanded == key ? null : key;
+        if (_expanded is not null) Nav.NoteHelp(key);
+    }
+
+    private async Task Open(string key)
+    {
+        Nav.NoteOpen(key);
+        await OnOpen.InvokeAsync(key);
+    }
+
+    private async Task OpenPalette() => await OnPalette.InvokeAsync();
+
+    private async Task OnKey(KeyboardEventArgs e)
+    {
+        switch (e.Key)
+        {
+            case "Escape": await Close(); break;
+            case "ArrowDown": if (Nav.HitCount > 0) _cursor = (_cursor + 1) % Nav.HitCount; break;
+            case "ArrowUp": if (Nav.HitCount > 0) _cursor = (_cursor + Nav.HitCount - 1) % Nav.HitCount; break;
+            case "Enter": if (_cursor < Nav.HitCount) await Open(Nav.Hit(_cursor).Entry.Key); break;
+        }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Nav.OnChange -= OnServiceChanged;
+}

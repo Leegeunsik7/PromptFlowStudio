@@ -176,6 +176,14 @@
         return InvokeAsync(Palette.Toggle);
     }
 
+    /// <summary>v17.89.0 Ctrl+K — 🧭 인텐트 허브(구독자 없으면 팔레트). '/' 는 계속 팔레트.</summary>
+    [JSInvokable]
+    public Task OnIntentHotkey()
+    {
+        if (_disposed) return Task.CompletedTask;
+        return InvokeAsync(Palette.RequestIntentHub);
+    }
+
     private void Close() => Palette.Close();
 
     private void OnInput(ChangeEventArgs e)

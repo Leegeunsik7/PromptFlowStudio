@@ -1,18 +1,17 @@
 # Current Project Status
-- Active Milestone: v17.88.0 완료 (Complete) — AI VOD 멀티포맷 리퍼포징 & 아티클 스튜디오
+- Active Milestone: v17.89.0 완료 (Complete) — AI 인텐트 내비게이션 & 전수 인터랙티브 도움말 시스템
 - Build Status: Desktop Release -warnaserror 0/0 · net8.0-ios Release -warnaserror 0/0 · net8.0-android 미검증(SDK/JDK 미설치)
-- Test Suite: 499/500 전량 회귀(단일 CPU · MaxCpuCount=1 · DisableParallelization) + 실패 1 `DistributedGpuCluster_And_CloudRenderingSwarm_Check`(silent fallbacks · 벽시계 타이밍 · v17.87 동일) 격리 재실행 1/1 통과
-- Sidebar: 7대 카테고리 · 164 엔트리
+- Test Suite: 501 전량 회귀(단일 CPU · MaxCpuCount=1 · DisableParallelization) 499 통과 + 실패 2 → `VodRepurposing_And_ArticleSynthesizer_Check`(카탈로그 164 고정 단언 → ≥164 로 수정) · `DistributedGpuCluster_And_CloudRenderingSwarm_Check`(벽시계 타이밍 간헐 · v17.87 이후 동일) 격리 재실행 3/3 통과
+- Sidebar: 7대 카테고리 · 165 엔트리
 - Updated At: 2026-10-23 (KST)
 
 ## Completed Deliverables
-- REP-1: `VodRepurposing/LongformTranscriptChapterSummarizerEngine` — `[hh:mm:ss]`/`mm:ss`/SRT/무타임코드 파싱 · `SpokenFillerFilter` 추임새·반복어·자모 정제 · 30 s 창 해시 키워드 벡터 + 발화 밀도 TextTiling 낙차 → 3~7 분 탐욕 경계 · TF-IDF 챕터 제목 · 3 줄 요약 · 바이그램 롱테일 SEO 5 · `00:00 - 주제` 포맷 · 분석/포맷 무할당
-- REP-2: `MarkdownArticleNewsletterSynthesizer` — `PooledCharWriter`(ArrayPool<char>) 무할당 렌더 · 블로그(친근체·이모지·H2/H3 포인트) / 뉴스레터(전문체·불릿·핵심 요약·결론) 2 종 · 서론-목차-본론-결론
-- REP-3: `ViralCardNewsOgRasterizerEngine` — 대표 프레임(주입/절차적) 커버 핏 + 어두운 그래디언트·비네트 · SDF 펀치라인 자동 크기/줄바꿈 · 1080² 카드 5 장 + 1200×630 OG · 렌더 무할당 · 인메모리 RGBA PNG(Sub/Up 적응 필터) + 미리보기 · 파일 I/O 없음
-- REP-4: `VodRepurposingStudioRunner`(v17.87 아카이브 길이 연계 리허설 · 대본 붙여넣기) + `VodRepurposingStudioModal`(챕터 타임라인 · 마크다운 프리뷰/원클릭 복사 · 카드 캐러셀 · JS `siteMaticDownload` 인메모리 다운로드) · 카탈로그 `_vodRepurposing` · HUD `gth-v1788`(`VrpRun`) · DI 양쪽
-- REP-5: `VodRepurposing_And_ArticleSynthesizer_Check`(TimingSensitive) · 크롤러 164 모달 결함 0
+- NAV-1: `Services/Ui/CatalogIntentSearchEngine` — 소문자 정규화 + Ordinal 스팬 토크나이징 · 38 개념 동의어 사전(자막=캡션=호르모지 · 송출=스트리밍=RTMPS · 얼굴=아바타=립싱크 …) ulong 비트 · 한국어 어미 접두 축약 · 개념 밀도 가중 → 상위 3~5 · 적합도 % · 사유 태그 · stackalloc 무할당 · 평균 0.14 ms
+- NAV-2: `StudioCatalogHelpRegistry` — 165 항목 1:1(역할 1줄 · 핵심 조작 3 · Step 1➔3 · 연관 메뉴 · 인텐트 키워드), 각 모달 마크업 부제/실제 버튼·슬라이더 라벨에서 추출 · `CountDefects` 누락/빈칸/임시문구/끊긴 링크 0
+- NAV-3: `IntentNavigationHubStudioModal`(실시간 질의 · 추천 카드 · 바로 열기 · 사용법 펼침 · 퀵 필터 5) · Ctrl+K → 허브(`/` 는 팔레트 유지) · 사이드바 🧭 버튼 · 카탈로그 `_intentNavigationHub`(⚙️ 시스템 & QA 카테고리) · HUD `gth-v1789`(`NavRun`) · DI 양쪽
+- NAV-4: `StudioHelpDrawer` + `promptflow.js siteMaticStudioHelp`(MutationObserver 가 `*-modal` ✕ 좌측에 원형 ? 주입) · 열린 플래그/헤더 제목으로 키 해석 · 연관 메뉴 = 호스트 모달 ✕ 클릭 후 대상 전환
+- NAV-5: `IntentNavigation_And_ExhaustiveHelpRegistry_Check`(TimingSensitive) · 크롤러 165 모달 결함 0
 
 ## Known Issues / 환경 노트
-- 호스트 CPU 경합 시 타이밍 민감 테스트 간헐 초과 가능(격리 재실행 통과 기조)
-- 요약은 추출형(문장 선택) — 생성형 LLM 미사용 · 카드 대표 프레임은 실 VOD 디코딩 미결선(절차적 키프레임/외부 RGB 주입)
-- 실 클라우드 버킷 전송 미검증 · Android 빌드 · GUI 육안 미검증
+- 카탈로그 0번은 "가상 프로덕션"이라 허브는 기존 [⚙️ 시스템 & QA 인프라](5번)에 등록
+- 도움말 문구는 마크업 추출 + 템플릿 기반 — 일부 불릿이 짧은 라벨(예: 「SPP」) 수준 · ? 버튼 주입은 DOM 규약 의존 · GUI 육안 미검증 · Android 빌드 미검증
