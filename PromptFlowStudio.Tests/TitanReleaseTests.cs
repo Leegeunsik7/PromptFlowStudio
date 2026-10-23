@@ -178,6 +178,7 @@ using Mrr = PromptFlowStudio.Services.MasterPipeline;
 using Pst = PromptFlowStudio.Services.PostPublishSplitTest;
 using Pvg = PromptFlowStudio.Services.PlatformVisibility;
 using Ghe = PromptFlowStudio.Services.GoldenHourEngagement;
+using Trj = PromptFlowStudio.Services.TrendJacking;
 
 namespace PromptFlowStudio.Tests;
 
@@ -36593,5 +36594,165 @@ public sealed class GoldenHourEngagementIsolatedTests
         Assert.NotNull(PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Find("_goldenHourEngagement"));
         Assert.Equal(cat.Length, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
         Assert.Equal(0, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects());
+    }
+}
+
+[Collection("TimingSensitivePerformance")]   // 스레드 할당 바이트 계측 · 100 ms 스캔 예산(피드 파싱 · 연관도 스캔 · 메타데이터 조합) → 비병렬
+public sealed class SocialTrendJackingIsolatedTests
+{
+    private const double T0 = 1_800_000_000;
+    private const string Script = "아이폰16 카메라로 야간 촬영할 때 꼭 바꿔야 할 설정 3가지! 야간 모드 노출 고정과 프로레스 촬영, 그리고 캡컷 보정까지 아이폰16 하나로 끝냅니다.";
+    private const string Tags = "아이폰16,야간촬영,카메라꿀팁,아이폰카메라,캡컷";
+    private const string Summary = "아이폰16 야간 촬영 설정 3가지로 밤 사진 퀄리티 2배 올리기";
+    private const string Niche = "야간촬영,카메라꿀팁,아이폰카메라,폰카꿀팁";
+
+    [Fact]
+    public void SocialTrendJacking_And_HashtagInjector_Check()
+    {
+        // ── TRJ-1: Span 피드 파싱 · 분당 가속도 · 연관도 0~100 · 골든 ≥ 80 ──
+        var radar = new Trj.RealtimeSocialTrendSpikeRadarEngine();
+        radar.SetContent(Script.AsSpan(), Tags.AsSpan());
+        Assert.Equal(100, radar.ScoreRelevance("아이폰16".AsSpan()));
+        Assert.Equal(100, radar.ScoreRelevance("야간 촬영".AsSpan()));     // 공백 무시 태그 일치
+        Assert.Equal(100, radar.ScoreRelevance("#카메라 꿀팁".AsSpan()));
+        Assert.Equal(85, radar.ScoreRelevance("프로레스".AsSpan()));       // 대본 1회 출현
+        Assert.Equal(35, radar.ScoreRelevance("캡컷 템플릿".AsSpan()));    // 토큰 1/2 커버
+        Assert.Equal(70, radar.ScoreRelevance("아이폰16이 야간".AsSpan())); // 조사 제거 2/2 → 70(구문 불일치)
+        Assert.Equal(0, radar.ScoreRelevance("흑백요리사".AsSpan()));
+        Assert.Equal(0, radar.ScoreRelevance("로제 아파트".AsSpan()));
+
+        Assert.Equal(4, radar.Ingest("아이폰16:100;흑백요리사:300\n야간 촬영:40; 카메라 꿀팁 : 20 ;".AsSpan()));
+        Assert.Equal(0, radar.Ingest("bad;:5;키워드:-3;x:12a;이건스물네자를넘어가는아주아주긴키워드입니다정말로진짜:5".AsSpan()));
+        Assert.Equal(5, radar.Malformed);
+        radar.CloseMinute();
+        radar.Ingest("아이폰16:160;흑백요리사:290;야간 촬영:55;카메라 꿀팁:21;로제 아파트:500".AsSpan());
+        Assert.Equal(5, radar.TopicCount);
+        Assert.Equal(3, radar.Scan());
+        Assert.Equal(60, radar.Velocity(0));
+        Assert.Equal(-10, radar.Velocity(1));
+        Assert.Equal(60 * 100 / (100 + Trj.RealtimeSocialTrendSpikeRadarEngine.SpikeDamp), radar.SpikeIndex(0));
+        Assert.Equal(0, radar.SpikeIndex(1));
+        Assert.Equal("로제 아파트", radar.Keyword(radar.Ranked(0)).ToString());   // 가속도 1위(무관)
+        Assert.Equal("아이폰16", radar.Keyword(radar.Ranked(1)).ToString());
+        Assert.False(radar.IsGolden(radar.Ranked(0)));
+        Assert.True(radar.IsGolden(0) && !radar.IsGolden(1));
+        for (var i = 0; i < 40; i++) radar.Ingest(("t" + i + ":1").AsSpan());
+        Assert.Equal(Trj.RealtimeSocialTrendSpikeRadarEngine.TopicCap, radar.TopicCount);
+        Assert.True(radar.Dropped > 0);
+
+        // ── TRJ-3: 무관 < 70 차단 · 4 시간 회전 쿨다운 ──
+        var guard = new Trj.TrendSpikeCooldownAntiSpamGuard();
+        Assert.Equal(Trj.TrendInjectDecision.BlockedIrrelevant, guard.Evaluate("흑백요리사".AsSpan(), 69, T0));
+        Assert.Equal(Trj.TrendInjectDecision.Allowed, guard.Evaluate("아이폰16".AsSpan(), 70, T0));
+        guard.Record("아이폰16".AsSpan(), T0);
+        Assert.Equal(Trj.TrendInjectDecision.CoolingDown, guard.Evaluate("#아이폰 16".AsSpan(), 100, T0 + 3600));   // 정규형 동일 태그
+        Assert.Equal(3 * 3600, guard.RemainingCooldownSec("아이폰16".AsSpan(), T0 + 3600), 3);
+        Assert.Equal(1, guard.ActiveCooldowns(T0 + 100));
+        Assert.Equal(Trj.TrendInjectDecision.Allowed, guard.Evaluate("아이폰16".AsSpan(), 100, T0 + Trj.TrendSpikeCooldownAntiSpamGuard.CooldownSec + 1));
+        Assert.Equal(0, guard.ActiveCooldowns(T0 + Trj.TrendSpikeCooldownAntiSpamGuard.CooldownSec + 1));
+        Assert.Equal(1, guard.BlockedIrrelevant);
+        Assert.Equal(1, guard.BlockedCooldown);
+        guard.Reset();
+
+        // ── TRJ-2: 3 플랫폼 메타데이터 합성 ──
+        var inj = new Trj.ViralHashtagDynamicMetadataInjector();
+        var r2 = new Trj.RealtimeSocialTrendSpikeRadarEngine();
+        r2.SetContent(Script.AsSpan(), Tags.AsSpan());
+        r2.Ingest("아이폰16:100;야간 촬영:40;카메라 꿀팁:20;흑백요리사:300;캡컷 템플릿:50".AsSpan());
+        r2.CloseMinute();
+        r2.Ingest("아이폰16:180;야간 촬영:70;카메라 꿀팁:30;흑백요리사:400;캡컷 템플릿:90".AsSpan());
+        r2.Scan();
+        Assert.Equal(3, inj.Compose(r2, guard, T0, Summary.AsSpan(), Niche.AsSpan()));
+        var title = inj.YouTubeTitle.ToString();
+        Assert.True(title.Length <= 100, title);
+        Assert.StartsWith("🔥 아이폰16 | ", title);
+        Assert.Equal(3, inj.YouTubeTagCount);
+        Assert.EndsWith("#아이폰16 #야간촬영 #카메라꿀팁", inj.YouTubeDescription.ToString());
+        Assert.Equal(5, inj.InstagramTagCount);
+        Assert.True(inj.InstagramTrendTags == 2 && inj.InstagramNicheTags == 2 && inj.InstagramMegaTags == 1);
+        Assert.EndsWith("#아이폰16 #야간촬영 #카메라꿀팁 #아이폰카메라 #reels", inj.InstagramCaption.ToString());   // 틈새 중복(#야간촬영) 생략
+        Assert.Contains(Summary, inj.InstagramCaption.ToString());
+        Assert.True(inj.TikTokCaption.Length <= Trj.ViralHashtagDynamicMetadataInjector.TtCaptionCap);
+        Assert.EndsWith("#fyp", inj.TikTokCaption.ToString());
+        Assert.Equal(4, inj.TikTokTagCount);
+        Assert.DoesNotContain("흑백요리사", inj.InstagramCaption.ToString());
+        Assert.DoesNotContain("캡컷템플릿", inj.YouTubeDescription.ToString());
+        // 100 자 절단 · 서로게이트 보존
+        inj.Compose(r2, guard, T0, (new string('가', 120) + "🔥").AsSpan(), Niche.AsSpan());
+        Assert.Equal(100, inj.YouTubeTitle.Length);
+        Assert.EndsWith("…", inj.YouTubeTitle.ToString());
+        // 커밋 → 재조합 시 쿨다운으로 트렌드 0 · 틈새/메가만 유지
+        inj.Compose(r2, guard, T0, Summary.AsSpan(), Niche.AsSpan());
+        inj.Commit(r2, guard, T0);
+        Assert.Equal(0, inj.Compose(r2, guard, T0 + 60, Summary.AsSpan(), Niche.AsSpan()));
+        Assert.Equal(5, inj.InstagramTagCount);
+        Assert.Equal(0, inj.InstagramTrendTags);
+        Assert.DoesNotContain("🔥", inj.YouTubeTitle.ToString());
+        Assert.Equal(3, inj.Compose(r2, guard, T0 + Trj.TrendSpikeCooldownAntiSpamGuard.CooldownSec, Summary.AsSpan(), Niche.AsSpan()));
+
+        // ── 무할당 · 100 ms 예산: 피드 파싱 · 스캔 · 조합 · 가드 판정 ──
+        var feeds = new string[8];
+        for (var m = 0; m < feeds.Length; m++)
+        {
+            var sb = new System.Text.StringBuilder();
+            for (var i = 0; i < Trj.TrendJackingStudioRunner.FeedKeywords.Length; i++) sb.Append(Trj.TrendJackingStudioRunner.FeedKeywords[i]).Append(':').Append(100 + i * 7 + m * (i + 3)).Append(';');
+            feeds[m] = sb.ToString();
+        }
+        var hr = new Trj.RealtimeSocialTrendSpikeRadarEngine();
+        var hg = new Trj.TrendSpikeCooldownAntiSpamGuard();
+        var hi = new Trj.ViralHashtagDynamicMetadataInjector();
+        hr.SetContent(Script.AsSpan(), Tags.AsSpan());
+        for (var w = 0; w < 3; w++) { hr.CloseMinute(); hr.Ingest(feeds[w].AsSpan()); hr.Scan(); hi.Compose(hr, hg, T0, Summary.AsSpan(), Niche.AsSpan()); hg.Evaluate("흑백요리사".AsSpan(), 0, T0); }
+        var sw = new System.Diagnostics.Stopwatch();   // 계측 구간 밖 생성(객체 40 B)
+        var a0 = GC.GetAllocatedBytesForCurrentThread();
+        sw.Start();
+        for (var k = 0; k < 400; k++)
+        {
+            hr.CloseMinute();
+            hr.Ingest(feeds[k % feeds.Length].AsSpan());
+            hr.Scan();
+            hi.Compose(hr, hg, T0 + k, Summary.AsSpan(), Niche.AsSpan());
+            hg.Evaluate("흑백요리사".AsSpan(), hr.ScoreRelevance("흑백요리사".AsSpan()), T0 + k);
+        }
+        sw.Stop();
+        var alloc = GC.GetAllocatedBytesForCurrentThread() - a0;
+        Assert.True(alloc == 0, "트렌드재킹 핫패스 할당 " + alloc);
+        Assert.True(sw.Elapsed.TotalMilliseconds / 400 < 100, "1 사이클 " + sw.Elapsed.TotalMilliseconds / 400 + " ms");
+
+        // ── 러너 E2E: 수신 → 주입 → 쿨다운 재주입 차단 → 무관 강제 차단 → 4 시간 후 재주입 ──
+        using var run = new Trj.TrendJackingStudioRunner();
+        var changes = 0;
+        run.OnChange += () => changes++;
+        Assert.Equal(3, run.Advance(3));
+        Assert.True(run.LastScanMicros < 100_000);
+        Assert.Equal(3, run.Inject());
+        Assert.Equal(1, run.Injections);
+        Assert.Equal(3, run.ActiveCooldowns);
+        Assert.Equal(0, run.Inject());
+        Assert.True(run.Guard.BlockedCooldown >= 3);
+        Assert.Equal(Trj.TrendInjectDecision.BlockedIrrelevant, run.ForceIrrelevant());
+        Assert.True(run.Guard.BlockedIrrelevant >= 1);
+        run.SkipCooldown();
+        Assert.Equal(0, run.ActiveCooldowns);
+        Assert.Equal(3, run.Inject());
+        run.SetPreset(1);
+        Assert.Equal(2, run.Radar.GoldenCount);   // 할로윈 메이크업(태그) · 좀비 분장(대본)
+        run.SetPlatform(Trj.TrendPlatform.InstagramReels);
+        Assert.Contains("#reels", run.Injector.Primary(run.Platform).ToString());
+        run.SetSummary("   ");
+        Assert.False(string.IsNullOrWhiteSpace(run.Summary));
+        Assert.True(run.LogCount > 0 && changes > 0);
+        run.Reset();
+        Assert.Equal(0, run.Radar.TopicCount);
+        Assert.Equal(0, run.Injections);
+
+        // ── 카탈로그 · 도움말 결선(172) ──
+        var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
+        Assert.Equal(172, cat.Length);
+        Assert.Contains(cat, e => e.Key == "_socialTrendJackingRadar" && e.Category == 4 && e.Title == "실시간 트렌드재킹 & 해시태그 레이더");
+        Assert.NotNull(PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Find("_socialTrendJackingRadar"));
+        Assert.Equal(cat.Length, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
+        Assert.Equal(0, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects());
+        Assert.Equal("_socialTrendJackingRadar", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.ResolveKeyByHeader("🔥 실시간 트렌드재킹 & 해시태그 레이더"));
     }
 }

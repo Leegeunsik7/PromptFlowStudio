@@ -1,0 +1,253 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.TrendJacking
+@implements IDisposable
+@inject TrendJackingStudioRunner Runner
+
+@* [PromptFlow Studio v17.96.0] 🔥 실시간 트렌드재킹 & 해시태그 레이더 — 급상승 키워드 랭킹 · 연관도 레이더 게이지 · 3 플랫폼 메타데이터 미리보기/원클릭 주입 · 무관 편승/쿨다운 가드. *@
+<div class="trj-scrim" @onclick="Close">
+    <div class="trj-modal" @onclick:stopPropagation="true">
+        <div class="trj-h">
+            <div>
+                <div class="trj-title">🔥 실시간 트렌드재킹 &amp; 해시태그 레이더</div>
+                <div class="trj-sub">SNS 급상승 키워드를 1분마다 수집해 <b>분당 가속도</b>로 줄 세우고, 지금 만든 숏폼의 대본 · 태그와 얼마나 관련 있는지 <b>0~100점</b>으로 매깁니다.
+                    <b>80점 이상</b> 골든 토픽만 골라 YouTube Shorts 제목 · Instagram Reels 태그 · TikTok 캡션에 자동으로 넣고, <b>70점 미만</b> 무관 트렌드 편승과 같은 태그 <b>4시간 내</b> 재사용은 막습니다.</div>
+            </div>
+            <div class="trj-hr">
+                <span class="trj-badge @(Runner.Radar.GoldenCount > 0 ? "ok" : null)">🎯 골든 @(Runner.Radar.GoldenCount) / 토픽 @(Runner.Radar.TopicCount)</span>
+                <span class="trj-badge @(Runner.ActiveCooldowns > 0 ? "warn" : null)">🧊 쿨다운 @(Runner.ActiveCooldowns)</span>
+                <span class="trj-badge @(Runner.MaxScanMicros > 100_000 ? "bad" : Runner.Radar.Scans > 0 ? "ok" : null)">⚡ 스캔 @(Runner.LastScanMicros.ToString("0.0", CultureInfo.InvariantCulture))µs</span>
+                <button class="trj-x" @onclick="Close">✕</button>
+            </div>
+        </div>
+
+        <div class="trj-body">
+            <div class="trj-bar">
+                <button class="trj-btn go" @onclick="Step1">📡 +1분 트렌드 수신</button>
+                <button class="trj-btn" @onclick="Step10">⏩ +10분</button>
+                <span class="trj-sep"></span>
+                <label class="trj-lbl">📝 대본
+                    <select class="trj-sel" value="@(Runner.Preset.ToString(CultureInfo.InvariantCulture))" @onchange="OnPreset">
+                        @for (var i = 0; i < TrendJackingStudioRunner.PresetNames.Length; i++)
+                        {
+                            <option value="@(i.ToString(CultureInfo.InvariantCulture))">@(TrendJackingStudioRunner.PresetNames[i])</option>
+                        }
+                    </select>
+                </label>
+                <button class="trj-btn" @onclick="ResetAll">♻ 초기화</button>
+            </div>
+
+            <div class="trj-card">
+                <div class="trj-sec">📈 실시간 급상승 키워드 랭킹 <span class="trj-kw">가속도 순 · 경과 @(Runner.ElapsedMin)분</span></div>
+                <div class="trj-strip">
+                    @if (Runner.Radar.TopicCount == 0)
+                    {
+                        <div class="trj-mini">아직 수신된 트렌드가 없습니다 — 「📡 +1분 트렌드 수신」을 눌러 보세요.</div>
+                    }
+                    @for (var i = 0; i < Runner.Radar.TopicCount; i++)
+                    {
+                        var t = Runner.Radar.Ranked(i);
+                        var rel = Runner.Radar.Relevance(t);
+                        <div class="trj-chip @(Runner.Radar.IsGolden(t) ? "gold" : rel < TrendSpikeCooldownAntiSpamGuard.MinRelevance ? "off" : null)">
+                            <span class="trj-rk">@(i + 1)</span>
+                            <span class="trj-kn">@(Runner.Radar.Keyword(t).ToString())</span>
+                            <span class="trj-v @(Runner.Radar.Velocity(t) > 0 ? "up" : "dn")">@(Runner.Radar.Velocity(t) > 0 ? "▲" : "▼")@(Math.Abs(Runner.Radar.Velocity(t)))/분</span>
+                            <span class="trj-rl">@(rel)점</span>
+                        </div>
+                    }
+                </div>
+            </div>
+
+            <div class="trj-main">
+                <div class="trj-card">
+                    <div class="trj-sec">🎯 연관도 매칭 레이더 <span class="trj-kw">골든 ≥ @(RealtimeSocialTrendSpikeRadarEngine.GoldenScore) · 차단 &lt; @(TrendSpikeCooldownAntiSpamGuard.MinRelevance)</span></div>
+                    <div class="trj-radar">
+                        <svg viewBox="0 0 120 120" class="trj-gauge" role="img" aria-label="최고 골든 토픽 연관도">
+                            <circle cx="60" cy="60" r="50" class="trj-gt" />
+                            <circle cx="60" cy="60" r="50" class="trj-gv @(TopRel() >= RealtimeSocialTrendSpikeRadarEngine.GoldenScore ? "ok" : TopRel() >= TrendSpikeCooldownAntiSpamGuard.MinRelevance ? "mid" : "bad")"
+                                    stroke-dasharray="@((TopRel() * 3.1416f).ToString("0.0", CultureInfo.InvariantCulture)) 314.16" transform="rotate(-90 60 60)" />
+                            <text x="60" y="58" text-anchor="middle" class="trj-gn">@(TopRel())</text>
+                            <text x="60" y="76" text-anchor="middle" class="trj-gs">연관도</text>
+                        </svg>
+                        <div class="trj-bars">
+                            @for (var i = 0; i < Runner.Radar.TopicCount; i++)
+                            {
+                                var t = Runner.Radar.Ranked(i);
+                                var rel = Runner.Radar.Relevance(t);
+                                <div class="trj-br">
+                                    <span class="trj-bn">@(Runner.Radar.Keyword(t).ToString())</span>
+                                    <span class="trj-bt"><span class="trj-bf @(rel >= RealtimeSocialTrendSpikeRadarEngine.GoldenScore ? "ok" : rel >= TrendSpikeCooldownAntiSpamGuard.MinRelevance ? "mid" : "bad")" style="width:@(rel.ToString(CultureInfo.InvariantCulture))%"></span></span>
+                                    <span class="trj-bs">S@(Runner.Radar.SpikeIndex(t))</span>
+                                </div>
+                            }
+                        </div>
+                    </div>
+                    <div class="trj-grid">
+                        <div class="m"><b>@(Runner.Guard.Allowed)</b><i>가드 허용</i></div>
+                        <div class="m"><b class="@(Runner.Guard.BlockedIrrelevant > 0 ? "bad" : null)">@(Runner.Guard.BlockedIrrelevant)</b><i>무관 차단</i></div>
+                        <div class="m"><b class="@(Runner.Guard.BlockedCooldown > 0 ? "warn" : null)">@(Runner.Guard.BlockedCooldown)</b><i>쿨다운 차단</i></div>
+                    </div>
+                </div>
+
+                <div class="trj-card">
+                    <div class="trj-sec">💉 메타데이터 주입 · 미리보기 <span class="trj-kw">채택 트렌드 @(Runner.Injector.PickedCount) · 주입 @(Runner.Injections)회</span></div>
+                    <div class="trj-bar">
+                        @for (var p = 0; p < 3; p++)
+                        {
+                            var pf = (TrendPlatform)p;
+                            <button class="trj-btn sm @(Runner.Platform == pf ? "on" : null)" @onclick="() => Pick(pf)">@(ViralHashtagDynamicMetadataInjector.PlatformName(pf))</button>
+                        }
+                    </div>
+                    @if (Runner.Platform == TrendPlatform.YouTubeShorts)
+                    {
+                        <div class="trj-pl">제목 <span class="trj-kw">@(Runner.Injector.YouTubeTitle.Length)/@(ViralHashtagDynamicMetadataInjector.YtTitleCap)자</span></div>
+                        <div class="trj-out">@(Runner.Injector.YouTubeTitle.ToString())</div>
+                        <div class="trj-pl">설명 · 핵심 태그 <span class="trj-kw">@(Runner.Injector.YouTubeTagCount)개</span></div>
+                        <div class="trj-out pre">@(Runner.Injector.YouTubeDescription.ToString())</div>
+                    }
+                    else if (Runner.Platform == TrendPlatform.InstagramReels)
+                    {
+                        <div class="trj-pl">캡션 <span class="trj-kw">트렌드 @(Runner.Injector.InstagramTrendTags) · 틈새 @(Runner.Injector.InstagramNicheTags) · 메가 @(Runner.Injector.InstagramMegaTags)</span></div>
+                        <div class="trj-out pre">@(Runner.Injector.InstagramCaption.ToString())</div>
+                    }
+                    else
+                    {
+                        <div class="trj-pl">캡션 <span class="trj-kw">@(Runner.Injector.TikTokCaption.Length)/@(ViralHashtagDynamicMetadataInjector.TtCaptionCap)자 · 태그 @(Runner.Injector.TikTokTagCount)</span></div>
+                        <div class="trj-out pre">@(Runner.Injector.TikTokCaption.ToString())</div>
+                    }
+                    <div class="trj-pl">대본 요약문</div>
+                    <textarea class="trj-ta" rows="2" aria-label="대본 요약문" value="@(Runner.Summary)" @oninput="OnSummary"></textarea>
+                    <div class="trj-pl">틈새 태그(쉼표 구분)</div>
+                    <input class="trj-in" aria-label="틈새 태그" value="@(Runner.Niche)" @oninput="OnNiche" />
+                    <div class="trj-bar">
+                        <button class="trj-btn go" @onclick="Inject">💉 원클릭 메타데이터 주입</button>
+                        <button class="trj-btn pick" @onclick="Force">🛑 무관 트렌드 강제 주입</button>
+                        <button class="trj-btn" @onclick="Skip">⏭ +4시간(쿨다운 해제)</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="trj-card">
+                <div class="trj-sec">📜 트렌드재킹 로그 <span class="trj-kw">@(Runner.LogCount)건</span></div>
+                <div class="trj-log">
+                    @if (Runner.LogCount == 0)
+                    {
+                        <div class="trj-mini">아직 기록이 없습니다 — 트렌드를 수신한 뒤 「💉 원클릭 메타데이터 주입」을 눌러 보세요.</div>
+                    }
+                    @for (var i = 0; i < Runner.LogCount; i++)
+                    {
+                        var line = Runner.Log(i);
+                        <div class="trj-ll @(line.Contains('⚠') || line.Contains("🛑", StringComparison.Ordinal) || line.Contains("🧊", StringComparison.Ordinal) ? "bad" : line.Contains("💉", StringComparison.Ordinal) ? "ok" : null)">@(line)</div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="trj-act">@(Runner.LastAction ?? "대기") · @(Runner.StatusLine())</div>
+    </div>
+</div>
+
+<style>
+    .trj-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .trj-modal { width: min(1240px, 96vw); max-height: 94vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); color: var(--text-primary); }
+    .trj-h { position: sticky; top: 0; z-index: 3; flex: 0 0 auto; display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px 8px; background: var(--card); border-bottom: 1px solid var(--line); }
+    .trj-hr { display: flex; align-items: flex-start; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+    .trj-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 10px; }
+    .trj-act { position: sticky; bottom: 0; z-index: 3; flex: 0 0 auto; padding: 8px 16px 14px; background: var(--card); border-top: 1px solid var(--line); font-size: 11px; color: var(--text-muted); }
+    .trj-title { font-size: 17px; font-weight: 800; }
+    .trj-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .trj-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .trj-badge { white-space: nowrap; font-size: 11.5px; font-weight: 700; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: #1e293b; }
+    .trj-badge.ok { border-color: #22c55e; background: #14532d; color: #bbf7d0; }
+    .trj-badge.warn { border-color: #f59e0b; background: #422006; color: #fde68a; }
+    .trj-badge.bad { border-color: #ef4444; background: #450a0a; color: #fecaca; }
+    .trj-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 0; }
+    .trj-sep { flex: 1; }
+    .trj-lbl { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-muted); }
+    .trj-sel { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font-size: 11.5px; }
+    .trj-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .trj-btn.sm { padding: 3px 8px; font-size: 11px; }
+    .trj-btn.go { border-color: #38bdf8; font-weight: 700; }
+    .trj-btn.on { border-color: #38bdf8; background: #0c4a6e; }
+    .trj-btn.pick { border-color: #facc15; }
+    .trj-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-width: 0; margin-top: 10px; }
+    .trj-sec { font-size: 12.5px; font-weight: 700; margin: 0 0 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .trj-kw { margin-left: auto; font-size: 10.5px; font-weight: 400; color: #7dd3fc; }
+    .trj-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 10px; }
+    .trj-strip { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
+    .trj-chip { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 999px; background: #111827; border: 1px solid var(--line); font-size: 11.5px; }
+    .trj-chip.gold { border-color: #facc15; background: #3a2e05; }
+    .trj-chip.off { opacity: .6; }
+    .trj-rk { font-weight: 800; color: #94a3b8; }
+    .trj-kn { font-weight: 700; }
+    .trj-v.up { color: #4ade80; } .trj-v.dn { color: #f87171; }
+    .trj-rl { font-size: 10.5px; color: #7dd3fc; }
+    .trj-radar { display: flex; gap: 10px; align-items: flex-start; }
+    .trj-gauge { flex: 0 0 120px; width: 120px; height: 120px; }
+    .trj-gt { fill: none; stroke: #1e293b; stroke-width: 10; }
+    .trj-gv { fill: none; stroke-width: 10; stroke-linecap: round; transition: stroke-dasharray .2s; }
+    .trj-gv.ok { stroke: #22c55e; } .trj-gv.mid { stroke: #facc15; } .trj-gv.bad { stroke: #ef4444; }
+    .trj-gn { fill: var(--text-primary); font-size: 24px; font-weight: 800; }
+    .trj-gs { fill: var(--text-muted); font-size: 10px; }
+    .trj-bars { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; max-height: 220px; overflow-y: auto; }
+    .trj-br { display: grid; grid-template-columns: 96px minmax(0, 1fr) 34px; gap: 6px; align-items: center; font-size: 11px; }
+    .trj-bn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .trj-bt { height: 8px; border-radius: 999px; background: #1e293b; overflow: hidden; }
+    .trj-bf { display: block; height: 100%; }
+    .trj-bf.ok { background: #22c55e; } .trj-bf.mid { background: #facc15; } .trj-bf.bad { background: #ef4444; }
+    .trj-bs { font-size: 10px; color: var(--text-muted); text-align: right; }
+    .trj-pl { font-size: 11px; font-weight: 700; margin: 8px 0 3px; display: flex; gap: 6px; }
+    .trj-out { padding: 6px 8px; background: #111827; border-radius: 6px; font-size: 11.5px; line-height: 1.45; min-height: 1.4em; }
+    .trj-out.pre { white-space: pre-wrap; }
+    .trj-ta, .trj-in { width: 100%; box-sizing: border-box; background: #111827; color: var(--text-primary); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font-size: 12px; }
+    .trj-ta { resize: vertical; line-height: 1.45; }
+    .trj-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
+    .trj-grid .m { background: #111827; border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; }
+    .trj-grid .m b { font-size: 12.5px; } .trj-grid .m b.bad { color: #f87171; } .trj-grid .m b.warn { color: #fbbf24; }
+    .trj-grid .m i { font-style: normal; font-size: 10px; color: var(--text-muted); }
+    .trj-log { max-height: 220px; overflow-y: auto; font-family: var(--mono); font-size: 10.5px; display: flex; flex-direction: column; gap: 2px; }
+    .trj-ll { padding: 1px 4px; border-radius: 4px; background: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .trj-ll.ok { color: #bbf7d0; } .trj-ll.bad { color: #fecaca; background: #2a0b0b; }
+    .trj-mini { font-size: 10px; color: var(--text-muted); }
+    @@media (max-width: 1000px) { .trj-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    protected override void OnInitialized() => Runner.OnChange += OnServiceChanged;
+
+    private void Step1() => Guard(() => Runner.Advance(1), "Step1");
+    private void Step10() => Guard(() => Runner.Advance(10), "Step10");
+    private void Inject() => Guard(() => Runner.Inject(), "Inject");
+    private void Force() => Guard(() => Runner.ForceIrrelevant(), "Force");
+    private void Skip() => Guard(Runner.SkipCooldown, "Skip");
+    private void Pick(TrendPlatform p) => Runner.SetPlatform(p);
+    private void ResetAll() => Runner.Reset();
+
+    private void OnSummary(ChangeEventArgs e) => Runner.SetSummary(e.Value?.ToString());
+    private void OnNiche(ChangeEventArgs e) => Runner.SetNiche(e.Value?.ToString());
+
+    private void OnPreset(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var p)) Runner.SetPreset(p);
+    }
+
+    private int TopRel()
+    {
+        var t = Runner.TopGolden();
+        if (t < 0 && Runner.Radar.TopicCount > 0) t = Runner.Radar.Ranked(0);
+        return t < 0 ? 0 : Runner.Radar.Relevance(t);
+    }
+
+    private static void Guard(Action a, string tag)
+    {
+        try { a(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("TrendJacking.Modal." + tag, ex); }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Runner.OnChange -= OnServiceChanged;
+}

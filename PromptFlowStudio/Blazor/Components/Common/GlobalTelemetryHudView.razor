@@ -286,6 +286,7 @@
 @inject PromptFlowStudio.Services.PostPublishSplitTest.PostPublishSplitTestStudioRunner PstRun
 @inject PromptFlowStudio.Services.PlatformVisibility.PlatformVisibilityGatewayStudioRunner PvgRun
 @inject PromptFlowStudio.Services.GoldenHourEngagement.GoldenHourEngagementStudioRunner GheRun
+@inject PromptFlowStudio.Services.TrendJacking.TrendJackingStudioRunner TrjRun
 @inject PromptFlowStudio.Services.LiveEngagement.LiveAudienceEngagementStudioRunner LaeRun
 @inject PromptFlowStudio.Services.LiveRestream.OmniLiveRestreamStudioRunner RstRun
 @inject PromptFlowStudio.Services.MultilingualDubbing.MultilingualDubbingStudioRunner MldRun
@@ -1011,6 +1012,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.96.0: 트렌드재킹 레이더 — 골든 토픽 · 최고 연관도 · 주입 · 무관/쿨다운 차단 ── *@
+    <div class="gth-v1796">
+        <div class="gth-v96-card pid @(TrjRun.Radar.GoldenCount > 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>🔥 트렌드재킹 레이더</b>
+                <span class="gth-v96-be">@(TrjRun.ActiveCooldowns > 0 ? "쿨다운 " + TrjRun.ActiveCooldowns.ToString(System.Globalization.CultureInfo.InvariantCulture) : "골든 " + TrjRun.Radar.GoldenCount.ToString(System.Globalization.CultureInfo.InvariantCulture))</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(TrjRun.Radar.TopicCount)</b><span>토픽</span></span>
+                <span class="gth-v96-m"><b>@(TrjRun.Injections)</b><span>주입</span></span>
+                <span class="gth-v96-m"><b>@(TrjRun.Guard.BlockedIrrelevant)</b><span>무관 차단</span></span>
+                <span class="gth-v96-m"><b>@(TrjRun.Guard.BlockedCooldown)</b><span>쿨다운</span></span>
+            </div>
+            <div class="gth-v96-act">@(TrjRun.LastAction ?? "트렌드 수신 대기 · 골든 ≥ 80 · 차단 < 70")</div>
+        </div>
+    </div>
     @* ── v17.95.0: 골든아워 댓글 부스터 — 고정 댓글 · 숨김 · 답글 · 시간당 속도 ── *@
     <div class="gth-v1795">
         <div class="gth-v96-card pid @(GheRun.Responder.PinnedInWindow ? "ok" : null)">
@@ -5891,6 +5907,7 @@
         VrpRun.OnChange += OnSwarmChanged; // v17.88.0 (파이프라인 시작/완료 시점만)
         PstRun.OnChange += OnSwarmChanged; // v17.93.0 (조작 · 틱 일괄 시점만)
         GheRun.OnChange += OnSwarmChanged; // v17.95.0 (조작 · 틱 일괄 시점만)
+        TrjRun.OnChange += OnSwarmChanged; // v17.96.0 (조작 · 1 분 틱 일괄 시점만)
         PvgRun.OnChange += OnSwarmChanged; // v17.94.0 (조작 · 폴링 일괄 시점만)
         MrrRun.OnChange += OnSwarmChanged; // v17.92.0 (스테이지 시작 250 ms 스로틀 · 완료/인터락/패키지 즉시)
         CpyRun.OnChange += OnSwarmChanged; // v17.91.0 (재생 헤드 100 ms → 250 ms 스로틀 · 검역 시작/완료 즉시)
@@ -6290,6 +6307,7 @@
         MrrRun.OnChange -= OnSwarmChanged;
         PstRun.OnChange -= OnSwarmChanged;
         GheRun.OnChange -= OnSwarmChanged;
+        TrjRun.OnChange -= OnSwarmChanged;
         PvgRun.OnChange -= OnSwarmChanged;
         NavRun.OnChange -= OnSwarmChanged;
         LavRun.OnChange -= OnSwarmChanged;
