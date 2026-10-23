@@ -287,6 +287,7 @@
 @inject PromptFlowStudio.Services.PlatformVisibility.PlatformVisibilityGatewayStudioRunner PvgRun
 @inject PromptFlowStudio.Services.GoldenHourEngagement.GoldenHourEngagementStudioRunner GheRun
 @inject PromptFlowStudio.Services.TrendJacking.TrendJackingStudioRunner TrjRun
+@inject PromptFlowStudio.Services.ViralCommerce.ViralCommerceAffiliateStudioRunner VcaRun
 @inject PromptFlowStudio.Services.LiveEngagement.LiveAudienceEngagementStudioRunner LaeRun
 @inject PromptFlowStudio.Services.LiveRestream.OmniLiveRestreamStudioRunner RstRun
 @inject PromptFlowStudio.Services.MultilingualDubbing.MultilingualDubbingStudioRunner MldRun
@@ -1012,6 +1013,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+@* ── v17.97.0: 바이럴 커머스 어트리뷰션 — 추천 상품 · 유효 클릭 · 전환 · 어뷰징 차단 · 수수료 ── *@
+    <div class="gth-v1797">
+        <div class="gth-v96-card pid @(VcaRun.Guard.Conversions > 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>🛒 바이럴 커머스 어트리뷰션</b>
+                <span class="gth-v96-be">@(VcaRun.NoticeOk ? "고지 준수" : "고지 누락") · ₩@(VcaRun.Guard.CommissionKrw.ToString("N0", System.Globalization.CultureInfo.InvariantCulture))</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(VcaRun.Matcher.TopCount)</b><span>추천</span></span>
+                <span class="gth-v96-m"><b>@(VcaRun.Guard.ValidClicks)</b><span>유효 클릭</span></span>
+                <span class="gth-v96-m"><b>@(VcaRun.Guard.Conversions)</b><span>전환</span></span>
+                <span class="gth-v96-m"><b>@(VcaRun.Guard.BlockedTotal)</b><span>어뷰징 차단</span></span>
+            </div>
+            <div class="gth-v96-act">@(VcaRun.LastAction ?? "제휴 링크 게시 대기 · 영상당 3 링크 · 공정위 고지 최상단")</div>
+        </div>
+    </div>
     @* ── v17.96.0: 트렌드재킹 레이더 — 골든 토픽 · 최고 연관도 · 주입 · 무관/쿨다운 차단 ── *@
     <div class="gth-v1796">
         <div class="gth-v96-card pid @(TrjRun.Radar.GoldenCount > 0 ? "ok" : null)">
@@ -5907,6 +5923,7 @@
         VrpRun.OnChange += OnSwarmChanged; // v17.88.0 (파이프라인 시작/완료 시점만)
         PstRun.OnChange += OnSwarmChanged; // v17.93.0 (조작 · 틱 일괄 시점만)
         GheRun.OnChange += OnSwarmChanged; // v17.95.0 (조작 · 틱 일괄 시점만)
+        VcaRun.OnChange += OnSwarmChanged; // v17.97.0 (조작 · 트래픽 틱 일괄 시점만)
         TrjRun.OnChange += OnSwarmChanged; // v17.96.0 (조작 · 1 분 틱 일괄 시점만)
         PvgRun.OnChange += OnSwarmChanged; // v17.94.0 (조작 · 폴링 일괄 시점만)
         MrrRun.OnChange += OnSwarmChanged; // v17.92.0 (스테이지 시작 250 ms 스로틀 · 완료/인터락/패키지 즉시)
@@ -6307,6 +6324,7 @@
         MrrRun.OnChange -= OnSwarmChanged;
         PstRun.OnChange -= OnSwarmChanged;
         GheRun.OnChange -= OnSwarmChanged;
+        VcaRun.OnChange -= OnSwarmChanged;
         TrjRun.OnChange -= OnSwarmChanged;
         PvgRun.OnChange -= OnSwarmChanged;
         NavRun.OnChange -= OnSwarmChanged;

@@ -1,0 +1,283 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.ViralCommerce
+@implements IDisposable
+@inject ViralCommerceAffiliateStudioRunner Runner
+@inject Microsoft.JSInterop.IJSRuntime JS
+
+@* [PromptFlow Studio v17.97.0] 🛒 바이럴 커머스 & 제휴 어트리뷰션 — 대본 맥락 상품 추천 · 공정위 고지 숏링크 미리보기/1클릭 복사 · 클릭/전환 게이지 · 어뷰징 차단. *@
+<div class="vca-scrim" @onclick="Close">
+    <div class="vca-modal" @onclick:stopPropagation="true">
+        <div class="vca-h">
+            <div>
+                <div class="vca-title">🛒 바이럴 커머스 &amp; 제휴 어트리뷰션</div>
+                <div class="vca-sub">숏폼 대본에서 제품명 · 브랜드 · 카테고리를 읽어 쿠팡 파트너스 · 아마존 어소시에이트 상품 중 <b>연관도 × 클릭당 기대 수수료(EPC)</b>가 높은 <b>상위 3개</b>를 고르고,
+                    <b>공정위 경제적 이해관계 고지 문구</b>와 <b>pfs.link</b> 숏링크를 고정 댓글 · 설명란 <b>맨 위</b>에 넣습니다. 봇 · 다중 클릭은 실시간 차단하고 영상당 링크는 <b>최대 3개</b>로 제한합니다.</div>
+            </div>
+            <div class="vca-hr">
+                <span class="vca-badge @(Runner.Matcher.TopCount > 0 ? "ok" : "warn")">🎯 추천 @(Runner.Matcher.TopCount) / @(VideoContextAffiliateProductMatcherEngine.CatalogSize)</span>
+                <span class="vca-badge @(Runner.NoticeOk ? "ok" : "bad")">⚖️ @(Runner.NoticeOk ? "고지 준수" : "고지 누락")</span>
+                <span class="vca-badge @(Runner.Guard.LinkCapRejected > 0 ? "warn" : null)">🔗 링크 @(Runner.Guard.LinkCount(Runner.Video))/@(RealtimeAffiliateAttributionSafetyGuard.MaxLinksPerVideo)</span>
+                <span class="vca-badge @(Runner.MaxMatchMicros > 100_000 ? "bad" : Runner.Matcher.Matches > 0 ? "ok" : null)">⚡ 매칭 @(Runner.LastMatchMicros.ToString("0.0", CultureInfo.InvariantCulture))µs</span>
+                <button class="vca-x" @onclick="Close">✕</button>
+            </div>
+        </div>
+
+        <div class="vca-body">
+            <div class="vca-bar">
+                <button class="vca-btn go" @onclick="Publish">🚀 제휴 링크 게시</button>
+                <button class="vca-btn" @onclick="Step60">⏩ +1분 트래픽</button>
+                <button class="vca-btn" @onclick="Step600">⏩ +10분</button>
+                <button class="vca-btn pick" @onclick="Bot">🤖 봇 공습 주입</button>
+                <button class="vca-btn pick" @onclick="Extra">➕ 4번째 링크 추가 시도</button>
+                <span class="vca-sep"></span>
+                <label class="vca-lbl">📝 대본
+                    <select class="vca-sel" value="@(Runner.Preset.ToString(CultureInfo.InvariantCulture))" @onchange="OnPreset">
+                        @for (var i = 0; i < ViralCommerceAffiliateStudioRunner.PresetNames.Length; i++)
+                        {
+                            <option value="@(i.ToString(CultureInfo.InvariantCulture))">@(ViralCommerceAffiliateStudioRunner.PresetNames[i])</option>
+                        }
+                    </select>
+                </label>
+                <button class="vca-btn" @onclick="NextVideo">🎬 다음 영상</button>
+                <button class="vca-btn" @onclick="ResetAll">♻ 초기화</button>
+            </div>
+
+            <div class="vca-main">
+                <div class="vca-card">
+                    <div class="vca-sec">🧠 대본 맥락 추천 상품 <span class="vca-kw">엔티티 @(Runner.Matcher.EntityHits)개 · 연관도 ≥ @(VideoContextAffiliateProductMatcherEngine.MinRelevance)</span></div>
+                    <textarea class="vca-ta" rows="3" aria-label="영상 대본" value="@(Runner.Script)" @oninput="OnScript"></textarea>
+                    @if (Runner.Matcher.TopCount == 0)
+                    {
+                        <div class="vca-mini">연관 상품이 없습니다 — 대본에 제품명 · 브랜드 · 카테고리를 넣어 보세요.</div>
+                    }
+                    @for (var i = 0; i < Runner.Matcher.TopCount; i++)
+                    {
+                        var p = Runner.Matcher.Top(i);
+                        var rel = Runner.Matcher.Relevance(p);
+                        <div class="vca-prod">
+                            <div class="vca-pr">
+                                <span class="vca-rk">@(i + 1)</span>
+                                <span class="vca-pn">@(VideoContextAffiliateProductMatcherEngine.Names[p])</span>
+                                <span class="vca-net @(VideoContextAffiliateProductMatcherEngine.Networks[p] == AffiliateNetwork.AmazonAssociates ? "amz" : "cp")">@(VideoContextAffiliateProductMatcherEngine.NetworkName(VideoContextAffiliateProductMatcherEngine.Networks[p]))</span>
+                            </div>
+                            <div class="vca-br">
+                                <span class="vca-bt"><span class="vca-bf @(rel >= 60 ? "ok" : "mid")" style="width:@(rel.ToString(CultureInfo.InvariantCulture))%"></span></span>
+                                <span class="vca-bs">@(rel)점</span>
+                            </div>
+                            <div class="vca-tags">
+                                @if (Runner.Matcher.NameHit(p)) { <span class="vca-tag">제품명</span> }
+                                @if (Runner.Matcher.BrandHit(p)) { <span class="vca-tag">브랜드 @(VideoContextAffiliateProductMatcherEngine.Brands[p])</span> }
+                                @if (Runner.Matcher.CategoryHit(p)) { <span class="vca-tag">카테고리 @(VideoContextAffiliateProductMatcherEngine.Categories[p])</span> }
+                                <span class="vca-tag">별칭 @(Runner.Matcher.AliasHits(p))</span>
+                                <span class="vca-tag acc">₩@(VideoContextAffiliateProductMatcherEngine.PriceKrw[p].ToString("N0", CultureInfo.InvariantCulture)) · EPC ₩@(VideoContextAffiliateProductMatcherEngine.Epc(p).ToString("0.0", CultureInfo.InvariantCulture))</span>
+                            </div>
+                        </div>
+                    }
+                </div>
+
+                <div class="vca-card">
+                    <div class="vca-sec">⚖️ 준법 숏링크 미리보기 <span class="vca-kw">링크 @(Runner.Injector.LinkCount) · 복사 @(Runner.Copies)회</span></div>
+                    <div class="vca-bar">
+                        <button class="vca-btn sm @(_desc ? null : "on")" aria-pressed="@(_desc ? "false" : "true")" @onclick="ShowPinned">📌 고정 댓글(v17.95)</button>
+                        <button class="vca-btn sm @(_desc ? "on" : null)" aria-pressed="@(_desc ? "true" : "false")" @onclick="ShowDesc">📄 설명란(v17.94)</button>
+                        <span class="vca-sep"></span>
+                        <button class="vca-btn sm go" @onclick="Copy">📋 1클릭 복사</button>
+                    </div>
+                    <div class="vca-out pre">@(_desc ? Runner.Injector.Description.ToString() : Runner.Injector.PinnedComment.ToString())</div>
+                    <div class="vca-pl">subId</div>
+                    <input class="vca-in" aria-label="subId" value="@(Runner.SubId)" @oninput="OnSubId" />
+                    <div class="vca-pl">캠페인 태그</div>
+                    <input class="vca-in" aria-label="캠페인 태그" value="@(Runner.Campaign)" @oninput="OnCampaign" />
+                    <div class="vca-pl">추적 URL(마지막 링크)</div>
+                    <div class="vca-out mono">@(Runner.Injector.TrackedUrl.ToString())</div>
+                    @if (_copied is not null)
+                    {
+                        <div class="vca-mini">@(_copied)</div>
+                    }
+                </div>
+            </div>
+
+            <div class="vca-card">
+                <div class="vca-sec">📊 실시간 어트리뷰션 <span class="vca-kw">영상 #@(Runner.Video + 1) · 경과 @(Runner.ElapsedSec)s</span></div>
+                <div class="vca-gauges">
+                    <div class="vca-g">
+                        <svg viewBox="0 0 120 120" class="vca-gauge" role="img" aria-label="전환율">
+                            <circle cx="60" cy="60" r="50" class="vca-gt" />
+                            <circle cx="60" cy="60" r="50" class="vca-gv ok" stroke-dasharray="@((Math.Min(100, Runner.Guard.ConversionRatePct * 5) * 3.1416).ToString("0.0", CultureInfo.InvariantCulture)) 314.16" transform="rotate(-90 60 60)" />
+                            <text x="60" y="58" text-anchor="middle" class="vca-gn">@(Runner.Guard.ConversionRatePct.ToString("0.0", CultureInfo.InvariantCulture))%</text>
+                            <text x="60" y="76" text-anchor="middle" class="vca-gs">전환율</text>
+                        </svg>
+                    </div>
+                    <div class="vca-g">
+                        <svg viewBox="0 0 120 120" class="vca-gauge" role="img" aria-label="차단율">
+                            <circle cx="60" cy="60" r="50" class="vca-gt" />
+                            <circle cx="60" cy="60" r="50" class="vca-gv bad" stroke-dasharray="@((Runner.Guard.BlockRatePct * 3.1416).ToString("0.0", CultureInfo.InvariantCulture)) 314.16" transform="rotate(-90 60 60)" />
+                            <text x="60" y="58" text-anchor="middle" class="vca-gn">@(Runner.Guard.BlockRatePct.ToString("0.0", CultureInfo.InvariantCulture))%</text>
+                            <text x="60" y="76" text-anchor="middle" class="vca-gs">어뷰징 차단</text>
+                        </svg>
+                    </div>
+                    <div class="vca-series" aria-label="최근 10분 유효 클릭">
+                        @for (var a = 9; a >= 0; a--)
+                        {
+                            var v = Runner.Guard.SeriesValid(Runner.SimNow, a);
+                            var b = Runner.Guard.SeriesBlocked(Runner.SimNow, a);
+                            <div class="vca-col" title="@(a)분 전 · 유효 @(v) · 차단 @(b)">
+                                <span class="vca-cb" style="height:@(Math.Min(100, b * 4).ToString(CultureInfo.InvariantCulture))%"></span>
+                                <span class="vca-cv" style="height:@(Math.Min(100, v * 4).ToString(CultureInfo.InvariantCulture))%"></span>
+                            </div>
+                        }
+                    </div>
+                </div>
+                <div class="vca-grid">
+                    <div class="m"><b>@(Runner.Guard.ValidClicks)</b><i>유효 클릭</i></div>
+                    <div class="m"><b>@(Runner.Guard.Conversions)</b><i>전환</i></div>
+                    <div class="m"><b class="acc">₩@(Runner.Guard.CommissionKrw.ToString("N0", CultureInfo.InvariantCulture))</b><i>추정 수수료</i></div>
+                    <div class="m"><b class="@(Runner.Guard.BlockedBot > 0 ? "bad" : null)">@(Runner.Guard.BlockedBot)</b><i>봇 UA 차단</i></div>
+                    <div class="m"><b class="@(Runner.Guard.BlockedBurst + Runner.Guard.BlockedBanned > 0 ? "bad" : null)">@(Runner.Guard.BlockedBurst + Runner.Guard.BlockedBanned)</b><i>다중 클릭 차단</i></div>
+                    <div class="m"><b class="@(Runner.Guard.LinkCapRejected > 0 ? "warn" : null)">@(Runner.Guard.LinkCapRejected)</b><i>링크 상한 거부</i></div>
+                </div>
+            </div>
+
+            <div class="vca-card">
+                <div class="vca-sec">📜 커머스 로그 <span class="vca-kw">@(Runner.LogCount)건</span></div>
+                <div class="vca-log">
+                    @if (Runner.LogCount == 0)
+                    {
+                        <div class="vca-mini">아직 기록이 없습니다 — 「🚀 제휴 링크 게시」 후 「⏩ +1분 트래픽」을 눌러 보세요.</div>
+                    }
+                    @for (var i = 0; i < Runner.LogCount; i++)
+                    {
+                        var line = Runner.Log(i);
+                        <div class="vca-ll @(line.Contains('⚠') || line.Contains("🛑", StringComparison.Ordinal) || line.Contains("🤖", StringComparison.Ordinal) || line.Contains("🚫", StringComparison.Ordinal) ? "bad" : line.Contains("💰", StringComparison.Ordinal) || line.Contains("🚀", StringComparison.Ordinal) ? "ok" : null)">@(line)</div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="vca-act">@(Runner.LastAction ?? "대기") · @(Runner.StatusLine())</div>
+    </div>
+</div>
+
+<style>
+    .vca-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .vca-modal { width: min(1240px, 96vw); max-height: 94vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); color: var(--text-primary); }
+    .vca-h { position: sticky; top: 0; z-index: 3; flex: 0 0 auto; display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px 8px; background: var(--card); border-bottom: 1px solid var(--line); }
+    .vca-hr { display: flex; align-items: flex-start; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+    .vca-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 10px; }
+    .vca-act { position: sticky; bottom: 0; z-index: 3; flex: 0 0 auto; padding: 8px 16px 14px; background: var(--card); border-top: 1px solid var(--line); font-size: 11px; color: var(--text-muted); }
+    .vca-title { font-size: 17px; font-weight: 800; }
+    .vca-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .vca-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .vca-badge { white-space: nowrap; font-size: 11.5px; font-weight: 700; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: #1e293b; }
+    .vca-badge.ok { border-color: #22c55e; background: #14532d; color: #bbf7d0; }
+    .vca-badge.warn { border-color: #f59e0b; background: #422006; color: #fde68a; }
+    .vca-badge.bad { border-color: #ef4444; background: #450a0a; color: #fecaca; }
+    .vca-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 0; }
+    .vca-sep { flex: 1; }
+    .vca-lbl { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-muted); }
+    .vca-sel { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font-size: 11.5px; }
+    .vca-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .vca-btn.sm { padding: 3px 8px; font-size: 11px; }
+    .vca-btn.go { border-color: #38bdf8; font-weight: 700; }
+    .vca-btn.on { border-color: #38bdf8; background: #0c4a6e; }
+    .vca-btn.pick { border-color: #facc15; }
+    .vca-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-width: 0; margin-top: 10px; }
+    .vca-sec { font-size: 12.5px; font-weight: 700; margin: 0 0 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .vca-kw { margin-left: auto; font-size: 10.5px; font-weight: 400; color: #7dd3fc; }
+    .vca-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 10px; }
+    .vca-prod { margin-top: 8px; padding: 7px 9px; background: #111827; border-radius: 8px; display: flex; flex-direction: column; gap: 4px; }
+    .vca-pr { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+    .vca-rk { font-weight: 800; color: #facc15; }
+    .vca-pn { font-weight: 700; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .vca-net { font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line); }
+    .vca-net.cp { border-color: #ef4444; color: #fecaca; } .vca-net.amz { border-color: #f59e0b; color: #fde68a; }
+    .vca-br { display: grid; grid-template-columns: minmax(0, 1fr) 40px; gap: 6px; align-items: center; font-size: 11px; }
+    .vca-bt { height: 8px; border-radius: 999px; background: #1e293b; overflow: hidden; }
+    .vca-bf { display: block; height: 100%; }
+    .vca-bf.ok { background: #22c55e; } .vca-bf.mid { background: #facc15; }
+    .vca-bs { font-size: 10.5px; color: #7dd3fc; text-align: right; }
+    .vca-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+    .vca-tag { font-size: 10px; padding: 1px 6px; border-radius: 6px; background: #1e293b; color: var(--text-muted); }
+    .vca-tag.acc { color: #bbf7d0; }
+    .vca-pl { font-size: 11px; font-weight: 700; margin: 8px 0 3px; display: flex; gap: 6px; }
+    .vca-out { padding: 6px 8px; background: #111827; border-radius: 6px; font-size: 11.5px; line-height: 1.45; min-height: 1.4em; margin-top: 6px; }
+    .vca-out.pre { white-space: pre-wrap; }
+    .vca-out.mono { font-family: var(--mono); font-size: 10.5px; word-break: break-all; }
+    .vca-ta, .vca-in { width: 100%; box-sizing: border-box; background: #111827; color: var(--text-primary); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font-size: 12px; }
+    .vca-ta { resize: vertical; line-height: 1.45; }
+    .vca-gauges { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .vca-gauge { width: 120px; height: 120px; }
+    .vca-gt { fill: none; stroke: #1e293b; stroke-width: 10; }
+    .vca-gv { fill: none; stroke-width: 10; stroke-linecap: round; transition: stroke-dasharray .2s; }
+    .vca-gv.ok { stroke: #22c55e; } .vca-gv.bad { stroke: #ef4444; }
+    .vca-gn { fill: var(--text-primary); font-size: 20px; font-weight: 800; }
+    .vca-gs { fill: var(--text-muted); font-size: 10px; }
+    .vca-series { flex: 1 1 260px; min-width: 0; height: 110px; display: flex; align-items: flex-end; gap: 4px; padding: 4px; background: #111827; border-radius: 8px; }
+    .vca-col { flex: 1 1 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; gap: 1px; }
+    .vca-cv { display: block; background: #22c55e; border-radius: 2px 2px 0 0; }
+    .vca-cb { display: block; background: #ef4444; border-radius: 2px 2px 0 0; }
+    .vca-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
+    .vca-grid .m { background: #111827; border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; }
+    .vca-grid .m b { font-size: 12.5px; } .vca-grid .m b.bad { color: #f87171; } .vca-grid .m b.warn { color: #fbbf24; } .vca-grid .m b.acc { color: #4ade80; }
+    .vca-grid .m i { font-style: normal; font-size: 10px; color: var(--text-muted); }
+    .vca-log { max-height: 220px; overflow-y: auto; font-family: var(--mono); font-size: 10.5px; display: flex; flex-direction: column; gap: 2px; }
+    .vca-ll { padding: 1px 4px; border-radius: 4px; background: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .vca-ll.ok { color: #bbf7d0; } .vca-ll.bad { color: #fecaca; background: #2a0b0b; }
+    .vca-mini { font-size: 10px; color: var(--text-muted); margin-top: 4px; }
+    @@media (max-width: 1000px) { .vca-main { grid-template-columns: 1fr; } .vca-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private bool _desc;
+    private string? _copied;
+
+    protected override void OnInitialized() => Runner.OnChange += OnServiceChanged;
+
+    private void Publish() => Guard(() => Runner.Publish(), "Publish");
+    private void Step60() => Guard(() => Runner.Advance(60), "Step60");
+    private void Step600() => Guard(() => Runner.Advance(600), "Step600");
+    private void Bot() => Guard(() => Runner.InjectBotAttack(), "Bot");
+    private void Extra() => Guard(() => Runner.ForceExtraLink(), "Extra");
+    private void NextVideo() => Guard(Runner.NextVideo, "NextVideo");
+    private void ResetAll() => Runner.Reset();
+    private void ShowPinned() => _desc = false;
+    private void ShowDesc() => _desc = true;
+
+    private void OnScript(ChangeEventArgs e) => Runner.SetScript(e.Value?.ToString());
+    private void OnSubId(ChangeEventArgs e) => Runner.SetSubId(e.Value?.ToString());
+    private void OnCampaign(ChangeEventArgs e) => Runner.SetCampaign(e.Value?.ToString());
+
+    private void OnPreset(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var p)) Runner.SetPreset(p);
+    }
+
+    private async Task Copy()
+    {
+        var text = Runner.CopyPackage(_desc);
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", text);
+            _copied = "📋 클립보드에 복사됨 · " + text.Length.ToString(CultureInfo.InvariantCulture) + "자";
+        }
+        catch (Exception ex)
+        {
+            _copied = "⚠️ 클립보드 복사 실패 — 미리보기를 직접 선택해 복사하세요";
+            PromptFlowStudio.Program.Log("ViralCommerce.Modal.Copy", ex);
+        }
+    }
+
+    private static void Guard(Action a, string tag)
+    {
+        try { a(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("ViralCommerce.Modal." + tag, ex); }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Runner.OnChange -= OnServiceChanged;
+}

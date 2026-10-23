@@ -512,6 +512,10 @@
         {
             <PostPublishSplitTestStudioModal OnClose="() => _postPublishSplitTest = false" />
         }
+        @if (_viralCommerceAffiliate)
+        {
+            <ViralCommerceAffiliateStudioModal OnClose="() => _viralCommerceAffiliate = false" />
+        }
         @if (_socialTrendJackingRadar)
         {
             <SocialTrendJackingStudioModal OnClose="() => _socialTrendJackingRadar = false" />
@@ -1149,6 +1153,7 @@
             case "_vodRepurposing": _vodRepurposing = on; break;
             case "_postPublishSplitTest": _postPublishSplitTest = on; break;
             case "_goldenHourEngagement": _goldenHourEngagement = on; break;
+            case "_viralCommerceAffiliate": _viralCommerceAffiliate = on; break;
             case "_socialTrendJackingRadar": _socialTrendJackingRadar = on; break;
             case "_platformVisibilityGateway": _platformVisibilityGateway = on; break;
             case "_realRunnerBatchSandbox": _realRunnerBatchSandbox = on; break;
@@ -1312,6 +1317,7 @@
         "_vodRepurposing" => _vodRepurposing,
         "_postPublishSplitTest" => _postPublishSplitTest,
         "_goldenHourEngagement" => _goldenHourEngagement,
+        "_viralCommerceAffiliate" => _viralCommerceAffiliate,
         "_socialTrendJackingRadar" => _socialTrendJackingRadar,
         "_platformVisibilityGateway" => _platformVisibilityGateway,
         "_realRunnerBatchSandbox" => _realRunnerBatchSandbox,
@@ -1429,6 +1435,7 @@
     private bool _globalDub; // v17.64.0 사이드바 🌍 글로벌 & 로컬라이제이션 ▸ 🗣️ 실시간 다국어 더빙 스튜디오(스트리밍 번역 ≤ 200 ms · 다국어 음색 유지 합성 · 플랫폼별 언어 트랙 · ARKit 가우시안 립싱크 < 50 ms)
     private bool _streamGateway; // v17.62.0 사이드바 📜 각본 & 타임라인 ▸ 🛰️ 스트림 게이트웨이 & 클리퍼 스튜디오(32 MB 압축 NAL 링 · 무손실 1080p 리먹스 · Twitch/YouTube/치지직 게이트웨이 · 백오프/배압)
     private bool _influencerLive; // v17.61.0 사이드바 📜 각본 & 타임라인 ▸ 🎙️ 버추얼 인플루언서 라이브 스튜디오(채팅 리액션 트리거 · 하이라이트 9:16 즉시 클리핑 · 도배/비속어 가드)
+    private bool _viralCommerceAffiliate; // v17.97.0 사이드바 📸 소셜 & 바이럴 ▸ 🛒 바이럴 커머스 & 제휴 어트리뷰션(무할당 대본 엔티티 추출 · 쿠팡 파트너스/아마존 어소시에이트 모의 카탈로그 연관도 × EPC 상위 3 · 8 자리 Base62 pfs.link 숏링크 · 공정위 경제적 이해관계 고지 최상단 주입 · 봇/다중 클릭 차단 · 영상당 3 링크 상한)
     private bool _socialTrendJackingRadar; // v17.96.0 사이드바 📸 소셜 & 바이럴 ▸ 🔥 실시간 트렌드재킹 & 해시태그 레이더(무할당 Span 급상승 피드 파싱 · 분당 가속도 랭킹 · 대본/태그 연관도 0~100 · 골든 ≥ 80 선별 · YouTube 100자 훅 + 핵심 3 태그 · IG 트렌드2/틈새2/메가1 · TikTok 150자 · 무관 < 70 차단 · 동일 태그 4 시간 쿨다운)
     private bool _goldenHourEngagement; // v17.95.0 사이드바 📸 소셜 & 바이럴 ▸ 💬 골든아워 댓글 & 인게이지먼트 부스터(무할당 댓글 감정 분류 긍정/질문/부정/스팸 · 링크 도배 · 욕설 · 트롤 자동 숨김 · 업로드 60 s 내 앵커 고정 댓글 · 공감/안내/유쾌 톤 답글 · 15~45 s 지터 · 시간당 상한 쿨다운)
     private bool _platformVisibilityGateway; // v17.94.0 사이드바 📸 소셜 & 바이럴 ▸ 🌐 플랫폼 비지빌리티 게이트웨이(YouTube Data API v3 videos.update/delete · IG Graph 숨김/삭제 · 토큰 5 분 전 갱신 · 429 지수 백오프 1.5~30 s · 일일 쿼터 90 % 안전 정지 · 5 분 시계열 유속 폴링 → v17.93 A/B 피딩)

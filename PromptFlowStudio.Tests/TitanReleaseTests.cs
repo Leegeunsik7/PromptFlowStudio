@@ -179,6 +179,7 @@ using Pst = PromptFlowStudio.Services.PostPublishSplitTest;
 using Pvg = PromptFlowStudio.Services.PlatformVisibility;
 using Ghe = PromptFlowStudio.Services.GoldenHourEngagement;
 using Trj = PromptFlowStudio.Services.TrendJacking;
+using Vca = PromptFlowStudio.Services.ViralCommerce;
 
 namespace PromptFlowStudio.Tests;
 
@@ -36748,11 +36749,231 @@ public sealed class SocialTrendJackingIsolatedTests
 
         // ── 카탈로그 · 도움말 결선(172) ──
         var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
-        Assert.Equal(172, cat.Length);
+        Assert.Equal(173, cat.Length);
         Assert.Contains(cat, e => e.Key == "_socialTrendJackingRadar" && e.Category == 4 && e.Title == "실시간 트렌드재킹 & 해시태그 레이더");
         Assert.NotNull(PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Find("_socialTrendJackingRadar"));
         Assert.Equal(cat.Length, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
         Assert.Equal(0, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects());
         Assert.Equal("_socialTrendJackingRadar", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.ResolveKeyByHeader("🔥 실시간 트렌드재킹 & 해시태그 레이더"));
+    }
+}
+
+[Collection("TimingSensitivePerformance")]   // 스레드 할당 바이트 계측 · 100 ms 예산(상품 매칭 · 숏링크/고지 조립 · 클릭 판정) → 비병렬
+public sealed class ViralCommerceAffiliateIsolatedTests
+{
+    private const double T0 = 1_800_000_000;
+    private const string Script = "아이폰16으로 야간 촬영할 때 흔들림 없이 찍는 법! 짐벌로 안정화하고 링라이트 조명 하나만 더하면 밤 영상 퀄리티가 확 달라집니다. 맥세이프 케이스까지 끼우면 준비 끝.";
+    private const string Pinned = "여러분은 야간 촬영 때 어떤 장비부터 챙기시나요?";
+    private const string Desc = "아이폰16 야간 촬영 설정 3가지";
+
+    [Fact]
+    public void ViralCommerce_And_AffiliateAttribution_Check()
+    {
+        // ── VCA-1: 엔티티 추출 · 연관도 · 연관도 × EPC 상위 3 ──
+        var m = new Vca.VideoContextAffiliateProductMatcherEngine();
+        m.SetScript(Script.AsSpan());
+        Assert.Equal(3, m.Match());
+        Assert.Equal(1, m.Top(0));   // 짐벌(EPC ₩80.46)
+        Assert.Equal(2, m.Top(1));   // 링라이트
+        Assert.Equal(0, m.Top(2));   // 맥세이프 케이스
+        Assert.Equal(65, m.Relevance(1));
+        Assert.True(m.CategoryHit(1) && !m.BrandHit(1) && !m.NameHit(1));
+        Assert.Equal(4, m.AliasHits(1));
+        Assert.Equal(65, m.Relevance(2));
+        Assert.Equal(45, m.Relevance(0));
+        Assert.Equal(15, m.Relevance(8));   // "케이스" 별칭 1 → 임계 미달
+        Assert.Equal(14, m.EntityHits);
+        Assert.Equal(80.46, Vca.VideoContextAffiliateProductMatcherEngine.Epc(1), 6);
+        Assert.Equal(4470, Vca.VideoContextAffiliateProductMatcherEngine.CommissionPerSale(1));
+        Assert.True(m.ContainsTerm("야간 촬영".AsSpan()));
+        Assert.False(m.ContainsTerm("갤럭시".AsSpan()));
+        m.SetScript("10분 완성 할로윈 좀비 분장! 특수분장 키트 하나로 상처를 표현하고 글리터 섀도우로 포인트 메이크업까지. 삼각대에 폰 세우고 따라 해 보세요.".AsSpan());
+        Assert.Equal(3, m.Match());
+        Assert.True(m.Top(0) == 6 && m.Top(1) == 5 && m.Top(2) == 10);
+        Assert.Equal(35, m.Relevance(10));
+        m.SetScript("dji 스마트폰 짐벌 OM7 리뷰".AsSpan());   // 제품명 · 브랜드 · 카테고리 동시(대소문자 · 공백 무시)
+        m.Match();
+        Assert.True(m.NameHit(1) && m.BrandHit(1) && m.CategoryHit(1));
+        Assert.Equal(100, m.Relevance(1));
+        m.SetScript("오늘은 그냥 동네 산책 브이로그".AsSpan());
+        Assert.Equal(0, m.Match());
+        m.SetScript(new string('가', 3000).AsSpan());
+        Assert.Equal(1, m.Truncated);
+
+        // ── VCA-2: 추적 URL · 8 자리 Base62 숏링크 · 공정위/FTC 최상단 고지 ──
+        var inj = new Vca.CompliantShortlinkLegalNoticeInjector();
+        Assert.True(inj.BuildTrackedUrl("https://www.coupang.com/vp/products/7810002".AsSpan(), "pfs_ch01".AsSpan(), "숏폼 v1".AsSpan()) > 0);
+        Assert.Equal("https://www.coupang.com/vp/products/7810002?subId=pfs_ch01&utm_campaign=%EC%88%8F%ED%8F%BC%20v1", inj.TrackedUrl.ToString());
+        inj.BuildTrackedUrl("https://x.test/p?id=1".AsSpan(), "a b".AsSpan(), "c".AsSpan());
+        Assert.Equal("https://x.test/p?id=1&subId=a%20b&utm_campaign=c", inj.TrackedUrl.ToString());
+        Assert.Equal(-1, inj.BuildTrackedUrl(new string('u', 600).AsSpan(), "s".AsSpan(), "c".AsSpan()));
+        Assert.Equal(0, inj.TrackedUrl.Length);
+        Span<char> id1 = stackalloc char[8], id2 = stackalloc char[8];
+        Vca.CompliantShortlinkLegalNoticeInjector.EncodeShortId("https://a.test/1".AsSpan(), id1);
+        Vca.CompliantShortlinkLegalNoticeInjector.EncodeShortId("https://a.test/1".AsSpan(), id2);
+        Assert.True(id1.SequenceEqual(id2));
+        var dec = Vca.CompliantShortlinkLegalNoticeInjector.DecodeShortId(id1);
+        Assert.InRange(dec, 0, 218_340_105_584_895L);
+        foreach (var ch in id1) Assert.True(char.IsAsciiLetterOrDigit(ch));
+        Vca.CompliantShortlinkLegalNoticeInjector.EncodeShortId("https://a.test/2".AsSpan(), id2);
+        Assert.False(id1.SequenceEqual(id2));
+        Assert.Equal(-1, Vca.CompliantShortlinkLegalNoticeInjector.DecodeShortId("abc-1234".AsSpan()));
+        Assert.Equal(-1, Vca.CompliantShortlinkLegalNoticeInjector.DecodeShortId("abc".AsSpan()));
+        Assert.Equal(61L * 62 * 62 * 62 * 62 * 62 * 62 * 62 + 1, Vca.CompliantShortlinkLegalNoticeInjector.DecodeShortId("z0000001".AsSpan()));
+
+        m.SetScript(Script.AsSpan());
+        m.Match();
+        Assert.Equal(3, inj.Compose(m, "pfs_ch01".AsSpan(), "v1797".AsSpan(), Pinned.AsSpan(), Desc.AsSpan()));
+        var pin = inj.PinnedComment.ToString();
+        var desc = inj.Description.ToString();
+        Assert.StartsWith("📢 [광고] 이 포스팅은 쿠팡 파트너스 활동의 일환으로, 이에 따른 일정액의 수수료를 제공받습니다.\n", pin);
+        Assert.StartsWith(inj.Notice.ToString() + "\n🛒 스마트폰 짐벌 OM7 👉 pfs.link/", desc);
+        Assert.EndsWith("📌 " + Pinned, pin);
+        Assert.EndsWith("\n\n" + Desc, desc);
+        Assert.DoesNotContain("Amazon", pin);
+        Assert.True(Vca.CompliantShortlinkLegalNoticeInjector.HasTopNotice(inj.PinnedComment, true, false));
+        Assert.True(Vca.CompliantShortlinkLegalNoticeInjector.HasTopNotice(inj.Description, true, false));
+        Assert.False(Vca.CompliantShortlinkLegalNoticeInjector.HasTopNotice(("링크 먼저\n" + inj.Notice.ToString()).AsSpan(), true, false));   // 최상단 아님
+        Assert.False(Vca.CompliantShortlinkLegalNoticeInjector.HasTopNotice("[광고] 수수료를 받을 수 있음".AsSpan(), true, false));          // 필수 문구 변형
+        Assert.Equal(3, System.Text.RegularExpressions.Regex.Matches(pin, @"pfs\.link/[0-9A-Za-z]{8}\n").Count);
+        for (var i = 0; i < 3; i++) Assert.Contains("pfs.link/" + inj.ShortId(i).ToString(), desc);
+        Assert.NotEqual(inj.ShortId(0).ToString(), inj.ShortId(1).ToString());
+        var firstId = inj.ShortId(0).ToString();
+        inj.Compose(m, "pfs_ch02".AsSpan(), "v1797".AsSpan(), Pinned.AsSpan(), Desc.AsSpan());
+        Assert.NotEqual(firstId, inj.ShortId(0).ToString());   // subId 변경 → 숏링크 재발급
+        // 쿠팡 + 아마존 혼합 → 양 고지 병기
+        m.SetScript("핀마이크로 녹음 음질 비교하고 아이폰16 맥세이프 케이스도 소개".AsSpan());
+        m.Match();
+        inj.Compose(m, "s".AsSpan(), "c".AsSpan(), default, default);
+        Assert.True(inj.UsesNetwork(Vca.AffiliateNetwork.AmazonAssociates) && inj.UsesNetwork(Vca.AffiliateNetwork.CoupangPartners));
+        Assert.Contains(Vca.CompliantShortlinkLegalNoticeInjector.CoupangNotice, inj.Notice.ToString());
+        Assert.Contains(Vca.CompliantShortlinkLegalNoticeInjector.AmazonNotice, inj.Notice.ToString());
+        Assert.True(Vca.CompliantShortlinkLegalNoticeInjector.HasTopNotice(inj.PinnedComment, true, true));
+        // 매칭 0 → 링크 · 고지 없음(광고 아님) · 본문만
+        m.SetScript("오늘은 그냥 산책".AsSpan());
+        m.Match();
+        Assert.Equal(0, inj.Compose(m, "s".AsSpan(), "c".AsSpan(), Pinned.AsSpan(), Desc.AsSpan()));
+        Assert.Equal(0, inj.Notice.Length);
+        Assert.Equal("📌 " + Pinned, inj.PinnedComment.ToString());
+
+        // ── VCA-3: 영상당 3 링크 상한 · 봇 UA · 동일 IP 초당 다중 클릭 · 어트리뷰션 시계열 ──
+        var g = new Vca.RealtimeAffiliateAttributionSafetyGuard();
+        Assert.Equal(0, g.TryRegisterLink(0, 1));
+        Assert.Equal(1, g.TryRegisterLink(0, 2));
+        Assert.Equal(2, g.TryRegisterLink(0, 0));
+        Assert.Equal(-1, g.TryRegisterLink(0, 5));
+        Assert.Equal(1, g.LinkCapRejected);
+        Assert.Equal(3, g.LinkCount(0));
+        Assert.Equal(-1, g.TryRegisterLink(Vca.RealtimeAffiliateAttributionSafetyGuard.VideoCap, 1));
+        const string Ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile/15E148";
+        Assert.Equal(Vca.ClickVerdict.UnknownLink, g.OnClick(0, 3, "1.1.1.1".AsSpan(), Ua.AsSpan(), T0));
+        Assert.Equal(Vca.ClickVerdict.UnknownLink, g.OnClick(1, 0, "1.1.1.1".AsSpan(), Ua.AsSpan(), T0));
+        Assert.Equal(Vca.ClickVerdict.BlockedBot, g.OnClick(0, 0, "2.2.2.2".AsSpan(), "Googlebot/2.1".AsSpan(), T0));
+        Assert.Equal(Vca.ClickVerdict.BlockedBot, g.OnClick(0, 0, "2.2.2.2".AsSpan(), "HeadlessChrome/130".AsSpan(), T0));
+        Assert.Equal(Vca.ClickVerdict.BlockedBot, g.OnClick(0, 0, "2.2.2.2".AsSpan(), "  ".AsSpan(), T0));
+        Assert.Equal(Vca.ClickVerdict.Valid, g.OnClick(0, 0, "9.9.9.9".AsSpan(), Ua.AsSpan(), T0));
+        Assert.Equal(Vca.ClickVerdict.Valid, g.OnClick(0, 1, "9.9.9.9".AsSpan(), Ua.AsSpan(), T0 + 0.2));
+        Assert.Equal(Vca.ClickVerdict.BlockedBurst, g.OnClick(0, 2, "9.9.9.9".AsSpan(), Ua.AsSpan(), T0 + 0.4));
+        Assert.Equal(Vca.ClickVerdict.BlockedBanned, g.OnClick(0, 0, "9.9.9.9".AsSpan(), Ua.AsSpan(), T0 + 5));
+        Assert.Equal(1, g.BannedIps(T0 + 5));
+        Assert.Equal(Vca.ClickVerdict.Valid, g.OnClick(0, 0, "8.8.8.8".AsSpan(), Ua.AsSpan(), T0 + 5));
+        Assert.Equal(Vca.ClickVerdict.Valid, g.OnClick(0, 0, "9.9.9.9".AsSpan(), Ua.AsSpan(), T0 + 601));   // 차단 600 s 해제
+        Assert.Equal(0, g.BannedIps(T0 + 601));
+        Assert.Equal(Vca.ClickVerdict.Valid, g.OnClick(0, 0, "9.9.9.9".AsSpan(), Ua.AsSpan(), T0 + 603));  // 간격 > 1 s → 새 창
+        Assert.True(g.OnConversion(0, 0, 4470, T0 + 6));
+        Assert.False(g.OnConversion(0, 3, 4470, T0 + 6));
+        Assert.Equal(5, g.ValidClicks);
+        Assert.Equal(3, g.BlockedBot);
+        Assert.Equal(1, g.BlockedBurst);
+        Assert.Equal(1, g.BlockedBanned);
+        Assert.Equal(3, g.UnknownLinks);
+        Assert.Equal(5, g.VideoValidClicks(0));
+        Assert.Equal(1, g.VideoConversions(0));
+        Assert.Equal(4470, g.VideoCommission(0));
+        Assert.Equal(20.0, g.ConversionRatePct, 6);
+        Assert.Equal(50.0, g.BlockRatePct, 6);
+        Assert.Equal(3, g.SeriesValid(T0 + 601, 10));      // 0 분 버킷: 9.9.9.9 ×2 + 8.8.8.8
+        Assert.Equal(5, g.SeriesBlocked(T0 + 601, 10));
+        Assert.Equal(1, g.SeriesConversions(T0 + 601, 10));
+        Assert.Equal(4470, g.SeriesCommission(T0 + 601, 10));
+        Assert.Equal(2, g.SeriesValid(T0 + 601, 0));
+        Assert.Equal(0, g.SeriesValid(T0 + 601, 5));
+        Assert.Equal(0, g.SeriesValid(T0 + 601, 60));
+        g.ClearLinks(0);
+        Assert.Equal(Vca.ClickVerdict.UnknownLink, g.OnClick(0, 0, "7.7.7.7".AsSpan(), Ua.AsSpan(), T0 + 700));
+        g.Reset();
+        Assert.Equal(0, g.ValidClicks + g.BlockedTotal + g.Conversions);
+
+        // ── 무할당 · 100 ms 예산: 매칭 · 숏링크/고지 조립 · 클릭 판정 ──
+        var ips = new string[32];
+        for (var i = 0; i < ips.Length; i++) ips[i] = "10.0.0." + i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var hm = new Vca.VideoContextAffiliateProductMatcherEngine();
+        var hi = new Vca.CompliantShortlinkLegalNoticeInjector();
+        var hg = new Vca.RealtimeAffiliateAttributionSafetyGuard();
+        for (var i = 0; i < 3; i++) hg.TryRegisterLink(0, i);
+        for (var w = 0; w < 3; w++) { hm.SetScript(Script.AsSpan()); hm.Match(); hi.Compose(hm, "pfs_ch01".AsSpan(), "숏폼".AsSpan(), Pinned.AsSpan(), Desc.AsSpan()); hg.OnClick(0, w, ips[w].AsSpan(), Ua.AsSpan(), T0 - 100 + w); }
+        var sw = new System.Diagnostics.Stopwatch();   // 계측 구간 밖 생성
+        var a0 = GC.GetAllocatedBytesForCurrentThread();
+        sw.Start();
+        for (var k = 0; k < 400; k++)
+        {
+            hm.SetScript(Script.AsSpan());
+            hm.Match();
+            hi.Compose(hm, "pfs_ch01".AsSpan(), "숏폼".AsSpan(), Pinned.AsSpan(), Desc.AsSpan());
+            Vca.CompliantShortlinkLegalNoticeInjector.HasTopNotice(hi.PinnedComment, true, false);
+            hg.OnClick(0, k % 3, ips[k % ips.Length].AsSpan(), Ua.AsSpan(), T0 + k * 0.05);
+            hg.OnClick(0, 0, ips[0].AsSpan(), "python-requests/2.32".AsSpan(), T0 + k * 0.05);
+            hg.OnConversion(0, k % 3, 870, T0 + k);
+        }
+        sw.Stop();
+        var alloc = GC.GetAllocatedBytesForCurrentThread() - a0;
+        Assert.True(alloc == 0, "바이럴 커머스 핫패스 할당 " + alloc);
+        Assert.True(sw.Elapsed.TotalMilliseconds / 400 < 100, "1 사이클 " + sw.Elapsed.TotalMilliseconds / 400 + " ms");
+        Assert.True(hg.BlockedBot == 400 && hg.ValidClicks > 400);
+
+        // ── 러너 E2E: 게시 → 상한 → 트래픽/전환 → 봇 공습 → 복사 → 다음 영상 → 무매칭 ──
+        using var run = new Vca.ViralCommerceAffiliateStudioRunner();
+        var changes = 0;
+        run.OnChange += () => changes++;
+        Assert.Equal(3, run.Matcher.TopCount);
+        Assert.True(run.NoticeOk);
+        Assert.True(run.LastMatchMicros < 100_000);
+        Assert.Equal(3, run.Publish());
+        Assert.Equal(3, run.Guard.LinkCount(0));
+        Assert.False(run.ForceExtraLink());
+        Assert.Equal(1, run.Guard.LinkCapRejected);
+        Assert.True(run.Advance(600) > 0);
+        Assert.True(run.Guard.Conversions > 0 && run.Guard.CommissionKrw > 0);
+        Assert.Equal(7, run.InjectBotAttack());   // 동일 IP 2 유효 후 다중 클릭 1 + 차단 중 3 + 크롤러 3
+        Assert.Equal(1, run.Guard.BannedIps(run.SimNow));
+        Assert.StartsWith("📢 [광고] " + Vca.CompliantShortlinkLegalNoticeInjector.CoupangNotice, run.CopyPackage(false));
+        Assert.StartsWith("📢 [광고] ", run.CopyPackage(true));
+        Assert.Equal(2, run.Copies);
+        run.SetSubId("pfs_ch09");
+        Assert.Contains("subId=pfs_ch09", run.Injector.TrackedUrl.ToString());
+        run.SetPreset(1);
+        Assert.True(run.Matcher.Top(0) == 6 && run.NoticeOk);
+        run.NextVideo();
+        Assert.Equal(1, run.Video);
+        Assert.Equal(0, run.Guard.LinkCount(1));
+        Assert.False(run.Published);
+        run.SetScript("오늘은 그냥 동네 산책 브이로그");
+        Assert.Equal(0, run.Publish());
+        Assert.Equal(0, run.ComplianceViolations);
+        run.SetScript("   ");
+        Assert.False(string.IsNullOrWhiteSpace(run.Script));
+        Assert.True(run.LogCount > 0 && changes > 0);
+        run.Reset();
+        Assert.Equal(0, run.Guard.ValidClicks);
+        Assert.Equal(0, run.Publications);
+
+        // ── 카탈로그 · 도움말 결선(173) ──
+        var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
+        Assert.Equal(173, cat.Length);
+        Assert.Contains(cat, e => e.Key == "_viralCommerceAffiliate" && e.Category == 4 && e.Title == "바이럴 커머스 & 제휴 어트리뷰션");
+        Assert.NotNull(PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Find("_viralCommerceAffiliate"));
+        Assert.Equal(cat.Length, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
+        Assert.Equal(0, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects());
+        Assert.Equal("_viralCommerceAffiliate", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.ResolveKeyByHeader("🛒 바이럴 커머스 & 제휴 어트리뷰션"));
     }
 }
