@@ -11,6 +11,8 @@ namespace PromptFlowStudio.Services.RetentionHeatmap;
 ///     1 클릭 심폐소생 = <see cref="MicroPunchDynamicPacingReEditorEngine"/> 펀치 · FX · WSOLA 리패키징 + 출력 프레임 줌 렌더 →
 ///     <see cref="RetentionRescueRepublishGuard"/> 판정 → v17.93 A/B Variant-R · v17.81 매트릭스 · 로컬 대기열 이관.
 ///   ▸ 시뮬레이션 가상 시계 · 결정적 프리셋 곡선 · 절차 합성 발화 오디오(데드존 = 긴 무음 간격).
+///   ▸ v17.99.1: <see cref="IngestAsync"/> = <see cref="YouTubeAnalyticsRetentionCollector"/>(자격 증명 없으면 모의 · 장애 시 캐시/세이프티 폴백 · 출처 표기) →
+///     <see cref="Remux"/> = 리에디트 템포 맵으로 합성 Annex-B 클립을 <see cref="NaluSmartReMuxer"/> GOP 스트림 복사 · PTS/DTS 재타이밍 · 무손실/A·V 동기 검증.
 /// </summary>
 public sealed class AudienceRetentionHeatmapStudioRunner : IDisposable
 {
@@ -31,9 +33,19 @@ public sealed class AudienceRetentionHeatmapStudioRunner : IDisposable
     private readonly float[] _out = new float[ClipMaxSec * MicroPunchDynamicPacingReEditorEngine.Fs];
     private readonly uint[] _frame = new uint[VideoW * VideoH];
     private readonly uint[] _frameOut = new uint[VideoW * VideoH];
+    private readonly float[] _presetCurve = new float[ClipMaxSec + 1];
+    private readonly WarpKnot[] _knots = new WarpKnot[MicroPunchDynamicPacingReEditorEngine.EditCap * 2 + 2];
+    private readonly int[] _punchMs = new int[MicroPunchDynamicPacingReEditorEngine.EditCap];
+    private readonly RemuxCut[] _cuts = new RemuxCut[1];
+    private readonly SyntheticAnnexBStream?[] _streams = new SyntheticAnnexBStream?[PresetNames.Length];
+    private byte[] _remuxBuf = Array.Empty<byte>();
+    private YouTubeAnalyticsRetentionCollector? _collector;
     private int _logHead, _logCount, _srcSamples;
 
     public AudienceRetentionHeatmapStudioRunner(IServiceProvider sp) : this() => _sp = sp;
+
+    /// <summary>수집기 주입(테스트 · 모의 핸들러).</summary>
+    public AudienceRetentionHeatmapStudioRunner(YouTubeAnalyticsRetentionCollector collector) : this() => _collector = collector;
 
     public AudienceRetentionHeatmapStudioRunner()
     {
@@ -67,6 +79,23 @@ public sealed class AudienceRetentionHeatmapStudioRunner : IDisposable
     public ReadOnlySpan<float> SourceAudio => _src.AsSpan(0, _srcSamples);
     public ReadOnlySpan<float> OutputAudio => _out.AsSpan(0, OutSamples);
 
+    // ── v17.99.1 수집 · 리먹스 ──
+    public YouTubeAnalyticsRetentionCollector Collector => _collector ??= new YouTubeAnalyticsRetentionCollector();
+    public NaluSmartReMuxer ReMuxer { get; } = new();
+    public RetentionSource IngestSource => _collector?.LastSource ?? RetentionSource.None;
+    public long Ingests { get; private set; }
+    public long Remuxes { get; private set; }
+    public bool Remuxed { get; private set; }
+    public int RemuxBytes { get; private set; }
+    public int RemuxLosslessFaults { get; private set; }
+    /// <summary>출력 AU 표시 시각 vs 오디오 리패키징 시간 맵(OutMsAt) 최대 편차(ms).</summary>
+    public double MaxAvDesyncMs { get; private set; }
+    /// <summary>영상 출력 끝(마지막 PTS + 1 프레임) vs WSOLA 출력 오디오 길이 차(ms).</summary>
+    public double EndDriftMs { get; private set; }
+    /// <summary>프리셋 합성 클립(파스타·메이크업 = H.264 · 보스전 = H.265 · 1 s 닫힌 GOP · B 2).</summary>
+    public SyntheticAnnexBStream Stream => _streams[Preset] ??= new SyntheticAnnexBStream(Preset == 1 ? NalCodec.H265 : NalCodec.H264, PresetSec[Preset] * MicroPunchDynamicPacingReEditorEngine.VideoFps,
+        MicroPunchDynamicPacingReEditorEngine.VideoFps, 2, MicroPunchDynamicPacingReEditorEngine.VideoFps, paramsEveryGop: Preset != 0, seed: 0x9800u + (uint)Preset);
+
     /// <summary>최근 로그(0 = 최신).</summary>
     public string Log(int i) => _log[(_logHead - 1 - i + LogSize * 2) % LogSize];
 
@@ -97,6 +126,7 @@ public sealed class AudienceRetentionHeatmapStudioRunner : IDisposable
         OutSamples = PunchedFrames = 0;
         MaxFrameScale = 1f;
         ReEditor.Reset();
+        Remuxed = false;
         return n;
     }
 
@@ -127,6 +157,98 @@ public sealed class AudienceRetentionHeatmapStudioRunner : IDisposable
         return v;
     }
 
+    /// <summary>
+    /// 유지율 수집 — 자격 증명(환경 변수) 있으면 YouTube Analytics 실응답 · 없으면 모의 · 429/단절이면 캐시/세이프티 프리셋.
+    /// 결과 곡선으로 재분석(기존 리에디트 무효화). 반환 = 수집 출처.
+    /// </summary>
+    public async Task<RetentionSource> IngestAsync(CancellationToken ct = default)
+    {
+        var sec = PresetSec[Preset];
+        BuildCurve(Preset, _presetCurve);
+        await Collector.CollectAsync(sec, _presetCurve.AsMemory(0, sec + 1), _curve.AsMemory(0, sec + 1), ct);
+        Ingests++;
+        Analyze();
+        var c = Collector;
+        LastAction = "📡 " + YouTubeAnalyticsRetentionCollector.SourceName(c.LastSource) +
+                     (c.LastFault == RetentionFault.None ? "" : " · " + YouTubeAnalyticsRetentionCollector.FaultName(c.LastFault)) + " · 절벽 " + Id(Detector.SlumpCount);
+        Push(LastAction);
+        Raise();
+        return c.LastSource;
+    }
+
+    /// <summary>
+    /// 스마트 리먹스 — (리에디트 미실행이면 먼저 실행) 템포 맵 절점 · 펀치 시각 → 합성 클립 GOP 스트림 복사 · PTS/DTS 재타이밍 →
+    /// 무손실 재파싱 검증 · A/V 동기 편차 · 끝 드리프트 계측. 반환 = 출력 바이트(−1 = 실패).
+    /// </summary>
+    public int Remux()
+    {
+        if (!Rescued) Rescue();
+        var st = Stream;
+        ReMuxer.Parse(st.Bytes, st.Codec);
+        ReMuxer.SetTimestamps(st.Pts, st.Dts);
+        var origin = long.MaxValue;
+        foreach (var p in st.Pts) if (p < origin) origin = p;
+        var originMs = (int)((origin * 1000 + NaluSmartReMuxer.Clock - 1) / NaluSmartReMuxer.Clock);
+        var kn = BuildKnots(origin);
+        var pn = Math.Min(ReEditor.PunchCount, _punchMs.Length);
+        for (var i = 0; i < pn; i++) _punchMs[i] = ReEditor.Punch(i).AtMs + originMs;
+        _cuts[0] = new RemuxCut(originMs, originMs + ReEditor.SourceDurationMs);
+        if (_remuxBuf.Length < st.Bytes.Length + 4096) _remuxBuf = new byte[st.Bytes.Length + 4096];
+        var w = ReMuxer.Remux(st.Bytes, _cuts, _knots.AsSpan(0, kn), st.FrameTicks, _remuxBuf, _punchMs.AsSpan(0, pn));
+        Remuxes++;
+        if (w <= 0)
+        {
+            Remuxed = false;
+            LastAction = "🛑 리먹스 실패 — 출력 버퍼 부족/빈 출력";
+            Push(LastAction);
+            Raise();
+            return -1;
+        }
+        RemuxBytes = w;
+        RemuxLosslessFaults = ReMuxer.VerifyLossless(st.Bytes, _remuxBuf.AsSpan(0, w));
+        var o0 = ReMuxer.OutAu(0).Pts;
+        for (var i = 1; i < ReMuxer.OutCount; i++) if (ReMuxer.OutAu(i).Pts < o0) o0 = ReMuxer.OutAu(i).Pts;
+        var outBase = ReEditor.OutMsAt(0);
+        double maxD = 0;
+        for (var i = 0; i < ReMuxer.OutCount; i++)
+        {
+            var srcMs = (ReMuxer.Au(ReMuxer.OutSourceAu(i)).Pts - origin) * 1000.0 / NaluSmartReMuxer.Clock;
+            var outMs = (ReMuxer.OutAu(i).Pts - o0) * 1000.0 / NaluSmartReMuxer.Clock;
+            var d = Math.Abs(outMs - (ReEditor.OutMsAt((int)Math.Round(srcMs)) - outBase));
+            if (d > maxD) maxD = d;
+        }
+        MaxAvDesyncMs = maxD;
+        EndDriftMs = Math.Abs((ReMuxer.OutEndTicks - o0) * 1000.0 / NaluSmartReMuxer.Clock - OutSamples * 1000.0 / MicroPunchDynamicPacingReEditorEngine.Fs);
+        Remuxed = RemuxLosslessFaults == 0;
+        LastAction = (Remuxed ? "🎞 무인코딩 리먹스 · " : "🛑 리먹스 검증 실패 · ") + (st.Codec == NalCodec.H264 ? "H.264" : "H.265") + " AU " + Id(ReMuxer.OutCount) +
+                     " · GOP " + Id(ReMuxer.CopiedGops) + " 복사 · 재인코딩 필요 " + Id(ReMuxer.ReencodeGops) + " · A/V 편차 " + MaxAvDesyncMs.ToString("0.00", CultureInfo.InvariantCulture) + " ms";
+        Push(LastAction);
+        Raise();
+        return w;
+    }
+
+    /// <summary>리에디트 템포 구간 → 리먹서 절점(90 kHz · 원본 PTS 원점 기준).</summary>
+    private int BuildKnots(long origin)
+    {
+        const long k = NaluSmartReMuxer.Clock / 1000;
+        var n = 0;
+        _knots[n++] = new WarpKnot(origin, origin + ReEditor.OutMsAt(0) * k);
+        for (var i = 0; i < ReEditor.TempoCount && n + 2 < _knots.Length; i++)
+        {
+            ref readonly var t = ref ReEditor.Tempo(i);
+            AddKnot(ref n, origin + t.SrcStartMs * k, origin + t.OutStartMs * k);
+            AddKnot(ref n, origin + t.SrcEndMs * k, origin + t.OutEndMs * k);
+        }
+        AddKnot(ref n, origin + ReEditor.SourceDurationMs * k, origin + ReEditor.OutDurationMs * k);
+        return n;
+    }
+
+    private void AddKnot(ref int n, long src, long outT)
+    {
+        if (src <= _knots[n - 1].Src || outT < _knots[n - 1].Out) return;   // 비단조 절점 폐기(맵 단조성 보장)
+        _knots[n++] = new WarpKnot(src, outT);
+    }
+
     /// <summary>가상 시계 전진(시간) — 중복/일일 상한 해제 확인용.</summary>
     public void AdvanceHours(int hours)
     {
@@ -140,6 +262,8 @@ public sealed class AudienceRetentionHeatmapStudioRunner : IDisposable
         Detector.Reset(); ReEditor.Reset(); Guard.Reset();
         SimNow = SimEpoch;
         Rescues = RouteFailures = 0;
+        Ingests = Remuxes = 0; Remuxed = false; RemuxBytes = RemuxLosslessFaults = 0; MaxAvDesyncMs = EndDriftMs = 0;
+        _collector?.Reset();
         LastTarget = RescueTarget.None;
         LastRescueMs = MaxAnalyzeUs = 0;
         Array.Clear(_log);
@@ -270,5 +394,9 @@ public sealed class AudienceRetentionHeatmapStudioRunner : IDisposable
         catch (Exception ex) { PromptFlowStudio.Program.Log("RetentionHeatmap.OnChange", ex); }
     }
 
-    public void Dispose() => OnChange = null;
+    public void Dispose()
+    {
+        OnChange = null;
+        _collector?.Dispose();
+    }
 }

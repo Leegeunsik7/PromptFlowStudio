@@ -14281,10 +14281,14 @@ class "Proto"
             return MathF.Sqrt(Sc.AudioSimd.SumSquares(f3.RustleBuffer) / B);
         }
         Assert.True(RustleRms(3f) > 4f * RustleRms(0.5f) && RustleRms(0f) < 1e-5f, "rustle ∝ speed");
-        a0 = GC.GetAllocatedBytesForCurrentThread();
-        fo.Trigger(new Sc.FoleyEvent(10.05, Sc.FoleyKind.Splash, Sc.SurfaceKind.Water, 0.7f, Nm.Vector3.One));
-        for (var b = 0; b < 10; b++) fo.RenderBlock(10.0 + (b + 1) / 60.0);
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - a0);
+        // 최소 할당(3 창) — 단일 창은 병렬 부하 중 티어드 JIT/OSR 재컴파일 일시 할당(584 B 관측)에 오염(저장소 AllocationProbe 관례)
+        var foT = 10.0;
+        Assert.Equal(0, AllocationProbe.MinAllocated(() =>
+        {
+            fo.Trigger(new Sc.FoleyEvent(foT + 0.05, Sc.FoleyKind.Splash, Sc.SurfaceKind.Water, 0.7f, Nm.Vector3.One));
+            for (var b = 0; b < 10; b++) fo.RenderBlock(foT + (b + 1) / 60.0);
+            foT += 1.0;
+        }));
 
         // ══ FS-4 마스터링 가드: 채널 할당 · 더킹/명료도 · R128/A85 정규화 · 트루 피크 · 무할당 ══
         var gp = new float[12];
@@ -17291,39 +17295,73 @@ class "Proto"
             pt.Engine.RenderFrame(3);
             Assert.True(pt.Engine.Color.SequenceEqual(front), "분산 조립 ≠ 단일 렌더");
 
-            lan.Silent = true; // 무통보 단절: 결과 미도착 → 타일 데드라인/하트비트 타임아웃으로 검출
-            res = g.RenderFrame(4);
-            Assert.False(res.TimedOut);
+            // 무통보 단절: 결과 미도착 → 타일 데드라인/하트비트 타임아웃으로 검출.
+            // 전제(원격에 타일 배정)를 명시적으로 성립시킨다 — 원격 예측에는 RTT ≥ 1 ms 가 항상 붙으므로, 티어드 JIT 최적화 후(전체 스위트 후반) 로컬 실측 처리량이
+            // 64×36 프레임 전체를 1 ms 미만에 끝내면 LPT 가 정당하게 원격 타일 0 개를 배정(시나리오 미성립 · 재시도로 해소 불가). 부하 시에는 전송 실측 부풀림(대역폭 EMA 급락)
+            // · keepalive 기아(하트비트 > 60 ms)도 같은 결과. → 로컬 저속 · 원격 고속 처리량 표본을 계획이 원격을 택할 때까지 주입(Plan 으로 확인) + 신선 하트비트.
+            var silentPlanned = 0;
+            for (var attempt = 0; attempt < 5; attempt++)
+            {
+                lan.Silent = false;
+                var arranged = false;
+                for (var k = 0; k < 64 && !arranged; k++)
+                {
+                    t3.ReportTile(l3, 1_000, tick * 10, 0, 0);                    // 로컬 0.1 Mpx/s
+                    t3.ReportTile(r3, 1_000_000, tick, 1 << 20, tick / 10);       // 원격 1 Gpx/s · 10 GB/s
+                    t3.Heartbeat(r3, 1);
+                    t3.Probe();
+                    lb3.Plan(g.Width, g.Height);
+                    arranged = lb3.NodeTiles(r3) > 0;
+                }
+                Assert.True(arranged, "원격 배정 전제 미성립 · Mpx L " + t3.Mpx(l3) + " R " + t3.Mpx(r3) + " BW " + t3.BandwidthMBs(r3) + " 건강 " + t3.Healthy(r3));
+                t3.Heartbeat(r3, 1);
+                lan.Silent = true;
+                res = g.RenderFrame(4);
+                Assert.False(res.TimedOut);
+                var f4 = g.Front.ToArray();
+                pt.Engine.RenderFrame(4);
+                Assert.True(pt.Engine.Color.SequenceEqual(f4));
+                silentPlanned = lb3.NodeTiles(r3);
+                if (silentPlanned > 0) break;
+            }
+            Assert.True(silentPlanned > 0, "원격 타일 배정 0 — 무통보 단절 시나리오 미성립(5 회)");
             Assert.True(res.Fallbacks > 0, "silent fallbacks");
             Assert.InRange(res.FallbackMs, 1, 150); // 데드라인 또는 하트비트 타임아웃 중 먼저
-            var f4 = g.Front.ToArray();
-            pt.Engine.RenderFrame(4);
-            Assert.True(pt.Engine.Color.SequenceEqual(f4));
         }
 
-        var t4 = new Gs.DistributedHeterogeneousGpuTopologyEngine { HeartbeatTimeoutMs = 60 };
-        var l4 = t4.AddNode("local", Gs.GpuBackend.CpuSimd, Gs.NodeLink.Local, 1L << 30, 1, 0.001f);
-        var c4 = t4.AddNode("cloud", Gs.GpuBackend.Dx12, Gs.NodeLink.Cloud, 1L << 30, 2, 100f, 1000f, 120f);
-        var lb4 = new Gs.DynamicCloudRenderSwarmLoadBalancer(t4);
-        using (var g = new Gs.LowLatencyFrameAssemblyFallbackGuard(t4, lb4))
+        // 명시 단절 페일백 < 50 ms — 벽시계 게이트이므로 최선 N(3 회) 판정(저장소 타이밍 관례): 정합성 단언은 매 시도 · 지연 상한은 최솟값에만
+        var bestExplicitMs = double.MaxValue;
+        for (var attempt = 0; attempt < 3 && bestExplicitMs >= 50; attempt++)
         {
+            if (attempt > 0) Thread.Sleep(150);
+            var t4 = new Gs.DistributedHeterogeneousGpuTopologyEngine { HeartbeatTimeoutMs = 60 };
+            var l4 = t4.AddNode("local", Gs.GpuBackend.CpuSimd, Gs.NodeLink.Local, 1L << 30, 1, 0.001f);
+            var c4 = t4.AddNode("cloud", Gs.GpuBackend.Dx12, Gs.NodeLink.Cloud, 1L << 30, 2, 100f, 1000f, 120f);
+            var lb4 = new Gs.DynamicCloudRenderSwarmLoadBalancer(t4);
+            using var g = new Gs.LowLatencyFrameAssemblyFallbackGuard(t4, lb4);
             g.SetWorkload(pt);
             g.StartNode(l4, 1, null);
             g.StartNode(c4, 2, new Gs.SimulatedLink { RttMs = 120, BandwidthMBs = 1000 });
             Thread.Sleep(30);
             var task = Task.Run(() => g.RenderFrame(5));
-            Thread.Sleep(40);
+            // 고정 지연 대신 배정 관측 배리어: 프레임 5 계획에서 클라우드 타일이 배정된 뒤(RTT 120 ms 전송 구간) 단절
+            Assert.True(SpinWait.SpinUntil(() =>
+            {
+                for (var i = 0; i < g.TileCount; i++) if (g.TileOwner(i) == c4) return true;
+                return false;
+            }, 10_000), "cloud tile assignment");
             g.SetConnected(c4, false); // 전송 중 명시 단절
             Assert.True(task.Wait(10_000));
             var res = task.Result;
             Assert.False(res.TimedOut);
             Assert.True(res.Fallbacks > 0);
-            Assert.True(res.FallbackMs < 50, "explicit fallback " + res.FallbackMs);
             Assert.Equal(0, t4.Tiles(c4)); // 원격 결과 커밋 0
             var f5 = g.Front.ToArray();
             pt.Engine.RenderFrame(5);
             Assert.True(pt.Engine.Color.SequenceEqual(f5));
+            bestExplicitMs = Math.Min(bestExplicitMs, res.FallbackMs);
         }
+        Assert.True(bestExplicitMs < 50, "explicit fallback " + bestExplicitMs);
 
         // ── v16.87 디퓨전 타일 워크로드: 분할 무관 일치 ──
         var dw = new Gs.DiffusionSwarmWorkload(48, 27, 8);
@@ -30195,9 +30233,17 @@ public sealed class InteractiveShowrunnerIsolatedTests
         var gg = run.Guard;
         var info = run.Summary() + " 수신 " + gg.Offered + " 링 " + gg.QueueDropped + " 허가 " + gg.Admitted + " 버킷 " + gg.RateLimited + " 재활용 " + gg.Recycled + " 스로틀 " + gg.Throttles + " 레이어초과 " + run.LayerOverBudget + " GC겹침 " + run.GcStalls + " MCR " + mcr.MaxTickMs;
         Assert.True(a1 == 0 && a0 == 0, "레이어 할당 " + a1 + " · " + info);
-        Assert.True(gg.Offered == 10_000 + 590 * 17 && gg.QueueDropped > 0 && gg.RateLimited > 0 && peak <= Shw.ViewerInteractivePhysicsSpawnerEngine.Capacity && gg.Recycled > 0, info);
+        // 재활용은 풀 포화 시에만 발생 — 부하 중 OS 선점으로 레이어 3 ms 예산 초과 → 프레임 가드 스로틀(정상 보호 동작)이 유입을 줄이면 포화 미도달 가능
+        Assert.True(gg.Offered == 10_000 + 590 * 17 && gg.QueueDropped > 0 && gg.RateLimited > 0 && peak <= Shw.ViewerInteractivePhysicsSpawnerEngine.Capacity && (gg.Recycled > 0 || gg.Throttles > 0), info);
         Assert.True(run.LayerOverBudget == 0, info);
         Assert.True(gg.Admitted <= 40 + 40 * 10 + 10 && gg.UserLimited >= 0, "버킷 상한 " + gg.Admitted);
+        // 결정적 재활용 경로: 풀을 직접 포화(벽시계 무관) → 버킷 리셋 → 허가 커맨드 1 건 → 레이어가 카메라 밖 최고령 슬롯 재활용
+        for (var u = 0; sp.FreeSlots > 0 && u < 2 * Shw.ViewerInteractivePhysicsSpawnerEngine.Capacity; u++) sp.Spawn(Shw.DropKind.Ball, -1, 0x5EED0000 + u);
+        Assert.Equal(0, sp.FreeSlots);
+        gg.Reset();
+        Assert.True(run.Submit("재활용검증", "!ball", 0));
+        run.Step();
+        Assert.True(gg.Admitted == 1 && gg.Recycled >= 1, "결정적 재활용 " + gg.Recycled + " 허가 " + gg.Admitted + " 빈 슬롯 " + sp.FreeSlots);
         // MCR 프레임 예산(중앙값 · 최선 N)
         var tk = new double[60]; var med = double.MaxValue;
         for (var attempt = 0; attempt < 5 && med >= 16.7; attempt++)

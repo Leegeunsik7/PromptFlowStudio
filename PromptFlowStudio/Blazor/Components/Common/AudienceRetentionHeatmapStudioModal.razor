@@ -26,6 +26,8 @@
                 <button class="arh-btn go" @onclick="RescueNow">🫀 1클릭 자동 심폐소생</button>
                 <button class="arh-btn" @onclick="Reanalyze">🔍 재분석</button>
                 <button class="arh-btn" @onclick="Plus6h">⏩ +6시간</button>
+                <button class="arh-btn" @onclick="IngestNow" disabled="@_ingesting">📡 유지율 수집</button>
+                <button class="arh-btn" @onclick="RemuxNow">🎞 무인코딩 리먹스</button>
                 <span class="arh-sep"></span>
                 <label class="arh-lbl">📼 클립
                     <select class="arh-sel" value="@(Runner.Preset.ToString(CultureInfo.InvariantCulture))" @onchange="OnPreset">
@@ -153,6 +155,21 @@
             </div>
 
             <div class="arh-card">
+                <div class="arh-sec">📡 수집 · 🎞 NALU 리먹스 파이프라인 <span class="arh-kw">@(YouTubeAnalyticsRetentionCollector.SourceName(Runner.IngestSource))</span></div>
+                <div class="arh-grid">
+                    <div class="m"><b class="@(Runner.IngestSource == RetentionSource.Live ? "acc" : Runner.IngestSource is RetentionSource.FallbackCache or RetentionSource.FallbackPreset ? "warn" : null)">@(Runner.Ingests)</b><i>수집 · @(YouTubeAnalyticsRetentionCollector.FaultName(Runner.Collector.LastFault))</i></div>
+                    <div class="m"><b>@(Runner.Collector.LiveSuccesses)/@(Runner.Collector.Requests)</b><i>실응답/요청</i></div>
+                    <div class="m"><b class="@(Runner.Collector.RateLimitHits > 0 ? "warn" : null)">@(Runner.Collector.RateLimitHits)</b><i>429 · 폴백 @(Runner.Collector.Fallbacks)</i></div>
+                    <div class="m"><b>@(Runner.Stream.Codec == NalCodec.H264 ? "H.264" : "H.265")</b><i>합성 클립 @(Runner.Stream.Frames)f</i></div>
+                    <div class="m"><b class="@(Runner.Remuxed ? "acc" : Runner.Remuxes > 0 ? "warn" : null)">@(Runner.Remuxes > 0 ? (Runner.RemuxLosslessFaults == 0 ? "무손실" : "불일치 " + Runner.RemuxLosslessFaults) : "—")</b><i>NAL 바이트 검증</i></div>
+                    <div class="m"><b>@(Runner.ReMuxer.CopiedGops)</b><i>GOP 스트림 복사</i></div>
+                    <div class="m"><b class="@(Runner.ReMuxer.ReencodeGops > 0 ? "warn" : null)">@(Runner.ReMuxer.ReencodeGops)</b><i>재인코딩 필요(펀치)</i></div>
+                    <div class="m"><b>@(Runner.MaxAvDesyncMs.ToString("0.00", CultureInfo.InvariantCulture))ms</b><i>A/V 편차 · 끝 @(Runner.EndDriftMs.ToString("0.0", CultureInfo.InvariantCulture))ms</i></div>
+                </div>
+                <div class="arh-mini">자격 증명은 환경 변수(@(YouTubeAnalyticsCredentials.EnvVideoId) + @(YouTubeAnalyticsCredentials.EnvAccessToken) 또는 CLIENT_ID/SECRET/REFRESH_TOKEN)로만 읽습니다 · 미설정 시 모의 수집 · 리먹스 대상은 합성 Annex-B 클립(디코딩 영상 아님) · 줌 펀치 GOP 는 스트림 복사로 표현 불가 → 재인코딩 필요로 집계.</div>
+            </div>
+
+            <div class="arh-card">
                 <div class="arh-sec">📜 리에디터 로그 <span class="arh-kw">@(Runner.LogCount)건</span></div>
                 <div class="arh-log">
                     @for (var i = 0; i < Runner.LogCount; i++)
@@ -230,6 +247,7 @@
 
     private const float W = 720f, H = 190f;
     private readonly System.Text.StringBuilder _sb = new(1024);
+    private bool _ingesting;
 
     private int SrcMs => Math.Max(1, Runner.Detector.DurationSec * 1000);
 
@@ -239,6 +257,16 @@
     private void Reanalyze() => Guard(() => Runner.SetThresholdTenths(Runner.ThresholdTenths), "Analyze");
     private void Plus6h() => Guard(() => Runner.AdvanceHours(6), "Plus6h");
     private void ResetAll() => Guard(Runner.Reset, "Reset");
+    private void RemuxNow() => Guard(() => Runner.Remux(), "Remux");
+
+    private async Task IngestNow()
+    {
+        if (_ingesting) return;
+        _ingesting = true;
+        try { await Runner.IngestAsync(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("RetentionHeatmap.Modal.Ingest", ex); }
+        finally { _ingesting = false; }
+    }
 
     private void OnPreset(ChangeEventArgs e)
     {

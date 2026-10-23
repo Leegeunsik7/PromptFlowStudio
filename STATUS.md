@@ -1,17 +1,18 @@
 # Current Project Status
-- Active Milestone: v17.99.0 완료 (Complete) — 경쟁 채널 바이럴 스파이 & 역공학 스튜디오
+- Active Milestone: v17.99.1 완료 (Complete) — YouTube Analytics 유지율 수집 · NALU 스마트 리먹서 · 타이밍 플레이크 해소
 - Build Status: Desktop Release -warnaserror 0/0 · net8.0-ios Release -warnaserror 0/0 · net8.0-android 미검증(SDK/JDK 미설치)
-- Test Suite: 511 전량 회귀(단일 CPU · MaxCpuCount=1 · DisableParallelization) 510 통과 + 부하 타이밍 간헐 1 → `DistributedGpuCluster_And_CloudRenderingSwarm_Check`(v17.87 이후 동일) 격리 재실행 3/3 통과
-- Sidebar: 7대 카테고리 · 175 엔트리 · 도움말 175/175 결함 0 · 크롤러 175 마운트 결함 0
+- Test Suite: 519 전량 회귀 2 회 연속 519/519 통과(실패 0 · 건너뜀 0) — `DistributedGpuCluster` · `ShowrunnerAdlib` · `GenerativeFilmScore`(신규 관측) 플레이크 해소
+- Sidebar: 7대 카테고리 · 175 엔트리 · 도움말 175/175 · 크롤러 175 마운트 결함 0(카탈로그 변경 없음)
 - Updated At: 2026-10-23 (KST)
 
 ## Completed Deliverables
-- SPY-1: `Services/CompetitorSpy/CompetitorViralOutlierSpikeDetectorEngine` — 4 축 Span 메트릭 스캔 · 중앙값×3 미만 평상 평균(조회/시간당 속도) 기준 ≥ 300 % 이상치 · 지수 0~100 = 스파이크 40 + 가속 25 + 완청 20 + 댓글 15 · 64 상한 · 무할당
-- SPY-2: `ViralHookAudiovisualReverseEngineer` — 도입 48 자 훅 의문/반전/공포·경고/호기심 규칙 분류(동점 우선순위 · 신뢰도) · 휘도 Δ ≥ 0.12 컷/초 · 평균 샷 · 100 ms 피크 변동계수/밀도 청사진 · 무할당
-- SPY-3: `CounterViralScriptFormulaSafetyGuard` — 유형별 자사 템플릿 3 변형 × 페르소나/키워드 · 640 자 고정 버퍼 대본 · max(Levenshtein, 바이그램 Jaccard) ≥ 40 % 즉시 재합성/차단 · 지문 중복 차단 · 승인 1 = 커밋 1 · v17.90 `SubmitStageOneInput` → 대기열 폴백 · 8 링 원장
-- SPY-4: `CompetitorViralSpyStudioModal` + `CompetitorViralSpyStudioRunner`(벤치마크 그리드 · 조회수 막대/임계선 · 이상치 리스트 · 훅 해체 다이어그램 · 1클릭 전송) · 카탈로그 `_competitorViralSpy`(4번) · 도움말 · HUD `gth-v1799`(`SpyRun`) · DI 양쪽
-- SPY-5: `CompetitorViralSpy_And_ReverseEngineering_Check`(TimingSensitive · 무할당 · 100 ms 예산) · 크롤러 175
+- ING-1: `RetentionHeatmap/YouTubeAnalyticsRetentionCollector` — `audienceWatchRatio`×`elapsedVideoTimeRatio` · 환경 변수 OAuth2(토큰/refresh) · 미설정 = 모의(실데이터 아님 표기) · 429 Retry-After 쿨다운(요청 0) · 단절/타임아웃/401/형식 → 실응답 캐시 → 세이프티 프리셋 · Utf8JsonReader
+- MUX-1: `NaluSmartReMuxer` — H.264/H.265 Annex-B NAL/AU 파싱 · GOP 스냅 스트림 복사 · SPS/PPS(/VPS) 원문 주입(중복 생략) · 템포 맵 PTS/DTS 재타이밍 · DTS 엄격 증가 · NAL 바이트 무손실 검증 · 펀치 GOP = 재인코딩 필요 집계 · 무할당
+- MUX-2: `SyntheticAnnexBStream` 구조 합성 클립(B 재정렬 · 다중 슬라이스) · 러너 `IngestAsync`/`Remux` · 모달 수집/리먹스 카드 · HUD `gth-v1798` 출처/무손실/A·V 줄
+- QA: `RetentionIngestRemuxTests` 8 건 · 프리셋 A/V 편차 ≤ 1.16 ms · 끝 드리프트 ≤ 0.81 ms · 소크 12 s ≈ 420 사이클/70 만 프레임 손상 0 · 후반 메모리 Δ ≈ 0 · 핸들 Δ ≤ 3
+- FLAKE: GPU 스웜 무통보 단절 전제 명시 성립(JIT 워밍 후 로컬 < RTT → 원격 0 배정) · 명시 단절 최선 3 · 클라우드 배정 관측 배리어 · 쇼러너 결정적 재활용 경로 · 폴리 무할당 MinAllocated
 
 ## Known Issues / 환경 노트
-- 경쟁 채널 메트릭 · 휘도/오디오는 결정적 프리셋 모의 — 실 YouTube Data API 수집 미결선
-- GUI 육안 미검증 · Android 빌드 미검증
+- 실 YouTube Analytics 서버 연동 미검증(가짜 HTTP 핸들러만) · 리먹스 대상은 합성 비트스트림(실 디코딩 미검증) · 줌 펀치 GOP 재인코딩 미구현(인코더 없음)
+- GPU 스웜 명시 단절 50 ms 게이트는 16 코어 전량 외부 포화 시 OS 스케줄링으로 미충족(8 코어 부하 통과)
+- 테스트 프로젝트 기존 분석기 경고 15(TitanReleaseTests 기존 라인) · GUI 육안 미검증 · Android 빌드 미검증

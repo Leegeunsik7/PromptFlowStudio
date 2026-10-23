@@ -1042,6 +1042,8 @@
                 <span class="gth-v96-m"><b>@(ArhRun.ReEditor.PunchCount + ArhRun.ReEditor.TempoCount)</b><span>리에디트</span></span>
                 <span class="gth-v96-m"><b>@(ArhRun.Guard.HandoffCount)</b><span>리스큐 이관</span></span>
             </div>
+            @* v17.99.1: 수집 출처(실데이터/모의/폴백 구분) · 리먹스 무손실 · A/V 편차 *@
+            <div class="gth-v96-act">@(PromptFlowStudio.Services.RetentionHeatmap.YouTubeAnalyticsRetentionCollector.SourceName(ArhRun.IngestSource)) · 리먹스 @(ArhRun.Remuxes > 0 ? (ArhRun.Remuxed ? "무손실 GOP " + ArhRun.ReMuxer.CopiedGops.ToString(System.Globalization.CultureInfo.InvariantCulture) + " · A/V " + ArhRun.MaxAvDesyncMs.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture) + "ms" : "검증 실패") : "대기")</div>
             <div class="gth-v96-act">@(ArhRun.LastAction ?? "리텐션 분석 대기 · 절벽 0.3 s 전 1.15× 펀치 · 데드에어 WSOLA 가속")</div>
         </div>
     </div>
