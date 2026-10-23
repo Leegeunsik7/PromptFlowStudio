@@ -1,0 +1,207 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.MasterPipeline
+@implements IDisposable
+@inject MasterPipelineRealRunnerStudioRunner Runner
+
+@* [PromptFlow Studio v17.92.0] ⚡ 마스터 실러너 E2E 샌드박스 — 7 실러너 주입 상태 · 스테이지 실측 · 실행 로그 · 수동 스텝 · 헤드리스 배치 · 인터락 롤백. *@
+<div class="mrr-scrim" @onclick="Close">
+    <div class="mrr-modal" @onclick:stopPropagation="true">
+        <div class="mrr-h">
+            <div>
+                <div class="mrr-title">⚡ 마스터 실러너 E2E 샌드박스 @(Runner.Busy ? "· ⏳ 실행 중" : Runner.Engine.State == RunnerChainState.Completed ? "· ✅ 완료" : Runner.Engine.State == RunnerChainState.Aborted ? "· ⛔ 인터락" : null)</div>
+                <div class="mrr-sub">흉내 내는 계산이 아니라 <b>실제 7개 스튜디오 엔진</b>을 순서대로 직접 부릅니다 — 라이브 클리퍼가 자른 클립을 스코어러가 채점해 <b>9:16 MP4</b>로 뽑고,
+                    저작권 검역이 BGM을 바꾸고, 더빙 · 채널 변형 렌더를 거쳐 VOD 리퍼포징이 <b>카드뉴스 5장과 마크다운 아티클</b>을 만든 뒤 클라우드 볼트에 올립니다.
+                    배치 실행은 화면과 분리된 <b>전용 백그라운드 스레드</b>에서 돌아 60fps를 지키고, 중간에 문제가 생기면 다음 단계를 즉시 막고 앞 단계 임시 버퍼를 한 번에 회수합니다.</div>
+            </div>
+            <div class="mrr-hr">
+                <span class="mrr-badge @(Runner.InjectedCount == RealRunnerE2EChainExecutionEngine.StageCount ? "ok" : null)">🔌 실러너 @(Runner.InjectedCount)/@(RealRunnerE2EChainExecutionEngine.StageCount) 주입</span>
+                <button class="mrr-x" @onclick="Close">✕</button>
+            </div>
+        </div>
+
+        <div class="mrr-body">
+            <div class="mrr-bar">
+                <button class="mrr-btn" disabled="@(Runner.Busy)" @onclick="Step">⏭ 단일 단계 스텝</button>
+                <button class="mrr-btn go" @onclick="Batch">⚡ E2E 원클릭 배치 실행</button>
+                <label class="mrr-lbl">세그먼트
+                    <input class="mrr-in" type="range" min="@(RealRunnerE2EChainExecutionEngine.MinSegmentSeconds)" max="@(RealRunnerE2EChainExecutionEngine.MaxSegmentSeconds)" step="5" value="@(Runner.SegmentSeconds.ToString(CultureInfo.InvariantCulture))" @onchange="SetSegment" />
+                    <b>@(Runner.SegmentSeconds)s</b>
+                </label>
+                <span class="mrr-sep"></span>
+                <button class="mrr-btn @(Runner.SimulateContentIdBreach ? "warn" : null)" aria-pressed="@(Runner.SimulateContentIdBreach ? "true" : "false")" @onclick="ToggleBreach">🧪 Content ID 위반 주입: @(Runner.SimulateContentIdBreach ? "ON" : "OFF")</button>
+                <button class="mrr-btn" disabled="@(Runner.Busy)" @onclick="ResetAll">♻ 초기화</button>
+            </div>
+
+            <div class="mrr-card">
+                <div class="mrr-sec">🔗 7대 실러너 체인 <span class="mrr-kw">다음 단계 @(Runner.Engine.NextStage + 1) · 체인 @(MasterPipelineRealRunnerStudioRunner.Us(Runner.Context.TotalUs)) · 대기 @(Runner.Batch.Pending)</span></div>
+                <div class="mrr-chain">
+                    @for (var s = 0; s < RealRunnerE2EChainExecutionEngine.StageCount; s++)
+                    {
+                        var st = Runner.Context.States[s];
+                        <div class="mrr-node @(StateClass(st))">
+                            <div class="mrr-ni">@(RealRunnerE2EChainExecutionEngine.StageIcons[s]) <b>@(s + 1)</b></div>
+                            <div class="mrr-nn">@(RealRunnerE2EChainExecutionEngine.StageNames[s])</div>
+                            <div class="mrr-nr">@(RealRunnerE2EChainExecutionEngine.RunnerNames[s]) · @(RealRunnerE2EChainExecutionEngine.StageSources[s])</div>
+                            <div class="mrr-ns"><span class="mrr-pill @(Runner.IsInjected(s) ? "ok" : "loc")">@(Runner.IsInjected(s) ? "Injected" : "Local")</span><span class="mrr-pill">@(StateName(st))</span></div>
+                            <div class="mrr-nm">@(MasterPipelineRealRunnerStudioRunner.Us(Runner.Context.StageUs[s])) · @(MasterPipelineRealRunnerStudioRunner.Kb(Runner.Context.StageBytes[s]))</div>
+                        </div>
+                    }
+                </div>
+            </div>
+
+            <div class="mrr-main">
+                <div class="mrr-card">
+                    <div class="mrr-sec">📜 스테이지 실행 로그 <span class="mrr-kw">@(Runner.LogCount)건 · 텔레메트리 #@(Runner.Engine.Published)</span></div>
+                    <div class="mrr-log">
+                        @if (Runner.LogCount == 0)
+                        {
+                            <div class="mrr-mini">아직 실행 기록이 없습니다 — 「⏭ 단일 단계 스텝」 또는 「⚡ E2E 원클릭 배치 실행」을 눌러 보세요.</div>
+                        }
+                        @for (var i = 0; i < Runner.LogCount; i++)
+                        {
+                            var line = Runner.Log(i);
+                            <div class="mrr-ll @(line.Contains('⛔') ? "bad" : line.Contains('✅') ? "ok" : null)">@(line)</div>
+                        }
+                    </div>
+                </div>
+                <div class="mrr-card">
+                    <div class="mrr-sec">📦 최근 배치 패키지</div>
+                    @{ var pkg = Runner.LastPackage; }
+                    @if (pkg is null)
+                    {
+                        <div class="mrr-mini">배치 결과 없음 — 세트 = 9:16 쇼츠 MP4 + 1:1 카드뉴스 PNG 5장 + 마크다운 아티클</div>
+                    }
+                    else
+                    {
+                        <div class="mrr-grid">
+                            <div class="m"><b class="@(pkg.Ok ? "ok" : "bad")">@(pkg.Ok ? "완료" : "중단")</b><i>배치 #@(pkg.JobId)</i></div>
+                            <div class="m"><b>@(MasterPipelineRealRunnerStudioRunner.Kb(pkg.ShortsMp4.Length))</b><i>쇼츠 MP4</i></div>
+                            <div class="m"><b>@(pkg.Cards.Length)장</b><i>카드뉴스 PNG</i></div>
+                            <div class="m"><b>@(pkg.Markdown.Length.ToString("N0", CultureInfo.InvariantCulture))자</b><i>아티클</i></div>
+                            <div class="m"><b>@(pkg.Score.ToString("0", CultureInfo.InvariantCulture))</b><i>바이럴 점수</i></div>
+                            <div class="m"><b>@(pkg.RiskAfter.ToString("0", CultureInfo.InvariantCulture))</b><i>Content ID</i></div>
+                            <div class="m"><b>@(pkg.VaultObjects)개</b><i>볼트 적재</i></div>
+                            <div class="m"><b>@(pkg.ElapsedMs.ToString("0", CultureInfo.InvariantCulture))ms</b><i>무인 소요</i></div>
+                            <div class="m"><b>@(MasterPipelineRealRunnerStudioRunner.Kb(pkg.ReclaimedBytes))</b><i>롤백 회수</i></div>
+                        </div>
+                        @if (!pkg.Ok)
+                        {
+                            <div class="mrr-out bad">@(pkg.Error)</div>
+                        }
+                        else
+                        {
+                            <div class="mrr-out">@(pkg.Markdown.Length > 360 ? pkg.Markdown.Substring(0, 360) + " …" : pkg.Markdown)</div>
+                        }
+                    }
+                    <div class="mrr-sec mt">🧯 인터락 · 스테이징</div>
+                    <div class="mrr-grid">
+                        <div class="m"><b class="@(Runner.Guard.IsTripped ? "bad" : "ok")">@(Runner.Guard.IsTripped ? "TRIP" : "ARMED")</b><i>@(Runner.Guard.IsTripped ? "③ 이후 차단" : "인터락")</i></div>
+                        <div class="m"><b>@(Runner.Guard.OutstandingLeases)건</b><i>스테이징 리스</i></div>
+                        <div class="m"><b>@(MasterPipelineRealRunnerStudioRunner.Kb(Runner.Guard.ReclaimedBytes))</b><i>누적 회수</i></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="mrr-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+    </div>
+</div>
+
+<style>
+    .mrr-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .mrr-modal { width: min(1280px, 96vw); max-height: 94vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); color: var(--text-primary); }
+    .mrr-h { position: sticky; top: 0; z-index: 3; flex: 0 0 auto; display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px 8px; background: var(--card); border-bottom: 1px solid var(--line); }
+    .mrr-hr { display: flex; align-items: flex-start; gap: 8px; }
+    .mrr-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 10px; }
+    .mrr-act { position: sticky; bottom: 0; z-index: 3; flex: 0 0 auto; padding: 8px 16px 14px; background: var(--card); border-top: 1px solid var(--line); font-size: 11px; color: var(--text-muted); }
+    .mrr-title { font-size: 17px; font-weight: 800; }
+    .mrr-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .mrr-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .mrr-badge { white-space: nowrap; font-size: 12px; font-weight: 800; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: #1e293b; }
+    .mrr-badge.ok { border-color: #22c55e; background: #14532d; color: #bbf7d0; }
+    .mrr-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 0; }
+    .mrr-sep { flex: 1; }
+    .mrr-lbl { display: inline-flex; gap: 6px; align-items: center; font-size: 11.5px; }
+    .mrr-in { accent-color: #38bdf8; }
+    .mrr-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .mrr-btn:disabled { opacity: .45; cursor: default; }
+    .mrr-btn.go { border-color: #38bdf8; font-weight: 700; }
+    .mrr-btn.warn { border-color: #f97316; background: #431407; }
+    .mrr-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-width: 0; margin-top: 10px; }
+    .mrr-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .mrr-sec.mt { margin-top: 10px; }
+    .mrr-kw { margin-left: auto; font-size: 10.5px; font-weight: 400; color: #7dd3fc; }
+    .mrr-chain { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+    .mrr-node { background: #111827; border: 1px solid var(--line); border-radius: 8px; padding: 6px; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+    .mrr-node.run { border-color: #38bdf8; box-shadow: 0 0 0 1px #38bdf8 inset; }
+    .mrr-node.done { border-color: #22c55e; }
+    .mrr-node.fail { border-color: #ef4444; background: #2a0b0b; }
+    .mrr-node.block { opacity: .5; border-style: dashed; }
+    .mrr-ni { font-size: 14px; } .mrr-nn { font-size: 11.5px; font-weight: 700; } .mrr-nr { font-size: 9.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .mrr-ns { display: flex; flex-wrap: wrap; gap: 3px; }
+    .mrr-pill { font-size: 9.5px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--line); background: #1e293b; }
+    .mrr-pill.ok { border-color: #22c55e; color: #bbf7d0; } .mrr-pill.loc { border-color: #f59e0b; color: #fde68a; }
+    .mrr-nm { font-size: 10px; font-family: var(--mono); color: #7dd3fc; }
+    .mrr-main { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 10px; }
+    .mrr-log { max-height: 280px; overflow-y: auto; font-family: var(--mono); font-size: 10.5px; display: flex; flex-direction: column; gap: 2px; }
+    .mrr-ll { padding: 1px 4px; border-radius: 4px; background: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mrr-ll.ok { color: #bbf7d0; } .mrr-ll.bad { color: #fecaca; background: #2a0b0b; }
+    .mrr-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+    .mrr-grid .m { background: #111827; border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; }
+    .mrr-grid .m b { font-size: 12.5px; } .mrr-grid .m b.ok { color: #4ade80; } .mrr-grid .m b.bad { color: #f87171; }
+    .mrr-grid .m i { font-style: normal; font-size: 10px; color: var(--text-muted); }
+    .mrr-out { margin-top: 6px; padding: 6px 8px; background: #111827; border-radius: 6px; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 140px; overflow-y: auto; }
+    .mrr-out.bad { color: #fecaca; background: #2a0b0b; }
+    .mrr-mini { font-size: 10px; color: var(--text-muted); margin-top: 6px; }
+    @@media (max-width: 1000px) { .mrr-chain { grid-template-columns: repeat(4, minmax(0, 1fr)); } .mrr-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    protected override void OnInitialized() => Runner.OnChange += OnServiceChanged;
+
+    private async Task Step()
+    {
+        try { await Runner.StepAsync(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("MasterPipeline.Modal.Step", ex); }
+    }
+
+    private void Batch()
+    {
+        try { Runner.EnqueueBatch(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("MasterPipeline.Modal.Batch", ex); }
+    }
+
+    private void SetSegment(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var s)) Runner.SetSegmentSeconds(s);
+    }
+
+    private void ToggleBreach() => Runner.ToggleContentIdBreach();
+    private void ResetAll() => Runner.Reset();
+
+    private static string? StateClass(RunnerStageState s) => s switch
+    {
+        RunnerStageState.Running => "run",
+        RunnerStageState.Done => "done",
+        RunnerStageState.Failed => "fail",
+        RunnerStageState.Blocked => "block",
+        _ => null,
+    };
+
+    private static string StateName(RunnerStageState s) => s switch
+    {
+        RunnerStageState.Running => "Running",
+        RunnerStageState.Done => "Done",
+        RunnerStageState.Failed => "Failed",
+        RunnerStageState.Blocked => "Blocked",
+        _ => "Ready",
+    };
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Runner.OnChange -= OnServiceChanged;
+}

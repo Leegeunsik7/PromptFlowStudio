@@ -174,6 +174,7 @@ using IL = PromptFlowStudio.Services.InfluencerLive;
 using SG = PromptFlowStudio.Services.StreamGateway;
 using Ovg = PromptFlowStudio.Services.OmniViral;
 using Cpy = PromptFlowStudio.Services.CopyrightCompliance;
+using Mrr = PromptFlowStudio.Services.MasterPipeline;
 
 namespace PromptFlowStudio.Tests;
 
@@ -35755,9 +35756,9 @@ public sealed class CopyrightComplianceIsolatedTests
 
         // ── CPY-4: 카탈로그 167 · 도움말 · HUD · 레이아웃 · DI · 모달 규격 · 외부 의존 0 · 모달 렌더 ──
         var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
-        Assert.Equal(167, cat.Length);
+        Assert.True(cat.Length >= 167);   // v17.92.0 이후 카탈로그 증가 허용
         Assert.Contains(cat, en => en.Key == "_copyrightCompliance" && en.Category == 4 && en.Title == "저작권 검역 & Content ID 가드");
-        Assert.Equal(167, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
+        Assert.True(PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count >= 167);
         Assert.Equal(0, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects());
         Assert.Equal("_copyrightCompliance", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.ResolveKeyByHeader("🛡️ 저작권 검역 & Content ID 가드 · ✅ Safe to Publish"));
         var root = RepoRoot();
@@ -35780,6 +35781,186 @@ public sealed class CopyrightComplianceIsolatedTests
         var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.CopyrightComplianceAuditStudioModal), sp);
         Assert.True(html.Length > 500 && html.Contains("cpy-scrim", StringComparison.Ordinal) && html.Contains("cpy-body", StringComparison.Ordinal) && html.Contains("검역 실행", StringComparison.Ordinal) && html.Contains("cpy-wave", StringComparison.Ordinal), "모달 렌더 " + html.Length);
         Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+}
+
+/// <summary>v17.92.0 마스터 실러너 E2E 체인 · 헤드리스 배치 드라이버 · 인터락 스테이징 롤백 · 실러너 샌드박스 콕핏 결선.</summary>
+[Collection("TimingSensitivePerformance")]   // 실러너 7 종 순차 호출(스레드 할당 바이트 계측 · 전용 배치 스레드 · 볼트 셰이핑 벽시계) → 비병렬
+public sealed class MasterPipelineRealRunnerIsolatedTests
+{
+    [Fact]
+    public async Task MasterPipeline_RealRunnerE2EChain_Check()
+    {
+        // ── RUN-3: 스테이징 리스 · 트립 래치 · 원자 롤백 · 중복 회수 0 · 리스 재사용 무할당 ──
+        var g = new Mrr.PipelineInterlockStagingRollbackGuard();
+        g.LeaseBytes(1000); g.LeaseFloats(256); g.LeaseChars(64);
+        Assert.True(g.OutstandingLeases == 3 && g.OutstandingBytes >= 1000 + 256 * 4 + 64 * 2);
+        Assert.True(g.Trip(2, Mrr.InterlockReason.ContentIdRisk, "위험도 초과") && !g.Trip(4, Mrr.InterlockReason.Exception, "후속"));
+        Assert.True(g.IsTripped && g.TripStage == 2 && g.Reason == Mrr.InterlockReason.ContentIdRisk);
+        Assert.Throws<Mrr.PipelineInterlockException>(() => g.LeaseBytes(16));   // 트립 후 하류 대여 차단
+        var reclaimed = g.Rollback();
+        Assert.True(reclaimed >= 1000 + 256 * 4 + 64 * 2 && g.OutstandingLeases == 0 && g.OutstandingBytes == 0 && g.Rollbacks == 1);
+        Assert.Equal(0, g.Rollback());
+        g.Arm();
+        Assert.True(!g.IsTripped && g.TripStage == -1 && g.Reason == Mrr.InterlockReason.None);
+        for (var w = 0; w < 4; w++) { g.LeaseBytes(2_000_000); g.LeaseFloats(240_000); g.LeaseChars(8192); g.ReleaseAll(); }
+        var a0 = GC.GetAllocatedBytesForCurrentThread();
+        for (var w = 0; w < 64; w++) { g.LeaseBytes(2_000_000).AsSpan(0, 4096).Fill(1); g.LeaseFloats(240_000); g.LeaseChars(8192); g.ReleaseAll(); }
+        Assert.True(GC.GetAllocatedBytesForCurrentThread() - a0 == 0, "스테이징 리스 할당 " + (GC.GetAllocatedBytesForCurrentThread() - a0));
+
+        // ── RUN-1: 실러너 7 종 실인스턴스 ①→⑦ 순차 호출 · 페이로드 파이핑 · µs/바이트 텔레메트리 ──
+        using var clipper = new PromptFlowStudio.Services.LiveClipper.LiveToShortsAutoClipperStudioRunner();
+        using var predictor = new PromptFlowStudio.Services.ViralExport.ViralPredictorShortsExportStudioRunner(clipper);
+        using var cpy = new Cpy.CopyrightComplianceStudioRunner();
+        using var dub = new PromptFlowStudio.Services.MultilingualDubbing.MultilingualDubbingStudioRunner();
+        using var mtx = new PromptFlowStudio.Services.MatrixSyndication.MatrixSyndicationStudioRunner();
+        using var vod = new PromptFlowStudio.Services.VodRepurposing.VodRepurposingStudioRunner();
+        using var vault = new PromptFlowStudio.Services.LiveArchive.LiveArchiveCloudVaultStudioRunner();
+        using (var stray = new PromptFlowStudio.Services.LiveClipper.LiveToShortsAutoClipperStudioRunner())
+            Assert.Throws<ArgumentException>(() => new Mrr.RealRunnerE2EChainExecutionEngine(stray, predictor, cpy, dub, mtx, vod, vault));
+        using var eng = new Mrr.RealRunnerE2EChainExecutionEngine(clipper, predictor, cpy, dub, mtx, vod, vault);
+        var observed = 0;
+        eng.Observer = _ => observed++;
+
+        var sw = Stopwatch.StartNew();
+        Assert.Equal(Mrr.RunnerChainState.Completed, await eng.RunAllAsync(40));
+        var e2eMs = sw.Elapsed.TotalMilliseconds;
+        var ctx = eng.Context;
+        Assert.True(ctx.DoneCount == 7 && eng.Completions == 1 && eng.Aborts == 0 && eng.LastError is null, eng.LastError);
+        for (var s = 0; s < 7; s++) Assert.True(ctx.States[s] == Mrr.RunnerStageState.Done && ctx.StageUs[s] > 0 && ctx.StageBytes[s] > 0, "스테이지 " + s + " " + ctx.StageUs[s] + "µs " + ctx.StageBytes[s] + "B");
+        // ① 클리퍼 → ② 스코어러: 같은 클립 · 실제 fMP4(NALU) 바이트 동일
+        Assert.True(ctx.ClipId > 0 && predictor.HasSelection && predictor.Selected.Id == ctx.ClipId && clipper.ClipsSliced >= 1);
+        Assert.True(ctx.NaluLength > 1024 && ctx.NaluSpan.SequenceEqual(predictor.Exporter.Output.Span) && ctx.NaluSpan.Slice(4, 4).SequenceEqual("ftyp"u8));
+        Assert.True(ctx.Score == predictor.Score.Total && ctx.Score > 0 && predictor.Analyses >= 1);
+        // ③ 저작권 검역: 실검역 1 회 · 치환 PCM 그대로
+        Assert.True(cpy.Audits == 1 && cpy.Audited && cpy.SafeToPublish && ctx.RiskBefore >= 70 && ctx.RiskAfter < 70, "위험도 " + ctx.RiskBefore + " → " + ctx.RiskAfter);
+        Assert.True(ctx.PcmLength == cpy.Substituted.Length && ctx.Pcm.AsSpan(0, ctx.PcmLength).SequenceEqual(cpy.Substituted));
+        // ④ 더빙: EN/ES/JA 연접
+        Assert.True(dub.Prepared);
+        var dubLen = 0;
+        for (var t = 1; t <= 3; t++) { Assert.True(ctx.Dub.AsSpan(dubLen, dub.Pcm(t).Length).SequenceEqual(dub.Pcm(t))); dubLen += dub.Pcm(t).Length; }
+        Assert.True(ctx.DubLength == dubLen && dubLen > 0);
+        // ⑤ 채널 변형 썸네일
+        Assert.True(ctx.VariantChannels == mtx.Router.ChannelCount && ctx.VariantChannels > 0 && ctx.Variant.AsSpan(0, mtx.Thumb(0).Length).SequenceEqual(mtx.Thumb(0)));
+        // ⑥ 아티클 + 카드뉴스 5
+        Assert.True(vod.Runs == 1 && ctx.TextSpan.SequenceEqual(vod.Markdown(PromptFlowStudio.Services.VodRepurposing.ArticleTemplate.Blog)) && ctx.TextLength > 200);
+        long pkgBytes = ctx.NaluLength + System.Text.Encoding.UTF8.GetByteCount(ctx.TextSpan);
+        for (var i = 0; i < 5; i++)
+        {
+            Assert.True(ctx.CardSpan(i).Length > 1000 && ctx.CardSpan(i)[..4].SequenceEqual(new byte[] { 0x89, (byte)'P', (byte)'N', (byte)'G' }) && ctx.CardSpan(i).SequenceEqual(vod.Rasterizer.Png(i)), "카드 " + i);
+            pkgBytes += ctx.CardLength[i];
+        }
+        // ⑦ 볼트: 쇼츠 + 카드 5 + 아티클 = 7 객체 · 바이트 일치
+        Assert.True(ctx.VaultObjects == 7 && vault.Gateway.Objects >= 7 && ctx.VaultBytes == pkgBytes, "볼트 " + ctx.VaultObjects + " " + ctx.VaultBytes + "/" + pkgBytes);
+        // 텔레메트리: 시작/완료 14 · 시퀀스 단조 · 완료 바이트 = 컨텍스트 계측
+        var ev = new System.Collections.Generic.List<Mrr.RunnerStageTelemetry>();
+        while (eng.Telemetry.TryRead(out var e)) ev.Add(e);
+        Assert.True(ev.Count == 14 && observed == 14, "텔레메트리 " + ev.Count + "/" + observed);
+        for (var i = 0; i < ev.Count; i++)
+        {
+            Assert.True(ev[i].Seq == i + 1 && (int)ev[i].Stage == i / 2 && ev[i].State == (i % 2 == 0 ? Mrr.RunnerStageState.Running : Mrr.RunnerStageState.Done));
+            if (i % 2 == 1) Assert.True(ev[i].Bytes == ctx.StageBytes[i / 2] && ev[i].ElapsedUs == ctx.StageUs[i / 2]);
+        }
+        Assert.True(eng.Guard.OutstandingLeases >= 10 && eng.Guard.OutstandingBytes >= ctx.NaluLength);
+        Assert.True(eng.ReleaseStaging() > 0 && eng.Guard.OutstandingLeases == 0 && ctx.Nalu is null);
+
+        // ── RUN-1: 페이로드 파이핑 핫패스 무할당(워밍 후 풀 리스 + 스팬 복사) ──
+        var nalu = predictor.Exporter.Output;
+        for (var w = 0; w < 2; w++) { nalu.Span.CopyTo(eng.Guard.LeaseBytes(nalu.Length)); cpy.Substituted.CopyTo(eng.Guard.LeaseFloats(cpy.Substituted.Length)); eng.Guard.ReleaseAll(); }
+        a0 = GC.GetAllocatedBytesForCurrentThread();
+        for (var w = 0; w < 16; w++) { nalu.Span.CopyTo(eng.Guard.LeaseBytes(nalu.Length)); cpy.Substituted.CopyTo(eng.Guard.LeaseFloats(cpy.Substituted.Length)); eng.Guard.ReleaseAll(); }
+        Assert.True(GC.GetAllocatedBytesForCurrentThread() - a0 == 0, "페이로드 파이핑 할당 " + (GC.GetAllocatedBytesForCurrentThread() - a0));
+
+        // ── RUN-3: 실패 인터락(③ Content ID 위반 주입) → 하류 차단 · 상류 버퍼 원자 회수 ──
+        var audits = cpy.Audits; var vodRuns = vod.Runs; var objects = vault.Gateway.Objects;
+        eng.InjectFaultStage = (int)Mrr.RunnerStage.Compliance;
+        Assert.Equal(Mrr.RunnerChainState.Aborted, await eng.RunAllAsync(40));
+        Assert.True(ctx.States[0] == Mrr.RunnerStageState.Done && ctx.States[1] == Mrr.RunnerStageState.Done && ctx.States[2] == Mrr.RunnerStageState.Failed);
+        for (var s = 3; s < 7; s++) Assert.Equal(Mrr.RunnerStageState.Blocked, ctx.States[s]);
+        Assert.True(cpy.Audits == audits + 1 && vod.Runs == vodRuns && vault.Gateway.Objects == objects, "하류 차단");
+        Assert.True(eng.Guard.IsTripped && eng.Guard.TripStage == 2 && eng.Guard.Reason == Mrr.InterlockReason.ContentIdRisk && eng.LastError!.Contains("Content ID", StringComparison.Ordinal));
+        Assert.True(eng.Guard.OutstandingLeases == 0 && eng.Guard.OutstandingBytes == 0 && ctx.Nalu is null && ctx.Pcm is null && eng.LastReclaimedBytes >= predictor.Exporter.Output.Length, "회수 " + eng.LastReclaimedBytes);
+        // 실 위험도 상한 인터락(주입 없이 실검역 결과 > 상한)
+        eng.InjectFaultStage = -1;
+        eng.RiskCeiling = -1f;
+        Assert.Equal(Mrr.RunnerChainState.Aborted, await eng.RunAllAsync(40));
+        Assert.True(ctx.States[2] == Mrr.RunnerStageState.Failed && eng.Guard.Reason == Mrr.InterlockReason.ContentIdRisk && eng.Guard.OutstandingLeases == 0 && eng.Aborts == 2);
+        eng.RiskCeiling = Mrr.RealRunnerE2EChainExecutionEngine.DefaultRiskCeiling;
+
+        // ── RUN-1: 수동 단일 스텝 7 회 = 전단계 ──
+        for (var s = 0; s < 7; s++)
+        {
+            Assert.True(await eng.StepAsync(40), "스텝 " + s + " " + eng.LastError);
+            Assert.True(ctx.DoneCount == s + 1);
+        }
+        Assert.True(eng.State == Mrr.RunnerChainState.Completed && eng.Completions == 2 && !eng.Guard.IsTripped);
+        eng.ReleaseStaging();
+
+        // ── RUN-2: 헤드리스 배치 — 전용 단일 스레드 · 쇼츠 MP4 + 카드뉴스 5 + 마크다운 세트 · 실패 롤백 ──
+        using (var drv = new Mrr.HeadlessBatchRenderDriver(eng))
+        {
+            Mrr.BatchMediaPackage? got = null;
+            drv.OnPackage += p => got = p;
+            Assert.False(drv.WorkerAlive);
+            var id = drv.Enqueue(45);
+            Assert.True(id > 0 && drv.WorkerAlive);
+            Assert.True(await drv.DrainAsync(180_000), "배치 소진");
+            var pkg = drv.Package(0)!;
+            Assert.True(pkg is { Ok: true } && ReferenceEquals(pkg, got) && pkg.JobId == id && drv.Completed == 1, pkg.Error);
+            Assert.True(drv.WorkerThreadId != Environment.CurrentManagedThreadId && drv.WorkerThreadId > 0);
+            Assert.True(pkg.ShortsMp4.Length > 1024 && pkg.ShortsMp4.AsSpan(4, 4).SequenceEqual("ftyp"u8));
+            Assert.Equal(5, pkg.Cards.Length);
+            foreach (var card in pkg.Cards) Assert.True(card.Length > 1000 && card[0] == 0x89 && card[1] == (byte)'P');
+            Assert.True(pkg.Markdown.Length > 200 && pkg.Markdown.Contains('#') && pkg.VaultObjects == 7 && pkg.TotalBytes == pkg.VaultBytes);
+            Assert.True(eng.Guard.OutstandingLeases == 0 && ctx.Nalu is null, "배치 후 스테이징 회수");
+            eng.InjectFaultStage = (int)Mrr.RunnerStage.Compliance;
+            Assert.True(drv.Enqueue(40) > 0 && await drv.DrainAsync(120_000));
+            var bad = drv.Package(0)!;
+            Assert.True(!bad.Ok && bad.ReclaimedBytes > 0 && bad.ShortsMp4.Length == 0 && drv.Failed == 1 && drv.PackageCount == 2 && eng.Guard.OutstandingLeases == 0, bad.Error);
+            eng.InjectFaultStage = -1;
+        }
+
+        // ── RUN-4: 카탈로그 168 · 도움말 · HUD · 레이아웃 · DI · 모달 규격 · 외부 의존 0 · 모달 렌더 ──
+        var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
+        Assert.Equal(168, cat.Length);
+        Assert.Contains(cat, en => en.Key == "_realRunnerBatchSandbox" && en.Category == 4 && en.Title == "마스터 실러너 E2E 샌드박스");
+        Assert.Equal(168, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
+        Assert.Equal(0, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects());
+        Assert.Equal("_realRunnerBatchSandbox", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.ResolveKeyByHeader("⚡ 마스터 실러너 E2E 샌드박스 · ✅ 완료"));
+        var root = RepoRoot();
+        string Src(params string[] p) => File.ReadAllText(Path.Combine(root, Path.Combine(p)));
+        var hud = Src("PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor");
+        var layout = Src("PromptFlowStudio", "Blazor", "MainLayout.razor");
+        var modalSrc = Src("PromptFlowStudio", "Blazor", "Components", "Common", "MasterPipelineRealRunnerStudioModal.razor");
+        Assert.True(hud.IndexOf("gth-v1792", StringComparison.Ordinal) is > 0 and var i1792 && i1792 < hud.IndexOf("gth-v1791", StringComparison.Ordinal) && hud.Contains("MrrRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("MrrRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<MasterPipelineRealRunnerStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_realRunnerBatchSandbox\"", StringComparison.Ordinal) && layout.Contains("\"_realRunnerBatchSandbox\" =>", StringComparison.Ordinal));
+        Assert.True(Src("PromptFlowStudio", "MainForm.cs").Contains("MasterPipeline.MasterPipelineRealRunnerStudioRunner(sp)", StringComparison.Ordinal) && Src("PromptFlowStudio.Mobile", "MauiProgram.cs").Contains("MasterPipeline.MasterPipelineRealRunnerStudioRunner(sp)", StringComparison.Ordinal));
+        Assert.True(modalSrc.Contains("@implements IDisposable", StringComparison.Ordinal) && modalSrc.Contains("flex: 1 1 auto; min-height: 0; overflow-y: auto;", StringComparison.Ordinal) && modalSrc.Contains("position: sticky", StringComparison.Ordinal) && modalSrc.Contains("aria-pressed", StringComparison.Ordinal));
+        foreach (var src in Directory.GetFiles(Path.Combine(root, "PromptFlowStudio", "Services", "MasterPipeline"), "*.cs"))
+        {
+            var body = File.ReadAllText(src);
+            Assert.True(!body.Contains("System.Linq", StringComparison.Ordinal) && !body.Contains("Process.Start", StringComparison.Ordinal) && !body.Contains("HttpClient", StringComparison.Ordinal) && !body.Contains("File.Write", StringComparison.Ordinal), "외부 의존 · 파일 I/O " + Path.GetFileName(src));
+        }
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = (Mrr.MasterPipelineRealRunnerStudioRunner)sp.GetService(typeof(Mrr.MasterPipelineRealRunnerStudioRunner))!;
+        Assert.True(runner.InjectedCount == 7, "주입 " + runner.InjectedCount);
+        Assert.True(ReferenceEquals(runner.Engine.Clipper, sp.GetService(typeof(PromptFlowStudio.Services.LiveClipper.LiveToShortsAutoClipperStudioRunner))) && ReferenceEquals(runner.Engine.Vault, sp.GetService(typeof(PromptFlowStudio.Services.LiveArchive.LiveArchiveCloudVaultStudioRunner))));
+        Assert.True(await runner.StepAsync() && runner.Context.DoneCount == 1 && runner.LogCount == 2 && runner.Steps == 1);
+        runner.ToggleContentIdBreach();
+        Assert.True(runner.SimulateContentIdBreach);
+        runner.ToggleContentIdBreach();
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.MasterPipelineRealRunnerStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("mrr-scrim", StringComparison.Ordinal) && html.Contains("mrr-body", StringComparison.Ordinal) && html.Contains("단일 단계 스텝", StringComparison.Ordinal) && html.Contains("E2E 원클릭 배치 실행", StringComparison.Ordinal) && html.Contains("Injected", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        Assert.True(e2eMs < 60_000, "E2E " + e2eMs.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + " ms");
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
     }
 

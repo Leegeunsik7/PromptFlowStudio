@@ -282,6 +282,7 @@
 @inject PromptFlowStudio.Services.Ui.IntentNavigationRunner NavRun
 @inject PromptFlowStudio.Services.OmniViral.OmniViralGrowthStudioRunner OvgRun
 @inject PromptFlowStudio.Services.CopyrightCompliance.CopyrightComplianceStudioRunner CpyRun
+@inject PromptFlowStudio.Services.MasterPipeline.MasterPipelineRealRunnerStudioRunner MrrRun
 @inject PromptFlowStudio.Services.LiveEngagement.LiveAudienceEngagementStudioRunner LaeRun
 @inject PromptFlowStudio.Services.LiveRestream.OmniLiveRestreamStudioRunner RstRun
 @inject PromptFlowStudio.Services.MultilingualDubbing.MultilingualDubbingStudioRunner MldRun
@@ -1007,6 +1008,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.92.0: 마스터 실러너 E2E 샌드박스 — 실러너 단계 · 체인 µs · 배치 패키지 · 롤백 회수 ── *@
+    <div class="gth-v1792">
+        <div class="gth-v96-card pid @(MrrRun.Engine.State == PromptFlowStudio.Services.MasterPipeline.RunnerChainState.Completed ? "ok" : null)">
+            <div class="gth-v96-h"><b>⚡ 실러너 E2E</b>
+                <span class="gth-v96-be">@(MrrRun.Busy ? "실행 중" : MrrRun.Engine.State == PromptFlowStudio.Services.MasterPipeline.RunnerChainState.Aborted ? "인터락" : MrrRun.Engine.State == PromptFlowStudio.Services.MasterPipeline.RunnerChainState.Completed ? "완료" : "대기")</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(MrrRun.Context.DoneCount)/7</b><span>단계</span></span>
+                <span class="gth-v96-m"><b>@(PromptFlowStudio.Services.MasterPipeline.MasterPipelineRealRunnerStudioRunner.Us(MrrRun.Context.TotalUs))</b><span>체인</span></span>
+                <span class="gth-v96-m"><b>@(MrrRun.Batch.Completed)</b><span>패키지</span></span>
+                <span class="gth-v96-m"><b>@(MrrRun.Guard.Rollbacks)</b><span>롤백</span></span>
+            </div>
+            <div class="gth-v96-act">@(MrrRun.LastAction ?? "실러너 " + MrrRun.InjectedCount + "/7 주입 · 대기")</div>
+        </div>
+    </div>
     @* ── v17.91.0: 저작권 검역 & Content ID 가드 — 위험도(전/후) · 침해 구간 · 금칙어 · Safe to Publish ── *@
     <div class="gth-v1791">
         <div class="gth-v96-card pid @(CpyRun.SafeToPublish ? "ok" : null)">
@@ -5825,6 +5841,7 @@
         OcRun.OnChange += OnSwarmChanged; // v17.51.0 (3.3 Hz)
         KbrRun.OnChange += OnSwarmChanged; // v17.78.0 (재생 10 Hz → 250 ms 스로틀)
         VrpRun.OnChange += OnSwarmChanged; // v17.88.0 (파이프라인 시작/완료 시점만)
+        MrrRun.OnChange += OnSwarmChanged; // v17.92.0 (스테이지 시작 250 ms 스로틀 · 완료/인터락/패키지 즉시)
         CpyRun.OnChange += OnSwarmChanged; // v17.91.0 (재생 헤드 100 ms → 250 ms 스로틀 · 검역 시작/완료 즉시)
         OvgRun.OnChange += OnSwarmChanged; // v17.90.0 (슬라이스 진행 · 100 ms 텔레메트리 → 250 ms 스로틀 · 인터락/완료 즉시)
         NavRun.OnChange += OnSwarmChanged; // v17.89.0 (검색 입력 · 열기 · 도움말 시점만)
@@ -6219,6 +6236,7 @@
         VrpRun.OnChange -= OnSwarmChanged;
         OvgRun.OnChange -= OnSwarmChanged;
         CpyRun.OnChange -= OnSwarmChanged;
+        MrrRun.OnChange -= OnSwarmChanged;
         NavRun.OnChange -= OnSwarmChanged;
         LavRun.OnChange -= OnSwarmChanged;
         RstRun.OnChange -= OnSwarmChanged;
