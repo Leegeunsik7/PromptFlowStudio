@@ -1,0 +1,283 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.RetentionHeatmap
+@implements IDisposable
+@inject AudienceRetentionHeatmapStudioRunner Runner
+
+@* [PromptFlow Studio v17.98.0] 📉 시청자 유지율 히트맵 & 리에디터 — 초 단위 리텐션 그래프 · 이탈 절벽 적색 히트맵 · 재편집 전후 타임라인 · 1클릭 자동 심폐소생 · Variant-R 이관. *@
+<div class="arh-scrim" @onclick="Close">
+    <div class="arh-modal" @onclick:stopPropagation="true">
+        <div class="arh-h">
+            <div>
+                <div class="arh-title">📉 시청자 유지율 히트맵 &amp; 리에디터</div>
+                <div class="arh-sub">배포된 숏폼의 <b>초 단위 시청 지속률 곡선</b>을 10 ms 단위 1초 창 미분으로 훑어 <b>이탈 절벽</b>(1초 내 −@(AudienceRetentionHeatmapStudioRunner.Pp(Runner.Detector.Threshold))%p 이상)과 지루한 <b>데드존</b>을 찾고,
+                    절벽 0.3초 전 <b>1.15× 줌 펀치 + 임팩트 FX</b>, 데드존엔 <b>1.05~1.15× WSOLA 템포 가속</b>을 넣어 되살린 <b>리스큐 버전</b>을 A/B <b>Variant-R</b> 슬롯(또는 다채널 매트릭스)으로 재투입합니다.</div>
+            </div>
+            <div class="arh-hr">
+                <span class="arh-badge @(Runner.Detector.SlumpCount > 0 ? "bad" : "ok")">📉 절벽 @(Runner.Detector.SlumpCount) · 데드존 @(Runner.Detector.DeadZoneCount)</span>
+                <span class="arh-badge @(Runner.Detector.RelativeScore >= 50 ? "ok" : "warn")">📊 상대 유지율 @(Runner.Detector.RelativeScore.ToString("0", CultureInfo.InvariantCulture))</span>
+                <span class="arh-badge @(Runner.Rescued ? (Runner.ReEditor.UpliftPp >= RetentionRescueRepublishGuard.MinUpliftPp ? "ok" : "warn") : null)">🫀 예상 +@(Runner.ReEditor.UpliftPp.ToString("0.0", CultureInfo.InvariantCulture))%p</span>
+                <span class="arh-badge @(Runner.Guard.HandoffCount > 0 ? "ok" : null)">🛟 이관 @(Runner.Guard.HandoffCount)</span>
+                <button class="arh-x" @onclick="Close">✕</button>
+            </div>
+        </div>
+
+        <div class="arh-body">
+            <div class="arh-bar">
+                <button class="arh-btn go" @onclick="RescueNow">🫀 1클릭 자동 심폐소생</button>
+                <button class="arh-btn" @onclick="Reanalyze">🔍 재분석</button>
+                <button class="arh-btn" @onclick="Plus6h">⏩ +6시간</button>
+                <span class="arh-sep"></span>
+                <label class="arh-lbl">📼 클립
+                    <select class="arh-sel" value="@(Runner.Preset.ToString(CultureInfo.InvariantCulture))" @onchange="OnPreset">
+                        @for (var i = 0; i < AudienceRetentionHeatmapStudioRunner.PresetNames.Length; i++)
+                        {
+                            <option value="@(i.ToString(CultureInfo.InvariantCulture))">@(AudienceRetentionHeatmapStudioRunner.PresetNames[i])</option>
+                        }
+                    </select>
+                </label>
+                <label class="arh-lbl">🎚 절벽 임계 @(AudienceRetentionHeatmapStudioRunner.Pp(Runner.Detector.Threshold))%p
+                    <input class="arh-rng" type="range" min="20" max="150" step="5" aria-label="절벽 임계" value="@(Runner.ThresholdTenths.ToString(CultureInfo.InvariantCulture))" @oninput="OnThreshold" />
+                </label>
+                <button class="arh-btn" @onclick="ResetAll">♻ 초기화</button>
+            </div>
+
+            <div class="arh-card">
+                <div class="arh-sec">📈 초 단위 리텐션 그래프 · 이탈 히트맵 <span class="arh-kw">@(Runner.Detector.DurationSec)s · 분석 @(Runner.Detector.LastAnalyzeUs.ToString("0.0", CultureInfo.InvariantCulture))µs</span></div>
+                <svg class="arh-graph" viewBox="0 0 @(W) @(H + 18)" role="img" aria-label="시청 지속률 곡선">
+                    @for (var s = 0; s < Runner.Detector.DurationSec; s++)
+                    {
+                        var heat = Runner.Detector.Heat(s);
+                        <rect x="@(X(s))" y="0" width="@(Cell())" height="@(H)" class="@(Runner.Detector.IsDead(s) ? "arh-dz" : "arh-hm")" style="opacity:@((Runner.Detector.IsDead(s) ? 0.28f : heat * 0.75f).ToString("0.00", CultureInfo.InvariantCulture))" />
+                    }
+                    @for (var g = 1; g < 4; g++)
+                    {
+                        <line x1="0" x2="@(W)" y1="@(F(H * g / 4f))" y2="@(F(H * g / 4f))" class="arh-gl" />
+                    }
+                    @for (var i = 0; i < Runner.Detector.SlumpCount; i++)
+                    {
+                        var sl = Runner.Detector.Slump(i);
+                        <g>
+                            <line x1="@(Xms(sl.OnsetMs))" x2="@(Xms(sl.OnsetMs))" y1="0" y2="@(H)" class="arh-cliff" />
+                            <text x="@(Xms(sl.OnsetMs))" y="10" class="arh-tl">−@(AudienceRetentionHeatmapStudioRunner.Pp(sl.Drop))%p</text>
+                        </g>
+                    }
+                    <polyline points="@(Points(Runner.Detector.Curve))" class="arh-line" />
+                    @if (Runner.Rescued)
+                    {
+                        <polyline points="@(Points(Runner.ReEditor.PredictedCurve))" class="arh-pred" />
+                    }
+                    @for (var s = 0; s <= Runner.Detector.DurationSec; s += 5)
+                    {
+                        <g>
+                            <text x="@(X(s))" y="@(H + 14)" class="arh-ax">@(s)s</text>
+                        </g>
+                    }
+                </svg>
+                <div class="arh-legend"><span class="k hm"></span>이탈 히트 <span class="k dz"></span>데드존 <span class="k ln"></span>원본 곡선 <span class="k pr"></span>리스큐 예상</div>
+            </div>
+
+            <div class="arh-main">
+                <div class="arh-card">
+                    <div class="arh-sec">🎞 재편집 전후 타임라인 <span class="arh-kw">@(Sec(Runner.ReEditor.SourceDurationMs > 0 ? Runner.ReEditor.SourceDurationMs : Runner.Detector.DurationSec * 1000)) → @(Sec(Runner.Rescued ? Runner.ReEditor.OutDurationMs : Runner.Detector.DurationSec * 1000))</span></div>
+                    <div class="arh-pl">원본</div>
+                    <div class="arh-tl-bar">
+                        @for (var i = 0; i < Runner.Detector.DeadZoneCount; i++)
+                        {
+                            var z = Runner.Detector.DeadZone(i);
+                            <span class="arh-seg dz" style="left:@(Pct(z.StartSec * 1000, SrcMs));width:@(Pct((z.EndSec - z.StartSec) * 1000, SrcMs))" title="데드존 @(z.StartSec)~@(z.EndSec)s"></span>
+                        }
+                        @for (var i = 0; i < Runner.Detector.SlumpCount; i++)
+                        {
+                            var sl = Runner.Detector.Slump(i);
+                            <span class="arh-mk cliff" style="left:@(Pct(sl.OnsetMs, SrcMs))" title="절벽 @(Sec(sl.OnsetMs))"></span>
+                        }
+                    </div>
+                    <div class="arh-pl">리스큐 @(Runner.Rescued ? null : "(심폐소생 전)")</div>
+                    <div class="arh-tl-bar @(Runner.Rescued ? null : "off")">
+                        @for (var i = 0; i < Runner.ReEditor.TempoCount; i++)
+                        {
+                            var t = Runner.ReEditor.Tempo(i);
+                            <span class="arh-seg tp" style="left:@(Pct(t.OutStartMs, SrcMs));width:@(Pct(t.OutEndMs - t.OutStartMs, SrcMs))" title="템포 @(t.Rate.ToString("0.00", CultureInfo.InvariantCulture))×">@(t.Rate.ToString("0.00", CultureInfo.InvariantCulture))×</span>
+                        }
+                        @for (var i = 0; i < Runner.ReEditor.PunchCount; i++)
+                        {
+                            var p = Runner.ReEditor.Punch(i);
+                            <span class="arh-mk punch" style="left:@(Pct(Runner.ReEditor.OutMsAt(p.AtMs), SrcMs))" title="줌 펀치 @(p.Scale.ToString("0.00", CultureInfo.InvariantCulture))× · @(Sec(p.AtMs))"></span>
+                        }
+                    </div>
+                    <div class="arh-edits">
+                        @if (Runner.ReEditor.PunchCount + Runner.ReEditor.TempoCount == 0)
+                        {
+                            <div class="arh-mini">편집 계획이 없습니다 — 「🫀 1클릭 자동 심폐소생」을 눌러 보세요.</div>
+                        }
+                        @for (var i = 0; i < Runner.ReEditor.PunchCount; i++)
+                        {
+                            var p = Runner.ReEditor.Punch(i);
+                            <div class="arh-ed">🔍💥 @(Sec(p.AtMs)) 줌 펀치 @(p.Scale.ToString("0.00", CultureInfo.InvariantCulture))× + 임팩트 FX <i>절벽 @(Sec(p.SlumpOnsetMs)) 0.3s 전</i></div>
+                        }
+                        @for (var i = 0; i < Runner.ReEditor.TempoCount; i++)
+                        {
+                            var t = Runner.ReEditor.Tempo(i);
+                            <div class="arh-ed">⏩ @(Sec(t.SrcStartMs))~@(Sec(t.SrcEndMs)) 템포 @(t.Rate.ToString("0.00", CultureInfo.InvariantCulture))× <i>데드에어 @(Sec(t.DeadAirMs))</i></div>
+                        }
+                    </div>
+                </div>
+
+                <div class="arh-card">
+                    <div class="arh-sec">🧮 리텐션 지표 · 세이프티 가드 <span class="arh-kw">판정 @(Runner.Rescues > 0 ? RetentionRescueRepublishGuard.VerdictName(Runner.Guard.LastVerdict) : "대기")</span></div>
+                    <div class="arh-grid">
+                        <div class="m"><b>@(AudienceRetentionHeatmapStudioRunner.Pp(Runner.Detector.AverageRetention))%</b><i>평균 지속률</i></div>
+                        <div class="m"><b>@(AudienceRetentionHeatmapStudioRunner.Pp(Runner.Detector.Completion))%</b><i>완청률</i></div>
+                        <div class="m"><b>@(AudienceRetentionHeatmapStudioRunner.Pp(Runner.Detector.BenchmarkAverage))%</b><i>기준 곡선</i></div>
+                        <div class="m"><b class="acc">@(Runner.Rescued ? AudienceRetentionHeatmapStudioRunner.Pp(Runner.ReEditor.PredictedAverage) + "%" : "—")</b><i>예상 평균</i></div>
+                        <div class="m"><b class="acc">@(Runner.Rescued ? AudienceRetentionHeatmapStudioRunner.Pp(Runner.ReEditor.PredictedCompletion) + "%" : "—")</b><i>예상 완청</i></div>
+                        <div class="m"><b>@(Runner.PunchedFrames)</b><i>펀치 프레임</i></div>
+                        <div class="m"><b>@(Runner.MaxFrameScale.ToString("0.00", CultureInfo.InvariantCulture))×</b><i>최대 줌</i></div>
+                        <div class="m"><b>@(Runner.LastRescueMs.ToString("0.0", CultureInfo.InvariantCulture))ms</b><i>리에디트</i></div>
+                        <div class="m"><b class="@(Runner.Guard.Approved > 0 ? "acc" : null)">@(Runner.Guard.Approved)</b><i>승인</i></div>
+                        <div class="m"><b class="@(Runner.Guard.Rejected > 0 ? "warn" : null)">@(Runner.Guard.Rejected)</b><i>보류</i></div>
+                        <div class="m"><b>@(Runner.Guard.ToVariantR)</b><i>Variant-R</i></div>
+                        <div class="m"><b>@(Runner.Guard.ToMatrix + Runner.Guard.Queued)</b><i>매트릭스/대기열</i></div>
+                    </div>
+                    <div class="arh-pl">이관 원장</div>
+                    @if (Runner.Guard.HandoffCount == 0)
+                    {
+                        <div class="arh-mini">아직 이관된 리스큐 클립이 없습니다.</div>
+                    }
+                    @for (var i = 0; i < Math.Min(5, Runner.Guard.HandoffCount); i++)
+                    {
+                        var h = Runner.Guard.Handoff(i);
+                        <div class="arh-ed">🛟 클립 #@(h.ClipId) → @(RetentionRescueRepublishGuard.TargetName(h.Target)) <i>+@(h.UpliftPp.ToString("0.0", CultureInfo.InvariantCulture))%p · 완청 @(AudienceRetentionHeatmapStudioRunner.Pp(h.PredictedCompletion))%</i></div>
+                    }
+                </div>
+            </div>
+
+            <div class="arh-card">
+                <div class="arh-sec">📜 리에디터 로그 <span class="arh-kw">@(Runner.LogCount)건</span></div>
+                <div class="arh-log">
+                    @for (var i = 0; i < Runner.LogCount; i++)
+                    {
+                        var line = Runner.Log(i);
+                        <div class="arh-ll @(line.Contains("🛑", StringComparison.Ordinal) ? "bad" : line.Contains("🫀", StringComparison.Ordinal) ? "ok" : null)">@(line)</div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="arh-act">@(Runner.LastAction ?? "대기") · @(Runner.StatusLine())</div>
+    </div>
+</div>
+
+<style>
+    .arh-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .arh-modal { width: min(1240px, 96vw); max-height: 94vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); color: var(--text-primary); }
+    .arh-h { position: sticky; top: 0; z-index: 3; flex: 0 0 auto; display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px 8px; background: var(--card); border-bottom: 1px solid var(--line); }
+    .arh-hr { display: flex; align-items: flex-start; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+    .arh-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 10px; }
+    .arh-act { position: sticky; bottom: 0; z-index: 3; flex: 0 0 auto; padding: 8px 16px 14px; background: var(--card); border-top: 1px solid var(--line); font-size: 11px; color: var(--text-muted); }
+    .arh-title { font-size: 17px; font-weight: 800; }
+    .arh-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .arh-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .arh-badge { white-space: nowrap; font-size: 11.5px; font-weight: 700; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: #1e293b; }
+    .arh-badge.ok { border-color: #22c55e; background: #14532d; color: #bbf7d0; }
+    .arh-badge.warn { border-color: #f59e0b; background: #422006; color: #fde68a; }
+    .arh-badge.bad { border-color: #ef4444; background: #450a0a; color: #fecaca; }
+    .arh-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 0; }
+    .arh-sep { flex: 1; }
+    .arh-lbl { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-muted); }
+    .arh-sel { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font-size: 11.5px; }
+    .arh-rng { width: 120px; }
+    .arh-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .arh-btn.go { border-color: #f43f5e; font-weight: 700; }
+    .arh-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-width: 0; margin-top: 10px; }
+    .arh-sec { font-size: 12.5px; font-weight: 700; margin: 0 0 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .arh-kw { margin-left: auto; font-size: 10.5px; font-weight: 400; color: #7dd3fc; }
+    .arh-main { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 10px; }
+    .arh-graph { width: 100%; height: 220px; background: #111827; border-radius: 8px; }
+    .arh-hm { fill: #ef4444; } .arh-dz { fill: #facc15; }
+    .arh-gl { stroke: #1e293b; stroke-width: 1; }
+    .arh-cliff { stroke: #f87171; stroke-width: 1.5; stroke-dasharray: 3 2; }
+    .arh-line { fill: none; stroke: #38bdf8; stroke-width: 2.2; }
+    .arh-pred { fill: none; stroke: #4ade80; stroke-width: 2; stroke-dasharray: 5 3; }
+    .arh-tl { fill: #fecaca; font-size: 9px; }
+    .arh-ax { fill: var(--text-muted); font-size: 9px; text-anchor: middle; }
+    .arh-legend { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; font-size: 10.5px; color: var(--text-muted); margin-top: 4px; }
+    .arh-legend .k { display: inline-block; width: 12px; height: 8px; border-radius: 2px; }
+    .arh-legend .k.hm { background: #ef4444; } .arh-legend .k.dz { background: #facc15; } .arh-legend .k.ln { background: #38bdf8; } .arh-legend .k.pr { background: #4ade80; }
+    .arh-pl { font-size: 11px; font-weight: 700; margin: 8px 0 3px; }
+    .arh-tl-bar { position: relative; height: 22px; background: #111827; border-radius: 6px; overflow: hidden; }
+    .arh-tl-bar.off { opacity: .4; }
+    .arh-seg { position: absolute; top: 0; bottom: 0; font-size: 9.5px; display: flex; align-items: center; justify-content: center; color: #0b1220; font-weight: 700; }
+    .arh-seg.dz { background: rgba(250,204,21,.45); } .arh-seg.tp { background: #a3e635; }
+    .arh-mk { position: absolute; top: 0; bottom: 0; width: 3px; margin-left: -1px; }
+    .arh-mk.cliff { background: #ef4444; } .arh-mk.punch { background: #f472b6; width: 4px; }
+    .arh-edits { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; }
+    .arh-ed { font-size: 11px; padding: 3px 7px; background: #111827; border-radius: 6px; }
+    .arh-ed i { font-style: normal; color: var(--text-muted); font-size: 10px; margin-left: 4px; }
+    .arh-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+    .arh-grid .m { background: #111827; border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; }
+    .arh-grid .m b { font-size: 12.5px; } .arh-grid .m b.warn { color: #fbbf24; } .arh-grid .m b.acc { color: #4ade80; }
+    .arh-grid .m i { font-style: normal; font-size: 10px; color: var(--text-muted); }
+    .arh-log { max-height: 200px; overflow-y: auto; font-family: var(--mono); font-size: 10.5px; display: flex; flex-direction: column; gap: 2px; }
+    .arh-ll { padding: 1px 4px; border-radius: 4px; background: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .arh-ll.ok { color: #bbf7d0; } .arh-ll.bad { color: #fecaca; background: #2a0b0b; }
+    .arh-mini { font-size: 10px; color: var(--text-muted); margin-top: 4px; }
+    @@media (max-width: 1000px) { .arh-main { grid-template-columns: 1fr; } .arh-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private const float W = 720f, H = 190f;
+    private readonly System.Text.StringBuilder _sb = new(1024);
+
+    private int SrcMs => Math.Max(1, Runner.Detector.DurationSec * 1000);
+
+    protected override void OnInitialized() => Runner.OnChange += OnServiceChanged;
+
+    private void RescueNow() => Guard(() => Runner.Rescue(), "Rescue");
+    private void Reanalyze() => Guard(() => Runner.SetThresholdTenths(Runner.ThresholdTenths), "Analyze");
+    private void Plus6h() => Guard(() => Runner.AdvanceHours(6), "Plus6h");
+    private void ResetAll() => Guard(Runner.Reset, "Reset");
+
+    private void OnPreset(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var p)) Runner.SetPreset(p);
+    }
+
+    private void OnThreshold(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var t)) Runner.SetThresholdTenths(t);
+    }
+
+    private static string F(float v) => v.ToString("0.0", CultureInfo.InvariantCulture);
+    private string X(int sec) => F(sec * W / Math.Max(1, Runner.Detector.DurationSec));
+    private string Xms(int ms) => F(ms * W / SrcMs);
+    private string Cell() => F(W / Math.Max(1, Runner.Detector.DurationSec) + 0.5f);
+    private static string Pct(int v, int total) => (Math.Clamp(v * 100.0 / total, 0, 100)).ToString("0.00", CultureInfo.InvariantCulture) + "%";
+    private static string Sec(int ms) => (ms / 1000.0).ToString("0.0", CultureInfo.InvariantCulture) + "s";
+
+    private string Points(ReadOnlySpan<float> curve)
+    {
+        _sb.Clear();
+        var dur = Math.Max(1, curve.Length - 1);
+        for (var i = 0; i < curve.Length; i++)
+        {
+            if (i > 0) _sb.Append(' ');
+            _sb.Append(F(i * W / dur)).Append(',').Append(F((1f - curve[i]) * H));
+        }
+        return _sb.ToString();
+    }
+
+    private static void Guard(Action a, string tag)
+    {
+        try { a(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("RetentionHeatmap.Modal." + tag, ex); }
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Runner.OnChange -= OnServiceChanged;
+}

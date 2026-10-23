@@ -288,6 +288,7 @@
 @inject PromptFlowStudio.Services.GoldenHourEngagement.GoldenHourEngagementStudioRunner GheRun
 @inject PromptFlowStudio.Services.TrendJacking.TrendJackingStudioRunner TrjRun
 @inject PromptFlowStudio.Services.ViralCommerce.ViralCommerceAffiliateStudioRunner VcaRun
+@inject PromptFlowStudio.Services.RetentionHeatmap.AudienceRetentionHeatmapStudioRunner ArhRun
 @inject PromptFlowStudio.Services.LiveEngagement.LiveAudienceEngagementStudioRunner LaeRun
 @inject PromptFlowStudio.Services.LiveRestream.OmniLiveRestreamStudioRunner RstRun
 @inject PromptFlowStudio.Services.MultilingualDubbing.MultilingualDubbingStudioRunner MldRun
@@ -1013,6 +1014,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+@* ── v17.98.0: 시청자 유지율 히트맵 & 리에디터 — 이탈 절벽 · 데드존 · 예상 상승 · 리스큐 이관 ── *@
+    <div class="gth-v1798">
+        <div class="gth-v96-card pid @(ArhRun.Guard.HandoffCount > 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>📉 유지율 히트맵 & 리에디터</b>
+                <span class="gth-v96-be">상대 유지율 @(ArhRun.Detector.RelativeScore.ToString("0", System.Globalization.CultureInfo.InvariantCulture)) · 예상 +@(ArhRun.ReEditor.UpliftPp.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture))%p</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(ArhRun.Detector.SlumpCount)</b><span>이탈 절벽</span></span>
+                <span class="gth-v96-m"><b>@(ArhRun.Detector.DeadZoneCount)</b><span>데드존</span></span>
+                <span class="gth-v96-m"><b>@(ArhRun.ReEditor.PunchCount + ArhRun.ReEditor.TempoCount)</b><span>리에디트</span></span>
+                <span class="gth-v96-m"><b>@(ArhRun.Guard.HandoffCount)</b><span>리스큐 이관</span></span>
+            </div>
+            <div class="gth-v96-act">@(ArhRun.LastAction ?? "리텐션 분석 대기 · 절벽 0.3 s 전 1.15× 펀치 · 데드에어 WSOLA 가속")</div>
+        </div>
+    </div>
 @* ── v17.97.0: 바이럴 커머스 어트리뷰션 — 추천 상품 · 유효 클릭 · 전환 · 어뷰징 차단 · 수수료 ── *@
     <div class="gth-v1797">
         <div class="gth-v96-card pid @(VcaRun.Guard.Conversions > 0 ? "ok" : null)">
@@ -5923,6 +5939,7 @@
         VrpRun.OnChange += OnSwarmChanged; // v17.88.0 (파이프라인 시작/완료 시점만)
         PstRun.OnChange += OnSwarmChanged; // v17.93.0 (조작 · 틱 일괄 시점만)
         GheRun.OnChange += OnSwarmChanged; // v17.95.0 (조작 · 틱 일괄 시점만)
+        ArhRun.OnChange += OnSwarmChanged; // v17.98.0 (조작 시점만)
         VcaRun.OnChange += OnSwarmChanged; // v17.97.0 (조작 · 트래픽 틱 일괄 시점만)
         TrjRun.OnChange += OnSwarmChanged; // v17.96.0 (조작 · 1 분 틱 일괄 시점만)
         PvgRun.OnChange += OnSwarmChanged; // v17.94.0 (조작 · 폴링 일괄 시점만)
@@ -6324,6 +6341,7 @@
         MrrRun.OnChange -= OnSwarmChanged;
         PstRun.OnChange -= OnSwarmChanged;
         GheRun.OnChange -= OnSwarmChanged;
+        ArhRun.OnChange -= OnSwarmChanged;
         VcaRun.OnChange -= OnSwarmChanged;
         TrjRun.OnChange -= OnSwarmChanged;
         PvgRun.OnChange -= OnSwarmChanged;

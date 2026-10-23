@@ -119,6 +119,7 @@ public static class StudioCatalog
         new("sb:_screenplayOpen", "📜", "AI 시나리오 & 세계관 스튜디오 (스토리보드)", 3),
         new("sb:_mvOpen", "🎵", "AI 뮤직비디오 & 안무 스튜디오 (스토리보드)", 3),
         new("_postPublishSplitTest", "⚖️", "포스트-퍼블리시 A/B & 패자 회수기", 4),
+        new("_retentionHeatmapReEditor", "📉", "시청자 유지율 히트맵 & 리에디터", 4),
         new("_viralCommerceAffiliate", "🛒", "바이럴 커머스 & 제휴 어트리뷰션", 4),
         new("_socialTrendJackingRadar", "🔥", "실시간 트렌드재킹 & 해시태그 레이더", 4),
         new("_goldenHourEngagement", "💬", "골든아워 댓글 & 인게이지먼트 부스터", 4),

@@ -180,6 +180,7 @@ using Pvg = PromptFlowStudio.Services.PlatformVisibility;
 using Ghe = PromptFlowStudio.Services.GoldenHourEngagement;
 using Trj = PromptFlowStudio.Services.TrendJacking;
 using Vca = PromptFlowStudio.Services.ViralCommerce;
+using Arh = PromptFlowStudio.Services.RetentionHeatmap;
 
 namespace PromptFlowStudio.Tests;
 
@@ -36749,7 +36750,7 @@ public sealed class SocialTrendJackingIsolatedTests
 
         // ── 카탈로그 · 도움말 결선(172) ──
         var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
-        Assert.Equal(173, cat.Length);
+        Assert.Equal(174, cat.Length);
         Assert.Contains(cat, e => e.Key == "_socialTrendJackingRadar" && e.Category == 4 && e.Title == "실시간 트렌드재킹 & 해시태그 레이더");
         Assert.NotNull(PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Find("_socialTrendJackingRadar"));
         Assert.Equal(cat.Length, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
@@ -36967,13 +36968,250 @@ public sealed class ViralCommerceAffiliateIsolatedTests
         Assert.Equal(0, run.Guard.ValidClicks);
         Assert.Equal(0, run.Publications);
 
-        // ── 카탈로그 · 도움말 결선(173) ──
+        // ── 카탈로그 · 도움말 결선(174) ──
         var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
-        Assert.Equal(173, cat.Length);
+        Assert.Equal(174, cat.Length);
         Assert.Contains(cat, e => e.Key == "_viralCommerceAffiliate" && e.Category == 4 && e.Title == "바이럴 커머스 & 제휴 어트리뷰션");
         Assert.NotNull(PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Find("_viralCommerceAffiliate"));
         Assert.Equal(cat.Length, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
         Assert.Equal(0, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects());
         Assert.Equal("_viralCommerceAffiliate", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.ResolveKeyByHeader("🛒 바이럴 커머스 & 제휴 어트리뷰션"));
+    }
+}
+
+[Collection("TimingSensitivePerformance")]   // 스레드 할당 바이트 계측 · 100 ms 예산(곡선 분석 · 편집 계획 · WSOLA 리패키징 · 줌 프레임) → 비병렬
+public sealed class AudienceRetentionHeatmapIsolatedTests
+{
+    private const long T0 = 1_800_000_000;
+    private const int Fs = Arh.MicroPunchDynamicPacingReEditorEngine.Fs;
+
+    /// <summary>30 s 곡선: 0→1 s 4 %p · 기본 0.8 %p/s · 7 s 절벽 12 %p · 14~19 s 데드존 2.2 %p/s · 23 s 절벽 8 %p.</summary>
+    private static float[] Curve()
+    {
+        var r = new float[31];
+        r[0] = 1f;
+        for (var s = 0; s < 30; s++)
+        {
+            var l = s == 0 ? 0.04f : s is >= 14 and < 19 ? 0.022f : s == 7 ? 0.12f : s == 23 ? 0.08f : 0.008f;
+            r[s + 1] = r[s] - l;
+        }
+        return r;
+    }
+
+    /// <summary>30 s 0.3 진폭 220 Hz 사인 + [15, 16) · [17, 17.5) s 무음(데드에어 1.5 s) + [5, 5.2) s 짧은 쉼.</summary>
+    private static float[] Audio()
+    {
+        var a = new float[30 * Fs];
+        for (var i = 0; i < a.Length; i++) a[i] = 0.3f * MathF.Sin(2f * MathF.PI * 220f * i / Fs);
+        Array.Clear(a, 15 * Fs, Fs);
+        Array.Clear(a, 17 * Fs, Fs / 2);
+        Array.Clear(a, 5 * Fs, Fs / 5);
+        return a;
+    }
+
+    [Fact]
+    public void AudienceRetentionHeatmap_And_ReEditor_Check()
+    {
+        // ── ARH-1: 10 ms 1 s 창 미분 이탈 절벽 · 데드존 마킹 · 지표 ──
+        var det = new Arh.AudienceRetentionDropoffDetectorEngine();
+        var curve = Curve();
+        Assert.Equal(2, det.Analyze(curve));
+        Assert.Equal(30, det.DurationSec);
+        var s0 = det.Slump(0);
+        Assert.Equal(6380, s0.OnsetMs);     // 0.008·(1−u) + 0.12·u ≥ 0.05 → u ≥ 0.375 → 첫 10 ms 틱 6.38 s
+        Assert.Equal(7000, s0.PeakMs);
+        Assert.Equal(8620, s0.EndMs);
+        Assert.Equal(0.12f, s0.Drop, 4);
+        var s1 = det.Slump(1);
+        Assert.Equal(22590, s1.OnsetMs);
+        Assert.Equal(23000, s1.PeakMs);
+        Assert.Equal(24410, s1.EndMs);
+        Assert.Equal(0.08f, s1.Drop, 4);
+        Assert.Equal(1, det.DeadZoneCount);
+        Assert.Equal(14, det.DeadZone(0).StartSec);
+        Assert.Equal(19, det.DeadZone(0).EndSec);
+        Assert.Equal(0.022f, det.DeadZone(0).LeakPerSec, 4);
+        Assert.True(det.IsDead(14) && det.IsDead(18) && !det.IsDead(19) && !det.IsDead(7));
+        Assert.Equal(0.12f, det.DropAt(7), 4);
+        Assert.Equal(0.8f, det.Heat(7), 3);
+        Assert.Equal(0f, det.DropAt(30));
+        Assert.Equal(0.474f, det.Completion, 4);
+        Assert.Equal(0.71743f, det.AverageRetention, 4);
+        Assert.Equal(0.78150f, det.BenchmarkAverage, 3);
+        Assert.Equal(45.90f, det.RelativeScore, 1);
+        Assert.Equal(0.932f, det.At(450), 4);   // 4.5 s 보간
+        det.Threshold = 0.13f;                  // 임계 상향 → 절벽 0 · 데드존 유지
+        Assert.Equal(0, det.Analyze(curve));
+        Assert.Equal(1, det.DeadZoneCount);
+        det.Threshold = Arh.AudienceRetentionDropoffDetectorEngine.DefaultThreshold;
+        var step = new float[8];
+        for (var i = 0; i < step.Length; i++) step[i] = i < 4 ? 1f : 0.94f;   // 3→4 s 계단 6 %p
+        step[6] = float.NaN;                                                    // NaN = 직전 값 유지
+        Assert.Equal(1, det.Analyze(step));
+        Assert.Equal(2840, det.Slump(0).OnsetMs);   // 0.06·u ≥ 0.05 → u ≥ 0.8333 → 2.84 s
+        Assert.Equal(0.94f, det.Completion, 5);
+        Assert.Equal(0, det.DeadZoneCount);
+        Assert.Equal(0, det.Analyze(new float[300]));
+        Assert.Equal(1, det.Truncated);
+        Assert.Equal(Arh.AudienceRetentionDropoffDetectorEngine.MaxSec + 1, det.Samples);
+        Assert.Equal(0, det.Analyze(ReadOnlySpan<float>.Empty));
+        var edge = new float[12];
+        for (var i = 0; i < edge.Length; i++) edge[i] = 1f - 0.06f * i;          // 매초 6 %p → 하나의 긴 절벽
+        Assert.Equal(1, det.Analyze(edge));
+        Assert.Equal(0, det.Slump(0).OnsetMs);
+
+        // ── ARH-2: 절벽 0.3 s 전 1.15× 펀치 + 임팩트 FX · 데드에어 WSOLA 템포 · 시간 사상 · 리패키징 ──
+        var audio = Audio();
+        Assert.Equal(1500, Arh.MicroPunchDynamicPacingReEditorEngine.DeadAirIn(audio, 14_000, 19_000));
+        Assert.Equal(0, Arh.MicroPunchDynamicPacingReEditorEngine.DeadAirIn(audio, 4_000, 6_000));   // 200 ms 쉼 < 300 ms
+        det.Analyze(curve);
+        var re = new Arh.MicroPunchDynamicPacingReEditorEngine(30);
+        Assert.Equal(3, re.Plan(det, audio));
+        Assert.Equal(2, re.PunchCount);
+        Assert.Equal(6080, re.Punch(0).AtMs);
+        Assert.Equal(22290, re.Punch(1).AtMs);
+        Assert.Equal(1.15f, re.Punch(0).Scale, 4);
+        Assert.Equal(2, re.Zoom.Count);
+        Assert.Equal(2, re.Sfx.CueCount);
+        Assert.Equal(PromptFlowStudio.Services.SmartPublishing.ViralSfxKind.Impact, re.Sfx.Cue(0).Kind);
+        Assert.Equal(1, re.TempoCount);
+        var tp = re.Tempo(0);
+        Assert.Equal(14_000, tp.SrcStartMs);
+        Assert.Equal(19_000, tp.SrcEndMs);
+        Assert.Equal(1500, tp.DeadAirMs);
+        Assert.Equal(1.11f, tp.Rate, 4);                       // 1.05 + 0.10 × (1.5/5 ÷ 0.5)
+        var outSeg = (int)(5 * Fs * (1f / tp.Rate));
+        Assert.Equal(14_000, tp.OutStartMs);
+        Assert.Equal((14 * Fs + outSeg) / (Fs / 1000), tp.OutEndMs);
+        Assert.Equal(tp.OutEndMs + 11_000, re.OutDurationMs);
+        Assert.Equal(1000, re.SourceMsAt(1000));
+        Assert.Equal(15_110, re.SourceMsAt(15_000));
+        Assert.Equal(20_000, re.SourceMsAt(tp.OutEndMs + 1000));
+        Assert.Equal(tp.OutEndMs + 1000, re.OutMsAt(20_000));
+        Assert.Equal(5000, re.TempoCoveredMs);
+        Assert.True(re.UpliftPp >= Arh.RetentionRescueRepublishGuard.MinUpliftPp, "uplift " + re.UpliftPp);
+        Assert.True(re.PredictedCompletion > det.Completion && re.PredictedAverage > det.AverageRetention);
+        Assert.Equal(31, re.PredictedCurve.Length);
+        var outBuf = new float[audio.Length];
+        var n = re.Repackage(audio, outBuf);
+        Assert.Equal(audio.Length - 5 * Fs + outSeg, n);
+        Assert.Equal(audio[1000], outBuf[1000]);                                        // 편집 없는 구간 = 원본
+        Assert.Equal(audio[14 * Fs + 100], outBuf[14 * Fs + 100]);                       // WSOLA 첫 홉 = 원본(진폭 딥 0)
+        Assert.Equal(audio[audio.Length - 1000], outBuf[n - 1000]);                      // 템포 이후 = 원본 이동
+        double eSrc = 0, eOut = 0;
+        for (var i = 6080 * 48; i < 6380 * 48; i++) { eSrc += audio[i] * audio[i]; eOut += outBuf[i] * outBuf[i]; }
+        Assert.True(eOut > eSrc * 1.2, "임팩트 FX 에너지 " + eOut + " / " + eSrc);
+        const int Vw = 32, Vh = 56;
+        var px = new uint[Vw * Vh];
+        for (var i = 0; i < px.Length; i++) px[i] = 0xFF000000u | ((uint)i * 2654435761u >> 8);
+        var po = new uint[px.Length];
+        Assert.Equal(1f, re.ApplyFrame(px, po, Vw, Vh, 0));
+        Assert.True(po.AsSpan().SequenceEqual(px));
+        var pf = PromptFlowStudio.Services.VisualHooks.KineticZoomPunchCutEngine.FrameOf(6080);
+        Assert.Equal(1.15f, re.ApplyFrame(px, po, Vw, Vh, pf), 4);
+        Assert.False(po.AsSpan().SequenceEqual(px));
+        var pf2 = (long)re.OutMsAt(22290) * 60 / 1000;                                   // 템포 이후 펀치 = 출력 프레임 재타이밍
+        Assert.True(re.ApplyFrame(px, po, Vw, Vh, pf2 + 1) > 1.1f);
+
+        // ── ARH-3: 리스큐 판정 · 이관 대상 · 원장 ──
+        var g = new Arh.RetentionRescueRepublishGuard();
+        Assert.Equal(Arh.RescueVerdict.NoSlumps, g.Evaluate(1, 0, 5f, 0, 30_000, 0, T0));
+        Assert.Equal(Arh.RescueVerdict.InsufficientUplift, g.Evaluate(1, 2, 1.0f, 2, 30_000, 0, T0));
+        Assert.Equal(Arh.RescueVerdict.OverEdited, g.Evaluate(1, 5, 4f, 5, 30_000, 0, T0));         // 분당 10 펀치 > 8
+        Assert.Equal(Arh.RescueVerdict.OverEdited, g.Evaluate(1, 2, 4f, 2, 30_000, 12_500, T0));    // 템포 41.7 % > 40 %
+        Assert.False(g.Commit(1, Arh.RescueTarget.Queued, 4f, 0.6f, T0));                           // 미승인 커밋 차단
+        Assert.Equal(Arh.RescueVerdict.Approved, g.Evaluate(1, 2, 4f, 2, 30_000, 5_000, T0));
+        Assert.False(g.Commit(1, Arh.RescueTarget.None, 4f, 0.6f, T0));
+        Assert.True(g.Commit(1, Arh.RescueTarget.SplitTestVariantR, 4f, 0.6f, T0));
+        Assert.False(g.Commit(1, Arh.RescueTarget.SplitTestVariantR, 4f, 0.6f, T0));                // 1 승인 = 1 커밋
+        Assert.Equal(Arh.RescueVerdict.Duplicate, g.Evaluate(1, 2, 4f, 2, 30_000, 5_000, T0 + 3600));
+        Assert.Equal(Arh.RescueVerdict.Approved, g.Evaluate(1, 2, 4f, 2, 30_000, 5_000, T0 + 6 * 3600));
+        Assert.True(g.Commit(1, Arh.RescueTarget.MatrixSyndication, 4f, 0.6f, T0 + 6 * 3600));
+        Assert.Equal(Arh.RescueVerdict.Approved, g.Evaluate(2, 2, 4f, 2, 30_000, 5_000, T0 + 7 * 3600));
+        Assert.True(g.Commit(2, Arh.RescueTarget.Queued, 4f, 0.6f, T0 + 7 * 3600));
+        Assert.Equal(Arh.RescueVerdict.DailyCap, g.Evaluate(3, 2, 4f, 2, 30_000, 5_000, T0 + 8 * 3600));
+        Assert.Equal(Arh.RescueVerdict.Approved, g.Evaluate(3, 2, 4f, 2, 30_000, 5_000, T0 + 24 * 3600 + 1));
+        Assert.Equal(3, g.HandoffCount);
+        Assert.Equal(2, g.Handoff(0).ClipId);
+        Assert.Equal(Arh.RescueTarget.SplitTestVariantR, g.Handoff(2).Target);
+        Assert.True(g.ToVariantR == 1 && g.ToMatrix == 1 && g.Queued == 1);
+        Assert.Equal(4, g.Approved);
+        Assert.Equal(6, g.Rejected);
+        Assert.Equal(Arh.RescueTarget.SplitTestVariantR, Arh.RetentionRescueRepublishGuard.SelectTarget(true, false, true));
+        Assert.Equal(Arh.RescueTarget.MatrixSyndication, Arh.RetentionRescueRepublishGuard.SelectTarget(true, true, true));
+        Assert.Equal(Arh.RescueTarget.Queued, Arh.RetentionRescueRepublishGuard.SelectTarget(true, true, false));
+        Assert.Equal(Arh.RescueTarget.Queued, Arh.RetentionRescueRepublishGuard.SelectTarget(false, false, false));
+        for (var i = 0; i < 20; i++) { g.Evaluate(100 + i, 1, 4f, 1, 30_000, 0, T0 + 1_000_000L * (i + 1)); g.Commit(100 + i, Arh.RescueTarget.Queued, 4f, 0.5f, T0 + 1_000_000L * (i + 1)); }
+        Assert.Equal(Arh.RetentionRescueRepublishGuard.LedgerCap, g.HandoffCount);
+        Assert.Equal(119, g.Handoff(0).ClipId);
+        g.Reset();
+        Assert.Equal(0, g.HandoffCount + g.Evaluations);
+
+        // ── 무할당 · 100 ms 예산: 분석 · 계획 · 리패키징 · 펀치 프레임 ──
+        var hd = new Arh.AudienceRetentionDropoffDetectorEngine();
+        var hr = new Arh.MicroPunchDynamicPacingReEditorEngine(30);
+        var hg = new Arh.RetentionRescueRepublishGuard();
+        for (var w = 0; w < 2; w++) { hd.Analyze(curve); hr.Plan(hd, audio); hr.Repackage(audio, outBuf); hr.ApplyFrame(px, po, Vw, Vh, pf); hg.Evaluate(1, 2, 3f, 2, 30_000, 5_000, T0); }
+        var sw = new System.Diagnostics.Stopwatch();
+        var a0 = GC.GetAllocatedBytesForCurrentThread();
+        sw.Start();
+        for (var k = 0; k < 10; k++)
+        {
+            hd.Analyze(curve);
+            hr.Plan(hd, audio);
+            hr.Repackage(audio, outBuf);
+            for (var f = 0; f < 30; f++) hr.ApplyFrame(px, po, Vw, Vh, pf - 10 + f);
+            hg.Evaluate(1 + k, hd.SlumpCount, hr.UpliftPp, hr.PunchCount, hr.SourceDurationMs, hr.TempoCoveredMs, T0 + k);
+        }
+        sw.Stop();
+        var alloc = GC.GetAllocatedBytesForCurrentThread() - a0;
+        Assert.True(alloc == 0, "리텐션 리에디터 핫패스 할당 " + alloc);
+        Assert.True(sw.Elapsed.TotalMilliseconds / 10 < 100, "1 사이클 " + sw.Elapsed.TotalMilliseconds / 10 + " ms");
+        Assert.True(hr.FramesRendered >= 300 && hr.Repackages >= 10);
+
+        // ── 러너 E2E: 분석 → 심폐소생(대기열) → 중복 → +6 h → 임계 → 무절벽 → 다절벽 ──
+        using var run = new Arh.AudienceRetentionHeatmapStudioRunner();
+        var changes = 0;
+        run.OnChange += () => changes++;
+        Assert.Equal(2, run.Detector.SlumpCount);
+        Assert.Equal(1, run.Detector.DeadZoneCount);
+        Assert.False(run.Rescued);
+        Assert.Equal(Arh.RescueVerdict.Approved, run.Rescue());
+        Assert.Equal(Arh.RescueTarget.Queued, run.LastTarget);   // DI 없음 → 로컬 대기열
+        Assert.True(run.Rescued && run.ReEditor.TempoCount == 1 && run.ReEditor.Tempo(0).DeadAirMs > 0);
+        Assert.InRange(run.ReEditor.Tempo(0).Rate, 1.05f, 1.15f);
+        Assert.True(run.OutSamples < run.SourceAudio.Length && run.OutSamples > 0);
+        Assert.True(run.PunchedFrames > 0);
+        Assert.Equal(1.15f, run.MaxFrameScale, 3);
+        Assert.Equal(Arh.RescueVerdict.Duplicate, run.Rescue());
+        run.AdvanceHours(6);
+        Assert.Equal(Arh.RescueVerdict.Approved, run.Rescue());
+        Assert.Equal(2, run.Guard.HandoffCount);
+        run.SetThresholdTenths(130);
+        Assert.Equal(0, run.Detector.SlumpCount);
+        Assert.False(run.Rescued);
+        Assert.Equal(130, run.ThresholdTenths);
+        run.SetThresholdTenths(50);
+        run.SetPreset(2);
+        Assert.Equal(0, run.Detector.SlumpCount);
+        Assert.Equal(Arh.RescueVerdict.NoSlumps, run.Rescue());
+        run.SetPreset(1);
+        Assert.Equal(3, run.Detector.SlumpCount);
+        Assert.Equal(Arh.RescueVerdict.Approved, run.Rescue());
+        Assert.Equal(3, run.ReEditor.PunchCount);
+        Assert.True(run.LogCount > 0 && changes > 0);
+        Assert.Contains("절벽", run.StatusLine());
+        run.Reset();
+        Assert.Equal(0, run.Guard.HandoffCount);
+        Assert.Equal(1, run.Preset);
+
+        // ── 카탈로그 · 도움말 결선(174) ──
+        var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
+        Assert.Equal(174, cat.Length);
+        Assert.Contains(cat, e => e.Key == "_retentionHeatmapReEditor" && e.Category == 4 && e.Title == "시청자 유지율 히트맵 & 리에디터");
+        Assert.NotNull(PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Find("_retentionHeatmapReEditor"));
+        Assert.Equal(cat.Length, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
+        Assert.Equal(0, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects());
+        Assert.Equal("_retentionHeatmapReEditor", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.ResolveKeyByHeader("📉 시청자 유지율 히트맵 & 리에디터"));
     }
 }
