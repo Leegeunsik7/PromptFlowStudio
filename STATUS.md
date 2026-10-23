@@ -1,17 +1,17 @@
 # Current Project Status
-- Active Milestone: v17.90.0 완료 (Complete) — 옴니 바이럴 그로스 마스터 콕핏 & 원클릭 파이프라인 오케스트레이터
+- Active Milestone: v17.91.0 완료 (Complete) — AI 자율 저작권 검역 · Content ID 세이프티 & BGM 리플레이서 스튜디오
 - Build Status: Desktop Release -warnaserror 0/0 · net8.0-ios Release -warnaserror 0/0 · net8.0-android 미검증(SDK/JDK 미설치)
-- Test Suite: 502 전량 회귀(단일 CPU · MaxCpuCount=1 · DisableParallelization) 500 통과 + 부하 타이밍 간헐 2 → `DistributedGpuCluster_And_CloudRenderingSwarm_Check`(v17.87 이후 동일) · `CloudSourceVerification_And_UiInteractiveTesting_Check`(20 ms 지연 판정) 격리 재실행 3/3 통과
-- Sidebar: 7대 카테고리 · 166 엔트리
+- Test Suite: 503 전량 회귀(단일 CPU · MaxCpuCount=1 · DisableParallelization) 502 통과 + 부하 타이밍 간헐 1 → `DistributedGpuCluster_And_CloudRenderingSwarm_Check`(v17.87 이후 동일 · silent fallbacks 판정) 격리 재실행 3/3 통과
+- Sidebar: 7대 카테고리 · 167 엔트리 · 도움말 167/167 결함 0 · 크롤러 167 마운트 결함 0
 - Updated At: 2026-10-23 (KST)
 
 ## Completed Deliverables
-- OVP-1: `Services/OmniViral/OneClickAutonomousViralOrchestratorEngine` — 7 노드 DAG(①→②→③→④→⑤ · ①→⑥ 독립 분기 · ④+⑥→⑦) · 단일 `ViralPipelineContext` 사전 할당 버퍼 · 노드당 10 슬라이스 · `Channel<StageEvent>`(Bounded/DropOldest) 논블로킹 진행 이벤트 · 입력 지문 동일 노드 캐시 스킵 · 재실행 무할당 검증
-- OVP-2: `MultiPlatformGrowthTelemetryAggregator` — YouTube Data/Analytics · Instagram Graph 응답 `Utf8JsonReader` 무할당 파싱 · 기준선 정규화 성장 지수 · K = 공유율×100×(0.10+0.30×지속률) · K ≥ 1.2 3 틱 지속 → 신디케이션 1 회(K < 1.0 재무장)
-- OVP-3: `PipelineSafetyInterlockCircuitBreakerGuard` — C 등급(<70) · 토큰 만료(60 s 스큐) · 예외 → Halt/승인 대기 · 완료 노드 체크포인트 다이제스트 · 동일 노드 연속 예외 3 회 → 차단기 개방 30 s 쿨다운
-- OVP-4: `OmniViralGrowthMasterCockpitStudioModal` + `OmniViralGrowthStudioRunner`(DAG 노드 인디케이터 · 원클릭 · 오토파일럿 · 승인/중단 · 토큰 만료 시뮬 · 성장 메트릭) · 카탈로그 `_omniViralMasterCockpit`(4번) · 도움말 1행 · HUD `gth-v1790`(`OvgRun`) · DI 양쪽
-- OVP-5: `OmniViralGrowth_And_MasterOrchestrator_Check`(TimingSensitive) · 크롤러/도움말 166 · 결함 0
+- CPY-1: `Services/CopyrightCompliance/AcousticFingerprintContentIdAnalyzerEngine` — 1024 Hann FFT · 800 홉(16.7 ms) · 12 로그 대역 상위 2 랜드마크 · (f1·f2·Δt) 해시 2^19 테이블 · 모의 상용 3 곡 DB · 0.5 s 창 오프셋 투표(커버리지 × 정밀도) 위험도 0~100 · ≥ 70 구간 10 ms 타임코드(실측 5000~13040 ms) · 프레임 < 1 ms · 재분석 무할당
+- CPY-2: `RoyaltyFreeBgmAutoSubstitutionMixer` — 지문 오프셋 → 상호상관 미세 정렬 레퍼런스 LS 소거(−18 dB) · 랜드마크 노치(Q 10 · ≤ 48) · 보컬 사이드체인/잔여 −30 dB · v17.76 SFX 뱅크 기반 Lo-Fi/Synthwave/Hip-Hop 2 마디 루프 크로스페이드 · BS.1770 −14 LUFS(±0.5) · 피크 리미터 클리핑 0
+- CPY-3: `PlatformPolicyBrandSafetyGuard` — 정책 50 종(선정성/혐오/위험) + 상표 10 종 · 정규화 Span 탐색(띄어쓰기/기호 우회 차단 · 허용 목록) · `***` 마스킹 · 큐 비례 1 kHz 비프 · 무할당
+- CPY-4: `CopyrightComplianceAuditStudioModal` + `CopyrightComplianceStudioRunner`(파형 위험 구간 Red Highlight · 원본/치환 비교 · 재생 헤드 · Safe to Publish 뱃지) · 카탈로그 `_copyrightCompliance`(4번) · 도움말 1행 · HUD `gth-v1791`(`CpyRun`) · DI 양쪽
+- CPY-5: `CopyrightCompliance_And_ContentIdAnalyzer_Check`(TimingSensitive) · v17.90 카탈로그 단언 증가 허용
 
 ## Known Issues / 환경 노트
-- 7 단계는 연동 러너(v17.78~v17.88)의 상태를 직접 구동하지 않는 컨텍스트 내 근사 계산 — 실기 연결은 DI 존재 표시(🔗)까지
-- 성장 텔레메트리는 스코어 기반 합성 곡선(실 API 폴링 미결선 · 파서만 실응답 스키마 검증) · GUI 육안 미검증 · Android 빌드 미검증
+- 레퍼런스 소거는 모의 DB 원본 합성음 기준(실환경은 권리자 레퍼런스 파일 필요) · 데모 클립/음원은 절차적 합성
+- 재생은 헤드 시뮬레이션(실 오디오 출력 미결선) · GUI 육안 미검증 · Android 빌드 미검증

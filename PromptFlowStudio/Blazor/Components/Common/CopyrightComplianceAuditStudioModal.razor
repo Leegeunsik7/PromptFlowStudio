@@ -1,0 +1,236 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.CopyrightCompliance
+@implements IDisposable
+@inject CopyrightComplianceStudioRunner Runner
+
+@* [PromptFlow Studio v17.91.0] 🛡️ 저작권 검역 & Content ID 가드 — 파형 위험 구간 · 원본/치환 비교 · 금칙어 마스킹 · Safe to Publish. *@
+<div class="cpy-scrim" @onclick="Close">
+    <div class="cpy-modal" @onclick:stopPropagation="true">
+        <div class="cpy-h">
+            <div>
+                <div class="cpy-title">🛡️ 저작권 검역 & Content ID 가드 @(Runner.Busy ? "· 🔎 검역 중" : Runner.SafeToPublish ? "· ✅ Safe to Publish" : Runner.Audited ? "· ⚠️ 게시 보류" : null)</div>
+                <div class="cpy-sub">숏폼을 올리기 전에 <b>배경 음악이 상용 음원과 겹치는지</b> 소리 지문으로 검사합니다. 위험도 70점 이상 구간은 빨간색으로 표시하고,
+                    목소리는 남긴 채 그 구간의 음악만 줄인 뒤 <b>저작권 걱정 없는 로열티 프리 BGM</b>(Lo-Fi · Synthwave · Hip-Hop)으로 자연스럽게 바꿔 넣습니다.
+                    전체 음량은 플랫폼 기준 <b>-14 LUFS</b>로 맞추고 찢어지는 소리(클리핑)는 0건으로 막으며, 자막 · 대본의 금칙어와 상표는 <b>***</b> 마스킹과 삐- 처리합니다.</div>
+            </div>
+            <div class="cpy-hr">
+                <span class="cpy-badge @(Runner.SafeToPublish ? "ok" : Runner.Audited ? "bad" : null)">@(Runner.SafeToPublish ? "✅ Safe to Publish" : Runner.Audited ? "⛔ 게시 보류" : "⏳ 미검역")</span>
+                <button class="cpy-x" @onclick="Close">✕</button>
+            </div>
+        </div>
+
+        <div class="cpy-body">
+            <div class="cpy-bar">
+                <button class="cpy-btn go" disabled="@(Runner.Busy)" @onclick="Audit">🛡️ 검역 실행</button>
+                <label class="cpy-lbl">배경 음원
+                    <select class="cpy-in" value="@(Runner.Track.ToString(CultureInfo.InvariantCulture))" @onchange="SetTrack">
+                        <option value="-1">🎙️ 없음(자체 제작)</option>
+                        @for (var t = 0; t < AcousticFingerprintContentIdAnalyzerEngine.RefTracks; t++)
+                        {
+                            <option value="@(t.ToString(CultureInfo.InvariantCulture))">🎵 @(AcousticFingerprintContentIdAnalyzerEngine.TrackNames[t])</option>
+                        }
+                    </select>
+                </label>
+                <label class="cpy-lbl">치환 BGM
+                    <select class="cpy-in" value="@(((int)Runner.Style).ToString(CultureInfo.InvariantCulture))" @onchange="SetStyle">
+                        @for (var s = 0; s < RoyaltyFreeBgmAutoSubstitutionMixer.Styles; s++)
+                        {
+                            <option value="@(s.ToString(CultureInfo.InvariantCulture))">@(RoyaltyFreeBgmAutoSubstitutionMixer.StyleNames[s]) · @(RoyaltyFreeBgmAutoSubstitutionMixer.Bpm[s]) BPM</option>
+                        }
+                    </select>
+                </label>
+                <span class="cpy-sep"></span>
+                <button class="cpy-btn @(Runner.MonitorSubstituted ? "on" : "warn")" aria-pressed="@(Runner.MonitorSubstituted ? "true" : "false")" @onclick="ToggleMonitor">🎧 비교: @(Runner.MonitorSubstituted ? "치환본" : "원본")</button>
+                <button class="cpy-btn @(Runner.Playing ? "on" : null)" aria-pressed="@(Runner.Playing ? "true" : "false")" @onclick="TogglePlay">@(Runner.Playing ? "⏸ 일시정지" : "▶ 재생")</button>
+                <button class="cpy-btn" disabled="@(Runner.Busy)" @onclick="ResetAll">♻ 초기화</button>
+            </div>
+
+            <div class="cpy-card">
+                <div class="cpy-sec">🌊 오디오 파형 타임라인 <span class="cpy-kw">@(Runner.MonitorSubstituted ? "치환본" : "원본") · 빨강 = Content ID 위험 구간(≥ 70) · @(CopyrightComplianceStudioRunner.ClipSeconds)s</span></div>
+                <div class="cpy-wave @(Runner.MonitorSubstituted ? "sub" : "orig")">
+                    @for (var i = 0; i < CopyrightComplianceStudioRunner.WavePoints; i++)
+                    {
+                        var p = Runner.MonitorSubstituted ? Runner.PeakSubstituted(i) : Runner.PeakOriginal(i);
+                        <i style="height:@(Math.Clamp(p * 100f, 1f, 100f).ToString("0.0", CultureInfo.InvariantCulture))%"></i>
+                    }
+                    @for (var s = 0; s < Runner.SegmentCount; s++)
+                    {
+                        var seg = Runner.Segment(s);
+                        <b class="cpy-risk @(Runner.MonitorSubstituted ? "fixed" : null)" style="left:@(Pct(seg.StartMs));width:@(Pct(seg.EndMs - seg.StartMs))" title="@(CopyrightComplianceStudioRunner.Ms(seg.StartMs)) ~ @(CopyrightComplianceStudioRunner.Ms(seg.EndMs))"></b>
+                    }
+                    <s class="cpy-head" style="left:@(Pct(Runner.PlayheadMs))"></s>
+                </div>
+                <div class="cpy-heat">
+                    @for (var w = 0; w < Runner.Windows; w++)
+                    {
+                        var r = Runner.MonitorSubstituted ? Runner.WindowRiskAfter(w) : Runner.WindowRiskBefore(w);
+                        <i class="@(r >= AcousticFingerprintContentIdAnalyzerEngine.RiskThreshold ? "hi" : r >= 30 ? "mid" : null)"></i>
+                    }
+                </div>
+                <div class="cpy-mini">재생 헤드 @(CopyrightComplianceStudioRunner.Ms(Runner.PlayheadMs))@(Runner.PlayheadInSegment() ? (Runner.MonitorSubstituted ? " · 🎼 치환 BGM 구간" : " · 🚨 침해 음원 재생 중") : null) · 창 @(AcousticFingerprintContentIdAnalyzerEngine.WindowMs)ms × @(Runner.Windows)</div>
+            </div>
+
+            <div class="cpy-main">
+                <div class="cpy-card">
+                    <div class="cpy-sec">🔎 Content ID 위험도</div>
+                    <div class="cpy-gauges">
+                        <div class="cpy-g"><span>원본</span><div class="cpy-gb"><i class="@(Runner.RiskBefore >= 70 ? "hi" : null)" style="width:@(Runner.RiskBefore.ToString("0.0", CultureInfo.InvariantCulture))%"></i><s></s></div><b>@(F0(Runner.RiskBefore))</b></div>
+                        <div class="cpy-g"><span>치환 후</span><div class="cpy-gb"><i class="@(Runner.RiskAfter >= 70 ? "hi" : null)" style="width:@(Runner.RiskAfter.ToString("0.0", CultureInfo.InvariantCulture))%"></i><s></s></div><b>@(F0(Runner.RiskAfter))</b></div>
+                    </div>
+                    <div class="cpy-mini">일치 음원 @(Runner.MatchedTrack >= 0 ? CopyrightComplianceStudioRunner.TrackName(Runner.MatchedTrack) : "—") · DB 해시 @(Runner.Analyzer.IndexedHashes.ToString("N0", CultureInfo.InvariantCulture)) · 프레임 @(Runner.Analyzer.FrameUs.ToString("0.0", CultureInfo.InvariantCulture))µs · 분석 @(Runner.Analyzer.LastAnalyzeMs.ToString("0", CultureInfo.InvariantCulture))ms</div>
+                    <table class="cpy-tb">
+                        <tr><th>#</th><th>시작</th><th>끝</th><th>음원</th><th>위험</th></tr>
+                        @if (Runner.SegmentCount == 0)
+                        {
+                            <tr><td colspan="5">@(Runner.Audited ? "침해 구간 없음" : "검역 실행을 누르면 침해 구간이 여기에 표시됩니다.")</td></tr>
+                        }
+                        @for (var s = 0; s < Runner.SegmentCount; s++)
+                        {
+                            var seg = Runner.Segment(s);
+                            <tr><td>@(s + 1)</td><td>@(CopyrightComplianceStudioRunner.Ms(seg.StartMs))</td><td>@(CopyrightComplianceStudioRunner.Ms(seg.EndMs))</td><td>@(CopyrightComplianceStudioRunner.TrackName(seg.Track))</td><td>@(F0(seg.Risk))</td></tr>
+                        }
+                    </table>
+                </div>
+
+                <div class="cpy-card">
+                    <div class="cpy-sec">🎼 로열티 프리 BGM 치환 믹서</div>
+                    <div class="cpy-grid">
+                        <span class="m"><b>@(RoyaltyFreeBgmAutoSubstitutionMixer.StyleNames[(int)Runner.Style])</b><i>치환 루프</i></span>
+                        <span class="m"><b>@(Runner.Mixer.PreLufs.ToString("0.0", CultureInfo.InvariantCulture)) → @(Runner.Mixer.PostLufs.ToString("0.0", CultureInfo.InvariantCulture))</b><i>LUFS(목표 -14)</i></span>
+                        <span class="m"><b class="@(Runner.Mixer.ClippedSamples == 0 ? "ok" : "bad")">@(Runner.Mixer.ClippedSamples)건 · @(Runner.Mixer.PeakDbfs.ToString("0.0", CultureInfo.InvariantCulture))dB</b><i>클리핑 · 피크</i></span>
+                        <span class="m"><b>@(Runner.NotchCount)개</b><i>밴드스톱 노치</i></span>
+                        <span class="m"><b>@((Runner.Mixer.VoiceOpenRatio * 100).ToString("0", CultureInfo.InvariantCulture))%</b><i>보컬 보존(사이드체인)</i></span>
+                        <span class="m"><b>@((Runner.Mixer.SubstitutedSamples / (double)AcousticFingerprintContentIdAnalyzerEngine.Fs).ToString("0.0", CultureInfo.InvariantCulture))s</b><i>치환 길이</i></span>
+                    </div>
+                    <div class="cpy-mini">노치 @(NotchList()) · 잔여 음악 -30dB · 크로스페이드 @(RoyaltyFreeBgmAutoSubstitutionMixer.CrossfadeMs)ms</div>
+                </div>
+            </div>
+
+            <div class="cpy-card">
+                <div class="cpy-sec">🚫 브랜드 세이프티 · 금칙어 검열 <span class="cpy-kw">정책 @(PlatformPolicyBrandSafetyGuard.PolicyTerms)종 + 상표 @(PlatformPolicyBrandSafetyGuard.Terms.Length - PlatformPolicyBrandSafetyGuard.PolicyTerms)종 · 띄어쓰기/기호 우회 차단</span></div>
+                <label class="cpy-lbl col">자막 · 대본
+                    <textarea class="cpy-in ta" rows="2" value="@(Runner.Script)" @onchange="SetScript"></textarea>
+                </label>
+                <div class="cpy-out">@(Runner.MaskedScript ?? "검역 후 마스킹된 대본이 여기에 표시됩니다.")</div>
+                <div class="cpy-hits">
+                    @for (var i = 0; i < Runner.HitCount; i++)
+                    {
+                        var h = Runner.Hit(i);
+                        <span class="cpy-tag @(h.Category == PolicyCategory.Trademark ? "tm" : null)">@(PlatformPolicyBrandSafetyGuard.CategoryName(h.Category)) · @(PlatformPolicyBrandSafetyGuard.Terms[h.Term])</span>
+                    }
+                </div>
+                <div class="cpy-mini">검출 @(Runner.HitCount)건 · 비프 @(Runner.Guard.BeepCount)구간(1kHz -12dBFS) · 재검사 잔여 @(Runner.ResidualHits)건</div>
+            </div>
+        </div>
+
+        <div class="cpy-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary()) · 연동 @(Runner.LinkedCount)/2</div>
+    </div>
+</div>
+
+<style>
+    .cpy-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .cpy-modal { width: min(1280px, 96vw); max-height: 94vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); color: var(--text-primary); }
+    .cpy-h { position: sticky; top: 0; z-index: 3; flex: 0 0 auto; display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px 8px; background: var(--card); border-bottom: 1px solid var(--line); }
+    .cpy-hr { display: flex; align-items: flex-start; gap: 8px; }
+    .cpy-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 10px; }
+    .cpy-act { position: sticky; bottom: 0; z-index: 3; flex: 0 0 auto; padding: 8px 16px 14px; background: var(--card); border-top: 1px solid var(--line); font-size: 11px; color: var(--text-muted); }
+    .cpy-title { font-size: 17px; font-weight: 800; }
+    .cpy-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .cpy-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .cpy-badge { white-space: nowrap; font-size: 12px; font-weight: 800; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: #1e293b; }
+    .cpy-badge.ok { border-color: #22c55e; background: #14532d; color: #bbf7d0; }
+    .cpy-badge.bad { border-color: #ef4444; background: #450a0a; color: #fecaca; }
+    .cpy-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 0; }
+    .cpy-sep { flex: 1; }
+    .cpy-lbl { display: inline-flex; gap: 6px; align-items: center; font-size: 11.5px; }
+    .cpy-lbl.col { display: flex; flex-direction: column; align-items: stretch; }
+    .cpy-in { background: #0f172a; color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; font-size: 11.5px; padding: 3px 6px; }
+    .cpy-in.ta { width: 100%; resize: vertical; font-family: inherit; }
+    .cpy-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .cpy-btn:disabled { opacity: .45; cursor: default; }
+    .cpy-btn.go { border-color: #38bdf8; font-weight: 700; }
+    .cpy-btn.on { border-color: #4ade80; background: #14532d; }
+    .cpy-btn.warn { border-color: #f97316; background: #431407; }
+    .cpy-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-width: 0; margin-top: 10px; }
+    .cpy-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .cpy-kw { margin-left: auto; font-size: 10.5px; font-weight: 400; color: #7dd3fc; }
+    .cpy-wave { position: relative; height: 96px; display: flex; align-items: center; gap: 1px; background: #050b16; border-radius: 6px; overflow: hidden; padding: 0 2px; }
+    .cpy-wave i { flex: 1 1 0; min-width: 0; background: #38bdf8; border-radius: 1px; opacity: .85; }
+    .cpy-wave.orig i { background: #a78bfa; }
+    .cpy-risk { position: absolute; top: 0; bottom: 0; background: rgba(239,68,68,.32); border-left: 2px solid #ef4444; border-right: 2px solid #ef4444; pointer-events: none; }
+    .cpy-risk.fixed { background: rgba(34,197,94,.18); border-color: #22c55e; }
+    .cpy-head { position: absolute; top: 0; bottom: 0; width: 2px; background: #facc15; transition: left .1s linear; }
+    .cpy-heat { display: flex; gap: 1px; height: 6px; margin-top: 4px; }
+    .cpy-heat i { flex: 1 1 0; background: #1e293b; } .cpy-heat i.mid { background: #f59e0b; } .cpy-heat i.hi { background: #ef4444; }
+    .cpy-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+    .cpy-gauges { display: flex; flex-direction: column; gap: 6px; }
+    .cpy-g { display: grid; grid-template-columns: 52px 1fr 36px; align-items: center; gap: 6px; font-size: 11.5px; }
+    .cpy-gb { position: relative; height: 10px; background: #1e293b; border-radius: 5px; overflow: hidden; }
+    .cpy-gb i { display: block; height: 100%; background: #22c55e; transition: width .2s; } .cpy-gb i.hi { background: #ef4444; }
+    .cpy-gb s { position: absolute; top: 0; bottom: 0; left: 70%; width: 2px; background: #facc15; }
+    .cpy-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+    .cpy-grid .m { background: #111827; border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; }
+    .cpy-grid .m b { font-size: 12.5px; } .cpy-grid .m b.ok { color: #4ade80; } .cpy-grid .m b.bad { color: #f87171; }
+    .cpy-grid .m i { font-style: normal; font-size: 10px; color: var(--text-muted); }
+    .cpy-tb { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 8px; }
+    .cpy-tb th { text-align: left; color: var(--text-muted); font-weight: 600; border-bottom: 1px solid var(--line); padding: 2px 4px; }
+    .cpy-tb td { padding: 2px 4px; border-bottom: 1px solid #111827; font-family: var(--mono); }
+    .cpy-out { margin-top: 6px; padding: 6px 8px; background: #111827; border-radius: 6px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }
+    .cpy-hits { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+    .cpy-tag { font-size: 10.5px; padding: 1px 8px; border-radius: 999px; background: #450a0a; border: 1px solid #ef4444; }
+    .cpy-tag.tm { background: #422006; border-color: #f59e0b; }
+    .cpy-mini { font-size: 10px; color: var(--text-muted); margin-top: 6px; }
+    @@media (max-width: 1000px) { .cpy-main { grid-template-columns: 1fr; } .cpy-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    protected override void OnInitialized() => Runner.OnChange += OnServiceChanged;
+
+    private async Task Audit()
+    {
+        try { await Runner.AuditAsync(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("Copyright.Modal.Audit", ex); }
+    }
+
+    private void SetTrack(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var t)) Runner.SetTrack(t);
+    }
+
+    private void SetStyle(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var s) && (uint)s < RoyaltyFreeBgmAutoSubstitutionMixer.Styles) Runner.SetStyle((BgmStyle)s);
+    }
+
+    private void SetScript(ChangeEventArgs e) => Runner.SetScript(e.Value?.ToString());
+    private void ToggleMonitor() => Runner.ToggleMonitor();
+
+    private void TogglePlay()
+    {
+        try { Runner.TogglePlay(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("Copyright.Modal.Play", ex); }
+    }
+
+    private void ResetAll() => Runner.Reset();
+
+    private static string F0(float v) => v.ToString("0", CultureInfo.InvariantCulture);
+
+    private static string Pct(int ms) => (Math.Clamp(ms, 0, CopyrightComplianceStudioRunner.ClipMs) * 100.0 / CopyrightComplianceStudioRunner.ClipMs).ToString("0.00", CultureInfo.InvariantCulture) + "%";
+
+    private string NotchList()
+    {
+        if (Runner.NotchCount == 0) return "—";
+        var sb = new System.Text.StringBuilder();
+        for (var i = 0; i < Math.Min(6, Runner.NotchCount); i++) { if (i > 0) sb.Append(", "); sb.Append(Runner.NotchHz(i).ToString("0", CultureInfo.InvariantCulture)).Append("Hz"); }
+        if (Runner.NotchCount > 6) sb.Append(" …");
+        return sb.ToString();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Runner.OnChange -= OnServiceChanged;
+}

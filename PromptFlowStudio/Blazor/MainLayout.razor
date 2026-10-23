@@ -508,6 +508,10 @@
         {
             <LiveToShortsAutoClipperStudioModal OnClose="() => _liveAutoClipper = false" />
         }
+        @if (_copyrightCompliance)
+        {
+            <CopyrightComplianceAuditStudioModal OnClose="() => _copyrightCompliance = false" />
+        }
         @if (_omniViralMasterCockpit)
         {
             <OmniViralGrowthMasterCockpitStudioModal OnClose="() => _omniViralMasterCockpit = false" />
@@ -1123,6 +1127,7 @@
             case "_liveAutoClipper": _liveAutoClipper = on; break;
             case "_liveArchiveVault": _liveArchiveVault = on; break;
             case "_vodRepurposing": _vodRepurposing = on; break;
+            case "_copyrightCompliance": _copyrightCompliance = on; break;
             case "_omniViralMasterCockpit": _omniViralMasterCockpit = on; break;
             case "_intentNavigationHub": _intentNavigationHub = on; if (on) NavRun.Search(""); break;
             case "_liveAudienceEngagement": _liveAudienceEngagement = on; break;
@@ -1280,6 +1285,7 @@
         "_liveAutoClipper" => _liveAutoClipper,
         "_liveArchiveVault" => _liveArchiveVault,
         "_vodRepurposing" => _vodRepurposing,
+        "_copyrightCompliance" => _copyrightCompliance,
         "_omniViralMasterCockpit" => _omniViralMasterCockpit,
         "_intentNavigationHub" => _intentNavigationHub,
         "_liveAudienceEngagement" => _liveAudienceEngagement,
@@ -1393,6 +1399,7 @@
     private bool _globalDub; // v17.64.0 사이드바 🌍 글로벌 & 로컬라이제이션 ▸ 🗣️ 실시간 다국어 더빙 스튜디오(스트리밍 번역 ≤ 200 ms · 다국어 음색 유지 합성 · 플랫폼별 언어 트랙 · ARKit 가우시안 립싱크 < 50 ms)
     private bool _streamGateway; // v17.62.0 사이드바 📜 각본 & 타임라인 ▸ 🛰️ 스트림 게이트웨이 & 클리퍼 스튜디오(32 MB 압축 NAL 링 · 무손실 1080p 리먹스 · Twitch/YouTube/치지직 게이트웨이 · 백오프/배압)
     private bool _influencerLive; // v17.61.0 사이드바 📜 각본 & 타임라인 ▸ 🎙️ 버추얼 인플루언서 라이브 스튜디오(채팅 리액션 트리거 · 하이라이트 9:16 즉시 클리핑 · 도배/비속어 가드)
+    private bool _copyrightCompliance; // v17.91.0 사이드바 📸 소셜 & 바이럴 ▸ 🛡️ 저작권 검역 & Content ID 가드(16.7 ms 컨스텔레이션 지문 · 모의 상용 음원 DB 해시 투표 위험도 0~100 · ≥ 70 구간 10 ms 타임코드 · 노치/−30 dB 사이드체인 제거 + 로열티 프리 루프 치환 · −14 LUFS · 금칙어 50 종 + 상표 마스킹/비프)
     private bool _omniViralMasterCockpit; // v17.90.0 사이드바 📸 소셜 & 바이럴 ▸ 👑 옴니 바이럴 그로스 마스터 콕핏(원클릭 7 노드 DAG ①클립 → ②스코어 → ③자막/더빙 → ④변형 렌더 → ⑤OAuth2 시차 예약 · ①→⑥아티클 · ④+⑥→⑦볼트 · 인터락 C 등급/토큰 만료 승인 대기 · 4 플랫폼 K-Factor ≥ 1.2 추가 신디케이션)
     private bool _vodRepurposing; // v17.88.0 사이드바 📸 소셜 & 바이럴 ▸ 📝 VOD 리퍼포징 & 아티클 스튜디오(v17.87 아카이브 VOD 대본 → 발화 밀도/키워드 벡터 낙차 3~7 분 챕터 · 3 줄 요약 · 롱테일 SEO 5 · 블로그/뉴스레터 마크다운 · 1080² 카드뉴스 5 장 + 1200×630 OG 인메모리 PNG)
     private bool _intentNavigationHub; // v17.89.0 사이드바 ⚙️ 시스템 ▸ 🧭 AI 인텐트 내비게이션 & 도움말 허브(Ctrl+K · 동의어 개념 무할당 검색 → 상위 3~5 추천 · 바로 열기)

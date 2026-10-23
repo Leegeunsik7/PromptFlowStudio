@@ -173,6 +173,7 @@ using QA = PromptFlowStudio.Services.VisualQa;
 using IL = PromptFlowStudio.Services.InfluencerLive;
 using SG = PromptFlowStudio.Services.StreamGateway;
 using Ovg = PromptFlowStudio.Services.OmniViral;
+using Cpy = PromptFlowStudio.Services.CopyrightCompliance;
 
 namespace PromptFlowStudio.Tests;
 
@@ -35595,9 +35596,9 @@ public sealed class OmniViralGrowthIsolatedTests
 
         // ── OVP-4: 카탈로그 166 · 도움말 · HUD · 레이아웃 · DI · 모달 규격 · 외부 의존 0 · 모달 렌더 ──
         var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
-        Assert.Equal(166, cat.Length);
+        Assert.True(cat.Length >= 166);   // v17.91.0 이후 카탈로그 증가 허용
         Assert.Contains(cat, en => en.Key == "_omniViralMasterCockpit" && en.Category == 4 && en.Title == "옴니 바이럴 그로스 마스터 콕핏");
-        Assert.Equal(166, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
+        Assert.Equal(cat.Length, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
         Assert.Equal(0, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects());
         Assert.Equal("_omniViralMasterCockpit", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.ResolveKeyByHeader("👑 옴니 바이럴 그로스 마스터 콕핏 · ⚙️ 가동 중"));
         var root = RepoRoot();
@@ -35619,6 +35620,165 @@ public sealed class OmniViralGrowthIsolatedTests
         Assert.True(runner.LinkedCount == 7, "연동 " + runner.LinkedCount);
         var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.OmniViralGrowthMasterCockpitStudioModal), sp);
         Assert.True(html.Length > 500 && html.Contains("ovg-scrim", StringComparison.Ordinal) && html.Contains("ovg-body", StringComparison.Ordinal) && html.Contains("원클릭 전자동 실행", StringComparison.Ordinal) && html.Contains("오토파일럿", StringComparison.Ordinal) && html.Contains("ovg-node", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+}
+
+/// <summary>v17.91.0 음향 지문 Content ID 분석 · 로열티 프리 BGM 치환 · 브랜드 세이프티 · 저작권 검역 콕핏 결선.</summary>
+[Collection("TimingSensitivePerformance")]   // 프레임 1 ms 판정 벽시계 · 스레드 할당 바이트 계측 → 비병렬
+public sealed class CopyrightComplianceIsolatedTests
+{
+    [Fact]
+    public async Task CopyrightCompliance_And_ContentIdAnalyzer_Check()
+    {
+        const int Fs = Cpy.AcousticFingerprintContentIdAnalyzerEngine.Fs;
+
+        // ── CPY-1: 지문 DB · 침해 구간 검출 · 10 ms 타임코드 · 무할당 · 1 ms 판정 ──
+        var an = new Cpy.AcousticFingerprintContentIdAnalyzerEngine();
+        Assert.True(an.IndexedHashes > 3_000 && an.TableDropped == 0, "DB " + an.IndexedHashes);
+        var clip = new float[Cpy.CopyrightComplianceStudioRunner.ClipSamples];
+        Cpy.CopyrightComplianceStudioRunner.BuildClip(clip, 1);
+        var risk = an.Analyze(clip);
+        var trace = new System.Text.StringBuilder();
+        for (var w = 0; w < an.Windows; w++) trace.Append(an.WindowRisk(w).ToString("0", System.Globalization.CultureInfo.InvariantCulture)).Append('/').Append(an.WindowTrack(w)).Append(':').Append(an.WindowVotes(w)).Append('/').Append(an.WindowHashes(w)).Append(' ');
+        Assert.True(risk >= 70 && an.MatchedTrack == 1 && an.SegmentCount == 1, "위험 " + risk + " · " + trace);
+        var seg = an.Segment(0);
+        Assert.True(seg.Track == 1 && seg.StartMs % 10 == 0 && seg.EndMs % 10 == 0, "구간 " + seg.StartMs + "~" + seg.EndMs);
+        Assert.True(Math.Abs(seg.StartMs - 5000) <= 120 && Math.Abs(seg.EndMs - 13000) <= 120, "구간 " + seg.StartMs + "~" + seg.EndMs + " · " + trace);
+        var hz = new float[Cpy.RoyaltyFreeBgmAutoSubstitutionMixer.MaxNotches];
+        var notches = an.CollectSegmentPeakHz(0, hz);
+        Assert.True(notches >= 4 && hz[0] > 50 && hz[0] < 12000, "노치 " + notches);
+        var clean = new float[clip.Length];
+        Cpy.CopyrightComplianceStudioRunner.BuildClip(clean, -1);
+        Assert.True(an.Analyze(clean) < 70 && an.SegmentCount == 0, "무음원 위험 " + an.RiskIndex);
+        for (var t = 0; t < 3; t++)
+        {
+            Cpy.CopyrightComplianceStudioRunner.BuildClip(clip, t);
+            Assert.True(an.Analyze(clip) >= 70 && an.MatchedTrack == t, "트랙 " + t + " " + an.RiskIndex);
+        }
+        var a0 = GC.GetAllocatedBytesForCurrentThread();
+        an.Analyze(clip);
+        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - a0);
+        Assert.True(an.FrameUs < 1000 && an.Frames == (clip.Length - Cpy.AcousticFingerprintContentIdAnalyzerEngine.FftSize) / Cpy.AcousticFingerprintContentIdAnalyzerEngine.Hop + 1, "프레임 " + an.FrameUs + "µs");
+        // 스트리밍 공급(임의 블록) = 일괄 분석
+        an.BeginRun();
+        for (var o = 0; o < clip.Length; o += 777) an.Feed(clip.AsSpan(o, Math.Min(777, clip.Length - o)));
+        an.Finish();
+        Assert.True(an.RiskIndex >= 70 && an.SegmentCount == 1);
+
+        // ── CPY-2: 치환 · −14 LUFS · 클리핑 0 · 재분석 안전 · 무할당 ──
+        var mix = new Cpy.RoyaltyFreeBgmAutoSubstitutionMixer();
+        for (var s = 0; s < 3; s++) Assert.True(mix.Loop((Cpy.BgmStyle)s).Length == Fs * 60 / Cpy.RoyaltyFreeBgmAutoSubstitutionMixer.Bpm[s] * 8);
+        Cpy.CopyrightComplianceStudioRunner.BuildClip(clip, 1);
+        an.Analyze(clip);
+        var segs = an.Segments.ToArray();
+        notches = an.CollectSegmentPeakHz(0, hz);
+        var work = (float[])clip.Clone();
+        mix.Style = Cpy.BgmStyle.Synthwave;
+        a0 = GC.GetAllocatedBytesForCurrentThread();
+        mix.Substitute(work, segs, hz.AsSpan(0, notches));
+        var lufs = mix.Normalize(work);
+        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - a0);
+        Assert.True(Math.Abs(lufs + 14) <= 0.5 && mix.ClippedSamples == 0 && mix.PeakDbfs <= -0.9f, "LUFS " + lufs + " 피크 " + mix.PeakDbfs);
+        Assert.True(Math.Abs(mix.LastCancelGain - 0.7f) < 0.05f && mix.LastCancelDb < -10 && mix.VoiceOpenRatio is > 0.3 and < 0.97 && mix.NotchCount == notches, "소거 g " + mix.LastCancelGain + " " + mix.LastCancelDb + "dB 보컬 " + mix.VoiceOpenRatio);
+        var post = an.Analyze(work);
+        trace.Clear();
+        for (var w = 0; w < an.Windows; w++) trace.Append(an.WindowRisk(w).ToString("0", System.Globalization.CultureInfo.InvariantCulture)).Append('/').Append(an.WindowTrack(w)).Append(':').Append(an.WindowVotes(w)).Append('/').Append(an.WindowHashes(w)).Append(' ');
+        Assert.True(post < 70 && an.SegmentCount == 0, "치환 후 위험 " + post + " · " + trace);
+        Assert.True(Math.Abs(mix.MeasureLufs(work) + 14) <= 0.5);
+        // 치환 구간 밖 원음 보존(크로스페이드 ±120 ms 바깥 · 정규화 이득만 적용)
+        var g = (float)Math.Pow(10, (-14 - mix.PreLufs) / 20);
+        Assert.True(Math.Abs(work[Fs] - clip[Fs] * g) < 0.02f + Math.Abs(clip[Fs] * g) * 0.05f, "보존 " + work[Fs] + " / " + clip[Fs] * g);
+
+        // ── CPY-3: 50 금칙어 · 우회 · 허용 목록 · 마스킹 · 비프 · 무할당 ──
+        var guard = new Cpy.PlatformPolicyBrandSafetyGuard();
+        Assert.Equal(60, Cpy.PlatformPolicyBrandSafetyGuard.Terms.Length);
+        var policy = 0;
+        for (var t = 0; t < Cpy.PlatformPolicyBrandSafetyGuard.Terms.Length; t++) if (Cpy.PlatformPolicyBrandSafetyGuard.CategoryOf(t) != Cpy.PolicyCategory.Trademark) policy++;
+        Assert.Equal(Cpy.PlatformPolicyBrandSafetyGuard.PolicyTerms, policy);
+        var text = "오늘 폭 탄 제 조 얘기는 없고 P.O.R.N 도 아님. 대마도 여행 + 마약김밥 먹방, 나이키 협찬.";
+        Assert.Equal(3, guard.Scan(text));
+        Assert.True(guard.PolicyHitCount == 2 && guard.TrademarkHitCount == 1);
+        var dst = new char[text.Length * 2];
+        var wn = guard.Mask(text, dst);
+        var masked = new string(dst, 0, wn);
+        Assert.Equal("오늘 *** 얘기는 없고 *** 도 아님. 대마도 여행 + 마약김밥 먹방, *** 협찬.", masked);
+        Assert.Equal(0, guard.Scan(masked));
+        guard.ClearBeeps();
+        guard.MaskCue(text, 1000, 5000, dst);
+        Assert.True(guard.BeepCount == 3 && guard.Beep(0).StartMs >= 1000 && guard.Beep(2).EndMs <= 5000);
+        var pcm = new float[6 * Fs];
+        Assert.True(guard.RenderBeeps(pcm) > 0 && pcm.Max() > 0.2f && pcm.Max() <= 0.26f);
+        a0 = GC.GetAllocatedBytesForCurrentThread();
+        for (var r = 0; r < 100; r++) { guard.Mask(text, dst); guard.Scan(Cpy.CopyrightComplianceStudioRunner.DefaultScript); }
+        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - a0);
+
+        // ── 러너: 검역 → Safe to Publish · 비교/재생 토글 · 무음원 ──
+        using (var run = new Cpy.CopyrightComplianceStudioRunner())
+        {
+            var changes = 0;
+            run.OnChange += () => Interlocked.Increment(ref changes);
+            var okA = await run.AuditAsync();
+            var tra = new System.Text.StringBuilder();
+            for (var w = 0; w < run.Windows; w++) tra.Append(run.WindowRiskAfter(w).ToString("0")).Append(' ');
+            Assert.True(okA, run.LastAction + " · " + run.Segment(0).StartMs + "~" + run.Segment(0).EndMs + " · " + tra);
+            Assert.True(run.RiskBefore >= 70 && run.RiskAfter < 70 && run.SegmentCount == 1 && run.SafeToPublish && run.MatchedTrack == 0 && changes > 0, run.LastAction);
+            Assert.True(run.HitCount == 3 && run.ResidualHits == 0 && run.MaskedScript!.Contains("***", StringComparison.Ordinal) && run.MaskedScript.Contains("대마도", StringComparison.Ordinal), run.MaskedScript);
+            Assert.True(run.Windows >= 39 && run.WindowRiskBefore(14) >= 70 && run.WindowRiskAfter(14) < 70 && run.PeakOriginal(100) > 0 && run.PeakSubstituted(100) > 0);
+            var mon = run.MonitorSubstituted;
+            run.ToggleMonitor();
+            Assert.NotEqual(mon, run.MonitorSubstituted);
+            run.TogglePlay();
+            Assert.True(run.Playing);
+            for (var i = 0; i < 60; i++) run.PlayTick();
+            Assert.True(run.PlayheadMs >= 6000 && run.PlayheadInSegment());
+            run.TogglePlay();
+            Assert.False(run.Playing);
+            run.SetTrack(-1);
+            run.SetStyle(Cpy.BgmStyle.HipHop);
+            Assert.False(run.Audited);
+            Assert.True(await run.AuditAsync(), run.LastAction);
+            Assert.True(run.SegmentCount == 0 && run.RiskBefore < 70 && Math.Abs(run.Mixer.PostLufs + 14) <= 0.5);
+            run.SetScript("깨끗한 대본입니다");
+            Assert.True(await run.AuditAsync() && run.HitCount == 0);
+            run.Reset();
+            Assert.True(run.Audits == 0 && !run.Audited && run.Track == 0 && !run.Playing);
+        }
+
+        // ── CPY-4: 카탈로그 167 · 도움말 · HUD · 레이아웃 · DI · 모달 규격 · 외부 의존 0 · 모달 렌더 ──
+        var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
+        Assert.Equal(167, cat.Length);
+        Assert.Contains(cat, en => en.Key == "_copyrightCompliance" && en.Category == 4 && en.Title == "저작권 검역 & Content ID 가드");
+        Assert.Equal(167, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
+        Assert.Equal(0, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects());
+        Assert.Equal("_copyrightCompliance", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.ResolveKeyByHeader("🛡️ 저작권 검역 & Content ID 가드 · ✅ Safe to Publish"));
+        var root = RepoRoot();
+        string Src(params string[] p) => File.ReadAllText(Path.Combine(root, Path.Combine(p)));
+        var hud = Src("PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor");
+        var layout = Src("PromptFlowStudio", "Blazor", "MainLayout.razor");
+        var modalSrc = Src("PromptFlowStudio", "Blazor", "Components", "Common", "CopyrightComplianceAuditStudioModal.razor");
+        Assert.True(hud.IndexOf("gth-v1791", StringComparison.Ordinal) is > 0 and var i1791 && i1791 < hud.IndexOf("gth-v1790", StringComparison.Ordinal) && hud.Contains("CpyRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("CpyRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<CopyrightComplianceAuditStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_copyrightCompliance\"", StringComparison.Ordinal) && layout.Contains("\"_copyrightCompliance\" =>", StringComparison.Ordinal));
+        Assert.True(Src("PromptFlowStudio", "MainForm.cs").Contains("CopyrightCompliance.CopyrightComplianceStudioRunner(sp)", StringComparison.Ordinal) && Src("PromptFlowStudio.Mobile", "MauiProgram.cs").Contains("CopyrightCompliance.CopyrightComplianceStudioRunner(sp)", StringComparison.Ordinal));
+        Assert.True(modalSrc.Contains("@implements IDisposable", StringComparison.Ordinal) && modalSrc.Contains("flex: 1 1 auto; min-height: 0; overflow-y: auto;", StringComparison.Ordinal) && modalSrc.Contains("position: sticky", StringComparison.Ordinal) && modalSrc.Contains("aria-pressed", StringComparison.Ordinal));
+        foreach (var src in Directory.GetFiles(Path.Combine(root, "PromptFlowStudio", "Services", "CopyrightCompliance"), "*.cs"))
+        {
+            var body = File.ReadAllText(src);
+            Assert.True(!body.Contains("System.Linq", StringComparison.Ordinal) && !body.Contains("Process.Start", StringComparison.Ordinal) && !body.Contains("HttpClient", StringComparison.Ordinal) && !body.Contains("File.Write", StringComparison.Ordinal), "외부 의존 · 파일 I/O " + Path.GetFileName(src));
+        }
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = (Cpy.CopyrightComplianceStudioRunner)sp.GetService(typeof(Cpy.CopyrightComplianceStudioRunner))!;
+        Assert.True(runner.LinkedCount == 2, "연동 " + runner.LinkedCount);
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.CopyrightComplianceAuditStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("cpy-scrim", StringComparison.Ordinal) && html.Contains("cpy-body", StringComparison.Ordinal) && html.Contains("검역 실행", StringComparison.Ordinal) && html.Contains("cpy-wave", StringComparison.Ordinal), "모달 렌더 " + html.Length);
         Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
     }

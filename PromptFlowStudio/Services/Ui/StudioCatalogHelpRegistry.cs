@@ -10,7 +10,7 @@ public sealed record StudioHelpEntry(
     string IntentKeywords);
 
 /// <summary>
-/// [PromptFlow Studio v17.89.0] 📘 카탈로그 166 항목 1:1 도움말 레지스트리 — 각 모달 마크업의 부제(역할) · 실제 버튼/토글/슬라이더 라벨
+/// [PromptFlow Studio v17.89.0] 📘 카탈로그 167 항목 1:1 도움말 레지스트리 — 각 모달 마크업의 부제(역할) · 실제 버튼/토글/슬라이더 라벨
 /// (핵심 조작 · 작업 순서)에서 추출해 정적으로 고정했다. 모달 헤더 <c>?</c> 버튼(<c>StudioHelpDrawer</c>)과
 /// <see cref="CatalogIntentSearchEngine"/> 의 인텐트 색인이 같은 데이터를 쓴다. 신규 카탈로그 항목은 여기에도 1행을 추가해야
 /// <c>IntentNavigation_And_ExhaustiveHelpRegistry_Check</c> 가 통과한다(누락 0 건 강제).
@@ -403,6 +403,10 @@ public static class StudioCatalogHelpRegistry
             new[] { "「🎼 음악 생성」 탭 — 작업 영역을 전환해 해당 단계의 설정과 결과를 엽니다.", "「BPM」 입력 — 값을 바꾸면 결과와 HUD 지표에 실시간 반영됩니다.", "「💾 BVH」 — 현재 결과물을 파일 · 클립보드로 내보냅니다." },
             new[] { "Step 1 · 「BPM」 등 입력값을 원하는 조건으로 맞춥니다.", "Step 2 · 「🎼 음악 생성」을(를) 눌러 처리를 시작합니다.", "Step 3 · 「💾 BVH」(으)로 결과를 보내고 연관 메뉴로 다음 공정을 이어갑니다." },
             new[] { "sb:_screenplayOpen", "_rhythmMv", "sb:_soundOpen" }, "오디오 VFX 각본 무대"),
+        new("_copyrightCompliance", "숏폼을 올리기 전에 배경 음악이 상용 음원과 겹치는지 소리 지문으로 검사하고, 위험 구간의 음악만 로열티 프리 BGM으로 바꿔 Content ID 스트라이크를 막습니다.",
+            new[] { "「🛡️ 검역 실행」 — 지문 분석 · BGM 치환 · 금칙어 마스킹 · -14 LUFS 마스터 · 재분석을 한 번에 실행합니다.", "「🎧 비교」 토글 — 원본과 치환본 파형 · 위험 타임라인을 번갈아 보며 「▶ 재생」 헤드로 구간을 확인합니다.", "「치환 BGM」 선택 — Lo-Fi · Synthwave · Hip-Hop 중 빈자리에 넣을 로열티 프리 루프를 고릅니다." },
+            new[] { "Step 1 · 「배경 음원」 · 「자막 · 대본」 등 입력값을 원하는 조건으로 맞춥니다.", "Step 2 · 「🛡️ 검역 실행」을(를) 눌러 처리를 시작합니다.", "Step 3 · Safe to Publish 뱃지를 확인하고 연관 메뉴로 다음 공정을 이어갑니다." },
+            new[] { "_omniViralMasterCockpit", "_viralPredictorExport", "_vodRepurposing" }, "저작권 음원 BGM 금칙어 검열 스트라이크 컴플라이언스 라우드니스"),
         new("_omniViralMasterCockpit", "영상 하나를 넣고 버튼 한 번이면 킬러클립 절삭부터 바이럴 스코어링 · 자막/더빙 · 플랫폼 변형 렌더 · OAuth2 시차 예약 · VOD 아티클 · 클라우드 볼트 적재까지 7단계를 자동으로 이어서 실행합니다.",
             new[] { "「🚀 원클릭 전자동 실행」 — 이 화면의 핵심 처리를 실행합니다.", "「🤖 오토파일럿」 토글 — 켜면 즉시 7단계를 실행하고 완료 후 성장 추적과 추가 배포까지 자동으로 이어갑니다.", "「✅ 승인 후 재개」 — 점수 미달 · 토큰 만료로 멈춘 단계를 확인한 뒤 완료 단계는 그대로 두고 이어서 진행합니다." },
             new[] { "Step 1 · 「소스」 · 「길이」 등 입력값을 원하는 조건으로 맞춥니다.", "Step 2 · 「🚀 원클릭 전자동 실행」을(를) 눌러 처리를 시작합니다.", "Step 3 · 「📡 성장 추적」으로 K-Factor 를 확인하고 연관 메뉴로 다음 공정을 이어갑니다." },
