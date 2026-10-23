@@ -119,6 +119,7 @@ public static class StudioCatalog
         new("sb:_screenplayOpen", "📜", "AI 시나리오 & 세계관 스튜디오 (스토리보드)", 3),
         new("sb:_mvOpen", "🎵", "AI 뮤직비디오 & 안무 스튜디오 (스토리보드)", 3),
         new("_postPublishSplitTest", "⚖️", "포스트-퍼블리시 A/B & 패자 회수기", 4),
+        new("_goldenHourEngagement", "💬", "골든아워 댓글 & 인게이지먼트 부스터", 4),
         new("_platformVisibilityGateway", "🌐", "플랫폼 비지빌리티 게이트웨이", 4),
         new("_realRunnerBatchSandbox", "⚡", "마스터 실러너 E2E 샌드박스", 4),
         new("_copyrightCompliance", "🛡️", "저작권 검역 & Content ID 가드", 4),

@@ -177,6 +177,7 @@ using Cpy = PromptFlowStudio.Services.CopyrightCompliance;
 using Mrr = PromptFlowStudio.Services.MasterPipeline;
 using Pst = PromptFlowStudio.Services.PostPublishSplitTest;
 using Pvg = PromptFlowStudio.Services.PlatformVisibility;
+using Ghe = PromptFlowStudio.Services.GoldenHourEngagement;
 
 namespace PromptFlowStudio.Tests;
 
@@ -36399,9 +36400,9 @@ public sealed class PlatformVisibilityGatewayIsolatedTests
 
         // ── PVG-4: 카탈로그 170 · 도움말 · HUD · 레이아웃 · DI · 모달 규격 · 외부 의존 0 · 모달 렌더 ──
         var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
-        Assert.Equal(170, cat.Length);
+        Assert.True(cat.Length >= 170);   // v17.95.0 이후 카탈로그 증가 허용
         Assert.Contains(cat, en => en.Key == "_platformVisibilityGateway" && en.Category == 4 && en.Title == "플랫폼 비지빌리티 게이트웨이");
-        Assert.Equal(170, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
+        Assert.Equal(cat.Length, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
         Assert.Equal(0, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects());
         Assert.Equal("_platformVisibilityGateway", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.ResolveKeyByHeader("🌐 플랫폼 비지빌리티 게이트웨이 · 시뮬레이션"));
         var root = RepoRoot();
@@ -36434,5 +36435,163 @@ public sealed class PlatformVisibilityGatewayIsolatedTests
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
         return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+}
+
+[Collection("TimingSensitivePerformance")]   // 스레드 할당 바이트 계측(감정 분류 · 답글 조합 · 속도 가드 허가) → 비병렬
+public sealed class GoldenHourEngagementIsolatedTests
+{
+    private const double T0 = 1_800_000_000;
+
+    [Fact]
+    public void GoldenHourCommentEngagement_And_Sentiment_Check()
+    {
+        // ── ENG-1: 감정 분류 정확도 · 스팸 자동 격리 ──
+        var gw = new Ghe.SimulatedCommentModerationGateway();
+        var tri = new Ghe.ZeroAllocCommentSentimentTriageEngine(gw);
+        (string Text, Ghe.CommentSentiment Want, bool Hide)[] cases =
+        {
+            ("와 이번 편 진짜 최고예요 👍", Ghe.CommentSentiment.Positive, false),
+            ("꿀팁 감사합니다 덕분에 해결했어요", Ghe.CommentSentiment.Positive, false),
+            ("awesome edit, love it 🔥", Ghe.CommentSentiment.Positive, false),
+            ("ㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋ 편집 센스 대박", Ghe.CommentSentiment.Positive, false),
+            ("이거 어떤 프로그램으로 편집하셨나요?", Ghe.CommentSentiment.Question, false),
+            ("what mic do you use?", Ghe.CommentSentiment.Question, false),
+            ("다음 편은 언제 올라와요", Ghe.CommentSentiment.Question, false),
+            ("방금 봤어요", Ghe.CommentSentiment.Neutral, false),
+            ("이번 건 좀 지루하고 아쉽네요", Ghe.CommentSentiment.Negative, false),
+            ("부업으로 월 500 수익 보장 👉 https://bit.ly/x9 무료 상담 카톡", Ghe.CommentSentiment.Spam, true),
+            ("free money dm me https://t.me/xx www.scam.xyz", Ghe.CommentSentiment.Spam, true),
+            ("ㅅㅂ 이게 뭐냐 시간 버렸네", Ghe.CommentSentiment.Negative, true),
+            ("이딴 걸 영상이라고 올리냐 구독취소함", Ghe.CommentSentiment.Negative, true),
+            ("ㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏㅏ", Ghe.CommentSentiment.Spam, true),
+        };
+        for (var i = 0; i < cases.Length; i++)
+        {
+            var r = tri.Triage(1000 + i, cases[i].Text.AsSpan());
+            Assert.True(r.Sentiment == cases[i].Want, cases[i].Text + " → " + r.Sentiment);
+            Assert.True(r.ShouldHide == cases[i].Hide, cases[i].Text + " hide " + r.Hide);
+        }
+        Assert.Equal(5, tri.Hidden);
+        Assert.Equal(5, gw.Hides);
+        Assert.Equal(cases.Length, tri.Scanned);
+        Assert.Equal(Ghe.CommentHideReason.LinkFlood, Ghe.ZeroAllocCommentSentimentTriageEngine.Score("a https://x.com/1 b https://y.com/2".AsSpan()).Hide & Ghe.CommentHideReason.LinkFlood);
+        Assert.False(Ghe.ZeroAllocCommentSentimentTriageEngine.Score("영상 링크 https://youtu.be 참고했어요 감사".AsSpan()).ShouldHide);   // 단일 링크 단독 = 허용
+        // 중복 숨김 차단 · 게이트웨이 실패 격리
+        tri.Triage(1009, cases[9].Text.AsSpan());
+        Assert.Equal(1, tri.DuplicateSkips);
+        Assert.Equal(5, gw.Hides);
+        gw.InjectFailures(1, 503);
+        tri.Triage(2000, cases[10].Text.AsSpan());
+        Assert.Equal(1, tri.HideFailures);
+        Assert.False(tri.AlreadyHidden(2000));
+        tri.Triage(2000, cases[10].Text.AsSpan());
+        Assert.True(tri.AlreadyHidden(2000));
+
+        // ── ENG-2: 앵커 고정 60 s · 톤 맞춤 답글 ──
+        var res = new Ghe.GoldenHourSmartEngagementResponder();
+        Assert.False(res.TryPublishPinned(T0, gw));   // 업로드 전
+        res.MarkUploaded(T0);
+        gw.InjectFailures(1, 503);
+        Assert.False(res.TryPublishPinned(T0 + 5, gw));
+        Assert.True(res.TryPublishPinned(T0 + 10, gw));
+        Assert.True(res.PinnedInWindow && res.PinDelaySec == 10 && res.PinAttempts == 2);
+        Assert.False(res.TryPublishPinned(T0 + 15, gw));   // 중복 고정 차단
+        res.PinnedTemplate = "   ";
+        Assert.Equal(Ghe.GoldenHourSmartEngagementResponder.DefaultPinnedTemplate, res.PinnedTemplate);
+        res.PinnedTemplate = new string('x', 500);
+        Assert.Equal(Ghe.GoldenHourSmartEngagementResponder.ReplyCap, res.PinnedTemplate.Length);
+        Assert.False(res.TryCompose(Ghe.CommentSentiment.Spam, 1, "spam".AsSpan()));
+        Assert.False(res.TryCompose(Ghe.CommentSentiment.Negative, 1, "x".AsSpan()));
+        var seen = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
+        for (var t = 0; t < 3; t++)
+        {
+            res.Tone = (Ghe.ChannelTone)t;
+            Assert.True(res.TryCompose(Ghe.CommentSentiment.Question, 42, "민지".AsSpan()));
+            var q = res.LastReply.ToString();
+            Assert.StartsWith("@민지 ", q);
+            Assert.True(seen.Add(q), "톤별 답글 상이 " + q);
+            Assert.True(res.TryCompose(Ghe.CommentSentiment.Positive, 43, new string('가', 50).AsSpan()));
+            Assert.InRange(res.LastReply.Length, 10, Ghe.GoldenHourSmartEngagementResponder.ReplyCap);
+            Assert.StartsWith("@" + new string('가', Ghe.GoldenHourSmartEngagementResponder.AuthorCap) + " ", res.LastReply.ToString());
+        }
+
+        // ── ENG-3: 15~45 s 지터 · 시간당 상한 쿨다운 ──
+        var g = new Ghe.EngagementVelocityAntiBotSafetyGuard(1234);
+        for (var i = 0; i < 2000; i++) Assert.InRange(g.NextJitterSec(), 15.0, 45.0);
+        g.Reset();
+        double now = T0, prevGrant = double.NaN;
+        var gaps = new System.Collections.Generic.HashSet<double>();
+        while (g.Granted < 30)
+        {
+            var d = g.TryAcquire(now, out var wait);
+            if (d == Ghe.VelocityDecision.Granted)
+            {
+                if (!double.IsNaN(prevGrant)) { Assert.InRange(now - prevGrant, 15.0, 46.0); gaps.Add(Math.Round(now - prevGrant)); }
+                prevGrant = now;
+            }
+            else Assert.True(d == Ghe.VelocityDecision.Jitter && wait > 0 && wait <= 45);
+            now += 1;
+        }
+        Assert.True(gaps.Count >= 5, "지터 간격 다양성 " + gaps.Count);   // 기계적 등간격 아님
+        Assert.InRange(g.MinJitterSeen, 15.0, 45.0);
+        Assert.InRange(g.MaxJitterSeen, 15.0, 45.0);
+        Assert.True(g.JitterDeferrals > 0);
+        now = g.NextAllowedUnix + 1;
+        Assert.Equal(Ghe.VelocityDecision.CoolDown, g.TryAcquire(now, out var cool));
+        Assert.True(g.CoolingDown && g.CoolDowns == 1 && cool > 0 && cool <= 3600);
+        Assert.Equal(Ghe.VelocityDecision.CoolDown, g.TryAcquire(now + 5, out _));
+        Assert.Equal(1, g.CoolDowns);   // 진입은 1 회만 카운트
+        Assert.Equal(30, g.CountInWindow(now));
+        Assert.Equal(Ghe.VelocityDecision.Granted, g.TryAcquire(now + cool + 0.001, out _));
+        Assert.False(g.CoolingDown);
+        g.HourlyCap = 1; Assert.Equal(Ghe.EngagementVelocityAntiBotSafetyGuard.MinHourlyCap, g.HourlyCap);
+        g.HourlyCap = 999; Assert.Equal(Ghe.EngagementVelocityAntiBotSafetyGuard.RingCap, g.HourlyCap);
+
+        // ── 무할당: 분류 · 답글 조합 · 허가 핫패스 ──
+        var spans = new string[cases.Length];
+        for (var i = 0; i < cases.Length; i++) spans[i] = cases[i].Text;
+        var hot = new Ghe.ZeroAllocCommentSentimentTriageEngine(new Ghe.SimulatedCommentModerationGateway());
+        var hg = new Ghe.EngagementVelocityAntiBotSafetyGuard();
+        for (var w = 0; w < 3; w++) for (var i = 0; i < spans.Length; i++) { hot.Triage(i, spans[i].AsSpan()); res.TryCompose(Ghe.CommentSentiment.Question, i, "민지".AsSpan()); hg.TryAcquire(T0 + i * 50, out _); }
+        var a0 = GC.GetAllocatedBytesForCurrentThread();
+        for (var k = 0; k < 200; k++)
+            for (var i = 0; i < spans.Length; i++)
+            {
+                hot.Triage(10_000 + k * 64 + i, spans[i].AsSpan());
+                res.TryCompose(Ghe.CommentSentiment.Positive, k + i, "jay_k".AsSpan());
+                hg.TryAcquire(T0 + 10_000 + (k * spans.Length + i) * 3.0, out _);
+            }
+        var alloc = GC.GetAllocatedBytesForCurrentThread() - a0;
+        Assert.True(alloc == 0, "골든아워 핫패스 할당 " + alloc);
+
+        // ── 러너 E2E: 업로드 → 60 s 내 고정 → 60 분 완주 · 상한 준수 ──
+        using var run = new Ghe.GoldenHourEngagementStudioRunner();
+        var changes = 0;
+        run.OnChange += () => changes++;
+        run.SetHourlyCap(30);
+        run.Upload();
+        Assert.True(run.Responder.PinnedInWindow);
+        run.InjectSpamRaid();
+        Assert.True(run.Triage.Hidden >= 6);
+        run.InjectQuestionFlood();
+        run.RunGoldenHour();
+        Assert.Equal(0, run.RemainingSec);
+        Assert.True(run.Replies > 0 && run.Replies <= 30, "답글 " + run.Replies);
+        Assert.True(run.HourlyCount <= run.Guard.HourlyCap);
+        Assert.True(run.Triage.Count(Ghe.CommentSentiment.Question) > 0 && run.Triage.Count(Ghe.CommentSentiment.Positive) > 0);
+        Assert.True(run.Guard.CoolDowns >= 1, "질문 폭주 → 쿨다운 진입");
+        Assert.True(run.LogCount > 0 && changes > 0);
+        run.Reset();
+        Assert.Equal(0, run.Triage.Scanned);
+        Assert.False(run.Responder.Uploaded);
+
+        // ── 카탈로그 · 도움말 결선(171) ──
+        var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
+        Assert.True(cat.Length >= 171);
+        Assert.Contains(cat, e => e.Key == "_goldenHourEngagement" && e.Category == 4);
+        Assert.NotNull(PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Find("_goldenHourEngagement"));
+        Assert.Equal(cat.Length, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
+        Assert.Equal(0, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects());
     }
 }

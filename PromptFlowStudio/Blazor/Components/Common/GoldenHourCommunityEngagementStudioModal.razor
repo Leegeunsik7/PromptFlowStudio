@@ -1,0 +1,229 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.GoldenHourEngagement
+@implements IDisposable
+@inject GoldenHourEngagementStudioRunner Runner
+
+@* [PromptFlow Studio v17.95.0] 💬 골든아워 댓글 & 인게이지먼트 부스터 — 실시간 댓글 감정 태그 · 자동 숨김 · 앵커 고정 댓글 편집 · 톤 맞춤 답글 · 시간당 발행 속도 게이지. *@
+<div class="ghe-scrim" @onclick="Close">
+    <div class="ghe-modal" @onclick:stopPropagation="true">
+        <div class="ghe-h">
+            <div>
+                <div class="ghe-title">💬 골든아워 댓글 &amp; 인게이지먼트 부스터</div>
+                <div class="ghe-sub">업로드 직후 <b>첫 60분</b> 동안 들어오는 댓글을 실시간으로 <b>긍정 · 질문 · 부정 · 스팸</b>으로 분류하고, 링크 도배 · 욕설 · 트롤링은 즉시 숨깁니다.
+                    업로드 <b>1분 이내</b> 시청자 투표를 묻는 고정 댓글을 올리고, 질문 · 호응 댓글에는 채널 톤에 맞춘 답글을 <b>15~45초</b> 무작위 간격 · 시간당 상한 안에서 자연스럽게 발행합니다.</div>
+            </div>
+            <div class="ghe-hr">
+                <span class="ghe-badge @(Runner.Responder.PinnedInWindow ? "ok" : Runner.Responder.Pinned ? "warn" : null)">📌 @(PinText())</span>
+                <span class="ghe-badge @(Runner.Guard.CoolingDown ? "bad" : Runner.Responder.Uploaded ? "ok" : null)">🛡️ @(Runner.Guard.CoolingDown ? "쿨다운" : "정상 속도") · @(Runner.HourlyCount)/@(Runner.Guard.HourlyCap)</span>
+                <span class="ghe-badge">⏱ 남은 @(GoldenHourEngagementStudioRunner.Mmss(Runner.RemainingSec))</span>
+                <button class="ghe-x" @onclick="Close">✕</button>
+            </div>
+        </div>
+
+        <div class="ghe-body">
+            <div class="ghe-bar">
+                <button class="ghe-btn go" @onclick="Upload">🎬 업로드 · 골든아워 시작</button>
+                <button class="ghe-btn" @onclick="Step1">⏩ +1분</button>
+                <button class="ghe-btn" @onclick="Step10">⏩ +10분</button>
+                <button class="ghe-btn" @onclick="RunHour">⏭ 60분 골든아워 완주</button>
+                <span class="ghe-sep"></span>
+                <button class="ghe-btn" @onclick="ResetAll">♻ 초기화</button>
+            </div>
+            <div class="ghe-bar">
+                <button class="ghe-btn @(Runner.AutoReply ? "on" : null)" aria-pressed="@(Runner.AutoReply ? "true" : "false")" @onclick="ToggleAuto">🤖 자동 답글: @(Runner.AutoReply ? "ON" : "OFF")</button>
+                <label class="ghe-lbl">🎭 채널 톤
+                    <select class="ghe-sel" value="@(((int)Runner.Responder.Tone).ToString(CultureInfo.InvariantCulture))" @onchange="OnTone">
+                        <option value="0">공감형</option>
+                        <option value="1">안내형</option>
+                        <option value="2">유쾌형</option>
+                    </select>
+                </label>
+                <label class="ghe-lbl">🛡️ 시간당 상한 <b>@(Runner.Guard.HourlyCap)</b>
+                    <input type="range" min="10" max="60" step="5" value="@(Runner.Guard.HourlyCap.ToString(CultureInfo.InvariantCulture))" @onchange="OnCap" />
+                </label>
+                <span class="ghe-sep"></span>
+                <button class="ghe-btn pick" @onclick="Raid">🚨 스팸 공습 주입</button>
+                <button class="ghe-btn pick" @onclick="Flood">❓ 질문 폭주 주입</button>
+                <button class="ghe-btn pick" @onclick="Fail">🧪 게이트웨이 503 주입</button>
+            </div>
+
+            <div class="ghe-main">
+                <div class="ghe-card">
+                    <div class="ghe-sec">💬 실시간 댓글 스트림 · 감정 태그 <span class="ghe-kw">최근 @(Runner.RowCount)건 · 답글 대기 @(Runner.QueueCount)</span></div>
+                    <div class="ghe-stream">
+                        @if (Runner.RowCount == 0)
+                        {
+                            <div class="ghe-mini">아직 댓글이 없습니다 — 「🎬 업로드 · 골든아워 시작」 후 「⏩ +1분」을 눌러 댓글 스트림을 흘려 보세요.</div>
+                        }
+                        @for (var i = 0; i < Runner.RowCount; i++)
+                        {
+                            var r = Runner.Row(i);
+                            <div class="ghe-row @(r.Hidden ? "hid" : null)">
+                                <span class="ghe-tag s@((int)r.Sentiment)">@(ZeroAllocCommentSentimentTriageEngine.SentimentName(r.Sentiment))</span>
+                                <span class="ghe-au">@(GoldenHourEngagementStudioRunner.PoolAuthors[r.Pool])</span>
+                                <span class="ghe-tx">@(GoldenHourEngagementStudioRunner.PoolTexts[r.Pool])</span>
+                                <span class="ghe-st">@(r.Hidden ? "🛡️ 숨김 · " + ZeroAllocCommentSentimentTriageEngine.HideReasonText(r.Hide) : r.Replied ? "↩️ 답글" : r.Queued ? "⏳ 대기" : "")</span>
+                            </div>
+                        }
+                    </div>
+                </div>
+                <div class="ghe-card">
+                    <div class="ghe-sec">📌 고정 댓글 템플릿 <span class="ghe-kw">@(Runner.Responder.PinnedTemplate.Length)/@(GoldenHourSmartEngagementResponder.ReplyCap)자 · 시도 @(Runner.Responder.PinAttempts)회</span></div>
+                    <textarea class="ghe-ta" rows="4" aria-label="고정 댓글 템플릿" value="@(Runner.Responder.PinnedTemplate)" @oninput="OnTemplate"></textarea>
+                    <div class="ghe-bar">
+                        <button class="ghe-btn sm" @onclick="Republish">📌 고정 댓글 재발행</button>
+                        <span class="ghe-mini">업로드 후 @(GoldenHourSmartEngagementResponder.PinWindowSec)초 안에 고정되면 초록 뱃지로 표시됩니다.</span>
+                    </div>
+                    <div class="ghe-sec">↩️ 최근 답글 미리보기 <span class="ghe-kw">@(GoldenHourSmartEngagementResponder.ToneName(Runner.Responder.Tone)) · 조합 @(Runner.Responder.Composed)회</span></div>
+                    <div class="ghe-out">@(Runner.Responder.Composed == 0 ? "아직 생성된 답글이 없습니다." : Runner.Responder.LastReply.ToString())</div>
+
+                    <div class="ghe-sec">⚡ 시간당 답글 발행 속도 <span class="ghe-kw">지터 @(Runner.Guard.LastJitterSec.ToString("0.0", CultureInfo.InvariantCulture))s · 범위 @(EngagementVelocityAntiBotSafetyGuard.JitterMinSec)~@(EngagementVelocityAntiBotSafetyGuard.JitterMaxSec)s</span></div>
+                    <div class="ghe-gauge"><div class="ghe-gf @(Runner.HourlyRatio >= 1f ? "end" : Runner.HourlyRatio >= 0.7f ? "mid" : null)" style="width:@(Math.Min(100f, Runner.HourlyRatio * 100f).ToString("0.0", CultureInfo.InvariantCulture))%"></div></div>
+                    <div class="ghe-grid">
+                        <div class="m"><b>@(Runner.HourlyCount)/@(Runner.Guard.HourlyCap)</b><i>최근 1시간 답글</i></div>
+                        <div class="m"><b>@(Runner.Guard.JitterDeferrals)</b><i>지터 대기</i></div>
+                        <div class="m"><b class="@(Runner.Guard.CoolDowns > 0 ? "bad" : null)">@(Runner.Guard.CoolDowns)</b><i>쿨다운 진입</i></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="ghe-card">
+                <div class="ghe-sec">📊 감정 분포 · 필터 <span class="ghe-kw">스캔 @(Runner.Triage.Scanned)건</span></div>
+                <div class="ghe-grid six">
+                    @for (var s = 0; s < 5; s++)
+                    {
+                        var cs = (CommentSentiment)s;
+                        <div class="m"><b class="ghe-c s@(s)">@(Runner.Triage.Count(cs))</b><i>@(ZeroAllocCommentSentimentTriageEngine.SentimentName(cs))</i></div>
+                    }
+                    <div class="m"><b class="@(Runner.Triage.Hidden > 0 ? "bad" : null)">@(Runner.Triage.Hidden) · 실패 @(Runner.Triage.HideFailures)</b><i>자동 숨김</i></div>
+                    <div class="m"><b>@(Runner.Replies) · 실패 @(Runner.ReplyFailures)</b><i>답글 발행</i></div>
+                    <div class="m"><b>@(Runner.Gateway.Pins)</b><i>고정 발행</i></div>
+                    <div class="m"><b>@(Runner.Triage.DuplicateSkips)</b><i>중복 차단</i></div>
+                    <div class="m"><b>@(Runner.QueueDrops)</b><i>큐 초과 폐기</i></div>
+                    <div class="m"><b>@(Runner.Gateway.Calls)</b><i>게이트웨이 호출</i></div>
+                </div>
+            </div>
+
+            <div class="ghe-card">
+                <div class="ghe-sec">📜 인게이지먼트 로그 <span class="ghe-kw">@(Runner.LogCount)건</span></div>
+                <div class="ghe-log">
+                    @if (Runner.LogCount == 0)
+                    {
+                        <div class="ghe-mini">아직 기록이 없습니다 — 「🎬 업로드 · 골든아워 시작」 후 「⏭ 60분 골든아워 완주」를 눌러 보세요.</div>
+                    }
+                    @for (var i = 0; i < Runner.LogCount; i++)
+                    {
+                        var line = Runner.Log(i);
+                        <div class="ghe-ll @(line.Contains('⚠') || line.Contains("🧊", StringComparison.Ordinal) ? "bad" : line.Contains("📌", StringComparison.Ordinal) || line.Contains("↩️", StringComparison.Ordinal) ? "ok" : null)">@(line)</div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="ghe-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+    </div>
+</div>
+
+<style>
+    .ghe-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .ghe-modal { width: min(1240px, 96vw); max-height: 94vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); color: var(--text-primary); }
+    .ghe-h { position: sticky; top: 0; z-index: 3; flex: 0 0 auto; display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px 8px; background: var(--card); border-bottom: 1px solid var(--line); }
+    .ghe-hr { display: flex; align-items: flex-start; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+    .ghe-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 10px; }
+    .ghe-act { position: sticky; bottom: 0; z-index: 3; flex: 0 0 auto; padding: 8px 16px 14px; background: var(--card); border-top: 1px solid var(--line); font-size: 11px; color: var(--text-muted); }
+    .ghe-title { font-size: 17px; font-weight: 800; }
+    .ghe-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .ghe-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .ghe-badge { white-space: nowrap; font-size: 11.5px; font-weight: 700; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: #1e293b; }
+    .ghe-badge.ok { border-color: #22c55e; background: #14532d; color: #bbf7d0; }
+    .ghe-badge.warn { border-color: #f59e0b; background: #422006; color: #fde68a; }
+    .ghe-badge.bad { border-color: #ef4444; background: #450a0a; color: #fecaca; }
+    .ghe-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 0; }
+    .ghe-sep { flex: 1; }
+    .ghe-lbl { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-muted); }
+    .ghe-sel { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font-size: 11.5px; }
+    .ghe-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .ghe-btn.sm { padding: 3px 8px; font-size: 11px; }
+    .ghe-btn.go { border-color: #38bdf8; font-weight: 700; }
+    .ghe-btn.on { border-color: #38bdf8; background: #0c4a6e; }
+    .ghe-btn.pick { border-color: #facc15; }
+    .ghe-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-width: 0; margin-top: 10px; }
+    .ghe-sec { font-size: 12.5px; font-weight: 700; margin: 8px 0 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .ghe-sec:first-child { margin-top: 0; }
+    .ghe-kw { margin-left: auto; font-size: 10.5px; font-weight: 400; color: #7dd3fc; }
+    .ghe-main { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 10px; }
+    .ghe-stream { max-height: 360px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; }
+    .ghe-row { display: flex; align-items: center; gap: 6px; padding: 3px 6px; border-radius: 6px; background: #111827; font-size: 11.5px; min-width: 0; }
+    .ghe-row.hid { opacity: .55; background: #2a0b0b; }
+    .ghe-row.hid .ghe-tx { text-decoration: line-through; }
+    .ghe-tag { flex: 0 0 auto; font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: #1e293b; }
+    .ghe-tag.s1 { background: #14532d; color: #bbf7d0; } .ghe-tag.s2 { background: #0c4a6e; color: #bae6fd; } .ghe-tag.s3 { background: #422006; color: #fde68a; } .ghe-tag.s4 { background: #450a0a; color: #fecaca; }
+    .ghe-c.s1 { color: #4ade80; } .ghe-c.s2 { color: #38bdf8; } .ghe-c.s3 { color: #fbbf24; } .ghe-c.s4 { color: #f87171; }
+    .ghe-au { flex: 0 0 auto; font-weight: 700; color: #c4b5fd; }
+    .ghe-tx { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ghe-st { flex: 0 0 auto; font-size: 10.5px; color: var(--text-muted); }
+    .ghe-ta { width: 100%; box-sizing: border-box; resize: vertical; background: #111827; color: var(--text-primary); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font-size: 12px; line-height: 1.45; }
+    .ghe-out { padding: 6px 8px; background: #111827; border-radius: 6px; font-size: 11.5px; line-height: 1.45; }
+    .ghe-gauge { height: 12px; border-radius: 999px; background: #1e293b; overflow: hidden; margin-bottom: 8px; }
+    .ghe-gf { height: 100%; background: #22c55e; transition: width .2s; }
+    .ghe-gf.mid { background: #facc15; } .ghe-gf.end { background: #ef4444; }
+    .ghe-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+    .ghe-grid.six { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+    .ghe-grid .m { background: #111827; border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; }
+    .ghe-grid .m b { font-size: 12.5px; } .ghe-grid .m b.bad { color: #f87171; }
+    .ghe-grid .m i { font-style: normal; font-size: 10px; color: var(--text-muted); }
+    .ghe-log { max-height: 240px; overflow-y: auto; font-family: var(--mono); font-size: 10.5px; display: flex; flex-direction: column; gap: 2px; }
+    .ghe-ll { padding: 1px 4px; border-radius: 4px; background: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ghe-ll.ok { color: #bbf7d0; } .ghe-ll.bad { color: #fecaca; background: #2a0b0b; }
+    .ghe-mini { font-size: 10px; color: var(--text-muted); }
+    @@media (max-width: 1000px) { .ghe-main { grid-template-columns: 1fr; } .ghe-grid.six { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    protected override void OnInitialized() => Runner.OnChange += OnServiceChanged;
+
+    private void Upload() => Guard(Runner.Upload, "Upload");
+    private void Step1() => Guard(() => Runner.Advance(60), "Step1");
+    private void Step10() => Guard(() => Runner.Advance(600), "Step10");
+    private void RunHour() => Guard(Runner.RunGoldenHour, "RunHour");
+    private void Raid() => Guard(Runner.InjectSpamRaid, "Raid");
+    private void Flood() => Guard(Runner.InjectQuestionFlood, "Flood");
+    private void Fail() => Runner.InjectGatewayFailure();
+    private void Republish() => Guard(Runner.RepublishPinned, "Republish");
+    private void ToggleAuto() => Runner.ToggleAutoReply();
+    private void ResetAll() => Runner.Reset();
+
+    private void OnTemplate(ChangeEventArgs e) => Runner.SetTemplate(e.Value?.ToString());
+
+    private void OnTone(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var t) && t is >= 0 and <= 2) Runner.SetTone((ChannelTone)t);
+    }
+
+    private void OnCap(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var c)) Runner.SetHourlyCap(c);
+    }
+
+    private static void Guard(Action a, string tag)
+    {
+        try { a(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("GoldenHourEngagement.Modal." + tag, ex); }
+    }
+
+    private string PinText()
+    {
+        var r = Runner.Responder;
+        if (!r.Uploaded) return "업로드 대기";
+        if (!r.Pinned) return "고정 대기 · 시도 " + r.PinAttempts.ToString(CultureInfo.InvariantCulture);
+        return (r.PinnedInWindow ? "고정 완료 +" : "지연 고정 +") + r.PinDelaySec.ToString("0", CultureInfo.InvariantCulture) + "s";
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Runner.OnChange -= OnServiceChanged;
+}

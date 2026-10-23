@@ -1,18 +1,17 @@
 # Current Project Status
-- Active Milestone: v17.94.0 완료 (Complete) — 프로덕션 플랫폼 비지빌리티 게이트웨이 & 실시간 텔레메트리 스튜디오
+- Active Milestone: v17.95.0 완료 (Complete) — 골든아워 댓글 감정 분석 & 커뮤니티 인게이지먼트 부스터 스튜디오
 - Build Status: Desktop Release -warnaserror 0/0 · net8.0-ios Release -warnaserror 0/0 · net8.0-android 미검증(SDK/JDK 미설치)
-- Test Suite: 506 전량 회귀(단일 CPU · MaxCpuCount=1 · DisableParallelization) 505 통과 + 부하 타이밍 간헐 1 → `DistributedGpuCluster_And_CloudRenderingSwarm_Check`(v17.87 이후 동일) 격리 재실행 3/3 통과
-- Sidebar: 7대 카테고리 · 170 엔트리 · 도움말 170/170 결함 0 · 크롤러 170 마운트 결함 0
+- Test Suite: 507 전량 회귀(단일 CPU · MaxCpuCount=1 · DisableParallelization) 505 통과 + 2 → ① v17.94 카탈로그 170 고정 단언(증가 허용 `>=` 로 완화 후 통과) ② 부하 타이밍 간헐 `GaussianSplatting_And_FrustumCulling_Check`(60fps 16.94 ms) 격리 재실행 3/3 통과
+- Sidebar: 7대 카테고리 · 171 엔트리 · 도움말 171/171 결함 0 · 크롤러 171 마운트 결함 0
 - Updated At: 2026-10-23 (KST)
 
 ## Completed Deliverables
-- PVG-1: `Services/PlatformVisibility/ProductionPlatformVisibilityGatewayEngine` — v17.93 `IVideoVisibilityGateway` 실체 · YouTube `PUT videos?part=status`(public/unlisted/private) · `DELETE videos` · IG Graph 숨김(comment_enabled)/삭제/조회 · ID 스키마 검증 · 2xx 응답 스키마 확정 · 재사용 버퍼 무할당 · `PROMPTFLOW_PVG_LIVE=1` 미설정 시 `PlatformApiContractSimulator` 결정적 폴백
-- PVG-2: `TokenLifecycleRateLimitBackoffGuard` — 만료 5 분 전 갱신(v17.79 볼트 결선 `VaultPlatformTokenSource` · 401 재발급) · 429/Graph 4·17·32·613 지수 백오프(1.5 s×2ⁿ⁻¹ · 상한 30 s · 지터 ≤25 % · Retry-After 우선) · 일일 쿼터(YT 10k units · IG 4.8k) 90 % 안전 정지 · quotaExceeded 당일 소진
-- PVG-3: `RealtimeTimeseriesMetricPollingEngine` — 5 분 간격 `videos.list?part=statistics` 50 ID 일괄 + Analytics 완청률 · IG insights → 분당 유속 링(19) 무할당 → v17.93 스플릿 테스터 피딩
-- PVG-4: `PlatformVisibilityGatewayStudioModal` + 러너(연결 뱃지 · 쿼터 바 · 영상별 수동 전환 · 유속 SVG · 429/쿼터/토큰 주입) · 카탈로그 `_platformVisibilityGateway`(4번) · 도움말 · HUD `gth-v1794`(`PvgRun`) · DI 양쪽 · `GraphHttpMethod.Delete` 추가 · OAuth 스코프 force-ssl/yt-analytics/instagram_manage_insights 추가
-- PVG-5: `ProductionPlatformVisibilityGateway_And_Telemetry_Check`(TimingSensitive · Mock HttpHandler 실 HttpClient 경로) · v17.93 카탈로그 단언 증가 허용
+- ENG-1: `Services/GoldenHourEngagement/ZeroAllocCommentSentimentTriageEngine` — Span 정적 어휘 사전 긍정/질문/부정/스팸 스코어 · 링크 도배(2+ 또는 스캠 동반) · 욕설 · 트롤 · 문자 도배(웃음 자모 30 허용) · 스캠 → `ICommentModerationGateway.HideComment` 즉시 숨김 · 64 링 중복 차단 · 실패 격리 · 핫패스 할당 0
+- ENG-2: `GoldenHourSmartEngagementResponder` — 업로드 60 s 내 앵커 투표 고정 댓글(실패 시 다음 틱 재시도 · 지연 고정 구분) · 공감/안내/유쾌 톤 × 3 변형 답글 280 자 고정 char 버퍼 조합(무할당)
+- ENG-3: `EngagementVelocityAntiBotSafetyGuard` — xorshift 15~45 s 지터(0.1 s 해상도) · 3600 s 슬라이딩 창 시간당 상한(기본 30 · 5~64) 도달 시 쿨다운 · 판정 무할당
+- ENG-4: `GoldenHourCommunityEngagementStudioModal` + `GoldenHourEngagementStudioRunner`(댓글 스트림 감정 태그 · 고정 템플릿 편집 · 톤/상한 · 속도 게이지 · 스팸 공습/질문 폭주/503 주입) · 카탈로그 `_goldenHourEngagement`(4번) · 도움말 · HUD `gth-v1795`(`GheRun`) · DI 양쪽
+- ENG-5: `GoldenHourCommentEngagement_And_Sentiment_Check`(TimingSensitive)
 
 ## Known Issues / 환경 노트
-- 실 엔드포인트 미호출 검증(계약 시뮬레이터 + Mock HttpHandler) — 실 계정 연동은 `PROMPTFLOW_PVG_LIVE=1` + v17.79 볼트 재인증(스코프 추가) 필요
-- IG Graph API 공식 비공개 전환 부재 → 비공개 요청은 댓글 잠금 숨김으로 대체
+- 댓글 게이트웨이는 인메모리 시뮬(`SimulatedCommentModerationGateway`) — 실 YouTube `comments.setModerationStatus` / IG `hide` 결선은 v17.94 게이트웨이 토큰 경로 확장 필요
 - GUI 육안 미검증 · Android 빌드 미검증

@@ -285,6 +285,7 @@
 @inject PromptFlowStudio.Services.MasterPipeline.MasterPipelineRealRunnerStudioRunner MrrRun
 @inject PromptFlowStudio.Services.PostPublishSplitTest.PostPublishSplitTestStudioRunner PstRun
 @inject PromptFlowStudio.Services.PlatformVisibility.PlatformVisibilityGatewayStudioRunner PvgRun
+@inject PromptFlowStudio.Services.GoldenHourEngagement.GoldenHourEngagementStudioRunner GheRun
 @inject PromptFlowStudio.Services.LiveEngagement.LiveAudienceEngagementStudioRunner LaeRun
 @inject PromptFlowStudio.Services.LiveRestream.OmniLiveRestreamStudioRunner RstRun
 @inject PromptFlowStudio.Services.MultilingualDubbing.MultilingualDubbingStudioRunner MldRun
@@ -1010,6 +1011,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+    @* ── v17.95.0: 골든아워 댓글 부스터 — 고정 댓글 · 숨김 · 답글 · 시간당 속도 ── *@
+    <div class="gth-v1795">
+        <div class="gth-v96-card pid @(GheRun.Responder.PinnedInWindow ? "ok" : null)">
+            <div class="gth-v96-h"><b>💬 골든아워 부스터</b>
+                <span class="gth-v96-be">@(GheRun.Guard.CoolingDown ? "쿨다운" : PromptFlowStudio.Services.GoldenHourEngagement.GoldenHourSmartEngagementResponder.ToneName(GheRun.Responder.Tone))</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(GheRun.Triage.Scanned)</b><span>분류</span></span>
+                <span class="gth-v96-m"><b>@(GheRun.Triage.Hidden)</b><span>숨김</span></span>
+                <span class="gth-v96-m"><b>@(GheRun.Replies)</b><span>답글</span></span>
+                <span class="gth-v96-m"><b>@(GheRun.HourlyCount)/@(GheRun.Guard.HourlyCap)</b><span>시간당</span></span>
+            </div>
+            <div class="gth-v96-act">@(GheRun.LastAction ?? "골든아워 대기 · 고정 " + (GheRun.Responder.Pinned ? "완료" : "미발행"))</div>
+        </div>
+    </div>
     @* ── v17.94.0: 플랫폼 비지빌리티 게이트웨이 — 모드 · YouTube 쿼터 · 토큰 갱신 · 백오프 · 표본 ── *@
     <div class="gth-v1794">
         <div class="gth-v96-card pid @(PvgRun.Connected(PromptFlowStudio.Services.LivePublish.LiveProvider.YouTube) ? "ok" : null)">
@@ -5874,6 +5890,7 @@
         KbrRun.OnChange += OnSwarmChanged; // v17.78.0 (재생 10 Hz → 250 ms 스로틀)
         VrpRun.OnChange += OnSwarmChanged; // v17.88.0 (파이프라인 시작/완료 시점만)
         PstRun.OnChange += OnSwarmChanged; // v17.93.0 (조작 · 틱 일괄 시점만)
+        GheRun.OnChange += OnSwarmChanged; // v17.95.0 (조작 · 틱 일괄 시점만)
         PvgRun.OnChange += OnSwarmChanged; // v17.94.0 (조작 · 폴링 일괄 시점만)
         MrrRun.OnChange += OnSwarmChanged; // v17.92.0 (스테이지 시작 250 ms 스로틀 · 완료/인터락/패키지 즉시)
         CpyRun.OnChange += OnSwarmChanged; // v17.91.0 (재생 헤드 100 ms → 250 ms 스로틀 · 검역 시작/완료 즉시)
@@ -6272,6 +6289,7 @@
         CpyRun.OnChange -= OnSwarmChanged;
         MrrRun.OnChange -= OnSwarmChanged;
         PstRun.OnChange -= OnSwarmChanged;
+        GheRun.OnChange -= OnSwarmChanged;
         PvgRun.OnChange -= OnSwarmChanged;
         NavRun.OnChange -= OnSwarmChanged;
         LavRun.OnChange -= OnSwarmChanged;
