@@ -176,6 +176,7 @@ using Ovg = PromptFlowStudio.Services.OmniViral;
 using Cpy = PromptFlowStudio.Services.CopyrightCompliance;
 using Mrr = PromptFlowStudio.Services.MasterPipeline;
 using Pst = PromptFlowStudio.Services.PostPublishSplitTest;
+using Pvg = PromptFlowStudio.Services.PlatformVisibility;
 
 namespace PromptFlowStudio.Tests;
 
@@ -36115,11 +36116,11 @@ public sealed class PostPublishSplitTestIsolatedTests
             Assert.Equal(Pst.PostPublishSplitTestStudioRunner.MaxStaggerMin, run.StaggerMinutes);
         }
 
-        // ── PST-4: 카탈로그 169 · 도움말 · HUD · 레이아웃 · DI · 모달 규격 · 외부 의존 0 · 모달 렌더 ──
+        // ── PST-4: 카탈로그 169+ · 도움말 · HUD · 레이아웃 · DI · 모달 규격 · 외부 의존 0 · 모달 렌더 ──
         var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
-        Assert.Equal(169, cat.Length);
+        Assert.True(cat.Length >= 169);   // v17.94.0 이후 카탈로그 증가 허용
         Assert.Contains(cat, en => en.Key == "_postPublishSplitTest" && en.Category == 4 && en.Title == "포스트-퍼블리시 A/B & 패자 회수기");
-        Assert.Equal(169, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
+        Assert.Equal(cat.Length, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
         Assert.Equal(0, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects());
         Assert.Equal("_postPublishSplitTest", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.ResolveKeyByHeader("⚖️ 포스트-퍼블리시 A/B & 패자 회수기 · 추적 중"));
         var root = RepoRoot();
@@ -36142,6 +36143,288 @@ public sealed class PostPublishSplitTestIsolatedTests
         runner.Advance(30);
         var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.PostPublishSplitTestStudioModal), sp);
         Assert.True(html.Length > 500 && html.Contains("pst-scrim", StringComparison.Ordinal) && html.Contains("pst-body", StringComparison.Ordinal) && html.Contains("A/B 분기 배포", StringComparison.Ordinal) && html.Contains("pst-pa", StringComparison.Ordinal) && html.Contains("강제 승자", StringComparison.Ordinal), "모달 렌더 " + html.Length);
+        Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+    }
+
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "build_titan_release.ps1"))) dir = dir.Parent;
+        return dir?.FullName ?? throw new DirectoryNotFoundException("저장소 루트를 찾지 못함");
+    }
+}
+
+[Collection("TimingSensitivePerformance")]   // 스레드 할당 바이트 계측(가시성 전환 · 폴링 라운드) → 비병렬
+public sealed class PlatformVisibilityGatewayIsolatedTests
+{
+    private const double T0 = 1_800_000_000;
+
+    private sealed class VClock { public double Now = T0; }
+
+    /// <summary>인메모리 Mock HttpHandler — 실제 HttpClient 요청(메서드 · URL · 헤더 · 본문)을 계약 시뮬레이터로 중계하고 원문을 기록.</summary>
+    private sealed class SimHandler : HttpMessageHandler
+    {
+        public readonly Pvg.PlatformApiContractSimulator Sim;
+        public readonly System.Collections.Generic.List<string> Requests = new();
+        public string LastBody = "", LastAuth = "";
+        public SimHandler(Func<double> clock) => Sim = new Pvg.PlatformApiContractSimulator(clock);
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage req, CancellationToken ct)
+        {
+            var body = req.Content is null ? Array.Empty<byte>() : await req.Content.ReadAsByteArrayAsync(ct);
+            LastBody = System.Text.Encoding.UTF8.GetString(body);
+            LastAuth = req.Headers.TryGetValues("Authorization", out var av) ? string.Join(",", av) : "";
+            var url = req.RequestUri!.OriginalString;
+            Requests.Add(req.Method.Method + " " + url);
+            var hdr = System.Text.Encoding.UTF8.GetBytes(LastAuth.Length > 0 ? "Authorization: " + LastAuth + "\r\n" : "");
+            var m = req.Method == HttpMethod.Put ? Gb.GraphHttpMethod.Put : req.Method == HttpMethod.Post ? Gb.GraphHttpMethod.Post : req.Method == HttpMethod.Delete ? Gb.GraphHttpMethod.Delete : Gb.GraphHttpMethod.Get;
+            var resp = new Gb.GraphResponseBuffer();
+            var st = await Sim.SendAsync(m, System.Text.Encoding.UTF8.GetBytes(url), hdr, body, resp, ct);
+            var r = new HttpResponseMessage((System.Net.HttpStatusCode)st) { Content = new ByteArrayContent(resp.Body, 0, resp.Length) };
+            if (resp.RetryAfterSec > 0) r.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(resp.RetryAfterSec));
+            return r;
+        }
+    }
+
+    private static Pvg.TokenLifecycleRateLimitBackoffGuard NewGuard(VClock c, out Pvg.SimulatedPlatformTokenSource tokens)
+    {
+        tokens = new Pvg.SimulatedPlatformTokenSource();
+        return new Pvg.TokenLifecycleRateLimitBackoffGuard(tokens) { Delay = (sec, _) => { c.Now += sec; return default; } };
+    }
+
+    [Fact]
+    public async Task ProductionPlatformVisibilityGateway_And_Telemetry_Check()
+    {
+        // ── PVG-1: 실 HttpClient 경로(Mock HttpHandler) — YouTube videos.update/delete · IG 숨김/삭제 API 계약 ──
+        var c = new VClock();
+        var handler = new SimHandler(() => c.Now);
+        using (var guard = NewGuard(c, out var tokens))
+        using (var http = new Gb.HttpGraphTransport(handler))
+        using (var gw = new Pvg.ProductionPlatformVisibilityGatewayEngine(guard, () => c.Now, liveEndpoints: true, liveTransport: http))
+        {
+            Assert.True(gw.LiveEndpoints && gw.ModeName == "LIVE" && ReferenceEquals(gw.Transport, http));
+            handler.Sim.Seed(Lp.LiveProvider.YouTube, "ytVideo00A1", T0, true);
+            handler.Sim.Seed(Lp.LiveProvider.Instagram, "17940000000001", T0, true);
+            Assert.Equal(-1, gw.Bind(Lp.LiveProvider.YouTube, "bad/../id?x=1", 1, Pst.SplitVariant.A, 0));   // URL 주입 차단
+            var yt = gw.Bind(Lp.LiveProvider.YouTube, "ytVideo00A1", 9401, Pst.SplitVariant.A, 0);
+            var ig = gw.Bind(Lp.LiveProvider.Instagram, "17940000000001", 9401, Pst.SplitVariant.B, 1);
+            Assert.Equal(yt, gw.Bind(Lp.LiveProvider.YouTube, "ytVideo00A1", 9401, Pst.SplitVariant.A, 0));   // 중복 결선 = 같은 슬롯
+            Assert.True(yt >= 0 && ig >= 0 && gw.BindingCount == 2 && gw.SchemaRejections == 1);
+
+            Pst.IVideoVisibilityGateway contract = gw;
+            Assert.Equal(200, contract.Apply(9401, 0, Pst.SplitVariant.A, Pst.PruneAction.Private));
+            Assert.Equal("PUT https://www.googleapis.com/youtube/v3/videos?part=status", handler.Requests[^1]);
+            Assert.True(handler.LastBody == "{\"id\":\"ytVideo00A1\",\"status\":{\"privacyStatus\":\"private\"}}" && handler.LastAuth == "Bearer sim-yt-1", handler.LastBody + " | " + handler.LastAuth);
+            Assert.True(gw.Binding(yt).Visibility == Pvg.VideoVisibility.Private && handler.Sim.StateOf(Lp.LiveProvider.YouTube, "ytVideo00A1") == Pvg.VideoVisibility.Private && gw.Privates == 1);
+            var calls = handler.Requests.Count;
+            Assert.Equal(200, contract.Apply(9401, 0, Pst.SplitVariant.A, Pst.PruneAction.Private));   // 이미 비공개 → 호출 생략
+            Assert.True(handler.Requests.Count == calls && gw.DuplicateSkips == 1);
+            Assert.Equal(200, await gw.ApplyAsync(yt, Pvg.VideoVisibility.Public));
+            Assert.True(handler.LastBody.Contains("\"privacyStatus\":\"public\"", StringComparison.Ordinal) && gw.Binding(yt).Visibility == Pvg.VideoVisibility.Public);
+            Assert.Equal(200, await gw.RefreshStatusAsync(yt));
+            Assert.Equal("GET https://www.googleapis.com/youtube/v3/videos?part=status&id=ytVideo00A1", handler.Requests[^1]);
+
+            Assert.Equal(200, contract.Apply(9401, 1, Pst.SplitVariant.B, Pst.PruneAction.Private));
+            Assert.Equal("POST https://graph.facebook.com/v21.0/17940000000001?comment_enabled=false", handler.Requests[^1]);
+            Assert.True(handler.LastAuth == "Bearer sim-ig-2" && gw.Binding(ig).Visibility == Pvg.VideoVisibility.Hidden && gw.Hides == 1);
+            Assert.Equal(422, await gw.ApplyAsync(ig, Pvg.VideoVisibility.Unlisted));   // IG 일부 공개 없음
+
+            Assert.Equal(204, await gw.ApplyAsync(yt, Pvg.VideoVisibility.Deleted));
+            Assert.Equal("DELETE https://www.googleapis.com/youtube/v3/videos?id=ytVideo00A1", handler.Requests[^1]);
+            Assert.True(gw.Binding(yt).Visibility == Pvg.VideoVisibility.Deleted && handler.Sim.StateOf(Lp.LiveProvider.YouTube, "ytVideo00A1") == Pvg.VideoVisibility.Deleted);
+            Assert.Equal(410, await gw.ApplyAsync(yt, Pvg.VideoVisibility.Public));   // 삭제 후 전환 차단
+            Assert.Equal(200, contract.Apply(9401, 1, Pst.SplitVariant.B, Pst.PruneAction.Delete));
+            Assert.True(handler.Requests[^1] == "DELETE https://graph.facebook.com/v21.0/17940000000001" && gw.Binding(ig).Visibility == Pvg.VideoVisibility.Deleted && gw.Deletes == 2);
+            Assert.Equal(404, contract.Apply(1, 0, Pst.SplitVariant.A, Pst.PruneAction.Private));   // 미결선
+            Assert.True(tokens.Issued == 2 && guard.QuotaUsed(Lp.LiveProvider.YouTube) == 50 + 50 + 1 + 50 && guard.QuotaUsed(Lp.LiveProvider.Instagram) == 2);
+        }
+
+        // ── PVG-2: 토큰 만료 5 분 전 갱신 · 401 재발급 · 429 지수 백오프 · Retry-After · 쿼터 안전 정지(시뮬 폴백) ──
+        c = new VClock();
+        using (var guard = NewGuard(c, out var tokens))
+        using (var gw = new Pvg.ProductionPlatformVisibilityGatewayEngine(guard, () => c.Now, liveEndpoints: false))
+        {
+            Assert.True(!gw.LiveEndpoints && gw.Transport is Pvg.PlatformApiContractSimulator);
+            gw.Simulator.Seed(Lp.LiveProvider.YouTube, "ytVideo00B1", T0, true);
+            gw.Simulator.Seed(Lp.LiveProvider.Instagram, "17940000000002", T0, true);
+            var yt = gw.Bind(Lp.LiveProvider.YouTube, "ytVideo00B1", 9402, Pst.SplitVariant.A, 0);
+            var ig = gw.Bind(Lp.LiveProvider.Instagram, "17940000000002", 9402, Pst.SplitVariant.B, 1);
+
+            Assert.True(guard.EnsureToken(Lp.LiveProvider.YouTube, T0) && tokens.Issued == 1 && guard.ExpiresAt(Lp.LiveProvider.YouTube) == T0 + 3600);
+            guard.Tick(T0 + 3600 - 301);
+            Assert.Equal(0, guard.BackgroundRefreshes);   // 5 분 1 초 전 = 아직
+            guard.Tick(T0 + 3600 - 299);
+            Assert.True(guard.BackgroundRefreshes == 1 && guard.Refreshes == 2 && guard.ExpiresAt(Lp.LiveProvider.YouTube) == T0 + 3600 - 299 + 3600, "5 분 전 자동 갱신");
+            Assert.False(guard.HasToken(Lp.LiveProvider.Instagram));   // 미보유 플랫폼은 첫 요청 시 지연 발급
+            tokens.InjectFailures(1);
+            guard.ForceExpiry(Lp.LiveProvider.YouTube, T0 + 10);
+            guard.Tick(T0);
+            Assert.Equal(1, guard.RefreshFailures);
+            guard.Tick(T0);
+            Assert.True(guard.Refreshes == 3 && guard.SecondsLeft(Lp.LiveProvider.YouTube, T0) == 3600);
+            guard.Invalidate(Lp.LiveProvider.YouTube);
+            Assert.Equal(200, await gw.ApplyAsync(yt, Pvg.VideoVisibility.Unlisted));   // 토큰 폐기 → 요청 직전 재발급
+            Assert.True(guard.Refreshes == 4 && gw.Binding(yt).Visibility == Pvg.VideoVisibility.Unlisted);
+
+            // 429 × 2 → 1.5 s · 3 s(+지터 0~25 %) 백오프 후 성공 · 연속 카운터 리셋
+            gw.Simulator.InjectRateLimit(2);
+            var t = c.Now;
+            Assert.Equal(200, await gw.ApplyAsync(yt, Pvg.VideoVisibility.Private));
+            Assert.True(gw.Backoffs == 2 && gw.Retries == 2 && guard.RateLimitHits == 2 && guard.ConsecutiveHits(Lp.LiveProvider.YouTube) == 0, "백오프 " + gw.Backoffs);
+            Assert.True(c.Now - t is >= 4.5 and <= 5.625, "백오프 누적 " + (c.Now - t));
+            // Retry-After 우선 · IG Graph 코드 4(400) 레이트 본문 인식
+            gw.Simulator.InjectRateLimit(1, retryAfterSec: 20);
+            Assert.Equal(200, await gw.ApplyAsync(yt, Pvg.VideoVisibility.Public));
+            Assert.Equal(20, guard.LastBackoffSec);
+            gw.Simulator.InjectRateLimit(1);
+            Assert.Equal(200, await gw.ApplyAsync(ig, Pvg.VideoVisibility.Private));
+            Assert.True(guard.RateLimitHits == 4 && gw.Binding(ig).Visibility == Pvg.VideoVisibility.Hidden);
+            // 지속 429 → 최대 4 회 시도 후 429 반환
+            gw.Simulator.InjectRateLimit(10);
+            Assert.Equal(429, await gw.ApplyAsync(yt, Pvg.VideoVisibility.Private));
+            Assert.True(gw.Retries >= 2 + 1 + 1 + 3 && gw.Binding(yt).Visibility == Pvg.VideoVisibility.Public && gw.Failures == 1);
+            gw.Simulator.InjectRateLimit(0);
+            c.Now += 60;
+            // quotaExceeded → 당일 안전 정지(시뮬레이터 미호출) → UTC 일 경계 후 재개
+            gw.Simulator.InjectQuotaExceeded(1);
+            Assert.Equal(403, await gw.ApplyAsync(yt, Pvg.VideoVisibility.Private));
+            Assert.True(guard.QuotaExhaustions == 1 && guard.Throttled(Lp.LiveProvider.YouTube));
+            var req = gw.Simulator.Requests;
+            Assert.Equal(403, await gw.ApplyAsync(yt, Pvg.VideoVisibility.Private));
+            Assert.True(gw.Simulator.Requests == req && guard.SafetyThrottles >= 1);
+            c.Now += 86400;
+            Assert.Equal(200, await gw.ApplyAsync(yt, Pvg.VideoVisibility.Private));
+        }
+
+        // 백오프 곡선 — Base 1.5 s × 2ⁿ⁻¹ · 지터 ≤ 25 % · 상한 30 s · 90 % 쿼터 안전선
+        using (var g = new Pvg.TokenLifecycleRateLimitBackoffGuard(new Pvg.SimulatedPlatformTokenSource()))
+        {
+            double[] lo = { 1.5, 3, 6, 12, 24, 30, 30 }, hi = { 1.875, 3.75, 7.5, 15, 30, 30, 30 };
+            for (var k = 0; k < lo.Length; k++)
+            {
+                var d = g.OnRateLimited(Lp.LiveProvider.YouTube, T0, 0);
+                Assert.True(d >= lo[k] && d <= hi[k], "백오프 " + k + " = " + d);
+                Assert.Equal(T0 + d, g.BlockedUntil(Lp.LiveProvider.YouTube));
+            }
+            Assert.Equal(Pvg.QuotaDecision.NoToken, g.TryAcquire(Lp.LiveProvider.YouTube, 1, T0 + 60));
+            Assert.True(g.EnsureToken(Lp.LiveProvider.YouTube, T0));
+            Assert.Equal(Pvg.QuotaDecision.BackingOff, g.TryAcquire(Lp.LiveProvider.YouTube, 1, T0 + 1));
+            g.SetQuotaLimit(Lp.LiveProvider.YouTube, 1000);
+            var allowed = 0;
+            while (g.TryAcquire(Lp.LiveProvider.YouTube, Pvg.TokenLifecycleRateLimitBackoffGuard.CostYtUpdate, T0 + 60) == Pvg.QuotaDecision.Allowed) allowed++;
+            Assert.True(allowed == 18 && g.QuotaUsed(Lp.LiveProvider.YouTube) == 900 && g.Throttled(Lp.LiveProvider.YouTube) && g.SafetyThrottles == 1, "안전선 " + allowed);
+            Assert.True(Pvg.TokenLifecycleRateLimitBackoffGuard.IsRateLimitBody("{\"error\":{\"code\":613}}"u8) && Pvg.TokenLifecycleRateLimitBackoffGuard.IsQuotaBody("{\"reason\":\"quotaExceeded\"}"u8) && !Pvg.TokenLifecycleRateLimitBackoffGuard.IsRateLimitBody("{\"error\":{\"code\":100}}"u8));
+        }
+
+        // ── PVG-3: 5 분 시계열 폴링 → 유속 · A/B 피딩 → 회수기 → 프로덕션 게이트웨이 · 핫패스 무할당 ──
+        c = new VClock();
+        using (var guard = NewGuard(c, out _))
+        using (var gw = new Pvg.ProductionPlatformVisibilityGatewayEngine(guard, () => c.Now, liveEndpoints: false))
+        {
+            gw.Simulator.Seed(Lp.LiveProvider.YouTube, "ytVideo00CA", T0, true);
+            gw.Simulator.Seed(Lp.LiveProvider.YouTube, "ytVideo00CB", T0, false);
+            gw.Simulator.Seed(Lp.LiveProvider.Instagram, "17940000000003", T0, true);
+            var sa = gw.Bind(Lp.LiveProvider.YouTube, "ytVideo00CA", 9403, Pst.SplitVariant.A, 0);
+            var sb = gw.Bind(Lp.LiveProvider.YouTube, "ytVideo00CB", 9403, Pst.SplitVariant.B, 1);
+            var si = gw.Bind(Lp.LiveProvider.Instagram, "17940000000003", 99403, Pst.SplitVariant.A, 2);
+            var split = new Pst.PostPublishSplitTestingEngine();
+            split.Deploy(9403, "A", 0, 0, "B", 1, 1, (long)T0, 0);
+            var poller = new Pvg.RealtimeTimeseriesMetricPollingEngine(gw) { Sink = split };
+            Assert.True(poller.Add(sa, (long)T0, true) == 0 && poller.Add(sb, (long)T0, true) == 1 && poller.Add(si, (long)T0, false) == 2 && poller.TrackCount == 3);
+            Assert.Equal(0, await poller.PollDueAsync((long)T0 + 120));   // 주기 미도래
+            long allocMax = 0;
+            for (var k = 1; k <= 18; k++)
+            {
+                c.Now = T0 + 300 * k;
+                guard.Tick(c.Now);
+                var a0 = GC.GetAllocatedBytesForCurrentThread();
+                var n = await poller.PollDueAsync((long)c.Now);
+                if (k > 2) allocMax = Math.Max(allocMax, GC.GetAllocatedBytesForCurrentThread() - a0);
+                Assert.Equal(3, n);
+                split.Evaluate((long)c.Now);
+            }
+            Assert.True(allocMax == 0, "폴링 라운드 할당 " + allocMax);
+            var ta = poller.Track(0); var tb = poller.Track(1); var ti = poller.Track(2);
+            Assert.True(ta.Count == 18 && tb.Count == 18 && ti.Count == 18 && poller.Fed == 36 && poller.SinkRejected == 0 && poller.Requests == 18 * 4, "폴링 " + poller.Requests);
+            Assert.Equal(90 * 14 + (long)(8100 * 0.12), ta.Last.Views);
+            Assert.True(Math.Abs(ta.Last.ViewsPerMin - (ta.Last.Views - ta.At(16).Views) / 5f) < 1e-3 && ta.Last.Completion is > 0.54f and < 0.62f && tb.Last.Completion is > 0.24f and < 0.30f, "유속 · 완청");
+            Assert.True(tb.Last.ViewsPerMin < 1f && ti.Last.Shares > 0 && ti.Last.LikesPerMin > 0 && guard.QuotaUsed(Lp.LiveProvider.YouTube) == 18 * 3);
+            Assert.True(split.Phase == Pst.SplitTestPhase.Closed && split.HasWinner && split.Winner == Pst.SplitVariant.A && split.Samples == 36);
+            Assert.Equal(0, await poller.PollDueAsync((long)T0 + 5700));   // 골든타임 밖
+            var pr = new Pst.LowPerformanceAutoPrunerEngine(gw);
+            Assert.Equal(1, pr.Evaluate(split, (long)T0 + 5400));
+            Assert.True(gw.Binding(sb).Visibility == Pvg.VideoVisibility.Private && gw.Simulator.StateOf(Lp.LiveProvider.YouTube, "ytVideo00CB") == Pvg.VideoVisibility.Private && pr.Audit(0).Status == 200 && pr.Audit(0).Ok);
+
+            // 가시성 전환 핫패스 무할당(워밍 후 공개 ↔ 비공개 16 회)
+            for (var w = 0; w < 2; w++) { await gw.ApplyAsync(sa, Pvg.VideoVisibility.Private); await gw.ApplyAsync(sa, Pvg.VideoVisibility.Public); }
+            var b0 = GC.GetAllocatedBytesForCurrentThread();
+            for (var w = 0; w < 8; w++) { await gw.ApplyAsync(sa, Pvg.VideoVisibility.Private); await gw.ApplyAsync(sa, Pvg.VideoVisibility.Public); }
+            Assert.True(GC.GetAllocatedBytesForCurrentThread() - b0 == 0, "가시성 전환 할당 " + (GC.GetAllocatedBytesForCurrentThread() - b0));
+        }
+
+        // ── 러너 E2E: 배포 → 골든타임 완주(폴링 · 판정 · 회수) · 수동 전환 · 429/토큰 데모 ──
+        using (var run = new Pvg.PlatformVisibilityGatewayStudioRunner(liveEndpoints: false))
+        {
+            Assert.True(!run.LiveInjected && run.Gateway.ModeName == "시뮬레이션");
+            var changes = 0;
+            run.OnChange += () => changes++;
+            await run.RunToGoldenEndAsync();
+            Assert.True(run.Split.Phase == Pst.SplitTestPhase.Closed && run.Split.Winner == Pst.SplitVariant.A && run.RemainingSec == 0, "러너 판정");
+            Assert.True(run.Pruner.Pruned == 1 && run.Gateway.Binding(run.SlotB).Visibility == Pvg.VideoVisibility.Private && run.Poller.Fed >= 34 && run.Poller.Track(2).Count == 18, "러너 회수 " + run.Poller.Fed);
+            Assert.True(run.Connected(Lp.LiveProvider.YouTube) && run.Connected(Lp.LiveProvider.Instagram) && run.LogCount >= 4 && changes > 0);
+            var bg = run.Guard.BackgroundRefreshes;
+            run.ExpireTokensSoon();
+            await run.AdvanceAsync(5);
+            Assert.True(run.Guard.BackgroundRefreshes == bg + 2 && run.Guard.SecondsLeft(Lp.LiveProvider.YouTube, run.NowUnix) > 3000);
+            run.InjectRateLimit();
+            Assert.Equal(200, await run.SetVisibilityAsync(run.SlotA, Pvg.VideoVisibility.Unlisted));
+            Assert.True(run.Gateway.Backoffs >= 2 && run.Gateway.Binding(run.SlotA).Visibility == Pvg.VideoVisibility.Unlisted);
+            Assert.Equal(422, await run.SetVisibilityAsync(run.SlotIg, Pvg.VideoVisibility.Unlisted));
+            Assert.Equal(204, await run.SetVisibilityAsync(run.SlotA, Pvg.VideoVisibility.Deleted));
+            Assert.Equal(410, await run.SetVisibilityAsync(run.SlotA, Pvg.VideoVisibility.Public));
+            Assert.Equal(200, await run.RefreshStatusAsync(run.SlotB));
+            run.ToggleBWins(); run.ToggleDeleteMode();
+            Assert.True(run.BWinsScenario && run.DeleteMode);
+            await run.DeployAsync();
+            await run.RunToGoldenEndAsync();
+            Assert.True(run.Split.Winner == Pst.SplitVariant.B && run.Gateway.Binding(run.SlotA).Visibility == Pvg.VideoVisibility.Deleted && run.Pruner.Pruned == 2);
+            run.InjectQuotaExceeded();
+            Assert.Equal(403, await run.SetVisibilityAsync(run.SlotB, Pvg.VideoVisibility.Private));
+            Assert.True(run.Guard.Throttled(Lp.LiveProvider.YouTube) && !run.Connected(Lp.LiveProvider.YouTube));
+            run.Reset();
+            Assert.True(run.SlotA == -1 && run.LogCount == 0 && run.Split.Phase == Pst.SplitTestPhase.Idle);
+            Assert.Equal(404, await run.SetVisibilityAsync(run.SlotA, Pvg.VideoVisibility.Private));
+        }
+
+        // ── PVG-4: 카탈로그 170 · 도움말 · HUD · 레이아웃 · DI · 모달 규격 · 외부 의존 0 · 모달 렌더 ──
+        var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
+        Assert.Equal(170, cat.Length);
+        Assert.Contains(cat, en => en.Key == "_platformVisibilityGateway" && en.Category == 4 && en.Title == "플랫폼 비지빌리티 게이트웨이");
+        Assert.Equal(170, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.Entries.Count);
+        Assert.Equal(0, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects());
+        Assert.Equal("_platformVisibilityGateway", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.ResolveKeyByHeader("🌐 플랫폼 비지빌리티 게이트웨이 · 시뮬레이션"));
+        var root = RepoRoot();
+        string Src(params string[] p) => File.ReadAllText(Path.Combine(root, Path.Combine(p)));
+        var hud = Src("PromptFlowStudio", "Blazor", "Components", "Common", "GlobalTelemetryHudView.razor");
+        var layout = Src("PromptFlowStudio", "Blazor", "MainLayout.razor");
+        var modalSrc = Src("PromptFlowStudio", "Blazor", "Components", "Common", "PlatformVisibilityGatewayStudioModal.razor");
+        Assert.True(hud.IndexOf("gth-v1794", StringComparison.Ordinal) is > 0 and var i1794 && i1794 < hud.IndexOf("gth-v1793", StringComparison.Ordinal) && hud.Contains("PvgRun.OnChange += OnSwarmChanged", StringComparison.Ordinal) && hud.Contains("PvgRun.OnChange -= OnSwarmChanged", StringComparison.Ordinal));
+        Assert.True(layout.Contains("<PlatformVisibilityGatewayStudioModal", StringComparison.Ordinal) && layout.Contains("case \"_platformVisibilityGateway\"", StringComparison.Ordinal) && layout.Contains("\"_platformVisibilityGateway\" =>", StringComparison.Ordinal));
+        Assert.True(Src("PromptFlowStudio", "MainForm.cs").Contains("PlatformVisibility.PlatformVisibilityGatewayStudioRunner(sp)", StringComparison.Ordinal) && Src("PromptFlowStudio.Mobile", "MauiProgram.cs").Contains("PlatformVisibility.PlatformVisibilityGatewayStudioRunner(sp)", StringComparison.Ordinal));
+        Assert.True(modalSrc.Contains("@implements IDisposable", StringComparison.Ordinal) && modalSrc.Contains("flex: 1 1 auto; min-height: 0; overflow-y: auto;", StringComparison.Ordinal) && modalSrc.Contains("position: sticky", StringComparison.Ordinal) && modalSrc.Contains("aria-pressed", StringComparison.Ordinal));
+        foreach (var src in Directory.GetFiles(Path.Combine(root, "PromptFlowStudio", "Services", "PlatformVisibility"), "*.cs"))
+        {
+            var body = File.ReadAllText(src);
+            Assert.True(!body.Contains("System.Linq", StringComparison.Ordinal) && !body.Contains("Process.Start", StringComparison.Ordinal) && !body.Contains("File.Write", StringComparison.Ordinal) && !body.Contains("new HttpClient", StringComparison.Ordinal), "외부 의존 · 파일 I/O " + Path.GetFileName(src));
+        }
+        using var sp = new HeadlessUiRendererCheck.AutoWireProvider();
+        var runner = (Pvg.PlatformVisibilityGatewayStudioRunner)sp.GetService(typeof(Pvg.PlatformVisibilityGatewayStudioRunner))!;
+        Assert.True(runner.LiveInjected && !runner.Gateway.LiveEndpoints);
+        await runner.AdvanceAsync(30);
+        Assert.True(runner.Poller.Samples > 0 && runner.Guard.Refreshes >= 2);   // 볼트 계약 Mock → 시뮬 토큰 폴백
+        var html = await HeadlessUiRendererCheck.RenderAsync(typeof(PromptFlowStudio.Blazor.Components.Common.PlatformVisibilityGatewayStudioModal), sp);
+        Assert.True(html.Length > 500 && html.Contains("pvg-scrim", StringComparison.Ordinal) && html.Contains("pvg-body", StringComparison.Ordinal) && html.Contains("릴스 배포", StringComparison.Ordinal) && html.Contains("pvg-quota", StringComparison.Ordinal) && html.Contains("일부 공개", StringComparison.Ordinal), "모달 렌더 " + html.Length);
         Assert.Equal(0, HeadlessUiRendererCheck.LiveSubscriberCount(runner));
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
     }

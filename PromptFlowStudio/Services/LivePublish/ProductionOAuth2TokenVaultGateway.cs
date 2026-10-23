@@ -64,8 +64,8 @@ public sealed class ProductionOAuth2TokenVaultGateway : IDisposable
 {
     public const string EnvYtClientId = "PROMPTFLOW_YT_CLIENT_ID", EnvYtClientSecret = "PROMPTFLOW_YT_CLIENT_SECRET", EnvMetaAppId = "PROMPTFLOW_META_APP_ID", EnvMetaAppSecret = "PROMPTFLOW_META_APP_SECRET";
     public const string GoogleAuthorizeUrl = "https://accounts.google.com/o/oauth2/v2/auth", MetaAuthorizeUrl = "https://www.facebook.com/v21.0/dialog/oauth";
-    public const string YouTubeScopes = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly";
-    public const string InstagramScopes = "instagram_basic,instagram_content_publish,pages_show_list,business_management";
+    public const string YouTubeScopes = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube.force-ssl https://www.googleapis.com/auth/yt-analytics.readonly";   // v17.94 videos.update/delete · 완청률 리포트
+    public const string InstagramScopes = "instagram_basic,instagram_content_publish,pages_show_list,business_management,instagram_manage_insights";   // v17.94 릴스 인사이트
     public const string LoopbackPrefix = "http://127.0.0.1:53682/", DefaultRedirect = "http://127.0.0.1:53682/oauth/callback";
     public const double RefreshLeadSec = 600, BackoffBaseSec = 2, BackoffMaxSec = 300, ConsentTimeoutSec = 180;
     public const int FormCap = 4096, TokenCap = GraphSecretSlot.Cap, VaultMagic = 0x31565046, VaultVersion = 1;

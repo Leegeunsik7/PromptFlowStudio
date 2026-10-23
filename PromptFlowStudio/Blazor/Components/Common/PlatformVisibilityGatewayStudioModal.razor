@@ -1,0 +1,256 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.LivePublish
+@using PromptFlowStudio.Services.PlatformVisibility
+@using PromptFlowStudio.Services.PostPublishSplitTest
+@implements IDisposable
+@inject PlatformVisibilityGatewayStudioRunner Runner
+
+@* [PromptFlow Studio v17.94.0] 🌐 플랫폼 비지빌리티 게이트웨이 — 연결 상태 · 일일 쿼터 · 영상별 공개 상태 수동 전환 · 5 분 시계열 유속 · 429 백오프/토큰 갱신 관제. *@
+<div class="pvg-scrim" @onclick="Close">
+    <div class="pvg-modal" @onclick:stopPropagation="true">
+        <div class="pvg-h">
+            <div>
+                <div class="pvg-title">🌐 플랫폼 비지빌리티 게이트웨이 · @(Runner.Gateway.ModeName)</div>
+                <div class="pvg-sub">YouTube Data API v3 · Instagram Graph API 로 영상의 <b>공개 · 일부 공개 · 비공개 · 삭제</b>를 직접 바꾸고, 발행 후 <b>90분 골든타임</b> 동안 5분마다 조회수 · 좋아요 · 댓글 · 완청률을 수집해
+                    A/B 스플릿 테스터에 실시간으로 흘려보냅니다. 토큰은 <b>만료 5분 전</b> 자동 갱신되고, 429 응답은 <b>1.5초 → 최대 30초</b> 지수 백오프로 재시도하며, 일일 쿼터 <b>90%</b>를 넘으면 안전 정지합니다.</div>
+            </div>
+            <div class="pvg-hr">
+                @for (var p = 0; p < 2; p++)
+                {
+                    var prov = (LiveProvider)p;
+                    <span class="pvg-badge @(Runner.Connected(prov) ? "ok" : Runner.Guard.Throttled(prov) ? "bad" : null)">@(prov == LiveProvider.YouTube ? "▶" : "📸") @(Runner.ConnectionText(prov))</span>
+                }
+                <button class="pvg-x" @onclick="Close">✕</button>
+            </div>
+        </div>
+
+        <div class="pvg-body">
+            <div class="pvg-bar">
+                <button class="pvg-btn go" @onclick="Deploy">🚀 A/B + 릴스 배포</button>
+                <button class="pvg-btn" @onclick="Step5">⏩ +5분 폴링</button>
+                <button class="pvg-btn" @onclick="Step30">⏩ +30분</button>
+                <button class="pvg-btn" @onclick="RunToEnd">⏭ 90분 골든타임 완주</button>
+                <span class="pvg-sep"></span>
+                <button class="pvg-btn" @onclick="ResetAll">♻ 초기화</button>
+            </div>
+            <div class="pvg-bar">
+                <button class="pvg-btn @(Runner.BWinsScenario ? "on" : null)" aria-pressed="@(Runner.BWinsScenario ? "true" : "false")" @onclick="ToggleScenario">🧪 B 우세 시나리오: @(Runner.BWinsScenario ? "ON" : "OFF")</button>
+                <button class="pvg-btn @(Runner.DeleteMode ? "warn" : null)" aria-pressed="@(Runner.DeleteMode ? "true" : "false")" @onclick="ToggleDelete">🗑️ 즉시 삭제 모드: @(Runner.DeleteMode ? "ON" : "OFF")</button>
+                <span class="pvg-sep"></span>
+                <button class="pvg-btn pick" @onclick="Inject429">🧪 429 주입</button>
+                <button class="pvg-btn pick" @onclick="InjectQuota">🧯 쿼터 소진 주입</button>
+                <button class="pvg-btn pick" @onclick="ExpireSoon">⌛ 토큰 만료 임박</button>
+            </div>
+
+            <div class="pvg-main">
+                @for (var p = 0; p < 2; p++)
+                {
+                    var prov = (LiveProvider)p;
+                    var ratio = Runner.Guard.QuotaRatio(prov);
+                    <div class="pvg-card">
+                        <div class="pvg-sec">@(prov == LiveProvider.YouTube ? "▶ YouTube Data API v3" : "📸 Instagram Graph API") <span class="pvg-kw">@(Runner.ConnectionText(prov))</span></div>
+                        <div class="pvg-quota"><div class="pvg-qf @(ratio >= 0.9f ? "end" : ratio >= 0.7f ? "mid" : null)" style="width:@(Math.Min(100f, ratio * 100f).ToString("0.0", CultureInfo.InvariantCulture))%"></div><i class="pvg-qline"></i></div>
+                        <div class="pvg-grid">
+                            <div class="m"><b>@(Runner.Guard.QuotaUsed(prov).ToString("N0", CultureInfo.InvariantCulture))/@(Runner.Guard.QuotaLimit(prov).ToString("N0", CultureInfo.InvariantCulture))</b><i>일일 쿼터</i></div>
+                            <div class="m"><b>@(PlatformVisibilityGatewayStudioRunner.Mmss((long)Runner.Guard.SecondsLeft(prov, Runner.NowUnix)))</b><i>토큰 잔여</i></div>
+                            <div class="m"><b class="@(Runner.Guard.ConsecutiveHits(prov) > 0 ? "bad" : null)">@(Runner.Guard.ConsecutiveHits(prov))</b><i>연속 429</i></div>
+                        </div>
+                    </div>
+                }
+            </div>
+
+            <div class="pvg-card">
+                <div class="pvg-sec">🎛 영상별 가시성 수동 전환 <span class="pvg-kw">결선 @(Runner.Gateway.BindingCount)건 · 중복 생략 @(Runner.Gateway.DuplicateSkips)</span></div>
+                @if (Runner.SlotA < 0)
+                {
+                    <div class="pvg-mini">결선된 영상이 없습니다 — 「🚀 A/B + 릴스 배포」를 눌러 YouTube A/B 두 편과 Instagram 릴스 한 편을 등록하세요.</div>
+                }
+                @foreach (var slot in Slots())
+                {
+                    var b = Runner.Gateway.Binding(slot);
+                    var s = slot;
+                    <div class="pvg-row">
+                        <span class="pvg-pv">@(b.Provider == LiveProvider.YouTube ? "▶ " + PostPublishSplitTestingEngine.VariantName(b.Variant) : "📸 릴스")</span>
+                        <span class="pvg-id">@(b.VideoId)</span>
+                        <span class="pvg-vis v@((int)b.Visibility)">@(ProductionPlatformVisibilityGatewayEngine.VisibilityName(b.Visibility))</span>
+                        <span class="pvg-st">HTTP @(b.LastStatus)</span>
+                        <span class="pvg-sep"></span>
+                        <button class="pvg-btn sm" @onclick="() => SetVis(s, VideoVisibility.Public)">🌍 공개</button>
+                        @if (b.Provider == LiveProvider.YouTube)
+                        {
+                            <button class="pvg-btn sm" @onclick="() => SetVis(s, VideoVisibility.Unlisted)">🔗 일부 공개</button>
+                        }
+                        <button class="pvg-btn sm" @onclick="() => SetVis(s, VideoVisibility.Private)">🔒 비공개</button>
+                        <button class="pvg-btn sm warn" @onclick="() => SetVis(s, VideoVisibility.Deleted)">🗑️ 삭제</button>
+                        <button class="pvg-btn sm" @onclick="() => Refresh(s)">🔎 상태</button>
+                    </div>
+                }
+            </div>
+
+            <div class="pvg-main">
+                <div class="pvg-card">
+                    <div class="pvg-sec">📈 5분 시계열 유속 <span class="pvg-kw"><i class="pvg-dot a"></i>A <i class="pvg-dot b"></i>B <i class="pvg-dot c"></i>릴스</span></div>
+                    <svg class="pvg-chart" viewBox="0 0 300 120" preserveAspectRatio="none">
+                        @for (var t = 0; t < 3; t++)
+                        {
+                            <g><polyline class="pvg-p@(t)" points="@(Points(t))" /></g>
+                        }
+                    </svg>
+                    @for (var t = 0; t < RealtimeTimeseriesMetricPollingEngine.MaxVideos; t++)
+                    {
+                        var tr = Runner.Poller.Track(t);
+                        if (!tr.Active) continue;
+                        var last = tr.Last;
+                        <div class="pvg-out">@(Runner.Gateway.Binding(tr.Slot).VideoId) · 조회 @(last.Views.ToString("N0", CultureInfo.InvariantCulture)) · @(last.ViewsPerMin.ToString("0.0", CultureInfo.InvariantCulture))뷰/분 · 좋아요 @(last.LikesPerMin.ToString("0.0", CultureInfo.InvariantCulture))/분 · 댓글 @(last.CommentsPerMin.ToString("0.00", CultureInfo.InvariantCulture))/분 · 완청 @(PlatformVisibilityGatewayStudioRunner.Pct(last.Completion)) · 표본 @(tr.Count)</div>
+                    }
+                </div>
+                <div class="pvg-card @(Runner.Split.HasWinner ? "win" : null)">
+                    <div class="pvg-sec">⚖️ A/B 스플릿 피딩 · 🛡️ 가드 <span class="pvg-kw">@(PostPublishSplitTestingEngine.PhaseName(Runner.Split.Phase)) · 남은 @(PlatformVisibilityGatewayStudioRunner.Mmss(Runner.RemainingSec))</span></div>
+                    <div class="pvg-grid">
+                        <div class="m"><b>@(Runner.Split.HasWinner ? "🏆 " + PostPublishSplitTestingEngine.VariantName(Runner.Split.Winner) : PlatformVisibilityGatewayStudioRunner.Pct(Runner.Split.Confidence))</b><i>승자 · 신뢰도</i></div>
+                        <div class="m"><b>@(Runner.Poller.Fed)</b><i>스플릿 피딩</i></div>
+                        <div class="m"><b class="@(Runner.Pruner.Pruned > 0 ? "bad" : null)">@(Runner.Pruner.Pruned)</b><i>자동 회수</i></div>
+                        <div class="m"><b>@(Runner.Guard.Refreshes)</b><i>토큰 갱신</i></div>
+                        <div class="m"><b>@(Runner.Gateway.Backoffs) · @(Runner.Guard.LastBackoffSec.ToString("0.0", CultureInfo.InvariantCulture))s</b><i>백오프 · 최근 지연</i></div>
+                        <div class="m"><b class="@(Runner.Guard.SafetyThrottles + Runner.Guard.QuotaExhaustions > 0 ? "bad" : null)">@(Runner.Guard.SafetyThrottles)/@(Runner.Guard.QuotaExhaustions)</b><i>안전 정지 · 소진</i></div>
+                        <div class="m"><b>@(Runner.Gateway.Privates)/@(Runner.Gateway.Hides)/@(Runner.Gateway.Deletes)</b><i>비공개 · 숨김 · 삭제</i></div>
+                        <div class="m"><b>@(Runner.Gateway.SchemaRejections)</b><i>스키마 거절</i></div>
+                        <div class="m"><b>@(Runner.Gateway.Simulator.Requests)</b><i>시뮬 요청</i></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="pvg-card">
+                <div class="pvg-sec">📜 게이트웨이 · 폴링 · 회수 로그 <span class="pvg-kw">@(Runner.LogCount)건</span></div>
+                <div class="pvg-log">
+                    @if (Runner.LogCount == 0)
+                    {
+                        <div class="pvg-mini">아직 기록이 없습니다 — 「🚀 A/B + 릴스 배포」 후 「⏩ +5분 폴링」 또는 「⏭ 90분 골든타임 완주」를 눌러 보세요.</div>
+                    }
+                    @for (var i = 0; i < Runner.LogCount; i++)
+                    {
+                        var line = Runner.Log(i);
+                        <div class="pvg-ll @(line.Contains('⚠') || line.Contains("🗑️", StringComparison.Ordinal) ? "bad" : line.Contains("🏆", StringComparison.Ordinal) || line.Contains("🔑", StringComparison.Ordinal) ? "ok" : null)">@(line)</div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="pvg-act">@(Runner.LastAction ?? "대기") · @(Runner.Summary())</div>
+    </div>
+</div>
+
+<style>
+    .pvg-scrim { position: fixed; inset: 0; z-index: var(--z-studio-modal); background: rgba(0,0,0,.62); display: flex; align-items: center; justify-content: center; }
+    .pvg-modal { width: min(1240px, 96vw); max-height: 94vh; display: flex; flex-direction: column; overflow: hidden; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.45); color: var(--text-primary); }
+    .pvg-h { position: sticky; top: 0; z-index: 3; flex: 0 0 auto; display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px 8px; background: var(--card); border-bottom: 1px solid var(--line); }
+    .pvg-hr { display: flex; align-items: flex-start; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+    .pvg-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 10px; }
+    .pvg-act { position: sticky; bottom: 0; z-index: 3; flex: 0 0 auto; padding: 8px 16px 14px; background: var(--card); border-top: 1px solid var(--line); font-size: 11px; color: var(--text-muted); }
+    .pvg-title { font-size: 17px; font-weight: 800; }
+    .pvg-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 4px; line-height: 1.5; }
+    .pvg-x { background: none; border: 0; color: var(--text-muted); font-size: 18px; cursor: pointer; }
+    .pvg-badge { white-space: nowrap; font-size: 11.5px; font-weight: 700; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line); background: #1e293b; }
+    .pvg-badge.ok { border-color: #22c55e; background: #14532d; color: #bbf7d0; }
+    .pvg-badge.bad { border-color: #ef4444; background: #450a0a; color: #fecaca; }
+    .pvg-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 0; }
+    .pvg-sep { flex: 1; }
+    .pvg-btn { background: #1e293b; color: var(--text-primary); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+    .pvg-btn.sm { padding: 3px 8px; font-size: 11px; }
+    .pvg-btn.go { border-color: #38bdf8; font-weight: 700; }
+    .pvg-btn.on { border-color: #38bdf8; background: #0c4a6e; }
+    .pvg-btn.warn { border-color: #f97316; background: #431407; }
+    .pvg-btn.pick { border-color: #facc15; }
+    .pvg-card { background: #0b1220; border: 1px solid var(--line); border-radius: 10px; padding: 10px; min-width: 0; margin-top: 10px; }
+    .pvg-card.win { border-color: #22c55e; box-shadow: 0 0 0 1px #22c55e inset; }
+    .pvg-sec { font-size: 12.5px; font-weight: 700; margin-bottom: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .pvg-kw { margin-left: auto; font-size: 10.5px; font-weight: 400; color: #7dd3fc; display: inline-flex; align-items: center; gap: 4px; }
+    .pvg-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+    .pvg-dot.a { background: #38bdf8; } .pvg-dot.b { background: #f472b6; } .pvg-dot.c { background: #facc15; }
+    .pvg-quota { position: relative; height: 12px; border-radius: 999px; background: #1e293b; overflow: hidden; margin-bottom: 8px; }
+    .pvg-qf { height: 100%; background: #22c55e; transition: width .2s; }
+    .pvg-qf.mid { background: #facc15; } .pvg-qf.end { background: #ef4444; }
+    .pvg-qline { position: absolute; top: 0; bottom: 0; left: 90%; width: 2px; background: #f87171; }
+    .pvg-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+    .pvg-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 5px 0; border-top: 1px dashed var(--line); font-size: 11.5px; }
+    .pvg-pv { font-weight: 700; min-width: 64px; }
+    .pvg-id { font-family: var(--mono); color: #c4b5fd; }
+    .pvg-st { font-family: var(--mono); font-size: 10.5px; color: var(--text-muted); }
+    .pvg-vis { font-size: 10.5px; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: #1e293b; }
+    .pvg-vis.v1 { background: #14532d; color: #bbf7d0; } .pvg-vis.v2 { background: #0c4a6e; color: #bae6fd; } .pvg-vis.v3, .pvg-vis.v4 { background: #422006; color: #fde68a; } .pvg-vis.v5 { background: #450a0a; color: #fecaca; }
+    .pvg-chart { width: 100%; height: 130px; background: #111827; border-radius: 8px; }
+    .pvg-p0, .pvg-p1, .pvg-p2 { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; }
+    .pvg-p0 { stroke: #38bdf8; } .pvg-p1 { stroke: #f472b6; } .pvg-p2 { stroke: #facc15; }
+    .pvg-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+    .pvg-grid .m { background: #111827; border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; }
+    .pvg-grid .m b { font-size: 12.5px; } .pvg-grid .m b.bad { color: #f87171; }
+    .pvg-grid .m i { font-style: normal; font-size: 10px; color: var(--text-muted); }
+    .pvg-log { max-height: 240px; overflow-y: auto; font-family: var(--mono); font-size: 10.5px; display: flex; flex-direction: column; gap: 2px; }
+    .pvg-ll { padding: 1px 4px; border-radius: 4px; background: #0f172a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .pvg-ll.ok { color: #bbf7d0; } .pvg-ll.bad { color: #fecaca; background: #2a0b0b; }
+    .pvg-out { margin-top: 6px; padding: 4px 8px; background: #111827; border-radius: 6px; font-size: 10.5px; font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pvg-mini { font-size: 10px; color: var(--text-muted); margin-top: 6px; }
+    @@media (max-width: 1000px) { .pvg-main { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    protected override void OnInitialized() => Runner.OnChange += OnServiceChanged;
+
+    private Task Deploy() => Guard(() => Runner.DeployAsync(), "Deploy");
+    private Task Step5() => Guard(() => Runner.AdvanceAsync(5), "Step5");
+    private Task Step30() => Guard(() => Runner.AdvanceAsync(30), "Step30");
+    private Task RunToEnd() => Guard(Runner.RunToGoldenEndAsync, "RunToEnd");
+    private Task SetVis(int slot, VideoVisibility v) => Guard(() => Runner.SetVisibilityAsync(slot, v), "SetVis");
+    private Task Refresh(int slot) => Guard(() => Runner.RefreshStatusAsync(slot), "Refresh");
+    private void ToggleScenario() => Runner.ToggleBWins();
+    private void ToggleDelete() => Runner.ToggleDeleteMode();
+    private void Inject429() => Runner.InjectRateLimit();
+    private void InjectQuota() => Runner.InjectQuotaExceeded();
+    private void ExpireSoon() => Runner.ExpireTokensSoon();
+    private void ResetAll() => Runner.Reset();
+
+    private static async Task Guard(Func<Task> a, string tag)
+    {
+        try { await a(); }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("PlatformVisibility.Modal." + tag, ex); }
+    }
+
+    private IEnumerable<int> Slots()
+    {
+        if (Runner.SlotA >= 0) yield return Runner.SlotA;
+        if (Runner.SlotB >= 0) yield return Runner.SlotB;
+        if (Runner.SlotIg >= 0) yield return Runner.SlotIg;
+    }
+
+    /// <summary>폴리라인 좌표 — X = 발행 후 경과(90 분), Y = 활성 트랙 공통 최대 조회수 정규화.</summary>
+    private string Points(int track)
+    {
+        var p = Runner.Poller;
+        var t = p.Track(track);
+        if (!t.Active || t.Count == 0) return "0,120";
+        double max = 1;
+        for (var k = 0; k < RealtimeTimeseriesMetricPollingEngine.MaxVideos; k++)
+        {
+            var tk = p.Track(k);
+            if (tk.Active && tk.Count > 0) max = Math.Max(max, tk.Last.Views);
+        }
+        var sb = new System.Text.StringBuilder(t.Count * 14);
+        for (var i = 0; i < t.Count; i++)
+        {
+            ref readonly var s = ref t.At(i);
+            var x = 300.0 * (s.TSec - t.PublishedUnix) / RealtimeTimeseriesMetricPollingEngine.WindowSec;
+            var y = 120.0 - 112.0 * s.Views / max;
+            if (i > 0) sb.Append(' ');
+            sb.Append(x.ToString("0.0", CultureInfo.InvariantCulture)).Append(',').Append(y.ToString("0.0", CultureInfo.InvariantCulture));
+        }
+        return sb.ToString();
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+
+    private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose() => Runner.OnChange -= OnServiceChanged;
+}

@@ -4,7 +4,7 @@ using System.Net.Http;
 using System.Security.Cryptography;
 namespace PromptFlowStudio.Services.GraphBridge;
 
-public enum GraphHttpMethod : byte { Get, Post, Put }
+public enum GraphHttpMethod : byte { Get, Post, Put, Delete }
 
 /// <summary>응답 수신 버퍼(재사용) — 본문 64 KB · Retry-After · X-App-Usage 원문.</summary>
 public sealed class GraphResponseBuffer
@@ -136,8 +136,8 @@ public sealed class HttpGraphTransport : IGraphTransport, IDisposable
 
     private async Task<int> SendCoreAsync(GraphHttpMethod method, ReadOnlyMemory<byte> url, ReadOnlyMemory<byte> headers, ReadOnlyMemory<byte> body, GraphResponseBuffer resp, CancellationToken ct)
     {
-        using var req = new HttpRequestMessage(method == GraphHttpMethod.Post ? HttpMethod.Post : method == GraphHttpMethod.Put ? HttpMethod.Put : HttpMethod.Get, System.Text.Encoding.UTF8.GetString(url.Span));
-        if (method != GraphHttpMethod.Get) req.Content = new ReadOnlyMemoryContent(body);
+        using var req = new HttpRequestMessage(method == GraphHttpMethod.Post ? HttpMethod.Post : method == GraphHttpMethod.Put ? HttpMethod.Put : method == GraphHttpMethod.Delete ? HttpMethod.Delete : HttpMethod.Get, System.Text.Encoding.UTF8.GetString(url.Span));
+        if (method is GraphHttpMethod.Post or GraphHttpMethod.Put) req.Content = new ReadOnlyMemoryContent(body);
         var h = System.Text.Encoding.UTF8.GetString(headers.Span);
         foreach (var line in h.Split("\r\n", StringSplitOptions.RemoveEmptyEntries))
         {
