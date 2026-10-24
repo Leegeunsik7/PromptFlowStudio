@@ -84,6 +84,7 @@ public sealed class FastShortsMuxingHardwareExporterEngine
     private long _vPts0 = -1, _aPts0 = -1, _vLastPts;
     private ushort _asc;
     private float _progress;
+    private bool _inBand;
 
     public bool IncludeSfxTrack { get; set; }
     public bool IncludeCaptionTrack { get; set; } = true;
@@ -93,6 +94,8 @@ public sealed class FastShortsMuxingHardwareExporterEngine
     public long Failures { get; private set; }
     public int Capacity => _out.Length;
     public long Grows { get; private set; }
+    /// <summary>[v17.98.2] 클립 중 SPS/PPS 변경(SPS 크롭 줌 펀치 등) 감지 → avc3 샘플 엔트리 + 파라미터 셋 인밴드 유지(avc1 은 avcC 단일 셋만 허용 · ISO/IEC 14496-15).</summary>
+    public bool InBandParameterSets => _inBand;
 
     /// <summary>최근 인출 fMP4 바이트(다음 인출 전까지 유효 · 복사 없음).</summary>
     public ReadOnlyMemory<byte> Output { get { lock (_gate) return Last.Status == ExportStatus.Ready ? _out.AsMemory(0, Last.Bytes) : ReadOnlyMemory<byte>.Empty; } }
@@ -147,7 +150,7 @@ public sealed class FastShortsMuxingHardwareExporterEngine
     private void ResetClip()
     {
         _vN = _aN = _tN = _sN = _vLen = _aLen = _tLen = _sLen = _keys = 0;
-        _vPts0 = _aPts0 = -1; _vLastPts = 0;
+        _vPts0 = _aPts0 = -1; _vLastPts = 0; _inBand = false;
         Volatile.Write(ref _progress, 0f);
         var r = Last; r.Status = ExportStatus.Rendering; Last = r;
     }
@@ -159,9 +162,17 @@ public sealed class FastShortsMuxingHardwareExporterEngine
         {
             if (nal.Length == 0) continue;
             var t = nal[0] & 0x1F;
-            if (t == 7) { if (nal.Length <= _sps.Length) { nal.CopyTo(_sps); _spsLen = nal.Length; } continue; }
-            if (t == 8) { if (nal.Length <= _pps.Length) { nal.CopyTo(_pps); _ppsLen = nal.Length; } continue; }
-            if (t == 9 || ptsUs < 0) continue;
+            if (t is 7 or 8)
+            {
+                // 첫 샘플 확정 전 = avcC 셋 갱신 · 이후 다른 셋 등장 = 인밴드 전환(avc3) — 마지막 셋으로 avcC 덮어쓰기 금지(초기 IDR 디코딩 불일치)
+                var ps = t == 7 ? _sps : _pps;
+                ref var pl = ref t == 7 ? ref _spsLen : ref _ppsLen;
+                if (_vN == 0) { if (nal.Length <= ps.Length) { nal.CopyTo(ps); pl = nal.Length; } continue; }
+                if (!_inBand && pl == nal.Length && nal.SequenceEqual(ps.AsSpan(0, pl))) continue;
+                _inBand = true;
+                if (ptsUs < 0) continue;
+            }
+            else if (t == 9 || ptsUs < 0) continue;
             if (t == 5) key = true;
             Ensure(ref _v, _vLen + nal.Length + 4);
             BinaryPrimitives.WriteInt32BigEndian(_v.AsSpan(_vLen), nal.Length);
@@ -410,7 +421,7 @@ public sealed class FastShortsMuxingHardwareExporterEngine
     private void Avc1(in ShortsOverlay ov)
     {
         const int cropW = InstantShortsPackagingPipelineGuard.CropW, srcW = InstantShortsPackagingPipelineGuard.SrcW, srcH = InstantShortsPackagingPipelineGuard.SrcH;
-        Begin(C('a', 'v', 'c', '1'));
+        Begin(_inBand ? C('a', 'v', 'c', '3') : C('a', 'v', 'c', '1'));
         Zero(6); U16(1); U16(0); U16(0); Zero(12); U16(srcW); U16(srcH); U32(0x00480000); U32(0x00480000); U32(0); U16(1);
         var name = "PFS Shorts H.264";
         Byte((byte)name.Length); Ascii(name); Zero(31 - name.Length); U16(0x0018); U16(0xFFFF);
@@ -604,7 +615,7 @@ public sealed class FastShortsMuxingHardwareExporterEngine
                         }
                         r.Samples += n; r.SampleBytes += sum;
                         ok &= data >= mdatStart && data + sum <= mdatEnd;
-                        if (track == VideoTrack && n > 0 && first > 5 && data + 5 <= mdatEnd) r.FirstVideoIdr = (mp4[(int)data + 4] & 0x1F) == 5;
+                        if (track == VideoTrack && n > 0 && first > 5 && data + first <= mdatEnd) r.FirstVideoIdr = FirstVclType(mp4.Slice((int)data, first)) == 5;
                     }
                     t += bs;
                 }
@@ -613,6 +624,21 @@ public sealed class FastShortsMuxingHardwareExporterEngine
         }
         r.OffsetsInMdat = ok && r.Trafs > 0;
         return r.Valid;
+    }
+
+    /// <summary>[v17.98.2] AVCC(4 B 길이) 샘플의 첫 VCL NAL 타입 — SEI/AUD 선행 IDR 허용(−1 = VCL 없음/길이 손상).</summary>
+    private static int FirstVclType(ReadOnlySpan<byte> s)
+    {
+        var p = 0;
+        while (p + 5 <= s.Length)
+        {
+            var len = BinaryPrimitives.ReadInt32BigEndian(s.Slice(p));
+            if (len <= 0 || p + 4 + len > s.Length) return -1;
+            var t = s[p + 4] & 0x1F;
+            if (t is >= 1 and <= 5) return t;
+            p += 4 + len;
+        }
+        return -1;
     }
 
     private static void Walk(ReadOnlySpan<byte> body, ref Mp4Inspection r, int depth)
@@ -628,7 +654,7 @@ public sealed class FastShortsMuxingHardwareExporterEngine
             else if (type == C('m', 'v', 'e', 'x')) r.Mvex = true;
             else if (type == C('m', 'd', 'i', 'a') || type == C('m', 'i', 'n', 'f') || type == C('s', 't', 'b', 'l')) Walk(inner, ref r, depth + 1);
             else if (type == C('s', 't', 's', 'd') && inner.Length > 8) Walk(inner.Slice(8), ref r, depth + 1);
-            else if (type == C('a', 'v', 'c', '1')) { r.Avc1 = true; if (inner.Length > 78) Walk(inner.Slice(78), ref r, depth + 1); }
+            else if (type == C('a', 'v', 'c', '1') || type == C('a', 'v', 'c', '3')) { r.Avc1 = true; if (inner.Length > 78) Walk(inner.Slice(78), ref r, depth + 1); }
             else if (type == C('m', 'p', '4', 'a')) { r.Mp4a = true; if (inner.Length > 28) Walk(inner.Slice(28), ref r, depth + 1); }
             else if (type == C('i', 'p', 'c', 'm')) r.Ipcm = true;
             else if (type == C('t', 'x', '3', 'g')) r.Tx3g = true;

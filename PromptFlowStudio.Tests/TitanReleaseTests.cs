@@ -37537,3 +37537,184 @@ public sealed class CompetitorViralSpyIsolatedTests
         Assert.Equal("_competitorViralSpy", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.ResolveKeyByHeader("🕵️ 경쟁 채널 바이럴 스파이 & 역공학"));
     }
 }
+
+/// <summary>v17.98.2 실기 비트스트림 재생 적합성 — SPS RBSP 에뮬레이션 방지 · 4:2:0 CropUnit 정렬 · fMP4 박스 트리/IDR 동기 컨포먼스 · 100 회 무할당.</summary>
+[Collection("TimingSensitivePerformance")]   // 100 회 무할당 · 벽시계 예산 계측 → 비병렬
+public sealed class RealBitstreamPlaybackConformanceIsolatedTests
+{
+    private static int Find(byte[] b, string fourcc, int from = 0)
+    {
+        for (var i = from; i + 4 <= b.Length; i++)
+            if (b[i] == fourcc[0] && b[i + 1] == fourcc[1] && b[i + 2] == fourcc[2] && b[i + 3] == fourcc[3]) return i;
+        return -1;
+    }
+
+    private static int Export(Vpe.FastShortsMuxingHardwareExporterEngine ex, Arh.NaluSmartReMuxer m, byte[] dst, in Vpe.ShortsOverlay ov)
+    {
+        // 출력 AU 순회 — 직전 AU 끝부터 현재 AU 끝까지(AU 앞 주입 파라미터 셋 포함) · DTS(µs) 순 공급
+        ex.BeginClip();
+        var prev = 0;
+        for (var i = 0; i < m.OutCount; i++)
+        {
+            ref readonly var o = ref m.OutAu(i);
+            var end = o.Offset + o.Length;
+            ex.AddVideo(dst.AsSpan(prev, end - prev), o.Dts * 1_000_000 / Arh.NaluSmartReMuxer.Clock);
+            prev = end;
+        }
+        return ex.FinishClip(ov, 98_2) == Vpe.ExportStatus.Ready ? ex.Last.Bytes : -1;
+    }
+
+    [Fact]
+    public void RealBitstreamPlaybackConformance_Check()
+    {
+        // ── CON-3 입력: 규격 Annex-B H.264(High · 4:2:0 · 1920×1088 하단 크롭 → 1080 · VUI 타이밍 · B 2 · GOP 30 · 첫 GOP 만 SPS/PPS) ──
+        const int fps = 30, gop = 30, frames = 180;
+        var st = new Arh.SyntheticAnnexBStream(Arh.NalCodec.H264, frames, gop, 2, fps, false, 0x98_2Fu);
+        var m = new Arh.NaluSmartReMuxer();
+        Assert.Equal(frames, m.Parse(st.Bytes, Arh.NalCodec.H264));
+        m.SetTimestamps(st.Pts, st.Dts);
+        var origin = long.MaxValue; foreach (var p in st.Pts) origin = Math.Min(origin, p);
+        var originMs = (int)((origin * 1000 + Arh.NaluSmartReMuxer.Clock - 1) / Arh.NaluSmartReMuxer.Clock);
+        var cuts = new[] { new Arh.RemuxCut(originMs, originMs + frames * 1000 / fps) };
+        var punches = new[] { originMs + 1500, originMs + 4500 };   // GOP 1 · GOP 4
+        var dst = new byte[st.Bytes.Length + 8192];
+
+        // 원 SPS — 적합(에뮬레이션 방지 포함 · 구문 종료 = 정지 비트)
+        var guard = new Arh.BitstreamRbspConformanceSafetyEngine();
+        var srcSps = -1;
+        for (var i = 0; i < m.NalCount && srcSps < 0; i++) if (m.Nal(i).ParamSet && m.Nal(i).Type == 7) srcSps = i;
+        var spsNal = st.Bytes.AsSpan(m.Nal(srcSps).Offset, m.Nal(srcSps).Length).ToArray();
+        Assert.Equal(Arh.RbspConformanceFault.None, guard.Validate(spsNal));
+        Assert.True(guard.Last.Profile == 100 && guard.Last.ChromaFormatIdc == 1 && guard.Last.WidthPx == 1920 && guard.Last.HeightPx == 1088 && guard.Last.VisibleW == 1920 && guard.Last.VisibleH == 1080, "원 SPS " + guard.Last.VisibleW + "x" + guard.Last.VisibleH);
+        Assert.True(guard.Last.Timing && guard.Last.TimeScale == 2 * fps && guard.Last.EmulationPreventionBytes > 0, "VUI/EP " + guard.Last.EmulationPreventionBytes);
+
+        // ── CON-1: 줌 펀치 리먹스(1.3×) → 크롭 SPS 전량 적합 · CropUnit 2×2 정렬 · 무손실 ──
+        var w = m.Remux(st.Bytes, cuts, ReadOnlySpan<Arh.WarpKnot>.Empty, st.FrameTicks, dst, punches, 1.3f);
+        Assert.True(w > 0);
+        Assert.Equal(0, m.VerifyLossless(st.Bytes, dst.AsSpan(0, w)));
+        Assert.Equal(2, m.ZeroTranscodePunchGops);
+        Assert.Equal(0, m.ReencodeGops);
+        Assert.Equal(0, m.ConformanceRejects);
+        Assert.Equal(2, m.CroppedSpsNals);
+        var re = new Arh.NaluSmartReMuxer();
+        Assert.Equal(frames, re.Parse(dst.AsSpan(0, w), Arh.NalCodec.H264));
+        int spsSeen = 0, cropped = 0;
+        for (var i = 0; i < re.NalCount; i++)
+        {
+            ref readonly var u = ref re.Nal(i);
+            if (u.Type != 7) continue;
+            spsSeen++;
+            var nal = dst.AsSpan(u.Offset, u.Length);
+            Assert.Equal(Arh.RbspConformanceFault.None, guard.Validate(nal));
+            ref readonly var rp = ref guard.Last;
+            Assert.True(rp.CropUnitX == 2 && rp.CropUnitY == 2 && rp.CropLeft % 2 == 0 && rp.CropRight % 2 == 0 && rp.CropTop % 2 == 0 && rp.CropBottom % 2 == 0, "CropUnit " + rp.CropLeft + "/" + rp.CropTop);
+            Assert.True((rp.VisibleW & 1) == 0 && (rp.VisibleH & 1) == 0 && rp.EmulationPreventionBytes > 0);
+            if (rp.VisibleW < 1920)
+            {
+                cropped++;
+                Assert.InRange(1920f / rp.VisibleW, 1.28f, 1.32f);
+                Assert.InRange(1080f / rp.VisibleH, 1.28f, 1.32f);
+                Assert.True(Math.Abs(rp.CropLeft - rp.CropRight) <= 2 && Math.Abs(rp.CropTop - (rp.CropBottom - 8)) <= 2, "중심 크롭 " + rp.CropLeft + "/" + rp.CropRight + "/" + rp.CropTop + "/" + rp.CropBottom);
+            }
+        }
+        Assert.True(spsSeen == 5 && cropped == 2, "SPS(원 1 · 크롭 주입 2 · 복원 2) " + spsSeen + "/" + cropped);
+
+        // 에뮬레이션 방지 누락 → 거부 · 재주입(Harden) → 적합 · 원문 바이트 복원
+        var crop = new byte[Arh.H264SpsCropRewriter.MaxNal + 64];
+        var cl = m.Cropper.Rewrite(spsNal, 1.3f, crop);
+        Assert.True(cl > 0);
+        var cropNal = crop.AsSpan(0, cl).ToArray();
+        var hdr = Arh.BitstreamRbspConformanceSafetyEngine.StartCodeLength(cropNal) + 1;
+        var raw = new byte[cl];
+        cropNal.AsSpan(0, hdr).CopyTo(raw);
+        var rl = Arh.H264SpsCropRewriter.Unescape(cropNal.AsSpan(hdr), raw.AsSpan(hdr));
+        var unescaped = raw.AsSpan(0, hdr + rl).ToArray();
+        Assert.True(unescaped.Length < cropNal.Length);
+        Assert.Equal(Arh.RbspConformanceFault.StartCodeEmulation, guard.Validate(unescaped));
+        var fixedNal = new byte[cl + 16];
+        var hl = guard.Harden(unescaped, fixedNal);
+        Assert.True(fixedNal.AsSpan(0, hl).SequenceEqual(cropNal), "Harden 바이트 복원");
+        Assert.Equal(Arh.RbspConformanceFault.None, guard.Validate(fixedNal.AsSpan(0, hl)));
+        Assert.Equal(cl, guard.Harden(cropNal, fixedNal));   // 정상 03 보존(멱등)
+        // 비트 시프팅 손상 · 바이트 계층 결함
+        var tail = new byte[cl + 1]; cropNal.CopyTo(tail, 0); tail[cl] = 0x80;
+        Assert.Equal(Arh.RbspConformanceFault.TrailingBits, guard.Validate(tail));
+        tail[cl] = 0x00;
+        Assert.Equal(Arh.RbspConformanceFault.TrailingZero, guard.Validate(tail));
+        Assert.Equal(Arh.RbspConformanceFault.BadEscape, guard.Validate(new byte[] { 0, 0, 0, 1, 0x67, 0x64, 0, 0, 3, 0x40, 0x80 }));
+        Assert.Equal(Arh.RbspConformanceFault.ForbiddenBit, guard.Validate(new byte[] { 0, 0, 1, 0xE7, 0x64, 0, 0x28, 0x80 }));
+        Assert.Equal(Arh.RbspConformanceFault.NotSps, guard.Validate(new byte[] { 0, 0, 1, 0x68, 0xEE, 0x3C, 0x80 }));
+        // 4:2:0 픽셀 크롭 → CropUnit 2 배수 정렬
+        int l = 3, r = 5, t = 1, b = 7;
+        Assert.True(Arh.BitstreamRbspConformanceSafetyEngine.AlignCrop(1, true, ref l, ref r, ref t, ref b));
+        Assert.True(l == 2 && r == 4 && t == 0 && b == 6);
+        Assert.False(Arh.BitstreamRbspConformanceSafetyEngine.AlignCrop(1, true, ref l, ref r, ref t, ref b));
+        l = 6; r = 6; t = 6; b = 6;
+        Assert.True(Arh.BitstreamRbspConformanceSafetyEngine.AlignCrop(1, false, ref l, ref r, ref t, ref b) && t == 4 && b == 4 && l == 6);   // 필드 = 세로 4
+
+        // ── CON-2: fMP4 컨포먼스 — 크롭 SPS 인밴드(avc3) · 박스 트리 · 9:16 tkhd · IDR 동기 ──
+        var ex = new Vpe.FastShortsMuxingHardwareExporterEngine();
+        var ov = new Vpe.ShortsOverlay { CropX = 656, Caption = 0, CaptionBox = Vh.HookBox.Centered(0.5f, 0.78f, 0.8f, 0.12f), Preset = Kbr.HormoziPreset.HormoziYellow, BounceScale = 1.15f, SpikeMs = 2_000 };
+        var v = new Vpe.IsoBmffFragmentedMp4ConformanceValidator();
+        var bytes = Export(ex, m, dst, ov);
+        Assert.True(bytes > 0 && ex.InBandParameterSets);
+        var mp4 = ex.Output.ToArray();
+        Assert.True(Vpe.FastShortsMuxingHardwareExporterEngine.TryInspect(mp4, out _));
+        Assert.Equal(Vpe.Fmp4Fault.None, v.Validate(mp4));
+        var rep = v.Last;
+        Assert.True(rep.Avc3 && rep.VideoSamples == frames && rep.SyncSamples == frames / gop && rep.Fragments == 1 && rep.Tracks == 2, "fMP4 " + rep.VideoSamples + "/" + rep.SyncSamples + "/" + rep.Tracks);
+        Assert.True(rep.TkhdWidth == 1080 && rep.TkhdHeight == 1920 && rep.RotationDeg == 0 && rep.LengthSize == 4 && rep.MajorBrand == Vpe.FastShortsMuxingHardwareExporterEngine.C('i', 's', 'o', 'm'));
+        Assert.True(rep.InBandSps >= 2 && rep.SpsChecked == rep.InBandSps + 1, "SPS 검증 " + rep.SpsChecked + "/" + rep.InBandSps);
+
+        // 크롭 없음 → avc1(파라미터 셋 avcC 단일) · 인밴드 0
+        var w0 = m.Remux(st.Bytes, cuts, ReadOnlySpan<Arh.WarpKnot>.Empty, st.FrameTicks, dst);
+        Assert.True(w0 == st.Bytes.Length && Export(ex, m, dst, ov) > 0 && !ex.InBandParameterSets);
+        Assert.Equal(Vpe.Fmp4Fault.None, v.Validate(ex.Output.Span));
+        Assert.True(!v.Last.Avc3 && v.Last.InBandSps == 0 && v.Last.SyncSamples == frames / gop);
+
+        // 결함 주입 — 첫 결함 정확 분류
+        Vpe.Fmp4Fault Corrupt(Action<byte[]> mutate) { var c = (byte[])mp4.Clone(); mutate(c); return v.Validate(c); }
+        var trun = Find(mp4, "trun");
+        var tkhd = Find(mp4, "tkhd");
+        var avcC = Find(mp4, "avcC");
+        Assert.Equal(Vpe.Fmp4Fault.FirstSampleSync, Corrupt(c => System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(c.AsSpan(trun + 24), Vpe.FastShortsMuxingHardwareExporterEngine.NonSyncFlags)));
+        Assert.Equal(Vpe.Fmp4Fault.FirstSampleSync, Corrupt(c => System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(c.AsSpan(trun + 24), 0x01000000u)));   // depends_on = 1
+        Assert.Equal(Vpe.Fmp4Fault.FirstNalNotIdr, Corrupt(c => System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(c.AsSpan(trun + 36), Vpe.FastShortsMuxingHardwareExporterEngine.SyncFlags)));   // 비 IDR 샘플 동기 표기
+        Assert.Equal(Vpe.Fmp4Fault.SyncFlagMismatch, Corrupt(c => System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(c.AsSpan(trun + 36), 0x02010000u)));   // depends_on = 2 ∧ is_non_sync 모순
+        Assert.Equal(Vpe.Fmp4Fault.Aspect, Corrupt(c => System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(c.AsSpan(tkhd + 80), 1920u << 16)));
+        Assert.Equal(Vpe.Fmp4Fault.Matrix, Corrupt(c => System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(c.AsSpan(tkhd + 76), 0)));
+        Assert.Equal(Vpe.Fmp4Fault.Brand, Corrupt(c => { c[8] = (byte)'x'; c[16] = (byte)'x'; }));
+        Assert.Equal(Vpe.Fmp4Fault.BoxSize, Corrupt(c => { var mv = Find(c, "moov") - 4; System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(c.AsSpan(mv), System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(c.AsSpan(mv)) + 1); }));
+        Assert.Equal(Vpe.Fmp4Fault.InBandParamsInAvc1, Corrupt(c => c[Find(c, "avc3") + 3] = (byte)'1'));
+        Assert.Equal(Vpe.Fmp4Fault.SpsConformance, Corrupt(c => { var len = System.Buffers.Binary.BinaryPrimitives.ReadUInt16BigEndian(c.AsSpan(avcC + 10)); c[avcC + 12 + len - 1] = 0; }));
+        Assert.Equal(Vpe.Fmp4Fault.DataOffset, Corrupt(c => System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(c.AsSpan(trun + 12), int.MaxValue / 2)));
+        Assert.Equal(Vpe.Fmp4Fault.FtypNotFirst, v.Validate(mp4.AsSpan(Find(mp4, "moov") - 4)));
+        Assert.Equal(Vpe.Fmp4Fault.None, v.Validate(mp4));
+
+        // ── 무할당: 워밍업 후 리먹스 → SPS 가드 → fMP4 인출 → 컨포먼스 100 회 ──
+        for (var k = 0; k < 3; k++)
+        {
+            m.Remux(st.Bytes, cuts, ReadOnlySpan<Arh.WarpKnot>.Empty, st.FrameTicks, dst, punches, 1.3f);
+            guard.Validate(cropNal);
+            Export(ex, m, dst, ov);
+            v.Validate(ex.Output.Span);
+        }
+        var faults = 0;
+        var sw = Stopwatch.StartNew();
+        var a0 = GC.GetAllocatedBytesForCurrentThread();
+        for (var k = 0; k < 100; k++)
+        {
+            var n = m.Remux(st.Bytes, cuts, ReadOnlySpan<Arh.WarpKnot>.Empty, st.FrameTicks, dst, punches, 1.3f);
+            if (n <= 0 || m.ConformanceRejects != 0 || m.ZeroTranscodePunchGops != 2) faults++;
+            if (guard.Validate(cropNal) != Arh.RbspConformanceFault.None) faults++;
+            if (Export(ex, m, dst, ov) <= 0) faults++;
+            if (v.Validate(ex.Output.Span) != Vpe.Fmp4Fault.None || !v.Last.Avc3) faults++;
+        }
+        var alloc = GC.GetAllocatedBytesForCurrentThread() - a0;
+        sw.Stop();
+        Assert.Equal(0, faults);
+        Assert.True(alloc == 0, "컨포먼스 핫패스 할당 " + alloc);
+        Assert.True(sw.Elapsed.TotalMilliseconds / 100 < 100, "1 사이클 " + sw.Elapsed.TotalMilliseconds / 100 + " ms");
+        Assert.True(guard.Rejects >= 5 && v.Rejects >= 12 && m.RbspGuard.Rejects == 0);
+    }
+}

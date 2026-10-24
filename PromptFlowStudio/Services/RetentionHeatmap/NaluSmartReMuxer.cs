@@ -33,6 +33,7 @@ public readonly record struct RemuxCut(int SrcStartMs, int SrcEndMs);
 ///   ▸ 타임스탬프: 템포 맵(<see cref="WarpKnot"/>)으로 PTS/DTS 동일 재매핑 → 세그먼트 연결 오프셋 → DTS 엄격 증가 · PTS ≥ DTS 보정(보정 횟수 계측).
 ///   ▸ NAL 바이트는 원문 그대로 복사(무손실) — <see cref="VerifyLossless"/>가 출력 재파싱 후 NAL 단위 바이트 일치를 검증.
 ///   ▸ [v17.98.1] 줌 펀치(H.264): 펀치 GOP 의 SPS 를 <see cref="H264SpsCropRewriter"/>로 frame_cropping 비트 재작성(재인코딩 0) → 다음 GOP 에서 원 SPS 복원 — <see cref="ZeroTranscodePunchGops"/>.
+///     [v17.98.2] 재작성 SPS 는 <see cref="BitstreamRbspConformanceSafetyEngine"/> 적합 판정 후에만 출력(<see cref="ConformanceRejects"/>).
 ///     H.265 · SPS 파싱 실패 · 크롭 비활성은 픽셀 변경을 스트림 복사로 표현 불가 → <see cref="ReencodeGops"/>로 정직 보고(인코더 없음 · 위장 금지).
 ///   ▸ 사전 할당 버퍼만 사용 — Parse/Remux/Verify 무할당.
 /// </summary>
@@ -45,6 +46,7 @@ public sealed class NaluSmartReMuxer
     private readonly int[] _outSrcAu;
     private readonly int[] _emitted = new int[3];   // 출력에 이미 실린 파라미터 셋(슬롯 VPS/SPS/PPS → 원본 NAL 인덱스)
     private readonly H264SpsCropRewriter _crop = new();
+    private readonly BitstreamRbspConformanceSafetyEngine _rbspGuard = new();
     private readonly byte[] _spsBuf = new byte[H264SpsCropRewriter.MaxNal + 64];
     private int _nalN, _auN, _outN, _vNalN, _spsLen;
     private float _cropZoom;
@@ -78,6 +80,10 @@ public sealed class NaluSmartReMuxer
     /// <summary>SPS 크롭 재작성 1 회 최대 소요(µs).</summary>
     public double MaxCropUs { get; private set; }
     public H264SpsCropRewriter Cropper => _crop;
+    /// <summary>[v17.98.2] 크롭 SPS 적합성 가드(에뮬레이션 방지 · 구문 종료 · CropUnit 정렬).</summary>
+    public BitstreamRbspConformanceSafetyEngine RbspGuard => _rbspGuard;
+    /// <summary>[v17.98.2] 적합성 가드가 거부한 크롭 SPS 수(거부 시 해당 GOP 는 재인코딩 필요로 정직 보고).</summary>
+    public int ConformanceRejects { get; private set; }
     public int TimestampRepairs { get; private set; }
     public long PaddingTicks { get; private set; }
     public long OutEndTicks { get; private set; }
@@ -202,7 +208,7 @@ public sealed class NaluSmartReMuxer
         if (!IsMonotonic(warp)) throw new ArgumentException("warp knots must be monotonic", nameof(warp));
         var t0 = Stopwatch.GetTimestamp();
         _outN = 0; OutBytes = 0; CopiedGops = 0; InjectedParamNals = 0; ReencodeGops = 0; TimestampRepairs = 0; PaddingTicks = 0; OutEndTicks = 0;
-        ZeroTranscodePunchGops = 0; CroppedSpsNals = 0; MaxCropUs = 0;
+        ZeroTranscodePunchGops = 0; CroppedSpsNals = 0; MaxCropUs = 0; ConformanceRejects = 0;
         _cropZoom = cropZoom; _cropActive = false;
         long offset = 0, prevDts = long.MinValue;
         var w = 0;
@@ -353,6 +359,8 @@ public sealed class NaluSmartReMuxer
         ref readonly var u = ref _nal[idx];
         _spsLen = _crop.Rewrite(src.Slice(u.Offset, u.Length), _cropZoom, _spsBuf);
         if (_crop.LastUs > MaxCropUs) MaxCropUs = _crop.LastUs;
+        // [v17.98.2] 플레이어 투입 전 적합성 게이트 — 에뮬레이션 방지 누락 · 비트 시프팅 손상 · 크로마 비정렬 크롭은 출력 금지
+        if (_spsLen > 0 && _rbspGuard.Validate(_spsBuf.AsSpan(0, _spsLen)) != RbspConformanceFault.None) { ConformanceRejects++; _spsLen = -1; }
         return _spsLen;
     }
 
