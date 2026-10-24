@@ -15,6 +15,10 @@
             </div>
             <button class="kbr-x" @onclick="Close">✕</button>
         </div>
+        @if (Pipeline is not null)
+        {
+            <div class="kbr-sub" title="숏폼 팩토리 ① 절삭 구간 대본만 자막 엔진에 재슬라이싱">🏭 팩토리 ② — 구간 @(PipeSec(Pipeline.Trim.Start))–@(PipeSec(Pipeline.Trim.End)) · 대본 @(Pipeline.Caption.WordCount)단어 · @(WordByWordKineticSubtitleEngine.PresetName(Pipeline.Caption.Preset)) · 보이스 #@(Pipeline.Caption.VoicePreset)</div>
+        }
 
         <div class="kbr-bar">
             <button class="kbr-btn hot" @onclick="Rebuild">🎬 대본 분석 & 인서트 재구성</button>
@@ -139,9 +143,30 @@
 
     private static string Hex(uint c) => "#" + (c & 0xFFFFFF).ToString("X6", CultureInfo.InvariantCulture);
 
+    /// <summary>[v18.0.1] 숏폼 팩토리 워크스페이스 안에서만 주입(단독 실행 시 null).</summary>
+    [CascadingParameter] public PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext? Pipeline { get; set; }
+    private int _pipeRev = -1;
+
+    private static string PipeSec(TimeSpan t) => t.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture) + "s";
+
+    /// <summary>파이프라인 Revision 이 바뀌면 절삭 구간 대본 · 프리셋을 러너(싱글톤 엔진)에 관통.</summary>
+    private void OnPipeline(PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext p)
+    {
+        if (p.Revision == _pipeRev) return;
+        _pipeRev = p.Revision;
+        try
+        {
+            if (Runner.Script != p.BuildSlicedScript()) Runner.SetScript(p.BuildSlicedScript());
+            if (Runner.Preset != p.Caption.Preset) Runner.SetPreset(p.Caption.Preset);
+        }
+        catch (Exception ex) { PromptFlowStudio.Program.Log("KineticBRoll.Modal.Pipeline", ex); }
+        _ = InvokeAsync(StateHasChanged);
+    }
+
     protected override void OnInitialized()
     {
         Runner.OnChange += OnServiceChanged;
+        if (Pipeline is not null) { Pipeline.Hydrated += OnPipeline; OnPipeline(Pipeline); }
         _timer = new System.Threading.Timer(_ =>
         {
             try { _ = InvokeAsync(StateHasChanged); }
@@ -169,6 +194,7 @@
     public void Dispose()
     {
         Runner.OnChange -= OnServiceChanged;
+        if (Pipeline is not null) Pipeline.Hydrated -= OnPipeline;
         _timer?.Dispose();
     }
 }

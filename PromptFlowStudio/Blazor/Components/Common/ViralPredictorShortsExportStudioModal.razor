@@ -16,6 +16,10 @@
             </div>
             <button class="vpe-x" @onclick="Close">✕</button>
         </div>
+        @if (Pipeline is not null)
+        {
+            <div class="vpe-sub" title="숏폼 팩토리 ①~③ 결합 원자적 fMP4 렌더 스펙">🏭 팩토리 ④ — 인출 @((Pipeline.Manifest.DurationMs / 1000.0).ToString("0.0", CultureInfo.InvariantCulture))s · 썸네일 피크 #@(Pipeline.Manifest.ThumbnailPeakFrame) · 9:16 X @(Pipeline.Reframe.BoxX) · 예상 @((Pipeline.Manifest.EstimatedBytes / 1_048_576.0).ToString("0.0", CultureInfo.InvariantCulture)) MB</div>
+        }
 
         <div class="vpe-body">
             <div class="vpe-bar">
@@ -213,9 +217,15 @@
     private ulong _inspHash;
     private string? _url;
 
+    /// <summary>[v18.0.1] 숏폼 팩토리 워크스페이스 안에서만 주입(단독 실행 시 null).</summary>
+    [CascadingParameter] public PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext? Pipeline { get; set; }
+
+    private void OnPipeline(PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext p) => _ = InvokeAsync(StateHasChanged);
+
     protected override void OnInitialized()
     {
         Runner.OnChange += OnServiceChanged;
+        if (Pipeline is not null) Pipeline.Hydrated += OnPipeline;
         _timer = new System.Threading.Timer(_ =>
         {
             try { if (Runner.Exporting) _ = InvokeAsync(StateHasChanged); }
@@ -318,6 +328,7 @@
     public void Dispose()
     {
         Runner.OnChange -= OnServiceChanged;
+        if (Pipeline is not null) Pipeline.Hydrated -= OnPipeline;
         _timer?.Dispose();
     }
 }

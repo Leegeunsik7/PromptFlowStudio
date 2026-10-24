@@ -3,7 +3,8 @@
 
 @* [PromptFlow Studio v18.0.0] 🏭 원스톱 숏폼 AI 팩토리 — v17.77 세이프존 훅 · v17.78 키네틱 자막 · v17.82 다국어 더빙 · v17.84 킬러클립 · v17.85 예측/익스포터 ·
    v17.91 저작권 · v17.98 리텐션 리먹서를 4 단계 탭으로 통합. 각 엔진 모달은 그대로 하위 탭에 주입하고, 탭 간 값은 ShortsFactoryWorkspaceContext 1 개로 공유한다. *@
-<div class="sw-docked" style="--sw-dock-h: 128px">
+@* [v18.0.1] ShortsFactoryPipelineContext 가 상단 바 값을 4 단계 엔진 파라미터로 관통 → 하위 엔진 모달에 CascadingValue 로 전달 · Alt+1~4 단계 전환. *@
+<div class="sw-docked" style="--sw-dock-h: 128px" tabindex="-1" @onkeydown="OnStageKey">
     <StudioWorkspaceDock Workspace="_ws" Tab="_tab" Member="_member" OnRoute="Go" OnClose="Close">
         <div class="swd-row sfw-ctx">
             @for (var i = 0; i < ShortsFactoryWorkspaceContext.StageCount; i++)
@@ -18,6 +19,7 @@
                     <label class="sfw-f">시작 @(Sec(Ctx.ClipInMs))<input type="range" min="0" max="@((ShortsFactoryWorkspaceContext.SourceMs - Ctx.DurationMs) / 1000)" value="@(Ctx.ClipInMs / 1000)" aria-label="클립 시작(초)" @oninput="OnClipStart" /></label>
                     <label class="sfw-f">길이 @(Sec(Ctx.DurationMs))<input type="range" min="3" max="60" value="@(Ctx.DurationMs / 1000)" aria-label="클립 길이(초)" @oninput="OnClipLength" /></label>
                     <label class="sfw-f">9:16 중심 @(Ctx.ReframeCenterPermille / 10)%<input type="range" min="0" max="100" value="@(Ctx.ReframeCenterPermille / 10)" aria-label="리프레임 중심(%)" @oninput="OnReframe" /></label>
+                    <span class="sfw-hy" title="9:16 바운딩 박스(원본 1920×1080 기준)">⬚ X @(Pipeline.Reframe.BoxX) · @(Pipeline.Reframe.BoxWidth)×@(Pipeline.Reframe.BoxHeight)</span>
                     break;
                 case 1:
                     <select class="sfw-sel" value="@(Ctx.CaptionPreset)" aria-label="자막 프리셋" @onchange="OnPreset">
@@ -28,13 +30,16 @@
                     <button type="button" class='sfw-tg @(Ctx.HasLanguage(ShortsFactoryWorkspaceContext.LangEn) ? "on" : null)' aria-pressed='@(Ctx.HasLanguage(ShortsFactoryWorkspaceContext.LangEn) ? "true" : "false")' aria-label="더빙 EN" @onclick="() => Ctx.ToggleLanguage(ShortsFactoryWorkspaceContext.LangEn)">EN</button>
                     <button type="button" class='sfw-tg @(Ctx.HasLanguage(ShortsFactoryWorkspaceContext.LangEs) ? "on" : null)' aria-pressed='@(Ctx.HasLanguage(ShortsFactoryWorkspaceContext.LangEs) ? "true" : "false")' aria-label="더빙 ES" @onclick="() => Ctx.ToggleLanguage(ShortsFactoryWorkspaceContext.LangEs)">ES</button>
                     <button type="button" class='sfw-tg @(Ctx.HasLanguage(ShortsFactoryWorkspaceContext.LangJa) ? "on" : null)' aria-pressed='@(Ctx.HasLanguage(ShortsFactoryWorkspaceContext.LangJa) ? "true" : "false")' aria-label="더빙 JA" @onclick="() => Ctx.ToggleLanguage(ShortsFactoryWorkspaceContext.LangJa)">JA</button>
+                    <span class="sfw-hy" title="① 절삭 구간 대본만 자막 엔진에 재슬라이싱">📝 대본 @(Pipeline.Caption.WordCount)단어</span>
                     break;
                 case 2:
                     <label class="sfw-f">줌 펀치 @(Ctx.ZoomPunchCount)회<input type="range" min="0" max="@(ShortsFactoryWorkspaceContext.MaxZoomPunches)" value="@(Ctx.ZoomPunchCount)" aria-label="줌 펀치 횟수" @oninput="OnPunches" /></label>
                     <button type="button" class='sfw-tg @(Ctx.BgmSafe ? "on" : null)' aria-pressed='@(Ctx.BgmSafe ? "true" : "false")' aria-label="안전 BGM 치환" @onclick="() => Ctx.SetBgmSafe(!Ctx.BgmSafe)">🛡 안전 BGM 치환</button>
+                    <span class="sfw-hy" title="절삭 구간 내 이탈 슬럼프 → NaluSmartReMuxer 컷 · 펀치 타임코드">📉 슬럼프 @(Pipeline.RetentionAudio.SlumpCount)곳 · 펀치 @(Pipeline.RetentionAudio.PunchCount)</span>
                     break;
                 default:
                     <label class="sfw-f">썸네일 @(Sec(Ctx.ThumbnailAtMs))<input type="range" min="0" max="100" value="@(Ctx.ThumbnailPermille / 10)" aria-label="썸네일 위치(%)" @oninput="OnThumb" /></label>
+                    <span class="sfw-hy" title="fMP4 인출 예상 길이 · 썸네일 피크 프레임">⏱ @(Sec(Pipeline.Manifest.DurationMs)) · 피크 #@(Pipeline.Manifest.ThumbnailPeakFrame)</span>
                     break;
             }
             <button type="button" class="sfw-go" disabled="@(!Ctx.CanCommit(_tab))" title="@(Ctx.CanCommit(_tab) ? "이 단계 값을 확정합니다" : "앞 단계를 먼저 확정하세요")" @onclick="CommitStage">@(CommitLabel())</button>
@@ -42,6 +47,7 @@
         </div>
     </StudioWorkspaceDock>
 
+    <CascadingValue Value="Pipeline" IsFixed="true">
     @switch (MemberKey)
     {
         case "_liveAutoClipper":
@@ -69,6 +75,7 @@
             <ReelsVisualPolishStudioModal OnClose="Close" />
             break;
     }
+    </CascadingValue>
 </div>
 
 <style>
@@ -84,6 +91,7 @@
     .sfw-tg.on { background: #155e75; border-color: #22d3ee; color: #fff; }
     .sfw-go { background: #0369a1; color: #fff; border: 1px solid #0ea5e9; border-radius: 6px; padding: 4px 11px; font-size: 11px; font-weight: 700; cursor: pointer; }
     .sfw-go:disabled { opacity: .45; cursor: not-allowed; }
+    .sfw-hy { font-size: 10.5px; color: #7dd3fc; white-space: nowrap; }
     .sfw-rs { background: none; border: 1px solid #334155; color: #94a3b8; border-radius: 6px; padding: 3px 7px; cursor: pointer; }
 </style>
 
@@ -98,6 +106,8 @@
 
     /// <summary>4 단계 탭 공유 컨텍스트 — 모달 수명 동안 1 개(탭 전환 시 재생성 없음).</summary>
     public ShortsFactoryWorkspaceContext Ctx { get; } = new();
+    /// <summary>[v18.0.1] Ctx → ①~④ 엔진 파라미터 관통 상태 — 하위 엔진 모달에 CascadingValue 로 주입.</summary>
+    public ShortsFactoryPipelineContext Pipeline { get; } = new();
 
     private readonly int _ws = StudioWorkspaceCatalog.IndexOfModal(StudioWorkspaceCatalog.ShortsModalKey);
     private int _tab, _member, _stamp = -1;
@@ -106,9 +116,25 @@
 
     protected override void OnParametersSet()
     {
+        Pipeline.Hydrate(Ctx);
         if (_stamp == RouteStamp) return;
         _stamp = RouteStamp;
         Apply(InitialTab, InitialMember);
+    }
+
+    /// <summary>모든 Ctx 변경(슬라이더 · 토글 · 초기화 · 확정)은 이벤트 → 재렌더를 거치므로 렌더 직전에 관통한다(Revision 동일 시 no-op).</summary>
+    protected override bool ShouldRender()
+    {
+        Pipeline.Hydrate(Ctx);
+        return true;
+    }
+
+    /// <summary>Alt+1~4 — 단계 탭 전환(셸 단축키 Alt+0/H 와 겹치지 않음).</summary>
+    private Task OnStageKey(KeyboardEventArgs e)
+    {
+        if (!e.AltKey || e.Key is not { Length: 1 } k || k[0] < '1' || k[0] >= '1' + ShortsFactoryWorkspaceContext.StageCount) return Task.CompletedTask;
+        var tab = k[0] - '1';
+        return tab == _tab ? Task.CompletedTask : Go(new WorkspaceSubTabRoute(_ws, tab, 0));
     }
 
     private Task Go(WorkspaceSubTabRoute r)

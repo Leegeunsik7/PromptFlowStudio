@@ -20,6 +20,10 @@
                 <button class="arh-x" @onclick="Close">✕</button>
             </div>
         </div>
+        @if (Pipeline is not null)
+        {
+            <div class="arh-sub" title="숏폼 팩토리 ① 절삭 구간 → NaluSmartReMuxer 컷 · 구간 내 이탈 슬럼프 · SPS 줌 펀치 타임코드">🏭 팩토리 ③ — 리먹서 컷 @(Pipeline.RemuxCuts[0].SrcStartMs / 1000)–@(Pipeline.RemuxCuts[0].SrcEndMs / 1000)s · 슬럼프 @(Pipeline.RetentionAudio.SlumpCount)곳 · 펀치 @(Pipeline.RetentionAudio.PunchCount)회 · BGM @(Pipeline.RetentionAudio.BgmVolumePermille / 10)%</div>
+        }
 
         <div class="arh-body">
             <div class="arh-bar">
@@ -252,7 +256,16 @@
 
     private int SrcMs => Math.Max(1, Runner.Detector.DurationSec * 1000);
 
-    protected override void OnInitialized() => Runner.OnChange += OnServiceChanged;
+    /// <summary>[v18.0.1] 숏폼 팩토리 워크스페이스 안에서만 주입(단독 실행 시 null).</summary>
+    [CascadingParameter] public PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext? Pipeline { get; set; }
+
+    private void OnPipeline(PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext p) => _ = InvokeAsync(StateHasChanged);
+
+    protected override void OnInitialized()
+    {
+        Runner.OnChange += OnServiceChanged;
+        if (Pipeline is not null) Pipeline.Hydrated += OnPipeline;
+    }
 
     private void RescueNow() => Guard(() => Runner.Rescue(), "Rescue");
     private void Reanalyze() => Guard(() => Runner.SetThresholdTenths(Runner.ThresholdTenths), "Analyze");
@@ -308,5 +321,9 @@
 
     private void OnServiceChanged() => _ = InvokeAsync(StateHasChanged);
 
-    public void Dispose() => Runner.OnChange -= OnServiceChanged;
+    public void Dispose()
+    {
+        Runner.OnChange -= OnServiceChanged;
+        if (Pipeline is not null) Pipeline.Hydrated -= OnPipeline;
+    }
 }

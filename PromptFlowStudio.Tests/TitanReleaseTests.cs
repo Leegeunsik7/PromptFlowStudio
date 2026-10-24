@@ -37879,3 +37879,104 @@ public sealed class SuperWorkspaceConsolidationTests
         Assert.True(sink > 0);
     }
 }
+
+/// <summary>v18.0.1: 숏폼 팩토리 심층 파이프라인 하이드레이션 — ① 절삭/리프레임 변경 → ② 대본 재슬라이싱 · ③ 슬럼프/펀치/리먹서 컷 · ④ 길이/썸네일 피크 단절 0 · 동기화 디스패치 무할당.</summary>
+[Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
+public sealed class ShortsFactoryDeepPipelineHydrationTests
+{
+    [Fact]
+    public void ShortsFactory_DeepPipeline_Hydration_Check()
+    {
+        var ws = new PromptFlowStudio.Services.Ui.ShortsFactoryWorkspaceContext();
+        var p = new PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext();
+        var dispatched = 0;
+        p.Hydrated += _ => dispatched++;
+        Assert.True(p.Hydrate(ws));
+        Assert.False(p.Hydrate(ws));   // Revision 동일 → no-op · 디스패치 없음
+        Assert.Equal(1, dispatched);
+        Assert.True(p.IsCoherent(ws));
+
+        // 1) ① 절삭 · 리프레임 변경 → 관통 전에는 단절 감지, 관통 후 ②③④ 전부 일치
+        ws.SetClip(30_000, 25_000);
+        ws.SetReframeCenter(620);
+        Assert.False(p.IsCoherent(ws));
+        Assert.True(p.Hydrate(ws));
+        Assert.True(p.IsCoherent(ws));
+        ref readonly var m = ref p.Manifest;
+        Assert.Equal(TimeSpan.FromSeconds(30), m.Trim.Start);
+        Assert.Equal(TimeSpan.FromSeconds(55), m.Trim.End);
+        Assert.Equal(900L, m.Trim.StartFrame);
+        Assert.Equal(886, p.Reframe.BoxX);
+        Assert.Equal(PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext.BoxWidth, m.Reframe.BoxWidth);
+        // ② 구간 대본만 재슬라이싱(30 s / 0.4 s = 75 번째 단어부터 55 s 이전까지 62 단어)
+        Assert.Equal(75, p.Caption.WordStart);
+        Assert.Equal(62, p.Caption.WordCount);
+        var script = p.BuildSlicedScript();
+        Assert.Equal(62, script.Split(' ').Length);
+        Assert.StartsWith(PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext.Word(75) + " ", script, StringComparison.Ordinal);
+        Assert.Same(script, p.BuildSlicedScript());
+        // ③ 구간 내 슬럼프(36 s · 51 s) → 펀치는 슬럼프 0.5 s 전 우선 + 균등 1 · 리먹서 컷 = 절삭 구간
+        Assert.Equal(new[] { 36_000, 51_000 }, p.SlumpPointsMs.ToArray());
+        Assert.Equal(new[] { 35_500, 42_500, 50_500 }, p.PunchTimecodesMs.ToArray());
+        Assert.Equal(new PromptFlowStudio.Services.RetentionHeatmap.RemuxCut(30_000, 55_000), p.RemuxCuts[0]);
+        // ④ 인출 길이 · 크기 · 썸네일 피크(구간 안 · 30 fps 프레임)
+        Assert.Equal(25_000, m.DurationMs);
+        Assert.Equal(25_000L * PromptFlowStudio.Services.Ui.ShortsFactoryWorkspaceContext.ExportBytesPerMs, m.EstimatedBytes);
+        Assert.InRange(m.ThumbnailPeakMs, 30_000, 54_999);
+        Assert.Equal((long)m.ThumbnailPeakMs * 30 / 1000, m.ThumbnailPeakFrame);
+        Assert.True(m.Trim.Revision == m.Revision && m.Caption.Revision == m.Revision && m.Retention.Revision == m.Revision && m.Reframe.Revision == m.Revision);
+
+        // 2) ②③ 상단 바 값도 엔진 파라미터로 관통
+        ws.SetCaptionPreset(1);
+        ws.ToggleLanguage(PromptFlowStudio.Services.Ui.ShortsFactoryWorkspaceContext.LangJa);
+        ws.SetZoomPunches(5);
+        ws.SetBgmSafe(false);
+        Assert.True(p.Hydrate(ws));
+        Assert.True(p.IsCoherent(ws));
+        Assert.Equal(PromptFlowStudio.Services.KineticBRoll.HormoziPreset.NeonCyber, p.Caption.Preset);
+        Assert.Equal(1, p.Caption.VoicePreset);
+        Assert.Equal(5, p.RetentionAudio.PunchCount);
+        Assert.Equal(0, p.RetentionAudio.BgmVolumePermille);
+        Assert.Equal(2, p.RetentionAudio.SlumpCount);
+
+        // 3) 전 구간 스윕(시작 0~117 s × 길이 3~60 s) — 단절 0
+        var broken = 0;
+        for (var s = 0; s <= 117; s++)
+            for (var len = 3; len <= 60; len++)
+            {
+                ws.SetClip(s * 1_000, len * 1_000);
+                ws.SetThumbnail((s * 37 + len) % 1001);
+                p.Hydrate(ws);
+                if (!p.IsCoherent(ws)) broken++;
+            }
+        Assert.Equal(0, broken);
+
+        // 4) 구독자 예외 격리 — 상태는 확정 · 다른 구독자 계속
+        Action<PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext> bad = _ => throw new InvalidOperationException("boom");
+        p.Hydrated += bad;
+        ws.SetClip(10_000, 20_000);
+        Assert.True(p.Hydrate(ws));
+        Assert.True(p.IsCoherent(ws));
+        p.Hydrated -= bad;
+
+        // 5) 무할당 — 상태 동기화 이벤트 디스패치 루프 100 회 0 B
+        long sink = 0;
+        void Hot()
+        {
+            for (var i = 0; i < 100; i++)
+            {
+                ws.SetClip(i * 997 % 100_000, 5_000 + i * 300);
+                ws.SetZoomPunches(i % 9);
+                ws.SetThumbnail(i * 10);
+                p.Hydrate(ws);
+                if (p.IsCoherent(ws)) sink += p.Manifest.DurationMs + p.SlumpPointsMs.Length + p.PunchTimecodesMs.Length + p.Manifest.ThumbnailPeakFrame;
+            }
+        }
+        Hot();
+        var before = dispatched;
+        var alloc = AllocationProbe.MinAllocated(Hot);
+        Assert.True(alloc == 0, "파이프라인 하이드레이션 디스패치 할당 " + alloc + " B");
+        Assert.True(dispatched - before >= 100);
+        Assert.True(sink > 0);
+    }
+}
