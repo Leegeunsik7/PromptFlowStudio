@@ -58,7 +58,7 @@
                         <div class="inh-card @(idx == _cursor ? "on" : null)" role="option" aria-selected="@(idx == _cursor ? "true" : "false")" @key="e.Key">
                             <div class="inh-rank">@(idx + 1)</div>
                             <div class="inh-main">
-                                <div class="inh-ct"><span class="inh-ic">@(e.Icon)</span><b>@(e.Title)</b><span class="inh-cat">@(StudioCatalog.Categories[e.Category])</span></div>
+                                <div class="inh-ct"><span class="inh-ic">@(e.Icon)</span><b>@(e.Title)</b><span class="inh-cat" title="@(StudioCatalog.Categories[e.Category])">@(StudioWorkspaceCatalog.RouteLabel(e.Key))</span></div>
                                 <div class="inh-fit"><span class="inh-bar"><i style="width:@(h.FitPercent.ToString(CultureInfo.InvariantCulture))%"></i></span><b>@(h.FitPercent)%</b><span>적합도</span></div>
                                 <div class="inh-tags">
                                     @if (h.TitleHit)

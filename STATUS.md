@@ -1,17 +1,17 @@
 # Current Project Status
-- Active Milestone: v17.98.2 완료 (Complete) — 실기 비트스트림 재생 컨포먼스 · 플레이어 하드닝(SPS RBSP 가드 · fMP4 컨포먼스 밸리데이터 · avc3 인밴드 파라미터 셋)
+- Active Milestone: v18.0.0 완료 (Complete) — 175 분절 모달 → 32 엔터프라이즈 슈퍼-워크스페이스 통폐합 · 서브탭 딥링크 라우터 · 원스톱 숏폼 AI 팩토리
 - Build Status: Desktop Release -warnaserror 0/0 · net8.0-ios Release -warnaserror 0/0 · net8.0-android 미검증(SDK/JDK 미설치)
-- Test Suite: 저메모리 단일 스레드(MaxCpuCount=1 · DisableParallelization) 520/520 통과(실패 0 · 건너뜀 0)
-- Sidebar: 7대 카테고리 · 175 엔트리 · 도움말 175/175 · 크롤러 175 마운트 결함 0(카탈로그 변경 없음)
-- Updated At: 2026-10-24 (KST)
+- Test Suite: 저메모리 단일 스레드(MaxCpuCount=1 · DisableParallelization) 522/522 통과(실패 0 · 건너뜀 0)
+- Sidebar: 6 그룹 · 32 워크스페이스(가상프로덕션 4 · 디지털휴먼 4 · 방송MCR 4 · 라이브커머스 3 · 소셜/바이럴 4 · 시스템/코어 13) · 175 기존 키 서브탭 매핑 175/175 · 중복 0
+- Updated At: 2026-10-25 (KST)
 
 ## Completed Deliverables
-- CON-1: `BitstreamRbspConformanceSafetyEngine` — EBSP 계층(00 00 00/01/02 금지 · 00 00 03 뒤 ≤ 03 · 끝 바이트 ≠ 00 · forbidden bit) · SPS 전 구문(VUI/HRD/bitstream_restriction) 파싱 → 종료 비트 = 정지 비트 일치 · CropUnit(4:2:0 = 2×2) 정렬/오버플로 · `Harden`(03 재주입) · `AlignCrop` · 무할당 — `NaluSmartReMuxer` 크롭 SPS 출력 전 게이트(`ConformanceRejects` → 재인코딩 필요 정직 보고)
-- CON-2: `IsoBmffFragmentedMp4ConformanceValidator` — 박스 트리 길이 정합(32/64 bit · size 0) · ftyp 선두 isom/mp42 · moov→moof→mdat 순서 · trex/tkhd(활성 · 직각 행렬 · w = 1.0 · 9:16 회전 반영) · avcC 구조 + SPS 가드 · mfhd 순번 · tfhd/trun 플래그 산출 길이 · data_offset ⊂ mdat · 첫 샘플 is_non_sync 0 ∧ depends_on 2 · AVCC 길이 접두 순회 동기 ⇔ IDR · avc1 인밴드 SPS/PPS 금지 · 무할당
-- 하드닝: `FastShortsMuxingHardwareExporterEngine` — 클립 중 SPS/PPS 변경(크롭 줌 펀치) 시 avc3 샘플 엔트리 + 인밴드 유지(종전: 마지막 SPS 로 avcC 덮어써 펀치 소실/초기 IDR 불일치) · `TryInspect` 첫 VCL 기준 IDR 판정(SEI 선행 허용)
-- CON-3: `RealBitstreamPlaybackConformance_Check`(TimingSensitivePerformance) — 줌 펀치 리먹스 → SPS 5 개 적합/CropUnit · fMP4 avc3/avc1 양 경로 적합 · 결함 주입 12 종 정확 분류 · 100 회 할당 0 B
+- CNS-1: `StudioWorkspaceCatalog` — 32 워크스페이스 · `ResolveWorkspaceSubTabRoute`(키 → 워크스페이스/탭/엔진 · 0 B) · 사이드바 검색이 175 기능 제목까지 읽어 해당 탭 직행 · Ctrl+K 허브 결과에 「워크스페이스 ▸ 탭」 표기 · 통합 모달 외 29 워크스페이스는 기존 엔진 모달 위 `StudioWorkspaceDock` 상단 탭
+- CNS-2: `ShortsStudioWorkspaceModal` — ① 절삭&리프레임 ② 자막&더빙 ③ 리텐션&사운드 ④ 인출&썸네일 · 엔진 8 종 하위 탭 주입 · `ShortsFactoryWorkspaceContext` 탭 공유(순서 강제 · 상류 변경 시 하류 확정 해제 · 무할당)
+- CNS-3: `SocialPublisherWorkspaceModal`(OAuth2 볼트 / 다채널 변형 / A/B 레이스+게이트웨이 3 탭) · `ViralGrowthCommerceWorkspaceModal`(트렌드재킹·스파이·제휴 태거·골든아워 단일 전략 룸)
+- CNS-4: `StudioCatalogHelpRegistry.WorkspaceGuides`(32 종합 가이드 · 도움말 서랍 표시) · `SuperWorkspaceConsolidation_And_SubTabRouting_Check` · 크롤러 `AllSuperWorkspaces_MountAndTabSwitchIntegrity`(32 마운트 · 탭/엔진 전환 결함 0) · 기존 175 모달 크롤 유지
 
 ## Known Issues / 환경 노트
-- 합성 비트스트림 기반 검증 — VLC/WMF/AVPlayer/ExoPlayer 실기 재생 육안 미검증 · 슬라이스/PPS 페이로드는 비규격(구조만)
-- 엑스포터 trun 에 composition offset 미기록(B 프레임 표시 순서 = DTS 공급 의존) · H.265 SPS 크롭 미구현
-- 부하 환경 타이밍 간헐(GPU 스웜 50 ms 게이트 등) · 테스트 프로젝트 기존 분석기 경고 15 · GUI 육안/Android 빌드 미검증
+- 기존 175 엔진 모달 · 백엔드 무변경(하위 탭 주입) — 독 워크스페이스는 엔진 모달 스크림을 독 높이만큼 내리는 CSS 오버라이드 방식(GUI 육안 미검증)
+- 숏폼 컨텍스트 값은 워크스페이스 상단 바 공유 상태 — 개별 엔진 러너 내부 파라미터로의 역주입은 미결선
+- 부하 환경 타이밍 간헐(GPU 스웜 50 ms 게이트 등) · 테스트 프로젝트 기존 분석기 경고 15 · Android 빌드 미검증

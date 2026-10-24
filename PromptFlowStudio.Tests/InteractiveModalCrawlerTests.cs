@@ -139,6 +139,126 @@ public class InteractiveModalCrawlerTests
         throw new DirectoryNotFoundException("레포 루트");
     }
 
+    // ══ v18.0.0 32 슈퍼-워크스페이스 — 통합 모달 3 종은 실마운트 후 전 탭 · 엔진 칩 실발화(활성 표시 + 주입 엔진 컴포넌트 교체 단언),
+    //    독 워크스페이스 29 종은 StudioWorkspaceDock 마운트 → 탭 발화 좌표 · 재렌더 활성 표시 단언. ══
+
+    [Fact]
+    public async Task AllSuperWorkspaces_MountAndTabSwitchIntegrity()
+    {
+        var ws = StudioWorkspaceCatalog.Workspaces;
+        Assert.Equal(32, ws.Length);
+        var layout = MapFlags(File.ReadAllText(Path.Combine(RepoRoot(), "PromptFlowStudio", "Blazor", "MainLayout.razor")));
+        var byKey = new Dictionary<string, Target>(StringComparer.Ordinal);
+        foreach (var t in ResolveCatalogTargets()) byKey[t.Entry.Key] = t;
+        var asm = typeof(MainForm).Assembly;
+
+        var services = new ServiceCollection();
+        using var owner = new System.Windows.Forms.Control();
+        MainForm.ConfigureServices(services, new ConfigurationBuilder().Build(), owner);
+        services.AddSingleton<PromptFlowStudio.Services.Platform.IFilePickerService, HeadlessDialogs>();
+        services.AddSingleton<PromptFlowStudio.Services.Platform.IVideoExportService, HeadlessDialogs>();
+        services.AddSingleton<PromptFlowStudio.Services.Platform.IClipboardService, HeadlessDialogs>();
+        await using var root = services.BuildServiceProvider();
+
+        var defects = new List<string>();
+        int mounted = 0, switches = 0;
+        for (var i = 0; i < ws.Length; i++)
+        {
+            var w = ws[i];
+            foreach (var tab in w.Tabs) foreach (var m in tab.Members) if (!byKey.ContainsKey(m)) defects.Add("[ROUTE] " + w.Id + " ▸ " + m + " 엔진 결선 없음");
+            await using var scope = root.CreateAsyncScope();
+            var r = new CrawlRenderer(new CrawlProvider(scope.ServiceProvider));
+            try
+            {
+                if (w.ModalKey is not null)
+                {
+                    Assert.True(layout.TryGetValue(w.ModalKey, out var m), "레이아웃 결선 없음: " + w.ModalKey);
+                    Type? type = null;
+                    foreach (var t in asm.GetTypes()) if (t.Name == m.Item1 && typeof(IComponent).IsAssignableFrom(t)) type = t;
+                    Assert.NotNull(type);
+                    var id = await r.Dispatcher.InvokeAsync(() => r.Mount(type!));
+                    await r.Dispatcher.InvokeAsync(() => r.RenderAsync(id, RootParameters(new Target(byKey[w.Tabs[0].Members[0]].Entry, type!, m.Item2))));
+                    if (r.TakeErrors() is { } boot) { defects.Add("[MOUNT] " + w.Id + ": " + boot.Message); continue; }
+                    mounted++;
+                    for (var t = 0; t < w.Tabs.Length; t++)
+                        for (var k = 0; k < w.Tabs[t].Members.Length; k++)
+                        {
+                            var tabPrefix = "워크스페이스 탭 " + (t + 1).ToString(CultureInfo.InvariantCulture) + " ·";
+                            var chip = "엔진 · " + StudioWorkspaceCatalog.TitleOf(w.Tabs[t].Members[k]);
+                            if (chip.Length > 28) chip = chip[..28];
+                            var multi = w.Tabs[t].Members.Length > 1;
+                            if (!await ClickAsync(r, id, tabPrefix) || multi && !await ClickAsync(r, id, chip)) { defects.Add("[TAB] " + w.Id + " 탭 " + t + "/" + k + " 컨트롤 없음"); continue; }
+                            switches++;
+                            var snap = await r.Dispatcher.InvokeAsync(() => r.Scan(id));
+                            if (FindByLabel(snap, tabPrefix)?.Pressed != "true") defects.Add("[TAB] " + w.Id + " 탭 " + t + " 활성 표시 불일치");
+                            if (multi && FindByLabel(snap, chip)?.Pressed != "true") defects.Add("[TAB] " + w.Id + " 엔진 칩 " + chip + " 활성 표시 불일치");
+                            var expect = byKey[w.Tabs[t].Members[k]].Component;
+                            if (!await r.Dispatcher.InvokeAsync(() => r.HasComponent(id, expect))) defects.Add("[TAB] " + w.Id + " 탭 " + t + "/" + k + " 엔진 " + expect.Name + " 미주입");
+                            if (r.TakeErrors() is { } err) defects.Add("[THROW] " + w.Id + " 탭 " + t + "/" + k + ": " + err.Message);
+                        }
+                }
+                else
+                {
+                    var routed = new WorkspaceSubTabRoute(-1, -1, -1);
+                    var wi = i;
+                    ParameterView Params(int tab) => ParameterView.FromDictionary(new Dictionary<string, object?>
+                    {
+                        ["Workspace"] = wi, ["Tab"] = tab, ["Member"] = 0,
+                        ["OnRoute"] = EventCallback.Factory.Create<WorkspaceSubTabRoute>(new object(), (WorkspaceSubTabRoute x) => routed = x),
+                        ["OnClose"] = EventCallback.Factory.Create(new object(), () => { }),
+                    });
+                    var id = await r.Dispatcher.InvokeAsync(() => r.Mount(typeof(PromptFlowStudio.Blazor.Components.Common.StudioWorkspaceDock)));
+                    await r.Dispatcher.InvokeAsync(() => r.RenderAsync(id, Params(0)));
+                    if (r.TakeErrors() is { } boot) { defects.Add("[MOUNT] " + w.Id + ": " + boot.Message); continue; }
+                    mounted++;
+                    for (var t = 0; t < w.Tabs.Length; t++)
+                    {
+                        var tabPrefix = "워크스페이스 탭 " + (t + 1).ToString(CultureInfo.InvariantCulture) + " ·";
+                        if (!await ClickAsync(r, id, tabPrefix)) { defects.Add("[TAB] " + w.Id + " 탭 " + t + " 컨트롤 없음"); continue; }
+                        if (routed != new WorkspaceSubTabRoute(i, t, 0)) { defects.Add("[ROUTE] " + w.Id + " 탭 " + t + " 좌표 " + routed); continue; }
+                        var tt = t;
+                        await r.Dispatcher.InvokeAsync(() => r.RenderAsync(id, Params(tt)));
+                        switches++;
+                        var snap = await r.Dispatcher.InvokeAsync(() => r.Scan(id));
+                        if (FindByLabel(snap, tabPrefix)?.Pressed != "true") defects.Add("[TAB] " + w.Id + " 탭 " + t + " 활성 표시 불일치");
+                        if (StudioWorkspaceCatalog.MemberKey(routed) != w.Tabs[t].Members[0]) defects.Add("[ROUTE] " + w.Id + " 탭 " + t + " 엔진 키 불일치");
+                        if (r.TakeErrors() is { } err) defects.Add("[THROW] " + w.Id + " 탭 " + t + ": " + err.Message);
+                    }
+                }
+            }
+            finally
+            {
+                try { await r.Dispatcher.InvokeAsync(() => r.Dispose()); }
+                catch (Exception ex) { defects.Add("[DISPOSE] " + w.Id + ": " + ex.Message); }
+            }
+        }
+        _out.WriteLine("슈퍼-워크스페이스 마운트 " + mounted.ToString(CultureInfo.InvariantCulture) + "/32 · 탭 전환 " + switches.ToString(CultureInfo.InvariantCulture) + " · 결함 " + defects.Count.ToString(CultureInfo.InvariantCulture));
+        Assert.True(defects.Count == 0, string.Join(Environment.NewLine, defects));
+        Assert.Equal(32, mounted);
+        var tabTotal = 0;
+        for (var i = 0; i < ws.Length; i++) tabTotal += ws[i].ModalKey is null ? ws[i].Tabs.Length : StudioWorkspaceCatalog.MemberCount(i);
+        Assert.Equal(tabTotal, switches);
+    }
+
+    private static Ctl? FindByLabel(Snapshot s, string prefix)
+    {
+        foreach (var c in s.Controls) if (c.Label.StartsWith(prefix, StringComparison.Ordinal)) return c;
+        return null;
+    }
+
+    /// <summary>라벨 접두 일치 컨트롤 1 개 실발화(완료까지 최대 AsyncSettle 대기) — 없으면 false.</summary>
+    private static async Task<bool> ClickAsync(CrawlRenderer r, int id, string prefix)
+    {
+        var task = await r.Dispatcher.InvokeAsync<Task?>(() =>
+        {
+            var c = FindByLabel(r.Scan(id), prefix);
+            return c is null ? null : r.DispatchEventAsync(c.HandlerId, null, new Microsoft.AspNetCore.Components.Web.MouseEventArgs { Button = 0, Detail = 1 });
+        });
+        if (task is null) return false;
+        await Task.WhenAny(task, Task.Delay(AsyncSettle));
+        return true;
+    }
+
     // ══ 크롤 1모달 ══
 
     private sealed class CrawlResult
@@ -316,6 +436,20 @@ public class InteractiveModalCrawlerTests
         protected override Task UpdateDisplayAsync(in RenderBatch renderBatch) => Task.CompletedTask;
 
         public int Mount(Type t) => AssignRootComponentId(InstantiateComponent(t));
+
+        /// <summary>v18.0.0 렌더 트리에 해당 타입 컴포넌트가 마운트돼 있는지(통합 워크스페이스 하위 탭 엔진 주입 판정).</summary>
+        public bool HasComponent(int componentId, Type t)
+        {
+            var range = GetCurrentRenderTreeFrames(componentId);
+            for (var i = 0; i < range.Count; i++)
+            {
+                ref var fr = ref range.Array[i];
+                if (fr.FrameType != RenderTreeFrameType.Component) continue;
+                if (fr.ComponentType == t || HasComponent(fr.ComponentId, t)) return true;
+                i += fr.ComponentSubtreeLength - 1;
+            }
+            return false;
+        }
         public Task RenderAsync(int id, ParameterView p) => RenderRootComponentAsync(id, p);
 
         public Exception? TakeErrors()

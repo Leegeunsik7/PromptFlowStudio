@@ -1,0 +1,77 @@
+@using PromptFlowStudio.Services.Ui
+
+@* [PromptFlow Studio v18.0.0] 🚀 소셜 퍼블리셔 매니저 — v17.79 OAuth2 라이브 배포 · Graph API · 옴니 퍼블리셔 · v17.81 매트릭스 · 스마트 캘린더 · 옴니 댓글 ·
+   v17.93 A/B 레이스 · v17.94 비지빌리티 게이트웨이를 3 탭으로 통합. 엔진 모달은 그대로 하위 탭 · 엔진 칩으로 주입한다. *@
+<div class="sw-docked" style="--sw-dock-h: 104px">
+    <StudioWorkspaceDock Workspace="_ws" Tab="_tab" Member="_member" OnRoute="Go" OnClose="Close">
+        <div class="swd-row spw-flow">@(StudioWorkspaceCatalog.Workspaces[_ws].Tabs[_tab].Role)</div>
+    </StudioWorkspaceDock>
+
+    @switch (MemberKey)
+    {
+        case "_liveOAuthPublisher":
+            <ProductionLivePublisherStudioModal OnClose="Close" />
+            break;
+        case "_graphApi":
+            <GraphApiBridgeStudioModal OnClose="Close" />
+            break;
+        case "_omniPublisher":
+            <OmniChannelPublisherStudioModal OnClose="Close" />
+            break;
+        case "_matrixSyndication":
+            <MultiAccountMatrixStudioModal OnClose="Close" />
+            break;
+        case "_smartPublish":
+            <SmartPublishingSchedulerStudioModal OnClose="Close" />
+            break;
+        case "_omni":
+            <OmniChannelEngagementStudioModal OnClose="Close" />
+            break;
+        case "_postPublishSplitTest":
+            <PostPublishSplitTestStudioModal OnClose="Close" />
+            break;
+        default:
+            <PlatformVisibilityGatewayStudioModal OnClose="Close" />
+            break;
+    }
+</div>
+
+<style>
+    .spw-flow { font-size: 11px; color: #94a3b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public int InitialTab { get; set; }
+    [Parameter] public int InitialMember { get; set; }
+    [Parameter] public int RouteStamp { get; set; }
+    /// <summary>탭 · 엔진 전환 통지(레이아웃 도움말 서랍이 현재 엔진을 가리키도록).</summary>
+    [Parameter] public EventCallback<WorkspaceSubTabRoute> OnRouteChanged { get; set; }
+
+    private readonly int _ws = StudioWorkspaceCatalog.IndexOfModal(StudioWorkspaceCatalog.PublisherModalKey);
+    private int _tab, _member, _stamp = -1;
+
+    private string MemberKey => StudioWorkspaceCatalog.MemberKey(new WorkspaceSubTabRoute(_ws, _tab, _member));
+
+    protected override void OnParametersSet()
+    {
+        if (_stamp == RouteStamp) return;
+        _stamp = RouteStamp;
+        Apply(InitialTab, InitialMember);
+    }
+
+    private Task Go(WorkspaceSubTabRoute r)
+    {
+        Apply(r.Tab, r.Member);
+        return OnRouteChanged.InvokeAsync(new WorkspaceSubTabRoute(_ws, _tab, _member));
+    }
+
+    private void Apply(int tab, int member)
+    {
+        var tabs = StudioWorkspaceCatalog.Workspaces[_ws].Tabs;
+        _tab = (uint)tab < (uint)tabs.Length ? tab : 0;
+        _member = (uint)member < (uint)tabs[_tab].Members.Length ? member : 0;
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+}

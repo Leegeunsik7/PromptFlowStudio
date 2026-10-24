@@ -1,0 +1,171 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Ui
+
+@* [PromptFlow Studio v18.0.0] 🏭 원스톱 숏폼 AI 팩토리 — v17.77 세이프존 훅 · v17.78 키네틱 자막 · v17.82 다국어 더빙 · v17.84 킬러클립 · v17.85 예측/익스포터 ·
+   v17.91 저작권 · v17.98 리텐션 리먹서를 4 단계 탭으로 통합. 각 엔진 모달은 그대로 하위 탭에 주입하고, 탭 간 값은 ShortsFactoryWorkspaceContext 1 개로 공유한다. *@
+<div class="sw-docked" style="--sw-dock-h: 128px">
+    <StudioWorkspaceDock Workspace="_ws" Tab="_tab" Member="_member" OnRoute="Go" OnClose="Close">
+        <div class="swd-row sfw-ctx">
+            @for (var i = 0; i < ShortsFactoryWorkspaceContext.StageCount; i++)
+            {
+                var s = i;
+                <span class='sfw-pill @(Ctx.IsCommitted(s) ? "ok" : null) @(s == _tab ? "cur" : null)'>@(Ctx.IsCommitted(s) ? "✔" : "•") @(StageSummary(s))</span>
+            }
+            <span class="sfw-sep"></span>
+            @switch (_tab)
+            {
+                case 0:
+                    <label class="sfw-f">시작 @(Sec(Ctx.ClipInMs))<input type="range" min="0" max="@((ShortsFactoryWorkspaceContext.SourceMs - Ctx.DurationMs) / 1000)" value="@(Ctx.ClipInMs / 1000)" aria-label="클립 시작(초)" @oninput="OnClipStart" /></label>
+                    <label class="sfw-f">길이 @(Sec(Ctx.DurationMs))<input type="range" min="3" max="60" value="@(Ctx.DurationMs / 1000)" aria-label="클립 길이(초)" @oninput="OnClipLength" /></label>
+                    <label class="sfw-f">9:16 중심 @(Ctx.ReframeCenterPermille / 10)%<input type="range" min="0" max="100" value="@(Ctx.ReframeCenterPermille / 10)" aria-label="리프레임 중심(%)" @oninput="OnReframe" /></label>
+                    break;
+                case 1:
+                    <select class="sfw-sel" value="@(Ctx.CaptionPreset)" aria-label="자막 프리셋" @onchange="OnPreset">
+                        <option value="0">옐로우 하이라이트</option>
+                        <option value="1">네온 사이버</option>
+                        <option value="2">미니멀 화이트</option>
+                    </select>
+                    <button type="button" class='sfw-tg @(Ctx.HasLanguage(ShortsFactoryWorkspaceContext.LangEn) ? "on" : null)' aria-pressed='@(Ctx.HasLanguage(ShortsFactoryWorkspaceContext.LangEn) ? "true" : "false")' aria-label="더빙 EN" @onclick="() => Ctx.ToggleLanguage(ShortsFactoryWorkspaceContext.LangEn)">EN</button>
+                    <button type="button" class='sfw-tg @(Ctx.HasLanguage(ShortsFactoryWorkspaceContext.LangEs) ? "on" : null)' aria-pressed='@(Ctx.HasLanguage(ShortsFactoryWorkspaceContext.LangEs) ? "true" : "false")' aria-label="더빙 ES" @onclick="() => Ctx.ToggleLanguage(ShortsFactoryWorkspaceContext.LangEs)">ES</button>
+                    <button type="button" class='sfw-tg @(Ctx.HasLanguage(ShortsFactoryWorkspaceContext.LangJa) ? "on" : null)' aria-pressed='@(Ctx.HasLanguage(ShortsFactoryWorkspaceContext.LangJa) ? "true" : "false")' aria-label="더빙 JA" @onclick="() => Ctx.ToggleLanguage(ShortsFactoryWorkspaceContext.LangJa)">JA</button>
+                    break;
+                case 2:
+                    <label class="sfw-f">줌 펀치 @(Ctx.ZoomPunchCount)회<input type="range" min="0" max="@(ShortsFactoryWorkspaceContext.MaxZoomPunches)" value="@(Ctx.ZoomPunchCount)" aria-label="줌 펀치 횟수" @oninput="OnPunches" /></label>
+                    <button type="button" class='sfw-tg @(Ctx.BgmSafe ? "on" : null)' aria-pressed='@(Ctx.BgmSafe ? "true" : "false")' aria-label="안전 BGM 치환" @onclick="() => Ctx.SetBgmSafe(!Ctx.BgmSafe)">🛡 안전 BGM 치환</button>
+                    break;
+                default:
+                    <label class="sfw-f">썸네일 @(Sec(Ctx.ThumbnailAtMs))<input type="range" min="0" max="100" value="@(Ctx.ThumbnailPermille / 10)" aria-label="썸네일 위치(%)" @oninput="OnThumb" /></label>
+                    break;
+            }
+            <button type="button" class="sfw-go" disabled="@(!Ctx.CanCommit(_tab))" title="@(Ctx.CanCommit(_tab) ? "이 단계 값을 확정합니다" : "앞 단계를 먼저 확정하세요")" @onclick="CommitStage">@(CommitLabel())</button>
+            <button type="button" class="sfw-rs" aria-label="컨텍스트 초기화" @onclick="Ctx.Reset">♻</button>
+        </div>
+    </StudioWorkspaceDock>
+
+    @switch (MemberKey)
+    {
+        case "_liveAutoClipper":
+            <LiveToShortsAutoClipperStudioModal OnClose="Close" />
+            break;
+        case "_visualHooks":
+            <KineticVisualHookStudioModal OnClose="Close" />
+            break;
+        case "_brollSubtitles":
+            <KineticTypographyBRollStudioModal OnClose="Close" />
+            break;
+        case "_multilingualDubbing":
+            <PolyglotDubbingLipSyncStudioModal OnClose="Close" />
+            break;
+        case "_retentionHeatmapReEditor":
+            <AudienceRetentionHeatmapStudioModal OnClose="Close" />
+            break;
+        case "_copyrightCompliance":
+            <CopyrightComplianceAuditStudioModal OnClose="Close" />
+            break;
+        case "_viralPredictorExport":
+            <ViralPredictorShortsExportStudioModal OnClose="Close" />
+            break;
+        default:
+            <ReelsVisualPolishStudioModal OnClose="Close" />
+            break;
+    }
+</div>
+
+<style>
+    .sfw-ctx { flex-wrap: wrap; row-gap: 4px; }
+    .sfw-pill { background: #0f172a; border: 1px solid #334155; border-radius: 999px; padding: 2px 8px; font-size: 10.5px; color: #94a3b8; white-space: nowrap; }
+    .sfw-pill.ok { color: #86efac; border-color: #166534; }
+    .sfw-pill.cur { border-color: #38bdf8; color: #e0f2fe; }
+    .sfw-sep { flex: 0 0 1px; height: 18px; background: #334155; margin: 0 4px; }
+    .sfw-f { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #cbd5e1; white-space: nowrap; }
+    .sfw-f input[type=range] { width: 110px; }
+    .sfw-sel { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 3px 6px; font-size: 11px; }
+    .sfw-tg { background: #1e293b; color: #cbd5e1; border: 1px solid #334155; border-radius: 6px; padding: 3px 9px; font-size: 11px; cursor: pointer; }
+    .sfw-tg.on { background: #155e75; border-color: #22d3ee; color: #fff; }
+    .sfw-go { background: #0369a1; color: #fff; border: 1px solid #0ea5e9; border-radius: 6px; padding: 4px 11px; font-size: 11px; font-weight: 700; cursor: pointer; }
+    .sfw-go:disabled { opacity: .45; cursor: not-allowed; }
+    .sfw-rs { background: none; border: 1px solid #334155; color: #94a3b8; border-radius: 6px; padding: 3px 7px; cursor: pointer; }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+    /// <summary>딥링크 진입 탭 · 엔진(기존 175 키 → ResolveWorkspaceSubTabRoute). RouteStamp 가 바뀔 때만 재적용(열린 채 재요청 대응).</summary>
+    [Parameter] public int InitialTab { get; set; }
+    [Parameter] public int InitialMember { get; set; }
+    [Parameter] public int RouteStamp { get; set; }
+    /// <summary>탭 · 엔진 전환 통지(레이아웃 도움말 서랍이 현재 엔진을 가리키도록).</summary>
+    [Parameter] public EventCallback<WorkspaceSubTabRoute> OnRouteChanged { get; set; }
+
+    /// <summary>4 단계 탭 공유 컨텍스트 — 모달 수명 동안 1 개(탭 전환 시 재생성 없음).</summary>
+    public ShortsFactoryWorkspaceContext Ctx { get; } = new();
+
+    private readonly int _ws = StudioWorkspaceCatalog.IndexOfModal(StudioWorkspaceCatalog.ShortsModalKey);
+    private int _tab, _member, _stamp = -1;
+
+    private string MemberKey => StudioWorkspaceCatalog.MemberKey(new WorkspaceSubTabRoute(_ws, _tab, _member));
+
+    protected override void OnParametersSet()
+    {
+        if (_stamp == RouteStamp) return;
+        _stamp = RouteStamp;
+        Apply(InitialTab, InitialMember);
+    }
+
+    private Task Go(WorkspaceSubTabRoute r)
+    {
+        Apply(r.Tab, r.Member);
+        return OnRouteChanged.InvokeAsync(new WorkspaceSubTabRoute(_ws, _tab, _member));
+    }
+
+    private void Apply(int tab, int member)
+    {
+        var tabs = StudioWorkspaceCatalog.Workspaces[_ws].Tabs;
+        _tab = (uint)tab < (uint)tabs.Length ? tab : 0;
+        _member = (uint)member < (uint)tabs[_tab].Members.Length ? member : 0;
+    }
+
+    private Task CommitStage()
+    {
+        // ④ 까지 확정되면 다음 단계(배포)는 소셜 퍼블리셔 워크스페이스 — 여기서는 단계 진행만 한다.
+        return Ctx.Commit(_tab) && _tab < ShortsFactoryWorkspaceContext.StageCount - 1 ? Go(new WorkspaceSubTabRoute(_ws, _tab + 1, 0)) : Task.CompletedTask;
+    }
+
+    private string CommitLabel() => _tab switch
+    {
+        0 => Ctx.IsCommitted(0) ? "✔ 절삭 확정됨" : "✔ 절삭 확정",
+        1 => Ctx.IsCommitted(1) ? "✔ 자막·더빙 확정됨" : "✔ 자막·더빙 확정",
+        2 => Ctx.IsCommitted(2) ? "✔ 리텐션 확정됨" : "✔ 리텐션 확정",
+        _ => Ctx.IsCommitted(3) ? "📦 인출 완료 " + (Ctx.ExportBytes / 1_048_576.0).ToString("0.0", CultureInfo.InvariantCulture) + " MB" : "📦 인출 확정",
+    };
+
+    private string StageSummary(int s) => s switch
+    {
+        0 => "✂ " + Sec(Ctx.ClipInMs) + "–" + Sec(Ctx.ClipOutMs),
+        1 => "💬 " + PresetName(Ctx.CaptionPreset) + " · " + LangText(),
+        2 => "📈 펀치 " + Ctx.ZoomPunchCount.ToString(CultureInfo.InvariantCulture) + (Ctx.BgmSafe ? " · 안전 BGM" : " · 원음"),
+        _ => "📦 썸네일 " + Sec(Ctx.ThumbnailAtMs),
+    };
+
+    private static string PresetName(int p) => p switch { 1 => "네온", 2 => "미니멀", _ => "옐로우" };
+
+    private string LangText()
+    {
+        if (Ctx.DubLanguageMask == 0) return "KO 원음";
+        return (Ctx.HasLanguage(ShortsFactoryWorkspaceContext.LangEn) ? "EN " : null)
+             + (Ctx.HasLanguage(ShortsFactoryWorkspaceContext.LangEs) ? "ES " : null)
+             + (Ctx.HasLanguage(ShortsFactoryWorkspaceContext.LangJa) ? "JA" : null);
+    }
+
+    private static string Sec(int ms) => (ms / 1000.0).ToString("0.0", CultureInfo.InvariantCulture) + "s";
+
+    private static int Num(ChangeEventArgs e) => int.TryParse(Convert.ToString(e.Value, CultureInfo.InvariantCulture), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : 0;
+
+    private void OnClipStart(ChangeEventArgs e) => Ctx.SetClip(Num(e) * 1000, Ctx.DurationMs);
+    private void OnClipLength(ChangeEventArgs e) => Ctx.SetClip(Ctx.ClipInMs, Num(e) * 1000);
+    private void OnReframe(ChangeEventArgs e) => Ctx.SetReframeCenter(Num(e) * 10);
+    private void OnPreset(ChangeEventArgs e) => Ctx.SetCaptionPreset(Num(e));
+    private void OnPunches(ChangeEventArgs e) => Ctx.SetZoomPunches(Num(e));
+    private void OnThumb(ChangeEventArgs e) => Ctx.SetThumbnail(Num(e) * 10);
+
+    private Task Close() => OnClose.InvokeAsync();
+}

@@ -9,6 +9,9 @@ public sealed record StudioHelpEntry(
     string[] RelatedMenuIds,
     string IntentKeywords);
 
+/// <summary>v18.0.0 슈퍼-워크스페이스 종합 가이드 — 개요 · 탭별 핵심 역할(다중 엔진 탭은 엔진 목록 포함) · 3 단계 작업 순서.</summary>
+public sealed record StudioWorkspaceGuide(string WorkspaceId, string Title, string Overview, string[] TabGuides, string[] Workflow);
+
 /// <summary>
 /// [PromptFlow Studio v17.89.0] 📘 카탈로그 170 항목 1:1 도움말 레지스트리 — 각 모달 마크업의 부제(역할) · 실제 버튼/토글/슬라이더 라벨
 /// (핵심 조작 · 작업 순서)에서 추출해 정적으로 고정했다. 모달 헤더 <c>?</c> 버튼(<c>StudioHelpDrawer</c>)과
@@ -722,6 +725,58 @@ public static class StudioCatalogHelpRegistry
     };
 
     private static readonly Dictionary<string, StudioHelpEntry> ByKey = BuildIndex();
+    private static StudioWorkspaceGuide[]? _workspaceGuides;
+
+    /// <summary>v18.0.0 32 워크스페이스 가이드(StudioWorkspaceCatalog 순서) — 최초 접근 때 1 회 조립.</summary>
+    public static IReadOnlyList<StudioWorkspaceGuide> WorkspaceGuides => _workspaceGuides ??= BuildWorkspaceGuides();
+
+    /// <summary>기존 175 키 · <c>ws:</c> 키 → 소속 워크스페이스 가이드(미등록 = null).</summary>
+    public static StudioWorkspaceGuide? WorkspaceGuideFor(string? key)
+        => StudioWorkspaceCatalog.ResolveWorkspaceSubTabRoute(key, out var r) ? WorkspaceGuides[r.Workspace] : null;
+
+    /// <summary>워크스페이스 가이드 중 개요 공백 · 탭 가이드 수 불일치 · 작업 순서 3 단계 아님인 수(0 이어야 정상).</summary>
+    public static int CountWorkspaceGuideDefects(List<string>? report = null)
+    {
+        var n = 0;
+        var ws = StudioWorkspaceCatalog.Workspaces;
+        for (var i = 0; i < ws.Length; i++)
+        {
+            var g = WorkspaceGuides[i];
+            string? why = g.WorkspaceId != ws[i].Id ? "순서 불일치"
+                : Blank(g.Overview) ? "빈 개요"
+                : g.TabGuides.Length != ws[i].Tabs.Length || AnyBlank(g.TabGuides) ? "탭 가이드 불일치"
+                : g.Workflow.Length != 3 || AnyBlank(g.Workflow) ? "작업 순서 3 단계 아님"
+                : null;
+            if (why is null) continue;
+            n++;
+            report?.Add(ws[i].Id + " — " + why);
+        }
+        return n;
+    }
+
+    private static StudioWorkspaceGuide[] BuildWorkspaceGuides()
+    {
+        var ws = StudioWorkspaceCatalog.Workspaces;
+        var a = new StudioWorkspaceGuide[ws.Length];
+        for (var i = 0; i < ws.Length; i++)
+        {
+            var tabs = new string[ws[i].Tabs.Length];
+            for (var t = 0; t < tabs.Length; t++)
+            {
+                var tab = ws[i].Tabs[t];
+                var sb = new System.Text.StringBuilder("「").Append(tab.Title).Append("」 — ").Append(tab.Role);
+                if (tab.Members.Length > 1)
+                {
+                    sb.Append(" (엔진: ");
+                    for (var m = 0; m < tab.Members.Length; m++) sb.Append(m == 0 ? "" : " · ").Append(StudioWorkspaceCatalog.TitleOf(tab.Members[m]));
+                    sb.Append(')');
+                }
+                tabs[t] = sb.ToString();
+            }
+            a[i] = new StudioWorkspaceGuide(ws[i].Id, ws[i].Icon + " " + ws[i].Title, ws[i].Overview, tabs, ws[i].Workflow);
+        }
+        return a;
+    }
 
     public static IReadOnlyList<StudioHelpEntry> Entries => All;
 

@@ -28,6 +28,8 @@ using VT = PromptFlowStudio.Services.VTuber;
 using GM = PromptFlowStudio.Services.Gaming;
 using Xr = PromptFlowStudio.Services.Xr;
 using Cine = PromptFlowStudio.Services.Cinema;
+using WsCat = PromptFlowStudio.Services.Ui.StudioWorkspaceCatalog;
+using WsRoute = PromptFlowStudio.Services.Ui.WorkspaceSubTabRoute;
 using Mm = PromptFlowStudio.Services.Mam;
 using Mc = PromptFlowStudio.Services.Mcr;
 using BMc = PromptFlowStudio.Services.BroadcastMcr;
@@ -37716,5 +37718,164 @@ public sealed class RealBitstreamPlaybackConformanceIsolatedTests
         Assert.True(alloc == 0, "컨포먼스 핫패스 할당 " + alloc);
         Assert.True(sw.Elapsed.TotalMilliseconds / 100 < 100, "1 사이클 " + sw.Elapsed.TotalMilliseconds / 100 + " ms");
         Assert.True(guard.Rejects >= 5 && v.Rejects >= 12 && m.RbspGuard.Rejects == 0);
+    }
+}
+
+/// <summary>[v18.0.0] 175 분절 모달 → 32 슈퍼-워크스페이스 통폐합 · 서브탭 딥링크 라우터 · 숏폼 팩토리 탭 공유 컨텍스트 무결성.</summary>
+[Collection("ProcessGcMode")]
+public sealed class SuperWorkspaceConsolidationTests
+{
+    [Fact]
+    public void SuperWorkspaceConsolidation_And_SubTabRouting_Check()
+    {
+        var ws = WsCat.Workspaces;
+        var cat = PromptFlowStudio.Services.Ui.StudioCatalog.Entries;
+
+        // 1) 32 워크스페이스 · 6 그룹(가상프로덕션 4 · 디지털휴먼 4 · 방송MCR 4 · 라이브커머스 3 · 소셜/바이럴 4 · 시스템/코어 13)
+        Assert.Equal(32, ws.Length);
+        Assert.Equal(6, WsCat.Groups.Length);
+        int[] perGroup = { 4, 4, 4, 3, 4, 13 };
+        for (var g = 0; g < perGroup.Length; g++) Assert.Equal(perGroup[g], WsCat.CountIn(g));
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var w in ws)
+        {
+            Assert.StartsWith("ws:", w.Id, StringComparison.Ordinal);
+            Assert.True(ids.Add(w.Id), "중복 워크스페이스 " + w.Id);
+            Assert.NotEmpty(w.Tabs);
+            Assert.Equal(3, w.Workflow.Length);
+            foreach (var t in w.Tabs) { Assert.NotEmpty(t.Members); Assert.False(string.IsNullOrWhiteSpace(t.Role)); }
+        }
+
+        // 2) 기존 175 키 → 서브탭 매핑 100 % · 중복 0 · 역참조 일치
+        Assert.Equal(175, cat.Length);
+        Assert.Equal(cat.Length, WsCat.MappedKeyCount);
+        Assert.Equal(0, WsCat.DuplicateKeyCount);
+        var members = 0;
+        for (var i = 0; i < ws.Length; i++) members += WsCat.MemberCount(i);
+        Assert.Equal(cat.Length, members);
+        var catKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var e in cat)
+        {
+            catKeys.Add(e.Key);
+            Assert.True(WsCat.ResolveWorkspaceSubTabRoute(e.Key, out var r), "라우트 누락 " + e.Key);
+            Assert.Equal(e.Key, WsCat.MemberKey(r));
+            Assert.Contains(" ▸ ", WsCat.RouteLabel(e.Key), StringComparison.Ordinal);
+        }
+        foreach (var w in ws) foreach (var t in w.Tabs) foreach (var m in t.Members) Assert.Contains(m, catKeys);
+        for (var i = 0; i < ws.Length; i++)
+        {
+            Assert.True(WsCat.ResolveWorkspaceSubTabRoute(ws[i].Id, out var r));
+            Assert.Equal(new WsRoute(i, 0, 0), r);
+        }
+        Assert.False(WsCat.ResolveWorkspaceSubTabRoute("_없는모달", out _));
+        Assert.False(WsCat.ResolveWorkspaceSubTabRoute(null, out _));
+
+        // 3) 소셜 3 대 통합 모달 — 숏폼 4 단계 · 퍼블리셔 3 탭 · 그로스 단일 전략 룸(엔진 4)
+        var dedicated = 0;
+        foreach (var w in ws) if (w.ModalKey is not null) { dedicated++; Assert.Equal(4, w.Group); }
+        Assert.Equal(3, dedicated);
+        var shorts = WsCat.IndexOfModal(WsCat.ShortsModalKey);
+        var pub = WsCat.IndexOfModal(WsCat.PublisherModalKey);
+        var viral = WsCat.IndexOfModal(WsCat.ViralGrowthModalKey);
+        Assert.True(shorts >= 0 && pub >= 0 && viral >= 0);
+        Assert.Equal(4, ws[shorts].Tabs.Length);
+        Assert.Equal(3, ws[pub].Tabs.Length);
+        Assert.Single(ws[viral].Tabs);
+        Assert.Equal(4, ws[viral].Tabs[0].Members.Length);
+        (string Key, int Ws, int Tab, int Member)[] expect =
+        {
+            ("_liveAutoClipper", shorts, 0, 0), ("_visualHooks", shorts, 0, 1), ("_brollSubtitles", shorts, 1, 0), ("_multilingualDubbing", shorts, 1, 1),
+            ("_retentionHeatmapReEditor", shorts, 2, 0), ("_copyrightCompliance", shorts, 2, 1), ("_viralPredictorExport", shorts, 3, 0), ("_visualPolish", shorts, 3, 1),
+            ("_liveOAuthPublisher", pub, 0, 0), ("_matrixSyndication", pub, 1, 0), ("_postPublishSplitTest", pub, 2, 0), ("_platformVisibilityGateway", pub, 2, 1),
+            ("_socialTrendJackingRadar", viral, 0, 0), ("_competitorViralSpy", viral, 0, 1), ("_viralCommerceAffiliate", viral, 0, 2), ("_goldenHourEngagement", viral, 0, 3),
+        };
+        foreach (var x in expect)
+        {
+            Assert.True(WsCat.ResolveWorkspaceSubTabRoute(x.Key, out var r));
+            Assert.Equal(new WsRoute(x.Ws, x.Tab, x.Member), r);
+        }
+
+        // 4) 사이드바 검색 · Ctrl+K — 175 세부 기능 키워드가 대상 워크스페이스 + 탭으로 직결(누락 0)
+        for (var g = 0; g < 6; g++) Assert.Equal(WsCat.CountIn(g), WsCat.CountMatches(g, "  "));
+        Assert.True(WsCat.FirstMatch(viral, "골든아워", out var gr));
+        Assert.Equal(new WsRoute(viral, 0, 3), gr);
+        var hits = new PromptFlowStudio.Services.Ui.IntentHit[PromptFlowStudio.Services.Ui.CatalogIntentSearchEngine.MaxHits];
+        var missing = new List<string>();
+        foreach (var e in cat)
+        {
+            var found = false;
+            for (var w = 0; w < ws.Length && !found; w++)
+                found = WsCat.FirstMatch(w, e.Title, out var sr) && WsCat.TitleOf(WsCat.MemberKey(sr)) == e.Title;
+            var n = PromptFlowStudio.Services.Ui.CatalogIntentSearchEngine.Search(e.Title, hits);
+            var deep = false;
+            for (var k = 0; k < n && !deep; k++)
+                deep = hits[k].Entry.Title == e.Title && WsCat.ResolveWorkspaceSubTabRoute(hits[k].Entry.Key, out _);
+            if (!found || !deep) missing.Add(e.Key + (found ? "" : " [사이드바]") + (deep ? "" : " [Ctrl+K]"));
+        }
+        Assert.True(missing.Count == 0, "딥링크 누락: " + string.Join(", ", missing));
+
+        // 5) 도움말 — 175 항목 기존 레지스트리 무결 + 32 워크스페이스 종합 가이드(탭별 역할 · 3 단계)
+        var report = new List<string>();
+        Assert.Equal(0, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountDefects(report));
+        Assert.True(PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.CountWorkspaceGuideDefects(report) == 0, string.Join(", ", report));
+        Assert.Equal(32, PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.WorkspaceGuides.Count);
+        Assert.Equal("ws:shortsFactory", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.WorkspaceGuideFor("_retentionHeatmapReEditor")!.WorkspaceId);
+        Assert.Contains("엔진:", PromptFlowStudio.Services.Ui.StudioCatalogHelpRegistry.WorkspaceGuides[viral].TabGuides[0], StringComparison.Ordinal);
+
+        // 6) 숏폼 팩토리 4 단계 탭 공유 컨텍스트 — 순서 강제 · 탭 간 값 유지 · 상류 변경 시 하류 무효화
+        var c = new PromptFlowStudio.Services.Ui.ShortsFactoryWorkspaceContext();
+        Assert.False(c.Commit(1));
+        c.SetClip(30_000, 25_000);
+        c.SetReframeCenter(620);
+        Assert.True(c.Commit(0));
+        c.SetCaptionPreset(1);
+        c.ToggleLanguage(PromptFlowStudio.Services.Ui.ShortsFactoryWorkspaceContext.LangJa);
+        Assert.True(c.Commit(1));
+        c.SetZoomPunches(5);
+        c.SetBgmSafe(false);
+        Assert.True(c.Commit(2));
+        c.SetThumbnail(400);
+        Assert.True(c.Commit(3));
+        Assert.Equal(4, c.CompletedCount);
+        Assert.Equal(25_000L * PromptFlowStudio.Services.Ui.ShortsFactoryWorkspaceContext.ExportBytesPerMs, c.ExportBytes);
+        Assert.Equal(30_000 + 10_000, c.ThumbnailAtMs);
+        c.SetCaptionPreset(2);   // ② 변경 → ②③④ 해제 · ① 유지 · 다른 탭 값 보존
+        Assert.True(c.IsCommitted(0) && !c.IsCommitted(1) && !c.IsCommitted(2) && !c.IsCommitted(3));
+        Assert.Equal(0, c.ExportBytes);
+        Assert.Equal(620, c.ReframeCenterPermille);
+        Assert.Equal(5, c.ZoomPunchCount);
+        Assert.False(c.BgmSafe);
+        Assert.False(c.Commit(2));
+        c.SetClip(119_000, 90_000);   // 클램프: 길이 ≤ 60 s · 링 120 s 안
+        Assert.Equal(60_000, c.DurationMs);
+        Assert.Equal(60_000, c.ClipInMs);
+        Assert.Equal(0, c.CompletedMask);
+
+        // 7) 무할당 — 175 키 라우팅 + 탭 전환 컨텍스트 전달 핫패스 0 B
+        long sink = 0;
+        void Hot()
+        {
+            for (var rep = 0; rep < 50; rep++)
+            {
+                foreach (var e in cat)
+                    if (WsCat.ResolveWorkspaceSubTabRoute(e.Key, out var r))
+                        sink += r.Tab + WsCat.MemberKey(r).Length + WsCat.RouteLabel(e.Key).Length;
+                c.SetClip(rep * 1_000, 20_000 + rep * 100);
+                c.Commit(0);
+                c.SetCaptionPreset(rep % 3);
+                c.ToggleLanguage(PromptFlowStudio.Services.Ui.ShortsFactoryWorkspaceContext.LangEs);
+                c.Commit(1);
+                c.SetZoomPunches(rep % 9);
+                c.SetBgmSafe((rep & 1) == 0);
+                c.Commit(2);
+                c.SetThumbnail(rep * 20);
+                c.Commit(3);
+                sink += c.ExportBytes + c.Revision;
+            }
+        }
+        Hot();
+        var alloc = AllocationProbe.MinAllocated(Hot);
+        Assert.True(alloc == 0, "서브탭 라우팅/컨텍스트 핫패스 할당 " + alloc + " B");
+        Assert.True(sink > 0);
     }
 }

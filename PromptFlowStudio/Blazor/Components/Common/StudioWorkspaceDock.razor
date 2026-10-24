@@ -1,0 +1,81 @@
+@using PromptFlowStudio.Services.Ui
+
+@* [PromptFlow Studio v18.0.0] 🧩 슈퍼-워크스페이스 상단 독 — 워크스페이스 제목 · 하위 탭 · (다중 엔진 탭) 엔진 칩 · 탭 컨텍스트 슬롯.
+   제어 컴포넌트: 탭/칩 클릭은 OnRoute 로 좌표만 올리고, 활성 표시는 부모가 내려준 Tab/Member 로 그린다.
+   조상에 .sw-docked 가 있으면 하위 스튜디오 모달 스크림을 독 높이(--sw-dock-h)만큼 내려 겹침을 막는다. *@
+<nav class="swd" aria-label="@(_ws.Title) 워크스페이스 탭">
+    <div class="swd-row">
+        <span class="swd-ws"><span class="swd-ic">@(_ws.Icon)</span><b>@(_ws.Title)</b><small>@(StudioWorkspaceCatalog.Groups[_ws.Group])</small></span>
+        <div class="swd-tabs">
+            @for (var i = 0; i < _ws.Tabs.Length; i++)
+            {
+                var t = i;
+                var on = t == _tab;
+                <button type="button" class='swd-tab @(on ? "on" : null)' aria-pressed='@(on ? "true" : "false")' aria-label="@(TabLabel(t))" title="@(_ws.Tabs[t].Role)" @onclick="() => Go(t, 0)">@(_ws.Tabs[t].Title)</button>
+            }
+        </div>
+        @if (OnClose.HasDelegate)
+        {
+            <button type="button" class="swd-x" aria-label="워크스페이스 닫기" @onclick="Close">✕</button>
+        }
+    </div>
+    @if (_ws.Tabs[_tab].Members.Length > 1)
+    {
+        var members = _ws.Tabs[_tab].Members;
+        <div class="swd-row swd-chips">
+            <span class="swd-lbl">엔진</span>
+            @for (var i = 0; i < members.Length; i++)
+            {
+                var m = i;
+                var on = m == _member;
+                <button type="button" class='swd-chip @(on ? "on" : null)' aria-pressed='@(on ? "true" : "false")' aria-label="@("엔진 · " + StudioWorkspaceCatalog.TitleOf(members[m]))" @onclick="() => Go(_tab, m)">@(StudioWorkspaceCatalog.IconOf(members[m])) @(StudioWorkspaceCatalog.TitleOf(members[m]))</button>
+            }
+        </div>
+    }
+    @ChildContent
+</nav>
+
+<style>
+    .swd { position: fixed; top: 0; left: 0; right: 0; z-index: calc(var(--z-studio-modal) + 8); display: flex; flex-direction: column; gap: 4px; padding: 6px 12px; background: rgba(15,23,42,.96); border-bottom: 1px solid #334155; box-shadow: 0 6px 24px rgba(0,0,0,.45); color: #e2e8f0; font-size: 12px; }
+    .swd-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .swd-ws { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; white-space: nowrap; }
+    .swd-ic { font-size: 17px; }
+    .swd-ws small { color: #94a3b8; font-size: 10.5px; }
+    .swd-tabs { display: flex; gap: 4px; flex: 1 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+    .swd-tab, .swd-chip { flex: 0 0 auto; background: #1e293b; color: #cbd5e1; border: 1px solid #334155; border-radius: 8px; padding: 5px 10px; font-size: 11.5px; cursor: pointer; white-space: nowrap; }
+    .swd-tab:hover, .swd-chip:hover { border-color: #38bdf8; }
+    .swd-tab.on { background: #0369a1; border-color: #0ea5e9; color: #fff; font-weight: 700; }
+    .swd-chip { padding: 3px 9px; font-size: 11px; border-radius: 999px; }
+    .swd-chip.on { background: #155e75; border-color: #22d3ee; color: #fff; }
+    .swd-lbl { color: #94a3b8; font-size: 10.5px; }
+    .swd-x { flex: 0 0 auto; margin-left: auto; background: none; border: 0; color: #94a3b8; font-size: 16px; cursor: pointer; }
+    .sw-docked [class*="-scrim"]:not(.shd-scrim) { top: var(--sw-dock-h, 50px) !important; }
+    .sw-docked [class*="-scrim"]:not(.shd-scrim) > [class*="-modal"] { max-height: calc(100vh - var(--sw-dock-h, 50px) - 16px) !important; }
+</style>
+
+@code {
+    /// <summary>StudioWorkspaceCatalog.Workspaces 인덱스.</summary>
+    [Parameter] public int Workspace { get; set; }
+    [Parameter] public int Tab { get; set; }
+    [Parameter] public int Member { get; set; }
+    [Parameter] public EventCallback<WorkspaceSubTabRoute> OnRoute { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    /// <summary>탭 컨텍스트 슬롯(숏폼 팩토리 단계 컨트롤 등).</summary>
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    private StudioWorkspace _ws = StudioWorkspaceCatalog.Workspaces[0];
+    private int _tab, _member;
+
+    protected override void OnParametersSet()
+    {
+        _ws = StudioWorkspaceCatalog.Workspaces[(uint)Workspace < (uint)StudioWorkspaceCatalog.Workspaces.Length ? Workspace : 0];
+        _tab = (uint)Tab < (uint)_ws.Tabs.Length ? Tab : 0;
+        _member = (uint)Member < (uint)_ws.Tabs[_tab].Members.Length ? Member : 0;
+    }
+
+    private string TabLabel(int t) => "워크스페이스 탭 " + (t + 1).ToString(System.Globalization.CultureInfo.InvariantCulture) + " · " + _ws.Tabs[t].Title;
+
+    private Task Go(int tab, int member) => OnRoute.InvokeAsync(new WorkspaceSubTabRoute(Workspace, tab, member));
+
+    private Task Close() => OnClose.InvokeAsync();
+}

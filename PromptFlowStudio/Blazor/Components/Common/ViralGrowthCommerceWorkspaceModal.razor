@@ -1,0 +1,77 @@
+@using PromptFlowStudio.Services.Ui
+
+@* [PromptFlow Studio v18.0.0] 📈 바이럴 그로스 룸 — v17.95 골든아워 댓글 · v17.96 트렌드재킹 · v17.97 제휴 커머스 · v17.99 경쟁 채널 스파이를
+   단일 전략 룸 탭의 엔진 칩 4 개로 결합. 엔진 모달 · 백엔드 러너는 그대로 주입한다. *@
+<div class="sw-docked" style="--sw-dock-h: 104px">
+    <StudioWorkspaceDock Workspace="_ws" Tab="_tab" Member="_member" OnRoute="Go" OnClose="Close">
+        <div class="swd-row vgw-flow">
+            @for (var i = 0; i < Members.Length; i++)
+            {
+                <span class='vgw-step @(i == _member ? "cur" : null)'>@(i + 1). @(StudioWorkspaceCatalog.TitleOf(Members[i]))</span>
+                @if (i < Members.Length - 1)
+                {
+                    <span class="vgw-arw">→</span>
+                }
+            }
+        </div>
+    </StudioWorkspaceDock>
+
+    @switch (MemberKey)
+    {
+        case "_socialTrendJackingRadar":
+            <SocialTrendJackingStudioModal OnClose="Close" />
+            break;
+        case "_competitorViralSpy":
+            <CompetitorViralSpyStudioModal OnClose="Close" />
+            break;
+        case "_viralCommerceAffiliate":
+            <ViralCommerceAffiliateStudioModal OnClose="Close" />
+            break;
+        default:
+            <GoldenHourCommunityEngagementStudioModal OnClose="Close" />
+            break;
+    }
+</div>
+
+<style>
+    .vgw-flow { font-size: 10.5px; color: #94a3b8; white-space: nowrap; overflow: hidden; }
+    .vgw-step.cur { color: #e0f2fe; font-weight: 700; }
+    .vgw-arw { color: #475569; }
+</style>
+
+@code {
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public int InitialTab { get; set; }
+    [Parameter] public int InitialMember { get; set; }
+    [Parameter] public int RouteStamp { get; set; }
+    /// <summary>탭 · 엔진 전환 통지(레이아웃 도움말 서랍이 현재 엔진을 가리키도록).</summary>
+    [Parameter] public EventCallback<WorkspaceSubTabRoute> OnRouteChanged { get; set; }
+
+    private readonly int _ws = StudioWorkspaceCatalog.IndexOfModal(StudioWorkspaceCatalog.ViralGrowthModalKey);
+    private int _tab, _member, _stamp = -1;
+
+    private string[] Members => StudioWorkspaceCatalog.Workspaces[_ws].Tabs[_tab].Members;
+    private string MemberKey => StudioWorkspaceCatalog.MemberKey(new WorkspaceSubTabRoute(_ws, _tab, _member));
+
+    protected override void OnParametersSet()
+    {
+        if (_stamp == RouteStamp) return;
+        _stamp = RouteStamp;
+        Apply(InitialTab, InitialMember);
+    }
+
+    private Task Go(WorkspaceSubTabRoute r)
+    {
+        Apply(r.Tab, r.Member);
+        return OnRouteChanged.InvokeAsync(new WorkspaceSubTabRoute(_ws, _tab, _member));
+    }
+
+    private void Apply(int tab, int member)
+    {
+        var tabs = StudioWorkspaceCatalog.Workspaces[_ws].Tabs;
+        _tab = (uint)tab < (uint)tabs.Length ? tab : 0;
+        _member = (uint)member < (uint)tabs[_tab].Members.Length ? member : 0;
+    }
+
+    private Task Close() => OnClose.InvokeAsync();
+}

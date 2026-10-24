@@ -29,7 +29,7 @@
     <button type="button" class="drawer-btn" @onclick="ToggleDrawer"
             aria-label="메뉴 열기" aria-expanded="@(_drawer ? "true" : "false")">☰</button>
 
-    <div class="app-shell @(_drawer ? "drawer-open" : "") @(_sideCollapsed ? "side-collapsed" : "")"
+    <div class="app-shell @(_drawer ? "drawer-open" : "") @(_sideCollapsed ? "side-collapsed" : "") @(TryDockRoute(out _) ? "sw-docked" : null)"
          @onkeydown="OnShellKey" tabindex="-1">
 
         @if (_drawer)
@@ -85,23 +85,25 @@
                 @* v17.89.0: 🧭 목적 문장 → 스튜디오 추천 허브(Ctrl+K) — 메뉴 이름을 몰라도 하고 싶은 일로 찾는다. *@
                 <button type="button" class="nav-intent" @onclick="ToggleIntentHub" aria-label="AI 인텐트 내비게이션 열기"><span>🧭 무엇을 하고 싶으세요?</span><kbd>Ctrl+K</kbd></button>
                 <div class="nav-acc-search"><input type="search" placeholder="🔎 스튜디오 검색" @bind="_navFilter" @bind:event="oninput" aria-label="스튜디오 검색" /></div>
-                @for (var ci = 0; ci < StudioCatalog.Categories.Length; ci++)
+                @* v18.0.0: 175 분절 모달 → 32 슈퍼-워크스페이스(6 그룹). 검색은 소속 175 기능 제목까지 읽어 일치한 하위 탭으로 직행. *@
+                @for (var gi = 0; gi < StudioWorkspaceCatalog.Groups.Length; gi++)
                 {
-                    var cat = ci;
-                    var hits = NavFiltering ? StudioCatalog.CountMatches(cat, _navFilter) : StudioCatalog.CountIn(cat);
+                    var grp = gi;
+                    var hits = NavFiltering ? StudioWorkspaceCatalog.CountMatches(grp, _navFilter) : StudioWorkspaceCatalog.CountIn(grp);
                     if (NavFiltering && hits == 0) continue;
-                    var open = _openCats[cat] || NavFiltering;
-                    <button type="button" class="nav-acc @(open ? "open" : null)" aria-expanded="@(open ? "true" : "false")" @onclick="() => ToggleCat(cat)">
-                        <span class="nav-acc-t">@StudioCatalog.Categories[cat]</span><span class="nav-acc-n">@hits</span><span class="nav-acc-c" aria-hidden="true">▸</span>
+                    var open = _openCats[grp] || NavFiltering;
+                    <button type="button" class="nav-acc @(open ? "open" : null)" aria-expanded="@(open ? "true" : "false")" @onclick="() => ToggleCat(grp)">
+                        <span class="nav-acc-t">@StudioWorkspaceCatalog.Groups[grp]</span><span class="nav-acc-n">@hits</span><span class="nav-acc-c" aria-hidden="true">▸</span>
                     </button>
                     @if (open)
                     {
                         <div class="nav-acc-body">
-                            @foreach (var e in StudioCatalog.Entries)
+                            @for (var wi = 0; wi < StudioWorkspaceCatalog.Workspaces.Length; wi++)
                             {
-                                if (e.Category != cat || NavFiltering && !StudioCatalog.Matches(e, _navFilter)) continue;
-                                var key = e.Key;
-                                <button type="button" class='nav-item nav-btn nav-sub @(IsStudioOpen(key) ? "on" : null)' title="@e.Title" @onclick="() => OpenStudio(key)"><span class="ic">@e.Icon</span><span class="nav-t">@e.Title</span></button>
+                                var w = StudioWorkspaceCatalog.Workspaces[wi];
+                                if (w.Group != grp || NavFiltering && !StudioWorkspaceCatalog.Matches(wi, _navFilter)) continue;
+                                var wsi = wi;
+                                <button type="button" class='nav-item nav-btn nav-sub @(IsWorkspaceOpen(wsi) ? "on" : null)' title="@w.Overview" @onclick="() => OpenWorkspace(wsi)"><span class="ic">@w.Icon</span><span class="nav-t">@w.Title</span></button>
                             }
                         </div>
                     }
@@ -499,6 +501,23 @@
         @if (_influencerLive)
         {
             <VirtualInfluencerLiveStudioModal OnClose="() => _influencerLive = false" />
+        }
+        @* v18.0.0 슈퍼-워크스페이스 — 소셜 3 대 통합 모달(엔진 모달은 하위 탭 주입) + 그 외 29 워크스페이스는 열린 엔진 모달 위 상단 독. *@
+        @if (_shortsStudioWorkspace)
+        {
+            <ShortsStudioWorkspaceModal OnClose="() => _shortsStudioWorkspace = false" InitialTab="_wsRoute.Tab" InitialMember="_wsRoute.Member" RouteStamp="_wsStamp" OnRouteChanged="r => _wsRoute = r" />
+        }
+        @if (_socialPublisherWorkspace)
+        {
+            <SocialPublisherWorkspaceModal OnClose="() => _socialPublisherWorkspace = false" InitialTab="_wsRoute.Tab" InitialMember="_wsRoute.Member" RouteStamp="_wsStamp" OnRouteChanged="r => _wsRoute = r" />
+        }
+        @if (_viralGrowthCommerceWorkspace)
+        {
+            <ViralGrowthCommerceWorkspaceModal OnClose="() => _viralGrowthCommerceWorkspace = false" InitialTab="_wsRoute.Tab" InitialMember="_wsRoute.Member" RouteStamp="_wsStamp" OnRouteChanged="r => _wsRoute = r" />
+        }
+        @if (TryDockRoute(out var dockRoute))
+        {
+            <StudioWorkspaceDock Workspace="dockRoute.Workspace" Tab="dockRoute.Tab" Member="dockRoute.Member" OnRoute="OpenRoute" OnClose="CloseOpenStudios" />
         }
         @if (_brollSubtitles)
         {
@@ -1081,25 +1100,29 @@
     private bool _camTrack; // v17.45.0 헤더 📐 AI 카메라 트래킹 스튜디오
     private bool _directorOpen, _multiEngineOpen, _virtualLiveOpen, _liveDubOpen, _motionMatchOpen, _visualQaOpen, _contactLocoOpen, _dexManipOpen, _ragdollOpen, _foleyOpen, _cineDirectorOpen, _narrativeOpen, _stageLightOpen, _pyroOpen, _lensOpen; // v17.50.1 스토리보드 → 레이아웃 이관 스튜디오 15종
     private bool _sideCollapsed; // v17.50.1 트랜스포트 바 ☰ 사이드바 접기
-    private readonly bool[] _openCats = new bool[StudioCatalog.Categories.Length];
+    private readonly bool[] _openCats = new bool[StudioWorkspaceCatalog.Groups.Length];
     private string _navFilter = "";
 
     private void ToggleSidebar() => _sideCollapsed = !_sideCollapsed;
     // v17.63.0 공백뿐인 검색어는 필터 아님(이전: 전 카테고리 펼침 + 0건 표시) · 0건 카테고리 숨김.
     private bool NavFiltering => !string.IsNullOrWhiteSpace(_navFilter);
-    private int NavMatchTotal() { var n = 0; for (var c = 0; c < StudioCatalog.Categories.Length; c++) n += StudioCatalog.CountMatches(c, _navFilter); return n; }
+    private int NavMatchTotal() { var n = 0; for (var c = 0; c < StudioWorkspaceCatalog.Groups.Length; c++) n += StudioWorkspaceCatalog.CountMatches(c, _navFilter); return n; }
     private void ToggleCat(int c) { if (NavFiltering) { _navFilter = ""; _openCats[c] = true; return; } _openCats[c] = !_openCats[c]; }
 
     /// <summary>v17.50.1 사이드바 카탈로그 디스패치 — 레이아웃 플래그 설정 · <c>sb:</c> 는 스토리보드로 위임.</summary>
     private void OpenStudio(string key)
     {
         CloseDrawer();
+        // v18.0.0 서브탭 딥링크 — ws: 키 · 통합 모달(숏폼/퍼블리셔/그로스) 소속 기존 키는 워크스페이스 하위 탭으로 순간이동.
+        if (StudioWorkspaceCatalog.ResolveWorkspaceSubTabRoute(key, out var route)
+            && (key.StartsWith("ws:", StringComparison.Ordinal) || StudioWorkspaceCatalog.Workspaces[route.Workspace].ModalKey is not null)) { OpenRoute(route); return; }
         if (key.StartsWith("sb:", StringComparison.Ordinal)) { StudioNav.Request(key[3..]); Nav.NavigateTo("storyboard"); return; }
         if (key == "@palette") { Palette.Open(); return; }
         if (key == "@help") { OpenHelp(); return; }
         // v17.63.0 단일 활성 스튜디오 — 스크림 z-index(112~118)가 버전별 고정이라 드로어(z 1200)로 두 번째 모달을 열면
         // DOM 순서상 앞선 모달 뒤에 깔려 클릭 불가였다. 새 모달을 열기 전에 열린 카탈로그 스튜디오를 모두 닫는다.
         foreach (var e in StudioCatalog.Entries) if (e.Key != key && IsStudioOpen(e.Key)) SetStudio(e.Key, false);
+        CloseWorkspaceModals(null);
         SetStudio(key, true);
     }
 
@@ -1107,6 +1130,63 @@
     private void CloseOpenStudios()
     {
         foreach (var e in StudioCatalog.Entries) if (IsStudioOpen(e.Key)) SetStudio(e.Key, false);
+        CloseWorkspaceModals(null);
+    }
+
+    private bool _shortsStudioWorkspace, _socialPublisherWorkspace, _viralGrowthCommerceWorkspace; // v18.0.0 소셜 3 대 통합 워크스페이스 모달
+    private WorkspaceSubTabRoute _wsRoute; // v18.0.0 통합 모달 딥링크 좌표(탭 · 엔진)
+    private int _wsStamp; // 같은 모달이 열린 채 재요청돼도 좌표를 다시 적용하도록 증가
+
+    /// <summary>v18.0.0 사이드바 워크스페이스 클릭 — 검색 중이면 처음 일치한 하위 탭으로, 아니면 첫 탭으로.</summary>
+    private void OpenWorkspace(int ws)
+    {
+        if (!NavFiltering || !StudioWorkspaceCatalog.FirstMatch(ws, _navFilter, out var r)) r = new WorkspaceSubTabRoute(ws, 0, 0);
+        OpenRoute(r);
+    }
+
+    /// <summary>v18.0.0 좌표 진입 — 통합 모달은 플래그 + 탭 좌표, 그 외는 해당 탭의 기존 엔진 모달을 연다(상단 독이 형제 탭 표시).</summary>
+    private void OpenRoute(WorkspaceSubTabRoute r)
+    {
+        var mk = StudioWorkspaceCatalog.Workspaces[r.Workspace].ModalKey;
+        if (mk is null) { OpenStudio(StudioWorkspaceCatalog.MemberKey(r)); return; }
+        CloseDrawer();
+        foreach (var e in StudioCatalog.Entries) if (IsStudioOpen(e.Key)) SetStudio(e.Key, false);
+        CloseWorkspaceModals(mk);
+        _wsRoute = r;
+        _wsStamp++;
+        SetStudio(mk, true);
+    }
+
+    private void CloseWorkspaceModals(string? keep)
+    {
+        foreach (var w in StudioWorkspaceCatalog.Workspaces)
+            if (w.ModalKey is { } mk && mk != keep && IsStudioOpen(mk)) SetStudio(mk, false);
+    }
+
+    private bool IsWorkspaceOpen(int ws)
+    {
+        var w = StudioWorkspaceCatalog.Workspaces[ws];
+        if (w.ModalKey is not null) return IsStudioOpen(w.ModalKey);
+        foreach (var t in w.Tabs) foreach (var m in t.Members) if (IsStudioOpen(m)) return true;
+        return false;
+    }
+
+    /// <summary>열린 통합 모달의 현재 엔진 키(도움말 서랍용) — 없으면 null.</summary>
+    private string? OpenWorkspaceMemberKey()
+    {
+        foreach (var w in StudioWorkspaceCatalog.Workspaces)
+            if (w.ModalKey is { } mk && IsStudioOpen(mk)) return StudioWorkspaceCatalog.MemberKey(_wsRoute);
+        return null;
+    }
+
+    /// <summary>독 워크스페이스(통합 모달 아님)의 엔진 모달이 열려 있으면 그 좌표 — 상단 워크스페이스 독 표시 조건.</summary>
+    private bool TryDockRoute(out WorkspaceSubTabRoute route)
+    {
+        foreach (var e in StudioCatalog.Entries)
+            if (IsStudioOpen(e.Key) && StudioWorkspaceCatalog.ResolveWorkspaceSubTabRoute(e.Key, out route)
+                && StudioWorkspaceCatalog.Workspaces[route.Workspace].ModalKey is null) return true;
+        route = default;
+        return false;
     }
 
     /// <summary>v17.63.0 카탈로그 키 → 레이아웃 플래그 설정/해제(OpenStudio 단일 활성 처리 공용).</summary>
@@ -1275,6 +1355,9 @@
             case "L_stageLightOpen": _stageLightOpen = on; break;
             case "L_pyroOpen": _pyroOpen = on; break;
             case "L_lensOpen": _lensOpen = on; break;
+            case StudioWorkspaceCatalog.ShortsModalKey: _shortsStudioWorkspace = on; break;
+            case StudioWorkspaceCatalog.PublisherModalKey: _socialPublisherWorkspace = on; break;
+            case StudioWorkspaceCatalog.ViralGrowthModalKey: _viralGrowthCommerceWorkspace = on; break;
         }
     }
 
@@ -1441,6 +1524,9 @@
         "L_stageLightOpen" => _stageLightOpen,
         "L_pyroOpen" => _pyroOpen,
         "L_lensOpen" => _lensOpen,
+        StudioWorkspaceCatalog.ShortsModalKey => _shortsStudioWorkspace,
+        StudioWorkspaceCatalog.PublisherModalKey => _socialPublisherWorkspace,
+        StudioWorkspaceCatalog.ViralGrowthModalKey => _viralGrowthCommerceWorkspace,
         _ => false,
     };
 
@@ -1480,8 +1566,8 @@
     [JSInvokable]
     public Task OnStudioHelpRequested(string? header) => InvokeAsync(() =>
     {
-        string? key = null;
-        foreach (var e in StudioCatalog.Entries) if (IsStudioOpen(e.Key)) { key = e.Key; break; }
+        var key = OpenWorkspaceMemberKey();
+        if (key is null) foreach (var e in StudioCatalog.Entries) if (IsStudioOpen(e.Key)) { key = e.Key; break; }
         key ??= StudioCatalogHelpRegistry.ResolveKeyByHeader(header);
         if (_studioHelpOpen && _studioHelpKey == key) { _studioHelpOpen = false; StateHasChanged(); return; }
         _studioHelpKey = key;
