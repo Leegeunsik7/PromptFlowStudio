@@ -39368,3 +39368,145 @@ public sealed class DesktopRuntimeSmokeTests
         private static ValueTask<TValue> Value<TValue>() => typeof(TValue) == typeof(Microsoft.JSInterop.IJSObjectReference) ? new((TValue)(object)Instance) : default;
     }
 }
+
+/// <summary>v18.2.0: StoryV 스토리보드 — 발화 호흡 샷 분할 정확도 · 9:16 키프레임 규격 · 무할당 핫패스 · 숏폼 팩토리 0-카피 핸드오프 일치성.</summary>
+[Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
+public sealed class StoryboardSequencerFactoryBridgeTests
+{
+    [Fact]
+    public void Storyboard_SequencerAndFactoryBridge_Check()
+    {
+        const string script = "안녕하세요. 오늘은 AI로 숏폼을 만드는 비밀을 알려드릴게요, 끝까지 보시면 반전이 있습니다! 준비되셨나요?";
+
+        // ① 발화 호흡 샷 분할 — 문장 부호 하드 컷 · 호흡 이상 쉼표 소프트 컷 · 음절 × 180 ms + 쉼(400/200 ms) · 끊김 없는 타임코드
+        Span<PromptFlowStudio.Services.Storyboard.StoryboardShot> shots = stackalloc PromptFlowStudio.Services.Storyboard.StoryboardShot[PromptFlowStudio.Services.Storyboard.StoryboardShotBreakdownEngine.MaxShots];
+        var n = PromptFlowStudio.Services.Storyboard.StoryboardShotBreakdownEngine.Breakdown(script, shots);
+        Assert.Equal(4, n);
+        Assert.Equal("안녕하세요.", shots[0].Text(script).ToString());
+        Assert.Equal("오늘은 AI로 숏폼을 만드는 비밀을 알려드릴게요,", shots[1].Text(script).ToString());
+        Assert.Equal("끝까지 보시면 반전이 있습니다!", shots[2].Text(script).ToString());
+        Assert.Equal("준비되셨나요?", shots[3].Text(script).ToString());
+        Assert.Equal((5, 20, 13, 6), (shots[0].Syllables, shots[1].Syllables, shots[2].Syllables, shots[3].Syllables));
+        Assert.Equal((0, 1_300), (shots[0].StartMs, shots[0].EndMs));
+        Assert.Equal((1_300, 5_100), (shots[1].StartMs, shots[1].EndMs));
+        Assert.Equal((5_100, 7_840), (shots[2].StartMs, shots[2].EndMs));
+        Assert.Equal((7_840, 9_320), (shots[3].StartMs, shots[3].EndMs));
+        Assert.Equal(9_320, PromptFlowStudio.Services.Storyboard.StoryboardShotBreakdownEngine.TotalMs(shots[..n]));
+        Assert.Equal(PromptFlowStudio.Services.Storyboard.ShotAngle.Wide, shots[0].Angle);
+        Assert.Equal(PromptFlowStudio.Services.Storyboard.ShotAngle.Wide, shots[1].Angle);      // 발화 3.6 s ≥ 3 s
+        Assert.Equal(PromptFlowStudio.Services.Storyboard.ShotAngle.CloseUp, shots[2].Angle);   // 느낌표 강조
+        Assert.Equal(PromptFlowStudio.Services.Storyboard.ShotAngle.CloseUp, shots[3].Angle);   // 물음표 강조
+        Assert.Equal((',', '!'), (shots[1].Terminator, shots[2].Terminator));
+
+        // 짧은 쉼표(호흡 미만)는 분할하지 않음 · 미디엄 앵글 · 쉼표 없는 장문 = 5 s 초과 시 공백 강제 분할
+        n = PromptFlowStudio.Services.Storyboard.StoryboardShotBreakdownEngine.Breakdown("네, 맞아요.", shots);
+        Assert.Equal(1, n);
+        Assert.Equal("네, 맞아요.", shots[0].Text("네, 맞아요.").ToString());
+        n = PromptFlowStudio.Services.Storyboard.StoryboardShotBreakdownEngine.Breakdown("안녕. 오늘은 정말 좋은 날이에요.", shots);
+        Assert.Equal(2, n);
+        Assert.Equal(PromptFlowStudio.Services.Storyboard.ShotAngle.Medium, shots[1].Angle);   // 11 음절 = 1.98 s
+        var longText = string.Join(' ', Enumerable.Repeat("가나다", 30));
+        n = PromptFlowStudio.Services.Storyboard.StoryboardShotBreakdownEngine.Breakdown(longText, shots);
+        Assert.Equal(3, n);
+        Assert.Equal((0, 5_600, 11_200, 17_000), (shots[0].StartMs, shots[1].StartMs, shots[2].StartMs, shots[2].EndMs));
+        Assert.Equal(39, shots[0].TextLength);
+        Assert.Equal(0, PromptFlowStudio.Services.Storyboard.StoryboardShotBreakdownEngine.Breakdown(" ... !? ", shots));
+
+        // ② 키프레임 시퀀서 — 번호 · 9:16 크롭(와이드 608×1080 = 팩토리 박스) · 3 분할 교차 중심 · 대본 슬라이스
+        var seq = new PromptFlowStudio.Services.Storyboard.StoryboardKeyframeSequencer();
+        Assert.Equal(4, seq.Load(script));
+        Assert.Equal(9_320, seq.TotalMs);
+        var k0 = seq.KeyframeAt(0);
+        Assert.Equal((1, 500, 608, 1_080, 656, 0), (k0.ShotNumber, k0.CenterXPermille, k0.CropWidth, k0.CropHeight, k0.CropX, k0.CropY));
+        Assert.Equal(PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext.BoxWidth, k0.CropWidth);
+        var k2 = seq.KeyframeAt(2);
+        Assert.Equal((3, 333, 380, 675, 449, 73), (k2.ShotNumber, k2.CenterXPermille, k2.CropWidth, k2.CropHeight, k2.CropX, k2.CropY));
+        var k3 = seq.KeyframeAt(3);
+        Assert.Equal((4, 667, 1_090, 1_480), (k3.ShotNumber, k3.CenterXPermille, k3.CropX, k3.DurationMs));
+        Assert.Equal("👁 클로즈업", PromptFlowStudio.Services.Storyboard.StoryboardKeyframeSequencer.AngleTag(k3.Angle));
+        Assert.Equal("준비되셨나요?", seq.TextOf(k3).ToString());
+        foreach (var k in seq.Keyframes)
+        {
+            Assert.InRange(k.CropX, 0, PromptFlowStudio.Services.Storyboard.StoryboardKeyframeSequencer.SourceWidth - k.CropWidth);
+            Assert.InRange(k.CropY, 0, PromptFlowStudio.Services.Storyboard.StoryboardKeyframeSequencer.SourceHeight - k.CropHeight);
+            Assert.Equal(0, k.CropWidth & 1);
+        }
+        var mid = new PromptFlowStudio.Services.Storyboard.StoryboardKeyframeSequencer();
+        Assert.Equal(2, mid.Load("안녕. 오늘은 정말 좋은 날이에요."));
+        var km = mid.KeyframeAt(1);
+        Assert.Equal((667, 486, 864, 1_037, 43), (km.CenterXPermille, km.CropWidth, km.CropHeight, km.CropX, km.CropY));
+
+        // 시간 역순 입력 → 시작 시각 오름차순 정렬 · 번호 재부여
+        n = PromptFlowStudio.Services.Storyboard.StoryboardShotBreakdownEngine.Breakdown(script, shots);
+        shots[..n].Reverse();
+        var reorder = new PromptFlowStudio.Services.Storyboard.StoryboardKeyframeSequencer();
+        Assert.Equal(4, reorder.Sequence(shots[..n]));
+        for (var i = 0; i < 4; i++)
+        {
+            Assert.Equal(i + 1, reorder.KeyframeAt(i).ShotNumber);
+            Assert.Equal(seq.KeyframeAt(i).StartMs, reorder.KeyframeAt(i).StartMs);
+        }
+
+        // ③ 무할당 계약 — 분할 · 재로드(용량 내) · 지문 0 B
+        var fp = seq.Fingerprint;
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        var all = true;
+        for (var i = 0; i < 64; i++)
+        {
+            all &= PromptFlowStudio.Services.Storyboard.StoryboardShotBreakdownEngine.Breakdown(script, shots) == 4;
+            all &= seq.Load(script) == 4;
+            all &= seq.Fingerprint == fp;
+        }
+        long hotAlloc = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.True(all);
+        Assert.Equal(0, hotAlloc);
+
+        // ④ 숏폼 팩토리 핸드오프 — 0-카피 슬라이스 · 지문 일치 · 0 B Push/Consume · 구독자 예외 격리
+        var bridge = new PromptFlowStudio.Services.Ui.StoryboardToShortsFactoryBridge();
+        var hits = 0;
+        bridge.OnHandoff += () => { if (hits++ == 0) throw new InvalidOperationException("구독자 예외 격리"); };
+        var shortsTabs = WsCat.Workspaces[WsCat.IndexOfModal(WsCat.ShortsModalKey)].Tabs;
+        Assert.InRange(PromptFlowStudio.Services.Ui.StoryboardToShortsFactoryBridge.FactoryTrimTab, 0, shortsTabs.Length - 1);
+        Assert.Equal(32, WsCat.Workspaces.Length);   // 신규 모달 0 — 32 워크스페이스 유지
+        Assert.False(bridge.Push(new PromptFlowStudio.Services.Storyboard.StoryboardKeyframeSequencer()));
+        Assert.True(bridge.Push(seq));
+        Assert.True(bridge.TryConsume(out _));
+        Assert.False(bridge.TryConsume(out _));
+        before = GC.GetAllocatedBytesForCurrentThread();
+        var pushed = bridge.Push(seq);
+        var consumed = bridge.TryConsume(out var handed);
+        long handoffAlloc = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.True(pushed && consumed);
+        Assert.Equal(0, handoffAlloc);
+        Assert.Equal(2, hits);
+        Assert.True(handed.IsLive);
+        Assert.True(handed.Keyframes.Span == seq.Keyframes, "키프레임 = 시퀀서 버퍼 슬라이스");
+        Assert.True(handed.Script.Span == seq.Script, "대본 = 시퀀서 버퍼 슬라이스");
+        Assert.Equal(seq.Fingerprint, handed.Fingerprint);
+        Assert.Equal(handed.Fingerprint, handed.ComputeFingerprint());
+        Assert.Equal(9_320, handed.ClipLengthMs);
+
+        // 팩토리 ① 타임코드 · 리프레임 · ② 대본 수화 — 파이프라인 정합(단절 0)
+        var ws = new PromptFlowStudio.Services.Ui.ShortsFactoryWorkspaceContext();
+        var p = new PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext();
+        Assert.True(p.Hydrate(ws));
+        Assert.True(p.ApplyStoryboard(handed, ws));
+        Assert.Equal((0, 9_320), (ws.ClipInMs, ws.ClipOutMs));
+        Assert.Equal(TimeSpan.FromMilliseconds(9_320), p.Trim.End);
+        Assert.Equal(500, ws.ReframeCenterPermille);
+        Assert.True(p.StoryboardShots.Span == seq.Keyframes, "파이프라인 샷 = 시퀀서 버퍼(0-카피)");
+        Assert.Equal(script, p.PlanScript);
+        Assert.Equal(script, p.BuildSlicedScript());
+        Assert.True(p.IsCoherent(ws));
+
+        // 낡은 시퀀스 차단 — 재분할 후 대기분 소비 거부 · 적용 거부
+        Assert.True(bridge.Push(seq));
+        Assert.Equal(1, seq.Load("새 대본입니다."));
+        Assert.False(bridge.TryConsume(out _));
+        Assert.False(handed.IsLive);
+        Assert.False(p.ApplyStoryboard(handed, ws));
+        Assert.Equal(2, bridge.Rejected);
+        Assert.Equal(2, bridge.Consumed);
+        Assert.Equal(seq.Revision - 1, bridge.Current.Revision);
+    }
+}

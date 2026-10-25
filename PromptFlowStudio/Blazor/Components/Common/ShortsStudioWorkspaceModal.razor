@@ -4,6 +4,7 @@
 @inject ShortsFactoryOneClickRenderOrchestrator OneClick
 @inject ShortsToPublisherHandoffBridge Handoff
 @inject GrowthToShortsFactoryBridge GrowthPlan
+@inject StoryboardToShortsFactoryBridge StoryShots
 
 @* [PromptFlow Studio v18.0.0] 🏭 원스톱 숏폼 AI 팩토리 — v17.77 세이프존 훅 · v17.78 키네틱 자막 · v17.82 다국어 더빙 · v17.84 킬러클립 · v17.85 예측/익스포터 ·
    v17.91 저작권 · v17.98 리텐션 리먹서를 4 단계 탭으로 통합. 각 엔진 모달은 그대로 하위 탭에 주입하고, 탭 간 값은 ShortsFactoryWorkspaceContext 1 개로 공유한다. *@
@@ -12,6 +13,7 @@
 @* [v18.0.3] ① 📁 로컬 비디오 열기 — MP4 실 NALU/AAC 를 소스 링에 주입(120 s 리허설 자동 비활성) · 파일 배지(이름 · 해상도 · 길이) · 절삭 슬라이더 = 파일 길이. *@
 @* [v18.0.4] 🚀 소셜 퍼블리셔로 전송 — ④ fMP4 · 썸네일 PNG 를 ShortsToPublisherHandoffBridge 로 0-카피 인계 → 퍼블리셔 ② 다채널 배포 탭 즉시 오픈. *@
 @* [v18.0.6] 📝 대본 입력창(①·②) — 그로스 룸 🎬 기획안(대본 · 훅 가이드 · 해시태그)을 GrowthToShortsFactoryBridge 에서 수화 → Pipeline 대본 · 줌 펀치 · 퍼블리셔 해시태그로 관통. *@
+@* [v18.2.0] 🎞 스토리보드 샷 시퀀스 — StoryboardToShortsFactoryBridge 에서 수화 → ① 절삭(0 ~ 총 길이) · 첫 샷 9:16 중심 · ② 대본 즉시 반영. *@
 <div class="sw-docked" style="--sw-dock-h: @(ShowProgress ? "150px" : "128px")" tabindex="-1" @onkeydown="OnStageKey">
     <StudioWorkspaceDock Workspace="_ws" Tab="_tab" Member="_member" OnRoute="Go" OnClose="Close">
         <div class="swd-row sfw-ctx">
@@ -27,6 +29,10 @@
                 @if (_planGuide is { } guide)
                 {
                     <span class="sfw-hy plan" title="그로스 룸 기획안 훅 가이드 · 해시태그">🎯 @(guide) · @(_planTags)</span>
+                }
+                @if (!Pipeline.StoryboardShots.IsEmpty)
+                {
+                    <span class="sfw-hy plan" title="스토리보드 샷 키프레임 시퀀스(0-카피 공유)">🎞 스토리보드 @(Pipeline.StoryboardShots.Length)샷 · @(Sec(StoryShots.Current.TotalMs))</span>
                 }
             }
             @switch (_tab)
@@ -206,9 +212,19 @@
         OneClick.OnChange += OnRenderChanged;
         GrowthPlan.OnHandoff += OnGrowthPlan;
         HydrateGrowthPlan();
+        StoryShots.OnHandoff += OnStoryShots;
+        HydrateStoryboard();
     }
 
     private void OnGrowthPlan() => _ = InvokeAsync(() => { HydrateGrowthPlan(); StateHasChanged(); });
+    private void OnStoryShots() => _ = InvokeAsync(() => { HydrateStoryboard(); StateHasChanged(); });
+
+    /// <summary>[v18.2.0] 스토리보드 샷 시퀀스 수화 — ① 타임코드 · 리프레임 · ② 대본을 Pipeline 에 관통(이전 렌더 결과 무효화).</summary>
+    private void HydrateStoryboard()
+    {
+        if (!StoryShots.TryConsume(out var seq) || !Pipeline.ApplyStoryboard(seq, Ctx)) return;
+        _renderedRev = -1;
+    }
 
     /// <summary>[v18.0.6] 그로스 룸 기획안 수화 — 대본(공유 버퍼 → 입력창 문자열 1 회) · 권장 컷 빈도 → 줌 펀치 · 해시태그 → 퍼블리셔 인계.</summary>
     private void HydrateGrowthPlan()
@@ -296,6 +312,7 @@
         _disposed = true;
         OneClick.OnChange -= OnRenderChanged;
         GrowthPlan.OnHandoff -= OnGrowthPlan;
+        StoryShots.OnHandoff -= OnStoryShots;
         _renderCts?.Cancel();
         _renderCts?.Dispose();
     }

@@ -197,6 +197,21 @@ public sealed class ShortsFactoryPipelineContext
         return true;
     }
 
+    /// <summary>[v18.2.0] 스토리보드 샷 키프레임(시퀀서 버퍼 공유 · 0-카피) — 비어 있으면 스토리보드 인계 없음.</summary>
+    public ReadOnlyMemory<PromptFlowStudio.Services.Storyboard.StoryboardKeyframe> StoryboardShots { get; private set; }
+
+    /// <summary>[v18.2.0] 스토리보드 시퀀스 수화 — ① 절삭 0 ~ 총 길이 · 첫 샷 9:16 중심 · ② 대본(UI 1 회 문자열화) → 재관통. 낡은/빈 시퀀스는 false.</summary>
+    public bool ApplyStoryboard(in StoryboardShortsSequence seq, ShortsFactoryWorkspaceContext ws)
+    {
+        if (seq.IsEmpty || !seq.IsLive) return false;
+        StoryboardShots = seq.Keyframes;
+        SetPlanScript(seq.Script.ToString());
+        ws.SetClip(0, seq.ClipLengthMs);
+        ws.SetReframeCenter(seq.FirstCenterXPermille);
+        _sourceRev = -1;
+        return Hydrate(ws);
+    }
+
     /// <summary>② 절삭 구간 대본(비핫패스 · Revision 캐시) — 키네틱 자막 러너 SetScript 입력. 기획안 대본이 있으면 구간 단어 슬롯을 앞에서부터 채운다.</summary>
     public string BuildSlicedScript()
     {

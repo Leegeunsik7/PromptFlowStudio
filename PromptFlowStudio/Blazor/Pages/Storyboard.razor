@@ -37,6 +37,7 @@
 @inject PromptFlowStudio.Services.Platform.ErrorDialogService Errors
 @inject NavigationManager Nav
 @inject PromptFlowStudio.Services.Ui.StudioNavigationService StudioNav
+@inject PromptFlowStudio.Services.Ui.StoryboardToShortsFactoryBridge ShotBridge
 @inject PromptFlowStudio.Services.Weather.WeatherEngine Weather
 @inject GalleryAutoSaveService Gallery
 @inject PostProductionEngine Post
@@ -75,6 +76,7 @@
             <button class="sb-tbtn wiz" @onclick="() => _agencyOpen = true" disabled="@Jobs.IsRunning" title="실시간 트렌드 → Writer/Director/Marketer 3 AI 에이전트 자율 토론 기획 → 승인">🤖 AI 콘텐츠 에이전시</button>
             <StoryboardHeader OnOpenBaby="() => _babyGalleryOpen = true" OnOpenHyper="() => _hyperOpen = true" OnOpenB2b="() => _b2bGalleryOpen = true" OnOpenWeather="() => _weatherGalleryOpen = true" OnOpenPitch="() => _pitchOpen = true" Disabled="@(Jobs.IsRunning || Jobs.IsMerging)" />
             <button class="sb-tbtn" @onclick="() => _osmuOpen = true" title="완성 영상을 9:16·1:1·4:5 플랫폼 규격으로 재구성 + AI 제목/해시태그 패키지(폴더/ZIP) · AI 품질 검수 · 소셜 바로 게시">🌐 OSMU 내보내기 · 게시 @if (FinalQa is { } fq) { <span class="sb-qa @(fq.Verdict == QaVerdict.Pass ? "pass" : fq.Verdict == QaVerdict.Warn ? "warn" : "reject")" title="@fq.Message">@(fq.Verdict == QaVerdict.Pass ? "✅ QA" : fq.Verdict == QaVerdict.Warn ? "⚠️ QA" : "⛔ QA") @(fq.Defects.Count)</span> }</button>
+            <button class="sb-tbtn wiz" @onclick="SendShotsToFactory" disabled="@(_project.Scenes.Count == 0)" title="나레이션을 발화 호흡 기준 샷으로 분할 → 타임코드 · 대본 · 9:16 프레이밍을 숏폼 팩토리 ① 절삭 · ② 자막 탭에 0-카피 인계">🎬 숏폼 팩토리로 시퀀스 전송</button>
             <button class="sb-tbtn" @onclick="BoostAll" disabled="@Jobs.IsRunning" title="Wan 2.1 알고리즘에 최적화된 시네마틱 카메라/조명 태그를 모든 컷에 1클릭으로 덧붙입니다.">⚡ 프롬프트 부스팅</button>
             <button class="sb-tbtn" @onclick="SaveProject" disabled="@(Jobs.IsRunning || Jobs.IsMerging)">💾 프로젝트 저장</button>
             <div class="sb-openbtn @((Jobs.IsRunning || Jobs.IsMerging) ? "off" : null)">
@@ -186,6 +188,7 @@
                     <button class="sb-ptool @(_snap ? "on" : null)" @onclick="() => _snap = !_snap" title="분할 시 문장 경계(. ! ? 。 줄바꿈)에 스냅">🧲 스냅 @(_snap ? "ON" : "OFF")</button>
                     <button class="sb-ptool" @onclick="ToggleMarker" disabled="@(_selScene is null)" title="선택 컷에 마커 토글">📍 마커</button>
                     <button class="sb-ptool" @onclick="SplitSelected" disabled="@(_selScene is null || Jobs.IsRunning)" title="선택 컷의 나레이션을 둘로 나눠 다음 컷으로 분할">✂ 분할</button>
+                    <button class="sb-ptool" @onclick="RefreshShots" disabled="@(_project.Scenes.Count == 0)" title="나레이션을 문장 부호 · 쉼표 · 발화 템포 기준 샷으로 분할하고 앵글 · 9:16 프레이밍을 규격화">🎞 샷 분할</button>
                     <span class="sb-tl-v">선택 @(SelLabel()) · 마커 @(_markers.Count)</span>
                     @foreach (var (ms, mi) in _project.Scenes.Select((s, idx) => (s, idx)))
                     {
@@ -194,6 +197,26 @@
                         <button class="sb-tl-mk @(_selScene == target ? "on" : null)" @onclick="() => _selScene = target">📍 컷 @(mi + 1)</button>
                     }
                 </div>
+                @* v18.2.0 🎞 샷 카드 인스펙터 — StoryboardKeyframeSequencer 키프레임(샷 번호 · 지속 시간 · 앵글 · 9:16 중심 · 대본) *@
+                @if (_shotSeq.Count > 0)
+                {
+                    <div class="sb-shots" aria-label="샷 키프레임 시퀀스">
+                        @for (var si = 0; si < _shotSeq.Count; si++)
+                        {
+                            var k = _shotSeq.KeyframeAt(si);
+                            <div class="sb-shot a@((int)k.Angle)" title="@(_shotSeq.TextOf(k).ToString())">
+                                <div class="sb-shot-h"><b>#@(k.ShotNumber)</b><span>@(ShotSec(k.StartMs))→@(ShotSec(k.EndMs))</span></div>
+                                <div class="sb-shot-m">@(PromptFlowStudio.Services.Storyboard.StoryboardKeyframeSequencer.AngleTag(k.Angle)) · @(ShotSec(k.DurationMs))s · ⬚ @(k.CenterXPermille / 10)%</div>
+                                <div class="sb-shot-t">@(_shotSeq.TextOf(k).ToString())</div>
+                            </div>
+                        }
+                    </div>
+                    <div class="sb-tl-v">샷 @(_shotSeq.Count) · 총 @(ShotSec(_shotSeq.TotalMs))s @(_shotMsg)</div>
+                }
+                else if (_shotMsg is { } shotMsg)
+                {
+                    <div class="sb-tl-v">@(shotMsg)</div>
+                }
                 <details class="sb-studios">
                     <summary>🧰 프로젝트 스튜디오 (13) — 현재 스토리보드 프로젝트를 사용하는 스튜디오</summary>
                     <div class="sb-studios-g">
@@ -220,6 +243,12 @@
                     .sb-tl-mk { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid #f59e0b; background: transparent; color: #f59e0b; cursor: pointer; }
                     .sb-tl-mk.on { background: color-mix(in srgb, #f59e0b 22%, transparent); }
                     .sb-studios { margin-top: 8px; }
+                    .sb-shots { display: flex; gap: 6px; overflow-x: auto; margin-top: 8px; padding-bottom: 4px; }
+                    .sb-shot { flex: 0 0 150px; border: 1px solid var(--line, #334155); border-left-width: 4px; border-radius: 8px; padding: 5px 7px; background: var(--card-2, #0f172a); font-size: 11px; }
+                    .sb-shot.a0 { border-left-color: #38bdf8; } .sb-shot.a1 { border-left-color: #a78bfa; } .sb-shot.a2 { border-left-color: #f472b6; }
+                    .sb-shot-h { display: flex; justify-content: space-between; font: 700 11px var(--mono, monospace); }
+                    .sb-shot-m { color: var(--text-secondary, #9fb0c8); margin: 2px 0; }
+                    .sb-shot-t { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; color: var(--text-primary, #e6eefc); }
                     .sb-studios > summary { cursor: pointer; font-size: 12px; font-weight: 800; }
                     .sb-studios-g { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
                     .sb-scene-no.sel { outline: 2px solid var(--accent, #7c6cff); border-radius: 6px; padding: 0 4px; }
@@ -1884,6 +1913,41 @@
     }
 
     /// <summary>선택 컷 분할 — 나레이션을 중앙(스냅 ON 이면 가장 가까운 문장 경계)에서 나눠 동일 설정의 다음 컷을 삽입.</summary>
+    // v18.2.0 🎞 샷 분할 시퀀서(컴포넌트 소유 · 브리지는 버퍼를 0-카피 공유) — 나레이션 우선, 없으면 프롬프트.
+    private readonly PromptFlowStudio.Services.Storyboard.StoryboardKeyframeSequencer _shotSeq = new();
+    private readonly System.Text.StringBuilder _shotScript = new(1024);
+    private string? _shotMsg;
+
+    private static string ShotSec(int ms) => (ms / 1000.0).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
+
+    private void RefreshShots()
+    {
+        _shotScript.Clear();
+        foreach (var s in _project.Scenes)
+        {
+            var line = string.IsNullOrWhiteSpace(s.VoiceText) ? s.Prompt : s.VoiceText;
+            if (string.IsNullOrWhiteSpace(line)) continue;
+            if (_shotScript.Length > 0) _shotScript.Append((char)10);
+            _shotScript.Append(line.Trim());
+        }
+        var buf = System.Buffers.ArrayPool<char>.Shared.Rent(Math.Max(1, _shotScript.Length));
+        try
+        {
+            _shotScript.CopyTo(0, buf, 0, _shotScript.Length);
+            _shotSeq.Load(buf.AsSpan(0, _shotScript.Length));
+        }
+        finally { System.Buffers.ArrayPool<char>.Shared.Return(buf); }
+        _shotMsg = _shotSeq.Count == 0 ? "샷 분할 실패 — 나레이션 또는 프롬프트를 입력하세요" : null;
+    }
+
+    /// <summary>v18.2.0 🎬 숏폼 팩토리로 시퀀스 전송 — 재분할 후 브리지 Push(레이아웃이 팩토리 ① 탭을 열고 모달이 수화).</summary>
+    private void SendShotsToFactory()
+    {
+        RefreshShots();
+        if (_shotSeq.Count == 0) return;
+        _shotMsg = ShotBridge.Push(_shotSeq) ? "· ✅ 숏폼 팩토리로 전송됨" : "· ⚠ 전송 실패";
+    }
+
     private void SplitSelected()
     {
         var s = _selScene;

@@ -8,6 +8,7 @@
 @inject PromptFlowStudio.Services.Ui.CommandPaletteService Palette
 @inject PromptFlowStudio.Services.Ui.IntentNavigationRunner NavRun
 @inject PromptFlowStudio.Services.Ui.StudioNavigationService StudioNav
+@inject PromptFlowStudio.Services.Ui.StoryboardToShortsFactoryBridge StoryShots
 @inject PromptFlowStudio.Services.Ui.ThemeService Theme
 @inject PromptFlowStudio.Services.Ui.SidebarGuideService SideGuide
 @inject PromptFlowStudio.Services.Storyboard.BatchProductionService Batch
@@ -1163,6 +1164,9 @@
     /// <summary>v18.0.6 그로스 룸 🎬 기획안 전송 — 그로스 모달을 닫고 숏폼 팩토리 ① 대본 입력 탭으로 진입(기획안은 팩토리 모달이 브리지에서 수화).</summary>
     private void OpenShortsFromGrowth() => OpenRoute(new WorkspaceSubTabRoute(StudioWorkspaceCatalog.IndexOfModal(StudioWorkspaceCatalog.ShortsModalKey), PromptFlowStudio.Services.Ui.GrowthToShortsFactoryBridge.FactoryScriptTab, 0));
 
+    /// <summary>v18.2.0 스토리보드 🎬 시퀀스 전송 — 숏폼 팩토리 ① 절삭 탭으로 진입(샷 시퀀스는 팩토리 모달이 브리지에서 수화).</summary>
+    private void OnStoryShots() => _ = InvokeAsync(() => { OpenRoute(new WorkspaceSubTabRoute(StudioWorkspaceCatalog.IndexOfModal(StudioWorkspaceCatalog.ShortsModalKey), PromptFlowStudio.Services.Ui.StoryboardToShortsFactoryBridge.FactoryTrimTab, 0)); StateHasChanged(); });
+
     private void CloseWorkspaceModals(string? keep)
     {
         foreach (var w in StudioWorkspaceCatalog.Workspaces)
@@ -1971,6 +1975,7 @@
         Theme.OnChange += OnCh;   // 커스텀 테마 변경 시 <style> 재렌더(라이브 반영)
         RegisterCommands();
         Palette.IntentHubRequested += OnIntentHotkey;
+        StoryShots.OnHandoff += OnStoryShots;   // v18.2.0 스토리보드 🎬 시퀀스 전송 → 숏폼 팩토리 ① 탭
         // ⚠ 이게 없으면 F1 으로 열었을 때 헤더 버튼의 aria-expanded 가
         //   "false" 로 남는다. 스크린리더는 대화상자가 열린 줄 모른다.
         Help.OnChange += OnCh;
@@ -2001,6 +2006,7 @@
         Prefs.OnChange -= OnCh;
         Theme.OnChange -= OnCh;
         Palette.IntentHubRequested -= OnIntentHotkey;
+        StoryShots.OnHandoff -= OnStoryShots;
         _selfRef?.Dispose();
         _selfRef = null;
     }

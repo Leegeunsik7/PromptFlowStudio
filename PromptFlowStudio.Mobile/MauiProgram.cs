@@ -791,6 +791,7 @@ public static class MauiProgram
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.KineticBRoll.KineticTypographyBRollStudioRunner(sp)); // v17.78.0 키네틱 자막 & B-Roll
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.LiveClipper.LiveToShortsAutoClipperStudioRunner(sp)); // v17.84.0 라이브 → 숏폼 오토 클리퍼(v17.83 송출 미디어 탭 · 120 s 무할당 H.264/AAC 롤링 링 + IDR/SPS/PPS 인덱스 · 1 s 채팅 가속/후원/RMS·고역/감정 급변 복합 스코어 ≥ 0.85 → −20 s/+15 s 직전 IDR 슬라이스) · BelowNormal 워커 격리 v17.77 9:16 세이프존 · v17.78 호르모지 키네틱 자막 · v17.76 임팩트 SFX → v17.79/v17.81 배포 큐 원클릭
         builder.Services.AddSingleton<PromptFlowStudio.Services.Ui.ShortsFactoryOneClickRenderOrchestrator>(); // v18.0.2 숏폼 팩토리 원클릭 풀체인 렌더(① 소스 링 실 슬라이스 → ② 키네틱 자막 → ③ SPS 줌 펀치 리먹스 · BGM −30 dB 덕킹 → ④ fMP4 · 썸네일 PNG) · 버퍼 첫 렌더 시 지연 할당
+        builder.Services.AddSingleton<PromptFlowStudio.Services.Ui.StoryboardToShortsFactoryBridge>(); // v18.2.0 스토리보드 → 숏폼 팩토리 샷 시퀀스 인계(키프레임 · 대본 ReadOnlyMemory 공유 · 0-카피 · ① 타임코드 · ② 대본 수화)
         builder.Services.AddSingleton<PromptFlowStudio.Services.Ui.GrowthToShortsFactoryBridge>(); // v18.0.6 바이럴 그로스 룸 → 숏폼 팩토리 기획안 인계(대본 · 훅 가이드 · 해시태그 ReadOnlyMemory 공유 · 0-카피)
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.Ui.LiveTrendRssHttpFetcher()); // v18.0.7 실시간 트렌드 RSS 라이브 수신(PROMPTFLOW_TREND_LIVE=1 · 1 초 예산 · Mock 폴백 · 버퍼 재사용)
         builder.Services.AddSingleton<PromptFlowStudio.Services.Ui.ShortsToPublisherHandoffBridge>(); // v18.0.4 숏폼 팩토리 → 소셜 퍼블리셔 인메모리 핸드오프(fMP4 · 썸네일 PNG ReadOnlyMemory 공유 · 0-카피)
