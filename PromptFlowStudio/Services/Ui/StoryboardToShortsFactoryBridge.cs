@@ -14,12 +14,17 @@ public readonly struct StoryboardShortsSequence
     public readonly ulong Fingerprint;
     public readonly long Sequence;
     public readonly StoryboardKeyframeSequencer? Owner;
+    /// <summary>[v18.2.1] 전체 샷 9:16 크롭 트랙(시퀀서 트래커 버퍼 공유 · 0-카피) · 타임코드 출처.</summary>
+    public readonly ReadOnlyMemory<ShotCropKeyframe> CropTrack;
+    public readonly AudioAlignmentSource Alignment;
 
     public StoryboardShortsSequence(ReadOnlyMemory<StoryboardKeyframe> keyframes, ReadOnlyMemory<char> script, int totalMs, int revision,
-                                    ulong fingerprint, long sequence, StoryboardKeyframeSequencer? owner)
+                                    ulong fingerprint, long sequence, StoryboardKeyframeSequencer? owner,
+                                    ReadOnlyMemory<ShotCropKeyframe> cropTrack = default, AudioAlignmentSource alignment = AudioAlignmentSource.SyllableEstimate)
     {
         Keyframes = keyframes; Script = script; TotalMs = totalMs; Revision = revision;
         Fingerprint = fingerprint; Sequence = sequence; Owner = owner;
+        CropTrack = cropTrack; Alignment = alignment;
     }
 
     public bool IsEmpty => Sequence == 0;
@@ -63,7 +68,7 @@ public sealed class StoryboardToShortsFactoryBridge
         if (seq.Count == 0) { Interlocked.Increment(ref _rejected); return false; }
         lock (_gate)
         {
-            _pending = new StoryboardShortsSequence(seq.KeyframeMemory, seq.ScriptMemory, seq.TotalMs, seq.Revision, seq.Fingerprint, ++_seq, seq);
+            _pending = new StoryboardShortsSequence(seq.KeyframeMemory, seq.ScriptMemory, seq.TotalMs, seq.Revision, seq.Fingerprint, ++_seq, seq, seq.CropTrackMemory, seq.Alignment);
             _handoffs++;
         }
         try { OnHandoff?.Invoke(); }

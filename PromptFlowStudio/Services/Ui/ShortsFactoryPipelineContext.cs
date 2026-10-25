@@ -200,11 +200,28 @@ public sealed class ShortsFactoryPipelineContext
     /// <summary>[v18.2.0] 스토리보드 샷 키프레임(시퀀서 버퍼 공유 · 0-카피) — 비어 있으면 스토리보드 인계 없음.</summary>
     public ReadOnlyMemory<PromptFlowStudio.Services.Storyboard.StoryboardKeyframe> StoryboardShots { get; private set; }
 
+    /// <summary>[v18.2.1] 스토리보드 전체 샷 9:16 크롭 트랙(시퀀서 트래커 버퍼 공유 · 0-카피) — 비어 있으면 단일 중심 리프레임.</summary>
+    public ReadOnlyMemory<PromptFlowStudio.Services.Storyboard.ShotCropKeyframe> ShotCropTrack { get; private set; }
+    /// <summary>[v18.2.1] 마지막 <see cref="ReframeAt"/> 활성 샷 인덱스(-1 = 트랙 없음).</summary>
+    public int ActiveShotIndex { get; private set; } = -1;
+
+    /// <summary>[v18.2.1] 재생 시각 → 활성 샷 이진 탐색(0 B) · 해당 샷 9:16 중심으로 ① 리프레임 갱신(값이 같으면 Revision 불변). 반환 = 샷 인덱스(-1 = 트랙 없음).</summary>
+    public int ReframeAt(int playheadMs, ShortsFactoryWorkspaceContext ws)
+    {
+        var track = ShotCropTrack.Span;
+        var i = PromptFlowStudio.Services.Storyboard.MultiShotDynamicReframeTracker.IndexAt(track, playheadMs);
+        ActiveShotIndex = i;
+        if (i >= 0) ws.SetReframeCenter(track[i].CenterXPermille);
+        return i;
+    }
+
     /// <summary>[v18.2.0] 스토리보드 시퀀스 수화 — ① 절삭 0 ~ 총 길이 · 첫 샷 9:16 중심 · ② 대본(UI 1 회 문자열화) → 재관통. 낡은/빈 시퀀스는 false.</summary>
     public bool ApplyStoryboard(in StoryboardShortsSequence seq, ShortsFactoryWorkspaceContext ws)
     {
         if (seq.IsEmpty || !seq.IsLive) return false;
         StoryboardShots = seq.Keyframes;
+        ShotCropTrack = seq.CropTrack;
+        ActiveShotIndex = seq.CropTrack.IsEmpty ? -1 : 0;
         SetPlanScript(seq.Script.ToString());
         ws.SetClip(0, seq.ClipLengthMs);
         ws.SetReframeCenter(seq.FirstCenterXPermille);

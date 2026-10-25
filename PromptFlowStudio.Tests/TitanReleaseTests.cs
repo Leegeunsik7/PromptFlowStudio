@@ -20427,6 +20427,9 @@ class "Proto"
             }
         });
         for (var k = 0; k < 60; k++) hot.Swap("engagement", Go.HotModuleKind.ScoreExpression, k % 2 == 0 ? "clamp(ctr * 5, 0, 1)" : "clamp(ctr * 10, 0, 1)", feats, canary, now);
+        // 저메모리 단일 CPU 에선 리더 스케줄 전에 교체가 끝날 수 있음 → 최소 1 회 관측 후 정지(최대 5 s)
+        var spinUntil = Environment.TickCount64 + 5_000;
+        while (Interlocked.Read(ref seen) == 0 && Environment.TickCount64 < spinUntil) Thread.Yield();
         Volatile.Write(ref stop, 1);
         await reader;
         Assert.Equal(0, torn);
@@ -39508,5 +39511,210 @@ public sealed class StoryboardSequencerFactoryBridgeTests
         Assert.Equal(2, bridge.Rejected);
         Assert.Equal(2, bridge.Consumed);
         Assert.Equal(seq.Revision - 1, bridge.Current.Revision);
+    }
+}
+
+/// <summary>v18.2.1: StoryV 오디오 정렬 — PCM 무음 경계 · TTS 단어 경계 1 ms 타임코드 · 다중 샷 9:16 크롭 이진 탐색 · 팩토리 크롭 트랙 0-카피 관통.</summary>
+[Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
+public sealed class StoryboardAudioAlignmentReframeTests
+{
+    private const string Script = "안녕하세요. 오늘은 AI로 숏폼을 만드는 비밀을 알려드릴게요, 끝까지 보시면 반전이 있습니다! 준비되셨나요?";
+
+    /// <summary>1 ms 프레임 단위 PCM 16-bit 합성 — 음성 = ±3000 구형파 · 무음 = ±80 잡음(샘플 경계 = f × rate / 1000).</summary>
+    private static byte[] SynthPcm(int sampleRate, int channels, int totalMs, (int Start, int End)[] voiced)
+    {
+        var frames = (int)((long)totalMs * sampleRate / 1000);
+        var pcm = new byte[frames * channels * 2];
+        for (var f = 0; f < totalMs; f++)
+        {
+            var on = false;
+            foreach (var v in voiced) on |= f >= v.Start && f < v.End;
+            int s0 = (int)((long)f * sampleRate / 1000), s1 = (int)((long)(f + 1) * sampleRate / 1000);
+            for (var s = s0; s < s1; s++)
+                for (var c = 0; c < channels; c++)
+                {
+                    var a = (short)((s & 1) == 0 ? (on ? 3000 : 80) : (on ? -3000 : -80));
+                    System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(pcm.AsSpan((s * channels + c) * 2), a);
+                }
+        }
+        return pcm;
+    }
+
+    private static byte[] Wav(byte[] pcm, int sampleRate, int channels)
+    {
+        var w = new byte[44 + pcm.Length];
+        var s = w.AsSpan();
+        "RIFF"u8.CopyTo(s); System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(s[4..], 36 + pcm.Length); "WAVE"u8.CopyTo(s[8..]);
+        "fmt "u8.CopyTo(s[12..]); System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(s[16..], 16);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(s[20..], 1);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(s[22..], (short)channels);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(s[24..], sampleRate);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(s[28..], sampleRate * channels * 2);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(s[32..], (short)(channels * 2));
+        System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(s[34..], 16);
+        "data"u8.CopyTo(s[36..]); System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(s[40..], pcm.Length);
+        pcm.CopyTo(s[44..]);
+        return w;
+    }
+
+    [Fact]
+    public void Storyboard_AudioAlignment_And_MultiShotReframe_Check()
+    {
+        // ① PCM 침묵 구간 감지 — 16 kHz 모노 · 250 ms 미만 쉼(150 ms) 병합 · 1 ms 경계
+        var pcm = SynthPcm(16_000, 1, 8_800, new[] { (100, 900), (1_300, 2_500), (2_650, 4_500), (4_900, 7_000), (7_350, 8_400) });
+        var voice = new SB.AudioVoiceSegment[SB.StoryboardAudioWordBoundaryAligner.MaxSegments];
+        var m = SB.StoryboardAudioWordBoundaryAligner.DetectVoice(pcm, 16_000, 1, voice, out var totalMs);
+        Assert.Equal(8_800, totalMs);
+        Assert.Equal(4, m);
+        Assert.Equal((100, 900, 1_300, 4_500), (voice[0].StartMs, voice[0].EndMs, voice[1].StartMs, voice[1].EndMs));
+        Assert.Equal((4_900, 7_000, 7_350, 8_400), (voice[2].StartMs, voice[2].EndMs, voice[3].StartMs, voice[3].EndMs));
+
+        // 샷 경계 = 무음 뒤 발화 시작점 · 첫 샷 = 첫 발화 · 마지막 샷 끝 = 오디오 길이 · 샷 안 음성 ms → 앵글 재판정
+        var seq = new SB.StoryboardKeyframeSequencer();
+        Assert.Equal(4, seq.LoadWithAudio(Script, pcm, 16_000));
+        Assert.Equal(SB.AudioAlignmentSource.PcmVoiceActivity, seq.Alignment);
+        var k = seq.Keyframes.ToArray();
+        Assert.Equal((100, 1_300, 4_900, 7_350), (k[0].StartMs, k[1].StartMs, k[2].StartMs, k[3].StartMs));
+        Assert.Equal((1_300, 4_900, 7_350, 8_800), (k[0].EndMs, k[1].EndMs, k[2].EndMs, k[3].EndMs));
+        Assert.Equal(8_800, seq.TotalMs);
+        Assert.Equal((SB.ShotAngle.Wide, SB.ShotAngle.Wide, SB.ShotAngle.CloseUp, SB.ShotAngle.CloseUp), (k[0].Angle, k[1].Angle, k[2].Angle, k[3].Angle));
+        var shots = new SB.StoryboardShot[SB.StoryboardShotBreakdownEngine.MaxShots];
+        var n = SB.StoryboardShotBreakdownEngine.Breakdown(Script, shots);
+        Assert.Equal(SB.AudioAlignmentSource.PcmVoiceActivity, SB.StoryboardAudioWordBoundaryAligner.AlignToVoice(shots.AsSpan(0, n), voice.AsSpan(0, m), totalMs));
+        Assert.Equal((800, 3_200, 2_100, 1_050), (shots[0].SpeechMs, shots[1].SpeechMs, shots[2].SpeechMs, shots[3].SpeechMs));
+
+        // WAV(44.1 kHz 스테레오 · 홀수 ms 경계) — RIFF 파싱 후 1 ms 오차 0
+        var wav = Wav(SynthPcm(44_100, 2, 8_820, new[] { (113, 907), (1_301, 4_499), (4_903, 7_001), (7_349, 8_411) }), 44_100, 2);
+        Assert.True(SB.StoryboardAudioWordBoundaryAligner.TryReadWav(wav, out var wavPcm, out var sr, out var ch));
+        Assert.Equal((44_100, 2, wav.Length - 44), (sr, ch, wavPcm.Length));
+        var wseq = new SB.StoryboardKeyframeSequencer();
+        Assert.Equal(4, wseq.LoadWithAudio(Script, wav));
+        Assert.Equal(SB.AudioAlignmentSource.PcmVoiceActivity, wseq.Alignment);
+        var wk = wseq.Keyframes.ToArray();
+        Assert.Equal((113, 1_301, 4_903, 7_349, 8_820), (wk[0].StartMs, wk[1].StartMs, wk[2].StartMs, wk[3].StartMs, wk[3].EndMs));
+
+        // 무음 후보 부족(단일 발화) → 비례 추정 · 단조/연속 유지
+        var one = new SB.StoryboardKeyframeSequencer();
+        Assert.Equal(4, one.LoadWithAudio(Script, SynthPcm(16_000, 1, 5_000, new[] { (0, 4_400) })));
+        for (var i = 1; i < one.Count; i++)
+        {
+            Assert.True(one.KeyframeAt(i).StartMs > one.KeyframeAt(i - 1).StartMs);
+            Assert.Equal(one.KeyframeAt(i - 1).EndMs, one.KeyframeAt(i).StartMs);
+        }
+        Assert.Equal(5_000, one.TotalMs);
+
+        // 폴백 — 오디오 없음 · 무음뿐 · 깨진 WAV → 음절 추정치(v18.2.0 동일)
+        var est = new SB.StoryboardKeyframeSequencer();
+        est.Load(Script);
+        foreach (var bad in new[] { Array.Empty<byte>(), SynthPcm(16_000, 1, 2_000, Array.Empty<(int, int)>()), "RIFF????WAVEjunk"u8.ToArray() })
+        {
+            var fb = new SB.StoryboardKeyframeSequencer();
+            Assert.Equal(4, fb.LoadWithAudio(Script, bad));
+            Assert.Equal(SB.AudioAlignmentSource.SyllableEstimate, fb.Alignment);
+            Assert.Equal(est.Fingerprint, fb.Fingerprint);
+        }
+
+        // ② TTS 단어 경계 — 헤더 · 문장 부호 · CRLF/탭 혼용 → 단어 순번 → 샷 시작/종료
+        var words = System.Text.Encoding.UTF8.GetBytes(
+            "start,end,word\r\n50,700,안녕하세요\r\n700,710,.\r\n1100,1400,오늘은\r\n1400,1700,AI로\r\n1700,2000,숏폼을\r\n2000,2300,만드는\r\n2300,2600,비밀을\r\n" +
+            "2600,3300,알려드릴게요\r\n3700,4100,끝까지\r\n4100\t4500\t보시면\n4500,4900,반전이\n4900,5600,있습니다\n6000,6900,준비되셨나요");
+        var wb = new SB.AudioWordBoundary[64];
+        var wn = SB.StoryboardAudioWordBoundaryAligner.ParseWordBoundaries(words, wb);
+        Assert.Equal(12, wn);
+        Assert.Equal("AI로", System.Text.Encoding.UTF8.GetString(words, wb[2].TextStart, wb[2].TextLength));
+        Assert.Equal((4_100, 4_500), (wb[8].StartMs, wb[8].EndMs));
+        var tts = new SB.StoryboardKeyframeSequencer();
+        Assert.Equal(4, tts.LoadWithWordBoundaries(Script, words));
+        Assert.Equal(SB.AudioAlignmentSource.TtsWordBoundary, tts.Alignment);
+        var tk = tts.Keyframes.ToArray();
+        Assert.Equal((50, 1_100, 3_700, 6_000, 6_900), (tk[0].StartMs, tk[1].StartMs, tk[2].StartMs, tk[3].StartMs, tk[3].EndMs));
+        Assert.Equal((1_050, 2_600, 2_300, 900), (tk[0].DurationMs, tk[1].DurationMs, tk[2].DurationMs, tk[3].DurationMs));
+        Assert.Equal((SB.ShotAngle.Wide, SB.ShotAngle.Medium, SB.ShotAngle.CloseUp, SB.ShotAngle.CloseUp), (tk[0].Angle, tk[1].Angle, tk[2].Angle, tk[3].Angle));
+        var none = new SB.StoryboardKeyframeSequencer();
+        none.LoadWithWordBoundaries(Script, "header only\n"u8);
+        Assert.Equal(SB.AudioAlignmentSource.SyllableEstimate, none.Alignment);
+        Assert.Equal(est.Fingerprint, none.Fingerprint);
+
+        // ③ 다중 샷 9:16 크롭 트랙 — 이진 탐색 = 선형 탐색(클램프 포함) · 키프레임 크롭 일치
+        var tracker = seq.CropTracker;
+        var track = tracker.Track.ToArray();
+        Assert.Equal(4, tracker.Count);
+        for (var i = 0; i < 4; i++)
+        {
+            Assert.Equal((k[i].ShotNumber, k[i].StartMs, k[i].EndMs, k[i].CenterXPermille, k[i].CenterYPermille), (track[i].ShotNumber, track[i].StartMs, track[i].EndMs, track[i].CenterXPermille, track[i].CenterYPermille));
+            Assert.Equal((k[i].CropX, k[i].CropY, k[i].CropWidth, k[i].CropHeight), (track[i].CropX, track[i].CropY, track[i].CropWidth, track[i].CropHeight));
+        }
+        Assert.Equal((0, 0, 0, 1, 1, 2, 2, 3, 3), (tracker.IndexAt(-5), tracker.IndexAt(100), tracker.IndexAt(1_299), tracker.IndexAt(1_300), tracker.IndexAt(4_899),
+                                                  tracker.IndexAt(4_900), tracker.IndexAt(7_349), tracker.IndexAt(7_350), tracker.IndexAt(99_999)));
+        for (var t = -50; t < 9_000; t += 7)
+        {
+            var lin = 0;
+            for (var i = 0; i < track.Length; i++) if (track[i].StartMs <= t) lin = i;
+            Assert.Equal(lin, tracker.IndexAt(t));
+        }
+        Assert.True(tracker.TryQuery(5_000, out var q2));
+        Assert.Equal((3, 333, k[2].CropX), (q2.ShotNumber, q2.CenterXPermille, q2.CropX));
+        Assert.Equal(-1, SB.MultiShotDynamicReframeTracker.IndexAt(ReadOnlySpan<SB.ShotCropKeyframe>.Empty, 10));
+        Assert.False(new SB.MultiShotDynamicReframeTracker().TryQuery(10, out _));
+
+        // ④ 무할당 계약 — PCM/WAV/단어 경계 정렬 재로드 · 크롭 이진 탐색 0 B
+        var fp = seq.Fingerprint;
+        var wfp = wseq.Fingerprint;
+        var tfp = tts.Fingerprint;
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        var all = true;
+        var acc = 0;
+        for (var r = 0; r < 16; r++)
+        {
+            all &= seq.LoadWithAudio(Script, pcm, 16_000) == 4 && seq.Fingerprint == fp;
+            all &= wseq.LoadWithAudio(Script, wav) == 4 && wseq.Fingerprint == wfp;
+            all &= tts.LoadWithWordBoundaries(Script, words) == 4 && tts.Fingerprint == tfp;
+            all &= SB.StoryboardAudioWordBoundaryAligner.DetectVoice(pcm, 16_000, 1, voice, out _) == 4;
+            for (var t = 0; t < 9_000; t += 50) { tracker.TryQuery(t, out var key); acc += key.CenterXPermille; }
+        }
+        long hotAlloc = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.True(all);
+        Assert.True(acc > 0);
+        Assert.Equal(0, hotAlloc);
+
+        // ⑤ 스토리보드 → 숏폼 팩토리 다중 샷 매니페스트 관통 — 크롭 트랙 0-카피 · 재생 시각별 리프레임 전환 · 마커 스냅
+        var bridge = new PromptFlowStudio.Services.Ui.StoryboardToShortsFactoryBridge();
+        Assert.Equal(32, WsCat.Workspaces.Length);   // 신규 모달 0 — 32 워크스페이스 유지
+        Assert.True(bridge.Push(seq));
+        Assert.True(bridge.TryConsume(out var handed));
+        Assert.True(handed.CropTrack.Span == tracker.Track, "크롭 트랙 = 시퀀서 트래커 버퍼 슬라이스");
+        Assert.Equal(SB.AudioAlignmentSource.PcmVoiceActivity, handed.Alignment);
+        Assert.Equal(handed.Fingerprint, handed.ComputeFingerprint());
+        Assert.Equal(8_800, handed.ClipLengthMs);
+
+        var ws = new PromptFlowStudio.Services.Ui.ShortsFactoryWorkspaceContext();
+        var p = new PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext();
+        Assert.True(p.ApplyStoryboard(handed, ws));
+        Assert.True(p.ShotCropTrack.Span == tracker.Track, "파이프라인 크롭 트랙 = 트래커 버퍼(0-카피)");
+        Assert.Equal(0, p.ActiveShotIndex);
+        Assert.Equal((0, 8_800, 500), (ws.ClipInMs, ws.ClipOutMs, ws.ReframeCenterPermille));
+        Assert.Equal(2, p.ReframeAt(5_000, ws));
+        Assert.Equal(333, ws.ReframeCenterPermille);
+        p.Hydrate(ws);
+        const int W = PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext.SourceWidth, BW = PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext.BoxWidth;
+        Assert.Equal(Math.Clamp(333 * W / 1000 - BW / 2, 0, W - BW), p.Reframe.BoxX);
+        Assert.True(p.IsCoherent(ws));
+        Assert.Equal(3, p.ReframeAt(8_000, ws));
+        Assert.Equal(667, ws.ReframeCenterPermille);
+        Assert.Equal(0, p.ReframeAt(0, ws));
+        Assert.Equal(500, ws.ReframeCenterPermille);
+        var rev = ws.Revision;
+        before = GC.GetAllocatedBytesForCurrentThread();
+        for (var t = 0; t < 9_000; t += 25) p.ReframeAt(t, ws);
+        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+        Assert.True(ws.Revision > rev);
+        ws.SetClip(p.ShotCropTrack.Span[2].StartMs, ws.DurationMs);   // 마커 S3 클릭 = 절삭 시작 스냅
+        Assert.Equal(4_900, ws.ClipInMs);
+        Assert.Equal(2, p.ReframeAt(ws.ClipInMs, ws));
+
+        // 낡은 시퀀스 — 재정렬 후 크롭 트랙 인계 거부
+        Assert.Equal(1, seq.Load("새 대본입니다."));
+        Assert.False(handed.IsLive);
+        Assert.False(p.ApplyStoryboard(handed, ws));
     }
 }

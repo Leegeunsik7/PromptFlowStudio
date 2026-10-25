@@ -55,6 +55,25 @@
                     <label class="sfw-f">길이 @(Sec(Ctx.DurationMs))<input type="range" min="3" max="60" value="@(Ctx.DurationMs / 1000)" aria-label="클립 길이(초)" @oninput="OnClipLength" /></label>
                     <label class="sfw-f">9:16 중심 @(Ctx.ReframeCenterPermille / 10)%<input type="range" min="0" max="100" value="@(Ctx.ReframeCenterPermille / 10)" aria-label="리프레임 중심(%)" @oninput="OnReframe" /></label>
                     <span class="sfw-hy" title="9:16 바운딩 박스(원본 1920×1080 기준)">⬚ X @(Pipeline.Reframe.BoxX) · @(Pipeline.Reframe.BoxWidth)×@(Pipeline.Reframe.BoxHeight)</span>
+                    @* [v18.2.1] 🎯 스토리보드 샷 마커 룰러 — 클릭 = 해당 샷 시작으로 절삭 스냅 · 재생 위치/시작 슬라이더 이동 = 활성 샷 9:16 크롭 자동 전환(이진 탐색 0 B). *@
+                    @if (!Pipeline.ShotCropTrack.IsEmpty)
+                    {
+                        <div class="sfw-ruler" role="group" aria-label="스토리보드 샷 마커">
+                            @for (var i = 0; i < Pipeline.ShotCropTrack.Length; i++)
+                            {
+                                var idx = i;
+                                var shot = Pipeline.ShotCropTrack.Span[i];
+                                <button type="button" class='sfw-pin @(idx == Pipeline.ActiveShotIndex ? "cur" : null)' style="left:@(Pct(shot.StartMs))%" title="S@(shot.ShotNumber) @(Sec(shot.StartMs))–@(Sec(shot.EndMs)) · 9:16 X @(shot.CropX) · @(shot.CropWidth)×@(shot.CropHeight)" aria-label="샷 @(shot.ShotNumber) 시작으로 이동" @onclick="() => SnapToShot(idx)">S@(shot.ShotNumber)</button>
+                            }
+                            <span class="sfw-head" style="left:@(Pct(_playheadMs))%"></span>
+                        </div>
+                        <label class="sfw-f">재생 @(Sec(_playheadMs))<input type="range" min="0" max="@(TrackEndMs)" step="10" value="@(_playheadMs)" aria-label="프리뷰 재생 위치(ms)" @oninput="OnPlayhead" /></label>
+                        @if (Pipeline.ActiveShotIndex >= 0)
+                        {
+                            var ac = Pipeline.ShotCropTrack.Span[Pipeline.ActiveShotIndex];
+                            <span class="sfw-hy ok" title="활성 샷 9:16 크롭 박스(원본 px)">🎯 S@(ac.ShotNumber) · X @(ac.CropX) Y @(ac.CropY) · @(ac.CropWidth)×@(ac.CropHeight)</span>
+                        }
+                    }
                     break;
                 case 1:
                     <select class="sfw-sel" value="@(Ctx.CaptionPreset)" aria-label="자막 프리셋" @onchange="OnPreset">
@@ -173,6 +192,10 @@
     .sfw-ho:disabled { opacity: .45; cursor: progress; }
     .sfw-script { width: 260px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 3px 8px; font-size: 11px; }
     .sfw-script:focus { border-color: #38bdf8; outline: none; }
+    .sfw-ruler { position: relative; flex: 1 0 100%; height: 22px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; }
+    .sfw-pin { position: absolute; top: 2px; transform: translateX(-1px); background: #1e293b; color: #fcd34d; border: 1px solid #a16207; border-radius: 4px; padding: 0 5px; font-size: 10px; line-height: 16px; cursor: pointer; }
+    .sfw-pin.cur { background: #a16207; color: #fff; border-color: #fcd34d; }
+    .sfw-head { position: absolute; top: 0; bottom: 0; width: 2px; background: #f472b6; pointer-events: none; }
     .sfw-hy.plan { color: #fcd34d; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 
@@ -196,6 +219,8 @@
     private int _tab, _member, _stamp = -1, _renderedRev = -1;
     private CancellationTokenSource? _renderCts;
     private bool _disposed, _importing;
+    /// <summary>[v18.2.1] ① 프리뷰 재생 위치(스토리보드 타임라인 ms) — 활성 샷 크롭 조회 키.</summary>
+    private int _playheadMs;
     private string? _importError, _handoffError, _planGuide, _planTags;
     /// <summary>로컬 비디오 상한(세그먼트 스트림 · 300 MB) — 링 창(120 s) 밖 샘플은 주입하지 않는다.</summary>
     private const long MaxImportBytes = 300L * 1024 * 1024;
@@ -224,6 +249,7 @@
     {
         if (!StoryShots.TryConsume(out var seq) || !Pipeline.ApplyStoryboard(seq, Ctx)) return;
         _renderedRev = -1;
+        _playheadMs = 0;
     }
 
     /// <summary>[v18.0.6] 그로스 룸 기획안 수화 — 대본(공유 버퍼 → 입력창 문자열 1 회) · 권장 컷 빈도 → 줌 펀치 · 해시태그 → 퍼블리셔 인계.</summary>
@@ -393,7 +419,34 @@
 
     private static int Num(ChangeEventArgs e) => int.TryParse(Convert.ToString(e.Value, CultureInfo.InvariantCulture), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) ? v : 0;
 
-    private void OnClipStart(ChangeEventArgs e) => Ctx.SetClip(Num(e) * 1000, Ctx.DurationMs);
+    private void OnClipStart(ChangeEventArgs e)
+    {
+        Ctx.SetClip(Num(e) * 1000, Ctx.DurationMs);
+        SeekShot(Ctx.ClipInMs);
+    }
+
+    /// <summary>[v18.2.1] 재생 위치 → 활성 샷 9:16 크롭 자동 전환.</summary>
+    private void OnPlayhead(ChangeEventArgs e) => SeekShot(Num(e));
+
+    /// <summary>[v18.2.1] 샷 마커 클릭 — 절삭 시작을 샷 시작으로 스냅(길이 유지) · 재생 위치 동기.</summary>
+    private void SnapToShot(int index)
+    {
+        var track = Pipeline.ShotCropTrack.Span;
+        if ((uint)index >= (uint)track.Length) return;
+        Ctx.SetClip(track[index].StartMs, Ctx.DurationMs);
+        SeekShot(track[index].StartMs);
+    }
+
+    private void SeekShot(int ms)
+    {
+        if (Pipeline.ShotCropTrack.IsEmpty) return;
+        _playheadMs = Math.Clamp(ms, 0, TrackEndMs);
+        Pipeline.ReframeAt(_playheadMs, Ctx);
+    }
+
+    private int TrackEndMs => Pipeline.ShotCropTrack.IsEmpty ? 0 : Pipeline.ShotCropTrack.Span[^1].EndMs;
+
+    private string Pct(int ms) => (TrackEndMs <= 0 ? 0 : Math.Clamp(ms * 100.0 / TrackEndMs, 0, 100)).ToString("0.##", CultureInfo.InvariantCulture);
     private void OnClipLength(ChangeEventArgs e) => Ctx.SetClip(Ctx.ClipInMs, Num(e) * 1000);
     private void OnReframe(ChangeEventArgs e) => Ctx.SetReframeCenter(Num(e) * 10);
     private void OnPreset(ChangeEventArgs e) => Ctx.SetCaptionPreset(Num(e));

@@ -34,11 +34,18 @@ public sealed class StoryboardKeyframeSequencer
     private readonly StoryboardKeyframe[] _keys = new StoryboardKeyframe[MaxShots];
     private char[] _script = new char[1024];
     private int _scriptLen;
+    private readonly AudioVoiceSegment[] _voice = new AudioVoiceSegment[StoryboardAudioWordBoundaryAligner.MaxSegments];
+    private readonly AudioWordBoundary[] _words = new AudioWordBoundary[StoryboardAudioWordBoundaryAligner.MaxWords];
 
     public int Count { get; private set; }
     public int TotalMs { get; private set; }
     public int Revision { get; private set; }
     public ulong Fingerprint { get; private set; }
+    /// <summary>[v18.2.1] 마지막 로드의 타임코드 출처(오디오 미제공 · 무음성 = 음절 추정 폴백).</summary>
+    public AudioAlignmentSource Alignment { get; private set; }
+    /// <summary>[v18.2.1] 전체 샷 9:16 크롭 트랙 — <see cref="Sequence"/> 마다 제자리 갱신.</summary>
+    public MultiShotDynamicReframeTracker CropTracker { get; } = new();
+    public ReadOnlyMemory<ShotCropKeyframe> CropTrackMemory => CropTracker.TrackMemory;
 
     public ReadOnlySpan<StoryboardKeyframe> Keyframes => _keys.AsSpan(0, Count);
     public ReadOnlyMemory<StoryboardKeyframe> KeyframeMemory => _keys.AsMemory(0, Count);
@@ -51,11 +58,34 @@ public sealed class StoryboardKeyframeSequencer
     /// <summary>대본 로드 → 샷 분할 → 키프레임 정렬/규격화. 반환 = 샷 수(용량 내 재호출 0 B).</summary>
     public int Load(ReadOnlySpan<char> script, int syllableMs = StoryboardShotBreakdownEngine.DefaultSyllableMs)
     {
+        var n = Split(script, syllableMs);
+        Alignment = AudioAlignmentSource.SyllableEstimate;
+        return Sequence(_shots.AsSpan(0, n));
+    }
+
+    /// <summary>[v18.2.1] 대본 + 오디오(WAV 또는 원시 PCM 16-bit 모노) → 무음 경계 스냅 타임코드. 오디오가 비거나 음성 0 이면 음절 추정 폴백(용량 내 0 B).</summary>
+    public int LoadWithAudio(ReadOnlySpan<char> script, ReadOnlySpan<byte> audio, int sampleRate = StoryboardAudioWordBoundaryAligner.DefaultSampleRate)
+    {
+        var n = Split(script, StoryboardShotBreakdownEngine.DefaultSyllableMs);
+        Alignment = StoryboardAudioWordBoundaryAligner.AlignToAudio(_shots.AsSpan(0, n), audio, _voice, sampleRate);
+        return Sequence(_shots.AsSpan(0, n));
+    }
+
+    /// <summary>[v18.2.1] 대본 + TTS 단어 경계 스트림(UTF-8 "startMs,endMs,word" 줄) → 단어 순번 매핑 타임코드. 단어 0 이면 음절 추정 폴백(용량 내 0 B).</summary>
+    public int LoadWithWordBoundaries(ReadOnlySpan<char> script, ReadOnlySpan<byte> boundaries)
+    {
+        var n = Split(script, StoryboardShotBreakdownEngine.DefaultSyllableMs);
+        var w = StoryboardAudioWordBoundaryAligner.ParseWordBoundaries(boundaries, _words);
+        Alignment = StoryboardAudioWordBoundaryAligner.AlignToWords(_shots.AsSpan(0, n), Script, _words.AsSpan(0, w));
+        return Sequence(_shots.AsSpan(0, n));
+    }
+
+    private int Split(ReadOnlySpan<char> script, int syllableMs)
+    {
         if (script.Length > _script.Length) _script = new char[Math.Max(script.Length, _script.Length * 2)];
         script.CopyTo(_script);
         _scriptLen = script.Length;
-        var n = StoryboardShotBreakdownEngine.Breakdown(Script, _shots, syllableMs);
-        return Sequence(_shots.AsSpan(0, n));
+        return StoryboardShotBreakdownEngine.Breakdown(Script, _shots, syllableMs);
     }
 
     /// <summary>샷 → 키프레임(시작 시각 오름차순 삽입 정렬 · 번호 재부여 · 9:16 프레이밍).</summary>
@@ -91,6 +121,7 @@ public sealed class StoryboardKeyframeSequencer
         TotalMs = total;
         Revision++;
         Fingerprint = Hash(Keyframes, Script);
+        CropTracker.Load(Keyframes);
         return n;
     }
 
