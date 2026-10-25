@@ -1,14 +1,20 @@
 @using System.Globalization
 @using PromptFlowStudio.Services.Ui
 @using PromptFlowStudio.Services.SocialMedia
+@using PromptFlowStudio.Services.LivePublish
+@using PromptFlowStudio.Services.PostPublishSplitTest
 @implements IDisposable
 @inject ShortsToPublisherHandoffBridge Handoff
+@inject ProductionResumableUploadSessionEngine Uploader
+@inject PromptFlowStudio.Services.PlatformVisibility.PlatformVisibilityGatewayStudioRunner Visibility
 
 @* [PromptFlow Studio v18.0.0] 🚀 소셜 퍼블리셔 매니저 — v17.79 OAuth2 라이브 배포 · Graph API · 옴니 퍼블리셔 · v17.81 매트릭스 · 스마트 캘린더 · 옴니 댓글 ·
    v17.93 A/B 레이스 · v17.94 비지빌리티 게이트웨이를 3 탭으로 통합. 엔진 모달은 그대로 하위 탭 · 엔진 칩으로 주입한다. *@
 @* [v18.0.4] 숏폼 팩토리 인계 — ShortsToPublisherHandoffBridge 수화 시 ② 탭 자동 진입 · 영상 크기/9:16/썸네일/제목·해시태그 폼 바인딩 ·
    YouTube Resumable · Instagram Reels 페이로드 규격 미리 조립 · ③ 탭 진입 시 인계 영상 = Variant A. *@
-<div class="sw-docked" style="--sw-dock-h: @(_payload.IsEmpty ? "104px" : "146px")">
+@* [v18.0.5] ② [🚀 지금 즉시 전송] → ProductionResumableUploadSessionEngine 실 Resumable 업로드(진행률 · 청크 · MB/s · ETA) →
+   완료 Video ID · 퍼머링크 결과 카드 + ③ A/B 가시성 게이트웨이 추적 등록. *@
+<div class="sw-docked" style="--sw-dock-h: @(DockHeight)">
     <StudioWorkspaceDock Workspace="_ws" Tab="_tab" Member="_member" OnRoute="Go" OnClose="Close">
         <div class="swd-row spw-flow">@(StudioWorkspaceCatalog.Workspaces[_ws].Tabs[_tab].Role)</div>
         @if (!_payload.IsEmpty)
@@ -25,6 +31,16 @@
                         <label class="spw-f">제목<input class="spw-in" value="@(_title)" maxlength="100" aria-label="인계 영상 제목" @onchange="OnTitle" /></label>
                         <label class="spw-f">해시태그<input class="spw-in wide" value="@(_tags)" aria-label="인계 영상 해시태그" @onchange="OnTags" /></label>
                         <span class="spw-b" title="YouTube Data API v3 Resumable 초기화 요청 · Instagram Graph Reels 컨테이너 폼(무할당 조립)">📤 YT Init @(_ytInitBytes) B · IG 폼 @(_igFormBytes) B · 썸네일 @(Sec(_payload.Render.ThumbnailOffsetMs))</span>
+                        <select class="spw-in sel" value="@(_target)" disabled="@(_uploading)" aria-label="전송 대상 플랫폼" @onchange="OnTarget">
+                            <option value="0">YouTube + Instagram</option>
+                            <option value="1">YouTube Shorts</option>
+                            <option value="2">Instagram Reels</option>
+                        </select>
+                        <button class="spw-go" disabled="@(_uploading || !_payload.Render.IsLive)" title="@(Uploader.ModeName) · 비공개(private) 업로드 · @(Mb(Uploader.ChunkSize)) MB 청크 Resumable" @onclick="DispatchAsync">🚀 지금 즉시 전송</button>
+                        @if (_uploading)
+                        {
+                            <button class="spw-x" @onclick="CancelUpload">⏹ 중지</button>
+                        }
                         break;
                     case ShortsToPublisherHandoffBridge.PublisherAbTab:
                         <span class='spw-b @(Handoff.CurrentIsVariantA ? "ok" : null)' title="A/B 레이스 기본 슬롯">🅰 Variant A = 인계 #@(Handoff.VariantASequence) · @(_title)</span>
@@ -34,6 +50,22 @@
                         break;
                 }
             </div>
+            @if (_tab == ShortsToPublisherHandoffBridge.PublisherDeployTab && _uploadRow)
+            {
+                <div class="swd-row spw-ho">
+                    @if (_uploading)
+                    {
+                        <progress class="spw-pg" max="100" value="@(_prog.Percent.ToString("0.0", CultureInfo.InvariantCulture))" aria-label="업로드 진행률"></progress>
+                        <span class="spw-b">@(_prog.Platform == UploadPlatform.YouTube ? "▶ YouTube" : "◎ Instagram") · @(PhaseName(_prog.Phase)) · 청크 @(_prog.Chunk)/@(_prog.Chunks) · @(_prog.Percent.ToString("0.0", CultureInfo.InvariantCulture))% · @(_prog.MBps.ToString("0.00", CultureInfo.InvariantCulture)) MB/s · ETA @(Eta(_prog.EtaSec))@(_prog.Resumes > 0 ? " · ↻ 이어올리기 " + _prog.Resumes.ToString(CultureInfo.InvariantCulture) : null)@(_prog.RateLimitWaits > 0 ? " · ⏳ 429 대기 " + _prog.RateLimitWaits.ToString(CultureInfo.InvariantCulture) : null)</span>
+                    }
+                    @ResultCard(_ytResult, _ytSlot)
+                    @ResultCard(_igResult, _igSlot)
+                    @if (_uploadNote is { } note)
+                    {
+                        <span class="spw-b bad">@(note)</span>
+                    }
+                </div>
+            }
         }
     </StudioWorkspaceDock>
 
@@ -76,6 +108,14 @@
     .spw-f { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #cbd5e1; white-space: nowrap; }
     .spw-in { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 2px 6px; font-size: 11px; width: 200px; }
     .spw-in.wide { width: 240px; }
+    .spw-in.sel { width: auto; }
+    .spw-go { background: #2563eb; color: #fff; border: 0; border-radius: 6px; padding: 3px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+    .spw-go:disabled { background: #334155; color: #94a3b8; cursor: default; }
+    .spw-x { background: transparent; color: #fca5a5; border: 1px solid #7f1d1d; border-radius: 6px; padding: 2px 8px; font-size: 11px; cursor: pointer; }
+    .spw-pg { width: 160px; height: 8px; accent-color: #38bdf8; }
+    .spw-card { font-size: 10.5px; border-radius: 6px; padding: 2px 8px; border: 1px solid #334155; white-space: nowrap; color: #cbd5e1; }
+    .spw-card.ok { border-color: #166534; color: #86efac; }
+    .spw-card.bad { border-color: #7f1d1d; color: #fca5a5; }
 </style>
 
 @code {
@@ -92,6 +132,16 @@
     private SocialPublishPayload _payload;
     private string _title = "", _tags = "";
     private int _ytInitBytes, _igFormBytes;
+    // [v18.0.5] 실 업로드 디스패치 상태
+    private CancellationTokenSource? _cts;
+    private bool _uploading, _uploadRow;
+    private int _target, _ytSlot = -1, _igSlot = -1;
+    private long _lastPaint;
+    private UploadProgress _prog;
+    private UploadResult _ytResult, _igResult;
+    private string? _uploadNote;
+
+    private string DockHeight => _payload.IsEmpty ? "104px" : _tab == ShortsToPublisherHandoffBridge.PublisherDeployTab && _uploadRow ? "188px" : "146px";
 
     private string MemberKey => StudioWorkspaceCatalog.MemberKey(new WorkspaceSubTabRoute(_ws, _tab, _member));
 
@@ -99,6 +149,7 @@
     protected override void OnInitialized()
     {
         Handoff.OnHandoff += OnHandoffArrived;
+        Uploader.Guard.OnProgress += OnUploadProgress;
         _fresh = Handoff.Hydrate();
         Bind();
     }
@@ -153,6 +204,95 @@
         Bind();
     }
 
+    // ══════════════════════ [v18.0.5] 🚀 지금 즉시 전송 ══════════════════════
+
+    private void OnTarget(ChangeEventArgs e) => _target = int.TryParse(Convert.ToString(e.Value, CultureInfo.InvariantCulture), NumberStyles.None, CultureInfo.InvariantCulture, out var t) && t is >= 0 and <= 2 ? t : 0;
+
+    /// <summary>YouTube → Instagram 순차 Resumable 업로드 · 완료 ID 를 ③ 가시성 게이트웨이 추적 대상으로 등록.</summary>
+    private async Task DispatchAsync()
+    {
+        if (_uploading || _payload.IsEmpty || Uploader.Busy) return;
+        var payload = _payload;
+        _uploadRow = true;
+        _ytResult = _igResult = default;
+        _ytSlot = _igSlot = -1;
+        _uploadNote = null;
+        if (!payload.Render.IsLive) { _uploadNote = "⚠ 재렌더로 버퍼 갱신됨 — 숏폼 팩토리에서 다시 전송하세요"; return; }
+        var cts = new CancellationTokenSource();
+        var prev = Interlocked.Exchange(ref _cts, cts);
+        prev?.Cancel();
+        prev?.Dispose();
+        _uploading = true;
+        _prog = default;
+        try
+        {
+            if (_target != 2)
+            {
+                _ytResult = await Uploader.UploadAsync(UploadPlatform.YouTube, payload, "private", cts.Token);
+                if (_ytResult.Ok) _ytSlot = Visibility.TrackPublished(LiveProvider.YouTube, _ytResult.VideoId, SplitVariant.A);
+                StateHasChanged();
+            }
+            if (_target != 1 && !cts.IsCancellationRequested)
+            {
+                _igResult = await Uploader.UploadAsync(UploadPlatform.Instagram, payload, "private", cts.Token);
+                if (_igResult.Ok) _igSlot = Visibility.TrackPublished(LiveProvider.Instagram, _igResult.VideoId, SplitVariant.A);
+            }
+            if (!payload.Render.IsLive) _uploadNote = "⚠ 업로드 중 재렌더 감지 — 전송 바이트 무결성 재확인 필요";
+        }
+        catch (Exception ex) { _uploadNote = "⚠ " + ex.Message; }
+        finally
+        {
+            _uploading = false;
+            if (Interlocked.CompareExchange(ref _cts, null, cts) == cts) cts.Dispose();
+        }
+    }
+
+    private void CancelUpload()
+    {
+        var c = Interlocked.Exchange(ref _cts, null);
+        c?.Cancel();
+        c?.Dispose();
+    }
+
+    /// <summary>전송 스레드 진행 표본 — 단계 전환은 즉시 · 청크 스트리밍은 100 ms 간격 렌더.</summary>
+    private void OnUploadProgress(UploadProgress p)
+    {
+        if (_disposed || !_uploading) return;
+        var phaseChanged = p.Phase != _prog.Phase;
+        _prog = p;
+        var now = Environment.TickCount64;
+        if (!phaseChanged && now - Interlocked.Read(ref _lastPaint) < 100) return;
+        Interlocked.Exchange(ref _lastPaint, now);
+        _ = InvokeAsync(() => { if (!_disposed) StateHasChanged(); });
+    }
+
+    private RenderFragment ResultCard(UploadResult r, int slot) => __builder =>
+    {
+        if (r.Ok)
+        {
+            <span class="spw-card ok" title="@(r.Permalink)">✅ @(r.Platform == UploadPlatform.YouTube ? "YouTube" : "Instagram") · ID @(r.VideoId) · @(r.Permalink) · 청크 @(r.Chunks)@(r.Resumes > 0 ? " · 이어올리기 " + r.Resumes.ToString(CultureInfo.InvariantCulture) : null) · @(slot >= 0 ? "📡 ③ 추적 슬롯 " + slot.ToString(CultureInfo.InvariantCulture) : "⚠ ③ 추적 등록 실패")</span>
+        }
+        else if (r.Error is { } err)
+        {
+            <span class="spw-card bad">❌ @(r.Platform == UploadPlatform.YouTube ? "YouTube" : "Instagram") · @(err)</span>
+        }
+    };
+
+    private static string PhaseName(UploadPhase p) => p switch
+    {
+        UploadPhase.Initiating => "세션 초기화",
+        UploadPhase.Uploading => "청크 전송",
+        UploadPhase.Recovering => "단절 복구",
+        UploadPhase.Processing => "IG 처리 대기",
+        UploadPhase.Publishing => "게시",
+        UploadPhase.Completed => "완료",
+        UploadPhase.Failed => "실패",
+        UploadPhase.Canceled => "취소",
+        _ => "대기",
+    };
+
+    private static string Eta(double sec) => sec < 0 ? "—" : sec < 60 ? sec.ToString("0", CultureInfo.InvariantCulture) + "s" : (sec / 60).ToString("0.0", CultureInfo.InvariantCulture) + "m";
+
     private Task Go(WorkspaceSubTabRoute r)
     {
         Apply(r.Tab, r.Member);
@@ -178,5 +318,7 @@
     {
         _disposed = true;
         Handoff.OnHandoff -= OnHandoffArrived;
+        Uploader.Guard.OnProgress -= OnUploadProgress;
+        CancelUpload();
     }
 }

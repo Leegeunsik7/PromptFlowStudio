@@ -292,6 +292,7 @@
 @inject PromptFlowStudio.Services.CompetitorSpy.CompetitorViralSpyStudioRunner SpyRun
 @inject PromptFlowStudio.Services.Ui.ShortsFactoryOneClickRenderOrchestrator OneClickRender
 @inject PromptFlowStudio.Services.Ui.ShortsToPublisherHandoffBridge PublisherHandoff
+@inject PromptFlowStudio.Services.SocialMedia.ProductionResumableUploadSessionEngine ResumableUpload
 @inject PromptFlowStudio.Services.LiveEngagement.LiveAudienceEngagementStudioRunner LaeRun
 @inject PromptFlowStudio.Services.LiveRestream.OmniLiveRestreamStudioRunner RstRun
 @inject PromptFlowStudio.Services.MultilingualDubbing.MultilingualDubbingStudioRunner MldRun
@@ -1017,6 +1018,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+@* ── v18.0.5: 실 Resumable 업로드 세션 — 단계 · 세션/완료/실패 · 청크 · 이어올리기 · 429 대기 · 최근 ID ── *@
+    <div class="gth-v1805">
+        <div class="gth-v96-card pid @(ResumableUpload.Completed > 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>📡 Resumable 업로드</b>
+                <span class="gth-v96-be">@(ResumableUpload.ModeName) · @(ResumableUpload.Phase)</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(ResumableUpload.Completed)</b><span>완료</span></span>
+                <span class="gth-v96-m"><b>@(ResumableUpload.ChunksSent)</b><span>청크</span></span>
+                <span class="gth-v96-m"><b>@(ResumableUpload.Guard.Resumes)</b><span>이어올리기</span></span>
+                <span class="gth-v96-m"><b>@(ResumableUpload.Guard.RateLimitWaits)</b><span>429 대기</span></span>
+            </div>
+            <div class="gth-v96-act">@(ResumableUpload.LastResult.Ok ? ResumableUpload.LastResult.VideoId + " · " + ResumableUpload.LastResult.Permalink : ResumableUpload.LastResult.Error ?? "소셜 퍼블리셔 ② 🚀 지금 즉시 전송 대기")</div>
+        </div>
+    </div>
 @* ── v18.0.4: 숏폼 → 소셜 퍼블리셔 핸드오프 — 인계 · 대기 · 폐기/거부 · 현재 fMP4(0-카피) · Variant A ── *@
     <div class="gth-v1804">
         <div class="gth-v96-card pid @(PublisherHandoff.Handoffs > 0 ? "ok" : null)">
@@ -6006,6 +6022,7 @@
         GheRun.OnChange += OnSwarmChanged; // v17.95.0 (조작 · 틱 일괄 시점만)
         SpyRun.OnChange += OnSwarmChanged; // v17.99.0 (조작 시점만)
         PublisherHandoff.OnHandoff += OnLiveChanged; // v18.0.4 (사용자 클릭 단위 → 스로틀 없음)
+        ResumableUpload.OnChange += OnLiveChanged; // v18.0.5 (단계 전환 · 완료 시점만 → 스로틀 없음)
         OneClickRender.OnChange += OnLiveChanged; // v18.0.2 (렌더 단계 진행 ≤ 250 ms 간격 → 스로틀 없음)
         ArhRun.OnChange += OnSwarmChanged; // v17.98.0 (조작 시점만)
         VcaRun.OnChange += OnSwarmChanged; // v17.97.0 (조작 · 트래픽 틱 일괄 시점만)
@@ -6411,6 +6428,7 @@
         GheRun.OnChange -= OnSwarmChanged;
         SpyRun.OnChange -= OnSwarmChanged;
         PublisherHandoff.OnHandoff -= OnLiveChanged;
+        ResumableUpload.OnChange -= OnLiveChanged;
         OneClickRender.OnChange -= OnLiveChanged;
         ArhRun.OnChange -= OnSwarmChanged;
         VcaRun.OnChange -= OnSwarmChanged;

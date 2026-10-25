@@ -214,6 +214,26 @@ public sealed class PlatformVisibilityGatewayStudioRunner : IDisposable
         Raise();
     }
 
+    /// <summary>
+    /// [v18.0.5] 실 업로드 완료 영상 → 게이트웨이 결선 · 5 분 시계열 폴링 등록(③ A/B 가시성 추적 대상). 시뮬레이션은 계약 시뮬레이터에 시드.
+    /// 반환 = 슬롯(-1 = ID 스키마 위반 · 용량 초과).
+    /// </summary>
+    public int TrackPublished(LiveProvider p, string videoId, SplitVariant variant)
+    {
+        var now = NowUnix;
+        if (!Gateway.LiveEndpoints) Gateway.Simulator.Seed(p, videoId, now, variant == SplitVariant.A);
+        var slot = Gateway.Bind(p, videoId, ++_content, variant, p == LiveProvider.YouTube ? 0 : 2);
+        if (slot < 0) return -1;
+        if (Poller.Add(slot, now, false) < 0) { Gateway.Unbind(slot); return -1; }
+        UploadsTracked++;
+        Push("📡 업로드 추적 등록 — " + (p == LiveProvider.YouTube ? "YouTube " : "IG ") + videoId + " · 슬롯 " + Id(slot));
+        LastAction = "📡 " + videoId + " 가시성 · 유속 추적 시작";
+        Raise();
+        return slot;
+    }
+
+    public long UploadsTracked { get; private set; }
+
     public void Reset()
     {
         Split.Reset(); Poller.Clear(); Gateway.Clear(); Gateway.Simulator.Reset(); Pruner.ClearAudit();

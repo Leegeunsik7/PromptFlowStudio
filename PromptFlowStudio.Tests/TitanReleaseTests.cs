@@ -38526,3 +38526,183 @@ public sealed class ShortsToPublisherHandoffTests
         Assert.Equal(0, bridge.VariantASequence);
     }
 }
+
+[Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
+public sealed class SocialPublisherResumableUploadTests
+{
+    [Fact]
+    public async Task SocialPublisher_ResumableUploadSession_Check()
+    {
+        const int total = 1_300_000, chunk = 2 * PromptFlowStudio.Services.SocialMedia.ProductionResumableUploadSessionEngine.ChunkQuantum;
+        var video = new byte[total];
+        for (var i = 0; i < total; i++) video[i] = (byte)((i * 31) ^ (i >> 8));
+        var render = new PromptFlowStudio.Services.Ui.ShortsRenderResult(video, default, null, "clip.mp4", 10_000_000, 0, 10_000, 1_500, 1080, 1920, 300, 470, 0xABCDUL, 1, null);
+        var payload = new PromptFlowStudio.Services.Ui.SocialPublishPayload(render, "업로드 검증 #Shorts", "#shorts #reels", 1);
+        Assert.True(render.IsLive);
+
+        var delays = new System.Collections.Generic.List<TimeSpan>();
+        var guard = new PromptFlowStudio.Services.SocialMedia.UploadNetworkRecoverySafetyGuard { Delay = (d, _) => { delays.Add(d); return Task.CompletedTask; } };
+        var events = 0;
+        PromptFlowStudio.Services.SocialMedia.UploadProgress last = default;
+        guard.OnProgress += p => { events++; last = p; };
+        var mock = new PromptFlowStudio.Services.SocialMedia.ResumableUploadMockHandler();
+        using var engine = new PromptFlowStudio.Services.SocialMedia.ProductionResumableUploadSessionEngine(mock, guard, chunk);
+        Assert.Throws<ArgumentOutOfRangeException>(() => new PromptFlowStudio.Services.SocialMedia.ProductionResumableUploadSessionEngine(mock, guard, 100_000));
+        Assert.Equal(8 * 1024 * 1024, PromptFlowStudio.Services.SocialMedia.ProductionResumableUploadSessionEngine.DefaultChunkSize);
+
+        // ① YouTube Resumable — POST 세션 → 512 KB 청크 PUT × 3(308 × 2 → 200) → id 파싱(중첩 "id" 무시)
+        var yt = await engine.UploadAsync(PromptFlowStudio.Services.SocialMedia.UploadPlatform.YouTube, payload);
+        Assert.True(yt.Ok, yt.Error);
+        Assert.Equal(mock.LastVideoId, yt.VideoId);
+        Assert.Equal(11, yt.VideoId.Length);
+        Assert.Equal("https://youtube.com/shorts/" + yt.VideoId, yt.Permalink);
+        Assert.Equal(3, yt.Chunks);
+        Assert.Equal(200, yt.Status);
+        Assert.Equal(total, yt.Bytes);
+        Assert.Equal((1, 3, 0), (mock.Inits, mock.DataRequests, mock.StatusQueries));
+        Assert.Equal("Bearer sim-upload-token", mock.LastAuthorization);
+        Assert.Equal("bytes 1048576-1299999/1300000", mock.LastContentRange);
+        Assert.True(mock.Received(PromptFlowStudio.Services.SocialMedia.UploadPlatform.YouTube).SequenceEqual(video), "308 이어붙인 수신 바이트 = 원본");
+        Assert.Equal(PromptFlowStudio.Services.SocialMedia.UploadPhase.Completed, engine.Phase);
+        Assert.False(engine.Busy);
+        Assert.True(events >= 6, "256 KB 스트림 단위 진행률 방출");
+        Assert.Equal((100.0, 3, 3, PromptFlowStudio.Services.SocialMedia.UploadPhase.Completed), (last.Percent, last.Chunk, last.Chunks, last.Phase));
+        Assert.Equal(0, last.EtaSec);
+        Assert.Equal(3, engine.ChunksSent);
+
+        // ② 네트워크 단절 — 2 번째 청크 256 KB 수신 후 리셋 → bytes */Total 질의 → Range bytes=0-786431 → 786432 부터 이어올리기
+        mock.Reset();
+        delays.Clear();
+        mock.DropAtData = 2;
+        var resumed = await engine.UploadAsync(PromptFlowStudio.Services.SocialMedia.UploadPlatform.YouTube, payload);
+        Assert.True(resumed.Ok, resumed.Error);
+        Assert.Equal(mock.LastVideoId, resumed.VideoId);
+        Assert.Equal((1, 1, 3), (mock.Drops, mock.StatusQueries, mock.DataRequests));
+        Assert.Equal("bytes 786432-1299999/1300000", mock.LastContentRange);
+        Assert.Equal(1, resumed.Resumes);
+        Assert.True(mock.Received(PromptFlowStudio.Services.SocialMedia.UploadPlatform.YouTube).SequenceEqual(video), "단절 후 재개 바이트 = 원본");
+        Assert.Equal(new[] { TimeSpan.FromSeconds(1) }, delays);
+        Assert.Equal(1, guard.Resumes);
+        Assert.Equal(1, guard.ConnectionLosses);
+
+        // ③ 429 레이트 리밋 — 2 회 → 1 s · 2 s 백오프 후 성공 / 4 회 → 3 회 재시도(1 · 2 · 4 s) 후 실패
+        mock.Reset();
+        delays.Clear();
+        mock.RateLimitBursts = 2;
+        var limited = await engine.UploadAsync(PromptFlowStudio.Services.SocialMedia.UploadPlatform.YouTube, payload);
+        Assert.True(limited.Ok, limited.Error);
+        Assert.Equal(2, limited.RateLimitWaits);
+        Assert.Equal(new[] { TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2) }, delays);
+        Assert.True(mock.Received(PromptFlowStudio.Services.SocialMedia.UploadPlatform.YouTube).SequenceEqual(video));
+        mock.Reset();
+        delays.Clear();
+        mock.RateLimitBursts = 4;
+        var blocked = await engine.UploadAsync(PromptFlowStudio.Services.SocialMedia.UploadPlatform.YouTube, payload);
+        Assert.False(blocked.Ok);
+        Assert.Equal(429, blocked.Status);
+        Assert.Contains("재시도 한도(3)", blocked.Error);
+        Assert.Equal(new[] { TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(4) }, delays);
+        Assert.Equal(PromptFlowStudio.Services.SocialMedia.UploadPhase.Failed, engine.Phase);
+        Assert.False(engine.Busy);
+        Assert.Equal(TimeSpan.FromSeconds(7), guard.BackoffFor(0, TimeSpan.FromSeconds(7)));
+        Assert.Equal(guard.MaxDelay, guard.BackoffFor(10));
+
+        // ④ Instagram Reels — 컨테이너 → rupload(256 KB 후 단절 → offset 질의 → 재개) → IN_PROGRESS × 2 → FINISHED → media_publish → permalink
+        mock.Reset();
+        mock.DropAtData = 1;
+        var ig = await engine.UploadAsync(PromptFlowStudio.Services.SocialMedia.UploadPlatform.Instagram, payload);
+        Assert.True(ig.Ok, ig.Error);
+        Assert.StartsWith("1791", ig.VideoId);
+        Assert.StartsWith("https://www.instagram.com/reel/PFmock", ig.Permalink);
+        Assert.Equal((1, 1, 1, 3), (mock.Drops, mock.StatusQueries, mock.Publishes, mock.Polls));
+        Assert.Equal(1, ig.Resumes);
+        Assert.True(mock.Received(PromptFlowStudio.Services.SocialMedia.UploadPlatform.Instagram).SequenceEqual(video), "rupload 재개 바이트 = 원본");
+        Assert.Equal("Bearer sim-upload-token", mock.LastAuthorization);
+
+        // ⑤ 동시 업로드 차단 · 진행 중 세션 불변
+        mock.Reset();
+        mock.Latency = TimeSpan.FromMilliseconds(30);
+        var running = engine.UploadAsync(PromptFlowStudio.Services.SocialMedia.UploadPlatform.YouTube, payload);
+        var second = await engine.UploadAsync(PromptFlowStudio.Services.SocialMedia.UploadPlatform.Instagram, payload);
+        Assert.False(second.Ok);
+        Assert.Equal("다른 업로드 진행 중", second.Error);
+        Assert.True((await running).Ok);
+        mock.Latency = TimeSpan.Zero;
+
+        // ⑥ Range 파서 · 헤더 기록 · 커서 경계
+        Assert.True(PromptFlowStudio.Services.SocialMedia.UploadNetworkRecoverySafetyGuard.TryParseResumeRange("bytes=0-524287", out var next) && next == 524_288);
+        Assert.True(PromptFlowStudio.Services.SocialMedia.UploadNetworkRecoverySafetyGuard.TryParseResumeRange("", out next) && next == 0);
+        Assert.False(PromptFlowStudio.Services.SocialMedia.UploadNetworkRecoverySafetyGuard.TryParseResumeRange("bytes=5-10", out _));
+        Assert.False(PromptFlowStudio.Services.SocialMedia.UploadNetworkRecoverySafetyGuard.TryParseResumeRange("bytes=0-", out _));
+        Assert.False(PromptFlowStudio.Services.SocialMedia.UploadNetworkRecoverySafetyGuard.TryParseResumeRange("items=0-9", out _));
+        var hdr = new char[64];
+        Assert.True(PromptFlowStudio.Services.SocialMedia.UploadNetworkRecoverySafetyGuard.TryWriteStatusQueryRange(total, hdr, out var hn));
+        Assert.Equal("bytes */1300000", new string(hdr, 0, hn));
+        Assert.False(PromptFlowStudio.Services.SocialMedia.UploadNetworkRecoverySafetyGuard.TryWriteContentRange(total - 1, 2, total, hdr, out _));
+        var probe = new PromptFlowStudio.Services.SocialMedia.ResumableChunkCursor(total, chunk);
+        Assert.False(probe.Acknowledge("bytes=0-1300000"));
+        Assert.Equal(0, probe.Offset);
+        Assert.True(System.Runtime.InteropServices.MemoryMarshal.TryGetArray(probe.Slice(video), out var seg) && ReferenceEquals(seg.Array, video) && seg.Count == chunk, "청크 = 원본 배열 뷰(복사 0)");
+
+        // ⑦ 청크 스트리밍 · 이어올리기 핫패스 0 B(커서 슬라이스 · Content-Range 기록 · 308 Range 파싱 · 진행률 산출 · 이벤트 방출)
+        var acks = new[] { "bytes=0-524287", "bytes=0-1048575", "bytes=0-1299999" };
+        var meter = new PromptFlowStudio.Services.SocialMedia.UploadProgressMeter();
+        var hot = new char[64];
+        long bytes = 0;
+        for (var pass = 0; pass < 52; pass++)
+        {
+            if (pass == 2) bytes = GC.GetAllocatedBytesForCurrentThread();   // 워밍업 2 회 후 계측
+            var c = new PromptFlowStudio.Services.SocialMedia.ResumableChunkCursor(total, chunk);
+            meter.Start(total, 0);
+            var k = 0;
+            while (!c.Done)
+            {
+                var slice = c.Slice(video);
+                if (!PromptFlowStudio.Services.SocialMedia.UploadNetworkRecoverySafetyGuard.TryWriteContentRange(c.Offset, slice.Length, total, hot, out _)) throw new InvalidOperationException("range");
+                if (!c.Acknowledge(acks[k])) throw new InvalidOperationException("ack");
+                var p = meter.Update(PromptFlowStudio.Services.SocialMedia.UploadPlatform.YouTube, PromptFlowStudio.Services.SocialMedia.UploadPhase.Uploading, c.Offset, c.CurrentChunk, c.Chunks, 0, 0, (k + 1) * 1000L, 10_000);
+                guard.Emit(p);
+                k++;
+            }
+            if (!PromptFlowStudio.Services.SocialMedia.UploadNetworkRecoverySafetyGuard.TryWriteStatusQueryRange(total, hot, out _)) throw new InvalidOperationException("status");
+        }
+        long hotAlloc = GC.GetAllocatedBytesForCurrentThread() - bytes;
+        Assert.Equal(0, hotAlloc);
+        Assert.Equal(100.0, last.Percent);
+        Assert.Equal(0, last.EtaSec);
+        Assert.True(last.MBps > 0);
+
+        // 구독자 예외 격리
+        guard.OnProgress += _ => throw new InvalidOperationException("UI 결함");
+        guard.Emit(last);
+
+        // ⑧ ③ A/B 가시성 추적 등록 — 게이트웨이 결선 · 5 분 폴링 대상 · ID 스키마 위반 거부
+        using (var pvg = new PromptFlowStudio.Services.PlatformVisibility.PlatformVisibilityGatewayStudioRunner())
+        {
+            var slot = pvg.TrackPublished(PromptFlowStudio.Services.LivePublish.LiveProvider.YouTube, yt.VideoId, PromptFlowStudio.Services.PostPublishSplitTest.SplitVariant.A);
+            Assert.True(slot >= 0);
+            Assert.Equal(yt.VideoId, pvg.Gateway.Binding(slot).VideoId);
+            Assert.True(pvg.TrackPublished(PromptFlowStudio.Services.LivePublish.LiveProvider.Instagram, ig.VideoId, PromptFlowStudio.Services.PostPublishSplitTest.SplitVariant.A) >= 0);
+            Assert.Equal(2, pvg.Poller.TrackCount);
+            Assert.Equal(2, pvg.UploadsTracked);
+            Assert.Equal(-1, pvg.TrackPublished(PromptFlowStudio.Services.LivePublish.LiveProvider.YouTube, "../x", PromptFlowStudio.Services.PostPublishSplitTest.SplitVariant.A));
+        }
+
+        // ⑨ DI 기본 구성(환경변수 미설정) → 내장 Mock 시뮬레이션 · 8 MB 청크 · 양 플랫폼 완주
+        using var sim = new PromptFlowStudio.Services.SocialMedia.ProductionResumableUploadSessionEngine(env: _ => null);
+        Assert.False(sim.Live);
+        Assert.NotNull(sim.Mock);
+        Assert.Equal("시뮬레이션", sim.ModeName);
+        var sy = await sim.UploadAsync(PromptFlowStudio.Services.SocialMedia.UploadPlatform.YouTube, payload);
+        var si = await sim.UploadAsync(PromptFlowStudio.Services.SocialMedia.UploadPlatform.Instagram, payload);
+        Assert.True(sy.Ok && si.Ok, sy.Error ?? si.Error);
+        Assert.Equal(1, sy.Chunks);
+        Assert.Equal(2, sim.Completed);
+        using var liveNoToken = new PromptFlowStudio.Services.SocialMedia.ProductionResumableUploadSessionEngine(env: n => n == PromptFlowStudio.Services.SocialMedia.ProductionResumableUploadSessionEngine.EnvLive ? "1" : null);
+        Assert.True(liveNoToken.Live);
+        var noTok = await liveNoToken.UploadAsync(PromptFlowStudio.Services.SocialMedia.UploadPlatform.YouTube, payload);
+        Assert.False(noTok.Ok);
+        Assert.Contains("PROMPTFLOW_YT_UPLOAD_TOKEN", noTok.Error);
+        Assert.Equal(0, liveNoToken.Sessions);
+    }
+}
