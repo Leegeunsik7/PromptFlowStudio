@@ -40674,3 +40674,158 @@ public sealed class StoryVFullChainClosedLoopTests
         }
     }
 }
+
+// ══ v18.3.0 Production Release Lockdown — 실기 바이너리 프로세스 스모크 + 배포 번들 SHA-256 매니페스트 ══
+[Collection("ProcessGcMode")]   // 서브프로세스 기동 · 실 디스크 I/O · 무할당 프로브 → 비병렬
+public sealed class ProductionReleaseLockdownTests
+{
+    private const int SmokeTimeoutMs = 5000;
+
+    [Fact]
+    public async Task SingleFileBinaryProcessBootstrap_Check()
+    {
+        var exe = LocateFreshBinary(out var probed);
+        if (exe is null)
+        {
+            // 안전 우회: 신선한 배포 바이너리 부재(미퍼블리시 개발 환경) → 동일 부트스트랩을 인프로세스로 검증.
+            var code = PromptFlowStudio.SmokeTestBootstrap.Run(false, out var inproc);
+            Assert.True(code == 0, "인프로세스 스모크(바이너리 부재 · 탐색 " + probed + "): " + inproc);
+            Assert.Contains("SMOKE PASS", inproc, StringComparison.Ordinal);
+            return;
+        }
+
+        var psi = new ProcessStartInfo(exe, PromptFlowStudio.SmokeTestBootstrap.Command)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = Path.GetDirectoryName(exe)!,
+        };
+        var sw = Stopwatch.StartNew();
+        using var p = Process.Start(psi)!;
+        var stdout = p.StandardOutput.ReadToEndAsync();
+        var stderr = p.StandardError.ReadToEndAsync();
+        if (!p.WaitForExit(SmokeTimeoutMs))
+        {
+            try { p.Kill(entireProcessTree: true); } catch (InvalidOperationException) { /* 경합 종료 */ }
+            Assert.Fail("스모크 타임아웃 " + SmokeTimeoutMs + "ms — UI 윈도우 기동 또는 부트스트랩 교착 의심: " + exe);
+        }
+        sw.Stop();
+        await p.WaitForExitAsync();   // 리디렉션 스트림 EOF 까지 대기
+        var output = await stdout + await stderr;
+        Assert.True(p.ExitCode == 0, "종료 코드 " + p.ExitCode + " · " + exe + Environment.NewLine + output);
+        Assert.Contains("SMOKE PASS", output, StringComparison.Ordinal);
+        Assert.Contains("workspaces=32", output, StringComparison.Ordinal);
+        Assert.Contains("defects=0", output, StringComparison.Ordinal);
+        Assert.True(sw.ElapsedMilliseconds < SmokeTimeoutMs, "기동 " + sw.ElapsedMilliseconds + "ms");
+    }
+
+    [Fact]
+    public void ReleaseBundleChecksumGenerator_Check()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pfs_rc_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(dir, "wwwroot", "_pfs"));
+            var rnd = new Random(1830);
+            var exeBytes = new byte[300_000]; rnd.NextBytes(exeBytes);
+            File.WriteAllBytes(Path.Combine(dir, "PromptFlowStudio.exe"), exeBytes);
+            File.WriteAllText(Path.Combine(dir, "appsettings.json"), "{\"a\":1}");
+            File.WriteAllText(Path.Combine(dir, "wwwroot", "index.html"), "<html></html>");
+            File.WriteAllText(Path.Combine(dir, "wwwroot", "_pfs", "app.js"), "export{};");
+            File.WriteAllText(Path.Combine(dir, "ignored.dll"), "x");   // 대상 외 파일은 매니페스트에 넣지 않는다
+
+            // ① 생성 — 항목 4 · 서수 정렬 · '/' 구분 · 2 공백 구분자 · 해시 = SHA256 표준값 · 임시 파일 잔존 0 · LF 전용
+            Assert.Equal(4, PromptFlowStudio.Services.Deploy.ReleaseBundleChecksumGenerator.Generate(dir));
+            var manifest = Path.Combine(dir, PromptFlowStudio.Services.Deploy.ReleaseBundleChecksumGenerator.ManifestFileName);
+            var lines = File.ReadAllLines(manifest);
+            Assert.Equal(new[] { "PromptFlowStudio.exe", "appsettings.json", "wwwroot/_pfs/app.js", "wwwroot/index.html" },
+                lines.Select(l => l.Substring(66)).ToArray());
+            Assert.All(lines, l => Assert.Equal("  ", l.Substring(64, 2)));
+            Assert.Equal(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(exeBytes)).ToLowerInvariant(), lines[0].Substring(0, 64));
+            Assert.False(File.Exists(manifest + ".tmp"));
+            Assert.DoesNotContain((byte)'\r', File.ReadAllBytes(manifest));
+
+            // ② 재검증 100% 일치 · CLI 진입점 0
+            var ok = PromptFlowStudio.Services.Deploy.ReleaseBundleChecksumGenerator.Verify(dir);
+            Assert.True(ok.AllMatched, ok.FirstFailure);
+            Assert.Equal(4, ok.Checked);
+            Assert.Equal(0, PromptFlowStudio.Services.Deploy.ReleaseBundleChecksumGenerator.RunCommand(dir, out var cli));
+            Assert.Contains("4/4", cli, StringComparison.Ordinal);
+
+            // ③ 바이너리 1 바이트 변조 → 불일치 탐지
+            exeBytes[12345] ^= 0x5A;
+            File.WriteAllBytes(Path.Combine(dir, "PromptFlowStudio.exe"), exeBytes);
+            var tampered = PromptFlowStudio.Services.Deploy.ReleaseBundleChecksumGenerator.Verify(dir);
+            Assert.False(tampered.AllMatched);
+            Assert.Equal("PromptFlowStudio.exe", tampered.FirstFailure);
+
+            // ④ 재생성 후 wwwroot 사후 주입 파일 → 미등재 탐지
+            PromptFlowStudio.Services.Deploy.ReleaseBundleChecksumGenerator.Generate(dir);
+            File.WriteAllText(Path.Combine(dir, "wwwroot", "evil.js"), "alert(1)");
+            Assert.False(PromptFlowStudio.Services.Deploy.ReleaseBundleChecksumGenerator.Verify(dir).AllMatched);
+            File.Delete(Path.Combine(dir, "wwwroot", "evil.js"));
+            Assert.True(PromptFlowStudio.Services.Deploy.ReleaseBundleChecksumGenerator.Verify(dir).AllMatched);
+
+            // ⑤ 경로 이탈 줄 주입 → 거부
+            File.AppendAllText(manifest, new string('0', 64) + "  ../outside.txt\n");
+            var escape = PromptFlowStudio.Services.Deploy.ReleaseBundleChecksumGenerator.Verify(dir);
+            Assert.False(escape.AllMatched);
+            Assert.StartsWith("경로 이탈", escape.FirstFailure, StringComparison.Ordinal);
+
+            // ⑥ 실행 파일 부재 → CLI 1 · 기존 매니페스트 보존(원자성)
+            var before = File.ReadAllBytes(manifest);
+            File.Delete(Path.Combine(dir, "PromptFlowStudio.exe"));
+            Assert.Equal(1, PromptFlowStudio.Services.Deploy.ReleaseBundleChecksumGenerator.RunCommand(dir, out _));
+            Assert.Equal(before, File.ReadAllBytes(manifest));
+
+            // ⑦ 다이제스트 → hex 핫패스 무할당
+            var digest = new byte[32];
+            var hex = new char[64];
+            Array.Fill(digest, (byte)0xAB);
+            PromptFlowStudio.Services.Deploy.ReleaseBundleChecksumGenerator.WriteHex(digest, hex);
+            var a0 = GC.GetAllocatedBytesForCurrentThread();
+            for (var i = 0; i < 10_000; i++) PromptFlowStudio.Services.Deploy.ReleaseBundleChecksumGenerator.WriteHex(digest, hex);
+            Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - a0);
+            Assert.Equal("abab", new string(hex, 0, 4));
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>
+    /// 배포 바이너리 탐색(우선순위: PFS_SMOKE_EXE → publish/win-x64-SingleFile → publish → 메인 Release 퍼블리시/빌드 → 테스트 출력 apphost).
+    /// 현재 테스트 대상 어셈블리보다 오래된(스모크 플래그 미탑재 가능) 산출물은 제외 — 구버전 UI 기동으로 인한 타임아웃 오탐 차단.
+    /// </summary>
+    private static string? LocateFreshBinary(out string probed)
+    {
+        var reference = File.GetLastWriteTimeUtc(typeof(PromptFlowStudio.MainForm).Assembly.Location).AddMinutes(-2);
+        var root = AppContext.BaseDirectory;
+        for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)
+            if (File.Exists(Path.Combine(d.FullName, "PromptFlowStudio", "PromptFlowStudio.csproj"))) { root = d.FullName; break; }
+
+        var candidates = new[]
+        {
+            Environment.GetEnvironmentVariable("PFS_SMOKE_EXE") ?? "",
+            Path.Combine(root, "publish", "win-x64-SingleFile", "PromptFlowStudio.exe"),
+            Path.Combine(root, "publish", "PromptFlowStudio.exe"),
+            Path.Combine(root, "PromptFlowStudio", "bin", "Release", "net8.0-windows", "win-x64", "publish", "PromptFlowStudio.exe"),
+            Path.Combine(root, "PromptFlowStudio", "bin", "Release", "net8.0-windows", "PromptFlowStudio.exe"),
+            Path.Combine(AppContext.BaseDirectory, "PromptFlowStudio.exe"),
+        };
+        var n = 0;
+        foreach (var c in candidates)
+        {
+            if (c.Length == 0 || !File.Exists(c)) continue;
+            n++;
+            var dll = Path.Combine(Path.GetDirectoryName(c)!, "PromptFlowStudio.dll");
+            var stamp = File.Exists(dll) ? File.GetLastWriteTimeUtc(dll) : File.GetLastWriteTimeUtc(c);   // apphost 는 동반 dll 기준
+            if (stamp >= reference) { probed = c; return c; }
+        }
+        probed = n.ToString(System.Globalization.CultureInfo.InvariantCulture) + "개 모두 구버전";
+        return null;
+    }
+}

@@ -48,7 +48,25 @@ internal static class Program
             return;
         }
 
+        // v18.3.0: 배포 번들 SHA-256 무결성 매니페스트 기록 모드(release-checksums.sha256 · UI 없음).
+        if (args.Length == 2 && args[0] == Services.Deploy.ReleaseBundleChecksumGenerator.Command)
+        {
+            Environment.ExitCode = Services.Deploy.ReleaseBundleChecksumGenerator.RunCommand(args[1], out var sumMessage);
+            Console.Out.WriteLine(sumMessage);
+            return;
+        }
+
         ApplicationConfiguration.Initialize();
+
+        // v18.3.0: 헤드리스 스모크 — DI 전수 해석 + 32 워크스페이스 확인 후 윈도우 없이 종료 코드로 보고.
+        if (args.Length >= 1 && args[0] == SmokeTestBootstrap.Command)
+        {
+            var smokeCode = SmokeTestBootstrap.Run(args.Length == 2 && args[1] == SmokeTestBootstrap.DeepOption, out var smokeMessage);
+            Console.Out.WriteLine(smokeMessage);
+            Console.Out.Flush();
+            if (smokeCode != 0) Log("스모크 실패: " + smokeMessage, null);
+            Environment.Exit(smokeCode);
+        }
 
         // v15.17.0 LTS: 바이너리 자체 무결성 검증 — 변조 감지 시 UI/서비스 기동 전에 안전 종료.
         var integrity = Services.Security.AppIntegrityGuard.VerifyInstalled();

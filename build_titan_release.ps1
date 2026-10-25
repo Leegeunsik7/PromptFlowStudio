@@ -135,6 +135,15 @@ if (-not (Test-Path -LiteralPath $manifest)) { Fail 'pfi1.manifest 가 생성되
 Get-Content -LiteralPath $manifest | Where-Object { $_ -notlike 'SIG *' } | ForEach-Object { Write-Host "  $_" }
 if ($ffmpegBundled -and -not (Select-String -LiteralPath $manifest -Pattern ' ffmpeg\.exe$' -Quiet)) { Fail 'ffmpeg.exe 가 서명 대상에 포함되지 않았습니다.' 34 }
 
+# ── 4.5) v18.3.0 헤드리스 스모크(--smoke-test · 5초 가드) + 배포 번들 SHA-256 매니페스트(release-checksums.sha256 · 최종 바이트 기준) ──
+Write-Step '헤드리스 스모크(--smoke-test)'
+$smoke = Start-Process -FilePath $exe -ArgumentList @('--smoke-test') -WorkingDirectory $OutputDir -NoNewWindow -PassThru
+if (-not $smoke.WaitForExit(5000)) { try { $smoke.Kill() } catch { }; Fail '스모크 타임아웃(5초) — UI 기동 또는 부트스트랩 교착' 35 }
+if ($smoke.ExitCode -ne 0) { Fail "스모크 실패(종료 코드 $($smoke.ExitCode)) — 자세한 내용: %LOCALAPPDATA%\PromptFlowStudio\logs\shell.log" 35 }
+Write-Step 'release-checksums.sha256 기록'
+$sum = Start-Process -FilePath $exe -ArgumentList @('--release-checksums', ('"' + $OutputDir + '"')) -WorkingDirectory $OutputDir -NoNewWindow -PassThru -Wait
+if ($sum.ExitCode -ne 0) { Fail "체크섬 매니페스트 기록 실패(종료 코드 $($sum.ExitCode))" 36 }
+
 # ── 5) Inno Setup 인스톨러 ──
 if ($BuildInstaller) {
     Write-Step "Inno Setup 컴파일 ($AppVersion)"
