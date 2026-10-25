@@ -37980,3 +37980,117 @@ public sealed class ShortsFactoryDeepPipelineHydrationTests
         Assert.True(sink > 0);
     }
 }
+
+/// <summary>v18.0.2: 숏폼 팩토리 실 슬라이스 E2E — ① 소스 링 절삭 바이트 → ③ 리텐션(펀치 GOP SPS 크롭 · −30 dB BGM · 원점 정규화) → ④ fMP4/PNG · 5 회 배치 누수 0 · 바인더 핫패스 무할당.</summary>
+[Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) · 메모리 누수 측정 → 비병렬
+public sealed class ShortsFactoryRealSliceE2ERenderTests
+{
+    [Fact]
+    public async Task ShortsFactory_RealSliceE2ERender_Check()
+    {
+        var ws = new PromptFlowStudio.Services.Ui.ShortsFactoryWorkspaceContext();
+        var p = new PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext();
+        var o = new PromptFlowStudio.Services.Ui.ShortsFactoryOneClickRenderOrchestrator();
+        var events = 0;
+        var stages = new List<PromptFlowStudio.Services.Ui.OneClickRenderStage>();
+        o.OnChange += () => { events++; if (stages.Count == 0 || stages[^1] != o.Stage) stages.Add(o.Stage); };
+        o.OnChange += () => throw new InvalidOperationException("구독자 예외 격리 확인");
+        Assert.True(p.Hydrate(ws));
+        Assert.True(o.Render(p), o.LastError);
+        Assert.True(o.RehearsalSource && o.SourceReady);
+        Assert.Equal(PromptFlowStudio.Services.Ui.OneClickRenderStage.Done, o.Stage);
+        Assert.Equal(100, o.TotalPercent);
+        Assert.True(events >= 8, "진행 이벤트 " + events);
+        Assert.Equal(new[] { PromptFlowStudio.Services.Ui.OneClickRenderStage.Trim, PromptFlowStudio.Services.Ui.OneClickRenderStage.Caption, PromptFlowStudio.Services.Ui.OneClickRenderStage.Retention, PromptFlowStudio.Services.Ui.OneClickRenderStage.Export, PromptFlowStudio.Services.Ui.OneClickRenderStage.Done }, stages);
+
+        // ① 실 슬라이스: 소스 링 시퀀스 · 바이트 일치 · 첫 IDR 원점 PTS 정규화 · T_start 오프셋 < 1 GOP
+        var b = o.Binder;
+        Assert.Equal(PromptFlowStudio.Services.Ui.SliceBindStatus.Bound, b.Status);
+        Assert.True(b.FirstSeq >= o.Source.OldestSeq && b.LastSeq <= o.Source.NewestSeq);
+        Assert.True(b.SliceVideoFrames >= ws.DurationMs / 1000 * 30 && b.SliceAudioFrames > 0);
+        var first = new byte[4096];
+        var n0 = o.Source.CopyFrame(b.FirstSeq, first);
+        Assert.True(n0 > 0 && b.SliceAnnexB[..n0].SequenceEqual(first.AsSpan(0, n0)), "슬라이스 첫 AU = 소스 링 원문");
+        Assert.Equal(0, b.SlicePts[0]);
+        Assert.Equal((ws.ClipInMs * 1000L - o.Source.Frame(b.FirstSeq).PtsUs) * 90 / 1000, b.OriginTicks);
+        Assert.InRange(b.OriginTicks, 0, 2 * 90_000);
+
+        // ③ 펀치 타임코드 동기화(원본 ms ↔ 클립 원점) · SPS 크롭 줌 펀치 GOP · 무손실 · −30 dB 덕킹
+        Assert.Equal(p.RetentionAudio.PunchCount, b.PunchCount);
+        for (var i = 0; i < b.PunchCount; i++) Assert.Equal(p.PunchTimecodesMs[i], b.ReEditor.Punch(i).AtMs + ws.ClipInMs);
+        Assert.True(b.Mux.ZeroTranscodePunchGops > 0 && b.Mux.CroppedSpsNals > 0, "SPS 줌 펀치 GOP");
+        Assert.Equal(0, b.Mux.ReencodeGops);
+        Assert.Equal(0, b.LosslessFaults);
+        Assert.Equal(PromptFlowStudio.Services.Ui.ShortsFactoryRetentionRealSliceBinder.DuckGain, b.BgmGain);
+        Assert.InRange(20f * MathF.Log10(b.BgmGain), -30.01f, -29.99f);
+        Assert.True(b.OutSamples > 0 && b.KeptAudioFrames > 0);
+        var pcmN = ws.DurationMs * 48;
+        Assert.True(b.ReEditor.TempoCount > 0 ? b.OutSamples < pcmN : b.OutSamples == pcmN, "템포 리패키징 길이 " + b.OutSamples);
+
+        // ④ fMP4 무결성 · 파일 스트림 · 자막 대본 · PNG
+        var ex = o.LastExport;
+        Assert.Equal(PromptFlowStudio.Services.ViralExport.ExportStatus.Ready, ex.Status);
+        Assert.True(PromptFlowStudio.Services.ViralExport.FastShortsMuxingHardwareExporterEngine.TryInspect(o.Output.Span, out var insp) && insp.Valid);
+        Assert.True(ex.StartsWithIdr && ex.VideoSamples == b.Mux.OutCount && ex.AudioSamples == b.KeptAudioFrames && ex.TextSamples > 0);
+        Assert.True(o.Exporter.InBandParameterSets, "펀치 SPS 인밴드(avc3)");
+        Assert.InRange(ex.DurationUs, (ws.DurationMs - 6_000) * 1000L, (ws.DurationMs + 2_500) * 1000L);
+        var path = Path.Combine(Path.GetTempPath(), "pfs_v1802_" + Guid.NewGuid().ToString("N") + ".mp4");
+        try
+        {
+            using (var src = o.Exporter.OpenRead())
+            using (var fs = File.Create(path)) src.CopyTo(fs);
+            var disk = File.ReadAllBytes(path);
+            Assert.Equal(ex.Bytes, disk.Length);
+            Assert.True(PromptFlowStudio.Services.ViralExport.FastShortsMuxingHardwareExporterEngine.TryInspect(disk, out var di) && di.Valid);
+        }
+        finally { File.Delete(path); }
+        Assert.Equal(p.Caption.WordCount, o.CaptionWords);
+        Assert.True(o.ThumbnailPng.Length > 64 && o.ThumbnailPng.Span[..8].SequenceEqual(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }));
+        Assert.StartsWith("data:image/png;base64,", o.ThumbnailDataUrl);
+
+        // 구간 변경 → 다른 소스 바이트 · 비동기 경로
+        var firstSeq = b.FirstSeq;
+        ws.SetClip(60_000, 20_000);
+        Assert.True(p.Hydrate(ws));
+        Assert.True(await o.RenderAsync(p), o.LastError);
+        Assert.True(b.FirstSeq > firstSeq && !o.Busy);
+        Assert.Equal(p.Revision, o.LastManifestRevision);
+        Assert.InRange(o.LastExport.DurationUs, 14_000_000L, 22_500_000L);
+
+        // 취소
+        using (var cts = new CancellationTokenSource())
+        {
+            cts.Cancel();
+            Assert.False(o.Render(p, cts.Token));
+            Assert.Equal(PromptFlowStudio.Services.Ui.OneClickRenderStage.Cancelled, o.Stage);
+        }
+
+        // 4 단계 풀체인 5 회 배치 — 관리 힙 누수 0 · 익스포터 버퍼 증가 0
+        ws.SetClip(12_000, 28_000);
+        p.Hydrate(ws);
+        Assert.True(o.Render(p));
+        var grows = o.Exporter.Grows;
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        var mem0 = GC.GetTotalMemory(true);
+        for (var i = 0; i < 5; i++) Assert.True(o.Render(p), o.LastError);
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        var leak = GC.GetTotalMemory(true) - mem0;
+        Assert.True(leak < 256 * 1024, "5 회 배치 렌더 잔류 " + leak + " B");
+        Assert.Equal(grows, o.Exporter.Grows);
+
+        // 바인더 핫패스(슬라이스 + 리텐션 + 리먹스 + ADTS 재타이밍) 무할당
+        var trim = p.Trim;
+        var punches = p.PunchTimecodesMs.ToArray();
+        b.Slice(o.Source, trim, o.SourceOriginUs);
+        b.ApplyRetention(o.SourcePcm.Span, o.BgmBed.Span, punches, true);
+        var a0 = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 3; i++)
+        {
+            b.Slice(o.Source, trim, o.SourceOriginUs);
+            b.ApplyRetention(o.SourcePcm.Span, o.BgmBed.Span, punches, true);
+        }
+        var alloc = GC.GetAllocatedBytesForCurrentThread() - a0;
+        Assert.True(alloc == 0, "실 슬라이스 바인딩 핫패스 할당 " + alloc + " B");
+        Assert.Equal(PromptFlowStudio.Services.Ui.SliceBindStatus.Bound, b.Status);
+    }
+}

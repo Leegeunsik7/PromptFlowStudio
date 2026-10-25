@@ -127,8 +127,11 @@ public sealed class MicroPunchDynamicPacingReEditorEngine
         LastPlanUs = LastRepackageUs = 0;
     }
 
-    /// <summary>편집 계획(무할당) — 절벽별 펀치/FX · 데드존별 템포 · 시간 사상 · 예상 곡선. 반환 = 펀치 + 템포 편집 수.</summary>
-    public int Plan(AudienceRetentionDropoffDetectorEngine det, ReadOnlySpan<float> audio)
+    /// <summary>
+    /// 편집 계획(무할당) — 절벽별 펀치/FX · 데드존별 템포 · 시간 사상 · 예상 곡선. 반환 = 펀치 + 템포 편집 수.
+    /// [v18.0.2] <paramref name="punchAtMs"/>(클립 원점 ms · 오름차순)가 있으면 절벽 유도 대신 그 시각에 펀치(숏폼 팩토리 ③ 타임코드 동기화).
+    /// </summary>
+    public int Plan(AudienceRetentionDropoffDetectorEngine det, ReadOnlySpan<float> audio, ReadOnlySpan<int> punchAtMs = default)
     {
         var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         Zoom.Clear(); Sfx.ClearCues();
@@ -137,14 +140,22 @@ public sealed class MicroPunchDynamicPacingReEditorEngine
         _srcMs = Math.Min(det.DurationSec, MaxSec) * 1000;
         var w = PunchWeight;
 
-        for (var i = 0; i < det.SlumpCount && _pn < EditCap; i++)
+        if (punchAtMs.Length > 0)
         {
-            ref readonly var s = ref det.Slump(i);
-            if (s.OnsetMs >= _srcMs) break;
-            var at = Math.Max(0, s.OnsetMs - PunchLeadMs);
-            Zoom.AddPunch(at, w, ZoomPunchSource.Manual);
-            Sfx.AddCue(at, ViralSfxKind.Impact);
-            _punch[_pn++] = new PunchEdit { AtMs = at, SlumpOnsetMs = s.OnsetMs, Scale = KineticZoomPunchCutEngine.ScaleFor(w * Zoom.Strength) };
+            foreach (var at in punchAtMs)
+            {
+                if (_pn == EditCap || at >= _srcMs) break;
+                if (at >= 0) AddPunchEdit(at, at + PunchLeadMs, w);
+            }
+        }
+        else
+        {
+            for (var i = 0; i < det.SlumpCount && _pn < EditCap; i++)
+            {
+                ref readonly var s = ref det.Slump(i);
+                if (s.OnsetMs >= _srcMs) break;
+                AddPunchEdit(Math.Max(0, s.OnsetMs - PunchLeadMs), s.OnsetMs, w);
+            }
         }
 
         var removed = 0;   // 누적 압축 샘플
@@ -174,6 +185,13 @@ public sealed class MicroPunchDynamicPacingReEditorEngine
         Plans++;
         LastPlanUs = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1e6 / System.Diagnostics.Stopwatch.Frequency;
         return _pn + _tn;
+    }
+
+    private void AddPunchEdit(int at, int onset, float w)
+    {
+        Zoom.AddPunch(at, w, ZoomPunchSource.Manual);
+        Sfx.AddCue(at, ViralSfxKind.Impact);
+        _punch[_pn++] = new PunchEdit { AtMs = at, SlumpOnsetMs = onset, Scale = KineticZoomPunchCutEngine.ScaleFor(w * Zoom.Strength) };
     }
 
     /// <summary>오디오 리패키징(무할당) — 작업 버퍼 복사 → 임팩트 FX 믹스 → 구간 복사/WSOLA. 반환 = 출력 샘플 수.</summary>

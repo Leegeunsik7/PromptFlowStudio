@@ -19,6 +19,10 @@ public struct ShortsOverlay
     public HormoziPreset Preset;
     public float BounceScale;
     public double SpikeMs;
+    /// <summary>[v18.0.2] 자막 대본 직접 지정(숏폼 팩토리 ② 절삭 구간 대본) — null 이면 <see cref="Caption"/> 프리셋 문구.</summary>
+    public string? Script;
+
+    public readonly string CaptionText => Script ?? InstantShortsPackagingPipelineGuard.Captions[Caption];
 
     public static ShortsOverlay From(in PackagedShort s) => new()
     {
@@ -241,7 +245,7 @@ public sealed class FastShortsMuxingHardwareExporterEngine
     private void BuildCaptions(in ShortsOverlay ov, int durMs)
     {
         _tN = 0; _tLen = 0;
-        var cap = InstantShortsPackagingPipelineGuard.Captions[ov.Caption].AsSpan();
+        var cap = ov.CaptionText.AsSpan();
         var words = CountWords(cap);
         var startMs = (int)Math.Clamp(ov.SpikeMs - 1000, 0, Math.Max(0, durMs - 1));
         var t = 0;
@@ -326,7 +330,7 @@ public sealed class FastShortsMuxingHardwareExporterEngine
         _sfx.AddCue(Math.Max(0, spike - ProceduralViralSoundFxSynthesizer.WhooshLeadMs), ViralSfxKind.Whoosh, 0.8f);
         _sfx.AddCue(spike, ViralSfxKind.Impact, 1.2f);
         var w0 = Math.Max(0, spike - 1000);
-        var words = CountWords(InstantShortsPackagingPipelineGuard.Captions[ov.Caption]);
+        var words = CountWords(ov.CaptionText);
         for (var i = 0; i < words; i++) _sfx.AddCue(w0 + i * (double)WordMs, ViralSfxKind.Pop, i == 0 ? 1f : 0.55f);
         var frames = durUs * ProceduralViralSoundFxSynthesizer.Fs / 1_000_000;
         _sN = (int)((frames + SfxFrames - 1) / SfxFrames);

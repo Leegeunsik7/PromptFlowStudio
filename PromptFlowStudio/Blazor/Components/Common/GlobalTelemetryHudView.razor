@@ -290,6 +290,7 @@
 @inject PromptFlowStudio.Services.ViralCommerce.ViralCommerceAffiliateStudioRunner VcaRun
 @inject PromptFlowStudio.Services.RetentionHeatmap.AudienceRetentionHeatmapStudioRunner ArhRun
 @inject PromptFlowStudio.Services.CompetitorSpy.CompetitorViralSpyStudioRunner SpyRun
+@inject PromptFlowStudio.Services.Ui.ShortsFactoryOneClickRenderOrchestrator OneClickRender
 @inject PromptFlowStudio.Services.LiveEngagement.LiveAudienceEngagementStudioRunner LaeRun
 @inject PromptFlowStudio.Services.LiveRestream.OmniLiveRestreamStudioRunner RstRun
 @inject PromptFlowStudio.Services.MultilingualDubbing.MultilingualDubbingStudioRunner MldRun
@@ -1015,6 +1016,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+@* ── v18.0.2: 숏폼 팩토리 원클릭 풀체인 렌더 — 실 슬라이스 · SPS 줌 펀치 GOP · fMP4 바이트 · 단계 진행률 ── *@
+    <div class="gth-v1802">
+        <div class="gth-v96-card pid @(OneClickRender.Renders > 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>⚡ 숏폼 원클릭 렌더</b>
+                <span class="gth-v96-be">@(PromptFlowStudio.Services.Ui.ShortsFactoryOneClickRenderOrchestrator.StageName(OneClickRender.Stage)) · @(OneClickRender.TotalPercent)%</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(OneClickRender.Renders)</b><span>렌더</span></span>
+                <span class="gth-v96-m"><b>@(OneClickRender.Renders > 0 ? OneClickRender.Binder.Mux.ZeroTranscodePunchGops : 0)</b><span>펀치 GOP</span></span>
+                <span class="gth-v96-m"><b>@((OneClickRender.LastExport.Bytes / 1024).ToString(System.Globalization.CultureInfo.InvariantCulture))</b><span>fMP4 KB</span></span>
+                <span class="gth-v96-m"><b>@(OneClickRender.LastRenderMs.ToString("0", System.Globalization.CultureInfo.InvariantCulture))</b><span>ms</span></span>
+            </div>
+            <div class="gth-v96-act">@(OneClickRender.LastError ?? (OneClickRender.Renders > 0 ? "실 소스 슬라이스 #" + OneClickRender.Binder.FirstSeq.ToString(System.Globalization.CultureInfo.InvariantCulture) + " → ④ fMP4·썸네일" : "대기 · ① 절삭 → ② 자막 → ③ 줌 펀치/BGM 덕킹 → ④ fMP4"))</div>
+        </div>
+    </div>
 @* ── v17.99.0: 경쟁 채널 바이럴 스파이 & 역공학 — 300 % 이상치 · 훅 해부 · 대항 기획안 · 표절 차단 · ①단계 전송 ── *@
     <div class="gth-v1799">
         <div class="gth-v96-card pid @(SpyRun.Guard.DispatchCount > 0 ? "ok" : null)">
@@ -5958,6 +5974,7 @@
         PstRun.OnChange += OnSwarmChanged; // v17.93.0 (조작 · 틱 일괄 시점만)
         GheRun.OnChange += OnSwarmChanged; // v17.95.0 (조작 · 틱 일괄 시점만)
         SpyRun.OnChange += OnSwarmChanged; // v17.99.0 (조작 시점만)
+        OneClickRender.OnChange += OnLiveChanged; // v18.0.2 (렌더 단계 진행 ≤ 250 ms 간격 → 스로틀 없음)
         ArhRun.OnChange += OnSwarmChanged; // v17.98.0 (조작 시점만)
         VcaRun.OnChange += OnSwarmChanged; // v17.97.0 (조작 · 트래픽 틱 일괄 시점만)
         TrjRun.OnChange += OnSwarmChanged; // v17.96.0 (조작 · 1 분 틱 일괄 시점만)
@@ -6361,6 +6378,7 @@
         PstRun.OnChange -= OnSwarmChanged;
         GheRun.OnChange -= OnSwarmChanged;
         SpyRun.OnChange -= OnSwarmChanged;
+        OneClickRender.OnChange -= OnLiveChanged;
         ArhRun.OnChange -= OnSwarmChanged;
         VcaRun.OnChange -= OnSwarmChanged;
         TrjRun.OnChange -= OnSwarmChanged;
