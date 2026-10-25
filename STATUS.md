@@ -1,15 +1,16 @@
 # Current Project Status
-- Active Milestone: v18.2.2 완료 (StoryV 실기 오디오 스트림 실결선 & 팩토리 관통)
+- Active Milestone: v18.2.3 완료 (StoryV 내부 TTS 직결 & SRT/VTT 자막 파서 및 비주얼 캔버스)
 - Build Status: Desktop · net8.0-ios · Tests 3 종 Release -warnaserror 0/0 · net8.0-android 미검증(SDK/JDK 미설치)
-- Test Suite: 저메모리 단일 스레드(MaxCpuCount=1 · DisableParallelization) 535/535 1 회 완주 통과(실패 0 · 건너뜀 0 · 단독 재실행 0 · 11 분 31 초)
+- Test Suite: 저메모리 단일 스레드(MaxCpuCount=1 · DisableParallelization) 536/536 1 회 완주 통과(실패 0 · 건너뜀 0 · 단독 재실행 0 · 8 분 45 초)
 - Sidebar: 6 그룹 · 32 워크스페이스 유지(신규 모달 0)
 - Updated At: 2026-10-25 (KST)
 
 ## Completed Deliverables
-- AUD-1: `Services/Storyboard/StoryboardAudioSourceStreamBinder.cs` — WAV RIFF/원시 PCM 16-bit 소유 버퍼 바인딩(용량 내 0 B) · 레이트/채널/길이 · TTS 단어 경계 → VAD → 실측 길이 비례 순 `Resync`(오디오 바인딩 시 음절 추정 배제) · `StoryboardAudioTrack` 0-카피 스냅샷/낡은 버퍼 차단
-- AUD-2: 브리지 `Push(seq, audio)` → `ShortsFactoryPipelineContext.SourceAudio` 0-카피 · ② 자막 시작 = 실측 발화 · ③ `ApplyRetention(pcm16, rate, ch, …)` 48 kHz 최근접 무할당 소비 · ④ fMP4 ipcm 트랙 내레이션 합성(`NarrationSamples`) · 낡은 오디오 = 기존 소스 PCM 폴백
-- AUD-3: 스토리보드 툴바 🎙️ 오디오 파일 불러오기(WAV/PCM/단어 경계 CSV) · 포맷/길이/샘플레이트/정렬 출처 배지 · 샷 인스펙터 즉시 실측 리프레시 · 🎬 전송 시 오디오 동반
-- AUD-4: `Storyboard_RealAudioBinding_And_FactoryPassthrough_Check` — WAV 파싱 · 실측 재동기화 0 B · 0-카피 관통 · ②~④ 렌더 소비 · 낡은 오디오 폴백
+- TTS-1: `Services/Storyboard/InternalTtsWordBoundaryDirectEmitter.cs` — `SpeechWordBoundaryEvent` 수신(범위/역전/역순 거부) · 경계 미방출 엔진은 VAD 발화 구간을 음절+호흡 가중치로 분배 · UTF-8 소유 버퍼 직렬화 → 바인더 직결 · 원자 재동기화(0 B)
+- SUB-2: `StandardSubtitleTimestampParser.cs` — SRT/WebVTT Span 1 회 스캔(BOM · NOTE · 큐 설정 · 태그 제거 · 시 생략) · 깨진/역전/역순 큐 건너뛰고 복구 · 쉼표/마침표 미세 구간 단어 경계 등록 → 샷 타임라인(0 B)
+- CV-3: `StoryboardVisualCanvasRenderer.cs` — 샷 9:16 SVG(3 분할 · 아이레벨 · 실루엣 · 자막 안전영역 · 숏츠 UI 경계 1536) · 앵글별 안전영역 · 자막 줄 수 침범 판정 녹/적 배지(0 B 직렬화)
+- UI: 스토리보드 툴바 🗣 AI 음성 생성 및 정렬(합성 → 직결 → 정렬) · 오디오 파일 불러오기에 .srt/.vtt 추가 · 샷 카드 9:16 캔버스 + 세이프존 배지
+- TEST: `Storyboard_TtsDirectEmitter_And_SubtitleParser_Check` — 타임코드 · SRT/VTT 정합 · 구문 복원력 · 직결=CSV 동일 지문 · 세이프존 판정 · 핫패스 0 B
 
 ## Known Issues / 환경 노트
-- 압축 오디오(MP3/AAC) 디코딩 미지원(Pure BCL · WAV PCM 16-bit 만) · 실 TTS 엔진 단어 경계 자동 수신 미결선(CSV 수동 로드) · 실 플랫폼 업로드 엔드포인트 미검증 · Android 빌드 미검증
+- 실 TTS 엔진(ElevenLabs/Edge/로컬) 네이티브 단어 경계 이벤트 미방출 → VAD/실측 길이 분배 폴백 · MP3 디코딩 미지원(MP3 합성 시 길이 기반) · Android 빌드 미검증

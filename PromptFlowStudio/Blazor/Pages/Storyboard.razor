@@ -80,8 +80,10 @@
             @* v18.2.2 🎙 실 오디오(WAV · PCM 16-bit) / TTS 단어 경계(CSV) 바인딩 → 샷 타임코드 실측 재동기화 · 팩토리 전송 시 오디오 0-카피 동반 *@
             <div class='sb-openbtn @(_audioLoading ? "off" : null)' title="WAV(PCM 16-bit) · 원시 PCM(16 kHz 모노) 또는 TTS 단어 경계 CSV(startMs,endMs,word) — 샷 타임코드를 음절 추정 대신 실측으로 재동기화">
                 @(_audioLoading ? "⏳ 오디오 불러오는 중…" : "🎙️ 오디오 파일 불러오기")
-                <InputFile class="sb-openinput" OnChange="OnShotAudioPicked" accept="audio/wav,audio/x-wav,.wav,.pcm,.raw,.csv,.tsv,.txt" disabled="@_audioLoading" aria-label="샷 정렬 오디오 파일 선택" />
+                <InputFile class="sb-openinput" OnChange="OnShotAudioPicked" accept="audio/wav,audio/x-wav,.wav,.pcm,.raw,.csv,.tsv,.txt,.srt,.vtt" disabled="@_audioLoading" aria-label="샷 정렬 오디오 · 자막 파일 선택" />
             </div>
+            @* v18.2.3 🗣 대본 → AI 음성 합성 → 단어 경계 인메모리 직결 → 샷 타임코드 원자 정렬(CSV 수동 로드 불필요) *@
+            <button class="sb-tbtn wiz" @onclick="OnAiVoiceAlign" disabled="@(_audioLoading || _project.Scenes.Count == 0)" title="나레이션을 AI 음성으로 합성하고 단어 경계를 메모리에서 바로 샷 타임코드에 정렬합니다(WAV 는 실 오디오 동반).">🗣 AI 음성 생성 및 정렬</button>
             @if (_shotAudio.HasAudio || _shotAudio.HasWordBoundaries || _audioMsg is not null)
             {
                 <span class="sb-audio-badge @(_audioMsg is null ? null : "bad")" title="@(_shotAudio.SourceName)">@(AudioBadge())</span>
@@ -217,6 +219,10 @@
                                 <div class="sb-shot-h"><b>#@(k.ShotNumber)</b><span>@(ShotSec(k.StartMs))→@(ShotSec(k.EndMs))</span></div>
                                 <div class="sb-shot-m">@(PromptFlowStudio.Services.Storyboard.StoryboardKeyframeSequencer.AngleTag(k.Angle)) · @(ShotSec(k.DurationMs))s · ⬚ @(k.CenterXPermille / 10)%</div>
                                 <div class="sb-shot-t">@(_shotSeq.TextOf(k).ToString())</div>
+                                @* v18.2.3 🖼 9:16 프리뷰 캔버스 — 3 분할 · 아이레벨 · 자막 안전영역 침범 배지 *@
+                                @{ var cv = PromptFlowStudio.Services.Storyboard.StoryboardVisualCanvasRenderer.Layout(k.Angle, _shotSeq.TextOf(k)); }
+                                <div class="sb-shot-cv">@((MarkupString)_shotCanvas.Svg(cv))</div>
+                                <span class="sb-sz @(cv.Overflow ? "bad" : "ok")" title="자막 @(cv.CaptionLines)줄 · 안전영역 최대 @(cv.MaxLines)줄">@(cv.Overflow ? "⛔ 자막 세이프존 침범" : "✅ 세이프존")</span>
                             </div>
                         }
                     </div>
@@ -258,6 +264,11 @@
                     .sb-shot-h { display: flex; justify-content: space-between; font: 700 11px var(--mono, monospace); }
                     .sb-shot-m { color: var(--text-secondary, #9fb0c8); margin: 2px 0; }
                     .sb-shot-t { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; color: var(--text-primary, #e6eefc); }
+                    .sb-shot-cv { width: 54px; aspect-ratio: 9 / 16; margin: 4px auto 3px; border-radius: 4px; overflow: hidden; }
+                    .sb-shot-cv svg { display: block; width: 100%; height: 100%; }
+                    .sb-sz { display: block; text-align: center; font: 700 10px var(--mono, monospace); border-radius: 999px; padding: 1px 6px; }
+                    .sb-sz.ok { color: #22c55e; background: color-mix(in srgb, #22c55e 14%, transparent); }
+                    .sb-sz.bad { color: #ef4444; background: color-mix(in srgb, #ef4444 14%, transparent); }
                     .sb-studios > summary { cursor: pointer; font-size: 12px; font-weight: 800; }
                     .sb-studios-g { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
                     .sb-scene-no.sel { outline: 2px solid var(--accent, #7c6cff); border-radius: 6px; padding: 0 4px; }
@@ -1931,7 +1942,7 @@
 
     private static string ShotSec(int ms) => (ms / 1000.0).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
 
-    private void RefreshShots()
+    private void BuildShotScript()
     {
         _shotScript.Clear();
         foreach (var s in _project.Scenes)
@@ -1940,6 +1951,18 @@
             if (string.IsNullOrWhiteSpace(line)) continue;
             if (_shotScript.Length > 0) _shotScript.Append((char)10);
             _shotScript.Append(line.Trim());
+        }
+    }
+
+    private void RefreshShots()
+    {
+        BuildShotScript();
+        // v18.2.3 컷 대본이 비고 자막만 불러온 경우 — 자막 본문을 대본으로 사용
+        if (_shotScript.Length == 0 && _subtitleLoaded)
+        {
+            _shotAudio.Resync(_shotSeq, _ttsEmitter.Script);
+            _shotMsg = _shotSeq.Count == 0 ? "샷 분할 실패 — 나레이션 또는 프롬프트를 입력하세요" : null;
+            return;
         }
         var buf = System.Buffers.ArrayPool<char>.Shared.Rent(Math.Max(1, _shotScript.Length));
         try
@@ -1956,10 +1979,22 @@
     private readonly PromptFlowStudio.Services.Storyboard.StoryboardAudioSourceStreamBinder _shotAudio = new();
     private bool _audioLoading;
     private string? _audioMsg;
+    // v18.2.3 🗣 TTS 단어 경계 직결기 · 📝 SRT/VTT 파서 · 🖼 9:16 프리뷰 캔버스(컴포넌트 소유 · 용량 내 재사용)
+    private readonly PromptFlowStudio.Services.Storyboard.InternalTtsWordBoundaryDirectEmitter _ttsEmitter = new();
+    private readonly PromptFlowStudio.Services.Storyboard.StandardSubtitleTimestampParser _subParser = new();
+    private readonly PromptFlowStudio.Services.Storyboard.StoryboardVisualCanvasRenderer _shotCanvas = new();
+    private bool _subtitleLoaded;
+    private string? _alignOrigin;
 
     private string AudioBadge()
     {
         if (_audioMsg is { } why) return "⚠ " + why;
+        if (_alignOrigin is { } origin) return origin + " · " + AudioBadgeCore();
+        return AudioBadgeCore();
+    }
+
+    private string AudioBadgeCore()
+    {
         var src = _shotSeq.Alignment switch
         {
             PromptFlowStudio.Services.Storyboard.AudioAlignmentSource.TtsWordBoundary => "TTS 단어 경계",
@@ -1986,7 +2021,24 @@
             var name = file.Name;
             var ext = Path.GetExtension(name);
             await using var src = file.OpenReadStream(PromptFlowStudio.Services.Storyboard.StoryboardAudioSourceStreamBinder.MaxBytes);
-            if (ext.Equals(".csv", StringComparison.OrdinalIgnoreCase) || ext.Equals(".tsv", StringComparison.OrdinalIgnoreCase) || ext.Equals(".txt", StringComparison.OrdinalIgnoreCase))
+            _alignOrigin = null;
+            _subtitleLoaded = false;
+            if (ext.Equals(".srt", StringComparison.OrdinalIgnoreCase) || ext.Equals(".vtt", StringComparison.OrdinalIgnoreCase))
+            {
+                // v18.2.3 📝 SRT/VTT → 큐 → 쉼표/마침표 미세 구간 단어 경계 → 바인더 직결(깨진 큐는 건너뜀)
+                using var reader = new StreamReader(src, System.Text.Encoding.UTF8, true);
+                var text = await reader.ReadToEndAsync();
+                if (_subParser.Parse(text) == 0 || _subParser.EmitTo(_ttsEmitter) == 0 || _ttsEmitter.Commit(_shotAudio) == 0)
+                    _audioMsg = "자막 큐 없음(SRT/VTT 타임코드 확인)";
+                else
+                {
+                    _subtitleLoaded = true;
+                    _alignOrigin = "📝 " + (_subParser.Format == PromptFlowStudio.Services.Storyboard.SubtitleFormat.WebVtt ? "VTT " : "SRT ")
+                                 + _subParser.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + "큐"
+                                 + (_subParser.Skipped > 0 ? " (손상 " + _subParser.Skipped.ToString(System.Globalization.CultureInfo.InvariantCulture) + " 건너뜀)" : "");
+                }
+            }
+            else if (ext.Equals(".csv", StringComparison.OrdinalIgnoreCase) || ext.Equals(".tsv", StringComparison.OrdinalIgnoreCase) || ext.Equals(".txt", StringComparison.OrdinalIgnoreCase))
             {
                 using var ms = new MemoryStream((int)file.Size);
                 await src.CopyToAsync(ms);
@@ -2002,6 +2054,47 @@
         catch (Exception ex) when (ex is IOException or InvalidOperationException or OperationCanceledException or ObjectDisposedException)
         {
             _audioMsg = "오디오 불러오기 실패: " + ex.Message;
+        }
+        finally { _audioLoading = false; }
+    }
+
+    /// <summary>
+    /// v18.2.3 🗣 AI 음성 생성 및 정렬 — 대본 합성(ElevenLabs → Edge → 로컬) → WAV 면 실 오디오 바인딩 · 아니면 실측 길이
+    ///   → 단어 경계 인메모리 직결(VAD 발화 구간 분배) → 샷 타임코드 원자 재동기화. 실패 시 기존 정렬 유지.
+    /// </summary>
+    private async Task OnAiVoiceAlign()
+    {
+        if (_audioLoading) return;
+        BuildShotScript();
+        var script = _shotScript.ToString();
+        if (script.Length == 0) { _audioMsg = "나레이션 또는 프롬프트를 입력하세요"; return; }
+        _audioLoading = true; _audioMsg = null;
+        try
+        {
+            var path = await LipTts.SynthesizeAsync(script);
+            if (path is null || !File.Exists(path)) { _audioMsg = "AI 음성 합성 실패 — TTS 엔진 미가용"; return; }
+            _shotAudio.Clear();
+            await using (var fs = File.OpenRead(path))
+            {
+                var head = new byte[4];
+                if (fs.Length > 44 && await fs.ReadAsync(head) == 4 && head.AsSpan().SequenceEqual("RIFF"u8))
+                {
+                    fs.Position = 0;
+                    await _shotAudio.BindAsync(fs, fs.Length, Path.GetFileName(path));
+                }
+            }
+            var fallbackMs = _shotAudio.HasAudio ? 0 : (int)((PromptFlowStudio.Services.Media.AiVoiceoverTtsService.ProbeSeconds(path)
+                                                             ?? PromptFlowStudio.Services.Media.AiVoiceoverTtsService.EstimateSeconds(script)) * 1000);
+            _ttsEmitter.Begin(script);
+            var words = _ttsEmitter.EmitFromAudio(_shotAudio, fallbackMs);
+            _subtitleLoaded = false;
+            if (words == 0 || _ttsEmitter.Commit(_shotAudio) == 0) { _audioMsg = "단어 경계 생성 실패"; RefreshShots(); return; }
+            _alignOrigin = "🗣 AI 음성 " + words.ToString(System.Globalization.CultureInfo.InvariantCulture) + "단어";
+            RefreshShots();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or OperationCanceledException)
+        {
+            _audioMsg = "AI 음성 정렬 실패: " + ex.Message;
         }
         finally { _audioLoading = false; }
     }

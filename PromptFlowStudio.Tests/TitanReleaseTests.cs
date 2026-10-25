@@ -39843,3 +39843,179 @@ public sealed class StoryboardRealAudioPassthroughTests
         Assert.False(realOut.AsSpan().SequenceEqual(b.OutputPcm), "실 오디오 ③ 출력 ≠ 리허설 PCM ③ 출력");
     }
 }
+
+/// <summary>v18.2.3: StoryV 내부 TTS 단어 경계 인메모리 직결 · SRT/WebVTT 무할당 자막 파서(깨진 큐 복구) · 9:16 프리뷰 캔버스 세이프존 침범 판정.</summary>
+[Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
+public sealed class StoryboardTtsDirectSubtitleCanvasTests
+{
+    private const string Script = "안녕하세요. 오늘은 AI로 숏폼을 만드는 비밀을 알려드릴게요, 끝까지 보시면 반전이 있습니다! 준비되셨나요?";
+    private static readonly (int, int)[] WordMs =
+        { (50, 700), (1_100, 1_400), (1_400, 1_700), (1_700, 2_000), (2_000, 2_300), (2_300, 2_600), (2_600, 3_300), (3_700, 4_100), (4_100, 4_500), (4_500, 4_900), (4_900, 5_600), (6_000, 6_900) };
+
+    private const string Srt =
+        "﻿1\r\n00:00:00,500 --> 00:00:02,000\r\n<i>안녕하세요.</i>\r\n\r\n" +
+        "2\r\n00:00:02,000 --> 00:00:05,500\r\n오늘은 AI로 숏폼을 만드는 비밀을,\r\n알려드릴게요!\r\n\r\n" +
+        "3\r\n00:00:0X,000 --> broken\r\n깨진 큐입니다\r\n\r\n" +
+        "4\r\n00:00:06,000 --> 00:00:08,000\r\n준비되셨나요?\r\n";
+
+    private const string Vtt =
+        "WEBVTT\n\nNOTE 주석 블록\n\nintro\n00:01.000 --> 00:03.250 align:start line:90%\n<v 화자>안녕하세요.</v>\n\n" +
+        "00:00:03.250 --> 00:00:06.000\n오늘은 비밀을 알려드릴게요!\n" +
+        "00:00:06.000 --> 00:00:05.000\n역전 구간\n\n" +
+        "00:00:07.000 --> 00:00:09.000\n준비되셨나요?\n";
+
+    private static void EmitScript(SB.InternalTtsWordBoundaryDirectEmitter em)
+    {
+        em.Begin(Script);
+        var p = 0;
+        for (var i = 0; SB.InternalTtsWordBoundaryDirectEmitter.NextWord(Script, ref p, out var ws, out var wl); i++)
+            em.Emit(new SB.SpeechWordBoundaryEvent(WordMs[i].Item1, WordMs[i].Item2, ws, wl));
+    }
+
+    [Fact]
+    public void Storyboard_TtsDirectEmitter_And_SubtitleParser_Check()
+    {
+        // ① 타임코드 — HH:mm:ss,fff · HH:mm:ss.fff · mm:ss.fff · 밀리초 1~3 자리 · 범위/구문 오류 거부
+        Assert.True(SB.StandardSubtitleTimestampParser.TryParseTimecode("01:02:03,045", out var tc));
+        Assert.Equal(3_723_045, tc);
+        Assert.True(SB.StandardSubtitleTimestampParser.TryParseTimecode(" 00:00:01.5 ", out tc));
+        Assert.Equal(1_500, tc);
+        Assert.True(SB.StandardSubtitleTimestampParser.TryParseTimecode("02:03.250", out tc));
+        Assert.Equal(123_250, tc);
+        foreach (var malformed in new[] { "", "abc", "00:61:00,000", "00:00:60,000", "00:00:01,0000", "00:00:01", "00:00:01;000", "-1:00:00,000" })
+            Assert.False(SB.StandardSubtitleTimestampParser.TryParseTimecode(malformed, out _), malformed);
+
+        // ② SRT — BOM · 태그 제거 · 여러 줄 결합 · 깨진 큐 건너뜀 · 번호 보존 · 샷 시퀀스 정합
+        var sub = new SB.StandardSubtitleTimestampParser();
+        Assert.Equal(SB.SubtitleFormat.SubRip, SB.StandardSubtitleTimestampParser.Detect(Srt));
+        Assert.Equal(3, sub.Parse(Srt));
+        Assert.Equal((SB.SubtitleFormat.SubRip, 1), (sub.Format, sub.Skipped));
+        var cues = sub.Cues.ToArray();
+        Assert.Equal((1, 500, 2_000), (cues[0].Index, cues[0].StartMs, cues[0].EndMs));
+        Assert.Equal((2, 2_000, 5_500), (cues[1].Index, cues[1].StartMs, cues[1].EndMs));
+        Assert.Equal((4, 6_000, 8_000), (cues[2].Index, cues[2].StartMs, cues[2].EndMs));
+        Assert.Equal("안녕하세요.\n오늘은 AI로 숏폼을 만드는 비밀을, 알려드릴게요!\n준비되셨나요?", sub.Script.ToString());
+        Assert.Equal("오늘은 AI로 숏폼을 만드는 비밀을, 알려드릴게요!", sub.TextOf(cues[1]).ToString());
+        var em = new SB.InternalTtsWordBoundaryDirectEmitter();
+        var binder = new SB.StoryboardAudioSourceStreamBinder();
+        var seq = new SB.StoryboardKeyframeSequencer();
+        Assert.Equal(SB.AudioAlignmentSource.TtsWordBoundary, sub.ApplyTo(em, binder, seq));
+        Assert.Equal(8, em.Count);
+        Assert.True(binder.HasWordBoundaries);
+        Assert.Equal(4, seq.Count);   // 하드 컷 2(큐 경계) + 쉼표 소프트 컷 1
+        // 큐 2 미세 구간: 음절 3·2·3·3·(3+쉼표 2)·(6+마침 3) = 25 단위 → "알려드릴게요!" = 2000 + 16/25 × 3500
+        Assert.Equal((500, 2_000, 4_240, 6_000), (seq.KeyframeAt(0).StartMs, seq.KeyframeAt(1).StartMs, seq.KeyframeAt(2).StartMs, seq.KeyframeAt(3).StartMs));
+        Assert.Equal(6_000 + 6 * 2_000 / 9, seq.TotalMs);
+
+        // ③ WebVTT — 헤더/NOTE/식별자 · 시 생략 · 큐 설정 · 빈 줄 누락 복구 · 역전 구간 건너뜀
+        Assert.Equal(SB.SubtitleFormat.WebVtt, SB.StandardSubtitleTimestampParser.Detect(Vtt));
+        Assert.Equal(3, sub.Parse(Vtt));
+        Assert.Equal((SB.SubtitleFormat.WebVtt, 1), (sub.Format, sub.Skipped));
+        Assert.Equal("안녕하세요.\n오늘은 비밀을 알려드릴게요!\n준비되셨나요?", sub.Script.ToString());
+        Assert.Equal((1_000, 3_250, 7_000, 9_000), (sub.Cues[0].StartMs, sub.Cues[1].StartMs, sub.Cues[2].StartMs, sub.TotalMs));
+        Assert.Equal(SB.AudioAlignmentSource.TtsWordBoundary, sub.ApplyTo(em, binder, seq));
+        Assert.Equal((1_000, 3_250, 7_000), (seq.KeyframeAt(0).StartMs, seq.KeyframeAt(1).StartMs, seq.KeyframeAt(2).StartMs));
+
+        // ④ 구문 복원력 — 깨진 입력 전량 크래시 0 · 정상 큐 0
+        foreach (var junk in new[] { "", "﻿", "-->", "-->\n-->-->\n\n", "1\n00:00:01,000 -->\n텍스트\n", "99:99:99,999 --> 00:00:00,000\nx\n",
+                                     "00:00:02,000 --> 00:00:03,000\n\n", "WEBVTT\n\n00:00.000 --> 00:01.000\n<b></b>\n", new string('\n', 64), "\r\n\r\n2\r\n" })
+        {
+            Assert.Equal(0, sub.Parse(junk));
+            Assert.Equal(0, sub.EmitTo(em));
+        }
+        Assert.Equal(2, sub.Parse("00:00:05,000 --> 00:00:06,000\n앞\n\n00:00:01,000 --> 00:00:02,000\n역순\n\n00:00:07,000 --> 00:00:08,000\n뒤\n"));   // 역순 큐 건너뜀 → 이후 정상 복구
+        Assert.Equal(1, sub.Skipped);
+        Assert.Equal("앞\n뒤", sub.Script.ToString());
+
+        // ⑤ TTS 단어 경계 인메모리 직결 — CSV 없이 엔진 이벤트 → 바인더 → 샷 타임코드(v18.2.2 CSV 경로와 동일)
+        EmitScript(em);
+        Assert.Equal((12, 0), (em.Count, em.Rejected));
+        var tts = new SB.StoryboardAudioSourceStreamBinder();
+        var tseq = new SB.StoryboardKeyframeSequencer();
+        Assert.Equal(SB.AudioAlignmentSource.TtsWordBoundary, em.CommitAndResync(tts, tseq));
+        Assert.True(em.Utf8.StartsWith("50,700,안녕하세요.\n1100,1400,오늘은\n"u8));
+        Assert.Equal((50, 1_100, 3_700, 6_000, 6_900), (tseq.KeyframeAt(0).StartMs, tseq.KeyframeAt(1).StartMs, tseq.KeyframeAt(2).StartMs, tseq.KeyframeAt(3).StartMs, tseq.TotalMs));
+        var csv = new SB.StoryboardKeyframeSequencer();
+        var viaCsv = new SB.StoryboardAudioSourceStreamBinder();
+        viaCsv.BindWordBoundaries(em.Utf8);
+        viaCsv.Resync(csv, Script);
+        Assert.Equal(csv.Fingerprint, tseq.Fingerprint);   // 직결 = CSV 경로 동일 결과
+        Assert.False(em.Emit(new SB.SpeechWordBoundaryEvent(7_000, 6_900, 0, 5)));                  // 역전
+        Assert.False(em.Emit(new SB.SpeechWordBoundaryEvent(7_000, 7_100, Script.Length - 2, 5)));  // 대본 범위 밖
+        Assert.False(em.Emit(new SB.SpeechWordBoundaryEvent(10, 20, 0, 5)));                        // 시작 역순
+        Assert.False(em.Emit(new SB.SpeechWordBoundaryEvent(7_000, 7_100, 5, 1)));                  // 문장 부호만
+        Assert.Equal((12, 4), (em.Count, em.Rejected));
+
+        // 경계 미방출 엔진 — 실 오디오 VAD 발화 구간 분배 · 오디오 없음 = 실측 길이 분배
+        var wav = StoryboardAudioAlignmentReframeTests.Wav(StoryboardAudioAlignmentReframeTests.SynthPcm(16_000, 1, 6_000, new[] { (300, 2_000), (2_400, 5_000) }), 16_000, 1);
+        var real = new SB.StoryboardAudioSourceStreamBinder();
+        Assert.Equal(SB.AudioBindStatus.Bound, real.Bind(wav));
+        em.Begin(Script);
+        Assert.Equal(12, em.EmitFromAudio(real, 0));
+        Assert.Equal(300, em.Events[0].StartMs);
+        Assert.InRange(em.Events[11].EndMs, 4_000, 5_000);
+        var rseq = new SB.StoryboardKeyframeSequencer();
+        Assert.Equal(SB.AudioAlignmentSource.TtsWordBoundary, em.CommitAndResync(real, rseq));
+        Assert.True(real.HasAudio && real.Track.Pcm.Length > 0, "실 오디오 동반 유지");
+        Assert.Equal(300, rseq.KeyframeAt(0).StartMs);
+        em.Begin(Script);
+        Assert.Equal(12, em.EmitFromAudio(new SB.StoryboardAudioSourceStreamBinder(), 6_000));
+        Assert.Equal(0, em.Events[0].StartMs);
+        Assert.True(em.Events[11].EndMs <= 6_000);
+        em.Begin(Script);
+        Assert.Equal(0, em.EmitFromAudio(new SB.StoryboardAudioSourceStreamBinder(), 0));
+
+        // ⑥ 9:16 세이프존 — 안전영역 하단 = 숏츠 UI 경계 1536 · 클로즈업 2 줄 · 미디엄 3 줄 · 와이드 4 줄
+        Assert.Equal(1_536, SB.StoryboardVisualCanvasRenderer.ZoneBottom);
+        var line28 = new string('가', 14);   // 28 단위 = 1 줄
+        Assert.Equal(1, SB.StoryboardVisualCanvasRenderer.CaptionLines(line28, out var units));
+        Assert.Equal(28, units);
+        Assert.Equal(2, SB.StoryboardVisualCanvasRenderer.CaptionLines(line28 + "A", out _));
+        Assert.Equal(0, SB.StoryboardVisualCanvasRenderer.CaptionLines("   ", out _));
+        var two = line28 + line28;
+        var three = two + "가";
+        var close2 = SB.StoryboardVisualCanvasRenderer.Layout(SB.ShotAngle.CloseUp, two);
+        Assert.Equal((2, 2, 1_376), (close2.CaptionLines, close2.MaxLines, close2.CaptionTop));
+        Assert.False(close2.Overflow);   // 경계 정확히 일치 = 통과
+        Assert.True(SB.StoryboardVisualCanvasRenderer.Layout(SB.ShotAngle.CloseUp, three).Overflow);
+        Assert.False(SB.StoryboardVisualCanvasRenderer.Layout(SB.ShotAngle.Medium, three).Overflow);
+        Assert.True(SB.StoryboardVisualCanvasRenderer.Layout(SB.ShotAngle.Medium, three + line28).Overflow);
+        Assert.False(SB.StoryboardVisualCanvasRenderer.Layout(SB.ShotAngle.Wide, three + line28).Overflow);
+        Assert.True(SB.StoryboardVisualCanvasRenderer.Layout(SB.ShotAngle.Wide, two + two + "가").Overflow);
+        Assert.False(SB.StoryboardVisualCanvasRenderer.Layout(SB.ShotAngle.CloseUp, "").Overflow);
+        var wide = SB.StoryboardVisualCanvasRenderer.Layout(SB.ShotAngle.Wide, "짧은 자막");
+        Assert.True(wide.EyeLineY > close2.EyeLineY && wide.HeadRadius < close2.HeadRadius, "클로즈업 = 아이레벨 상향 · 인물 확대");
+        var svgBuf = new char[4096];
+        Assert.True(SB.StoryboardVisualCanvasRenderer.TryWriteSvg(close2, svgBuf, out var n1));
+        var okSvg = new string(svgBuf, 0, n1);
+        Assert.StartsWith("<svg", okSvg);
+        Assert.EndsWith("</svg>", okSvg);
+        Assert.Contains("#22c55e", okSvg);
+        Assert.DoesNotContain("#ef4444", okSvg);
+        Assert.Contains("M360 0V1920M720 0V1920M0 640H1080M0 1280H1080", okSvg);   // 3 분할
+        Assert.Contains("<path d='M0 " + close2.EyeLineY.ToString(System.Globalization.CultureInfo.InvariantCulture) + "H1080'", okSvg);   // 아이레벨
+        var bad = SB.StoryboardVisualCanvasRenderer.Layout(SB.ShotAngle.CloseUp, three);
+        Assert.Contains("#ef4444", new SB.StoryboardVisualCanvasRenderer().Svg(bad));
+        Assert.False(SB.StoryboardVisualCanvasRenderer.TryWriteSvg(close2, new char[64], out _));
+        Assert.Equal(32, WsCat.Workspaces.Length);   // 신규 모달 0 — 32 워크스페이스 유지
+
+        // ⑦ 무할당 — 자막 파싱 · 단어 경계 직결 · 재동기화 · 세이프존 판정/SVG 직렬화 0 B
+        sub.Parse(Srt); sub.ApplyTo(em, binder, seq);
+        EmitScript(em); em.CommitAndResync(tts, tseq);
+        var fp = tseq.Fingerprint;
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        var all = true;
+        for (var i = 0; i < 16; i++)
+        {
+            all &= sub.Parse(Srt) == 3 && sub.Parse(Vtt) == 3;
+            all &= sub.ApplyTo(em, binder, seq) == SB.AudioAlignmentSource.TtsWordBoundary;
+            EmitScript(em);
+            all &= em.CommitAndResync(tts, tseq) == SB.AudioAlignmentSource.TtsWordBoundary && tseq.Fingerprint == fp;
+            var lay = SB.StoryboardVisualCanvasRenderer.Layout(SB.ShotAngle.CloseUp, three);
+            all &= lay.Overflow && SB.StoryboardVisualCanvasRenderer.TryWriteSvg(lay, svgBuf, out _);
+        }
+        long hotAlloc = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.True(all);
+        Assert.Equal(0, hotAlloc);
+    }
+}
