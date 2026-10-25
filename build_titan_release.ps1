@@ -7,7 +7,7 @@
   1) dotnet publish -c Release -r win-x64 -p:PublishReadyToRun=true
   2) scripts\bundle_ffmpeg.ps1 — 정식 FFmpeg(PE32+ x64 · 버전 프로브 · 선택 해시 고정) 검증 후 동봉(OptionalFiles → 서명 대상 자동 포함)
   3) PromptFlowStudio.exe --pfi1-sign <dir> → AppIntegrityGuard.SignManifest 로 서명 후 내장 공개키로 재검증
-  4) -BuildInstaller: (-FetchWebView2 시 scripts\fetch_webview2.ps1 로 installer\redist\ 확보) ISCC 로 installer\promptflow_studio.iss 컴파일 → installer\Output\
+  4) -BuildInstaller: (-FetchWebView2 시 scripts\fetch_webview2.ps1 로 installer\redist\ 확보) ISCC 로 installer\promptflow_studio.iss 컴파일 → installer\Output\ → artifacts\release\installer\PromptFlowStudio-Setup-v<ver>.exe + release-checksums.sha256(-InstallerOutputDir 로 변경)
      -RequireWebView2Redist: redist 미동봉 시 ISCC 컴파일 거부(CI 정식 릴리스용)
   Authenticode(선택): -AuthenticodePfxPath(암호 환경변수 PROMPTFLOW_PFX_PASSWORD) 또는 -AuthenticodeThumbprint(EV/HSM) 지정 시
      scripts\sign_authenticode.ps1 로 PromptFlowStudio.exe(퍼블리시 직후) · setup.exe(ISCC 직후 · BOM 산출 전) 서명. -RequireAuthenticode 시 미제공 실패.
@@ -35,6 +35,7 @@ param(
     [string]$TimestampUrl = 'http://timestamp.digicert.com',
     [switch]$RequireAuthenticode,
     [switch]$BuildInstaller,
+    [string]$InstallerOutputDir,
     [switch]$FetchWebView2,
     [ValidateSet('Bootstrapper', 'Standalone')][string]$WebView2Mode = 'Bootstrapper',
     [switch]$RequireWebView2Redist,
@@ -138,8 +139,11 @@ if ($ffmpegBundled -and -not (Select-String -LiteralPath $manifest -Pattern ' ff
 # ── 4.5) v18.3.0 헤드리스 스모크(--smoke-test · 5초 가드) + 배포 번들 SHA-256 매니페스트(release-checksums.sha256 · 최종 바이트 기준) ──
 Write-Step '헤드리스 스모크(--smoke-test)'
 $smoke = Start-Process -FilePath $exe -ArgumentList @('--smoke-test') -WorkingDirectory $OutputDir -NoNewWindow -PassThru
+$null = $smoke.Handle   # PS 5.1: 핸들 미캐시 시 ExitCode 가 $null 로 반환됨
+$smokeSw = [System.Diagnostics.Stopwatch]::StartNew()
 if (-not $smoke.WaitForExit(5000)) { try { $smoke.Kill() } catch { }; Fail '스모크 타임아웃(5초) — UI 기동 또는 부트스트랩 교착' 35 }
 if ($smoke.ExitCode -ne 0) { Fail "스모크 실패(종료 코드 $($smoke.ExitCode)) — 자세한 내용: %LOCALAPPDATA%\PromptFlowStudio\logs\shell.log" 35 }
+Write-Step "스모크 통과($($smokeSw.ElapsedMilliseconds)ms)"
 Write-Step 'release-checksums.sha256 기록'
 $sum = Start-Process -FilePath $exe -ArgumentList @('--release-checksums', ('"' + $OutputDir + '"')) -WorkingDirectory $OutputDir -NoNewWindow -PassThru -Wait
 if ($sum.ExitCode -ne 0) { Fail "체크섬 매니페스트 기록 실패(종료 코드 $($sum.ExitCode))" 36 }
@@ -176,6 +180,20 @@ if ($BuildInstaller) {
     }
     [System.IO.File]::WriteAllText($setup + '.release.json', ($bom | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
     Write-Step "릴리스 BOM: $setup.release.json"
+
+    # v18.4.0 정식 배포 산출물 — artifacts\release\installer\PromptFlowStudio-Setup-v<ver>.exe(사후 복사 · installer\Output 원본은 CI/verify_release 용 유지)
+    # 설치 파일 해시는 번들 매니페스트(대상 집합 고정)가 아닌 배포 폴더의 release-checksums.sha256 에 sha256sum 형식으로 기록(동일 파일명 행 교체).
+    if (-not $InstallerOutputDir) { $InstallerOutputDir = Join-Path $root 'artifacts\release\installer' }
+    $null = New-Item -ItemType Directory -Force -Path $InstallerOutputDir
+    $releaseSetup = Join-Path $InstallerOutputDir "PromptFlowStudio-Setup-v$AppVersion.exe"
+    Copy-Item -LiteralPath $setup -Destination $releaseSetup -Force
+    $releaseName = [System.IO.Path]::GetFileName($releaseSetup)
+    $releaseHash = (Get-FileHash -LiteralPath $releaseSetup -Algorithm SHA256).Hash.ToLowerInvariant()
+    $sumPath = Join-Path $InstallerOutputDir 'release-checksums.sha256'
+    $sumLines = @(if (Test-Path -LiteralPath $sumPath) { Get-Content -LiteralPath $sumPath | Where-Object { $_ -and -not $_.EndsWith("  $releaseName") } })
+    $sumLines += "$releaseHash  $releaseName"
+    [System.IO.File]::WriteAllText($sumPath, (($sumLines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+    Write-Step "배포 인스톨러: $releaseSetup ($releaseHash)"
 }
 
 Write-Step "완료: $OutputDir"
