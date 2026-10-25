@@ -38706,3 +38706,144 @@ public sealed class SocialPublisherResumableUploadTests
         Assert.Equal(0, liveNoToken.Sessions);
     }
 }
+
+[Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
+public sealed class ViralGrowthStrategyPipelineTests
+{
+    [Fact]
+    public void ViralGrowthCommerce_StrategyPipeline_Check()
+    {
+        var feed = PromptFlowStudio.Services.Ui.RealtimeTrendRssAndAffiliateValidator.MockFeed;
+        var coupang = PromptFlowStudio.Services.ViralCommerce.AffiliateNetwork.CoupangPartners;
+        var notice = PromptFlowStudio.Services.ViralCommerce.CompliantShortlinkLegalNoticeInjector.CoupangNotice;
+        var url = PromptFlowStudio.Services.ViralCommerce.VideoContextAffiliateProductMatcherEngine.Urls[4];
+        const string hook = "이거 모르고 캠핑 가면 100% 후회합니다";
+
+        // ① RSS 무할당 파서 — CDATA · 천 단위 · prev 없는 토픽 상대 지수
+        var spikes = new PromptFlowStudio.Services.Ui.TrendSpike[PromptFlowStudio.Services.Ui.RealtimeTrendRssAndAffiliateValidator.MaxSpikes];
+        var n = PromptFlowStudio.Services.Ui.RealtimeTrendRssAndAffiliateValidator.Parse(feed, spikes);
+        Assert.Equal(4, n);
+        Assert.Equal("에어프라이어 레시피", spikes[0].Title(feed).ToString());
+        Assert.Equal((50_000, 20_000, 150), (spikes[0].Traffic, spikes[0].PrevTraffic, spikes[0].Acceleration));
+        Assert.Equal("무선 이어폰 할인", spikes[1].Title(feed).ToString());
+        Assert.Equal(10, spikes[3].Acceleration);
+        var top = PromptFlowStudio.Services.Ui.RealtimeTrendRssAndAffiliateValidator.TopIndex(spikes.AsSpan(0, n));
+        Assert.Equal("캠핑 의자", spikes[top].Title(feed).ToString());
+        Assert.Equal(300, spikes[top].Acceleration);
+        Assert.Equal(1_200_000, PromptFlowStudio.Services.Ui.RealtimeTrendRssAndAffiliateValidator.ParseTraffic("1.2M+"));
+        Assert.Equal(0, PromptFlowStudio.Services.Ui.RealtimeTrendRssAndAffiliateValidator.Parse("<rss><item><title></title></item>", spikes));
+
+        // ② 공정위 린터 — 원문 · 공백 변형 허용 · 변형/누락/묻힘 판정
+        var L = PromptFlowStudio.Services.Ui.AffiliateNoticeLint.Ok;
+        Assert.Equal(L, PromptFlowStudio.Services.Ui.RealtimeTrendRssAndAffiliateValidator.Lint("📢 [광고] " + notice, coupang));
+        Assert.Equal(L, PromptFlowStudio.Services.Ui.RealtimeTrendRssAndAffiliateValidator.Lint(notice.Replace(" 쿠팡 ", "  쿠팡\n"), coupang));
+        Assert.Equal(PromptFlowStudio.Services.Ui.AffiliateNoticeLint.Altered, PromptFlowStudio.Services.Ui.RealtimeTrendRssAndAffiliateValidator.Lint("쿠팡 파트너스 활동으로 수수료를 받을 수 있음", coupang));
+        Assert.Equal(PromptFlowStudio.Services.Ui.AffiliateNoticeLint.Missing, PromptFlowStudio.Services.Ui.RealtimeTrendRssAndAffiliateValidator.Lint("오늘의 캠핑 꿀팁 👇", coupang));
+        Assert.Equal(PromptFlowStudio.Services.Ui.AffiliateNoticeLint.Buried, PromptFlowStudio.Services.Ui.RealtimeTrendRssAndAffiliateValidator.Lint(new string('가', 200) + notice, coupang));
+        Assert.Equal(PromptFlowStudio.Services.Ui.AffiliateNoticeLint.Missing, PromptFlowStudio.Services.Ui.RealtimeTrendRssAndAffiliateValidator.Lint(notice, PromptFlowStudio.Services.ViralCommerce.AffiliateNetwork.AmazonAssociates));
+
+        // ③ 4 단계 전략 체인(스파이 → 트렌드 → 커머스 → 댓글) — 상류 미완성 시 하류 거부
+        var ctx = new PromptFlowStudio.Services.Ui.ViralGrowthStrategyPipelineContext();
+        Assert.False(ctx.InjectTrend(feed));
+        Assert.True(ctx.ApplyOutlier(hook, 30, 15_000));
+        Assert.Equal(1, ctx.StageCount);
+        Assert.False(ctx.BuildAffiliate(url, "growth_shorts", coupang));
+        Assert.False(ctx.IsComplete);
+        Assert.True(ctx.RunChain(hook, 30, 15_000, feed, url, "growth_shorts", coupang));
+        Assert.True(ctx.IsComplete);
+        Assert.Equal(4, ctx.StageCount);
+        Assert.Equal(2_000, ctx.Hook.CutsPerSecMilli);
+        Assert.Contains(PromptFlowStudio.Services.CompetitorSpy.ViralHookAudiovisualReverseEngineer.PatternNames[(int)ctx.Hook.Hook], ctx.HookGuide.ToString());
+        Assert.Contains("초당 2.0컷", ctx.HookGuide.ToString());
+        Assert.Contains(hook, ctx.Script.ToString());
+        Assert.Contains("요즘 화제인 캠핑 의자", ctx.Script.ToString());
+        Assert.Equal("캠핑 의자", ctx.TrendKeyword.ToString());
+        Assert.Equal("#Shorts #릴스 #캠핑의자", ctx.Hashtags.ToString());
+        Assert.StartsWith("pfs.link/", ctx.ShortLink.ToString());
+        Assert.Equal(17, ctx.ShortLink.Length);
+        Assert.Equal(PromptFlowStudio.Services.Ui.AffiliateNoticeLint.Ok, ctx.Affiliate.Lint);
+        var pinned = ctx.PinnedComment.ToString();
+        Assert.StartsWith("📢 [광고] " + notice, pinned);
+        Assert.Contains("캠핑 의자, 어떻게 생각하세요?", pinned);
+        Assert.EndsWith("https://" + ctx.ShortLink.ToString(), pinned);
+        Assert.Equal(60_000, ctx.Pinned.PinDelayMs);
+        Assert.Equal(PromptFlowStudio.Services.Ui.AffiliateNoticeLint.Ok, ctx.Pinned.Lint);
+        var shortId = ctx.ShortLink[PromptFlowStudio.Services.ViralCommerce.CompliantShortlinkLegalNoticeInjector.Domain.Length..];
+        Assert.True(PromptFlowStudio.Services.ViralCommerce.CompliantShortlinkLegalNoticeInjector.DecodeShortId(shortId) >= 0);
+        var scriptText = ctx.Script.ToString();
+        Assert.True(ctx.InjectTrend(feed));
+        Assert.Equal(scriptText, ctx.Script.ToString());   // 재주입 = 같은 문장 덮어쓰기(누적 0)
+        Assert.False(ctx.IsComplete);                         // 트렌드 재실행 → 하류 커머스 · 댓글 낡음
+        Assert.True(ctx.RunChain(hook, 30, 15_000, feed, url, "growth_shorts", coupang));
+
+        // ④ 무할당 계약 — 체인 갱신 루프 · RSS 파싱 · 린트 0 B
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        var all = true;
+        for (var i = 0; i < 64; i++)
+        {
+            all &= ctx.RunChain(hook, 30, 15_000, feed, url, "growth_shorts", coupang);
+            all &= PromptFlowStudio.Services.Ui.RealtimeTrendRssAndAffiliateValidator.Parse(feed, spikes) == 4;
+            all &= PromptFlowStudio.Services.Ui.RealtimeTrendRssAndAffiliateValidator.Lint(ctx.PinnedComment, coupang) == L;
+        }
+        long chainAlloc = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.True(all);
+        Assert.Equal(0, chainAlloc);
+
+        // ⑤ 숏폼 팩토리 핸드오프 — 0-카피 슬라이스 · 지문 일치 · 0 B Push/Consume
+        var bridge = new PromptFlowStudio.Services.Ui.GrowthToShortsFactoryBridge();
+        var hits = 0;
+        bridge.OnHandoff += () => { if (hits++ == 0) throw new InvalidOperationException("구독자 예외 격리"); };
+        var shortsTabs = WsCat.Workspaces[WsCat.IndexOfModal(WsCat.ShortsModalKey)].Tabs;
+        Assert.InRange(PromptFlowStudio.Services.Ui.GrowthToShortsFactoryBridge.FactoryScriptTab, 0, shortsTabs.Length - 1);
+        Assert.True(bridge.Push(ctx));
+        Assert.True(bridge.Hydrate());
+        Assert.False(bridge.Hydrate());
+        before = GC.GetAllocatedBytesForCurrentThread();
+        var pushed = bridge.Push(ctx);
+        var consumed = bridge.TryConsume(out var plan);
+        long handoffAlloc = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.True(pushed && consumed);
+        Assert.Equal(0, handoffAlloc);
+        Assert.Equal(2, hits);
+        Assert.Equal(2, plan.Sequence);
+        Assert.True(plan.IsLive);
+        Assert.True(plan.Script.Span == ctx.Script, "대본 = 전략 컨텍스트 버퍼 슬라이스");
+        Assert.True(plan.Hashtags.Span == ctx.Hashtags, "해시태그 = 버퍼 슬라이스");
+        Assert.True(plan.HookGuide.Span == ctx.HookGuide, "훅 가이드 = 버퍼 슬라이스");
+        Assert.Equal(ctx.Fingerprint, plan.Fingerprint);
+        Assert.Equal(plan.Fingerprint, plan.ComputeFingerprint());
+        Assert.Equal(ctx.Hook.Hook, plan.Hook);
+
+        // 팩토리 ① 대본 입력창 · 줌 펀치 바인딩 — 절삭 대본 = 기획안 대본
+        var ws = new PromptFlowStudio.Services.Ui.ShortsFactoryWorkspaceContext();
+        var p = new PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext();
+        Assert.True(p.Hydrate(ws));
+        var rehearsal = p.BuildSlicedScript();
+        Assert.True(p.SetPlanScript(plan.Script.ToString()));
+        Assert.False(p.SetPlanScript(plan.Script.ToString()));
+        Assert.True(p.Hydrate(ws));
+        Assert.True(p.HasPlanScript);
+        Assert.Equal(scriptText, p.BuildSlicedScript());
+        ws.SetZoomPunches(plan.ZoomPunchesFor(ws.DurationMs));
+        Assert.Equal(PromptFlowStudio.Services.Ui.ShortsFactoryWorkspaceContext.MaxZoomPunches, ws.ZoomPunchCount);
+        Assert.Equal(4, plan.ZoomPunchesFor(4_000));       // 2.0 cut/s × 4 s = 8 컷 → 펀치 4
+        ws.SetClip(0, 3_000);                                // 3 s = 7 단어 슬롯 → 기획안 앞 7 단어
+        Assert.True(p.Hydrate(ws));
+        Assert.StartsWith(p.BuildSlicedScript(), scriptText);
+        Assert.True(p.SetPlanScript(null));
+        Assert.True(p.Hydrate(ws));
+        Assert.False(p.HasPlanScript);
+        Assert.NotEqual(scriptText, p.BuildSlicedScript());
+        Assert.False(string.IsNullOrEmpty(rehearsal));
+
+        // 낡은 기획안 차단 — 체인 재실행 후 대기분은 소비 거부 · 미완성 컨텍스트 Push 거부
+        Assert.True(bridge.Push(ctx));
+        Assert.True(ctx.ApplyOutlier("왜 아무도 이걸 안 알려줬을까?", 0, 0));
+        Assert.False(bridge.TryConsume(out _));
+        Assert.False(plan.IsLive);
+        Assert.False(bridge.Push(ctx));
+        Assert.Equal(2, bridge.Rejected);
+        Assert.Equal(2, bridge.Consumed);
+        Assert.Equal(2, bridge.Current.Sequence);
+    }
+}

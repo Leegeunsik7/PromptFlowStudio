@@ -513,7 +513,7 @@
         }
         @if (_viralGrowthCommerceWorkspace)
         {
-            <ViralGrowthCommerceWorkspaceModal OnClose="() => _viralGrowthCommerceWorkspace = false" InitialTab="_wsRoute.Tab" InitialMember="_wsRoute.Member" RouteStamp="_wsStamp" OnRouteChanged="r => _wsRoute = r" />
+            <ViralGrowthCommerceWorkspaceModal OnClose="() => _viralGrowthCommerceWorkspace = false" OnHandoffToFactory="OpenShortsFromGrowth" InitialTab="_wsRoute.Tab" InitialMember="_wsRoute.Member" RouteStamp="_wsStamp" OnRouteChanged="r => _wsRoute = r" />
         }
         @if (TryDockRoute(out var dockRoute))
         {
@@ -1159,6 +1159,9 @@
 
     /// <summary>v18.0.4 숏폼 팩토리 🚀 전송 — 소셜 퍼블리셔 ② 다채널 변형 배포 탭으로 진입(인계 페이로드는 퍼블리셔 모달이 브리지에서 수화).</summary>
     private void OpenPublisherFromShorts() => OpenRoute(new WorkspaceSubTabRoute(StudioWorkspaceCatalog.IndexOfModal(StudioWorkspaceCatalog.PublisherModalKey), PromptFlowStudio.Services.Ui.ShortsToPublisherHandoffBridge.PublisherDeployTab, 0));
+
+    /// <summary>v18.0.6 그로스 룸 🎬 기획안 전송 — 그로스 모달을 닫고 숏폼 팩토리 ① 대본 입력 탭으로 진입(기획안은 팩토리 모달이 브리지에서 수화).</summary>
+    private void OpenShortsFromGrowth() => OpenRoute(new WorkspaceSubTabRoute(StudioWorkspaceCatalog.IndexOfModal(StudioWorkspaceCatalog.ShortsModalKey), PromptFlowStudio.Services.Ui.GrowthToShortsFactoryBridge.FactoryScriptTab, 0));
 
     private void CloseWorkspaceModals(string? keep)
     {

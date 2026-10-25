@@ -1,8 +1,12 @@
 @using PromptFlowStudio.Services.Ui
+@inject GrowthToShortsFactoryBridge GrowthPlan
+@inject PromptFlowStudio.Services.CompetitorSpy.CompetitorViralSpyStudioRunner Spy
 
 @* [PromptFlow Studio v18.0.0] 📈 바이럴 그로스 룸 — v17.95 골든아워 댓글 · v17.96 트렌드재킹 · v17.97 제휴 커머스 · v17.99 경쟁 채널 스파이를
    단일 전략 룸 탭의 엔진 칩 4 개로 결합. 엔진 모달 · 백엔드 러너는 그대로 주입한다. *@
-<div class="sw-docked" style="--sw-dock-h: 104px">
+@* [v18.0.6] ⚡ 바이럴 전략 체인 — ViralGrowthStrategyPipelineContext 가 스파이 훅 DNA → RSS 급상승 트렌드 → 제휴 숏링크·공정위 고지 → 1 분 고정 댓글을 단일 패스로 합성 ·
+   🎬 GrowthToShortsFactoryBridge 로 대본 · 훅 가이드 · 해시태그를 0-카피 인계 → 숏폼 팩토리 ① 대본 입력창 즉시 바인딩. *@
+<div class="sw-docked" style="--sw-dock-h: 132px">
     <StudioWorkspaceDock Workspace="_ws" Tab="_tab" Member="_member" OnRoute="Go" OnClose="Close">
         <div class="swd-row vgw-flow">
             @for (var i = 0; i < Members.Length; i++)
@@ -12,6 +16,30 @@
                 {
                     <span class="vgw-arw">→</span>
                 }
+            }
+        </div>
+        <div class="swd-row vgw-chain">
+            <button type="button" class="vgw-1c" title="스파이 훅 DNA → 실시간 트렌드 → 제휴 숏링크·공정위 고지 → 1분 고정 댓글을 한 번에 합성합니다" @onclick="RunChain">⚡ 바이럴 전략 체인 원클릭 완성</button>
+            @for (var i = 0; i < 4; i++)
+            {
+                <span class='vgw-st @(i < Strategy.StageCount ? "ok" : null)'>@(i < Strategy.StageCount ? "✔" : "•") @(ViralGrowthStrategyPipelineContext.StageName(i))</span>
+            }
+            @if (Strategy.StageCount > 0)
+            {
+                <span class="vgw-chip" title="@(Strategy.Script.ToString())">@(Strategy.HookGuide.ToString())</span>
+            }
+            @if (Strategy.Trend.Revision > 0)
+            {
+                <span class="vgw-chip" title="RSS 가속도 지수 · 트래픽">📡 @(Strategy.TrendKeyword.ToString()) +@(Strategy.Trend.Acceleration)% · @(Strategy.Hashtags.ToString())</span>
+            }
+            @if (Strategy.Pinned.Revision > 0)
+            {
+                <span class='vgw-chip @(Strategy.Pinned.Lint == AffiliateNoticeLint.Ok ? "ok" : "bad")' title="@(Strategy.PinnedComment.ToString())">🔗 @(Strategy.ShortLink.ToString()) · @(RealtimeTrendRssAndAffiliateValidator.LintText(Strategy.Pinned.Lint))</span>
+            }
+            <button type="button" class="vgw-ho" disabled="@(!Strategy.IsComplete)" title="@(Strategy.IsComplete ? "대본 · 훅 가이드 · 해시태그를 숏폼 팩토리 ① 대본 입력창으로 넘깁니다" : "전략 체인을 먼저 완성하세요")" @onclick="SendToFactory">🎬 숏폼 팩토리로 기획안 전송</button>
+            @if (_chainError is { } err)
+            {
+                <span class="vgw-chip bad" role="alert">⚠ @(err)</span>
             }
         </div>
     </StudioWorkspaceDock>
@@ -37,6 +65,15 @@
     .vgw-flow { font-size: 10.5px; color: #94a3b8; white-space: nowrap; overflow: hidden; }
     .vgw-step.cur { color: #e0f2fe; font-weight: 700; }
     .vgw-arw { color: #475569; }
+    .vgw-chain { flex-wrap: wrap; row-gap: 4px; font-size: 10.5px; }
+    .vgw-1c { background: linear-gradient(90deg, #b45309, #db2777); color: #fff; border: 1px solid #f9a8d4; border-radius: 6px; padding: 3px 10px; font-size: 11px; font-weight: 800; cursor: pointer; white-space: nowrap; }
+    .vgw-ho { background: linear-gradient(90deg, #0369a1, #7c3aed); color: #fff; border: 1px solid #a78bfa; border-radius: 6px; padding: 3px 10px; font-size: 11px; font-weight: 800; cursor: pointer; white-space: nowrap; }
+    .vgw-ho:disabled { opacity: .45; cursor: not-allowed; }
+    .vgw-st { color: #64748b; white-space: nowrap; }
+    .vgw-st.ok { color: #86efac; }
+    .vgw-chip { background: #0f172a; border: 1px solid #334155; border-radius: 999px; padding: 1px 8px; color: #cbd5e1; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .vgw-chip.ok { color: #86efac; border-color: #166534; }
+    .vgw-chip.bad { color: #fca5a5; border-color: #7f1d1d; }
 </style>
 
 @code {
@@ -46,6 +83,15 @@
     [Parameter] public int RouteStamp { get; set; }
     /// <summary>탭 · 엔진 전환 통지(레이아웃 도움말 서랍이 현재 엔진을 가리키도록).</summary>
     [Parameter] public EventCallback<WorkspaceSubTabRoute> OnRouteChanged { get; set; }
+    /// <summary>[v18.0.6] 기획안 브리지 적재 직후 — 레이아웃이 그로스 모달을 닫고 숏폼 팩토리 ① 탭을 연다.</summary>
+    [Parameter] public EventCallback OnHandoffToFactory { get; set; }
+
+    /// <summary>4 엔진 탭 관통 전략 컨텍스트 — 모달 수명 동안 1 개(탭 전환 시 유지).</summary>
+    public ViralGrowthStrategyPipelineContext Strategy { get; } = new();
+    private string? _chainError;
+    /// <summary>스파이 탭에서 아웃라이어를 고르지 않았을 때의 기본 경쟁 훅 · 제휴 상품(원터치 캠핑 텐트 · 쿠팡).</summary>
+    private const string FallbackHook = "이거 모르고 캠핑 가면 100% 후회합니다";
+    private const int FallbackProduct = 4;
 
     private readonly int _ws = StudioWorkspaceCatalog.IndexOfModal(StudioWorkspaceCatalog.ViralGrowthModalKey);
     private int _tab, _member, _stamp = -1;
@@ -71,6 +117,30 @@
         var tabs = StudioWorkspaceCatalog.Workspaces[_ws].Tabs;
         _tab = (uint)tab < (uint)tabs.Length ? tab : 0;
         _member = (uint)member < (uint)tabs[_tab].Members.Length ? member : 0;
+    }
+
+    /// <summary>⚡ 전략 체인 — 스파이 선택 훅 · 역공학 컷 수(없으면 기본) → 오프라인 RSS 피드 → 제휴 숏링크 → 고정 댓글.</summary>
+    private void RunChain()
+    {
+        var hook = Spy.SelectedHook ?? FallbackHook;
+        ref readonly var bp = ref Spy.Decompiler.Blueprint;
+        var hasBp = Spy.Decompiler.Decompiles > 0;
+        var ok = Strategy.RunChain(hook, hasBp ? bp.CutCount : 0, hasBp ? (int)(bp.DurationSec * 1000) : 0, RealtimeTrendRssAndAffiliateValidator.MockFeed,
+                                   PromptFlowStudio.Services.ViralCommerce.VideoContextAffiliateProductMatcherEngine.Urls[FallbackProduct], "growth_shorts",
+                                   PromptFlowStudio.Services.ViralCommerce.AffiliateNetwork.CoupangPartners);
+        _chainError = ok ? null : "전략 체인 실패 — " + RealtimeTrendRssAndAffiliateValidator.LintText(Strategy.Pinned.Lint);
+    }
+
+    /// <summary>🎬 완성 기획안 → 브리지(0-카피) → 숏폼 팩토리 오픈. 미완성 체인은 거부.</summary>
+    private Task SendToFactory()
+    {
+        if (!GrowthPlan.Push(Strategy))
+        {
+            _chainError = "전송 실패 — 전략 체인을 다시 완성하세요";
+            return Task.CompletedTask;
+        }
+        _chainError = null;
+        return OnHandoffToFactory.InvokeAsync();
     }
 
     private Task Close() => OnClose.InvokeAsync();

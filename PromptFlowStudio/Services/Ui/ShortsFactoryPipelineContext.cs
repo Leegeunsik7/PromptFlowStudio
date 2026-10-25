@@ -90,6 +90,7 @@ public sealed class ShortsFactoryPipelineContext
     private readonly StringBuilder _sb = new(512);
     private int _sourceRev = -1, _scriptRev = -1;
     private string _script = string.Empty;
+    private string[] _planWords = Array.Empty<string>();
 
     /// <summary>하이드레이션 완료 통지 — 하위 엔진 모달이 구독(호출 무할당 · 예외 격리).</summary>
     public event Action<ShortsFactoryPipelineContext>? Hydrated;
@@ -181,16 +182,34 @@ public sealed class ShortsFactoryPipelineContext
         return m.ThumbnailPeakMs >= inMs && m.ThumbnailPeakMs < outMs;
     }
 
-    /// <summary>② 절삭 구간 대본(비핫패스 · Revision 캐시) — 키네틱 자막 러너 SetScript 입력.</summary>
+    /// <summary>[v18.0.6] 그로스 룸 기획안 · 사용자 입력 대본(null/공백 = 리허설 어휘) — UI 1 회 분해 · 다음 Hydrate 에서 재관통.</summary>
+    public string PlanScript { get; private set; } = string.Empty;
+    public bool HasPlanScript => _planWords.Length > 0;
+
+    public bool SetPlanScript(string? script)
+    {
+        var s = script?.Trim() ?? string.Empty;
+        if (s == PlanScript) return false;
+        PlanScript = s;
+        _planWords = s.Length == 0 ? Array.Empty<string>() : s.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        _sourceRev = -1;
+        _scriptRev = -1;
+        return true;
+    }
+
+    /// <summary>② 절삭 구간 대본(비핫패스 · Revision 캐시) — 키네틱 자막 러너 SetScript 입력. 기획안 대본이 있으면 구간 단어 슬롯을 앞에서부터 채운다.</summary>
     public string BuildSlicedScript()
     {
         if (_scriptRev == _m.Revision) return _script;
         _sb.Clear();
         var end = _m.Caption.WordStart + _m.Caption.WordCount;
+        var plan = _planWords;
         for (var i = _m.Caption.WordStart; i < end; i++)
         {
+            var k = i - _m.Caption.WordStart;
+            if (plan.Length > 0 && k >= plan.Length) break;
             if (_sb.Length > 0) _sb.Append(' ');
-            _sb.Append(Word(i));
+            _sb.Append(plan.Length > 0 ? plan[k] : Word(i));
         }
         _script = _sb.ToString();
         _scriptRev = _m.Revision;

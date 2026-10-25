@@ -3,6 +3,7 @@
 @implements IDisposable
 @inject ShortsFactoryOneClickRenderOrchestrator OneClick
 @inject ShortsToPublisherHandoffBridge Handoff
+@inject GrowthToShortsFactoryBridge GrowthPlan
 
 @* [PromptFlow Studio v18.0.0] 🏭 원스톱 숏폼 AI 팩토리 — v17.77 세이프존 훅 · v17.78 키네틱 자막 · v17.82 다국어 더빙 · v17.84 킬러클립 · v17.85 예측/익스포터 ·
    v17.91 저작권 · v17.98 리텐션 리먹서를 4 단계 탭으로 통합. 각 엔진 모달은 그대로 하위 탭에 주입하고, 탭 간 값은 ShortsFactoryWorkspaceContext 1 개로 공유한다. *@
@@ -10,6 +11,7 @@
 @* [v18.0.2] ⚡ 원클릭 숏폼 렌더 — ShortsFactoryOneClickRenderOrchestrator 가 ①~④ 를 실 소스 슬라이스로 단일 비동기 패스 실행 · 통합 진행률 · 완료 시 ④ 탭 포커스. *@
 @* [v18.0.3] ① 📁 로컬 비디오 열기 — MP4 실 NALU/AAC 를 소스 링에 주입(120 s 리허설 자동 비활성) · 파일 배지(이름 · 해상도 · 길이) · 절삭 슬라이더 = 파일 길이. *@
 @* [v18.0.4] 🚀 소셜 퍼블리셔로 전송 — ④ fMP4 · 썸네일 PNG 를 ShortsToPublisherHandoffBridge 로 0-카피 인계 → 퍼블리셔 ② 다채널 배포 탭 즉시 오픈. *@
+@* [v18.0.6] 📝 대본 입력창(①·②) — 그로스 룸 🎬 기획안(대본 · 훅 가이드 · 해시태그)을 GrowthToShortsFactoryBridge 에서 수화 → Pipeline 대본 · 줌 펀치 · 퍼블리셔 해시태그로 관통. *@
 <div class="sw-docked" style="--sw-dock-h: @(ShowProgress ? "150px" : "128px")" tabindex="-1" @onkeydown="OnStageKey">
     <StudioWorkspaceDock Workspace="_ws" Tab="_tab" Member="_member" OnRoute="Go" OnClose="Close">
         <div class="swd-row sfw-ctx">
@@ -19,6 +21,14 @@
                 <span class='sfw-pill @(Ctx.IsCommitted(s) ? "ok" : null) @(s == _tab ? "cur" : null)'>@(Ctx.IsCommitted(s) ? "✔" : "•") @(StageSummary(s))</span>
             }
             <span class="sfw-sep"></span>
+            @if (_tab <= 1)
+            {
+                <input class="sfw-script" value="@(Pipeline.PlanScript)" placeholder="📝 대본 입력(비우면 리허설 대본 · 그로스 룸 기획안 자동 바인딩)" aria-label="숏폼 대본" title="@(Pipeline.PlanScript)" @onchange="OnScriptEdited" />
+                @if (_planGuide is { } guide)
+                {
+                    <span class="sfw-hy plan" title="그로스 룸 기획안 훅 가이드 · 해시태그">🎯 @(guide) · @(_planTags)</span>
+                }
+            }
             @switch (_tab)
             {
                 case 0:
@@ -155,6 +165,9 @@
     .sfw-hy.bad { color: #fca5a5; }
     .sfw-ho { background: linear-gradient(90deg, #0369a1, #7c3aed); color: #fff; border: 1px solid #a78bfa; border-radius: 6px; padding: 4px 11px; font-size: 11px; font-weight: 800; cursor: pointer; white-space: nowrap; }
     .sfw-ho:disabled { opacity: .45; cursor: progress; }
+    .sfw-script { width: 260px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; padding: 3px 8px; font-size: 11px; }
+    .sfw-script:focus { border-color: #38bdf8; outline: none; }
+    .sfw-hy.plan { color: #fcd34d; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 
 @code {
@@ -177,7 +190,7 @@
     private int _tab, _member, _stamp = -1, _renderedRev = -1;
     private CancellationTokenSource? _renderCts;
     private bool _disposed, _importing;
-    private string? _importError, _handoffError;
+    private string? _importError, _handoffError, _planGuide, _planTags;
     /// <summary>로컬 비디오 상한(세그먼트 스트림 · 300 MB) — 링 창(120 s) 밖 샘플은 주입하지 않는다.</summary>
     private const long MaxImportBytes = 300L * 1024 * 1024;
 
@@ -188,7 +201,34 @@
     /// <summary>원클릭 렌더 결과가 현재 컨텍스트 값과 같은지(값이 바뀌면 낡은 결과 표시 중단).</summary>
     private bool Rendered => _renderedRev == Ctx.Revision && OneClick.LastExport.Status == PromptFlowStudio.Services.ViralExport.ExportStatus.Ready;
 
-    protected override void OnInitialized() => OneClick.OnChange += OnRenderChanged;
+    protected override void OnInitialized()
+    {
+        OneClick.OnChange += OnRenderChanged;
+        GrowthPlan.OnHandoff += OnGrowthPlan;
+        HydrateGrowthPlan();
+    }
+
+    private void OnGrowthPlan() => _ = InvokeAsync(() => { HydrateGrowthPlan(); StateHasChanged(); });
+
+    /// <summary>[v18.0.6] 그로스 룸 기획안 수화 — 대본(공유 버퍼 → 입력창 문자열 1 회) · 권장 컷 빈도 → 줌 펀치 · 해시태그 → 퍼블리셔 인계.</summary>
+    private void HydrateGrowthPlan()
+    {
+        if (!GrowthPlan.TryConsume(out var plan)) return;
+        Pipeline.SetPlanScript(plan.Script.ToString());
+        _planGuide = plan.HookGuide.ToString();
+        _planTags = plan.Hashtags.ToString();
+        Ctx.SetZoomPunches(plan.ZoomPunchesFor(Ctx.DurationMs));
+        _renderedRev = -1;
+        Pipeline.Hydrate(Ctx);
+    }
+
+    /// <summary>📝 대본 직접 편집 — 이전 렌더 결과 무효화(다음 렌더 · 자막 엔진이 새 대본 사용).</summary>
+    private void OnScriptEdited(ChangeEventArgs e)
+    {
+        if (!Pipeline.SetPlanScript(Convert.ToString(e.Value, CultureInfo.InvariantCulture))) return;
+        _renderedRev = -1;
+        Pipeline.Hydrate(Ctx);
+    }
 
     private void OnRenderChanged() => _ = InvokeAsync(StateHasChanged);
 
@@ -241,7 +281,8 @@
         if (!Rendered || OneClick.Busy) return Task.CompletedTask;
         var script = Pipeline.BuildSlicedScript();
         var r = ShortsRenderResult.Capture(OneClick, Ctx);
-        if (!Handoff.Push(r, ShortsToPublisherHandoffBridge.ComposeTitle(script, OneClick.SourceName), ShortsToPublisherHandoffBridge.ComposeHashtags(script, Ctx.DubLanguageMask)))
+        var tags = _planTags is { Length: > 0 } planTags ? planTags : ShortsToPublisherHandoffBridge.ComposeHashtags(script, Ctx.DubLanguageMask);
+        if (!Handoff.Push(r, ShortsToPublisherHandoffBridge.ComposeTitle(script, OneClick.SourceName), tags))
         {
             _handoffError = "전송 실패 — 렌더 결과가 바뀌었습니다. 다시 렌더하세요";
             return Task.CompletedTask;
@@ -254,6 +295,7 @@
     {
         _disposed = true;
         OneClick.OnChange -= OnRenderChanged;
+        GrowthPlan.OnHandoff -= OnGrowthPlan;
         _renderCts?.Cancel();
         _renderCts?.Dispose();
     }
