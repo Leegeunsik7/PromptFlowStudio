@@ -39047,3 +39047,262 @@ public sealed class ClosedLoopAutonomousMediaPipelineTests
         Assert.Equal(0, growthBridge.Rejected + pubBridge.Rejected);
     }
 }
+
+[Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) · 메모리 누수 측정 · 실 디스크 I/O → 비병렬
+public sealed class RealDiskExportBinaryIntegrityTests
+{
+    [Fact]
+    public async Task RealDiskExport_And_BinaryIntegrity_Check()
+    {
+        var mp4 = ShortsFactoryRealFileImportTests.BuildMp4(out _, out _);
+        var ws = new PromptFlowStudio.Services.Ui.ShortsFactoryWorkspaceContext();
+        var p = new PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext();
+        var o = new PromptFlowStudio.Services.Ui.ShortsFactoryOneClickRenderOrchestrator();
+        using (var file = new MemoryStream(mp4, false))
+            Assert.Equal(PromptFlowStudio.Services.Ui.LocalVideoImportStatus.Injected, o.ImportLocalVideo(file, "clip.mp4"));
+        ws.SetClip(5_000, 20_000);
+        Assert.True(p.Hydrate(ws));
+        Assert.True(await o.RenderAsync(p), o.LastError);
+        Assert.False(o.RehearsalSource);
+        Assert.True(PromptFlowStudio.Services.ViralExport.FastShortsMuxingHardwareExporterEngine.TryInspect(o.Output.Span, out var mem) && mem.Valid);
+
+        // ① 실 디스크 기록 → 스트림 재판독 — ftyp · moov/moof/mdat 연속 오프셋 · Σ박스 = 파일 크기 · PNG 매직/CRC/IEND · 왕복 바이트 일치
+        string dir, video, thumb;
+        await using (var d = new PromptFlowStudio.Services.Ui.DiskMediaExportVerificationUtility())
+        {
+            dir = d.Directory; video = d.VideoPath; thumb = d.ThumbnailPath;
+            Assert.StartsWith(Path.GetTempPath(), dir);
+            Assert.Equal(PromptFlowStudio.Services.Ui.DiskExportStatus.Verified, await d.ExportAndVerifyAsync(o));
+            Assert.True(File.Exists(video) && File.Exists(thumb));
+            Assert.Equal(o.Output.Length, new FileInfo(video).Length);
+            Assert.Equal(o.ThumbnailPng.Length, new FileInfo(thumb).Length);
+            Assert.Equal(2, d.FilesWritten);
+            Assert.Equal(o.Output.Length + o.ThumbnailPng.Length, d.BytesWritten);
+
+            var m = d.Mp4;
+            Assert.True(m.Valid && m.FtypFirst && m.Contiguous && m.MoovBeforeMoof);
+            Assert.Equal(m.FileBytes, m.BoxBytes);
+            Assert.Equal(mem.TopBoxes, m.TopBoxes);
+            Assert.Equal(mem.MajorBrand, m.MajorBrand);
+            Assert.True(m.MoovOffset > 0 && m.FirstMoofOffset > m.MoovOffset && m.FirstMdatOffset > m.FirstMoofOffset);
+            Assert.Equal(m.Moof, m.MoofMdatPairs);
+            var head = new byte[8];
+            using (var fs = File.OpenRead(video)) fs.ReadExactly(head);
+            Assert.True(head.AsSpan(4, 4).SequenceEqual("ftyp"u8), "첫 8 B ISO-BMFF ftyp");
+
+            var g = d.Png;
+            Assert.True(g.Valid && g.Signature && g.IhdrFirst && g.CrcOk && g.IendLast);
+            Assert.Equal((1080, 1920), (g.Width, g.Height));   // 9:16 썸네일
+            Assert.True(PromptFlowStudio.Services.Ui.RealKeyframeThumbnailRasterizer.ValidatePng(File.ReadAllBytes(thumb), out var tw, out var th) && tw == 1080 && th == 1920);
+
+            // ② 손상 판정 — ftyp 훼손 · moof 크기 절삭 · PNG IEND 절단 · CRC 1 비트 · 빈 출력
+            var badMp4 = o.Output.ToArray(); badMp4[4] = (byte)'x';
+            Assert.Equal(PromptFlowStudio.Services.Ui.DiskExportStatus.Mp4Invalid, await d.ExportAndVerifyAsync(badMp4, o.ThumbnailPng));
+            Assert.False(d.Mp4.FtypFirst);
+            var cut = o.Output[..^7].ToArray();
+            Assert.Equal(PromptFlowStudio.Services.Ui.DiskExportStatus.Mp4Invalid, await d.ExportAndVerifyAsync(cut, o.ThumbnailPng));
+            Assert.False(d.Mp4.Contiguous);
+            Assert.Equal(PromptFlowStudio.Services.Ui.DiskExportStatus.PngInvalid, await d.ExportAndVerifyAsync(o.Output, o.ThumbnailPng[..^12]));
+            Assert.False(d.Png.IendLast);
+            var flip = o.ThumbnailPng.ToArray(); flip[40] ^= 1;
+            Assert.Equal(PromptFlowStudio.Services.Ui.DiskExportStatus.PngInvalid, await d.ExportAndVerifyAsync(o.Output, flip));
+            Assert.False(d.Png.CrcOk);
+            Assert.Equal(PromptFlowStudio.Services.Ui.DiskExportStatus.NoOutput, await d.ExportAndVerifyAsync(default, o.ThumbnailPng));
+            using (var cts = new CancellationTokenSource())
+            {
+                cts.Cancel();
+                Assert.Equal(PromptFlowStudio.Services.Ui.DiskExportStatus.Cancelled, await d.ExportAndVerifyAsync(o, cts.Token));
+            }
+            Assert.Equal(PromptFlowStudio.Services.Ui.DiskExportStatus.Verified, await d.ExportAndVerifyAsync(o));
+            Assert.Equal(2, d.FilesWritten);   // 같은 경로 덮어쓰기 — 파일 증식 없음
+            Assert.Single(Directory.GetFiles(dir, "*.mp4"));
+            Assert.Single(Directory.GetFiles(dir, "*.png"));
+
+            // ③ 판독 핫패스 무할당(인스턴스 버퍼 재사용)
+            using var ms = new MemoryStream(o.Output.ToArray(), false);
+            using var ps = new MemoryStream(o.ThumbnailPng.ToArray(), false);
+            Assert.True(d.VerifyMp4(ms, out _) && d.VerifyPng(ps, out _));
+            var a0 = GC.GetAllocatedBytesForCurrentThread();
+            for (var i = 0; i < 4; i++) { d.VerifyMp4(ms, out _); d.VerifyPng(ps, out _); }
+            var alloc = GC.GetAllocatedBytesForCurrentThread() - a0;
+            Assert.True(alloc == 0, "MP4/PNG 판독 핫패스 할당 " + alloc + " B");
+        }
+        // ④ Dispose = 파일 · 전용 디렉터리 전량 삭제(Zero-Disk-Leak)
+        Assert.False(File.Exists(video) || File.Exists(thumb));
+        Assert.False(Directory.Exists(dir));
+
+        // ⑤ 5 회 렌더 → 디스크 인출 → 삭제 사이클 — 관리 힙 누수 0 · 디스크 잔존 0
+        var leftover = new string[5];
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        var mem0 = GC.GetTotalMemory(true);
+        for (var i = 0; i < 5; i++)
+        {
+            Assert.True(o.Render(p), o.LastError);
+            using var d = new PromptFlowStudio.Services.Ui.DiskMediaExportVerificationUtility();
+            leftover[i] = d.Directory;
+            Assert.Equal(PromptFlowStudio.Services.Ui.DiskExportStatus.Verified, await d.ExportAndVerifyAsync(o));
+            d.Dispose();
+            Assert.Equal(2, d.FilesDeleted);
+            Assert.Equal(0, d.LeakedFiles);
+        }
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        var leak = GC.GetTotalMemory(true) - mem0;
+        Assert.True(leak < 256 * 1024, "5 회 디스크 인출 잔류 " + leak + " B");
+        foreach (var x in leftover) Assert.False(Directory.Exists(x), "디스크 잔존 " + x);
+
+        var disposed = new PromptFlowStudio.Services.Ui.DiskMediaExportVerificationUtility();
+        disposed.Dispose();
+        disposed.Dispose();   // 멱등
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => disposed.ExportAndVerifyAsync(o));
+    }
+}
+
+[Collection("ProcessGcMode")]
+public sealed class DesktopRuntimeSmokeTests
+{
+    [Fact]
+    public async Task DesktopRuntimeSmoke_Check()
+    {
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        using var owner = new System.Windows.Forms.Control();
+        PromptFlowStudio.MainForm.ConfigureServices(services, new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build(), owner);
+        await using var root = Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(services);
+        await using var scope = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.CreateAsyncScope(root);
+        var sp = new SmokeProvider(scope.ServiceProvider);
+        var defects = new System.Collections.Generic.List<string>();
+
+        // ① 데스크톱 DI 등록 전수 해석 — 팩토리/생성자 예외 0
+        var resolved = 0;
+        foreach (var sd in services)
+        {
+            if (sd.ServiceType.ContainsGenericParameters) continue;
+            try { if (sp.GetService(sd.ServiceType) is null) defects.Add("[NULL] " + sd.ServiceType.Name); else resolved++; }
+            catch (Exception ex) { defects.Add("[RESOLVE] " + sd.ServiceType.Name + ": " + ex.GetType().Name + " " + ex.Message); }
+        }
+        Assert.True(resolved > 100, "해석 " + resolved);
+
+        // ② 전 컴포넌트 [Inject] 결선 — 32 슈퍼-워크스페이스 · 175 엔진 포함 미등록 서비스 0
+        var asm = typeof(PromptFlowStudio.MainForm).Assembly;
+        Type? shorts = null, social = null, growth = null;
+        int comps = 0, injects = 0;
+        foreach (var t in asm.GetTypes())
+        {
+            if (t.IsAbstract || !typeof(Microsoft.AspNetCore.Components.IComponent).IsAssignableFrom(t)) continue;
+            comps++;
+            if (t.Name == "ShortsStudioWorkspaceModal") shorts = t;
+            else if (t.Name == "SocialPublisherWorkspaceModal") social = t;
+            else if (t.Name == "ViralGrowthCommerceWorkspaceModal") growth = t;
+            for (var bt = t; bt is not null && bt != typeof(object); bt = bt.BaseType)
+                foreach (var pi in bt.GetProperties(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly))
+                {
+                    if (!pi.IsDefined(typeof(Microsoft.AspNetCore.Components.InjectAttribute), true)) continue;
+                    injects++;
+                    try { if (sp.GetService(pi.PropertyType) is null) defects.Add("[UNREGISTERED] " + t.Name + "." + pi.Name + " : " + pi.PropertyType.Name); }
+                    catch (Exception ex) { defects.Add("[RESOLVE] " + t.Name + "." + pi.Name + ": " + ex.Message); }
+                }
+        }
+        Assert.True(comps > 175 && injects > 0, "컴포넌트 " + comps + " · 주입 " + injects);
+        Assert.Equal(32, WsCat.Workspaces.Length);
+        var keys = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
+        foreach (var e in PromptFlowStudio.Services.Ui.StudioCatalog.Entries) keys.Add(e.Key);
+        foreach (var w in WsCat.Workspaces)
+        {
+            if (w.Tabs.Length == 0) defects.Add("[EMPTY] " + w.Id);
+            foreach (var tab in w.Tabs) foreach (var m in tab.Members) if (!keys.Contains(m)) defects.Add("[ROUTE] " + w.Id + " ▸ " + m);
+        }
+
+        // ③ 3 대 핵심 모달 — 레이아웃 동일 파라미터 · 기본값(미전달) 양쪽 OnInitialized/OnParametersSet NRE 0 · Dispose 정상
+        Assert.NotNull(shorts); Assert.NotNull(social); Assert.NotNull(growth);
+        var routed = 0;
+        foreach (var type in new[] { shorts!, social!, growth! })
+            foreach (var full in new[] { true, false })
+                for (var tab = 0; tab < (full ? 3 : 1); tab++)
+                {
+                    var r = new SmokeRenderer(sp);
+                    try
+                    {
+                        var id = await r.Dispatcher.InvokeAsync(() => r.Mount(type));
+                        await r.Dispatcher.InvokeAsync(() => r.RenderAsync(id, full ? LayoutParameters(type, tab, () => routed++) : Microsoft.AspNetCore.Components.ParameterView.Empty));
+                        await Task.Delay(50);
+                        if (r.TakeError() is { } err) defects.Add("[MOUNT] " + type.Name + (full ? " 탭 " + tab : " 기본값") + ": " + err.GetType().Name + " " + err.Message);
+                    }
+                    catch (Exception ex) { defects.Add("[MOUNT] " + type.Name + ": " + ex.GetType().Name + " " + ex.Message); }
+                    finally
+                    {
+                        try { await r.DisposeAsync(); }
+                        catch (Exception ex) { defects.Add("[DISPOSE] " + type.Name + ": " + ex.Message); }
+                    }
+                    if (r.TakeError() is { } late) defects.Add("[DISPOSE] " + type.Name + ": " + late.Message);
+                }
+        Assert.True(defects.Count == 0, string.Join(Environment.NewLine, defects));
+    }
+
+    private static Microsoft.AspNetCore.Components.ParameterView LayoutParameters(Type t, int tab, Action routed)
+    {
+        var none = Microsoft.AspNetCore.Components.EventCallback.Factory.Create(new object(), () => { });
+        var d = new System.Collections.Generic.Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["OnClose"] = none,
+            ["InitialTab"] = tab,
+            ["InitialMember"] = 0,
+            ["RouteStamp"] = tab + 1,
+            ["OnRouteChanged"] = Microsoft.AspNetCore.Components.EventCallback.Factory.Create<PromptFlowStudio.Services.Ui.WorkspaceSubTabRoute>(new object(), _ => routed()),
+        };
+        foreach (var h in new[] { "OnHandoffToPublisher", "OnHandoffToFactory" })
+            if (t.GetProperty(h)?.IsDefined(typeof(Microsoft.AspNetCore.Components.ParameterAttribute), true) == true) d[h] = none;
+        return Microsoft.AspNetCore.Components.ParameterView.FromDictionary(d);
+    }
+
+#pragma warning disable BL0006 // 외부 bUnit 없이 BCL Renderer 서브클래스로 헤드리스 마운트
+    private sealed class SmokeRenderer : Microsoft.AspNetCore.Components.RenderTree.Renderer
+    {
+        private readonly System.Collections.Generic.List<Exception> _errors = new();
+        public SmokeRenderer(IServiceProvider sp) : base(sp, Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance) { }
+        public override Microsoft.AspNetCore.Components.Dispatcher Dispatcher { get; } = Microsoft.AspNetCore.Components.Dispatcher.CreateDefault();
+        protected override void HandleException(Exception exception) { lock (_errors) _errors.Add(exception); }
+        protected override Task UpdateDisplayAsync(in Microsoft.AspNetCore.Components.RenderTree.RenderBatch renderBatch) => Task.CompletedTask;
+        public int Mount(Type t) => AssignRootComponentId(InstantiateComponent(t));
+        public Task RenderAsync(int id, Microsoft.AspNetCore.Components.ParameterView p) => RenderRootComponentAsync(id, p);
+        public Exception? TakeError()
+        {
+            lock (_errors)
+            {
+                if (_errors.Count == 0) return null;
+                var e = _errors.Count == 1 ? _errors[0] : new AggregateException(_errors);
+                _errors.Clear();
+                return e;
+            }
+        }
+    }
+#pragma warning restore BL0006
+
+    // 웹뷰 스코프 대체(IJSRuntime · NavigationManager) — 그 외 전 의존성은 프로덕션 DI 그대로
+    private sealed class SmokeProvider : IServiceProvider
+    {
+        private readonly IServiceProvider _inner;
+        private readonly SmokeNav _nav = new();
+        public SmokeProvider(IServiceProvider inner) => _inner = inner;
+        public object? GetService(Type t)
+        {
+            if (t == typeof(IServiceProvider)) return this;
+            if (t == typeof(Microsoft.JSInterop.IJSRuntime)) return SmokeJs.Instance;
+            if (t == typeof(Microsoft.AspNetCore.Components.NavigationManager)) return _nav;
+            return _inner.GetService(t);
+        }
+    }
+
+    private sealed class SmokeNav : Microsoft.AspNetCore.Components.NavigationManager
+    {
+        public SmokeNav() => Initialize("https://0.0.0.0/", "https://0.0.0.0/");
+        protected override void NavigateToCore(string uri, Microsoft.AspNetCore.Components.NavigationOptions options) => Uri = ToAbsoluteUri(uri).ToString();
+    }
+
+    private sealed class SmokeJs : Microsoft.JSInterop.IJSRuntime, Microsoft.JSInterop.IJSObjectReference
+    {
+        public static readonly SmokeJs Instance = new();
+        public ValueTask<TValue> InvokeAsync<TValue>(string identifier, object?[]? args) => Value<TValue>();
+        public ValueTask<TValue> InvokeAsync<TValue>(string identifier, CancellationToken cancellationToken, object?[]? args) => Value<TValue>();
+        public ValueTask DisposeAsync() => default;
+        private static ValueTask<TValue> Value<TValue>() => typeof(TValue) == typeof(Microsoft.JSInterop.IJSObjectReference) ? new((TValue)(object)Instance) : default;
+    }
+}
