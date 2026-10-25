@@ -94,6 +94,8 @@ public sealed class BroadcastMcrStudioRunner : IDisposable
     public ChatPlatform AudioPlatform { get; private set; } = ChatPlatform.Twitch;
     public bool IsRunning => _running;
     public long Tick => Interlocked.Read(ref _tick);
+    /// <summary>v18.0.7: 틱 예산 계측 시계(기본 시스템 · 테스트는 가상 시계로 호스트 부하 무관 결정론 판정).</summary>
+    public TimeProvider Clock { get; set; } = TimeProvider.System;
     public double LastTickMs { get; private set; }
     public double MaxTickMs { get; private set; }
     public long FramesOverBudget { get; private set; }
@@ -188,7 +190,8 @@ public sealed class BroadcastMcrStudioRunner : IDisposable
 
     private void Compute()
     {
-        var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+        var clk = Clock;
+        var t0 = clk.GetTimestamp();
         Interlocked.Increment(ref _tick);
         var comp = _comp!;
         var talk = _talk;
@@ -251,7 +254,7 @@ public sealed class BroadcastMcrStudioRunner : IDisposable
         // ⑥ 오디오(v17.64 플랫폼 트랙 · 위치 추적 = 정확히 새 샘플만) → 프레임
         PushAudio();
         Mcr.Frame(comp);
-        var ms = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+        var ms = (clk.GetTimestamp() - t0) * 1000.0 / clk.TimestampFrequency;
         LastTickMs = ms; if (ms > MaxTickMs && _tick > 5) MaxTickMs = ms;
         if (ms > 1000.0 / Hz) FramesOverBudget++;
         _msS[_sHead] = (float)ms; _occS[_sHead] = Ppl.OcclusionRatio; _vuS[_sHead] = Mcr.RmsDb;

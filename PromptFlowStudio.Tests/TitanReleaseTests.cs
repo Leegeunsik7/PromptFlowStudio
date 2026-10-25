@@ -17193,12 +17193,28 @@ class "Proto"
 
     private static V3 XrFwd(in Sxr.XrEyeView e) => V3.Transform(new V3(0, 0, -1), e.Orientation);
 
+    // v18.0.7 가상 시계 구동: 원격 전송 대기의 가장 이른 만료 시각으로만 전진(오버슈트 0) — 데드라인/하트비트 판정이 호스트 부하와 무관
+    private static Gs.SwarmFrameResult PumpFrame(Gs.LowLatencyFrameAssemblyFallbackGuard g, VirtualTimeProvider vc, long frame)
+    {
+        var task = Task.Run(() => g.RenderFrame(frame));
+        var watchdog = Stopwatch.StartNew(); // 교착 감시 전용(판정 아님)
+        while (!task.IsCompleted)
+        {
+            var w = g.NextClockWakeTimestamp;
+            if (w != 0 && w > vc.GetTimestamp()) vc.AdvanceTo(w);
+            else task.Wait(1);
+            Assert.True(watchdog.ElapsedMilliseconds < 60_000, "가상 시계 펌프 교착");
+        }
+        return task.Result;
+    }
+
 
     [Fact]
     public void DistributedGpuCluster_And_CloudRenderingSwarm_Check()
     {
         // ── GPUSWARM-1: 토폴로지 · SIMD EMA 프로빙 · 건강 · VRAM ──
-        var topo = new Gs.DistributedHeterogeneousGpuTopologyEngine { HeartbeatTimeoutMs = 60 };
+        var vc1 = new VirtualTimeProvider();
+        var topo = new Gs.DistributedHeterogeneousGpuTopologyEngine(vc1) { HeartbeatTimeoutMs = 60 };
         var nL = topo.AddNode("local", Gs.GpuBackend.CpuSimd, Gs.NodeLink.Local, 1L << 30, 2, 1f);
         var nR = topo.AddNode("lan", Gs.GpuBackend.Vulkan, Gs.NodeLink.Lan, 1L << 12, 1, 1f, 500f, 1f); // VRAM 4 KB
         var nC = topo.AddNode("cloud", Gs.GpuBackend.Dx12, Gs.NodeLink.Cloud, 4L << 30, 2, 1f, 100f, 20f);
@@ -17223,7 +17239,7 @@ class "Proto"
         Assert.Equal(1 << 20, topo.VramPeak(nC));
         topo.ReleaseVram(nC, 1 << 20);
         Assert.Equal(0, topo.VramUsed(nC));
-        Thread.Sleep(90);
+        vc1.Advance(90); // 가상 90 ms(벽시계 수면 제거)
         topo.Heartbeat(nL, 0);
         topo.Probe();
         Assert.False(topo.Healthy(nC)); // 하트비트 타임아웃(무통보)
@@ -17276,7 +17292,8 @@ class "Proto"
 
         // ── GPUSWARM-3: 분산 조립 = 단일 RenderFrame 비트 일치 · 제로카피/블릿 · 무통보/명시 단절 페일백 ──
         var pt = Gs.PathTraceSwarmWorkload.CreateDemo(64, 36);
-        var t3 = new Gs.DistributedHeterogeneousGpuTopologyEngine { HeartbeatTimeoutMs = 60 };
+        var vc3 = new VirtualTimeProvider();
+        var t3 = new Gs.DistributedHeterogeneousGpuTopologyEngine(vc3) { HeartbeatTimeoutMs = 60 };
         var l3 = t3.AddNode("local", Gs.GpuBackend.CpuSimd, Gs.NodeLink.Local, 1L << 30, 2, 0.3f);
         var r3 = t3.AddNode("lan", Gs.GpuBackend.Vulkan, Gs.NodeLink.Lan, 1L << 30, 2, 0.3f, 1000f, 1f);
         var lb3 = new Gs.DynamicCloudRenderSwarmLoadBalancer(t3);
@@ -17286,9 +17303,8 @@ class "Proto"
             g.StartNode(l3, 2, null);
             var lan = new Gs.SimulatedLink { RttMs = 1, BandwidthMBs = 1000 };
             g.StartNode(r3, 2, lan);
-            Thread.Sleep(30);
             Gs.SwarmFrameResult res = default;
-            for (var f = 1; f <= 3; f++) res = g.RenderFrame(f);
+            for (var f = 1; f <= 3; f++) res = PumpFrame(g, vc3, f);
             Assert.False(res.TimedOut);
             Assert.True(g.IsMapped);
             Assert.True(res.ZeroCopyBytes > 0);
@@ -17297,10 +17313,8 @@ class "Proto"
             pt.Engine.RenderFrame(3);
             Assert.True(pt.Engine.Color.SequenceEqual(front), "분산 조립 ≠ 단일 렌더");
 
-            // 무통보 단절: 결과 미도착 → 타일 데드라인/하트비트 타임아웃으로 검출.
-            // 전제(원격에 타일 배정)를 명시적으로 성립시킨다 — 원격 예측에는 RTT ≥ 1 ms 가 항상 붙으므로, 티어드 JIT 최적화 후(전체 스위트 후반) 로컬 실측 처리량이
-            // 64×36 프레임 전체를 1 ms 미만에 끝내면 LPT 가 정당하게 원격 타일 0 개를 배정(시나리오 미성립 · 재시도로 해소 불가). 부하 시에는 전송 실측 부풀림(대역폭 EMA 급락)
-            // · keepalive 기아(하트비트 > 60 ms)도 같은 결과. → 로컬 저속 · 원격 고속 처리량 표본을 계획이 원격을 택할 때까지 주입(Plan 으로 확인) + 신선 하트비트.
+            // 무통보 단절: 결과 미도착 → 하트비트 타임아웃/데드라인으로 검출(가상 시계 — 배정 배리어 후 정확히 100 ms 전진 · 벽시계 무관).
+            // 전제(원격에 타일 배정)를 명시적으로 성립: 로컬 저속 · 원격 고속 처리량 표본을 계획이 원격을 택할 때까지 주입(Plan 으로 확인) + 신선 하트비트.
             var silentPlanned = 0;
             for (var attempt = 0; attempt < 5; attempt++)
             {
@@ -17318,25 +17332,31 @@ class "Proto"
                 Assert.True(arranged, "원격 배정 전제 미성립 · Mpx L " + t3.Mpx(l3) + " R " + t3.Mpx(r3) + " BW " + t3.BandwidthMBs(r3) + " 건강 " + t3.Healthy(r3));
                 t3.Heartbeat(r3, 1);
                 lan.Silent = true;
-                res = g.RenderFrame(4);
+                long fi = 4 + attempt;
+                Gs.SwarmFrameResult silentRes = default;
+                using var silentDone = new ManualResetEventSlim(false);
+                new Thread(() => { try { silentRes = g.RenderFrame(fi); } finally { silentDone.Set(); } }) { IsBackground = true }.Start();
+                Assert.True(SpinWait.SpinUntil(() => silentDone.IsSet || g.PlannedFrame == fi, 10_000), "무통보 프레임 배정 배리어");
+                silentPlanned = 0;
+                if (!silentDone.IsSet) for (var i = 0; i < g.TileCount; i++) if (g.TileOwner(i) == r3) silentPlanned++;
+                if (silentPlanned > 0) vc3.Advance(100); // > 하트비트 타임아웃 60 ms · 데드라인
+                Assert.True(silentDone.Wait(10_000), "무통보 프레임 완료");
+                res = silentRes;
                 Assert.False(res.TimedOut);
                 var f4 = g.Front.ToArray();
-                pt.Engine.RenderFrame(4);
+                pt.Engine.RenderFrame(fi);
                 Assert.True(pt.Engine.Color.SequenceEqual(f4));
-                silentPlanned = lb3.NodeTiles(r3);
                 if (silentPlanned > 0) break;
             }
             Assert.True(silentPlanned > 0, "원격 타일 배정 0 — 무통보 단절 시나리오 미성립(5 회)");
             Assert.True(res.Fallbacks > 0, "silent fallbacks");
-            Assert.InRange(res.FallbackMs, 1, 150); // 데드라인 또는 하트비트 타임아웃 중 먼저
+            Assert.Equal(100.0, res.FallbackMs, 3); // 마지막 하트비트(가상) 기준 검출 지연 = 전진량 정확 일치
         }
 
-        // 명시 단절 페일백 < 50 ms — 벽시계 게이트이므로 최선 N(3 회) 판정(저장소 타이밍 관례): 정합성 단언은 매 시도 · 지연 상한은 최솟값에만
-        var bestExplicitMs = double.MaxValue;
-        for (var attempt = 0; attempt < 3 && bestExplicitMs >= 50; attempt++)
+        // 명시 단절 페일백 < 50 ms — 가상 시계 기준 1 회 판정: 배정 배리어 → 전송 구간(RTT 120 ms) 중 단절 → 프로브 주기 대기 없이 즉시 탈취
         {
-            if (attempt > 0) Thread.Sleep(150);
-            var t4 = new Gs.DistributedHeterogeneousGpuTopologyEngine { HeartbeatTimeoutMs = 60 };
+            var vc4 = new VirtualTimeProvider();
+            var t4 = new Gs.DistributedHeterogeneousGpuTopologyEngine(vc4) { HeartbeatTimeoutMs = 60 };
             var l4 = t4.AddNode("local", Gs.GpuBackend.CpuSimd, Gs.NodeLink.Local, 1L << 30, 1, 0.001f);
             var c4 = t4.AddNode("cloud", Gs.GpuBackend.Dx12, Gs.NodeLink.Cloud, 1L << 30, 2, 100f, 1000f, 120f);
             var lb4 = new Gs.DynamicCloudRenderSwarmLoadBalancer(t4);
@@ -17344,26 +17364,24 @@ class "Proto"
             g.SetWorkload(pt);
             g.StartNode(l4, 1, null);
             g.StartNode(c4, 2, new Gs.SimulatedLink { RttMs = 120, BandwidthMBs = 1000 });
-            Thread.Sleep(30);
-            var task = Task.Run(() => g.RenderFrame(5));
-            // 고정 지연 대신 배정 관측 배리어: 프레임 5 계획에서 클라우드 타일이 배정된 뒤(RTT 120 ms 전송 구간) 단절
-            Assert.True(SpinWait.SpinUntil(() =>
-            {
-                for (var i = 0; i < g.TileCount; i++) if (g.TileOwner(i) == c4) return true;
-                return false;
-            }, 10_000), "cloud tile assignment");
+            Gs.SwarmFrameResult res = default;
+            using var done = new ManualResetEventSlim(false);
+            new Thread(() => { try { res = g.RenderFrame(5); } finally { done.Set(); } }) { IsBackground = true }.Start();
+            Assert.True(SpinWait.SpinUntil(() => done.IsSet || g.PlannedFrame == 5, 10_000), "프레임 5 배정 배리어");
+            var cloudTiles = 0;
+            for (var i = 0; i < g.TileCount; i++) if (g.TileOwner(i) == c4) cloudTiles++;
+            Assert.True(cloudTiles > 0, "cloud tile assignment");
+            vc4.Advance(7); // 전송 구간(가상 RTT 120 ms) 7 ms 시점 — 데드라인 미도달
             g.SetConnected(c4, false); // 전송 중 명시 단절
-            Assert.True(task.Wait(10_000));
-            var res = task.Result;
+            Assert.True(done.Wait(10_000));
             Assert.False(res.TimedOut);
             Assert.True(res.Fallbacks > 0);
             Assert.Equal(0, t4.Tiles(c4)); // 원격 결과 커밋 0
             var f5 = g.Front.ToArray();
             pt.Engine.RenderFrame(5);
             Assert.True(pt.Engine.Color.SequenceEqual(f5));
-            bestExplicitMs = Math.Min(bestExplicitMs, res.FallbackMs);
+            Assert.True(res.FallbackMs < 50, "explicit fallback " + res.FallbackMs);
         }
-        Assert.True(bestExplicitMs < 50, "explicit fallback " + bestExplicitMs);
 
         // ── v16.87 디퓨전 타일 워크로드: 분할 무관 일치 ──
         var dw = new Gs.DiffusionSwarmWorkload(48, 27, 8);
@@ -26050,7 +26068,7 @@ public sealed class DexterousManipulationIsolatedTests
         Assert.True(cr.Guard.MaxResidualPenetrationMm <= 1.01f);
         // 프레임 예산: 평균(전 CPU 병렬 부하 시 선점 스파이크로 최대값은 플래키 — rules_testing 타이밍 여유)
         var tickSum = 0.0; for (var i = 0; i < 120; i++) tickSum += cr.TickMsSeries(i);
-        Assert.True(tickSum / 120 < 16.7, "평균 프레임 " + tickSum / 120 + " · 최대 " + cr.MaxTickMs);
+        Assert.True(tickSum / 120 < CiFrameBudget.Ms, "평균 프레임 " + tickSum / 120 + " · 최대 " + cr.MaxTickMs);
 
         // ── 무할당: 60 Hz 프레임(인계 · 파지 · 폐쇄 체인 · 가드) ──
         Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 2; i++) on.Step(); }));
@@ -26142,7 +26160,7 @@ public sealed class NeuralRagdollIsolatedTests
         Assert.Equal(NR.RecoveryState.GetUp, z.Recovery.State);
         Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 2; i++) z.Step(); }));
         var tick = 0.0; for (var i = 0; i < 120; i++) tick += z.TickMsSeries(i);
-        Assert.True(tick / 120 < 16.7, "평균 프레임 " + tick / 120);
+        Assert.True(tick / 120 < CiFrameBudget.Ms, "평균 프레임 " + tick / 120);
     }
 }
 
@@ -26274,14 +26292,14 @@ public sealed class ProceduralFoleyIsolatedTests
         for (var i = 0; i < 120; i++) nrm.Step();
         // 병렬 테스트 부하 시 선점 스파이크로 평균이 튐 → 중앙값(프레임 예산 판정은 대표값)
         var ticks = new float[120]; var med = float.MaxValue;
-        for (var attempt = 0; attempt < 5 && med >= 16.7f; attempt++)   // 경합 창 회피 — 최선 중앙값(실측 대표값)
+        for (var attempt = 0; attempt < 5 && med >= CiFrameBudget.MsF; attempt++)   // 경합 창 회피 — 최선 중앙값(실측 대표값)
         {
             if (attempt > 0) { Thread.Sleep(150); for (var i = 0; i < 120; i++) nrm.Step(); }
             for (var i = 0; i < 120; i++) ticks[i] = nrm.TickMsSeries(i);
             Array.Sort(ticks);
             med = Math.Min(med, ticks[60]);
         }
-        Assert.True(med < 16.7f, "중앙 프레임 " + med);
+        Assert.True(med < CiFrameBudget.MsF, "중앙 프레임 " + med);
     }
 }
 
@@ -26376,7 +26394,7 @@ public sealed class CinematicDirectorIsolatedTests
         // ── 무할당 · 프레임 예산 ──
         Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 2; i++) std.Step(); }));
         var tick = 0.0; for (var i = 0; i < 120; i++) tick += std.TickMsSeries(i);
-        Assert.True(tick / 120 < 16.7, "평균 프레임 " + tick / 120);
+        Assert.True(tick / 120 < CiFrameBudget.Ms, "평균 프레임 " + tick / 120);
     }
 }
 
@@ -26498,7 +26516,7 @@ public sealed class NarrativeTimelineIsolatedTests
         Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 2; i++) r.Step(); }));
         var tk = new float[120]; for (var i = 0; i < 120; i++) tk[i] = r.TickMsSeries(i);
         Array.Sort(tk);
-        Assert.True(tk[60] < 16.7, "중앙 프레임 " + tk[60]);
+        Assert.True(tk[60] < CiFrameBudget.Ms, "중앙 프레임 " + tk[60]);
     }
 }
 
@@ -26613,7 +26631,7 @@ public sealed class IntelligentStageLightingIsolatedTests
         Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 2; i++) r.Step(); }));
         var tk = new float[120]; for (var i = 0; i < 120; i++) tk[i] = r.TickMsSeries(i);
         Array.Sort(tk);
-        Assert.True(tk[60] < 16.7, "중앙 프레임 " + tk[60]);
+        Assert.True(tk[60] < CiFrameBudget.Ms, "중앙 프레임 " + tk[60]);
         r.Dispose(); c.Dispose();
     }
 }
@@ -26738,14 +26756,14 @@ public sealed class NeuralVfxPyrotechnicsIsolatedTests
         Assert.Equal(0, AllocationProbe.MinAllocated(() => { sa.Emit(V3.UnitY, 64, boom, V3.Zero, pg, V3.Zero); sa.Step(1f / 60f); pg.Sanitize(ea, 1f / 60f, true); }));
         // 프레임 예산: 120 프레임 창의 중앙값 — 병렬 테스트 부하 경합 배제를 위해 최대 3 창 중 최소(AllocationProbe 와 동일 원리)
         var best = float.MaxValue; var tk = new float[120];
-        for (var w = 0; w < 3 && best >= 16.7f; w++)
+        for (var w = 0; w < 3 && best >= CiFrameBudget.MsF; w++)
         {
             for (var i = 0; i < 120; i++) fnt.Step();
             for (var i = 0; i < 120; i++) tk[i] = fnt.TickMsSeries(i);
             Array.Sort(tk);
             best = MathF.Min(best, tk[60]);
         }
-        Assert.True(best < 16.7f, "중앙 프레임 " + best);
+        Assert.True(best < CiFrameBudget.MsF, "중앙 프레임 " + best);
         fnt.Dispose(); camp.Dispose(); stage.Dispose(); on.Dispose(); off.Dispose(); lod.Dispose(); bad.Dispose();
     }
 }
@@ -26888,7 +26906,7 @@ public sealed class CinematicLensOpticsIsolatedTests
         Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 2; i++) run.Step(); }));
         // 120 프레임 창 중앙값 — 병렬 부하 경합 배제를 위해 최대 3 창 중 최소(예산 초과 시 가드가 단계를 낮춘 상태로 재측정)
         var pm = new float[120]; var tk = new float[120]; float bestPm = float.MaxValue, bestTk = float.MaxValue;
-        for (var w = 0; w < 3 && (bestPm >= Lo.HdrBloomSaturationLatencyGuard.DefaultBudgetMs || bestTk >= 16.7f); w++)
+        for (var w = 0; w < 3 && (bestPm >= Lo.HdrBloomSaturationLatencyGuard.DefaultBudgetMs || bestTk >= CiFrameBudget.MsF); w++)
         {
             for (var i = 0; i < 120; i++) run.Step();
             for (var i = 0; i < 120; i++) { pm[i] = run.PostMsSeries(i); tk[i] = run.TickMsSeries(i); }
@@ -26896,7 +26914,7 @@ public sealed class CinematicLensOpticsIsolatedTests
             bestPm = MathF.Min(bestPm, pm[60]); bestTk = MathF.Min(bestTk, tk[60]);
         }
         Assert.True(bestPm < Lo.HdrBloomSaturationLatencyGuard.DefaultBudgetMs, "중앙 포스트 " + bestPm + " · 블룸 단계 " + run.Guard.Levels);
-        Assert.True(bestTk < 16.7f, "중앙 프레임 " + bestTk);
+        Assert.True(bestTk < CiFrameBudget.MsF, "중앙 프레임 " + bestTk);
         run.Dispose(); on.Dispose(); off.Dispose(); stage.Dispose(); pyro.Dispose();
     }
 }
@@ -27028,14 +27046,14 @@ public sealed class GenlockFrustumIsolatedTests
         Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 2; i++) run.Step(); }));
         // 120 프레임 창 중앙값 — 병렬 부하 경합 배제를 위해 최대 3 창 중 최소
         var tk = new float[120]; var best = float.MaxValue;
-        for (var w = 0; w < 3 && best >= 16.7f; w++)
+        for (var w = 0; w < 3 && best >= CiFrameBudget.MsF; w++)
         {
             for (var i = 0; i < 120; i++) run.Step();
             for (var i = 0; i < 120; i++) tk[i] = run.TickMsSeries(i);
             Array.Sort(tk);
             best = MathF.Min(best, tk[60]);
         }
-        Assert.True(best < 16.7f, "중앙 프레임 " + best);
+        Assert.True(best < CiFrameBudget.MsF, "중앙 프레임 " + best);
         run.Dispose(); stage.Dispose(); lens.Dispose();
     }
 
@@ -27134,14 +27152,14 @@ public sealed class CameraTrackingIsolatedTests
         Assert.True(run.Engine.Reacquisitions > 0, "리그 전환 재획득");
         Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 2; i++) run.Step(); }));
         var tk = new float[120]; var best = float.MaxValue;
-        for (var w = 0; w < 3 && best >= 16.7f; w++)
+        for (var w = 0; w < 3 && best >= CiFrameBudget.MsF; w++)
         {
             for (var i = 0; i < 120; i++) run.Step();
             for (var i = 0; i < 120; i++) tk[i] = run.TickMsSeries(i);
             Array.Sort(tk);
             best = MathF.Min(best, tk[60]);
         }
-        Assert.True(best < 16.7f, "중앙 프레임 " + best);
+        Assert.True(best < CiFrameBudget.MsF, "중앙 프레임 " + best);
         run.Dispose(); raw.Dispose();
     }
 }
@@ -27227,14 +27245,14 @@ public sealed class VirtualSetExtensionIsolatedTests
         Assert.True(bmp[0] == (byte)'B' && BitConverter.ToInt32(bmp, 18) == W && BitConverter.ToInt32(bmp, 22) == H && on.Engine.StyleName == "화산");
         Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 2; i++) on.Step(); }));
         var tk = new float[120]; var best = float.MaxValue;
-        for (var w = 0; w < 3 && best >= 16.7f; w++)
+        for (var w = 0; w < 3 && best >= CiFrameBudget.MsF; w++)
         {
             for (var i = 0; i < 120; i++) on.Step();
             for (var i = 0; i < 120; i++) tk[i] = on.TickMsSeries(i);
             Array.Sort(tk);
             best = MathF.Min(best, tk[60]);
         }
-        Assert.True(best < 16.7f, "중앙 프레임 " + best);
+        Assert.True(best < CiFrameBudget.MsF, "중앙 프레임 " + best);
         on.Dispose(); off.Dispose();
     }
 }
@@ -27335,14 +27353,14 @@ public sealed class InstagramViralReelsRemixIsolatedTests
         // ── 무할당 · 프레임 예산 ──
         Assert.Equal(0, AllocationProbe.MinAllocated(() => { for (var i = 0; i < 2; i++) run.Step(); }));
         var tk = new float[120]; var best = float.MaxValue;
-        for (var w = 0; w < 3 && best >= 16.7f; w++)
+        for (var w = 0; w < 3 && best >= CiFrameBudget.MsF; w++)
         {
             for (var i = 0; i < 120; i++) run.Step();
             for (var i = 0; i < 120; i++) tk[i] = run.TickMsSeries(i);
             Array.Sort(tk);
             best = MathF.Min(best, tk[60]);
         }
-        Assert.True(best < 16.7f, "중앙 프레임 " + best);
+        Assert.True(best < CiFrameBudget.MsF, "중앙 프레임 " + best);
         run.Dispose(); rp.Dispose(); au.Dispose();
     }
 }
@@ -28025,14 +28043,14 @@ public sealed class MotionTypographyIsolatedTests
         Assert.True(f2 > f1 && f2 > p1.W * 0.8, "진행률 " + f1 + " → " + f2);
         Assert.Equal(0, AllocationProbe.MinAllocated(() => { run.RenderFrame(4100); run.RenderFrame(4116); }));
         var tk = new double[60]; var med = double.MaxValue;
-        for (var attempt = 0; attempt < 5 && med >= 16.7; attempt++)   // 병렬 스위트 CPU 경합 → 최선 중앙값(타 프레임 예산 테스트와 동일 best 패턴)
+        for (var attempt = 0; attempt < 5 && med >= CiFrameBudget.Ms; attempt++)   // 병렬 스위트 CPU 경합 → 최선 중앙값(타 프레임 예산 테스트와 동일 best 패턴)
         {
             if (attempt > 0) Thread.Sleep(150);
             for (var i = 0; i < 60; i++) { run.RenderFrame(3000 + i * 16.7f); tk[i] = run.LastFrameMs; }
             Array.Sort(tk);
             med = Math.Min(med, tk[30]);
         }
-        Assert.True(med < 16.7, "중앙 프레임 " + med + " ms");
+        Assert.True(med < CiFrameBudget.Ms, "중앙 프레임 " + med + " ms");
 
         // ── MOTION-2b: NV12 알파 합성 수치 · v17.49 인코딩 직전 결선 ──
         var layer = new Mt.RgbaOverlayLayer(8, 8);
@@ -28365,7 +28383,7 @@ public sealed class GaussianSplatEnvironmentIsolatedTests
         Assert.Equal(0, AllocationProbe.MinAllocated(() => { run.Step(); run.Step(); }));
         // 공유 머신 부하(타 프로세스) 내성: 60 프레임 창 5 회(150 ms 간격) 중 최선 중앙값 · 60fps 게이트는 최적화 빌드 기준(Debug 는 비최적화 JIT 상한)
         var fm = new double[60]; var best = double.MaxValue;
-        for (var wdw = 0; wdw < 5 && best >= 16.7; wdw++)
+        for (var wdw = 0; wdw < 5 && best >= CiFrameBudget.Ms; wdw++)
         {
             if (wdw > 0) Thread.Sleep(150);
             for (var i = 0; i < 60; i++) { run.Step(); fm[i] = run.LastTickMs; }
@@ -28374,7 +28392,7 @@ public sealed class GaussianSplatEnvironmentIsolatedTests
 #if DEBUG
         const double FrameGateMs = 150;
 #else
-        const double FrameGateMs = 16.7;
+        const double FrameGateMs = CiFrameBudget.Ms;
 #endif
         var rep = " 프레임 중앙(최선) " + best + " ms · 워커 " + run.Engine.Workers + " · 가시 " + run.Engine.Visible + " 엔트리 " + run.Engine.TileEntries + " · 컬링 " + run.Engine.LastCullUs + " 정렬 " + run.Engine.LastSortUs + " 투영 " + run.Engine.LastProjectUs + " SH " + run.Engine.LastShUs + " 비닝 " + run.Engine.LastBinUs + " 블렌딩 " + run.Engine.LastBlendUs + " µs · 픽셀 연산 " + run.Engine.PixelOps;
         Assert.True(best < FrameGateMs, "60fps" + rep);
@@ -28503,7 +28521,7 @@ public sealed class GaussianSplatRelightingIsolatedTests
         run.SetReflection(1f);
         Assert.Equal(0, AllocationProbe.MinAllocated(() => { run.Step(); run.Step(); }));
         var fm = new double[60]; var sm = new double[60]; double best = double.MaxValue, bestSh = double.MaxValue;
-        for (var wdw = 0; wdw < 3 && (best >= 16.7 || bestSh >= 3.5); wdw++)
+        for (var wdw = 0; wdw < 3 && (best >= CiFrameBudget.Ms || bestSh >= 3.5); wdw++)
         {
             for (var i = 0; i < 60; i++) { run.Step(); fm[i] = run.LastTickMs; sm[i] = sh.LastShadowMs; }
             Array.Sort(fm); Array.Sort(sm); best = Math.Min(best, fm[30]); bestSh = Math.Min(bestSh, sm[30]);
@@ -28511,7 +28529,7 @@ public sealed class GaussianSplatRelightingIsolatedTests
 #if DEBUG
         const double FrameGate = 150, ShadowGate = 30;
 #else
-        const double FrameGate = 16.7, ShadowGate = 3.5;
+        const double FrameGate = CiFrameBudget.Ms, ShadowGate = 3.5;
 #endif
         Assert.True(best < FrameGate && bestSh < ShadowGate, "프레임 " + best + " ms · 그림자 " + bestSh + " ms (빌드 " + sh.LastBuildUs + " PCF " + sh.LastPcfUs + " µs · 반경 " + run.ShadowGuard.RadiusCap + ")");
         // 가드 100 % 작동: 예산을 극소로 → 초과 프레임마다 축소, 바닥 도달
@@ -28661,11 +28679,11 @@ public sealed class DualQuaternionGaussianAvatarIsolatedTests
         Assert.Equal(0, AllocationProbe.MinAllocated(() => { run.Step(); run.Step(); }));
         var fm = new double[60]; var best = double.MaxValue;
         for (var i = 0; i < 60; i++) run.Step();   // v17.63.1 측정 전 웜업 창(티어드 JIT 승격 · 캐시 예열) — 폐기 후 3 창 중앙값 Best-of-3
-        for (var wdw = 0; wdw < 3 && best >= 16.7; wdw++) { for (var i = 0; i < 60; i++) { run.Step(); fm[i] = run.LastTickMs; } Array.Sort(fm); best = Math.Min(best, fm[30]); }
+        for (var wdw = 0; wdw < 3 && best >= CiFrameBudget.Ms; wdw++) { for (var i = 0; i < 60; i++) { run.Step(); fm[i] = run.LastTickMs; } Array.Sort(fm); best = Math.Min(best, fm[30]); }
 #if DEBUG
         const double Gate = 150;
 #else
-        const double Gate = 16.7;
+        const double Gate = CiFrameBudget.Ms;
 #endif
         Assert.True(best < Gate, "프레임 " + best + " ms · 스키닝 " + run.Skinning!.LastSkinUs + " µs · 셀프 섀도우 " + run.SelfShadow!.LastComputeUs + " µs");
         Assert.True(run.ProjectJoint(4, out var jx, out var jy) && jx is > 0 and < 320 && jy is > 0 and < 192);
@@ -28840,11 +28858,11 @@ public sealed class GaussianFacialHandIsolatedTests
         Assert.Equal(0, AllocationProbe.MinAllocated(() => { run.Step(); run.Step(); }));
         var fms = new double[60]; var best = double.MaxValue;
         for (var i = 0; i < 60; i++) run.Step();   // v17.63.1 측정 전 웜업 창(티어드 JIT 승격 · 캐시 예열) — 폐기 후 3 창 중앙값 Best-of-3
-        for (var wdw = 0; wdw < 3 && best >= 16.7; wdw++) { for (var i = 0; i < 60; i++) { run.Step(); fms[i] = run.LastTickMs; } Array.Sort(fms); best = Math.Min(best, fms[30]); }
+        for (var wdw = 0; wdw < 3 && best >= CiFrameBudget.Ms; wdw++) { for (var i = 0; i < 60; i++) { run.Step(); fms[i] = run.LastTickMs; } Array.Sort(fms); best = Math.Min(best, fms[30]); }
 #if DEBUG
         const double Gate = 150;
 #else
-        const double Gate = 16.7;
+        const double Gate = CiFrameBudget.Ms;
 #endif
         Assert.True(best < Gate, "프레임 " + best + " ms · 블렌드 " + run.Face!.LastBlendUs + " µs · 손 " + run.Hands.LastStepUs + " µs");
         Assert.True(run.Project(new V3(run.Scene!.X[run.FaceStart], run.Scene.Y[run.FaceStart], run.Scene.Z[run.FaceStart]), out var px, out var py) && px is > 0 and < 320 && py is > 0 and < 192, "투영 " + px + "," + py);
@@ -28970,11 +28988,11 @@ public sealed class GaussianClothHairIsolatedTests
         Assert.Equal(0, AllocationProbe.MinAllocated(() => { run.Step(); run.Step(); }));
         var fms = new double[60]; var best = double.MaxValue;
         for (var i = 0; i < 60; i++) run.Step();   // v17.63.1 측정 전 웜업 창(티어드 JIT 승격 · 캐시 예열) — 폐기 후 3 창 중앙값 Best-of-3
-        for (var wdw = 0; wdw < 3 && best >= 16.7; wdw++) { for (var i = 0; i < 60; i++) { run.Step(); fms[i] = run.LastTickMs; } Array.Sort(fms); best = Math.Min(best, fms[30]); }
+        for (var wdw = 0; wdw < 3 && best >= CiFrameBudget.Ms; wdw++) { for (var i = 0; i < 60; i++) { run.Step(); fms[i] = run.LastTickMs; } Array.Sort(fms); best = Math.Min(best, fms[30]); }
 #if DEBUG
         const double Gate = 150;
 #else
-        const double Gate = 16.7;
+        const double Gate = CiFrameBudget.Ms;
 #endif
         Assert.True(best < Gate, "프레임 " + best + " ms · PBD " + run.Physics.LastStepUs + " µs · 정렬 " + run.Physics.LastSplatUs + " µs · 가드 " + run.Guard.LastGuardUs + " µs");
         var cp = run.Physics.Position(Gch.RealtimeGaussianClothHairPhysicsEngine.Cloth(0, 10));
@@ -29113,11 +29131,11 @@ public sealed class AvatarActingIsolatedTests
         Assert.Equal(0, AllocationProbe.MinAllocated(() => { run.Step(); run.Step(); }));
         var fms = new double[60]; var best = double.MaxValue;
         for (var i = 0; i < 60; i++) run.Step();   // v17.63.1 측정 전 웜업 창(티어드 JIT 승격 · 캐시 예열) — 폐기 후 3 창 중앙값 Best-of-3
-        for (var wdw = 0; wdw < 3 && best >= 16.7; wdw++) { for (var i = 0; i < 60; i++) { run.Step(); fms[i] = run.LastTickMs; } Array.Sort(fms); best = Math.Min(best, fms[30]); }
+        for (var wdw = 0; wdw < 3 && best >= CiFrameBudget.Ms; wdw++) { for (var i = 0; i < 60; i++) { run.Step(); fms[i] = run.LastTickMs; } Array.Sort(fms); best = Math.Min(best, fms[30]); }
 #if DEBUG
         const double Gate = 150;
 #else
-        const double Gate = 16.7;
+        const double Gate = CiFrameBudget.Ms;
 #endif
         Assert.True(best < Gate, "프레임 " + best + " ms · IK " + run.Ik.LastIkUs + " µs · 가드 " + run.Guard.LastGuardUs + " µs");
         Assert.True(run.Project(run.Ik.Target(1), out var px, out var py) && px is > 0 and < 320 && py is > 0 and < 192, "투영 " + px + "," + py);
@@ -29321,7 +29339,7 @@ public sealed class AvatarActingIsolatedTests
 #if DEBUG
         const double RemuxGate = 80, TickGate = 50;
 #else
-        const double RemuxGate = 10, TickGate = 16.7;
+        const double RemuxGate = 10, TickGate = CiFrameBudget.Ms;
 #endif
         // ── CLIP-3: 배압 가드 — 1·2·4·8·16 s 지터 백오프 · 500 msg/s 셰딩 · 우선 레인 · 테일 드롭 · 지연 폐기 · µs 예산 · 무할당 ──
         var g = new SG.SocketBackpressureDropoutGuard();
@@ -29991,12 +30009,12 @@ public sealed class MultiAvatarTalkshowIsolatedTests
         Assert.True(float.IsFinite(prog.Position.X) && prog.VFovDeg > 5f && prog.VFovDeg < 90f, "프로그램 캠");
         for (var a = 0; a < 3; a++) Assert.True(float.IsFinite(run.Face(a).Aperture) && float.IsFinite(z.Pose(a).ErrorDeg));
         var tk = new double[60]; var med = double.MaxValue;
-        for (var attempt = 0; attempt < 5 && med >= 16.7; attempt++)
+        for (var attempt = 0; attempt < 5 && med >= CiFrameBudget.Ms; attempt++)
         {
             for (var i = 0; i < 60; i++) { run.Step(); tk[i] = run.LastTickMs; }
             Array.Sort(tk); med = Math.Min(med, tk[30]);
         }
-        Assert.True(med < 16.7, "중앙 틱 " + med + " ms");
+        Assert.True(med < CiFrameBudget.Ms, "중앙 틱 " + med + " ms");
         run.Dispose();
     }
 }
@@ -30136,14 +30154,14 @@ public sealed class BroadcastMcrIsolatedTests
         Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, e => e.Key == "_bcastMcr" && e.Category == 0);
         // 프레임 예산(중앙값 · 최선 N)
         var tk = new double[60]; var med = double.MaxValue;
-        for (var attempt = 0; attempt < 5 && med >= 16.7; attempt++)
+        for (var attempt = 0; attempt < 5 && med >= CiFrameBudget.Ms; attempt++)
         {
             if (attempt > 0) Thread.Sleep(150);
             for (var i = 0; i < 60; i++) { run.Step(); tk[i] = run.LastTickMs; }
             Array.Sort(tk); med = Math.Min(med, tk[30]);
         }
-        if (med >= 16.7) info += " | " + ProcessCpuDiag();
-        Assert.True(med < 16.7, "중앙 틱 " + med + " ms · " + info);
+        if (med >= CiFrameBudget.Ms) info += " | " + ProcessCpuDiag();
+        Assert.True(med < CiFrameBudget.Ms, "중앙 틱 " + med + " ms · " + info);
         run.Dispose();
         talk.Dispose();
         // 40만 스플랫 공용 버퍼(LOH) 즉시 회수 — 후속 비병렬 프레임 예산 테스트 중 Gen2 압축 방지
@@ -30185,6 +30203,9 @@ public sealed class InteractiveShowrunnerIsolatedTests
         var talk = new PromptFlowStudio.Services.Talkshow.MultiAvatarTalkshowStudioRunner(1500);
         var mcr = new BMc.BroadcastMcrStudioRunner(talk, envSplats: 60_000, bodySplats: 20_000, faceSplats: 4_000);
         var run = new Shw.InteractiveShowrunnerStudioRunner(mcr);
+        // v18.0.7 가상 시계: 레이어/MCR 틱 예산 판정을 호스트 선점·부하와 분리(정지 시계 = 측정 지연 0 · 1 회 결정론)
+        var vcs = new VirtualTimeProvider();
+        run.Clock = vcs; mcr.Clock = vcs;
         Assert.Same(run, mcr.Layer);
         mcr.Prepare();
         for (var i = 0; i < 40; i++) run.Step();
@@ -30246,15 +30267,16 @@ public sealed class InteractiveShowrunnerIsolatedTests
         Assert.True(run.Submit("재활용검증", "!ball", 0));
         run.Step();
         Assert.True(gg.Admitted == 1 && gg.Recycled >= 1, "결정적 재활용 " + gg.Recycled + " 허가 " + gg.Admitted + " 빈 슬롯 " + sp.FreeSlots);
-        // MCR 프레임 예산(중앙값 · 최선 N)
+        // MCR 프레임 예산: 실 Stopwatch 복원(v18.0.7 CI 헤드룸) — 가상 시계는 위 가드 결정론 구간 전용, 프레임 성능 회귀는 실측으로 감지
+        run.Clock = TimeProvider.System; mcr.Clock = TimeProvider.System;
+        for (var i = 0; i < 10; i++) run.Step();   // 시계 전환 후 워밍업
         var tk = new double[60]; var med = double.MaxValue;
-        for (var attempt = 0; attempt < 5 && med >= 16.7; attempt++)
+        for (var attempt = 0; attempt < 3 && med >= CiFrameBudget.Ms; attempt++)
         {
-            if (attempt > 0) Thread.Sleep(150);
             for (var i = 0; i < 60; i++) { run.Step(); tk[i] = mcr.LastTickMs; }
             Array.Sort(tk); med = Math.Min(med, tk[30]);
         }
-        Assert.True(med < 16.7, "중앙 틱 " + med + " ms · " + info);
+        Assert.True(med < CiFrameBudget.Ms, "중앙 틱 " + med + " ms · " + info);
         run.Dispose(); mcr.Dispose(); talk.Dispose();
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
     }
@@ -30407,14 +30429,14 @@ public sealed class LiveCommerceIsolatedTests
         Assert.True(alloc == 0, "커머스 MCR 틱 할당 " + alloc + " · " + run.Summary());
         // 레이어 예산 초과는 측정 창(60 f) 단위 최선값 — 공유 머신 스케줄러 지터 1 회가 전체 판정을 깨지 않도록(최대 5 창)
         var tk = new double[60]; var med = double.MaxValue; var over = long.MaxValue;
-        for (var attempt = 0; attempt < 5 && (med >= 16.7 || over > 0); attempt++)
+        for (var attempt = 0; attempt < 5 && (med >= CiFrameBudget.Ms || over > 0); attempt++)
         {
             if (attempt > 0) Thread.Sleep(150);
             var ob0 = run.LayerOverBudget;
             for (var i = 0; i < 60; i++) { run.Step(); tk[i] = mcr.LastTickMs; }
             Array.Sort(tk); med = Math.Min(med, tk[30]); over = Math.Min(over, run.LayerOverBudget - ob0);
         }
-        Assert.True(med < 16.7 && over == 0, "중앙 틱 " + med + " ms · 창 레이어 초과 " + over + " · 레이어 최대 " + run.MaxLayerMs + " · 상품 " + run.Inspection.LastUs + " µs · " + run.Summary());
+        Assert.True(med < CiFrameBudget.Ms && over == 0, "중앙 틱 " + med + " ms · 창 레이어 초과 " + over + " · 레이어 최대 " + run.MaxLayerMs + " · 상품 " + run.Inspection.LastUs + " µs · " + run.Summary());
         run.Dispose(); shw.Dispose(); mcr.Dispose(); talk.Dispose();
         GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
     }
@@ -30603,7 +30625,7 @@ public sealed class LiveToReelsFactoryIsolatedTests
                 for (var i = 0; i < frameBuf.Length; i++) frameBuf[i] = MathF.Sin(i * 0.001f + f) * 0.5f + frameBuf[i] * 0.5f;   // MCR 프레임 대용 연산
                 det.Step(now += 16);
                 var ms = swf.Elapsed.TotalMilliseconds - f0;
-                worst = Math.Max(worst, ms); if (ms > 16.7) cnt++;
+                worst = Math.Max(worst, ms); if (ms > CiFrameBudget.Ms) cnt++;
                 var rest = 1000.0 / 60 * (f + 1) - swf.Elapsed.TotalMilliseconds;
                 if (rest > 1) Thread.Sleep((int)rest);
             }
@@ -30842,13 +30864,13 @@ public sealed class MasterStationIsolatedTests
         // ── 60 fps 예산(편성 레이어 결선) ──
         fo.Enabled = false;
         var tk = new double[60]; var lu = new double[60]; var med = double.MaxValue; var lmed = double.MaxValue;
-        for (var attempt = 0; attempt < 5 && (med >= 16.7 || lmed >= 1_000); attempt++)
+        for (var attempt = 0; attempt < 5 && (med >= CiFrameBudget.Ms || lmed >= 1_000); attempt++)
         {
             if (attempt > 0) Thread.Sleep(150);
             for (var i = 0; i < 60; i++) { mcr.Step(); tk[i] = mcr.LastTickMs; lu[i] = st.LastLayerUs; }
             Array.Sort(tk); med = Math.Min(med, tk[30]); Array.Sort(lu); lmed = Math.Min(lmed, lu[30]);
         }
-        Assert.True(med < 16.7 && lmed < 1_000, "중앙 틱 " + med + " ms · 레이어 중앙 " + lmed + " µs (최대 " + st.MaxLayerUs + ")");
+        Assert.True(med < CiFrameBudget.Ms && lmed < 1_000, "중앙 틱 " + med + " ms · 레이어 중앙 " + lmed + " µs (최대 " + st.MaxLayerUs + ")");
         st.Dispose(); mcr.Dispose(); talk.Dispose();
 
         // ── STAT-4: 카탈로그 · HUD · 레이아웃 · 모달 렌더 · 구독 해제 ──
@@ -31334,13 +31356,13 @@ public sealed class SemanticChatWeatherIsolatedTests
         }
         Assert.True(layerAlloc == 0, "MCR 날씨 틱 할당 " + layerAlloc);
         var tk = new double[60]; var ov = new double[60]; var ly = new double[60]; var med = double.MaxValue; var ovMed = double.MaxValue; var lyMed = double.MaxValue;
-        for (var attempt = 0; attempt < 5 && (med >= 16.7 || ovMed >= 3_000 || lyMed >= 3_000); attempt++)
+        for (var attempt = 0; attempt < 5 && (med >= CiFrameBudget.Ms || ovMed >= 3_000 || lyMed >= 3_000); attempt++)
         {
             if (attempt > 0) Thread.Sleep(150);
             for (var i = 0; i < 60; i++) { if ((i & 1) == 0) for (var k = 0; k < 17; k++) run.Simulator.Emit((SG.ChatPlatform)(k % 3), ref rng, ub); mcr.Step(); tk[i] = mcr.LastTickMs; ov[i] = run.Weather.LastOverlayUs; ly[i] = run.LastLayerUs; }
             Array.Sort(tk); med = Math.Min(med, tk[30]); Array.Sort(ov); ovMed = Math.Min(ovMed, ov[30]); Array.Sort(ly); lyMed = Math.Min(lyMed, ly[30]);
         }
-        Assert.True(med < 16.7 && ovMed < 3_000 && lyMed < 3_000, "중앙 틱 " + med + " ms · 오버레이 중앙 " + ovMed + " µs · 레이어 중앙 " + lyMed + " (최대 " + run.Weather.MaxOverlayUs + "/" + run.MaxLayerUs + ")");
+        Assert.True(med < CiFrameBudget.Ms && ovMed < 3_000 && lyMed < 3_000, "중앙 틱 " + med + " ms · 오버레이 중앙 " + ovMed + " µs · 레이어 중앙 " + lyMed + " (최대 " + run.Weather.MaxOverlayUs + "/" + run.MaxLayerUs + ")");
         Assert.True(run.Vector.Hype > run.Vector.Sadness, "슬픔 → 열광 전환 " + run.Vector.Hype);
         run.Dispose();
         Assert.True(ReferenceEquals(mcr.Mcr.Overlay, banner) && ReferenceEquals(mcr.Compositor.Raster.Modulator, shadows), "해제 시 체인 원복");
@@ -31689,7 +31711,7 @@ public sealed class ReelsVisualPolishIsolatedTests
         using var burned = new Vt.SegmentedChunkStream();
         var res = motion2.Burn(clip, "움직이는 영상 위 자막. 두번째 문장도 번인".AsSpan(), burned);
         Assert.True(res.Ok && res.Frames == 60 && res.Width == W && res.Height == H && res.Decoder == Vps.VideoDecoderBackend.ManagedBaseline && motion2.BurnIn.BurnedFrames > 30, "번-인 " + res.Error);
-        Assert.True(res.MedianFrameMs < 16.7 && res.P95FrameMs < 33, "프레임 예산 중앙 " + res.MedianFrameMs + " p95 " + res.P95FrameMs + " 최대 " + res.MaxFrameMs);
+        Assert.True(res.MedianFrameMs < CiFrameBudget.Ms && res.P95FrameMs < 2 * CiFrameBudget.Ms, "프레임 예산 중앙 " + res.MedianFrameMs + " p95 " + res.P95FrameMs + " 최대 " + res.MaxFrameMs);
         // 결과 디코드: 자막 구간 프레임 ≠ 원본 · 첫 프레임(큐 전) = 원본 · 원본 움직임 유지
         using (var rb = new Vps.HardwareVideoDemuxFrameDecoder { PreferHardware = false })
         using (var ro = new Vps.HardwareVideoDemuxFrameDecoder { PreferHardware = false })
@@ -31723,7 +31745,7 @@ public sealed class ReelsVisualPolishIsolatedTests
                 ms[f] = (Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency;
             }
             Array.Sort(ms);
-            Assert.True(ms[15] < 16.7 && hs.Decoded == 30 && hs.Direct >= 28, "1080p 디코드 + 번-인 중앙 " + ms[15] + " ms · 직접 " + hs.Direct + " · 디코드 " + hs.LastRenderUs + " µs · 번인 " + hb.LastApplyUs + " µs");
+            Assert.True(ms[15] < CiFrameBudget.Ms && hs.Decoded == 30 && hs.Direct >= 28, "1080p 디코드 + 번-인 중앙 " + ms[15] + " ms · 직접 " + hs.Direct + " · 디코드 " + hs.LastRenderUs + " µs · 번인 " + hb.LastApplyUs + " µs");
             var hiAlloc = AllocationProbe.MinAllocated(() => { hs.Render(29, 30, hy, huv, 1080, 1920); hb.Apply(hy, huv, 1080, 1920, 29, 30); });
             Assert.True(hiAlloc == 0, "1080p 번-인 경로 할당 " + hiAlloc);
         }
@@ -38845,5 +38867,183 @@ public sealed class ViralGrowthStrategyPipelineTests
         Assert.Equal(2, bridge.Rejected);
         Assert.Equal(2, bridge.Consumed);
         Assert.Equal(2, bridge.Current.Sequence);
+    }
+}
+
+/// <summary>v18.0.7: 3대 슈퍼-워크스페이스 E2E 클로즈드 루프 — 그로스 룸(스파이 역공학 · 트렌드 · 제휴) → 브리지 1(0-카피) → 숏폼 팩토리(①~④ 원클릭) → 브리지 2(0-카피) → 소셜 퍼블리셔(YouTube 8 MB 청크 · Instagram 컨테이너 발행) · 라이브 RSS 폴백 · 누수 0.</summary>
+[Collection("TimingSensitivePerformance")]   // 메모리 누수 측정(GC 카운터) → 비병렬
+public sealed class ClosedLoopAutonomousMediaPipelineTests
+{
+    private sealed class StubRssHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _send;
+        public int Calls;
+        public StubRssHandler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send) => _send = send;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) { Interlocked.Increment(ref Calls); return _send(request, ct); }
+    }
+
+    [Fact]
+    public async Task ClosedLoopAutonomousMediaPipeline_Check()
+    {
+        // ── STB-2: 라이브 RSS 수신 — 플래그 미설정 = Mock 동기 완료(네트워크 0) · 라이브 = 실 피드 · 오류/스키마 위반/예산 초과 = Mock 폴백 ──
+        const string liveFeed = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><rss version=\"2.0\" xmlns:ht=\"https://trends.google.com/trending/rss\"><channel><title>Daily Search Trends</title>" +
+                                "<item><title>캠핑 의자</title><ht:approx_traffic>200,000+</ht:approx_traffic><ht:prev_traffic>50,000+</ht:prev_traffic></item>" +
+                                "<item><title>전기 그릴</title><ht:approx_traffic>20,000+</ht:approx_traffic></item></channel></rss>";
+        string? seenUrl = null;
+        var okHandler = new StubRssHandler((rq, _) => { seenUrl = rq.RequestUri!.AbsoluteUri; return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(liveFeed, System.Text.Encoding.UTF8, "application/rss+xml") }); });
+        using (var off = new PromptFlowStudio.Services.Ui.LiveTrendRssHttpFetcher(okHandler) { ForceLive = false })
+        {
+            var vt = off.FetchAsync();
+            Assert.True(vt.IsCompletedSuccessfully, "Mock 경로 = 동기 완료(0 ms)");
+            Assert.True((await vt).Span.SequenceEqual(PromptFlowStudio.Services.Ui.RealtimeTrendRssAndAffiliateValidator.MockFeed));
+            Assert.Equal(PromptFlowStudio.Services.Ui.TrendFeedSource.Mock, off.LastSource);
+            Assert.Equal(0, okHandler.Calls);
+        }
+        using (var live = new PromptFlowStudio.Services.Ui.LiveTrendRssHttpFetcher(okHandler) { ForceLive = true })
+        {
+            var f1 = await live.FetchAsync();
+            Assert.Equal(PromptFlowStudio.Services.Ui.TrendFeedSource.Live, live.LastSource);
+            Assert.Equal(PromptFlowStudio.Services.Ui.LiveTrendRssHttpFetcher.GoogleTrendsKr, seenUrl);
+            Assert.Equal(liveFeed, f1.ToString());
+            Assert.Equal(2, live.LastSpikes);
+            Assert.True(System.Runtime.InteropServices.MemoryMarshal.TryGetArray(f1, out var s1));
+            var f2 = await live.FetchAsync();
+            Assert.True(System.Runtime.InteropServices.MemoryMarshal.TryGetArray(f2, out var s2) && ReferenceEquals(s1.Array, s2.Array), "수신 버퍼 재사용");
+            Assert.Equal(2, live.LiveFetches);
+        }
+        var bad = new StubRssHandler((_, _) => Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable)));
+        using (var down = new PromptFlowStudio.Services.Ui.LiveTrendRssHttpFetcher(bad) { ForceLive = true, BackoffBaseMs = 1, MaxAttempts = 3 })
+        {
+            var f = await down.FetchAsync();
+            Assert.Equal(PromptFlowStudio.Services.Ui.TrendFeedSource.Fallback, down.LastSource);
+            Assert.True(f.Span.SequenceEqual(PromptFlowStudio.Services.Ui.RealtimeTrendRssAndAffiliateValidator.MockFeed));
+            Assert.Equal(3, bad.Calls);                                           // 지수 백오프 3 회 시도
+            Assert.Contains("503", down.LastError);
+        }
+        var junk = new StubRssHandler((_, _) => Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent("<html>captcha</html>") }));
+        using (var schema = new PromptFlowStudio.Services.Ui.LiveTrendRssHttpFetcher(junk) { ForceLive = true, BackoffBaseMs = 1, MaxAttempts = 1 })
+        {
+            await schema.FetchAsync();
+            Assert.Equal(PromptFlowStudio.Services.Ui.TrendFeedSource.Fallback, schema.LastSource);
+            Assert.StartsWith("스키마 위반", schema.LastError);
+        }
+        var hang = new StubRssHandler(async (_, ct) => { await Task.Delay(Timeout.Infinite, ct); return new HttpResponseMessage(); });
+        using (var slow = new PromptFlowStudio.Services.Ui.LiveTrendRssHttpFetcher(hang) { ForceLive = true, BudgetMs = 30 })
+        {
+            var f = await slow.FetchAsync();                                     // 무응답 → 예산 취소(시간 비교 단언 없음 · 취소 신호 기반)
+            Assert.Equal(PromptFlowStudio.Services.Ui.TrendFeedSource.Fallback, slow.LastSource);
+            Assert.Contains("예산", slow.LastError);
+            Assert.Equal(1, slow.Fallbacks);
+            Assert.True(f.Span.SequenceEqual(PromptFlowStudio.Services.Ui.RealtimeTrendRssAndAffiliateValidator.MockFeed));
+        }
+
+        using var spy = new PromptFlowStudio.Services.CompetitorSpy.CompetitorViralSpyStudioRunner();
+        using var trend = new PromptFlowStudio.Services.Ui.LiveTrendRssHttpFetcher(okHandler) { ForceLive = false };
+        var ctx = new PromptFlowStudio.Services.Ui.ViralGrowthStrategyPipelineContext();
+        var growthBridge = new PromptFlowStudio.Services.Ui.GrowthToShortsFactoryBridge();
+        var ws = new PromptFlowStudio.Services.Ui.ShortsFactoryWorkspaceContext();
+        var p = new PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext();
+        var o = new PromptFlowStudio.Services.Ui.ShortsFactoryOneClickRenderOrchestrator();
+        var pubBridge = new PromptFlowStudio.Services.Ui.ShortsToPublisherHandoffBridge();
+        var guard = new PromptFlowStudio.Services.SocialMedia.UploadNetworkRecoverySafetyGuard { Delay = (_, _) => Task.CompletedTask };
+        var mock = new PromptFlowStudio.Services.SocialMedia.ResumableUploadMockHandler();
+        using var engine = new PromptFlowStudio.Services.SocialMedia.ProductionResumableUploadSessionEngine(mock, guard, PromptFlowStudio.Services.SocialMedia.ProductionResumableUploadSessionEngine.DefaultChunkSize);
+        var stages = new List<PromptFlowStudio.Services.Ui.OneClickRenderStage>();
+        o.OnChange += () => { if (stages.Count == 0 || stages[^1] != o.Stage) stages.Add(o.Stage); };
+        var buf = new byte[16 * 1024];
+        var url = PromptFlowStudio.Services.ViralCommerce.VideoContextAffiliateProductMatcherEngine.Urls[4];
+        var coupang = PromptFlowStudio.Services.ViralCommerce.AffiliateNetwork.CoupangPartners;
+
+        async Task Cycle(int cycle)
+        {
+            // ① 그로스 룸 — 스파이 역공학(이상치 훅 · 컷 청사진) + 트렌드(Mock) + 제휴 → 4 단계 기획안
+            var hook = spy.SelectedHook;
+            Assert.False(string.IsNullOrEmpty(hook), "스파이 이상치 훅");
+            var cuts = spy.Decompiler.Blueprint.CutCount;
+            var durMs = (int)(spy.Decompiler.Blueprint.DurationSec * 1000);
+            Assert.True(cuts > 0 && durMs > 0, "역공학 컷 청사진");
+            var feed = await trend.FetchAsync();
+            Assert.True(ctx.RunChain(hook, cuts, durMs, feed.Span, url, "growth_shorts", coupang));
+            Assert.True(ctx.IsComplete && ctx.StageCount == 4);
+            Assert.Equal("캠핑 의자", ctx.TrendKeyword.ToString());
+            Assert.Contains(hook, ctx.Script.ToString());
+            Assert.Equal(PromptFlowStudio.Services.Ui.AffiliateNoticeLint.Ok, ctx.Pinned.Lint);
+            var scriptText = ctx.Script.ToString();
+            var growthTags = ctx.Hashtags.ToString();
+
+            // ② 브리지 1 — 기획안 0-카피 핸드오프 · 지문 일치
+            Assert.True(growthBridge.Push(ctx));
+            Assert.True(growthBridge.TryConsume(out var plan));
+            Assert.True(plan.IsLive);
+            Assert.True(plan.Script.Span == ctx.Script && plan.Hashtags.Span == ctx.Hashtags, "기획안 = 전략 버퍼 슬라이스(0-카피)");
+            Assert.Equal(plan.Fingerprint, plan.ComputeFingerprint());
+
+            // ③ 숏폼 팩토리 — 대본 · 줌 펀치 수화 → ① 트림 → ② 키네틱 자막 → ③ 리텐션 줌펀치 → ④ fMP4 · 썸네일 원클릭
+            p.SetPlanScript(plan.Script.ToString());
+            ws.SetZoomPunches(plan.ZoomPunchesFor(ws.DurationMs));
+            Assert.True(ws.ZoomPunchCount > 0);
+            p.Hydrate(ws);
+            Assert.True(p.HasPlanScript);
+            var sliced = p.BuildSlicedScript();
+            Assert.StartsWith(sliced, scriptText);                                 // 절삭 대본 = 기획안 대본 앞부분
+            stages.Clear();
+            Assert.True(o.Render(p), o.LastError);
+            Assert.Equal(new[] { PromptFlowStudio.Services.Ui.OneClickRenderStage.Trim, PromptFlowStudio.Services.Ui.OneClickRenderStage.Caption, PromptFlowStudio.Services.Ui.OneClickRenderStage.Retention, PromptFlowStudio.Services.Ui.OneClickRenderStage.Export, PromptFlowStudio.Services.Ui.OneClickRenderStage.Done }, stages);
+            // 키네틱 자막 단어 = 구간 슬롯 중 기획안 대본이 채운 단어(대본 < 슬롯이면 대본 전량)
+            Assert.Equal(Math.Min(p.Caption.WordCount, scriptText.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length), o.CaptionWords);
+            var b = o.Binder;
+            Assert.Equal(PromptFlowStudio.Services.Ui.SliceBindStatus.Bound, b.Status);
+            Assert.Equal(p.RetentionAudio.PunchCount, b.PunchCount);
+            Assert.True(b.PunchCount > 0, "리텐션 줌 펀치");
+            Assert.Equal(0, b.Mux.ReencodeGops);
+            Assert.Equal(0, b.LosslessFaults);
+            Assert.Equal(PromptFlowStudio.Services.ViralExport.ExportStatus.Ready, o.LastExport.Status);
+            Assert.True(PromptFlowStudio.Services.ViralExport.FastShortsMuxingHardwareExporterEngine.TryInspect(o.Output.Span, out var insp) && insp.Valid, "fMP4 무결성");
+            Assert.True(o.ThumbnailPng.Length > 64 && o.ThumbnailPng.Span[..8].SequenceEqual(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }));
+
+            // ④ 브리지 2 — 렌더 결과 0-카피 핸드오프(기획안 해시태그 관통)
+            var r = PromptFlowStudio.Services.Ui.ShortsRenderResult.Capture(o, ws);
+            Assert.True(r.IsLive && r.IsVertical);
+            var title = PromptFlowStudio.Services.Ui.ShortsToPublisherHandoffBridge.ComposeTitle(sliced, o.SourceName);
+            Assert.True(pubBridge.Push(r, title, plan.Hashtags.ToString()));
+            Assert.True(pubBridge.TryConsume(out var got));
+            Assert.True(got.Video.Span == o.Output.Span && got.Render.ThumbnailPng.Span == o.ThumbnailPng.Span, "퍼블리셔 = 팩토리 버퍼(0-카피)");
+            Assert.Equal(growthTags, got.Hashtags);
+            Assert.Equal(title, got.Title);
+
+            // ⑤ 소셜 퍼블리셔 — YouTube Resumable(8 MB 청크) 조립 · 업로드 / Instagram 컨테이너 폼 · 발행
+            Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteYouTubeResumableInit(got, "private", "tok", buf, out var n, out var bodyOff));
+            Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryGetHeaderInt64(buf.AsSpan(0, n), "X-Upload-Content-Length"u8, out var xl));
+            Assert.Equal(o.LastExport.Bytes, xl);
+            using (var j = System.Text.Json.JsonDocument.Parse(buf.AsMemory(bodyOff, n - bodyOff)))
+                Assert.Equal(title + "\n" + growthTags, j.RootElement.GetProperty("snippet").GetProperty("description").GetString());
+            mock.Reset();
+            var yt = await engine.UploadAsync(PromptFlowStudio.Services.SocialMedia.UploadPlatform.YouTube, got);
+            Assert.True(yt.Ok, yt.Error);
+            var chunk8 = PromptFlowStudio.Services.SocialMedia.ProductionResumableUploadSessionEngine.DefaultChunkSize;
+            Assert.Equal((o.LastExport.Bytes + chunk8 - 1) / chunk8, yt.Chunks);
+            Assert.Equal((long)o.LastExport.Bytes, (long)yt.Bytes);
+            Assert.True(mock.Received(PromptFlowStudio.Services.SocialMedia.UploadPlatform.YouTube).SequenceEqual(o.Output.Span), "YouTube 수신 = 팩토리 fMP4");
+            Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteInstagramReelsContainerForm(got, default, true, buf, out n));
+            var form = System.Text.Encoding.ASCII.GetString(buf, 0, n).Split('&').Select(kv => kv.Split('=', 2)).ToDictionary(a => a[0], a => Uri.UnescapeDataString(a[1]));
+            Assert.Equal("REELS", form["media_type"]);
+            Assert.Equal(title + "\n" + growthTags, form["caption"]);
+            var ig = await engine.UploadAsync(PromptFlowStudio.Services.SocialMedia.UploadPlatform.Instagram, got);
+            Assert.True(ig.Ok, ig.Error);
+            Assert.Equal(1, mock.Publishes);                                      // media_publish 발행 큐 적재
+            Assert.True(mock.Received(PromptFlowStudio.Services.SocialMedia.UploadPlatform.Instagram).SequenceEqual(o.Output.Span), "Instagram 수신 = 팩토리 fMP4");
+            Assert.Equal(2L * (cycle + 1), (long)pubBridge.Consumed + growthBridge.Consumed);
+        }
+
+        await Cycle(0);                                                          // 워밍업(JIT · 버퍼 확보)
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        var mem0 = GC.GetTotalMemory(true);
+        for (var c = 1; c <= 3; c++) await Cycle(c);
+        mock.Reset();
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        var leak = GC.GetTotalMemory(true) - mem0;
+        Assert.True(leak < 256 * 1024, "클로즈드 루프 3 회 잔류 " + leak + " B");
+        Assert.Equal(PromptFlowStudio.Services.Ui.TrendFeedSource.Mock, trend.LastSource);
+        Assert.Equal(0, growthBridge.Rejected + pubBridge.Rejected);
     }
 }

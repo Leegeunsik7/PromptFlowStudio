@@ -24,6 +24,8 @@ public sealed class DistributedHeterogeneousGpuTopologyEngine
     public static readonly string[] BackendNames = { "CPU SIMD", "DirectX 12", "Vulkan", "Metal" };
     public static readonly string[] LinkNames = { "로컬", "LAN", "클라우드" };
     private static readonly double TickMs = 1000.0 / Stopwatch.Frequency;
+    private readonly TimeProvider _clock;
+    private readonly double _clockMs; // 가상/시스템 시계 1 틱 = ms
     private static readonly int Pad = (MaxNodes + Vector<float>.Count - 1) / Vector<float>.Count * Vector<float>.Count;
 
     private readonly object _gate = new();
@@ -43,7 +45,18 @@ public sealed class DistributedHeterogeneousGpuTopologyEngine
     private int _count;
     private long _probes, _version;
 
-    public DistributedHeterogeneousGpuTopologyEngine() => DetectLocal();
+    public DistributedHeterogeneousGpuTopologyEngine() : this(null) { }
+
+    /// <summary>v18.0.7: 시계 주입(하트비트 · 건강 · 페일백 지연 판정 = TimeProvider 기준 · null = 시스템 시계). 테스트는 가상 시계로 결정론 전진.</summary>
+    public DistributedHeterogeneousGpuTopologyEngine(TimeProvider? clock)
+    {
+        _clock = clock ?? TimeProvider.System;
+        _clockMs = 1000.0 / _clock.TimestampFrequency;
+        DetectLocal();
+    }
+
+    public TimeProvider Clock => _clock;
+    public double ClockTickMs => _clockMs;
 
     public float EmaAlpha { get; set; } = 0.3f;
     public double HeartbeatTimeoutMs { get; set; } = 60;
@@ -105,7 +118,7 @@ public sealed class DistributedHeterogeneousGpuTopologyEngine
             if (_count >= MaxNodes) throw new InvalidOperationException("노드 상한 " + MaxNodes);
             var n = _count;
             _name[n] = name; _backend[n] = backend; _link[n] = link; _vramTotal[n] = Math.Max(1, vramBytes);
-            _connected[n] = 1; _heartbeatTs[n] = Stopwatch.GetTimestamp();
+            _connected[n] = 1; _heartbeatTs[n] = _clock.GetTimestamp();
             _lanes[n] = Math.Max(1, lanes); _mpx[n] = priorMpx; _bw[n] = priorBwMBs; _rtt[n] = priorRttMs; _rttUs[n] = (int)(priorRttMs * 1000); _healthy[n] = true;
             Volatile.Write(ref _count, n + 1);
             Interlocked.Increment(ref _version);
@@ -131,14 +144,14 @@ public sealed class DistributedHeterogeneousGpuTopologyEngine
     public float RttMs(int n) => _rtt[n];
     public float Weight(int n) => _weight[n];
     public float Load(int n) => _load[n];
-    public double HeartbeatAgeMs(int n) => (Stopwatch.GetTimestamp() - Volatile.Read(ref _heartbeatTs[n])) * TickMs;
+    public double HeartbeatAgeMs(int n) => (_clock.GetTimestamp() - Volatile.Read(ref _heartbeatTs[n])) * _clockMs;
 
     public void SetConnected(int n, bool on) { Volatile.Write(ref _connected[n], on ? 1 : 0); Interlocked.Increment(ref _version); }
 
     // ── 핫패스 보고 ──
     public void Heartbeat(int n, double rttMs)
     {
-        Volatile.Write(ref _heartbeatTs[n], Stopwatch.GetTimestamp());
+        Volatile.Write(ref _heartbeatTs[n], _clock.GetTimestamp());
         Volatile.Write(ref _rttUs[n], (int)Math.Min(int.MaxValue, rttMs * 1000));
     }
 
@@ -149,7 +162,7 @@ public sealed class DistributedHeterogeneousGpuTopologyEngine
         Interlocked.Add(ref _bytes[n], bytes);
         Interlocked.Add(ref _xferTicks[n], xferTicks);
         Interlocked.Increment(ref _tiles[n]);
-        Volatile.Write(ref _heartbeatTs[n], Stopwatch.GetTimestamp());
+        Volatile.Write(ref _heartbeatTs[n], _clock.GetTimestamp());
     }
 
     /// <summary>VRAM 예약(잔량 부족 = false · 무잠금 CAS).</summary>
@@ -178,7 +191,7 @@ public sealed class DistributedHeterogeneousGpuTopologyEngine
         {
             var t0 = Stopwatch.GetTimestamp();
             var n = _count;
-            var now = t0;
+            var now = _clock.GetTimestamp();
             for (var i = 0; i < n; i++)
             {
                 var px = Interlocked.Read(ref _pixels[i]); var ct = Interlocked.Read(ref _computeTicks[i]);
@@ -186,10 +199,10 @@ public sealed class DistributedHeterogeneousGpuTopologyEngine
                 var dPx = px - _lastPixels[i]; var dCt = ct - _lastCompute[i]; var dBy = by - _lastBytes[i]; var dXt = xt - _lastXfer[i];
                 _lastPixels[i] = px; _lastCompute[i] = ct; _lastBytes[i] = by; _lastXfer[i] = xt;
                 // 표본 없는 구간은 이전 EMA 유지(순간값 = EMA)
-                _mpxInst[i] = dCt > 0 ? (float)(dPx / (dCt * TickMs * 1000.0)) : _mpx[i];
-                _bwInst[i] = dXt > 0 && dBy > 0 ? (float)(dBy / (dXt * TickMs / 1000.0) / (1024 * 1024)) : _bw[i];
+                _mpxInst[i] = dCt > 0 ? (float)(dPx / (dCt * _clockMs * 1000.0)) : _mpx[i];
+                _bwInst[i] = dXt > 0 && dBy > 0 ? (float)(dBy / (dXt * _clockMs / 1000.0) / (1024 * 1024)) : _bw[i];
                 _rttInst[i] = Volatile.Read(ref _rttUs[i]) / 1000f;
-                _healthy[i] = Volatile.Read(ref _connected[i]) != 0 && (now - Volatile.Read(ref _heartbeatTs[i])) * TickMs <= HeartbeatTimeoutMs;
+                _healthy[i] = Volatile.Read(ref _connected[i]) != 0 && (now - Volatile.Read(ref _heartbeatTs[i])) * _clockMs <= HeartbeatTimeoutMs;
                 _load[i] = (float)((double)Interlocked.Read(ref _vramUsed[i]) / _vramTotal[i]);
             }
             Ema(_mpx, _mpxInst, n); Ema(_bw, _bwInst, n); Ema(_rtt, _rttInst, n);

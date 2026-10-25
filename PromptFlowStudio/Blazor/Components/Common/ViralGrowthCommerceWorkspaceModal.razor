@@ -1,5 +1,6 @@
 @using PromptFlowStudio.Services.Ui
 @inject GrowthToShortsFactoryBridge GrowthPlan
+@inject LiveTrendRssHttpFetcher TrendFeed
 @inject PromptFlowStudio.Services.CompetitorSpy.CompetitorViralSpyStudioRunner Spy
 
 @* [PromptFlow Studio v18.0.0] 📈 바이럴 그로스 룸 — v17.95 골든아워 댓글 · v17.96 트렌드재킹 · v17.97 제휴 커머스 · v17.99 경쟁 채널 스파이를
@@ -120,12 +121,18 @@
     }
 
     /// <summary>⚡ 전략 체인 — 스파이 선택 훅 · 역공학 컷 수(없으면 기본) → 오프라인 RSS 피드 → 제휴 숏링크 → 고정 댓글.</summary>
-    private void RunChain()
+    private async Task RunChain()
+    {
+        var feed = await TrendFeed.FetchAsync(); // v18.0.7 PROMPTFLOW_TREND_LIVE=1 → 실 피드 · 미설정/실패 → Mock(0 ms)
+        ApplyChain(feed);
+    }
+
+    private void ApplyChain(ReadOnlyMemory<char> feed)
     {
         var hook = Spy.SelectedHook ?? FallbackHook;
         ref readonly var bp = ref Spy.Decompiler.Blueprint;
         var hasBp = Spy.Decompiler.Decompiles > 0;
-        var ok = Strategy.RunChain(hook, hasBp ? bp.CutCount : 0, hasBp ? (int)(bp.DurationSec * 1000) : 0, RealtimeTrendRssAndAffiliateValidator.MockFeed,
+        var ok = Strategy.RunChain(hook, hasBp ? bp.CutCount : 0, hasBp ? (int)(bp.DurationSec * 1000) : 0, feed.Span,
                                    PromptFlowStudio.Services.ViralCommerce.VideoContextAffiliateProductMatcherEngine.Urls[FallbackProduct], "growth_shorts",
                                    PromptFlowStudio.Services.ViralCommerce.AffiliateNetwork.CoupangPartners);
         _chainError = ok ? null : "전략 체인 실패 — " + RealtimeTrendRssAndAffiliateValidator.LintText(Strategy.Pinned.Lint);

@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.IO.MemoryMappedFiles;
 
 namespace PromptFlowStudio.Services.GpuSwarm;
@@ -72,7 +71,7 @@ public sealed class LowLatencyFrameAssemblyFallbackGuard : IDisposable
 {
     private const int MaxTiles = DynamicCloudRenderSwarmLoadBalancer.MaxTiles, MaxNodes = DistributedHeterogeneousGpuTopologyEngine.MaxNodes;
     private const long Assigned = 0, Writing = 1, Done = 2;
-    private static readonly double TickMs = 1000.0 / Stopwatch.Frequency;
+    private const int MaxWorkers = 64;
 
     private sealed class NodeQueue
     {
@@ -89,6 +88,12 @@ public sealed class LowLatencyFrameAssemblyFallbackGuard : IDisposable
     private readonly int[] _tx = new int[MaxTiles], _ty = new int[MaxTiles], _tw = new int[MaxTiles], _th = new int[MaxTiles], _owner = new int[MaxTiles], _reject = new int[MaxTiles];
     private readonly long[] _state = new long[MaxTiles], _deadline = new long[MaxTiles];
     private readonly ManualResetEventSlim _signal = new(false);
+    private readonly TimeProvider _clock;
+    private readonly double TickMs; // 시계 1 틱 = ms(토폴로지 시계 공유)
+    private readonly bool _virtualClock;
+    private readonly long[] _wake = new long[MaxWorkers]; // 가상 시계 대기 슬롯(전송 지연 만료 시각 · 0 = 비어 있음)
+    private int _workerGen;
+    private long _plannedFrame = -1;
     private readonly object _frameGate = new();
     private MappedFrameBuffer? _fb;
     private float[] _mainScratch = Array.Empty<float>();
@@ -102,6 +107,7 @@ public sealed class LowLatencyFrameAssemblyFallbackGuard : IDisposable
     public LowLatencyFrameAssemblyFallbackGuard(DistributedHeterogeneousGpuTopologyEngine topo, DynamicCloudRenderSwarmLoadBalancer lb)
     {
         _topo = topo; _lb = lb;
+        _clock = topo.Clock; TickMs = topo.ClockTickMs; _virtualClock = !ReferenceEquals(_clock, TimeProvider.System);
         for (var i = 0; i < MaxNodes; i++) _q[i] = new NodeQueue();
     }
 
@@ -122,6 +128,18 @@ public sealed class LowLatencyFrameAssemblyFallbackGuard : IDisposable
     public double MaxFallbackMs { get; private set; }
     public SimulatedLink? LinkOf(int n) => _links[n];
     public int TileCount => _count;
+    /// <summary>배정(계획 · 상태 · 큐 적재)까지 끝난 최근 프레임 번호 — 테스트/관측용 결정론 배리어.</summary>
+    public long PlannedFrame => Interlocked.Read(ref _plannedFrame);
+    /// <summary>가상 시계 대기 중 가장 이른 만료 시각(0 = 대기 없음) — 가상 시계 구동자가 정확히 이 시각까지만 전진(오버슈트 0).</summary>
+    public long NextClockWakeTimestamp
+    {
+        get
+        {
+            long min = 0;
+            for (var i = 0; i < MaxWorkers; i++) { var w = Volatile.Read(ref _wake[i]); if (w != 0 && (min == 0 || w < min)) min = w; }
+            return min;
+        }
+    }
     public int TileOwner(int i) => Volatile.Read(ref _owner[i]);
     public (int X, int Y, int W, int H) TileRect(int i) => (_tx[i], _ty[i], _tw[i], _th[i]);
 
@@ -152,7 +170,7 @@ public sealed class LowLatencyFrameAssemblyFallbackGuard : IDisposable
         {
             var t = new Thread(WorkerLoop) { IsBackground = true, Name = "PF.GPU.Node" + node + "." + k };
             lock (_threads) _threads.Add(t);
-            t.Start(node);
+            t.Start(node | ((Interlocked.Increment(ref _workerGen) - 1) % MaxWorkers << 8));
         }
         if (_keepalive is null)
         {
@@ -164,7 +182,7 @@ public sealed class LowLatencyFrameAssemblyFallbackGuard : IDisposable
     /// <summary>원격 연결 토글(명시 단절 = 즉시 비건강 → 다음 스캔에서 페일백).</summary>
     public void SetConnected(int node, bool on)
     {
-        if (!on) Volatile.Write(ref _disconnectTs[node], Stopwatch.GetTimestamp());
+        if (!on) Volatile.Write(ref _disconnectTs[node], _clock.GetTimestamp());
         _topo.SetConnected(node, on);
     }
 
@@ -221,7 +239,8 @@ public sealed class LowLatencyFrameAssemblyFallbackGuard : IDisposable
     // ── 워커 ──
     private void WorkerLoop(object? o)
     {
-        var node = (int)o!;
+        var node = (int)o! & 0xFF;
+        var slot = (int)o! >> 8;
         float[] scratch = Array.Empty<float>(), recv = Array.Empty<float>();
         while (!_stop)
         {
@@ -234,7 +253,7 @@ public sealed class LowLatencyFrameAssemblyFallbackGuard : IDisposable
                 var link = _links[node];
                 if (link is null) { RunLocal(node, tile, epoch, w, scratch); continue; }
                 if (recv.Length < w.Width * w.Height * 3) recv = new float[w.Width * w.Height * 3];
-                RunRemote(node, tile, epoch, w, scratch, recv, link);
+                RunRemote(node, slot, tile, epoch, w, scratch, recv, link);
             }
             catch (Exception ex) when (ex is not OutOfMemoryException) { PromptFlowStudio.Program.Log("GpuSwarm.Worker", ex); }
         }
@@ -248,10 +267,10 @@ public sealed class LowLatencyFrameAssemblyFallbackGuard : IDisposable
         if (Interlocked.CompareExchange(ref _state[i], Pack(epoch, Writing), Pack(epoch, Assigned)) != Pack(epoch, Assigned)) return false;
         var bytes = _tw[i] * _th[i] * 3 * sizeof(float);
         var reserved = _topo.ReserveVram(node, bytes);
-        var t0 = Stopwatch.GetTimestamp();
+        var t0 = _clock.GetTimestamp();
         var frame = _fb!.Frame(1 - Volatile.Read(ref _front));
         w.RenderTile(Interlocked.Read(ref _frame), _tx[i], _ty[i], _tw[i], _th[i], frame[((_ty[i] * _width + _tx[i]) * 3)..], _width * 3, scratch);
-        var ct = Stopwatch.GetTimestamp() - t0;
+        var ct = _clock.GetTimestamp() - t0;
         if (reserved) _topo.ReleaseVram(node, bytes);
         _topo.ReportTile(node, _tw[i] * _th[i], ct, 0, 0);
         _lb.Observe(_tx[i], _ty[i], _tw[i], _th[i], node, ct);
@@ -261,7 +280,7 @@ public sealed class LowLatencyFrameAssemblyFallbackGuard : IDisposable
     }
 
     /// <summary>원격 타일: 수신 슬랩 렌더 → 전송 지연 → 단절/탈취면 드롭 → CAS 커밋 → 행 블릿 → Done.</summary>
-    private void RunRemote(int node, int i, long epoch, ISwarmWorkload w, Span<float> scratch, Span<float> recv, SimulatedLink link)
+    private void RunRemote(int node, int slot, int i, long epoch, ISwarmWorkload w, Span<float> scratch, Span<float> recv, SimulatedLink link)
     {
         if (Volatile.Read(ref _state[i]) != Pack(epoch, Assigned)) { Interlocked.Increment(ref _stale); return; }
         if (!_topo.Connected(node) || link.Silent) return; // 블랙홀(결과 미도착)
@@ -270,13 +289,13 @@ public sealed class LowLatencyFrameAssemblyFallbackGuard : IDisposable
         if (!_topo.ReserveVram(node, bytes)) { Volatile.Write(ref _reject[i], 1); return; }
         try
         {
-            var t0 = Stopwatch.GetTimestamp();
+            var t0 = _clock.GetTimestamp();
             w.RenderTile(Interlocked.Read(ref _frame), x, y, tw, th, recv, tw * 3, scratch);
-            var ct = Stopwatch.GetTimestamp() - t0;
+            var ct = _clock.GetTimestamp() - t0;
             var delayMs = link.RttMs + bytes / (Math.Max(1e-3, link.BandwidthMBs) * 1024 * 1024 / 1000.0) + (link.JitterMs > 0 ? link.JitterMs * Random.Shared.NextDouble() : 0);
-            var x0 = Stopwatch.GetTimestamp();
-            Delay(delayMs);
-            var xt = Stopwatch.GetTimestamp() - x0;
+            var x0 = _clock.GetTimestamp();
+            Delay(delayMs, slot);
+            var xt = _clock.GetTimestamp() - x0;
             if (!_topo.Connected(node) || link.Silent) return; // 전송 중 단절 = 소실
             if (Interlocked.CompareExchange(ref _state[i], Pack(epoch, Writing), Pack(epoch, Assigned)) != Pack(epoch, Assigned)) { Interlocked.Increment(ref _stale); return; }
             var frame = _fb!.Frame(1 - Volatile.Read(ref _front));
@@ -289,13 +308,21 @@ public sealed class LowLatencyFrameAssemblyFallbackGuard : IDisposable
         finally { _topo.ReleaseVram(node, bytes); }
     }
 
-    private void Delay(double ms)
+    private void Delay(double ms, int slot)
     {
         if (ms <= 0) return;
-        var end = Stopwatch.GetTimestamp() + (long)(ms / TickMs);
-        if (ms > 3) Thread.Sleep((int)(ms - 2));
+        var end = _clock.GetTimestamp() + (long)(ms / TickMs);
         var sw = new SpinWait();
-        while (Stopwatch.GetTimestamp() < end && !_stop) sw.SpinOnce(-1);
+        if (!_virtualClock)
+        {
+            if (ms > 3) Thread.Sleep((int)(ms - 2));
+            while (_clock.GetTimestamp() < end && !_stop) sw.SpinOnce(-1);
+            return;
+        }
+        // 가상 시계: 만료 시각을 슬롯에 게시 → 구동자가 전진시킬 때까지 양보 대기(벽시계 무관 · 부하 무관)
+        Volatile.Write(ref _wake[slot], end);
+        try { while (_clock.GetTimestamp() < end && !_stop) sw.SpinOnce(); }
+        finally { Volatile.Write(ref _wake[slot], 0); }
     }
 
     private void Complete(int i, long epoch)
@@ -326,7 +353,7 @@ public sealed class LowLatencyFrameAssemblyFallbackGuard : IDisposable
         lock (_frameGate)
         {
             var w = _work ?? throw new InvalidOperationException("워크로드 미설정");
-            var t0 = Stopwatch.GetTimestamp();
+            var t0 = _clock.GetTimestamp();
             Interlocked.Exchange(ref _frame, frameIndex);
             _topo.Probe();
             var n = _lb.Plan(_width, _height);
@@ -342,6 +369,7 @@ public sealed class LowLatencyFrameAssemblyFallbackGuard : IDisposable
                 Volatile.Write(ref _state[i], Pack(e, Assigned));
             }
             for (var i = 0; i < n; i++) Enqueue(_owner[i], i, Volatile.Read(ref _state[i]) >> 2);
+            Interlocked.Exchange(ref _plannedFrame, frameIndex);
             var local = _topo.LocalFallbackNode;
             double fallbackMs = 0;
             var timedOut = false;
@@ -349,13 +377,13 @@ public sealed class LowLatencyFrameAssemblyFallbackGuard : IDisposable
             while (Volatile.Read(ref _done) < n)
             {
                 if (MainThreadHelps && TryDequeue(local, 0, out var lt, out var le)) { RunLocal(local, lt, le, w, _mainScratch); continue; }
-                var now = Stopwatch.GetTimestamp();
+                var now = _clock.GetTimestamp();
                 if ((now - lastProbe) * TickMs >= 2) { _topo.Probe(); lastProbe = now; }
                 for (var i = 0; i < n; i++)
                 {
                     var o = Volatile.Read(ref _owner[i]);
                     if (o == local || (Volatile.Read(ref _state[i]) & 3) != Assigned) continue;
-                    var unhealthy = !_topo.Healthy(o);
+                    var unhealthy = !_topo.Healthy(o) || !_topo.Connected(o); // 명시 단절 = 프로브 주기 대기 없이 즉시
                     if (!unhealthy && now < _deadline[i] && Volatile.Read(ref _reject[i]) == 0) continue;
                     if (!Steal(i, local)) continue;
                     _fallbacks++;
@@ -376,7 +404,7 @@ public sealed class LowLatencyFrameAssemblyFallbackGuard : IDisposable
             }
             _lb.NormalizeCostMap();
             Volatile.Write(ref _front, 1 - _front);
-            var ms = (Stopwatch.GetTimestamp() - t0) * TickMs;
+            var ms = (_clock.GetTimestamp() - t0) * TickMs;
             Interlocked.Add(ref _totalFallbacks, _fallbacks);
             Interlocked.Add(ref _totalStale, Volatile.Read(ref _stale));
             Interlocked.Increment(ref _frames);

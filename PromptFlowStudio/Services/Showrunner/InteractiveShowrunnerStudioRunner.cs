@@ -51,6 +51,8 @@ public sealed class InteractiveShowrunnerStudioRunner : IMcrSceneLayer, IShowrun
     public bool GatewayAvailable => _gateway is not null;
     public bool LinkGateway { get; private set; }
     public bool IsRunning => _mcr.IsRunning;
+    /// <summary>v18.0.7: 레이어 예산 계측 시계(기본 시스템 · 테스트는 가상 시계로 호스트 부하 무관 결정론 판정).</summary>
+    public TimeProvider Clock { get; set; } = TimeProvider.System;
     public double LastLayerMs { get; private set; }
     public double MaxLayerMs { get; private set; }
     public long LayerOverBudget { get; private set; }
@@ -117,7 +119,8 @@ public sealed class InteractiveShowrunnerStudioRunner : IMcrSceneLayer, IShowrun
     // ══════════════════════ IMcrSceneLayer(MCR 틱 · 무할당) ══════════════════════
     public void Step(UnifiedGaussianSceneCompositorEngine comp, in SplatCamera pgm, double nowMs, float dt)
     {
-        var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+        var clk = Clock;
+        var t0 = clk.GetTimestamp();
         var gc0 = GC.CollectionCount(0);
         var now = (long)nowMs;
         Guard.Refill(nowMs);
@@ -144,7 +147,7 @@ public sealed class InteractiveShowrunnerStudioRunner : IMcrSceneLayer, IShowrun
         Spawner.Step(dt);
         Spawner.Write(comp.Scene, comp.ViewerStart);
         Showrunner.Step(Spawner, this, confetti, _confettiUser.AsSpan(0, cuLen));
-        var ms = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+        var ms = (clk.GetTimestamp() - t0) * 1000.0 / clk.TimestampFrequency;
         Guard.ObserveLayer(ms, nowMs);
         _layerFrames++;
         LastLayerMs = ms; if (ms > MaxLayerMs && _layerFrames > 3) MaxLayerMs = ms;
