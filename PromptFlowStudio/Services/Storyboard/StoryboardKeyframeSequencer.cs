@@ -137,6 +137,40 @@ public sealed class StoryboardKeyframeSequencer
         return n;
     }
 
+    /// <summary>[v18.2.5] 편집기 · 매니페스트 전용 — 키프레임 고정 배열 전체(용량 <see cref="MaxShots"/>) 제자리 편집 창.</summary>
+    internal Span<StoryboardKeyframe> EditBuffer => _keys;
+
+    /// <summary>[v18.2.5] 편집 확정 — 번호 재부여 · 총 길이 · Revision · 지문 · 크롭 트랙 갱신(수동 프레이밍 보존 · 0 B). 반환 = 샷 수.</summary>
+    internal int Commit(int count)
+    {
+        var n = Math.Clamp(count, 0, MaxShots);
+        var total = 0;
+        for (var i = 0; i < n; i++)
+        {
+            ref var k = ref _keys[i];
+            k.ShotNumber = i + 1;
+            total = Math.Max(total, k.EndMs);
+        }
+        Count = n;
+        TotalMs = total;
+        Revision++;
+        Fingerprint = Hash(Keyframes, Script);
+        CropTracker.Load(Keyframes);
+        return n;
+    }
+
+    /// <summary>[v18.2.5] 매니페스트 복원 — 대본 · 키프레임(검증 완료분)을 소유 버퍼에 기록 후 확정(용량 내 0 B).</summary>
+    internal int Restore(ReadOnlySpan<char> script, ReadOnlySpan<StoryboardKeyframe> keys, AudioAlignmentSource alignment)
+    {
+        if (script.Length > _script.Length) _script = new char[Math.Max(script.Length, _script.Length * 2)];
+        script.CopyTo(_script);
+        _scriptLen = script.Length;
+        var n = Math.Min(keys.Length, MaxShots);
+        keys[..n].CopyTo(_keys);
+        Alignment = alignment;
+        return Commit(n);
+    }
+
     /// <summary>9:16 크롭 — 와이드는 정중앙 · 그 외는 3 분할선(333/667 ‰) 교차로 시선 리듬. 박스 폭은 짝수 정렬 · 원본 안으로 클램프.</summary>
     public static void Frame(ref StoryboardKeyframe k, int index)
     {

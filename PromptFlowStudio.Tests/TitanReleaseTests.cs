@@ -40256,3 +40256,287 @@ public sealed class StoryboardMp3LufsNormalizerTests
         Assert.Equal(0, hotAlloc);
     }
 }
+
+/// <summary>v18.2.5: StoryV 샷 스플릿/머지/넛지 편집기 · .storyv 매니페스트 영속화 · StoryV → 숏폼 팩토리 → 소셜 퍼블리셔 전주기 클로즈드 루프.</summary>
+[Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) · 메모리 누수 측정 · 실 디스크 I/O → 비병렬
+public sealed class StoryVFullChainClosedLoopTests
+{
+    private const string Script = "안녕하세요. 오늘은 AI로 숏폼을 만드는 비밀을 알려드릴게요, 끝까지 보시면 반전이 있습니다! 준비되셨나요?";
+    private static readonly (int, int)[] Voiced = { (100, 900), (1_300, 4_500), (4_900, 7_000), (7_350, 8_400) };
+
+    private static void AssertContiguous(SB.StoryboardKeyframeSequencer seq)
+    {
+        var k = seq.Keyframes;
+        var t = seq.CropTracker.Track;
+        Assert.Equal(k.Length, t.Length);
+        for (var i = 0; i < k.Length; i++)
+        {
+            Assert.Equal(i + 1, k[i].ShotNumber);
+            Assert.True(k[i].DurationMs >= SB.StoryboardShotNudgeEditor.MinShotMs || i == 0, "샷 " + i + " 길이 " + k[i].DurationMs);
+            if (i > 0) Assert.Equal(k[i - 1].EndMs, k[i].StartMs);
+            Assert.Equal((k[i].StartMs, k[i].EndMs, k[i].CenterXPermille, k[i].CropX, k[i].CropWidth), (t[i].StartMs, t[i].EndMs, t[i].CenterXPermille, t[i].CropX, t[i].CropWidth));
+        }
+        Assert.Equal(k[^1].EndMs, seq.TotalMs);
+        Assert.Equal(SB.StoryboardKeyframeSequencer.Hash(k, seq.Script), seq.Fingerprint);
+    }
+
+    [Fact]
+    public async Task StoryV_FullChain_ClosedLoopPipeline_Check()
+    {
+        var wav = StoryboardAudioAlignmentReframeTests.Wav(StoryboardAudioAlignmentReframeTests.SynthPcm(48_000, 1, 9_000, Voiced), 48_000, 1);
+        var audio = new SB.StoryboardAudioSourceStreamBinder();
+        var seq = new SB.StoryboardKeyframeSequencer();
+        var restored = new SB.StoryboardKeyframeSequencer();
+        var editor = new SB.StoryboardShotNudgeEditor(seq);
+        var manifest = new SB.StoryboardSequenceManifestEngine();
+        var bridge = new PromptFlowStudio.Services.Ui.StoryboardToShortsFactoryBridge();
+        var ws = new PromptFlowStudio.Services.Ui.ShortsFactoryWorkspaceContext();
+        var p = new PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext();
+        var o = new PromptFlowStudio.Services.Ui.ShortsFactoryOneClickRenderOrchestrator();
+        var pubBridge = new PromptFlowStudio.Services.Ui.ShortsToPublisherHandoffBridge();
+        var guard = new PromptFlowStudio.Services.SocialMedia.UploadNetworkRecoverySafetyGuard { Delay = (_, _) => Task.CompletedTask };
+        var mock = new PromptFlowStudio.Services.SocialMedia.ResumableUploadMockHandler();
+        using var engine = new PromptFlowStudio.Services.SocialMedia.ProductionResumableUploadSessionEngine(mock, guard, PromptFlowStudio.Services.SocialMedia.ProductionResumableUploadSessionEngine.DefaultChunkSize);
+        var stages = new List<PromptFlowStudio.Services.Ui.OneClickRenderStage>();
+        o.OnChange += () => { if (stages.Count == 0 || stages[^1] != o.Stage) stages.Add(o.Stage); };
+        var buf = new byte[16 * 1024];
+        var dir = Path.Combine(Path.GetTempPath(), "pfs-storyv-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(dir, "e2e" + SB.StoryboardSequenceManifestEngine.Extension);
+        Assert.Equal(32, WsCat.Workspaces.Length);   // 신규 모달 0 — 32 워크스페이스 유지
+
+        async Task Cycle(int cycle)
+        {
+            // ① StoryV — 대본 + 실 오디오 인입 → VAD 실측 샷 분할(4 샷 · 0~9 s)
+            Assert.Equal(SB.AudioBindStatus.Bound, audio.Bind(wav, name: "voice.wav"));
+            Assert.Equal(SB.AudioAlignmentSource.PcmVoiceActivity, audio.Resync(seq, Script));
+            Assert.Equal(4, seq.Count);
+            Assert.Equal((100, 1_300, 4_900, 7_350, 9_000), (seq.KeyframeAt(0).StartMs, seq.KeyframeAt(1).StartMs, seq.KeyframeAt(2).StartMs, seq.KeyframeAt(3).StartMs, seq.TotalMs));
+            var original = seq.KeyframeAt(1);
+            var originalText = seq.TextOf(original).ToString();
+
+            // ①-a 스플릿 — 3.1 s 에서 샷 #2 양분: 대본은 공백 경계 · 9:16 크롭은 양쪽 승계 · 크롭 트랙 5 개
+            var rev = seq.Revision;
+            Assert.Equal(SB.ShotEditStatus.Applied, editor.SplitShot(1, TimeSpan.FromMilliseconds(3_100)));
+            Assert.Equal(5, seq.Count);
+            Assert.True(seq.Revision > rev);
+            var l = seq.KeyframeAt(1);
+            var r = seq.KeyframeAt(2);
+            Assert.Equal((1_300, 3_100, 3_100, 4_900), (l.StartMs, l.EndMs, r.StartMs, r.EndMs));
+            Assert.True(l.TextLength > 0 && r.TextLength > 0);
+            Assert.Equal(originalText, seq.TextOf(l).ToString() + " " + seq.TextOf(r).ToString());
+            Assert.Equal((original.Angle, original.CenterXPermille, original.CropX, original.CropY, original.CropWidth, original.CropHeight), (l.Angle, l.CenterXPermille, l.CropX, l.CropY, l.CropWidth, l.CropHeight));
+            Assert.Equal((original.CenterXPermille, original.CropX, original.CropHeight), (r.CenterXPermille, r.CropX, r.CropHeight));
+            Assert.Equal(2, seq.CropTracker.IndexAt(3_100));
+            AssertContiguous(seq);
+
+            // ①-b 거부 경로 — 시퀀서 불변(원자성)
+            var fpEdit = seq.Fingerprint;
+            Assert.Equal(SB.ShotEditStatus.OutOfRange, editor.SplitShot(0, TimeSpan.FromMilliseconds(50)));
+            Assert.Equal(SB.ShotEditStatus.TooShort, editor.SplitShot(0, TimeSpan.FromMilliseconds(250)));
+            Assert.Equal(SB.ShotEditStatus.InvalidIndex, editor.SplitShot(9, TimeSpan.FromMilliseconds(1_000)));
+            Assert.Equal(SB.ShotEditStatus.InvalidIndex, editor.MergeWithNext(4));
+            Assert.Equal(SB.ShotEditStatus.NoChange, editor.NudgeBoundary(1, 60));
+            Assert.Equal(fpEdit, seq.Fingerprint);
+            Assert.Equal(5, seq.Count);
+
+            // ①-c 넛지 — 100 ms 격자 스냅(+250 → +200) · 다음 샷 시작 동기화 · 최소 길이 클램프 · 복귀
+            Assert.Equal(SB.ShotEditStatus.Applied, editor.NudgeBoundary(1, 250));
+            Assert.Equal(200, editor.LastNudgeMs);
+            Assert.Equal((3_300, 3_300, 1_600), (seq.KeyframeAt(1).EndMs, seq.KeyframeAt(2).StartMs, seq.KeyframeAt(2).DurationMs));
+            Assert.Equal(SB.ShotEditStatus.Applied, editor.NudgeBoundary(1, -5_000));
+            Assert.Equal(SB.StoryboardShotNudgeEditor.MinShotMs, seq.KeyframeAt(1).DurationMs);
+            Assert.Equal(-1_700, editor.LastNudgeMs);
+            Assert.Equal(SB.ShotEditStatus.Applied, editor.NudgeBoundary(1, 1_700));
+            Assert.Equal(SB.ShotEditStatus.Applied, editor.NudgeBoundary(1, -200));
+            Assert.Equal(fpEdit, seq.Fingerprint);                                // 넛지 왕복 = 스플릿 직후 상태
+            Assert.Equal(9_000, seq.TotalMs);
+            AssertContiguous(seq);
+
+            // ①-d 스플릿 → 머지 왕복 = 원상 복구(지문 일치)
+            Assert.Equal(SB.ShotEditStatus.Applied, editor.SplitShot(3, TimeSpan.FromMilliseconds(6_000)));
+            Assert.Equal(6, seq.Count);
+            Assert.Equal(SB.ShotEditStatus.Applied, editor.MergeWithNext(3));
+            Assert.Equal(5, seq.Count);
+            Assert.Equal(fpEdit, seq.Fingerprint);
+            AssertContiguous(seq);
+
+            // ①-e 편집 핫패스 무할당(스플릿 · 머지 · 넛지 · 크롭 트랙 재적재)
+            var a0 = GC.GetAllocatedBytesForCurrentThread();
+            var ok = true;
+            for (var i = 0; i < 16; i++)
+            {
+                ok &= editor.SplitShot(3, TimeSpan.FromMilliseconds(6_000)) == SB.ShotEditStatus.Applied;
+                ok &= editor.MergeWithNext(3) == SB.ShotEditStatus.Applied;
+                ok &= editor.NudgeBoundary(1, 100) == SB.ShotEditStatus.Applied;
+                ok &= editor.NudgeBoundary(1, -100) == SB.ShotEditStatus.Applied;
+            }
+            var editAlloc = GC.GetAllocatedBytesForCurrentThread() - a0;
+            Assert.True(ok);
+            Assert.Equal(0, editAlloc);
+            Assert.Equal(fpEdit, seq.Fingerprint);
+
+            // ①-f .storyv 매니페스트 — 직렬화 → 구조 확인 → 복원(지문 · 키프레임 · 크롭 트랙 · 대본 · 오디오 헤더 일치)
+            var json = manifest.Write(seq, audio.Track).ToArray();
+            using (var doc = System.Text.Json.JsonDocument.Parse(json))
+            {
+                var root = doc.RootElement;
+                Assert.Equal("storyv", root.GetProperty("format").GetString());
+                Assert.Equal(Script, root.GetProperty("script").GetString());
+                Assert.Equal(5, root.GetProperty("shots").GetArrayLength());
+                Assert.Equal(5, root.GetProperty("cropTrack").GetArrayLength());
+                Assert.Equal(48_000, root.GetProperty("audio").GetProperty("sampleRate").GetInt32());
+                Assert.Equal(seq.Fingerprint, root.GetProperty("fingerprint").GetUInt64());
+            }
+            Assert.Equal(SB.StoryvManifestStatus.Ok, manifest.Read(json, restored));
+            Assert.Equal(seq.Fingerprint, restored.Fingerprint);
+            Assert.True(restored.Keyframes.SequenceEqual(seq.Keyframes), "키프레임 왕복 일치");
+            Assert.True(restored.CropTracker.Track.SequenceEqual(seq.CropTracker.Track), "9:16 크롭 트랙 왕복 일치");
+            Assert.Equal(Script, restored.Script.ToString());
+            Assert.Equal(SB.AudioAlignmentSource.PcmVoiceActivity, restored.Alignment);
+            var h = manifest.LastAudio;
+            Assert.Equal((SB.AudioContainer.Wav, 48_000, 1, 9_000), (h.Container, h.SampleRate, h.Channels, h.DurationMs));
+            Assert.Equal(audio.Loudness.Measured, h.Loudness.Measured);
+            Assert.Equal(audio.Loudness.GainDb, h.Loudness.GainDb, 9);
+
+            // ①-g 무결성 거부 — 지문 변조 · 크롭 트랙 변조 · 버전 · 구문 · 빈 입력 → 시퀀서 불변
+            var fpRestored = restored.Fingerprint;
+            var node = System.Text.Json.Nodes.JsonNode.Parse(json)!;
+            node["fingerprint"] = seq.Fingerprint ^ 1UL;
+            Assert.Equal(SB.StoryvManifestStatus.FingerprintMismatch, manifest.Read(System.Text.Encoding.UTF8.GetBytes(node.ToJsonString()), restored));
+            node = System.Text.Json.Nodes.JsonNode.Parse(json)!;
+            node["cropTrack"]![2]!["x"] = (int)node["cropTrack"]![2]!["x"]! + 2;
+            Assert.Equal(SB.StoryvManifestStatus.CropMismatch, manifest.Read(System.Text.Encoding.UTF8.GetBytes(node.ToJsonString()), restored));
+            node = System.Text.Json.Nodes.JsonNode.Parse(json)!;
+            node["script"] = Script.Replace("비밀", "비결");                        // 같은 길이 대본 변조 — 오프셋은 유효 · 지문만 불일치
+            Assert.Equal(SB.StoryvManifestStatus.FingerprintMismatch, manifest.Read(System.Text.Encoding.UTF8.GetBytes(node.ToJsonString()), restored));
+            node = System.Text.Json.Nodes.JsonNode.Parse(json)!;
+            node["shots"]![0]!["tl"] = 4_096;
+            Assert.Equal(SB.StoryvManifestStatus.OutOfRange, manifest.Read(System.Text.Encoding.UTF8.GetBytes(node.ToJsonString()), restored));
+            node = System.Text.Json.Nodes.JsonNode.Parse(json)!;
+            node["version"] = 2;
+            Assert.Equal(SB.StoryvManifestStatus.UnsupportedVersion, manifest.Read(System.Text.Encoding.UTF8.GetBytes(node.ToJsonString()), restored));
+            Assert.Equal(SB.StoryvManifestStatus.Malformed, manifest.Read("{\"format\":\"storyv\",\"shots\":["u8, restored));
+            Assert.Equal(SB.StoryvManifestStatus.Empty, manifest.Verify(ReadOnlySpan<byte>.Empty));
+            Assert.Equal(fpRestored, restored.Fingerprint);
+            Assert.Equal(5, restored.Count);
+
+            // ①-h 매니페스트 직렬화 · 검증 · 복원 핫패스 무할당(라이터 · 버퍼 재사용)
+            manifest.Write(seq, audio.Track);
+            var a1 = GC.GetAllocatedBytesForCurrentThread();
+            for (var i = 0; i < 8; i++)
+            {
+                var outMem = manifest.Write(seq, audio.Track);
+                ok &= manifest.Verify(outMem.Span) == SB.StoryvManifestStatus.Ok;
+                ok &= manifest.Read(outMem.Span, restored) == SB.StoryvManifestStatus.Ok;
+            }
+            var ioAlloc = GC.GetAllocatedBytesForCurrentThread() - a1;
+            Assert.True(ok);
+            Assert.True(ioAlloc == 0, ".storyv 직렬화/역직렬화 핫패스 할당 " + ioAlloc + " B");
+
+            // ①-i 디스크 — 임시 파일 원자 교체 저장 → 재판독 검증 → 복원 · 손상 파일/부재 파일 거부
+            Assert.Equal(SB.StoryvManifestStatus.Ok, await manifest.SaveAsync(path, seq, audio.Track));
+            Assert.True(File.Exists(path) && !File.Exists(path + ".tmp"));
+            Assert.Equal(json.Length, new FileInfo(path).Length);
+            var fromDisk = new SB.StoryboardKeyframeSequencer();
+            Assert.Equal(SB.StoryvManifestStatus.Ok, await manifest.LoadAsync(path, fromDisk));
+            Assert.Equal(seq.Fingerprint, fromDisk.Fingerprint);
+            var bad = Path.Combine(dir, "bad" + SB.StoryboardSequenceManifestEngine.Extension);
+            await File.WriteAllBytesAsync(bad, json.AsSpan(0, json.Length / 2).ToArray());
+            Assert.Equal(SB.StoryvManifestStatus.Malformed, await manifest.VerifyFileAsync(bad));
+            Assert.Equal(SB.StoryvManifestStatus.IoError, await manifest.LoadAsync(Path.Combine(dir, "missing.storyv"), fromDisk));
+            Assert.Equal(seq.Fingerprint, fromDisk.Fingerprint);
+
+            // ② StoryV → 팩토리 핸드오프 — 복원 시퀀스 · 9:16 크롭 트랙 · 오디오 0-카피
+            Assert.True(bridge.Push(fromDisk, audio.Track));
+            Assert.True(bridge.TryConsume(out var handed));
+            Assert.True(handed.Keyframes.Span == fromDisk.Keyframes, "인계 키프레임 = 시퀀서 버퍼");
+            Assert.True(handed.CropTrack.Span == fromDisk.CropTracker.Track, "인계 크롭 트랙 = 트래커 버퍼");
+            Assert.True(handed.Audio.Pcm.Span == audio.Pcm, "인계 오디오 = 바인더 버퍼");
+            Assert.Equal(handed.Fingerprint, handed.ComputeFingerprint());
+            Assert.True(p.ApplyStoryboard(handed, ws));
+            Assert.True(p.StoryboardShots.Span == fromDisk.Keyframes && p.ShotCropTrack.Span == fromDisk.CropTracker.Track);
+            Assert.True(p.HasSourceAudio && p.SourceAudio.Pcm.Span == audio.Pcm);
+            Assert.Equal((0, 9_000), (ws.ClipInMs, ws.ClipOutMs));
+
+            // ③-1 다중 샷 크롭 트래킹 — 샷마다 활성 인덱스 · 9:16 중심 추종
+            for (var i = 0; i < fromDisk.Count; i++)
+            {
+                var k = fromDisk.KeyframeAt(i);
+                Assert.Equal(i, p.ReframeAt(k.StartMs + k.DurationMs / 2, ws));
+                Assert.Equal(k.CenterXPermille, ws.ReframeCenterPermille);
+            }
+            p.ReframeAt(0, ws);
+            ws.SetZoomPunches(3);
+            p.Hydrate(ws);
+            Assert.True(p.IsCoherent(ws));
+
+            // ③-2~4 자막 → 리텐션 줌펀치 → fMP4 · 썸네일 원클릭 렌더
+            stages.Clear();
+            Assert.True(o.Render(p), o.LastError);
+            Assert.Equal(new[] { PromptFlowStudio.Services.Ui.OneClickRenderStage.Trim, PromptFlowStudio.Services.Ui.OneClickRenderStage.Caption, PromptFlowStudio.Services.Ui.OneClickRenderStage.Retention, PromptFlowStudio.Services.Ui.OneClickRenderStage.Export, PromptFlowStudio.Services.Ui.OneClickRenderStage.Done }, stages);
+            Assert.True(o.LastUsedStoryboardAudio);
+            var b = o.Binder;
+            Assert.Equal(PromptFlowStudio.Services.Ui.SliceBindStatus.Bound, b.Status);
+            Assert.Equal(b.ReEditor.OutMsAt(100), o.CaptionStartOutMs);              // ② 자막 시작 = 실측 발화
+            Assert.Equal(p.RetentionAudio.PunchCount, b.PunchCount);
+            Assert.True(b.PunchCount > 0, "③ 리텐션 줌 펀치");
+            Assert.Equal(0, b.LosslessFaults);
+            Assert.Equal(PromptFlowStudio.Services.ViralExport.ExportStatus.Ready, o.LastExport.Status);
+            Assert.True(PromptFlowStudio.Services.ViralExport.FastShortsMuxingHardwareExporterEngine.TryInspect(o.Output.Span, out var insp) && insp.Valid, "④ fMP4 무결성");
+            Assert.True(o.Output.Span.IndexOf("ipcm"u8) >= 0, "④ 내레이션 트랙");
+            Assert.True(o.ThumbnailPng.Length > 64 && o.ThumbnailPng.Span[..8].SequenceEqual(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }));
+
+            // ④ 팩토리 → 퍼블리셔 핸드오프 — 렌더 결과 0-카피
+            var rr = PromptFlowStudio.Services.Ui.ShortsRenderResult.Capture(o, ws);
+            Assert.True(rr.IsLive && rr.IsVertical);
+            var title = PromptFlowStudio.Services.Ui.ShortsToPublisherHandoffBridge.ComposeTitle(p.BuildSlicedScript(), o.SourceName);
+            const string tags = "#StoryV #숏폼";
+            Assert.True(pubBridge.Push(rr, title, tags));
+            Assert.True(pubBridge.TryConsume(out var got));
+            Assert.True(got.Video.Span == o.Output.Span && got.Render.ThumbnailPng.Span == o.ThumbnailPng.Span, "퍼블리셔 = 팩토리 버퍼(0-카피)");
+
+            // ⑤ 소셜 퍼블리셔 — YouTube Resumable 8 MB 청크 조립 · 업로드 / Instagram 비디오 컨테이너 · 발행 큐
+            Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteYouTubeResumableInit(got, "private", "tok", buf, out var n, out var bodyOff));
+            Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryGetHeaderInt64(buf.AsSpan(0, n), "X-Upload-Content-Length"u8, out var xl));
+            Assert.Equal(o.LastExport.Bytes, xl);
+            using (var j = System.Text.Json.JsonDocument.Parse(buf.AsMemory(bodyOff, n - bodyOff)))
+                Assert.Equal(title + "\n" + tags, j.RootElement.GetProperty("snippet").GetProperty("description").GetString());
+            mock.Reset();
+            var yt = await engine.UploadAsync(PromptFlowStudio.Services.SocialMedia.UploadPlatform.YouTube, got);
+            Assert.True(yt.Ok, yt.Error);
+            var chunk8 = PromptFlowStudio.Services.SocialMedia.ProductionResumableUploadSessionEngine.DefaultChunkSize;
+            Assert.Equal(8 * 1024 * 1024, chunk8);
+            Assert.Equal((o.LastExport.Bytes + chunk8 - 1) / chunk8, yt.Chunks);
+            Assert.True(mock.Received(PromptFlowStudio.Services.SocialMedia.UploadPlatform.YouTube).SequenceEqual(o.Output.Span), "YouTube 수신 = 팩토리 fMP4");
+            Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteInstagramReelsContainerForm(got, default, true, buf, out n));
+            var form = System.Text.Encoding.ASCII.GetString(buf, 0, n).Split('&').Select(kv => kv.Split('=', 2)).ToDictionary(a => a[0], a => Uri.UnescapeDataString(a[1]));
+            Assert.Equal("REELS", form["media_type"]);
+            Assert.Equal(title + "\n" + tags, form["caption"]);
+            var ig = await engine.UploadAsync(PromptFlowStudio.Services.SocialMedia.UploadPlatform.Instagram, got);
+            Assert.True(ig.Ok, ig.Error);
+            Assert.Equal(1, mock.Publishes);                                      // media_publish 발행 큐 적재
+            Assert.True(mock.Received(PromptFlowStudio.Services.SocialMedia.UploadPlatform.Instagram).SequenceEqual(o.Output.Span), "Instagram 수신 = 팩토리 fMP4");
+            Assert.Equal(cycle + 1L, bridge.Consumed);
+            Assert.Equal(cycle + 1L, pubBridge.Consumed);
+        }
+
+        try
+        {
+            await Cycle(0);                                                      // 워밍업(JIT · 버퍼 확보)
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+            var mem0 = GC.GetTotalMemory(true);
+            for (var c = 1; c <= 3; c++) await Cycle(c);
+            mock.Reset();
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+            var leak = GC.GetTotalMemory(true) - mem0;
+            Assert.True(leak < 256 * 1024, "StoryV 풀체인 3 회 잔류 " + leak + " B");
+            Assert.Equal(0, bridge.Rejected + pubBridge.Rejected);
+            Assert.Equal((4L * 71, 4L * 5), (editor.Edits, editor.Rejected));   // 사이클당 적용 71(스플릿 1 · 넛지 4 · 왕복 2 · 핫패스 64) · 거부 5
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, true);
+        }
+        Assert.False(Directory.Exists(dir), "임시 .storyv 잔존");
+    }
+}

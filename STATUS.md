@@ -1,15 +1,16 @@
 # Current Project Status
-- Active Milestone: v18.2.4 완료 (StoryV 순수 C# MP3 파서 & -14 LUFS 노멀라이저)
+- Active Milestone: v18.2.5 완료 (StoryV 매니페스트 영속화 & 샷 편집기 및 E2E 풀루프 무결성 확정)
 - Build Status: Desktop · net8.0-ios · Tests 3 종 Release -warnaserror 0/0 · net8.0-android 미검증(SDK/JDK 미설치)
-- Test Suite: 저메모리 단일 스레드(MaxCpuCount=1 · DisableParallelization) 537/537 1 회 완주 통과(실패 0 · 건너뜀 0 · 단독 재실행 0 · 9 분 29 초)
+- Test Suite: 저메모리 단일 스레드(MaxCpuCount=1 · DisableParallelization) 538/538 1 회 완주 통과(실패 0 · 건너뜀 0 · 단독 재실행 0 · 8 분 50 초)
 - Sidebar: 6 그룹 · 32 워크스페이스 유지(신규 모달 0)
 - Updated At: 2026-10-25 (KST)
 
 ## Completed Deliverables
-- MP3-1: `Services/Storyboard/Mp3FrameHeaderBitstreamParser.cs` — 11 비트 싱크 · MPEG-1/2/2.5 Layer III 비트레이트/샘플레이트/패딩 해석 · ID3v2/ID3v1 건너뜀 · 연속 2 프레임 싱크 확정 · 손상 구간 재동기화 · Xing/Info/VBRI · LAME 지연/패딩 → 프레임 수 · TimeSpan 재생 시간(0 B)
-- MP3-2: `LufsLoudnessComplianceNormalizer.cs` — BS.1770-4 K-가중(임의 레이트) · 400 ms/75 % 블록 · 절대 −70/상대 −10 LU 게이팅 · 4× 오버샘플 True Peak · −14 LUFS 게인을 −1 dBTP 상한으로 제한 → `LufsLoudnessReport`(0 B)
-- MP3-3: 바인더 MP3 수용(`AudioContainer.Mp3` · 프레임 구간 0-카피 · 실측 길이 비례 재동기화 · 음절 추정 배제) · PCM 바인딩 시 라우드니스 실측 → `StoryboardAudioTrack.Loudness/GainFactor` → 팩토리 ③ 내레이션 게인 적용 · 툴바/AI 음성 `.mp3` 수용
-- TEST: `Storyboard_Mp3BitstreamParser_And_LufsNormalizer_Check` — CBR/Xing/VBRI 길이 1 ms · EBU −23 LUFS 기준 · True Peak 제한 · MP3/PCM → 팩토리 게인 관통 · 핫패스 0 B
+- EDT-1: `Services/Storyboard/StoryboardShotNudgeEditor.cs` — `SplitShot`(타임코드 분할 · 대본 공백 경계 양분 · 9:16 크롭 승계) · `MergeWithNext`(구간/대본 합집합) · `NudgeBoundary`(100 ms 격자 · 다음 샷 동기화 · 최소 300 ms 클램프) · 지역 검증 후 원자 기록 · 핫패스 0 B
+- EDT-2: `StoryboardSequenceManifestEngine.cs` — `.storyv` Utf8JsonWriter/Reader 직렬화(샷 · 크롭 트랙 · 대본 · 오디오 헤더 · 지문) · 범위/크롭/지문 검증 통과 시에만 원자 복원 · 임시 파일 원자 교체 저장 + 재판독 검증 · 핫패스 0 B
+- EDT-2(UI): 스토리보드 툴바 `💾 프로젝트 저장 (.storyv)` · `📂 프로젝트 열기 (.storyv)` · 샷 카드 선택 → ✂ 스플릿 · 🔗 머지 · ±0.1s 넛지(편집/복원 후 팩토리 전송 시 재분할 생략)
+- 시퀀서: `EditBuffer` · `Commit`(수동 프레이밍 보존 확정) · `Restore` 추가
+- TEST: `StoryV_FullChain_ClosedLoopPipeline_Check` — 대본+WAV → 샷 분할 → 스플릿/넛지/머지 → .storyv 메모리·디스크 왕복 → 팩토리 0-카피(다중 샷 크롭 추종 · ①~④ 렌더) → 퍼블리셔 0-카피(YouTube 8 MB 청크 · Instagram 발행 큐) · 3 회 누수 < 256 KB · 변조 거부
 
 ## Known Issues / 환경 노트
-- MP3 는 디코딩 없이 비트스트림만 바인딩 → 라우드니스 미계측(게인 1) · 팩토리 ③ 은 기존 소스 PCM 사용 · 실 TTS 네이티브 단어 경계 미방출(VAD/실측 길이 분배 폴백) · Android 빌드 미검증
+- MP3 는 디코딩 없이 비트스트림만 바인딩 → 라우드니스 미계측(게인 1) · .storyv 는 오디오 본문 미포함(헤더만 · 재바인딩 필요) · Android 빌드 미검증

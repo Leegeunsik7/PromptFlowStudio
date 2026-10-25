@@ -200,6 +200,11 @@
                     <button class="sb-ptool" @onclick="ToggleMarker" disabled="@(_selScene is null)" title="선택 컷에 마커 토글">📍 마커</button>
                     <button class="sb-ptool" @onclick="SplitSelected" disabled="@(_selScene is null || Jobs.IsRunning)" title="선택 컷의 나레이션을 둘로 나눠 다음 컷으로 분할">✂ 분할</button>
                     <button class="sb-ptool" @onclick="RefreshShots" disabled="@(_project.Scenes.Count == 0)" title="나레이션을 문장 부호 · 쉼표 · 발화 템포 기준 샷으로 분할하고 앵글 · 9:16 프레이밍을 규격화">🎞 샷 분할</button>
+                    <button class="sb-ptool" @onclick="SaveStoryv" disabled="@(_shotSeq.Count == 0 || _storyvBusy)" title="샷 리스트 · 9:16 크롭 트랙 · 대본 · 오디오 헤더를 .storyv 매니페스트로 저장(재판독 무결성 검증)">💾 프로젝트 저장 (.storyv)</button>
+                    <div class='sb-openbtn @(_storyvBusy ? "off" : null)' title=".storyv 매니페스트를 열어 샷 시퀀스 · 9:16 크롭 트랙을 복원(지문 · 크롭 무결성 검증 통과 시에만 적용)">
+                        📂 프로젝트 열기 (.storyv)
+                        <InputFile class="sb-openinput" OnChange="OnStoryvPicked" accept=".storyv,application/json" disabled="@_storyvBusy" aria-label=".storyv 시퀀스 프로젝트 선택" />
+                    </div>
                     <span class="sb-tl-v">선택 @(SelLabel()) · 마커 @(_markers.Count)</span>
                     @foreach (var (ms, mi) in _project.Scenes.Select((s, idx) => (s, idx)))
                     {
@@ -211,11 +216,21 @@
                 @* v18.2.0 🎞 샷 카드 인스펙터 — StoryboardKeyframeSequencer 키프레임(샷 번호 · 지속 시간 · 앵글 · 9:16 중심 · 대본) *@
                 @if (_shotSeq.Count > 0)
                 {
+                    @* v18.2.5 ✂ 샷 스플릿/머지 · ±100 ms 경계 넛지 — StoryboardShotNudgeEditor *@
+                    <div class="sb-tl-tools">
+                        <span class="sb-tl-lb">✂ 샷 편집</span>
+                        <button class="sb-ptool" @onclick="SplitSelectedShot" disabled="@(_selShot < 0)" title="선택 샷을 재생 구간 중앙에서 2 개로 분할(대본 · 9:16 크롭 양분)">✂ 스플릿</button>
+                        <button class="sb-ptool" @onclick="MergeSelectedShot" disabled="@(_selShot < 0 || _selShot >= _shotSeq.Count - 1)" title="선택 샷과 다음 샷 결합">🔗 머지</button>
+                        <button class="sb-ptool" @onclick="() => NudgeSelectedShot(-PromptFlowStudio.Services.Storyboard.StoryboardShotNudgeEditor.NudgeStepMs)" disabled="@(_selShot < 0)" title="선택 샷 끝 경계 −100 ms(다음 샷 시작 동기화)">⏪ −0.1s</button>
+                        <button class="sb-ptool" @onclick="() => NudgeSelectedShot(PromptFlowStudio.Services.Storyboard.StoryboardShotNudgeEditor.NudgeStepMs)" disabled="@(_selShot < 0)" title="선택 샷 끝 경계 +100 ms(다음 샷 시작 동기화)">⏩ +0.1s</button>
+                        <span class="sb-tl-v">@(_selShot < 0 ? "샷 카드를 선택하세요" : "선택 #" + (_selShot + 1).ToString(System.Globalization.CultureInfo.InvariantCulture))</span>
+                    </div>
                     <div class="sb-shots" aria-label="샷 키프레임 시퀀스">
                         @for (var si = 0; si < _shotSeq.Count; si++)
                         {
                             var k = _shotSeq.KeyframeAt(si);
-                            <div class="sb-shot a@((int)k.Angle)" title="@(_shotSeq.TextOf(k).ToString())">
+                            var shotIdx = si;
+                            <div class="sb-shot a@((int)k.Angle) @(_selShot == shotIdx ? "on" : null)" title="@(_shotSeq.TextOf(k).ToString())" @onclick="() => _selShot = shotIdx">
                                 <div class="sb-shot-h"><b>#@(k.ShotNumber)</b><span>@(ShotSec(k.StartMs))→@(ShotSec(k.EndMs))</span></div>
                                 <div class="sb-shot-m">@(PromptFlowStudio.Services.Storyboard.StoryboardKeyframeSequencer.AngleTag(k.Angle)) · @(ShotSec(k.DurationMs))s · ⬚ @(k.CenterXPermille / 10)%</div>
                                 <div class="sb-shot-t">@(_shotSeq.TextOf(k).ToString())</div>
@@ -260,6 +275,7 @@
                     .sb-studios { margin-top: 8px; }
                     .sb-shots { display: flex; gap: 6px; overflow-x: auto; margin-top: 8px; padding-bottom: 4px; }
                     .sb-shot { flex: 0 0 150px; border: 1px solid var(--line, #334155); border-left-width: 4px; border-radius: 8px; padding: 5px 7px; background: var(--card-2, #0f172a); font-size: 11px; }
+                    .sb-shot { cursor: pointer; } .sb-shot.on { outline: 2px solid #facc15; outline-offset: 1px; }
                     .sb-shot.a0 { border-left-color: #38bdf8; } .sb-shot.a1 { border-left-color: #a78bfa; } .sb-shot.a2 { border-left-color: #f472b6; }
                     .sb-shot-h { display: flex; justify-content: space-between; font: 700 11px var(--mono, monospace); }
                     .sb-shot-m { color: var(--text-secondary, #9fb0c8); margin: 2px 0; }
@@ -1939,6 +1955,12 @@
     private readonly PromptFlowStudio.Services.Storyboard.StoryboardKeyframeSequencer _shotSeq = new();
     private readonly System.Text.StringBuilder _shotScript = new(1024);
     private string? _shotMsg;
+    // v18.2.5 ✂ 샷 편집기 · 💾 .storyv 매니페스트(컴포넌트 소유) — 수동 편집/복원 후에는 전송 시 재분할하지 않는다.
+    private PromptFlowStudio.Services.Storyboard.StoryboardShotNudgeEditor? _shotEditor;
+    private PromptFlowStudio.Services.Storyboard.StoryboardShotNudgeEditor ShotEditor => _shotEditor ??= new(_shotSeq);
+    private readonly PromptFlowStudio.Services.Storyboard.StoryboardSequenceManifestEngine _storyv = new();
+    private int _selShot = -1;
+    private bool _shotsEdited, _storyvBusy;
 
     private static string ShotSec(int ms) => (ms / 1000.0).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
 
@@ -1956,6 +1978,8 @@
 
     private void RefreshShots()
     {
+        _shotsEdited = false;
+        _selShot = -1;
         BuildShotScript();
         // v18.2.3 컷 대본이 비고 자막만 불러온 경우 — 자막 본문을 대본으로 사용
         if (_shotScript.Length == 0 && _subtitleLoaded)
@@ -2111,9 +2135,78 @@
 
     private void SendShotsToFactory()
     {
-        RefreshShots();
+        if (!_shotsEdited) RefreshShots();
         if (_shotSeq.Count == 0) return;
         _shotMsg = ShotBridge.Push(_shotSeq, _shotAudio.Track) ? (_shotAudio.HasAudio ? "· ✅ 숏폼 팩토리로 전송됨(🎙 실 오디오 동반)" : "· ✅ 숏폼 팩토리로 전송됨") : "· ⚠ 전송 실패";
+    }
+
+    private void SplitSelectedShot()
+    {
+        if ((uint)_selShot >= (uint)_shotSeq.Count) return;
+        var k = _shotSeq.KeyframeAt(_selShot);
+        ShotEdited(ShotEditor.SplitShot(_selShot, TimeSpan.FromMilliseconds(k.StartMs + k.DurationMs / 2)), "스플릿");
+    }
+
+    private void MergeSelectedShot()
+    {
+        if ((uint)_selShot >= (uint)_shotSeq.Count) return;
+        ShotEdited(ShotEditor.MergeWithNext(_selShot), "머지");
+    }
+
+    private void NudgeSelectedShot(int deltaMs)
+    {
+        if ((uint)_selShot >= (uint)_shotSeq.Count) return;
+        ShotEdited(ShotEditor.NudgeBoundary(_selShot, deltaMs), "넛지");
+    }
+
+    private void ShotEdited(PromptFlowStudio.Services.Storyboard.ShotEditStatus st, string op)
+    {
+        if (st == PromptFlowStudio.Services.Storyboard.ShotEditStatus.Applied) { _shotsEdited = true; _shotMsg = "· ✂ " + op + " 적용"; }
+        else _shotMsg = "· ⚠ " + op + " 불가(" + st.ToString() + ")";
+        if (_selShot >= _shotSeq.Count) _selShot = _shotSeq.Count - 1;
+    }
+
+    private async Task SaveStoryv()
+    {
+        if (_shotSeq.Count == 0 || _storyvBusy) return;
+        _storyvBusy = true;
+        try
+        {
+            var path = Path.Combine(Repo.ProjectsDir, _project.Id + PromptFlowStudio.Services.Storyboard.StoryboardSequenceManifestEngine.Extension);
+            var st = await _storyv.SaveAsync(path, _shotSeq, _shotAudio.Track);
+            _shotMsg = st == PromptFlowStudio.Services.Storyboard.StoryvManifestStatus.Ok ? "· 💾 .storyv 저장 · 무결성 검증 완료" : "· ⚠ .storyv 저장 실패(" + st.ToString() + ")";
+            if (st == PromptFlowStudio.Services.Storyboard.StoryvManifestStatus.Ok) FolderLink.Reveal(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OperationCanceledException)
+        {
+            _shotMsg = "· ⚠ .storyv 저장 실패: " + ex.Message;
+        }
+        finally { _storyvBusy = false; }
+    }
+
+    private async Task OnStoryvPicked(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file is null || _storyvBusy) return;
+        if (file.Size > PromptFlowStudio.Services.Storyboard.StoryboardSequenceManifestEngine.MaxBytes) { _shotMsg = "· ⚠ .storyv 파일이 너무 큽니다"; return; }
+        _storyvBusy = true;
+        try
+        {
+            await using var src = file.OpenReadStream(PromptFlowStudio.Services.Storyboard.StoryboardSequenceManifestEngine.MaxBytes);
+            var st = await _storyv.LoadAsync(src, file.Size, _shotSeq);
+            if (st == PromptFlowStudio.Services.Storyboard.StoryvManifestStatus.Ok)
+            {
+                _shotsEdited = true;
+                _selShot = -1;
+                _shotMsg = "· 📂 .storyv 복원(샷 " + _shotSeq.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + ")";
+            }
+            else _shotMsg = "· ⚠ .storyv 열기 실패(" + st.ToString() + ")";
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or OperationCanceledException or ObjectDisposedException)
+        {
+            _shotMsg = "· ⚠ .storyv 열기 실패: " + ex.Message;
+        }
+        finally { _storyvBusy = false; }
     }
 
     private void SplitSelected()
