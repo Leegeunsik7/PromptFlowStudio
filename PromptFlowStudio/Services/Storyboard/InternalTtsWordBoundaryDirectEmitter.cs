@@ -107,6 +107,7 @@ public sealed class InternalTtsWordBoundaryDirectEmitter
     public int EmitFromAudio(StoryboardAudioSourceStreamBinder audio, int fallbackMs)
     {
         if (!audio.HasAudio) return fallbackMs > 0 ? EmitSpan(0, fallbackMs) : 0;
+        if (!audio.HasPcm) return EmitSpan(0, Math.Max(1, audio.DurationMs));   // [v18.2.4] MP3 = 프레임 실측 길이(VAD 는 PCM 전용)
         Span<AudioVoiceSegment> voice = stackalloc AudioVoiceSegment[StoryboardAudioWordBoundaryAligner.MaxSegments];
         var m = StoryboardAudioWordBoundaryAligner.DetectVoice(audio.Pcm, audio.SampleRate, audio.Channels, voice, out var totalMs);
         return m == 0 ? EmitSpan(0, Math.Max(1, Math.Max(totalMs, audio.DurationMs))) : EmitSpan(voice[0].StartMs, voice[m - 1].EndMs);

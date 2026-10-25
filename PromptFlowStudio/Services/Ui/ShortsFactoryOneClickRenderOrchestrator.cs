@@ -167,6 +167,9 @@ public sealed class ShortsFactoryOneClickRenderOrchestrator
     /// <summary>[v18.2.2] 마지막 렌더가 스토리보드 실 오디오를 ②~④ 에 소비했는지.</summary>
     public bool LastUsedStoryboardAudio { get; private set; }
 
+    /// <summary>[v18.2.4] 마지막 렌더 ③ 내레이션 게인 계수(스토리보드 트랙 라우드니스 메타데이터 · 미사용 = 1).</summary>
+    public float LastNarrationGain { get; private set; } = 1f;
+
     private bool RenderCore(ExportManifest m, int punches, string script, PromptFlowStudio.Services.Storyboard.StoryboardAudioTrack audio, int onsetMs, CancellationToken ct)
     {
         LastUsedStoryboardAudio = false;
@@ -199,9 +202,11 @@ public sealed class ShortsFactoryOneClickRenderOrchestrator
             // ③ 리텐션 — 펀치 GOP SPS 크롭 리먹스 · −30 dB BGM · 템포
             ct.ThrowIfCancellationRequested();
             Report(OneClickRenderStage.Retention, 0);
-            var real = !audio.IsEmpty && audio.IsLive;
+            // [v18.2.4] MP3 비트스트림은 샘플 소비 불가 → 기존 소스 PCM · PCM 은 −14 LUFS 노멀라이저 게인 적용
+            var real = !audio.IsEmpty && audio.IsLive && audio.IsPcm;
+            LastNarrationGain = real ? audio.GainFactor : 1f;
             var st = real
-                ? b.ApplyRetention(audio.Pcm.Span, audio.SampleRate, audio.Channels, _bgm, _punch.AsSpan(0, punches), m.Retention.BgmSafe)
+                ? b.ApplyRetention(audio.Pcm.Span, audio.SampleRate, audio.Channels, _bgm, _punch.AsSpan(0, punches), m.Retention.BgmSafe, LastNarrationGain)
                 : b.ApplyRetention(_pcm, _bgm, _punch.AsSpan(0, punches), m.Retention.BgmSafe);
             if (st != SliceBindStatus.Bound) return Fail("③ 리먹스 실패: " + b.Status.ToString());
             if (real) ov.Narration = b.OutputPcmMemory;

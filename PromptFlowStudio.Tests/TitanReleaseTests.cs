@@ -40019,3 +40019,240 @@ public sealed class StoryboardTtsDirectSubtitleCanvasTests
         Assert.Equal(0, hotAlloc);
     }
 }
+
+/// <summary>v18.2.4: StoryV 순수 C# MP3 프레임 헤더 파서(CBR · Xing VBR · VBRI) · BS.1770-4 −14 LUFS 노멀라이저 · MP3/PCM 스토리보드 → 숏폼 팩토리 오디오 · 게인 메타데이터 관통.</summary>
+[Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
+public sealed class StoryboardMp3LufsNormalizerTests
+{
+    private const string Script = "안녕하세요. 오늘은 AI로 숏폼을 만드는 비밀을 알려드릴게요, 끝까지 보시면 반전이 있습니다! 준비되셨나요?";
+
+    /// <summary>Layer III 프레임 1 개(헤더 + 0 페이로드) — ver 3 = MPEG-1 · 2 = MPEG-2.</summary>
+    private static void Frame(List<byte> dst, int ver, int bi, int si, bool pad, bool mono)
+    {
+        var start = dst.Count;
+        dst.Add(0xFF);
+        dst.Add((byte)(0xE0 | (ver << 3) | 0x02 | 0x01));
+        dst.Add((byte)((bi << 4) | (si << 2) | (pad ? 2 : 0)));
+        dst.Add((byte)(mono ? 0xC0 : 0x40));
+        Assert.True(SB.Mp3FrameHeaderBitstreamParser.TryReadHeader(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(dst)[start..], out var h));
+        for (var i = 4; i < h.FrameLength; i++) dst.Add(0);
+    }
+
+    private static void Put(List<byte> dst, int at, ReadOnlySpan<byte> v) { for (var i = 0; i < v.Length; i++) dst[at + i] = v[i]; }
+    private static void PutBe(List<byte> dst, int at, uint v) { dst[at] = (byte)(v >> 24); dst[at + 1] = (byte)(v >> 16); dst[at + 2] = (byte)(v >> 8); dst[at + 3] = (byte)v; }
+
+    /// <summary>ID3v2(1 000 B) + 잡음 37 B + MPEG-1 44.1 kHz 128 kbps 스테레오 100 프레임(중간 손상 50 B · 잘린 꼬리 프레임) + ID3v1.</summary>
+    internal static byte[] Cbr()
+    {
+        var d = new List<byte> { (byte)'I', (byte)'D', (byte)'3', 3, 0, 0, 0, 0, 7, 104 };   // 동기안전 7·128 + 104 = 1 000
+        d.AddRange(new byte[1_000 + 37]);
+        for (var i = 0; i < 100; i++)
+        {
+            Frame(d, 3, 9, 0, i % 3 != 0, false);
+            if (i == 49) d.AddRange(new byte[50]);
+        }
+        var cut = d.Count;
+        Frame(d, 3, 9, 0, false, false);
+        d.RemoveRange(cut + 200, d.Count - cut - 200);
+        d.AddRange("TAG"u8.ToArray());
+        d.AddRange(new byte[125]);
+        return d.ToArray();
+    }
+
+    /// <summary>MPEG-1 48 kHz 스테레오 — Xing(프레임 60) + LAME 지연 576 · 패딩 1 000 · 128/192/320 kbps 순환 60 프레임.</summary>
+    internal static byte[] XingVbr()
+    {
+        var d = new List<byte>();
+        Frame(d, 3, 9, 1, false, false);
+        Put(d, 36, "Xing"u8); PutBe(d, 40, 0x0F); PutBe(d, 44, 60);
+        Put(d, 156, "LAME3.100"u8);
+        d[156 + 21] = 0x24; d[156 + 22] = 0x03; d[156 + 23] = 0xE8;
+        ReadOnlySpan<int> bis = stackalloc int[] { 9, 11, 14 };
+        for (var i = 0; i < 60; i++) Frame(d, 3, bis[i % 3], 1, false, false);
+        return d.ToArray();
+    }
+
+    /// <summary>MPEG-2 22.05 kHz 모노 — VBRI(프레임 40) + 48/64 kbps 교차 40 프레임.</summary>
+    internal static byte[] VbriVbr()
+    {
+        var d = new List<byte>();
+        Frame(d, 2, 8, 0, false, true);
+        Put(d, 36, "VBRI"u8); PutBe(d, 50, 40);
+        for (var i = 0; i < 40; i++) Frame(d, 2, (i & 1) == 0 ? 6 : 8, 0, false, true);
+        return d.ToArray();
+    }
+
+    /// <summary>사인(채널별 동일) float 인터리브 — 피크 <paramref name="dbfs"/>.</summary>
+    internal static float[] Sine(int rate, int channels, int ms, double dbfs, double hz = 1_000)
+    {
+        var frames = (int)((long)rate * ms / 1000);
+        var a = Math.Pow(10, dbfs / 20);
+        var s = new float[frames * channels];
+        for (var f = 0; f < frames; f++)
+            for (var c = 0; c < channels; c++) s[f * channels + c] = (float)(a * Math.Sin(2 * Math.PI * hz * f / rate));
+        return s;
+    }
+
+    internal static byte[] ToPcm16(float[] s)
+    {
+        var b = new byte[s.Length * 2];
+        for (var i = 0; i < s.Length; i++) System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(b.AsSpan(i * 2), (short)Math.Round(s[i] * 32767));
+        return b;
+    }
+
+    [Fact]
+    public void Storyboard_Mp3BitstreamParser_And_LufsNormalizer_Check()
+    {
+        // ① 프레임 헤더 — 싱크 · 버전 · Layer III · 테이블 · 패딩 · 거부(Layer I · free · bad · 예약 레이트/버전)
+        Assert.True(SB.Mp3FrameHeaderBitstreamParser.TryReadHeader(new byte[] { 0xFF, 0xFB, 0x92, 0x40 }, out var h));
+        Assert.Equal((SB.MpegVersion.Mpeg1, 128, 44_100, 2, 418, 1_152, true), (h.Version, h.BitrateKbps, h.SampleRate, h.Channels, h.FrameLength, h.SamplesPerFrame, h.Padding));
+        Assert.True(SB.Mp3FrameHeaderBitstreamParser.TryReadHeader(new byte[] { 0xFF, 0xE3, 0x80, 0xC0 }, out h));   // MPEG-2.5 11.025 kHz 64 kbps 모노
+        Assert.Equal((SB.MpegVersion.Mpeg25, 64, 11_025, 1, 417, 576), (h.Version, h.BitrateKbps, h.SampleRate, h.Channels, h.FrameLength, h.SamplesPerFrame));
+        Assert.False(SB.Mp3FrameHeaderBitstreamParser.TryReadHeader(new byte[] { 0xFF, 0xFF, 0x90, 0x40 }, out _));   // Layer I
+        Assert.False(SB.Mp3FrameHeaderBitstreamParser.TryReadHeader(new byte[] { 0xFF, 0xFB, 0x00, 0x40 }, out _));   // free format
+        Assert.False(SB.Mp3FrameHeaderBitstreamParser.TryReadHeader(new byte[] { 0xFF, 0xFB, 0xF0, 0x40 }, out _));   // bad
+        Assert.False(SB.Mp3FrameHeaderBitstreamParser.TryReadHeader(new byte[] { 0xFF, 0xFB, 0x9C, 0x40 }, out _));   // 예약 레이트
+        Assert.False(SB.Mp3FrameHeaderBitstreamParser.TryReadHeader(new byte[] { 0xFF, 0xEB, 0x90, 0x40 }, out _));   // 예약 버전
+        Assert.Equal(SB.Mp3ParseStatus.Empty, SB.Mp3FrameHeaderBitstreamParser.Analyze(ReadOnlySpan<byte>.Empty).Status);
+        Assert.Equal(SB.Mp3ParseStatus.NoSync, SB.Mp3FrameHeaderBitstreamParser.Analyze(new byte[4_096]).Status);
+
+        // ② CBR — ID3v2/잡음 건너뜀 · 손상 재동기화 · 잘린 꼬리/ID3v1 제외 · 1 ms 정밀도
+        var cbr = Cbr();
+        var ci = SB.Mp3FrameHeaderBitstreamParser.Analyze(cbr);
+        Assert.Equal((SB.Mp3ParseStatus.Ok, SB.Mp3VbrTag.None, 100, 0, false, 128), (ci.Status, ci.Tag, ci.Frames, ci.HeaderFrames, ci.IsVbr, ci.AvgBitrateKbps));
+        Assert.Equal((44_100, 2, 1_152, 115_200L), (ci.SampleRate, ci.Channels, ci.SamplesPerFrame, ci.TotalSamples));
+        Assert.Equal(1_010 + 37, ci.DataOffset);
+        Assert.True(Math.Abs(ci.Duration.TotalMilliseconds - 115_200 * 1000.0 / 44_100) < 1.0);
+        Assert.Equal(2_612, ci.DurationMs);
+
+        // ③ Xing VBR + LAME 갭리스 · VBRI VBR(MPEG-2 모노)
+        var xi = SB.Mp3FrameHeaderBitstreamParser.Analyze(XingVbr());
+        Assert.Equal((SB.Mp3VbrTag.Xing, 60, 60, true, 213), (xi.Tag, xi.Frames, xi.HeaderFrames, xi.IsVbr, xi.AvgBitrateKbps));
+        Assert.Equal((576, 1_000, 60L * 1_152 - 1_576, 384), (xi.EncoderDelay, xi.EncoderPadding, xi.TotalSamples, xi.DataOffset));
+        Assert.True(Math.Abs(xi.Duration.TotalMilliseconds - 67_544 / 48.0) < 1.0);
+        Assert.Equal(1_407, xi.DurationMs);
+        var vi = SB.Mp3FrameHeaderBitstreamParser.Analyze(VbriVbr());
+        Assert.Equal((SB.Mp3VbrTag.Vbri, 40, 40, true, SB.MpegVersion.Mpeg2, 22_050, 1), (vi.Tag, vi.Frames, vi.HeaderFrames, vi.IsVbr, vi.Version, vi.SampleRate, vi.Channels));
+        Assert.Equal(40L * 576, vi.TotalSamples);
+        Assert.Equal(1_045, vi.DurationMs);
+
+        // ④ BS.1770-4 — 스테레오 1 kHz −23 dBFS = −23 LUFS(EBU 3341) → −14 목표 +9 dB · 44.1 kHz 동일 · 적용 후 재계측
+        var s48 = Sine(48_000, 2, 5_000, -23);
+        var r = SB.LufsLoudnessComplianceNormalizer.Measure(s48, 48_000, 2);
+        Assert.True(r.Measured);
+        Assert.InRange(r.IntegratedLufs, -23.15, -22.85);
+        Assert.InRange(r.TruePeakDbtp, -23.1, -22.9);
+        Assert.InRange(r.GainDb, 8.85, 9.15);
+        Assert.Equal(-14.0, r.TargetLufs);
+        Assert.False(r.PeakLimited);
+        Assert.True(r.IsCompliant);
+        Assert.InRange(r.GainFactor, 2.77f, 2.87f);
+        Assert.InRange(SB.LufsLoudnessComplianceNormalizer.Measure(Sine(44_100, 2, 5_000, -23), 44_100, 2).IntegratedLufs, -23.15, -22.85);
+        var boosted = (float[])s48.Clone();
+        SB.LufsLoudnessComplianceNormalizer.Apply(boosted, r.GainFactor);
+        Assert.InRange(SB.LufsLoudnessComplianceNormalizer.IntegratedLufs(boosted, 48_000, 2), -14.1, -13.9);
+        Assert.True(SB.LufsLoudnessComplianceNormalizer.TruePeakDbtp(boosted, 2) <= -1.0);
+        Assert.InRange(SB.LufsLoudnessComplianceNormalizer.Measure(Sine(48_000, 2, 200, -23), 48_000, 2).IntegratedLufs, -23.3, -22.7);   // 400 ms 미만 = 전체 1 블록
+
+        // True Peak 우선 — 조용한 사인 + 스파이크 → 목표 미달이어도 −1 dBTP 상한
+        var spiky = Sine(48_000, 1, 3_000, -30);
+        for (var i = 2_400; i < spiky.Length; i += 4_800) spiky[i] = 0.95f;
+        var sp = SB.LufsLoudnessComplianceNormalizer.Measure(spiky, 48_000, 1);
+        Assert.True(sp.PeakLimited);
+        Assert.True(sp.TruePeakDbtp >= 20 * Math.Log10(0.95) - 1e-6);
+        Assert.Equal(-1.0, sp.OutputTruePeakDbtp, 6);
+        Assert.True(sp.GainDb < -14.0 - sp.IntegratedLufs);
+        Assert.False(sp.IsCompliant);
+        // 무음 · 절대 게이트(−70) 이하 = 미계측(게인 1)
+        var mute = SB.LufsLoudnessComplianceNormalizer.Measure(new float[96_000], 48_000, 2);
+        Assert.Equal((false, 1f), (mute.Measured, mute.GainFactor));
+        Assert.False(SB.LufsLoudnessComplianceNormalizer.Measure(Sine(48_000, 1, 1_000, -90), 48_000, 1).Measured);
+        Assert.Equal(1f, default(SB.LufsLoudnessReport).GainFactor);
+
+        // ⑤ MP3 바인딩 — 프레임 실측 길이 · 버퍼 슬라이스 · 음절 추정 배제(실측 길이 비례 · TTS 직결 분배)
+        var mp3 = new SB.StoryboardAudioSourceStreamBinder();
+        Assert.Equal(SB.AudioBindStatus.Bound, mp3.Bind(cbr, name: "tts.mp3"));
+        Assert.Equal((SB.AudioContainer.Mp3, 44_100, 2, 2_612, true, false), (mp3.Container, mp3.SampleRate, mp3.Channels, mp3.DurationMs, mp3.HasAudio, mp3.HasPcm));
+        Assert.True(mp3.Pcm.SequenceEqual(cbr.AsSpan(ci.DataOffset, ci.DataLength)));
+        Assert.True(mp3.Track.Pcm.Span == mp3.Pcm, "MP3 트랙 = 바인더 프레임 구간 슬라이스");
+        Assert.Equal(100, mp3.Mp3.Frames);
+        Assert.False(mp3.Loudness.Measured);
+        Assert.False(mp3.Track.IsPcm);
+        Assert.Equal(0, mp3.Track.Frames);
+        Assert.Equal(SB.AudioBindStatus.Bound, new SB.StoryboardAudioSourceStreamBinder().Bind(XingVbr()));   // 이름 없이 싱크 판별
+        Assert.Equal(SB.AudioBindStatus.Unsupported, new SB.StoryboardAudioSourceStreamBinder().Bind(new byte[2_048], name: "broken.mp3"));
+        Assert.Equal(SB.AudioBindStatus.Unsupported, new SB.StoryboardAudioSourceStreamBinder().Bind("ID3\u0003\0\0\0\0\0\u0010garbage-garbage"u8));
+        var seq = new SB.StoryboardKeyframeSequencer();
+        Assert.Equal(SB.AudioAlignmentSource.AudioDurationScale, mp3.Resync(seq, Script));
+        Assert.Equal(2_612, seq.TotalMs);
+        var em = new SB.InternalTtsWordBoundaryDirectEmitter();
+        em.Begin(Script);
+        Assert.True(em.EmitFromAudio(mp3, 0) > 0);
+        Assert.True(em.Commit(mp3) > 0);
+        var tseq = new SB.StoryboardKeyframeSequencer();
+        Assert.Equal(SB.AudioAlignmentSource.TtsWordBoundary, mp3.Resync(tseq, Script));
+        Assert.InRange(tseq.TotalMs, 2_000, 2_612);   // 마지막 단어 끝 ≤ MP3 실측 길이
+
+        // ⑥ PCM(WAV) 바인딩 = 라우드니스 실측 → 트랙 게인 메타데이터
+        var wav = StoryboardAudioAlignmentReframeTests.Wav(ToPcm16(s48), 48_000, 2);
+        var pcm = new SB.StoryboardAudioSourceStreamBinder();
+        Assert.Equal(SB.AudioBindStatus.Bound, pcm.Bind(wav, name: "voice.wav"));
+        Assert.True(pcm.HasPcm);
+        Assert.InRange(pcm.Loudness.IntegratedLufs, -23.15, -22.85);
+        Assert.Equal(pcm.Loudness.GainFactor, pcm.Track.GainFactor);
+
+        // ⑦ 스토리보드 → 숏폼 팩토리 — PCM: 오디오 0-카피 + 게인 → ③ 내레이션 적용 · MP3: 비트스트림 0-카피 + 게인 1(샘플 소비 없음 → 소스 PCM)
+        Assert.Equal(32, WsCat.Workspaces.Length);   // 신규 모달 0 — 32 워크스페이스 유지
+        var pseq = new SB.StoryboardKeyframeSequencer();
+        pcm.Resync(pseq, Script);
+        var bridge = new PromptFlowStudio.Services.Ui.StoryboardToShortsFactoryBridge();
+        Assert.True(bridge.Push(pseq, pcm.Track));
+        Assert.True(bridge.TryConsume(out var handed));
+        Assert.True(handed.Audio.Pcm.Span == pcm.Pcm, "인계 오디오 = 바인더 버퍼 슬라이스");
+        Assert.Equal(pcm.Loudness.GainDb, handed.Audio.Loudness.GainDb);
+        var ws = new PromptFlowStudio.Services.Ui.ShortsFactoryWorkspaceContext();
+        var p = new PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext();
+        Assert.True(p.ApplyStoryboard(handed, ws));
+        Assert.Equal(pcm.Track.GainFactor, p.SourceAudio.GainFactor);
+        var o = new PromptFlowStudio.Services.Ui.ShortsFactoryOneClickRenderOrchestrator();
+        Assert.True(o.Render(p), o.LastError);
+        Assert.True(o.LastUsedStoryboardAudio);
+        Assert.Equal(pcm.Track.GainFactor, o.LastNarrationGain);
+        Assert.Equal(pcm.Track.GainFactor, o.Binder.NarrationGain);
+
+        Assert.True(bridge.Push(seq, mp3.Track));
+        Assert.True(bridge.TryConsume(out var mh));
+        Assert.Equal(SB.AudioContainer.Mp3, mh.Audio.Container);
+        Assert.True(mh.Audio.Pcm.Span == mp3.Pcm, "MP3 인계 = 바인더 프레임 구간(0-카피)");
+        Assert.Equal((2_612, 1f, false), (mh.Audio.DurationMs, mh.Audio.GainFactor, mh.Audio.Loudness.Measured));
+        var p2 = new PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext();
+        Assert.True(p2.ApplyStoryboard(mh, new PromptFlowStudio.Services.Ui.ShortsFactoryWorkspaceContext()));
+        Assert.True(p2.HasSourceAudio);
+        Assert.False(p2.SourceAudio.IsPcm);
+        Assert.True(o.Render(p2), o.LastError);
+        Assert.False(o.LastUsedStoryboardAudio);
+        Assert.Equal(1f, o.LastNarrationGain);
+
+        // ⑧ 무할당 — MP3 분석 · MP3 재바인딩 · LUFS 계측(PCM16 · float) 0 B
+        var xing = XingVbr();
+        var vbri = VbriVbr();
+        var pcm16 = pcm.Pcm.ToArray();
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        var all = true;
+        for (var i = 0; i < 16; i++)
+        {
+            all &= SB.Mp3FrameHeaderBitstreamParser.Analyze(cbr).Frames == 100;
+            all &= SB.Mp3FrameHeaderBitstreamParser.Analyze(xing).DurationMs == 1_407;
+            all &= SB.Mp3FrameHeaderBitstreamParser.Analyze(vbri).DurationMs == 1_045;
+            all &= mp3.Bind(cbr, name: "tts.mp3") == SB.AudioBindStatus.Bound && mp3.DurationMs == 2_612;
+        }
+        for (var i = 0; i < 2; i++)
+        {
+            all &= SB.LufsLoudnessComplianceNormalizer.Measure(pcm16, 48_000, 2).IsCompliant;
+            all &= SB.LufsLoudnessComplianceNormalizer.Measure(s48, 48_000, 2).IsCompliant;
+        }
+        long hotAlloc = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.True(all);
+        Assert.Equal(0, hotAlloc);
+    }
+}

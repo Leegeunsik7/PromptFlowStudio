@@ -1,16 +1,15 @@
 # Current Project Status
-- Active Milestone: v18.2.3 완료 (StoryV 내부 TTS 직결 & SRT/VTT 자막 파서 및 비주얼 캔버스)
+- Active Milestone: v18.2.4 완료 (StoryV 순수 C# MP3 파서 & -14 LUFS 노멀라이저)
 - Build Status: Desktop · net8.0-ios · Tests 3 종 Release -warnaserror 0/0 · net8.0-android 미검증(SDK/JDK 미설치)
-- Test Suite: 저메모리 단일 스레드(MaxCpuCount=1 · DisableParallelization) 536/536 1 회 완주 통과(실패 0 · 건너뜀 0 · 단독 재실행 0 · 8 분 45 초)
+- Test Suite: 저메모리 단일 스레드(MaxCpuCount=1 · DisableParallelization) 537/537 1 회 완주 통과(실패 0 · 건너뜀 0 · 단독 재실행 0 · 9 분 29 초)
 - Sidebar: 6 그룹 · 32 워크스페이스 유지(신규 모달 0)
 - Updated At: 2026-10-25 (KST)
 
 ## Completed Deliverables
-- TTS-1: `Services/Storyboard/InternalTtsWordBoundaryDirectEmitter.cs` — `SpeechWordBoundaryEvent` 수신(범위/역전/역순 거부) · 경계 미방출 엔진은 VAD 발화 구간을 음절+호흡 가중치로 분배 · UTF-8 소유 버퍼 직렬화 → 바인더 직결 · 원자 재동기화(0 B)
-- SUB-2: `StandardSubtitleTimestampParser.cs` — SRT/WebVTT Span 1 회 스캔(BOM · NOTE · 큐 설정 · 태그 제거 · 시 생략) · 깨진/역전/역순 큐 건너뛰고 복구 · 쉼표/마침표 미세 구간 단어 경계 등록 → 샷 타임라인(0 B)
-- CV-3: `StoryboardVisualCanvasRenderer.cs` — 샷 9:16 SVG(3 분할 · 아이레벨 · 실루엣 · 자막 안전영역 · 숏츠 UI 경계 1536) · 앵글별 안전영역 · 자막 줄 수 침범 판정 녹/적 배지(0 B 직렬화)
-- UI: 스토리보드 툴바 🗣 AI 음성 생성 및 정렬(합성 → 직결 → 정렬) · 오디오 파일 불러오기에 .srt/.vtt 추가 · 샷 카드 9:16 캔버스 + 세이프존 배지
-- TEST: `Storyboard_TtsDirectEmitter_And_SubtitleParser_Check` — 타임코드 · SRT/VTT 정합 · 구문 복원력 · 직결=CSV 동일 지문 · 세이프존 판정 · 핫패스 0 B
+- MP3-1: `Services/Storyboard/Mp3FrameHeaderBitstreamParser.cs` — 11 비트 싱크 · MPEG-1/2/2.5 Layer III 비트레이트/샘플레이트/패딩 해석 · ID3v2/ID3v1 건너뜀 · 연속 2 프레임 싱크 확정 · 손상 구간 재동기화 · Xing/Info/VBRI · LAME 지연/패딩 → 프레임 수 · TimeSpan 재생 시간(0 B)
+- MP3-2: `LufsLoudnessComplianceNormalizer.cs` — BS.1770-4 K-가중(임의 레이트) · 400 ms/75 % 블록 · 절대 −70/상대 −10 LU 게이팅 · 4× 오버샘플 True Peak · −14 LUFS 게인을 −1 dBTP 상한으로 제한 → `LufsLoudnessReport`(0 B)
+- MP3-3: 바인더 MP3 수용(`AudioContainer.Mp3` · 프레임 구간 0-카피 · 실측 길이 비례 재동기화 · 음절 추정 배제) · PCM 바인딩 시 라우드니스 실측 → `StoryboardAudioTrack.Loudness/GainFactor` → 팩토리 ③ 내레이션 게인 적용 · 툴바/AI 음성 `.mp3` 수용
+- TEST: `Storyboard_Mp3BitstreamParser_And_LufsNormalizer_Check` — CBR/Xing/VBRI 길이 1 ms · EBU −23 LUFS 기준 · True Peak 제한 · MP3/PCM → 팩토리 게인 관통 · 핫패스 0 B
 
 ## Known Issues / 환경 노트
-- 실 TTS 엔진(ElevenLabs/Edge/로컬) 네이티브 단어 경계 이벤트 미방출 → VAD/실측 길이 분배 폴백 · MP3 디코딩 미지원(MP3 합성 시 길이 기반) · Android 빌드 미검증
+- MP3 는 디코딩 없이 비트스트림만 바인딩 → 라우드니스 미계측(게인 1) · 팩토리 ③ 은 기존 소스 PCM 사용 · 실 TTS 네이티브 단어 경계 미방출(VAD/실측 길이 분배 폴백) · Android 빌드 미검증

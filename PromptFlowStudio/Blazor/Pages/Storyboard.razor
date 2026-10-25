@@ -80,7 +80,7 @@
             @* v18.2.2 🎙 실 오디오(WAV · PCM 16-bit) / TTS 단어 경계(CSV) 바인딩 → 샷 타임코드 실측 재동기화 · 팩토리 전송 시 오디오 0-카피 동반 *@
             <div class='sb-openbtn @(_audioLoading ? "off" : null)' title="WAV(PCM 16-bit) · 원시 PCM(16 kHz 모노) 또는 TTS 단어 경계 CSV(startMs,endMs,word) — 샷 타임코드를 음절 추정 대신 실측으로 재동기화">
                 @(_audioLoading ? "⏳ 오디오 불러오는 중…" : "🎙️ 오디오 파일 불러오기")
-                <InputFile class="sb-openinput" OnChange="OnShotAudioPicked" accept="audio/wav,audio/x-wav,.wav,.pcm,.raw,.csv,.tsv,.txt,.srt,.vtt" disabled="@_audioLoading" aria-label="샷 정렬 오디오 · 자막 파일 선택" />
+                <InputFile class="sb-openinput" OnChange="OnShotAudioPicked" accept="audio/wav,audio/x-wav,audio/mpeg,.wav,.mp3,.pcm,.raw,.csv,.tsv,.txt,.srt,.vtt" disabled="@_audioLoading" aria-label="샷 정렬 오디오 · 자막 파일 선택" />
             </div>
             @* v18.2.3 🗣 대본 → AI 음성 합성 → 단어 경계 인메모리 직결 → 샷 타임코드 원자 정렬(CSV 수동 로드 불필요) *@
             <button class="sb-tbtn wiz" @onclick="OnAiVoiceAlign" disabled="@(_audioLoading || _project.Scenes.Count == 0)" title="나레이션을 AI 음성으로 합성하고 단어 경계를 메모리에서 바로 샷 타임코드에 정렬합니다(WAV 는 실 오디오 동반).">🗣 AI 음성 생성 및 정렬</button>
@@ -2004,7 +2004,15 @@
         };
         if (!_shotAudio.HasAudio) return "🗣 단어 경계 · " + src;
         var inv = System.Globalization.CultureInfo.InvariantCulture;
-        return "🎙 " + (_shotAudio.Container == PromptFlowStudio.Services.Storyboard.AudioContainer.Wav ? "WAV" : "PCM") + " 16-bit · "
+        var lu = _shotAudio.Loudness;
+        var head = _shotAudio.Container switch
+        {
+            PromptFlowStudio.Services.Storyboard.AudioContainer.Mp3 => "MP3 " + (_shotAudio.Mp3.IsVbr ? "VBR " : "CBR ") + _shotAudio.Mp3.AvgBitrateKbps.ToString(inv) + "k",
+            PromptFlowStudio.Services.Storyboard.AudioContainer.Wav => "WAV 16-bit",
+            _ => "PCM 16-bit",
+        };
+        return "🎙 " + head + " · "
+             + (lu.Measured ? lu.IntegratedLufs.ToString("0.0", inv) + " LUFS→" + lu.TargetLufs.ToString("0", inv) + " (" + lu.GainDb.ToString("+0.0;-0.0", inv) + " dB) · " : "")
              + (_shotAudio.DurationMs / 1000.0).ToString("0.0", inv) + "s · " + (_shotAudio.SampleRate / 1000.0).ToString("0.#", inv) + " kHz · "
              + (_shotAudio.Channels == 1 ? "모노" : _shotAudio.Channels.ToString(inv) + "ch") + " · " + src;
     }
@@ -2047,7 +2055,7 @@
             else
             {
                 var st = await _shotAudio.BindAsync(src, file.Size, name);
-                if (st != PromptFlowStudio.Services.Storyboard.AudioBindStatus.Bound) _audioMsg = "오디오 불러오기 실패(" + st.ToString() + ") — WAV PCM 16-bit 만 지원";
+                if (st != PromptFlowStudio.Services.Storyboard.AudioBindStatus.Bound) _audioMsg = "오디오 불러오기 실패(" + st.ToString() + ") — WAV PCM 16-bit · MP3(Layer III) 지원";
             }
             RefreshShots();
         }
@@ -2077,7 +2085,9 @@
             await using (var fs = File.OpenRead(path))
             {
                 var head = new byte[4];
-                if (fs.Length > 44 && await fs.ReadAsync(head) == 4 && head.AsSpan().SequenceEqual("RIFF"u8))
+                // v18.2.4 상용 TTS MP3 도 실 오디오 바인딩(프레임 실측 길이 · 음절 추정 배제)
+                if (fs.Length > 44 && await fs.ReadAsync(head) == 4
+                    && (head.AsSpan().SequenceEqual("RIFF"u8) || PromptFlowStudio.Services.Storyboard.Mp3FrameHeaderBitstreamParser.LooksLikeMp3(head)))
                 {
                     fs.Position = 0;
                     await _shotAudio.BindAsync(fs, fs.Length, Path.GetFileName(path));

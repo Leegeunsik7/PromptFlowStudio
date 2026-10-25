@@ -149,16 +149,19 @@ public sealed class ShortsFactoryRetentionRealSliceBinder
 
     /// <summary>
     /// [v18.2.2] ③ 리텐션 — 스토리보드 실 오디오(PCM 16-bit LE 인터리브 · 임의 레이트/채널 · 0 = 링 원점)를 복사 없이 48 kHz 모노 최근접 샘플링으로 소비(무할당).
+    ///   [v18.2.4] <paramref name="narrationGain"/> = −14 LUFS 노멀라이저 게인 계수(BGM 덕킹 전 내레이션에만 적용).
     /// </summary>
-    public SliceBindStatus ApplyRetention(ReadOnlySpan<byte> pcm16, int sampleRate, int channels, ReadOnlySpan<short> bgm, ReadOnlySpan<int> punchSrcMs, bool bgmSafe)
+    public SliceBindStatus ApplyRetention(ReadOnlySpan<byte> pcm16, int sampleRate, int channels, ReadOnlySpan<short> bgm, ReadOnlySpan<int> punchSrcMs, bool bgmSafe,
+                                          float narrationGain = 1f)
     {
         if (Status != SliceBindStatus.Bound) return Status;
         var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         var n = BeginRetention(bgm, bgmSafe, out var s0);
+        NarrationGain = narrationGain;
         for (var i = 0; i < n; i++)
         {
             var at = s0 + i;
-            var v = PromptFlowStudio.Services.Storyboard.StoryboardAudioTrack.SampleAt(pcm16, sampleRate, channels, Fs, at);
+            var v = PromptFlowStudio.Services.Storyboard.StoryboardAudioTrack.SampleAt(pcm16, sampleRate, channels, Fs, at) * narrationGain;
             if (BgmGain > 0f) v += bgm[(int)(at % bgm.Length)] * (BgmGain / 32768f);
             _pcm[i] = v;
         }
@@ -168,6 +171,9 @@ public sealed class ShortsFactoryRetentionRealSliceBinder
 
     /// <summary>[v18.2.2] 실 오디오 PCM 으로 ③ 을 수행한 횟수.</summary>
     public long ExternalAudioBinds { get; private set; }
+
+    /// <summary>[v18.2.4] 마지막 실 오디오 ③ 에 적용한 내레이션 게인 계수.</summary>
+    public float NarrationGain { get; private set; } = 1f;
 
     /// <summary>[v18.2.2] 리텐션 출력 PCM(48 kHz 모노 · 바인더 버퍼 공유) — ④ 내레이션 트랙 입력.</summary>
     public ReadOnlyMemory<float> OutputPcmMemory => _out.AsMemory(0, OutSamples);
