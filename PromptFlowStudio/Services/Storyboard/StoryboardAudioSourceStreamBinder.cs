@@ -1,9 +1,13 @@
 using System.Buffers.Binary;
+using System.Security.Cryptography;
 
 namespace PromptFlowStudio.Services.Storyboard;
 
 /// <summary>[v18.2.2] 오디오 바인딩 결과.</summary>
 public enum AudioBindStatus : byte { None, Bound, Empty, Unsupported, TooLarge }
+
+/// <summary>[v18.2.6] .storyv 오디오 자동 재연결 결과 — 기록 없음 · 연결됨 · 파일 유실 · 해시 불일치(변조/교체) · 미지원 경로/형식 · I/O 오류.</summary>
+public enum AudioHydrationStatus : byte { None, Hydrated, Missing, Tampered, Unsupported, IoError }
 
 /// <summary>[v18.2.2] 바인딩된 오디오 컨테이너 형식.</summary>
 public enum AudioContainer : byte { None, Wav, RawPcm16, Mp3 }
@@ -58,13 +62,18 @@ public readonly struct StoryboardAudioTrack
 ///   ▸ <see cref="Track"/>: 숏폼 팩토리 관통용 0-카피 스냅샷.
 ///   ▸ [v18.2.4] MP3(ID3v2 · Layer III 싱크) → <see cref="Mp3FrameHeaderBitstreamParser"/> 실측 길이 · 프레임 비트스트림 바인딩(음절 추정 배제 · 실측 길이 비례 재동기화).
 ///     PCM 은 바인딩 시 <see cref="LufsLoudnessComplianceNormalizer"/> 로 −14 LUFS 게인 실측(0 B) → 트랙 메타데이터로 관통.
+///   ▸ [v18.2.6] 바인딩 원본 SHA-256 64-bit 체크섬(<see cref="SourceChecksum"/> · 수신 청크 증분 해시 0 B) · 절대 경로(<see cref="SourcePath"/>) →
+///     <see cref="HydrateAsync(StoryvAudioHeader, CancellationToken)"/>: .storyv 복원 시 디스크 존재 확인 → 청크 수신 · 해시 대조 → 일치 시에만 자동 재바인딩.
 /// </summary>
 public sealed class StoryboardAudioSourceStreamBinder
 {
     /// <summary>바인딩 상한(64 MB ≈ 48 kHz 스테레오 16-bit 5.8 분).</summary>
     public const int MaxBytes = 64 << 20;
+    /// <summary>[v18.2.6] 자동 재연결 경로 상한(문자).</summary>
+    public const int MaxPathChars = 1024;
 
     private byte[] _buf = Array.Empty<byte>();
+    private IncrementalHash? _sha;
     private byte[] _wordBuf = Array.Empty<byte>();
     private int _len, _wordLen, _dataOffset, _dataLength;
 
@@ -75,6 +84,14 @@ public sealed class StoryboardAudioSourceStreamBinder
     public int DurationMs { get; private set; }
     public int Revision { get; private set; }
     public string? SourceName { get; private set; }
+    /// <summary>[v18.2.6] 바인딩 원본 파일 절대 경로(파일 바인딩 · 영속 사본 · 자동 재연결 시 · 그 외 null).</summary>
+    public string? SourcePath { get; private set; }
+    /// <summary>[v18.2.6] 바인딩 원본 바이트(WAV/MP3 헤더 포함) SHA-256 앞 64-bit(미바인딩 = 0).</summary>
+    public ulong SourceChecksum { get; private set; }
+    /// <summary>[v18.2.6] 마지막 자동 재연결 결과(수동 바인딩 · 해제 = None).</summary>
+    public AudioHydrationStatus Hydration { get; private set; }
+    /// <summary>[v18.2.6] 매니페스트에 오디오가 기록돼 있었으나 재연결 실패(유실 · 변조 · I/O) — UI 수동 로드 유도.</summary>
+    public bool IsAudioLost => Hydration is AudioHydrationStatus.Missing or AudioHydrationStatus.Tampered or AudioHydrationStatus.Unsupported or AudioHydrationStatus.IoError;
     public bool HasAudio => Status == AudioBindStatus.Bound;
     /// <summary>[v18.2.4] PCM 샘플 오디오 바인딩(VAD · 라우드니스 계측 가능) — MP3 비트스트림은 false.</summary>
     public bool HasPcm => HasAudio && Container != AudioContainer.Mp3;
@@ -104,33 +121,176 @@ public sealed class StoryboardAudioSourceStreamBinder
         audio.CopyTo(_buf);
         _len = audio.Length;
         SourceName = name;
-        return Parse(rawSampleRate, rawChannels);
+        return Commit(Parse(rawSampleRate, rawChannels), ComputeChecksum(audio), null);
     }
 
     /// <summary>스트림(파일 · 네트워크) → 소유 버퍼 직접 수신 후 <see cref="Bind"/> 와 같은 파싱(비핫패스 · 용량 내 재수신 0 B 버퍼).</summary>
     public async Task<AudioBindStatus> BindAsync(Stream stream, long lengthHint, string? name = null,
                                                  int rawSampleRate = StoryboardAudioWordBoundaryAligner.DefaultSampleRate, int rawChannels = 1, CancellationToken ct = default)
     {
-        if (lengthHint > MaxBytes) return Fail(AudioBindStatus.TooLarge);
+        var len = await ReceiveAsync(stream, lengthHint, ct).ConfigureAwait(false);
+        if (len < 0) return Commit(Fail(AudioBindStatus.TooLarge), 0, null);
+        _len = len;
+        SourceName = name;
+        return Commit(Parse(rawSampleRate, rawChannels), _recvSum, null);
+    }
+
+    /// <summary>[v18.2.6] 디스크 파일 바인딩 — <see cref="BindAsync"/> 와 같은 파싱 · 성공 시 <see cref="SourcePath"/> = 절대 경로(자동 재연결 앵커).</summary>
+    public async Task<AudioBindStatus> BindFileAsync(string path, int rawSampleRate = StoryboardAudioWordBoundaryAligner.DefaultSampleRate, int rawChannels = 1,
+                                                     CancellationToken ct = default)
+    {
+        var full = Path.GetFullPath(path);
+        AudioBindStatus st;
+        await using (var fs = new FileStream(full, FileMode.Open, FileAccess.Read, FileShare.Read, 1, FileOptions.Asynchronous | FileOptions.SequentialScan))
+            st = await BindAsync(fs, fs.Length, Path.GetFileName(full), rawSampleRate, rawChannels, ct).ConfigureAwait(false);
+        if (st == AudioBindStatus.Bound) SourcePath = full;
+        return st;
+    }
+
+    /// <summary>
+    /// [v18.2.6] 바인딩 원본(헤더 포함 · 체크섬 동일)을 디스크에 원자 기록 → <see cref="SourcePath"/> 지정.
+    ///   브라우저 파일 선택처럼 절대 경로가 없는 바인딩의 재연결 앵커. 실패 · 기록 중 재바인딩 = false(바인딩 불변).
+    /// </summary>
+    public async Task<bool> PersistSourceAsync(string path, CancellationToken ct = default)
+    {
+        if (!HasAudio) return false;
+        string full, tmp;
+        try { full = Path.GetFullPath(path); }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { return false; }
+        tmp = full + ".tmp";
+        var rev = Revision;
+        try
+        {
+            var dir = Path.GetDirectoryName(full);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            await using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 1, FileOptions.Asynchronous))
+                await fs.WriteAsync(_buf.AsMemory(0, _len), ct).ConfigureAwait(false);
+            if (rev != Revision) { TryDelete(tmp); return false; }
+            File.Move(tmp, full, true);
+            SourcePath = full;
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            TryDelete(tmp);
+            return false;
+        }
+        catch (OperationCanceledException)
+        {
+            TryDelete(tmp);
+            throw;
+        }
+    }
+
+    /// <summary>[v18.2.6] .storyv 오디오 헤더 → 자동 재연결(헤더가 비면 해제 · None).</summary>
+    public Task<AudioHydrationStatus> HydrateAsync(StoryvAudioHeader header, CancellationToken ct = default)
+    {
+        if (header.IsEmpty)
+        {
+            Clear();
+            return Task.FromResult(AudioHydrationStatus.None);
+        }
+        return HydrateAsync(header.SourcePath, header.Checksum, header.SampleRate, header.Channels, ct);
+    }
+
+    /// <summary>
+    /// [v18.2.6] 자동 재연결(Auto-Hydration) — 이전 오디오 해제 → 경로 검증 · 존재 확인 → 청크 수신 + 증분 해시(0 B) → 체크섬 일치 시에만 파싱 · 바인딩.
+    ///   실패(유실 · 변조 · 미지원 · I/O) = 빈 오디오(<see cref="Track"/> = default) 유지 · 예외 없음. 취소만 전파.
+    /// </summary>
+    public async Task<AudioHydrationStatus> HydrateAsync(string? path, ulong checksum, int rawSampleRate = StoryboardAudioWordBoundaryAligner.DefaultSampleRate,
+                                                         int rawChannels = 1, CancellationToken ct = default)
+    {
+        Clear();
+        if (string.IsNullOrEmpty(path)) return Hydration = AudioHydrationStatus.Missing;
+        if (!IsHydratablePath(path)) return Hydration = AudioHydrationStatus.Unsupported;
+        if (!File.Exists(path)) return Hydration = AudioHydrationStatus.Missing;
+        try
+        {
+            int len;
+            await using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1, FileOptions.Asynchronous | FileOptions.SequentialScan))
+                len = await ReceiveAsync(fs, fs.Length, ct).ConfigureAwait(false);
+            if (len < 0) { Clear(); return Hydration = AudioHydrationStatus.Unsupported; }
+            if (checksum == 0 || _recvSum != checksum) { Clear(); return Hydration = AudioHydrationStatus.Tampered; }
+            _len = len;
+            SourceName = Path.GetFileName(path);
+            if (Parse(rawSampleRate, rawChannels) != AudioBindStatus.Bound) return Hydration = AudioHydrationStatus.Unsupported;
+            SourceChecksum = _recvSum;
+            SourcePath = Path.GetFullPath(path);
+            return Hydration = AudioHydrationStatus.Hydrated;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            Clear();
+            return Hydration = AudioHydrationStatus.IoError;
+        }
+    }
+
+    /// <summary>[v18.2.6] 원본 바이트 SHA-256 앞 64-bit(빅엔디언 · 0 B).</summary>
+    public static ulong ComputeChecksum(ReadOnlySpan<byte> data)
+    {
+        Span<byte> h = stackalloc byte[32];
+        SHA256.HashData(data, h);
+        return BinaryPrimitives.ReadUInt64BigEndian(h);
+    }
+
+    /// <summary>[v18.2.6] 자동 재연결 허용 경로 — 절대 경로 · 길이 상한 · 오디오 확장자(.wav · .mp3 · .pcm · .raw)만.</summary>
+    public static bool IsHydratablePath(string? path)
+    {
+        if (string.IsNullOrEmpty(path) || path.Length > MaxPathChars || !Path.IsPathFullyQualified(path)) return false;
+        var ext = Path.GetExtension(path.AsSpan());
+        return ext.Equals(".wav", StringComparison.OrdinalIgnoreCase) || ext.Equals(".mp3", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".pcm", StringComparison.OrdinalIgnoreCase) || ext.Equals(".raw", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private ulong _recvSum;
+
+    /// <summary>스트림 → 소유 버퍼 수신 + 수신 청크 증분 SHA-256(용량 내 0 B) → <see cref="_recvSum"/>. 반환 = 길이(상한 초과 = −1).</summary>
+    private async Task<int> ReceiveAsync(Stream stream, long lengthHint, CancellationToken ct)
+    {
+        _recvSum = 0;
+        if (lengthHint > MaxBytes) return -1;
         var cap = (int)Math.Max(lengthHint, 4096);
         if (cap > _buf.Length) _buf = new byte[cap];
+        var sha = _sha ??= IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        Finish(sha);   // 이전 중단 수신의 잔여 상태 폐기
         var len = 0;
         while (true)
         {
             if (len == _buf.Length)
             {
-                if (len >= MaxBytes) return Fail(AudioBindStatus.TooLarge);
+                if (len >= MaxBytes) return -1;
                 var grown = new byte[Math.Min(MaxBytes, len * 2)];
                 _buf.AsSpan(0, len).CopyTo(grown);
                 _buf = grown;
             }
             var r = await stream.ReadAsync(_buf.AsMemory(len), ct).ConfigureAwait(false);
             if (r == 0) break;
+            sha.AppendData(_buf, len, r);
             len += r;
         }
-        _len = len;
-        SourceName = name;
-        return Parse(rawSampleRate, rawChannels);
+        _recvSum = Finish(sha);
+        return len;
+    }
+
+    private static ulong Finish(IncrementalHash sha)
+    {
+        Span<byte> h = stackalloc byte[32];
+        sha.GetHashAndReset(h);
+        return BinaryPrimitives.ReadUInt64BigEndian(h);
+    }
+
+    /// <summary>바인딩 확정 — 성공 시 원본 체크섬 · 경로 기록, 수동 바인딩은 재연결 상태 해제.</summary>
+    private AudioBindStatus Commit(AudioBindStatus st, ulong checksum, string? path)
+    {
+        if (st == AudioBindStatus.Bound) { SourceChecksum = checksum; SourcePath = path; }
+        Hydration = AudioHydrationStatus.None;
+        return st;
+    }
+
+    private static void TryDelete(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* 임시 파일 정리 실패 무시 */ }
     }
 
     /// <summary>TTS 단어 경계 스트림 기록(용량 내 0 B) · 단어가 없으면 해제. 반환 = 파싱 가능한 단어 수(최대 64 개까지 확인).</summary>
@@ -154,7 +314,9 @@ public sealed class StoryboardAudioSourceStreamBinder
         SampleRate = Channels = DurationMs = 0;
         Mp3 = default;
         Loudness = default;
-        SourceName = null;
+        SourceName = SourcePath = null;
+        SourceChecksum = 0;
+        Hydration = AudioHydrationStatus.None;
         Revision++;
     }
 
@@ -262,6 +424,8 @@ public sealed class StoryboardAudioSourceStreamBinder
         SampleRate = Channels = DurationMs = 0;
         Mp3 = default;
         Loudness = default;
+        SourcePath = null;
+        SourceChecksum = 0;
         Status = st;
         return st;
     }

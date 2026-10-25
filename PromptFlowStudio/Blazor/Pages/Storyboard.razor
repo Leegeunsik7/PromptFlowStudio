@@ -78,15 +78,15 @@
             <button class="sb-tbtn" @onclick="() => _osmuOpen = true" title="완성 영상을 9:16·1:1·4:5 플랫폼 규격으로 재구성 + AI 제목/해시태그 패키지(폴더/ZIP) · AI 품질 검수 · 소셜 바로 게시">🌐 OSMU 내보내기 · 게시 @if (FinalQa is { } fq) { <span class="sb-qa @(fq.Verdict == QaVerdict.Pass ? "pass" : fq.Verdict == QaVerdict.Warn ? "warn" : "reject")" title="@fq.Message">@(fq.Verdict == QaVerdict.Pass ? "✅ QA" : fq.Verdict == QaVerdict.Warn ? "⚠️ QA" : "⛔ QA") @(fq.Defects.Count)</span> }</button>
             <button class="sb-tbtn wiz" @onclick="SendShotsToFactory" disabled="@(_project.Scenes.Count == 0)" title="나레이션을 발화 호흡 기준 샷으로 분할 → 타임코드 · 대본 · 9:16 프레이밍을 숏폼 팩토리 ① 절삭 · ② 자막 탭에 0-카피 인계">🎬 숏폼 팩토리로 시퀀스 전송</button>
             @* v18.2.2 🎙 실 오디오(WAV · PCM 16-bit) / TTS 단어 경계(CSV) 바인딩 → 샷 타임코드 실측 재동기화 · 팩토리 전송 시 오디오 0-카피 동반 *@
-            <div class='sb-openbtn @(_audioLoading ? "off" : null)' title="WAV(PCM 16-bit) · 원시 PCM(16 kHz 모노) 또는 TTS 단어 경계 CSV(startMs,endMs,word) — 샷 타임코드를 음절 추정 대신 실측으로 재동기화">
+            <div class='sb-openbtn @(_audioLoading ? "off" : _shotAudio.IsAudioLost ? "need" : null)' title="@(_shotAudio.IsAudioLost ? "오디오 유실 — 원본 파일을 다시 선택하면 복원된 타임라인을 유지한 채 재연결합니다" : "WAV(PCM 16-bit) · 원시 PCM(16 kHz 모노) 또는 TTS 단어 경계 CSV(startMs,endMs,word) — 샷 타임코드를 음절 추정 대신 실측으로 재동기화")">
                 @(_audioLoading ? "⏳ 오디오 불러오는 중…" : "🎙️ 오디오 파일 불러오기")
                 <InputFile class="sb-openinput" OnChange="OnShotAudioPicked" accept="audio/wav,audio/x-wav,audio/mpeg,.wav,.mp3,.pcm,.raw,.csv,.tsv,.txt,.srt,.vtt" disabled="@_audioLoading" aria-label="샷 정렬 오디오 · 자막 파일 선택" />
             </div>
             @* v18.2.3 🗣 대본 → AI 음성 합성 → 단어 경계 인메모리 직결 → 샷 타임코드 원자 정렬(CSV 수동 로드 불필요) *@
             <button class="sb-tbtn wiz" @onclick="OnAiVoiceAlign" disabled="@(_audioLoading || _project.Scenes.Count == 0)" title="나레이션을 AI 음성으로 합성하고 단어 경계를 메모리에서 바로 샷 타임코드에 정렬합니다(WAV 는 실 오디오 동반).">🗣 AI 음성 생성 및 정렬</button>
-            @if (_shotAudio.HasAudio || _shotAudio.HasWordBoundaries || _audioMsg is not null)
+            @if (_shotAudio.HasAudio || _shotAudio.HasWordBoundaries || _audioMsg is not null || _shotAudio.IsAudioLost)
             {
-                <span class="sb-audio-badge @(_audioMsg is null ? null : "bad")" title="@(_shotAudio.SourceName)">@(AudioBadge())</span>
+                <span class="sb-audio-badge @(_audioMsg is null && !_shotAudio.IsAudioLost ? null : "bad")" title="@(_shotAudio.SourcePath ?? _shotAudio.SourceName)">@(AudioBadge())</span>
             }
             <button class="sb-tbtn" @onclick="BoostAll" disabled="@Jobs.IsRunning" title="Wan 2.1 알고리즘에 최적화된 시네마틱 카메라/조명 태그를 모든 컷에 1클릭으로 덧붙입니다.">⚡ 프롬프트 부스팅</button>
             <button class="sb-tbtn" @onclick="SaveProject" disabled="@(Jobs.IsRunning || Jobs.IsMerging)">💾 프로젝트 저장</button>
@@ -1260,6 +1260,7 @@
     .sb-tbtn.wiz:hover:not(:disabled) { filter: brightness(1.07); color: #fff; }
     .sb-openbtn { position: relative; font: 700 12.5px inherit; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; overflow: hidden; }
     .sb-openbtn:hover { border-color: var(--accent); color: var(--text-primary); } .sb-openbtn.off { opacity: .45; }
+    .sb-openbtn.need { border-color: #f59e0b; color: #b45309; box-shadow: 0 0 0 2px rgba(245, 158, 11, .25); }
     .sb-audio-badge { align-self: center; font: 700 11px var(--mono, monospace); color: #86efac; border: 1px solid #166534; border-radius: 999px; padding: 3px 9px; white-space: nowrap; }
     .sb-audio-badge.bad { color: #fca5a5; border-color: #7f1d1d; }
     .sb-openinput { position: absolute; inset: 0; opacity: 0; cursor: pointer; } .sb-openbtn.off .sb-openinput { pointer-events: none; }
@@ -2013,9 +2014,24 @@
     private string AudioBadge()
     {
         if (_audioMsg is { } why) return "⚠ " + why;
+        // v18.2.6 .storyv 자동 재연결 상태
+        if (_shotAudio.IsAudioLost) return "⚠️ 오디오 유실됨 · " + LostReason(_shotAudio.Hydration) + " — 🎙️ 오디오 파일 불러오기로 재연결";
+        if (_shotAudio.Hydration == PromptFlowStudio.Services.Storyboard.AudioHydrationStatus.Hydrated) return "🟢 오디오 연결됨 · " + AudioBadgeCore();
         if (_alignOrigin is { } origin) return origin + " · " + AudioBadgeCore();
         return AudioBadgeCore();
     }
+
+    private static string LostReason(PromptFlowStudio.Services.Storyboard.AudioHydrationStatus h) => h switch
+    {
+        PromptFlowStudio.Services.Storyboard.AudioHydrationStatus.Missing => "원본 파일 없음",
+        PromptFlowStudio.Services.Storyboard.AudioHydrationStatus.Tampered => "해시 불일치(변조/교체)",
+        PromptFlowStudio.Services.Storyboard.AudioHydrationStatus.Unsupported => "지원하지 않는 경로/형식",
+        _ => "읽기 실패",
+    };
+
+    /// <summary>v18.2.6 경로 없는 바인딩(브라우저 파일 선택 · TTS 임시 파일) → 프로젝트 오디오 폴더 영속 사본 → .storyv 자동 재연결 앵커(실패 = 경로 미기록).</summary>
+    private Task<bool> PinShotAudioAsync(string name) =>
+        _shotAudio.PersistSourceAsync(Path.Combine(Repo.ProjectsDir, "audio", _project.Id + "_" + Path.GetFileName(name)));
 
     private string AudioBadgeCore()
     {
@@ -2078,8 +2094,15 @@
             }
             else
             {
+                // v18.2.6 유실 복구 — .storyv 복원 타임라인은 유지하고 오디오만 재연결
+                var relink = _shotAudio.IsAudioLost && _shotsEdited && _shotSeq.Count > 0;
                 var st = await _shotAudio.BindAsync(src, file.Size, name);
                 if (st != PromptFlowStudio.Services.Storyboard.AudioBindStatus.Bound) _audioMsg = "오디오 불러오기 실패(" + st.ToString() + ") — WAV PCM 16-bit · MP3(Layer III) 지원";
+                else
+                {
+                    await PinShotAudioAsync(name);
+                    if (relink) { _shotMsg = "· 🎙 오디오 수동 재연결(타임라인 유지)"; return; }
+                }
             }
             RefreshShots();
         }
@@ -2117,6 +2140,7 @@
                     await _shotAudio.BindAsync(fs, fs.Length, Path.GetFileName(path));
                 }
             }
+            if (_shotAudio.HasAudio) await PinShotAudioAsync(Path.GetFileName(path));   // v18.2.6 TTS 임시 파일 → 영속 사본(재연결 앵커)
             var fallbackMs = _shotAudio.HasAudio ? 0 : (int)((PromptFlowStudio.Services.Media.AiVoiceoverTtsService.ProbeSeconds(path)
                                                              ?? PromptFlowStudio.Services.Media.AiVoiceoverTtsService.EstimateSeconds(script)) * 1000);
             _ttsEmitter.Begin(script);
@@ -2199,6 +2223,11 @@
                 _shotsEdited = true;
                 _selShot = -1;
                 _shotMsg = "· 📂 .storyv 복원(샷 " + _shotSeq.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + ")";
+                // v18.2.6 오디오 자동 재연결 — 경로 · 해시 일치 시에만 바인딩, 실패해도 타임라인 · 대본은 매니페스트 복원본 유지(빈 오디오 컨텍스트)
+                _audioMsg = null; _alignOrigin = null; _subtitleLoaded = false;
+                var h = await _shotAudio.HydrateAsync(_storyv.LastAudio);
+                if (h == PromptFlowStudio.Services.Storyboard.AudioHydrationStatus.Hydrated) _shotMsg += " · 🟢 오디오 자동 재연결";
+                else if (_shotAudio.IsAudioLost) _shotMsg += " · ⚠️ 오디오 유실 — 수동 재연결 필요";
             }
             else _shotMsg = "· ⚠ .storyv 열기 실패(" + st.ToString() + ")";
         }

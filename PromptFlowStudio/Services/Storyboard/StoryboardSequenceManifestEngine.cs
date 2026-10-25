@@ -7,19 +7,29 @@ namespace PromptFlowStudio.Services.Storyboard;
 /// <summary>[v18.2.5] .storyv 판독 결과 — 정상 · 빈 입력 · 구문 오류 · 미지원 버전 · 범위/연속성 위반 · 지문 불일치 · 크롭 트랙 불일치 · 용량 초과 · I/O 오류.</summary>
 public enum StoryvManifestStatus : byte { None, Ok, Empty, Malformed, UnsupportedVersion, OutOfRange, FingerprintMismatch, CropMismatch, TooLarge, IoError }
 
-/// <summary>[v18.2.5] 매니페스트 오디오 헤더(PCM 본문 제외) — 컨테이너 · 레이트 · 채널 · 길이 · 라우드니스 리포트.</summary>
+/// <summary>
+/// [v18.2.5] 매니페스트 오디오 헤더(PCM 본문 제외) — 컨테이너 · 레이트 · 채널 · 길이 · 라우드니스 리포트.
+///   [v18.2.6] + 원본 절대 경로 · SHA-256 64-bit 체크섬(자동 재연결 앵커 · 경로 없음 = null).
+/// </summary>
 public readonly struct StoryvAudioHeader
 {
     public readonly AudioContainer Container;
     public readonly int SampleRate, Channels, DurationMs;
     public readonly LufsLoudnessReport Loudness;
+    public readonly string? SourcePath;
+    public readonly ulong Checksum;
 
-    public StoryvAudioHeader(AudioContainer container, int sampleRate, int channels, int durationMs, LufsLoudnessReport loudness)
+    public StoryvAudioHeader(AudioContainer container, int sampleRate, int channels, int durationMs, LufsLoudnessReport loudness,
+                             string? sourcePath = null, ulong checksum = 0)
     {
         Container = container; SampleRate = sampleRate; Channels = channels; DurationMs = durationMs; Loudness = loudness;
+        SourcePath = sourcePath; Checksum = checksum;
     }
 
-    public static StoryvAudioHeader From(in StoryboardAudioTrack t) => new(t.Container, t.SampleRate, t.Channels, t.DurationMs, t.Loudness);
+    /// <summary>트랙 → 헤더(경로 · 체크섬은 캡처 시점 바인더가 아직 같은 오디오일 때만).</summary>
+    public static StoryvAudioHeader From(in StoryboardAudioTrack t) => t.Owner is { } o && !t.IsEmpty && t.IsLive
+        ? new(t.Container, t.SampleRate, t.Channels, t.DurationMs, t.Loudness, o.SourcePath, o.SourceChecksum)
+        : new(t.Container, t.SampleRate, t.Channels, t.DurationMs, t.Loudness);
     public bool IsEmpty => Container == AudioContainer.None;
 }
 
@@ -29,6 +39,8 @@ public readonly struct StoryvAudioHeader
 ///     (출력 버퍼 · 라이터 재사용 · 속성명 사전 인코딩 → 용량 내 0 B).
 ///   ▸ <see cref="Read"/>/<see cref="Verify"/>: 스택 리더로 스캔 → 스크래치 버퍼에 검증(범위 · 시간 연속성 · 대본 오프셋 · 지문 재계산 · 크롭 트랙 = 샷 프레이밍) → 통과 시에만 시퀀서에 원자 복원.
 ///   ▸ <see cref="SaveAsync"/>/<see cref="LoadAsync(string, StoryboardKeyframeSequencer, CancellationToken)"/>: 임시 파일 기록 후 원자 교체 · 재판독 무결성 검증.
+///   ▸ [v18.2.6] 오디오 헤더에 원본 절대 경로(audioSourcePath) · SHA-256 64-bit 체크섬(audioChecksum) 기록 → <see cref="StoryboardAudioSourceStreamBinder.HydrateAsync(StoryvAudioHeader, CancellationToken)"/> 자동 재연결.
+///     구 매니페스트(필드 없음)는 경로 null 로 판독(상위 호환 · 버전 불변).
 /// </summary>
 public sealed class StoryboardSequenceManifestEngine
 {
@@ -45,6 +57,7 @@ public sealed class StoryboardSequenceManifestEngine
         PDuration = JsonEncodedText.Encode("durationMs"), PMeasured = JsonEncodedText.Encode("lufsMeasured"), PIntegrated = JsonEncodedText.Encode("integratedLufs"),
         PTarget = JsonEncodedText.Encode("targetLufs"), PPeak = JsonEncodedText.Encode("truePeakDbtp"), PGain = JsonEncodedText.Encode("gainDb"),
         PLimited = JsonEncodedText.Encode("peakLimited"), PBlocks = JsonEncodedText.Encode("gatedBlocks"),
+        PSourcePath = JsonEncodedText.Encode("audioSourcePath"), PChecksum = JsonEncodedText.Encode("audioChecksum"),
         PN = JsonEncodedText.Encode("n"), PStart = JsonEncodedText.Encode("start"), PEnd = JsonEncodedText.Encode("end"), PDur = JsonEncodedText.Encode("dur"),
         PAngle = JsonEncodedText.Encode("angle"), PCx = JsonEncodedText.Encode("cx"), PCy = JsonEncodedText.Encode("cy"), PX = JsonEncodedText.Encode("x"),
         PY = JsonEncodedText.Encode("y"), PW = JsonEncodedText.Encode("w"), PH = JsonEncodedText.Encode("h"), PTs = JsonEncodedText.Encode("ts"), PTl = JsonEncodedText.Encode("tl"),
@@ -102,6 +115,9 @@ public sealed class StoryboardSequenceManifestEngine
         w.WriteNumber(PGain, Finite(l.GainDb));
         w.WriteBoolean(PLimited, l.PeakLimited);
         w.WriteNumber(PBlocks, l.GatedBlocks);
+        if (audio.SourcePath is { } src) w.WriteString(PSourcePath, src);
+        else w.WriteNull(PSourcePath);
+        w.WriteNumber(PChecksum, audio.Checksum);
         w.WriteEndObject();
 
         w.WriteStartArray(PShots);
@@ -267,7 +283,7 @@ public sealed class StoryboardSequenceManifestEngine
                     _scriptLen = r.CopyString(_script);
                     script = true;
                 }
-                else if (r.ValueTextEquals(PAudio.EncodedUtf8Bytes)) { if (!ReadAudio(ref r, out audio)) return StoryvManifestStatus.Malformed; }
+                else if (r.ValueTextEquals(PAudio.EncodedUtf8Bytes)) { if (!ReadAudio(ref r, LastAudio.SourcePath, out audio)) return StoryvManifestStatus.Malformed; }
                 else if (r.ValueTextEquals(PShots.EncodedUtf8Bytes)) { if (!ReadShots(ref r)) return StoryvManifestStatus.Malformed; }
                 else if (r.ValueTextEquals(PCrop.EncodedUtf8Bytes)) { if (!ReadCrop(ref r)) return StoryvManifestStatus.Malformed; }
                 else { r.Read(); r.Skip(); }   // 미지 속성 — 상위 호환
@@ -316,15 +332,29 @@ public sealed class StoryboardSequenceManifestEngine
         return StoryvManifestStatus.Ok;
     }
 
-    private static bool ReadAudio(ref Utf8JsonReader r, out StoryvAudioHeader audio)
+    /// <summary>오디오 헤더 판독 — [v18.2.6] 경로가 직전 판독과 같으면 문자열 재사용(재판독 0 B) · 경로 상한 초과 = 오류.</summary>
+    private static bool ReadAudio(ref Utf8JsonReader r, string? lastPath, out StoryvAudioHeader audio)
     {
         audio = default;
         if (!r.Read() || r.TokenType != JsonTokenType.StartObject) return false;
         int container = 0, rate = 0, ch = 0, dur = 0, blocks = 0;
         bool measured = false, limited = false;
         double integ = 0, target = 0, peak = 0, gain = 0;
+        string? path = null;
+        ulong checksum = 0;
         while (r.Read() && r.TokenType == JsonTokenType.PropertyName)
         {
+            if (r.ValueTextEquals(PSourcePath.EncodedUtf8Bytes))
+            {
+                r.Read();
+                if (r.TokenType == JsonTokenType.Null) continue;
+                if (r.TokenType != JsonTokenType.String) return false;
+                if ((r.HasValueSequence ? r.ValueSequence.Length : r.ValueSpan.Length) > StoryboardAudioSourceStreamBinder.MaxPathChars * 6) return false;
+                path = lastPath is not null && r.ValueTextEquals(lastPath) ? lastPath : r.GetString();
+                if (path is { Length: 0 or > StoryboardAudioSourceStreamBinder.MaxPathChars }) return false;
+                continue;
+            }
+            if (r.ValueTextEquals(PChecksum.EncodedUtf8Bytes)) { r.Read(); checksum = r.GetUInt64(); continue; }
             if (r.ValueTextEquals(PContainer.EncodedUtf8Bytes)) { r.Read(); container = r.GetInt32(); }
             else if (r.ValueTextEquals(PRate.EncodedUtf8Bytes)) { r.Read(); rate = r.GetInt32(); }
             else if (r.ValueTextEquals(PChannels.EncodedUtf8Bytes)) { r.Read(); ch = r.GetInt32(); }
@@ -339,7 +369,7 @@ public sealed class StoryboardSequenceManifestEngine
             else { r.Read(); r.Skip(); }
         }
         if (r.TokenType != JsonTokenType.EndObject || (uint)container > (uint)AudioContainer.Mp3 || rate < 0 || ch < 0 || dur < 0) return false;
-        audio = new StoryvAudioHeader((AudioContainer)container, rate, ch, dur, new LufsLoudnessReport(measured, integ, target, peak, gain, limited, blocks));
+        audio = new StoryvAudioHeader((AudioContainer)container, rate, ch, dur, new LufsLoudnessReport(measured, integ, target, peak, gain, limited, blocks), path, checksum);
         return true;
     }
 

@@ -40539,4 +40539,138 @@ public sealed class StoryVFullChainClosedLoopTests
         }
         Assert.False(Directory.Exists(dir), "임시 .storyv 잔존");
     }
+
+    /// <summary>v18.2.6: .storyv 오디오 경로 · 해시 영속화 → 자동 재연결(Success) · 유실/변조 Fallback(Missing/Tampered) · 빈 오디오 팩토리 핸드오프.</summary>
+    [Fact]
+    public async Task Storyboard_AudioAutoHydration_And_PathResolution_Check()
+    {
+        var wav = StoryboardAudioAlignmentReframeTests.Wav(StoryboardAudioAlignmentReframeTests.SynthPcm(48_000, 1, 9_000, Voiced), 48_000, 1);
+        var dir = Path.Combine(Path.GetTempPath(), "pfs-hydrate-" + Guid.NewGuid().ToString("N"));
+        var wavPath = Path.Combine(dir, "보이스 voice.wav");
+        var storyv = Path.Combine(dir, "proj" + SB.StoryboardSequenceManifestEngine.Extension);
+        Directory.CreateDirectory(dir);
+        try
+        {
+            await File.WriteAllBytesAsync(wavPath, wav);
+            var sum = SB.StoryboardAudioSourceStreamBinder.ComputeChecksum(wav);
+            Assert.NotEqual(0UL, sum);
+
+            // ① 파일 바인딩 — 절대 경로 · 청크 증분 해시 = 원샷 해시 · 수동 바인딩은 재연결 상태 None
+            var audio = new SB.StoryboardAudioSourceStreamBinder();
+            var seq = new SB.StoryboardKeyframeSequencer();
+            Assert.Equal(SB.AudioBindStatus.Bound, await audio.BindFileAsync(wavPath));
+            Assert.Equal(Path.GetFullPath(wavPath), audio.SourcePath);
+            Assert.Equal(sum, audio.SourceChecksum);
+            Assert.Equal(SB.AudioHydrationStatus.None, audio.Hydration);
+            Assert.False(audio.IsAudioLost);
+            Assert.Equal(SB.AudioAlignmentSource.PcmVoiceActivity, audio.Resync(seq, Script));
+            var mem = new SB.StoryboardAudioSourceStreamBinder();
+            Assert.Equal(SB.AudioBindStatus.Bound, mem.Bind(wav, name: "m.wav"));
+            Assert.Equal(sum, mem.SourceChecksum);
+            Assert.Null(mem.SourcePath);                                          // 메모리 바인딩 = 경로 없음
+
+            // ② .storyv 저장 — audioSourcePath · audioChecksum 기록 · 직렬화/재판독 핫패스 무할당(경로 문자열 재사용)
+            var manifest = new SB.StoryboardSequenceManifestEngine();
+            var json = manifest.Write(seq, audio.Track).ToArray();
+            using (var doc = System.Text.Json.JsonDocument.Parse(json))
+            {
+                var a = doc.RootElement.GetProperty("audio");
+                Assert.Equal(audio.SourcePath, a.GetProperty("audioSourcePath").GetString());
+                Assert.Equal(sum, a.GetProperty("audioChecksum").GetUInt64());
+            }
+            var restored = new SB.StoryboardKeyframeSequencer();
+            Assert.Equal(SB.StoryvManifestStatus.Ok, manifest.Read(json, restored));
+            Assert.Equal((audio.SourcePath, sum), (manifest.LastAudio.SourcePath, manifest.LastAudio.Checksum));
+            var ok = true;
+            var a0 = GC.GetAllocatedBytesForCurrentThread();
+            for (var i = 0; i < 8; i++)
+            {
+                var outMem = manifest.Write(seq, audio.Track);
+                ok &= manifest.Read(outMem.Span, restored) == SB.StoryvManifestStatus.Ok;
+                ok &= SB.StoryboardAudioSourceStreamBinder.ComputeChecksum(wav) == sum;
+            }
+            var ioAlloc = GC.GetAllocatedBytesForCurrentThread() - a0;
+            Assert.True(ok);
+            Assert.True(ioAlloc == 0, "경로 · 해시 직렬화/대조 핫패스 할당 " + ioAlloc + " B");
+            Assert.Equal(SB.StoryvManifestStatus.Ok, await manifest.SaveAsync(storyv, seq, audio.Track));
+
+            // ③ 자동 재연결(Success) — 새 세션: 매니페스트 복원 → 경로 존재 · 해시 일치 → PCM 동일 · 라이브 트랙
+            var session = new SB.StoryboardAudioSourceStreamBinder();
+            var loaded = new SB.StoryboardKeyframeSequencer();
+            Assert.Equal(SB.StoryvManifestStatus.Ok, await manifest.LoadAsync(storyv, loaded));
+            Assert.Equal(SB.AudioHydrationStatus.Hydrated, await session.HydrateAsync(manifest.LastAudio));
+            Assert.True(session.HasAudio && session.Track.IsLive && !session.IsAudioLost);
+            Assert.Equal((SB.AudioContainer.Wav, 48_000, 1, 9_000), (session.Container, session.SampleRate, session.Channels, session.DurationMs));
+            Assert.True(session.Pcm.SequenceEqual(audio.Pcm), "재연결 PCM = 원본");
+            Assert.Equal((audio.SourcePath, sum), (session.SourcePath, session.SourceChecksum));
+            Assert.Equal(seq.Fingerprint, loaded.Fingerprint);
+
+            // ④ 변조(Tampered) — 같은 경로 · 샘플 1 바이트 교체 → 바인딩 거부 · 빈 오디오
+            var forged = (byte[])wav.Clone();
+            forged[^3] ^= 0x5A;
+            await File.WriteAllBytesAsync(wavPath, forged);
+            Assert.Equal(SB.AudioHydrationStatus.Tampered, await session.HydrateAsync(manifest.LastAudio));
+            Assert.True(!session.HasAudio && session.Track.IsEmpty && session.IsAudioLost);
+            Assert.Null(session.SourcePath);
+
+            // ⑤ 유실(Missing) — 파일 삭제 · 경로 미기록 → 크래시 0 · 타임라인/대본은 매니페스트 복원본 유지
+            File.Delete(wavPath);
+            Assert.Equal(SB.AudioHydrationStatus.Missing, await session.HydrateAsync(manifest.LastAudio));
+            Assert.True(session.IsAudioLost && session.Track.IsEmpty);
+            var noPath = new SB.StoryvAudioHeader(SB.AudioContainer.Wav, 48_000, 1, 9_000, default);
+            Assert.Equal(SB.AudioHydrationStatus.Missing, await session.HydrateAsync(noPath));
+            Assert.Equal(SB.AudioHydrationStatus.None, await session.HydrateAsync(default(SB.StoryvAudioHeader)));
+            Assert.False(session.IsAudioLost);
+            Assert.Equal(SB.AudioHydrationStatus.Unsupported, await session.HydrateAsync("relative\\voice.wav", sum));
+            Assert.Equal(SB.AudioHydrationStatus.Unsupported, await session.HydrateAsync(Path.Combine(dir, "secret.txt"), sum));
+            Assert.Equal(SB.AudioHydrationStatus.Missing, await session.HydrateAsync(manifest.LastAudio));
+            Assert.Equal(seq.Fingerprint, loaded.Fingerprint);
+            Assert.Equal(Script, loaded.Script.ToString());
+            Assert.Equal(seq.Count, loaded.Count);
+
+            // ⑥ 유실 상태 팩토리 핸드오프 — 빈 오디오 컨텍스트 안전 인계(NRE 0)
+            var bridge = new PromptFlowStudio.Services.Ui.StoryboardToShortsFactoryBridge();
+            var ws = new PromptFlowStudio.Services.Ui.ShortsFactoryWorkspaceContext();
+            var p = new PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext();
+            var ex = await Record.ExceptionAsync(() =>
+            {
+                Assert.True(bridge.Push(loaded, session.Track));
+                Assert.True(bridge.TryConsume(out var handed));
+                Assert.True(handed.Audio.IsEmpty);
+                Assert.True(p.ApplyStoryboard(handed, ws));
+                return Task.CompletedTask;
+            });
+            Assert.Null(ex);
+            Assert.False(p.HasSourceAudio);
+            Assert.True(p.StoryboardShots.Span == loaded.Keyframes);
+            Assert.Equal((0, seq.TotalMs), (ws.ClipInMs, ws.ClipOutMs));
+
+            // ⑦ 수동 복구 — 영속 사본(경로 없는 메모리 바인딩) → 재저장 → 새 세션 자동 재연결
+            var pinned = Path.Combine(dir, "audio", "p_voice.wav");
+            Assert.Equal(SB.AudioBindStatus.Bound, session.Bind(wav, name: "voice.wav"));
+            Assert.Equal(SB.AudioHydrationStatus.None, session.Hydration);
+            Assert.True(await session.PersistSourceAsync(pinned));
+            Assert.True(File.ReadAllBytes(pinned).AsSpan().SequenceEqual(wav) && !File.Exists(pinned + ".tmp"));
+            Assert.Equal(SB.StoryvManifestStatus.Ok, await manifest.SaveAsync(storyv, loaded, session.Track));
+            var next = new SB.StoryboardAudioSourceStreamBinder();
+            Assert.Equal(SB.StoryvManifestStatus.Ok, await manifest.LoadAsync(storyv, new SB.StoryboardKeyframeSequencer()));
+            Assert.Equal(Path.GetFullPath(pinned), manifest.LastAudio.SourcePath);
+            Assert.Equal(SB.AudioHydrationStatus.Hydrated, await next.HydrateAsync(manifest.LastAudio));
+            Assert.True(bridge.Push(loaded, next.Track) && bridge.TryConsume(out var relinked) && relinked.Audio.Pcm.Span == next.Pcm);
+
+            // ⑧ 구 매니페스트(v18.2.5 · 경로/해시 필드 없음) 상위 호환 → 경로 null · 재연결 = 유실
+            var node = System.Text.Json.Nodes.JsonNode.Parse(json)!;
+            node["audio"]!.AsObject().Remove("audioSourcePath");
+            node["audio"]!.AsObject().Remove("audioChecksum");
+            Assert.Equal(SB.StoryvManifestStatus.Ok, manifest.Read(System.Text.Encoding.UTF8.GetBytes(node.ToJsonString()), new SB.StoryboardKeyframeSequencer()));
+            Assert.Null(manifest.LastAudio.SourcePath);
+            Assert.Equal(SB.AudioHydrationStatus.Missing, await next.HydrateAsync(manifest.LastAudio));
+            node["audio"]!["audioSourcePath"] = 42;
+            Assert.Equal(SB.StoryvManifestStatus.Malformed, manifest.Verify(System.Text.Encoding.UTF8.GetBytes(node.ToJsonString())));
+        }
+        finally
+        {
+            if (Directory.Exists(dir)) Directory.Delete(dir, true);
+        }
+    }
 }
