@@ -18,21 +18,23 @@ public enum OneClickRenderStage : byte { Idle, Trim, Caption, Retention, Export,
 ///   ④ <see cref="FastShortsMuxingHardwareExporterEngine"/> fMP4 패키징 + 썸네일 피크 AU 기반 9:16 PNG 동시 추출.
 ///   ▸ 진행률(단계 0~100 · 전체 0~100)은 필드 기록 + <see cref="OnChange"/> 통지(5 % 단위 · 구독자 예외 격리 · 호출 스레드 비차단).
 ///   ▸ 소스 = <see cref="AttachCapture"/> 로 연결된 실 캡처 · 미연결 시 첫 렌더에 120 s 리허설 캡처(규격 SPS · AUD · IDR/P · ADTS · 음성형 PCM)를 링에 1 회 적재.
+///   ▸ [v18.0.3] <see cref="ImportLocalVideo"/> — 로컬 MP4 실 NALU/AAC 를 <see cref="LocalVideoFileRingBufferSourceInjector"/> 로 링에 주입 → 리허설 자동 비활성 ·
+///     ④ 썸네일 = <see cref="RealKeyframeThumbnailRasterizer"/>(피크 인접 IDR 실 디코딩 · 불가 시 IDR RBSP 비트 할당 맵) 1080×1920 PNG.
 /// </summary>
 public sealed class ShortsFactoryOneClickRenderOrchestrator
 {
-    public const int SourceFps = 30, SourceGop = SourceFps * 2, SourceKbps = 256, ThumbW = 108, ThumbH = 192, BgmLoopSec = 4;
+    public const int SourceFps = 30, SourceGop = SourceFps * 2, SourceKbps = 256, BgmLoopSec = 4, DefaultBinderBytes = 4 << 20, DefaultBinderAus = 4_096;
     public const long SourceFrameUs = 1_000_000 / SourceFps, AacFrameUs = ShortsFactoryRetentionRealSliceBinder.AacFrameSamples * 1_000_000L / ShortsFactoryRetentionRealSliceBinder.Fs;
     public const float BounceScale = 1.15f;
 
     private readonly object _gate = new();
     private readonly int[] _punch = new int[ShortsFactoryWorkspaceContext.MaxZoomPunches];
-    private readonly byte[] _rgb = new byte[ThumbW * ThumbH * 3];
-    private readonly MemoryStream _png = new(16 * 1024);
+    private readonly byte[] _params = new byte[RollingCircularVideoBufferEngine.ParamCap];
     private ShortsFactoryRetentionRealSliceBinder? _binder;
+    private int _binderBytes = DefaultBinderBytes, _binderAus = DefaultBinderAus;
     private short[] _pcm = Array.Empty<short>(), _bgm = Array.Empty<short>();
     private long _originUs;
-    private int _busy, _stagePct, _totalPct, _pngLen;
+    private int _busy, _stagePct, _totalPct;
     private OneClickRenderStage _stage;
 
     public event Action? OnChange;
@@ -40,7 +42,13 @@ public sealed class ShortsFactoryOneClickRenderOrchestrator
     public RollingCircularVideoBufferEngine Source { get; } = new(SourceKbps);
     public FastShortsMuxingHardwareExporterEngine Exporter { get; } = new();
     /// <summary>슬라이스 바인더(첫 렌더 시 버퍼 할당 · 이후 재사용).</summary>
-    public ShortsFactoryRetentionRealSliceBinder Binder => _binder ??= new ShortsFactoryRetentionRealSliceBinder();
+    public ShortsFactoryRetentionRealSliceBinder Binder => _binder ??= new ShortsFactoryRetentionRealSliceBinder(_binderBytes, _binderAus);
+    /// <summary>[v18.0.3] 로컬 MP4 → 링 주입기 · 실 키프레임 썸네일러.</summary>
+    public LocalVideoFileRingBufferSourceInjector Importer { get; } = new();
+    public RealKeyframeThumbnailRasterizer Thumbnailer { get; } = new();
+    /// <summary>실 파일 소스 이름(리허설 · 캡처 = null) · 링 소스 길이(ms · 리허설 = 120 s).</summary>
+    public string? SourceName { get; private set; }
+    public int SourceDurationMs { get; private set; } = ShortsFactoryWorkspaceContext.SourceMs;
     public bool SourceReady { get; private set; }
     public bool RehearsalSource { get; private set; }
     public bool Busy => Volatile.Read(ref _busy) != 0;
@@ -60,8 +68,8 @@ public sealed class ShortsFactoryOneClickRenderOrchestrator
     public ReadOnlyMemory<short> SourcePcm => _pcm;
     public ReadOnlyMemory<short> BgmBed => _bgm;
     public long SourceOriginUs => _originUs;
-    public ReadOnlyMemory<byte> ThumbnailPng => _png.GetBuffer().AsMemory(0, _pngLen);
-    /// <summary>UI 미리보기(렌더 완료 시 1 회 생성).</summary>
+    public ReadOnlyMemory<byte> ThumbnailPng => Thumbnailer.Png;
+    /// <summary>UI 미리보기(108×192 PNG · 렌더 완료 시 1 회 생성).</summary>
     public string? ThumbnailDataUrl { get; private set; }
 
     public static string StageName(OneClickRenderStage s) => s switch
@@ -83,9 +91,42 @@ public sealed class ShortsFactoryOneClickRenderOrchestrator
         {
             if (Busy) return false;
             _pcm = pcm; _bgm = bgm; _originUs = ringOriginUs;
-            SourceReady = true; RehearsalSource = false;
+            SourceReady = true; RehearsalSource = false; SourceName = null;
+            SourceDurationMs = ShortsFactoryWorkspaceContext.SourceMs;
             return true;
         }
+    }
+
+    /// <summary>
+    /// [v18.0.3] 로컬 MP4(탐색 가능 스트림) → <see cref="Source"/> 링 실 NALU/ADTS 주입 → PCM 엔벨로프 프록시 + 안전 BGM 베드로 <see cref="AttachCapture"/> 동등 연결.
+    /// 렌더 중이면 <see cref="LocalVideoImportStatus.Busy"/>. 실패 시 소스 미준비(다음 렌더 = 리허설 재적재). 슬라이스 바인더는 파일 비트레이트에 맞춰 1 회 재할당.
+    /// </summary>
+    public LocalVideoImportStatus ImportLocalVideo(Stream file, string? name = null)
+    {
+        if (Interlocked.CompareExchange(ref _busy, 1, 0) != 0) return LocalVideoImportStatus.Busy;
+        try
+        {
+            lock (_gate)
+            {
+                var st = Importer.Import(file, Source, name);
+                if (st != LocalVideoImportStatus.Injected)
+                {
+                    SourceReady = false; RehearsalSource = false; SourceName = null;
+                    SourceDurationMs = ShortsFactoryWorkspaceContext.SourceMs;
+                    return st;
+                }
+                if (_bgm.Length == 0) _bgm = BuildBgmBed();
+                _pcm = Importer.EnvelopePcm; _originUs = 0;
+                SourceReady = true; RehearsalSource = false; SourceName = name ?? "local.mp4";
+                SourceDurationMs = (int)Math.Clamp((Importer.LastPtsUs + SourceFrameUs) / 1000, 1, ShortsFactoryWorkspaceContext.SourceMs);
+                // 바인더 용량 = 최대 클립(60 s) × 실측 kbps × 1.25 · AU = fps × 60 s × 1.1
+                var bytes = (int)Math.Clamp((long)Importer.RingKbps * 1000 / 8 * ShortsFactoryRetentionRealSliceBinder.MaxSec * 5 / 4, DefaultBinderBytes, 256L << 20);
+                var aus = (int)Math.Clamp(Importer.Fps * ShortsFactoryRetentionRealSliceBinder.MaxSec * 1.1, DefaultBinderAus, 16_384);
+                if (bytes > _binderBytes || aus > _binderAus) { _binderBytes = Math.Max(bytes, _binderBytes); _binderAus = Math.Max(aus, _binderAus); _binder = null; }
+                return st;
+            }
+        }
+        finally { Volatile.Write(ref _busy, 0); Notify(); }
     }
 
     /// <summary>원클릭 렌더 — 호출 스레드에서 매니페스트 · 펀치 · 대본을 스냅샷 후 스레드 풀에서 ①~④ 실행. 이미 실행 중이면 false.</summary>
@@ -217,42 +258,27 @@ public sealed class ShortsFactoryOneClickRenderOrchestrator
 
     // ══════════════════════ ④ 썸네일(피크 AU · 비핫패스) ══════════════════════
 
-    /// <summary>썸네일 피크 시각의 출력 AU 바이트(FNV)로 배경 톤 · 펀치 GOP 이면 1.15× 비네트 · 프리셋 색 자막 바 → 108×192 PNG.</summary>
+    /// <summary>썸네일 피크 시각에 가장 가까운 출력 IDR AU → <see cref="RealKeyframeThumbnailRasterizer"/>(실 디코딩 · 폴백 RBSP 맵) · 펀치 GOP 이면 비네트 강화 · 프리셋 색 자막 바.</summary>
     private void WriteThumbnail(in ExportManifest m, ShortsFactoryRetentionRealSliceBinder b, int inMs)
     {
         var mux = b.Mux;
         var peakTicks = (long)b.ReEditor.OutMsAt(Math.Max(0, m.ThumbnailPeakMs - inMs)) * NaluSmartReMuxer.Clock / 1000;
-        var best = 0;
-        for (var i = 1; i < mux.OutCount; i++)
-            if (Math.Abs(mux.OutAu(i).Pts - peakTicks) < Math.Abs(mux.OutAu(best).Pts - peakTicks)) best = i;
+        var best = -1;
+        for (var i = 0; i < mux.OutCount; i++)
+            if (mux.OutAu(i).Key && (best < 0 || Math.Abs(mux.OutAu(i).Pts - peakTicks) < Math.Abs(mux.OutAu(best).Pts - peakTicks))) best = i;
+        if (best < 0) best = 0;
         ref readonly var au = ref mux.OutAu(best);
-        var h = (uint)RtmpWire.Fnv(b.RemuxedAnnexB.Slice(au.Offset, au.Length));
         var punched = false;
         for (var i = 0; i < b.ReEditor.PunchCount; i++)
             if (Math.Abs(b.ReEditor.Punch(i).AtMs - (m.ThumbnailPeakMs - inMs)) < 2_000) { punched = true; break; }
         var accent = WordByWordKineticSubtitleEngine.PresetColors[(int)m.Caption.Preset][0];
-        int r0 = (int)(h & 0x7F) + 40, g0 = (int)((h >> 8) & 0x7F) + 40, b0 = (int)((h >> 16) & 0x7F) + 60;
-        for (var y = 0; y < ThumbH; y++)
+        var pn = Math.Max(0, Source.CopyParams(_params));
+        if (!Thumbnailer.Rasterize(b.RemuxedAnnexB.Slice(au.Offset, au.Length), _params.AsSpan(0, pn), m.Reframe.BoxX, punched, (uint)accent, Thumbnailer.AllowHardwareDecode))
         {
-            for (var x = 0; x < ThumbW; x++)
-            {
-                var o = (y * ThumbW + x) * 3;
-                var dx = (x - ThumbW / 2) / (float)ThumbW; var dy = (y - ThumbH / 2) / (float)ThumbH;
-                var v = 1.25f - (dx * dx + dy * dy) * (punched ? 3.2f : 2f);   // 고CTR 대비 + 펀치 비네트
-                var shade = 0.55f + 0.45f * y / ThumbH;
-                _rgb[o] = (byte)Math.Clamp(r0 * v * shade, 0f, 255f);
-                _rgb[o + 1] = (byte)Math.Clamp(g0 * v * shade, 0f, 255f);
-                _rgb[o + 2] = (byte)Math.Clamp(b0 * v * (1.2f - shade * 0.4f), 0f, 255f);
-                if (y >= ThumbH * 62 / 100 && y < ThumbH * 70 / 100 && x >= 10 && x < ThumbW - 10)
-                {
-                    _rgb[o] = (byte)(accent >> 16); _rgb[o + 1] = (byte)(accent >> 8); _rgb[o + 2] = (byte)accent;
-                }
-            }
+            ThumbnailDataUrl = null;
+            return;
         }
-        _png.SetLength(0);
-        PeakEmotion3dgsThumbnailSynthesizer.EncodePng(_rgb, ThumbW, ThumbH, _png);
-        _pngLen = (int)_png.Length;
-        ThumbnailDataUrl = "data:image/png;base64," + Convert.ToBase64String(_png.GetBuffer(), 0, _pngLen);
+        ThumbnailDataUrl = "data:image/png;base64," + Convert.ToBase64String(Thumbnailer.PreviewPng.Span);
     }
 
     // ══════════════════════ 소스 링(비핫패스 · 1 회) ══════════════════════
@@ -263,7 +289,8 @@ public sealed class ShortsFactoryOneClickRenderOrchestrator
         {
             if (SourceReady) return;
             PrimeRehearsalSource();
-            SourceReady = true; RehearsalSource = true;
+            SourceReady = true; RehearsalSource = true; SourceName = null;
+            SourceDurationMs = ShortsFactoryWorkspaceContext.SourceMs;
         }
     }
 
@@ -271,7 +298,7 @@ public sealed class ShortsFactoryOneClickRenderOrchestrator
     private void PrimeRehearsalSource()
     {
         const int Sec = ShortsFactoryWorkspaceContext.SourceMs / 1000, Fs = ShortsFactoryRetentionRealSliceBinder.Fs;
-        Source.Reset();
+        Source.Configure(SourceKbps);   // 파일 주입 후 재구성된 용량 복원(인덱스 초기화 포함)
         _originUs = 0;
         var sps = SyntheticAnnexBStream.BuildH264Sps(SourceFps);
         var au = new byte[2048];
@@ -311,13 +338,20 @@ public sealed class ShortsFactoryOneClickRenderOrchestrator
             var env = MathF.Sin(MathF.PI * (ms % 240) / 170f);
             pcm[i] = (short)(9_000f * env * (MathF.Sin(2f * MathF.PI * f0 * i / Fs) + 0.35f * MathF.Sin(4f * MathF.PI * f0 * i / Fs)));
         }
+        _pcm = pcm; _bgm = BuildBgmBed();
+    }
+
+    /// <summary>안전 BGM 베드(4 s · A3 장3화음 반복) — 리허설 · 파일 소스 공용.</summary>
+    private static short[] BuildBgmBed()
+    {
+        const int Fs = ShortsFactoryRetentionRealSliceBinder.Fs;
         var bgm = new short[BgmLoopSec * Fs];
         for (var i = 0; i < bgm.Length; i++)
         {
             var t = i / (float)Fs;
             bgm[i] = (short)(8_000f * (MathF.Sin(2f * MathF.PI * 220f * t) + MathF.Sin(2f * MathF.PI * 277.18f * t) + MathF.Sin(2f * MathF.PI * 329.63f * t)) / 3f);
         }
-        _pcm = pcm; _bgm = bgm;
+        return bgm;
     }
 
     /// <summary>H.264 AU — AUD · (IDR: SPS/PPS) · 슬라이스(first_mb = 0 · 페이로드 0 바이트 없음 = 에뮬레이션 방지 불요 · RBSP 정지 비트).</summary>

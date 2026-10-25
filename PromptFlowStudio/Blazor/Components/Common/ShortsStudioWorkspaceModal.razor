@@ -7,6 +7,7 @@
    v17.91 저작권 · v17.98 리텐션 리먹서를 4 단계 탭으로 통합. 각 엔진 모달은 그대로 하위 탭에 주입하고, 탭 간 값은 ShortsFactoryWorkspaceContext 1 개로 공유한다. *@
 @* [v18.0.1] ShortsFactoryPipelineContext 가 상단 바 값을 4 단계 엔진 파라미터로 관통 → 하위 엔진 모달에 CascadingValue 로 전달 · Alt+1~4 단계 전환. *@
 @* [v18.0.2] ⚡ 원클릭 숏폼 렌더 — ShortsFactoryOneClickRenderOrchestrator 가 ①~④ 를 실 소스 슬라이스로 단일 비동기 패스 실행 · 통합 진행률 · 완료 시 ④ 탭 포커스. *@
+@* [v18.0.3] ① 📁 로컬 비디오 열기 — MP4 실 NALU/AAC 를 소스 링에 주입(120 s 리허설 자동 비활성) · 파일 배지(이름 · 해상도 · 길이) · 절삭 슬라이더 = 파일 길이. *@
 <div class="sw-docked" style="--sw-dock-h: @(ShowProgress ? "150px" : "128px")" tabindex="-1" @onkeydown="OnStageKey">
     <StudioWorkspaceDock Workspace="_ws" Tab="_tab" Member="_member" OnRoute="Go" OnClose="Close">
         <div class="swd-row sfw-ctx">
@@ -19,7 +20,20 @@
             @switch (_tab)
             {
                 case 0:
-                    <label class="sfw-f">시작 @(Sec(Ctx.ClipInMs))<input type="range" min="0" max="@((ShortsFactoryWorkspaceContext.SourceMs - Ctx.DurationMs) / 1000)" value="@(Ctx.ClipInMs / 1000)" aria-label="클립 시작(초)" @oninput="OnClipStart" /></label>
+                    <label class='sfw-open @(_importing || OneClick.Busy ? "dis" : null)' title="로컬 MP4(H.264 · AAC)를 열어 120초 리허설 대신 실제 비트스트림으로 ①~④ 를 구동합니다">@(_importing ? "⏳ 불러오는 중…" : "📁 로컬 비디오 열기")<InputFile class="sfw-file" OnChange="OnVideoPicked" accept="video/mp4,.mp4,.m4v,.mov" disabled="@(_importing || OneClick.Busy)" aria-label="로컬 비디오 파일 선택" /></label>
+                    @if (OneClick.SourceName is { } srcName)
+                    {
+                        <span class="sfw-hy ok" title="실 파일 소스(리허설 비활성) · 링 주입 V@(OneClick.Importer.InjectedVideo)/A@(OneClick.Importer.InjectedAudio)">🎞 @(srcName) · @(OneClick.Importer.Width)×@(OneClick.Importer.Height) · @(Sec(OneClick.Importer.DurationMs))</span>
+                    }
+                    else
+                    {
+                        <span class="sfw-hy" title="파일 미선택 시 120초 리허설 캡처로 렌더합니다">🧪 리허설 소스</span>
+                    }
+                    @if (_importError is { } importErr)
+                    {
+                        <span class="sfw-hy bad" role="alert">⚠ @(importErr)</span>
+                    }
+                    <label class="sfw-f">시작 @(Sec(Ctx.ClipInMs))<input type="range" min="0" max="@(Math.Max(0, (SourceSpanMs - Ctx.DurationMs) / 1000))" value="@(Ctx.ClipInMs / 1000)" aria-label="클립 시작(초)" @oninput="OnClipStart" /></label>
                     <label class="sfw-f">길이 @(Sec(Ctx.DurationMs))<input type="range" min="3" max="60" value="@(Ctx.DurationMs / 1000)" aria-label="클립 길이(초)" @oninput="OnClipLength" /></label>
                     <label class="sfw-f">9:16 중심 @(Ctx.ReframeCenterPermille / 10)%<input type="range" min="0" max="100" value="@(Ctx.ReframeCenterPermille / 10)" aria-label="리프레임 중심(%)" @oninput="OnReframe" /></label>
                     <span class="sfw-hy" title="9:16 바운딩 박스(원본 1920×1080 기준)">⬚ X @(Pipeline.Reframe.BoxX) · @(Pipeline.Reframe.BoxWidth)×@(Pipeline.Reframe.BoxHeight)</span>
@@ -128,6 +142,10 @@
     .sfw-pt { margin-left: auto; color: #e2e8f0; }
     .sfw-hy.ok { color: #86efac; }
     .sfw-th { height: 40px; width: auto; border-radius: 4px; border: 1px solid #334155; }
+    .sfw-open { background: #1e293b; color: #e2e8f0; border: 1px solid #38bdf8; border-radius: 6px; padding: 3px 10px; font-size: 11px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+    .sfw-open.dis { opacity: .5; cursor: progress; }
+    .sfw-file { display: none; }
+    .sfw-hy.bad { color: #fca5a5; }
 </style>
 
 @code {
@@ -147,7 +165,13 @@
     private readonly int _ws = StudioWorkspaceCatalog.IndexOfModal(StudioWorkspaceCatalog.ShortsModalKey);
     private int _tab, _member, _stamp = -1, _renderedRev = -1;
     private CancellationTokenSource? _renderCts;
-    private bool _disposed;
+    private bool _disposed, _importing;
+    private string? _importError;
+    /// <summary>로컬 비디오 상한(세그먼트 스트림 · 300 MB) — 링 창(120 s) 밖 샘플은 주입하지 않는다.</summary>
+    private const long MaxImportBytes = 300L * 1024 * 1024;
+
+    /// <summary>절삭 가능한 소스 길이(파일 = 실제 길이 · 리허설 = 120 s).</summary>
+    private int SourceSpanMs => Math.Min(ShortsFactoryWorkspaceContext.SourceMs, OneClick.SourceDurationMs);
 
     private bool ShowProgress => OneClick.Busy || OneClick.Stage is OneClickRenderStage.Failed or OneClickRenderStage.Cancelled || (OneClick.Stage == OneClickRenderStage.Done && Rendered);
     /// <summary>원클릭 렌더 결과가 현재 컨텍스트 값과 같은지(값이 바뀌면 낡은 결과 표시 중단).</summary>
@@ -169,6 +193,35 @@
         for (var s = 0; s < ShortsFactoryWorkspaceContext.StageCount; s++) Ctx.Commit(s);
         _renderedRev = Ctx.Revision;
         await Go(new WorkspaceSubTabRoute(_ws, ShortsFactoryWorkspaceContext.StageCount - 1, 0));
+    }
+
+    /// <summary>[v18.0.3] 📁 로컬 MP4 → 세그먼트 버퍼(탐색 가능) → 소스 링 주입(스레드 풀) · 절삭 구간을 파일 길이 안으로 보정 · 이전 렌더 결과 무효화.</summary>
+    private async Task OnVideoPicked(InputFileChangeEventArgs e)
+    {
+        if (_importing || OneClick.Busy) return;
+        _importing = true; _importError = null;
+        try
+        {
+            using var buf = new PromptFlowStudio.Services.VerticalTranscode.SegmentedChunkStream(MaxImportBytes);
+            await using (var src = e.File.OpenReadStream(MaxImportBytes)) await src.CopyToAsync(buf);
+            buf.Position = 0;
+            var name = e.File.Name;
+            var st = await Task.Run(() => OneClick.ImportLocalVideo(buf, name));
+            if (_disposed) return;
+            if (st != LocalVideoImportStatus.Injected)
+            {
+                _importError = "불러오기 실패(" + st.ToString() + ")" + (OneClick.Importer.LastError is { } why ? ": " + why : null);
+                return;
+            }
+            _renderedRev = -1;
+            var span = SourceSpanMs;
+            if (Ctx.ClipOutMs > span) Ctx.SetClip(0, Math.Min(Ctx.DurationMs, span));
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or OperationCanceledException or ObjectDisposedException)
+        {
+            _importError = "불러오기 실패: " + ex.Message;
+        }
+        finally { _importing = false; }
     }
 
     public void Dispose()

@@ -1016,6 +1016,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+@* ── v18.0.3: 숏폼 팩토리 로컬 MP4 실 파일 임포트 — 링 주입 V/A · 링 kbps · 키프레임 썸네일(실 디코딩/IDR 비트 맵) *@
+    <div class="gth-v1803">
+        <div class="gth-v96-card pid @(OneClickRender.SourceName is not null ? "ok" : null)">
+            <div class="gth-v96-h"><b>📁 실 파일 소스</b>
+                <span class="gth-v96-be">@(OneClickRender.SourceName ?? (OneClickRender.RehearsalSource ? "리허설" : "대기"))</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(OneClickRender.Importer.InjectedVideo)</b><span>V 샘플</span></span>
+                <span class="gth-v96-m"><b>@(OneClickRender.Importer.InjectedAudio)</b><span>A 샘플</span></span>
+                <span class="gth-v96-m"><b>@(OneClickRender.Importer.RingKbps)</b><span>링 kbps</span></span>
+                <span class="gth-v96-m"><b>@(OneClickRender.Thumbnailer.Kind == PromptFlowStudio.Services.Ui.ThumbnailSourceKind.DecodedIdr ? "디코딩" : OneClickRender.Thumbnailer.Kind == PromptFlowStudio.Services.Ui.ThumbnailSourceKind.IdrBitstreamMap ? "IDR 맵" : "—")</b><span>썸네일</span></span>
+            </div>
+            <div class="gth-v96-act">@(OneClickRender.Importer.LastError ?? (OneClickRender.SourceName is not null ? OneClickRender.Importer.Width.ToString(System.Globalization.CultureInfo.InvariantCulture) + "×" + OneClickRender.Importer.Height.ToString(System.Globalization.CultureInfo.InvariantCulture) + " · 결함 " + OneClickRender.Importer.Faults.ToString(System.Globalization.CultureInfo.InvariantCulture) + " · 주입 " + OneClickRender.Importer.LastInjectMs.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + " ms" : "① 📁 로컬 비디오 열기 → 링 실 NALU/AAC 주입"))</div>
+        </div>
+    </div>
 @* ── v18.0.2: 숏폼 팩토리 원클릭 풀체인 렌더 — 실 슬라이스 · SPS 줌 펀치 GOP · fMP4 바이트 · 단계 진행률 ── *@
     <div class="gth-v1802">
         <div class="gth-v96-card pid @(OneClickRender.Renders > 0 ? "ok" : null)">

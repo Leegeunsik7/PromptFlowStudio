@@ -38094,3 +38094,239 @@ public sealed class ShortsFactoryRealSliceE2ERenderTests
         Assert.Equal(PromptFlowStudio.Services.Ui.SliceBindStatus.Bound, b.Status);
     }
 }
+
+/// <summary>v18.0.3: 로컬 MP4 실 파일 임포트 — ISO-BMFF 표(stts · ctts · stss · stsz · stsc · stco) → 링 실 NALU/ADTS 주입 · 리허설 배제 · ①~④ 관통 · 1080×1920 PNG 구조 · 누수 0 · 주입 핫패스 무할당.</summary>
+[Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) · 메모리 누수 측정 → 비병렬
+public sealed class ShortsFactoryRealFileImportTests
+{
+    private const int Sec = 40, Fps = 30, Gop = 60, AacFrames = Sec * 48_000 / 1024;
+
+    private static byte[] Box(string type, params byte[][] parts)
+    {
+        var len = 8 + parts.Sum(p => p.Length);
+        var b = new byte[len];
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(b, len);
+        System.Text.Encoding.ASCII.GetBytes(type).CopyTo(b, 4);
+        var o = 8;
+        foreach (var p in parts) { p.CopyTo(b, o); o += p.Length; }
+        return b;
+    }
+
+    private static byte[] U32(params uint[] v)
+    {
+        var b = new byte[v.Length * 4];
+        for (var i = 0; i < v.Length; i++) System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(b.AsSpan(i * 4), v[i]);
+        return b;
+    }
+
+    private static byte[] B(params byte[] v) => v;
+
+    /// <summary>진행형 MP4(avc1/avcC · mp4a/esds) — 비디오 AVCC 4 바이트 길이 접두 · SPS/PPS 는 avcC 에만 · ctts = 1 프레임 · 오디오 = 음성형 크기(데드에어 8 B).</summary>
+    internal static byte[] BuildMp4(out byte[] firstIdrNal, out byte[] spsNal)
+    {
+        var sps = new byte[] { 0x67 }.Concat(PromptFlowStudio.Services.RetentionHeatmap.SyntheticAnnexBStream.BuildH264Sps(Fps)).ToArray();
+        var pps = new byte[] { 0x68, 0xEE, 0x3C, 0x80 };
+        spsNal = sps;
+        uint seed = 0x2468ACE1u;
+        byte Next() { seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5; var v = (byte)(seed >> 24); return v == 0 ? (byte)0xA5 : v; }
+        var mdat = new MemoryStream();
+        var vSizes = new List<uint>(); var vOff = new List<uint>(); var aSizes = new List<uint>(); var aOff = new List<uint>();
+        const int head = 4096;   // ftyp + moov 자리(moov 는 mdat 뒤 · stco = 절대 오프셋)
+        firstIdrNal = Array.Empty<byte>();
+        int vi = 0, ai = 0;
+        while (vi < Sec * Fps || ai < AacFrames)
+        {
+            var vUs = vi * 1_000_000L / Fps; var aUs = ai * 1024 * 1_000_000L / 48_000;
+            if (vi < Sec * Fps && (ai >= AacFrames || vUs <= aUs))
+            {
+                var key = vi % Gop == 0;
+                var size = key ? 700 : 120 + vi % 60;
+                var nal = new byte[size];
+                nal[0] = key ? (byte)0x65 : (byte)0x41;
+                nal[1] = (byte)(0x80 | (Next() & 0x7F));
+                for (var i = 2; i < size - 1; i++) nal[i] = Next();
+                nal[size - 1] = 0x80;
+                if (vi == 0) firstIdrNal = nal;
+                vOff.Add((uint)(head + mdat.Length));
+                var len = new byte[4]; System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(len, size);
+                mdat.Write(len); mdat.Write(nal);
+                vSizes.Add((uint)(size + 4));
+                vi++;
+            }
+            else
+            {
+                var voiced = (ai * 1024 / 48 % 8_000) < 6_200;   // 8 s 주기 · 1.8 s 데드에어
+                var size = voiced ? 150 + ai % 40 : 8;
+                aOff.Add((uint)(head + mdat.Length));
+                for (var i = 0; i < size; i++) mdat.WriteByte(Next());
+                aSizes.Add((uint)size);
+                ai++;
+            }
+        }
+
+        byte[] Full(string t, params byte[][] parts) => Box(t, new[] { new byte[4] }.Concat(parts).ToArray());
+        byte[] Stbl(byte[] stsd, uint delta, List<uint> sizes, List<uint> offs, bool video)
+        {
+            var parts = new List<byte[]> { stsd, Full("stts", U32(1, (uint)sizes.Count, delta)) };
+            if (video)
+            {
+                parts.Add(Full("ctts", U32(1, (uint)sizes.Count, delta)));
+                var keys = Enumerable.Range(0, sizes.Count).Where(i => i % Gop == 0).Select(i => (uint)(i + 1)).ToArray();
+                parts.Add(Full("stss", U32((uint)keys.Length), U32(keys)));
+            }
+            parts.Add(Full("stsc", U32(1, 1, 1, 1)));   // 청크당 1 샘플
+            parts.Add(Full("stsz", U32(0, (uint)sizes.Count), U32(sizes.ToArray())));
+            parts.Add(Full("stco", U32((uint)offs.Count), U32(offs.ToArray())));
+            return Box("stbl", parts.ToArray());
+        }
+        byte[] Trak(string handler, uint ts, uint dur, byte[] stbl) => Box("trak",
+            Box("mdia",
+                Full("mdhd", U32(0, 0, ts, dur), new byte[4]),
+                Full("hdlr", new byte[4], System.Text.Encoding.ASCII.GetBytes(handler), new byte[12], new byte[1]),
+                Box("minf", stbl)));
+
+        var avcC = Box("avcC", B(1, 0x42, 0xC0, 0x1E, 0xFF, 0xE1, 0, (byte)sps.Length), sps, B(1, 0, (byte)pps.Length), pps);
+        var avc1 = Box("avc1", new byte[6], B(0, 1), new byte[16], B(0x07, 0x80, 0x04, 0x38), U32(0x00480000, 0x00480000, 0), B(0, 1), new byte[32], B(0, 0x18, 0xFF, 0xFF), avcC);
+        var esds = Full("esds",
+            B(0x03, 25, 0, 1, 0),
+            B(0x04, 17, 0x40, 0x15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+            B(0x05, 2, 0x11, 0x88),                 // AAC-LC · 48 kHz(3) · 모노
+            B(0x06, 1, 2));
+        var mp4a = Box("mp4a", new byte[6], B(0, 1), new byte[8], B(0, 1, 0, 16, 0, 0, 0, 0), U32(48_000u << 16), esds);
+        var vTrak = Trak("vide", 90_000, (uint)(Sec * 90_000), Stbl(Full("stsd", U32(1), avc1), 3_000, vSizes, vOff, true));
+        var aTrak = Trak("soun", 48_000, (uint)(AacFrames * 1024), Stbl(Full("stsd", U32(1), mp4a), 1024, aSizes, aOff, false));
+        var moov = Box("moov", Full("mvhd", new byte[96]), vTrak, aTrak);
+
+        var ftyp = Box("ftyp", System.Text.Encoding.ASCII.GetBytes("isom"), U32(512), System.Text.Encoding.ASCII.GetBytes("isomavc1"));
+        var file = new MemoryStream();
+        file.Write(ftyp);
+        file.Write(Box("free", new byte[head - ftyp.Length - 8 - 8]));
+        var mdatLen = new byte[8]; System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(mdatLen, (int)mdat.Length + 8); "mdat"u8.CopyTo(mdatLen.AsSpan(4));
+        file.Write(mdatLen);
+        Assert.Equal(head, (int)file.Length);
+        mdat.Position = 0; mdat.CopyTo(file);
+        file.Write(moov);
+        return file.ToArray();
+    }
+
+    [Fact]
+    public async Task ShortsFactory_RealFileImport_And_Thumbnail_Check()
+    {
+        var mp4 = BuildMp4(out var idrNal, out var spsNal);
+        var ws = new PromptFlowStudio.Services.Ui.ShortsFactoryWorkspaceContext();
+        var p = new PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext();
+        var o = new PromptFlowStudio.Services.Ui.ShortsFactoryOneClickRenderOrchestrator();
+
+        // 손상 파일 → 거부 · 소스 미준비 → 렌더 시 리허설 폴백
+        Assert.Equal(PromptFlowStudio.Services.Ui.LocalVideoImportStatus.NotMp4, o.ImportLocalVideo(new MemoryStream(new byte[4096]), "bad.mp4"));
+        Assert.False(o.SourceReady);
+
+        // ① 실 파일 임포트 — 표 해석 · 메타 · 링 주입(타임스탬프 단조 · 거부 0)
+        using var file = new MemoryStream(mp4, false);
+        Assert.Equal(PromptFlowStudio.Services.Ui.LocalVideoImportStatus.Injected, o.ImportLocalVideo(file, "clip.mp4"));
+        var imp = o.Importer;
+        Assert.True(o.SourceReady && !o.RehearsalSource && o.SourceName == "clip.mp4", imp.LastError);
+        Assert.Equal((1920, 1080), (imp.Width, imp.Height));   // SPS 1920×1088 · 하단 크롭 8 · 스케일링 행렬(전체 파서 폴백)
+        Assert.InRange(imp.DurationMs, Sec * 1000 - 50, Sec * 1000 + 50);
+        Assert.InRange(imp.Fps, 29.9, 30.1);
+        Assert.Equal(48_000, imp.AudioRate);
+        Assert.Equal(Sec * Fps, imp.VideoSamples);
+        Assert.Equal(AacFrames, imp.AudioSamples);
+        Assert.Equal(Sec * Fps, imp.InjectedVideo);
+        Assert.InRange(imp.InjectedAudio, AacFrames - 2, AacFrames);
+        Assert.Equal(Sec * Fps / Gop, imp.InjectedKeyframes);
+        Assert.Equal(0, imp.Faults);
+        Assert.Equal(0, imp.FirstPtsUs);                         // ctts 1 프레임 → 첫 표시 = 0
+        Assert.Equal(imp.InjectedVideo + imp.InjectedAudio, o.Source.TotalFrames);
+        Assert.InRange(o.SourceDurationMs, Sec * 1000 - 50, Sec * 1000 + 50);
+        Assert.Equal(Sec * 48_000 + 48_000, imp.EnvelopePcm.Length);
+
+        // 링 첫 AU = AUD + avcC SPS/PPS 동봉 + 파일 IDR NAL 원문(실 비트스트림 관통)
+        var first = new byte[4096];
+        var n0 = o.Source.CopyFrame(o.Source.OldestSeq, first);
+        Assert.True(o.Source.Frame(o.Source.OldestSeq).Key && o.Source.Frame(o.Source.OldestSeq).HasParams);
+        Assert.True(first.AsSpan(0, n0).EndsWith(idrNal), "링 IDR = 파일 NAL 원문");
+        Assert.True(first.AsSpan(0, n0).IndexOf(spsNal) > 0);
+        long prevPts = -1; var mono = true;
+        for (var q = o.Source.OldestSeq; q <= o.Source.NewestSeq; q++)
+        {
+            var f = o.Source.Frame(q);
+            if (f.Kind != PromptFlowStudio.Services.LiveClipper.MediaKind.Video) continue;
+            if (f.PtsUs <= prevPts) mono = false;
+            prevPts = f.PtsUs;
+        }
+        Assert.True(mono, "비디오 PTS 단조 증가");
+        // PCM 엔벨로프: 데드에어(7 s 부근) 무음 · 유성(2 s) 비무음
+        Assert.True(imp.EnvelopePcm.AsSpan(7_000 * 48, 4_800).IndexOfAnyExcept((short)0) < 0, "데드에어 무음");
+        Assert.True(imp.EnvelopePcm.AsSpan(2_000 * 48, 4_800).IndexOfAnyExcept((short)0) >= 0, "유성 구간");
+
+        // ②~④ 원클릭 — 리허설 배제 · 실 파일 슬라이스 · fMP4 · 1080×1920 PNG
+        ws.SetClip(5_000, 20_000);
+        Assert.True(p.Hydrate(ws));
+        Assert.True(o.Render(p), o.LastError);
+        Assert.False(o.RehearsalSource);
+        Assert.Equal(imp.InjectedVideo + imp.InjectedAudio, o.Source.TotalFrames);   // 리허설 재적재 없음
+        var b = o.Binder;
+        Assert.Equal(PromptFlowStudio.Services.Ui.SliceBindStatus.Bound, b.Status);
+        Assert.True(b.SliceVideoFrames >= 20 * Fps && b.SliceAudioFrames > 0);
+        var n1 = o.Source.CopyFrame(b.FirstSeq, first);
+        Assert.True(b.SliceAnnexB[..n1].SequenceEqual(first.AsSpan(0, n1)), "슬라이스 첫 AU = 파일 주입 링 원문");
+        var ex = o.LastExport;
+        Assert.Equal(PromptFlowStudio.Services.ViralExport.ExportStatus.Ready, ex.Status);
+        Assert.True(PromptFlowStudio.Services.ViralExport.FastShortsMuxingHardwareExporterEngine.TryInspect(o.Output.Span, out var insp) && insp.Valid);
+        Assert.True(ex.StartsWithIdr && ex.VideoSamples == b.Mux.OutCount && ex.AudioSamples == b.KeptAudioFrames);
+        Assert.Equal(48_000, ex.AudioRate);
+
+        var th = o.Thumbnailer;
+        Assert.NotEqual(PromptFlowStudio.Services.Ui.ThumbnailSourceKind.None, th.Kind);
+        Assert.Equal(1920, th.SourceWidth);
+        Assert.True(o.ThumbnailPng.Span[..8].SequenceEqual(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }));
+        Assert.True(PromptFlowStudio.Services.Ui.RealKeyframeThumbnailRasterizer.ValidatePng(o.ThumbnailPng.Span, out var tw, out var thh), "PNG 청크 구조/CRC");
+        Assert.Equal((1080, 1920), (tw, thh));
+        Assert.True(PromptFlowStudio.Services.Ui.RealKeyframeThumbnailRasterizer.ValidatePng(th.PreviewPng.Span, out var pw, out var ph) && pw == 108 && ph == 192);
+        Assert.StartsWith("data:image/png;base64,", o.ThumbnailDataUrl);
+        // 비트스트림 맵 폴백(디코딩 비허용) — 다른 IDR → 다른 화상 · 같은 IDR → 결정적
+        var r = new PromptFlowStudio.Services.Ui.RealKeyframeThumbnailRasterizer();
+        var au0 = first.AsSpan(0, n0).ToArray();
+        Assert.True(r.Rasterize(au0, default, 656, false, 0xFFE000, allowHardware: false));
+        Assert.True(PromptFlowStudio.Services.Ui.RealKeyframeThumbnailRasterizer.ValidatePng(r.Png.Span, out _, out _));
+        var h0 = r.Rgb.ToArray();
+        Assert.True(r.Rasterize(au0, default, 656, false, 0xFFE000, allowHardware: false));
+        Assert.True(r.Rgb.SequenceEqual(h0));
+        var keySeq = o.Source.OldestSeq; var seen = 0;
+        for (var q = o.Source.OldestSeq; q <= o.Source.NewestSeq; q++) if (o.Source.Frame(q).Key && ++seen == 2) { keySeq = q; break; }
+        var n2 = o.Source.CopyFrame(keySeq, first);
+        Assert.True(r.Rasterize(first.AsSpan(0, n2), default, 656, false, 0xFFE000, allowHardware: false));
+        Assert.False(r.Rgb.SequenceEqual(h0), "IDR 바이트 함수(해시 색조 아님)");
+        Assert.False(r.Rasterize(new byte[] { 0, 0, 0, 1, 0x41, 0x9A, 0x80 }, default, 0, false, 0, allowHardware: false));
+
+        // 비동기 경로 + 구간 변경
+        ws.SetClip(15_000, 15_000);
+        Assert.True(p.Hydrate(ws));
+        Assert.True(await o.RenderAsync(p), o.LastError);
+        Assert.False(o.RehearsalSource);
+
+        // 5 회 배치 — 관리 힙 누수 0
+        Assert.True(o.Render(p));
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        var mem0 = GC.GetTotalMemory(true);
+        for (var i = 0; i < 5; i++) Assert.True(o.Render(p), o.LastError);
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        var leak = GC.GetTotalMemory(true) - mem0;
+        Assert.True(leak < 256 * 1024, "5 회 실 파일 렌더 잔류 " + leak + " B");
+
+        // 주입 핫패스 무할당(파싱 완료 표 · 같은 용량 링 재사용)
+        var ring = new PromptFlowStudio.Services.LiveClipper.RollingCircularVideoBufferEngine(256);
+        Assert.Equal(PromptFlowStudio.Services.Ui.LocalVideoImportStatus.Injected, imp.Inject(file, ring));
+        var a0 = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 2; i++) imp.Inject(file, ring);
+        var alloc = GC.GetAllocatedBytesForCurrentThread() - a0;
+        Assert.True(alloc == 0, "MP4 → 링 주입 핫패스 할당 " + alloc + " B");
+        Assert.Equal(imp.InjectedVideo + imp.InjectedAudio, ring.Frames);
+
+        // 캡처 연결 · 손상 파일 → 리허설 폴백 복귀
+        Assert.Equal(PromptFlowStudio.Services.Ui.LocalVideoImportStatus.NotMp4, o.ImportLocalVideo(new MemoryStream(new byte[64]), "x"));
+        Assert.True(o.Render(p), o.LastError);
+        Assert.True(o.RehearsalSource && o.SourceName is null);
+    }
+}
