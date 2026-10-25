@@ -1,0 +1,54 @@
+# v18.1.0 줄바꿈 정규화 — 인덱스(저장소)는 LF, 작업 트리는 CRLF 로 고정(core.autocrlf 설정과 무관하게 동일 결과).
+* text=auto eol=crlf
+
+# C# / Razor / MSBuild 소스
+*.cs        text eol=crlf diff=csharp
+*.razor     text eol=crlf
+*.cshtml    text eol=crlf
+*.csproj    text eol=crlf
+*.props     text eol=crlf
+*.targets   text eol=crlf
+*.pubxml    text eol=crlf
+*.sln       text eol=crlf
+
+# 리소스 / 설정 / 스크립트
+*.resx      text eol=crlf
+*.xaml      text eol=crlf
+*.xml       text eol=crlf
+*.plist     text eol=crlf
+*.json      text eol=crlf
+*.config    text eol=crlf
+*.css       text eol=crlf
+*.js        text eol=crlf
+*.html      text eol=crlf
+*.md        text eol=crlf
+*.txt       text eol=crlf
+*.yml       text eol=crlf
+*.yaml      text eol=crlf
+*.ps1       text eol=crlf
+*.iss       text eol=crlf
+
+# POSIX 셸 스크립트는 LF 고정(bash 가 CR 을 명령 일부로 해석)
+*.sh        text eol=lf
+
+# 문자열 리터럴에 NUL 바이트를 포함하는 소스 — 바이트 그대로 보존(텍스트 변환 금지)
+PromptFlowStudio/Services/Newsroom/RealtimeNewsFeedFactCheckEngine.cs -text
+
+# 바이너리
+*.ico   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.mp3   binary
+*.mp4   binary
+*.wav   binary
+*.onnx  binary
+*.exe   binary
+*.dll   binary
+*.pdb   binary
+*.zip   binary
+*.pfx   binary
+*.snk   binary
+*.bin   binary
