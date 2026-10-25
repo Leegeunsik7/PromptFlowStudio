@@ -2,12 +2,14 @@
 @using PromptFlowStudio.Services.Ui
 @implements IDisposable
 @inject ShortsFactoryOneClickRenderOrchestrator OneClick
+@inject ShortsToPublisherHandoffBridge Handoff
 
 @* [PromptFlow Studio v18.0.0] 🏭 원스톱 숏폼 AI 팩토리 — v17.77 세이프존 훅 · v17.78 키네틱 자막 · v17.82 다국어 더빙 · v17.84 킬러클립 · v17.85 예측/익스포터 ·
    v17.91 저작권 · v17.98 리텐션 리먹서를 4 단계 탭으로 통합. 각 엔진 모달은 그대로 하위 탭에 주입하고, 탭 간 값은 ShortsFactoryWorkspaceContext 1 개로 공유한다. *@
 @* [v18.0.1] ShortsFactoryPipelineContext 가 상단 바 값을 4 단계 엔진 파라미터로 관통 → 하위 엔진 모달에 CascadingValue 로 전달 · Alt+1~4 단계 전환. *@
 @* [v18.0.2] ⚡ 원클릭 숏폼 렌더 — ShortsFactoryOneClickRenderOrchestrator 가 ①~④ 를 실 소스 슬라이스로 단일 비동기 패스 실행 · 통합 진행률 · 완료 시 ④ 탭 포커스. *@
 @* [v18.0.3] ① 📁 로컬 비디오 열기 — MP4 실 NALU/AAC 를 소스 링에 주입(120 s 리허설 자동 비활성) · 파일 배지(이름 · 해상도 · 길이) · 절삭 슬라이더 = 파일 길이. *@
+@* [v18.0.4] 🚀 소셜 퍼블리셔로 전송 — ④ fMP4 · 썸네일 PNG 를 ShortsToPublisherHandoffBridge 로 0-카피 인계 → 퍼블리셔 ② 다채널 배포 탭 즉시 오픈. *@
 <div class="sw-docked" style="--sw-dock-h: @(ShowProgress ? "150px" : "128px")" tabindex="-1" @onkeydown="OnStageKey">
     <StudioWorkspaceDock Workspace="_ws" Tab="_tab" Member="_member" OnRoute="Go" OnClose="Close">
         <div class="swd-row sfw-ctx">
@@ -64,6 +66,11 @@
                         {
                             <img class="sfw-th" src="@thumb" alt="고CTR 썸네일 미리보기" />
                         }
+                        <button type="button" class="sfw-ho" title="렌더된 fMP4 · 썸네일 · 제목/해시태그를 소셜 퍼블리셔로 그대로 넘기고 ② 다채널 배포 탭을 엽니다(재임포트 없음)" disabled="@(OneClick.Busy)" @onclick="SendToPublisher">🚀 소셜 퍼블리셔로 전송</button>
+                    }
+                    @if (_handoffError is { } hoErr)
+                    {
+                        <span class="sfw-hy bad" role="alert">⚠ @(hoErr)</span>
                     }
                     break;
             }
@@ -146,6 +153,8 @@
     .sfw-open.dis { opacity: .5; cursor: progress; }
     .sfw-file { display: none; }
     .sfw-hy.bad { color: #fca5a5; }
+    .sfw-ho { background: linear-gradient(90deg, #0369a1, #7c3aed); color: #fff; border: 1px solid #a78bfa; border-radius: 6px; padding: 4px 11px; font-size: 11px; font-weight: 800; cursor: pointer; white-space: nowrap; }
+    .sfw-ho:disabled { opacity: .45; cursor: progress; }
 </style>
 
 @code {
@@ -156,6 +165,8 @@
     [Parameter] public int RouteStamp { get; set; }
     /// <summary>탭 · 엔진 전환 통지(레이아웃 도움말 서랍이 현재 엔진을 가리키도록).</summary>
     [Parameter] public EventCallback<WorkspaceSubTabRoute> OnRouteChanged { get; set; }
+    /// <summary>[v18.0.4] 핸드오프 브리지 적재 직후 — 레이아웃이 소셜 퍼블리셔 ② 탭을 연다.</summary>
+    [Parameter] public EventCallback OnHandoffToPublisher { get; set; }
 
     /// <summary>4 단계 탭 공유 컨텍스트 — 모달 수명 동안 1 개(탭 전환 시 재생성 없음).</summary>
     public ShortsFactoryWorkspaceContext Ctx { get; } = new();
@@ -166,7 +177,7 @@
     private int _tab, _member, _stamp = -1, _renderedRev = -1;
     private CancellationTokenSource? _renderCts;
     private bool _disposed, _importing;
-    private string? _importError;
+    private string? _importError, _handoffError;
     /// <summary>로컬 비디오 상한(세그먼트 스트림 · 300 MB) — 링 창(120 s) 밖 샘플은 주입하지 않는다.</summary>
     private const long MaxImportBytes = 300L * 1024 * 1024;
 
@@ -222,6 +233,21 @@
             _importError = "불러오기 실패: " + ex.Message;
         }
         finally { _importing = false; }
+    }
+
+    /// <summary>[v18.0.4] 🚀 ④ fMP4 · 썸네일 PNG(버퍼 공유) + 대본 기반 제목/해시태그 → 핸드오프 브리지 → 퍼블리셔 오픈. 낡은 렌더는 거부.</summary>
+    private Task SendToPublisher()
+    {
+        if (!Rendered || OneClick.Busy) return Task.CompletedTask;
+        var script = Pipeline.BuildSlicedScript();
+        var r = ShortsRenderResult.Capture(OneClick, Ctx);
+        if (!Handoff.Push(r, ShortsToPublisherHandoffBridge.ComposeTitle(script, OneClick.SourceName), ShortsToPublisherHandoffBridge.ComposeHashtags(script, Ctx.DubLanguageMask)))
+        {
+            _handoffError = "전송 실패 — 렌더 결과가 바뀌었습니다. 다시 렌더하세요";
+            return Task.CompletedTask;
+        }
+        _handoffError = null;
+        return OnHandoffToPublisher.InvokeAsync();
     }
 
     public void Dispose()

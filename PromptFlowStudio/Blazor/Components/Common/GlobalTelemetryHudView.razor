@@ -291,6 +291,7 @@
 @inject PromptFlowStudio.Services.RetentionHeatmap.AudienceRetentionHeatmapStudioRunner ArhRun
 @inject PromptFlowStudio.Services.CompetitorSpy.CompetitorViralSpyStudioRunner SpyRun
 @inject PromptFlowStudio.Services.Ui.ShortsFactoryOneClickRenderOrchestrator OneClickRender
+@inject PromptFlowStudio.Services.Ui.ShortsToPublisherHandoffBridge PublisherHandoff
 @inject PromptFlowStudio.Services.LiveEngagement.LiveAudienceEngagementStudioRunner LaeRun
 @inject PromptFlowStudio.Services.LiveRestream.OmniLiveRestreamStudioRunner RstRun
 @inject PromptFlowStudio.Services.MultilingualDubbing.MultilingualDubbingStudioRunner MldRun
@@ -1016,6 +1017,21 @@
     @* ── v10.5.0-F5: 핫픽스 자동 서명기 — LtsHotfixPatcher(라이프사이클)+ReleaseIntegrityValidator(SHA3/HMAC) 결합, manifest+.sig 출력 ── *@
     @* ── v10.6.0: Wan 2.1 후처리(보간+업스케일) 스루풋 + Latent 프로그레시브 프리뷰 ── *@
     @* ── v10.6.0-F2: 이종 하드웨어 스케줄러 — Primary/Secondary 디바이스 부하 분산 + GPU 탐지 목록 ── *@
+@* ── v18.0.4: 숏폼 → 소셜 퍼블리셔 핸드오프 — 인계 · 대기 · 폐기/거부 · 현재 fMP4(0-카피) · Variant A ── *@
+    <div class="gth-v1804">
+        <div class="gth-v96-card pid @(PublisherHandoff.Handoffs > 0 ? "ok" : null)">
+            <div class="gth-v96-h"><b>🚀 숏폼 → 퍼블리셔 인계</b>
+                <span class="gth-v96-be">@(PublisherHandoff.HasCurrent ? (PublisherHandoff.Current.Render.IsLive ? "바인딩" : "버퍼 갱신됨") : "대기")</span>
+            </div>
+            <div class="gth-v96-grid">
+                <span class="gth-v96-m"><b class="acc">@(PublisherHandoff.Handoffs)</b><span>인계</span></span>
+                <span class="gth-v96-m"><b>@(PublisherHandoff.Pending)</b><span>대기</span></span>
+                <span class="gth-v96-m"><b>@(PublisherHandoff.Dropped + PublisherHandoff.Rejected)</b><span>폐기·거부</span></span>
+                <span class="gth-v96-m"><b>@((PublisherHandoff.Current.Bytes / 1024).ToString(System.Globalization.CultureInfo.InvariantCulture))</b><span>fMP4 KB</span></span>
+            </div>
+            <div class="gth-v96-act">@(PublisherHandoff.HasCurrent ? "#" + PublisherHandoff.Current.Sequence.ToString(System.Globalization.CultureInfo.InvariantCulture) + " · " + PublisherHandoff.Current.Title + (PublisherHandoff.CurrentIsVariantA ? " · 🅰 Variant A" : null) : "숏폼 팩토리 ④ 🚀 소셜 퍼블리셔로 전송 → ② 다채널 배포")</div>
+        </div>
+    </div>
 @* ── v18.0.3: 숏폼 팩토리 로컬 MP4 실 파일 임포트 — 링 주입 V/A · 링 kbps · 키프레임 썸네일(실 디코딩/IDR 비트 맵) *@
     <div class="gth-v1803">
         <div class="gth-v96-card pid @(OneClickRender.SourceName is not null ? "ok" : null)">
@@ -5989,6 +6005,7 @@
         PstRun.OnChange += OnSwarmChanged; // v17.93.0 (조작 · 틱 일괄 시점만)
         GheRun.OnChange += OnSwarmChanged; // v17.95.0 (조작 · 틱 일괄 시점만)
         SpyRun.OnChange += OnSwarmChanged; // v17.99.0 (조작 시점만)
+        PublisherHandoff.OnHandoff += OnLiveChanged; // v18.0.4 (사용자 클릭 단위 → 스로틀 없음)
         OneClickRender.OnChange += OnLiveChanged; // v18.0.2 (렌더 단계 진행 ≤ 250 ms 간격 → 스로틀 없음)
         ArhRun.OnChange += OnSwarmChanged; // v17.98.0 (조작 시점만)
         VcaRun.OnChange += OnSwarmChanged; // v17.97.0 (조작 · 트래픽 틱 일괄 시점만)
@@ -6393,6 +6410,7 @@
         PstRun.OnChange -= OnSwarmChanged;
         GheRun.OnChange -= OnSwarmChanged;
         SpyRun.OnChange -= OnSwarmChanged;
+        PublisherHandoff.OnHandoff -= OnLiveChanged;
         OneClickRender.OnChange -= OnLiveChanged;
         ArhRun.OnChange -= OnSwarmChanged;
         VcaRun.OnChange -= OnSwarmChanged;

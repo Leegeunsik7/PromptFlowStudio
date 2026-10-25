@@ -38330,3 +38330,199 @@ public sealed class ShortsFactoryRealFileImportTests
         Assert.True(o.RehearsalSource && o.SourceName is null);
     }
 }
+
+[Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
+public sealed class ShortsToPublisherHandoffTests
+{
+    [Fact]
+    public void ShortsToPublisher_HandoffAndPayload_Check()
+    {
+        var ws = new PromptFlowStudio.Services.Ui.ShortsFactoryWorkspaceContext();
+        var p = new PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext();
+        var o = new PromptFlowStudio.Services.Ui.ShortsFactoryOneClickRenderOrchestrator();
+        ws.SetClip(5_000, 15_000);
+        Assert.True(p.Hydrate(ws));
+        Assert.True(o.Render(p), o.LastError);
+        Assert.Equal(PromptFlowStudio.Services.ViralExport.ExportStatus.Ready, o.LastExport.Status);
+
+        // 퍼블리셔 탭 좌표 = 카탈로그(② 다채널 변형 배포 · ③ A/B 레이스)
+        var pubTabs = WsCat.Workspaces[WsCat.IndexOfModal(WsCat.PublisherModalKey)].Tabs;
+        Assert.Equal(3, pubTabs.Length);
+        Assert.Equal("_matrixSyndication", pubTabs[PromptFlowStudio.Services.Ui.ShortsToPublisherHandoffBridge.PublisherDeployTab].Members[0]);
+        Assert.Equal("_postPublishSplitTest", pubTabs[PromptFlowStudio.Services.Ui.ShortsToPublisherHandoffBridge.PublisherAbTab].Members[0]);
+
+        // ① 렌더 스냅샷 — fMP4 · PNG 는 오케스트레이터 버퍼 그대로(복사 0) · 1080×1920 9:16
+        var script = p.BuildSlicedScript();
+        var title = PromptFlowStudio.Services.Ui.ShortsToPublisherHandoffBridge.ComposeTitle(script, o.SourceName);
+        var tags = PromptFlowStudio.Services.Ui.ShortsToPublisherHandoffBridge.ComposeHashtags(script, ws.DubLanguageMask);
+        Assert.EndsWith("#Shorts", title);
+        Assert.StartsWith("#shorts #reels", tags);
+        Assert.Contains("#english", tags);
+        var r = PromptFlowStudio.Services.Ui.ShortsRenderResult.Capture(o, ws);
+        Assert.True(r.IsLive && r.IsVertical);
+        Assert.Equal((1080, 1920), (r.Width, r.Height));
+        Assert.Equal(o.LastExport.Bytes, r.Bytes);
+        Assert.True(r.Video.Span == o.Output.Span, "fMP4 = 오케스트레이터 버퍼 슬라이스");
+        Assert.True(r.ThumbnailPng.Span == o.ThumbnailPng.Span, "PNG = 썸네일러 버퍼 슬라이스");
+        Assert.InRange(r.ThumbnailOffsetMs, 0, r.DurationMs);
+
+        // ② 핸드오프 — 통지 · 수화 · 0 B 할당
+        var bridge = new PromptFlowStudio.Services.Ui.ShortsToPublisherHandoffBridge();
+        var hits = 0;
+        bridge.OnHandoff += () => hits++;
+        Assert.False(bridge.HasCurrent);
+        Assert.True(bridge.Push(r, title, tags));
+        Assert.Equal(1, bridge.Pending);
+        Assert.True(bridge.Hydrate());
+        Assert.False(bridge.Hydrate());
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        var pushed = bridge.Push(r, title, tags);
+        var consumed = bridge.TryConsume(out var got);
+        var live = got.Render.IsLive;
+        long handoffAlloc = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.True(pushed && consumed && live);
+        Assert.Equal(0, handoffAlloc);
+        Assert.Equal(2, hits);
+        Assert.Equal(2, got.Sequence);
+        Assert.True(got.Video.Span == o.Output.Span, "인계 후에도 동일 버퍼");
+        Assert.Equal(title, bridge.Current.Title);
+        Assert.Equal(2, bridge.Consumed);
+
+        // 폼 수정 · Variant A
+        Assert.True(bridge.UpdateMetadata("새 제목 #Shorts", "#a #b"));
+        Assert.True(bridge.Current.Video.Span == o.Output.Span);
+        Assert.Equal("#a #b", bridge.Current.Hashtags);
+        Assert.False(bridge.CurrentIsVariantA);
+        Assert.True(bridge.AssignVariantA());
+        Assert.True(bridge.CurrentIsVariantA);
+        Assert.Equal(2, bridge.VariantASequence);
+        Assert.True(bridge.UpdateMetadata(title, tags));
+
+        // ③ YouTube Resumable 초기화 요청
+        got = bridge.Current;
+        var buf = new byte[16 * 1024];
+        Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteYouTubeResumableInit(got, "private", "tok", buf, out var n, out var bodyOff));
+        var req = buf.AsSpan(0, n);
+        Assert.True(req.StartsWith("POST /upload/youtube/v3/videos?uploadType=resumable&part=snippet,status HTTP/1.1\r\nHost: www.googleapis.com\r\n"u8));
+        Assert.Equal(bodyOff, PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.HeadLength(req));
+        Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryGetHeader(req, "x-upload-content-type"u8, out var xct) && xct.SequenceEqual("video/mp4"u8));
+        Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryGetHeaderInt64(req, "X-Upload-Content-Length"u8, out var xl));
+        Assert.Equal(o.LastExport.Bytes, xl);
+        Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryGetHeader(req, "Content-Type"u8, out var jct) && jct.SequenceEqual("application/json; charset=UTF-8"u8));
+        Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryGetHeaderInt64(req, "Content-Length"u8, out var cl));
+        Assert.Equal(n - bodyOff, cl);
+        Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryGetHeader(req, "Authorization"u8, out var auth) && auth.SequenceEqual("Bearer tok"u8));
+        using (var j = System.Text.Json.JsonDocument.Parse(buf.AsMemory(bodyOff, n - bodyOff)))
+        {
+            var sn = j.RootElement.GetProperty("snippet");
+            Assert.Equal(title, sn.GetProperty("title").GetString());
+            Assert.Equal(title + "\n" + tags, sn.GetProperty("description").GetString());
+            Assert.Equal("shorts", sn.GetProperty("tags")[0].GetString());
+            Assert.Equal("reels", sn.GetProperty("tags")[1].GetString());
+            Assert.Equal("22", sn.GetProperty("categoryId").GetString());
+            Assert.Equal("private", j.RootElement.GetProperty("status").GetProperty("privacyStatus").GetString());
+            Assert.False(j.RootElement.GetProperty("status").GetProperty("selfDeclaredMadeForKids").GetBoolean());
+        }
+        var meta = new byte[8 * 1024];
+        Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteYouTubeMetadataJson(got, "private", meta, out var mn));
+        Assert.True(meta.AsSpan(0, mn).SequenceEqual(buf.AsSpan(bodyOff, n - bodyOff)));
+        Assert.False(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteYouTubeResumableInit(got, "private", "tok", buf.AsSpan(0, 32), out var small, out _));
+        Assert.Equal(0, small);
+
+        // JSON 이스케이프 · 서로게이트 · 제어 문자 · 100 자 절단 · 공개 범위 화이트리스트
+        var tricky = new PromptFlowStudio.Services.Ui.SocialPublishPayload(r, "따옴표 \"q\" \\ 줄\n탭\t😀\u0001 #Shorts", "#태그 ##x  #y", 9);
+        Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteYouTubeMetadataJson(tricky, "hacked", meta, out mn));
+        using (var j = System.Text.Json.JsonDocument.Parse(meta.AsMemory(0, mn)))
+        {
+            Assert.Equal(tricky.Title, j.RootElement.GetProperty("snippet").GetProperty("title").GetString());
+            Assert.Equal(new[] { "태그", "x", "y" }, j.RootElement.GetProperty("snippet").GetProperty("tags").EnumerateArray().Select(e => e.GetString()).ToArray());
+            Assert.Equal("private", j.RootElement.GetProperty("status").GetProperty("privacyStatus").GetString());
+        }
+        var longTitle = new PromptFlowStudio.Services.Ui.SocialPublishPayload(r, new string('가', 99) + "😀😀", "", 10);
+        Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteYouTubeMetadataJson(longTitle, "public", meta, out mn));
+        using (var j = System.Text.Json.JsonDocument.Parse(meta.AsMemory(0, mn)))
+        {
+            Assert.Equal(new string('가', 99), j.RootElement.GetProperty("snippet").GetProperty("title").GetString());   // 서로게이트 쌍 미분할
+            Assert.Equal("public", j.RootElement.GetProperty("status").GetProperty("privacyStatus").GetString());
+        }
+
+        // 청크 PUT · multipart/related(영상 바이트 0-카피 사이 삽입)
+        var total = (long)got.Bytes;
+        var chunk = (int)Math.Min(256 * 1024, total);
+        Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteYouTubeChunkHead("/upload/youtube/v3/videos?upload_id=xyz", 0, chunk, total, buf, out n));
+        Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryGetHeader(buf.AsSpan(0, n), "Content-Range"u8, out var range));
+        Assert.Equal("bytes 0-" + (chunk - 1).ToString(System.Globalization.CultureInfo.InvariantCulture) + "/" + total.ToString(System.Globalization.CultureInfo.InvariantCulture), System.Text.Encoding.ASCII.GetString(range));
+        Assert.False(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteYouTubeChunkHead("/x", total - 1, 2, total, buf, out _));
+        Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteYouTubeMultipartPrefix(got, "unlisted", "pf_b0undary", buf, out var pre));
+        var suf = new byte[64];
+        Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteMultipartSuffix("pf_b0undary", suf, out var sn2));
+        Assert.True(buf.AsSpan(0, pre).StartsWith("--pf_b0undary\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{"u8));
+        Assert.True(buf.AsSpan(0, pre).EndsWith("\r\n--pf_b0undary\r\nContent-Type: video/mp4\r\n\r\n"u8));
+        Assert.True(suf.AsSpan(0, sn2).SequenceEqual("\r\n--pf_b0undary--\r\n"u8));
+        Assert.False(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteYouTubeMultipartPrefix(got, "private", "bad boundary", buf, out _));
+
+        // ④ Instagram Graph Reels 컨테이너 폼 · rupload 헤드
+        Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteInstagramReelsContainerForm(got, default, true, buf, out n));
+        var form = System.Text.Encoding.ASCII.GetString(buf, 0, n).Split('&').Select(kv => kv.Split('=', 2)).ToDictionary(a => a[0], a => Uri.UnescapeDataString(a[1]));
+        Assert.Equal("REELS", form["media_type"]);
+        Assert.Equal("resumable", form["upload_type"]);
+        Assert.Equal(title + "\n" + tags, form["caption"]);
+        Assert.Equal(r.ThumbnailOffsetMs.ToString(System.Globalization.CultureInfo.InvariantCulture), form["thumb_offset"]);
+        Assert.Equal("true", form["share_to_feed"]);
+        Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteInstagramReelsContainerForm(got, "https://cdn.example.com/a b.mp4", false, buf, out n));
+        var form2 = System.Text.Encoding.ASCII.GetString(buf, 0, n);
+        Assert.Contains("video_url=https%3A%2F%2Fcdn.example.com%2Fa%20b.mp4&", form2);
+        Assert.DoesNotContain("upload_type", form2);
+        Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteInstagramRuploadHead("17890000000000001", "igtok", total, buf, out n));
+        var rh = buf.AsSpan(0, n);
+        Assert.True(rh.StartsWith("POST /ig-api-upload/v21.0/17890000000000001 HTTP/1.1\r\nHost: rupload.facebook.com\r\n"u8));
+        Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryGetHeader(rh, "Authorization"u8, out var oa) && oa.SequenceEqual("OAuth igtok"u8));
+        Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryGetHeaderInt64(rh, "offset"u8, out var off0) && off0 == 0);
+        Assert.True(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryGetHeaderInt64(rh, "file_size"u8, out var fs) && fs == total);
+        Assert.False(PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteInstagramRuploadHead("../x", "t", total, buf, out _));
+        using (var content = PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.CreateRuploadContent(got.Video))
+        {
+            Assert.Equal(total.ToString(System.Globalization.CultureInfo.InvariantCulture), content.Headers.GetValues("file_size").Single());
+            using var ms = new MemoryStream();
+            content.ReadAsStream().CopyTo(ms);
+            Assert.True(ms.ToArray().AsSpan().SequenceEqual(o.Output.Span));
+        }
+
+        // ⑤ 페이로드 조립 핫패스 0 B(워밍업 후 50 회)
+        var hdr = new byte[16 * 1024];
+        PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteInstagramRuploadHead("17890000000000001", "igtok", total, hdr, out var rn);
+        before = GC.GetAllocatedBytesForCurrentThread();
+        var allOk = true;
+        for (var i = 0; i < 50; i++)
+        {
+            allOk &= PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteYouTubeResumableInit(got, "private", "tok", buf, out _, out _);
+            allOk &= PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteYouTubeChunkHead("/upload/youtube/v3/videos?upload_id=xyz", 0, chunk, total, buf, out _);
+            allOk &= PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteYouTubeMultipartPrefix(got, "private", "pf_b0undary", buf, out _);
+            allOk &= PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteMultipartSuffix("pf_b0undary", suf, out _);
+            allOk &= PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteInstagramReelsContainerForm(got, default, true, buf, out _);
+            allOk &= PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryWriteInstagramRuploadHead("17890000000000001", "igtok", total, buf, out _);
+            allOk &= PromptFlowStudio.Services.SocialMedia.ProductionSocialUploadPayloadBuilder.TryGetHeaderInt64(hdr.AsSpan(0, rn), "file_size"u8, out _);
+        }
+        long buildAlloc = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.True(allOk);
+        Assert.Equal(0, buildAlloc);
+
+        // ⑥ 링 상한 · 구독자 예외 격리 · 재렌더 → 낡은 버퍼 거부
+        bridge.OnHandoff += () => throw new InvalidOperationException("구독자 결함");
+        for (var i = 0; i < PromptFlowStudio.Services.Ui.ShortsToPublisherHandoffBridge.Capacity + 1; i++) Assert.True(bridge.Push(r, title, tags));
+        Assert.Equal(PromptFlowStudio.Services.Ui.ShortsToPublisherHandoffBridge.Capacity, bridge.Pending);
+        Assert.Equal(1, bridge.Dropped);
+        Assert.True(bridge.Hydrate());
+        Assert.Equal(0, bridge.Pending);
+        Assert.Equal(2 + PromptFlowStudio.Services.Ui.ShortsToPublisherHandoffBridge.Capacity + 1, bridge.Current.Sequence);
+        Assert.True(o.Render(p), o.LastError);
+        Assert.False(r.IsLive, "재렌더 → 이전 스냅샷 무효");
+        Assert.False(bridge.Current.Render.IsLive);
+        Assert.False(bridge.Push(r, title, tags));
+        Assert.Equal(1, bridge.Rejected);
+        Assert.True(bridge.Push(PromptFlowStudio.Services.Ui.ShortsRenderResult.Capture(o, ws), title, tags));
+        bridge.Clear();
+        Assert.False(bridge.HasCurrent);
+        Assert.Equal(0, bridge.VariantASequence);
+    }
+}

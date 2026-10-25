@@ -505,7 +505,7 @@
         @* v18.0.0 슈퍼-워크스페이스 — 소셜 3 대 통합 모달(엔진 모달은 하위 탭 주입) + 그 외 29 워크스페이스는 열린 엔진 모달 위 상단 독. *@
         @if (_shortsStudioWorkspace)
         {
-            <ShortsStudioWorkspaceModal OnClose="() => _shortsStudioWorkspace = false" InitialTab="_wsRoute.Tab" InitialMember="_wsRoute.Member" RouteStamp="_wsStamp" OnRouteChanged="r => _wsRoute = r" />
+            <ShortsStudioWorkspaceModal OnClose="() => _shortsStudioWorkspace = false" OnHandoffToPublisher="OpenPublisherFromShorts" InitialTab="_wsRoute.Tab" InitialMember="_wsRoute.Member" RouteStamp="_wsStamp" OnRouteChanged="r => _wsRoute = r" />
         }
         @if (_socialPublisherWorkspace)
         {
@@ -1156,6 +1156,9 @@
         _wsStamp++;
         SetStudio(mk, true);
     }
+
+    /// <summary>v18.0.4 숏폼 팩토리 🚀 전송 — 소셜 퍼블리셔 ② 다채널 변형 배포 탭으로 진입(인계 페이로드는 퍼블리셔 모달이 브리지에서 수화).</summary>
+    private void OpenPublisherFromShorts() => OpenRoute(new WorkspaceSubTabRoute(StudioWorkspaceCatalog.IndexOfModal(StudioWorkspaceCatalog.PublisherModalKey), PromptFlowStudio.Services.Ui.ShortsToPublisherHandoffBridge.PublisherDeployTab, 0));
 
     private void CloseWorkspaceModals(string? keep)
     {
