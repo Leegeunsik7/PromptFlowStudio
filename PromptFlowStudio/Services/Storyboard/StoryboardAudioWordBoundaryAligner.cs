@@ -4,7 +4,7 @@ using System.Buffers.Text;
 namespace PromptFlowStudio.Services.Storyboard;
 
 /// <summary>[v18.2.1] 샷 타임코드 출처 — 음절 추정(폴백) · PCM 음성 구간(VAD) · TTS 단어 경계.</summary>
-public enum AudioAlignmentSource : byte { SyllableEstimate, PcmVoiceActivity, TtsWordBoundary }
+public enum AudioAlignmentSource : byte { SyllableEstimate, PcmVoiceActivity, TtsWordBoundary, AudioDurationScale }
 
 /// <summary>[v18.2.1] PCM 음성 구간 1 개 [StartMs, EndMs) — 250 ms 미만 쉼은 구간 안으로 병합.</summary>
 public struct AudioVoiceSegment
@@ -131,10 +131,9 @@ public static class StoryboardAudioWordBoundaryAligner
     /// 오디오 버퍼(WAV 또는 원시 PCM 16-bit 모노 @ <paramref name="sampleRate"/>) 로 샷 타임코드 정렬. 비었거나 음성 0 이면 폴백(샷 불변).
     /// </summary>
     public static AudioAlignmentSource AlignToAudio(Span<StoryboardShot> shots, ReadOnlySpan<byte> audio, Span<AudioVoiceSegment> scratch,
-                                                    int sampleRate = DefaultSampleRate, int threshold = DefaultThreshold)
+                                                    int sampleRate = DefaultSampleRate, int threshold = DefaultThreshold, int channels = 1)
     {
         if (shots.IsEmpty || audio.IsEmpty) return AudioAlignmentSource.SyllableEstimate;
-        var channels = 1;
         if (audio.Length >= 4 && audio[..4].SequenceEqual("RIFF"u8) && !TryReadWav(audio, out audio, out sampleRate, out channels))
             return AudioAlignmentSource.SyllableEstimate;
         var m = DetectVoice(audio, sampleRate, channels, scratch, out var totalMs, threshold);

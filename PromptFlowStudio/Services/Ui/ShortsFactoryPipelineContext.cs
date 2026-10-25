@@ -202,6 +202,19 @@ public sealed class ShortsFactoryPipelineContext
 
     /// <summary>[v18.2.1] 스토리보드 전체 샷 9:16 크롭 트랙(시퀀서 트래커 버퍼 공유 · 0-카피) — 비어 있으면 단일 중심 리프레임.</summary>
     public ReadOnlyMemory<PromptFlowStudio.Services.Storyboard.ShotCropKeyframe> ShotCropTrack { get; private set; }
+    /// <summary>[v18.2.2] 스토리보드 실 오디오(바인더 버퍼 공유 · 0-카피) — 비어 있지 않으면 ② 자막 시작 · ③ 리텐션 PCM · ④ 내레이션 트랙이 소비.</summary>
+    public PromptFlowStudio.Services.Storyboard.StoryboardAudioTrack SourceAudio { get; private set; }
+    public bool HasSourceAudio => !SourceAudio.IsEmpty && SourceAudio.IsLive;
+
+    /// <summary>[v18.2.2] ② 자막 시작(원본 ms) — 실 오디오가 있으면 절삭 시작 이후 첫 샷(실측 발화 시작) · 없으면 -1(기존 단어 슬롯 시각).</summary>
+    public int SpeechOnsetMs(int inMs)
+    {
+        if (!HasSourceAudio) return -1;
+        foreach (ref readonly var k in StoryboardShots.Span)
+            if (k.StartMs >= inMs) return k.StartMs;
+        return -1;
+    }
+
     /// <summary>[v18.2.1] 마지막 <see cref="ReframeAt"/> 활성 샷 인덱스(-1 = 트랙 없음).</summary>
     public int ActiveShotIndex { get; private set; } = -1;
 
@@ -221,6 +234,7 @@ public sealed class ShortsFactoryPipelineContext
         if (seq.IsEmpty || !seq.IsLive) return false;
         StoryboardShots = seq.Keyframes;
         ShotCropTrack = seq.CropTrack;
+        SourceAudio = seq.Audio;
         ActiveShotIndex = seq.CropTrack.IsEmpty ? -1 : 0;
         SetPlanScript(seq.Script.ToString());
         ws.SetClip(0, seq.ClipLengthMs);

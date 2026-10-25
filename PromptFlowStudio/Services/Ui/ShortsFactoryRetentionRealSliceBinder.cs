@@ -136,14 +136,7 @@ public sealed class ShortsFactoryRetentionRealSliceBinder
     {
         if (Status != SliceBindStatus.Bound) return Status;
         var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-
-        var secs = _durMs / 1000;
-        for (var i = 0; i <= secs; i++) _curve[i] = ShortsFactoryPipelineContext.RetentionAt(_inMs + i * 1000) / 1000f;
-        Detector.Analyze(_curve.AsSpan(0, secs + 1));
-
-        var n = _durMs * (Fs / 1000);
-        var s0 = (long)_inMs * (Fs / 1000);
-        BgmGain = bgmSafe && bgm.Length > 0 ? DuckGain : 0f;
+        var n = BeginRetention(bgm, bgmSafe, out var s0);
         for (var i = 0; i < n; i++)
         {
             var at = s0 + i;
@@ -151,7 +144,46 @@ public sealed class ShortsFactoryRetentionRealSliceBinder
             if (BgmGain > 0f) v += bgm[(int)(at % bgm.Length)] * (BgmGain / 32768f);
             _pcm[i] = v;
         }
+        return FinishRetention(punchSrcMs, t0, n);
+    }
 
+    /// <summary>
+    /// [v18.2.2] ③ 리텐션 — 스토리보드 실 오디오(PCM 16-bit LE 인터리브 · 임의 레이트/채널 · 0 = 링 원점)를 복사 없이 48 kHz 모노 최근접 샘플링으로 소비(무할당).
+    /// </summary>
+    public SliceBindStatus ApplyRetention(ReadOnlySpan<byte> pcm16, int sampleRate, int channels, ReadOnlySpan<short> bgm, ReadOnlySpan<int> punchSrcMs, bool bgmSafe)
+    {
+        if (Status != SliceBindStatus.Bound) return Status;
+        var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+        var n = BeginRetention(bgm, bgmSafe, out var s0);
+        for (var i = 0; i < n; i++)
+        {
+            var at = s0 + i;
+            var v = PromptFlowStudio.Services.Storyboard.StoryboardAudioTrack.SampleAt(pcm16, sampleRate, channels, Fs, at);
+            if (BgmGain > 0f) v += bgm[(int)(at % bgm.Length)] * (BgmGain / 32768f);
+            _pcm[i] = v;
+        }
+        ExternalAudioBinds++;
+        return FinishRetention(punchSrcMs, t0, n);
+    }
+
+    /// <summary>[v18.2.2] 실 오디오 PCM 으로 ③ 을 수행한 횟수.</summary>
+    public long ExternalAudioBinds { get; private set; }
+
+    /// <summary>[v18.2.2] 리텐션 출력 PCM(48 kHz 모노 · 바인더 버퍼 공유) — ④ 내레이션 트랙 입력.</summary>
+    public ReadOnlyMemory<float> OutputPcmMemory => _out.AsMemory(0, OutSamples);
+
+    private int BeginRetention(ReadOnlySpan<short> bgm, bool bgmSafe, out long s0)
+    {
+        var secs = _durMs / 1000;
+        for (var i = 0; i <= secs; i++) _curve[i] = ShortsFactoryPipelineContext.RetentionAt(_inMs + i * 1000) / 1000f;
+        Detector.Analyze(_curve.AsSpan(0, secs + 1));
+        s0 = (long)_inMs * (Fs / 1000);
+        BgmGain = bgmSafe && bgm.Length > 0 ? DuckGain : 0f;
+        return _durMs * (Fs / 1000);
+    }
+
+    private SliceBindStatus FinishRetention(ReadOnlySpan<int> punchSrcMs, long t0, int n)
+    {
         var pn = 0;
         foreach (var p in punchSrcMs)
             if (pn < _punchRel.Length && p >= _inMs && p < _inMs + _durMs) _punchRel[pn++] = p - _inMs;

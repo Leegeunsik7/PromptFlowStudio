@@ -17,19 +17,22 @@ public readonly struct StoryboardShortsSequence
     /// <summary>[v18.2.1] 전체 샷 9:16 크롭 트랙(시퀀서 트래커 버퍼 공유 · 0-카피) · 타임코드 출처.</summary>
     public readonly ReadOnlyMemory<ShotCropKeyframe> CropTrack;
     public readonly AudioAlignmentSource Alignment;
+    /// <summary>[v18.2.2] 실 오디오(바인더 버퍼 공유 · 0-카피) — 비어 있으면 팩토리는 기존 소스 PCM 사용.</summary>
+    public readonly StoryboardAudioTrack Audio;
 
     public StoryboardShortsSequence(ReadOnlyMemory<StoryboardKeyframe> keyframes, ReadOnlyMemory<char> script, int totalMs, int revision,
                                     ulong fingerprint, long sequence, StoryboardKeyframeSequencer? owner,
-                                    ReadOnlyMemory<ShotCropKeyframe> cropTrack = default, AudioAlignmentSource alignment = AudioAlignmentSource.SyllableEstimate)
+                                    ReadOnlyMemory<ShotCropKeyframe> cropTrack = default, AudioAlignmentSource alignment = AudioAlignmentSource.SyllableEstimate,
+                                    StoryboardAudioTrack audio = default)
     {
         Keyframes = keyframes; Script = script; TotalMs = totalMs; Revision = revision;
         Fingerprint = fingerprint; Sequence = sequence; Owner = owner;
-        CropTrack = cropTrack; Alignment = alignment;
+        CropTrack = cropTrack; Alignment = alignment; Audio = audio;
     }
 
     public bool IsEmpty => Sequence == 0;
-    /// <summary>공유 버퍼가 아직 캡처 시점 시퀀스인지(소유자 없는 외부 버퍼는 항상 true).</summary>
-    public bool IsLive => !Keyframes.IsEmpty && (Owner is null || Owner.Revision == Revision);
+    /// <summary>공유 버퍼(샷 · 오디오)가 아직 캡처 시점인지(소유자 없는 외부 버퍼는 항상 true).</summary>
+    public bool IsLive => !Keyframes.IsEmpty && (Owner is null || Owner.Revision == Revision) && Audio.IsLive;
     /// <summary>현재 내용의 지문 — 캡처 시 <see cref="Fingerprint"/> 와 같으면 단절 0.</summary>
     public ulong ComputeFingerprint() => StoryboardKeyframeSequencer.Hash(Keyframes.Span, Script.Span);
     /// <summary>① 절삭 길이 — 시퀀스 총 길이를 팩토리 클립 범위(3~60 s)로 클램프.</summary>
@@ -63,12 +66,15 @@ public sealed class StoryboardToShortsFactoryBridge
     public long Rejected => Interlocked.Read(ref _rejected);
 
     /// <summary>샷이 1 개 이상인 시퀀스만 인계(대기 중인 이전 시퀀스는 덮어씀). 성공 시 통지.</summary>
-    public bool Push(StoryboardKeyframeSequencer seq)
+    public bool Push(StoryboardKeyframeSequencer seq) => Push(seq, default);
+
+    /// <summary>[v18.2.2] 샷 시퀀스 + 실 오디오 트랙 동시 인계(오디오는 바인더 버퍼 0-카피 · 낡은 오디오 거부).</summary>
+    public bool Push(StoryboardKeyframeSequencer seq, in StoryboardAudioTrack audio)
     {
-        if (seq.Count == 0) { Interlocked.Increment(ref _rejected); return false; }
+        if (seq.Count == 0 || !audio.IsLive) { Interlocked.Increment(ref _rejected); return false; }
         lock (_gate)
         {
-            _pending = new StoryboardShortsSequence(seq.KeyframeMemory, seq.ScriptMemory, seq.TotalMs, seq.Revision, seq.Fingerprint, ++_seq, seq, seq.CropTrackMemory, seq.Alignment);
+            _pending = new StoryboardShortsSequence(seq.KeyframeMemory, seq.ScriptMemory, seq.TotalMs, seq.Revision, seq.Fingerprint, ++_seq, seq, seq.CropTrackMemory, seq.Alignment, audio);
             _handoffs++;
         }
         try { OnHandoff?.Invoke(); }

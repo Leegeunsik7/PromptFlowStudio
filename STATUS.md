@@ -1,15 +1,15 @@
 # Current Project Status
-- Active Milestone: v18.2.1 완료 (StoryV 오디오 단어 경계 정렬 & 다중 샷 다이내믹 리프레임)
+- Active Milestone: v18.2.2 완료 (StoryV 실기 오디오 스트림 실결선 & 팩토리 관통)
 - Build Status: Desktop · net8.0-ios · Tests 3 종 Release -warnaserror 0/0 · net8.0-android 미검증(SDK/JDK 미설치)
-- Test Suite: 저메모리 단일 스레드(MaxCpuCount=1 · DisableParallelization) 534/534 1 회 완주 통과(실패 0 · 건너뜀 0 · 단독 재실행 0 · 9 분 1 초)
+- Test Suite: 저메모리 단일 스레드(MaxCpuCount=1 · DisableParallelization) 535/535 1 회 완주 통과(실패 0 · 건너뜀 0 · 단독 재실행 0 · 11 분 31 초)
 - Sidebar: 6 그룹 · 32 워크스페이스 유지(신규 모달 0)
 - Updated At: 2026-10-25 (KST)
 
 ## Completed Deliverables
-- ALN-1: `Services/Storyboard/StoryboardAudioWordBoundaryAligner.cs` — WAV RIFF/원시 PCM 16-bit 1 ms 프레임 VAD · 250 ms 이상 무음 = 경계 후보 · 누적 음절 비율 위치 → 무음 뒤 발화 시작 단조 스냅(1 ms) · TTS 단어 경계(UTF-8 "start,end,word") 순번 매핑 · 오디오 없음/무음성 = 음절 추정 폴백 · 시퀀서 `LoadWithAudio`/`LoadWithWordBoundaries`(0 B)
-- ALN-2: `Services/Storyboard/MultiShotDynamicReframeTracker.cs` — `ShotCropKeyframe` 시계열 고정 배열 · 이진 탐색 `IndexAt`/`TryQuery`(0 B · 클램프) · 브리지 시퀀스 `CropTrack` 0-카피 → `ShortsFactoryPipelineContext.ShotCropTrack`/`ReframeAt`
-- ALN-3: 숏폼 팩토리 ① 샷 마커 룰러(S1…) · 재생 위치 슬라이더/시작 슬라이더 → 활성 샷 9:16 크롭 자동 전환 · 마커 클릭 = 절삭 시작 스냅
-- ALN-4: `Storyboard_AudioAlignment_And_MultiShotReframe_Check` — PCM/WAV 경계 정확도 · TTS 매핑 · 폴백 · 이진 탐색=선형 · 무할당 · 팩토리 관통 / `ContinuousEvolution_And_GlobalOperations_Check` 단일 CPU 리더 미기동 경합 수정
+- AUD-1: `Services/Storyboard/StoryboardAudioSourceStreamBinder.cs` — WAV RIFF/원시 PCM 16-bit 소유 버퍼 바인딩(용량 내 0 B) · 레이트/채널/길이 · TTS 단어 경계 → VAD → 실측 길이 비례 순 `Resync`(오디오 바인딩 시 음절 추정 배제) · `StoryboardAudioTrack` 0-카피 스냅샷/낡은 버퍼 차단
+- AUD-2: 브리지 `Push(seq, audio)` → `ShortsFactoryPipelineContext.SourceAudio` 0-카피 · ② 자막 시작 = 실측 발화 · ③ `ApplyRetention(pcm16, rate, ch, …)` 48 kHz 최근접 무할당 소비 · ④ fMP4 ipcm 트랙 내레이션 합성(`NarrationSamples`) · 낡은 오디오 = 기존 소스 PCM 폴백
+- AUD-3: 스토리보드 툴바 🎙️ 오디오 파일 불러오기(WAV/PCM/단어 경계 CSV) · 포맷/길이/샘플레이트/정렬 출처 배지 · 샷 인스펙터 즉시 실측 리프레시 · 🎬 전송 시 오디오 동반
+- AUD-4: `Storyboard_RealAudioBinding_And_FactoryPassthrough_Check` — WAV 파싱 · 실측 재동기화 0 B · 0-카피 관통 · ②~④ 렌더 소비 · 낡은 오디오 폴백
 
 ## Known Issues / 환경 노트
-- 실 TTS 엔진 단어 경계 스트림 결선 미완(파서·정렬기만 · UI 오디오 입력 경로 미결선) · 실 플랫폼 업로드 엔드포인트 미검증(Mock 경로만) · Android 빌드 미검증
+- 압축 오디오(MP3/AAC) 디코딩 미지원(Pure BCL · WAV PCM 16-bit 만) · 실 TTS 엔진 단어 경계 자동 수신 미결선(CSV 수동 로드) · 실 플랫폼 업로드 엔드포인트 미검증 · Android 빌드 미검증

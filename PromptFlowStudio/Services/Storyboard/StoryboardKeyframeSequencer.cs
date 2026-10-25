@@ -64,10 +64,22 @@ public sealed class StoryboardKeyframeSequencer
     }
 
     /// <summary>[v18.2.1] 대본 + 오디오(WAV 또는 원시 PCM 16-bit 모노) → 무음 경계 스냅 타임코드. 오디오가 비거나 음성 0 이면 음절 추정 폴백(용량 내 0 B).</summary>
-    public int LoadWithAudio(ReadOnlySpan<char> script, ReadOnlySpan<byte> audio, int sampleRate = StoryboardAudioWordBoundaryAligner.DefaultSampleRate)
+    public int LoadWithAudio(ReadOnlySpan<char> script, ReadOnlySpan<byte> audio, int sampleRate = StoryboardAudioWordBoundaryAligner.DefaultSampleRate, int channels = 1)
     {
         var n = Split(script, StoryboardShotBreakdownEngine.DefaultSyllableMs);
-        Alignment = StoryboardAudioWordBoundaryAligner.AlignToAudio(_shots.AsSpan(0, n), audio, _voice, sampleRate);
+        Alignment = StoryboardAudioWordBoundaryAligner.AlignToAudio(_shots.AsSpan(0, n), audio, _voice, sampleRate, StoryboardAudioWordBoundaryAligner.DefaultThreshold, channels);
+        return Sequence(_shots.AsSpan(0, n));
+    }
+
+    /// <summary>[v18.2.2] 대본 + 실측 오디오 길이(음성 미검출 오디오) → 음절 비율로 [0, <paramref name="totalMs"/>) 를 분배(음절 템포 추정 배제 · 0 B).</summary>
+    public int LoadWithDuration(ReadOnlySpan<char> script, int totalMs)
+    {
+        var n = Split(script, StoryboardShotBreakdownEngine.DefaultSyllableMs);
+        Span<AudioVoiceSegment> whole = stackalloc AudioVoiceSegment[1];
+        whole[0].StartMs = 0;
+        whole[0].EndMs = Math.Max(1, totalMs);
+        Alignment = StoryboardAudioWordBoundaryAligner.AlignToVoice(_shots.AsSpan(0, n), whole, totalMs) == AudioAlignmentSource.SyllableEstimate
+            ? AudioAlignmentSource.SyllableEstimate : AudioAlignmentSource.AudioDurationScale;
         return Sequence(_shots.AsSpan(0, n));
     }
 

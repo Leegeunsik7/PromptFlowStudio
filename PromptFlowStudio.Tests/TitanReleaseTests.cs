@@ -39521,7 +39521,7 @@ public sealed class StoryboardAudioAlignmentReframeTests
     private const string Script = "안녕하세요. 오늘은 AI로 숏폼을 만드는 비밀을 알려드릴게요, 끝까지 보시면 반전이 있습니다! 준비되셨나요?";
 
     /// <summary>1 ms 프레임 단위 PCM 16-bit 합성 — 음성 = ±3000 구형파 · 무음 = ±80 잡음(샘플 경계 = f × rate / 1000).</summary>
-    private static byte[] SynthPcm(int sampleRate, int channels, int totalMs, (int Start, int End)[] voiced)
+    internal static byte[] SynthPcm(int sampleRate, int channels, int totalMs, (int Start, int End)[] voiced)
     {
         var frames = (int)((long)totalMs * sampleRate / 1000);
         var pcm = new byte[frames * channels * 2];
@@ -39540,7 +39540,7 @@ public sealed class StoryboardAudioAlignmentReframeTests
         return pcm;
     }
 
-    private static byte[] Wav(byte[] pcm, int sampleRate, int channels)
+    internal static byte[] Wav(byte[] pcm, int sampleRate, int channels)
     {
         var w = new byte[44 + pcm.Length];
         var s = w.AsSpan();
@@ -39716,5 +39716,130 @@ public sealed class StoryboardAudioAlignmentReframeTests
         Assert.Equal(1, seq.Load("새 대본입니다."));
         Assert.False(handed.IsLive);
         Assert.False(p.ApplyStoryboard(handed, ws));
+    }
+}
+
+/// <summary>v18.2.2: StoryV 실기 오디오 — WAV 헤더 파싱 · 실측 샷 재동기화(음절 추정 배제) 무할당 · 스토리보드 → 숏폼 팩토리 오디오 0-카피 관통 · ②~④ 렌더 소비.</summary>
+[Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
+public sealed class StoryboardRealAudioPassthroughTests
+{
+    private const string Script = "안녕하세요. 오늘은 AI로 숏폼을 만드는 비밀을 알려드릴게요, 끝까지 보시면 반전이 있습니다! 준비되셨나요?";
+    private static readonly (int, int)[] Voiced = { (100, 900), (1_300, 4_500), (4_900, 7_000), (7_350, 8_400) };
+
+    [Fact]
+    public void Storyboard_RealAudioBinding_And_FactoryPassthrough_Check()
+    {
+        // ① WAV 헤더 파싱 — 48 kHz 모노 9 s · data 청크 = 바인더 버퍼 슬라이스(복사 0)
+        var wav = StoryboardAudioAlignmentReframeTests.Wav(StoryboardAudioAlignmentReframeTests.SynthPcm(48_000, 1, 9_000, Voiced), 48_000, 1);
+        var audio = new SB.StoryboardAudioSourceStreamBinder();
+        Assert.False(audio.HasAudio);
+        Assert.True(audio.Track.IsEmpty);
+        Assert.Equal(SB.AudioBindStatus.Bound, audio.Bind(wav, name: "voice.wav"));
+        Assert.Equal((SB.AudioContainer.Wav, 48_000, 1, 9_000), (audio.Container, audio.SampleRate, audio.Channels, audio.DurationMs));
+        Assert.Equal(wav.Length - 44, audio.Pcm.Length);
+        Assert.True(audio.Pcm.SequenceEqual(wav.AsSpan(44)));
+        Assert.True(audio.Track.Pcm.Span == audio.Pcm, "트랙 = 바인더 data 슬라이스");
+        Assert.Equal(SB.AudioBindStatus.Unsupported, new SB.StoryboardAudioSourceStreamBinder().Bind("RIFF\0\0\0\0WAVEjunk"u8));
+        Assert.Equal(SB.AudioBindStatus.Empty, new SB.StoryboardAudioSourceStreamBinder().Bind(ReadOnlySpan<byte>.Empty));
+        var raw = new SB.StoryboardAudioSourceStreamBinder();
+        Assert.Equal(SB.AudioBindStatus.Bound, raw.Bind(StoryboardAudioAlignmentReframeTests.SynthPcm(16_000, 2, 2_000, Voiced), 16_000, 2));
+        Assert.Equal((SB.AudioContainer.RawPcm16, 16_000, 2, 2_000), (raw.Container, raw.SampleRate, raw.Channels, raw.DurationMs));
+        Assert.Equal(3000f / 32768f, SB.StoryboardAudioTrack.SampleAt(raw.Pcm, 16_000, 2, 48_000, 300 * 48), 5);   // 300 ms 유성 · 스테레오 평균
+        Assert.Equal(0f, SB.StoryboardAudioTrack.SampleAt(raw.Pcm, 16_000, 2, 48_000, 48_000 * 3));                 // 범위 밖
+
+        // ② 실측 재동기화 — 음절 추정 배제(VAD · 무음 오디오 = 실측 길이 비례 · TTS 단어 경계 우선)
+        var seq = new SB.StoryboardKeyframeSequencer();
+        Assert.Equal(SB.AudioAlignmentSource.PcmVoiceActivity, audio.Resync(seq, Script));
+        var k = seq.Keyframes.ToArray();
+        Assert.Equal((100, 1_300, 4_900, 7_350, 9_000), (k[0].StartMs, k[1].StartMs, k[2].StartMs, k[3].StartMs, k[3].EndMs));
+        var est = new SB.StoryboardKeyframeSequencer();
+        Assert.Equal(SB.AudioAlignmentSource.SyllableEstimate, new SB.StoryboardAudioSourceStreamBinder().Resync(est, Script));   // 오디오 없음 = 추정(유일)
+        Assert.NotEqual(est.Fingerprint, seq.Fingerprint);
+        var silent = new SB.StoryboardAudioSourceStreamBinder();
+        silent.Bind(StoryboardAudioAlignmentReframeTests.Wav(StoryboardAudioAlignmentReframeTests.SynthPcm(48_000, 1, 6_000, Array.Empty<(int, int)>()), 48_000, 1));
+        var sseq = new SB.StoryboardKeyframeSequencer();
+        Assert.Equal(SB.AudioAlignmentSource.AudioDurationScale, silent.Resync(sseq, Script));
+        Assert.Equal((0, 6_000), (sseq.KeyframeAt(0).StartMs, sseq.TotalMs));
+        var words = System.Text.Encoding.UTF8.GetBytes("50,700,안녕하세요\n1100,1400,오늘은\n1400,1700,AI로\n1700,2000,숏폼을\n2000,2300,만드는\n2300,2600,비밀을\n" +
+                                                       "2600,3300,알려드릴게요\n3700,4100,끝까지\n4100,4500,보시면\n4500,4900,반전이\n4900,5600,있습니다\n6000,6900,준비되셨나요");
+        var tts = new SB.StoryboardAudioSourceStreamBinder();
+        tts.Bind(wav);
+        Assert.Equal(12, tts.BindWordBoundaries(words));
+        var tseq = new SB.StoryboardKeyframeSequencer();
+        Assert.Equal(SB.AudioAlignmentSource.TtsWordBoundary, tts.Resync(tseq, Script));
+        Assert.Equal((50, 1_100, 3_700, 6_000), (tseq.KeyframeAt(0).StartMs, tseq.KeyframeAt(1).StartMs, tseq.KeyframeAt(2).StartMs, tseq.KeyframeAt(3).StartMs));
+        Assert.Equal(0, tts.BindWordBoundaries("no,boundaries"u8));
+        Assert.Equal(SB.AudioAlignmentSource.PcmVoiceActivity, tts.Resync(tseq, Script));
+
+        // ③ 무할당 — 수신(용량 내 재바인딩) · 실측 재동기화 0 B
+        var fp = seq.Fingerprint;
+        var rawPcm = StoryboardAudioAlignmentReframeTests.SynthPcm(16_000, 2, 2_000, Voiced);
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        var all = true;
+        for (var i = 0; i < 16; i++)
+        {
+            all &= audio.Bind(wav) == SB.AudioBindStatus.Bound;
+            all &= audio.Resync(seq, Script) == SB.AudioAlignmentSource.PcmVoiceActivity && seq.Fingerprint == fp;
+            all &= raw.Bind(rawPcm, 16_000, 2) == SB.AudioBindStatus.Bound;
+        }
+        long hotAlloc = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.True(all);
+        Assert.Equal(0, hotAlloc);
+
+        // ④ 스토리보드 → 숏폼 팩토리 오디오 0-카피 관통
+        var bridge = new PromptFlowStudio.Services.Ui.StoryboardToShortsFactoryBridge();
+        Assert.Equal(32, WsCat.Workspaces.Length);   // 신규 모달 0 — 32 워크스페이스 유지
+        Assert.True(bridge.Push(seq, audio.Track));
+        Assert.True(bridge.TryConsume(out var handed));
+        Assert.True(handed.Audio.Pcm.Span == audio.Pcm, "인계 오디오 = 바인더 버퍼 슬라이스");
+        Assert.Equal((48_000, 1, 9_000), (handed.Audio.SampleRate, handed.Audio.Channels, handed.Audio.DurationMs));
+        var ws = new PromptFlowStudio.Services.Ui.ShortsFactoryWorkspaceContext();
+        var p = new PromptFlowStudio.Services.Ui.ShortsFactoryPipelineContext();
+        Assert.True(p.ApplyStoryboard(handed, ws));
+        Assert.True(p.HasSourceAudio);
+        Assert.True(p.SourceAudio.Pcm.Span == audio.Pcm, "파이프라인 SourceAudio = 바인더 버퍼(0-카피)");
+        Assert.Equal((0, 9_000), (ws.ClipInMs, ws.ClipOutMs));
+        Assert.Equal(100, p.SpeechOnsetMs(0));
+        Assert.Equal(4_900, p.SpeechOnsetMs(2_000));
+
+        // ②~④ 렌더 소비 — ② 자막 시작 = 실측 발화 · ③ 리텐션 PCM = 실 오디오 · ④ fMP4 ipcm 내레이션 트랙
+        var o = new PromptFlowStudio.Services.Ui.ShortsFactoryOneClickRenderOrchestrator();
+        Assert.True(o.Render(p), o.LastError);
+        Assert.True(o.LastUsedStoryboardAudio);
+        var b = o.Binder;
+        Assert.Equal(1, b.ExternalAudioBinds);
+        Assert.Equal(b.ReEditor.OutMsAt(100), o.CaptionStartOutMs);
+        Assert.Equal(PromptFlowStudio.Services.ViralExport.ExportStatus.Ready, o.LastExport.Status);
+        Assert.True(o.LastExport.SfxSamples > 0);
+        Assert.Equal(Math.Min(b.OutSamples, o.LastExport.SfxSamples * PromptFlowStudio.Services.ViralExport.FastShortsMuxingHardwareExporterEngine.SfxFrames), o.LastExport.NarrationSamples);
+        var realOut = b.OutputPcm.ToArray();   // ③ 출력 = 실 오디오 기반(아래 폴백 렌더와 달라야 함)
+        Assert.True(realOut.Length > 0);
+        Assert.True(o.Output.Span.IndexOf("ipcm"u8) >= 0, "④ fMP4 ipcm 내레이션 트랙");
+
+        // ③ 실 오디오 리텐션 핫패스 무할당
+        var trim = p.Trim;
+        var punches = p.PunchTimecodesMs.ToArray();
+        var src = p.SourceAudio;
+        b.Slice(o.Source, trim, o.SourceOriginUs);
+        b.ApplyRetention(src.Pcm.Span, src.SampleRate, src.Channels, o.BgmBed.Span, punches, true);
+        var a0 = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 3; i++)
+        {
+            b.Slice(o.Source, trim, o.SourceOriginUs);
+            b.ApplyRetention(src.Pcm.Span, src.SampleRate, src.Channels, o.BgmBed.Span, punches, true);
+        }
+        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - a0);
+        Assert.Equal(PromptFlowStudio.Services.Ui.SliceBindStatus.Bound, b.Status);
+
+        // 낡은 오디오 — 재바인딩 후 인계/소비 거부 · 렌더는 기존 소스 PCM 폴백
+        audio.Bind(rawPcm, 16_000, 2);
+        Assert.False(handed.IsLive);
+        Assert.False(p.HasSourceAudio);
+        Assert.False(bridge.Push(seq, handed.Audio));
+        Assert.True(o.Render(p), o.LastError);
+        Assert.False(o.LastUsedStoryboardAudio);
+        Assert.Equal(0, o.LastExport.NarrationSamples);
+        Assert.Equal(5, b.ExternalAudioBinds);   // 렌더 1 + 핫패스 프로브 4 — 폴백 렌더는 실 오디오 경로 미사용
+        Assert.False(realOut.AsSpan().SequenceEqual(b.OutputPcm), "실 오디오 ③ 출력 ≠ 리허설 PCM ③ 출력");
     }
 }

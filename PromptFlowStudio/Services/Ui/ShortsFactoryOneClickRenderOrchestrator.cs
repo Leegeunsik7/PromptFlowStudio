@@ -138,7 +138,9 @@ public sealed class ShortsFactoryOneClickRenderOrchestrator
             var m = p.Manifest;
             var punches = Snapshot(p);
             var script = p.BuildSlicedScript();
-            return await Task.Run(() => RenderCore(m, punches, script, ct), CancellationToken.None).ConfigureAwait(false);
+            var audio = AudioOf(p);
+            var onset = p.SpeechOnsetMs((int)(m.Trim.Start.Ticks / TimeSpan.TicksPerMillisecond));
+            return await Task.Run(() => RenderCore(m, punches, script, audio, onset, ct), CancellationToken.None).ConfigureAwait(false);
         }
         finally { Volatile.Write(ref _busy, 0); Notify(); }
     }
@@ -147,7 +149,7 @@ public sealed class ShortsFactoryOneClickRenderOrchestrator
     public bool Render(ShortsFactoryPipelineContext p, CancellationToken ct = default)
     {
         if (Interlocked.CompareExchange(ref _busy, 1, 0) != 0) return false;
-        try { return RenderCore(p.Manifest, Snapshot(p), p.BuildSlicedScript(), ct); }
+        try { return RenderCore(p.Manifest, Snapshot(p), p.BuildSlicedScript(), AudioOf(p), p.SpeechOnsetMs((int)(p.Trim.Start.Ticks / TimeSpan.TicksPerMillisecond)), ct); }
         finally { Volatile.Write(ref _busy, 0); }
     }
 
@@ -159,8 +161,15 @@ public sealed class ShortsFactoryOneClickRenderOrchestrator
         return n;
     }
 
-    private bool RenderCore(ExportManifest m, int punches, string script, CancellationToken ct)
+    /// <summary>[v18.2.2] 스토리보드 실 오디오 스냅샷(낡은 버퍼 = 빈 트랙 → 기존 소스 PCM).</summary>
+    private static PromptFlowStudio.Services.Storyboard.StoryboardAudioTrack AudioOf(ShortsFactoryPipelineContext p) => p.HasSourceAudio ? p.SourceAudio : default;
+
+    /// <summary>[v18.2.2] 마지막 렌더가 스토리보드 실 오디오를 ②~④ 에 소비했는지.</summary>
+    public bool LastUsedStoryboardAudio { get; private set; }
+
+    private bool RenderCore(ExportManifest m, int punches, string script, PromptFlowStudio.Services.Storyboard.StoryboardAudioTrack audio, int onsetMs, CancellationToken ct)
     {
+        LastUsedStoryboardAudio = false;
         var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         LastError = null;
         try
@@ -178,7 +187,8 @@ public sealed class ShortsFactoryOneClickRenderOrchestrator
             Report(OneClickRenderStage.Caption, 0);
             var inMs = (int)(m.Trim.Start.Ticks / TimeSpan.TicksPerMillisecond);
             CaptionWords = FastShortsMuxingHardwareExporterEngine.CountWords(script);
-            var capSrcMs = Math.Max(0, ShortsFactoryPipelineContext.WordStartMs(m.Caption.WordStart) - inMs);
+            // [v18.2.2] 실 오디오가 있으면 첫 단어 = 실측 발화 시작(스토리보드 샷)
+            var capSrcMs = onsetMs >= 0 ? onsetMs - inMs : Math.Max(0, ShortsFactoryPipelineContext.WordStartMs(m.Caption.WordStart) - inMs);
             var ov = new ShortsOverlay
             {
                 CropX = m.Reframe.BoxX, Caption = 0, Preset = m.Caption.Preset, BounceScale = BounceScale,
@@ -189,7 +199,12 @@ public sealed class ShortsFactoryOneClickRenderOrchestrator
             // ③ 리텐션 — 펀치 GOP SPS 크롭 리먹스 · −30 dB BGM · 템포
             ct.ThrowIfCancellationRequested();
             Report(OneClickRenderStage.Retention, 0);
-            if (b.ApplyRetention(_pcm, _bgm, _punch.AsSpan(0, punches), m.Retention.BgmSafe) != SliceBindStatus.Bound) return Fail("③ 리먹스 실패: " + b.Status.ToString());
+            var real = !audio.IsEmpty && audio.IsLive;
+            var st = real
+                ? b.ApplyRetention(audio.Pcm.Span, audio.SampleRate, audio.Channels, _bgm, _punch.AsSpan(0, punches), m.Retention.BgmSafe)
+                : b.ApplyRetention(_pcm, _bgm, _punch.AsSpan(0, punches), m.Retention.BgmSafe);
+            if (st != SliceBindStatus.Bound) return Fail("③ 리먹스 실패: " + b.Status.ToString());
+            if (real) ov.Narration = b.OutputPcmMemory;
             CaptionStartOutMs = b.ReEditor.OutMsAt(capSrcMs);
             ov.SpikeMs = CaptionStartOutMs + 1000;   // 익스포터 자막 시작 = SpikeMs − 1 s
             Report(OneClickRenderStage.Retention, 100);
@@ -210,6 +225,7 @@ public sealed class ShortsFactoryOneClickRenderOrchestrator
             if (Exporter.FinishClip(ov, m.Revision) != ExportStatus.Ready) return Fail("④ fMP4 패키징 실패");
             Report(OneClickRenderStage.Export, 85);
             WriteThumbnail(m, b, inMs);
+            LastUsedStoryboardAudio = real;
             LastManifestRevision = m.Revision;
             Renders++;
             LastRenderMs = System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds;

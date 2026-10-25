@@ -21,6 +21,8 @@ public struct ShortsOverlay
     public double SpikeMs;
     /// <summary>[v18.0.2] 자막 대본 직접 지정(숏폼 팩토리 ② 절삭 구간 대본) — null 이면 <see cref="Caption"/> 프리셋 문구.</summary>
     public string? Script;
+    /// <summary>[v18.2.2] 실 내레이션 PCM(48 kHz 모노 −1~1 · 클립 원점 · 버퍼 공유) — 비어 있지 않으면 ipcm 트랙에 효과음과 합성해 기록.</summary>
+    public ReadOnlyMemory<float> Narration;
 
     public readonly string CaptionText => Script ?? InstantShortsPackagingPipelineGuard.Captions[Caption];
 
@@ -36,6 +38,8 @@ public struct ExportResult
 {
     public long ShortId, DurationUs;
     public int Bytes, VideoSamples, AudioSamples, TextSamples, SfxSamples, Keyframes, CropX, AudioRate, AudioChannels;
+    /// <summary>[v18.2.2] ipcm 트랙에 합성된 실 내레이션 샘플 수(0 = 효과음만/트랙 없음).</summary>
+    public int NarrationSamples;
     public ulong Hash;
     public float RenderMs;
     public bool StartsWithIdr;
@@ -85,6 +89,9 @@ public sealed class FastShortsMuxingHardwareExporterEngine
     private readonly int[] _tSize = new int[64];
     private readonly uint[] _tDur = new uint[64];
     private int _vN, _aN, _tN, _sN, _vLen, _aLen, _tLen, _sLen, _spsLen, _ppsLen, _pos, _sp, _rate = 48_000, _ch = 2, _keys;
+    /// <summary>[v18.2.2] 이번 인출의 ipcm 트랙 활성(효과음 옵션 또는 실 내레이션) · 합성된 내레이션 샘플 수.</summary>
+    private bool _sfxOn;
+    private int _narrN;
     private long _vPts0 = -1, _aPts0 = -1, _vLastPts;
     private ushort _asc;
     private float _progress;
@@ -225,11 +232,13 @@ public sealed class FastShortsMuxingHardwareExporterEngine
             var durUs = _vLastPts - _vPts0 + (long)lastDur * 1_000_000 / VideoTs;
             var durMs = (int)(durUs / 1000);
             if (IncludeCaptionTrack) BuildCaptions(ov, durMs);
-            if (IncludeSfxTrack) BuildSfx(ov, durUs);
+            _sfxOn = IncludeSfxTrack || !ov.Narration.IsEmpty;
+            _narrN = 0;
+            if (_sfxOn) BuildSfx(ov, durUs);
             Volatile.Write(ref _progress, 0.95f);
             WriteFile(ov, durUs, durMs);
             r.Bytes = _pos; r.DurationUs = durUs; r.VideoSamples = _vN; r.AudioSamples = _aN; r.TextSamples = IncludeCaptionTrack ? _tN : 0;
-            r.SfxSamples = IncludeSfxTrack ? _sN : 0; r.Keyframes = _keys; r.StartsWithIdr = _vKey[0];
+            r.SfxSamples = _sfxOn ? _sN : 0; r.NarrationSamples = _narrN; r.Keyframes = _keys; r.StartsWithIdr = _vKey[0];
             r.Hash = RtmpWire.Fnv(_out.AsSpan(0, _pos));
             Exports++;
         }
@@ -326,12 +335,16 @@ public sealed class FastShortsMuxingHardwareExporterEngine
     private void BuildSfx(in ShortsOverlay ov, long durUs)
     {
         _sfx.ClearCues();
-        var spike = ov.SpikeMs;
-        _sfx.AddCue(Math.Max(0, spike - ProceduralViralSoundFxSynthesizer.WhooshLeadMs), ViralSfxKind.Whoosh, 0.8f);
-        _sfx.AddCue(spike, ViralSfxKind.Impact, 1.2f);
-        var w0 = Math.Max(0, spike - 1000);
-        var words = CountWords(ov.CaptionText);
-        for (var i = 0; i < words; i++) _sfx.AddCue(w0 + i * (double)WordMs, ViralSfxKind.Pop, i == 0 ? 1f : 0.55f);
+        if (IncludeSfxTrack)
+        {
+            var spike = ov.SpikeMs;
+            _sfx.AddCue(Math.Max(0, spike - ProceduralViralSoundFxSynthesizer.WhooshLeadMs), ViralSfxKind.Whoosh, 0.8f);
+            _sfx.AddCue(spike, ViralSfxKind.Impact, 1.2f);
+            var w0 = Math.Max(0, spike - 1000);
+            var words = CountWords(ov.CaptionText);
+            for (var i = 0; i < words; i++) _sfx.AddCue(w0 + i * (double)WordMs, ViralSfxKind.Pop, i == 0 ? 1f : 0.55f);
+        }
+        var narr = ov.Narration.Span;
         var frames = durUs * ProceduralViralSoundFxSynthesizer.Fs / 1_000_000;
         _sN = (int)((frames + SfxFrames - 1) / SfxFrames);
         _sLen = _sN * SfxFrames * 2;
@@ -340,6 +353,13 @@ public sealed class FastShortsMuxingHardwareExporterEngine
         {
             Array.Clear(_pcm);
             _sfx.Mix(_pcm, 1, (long)k * SfxFrames, _mixScratch);
+            // [v18.2.2] 실 내레이션 합성(포화 클램프)
+            var b0 = k * SfxFrames;
+            for (var i = 0; i < SfxFrames && b0 + i < narr.Length; i++)
+            {
+                _pcm[i] = (short)Math.Clamp(_pcm[i] + (int)(narr[b0 + i] * 32767f), short.MinValue, short.MaxValue);
+                _narrN++;
+            }
             var dst = _s.AsSpan(k * SfxFrames * 2, SfxFrames * 2);
             for (var i = 0; i < SfxFrames; i++) BinaryPrimitives.WriteInt16LittleEndian(dst.Slice(i * 2), _pcm[i]);
         }
@@ -351,7 +371,7 @@ public sealed class FastShortsMuxingHardwareExporterEngine
 
     private void WriteFile(in ShortsOverlay ov, long durUs, int durMs)
     {
-        var text = IncludeCaptionTrack && _tN > 0; var sfx = IncludeSfxTrack && _sN > 0; var audio = _aN > 0;
+        var text = IncludeCaptionTrack && _tN > 0; var sfx = _sfxOn && _sN > 0; var audio = _aN > 0;
         var bound = _vLen + _aLen + _tLen + _sLen + _vN * 16 + _aN * 8 + _tN * 8 + _sN * 8 + 8192;
         if (_out.Length < bound) { _out = new byte[bound + bound / 4]; Grows++; }
         _pos = 0; _sp = 0;

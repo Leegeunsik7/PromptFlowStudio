@@ -77,6 +77,15 @@
             <StoryboardHeader OnOpenBaby="() => _babyGalleryOpen = true" OnOpenHyper="() => _hyperOpen = true" OnOpenB2b="() => _b2bGalleryOpen = true" OnOpenWeather="() => _weatherGalleryOpen = true" OnOpenPitch="() => _pitchOpen = true" Disabled="@(Jobs.IsRunning || Jobs.IsMerging)" />
             <button class="sb-tbtn" @onclick="() => _osmuOpen = true" title="완성 영상을 9:16·1:1·4:5 플랫폼 규격으로 재구성 + AI 제목/해시태그 패키지(폴더/ZIP) · AI 품질 검수 · 소셜 바로 게시">🌐 OSMU 내보내기 · 게시 @if (FinalQa is { } fq) { <span class="sb-qa @(fq.Verdict == QaVerdict.Pass ? "pass" : fq.Verdict == QaVerdict.Warn ? "warn" : "reject")" title="@fq.Message">@(fq.Verdict == QaVerdict.Pass ? "✅ QA" : fq.Verdict == QaVerdict.Warn ? "⚠️ QA" : "⛔ QA") @(fq.Defects.Count)</span> }</button>
             <button class="sb-tbtn wiz" @onclick="SendShotsToFactory" disabled="@(_project.Scenes.Count == 0)" title="나레이션을 발화 호흡 기준 샷으로 분할 → 타임코드 · 대본 · 9:16 프레이밍을 숏폼 팩토리 ① 절삭 · ② 자막 탭에 0-카피 인계">🎬 숏폼 팩토리로 시퀀스 전송</button>
+            @* v18.2.2 🎙 실 오디오(WAV · PCM 16-bit) / TTS 단어 경계(CSV) 바인딩 → 샷 타임코드 실측 재동기화 · 팩토리 전송 시 오디오 0-카피 동반 *@
+            <div class='sb-openbtn @(_audioLoading ? "off" : null)' title="WAV(PCM 16-bit) · 원시 PCM(16 kHz 모노) 또는 TTS 단어 경계 CSV(startMs,endMs,word) — 샷 타임코드를 음절 추정 대신 실측으로 재동기화">
+                @(_audioLoading ? "⏳ 오디오 불러오는 중…" : "🎙️ 오디오 파일 불러오기")
+                <InputFile class="sb-openinput" OnChange="OnShotAudioPicked" accept="audio/wav,audio/x-wav,.wav,.pcm,.raw,.csv,.tsv,.txt" disabled="@_audioLoading" aria-label="샷 정렬 오디오 파일 선택" />
+            </div>
+            @if (_shotAudio.HasAudio || _shotAudio.HasWordBoundaries || _audioMsg is not null)
+            {
+                <span class="sb-audio-badge @(_audioMsg is null ? null : "bad")" title="@(_shotAudio.SourceName)">@(AudioBadge())</span>
+            }
             <button class="sb-tbtn" @onclick="BoostAll" disabled="@Jobs.IsRunning" title="Wan 2.1 알고리즘에 최적화된 시네마틱 카메라/조명 태그를 모든 컷에 1클릭으로 덧붙입니다.">⚡ 프롬프트 부스팅</button>
             <button class="sb-tbtn" @onclick="SaveProject" disabled="@(Jobs.IsRunning || Jobs.IsMerging)">💾 프로젝트 저장</button>
             <div class="sb-openbtn @((Jobs.IsRunning || Jobs.IsMerging) ? "off" : null)">
@@ -1224,6 +1233,8 @@
     .sb-tbtn.wiz:hover:not(:disabled) { filter: brightness(1.07); color: #fff; }
     .sb-openbtn { position: relative; font: 700 12.5px inherit; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; overflow: hidden; }
     .sb-openbtn:hover { border-color: var(--accent); color: var(--text-primary); } .sb-openbtn.off { opacity: .45; }
+    .sb-audio-badge { align-self: center; font: 700 11px var(--mono, monospace); color: #86efac; border: 1px solid #166534; border-radius: 999px; padding: 3px 9px; white-space: nowrap; }
+    .sb-audio-badge.bad { color: #fca5a5; border-color: #7f1d1d; }
     .sb-openinput { position: absolute; inset: 0; opacity: 0; cursor: pointer; } .sb-openbtn.off .sb-openinput { pointer-events: none; }
     /* 글로벌 다국어 번역 & SEO */
     .sb-locwrap { display: inline-flex; align-items: center; gap: 6px; }
@@ -1934,18 +1945,72 @@
         try
         {
             _shotScript.CopyTo(0, buf, 0, _shotScript.Length);
-            _shotSeq.Load(buf.AsSpan(0, _shotScript.Length));
+            _shotAudio.Resync(_shotSeq, buf.AsSpan(0, _shotScript.Length));
         }
         finally { System.Buffers.ArrayPool<char>.Shared.Return(buf); }
         _shotMsg = _shotSeq.Count == 0 ? "샷 분할 실패 — 나레이션 또는 프롬프트를 입력하세요" : null;
     }
 
     /// <summary>v18.2.0 🎬 숏폼 팩토리로 시퀀스 전송 — 재분할 후 브리지 Push(레이아웃이 팩토리 ① 탭을 열고 모달이 수화).</summary>
+    // v18.2.2 🎙 샷 정렬 오디오 바인더(컴포넌트 소유 · 브리지/팩토리는 버퍼를 0-카피 공유)
+    private readonly PromptFlowStudio.Services.Storyboard.StoryboardAudioSourceStreamBinder _shotAudio = new();
+    private bool _audioLoading;
+    private string? _audioMsg;
+
+    private string AudioBadge()
+    {
+        if (_audioMsg is { } why) return "⚠ " + why;
+        var src = _shotSeq.Alignment switch
+        {
+            PromptFlowStudio.Services.Storyboard.AudioAlignmentSource.TtsWordBoundary => "TTS 단어 경계",
+            PromptFlowStudio.Services.Storyboard.AudioAlignmentSource.PcmVoiceActivity => "무음 경계 실측",
+            PromptFlowStudio.Services.Storyboard.AudioAlignmentSource.AudioDurationScale => "실측 길이 비례",
+            _ => "음절 추정",
+        };
+        if (!_shotAudio.HasAudio) return "🗣 단어 경계 · " + src;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        return "🎙 " + (_shotAudio.Container == PromptFlowStudio.Services.Storyboard.AudioContainer.Wav ? "WAV" : "PCM") + " 16-bit · "
+             + (_shotAudio.DurationMs / 1000.0).ToString("0.0", inv) + "s · " + (_shotAudio.SampleRate / 1000.0).ToString("0.#", inv) + " kHz · "
+             + (_shotAudio.Channels == 1 ? "모노" : _shotAudio.Channels.ToString(inv) + "ch") + " · " + src;
+    }
+
+    /// <summary>v18.2.2 🎙 오디오/단어 경계 파일 → 바인더(소유 버퍼 직접 수신) → 샷 타임코드 즉시 실측 재동기화.</summary>
+    private async Task OnShotAudioPicked(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file is null || _audioLoading) return;
+        if (file.Size > PromptFlowStudio.Services.Storyboard.StoryboardAudioSourceStreamBinder.MaxBytes) { _audioMsg = "파일이 너무 큽니다(최대 64MB)"; return; }
+        _audioLoading = true; _audioMsg = null;
+        try
+        {
+            var name = file.Name;
+            var ext = Path.GetExtension(name);
+            await using var src = file.OpenReadStream(PromptFlowStudio.Services.Storyboard.StoryboardAudioSourceStreamBinder.MaxBytes);
+            if (ext.Equals(".csv", StringComparison.OrdinalIgnoreCase) || ext.Equals(".tsv", StringComparison.OrdinalIgnoreCase) || ext.Equals(".txt", StringComparison.OrdinalIgnoreCase))
+            {
+                using var ms = new MemoryStream((int)file.Size);
+                await src.CopyToAsync(ms);
+                if (_shotAudio.BindWordBoundaries(ms.GetBuffer().AsSpan(0, (int)ms.Length)) == 0) _audioMsg = "단어 경계 없음(startMs,endMs,word)";
+            }
+            else
+            {
+                var st = await _shotAudio.BindAsync(src, file.Size, name);
+                if (st != PromptFlowStudio.Services.Storyboard.AudioBindStatus.Bound) _audioMsg = "오디오 불러오기 실패(" + st.ToString() + ") — WAV PCM 16-bit 만 지원";
+            }
+            RefreshShots();
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or OperationCanceledException or ObjectDisposedException)
+        {
+            _audioMsg = "오디오 불러오기 실패: " + ex.Message;
+        }
+        finally { _audioLoading = false; }
+    }
+
     private void SendShotsToFactory()
     {
         RefreshShots();
         if (_shotSeq.Count == 0) return;
-        _shotMsg = ShotBridge.Push(_shotSeq) ? "· ✅ 숏폼 팩토리로 전송됨" : "· ⚠ 전송 실패";
+        _shotMsg = ShotBridge.Push(_shotSeq, _shotAudio.Track) ? (_shotAudio.HasAudio ? "· ✅ 숏폼 팩토리로 전송됨(🎙 실 오디오 동반)" : "· ✅ 숏폼 팩토리로 전송됨") : "· ⚠ 전송 실패";
     }
 
     private void SplitSelected()
