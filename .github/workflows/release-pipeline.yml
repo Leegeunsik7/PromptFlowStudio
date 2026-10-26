@@ -1,12 +1,12 @@
 name: Multi-Platform CI Pipeline
 
-# [PromptFlow Studio v10.0.0-LTS 夷?LTS-10.0.3] 筌렺?怨좊탣???쨲 CI/CD ?깅???????뵠?袁⑥뵬??
-#  ??Windows(net8.0-windows ?癒?퍥?袁㏐퍙 ??μ뵬???뵬) 夷?Android(net8.0-android) 夷?iOS(net8.0-ios ?????됱뵠???????뚮똾???野껊슣??? 夷?
-#    macOS/Mac Catalyst(?醫뤾문??夷?TargetFrameworks ??net8.0-maccatalyst 揶쎛 ?醫롫섧??野껋럩??癒?춸 ?癒?짗 ??뽮쉐 夷??봔????Graceful ??쎄땁)
-#    4揶????삸????れ뱽 癰귣쵎????쎈뻬??랁? ????れ뵠 -warnaserror(0野껋럡??0??살첒) 野껊슣??紐? ???궢??곷튊 ??뺣뼄.
-#  ??揶????怨쀭뀱?얠눘? SHA-256 筌ｋ똾寃??????ｍ뜞 ?袁る뼒??븍뱜嚥???낆쨮??뺣┷?? collect ??れ뵠 ???? SHA256SUMS.txt 筌띲끇???뤿뮞?紐? ??밴쉐??뺣뼄.
-#  ??v18.4.3: PR/?됰슢?뽫㎉?Push ?袁⑹뒠 CI 野꺜筌앹빓由?????볥젃 ?紐꺿봺椰꾧콛?큛tHub Release 野껊슣????볤탢(?類ㅻ뻼 ?깅????삳뮉 release.yml ??μ뵬 ?袁⑤뼖).
-#    windows-desktop ??る퓠??xUnit ?袁⑸땾 ??쎈뻬??곗쨮 PR ??μ맄 ?????鈺곌퀗由?揶쏅Ŋ???뺣뼄.
+# [PromptFlow Studio v10.0.0-LTS · LTS-10.0.3] 멀티플랫폼 CI/CD 릴리스 파이프라인.
+#  ▸ Windows(net8.0-windows 자체완결 단일파일) · Android(net8.0-android) · iOS(net8.0-ios 시뮬레이터 대상 컴파일 게이트) ·
+#    macOS/Mac Catalyst(선택적 · TargetFrameworks 에 net8.0-maccatalyst 가 선언된 경우에만 자동 활성 · 부재 시 Graceful 스킵)
+#    4개 플랫폼 잡을 병렬 실행하고, 전 잡이 -warnaserror(0경고/0오류) 게이트를 통과해야 한다.
+#  ▸ 각 잡 산출물은 SHA-256 체크섬과 함께 아티팩트로 업로드되고, collect 잡이 통합 SHA256SUMS.txt 매니페스트를 생성한다.
+#  ▸ v18.4.3: PR/브랜치 Push 전용 CI 검증기 — 태그 트리거·GitHub Release 게시 제거(정식 릴리스는 release.yml 단일 전담).
+#    windows-desktop 잡에서 xUnit 전수 실행으로 PR 단위 회귀를 조기 감지한다.
 
 on:
   push:
@@ -25,9 +25,9 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
 
 jobs:
-  # ???? ??Windows ?怨쀫뮞???? net8.0-windows ?癒?퍥?袁㏐퍙 ??μ뵬???뵬 Release ????????????????????????????????????????????????????????
+  # ── ① Windows 데스크톱: net8.0-windows 자체완결 단일파일 Release ────────────────────────────
   windows-desktop:
-    name: Windows (net8.0-windows 夷?self-contained 夷?warn=error)
+    name: Windows (net8.0-windows · self-contained · warn=error)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,13 +40,13 @@ jobs:
       - name: Restore
         run: dotnet restore PromptFlowStudio/PromptFlowStudio.csproj
 
-      - name: Build (Release 夷?0 野껋럡??0 ??살첒 揶쏅벡??
+      - name: Build (Release · 0 경고/0 오류 강제)
         run: dotnet build PromptFlowStudio/PromptFlowStudio.csproj -c Release --no-restore -warnaserror
 
-      - name: xUnit ???(100% PASS 夷?筌욊낮??
+      - name: xUnit 회귀(100% PASS · 직렬)
         run: dotnet test PromptFlowStudio.Tests/PromptFlowStudio.Tests.csproj -c Release -warnaserror --logger "trx;LogFileName=test_results.trx" --results-directory TestResults -- RunConfiguration.MaxCpuCount=1 RunConfiguration.DisableParallelization=true
 
-      - name: TRX ??낆쨮??
+      - name: TRX 업로드
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -60,7 +60,7 @@ jobs:
             -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
             -o artifacts/windows
 
-      - name: SHA-256 筌ｋ똾寃????밴쉐
+      - name: SHA-256 체크섬 생성
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts/windows | Out-Null
@@ -76,9 +76,9 @@ jobs:
           path: artifacts/windows/**
           if-no-files-found: error
 
-  # ???? ??Android: net8.0-android Release ??슢諭??뚮똾???野껊슣??? + ??고닜?귐딅뻻 ?怨쀭뀱??筌ｋ똾寃??????????????????????
+  # ── ② Android: net8.0-android Release 빌드(컴파일 게이트) + 퍼블리시 산출물 체크섬 ──────────
   android:
-    name: Android (net8.0-android 夷?warn=error)
+    name: Android (net8.0-android · warn=error)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -88,7 +88,7 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Setup JDK 17 (Microsoft OpenJDK 夷?MAUI Android ?遺쎈럡)
+      - name: Setup JDK 17 (Microsoft OpenJDK · MAUI Android 요구)
         uses: actions/setup-java@v4
         with:
           distribution: 'microsoft'
@@ -109,15 +109,15 @@ jobs:
       - name: Restore
         run: dotnet restore PromptFlowStudio.Mobile/PromptFlowStudio.Mobile.csproj
 
-      - name: Build (net8.0-android 夷?Release 夷?0 野껋럡??0 ??살첒 揶쏅벡??
+      - name: Build (net8.0-android · Release · 0 경고/0 오류 강제)
         run: dotnet build PromptFlowStudio.Mobile/PromptFlowStudio.Mobile.csproj -f net8.0-android -c Release --no-restore -warnaserror
 
-      - name: Publish (unsigned APK/AAB 夷?CI 野꺜筌앹빘??
+      - name: Publish (unsigned APK/AAB · CI 검증용)
         run: |
           dotnet publish PromptFlowStudio.Mobile/PromptFlowStudio.Mobile.csproj -f net8.0-android -c Release `
             -o artifacts/android
 
-      - name: SHA-256 筌ｋ똾寃????밴쉐
+      - name: SHA-256 체크섬 생성
         shell: bash
         run: |
           mkdir -p artifacts/android
@@ -131,9 +131,9 @@ jobs:
           path: artifacts/android/**
           if-no-files-found: warn
 
-  # ???? ??iOS: net8.0-ios ?????됱뵠???????뚮똾???野껊슣?????뺤구 ?븍뜇釉??夷???쎈꽅????뺤구 獄쏄퀬猷??store-deploy.yml ?袁⑤뼖) ????
+  # ── ③ iOS: net8.0-ios 시뮬레이터 대상 컴파일 게이트(서명 불필요 · 스토어 서명 배포는 store-deploy.yml 전담) ──
   ios:
-    name: iOS (net8.0-ios 夷?simulator 夷?warn=error)
+    name: iOS (net8.0-ios · simulator · warn=error)
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -149,15 +149,15 @@ jobs:
       - name: Restore
         run: dotnet restore PromptFlowStudio.Mobile/PromptFlowStudio.Mobile.csproj
 
-      # ?????됱뵠??RID 嚥???슢諭??Apple 揶쏆뮆而????뺤구 ??곸뵠 -warnaserror ?뚮똾????類λ??源낆춸 野꺜筌?筌ｋ똾寃???????袁⑤뻷).
-      - name: Build (net8.0-ios 夷?iossimulator-arm64 夷?Release 夷?0 野껋럡??0 ??살첒 揶쏅벡??
+      # 시뮬레이터 RID 로 빌드해 Apple 개발자 서명 없이 -warnaserror 컴파일 정합성만 검증(체크섬 대상 아님).
+      - name: Build (net8.0-ios · iossimulator-arm64 · Release · 0 경고/0 오류 강제)
         run: |
           dotnet build PromptFlowStudio.Mobile/PromptFlowStudio.Mobile.csproj -f net8.0-ios -c Release --no-restore -warnaserror `
             -p:RuntimeIdentifier=iossimulator-arm64 -p:BuildIpa=false -p:CodesignRequireProvisioningProfile=false
 
-  # ???? ??macOS(Mac Catalyst): TargetFrameworks ??net8.0-maccatalyst ?醫롫섧 ??뽯퓠筌???뽮쉐(?봔????Graceful ??쎄땁) ????
+  # ── ④ macOS(Mac Catalyst): TargetFrameworks 에 net8.0-maccatalyst 선언 시에만 활성(부재 시 Graceful 스킵) ──
   macos-maccatalyst:
-    name: macOS (Mac Catalyst 夷?conditional)
+    name: macOS (Mac Catalyst · conditional)
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -167,7 +167,7 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: TargetFrameworks ?類ㅼ뵥 ??net8.0-maccatalyst ?봔????Graceful ??쎄땁
+      - name: TargetFrameworks 확인 — net8.0-maccatalyst 부재 시 Graceful 스킵
         id: check
         shell: bash
         run: |
@@ -175,7 +175,7 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::net8.0-maccatalyst 揶쎛 TargetFrameworks ????곷선 macOS ??슢諭띄몴???쎄땁??몃빍??Graceful ??野껉퀣苑?? PromptFlowStudio.Mobile.csproj + Platforms/MacCatalyst ??쇳떐??逾??곕떽? ???癒?짗 ??뽮쉐)."
+            echo "::notice::net8.0-maccatalyst 가 TargetFrameworks 에 없어 macOS 빌드를 스킵합니다(Graceful — 결선점: PromptFlowStudio.Mobile.csproj + Platforms/MacCatalyst 스캐폴딩 추가 시 자동 활성)."
           fi
 
       - name: Install MAUI MacCatalyst workload
@@ -186,11 +186,11 @@ jobs:
         if: steps.check.outputs.present == 'true'
         run: dotnet restore PromptFlowStudio.Mobile/PromptFlowStudio.Mobile.csproj
 
-      - name: Build (net8.0-maccatalyst 夷?Release 夷?0 野껋럡??0 ??살첒 揶쏅벡??
+      - name: Build (net8.0-maccatalyst · Release · 0 경고/0 오류 강제)
         if: steps.check.outputs.present == 'true'
         run: dotnet build PromptFlowStudio.Mobile/PromptFlowStudio.Mobile.csproj -f net8.0-maccatalyst -c Release --no-restore -warnaserror
 
-  # ???? ??NuGet ???텕筌왖: Shared RCL(PromptFlowStudio.Shared) ???怨쀭뀱??????????????????????????????????????????????????????
+  # ── ⑤ NuGet 패키지: Shared RCL(PromptFlowStudio.Shared) 팩 산출물 ──────────────────────────
   shared-nuget-pack:
     name: NuGet Pack (PromptFlowStudio.Shared)
     runs-on: windows-latest
@@ -205,13 +205,13 @@ jobs:
       - name: Restore
         run: dotnet restore PromptFlowStudio.Shared/PromptFlowStudio.Shared.csproj
 
-      - name: Build (Release 夷?0 野껋럡??0 ??살첒 揶쏅벡??
+      - name: Build (Release · 0 경고/0 오류 강제)
         run: dotnet build PromptFlowStudio.Shared/PromptFlowStudio.Shared.csproj -c Release --no-restore -warnaserror
 
       - name: Pack
         run: dotnet pack PromptFlowStudio.Shared/PromptFlowStudio.Shared.csproj -c Release --no-build -o artifacts/nuget
 
-      - name: SHA-256 筌ｋ똾寃????밴쉐
+      - name: SHA-256 체크섬 생성
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts/nuget | Out-Null
@@ -227,7 +227,7 @@ jobs:
           path: artifacts/nuget/**
           if-no-files-found: warn
 
-  # ???? ????륁춿: ?????삸???袁る뼒??븍뱜 + ???? 筌ｋ똾寃??筌띲끇???뤿뮞??Release 野껊슣????곸벉 夷?release.yml ?袁⑤뼖) ????????????
+  # ── ⑥ 수집: 전 플랫폼 아티팩트 + 통합 체크섬 매니페스트(Release 게시 없음 · release.yml 전담) ──────
   collect:
     name: Collect Artifacts & Checksum Manifest
     needs: [ windows-desktop, android, ios, macos-maccatalyst, shared-nuget-pack ]
@@ -239,7 +239,7 @@ jobs:
         with:
           path: collected
 
-      - name: ???? SHA256SUMS.txt 筌띲끇???뤿뮞????밴쉐
+      - name: 통합 SHA256SUMS.txt 매니페스트 생성
         shell: bash
         run: |
           cd collected

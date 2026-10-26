@@ -204,11 +204,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          files: |
-            artifacts/release/installer/PromptFlowStudio-Setup-v*.exe
-            artifacts/release/installer/release-checksums.sha256
-            artifacts/release/installer/pfi1.manifest
-            artifacts/release/installer/*.release.json
-            artifacts/release/installer/*.verify.json
-          fail_on_unmatched_files: true
-          generate_release_notes: true
+        files: |
+          artifacts/release/installer/PromptFlowStudio-Setup-v*.exe
+          artifacts/release/installer/release-checksums.sha256
+          artifacts/release/installer/pfi1.manifest
+        fail_on_unmatched_files: true
