@@ -1,21 +1,21 @@
 name: Signed Windows Release (Titan)
-# [PromptFlow Studio v18.4.3] ?⑥씪 ?뺤떇 由대━???뚯씠?꾨씪????GitHub Release 寃뚯떆?????뚰겕?뚮줈?곕쭔 ?섑뻾(release-pipeline.yml ? PR/Push CI ?꾩슜).
-#  ???쒓렇(vX.Y.Z) ?몄떆 ????test: -warnaserror 鍮뚮뱶 寃뚯씠????xUnit 吏곷젹 ?ㅽ뻾 ??TRX ?⑥뼵(Total ??541 쨌 Failed 0 쨌 Skipped 0)
-#    ????installer: build_titan_release.ps1(ReadyToRun publish ??FFmpeg 寃利씲룸룞遊???RSA-2048 pfi1.manifest ?쒕챸 ??WebView2 redist ??Inno Setup)
-#       ??scripts/verify_release.ps1 -InstallCycle Golden Master 寃????artifacts/release/installer ?섏쭛쨌?낅줈??
-#    ????publish-release: PromptFlowStudio-Setup-v*.exe 쨌 release-checksums.sha256 쨌 pfi1.manifest 쨌 BOM/寃??JSON ???⑥씪 GitHub Release 濡?寃뚯떆.
-#  ???쒗겕由? PROMPTFLOW_SIGNING_KEY(base64 PKCS#8 RSA-2048 媛쒖씤?? ???쒕챸 ?ㅽ뀦 env 濡쒕쭔 二쇱엯, 濡쒓렇쨌?붿뒪?ъ뿉 湲곕줉?섏? ?딆쓬.
-#    ?좏깮: PROMPTFLOW_PFX_BASE64 쨌 PROMPTFLOW_PFX_PASSWORD(Authenticode) ???덉쑝硫?exe/setup 肄붾뱶 ?쒕챸, PFX ??RUNNER_TEMP ???좎떆 蹂듭썝 ??利됱떆 ??젣.
-#  ??蹂??Repository Variables): FFMPEG_URL 쨌 FFMPEG_ARCHIVE_SHA256(?꾩닔 쨌 ?댁떆 怨좎젙 zip) 쨌 FFMPEG_SHA256(?좏깮 쨌 ffmpeg.exe 怨좎젙 ?댁떆)
-#  ??workflow_dispatch: ?쒕씪?대윴(由대━??寃뚯떆 ?놁씠 ?꾪떚?⑺듃留? ??FFmpeg 誘몃룞遊??덉슜 ?듭뀡 ?쒓났.
+# [PromptFlow Studio v18.4.3] ??μ뵬 ?類ㅻ뻼 ?깅???????뵠?袁⑥뵬????GitHub Release 野껊슣???????곌쾿???쨮?怨뺤춸 ??묐뻬(release-pipeline.yml ?? PR/Push CI ?袁⑹뒠).
+#  ????볥젃(vX.Y.Z) ?紐꾨뻻 ????test: -warnaserror ??슢諭?野껊슣?????xUnit 筌욊낮????쎈뻬 ??TRX ??λ섧(Total ??541 夷?Failed 0 夷?Skipped 0)
+#    ????installer: build_titan_release.ps1(ReadyToRun publish ??FFmpeg 野꺜筌앹뵴猷몃짗????RSA-2048 pfi1.manifest ??뺤구 ??WebView2 redist ??Inno Setup)
+#       ??scripts/verify_release.ps1 -InstallCycle Golden Master 野꺜????artifacts/release/installer ??륁춿夷??낆쨮??
+#    ????publish-release: PromptFlowStudio-Setup-v*.exe 夷?release-checksums.sha256 夷?pfi1.manifest 夷?BOM/野꺜??JSON ????μ뵬 GitHub Release 嚥?野껊슣??
+#  ????쀪쾿?? PROMPTFLOW_SIGNING_KEY(base64 PKCS#8 RSA-2048 揶쏆뮇??? ????뺤구 ??쎈?env 嚥≪뮆彛?雅뚯눘?? 嚥≪뮄?뉗쮯?遺용뮞??肉?疫꿸퀡以??? ??놁벉.
+#    ?醫뤾문: PROMPTFLOW_PFX_BASE64 夷?PROMPTFLOW_PFX_PASSWORD(Authenticode) ????됱몵筌?exe/setup ?꾨뗀諭???뺤구, PFX ??RUNNER_TEMP ???醫롫뻻 癰귣벊????筌앸맩??????
+#  ??癰궰??Repository Variables): FFMPEG_URL 夷?FFMPEG_ARCHIVE_SHA256(?袁⑸땾 夷???곷뻻 ?⑥쥙??zip) 夷?FFMPEG_SHA256(?醫뤾문 夷?ffmpeg.exe ?⑥쥙????곷뻻)
+#  ??workflow_dispatch: ??뺤뵬?????깅????野껊슣????곸뵠 ?袁る뼒??븍뱜筌? ??FFmpeg 沃섎챶猷욇걡???됱뒠 ??????볥궗.
 
 on:
   push:
-    tags: [ 'v[0-9]+.[0-9]+.[0-9]+' ]
+    tags: ['v*.*.*']
   workflow_dispatch:
     inputs:
       allow_missing_ffmpeg:
-        description: 'FFmpeg 誘몃룞遊??덉슜(?쒕씪?대윴 ?꾩슜)'
+        description: 'FFmpeg 沃섎챶猷욇걡???됱뒠(??뺤뵬?????袁⑹뒠)'
         type: boolean
         default: false
 
@@ -33,9 +33,9 @@ env:
   MIN_TEST_COUNT: 541
 
 jobs:
-  # ?? ???뚯뒪??寃뚯씠?? 0/0 鍮뚮뱶 + 541 ?꾩닔 쨌 0 Failed 쨌 0 Skipped ?????????????????????????????
+  # ???? ?????뮞??野껊슣??? 0/0 ??슢諭?+ 541 ?袁⑸땾 夷?0 Failed 夷?0 Skipped ??????????????????????????????????????????????????????????
   test:
-    name: Release 鍮뚮뱶 + xUnit ?꾩닔 寃뚯씠??
+    name: Release ??슢諭?+ xUnit ?袁⑸땾 野껊슣???
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -47,32 +47,32 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Release 鍮뚮뱶 寃뚯씠??-warnaserror 0/0)
+      - name: Release ??슢諭?野껊슣???-warnaserror 0/0)
         run: |
           dotnet build PromptFlowStudio/PromptFlowStudio.csproj -c Release -warnaserror
           dotnet build PromptFlowStudio.Tests/PromptFlowStudio.Tests.csproj -c Release -warnaserror
 
-      - name: xUnit ?꾩닔 ?ㅽ뻾(吏곷젹)
+      - name: xUnit ?袁⑸땾 ??쎈뻬(筌욊낮??
         run: dotnet test PromptFlowStudio.Tests/PromptFlowStudio.Tests.csproj -c Release --no-build --logger "trx;LogFileName=test_results.trx" --results-directory TestResults -- RunConfiguration.MaxCpuCount=1 RunConfiguration.DisableParallelization=true
 
-      - name: TRX ?⑥뼵(Total ??541 쨌 Failed 0 쨌 Skipped 0)
+      - name: TRX ??λ섧(Total ??541 夷?Failed 0 夷?Skipped 0)
         if: always()
         shell: pwsh
         run: |
           $trx = Join-Path $env:GITHUB_WORKSPACE 'TestResults\test_results.trx'
-          if (-not (Test-Path -LiteralPath $trx)) { Write-Error "TRX 寃곌낵媛 ?놁뒿?덈떎: $trx"; exit 1 }
+          if (-not (Test-Path -LiteralPath $trx)) { Write-Error "TRX 野껉퀗?드첎? ??곷뮸??덈뼄: $trx"; exit 1 }
           $c = ([xml](Get-Content -Raw -LiteralPath $trx)).TestRun.ResultSummary.Counters
           $total = [int]$c.total; $passed = [int]$c.passed; $failed = [int]$c.failed + [int]$c.error + [int]$c.timeout + [int]$c.aborted
           $skipped = [int]$c.notExecuted + [int]$c.inconclusive
           $min = [int]$env:MIN_TEST_COUNT
           Write-Host "Total=$total Passed=$passed Failed=$failed Skipped=$skipped (Min=$min)"
-          "### xUnit 寃뚯씠??nTotal $total 쨌 Passed $passed 쨌 Failed $failed 쨌 Skipped $skipped (理쒖냼 $min)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-          if ($total -lt $min) { Write-Error "?뚯뒪????誘몃떖: $total < $min"; exit 1 }
-          if ($failed -ne 0) { Write-Error "?ㅽ뙣 ?뚯뒪??議댁옱: $failed"; exit 1 }
-          if ($skipped -ne 0) { Write-Error "嫄대꼫? ?뚯뒪??議댁옱: $skipped"; exit 1 }
-          if ($passed -ne $total) { Write-Error "?듦낵 ??遺덉씪移? $passed / $total"; exit 1 }
+          "### xUnit 野껊슣???nTotal $total 夷?Passed $passed 夷?Failed $failed 夷?Skipped $skipped (筌ㅼ뮇??$min)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($total -lt $min) { Write-Error "???뮞????沃섎챶?? $total < $min"; exit 1 }
+          if ($failed -ne 0) { Write-Error "??쎈솭 ???뮞??鈺곕똻?? $failed"; exit 1 }
+          if ($skipped -ne 0) { Write-Error "椰꾨?瑗?? ???뮞??鈺곕똻?? $skipped"; exit 1 }
+          if ($passed -ne $total) { Write-Error "???궢 ???븍뜆?ょ㎉? $passed / $total"; exit 1 }
 
-      - name: TRX ?낅줈??
+      - name: TRX ??낆쨮??
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -81,9 +81,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  # ?? ???쒕챸 ?몄뒪?⑤윭 鍮뚮뱶 + Golden Master 寃????????????????????????????????????????????????
+  # ???? ????뺤구 ?紐꾨뮞??ㅼ쑎 ??슢諭?+ Golden Master 野꺜??????????????????????????????????????????????????????????????????????????????????????????????
   installer:
-    name: win-x64 ?쒕챸 ?몄뒪?⑤윭
+    name: win-x64 ??뺤구 ?紐꾨뮞??ㅼ쑎
     needs: test
     runs-on: windows-latest
     timeout-minutes: 60
@@ -98,41 +98,41 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: 踰꾩쟾 ?댁꽍(?쒓렇 vX.Y.Z ??AppVersion)
+      - name: 甕곌쑴????곴퐤(??볥젃 vX.Y.Z ??AppVersion)
         id: ver
         shell: pwsh
         run: |
           $ref = '${{ github.ref_name }}'
           if ('${{ github.ref_type }}' -eq 'tag' -and $ref -match '^v(\d+\.\d+\.\d+)$') { $v = $Matches[1] }
-          else { $v = '0.0.0.${{ github.run_number }}' }   # ?쒕씪?대윴 ??VersionInfoVersion ?レ옄 洹쒓꺽 ?좎?
+          else { $v = '0.0.0.${{ github.run_number }}' }   # ??뺤뵬??????VersionInfoVersion ??ъ쁽 域뱀뮄爰??醫?
           "app_version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "AppVersion=$v"
 
-      - name: ?쒕챸 ??議댁옱 ?뺤씤
+      - name: ??뺤구 ??鈺곕똻???類ㅼ뵥
         shell: pwsh
         env:
           PROMPTFLOW_SIGNING_KEY: ${{ secrets.PROMPTFLOW_SIGNING_KEY }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:PROMPTFLOW_SIGNING_KEY)) { Write-Error 'PROMPTFLOW_SIGNING_KEY ?쒗겕由우씠 ?ㅼ젙?섏? ?딆븯?듬땲??'; exit 1 }
+          if ([string]::IsNullOrWhiteSpace($env:PROMPTFLOW_SIGNING_KEY)) { Write-Error 'PROMPTFLOW_SIGNING_KEY ??쀪쾿?깆슦????쇱젟??? ??녿릭??щ빍??'; exit 1 }
 
-      - name: Inno Setup 6 ?뺣낫
+      - name: Inno Setup 6 ?類ｋ궖
         shell: pwsh
         run: |
           $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $iscc) { choco install innosetup --no-progress -y; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
 
-      - name: Authenticode PFX 蹂듭썝(?좏깮 쨌 ?쒗겕由?議댁옱 ??
+      - name: Authenticode PFX 癰귣벊???醫뤾문 夷???쀪쾿??鈺곕똻????
         id: pfx
         shell: pwsh
         env:
           PFX_BASE64: ${{ secrets.PROMPTFLOW_PFX_BASE64 }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:PFX_BASE64)) { Write-Host 'Authenticode ?쒗겕由??놁쓬 ??肄붾뱶 ?쒕챸 嫄대꼫?'; exit 0 }
+          if ([string]::IsNullOrWhiteSpace($env:PFX_BASE64)) { Write-Host 'Authenticode ??쀪쾿????곸벉 ???꾨뗀諭???뺤구 椰꾨?瑗??'; exit 0 }
           $path = Join-Path $env:RUNNER_TEMP ('pfs-' + [guid]::NewGuid().ToString('N') + '.pfx')
           [System.IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:PFX_BASE64))
           "path=$path" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-      - name: ?쒕챸 由대━???뚯씠?꾨씪??publish R2R ??Authenticode ??FFmpeg ??RSA ?쒕챸 ??WebView2 ???몄뒪?⑤윭)
+      - name: ??뺤구 ?깅???????뵠?袁⑥뵬??publish R2R ??Authenticode ??FFmpeg ??RSA ??뺤구 ??WebView2 ???紐꾨뮞??ㅼ쑎)
         shell: pwsh
         env:
           PROMPTFLOW_SIGNING_KEY: ${{ secrets.PROMPTFLOW_SIGNING_KEY }}
@@ -154,17 +154,17 @@ jobs:
           if ($env:FFMPEG_SHA256) { $titan.FfmpegSha256 = $env:FFMPEG_SHA256 }
           if ($env:PFX_PATH) { $titan.AuthenticodePfxPath = $env:PFX_PATH }
           if ($env:ALLOW_MISSING_FFMPEG -eq 'true') { $titan.AllowMissingFfmpeg = $true }
-          elseif (-not $env:FFMPEG_URL) { Write-Error 'FFMPEG_URL/FFMPEG_ARCHIVE_SHA256 蹂?섍? ?꾩슂?⑸땲???뺤떇 由대━?ㅻ뒗 FFmpeg ?숇큺 ?꾩닔).'; exit 1 }
+          elseif (-not $env:FFMPEG_URL) { Write-Error 'FFMPEG_URL/FFMPEG_ARCHIVE_SHA256 癰궰??? ?袁⑹뒄??몃빍???類ㅻ뻼 ?깅????삳뮉 FFmpeg ??뉙겫 ?袁⑸땾).'; exit 1 }
           try { & ./build_titan_release.ps1 @titan; $code = $LASTEXITCODE }
-          finally { if ($env:PFX_PATH -and (Test-Path $env:PFX_PATH)) { Remove-Item $env:PFX_PATH -Force } }   # PFX ?붿뒪???붿〈 湲덉?
+          finally { if ($env:PFX_PATH -and (Test-Path $env:PFX_PATH)) { Remove-Item $env:PFX_PATH -Force } }   # PFX ?遺용뮞???遺욍?疫뀀뜆?
           exit $code
 
-      - name: Golden Master 寃??RSA 쨌 PE32+ 쨌 FFmpeg 쨌 WebView2 쨌 ?ㅼ튂/?쒓굅 + ?ъ슜???곗씠??蹂댁〈)
+      - name: Golden Master 野꺜??RSA 夷?PE32+ 夷?FFmpeg 夷?WebView2 夷???쇳뒄/??볤탢 + ??????怨쀬뵠??癰귣똻??
         shell: pwsh
         env:
           ALLOW_MISSING_FFMPEG: ${{ github.event_name == 'workflow_dispatch' && inputs.allow_missing_ffmpeg }}
         run: |
-          # ?쇳쉶???щ꼫?먯꽌留??ㅼ젣 ?ㅼ튂/?쒓굅 ?ъ씠???섑뻾(-InstallCycle)
+          # ??녹돳????瑗?癒?퐣筌???쇱젫 ??쇳뒄/??볤탢 ???????묐뻬(-InstallCycle)
           $verify = @{
             PublishDir            = Join-Path $env:GITHUB_WORKSPACE 'publish\release'
             RequireWebView2Redist = $true
@@ -174,24 +174,24 @@ jobs:
           & ./scripts/verify_release.ps1 @verify
           exit $LASTEXITCODE
 
-      - name: 諛고룷 ?곗텧臾??뺥빀(artifacts/release/installer)
+      - name: 獄쏄퀬猷??怨쀭뀱???類λ?(artifacts/release/installer)
         shell: pwsh
         run: |
           $v = '${{ steps.ver.outputs.app_version }}'
           $out = Join-Path $env:GITHUB_WORKSPACE 'artifacts\release\installer'
           $setup = Join-Path $out "PromptFlowStudio-Setup-v$v.exe"
           $sums = Join-Path $out 'release-checksums.sha256'
-          if (-not (Test-Path -LiteralPath $setup)) { Write-Error "諛고룷 ?몄뒪?⑤윭媛 ?놁뒿?덈떎: $setup"; exit 1 }
-          if (-not (Test-Path -LiteralPath $sums)) { Write-Error "泥댄겕???뚯씪???놁뒿?덈떎: $sums"; exit 1 }
+          if (-not (Test-Path -LiteralPath $setup)) { Write-Error "獄쏄퀬猷??紐꾨뮞??ㅼ쑎揶쎛 ??곷뮸??덈뼄: $setup"; exit 1 }
+          if (-not (Test-Path -LiteralPath $sums)) { Write-Error "筌ｋ똾寃?????뵬????곷뮸??덈뼄: $sums"; exit 1 }
           $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
-          if (-not (Select-String -LiteralPath $sums -SimpleMatch "$hash  PromptFlowStudio-Setup-v$v.exe" -Quiet)) { Write-Error 'release-checksums.sha256 ?댁떆 遺덉씪移?; exit 1 }
+          if (-not (Select-String -LiteralPath $sums -SimpleMatch "$hash  PromptFlowStudio-Setup-v$v.exe" -Quiet)) { Write-Error 'release-checksums.sha256 ??곷뻻 ?븍뜆?ょ㎉?; exit 1 }
           $src = Join-Path $env:GITHUB_WORKSPACE "installer\Output\PromptFlowStudio-$v-win-x64-setup.exe"
           Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'publish\release\pfi1.manifest') -Destination $out -Force
           Copy-Item -LiteralPath ($src + '.release.json') -Destination (Join-Path $out "PromptFlowStudio-Setup-v$v.release.json") -Force
           Copy-Item -LiteralPath ($src + '.verify.json') -Destination (Join-Path $out "PromptFlowStudio-Setup-v$v.verify.json") -Force
           Get-ChildItem -LiteralPath $out -File | ForEach-Object { Write-Host ('{0,12:N0}  {1}' -f $_.Length, $_.Name) }
 
-      - name: Actions ?꾪떚?⑺듃 ?낅줈??
+      - name: Actions ?袁る뼒??븍뱜 ??낆쨮??
         uses: actions/upload-artifact@v4
         with:
           name: promptflow-studio-installer
@@ -199,21 +199,21 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # ?? ???⑥씪 GitHub Release 寃뚯떆(?쒓렇 ?몄떆 ?쒖뿉留? ???????????????????????????????????????????
+  # ???? ????μ뵬 GitHub Release 野껊슣????볥젃 ?紐꾨뻻 ??뽯퓠筌? ??????????????????????????????????????????????????????????????????????????????????????
   publish-release:
-    name: GitHub Release 寃뚯떆
+    name: GitHub Release 野껊슣??
     needs: installer
     if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: ?몄뒪?⑤윭 ?꾪떚?⑺듃 ?섏떊
+      - name: ?紐꾨뮞??ㅼ쑎 ?袁る뼒??븍뱜 ??뤿뻿
         uses: actions/download-artifact@v4
         with:
           name: promptflow-studio-installer
           path: artifacts/release/installer
 
-      - name: GitHub Release 泥⑤?
+      - name: GitHub Release 筌ｂ뫀?
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
