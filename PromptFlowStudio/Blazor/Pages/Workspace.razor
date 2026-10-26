@@ -16,6 +16,8 @@
 @inject AiAudioDrivenLipSyncService LipAi
 @inject AiVoiceoverTtsService Tts
 @inject EpisodicStorySeriesBuilder SeriesBuilder
+@inject PromptFlowStudio.Services.Prompt.PromptSynthesizerService Synth
+@inject GeminiPromptEnhancer Enhancer
 
 @* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
    상태는 WanJobState(싱글턴)에 있고, 이 컴포넌트는 OnChange 를 구독해 InvokeAsync(StateHasChanged)로만 갱신한다.
@@ -30,7 +32,7 @@
             <button class="ws-back" @onclick='() => Nav.NavigateTo("storyboard")'>🎬 스토리보드(여러 컷) →</button>
         </div>
         <h1 class="ws-title">새 프로젝트 <span class="ws-title-g">텍스트 → 영상</span>
-            <span class="ws-accel @AccelClass" title="Wan 2.1 엔진 상태">⚡ WAN 2.1 · @AccelLabel</span></h1>
+            <span class="ws-accel @AccelClass" title="Wan 2.1 엔진 상태">⚡ @(AccelClass == "ready" ? _vm.StatusBadge : "WAN 2.1 · " + AccelLabel)</span></h1>
         <p class="ws-sub">프롬프트를 입력하면 통의만상(Wan 2.1)이 5초 영상을 생성합니다.</p>
     </header>
 
@@ -105,13 +107,13 @@
                       maxlength="800" disabled="@State.IsBusy"></textarea>
             <div class="ws-row">
                 <label class="ws-lbl">해상도
-                    <select class="ws-sel" @bind="_size" disabled="@State.IsBusy">
+                    <select class="ws-sel" @bind="_size" @bind:after="SyncSize" disabled="@State.IsBusy">
                         <option value="1280*720">가로 1280×720 (16:9)</option>
                         <option value="720*1280">세로 720×1280 (9:16)</option>
                         <option value="960*960">정사각 960×960 (1:1)</option>
                     </select>
                 </label>
-                <span class="ws-count">@(_prompt?.Length ?? 0)/800</span>
+                <span class="ws-count @(_vm.IsOverBudget ? "over" : null)" title="Wan 2.1 합성 프롬프트 글자 수">@_vm.CharacterCount / @_vm.MaxCharacterLimit</span>
             </div>
             @* v15.6.0 🎥 Wan 2.1 시네마틱 카메라 & 그래픽 스타일 — 그룹 배타 결합(재클릭 0B) *@
             <div class="ws-zen">
@@ -135,7 +137,7 @@
                 </div>
             </div>
             @* v5.6.5·v5.6.6: 생성 전 예상 첫 프레임 + 참조(i2v) 이미지 앵커 대조(정체성 드리프트 사전검증) *@
-            <FirstFramePreviewDeck Prompt="@_prompt" AnchorImageUrl="@_imagePreview" Size="@_size" CanStart="@CanStart" OnStartGenerate="Start" />
+            <FirstFramePreviewDeck Prompt="@_prompt" AnchorImageUrl="@_imagePreview" AnchorAspect="@_vm.ReferenceAspectCss" Size="@_size" CanStart="@CanStart" OnStartGenerate="Start" />
             <div class="ws-actions">
                 @if (State.IsBusy)
                 {
@@ -158,7 +160,15 @@
             @if (State.Phase == WanJobPhase.Idle)
             {
                 <div class="ws-empty">
-                    <div class="ws-empty-ic">🎬</div>
+                    @* 뷰파인더 HUD — 선택 해상도 비율 가이드 박스 + 3분할 그리드 + 중앙 크로스헤어 + 해상도 상태 *@
+                    <div class="ws-vf" style="aspect-ratio: @_vm.HudAspectCss">
+                        <span class="ws-vf-g v1"></span><span class="ws-vf-g v2"></span>
+                        <span class="ws-vf-g h1"></span><span class="ws-vf-g h2"></span>
+                        <span class="ws-vf-x"></span>
+                        <span class="ws-vf-c tl"></span><span class="ws-vf-c tr"></span><span class="ws-vf-c bl"></span><span class="ws-vf-c br"></span>
+                        <span class="ws-vf-mode">@_vm.StatusBadge</span>
+                        <span class="ws-vf-st">@_vm.HudStatusText</span>
+                    </div>
                     <div>왼쪽에 프롬프트를 입력하고 <b>생성 시작</b>을 누르세요.</div>
                     <button class="ws-empty-card" @onclick='() => Nav.NavigateTo("storyboard")'>🪄 여러 컷을 한 번에 — 대본 자동 생성 →</button>
                 </div>
@@ -370,7 +380,7 @@
 
             <div class="ws-w ws-gem">
                 <div class="ws-w-h">✨ 제미나이 AI 추천 스튜디오</div>
-                <button class="ws-gem-enh" @onclick="_geminiEnhance" disabled="@State.IsBusy" title="@GeminiRecommendationMatrix.QualityTokens">🪄 AI 문장 자동 강화</button>
+                <button class="ws-gem-enh" @onclick="_geminiEnhance" disabled="@(State.IsBusy || _enhancing)" title="@GeminiRecommendationMatrix.QualityTokens">🪄 AI 문장 자동 강화</button>
                 <div class="ws-gem-h">🌟 제미나이 픽 프리셋</div>
                 <div class="ws-chips">
                     @for (var i = 0; i < _geminiPick.Length; i++)
@@ -495,6 +505,22 @@
     .ws-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 8px;
         min-height: 220px; color: var(--text-muted); font-size: 13px; line-height: 1.7; }
     .ws-empty-ic { font-size: 44px; opacity: .5; }
+    .ws-vf { position: relative; height: min(40vh, 280px); width: auto; max-width: 100%; margin-bottom: 6px; border: 1px dashed color-mix(in srgb, #22d3ee 55%, var(--line)); border-radius: 6px;
+        background: radial-gradient(ellipse at center, color-mix(in srgb, #22d3ee 6%, transparent), transparent 70%); overflow: hidden; }
+    .ws-vf-g { position: absolute; background: color-mix(in srgb, #22d3ee 22%, transparent); }
+    .ws-vf-g.v1, .ws-vf-g.v2 { top: 0; bottom: 0; width: 1px; }
+    .ws-vf-g.h1, .ws-vf-g.h2 { left: 0; right: 0; height: 1px; }
+    .ws-vf-g.v1 { left: 33.333%; } .ws-vf-g.v2 { left: 66.666%; }
+    .ws-vf-g.h1 { top: 33.333%; } .ws-vf-g.h2 { top: 66.666%; }
+    .ws-vf-x { position: absolute; left: 50%; top: 50%; width: 28px; height: 28px; transform: translate(-50%, -50%); border: 1px solid #22d3ee; border-radius: 50%; }
+    .ws-vf-x::before, .ws-vf-x::after { content: ""; position: absolute; background: #22d3ee; left: 50%; top: 50%; transform: translate(-50%, -50%); }
+    .ws-vf-x::before { width: 44px; height: 1px; } .ws-vf-x::after { width: 1px; height: 44px; }
+    .ws-vf-c { position: absolute; width: 14px; height: 14px; border: 2px solid #22d3ee; }
+    .ws-vf-c.tl { left: 6px; top: 6px; border-right: 0; border-bottom: 0; } .ws-vf-c.tr { right: 6px; top: 6px; border-left: 0; border-bottom: 0; }
+    .ws-vf-c.bl { left: 6px; bottom: 6px; border-right: 0; border-top: 0; } .ws-vf-c.br { right: 6px; bottom: 6px; border-left: 0; border-top: 0; }
+    .ws-vf-mode { position: absolute; left: 26px; top: 8px; font: 800 9px/1 var(--mono); letter-spacing: .06em; color: #22d3ee; }
+    .ws-vf-st { position: absolute; right: 26px; bottom: 8px; font: 700 9px/1 var(--mono); letter-spacing: .05em; color: #22d3ee; opacity: .85; }
+    .ws-count.over { color: #f87171; }
     .ws-empty b { color: var(--text-secondary); }
     .ws-empty-card { margin-top: 6px; padding: 9px 16px; border-radius: 999px; cursor: pointer; font: 700 12px inherit; color: var(--accent-2);
         background: color-mix(in srgb, var(--flow-cyan) 8%, var(--card-2)); border: 1px solid color-mix(in srgb, var(--flow-cyan) 30%, var(--line)); }
@@ -685,11 +711,11 @@
     private string AccelLabel => !State.Enabled ? "OFFLINE" : State.IsBusy ? "RENDERING" : "READY";
 
     // v15.3.0 제미나이 AI 추천: 강화(누적 1회)·픽(참조 교체) 핸들러도 인스턴스당 1회 생성.
-    private Action _geminiEnhance = static () => { };
+    private Func<Task> _geminiEnhance = static () => Task.CompletedTask;
     private Action[] _geminiPick = Array.Empty<Action>();
     private void BuildGeminiInjectors()
     {
-        _geminiEnhance = () => _prompt = GeminiRecommendationMatrix.EnhancePromptWithGemini(_prompt);
+        _geminiEnhance = EnhanceWithGeminiAsync;
         var arr = new Action[GeminiRecommendationMatrix.Picks.Length];
         for (var i = 0; i < arr.Length; i++)
         {
@@ -697,6 +723,40 @@
             arr[i] = () => _prompt = GeminiRecommendationMatrix.InjectPick(idx, _prompt);
         }
         _geminiPick = arr;
+    }
+
+    // 🪄 AI 문장 자동 강화 — Gemini 시네마틱 확장. 키 없음/실패 시 Enhancer 가 원본을 돌려주면 기존 로컬 품질 토큰 결합으로 폴백.
+    private bool _enhancing;
+    private async Task EnhanceWithGeminiAsync()
+    {
+        if (_enhancing) return;
+        _enhancing = true;
+        try
+        {
+            var src = _prompt ?? "";
+            var cam = WanCameraStyleStudio.ActiveIndex(src, WanCameraStyleStudio.Cameras);
+            var sty = WanCameraStyleStudio.ActiveIndex(src, WanCameraStyleStudio.Styles);
+            var enhanced = await Enhancer.EnhancePromptAsync(src,
+                sty >= 0 ? WanCameraStyleStudio.Styles[sty].Label : null,
+                cam >= 0 ? WanCameraStyleStudio.Cameras[cam].Label : null, _mediaCts.Token);
+            _prompt = string.Equals(enhanced, src, StringComparison.Ordinal) ? GeminiRecommendationMatrix.EnhancePromptWithGemini(src) : enhanced;
+        }
+        catch (Exception ex) { Program.Log("Workspace.GeminiEnhance", ex); }
+        finally { _enhancing = false; }
+    }
+
+    // ── 1번 워크플로우 뷰모델(T2V↔I2V 감지 · 합성 글자 수 · HUD) ──
+    private PromptFlowStudio.ViewModels.PromptInputViewModel _vm = null!;
+    private void SyncSize() => _vm.SetOutputSize(_size);
+
+    // 렌더 직전 프롬프트 동기화 — 칩/드래프트/AI 강화 등 _prompt 를 바꾸는 모든 경로를 한 곳에서 흡수(변경 없으면 통지 0).
+    protected override bool ShouldRender() { _vm.UserInput = _prompt; return true; }
+
+    // 뷰모델 통지 — 프롬프트 계열은 이미 렌더 중 동기화되므로 제외, 이미지/해상도 변화만 UI 스레드로 마샬링.
+    private void OnVmChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(_vm.UserInput) or nameof(_vm.Result) or nameof(_vm.CharacterCount) or nameof(_vm.IsOverBudget)) return;
+        _ = InvokeAsync(StateHasChanged);
     }
 
     private string? _alertedError;   // v16.3.1: 같은 실패로 팝업 반복 방지
@@ -842,6 +902,8 @@
         _imagePath = savePath;
         _imageName = e.File.Name;
         _imagePreview = Media.ToPlaybackUrl(savePath);   // base64 불필요 — 가상호스트에서 직접
+        try { await using var fs = File.OpenRead(savePath); await _vm.HandleImageDroppedAsync(fs, _mediaCts.Token); }   // T2V→I2V 감지 · 비율 판독
+        catch (Exception ex) { Program.Log("Workspace.VmImage", ex); }
     }
 
     /// <summary>v16.5.0: 끝 프레임 선택/드롭 — 첫 프레임과 같은 저장 경로 규칙.</summary>
@@ -883,6 +945,7 @@
     {
         try { if (!string.IsNullOrEmpty(_imagePath) && File.Exists(_imagePath)) File.Delete(_imagePath); } catch { /* 무시 */ }
         _imagePath = null; _imageName = null; _imagePreview = null; _imgError = null;
+        _vm.RemoveReferenceImage();   // I2V→T2V 복귀
         ClearLastImage();   // v16.5.0: 첫 프레임이 없으면 끝 프레임도 무의미
     }
 
@@ -897,16 +960,21 @@
     protected override void OnInitialized()
     {
         State.OnChange += OnStateChanged;
+        _vm = new PromptFlowStudio.ViewModels.PromptInputViewModel(Synth);
+        _vm.SetOutputSize(_size);
+        _vm.PropertyChanged += OnVmChanged;
         BuildBabyInjectors();
         BuildGeminiInjectors();
         BuildZenInjectors();
         var d = Draft.Consume();   // 모션프리셋(/motion)에서 전달된 스니펫 흡수
         if (!string.IsNullOrWhiteSpace(d)) _prompt = d;
         _recent = Library.List(6);
+        _vm.UserInput = _prompt;
     }
     public void Dispose()
     {
         State.OnChange -= OnStateChanged;
+        _vm.PropertyChanged -= OnVmChanged;
         var cts = Interlocked.Exchange(ref _liveCts, null);
         if (cts is not null) { cts.Cancel(); cts.Dispose(); }
         _mediaCts.Cancel(); _mediaCts.Dispose();

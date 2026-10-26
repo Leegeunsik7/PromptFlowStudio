@@ -68,6 +68,8 @@ public sealed class MainForm : Form
         services.AddSingleton<GeminiConfigService>();                              // Gemini API 키 동적 설정(관리자 UI 등록 · 검증 핑 · override.json 영속 · 재시작 불필요 · 모든 Gemini 서비스의 키 근원)
         services.AddSingleton<IGeminiDirectorService, GeminiDirectorService>();     // AI 감독 자율 검수(Gemini 멀티모달 · QualityScore + 프롬프트 보정 Re-roll · 키 없으면 비활성)
         services.AddSingleton<GeminiClient>();                                      // Gemini 멀티모달 REST 공용 클라이언트(텍스트+이미지/오디오/비디오 인라인 · 3대 고급 서비스 공유)
+        services.AddSingleton<PromptFlowStudio.Services.Prompt.PromptSynthesizerService>();   // 1번 워크플로우 프롬프트 합성기(Subject 우선 · 800자 예산 · 네거티브 중복 제거)
+        services.AddSingleton(sp => new PromptFlowStudio.Services.AI.GeminiPromptEnhancer(new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(30) }, sp.GetRequiredService<GeminiConfigService>())); // 🪄 AI 문장 자동 강화(실패 시 원본 반환)
         services.AddSingleton<IGeminiVideoAnalyzerService, GeminiVideoAnalyzerService>(); // 네이티브 MP4 통비디오 시간축 분석(VideoTemporalScore + 모션 보정)
         services.AddSingleton<IGeminiKineticSyncService, GeminiKineticSyncService>();     // 키네틱 자막/SFX 밀리초 타임코드 추출(단어별 highlight + SfxTriggers)
         services.AddSingleton<IGeminiColorGradingService, GeminiColorGradingService>();   // AI 시네마틱 컬러 그레이딩(분위기별 ffmpeg vf · 안전 검증)
