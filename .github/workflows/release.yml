@@ -208,4 +208,5 @@ jobs:
             artifacts/release/installer/PromptFlowStudio-Setup-v*.exe
             artifacts/release/installer/release-checksums.sha256
             artifacts/release/installer/pfi1.manifest
+            artifacts/release/installer/*.verify.json
           fail_on_unmatched_files: true
