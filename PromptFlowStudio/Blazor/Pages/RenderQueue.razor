@@ -1,10 +1,13 @@
 @page "/queue"
 @implements IDisposable
+@using System.Globalization
+@using PromptFlowStudio.Services.Batch
 @inject WanJobState WanJob
 @inject StoryboardJobManager Jobs
 @inject NavigationManager Nav
+@inject PromptFlowStudio.ViewModels.RenderQueueViewModel Vm
 
-@* [PromptFlow Studio] 렌더링 큐 — 단일 컷(WanJobState)과 스토리보드 배치(StoryboardJobManager)의 진행을 대형 뷰어로 관찰. *@
+@* [PromptFlow Studio] 렌더링 큐 — 대량 양산 렌더 큐(RenderQueueViewModel)·단일 컷(WanJobState)·스토리보드 배치(StoryboardJobManager)의 진행을 대형 뷰어로 관찰. *@
 
 <PageTitle>PromptFlow Studio · 렌더링 큐</PageTitle>
 
@@ -16,6 +19,61 @@
 
     <div style="margin:12px 0;"><StudioMonitorHeader EngineReady="true" /></div>
     <div style="margin:0 0 16px;"><ResourceMonitor /></div>
+
+    @* ── 대량 양산 렌더 큐 요약 HUD ── *@
+    <section class="q-hud">
+        <div class="q-hud-c pend"><span class="q-hud-l">대기 중</span><b>@(Vm.PendingCount.ToString(CultureInfo.InvariantCulture))</b></div>
+        <div class="q-hud-c proc"><span class="q-hud-l">렌더 중</span><b>@(Vm.ProcessingCount.ToString(CultureInfo.InvariantCulture))</b></div>
+        <div class="q-hud-c done"><span class="q-hud-l">완료</span><b>@(Vm.CompletedCount.ToString(CultureInfo.InvariantCulture))</b></div>
+        <div class="q-hud-c fail"><span class="q-hud-l">실패</span><b>@(Vm.FailedCount.ToString(CultureInfo.InvariantCulture))</b></div>
+        <div class="q-hud-a">
+            <button class="q-btn ghost" @onclick="Vm.TogglePause">@(Vm.IsPaused ? "▶ 큐 재개" : "⏸ 큐 일시정지")</button>
+            <button class="q-btn ghost" disabled="@(Vm.CompletedCount == 0)" @onclick="Vm.ClearCompleted">🧹 완료 항목 정리</button>
+        </div>
+    </section>
+
+    @if (Vm.TotalJobsCount > 0)
+    {
+        <section class="q-card">
+            <div class="q-card-h">
+                <span>🏭 대량 양산 렌더 큐 <span class="q-dim">— 총 @(Vm.TotalJobsCount.ToString(CultureInfo.InvariantCulture))건</span></span>
+                @if (Vm.ActiveJob is { } act) { <span class="q-badge run">렌더 중 · @(Trunc(act.Prompt))</span> }
+                else if (Vm.IsPaused) { <span class="q-badge">일시정지</span> }
+            </div>
+            <table class="q-tbl">
+                <thead><tr><th>#</th><th>프롬프트</th><th>시드</th><th>해상도</th><th>길이</th><th>상태</th><th>진행률</th><th></th></tr></thead>
+                <tbody>
+                    @for (var i = 0; i < Vm.Jobs.Count; i++)
+                    {
+                        var job = Vm.Jobs[i];
+                        var no = i + 1;
+                        <tr @key="job.JobId">
+                            <td class="q-mono">@(no.ToString(CultureInfo.InvariantCulture))</td>
+                            <td class="q-tbl-p" title="@job.Prompt">@(Trunc(job.Prompt))</td>
+                            <td class="q-mono">@(job.Seed.ToString(CultureInfo.InvariantCulture))</td>
+                            <td class="q-mono">@job.Resolution</td>
+                            <td class="q-mono">@(job.DurationSec.ToString("0.#", CultureInfo.InvariantCulture))s</td>
+                            <td><span class="q-st @JobCls(job.Status)">@JobLabel(job.Status)</span></td>
+                            <td>
+                                <div class="q-scene-bar"><div class="q-scene-bar-f" style="width:@(job.ProgressPercent.ToString(CultureInfo.InvariantCulture))%"></div></div>
+                                <span class="q-mono q-pct">@(job.ProgressPercent.ToString(CultureInfo.InvariantCulture))%</span>
+                            </td>
+                            <td class="q-tbl-a">
+                                @if (job.Status is BatchJobStatus.Queued or BatchJobStatus.Processing)
+                                {
+                                    <button class="q-ic" title="취소" @onclick="() => Vm.Cancel(job.JobId)">✕</button>
+                                }
+                                else if (job.Status is BatchJobStatus.Failed or BatchJobStatus.Cancelled)
+                                {
+                                    <button class="q-ic" title="재시도" @onclick="() => Vm.Retry(job.JobId)">↺</button>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </section>
+    }
 
     @if (!AnyActive)
     {
@@ -124,24 +182,53 @@
     .q-btn.go { color: #fff; background: linear-gradient(135deg, var(--flow-violet), var(--accent)); }
     .q-btn.ghost { background: var(--card-2); color: var(--text-secondary); border: 1px solid var(--line); }
 
+    .q-hud { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; margin-bottom: 16px; }
+    .q-hud-c { flex: 1 1 110px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
+    .q-hud-c b { font-size: 26px; font-weight: 900; color: var(--text-primary); line-height: 1; }
+    .q-hud-l { font: 700 11px var(--mono); color: var(--text-muted); }
+    .q-hud-c.pend { border-color: color-mix(in srgb, #eab308 45%, var(--line)); } .q-hud-c.pend b { color: #eab308; }
+    .q-hud-c.proc { border-color: color-mix(in srgb, #3b82f6 45%, var(--line)); } .q-hud-c.proc b { color: #3b82f6; }
+    .q-hud-c.done { border-color: color-mix(in srgb, #10b981 45%, var(--line)); } .q-hud-c.done b { color: #10b981; }
+    .q-hud-c.fail { border-color: color-mix(in srgb, #ef4444 45%, var(--line)); } .q-hud-c.fail b { color: #ef4444; }
+    .q-hud-a { display: flex; flex-direction: column; gap: 6px; justify-content: center; }
+    .q-hud-a .q-btn:disabled { opacity: .45; cursor: default; }
+
+    .q-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    .q-tbl th { text-align: left; font: 700 10.5px var(--mono); color: var(--text-muted); padding: 6px 8px; border-bottom: 1px solid var(--line); }
+    .q-tbl td { padding: 7px 8px; border-bottom: 1px solid var(--line); color: var(--text-secondary); vertical-align: middle; }
+    .q-tbl-p { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .q-tbl-a { width: 36px; text-align: center; }
+    .q-mono { font: 600 11.5px var(--mono); }
+    .q-pct { color: var(--text-muted); }
+    .q-st { font: 700 10px var(--mono); border-radius: 999px; padding: 3px 8px; border: 1px solid var(--line); white-space: nowrap; }
+    .q-st.pend { color: #eab308; border-color: color-mix(in srgb, #eab308 50%, var(--line)); }
+    .q-st.proc { color: #3b82f6; border-color: color-mix(in srgb, #3b82f6 50%, var(--line)); }
+    .q-st.done { color: #10b981; border-color: color-mix(in srgb, #10b981 50%, var(--line)); }
+    .q-st.fail { color: #ef4444; border-color: color-mix(in srgb, #ef4444 50%, var(--line)); }
+    .q-ic { width: 26px; height: 26px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; font-weight: 800; }
+    .q-ic:hover { color: var(--text-primary); }
+
     @@keyframes q-flow { to { background-position: 200% 0; } }
     @@media (prefers-reduced-motion: reduce) { .q-bar-f { animation: none; } }
 </style>
 
 @code {
-    private bool AnyActive => WanJob.Phase != WanJobPhase.Idle || (Jobs.Current is { } p && p.Scenes.Count > 0);
+    private bool AnyActive => Vm.TotalJobsCount > 0 || WanJob.Phase != WanJobPhase.Idle || (Jobs.Current is { } p && p.Scenes.Count > 0);
 
     protected override void OnInitialized()
     {
         WanJob.OnChange += OnCh;
         Jobs.OnChange += OnCh;
         Jobs.OnCompleted += OnCh;
+        Vm.Changed += OnCh;
+        Vm.Refresh();
     }
     public void Dispose()
     {
         WanJob.OnChange -= OnCh;
         Jobs.OnChange -= OnCh;
         Jobs.OnCompleted -= OnCh;
+        Vm.Changed -= OnCh;
     }
     private void OnCh() => InvokeAsync(StateHasChanged);
 
@@ -165,6 +252,17 @@
     {
         SceneStatus.Completed => "ok", SceneStatus.Failed or SceneStatus.Canceled => "bad",
         SceneStatus.Generating or SceneStatus.Downloading => "run", _ => "",
+    };
+
+    private static string JobLabel(BatchJobStatus s) => s switch
+    {
+        BatchJobStatus.Pending => "대기", BatchJobStatus.Queued => "대기열", BatchJobStatus.Processing => "렌더 중",
+        BatchJobStatus.Completed => "완료", BatchJobStatus.Failed => "실패", BatchJobStatus.Cancelled => "취소", _ => "",
+    };
+    private static string JobCls(BatchJobStatus s) => s switch
+    {
+        BatchJobStatus.Processing => "proc", BatchJobStatus.Completed => "done",
+        BatchJobStatus.Failed or BatchJobStatus.Cancelled => "fail", _ => "pend",
     };
 
     private static string Trunc(string s) => s.Length <= 60 ? s : s[..58] + "…";

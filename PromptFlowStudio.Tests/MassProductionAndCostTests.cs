@@ -81,7 +81,7 @@ public class MassProductionAndCostTests
     [Fact]
     public void ViewModel_PromptChange_UpdatesEstimate_AndDispatchQueuesJobs()
     {
-        var vm = new MassProductionViewModel(_batch, _est);
+        var vm = new MassProductionViewModel(_batch, _est, new RenderQueueService(TimeSpan.Zero, autoStart: false));
         Assert.Equal(0, vm.JobCount);
         Assert.Equal(0, vm.TotalEstimatedCredits);
 
@@ -107,7 +107,7 @@ public class MassProductionAndCostTests
     [Fact]
     public void ViewModel_GeneratedJobs_PreviewTracksInput_AndFlipsToQueuedOnDispatch()
     {
-        var vm = new MassProductionViewModel(_batch, _est);
+        var vm = new MassProductionViewModel(_batch, _est, new RenderQueueService(TimeSpan.Zero, autoStart: false));
         Assert.Empty(vm.GeneratedJobs);
 
         vm.PromptInputText = "a\nb\nc";

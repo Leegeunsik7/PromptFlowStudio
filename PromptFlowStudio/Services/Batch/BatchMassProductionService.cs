@@ -4,7 +4,7 @@ using PromptFlowStudio.Services.Render;
 
 namespace PromptFlowStudio.Services.Batch;
 
-public enum BatchJobStatus { Pending, Queued, Processing, Completed, Failed }
+public enum BatchJobStatus { Pending, Queued, Processing, Completed, Failed, Cancelled }
 
 /// <summary>대량 양산 렌더 작업 1건(프롬프트 1줄 = 작업 1건).</summary>
 public sealed class BatchRenderJob
@@ -15,6 +15,9 @@ public sealed class BatchRenderJob
     public string Resolution { get; init; } = RenderCostEstimatorService.DefaultResolution;
     public float DurationSec { get; init; } = RenderCostEstimatorService.DefaultDurationSec;
     public BatchJobStatus Status { get; set; } = BatchJobStatus.Pending;
+    /// <summary>렌더 진행률 0~100 — <see cref="PromptFlowStudio.Services.Render.RenderQueueService"/> 워커가 갱신.</summary>
+    public int ProgressPercent { get; set; }
+    public DateTimeOffset? CompletedAt { get; set; }
 }
 
 /// <summary>

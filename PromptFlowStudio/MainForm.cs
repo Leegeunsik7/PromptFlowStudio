@@ -74,6 +74,8 @@ public sealed class MainForm : Form
         services.AddSingleton<PromptFlowStudio.Services.Render.RenderCostEstimatorService>();   // 3번 워크플로우 렌더 비용/VRAM 사전 추산
         services.AddSingleton<PromptFlowStudio.Services.Batch.BatchMassProductionService>();    // 3번 워크플로우 다중 줄 프롬프트 → 배치 렌더 작업 전개
         services.AddSingleton<PromptFlowStudio.ViewModels.MassProductionViewModel>();           // 3번 워크플로우 대량 양산 상태 · 렌더 큐(화면 간 공유)
+        services.AddSingleton<PromptFlowStudio.Services.Render.IRenderQueueService, PromptFlowStudio.Services.Render.RenderQueueService>();   // 전역 렌더 큐 + 백그라운드 가상 렌더 워커
+        services.AddSingleton<PromptFlowStudio.ViewModels.RenderQueueViewModel>();             // 렌더링 큐 화면 요약 통계 · 작업 목록
         services.AddSingleton(sp => new PromptFlowStudio.Services.AI.GeminiPromptEnhancer(new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(30) }, sp.GetRequiredService<GeminiConfigService>())); // 🪄 AI 문장 자동 강화(실패 시 원본 반환)
         services.AddSingleton<IGeminiVideoAnalyzerService, GeminiVideoAnalyzerService>(); // 네이티브 MP4 통비디오 시간축 분석(VideoTemporalScore + 모션 보정)
         services.AddSingleton<IGeminiKineticSyncService, GeminiKineticSyncService>();     // 키네틱 자막/SFX 밀리초 타임코드 추출(단어별 highlight + SfxTriggers)

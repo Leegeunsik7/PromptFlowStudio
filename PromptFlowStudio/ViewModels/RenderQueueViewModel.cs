@@ -1,0 +1,70 @@
+using System;
+using System.Collections.Generic;
+using PromptFlowStudio.Services.Batch;
+using PromptFlowStudio.Services.Render;
+
+namespace PromptFlowStudio.ViewModels;
+
+/// <summary>
+/// [PromptFlowStudio] 렌더링 큐 화면 뷰모델 — <see cref="IRenderQueueService"/> 스냅샷 기반 요약 통계 · 활성 작업 · 큐 제어.
+///   ▸ 서비스 OnChange 마다 <see cref="Refresh"/> 로 카운트 재계산 후 <see cref="Changed"/> 전파(워커 스레드 — Blazor 는 InvokeAsync 마샬링).
+/// </summary>
+public sealed class RenderQueueViewModel : IDisposable
+{
+    private readonly IRenderQueueService _queue;
+
+    public RenderQueueViewModel(IRenderQueueService queue)
+    {
+        _queue = queue ?? throw new ArgumentNullException(nameof(queue));
+        _queue.OnChange += OnQueueChanged;
+        Refresh();
+    }
+
+    public event Action? Changed;
+
+    public IReadOnlyList<BatchRenderJob> Jobs { get; private set; } = Array.Empty<BatchRenderJob>();
+    public BatchRenderJob? ActiveJob { get; private set; }
+    public bool IsPaused { get; private set; }
+    public int TotalJobsCount { get; private set; }
+    public int PendingCount { get; private set; }
+    public int ProcessingCount { get; private set; }
+    public int CompletedCount { get; private set; }
+    public int FailedCount { get; private set; }
+
+    public void TogglePause() { if (_queue.IsPaused) _queue.ResumeQueue(); else _queue.PauseQueue(); }
+    public void ClearCompleted() => _queue.ClearCompleted();
+    public void Cancel(Guid jobId) => _queue.CancelJob(jobId);
+    public void Retry(Guid jobId) => _queue.RetryJob(jobId);
+
+    public void Refresh()
+    {
+        var snap = _queue.Snapshot();
+        int pending = 0, processing = 0, completed = 0, failed = 0;
+        for (var i = 0; i < snap.Length; i++)
+        {
+            switch (snap[i].Status)
+            {
+                case BatchJobStatus.Pending or BatchJobStatus.Queued: pending++; break;
+                case BatchJobStatus.Processing: processing++; break;
+                case BatchJobStatus.Completed: completed++; break;
+                default: failed++; break;   // Failed · Cancelled
+            }
+        }
+        Jobs = snap;
+        ActiveJob = _queue.ActiveJob;
+        IsPaused = _queue.IsPaused;
+        TotalJobsCount = snap.Length;
+        PendingCount = pending;
+        ProcessingCount = processing;
+        CompletedCount = completed;
+        FailedCount = failed;
+    }
+
+    public void Dispose() => _queue.OnChange -= OnQueueChanged;
+
+    private void OnQueueChanged()
+    {
+        Refresh();
+        try { Changed?.Invoke(); } catch (Exception) { }
+    }
+}

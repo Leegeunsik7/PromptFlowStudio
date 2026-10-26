@@ -12,16 +12,18 @@ namespace PromptFlowStudio.ViewModels;
 /// [PromptFlowStudio] 3번 워크플로우 【대량 양산 &amp; 비용】 뷰모델 — 다중 줄 프롬프트 입력 · 비용/VRAM 실시간 추산 · 렌더 큐 일괄 전송.
 ///   ▸ 프롬프트/해상도/길이/FPS 변경 시 <see cref="RenderCostEstimatorService.Estimate"/> 재호출(작업 0건이면 지표 0).
 ///   ▸ <see cref="GeneratedJobs"/> 는 입력·시드 변경마다 재전개되는 미리보기(Pending), 디스패치 직후엔 전송분(Queued)을 표시.
-///   ▸ <see cref="DispatchAllToRenderQueue"/> 는 작업을 Queued 로 표시해 <see cref="RenderQueue"/> 에 적재.
+///   ▸ <see cref="DispatchAllToRenderQueue"/> 는 작업을 <see cref="IRenderQueueService.Enqueue"/> 로 전역 렌더 큐에 직접 적재(Queued).
 ///   ⚠ PropertyChanged 는 호출 스레드에서 발생 — Blazor 구독부는 InvokeAsync(StateHasChanged)로 마샬링한다.
 /// </summary>
 public sealed class MassProductionViewModel : INotifyPropertyChanged
 {
     private readonly BatchMassProductionService _batch;
     private readonly RenderCostEstimatorService _estimator;
+    private readonly IRenderQueueService _queue;
 
-    public MassProductionViewModel(BatchMassProductionService batch, RenderCostEstimatorService estimator)
+    public MassProductionViewModel(BatchMassProductionService batch, RenderCostEstimatorService estimator, IRenderQueueService queue)
     {
+        _queue = queue ?? throw new ArgumentNullException(nameof(queue));
         _batch = batch ?? throw new ArgumentNullException(nameof(batch));
         _estimator = estimator ?? throw new ArgumentNullException(nameof(estimator));
         Recalculate();
@@ -29,8 +31,8 @@ public sealed class MassProductionViewModel : INotifyPropertyChanged
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    /// <summary>렌더 큐 — 전송된 작업 누적(상태는 렌더러가 Processing/Completed/Failed 로 갱신).</summary>
-    public ObservableCollection<BatchRenderJob> RenderQueue { get; } = new();
+    /// <summary>전역 렌더 큐(<see cref="IRenderQueueService.Queue"/>) — 상태는 워커가 Processing/Completed/Failed 로 갱신.</summary>
+    public ObservableCollection<BatchRenderJob> RenderQueue => _queue.Queue;
 
     private string _promptInputText = "";
     public string PromptInputText { get => _promptInputText; set { value ??= ""; if (_promptInputText == value) return; _promptInputText = value; OnPropertyChanged(nameof(PromptInputText)); Recalculate(); } }
@@ -62,14 +64,10 @@ public sealed class MassProductionViewModel : INotifyPropertyChanged
     public int DispatchAllToRenderQueue()
     {
         var jobs = _batch.GenerateBatchJobs(_promptInputText, _baseSeed, _incrementSeed, _selectedResolution, _durationSec);
-        foreach (var job in jobs)
-        {
-            job.Status = BatchJobStatus.Queued;
-            RenderQueue.Add(job);
-        }
+        var added = _queue.Enqueue(jobs);
         GeneratedJobs = jobs;
         OnPropertyChanged(nameof(GeneratedJobs));
-        return jobs.Count;
+        return added;
     }
 
     private void Recalculate()
