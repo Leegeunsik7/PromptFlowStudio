@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       allow_missing_ffmpeg:
-        description: 'FFmpeg ????븍툖??野껊갭???ш끽維???嶺?野????嚥싲갭큔?댁빢?????꿔꺂??틝????????????諛몃마??'
+        description: 'Allow building release installer without bundling official FFmpeg binaries'
         type: boolean
         default: false
 
@@ -25,7 +25,7 @@ env:
 
 jobs:
   test:
-    name: Release ??????+ xUnit ?????諛몃마????棺堉?뤃?????
+    name: Release Build and Quality Gate
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
@@ -50,19 +50,19 @@ jobs:
         shell: pwsh
         run: |
           $trx = Join-Path $env:GITHUB_WORKSPACE 'TestResults\test_results.trx'
-          if (-not (Test-Path -LiteralPath $trx)) { Write-Error "TRX ??棺堉?뤃?????嶺뚮???? ??????깅즽????????놁졄: $trx"; exit 1 }
+          if (-not (Test-Path -LiteralPath $trx)) { Write-Error "TRX result file not found: $trx"; exit 1 }
           $c = ([xml](Get-Content -Raw -LiteralPath $trx)).TestRun.ResultSummary.Counters
           $total = [int]$c.total; $passed = [int]$c.passed; $failed = [int]$c.failed + [int]$c.error + [int]$c.timeout + [int]$c.aborted
           $skipped = [int]$c.notExecuted + [int]$c.inconclusive
           $min = [int]$env:MIN_TEST_COUNT
           Write-Host "Total=$total Passed=$passed Failed=$failed Skipped=$skipped (Min=$min)"
-          "### xUnit ??棺堉?뤃?????nTotal $total ??Passed $passed ??Failed $failed ??Skipped $skipped (?饔낅떽?????壤??$min)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-          if ($total -lt $min) { Write-Error "????????????븍툖??野껊갭??? $total < $min"; exit 1 }
-          if ($failed -ne 0) { Write-Error "??????⑤슣???????????怨쀫뮡???? $failed"; exit 1 }
-          if ($skipped -ne 0) { Write-Error "?饔낅챷維?????? ?????????怨쀫뮡???? $skipped"; exit 1 }
-          if ($passed -ne $total) { Write-Error "???????????⑥ル럯?????β뼯爰?? $passed / $total"; exit 1 }
+          "### xUnit Test Results`nTotal $total | Passed $passed | Failed $failed | Skipped $skipped (Min $min)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($total -lt $min) { Write-Error "Total tests below minimum: $total < $min"; exit 1 }
+          if ($failed -ne 0) { Write-Error "Failed tests detected: $failed"; exit 1 }
+          if ($skipped -ne 0) { Write-Error "Skipped tests detected: $skipped"; exit 1 }
+          if ($passed -ne $total) { Write-Error "Not all tests passed: $passed / $total"; exit 1 }
 
-      - name: TRX ???????
+      - name: Upload Test Results
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -72,7 +72,7 @@ jobs:
           retention-days: 30
 
   installer:
-    name: win-x64 ???꿔꺂??틝?????轅붽틓????嶺????濚밸Ŧ援욆떋?
+    name: Build Installer Package (win-x64)
     needs: test
     runs-on: windows-latest
     timeout-minutes: 60
@@ -87,41 +87,41 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Process Pipeline Step
+      - name: Resolve App Version
         id: ver
         shell: pwsh
         run: |
           $ref = '${{ github.ref_name }}'
           if ('${{ github.ref_type }}' -eq 'tag' -and $ref -match '^v(\d+\.\d+\.\d+)$') { $v = $Matches[1] }
-          else { $v = '0.0.0.${{ github.run_number }}' }   # ???꿔꺂??틝?????????VersionInfoVersion ?????????沃섃뫖荑??????
+          else { $v = '0.0.0.${{ github.run_number }}' }
           "app_version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "AppVersion=$v"
 
-      - name: Process Pipeline Step
+      - name: Validate Signing Secrets
         shell: pwsh
         env:
           PROMPTFLOW_SIGNING_KEY: ${{ secrets.PROMPTFLOW_SIGNING_KEY }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:PROMPTFLOW_SIGNING_KEY)) { Write-Error 'PROMPTFLOW_SIGNING_KEY ?????????μ떜媛?걫???????嚥싲갭큔????? ?????繹먮굝???????'; exit 1 }
+          if ([string]::IsNullOrWhiteSpace($env:PROMPTFLOW_SIGNING_KEY)) { Write-Error 'PROMPTFLOW_SIGNING_KEY is required but missing'; exit 1 }
 
-      - name: Inno Setup 6 ??轅붽틓???????
+      - name: Install Inno Setup
         shell: pwsh
         run: |
           $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $iscc) { choco install innosetup --no-progress -y; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
 
-      - name: Authenticode PFX ????쇰뮛?筌믡꺂???????影?력????????????????怨쀫뮡??????
+      - name: Export Authenticode PFX
         id: pfx
         shell: pwsh
         env:
           PFX_BASE64: ${{ secrets.PROMPTFLOW_PFX_BASE64 }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:PFX_BASE64)) { Write-Host 'Authenticode ???????????????⑤뜤?????????밸븶???????꿔꺂??틝????饔낅챷維??????'; exit 0 }
+          if ([string]::IsNullOrWhiteSpace($env:PFX_BASE64)) { Write-Host 'Authenticode PFX secret is empty, skipping'; exit 0 }
           $path = Join-Path $env:RUNNER_TEMP ('pfs-' + [guid]::NewGuid().ToString('N') + '.pfx')
           [System.IO.File]::WriteAllBytes($path, [Convert]::FromBase64String($env:PFX_BASE64))
           "path=$path" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-      - name: Process Pipeline Step
+      - name: Build Titan Release
         shell: pwsh
         env:
           PROMPTFLOW_SIGNING_KEY: ${{ secrets.PROMPTFLOW_SIGNING_KEY }}
@@ -143,9 +143,9 @@ jobs:
           if ($env:FFMPEG_SHA256) { $titan.FfmpegSha256 = $env:FFMPEG_SHA256 }
           if ($env:PFX_PATH) { $titan.AuthenticodePfxPath = $env:PFX_PATH }
           if ($env:ALLOW_MISSING_FFMPEG -eq 'true') { $titan.AllowMissingFfmpeg = $true }
-          elseif (-not $env:FFMPEG_URL) { Write-Error 'FFMPEG_URL/FFMPEG_ARCHIVE_SHA256 ????쇰뮛????? ?????諛몃마????꿔꺂????????轅붽틓???????곷뾼?????????嶺뚮ㅎ???FFmpeg ?????? ?????諛몃마??.'; exit 1 }
+          elseif (-not $env:FFMPEG_URL) { Write-Error 'FFMPEG_URL and FFMPEG_ARCHIVE_SHA256 are required when ALLOW_MISSING_FFMPEG is not true'; exit 1 }
           try { & ./build_titan_release.ps1 @titan; $code = $LASTEXITCODE }
-          finally { if ($env:PFX_PATH -and (Test-Path $env:PFX_PATH)) { Remove-Item $env:PFX_PATH -Force } }   # PFX ????嫄??リ랜???????嫄??????亦낃콛????
+          finally { if ($env:PFX_PATH -and (Test-Path $env:PFX_PATH)) { Remove-Item $env:PFX_PATH -Force } }
           exit $code
 
       - name: Golden Master Verification
@@ -169,10 +169,10 @@ jobs:
           $out = Join-Path $env:GITHUB_WORKSPACE 'artifacts\release\installer'
           $setup = Join-Path $out "PromptFlowStudio-Setup-v$v.exe"
           $sums = Join-Path $out 'release-checksums.sha256'
-          if (-not (Test-Path -LiteralPath $setup)) { Write-Error "????썹땟戮녹???????轅붽틓????嶺????濚밸Ŧ援욆떋????ル늉?? ??????깅즽????????놁졄: $setup"; exit 1 }
-          if (-not (Test-Path -LiteralPath $sums)) { Write-Error "?饔낅떽??????????????????????깅즽????????놁졄: $sums"; exit 1 }
+          if (-not (Test-Path -LiteralPath $setup)) { Write-Error "Installer executable not found: $setup"; exit 1 }
+          if (-not (Test-Path -LiteralPath $sums)) { Write-Error "Checksum file not found: $sums"; exit 1 }
           $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
-          if (-not (Select-String -LiteralPath $sums -SimpleMatch "$hash  PromptFlowStudio-Setup-v$v.exe" -Quiet)) { Write-Error 'release-checksums.sha256 ??????깅즽癲?????⑥ル럯?????β뼯爰??; exit 1 }
+          if (-not (Select-String -LiteralPath $sums -SimpleMatch "$hash  PromptFlowStudio-Setup-v$v.exe" -Quiet)) { Write-Error "Checksum verification failed in release-checksums.sha256"; exit 1 }
           $src = Join-Path $env:GITHUB_WORKSPACE "installer\Output\PromptFlowStudio-$v-win-x64-setup.exe"
           Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'publish\release\pfi1.manifest') -Destination $out -Force
           Copy-Item -LiteralPath ($src + '.release.json') -Destination (Join-Path $out "PromptFlowStudio-Setup-v$v.release.json") -Force
@@ -186,6 +186,7 @@ jobs:
           path: artifacts/release/installer/**/*
           if-no-files-found: error
           retention-days: 30
+
   publish-release:
     name: GitHub Release
     needs: installer
