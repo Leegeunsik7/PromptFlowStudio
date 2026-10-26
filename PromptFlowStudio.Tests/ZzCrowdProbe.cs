@@ -26,6 +26,8 @@ public sealed class ZzCrowdProbe
         Map(r);
         var p = new Nc.NeuralCrowdStudioRunner(); p.SetMood(Nc.CrowdMood.Panic, 0.9f); for (var i = 0; i < 900; i++) p.Step(); Dump("panic", p); Map(p);
         for (var i = 0; i < p.Engine.Count; i++) if (p.Engine.PY[i] < 3f || p.Engine.PY[i] > 61f) sb.AppendLine($"i={i} p=({p.Engine.PX[i]:0.00},{p.Engine.PY[i]:0.00}) v=({p.Engine.VX[i]:0.00},{p.Engine.VY[i]:0.00}) ew={p.Engine.ExitWeight[i]:0.00} fear={p.Social.Fear(i):0.00} dir={p.Engine.SampleDir(2, p.Engine.PX[i], p.Engine.PY[i])} d={p.Engine.FieldDistance(2, (int)p.Engine.PY[i]*64+(int)p.Engine.PX[i]):0.0}");
-        System.IO.File.WriteAllText(@"C:\Users\GSLEE\AppData\Local\Temp\claude\D--PROGRAM-PromptFlow-Studio\f2b3e201-7ae7-48ec-beb5-1ba843843996\scratchpad\probe.txt", sb.ToString());
+        var probeDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "PromptFlowStudioProbe");
+        System.IO.Directory.CreateDirectory(probeDir);
+        System.IO.File.WriteAllText(System.IO.Path.Combine(probeDir, "probe.txt"), sb.ToString());
     }
 }
