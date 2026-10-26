@@ -37,15 +37,15 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: Release ????????棺堉?뤃?????-warnaserror 0/0)
+      - name: Release Build (-warnaserror 0/0)
         run: |
           dotnet build PromptFlowStudio/PromptFlowStudio.csproj -c Release -warnaserror
           dotnet build PromptFlowStudio.Tests/PromptFlowStudio.Tests.csproj -c Release -warnaserror
 
-      - name: xUnit ?????諛몃마??????????(?饔낅떽??????
+      - name: xUnit Regression Tests
         run: dotnet test PromptFlowStudio.Tests/PromptFlowStudio.Tests.csproj -c Release --no-build --logger "trx;LogFileName=test_results.trx" --results-directory TestResults -- RunConfiguration.MaxCpuCount=1 RunConfiguration.DisableParallelization=true
 
-      - name: TRX ?????Total ??541 ??Failed 0 ??Skipped 0)
+      - name: TRX Gate (Total >= 541, Failed 0, Skipped 0)
         if: always()
         shell: pwsh
         run: |
@@ -186,7 +186,6 @@ jobs:
           path: artifacts/release/installer/**/*
           if-no-files-found: error
           retention-days: 30
-
   publish-release:
     name: GitHub Release
     needs: installer
@@ -194,7 +193,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Process Pipeline Step
+      - name: Download Artifacts
         uses: actions/download-artifact@v4
         with:
           name: promptflow-studio-installer
@@ -204,8 +203,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-        files: |
-          artifacts/release/installer/PromptFlowStudio-Setup-v*.exe
-          artifacts/release/installer/release-checksums.sha256
-          artifacts/release/installer/pfi1.manifest
-        fail_on_unmatched_files: true
+          files: |
+            artifacts/release/installer/PromptFlowStudio-Setup-v*.exe
+            artifacts/release/installer/release-checksums.sha256
+            artifacts/release/installer/pfi1.manifest
+          fail_on_unmatched_files: true
