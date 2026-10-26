@@ -103,4 +103,28 @@ public class MassProductionAndCostTests
         Assert.All(vm.RenderQueue, j => Assert.Equal(BatchJobStatus.Queued, j.Status));
         Assert.Equal(44, vm.RenderQueue[2].Seed);
     }
+
+    [Fact]
+    public void ViewModel_GeneratedJobs_PreviewTracksInput_AndFlipsToQueuedOnDispatch()
+    {
+        var vm = new MassProductionViewModel(_batch, _est);
+        Assert.Empty(vm.GeneratedJobs);
+
+        vm.PromptInputText = "a\nb\nc";
+        vm.SelectedResolution = "1920x1080";
+        Assert.Equal(405.0, vm.EstimatedRenderTimeSec, 6);
+        vm.Fps = 30;
+        Assert.Equal(506.25, vm.EstimatedRenderTimeSec, 6);
+
+        vm.BaseSeed = 10;
+        Assert.Equal(3, vm.GeneratedJobs.Count);
+        Assert.All(vm.GeneratedJobs, j => Assert.Equal(BatchJobStatus.Pending, j.Status));
+        Assert.Equal(12, vm.GeneratedJobs[2].Seed);
+        vm.IncrementSeed = false;
+        Assert.Equal(10, vm.GeneratedJobs[2].Seed);
+
+        vm.DispatchAllToRenderQueue();
+        Assert.All(vm.GeneratedJobs, j => Assert.Equal(BatchJobStatus.Queued, j.Status));
+        Assert.Same(vm.RenderQueue[0], vm.GeneratedJobs[0]);
+    }
 }

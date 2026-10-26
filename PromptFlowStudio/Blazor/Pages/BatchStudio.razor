@@ -5,6 +5,7 @@
 @inject ILocalMediaService Media
 @inject IVideoExportService Export
 @inject NavigationManager Nav
+@inject PromptFlowStudio.ViewModels.MassProductionViewModel Vm
 
 @* [PromptFlow Studio] 대량 양산 배치 팩토리 — CSV/TXT 대량 입력을 큐로 받아 백그라운드에서 한 편씩 순차 양산.
    상태는 BatchProductionService(싱글턴)가 보유, 이 컴포넌트는 OnChange 구독 후 InvokeAsync(StateHasChanged)로만 갱신. *@
@@ -30,6 +31,58 @@
 
     @* 엑셀식 배치 그리드 — 셀 수정·검증·CSV/JSON 임포트 후 일괄 큐 등록(공유 배치 큐) *@
     <div style="margin:0 0 16px;"><MassProductionGrid /></div>
+
+    @* 3번 워크플로우 대량 양산 & 비용 — MassProductionViewModel(싱글턴) 바인딩 · 입력 즉시 비용/VRAM 재계산 *@
+    <section class="bt-mp">
+        <div class="bt-mp-in">
+            <textarea class="bt-mp-ta" rows="5" placeholder="한 줄에 프롬프트 하나 — 줄 수만큼 렌더 작업이 생성됩니다"
+                      @bind="Vm.PromptInputText" @bind:event="oninput"></textarea>
+            <div class="bt-mp-opts">
+                <label>해상도
+                    <select @bind="Vm.SelectedResolution">
+                        <option value="854x480">480p</option>
+                        <option value="1280x720">720p</option>
+                        <option value="1920x1080">1080p</option>
+                        <option value="3840x2160">4K</option>
+                    </select>
+                </label>
+                <label>컷 길이(초) <input type="number" min="1" max="600" step="0.5" @bind="Vm.DurationSec" @bind:event="oninput" /></label>
+                <label>FPS <input type="number" min="1" max="120" @bind="Vm.Fps" @bind:event="oninput" /></label>
+                <label>시드 <input type="number" @bind="Vm.BaseSeed" /></label>
+                <label class="bt-mp-sw"><input type="checkbox" @bind="Vm.IncrementSeed" /> 시드 자동 증분</label>
+            </div>
+        </div>
+        <div class="bt-mp-hud">
+            <div><span>총 작업</span><b>@(Vm.JobCount.ToString(System.Globalization.CultureInfo.InvariantCulture))개</b></div>
+            <div><span>예상 VRAM</span><b>@Vm.EstimatedVramDisplay</b></div>
+            <div><span>총 예상 크레딧</span><b>@(Vm.TotalEstimatedCredits.ToString(System.Globalization.CultureInfo.InvariantCulture))</b></div>
+            <div><span>예상 소요</span><b class="bt-mp-time">⏱ @RenderTimeText</b></div>
+        </div>
+        @if (Vm.GeneratedJobs.Count > 0)
+        {
+            <table class="bt-mp-tbl">
+                <thead><tr><th>#</th><th>프롬프트</th><th>시드</th><th>해상도</th><th>길이</th><th>상태</th></tr></thead>
+                <tbody>
+                    @for (var i = 0; i < Vm.GeneratedJobs.Count; i++)
+                    {
+                        var job = Vm.GeneratedJobs[i];
+                        <tr @key="job.JobId">
+                            <td>@((i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture))</td>
+                            <td class="bt-mp-pr" title="@job.Prompt">@job.Prompt</td>
+                            <td>@(job.Seed.ToString(System.Globalization.CultureInfo.InvariantCulture))</td>
+                            <td>@job.Resolution</td>
+                            <td>@(job.DurationSec.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture))초</td>
+                            <td><span class="bt-mp-st @(job.Status == PromptFlowStudio.Services.Batch.BatchJobStatus.Queued ? "q" : "")">@job.Status</span></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+        <div class="bt-mp-foot">
+            <span>렌더 큐 누적 <b>@(Vm.RenderQueue.Count.ToString(System.Globalization.CultureInfo.InvariantCulture))</b>건</span>
+            <button class="bt-mp-go" disabled="@(Vm.JobCount == 0)" @onclick="DispatchMassProduction">전체 렌더 큐로 디스패치</button>
+        </div>
+    </section>
 
     @* v16.16.0 대량 생산 허브 — 테마 다중 선택 일괄 큐 · 우선순위 · 일시정지/재개 · 재시도 · 자원 거버너 *@
     <BatchProductionHub />
@@ -352,6 +405,29 @@
 
     .bt-toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); z-index: 90; background: var(--card); border: 1px solid var(--line);
         color: var(--text-primary); padding: 11px 18px; border-radius: 12px; font-size: 12.5px; font-weight: 600; box-shadow: 0 12px 32px rgba(0,0,0,.32); max-width: 82vw; }
+
+    /* 3번 워크플로우 대량 양산 & 비용(MassProductionViewModel) */
+    .bt-mp { display: flex; flex-direction: column; gap: 10px; margin: 0 0 16px; padding: 12px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+    .bt-mp-ta { width: 100%; box-sizing: border-box; resize: vertical; background: var(--card-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; color: var(--text-primary); font: 13px/1.5 inherit; }
+    .bt-mp-ta:focus { outline: none; border-color: var(--accent); }
+    .bt-mp-opts { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--text-secondary); }
+    .bt-mp-opts label { display: flex; align-items: center; gap: 6px; }
+    .bt-mp-opts select, .bt-mp-opts input[type=number] { font: 600 12px inherit; width: 90px; background: var(--card-2); color: var(--text-primary); border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; }
+    .bt-mp-hud { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    .bt-mp-hud div { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: 10px; background: var(--card-2); border: 1px solid var(--line); }
+    .bt-mp-hud span { font-size: 11px; color: var(--text-muted); }
+    .bt-mp-hud b { font: 800 15px/1 var(--mono); color: var(--text-primary); }
+    .bt-mp-time { color: var(--accent) !important; }
+    .bt-mp-tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .bt-mp-tbl th, .bt-mp-tbl td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); color: var(--text-secondary); }
+    .bt-mp-tbl th { color: var(--text-muted); font-weight: 700; }
+    .bt-mp-pr { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary) !important; }
+    .bt-mp-st { font: 700 11px/1 inherit; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); }
+    .bt-mp-st.q { color: #059669; border-color: color-mix(in srgb, #10b981 40%, var(--line)); }
+    .bt-mp-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--text-secondary); }
+    .bt-mp-foot b { color: var(--text-primary); }
+    .bt-mp-go { font: 800 13px inherit; padding: 10px 16px; border-radius: 10px; border: none; background: var(--accent); color: #fff; cursor: pointer; }
+    .bt-mp-go:disabled { opacity: .45; cursor: not-allowed; }
 </style>
 
 @code {
@@ -377,6 +453,25 @@
         Batch.OnChange += OnStateChanged;
         Batch.OnCompleted += OnBatchCompleted;
         Cfg.OnConfigChanged += OnStateChanged;
+        Vm.PropertyChanged += OnMassProductionChanged;   // 3번 워크플로우 비용/VRAM HUD · 작업 미리보기
+    }
+
+    // ── 3번 워크플로우 대량 양산 & 비용(MassProductionViewModel) ──
+    private string RenderTimeText
+    {
+        get
+        {
+            var sec = Vm.EstimatedRenderTimeSec;
+            if (sec < 60) return sec.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "초";
+            if (sec < 3600) return (sec / 60).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "분";
+            return (sec / 3600).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "시간";
+        }
+    }
+    private void OnMassProductionChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e) => _ = InvokeAsync(StateHasChanged);
+    private void DispatchMassProduction()
+    {
+        var n = Vm.DispatchAllToRenderQueue();
+        ShowToast(n > 0 ? "🚀 렌더 큐로 " + n.ToString(System.Globalization.CultureInfo.InvariantCulture) + "건 디스패치 완료" : "디스패치할 프롬프트가 없습니다");
     }
 
     private void OnStateChanged() => InvokeAsync(StateHasChanged);
@@ -530,6 +625,7 @@
         Batch.OnChange -= OnStateChanged;
         Batch.OnCompleted -= OnBatchCompleted;
         Cfg.OnConfigChanged -= OnStateChanged;
+        Vm.PropertyChanged -= OnMassProductionChanged;
         _toastTimer?.Dispose();
     }
 }
