@@ -1,17 +1,17 @@
 name: Signed Windows Release (Titan)
-# [PromptFlow Studio v16.4.0] 서명 배포 파이프라인 — release-pipeline.yml(빌드 정합성·체크섬)과 분리된 "외부 서명" 전담 워크플로우.
-#  ▸ 태그(v*) 푸시 → windows-latest(win-x64): -warnaserror 빌드 게이트 → xUnit 전량 → build_titan_release.ps1
-#    (ReadyToRun publish → FFmpeg 검증·동봉 → RSA-2048 pfi1.manifest 서명 → WebView2 redist 확보 → Inno Setup 인스톨러)
-#    → scripts/verify_release.ps1 Golden Master 검인(설치/제거 사이클 + 사용자 데이터 보존 포함) 통과 시에만 게시
-#  ▸ 산출물(setup.exe · pfi1.manifest · SHA256SUMS-signed.txt)을 Actions 아티팩트 + GitHub Release 에 자동 첨부.
+# [PromptFlow Studio v18.4.3] 단일 정식 릴리스 파이프라인 — GitHub Release 게시는 이 워크플로우만 수행(release-pipeline.yml 은 PR/Push CI 전용).
+#  ▸ 태그(vX.Y.Z) 푸시 → ① test: -warnaserror 빌드 게이트 → xUnit 직렬 실행 → TRX 단언(Total ≥ 541 · Failed 0 · Skipped 0)
+#    → ② installer: build_titan_release.ps1(ReadyToRun publish → FFmpeg 검증·동봉 → RSA-2048 pfi1.manifest 서명 → WebView2 redist → Inno Setup)
+#       → scripts/verify_release.ps1 -InstallCycle Golden Master 검인 → artifacts/release/installer 수집·업로드
+#    → ③ publish-release: PromptFlowStudio-Setup-v*.exe · release-checksums.sha256 · pfi1.manifest · BOM/검인 JSON 을 단일 GitHub Release 로 게시.
 #  ▸ 시크릿: PROMPTFLOW_SIGNING_KEY(base64 PKCS#8 RSA-2048 개인키) — 서명 스텝 env 로만 주입, 로그·디스크에 기록하지 않음.
-#    선택: PROMPTFLOW_PFX_BASE64 · PROMPTFLOW_PFX_PASSWORD(Authenticode) — 있으면 exe/setup 코드 서명 + 검인에서 필수화, PFX 는 RUNNER_TEMP 에 잠시 복원 후 즉시 삭제.
+#    선택: PROMPTFLOW_PFX_BASE64 · PROMPTFLOW_PFX_PASSWORD(Authenticode) — 있으면 exe/setup 코드 서명, PFX 는 RUNNER_TEMP 에 잠시 복원 후 즉시 삭제.
 #  ▸ 변수(Repository Variables): FFMPEG_URL · FFMPEG_ARCHIVE_SHA256(필수 · 해시 고정 zip) · FFMPEG_SHA256(선택 · ffmpeg.exe 고정 해시)
 #  ▸ workflow_dispatch: 드라이런(릴리스 게시 없이 아티팩트만) — FFmpeg 미동봉 허용 옵션 제공.
 
 on:
   push:
-    tags: [ 'v*' ]
+    tags: [ 'v[0-9]+.[0-9]+.[0-9]+' ]
   workflow_dispatch:
     inputs:
       allow_missing_ffmpeg:
@@ -30,12 +30,14 @@ env:
   DOTNET_VERSION: '8.0.x'
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
+  MIN_TEST_COUNT: 541
 
 jobs:
-  signed-installer:
-    name: win-x64 서명 인스톨러
+  # ── ① 테스트 게이트: 0/0 빌드 + 541 전수 · 0 Failed · 0 Skipped ─────────────────────────────
+  test:
+    name: Release 빌드 + xUnit 전수 게이트
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,21 +47,66 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
-      - name: 버전 해석(태그 v* → AppVersion)
+      - name: Release 빌드 게이트(-warnaserror 0/0)
+        run: |
+          dotnet build PromptFlowStudio/PromptFlowStudio.csproj -c Release -warnaserror
+          dotnet build PromptFlowStudio.Tests/PromptFlowStudio.Tests.csproj -c Release -warnaserror
+
+      - name: xUnit 전수 실행(직렬)
+        run: dotnet test PromptFlowStudio.Tests/PromptFlowStudio.Tests.csproj -c Release --no-build --logger "trx;LogFileName=test_results.trx" --results-directory TestResults -- RunConfiguration.MaxCpuCount=1 RunConfiguration.DisableParallelization=true
+
+      - name: TRX 단언(Total ≥ 541 · Failed 0 · Skipped 0)
+        if: always()
+        shell: pwsh
+        run: |
+          $trx = Join-Path $env:GITHUB_WORKSPACE 'TestResults\test_results.trx'
+          if (-not (Test-Path -LiteralPath $trx)) { Write-Error "TRX 결과가 없습니다: $trx"; exit 1 }
+          $c = ([xml](Get-Content -Raw -LiteralPath $trx)).TestRun.ResultSummary.Counters
+          $total = [int]$c.total; $passed = [int]$c.passed; $failed = [int]$c.failed + [int]$c.error + [int]$c.timeout + [int]$c.aborted
+          $skipped = [int]$c.notExecuted + [int]$c.inconclusive
+          $min = [int]$env:MIN_TEST_COUNT
+          Write-Host "Total=$total Passed=$passed Failed=$failed Skipped=$skipped (Min=$min)"
+          "### xUnit 게이트`nTotal $total · Passed $passed · Failed $failed · Skipped $skipped (최소 $min)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if ($total -lt $min) { Write-Error "테스트 수 미달: $total < $min"; exit 1 }
+          if ($failed -ne 0) { Write-Error "실패 테스트 존재: $failed"; exit 1 }
+          if ($skipped -ne 0) { Write-Error "건너뜀 테스트 존재: $skipped"; exit 1 }
+          if ($passed -ne $total) { Write-Error "통과 수 불일치: $passed / $total"; exit 1 }
+
+      - name: TRX 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-trx
+          path: TestResults/*.trx
+          if-no-files-found: warn
+          retention-days: 30
+
+  # ── ② 서명 인스톨러 빌드 + Golden Master 검인 ──────────────────────────────────────────────
+  installer:
+    name: win-x64 서명 인스톨러
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 60
+    outputs:
+      app_version: ${{ steps.ver.outputs.app_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: 버전 해석(태그 vX.Y.Z → AppVersion)
         id: ver
         shell: pwsh
         run: |
           $ref = '${{ github.ref_name }}'
-          if ('${{ github.ref_type }}' -eq 'tag' -and $ref -match '^v(\d+\.\d+\.\d+)') { $v = $Matches[1] }
+          if ('${{ github.ref_type }}' -eq 'tag' -and $ref -match '^v(\d+\.\d+\.\d+)$') { $v = $Matches[1] }
           else { $v = '0.0.0.${{ github.run_number }}' }   # 드라이런 — VersionInfoVersion 숫자 규격 유지
           "app_version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "AppVersion=$v"
-
-      - name: Release 빌드 게이트(-warnaserror 0/0)
-        run: dotnet build PromptFlowStudio/PromptFlowStudio.csproj -c Release -warnaserror
-
-      - name: xUnit 회귀(100% PASS)
-        run: dotnet test PromptFlowStudio.Tests -c Release --logger "trx;LogFileName=titan.trx" --results-directory TestResults
 
       - name: 서명 키 존재 확인
         shell: pwsh
@@ -127,41 +174,54 @@ jobs:
           & ./scripts/verify_release.ps1 @verify
           exit $LASTEXITCODE
 
-      - name: 릴리스 산출물 수집 + SHA-256
-        id: collect
+      - name: 배포 산출물 정합(artifacts/release/installer)
         shell: pwsh
         run: |
-          $out = New-Item -ItemType Directory -Force -Path dist
-          $setup = Get-ChildItem installer/Output -Filter 'PromptFlowStudio-*-win-x64-setup.exe' | Select-Object -First 1
-          if (-not $setup) { Write-Error '인스톨러 산출물이 없습니다.'; exit 1 }
-          Copy-Item $setup.FullName $out
-          Copy-Item publish/release/pfi1.manifest $out
-          Copy-Item ($setup.FullName + '.release.json') $out
-          Copy-Item ($setup.FullName + '.verify.json') $out
-          Get-ChildItem $out -File | ForEach-Object { '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name } |
-            Set-Content -Path (Join-Path $out 'SHA256SUMS-signed.txt') -Encoding ascii
-          Get-Content (Join-Path $out 'SHA256SUMS-signed.txt')
+          $v = '${{ steps.ver.outputs.app_version }}'
+          $out = Join-Path $env:GITHUB_WORKSPACE 'artifacts\release\installer'
+          $setup = Join-Path $out "PromptFlowStudio-Setup-v$v.exe"
+          $sums = Join-Path $out 'release-checksums.sha256'
+          if (-not (Test-Path -LiteralPath $setup)) { Write-Error "배포 인스톨러가 없습니다: $setup"; exit 1 }
+          if (-not (Test-Path -LiteralPath $sums)) { Write-Error "체크섬 파일이 없습니다: $sums"; exit 1 }
+          $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          if (-not (Select-String -LiteralPath $sums -SimpleMatch "$hash  PromptFlowStudio-Setup-v$v.exe" -Quiet)) { Write-Error 'release-checksums.sha256 해시 불일치'; exit 1 }
+          $src = Join-Path $env:GITHUB_WORKSPACE "installer\Output\PromptFlowStudio-$v-win-x64-setup.exe"
+          Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'publish\release\pfi1.manifest') -Destination $out -Force
+          Copy-Item -LiteralPath ($src + '.release.json') -Destination (Join-Path $out "PromptFlowStudio-Setup-v$v.release.json") -Force
+          Copy-Item -LiteralPath ($src + '.verify.json') -Destination (Join-Path $out "PromptFlowStudio-Setup-v$v.verify.json") -Force
+          Get-ChildItem -LiteralPath $out -File | ForEach-Object { Write-Host ('{0,12:N0}  {1}' -f $_.Length, $_.Name) }
 
       - name: Actions 아티팩트 업로드
         uses: actions/upload-artifact@v4
         with:
-          name: promptflow-studio-${{ steps.ver.outputs.app_version }}-win-x64-signed
-          path: |
-            dist/*
-            TestResults/*.trx
+          name: promptflow-studio-installer
+          path: artifacts/release/installer/**/*
           if-no-files-found: error
           retention-days: 30
 
+  # ── ③ 단일 GitHub Release 게시(태그 푸시 시에만) ───────────────────────────────────────────
+  publish-release:
+    name: GitHub Release 게시
+    needs: installer
+    if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 인스톨러 아티팩트 수신
+        uses: actions/download-artifact@v4
+        with:
+          name: promptflow-studio-installer
+          path: artifacts/release/installer
+
       - name: GitHub Release 첨부
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           files: |
-            dist/PromptFlowStudio-*-win-x64-setup.exe
-            dist/pfi1.manifest
-            dist/SHA256SUMS-signed.txt
-            dist/*.release.json
-            dist/*.verify.json
+            artifacts/release/installer/PromptFlowStudio-Setup-v*.exe
+            artifacts/release/installer/release-checksums.sha256
+            artifacts/release/installer/pfi1.manifest
+            artifacts/release/installer/*.release.json
+            artifacts/release/installer/*.verify.json
           fail_on_unmatched_files: true
           generate_release_notes: true

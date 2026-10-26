@@ -1,15 +1,17 @@
 # Current Project Status
-- Active Milestone: v18.4.0 Complete - Enterprise Inno Setup Installer Packaged
-- Build Status: Desktop · net8.0-ios · Tests 3 종 Release -warnaserror 0/0 · net8.0-android 미검증(SDK/JDK 미설치)
-- Test Suite: 541/541(v18.3.0 기준) · v18.4.0 회귀 TitanRelease 계열 106/106 통과(실패 0 · 건너뜀 0)
+- Active Milestone: v18.4.3 Complete - CI/CD 릴리즈 워크플로우 단일화 및 테스트 수 검증 게이트 확립
+- Build Status: Desktop · Tests Release -warnaserror 0/0 · net8.0-android 미검증(SDK/JDK 미설치)
+- Test Suite: 541/541 직렬 실행(MaxCpuCount=1 · 실패 0 · 건너뜀 0) · TRX 게이트 로컬 재현 exit 0
 - Sidebar: 6 그룹 · 32 워크스페이스 유지(신규 모달 0)
 - Updated At: 2026-10-26 (KST)
 
 ## Completed Deliverables
-- INST-1: `build_titan_release.ps1` — PS 5.1 `$smoke.Handle` 캐시 · 스모크 소요(ms) 로깅 영구화 · `-InstallerOutputDir`(기본 `artifacts\release\installer`) 사후 복사 → `PromptFlowStudio-Setup-v<ver>.exe` (installer\Output 원본은 CI/verify_release 용 유지)
-- INST-2: Inno Setup 6 ISCC 컴파일(19.9 초) — publish 번들 462 파일(93.8MB · exe · appsettings.json · wwwroot 20) → Setup 26.0MB · 시작 메뉴/제거 바로가기 · 바탕화면(desktopicon 태스크) · WebView2 EdgeUpdate `Clients\{F3017226-…}` HKLM64/WOW6432Node/HKCU 검출 + Bootstrapper 동봉
-- INST-2: `artifacts\release\installer\release-checksums.sha256` — `002a9a196b8c0206db9733bc0592ee515d5bd928c4935f5006582157d11c387b  PromptFlowStudio-Setup-v18.3.0.exe` (번들 매니페스트는 대상 집합 고정이므로 분리 기록)
+- WFL-1: `.github/workflows/release.yml` — 트리거 `v[0-9]+.[0-9]+.[0-9]+` 태그 + workflow_dispatch 전용 · test(0/0 빌드 → xUnit 직렬 → TRX Total≥541/Failed 0/Skipped 0 단언) → installer(build_titan_release.ps1 → verify_release.ps1 -InstallCycle → artifacts/release/installer 업로드) → publish-release(Setup-v*.exe · release-checksums.sha256 · pfi1.manifest · release/verify JSON 단일 게시)
+- WFL-2: `.github/workflows/release-pipeline.yml` — 태그 트리거·softprops 게시 제거, PR/main·master Push 전용 CI · windows-desktop 잡 xUnit 전수 + TRX 업로드
+- WFL-3: `PromptFlowStudio/.github/` 삭제(release.yml 중복 · store-deploy.yml 은 부재한 tools/PromptFlowCiGate 의존 + APP_VERSION 4.4.0 고정 → 데드로 판단 삭제)
+- WFL-4: YAML 구문 검증(PyYAML 3종 OK) · TitanReleaseTests 워크플로우 계약 단언 갱신(게시 단일화·중복 .github 부재 검증 추가)
 
 ## Known Issues / 환경 노트
 - 로컬 ffmpeg.exe 부재로 `-AllowMissingFfmpeg` 빌드 — 정식 배포 전 `-FfmpegPath` 지정 재빌드 필요
 - Authenticode 미서명(인증서 미제공) · Android 빌드는 환경 제약으로 미검증
+- 스토어 배포 워크플로우 필요 시 CiGate 도구 구현 후 루트 `.github/workflows/` 에 재작성

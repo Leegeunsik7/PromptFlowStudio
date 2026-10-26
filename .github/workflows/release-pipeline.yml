@@ -1,20 +1,16 @@
-name: Multi-Platform Release Pipeline
+name: Multi-Platform CI Pipeline
 
 # [PromptFlow Studio v10.0.0-LTS · LTS-10.0.3] 멀티플랫폼 CI/CD 릴리스 파이프라인.
 #  ▸ Windows(net8.0-windows 자체완결 단일파일) · Android(net8.0-android) · iOS(net8.0-ios 시뮬레이터 대상 컴파일 게이트) ·
 #    macOS/Mac Catalyst(선택적 · TargetFrameworks 에 net8.0-maccatalyst 가 선언된 경우에만 자동 활성 · 부재 시 Graceful 스킵)
 #    4개 플랫폼 잡을 병렬 실행하고, 전 잡이 -warnaserror(0경고/0오류) 게이트를 통과해야 한다.
-#  ▸ 각 잡 산출물은 SHA-256 체크섬과 함께 아티팩트로 업로드되고, 태그 푸시(v*) 시 collect 잡이 전체를 모아
-#    통합 SHA256SUMS.txt 매니페스트를 생성해 단일 GitHub Release 로 게시한다(제약: 외부 서명/스토어 배포는
-#    release.yml/store-deploy.yml 이 전담 — 이 파이프라인은 빌드 정합성 검증 + 체크섬 + 아티팩트 수집 전용).
-#  ⚠ 이 저장소는 `.github` 가 레포 루트와 `PromptFlowStudio/` 하위에 중복 존재(과거 리포 재구성 잔재).
-#    CLAUDE.md 가 명시하는 현재 유효 규약은 "레포 루트 기준 PromptFlowStudio/PromptFlowStudio.csproj" 이므로
-#    이 워크플로는 레포 루트에 위치하고 그 경로 규약을 따른다.
+#  ▸ 각 잡 산출물은 SHA-256 체크섬과 함께 아티팩트로 업로드되고, collect 잡이 통합 SHA256SUMS.txt 매니페스트를 생성한다.
+#  ▸ v18.4.3: PR/브랜치 Push 전용 CI 검증기 — 태그 트리거·GitHub Release 게시 제거(정식 릴리스는 release.yml 단일 전담).
+#    windows-desktop 잡에서 xUnit 전수 실행으로 PR 단위 회귀를 조기 감지한다.
 
 on:
   push:
     branches: [ main, master ]
-    tags: [ 'v*' ]
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
@@ -46,6 +42,17 @@ jobs:
 
       - name: Build (Release · 0 경고/0 오류 강제)
         run: dotnet build PromptFlowStudio/PromptFlowStudio.csproj -c Release --no-restore -warnaserror
+
+      - name: xUnit 회귀(100% PASS · 직렬)
+        run: dotnet test PromptFlowStudio.Tests/PromptFlowStudio.Tests.csproj -c Release -warnaserror --logger "trx;LogFileName=test_results.trx" --results-directory TestResults -- RunConfiguration.MaxCpuCount=1 RunConfiguration.DisableParallelization=true
+
+      - name: TRX 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-trx
+          path: TestResults/*.trx
+          if-no-files-found: warn
 
       - name: Publish (win-x64 self-contained single file)
         run: |
@@ -220,9 +227,9 @@ jobs:
           path: artifacts/nuget/**
           if-no-files-found: warn
 
-  # ── ⑥ 수집: 전 플랫폼 아티팩트 + 통합 체크섬 매니페스트, 태그 푸시 시 단일 GitHub Release 게시 ──────
+  # ── ⑥ 수집: 전 플랫폼 아티팩트 + 통합 체크섬 매니페스트(Release 게시 없음 · release.yml 전담) ──────
   collect:
-    name: Collect Artifacts & Publish Release
+    name: Collect Artifacts & Checksum Manifest
     needs: [ windows-desktop, android, ios, macos-maccatalyst, shared-nuget-pack ]
     if: always() && needs.windows-desktop.result == 'success' && needs.android.result == 'success' && needs.ios.result == 'success'
     runs-on: ubuntu-latest
@@ -245,10 +252,3 @@ jobs:
           name: release-manifest
           path: collected/SHA256SUMS.txt
 
-      - name: Create GitHub Release (태그 푸시 시에만)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            collected/**/*
-          generate_release_notes: true

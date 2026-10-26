@@ -374,8 +374,8 @@ public class TitanReleaseTests
         var root = RepoRoot();
         var yml = File.ReadAllText(Path.Combine(root, ".github", "workflows", "release.yml"));
 
-        // ══ ① 트리거 · runner · 권한: 태그 v* → windows-latest · Release 쓰기 ══
-        Assert.Contains("tags: [ 'v*' ]", yml);
+        // ══ ① 트리거 · runner · 권한: 태그 vX.Y.Z → windows-latest · Release 쓰기 ══
+        Assert.Contains("tags: [ 'v[0-9]+.[0-9]+.[0-9]+' ]", yml);
         Assert.Contains("runs-on: windows-latest", yml);
         Assert.Contains("contents: write", yml);
         Assert.DoesNotContain("pull_request", yml);   // 서명 시크릿은 PR(포크) 컨텍스트에 노출 금지
@@ -389,8 +389,18 @@ public class TitanReleaseTests
         Assert.Contains("BuildInstaller        = $true", yml);
         Assert.Contains("RequireWebView2Redist = $true", yml);
         Assert.Contains("FetchWebView2         = $true", yml);
-        Assert.Contains("dist/PromptFlowStudio-*-win-x64-setup.exe", yml);
-        Assert.Contains("dist/pfi1.manifest", yml);
+        Assert.Contains("artifacts/release/installer/PromptFlowStudio-Setup-v*.exe", yml);
+        Assert.Contains("artifacts/release/installer/release-checksums.sha256", yml);
+        Assert.Contains("artifacts/release/installer/pfi1.manifest", yml);
+        Assert.Contains("MIN_TEST_COUNT: 541", yml);   // v18.4.3 TRX 게이트(Total ≥ 541 · Failed 0 · Skipped 0)
+        Assert.Contains("RunConfiguration.DisableParallelization=true", yml);
+
+        // v18.4.3 Release 게시 단일화 — CI 파이프라인은 태그 트리거·게시 스텝 없음
+        var ci = File.ReadAllText(Path.Combine(root, ".github", "workflows", "release-pipeline.yml"));
+        Assert.DoesNotContain("softprops/action-gh-release", ci);
+        Assert.DoesNotContain("tags:", ci);
+        Assert.Contains("dotnet test PromptFlowStudio.Tests", ci);
+        Assert.False(Directory.Exists(Path.Combine(root, "PromptFlowStudio", ".github")), "미인식 중복 .github 잔존");
         Assert.Contains("actions/upload-artifact@v4", yml);
         Assert.Contains("fail_on_unmatched_files: true", yml);
 
@@ -529,7 +539,7 @@ public class TitanReleaseTests
         int rel = yml.IndexOf("softprops/action-gh-release@v2", StringComparison.Ordinal);
         Assert.True(pipe > 0 && pipe < gm && gm < rel, "검인 스텝은 빌드 후 · 게시 전");
         Assert.Contains("InstallCycle          = $true", yml);
-        Assert.Contains("dist/*.verify.json", yml);
+        Assert.Contains("artifacts/release/installer/*.verify.json", yml);
 
         if (OperatingSystem.IsWindows())
         {
