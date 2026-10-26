@@ -18,6 +18,7 @@
 @inject EpisodicStorySeriesBuilder SeriesBuilder
 @inject PromptFlowStudio.Services.Prompt.PromptSynthesizerService Synth
 @inject GeminiPromptEnhancer Enhancer
+@inject PromptFlowStudio.ViewModels.StoryboardViewModel StoryVm
 
 @* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
    상태는 WanJobState(싱글턴)에 있고, 이 컴포넌트는 OnChange 를 구독해 InvokeAsync(StateHasChanged)로만 갱신한다.
@@ -170,7 +171,7 @@
                         <span class="ws-vf-st">@_vm.HudStatusText</span>
                     </div>
                     <div>왼쪽에 프롬프트를 입력하고 <b>생성 시작</b>을 누르세요.</div>
-                    <button class="ws-empty-card" @onclick='() => Nav.NavigateTo("storyboard")'>🪄 여러 컷을 한 번에 — 대본 자동 생성 →</button>
+                    <button class="ws-empty-card" @onclick="SendScriptToStoryboard">🪄 여러 컷을 한 번에 — 대본 자동 생성 →</button>
                 </div>
             }
             else if (State.Phase == WanJobPhase.Completed && State.VideoUrl is not null)
@@ -639,6 +640,15 @@
 
 @code {
     private string _prompt = "";
+
+    // 2번 워크플로우: 입력 대본 → StoryboardViewModel 컷 전개 후 스토리보드 화면 전환(빈 대본은 4컷 기본 시놉시스).
+    private const string DefaultStorySynopsis = "아침 햇살이 드는 방에서 주인공이 눈을 뜬다.\n창밖을 바라보며 무언가를 결심한다.\n거리로 나서 목적지를 향해 걷는다.\n노을 아래 목적지에 도착해 미소 짓는다.";
+    private void SendScriptToStoryboard()
+    {
+        var script = string.IsNullOrWhiteSpace(_prompt) ? DefaultStorySynopsis : _prompt;
+        if (!StoryVm.ReceiveGeneratedScript(script)) StoryVm.ReceiveGeneratedScript(DefaultStorySynopsis);
+        Nav.NavigateTo("storyboard");
+    }
     private string _size = "1280*720";
     private bool _safeZone = true;   // 숏츠 세이프존 오버레이(세로 결과일 때만 표시)
 

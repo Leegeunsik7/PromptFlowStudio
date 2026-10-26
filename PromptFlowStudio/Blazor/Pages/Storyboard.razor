@@ -38,6 +38,7 @@
 @inject NavigationManager Nav
 @inject PromptFlowStudio.Services.Ui.StudioNavigationService StudioNav
 @inject PromptFlowStudio.Services.Ui.StoryboardToShortsFactoryBridge ShotBridge
+@inject PromptFlowStudio.ViewModels.StoryboardViewModel Vm
 @inject PromptFlowStudio.Services.Weather.WeatherEngine Weather
 @inject GalleryAutoSaveService Gallery
 @inject PostProductionEngine Post
@@ -148,6 +149,51 @@
             <UpdateBadge />
         </div>
     </header>
+
+    @* 2번 워크플로우 컷 덱 — StoryboardViewModel(싱글턴) 바인딩 · Workspace 「대본 자동 생성」 수신분 즉시 전개 *@
+    <section class="sb-cd">
+        @if (Vm.Cuts.Count == 0)
+        {
+            <div class="sb-cd-empty">워크스페이스에서 「대본 자동 생성」을 누르거나 아래 <b>+ 새 컷 추가</b>로 컷을 구성하세요.</div>
+        }
+        @for (var i = 0; i < Vm.Cuts.Count; i++)
+        {
+            var pos = i;
+            var cut = Vm.Cuts[i];
+            <div class="sb-cd-card" @key="cut">
+                <div class="sb-cd-h">
+                    <span class="sb-cd-no">컷 #@(cut.CutIndex.ToString(System.Globalization.CultureInfo.InvariantCulture))</span>
+                    <span class="sb-cd-dur">@(cut.DurationSec.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture))초</span>
+                    <select class="sb-cd-tr" @bind="cut.TransitionType">
+                        @foreach (var t in CutTransitions)
+                        {
+                            <option value="@t">@TransitionLabel(t)</option>
+                        }
+                    </select>
+                    <span class="sb-cd-sp"></span>
+                    <button class="sb-cd-btn" title="위로 이동" disabled="@(pos == 0)" @onclick="() => { Vm.MoveUp(pos); }">▲</button>
+                    <button class="sb-cd-btn" title="아래로 이동" disabled="@(pos == Vm.Cuts.Count - 1)" @onclick="() => { Vm.MoveDown(pos); }">▼</button>
+                    <button class="sb-cd-btn del" title="컷 삭제" @onclick="() => { Vm.RemoveCut(pos); }">✕</button>
+                </div>
+                <textarea class="sb-cd-ta" rows="2" @bind="cut.RawPrompt" placeholder="컷 프롬프트"></textarea>
+                <div class="sb-cd-f">
+                    @if (!string.IsNullOrEmpty(cut.CameraMotion)) { <span class="sb-cd-chip">🎥 @cut.CameraMotion</span> }
+                    @if (pos == 0)
+                    {
+                        <span class="sb-cd-lock seed">[마스터 시드: @(cut.Seed.ToString(System.Globalization.CultureInfo.InvariantCulture))]</span>
+                    }
+                    else if (cut.IsSubjectLocked)
+                    {
+                        <span class="sb-cd-lock">[피사체 일관성 잠금 ON]</span>
+                    }
+                </div>
+            </div>
+        }
+        <div class="sb-cd-foot">
+            <span>총 <b>@(Vm.Cuts.Count.ToString(System.Globalization.CultureInfo.InvariantCulture))</b>컷 · <b>@(Vm.TotalDurationSec.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture))</b>초</span>
+            <button class="sb-tbtn" @onclick="() => { Vm.AddCut(); }">+ 새 컷 추가</button>
+        </div>
+    </section>
 
     @if (!Cfg.IsConfigured)
     {
@@ -1252,6 +1298,26 @@
     .sb-toolbar { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
     .sb-tbtn { font: 700 12.5px inherit; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; }
     .sb-tbtn:hover:not(:disabled) { border-color: var(--accent); color: var(--text-primary); } .sb-tbtn:disabled { opacity: .45; cursor: not-allowed; }
+    /* 2번 워크플로우 컷 덱(StoryboardViewModel) */
+    .sb-cd { display: flex; flex-direction: column; gap: 10px; margin: 0 0 16px; }
+    .sb-cd-empty { font-size: 12.5px; color: var(--text-muted); padding: 12px 14px; border: 1px dashed var(--line); border-radius: 12px; }
+    .sb-cd-card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+    .sb-cd-h { display: flex; align-items: center; gap: 8px; }
+    .sb-cd-no { font: 800 13px/1 var(--mono); color: var(--text-primary); }
+    .sb-cd-dur { font: 700 11px/1 var(--mono); padding: 3px 8px; border-radius: 999px; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+    .sb-cd-tr { font: 600 12px inherit; background: var(--card-2); color: var(--text-secondary); border: 1px solid var(--line); border-radius: 8px; padding: 3px 6px; }
+    .sb-cd-sp { flex: 1; }
+    .sb-cd-btn { font: 700 12px/1 inherit; width: 26px; height: 26px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; }
+    .sb-cd-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--text-primary); } .sb-cd-btn:disabled { opacity: .35; cursor: not-allowed; }
+    .sb-cd-btn.del:hover { border-color: #ef4444; color: #ef4444; }
+    .sb-cd-ta { width: 100%; box-sizing: border-box; resize: vertical; background: var(--card-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; color: var(--text-primary); font: 13px/1.5 inherit; }
+    .sb-cd-ta:focus { outline: none; border-color: var(--accent); }
+    .sb-cd-f { display: flex; gap: 6px; flex-wrap: wrap; }
+    .sb-cd-chip, .sb-cd-lock { font: 700 11px/1 inherit; padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-secondary); }
+    .sb-cd-lock { color: #059669; border-color: color-mix(in srgb, #10b981 40%, var(--line)); }
+    .sb-cd-lock.seed { color: var(--flow-violet); border-color: color-mix(in srgb, var(--flow-violet) 40%, var(--line)); }
+    .sb-cd-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--text-secondary); padding: 8px 12px; border-radius: 12px; background: var(--card-2); border: 1px solid var(--line); }
+    .sb-cd-foot b { color: var(--text-primary); }
     .sb-qa { margin-left: 6px; font: 800 10.5px inherit; padding: 2px 7px; border-radius: 999px; }
     .sb-qa.pass { color: #059669; background: color-mix(in srgb, #10b981 15%, transparent); }
     .sb-qa.warn { color: #b45309; background: color-mix(in srgb, #f59e0b 16%, transparent); }
@@ -1810,7 +1876,21 @@
         Cfg.OnConfigChanged += OnStateChanged;   // 키 등록 시 배너/버튼 즉시 반영
         Recents.OnChange += OnStateChanged;
         QaInspector.OnChange += OnStateChanged;   // v16.17.0 최종 영상 QA 배지      // 최근 목록 변경 반영
+        Vm.PropertyChanged += OnCutDeckPropertyChanged;   // 2번 워크플로우 컷 덱(총 재생 시간 등)
+        Vm.Cuts.CollectionChanged += OnCutDeckCollectionChanged;
     }
+
+    // ── 2번 워크플로우 컷 덱(StoryboardViewModel) ──
+    private static readonly TransitionType[] CutTransitions = { TransitionType.Cut, TransitionType.Dissolve, TransitionType.WhipPan, TransitionType.ZoomIn };
+    private static string TransitionLabel(TransitionType t) => t switch
+    {
+        TransitionType.Dissolve => "디졸브",
+        TransitionType.WhipPan => "휩 팬",
+        TransitionType.ZoomIn => "줌 인",
+        _ => "컷",
+    };
+    private void OnCutDeckPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e) => _ = InvokeAsync(StateHasChanged);
+    private void OnCutDeckCollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e) => _ = InvokeAsync(StateHasChanged);
 
     // ── v16.12.0 최종 내보내기(Post-Production) ──
     private CancellationTokenSource? _ppCts;
@@ -1873,6 +1953,8 @@
         Cfg.OnConfigChanged -= OnStateChanged;
         Recents.OnChange -= OnStateChanged;
         QaInspector.OnChange -= OnStateChanged;
+        Vm.PropertyChanged -= OnCutDeckPropertyChanged;
+        Vm.Cuts.CollectionChanged -= OnCutDeckCollectionChanged;
         _toastTimer?.Dispose();
         _guideTimer?.Dispose();
         _hlTimer?.Dispose();
