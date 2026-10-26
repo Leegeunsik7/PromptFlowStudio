@@ -403,6 +403,8 @@ public static class MauiProgram
         builder.Services.AddSingleton<PromptFlowStudio.Services.Storyboard.SocialMetadataAiGenerator>(); // v16.15.0 (Gemini/오프라인 SEO 미등록 시 로컬 템플릿)
         builder.Services.AddSingleton<PromptFlowStudio.Services.Prompt.PromptSynthesizerService>();   // 1번 워크플로우 프롬프트 합성기
         builder.Services.AddSingleton<PromptFlowStudio.Services.Storyboard.StoryboardSequencerService>();   // 2번 워크플로우 스토리보드 시퀀서
+        builder.Services.AddSingleton<PromptFlowStudio.Services.Render.RenderCostEstimatorService>();   // 3번 워크플로우 렌더 비용 추산
+        builder.Services.AddSingleton<PromptFlowStudio.Services.Batch.BatchMassProductionService>();    // 3번 워크플로우 배치 디스패처
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.AI.GeminiPromptEnhancer(new System.Net.Http.HttpClient { Timeout = System.TimeSpan.FromSeconds(30) }, () => sp.GetService<PromptFlowStudio.Services.Wan.GeminiConfigService>()?.ApiKey)); // Gemini 미등록 시 원본 반환
 
         builder.Services.AddSingleton<PromptFlowStudio.Services.Media.OsmuExportPackager>();

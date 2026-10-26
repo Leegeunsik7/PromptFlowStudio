@@ -71,6 +71,9 @@ public sealed class MainForm : Form
         services.AddSingleton<PromptFlowStudio.Services.Prompt.PromptSynthesizerService>();   // 1번 워크플로우 프롬프트 합성기(Subject 우선 · 800자 예산 · 네거티브 중복 제거)
         services.AddSingleton<PromptFlowStudio.Services.Storyboard.StoryboardSequencerService>();   // 2번 워크플로우 스토리보드 시퀀서(대본 → N컷 분할 · 시드/피사체 일관성 전파)
         services.AddSingleton<PromptFlowStudio.ViewModels.StoryboardViewModel>();   // 2번 워크플로우 컷 덱 상태(Workspace → Storyboard 대본 인계 · 화면 간 공유)
+        services.AddSingleton<PromptFlowStudio.Services.Render.RenderCostEstimatorService>();   // 3번 워크플로우 렌더 비용/VRAM 사전 추산
+        services.AddSingleton<PromptFlowStudio.Services.Batch.BatchMassProductionService>();    // 3번 워크플로우 다중 줄 프롬프트 → 배치 렌더 작업 전개
+        services.AddSingleton<PromptFlowStudio.ViewModels.MassProductionViewModel>();           // 3번 워크플로우 대량 양산 상태 · 렌더 큐(화면 간 공유)
         services.AddSingleton(sp => new PromptFlowStudio.Services.AI.GeminiPromptEnhancer(new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(30) }, sp.GetRequiredService<GeminiConfigService>())); // 🪄 AI 문장 자동 강화(실패 시 원본 반환)
         services.AddSingleton<IGeminiVideoAnalyzerService, GeminiVideoAnalyzerService>(); // 네이티브 MP4 통비디오 시간축 분석(VideoTemporalScore + 모션 보정)
         services.AddSingleton<IGeminiKineticSyncService, GeminiKineticSyncService>();     // 키네틱 자막/SFX 밀리초 타임코드 추출(단어별 highlight + SfxTriggers)
