@@ -77,6 +77,16 @@ public sealed class StoryboardScene
     /// <summary>이 컷으로 <b>들어오는</b> 스마트 트랜지션(이전 컷과의 경계 xfade). scene[0]은 루프(마지막→첫) 매치컷 메타.</summary>
     public VideoTransition? EnterTransition { get; set; }
 
+    // ── 2번 워크플로우 컷 덱(StoryboardCut) 동기화 필드 — StoryboardViewModel.AttachProject 양방향 결선 ──
+    /// <summary>컷 카메라 모션(컷 덱 편집값). null 이면 위치 기반 기본값.</summary>
+    public string? CameraMotion { get; set; }
+    /// <summary>컷 렌더링 시드(컷 덱 편집값). null 이면 미지정.</summary>
+    public long? Seed { get; set; }
+    /// <summary>컷 길이(초 · 컷 덱 편집값). null 이면 기본 5초.</summary>
+    public float? DurationSec { get; set; }
+    /// <summary>컷 덱 전환 효과(이전 컷 → 이 컷).</summary>
+    public TransitionType CutTransition { get; set; }
+
     /// <summary>i2v 참조 이미지 로컬 경로(업로드용). Mode=ImageToVideo 일 때 사용.</summary>
     public string? ImagePath { get; set; }
     /// <summary>미리보기 썸네일 URL(가상호스트).</summary>

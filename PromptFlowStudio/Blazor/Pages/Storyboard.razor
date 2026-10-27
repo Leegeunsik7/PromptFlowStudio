@@ -176,6 +176,7 @@
                     <button class="sb-cd-btn del" title="컷 삭제" @onclick="() => { Vm.RemoveCut(pos); }">✕</button>
                 </div>
                 <textarea class="sb-cd-ta" rows="2" @bind="cut.RawPrompt" placeholder="컷 프롬프트"></textarea>
+                <textarea class="sb-cd-ta" rows="1" @bind="cut.Script" placeholder="컷 대본(나레이션)"></textarea>
                 <div class="sb-cd-f">
                     @if (!string.IsNullOrEmpty(cut.CameraMotion)) { <span class="sb-cd-chip">🎥 @cut.CameraMotion</span> }
                     @if (pos == 0)
@@ -1878,6 +1879,21 @@
         QaInspector.OnChange += OnStateChanged;   // v16.17.0 최종 영상 QA 배지      // 최근 목록 변경 반영
         Vm.PropertyChanged += OnCutDeckPropertyChanged;   // 2번 워크플로우 컷 덱(총 재생 시간 등)
         Vm.Cuts.CollectionChanged += OnCutDeckCollectionChanged;
+        Vm.AttachProject(_project);   // 컷 덱 ↔ _project.Scenes 양방향 결선(로드분 역복원 · 수신 덱은 빈 프로젝트에 채움)
+    }
+
+    /// <summary>
+    /// 렌더 후 컷 덱 재결선 — _project 교체(열기/최근/에피소드)는 재결선, 기존 컷 목록·테마·위저드의 씬 직접 편집은 역복원.
+    ///   값 동일 시 PropertyChanged 미발생 → 재렌더 루프 없음. 구조 동일 시 할당 0.
+    /// </summary>
+    protected override void OnAfterRender(bool firstRender)
+    {
+        try
+        {
+            if (!ReferenceEquals(Vm.Project, _project)) Vm.AttachProject(_project);
+            else Vm.PullFromProject();
+        }
+        catch (Exception ex) { Program.Log("Storyboard.CutDeckSync", ex); }
     }
 
     // ── 2번 워크플로우 컷 덱(StoryboardViewModel) ──
@@ -1955,6 +1971,7 @@
         QaInspector.OnChange -= OnStateChanged;
         Vm.PropertyChanged -= OnCutDeckPropertyChanged;
         Vm.Cuts.CollectionChanged -= OnCutDeckCollectionChanged;
+        if (ReferenceEquals(Vm.Project, _project)) Vm.AttachProject(null);
         _toastTimer?.Dispose();
         _guideTimer?.Dispose();
         _hlTimer?.Dispose();
@@ -2414,6 +2431,7 @@
     // ── 프로젝트 저장/열기 ──
     private void SaveProject()
     {
+        Vm.FlushToProject();   // 컷 덱 최신 편집분 누락 차단
         var path = Repo.Save(_project);
         if (path is null) { ShowToast("❌ 저장 실패(로그를 확인하세요)."); return; }
         Recents.Touch(path, _project.Title);

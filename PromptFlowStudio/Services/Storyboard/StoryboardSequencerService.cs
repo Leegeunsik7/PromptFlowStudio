@@ -24,6 +24,7 @@ public sealed class StoryboardCut : INotifyPropertyChanged
     private long _seed;
     private bool _isSubjectLocked;
     private string? _subjectIdentity;
+    private string _script = "";
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -40,6 +41,8 @@ public sealed class StoryboardCut : INotifyPropertyChanged
     public bool IsSubjectLocked { get => _isSubjectLocked; set => Set(ref _isSubjectLocked, value); }
     /// <summary>상속된 피사체 정체성(1번 컷 기준).</summary>
     public string? SubjectIdentity { get => _subjectIdentity; set => Set(ref _subjectIdentity, value); }
+    /// <summary>컷 대본(나레이션/대사) — 프로젝트 씬 VoiceText 와 동기화.</summary>
+    public string Script { get => _script; set => Set(ref _script, value ?? ""); }
 
     private void Set<T>(ref T field, T value, [CallerMemberName] string? name = null)
     {
