@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -12,12 +13,12 @@ public sealed record StreamTelemetry(double Fps, string Resolution, int LatencyM
     public static readonly StreamTelemetry Empty = new(0, "", 0, 0);
 }
 
-/// <summary>캡처 1장 메타 — <see cref="FrameDataUrl"/> 은 썸네일·I2V 핸드오프에 그대로 쓰는 BMP data URL.</summary>
+/// <summary>캡처 1장 메타 — <see cref="FrameDataUrl"/> 은 썸네일·I2V 핸드오프에 그대로 쓰는 이미지(JPEG/PNG/BMP) data URL.</summary>
 public sealed record CapturedFrameMeta(Guid FrameId, DateTime Timestamp, string Resolution, string FrameDataUrl);
 
 /// <summary>
-/// [PromptFlowStudio] 무선 카메라(RTSP/SRT/WebRTC/HTTP) 스트림 연결 시뮬레이터 + 단일 프레임 캡처.
-///   ▸ 캡처 버퍼는 Pure BCL 24bpp BMP(외부 디코더 0) — <see cref="QueueI2vReference"/> 로 프롬프트 입력의 I2V 첫 프레임에 1회 전달.
+/// [PromptFlowStudio] 무선 카메라(RTSP/SRT/WebRTC/HTTP) 스트림 연결 + 단일 프레임 캡처 — 수신은 <see cref="ICameraStreamReceiver"/> 위임.
+///   ▸ 실물 프레임(JPEG/PNG/BMP) 또는 폴백 프록시 BMP — <see cref="QueueI2vReference"/> 로 프롬프트 입력의 I2V 첫 프레임에 1회 전달.
 ///   ▸ 연결 중 재호출/해제는 CTS 로 취소, 해제 시 텔레메트리·캡처 버퍼 초기화.
 /// </summary>
 public sealed class WirelessCameraService : IDisposable
@@ -32,16 +33,22 @@ public sealed class WirelessCameraService : IDisposable
 
     private readonly object _gate = new();
     private readonly TimeSpan _handshake;
+    private readonly ICameraStreamReceiver _receiver;
     private CancellationTokenSource? _connectCts;
-    private StreamTelemetry _telemetry = StreamTelemetry.Empty;
     private byte[]? _lastFrameBytes;
     private byte[]? _pendingI2v;
-    private long _frameCounter;
 
-    public WirelessCameraService() : this(TimeSpan.FromMilliseconds(350)) { }
+    /// <summary>DI — 실물 수신기(<see cref="NetworkCameraStreamReceiver"/>) 주입.</summary>
+    public WirelessCameraService(ICameraStreamReceiver receiver) : this(receiver, TimeSpan.Zero) { }
 
-    /// <summary>테스트용 — 핸드셰이크 지연 주입.</summary>
-    public WirelessCameraService(TimeSpan handshake) => _handshake = handshake < TimeSpan.Zero ? TimeSpan.Zero : handshake;
+    /// <summary>테스트/오프라인용 — <see cref="MockStreamReceiver"/> + 핸드셰이크 지연 주입.</summary>
+    public WirelessCameraService(TimeSpan handshake) : this(new MockStreamReceiver(), handshake) { }
+
+    public WirelessCameraService(ICameraStreamReceiver receiver, TimeSpan handshake)
+    {
+        _receiver = receiver ?? throw new ArgumentNullException(nameof(receiver));
+        _handshake = handshake < TimeSpan.Zero ? TimeSpan.Zero : handshake;
+    }
 
     public event Action? StateChanged;
 
@@ -50,8 +57,11 @@ public sealed class WirelessCameraService : IDisposable
     public string? LastError { get; private set; }
     public CapturedFrameMeta? LastFrame { get; private set; }
     public bool HasPendingI2vReference => Volatile.Read(ref _pendingI2v) is not null;
+    /// <summary>실물 수신 실패로 프록시 프레임 송출 중인가(사유 <see cref="FallbackReason"/>).</summary>
+    public bool IsFallbackMode => _receiver.IsFallback;
+    public string? FallbackReason => _receiver.FallbackReason;
 
-    /// <summary>엔드포인트 검증 → Connecting → 핸드셰이크 → Streaming. 형식 오류는 Error(false), 취소/해제는 Disconnected(false).</summary>
+    /// <summary>엔드포인트 검증 → Connecting → 핸드셰이크 → 수신기 연결(실패 시 폴백) → Streaming. 형식 오류는 Error(false), 취소/해제는 Disconnected(false).</summary>
     public async Task<bool> ConnectStreamAsync(string streamEndpoint, CancellationToken ct = default)
     {
         if (!TryValidateEndpoint(streamEndpoint, out var error))
@@ -75,12 +85,29 @@ public sealed class WirelessCameraService : IDisposable
         {
             if (_handshake > TimeSpan.Zero) await Task.Delay(_handshake, token).ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
-            _telemetry = new StreamTelemetry(NominalFps, DefaultResolution, LatencyFor(endpoint), DefaultBitrateKbps);
+            if (!await _receiver.ConnectAsync(endpoint, token).ConfigureAwait(false))
+            {
+                token.ThrowIfCancellationRequested();
+                LastError = "스트림 수신기 연결 실패";
+                SetState(CameraConnectionState.Error);
+                return false;
+            }
+            token.ThrowIfCancellationRequested();
             SetState(CameraConnectionState.Streaming);
             return true;
         }
         catch (OperationCanceledException)
         {
+            bool current;
+            lock (_gate) current = ReferenceEquals(_connectCts, cts);
+            if (current) _receiver.Disconnect();   // 외부 토큰 취소 — 수신기만 정리(해제 경로는 DisconnectStream 이 처리)
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Program.Log("WirelessCamera.Connect", ex);
+            LastError = "스트림 연결 오류: " + ex.GetType().Name;
+            SetState(CameraConnectionState.Error);
             return false;
         }
     }
@@ -91,35 +118,60 @@ public sealed class WirelessCameraService : IDisposable
         CancellationTokenSource? old;
         lock (_gate) { old = _connectCts; _connectCts = null; }
         CancelAndDispose(old);
+        _receiver.Disconnect();
 
-        _telemetry = StreamTelemetry.Empty;
         _lastFrameBytes = null;
         LastFrame = null;
         Endpoint = null;
         LastError = null;
-        Interlocked.Exchange(ref _frameCounter, 0);
         SetState(CameraConnectionState.Disconnected);
     }
 
-    /// <summary>현재 스트림에서 단일 프레임 캡처. Streaming 이 아니면 null.</summary>
-    public CapturedFrameMeta? CaptureFrame()
+    /// <summary>동기 캡처(폴백/Mock 은 즉시 완료) — UI 는 <see cref="CaptureFrameAsync"/> 사용.</summary>
+    public CapturedFrameMeta? CaptureFrame() => CaptureFrameAsync().GetAwaiter().GetResult();
+
+    /// <summary>
+    /// 현재 스트림에서 단일 프레임 캡처. Streaming 이 아니거나 수신 실패면 null(LastError 기록).
+    ///   해상도: 실물 프레임은 헤더 실측, 폴백 프록시는 공칭 해상도(텔레메트리).
+    /// </summary>
+    public async Task<CapturedFrameMeta?> CaptureFrameAsync(CancellationToken ct = default)
     {
         if (State != CameraConnectionState.Streaming) return null;
-        var n = Interlocked.Increment(ref _frameCounter);
-        var bytes = RenderProxyBmp(n);
-        var meta = new CapturedFrameMeta(Guid.NewGuid(), DateTime.UtcNow, _telemetry.Resolution,
-            "data:image/bmp;base64," + Convert.ToBase64String(bytes));
+        byte[]? bytes;
+        try { bytes = await _receiver.CaptureFrameBytesAsync(ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { return null; }
+        catch (Exception ex)
+        {
+            Program.Log("WirelessCamera.Capture", ex);
+            bytes = null;
+        }
+        if (State != CameraConnectionState.Streaming) return null;   // 수신 중 해제
+        var mime = bytes is null ? null : CameraFrameCodec.MimeOf(bytes);
+        if (bytes is null || mime is null)
+        {
+            LastError = "프레임 수신 실패 — 카메라 응답을 확인하세요.";
+            Raise();
+            return null;
+        }
+
+        var resolution = !_receiver.IsFallback && CameraFrameCodec.TryReadSize(bytes, out var w, out var h)
+            ? w.ToString(CultureInfo.InvariantCulture) + "x" + h.ToString(CultureInfo.InvariantCulture)
+            : _receiver.GetCurrentTelemetry().Resolution;
+        var meta = new CapturedFrameMeta(Guid.NewGuid(), DateTime.UtcNow, resolution,
+            "data:" + mime + ";base64," + Convert.ToBase64String(bytes));
         _lastFrameBytes = bytes;
         LastFrame = meta;
+        LastError = null;
         Raise();
         return meta;
     }
 
-    /// <summary>실시간 지표 — Streaming 중엔 프레임 카운터 기반 ±0.03fps 지터, 그 외 <see cref="StreamTelemetry.Empty"/>.</summary>
+    /// <summary>실시간 지표 — Streaming 중엔 수신기 지표 + ±0.03fps 지터, 그 외 <see cref="StreamTelemetry.Empty"/>.</summary>
     public StreamTelemetry GetTelemetry()
     {
-        var t = _telemetry;
         if (State != CameraConnectionState.Streaming) return StreamTelemetry.Empty;
+        var t = _receiver.GetCurrentTelemetry();
+        if (t.Fps <= 0) return t;
         var jitter = (Environment.TickCount64 / 250 % 7 - 3) * 0.01;
         return t with { Fps = t.Fps + jitter };
     }
@@ -161,48 +213,13 @@ public sealed class WirelessCameraService : IDisposable
         };
     }
 
-    /// <summary>24bpp bottom-up BMP 프록시 프레임 — 프레임 번호로 색조가 이동하는 그라디언트(캡처 시점 구분용).</summary>
-    internal static byte[] RenderProxyBmp(long frameNo)
-    {
-        const int w = BufferWidth, h = BufferHeight;
-        const int stride = (w * 3 + 3) & ~3;
-        const int pixelBytes = stride * h;
-        const int headerBytes = 54;
-        var buf = new byte[headerBytes + pixelBytes];
-        buf[0] = (byte)'B'; buf[1] = (byte)'M';
-        WriteLe(buf, 2, buf.Length);
-        WriteLe(buf, 10, headerBytes);
-        WriteLe(buf, 14, 40);
-        WriteLe(buf, 18, w);
-        WriteLe(buf, 22, h);
-        buf[26] = 1; buf[28] = 24;
-        WriteLe(buf, 34, pixelBytes);
-        var shift = (int)(frameNo * 37 % 256);
-        for (var y = 0; y < h; y++)
-        {
-            var row = headerBytes + y * stride;
-            for (var x = 0; x < w; x++)
-            {
-                var o = row + x * 3;
-                buf[o] = (byte)(96 + y * 120 / h);                 // B
-                buf[o + 1] = (byte)((x * 255 / w + shift) & 0xFF);  // G
-                buf[o + 2] = (byte)(40 + (shift >> 1));            // R
-            }
-        }
-        return buf;
-    }
-
     public void Dispose()
     {
         CancellationTokenSource? old;
         lock (_gate) { old = _connectCts; _connectCts = null; }
         CancelAndDispose(old);
+        _receiver.Disconnect();   // 수신기 자원(HttpClient)은 DI 컨테이너 소유
         StateChanged = null;
-    }
-
-    private static void WriteLe(byte[] b, int o, int v)
-    {
-        b[o] = (byte)v; b[o + 1] = (byte)(v >> 8); b[o + 2] = (byte)(v >> 16); b[o + 3] = (byte)(v >> 24);
     }
 
     private static void CancelAndDispose(CancellationTokenSource? cts)

@@ -55,7 +55,7 @@
 
         @* ── 우측 캡처 덱 ── *@
         <section class="wc-deck">
-            <button class="wc-shutter" @onclick="Vm.CaptureCurrentFrame" disabled="@(!Vm.IsStreaming)">📷 현재 프레임 캡처</button>
+            <button class="wc-shutter" @onclick="Capture" disabled="@(!Vm.IsStreaming)">📷 현재 프레임 캡처</button>
             @if (Vm.LastCapturedFrame is { } f)
             {
                 <img class="wc-thumb" src="@f.FrameDataUrl" alt="최근 캡처" />
@@ -141,6 +141,12 @@
     {
         try { await Vm.ToggleConnection(); }
         catch (Exception ex) { Program.Log("WirelessCamera.Toggle", ex); }
+    }
+
+    private async Task Capture()
+    {
+        try { await Vm.CaptureCurrentFrame(); }
+        catch (Exception ex) { Program.Log("WirelessCamera.Capture", ex); }
     }
 
     private void SendToI2v()

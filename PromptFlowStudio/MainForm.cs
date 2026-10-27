@@ -84,6 +84,7 @@ public sealed class MainForm : Form
         services.AddSingleton<PromptFlowStudio.ViewModels.CommercialStudioViewModel>();         // 커머셜 브랜드 스튜디오 킷 · 포맷 프리셋 · 렌더 큐 전송
         services.AddSingleton<PromptFlowStudio.Services.Shorts.AiShortsService>();              // 6번 워크플로우 AI 15초 숏폼 3컷 시퀀서(9:16 · BGM 박 전환)
         services.AddSingleton<PromptFlowStudio.ViewModels.AiShortsViewModel>();                 // 숏폼 시퀀스 생성 · 9:16 3컷 렌더 큐 일괄 전송
+        services.AddSingleton<PromptFlowStudio.Services.Camera.ICameraStreamReceiver, PromptFlowStudio.Services.Camera.NetworkCameraStreamReceiver>(); // HTTP 스냅샷·MJPEG · ffmpeg RTSP 1프레임 · 미응답 시 Mock 폴백
         services.AddSingleton<PromptFlowStudio.Services.Camera.WirelessCameraService>();        // 무선 카메라 스트림 연결 · 프레임 캡처 · I2V 핸드오프 버퍼
         services.AddSingleton<PromptFlowStudio.ViewModels.WirelessCameraViewModel>();           // 연결 토글 · 캡처 덱 · I2V 첫 프레임 전송
         services.AddSingleton<PromptFlowStudio.Services.Gallery.GalleryMediaService>();         // 갤러리 메타데이터 아카이브 · 안전 삭제 · 작업실 복원 핸드오프

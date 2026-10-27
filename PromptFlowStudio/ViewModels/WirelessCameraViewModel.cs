@@ -42,15 +42,19 @@ public sealed class WirelessCameraViewModel
             StatusMessage = "연결 중…";
             Raise();
             var ok = await _camera.ConnectStreamAsync(StreamEndpointInput).ConfigureAwait(false);
-            StatusMessage = ok ? "스트리밍 중 · " + _camera.Endpoint : _camera.LastError ?? "연결 취소됨";
+            StatusMessage = !ok ? _camera.LastError ?? "연결 취소됨"
+                : _camera.IsFallbackMode ? "폴백 프레임 수신 중(" + _camera.FallbackReason + ") · " + _camera.Endpoint
+                : "스트리밍 중 · " + _camera.Endpoint;
         }
         RefreshTelemetry();
     }
 
-    public void CaptureCurrentFrame()
+    public async Task CaptureCurrentFrame()
     {
-        var frame = _camera.CaptureFrame();
-        StatusMessage = frame is null ? "스트리밍 중일 때만 캡처할 수 있습니다." : "프레임 캡처 완료 · " + frame.Resolution;
+        var frame = await _camera.CaptureFrameAsync().ConfigureAwait(false);
+        StatusMessage = frame is not null ? "프레임 캡처 완료 · " + frame.Resolution
+            : _camera.State == CameraConnectionState.Streaming ? _camera.LastError ?? "프레임 수신 실패"
+            : "스트리밍 중일 때만 캡처할 수 있습니다.";
         Raise();
     }
 
