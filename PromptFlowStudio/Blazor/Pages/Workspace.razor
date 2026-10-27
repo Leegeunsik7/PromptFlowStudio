@@ -455,6 +455,15 @@
             <div class="ws-insp-tabs">
                 <button class="ws-insp-tab @(_inspTab == 0 ? "on" : null)" @onclick="() => _inspTab = 0">🎬 장르별 완성 스토리</button>
                 <button class="ws-insp-tab @(_inspTab == 1 ? "on" : null)" @onclick="() => _inspTab = 1">🧱 레고식 모듈 조합기</button>
+                <button class="ws-insp-tab @(_inspTab == 2 ? "on" : null)" @onclick="() => _inspTab = 2">⭐ 내 커스텀 프리셋 (@(_vm.CustomPresets.Count))</button>
+            </div>
+            <div class="ws-insp-save">
+                <input class="ws-insp-save-in" placeholder="현재 프롬프트를 내 프리셋으로 저장 — 제목 입력" maxlength="@PromptFlowStudio.Services.Prompt.PromptInspirationService.MaxCustomTitleLength" @bind="_presetTitle" @bind:event="oninput" />
+                <button class="ws-insp-apply" @onclick="SaveCurrentPreset" disabled="@(string.IsNullOrWhiteSpace(_presetTitle) || string.IsNullOrWhiteSpace(_prompt))">💾 저장</button>
+                @if (_presetMsg is { Length: > 0 })
+                {
+                    <span class="ws-insp-save-msg">@_presetMsg</span>
+                }
             </div>
             @if (_inspTab == 0)
             {
@@ -482,6 +491,34 @@
                         <div class="ws-insp-prev-t">@pick.Title</div>
                         <div class="ws-insp-prev-p">@pick.FullPrompt</div>
                         <button class="ws-insp-apply" @onclick="() => ApplyRecipeAsync(pick)">✅ 이 스토리 적용</button>
+                    </div>
+                }
+            }
+            else if (_inspTab == 2)
+            {
+                @if (_vm.CustomPresets.Count == 0)
+                {
+                    <div class="ws-insp-prev"><div class="ws-insp-prev-p">저장된 프리셋이 없습니다. 위 입력란에 제목을 적고 💾 저장을 누르세요.</div></div>
+                }
+                else
+                {
+                    <div class="ws-insp-deck">
+                        @foreach (var cp in _vm.CustomPresets)
+                        {
+                            <div class="ws-insp-card" @key="cp.Id">
+                                <span class="ws-insp-cat">⭐ @cp.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture)</span>
+                                <span class="ws-insp-title">@cp.Title</span>
+                                @if (cp.CameraMotion.Length > 0)
+                                {
+                                    <span class="ws-insp-meta">🎥 @cp.CameraMotion</span>
+                                }
+                                <span class="ws-insp-meta ws-insp-clip" title="@cp.Prompt">@cp.Prompt</span>
+                                <div class="ws-insp-acts">
+                                    <button class="ws-insp-apply" @onclick="() => ApplyCustomPresetAsync(cp)">✅ 적용</button>
+                                    <button class="ws-insp-del" @onclick="() => DeleteCustomPreset(cp.Id)">🗑 삭제</button>
+                                </div>
+                            </div>
+                        }
                     </div>
                 }
             }
@@ -757,6 +794,13 @@
     .ws-insp-prev-p { font-size: 12.5px; line-height: 1.6; color: var(--text-secondary); white-space: pre-wrap; }
     .ws-insp-apply { align-self: flex-end; padding: 7px 14px; border-radius: 8px; border: none; cursor: pointer; font-weight: 800; font-size: 12.5px; font-family: inherit; color: #fff; background: linear-gradient(90deg, var(--flow-violet), var(--flow-cyan)); }
     .ws-insp-apply:disabled { opacity: .45; cursor: default; }
+    .ws-insp-save { display: flex; align-items: center; gap: 8px; }
+    .ws-insp-save-in { flex: 1; min-width: 0; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); font-family: inherit; font-size: 12.5px; }
+    .ws-insp-save-msg { font-size: 11.5px; color: var(--text-secondary); white-space: nowrap; }
+    .ws-insp-clip { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+    .ws-insp-acts { display: flex; justify-content: flex-end; gap: 6px; margin-top: 4px; }
+    .ws-insp-del { padding: 7px 12px; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 12px; font-family: inherit; color: var(--text-secondary); background: none; border: 1px solid var(--line); }
+    .ws-insp-del:hover { color: var(--text-primary); border-color: color-mix(in srgb, #ef4444 60%, var(--line)); }
     @@keyframes ws-insp-in { from { opacity: 0; transform: scale(.98); } to { opacity: 1; transform: none; } }
     @@keyframes ws-insp-out { from { opacity: 1; } to { opacity: 0; transform: scale(.98); } }
     @@media (prefers-reduced-motion: reduce) { .ws-insp-ov, .ws-insp-ov.closing { animation: none; } }
@@ -896,6 +940,7 @@
     private void OpenInspiration()
     {
         _inspClosing = false;
+        _presetMsg = null;
         if (_inspList.Count == 0) SelectInspirationCategory(_inspCat);
         _vm.IsInspirationModalOpen = true;
     }
@@ -929,6 +974,21 @@
         var l = ChipAt(PromptFlowStudio.Services.Prompt.PromptInspirationService.Lightings, _chipLight);
         if (_vm.BuildAndApplyChips(p, e, m, l)) _prompt = _vm.UserInput ?? "";
         else _vm.IsInspirationModalOpen = false;
+    }
+    // ⭐ 내 커스텀 프리셋 — 저장은 _prompt 를 VM 에 선반영(ShouldRender 동기화 이전 클릭 대비).
+    private string? _presetTitle, _presetMsg;
+    private void SaveCurrentPreset()
+    {
+        _vm.UserInput = _prompt;
+        if (_vm.SaveCurrentAsPreset(_presetTitle ?? "")) { _presetMsg = "✅ 저장됨"; _presetTitle = null; _inspTab = 2; }
+        else _presetMsg = "⚠ 저장 실패";
+    }
+    private void DeleteCustomPreset(Guid id) => _presetMsg = _vm.DeletePreset(id) ? "🗑 삭제됨" : "⚠ 삭제 실패";
+    private async Task ApplyCustomPresetAsync(PromptFlowStudio.Services.Prompt.UserCustomPreset preset)
+    {
+        if (!await FadeOutInspirationAsync()) return;
+        _vm.ApplyCustomPreset(preset);
+        _prompt = _vm.UserInput ?? "";
     }
     private async Task<bool> FadeOutInspirationAsync()
     {

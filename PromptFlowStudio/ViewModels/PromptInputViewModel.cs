@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
 using System.IO;
@@ -33,6 +34,7 @@ public sealed class PromptInputViewModel : INotifyPropertyChanged
     {
         _synth = synth ?? throw new ArgumentNullException(nameof(synth));
         _inspiration = inspiration ?? new PromptInspirationService();
+        CustomPresets = new ObservableCollection<UserCustomPreset>(_inspiration.LoadCustomPresets());
         _result = _synth.Synthesize(BuildContext());
         ApplySize(DefaultSize);
     }
@@ -79,6 +81,44 @@ public sealed class PromptInputViewModel : INotifyPropertyChanged
         UserInput = text;
         IsInspirationModalOpen = false;
         return true;
+    }
+
+    // ── ⭐ 내 커스텀 프리셋 ──
+    public ObservableCollection<UserCustomPreset> CustomPresets { get; }
+
+    /// <summary>현재 <see cref="UserInput"/>·<see cref="CameraMotion"/> 을 프리셋으로 저장. 빈 제목/입력 또는 IO 실패 시 false.</summary>
+    public bool SaveCurrentAsPreset(string title)
+    {
+        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(_userInput)) return false;
+        try { _inspiration.SaveCustomPreset(title, _userInput, _cameraMotion ?? ""); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
+        ReloadCustomPresets();
+        return true;
+    }
+
+    /// <summary>프리셋 삭제 — 없거나 IO 실패면 false.</summary>
+    public bool DeletePreset(Guid id)
+    {
+        bool removed;
+        try { removed = _inspiration.DeleteCustomPreset(id); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
+        if (removed) ReloadCustomPresets();
+        return removed;
+    }
+
+    /// <summary>프리셋 → <see cref="UserInput"/>/<see cref="CameraMotion"/> 대입 후 모달 닫기.</summary>
+    public void ApplyCustomPreset(UserCustomPreset preset)
+    {
+        ArgumentNullException.ThrowIfNull(preset);
+        UserInput = preset.Prompt;
+        if (!string.IsNullOrWhiteSpace(preset.CameraMotion)) CameraMotion = preset.CameraMotion;
+        IsInspirationModalOpen = false;
+    }
+
+    private void ReloadCustomPresets()
+    {
+        CustomPresets.Clear();
+        foreach (var p in _inspiration.LoadCustomPresets()) CustomPresets.Add(p);
     }
 
     // ── 참조 이미지 / 모드 ──

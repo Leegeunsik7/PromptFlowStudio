@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using PromptFlowStudio.Services.Prompt;
 using PromptFlowStudio.ViewModels;
 
@@ -111,6 +112,100 @@ public class PromptInspirationTests
         Assert.True(vm.BuildAndApplyChips("a cyber ninja", "a neon alley", "fast handheld tracking shot", "neon contrast"));
         Assert.Equal(_svc.BuildFromChips("a cyber ninja", "a neon alley", "fast handheld tracking shot", "neon contrast"), vm.UserInput);
         Assert.False(vm.IsInspirationModalOpen);
+    }
+
+    private static string TempPresetPath() =>
+        Path.Combine(Path.GetTempPath(), "pfs_presets_" + Guid.NewGuid().ToString("N"), PromptInspirationService.CustomPresetFileName);
+
+    private static void Cleanup(string path)
+    {
+        try { Directory.Delete(Path.GetDirectoryName(path)!, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+    }
+
+    [Fact]
+    public void SaveCustomPreset_PersistsToFileAndLoadsCorrectly()
+    {
+        var path = TempPresetPath();
+        try
+        {
+            Assert.Empty(new PromptInspirationService(path).LoadCustomPresets());
+
+            var svc = new PromptInspirationService(path);
+            svc.SaveCustomPreset("  내 우주 씬 ", "An astronaut drifting past Saturn rings", "slow push-in");
+            svc.SaveCustomPreset("두번째", "A cat on a rooftop at dusk", "");
+            Assert.True(File.Exists(path));
+
+            var loaded = new PromptInspirationService(path).LoadCustomPresets();   // 새 인스턴스 = 디스크 재로드
+            Assert.Equal(2, loaded.Count);
+            Assert.Equal("두번째", loaded[0].Title);   // 최신 우선
+            Assert.Equal("내 우주 씬", loaded[1].Title);
+            Assert.Equal("An astronaut drifting past Saturn rings", loaded[1].Prompt);
+            Assert.Equal("slow push-in", loaded[1].CameraMotion);
+            Assert.NotEqual(Guid.Empty, loaded[1].Id);
+            Assert.NotEqual(loaded[0].Id, loaded[1].Id);
+
+            var (curated, custom) = svc.GetAllPresets();
+            Assert.Same(svc.GetCuratedPresets(), curated);
+            Assert.Equal(2, custom.Count);
+
+            Assert.Throws<ArgumentException>(() => svc.SaveCustomPreset(" ", "x", ""));
+            Assert.Throws<ArgumentException>(() => svc.SaveCustomPreset("t", "", ""));
+
+            var vm = new PromptInputViewModel(_synth, new PromptInspirationService(path)) { UserInput = "A fox in snow", CameraMotion = "orbit", IsInspirationModalOpen = true };
+            Assert.Equal(2, vm.CustomPresets.Count);
+            Assert.True(vm.SaveCurrentAsPreset("여우"));
+            Assert.Equal(3, vm.CustomPresets.Count);
+            vm.UserInput = "다른 입력";
+            vm.ApplyCustomPreset(vm.CustomPresets[0]);
+            Assert.Equal("A fox in snow", vm.UserInput);
+            Assert.Equal("orbit", vm.CameraMotion);
+            Assert.False(vm.IsInspirationModalOpen);
+        }
+        finally { Cleanup(path); }
+    }
+
+    [Fact]
+    public void DeleteCustomPreset_RemovesTargetPreset()
+    {
+        var path = TempPresetPath();
+        try
+        {
+            var svc = new PromptInspirationService(path);
+            svc.SaveCustomPreset("A", "prompt a", "");
+            svc.SaveCustomPreset("B", "prompt b", "");
+            var target = svc.LoadCustomPresets()[1];   // "A"
+
+            Assert.True(svc.DeleteCustomPreset(target.Id));
+            Assert.False(svc.DeleteCustomPreset(target.Id));
+            Assert.False(svc.DeleteCustomPreset(Guid.NewGuid()));
+
+            var reloaded = new PromptInspirationService(path).LoadCustomPresets();
+            Assert.Single(reloaded);
+            Assert.Equal("B", reloaded[0].Title);
+
+            var vm = new PromptInputViewModel(_synth, new PromptInspirationService(path));
+            Assert.True(vm.DeletePreset(reloaded[0].Id));
+            Assert.Empty(vm.CustomPresets);
+            Assert.Empty(new PromptInspirationService(path).LoadCustomPresets());
+        }
+        finally { Cleanup(path); }
+    }
+
+    [Fact]
+    public void LoadCustomPresets_CorruptFile_ReturnsEmptyAndKeepsBackup()
+    {
+        var path = TempPresetPath();
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, "{ not json");
+            var svc = new PromptInspirationService(path);
+            Assert.Empty(svc.LoadCustomPresets());
+            Assert.True(File.Exists(path + ".corrupt.bak"));
+            svc.SaveCustomPreset("복구", "recovered prompt", "");
+            Assert.Single(new PromptInspirationService(path).LoadCustomPresets());
+        }
+        finally { Cleanup(path); }
     }
 
     [Fact]

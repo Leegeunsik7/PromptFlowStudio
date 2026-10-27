@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
+using System.Text.Json;
 
 namespace PromptFlowStudio.Services.Prompt;
 
@@ -13,14 +15,37 @@ public sealed record StoryRecipe(string Title, StoryPresetCategory Category, str
 /// <summary>레고식 조합기 칩 — 표시 라벨(한글) + 합성 스니펫(영문).</summary>
 public sealed record InspirationChip(string Label, string Snippet);
 
+/// <summary>⭐ 사용자 커스텀 프리셋 — <c>custom_story_presets.json</c> 영속.</summary>
+public sealed record UserCustomPreset(Guid Id, string Title, string Prompt, string CameraMotion, DateTime CreatedAt);
+
 /// <summary>
 /// [PromptFlowStudio] 「스토리 레시피 &amp; 인스피레이션 허브」 — 장르별 큐레이션 프리셋 + 피사체/배경/카메라/조명 칩 합성(순수 BCL).
 ///   ▸ 프리셋·칩은 정적 불변 배열(인스턴스 간 공유 · 조회 할당 0).
 ///   ▸ <see cref="BuildFromChips"/> 는 빈 칩을 건너뛰고 <see cref="PromptSynthesizerService.MaxCharacterLimit"/> 로 절삭.
+///   ▸ 사용자 프리셋은 %LocalAppData%\PromptFlowStudio\custom_story_presets.json(지연 로드 · 임시파일→원자 교체 · 손상 시 .corrupt.bak 보존).
 /// </summary>
 public sealed class PromptInspirationService
 {
     private const string QualitySuffix = "ultra-detailed, 4K cinematic quality, smooth natural motion, consistent subject identity";
+    public const string CustomPresetFileName = "custom_story_presets.json";
+    public const int MaxCustomTitleLength = 80;
+
+    private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
+    private readonly object _customGate = new();
+    private List<UserCustomPreset>? _custom;
+
+    /// <summary>사용자 프리셋 JSON 경로.</summary>
+    public string CustomPresetPath { get; }
+
+    public PromptInspirationService() : this(null) { }
+
+    /// <param name="customPresetPath">null/공백이면 기본 %LocalAppData% 경로(테스트는 임시 경로 주입).</param>
+    public PromptInspirationService(string? customPresetPath)
+    {
+        CustomPresetPath = string.IsNullOrWhiteSpace(customPresetPath)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", CustomPresetFileName)
+            : customPresetPath!;
+    }
 
     private static readonly StoryRecipe[] Presets =
     {
@@ -166,5 +191,80 @@ public sealed class PromptInspirationService
         sb.Append(", ").Append(QualitySuffix);
         if (sb.Length > PromptSynthesizerService.MaxCharacterLimit) sb.Length = PromptSynthesizerService.MaxCharacterLimit;
         return sb.ToString();
+    }
+
+    // ── ⭐ 사용자 커스텀 프리셋 ──
+
+    /// <summary>사용자 프리셋 스냅숏(최신 저장 순). 파일 없음/손상이면 빈 목록.</summary>
+    public IReadOnlyList<UserCustomPreset> LoadCustomPresets()
+    {
+        lock (_customGate) return EnsureCustomLocked().ToArray();
+    }
+
+    /// <summary>큐레이션 + 사용자 프리셋 통합 조회(분리 유지).</summary>
+    public (IReadOnlyList<StoryRecipe> Curated, IReadOnlyList<UserCustomPreset> Custom) GetAllPresets()
+        => (Presets, LoadCustomPresets());
+
+    /// <summary>프리셋 저장(제목 ≤80자 · 프롬프트 ≤800자 절삭). 빈 제목/프롬프트는 <see cref="ArgumentException"/>.</summary>
+    public void SaveCustomPreset(string title, string prompt, string cameraMotion)
+    {
+        var t = title?.Trim(); var p = prompt?.Trim();
+        if (string.IsNullOrEmpty(t)) throw new ArgumentException("프리셋 제목이 비어 있습니다.", nameof(title));
+        if (string.IsNullOrEmpty(p)) throw new ArgumentException("프리셋 프롬프트가 비어 있습니다.", nameof(prompt));
+        if (t.Length > MaxCustomTitleLength) t = t[..MaxCustomTitleLength];
+        if (p.Length > PromptSynthesizerService.MaxCharacterLimit) p = p[..PromptSynthesizerService.MaxCharacterLimit];
+
+        lock (_customGate)
+        {
+            var list = EnsureCustomLocked();
+            list.Insert(0, new UserCustomPreset(Guid.NewGuid(), t, p, cameraMotion?.Trim() ?? "", DateTime.UtcNow));
+            PersistLocked(list);
+        }
+    }
+
+    /// <summary>Id 로 삭제 — 없으면 false(파일 불변).</summary>
+    public bool DeleteCustomPreset(Guid presetId)
+    {
+        lock (_customGate)
+        {
+            var list = EnsureCustomLocked();
+            var idx = list.FindIndex(x => x.Id == presetId);
+            if (idx < 0) return false;
+            list.RemoveAt(idx);
+            PersistLocked(list);
+            return true;
+        }
+    }
+
+    private List<UserCustomPreset> EnsureCustomLocked()
+    {
+        if (_custom is not null) return _custom;
+        _custom = new List<UserCustomPreset>();
+        try
+        {
+            if (!File.Exists(CustomPresetPath)) return _custom;
+            var arr = JsonSerializer.Deserialize<UserCustomPreset[]>(File.ReadAllText(CustomPresetPath, Encoding.UTF8), JsonOpts);
+            if (arr is not null)
+                foreach (var x in arr)
+                    if (x is not null && x.Id != Guid.Empty && !string.IsNullOrWhiteSpace(x.Title) && !string.IsNullOrWhiteSpace(x.Prompt))
+                        _custom.Add(x with { CameraMotion = x.CameraMotion ?? "" });
+        }
+        catch (JsonException)
+        {
+            // [부분 구제] 손상 파일은 덮어쓰기 전 백업 보존.
+            try { File.Copy(CustomPresetPath, CustomPresetPath + ".corrupt.bak", overwrite: true); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        return _custom;
+    }
+
+    private void PersistLocked(List<UserCustomPreset> list)
+    {
+        var dir = Path.GetDirectoryName(CustomPresetPath);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        var tmp = CustomPresetPath + ".tmp";
+        File.WriteAllText(tmp, JsonSerializer.Serialize(list, JsonOpts), new UTF8Encoding(false));
+        File.Move(tmp, CustomPresetPath, overwrite: true);
     }
 }
