@@ -75,7 +75,8 @@ public sealed class MainForm : Form
         services.AddSingleton<PromptFlowStudio.Services.Render.RenderCostEstimatorService>();   // 3번 워크플로우 렌더 비용/VRAM 사전 추산
         services.AddSingleton<PromptFlowStudio.Services.Batch.BatchMassProductionService>();    // 3번 워크플로우 다중 줄 프롬프트 → 배치 렌더 작업 전개
         services.AddSingleton<PromptFlowStudio.ViewModels.MassProductionViewModel>();           // 3번 워크플로우 대량 양산 상태 · 렌더 큐(화면 간 공유)
-        services.AddSingleton<PromptFlowStudio.Services.Render.IRenderQueueService, PromptFlowStudio.Services.Render.RenderQueueService>();   // 전역 렌더 큐 + 백그라운드 가상 렌더 워커
+        services.AddSingleton<PromptFlowStudio.Services.Render.IRenderExecutionEngine>(sp => new PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine(sp.GetService<VideoEngineSelector>()));   // 렌더 큐 → 활성 비디오 엔진(ComfyUI/클라우드) 어댑터 · 미구성 시 시뮬레이션 폴백
+        services.AddSingleton<PromptFlowStudio.Services.Render.IRenderQueueService, PromptFlowStudio.Services.Render.RenderQueueService>();   // 전역 렌더 큐 + 백그라운드 렌더 워커(실물 엔진 어댑터 주입)
         services.AddSingleton<PromptFlowStudio.ViewModels.RenderQueueViewModel>();             // 렌더링 큐 화면 요약 통계 · 작업 목록
         services.AddSingleton<PromptFlowStudio.Services.Live.LiveStudioHostService>();         // 4번 워크플로우 쇼호스트 세일즈 피치 생성 + 24/7 릴레이 버퍼
         services.AddSingleton<PromptFlowStudio.ViewModels.LiveStudioViewModel>();              // 24/7 AI 라이브 스튜디오 피치 큐 · 가상 송출(화면 이탈 후에도 유지)

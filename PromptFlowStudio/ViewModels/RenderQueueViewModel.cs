@@ -30,6 +30,10 @@ public sealed class RenderQueueViewModel : IDisposable
     public int ProcessingCount { get; private set; }
     public int CompletedCount { get; private set; }
     public int FailedCount { get; private set; }
+    /// <summary>활성 작업 실행 엔진(ComfyUI · Cloud · Mock) — 대기 중이면 null.</summary>
+    public string? ActiveEngineKind { get; private set; }
+    /// <summary>가장 최근(큐 후순위) 실패 작업의 원인 — 없으면 null.</summary>
+    public string? LastErrorMessage { get; private set; }
 
     public void TogglePause() { if (_queue.IsPaused) _queue.ResumeQueue(); else _queue.PauseQueue(); }
     public void ClearCompleted() => _queue.ClearCompleted();
@@ -40,6 +44,7 @@ public sealed class RenderQueueViewModel : IDisposable
     {
         var snap = _queue.Snapshot();
         int pending = 0, processing = 0, completed = 0, failed = 0;
+        string? lastError = null;
         for (var i = 0; i < snap.Length; i++)
         {
             switch (snap[i].Status)
@@ -49,9 +54,12 @@ public sealed class RenderQueueViewModel : IDisposable
                 case BatchJobStatus.Completed: completed++; break;
                 default: failed++; break;   // Failed · Cancelled
             }
+            if (snap[i].Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(snap[i].ErrorMessage)) lastError = snap[i].ErrorMessage;
         }
         Jobs = snap;
         ActiveJob = _queue.ActiveJob;
+        ActiveEngineKind = ActiveJob?.EngineKind;
+        LastErrorMessage = lastError;
         IsPaused = _queue.IsPaused;
         TotalJobsCount = snap.Length;
         PendingCount = pending;

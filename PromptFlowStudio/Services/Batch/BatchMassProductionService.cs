@@ -20,6 +20,12 @@ public sealed class BatchRenderJob
     public DateTimeOffset? CompletedAt { get; set; }
     /// <summary>렌더 출력 미디어 경로(선택) — 지정 시 완료 시점에 옆에 <c>.meta.json</c> 기록(갤러리 복원용).</summary>
     public string? OutputPath { get; init; }
+    /// <summary>실행 엔진 종류(ComfyUI · Cloud · Mock) — 디스패치 시 기록.</summary>
+    public string? EngineKind { get; set; }
+    /// <summary>실물 엔진 산출물(로컬 경로 또는 원격 URL) — 시뮬레이션은 null.</summary>
+    public string? ResultPath { get; set; }
+    /// <summary>실패 원인 — Failed 전이 시 기록, 재적재 시 초기화.</summary>
+    public string? ErrorMessage { get; set; }
 }
 
 /// <summary>

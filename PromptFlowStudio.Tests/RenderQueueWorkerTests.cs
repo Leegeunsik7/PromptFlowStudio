@@ -100,4 +100,91 @@ public class RenderQueueWorkerTests
         Assert.Contains(extra[0], q.Queue);
         Assert.DoesNotContain(q.Queue, j => j.Status == BatchJobStatus.Completed);
     }
+
+    [Fact]
+    public async Task ProcessQueue_InvokesRealEngineAdapter_AndCompletesJob()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pfs_rq_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var engine = new FakeEngine((job, progress) =>
+            {
+                progress.Report(40);
+                progress.Report(100);
+                var output = Path.Combine(dir, "clip_" + job.Seed + ".mp4");
+                File.WriteAllBytes(output, new byte[] { 0 });
+                return new RenderExecutionResult(true, RenderEngineKind.ComfyUi, output, "ok");
+            });
+            using var q = new RenderQueueService(TimeSpan.Zero, autoStart: false, engine);
+            var jobs = Jobs(2);
+            q.Enqueue(jobs);
+            var vm = new RenderQueueViewModel(q);
+            var sawKind = false;
+            q.OnChange += () => { if (vm.ActiveEngineKind == RenderEngineKind.ComfyUi) sawKind = true; };
+
+            await q.ProcessQueueAsync(CancellationToken.None);
+
+            Assert.Equal(2, engine.Calls);
+            Assert.True(sawKind);
+            Assert.All(jobs, j =>
+            {
+                Assert.Equal(BatchJobStatus.Completed, j.Status);
+                Assert.Equal(100, j.ProgressPercent);
+                Assert.Equal(RenderEngineKind.ComfyUi, j.EngineKind);
+                Assert.Null(j.ErrorMessage);
+                Assert.True(File.Exists(j.ResultPath));
+                Assert.True(File.Exists(Path.ChangeExtension(j.ResultPath!, null) + ".meta.json"));
+            });
+            vm.Dispose();
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch (IOException) { } }
+    }
+
+    [Fact]
+    public async Task ProcessQueue_HandlesEngineFailure_MarksJobAsFailed()
+    {
+        var engine = new FakeEngine((job, _) => job.Seed == 0
+            ? throw new InvalidOperationException("GPU OOM")
+            : new RenderExecutionResult(false, RenderEngineKind.Cloud, null, "quota exceeded"));
+        using var q = new RenderQueueService(TimeSpan.Zero, autoStart: false, engine);
+        var jobs = Jobs(2);
+        q.Enqueue(jobs);
+
+        await q.ProcessQueueAsync(CancellationToken.None);
+
+        Assert.Equal(BatchJobStatus.Failed, jobs[0].Status);
+        Assert.Equal("GPU OOM", jobs[0].ErrorMessage);
+        Assert.Equal(BatchJobStatus.Failed, jobs[1].Status);
+        Assert.Equal("quota exceeded", jobs[1].ErrorMessage);
+        Assert.Null(q.ActiveJob);
+
+        var vm = new RenderQueueViewModel(q);
+        Assert.Equal(2, vm.FailedCount);
+        Assert.Equal("quota exceeded", vm.LastErrorMessage);
+        vm.Dispose();
+
+        // 재시도 시 실패 원인 초기화 · 엔진 미가용이면 시뮬레이션 폴백
+        engine.Available = false;
+        Assert.True(q.RetryJob(jobs[0].JobId));
+        Assert.Null(jobs[0].ErrorMessage);
+        await q.ProcessQueueAsync(CancellationToken.None);
+        Assert.Equal(BatchJobStatus.Completed, jobs[0].Status);
+        Assert.Equal(RenderEngineKind.Mock, jobs[0].EngineKind);
+        Assert.Equal(2, engine.Calls);
+    }
+
+    private sealed class FakeEngine(Func<BatchRenderJob, IProgress<int>, RenderExecutionResult> run) : IRenderExecutionEngine
+    {
+        public int Calls;
+        public bool Available { get; set; } = true;
+        public bool IsAvailable => Available;
+        public string EngineKind => RenderEngineKind.ComfyUi;
+
+        public Task<RenderExecutionResult> ExecuteAsync(BatchRenderJob job, IProgress<int> progress, CancellationToken ct)
+        {
+            Calls++;
+            return Task.FromResult(run(job, progress));
+        }
+    }
 }
