@@ -871,7 +871,7 @@
 
     // v15.4.0 라이브 캔버스 튜너: 값 필드만 갱신(클램프), 요약 문자열은 변경 후 첫 렌더에서만 생성.
     private readonly LiveVideoCanvasStudio _canvas = new();
-    private void RollSeed() => _canvas.Seed = Random.Shared.Next();
+    private void RollSeed() => _canvas.Seed = Random.Shared.NextInt64(0, long.MaxValue);
 
     // v15.6.0 Wan 2.1 카메라·스타일: 그룹 배타 결합 핸들러 1회 생성 · 가속 배지는 리터럴만.
     private Action[] _zenCam = Array.Empty<Action>();
@@ -1241,7 +1241,7 @@
         try
         {
             if (!string.IsNullOrWhiteSpace(ctx.Prompt)) { _prompt = ctx.Prompt; _vm.UserInput = _prompt; }
-            if (ctx.Seed > 0) { _canvas.SeedPinned = true; _canvas.Seed = (int)Math.Min(ctx.Seed, int.MaxValue); }
+            if (ctx.Seed > 0) { _canvas.SeedPinned = true; _canvas.Seed = ctx.Seed; }
             if (ctx.WorkspaceSize is "1280*720" or "720*1280" or "960*960") { _size = ctx.WorkspaceSize; _vm.SetOutputSize(_size); }
         }
         catch (Exception ex) { Program.Log("Workspace.GalleryRestore", ex); }

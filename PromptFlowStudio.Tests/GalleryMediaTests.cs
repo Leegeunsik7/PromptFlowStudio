@@ -111,6 +111,29 @@ public class GalleryMediaTests : IDisposable
     }
 
     [Fact]
+    public void LargeSeed_Above_IntMax_SurvivesRestoreAndWorkspaceInput()
+    {
+        const long big = 9_876_543_210L;
+        var svc = new GalleryMediaService();
+        var item = new GalleryItem { ItemId = Guid.NewGuid(), Title = "big-seed", Prompt = "baby", Seed = big, Resolution = "720x1280", AspectCategory = AspectCategory.Vertical9x16 };
+
+        var ctx = svc.PackageRestoreContext(item);
+        Assert.Equal(big, ctx.Seed);
+
+        // Workspace 주입 경로(LiveVideoCanvasStudio) — int 다운캐스트 없이 원값 유지
+        var canvas = new PromptFlowStudio.Services.Ui.LiveVideoCanvasStudio { SeedPinned = true, Seed = ctx.Seed };
+        Assert.Equal(big, canvas.Seed);
+        var req = new PromptFlowStudio.Services.Wan.WanVideoRequest { Prompt = "아기", Seed = canvas.EffectiveSeed };
+        Assert.Equal(big, req.Seed);
+
+        // 클라우드 경계: [0, int.MaxValue] 결정적 폴딩
+        var cloud = PromptFlowStudio.Services.Wan.WanVideoRequest.ToCloudSeed(req.Seed);
+        Assert.Equal((int)(big & int.MaxValue), cloud);
+        Assert.Equal(cloud, PromptFlowStudio.Services.Wan.WanVideoRequest.ToCloudSeed(big));
+        Assert.Null(PromptFlowStudio.Services.Wan.WanVideoRequest.ToCloudSeed(null));
+    }
+
+    [Fact]
     public void DeleteGalleryItem_RemovesTargetItemCorrectly()
     {
         var keep = WriteMedia("keep.mp4", "{\"title\":\"keep\"}");

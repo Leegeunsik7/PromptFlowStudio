@@ -588,7 +588,7 @@ public sealed class GenerativeVideoMultiEngineRouter : IVideoGenerationEngine, I
                 {
                     wr.WriteString("model", "gen3a_turbo"); wr.WriteString("promptImage", dataUri); wr.WriteString("promptText", r.Prompt);
                     wr.WriteString("ratio", RunwayRatio(w, h)); wr.WriteNumber("duration", 5);
-                    if (r.Seed is int s) wr.WriteNumber("seed", s);
+                    if (WanVideoRequest.ToCloudSeed(r.Seed) is int s) wr.WriteNumber("seed", s);
                 });
                 return m;
             },

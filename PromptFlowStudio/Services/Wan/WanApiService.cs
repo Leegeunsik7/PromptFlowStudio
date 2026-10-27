@@ -173,7 +173,7 @@ public sealed class WanApiService(IWanConfigService cfg, QuotaRateGuardService g
             if (prompt.Length > 0) input.Prompt = prompt;        // i2v 프롬프트는 선택
             parameters.Resolution = (request.Size?.Contains("480") ?? false) ? "480P" : "720P";
             parameters.PromptExtend = request.PromptExtend;
-            parameters.Seed = request.Seed;
+            parameters.Seed = WanVideoRequest.ToCloudSeed(request.Seed);
         }
         else
         {
@@ -182,7 +182,7 @@ public sealed class WanApiService(IWanConfigService cfg, QuotaRateGuardService g
             parameters.Size = string.IsNullOrWhiteSpace(request.Size) ? DefaultSize : request.Size!;
             parameters.PromptExtend = request.PromptExtend;
             parameters.Watermark = request.Watermark;
-            parameters.Seed = request.Seed;
+            parameters.Seed = WanVideoRequest.ToCloudSeed(request.Seed);
         }
 
         var negative = (request.NegativePrompt ?? "").Trim();
@@ -310,7 +310,7 @@ public sealed class WanApiService(IWanConfigService cfg, QuotaRateGuardService g
             Model = SiliconFlowModel(isI2v, request.Model),
             Prompt = prompt,
             ImageSize = SiliconFlowSize(string.IsNullOrWhiteSpace(request.Size) ? DefaultSize : request.Size!),
-            Seed = request.Seed,
+            Seed = WanVideoRequest.ToCloudSeed(request.Seed),
         };
         var negative = (request.NegativePrompt ?? "").Trim();
         if (negative.Length > 0) body.NegativePrompt = negative.Length > 500 ? negative[..500] : negative;

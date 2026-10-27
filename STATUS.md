@@ -1,10 +1,11 @@
 # Current Project Status
-- Active Milestone: 인스피레이션 허브 👶 큐트 베이비 & 키즈 카테고리 · 레고 칩 보강
+- Active Milestone: 【P0】 Seed 64비트(long) 파이프라인 일원화 · origin/main 브랜치 정렬
 - Build Status: Release 빌드 (-warnaserror 0W/0E) — PromptFlowStudio · PromptFlowStudio.Tests · net8.0-android 미검증(SDK/JDK 미설치)
-- Test Suite: 전체 631/631 PASS(직렬 · MaxCpuCount=1 · DisableParallelization) · PromptInspirationTests 13/13
+- Test Suite: 전체 632/632 PASS(직렬 · MaxCpuCount=1 · DisableParallelization) · Gallery/Inspiration/Canvas 20/20
 - Updated At: 2026-10-27 (KST)
 
 ## Completed Deliverables
+- P0: Seed long 일원화 — `LiveVideoCanvasStudio.Seed`·`WanVideoRequest.Seed` long · 갤러리 복원 int 다운캐스트 제거 · 🎲 `NextInt64` · 클라우드(DashScope/SiliconFlow/Runway)는 `ToCloudSeed` 31비트 결정적 폴딩 · 로컬 엔진 원값 · origin/main 정렬(upstream=origin/main)
 - PR-3: `StoryPresetCategory.CuteBabyKids`(👶 큐트 베이비) 프리셋 4종 · 피사체/배경/조명 칩 각 2종 · `Workspace.razor` 필터 인기순(👶 최전면) · 테스트 `GetCuratedPresets_ContainsCuteBabyKidsCategory`
 - PR-2: `UserCustomPreset` · `Load/Save/DeleteCustomPreset` · `GetAllPresets`(큐레이션/사용자 분리) — `%LocalAppData%\PromptFlowStudio\custom_story_presets.json`(지연 로드 · tmp→원자 교체 · 손상 시 `.corrupt.bak` 보존)
 - PR-2: `PromptInputViewModel.CustomPresets`(ObservableCollection) · `SaveCurrentAsPreset`/`DeletePreset`/`ApplyCustomPreset` · `Workspace.razor` ⭐ 탭 + 제목 저장폼 + 적용/삭제 카드

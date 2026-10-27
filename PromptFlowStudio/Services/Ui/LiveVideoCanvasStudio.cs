@@ -15,7 +15,8 @@ public sealed class LiveVideoCanvasStudio
     public const float MinCfg = 1.0f, MaxCfg = 15.0f, DefaultCfg = 6.0f;
     public const int MinMotion = 1, MaxMotion = 255, DefaultMotion = 127;
 
-    private int _steps = DefaultSteps, _motion = DefaultMotion, _seed;
+    private int _steps = DefaultSteps, _motion = DefaultMotion;
+    private long _seed;
     private float _cfg = DefaultCfg;
     private bool _seedPinned, _faceSharpen, _interpolate60;
     private string? _summary, _cfgLabel;
@@ -40,8 +41,8 @@ public sealed class LiveVideoCanvasStudio
     /// <summary>모션 버킷(1~255, 클수록 움직임 큼).</summary>
     public int MotionBucket { get => _motion; set => Set(ref _motion, Math.Clamp(value, MinMotion, MaxMotion)); }
 
-    /// <summary>시드 값(0~int.MaxValue). 핀이 꺼져 있으면 요청에 실리지 않는다(서버 랜덤).</summary>
-    public int Seed { get => _seed; set => Set(ref _seed, Math.Max(0, value)); }
+    /// <summary>시드 값(0~long.MaxValue · 64비트). 핀이 꺼져 있으면 요청에 실리지 않는다(서버 랜덤).</summary>
+    public long Seed { get => _seed; set => Set(ref _seed, Math.Max(0, value)); }
 
     /// <summary>📌 시드 고정 — 켜면 같은 시드로 재현 생성.</summary>
     public bool SeedPinned { get => _seedPinned; set => Set(ref _seedPinned, value); }
@@ -53,7 +54,7 @@ public sealed class LiveVideoCanvasStudio
     public bool Interpolate60 { get => _interpolate60; set => Set(ref _interpolate60, value); }
 
     /// <summary>요청에 실을 시드 — 핀 해제 시 null.</summary>
-    public int? EffectiveSeed => _seedPinned ? _seed : null;
+    public long? EffectiveSeed => _seedPinned ? _seed : null;
 
     /// <summary>요청 결선용 값 스냅숏(0B).</summary>
     public WanTuning Snapshot() => new(_steps, _cfg, _motion, _faceSharpen, _interpolate60);

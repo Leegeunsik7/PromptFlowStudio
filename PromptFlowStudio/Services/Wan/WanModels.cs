@@ -62,8 +62,11 @@ public sealed record WanVideoRequest
     /// <summary>워터마크 표시. 기본 false.</summary>
     public bool Watermark { get; init; } = false;
 
-    /// <summary>시드(재현성). 범위 [0, 2147483647]. 미지정 시 서버 랜덤.</summary>
-    public int? Seed { get; init; }
+    /// <summary>시드(재현성 · 64비트). 로컬 엔진은 원값, 클라우드는 <see cref="ToCloudSeed"/> 로 [0, 2147483647] 결정적 폴딩. 미지정 시 서버 랜덤.</summary>
+    public long? Seed { get; init; }
+
+    /// <summary>클라우드(DashScope·SiliconFlow) 시드 범위 [0, int.MaxValue] 로 결정적 폴딩 — 같은 64비트 시드는 항상 같은 31비트 시드.</summary>
+    public static int? ToCloudSeed(long? seed) => seed is long v ? (int)(v & int.MaxValue) : null;
 
     /// <summary>참조 이미지 로컬 경로. 지정 시 i2v(이미지→영상)로 분기 — 업로드 후 img_url 로 바인딩된다.</summary>
     public string? ImagePath { get; init; }

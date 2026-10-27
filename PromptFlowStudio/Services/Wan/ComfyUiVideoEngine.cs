@@ -83,7 +83,7 @@ public sealed class ComfyUiVideoEngine(EngineConfigService engines) : IVideoGene
                 vars["face_sharpen"] = t.FaceSharpen ? "1" : "0";
                 vars["interp60"] = t.Interpolate60 ? "1" : "0";
             }
-            if (request.Seed is int seed) vars["seed"] = seed.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (request.Seed is long seed) vars["seed"] = seed.ToString(System.Globalization.CultureInfo.InvariantCulture);
             if (!string.IsNullOrWhiteSpace(request.NegativePrompt)) vars["negative"] = request.NegativePrompt!.Trim();
             if (imagePath is not null) vars["image"] = imagePath;
             vars["mode"] = imagePath is not null ? "i2v" : "t2v";
