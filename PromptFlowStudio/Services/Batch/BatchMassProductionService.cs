@@ -18,6 +18,8 @@ public sealed class BatchRenderJob
     /// <summary>렌더 진행률 0~100 — <see cref="PromptFlowStudio.Services.Render.RenderQueueService"/> 워커가 갱신.</summary>
     public int ProgressPercent { get; set; }
     public DateTimeOffset? CompletedAt { get; set; }
+    /// <summary>렌더 출력 미디어 경로(선택) — 지정 시 완료 시점에 옆에 <c>.meta.json</c> 기록(갤러리 복원용).</summary>
+    public string? OutputPath { get; init; }
 }
 
 /// <summary>

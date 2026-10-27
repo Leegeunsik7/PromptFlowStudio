@@ -1,10 +1,16 @@
 @page "/gallery"
 @using PromptFlowStudio.Services.Wan
+@using PromptFlowStudio.Services.Gallery
+@using PromptFlowStudio.ViewModels
+@using System.Globalization
 @implements IDisposable
 @inject IMediaLibraryService Library
 @inject IVideoUpscaleService Upscale
 @inject PromptFlowStudio.Services.Ui.GalleryAutoSaveService Flow
 @inject NavigationManager Nav
+@inject GalleryViewModel Vm
+@inject ILocalMediaService Media
+@inject IClipboardService Clipboard
 
 @* [PromptFlow Studio] 갤러리 — %LocalAppData%/PromptFlowStudio/Media 의 모든 MP4 를 그리드로 감상/관리/삭제. *@
 
@@ -25,6 +31,85 @@
     </header>
 
     <div style="margin:12px 0 16px;"><StudioMonitorHeader EngineReady="true" /></div>
+
+    @* 메타데이터 아카이브 — 프롬프트·시드·해상도 사이드카(.meta.json) 기반 그리드 + 인스펙터 → 작업실 복원 *@
+    <section class="ga">
+        <div class="ga-bar">
+            <div class="ga-tabs">
+                <button class="ga-tab @(Vm.SelectedFilter == GalleryFilter.All ? "on" : null)" @onclick="() => Vm.SetFilter(GalleryFilter.All)">전체</button>
+                <button class="ga-tab @(Vm.SelectedFilter == GalleryFilter.Vertical9x16 ? "on" : null)" @onclick="() => Vm.SetFilter(GalleryFilter.Vertical9x16)">9:16 쇼츠</button>
+                <button class="ga-tab @(Vm.SelectedFilter == GalleryFilter.Landscape16x9 ? "on" : null)" @onclick="() => Vm.SetFilter(GalleryFilter.Landscape16x9)">16:9 와이드</button>
+            </div>
+            <input class="gl-search" value="@Vm.SearchQuery" @oninput="OnArchiveSearch" placeholder="프롬프트·제목 검색…" />
+            <button class="gl-btn ghost" @onclick="RefreshArchive" title="아카이브 새로고침">⟳</button>
+            <span class="ga-cnt">@Vm.MediaItems.Count / @Vm.TotalCount</span>
+        </div>
+        <div class="ga-body">
+            <div class="ga-grid">
+                @foreach (var g in Vm.MediaItems)
+                {
+                    <div class="ga-card @(ReferenceEquals(g, Vm.SelectedItem) ? "sel" : null)" @key="g.ItemId" @onclick="() => Vm.SelectMedia(g)">
+                        <div class="ga-thumb">
+                            @if (ThumbOf(g) is { } th)
+                            {
+                                <img src="@th" alt="@g.Title" loading="lazy" />
+                            }
+                            else if (g.IsVideo && !g.IsSample)
+                            {
+                                <video src="@Media.ToPlaybackUrl(g.FilePath)" preload="metadata" muted></video>
+                            }
+                            <span class="ga-badge">@AspectLabel(g.AspectCategory)</span>
+                            @if (g.IsSample)
+                            {
+                                <span class="ga-badge smp">샘플</span>
+                            }
+                        </div>
+                        <div class="ga-t" title="@g.Title">@g.Title</div>
+                        <div class="ga-d">@g.CreatedAt.ToString("MM-dd HH:mm", CultureInfo.InvariantCulture)</div>
+                    </div>
+                }
+                @if (Vm.MediaItems.Count == 0)
+                {
+                    <div class="ga-none">조건에 맞는 미디어가 없어요.</div>
+                }
+            </div>
+            <aside class="ga-insp">
+                @if (Vm.SelectedItem is { } si)
+                {
+                    <div class="ga-prev">
+                        @if (si.IsVideo && !si.IsSample)
+                        {
+                            <video src="@Media.ToPlaybackUrl(si.FilePath)" controls loop muted></video>
+                        }
+                        else if (ThumbOf(si) is { } pv)
+                        {
+                            <img src="@pv" alt="@si.Title" />
+                        }
+                    </div>
+                    <div class="ga-it">@si.Title</div>
+                    <div class="ga-k">사용된 프롬프트 <button class="ga-copy" @onclick="() => CopyPrompt(si)" title="프롬프트 복사">📋</button></div>
+                    <textarea class="ga-prompt" readonly value="@si.Prompt"></textarea>
+                    <div class="ga-meta">
+                        <span>시드</span><b>@si.Seed.ToString(CultureInfo.InvariantCulture)</b>
+                        <span>해상도</span><b>@si.Resolution</b>
+                        <span>렌더 시간</span><b>@(si.RenderDurationSec.ToString("0.0", CultureInfo.InvariantCulture))초</b>
+                    </div>
+                    <div class="ga-acts">
+                        <button class="gl-btn up" @onclick="() => Vm.RestoreToWorkspace(si)">✨ 이 프롬프트로 작업실 복원 →</button>
+                        <button class="gl-btn bad" @onclick="() => DeleteArchive(si)">🗑 삭제</button>
+                    </div>
+                }
+                else
+                {
+                    <div class="ga-none">카드를 선택하면 프롬프트·시드·해상도를 확인할 수 있어요.</div>
+                }
+                @if (Vm.StatusMessage is { } sm)
+                {
+                    <div class="ga-msg">@sm</div>
+                }
+            </aside>
+        </div>
+    </section>
 
     @* v5.6: 플로우 노드가 자산화한 이미지/비디오(추출 프레임·롱폼 병합) 실시간 스트립 *@
     @if (Flow.Assets.Count > 0)
@@ -242,6 +327,37 @@
     .gl-up-prog { padding: 0 16px 14px; }
     .gl-up-t { font: 700 12px var(--mono); color: var(--accent-2); margin-bottom: 6px; }
     .gl-bar { height: 8px; border-radius: 999px; background: var(--card-2); border: 1px solid var(--line); overflow: hidden; }
+    /* 메타데이터 아카이브 */
+    .ga { margin: 0 0 18px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+    .ga-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+    .ga-tabs { display: flex; gap: 4px; }
+    .ga-tab { border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); border-radius: 20px; padding: 6px 12px; font-weight: 700; font-size: 12px; cursor: pointer; font-family: inherit; }
+    .ga-tab.on { border-color: var(--flow-violet); color: var(--text-primary); background: color-mix(in srgb, var(--flow-violet) 16%, var(--card-2)); }
+    .ga-cnt { font: 600 11px var(--mono); color: var(--text-muted); margin-left: auto; }
+    .ga-body { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 14px; }
+    .ga-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; align-content: start; }
+    .ga-card { border: 2px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--card-2); cursor: pointer; transition: border-color .14s; }
+    .ga-card:hover { border-color: color-mix(in srgb, var(--flow-violet) 45%, var(--line)); }
+    .ga-card.sel { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent); }
+    .ga-thumb { position: relative; aspect-ratio: 16/9; background: #000; }
+    .ga-thumb img, .ga-thumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .ga-badge { position: absolute; top: 6px; left: 6px; font: 800 9.5px var(--mono); color: #fff; background: rgba(0,0,0,.6); border-radius: 6px; padding: 2px 6px; }
+    .ga-badge.smp { left: auto; right: 6px; background: color-mix(in srgb, var(--flow-violet) 70%, #000); }
+    .ga-t { font-size: 12px; font-weight: 700; color: var(--text-primary); padding: 6px 8px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ga-d { font: 600 10px var(--mono); color: var(--text-muted); padding: 2px 8px 7px; }
+    .ga-insp { border: 1px solid var(--line); border-radius: 12px; background: var(--card-2); padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .ga-prev { background: #000; border-radius: 8px; overflow: hidden; display: grid; place-items: center; max-height: 260px; }
+    .ga-prev img, .ga-prev video { max-width: 100%; max-height: 260px; display: block; }
+    .ga-it { font-size: 14px; font-weight: 800; color: var(--text-primary); }
+    .ga-k { font-size: 11px; font-weight: 700; color: var(--text-muted); display: flex; align-items: center; justify-content: space-between; }
+    .ga-copy { border: 1px solid var(--line); background: var(--card); border-radius: 6px; cursor: pointer; font-size: 12px; padding: 2px 6px; }
+    .ga-prompt { width: 100%; box-sizing: border-box; min-height: 84px; resize: vertical; background: var(--card); border: 1px solid var(--line); border-radius: 8px; color: var(--text-primary); font-size: 12px; line-height: 1.5; font-family: inherit; padding: 8px; user-select: text; }
+    .ga-meta { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px; color: var(--text-secondary); }
+    .ga-meta b { font: 700 12px var(--mono); color: var(--text-primary); }
+    .ga-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+    .ga-msg { font: 600 11px var(--mono); color: var(--accent-2); }
+    .ga-none { font-size: 12px; color: var(--text-muted); padding: 14px; text-align: center; }
+    @@media (max-width: 900px) { .ga-body { grid-template-columns: 1fr; } }
     .gl-bar-f { height: 100%; border-radius: 999px; transition: width .4s ease; background: linear-gradient(90deg, var(--flow-violet), var(--flow-cyan), var(--flow-magenta)); }
 </style>
 
@@ -269,10 +385,51 @@
     {
         Refresh();
         Flow.OnChanged += OnFlowChanged;   // v5.6 플로우 자산 실시간 갱신
+        Vm.Changed += OnVmChanged;
+        Vm.RestoreRequested += OnRestoreRequested;
+        Vm.Refresh(Media.MediaRoot);
     }
 
     private void OnFlowChanged() => InvokeAsync(StateHasChanged);
-    public void Dispose() => Flow.OnChanged -= OnFlowChanged;
+    private void OnVmChanged() => InvokeAsync(StateHasChanged);
+    private void OnRestoreRequested() => InvokeAsync(() => Nav.NavigateTo("workspace"));
+    public void Dispose()
+    {
+        Flow.OnChanged -= OnFlowChanged;
+        Vm.Changed -= OnVmChanged;
+        Vm.RestoreRequested -= OnRestoreRequested;
+    }
+
+    // ── 메타데이터 아카이브 ──
+    private void RefreshArchive() => Vm.Refresh(Media.MediaRoot);
+
+    private void OnArchiveSearch(ChangeEventArgs e)
+    {
+        Vm.SearchQuery = e.Value?.ToString() ?? "";
+        Vm.ApplyFilter();
+    }
+
+    private void DeleteArchive(GalleryItem g)
+    {
+        if (Vm.Delete(g)) Refresh();   // 파일 삭제 → 하단 MP4 그리드 동기화
+    }
+
+    private void CopyPrompt(GalleryItem g) => Clipboard.SetText(g.Prompt);
+
+    private string? ThumbOf(GalleryItem g)
+    {
+        var t = g.ThumbnailUrl;
+        if (string.IsNullOrEmpty(t)) return null;
+        if (t.StartsWith("data:", StringComparison.Ordinal) || t.StartsWith("http", StringComparison.OrdinalIgnoreCase)) return t;
+        try { return Media.ToPlaybackUrl(t); } catch { return null; }
+    }
+
+    private static string AspectLabel(AspectCategory a) => a switch
+    {
+        AspectCategory.Vertical9x16 => "9:16",
+        AspectCategory.Square1x1 => "1:1",
+        _ => "16:9",
+    };
 
     private void Refresh()
     {

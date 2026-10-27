@@ -1,9 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.IO;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using PromptFlowStudio.Services.Batch;
+using PromptFlowStudio.Services.Gallery;
 
 namespace PromptFlowStudio.Services.Render;
 
@@ -175,6 +178,7 @@ public sealed class RenderQueueService : IRenderQueueService
             }
             Raise();
 
+            var startedAt = DateTimeOffset.Now;
             try
             {
                 for (var p = ProgressStep; p <= 100; p += ProgressStep)
@@ -190,6 +194,7 @@ public sealed class RenderQueueService : IRenderQueueService
                     job.Status = BatchJobStatus.Completed;
                     job.CompletedAt = DateTimeOffset.Now;
                 }
+                WriteRenderMeta(job, startedAt);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -210,6 +215,31 @@ public sealed class RenderQueueService : IRenderQueueService
                 Raise();
             }
         }
+    }
+
+    /// <summary>
+    /// 완료 작업의 출력 미디어 옆에 <c>{이름}.meta.json</c> 기록 — <see cref="GalleryMediaService"/> 스키마(camelCase).
+    /// 기록 실패는 격리(작업 상태는 Completed 유지).
+    /// </summary>
+    internal static void WriteRenderMeta(BatchRenderJob job, DateTimeOffset startedAt)
+    {
+        if (string.IsNullOrWhiteSpace(job.OutputPath)) return;
+        try
+        {
+            var created = job.CompletedAt ?? DateTimeOffset.Now;
+            var json = JsonSerializer.Serialize(new
+            {
+                title = Path.GetFileNameWithoutExtension(job.OutputPath),
+                prompt = job.Prompt,
+                seed = job.Seed,
+                resolution = job.Resolution,
+                createdAt = created,
+                durationSec = job.DurationSec,
+                renderDurationSec = (float)Math.Max(0, (created - startedAt).TotalSeconds),
+            });
+            File.WriteAllText(GalleryMediaService.MetaPathFor(job.OutputPath), json);
+        }
+        catch (Exception ex) { Program.Log("RenderQueue.Meta", ex); }
     }
 
     public void Dispose()
