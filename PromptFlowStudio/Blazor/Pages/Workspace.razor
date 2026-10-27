@@ -19,6 +19,7 @@
 @inject PromptFlowStudio.Services.Prompt.PromptSynthesizerService Synth
 @inject GeminiPromptEnhancer Enhancer
 @inject PromptFlowStudio.ViewModels.StoryboardViewModel StoryVm
+@inject PromptFlowStudio.Services.Camera.WirelessCameraService WirelessCam
 
 @* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
    상태는 WanJobState(싱글턴)에 있고, 이 컴포넌트는 OnChange 를 구독해 InvokeAsync(StateHasChanged)로만 갱신한다.
@@ -980,6 +981,25 @@
         if (!string.IsNullOrWhiteSpace(d)) _prompt = d;
         _recent = Library.List(6);
         _vm.UserInput = _prompt;
+        AbsorbWirelessCameraFrame();   // 무선 카메라(/wireless-camera)에서 전달된 I2V 첫 프레임 흡수
+    }
+
+    /// <summary>무선 카메라 캡처(BMP) 1회 소비 → _uploads 저장 → I2V 첫 프레임 바인딩. 실패 시 T2V 유지.</summary>
+    private void AbsorbWirelessCameraFrame()
+    {
+        if (WirelessCam.TakeI2vReference() is not { } bytes) return;
+        try
+        {
+            var dir = Path.Combine(Media.MediaRoot, "_uploads");
+            Directory.CreateDirectory(dir);
+            var savePath = Path.Combine(dir, $"{Guid.NewGuid():N}.bmp");
+            File.WriteAllBytes(savePath, bytes);
+            _imagePath = savePath;
+            _imageName = "wireless-camera.bmp";
+            _imagePreview = Media.ToPlaybackUrl(savePath);
+            _ = _vm.HandleImageDroppedAsync(new MemoryStream(bytes, writable: false), _mediaCts.Token);   // T2V→I2V 감지 · 비율 판독(메모리 스트림 → 동기 완료)
+        }
+        catch (Exception ex) { Program.Log("Workspace.WirelessCamFrame", ex); }
     }
     public void Dispose()
     {

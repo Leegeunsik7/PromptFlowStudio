@@ -409,6 +409,7 @@ public static class MauiProgram
         builder.Services.AddSingleton<PromptFlowStudio.Services.Live.LiveStudioHostService>(); // 24/7 라이브 쇼호스트 피치 + 릴레이 버퍼
         builder.Services.AddSingleton<PromptFlowStudio.Services.Commercial.CommercialBrandService>(); // 브랜드 킷 + 커머셜 규격 프롬프트 합성
         builder.Services.AddSingleton<PromptFlowStudio.Services.Shorts.AiShortsService>(); // AI 15초 숏폼 3컷 시퀀서(9:16)
+        builder.Services.AddSingleton<PromptFlowStudio.Services.Camera.WirelessCameraService>(); // 무선 카메라 스트림 · 캡처 · I2V 핸드오프 버퍼
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.AI.GeminiPromptEnhancer(new System.Net.Http.HttpClient { Timeout = System.TimeSpan.FromSeconds(30) }, () => sp.GetService<PromptFlowStudio.Services.Wan.GeminiConfigService>()?.ApiKey)); // Gemini 미등록 시 원본 반환
 
         builder.Services.AddSingleton<PromptFlowStudio.Services.Media.OsmuExportPackager>();
