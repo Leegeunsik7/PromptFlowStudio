@@ -30228,6 +30228,9 @@ public sealed class BroadcastMcrIsolatedTests
         Assert.Contains(PromptFlowStudio.Services.Ui.StudioCatalog.Entries, e => e.Key == "_bcastMcr" && e.Category == 0);
         // 프레임 예산(중앙값 · 최선 N)
         var tk = new double[60]; var med = double.MaxValue;
+        // 측정 전 웜업 — 인코더 정지 후 Tier-1 재컴파일·Gen2 잔여 정리를 타이머 밖으로
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        for (var i = 0; i < 30; i++) run.Step();
         for (var attempt = 0; attempt < 5 && med >= CiFrameBudget.Ms; attempt++)
         {
             if (attempt > 0) Thread.Sleep(150);
@@ -35010,6 +35013,9 @@ public sealed class LiveAudienceEngagementIsolatedTests
         run.Step(30);
         Assert.True(run.SimVotes > 5 && run.Voting.Total == 2 + run.SimVotes, "가상 시청자 " + run.SimVotes);
         Assert.True(FrameComposited(run), "프레임 합성");
+        // 측정 전 웜업 — 콜드 JIT·Gen2 잔여 정리를 타이머 밖으로
+        GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+        for (var k = 0; k < 30; k++) run.Tick(Lae.LiveAudienceEngagementStudioRunner.FrameUs);
         run.Compositor.ResetStats();
         var best = double.MaxValue;
         for (var k = 0; k < 120; k++) { run.Tick(Lae.LiveAudienceEngagementStudioRunner.FrameUs); best = Math.Min(best, run.Compositor.LastUs); }
@@ -36483,14 +36489,18 @@ public sealed class PlatformVisibilityGatewayIsolatedTests
             var poller = new Pvg.RealtimeTimeseriesMetricPollingEngine(gw) { Sink = split };
             Assert.True(poller.Add(sa, (long)T0, true) == 0 && poller.Add(sb, (long)T0, true) == 1 && poller.Add(si, (long)T0, false) == 2 && poller.TrackCount == 3);
             Assert.Equal(0, await poller.PollDueAsync((long)T0 + 120));   // 주기 미도래
+            // 콜드 스타트 오염 제거 — 선행 테스트 잔여 정리(ArrayPool 트림 포함) 후 k ≤ 3 웜업 라운드에서 JIT·풀 재충전
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
             long allocMax = 0;
             for (var k = 1; k <= 18; k++)
             {
                 c.Now = T0 + 300 * k;
                 guard.Tick(c.Now);
+                var tid = Environment.CurrentManagedThreadId;
                 var a0 = GC.GetAllocatedBytesForCurrentThread();
                 var n = await poller.PollDueAsync((long)c.Now);
-                if (k > 2) allocMax = Math.Max(allocMax, GC.GetAllocatedBytesForCurrentThread() - a0);
+                // 스레드 홉 시 스레드별 카운터 차분은 무의미 → 동일 스레드 라운드만 집계
+                if (k > 3 && Environment.CurrentManagedThreadId == tid) allocMax = Math.Max(allocMax, GC.GetAllocatedBytesForCurrentThread() - a0);
                 Assert.Equal(3, n);
                 split.Evaluate((long)c.Now);
             }
@@ -36507,6 +36517,7 @@ public sealed class PlatformVisibilityGatewayIsolatedTests
             Assert.True(gw.Binding(sb).Visibility == Pvg.VideoVisibility.Private && gw.Simulator.StateOf(Lp.LiveProvider.YouTube, "ytVideo00CB") == Pvg.VideoVisibility.Private && pr.Audit(0).Status == 200 && pr.Audit(0).Ok);
 
             // 가시성 전환 핫패스 무할당(워밍 후 공개 ↔ 비공개 16 회)
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
             for (var w = 0; w < 2; w++) { await gw.ApplyAsync(sa, Pvg.VideoVisibility.Private); await gw.ApplyAsync(sa, Pvg.VideoVisibility.Public); }
             var b0 = GC.GetAllocatedBytesForCurrentThread();
             for (var w = 0; w < 8; w++) { await gw.ApplyAsync(sa, Pvg.VideoVisibility.Private); await gw.ApplyAsync(sa, Pvg.VideoVisibility.Public); }

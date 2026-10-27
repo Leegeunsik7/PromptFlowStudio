@@ -69,6 +69,7 @@ public sealed class MainForm : Form
         services.AddSingleton<IGeminiDirectorService, GeminiDirectorService>();     // AI 감독 자율 검수(Gemini 멀티모달 · QualityScore + 프롬프트 보정 Re-roll · 키 없으면 비활성)
         services.AddSingleton<GeminiClient>();                                      // Gemini 멀티모달 REST 공용 클라이언트(텍스트+이미지/오디오/비디오 인라인 · 3대 고급 서비스 공유)
         services.AddSingleton<PromptFlowStudio.Services.Prompt.PromptSynthesizerService>();   // 1번 워크플로우 프롬프트 합성기(Subject 우선 · 800자 예산 · 네거티브 중복 제거)
+        services.AddSingleton<PromptFlowStudio.Services.Prompt.PromptInspirationService>();   // 💡 스토리 레시피 & 인스피레이션 허브(장르 프리셋 · 칩 조합기)
         services.AddSingleton<PromptFlowStudio.Services.Storyboard.StoryboardSequencerService>();   // 2번 워크플로우 스토리보드 시퀀서(대본 → N컷 분할 · 시드/피사체 일관성 전파)
         services.AddSingleton<PromptFlowStudio.ViewModels.StoryboardViewModel>();   // 2번 워크플로우 컷 덱 상태(Workspace → Storyboard 대본 인계 · 화면 간 공유)
         services.AddSingleton<PromptFlowStudio.Services.Render.RenderCostEstimatorService>();   // 3번 워크플로우 렌더 비용/VRAM 사전 추산
@@ -84,6 +85,8 @@ public sealed class MainForm : Form
         services.AddSingleton<PromptFlowStudio.ViewModels.AiShortsViewModel>();                 // 숏폼 시퀀스 생성 · 9:16 3컷 렌더 큐 일괄 전송
         services.AddSingleton<PromptFlowStudio.Services.Camera.WirelessCameraService>();        // 무선 카메라 스트림 연결 · 프레임 캡처 · I2V 핸드오프 버퍼
         services.AddSingleton<PromptFlowStudio.ViewModels.WirelessCameraViewModel>();           // 연결 토글 · 캡처 덱 · I2V 첫 프레임 전송
+        services.AddSingleton<PromptFlowStudio.Services.Gallery.GalleryMediaService>();         // 갤러리 메타데이터 아카이브 · 안전 삭제 · 작업실 복원 핸드오프
+        services.AddSingleton<PromptFlowStudio.ViewModels.GalleryViewModel>();                  // 카테고리/검색 필터 · 인스펙터 선택 · 작업실 복원
         services.AddSingleton(sp => new PromptFlowStudio.Services.AI.GeminiPromptEnhancer(new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(30) }, sp.GetRequiredService<GeminiConfigService>())); // 🪄 AI 문장 자동 강화(실패 시 원본 반환)
         services.AddSingleton<IGeminiVideoAnalyzerService, GeminiVideoAnalyzerService>(); // 네이티브 MP4 통비디오 시간축 분석(VideoTemporalScore + 모션 보정)
         services.AddSingleton<IGeminiKineticSyncService, GeminiKineticSyncService>();     // 키네틱 자막/SFX 밀리초 타임코드 추출(단어별 highlight + SfxTriggers)

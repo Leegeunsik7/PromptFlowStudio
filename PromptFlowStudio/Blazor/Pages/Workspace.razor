@@ -20,6 +20,8 @@
 @inject GeminiPromptEnhancer Enhancer
 @inject PromptFlowStudio.ViewModels.StoryboardViewModel StoryVm
 @inject PromptFlowStudio.Services.Camera.WirelessCameraService WirelessCam
+@inject PromptFlowStudio.Services.Gallery.GalleryMediaService GalleryMedia
+@inject PromptFlowStudio.Services.Prompt.PromptInspirationService Inspiration
 
 @* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
    상태는 WanJobState(싱글턴)에 있고, 이 컴포넌트는 OnChange 를 구독해 InvokeAsync(StateHasChanged)로만 갱신한다.
@@ -104,6 +106,9 @@
             }
             @if (_imgError is not null) { <div class="ws-imgerr">⚠ @_imgError</div> }
 
+            <div class="ws-insp-bar">
+                <button class="ws-insp-open" @onclick="OpenInspiration" disabled="@State.IsBusy" title="장르별 완성 스토리 · 레고식 조합기">💡 스토리 레시피 & 영감 모음</button>
+            </div>
             <textarea class="ws-ta" @bind="_prompt" @bind:event="oninput"
                       placeholder="@(_imagePath is null ? "예) 노을 지는 해변을 천천히 걷는 골든리트리버, 시네마틱, 부드러운 카메라 팬" : "예) 카메라가 천천히 줌인, 머리카락이 바람에 날림 (i2v는 움직임 위주로 · 프롬프트 선택)")"
                       maxlength="800" disabled="@State.IsBusy"></textarea>
@@ -438,6 +443,93 @@
     }
 </div>
 
+@* 💡 스토리 레시피 & 인스피레이션 허브 — 탭1 장르별 카드 덱 · 탭2 레고식 칩 조합기 → UserInput 즉시 적용 *@
+@if (_vm.IsInspirationModalOpen)
+{
+    <div class="ws-insp-ov @(_inspClosing ? "closing" : null)" @onclick="CloseInspiration">
+        <div class="ws-insp-dlg" role="dialog" aria-label="스토리 레시피 & 영감 모음" @onclick:stopPropagation="true">
+            <div class="ws-insp-h">
+                <span>💡 스토리 레시피 & 영감 모음</span>
+                <button class="ws-insp-x" @onclick="CloseInspiration" title="닫기">✕</button>
+            </div>
+            <div class="ws-insp-tabs">
+                <button class="ws-insp-tab @(_inspTab == 0 ? "on" : null)" @onclick="() => _inspTab = 0">🎬 장르별 완성 스토리</button>
+                <button class="ws-insp-tab @(_inspTab == 1 ? "on" : null)" @onclick="() => _inspTab = 1">🧱 레고식 모듈 조합기</button>
+            </div>
+            @if (_inspTab == 0)
+            {
+                <div class="ws-insp-cats">
+                    <button class="ws-zen-chip @(_inspCat is null ? "on" : null)" @onclick="() => SelectInspirationCategory(null)">전체</button>
+                    @foreach (var ic in InspirationCategories)
+                    {
+                        <button class="ws-zen-chip @(_inspCat == ic ? "on" : null)" @onclick="() => SelectInspirationCategory(ic)" @key="ic">@PromptFlowStudio.Services.Prompt.PromptInspirationService.CategoryLabel(ic)</button>
+                    }
+                </div>
+                <div class="ws-insp-deck">
+                    @foreach (var r in _inspList)
+                    {
+                        <button class="ws-insp-card @(ReferenceEquals(_inspPick, r) ? "on" : null)" @onclick="() => _inspPick = r" @key="r.Title">
+                            <span class="ws-insp-cat">@PromptFlowStudio.Services.Prompt.PromptInspirationService.CategoryLabel(r.Category)</span>
+                            <span class="ws-insp-title">@r.Title</span>
+                            <span class="ws-insp-meta">🎥 @r.RecommendedCamera</span>
+                            <span class="ws-insp-meta">💡 @r.RecommendedLighting</span>
+                        </button>
+                    }
+                </div>
+                @if (_inspPick is { } pick)
+                {
+                    <div class="ws-insp-prev">
+                        <div class="ws-insp-prev-t">@pick.Title</div>
+                        <div class="ws-insp-prev-p">@pick.FullPrompt</div>
+                        <button class="ws-insp-apply" @onclick="() => ApplyRecipeAsync(pick)">✅ 이 스토리 적용</button>
+                    </div>
+                }
+            }
+            else
+            {
+                <div class="ws-zen-l">주인공</div>
+                <div class="ws-zen-g">
+                    @for (var i = 0; i < PromptFlowStudio.Services.Prompt.PromptInspirationService.Subjects.Length; i++)
+                    {
+                        var idx = i; var c = PromptFlowStudio.Services.Prompt.PromptInspirationService.Subjects[i];
+                        <button class="ws-zen-chip @(_chipSubj == idx ? "on" : null)" @onclick="() => _chipSubj = _chipSubj == idx ? -1 : idx" title="@c.Snippet" @key="c.Label">@c.Label</button>
+                    }
+                </div>
+                <div class="ws-zen-l">배경</div>
+                <div class="ws-zen-g">
+                    @for (var i = 0; i < PromptFlowStudio.Services.Prompt.PromptInspirationService.Environments.Length; i++)
+                    {
+                        var idx = i; var c = PromptFlowStudio.Services.Prompt.PromptInspirationService.Environments[i];
+                        <button class="ws-zen-chip @(_chipEnv == idx ? "on" : null)" @onclick="() => _chipEnv = _chipEnv == idx ? -1 : idx" title="@c.Snippet" @key="c.Label">@c.Label</button>
+                    }
+                </div>
+                <div class="ws-zen-l">카메라 무빙</div>
+                <div class="ws-zen-g">
+                    @for (var i = 0; i < PromptFlowStudio.Services.Prompt.PromptInspirationService.Motions.Length; i++)
+                    {
+                        var idx = i; var c = PromptFlowStudio.Services.Prompt.PromptInspirationService.Motions[i];
+                        <button class="ws-zen-chip @(_chipMot == idx ? "on" : null)" @onclick="() => _chipMot = _chipMot == idx ? -1 : idx" title="@c.Snippet" @key="c.Label">@c.Label</button>
+                    }
+                </div>
+                <div class="ws-zen-l">조명</div>
+                <div class="ws-zen-g">
+                    @for (var i = 0; i < PromptFlowStudio.Services.Prompt.PromptInspirationService.Lightings.Length; i++)
+                    {
+                        var idx = i; var c = PromptFlowStudio.Services.Prompt.PromptInspirationService.Lightings[i];
+                        <button class="ws-zen-chip @(_chipLight == idx ? "on" : null)" @onclick="() => _chipLight = _chipLight == idx ? -1 : idx" title="@c.Snippet" @key="c.Label">@c.Label</button>
+                    }
+                </div>
+                var chipText = ChipPreview();
+                <div class="ws-insp-prev">
+                    <div class="ws-insp-prev-t">실시간 문장 미리보기</div>
+                    <div class="ws-insp-prev-p">@(chipText.Length > 0 ? chipText : "칩을 하나 이상 선택하세요")</div>
+                    <button class="ws-insp-apply" @onclick="ApplyChipsAsync" disabled="@(chipText.Length == 0)">✅ 조합 문장 적용</button>
+                </div>
+            }
+        </div>
+    </div>
+}
+
 <style>
     .ws { padding: 6px 8px 48px; width: 100%; box-sizing: border-box; }
     .ws-head { margin-bottom: 18px; }
@@ -451,7 +543,7 @@
     .ws-warn { margin: 14px 0; padding: 12px 16px; border-radius: 12px; font-size: 12.5px; line-height: 1.6;
         border: 1px solid color-mix(in srgb, #f5a623 45%, var(--line)); background: color-mix(in srgb, #f5a623 10%, var(--card)); color: var(--text-secondary); }
     .ws-warn code { font: 600 11.5px var(--mono); color: var(--accent-2); }
-    .ws-warn-link { font: 700 12.5px inherit; color: var(--accent-2); background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline; }
+    .ws-warn-link { font-weight: 700; font-size: 12.5px; font-family: inherit; color: var(--accent-2); background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline; }
     .ws-warn-link:hover { color: var(--text-primary); }
 
     /* v15.5.0 픽셀 정렬: 3칼럼을 같은 행 높이로 늘려(stretch) 상·하단 수평선 일치, 각 칼럼은 height:100% · min-height:0 */
@@ -524,7 +616,7 @@
     .ws-vf-st { position: absolute; right: 26px; bottom: 8px; font: 700 9px/1 var(--mono); letter-spacing: .05em; color: #22d3ee; opacity: .85; }
     .ws-count.over { color: #f87171; }
     .ws-empty b { color: var(--text-secondary); }
-    .ws-empty-card { margin-top: 6px; padding: 9px 16px; border-radius: 999px; cursor: pointer; font: 700 12px inherit; color: var(--accent-2);
+    .ws-empty-card { margin-top: 6px; padding: 9px 16px; border-radius: 999px; cursor: pointer; font-weight: 700; font-size: 12px; font-family: inherit; color: var(--accent-2);
         background: color-mix(in srgb, var(--flow-cyan) 8%, var(--card-2)); border: 1px solid color-mix(in srgb, var(--flow-cyan) 30%, var(--line)); }
     .ws-empty-card:hover { border-color: var(--accent-2); color: var(--text-primary); }
 
@@ -637,6 +729,37 @@
 
     @@keyframes ws-flow { to { background-position: 200% 0; } }
     @@media (prefers-reduced-motion: reduce) { .ws-bar-f { animation: none; } }
+
+    /* 💡 스토리 레시피 & 인스피레이션 모달 */
+    .ws-insp-bar { display: flex; justify-content: flex-end; margin-bottom: 6px; }
+    .ws-insp-open { font-weight: 700; font-size: 12px; font-family: inherit; padding: 6px 12px; border-radius: 999px; cursor: pointer; color: var(--text-primary); border: 1px solid color-mix(in srgb, var(--flow-violet) 55%, var(--line)); background: linear-gradient(90deg, color-mix(in srgb, var(--flow-violet) 18%, var(--card)), color-mix(in srgb, var(--flow-cyan) 14%, var(--card))); }
+    .ws-insp-open:hover:not(:disabled) { border-color: var(--flow-cyan); }
+    .ws-insp-open:disabled { opacity: .5; cursor: default; }
+    .ws-insp-ov { position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.55); backdrop-filter: blur(3px); animation: ws-insp-in .18s ease-out; }
+    .ws-insp-ov.closing { animation: ws-insp-out .18s ease-in forwards; }
+    .ws-insp-dlg { width: min(860px, 94vw); max-height: 86vh; overflow: auto; display: flex; flex-direction: column; gap: 10px; padding: 16px 18px; border-radius: 14px; background: var(--card); border: 1px solid var(--line); box-shadow: 0 18px 48px rgba(0,0,0,.45); }
+    .ws-insp-h { display: flex; align-items: center; justify-content: space-between; font-size: 15px; font-weight: 900; color: var(--text-primary); }
+    .ws-insp-x { background: none; border: none; color: var(--text-muted); font-size: 16px; cursor: pointer; }
+    .ws-insp-x:hover { color: var(--text-primary); }
+    .ws-insp-tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--line); }
+    .ws-insp-tab { background: none; border: none; border-bottom: 2px solid transparent; padding: 6px 10px; font-weight: 700; font-size: 12.5px; font-family: inherit; color: var(--text-secondary); cursor: pointer; }
+    .ws-insp-tab.on { color: var(--text-primary); border-bottom-color: var(--flow-cyan); }
+    .ws-insp-cats { display: flex; flex-wrap: wrap; gap: 6px; }
+    .ws-insp-deck { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+    .ws-insp-card { display: flex; flex-direction: column; gap: 3px; text-align: left; padding: 10px; border-radius: 10px; cursor: pointer; background: var(--card-2); border: 1px solid var(--line); color: var(--text-primary); }
+    .ws-insp-card:hover { border-color: color-mix(in srgb, var(--flow-violet) 60%, var(--line)); }
+    .ws-insp-card.on { border-color: var(--flow-cyan); box-shadow: 0 0 0 1px var(--flow-cyan) inset; }
+    .ws-insp-cat { font: 700 10.5px var(--mono); color: var(--text-muted); }
+    .ws-insp-title { font-size: 13.5px; font-weight: 800; }
+    .ws-insp-meta { font-size: 11px; color: var(--text-secondary); }
+    .ws-insp-prev { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 10px; background: var(--card-2); border: 1px dashed var(--line); }
+    .ws-insp-prev-t { font-size: 12px; font-weight: 800; color: var(--text-primary); }
+    .ws-insp-prev-p { font-size: 12.5px; line-height: 1.6; color: var(--text-secondary); white-space: pre-wrap; }
+    .ws-insp-apply { align-self: flex-end; padding: 7px 14px; border-radius: 8px; border: none; cursor: pointer; font-weight: 800; font-size: 12.5px; font-family: inherit; color: #fff; background: linear-gradient(90deg, var(--flow-violet), var(--flow-cyan)); }
+    .ws-insp-apply:disabled { opacity: .45; cursor: default; }
+    @@keyframes ws-insp-in { from { opacity: 0; transform: scale(.98); } to { opacity: 1; transform: none; } }
+    @@keyframes ws-insp-out { from { opacity: 1; } to { opacity: 0; transform: scale(.98); } }
+    @@media (prefers-reduced-motion: reduce) { .ws-insp-ov, .ws-insp-ov.closing { animation: none; } }
 </style>
 
 @code {
@@ -759,6 +882,64 @@
     // ── 1번 워크플로우 뷰모델(T2V↔I2V 감지 · 합성 글자 수 · HUD) ──
     private PromptFlowStudio.ViewModels.PromptInputViewModel _vm = null!;
     private void SyncSize() => _vm.SetOutputSize(_size);
+
+    // ── 💡 스토리 레시피 & 인스피레이션 모달 ──
+    private static readonly PromptFlowStudio.Services.Prompt.StoryPresetCategory[] InspirationCategories =
+        Enum.GetValues<PromptFlowStudio.Services.Prompt.StoryPresetCategory>();
+    private int _inspTab;
+    private bool _inspClosing;
+    private PromptFlowStudio.Services.Prompt.StoryPresetCategory? _inspCat;
+    private IReadOnlyList<PromptFlowStudio.Services.Prompt.StoryRecipe> _inspList = Array.Empty<PromptFlowStudio.Services.Prompt.StoryRecipe>();
+    private PromptFlowStudio.Services.Prompt.StoryRecipe? _inspPick;
+    private int _chipSubj = -1, _chipEnv = -1, _chipMot = -1, _chipLight = -1;
+
+    private void OpenInspiration()
+    {
+        _inspClosing = false;
+        if (_inspList.Count == 0) SelectInspirationCategory(_inspCat);
+        _vm.IsInspirationModalOpen = true;
+    }
+    private void CloseInspiration() { _inspClosing = false; _vm.IsInspirationModalOpen = false; }
+    private void SelectInspirationCategory(PromptFlowStudio.Services.Prompt.StoryPresetCategory? cat)
+    {
+        _inspCat = cat;
+        _inspList = cat is { } c ? _vm.Inspiration.GetPresetsByCategory(c) : _vm.Inspiration.GetCuratedPresets();
+        if (_inspPick is not null && _inspPick.Category != cat && cat is not null) _inspPick = null;
+    }
+    private static string? ChipAt(PromptFlowStudio.Services.Prompt.InspirationChip[] chips, int idx) => idx >= 0 && idx < chips.Length ? chips[idx].Snippet : null;
+    private string ChipPreview() => _vm.Inspiration.BuildFromChips(
+        ChipAt(PromptFlowStudio.Services.Prompt.PromptInspirationService.Subjects, _chipSubj),
+        ChipAt(PromptFlowStudio.Services.Prompt.PromptInspirationService.Environments, _chipEnv),
+        ChipAt(PromptFlowStudio.Services.Prompt.PromptInspirationService.Motions, _chipMot),
+        ChipAt(PromptFlowStudio.Services.Prompt.PromptInspirationService.Lightings, _chipLight));
+
+    // 적용 — 페이드아웃(180ms) 후 VM 대입 → _prompt 역동기화(ShouldRender 가 _prompt → VM 으로 덮어쓰므로 필수).
+    private async Task ApplyRecipeAsync(PromptFlowStudio.Services.Prompt.StoryRecipe recipe)
+    {
+        if (!await FadeOutInspirationAsync()) return;
+        _vm.ApplyRecipe(recipe);
+        _prompt = _vm.UserInput ?? "";
+    }
+    private async Task ApplyChipsAsync()
+    {
+        if (!await FadeOutInspirationAsync()) return;
+        var p = ChipAt(PromptFlowStudio.Services.Prompt.PromptInspirationService.Subjects, _chipSubj);
+        var e = ChipAt(PromptFlowStudio.Services.Prompt.PromptInspirationService.Environments, _chipEnv);
+        var m = ChipAt(PromptFlowStudio.Services.Prompt.PromptInspirationService.Motions, _chipMot);
+        var l = ChipAt(PromptFlowStudio.Services.Prompt.PromptInspirationService.Lightings, _chipLight);
+        if (_vm.BuildAndApplyChips(p, e, m, l)) _prompt = _vm.UserInput ?? "";
+        else _vm.IsInspirationModalOpen = false;
+    }
+    private async Task<bool> FadeOutInspirationAsync()
+    {
+        if (_inspClosing) return false;
+        _inspClosing = true;
+        StateHasChanged();
+        try { await Task.Delay(180, _mediaCts.Token); }
+        catch (OperationCanceledException) { return false; }
+        finally { _inspClosing = false; }
+        return true;
+    }
 
     // 렌더 직전 프롬프트 동기화 — 칩/드래프트/AI 강화 등 _prompt 를 바꾸는 모든 경로를 한 곳에서 흡수(변경 없으면 통지 0).
     protected override bool ShouldRender() { _vm.UserInput = _prompt; return true; }
@@ -971,7 +1152,7 @@
     protected override void OnInitialized()
     {
         State.OnChange += OnStateChanged;
-        _vm = new PromptFlowStudio.ViewModels.PromptInputViewModel(Synth);
+        _vm = new PromptFlowStudio.ViewModels.PromptInputViewModel(Synth, Inspiration);
         _vm.SetOutputSize(_size);
         _vm.PropertyChanged += OnVmChanged;
         BuildBabyInjectors();
@@ -982,6 +1163,20 @@
         _recent = Library.List(6);
         _vm.UserInput = _prompt;
         AbsorbWirelessCameraFrame();   // 무선 카메라(/wireless-camera)에서 전달된 I2V 첫 프레임 흡수
+        AbsorbGalleryRestore();        // 갤러리(/gallery) ✨ 작업실 복원 — 프롬프트·시드·해상도 주입
+    }
+
+    /// <summary>갤러리 복원 번들 1회 소비 → 프롬프트(UserInput) · Seed 핀 · 출력 사이즈 주입.</summary>
+    private void AbsorbGalleryRestore()
+    {
+        if (GalleryMedia.TakePendingRestore() is not { } ctx) return;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(ctx.Prompt)) { _prompt = ctx.Prompt; _vm.UserInput = _prompt; }
+            if (ctx.Seed > 0) { _canvas.SeedPinned = true; _canvas.Seed = (int)Math.Min(ctx.Seed, int.MaxValue); }
+            if (ctx.WorkspaceSize is "1280*720" or "720*1280" or "960*960") { _size = ctx.WorkspaceSize; _vm.SetOutputSize(_size); }
+        }
+        catch (Exception ex) { Program.Log("Workspace.GalleryRestore", ex); }
     }
 
     /// <summary>무선 카메라 캡처(BMP) 1회 소비 → _uploads 저장 → I2V 첫 프레임 바인딩. 실패 시 T2V 유지.</summary>

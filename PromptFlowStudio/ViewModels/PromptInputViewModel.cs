@@ -27,10 +27,12 @@ public sealed class PromptInputViewModel : INotifyPropertyChanged
     public const long MaxReferenceImageBytes = 32L * 1024 * 1024;
 
     private readonly PromptSynthesizerService _synth;
+    private readonly PromptInspirationService _inspiration;
 
-    public PromptInputViewModel(PromptSynthesizerService synth)
+    public PromptInputViewModel(PromptSynthesizerService synth, PromptInspirationService? inspiration = null)
     {
         _synth = synth ?? throw new ArgumentNullException(nameof(synth));
+        _inspiration = inspiration ?? new PromptInspirationService();
         _result = _synth.Synthesize(BuildContext());
         ApplySize(DefaultSize);
     }
@@ -55,6 +57,29 @@ public sealed class PromptInputViewModel : INotifyPropertyChanged
     public int CharacterCount => _result.CharacterCount;
     public bool IsOverBudget => _result.IsOverBudget;
     public int MaxCharacterLimit => PromptSynthesizerService.MaxCharacterLimit;
+
+    // ── 💡 스토리 레시피 & 인스피레이션 모달 ──
+    private bool _isInspirationModalOpen;
+    public bool IsInspirationModalOpen { get => _isInspirationModalOpen; set => Set(ref _isInspirationModalOpen, value); }
+    public PromptInspirationService Inspiration => _inspiration;
+
+    /// <summary>레시피 <see cref="StoryRecipe.FullPrompt"/> → <see cref="UserInput"/> 대입(재합성) 후 모달 닫기.</summary>
+    public void ApplyRecipe(StoryRecipe recipe)
+    {
+        ArgumentNullException.ThrowIfNull(recipe);
+        UserInput = recipe.FullPrompt;
+        IsInspirationModalOpen = false;
+    }
+
+    /// <summary>칩 조합 합성 → <see cref="UserInput"/> 대입 후 모달 닫기. 전부 빈 칩이면 false(상태 불변).</summary>
+    public bool BuildAndApplyChips(string? subject, string? env, string? motion, string? light)
+    {
+        var text = _inspiration.BuildFromChips(subject, env, motion, light);
+        if (text.Length == 0) return false;
+        UserInput = text;
+        IsInspirationModalOpen = false;
+        return true;
+    }
 
     // ── 참조 이미지 / 모드 ──
     public byte[]? ReferenceImageBytes { get; private set; }

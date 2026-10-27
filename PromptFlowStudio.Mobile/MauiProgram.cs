@@ -402,6 +402,7 @@ public static class MauiProgram
 
         builder.Services.AddSingleton<PromptFlowStudio.Services.Storyboard.SocialMetadataAiGenerator>(); // v16.15.0 (Gemini/오프라인 SEO 미등록 시 로컬 템플릿)
         builder.Services.AddSingleton<PromptFlowStudio.Services.Prompt.PromptSynthesizerService>();   // 1번 워크플로우 프롬프트 합성기
+        builder.Services.AddSingleton<PromptFlowStudio.Services.Prompt.PromptInspirationService>();   // 💡 스토리 레시피 & 인스피레이션 허브
         builder.Services.AddSingleton<PromptFlowStudio.Services.Storyboard.StoryboardSequencerService>();   // 2번 워크플로우 스토리보드 시퀀서
         builder.Services.AddSingleton<PromptFlowStudio.Services.Render.RenderCostEstimatorService>();   // 3번 워크플로우 렌더 비용 추산
         builder.Services.AddSingleton<PromptFlowStudio.Services.Batch.BatchMassProductionService>();    // 3번 워크플로우 배치 디스패처
@@ -410,6 +411,7 @@ public static class MauiProgram
         builder.Services.AddSingleton<PromptFlowStudio.Services.Commercial.CommercialBrandService>(); // 브랜드 킷 + 커머셜 규격 프롬프트 합성
         builder.Services.AddSingleton<PromptFlowStudio.Services.Shorts.AiShortsService>(); // AI 15초 숏폼 3컷 시퀀서(9:16)
         builder.Services.AddSingleton<PromptFlowStudio.Services.Camera.WirelessCameraService>(); // 무선 카메라 스트림 · 캡처 · I2V 핸드오프 버퍼
+        builder.Services.AddSingleton<PromptFlowStudio.Services.Gallery.GalleryMediaService>(); // 갤러리 메타데이터 아카이브 · 작업실 복원 핸드오프
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.AI.GeminiPromptEnhancer(new System.Net.Http.HttpClient { Timeout = System.TimeSpan.FromSeconds(30) }, () => sp.GetService<PromptFlowStudio.Services.Wan.GeminiConfigService>()?.ApiKey)); // Gemini 미등록 시 원본 반환
 
         builder.Services.AddSingleton<PromptFlowStudio.Services.Media.OsmuExportPackager>();
