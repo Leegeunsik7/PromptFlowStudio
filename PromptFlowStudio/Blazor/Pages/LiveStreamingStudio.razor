@@ -2,12 +2,14 @@
 @implements IDisposable
 @using System.Globalization
 @using PromptFlowStudio.Services.Broadcast
+@using PromptFlowStudio.Services.Live
 @using PromptFlowStudio.Services.Media
 @using PromptFlowStudio.Services.Storyboard
 @inject AiLiveLoopStreamerService Streamer
 @inject LiveChatAiReactionEngine Chat
 @inject RealtimeAvatarPuppeteerService Avatar
 @inject PromptFlowStudio.Services.Studio.StudioFolderLinkService FolderLink
+@inject PromptFlowStudio.ViewModels.LiveStudioViewModel Vm
 @inject NavigationManager Nav
 
 @* [PromptFlow Studio v16.25.0] 📺 24/7 AI 라이브 스튜디오 — 플레이리스트 루프 송출(RTMP/SRT 동시) · 실시간 채팅 AI 반응 · 아바타 립싱크/표정 오버레이.
@@ -36,6 +38,62 @@
         <div class="ls-kpi"><span>AI 응답</span><b>@(Chat.RepliedCount)</b><small>AI @(Chat.AiReplyCount) · 템플릿 @(Chat.FallbackCount) · 평균 @(Chat.AvgLatencyMs.ToString("0", CultureInfo.InvariantCulture))ms</small></div>
         <div class="ls-kpi"><span>아바타 발화</span><b>@(Avatar.SpokenCount)</b><small>큐 @(Avatar.QueueDepth) · 음성 @(Chat.VoicedCount)</small></div>
     </section>
+
+    @* ── AI 쇼호스트 세일즈 피치 — 좌: 상품 입력 · 중: 온에어 뷰파인더 HUD · 우: 5단계 타임라인 ── *@
+    <div class="lp-grid">
+        <section class="ls-card">
+            <h2 class="ls-h2">🛍️ 상품 정보</h2>
+            <label class="ls-opt">상품명</label>
+            <input class="ls-in" @bind="Vm.ProductName" placeholder="예: 저자극 수분 크림" />
+            <div class="ls-split">
+                <div><label class="ls-opt">정가(원)</label><input class="ls-in" type="number" min="0" @bind="Vm.Price" /></div>
+                <div><label class="ls-opt">할인율(%)</label><input class="ls-in" type="number" min="0" max="100" @bind="Vm.DiscountRate" /></div>
+            </div>
+            <div class="ls-row"><span class="ls-note">할인가</span><b class="lp-price">@(Vm.SalePrice.ToString("N0", CultureInfo.InvariantCulture))원</b></div>
+            <label class="ls-opt">프로모션</label>
+            <select class="ls-in" @bind="Vm.PromotionType">
+                <option value="@PromotionType.FlashSale">플래시 세일</option>
+                <option value="@PromotionType.TimeAttack">타임어택</option>
+                <option value="@PromotionType.LimitedEdition">한정판</option>
+            </select>
+            <label class="ls-opt">셀링포인트(줄바꿈/쉼표 구분)</label>
+            <textarea class="ls-in" rows="4" @bind="Vm.SellingPointsInput" placeholder="72시간 보습 지속&#10;무향 저자극 포뮬러"></textarea>
+            <button class="ls-btn go" @onclick="BuildPitch">AI 세일즈 피치 생성</button>
+            @if (Vm.StatusMessage is not null) { <span class="ls-msg">@(Vm.StatusMessage)</span> }
+        </section>
+
+        <section class="ls-card lp-view">
+            <div class="lp-screen">
+                <div class="lp-badges">
+                    <span class="ls-state @(Vm.IsLiveStreaming ? "live" : "")">● ON AIR 24/7</span>
+                    @if (Vm.CurrentPhase is { } phase) { <span class="ls-pill">Phase: @(phase)</span> }
+                    @if (Vm.ActiveSegment is { Kind: not LiveSegmentKind.Pitch } cut) { <span class="ls-pill ok">@(cut.Kind)</span> }
+                    <span class="ls-pill">사이클 @(Vm.CycleCount)</span>
+                </div>
+                <div class="lp-cam">@(Vm.ActiveSegment?.RecommendedCameraMotion ?? "STANDBY")</div>
+                <div class="lp-prompter">@(Vm.ActiveSegment?.HostScript ?? "피치를 생성하고 송출을 시작하면 쇼호스트 대본이 텔레프롬프터로 표시됩니다.")</div>
+            </div>
+            <div class="ls-row">
+                <button class="ls-btn @(Vm.IsLiveStreaming ? "stop" : "go")" @onclick="ToggleLive">@(Vm.IsLiveStreaming ? "■ 송출 중단" : "▶ 가상 송출 시작")</button>
+                <span class="ls-note">틱 @(Vm.TickCount) · 렌더 디스패치 @(Vm.DispatchedCount)</span>
+            </div>
+        </section>
+
+        <section class="ls-card">
+            <h2 class="ls-h2">🎬 세일즈 피치 타임라인</h2>
+            @if (Vm.Segments.Count == 0) { <p class="ls-note">아직 생성된 세그먼트가 없습니다.</p> }
+            <div class="lp-tl">
+                @foreach (var seg in Vm.Segments)
+                {
+                    <div class="lp-seg @(ReferenceEquals(seg, Vm.ActiveSegment) ? "on" : "")">
+                        <div class="ls-row"><span class="ls-tag">@(seg.Phase)</span><span class="ls-meta">🎥 @(seg.RecommendedCameraMotion)</span></div>
+                        <div class="ls-line">@(seg.HostScript)</div>
+                        <button class="ls-mini" @onclick="() => Vm.SendToRenderQueue(seg)">렌더 큐로 내보내기 →</button>
+                    </div>
+                }
+            </div>
+        </section>
+    </div>
 
     <div class="ls-grid">
         @* ── ① 송출 대상 ── *@
@@ -251,9 +309,18 @@
     .ls-st { float: right; font: 700 10.5px var(--mono); color: var(--text-muted); }
     .ls-rx { padding: 6px 8px; border-radius: 9px; background: var(--card-2); display: flex; flex-direction: column; gap: 3px; }
     .ls-q { font-size: 11.5px; color: var(--text-muted); } .ls-a { font-size: 12.5px; color: var(--text-primary); } .ls-meta { font: 600 10.5px var(--mono); color: var(--text-muted); }
+    .lp-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1.1fr); gap: 12px; }
+    .lp-price { font-size: 16px; font-weight: 900; color: #ff3b5c; }
+    .lp-screen { position: relative; min-height: 260px; border-radius: 14px; padding: 12px; display: flex; flex-direction: column; justify-content: space-between; background: radial-gradient(circle at 50% 35%, rgba(255,59,92,.22), transparent 65%), #0d0b12; }
+    .lp-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+    .lp-cam { align-self: center; font: 800 12px var(--mono); letter-spacing: .12em; color: rgba(255,255,255,.45); text-transform: uppercase; }
+    .lp-prompter { padding: 10px 12px; border-radius: 10px; background: rgba(0,0,0,.6); color: #fff; font-size: 14px; line-height: 1.5; text-align: center; }
+    .lp-tl { display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow: auto; }
+    .lp-seg { padding: 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); display: flex; flex-direction: column; gap: 4px; }
+    .lp-seg.on { border-color: #e5203a; box-shadow: 0 0 0 1px #e5203a inset; }
     @@keyframes lsPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(229,32,58,.55); } 50% { box-shadow: 0 0 0 6px rgba(229,32,58,0); } }
-    @@media (max-width: 1200px) { .ls-grid { grid-template-columns: 1fr 1fr; } .ls-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-    @@media (max-width: 820px) { .ls-grid, .ls-split { grid-template-columns: 1fr; } .ls-kpis { grid-template-columns: 1fr 1fr; } }
+    @@media (max-width: 1200px) { .ls-grid, .lp-grid { grid-template-columns: 1fr 1fr; } .ls-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+    @@media (max-width: 820px) { .ls-grid, .lp-grid, .ls-split { grid-template-columns: 1fr; } .ls-kpis { grid-template-columns: 1fr 1fr; } }
 </style>
 
 @code {
@@ -284,6 +351,7 @@
         Streamer.OnChange += OnLiveChanged;
         Chat.OnChange += OnLiveChanged;
         Avatar.OnChange += OnAvatarChanged;
+        Vm.Changed += OnLiveChanged;
         Avatar.Arm();   // 미리보기 립싱크(송출 전에도)
     }
 
@@ -411,6 +479,18 @@
         Viseme.A => "34", Viseme.E => "38", Viseme.I => "40", Viseme.O => "24", Viseme.U => "16", Viseme.Closed => "30", _ => "28",
     };
 
+    private void BuildPitch()
+    {
+        try { Vm.BuildPitchSequence(); }
+        catch (Exception ex) { _toast = "피치 생성 실패: " + ex.Message; Program.Log("LiveStudio.Pitch", ex); }
+    }
+
+    private void ToggleLive()
+    {
+        try { Vm.ToggleLiveStream(); }
+        catch (Exception ex) { _toast = "가상 송출 실패: " + ex.Message; Program.Log("LiveStudio.PitchLive", ex); }
+    }
+
     private static string FormatUptime(TimeSpan t) =>
         ((int)t.TotalHours).ToString("00", CultureInfo.InvariantCulture) + ":" + t.Minutes.ToString("00", CultureInfo.InvariantCulture) + ":" + t.Seconds.ToString("00", CultureInfo.InvariantCulture);
 
@@ -419,6 +499,7 @@
         Streamer.OnChange -= OnLiveChanged;
         Chat.OnChange -= OnLiveChanged;
         Avatar.OnChange -= OnAvatarChanged;
+        Vm.Changed -= OnLiveChanged;
         var cts = Interlocked.Exchange(ref _previewCts, null);
         if (cts is not null) { try { cts.Cancel(); cts.Dispose(); } catch { } }
         if (!Streamer.IsLive) Avatar.Disarm();   // 송출 중이면 펌프 유지

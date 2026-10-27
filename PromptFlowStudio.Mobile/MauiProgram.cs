@@ -406,6 +406,7 @@ public static class MauiProgram
         builder.Services.AddSingleton<PromptFlowStudio.Services.Render.RenderCostEstimatorService>();   // 3번 워크플로우 렌더 비용 추산
         builder.Services.AddSingleton<PromptFlowStudio.Services.Batch.BatchMassProductionService>();    // 3번 워크플로우 배치 디스패처
         builder.Services.AddSingleton<PromptFlowStudio.Services.Render.IRenderQueueService, PromptFlowStudio.Services.Render.RenderQueueService>(); // 전역 렌더 큐 워커
+        builder.Services.AddSingleton<PromptFlowStudio.Services.Live.LiveStudioHostService>(); // 24/7 라이브 쇼호스트 피치 + 릴레이 버퍼
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.AI.GeminiPromptEnhancer(new System.Net.Http.HttpClient { Timeout = System.TimeSpan.FromSeconds(30) }, () => sp.GetService<PromptFlowStudio.Services.Wan.GeminiConfigService>()?.ApiKey)); // Gemini 미등록 시 원본 반환
 
         builder.Services.AddSingleton<PromptFlowStudio.Services.Media.OsmuExportPackager>();
