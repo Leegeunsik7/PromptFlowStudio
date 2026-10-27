@@ -80,6 +80,8 @@ public sealed class MainForm : Form
         services.AddSingleton<PromptFlowStudio.ViewModels.LiveStudioViewModel>();              // 24/7 AI 라이브 스튜디오 피치 큐 · 가상 송출(화면 이탈 후에도 유지)
         services.AddSingleton<PromptFlowStudio.Services.Commercial.CommercialBrandService>();   // 5번 워크플로우 브랜드 킷 + 커머셜 규격 프롬프트 합성
         services.AddSingleton<PromptFlowStudio.ViewModels.CommercialStudioViewModel>();         // 커머셜 브랜드 스튜디오 킷 · 포맷 프리셋 · 렌더 큐 전송
+        services.AddSingleton<PromptFlowStudio.Services.Shorts.AiShortsService>();              // 6번 워크플로우 AI 15초 숏폼 3컷 시퀀서(9:16 · BGM 박 전환)
+        services.AddSingleton<PromptFlowStudio.ViewModels.AiShortsViewModel>();                 // 숏폼 시퀀스 생성 · 9:16 3컷 렌더 큐 일괄 전송
         services.AddSingleton(sp => new PromptFlowStudio.Services.AI.GeminiPromptEnhancer(new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(30) }, sp.GetRequiredService<GeminiConfigService>())); // 🪄 AI 문장 자동 강화(실패 시 원본 반환)
         services.AddSingleton<IGeminiVideoAnalyzerService, GeminiVideoAnalyzerService>(); // 네이티브 MP4 통비디오 시간축 분석(VideoTemporalScore + 모션 보정)
         services.AddSingleton<IGeminiKineticSyncService, GeminiKineticSyncService>();     // 키네틱 자막/SFX 밀리초 타임코드 추출(단어별 highlight + SfxTriggers)

@@ -8,6 +8,8 @@
 @inject IFilePickerService Picker
 @inject UserPreferenceService Prefs
 @inject GalleryAutoSaveService Gallery
+@using PromptFlowStudio.Services.Shorts
+@inject PromptFlowStudio.ViewModels.AiShortsViewModel Vm
 
 <PageTitle>PromptFlow Studio · AI 15초 컷다운</PageTitle>
 
@@ -18,6 +20,63 @@
     <div class="acd-head">
         <div class="acd-title">✂️ AI 15초 컷다운</div>
         <div class="acd-sub">15~30초 원본 동영상을 4단계로 숏폼 15초 1편으로 재단합니다 — 컷 전략과 출력 품질을 직접 선택할 수 있습니다.</div>
+    </div>
+
+    @* ── AI 15초 숏폼 시퀀서 — 좌: 주제/훅/BGM/자막 · 중: 9:16 뷰파인더(세이프존) · 우: 3컷 타임라인 + 렌더 큐 전송 ── *@
+    <div class="ash-grid">
+        <section class="acd-step">
+            <div class="acd-step-h">🎬 AI 15초 숏폼 시퀀서</div>
+            <input class="acd-input" @bind="Vm.TopicInput" placeholder="핵심 주제 (예: 편의점 신상 디저트 리뷰)" />
+            <div class="acd-optlabel">훅 스타일</div>
+            <select class="acd-input" @bind="Vm.SelectedHook">
+                <option value="@ShortsHookType.QuestionHook">❓ 질문형 훅</option>
+                <option value="@ShortsHookType.ShockingFact">⚡ 충격 팩트</option>
+                <option value="@ShortsHookType.VisualSpectacle">🎆 비주얼 스펙터클</option>
+                <option value="@ShortsHookType.RelatableDaily">🙋 공감 일상</option>
+            </select>
+            <div class="acd-optlabel">BGM 프리셋</div>
+            <select class="acd-input" @bind="Vm.SelectedBgm">
+                <option value="@BgmBeatPreset.HyperBeat">하이퍼 비트 (140 BPM)</option>
+                <option value="@BgmBeatPreset.LofiChill">로파이 칠 (80 BPM)</option>
+                <option value="@BgmBeatPreset.TrendingPop">트렌딩 팝 (120 BPM)</option>
+                <option value="@BgmBeatPreset.DramaticDrop">드라마틱 드롭 (100 BPM)</option>
+            </select>
+            <div class="acd-optlabel">자막 스타일</div>
+            <select class="acd-input" @bind="Vm.SelectedCaption">
+                <option value="@CaptionStyle.BoldYellow">볼드 옐로</option>
+                <option value="@CaptionStyle.NeonCyber">네온 사이버</option>
+                <option value="@CaptionStyle.MinimalWhite">미니멀 화이트</option>
+                <option value="@CaptionStyle.ImpactDrop">임팩트 드롭</option>
+            </select>
+            <button class="acd-btn go" @onclick="Vm.GenerateSequence">✨ AI 15초 시퀀스 자동 생성</button>
+        </section>
+
+        <section class="acd-step ash-center">
+            <div class="ash-phone">
+                <span class="ash-badge">9:16 VERTICAL REELS / SHORTS</span>
+                <span class="ash-rail" title="우측 아이콘 영역(좋아요·댓글·공유)"></span>
+                <span class="ash-cap ash-cap-@(Vm.SelectedCaption.ToString().ToLowerInvariant())">@(string.IsNullOrWhiteSpace(Vm.TopicInput) ? "자막 세이프존" : Vm.TopicInput)</span>
+                <span class="ash-res">@(Vm.TargetResolution) · @(Vm.TotalDurationSec.ToString("0", CultureInfo.InvariantCulture))s</span>
+            </div>
+        </section>
+
+        <section class="acd-step">
+            <div class="acd-step-h">🎞️ 3컷 타임라인</div>
+            @if (Vm.Cuts.Count == 0)
+            {
+                <div class="acd-hint">주제를 입력하고 시퀀스를 생성하세요.</div>
+            }
+            @foreach (var cut in Vm.Cuts)
+            {
+                <div class="ash-cut ash-cut-@(cut.CutIndex)">
+                    <div class="ash-cut-h"><b>#@(cut.CutIndex) @(cut.Phase)</b><span>@(cut.DurationSec.ToString("0.#", CultureInfo.InvariantCulture))s</span></div>
+                    <div class="ash-cut-m">🎥 @(cut.CameraMotion) · 🥁 @(cut.BgmBpm)BPM @(cut.TransitionBeatIndex)박 · @(cut.TransitionFx)</div>
+                    <div class="ash-cut-p" title="@cut.VisualPrompt">@(cut.VisualPrompt)</div>
+                </div>
+            }
+            <button class="acd-btn go" @onclick="DispatchShorts">📤 숏폼 전체 렌더 큐로 전송</button>
+            <span class="acd-hint">전송 @(Vm.DispatchedCount)건@(Vm.StatusMessage is null ? "" : " · " + Vm.StatusMessage)</span>
+        </section>
     </div>
 
     <div class="acd-step">
@@ -150,6 +209,24 @@
     .acd-note{font-size:12px; color:var(--text-secondary)}
     .acd-video{width:100%; max-height:56vh; border-radius:10px; background:#000}
     .acd-path{font:600 10.5px var(--mono); color:var(--text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0}
+    /* AI 15초 숏폼 시퀀서 — 3열 그리드 + 9:16 폰 뷰파인더(하단 자막 · 우측 아이콘 세이프존) */
+    .ash-grid{display:grid; grid-template-columns:minmax(220px,1fr) 250px minmax(260px,1.3fr); gap:12px; width:min(1180px, calc(100vw - 80px))}
+    @@media (max-width:980px){ .ash-grid{grid-template-columns:1fr} }
+    .ash-center{align-items:center; justify-content:center}
+    .ash-phone{position:relative; width:216px; aspect-ratio:9/16; border-radius:22px; border:3px solid #1f2937; background:linear-gradient(180deg,#0f172a,#1e1b4b); overflow:hidden}
+    .ash-badge{position:absolute; top:10px; left:50%; transform:translateX(-50%); white-space:nowrap; font:800 9px var(--mono); color:#fff; padding:3px 8px; border-radius:999px; background:linear-gradient(135deg,#ec4899,#6366f1)}
+    .ash-rail{position:absolute; right:6px; top:38%; bottom:22%; width:16%; border:1.5px dashed rgba(244,114,182,.75); border-radius:8px}
+    .ash-cap{position:absolute; left:8%; right:22%; bottom:8%; height:14%; display:flex; align-items:center; justify-content:center; text-align:center; border:1.5px dashed rgba(125,211,252,.8); border-radius:8px; font:900 11px Pretendard,'Malgun Gothic',sans-serif; padding:0 4px; overflow:hidden}
+    .ash-cap-boldyellow{color:#facc15; text-shadow:0 0 2px #000,1px 1px 0 #000}
+    .ash-cap-neoncyber{color:#22d3ee; text-shadow:0 0 8px #22d3ee}
+    .ash-cap-minimalwhite{color:#fff; font-weight:600}
+    .ash-cap-impactdrop{color:#fff; font-size:13px; text-transform:uppercase; text-shadow:2px 2px 0 #ef4444}
+    .ash-res{position:absolute; bottom:2%; left:0; right:0; text-align:center; font:700 8.5px var(--mono); color:rgba(255,255,255,.55)}
+    .ash-cut{display:flex; flex-direction:column; gap:4px; padding:9px 10px; border-radius:11px; border:1px solid var(--line); background:var(--card-2); border-left:4px solid #ec4899}
+    .ash-cut-2{border-left-color:#6366f1} .ash-cut-3{border-left-color:#22c55e}
+    .ash-cut-h{display:flex; justify-content:space-between; font:800 11.5px var(--mono); color:var(--text-primary)}
+    .ash-cut-m{font:700 10.5px var(--mono); color:#7dd3fc}
+    .ash-cut-p{font-size:10.5px; color:var(--text-muted); display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden}
 </style>
 
 @code {
@@ -216,6 +293,12 @@
         _running = true; _result = null; _savedToGallery = false;
         try { _result = await Cutdown.ExecuteCutdownAsync(_sourcePath, Prefs.FfmpegBinaryPath, AiShortsCutdownEngine.TargetDurationSec, _strategy, _manualStartSec, _quality); }
         finally { _running = false; }
+    }
+
+    private void DispatchShorts()
+    {
+        try { Vm.DispatchToRenderQueue(); }
+        catch (Exception ex) { Program.Log("AiShorts.Dispatch", ex); }
     }
 
     private void SaveToGallery(string url)
