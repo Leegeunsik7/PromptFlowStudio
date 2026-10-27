@@ -1,10 +1,11 @@
 # Current Project Status
-- Active Milestone: 인스피레이션 허브 ⭐ 커스텀 프리셋 영속화 · 릴리즈 계약 검증
+- Active Milestone: 인스피레이션 허브 👶 큐트 베이비 & 키즈 카테고리 · 레고 칩 보강
 - Build Status: Release 빌드 (-warnaserror 0W/0E) — PromptFlowStudio · PromptFlowStudio.Tests · net8.0-android 미검증(SDK/JDK 미설치)
-- Test Suite: 전체 630/630 PASS(직렬 · MaxCpuCount=1 · DisableParallelization) · PromptInspirationTests 12/12 · SingleFileBinaryProcessBootstrap_Check · TitanReleaseTests.ProductionReleaseVerification_Check PASS
+- Test Suite: 전체 631/631 PASS(직렬 · MaxCpuCount=1 · DisableParallelization) · PromptInspirationTests 13/13
 - Updated At: 2026-10-27 (KST)
 
 ## Completed Deliverables
+- PR-3: `StoryPresetCategory.CuteBabyKids`(👶 큐트 베이비) 프리셋 4종 · 피사체/배경/조명 칩 각 2종 · `Workspace.razor` 필터 인기순(👶 최전면) · 테스트 `GetCuratedPresets_ContainsCuteBabyKidsCategory`
 - PR-2: `UserCustomPreset` · `Load/Save/DeleteCustomPreset` · `GetAllPresets`(큐레이션/사용자 분리) — `%LocalAppData%\PromptFlowStudio\custom_story_presets.json`(지연 로드 · tmp→원자 교체 · 손상 시 `.corrupt.bak` 보존)
 - PR-2: `PromptInputViewModel.CustomPresets`(ObservableCollection) · `SaveCurrentAsPreset`/`DeletePreset`/`ApplyCustomPreset` · `Workspace.razor` ⭐ 탭 + 제목 저장폼 + 적용/삭제 카드
 - PR-1: `PromptInspirationService` · 스토리 레시피 허브 · 레고 빌더 모달 · DI `MainForm.cs`+`MauiProgram.cs`

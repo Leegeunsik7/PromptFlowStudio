@@ -7,7 +7,7 @@ using System.Text.Json;
 namespace PromptFlowStudio.Services.Prompt;
 
 /// <summary>스토리 레시피 장르.</summary>
-public enum StoryPresetCategory { CinematicSciFi, NatureDocu, EmotionalDrama, FashionLookbook, CyberpunkAction }
+public enum StoryPresetCategory { CinematicSciFi, NatureDocu, EmotionalDrama, FashionLookbook, CyberpunkAction, CuteBabyKids }
 
 /// <summary>장르별 완성형 시나리오 프리셋 — <see cref="FullPrompt"/> 는 Wan 2.1 최적화(≤800자).</summary>
 public sealed record StoryRecipe(string Title, StoryPresetCategory Category, string FullPrompt, string RecommendedCamera, string RecommendedLighting);
@@ -49,6 +49,20 @@ public sealed class PromptInspirationService
 
     private static readonly StoryRecipe[] Presets =
     {
+        // ── CuteBabyKids (인기 1위 · 최전면) ──
+        new("햇살 속 첫 걸음마와 까르르 웃음", StoryPresetCategory.CuteBabyKids,
+            "Adorable 1-year-old baby taking joyful first steps on a soft ivory rug, pure innocent laughter, chubby pink cheeks, cinematic morning golden-hour rays streaming through a large sunroom window, dust motes dancing, 8k resolution, ultra-photorealistic, high-end commercial look.",
+            "Eye-Level Gentle Push-In, Slow Motion", "Golden Hour Window Rays, Soft Fill"),
+        new("곰돌이 롬퍼와 판타지 숲속 요정", StoryPresetCategory.CuteBabyKids,
+            "Chubby toddler wearing a fluffy plush brown teddy bear onesie sitting peacefully in a magical woodland glade, looking with wonder at glowing bioluminescent fireflies hovering around tiny hands, fairytale cinematic atmosphere, Pixar-meets-live-action aesthetic.",
+            "Low-Angle Macro Orbit", "Magical Firefly Bokeh, Soft Forest Rim Light"),
+        new("골든 리트리버와 낮잠 교감", StoryPresetCategory.CuteBabyKids,
+            "Heartwarming moment of a sleeping baby in pastel pajamas snuggled gently against a sleepy, massive golden retriever on a sunlit daybed, puppy breathing softly, sheer white curtains fluttering, serene peaceful ambiance.",
+            "Slow Dolly Out, High Angle", "Soft Diffused Daylight, Natural Warmth"),
+        new("꼬마 우주비행사의 풍선 모험", StoryPresetCategory.CuteBabyKids,
+            "Cute toddler in a miniature retro-futuristic astronaut suit holding a glowing crescent-moon balloon in a dreamy pastel galaxy nursery, floating soft movements, whimsical and heartwarming.",
+            "Slow Floating Crane Reveal", "Pastel Ambient Glow, Rim Specular"),
+
         // ── CinematicSciFi ──
         new("궤도 정거장의 새벽", StoryPresetCategory.CinematicSciFi,
             "A lone astronaut floats beside a massive rotating space station above Earth at dawn, sunlight sweeping across solar panels, tiny debris glittering in zero gravity, the blue curve of the planet glowing below, epic sci-fi scale",
@@ -119,6 +133,8 @@ public sealed class PromptInspirationService
         new("🥷 사이버 닌자", "a cyber ninja with glowing visor"),
         new("👵 할머니", "a warm-hearted elderly grandmother"),
         new("🦅 독수리", "a majestic bald eagle"),
+        new("👶 앙증맞은 아기", "an adorable chubby-cheeked baby"),
+        new("🧸 곰돌이 옷을 입은 토들러", "a toddler in a fluffy teddy bear onesie"),
     };
 
     public static readonly InspirationChip[] Environments =
@@ -129,6 +145,8 @@ public sealed class PromptInspirationService
         new("🌴 열대우림", "a lush tropical rainforest"),
         new("🏙 도심 옥상", "a city rooftop overlooking skyscrapers"),
         new("⬜ 화이트 스튜디오", "a minimal white studio"),
+        new("🍼 파스텔톤 햇살 아기방", "a sunlit pastel-toned nursery"),
+        new("🌼 동화 같은 잔디 꽃밭", "a fairytale grassy meadow full of wildflowers"),
     };
 
     public static readonly InspirationChip[] Motions =
@@ -149,6 +167,8 @@ public sealed class PromptInspirationService
         new("🕯 무디 텅스텐", "moody tungsten practical lights"),
         new("☁ 소프트 디퓨즈", "soft overcast diffused light"),
         new("⚡ 림 라이트", "dramatic electric rim light"),
+        new("🪟 포근한 창가 햇살", "cozy soft window sunlight"),
+        new("🍭 파스텔 솜사탕 글로우", "dreamy pastel cotton-candy glow"),
     };
 
     /// <summary>장르별 엄선 프리셋(15개+) — 정적 불변 배열을 그대로 노출(할당 0).</summary>
@@ -171,6 +191,7 @@ public sealed class PromptInspirationService
         StoryPresetCategory.EmotionalDrama => "🎭 감성 드라마",
         StoryPresetCategory.FashionLookbook => "👗 패션 룩북",
         StoryPresetCategory.CyberpunkAction => "🌆 사이버펑크 액션",
+        StoryPresetCategory.CuteBabyKids => "👶 큐트 베이비",
         _ => c.ToString(),
     };
 

@@ -43,6 +43,19 @@ public class PromptInspirationTests
     }
 
     [Fact]
+    public void GetCuratedPresets_ContainsCuteBabyKidsCategory()
+    {
+        var baby = _svc.GetPresetsByCategory(StoryPresetCategory.CuteBabyKids);
+        Assert.Equal(4, baby.Count);
+        Assert.Contains(_svc.GetCuratedPresets(), r => r.Category == StoryPresetCategory.CuteBabyKids && r.Title == "햇살 속 첫 걸음마와 까르르 웃음");
+        Assert.All(baby, r => Assert.False(string.IsNullOrWhiteSpace(r.RecommendedCamera)));
+        Assert.Equal("👶 큐트 베이비", PromptInspirationService.CategoryLabel(StoryPresetCategory.CuteBabyKids));
+        Assert.Contains(PromptInspirationService.Subjects, c => c.Label.Contains("앙증맞은 아기"));
+        Assert.Contains(PromptInspirationService.Environments, c => c.Label.Contains("파스텔톤 햇살 아기방"));
+        Assert.Contains(PromptInspirationService.Lightings, c => c.Label.Contains("파스텔 솜사탕 글로우"));
+    }
+
+    [Fact]
     public void BuildFromChips_AllChips_ProducesCinematicFormat()
     {
         var s = _svc.BuildFromChips("a lone astronaut", "a misty fjord", "slow push-in", "golden hour rays");

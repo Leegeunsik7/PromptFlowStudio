@@ -928,8 +928,16 @@
     private void SyncSize() => _vm.SetOutputSize(_size);
 
     // ── 💡 스토리 레시피 & 인스피레이션 모달 ──
+    // 인기순 — 👶 큐트 베이비 최전면
     private static readonly PromptFlowStudio.Services.Prompt.StoryPresetCategory[] InspirationCategories =
-        Enum.GetValues<PromptFlowStudio.Services.Prompt.StoryPresetCategory>();
+    {
+        PromptFlowStudio.Services.Prompt.StoryPresetCategory.CuteBabyKids,
+        PromptFlowStudio.Services.Prompt.StoryPresetCategory.CinematicSciFi,
+        PromptFlowStudio.Services.Prompt.StoryPresetCategory.NatureDocu,
+        PromptFlowStudio.Services.Prompt.StoryPresetCategory.EmotionalDrama,
+        PromptFlowStudio.Services.Prompt.StoryPresetCategory.FashionLookbook,
+        PromptFlowStudio.Services.Prompt.StoryPresetCategory.CyberpunkAction,
+    };
     private int _inspTab;
     private bool _inspClosing;
     private PromptFlowStudio.Services.Prompt.StoryPresetCategory? _inspCat;
