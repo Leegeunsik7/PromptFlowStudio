@@ -2,11 +2,13 @@
 @implements IDisposable
 @using System.Globalization
 @using System.Threading
+@using PromptFlowStudio.Services.Commercial
 @inject CommercialBrandCampaignService Campaign
 @inject SmartThemeRecommender Themes
 @inject ILocalMediaService Media
 @inject PromptFlowStudio.Services.Studio.StudioFolderLinkService FolderLink
 @inject NavigationManager Nav
+@inject PromptFlowStudio.ViewModels.CommercialStudioViewModel Vm
 
 @* [PromptFlow Studio v16.19.0] 🛍️ 커머셜 브랜드 스튜디오 — 협찬 제품 누끼 + 테마 장면 합성 + 로고/PPL/CTA 오버레이 + Gemini CM 카피 → 1-Click 광고 비디오.
    상태는 CommercialBrandCampaignService(싱글턴) 소유 — 이 페이지는 OnChange 구독 + InvokeAsync(StateHasChanged) 로만 갱신, 이탈 시 CTS 취소·해제. *@
@@ -26,6 +28,57 @@
         </div>
         <p class="cb-sub">아동용품·브랜드 협찬 제품 사진을 <b>자동 누끼 + 장면 조명 매칭</b>으로 테마 영상에 합성하고, <b>로고 워터마크 · PPL 고지 · CTA</b>를 세이프존에 배치해 광고 비디오를 출력합니다.</p>
     </header>
+
+    @* ── 브랜드 킷 커머셜 — 좌: 브랜드 킷 · 중: 비율 토글 뷰파인더(워터마크 세이프존) · 우: 포맷 프리셋 + 렌더 큐 전송 ── *@
+    <div class="ck-grid">
+        <section class="cb-card">
+            <h2 class="cb-h2">🏷️ 브랜드 킷</h2>
+            <input class="cb-in" @bind="Vm.BrandName" placeholder="브랜드명" />
+            <input class="cb-in" @bind="Vm.ProductConcept" placeholder="제품 컨셉 (예: 저자극 수분 선크림)" />
+            <label class="cb-opt">워터마크 위치</label>
+            <select class="cb-in" @bind="Vm.SelectedPlacement">
+                <option value="@WatermarkPlacement.TopLeft">좌상단</option>
+                <option value="@WatermarkPlacement.TopRight">우상단</option>
+                <option value="@WatermarkPlacement.BottomRight">우하단</option>
+                <option value="@WatermarkPlacement.CenterWatermark">중앙 워터마크</option>
+            </select>
+            <div class="cb-row">
+                <input class="cb-color" type="color" @bind="Vm.PrimaryColorHex" />
+                <input class="cb-in" @bind="Vm.PrimaryColorHex" placeholder="#FF3366" />
+            </div>
+            <label class="cb-opt">필수 표기사항(유료광고/심의필)</label>
+            <input class="cb-in" @bind="Vm.DisclaimerText" />
+            <input class="cb-in" @bind="Vm.CtaText" placeholder="CTA (예: 지금 구매하기)" />
+        </section>
+
+        <section class="cb-card">
+            <div class="cb-row">
+                <h2 class="cb-h2">🎞️ 커머셜 프리뷰</h2>
+                <button class="cb-btn ghost ck-toggle" @onclick="Vm.ToggleAspect">@(Vm.IsVertical ? "9:16 → 16:9" : "16:9 → 9:16")</button>
+            </div>
+            <div class="ck-vf @(Vm.IsVertical ? "v" : "h")" style="--ck-c:@(CommercialBrandService.NormalizeHex(Vm.PrimaryColorHex))">
+                <span class="ck-wm @(PlacementClass(Vm.SelectedPlacement))">@(string.IsNullOrWhiteSpace(Vm.BrandName) ? "LOGO" : Vm.BrandName)</span>
+                <span class="ck-cta">@(Vm.CtaText)</span>
+                <span class="ck-disc">@(Vm.DisclaimerText)</span>
+                <span class="ck-ar">@(Vm.AspectRatio) · @(Vm.TargetDurationSec.ToString("0", CultureInfo.InvariantCulture))s</span>
+            </div>
+            @if (Vm.LastPackage is { } pkg) { <p class="cb-meta ck-prompt">@(pkg.Prompt)</p> }
+        </section>
+
+        <section class="cb-card">
+            <h2 class="cb-h2">⏱️ 포맷 프리셋</h2>
+            @foreach (var f in Formats)
+            {
+                <button class="ck-fmt @(Vm.SelectedFormat == f ? "on" : "")" @onclick="() => SelectFormat(f)">
+                    <b>@(CommercialBrandService.DurationFor(f).ToString("0", CultureInfo.InvariantCulture))초 @(FormatLabel(f))</b>
+                    <small>@(CommercialBrandService.DefaultAspectFor(f))</small>
+                </button>
+            }
+            <button class="cb-btn ghost" @onclick="GenerateAd">커머셜 프롬프트 합성</button>
+            <button class="cb-btn" @onclick="ExportAd">커머셜 렌더 큐로 전송</button>
+            <span class="cb-note">전송 @(Vm.DispatchedCount)건@(Vm.StatusMessage is null ? "" : " · " + Vm.StatusMessage)</span>
+        </section>
+    </div>
 
     <div class="cb-grid">
         @* ① 자산 *@
@@ -226,6 +279,23 @@
     .cb-bar-f { height: 100%; background: linear-gradient(90deg, #ff4f8b, #a855f7); transition: width .3s; }
     .cb-cutout { border-radius: 10px; overflow: hidden; background: repeating-conic-gradient(#d4d4d8 0 25%, #fafafa 0 50%) 0 0 / 18px 18px; display: flex; justify-content: center; }
     .cb-cutout img { max-width: 100%; max-height: 240px; object-fit: contain; }
+    .ck-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1fr); gap: 14px; }
+    .ck-toggle { flex: 0 0 auto; margin-left: auto; }
+    .ck-vf { position: relative; margin: 0 auto; border-radius: 12px; overflow: hidden; background: radial-gradient(circle at 50% 40%, color-mix(in srgb, var(--ck-c) 35%, transparent), transparent 70%), #0d0b12; border: 2px solid var(--ck-c); }
+    .ck-vf.v { width: 200px; aspect-ratio: 9 / 16; }
+    .ck-vf.h { width: 100%; max-width: 420px; aspect-ratio: 16 / 9; }
+    .ck-vf::after { content: ""; position: absolute; inset: 8%; border: 1px dashed rgba(255,255,255,.28); border-radius: 6px; pointer-events: none; }
+    .ck-wm { position: absolute; padding: 3px 8px; border-radius: 6px; font: 800 11px var(--mono); color: #fff; background: color-mix(in srgb, var(--ck-c) 70%, transparent); outline: 1px dashed #fff; }
+    .ck-wm.tl { top: 8%; left: 8%; } .ck-wm.tr { top: 8%; right: 8%; } .ck-wm.br { bottom: 16%; right: 8%; }
+    .ck-wm.c { top: 50%; left: 50%; transform: translate(-50%, -50%); opacity: .55; }
+    .ck-cta { position: absolute; left: 50%; bottom: 9%; transform: translateX(-50%); padding: 4px 12px; border-radius: 999px; background: var(--ck-c); color: #fff; font-size: 11.5px; font-weight: 800; white-space: nowrap; }
+    .ck-disc { position: absolute; left: 8%; bottom: 3%; font-size: 9.5px; color: rgba(255,255,255,.75); }
+    .ck-ar { position: absolute; left: 8%; top: 3%; font: 700 9.5px var(--mono); color: rgba(255,255,255,.6); }
+    .ck-prompt { word-break: break-word; max-height: 120px; overflow: auto; }
+    .ck-fmt { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 9px 11px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); cursor: pointer; text-align: left; }
+    .ck-fmt small { color: var(--text-muted); font-size: 11px; }
+    .ck-fmt.on { border-color: #ff4f8b; box-shadow: 0 0 0 1px #ff4f8b inset; }
+    @@media (max-width: 1100px) { .ck-grid { grid-template-columns: 1fr; } }
     @@media (max-width: 720px) { .cb-row { flex-wrap: wrap; } }
 </style>
 
@@ -258,11 +328,47 @@
         }
     }
 
-    protected override void OnInitialized() => Campaign.OnChange += OnCampaignChanged;
+    private static readonly CommercialAdFormat[] Formats = { CommercialAdFormat.Bumper6s, CommercialAdFormat.Feed15s, CommercialAdFormat.Narrative30s };
+
+    private static string FormatLabel(CommercialAdFormat f) => f switch
+    {
+        CommercialAdFormat.Bumper6s => "범퍼 훅",
+        CommercialAdFormat.Feed15s => "SNS 피드",
+        _ => "내러티브",
+    };
+
+    private static string PlacementClass(WatermarkPlacement p) => p switch
+    {
+        WatermarkPlacement.TopLeft => "tl",
+        WatermarkPlacement.TopRight => "tr",
+        WatermarkPlacement.BottomRight => "br",
+        _ => "c",
+    };
+
+    private void SelectFormat(CommercialAdFormat f) => Vm.SelectedFormat = f;
+
+    private void GenerateAd()
+    {
+        try { Vm.GenerateAdPrompt(); }
+        catch (Exception ex) { _toast = "커머셜 프롬프트 합성 실패: " + ex.Message; Program.Log("CommercialStudio.Generate", ex); }
+    }
+
+    private void ExportAd()
+    {
+        try { Vm.ExportToRenderQueue(); }
+        catch (Exception ex) { _toast = "렌더 큐 전송 실패: " + ex.Message; Program.Log("CommercialStudio.Export", ex); }
+    }
+
+    protected override void OnInitialized()
+    {
+        Campaign.OnChange += OnCampaignChanged;
+        Vm.Changed += OnCampaignChanged;
+    }
 
     public void Dispose()
     {
         Campaign.OnChange -= OnCampaignChanged;
+        Vm.Changed -= OnCampaignChanged;
         var c = Interlocked.Exchange(ref _cts, null);
         if (c is not null) { try { c.Cancel(); } catch (ObjectDisposedException) { } c.Dispose(); }
     }
