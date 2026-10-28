@@ -47,6 +47,23 @@ public sealed class GalleryViewModel
         Raise();
     }
 
+    /// <summary>렌더 큐 딥링크 — 필터/검색 해제 후 경로가 일치하는 항목을 인스펙터에 선택. 없으면 false + 상태 메시지.</summary>
+    public bool FocusByPath(string? mediaPath)
+    {
+        if (string.IsNullOrWhiteSpace(mediaPath)) return false;
+        SelectedFilter = GalleryFilter.All;
+        SearchQuery = "";
+        ApplyFilter();
+        if (_gallery.FindByPath(mediaPath) is not { } item)
+        {
+            StatusMessage = "갤러리에서 찾을 수 없음 — " + Path.GetFileName(mediaPath);
+            Raise();
+            return false;
+        }
+        SelectMedia(item);
+        return true;
+    }
+
     public void ApplyFilter()
     {
         MediaItems.Clear();

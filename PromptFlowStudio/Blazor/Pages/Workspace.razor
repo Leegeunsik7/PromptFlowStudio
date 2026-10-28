@@ -1259,10 +1259,10 @@
         _recent = Library.List(6);
         _vm.UserInput = _prompt;
         AbsorbWirelessCameraFrame();   // 무선 카메라(/wireless-camera)에서 전달된 I2V 첫 프레임 흡수
-        AbsorbGalleryRestore();        // 갤러리(/gallery) ✨ 작업실 복원 — 프롬프트·시드·해상도 주입
+        AbsorbGalleryRestore();        // 갤러리(/gallery) ✨ 작업실 복원 — 프롬프트·시드·해상도·I2V 참조 이미지 주입
     }
 
-    /// <summary>갤러리 복원 번들 1회 소비 → 프롬프트(UserInput) · Seed 핀 · 출력 사이즈 주입.</summary>
+    /// <summary>갤러리 복원 번들 1회 소비 → 프롬프트(UserInput) · Seed 핀 · 출력 사이즈 · I2V 참조 이미지(첫 프레임 · 모드 자동 활성화) 주입.</summary>
     private void AbsorbGalleryRestore()
     {
         if (GalleryMedia.TakePendingRestore() is not { } ctx) return;
@@ -1271,6 +1271,14 @@
             if (!string.IsNullOrWhiteSpace(ctx.Prompt)) { _prompt = ctx.Prompt; _vm.UserInput = _prompt; }
             if (ctx.Seed > 0) { _canvas.SeedPinned = true; _canvas.Seed = ctx.Seed; }
             if (ctx.WorkspaceSize is "1280*720" or "720*1280" or "960*960") { _size = ctx.WorkspaceSize; _vm.SetOutputSize(_size); }
+            if (ctx.ReferenceImagePath is { Length: > 0 } refPath && File.Exists(refPath))
+            {
+                _imagePath = refPath;
+                _imageName = Path.GetFileName(refPath);
+                _imagePreview = Media.ToPlaybackUrl(refPath);
+                _ = _vm.ApplyGalleryRestoreAsync(ctx with { Prompt = "", WorkspaceSize = "" }, _mediaCts.Token);   // I2V 바인딩 + 모드 활성화(프롬프트·사이즈는 위에서 반영)
+                _camToast = "🖼️ 갤러리 참조 이미지가 첫 프레임으로 복원되었습니다 · I2V 모드 활성화";
+            }
         }
         catch (Exception ex) { Program.Log("Workspace.GalleryRestore", ex); }
     }

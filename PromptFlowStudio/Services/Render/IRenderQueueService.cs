@@ -15,6 +15,8 @@ public interface IRenderQueueService : IDisposable
 {
     ObservableCollection<BatchRenderJob> Queue { get; }
     bool IsPaused { get; }
+    /// <summary>VRAM 위험 수준(≥95%) 감지로 자동 일시정지됨 — <see cref="ResumeQueue"/> 시 해제.</summary>
+    bool IsVramPaused { get; }
     BatchRenderJob? ActiveJob { get; }
 
     /// <summary>큐/작업 상태 변경 알림 — 워커 스레드에서 발생할 수 있음.</summary>

@@ -8,6 +8,7 @@ using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using PromptFlowStudio.Services.Camera;
+using PromptFlowStudio.Services.Gallery;
 using PromptFlowStudio.Services.Prompt;
 
 namespace PromptFlowStudio.ViewModels;
@@ -192,6 +193,28 @@ public sealed class PromptInputViewModel : INotifyPropertyChanged
             UserInput = SmartCameraMerge.MergeCameraPrompt(UserInput, transfer.CameraMotion, transfer.Intensity, transfer.Speed);
         if (frameBytes is { Length: > 0 })
             await HandleImageDroppedAsync(new MemoryStream(frameBytes, writable: false), ct).ConfigureAwait(false);
+        I2vModeRequested = IsI2V;
+        OnPropertyChanged(nameof(I2vModeRequested));
+        return I2vModeRequested;
+    }
+
+    /// <summary>
+    /// 갤러리 복원 번들 적용 — 프롬프트 · 출력 사이즈 주입 + <see cref="GalleryRestoreContext.ReferenceImagePath"/> 가 실존하면
+    ///   I2V 첫 프레임 바인딩 + <see cref="I2vModeRequested"/>. 이미지 판독 실패·부재는 T2V 유지(예외 격리). 반환: I2V 활성 여부.
+    /// </summary>
+    public async Task<bool> ApplyGalleryRestoreAsync(GalleryRestoreContext ctx, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(ctx);
+        if (!string.IsNullOrWhiteSpace(ctx.Prompt)) UserInput = ctx.Prompt;
+        if (!string.IsNullOrWhiteSpace(ctx.WorkspaceSize)) SetOutputSize(ctx.WorkspaceSize);
+        var path = ctx.ReferenceImagePath;
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return false;
+        try
+        {
+            await using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 4096, useAsync: true);
+            if (!await HandleImageDroppedAsync(fs, ct).ConfigureAwait(false)) return false;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Program.Log("PromptInput.GalleryRestore", ex); return false; }
         I2vModeRequested = IsI2V;
         OnPropertyChanged(nameof(I2vModeRequested));
         return I2vModeRequested;

@@ -25,6 +25,8 @@ public sealed class RenderQueueViewModel : IDisposable
     public IReadOnlyList<BatchRenderJob> Jobs { get; private set; } = Array.Empty<BatchRenderJob>();
     public BatchRenderJob? ActiveJob { get; private set; }
     public bool IsPaused { get; private set; }
+    /// <summary>VRAM 위험 수준 자동 일시정지 상태(배너 표출).</summary>
+    public bool IsVramPaused { get; private set; }
     public int TotalJobsCount { get; private set; }
     public int PendingCount { get; private set; }
     public int ProcessingCount { get; private set; }
@@ -39,6 +41,17 @@ public sealed class RenderQueueViewModel : IDisposable
     public void ClearCompleted() => _queue.ClearCompleted();
     public void Cancel(Guid jobId) => _queue.CancelJob(jobId);
     public void Retry(Guid jobId) => _queue.RetryJob(jobId);
+
+    public const string VramPauseNotice = "GPU 메모리가 위험 수준에 도달하여 렌더 큐를 일시 정지했습니다. 메모리가 확보되면 재개하십시오.";
+
+    /// <summary>완료 작업 → 갤러리 딥링크(<c>gallery?focus=</c> 출력 경로) — 완료 전이거나 로컬 산출물이 없으면 null.</summary>
+    public static string? GalleryLinkFor(BatchRenderJob job)
+    {
+        if (job is null || job.Status != BatchJobStatus.Completed) return null;
+        var path = !string.IsNullOrWhiteSpace(job.OutputPath) ? job.OutputPath
+                 : !string.IsNullOrWhiteSpace(job.ResultPath) && !job.ResultPath.Contains("://", StringComparison.Ordinal) ? job.ResultPath : null;
+        return path is null ? null : "gallery?focus=" + Uri.EscapeDataString(path);
+    }
 
     public void Refresh()
     {
@@ -61,6 +74,7 @@ public sealed class RenderQueueViewModel : IDisposable
         ActiveEngineKind = ActiveJob?.EngineKind;
         LastErrorMessage = lastError;
         IsPaused = _queue.IsPaused;
+        IsVramPaused = _queue.IsVramPaused;
         TotalJobsCount = snap.Length;
         PendingCount = pending;
         ProcessingCount = processing;

@@ -17,3 +17,6 @@ node_modules/
 
 # v17.65.0 로컬 Claude/headroom 툴 캐시(추적 배제 · prompts/ 기존 추적분은 유지)
 .claude/
+
+# Step 4 스크린샷/런타임 덤프(추적 배제)
+artifacts/

@@ -206,4 +206,42 @@ public class RenderQueueWorkerTests
         }
         finally { File.Delete(img); }
     }
+
+    [Fact]
+    public async Task RenderQueue_AutoPauses_WhenVramExceedsThreshold()
+    {
+        var vram = 0.97;
+        using var q = new RenderQueueService(TimeSpan.Zero, autoStart: false, engine: null, vramProbe: () => Volatile.Read(ref vram));
+        using var vm = new RenderQueueViewModel(q);
+        var jobs = Jobs(2);
+        q.Enqueue(jobs);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var worker = q.ProcessQueueAsync(cts.Token);
+        for (var i = 0; i < 200 && !q.IsVramPaused; i++) await Task.Delay(10);
+
+        // 디스패치 차단 — 위험 수준에서 어떤 작업도 Processing 으로 꺼내지 않음(크래시 없는 안전 정지)
+        Assert.True(q.IsPaused);
+        Assert.True(q.IsVramPaused);
+        Assert.True(vm.IsVramPaused);
+        Assert.False(worker.IsCompleted);
+        Assert.All(jobs, j => Assert.Equal(BatchJobStatus.Queued, j.Status));
+        Assert.Contains("GPU 메모리가 위험 수준", RenderQueueViewModel.VramPauseNotice);
+
+        // 메모리 확보 후 수동 재개 → 경고 해제 · 전량 완료
+        Volatile.Write(ref vram, 0.50);
+        q.ResumeQueue();
+        Assert.False(q.IsVramPaused);
+        await worker.WaitAsync(cts.Token);
+        Assert.All(jobs, j => Assert.Equal(BatchJobStatus.Completed, j.Status));
+        Assert.False(vm.IsVramPaused);
+
+        // 임계 미만 · GPU 미탐지(null) · 프로브 예외 → 가드 통과
+        using var q2 = new RenderQueueService(TimeSpan.Zero, autoStart: false, engine: null, vramProbe: () => throw new InvalidOperationException("nvidia-smi"));
+        var more = Jobs(1);
+        q2.Enqueue(more);
+        await q2.ProcessQueueAsync(cts.Token);
+        Assert.Equal(BatchJobStatus.Completed, more[0].Status);
+        Assert.False(q2.IsVramPaused);
+    }
 }

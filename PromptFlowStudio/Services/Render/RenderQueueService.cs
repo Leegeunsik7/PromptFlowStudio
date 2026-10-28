@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using PromptFlowStudio.Services.Batch;
 using PromptFlowStudio.Services.Gallery;
+using PromptFlowStudio.Services.Telemetry;
 
 namespace PromptFlowStudio.Services.Render;
 
@@ -16,20 +17,27 @@ namespace PromptFlowStudio.Services.Render;
 ///   ▸ Enqueue/Retry/Resume 시 워커가 없으면 1개만 기동(<c>_workerRunning</c> 잠금 판정 — 소진 직전 적재분 유실 방지).
 ///   ▸ 프레임 틱마다 진행률 +<see cref="ProgressStep"/>% — 완료 시 Completed + CompletedAt.
 ///   ▸ 처리 중 작업 취소는 작업별 링크 CTS 로 즉시 중단 → Cancelled. 서비스 Dispose 시 처리 중 작업은 Queued 로 복귀.
+///   ▸ VRAM 가드레일: 디스패치 직전 사용률 ≥ <see cref="VramPauseThreshold"/> 이면 새 작업을 꺼내지 않고 자동 일시정지(<see cref="IsVramPaused"/>) — 재개는 수동.
 ///   ▸ OnChange 구독자 예외는 격리.
 /// </summary>
 public sealed class RenderQueueService : IRenderQueueService
 {
     public const int ProgressStep = 5;
+    /// <summary>VRAM 사용률 자동 일시정지 임계(0~1).</summary>
+    public const double VramPauseThreshold = 0.95;
+    private static readonly TimeSpan TelemetryInterval = TimeSpan.FromSeconds(2);
 
     private readonly object _gate = new();
     private readonly TimeSpan _frameDelay;
     private readonly bool _autoStart;
     private readonly IRenderExecutionEngine? _engine;
+    private readonly Func<double?>? _vramProbe;
+    private readonly SystemHardwareTelemetryMonitor? _telemetry;
     private readonly CancellationTokenSource _shutdown = new();
     private TaskCompletionSource _resume = NewResumeSignal();
     private CancellationTokenSource? _activeCts;
     private bool _paused;
+    private bool _vramPaused;
     private bool _workerRunning;
     private bool _disposed;
 
@@ -37,11 +45,20 @@ public sealed class RenderQueueService : IRenderQueueService
 
     public RenderQueueService(IRenderExecutionEngine engine) : this(TimeSpan.FromMilliseconds(120), autoStart: true, engine) { }
 
-    public RenderQueueService(TimeSpan frameDelay, bool autoStart, IRenderExecutionEngine? engine = null)
+    /// <summary>DI 기본 — 워커 가동 중 하드웨어 텔레메트리 폴링(참조 카운트) · 최신 샘플 VRAM 사용률로 가드.</summary>
+    public RenderQueueService(IRenderExecutionEngine engine, SystemHardwareTelemetryMonitor telemetry)
+        : this(TimeSpan.FromMilliseconds(120), autoStart: true, engine, telemetry is null ? null : () => telemetry.Latest?.VramUsedRatio)
+    {
+        _telemetry = telemetry;
+    }
+
+    /// <param name="vramProbe">VRAM 사용률(0~1) 조회 — null 반환(GPU 미탐지)이면 가드 생략.</param>
+    public RenderQueueService(TimeSpan frameDelay, bool autoStart, IRenderExecutionEngine? engine = null, Func<double?>? vramProbe = null)
     {
         _frameDelay = frameDelay < TimeSpan.Zero ? TimeSpan.Zero : frameDelay;
         _autoStart = autoStart;
         _engine = engine;
+        _vramProbe = vramProbe;
         _resume.TrySetResult();
     }
 
@@ -49,6 +66,7 @@ public sealed class RenderQueueService : IRenderQueueService
     public event Action? OnChange;
 
     public bool IsPaused { get { lock (_gate) return _paused; } }
+    public bool IsVramPaused { get { lock (_gate) return _vramPaused; } }
 
     private BatchRenderJob? _activeJob;
     public BatchRenderJob? ActiveJob { get { lock (_gate) return _activeJob; } }
@@ -146,6 +164,7 @@ public sealed class RenderQueueService : IRenderQueueService
         {
             if (!_paused) return;
             _paused = false;
+            _vramPaused = false;
             _resume.TrySetResult();
         }
         Raise();
@@ -167,6 +186,7 @@ public sealed class RenderQueueService : IRenderQueueService
         while (!ct.IsCancellationRequested)
         {
             await WaitIfPausedAsync(ct).ConfigureAwait(false);
+            if (TryVramAutoPause()) continue;   // 위험 수준 — 다음 루프에서 재개 대기
 
             BatchRenderJob? job = null;
             CancellationTokenSource jobCts;
@@ -220,6 +240,30 @@ public sealed class RenderQueueService : IRenderQueueService
                 Raise();
             }
         }
+    }
+
+    /// <summary>디스패치 직전 VRAM 점검 — 대기 작업이 있고 사용률 ≥ 임계면 큐 일시정지(Paused · VRAM Warning). 프로브 예외는 격리(통과).</summary>
+    private bool TryVramAutoPause()
+    {
+        var probe = _vramProbe;
+        if (probe is null) return false;
+        double? usage;
+        try { usage = probe(); }
+        catch (Exception ex) { Program.Log("RenderQueue.VramProbe", ex); return false; }
+        if (usage is not { } u || u < VramPauseThreshold) return false;
+        lock (_gate)
+        {
+            if (_paused) return true;
+            var hasQueued = false;
+            for (var i = 0; i < Queue.Count; i++)
+                if (Queue[i].Status == BatchJobStatus.Queued) { hasQueued = true; break; }
+            if (!hasQueued) return false;
+            _paused = true;
+            _vramPaused = true;
+            _resume = NewResumeSignal();
+        }
+        Raise();
+        return true;
     }
 
     /// <summary>내장 시뮬레이션 — 프레임 틱마다 +<see cref="ProgressStep"/>%.</summary>
@@ -333,12 +377,18 @@ public sealed class RenderQueueService : IRenderQueueService
             _workerRunning = true;
             token = _shutdown.Token;
         }
+        var telemetry = _telemetry;
         _ = Task.Run(async () =>
         {
+            try { telemetry?.Start(TelemetryInterval); } catch (Exception ex) { Program.Log("RenderQueue.Telemetry", ex); }
             try { await ProcessQueueAsync(token).ConfigureAwait(false); }
             catch (OperationCanceledException) { }
             catch (Exception) { }
-            finally { lock (_gate) _workerRunning = false; }
+            finally
+            {
+                lock (_gate) _workerRunning = false;
+                try { telemetry?.Stop(); } catch (Exception ex) { Program.Log("RenderQueue.Telemetry", ex); }
+            }
         });
     }
 

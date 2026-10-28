@@ -33,13 +33,18 @@
         </div>
     </section>
 
+    @if (Vm.IsVramPaused)
+    {
+        <div class="q-err q-vram" role="alert">🛑 @PromptFlowStudio.ViewModels.RenderQueueViewModel.VramPauseNotice</div>
+    }
+
     @if (Vm.TotalJobsCount > 0)
     {
         <section class="q-card">
             <div class="q-card-h">
                 <span>🏭 대량 양산 렌더 큐 <span class="q-dim">— 총 @(Vm.TotalJobsCount.ToString(CultureInfo.InvariantCulture))건</span></span>
                 @if (Vm.ActiveJob is { } act) { <span class="q-badge run">렌더 중 · @(Trunc(act.Prompt))@(act.EngineKind is null ? "" : " · " + act.EngineKind)</span> }
-                else if (Vm.IsPaused) { <span class="q-badge">일시정지</span> }
+                else if (Vm.IsPaused) { <span class="q-badge">@(Vm.IsVramPaused ? "일시정지 (VRAM Warning)" : "일시정지")</span> }
             </div>
             <table class="q-tbl">
                 <thead><tr><th>#</th><th>프롬프트</th><th>시드</th><th>해상도</th><th>길이</th><th>엔진</th><th>상태</th><th>진행률</th><th></th></tr></thead>
@@ -68,6 +73,10 @@
                                 else if (job.Status is BatchJobStatus.Failed or BatchJobStatus.Cancelled)
                                 {
                                     <button class="q-ic" title="재시도(오류 초기화 후 재큐잉)" @onclick="() => Vm.Retry(job.JobId)">↺</button>
+                                }
+                                else if (PromptFlowStudio.ViewModels.RenderQueueViewModel.GalleryLinkFor(job) is { } link)
+                                {
+                                    <button class="q-ic" title="📂 갤러리에서 보기" @onclick="() => Nav.NavigateTo(link)">📂</button>
                                 }
                             </td>
                         </tr>
@@ -225,6 +234,7 @@
     .q-ic:hover { color: var(--text-primary); }
 
     @@keyframes q-flow { to { background-position: 200% 0; } }
+    .q-vram { margin: 0 0 16px; white-space: normal; font-weight: 600; }
     @@media (prefers-reduced-motion: reduce) { .q-bar-f { animation: none; } }
 </style>
 

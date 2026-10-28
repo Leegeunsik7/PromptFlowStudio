@@ -180,4 +180,81 @@ public class GalleryMediaTests : IDisposable
         Assert.Equal("1080x1920", item.Resolution);
         Assert.Equal(AspectCategory.Vertical9x16, item.AspectCategory);
     }
+
+    private string WritePng(string name)
+    {
+        var path = Path.Combine(_dir, "_uploads", name);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var png = new byte[] { 0x89, (byte)'P', (byte)'N', (byte)'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 13, (byte)'I', (byte)'H', (byte)'D', (byte)'R', 0, 0, 2, 0xD0, 0, 0, 5, 0 };
+        File.WriteAllBytes(path, png);   // 720x1280 IHDR
+        return path;
+    }
+
+    [Fact]
+    public async Task Gallery_RestoreToWorkspace_RestoresReferenceImageAndI2vMode()
+    {
+        var refImg = WritePng("ref.png");
+        var meta = "{\"title\":\"i2v-cut\",\"prompt\":\"a cat jumps\",\"seed\":77,\"resolution\":\"720x1280\",\"referenceImagePath\":" + System.Text.Json.JsonSerializer.Serialize(refImg) + "}";
+        WriteMedia("i2v-cut.mp4", meta);
+        WriteMedia("t2v-cut.mp4", "{\"title\":\"t2v-cut\",\"prompt\":\"plain\",\"seed\":1,\"resolution\":\"1280x720\"}");
+
+        var svc = new GalleryMediaService();
+        var vm = new GalleryViewModel(svc);
+        vm.Refresh(_dir);
+        Assert.DoesNotContain(vm.MediaItems, i => i.FilePath == refImg);   // _uploads 참조 이미지는 갤러리 제외
+        var item = vm.MediaItems.Single(i => i.Title == "i2v-cut");
+        Assert.Equal(refImg, item.ReferenceImagePath);
+        Assert.Null(vm.MediaItems.Single(i => i.Title == "t2v-cut").ReferenceImagePath);
+
+        vm.RestoreToWorkspace(item);
+        var ctx = svc.TakePendingRestore();
+        Assert.NotNull(ctx);
+        Assert.Equal(refImg, ctx!.ReferenceImagePath);
+        Assert.Equal(77, ctx.Seed);
+        Assert.Equal("720*1280", ctx.WorkspaceSize);
+
+        // 작업실 VM — 프롬프트 · 사이즈 · I2V 첫 프레임 · 모드 자동 활성화
+        var ws = new PromptInputViewModel(new PromptFlowStudio.Services.Prompt.PromptSynthesizerService());
+        Assert.True(await ws.ApplyGalleryRestoreAsync(ctx));
+        Assert.Equal("a cat jumps", ws.UserInput);
+        Assert.Equal(720, ws.OutputWidth);
+        Assert.Equal(1280, ws.OutputHeight);
+        Assert.True(ws.IsI2V);
+        Assert.True(ws.I2vModeRequested);
+        Assert.Equal(PromptInputViewModel.I2VBadge, ws.StatusBadge);
+        Assert.Equal(720, ws.ReferenceImageWidth);
+        Assert.Equal(1280, ws.ReferenceImageHeight);
+
+        // 참조 파일 유실 → T2V 유지(예외 없음)
+        var ws2 = new PromptInputViewModel(new PromptFlowStudio.Services.Prompt.PromptSynthesizerService());
+        Assert.False(await ws2.ApplyGalleryRestoreAsync(ctx with { ReferenceImagePath = refImg + ".gone" }));
+        Assert.False(ws2.IsI2V);
+        Assert.False(ws2.I2vModeRequested);
+    }
+
+    [Fact]
+    public void Gallery_DeepLinkFromRenderQueue_FocusesInspector()
+    {
+        var media = WriteMedia("queue-out.mp4", "{\"title\":\"queue-out\",\"prompt\":\"p\",\"seed\":3,\"resolution\":\"1280x720\"}");
+        WriteMedia("other.mp4", "{\"title\":\"other\",\"prompt\":\"q\",\"seed\":4,\"resolution\":\"720x1280\"}");
+        var job = new PromptFlowStudio.Services.Batch.BatchRenderJob { Prompt = "p", OutputPath = media };
+
+        Assert.Null(RenderQueueViewModel.GalleryLinkFor(job));   // 미완료 → 버튼 없음
+        job.Status = PromptFlowStudio.Services.Batch.BatchJobStatus.Completed;
+        var link = RenderQueueViewModel.GalleryLinkFor(job);
+        Assert.NotNull(link);
+        Assert.StartsWith("gallery?focus=", link);
+        var target = Uri.UnescapeDataString(link!["gallery?focus=".Length..]);
+        Assert.Equal(media, target);
+
+        var svc = new GalleryMediaService();
+        var vm = new GalleryViewModel(svc) { SearchQuery = "zzz" };
+        vm.Refresh(_dir);
+        vm.SetFilter(GalleryFilter.Vertical9x16);
+        Assert.True(vm.FocusByPath(target));   // 필터·검색 해제 후 인스펙터 선택
+        Assert.Equal(GalleryFilter.All, vm.SelectedFilter);
+        Assert.Equal("queue-out", vm.SelectedItem!.Title);
+        Assert.False(vm.FocusByPath(Path.Combine(_dir, "missing.mp4")));
+        Assert.NotNull(vm.StatusMessage);
+    }
 }

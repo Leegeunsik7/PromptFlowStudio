@@ -89,6 +89,11 @@
                     <div class="ga-it">@si.Title</div>
                     <div class="ga-k">사용된 프롬프트 <button class="ga-copy" @onclick="() => CopyPrompt(si)" title="프롬프트 복사">📋</button></div>
                     <textarea class="ga-prompt" readonly value="@si.Prompt"></textarea>
+                    @if (si.ReferenceImagePath is { } refPath)
+                    {
+                        <div class="ga-k">I2V 참조 이미지</div>
+                        <div class="ga-ref" title="@refPath">🖼 @(System.IO.Path.GetFileName(refPath))</div>
+                    }
                     <div class="ga-meta">
                         <span>시드</span><b>@si.Seed.ToString(CultureInfo.InvariantCulture)</b>
                         <span>해상도</span><b>@si.Resolution</b>
@@ -350,6 +355,7 @@
     .ga-prev img, .ga-prev video { max-width: 100%; max-height: 260px; display: block; }
     .ga-it { font-size: 14px; font-weight: 800; color: var(--text-primary); }
     .ga-k { font-size: 11px; font-weight: 700; color: var(--text-muted); display: flex; align-items: center; justify-content: space-between; }
+    .ga-ref { font-size: 12px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 8px; }
     .ga-copy { border: 1px solid var(--line); background: var(--card); border-radius: 6px; cursor: pointer; font-size: 12px; padding: 2px 6px; }
     .ga-prompt { width: 100%; box-sizing: border-box; min-height: 84px; resize: vertical; background: var(--card); border: 1px solid var(--line); border-radius: 8px; color: var(--text-primary); font-size: 12px; line-height: 1.5; font-family: inherit; padding: 8px; user-select: text; }
     .ga-meta { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px; color: var(--text-secondary); }
@@ -381,6 +387,10 @@
               m.Name.Contains(_filter, StringComparison.OrdinalIgnoreCase) ||
               m.Folder.Contains(_filter, StringComparison.OrdinalIgnoreCase)).ToList();
 
+    /// <summary>렌더 큐 📂 딥링크 — 완료 작업 출력 경로(인스펙터 기본 선택).</summary>
+    [SupplyParameterFromQuery(Name = "focus")] public string? Focus { get; set; }
+    private string? _focused;
+
     protected override void OnInitialized()
     {
         Refresh();
@@ -388,6 +398,13 @@
         Vm.Changed += OnVmChanged;
         Vm.RestoreRequested += OnRestoreRequested;
         Vm.Refresh(Media.MediaRoot);
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (string.IsNullOrWhiteSpace(Focus) || string.Equals(Focus, _focused, StringComparison.Ordinal)) return;
+        _focused = Focus;
+        Vm.FocusByPath(Focus);
     }
 
     private void OnFlowChanged() => InvokeAsync(StateHasChanged);

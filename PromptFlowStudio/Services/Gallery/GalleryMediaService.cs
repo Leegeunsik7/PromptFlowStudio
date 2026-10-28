@@ -23,6 +23,8 @@ public sealed class GalleryItem
     public AspectCategory AspectCategory { get; init; }
     public DateTime CreatedAt { get; init; }
     public float RenderDurationSec { get; init; }
+    /// <summary>I2V 첫 프레임 참조 이미지 경로(메타 <c>referenceImagePath</c>) — T2V 산출물이면 null.</summary>
+    public string? ReferenceImagePath { get; init; }
     /// <summary>폴더가 비었을 때 노출하는 기본 템플릿(파일 없음 · 삭제는 목록에서만).</summary>
     public bool IsSample { get; init; }
     public bool IsVideo => !IsImagePath(FilePath);
@@ -35,8 +37,8 @@ public sealed class GalleryItem
     }
 }
 
-/// <summary>Workspace 프롬프트 입력 복원 번들 — <see cref="WorkspaceSize"/>는 Workspace 사이즈 셀렉터 값(<c>"1280*720"</c>).</summary>
-public sealed record GalleryRestoreContext(Guid SourceItemId, string Title, string Prompt, long Seed, string Resolution, string WorkspaceSize);
+/// <summary>Workspace 프롬프트 입력 복원 번들 — <see cref="WorkspaceSize"/>는 Workspace 사이즈 셀렉터 값(<c>"1280*720"</c>) · <see cref="ReferenceImagePath"/> 가 있으면 I2V 복원.</summary>
+public sealed record GalleryRestoreContext(Guid SourceItemId, string Title, string Prompt, long Seed, string Resolution, string WorkspaceSize, string? ReferenceImagePath = null);
 
 /// <summary>
 /// [PromptFlowStudio] 갤러리 메타데이터 아카이브 — 출력 폴더 미디어 탐색 · 사이드카 메타 파싱 · 안전 삭제 · Workspace 복원 핸드오프.
@@ -123,7 +125,27 @@ public sealed class GalleryMediaService
         ArgumentNullException.ThrowIfNull(item);
         var (w, h) = ParseResolution(item.Resolution) ?? (1280, 720);
         var size = w.ToString(CultureInfo.InvariantCulture) + "*" + h.ToString(CultureInfo.InvariantCulture);
-        return new GalleryRestoreContext(item.ItemId, item.Title, item.Prompt ?? "", item.Seed, item.Resolution, size);
+        var reference = string.IsNullOrWhiteSpace(item.ReferenceImagePath) ? null : item.ReferenceImagePath;
+        return new GalleryRestoreContext(item.ItemId, item.Title, item.Prompt ?? "", item.Seed, item.Resolution, size, reference);
+    }
+
+    /// <summary>마지막 스캔 결과에서 미디어 경로(전체 경로 · 대소문자 무시)로 항목 조회 — 렌더 큐 딥링크 포커스용.</summary>
+    public GalleryItem? FindByPath(string? mediaPath)
+    {
+        if (string.IsNullOrWhiteSpace(mediaPath)) return null;
+        string full;
+        try { full = Path.GetFullPath(mediaPath); } catch { return null; }
+        lock (_lock)
+        {
+            for (int i = 0; i < _items.Count; i++)
+            {
+                var it = _items[i];
+                if (it.IsSample || it.FilePath.Length == 0) continue;
+                try { if (string.Equals(Path.GetFullPath(it.FilePath), full, StringComparison.OrdinalIgnoreCase)) return it; }
+                catch { }
+            }
+        }
+        return null;
     }
 
     public void QueueRestore(GalleryRestoreContext ctx) => Volatile.Write(ref _pendingRestore, ctx ?? throw new ArgumentNullException(nameof(ctx)));
@@ -181,7 +203,7 @@ public sealed class GalleryMediaService
         try
         {
             var info = new FileInfo(file);
-            string title = Path.GetFileNameWithoutExtension(file), prompt = "", thumb = "", resolution = "";
+            string title = Path.GetFileNameWithoutExtension(file), prompt = "", thumb = "", resolution = "", reference = "";
             long seed = 0;
             float duration = 0;
             DateTime created = info.LastWriteTime;
@@ -199,6 +221,7 @@ public sealed class GalleryMediaService
                         prompt = Str(r, "prompt");
                         thumb = Str(r, "thumbnail");
                         resolution = Str(r, "resolution");
+                        reference = Str(r, "referenceImagePath");
                         if (r.TryGetProperty("seed", out var s) && s.ValueKind == JsonValueKind.Number && s.TryGetInt64(out var sv)) seed = sv;
                         if (r.TryGetProperty("renderDurationSec", out var d) && d.ValueKind == JsonValueKind.Number && d.TryGetSingle(out var dv)) duration = dv;
                         if (r.TryGetProperty("createdAt", out var c) && c.ValueKind == JsonValueKind.String && c.TryGetDateTime(out var cv)) created = cv;
@@ -225,6 +248,7 @@ public sealed class GalleryMediaService
                 AspectCategory = Classify(w, h),
                 CreatedAt = created,
                 RenderDurationSec = duration,
+                ReferenceImagePath = reference.Length > 0 ? reference : null,
             };
         }
         catch (Exception ex) { Program.Log("GalleryMedia.Item", ex); return null; }
