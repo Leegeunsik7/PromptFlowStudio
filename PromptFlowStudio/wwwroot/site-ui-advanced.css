@@ -7239,3 +7239,18 @@ tr:hover .ua-pen { opacity: 1; }
 .gav-scrim .gav-main,
 .wet-scrim .wet-main { max-height: calc(90vh - 100px); }
 }
+
+/* ── vUI-polish: 전역 커스텀 스크롤바 (WebView2/Chromium) ───────────────────
+   기본 회색 스크롤바 대신 인디고→바이올렛 썸. 테마별 트랙/썸 토큰 분리 — 라이트 테마에서
+   다크 트랙(rgba(18,18,24,.6))이 흰 배경 위에 검은 띠로 보이는 것을 막는다.
+   요소별 지정(.topbar-tools 등)이 있으면 그쪽이 우선한다. */
+:root { --sb-track: rgba(15, 23, 42, .06); --sb-thumb: rgba(99, 102, 241, .35); --sb-thumb-hover: rgba(168, 85, 247, .6); }
+:root[data-theme="dark"] { --sb-track: rgba(18, 18, 24, .6); --sb-thumb: rgba(99, 102, 241, .4); --sb-thumb-hover: rgba(168, 85, 247, .7); }
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --sb-track: rgba(18, 18, 24, .6); --sb-thumb: rgba(99, 102, 241, .4); --sb-thumb-hover: rgba(168, 85, 247, .7); }
+}
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--sb-track); }
+::-webkit-scrollbar-thumb { background: var(--sb-thumb); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--sb-thumb-hover); }
+::-webkit-scrollbar-corner { background: transparent; }

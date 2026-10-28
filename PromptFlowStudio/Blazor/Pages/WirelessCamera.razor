@@ -100,13 +100,15 @@
     .wc-live { position: absolute; inset: 0; background: linear-gradient(120deg, #0f172a, #1e3a8a 40%, #0e7490 70%, #0f172a); background-size: 300% 300%; animation: wc-pan 8s ease-in-out infinite; }
     @@keyframes wc-pan { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
     .wc-empty { position: relative; font: 700 13px var(--mono); color: var(--text-muted); }
-    .wc-rec { position: absolute; top: 10px; left: 12px; font: 900 11px var(--mono); color: #ef4444; }
+    .wc-rec { position: absolute; top: 15px; left: 12px; font: 900 11px var(--mono); color: #ef4444; }
     .wc-thirds { position: absolute; inset: 0; pointer-events: none; }
-    .wc-thirds i, .wc-thirds b { position: absolute; background: rgba(255,255,255,.28); }
-    .wc-thirds i { top: 0; bottom: 0; width: 1px; }
-    .wc-thirds b { left: 0; right: 0; height: 1px; }
-    .wc-hud { position: absolute; top: 10px; right: 12px; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
-    .wc-chip { font: 800 10.5px/1 var(--mono); padding: 5px 8px; border-radius: 999px; background: rgba(0,0,0,.55); color: #a7f3d0; border: 1px solid rgba(167,243,208,.35); }
+    .wc-thirds i, .wc-thirds b { position: absolute; background: transparent; }
+    .wc-thirds i { border-left: 1px dashed rgba(34,211,238,.55); }
+    .wc-thirds b { border-top: 1px dashed rgba(236,72,153,.5); }
+    .wc-thirds i { top: 0; bottom: 0; width: 0; }
+    .wc-thirds b { left: 0; right: 0; height: 0; }
+    .wc-hud { position: absolute; top: 12px; right: 12px; left: 64px; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+    .wc-chip { font: 800 11px/1 var(--mono); letter-spacing: .03em; padding: 5px 9px; border-radius: 999px; background: rgba(0,0,0,.6); backdrop-filter: blur(6px); font-variant-numeric: tabular-nums; color: #a7f3d0; border: 1px solid rgba(167,243,208,.35); }
     .wc-chip.warn { color: #fbbf24; border-color: rgba(251,191,36,.45); }
     .wc-deck { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: 14px; border: 1px solid var(--line); background: var(--card-2); }
     .wc-shutter { font: 900 13px/1 var(--mono); padding: 14px; border-radius: 12px; border: none; background: linear-gradient(135deg, #f43f5e, #d946ef); color: #fff; cursor: pointer; }

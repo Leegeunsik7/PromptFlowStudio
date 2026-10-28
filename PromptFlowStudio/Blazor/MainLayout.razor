@@ -997,9 +997,9 @@
     .nav-btn.on { color: var(--accent, #7c6cff); }
     /* v5.6.3: 현재 라우트 활성 항목 네온 하이라이트(PC 사이드바 · 모바일 드로어 .mnd-item.active 와 톤 동기화).
        NavLink 가 라우트 일치 시 .active 를 자동 부여(LocationChanged 기반). */
-    .sidebar .nav-item.active { background: color-mix(in srgb, var(--accent-2, #22d3ee) 16%, var(--side-active, rgba(124,108,255,.16)));
-        box-shadow: inset 3px 0 0 var(--accent-2, #22d3ee), 0 0 14px color-mix(in srgb, var(--accent-2, #22d3ee) 40%, transparent);
-        border: 1px solid color-mix(in srgb, var(--accent-2, #22d3ee) 45%, transparent); }
+    .sidebar .nav-item.active { background: linear-gradient(90deg, color-mix(in srgb, #6366f1 30%, var(--side-active, rgba(124,108,255,.16))), color-mix(in srgb, #6366f1 8%, var(--side-active, rgba(124,108,255,.16))) 85%);
+        box-shadow: inset 3px 0 0 #6366f1, 0 0 14px color-mix(in srgb, #6366f1 35%, transparent);
+        border: 1px solid color-mix(in srgb, #6366f1 45%, transparent); }
     /* v5.3.2: 모바일 시뮬레이터 우측 슬라이딩 오버레이(외부 UI 라이브러리 0 · CSS transform transition). */
     .mss-scrim { position: fixed; inset: 0; z-index: var(--z-drawer-scrim); background: rgba(3,4,10,.45); opacity: 0; pointer-events: none; transition: opacity .25s ease; }
     .mss-scrim.on { opacity: 1; pointer-events: auto; }

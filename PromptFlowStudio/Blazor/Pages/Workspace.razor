@@ -498,7 +498,11 @@
             {
                 @if (_vm.CustomPresets.Count == 0)
                 {
-                    <div class="ws-insp-prev"><div class="ws-insp-prev-p">저장된 프리셋이 없습니다. 위 입력란에 제목을 적고 💾 저장을 누르세요.</div></div>
+                    <div class="ws-insp-empty">
+                        <span class="ws-insp-empty-ic" aria-hidden="true">🐣</span>
+                        <div class="ws-insp-empty-t">아직 저장된 프리셋이 없어요</div>
+                        <div class="ws-insp-empty-p">저장된 프리셋이 없습니다. 위 입력란에 제목을 적고 💾 저장을 누르세요.</div>
+                    </div>
                 }
                 else
                 {
@@ -779,16 +783,23 @@
     .ws-insp-x { background: none; border: none; color: var(--text-muted); font-size: 16px; cursor: pointer; }
     .ws-insp-x:hover { color: var(--text-primary); }
     .ws-insp-tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--line); }
-    .ws-insp-tab { background: none; border: none; border-bottom: 2px solid transparent; padding: 6px 10px; font-weight: 700; font-size: 12.5px; font-family: inherit; color: var(--text-secondary); cursor: pointer; }
-    .ws-insp-tab.on { color: var(--text-primary); border-bottom-color: var(--flow-cyan); }
+    .ws-insp-tab { background: none; border: none; border-bottom: 2px solid transparent; border-radius: 8px 8px 0 0; padding: 6px 10px; font-weight: 700; font-size: 12.5px; font-family: inherit; color: var(--text-secondary); cursor: pointer; transition: color .15s ease, background .15s ease, box-shadow .15s ease; }
+    .ws-insp-tab:hover { color: var(--text-primary); }
+    .ws-insp-tab.on { color: var(--text-primary); border-bottom-color: var(--flow-cyan); background: color-mix(in srgb, #6366f1 14%, transparent); box-shadow: 0 0 12px rgba(99, 102, 241, .5); }
     .ws-insp-cats { display: flex; flex-wrap: wrap; gap: 6px; }
     .ws-insp-deck { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
-    .ws-insp-card { display: flex; flex-direction: column; gap: 3px; text-align: left; padding: 10px; border-radius: 10px; cursor: pointer; background: var(--card-2); border: 1px solid var(--line); color: var(--text-primary); }
-    .ws-insp-card:hover { border-color: color-mix(in srgb, var(--flow-violet) 60%, var(--line)); }
+    .ws-insp-card { display: flex; flex-direction: column; gap: 3px; text-align: left; padding: 10px; border-radius: 10px; cursor: pointer; background: var(--card-2); border: 1px solid var(--line); color: var(--text-primary); transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease; }
+    .ws-insp-card:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--flow-violet) 70%, var(--line)); box-shadow: 0 6px 18px rgba(0,0,0,.22); }
     .ws-insp-card.on { border-color: var(--flow-cyan); box-shadow: 0 0 0 1px var(--flow-cyan) inset; }
     .ws-insp-cat { font: 700 10.5px var(--mono); color: var(--text-muted); }
     .ws-insp-title { font-size: 13.5px; font-weight: 800; }
-    .ws-insp-meta { font-size: 11px; color: var(--text-secondary); }
+    .ws-insp-meta { font-size: 11px; line-height: 1.5; color: var(--text-secondary); }
+    .ws-insp-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 26px 16px; border-radius: 12px; text-align: center; background: var(--card-2); border: 1px dashed color-mix(in srgb, var(--flow-violet) 45%, var(--line)); }
+    .ws-insp-empty-ic { font-size: 34px; line-height: 1; animation: ws-insp-bob 2.4s ease-in-out infinite; }
+    .ws-insp-empty-t { font-size: 13.5px; font-weight: 800; color: var(--text-primary); }
+    .ws-insp-empty-p { font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+    @@keyframes ws-insp-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+    @@media (prefers-reduced-motion: reduce) { .ws-insp-card, .ws-insp-card:hover { transform: none; transition: none; } .ws-insp-empty-ic { animation: none; } }
     .ws-insp-prev { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 10px; background: var(--card-2); border: 1px dashed var(--line); }
     .ws-insp-prev-t { font-size: 12px; font-weight: 800; color: var(--text-primary); }
     .ws-insp-prev-p { font-size: 12.5px; line-height: 1.6; color: var(--text-secondary); white-space: pre-wrap; }
