@@ -1,0 +1,82 @@
+@page "/camera-studio"
+@page "/wireless-camera"
+@page "/motion"
+@page "/motion-camera"
+@inject PromptFlowStudio.ViewModels.WirelessCameraViewModel Vm
+@inject PromptDraftService Draft
+@inject NavigationManager Nav
+
+@* [PromptFlow Studio] 🎥 스마트 카메라 & 모션 스튜디오 — 📡 무선 스트림(I2V) + 🕹️ 3D 가상 모션 단일 화면.
+   레거시 /wireless-camera · /motion · /motion-camera 는 /camera-studio?tab=… 으로 replace 포워딩.
+   모션 조합은 이 페이지가 소유(탭 전환 시 유지), 캡처 프레임은 싱글턴 서비스 소유 → 통합 전송 바가 둘을 한 번에 작업실로 보낸다. *@
+
+<PageTitle>PromptFlow Studio · 스마트 카메라 & 모션</PageTitle>
+
+<div class="cs">
+    <nav class="cs-tabs" role="tablist">
+        <button class="cs-tab @(_tab == TabWireless ? "on" : null)" role="tab" aria-selected="@(_tab == TabWireless)" @onclick="() => Select(TabWireless)">📡 실시간 무선 스트림 (I2V)</button>
+        <button class="cs-tab @(_tab == TabMotion ? "on" : null)" role="tab" aria-selected="@(_tab == TabMotion)" @onclick="() => Select(TabMotion)">🕹️ 3D 가상 모션 & 워크</button>
+    </nav>
+
+    <div class="cs-body">
+        @if (_tab == TabMotion)
+        {
+            <MotionPresets SharedCombo="_combo" ComboChanged="StateHasChanged" />
+        }
+        else
+        {
+            <WirelessCamera />
+        }
+    </div>
+
+    <div class="cs-bar">
+        <span class="cs-bar-st">📷 @(Vm.LastCapturedFrame is null ? "캡처 없음" : "캡처 1장") · 🎥 모션 @(_combo.Count)개</span>
+        <button class="cs-send" disabled="@(Vm.LastCapturedFrame is null && _combo.Count == 0)" @onclick="SendAll">✨ 캡처 프레임 + 카메라 모션 작업실로 전송</button>
+    </div>
+</div>
+
+<style>
+    .cs { display: flex; flex-direction: column; gap: 12px; padding-bottom: 72px; }
+    .cs-tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--line, rgba(255,255,255,.12)); }
+    .cs-tab { padding: 9px 16px; border: 0; border-bottom: 2px solid transparent; background: none; color: inherit; opacity: .7; cursor: pointer; font: inherit; }
+    .cs-tab:hover { opacity: 1; }
+    .cs-tab.on { opacity: 1; border-bottom-color: var(--accent, #7c5cff); font-weight: 600; }
+    .cs-bar { position: sticky; bottom: 0; align-self: flex-end; display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 12px; background: var(--panel, rgba(20,20,30,.92)); box-shadow: 0 6px 24px rgba(0,0,0,.35); }
+    .cs-bar-st { font-size: 12px; opacity: .8; }
+    .cs-send { padding: 9px 16px; border: 0; border-radius: 10px; background: linear-gradient(135deg, #7c5cff, #2ec5ff); color: #fff; font-weight: 600; cursor: pointer; }
+    .cs-send:disabled { opacity: .45; cursor: not-allowed; }
+</style>
+
+@code {
+    internal const string TabWireless = "wireless";
+    internal const string TabMotion = "motion";
+
+    [SupplyParameterFromQuery(Name = "tab")] public string? Tab { get; set; }
+
+    private readonly List<string> _combo = new();
+    private string _tab = TabWireless;
+
+    protected override void OnParametersSet()
+    {
+        var path = Nav.ToBaseRelativePath(Nav.Uri);
+        var cut = path.IndexOfAny(new[] { '?', '#' });
+        if (cut >= 0) path = path[..cut];
+        path = path.Trim('/').ToLowerInvariant();
+        if (path is "wireless-camera" or "motion" or "motion-camera")
+        {
+            Nav.NavigateTo("camera-studio?tab=" + (path == "wireless-camera" ? TabWireless : TabMotion), replace: true);
+            return;
+        }
+        _tab = string.Equals(Tab, TabMotion, StringComparison.OrdinalIgnoreCase) ? TabMotion : TabWireless;
+    }
+
+    private void Select(string tab) => Nav.NavigateTo("camera-studio?tab=" + tab);
+
+    /// <summary>캡처 프레임 → I2V 참조 버퍼, 모션 조합 → 프롬프트 카메라 태그(드래프트 이어붙임). 둘 중 하나라도 있으면 작업실로 이동.</summary>
+    private void SendAll()
+    {
+        var sent = Vm.LastCapturedFrame is not null && Vm.SendToI2vReference();
+        if (_combo.Count > 0) { Draft.Send(string.Join(", ", _combo)); sent = true; }
+        if (sent) Nav.NavigateTo("workspace");
+    }
+}

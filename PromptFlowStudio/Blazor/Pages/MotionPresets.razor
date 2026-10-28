@@ -1,13 +1,10 @@
-@page "/motion"
 @implements IDisposable
 @inject PromptDraftService Draft
 @inject CustomPresetService Presets
 @inject NavigationManager Nav
 @inject IJSRuntime JS
 
-@* [PromptFlow Studio] 모션·카메라 — 카메라 워크/스타일/모션 프롬프트를 시각적으로 조합해 복사하거나 워크스페이스로 전달. *@
-
-<PageTitle>PromptFlow Studio · 모션·카메라</PageTitle>
+@* [PromptFlow Studio] 모션·카메라 (CameraStudio 🕹️ 탭 컴포넌트) — 카메라 워크/스타일/모션 프롬프트를 시각적으로 조합해 복사하거나 워크스페이스로 전달. *@
 
 <div class="mo">
     <header class="mo-head">
@@ -135,7 +132,12 @@
         ("🌊 모션 · 시간",   PromptPresets.Motion),
     };
 
-    private readonly List<string> _combo = new();
+    /// <summary>CameraStudio 가 소유한 조합 리스트(탭 전환·통합 전송 시 유지). null 이면 자체 리스트.</summary>
+    [Parameter] public List<string>? SharedCombo { get; set; }
+    [Parameter] public EventCallback ComboChanged { get; set; }
+
+    private readonly List<string> _own = new();
+    private List<string> _combo => SharedCombo ?? _own;
     private string _presetName = "";
     private List<CustomPreset> _favs = new();
     private string? _toast;
@@ -145,8 +147,8 @@
     public void Dispose() { Presets.OnChange -= OnFavsChanged; _toastTimer?.Dispose(); }
     private void OnFavsChanged() { _favs = Presets.List(); _ = InvokeAsync(StateHasChanged); }
 
-    private void Toggle(string snippet) { if (!_combo.Remove(snippet)) _combo.Add(snippet); }
-    private void Clear() => _combo.Clear();
+    private Task Toggle(string snippet) { if (!_combo.Remove(snippet)) _combo.Add(snippet); return ComboChanged.InvokeAsync(); }
+    private Task Clear() { _combo.Clear(); return ComboChanged.InvokeAsync(); }
 
     private void SavePreset()
     {
@@ -156,11 +158,12 @@
         Toast("⭐ 프리셋을 저장했습니다.");
     }
 
-    private void Apply(CustomPreset p)
+    private Task Apply(CustomPreset p)
     {
         _combo.Clear();
         _combo.AddRange(p.Snippet.Split(new[] { ", " }, StringSplitOptions.RemoveEmptyEntries));
         Toast($"'{p.Name}' 프리셋을 적용했습니다.");
+        return ComboChanged.InvokeAsync();
     }
 
     private async Task CopyAsync()

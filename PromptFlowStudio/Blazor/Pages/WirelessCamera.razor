@@ -1,14 +1,11 @@
-@page "/wireless-camera"
 @implements IDisposable
 @using System.Globalization
 @using PromptFlowStudio.Services.Camera
 @inject PromptFlowStudio.ViewModels.WirelessCameraViewModel Vm
 @inject NavigationManager Nav
 
-@* [PromptFlow Studio] 📡 무선 카메라 — RTSP/SRT/WebRTC 스트림 연결 · 뷰파인더 HUD(FPS/지연) + 3x3 구도 그리드 · 단일 프레임 캡처 → I2V 첫 프레임 전달.
+@* [PromptFlow Studio] 📡 무선 카메라 (CameraStudio 📡 탭 컴포넌트) — RTSP/SRT/WebRTC 스트림 연결 · 뷰파인더 HUD(FPS/지연) + 3x3 구도 그리드 · 단일 프레임 캡처 → I2V 첫 프레임 전달.
    상태는 싱글턴 서비스 소유 — 이 페이지는 Vm.Changed 구독 + 500ms 텔레메트리 타이머(Streaming 중에만 갱신) InvokeAsync(StateHasChanged). *@
-
-<PageTitle>PromptFlow Studio · 무선 카메라</PageTitle>
 
 <div class="wc">
     <header class="wc-head">

@@ -66,8 +66,7 @@
                 <div class="navw" @onmouseenter='e => ShowSideGuide("analytics", e.ClientY)'><NavLink class="nav-item" href="analytics"><span class="ic">📊</span><span class="nav-t" title="생산성 &amp; 비용 대시보드">생산성 &amp; 비용</span></NavLink></div>
                 <div class="navw" @onmouseenter='e => ShowSideGuide("live-studio", e.ClientY)'><NavLink class="nav-item" href="live-studio"><span class="ic">📺</span><span class="nav-t" title="24/7 AI 라이브 스튜디오">24/7 AI 라이브 스튜디오</span></NavLink></div>
                 <div class="navw" @onmouseenter='e => ShowSideGuide("brand-studio", e.ClientY)'><NavLink class="nav-item" href="brand-studio"><span class="ic">🛍️</span><span class="nav-t" title="커머셜 브랜드 스튜디오">커머셜 브랜드 스튜디오</span></NavLink></div>
-                <div class="navw" @onmouseenter='e => ShowSideGuide("wireless-camera", e.ClientY)'><NavLink class="nav-item" href="wireless-camera"><span class="ic">📡</span><span class="nav-t" title="무선 카메라">무선 카메라</span></NavLink></div>
-                <div class="navw" @onmouseenter='e => ShowSideGuide("motion", e.ClientY)'><NavLink class="nav-item" href="motion"><span class="ic">🎥</span><span class="nav-t" title="모션·카메라">모션·카메라</span></NavLink></div>
+                <div class="navw" @onmouseenter='e => ShowSideGuide("camera-studio", e.ClientY)'><NavLink class="nav-item" href="camera-studio"><span class="ic">🎥</span><span class="nav-t" title="스마트 카메라 & 모션">스마트 카메라 & 모션</span></NavLink></div>
                 <div class="navw" @onmouseenter='e => ShowSideGuide("queue", e.ClientY)'><NavLink class="nav-item" href="queue"><span class="ic">⏳</span><span class="nav-t" title="렌더링 큐">렌더링 큐</span></NavLink></div>
                 <div class="navw" @onmouseenter='e => ShowSideGuide("gallery", e.ClientY)'><NavLink class="nav-item" href="gallery"><span class="ic">🖼️</span><span class="nav-t" title="갤러리">갤러리</span></NavLink></div>
                 @* v5.8.2: AI 15초 컷다운 — 15~30초 원본을 15초 숏폼으로 자동 재단(신규 사이드 메뉴 · 갤러리 다음). *@
@@ -164,7 +163,7 @@
                 </div>
                 @* 도움말은 상단 헤더의 [도움말 F1] 가 단독 진입점이다.
                    사이드바의 보조 도움말 버튼은 중복이라 제거했다(단축키 F1·Alt+H 는 그대로 동작). *@
-                <button class="side-out" title="로그아웃" @onclick="Logout">⏻</button>
+                <button class="side-out" title="로그아웃" @onclick="Logout"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 3v9"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></svg></button>
             </div>
         </aside>
         <main class="content">
@@ -1727,7 +1726,7 @@
             ("workspace",    "✍️", "프롬프트 입력",   new[] { "workspace", "프롬프트", "생성", "t2v", "i2v", "영상", "텍스트" }),
             ("storyboard",   "🎞️", "스토리보드",     new[] { "storyboard", "스토리보드", "컷", "장면", "연쇄" }),
             ("batch",        "🏭", "대량 양산",      new[] { "batch", "대량", "양산", "배치", "공장", "csv", "일괄", "factory" }),
-            ("motion",       "🎥", "모션·카메라",    new[] { "motion", "모션", "카메라", "팬", "줌", "드론", "프리셋" }),
+            ("camera-studio", "🎥", "스마트 카메라 & 모션", new[] { "camera", "motion", "wireless", "모션", "카메라", "무선", "스트림", "캡처", "팬", "줌", "드론", "프리셋" }),
             ("queue",        "⏳", "렌더링 큐",       new[] { "queue", "렌더", "큐", "진행률", "대기", "작업" }),
             ("gallery",      "🖼️", "갤러리",          new[] { "gallery", "갤러리", "미디어", "영상목록", "저장" }),
             ("user-settings","🎚️", "사용자 설정",     new[] { "임계값", "테마", "밀도", "화면", "표시", "환경", "사용자", "user" }),
@@ -1821,7 +1820,7 @@
 
         // ── 세션 ──
         Palette.Register(new PaletteCommand(
-            "session.logout", "계정", "⏻", "로그아웃", null,
+            "session.logout", "계정", "🚪", "로그아웃", null,
             new[] { "logout", "나가기", "종료" },
             () => { Session.SignOut(); Nav.NavigateTo("login"); return Task.CompletedTask; })
             { IsSensitive = true });
