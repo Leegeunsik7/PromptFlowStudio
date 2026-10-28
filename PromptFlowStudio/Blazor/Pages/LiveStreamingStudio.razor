@@ -59,6 +59,7 @@
             <label class="ls-opt">셀링포인트(줄바꿈/쉼표 구분)</label>
             <textarea class="ls-in" rows="4" @bind="Vm.SellingPointsInput" placeholder="@SellingPointsPlaceholder"></textarea>
             <button class="ls-btn go" @onclick="BuildPitch">AI 세일즈 피치 생성</button>
+            <button class="ls-btn" @onclick="SendOnAirLoop">🎥 온에어 배경 비디오 렌더</button>
             @if (Vm.StatusMessage is not null) { <span class="ls-msg">@(Vm.StatusMessage)</span> }
         </section>
 
@@ -484,6 +485,12 @@
     {
         try { Vm.BuildPitchSequence(); }
         catch (Exception ex) { _toast = "피치 생성 실패: " + ex.Message; Program.Log("LiveStudio.Pitch", ex); }
+    }
+
+    private void SendOnAirLoop()
+    {
+        try { Vm.SendOnAirLoopToRenderQueue(); }
+        catch (Exception ex) { _toast = "온에어 루프 렌더 전송 실패: " + ex.Message; Program.Log("LiveStudio.OnAirLoop", ex); }
     }
 
     private void ToggleLive()

@@ -107,4 +107,22 @@ public class LiveStudioHostTests
         Assert.Equal(LivePitchPhase.Hook, vm.CurrentPhase);
         Assert.Same(vm.Segments[0], vm.ActiveSegment);
     }
+
+    [Fact]
+    public void SendOnAirLoopToRenderQueue_EnqueuesLoopJobFromPitchHighlights()
+    {
+        using var q = new RenderQueueService(TimeSpan.Zero, autoStart: false);
+        using var vm = new LiveStudioViewModel(new LiveStudioHostService(), q) { ProductName = "저자극 수분 크림", SellingPointsInput = "72시간 보습" };
+
+        Assert.True(vm.SendOnAirLoopToRenderQueue());   // 피치 미생성 → 자동 생성 후 적재
+        Assert.Equal(5, vm.Segments.Count);
+        var job = Assert.Single(q.Queue);
+        Assert.Contains("seamless looping", job.Prompt);
+        Assert.Contains("저자극 수분 크림", job.Prompt);
+        Assert.Contains(vm.Segments[0].VisualPrompt.Trim(), job.Prompt);
+        Assert.True(job.Prompt.Length <= 800);
+        Assert.Equal(LiveStudioViewModel.OnAirLoopResolution, job.Resolution);
+        Assert.Equal("true", job.Metadata!["loop"]);
+        Assert.Equal(1, vm.DispatchedCount);
+    }
 }

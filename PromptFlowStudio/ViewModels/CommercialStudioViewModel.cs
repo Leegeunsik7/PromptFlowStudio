@@ -27,6 +27,8 @@ public sealed class CommercialStudioViewModel
 
     public string BrandName { get; set; } = "";
     public string LogoImagePath { get; set; } = "";
+    /// <summary>제품(누끼) 사진 경로 — 렌더 작업 ReferenceImagePath(I2V 첫 프레임)로 전달.</summary>
+    public string ProductImagePath { get; set; } = "";
     public string PrimaryColorHex { get; set; } = CommercialBrandService.DefaultColorHex;
     public WatermarkPlacement SelectedPlacement { get; set; } = WatermarkPlacement.BottomRight;
     public string DisclaimerText { get; set; } = CommercialBrandService.DefaultDisclaimer;
@@ -50,6 +52,8 @@ public sealed class CommercialStudioViewModel
     public CommercialPromptPackage? LastPackage { get; private set; }
     public int DispatchedCount { get; private set; }
     public string? StatusMessage { get; private set; }
+    /// <summary>직전 전송 성공 작업 — UI 토스트 · 렌더 큐 이동 안내.</summary>
+    public Guid? LastExportedJobId => _exportedJobId == Guid.Empty ? null : _exportedJobId;
 
     public void ToggleAspect()
     {
@@ -61,7 +65,7 @@ public sealed class CommercialStudioViewModel
     {
         var kit = new BrandKitProfile(BrandName, LogoImagePath, SelectedPlacement, PrimaryColorHex, DisclaimerText);
         var spec = CommercialBrandService.Preset(_format, AspectRatio, CtaText);
-        LastPackage = _brand.SynthesizeCommercialPrompt(ProductConcept, kit, spec);
+        LastPackage = _brand.SynthesizeCommercialPrompt(ProductConcept, kit, spec, ProductImagePath);
         StatusMessage = "커머셜 프롬프트 합성 완료 · " + LastPackage.Overlay.Resolution;
         Raise();
         return LastPackage;
@@ -78,7 +82,10 @@ public sealed class CommercialStudioViewModel
             DispatchedCount += added;
             _exportedJobId = pkg.Job.JobId;
         }
-        StatusMessage = added > 0 ? "커머셜 렌더 큐 적재 (" + pkg.Overlay.AspectRatio + ")" : "렌더 큐 적재 실패(중복 작업)";
+        StatusMessage = added > 0
+            ? "커머셜 렌더 큐 적재 (" + pkg.Overlay.AspectRatio + " · " + TargetDurationSec.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "s"
+              + (pkg.Job.ReferenceImagePath is null ? ")" : " · 제품 I2V)")
+            : "렌더 큐 적재 실패(중복 작업)";
         Raise();
         return added > 0;
     }

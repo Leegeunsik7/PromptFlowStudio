@@ -29,12 +29,7 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine
         var kind = KindOf(engine);
         if (engine is not { Enabled: true }) return new RenderExecutionResult(false, kind, null, "렌더 엔진 미설정");
 
-        var request = new WanVideoRequest
-        {
-            Prompt = job.Prompt,
-            Size = ToEngineSize(job.Resolution),
-            Seed = job.Seed,
-        };
+        var request = BuildRequest(job);
         var relay = progress is null ? null : new WanProgressRelay(progress);
         var r = await engine.GenerateAsync(request, relay, ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
@@ -51,6 +46,27 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine
             output = job.OutputPath;
         }
         return new RenderExecutionResult(true, kind, output, r.Message);
+    }
+
+    /// <summary>
+    /// 렌더 작업 → 엔진 요청. <see cref="BatchRenderJob.ReferenceImagePath"/> 가 실존 로컬 파일이면 <see cref="WanVideoRequest.ImagePath"/> 로 주입해
+    /// I2V(첫 프레임 참조)로 분기 — 캡처 롤 · 스토리보드 1번 컷 앵커 · 커머셜 제품 사진. 파일 누락 시 T2V 로 폴백.
+    /// </summary>
+    internal static WanVideoRequest BuildRequest(BatchRenderJob job) => new()
+    {
+        Prompt = job.Prompt,
+        Size = ToEngineSize(job.Resolution),
+        Seed = job.Seed,
+        ImagePath = ResolveReferenceImage(job.ReferenceImagePath),
+    };
+
+    /// <summary>실존 로컬 이미지면 전체 경로, 아니면 null(T2V).</summary>
+    internal static string? ResolveReferenceImage(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return null;
+        var p = path.Trim();
+        try { return Path.IsPathRooted(p) && File.Exists(p) ? Path.GetFullPath(p) : null; }
+        catch (Exception) { return null; }
     }
 
     /// <summary>"1280x720" → 엔진 규격 "1280*720".</summary>

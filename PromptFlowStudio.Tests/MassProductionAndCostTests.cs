@@ -127,4 +127,41 @@ public class MassProductionAndCostTests
         Assert.All(vm.GeneratedJobs, j => Assert.Equal(BatchJobStatus.Queued, j.Status));
         Assert.Same(vm.RenderQueue[0], vm.GeneratedJobs[0]);
     }
+
+    [Fact]
+    public void BatchProduction_EnqueuingJobs_RegistersExpectedCostToTracker()
+    {
+        using var cost = new PromptFlowStudio.Services.Telemetry.ProductionCostTrackerService(null, () => new DateTimeOffset(2026, 10, 15, 12, 0, 0, TimeSpan.Zero));
+        using var q = new RenderQueueService(TimeSpan.Zero, autoStart: false);
+        using var vm = new MassProductionViewModel(_batch, _est, q, cost) { DurationSec = 5f, PromptInputText = "a\nb\nc" };
+
+        var perJob = cost.Rates.DashScopePlusPerSecond * 5;
+        Assert.Equal(perJob * 3, vm.EstimatedUsd, 6);
+        Assert.Equal(3, vm.DispatchAllToRenderQueue());
+        Assert.Equal(3, cost.ReservationCount);
+        Assert.Equal(perJob * 3, cost.ReservedUsd, 6);
+        Assert.False(vm.BudgetWarning);
+
+        Assert.True(q.CancelJob(q.Queue[0].JobId));   // Queued 이탈 → 예약 해제
+        Assert.Equal(2, cost.ReservationCount);
+    }
+
+    [Fact]
+    public void BatchProduction_OverBudget_RequiresExplicitApproval()
+    {
+        using var cost = new PromptFlowStudio.Services.Telemetry.ProductionCostTrackerService(null, () => new DateTimeOffset(2026, 10, 15, 12, 0, 0, TimeSpan.Zero));
+        cost.UpdateBudget(0, 1.0, enforce: true);
+        using var q = new RenderQueueService(TimeSpan.Zero, autoStart: false);
+        using var vm = new MassProductionViewModel(_batch, _est, q, cost) { DurationSec = 5f, PromptInputText = "a\nb\nc" };   // $1.5 > $1.0
+
+        Assert.Equal(0, vm.DispatchAllToRenderQueue());
+        Assert.True(vm.BudgetWarning);
+        Assert.NotNull(vm.BudgetWarningMessage);
+        Assert.Empty(q.Queue);
+        Assert.Equal(0, cost.ReservationCount);
+
+        Assert.Equal(3, vm.DispatchAllToRenderQueue(approveOverBudget: true));
+        Assert.False(vm.BudgetWarning);
+        Assert.Equal(3, cost.ReservationCount);
+    }
 }

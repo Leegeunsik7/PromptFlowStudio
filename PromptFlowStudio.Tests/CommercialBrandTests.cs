@@ -98,4 +98,42 @@ public class CommercialBrandTests
         Assert.Equal(2, vm.DispatchedCount);
         Assert.True(changed >= 4);
     }
+
+    [Fact]
+    public void Commercial_SendToRenderQueue_PreservesBrandMetadataAndFormat()
+    {
+        using var q = new RenderQueueService(TimeSpan.Zero, autoStart: false);
+        var vm = new CommercialStudioViewModel(new CommercialBrandService(), q)
+        {
+            BrandName = "루미에르",
+            LogoImagePath = @"C:\brand\logo.png",
+            ProductImagePath = @"C:\brand\product_cutout.png",
+            SelectedPlacement = WatermarkPlacement.TopRight,
+            DisclaimerText = "심의필 2026-001",
+            CtaText = "지금 담기",
+            ProductConcept = "수분 선크림",
+            SelectedFormat = CommercialAdFormat.Bumper6s,
+        };
+
+        Assert.True(vm.ExportToRenderQueue());
+        var job = Assert.Single(q.Queue);
+        Assert.Equal(6.0f, job.DurationSec);
+        Assert.Equal("1080x1920", job.Resolution);
+        Assert.Equal(@"C:\brand\product_cutout.png", job.ReferenceImagePath);
+        Assert.Equal(vm.LastExportedJobId, job.JobId);
+        var meta = Assert.IsAssignableFrom<IReadOnlyDictionary<string, string>>(job.Metadata);
+        Assert.Equal("commercial", meta[CommercialBrandService.MetaKind]);
+        Assert.Equal(nameof(CommercialAdFormat.Bumper6s), meta[CommercialBrandService.MetaFormat]);
+        Assert.Equal(CommercialBrandService.Vertical, meta[CommercialBrandService.MetaAspect]);
+        Assert.Equal(@"C:\brand\logo.png", meta[CommercialBrandService.MetaLogoPath]);
+        Assert.Equal(nameof(WatermarkPlacement.TopRight), meta[CommercialBrandService.MetaLogoSafeZone]);
+        Assert.Equal("지금 담기", meta[CommercialBrandService.MetaCta]);
+        Assert.Equal("심의필 2026-001", meta[CommercialBrandService.MetaDisclaimer]);
+        Assert.Equal(@"C:\brand\product_cutout.png", meta[CommercialBrandService.MetaProductImage]);
+
+        vm.SelectedFormat = CommercialAdFormat.Feed15s;
+        Assert.True(vm.ExportToRenderQueue());
+        Assert.Equal(15.0f, q.Queue[1].DurationSec);
+        Assert.Equal(nameof(CommercialAdFormat.Feed15s), q.Queue[1].Metadata![CommercialBrandService.MetaFormat]);
+    }
 }

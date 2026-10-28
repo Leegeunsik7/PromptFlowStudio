@@ -111,6 +111,74 @@ public sealed class LiveStudioViewModel : IDisposable
         return added > 0;
     }
 
+    public const string OnAirLoopResolution = "1080x1920";
+    public const float OnAirLoopDurationSec = 10f;
+    private const int MaxPromptChars = 800;   // Wan 서버 프롬프트 제한
+
+    /// <summary>
+    /// [🎥 온에어 배경 비디오 렌더] 피치 하이라이트(Hook · Solution · CTA 비주얼) → 무한 루프 배경 영상 작업 1건을 렌더 큐에 즉시 적재.
+    ///   피치 미생성 시 먼저 생성. 적재 성공 여부 반환.
+    /// </summary>
+    public bool SendOnAirLoopToRenderQueue()
+    {
+        if (Segments.Count == 0 && !BuildPitchSequence()) return false;
+        var prompt = BuildOnAirLoopPrompt(ProductName, Segments);
+        if (prompt.Length == 0) return false;
+        var job = new BatchRenderJob
+        {
+            Prompt = prompt,
+            Seed = StableSeed(ProductName),
+            Resolution = OnAirLoopResolution,
+            DurationSec = OnAirLoopDurationSec,
+            Metadata = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["kind"] = "live.onair-loop",
+                ["loop"] = "true",
+                ["live.product"] = ProductName ?? "",
+                ["live.promotion"] = PromotionType.ToString(),
+            },
+        };
+        var added = _queue.Enqueue(new[] { job });
+        if (added > 0) DispatchedCount += added;
+        StatusMessage = added > 0 ? "🎥 온에어 루프 배경 렌더 큐 적재" : "렌더 큐 적재 실패";
+        Raise();
+        return added > 0;
+    }
+
+    /// <summary>Hook · SolutionIntro · CallToAction 순 피치 비주얼을 무한 루프 배경 프롬프트로 결합(800자 상한).</summary>
+    public static string BuildOnAirLoopPrompt(string? productName, IReadOnlyList<LivePitchSegment> segments)
+    {
+        ArgumentNullException.ThrowIfNull(segments);
+        var sb = new System.Text.StringBuilder(512);
+        sb.Append("seamless looping 24/7 live commerce on-air background, studio set, ")
+          .Append(string.IsNullOrWhiteSpace(productName) ? "featured product" : productName.Trim())
+          .Append(" hero display");
+        AppendPhase(sb, segments, LivePitchPhase.Hook);
+        AppendPhase(sb, segments, LivePitchPhase.SolutionIntro);
+        AppendPhase(sb, segments, LivePitchPhase.CallToAction);
+        sb.Append(", subtle ambient motion, first and last frame identical for perfect loop, no text");
+        return sb.Length > MaxPromptChars ? sb.ToString(0, MaxPromptChars) : sb.ToString();
+    }
+
+    private static void AppendPhase(System.Text.StringBuilder sb, IReadOnlyList<LivePitchSegment> segments, LivePitchPhase phase)
+    {
+        for (var i = 0; i < segments.Count; i++)
+        {
+            var seg = segments[i];
+            if (seg.Phase != phase || seg.Kind != LiveSegmentKind.Pitch || string.IsNullOrWhiteSpace(seg.VisualPrompt)) continue;
+            sb.Append(", ").Append(seg.VisualPrompt.Trim());
+            return;
+        }
+    }
+
+    /// <summary>프로세스 간 결정적 시드(FNV-1a).</summary>
+    private static long StableSeed(string? s)
+    {
+        var h = 2166136261u;
+        foreach (var c in s ?? "") h = unchecked((h ^ c) * 16777619u);
+        return h & int.MaxValue;
+    }
+
     public void Dispose()
     {
         Interlocked.Exchange(ref _timer, null)?.Dispose();

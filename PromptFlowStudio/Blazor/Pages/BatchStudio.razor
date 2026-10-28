@@ -57,6 +57,7 @@
             <div><span>예상 VRAM</span><b>@Vm.EstimatedVramDisplay</b></div>
             <div><span>총 예상 크레딧</span><b>@(Vm.TotalEstimatedCredits.ToString(System.Globalization.CultureInfo.InvariantCulture))</b></div>
             <div><span>예상 소요</span><b class="bt-mp-time">⏱ @RenderTimeText</b></div>
+            <div><span>예상 비용</span><b>$@(PromptFlowStudio.Services.Telemetry.ProductionCostTrackerService.Usd(Vm.EstimatedUsd))</b></div>
         </div>
         @if (Vm.GeneratedJobs.Count > 0)
         {
@@ -80,8 +81,15 @@
         }
         <div class="bt-mp-foot">
             <span>렌더 큐 누적 <b>@(Vm.RenderQueue.Count.ToString(System.Globalization.CultureInfo.InvariantCulture))</b>건</span>
-            <button class="bt-mp-go" disabled="@(Vm.JobCount == 0)" @onclick="DispatchMassProduction">전체 렌더 큐로 디스패치</button>
+            <button class="bt-mp-go" disabled="@(Vm.JobCount == 0)" @onclick="() => DispatchMassProduction(false)">전체 렌더 큐로 디스패치</button>
         </div>
+        @if (Vm.BudgetWarning)
+        {
+            <div class="bt-mp-foot">
+                <span>@Vm.BudgetWarningMessage</span>
+                <button class="bt-mp-go" @onclick="() => DispatchMassProduction(true)">⚠ 한도 초과 승인 후 디스패치</button>
+            </div>
+        }
     </section>
 
     @* v16.16.0 대량 생산 허브 — 테마 다중 선택 일괄 큐 · 우선순위 · 일시정지/재개 · 재시도 · 자원 거버너 *@
@@ -468,10 +476,11 @@
         }
     }
     private void OnMassProductionChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e) => _ = InvokeAsync(StateHasChanged);
-    private void DispatchMassProduction()
+    private void DispatchMassProduction(bool approveOverBudget)
     {
-        var n = Vm.DispatchAllToRenderQueue();
-        ShowToast(n > 0 ? "🚀 렌더 큐로 " + n.ToString(System.Globalization.CultureInfo.InvariantCulture) + "건 디스패치 완료" : "디스패치할 프롬프트가 없습니다");
+        var n = Vm.DispatchAllToRenderQueue(approveOverBudget);
+        ShowToast(n > 0 ? "🚀 렌더 큐로 " + n.ToString(System.Globalization.CultureInfo.InvariantCulture) + "건 디스패치 완료"
+            : Vm.BudgetWarning ? "💸 예산 한도 초과 — 승인 후 진행하세요" : "디스패치할 프롬프트가 없습니다");
     }
 
     private void OnStateChanged() => InvokeAsync(StateHasChanged);

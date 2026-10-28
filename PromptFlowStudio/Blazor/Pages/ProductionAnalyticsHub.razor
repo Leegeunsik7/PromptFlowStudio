@@ -36,6 +36,7 @@
         <div class="pa-kpi"><span>누적 비용</span><b>$@ProductionCostTrackerService.Usd(Cost.TotalUsd)</b><small>전체 기간</small></div>
         <div class="pa-kpi"><span>오늘</span><b>$@ProductionCostTrackerService.Usd(Cost.TodayUsd)</b><small>@(_daily > 0 ? "한도 $" + _daily.ToString("0", CultureInfo.InvariantCulture) : "한도 없음")</small></div>
         <div class="pa-kpi"><span>이번 달</span><b>$@ProductionCostTrackerService.Usd(Cost.MonthUsd)</b><small>@(_monthly > 0 ? "한도 $" + _monthly.ToString("0", CultureInfo.InvariantCulture) : "한도 없음")</small></div>
+        <div class="pa-kpi"><span>예약(큐 대기)</span><b>$@ProductionCostTrackerService.Usd(Cost.ReservedUsd)</b><small>@(Cost.ReservationCount.ToString(CultureInfo.InvariantCulture))건 대량 양산 예상분</small></div>
         <div class="pa-kpi"><span>차단된 요청</span><b>@Cost.BlockedRequests.ToString(CultureInfo.InvariantCulture)</b><small>예산 초과 거부</small></div>
     </div>
 

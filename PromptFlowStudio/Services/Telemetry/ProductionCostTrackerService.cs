@@ -121,6 +121,7 @@ public sealed class ProductionCostTrackerService : IDisposable
     private readonly SortedDictionary<int, double> _daily = new();   // yyyyMMdd(로컬) → USD
     private readonly double[] _byService = new double[5];
     private readonly long[] _countByService = new long[5];
+    private readonly Dictionary<Guid, double> _reservations = new();
     private readonly AsyncLocal<CostScope?> _scope = new();
     private readonly System.Threading.Timer _flushTimer;
     private CostRateCard _rates = new();
@@ -254,6 +255,41 @@ public sealed class ProductionCostTrackerService : IDisposable
         if (after != BudgetState.Exceeded) return null;
         Interlocked.Increment(ref _blockedRequests);
         return "💸 예산 한도 도달 — 신규 영상 생성이 일시정지되었습니다(오늘 $" + Usd(TodayUsd) + " / 이번 달 $" + Usd(MonthUsd) + "). 대시보드에서 한도를 조정하세요.";
+    }
+
+    // ── 예상 비용 예약(대량 양산 큐잉분 · 메모리 전용) ──
+
+    /// <summary>렌더 큐 적재 작업의 예상 USD 예약 — 이미 예약된 JobId 는 무시. 실제 제출 시 <see cref="ReleaseReservation"/> 로 해제(이중 계상 방지).</summary>
+    public bool ReserveEstimate(Guid jobId, double usd)
+    {
+        if (!double.IsFinite(usd) || usd < 0) usd = 0;
+        bool added;
+        lock (_gate) added = _reservations.TryAdd(jobId, Math.Round(usd, 6));
+        if (added) Notify(BudgetState.Ok, BudgetState.Ok);
+        return added;
+    }
+
+    /// <summary>예약 해제(처리 시작/취소/실패) — 해제 여부 반환.</summary>
+    public bool ReleaseReservation(Guid jobId)
+    {
+        bool removed;
+        lock (_gate) removed = _reservations.Remove(jobId);
+        if (removed) Notify(BudgetState.Ok, BudgetState.Ok);
+        return removed;
+    }
+
+    public double ReservedUsd { get { lock (_gate) { double s = 0; foreach (var v in _reservations.Values) s += v; return s; } } }
+    public int ReservationCount { get { lock (_gate) return _reservations.Count; } }
+
+    /// <summary>현재 지출 + 예약 + <paramref name="additionalUsd"/> 가 일간/월간 한도(Enforce · 0 = 무제한)를 넘는지 — 대량 양산 사전 가드레일.</summary>
+    public bool WouldExceedBudget(double additionalUsd)
+    {
+        if (!double.IsFinite(additionalUsd) || additionalUsd < 0) additionalUsd = 0;
+        CostBudget b; lock (_gate) b = Clone(_budget);
+        if (!b.Enforce) return false;
+        var reserved = ReservedUsd;
+        if (b.DailyCapUsd > 0 && TodayUsd + reserved + additionalUsd > b.DailyCapUsd) return true;
+        return b.MonthlyCapUsd > 0 && MonthUsd + reserved + additionalUsd > b.MonthlyCapUsd;
     }
 
     // ── 생산 스코프 ──

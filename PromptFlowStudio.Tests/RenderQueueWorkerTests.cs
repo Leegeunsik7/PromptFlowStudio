@@ -187,4 +187,23 @@ public class RenderQueueWorkerTests
             return Task.FromResult(run(job, progress));
         }
     }
+
+    [Fact]
+    public void RenderExecutionEngine_PassesReferenceImagePath_ToInferenceRequest()
+    {
+        var img = Path.Combine(Path.GetTempPath(), "pfs_i2v_" + Guid.NewGuid().ToString("N") + ".png");
+        File.WriteAllBytes(img, new byte[] { 0x89, 0x50, 0x4E, 0x47 });
+        try
+        {
+            var i2v = VideoEngineRenderExecutionEngine.BuildRequest(new BatchRenderJob { Prompt = "p", Resolution = "1080x1920", Seed = 7, ReferenceImagePath = img });
+            Assert.Equal(Path.GetFullPath(img), i2v.ImagePath);   // I2V 분기(엔진은 ImagePath 존재 시 이미지→영상)
+            Assert.Equal("1080*1920", i2v.Size);
+            Assert.Equal(7, i2v.Seed);
+
+            var missing = VideoEngineRenderExecutionEngine.BuildRequest(new BatchRenderJob { Prompt = "p", ReferenceImagePath = img + ".none" });
+            Assert.Null(missing.ImagePath);   // 파일 누락 → T2V 폴백
+            Assert.Null(VideoEngineRenderExecutionEngine.BuildRequest(new BatchRenderJob { Prompt = "p" }).ImagePath);
+        }
+        finally { File.Delete(img); }
+    }
 }

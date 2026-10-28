@@ -75,8 +75,13 @@
                 </button>
             }
             <button class="cb-btn ghost" @onclick="GenerateAd">커머셜 프롬프트 합성</button>
-            <button class="cb-btn" @onclick="ExportAd">커머셜 렌더 큐로 전송</button>
+            <button class="cb-btn" @onclick="ExportAd">🎬 커머셜 렌더 전송</button>
             <span class="cb-note">전송 @(Vm.DispatchedCount)건@(Vm.StatusMessage is null ? "" : " · " + Vm.StatusMessage)</span>
+            <span class="cb-note">📦 제품 I2V 참조: @(string.IsNullOrWhiteSpace(Vm.ProductImagePath) ? "없음(아래 제품 사진 업로드 시 자동 연결)" : System.IO.Path.GetFileName(Vm.ProductImagePath))</span>
+            @if (_exportToast is not null)
+            {
+                <div class="cb-note ok">@_exportToast <button class="cb-btn ghost" @onclick='() => Nav.NavigateTo("queue")'>렌더 큐 보기 →</button></div>
+            }
         </section>
     </div>
 
@@ -300,7 +305,7 @@
 </style>
 
 @code {
-    private string? _productPath, _logoPath, _cutoutUrl, _cutoutNote, _toast, _stage;
+    private string? _productPath, _logoPath, _cutoutUrl, _cutoutNote, _toast, _stage, _exportToast;
     private readonly List<string> _scenes = new();
     private string _themeQuery = "";
     private BabyThemeDef? _theme;
@@ -355,7 +360,12 @@
 
     private void ExportAd()
     {
-        try { Vm.ExportToRenderQueue(); }
+        _exportToast = null;
+        try
+        {
+            if (string.IsNullOrWhiteSpace(Vm.ProductImagePath) && _productPath is not null) Vm.ProductImagePath = _productPath;
+            if (Vm.ExportToRenderQueue()) _exportToast = "✅ " + Vm.StatusMessage;
+        }
         catch (Exception ex) { _toast = "렌더 큐 전송 실패: " + ex.Message; Program.Log("CommercialStudio.Export", ex); }
     }
 
@@ -493,13 +503,13 @@
     private async Task OnProductPicked(InputFileChangeEventArgs e)
     {
         var p = await SaveUploadAsync(e.File, "product", 15L * 1024 * 1024, ".png");
-        if (p is not null) { _productPath = p; _cutoutUrl = null; }
+        if (p is not null) { _productPath = p; _cutoutUrl = null; Vm.ProductImagePath = p; }
     }
 
     private async Task OnLogoPicked(InputFileChangeEventArgs e)
     {
         var p = await SaveUploadAsync(e.File, "logo", 8L * 1024 * 1024, ".png");
-        if (p is not null) _logoPath = p;
+        if (p is not null) { _logoPath = p; if (string.IsNullOrWhiteSpace(Vm.LogoImagePath)) Vm.LogoImagePath = p; }
     }
 
     private async Task OnScenesPicked(InputFileChangeEventArgs e)

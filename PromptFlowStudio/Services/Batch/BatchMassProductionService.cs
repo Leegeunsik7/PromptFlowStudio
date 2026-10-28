@@ -42,6 +42,8 @@ public sealed class BatchRenderJob
     public string? SubjectAnchor { get; init; }
     /// <summary>피사체 일관성 참조 이미지 경로(1번 컷/프로젝트 앵커) — 후속 컷 공통.</summary>
     public string? ReferenceImagePath { get; init; }
+    /// <summary>후처리 메타(커머셜 로고 세이프존·CTA·디스클레이머 · 라이브 루프 등) — 갤러리 <c>.meta.json</c> 에 동반 기록.</summary>
+    public IReadOnlyDictionary<string, string>? Metadata { get; init; }
 }
 
 /// <summary>

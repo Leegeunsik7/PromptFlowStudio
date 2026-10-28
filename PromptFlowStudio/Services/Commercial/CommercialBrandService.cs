@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using PromptFlowStudio.Services.Batch;
@@ -54,6 +55,18 @@ public sealed class CommercialBrandService
     public const string Landscape = "16:9 Landscape";
     public const string Square = "1:1 Square";
 
+    // ── 렌더 큐 작업 메타 키(BatchRenderJob.Metadata) ──
+    public const string MetaKind = "kind";
+    public const string MetaFormat = "commercial.format";
+    public const string MetaAspect = "commercial.aspect";
+    public const string MetaBrand = "commercial.brand";
+    public const string MetaLogoPath = "commercial.logoPath";
+    public const string MetaLogoSafeZone = "commercial.logoSafeZone";
+    public const string MetaColor = "commercial.color";
+    public const string MetaCta = "commercial.cta";
+    public const string MetaDisclaimer = "commercial.disclaimer";
+    public const string MetaProductImage = "commercial.productImage";
+
     /// <summary>포맷 프리셋 — 6초 / 15초 / 30초.</summary>
     public static float DurationFor(CommercialAdFormat format) => format switch
     {
@@ -89,7 +102,8 @@ public sealed class CommercialBrandService
         return "#" + s.ToUpperInvariant();
     }
 
-    public CommercialPromptPackage SynthesizeCommercialPrompt(string productConcept, BrandKitProfile brand, CommercialAdSpec spec)
+    /// <param name="productImagePath">제품(누끼) 사진 — 지정 시 작업 <see cref="BatchRenderJob.ReferenceImagePath"/> 로 I2V 첫 프레임 참조.</param>
+    public CommercialPromptPackage SynthesizeCommercialPrompt(string productConcept, BrandKitProfile brand, CommercialAdSpec spec, string? productImagePath = null)
     {
         ArgumentNullException.ThrowIfNull(brand);
         ArgumentNullException.ThrowIfNull(spec);
@@ -114,14 +128,37 @@ public sealed class CommercialBrandService
         var prompt = sb.ToString();
 
         var overlay = new CommercialOverlayMetadata(brandName, brand.LogoImagePath ?? "", brand.WatermarkPlacement, color, disclaimer, cta, aspect, resolution);
+        var productImage = string.IsNullOrWhiteSpace(productImagePath) ? null : productImagePath.Trim();
         var job = new BatchRenderJob
         {
             Prompt = prompt,
             Seed = StableSeed(brandName, concept),
             Resolution = resolution,
             DurationSec = duration,
+            ReferenceImagePath = productImage,
+            Metadata = BuildJobMetadata(spec.Format, overlay, productImage),
         };
         return new CommercialPromptPackage(prompt, overlay, job);
+    }
+
+    /// <summary>렌더 후 합성 단계용 작업 메타 — 포맷·화면비·로고 세이프존·CTA·디스클레이머·제품 사진.</summary>
+    public static Dictionary<string, string> BuildJobMetadata(CommercialAdFormat format, CommercialOverlayMetadata overlay, string? productImagePath)
+    {
+        ArgumentNullException.ThrowIfNull(overlay);
+        var meta = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [MetaKind] = "commercial",
+            [MetaFormat] = format.ToString(),
+            [MetaAspect] = overlay.AspectRatio,
+            [MetaBrand] = overlay.BrandName,
+            [MetaLogoPath] = overlay.LogoImagePath,
+            [MetaLogoSafeZone] = overlay.Placement.ToString(),
+            [MetaColor] = overlay.ColorHex,
+            [MetaCta] = overlay.CtaText,
+            [MetaDisclaimer] = overlay.DisclaimerText,
+        };
+        if (!string.IsNullOrEmpty(productImagePath)) meta[MetaProductImage] = productImagePath;
+        return meta;
     }
 
     private static string LookFor(CommercialAdFormat format) => format switch

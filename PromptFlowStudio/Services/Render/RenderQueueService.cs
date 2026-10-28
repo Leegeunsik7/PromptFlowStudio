@@ -305,6 +305,7 @@ public sealed class RenderQueueService : IRenderQueueService
                 transitionFx = job.TransitionFx,
                 subjectAnchor = job.SubjectAnchor,
                 referenceImagePath = job.ReferenceImagePath,
+                metadata = job.Metadata,
             });
             File.WriteAllText(GalleryMediaService.MetaPathFor(mediaPath), json);
         }
