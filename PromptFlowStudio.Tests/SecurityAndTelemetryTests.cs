@@ -16,6 +16,7 @@ using PromptFlowStudio.Services.Integration;
 
 namespace PromptFlowStudio.Tests;
 
+[Trait("Category", "FastUnit")]
 public class SecureSecretVaultTests
 {
     [Fact]
@@ -55,6 +56,7 @@ public class SecureSecretVaultTests
     }
 }
 
+[Trait("Category", "FastUnit")]
 public class ProductionTelemetryExporterTests
 {
     private static (ProductionTelemetryExporter Exporter, OtlpTelemetryVisualizerProvider Visualizer) Build()
@@ -103,6 +105,7 @@ public class ProductionTelemetryExporterTests
     }
 }
 
+[Trait("Category", "Integration")]
 public class HotfixAutoSignerEngineTests
 {
     [Fact]
@@ -158,6 +161,7 @@ public class HotfixAutoSignerEngineTests
     }
 }
 
+[Trait("Category", "Integration")]
 public class OperationsCanaryLogRetentionCleanerTests
 {
     [Fact]
@@ -227,6 +231,7 @@ public class OperationsCanaryLogRetentionCleanerTests
         finally { tempDir.Delete(recursive: true); }
     }
 }
+[Trait("Category", "Integration")]
 public class MobileDiRegistrationScanTests
 {
     // MauiProgram.cs 의 Wan/텔레메트리/보안 플랫폼 비의존 등록 구간(#if ANDROID/IOS 없는 v10.x~v11.x 블록)을
@@ -271,6 +276,7 @@ public class MobileDiRegistrationScanTests
     }
 }
 
+[Trait("Category", "Integration")]
 public class ProductionArtifactPackagerTests
 {
     [Fact]
@@ -319,6 +325,7 @@ public class ProductionArtifactPackagerTests
         finally { dir.Delete(recursive: true); }
     }
 }
+[Trait("Category", "FastUnit")]
 public class OperationsCanaryHealthCheckerTests
 {
     [Fact]
@@ -361,6 +368,7 @@ public class OperationsCanaryHealthCheckerTests
 }
 
 /// <summary>v13.0.1: 디바운스/지연 실행 크래시 안전성(async void 제거) - 예외 격리·원자 대체·파기 안전을 신호로만 검증.</summary>
+[Trait("Category", "Integration")]
 public class SafeDebouncerTests
 {
     private static readonly TimeSpan SafetyNet = TimeSpan.FromSeconds(45);
@@ -456,6 +464,7 @@ public class SafeDebouncerTests
 }
 
 /// <summary>v13.0.1: 모바일 DI 미등록 회귀 잠금 - 모바일 루트 트리 @inject 가 MauiProgram 계열 등록에 모두 있는지 + 신규 7종 실해소.</summary>
+[Trait("Category", "Integration")]
 public class MobileRootDiRegistrationTests
 {
     private static string RepoRoot()
@@ -532,6 +541,7 @@ public class MobileRootDiRegistrationTests
 }
 
 /// <summary>v13.0.2: MCP 공급망 고정 - .mcp.json 의 npx 패키지가 정확한 semver 로 핀돼 있는지(latest/next/범위/무버전 금지) 정적 진단.</summary>
+[Trait("Category", "Integration")]
 public class McpSupplyChainTests
 {
     private static readonly System.Text.RegularExpressions.Regex ExactPin =
@@ -606,6 +616,7 @@ public class McpSupplyChainTests
 
 /// <summary>v13.2.0: MCP 격리 설치 - tools/mcp 의 package-lock(전 트리 sha512·레지스트리 출처·정확 핀)과 .mcp.json 실행 경로 정합성 정적 검증.
 ///   node_modules 존재는 요구하지 않는다(CI 등 미설치 환경에서도 lock·설정만으로 판정).</summary>
+[Trait("Category", "Integration")]
 public class McpLockfileIsolationTests
 {
     private static readonly Dictionary<string, string> Pins = new(StringComparer.Ordinal)
@@ -726,6 +737,7 @@ public class McpLockfileIsolationTests
 }
 
 /// <summary>v14.0.0: 릴리스 번들 배포 제외 규칙 - 디버그 심볼·publish 중간산출·최상위 RID 폴더는 제외, runtimes/&lt;rid&gt;/native 는 유지.</summary>
+[Trait("Category", "Integration")]
 public class ProductionArtifactPackagerExclusionTests
 {
     [Theory]
@@ -770,6 +782,7 @@ public class ProductionArtifactPackagerExclusionTests
     }
 }
 /// <summary>v14.0.1: 카나리 키 Resolve 는 32건 감사 링버퍼를 잠식하지 않고 전용 카운터로만 집계.</summary>
+[Trait("Category", "Integration")]
 public class SecureSecretVaultCanaryIsolationTests
 {
     [Fact]
@@ -794,6 +807,7 @@ public class SecureSecretVaultCanaryIsolationTests
 /// <summary>v14.2.0: 장기 운용 스트레스 — 프레임 Blit·VLM 백프레셔·P2P 메시 재라우팅 동시 10,000회 후 잔류 메모리·Gen2 GC 0 검증.
 ///   프로세스 전역 GC 지표를 쓰므로 병렬 비활성 컬렉션에서 단독 실행(타 테스트 할당 오염 차단).</summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public class LongRunSustainedLoadTests
 {
     private const int Iterations = 10_000;
@@ -892,6 +906,7 @@ public class LongRunSustainedLoadTests
 }
 
 /// <summary>v14.2.0: 장기 운용 보조 하네스 — 디바운서 대량 대체 시 CTS 잔류 0 · 카나리 반복 프로브의 감사 이력 비잠식.</summary>
+[Trait("Category", "FastUnit")]
 public class LongRunResourceHygieneTests
 {
     [Fact]
@@ -929,6 +944,7 @@ public class LongRunResourceHygieneTests
 
 /// <summary>v15.0.0: 메시 라우터 Zero-Alloc 코어 — 지속 부하에서 스레드 힙 할당 0B · Gen2 GC 0건(프로세스 전역 지표 → 단독 컬렉션).</summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public class MeshRouterZeroAllocTests
 {
     private const int Iterations = 10_000;
@@ -968,6 +984,7 @@ public class MeshRouterZeroAllocTests
 }
 
 /// <summary>v15.0.0: 바이트 정규화(Route 코어)와 문자열 정규화(VerifyEnvelope) 비트 동일 · SIMD 커널과 스칼라 비트 정합.</summary>
+[Trait("Category", "FastUnit")]
 public class ZeroAllocSimdParityTests
 {
     [Fact]

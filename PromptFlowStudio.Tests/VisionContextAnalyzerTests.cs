@@ -15,6 +15,7 @@ namespace PromptFlowStudio.Tests;
 
 /// <summary>v13.0.0: 비전 컨텍스트 분석기 - 축소/휴리스틱/무할당 샘플링/VLM 보강 순서(신호 기반, 벽시계 단언 없음).</summary>
 [Collection("ProcessGcMode")]   // v16.9.0: 스레드 할당 0B 단언 — 병렬 GC 중 ArrayPool 트림 오염 차단
+[Trait("Category", "Integration")]
 public class VisionContextAnalyzerTests
 {
     private static readonly TimeSpan SafetyNet = TimeSpan.FromSeconds(45);
@@ -159,6 +160,7 @@ public class VisionContextAnalyzerTests
     }
 }
 
+[Trait("Category", "Integration")]
 public class VisionReactionBinderTests
 {
     private sealed class FakeClock { public long Now = 1_000_000; public void AdvanceMs(double ms) => Now += (long)(ms * Stopwatch.Frequency / 1000.0); }
@@ -237,6 +239,7 @@ public class VisionReactionBinderTests
     }
 }
 
+[Trait("Category", "Integration")]
 public class LocalVlmHttpClientTests
 {
     private static readonly TimeSpan SafetyNet = TimeSpan.FromSeconds(45);

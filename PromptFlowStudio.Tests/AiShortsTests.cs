@@ -6,6 +6,7 @@ using PromptFlowStudio.ViewModels;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>AI 15초 숏폼 스튜디오 — 15초 고정 길이 · 9:16 세로 구도 토큰 · 렌더 큐 3컷 전송 회귀 잠금.</summary>
+[Trait("Category", "FastUnit")]
 public class AiShortsTests
 {
     [Fact]

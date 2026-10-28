@@ -158,8 +158,15 @@
         "pan" => "↔ Pan/Track", "orbit" => "⟳ Orbit", "dolly" => "⇕ Dolly/Zoom", "crane" => "⤴ Crane", _ => "∿ Free",
     };
 
-    protected override void OnInitialized() => Vm.Changed += OnVmChanged;
-    private void OnVmChanged() => _ = InvokeAsync(StateHasChanged);
+    // 텔레메트리 틱(500ms)은 이 화면에 표시되지 않음 — 상태 버전이 바뀐 통지만 렌더.
+    private long _seenVmVersion;
+    protected override void OnInitialized() { _seenVmVersion = Vm.StateVersion; Vm.Changed += OnVmChanged; }
+    private void OnVmChanged()
+    {
+        var v = Vm.StateVersion;
+        if (Interlocked.Exchange(ref _seenVmVersion, v) == v) return;
+        _ = InvokeAsync(StateHasChanged);
+    }
     public void Dispose() => Vm.Changed -= OnVmChanged;
 
     protected override void OnParametersSet()

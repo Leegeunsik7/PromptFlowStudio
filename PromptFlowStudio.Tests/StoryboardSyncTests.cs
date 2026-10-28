@@ -5,6 +5,7 @@ using PromptFlowStudio.ViewModels;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>2번 워크플로우 컷 덱(StoryboardViewModel) ↔ 프로젝트 코어(StoryboardProject.Scenes) 양방향 동기화 회귀 잠금.</summary>
+[Trait("Category", "FastUnit")]
 public class StoryboardSyncTests
 {
     private const string FourLineScript =

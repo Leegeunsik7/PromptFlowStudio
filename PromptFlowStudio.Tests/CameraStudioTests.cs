@@ -7,6 +7,7 @@ using PromptFlowStudio.ViewModels;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>🎥 스마트 카메라 & 모션 통합 — 사이드바 가이드 단일화 · 도움말 라우트(탭 쿼리 포함) 매핑 회귀 잠금.</summary>
+[Trait("Category", "FastUnit")]
 public class CameraStudioTests
 {
     [Fact]
@@ -100,7 +101,7 @@ public class CameraStudioTests
         await cam.CaptureCurrentFrame();
         var best = cam.SelectedFrame!;
         await cam.CaptureCurrentFrame();
-        Assert.True(cam.SelectFrame(best.FrameId));   // 롤의 이전 컷(DataUrl 복원 경로) 선택
+        Assert.True(cam.SelectFrame(best.FrameId));   // 롤의 이전 컷(롤 보관 원본 바이트 경로) 선택
 
         Assert.True(cam.TransferToWorkspace("camera orbiting around the subject, slow motion"));
         var transfer = svc.TakeWorkspaceTransfer();

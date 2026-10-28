@@ -4,6 +4,7 @@ using PromptFlowStudio.Services.AI.Wan;
 
 namespace PromptFlowStudio.Tests;
 
+[Trait("Category", "FastUnit")]
 public class MultimodalAudioSyncEngineTests
 {
     private static byte[] GenerateSineWavePcm16(double freqHz, int sampleRateHz, int sampleCount, double amplitude = 0.5)

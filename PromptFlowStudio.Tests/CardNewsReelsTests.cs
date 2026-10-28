@@ -7,6 +7,7 @@ using PromptFlowStudio.Services.SocialMedia;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>v17.30.1: 카드뉴스 9:16 릴스 생성기 + Instagram Reels 발행 — 레이아웃 인자 · HTML 폴백 · Graph API 3단계 · 재시도 회귀 잠금.</summary>
+[Trait("Category", "Integration")]
 public class CardNewsReelsTests
 {
     private static CardNewsDeck Deck(string output, int bodies = 3) => new(

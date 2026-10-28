@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading;
 using PromptFlowStudio.Services.Batch;
 using PromptFlowStudio.Services.Render;
 
@@ -8,17 +10,39 @@ namespace PromptFlowStudio.ViewModels;
 /// <summary>
 /// [PromptFlowStudio] 렌더링 큐 화면 뷰모델 — <see cref="IRenderQueueService"/> 스냅샷 기반 요약 통계 · 활성 작업 · 큐 제어.
 ///   ▸ 서비스 OnChange 마다 <see cref="Refresh"/> 로 카운트 재계산 후 <see cref="Changed"/> 전파(워커 스레드 — Blazor 는 InvokeAsync 마샬링).
+///   ▸ 진행률만 바뀐 통지는 <see cref="ProgressThrottle"/> 간격으로 스로틀(마지막 값은 트레일링 1회 보장) · 상태 전이(완료/실패/일시정지·활성 작업 교체)는 즉시.
+///   ▸ <see cref="Version"/> 은 표시 데이터가 실제로 바뀐 경우에만 증가 — 페이지 ShouldRender 판정용.
 /// </summary>
 public sealed class RenderQueueViewModel : IDisposable
 {
-    private readonly IRenderQueueService _queue;
+    /// <summary>진행률 전용 통지의 최소 전파 간격.</summary>
+    public static readonly TimeSpan ProgressThrottle = TimeSpan.FromMilliseconds(100);
 
-    public RenderQueueViewModel(IRenderQueueService queue)
+    private readonly IRenderQueueService _queue;
+    private readonly TimeSpan _throttle;
+    private readonly object _sync = new();
+    private readonly System.Threading.Timer _trailing;
+    private int _structSig;
+    private int _dataSig;
+    private long _lastEmit;          // Stopwatch 타임스탬프
+    private bool _trailingArmed;
+    private bool _disposed;
+    private long _version;
+
+    public RenderQueueViewModel(IRenderQueueService queue) : this(queue, ProgressThrottle) { }
+
+    /// <param name="throttle">진행률 통지 스로틀 간격(≤0 이면 스로틀 없음).</param>
+    internal RenderQueueViewModel(IRenderQueueService queue, TimeSpan throttle)
     {
         _queue = queue ?? throw new ArgumentNullException(nameof(queue));
+        _throttle = throttle;
+        _trailing = new System.Threading.Timer(OnTrailing);
         _queue.OnChange += OnQueueChanged;
         Refresh();
     }
+
+    /// <summary>표시 데이터 변경 버전(카운트·상태·진행률 중 하나라도 바뀌면 증가).</summary>
+    public long Version => Interlocked.Read(ref _version);
 
     public event Action? Changed;
 
@@ -55,11 +79,19 @@ public sealed class RenderQueueViewModel : IDisposable
 
     public void Refresh()
     {
+        lock (_sync) RefreshCore(out _);
+    }
+
+    /// <param name="structural">진행률 외 상태(카운트·일시정지·활성 작업·오류)가 바뀌었는지.</param>
+    private void RefreshCore(out bool structural)
+    {
         var snap = _queue.Snapshot();
         int pending = 0, processing = 0, completed = 0, failed = 0;
         string? lastError = null;
+        var progress = new HashCode();
         for (var i = 0; i < snap.Length; i++)
         {
+            progress.Add(snap[i].ProgressPercent);
             switch (snap[i].Status)
             {
                 case BatchJobStatus.Pending or BatchJobStatus.Queued: pending++; break;
@@ -80,13 +112,59 @@ public sealed class RenderQueueViewModel : IDisposable
         ProcessingCount = processing;
         CompletedCount = completed;
         FailedCount = failed;
+
+        var sig = HashCode.Combine(snap.Length, pending, processing, completed, failed, IsPaused, IsVramPaused, HashCode.Combine(ActiveJob?.JobId, ActiveEngineKind, lastError));
+        var data = HashCode.Combine(sig, progress.ToHashCode());
+        structural = sig != _structSig;
+        _structSig = sig;
+        if (data != _dataSig) { _dataSig = data; Interlocked.Increment(ref _version); }
     }
 
-    public void Dispose() => _queue.OnChange -= OnQueueChanged;
+    public void Dispose()
+    {
+        _queue.OnChange -= OnQueueChanged;
+        lock (_sync) { _disposed = true; _trailingArmed = false; }
+        _trailing.Dispose();
+    }
 
     private void OnQueueChanged()
     {
-        Refresh();
+        lock (_sync)
+        {
+            if (_disposed) return;
+            RefreshCore(out var structural);
+            var now = Stopwatch.GetTimestamp();
+            var elapsed = Stopwatch.GetElapsedTime(_lastEmit, now);
+            if (!structural && _throttle > TimeSpan.Zero && elapsed < _throttle)
+            {
+                if (!_trailingArmed)
+                {
+                    _trailingArmed = true;
+                    try { _trailing.Change(_throttle - elapsed, Timeout.InfiniteTimeSpan); } catch (ObjectDisposedException) { }
+                }
+                return;
+            }
+            _lastEmit = now;
+            _trailingArmed = false;
+        }
+        Emit();
+    }
+
+    /// <summary>스로틀 구간 마지막 진행률을 반영하는 트레일링 통지(타이머 콜백 — 예외 격리).</summary>
+    private void OnTrailing(object? state)
+    {
+        lock (_sync)
+        {
+            if (_disposed || !_trailingArmed) return;
+            _trailingArmed = false;
+            RefreshCore(out _);
+            _lastEmit = Stopwatch.GetTimestamp();
+        }
+        Emit();
+    }
+
+    private void Emit()
+    {
         try { Changed?.Invoke(); } catch (Exception) { }
     }
 }

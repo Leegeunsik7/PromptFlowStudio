@@ -1,19 +1,17 @@
 # Current Project Status
-- Active Milestone: 【Step 4】 인프라 & 자산 관제 정밀 감사 · 렌더큐→갤러리 딥링크 · I2V 복원 완결 · VRAM 가드레일
+- Active Milestone: 【Perf】 UI 스로틀링 · ArrayPool 프레임 풀링 · VRAM 텔레메트리 캐시 · 테스트 카테고리 분리
 - Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (net8.0-android 미검증: SDK/JDK 미설치)
-- Tests: 전체 657/657 PASS(직렬 · MaxCpuCount=1 · DisableParallelization) · Gallery+RenderQueue 22/22
-- Updated: 2026-10-28 (KST)
+- Tests: 전체 672/672 PASS(직렬 11m19s, 기존 14m43s) · FastUnit 123/123 PASS(병렬 ~3s)
+- Updated: 2026-10-29 (KST)
 
 ## Completed
-- Step4 딥링크: 렌더 큐 Completed 작업 `📂 갤러리에서 보기` → `gallery?focus=<OutputPath>` → `GalleryViewModel.FocusByPath`(필터/검색 해제 · 인스펙터 선택)
-- Step4 I2V 복원: `.meta.json` `referenceImagePath` → `GalleryItem`/`GalleryRestoreContext` → `PromptInputViewModel.ApplyGalleryRestoreAsync`(첫 프레임 · `I2vModeRequested`) · 작업실 `_imagePath` 바인딩 · 파일 유실 시 T2V
-- Step4 VRAM: `RenderQueueService` 디스패치 직전 VRAM ≥95% → 자동 일시정지(`IsVramPaused`) + 경고 배너 · 수동 재개 시 해제 · 워커 가동 중 텔레메트리 폴링(참조 카운트) · 프로브 예외 격리
-- Step4 인프라: `.gitignore` `artifacts/` 추가 · 사이드바 NavLink 15개 전수 `@page` 매칭(글로벌 관제는 오버레이 · 노드 `/node-studio`)
-- Step3: I2V 엔진 실물 바인딩 · 커머셜/라이브 큐 결선 · 비용 예약 가드
-- Step2: 작업실↔스토리보드↔숏폼 결선 · 카메라 캡처 롤/`SmartCameraMerge` · `CameraStudio.razor` 통합
+- Perf UI: `RenderQueueViewModel` 진행률 통지 100ms 스로틀 + 트레일링 1회 · 상태 전이(완료/실패/일시정지) 즉시 · `Version` 기반 `RenderQueue.razor` `ShouldRender` · `CameraStudio` 텔레메트리 틱 렌더 스킵(`StateVersion`)
+- Perf 메모리: `NetworkCameraStreamReceiver` 수신 버퍼 `ArrayPool<byte>` 대여/확장/반납 · `CapturedFrameMeta` 원본 바이트 보관 + data URL 온디맨드(약참조 캐시) · I2V 롤 복원 base64 디코드 제거
+- Perf GPU: `ResourceMonitorService` nvidia-smi 1.5s TTL 캐시 + 동시 호출 합류(`GpuQueryCount`)
+- Perf 테스트: 전 테스트 클래스 `[Trait("Category","FastUnit"|"Integration")]` — I/O·프로세스·GC·타이밍 의존은 Integration
+- Step4: 렌더큐→갤러리 딥링크 · I2V 복원 · VRAM ≥95% 자동 일시정지
 
 ## Known Issues
-- VRAM 가드는 nvidia-smi 있을 때만(모바일·비 NVIDIA → 가드 생략) · 첫 샘플 이전 디스패치는 미검사
-- 비용 예약은 메모리 전용(재시작 시 소멸) · 커머셜 로고/디스클레이머 합성 미결선
-- 시뮬레이션 폴백은 실제 미디어 미생성 → `OutputPath` 지정 작업만 메타 기록 · 딥링크도 동일
+- FastUnit 분류는 정적 휴리스틱(I/O·GC·Delay 마커) — 순수 테스트 일부가 Integration 에 남음(123/672)
+- VRAM 가드는 nvidia-smi 있을 때만 · 비용 예약 메모리 전용 · 시뮬레이션 폴백은 실제 미디어 미생성
 - 모바일: `ViewModels/`·`Blazor/Pages/` 미링크 · Android 빌드 미검증

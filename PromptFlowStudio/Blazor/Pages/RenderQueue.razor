@@ -241,22 +241,36 @@
 @code {
     private bool AnyActive => Vm.TotalJobsCount > 0 || WanJob.Phase != WanJobPhase.Idle || (Jobs.Current is { } p && p.Scenes.Count > 0);
 
+    // ShouldRender 게이트 — 큐 VM 은 Version(표시 데이터 변경 시에만 증가)으로, 단일 컷·스토리보드는 통지 플래그로 판정.
+    private long _renderedVmVersion = -1;
+    private volatile bool _extDirty = true;
+
+    protected override bool ShouldRender()
+    {
+        var v = Vm.Version;
+        if (!_extDirty && v == _renderedVmVersion) return false;
+        _extDirty = false;
+        _renderedVmVersion = v;
+        return true;
+    }
+
     protected override void OnInitialized()
     {
-        WanJob.OnChange += OnCh;
-        Jobs.OnChange += OnCh;
-        Jobs.OnCompleted += OnCh;
+        WanJob.OnChange += OnExt;
+        Jobs.OnChange += OnExt;
+        Jobs.OnCompleted += OnExt;
         Vm.Changed += OnCh;
         Vm.Refresh();
     }
     public void Dispose()
     {
-        WanJob.OnChange -= OnCh;
-        Jobs.OnChange -= OnCh;
-        Jobs.OnCompleted -= OnCh;
+        WanJob.OnChange -= OnExt;
+        Jobs.OnChange -= OnExt;
+        Jobs.OnCompleted -= OnExt;
         Vm.Changed -= OnCh;
     }
     private void OnCh() => InvokeAsync(StateHasChanged);
+    private void OnExt() { _extDirty = true; InvokeAsync(StateHasChanged); }
 
     private string WanLabel => WanJob.Phase switch
     {

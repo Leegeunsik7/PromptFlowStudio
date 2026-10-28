@@ -6,6 +6,7 @@ using PromptFlowStudio.ViewModels;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>커머셜 브랜드 스튜디오 — 브랜드 톤/디스클레이머 인젝션 · 포맷 프리셋 길이 · 렌더 큐 전송 회귀 잠금.</summary>
+[Trait("Category", "FastUnit")]
 public class CommercialBrandTests
 {
     [Fact]

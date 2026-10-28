@@ -7,6 +7,7 @@ using PromptFlowStudio.ViewModels;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>무선 카메라 — 연결 상태 전이 · 캡처 메타/BMP 버퍼 · 해제 초기화 · I2V 핸드오프 · 실물 수신기(루프백 HTTP)/폴백 회귀 잠금.</summary>
+[Trait("Category", "Integration")]
 public class WirelessCameraTests
 {
     [Fact]

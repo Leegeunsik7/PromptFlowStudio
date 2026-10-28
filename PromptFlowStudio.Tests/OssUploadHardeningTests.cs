@@ -13,6 +13,7 @@ using PromptFlowStudio.Services.Wan;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>v16.3.1 OSS 업로드 강화 — 고용량 멀티파트 규격 · 파일명 정규화 · 원인별 오류 · 사용자 알림/재시도.</summary>
+[Trait("Category", "Integration")]
 public class OssUploadHardeningTests
 {
     [Fact]

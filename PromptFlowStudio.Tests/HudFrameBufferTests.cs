@@ -4,6 +4,7 @@ using PromptFlowStudio.Shared.Hud;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>v17.30.0: Shared HUD 캔버스 프레임 버퍼 — 버전 게이트 · 양자화 · 링 순서 · 무할당 회귀 잠금.</summary>
+[Trait("Category", "Integration")]
 public class HudFrameBufferTests
 {
     [Fact]

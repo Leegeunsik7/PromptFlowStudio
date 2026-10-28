@@ -15,6 +15,7 @@ using PromptFlowStudio.Services.Wan;
 
 namespace PromptFlowStudio.Tests;
 
+[Trait("Category", "FastUnit")]
 public class HeterogeneousTaskSchedulerTests
 {
     [Fact]
@@ -57,6 +58,7 @@ public class HeterogeneousTaskSchedulerTests
     }
 }
 
+[Trait("Category", "FastUnit")]
 public class LoRAHotSwapManagerTests
 {
     // 결정적 동기화: 스왑 구간을 TaskCompletionSource 게이트로 붙잡아 실시간 지연(60ms)과의 경쟁을 원천 제거.
@@ -123,6 +125,7 @@ public class LoRAHotSwapManagerTests
 }
 
 
+[Trait("Category", "FastUnit")]
 public class MultimodalAudioSyncHudBindingTests
 {
     // v11.0.0-F1: GlobalTelemetryHudView 의 gth-v110f1 카드가 바로 이 두 값(Report/LastApplied)을 그대로 바인딩한다 —
@@ -159,6 +162,7 @@ public class MultimodalAudioSyncHudBindingTests
     }
 }
 
+[Trait("Category", "FastUnit")]
 public class JsonSourceGenerationRegressionTests
 {
     // v11.0.0-Refinement REFINE-1: 24개 파일을 이관한 PromptFlowWireJsonContext(camelCase) 가 실제로
@@ -178,6 +182,7 @@ public class JsonSourceGenerationRegressionTests
         Assert.Equal(req.Purpose, back.Purpose);
     }
 }
+[Trait("Category", "FastUnit")]
 public class WanPostProcessingEngineTests
 {
     private static WanPostProcessingEngine Build(out LivePipelineAutoTuner tuner, out AutonomousNeuralTilingUpscaler upscaler)
@@ -260,6 +265,7 @@ public class WanPostProcessingEngineTests
     }
 }
 
+[Trait("Category", "Integration")]
 public class EdgeP2PTaskRelayTests
 {
     private static Task<byte[]> LocalEcho(byte[] payload, CancellationToken ct) => Task.FromResult(payload);
@@ -325,6 +331,7 @@ public class EdgeP2PTaskRelayTests
         Assert.Equal(0, node.Fallbacks);
     }
 }
+[Trait("Category", "Integration")]
 public class InteractiveReactionEngineTests
 {
     private static (WanDynamicMotionController motion, LoRAHotSwapManager lora, InteractiveReactionEngine engine) Build()
@@ -449,6 +456,7 @@ public class InteractiveReactionEngineTests
 }
 
 /// <summary>v12.1.0: MainForm/HUD 에서 쓰는 수명주기 경로(재시작·재연결·해제)의 회귀 검증 - 실시간 지연 비교 없이 신호/상태로만 판정.</summary>
+[Trait("Category", "Integration")]
 public class ServiceLifecycleTests
 {
     // v17.63.1: 고부하 병렬 일괄 실행(463 건) 안전망 — 교착 탐지 전용(타이밍 단언 아님). 10 s 는 CPU 포화 시 정상 핸드셰이크도 초과했다.
@@ -591,6 +599,7 @@ public class ServiceLifecycleTests
 }
 
 /// <summary>v12.2.0 Phase 1 감사: 핸들/소켓 수명주기 엣지케이스 회귀 잠금 - 벽시계 비교 없이 신호/상태로만 판정.</summary>
+[Trait("Category", "Integration")]
 public class Phase1AuditHardeningTests
 {
     private static readonly TimeSpan SafetyNet = TimeSpan.FromSeconds(45);
@@ -779,6 +788,7 @@ public class Phase1AuditHardeningTests
 }
 
 /// <summary>v12.2.0 Phase 2: Zero-Alloc 핫패스·SIMD 비트 동일성·무락 리더 torn-read 부재 회귀 잠금(벽시계 단언 없음).</summary>
+[Trait("Category", "Integration")]
 public class Phase2ZeroAllocOptimizationTests
 {
     private static WanPostProcessingEngine BuildEngine()
@@ -931,6 +941,7 @@ public class Phase2ZeroAllocOptimizationTests
 
 /// <summary>v12.2.0-Phase4: 리액션 오버레이 → 가상카메라 송출 종단간 결속(Passthrough/합성/폴백/0-Alloc).</summary>
 [Collection("ProcessGcMode")]   // v16.9.0: 스레드 할당 0B 단언 — 병렬 GC 중 ArrayPool 트림 오염 차단
+[Trait("Category", "Integration")]
 public class Phase4VirtualCamOverlayE2ETests
 {
     private const int W = 128, H = 128;
@@ -1050,6 +1061,7 @@ public class Phase4VirtualCamOverlayE2ETests
 
 /// <summary>v15.1.0: Wan Ultra-Efficiency 파이프라인 — 거버너 동적 스케일링·SIMD 위상 보간 비트 정합성·락-프리 스테이징·0B 연쇄 처리.</summary>
 [Collection("ProcessGcMode")]   // v16.9.0: 스레드 할당 0B 단언 — 병렬 GC 중 ArrayPool 트림 오염 차단
+[Trait("Category", "Integration")]
 public class WanUltraEfficiencyPipelineTests
 {
     private const int W = 128, H = 128;

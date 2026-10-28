@@ -6,6 +6,7 @@ using PromptFlowStudio.ViewModels;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>24/7 AI 라이브 스튜디오 — 5단계 피치 생성 · 과장광고 보정 · 릴레이 무중단 순환 · 렌더 큐 디스패치 회귀 잠금.</summary>
+[Trait("Category", "FastUnit")]
 public class LiveStudioHostTests
 {
     private static LiveProductSpec Spec(params string[] points) =>

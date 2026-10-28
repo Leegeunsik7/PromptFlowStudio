@@ -7,6 +7,7 @@ using PromptFlowStudio.ViewModels;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>1번 워크플로우 — 프롬프트 합성기(빈 입력 · 800자 절삭 · Subject 우선 · 네거티브 중복 제거) + 강화기 폴백 + T2V/I2V 뷰모델 회귀 잠금.</summary>
+[Trait("Category", "Integration")]
 public class PromptSynthesizerTests
 {
     private readonly PromptSynthesizerService _synth = new();

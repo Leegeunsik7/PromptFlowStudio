@@ -4,6 +4,7 @@ using PromptFlowStudio.ViewModels;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>갤러리 아카이브 — 빈 폴더 샘플 폴백 · 종횡비 필터 · 복원 번들 보존 · 안전 삭제 회귀 잠금.</summary>
+[Trait("Category", "Integration")]
 public class GalleryMediaTests : IDisposable
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "pfs-gallery-" + Guid.NewGuid().ToString("N"));

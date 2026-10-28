@@ -5,6 +5,7 @@ using PromptFlowStudio.ViewModels;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>3번 워크플로우 — 대량 양산 배치 전개 · 렌더 비용/VRAM 추산 · 뷰모델 큐 전송 회귀 잠금.</summary>
+[Trait("Category", "FastUnit")]
 public class MassProductionAndCostTests
 {
     private readonly RenderCostEstimatorService _est = new();

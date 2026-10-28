@@ -19,10 +19,28 @@ public sealed record ResourceSample(
 /// </summary>
 public sealed class ResourceMonitorService
 {
+    /// <summary>GPU 조회 캐시 TTL — 이 시간 내 재호출은 nvidia-smi 스폰 없이 캐시값 반환.</summary>
+    public static readonly TimeSpan GpuCacheTtl = TimeSpan.FromMilliseconds(1500);
+
     private volatile bool _gpuChecked;
     private volatile bool _gpuAvailable = true;   // 첫 조회 전엔 시도
 
-    /// <summary>현재 리소스 샘플을 반환한다(GPU 는 nvidia-smi 있을 때만). 실패는 Graceful.</summary>
+    private readonly Func<CancellationToken, Task<(string Name, double Util, double Used, double Total)?>> _query;
+    private readonly object _gpuGate = new();
+    private (string Name, double Util, double Used, double Total)? _gpuCached;
+    private long _gpuCachedAt;                     // Stopwatch 타임스탬프(0 = 없음)
+    private Task<(string Name, double Util, double Used, double Total)?>? _gpuInflight;   // 동시 호출 합류
+    private int _gpuQueries;
+
+    public ResourceMonitorService() : this(QueryNvidiaAsync) { }
+
+    /// <summary>테스트용 — GPU 조회 대체.</summary>
+    internal ResourceMonitorService(Func<CancellationToken, Task<(string Name, double Util, double Used, double Total)?>> query) => _query = query;
+
+    /// <summary>실제 GPU 조회(프로세스 스폰) 누적 횟수.</summary>
+    public int GpuQueryCount => Volatile.Read(ref _gpuQueries);
+
+    /// <summary>현재 리소스 샘플을 반환한다(GPU 는 nvidia-smi 있을 때만 · <see cref="GpuCacheTtl"/> 캐시). 실패는 Graceful.</summary>
     public async Task<ResourceSample> SampleAsync(CancellationToken ct = default)
     {
         var cores = Environment.ProcessorCount;
@@ -36,11 +54,46 @@ public sealed class ResourceMonitorService
         if (_gpuChecked && !_gpuAvailable)
             return new(cores, managed, ws, total, null, null, null, null, false);
 
-        var gpu = await QueryNvidiaAsync(ct).ConfigureAwait(false);
+        var gpu = await GetGpuCachedAsync(ct).ConfigureAwait(false);
         _gpuChecked = true;
         if (gpu is null) { _gpuAvailable = false; return new(cores, managed, ws, total, null, null, null, null, false); }
         _gpuAvailable = true;
         return new(cores, managed, ws, total, gpu.Value.Util, gpu.Value.Used, gpu.Value.Total, gpu.Value.Name, true);
+    }
+
+    /// <summary>TTL 내면 캐시 반환 · 진행 중 조회가 있으면 합류 · 아니면 1회 조회 후 캐시 갱신.</summary>
+    private async Task<(string Name, double Util, double Used, double Total)?> GetGpuCachedAsync(CancellationToken ct)
+    {
+        Task<(string Name, double Util, double Used, double Total)?> task;
+        lock (_gpuGate)
+        {
+            if (_gpuCachedAt != 0 && Stopwatch.GetElapsedTime(_gpuCachedAt) < GpuCacheTtl) return _gpuCached;
+            task = _gpuInflight ?? StartQuery(ct);
+        }
+        return await task.ConfigureAwait(false);
+    }
+
+    /// <summary>_gpuGate 보유 상태에서 호출 — 동기 완료 시(재진입 lock 으로 이미 정리됨) 진행 중 슬롯에 남기지 않는다.</summary>
+    private Task<(string Name, double Util, double Used, double Total)?> StartQuery(CancellationToken ct)
+    {
+        Interlocked.Increment(ref _gpuQueries);
+        var t = RunQueryAsync(ct);
+        if (!t.IsCompleted) _gpuInflight = t;
+        return t;
+    }
+
+    private async Task<(string Name, double Util, double Used, double Total)?> RunQueryAsync(CancellationToken ct)
+    {
+        (string Name, double Util, double Used, double Total)? r = null;
+        try { r = await _query(ct).ConfigureAwait(false); }
+        catch (Exception ex) { Program.Log("ResourceMonitor.Query", ex); }
+        lock (_gpuGate)
+        {
+            _gpuCached = r;
+            _gpuCachedAt = Stopwatch.GetTimestamp();
+            _gpuInflight = null;
+        }
+        return r;
     }
 
     private static async Task<(string Name, double Util, double Used, double Total)?> QueryNvidiaAsync(CancellationToken ct)

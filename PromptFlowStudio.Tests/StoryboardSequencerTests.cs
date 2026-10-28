@@ -4,6 +4,7 @@ using PromptFlowStudio.ViewModels;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>2번 워크플로우 — 스토리보드 시퀀서(대본 N컷 분할 · 시드/피사체 전파) + 뷰모델(순서 변경 · 총 재생 시간) 회귀 잠금.</summary>
+[Trait("Category", "FastUnit")]
 public class StoryboardSequencerTests
 {
     private readonly StoryboardSequencerService _seq = new();

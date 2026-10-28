@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
@@ -14,6 +15,7 @@ namespace PromptFlowStudio.Services.Camera;
 ///   ▸ rtsp(s)/rtmp/srt: 설치된 ffmpeg CLI 로 1프레임 MJPEG 파이프 캡처(미설치/미지원 플랫폼은 폴백).
 ///   ▸ 응답 없음·타임아웃·비이미지 응답·WebRTC → 즉시 <see cref="MockStreamReceiver"/> 폴백(연결은 성공 처리, UI 크래시 0).
 ///   ▸ 연결 세대(_gen)로 진행 중 연결과 해제 경합 차단 — 해제/재연결 후 늦게 끝난 연결은 커밋하지 않음.
+///   ▸ 수신 버퍼는 <see cref="ArrayPool{T}.Shared"/> 대여·반납(LOH 파편화 방지) — 최종 프레임 1장만 정확한 크기로 할당.
 /// </summary>
 public sealed class NetworkCameraStreamReceiver : ICameraStreamReceiver, IDisposable
 {
@@ -217,39 +219,58 @@ public sealed class NetworkCameraStreamReceiver : ICameraStreamReceiver, IDispos
         catch { return null; }
     }
 
-    private static async Task<byte[]?> ReadAllCappedAsync(Stream s, CancellationToken ct)
+    internal const int PoolChunk = 64 * 1024;
+
+    internal static async Task<byte[]?> ReadAllCappedAsync(Stream s, CancellationToken ct)
     {
-        using var ms = new MemoryStream();
-        var buf = new byte[81920];
-        int n;
-        while ((n = await s.ReadAsync(buf.AsMemory(), ct).ConfigureAwait(false)) > 0)
+        var buf = ArrayPool<byte>.Shared.Rent(PoolChunk);
+        var len = 0;
+        try
         {
-            if (ms.Length + n > MaxFrameBytes) return null;
-            ms.Write(buf, 0, n);
+            int n;
+            while ((n = await s.ReadAsync(buf.AsMemory(len), ct).ConfigureAwait(false)) > 0)
+            {
+                len += n;
+                if (len > MaxFrameBytes) return null;
+                if (len == buf.Length) buf = Grow(buf, len);
+            }
+            return len == 0 ? null : buf.AsSpan(0, len).ToArray();
         }
-        return ms.Length == 0 ? null : ms.ToArray();
+        finally { ArrayPool<byte>.Shared.Return(buf); }
     }
 
     /// <summary>MJPEG 멀티파트 스트림에서 첫 SOI(FFD8)~EOI(FFD9) 구간 추출.</summary>
-    private static async Task<byte[]?> ReadFirstJpegAsync(Stream s, CancellationToken ct)
+    internal static async Task<byte[]?> ReadFirstJpegAsync(Stream s, CancellationToken ct)
     {
-        using var ms = new MemoryStream();
-        var buf = new byte[65536];
-        int n, start = -1, scanFrom = 1;
-        while ((n = await s.ReadAsync(buf.AsMemory(), ct).ConfigureAwait(false)) > 0)
+        var buf = ArrayPool<byte>.Shared.Rent(PoolChunk);
+        int len = 0, start = -1, scanFrom = 1;
+        try
         {
-            if (ms.Length + n > MaxFrameBytes) return null;
-            ms.Write(buf, 0, n);
-            var data = ms.GetBuffer();
-            var len = (int)ms.Length;
-            for (var i = scanFrom; i < len; i++)
+            int n;
+            while ((n = await s.ReadAsync(buf.AsMemory(len), ct).ConfigureAwait(false)) > 0)
             {
-                if (data[i - 1] != 0xFF) continue;
-                if (start < 0) { if (data[i] == 0xD8) start = i - 1; }
-                else if (data[i] == 0xD9) return data.AsSpan(start, i + 1 - start).ToArray();
+                len += n;
+                if (len > MaxFrameBytes) return null;
+                for (var i = scanFrom; i < len; i++)
+                {
+                    if (buf[i - 1] != 0xFF) continue;
+                    if (start < 0) { if (buf[i] == 0xD8) start = i - 1; }
+                    else if (buf[i] == 0xD9) return buf.AsSpan(start, i + 1 - start).ToArray();
+                }
+                scanFrom = Math.Max(1, len);
+                if (len == buf.Length) buf = Grow(buf, len);
             }
-            scanFrom = Math.Max(1, len);
+            return null;
         }
-        return null;
+        finally { ArrayPool<byte>.Shared.Return(buf); }
+    }
+
+    /// <summary>대여 버퍼 2배 확장 — 새 버퍼 대여 → 유효 구간 복사 → 이전 버퍼 반납.</summary>
+    private static byte[] Grow(byte[] buf, int len)
+    {
+        var next = ArrayPool<byte>.Shared.Rent(Math.Min(buf.Length * 2, MaxFrameBytes + 1));
+        buf.AsSpan(0, len).CopyTo(next);
+        ArrayPool<byte>.Shared.Return(buf);
+        return next;
     }
 }

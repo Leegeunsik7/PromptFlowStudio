@@ -21,6 +21,7 @@ namespace PromptFlowStudio.Tests;
 /// <see cref="Renderer.DispatchEventAsync"/> 로 실발화 → 예외 · 빈 람다 핸들러 · 값이 고정된 스위치/슬라이더/aria-pressed 토글을 전수 판정.
 /// </summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public class InteractiveModalCrawlerTests
 {
     private const int MaxDispatchPerModal = 400;

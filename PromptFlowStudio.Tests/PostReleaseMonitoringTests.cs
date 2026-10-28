@@ -10,6 +10,7 @@ using PromptFlowStudio.Services.Telemetry;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>v14.0.1: 배포 후 관제 가드레일 - 구독자 예외 격리·파기 후 잔류 호출·로그 홍수 억제.</summary>
+[Trait("Category", "Integration")]
 public class PostReleaseMonitoringTests
 {
     private static LiveStreamVirtualCamPipe Pipe()

@@ -7,6 +7,7 @@ using PromptFlowStudio.Services.AI.Wan;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>v12.2.0-Phase3: 리액션 오버레이(10ms 고정스텝·0-Alloc) 회귀 잠금 - 벽시계 단언 없이 스텝 수/상태로 판정.</summary>
+[Trait("Category", "Integration")]
 public class StreamerReactionOverlayTests
 {
     private static byte[] SinePcm16(double freqHz, int sampleRate, int samples, double amp)
@@ -137,6 +138,7 @@ public class StreamerReactionOverlayTests
 }
 
 /// <summary>v12.2.0-Phase3: P2P 메시 부하분산/원자 페일오버 - 시계 주입으로 무응답 판정까지 결정적 재현.</summary>
+[Trait("Category", "Integration")]
 public class P2pLoadBalancerTests
 {
     private sealed class FakeClock
@@ -310,6 +312,7 @@ public class P2pLoadBalancerTests
     }
 }
 
+[Trait("Category", "FastUnit")]
 public class MeshRelayNodeTests
 {
     [Fact]
@@ -356,6 +359,7 @@ public class MeshRelayNodeTests
 }
 
 /// <summary>v12.2.0-Phase4: EdgeP2PTaskRelay 실 UDP Ping/Pong → P2pLoadBalancer 결선 - 루프백 실소켓, 신호(TCS) 기반 동기화.</summary>
+[Trait("Category", "Integration")]
 public class EdgeRelayProbeBinderTests
 {
     private static readonly TimeSpan SafetyNet = TimeSpan.FromSeconds(45);

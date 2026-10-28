@@ -13,8 +13,26 @@ public sealed record StreamTelemetry(double Fps, string Resolution, int LatencyM
     public static readonly StreamTelemetry Empty = new(0, "", 0, 0);
 }
 
-/// <summary>캡처 1장 메타 — <see cref="FrameDataUrl"/> 은 썸네일·I2V 핸드오프에 그대로 쓰는 이미지(JPEG/PNG/BMP) data URL.</summary>
-public sealed record CapturedFrameMeta(Guid FrameId, DateTime Timestamp, string Resolution, string FrameDataUrl);
+/// <summary>
+/// 캡처 1장 메타 — <see cref="Data"/> 는 이미지(JPEG/PNG/BMP) 원본 바이트(I2V 핸드오프에 그대로 사용).
+///   ▸ 롤 보관은 원본 바이트만 — <see cref="FrameDataUrl"/> 은 렌더 시 온디맨드 인코딩 후 약참조 캐시(화면에서 내려가면 GC 회수).
+/// </summary>
+public sealed record CapturedFrameMeta(Guid FrameId, DateTime Timestamp, string Resolution, string Mime, byte[] Data)
+{
+    private WeakReference<string>? _dataUrl;
+
+    /// <summary>썸네일·뷰파인더용 data URL — 표시 중엔 동일 문자열 재사용, 비표시 시 회수되면 재인코딩.</summary>
+    public string FrameDataUrl
+    {
+        get
+        {
+            if (_dataUrl is not null && _dataUrl.TryGetTarget(out var cached)) return cached;
+            var url = "data:" + Mime + ";base64," + Convert.ToBase64String(Data);
+            _dataUrl = new WeakReference<string>(url);
+            return url;
+        }
+    }
+}
 
 /// <summary>
 /// [PromptFlowStudio] 무선 카메라(RTSP/SRT/WebRTC/HTTP) 스트림 연결 + 단일 프레임 캡처 — 수신은 <see cref="ICameraStreamReceiver"/> 위임.
@@ -157,8 +175,7 @@ public sealed class WirelessCameraService : IDisposable
         var resolution = !_receiver.IsFallback && CameraFrameCodec.TryReadSize(bytes, out var w, out var h)
             ? w.ToString(CultureInfo.InvariantCulture) + "x" + h.ToString(CultureInfo.InvariantCulture)
             : _receiver.GetCurrentTelemetry().Resolution;
-        var meta = new CapturedFrameMeta(Guid.NewGuid(), DateTime.UtcNow, resolution,
-            "data:" + mime + ";base64," + Convert.ToBase64String(bytes));
+        var meta = new CapturedFrameMeta(Guid.NewGuid(), DateTime.UtcNow, resolution, mime, bytes);
         _lastFrameBytes = bytes;
         LastFrame = meta;
         LastError = null;
@@ -185,12 +202,12 @@ public sealed class WirelessCameraService : IDisposable
         return true;
     }
 
-    /// <summary>캡처 롤의 특정 프레임을 I2V 대기 버퍼에 적재 — 최신 캡처는 원본 바이트, 그 외는 DataUrl base64 복원(실패 시 false).</summary>
+    /// <summary>캡처 롤의 특정 프레임을 I2V 대기 버퍼에 적재 — 롤이 보관한 원본 바이트 그대로(빈 프레임이면 false).</summary>
     public bool QueueI2vReference(CapturedFrameMeta frame)
     {
         ArgumentNullException.ThrowIfNull(frame);
-        var bytes = LastFrame?.FrameId == frame.FrameId ? _lastFrameBytes : DecodeDataUrl(frame.FrameDataUrl);
-        if (bytes is null) return false;
+        var bytes = frame.Data;
+        if (bytes is not { Length: > 0 }) return false;
         Volatile.Write(ref _pendingI2v, bytes);
         return true;
     }
@@ -206,14 +223,6 @@ public sealed class WirelessCameraService : IDisposable
         => Volatile.Write(ref _pendingTransfer, transfer ?? throw new ArgumentNullException(nameof(transfer)));
 
     public CameraWorkspaceTransfer? TakeWorkspaceTransfer() => Interlocked.Exchange(ref _pendingTransfer, null);
-
-    private static byte[]? DecodeDataUrl(string? dataUrl)
-    {
-        var comma = dataUrl?.IndexOf(";base64,", StringComparison.Ordinal) ?? -1;
-        if (comma < 0) return null;
-        try { return Convert.FromBase64String(dataUrl![(comma + 8)..]); }
-        catch (FormatException) { return null; }
-    }
 
     public static bool TryValidateEndpoint(string? endpoint, out string? error)
     {

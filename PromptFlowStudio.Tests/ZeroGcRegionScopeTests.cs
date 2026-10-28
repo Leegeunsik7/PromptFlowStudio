@@ -10,6 +10,7 @@ namespace PromptFlowStudio.Tests;
 public sealed class ProcessGcModeCollection { }
 
 /// <summary>v12.3.0: 할당 가드(부작용 없음)·NoGC 임계 영역·저지연 세션 참조 카운트 회귀 잠금.</summary>
+[Trait("Category", "Integration")]
 public class ZeroGcRegionGuardTests
 {
     [Fact]
@@ -68,6 +69,7 @@ public class ZeroGcRegionGuardTests
 }
 
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public class ZeroGcProcessModeTests
 {
     [Fact]

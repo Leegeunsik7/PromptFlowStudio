@@ -16,6 +16,7 @@ using PromptFlowStudio.Services.Wan;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>v13.1.0: VLM 백프레셔(즉시 드롭)·5초 데드라인·E2E 지연·오프라인 폴백 - HttpMessageHandler 모의로 결정적 재현.</summary>
+[Trait("Category", "Integration")]
 public class VisionIntelligenceTests
 {
     private static readonly TimeSpan SafetyNet = TimeSpan.FromSeconds(45);
@@ -256,6 +257,7 @@ public class VisionIntelligenceTests
 }
 
 /// <summary>v13.2.0: Ollama 비전 모델 프로빙(/api/tags + /api/show capabilities) · 자동 모델 적용 · 합성 벤치마크 - 모의 HTTP 로 결정적 검증.</summary>
+[Trait("Category", "Integration")]
 public class VisionModelProbeEngineTests
 {
     private sealed class RouteHandler(Func<HttpRequestMessage, string, Task<HttpResponseMessage>> route) : HttpMessageHandler
@@ -430,6 +432,7 @@ public class VisionModelProbeEngineTests
 
 /// <summary>v13.3.0: VLM 요약문 → 액션 매퍼 - Span 파싱 0-Alloc · 모션/스타일 LoRA 스왑 · 원자 쿨다운 · 장면 바인더와의 중복 방지 · UI 컨텍스트 비점유.</summary>
 [Collection("ProcessGcMode")]   // v16.9.0: 스레드 할당 0B 단언 — 병렬 GC 중 ArrayPool 트림 오염 차단
+[Trait("Category", "Integration")]
 public class VisionActionMapperTests
 {
     private static readonly TimeSpan SafetyNet = TimeSpan.FromSeconds(45);

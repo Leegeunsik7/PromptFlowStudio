@@ -13,6 +13,7 @@ namespace PromptFlowStudio.Tests;
 /// 외부 네트워크 미사용(가짜 <see cref="HttpMessageHandler"/>).
 /// </summary>
 [Collection("ProcessGcMode")]   // 무할당 · 메모리/핸들 델타 계측 → 직렬화
+[Trait("Category", "Integration")]
 public sealed class RetentionIngestRemuxTests
 {
     private readonly ITestOutputHelper _out;

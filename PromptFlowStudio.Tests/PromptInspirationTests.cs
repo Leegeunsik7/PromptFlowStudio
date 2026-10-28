@@ -7,6 +7,7 @@ using PromptFlowStudio.ViewModels;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>💡 스토리 레시피 &amp; 인스피레이션 허브 — 프리셋 유효성 · 칩 합성 포맷 · 뷰모델 UserInput 주입 회귀 잠금.</summary>
+[Trait("Category", "Integration")]
 public class PromptInspirationTests
 {
     private readonly PromptInspirationService _svc = new();

@@ -15,6 +15,7 @@ using PromptFlowStudio.Services.Wan;
 namespace PromptFlowStudio.Tests;
 
 [Collection("ProcessGcMode")]   // EventListener 활성화는 프로세스 전역 + 스레드 할당 단언 → 직렬화
+[Trait("Category", "Integration")]
 public class LtsSealTests
 {
     [Fact]

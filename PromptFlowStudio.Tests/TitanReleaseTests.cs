@@ -189,6 +189,7 @@ namespace PromptFlowStudio.Tests;
 
 /// <summary>v16.0.0 Titan — RSA-2048 비대칭 무결성 + 로컬 ComfyUI I2V 폴백 회귀.</summary>
 [Collection("ProcessGcMode")]   // 서명 모드 환경변수는 프로세스 전역 → 직렬화
+[Trait("Category", "Integration")]
 public class TitanReleaseTests
 {
     [Fact]
@@ -21826,6 +21827,7 @@ internal sealed class PatternStream(long length) : Stream
 /// ProcessGcMode(DisableParallelization) 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class MassiveCrowdIsolatedTests
 {
     [Fact]
@@ -21974,6 +21976,7 @@ public sealed class MassiveCrowdIsolatedTests
 /// ProcessGcMode(DisableParallelization) 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class BroadcastMasterControlIsolatedTests
 {
     private const int W = 64, H = 36;
@@ -22267,6 +22270,7 @@ public sealed class BroadcastMasterControlIsolatedTests
 /// 실행하도록 ProcessGcMode(DisableParallelization) 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class BroadcastArGraphicsIsolatedTests
 {
     [Fact]
@@ -22488,6 +22492,7 @@ public sealed class BroadcastArGraphicsIsolatedTests
 /// v17.07.0 시공간 디플리커 &amp; 텍스처 피닝 — 무할당 단언을 타 병렬 테스트 GC 간섭 없이 실행하도록 ProcessGcMode(DisableParallelization) 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class TemporalDeflickerIsolatedTests
 {
     [Fact]
@@ -22564,6 +22569,7 @@ public sealed class TemporalDeflickerIsolatedTests
 /// v17.08.0 시맨틱 매팅 &amp; 가상 세트 융합 — 무할당 단언을 타 병렬 테스트 GC 간섭 없이 실행하도록 ProcessGcMode(DisableParallelization) 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class SemanticMattingIsolatedTests
 {
     [Fact]
@@ -22668,6 +22674,7 @@ public sealed class SemanticMattingIsolatedTests
 /// v17.09.0 인카메라 VFX LED 월 &amp; 젠록 — 무할당 단언을 타 병렬 테스트 GC 간섭 없이 실행하도록 ProcessGcMode(DisableParallelization) 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class InCameraVfxIsolatedTests
 {
     [Fact]
@@ -22813,6 +22820,7 @@ public sealed class InCameraVfxIsolatedTests
 /// v17.10.0 ACES 색 과학 &amp; 라이브 DIT 그레이딩 — 무할당 단언을 타 병렬 테스트 GC 간섭 없이 실행하도록 ProcessGcMode(DisableParallelization) 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class AcesColorScienceIsolatedTests
 {
     [Fact]
@@ -23025,6 +23033,7 @@ public sealed class AcesColorScienceIsolatedTests
 /// v17.11.0 무마커 멀티뷰 모캡 &amp; 생체역학 리타게팅 — 무할당 단언을 ProcessGcMode 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class MarkerlessMocapIsolatedTests
 {
     [Fact]
@@ -23184,6 +23193,7 @@ public sealed class MarkerlessMocapIsolatedTests
 /// v17.12.0 페이셜 퍼포먼스 캡처 &amp; Audio2Face 비짐 — 무할당 단언을 ProcessGcMode 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class FacialPerformanceIsolatedTests
 {
     [Fact]
@@ -23368,6 +23378,7 @@ public sealed class FacialPerformanceIsolatedTests
 /// v17.13.0 덱스터러스 핸드 &amp; 소품 접촉 물리 — 무할당 단언을 ProcessGcMode 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class DexterousHandIsolatedTests
 {
     [Fact]
@@ -23516,6 +23527,7 @@ public sealed class DexterousHandIsolatedTests
 /// v17.14.0 해부학 근육 &amp; 연조직 변형 — 무할당 단언을 ProcessGcMode 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class AnatomicalTissueIsolatedTests
 {
     [Fact]
@@ -23649,6 +23661,7 @@ public sealed class AnatomicalTissueIsolatedTests
 /// v17.15.0 스트랜드 헤어 PBD 동역학 &amp; 뉴럴 그루밍 — 무할당 단언을 ProcessGcMode 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class StrandHairIsolatedTests
 {
     [Fact]
@@ -23779,6 +23792,7 @@ public sealed class StrandHairIsolatedTests
 /// v17.16.0 다층 의상 동역학 &amp; 뉴럴 드레이핑 — 무할당 단언을 ProcessGcMode 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class GarmentDynamicsIsolatedTests
 {
     [Fact]
@@ -23881,6 +23895,7 @@ public sealed class GarmentDynamicsIsolatedTests
 /// v17.17.0 분리형 피부 SSS &amp; 미세 혈류 동역학 · 각막 굴절 — 무할당 단언을 ProcessGcMode 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class SkinOpticsIsolatedTests
 {
     [Fact]
@@ -24010,6 +24025,7 @@ public sealed class SkinOpticsIsolatedTests
 /// v17.18.0 뉴럴 음성 합성 &amp; 성도 공명 · A/V 지연 · 파열음 가드 — 무할당 단언을 ProcessGcMode 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class NeuralVoiceIsolatedTests
 {
     [Fact]
@@ -24143,6 +24159,7 @@ public sealed class NeuralVoiceIsolatedTests
 }
 
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class FluidWetnessIsolatedTests
 {
     [Fact]
@@ -24266,6 +24283,7 @@ public sealed class FluidWetnessIsolatedTests
 }
 
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class GaussianAvatarIsolatedTests
 {
     [Fact]
@@ -24378,6 +24396,7 @@ public sealed class GaussianAvatarIsolatedTests
 }
 
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class CognitiveCinematographyIsolatedTests
 {
     [Fact]
@@ -24480,6 +24499,7 @@ public sealed class CognitiveCinematographyIsolatedTests
     }
 }
 
+[Trait("Category", "Integration")]
 public sealed class StereoXrIsolatedTests
 {
     private static long Diff(ReadOnlySpan<uint> a, ReadOnlySpan<uint> b)
@@ -24656,6 +24676,7 @@ public sealed class StereoXrIsolatedTests
 }
 
 /// <summary>v17.23.0 AI 6DoF 공간 음향 &amp; 광선 추적 — BVH/커널 비트 동일 · RT60 · HRTF ITD/ILD · 도플러 · 회절 · 위상 가드 · 러너 무할당.</summary>
+[Trait("Category", "Integration")]
 public sealed class SpatialAcousticsIsolatedTests
 {
     [Fact]
@@ -24876,6 +24897,7 @@ public sealed class SpatialAcousticsIsolatedTests
 }
 
 /// <summary>v17.24.0 AI 6DoF 공간 햅틱 &amp; 역각 피드백 — SIMD 커널 비트 동일 · 갓-오브젝트 프록시 · 켈빈-보이트 · 진동 텍스처/맥동 · POPC 가드 · 러너 무할당.</summary>
+[Trait("Category", "Integration")]
 public sealed class SpatialHapticsIsolatedTests
 {
     [Fact]
@@ -24997,6 +25019,7 @@ public sealed class SpatialHapticsIsolatedTests
 }
 
 /// <summary>v17.25.0 AI 홀로그래픽 텔레프레전스 — 체적 LoD 스트리밍(SIMD 비트 동일 · 예산 · 양자화 오차) · 시선/AEC/햅틱 정합 · GGPO 롤백 결정성 · 에르미트 워프 · 러너 무할당.</summary>
+[Trait("Category", "Integration")]
 public sealed class HolographicTelepresenceIsolatedTests
 {
     [Fact]
@@ -25148,6 +25171,7 @@ public sealed class HolographicTelepresenceIsolatedTests
 }
 
 /// <summary>v17.26.0 AI 뉴럴 물리 &amp; 연속체 역학 — MPM SIMD 커널 비트 동일 · 야코비 고유분해 · APIC 질량 보존 · 점탄소성 · 보로노이 파괴 · 비침투/에너지 가드 · 러너 무할당.</summary>
+[Trait("Category", "Integration")]
 public sealed class ContinuumPhysicsIsolatedTests
 {
     [Fact]
@@ -25277,6 +25301,7 @@ public sealed class ContinuumPhysicsIsolatedTests
 }
 
 /// <summary>v17.27.0 AI 생성형 월드 확장 &amp; 4D 인페인팅 — 해시 그리드 MLP SIMD 비트 동일 · 프롬프트 스타일 · 예측 생성 · 고정 메모리 예산 · 알파-디졸브 · 심도 유도 인페인팅 · 러너 무할당.</summary>
+[Trait("Category", "Integration")]
 public sealed class WorldExpansionIsolatedTests
 {
     [Fact]
@@ -25416,6 +25441,7 @@ public sealed class WorldExpansionIsolatedTests
 }
 
 /// <summary>v17.28.0 AI 대기 기상 &amp; 미기후 — 격자 SIMD 커널 비트 동일 · 무발산 투영 · 마하/NaN/에너지 가드 · 운량/강수/안개 · 헤어/의상 항력 · 젖음 · 적설 안식각 · 러너 무할당.</summary>
+[Trait("Category", "Integration")]
 public sealed class MicroclimateIsolatedTests
 {
     [Fact]
@@ -25518,6 +25544,7 @@ public sealed class MicroclimateIsolatedTests
 }
 
 /// <summary>v17.31.0: AI 버추얼 라이브 방송 &amp; 시청자 인터랙션 — 패킷화 규격 · 세이프티 가드 · 감정/슈퍼챗 합성 · ABR/스파이크 안정 보간 · 무할당.</summary>
+[Trait("Category", "Integration")]
 public sealed class VirtualLiveIsolatedTests
 {
     private sealed class CountingSink : VL.ILiveTransportSink
@@ -25709,6 +25736,7 @@ public sealed class VirtualLiveIsolatedTests
 }
 
 /// <summary>v17.32.0: AI 다국어 동시 더빙 &amp; 신경망 립싱크 — G2P 음절 증감 · 지연 예산 · 음소 → 블렌드셰이프 · WSOLA 피치 보존 · 드리프트/플리커 가드 · 음색 클로닝 · 무할당.</summary>
+[Trait("Category", "Integration")]
 public sealed class LiveDubbingIsolatedTests
 {
     [Fact]
@@ -25805,6 +25833,7 @@ public sealed class LiveDubbingIsolatedTests
 }
 
 /// <summary>v17.33.0: AI 뉴럴 모션 매칭 &amp; 지형 적응 생체역학 — 가속 검색 정확성 · 궤적 예측 · 관성 블렌딩 · 지형 IK/ZMP · 풋스케이팅/과신전 가드 · 무할당.</summary>
+[Trait("Category", "Integration")]
 public sealed class MotionMatchingIsolatedTests
 {
     private static MM.NeuralMotionMatchingStudioRunner Run(int frames, Action<MM.NeuralMotionMatchingStudioRunner>? setup = null)
@@ -25887,6 +25916,7 @@ public sealed class MotionMatchingIsolatedTests
 }
 
 /// <summary>v17.34.0: AI 헤드리스 시각 QA &amp; ZMP 디버깅 — 소프트웨어 래스터 · 실 Blazor 헤드리스 캡처 · SSIM/픽셀 회귀 · 레이아웃 붕괴/팝핑 판독 · 계단 ZMP 교정 · 무할당.</summary>
+[Trait("Category", "Integration")]
 public sealed class VisualQaIsolatedTests
 {
     [Fact]
@@ -25988,6 +26018,7 @@ public sealed class VisualQaIsolatedTests
 }
 
 /// <summary>v17.35.0: AI 접촉 로코모션 &amp; 계단 보행 — 볼류메트릭 스캔 · 4보 발 배치 · 계단 합성(포착 스텝 · 속도 정합) · 접지 창 LIPM/DCM ZMP 95%+ · 각운동량 · 무할당.</summary>
+[Trait("Category", "Integration")]
 public sealed class ContactLocomotionIsolatedTests
 {
     [Fact]
@@ -26058,6 +26089,7 @@ public sealed class ContactLocomotionIsolatedTests
 
 /// <summary>v17.36.0: AI 양손 정밀 조작 — 20 관절 덱스그랩(SDF 순차 닫힘 · 힘 폐쇄) · 위상 잠금 인계 · 4 손 폐쇄 체인 운반 · 마찰 원뿔 파지력 증폭 · 관통/터널링 방어 · 무할당.</summary>
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class DexterousManipulationIsolatedTests
 {
     [Fact]
@@ -26153,6 +26185,7 @@ public sealed class DexterousManipulationIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class NeuralRagdollIsolatedTests
 {
     [Fact]
@@ -26239,6 +26272,7 @@ public sealed class NeuralRagdollIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class ProceduralFoleyIsolatedTests
 {
     [Fact]
@@ -26378,6 +26412,7 @@ public sealed class ProceduralFoleyIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class CinematicDirectorIsolatedTests
 {
     [Fact]
@@ -26473,6 +26508,7 @@ public sealed class CinematicDirectorIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class NarrativeTimelineIsolatedTests
 {
     [Fact]
@@ -26595,6 +26631,7 @@ public sealed class NarrativeTimelineIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class IntelligentStageLightingIsolatedTests
 {
     [Fact]
@@ -26711,6 +26748,7 @@ public sealed class IntelligentStageLightingIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class NeuralVfxPyrotechnicsIsolatedTests
 {
     private sealed class StageSp : IServiceProvider
@@ -26843,6 +26881,7 @@ public sealed class NeuralVfxPyrotechnicsIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class CinematicLensOpticsIsolatedTests
 {
     private sealed class Sp : IServiceProvider
@@ -26994,6 +27033,7 @@ public sealed class CinematicLensOpticsIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class GenlockFrustumIsolatedTests
 {
     private sealed class Sp : IServiceProvider
@@ -27135,6 +27175,7 @@ public sealed class GenlockFrustumIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class CameraTrackingIsolatedTests
 {
     [Fact]
@@ -27239,6 +27280,7 @@ public sealed class CameraTrackingIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class VirtualSetExtensionIsolatedTests
 {
     private static Se.SetCameraPose P(float x, float y, float z, float pan, float tilt) => new() { Position = new V3(x, y, z), Pan = pan, Tilt = tilt };
@@ -27332,6 +27374,7 @@ public sealed class VirtualSetExtensionIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class InstagramViralReelsRemixIsolatedTests
 {
     [Fact]
@@ -27439,6 +27482,7 @@ public sealed class InstagramViralReelsRemixIsolatedTests
     }
 }
 
+[Trait("Category", "Integration")]
 public sealed class MetaGraphApiBridgeIsolatedTests
 {
     private static int RunUntil(Gb.GraphApiBridgeStudioRunner run, Func<bool> done, int max)
@@ -27598,6 +27642,7 @@ public sealed class MetaGraphApiBridgeIsolatedTests
     }
 }
 
+[Trait("Category", "Integration")]
 public sealed class VerticalVideoTranscodeIsolatedTests
 {
     private sealed class Collect : Vt.IMfSampleSink
@@ -27784,6 +27829,7 @@ public sealed class VerticalVideoTranscodeIsolatedTests
     }
 }
 
+[Trait("Category", "Integration")]
 public sealed class ViralLoopAutomationIsolatedTests
 {
     [Fact]
@@ -27892,6 +27938,7 @@ public sealed class ViralLoopAutomationIsolatedTests
     }
 }
 
+[Trait("Category", "Integration")]
 public sealed class OmniChannelPublishingIsolatedTests
 {
     [Fact]
@@ -28026,6 +28073,7 @@ public sealed class OmniChannelPublishingIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class MotionTypographyIsolatedTests
 {
     [Fact]
@@ -28148,6 +28196,7 @@ public sealed class MotionTypographyIsolatedTests
     }
 }
 
+[Trait("Category", "Integration")]
 public sealed class BeatSyncAudioDuckingIsolatedTests
 {
     [Fact]
@@ -28273,6 +28322,7 @@ public sealed class BeatSyncAudioDuckingIsolatedTests
     }
 }
 
+[Trait("Category", "Integration")]
 public sealed class RhythmActionMvIsolatedTests
 {
     [Fact]
@@ -28387,6 +28437,7 @@ public sealed class RhythmActionMvIsolatedTests
 /// v17.55.0 3D 가우시안 스플래팅 — 상주 워커 풀 병렬 렌더의 60fps 게이트 · 무할당 단언을 타 병렬 테스트 CPU 경합 없이 실행하도록 ProcessGcMode(DisableParallelization) 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class GaussianSplatEnvironmentIsolatedTests
 {
     [Fact]
@@ -28504,6 +28555,7 @@ public sealed class GaussianSplatEnvironmentIsolatedTests
 /// v17.56.0 3DGS 섀도우 &amp; 상호 릴라이팅 — 상주 워커 풀 병렬 렌더의 60fps/3.5 ms 게이트 · 무할당 단언을 단독 실행(v17.80.0: 부하 환경 플래키 차단 → TimingSensitivePerformance 이전).
 /// </summary>
 [Collection("TimingSensitivePerformance")]   // 벽시계 60fps/3.5 ms 워커 풀 게이트 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class GaussianSplatRelightingIsolatedTests
 {
     [Fact]
@@ -28632,6 +28684,7 @@ public sealed class GaussianSplatRelightingIsolatedTests
 /// v17.57.0 4D 가우시안 아바타(DQS · 셀프 섀도우 · 체적 가드) — 워커 풀 병렬 스키닝/차폐의 60fps · 무할당 단언을 단독 실행(ProcessGcMode).
 /// </summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class DualQuaternionGaussianAvatarIsolatedTests
 {
     [Fact]
@@ -28785,6 +28838,7 @@ public sealed class DualQuaternionGaussianAvatarIsolatedTests
 /// v17.58.0 4D 가우시안 페이셜 &amp; 핑거(ARKit 52 델타 · 20 관절 핑거 DQS · 찢어짐/관통 가드) — 워커 풀 스키닝 60fps · 무할당 단언 단독 실행(ProcessGcMode).
 /// </summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class GaussianFacialHandIsolatedTests
 {
     [Fact]
@@ -28953,6 +29007,7 @@ public sealed class GaussianFacialHandIsolatedTests
 /// v17.59.0 3DGS 클로스 &amp; 헤어 PBD(SIMD 베를레 · GS 구속 · 공분산 정렬 · 공기역학 · 캡슐 충돌 · 신장/CCD 가드) — 60fps · 무할당 단언 단독 실행(ProcessGcMode).
 /// </summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class GaussianClothHairIsolatedTests
 {
     private static void Run(Gch.RealtimeGaussianClothHairPhysicsEngine e, Gch.AerodynamicWindBodyCollisionSynthesizer a, Gch.StrainLimitPenetrationGuard? g, Dqa.AvatarFkAnimator anim, Dqa.RealtimeDualQuaternionGaussianSkinningEngine dq, Dqa.AvatarMotion m, float t, float dt)
@@ -29085,6 +29140,7 @@ public sealed class GaussianClothHairIsolatedTests
 /// v17.60.0 아바타 자율 연기(텍스트-투-제스처 트랜스포머 · FABRIK 상지 IK · v17.33 보행 레이어 · 스윙-트위스트 관절 한계) — 60fps · 무할당 단언 단독 실행(ProcessGcMode).
 /// </summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class AvatarActingIsolatedTests
 {
     private static Act.GestureClass ClassOf(Act.RealtimeLlmTextToGestureTransformer tr, string word, out float valence)
@@ -29760,6 +29816,7 @@ public sealed class AvatarActingIsolatedTests
 }
 
 /// <summary>v17.63.1 시스템 전반 결선 감사 &amp; 하드닝 — 스텁 결선 3 건 · z-index 토큰 정규화 회귀 고정.</summary>
+[Trait("Category", "Integration")]
 public sealed class SystemWideHardeningIsolatedTests
 {
     private static string Root()
@@ -29866,6 +29923,7 @@ public sealed class SystemWideHardeningIsolatedTests
 }
 
 /// <summary>v17.64.0 실시간 다국어 동시 번역 · 다국어 음성 라우팅 · 로컬라이즈드 가우시안 립싱크 회귀.</summary>
+[Trait("Category", "Integration")]
 public sealed class MultilingualDubbingIsolatedTests
 {
     private static readonly string[] GlobalLines = PromptFlowStudio.Services.GlobalDubbing.GlobalDubbingStudioRunner.DemoLines;
@@ -29988,6 +30046,7 @@ public sealed class MultilingualDubbingIsolatedTests
 
 /// <summary>v17.65.0 멀티 아바타 토크쇼 — 턴테이킹 FSM · 오버랩/데드락 가드 · 상호 시선 · 멀티캠 컷 회귀(틱 예산 측정 → 비병렬).</summary>
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 틱 게이트 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class MultiAvatarTalkshowIsolatedTests
 {
     [Fact]
@@ -30095,6 +30154,7 @@ public sealed class MultiAvatarTalkshowIsolatedTests
 
 /// <summary>v17.66.0 통합 3DGS 컴포지터 · MCR PGM/PVW · PPL 브랜드 가드 회귀(벽시계 렌더 예산 → 비병렬).</summary>
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 틱 게이트 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class BroadcastMcrIsolatedTests
 {
     /// <summary>진단: 1 s 동안 프로세스 CPU · 스레드 수 · 상위 스레드 CPU(누수 루프 탐지) — 실패 메시지 전용.</summary>
@@ -30248,6 +30308,7 @@ public sealed class BroadcastMcrIsolatedTests
 
 /// <summary>v17.67.0 시청자 인터랙티브 물리 · AI 쇼러너 애드리브 · 스팸 풀링 가드 회귀(벽시계 레이어 예산 → 비병렬).</summary>
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 레이어/틱 게이트 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class InteractiveShowrunnerIsolatedTests
 {
     [Fact]
@@ -30361,6 +30422,7 @@ public sealed class InteractiveShowrunnerIsolatedTests
 
 /// <summary>v17.68.0 버추얼 라이브 커머스 — 상품 손목 앵커 · 360° 쇼케이스 · 세일즈 FSM · 광고 심의 · 가격 정합성 회귀(벽시계 레이어 예산 → 비병렬).</summary>
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 레이어/틱 게이트 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class LiveCommerceIsolatedTests
 {
     private sealed class OutProbe : Lcm.ISalesPitchOutput
@@ -30521,6 +30583,7 @@ public sealed class LiveCommerceIsolatedTests
 
 /// <summary>v17.69.0 라이브-투-릴스 팩토리 — 복합 바이럴 클라이맥스 · 무손실 패키징(SDF 자막 · BGM 훅 · 더빙) · 배압 업로드 가드 회귀(벽시계 프레임 예산 → 비병렬).</summary>
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class LiveToReelsFactoryIsolatedTests
 {
     private sealed class Capture : L2R.IClimaxClipDispatcher
@@ -30741,6 +30804,7 @@ public sealed class LiveToReelsFactoryIsolatedTests
 
 /// <summary>v17.70.0 24/7 방송국 — EPG 링 편성 · MCR 무블랙 디졸브 · 베이지안 자가진화 · 50 ms 무중단 페일오버 회귀(벽시계 프레임 주기 → 비병렬).</summary>
 [Collection("TimingSensitivePerformance")]   // 벽시계 33 ms 프레임 주기 · 50 ms 전환 게이트 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class MasterStationIsolatedTests
 {
     private sealed class Sink : SM.IStandbyFrameSink
@@ -30968,6 +31032,7 @@ public sealed class MasterStationIsolatedTests
 
 /// <summary>v17.71.0 AI 옴니채널 퍼블리셔 — OAuth2 AES-GCM 볼트 · YT/IG 업로드 규격 · 자동 갱신 · AI 메타 스트리밍 · 편성 추천 · 1-Click 프리셋 회귀(벽시계 토큰 만료/타임아웃 → 비병렬).</summary>
 [Collection("TimingSensitivePerformance")]   // 1 s LLM 타임아웃 폴백 · 토큰 만료 시계 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class OmniChannelPublisherIsolatedTests
 {
     private sealed class ScriptedLlm : Pub.IContentLlmProvider
@@ -31227,6 +31292,7 @@ public sealed class OmniChannelPublisherIsolatedTests
 
 /// <summary>v17.72.0 시맨틱 채팅 &amp; 날씨 — 통합 MPSC 링 · 1k/s 밸브 · 톡시시티 블라인드 · 4D 감성 · 3DGS 날씨/조명 트랜지션 회귀(벽시계 프레임 예산 → 비병렬).</summary>
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms · 다중 생산자 스레드 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class SemanticChatWeatherIsolatedTests
 {
     private sealed class Collect : Scw.IUnifiedChatConsumer
@@ -31464,6 +31530,7 @@ public sealed class SemanticChatWeatherIsolatedTests
 
 /// <summary>v17.73.0 제로-터치 오토파일럿 — GPU 하드서브 번-인 · 스마트 쿼터 격리/우회/재시도 · 웹훅 텔레메트리 · 폐루프 FSM 회귀(벽시계 → 비병렬).</summary>
 [Collection("TimingSensitivePerformance")]   // 벽시계 번-인 예산 · 백오프 시계 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class ZeroTouchAutopilotIsolatedTests
 {
     private static string RepoRoot()
@@ -31701,6 +31768,7 @@ public sealed class ZeroTouchAutopilotIsolatedTests
 
 /// <summary>v17.74.0 비주얼 폴리시 — fMP4/MP4 디먹스 · H.264 디코드(관리 비트 동일 · MF 하드웨어) · 동적 하드서브 번-인 예산 · 3DGS 골든 프레임 타일 썸네일 · A/B 회귀(벽시계 → 비병렬).</summary>
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 번-인 프레임 예산 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class ReelsVisualPolishIsolatedTests
 {
     private static string RepoRoot()
@@ -31963,6 +32031,7 @@ public sealed class ReelsVisualPolishIsolatedTests
 
 /// <summary>v17.75.0 유지율 &amp; A/B 최적화 — 훅 데드에어 트리밍(무할당 · 콜드 오픈 · 0 프레임 컷) · 2×2 A/B 폴링/승격(재시도 · 클릭베이트 가드) · 저성과 진단 → EPG 역피드백 · UI 결선(벽시계 재부호화 → 비병렬).</summary>
 [Collection("TimingSensitivePerformance")]   // 관리 H.264 재부호화 · 벽시계 백오프 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class ViralRetentionOptimizerIsolatedTests
 {
     private static string RepoRoot()
@@ -32176,6 +32245,7 @@ public sealed class ViralRetentionOptimizerIsolatedTests
 
 /// <summary>v17.76.0 스마트 배포 &amp; SFX — 절차적 효과음 4종 · 샘플 정밀 믹싱(무할당) · 골든타임 예약 · 45 분 간격/일일 쿼터 순차 지연 · A/B 승자 우선 · 누수 0 · UI 결선(벽시계 → 비병렬).</summary>
 [Collection("TimingSensitivePerformance")]   // 믹싱/배치 µs 계측 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class SmartPublishingSchedulerIsolatedTests
 {
     private static string RepoRoot()
@@ -32384,6 +32454,7 @@ public sealed class SmartPublishingSchedulerIsolatedTests
 
 /// <summary>v17.77.0 키네틱 비주얼 훅 &amp; 세이프존 — 0 프레임 오차 펀치 줌 · 스마트 피벗 헤드룸 · 세이프존 시프트/분리 · 절차적 벡터 스티커(디스크 I/O 0) · 스프링 바운스 · 3~5 프레임 셰이크 비네트 · 무할당 · UI 결선(벽시계 → 비병렬).</summary>
 [Collection("TimingSensitivePerformance")]   // 프레임 µs 계측 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class KineticVisualHookIsolatedTests
 {
     private static string RepoRoot()
@@ -32625,6 +32696,7 @@ public sealed class KineticVisualHookIsolatedTests
 
 /// <summary>v17.78.0 키네틱 자막 &amp; B-Roll — 단어 윈도우 · 활성 1.15× 바운스/형광 틴트 · 지나간 단어 그레이 · 키워드 해시/정규식 감지 · 1.5~2.5 s 인서트 · 4 레이아웃 믹싱 · 프레임 캐시 30 %+ 절감 · 무할당 · UI 결선(벽시계 → 비병렬).</summary>
 [Collection("TimingSensitivePerformance")]   // 프레임/스캔 µs · 예산 가드 계측 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class HormoziKineticBRollIsolatedTests
 {
     private static string RepoRoot()
@@ -32901,6 +32973,7 @@ public sealed class HormoziKineticBRollIsolatedTests
 
 /// <summary>v17.79.0 실제 SNS 라이브 배포 — OAuth2 PKCE(S256 · state CSRF) · 만료 10 분 전 무할당 갱신 · AES-GCM 볼트 영속화/변조 탐지 · YouTube Resumable(308/Range · 단절 후 바이트 오프셋 재개) · IG 릴스 3 단계 · 프리플라이트 · 비공개 드라이런 2 단계 커밋 롤백 · 웹훅 알림 · UI 결선(할당 계측 → 비병렬).</summary>
 [Collection("TimingSensitivePerformance")]   // 무할당 계측 · 업로드 루프 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class ProductionLivePublisherIsolatedTests
 {
     private static readonly Func<string, string?> NoEnv = static _ => null;
@@ -33239,6 +33312,7 @@ public sealed class ProductionLivePublisherIsolatedTests
 
 /// <summary>v17.80.0 바이럴 보이스 FX &amp; 감정 스튜디오 — SOLA 피치/포먼트 0.7~1.4× · 태그 파싱 · 50 ms 글라이드 · FX 4 종 · 제로-클리핑 소프트 니 리미터(THD ≤ 0.1 % · 인터샘플 피크 0) · 무할당 · UI 결선(블록 µs 계측 → 비병렬).</summary>
 [Collection("TimingSensitivePerformance")]   // 블록 µs 계측 · 라이브 루프 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class ViralVoiceFxIsolatedTests
 {
     private const int Fs = 48_000;
@@ -33550,6 +33624,7 @@ public sealed class ViralVoiceFxIsolatedTests
 /// <summary>
 /// UI 전수 감사 회귀 — 전 스튜디오 모달 스크롤 컨테이너 규격 · 구독 컴포넌트 IDisposable · 오버레이 이벤트 투과 · Esc 닫기 · 휠 리스너 범위.
 /// </summary>
+[Trait("Category", "Integration")]
 public sealed class UiExhaustiveAuditIsolatedTests
 {
     private static readonly System.Text.RegularExpressions.Regex ModalPair = new(
@@ -33662,6 +33737,7 @@ public sealed class UiExhaustiveAuditIsolatedTests
 
 /// <summary>v17.81.0 준법형 다계정 매트릭스 · 채널 변형 렌더러 · 계정 건전성 안전 정지 · 스튜디오 결선.</summary>
 [Collection("TimingSensitivePerformance")]   // 1080p 프레임 µs 계측 · 프리뷰 루프 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class MatrixSyndicationIsolatedTests
 {
     private static readonly long T0 = new DateTimeOffset(2026, 10, 22, 0, 0, 0, TimeSpan.Zero).ToUnixTimeSeconds();
@@ -33899,6 +33975,7 @@ public sealed class MatrixSyndicationIsolatedTests
 
 /// <summary>v17.82.0 다국어 더빙 타임-스트레치 · 뉴럴 비젬 립싱크 리타게팅 · A/V 위상 드리프트 가드 · 스튜디오 결선.</summary>
 [Collection("TimingSensitivePerformance")]   // WSOLA/비젬 µs 계측 · 60 fps 재생 루프 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class MultilingualDubbingLipSyncIsolatedTests
 {
     private const int Fs = Mld.MultilingualDubbingTimeStretchEngine.Fs;
@@ -34106,6 +34183,7 @@ public sealed class MultilingualDubbingLipSyncIsolatedTests
 
 /// <summary>v17.83.0 RTMPS 멀티-타겟 제로-카피 송출 · 옴니채널 채팅/슈퍼챗 릴레이 · IDR 정렬 ABR 세이프티 가드 · 라이브 콕핏 결선.</summary>
 [Collection("TimingSensitivePerformance")]   // 먹스 µs 계측 · 60 Hz 송출 루프 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class OmniLiveRestreamIsolatedTests
 {
     private const long Dt = 16_667;
@@ -34400,6 +34478,7 @@ public sealed class OmniLiveRestreamIsolatedTests
 
 /// <summary>v17.84.0 120 s 무할당 롤링 링버퍼 · 멀티모달 클라이맥스 스파이크 감지 · 저우선순위 숏폼 패키징 가드 · 오토 클리퍼 콕핏 결선.</summary>
 [Collection("TimingSensitivePerformance")]   // 링 기록 µs · 라이브 틱 16.7 ms 예산 · 백그라운드 워커 간섭 계측 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class LiveToShortsAutoClipperIsolatedTests
 {
     private const long Dt = 16_667;
@@ -34701,6 +34780,7 @@ public sealed class LiveToShortsAutoClipperIsolatedTests
 
 /// <summary>v17.85.0 무할당 인메모리 fMP4 엑스포터 · 4 축 바이럴 포텐셜 스코어러 · 고CTR 썸네일/훅 카피 · 콕핏 결선.</summary>
 [Collection("TimingSensitivePerformance")]   // 인출 무할당 계측 · 렌더 ms · 백그라운드 인출 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class ViralPredictorShortsExporterIsolatedTests
 {
     [Fact]
@@ -34913,6 +34993,7 @@ public sealed class ViralPredictorShortsExporterIsolatedTests
 
 /// <summary>v17.86.0 무할당 알파 오버레이 합성기 · 실시간 투표/퀴즈 · 후원 골/파티클 스팅어 · 콕핏 결선.</summary>
 [Collection("TimingSensitivePerformance")]   // 1080p 합성 µs 계측 · 60 Hz 합성 루프 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class LiveAudienceEngagementIsolatedTests
 {
     [Fact]
@@ -35074,6 +35155,7 @@ public sealed class LiveAudienceEngagementIsolatedTests
 
 /// <summary>v17.87.0 무손실 세그먼트 레코더 · SigV4 멀티클라우드 볼트 · 수명주기 티어링 · 아카이브 콕핏 결선.</summary>
 [Collection("TimingSensitivePerformance")]   // 대역폭 셰이핑 벽시계 계측 · 업로드 워커 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class LiveArchiveCloudVaultIsolatedTests
 {
     private const long FrameUs = 33_334;
@@ -35304,6 +35386,7 @@ public sealed class LiveArchiveCloudVaultIsolatedTests
 
 /// <summary>v17.88.0 장문 VOD 챕터 요약 · 마크다운 신디케이터 · 카드뉴스/OG 래스터라이저 · 리퍼포징 콕핏 결선.</summary>
 [Collection("TimingSensitivePerformance")]   // 래스터/파이프라인 벽시계 계측 · 무할당 계측(스레드 할당 바이트) → 비병렬
+[Trait("Category", "Integration")]
 public sealed class VodRepurposingIsolatedTests
 {
     [Fact]
@@ -35469,6 +35552,7 @@ public sealed class VodRepurposingIsolatedTests
 
 /// <summary>v17.89.0 무할당 인텐트 검색 엔진 · 165 카탈로그 1:1 도움말 레지스트리 · 허브 모달/도움말 서랍/Ctrl+K/HUD 결선.</summary>
 [Collection("TimingSensitivePerformance")]   // 검색 1 ms 벽시계 게이트 · 스레드 할당 바이트 계측 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class IntentNavigationIsolatedTests
 {
     [Fact]
@@ -35583,6 +35667,7 @@ public sealed class IntentNavigationIsolatedTests
 
 /// <summary>v17.90.0 원클릭 7 노드 바이럴 DAG · 인터락 서킷브레이커 · 멀티플랫폼 K-Factor 텔레메트리 · 마스터 콕핏 결선.</summary>
 [Collection("TimingSensitivePerformance")]   // 스레드 할당 바이트 · 100 ms 판정 벽시계 계측 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class OmniViralGrowthIsolatedTests
 {
     [Fact]
@@ -35793,6 +35878,7 @@ public sealed class OmniViralGrowthIsolatedTests
 
 /// <summary>v17.91.0 음향 지문 Content ID 분석 · 로열티 프리 BGM 치환 · 브랜드 세이프티 · 저작권 검역 콕핏 결선.</summary>
 [Collection("TimingSensitivePerformance")]   // 프레임 1 ms 판정 벽시계 · 스레드 할당 바이트 계측 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class CopyrightComplianceIsolatedTests
 {
     [Fact]
@@ -35952,6 +36038,7 @@ public sealed class CopyrightComplianceIsolatedTests
 
 /// <summary>v17.92.0 마스터 실러너 E2E 체인 · 헤드리스 배치 드라이버 · 인터락 스테이징 롤백 · 실러너 샌드박스 콕핏 결선.</summary>
 [Collection("TimingSensitivePerformance")]   // 실러너 7 종 순차 호출(스레드 할당 바이트 계측 · 전용 배치 스레드 · 볼트 셰이핑 벽시계) → 비병렬
+[Trait("Category", "Integration")]
 public sealed class MasterPipelineRealRunnerIsolatedTests
 {
     [Fact]
@@ -36132,6 +36219,7 @@ public sealed class MasterPipelineRealRunnerIsolatedTests
 
 /// <summary>v17.93.0 포스트-퍼블리시 A/B 추적 · 저성과 자동 회수 · 승자 매트릭스 승격 · 관제 콕핏 결선.</summary>
 [Collection("TimingSensitivePerformance")]   // 스레드 할당 바이트 계측(시계열 기록 · 스코어링 · 승격 핸드오프) → 비병렬
+[Trait("Category", "Integration")]
 public sealed class PostPublishSplitTestIsolatedTests
 {
     private const long T0 = 1_800_000_000;
@@ -36312,6 +36400,7 @@ public sealed class PostPublishSplitTestIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 스레드 할당 바이트 계측(가시성 전환 · 폴링 라운드) → 비병렬
+[Trait("Category", "Integration")]
 public sealed class PlatformVisibilityGatewayIsolatedTests
 {
     private const double T0 = 1_800_000_000;
@@ -36599,6 +36688,7 @@ public sealed class PlatformVisibilityGatewayIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 스레드 할당 바이트 계측(감정 분류 · 답글 조합 · 속도 가드 허가) → 비병렬
+[Trait("Category", "Integration")]
 public sealed class GoldenHourEngagementIsolatedTests
 {
     private const double T0 = 1_800_000_000;
@@ -36757,6 +36847,7 @@ public sealed class GoldenHourEngagementIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 스레드 할당 바이트 계측 · 100 ms 스캔 예산(피드 파싱 · 연관도 스캔 · 메타데이터 조합) → 비병렬
+[Trait("Category", "Integration")]
 public sealed class SocialTrendJackingIsolatedTests
 {
     private const double T0 = 1_800_000_000;
@@ -36917,6 +37008,7 @@ public sealed class SocialTrendJackingIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 스레드 할당 바이트 계측 · 100 ms 예산(상품 매칭 · 숏링크/고지 조립 · 클릭 판정) → 비병렬
+[Trait("Category", "Integration")]
 public sealed class ViralCommerceAffiliateIsolatedTests
 {
     private const double T0 = 1_800_000_000;
@@ -37137,6 +37229,7 @@ public sealed class ViralCommerceAffiliateIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 스레드 할당 바이트 계측 · 100 ms 예산(곡선 분석 · 편집 계획 · WSOLA 리패키징 · 줌 프레임) → 비병렬
+[Trait("Category", "Integration")]
 public sealed class AudienceRetentionHeatmapIsolatedTests
 {
     private const long T0 = 1_800_000_000;
@@ -37404,6 +37497,7 @@ public sealed class AudienceRetentionHeatmapIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 스레드 할당 바이트 계측 · 100 ms 예산(이상치 스캔 · 훅/컷/피크 디컴파일 · 대항 합성/표절 검사) → 비병렬
+[Trait("Category", "Integration")]
 public sealed class CompetitorViralSpyIsolatedTests
 {
     private const long T0 = 1_800_000_000;
@@ -37650,6 +37744,7 @@ public sealed class CompetitorViralSpyIsolatedTests
 
 /// <summary>v17.98.2 실기 비트스트림 재생 적합성 — SPS RBSP 에뮬레이션 방지 · 4:2:0 CropUnit 정렬 · fMP4 박스 트리/IDR 동기 컨포먼스 · 100 회 무할당.</summary>
 [Collection("TimingSensitivePerformance")]   // 100 회 무할당 · 벽시계 예산 계측 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class RealBitstreamPlaybackConformanceIsolatedTests
 {
     private static int Find(byte[] b, string fourcc, int from = 0)
@@ -37831,6 +37926,7 @@ public sealed class RealBitstreamPlaybackConformanceIsolatedTests
 
 /// <summary>[v18.0.0] 175 분절 모달 → 32 슈퍼-워크스페이스 통폐합 · 서브탭 딥링크 라우터 · 숏폼 팩토리 탭 공유 컨텍스트 무결성.</summary>
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class SuperWorkspaceConsolidationTests
 {
     [Fact]
@@ -37990,6 +38086,7 @@ public sealed class SuperWorkspaceConsolidationTests
 
 /// <summary>v18.0.1: 숏폼 팩토리 심층 파이프라인 하이드레이션 — ① 절삭/리프레임 변경 → ② 대본 재슬라이싱 · ③ 슬럼프/펀치/리먹서 컷 · ④ 길이/썸네일 피크 단절 0 · 동기화 디스패치 무할당.</summary>
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
+[Trait("Category", "Integration")]
 public sealed class ShortsFactoryDeepPipelineHydrationTests
 {
     [Fact]
@@ -38091,6 +38188,7 @@ public sealed class ShortsFactoryDeepPipelineHydrationTests
 
 /// <summary>v18.0.2: 숏폼 팩토리 실 슬라이스 E2E — ① 소스 링 절삭 바이트 → ③ 리텐션(펀치 GOP SPS 크롭 · −30 dB BGM · 원점 정규화) → ④ fMP4/PNG · 5 회 배치 누수 0 · 바인더 핫패스 무할당.</summary>
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) · 메모리 누수 측정 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class ShortsFactoryRealSliceE2ERenderTests
 {
     [Fact]
@@ -38205,6 +38303,7 @@ public sealed class ShortsFactoryRealSliceE2ERenderTests
 
 /// <summary>v18.0.3: 로컬 MP4 실 파일 임포트 — ISO-BMFF 표(stts · ctts · stss · stsz · stsc · stco) → 링 실 NALU/ADTS 주입 · 리허설 배제 · ①~④ 관통 · 1080×1920 PNG 구조 · 누수 0 · 주입 핫패스 무할당.</summary>
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) · 메모리 누수 측정 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class ShortsFactoryRealFileImportTests
 {
     private const int Sec = 40, Fps = 30, Gop = 60, AacFrames = Sec * 48_000 / 1024;
@@ -38440,6 +38539,7 @@ public sealed class ShortsFactoryRealFileImportTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
+[Trait("Category", "Integration")]
 public sealed class ShortsToPublisherHandoffTests
 {
     [Fact]
@@ -38636,6 +38736,7 @@ public sealed class ShortsToPublisherHandoffTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
+[Trait("Category", "Integration")]
 public sealed class SocialPublisherResumableUploadTests
 {
     [Fact]
@@ -38816,6 +38917,7 @@ public sealed class SocialPublisherResumableUploadTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
+[Trait("Category", "Integration")]
 public sealed class ViralGrowthStrategyPipelineTests
 {
     [Fact]
@@ -38958,6 +39060,7 @@ public sealed class ViralGrowthStrategyPipelineTests
 
 /// <summary>v18.0.7: 3대 슈퍼-워크스페이스 E2E 클로즈드 루프 — 그로스 룸(스파이 역공학 · 트렌드 · 제휴) → 브리지 1(0-카피) → 숏폼 팩토리(①~④ 원클릭) → 브리지 2(0-카피) → 소셜 퍼블리셔(YouTube 8 MB 청크 · Instagram 컨테이너 발행) · 라이브 RSS 폴백 · 누수 0.</summary>
 [Collection("TimingSensitivePerformance")]   // 메모리 누수 측정(GC 카운터) → 비병렬
+[Trait("Category", "Integration")]
 public sealed class ClosedLoopAutonomousMediaPipelineTests
 {
     private sealed class StubRssHandler : HttpMessageHandler
@@ -39135,6 +39238,7 @@ public sealed class ClosedLoopAutonomousMediaPipelineTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) · 메모리 누수 측정 · 실 디스크 I/O → 비병렬
+[Trait("Category", "Integration")]
 public sealed class RealDiskExportBinaryIntegrityTests
 {
     [Fact]
@@ -39244,6 +39348,7 @@ public sealed class RealDiskExportBinaryIntegrityTests
 }
 
 [Collection("ProcessGcMode")]
+[Trait("Category", "Integration")]
 public sealed class DesktopRuntimeSmokeTests
 {
     [Fact]
@@ -39395,6 +39500,7 @@ public sealed class DesktopRuntimeSmokeTests
 
 /// <summary>v18.2.0: StoryV 스토리보드 — 발화 호흡 샷 분할 정확도 · 9:16 키프레임 규격 · 무할당 핫패스 · 숏폼 팩토리 0-카피 핸드오프 일치성.</summary>
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
+[Trait("Category", "Integration")]
 public sealed class StoryboardSequencerFactoryBridgeTests
 {
     [Fact]
@@ -39537,6 +39643,7 @@ public sealed class StoryboardSequencerFactoryBridgeTests
 
 /// <summary>v18.2.1: StoryV 오디오 정렬 — PCM 무음 경계 · TTS 단어 경계 1 ms 타임코드 · 다중 샷 9:16 크롭 이진 탐색 · 팩토리 크롭 트랙 0-카피 관통.</summary>
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
+[Trait("Category", "Integration")]
 public sealed class StoryboardAudioAlignmentReframeTests
 {
     private const string Script = "안녕하세요. 오늘은 AI로 숏폼을 만드는 비밀을 알려드릴게요, 끝까지 보시면 반전이 있습니다! 준비되셨나요?";
@@ -39742,6 +39849,7 @@ public sealed class StoryboardAudioAlignmentReframeTests
 
 /// <summary>v18.2.2: StoryV 실기 오디오 — WAV 헤더 파싱 · 실측 샷 재동기화(음절 추정 배제) 무할당 · 스토리보드 → 숏폼 팩토리 오디오 0-카피 관통 · ②~④ 렌더 소비.</summary>
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
+[Trait("Category", "Integration")]
 public sealed class StoryboardRealAudioPassthroughTests
 {
     private const string Script = "안녕하세요. 오늘은 AI로 숏폼을 만드는 비밀을 알려드릴게요, 끝까지 보시면 반전이 있습니다! 준비되셨나요?";
@@ -39867,6 +39975,7 @@ public sealed class StoryboardRealAudioPassthroughTests
 
 /// <summary>v18.2.3: StoryV 내부 TTS 단어 경계 인메모리 직결 · SRT/WebVTT 무할당 자막 파서(깨진 큐 복구) · 9:16 프리뷰 캔버스 세이프존 침범 판정.</summary>
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
+[Trait("Category", "Integration")]
 public sealed class StoryboardTtsDirectSubtitleCanvasTests
 {
     private const string Script = "안녕하세요. 오늘은 AI로 숏폼을 만드는 비밀을 알려드릴게요, 끝까지 보시면 반전이 있습니다! 준비되셨나요?";
@@ -40043,6 +40152,7 @@ public sealed class StoryboardTtsDirectSubtitleCanvasTests
 
 /// <summary>v18.2.4: StoryV 순수 C# MP3 프레임 헤더 파서(CBR · Xing VBR · VBRI) · BS.1770-4 −14 LUFS 노멀라이저 · MP3/PCM 스토리보드 → 숏폼 팩토리 오디오 · 게인 메타데이터 관통.</summary>
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
+[Trait("Category", "Integration")]
 public sealed class StoryboardMp3LufsNormalizerTests
 {
     private const string Script = "안녕하세요. 오늘은 AI로 숏폼을 만드는 비밀을 알려드릴게요, 끝까지 보시면 반전이 있습니다! 준비되셨나요?";
@@ -40280,6 +40390,7 @@ public sealed class StoryboardMp3LufsNormalizerTests
 
 /// <summary>v18.2.5: StoryV 샷 스플릿/머지/넛지 편집기 · .storyv 매니페스트 영속화 · StoryV → 숏폼 팩토리 → 소셜 퍼블리셔 전주기 클로즈드 루프.</summary>
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) · 메모리 누수 측정 · 실 디스크 I/O → 비병렬
+[Trait("Category", "Integration")]
 public sealed class StoryVFullChainClosedLoopTests
 {
     private const string Script = "안녕하세요. 오늘은 AI로 숏폼을 만드는 비밀을 알려드릴게요, 끝까지 보시면 반전이 있습니다! 준비되셨나요?";
@@ -40698,6 +40809,7 @@ public sealed class StoryVFullChainClosedLoopTests
 
 // ══ v18.3.0 Production Release Lockdown — 실기 바이너리 프로세스 스모크 + 배포 번들 SHA-256 매니페스트 ══
 [Collection("ProcessGcMode")]   // 서브프로세스 기동 · 실 디스크 I/O · 무할당 프로브 → 비병렬
+[Trait("Category", "Integration")]
 public sealed class ProductionReleaseLockdownTests
 {
     private const int SmokeTimeoutMs = 5000;

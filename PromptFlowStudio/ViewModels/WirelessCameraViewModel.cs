@@ -7,6 +7,7 @@ namespace PromptFlowStudio.ViewModels;
 /// [PromptFlowStudio] 무선 카메라 화면 VM — 연결 토글 · 프레임 캡처(캡처 롤 최근 5장) · 종횡비 가이드 · 모션 강도/속도 · 작업실 원클릭 전송.
 ///   ▸ 텔레메트리는 <see cref="RefreshTelemetry"/> 호출 시점 스냅숏(페이지 타이머가 주기 호출).
 ///   ▸ 캡처 롤은 연결 해제 후에도 유지 → 베스트 컷을 고른 뒤 전송 가능.
+///   ▸ <see cref="StateVersion"/> 은 텔레메트리 외 상태 변경 시에만 증가 — 텔레메트리 미표시 화면은 주기 틱 렌더를 건너뛴다.
 /// </summary>
 public sealed class WirelessCameraViewModel
 {
@@ -21,6 +22,10 @@ public sealed class WirelessCameraViewModel
     }
 
     public event Action? Changed;
+
+    private long _stateVersion;
+    /// <summary>연결·캡처 롤·활성 프레임·가이드·상태 메시지 변경 버전(텔레메트리 틱은 미증가).</summary>
+    public long StateVersion => Interlocked.Read(ref _stateVersion);
 
     public string StreamEndpointInput { get; set; } = "rtsp://192.168.0.10:554/live";
     public CameraConnectionState ConnectionState => _camera.State;
@@ -63,6 +68,7 @@ public sealed class WirelessCameraViewModel
                 : _camera.IsFallbackMode ? "폴백 프레임 수신 중(" + _camera.FallbackReason + ") · " + _camera.Endpoint
                 : "스트리밍 중 · " + _camera.Endpoint;
         }
+        Interlocked.Increment(ref _stateVersion);
         RefreshTelemetry();
     }
 
@@ -83,6 +89,7 @@ public sealed class WirelessCameraViewModel
         RecentCaptures.Insert(0, frame);
         while (RecentCaptures.Count > MaxRecentCaptures) RecentCaptures.RemoveAt(RecentCaptures.Count - 1);
         SelectedFrame = frame;
+        Interlocked.Increment(ref _stateVersion);
     }
 
     /// <summary>롤에서 활성 프레임 변경(롤에 없는 ID 면 false).</summary>
@@ -143,8 +150,12 @@ public sealed class WirelessCameraViewModel
         LatencyMs = t.LatencyMs;
         BitrateKbps = t.BitrateKbps;
         ResolutionDisplay = string.IsNullOrEmpty(t.Resolution) ? "—" : t.Resolution;
-        Raise();
+        Changed?.Invoke();
     }
 
-    private void Raise() => Changed?.Invoke();
+    private void Raise()
+    {
+        Interlocked.Increment(ref _stateVersion);
+        Changed?.Invoke();
+    }
 }

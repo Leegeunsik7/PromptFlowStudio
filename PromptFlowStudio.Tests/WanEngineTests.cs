@@ -10,6 +10,7 @@ using PromptFlowStudio.Services.Wan;
 
 namespace PromptFlowStudio.Tests;
 
+[Trait("Category", "Integration")]
 public class WanEngineTests
 {
     [Fact]

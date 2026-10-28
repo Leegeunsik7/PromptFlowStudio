@@ -5,6 +5,7 @@ using PromptFlowStudio.Services.Media;
 
 namespace PromptFlowStudio.Tests;
 
+[Trait("Category", "FastUnit")]
 public class VirtualCamPipeNativeSpecTests
 {
     [Fact]
@@ -41,6 +42,7 @@ public class VirtualCamPipeNativeSpecTests
         Assert.True(header.Timestamp > 0);
     }
 }
+[Trait("Category", "FastUnit")]
 public class LiveStreamVirtualCamPipeTests
 {
     private static (string map, string mutex) UniqueNames([System.Runtime.CompilerServices.CallerMemberName] string caller = "")
@@ -124,6 +126,7 @@ public class LiveStreamVirtualCamPipeTests
     }
 }
 
+[Trait("Category", "FastUnit")]
 public class WanPostProcessingEngineStreamingBridgeTests
 {
     // v11.1.0: MainForm.cs 의 OnChange 결선점이 실제로 의미 있는 프레임을 넘길 수 있는지 - CopyLastInterpolatedFrameTo

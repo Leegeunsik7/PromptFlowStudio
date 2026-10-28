@@ -5,6 +5,7 @@ using PromptFlowStudio.Services;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>v17.63.2 — 모바일(iOS 계열) 격리 시임: 관리형 GCM 폴백이 네이티브 AesGcm 과 바이트 단위 동일해야 한다.</summary>
+[Trait("Category", "FastUnit")]
 public class AesGcmCompatTests
 {
     [Theory]
