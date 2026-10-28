@@ -7,6 +7,7 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
+using PromptFlowStudio.Services.Camera;
 using PromptFlowStudio.Services.Prompt;
 
 namespace PromptFlowStudio.ViewModels;
@@ -172,7 +173,28 @@ public sealed class PromptInputViewModel : INotifyPropertyChanged
         if (ReferenceImageBytes is null) return;
         ReferenceImageBytes = null;
         ReferenceImageWidth = 0; ReferenceImageHeight = 0; ReferenceAspectCss = null;
+        I2vModeRequested = false;
         RaiseImageChanged();
+    }
+
+    // ── 스마트 카메라 핸드오프 ──
+    /// <summary>스마트 카메라 전송으로 I2V 모드가 자동 활성화됨(작업실 HUD 강조 · 토스트). 참조 이미지 제거 시 해제.</summary>
+    public bool I2vModeRequested { get; private set; }
+
+    /// <summary>
+    /// 스마트 카메라 전송 페이로드 적용 — 기존 <see cref="UserInput"/> 의 카메라 지시어를 새 모션·강도·속도로 교체 병합 →
+    ///   프레임이 있으면 I2V 첫 프레임 바인딩 + <see cref="I2vModeRequested"/>. 프롬프트는 이미지 판독 전에 대입(호출자 즉시 반영).
+    /// </summary>
+    public async Task<bool> ApplyCameraTransferAsync(CameraWorkspaceTransfer transfer, byte[]? frameBytes, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(transfer);
+        if (transfer.CameraMotion.Length > 0)
+            UserInput = SmartCameraMerge.MergeCameraPrompt(UserInput, transfer.CameraMotion, transfer.Intensity, transfer.Speed);
+        if (frameBytes is { Length: > 0 })
+            await HandleImageDroppedAsync(new MemoryStream(frameBytes, writable: false), ct).ConfigureAwait(false);
+        I2vModeRequested = IsI2V;
+        OnPropertyChanged(nameof(I2vModeRequested));
+        return I2vModeRequested;
     }
 
     /// <summary>출력 해상도("1280*720" · "1280x720") 반영 → HUD 가이드 박스 비율/상태 텍스트 갱신. 파싱 실패 시 1280x720.</summary>

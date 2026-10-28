@@ -3,12 +3,15 @@
 @page "/motion"
 @page "/motion-camera"
 @inject PromptFlowStudio.ViewModels.WirelessCameraViewModel Vm
-@inject PromptDraftService Draft
 @inject NavigationManager Nav
+@implements IDisposable
+@using System.Globalization
+@using PromptFlowStudio.Services.Camera
 
 @* [PromptFlow Studio] 🎥 스마트 카메라 & 모션 스튜디오 — 📡 무선 스트림(I2V) + 🕹️ 3D 가상 모션 단일 화면.
    레거시 /wireless-camera · /motion · /motion-camera 는 /camera-studio?tab=… 으로 replace 포워딩.
-   모션 조합은 이 페이지가 소유(탭 전환 시 유지), 캡처 프레임은 싱글턴 서비스 소유 → 통합 전송 바가 둘을 한 번에 작업실로 보낸다. *@
+   모션 조합은 이 페이지가 소유(탭 전환 시 유지), 캡처 롤/활성 프레임은 싱글턴 VM 소유 → 통합 전송 바가 둘을 한 번에 작업실로 보낸다.
+   🎬 모션 연출 패널: 활성 프레임 배경 + 3D 궤적 그리드 오버레이 · 강도(Subtle/Normal/Dynamic) · 속도(0.5/1.0/1.5x) → 작업실에서 카메라 지시어 교체 병합 + I2V 자동 활성화. *@
 
 <PageTitle>PromptFlow Studio · 스마트 카메라 & 모션</PageTitle>
 
@@ -29,9 +32,46 @@
         }
     </div>
 
+    @* ── 🎬 실시간 모션 궤적 연출: 활성 프레임 배경 + 3D 카메라 궤적 그리드 ── *@
+    <section class="cs-dir">
+        <div class="cs-pv cs-pv-@(_kind)" style="--amp:@(Amp.ToString("0.0", CultureInfo.InvariantCulture));--dur:@((6.0 / Vm.Speed).ToString("0.00", CultureInfo.InvariantCulture))s">
+            @if (Vm.SelectedFrame is { } sf)
+            {
+                <img class="cs-pv-img" src="@sf.FrameDataUrl" alt="활성 프레임" />
+            }
+            else
+            {
+                <div class="cs-pv-img cs-pv-void">📷 캡처 롤에서 베스트 컷을 선택하세요</div>
+            }
+            <div class="cs-pv-floor"></div>
+            <svg class="cs-pv-path" viewBox="0 0 160 90" preserveAspectRatio="none" aria-hidden="true">
+                <path d="@(PathFor(_kind))" />
+            </svg>
+            <span class="cs-pv-tag">@(KindLabel(_kind)) · @(Vm.Intensity) · @(SmartCameraMerge.SpeedLabel(Vm.Speed))</span>
+        </div>
+        <div class="cs-ctl">
+            <div class="cs-ctl-h">💪 모션 강도</div>
+            <div class="cs-seg">
+                @foreach (var it in Intensities)
+                {
+                    <button class="cs-seg-b @(Vm.Intensity == it.Value ? "on" : null)" @onclick="() => Vm.Intensity = it.Value" @key="it.Value">@(it.Label)</button>
+                }
+            </div>
+            <div class="cs-ctl-h">⏱️ 모션 속도</div>
+            <div class="cs-seg">
+                @foreach (var sp in SmartCameraMerge.Speeds)
+                {
+                    <button class="cs-seg-b @(Vm.Speed == sp ? "on" : null)" @onclick="() => Vm.Speed = sp" @key="sp">@(SmartCameraMerge.SpeedLabel(sp))</button>
+                }
+            </div>
+            <div class="cs-ctl-h">🧠 병합 미리보기</div>
+            <div class="cs-merge">@(_combo.Count == 0 ? "🕹️ 탭에서 카메라 모션을 선택하세요." : Vm.PreviewMerge(null, string.Join(", ", _combo)))</div>
+        </div>
+    </section>
+
     <div class="cs-bar">
-        <span class="cs-bar-st">📷 @(Vm.LastCapturedFrame is null ? "캡처 없음" : "캡처 1장") · 🎥 모션 @(_combo.Count)개</span>
-        <button class="cs-send" disabled="@(Vm.LastCapturedFrame is null && _combo.Count == 0)" @onclick="SendAll">✨ 캡처 프레임 + 카메라 모션 작업실로 전송</button>
+        <span class="cs-bar-st">📷 @(Vm.SelectedFrame is null ? "활성 프레임 없음" : "활성 프레임 1장 (롤 " + Vm.RecentCaptures.Count.ToString(CultureInfo.InvariantCulture) + ")") · 🎥 모션 @(_combo.Count)개</span>
+        <button class="cs-send" disabled="@(Vm.SelectedFrame is null && _combo.Count == 0)" @onclick="SendAll">✨ 작업실로 전송 (I2V)</button>
     </div>
 </div>
 
@@ -45,6 +85,30 @@
     .cs-bar-st { font-size: 12px; opacity: .8; }
     .cs-send { padding: 9px 16px; border: 0; border-radius: 10px; background: linear-gradient(135deg, #7c5cff, #2ec5ff); color: #fff; font-weight: 600; cursor: pointer; }
     .cs-send:disabled { opacity: .45; cursor: not-allowed; }
+    .cs-dir { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; }
+    @@media (max-width: 980px) { .cs-dir { grid-template-columns: 1fr; } }
+    .cs-pv { position: relative; aspect-ratio: 16 / 9; max-height: 340px; border-radius: 14px; overflow: hidden; background: #05070d; border: 1px solid var(--line, rgba(255,255,255,.12)); perspective: 600px; }
+    .cs-pv-img { position: absolute; inset: -8%; width: 116%; height: 116%; object-fit: cover; animation: var(--anim) var(--dur) ease-in-out infinite alternate; }
+    .cs-pv-void { display: flex; align-items: center; justify-content: center; font: 700 12px var(--mono); color: var(--text-muted); background: linear-gradient(135deg, #0f172a, #1e1b4b); }
+    .cs-pv-floor { position: absolute; left: -30%; right: -30%; bottom: -10%; height: 70%; transform-origin: 50% 100%; transform: rotateX(68deg); pointer-events: none;
+        background-image: linear-gradient(rgba(34,211,238,.55) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,.55) 1px, transparent 1px); background-size: 40px 40px; animation: cs-floor var(--dur) linear infinite; opacity: .7; }
+    @@keyframes cs-floor { from { background-position: 0 0; } to { background-position: 0 calc(var(--amp) * 80px); } }
+    .cs-pv-path { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    .cs-pv-path path { fill: none; stroke: #f472b6; stroke-width: 1.2; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; animation: cs-dash var(--dur) linear infinite; }
+    @@keyframes cs-dash { to { stroke-dashoffset: -60; } }
+    .cs-pv-tag { position: absolute; left: 10px; top: 10px; font: 800 11px/1 var(--mono); padding: 5px 9px; border-radius: 999px; background: rgba(0,0,0,.6); color: #f9a8d4; border: 1px solid rgba(244,114,182,.45); }
+    .cs-pv-pan { --anim: cs-pan; } .cs-pv-orbit { --anim: cs-orbit; } .cs-pv-dolly { --anim: cs-dolly; } .cs-pv-crane { --anim: cs-crane; } .cs-pv-free { --anim: cs-free; }
+    @@keyframes cs-pan { from { transform: translateX(calc(var(--amp) * -5%)); } to { transform: translateX(calc(var(--amp) * 5%)); } }
+    @@keyframes cs-orbit { from { transform: rotateY(calc(var(--amp) * -9deg)) scale(1.04); } to { transform: rotateY(calc(var(--amp) * 9deg)) scale(1.04); } }
+    @@keyframes cs-dolly { from { transform: scale(1); } to { transform: scale(calc(1 + var(--amp) * .12)); } }
+    @@keyframes cs-crane { from { transform: translateY(calc(var(--amp) * 5%)); } to { transform: translateY(calc(var(--amp) * -5%)); } }
+    @@keyframes cs-free { from { transform: translate(calc(var(--amp) * -2%), calc(var(--amp) * 1%)) rotate(-.4deg); } to { transform: translate(calc(var(--amp) * 2%), calc(var(--amp) * -1%)) rotate(.4deg); } }
+    .cs-ctl { display: flex; flex-direction: column; gap: 8px; padding: 14px; border-radius: 14px; border: 1px solid var(--line, rgba(255,255,255,.12)); background: var(--card-2); }
+    .cs-ctl-h { font: 800 12px var(--mono); color: var(--text-secondary); }
+    .cs-seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+    .cs-seg-b { padding: 7px 0; border-radius: 8px; border: 1px solid var(--line, rgba(255,255,255,.12)); background: var(--card); color: var(--text-secondary); font: 700 11.5px var(--mono); cursor: pointer; }
+    .cs-seg-b.on { border-color: transparent; color: #fff; background: linear-gradient(135deg, #7c5cff, #f472b6); }
+    .cs-merge { min-height: 54px; padding: 8px 10px; border-radius: 8px; background: var(--card); border: 1px solid var(--line, rgba(255,255,255,.12)); font: 500 11.5px/1.5 var(--mono); color: var(--text-secondary); word-break: break-word; }
 </style>
 
 @code {
@@ -53,8 +117,50 @@
 
     [SupplyParameterFromQuery(Name = "tab")] public string? Tab { get; set; }
 
+    private static readonly (MotionIntensity Value, string Label)[] Intensities =
+    {
+        (MotionIntensity.Subtle, "Subtle 미세"), (MotionIntensity.Normal, "Normal 표준"), (MotionIntensity.Dynamic, "Dynamic 역동"),
+    };
+
     private readonly List<string> _combo = new();
     private string _tab = TabWireless;
+
+    /// <summary>조합의 첫 카메라 지시어로 3D 프리뷰 궤적 결정(pan · orbit · dolly · crane · free).</summary>
+    private string _kind => KindOf(_combo);
+    private double Amp => Vm.Intensity switch { MotionIntensity.Subtle => 0.5, MotionIntensity.Dynamic => 1.8, _ => 1.0 };
+
+    internal static string KindOf(IReadOnlyList<string> combo)
+    {
+        for (var i = 0; i < combo.Count; i++)
+        {
+            var c = combo[i];
+            if (!SmartCameraMerge.IsCameraToken(c)) continue;
+            if (c.Contains("orbit", StringComparison.OrdinalIgnoreCase)) return "orbit";
+            if (c.Contains("pan", StringComparison.OrdinalIgnoreCase) || c.Contains("tracking", StringComparison.OrdinalIgnoreCase)) return "pan";
+            if (c.Contains("dolly", StringComparison.OrdinalIgnoreCase) || c.Contains("zoom", StringComparison.OrdinalIgnoreCase)) return "dolly";
+            if (c.Contains("crane", StringComparison.OrdinalIgnoreCase) || c.Contains("aerial", StringComparison.OrdinalIgnoreCase)) return "crane";
+            return "free";
+        }
+        return "free";
+    }
+
+    private static string PathFor(string kind) => kind switch
+    {
+        "pan" => "M14 62 L146 62 M138 56 L146 62 L138 68",
+        "orbit" => "M80 70 C140 70 140 40 80 40 C20 40 20 70 80 70",
+        "dolly" => "M80 84 L80 30 M74 38 L80 30 L86 38",
+        "crane" => "M24 78 Q60 10 136 20 M128 14 L136 20 L128 26",
+        _ => "M18 70 C58 22 102 82 142 30",
+    };
+
+    private static string KindLabel(string kind) => kind switch
+    {
+        "pan" => "↔ Pan/Track", "orbit" => "⟳ Orbit", "dolly" => "⇕ Dolly/Zoom", "crane" => "⤴ Crane", _ => "∿ Free",
+    };
+
+    protected override void OnInitialized() => Vm.Changed += OnVmChanged;
+    private void OnVmChanged() => _ = InvokeAsync(StateHasChanged);
+    public void Dispose() => Vm.Changed -= OnVmChanged;
 
     protected override void OnParametersSet()
     {
@@ -72,11 +178,9 @@
 
     private void Select(string tab) => Nav.NavigateTo("camera-studio?tab=" + tab);
 
-    /// <summary>캡처 프레임 → I2V 참조 버퍼, 모션 조합 → 프롬프트 카메라 태그(드래프트 이어붙임). 둘 중 하나라도 있으면 작업실로 이동.</summary>
+    /// <summary>✨ 작업실로 전송 — 활성 프레임 → I2V 참조 버퍼, 모션·강도·속도 → 작업실 1회 페이로드(기존 카메라 지시어 교체 병합 + I2V 자동 활성화).</summary>
     private void SendAll()
     {
-        var sent = Vm.LastCapturedFrame is not null && Vm.SendToI2vReference();
-        if (_combo.Count > 0) { Draft.Send(string.Join(", ", _combo)); sent = true; }
-        if (sent) Nav.NavigateTo("workspace");
+        if (Vm.TransferToWorkspace(string.Join(", ", _combo))) Nav.NavigateTo("workspace");
     }
 }

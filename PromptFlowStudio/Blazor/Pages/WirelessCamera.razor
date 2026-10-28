@@ -27,6 +27,12 @@
     <div class="wc-grid">
         @* ── 중앙 뷰파인더: HUD + 3x3 구도 가이드 ── *@
         <section class="wc-view">
+            <div class="wc-aspects" role="group" aria-label="프레임 가이드">
+                @foreach (var g in PromptFlowStudio.ViewModels.WirelessCameraViewModel.AspectGuides)
+                {
+                    <button class="wc-asp @(Vm.AspectGuide == g ? "on" : null)" @onclick="() => Vm.SetAspectGuide(g)" @key="g">@(AspectLabel(g))</button>
+                }
+            </div>
             <div class="wc-frame @(Vm.IsStreaming ? "on" : null)">
                 @if (Vm.IsStreaming)
                 {
@@ -41,6 +47,7 @@
                     <i style="left:33.333%"></i><i style="left:66.666%"></i>
                     <b style="top:33.333%"></b><b style="top:66.666%"></b>
                 </div>
+                <div class="wc-safe wc-safe-@(Vm.AspectGuide.Replace(':', 'x'))"><span>@(Vm.AspectGuide) SAFE</span></div>
                 <div class="wc-hud">
                     <span class="wc-chip">@(Vm.CurrentFps.ToString("0.00", CultureInfo.InvariantCulture)) FPS</span>
                     <span class="wc-chip @(Vm.LatencyMs > 500 ? "warn" : null)">@(Vm.LatencyMs.ToString(CultureInfo.InvariantCulture)) ms</span>
@@ -53,9 +60,9 @@
         @* ── 우측 캡처 덱 ── *@
         <section class="wc-deck">
             <button class="wc-shutter" @onclick="Capture" disabled="@(!Vm.IsStreaming)">📷 현재 프레임 캡처</button>
-            @if (Vm.LastCapturedFrame is { } f)
+            @if (Vm.SelectedFrame is { } f)
             {
-                <img class="wc-thumb" src="@f.FrameDataUrl" alt="최근 캡처" />
+                <img class="wc-thumb" src="@f.FrameDataUrl" alt="활성 프레임" />
                 <div class="wc-meta">
                     <span>@(f.Resolution)</span>
                     <span>@(f.Timestamp.ToLocalTime().ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture))</span>
@@ -66,7 +73,21 @@
             {
                 <div class="wc-thumb wc-thumb-empty">캡처된 프레임 없음</div>
             }
-            <button class="wc-btn wc-send" @onclick="SendToI2v" disabled="@(Vm.LastCapturedFrame is null)">I2V 첫 프레임으로 보내기 →</button>
+            @* ── 캡처 롤(Filmstrip) — 최신순 최대 5장 · 클릭으로 활성 프레임 변경 ── *@
+            <div class="wc-roll-h">🎞️ 캡처 롤 <span>@(Vm.RecentCaptures.Count)/@(PromptFlowStudio.ViewModels.WirelessCameraViewModel.MaxRecentCaptures)</span></div>
+            <div class="wc-roll">
+                @foreach (var c in Vm.RecentCaptures)
+                {
+                    <button class="wc-roll-i @(Vm.SelectedFrame?.FrameId == c.FrameId ? "on" : null)" @onclick="() => Vm.SelectFrame(c.FrameId)" @key="c.FrameId" title="@(c.Timestamp.ToLocalTime().ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture))">
+                        <img src="@c.FrameDataUrl" alt="캡처" />
+                    </button>
+                }
+                @for (var i = Vm.RecentCaptures.Count; i < PromptFlowStudio.ViewModels.WirelessCameraViewModel.MaxRecentCaptures; i++)
+                {
+                    <span class="wc-roll-i empty"></span>
+                }
+            </div>
+            <button class="wc-btn wc-send" @onclick="SendToI2v" disabled="@(Vm.SelectedFrame is null)">I2V 첫 프레임으로 보내기 →</button>
             @if (Vm.I2vQueued)
             {
                 <div class="wc-hint">✅ 대기 중 — 프롬프트 입력 화면을 열면 첫 프레임으로 적용됩니다.</div>
@@ -116,6 +137,20 @@
     .wc-id { font: 600 10px var(--mono); color: var(--text-muted); }
     .wc-send { width: 100%; }
     .wc-hint { font-size: 11.5px; color: var(--text-secondary); }
+    .wc-aspects { display: flex; gap: 6px; margin-bottom: 8px; }
+    .wc-asp { font: 800 11px/1 var(--mono); padding: 6px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; }
+    .wc-asp.on { color: #fff; border-color: transparent; background: linear-gradient(135deg, #22d3ee, #6366f1); }
+    .wc-safe { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); height: 92%; border: 2px solid rgba(250,204,21,.85); border-radius: 4px; box-shadow: 0 0 0 9999px rgba(0,0,0,.45); pointer-events: none; }
+    .wc-safe span { position: absolute; left: 6px; bottom: 6px; font: 900 10px/1 var(--mono); color: #facc15; letter-spacing: .06em; }
+    .wc-safe-16x9 { height: 100%; aspect-ratio: 16 / 9; box-shadow: none; border-style: dashed; }
+    .wc-safe-9x16 { aspect-ratio: 9 / 16; }
+    .wc-safe-1x1 { aspect-ratio: 1 / 1; }
+    .wc-roll-h { display: flex; justify-content: space-between; font: 800 11px var(--mono); color: var(--text-secondary); }
+    .wc-roll { display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; }
+    .wc-roll-i { padding: 0; aspect-ratio: 16 / 9; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); background: #05070d; cursor: pointer; }
+    .wc-roll-i img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .wc-roll-i.on { border-color: #f43f5e; box-shadow: 0 0 0 2px rgba(244,63,94,.55); }
+    .wc-roll-i.empty { cursor: default; opacity: .4; border-style: dashed; }
 </style>
 
 @code {
@@ -152,6 +187,13 @@
     {
         if (Vm.SendToI2vReference()) Nav.NavigateTo("workspace");
     }
+
+    private static string AspectLabel(string g) => g switch
+    {
+        "9:16" => "▯ 9:16 세로 쇼츠",
+        "1:1" => "◻ 1:1 정방형",
+        _ => "▭ 16:9 와이드",
+    };
 
     private static string StateLabel(CameraConnectionState s) => s switch
     {

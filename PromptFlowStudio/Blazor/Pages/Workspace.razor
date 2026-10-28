@@ -49,6 +49,11 @@
         </div>
     }
 
+    @if (_camToast is not null)
+    {
+        <div class="ws-cam-toast" role="status">@(_camToast) <button class="ws-cam-toast-x" @onclick="() => _camToast = null" title="닫기">✕</button></div>
+    }
+
     <section class="ws-grid">
         @* ── ① 입력 ── *@
         <div class="ws-card">
@@ -168,7 +173,7 @@
             {
                 <div class="ws-empty">
                     @* 뷰파인더 HUD — 선택 해상도 비율 가이드 박스 + 3분할 그리드 + 중앙 크로스헤어 + 해상도 상태 *@
-                    <div class="ws-vf" style="aspect-ratio: @_vm.HudAspectCss">
+                    <div class="ws-vf @(_vm.I2vModeRequested ? "i2v-hot" : null)" style="aspect-ratio: @_vm.HudAspectCss">
                         <span class="ws-vf-g v1"></span><span class="ws-vf-g v2"></span>
                         <span class="ws-vf-g h1"></span><span class="ws-vf-g h2"></span>
                         <span class="ws-vf-x"></span>
@@ -653,6 +658,11 @@
     .ws-vf-c { position: absolute; width: 14px; height: 14px; border: 2px solid #22d3ee; }
     .ws-vf-c.tl { left: 6px; top: 6px; border-right: 0; border-bottom: 0; } .ws-vf-c.tr { right: 6px; top: 6px; border-left: 0; border-bottom: 0; }
     .ws-vf-c.bl { left: 6px; bottom: 6px; border-right: 0; border-top: 0; } .ws-vf-c.br { right: 6px; bottom: 6px; border-left: 0; border-top: 0; }
+    .ws-vf.i2v-hot { border: 1px solid #f472b6; box-shadow: 0 0 0 2px color-mix(in srgb, #f472b6 35%, transparent), 0 0 24px color-mix(in srgb, #f472b6 40%, transparent); animation: ws-i2v-pulse 1.6s ease-in-out 3; }
+    .ws-vf.i2v-hot .ws-vf-mode { color: #f472b6; }
+    @@keyframes ws-i2v-pulse { 0%, 100% { box-shadow: 0 0 0 2px color-mix(in srgb, #f472b6 35%, transparent); } 50% { box-shadow: 0 0 0 4px color-mix(in srgb, #f472b6 60%, transparent), 0 0 32px #f472b6; } }
+    .ws-cam-toast { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; padding: 10px 14px; border-radius: 12px; border: 1px solid color-mix(in srgb, #f472b6 55%, var(--line)); background: color-mix(in srgb, #f472b6 12%, var(--card)); color: var(--text-primary); font-size: 13px; font-weight: 700; }
+    .ws-cam-toast-x { margin-left: auto; border: 0; background: none; color: var(--text-muted); cursor: pointer; font-size: 13px; }
     .ws-vf-mode { position: absolute; left: 26px; top: 8px; font: 800 9px/1 var(--mono); letter-spacing: .06em; color: #22d3ee; }
     .ws-vf-st { position: absolute; right: 26px; bottom: 8px; font: 700 9px/1 var(--mono); letter-spacing: .05em; color: #22d3ee; opacity: .85; }
     .ws-count.over { color: #f87171; }
@@ -1258,23 +1268,41 @@
         catch (Exception ex) { Program.Log("Workspace.GalleryRestore", ex); }
     }
 
-    /// <summary>무선 카메라 캡처(BMP) 1회 소비 → _uploads 저장 → I2V 첫 프레임 바인딩. 실패 시 T2V 유지.</summary>
+    /// <summary>
+    /// 스마트 카메라 캡처(JPEG/PNG/BMP) + 전송 페이로드 1회 소비 → _uploads 저장 → I2V 첫 프레임 바인딩 ·
+    ///   페이로드가 있으면 기존 프롬프트 카메라 지시어 교체 병합 + I2V 자동 활성화 토스트. 실패 시 T2V 유지.
+    /// </summary>
     private void AbsorbWirelessCameraFrame()
     {
-        if (WirelessCam.TakeI2vReference() is not { } bytes) return;
+        var transfer = WirelessCam.TakeWorkspaceTransfer();
+        var bytes = WirelessCam.TakeI2vReference();
+        if (bytes is null && transfer is null) return;
         try
         {
-            var dir = Path.Combine(Media.MediaRoot, "_uploads");
-            Directory.CreateDirectory(dir);
-            var savePath = Path.Combine(dir, $"{Guid.NewGuid():N}.bmp");
-            File.WriteAllBytes(savePath, bytes);
-            _imagePath = savePath;
-            _imageName = "wireless-camera.bmp";
-            _imagePreview = Media.ToPlaybackUrl(savePath);
-            _ = _vm.HandleImageDroppedAsync(new MemoryStream(bytes, writable: false), _mediaCts.Token);   // T2V→I2V 감지 · 비율 판독(메모리 스트림 → 동기 완료)
+            if (bytes is not null)
+            {
+                var ext = PromptFlowStudio.Services.Camera.CameraFrameCodec.MimeOf(bytes) switch { "image/jpeg" => ".jpg", "image/png" => ".png", _ => ".bmp" };
+                var dir = Path.Combine(Media.MediaRoot, "_uploads");
+                Directory.CreateDirectory(dir);
+                var savePath = Path.Combine(dir, Guid.NewGuid().ToString("N") + ext);
+                File.WriteAllBytes(savePath, bytes);
+                _imagePath = savePath;
+                _imageName = "camera-studio" + ext;
+                _imagePreview = Media.ToPlaybackUrl(savePath);
+            }
+            if (transfer is not null)
+            {
+                _ = _vm.ApplyCameraTransferAsync(transfer, bytes, _mediaCts.Token);   // 프롬프트 병합(즉시) + I2V 바인딩(메모리 스트림 → 동기 완료)
+                _prompt = _vm.UserInput ?? "";
+                _camToast = bytes is not null ? "📸 카메라 프레임 및 모션이 작업실에 적용되었습니다 · I2V 모드 활성화" : "🎥 카메라 모션이 작업실 프롬프트에 적용되었습니다";
+            }
+            else if (bytes is not null)
+                _ = _vm.HandleImageDroppedAsync(new MemoryStream(bytes, writable: false), _mediaCts.Token);   // T2V→I2V 감지 · 비율 판독(메모리 스트림 → 동기 완료)
         }
         catch (Exception ex) { Program.Log("Workspace.WirelessCamFrame", ex); }
     }
+
+    private string? _camToast;
     public void Dispose()
     {
         State.OnChange -= OnStateChanged;

@@ -185,8 +185,35 @@ public sealed class WirelessCameraService : IDisposable
         return true;
     }
 
+    /// <summary>캡처 롤의 특정 프레임을 I2V 대기 버퍼에 적재 — 최신 캡처는 원본 바이트, 그 외는 DataUrl base64 복원(실패 시 false).</summary>
+    public bool QueueI2vReference(CapturedFrameMeta frame)
+    {
+        ArgumentNullException.ThrowIfNull(frame);
+        var bytes = LastFrame?.FrameId == frame.FrameId ? _lastFrameBytes : DecodeDataUrl(frame.FrameDataUrl);
+        if (bytes is null) return false;
+        Volatile.Write(ref _pendingI2v, bytes);
+        return true;
+    }
+
     /// <summary>대기 중인 I2V 참조 프레임을 1회 소비(없으면 null).</summary>
     public byte[]? TakeI2vReference() => Interlocked.Exchange(ref _pendingI2v, null);
+
+    private CameraWorkspaceTransfer? _pendingTransfer;
+    public bool HasPendingWorkspaceTransfer => Volatile.Read(ref _pendingTransfer) is not null;
+
+    /// <summary>작업실 전송 페이로드(모션·강도·속도) 적재 — 작업실 진입 시 1회 소비되어 프롬프트 병합 + I2V 자동 활성화.</summary>
+    public void QueueWorkspaceTransfer(CameraWorkspaceTransfer transfer)
+        => Volatile.Write(ref _pendingTransfer, transfer ?? throw new ArgumentNullException(nameof(transfer)));
+
+    public CameraWorkspaceTransfer? TakeWorkspaceTransfer() => Interlocked.Exchange(ref _pendingTransfer, null);
+
+    private static byte[]? DecodeDataUrl(string? dataUrl)
+    {
+        var comma = dataUrl?.IndexOf(";base64,", StringComparison.Ordinal) ?? -1;
+        if (comma < 0) return null;
+        try { return Convert.FromBase64String(dataUrl![(comma + 8)..]); }
+        catch (FormatException) { return null; }
+    }
 
     public static bool TryValidateEndpoint(string? endpoint, out string? error)
     {
