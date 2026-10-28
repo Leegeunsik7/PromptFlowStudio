@@ -91,7 +91,7 @@ public class StoryboardSequencerTests
         Assert.False(cuts[0].IsSubjectLocked);
         for (var i = 0; i < cuts.Count; i++)
         {
-            Assert.Equal(424242L, cuts[i].Seed);
+            Assert.Equal(424242L + i, cuts[i].Seed);   // MasterSeed + (CutIndex - 1)
             Assert.Equal("1-year-old Korean baby girl, pink onesie", cuts[i].SubjectIdentity);
             if (i > 0) Assert.True(cuts[i].IsSubjectLocked);
         }
@@ -103,7 +103,7 @@ public class StoryboardSequencerTests
         var cuts = _seq.BreakdownScript(FourLineScript, 2);
         _seq.PropagateConsistency(cuts, 7L, "  ");
         Assert.Null(cuts[1].SubjectIdentity);
-        Assert.Equal(7L, cuts[1].Seed);
+        Assert.Equal(8L, cuts[1].Seed);
         _seq.PropagateConsistency(new List<StoryboardCut>(), 7L, "x");
         Assert.Throws<ArgumentNullException>(() => _seq.PropagateConsistency(null!, 7L, "x"));
     }
@@ -178,10 +178,10 @@ public class StoryboardSequencerTests
         vm.MoveUp(1);   // 2번 컷이 1번으로 승격 → 잠금 해제, 기존 1번은 상속 컷으로
         Assert.False(vm.Cuts[0].IsSubjectLocked);
         Assert.True(vm.Cuts[1].IsSubjectLocked);
-        foreach (var c in vm.Cuts)
+        for (var i = 0; i < vm.Cuts.Count; i++)
         {
-            Assert.Equal(99L, c.Seed);
-            Assert.Equal("golden retriever", c.SubjectIdentity);
+            Assert.Equal(99L + i, vm.Cuts[i].Seed);   // 재정렬 후에도 위치 기준 전개
+            Assert.Equal("golden retriever", vm.Cuts[i].SubjectIdentity);
         }
     }
 }

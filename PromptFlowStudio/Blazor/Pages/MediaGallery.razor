@@ -154,7 +154,7 @@
                         <span class="gl-card-d">텍스트/이미지 → 영상 단일 컷</span>
                     </button>
                     <button class="gl-card" @onclick='() => Nav.NavigateTo("storyboard")'>
-                        <span class="gl-card-ic">🪄</span>
+                        <span class="gl-card-ic">✨</span>
                         <span class="gl-card-t">대본 자동 생성</span>
                         <span class="gl-card-d">주제 한 줄 → 5컷 스토리보드</span>
                     </button>
@@ -189,7 +189,7 @@
                         <div class="gl-info">@m.Folder · @MediaLibraryService.FormatBytes(m.Bytes) · @m.Created.ToString("MM-dd HH:mm")</div>
                     </div>
                     <div class="gl-ops">
-                        <button class="gl-op" @onclick="() => Library.Reveal(m.Path)" title="탐색기에서 보기">💾</button>
+                        <button class="gl-op" @onclick="() => Library.Reveal(m.Path)" title="탐색기에서 보기">📂</button>
                         <button class="gl-op del" @onclick="() => _pendingDelete = m" title="삭제">🗑️</button>
                     </div>
                 </div>
@@ -295,8 +295,8 @@
     .gl-play { position: absolute; width: 42px; height: 42px; border-radius: 50%; background: rgba(0,0,0,.5); color: #fff; display: grid; place-items: center; font-size: 16px; pointer-events: none; }
     .gl-meta { padding: 9px 11px 4px; }
     .gl-name { font-size: 12.5px; font-weight: 700; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .gl-info { font: 600 10.5px var(--mono); color: var(--text-muted); margin-top: 2px; }
-    .gl-ops { display: flex; gap: 6px; padding: 6px 11px 11px; }
+    .gl-info { font: 600 10.5px var(--mono); color: var(--text-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .gl-ops { display: flex; gap: 6px; padding: 6px 11px 11px; margin-top: auto; }
     .gl-op { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; font-size: 13px; }
     .gl-op:hover { border-color: var(--accent); color: var(--text-primary); }
     .gl-op.del:hover { border-color: #ef4444; color: #ef4444; }

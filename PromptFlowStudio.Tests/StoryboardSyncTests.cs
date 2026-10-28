@@ -141,4 +141,83 @@ public class StoryboardSyncTests
         vm.Cuts[0].RawPrompt = "detached";
         Assert.Equal("a2", project.Scenes[0].Prompt);
     }
+
+    [Fact]
+    public void Workspace_ExpandToStoryboard_PreservesSeedAndExpandsSequence()
+    {
+        using var vm = NewVm();
+        const string concept = "a golden retriever puppy running on a beach at sunrise";
+        Assert.False(vm.ExpandFromWorkspace("   ", 77L));   // 빈 콘셉트는 상태 불변
+        Assert.Empty(vm.Cuts);
+
+        Assert.True(vm.ExpandFromWorkspace(concept, 5000L));
+        Assert.Equal(4, vm.Cuts.Count);
+        Assert.Equal(5000L, vm.MasterSeed);
+        Assert.Equal(concept, vm.Cuts[0].RawPrompt);
+        Assert.Contains(StoryboardSequencerService.ArcDevelopment, vm.Cuts[1].RawPrompt);
+        Assert.Contains(StoryboardSequencerService.ArcTurn, vm.Cuts[2].RawPrompt);
+        Assert.Contains(StoryboardSequencerService.ArcResolution, vm.Cuts[3].RawPrompt);
+        for (var i = 0; i < 4; i++)
+        {
+            Assert.Equal(i + 1, vm.Cuts[i].CutIndex);
+            Assert.Equal(5000L + i, vm.Cuts[i].Seed);
+            if (i > 0) Assert.StartsWith(concept, vm.Cuts[i].RawPrompt);
+        }
+        Assert.Equal(StoryboardSequencerService.OpeningMotion, vm.Cuts[0].CameraMotion);
+        Assert.Equal(StoryboardSequencerService.ClosingMotion, vm.Cuts[3].CameraMotion);
+
+        // 시드 미고정(null/0) → 결정적 비 0 시드
+        using var vm2 = NewVm();
+        Assert.True(vm2.ExpandFromWorkspace(concept, null));
+        using var vm3 = NewVm();
+        Assert.True(vm3.ExpandFromWorkspace(concept, 0L));
+        Assert.NotNull(vm2.MasterSeed);
+        Assert.True(vm2.MasterSeed > 0);
+        Assert.Equal(vm2.MasterSeed, vm3.MasterSeed);
+        Assert.All(vm2.Cuts, c => Assert.NotEqual(0L, c.Seed));
+    }
+
+    [Fact]
+    public void Storyboard_MultiCutDispatch_PropagatesConsistencyAnchor()
+    {
+        using var vm = NewVm();
+        var project = new StoryboardProject { AnchorImagePath = @"C:\anchors\hero.png" };
+        vm.ExpandFromWorkspace("a red-haired girl in a yellow raincoat", 1234L);
+        vm.AttachProject(project);
+        vm.Cuts[0].SubjectIdentity = null;   // 키워드 미지정 → 1번 컷 프롬프트가 앵커
+
+        using var q = new PromptFlowStudio.Services.Render.RenderQueueService(TimeSpan.Zero, autoStart: false);
+        Assert.Equal(4, vm.DispatchToRenderQueue(q));
+        var jobs = q.Queue.ToList();
+        Assert.Equal(4, jobs.Count);
+        for (var i = 0; i < 4; i++)
+        {
+            var j = jobs[i];
+            Assert.Equal(i + 1, j.CutIndex);
+            Assert.Equal(1234L + i, j.Seed);   // MasterSeed + (CutIndex - 1) — 0 으로 뭉개지지 않음
+            Assert.Equal("a red-haired girl in a yellow raincoat", j.SubjectAnchor);
+            Assert.Equal(@"C:\anchors\hero.png", j.ReferenceImagePath);
+            Assert.Contains("a red-haired girl in a yellow raincoat", j.Prompt);
+        }
+        Assert.Equal(0f, jobs[0].StartSec);
+        Assert.Equal(jobs[0].DurationSec, jobs[1].StartSec);
+
+        // 명시 피사체 + 프로젝트 앵커 없음 → 1번 씬 i2v 이미지를 참조로, 후속 컷 프롬프트에 앵커 결합
+        using var vm2 = new StoryboardViewModel(new StoryboardSequencerService()) { SubjectIdentity = "corgi with blue scarf" };
+        var p2 = new StoryboardProject();
+        vm2.ReceiveGeneratedScript(FourLineScript);
+        vm2.MasterSeed = 10L;
+        vm2.AttachProject(p2);
+        p2.Scenes[0].ImagePath = @"C:\ref\cut1.png";
+        var jobs2 = vm2.BuildRenderJobs("720x1280");
+        Assert.All(jobs2, j =>
+        {
+            Assert.Equal("corgi with blue scarf", j.SubjectAnchor);
+            Assert.Equal(@"C:\ref\cut1.png", j.ReferenceImagePath);
+            Assert.Equal("720x1280", j.Resolution);
+        });
+        Assert.DoesNotContain("same subject as cut 1", jobs2[0].Prompt);
+        Assert.EndsWith("same subject as cut 1: corgi with blue scarf", jobs2[3].Prompt);
+        Assert.Equal(new[] { 10L, 11L, 12L, 13L }, jobs2.Select(j => j.Seed));
+    }
 }

@@ -133,6 +133,8 @@ a { color: inherit; text-decoration: none; }
 .side-ava { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; font-weight: 800; color: var(--accent-ink); background: linear-gradient(135deg, var(--accent-2), var(--accent)); flex: 0 0 auto; }
 .side-um { min-width: 0; flex: 1; } .side-un { font-size: 12.5px; font-weight: 800; color: #eef2fb; } .side-ue { font-size: 10.5px; color: var(--side-sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .side-out { width: 30px; height: 30px; flex: 0 0 auto; border-radius: 9px; border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.04); color: var(--side-sub); cursor: pointer; font-size: 14px; transition: color .14s, border-color .14s, background .14s; }
+/* FocusOnNavigate(Selector="h1") 가 제목에 프로그램 포커스를 주며 흰 사각 아웃라인이 노출되던 결함 차단(키보드 탐색 포커스는 그대로) */
+h1:focus, h1:focus-visible { outline: none; }
 .side-out:hover { color: #fca5a5; border-color: rgba(248,113,113,.5); background: rgba(248,113,113,.1); }
 
 /* ── 공용 카드/유틸 ── */

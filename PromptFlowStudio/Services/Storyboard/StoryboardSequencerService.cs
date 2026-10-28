@@ -103,7 +103,42 @@ public sealed class StoryboardSequencerService
         return cuts;
     }
 
-    /// <summary>1번 컷에 <paramref name="masterSeed"/>·<paramref name="subjectIdentity"/>를 고정하고 후속 컷 전체에 상속(IsSubjectLocked=true).</summary>
+    /// <summary>
+    /// 단일 콘셉트 → 기승전결 N컷(기본 4) 뼈대. 1번 컷 = 원문 그대로, 2~N번 = 전개/전환/결말 시네마틱 구문 + 콘셉트 앵커.
+    /// 빈 콘셉트는 빈 리스트.
+    /// </summary>
+    public List<StoryboardCut> ExpandConcept(string? concept, int cutCount = 4)
+    {
+        var cuts = new List<StoryboardCut>();
+        if (string.IsNullOrWhiteSpace(concept)) return cuts;
+        var core = concept.Trim();
+        var count = Math.Clamp(cutCount, 1, MaxCutCount);
+        for (var i = 0; i < count; i++)
+        {
+            cuts.Add(new StoryboardCut
+            {
+                CutIndex = i + 1,
+                RawPrompt = i == 0 ? core : core + ", " + ArcBeat(i, count),
+                CameraMotion = PickCameraMotion(i, count),
+                TransitionType = i == 0 ? TransitionType.Cut : TransitionType.Dissolve,
+            });
+        }
+        return cuts;
+    }
+
+    /// <summary>기(0)·승·전·결(마지막) 시네마틱 전개 구문 — 중간 컷이 여럿이면 승/전을 앞뒤 절반으로 배분.</summary>
+    private static string ArcBeat(int position, int count)
+    {
+        if (position >= count - 1) return ArcResolution;
+        return position * 2 < count ? ArcDevelopment : ArcTurn;
+    }
+
+    public const string ArcDevelopment = "rising development, the story unfolds, subject in motion, building momentum";
+    public const string ArcTurn = "dramatic turning point, emotional climax, heightened tension and contrast";
+    public const string ArcResolution = "resolution, calm aftermath, emotional payoff, cinematic closing";
+
+    /// <summary>1번 컷에 <paramref name="masterSeed"/>·<paramref name="subjectIdentity"/>를 고정하고 후속 컷 전체에 상속(IsSubjectLocked=true).
+    ///   시드는 컷마다 <c>masterSeed + (CutIndex - 1)</c> — 같은 피사체 계열을 유지하되 컷별 구도가 동일 노이즈로 뭉개지지 않도록 전개.</summary>
     public void PropagateConsistency(List<StoryboardCut> cuts, long masterSeed, string? subjectIdentity)
     {
         ArgumentNullException.ThrowIfNull(cuts);
@@ -112,7 +147,7 @@ public sealed class StoryboardSequencerService
         {
             var c = cuts[i];
             if (c is null) continue;
-            c.Seed = masterSeed;
+            c.Seed = unchecked(masterSeed + i);
             c.SubjectIdentity = identity;
             c.IsSubjectLocked = i > 0;
         }

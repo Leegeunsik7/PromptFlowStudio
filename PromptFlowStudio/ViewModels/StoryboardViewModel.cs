@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using PromptFlowStudio.Services.Batch;
+using PromptFlowStudio.Services.Render;
 using PromptFlowStudio.Services.Storyboard;
 
 namespace PromptFlowStudio.ViewModels;
@@ -74,6 +76,93 @@ public sealed class StoryboardViewModel : INotifyPropertyChanged, IDisposable
         finally { _suppress = false; }
         AfterStructureChanged();
         return true;
+    }
+
+    /// <summary>
+    /// 작업실 단일 콘셉트 → 4컷(기승전결) 확장 — 1번 컷에 원문 주입, 시드는 MasterSeed 로 고정 후 컷별 +1 전개.
+    /// 시드 미지정/0 은 콘셉트 기반 결정적 시드로 대체(0 으로 뭉개짐 방지). 빈 콘셉트면 false(상태 불변).
+    /// </summary>
+    public bool ExpandFromWorkspace(string? concept, long? seed, int cutCount = 4)
+    {
+        var cuts = _sequencer.ExpandConcept(concept, cutCount);
+        if (cuts.Count == 0) return false;
+        var master = seed is > 0 ? seed.Value : StableSeed(concept!);
+        _masterSeed = master;
+        OnPropertyChanged(nameof(MasterSeed));
+        _sequencer.PropagateConsistency(cuts, master, _subjectIdentity);
+
+        _suppress = true;
+        try
+        {
+            Cuts.Clear();
+            foreach (var c in cuts) Cuts.Add(c);
+        }
+        finally { _suppress = false; }
+        AfterStructureChanged();
+        return true;
+    }
+
+    /// <summary>
+    /// 전 컷 일괄 렌더 작업 생성 — 1번 컷 피사체 키워드(SubjectIdentity → 없으면 1번 컷 프롬프트)와 참조 이미지
+    /// (프로젝트 앵커 → 없으면 1번 씬 i2v 이미지)를 전 컷 공통 앵커로 전파, 후속 컷 프롬프트에 앵커 구문 결합.
+    /// 시드: MasterSeed 지정 시 <c>MasterSeed + (CutIndex - 1)</c>, 미지정이면 컷 시드(0 이면 결정적 대체 + 위치).
+    /// </summary>
+    public BatchRenderJob[] BuildRenderJobs(string resolution = RenderCostEstimatorService.DefaultResolution)
+    {
+        if (Cuts.Count == 0) return Array.Empty<BatchRenderJob>();
+        var first = Cuts[0];
+        string? anchor = !string.IsNullOrWhiteSpace(first.SubjectIdentity) ? first.SubjectIdentity.Trim()
+                   : !string.IsNullOrWhiteSpace(_subjectIdentity) ? _subjectIdentity.Trim()
+                   : first.RawPrompt.Trim();
+        if (anchor.Length == 0) anchor = null;
+        var refImage = !string.IsNullOrWhiteSpace(_project?.AnchorImagePath) ? _project!.AnchorImagePath
+                     : _links.TryGetValue(first, out var s0) && !string.IsNullOrWhiteSpace(s0.ImagePath) ? s0.ImagePath
+                     : null;
+        var fallbackSeed = _masterSeed ?? (first.Seed != 0 ? first.Seed : StableSeed(first.RawPrompt));
+
+        var jobs = new BatchRenderJob[Cuts.Count];
+        var start = 0f;
+        for (var i = 0; i < jobs.Length; i++)
+        {
+            var cut = Cuts[i];
+            var seed = _masterSeed is long m ? unchecked(m + i)
+                     : cut.Seed != 0 ? cut.Seed
+                     : unchecked(fallbackSeed + i);
+            var prompt = cut.RawPrompt;
+            if (i > 0 && anchor is not null && prompt.IndexOf(anchor, StringComparison.OrdinalIgnoreCase) < 0)
+                prompt = prompt.Length == 0 ? "same subject as cut 1: " + anchor : prompt + ", same subject as cut 1: " + anchor;
+            jobs[i] = new BatchRenderJob
+            {
+                Prompt = prompt,
+                Seed = seed,
+                Resolution = resolution,
+                DurationSec = cut.DurationSec > 0f ? cut.DurationSec : StoryboardCut.DefaultDurationSec,
+                CutIndex = i + 1,
+                StartSec = start,
+                TransitionFx = cut.TransitionType.ToString(),
+                SubjectAnchor = anchor,
+                ReferenceImagePath = refImage,
+            };
+            start += jobs[i].DurationSec;
+        }
+        return jobs;
+    }
+
+    /// <summary>전 컷을 렌더 큐에 일괄 적재 — 실제 적재 건수 반환.</summary>
+    public int DispatchToRenderQueue(IRenderQueueService queue, string resolution = RenderCostEstimatorService.DefaultResolution)
+    {
+        ArgumentNullException.ThrowIfNull(queue);
+        var jobs = BuildRenderJobs(resolution);
+        return jobs.Length == 0 ? 0 : queue.Enqueue(jobs);
+    }
+
+    /// <summary>프로세스 간 결정적 양수 시드(FNV-1a) — string.GetHashCode 는 실행마다 달라짐.</summary>
+    private static long StableSeed(string text)
+    {
+        var h = 2166136261u;
+        foreach (var c in text) h = unchecked((h ^ c) * 16777619u);
+        var v = h & int.MaxValue;
+        return v == 0 ? 1 : v;
     }
 
     /// <summary>컷 추가(끝) — 카메라 모션은 위치 기반 기본값.</summary>

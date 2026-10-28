@@ -34,6 +34,7 @@
         <div class="ws-navrow">
             <button class="ws-back" @onclick='() => Nav.NavigateTo("")'>← 워크스페이스</button>
             <button class="ws-back" @onclick='() => Nav.NavigateTo("storyboard")'>🎬 스토리보드(여러 컷) →</button>
+            <button class="ws-back" @onclick="ExpandToStoryboard" disabled="@(State.IsBusy || string.IsNullOrWhiteSpace(_prompt))" title="현재 프롬프트·시드로 1번 컷을 채우고 2~4번 컷을 기승전결로 자동 전개">🎬 스토리보드로 4컷 확장</button>
         </div>
         <h1 class="ws-title">새 프로젝트 <span class="ws-title-g">텍스트 → 영상</span>
             <span class="ws-accel @AccelClass" title="Wan 2.1 엔진 상태">⚡ @(AccelClass == "ready" ? _vm.StatusBadge : "WAN 2.1 · " + AccelLabel)</span></h1>
@@ -836,6 +837,12 @@
     {
         var script = string.IsNullOrWhiteSpace(_prompt) ? DefaultStorySynopsis : _prompt;
         if (!StoryVm.ReceiveGeneratedScript(script)) StoryVm.ReceiveGeneratedScript(DefaultStorySynopsis);
+        Nav.NavigateTo("storyboard");
+    }
+    // 단일 콘셉트 원클릭 확장: 1번 컷 = 현재 프롬프트, 2~4번 = 기승전결 뼈대, 시드 핀 값(미고정이면 콘셉트 결정적 시드) 계승.
+    private void ExpandToStoryboard()
+    {
+        if (!StoryVm.ExpandFromWorkspace(_prompt, _canvas.EffectiveSeed)) return;
         Nav.NavigateTo("storyboard");
     }
     private string _size = "1280*720";

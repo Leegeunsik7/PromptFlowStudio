@@ -87,4 +87,41 @@ public class AiShortsTests
         Assert.Equal(6, vm.DispatchedCount);
         Assert.True(changed >= 3);
     }
+
+    [Fact]
+    public void Shorts_SendToRenderQueue_Enforces9x16ResolutionAndBpmMetadata()
+    {
+        using var q = new RenderQueueService(TimeSpan.Zero, autoStart: false);
+        foreach (var bgm in Enum.GetValues<BgmBeatPreset>())
+        {
+            var vm = new AiShortsViewModel(new AiShortsService(), q)
+            {
+                TopicInput = "BPM " + bgm,
+                SelectedBgm = bgm,
+                TargetResolution = "1280x720",   // 16:9 입력도 9:16 으로 잠금
+            };
+            vm.GenerateSequence();
+            var before = q.Queue.Count;
+            Assert.Equal(3, vm.DispatchToRenderQueue());
+
+            var jobs = q.Queue.Skip(before).ToList();
+            var bpm = AiShortsService.BpmFor(bgm);
+            Assert.Equal(3, jobs.Count);
+            for (var i = 0; i < 3; i++)
+            {
+                var j = jobs[i];
+                var cut = vm.Cuts[i];
+                Assert.Equal("720x1280", j.Resolution);
+                Assert.Equal(i + 1, j.CutIndex);
+                Assert.Equal(cut.StartSec, j.StartSec);
+                Assert.Equal(bpm, j.BgmBpm);
+                Assert.Equal(cut.TransitionBeatIndex, j.TransitionBeatIndex);
+                Assert.False(string.IsNullOrEmpty(j.TransitionFx));
+                Assert.Equal(cut.Seed, j.Seed);
+            }
+            Assert.Equal(15 * bpm / 60, jobs[2].TransitionBeatIndex);
+            Assert.Equal("Hold on Final Beat", jobs[2].TransitionFx);
+        }
+        Assert.Equal(new[] { 140, 80, 120, 100 }, new[] { BgmBeatPreset.HyperBeat, BgmBeatPreset.LofiChill, BgmBeatPreset.TrendingPop, BgmBeatPreset.DramaticDrop }.Select(AiShortsService.BpmFor));
+    }
 }

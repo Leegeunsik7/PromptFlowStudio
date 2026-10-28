@@ -55,8 +55,13 @@ public sealed class AiShortsViewModel
             {
                 Prompt = cut.VisualPrompt,
                 Seed = cut.Seed,
-                Resolution = cut.Resolution,
+                Resolution = AiShortsService.NormalizeVerticalResolution(cut.Resolution),   // 9:16 잠금 — 가로형/빈 값이 섞여도 세로로 강제
                 DurationSec = cut.DurationSec,
+                CutIndex = cut.CutIndex,
+                StartSec = cut.StartSec,
+                BgmBpm = cut.BgmBpm,
+                TransitionBeatIndex = cut.TransitionBeatIndex,
+                TransitionFx = cut.TransitionFx,
             };
         }
         var added = _queue.Enqueue(jobs);

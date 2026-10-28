@@ -57,7 +57,7 @@
                 <option value="@PromotionType.LimitedEdition">한정판</option>
             </select>
             <label class="ls-opt">셀링포인트(줄바꿈/쉼표 구분)</label>
-            <textarea class="ls-in" rows="4" @bind="Vm.SellingPointsInput" placeholder="72시간 보습 지속&#10;무향 저자극 포뮬러"></textarea>
+            <textarea class="ls-in" rows="4" @bind="Vm.SellingPointsInput" placeholder="@SellingPointsPlaceholder"></textarea>
             <button class="ls-btn go" @onclick="BuildPitch">AI 세일즈 피치 생성</button>
             @if (Vm.StatusMessage is not null) { <span class="ls-msg">@(Vm.StatusMessage)</span> }
         </section>
@@ -324,6 +324,7 @@
 </style>
 
 @code {
+    private const string SellingPointsPlaceholder = "72시간 보습 지속\n무향 저자극 포뮬러"; // 줄바꿈은 C# 문자열로 — 속성 내 &#10; 는 Razor 가 이중 인코딩해 그대로 노출됨
     private readonly bool[] _use = new bool[AiLiveLoopStreamerService.Presets.Count];
     private readonly string[] _server = new string[AiLiveLoopStreamerService.Presets.Count];
     private readonly string[] _key = new string[AiLiveLoopStreamerService.Presets.Count];

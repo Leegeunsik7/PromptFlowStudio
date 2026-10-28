@@ -26,6 +26,22 @@ public sealed class BatchRenderJob
     public string? ResultPath { get; set; }
     /// <summary>실패 원인 — Failed 전이 시 기록, 재적재 시 초기화.</summary>
     public string? ErrorMessage { get; set; }
+
+    // ── 시퀀스 메타(선택) — 스토리보드/숏폼 전송분만 기록, 단건 작업은 null ──
+    /// <summary>시퀀스 내 컷 순서(1부터).</summary>
+    public int? CutIndex { get; init; }
+    /// <summary>시퀀스 타임라인 시작 시각(초).</summary>
+    public float? StartSec { get; init; }
+    /// <summary>BGM BPM(숏폼 프리셋 140/80/120/100).</summary>
+    public int? BgmBpm { get; init; }
+    /// <summary>컷 종료 지점 누적 박 번호(0 기준).</summary>
+    public int? TransitionBeatIndex { get; init; }
+    /// <summary>다음 컷 진입 전환 효과.</summary>
+    public string? TransitionFx { get; init; }
+    /// <summary>피사체 일관성 앵커(1번 컷 피사체 키워드) — 후속 컷 공통.</summary>
+    public string? SubjectAnchor { get; init; }
+    /// <summary>피사체 일관성 참조 이미지 경로(1번 컷/프로젝트 앵커) — 후속 컷 공통.</summary>
+    public string? ReferenceImagePath { get; init; }
 }
 
 /// <summary>

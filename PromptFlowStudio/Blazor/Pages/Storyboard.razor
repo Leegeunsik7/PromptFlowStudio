@@ -39,6 +39,7 @@
 @inject PromptFlowStudio.Services.Ui.StudioNavigationService StudioNav
 @inject PromptFlowStudio.Services.Ui.StoryboardToShortsFactoryBridge ShotBridge
 @inject PromptFlowStudio.ViewModels.StoryboardViewModel Vm
+@inject PromptFlowStudio.Services.Render.IRenderQueueService RenderQueue
 @inject PromptFlowStudio.Services.Weather.WeatherEngine Weather
 @inject GalleryAutoSaveService Gallery
 @inject PostProductionEngine Post
@@ -73,7 +74,7 @@
         </div>
 
         <div class="sb-toolbar">
-            <button class="sb-tbtn wiz" @onclick="() => _wizardOpen = true" disabled="@Jobs.IsRunning">🪄 원클릭 숏츠 대본 자동 생성</button>
+            <button class="sb-tbtn wiz" @onclick="() => _wizardOpen = true" disabled="@Jobs.IsRunning">✨ 원클릭 숏츠 대본 자동 생성</button>
             <button class="sb-tbtn wiz" @onclick="() => _agencyOpen = true" disabled="@Jobs.IsRunning" title="실시간 트렌드 → Writer/Director/Marketer 3 AI 에이전트 자율 토론 기획 → 승인">🤖 AI 콘텐츠 에이전시</button>
             <StoryboardHeader OnOpenBaby="() => _babyGalleryOpen = true" OnOpenHyper="() => _hyperOpen = true" OnOpenB2b="() => _b2bGalleryOpen = true" OnOpenWeather="() => _weatherGalleryOpen = true" OnOpenPitch="() => _pitchOpen = true" Disabled="@(Jobs.IsRunning || Jobs.IsMerging)" />
             <button class="sb-tbtn" @onclick="() => _osmuOpen = true" title="완성 영상을 9:16·1:1·4:5 플랫폼 규격으로 재구성 + AI 제목/해시태그 패키지(폴더/ZIP) · AI 품질 검수 · 소셜 바로 게시">🌐 OSMU 내보내기 · 게시 @if (FinalQa is { } fq) { <span class="sb-qa @(fq.Verdict == QaVerdict.Pass ? "pass" : fq.Verdict == QaVerdict.Warn ? "warn" : "reject")" title="@fq.Message">@(fq.Verdict == QaVerdict.Pass ? "✅ QA" : fq.Verdict == QaVerdict.Warn ? "⚠️ QA" : "⛔ QA") @(fq.Defects.Count)</span> }</button>
@@ -193,6 +194,7 @@
         <div class="sb-cd-foot">
             <span>총 <b>@(Vm.Cuts.Count.ToString(System.Globalization.CultureInfo.InvariantCulture))</b>컷 · <b>@(Vm.TotalDurationSec.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture))</b>초</span>
             <button class="sb-tbtn" @onclick="() => { Vm.AddCut(); }">+ 새 컷 추가</button>
+            <button class="sb-tbtn" @onclick="DispatchDeckToRenderQueue" disabled="@(Vm.Cuts.Count == 0)" title="전 컷을 렌더 큐에 일괄 적재 — 1번 컷 피사체·참조 이미지를 공통 앵커로, 시드는 MasterSeed+(컷-1)">📥 렌더 큐 일괄 전송</button>
         </div>
     </section>
 
@@ -225,7 +227,7 @@
                     <div class="sb-gs-ic">🎬</div>
                     <div class="sb-gs-t">여기서 숏츠를 만들어 보세요</div>
                     <div class="sb-gs-d">주제 한 줄만 입력하면 컷·나레이션·카메라가 자동으로 구성됩니다. 컷을 직접 추가해 편집할 수도 있어요.</div>
-                    <button class="sb-btn go" @onclick="() => _wizardOpen = true" disabled="@Jobs.IsRunning">🪄 원클릭 대본 자동 생성</button>
+                    <button class="sb-btn go" @onclick="() => _wizardOpen = true" disabled="@Jobs.IsRunning">✨ 원클릭 대본 자동 생성</button>
                 </div>
             }
 
@@ -1020,7 +1022,7 @@
         <div class="sb-modal-scrim" @onclick="() => _wizardOpen = false">
             <div class="sb-modal" @onclick:stopPropagation="true">
                 <div class="sb-modal-h">
-                    <span>🪄 원클릭 숏츠 대본 자동 생성</span>
+                    <span>✨ 원클릭 숏츠 대본 자동 생성</span>
                     <button class="sb-modal-x" @onclick="() => _wizardOpen = false" title="닫기">✕</button>
                 </div>
                 <div class="sb-modal-b">
@@ -2548,7 +2550,7 @@
             _project.Title = TruncTitle(_wizardInput!.Trim());
 
         _wizardOpen = false;
-        ShowToast($"🪄 {cuts.Count}개 컷 자동 생성 완료 — 프롬프트·나레이션을 확인/편집하세요.");
+        ShowToast($"✨ {cuts.Count}개 컷 자동 생성 완료 — 프롬프트·나레이션을 확인/편집하세요.");
     }
 
     private static string TruncTitle(string s)
@@ -2992,6 +2994,16 @@
 
     private static void ClearSceneImageFile(StoryboardScene s)
     { try { if (!string.IsNullOrEmpty(s.ImagePath) && File.Exists(s.ImagePath)) File.Delete(s.ImagePath); } catch { /* 무시 */ } }
+
+    private void DispatchDeckToRenderQueue()
+    {
+        try
+        {
+            var n = Vm.DispatchToRenderQueue(RenderQueue);
+            ShowToast(n > 0 ? "📥 " + n.ToString(System.Globalization.CultureInfo.InvariantCulture) + "컷 렌더 큐 적재 — 1번 컷 피사체 앵커 공통 적용" : "렌더 큐 적재 실패(중복 또는 빈 덱)");
+        }
+        catch (Exception ex) { Program.Log("Storyboard.DispatchDeck", ex); ShowToast("렌더 큐 적재 실패"); }
+    }
 
     private void ShowToast(string msg)
     {

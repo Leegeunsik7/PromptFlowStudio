@@ -299,6 +299,12 @@ public sealed class RenderQueueService : IRenderQueueService
                 createdAt = created,
                 durationSec = job.DurationSec,
                 renderDurationSec = (float)Math.Max(0, (created - startedAt).TotalSeconds),
+                cutIndex = job.CutIndex,
+                bgmBpm = job.BgmBpm,
+                transitionBeatIndex = job.TransitionBeatIndex,
+                transitionFx = job.TransitionFx,
+                subjectAnchor = job.SubjectAnchor,
+                referenceImagePath = job.ReferenceImagePath,
             });
             File.WriteAllText(GalleryMediaService.MetaPathFor(mediaPath), json);
         }
