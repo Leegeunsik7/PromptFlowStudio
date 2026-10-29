@@ -7,13 +7,13 @@ using PromptFlowStudio.ViewModels;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>💡 스토리 레시피 &amp; 인스피레이션 허브 — 프리셋 유효성 · 칩 합성 포맷 · 뷰모델 UserInput 주입 회귀 잠금.</summary>
-[Trait("Category", "Integration")]
 public class PromptInspirationTests
 {
     private readonly PromptInspirationService _svc = new();
     private readonly PromptSynthesizerService _synth = new();
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void CuratedPresets_AtLeast15_AllFieldsValid_TitlesUnique()
     {
         var presets = _svc.GetCuratedPresets();
@@ -32,6 +32,7 @@ public class PromptInspirationTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void EveryCategory_HasPresets_AndFilterMatches()
     {
         foreach (var cat in Enum.GetValues<StoryPresetCategory>())
@@ -44,6 +45,7 @@ public class PromptInspirationTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void GetCuratedPresets_ContainsCuteBabyKidsCategory()
     {
         var baby = _svc.GetPresetsByCategory(StoryPresetCategory.CuteBabyKids);
@@ -57,6 +59,7 @@ public class PromptInspirationTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void BuildFromChips_AllChips_ProducesCinematicFormat()
     {
         var s = _svc.BuildFromChips("a lone astronaut", "a misty fjord", "slow push-in", "golden hour rays");
@@ -65,6 +68,7 @@ public class PromptInspirationTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void BuildFromChips_SkipsBlankChips_AndTrims()
     {
         var s = _svc.BuildFromChips("  a golden retriever ", null, "", "  ");
@@ -78,6 +82,7 @@ public class PromptInspirationTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void BuildFromChips_AllBlank_ReturnsEmpty_AndOverlongIsTruncated()
     {
         Assert.Equal("", _svc.BuildFromChips(null, " ", "", null));
@@ -86,6 +91,7 @@ public class PromptInspirationTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void ChipCatalogs_NonEmpty_WithSnippets()
     {
         foreach (var group in new[] { PromptInspirationService.Subjects, PromptInspirationService.Environments, PromptInspirationService.Motions, PromptInspirationService.Lightings })
@@ -96,6 +102,7 @@ public class PromptInspirationTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void ViewModel_ApplyRecipe_InjectsUserInput_ResynthesizesAndClosesModal()
     {
         var vm = new PromptInputViewModel(_synth, _svc);
@@ -115,6 +122,7 @@ public class PromptInspirationTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void ViewModel_BuildAndApplyChips_InjectsComposedText_BlankKeepsState()
     {
         var vm = new PromptInputViewModel(_synth, _svc) { UserInput = "기존 입력", IsInspirationModalOpen = true };
@@ -137,6 +145,7 @@ public class PromptInspirationTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void SaveCustomPreset_PersistsToFileAndLoadsCorrectly()
     {
         var path = TempPresetPath();
@@ -179,6 +188,7 @@ public class PromptInspirationTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void DeleteCustomPreset_RemovesTargetPreset()
     {
         var path = TempPresetPath();
@@ -206,6 +216,7 @@ public class PromptInspirationTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void LoadCustomPresets_CorruptFile_ReturnsEmptyAndKeepsBackup()
     {
         var path = TempPresetPath();
@@ -223,6 +234,7 @@ public class PromptInspirationTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void ViewModel_WithoutInspiration_FallsBackToDefaultService()
     {
         var vm = new PromptInputViewModel(_synth);

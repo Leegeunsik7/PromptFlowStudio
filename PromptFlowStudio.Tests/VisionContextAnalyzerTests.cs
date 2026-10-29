@@ -15,7 +15,7 @@ namespace PromptFlowStudio.Tests;
 
 /// <summary>v13.0.0: 비전 컨텍스트 분석기 - 축소/휴리스틱/무할당 샘플링/VLM 보강 순서(신호 기반, 벽시계 단언 없음).</summary>
 [Collection("ProcessGcMode")]   // v16.9.0: 스레드 할당 0B 단언 — 병렬 GC 중 ArrayPool 트림 오염 차단
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public class VisionContextAnalyzerTests
 {
     private static readonly TimeSpan SafetyNet = TimeSpan.FromSeconds(45);
@@ -160,7 +160,7 @@ public class VisionContextAnalyzerTests
     }
 }
 
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public class VisionReactionBinderTests
 {
     private sealed class FakeClock { public long Now = 1_000_000; public void AdvanceMs(double ms) => Now += (long)(ms * Stopwatch.Frequency / 1000.0); }
@@ -239,7 +239,6 @@ public class VisionReactionBinderTests
     }
 }
 
-[Trait("Category", "Integration")]
 public class LocalVlmHttpClientTests
 {
     private static readonly TimeSpan SafetyNet = TimeSpan.FromSeconds(45);
@@ -289,6 +288,7 @@ public class LocalVlmHttpClientTests
     private const string OllamaExplosion = "{\"message\":{\"role\":\"assistant\",\"content\":\"{\\\"scene\\\":\\\"explosion\\\",\\\"confidence\\\":0.9,\\\"summary\\\":\\\"fireball\\\"}\"}}";
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task Transient500_ThenSuccess_RetriesWithBackoffAndParsesReply()
     {
         var port = FreeTcpPort();
@@ -309,6 +309,7 @@ public class LocalVlmHttpClientTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task SchemaMismatch_ReturnsNullForHeuristicFallback()
     {
         var port = FreeTcpPort();
@@ -324,6 +325,7 @@ public class LocalVlmHttpClientTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task Timeout_ReturnsNull_AndRepeatedFailuresOpenCircuitWithoutFurtherRequests()
     {
         var port = FreeTcpPort();
@@ -342,6 +344,7 @@ public class LocalVlmHttpClientTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void RemoteEndpoint_WithoutExplicitOptIn_IsDisabled()
     {
         using var remote = new LocalVlmHttpClient(new VlmClientOptions(new Uri("http://10.20.30.40:11434"), "llava", VlmApiFlavor.Ollama, null, TimeSpan.FromSeconds(1), 1, AllowRemote: false));
@@ -353,6 +356,7 @@ public class LocalVlmHttpClientTests
     }
 
     [Theory]
+    [Trait("Category", "FastUnit")]
     [InlineData("{\"choices\":[{\"message\":{\"content\":\"```json\\n{\\\"scene\\\":\\\"dark\\\",\\\"confidence\\\":1.7}\\n```\"}}]}", VisionScene.DarkScene, 1.0)]
     [InlineData("{\"choices\":[{\"message\":{\"content\":\"{\\\"scene\\\":\\\"fast action fight\\\"}\"}}]}", VisionScene.HighAction, 0.5)]
     public void ParseEnvelope_OpenAiCompatible_ToleratesFencesAndClampsConfidence(string json, VisionScene scene, double conf)
@@ -364,6 +368,7 @@ public class LocalVlmHttpClientTests
     }
 
     [Theory]
+    [Trait("Category", "FastUnit")]
     [InlineData("not json")]
     [InlineData("{\"message\":{\"content\":\"{\\\"confidence\\\":0.9}\"}}")]
     [InlineData("{\"unexpected\":true}")]
@@ -371,6 +376,7 @@ public class LocalVlmHttpClientTests
         => Assert.Null(LocalVlmHttpClient.ParseEnvelope(json, VlmApiFlavor.Ollama));
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void PngEncoder_ProducesStructurallyValidPng_WithCorrectCrcAndPixels()
     {
         var rgb = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 };   // 3x2
@@ -403,6 +409,7 @@ public class LocalVlmHttpClientTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void PngCrc32_MatchesKnownVector()
         => Assert.Equal(0xCBF43926u, PngRgbEncoder.Crc32(0xFFFFFFFFu, "123456789"u8) ^ 0xFFFFFFFFu);
 }

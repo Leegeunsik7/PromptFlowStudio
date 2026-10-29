@@ -7,12 +7,12 @@ using PromptFlowStudio.ViewModels;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>1번 워크플로우 — 프롬프트 합성기(빈 입력 · 800자 절삭 · Subject 우선 · 네거티브 중복 제거) + 강화기 폴백 + T2V/I2V 뷰모델 회귀 잠금.</summary>
-[Trait("Category", "Integration")]
 public class PromptSynthesizerTests
 {
     private readonly PromptSynthesizerService _synth = new();
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void EmptyInput_ProducesEmptyPositive_AndDefaultNegatives()
     {
         var r = _synth.Synthesize(new PromptContext(null));
@@ -23,6 +23,7 @@ public class PromptSynthesizerTests
     }
 
     [Theory]
+    [Trait("Category", "FastUnit")]
     [InlineData(801)]
     [InlineData(2000)]
     public void OverBudget_IsTruncatedTo800_AndFlagged(int len)
@@ -37,6 +38,7 @@ public class PromptSynthesizerTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void ExactlyAtBudget_IsNotFlagged()
     {
         var r = _synth.Synthesize(new PromptContext(new string('a', 800)));
@@ -45,6 +47,7 @@ public class PromptSynthesizerTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void LockedIdentity_IsInjectedFirst_AndSurvivesTruncation()
     {
         var r = _synth.Synthesize(new PromptContext(new string('x', 1200), "FPV Drone", "Cyberpunk Neo", "Mina", IsIdentityLocked: true));
@@ -53,6 +56,7 @@ public class PromptSynthesizerTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void UnlockedIdentity_IsNotInjected_AndOrderIsMainCameraStyle()
     {
         var r = _synth.Synthesize(new PromptContext("a cat", "Orbit", "8K Photoreal", "Mina", IsIdentityLocked: false));
@@ -61,6 +65,7 @@ public class PromptSynthesizerTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void CameraOrStyleAlreadyInInput_IsNotDuplicated()
     {
         var r = _synth.Synthesize(new PromptContext("slow orbit around a lighthouse, watercolor", "Orbit", "Watercolor"));
@@ -68,6 +73,7 @@ public class PromptSynthesizerTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void Negatives_AreDeduplicated_CaseInsensitive_WithBabyTokens()
     {
         var r = _synth.Synthesize(new PromptContext("baby smiling", NegativeInput: "Low Quality, blurry, DISTORTED FACE, blurry, , harsh shadows", AutoBabyModifier: true));
@@ -80,6 +86,7 @@ public class PromptSynthesizerTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void BabyTokens_AreOmitted_WhenModifierOff()
     {
         var r = _synth.Synthesize(new PromptContext("baby smiling"));
@@ -95,6 +102,7 @@ public class PromptSynthesizerTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task Enhancer_NoKey_ReturnsOriginal_WithoutNetwork()
     {
         var h = new StubHandler(_ => throw new InvalidOperationException());
@@ -104,6 +112,7 @@ public class PromptSynthesizerTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task Enhancer_NetworkFailure_ReturnsOriginal()
     {
         var e = new GeminiPromptEnhancer(new HttpClient(new StubHandler(_ => throw new HttpRequestException("down"))), () => "k");
@@ -111,6 +120,7 @@ public class PromptSynthesizerTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task Enhancer_ServerError_RetriesOnce_ThenReturnsOriginal()
     {
         var h = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
@@ -120,6 +130,7 @@ public class PromptSynthesizerTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task Enhancer_Success_ReturnsModelText_AndSendsKeyHeader()
     {
         string? key = null; string? url = null;
@@ -139,6 +150,7 @@ public class PromptSynthesizerTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task Enhancer_Cancelled_ReturnsOriginal()
     {
         using var cts = new CancellationTokenSource();
@@ -158,6 +170,7 @@ public class PromptSynthesizerTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task ViewModel_ImageDrop_SwitchesToI2V_AndRemoveRevertsToT2V()
     {
         var vm = new PromptInputViewModel(_synth);
@@ -177,6 +190,7 @@ public class PromptSynthesizerTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task ViewModel_EmptyStream_StaysT2V()
     {
         var vm = new PromptInputViewModel(_synth);
@@ -185,6 +199,7 @@ public class PromptSynthesizerTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void ViewModel_UserInput_NotifiesCharacterCount()
     {
         var vm = new PromptInputViewModel(_synth);
@@ -196,6 +211,7 @@ public class PromptSynthesizerTests
     }
 
     [Theory]
+    [Trait("Category", "FastUnit")]
     [InlineData("1280*720", "1280x720 (16:9) HUD READY", "1280 / 720")]
     [InlineData("720*1280", "720x1280 (9:16) HUD READY", "720 / 1280")]
     [InlineData("960x960", "960x960 (1:1) HUD READY", "960 / 960")]
@@ -209,6 +225,7 @@ public class PromptSynthesizerTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void ImageSize_ReadsJpegSof()
     {
         byte[] jpg = { 0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x02, 0xD0, 0x05, 0x00, 0x03, 0, 0, 0, 0 };

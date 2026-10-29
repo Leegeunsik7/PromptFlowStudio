@@ -4,7 +4,7 @@ using Xunit;
 
 namespace PromptFlowStudio.Tests;
 
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public class MediaPipelineTests
 {
     [Fact]

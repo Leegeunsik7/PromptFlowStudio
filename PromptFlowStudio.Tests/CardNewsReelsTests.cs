@@ -7,7 +7,6 @@ using PromptFlowStudio.Services.SocialMedia;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>v17.30.1: 카드뉴스 9:16 릴스 생성기 + Instagram Reels 발행 — 레이아웃 인자 · HTML 폴백 · Graph API 3단계 · 재시도 회귀 잠금.</summary>
-[Trait("Category", "Integration")]
 public class CardNewsReelsTests
 {
     private static CardNewsDeck Deck(string output, int bodies = 3) => new(
@@ -16,6 +15,7 @@ public class CardNewsReelsTests
         "지금 시작하세요", "저장하고 팔로우", output);
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void Validate_RequiresExactlyThreeBodies_AndHexColors()
     {
         Assert.Null(CardNewsReelsGenerator.Validate(Deck("o.mp4")));
@@ -25,6 +25,7 @@ public class CardNewsReelsTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void BuildSlides_HookBodiesCta_Order()
     {
         var s = CardNewsReelsGenerator.BuildSlides(Deck("o.mp4"));
@@ -36,6 +37,7 @@ public class CardNewsReelsTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void Wrap_RespectsWidthUnits_AndEllipsizes()
     {
         // 한글 12자 = 24단위 → 22단위 폭이면 2줄
@@ -48,6 +50,7 @@ public class CardNewsReelsTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void BuildArgs_Vertical1080x1920_ConcatWithSilentAudio()
     {
         var files = Enumerable.Range(0, 5).Select(i => ($"C:/t{i}.txt", $"C:/b{i}.txt", $"C:/p{i}.txt")).ToArray();
@@ -64,6 +67,7 @@ public class CardNewsReelsTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void RenderHtml_EncodesText_AndHasFiveCards()
     {
         var html = CardNewsReelsGenerator.RenderHtml(Deck("o.mp4") with { Hook = "<script>x</script>" });
@@ -74,6 +78,7 @@ public class CardNewsReelsTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task Generate_WithoutFfmpeg_FallsBackToHtml()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pfs_cardnews_" + Guid.NewGuid().ToString("N"));
@@ -118,6 +123,7 @@ public class CardNewsReelsTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void Options_MaskToken_AndFormFields()
     {
         var o = new InstagramReelsOptions("u", "SECRET_TOKEN");
@@ -134,6 +140,7 @@ public class CardNewsReelsTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void Options_ResolveFromConfig_WhenEnvAbsent()
     {
         if (Environment.GetEnvironmentVariable("PFS_IG_USER_ID") is not null || Environment.GetEnvironmentVariable("IG_USER_ID") is not null) return;
@@ -148,6 +155,7 @@ public class CardNewsReelsTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void Caption_And_Url_Validation()
     {
         Assert.Null(InstagramReelsService.ValidateCaption("hello #a #b"));
@@ -160,6 +168,7 @@ public class CardNewsReelsTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task PublishFromUrl_ContainerPollPublish_HappyPath()
     {
         var g = new FakeGraph();
@@ -200,6 +209,7 @@ public class CardNewsReelsTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task PublishFromUrl_ErrorStatus_FailsWithoutPublish()
     {
         var g = new FakeGraph();
@@ -213,6 +223,7 @@ public class CardNewsReelsTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task PublishFromUrl_RetriesOn429_ThenSucceeds()
     {
         var g = new FakeGraph();
@@ -230,6 +241,7 @@ public class CardNewsReelsTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task PublishFromUrl_GraphError_SurfacesMessage()
     {
         var g = new FakeGraph();
@@ -242,6 +254,7 @@ public class CardNewsReelsTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task Publish_Guards_NoHttpWhenUnconfiguredOrInvalid()
     {
         var g = new FakeGraph();

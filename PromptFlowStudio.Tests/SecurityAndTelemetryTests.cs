@@ -105,10 +105,10 @@ public class ProductionTelemetryExporterTests
     }
 }
 
-[Trait("Category", "Integration")]
 public class HotfixAutoSignerEngineTests
 {
     [Fact]
+    [Trait("Category", "Integration")]
     public void SignAndExport_ProducesManifestAndSigFiles_WithConsistentDigestAndSignature()
     {
         var vault = new SecureSecretVault();
@@ -146,6 +146,7 @@ public class HotfixAutoSignerEngineTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void SignAndExport_MissingFile_ReturnsGracefulFailure_NoException()
     {
         var vault = new SecureSecretVault();
@@ -231,7 +232,7 @@ public class OperationsCanaryLogRetentionCleanerTests
         finally { tempDir.Delete(recursive: true); }
     }
 }
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public class MobileDiRegistrationScanTests
 {
     // MauiProgram.cs 의 Wan/텔레메트리/보안 플랫폼 비의존 등록 구간(#if ANDROID/IOS 없는 v10.x~v11.x 블록)을
@@ -368,7 +369,7 @@ public class OperationsCanaryHealthCheckerTests
 }
 
 /// <summary>v13.0.1: 디바운스/지연 실행 크래시 안전성(async void 제거) - 예외 격리·원자 대체·파기 안전을 신호로만 검증.</summary>
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public class SafeDebouncerTests
 {
     private static readonly TimeSpan SafetyNet = TimeSpan.FromSeconds(45);
@@ -464,7 +465,6 @@ public class SafeDebouncerTests
 }
 
 /// <summary>v13.0.1: 모바일 DI 미등록 회귀 잠금 - 모바일 루트 트리 @inject 가 MauiProgram 계열 등록에 모두 있는지 + 신규 7종 실해소.</summary>
-[Trait("Category", "Integration")]
 public class MobileRootDiRegistrationTests
 {
     private static string RepoRoot()
@@ -480,6 +480,7 @@ public class MobileRootDiRegistrationTests
     private static string Simple(string typeName) { var t = typeName.Trim(); var lt = t.IndexOf('<'); if (lt >= 0) t = t[..lt]; var dot = t.LastIndexOf('.'); return dot >= 0 ? t[(dot + 1)..] : t; }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void MobileRootTree_EveryInjectedService_IsRegisteredForMobile()
     {
         var root = RepoRoot();
@@ -510,6 +511,7 @@ public class MobileRootDiRegistrationTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void SevenPreviouslyOrphanedServices_ResolveWithTheirConstructorDependencies()
     {
         var services = new ServiceCollection();
@@ -531,6 +533,7 @@ public class MobileRootDiRegistrationTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void McpConfig_RestoresBothServers_AsValidJson()
     {
         using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(RepoRoot(), ".mcp.json")));
@@ -541,7 +544,6 @@ public class MobileRootDiRegistrationTests
 }
 
 /// <summary>v13.0.2: MCP 공급망 고정 - .mcp.json 의 npx 패키지가 정확한 semver 로 핀돼 있는지(latest/next/범위/무버전 금지) 정적 진단.</summary>
-[Trait("Category", "Integration")]
 public class McpSupplyChainTests
 {
     private static readonly System.Text.RegularExpressions.Regex ExactPin =
@@ -577,6 +579,7 @@ public class McpSupplyChainTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void McpConfig_IsValidJson_AndEveryNpxServerIsPinnedToExactVersion()
     {
         using var doc = JsonDocument.Parse(File.ReadAllText(McpPath()));
@@ -588,6 +591,7 @@ public class McpSupplyChainTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void McpConfig_NpxServers_PreferOfflineCache()
     {
         using var doc = JsonDocument.Parse(File.ReadAllText(McpPath()));
@@ -599,6 +603,7 @@ public class McpSupplyChainTests
     }
 
     [Theory]
+    [Trait("Category", "FastUnit")]
     [InlineData("@playwright/mcp@latest", false)]
     [InlineData("chrome-devtools-mcp@next", false)]
     [InlineData("chrome-devtools-mcp@^1.10.1", false)]
@@ -616,7 +621,6 @@ public class McpSupplyChainTests
 
 /// <summary>v13.2.0: MCP 격리 설치 - tools/mcp 의 package-lock(전 트리 sha512·레지스트리 출처·정확 핀)과 .mcp.json 실행 경로 정합성 정적 검증.
 ///   node_modules 존재는 요구하지 않는다(CI 등 미설치 환경에서도 lock·설정만으로 판정).</summary>
-[Trait("Category", "Integration")]
 public class McpLockfileIsolationTests
 {
     private static readonly Dictionary<string, string> Pins = new(StringComparer.Ordinal)
@@ -656,6 +660,7 @@ public class McpLockfileIsolationTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void Lock_EveryPackage_HasSha512Integrity_FromOfficialRegistry()
     {
         using var doc = Read("tools", "mcp", "package-lock.json");
@@ -664,6 +669,7 @@ public class McpLockfileIsolationTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void PackageJsonAndLock_TopLevelPins_AreExactAndAgree()
     {
         using var pkg = Read("tools", "mcp", "package.json");
@@ -680,6 +686,7 @@ public class McpLockfileIsolationTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void Npmrc_BlocksInstallScripts_AndSavesExact()
     {
         var npmrc = File.ReadAllText(Path.Combine(Root(), "tools", "mcp", ".npmrc"));
@@ -688,6 +695,7 @@ public class McpLockfileIsolationTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void McpConfig_RunsFromLockedTree_ViaNodeBin_NotNpx_WithOfflineOverrides()
     {
         using var mcp = Read(".mcp.json");
@@ -724,6 +732,7 @@ public class McpLockfileIsolationTests
     }
 
     [Theory]
+    [Trait("Category", "FastUnit")]
     [InlineData("{\"lockfileVersion\":3,\"packages\":{\"\":{},\"node_modules/a\":{\"version\":\"1.0.0\",\"resolved\":\"https://registry.npmjs.org/a/-/a-1.0.0.tgz\",\"integrity\":\"sha512-AAAAAAAAAAAAAAAAAAAAAAAAAA==\"}}}", true)]
     [InlineData("{\"lockfileVersion\":3,\"packages\":{\"\":{},\"node_modules/a\":{\"version\":\"1.0.0\",\"resolved\":\"https://registry.npmjs.org/a/-/a-1.0.0.tgz\"}}}", false)]
     [InlineData("{\"lockfileVersion\":3,\"packages\":{\"\":{},\"node_modules/a\":{\"version\":\"1.0.0\",\"resolved\":\"https://evil.example/a.tgz\",\"integrity\":\"sha512-AAAAAAAAAAAAAAAAAAAAAAAAAA==\"}}}", false)]
@@ -737,10 +746,10 @@ public class McpLockfileIsolationTests
 }
 
 /// <summary>v14.0.0: 릴리스 번들 배포 제외 규칙 - 디버그 심볼·publish 중간산출·최상위 RID 폴더는 제외, runtimes/&lt;rid&gt;/native 는 유지.</summary>
-[Trait("Category", "Integration")]
 public class ProductionArtifactPackagerExclusionTests
 {
     [Theory]
+    [Trait("Category", "FastUnit")]
     [InlineData("PromptFlowStudio.dll", true)]
     [InlineData("PromptFlowStudio.pdb", false)]
     [InlineData("PromptFlowStudio.Shared.PDB", false)]
@@ -756,6 +765,7 @@ public class ProductionArtifactPackagerExclusionTests
         => Assert.Equal(shippable, ProductionArtifactPackager.IsShippable(rel));
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task PackageReleaseZip_ExcludesPdbPublishAndRidFolders_KeepsRuntimeAssets()
     {
         var src = Path.Combine(Path.GetTempPath(), "pfs_pkg_excl_" + Guid.NewGuid().ToString("N")[..8]);

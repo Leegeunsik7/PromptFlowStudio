@@ -5,7 +5,6 @@ using PromptFlowStudio.ViewModels;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>렌더 큐 워커 — 적재 초기 상태 · Queued→Completed 전이 · 취소 · 완료 정리 회귀 잠금(autoStart=false 결정론 구동).</summary>
-[Trait("Category", "Integration")]
 public class RenderQueueWorkerTests
 {
     private static RenderQueueService NewQueue() => new(TimeSpan.Zero, autoStart: false);
@@ -18,6 +17,7 @@ public class RenderQueueWorkerTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void Enqueue_AddsJobsToQueue_InCorrectInitialStatus()
     {
         using var q = NewQueue();
@@ -30,6 +30,7 @@ public class RenderQueueWorkerTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task ProcessQueue_TransitionsStatus_FromQueuedToCompleted()
     {
         using var q = NewQueue();
@@ -56,6 +57,7 @@ public class RenderQueueWorkerTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task CancelJob_UpdatesStatusToFailedOrCancelled()
     {
         using var q = NewQueue();
@@ -84,6 +86,7 @@ public class RenderQueueWorkerTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task ClearCompleted_RemovesOnlyCompletedJobs()
     {
         using var q = NewQueue();
@@ -103,6 +106,7 @@ public class RenderQueueWorkerTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task ProcessQueue_InvokesRealEngineAdapter_AndCompletesJob()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pfs_rq_" + Guid.NewGuid().ToString("N"));
@@ -143,6 +147,7 @@ public class RenderQueueWorkerTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task ProcessQueue_HandlesEngineFailure_MarksJobAsFailed()
     {
         var engine = new FakeEngine((job, _) => job.Seed == 0
@@ -190,6 +195,7 @@ public class RenderQueueWorkerTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void RenderExecutionEngine_PassesReferenceImagePath_ToInferenceRequest()
     {
         var img = Path.Combine(Path.GetTempPath(), "pfs_i2v_" + Guid.NewGuid().ToString("N") + ".png");
@@ -209,6 +215,7 @@ public class RenderQueueWorkerTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task RenderQueue_AutoPauses_WhenVramExceedsThreshold()
     {
         var vram = 0.97;

@@ -265,12 +265,12 @@ public class WanPostProcessingEngineTests
     }
 }
 
-[Trait("Category", "Integration")]
 public class EdgeP2PTaskRelayTests
 {
     private static Task<byte[]> LocalEcho(byte[] payload, CancellationToken ct) => Task.FromResult(payload);
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task P2PPeerDiscoveryAndFallback_ExecutesCleanly()
     {
         // overloadThreshold: 0 -> 첫 호출부터 "오버로드"로 취급(결정적 - 실 동시성 경쟁 없이 오프로드 경로를 확실히 태움).
@@ -309,6 +309,7 @@ public class EdgeP2PTaskRelayTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task RunOrOffloadAsync_NoPeersEverDiscovered_AlwaysUsesLocalWithoutException()
     {
         using var node = new EdgeP2PTaskRelay(discoveryPort: 47996, tcpPort: 47997, overloadThreshold: 0);
@@ -321,6 +322,7 @@ public class EdgeP2PTaskRelayTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void ResetCounters_ClearsAllCountersAndPeers()
     {
         using var node = new EdgeP2PTaskRelay(discoveryPort: 47998, tcpPort: 47999);
@@ -456,7 +458,6 @@ public class InteractiveReactionEngineTests
 }
 
 /// <summary>v12.1.0: MainForm/HUD 에서 쓰는 수명주기 경로(재시작·재연결·해제)의 회귀 검증 - 실시간 지연 비교 없이 신호/상태로만 판정.</summary>
-[Trait("Category", "Integration")]
 public class ServiceLifecycleTests
 {
     // v17.63.1: 고부하 병렬 일괄 실행(463 건) 안전망 — 교착 탐지 전용(타이밍 단언 아님). 10 s 는 CPU 포화 시 정상 핸드셰이크도 초과했다.
@@ -496,6 +497,7 @@ public class ServiceLifecycleTests
     private static readonly TimeSpan SafetyNet = TimeSpan.FromSeconds(45);
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void EdgeP2PTaskRelay_StopThenStart_RebindsSamePortsAndRunsAgain()
     {
         var (udpPort, tcpPort) = FreePorts();   // 같은 포트 재바인드를 검증하려면 구성값이 고정이어야 함 - 대신 매 실행 빈 포트로 선정
@@ -511,6 +513,7 @@ public class ServiceLifecycleTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void EdgeP2PTaskRelay_StartWithTcpPortOccupied_ThrowsThenRecoversAfterPortFreed()
     {
         var blocker = new System.Net.Sockets.TcpListener(IPAddress.Any, 0);
@@ -530,6 +533,7 @@ public class ServiceLifecycleTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task InteractiveReactionEngine_ReconnectThenDisconnect_CyclesStateAndOpensFreshHandshake()
     {
         var listener = StartLoopbackListener(out var port);
@@ -556,6 +560,7 @@ public class ServiceLifecycleTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task InteractiveReactionEngine_ReconnectWithoutPriorConnect_ThrowsInvalidOperation()
     {
         using var engine = new InteractiveReactionEngine(new WanDynamicMotionController(), new LoRAHotSwapManager());
@@ -599,7 +604,6 @@ public class ServiceLifecycleTests
 }
 
 /// <summary>v12.2.0 Phase 1 감사: 핸들/소켓 수명주기 엣지케이스 회귀 잠금 - 벽시계 비교 없이 신호/상태로만 판정.</summary>
-[Trait("Category", "Integration")]
 public class Phase1AuditHardeningTests
 {
     private static readonly TimeSpan SafetyNet = TimeSpan.FromSeconds(45);
@@ -627,6 +631,7 @@ public class Phase1AuditHardeningTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void AbandonedMutex_Recovery_Successfully()
     {
         var (map, mutex) = UniqueNames();
@@ -659,6 +664,7 @@ public class Phase1AuditHardeningTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void LiveStreamVirtualCamPipe_SubmitAndReadAfterDispose_DropGracefullyWithoutException()
     {
         var (map, mutex) = UniqueNames();
@@ -670,6 +676,7 @@ public class Phase1AuditHardeningTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void OperationsCanaryLogRetentionCleaner_RunAfterDispose_ReturnsResultWithoutTouchingReleasedView()
     {
         var cleaner = new PromptFlowStudio.Services.Operations.OperationsCanaryLogRetentionCleaner("Local\\pfs_test_audit_ret_" + Guid.NewGuid().ToString("N")[..8]);
@@ -680,6 +687,7 @@ public class Phase1AuditHardeningTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task WebSocket_UngracefulDisconnect_CleansUpResources_WithoutLeak()
     {
         var listener = ServiceLifecycleTests.StartLoopbackListener(out var port);
@@ -711,6 +719,7 @@ public class Phase1AuditHardeningTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task WebSocket_HandshakeFailure_ReleasesSocketImmediately()
     {
         // 리스너 없는 포트 - ConnectAsync 실패 시 Failed 상태로 소켓/CTS 가 남던 누수 확인.
@@ -722,6 +731,7 @@ public class Phase1AuditHardeningTests
     }
 
     [Theory]
+    [Trait("Category", "FastUnit")]
     [InlineData(0, 10)]
     [InlineData(10, 20)]
     [InlineData(640, 1280)]
@@ -731,6 +741,7 @@ public class Phase1AuditHardeningTests
         => Assert.Equal(expected, EdgeP2PTaskRelay.NextBackoffMs(current));
 
     [Theory]
+    [Trait("Category", "FastUnit")]
     [InlineData(System.Net.Sockets.SocketError.ConnectionReset, true)]
     [InlineData(System.Net.Sockets.SocketError.NetworkUnreachable, true)]
     [InlineData(System.Net.Sockets.SocketError.HostUnreachable, true)]
@@ -741,6 +752,7 @@ public class Phase1AuditHardeningTests
         => Assert.Equal(transient, EdgeP2PTaskRelay.IsTransientSocketError(error));
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task EdgeP2P_PingToClosedPort_DiscoveryLoopSurvivesAndStillAnswersPeers()
     {
         // 닫힌 UDP 포트로 유니캐스트 → ICMP Port Unreachable. Windows 에선 이전 구현의 다음 ReceiveFrom 이 WSAECONNRESET 으로
@@ -788,7 +800,6 @@ public class Phase1AuditHardeningTests
 }
 
 /// <summary>v12.2.0 Phase 2: Zero-Alloc 핫패스·SIMD 비트 동일성·무락 리더 torn-read 부재 회귀 잠금(벽시계 단언 없음).</summary>
-[Trait("Category", "Integration")]
 public class Phase2ZeroAllocOptimizationTests
 {
     private static WanPostProcessingEngine BuildEngine()
@@ -808,6 +819,7 @@ public class Phase2ZeroAllocOptimizationTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void FastFFT_And_FrameTransform_DoesNotCauseGCPressure()
     {
         using var engine = BuildEngine();
@@ -838,6 +850,7 @@ public class Phase2ZeroAllocOptimizationTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void InterpolateInto_Simd_MatchesScalarReferenceBitExact_ForAllTailLengths()
     {
         var rng = new Random(17);
@@ -852,6 +865,7 @@ public class Phase2ZeroAllocOptimizationTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void ApplyMotionInPlace_Simd_MatchesScalarReferenceBitExact()
     {
         var vector = new WanMotionVector(3, PanDirection.Up, 0.9, ZoomDirection.In, 0.7, -12.5, DateTimeOffset.UnixEpoch);
@@ -868,6 +882,7 @@ public class Phase2ZeroAllocOptimizationTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task CopyLastInterpolatedFrameTo_LockFreeReaderDuringConcurrentWrites_NeverObservesTornFrame()
     {
         // 균일값 프레임만 제출 → 보간 결과도 항상 균일. 리더가 두 게시 사이에 섞인(torn) 버퍼를 복사하면 균일성이 깨진다.
@@ -903,6 +918,7 @@ public class Phase2ZeroAllocOptimizationTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void AnalyzeFrame_ConcurrentCallers_EachGetsOwnCorrectDominantFrequency()
     {
         // 이전 구현은 인스턴스 공유 _re/_im 를 락 없이 써서 병렬 호출 시 서로의 FFT 입력을 덮어썼다.
@@ -922,6 +938,7 @@ public class Phase2ZeroAllocOptimizationTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void Upscaler_HotPathThenLastReport_MaterializesLazilyWithSameSemantics()
     {
         var up = new AutonomousNeuralTilingUpscaler();
@@ -941,7 +958,7 @@ public class Phase2ZeroAllocOptimizationTests
 
 /// <summary>v12.2.0-Phase4: 리액션 오버레이 → 가상카메라 송출 종단간 결속(Passthrough/합성/폴백/0-Alloc).</summary>
 [Collection("ProcessGcMode")]   // v16.9.0: 스레드 할당 0B 단언 — 병렬 GC 중 ArrayPool 트림 오염 차단
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public class Phase4VirtualCamOverlayE2ETests
 {
     private const int W = 128, H = 128;
@@ -1061,7 +1078,7 @@ public class Phase4VirtualCamOverlayE2ETests
 
 /// <summary>v15.1.0: Wan Ultra-Efficiency 파이프라인 — 거버너 동적 스케일링·SIMD 위상 보간 비트 정합성·락-프리 스테이징·0B 연쇄 처리.</summary>
 [Collection("ProcessGcMode")]   // v16.9.0: 스레드 할당 0B 단언 — 병렬 GC 중 ArrayPool 트림 오염 차단
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public class WanUltraEfficiencyPipelineTests
 {
     private const int W = 128, H = 128;

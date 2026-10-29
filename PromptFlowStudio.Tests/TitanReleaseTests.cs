@@ -189,10 +189,10 @@ namespace PromptFlowStudio.Tests;
 
 /// <summary>v16.0.0 Titan — RSA-2048 비대칭 무결성 + 로컬 ComfyUI I2V 폴백 회귀.</summary>
 [Collection("ProcessGcMode")]   // 서명 모드 환경변수는 프로세스 전역 → 직렬화
-[Trait("Category", "Integration")]
 public class TitanReleaseTests
 {
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task RsaIntegrity_And_LocalI2vFallback_Check()
     {
         // ══ ① 내장 공개키: 2048비트 SPKI · 개인키 미포함 ══
@@ -296,6 +296,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void InstallerPackaging_And_FfmpegBundle_Check()
     {
         var root = RepoRoot();
@@ -370,6 +371,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void CiCdPipeline_And_RedistBundle_Check()
     {
         var root = RepoRoot();
@@ -459,6 +461,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task ProductionReleaseVerification_Check()
     {
         var root = RepoRoot();
@@ -558,6 +561,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void SecurityAclAndAuthenticodeSign_Check()
     {
         var root = RepoRoot();
@@ -888,6 +892,7 @@ public class TitanReleaseTests
     /// 메인 csproj 배포 계약(트리밍 금지 · wwwroot/appsettings 퍼블리시 동봉) · .gitattributes CRLF 고정 규칙을 검증.
     /// </summary>
     [Fact]
+    [Trait("Category", "Integration")]
     public void ProductionSingleFilePackage_Integrity_Check()
     {
         var root = RepoRoot();
@@ -949,6 +954,7 @@ public class TitanReleaseTests
     /// 렌더러 Dispose 후 러너 이벤트 구독자 0(누수 없음) · 전 .razor 구독/해제 쌍 · 사이드바 검색/카탈로그 디스패치 동기화 · 반응형 CSS 가드를 검증.
     /// </summary>
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task Headless_UI_Rendering_Check()
     {
         // ══ UI-1 7대 카테고리 대표 모달 헤드리스 렌더(Null 참조 · 수명주기 예외 없음) + Dispose 후 이벤트 누수 0 ══
@@ -1051,6 +1057,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task MotionVector_DualKeyframe_And_VideoReverse_Check()
     {
         // ══ ① Motion-Vector: I2V 역방향 방지 네거티브(멱등 · 사용자 네거티브 원형 앞 유지) ══
@@ -1111,6 +1118,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task DualKeyframe_Kf2vSubmit_EndToEnd_Check()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pfs-kf2v-" + Guid.NewGuid().ToString("N"));
@@ -1146,6 +1154,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void EverydayBabyThemes_PresetAndSearch_Check()
     {
         var db = new PromptFlowStudio.Services.Storyboard.BabyThemeDatabase();
@@ -1197,6 +1206,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void HighEndThemeSystem_CameraBindingAndSmartMatching_Check()
     {
         var db = new PromptFlowStudio.Services.Storyboard.BabyThemeDatabase();
@@ -1277,6 +1287,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void CustomThemeStudio_ImportExportAndTranspiler_Check()
     {
         var root = Path.Combine(Path.GetTempPath(), "pfs-themes-" + Guid.NewGuid().ToString("N"));
@@ -1409,6 +1420,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task CustomThemeRegistry_And_Transpiler_Check()
     {
         var root = Path.Combine(Path.GetTempPath(), "pfs-themes13-" + Guid.NewGuid().ToString("N"));
@@ -1512,6 +1524,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void ArtifactGuardEngine_Injection_Check()
     {
         // ══ ① 컨텍스트 감지(영/한 · 복합 플래그) ══
@@ -1559,6 +1572,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void MassiveThemeExpansion_CountAndMetadata_Check()
     {
         var db = new PromptFlowStudio.Services.Storyboard.BabyThemeDatabase();
@@ -1620,6 +1634,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task FirstFrameSimulation_LiveRender_Check()
     {
         static string Svg(string? url) => System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(url!["data:image/svg+xml;base64,".Length..]));
@@ -1705,6 +1720,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task PostProductionEngine_FfmpegMixing_Check()
     {
         var clips = new[] { @"V:\cuts\a 1.mp4", @"V:\cuts\b.mp4", @"V:\cuts\c.mp4" };
@@ -1807,6 +1823,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task VoiceoverAndSubtitles_Muxing_Check()
     {
         var tmp = Path.Combine(Path.GetTempPath(), "pf_vo_" + Guid.NewGuid().ToString("N"));
@@ -2004,6 +2021,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task OsmuSmartReframing_And_Metadata_Check()
     {
         // ① 대상 규격: 9:16 ×3 · 1:1 · 4:5 ×2 — 메타데이터 채널 매핑
@@ -2140,6 +2158,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task BatchProduction_QueueAndGovernor_Check()
     {
         // ① 거버너 순수 계산: VRAM/RAM 여유 → 동시 한도 · 지수 백오프(Retry-After 우선 · 120초 상한)
@@ -2365,6 +2384,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task VideoQa_And_SocialPublisher_Bridge_Check()
     {
         // ① ffmpeg stderr 파서: blackdetect · freezedetect(열린 구간은 영상 끝으로 닫음) · astats(피크 최대 · Overall RMS) · Duration
@@ -2576,6 +2596,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task ProductionCostTracker_And_HardwareTelemetry_Check()
     {
         // ① 요금표 순수 계산: DashScope turbo/plus 초당 · SiliconFlow 건당 · Custom 초당 · Gemini 토큰 · ElevenLabs 문자
@@ -2886,6 +2907,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task CommercialBrandStudio_Compositing_Check()
     {
         // ① 누끼: 흰 배경 + 빨간 제품(내부 흰 구멍 = 흰 제품 부위) → 테두리 연결 배경만 제거, 내부 흰색 보존
@@ -3040,6 +3062,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task LipSync_And_EmotionPuppeteer_Check()
     {
         // ① 감정 키워드 탐지 · 아기 피사체 · 프리셋
@@ -3285,6 +3308,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task NodeGraph_And_InteractiveCanvas_Check()
     {
         // ① 그래프 규칙: 타입 · 자기연결 · 순환 · 입력 대체 · 컴파일 레벨
@@ -3638,6 +3662,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task CharacterIdentity_And_OutfitTransfer_Check()
     {
         // ① 특징 벡터: 동일 얼굴(밝기만 변화) 고정 · 다른 얼굴 이탈 · 순수/무할당 경로
@@ -3843,6 +3868,7 @@ public class TitanReleaseTests
     }
     // ── v16.23.0 AI 바이럴 후킹 감독: A/B/C 후킹 필터 · 오프닝 분석 · 유지율 곡선/위험 구간(무할당) · 램핑 필터 · A/B 패키저 ──
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task ViralDirector_HookAndRetention_Check()
     {
         // 1) 오프닝 분석 — 질문+클로즈업 보유 → 남은 신호(파이어링 카피) 추천 · 빈 프로젝트 → 0점/질문형
@@ -3982,6 +4008,7 @@ public class TitanReleaseTests
     }
     // ── v16.24.0 글로벌 다국어 더빙: 로캘 카탈로그 · 화폐/단위/관용구/금기어 · Gemini 검증/폴백 · 타임 스트레칭 정렬(무할당) · 음색 F0 · 보이스 매칭 ──
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task MultilingualDubbing_And_Localization_Check()
     {
         // 1) 로캘 카탈로그 — 30+ 대상 · 코드 고유 · 언어만 지정 조회
@@ -4146,6 +4173,7 @@ public class TitanReleaseTests
 
     // ── v16.30.0 마스터 스위트: 제로 트러스트(KEK DPAPI-NG · 비밀 · 인가/스텝업/디바이스 · 스트리밍 AES-GCM 변조/절단 · HMAC 감사 체인 · KEK 회전) · OIDC(RS256/JWKS/nonce/PKCE) · SAML2(XML-DSig/XSW) · CDC 델타 동기화(무할당 경계 · 증분 · 복원 · 릴레이 · 수렴 암호화) · 30 모듈 매트릭스/파이프라인 ──
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task UniversalMasterSuite_And_ZeroTrustShield_Check()
     {
         var root = Path.Combine(Path.GetTempPath(), "pfs_master_" + Guid.NewGuid().ToString("N"));
@@ -4426,6 +4454,7 @@ public class TitanReleaseTests
 
     // ── v16.29.0 멀티 엔진: 트랜스파일 방언 · 라우팅 점수/제약/완화(무할당) · 장애 조치/서킷 · 원격 어댑터(가짜 HTTP Luma 왕복 · 상태 스키마) · 플러그인 매니페스트/필터 검증/신뢰 게이트/DLL 로드·격리·핫 리로드 ──
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task GenerativeMultiEngine_And_PluginFramework_Check()
     {
         // 1) 트랜스파일러 — 파싱 · 방언별 구문 · 길이 제한
@@ -4644,6 +4673,7 @@ public class TitanReleaseTests
 
     // ── v16.28.0 AI 자율주행 디렉터: 트렌드 파싱(YouTube/RSS·XXE 차단) · 24h 스케줄 · 스토리보드 검증/템플릿 · 보상/특성/UCB(무할당) · 진단/자가 정제(Gemini·폴백) · ROI 배분/정수 배분(무할당)/기여도 · 자율 루프(가드·승인·게시·학습) ──
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task AutonomousCampaign_And_SelfTuningEngine_Check()
     {
         // 1) 트렌드 파싱 — YouTube mostPopular · Google Trends RSS(DTD 거부) · 병합 · 포맷 분류
@@ -4853,6 +4883,7 @@ public class TitanReleaseTests
 
     // ── v16.27.0 엔터프라이즈: 렌더 팜 청킹/노드 선택(무할당)/오토스케일/헬스 스키마/해시 비교 · 로컬 HTTP 노드 원격 렌더(무결성 검증) · 팀 RBAC/승인 워크플로우/토큰/봉투 · WebSocket 호스트-참가 왕복 · C2PA 워터마크(무할당)/서명/변조 검출 ──
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task EnterpriseRenderFarm_And_TeamCollaboration_Check()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pfs_ent_" + Guid.NewGuid().ToString("N"));
@@ -5144,6 +5175,7 @@ public class TitanReleaseTests
 
     // ── v16.26.0 인터랙티브 분기 & 쇼핑: 결정 트리 검증/깊이/기본 경로 · 승자/채팅 투표 파싱(무할당) · 라이브 투표 · 오버레이 필터 · graph.json/player.html 보안 · 핫스팟 추적/보간 · 전환율 집계(무할당) · 패키지 부분 구제 ──
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task InteractiveChoice_And_ShoppableVideo_Check()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pfs_ix_" + Guid.NewGuid().ToString("N"));
@@ -5329,6 +5361,7 @@ public class TitanReleaseTests
 
     // ── v16.25.0 24/7 AI 라이브: URL/키 마스킹 · ffmpeg 인자(루프·덕킹·오버레이·tee) · progress 파싱(무할당) · 채팅 필터/의도 · Gemini 검증/폴백 · YouTube 스키마 · 아바타 립싱크(무할당) ──
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task LiveStreamingStudio_And_ChatReaction_Check()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pfs_live_" + Guid.NewGuid().ToString("N"));
@@ -5618,6 +5651,7 @@ public class TitanReleaseTests
 
     // ── v16.31.0 공간 비디오: 단안 깊이 · 패닝 정합 · 3DGS 통합/렌더/PLY · DIBR SBS · 바이노럴(ITD/ILD) · 인자 빌더 · 프리뷰 BMP · 공간 앵커/시선 드웰/핀치/스와이프 · USDA ──
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task SpatialVideo_And_GaussianSplatting_Check()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pfs_spatial_" + Guid.NewGuid().ToString("N"));
@@ -5900,6 +5934,7 @@ public class TitanReleaseTests
     // ── v16.32.0 버추얼 프로덕션: OSC 코덱/번들 · UE 좌표 변환 · 트래킹 링버퍼/지터 · UDP 루프백 수신/송신/궤적 스트리밍 · 인제스트 인자 검증 · 헬스 프로브
     //    · 스마트 키/매트/스필/리라이팅 · 무할당 프레임 · 카메라 리그 추천/생성/샘플/인젝션/UE 내보내기 · 스테이징 패키지 [부분 구제] ──
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task VirtualProduction_And_UnrealBridge_Check()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pfs_vp_" + Guid.NewGuid().ToString("N"));
@@ -6205,6 +6240,7 @@ public class TitanReleaseTests
     // ── v16.33.0 사운드 디자인: DSP(FFT·바이쿼드·BS.1770·리미터·WAV) · Foley(키워드·모션·이벤트·합성·팬·인젝션 인자) · 4-스템 분리(완전 재구성·HPSS·중앙성)
     //    · 믹서(뮤트/솔로·덕킹·LUFS 정규화·피크) · Atmos(패닝 에너지·좌표·지문·블록 렌더·ADM XML/chna·BWF) · 1-Click 마스터 ──
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task SoundDesign_And_SpatialAudio_Check()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pfs_sound_" + Guid.NewGuid().ToString("N"));
@@ -6456,6 +6492,7 @@ public class TitanReleaseTests
     // ── v16.34.0 VFX: 법선(평면/경사) · 포인트/스포트/디렉셔널 셰이딩 · 그림자 · 무할당 프레임 · fps 파싱 · 업스케일(목표 해상도·패스·디노이즈·디블록·바이큐빅·샤프·필터/인자)
     //    · 광학 흐름(블록 SAD·메디안) · 워프 보간 · 슬로모션 필터/atempo · RIFE/FLAVR 인자 · ffmpeg 부재 Graceful ──
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task VfxRelighting_And_SuperResolution8k_Check()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pfs_vfx_" + Guid.NewGuid().ToString("N"));
@@ -6645,6 +6682,7 @@ public class TitanReleaseTests
     // ── v16.35.0 시나리오: 장르 감지 · 결정적 에이전트 토론/감독 검수/수정 · 관계 그래프 · LLM JSON 검증 · 영구 저장 · 3막/숏폼 비트 · 대본/카메라
     //    · Fountain 왕복/관용 파싱 · 스토리보드 변환(컷 분할·립싱크·TTS 큐·테마 매칭·표정·교체/추가) ──
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task Screenplay_And_WorldbuildingEngine_Check()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pfs_scr_" + Guid.NewGuid().ToString("N"));
@@ -6848,6 +6886,7 @@ public class TitanReleaseTests
 
     // ── v16.36.0: AI 디지털 트윈 · 실시간 모캡 · 매핑/리타겟 · 녹화/BVH · 인젝션 ──
     [Fact]
+    [Trait("Category", "Integration")]
     public void DigitalTwin_And_MotionCapture_Check()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pfs_dt_" + Guid.NewGuid().ToString("N"));
@@ -7115,6 +7154,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task GenerativeMusic_And_Choreography_Check()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pfs_mv_" + Guid.NewGuid().ToString("N"));
@@ -7366,6 +7406,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task AutonomousVTuber_And_AgencyDashboard_Check()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pfs_vt_" + Guid.NewGuid().ToString("N"));
@@ -7636,6 +7677,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task RealtimeGamingVision_And_CoStreamer_Check()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pfs_gm_" + Guid.NewGuid().ToString("N"));
@@ -7820,6 +7862,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task SpatialXrStage_And_VolumetricHologram_Check()
     {
         // 1) 모캡 → 볼륨 생성 · 코덱 키/인터 프레임 왕복(양자화 오차 내) · 무할당
@@ -8032,6 +8075,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task AutonomousCinematicUniverse_And_FranchiseEngine_Check()
     {
         // 1) 데모 유니버스(3화 + 외전): 의도적 모순 7종 검출 · 회상 제외 · 외전 무모순 · 노드 그래프
@@ -8204,6 +8248,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task EnterpriseMam_And_GlobalDistribution_Check()
     {
         var root = Path.Combine(Path.GetTempPath(), "pfs_mam_" + Guid.NewGuid().ToString("N"));
@@ -8426,6 +8471,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task AutonomousMcr_And_DynamicAdInsertion_Check()
     {
         // 1) MCR: 정상 송출 → PGM 블랙 → 같은 틱 0초 바이패스(PVW) → 전 채널 장애 시 슬레이트 → 회복 후 자동 복귀 · 유실/프리즈 · TAKE · 무할당
@@ -8683,6 +8729,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task Newsroom_And_FactCheck_Check()
     {
         // 1) 파서: RSS/Atom(태그·엔티티 제거) · JSON(스키마 검증)
@@ -8979,6 +9026,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task SportsBroadcasting_And_BiometricAnalytics_Check()
     {
         // 1) 시뮬레이터: 결정적 경기 진행 · 이벤트 · 피치 경계 · 무할당 Step
@@ -9324,6 +9372,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task EduTechElearning_And_AiTutor_Check()
     {
         // 1) 채점 코어(무할당): 주관식 정규화/레벤슈타인 · 객관식 부분점수 · 핫스팟 · BKT
@@ -9636,6 +9685,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task UniversalAccessibility_And_BarrierFree_Check()
     {
         // 1) 수어 번역: 어간 추출 · 사전 · 지문자 · 비수지 기호 · ASL 글로스 문법
@@ -9977,6 +10027,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task GenerativeWorldModel_And_Interactive4dVideo_Check()
     {
         // ══ WORLD-3: 4D 장면 그래프 파싱 · 보정 · 정제 · 퍼셉트론 ══
@@ -10233,6 +10284,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task EdgeSwarmOrchestration_And_GlobalMediaMesh_Check()
     {
         // ── SWARM-2: 메시 라우터 — 트랜스파일 · 컷스루 · 무단절 우회 · ABR · 무할당 ──
@@ -10426,6 +10478,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void LowSpecUltraPerformance_And_AdaptiveResourceSqueezing_Check()
     {
         // ── LOWSPEC-1: 등급 판정 · LOD/해상도 히스테리시스 · 비상/메모리 압박 · 무할당 ──
@@ -10567,6 +10620,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task EnterpriseProductionRelease_And_GlobalCloudEdgeSync_Check()
     {
         // ── RELEASE-1: 델타 OTA — 변경 블록만 전송 · 무단절 A/B · 우선순위 · 단절 Resume · 변조 롤백 · 무할당 ──
@@ -10765,6 +10819,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void AutonomousAvailabilityGuard_And_GlobalTelemetryGrid_Check()
     {
         // ── GRID-2: 번 레이트 — 증분 창 합계 정확도 · 다중 창 판정 · 회복 · 무할당 ──
@@ -10906,6 +10961,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void MultiAgentFederation_And_KnowledgeGraph_Check()
     {
         // ── FEDERATION-2: 지식 그래프 — 업서트 · 시점 질의 · TTL 만료 · 근접 · 경로 · 전이 추론 · 영향 역전파 · 임베딩 · 무할당 ──
@@ -11060,6 +11116,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void GlobalLocalization_And_RealtimeDubbing_Check()
     {
         // ── LOCALIZATION-1: G2V · 등시성 · SIMD 행 보간 비트 동일 · ROI 워프 · 무할당 ──
@@ -11197,6 +11254,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void OmniModalNexus_And_CreativeSingularity_Check()
     {
         // NEXUS-1: 시공간 텐서 저랭크 분해 · 인코드/디코드 · 잔차 이상 · SQA QUBO 최적성 · 잡 배치 · 무할당 ──
@@ -11379,6 +11437,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void LiveBroadcastProduction_And_InteractiveStreamer_Check()
     {
         // LIVE-1: 자율 스위칭 — 발화 Cut · 모션 Dissolve · 디렉터 Wipe · 최대 홀드 · SIMD 디졸브 · A/V 지연 보상 · 무할당 ──
@@ -11579,6 +11638,7 @@ public class TitanReleaseTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void OpenUsdSpatialAsset_And_GenerativeWorld_Check()
     {
         // USD-1: USDA 파싱 · 레이어 합성(over/뮤트/미정의) · 시간 샘플 · 계층 변환 · 3DGS/4D 바인딩 · USDC/USDZ/USDA 왕복 · 무할당 ──
@@ -11939,6 +11999,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void DigitalTwinPhysicalSync_And_SyntheticDataSimulation_Check()
     {
         // TWIN-1: 와이어 포맷 · CRC/역순/미등록 폐기 · 보정 양방향 · 데드레커닝 지연 보상 · USD/3DGS/장면 출력 · 가상 편집 → 명령 · 무할당 ──
@@ -12224,6 +12285,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void NeuralPathTracing_And_RealtimeDenoising_Check()
     {
         static System.Numerics.Vector3 V3(float x, float y, float z) => new(x, y, z);
@@ -12472,6 +12534,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void NeuralMarkerlessMotionCapture_And_CharacterPerformance_Check()
     {
         static System.Numerics.Vector3 V3(float x, float y, float z) => new(x, y, z);
@@ -12723,6 +12786,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void SpatialAudio_And_AcousticRaytracing_Check()
     {
         static System.Numerics.Vector3 V3(float x, float y, float z) => new(x, y, z);
@@ -12971,6 +13035,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void VolumetricHologram_And_TelepresenceStudio_Check()
     {
         // HOLO-1: SIMD AABB/양자화 = 스칼라 · 키/델타 왕복 · 오차 ≤ 반 칸 · CRC 변조 거부 · 분할 재조립
@@ -13111,6 +13176,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void InteractiveCinema_And_NarrativeBranching_Check()
     {
         // CINEMA-2: 어휘 · BCI 융합 · 발산 · 시선 체류 · 음성 의도 · 조건 잠금 · 스코어러 결선점
@@ -13264,6 +13330,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void AutonomousEditorial_And_MontageAssembly_Check()
     {
         // EDIT-1 SIMD 커널 = 스칼라
@@ -13378,6 +13445,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void VirtualProduction_And_CinematicMastering_Check()
     {
         // ══ VP-1 오프-액시스 투영: 월 4모서리 → NDC ±1 · 월 위 점 선형 ══
@@ -13552,6 +13620,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void NeuralHairCloth_And_GarmentDynamics_Check()
     {
         // ══ HC-0 SIMD 커널 = 스칼라(비트 일치 · 꼬리) ══
@@ -13792,6 +13861,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void GenerativeEnvironment_And_MicroWeatherLighting_Check()
     {
         // ══ ENV-0 SIMD 커널 = 스칼라(비트 일치 · 꼬리) ══
@@ -14039,6 +14109,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void NeuralCinematography_And_ShotComposition_Check()
     {
         // ══ CI-0 SIMD 커널 = 스칼라(비트 일치 · 꼬리) ══
@@ -14216,6 +14287,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void GenerativeFilmScore_And_NeuralSoundDesign_Check()
     {
         const int B = Sc.NeuralCinematographicFilmScoreGenerator.Block, SR = Sc.NeuralCinematographicFilmScoreGenerator.SampleRate;
@@ -14450,6 +14522,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void LatentVideoDiffusion_And_TemporalConsistency_Check()
     {
         const int W = Vd.RealtimeLatentVideoDiffusionEngine.W, H = Vd.RealtimeLatentVideoDiffusionEngine.H, LS = Vd.RealtimeLatentVideoDiffusionEngine.LatentSize;
@@ -14638,6 +14711,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void ScriptContinuity_And_SceneCoherence_Check()
     {
         // ══ CT-0 SIMD 커널 = 스칼라(비트 일치 · 꼬리) ══
@@ -14807,6 +14881,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void GlobalLocalization_And_NeuralLipSync_Check()
     {
         // ══ DB-0 SIMD 커널 = 스칼라(비트 일치 · 꼬리) ══
@@ -14967,6 +15042,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void ContentSecurity_And_DigitalRights_Check()
     {
         // ══ SC-0 SIMD 커널 = 스칼라(비트 일치 · 꼬리) · DCT 기저 정규직교 · CRC ══
@@ -15172,6 +15248,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void MultiAgentCrewOrchestration_And_AutonomousDirectorial_Check()
     {
         // ══ CR-0 메시지 버스: 대상 필터 · 자기 제안 비반향 · 손실 집계 · 무할당 ══
@@ -15318,6 +15395,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task CloudSourceVerification_And_UiInteractiveTesting_Check()
     {
         // ══ VF-1 렉서: 주석/문자열/보간 홀 중첩/축자/원시 정규화(길이·개행 보존) ══
@@ -15523,6 +15601,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task RealDomUiTesting_And_CodeDefectSelfFix_Check()
     {
         // ══ RF-1 실 RenderTree 구동: 클릭/변경/체크 디스패치 · NRE · 비동기 예외 · 지연 · 위험 라벨 · disabled · OnClose ══
@@ -15685,6 +15764,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void LiveTelemetry_And_PerformanceSelfTuning_Check()
     {
         // ══ LT-1 프로파일러: 링/통계 · SIMD = 스칼라 · p95 버킷 · 게이지 결합 · 무할당 Record/Measure/Sample ══
@@ -15846,6 +15926,7 @@ class "Proto"
     private sealed class FakeTickRunner { public double LastTickMs { get; set; } }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void DigitalTwin_And_OmniverseWorldSimulation_Check()
     {
         // ── TWIN-1: Horn 캘리브레이션 · 양방향 동기화 · 권한 · SIMD 변환 · 무할당 ──
@@ -16038,6 +16119,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void HolographicTelepresence_And_UniversalAgiDirector_Check()
     {
         // ── HOLO-1: SIMD 커널 = 스칼라 비트 동일(길이 0..37 · 비정렬 꼬리) ──
@@ -16237,6 +16319,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void RoboticMoCo_And_PhysicalStageHIL_Check()
     {
         // ── MOCO-1: SIMD 커널 = 스칼라 비트 동일(길이 0..37) ──
@@ -16530,6 +16613,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void NeuralCodec_And_GlobalEdgeCdn_Check()
     {
         // ── CDN-1: SIMD 커널 = 스칼라 비트 동일(길이 0..37) ──
@@ -16715,6 +16799,7 @@ class "Proto"
 
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void VirtualArena_And_DeterministicRollbackNetcode_Check()
     {
         // ── ARENA-1: SIMD 커널 = 스칼라 비트 동일(길이 0..37) ──
@@ -16868,6 +16953,7 @@ class "Proto"
 
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void SpatialSlam_And_LidarMeshReconstruction_Check()
     {
         const int W = Slm.SpatialSlamStudioRunner.W, H = Slm.SpatialSlamStudioRunner.H;
@@ -17051,6 +17137,7 @@ class "Proto"
 
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void SpatialComputing_And_WebXrStreaming_Check()
     {
         // ── XR-1: 6DoF 표본 · 예측 · 양안 뷰 · SIMD 투영 ──
@@ -17282,6 +17369,7 @@ class "Proto"
 
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void DistributedGpuCluster_And_CloudRenderingSwarm_Check()
     {
         // ── GPUSWARM-1: 토폴로지 · SIMD EMA 프로빙 · 건강 · VRAM ──
@@ -17487,6 +17575,7 @@ class "Proto"
 
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void EnterpriseSla_And_ZeroDowntimeFailover_Check()
     {
         // ── SLA-1: 멈춤 · 무한 루프 · 락 교착 · 메모리 압박 감지 ──
@@ -17700,6 +17789,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void DigitalHumanPerformance_And_NeuralFacialRigging_Check()
     {
         // ══ DH-1 ARKit 52 · SIMD = 스칼라 · 중립 항등 · 좌우 대칭 ══
@@ -17962,6 +18052,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void GenerativeVfx_And_NeuralParticleFluid_Check()
     {
         // ══ VFX-1 SIMD 커널 = 스칼라(비트 일치 · 비정렬 꼬리) ══
@@ -18141,6 +18232,7 @@ class "Proto"
 
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task HardwareAcceleration_And_DistributedRendering_Check()
     {
         // ── HW-1: DirectPath 아레나 — 제자리 게시 · 공유 메모리 교차 인스턴스 · 회수 · 3DGS 제자리 렌더 ──
@@ -18397,6 +18489,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void DeepFeatureReinforcement_And_CrossModuleSynergy_Check()
     {
         // ── REINFORCE-2: 하이퍼 가속 커널 — 스칼라 원본과 비트 동일 · 무할당 · 엔진 결선 ──
@@ -18596,6 +18689,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task SpatialXrBroadcasting_And_NeuralHologram_Check()
     {
         // ══ XR-1: 포즈 규약 · 스테레오 시차 · 헤드 예측 · XRS1 키/델타/손실 · gRPC · WebXR · UDP · 무할당 ══
@@ -18882,6 +18976,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task IcvfxVirtualProduction_And_AutonomousDirector_Check()
     {
         // ══ ICVFX-1: 오프액시스 투영 · 시차 정확 인-카메라 · 소프트 에지 · 지연 보상 · 무할당 ══
@@ -19148,6 +19243,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task GaussianSplatting_And_NeRfLiveStudio_Check()
     {
         // ══ 3DGS-1: 라스터라이저 — EWA 비등방 · 깊이 정렬 · SH 시점 색 · 클리핑 · 무할당 ══
@@ -19392,6 +19488,7 @@ class "Proto"
         => Math.Acos(Math.Clamp(System.Numerics.Vector3.Dot(System.Numerics.Vector3.Normalize(a), System.Numerics.Vector3.Normalize(b)), -1f, 1f)) * 180 / Math.PI;
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task AutoOptimization_And_HighCapacityMediaPipeline_Check()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pfs_v1657_" + Guid.NewGuid().ToString("N")[..8]);
@@ -19678,6 +19775,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task BciNeuro_And_BioFeedbackMedia_Check()
     {
         // ══ BCI-1: EEG 대역 전력 · 텍스트/바이너리 파싱 · 감정 지수 · UDP ══
@@ -19887,6 +19985,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task VolumetricTeleportation_And_SpatialBeamforming_Check()
     {
         // ══ TELEPORT-1: 동적 메시 코덱 · 노이즈 게이트 · 스파이크 홀드 · 패킷/FEC ══
@@ -20127,6 +20226,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task SovereignMediaCloud_And_QuantumVault_Check()
     {
         static string Hex(ReadOnlySpan<byte> b) => Convert.ToHexString(b).ToLowerInvariant();
@@ -20388,6 +20488,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task ContinuousEvolution_And_GlobalOperations_Check()
     {
         // 1) 핫 리로딩: 식 트랜스파일 · 오류 위치 · 카나리 · 원자 교체(동시 실행) · 롤백 · 프롬프트 규칙 · 서명 어셈블리 ALC 스왑 · 무할당 실행
@@ -20649,6 +20750,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task EnterpriseSystemHardening_And_ProductionRelease_Check()
     {
         // 1) SIMD 커널: Vector512/256/128 · Vector<T> · 스칼라 비트 동일(비정렬 꼬리 포함)
@@ -20890,6 +20992,7 @@ class "Proto"
     };
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task UniversalMediaEmpire_And_OmnichannelMaster_Check()
     {
         // 1) 옴니채널: 50+ 카탈로그 · 렌디션 공유 · 메타데이터 최적화 · 피크 예약 · 병렬 송출/재시도/페일오버 · 동시성 상한 · 라이브 정지 재연결
@@ -21147,6 +21250,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task Podcast_And_MultiAgentTalkshow_Check()
     {
         // 1) 오케스트레이터: 라인업 검증 · 발화권(연속 금지 · 지목 답변 · 반박 · MC 개입 주기 · 공정성) · 아젠다 진행 · 정리/클로징
@@ -21392,6 +21496,7 @@ class "Proto"
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task LiveCommerce_And_ShoppertainmentHost_Check()
     {
         // 1) QR(ISO 18004): 포맷 BCH 기준값 · 용량 표 · 왕복 판독(RS 신드롬) · 기능 패턴 · 버전 정보
@@ -21976,7 +22081,7 @@ public sealed class MassiveCrowdIsolatedTests
 /// ProcessGcMode(DisableParallelization) 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class BroadcastMasterControlIsolatedTests
 {
     private const int W = 64, H = 36;
@@ -22569,7 +22674,7 @@ public sealed class TemporalDeflickerIsolatedTests
 /// v17.08.0 시맨틱 매팅 &amp; 가상 세트 융합 — 무할당 단언을 타 병렬 테스트 GC 간섭 없이 실행하도록 ProcessGcMode(DisableParallelization) 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class SemanticMattingIsolatedTests
 {
     [Fact]
@@ -22820,7 +22925,7 @@ public sealed class InCameraVfxIsolatedTests
 /// v17.10.0 ACES 색 과학 &amp; 라이브 DIT 그레이딩 — 무할당 단언을 타 병렬 테스트 GC 간섭 없이 실행하도록 ProcessGcMode(DisableParallelization) 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class AcesColorScienceIsolatedTests
 {
     [Fact]
@@ -23033,7 +23138,7 @@ public sealed class AcesColorScienceIsolatedTests
 /// v17.11.0 무마커 멀티뷰 모캡 &amp; 생체역학 리타게팅 — 무할당 단언을 ProcessGcMode 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class MarkerlessMocapIsolatedTests
 {
     [Fact]
@@ -23193,7 +23298,7 @@ public sealed class MarkerlessMocapIsolatedTests
 /// v17.12.0 페이셜 퍼포먼스 캡처 &amp; Audio2Face 비짐 — 무할당 단언을 ProcessGcMode 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class FacialPerformanceIsolatedTests
 {
     [Fact]
@@ -23378,7 +23483,7 @@ public sealed class FacialPerformanceIsolatedTests
 /// v17.13.0 덱스터러스 핸드 &amp; 소품 접촉 물리 — 무할당 단언을 ProcessGcMode 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class DexterousHandIsolatedTests
 {
     [Fact]
@@ -23527,7 +23632,7 @@ public sealed class DexterousHandIsolatedTests
 /// v17.14.0 해부학 근육 &amp; 연조직 변형 — 무할당 단언을 ProcessGcMode 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class AnatomicalTissueIsolatedTests
 {
     [Fact]
@@ -24025,7 +24130,7 @@ public sealed class SkinOpticsIsolatedTests
 /// v17.18.0 뉴럴 음성 합성 &amp; 성도 공명 · A/V 지연 · 파열음 가드 — 무할당 단언을 ProcessGcMode 컬렉션에서 단독 실행.
 /// </summary>
 [Collection("ProcessGcMode")]
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class NeuralVoiceIsolatedTests
 {
     [Fact]
@@ -24897,7 +25002,7 @@ public sealed class SpatialAcousticsIsolatedTests
 }
 
 /// <summary>v17.24.0 AI 6DoF 공간 햅틱 &amp; 역각 피드백 — SIMD 커널 비트 동일 · 갓-오브젝트 프록시 · 켈빈-보이트 · 진동 텍스처/맥동 · POPC 가드 · 러너 무할당.</summary>
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class SpatialHapticsIsolatedTests
 {
     [Fact]
@@ -25544,7 +25649,7 @@ public sealed class MicroclimateIsolatedTests
 }
 
 /// <summary>v17.31.0: AI 버추얼 라이브 방송 &amp; 시청자 인터랙션 — 패킷화 규격 · 세이프티 가드 · 감정/슈퍼챗 합성 · ABR/스파이크 안정 보간 · 무할당.</summary>
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class VirtualLiveIsolatedTests
 {
     private sealed class CountingSink : VL.ILiveTransportSink
@@ -25833,7 +25938,7 @@ public sealed class LiveDubbingIsolatedTests
 }
 
 /// <summary>v17.33.0: AI 뉴럴 모션 매칭 &amp; 지형 적응 생체역학 — 가속 검색 정확성 · 궤적 예측 · 관성 블렌딩 · 지형 IK/ZMP · 풋스케이팅/과신전 가드 · 무할당.</summary>
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class MotionMatchingIsolatedTests
 {
     private static MM.NeuralMotionMatchingStudioRunner Run(int frames, Action<MM.NeuralMotionMatchingStudioRunner>? setup = null)
@@ -26018,7 +26123,7 @@ public sealed class VisualQaIsolatedTests
 }
 
 /// <summary>v17.35.0: AI 접촉 로코모션 &amp; 계단 보행 — 볼류메트릭 스캔 · 4보 발 배치 · 계단 합성(포착 스텝 · 속도 정합) · 접지 창 LIPM/DCM ZMP 95%+ · 각운동량 · 무할당.</summary>
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class ContactLocomotionIsolatedTests
 {
     [Fact]
@@ -26089,7 +26194,7 @@ public sealed class ContactLocomotionIsolatedTests
 
 /// <summary>v17.36.0: AI 양손 정밀 조작 — 20 관절 덱스그랩(SDF 순차 닫힘 · 힘 폐쇄) · 위상 잠금 인계 · 4 손 폐쇄 체인 운반 · 마찰 원뿔 파지력 증폭 · 관통/터널링 방어 · 무할당.</summary>
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class DexterousManipulationIsolatedTests
 {
     [Fact]
@@ -26185,7 +26290,7 @@ public sealed class DexterousManipulationIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class NeuralRagdollIsolatedTests
 {
     [Fact]
@@ -26508,7 +26613,7 @@ public sealed class CinematicDirectorIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class NarrativeTimelineIsolatedTests
 {
     [Fact]
@@ -26631,7 +26736,7 @@ public sealed class NarrativeTimelineIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class IntelligentStageLightingIsolatedTests
 {
     [Fact]
@@ -26881,7 +26986,7 @@ public sealed class NeuralVfxPyrotechnicsIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class CinematicLensOpticsIsolatedTests
 {
     private sealed class Sp : IServiceProvider
@@ -27033,7 +27138,7 @@ public sealed class CinematicLensOpticsIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class GenlockFrustumIsolatedTests
 {
     private sealed class Sp : IServiceProvider
@@ -27175,7 +27280,7 @@ public sealed class GenlockFrustumIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class CameraTrackingIsolatedTests
 {
     [Fact]
@@ -27374,7 +27479,7 @@ public sealed class VirtualSetExtensionIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 프레임 게이트 → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class InstagramViralReelsRemixIsolatedTests
 {
     [Fact]
@@ -27482,7 +27587,7 @@ public sealed class InstagramViralReelsRemixIsolatedTests
     }
 }
 
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class MetaGraphApiBridgeIsolatedTests
 {
     private static int RunUntil(Gb.GraphApiBridgeStudioRunner run, Func<bool> done, int max)
@@ -30046,7 +30151,7 @@ public sealed class MultilingualDubbingIsolatedTests
 
 /// <summary>v17.65.0 멀티 아바타 토크쇼 — 턴테이킹 FSM · 오버랩/데드락 가드 · 상호 시선 · 멀티캠 컷 회귀(틱 예산 측정 → 비병렬).</summary>
 [Collection("TimingSensitivePerformance")]   // 벽시계 16.7 ms 틱 게이트 → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class MultiAvatarTalkshowIsolatedTests
 {
     [Fact]
@@ -36688,7 +36793,7 @@ public sealed class PlatformVisibilityGatewayIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 스레드 할당 바이트 계측(감정 분류 · 답글 조합 · 속도 가드 허가) → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class GoldenHourEngagementIsolatedTests
 {
     private const double T0 = 1_800_000_000;
@@ -36847,7 +36952,7 @@ public sealed class GoldenHourEngagementIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 스레드 할당 바이트 계측 · 100 ms 스캔 예산(피드 파싱 · 연관도 스캔 · 메타데이터 조합) → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class SocialTrendJackingIsolatedTests
 {
     private const double T0 = 1_800_000_000;
@@ -37008,7 +37113,7 @@ public sealed class SocialTrendJackingIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 스레드 할당 바이트 계측 · 100 ms 예산(상품 매칭 · 숏링크/고지 조립 · 클릭 판정) → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class ViralCommerceAffiliateIsolatedTests
 {
     private const double T0 = 1_800_000_000;
@@ -37229,7 +37334,7 @@ public sealed class ViralCommerceAffiliateIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 스레드 할당 바이트 계측 · 100 ms 예산(곡선 분석 · 편집 계획 · WSOLA 리패키징 · 줌 프레임) → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class AudienceRetentionHeatmapIsolatedTests
 {
     private const long T0 = 1_800_000_000;
@@ -37497,7 +37602,7 @@ public sealed class AudienceRetentionHeatmapIsolatedTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 스레드 할당 바이트 계측 · 100 ms 예산(이상치 스캔 · 훅/컷/피크 디컴파일 · 대항 합성/표절 검사) → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class CompetitorViralSpyIsolatedTests
 {
     private const long T0 = 1_800_000_000;
@@ -37744,7 +37849,7 @@ public sealed class CompetitorViralSpyIsolatedTests
 
 /// <summary>v17.98.2 실기 비트스트림 재생 적합성 — SPS RBSP 에뮬레이션 방지 · 4:2:0 CropUnit 정렬 · fMP4 박스 트리/IDR 동기 컨포먼스 · 100 회 무할당.</summary>
 [Collection("TimingSensitivePerformance")]   // 100 회 무할당 · 벽시계 예산 계측 → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class RealBitstreamPlaybackConformanceIsolatedTests
 {
     private static int Find(byte[] b, string fourcc, int from = 0)
@@ -37926,7 +38031,7 @@ public sealed class RealBitstreamPlaybackConformanceIsolatedTests
 
 /// <summary>[v18.0.0] 175 분절 모달 → 32 슈퍼-워크스페이스 통폐합 · 서브탭 딥링크 라우터 · 숏폼 팩토리 탭 공유 컨텍스트 무결성.</summary>
 [Collection("ProcessGcMode")]
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class SuperWorkspaceConsolidationTests
 {
     [Fact]
@@ -38086,7 +38191,7 @@ public sealed class SuperWorkspaceConsolidationTests
 
 /// <summary>v18.0.1: 숏폼 팩토리 심층 파이프라인 하이드레이션 — ① 절삭/리프레임 변경 → ② 대본 재슬라이싱 · ③ 슬럼프/펀치/리먹서 컷 · ④ 길이/썸네일 피크 단절 0 · 동기화 디스패치 무할당.</summary>
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class ShortsFactoryDeepPipelineHydrationTests
 {
     [Fact]
@@ -38539,7 +38644,7 @@ public sealed class ShortsFactoryRealFileImportTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class ShortsToPublisherHandoffTests
 {
     [Fact]
@@ -38736,7 +38841,7 @@ public sealed class ShortsToPublisherHandoffTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class SocialPublisherResumableUploadTests
 {
     [Fact]
@@ -38917,7 +39022,7 @@ public sealed class SocialPublisherResumableUploadTests
 }
 
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class ViralGrowthStrategyPipelineTests
 {
     [Fact]
@@ -39500,7 +39605,7 @@ public sealed class DesktopRuntimeSmokeTests
 
 /// <summary>v18.2.0: StoryV 스토리보드 — 발화 호흡 샷 분할 정확도 · 9:16 키프레임 규격 · 무할당 핫패스 · 숏폼 팩토리 0-카피 핸드오프 일치성.</summary>
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class StoryboardSequencerFactoryBridgeTests
 {
     [Fact]
@@ -39643,7 +39748,7 @@ public sealed class StoryboardSequencerFactoryBridgeTests
 
 /// <summary>v18.2.1: StoryV 오디오 정렬 — PCM 무음 경계 · TTS 단어 경계 1 ms 타임코드 · 다중 샷 9:16 크롭 이진 탐색 · 팩토리 크롭 트랙 0-카피 관통.</summary>
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class StoryboardAudioAlignmentReframeTests
 {
     private const string Script = "안녕하세요. 오늘은 AI로 숏폼을 만드는 비밀을 알려드릴게요, 끝까지 보시면 반전이 있습니다! 준비되셨나요?";
@@ -39849,7 +39954,7 @@ public sealed class StoryboardAudioAlignmentReframeTests
 
 /// <summary>v18.2.2: StoryV 실기 오디오 — WAV 헤더 파싱 · 실측 샷 재동기화(음절 추정 배제) 무할당 · 스토리보드 → 숏폼 팩토리 오디오 0-카피 관통 · ②~④ 렌더 소비.</summary>
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class StoryboardRealAudioPassthroughTests
 {
     private const string Script = "안녕하세요. 오늘은 AI로 숏폼을 만드는 비밀을 알려드릴게요, 끝까지 보시면 반전이 있습니다! 준비되셨나요?";
@@ -39975,7 +40080,7 @@ public sealed class StoryboardRealAudioPassthroughTests
 
 /// <summary>v18.2.3: StoryV 내부 TTS 단어 경계 인메모리 직결 · SRT/WebVTT 무할당 자막 파서(깨진 큐 복구) · 9:16 프리뷰 캔버스 세이프존 침범 판정.</summary>
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class StoryboardTtsDirectSubtitleCanvasTests
 {
     private const string Script = "안녕하세요. 오늘은 AI로 숏폼을 만드는 비밀을 알려드릴게요, 끝까지 보시면 반전이 있습니다! 준비되셨나요?";
@@ -40152,7 +40257,7 @@ public sealed class StoryboardTtsDirectSubtitleCanvasTests
 
 /// <summary>v18.2.4: StoryV 순수 C# MP3 프레임 헤더 파서(CBR · Xing VBR · VBRI) · BS.1770-4 −14 LUFS 노멀라이저 · MP3/PCM 스토리보드 → 숏폼 팩토리 오디오 · 게인 메타데이터 관통.</summary>
 [Collection("TimingSensitivePerformance")]   // 무할당 프로브(GC 카운터) → 비병렬
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public sealed class StoryboardMp3LufsNormalizerTests
 {
     private const string Script = "안녕하세요. 오늘은 AI로 숏폼을 만드는 비밀을 알려드릴게요, 끝까지 보시면 반전이 있습니다! 준비되셨나요?";

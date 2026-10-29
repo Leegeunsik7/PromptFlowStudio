@@ -10,10 +10,10 @@ using PromptFlowStudio.Services.Wan;
 
 namespace PromptFlowStudio.Tests;
 
-[Trait("Category", "Integration")]
 public class WanEngineTests
 {
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void MultiCloudVault_DynamicAdd_And_InstantApply_Check()
     {
         var vault = new WanTokenVault(null);   // 인메모리 전용(사용자 vault.enc 미접촉)
@@ -78,6 +78,7 @@ public class WanEngineTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task SecureVault_Persistence_And_RetryLogic_Check()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pfs-vault-" + Guid.NewGuid().ToString("N"));
@@ -151,6 +152,7 @@ public class WanEngineTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task SecureVault_DPAPI_And_RetryLogic_Check()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pfs-dpapi-" + Guid.NewGuid().ToString("N"));
@@ -252,6 +254,7 @@ public class WanEngineTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task Wan21_I2V_MultiKey_And_CrossProvider_Check()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pfs-i2v-" + Guid.NewGuid().ToString("N"));
@@ -329,6 +332,7 @@ public class WanEngineTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task SystemAudit_EdgeCases_And_LocalFallback_Check()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pfs-audit-" + Guid.NewGuid().ToString("N"));
@@ -425,6 +429,7 @@ public class WanEngineTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task Opus_Ascension_ZeroAlloc_Architecture_Check()
     {
         // ① Lock-Free 링: 동시 순환 — CAS 커서로 정확한 라운드로빈(키별 배정 수 동일 · 이중 배정 0)
@@ -602,6 +607,7 @@ public class WanEngineTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void NativeAOT_JsonSourceGenerator_And_SIMD_Check()
     {
         // ① WanJsonContext 메타데이터 = 소스 생성(리플렉션 리졸버 아님)

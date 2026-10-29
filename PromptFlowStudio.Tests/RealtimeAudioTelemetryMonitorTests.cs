@@ -3,7 +3,7 @@ using PromptFlowStudio.Services.AudioTelemetry;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>v17.29.0: 실시간 오디오/텔레메트리 모니터 — 지표 정확도 · 스펙트럼 밴드 피크 · 클립 · 무할당 회귀 잠금.</summary>
-[Trait("Category", "Integration")]
+[Trait("Category", "FastUnit")]
 public class RealtimeAudioTelemetryMonitorTests
 {
     [Fact]

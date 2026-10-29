@@ -16,7 +16,6 @@ using PromptFlowStudio.Services.Wan;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>v13.1.0: VLM 백프레셔(즉시 드롭)·5초 데드라인·E2E 지연·오프라인 폴백 - HttpMessageHandler 모의로 결정적 재현.</summary>
-[Trait("Category", "Integration")]
 public class VisionIntelligenceTests
 {
     private static readonly TimeSpan SafetyNet = TimeSpan.FromSeconds(45);
@@ -64,6 +63,7 @@ public class VisionIntelligenceTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task SlowVlm_DropsSamplesImmediatelyWithoutQueue_AtZeroAllocation_ThenAcceptsAndMeasuresE2E()
     {
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -109,6 +109,7 @@ public class VisionIntelligenceTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task HungVlm_DeadlineCancelsRequest_ReleasesInFlightSlot_AndNextSampleRetries()
     {
         var sawCancel = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -136,6 +137,7 @@ public class VisionIntelligenceTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task OfflineEndpoint_ExponentialBackoff_OpensCircuit_SkipsNetwork_AndHudShowsOffline()
     {
         var handler = new ScriptedHandler((_, _) => throw new HttpRequestException("대상 컴퓨터에서 연결을 거부했으므로 연결하지 못했습니다. (127.0.0.1:11434)"));
@@ -167,6 +169,7 @@ public class VisionIntelligenceTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task RealSocket_ConnectionRefused_FallsBackQuicklyAndReportsOffline()
     {
         // 실 소켓 경로: 방금 비운 포트(리스너 없음)로 접속 → 연결 거부 → 휴리스틱 폴백(모의 핸들러 아님)
@@ -187,6 +190,7 @@ public class VisionIntelligenceTests
     // ── v14.3.0 가변 VLM 샘플링 ──
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void AdaptiveFrameSampler_DynamicScale_OnLatencySpike()
     {
         var s = new AdaptiveFrameSampler();
@@ -212,6 +216,7 @@ public class VisionIntelligenceTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void AdaptiveFrameSampler_LatencyDistribution_PercentilesHistogramEwma_ZeroAlloc()
     {
         ReadOnlySpan<float> seq = stackalloc float[] { 100, 200, 300 };
@@ -239,6 +244,7 @@ public class VisionIntelligenceTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task VisionContextAnalyzer_VlmTimeout_RelaxesAdaptiveSamplerToMaxInterval()
     {
         var handler = new ScriptedHandler(async (_, ct) => { await Task.Delay(Timeout.Infinite, ct); return Ok(OllamaExplosion); });
@@ -257,7 +263,6 @@ public class VisionIntelligenceTests
 }
 
 /// <summary>v13.2.0: Ollama 비전 모델 프로빙(/api/tags + /api/show capabilities) · 자동 모델 적용 · 합성 벤치마크 - 모의 HTTP 로 결정적 검증.</summary>
-[Trait("Category", "Integration")]
 public class VisionModelProbeEngineTests
 {
     private sealed class RouteHandler(Func<HttpRequestMessage, string, Task<HttpResponseMessage>> route) : HttpMessageHandler
@@ -293,6 +298,7 @@ public class VisionModelProbeEngineTests
         });
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task TextOnlyModels_ReportNoVisionModel_WithPullGuide()
     {
         // 이 PC 의 실제 설치 구성(gemma2 / qwen2.5 계열 = 텍스트 전용)을 재현
@@ -308,6 +314,7 @@ public class VisionModelProbeEngineTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task VisionCapability_IsDetected_AndPreferredFamilyWins()
     {
         var h = Ollama(new[] { "llava:7b", "gemma2:2b", "qwen2.5vl:3b" }, n => n.StartsWith("gemma2") ? new[] { "completion" } : new[] { "completion", "vision" });
@@ -320,6 +327,7 @@ public class VisionModelProbeEngineTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task OllamaWithoutCapabilities_FallsBackToNameHeuristic()
     {
         var h = Ollama(new[] { "qwen2.5:7b", "llava:13b" }, _ => null);   // /api/show 404 = 구버전(capabilities 미제공)
@@ -331,6 +339,7 @@ public class VisionModelProbeEngineTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task ServerOffline_And_InvalidSchema_AreReportedWithoutThrowing()
     {
         using var off = new VisionModelProbeEngine(Opt(), new HttpClient(new RouteHandler((_, _) => throw new HttpRequestException("연결 거부"))));
@@ -347,6 +356,7 @@ public class VisionModelProbeEngineTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task ApplyTo_SwitchesDefaultModel_ToDetected_ButRespectsExplicitConfig_AndRequestsUseIt()
     {
         var h = Ollama(new[] { "qwen2.5vl:3b" }, _ => new[] { "vision" });
@@ -377,6 +387,7 @@ public class VisionModelProbeEngineTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task SyntheticBenchmark_ReportsLatencyDistributionAndFps_AndRejectsConcurrentRun()
     {
         using var probe = new VisionModelProbeEngine(Opt(), new HttpClient(new RouteHandler((_, _) => Task.FromResult(Json("{}")))));
@@ -403,6 +414,7 @@ public class VisionModelProbeEngineTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void SyntheticFrames_DifferPerFrame_AndContainFlashPattern()
     {
         var a = new byte[64 * 36 * 3]; var b = new byte[64 * 36 * 3];
@@ -414,6 +426,7 @@ public class VisionModelProbeEngineTests
     }
 
     [Theory]
+    [Trait("Category", "FastUnit")]
     [InlineData("qwen2.5vl:3b", true)]
     [InlineData("qwen2.5:7b", false)]
     [InlineData("qwen2.5:latest", false)]
@@ -432,7 +445,6 @@ public class VisionModelProbeEngineTests
 
 /// <summary>v13.3.0: VLM 요약문 → 액션 매퍼 - Span 파싱 0-Alloc · 모션/스타일 LoRA 스왑 · 원자 쿨다운 · 장면 바인더와의 중복 방지 · UI 컨텍스트 비점유.</summary>
 [Collection("ProcessGcMode")]   // v16.9.0: 스레드 할당 0B 단언 — 병렬 GC 중 ArrayPool 트림 오염 차단
-[Trait("Category", "Integration")]
 public class VisionActionMapperTests
 {
     private static readonly TimeSpan SafetyNet = TimeSpan.FromSeconds(45);
@@ -447,6 +459,7 @@ public class VisionActionMapperTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void VisionActionMapper_ParseSpan_DoesNotAllocateMemory()
     {
         string[] samples =
@@ -465,6 +478,7 @@ public class VisionActionMapperTests
     }
 
     [Theory]
+    [Trait("Category", "FastUnit")]
     [InlineData("A massive EXPLOSION rocks the arena", VisionAction.MotionSpike, VisionAction.None)]
     [InlineData("two players in close combat", VisionAction.MotionSpike, VisionAction.None)]
     [InlineData("GAME OVER screen", VisionAction.GameOver, VisionAction.None)]
@@ -484,6 +498,7 @@ public class VisionActionMapperTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task Explosion_InjectsZoomShakeSpike_AndCooldownBlocksRepeat_ThenRecovers()
     {
         var (map, motion, _, clk) = Build();
@@ -507,6 +522,7 @@ public class VisionActionMapperTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task StyleKeywords_SwapLoraWithoutStacking_PreviousStyleUnmerged()
     {
         var (map, _, lora, clk) = Build();
@@ -528,6 +544,7 @@ public class VisionActionMapperTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task SceneBinderAlreadyMoved_ExplosionScene_MapperDefersMotion_ButStillAppliesStyle()
     {
         var (map, motion, lora, _) = Build();
@@ -540,6 +557,7 @@ public class VisionActionMapperTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void CooldownRegistry_ConcurrentEntrants_ExactlyOneWinsPerWindow()
     {
         var (map, _, _, _) = Build();
@@ -561,6 +579,7 @@ public class VisionActionMapperTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task Dispatch_DoesNotResumeOnCallerUiContext()
     {
         var motion = new WanDynamicMotionController();
@@ -592,6 +611,7 @@ public class VisionActionMapperTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task Analyzer_VlmConfirmedSummary_FlowsIntoMapper_EndToEnd()
     {
         var (map, _, lora, _) = Build();
@@ -615,6 +635,7 @@ public class VisionActionMapperTests
     // ── v15.2.0 아기 스튜디오 원클릭 마스터피스 ──
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void BabyPromptPresets_OneClickInject_AutoFillsInput_Check()
     {
         var presets = PromptPresets.Baby;
@@ -636,6 +657,7 @@ public class VisionActionMapperTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void BabyPromptPresets_OutOfRangeIndex_KeepsCurrentInput()
     {
         const string current = "유지되어야 할 입력";
@@ -645,6 +667,7 @@ public class VisionActionMapperTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void BabyPromptPresets_Inject_IsZeroAlloc()
     {
         var presets = PromptPresets.Baby;
@@ -662,6 +685,7 @@ public class VisionActionMapperTests
     // ── v15.2.1 아기 스튜디오 울티메이트 매트릭스 ──
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void BabyStudio_Matrix_OneClickInject_AutoAppendsModifiersAndNegative_Check()
     {
         Assert.Equal(5, BabyStudioMatrix.Growth.Length);
@@ -727,6 +751,7 @@ public class VisionActionMapperTests
     // ── v15.3.0 제미나이 AI 추천 스튜디오 ──
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void GeminiRecommendation_InjectAndEnhance_Check()
     {
         var picks = GeminiRecommendationMatrix.Picks;
@@ -773,6 +798,7 @@ public class VisionActionMapperTests
     // ── v15.4.0 라이브 비디오 캔버스 & Wan 2.1 튜너 ──
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void LiveVideoCanvas_ParameterTuningAndSharpening_Check()
     {
         var c = new LiveVideoCanvasStudio();
@@ -820,6 +846,7 @@ public class VisionActionMapperTests
     // ── v15.4.1 DashScope 튜닝 어댑터 · MMF 라이브 캔버스 ──
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void DashScopeTuningAdapter_MapsTuningToPromptTokens_Check()
     {
         const string p = "잠든 아기";
@@ -863,6 +890,7 @@ public class VisionActionMapperTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public void GridAlignment_And_DashScopeTuningAdapter_Check()
     {
         // 1) 3칼럼 높이 동기화 CSS 계약(Workspace.razor 소스 잠금).
@@ -891,6 +919,7 @@ public class VisionActionMapperTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void Wan21_CameraAndStyleStudio_ZeroAlloc_Check()
     {
         var cams = WanCameraStyleStudio.Cameras;
@@ -936,6 +965,7 @@ public class VisionActionMapperTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void LiveCanvas_MmfFrameReader_DeliversOnlyNewSequences_ZeroAlloc()
     {
         var tag = Guid.NewGuid().ToString("N")[..8];

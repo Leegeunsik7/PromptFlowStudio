@@ -7,10 +7,10 @@ using PromptFlowStudio.ViewModels;
 namespace PromptFlowStudio.Tests;
 
 /// <summary>무선 카메라 — 연결 상태 전이 · 캡처 메타/BMP 버퍼 · 해제 초기화 · I2V 핸드오프 · 실물 수신기(루프백 HTTP)/폴백 회귀 잠금.</summary>
-[Trait("Category", "Integration")]
 public class WirelessCameraTests
 {
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task ConnectStream_TransitionsToStreamingState()
     {
         using var svc = new WirelessCameraService(TimeSpan.Zero);
@@ -35,6 +35,7 @@ public class WirelessCameraTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task CaptureFrame_ProducesValidMetadataAndTimestamp()
     {
         using var svc = new WirelessCameraService(TimeSpan.Zero);
@@ -69,6 +70,7 @@ public class WirelessCameraTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task DisconnectStream_ResetsTelemetryAndState()
     {
         using var svc = new WirelessCameraService(TimeSpan.Zero);
@@ -101,6 +103,7 @@ public class WirelessCameraTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task NetworkReceiver_FallsBackToMock_WhenEndpointUnreachable()
     {
         // 바인딩 후 즉시 해제한 루프백 포트 — 연결 거부(외부 네트워크 불필요)
@@ -133,6 +136,7 @@ public class WirelessCameraTests
     }
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task CaptureFrame_ReturnsValidImageBytes_WhenConnected()
     {
         // 루프백 HTTP 스냅샷 서버 — 매 요청마다 64x36 BMP 응답

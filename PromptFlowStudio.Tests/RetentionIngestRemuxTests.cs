@@ -13,7 +13,6 @@ namespace PromptFlowStudio.Tests;
 /// 외부 네트워크 미사용(가짜 <see cref="HttpMessageHandler"/>).
 /// </summary>
 [Collection("ProcessGcMode")]   // 무할당 · 메모리/핸들 델타 계측 → 직렬화
-[Trait("Category", "Integration")]
 public sealed class RetentionIngestRemuxTests
 {
     private readonly ITestOutputHelper _out;
@@ -72,6 +71,7 @@ public sealed class RetentionIngestRemuxTests
     // ══════════════════════ 수집기 ══════════════════════
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task YouTubeAnalyticsCollector_Mock_Live_RateLimit_Fallback_Check()
     {
         var preset = new float[31];
@@ -181,6 +181,7 @@ public sealed class RetentionIngestRemuxTests
     }
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public void YouTubeAnalyticsReport_Parse_Check()
     {
         var xs = new float[128]; var ys = new float[128];
@@ -209,6 +210,7 @@ public sealed class RetentionIngestRemuxTests
     // ══════════════════════ NALU 리먹서 ══════════════════════
 
     [Theory]
+    [Trait("Category", "FastUnit")]
     [InlineData(NalCodec.H264, 2, true)]
     [InlineData(NalCodec.H264, 0, false)]
     [InlineData(NalCodec.H265, 2, false)]
@@ -357,6 +359,7 @@ public sealed class RetentionIngestRemuxTests
     // ══════════════════════ 러너 결속 ══════════════════════
 
     [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task RetentionRunner_Ingest_And_Remux_Binding_Check()
     {
         var h = new FakeHandler { Respond = _ => Json(Report()) };
@@ -415,6 +418,7 @@ public sealed class RetentionIngestRemuxTests
     // ══════════════════════ 장기 소크 ══════════════════════
 
     [Fact]
+    [Trait("Category", "Integration")]
     public async Task RetentionPipeline_Soak_NoLeak_Check()
     {
         var seconds = double.TryParse(Environment.GetEnvironmentVariable("PFS_SOAK_SECONDS"), NumberStyles.Float, CultureInfo.InvariantCulture, out var s) ? s : 12.0;
