@@ -38,6 +38,8 @@ public static class MauiProgram
 
     {
 
+        PromptFlowStudio.Services.Configuration.AppFolderBootstrapper.EnsureFolders(); // 필수 폴더 부트스트랩(샌드박스 읽기 전용이면 격리)
+
         var builder = MauiApp.CreateBuilder();
 
         builder
@@ -410,7 +412,7 @@ public static class MauiProgram
         builder.Services.AddSingleton<PromptFlowStudio.Services.Configuration.AppSettingsManager>(); // user_settings.json → appsettings 기본값(ComfyUI 주소 · 렌더 모드)
         builder.Services.AddSingleton<PromptFlowStudio.Services.Render.IRenderExecutionEngine>(sp => new PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine(sp.GetService<PromptFlowStudio.Services.Wan.VideoEngineSelector>(), sp.GetRequiredService<PromptFlowStudio.Services.Render.FFmpegVideoStitchService>(), null)); // 선택기 미등록 → 시뮬레이션 폴백
         builder.Services.AddSingleton<PromptFlowStudio.Services.Render.IRenderQueueService, PromptFlowStudio.Services.Render.RenderQueueService>(); // 전역 렌더 큐 워커
-        builder.Services.AddSingleton<PromptFlowStudio.Services.Render.EngineHealthCheckService>(sp => new PromptFlowStudio.Services.Render.EngineHealthCheckService(sp.GetService<PromptFlowStudio.Services.Wan.VideoEngineSelector>())); // 엔진 헬스체크(선택기 미등록 → Cloud 미설정 표기)
+        builder.Services.AddSingleton<PromptFlowStudio.Services.Render.EngineHealthCheckService>(sp => { var app = sp.GetRequiredService<PromptFlowStudio.Services.Configuration.AppSettingsManager>(); var h = new PromptFlowStudio.Services.Render.EngineHealthCheckService(sp.GetService<PromptFlowStudio.Services.Wan.VideoEngineSelector>(), null, app.EffectiveComfyUiUrl); h.AttachSettings(app); return h; }); // 엔진 헬스체크(선택기 미등록 → Cloud 미설정 표기) · 환경설정 저장 즉시 URL 핫리로드
         builder.Services.AddSingleton<PromptFlowStudio.Services.Audio.ITtsSynthesisService>(sp => new PromptFlowStudio.Services.Audio.LocalTtsSynthesisService(sp.GetService<PromptFlowStudio.Services.Media.ILocalTtsService>())); // 대본 TTS(모바일 SAPI 부재 → 무음 Mock)
         builder.Services.AddSingleton<PromptFlowStudio.Services.Export.SubtitleGeneratorService>(); // 합본 SRT 자막
         builder.Services.AddSingleton<PromptFlowStudio.Services.Live.LiveStudioHostService>(); // 24/7 라이브 쇼호스트 피치 + 릴레이 버퍼

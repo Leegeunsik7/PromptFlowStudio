@@ -42,6 +42,9 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine
     /// <summary>true 반환 시 실물 엔진을 비활성으로 보고해 큐가 시뮬레이션(Mock)으로 처리 — [환경설정] 기본 렌더 모드 Mock.</summary>
     public Func<bool>? ForceSimulation { get; init; }
 
+    /// <summary>ComfyUI 베이스 URL 공급자(호출 시점 평가 → [환경설정] 저장 즉시 반영). null 이면 <c>PFS_COMFY_URL</c> → 127.0.0.1:8188.</summary>
+    public Func<string>? ComfyBaseUrl { get; init; }
+
     public bool IsAvailable => !(ForceSimulation?.Invoke() ?? false) && TryGetActive() is { Enabled: true };
 
     public string EngineKind => KindOf(TryGetActive());
@@ -113,11 +116,12 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine
         });
     }
 
-    /// <summary>ComfyUI 서버 실행 중 프롬프트 중단(<c>PFS_COMFY_URL</c> · 기본 127.0.0.1:8188). 서버 미기동은 무시.</summary>
-    private static async Task DefaultInterruptAsync(string kind, CancellationToken ct)
+    /// <summary>ComfyUI 서버 실행 중 프롬프트 중단(<see cref="ComfyBaseUrl"/> → <c>PFS_COMFY_URL</c> · 기본 127.0.0.1:8188). 서버 미기동은 무시.</summary>
+    private async Task DefaultInterruptAsync(string kind, CancellationToken ct)
     {
         if (!string.Equals(kind, RenderEngineKind.ComfyUi, StringComparison.Ordinal)) return;
-        var baseUrl = Environment.GetEnvironmentVariable("PFS_COMFY_URL") is { Length: > 0 } u ? u.TrimEnd('/') : "http://127.0.0.1:8188";
+        var baseUrl = ComfyBaseUrl?.Invoke() is { Length: > 0 } cfg ? cfg.TrimEnd('/')
+            : Environment.GetEnvironmentVariable("PFS_COMFY_URL") is { Length: > 0 } u ? u.TrimEnd('/') : "http://127.0.0.1:8188";
         try
         {
             using var content = new StringContent("");

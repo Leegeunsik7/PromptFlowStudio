@@ -16,7 +16,7 @@ public sealed record UserSettings(string ComfyUiUrl, string RenderMode);
 /// <summary>
 /// [PromptFlowStudio] 앱 환경설정 관리자 — 순수 BCL(System.Text.Json · 외부 NuGet 0).
 ///   ▸ 우선순위: <c>user_settings.json</c>(사용자 저장본) → 번들 <c>appsettings.json</c>(<c>ComfyUI:BaseUrl</c> · <c>Render:DefaultMode</c>) → 내장 기본값.
-///   ▸ 저장은 .tmp 기록 후 교체(원자적) · 인메모리 스냅샷 참조 교체(읽기 lock-free) · 저장 성공 시 <see cref="OnChanged"/>.
+///   ▸ 저장은 .tmp 기록 후 교체(원자적) · 인메모리 스냅샷 참조 교체(읽기 lock-free) · 저장 성공 시 <see cref="OnChanged"/> · <see cref="OnSettingsChanged"/>(구독자별 예외 격리).
 ///   ▸ 환경변수 <c>PFS_COMFY_URL</c> 은 기존 동작대로 최우선(<see cref="EffectiveComfyUiUrl"/>).
 /// </summary>
 public sealed class AppSettingsManager
@@ -32,6 +32,8 @@ public sealed class AppSettingsManager
     private volatile UserSettings _s;
 
     public event Action? OnChanged;
+    /// <summary>저장 성공 시 새 스냅샷 전달 — 헬스체크/렌더 엔진 URL 핫리로드(재시작 불필요).</summary>
+    public event Action<UserSettings>? OnSettingsChanged;
     public string FilePath { get; }
     /// <summary>사용자 저장본에서 로드했는지(false = 번들 기본값).</summary>
     public bool LoadedFromUser { get; private set; }
@@ -79,6 +81,13 @@ public sealed class AppSettingsManager
             }
         }
         try { OnChanged?.Invoke(); } catch (Exception ex) { Program.Log("AppSettingsManager.OnChanged", ex); }
+        var snap = _s;
+        var handlers = OnSettingsChanged;
+        if (handlers is not null)
+            foreach (var d in handlers.GetInvocationList())
+            {
+                try { ((Action<UserSettings>)d)(snap); } catch (Exception ex) { Program.Log("AppSettingsManager.OnSettingsChanged", ex); }
+            }
         return true;
     }
 

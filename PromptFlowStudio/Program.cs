@@ -56,6 +56,9 @@ internal static class Program
             return;
         }
 
+        // v19.0.0: 필수 폴더(_renders · _uploads · _gallery · tools/ffmpeg/bin · presets) 부트스트랩 — 멱등 · 예외 격리.
+        Services.Configuration.AppFolderBootstrapper.EnsureFolders();
+
         ApplicationConfiguration.Initialize();
 
         // v18.3.0: 헤드리스 스모크 — DI 전수 해석 + 32 워크스페이스 확인 후 윈도우 없이 종료 코드로 보고.

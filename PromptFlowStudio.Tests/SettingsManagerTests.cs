@@ -95,4 +95,64 @@ public class SettingsManagerTests
         mock = false;
         Assert.False(engine.IsAvailable);   // 선택기 없음 → 여전히 비가용(시뮬레이션)
     }
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public async Task SettingsManager_TriggerOnSettingsChanged_NotifiesHealthCheckService()
+    {
+        var path = TempFile();
+        try
+        {
+            var m = new AppSettingsManager(Bundled("http://127.0.0.1:8188", "ComfyUI"), path);
+            var pinged = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            using var health = new EngineHealthCheckService(null, (url, ct) => { pinged.Enqueue(url); return Task.FromResult(true); }, m.EffectiveComfyUiUrl);
+            health.AttachSettings(m);
+            await health.CheckNowAsync();
+            Assert.Equal("http://127.0.0.1:8188", health.Latest.ComfyUrl);
+
+            UserSettings? seen = null;
+            m.OnSettingsChanged += s => seen = s;
+            m.OnSettingsChanged += _ => throw new InvalidOperationException("구독자 예외 격리");
+            var changed = 0;
+            health.Changed += () => Interlocked.Increment(ref changed);
+
+            Assert.True(m.Save("http://10.1.2.3:9188/", "ComfyUI"));
+            Assert.Equal("http://10.1.2.3:9188", seen?.ComfyUiUrl);
+
+            var expected = Environment.GetEnvironmentVariable("PFS_COMFY_URL") is { Length: > 0 } env ? env.TrimEnd('/') : "http://10.1.2.3:9188";
+            Assert.Equal(expected, health.ComfyUrl);   // 재시작 없이 즉시 교체
+            Assert.Equal(expected, health.Latest.ComfyUrl);
+
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline && !(health.Latest.IsChecked && pinged.Contains(expected))) await Task.Delay(10);
+            Assert.Contains(expected, pinged);           // 백그라운드 재핑
+            Assert.True(health.Latest.IsChecked);
+            Assert.True(health.Latest.ComfyOnline);
+            Assert.True(Volatile.Read(ref changed) >= 1);
+
+            // 같은 주소 재저장 → 무변경 · Dispose 후 구독 해제
+            Assert.False(health.UpdateComfyUrl(expected));
+            health.Dispose();
+            Assert.True(m.Save("http://10.9.9.9:8188", "ComfyUI"));
+            Assert.Equal(expected, health.ComfyUrl);
+        }
+        finally { try { Directory.Delete(Path.GetDirectoryName(path)!, recursive: true); } catch (IOException) { } }
+    }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public void AppFolderBootstrapper_CreatesRequiredFolders_Idempotent()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "pfs-boot-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Assert.Equal(AppFolderBootstrapper.RequiredFolders.Length, AppFolderBootstrapper.EnsureFolders(root));
+            Assert.True(Directory.Exists(Path.Combine(root, "_renders")));
+            Assert.True(Directory.Exists(Path.Combine(root, "_uploads")));
+            Assert.True(Directory.Exists(Path.Combine(root, "_gallery")));
+            Assert.True(Directory.Exists(Path.Combine(root, "tools", "ffmpeg", "bin")));
+            Assert.True(Directory.Exists(Path.Combine(root, "presets")));
+            Assert.Equal(AppFolderBootstrapper.RequiredFolders.Length, AppFolderBootstrapper.EnsureFolders(root));
+        }
+        finally { try { Directory.Delete(root, recursive: true); } catch (IOException) { } }
+    }
 }

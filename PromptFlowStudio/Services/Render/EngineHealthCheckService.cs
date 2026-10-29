@@ -2,6 +2,7 @@ using System;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using PromptFlowStudio.Services.Configuration;
 using PromptFlowStudio.Services.Wan;
 
 namespace PromptFlowStudio.Services.Render;
@@ -29,6 +30,7 @@ public sealed record EngineHealthSnapshot(bool ComfyOnline, string ComfyUrl, boo
 ///   ▸ Cloud: <see cref="VideoEngineSelector"/> 의 비-ComfyUI 엔진 중 <c>Enabled</c>(API 키/엔드포인트 구성) 존재 여부.
 ///   ▸ 구독 참조 카운트(<see cref="Start"/>/<see cref="Stop"/>) — 화면이 없으면 폴링 0. 상태 변화 시에만 <see cref="Changed"/>(예외 격리).
 ///   ▸ 틱 중첩 차단(Interlocked) · 핑/콜백 예외는 Offline 판정으로 격리.
+///   ▸ 핫리로드: <see cref="AttachSettings"/> 로 <see cref="AppSettingsManager.OnSettingsChanged"/> 구독 → 타깃 URL 즉시 교체 + 백그라운드 재핑.
 /// </summary>
 public sealed class EngineHealthCheckService : IDisposable
 {
@@ -39,7 +41,8 @@ public sealed class EngineHealthCheckService : IDisposable
 
     private readonly VideoEngineSelector? _selector;
     private readonly Func<string, CancellationToken, Task<bool>> _ping;
-    private readonly string _comfyUrl;
+    private volatile string _comfyUrl;
+    private AppSettingsManager? _settings;
     private readonly object _gate = new();
     private System.Threading.Timer? _timer;
     private CancellationTokenSource? _cts;
@@ -61,6 +64,51 @@ public sealed class EngineHealthCheckService : IDisposable
     }
 
     public EngineHealthSnapshot Latest { get { lock (_gate) return _latest; } }
+
+    /// <summary>현재 핑 대상 ComfyUI 베이스 URL.</summary>
+    public string ComfyUrl => _comfyUrl;
+
+    /// <summary>환경설정 저장 이벤트 구독(1회) — 저장 즉시 <see cref="AppSettingsManager.EffectiveComfyUiUrl"/> 로 동기화. Dispose 시 해제.</summary>
+    public void AttachSettings(AppSettingsManager settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        lock (_gate)
+        {
+            if (_disposed || _settings is not null) return;
+            _settings = settings;
+        }
+        settings.OnSettingsChanged += OnSettingsChanged;
+    }
+
+    /// <summary>
+    /// 타깃 URL 교체 — 바뀌면 스냅샷을 '점검 중'으로 되돌려 <see cref="Changed"/> 후 즉시 백그라운드 핑(재시작 불필요).
+    /// 반환: 실제 변경 여부.
+    /// </summary>
+    public bool UpdateComfyUrl(string? url)
+    {
+        var next = AppSettingsManager.NormalizeUrl(url);
+        lock (_gate)
+        {
+            if (_disposed || string.Equals(next, _comfyUrl, StringComparison.Ordinal)) return false;
+            _comfyUrl = next;
+            _latest = EngineHealthSnapshot.Unknown with { ComfyUrl = next };
+        }
+        try { Changed?.Invoke(); } catch (Exception ex) { Program.Log("EngineHealth.Changed", ex); }
+        _ = RecheckAsync();
+        return true;
+    }
+
+    private void OnSettingsChanged(UserSettings _)
+    {
+        var s = _settings;
+        if (s is not null) UpdateComfyUrl(s.EffectiveComfyUiUrl);
+    }
+
+    private async Task RecheckAsync()
+    {
+        try { await CheckNowAsync().ConfigureAwait(false); }
+        catch (Exception ex) { Program.Log("EngineHealth.Recheck", ex); }
+    }
 
     /// <summary>상태 변화 알림 — 타이머 스레드에서 발생(Blazor 는 InvokeAsync 마샬링).</summary>
     public event Action? Changed;
@@ -94,11 +142,12 @@ public sealed class EngineHealthCheckService : IDisposable
     /// <summary>즉시 1회 점검 — 상태가 바뀌면 <see cref="Changed"/>.</summary>
     public async Task<EngineHealthSnapshot> CheckNowAsync(CancellationToken ct = default)
     {
+        var url = _comfyUrl;
         bool online;
         using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct))
         {
             timeout.CancelAfter(PingTimeout);
-            try { online = await _ping(_comfyUrl, timeout.Token).ConfigureAwait(false); }
+            try { online = await _ping(url, timeout.Token).ConfigureAwait(false); }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception) { online = false; }   // 연결 거부 · 타임아웃 · DNS → Offline
         }
@@ -108,9 +157,10 @@ public sealed class EngineHealthCheckService : IDisposable
         bool changed;
         lock (_gate)
         {
+            if (!string.Equals(url, _comfyUrl, StringComparison.Ordinal)) return _latest;   // 점검 중 URL 교체 → 낡은 결과 폐기
             var prev = _latest;
             changed = !prev.IsChecked || prev.ComfyOnline != online || prev.CloudConfigured != cloud || !string.Equals(prev.CloudEngineName, cloudName, StringComparison.Ordinal);
-            if (changed) _latest = new EngineHealthSnapshot(online, _comfyUrl, cloud, cloudName, DateTimeOffset.Now);
+            if (changed) _latest = new EngineHealthSnapshot(online, url, cloud, cloudName, DateTimeOffset.Now);
             snap = _latest;
         }
         if (changed) { try { Changed?.Invoke(); } catch (Exception ex) { Program.Log("EngineHealth.Changed", ex); } }
@@ -166,13 +216,16 @@ public sealed class EngineHealthCheckService : IDisposable
     {
         System.Threading.Timer? timer;
         CancellationTokenSource? cts;
+        AppSettingsManager? settings;
         lock (_gate)
         {
             if (_disposed) return;
             _disposed = true;
             timer = _timer; cts = _cts;
             _timer = null; _cts = null; _refs = 0;
+            settings = _settings; _settings = null;
         }
+        if (settings is not null) settings.OnSettingsChanged -= OnSettingsChanged;
         timer?.Dispose();
         if (cts is not null) { try { cts.Cancel(); } catch (ObjectDisposedException) { } cts.Dispose(); }
         Changed = null;

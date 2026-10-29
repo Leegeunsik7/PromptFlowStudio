@@ -20,3 +20,7 @@ node_modules/
 
 # Step 4 스크린샷/런타임 덤프(추적 배제)
 artifacts/
+
+# v19.0.0 배포 패키저 산출물(키 주입 ZIP) · 로컬 시크릿 — 저장소 추적 금지
+dist/
+secrets.local.json

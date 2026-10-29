@@ -173,6 +173,64 @@ public class FFmpegStitchTests : IDisposable
         Assert.Equal("RAW", File.ReadAllText(raw));            // 원본 유지
         Assert.Equal("virtual", job.Metadata![CommercialBrandService.MetaOverlayApplied]);
     }
+
+    [Fact]
+    public async Task FFmpegStitch_WithMixedResolutions_GeneratesValidTranscodeFilterCommand()
+    {
+        var parts = new[] { Part("hd.mp4", "A"), Part("oom720.mp4", "B") };
+        var calls = new List<string[]>();
+        var probes = new Dictionary<string, StitchProbe>(StringComparer.OrdinalIgnoreCase)
+        {
+            [parts[0]] = new(1920, 1080, HasAudio: false),
+            [parts[1]] = new(1280, 720, HasAudio: false),   // OOM 하향 컷
+        };
+        var svc = new FFmpegVideoStitchService(() => "ffmpeg.exe", (exe, args, ct) =>
+        {
+            calls.Add(args.ToArray());
+            File.WriteAllText(args[^1], "T");
+            return Task.FromResult(true);
+        }, (exe, path, ct) => Task.FromResult<StitchProbe?>(probes[path]));
+
+        var output = Path.Combine(_dir, "mixed_full.mp4");
+        var r = await svc.StitchAsync(parts, output);
+
+        Assert.True(r.Ok, r.Message);
+        Assert.Contains("1920x1080", r.Message);
+        var args = Assert.Single(calls);   // 해상도 불일치 사전 감지 → -c copy 생략
+        Assert.DoesNotContain("copy", args);
+        var filter = args[Array.IndexOf(args, "-filter_complex") + 1];
+        Assert.Contains("[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2", filter);
+        Assert.Contains("[1:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2", filter);
+        Assert.EndsWith("[v0][v1]concat=n=2:v=1:a=0[vout]", filter);
+        Assert.Equal("libx264", args[Array.IndexOf(args, "-c:v") + 1]);
+        Assert.Equal("aac", args[Array.IndexOf(args, "-c:a") + 1]);
+        Assert.Contains("anullsrc=r=44100:cl=stereo", args);   // 무음 컷 → aac 무음 트랙
+        Assert.Equal("2:a", args[Array.LastIndexOf(args, "-map") + 1]);
+
+        // 오디오 보유 컷 → [a] 체인 concat · 프로브 불명 → copy 실패 시 1080p 폴백
+        var withAudio = FFmpegVideoStitchService.BuildTranscodeConcatArgs(parts, 1281, 721, includeAudio: true, output);
+        var f2 = withAudio[Array.IndexOf(withAudio, "-filter_complex") + 1];
+        Assert.Contains("scale=1280:720:", f2);   // 짝수 정렬
+        Assert.EndsWith("[v0][a0][v1][a1]concat=n=2:v=1:a=1[vout][aout]", f2);
+        Assert.DoesNotContain("anullsrc=r=44100:cl=stereo", withAudio);
+
+        var seq = new List<bool>();
+        var fallback = new FFmpegVideoStitchService(() => "ffmpeg.exe", (exe, a, ct) =>
+        {
+            var copy = a.Contains("copy");
+            seq.Add(copy);
+            if (copy) return Task.FromResult(false);   // 스트림 복사 실패
+            File.WriteAllText(a[^1], "T");
+            return Task.FromResult(true);
+        });
+        var r2 = await fallback.StitchAsync(parts, Path.Combine(_dir, "fb_full.mp4"));
+        Assert.True(r2.Ok, r2.Message);
+        Assert.Equal(new[] { true, false }, seq);
+        Assert.Contains("1920x1080", r2.Message);
+
+        Assert.Equal(new StitchProbe(1280, 720, true), FFmpegVideoStitchService.ParseProbeOutput("video,1280,720\r\naudio,,\r\n"));
+        Assert.Null(FFmpegVideoStitchService.ParseProbeOutput("audio\n"));
+    }
 }
 
 /// <summary>테스트용 비디오 엔진 — 고정 산출물 반환 또는 취소까지 무한 대기(취소 관측 기록).</summary>
