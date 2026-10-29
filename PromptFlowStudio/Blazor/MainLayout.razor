@@ -119,6 +119,8 @@
                 <div class="navw" @onmouseenter='e => ShowSideGuide("user-settings", e.ClientY)'><NavLink class="nav-item" href="user-settings"><span class="ic">🎚️</span><span class="nav-t" title="사용자 설정">사용자 설정</span></NavLink></div>
                 @* 회원·라이선스·메일·설치PC 관리는 <관리자 설정> 탭으로 통합(관리자 비밀번호 게이트). *@
                 <div class="navw" @onmouseenter='e => ShowSideGuide("settings", e.ClientY)'><NavLink class="nav-item" href="settings"><span class="ic">⚙️</span><span class="nav-t" title="관리자 설정">관리자 설정</span></NavLink></div>
+                @* 환경설정 — ComfyUI 주소 · 클라우드 키(관리자만) · FFmpeg 상태 · 기본 렌더 모드(user_settings.json). *@
+                <div class="navw" @onmouseenter='e => ShowSideGuide("app-settings", e.ClientY)'><NavLink class="nav-item" href="app-settings"><span class="ic">🛠️</span><span class="nav-t" title="환경설정">⚙️ 환경설정</span></NavLink></div>
                 @* v5.3.4: 중복 메뉴 [원클릭 앱 제작] 제거 — 배포는 [관리자 설정 ▸ 보안·배포] 탭으로 일원화. *@
             </nav>
 
@@ -1730,6 +1732,7 @@
             ("queue",        "⏳", "렌더링 큐",       new[] { "queue", "렌더", "큐", "진행률", "대기", "작업" }),
             ("gallery",      "🖼️", "갤러리",          new[] { "gallery", "갤러리", "미디어", "영상목록", "저장" }),
             ("user-settings","🎚️", "사용자 설정",     new[] { "임계값", "테마", "밀도", "화면", "표시", "환경", "사용자", "user" }),
+            ("app-settings", "🛠️", "환경설정",       new[] { "환경설정", "comfyui", "ffmpeg", "api", "키", "렌더모드", "mock", "cloud" }),
             ("settings",     "⚙️", "관리자 설정",     new[] { "설정", "관리자", "계정", "권한", "라이선스", "만료", "회원", "rbac", "메일", "smtp", "설치" }),
         };
 

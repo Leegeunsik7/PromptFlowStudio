@@ -151,7 +151,7 @@ public class RenderQueueWorkerTests
     public async Task ProcessQueue_HandlesEngineFailure_MarksJobAsFailed()
     {
         var engine = new FakeEngine((job, _) => job.Seed == 0
-            ? throw new InvalidOperationException("GPU OOM")
+            ? throw new InvalidOperationException("GPU driver reset")
             : new RenderExecutionResult(false, RenderEngineKind.Cloud, null, "quota exceeded"));
         using var q = new RenderQueueService(TimeSpan.Zero, autoStart: false, engine);
         var jobs = Jobs(2);
@@ -160,7 +160,7 @@ public class RenderQueueWorkerTests
         await q.ProcessQueueAsync(CancellationToken.None);
 
         Assert.Equal(BatchJobStatus.Failed, jobs[0].Status);
-        Assert.Equal("GPU OOM", jobs[0].ErrorMessage);
+        Assert.Equal("GPU driver reset", jobs[0].ErrorMessage);
         Assert.Equal(BatchJobStatus.Failed, jobs[1].Status);
         Assert.Equal("quota exceeded", jobs[1].ErrorMessage);
         Assert.Null(q.ActiveJob);
@@ -179,6 +179,64 @@ public class RenderQueueWorkerTests
         Assert.Equal(RenderEngineKind.Mock, jobs[0].EngineKind);
         Assert.Equal(2, engine.Calls);
     }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public async Task RenderExecution_OnCudaOom_AutoDownscalesAndRetriesOnce()
+    {
+        var seen = new List<string>();
+        var engine = new FakeEngine((job, _) =>
+        {
+            seen.Add(job.Resolution);
+            return job.Resolution == "1920x1080"
+                ? throw new InvalidOperationException("RuntimeError: CUDA out of memory. Tried to allocate 2.00 GiB")
+                : new RenderExecutionResult(true, RenderEngineKind.ComfyUi, null, "ok");
+        });
+        using var q = new RenderQueueService(TimeSpan.Zero, autoStart: false, engine);
+        var job = new BatchRenderJob { Prompt = "p", Resolution = "1920x1080", Metadata = new Dictionary<string, string> { ["k"] = "v" } };
+        q.Enqueue(new[] { job });
+
+        await q.ProcessQueueAsync(CancellationToken.None);
+
+        Assert.Equal(BatchJobStatus.Completed, job.Status);
+        Assert.Equal(new[] { "1920x1080", "1280x720" }, seen);
+        Assert.Equal("1280x720", job.Resolution);
+        Assert.Equal(1, job.RetryCount);
+        Assert.Equal("true", job.Metadata![RenderQueueService.MetaOomAutoDownscaled]);
+        Assert.Equal("v", job.Metadata["k"]);   // 기존 메타 보존
+
+        // 재시도 후에도 OOM 이면 1회로 끝(무한 루프 금지) → Failed
+        var always = new FakeEngine((_, _) => new RenderExecutionResult(false, RenderEngineKind.ComfyUi, null, "torch.OutOfMemoryError"));
+        using var q2 = new RenderQueueService(TimeSpan.Zero, autoStart: false, always);
+        var j2 = new BatchRenderJob { Prompt = "p", Resolution = "1280x720" };
+        q2.Enqueue(new[] { j2 });
+        await q2.ProcessQueueAsync(CancellationToken.None);
+        Assert.Equal(BatchJobStatus.Failed, j2.Status);
+        Assert.Equal("960x540", j2.Resolution);
+        Assert.Equal(1, j2.RetryCount);
+        Assert.Equal(2, always.Calls);
+    }
+
+    [Theory]
+    [Trait("Category", "FastUnit")]
+    [InlineData("1920x1080", "1280x720")]
+    [InlineData("1280x720", "960x540")]
+    [InlineData("1080x1920", "720x1280")]
+    [InlineData("3840*2160", "1280x720")]
+    [InlineData("960x540", null)]
+    [InlineData("bogus", null)]
+    public void DownscaleResolution_StepsDownOneTier(string input, string? expected)
+        => Assert.Equal(expected, VideoEngineRenderExecutionEngine.DownscaleResolution(input));
+
+    [Theory]
+    [Trait("Category", "FastUnit")]
+    [InlineData("CUDA out of memory", true)]
+    [InlineData("torch.OutOfMemoryError: ...", true)]
+    [InlineData("ComfyUI OOM", true)]
+    [InlineData("zoom failed", false)]
+    [InlineData(null, false)]
+    public void IsCudaOom_MatchesKeywords(string? msg, bool expected)
+        => Assert.Equal(expected, VideoEngineRenderExecutionEngine.IsCudaOom(msg));
 
     private sealed class FakeEngine(Func<BatchRenderJob, IProgress<int>, RenderExecutionResult> run) : IRenderExecutionEngine
     {

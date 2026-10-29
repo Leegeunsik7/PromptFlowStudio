@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Net.Http;
 using System.Threading;
@@ -38,7 +39,10 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine
         _interrupt = interrupt ?? DefaultInterruptAsync;
     }
 
-    public bool IsAvailable => TryGetActive() is { Enabled: true };
+    /// <summary>true 반환 시 실물 엔진을 비활성으로 보고해 큐가 시뮬레이션(Mock)으로 처리 — [환경설정] 기본 렌더 모드 Mock.</summary>
+    public Func<bool>? ForceSimulation { get; init; }
+
+    public bool IsAvailable => !(ForceSimulation?.Invoke() ?? false) && TryGetActive() is { Enabled: true };
 
     public string EngineKind => KindOf(TryGetActive());
 
@@ -142,6 +146,36 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine
         try { return Path.IsPathRooted(p) && File.Exists(p) ? Path.GetFullPath(p) : null; }
         catch (Exception) { return null; }
     }
+
+    /// <summary>CUDA OOM 판정 — <c>CUDA out of memory</c>/<c>out of memory</c>(대소문자 무시) · <c>OutOfMemoryError</c> · 대문자 <c>OOM</c>.</summary>
+    public static bool IsCudaOom(string? message)
+        => !string.IsNullOrEmpty(message)
+           && (message.Contains("out of memory", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("OutOfMemoryError", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("OOM", StringComparison.Ordinal));
+
+    /// <summary>
+    /// OOM 재시도용 해상도 1단계 하향 — 짧은 변 &gt;720 → 720, &gt;540 → 540(종횡비·방향 유지, 짝수 정렬).
+    /// 예) 1920x1080 → 1280x720, 1280x720 → 960x540, 1080x1920 → 720x1280. 파싱 불가/더 내릴 수 없으면 null.
+    /// </summary>
+    public static string? DownscaleResolution(string? resolution)
+    {
+        if (string.IsNullOrWhiteSpace(resolution)) return null;
+        var s = resolution.Trim();
+        var i = s.IndexOfAny(SizeSeparators);
+        if (i <= 0 || !int.TryParse(s.AsSpan(0, i), NumberStyles.None, CultureInfo.InvariantCulture, out var w)
+                   || !int.TryParse(s.AsSpan(i + 1), NumberStyles.None, CultureInfo.InvariantCulture, out var h)
+                   || w <= 0 || h <= 0) return null;
+        var shortSide = Math.Min(w, h);
+        var target = shortSide > 720 ? 720 : shortSide > 540 ? 540 : 0;
+        if (target == 0) return null;
+        var longSide = (int)Math.Round(Math.Max(w, h) * (double)target / shortSide, MidpointRounding.AwayFromZero) & ~1;
+        return w >= h
+            ? longSide.ToString(CultureInfo.InvariantCulture) + "x" + target.ToString(CultureInfo.InvariantCulture)
+            : target.ToString(CultureInfo.InvariantCulture) + "x" + longSide.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private static readonly char[] SizeSeparators = { 'x', 'X', '*' };
 
     /// <summary>"1280x720" → 엔진 규격 "1280*720".</summary>
     internal static string? ToEngineSize(string? resolution)

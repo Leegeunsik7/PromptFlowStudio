@@ -48,7 +48,7 @@ public sealed class FFmpegVideoStitchService
 
     public FFmpegVideoStitchService() : this(null, null) { }
 
-    /// <param name="resolveFfmpeg">ffmpeg 경로 조회(null 반환 = 부재 → 가상 병합). null 이면 exe 옆 → <see cref="CliPathResolver"/>.</param>
+    /// <param name="resolveFfmpeg">ffmpeg 경로 조회(null 반환 = 부재 → 가상 병합). null 이면 <see cref="FfmpegLocator"/>(tools 동봉 우선 → PATH).</param>
     /// <param name="runner">ffmpeg 실행기. null 이면 <see cref="ProcessRunner"/>.</param>
     public FFmpegVideoStitchService(Func<string?>? resolveFfmpeg, FfmpegRunner? runner)
     {
@@ -359,12 +359,8 @@ public sealed class FFmpegVideoStitchService
         catch (Exception ex) { Program.Log("Stitch.Resolve", ex); return null; }
     }
 
-    /// <summary>exe 옆 ffmpeg.exe → <see cref="CliPathResolver"/>(Tools 번들 → 로컬앱데이터 → PATH).</summary>
-    private static string? DefaultResolveFfmpeg()
-    {
-        var local = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
-        return File.Exists(local) ? local : CliPathResolver.GetExecutablePath("ffmpeg", "ffmpeg.exe");
-    }
+    /// <summary><see cref="FfmpegLocator"/> — tools/ffmpeg/bin → tools → 앱 폴더 → <see cref="CliPathResolver"/>(Tools 번들 → 로컬앱데이터 → PATH).</summary>
+    private static string? DefaultResolveFfmpeg() => FfmpegLocator.Locate().Path;
 
     private static async Task<bool> DefaultRunAsync(string exe, IReadOnlyList<string> args, CancellationToken ct)
     {

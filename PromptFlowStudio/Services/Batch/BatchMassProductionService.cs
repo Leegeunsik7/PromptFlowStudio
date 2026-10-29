@@ -12,7 +12,8 @@ public sealed class BatchRenderJob
     public Guid JobId { get; init; } = Guid.NewGuid();
     public string Prompt { get; init; } = "";
     public long Seed { get; init; }
-    public string Resolution { get; init; } = RenderCostEstimatorService.DefaultResolution;
+    /// <summary>렌더 해상도("1280x720") — CUDA OOM 자동 다운스케일 재시도 시 워커가 하향 갱신.</summary>
+    public string Resolution { get; set; } = RenderCostEstimatorService.DefaultResolution;
     public float DurationSec { get; init; } = RenderCostEstimatorService.DefaultDurationSec;
     public BatchJobStatus Status { get; set; } = BatchJobStatus.Pending;
     /// <summary>렌더 진행률 0~100 — <see cref="PromptFlowStudio.Services.Render.RenderQueueService"/> 워커가 갱신.</summary>
@@ -26,6 +27,8 @@ public sealed class BatchRenderJob
     public string? ResultPath { get; set; }
     /// <summary>실패 원인 — Failed 전이 시 기록, 재적재 시 초기화.</summary>
     public string? ErrorMessage { get; set; }
+    /// <summary>자동 재시도 횟수 — CUDA OOM 다운스케일 재시도는 0 일 때 1회만.</summary>
+    public int RetryCount { get; set; }
 
     // ── 시퀀스 메타(선택) — 스토리보드/숏폼 전송분만 기록, 단건 작업은 null ──
     /// <summary>시퀀스 내 컷 순서(1부터).</summary>

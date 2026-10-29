@@ -1,0 +1,166 @@
+@page "/app-settings"
+@using PromptFlowStudio.Services.Account
+@using PromptFlowStudio.Services.Render
+@using PromptFlowStudio.ViewModels
+@implements IDisposable
+@inject SessionState Session
+@inject SettingsViewModel Vm
+
+@* [PromptFlow Studio] ⚙️ 환경설정 — ComfyUI 주소 · 클라우드 API 키 · FFmpeg 툴체인 · 기본 렌더 모드.
+   ▸ 일반 값은 user_settings.json(원자적 저장) → 없으면 번들 appsettings.json 기본값.
+   ▸ API 키는 관리자만 열람/변경(머신바운드 암호화 저장소 위임). /settings 는 관리자 설정 화면이라 별도 라우트. *@
+
+<PageTitle>PromptFlow Studio · 환경설정</PageTitle>
+
+<div class="es">
+    <header class="es-head">
+        <div><h1 class="es-title">⚙️ 환경설정</h1><div class="es-sub">ComfyUI · 클라우드 API 키 · FFmpeg · 기본 렌더 모드 — @(Vm.LoadedFromUser ? "사용자 저장본 적용 중" : "배포 기본값 적용 중")</div></div>
+        <button class="es-save" @onclick="Save">💾 설정 저장</button>
+    </header>
+
+    @if (Vm.StatusMessage is { Length: > 0 } msg)
+    {
+        <div class="es-toast @(Vm.StatusOk ? null : "err")" role="status">@(Vm.StatusOk ? "✓" : "⚠") @msg</div>
+    }
+
+    <section class="es-card">
+        <div class="es-card-t">🖥️ ComfyUI 엔드포인트</div>
+        <div class="es-row">
+            <input class="es-in" @bind="Vm.ComfyUiUrl" @bind:event="oninput" placeholder="http://127.0.0.1:8188" />
+            <button class="es-btn" disabled="@Vm.IsTesting" @onclick="TestComfy">@(Vm.IsTesting ? "테스트 중…" : "연결 테스트")</button>
+            @if (Vm.ComfyOnline is bool on)
+            {
+                <span class="es-badge @(on ? "ok" : "bad")">@(on ? "🟢 연결됨" : "🔴 응답 없음")</span>
+            }
+        </div>
+        <div class="es-hint">환경변수 PFS_COMFY_URL 이 설정돼 있으면 그 값이 우선합니다. 헬스체크 주소 변경은 재시작 후 반영됩니다.</div>
+    </section>
+
+    <section class="es-card">
+        <div class="es-card-t">🔑 클라우드 API 키</div>
+        @if (Session.IsAdmin)
+        {
+            <div class="es-field"><label>DashScope · Wan API 키</label>
+                <div class="es-row">
+                    <input class="es-in" type="@(_showDash ? "text" : "password")" @bind="Vm.DashScopeKey" autocomplete="off" placeholder="sk-..." />
+                    <button class="es-btn ghost" @onclick="() => _showDash = !_showDash">@(_showDash ? "🙈 숨기기" : "👁 표시")</button>
+                </div>
+            </div>
+            <div class="es-field"><label>Gemini API 키</label>
+                <div class="es-row">
+                    <input class="es-in" type="@(_showGemini ? "text" : "password")" @bind="Vm.GeminiKey" autocomplete="off" placeholder="AIza..." />
+                    <button class="es-btn ghost" @onclick="() => _showGemini = !_showGemini">@(_showGemini ? "🙈 숨기기" : "👁 표시")</button>
+                </div>
+            </div>
+            <div class="es-hint">키는 이 PC 에 머신바운드 암호화(AES-256-GCM)로 저장됩니다. 비우면 해당 클라우드 기능은 비활성(시뮬레이션)으로 동작합니다.</div>
+        }
+        else
+        {
+            <div class="es-row">
+                <span class="es-badge @(Vm.DashScopeConfigured ? "ok" : "bad")">DashScope · Wan @(Vm.DashScopeConfigured ? "구성됨" : "미구성")</span>
+                <span class="es-badge @(Vm.GeminiConfigured ? "ok" : "bad")">Gemini @(Vm.GeminiConfigured ? "구성됨" : "미구성")</span>
+            </div>
+            <div class="es-hint">API 키 열람/변경은 관리자 계정만 가능합니다.</div>
+        }
+    </section>
+
+    <section class="es-card">
+        <div class="es-card-t">🎬 FFmpeg 툴체인</div>
+        <div class="es-row">
+            <span class="es-badge @(Vm.Ffmpeg.Found ? "ok" : "bad")">@(Vm.Ffmpeg.Found ? "정상" : "미설치")</span>
+            <span class="es-mono">@(Vm.Ffmpeg.Path ?? "tools/ffmpeg/bin/ffmpeg.exe 또는 PATH 에서 찾지 못함")</span>
+            <button class="es-btn ghost" @onclick="RefreshFfmpeg">↻ 재탐색</button>
+        </div>
+        @if (Vm.Ffmpeg.Found)
+        {
+            <div class="es-hint">출처: @Vm.Ffmpeg.Source · @(Vm.FfmpegVersion ?? "버전 확인 불가")</div>
+        }
+        else
+        {
+            <div class="es-hint">앱 폴더의 tools/ffmpeg/bin/ffmpeg.exe 에 동봉하면 별도 설치 없이 합본·음성 믹싱이 동작합니다.</div>
+        }
+    </section>
+
+    <section class="es-card">
+        <div class="es-card-t">⚡ 기본 렌더 모드</div>
+        <div class="es-row">
+            @foreach (var m in Modes)
+            {
+                var mode = m;
+                <button class="es-mode @(Vm.RenderMode == mode.Key ? "on" : null)" @onclick="() => Vm.RenderMode = mode.Key">@mode.Label</button>
+            }
+        </div>
+        <div class="es-hint">Mock 은 실물 엔진을 호출하지 않고 렌더 큐를 시뮬레이션으로 처리합니다.</div>
+    </section>
+
+    <div class="es-foot">저장 위치: <span class="es-mono">@Vm.SettingsFilePath</span></div>
+</div>
+
+<style>
+    .es{padding:22px 26px 40px;max-width:980px;color:var(--ink,#e6eefc)}
+    .es-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:16px}
+    .es-title{font-size:22px;font-weight:800;margin:0;color:var(--ink,#f1f6ff)}
+    .es-sub{font-size:13px;color:var(--sub,#93a3b8);margin-top:4px}
+    .es-save{padding:10px 18px;border-radius:11px;border:0;cursor:pointer;font-weight:800;font-size:13.5px;color:#fff;background:linear-gradient(135deg,#8b7bff,#6d5efc)}
+    .es-toast{margin-bottom:14px;padding:10px 14px;border-radius:10px;font-size:13px;font-weight:700;color:#4ade80;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.4)}
+    .es-toast.err{color:#f87171;background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.4)}
+    .es-card{background:var(--card,#111a2e);border:1px solid var(--line,rgba(148,163,184,.16));border-radius:16px;padding:16px 18px;margin-bottom:14px}
+    .es-card-t{font-size:15px;font-weight:800;margin-bottom:12px;color:var(--ink,#f1f6ff)}
+    .es-field{margin-bottom:10px}
+    .es-field label{display:block;font-size:12px;font-weight:700;color:var(--sub,#93a3b8);margin-bottom:5px}
+    .es-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+    .es-in{flex:1 1 320px;padding:9px 12px;border-radius:10px;border:1px solid var(--line,rgba(148,163,184,.25));background:rgba(15,23,42,.6);color:inherit;font-size:13px}
+    .es-btn{padding:9px 14px;border-radius:10px;border:1px solid rgba(124,108,255,.45);background:rgba(124,108,255,.16);color:inherit;font-weight:700;font-size:12.5px;cursor:pointer}
+    .es-btn.ghost{background:transparent;border-color:var(--line,rgba(148,163,184,.25))}
+    .es-btn[disabled]{opacity:.6;cursor:default}
+    .es-badge{padding:4px 10px;border-radius:999px;font-size:11.5px;font-weight:800}
+    .es-badge.ok{color:#4ade80;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.4)}
+    .es-badge.bad{color:#f87171;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.4)}
+    .es-mode{padding:9px 16px;border-radius:10px;border:1px solid var(--line,rgba(148,163,184,.25));background:transparent;color:var(--sub,#93a3b8);font-weight:700;cursor:pointer}
+    .es-mode.on{color:#fff;background:rgba(124,108,255,.28);border-color:rgba(124,108,255,.6)}
+    .es-mono{font:12px 'Roboto Mono',Consolas,monospace;color:var(--sub,#cbd5e1);word-break:break-all}
+    .es-hint{font-size:11.5px;color:var(--sub,#93a3b8);margin-top:8px}
+    .es-foot{font-size:11.5px;color:var(--sub,#93a3b8)}
+</style>
+
+@code {
+    private static readonly (string Key, string Label)[] Modes =
+    {
+        (RenderEngineKind.ComfyUi, "🖥️ ComfyUI (로컬)"),
+        (RenderEngineKind.Cloud, "☁️ Cloud"),
+        (RenderEngineKind.Mock, "🧪 Mock"),
+    };
+
+    private readonly CancellationTokenSource _cts = new();
+    private bool _showDash;
+    private bool _showGemini;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { await Vm.RefreshFfmpegAsync(_cts.Token); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("EnvironmentSettings.Ffmpeg", ex); }
+    }
+
+    private void Save() => Vm.Save(Session.IsAdmin);
+
+    private async Task TestComfy()
+    {
+        var t = Vm.TestComfyAsync(_cts.Token);
+        StateHasChanged();
+        try { await t; }
+        catch (OperationCanceledException) { }
+    }
+
+    private async Task RefreshFfmpeg()
+    {
+        try { await Vm.RefreshFfmpegAsync(_cts.Token); }
+        catch (OperationCanceledException) { }
+    }
+
+    public void Dispose()
+    {
+        try { _cts.Cancel(); } catch (ObjectDisposedException) { }
+        _cts.Dispose();
+    }
+}

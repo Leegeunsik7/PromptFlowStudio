@@ -240,8 +240,13 @@ public sealed class RenderQueueService : IRenderQueueService
             }
             catch (Exception ex)
             {
-                lock (_gate) { job.Status = BatchJobStatus.Failed; job.ErrorMessage = ex.Message; }
-                Program.Log("RenderQueue.Execute", ex);
+                if (TryOomDownscaleRetry(job, ex.Message))
+                    Program.Log("RenderQueue.OomRetry", new InvalidOperationException(OomRetryNotice + " → " + job.Resolution, ex));
+                else
+                {
+                    lock (_gate) { job.Status = BatchJobStatus.Failed; job.ErrorMessage = ex.Message; }
+                    Program.Log("RenderQueue.Execute", ex);
+                }
             }
             finally
             {
@@ -389,6 +394,36 @@ public sealed class RenderQueueService : IRenderQueueService
             throw new FileNotFoundException("렌더 산출 파일 없음", output);
         lock (_gate) { job.EngineKind = result.EngineKind; job.ResultPath = output; }
     }
+
+    /// <summary>
+    /// CUDA OOM 가드 — 첫 실패(<see cref="BatchRenderJob.RetryCount"/>==0)이고 하향 해상도가 있으면 해상도 하향 · 재시도 1 증가 ·
+    /// 메타 <see cref="MetaOomAutoDownscaled"/>="true" 기록 후 Queued 복귀(워커 루프가 즉시 재실행). 아니면 false(Failed 처리).
+    /// </summary>
+    private bool TryOomDownscaleRetry(BatchRenderJob job, string? message)
+    {
+        if (!VideoEngineRenderExecutionEngine.IsCudaOom(message)) return false;
+        lock (_gate)
+        {
+            if (job.RetryCount != 0) return false;
+            var lower = VideoEngineRenderExecutionEngine.DownscaleResolution(job.Resolution);
+            if (lower is null) return false;
+            var meta = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (job.Metadata is not null) foreach (var kv in job.Metadata) meta[kv.Key] = kv.Value;
+            meta[MetaOomAutoDownscaled] = "true";
+            job.Metadata = meta;
+            job.Resolution = lower;
+            job.RetryCount++;
+            job.Status = BatchJobStatus.Queued;
+            job.ProgressPercent = 0;
+            job.ErrorMessage = OomRetryNotice;
+        }
+        return true;
+    }
+
+    /// <summary>OOM 자동 다운스케일 재시도 메타 키.</summary>
+    public const string MetaOomAutoDownscaled = "OomAutoDownscaled";
+    /// <summary>OOM 자동 재시도 안내 문구.</summary>
+    public const string OomRetryNotice = "GPU VRAM 부족으로 해상도를 자동 조정하여 재시도합니다";
 
     private static bool IsLocalPath(string? path)
         => !string.IsNullOrWhiteSpace(path) && !path.Contains("://", StringComparison.Ordinal) && Path.IsPathRooted(path);
