@@ -155,4 +155,55 @@ public class SettingsManagerTests
         }
         finally { try { Directory.Delete(root, recursive: true); } catch (IOException) { } }
     }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public void SettingsManager_PersistsSnsCredentials_Securely()
+    {
+        var path = TempFile();
+        try
+        {
+            var m = new AppSettingsManager(Bundled(), path);
+            Assert.Equal(SnsCredentials.Empty, m.Sns);
+            Assert.False(m.Sns.YouTubeConfigured);
+
+            SnsCredentials? pushed = null;
+            m.OnSnsChanged += c => pushed = c;
+            m.OnSnsChanged += _ => throw new InvalidOperationException("구독자 예외 격리");
+            var creds = new SnsCredentials(" cid.apps.googleusercontent.com ", "GOCSPX-secret", "1//refresh-token", "17841400", "EAAGsecret-token", "https://hooks.zapier.com/h/1");
+            Assert.True(m.SaveSns(creds));
+            Assert.Equal("cid.apps.googleusercontent.com", m.Sns.YouTubeClientId);   // 정규화(Trim)
+            Assert.True(m.Sns.YouTubeConfigured);
+            Assert.True(m.Sns.InstagramConfigured);
+            Assert.Equal(m.Sns, pushed);
+            Assert.False(File.Exists(m.SnsFilePath + ".tmp"));
+
+            // 디스크에는 평문 비밀 0(LocalCipher 봉인본만)
+            var raw = File.ReadAllText(m.SnsFilePath);
+            Assert.DoesNotContain("GOCSPX-secret", raw);
+            Assert.DoesNotContain("1//refresh-token", raw);
+            Assert.DoesNotContain("EAAGsecret-token", raw);
+            Assert.DoesNotContain("17841400", raw);
+            Assert.DoesNotContain("secret", m.Sns.ToString());   // 로그 마스킹
+
+            // 재시작 — 동일 PC/사용자에서 복원
+            var m2 = new AppSettingsManager(Bundled(), path);
+            Assert.Equal(m.Sns, m2.Sns);
+
+            // 손상 → 빈 자격(Graceful)
+            File.WriteAllText(m.SnsFilePath, "{ broken");
+            Assert.Equal(SnsCredentials.Empty, new AppSettingsManager(Bundled(), path).Sns);
+
+            // 뷰모델 경유 저장(관리자) — 잘못된 웹훅 URL 은 거부
+            var vm = new SettingsViewModel(m2, wan: null, gemini: null, engines: null, () => new FfmpegLocation(null, "미설치"));
+            Assert.Equal("17841400", vm.InstagramUserId);
+            vm.InstagramWebhookUrl = "ftp://bad";
+            Assert.False(vm.Save(includeKeys: true));
+            vm.InstagramWebhookUrl = "";
+            vm.YouTubeRefreshToken = "";
+            Assert.True(vm.Save(includeKeys: true));
+            Assert.False(new AppSettingsManager(Bundled(), path).Sns.YouTubeConfigured);
+        }
+        finally { try { Directory.Delete(Path.GetDirectoryName(path)!, recursive: true); } catch (IOException) { } }
+    }
 }

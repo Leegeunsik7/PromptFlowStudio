@@ -1,0 +1,162 @@
+@using System.Globalization
+@using PromptFlowStudio.ViewModels
+@implements IDisposable
+
+@* [PromptFlow Studio] 🚀 SNS 원클릭 발행 모달 — YouTube Shorts · Instagram Reels.
+   ▸ 데스크톱 전용(ViewModels 는 모바일 링크 대상 아님 → Mobile.csproj 에서 RazorComponent Remove). @inject 없이 Vm 파라미터만 받는다.
+   ▸ 전송은 Vm 이 백그라운드로 수행 — 모달을 닫아도 계속되며 다시 열면 진행률 확인. *@
+
+@if (Vm is { IsOpen: true } vm)
+{
+    <div class="pm-dim" @onclick="vm.Close"></div>
+    <div class="pm" role="dialog" aria-label="SNS 원클릭 발행">
+        <div class="pm-h">
+            <span>🚀 SNS 원클릭 발행</span>
+            <button class="pm-x" @onclick="vm.Close" title="닫기(전송은 백그라운드 계속)">✕</button>
+        </div>
+
+        <div class="pm-body">
+            <div class="pm-row pm-path" title="@vm.VideoPath">🎬 @(System.IO.Path.GetFileName(vm.VideoPath))@(vm.SrtPath is null ? "" : "  ·  📝 " + System.IO.Path.GetFileName(vm.SrtPath))</div>
+
+            <div class="pm-lbl">대상 채널</div>
+            <div class="pm-row">
+                <label class="pm-chk"><input type="checkbox" @bind="vm.ToYouTube" disabled="@vm.IsBusy" /> ▶️ YouTube Shorts
+                    <span class="pm-badge @(vm.YouTubeEnabled ? "ok" : "mock")">@(vm.YouTubeEnabled ? "연결됨" : "모의")</span></label>
+                <label class="pm-chk"><input type="checkbox" @bind="vm.ToInstagram" disabled="@vm.IsBusy" /> 📸 Instagram Reels
+                    <span class="pm-badge @(vm.InstagramEnabled ? "ok" : "mock")">@(vm.InstagramEnabled ? "연결됨" : "모의")</span></label>
+            </div>
+
+            <div class="pm-lbl">제목 (훅 기반 자동 · @(vm.Title.Length)/100)</div>
+            <input class="pm-in" @bind="vm.Title" @bind:event="oninput" maxlength="100" disabled="@vm.IsBusy" />
+
+            <div class="pm-lbl">설명 (씬 대본 타임스탬프 자동 요약)</div>
+            <textarea class="pm-in pm-ta" @bind="vm.Description" disabled="@vm.IsBusy"></textarea>
+
+            <div class="pm-lbl">태그 (쉼표 구분 · #Shorts 자동 포함)</div>
+            <input class="pm-in" @bind="vm.TagsText" disabled="@vm.IsBusy" />
+
+            <div class="pm-grid">
+                <div>
+                    <div class="pm-lbl">공개 상태 (YouTube)</div>
+                    <select class="pm-in" @bind="vm.Privacy" disabled="@(vm.IsBusy || vm.Schedule)">
+                        @foreach (var o in PublishViewModel.PrivacyOptions)
+                        {
+                            <option value="@o.Key">@o.Label</option>
+                        }
+                    </select>
+                </div>
+                <div>
+                    <div class="pm-lbl"><label class="pm-chk"><input type="checkbox" @bind="vm.Schedule" disabled="@vm.IsBusy" /> 예약 발행 (YouTube · 비공개→자동 공개)</label></div>
+                    <input class="pm-in" type="datetime-local" value="@(vm.ScheduleLocal.ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture))"
+                           @onchange="OnScheduleChanged" disabled="@(vm.IsBusy || !vm.Schedule)" />
+                </div>
+            </div>
+
+            @if (vm.ToInstagram)
+            {
+                <div class="pm-lbl">릴스 캡션 (≤2200자 · 해시태그 ≤30개 · @(vm.Caption.Length)자)</div>
+                <textarea class="pm-in pm-ta" @bind="vm.Caption" disabled="@vm.IsBusy"></textarea>
+                <div class="pm-lbl">공개 영상 URL (선택 — 있으면 Graph API 직결, 없으면 웹훅/로컬 브릿지)</div>
+                <input class="pm-in" @bind="vm.PublicVideoUrl" placeholder="https://cdn.example.com/video.mp4" disabled="@vm.IsBusy" />
+                <label class="pm-chk pm-consent"><input type="checkbox" @bind="vm.InstagramConsent" disabled="@vm.IsBusy" /> 릴스는 공개 게시됩니다 — 동의합니다</label>
+            }
+
+            @if (vm.ToYouTube && vm.YouTubeStatus is { } ys)
+            {
+                <div class="pm-prog"><span>▶️ @ys</span><div class="pm-bar"><div class="pm-bar-f yt" style="width:@(Pct(vm.YouTubeProgress))%"></div></div></div>
+                @if (vm.YouTubeResult is { Url: { } url })
+                {
+                    <div class="pm-link">🔗 @url</div>
+                }
+            }
+            @if (vm.ToInstagram && vm.InstagramStatus is { } igs)
+            {
+                <div class="pm-prog"><span>📸 @igs</span><div class="pm-bar"><div class="pm-bar-f ig" style="width:@(Pct(vm.InstagramProgress))%"></div></div></div>
+            }
+        </div>
+
+        <div class="pm-foot">
+            @if (vm.IsBusy)
+            {
+                <span class="pm-sub">전체 @(Pct(vm.OverallProgress))%</span>
+                <button class="pm-btn ghost" @onclick="vm.Cancel">⏹ 취소</button>
+            }
+            else
+            {
+                <button class="pm-btn ghost" @onclick="vm.Close">닫기</button>
+                <button class="pm-btn go" disabled="@(!vm.CanStart)" @onclick="Start">⬆ 업로드 시작</button>
+            }
+        </div>
+    </div>
+}
+
+<style>
+    .pm-dim{position:fixed;inset:0;background:rgba(2,6,23,.62);z-index:900}
+    .pm{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(640px,94vw);max-height:90vh;display:flex;flex-direction:column;z-index:901;
+        background:var(--card,#111a2e);border:1px solid var(--line,rgba(148,163,184,.2));border-radius:16px;color:var(--ink,#e6eefc);box-shadow:0 24px 60px rgba(0,0,0,.45)}
+    .pm-h{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;font-weight:800;font-size:15px;border-bottom:1px solid var(--line,rgba(148,163,184,.16))}
+    .pm-x{background:transparent;border:0;color:inherit;font-size:16px;cursor:pointer}
+    .pm-body{padding:12px 18px;overflow:auto;display:flex;flex-direction:column;gap:6px}
+    .pm-lbl{font-size:12px;font-weight:700;color:var(--sub,#93a3b8);margin-top:6px}
+    .pm-row{display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+    .pm-path{font:12px 'Roboto Mono',Consolas,monospace;color:var(--sub,#cbd5e1);word-break:break-all}
+    .pm-chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:700;cursor:pointer}
+    .pm-consent{margin-top:6px;font-size:12px}
+    .pm-in{width:100%;box-sizing:border-box;padding:8px 11px;border-radius:9px;border:1px solid var(--line,rgba(148,163,184,.25));background:rgba(15,23,42,.6);color:inherit;font-size:13px}
+    .pm-ta{min-height:84px;resize:vertical;font-family:inherit}
+    .pm-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .pm-badge{padding:2px 8px;border-radius:999px;font-size:10.5px;font-weight:800}
+    .pm-badge.ok{color:#4ade80;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.4)}
+    .pm-badge.mock{color:#fbbf24;background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.4)}
+    .pm-prog{display:flex;flex-direction:column;gap:4px;font-size:12px;margin-top:8px}
+    .pm-bar{height:6px;border-radius:999px;background:rgba(148,163,184,.18);overflow:hidden}
+    .pm-bar-f{height:100%;transition:width .2s}
+    .pm-bar-f.yt{background:linear-gradient(90deg,#ef4444,#f97316)}
+    .pm-bar-f.ig{background:linear-gradient(90deg,#a855f7,#ec4899)}
+    .pm-link{font:12px 'Roboto Mono',Consolas,monospace;color:#93c5fd;word-break:break-all}
+    .pm-foot{display:flex;justify-content:flex-end;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--line,rgba(148,163,184,.16))}
+    .pm-sub{font-size:12px;color:var(--sub,#93a3b8);margin-right:auto}
+    .pm-btn{padding:9px 16px;border-radius:10px;border:1px solid var(--line,rgba(148,163,184,.25));background:transparent;color:inherit;font-weight:800;font-size:13px;cursor:pointer}
+    .pm-btn.go{border:0;color:#fff;background:linear-gradient(135deg,#8b7bff,#6d5efc)}
+    .pm-btn[disabled]{opacity:.55;cursor:default}
+</style>
+
+@code {
+    [Parameter] public PublishViewModel? Vm { get; set; }
+
+    private PublishViewModel? _bound;
+
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(_bound, Vm)) return;
+        if (_bound is not null) _bound.OnChange -= OnVmChanged;
+        _bound = Vm;
+        if (_bound is not null) _bound.OnChange += OnVmChanged;
+    }
+
+    private void OnVmChanged()
+    {
+        try { _ = InvokeAsync(StateHasChanged); }
+        catch (Exception ex) { Program.Log("PublishModal.OnChange", ex); }
+    }
+
+    private void OnScheduleChanged(ChangeEventArgs e)
+    {
+        if (Vm is not null && DateTime.TryParse(e.Value?.ToString(), CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var t)) Vm.ScheduleLocal = t;
+    }
+
+    private async Task Start()
+    {
+        if (Vm is null) return;
+        try { await Vm.StartAsync(); }
+        catch (Exception ex) { Program.Log("PublishModal.Start", ex); }
+    }
+
+    private static string Pct(double v) => Math.Round(Math.Clamp(v, 0, 1) * 100).ToString("0", CultureInfo.InvariantCulture);
+
+    public void Dispose()
+    {
+        if (_bound is not null) _bound.OnChange -= OnVmChanged;
+        _bound = null;
+    }
+}

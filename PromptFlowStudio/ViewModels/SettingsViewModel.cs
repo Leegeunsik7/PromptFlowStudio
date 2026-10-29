@@ -3,6 +3,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using PromptFlowStudio.Services.Configuration;
 using PromptFlowStudio.Services.Engines;
+using PromptFlowStudio.Services.Publishing;
 using PromptFlowStudio.Services.Render;
 using PromptFlowStudio.Services.Wan;
 
@@ -24,18 +25,23 @@ public sealed class SettingsViewModel
     private readonly GeminiConfigService? _gemini;
     private readonly EngineConfigService? _engines;
     private readonly Func<FfmpegLocation> _locateFfmpeg;
+    private readonly IYouTubeShortsPublisher? _yt;
+    private readonly IInstagramReelsPublisher? _ig;
 
-    public SettingsViewModel(AppSettingsManager settings, IWanConfigService? wan, GeminiConfigService? gemini, EngineConfigService? engines)
-        : this(settings, wan, gemini, engines, FfmpegLocator.Locate) { }
+    public SettingsViewModel(AppSettingsManager settings, IWanConfigService? wan, GeminiConfigService? gemini, EngineConfigService? engines,
+        IYouTubeShortsPublisher? yt = null, IInstagramReelsPublisher? ig = null)
+        : this(settings, wan, gemini, engines, FfmpegLocator.Locate, yt, ig) { }
 
     internal SettingsViewModel(AppSettingsManager settings, IWanConfigService? wan, GeminiConfigService? gemini,
-        EngineConfigService? engines, Func<FfmpegLocation> locateFfmpeg)
+        EngineConfigService? engines, Func<FfmpegLocation> locateFfmpeg, IYouTubeShortsPublisher? yt = null, IInstagramReelsPublisher? ig = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _wan = wan;
         _gemini = gemini;
         _engines = engines;
         _locateFfmpeg = locateFfmpeg;
+        _yt = yt;
+        _ig = ig;
         Load();
     }
 
@@ -54,6 +60,20 @@ public sealed class SettingsViewModel
     public string? StatusMessage { get; private set; }
     public bool StatusOk { get; private set; }
 
+    // ── SNS 채널 연동(관리자만 편집 · AppSettingsManager 암호화 저장소) ──
+    public string YouTubeClientId { get; set; } = "";
+    public string YouTubeClientSecret { get; set; } = "";
+    public string YouTubeRefreshToken { get; set; } = "";
+    public string InstagramUserId { get; set; } = "";
+    public string InstagramAccessToken { get; set; } = "";
+    public string InstagramWebhookUrl { get; set; } = "";
+    public bool YouTubeConfigured => _settings.Sns.YouTubeConfigured;
+    public bool InstagramConfigured => _settings.Sns.InstagramConfigured || _settings.Sns.InstagramBridgeConfigured;
+    /// <summary>마지막 연결 테스트 결과(null = 미실행).</summary>
+    public bool? YouTubeOnline { get; private set; }
+    public bool? InstagramValid { get; private set; }
+    public bool IsTestingSns { get; private set; }
+
     public FfmpegLocation Ffmpeg { get; private set; } = new(null, "미설치");
     public string? FfmpegVersion { get; private set; }
 
@@ -67,7 +87,18 @@ public sealed class SettingsViewModel
                    : RenderEngineKind.Cloud;
         DashScopeKey = _wan?.ApiKey ?? "";
         GeminiKey = _gemini?.ApiKey ?? "";
+        var sns = _settings.Sns;
+        YouTubeClientId = sns.YouTubeClientId;
+        YouTubeClientSecret = sns.YouTubeClientSecret;
+        YouTubeRefreshToken = sns.YouTubeRefreshToken;
+        InstagramUserId = sns.InstagramUserId;
+        InstagramAccessToken = sns.InstagramAccessToken;
+        InstagramWebhookUrl = sns.InstagramWebhookUrl;
     }
+
+    /// <summary>폼의 SNS 자격 스냅샷.</summary>
+    public SnsCredentials SnsDraft => new(YouTubeClientId ?? "", YouTubeClientSecret ?? "", YouTubeRefreshToken ?? "",
+        InstagramUserId ?? "", InstagramAccessToken ?? "", InstagramWebhookUrl ?? "");
 
     /// <summary>
     /// 저장 — user_settings.json → (<paramref name="includeKeys"/> 일 때) 변경된 키만 암호화 저장소 → 활성 엔진 전환. 하나라도 실패하면 false.
@@ -82,6 +113,9 @@ public sealed class SettingsViewModel
             if (_wan is not null && !string.Equals(key, _wan.ApiKey, StringComparison.Ordinal)) ok &= _wan.Save(key, _wan.BaseUrl);
             var gk = (GeminiKey ?? "").Trim();
             if (_gemini is not null && !string.Equals(gk, _gemini.ApiKey, StringComparison.Ordinal)) ok &= _gemini.Save(gk);
+            var sns = SnsDraft;
+            if (sns.InstagramWebhookUrl.Trim().Length > 0 && !InstagramReelsPublisher.IsValidWebhookUrl(sns.InstagramWebhookUrl.Trim())) ok = false;
+            else if (!Equals(Trimmed(sns), _settings.Sns)) ok &= _settings.SaveSns(sns);
         }
 
         var mode = _settings.RenderMode;
@@ -98,6 +132,29 @@ public sealed class SettingsViewModel
         StatusOk = ok;
         StatusMessage = ok ? "저장했습니다 — 재시작 후에도 유지됩니다." : "일부 항목 저장에 실패했습니다(로그 확인).";
         return ok;
+    }
+
+    private static SnsCredentials Trimmed(SnsCredentials c) => new(c.YouTubeClientId.Trim(), c.YouTubeClientSecret.Trim(), c.YouTubeRefreshToken.Trim(),
+        c.InstagramUserId.Trim(), c.InstagramAccessToken.Trim(), c.InstagramWebhookUrl.Trim());
+
+    /// <summary>YouTube 연결 테스트 — 저장된 자격으로 토큰 리프레시(저장 후 실행).</summary>
+    public async Task<bool> TestYouTubeAsync(CancellationToken ct = default)
+    {
+        if (_yt is null) { YouTubeOnline = false; return false; }
+        IsTestingSns = true;
+        try { YouTubeOnline = await _yt.TestConnectionAsync(ct).ConfigureAwait(false); }
+        finally { IsTestingSns = false; }
+        return YouTubeOnline == true;
+    }
+
+    /// <summary>Instagram 자격 유효성 검사 — 입력 중인 UserId/Token 기준(저장하지 않음).</summary>
+    public async Task<bool> ValidateInstagramAsync(CancellationToken ct = default)
+    {
+        if (_ig is null) { InstagramValid = false; return false; }
+        IsTestingSns = true;
+        try { InstagramValid = await _ig.ValidateCredentialsAsync(InstagramUserId, InstagramAccessToken, ct).ConfigureAwait(false); }
+        finally { IsTestingSns = false; }
+        return InstagramValid == true;
     }
 
     /// <summary>ComfyUI <c>/system_stats</c> 연결 테스트(입력 중인 주소 기준).</summary>

@@ -81,6 +81,8 @@
          (Shared\Blazor\_Imports.razor 의 @namespace 로 데스크톱과 동일한 PromptFlowStudio.Blazor.Components.* 네임스페이스 유지). -->
     <RazorComponent Include="..\PromptFlowStudio\Blazor\Components\**\*.razor" LinkBase="Shared\Blazor"
                     TargetPath="Shared\Blazor\%(RecursiveDir)%(Filename)%(Extension)" />
+    <!-- 데스크톱 전용 SNS 발행 모달(PromptFlowStudio.ViewModels.PublishViewModel 의존 — ViewModels 는 모바일 링크 대상 아님). -->
+    <RazorComponent Remove="..\PromptFlowStudio\Blazor\Components\PublishModal.razor" />
   </ItemGroup>
 
   <!-- wwwroot(글래스모피즘 CSS/JS) 재사용 — 데스크톱 index.html 은 제외(모바일 자체 wwwroot\index.html 사용).

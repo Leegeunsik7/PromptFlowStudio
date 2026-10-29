@@ -15,6 +15,7 @@
 @inject PromptFlowStudio.Services.Audio.ITtsSynthesisService ScriptTts
 @inject PromptFlowStudio.Services.Export.SubtitleGeneratorService Subtitles
 @inject PromptFlowStudio.Services.Media.ILocalMediaService Media
+@inject PromptFlowStudio.ViewModels.PublishViewModel PubVm
 @implements IDisposable
 
 <PageTitle>PromptFlow Studio · AI 15초 컷다운</PageTitle>
@@ -87,6 +88,10 @@
                 <button class="acd-btn go" disabled="@(_stitching || _stitchDone < _stitchTotal)" @onclick="ExportFullVideoAsync">🎬 최종 완성본 1개로 합치기 (Export Full Video)</button>
                 <span class="acd-hint">렌더 큐 @(_stitchDone)/@(_stitchTotal) 완료@(_stitchMessage is null ? "" : " · " + _stitchMessage)</span>
             }
+            @if (_fullVideoPath is not null)
+            {
+                <button class="acd-btn go" @onclick="OpenPublish" title="합본을 YouTube Shorts · Instagram Reels 로 원클릭 발행(훅 제목 · 대본 타임스탬프 · SRT 자막)">🚀 SNS 즉시 발행</button>
+            }
         </section>
     </div>
 
@@ -157,6 +162,8 @@
             @(_running ? "⏳ 컷다운 중…" : "✨ 15초로 컷다운 시작")
         </button>
     </div>
+
+    <PublishModal Vm="PubVm" />
 
     @if (_result is { } r)
     {
@@ -316,6 +323,7 @@
     private int _stitchTotal, _stitchDone;
     private bool _stitching;
     private string? _stitchMessage;
+    private string? _fullVideoPath;
 
     protected override void OnInitialized() => RenderQueue.OnChange += OnRenderQueueChanged;
 
@@ -349,10 +357,24 @@
             var name = string.IsNullOrWhiteSpace(Vm.TopicInput) ? "shorts" : "shorts_" + Vm.TopicInput.Trim();
             var r = await Stitcher.StitchCutsAsync(cuts, PromptFlowStudio.Services.Render.FFmpegVideoStitchService.BuildFullOutputPath(Media.MediaRoot, name), ScriptTts, Subtitles);   // 나레이션 AAC 믹싱 + SRT
             _stitchMessage = r.Message;
-            if (r.Ok && !r.IsVirtual && r.OutputPath is not null) Gallery.Register(null, GalleryAssetKind.Video, r.OutputPath, "AI 숏폼 3컷 합본");
+            if (r.Ok && !r.IsVirtual && r.OutputPath is not null)
+            {
+                Gallery.Register(null, GalleryAssetKind.Video, r.OutputPath, "AI 숏폼 3컷 합본");
+                _fullVideoPath = r.OutputPath;
+            }
         }
         catch (Exception ex) { Program.Log("AiShorts.Stitch", ex); _stitchMessage = "합본 실패"; }
         finally { _stitching = false; }
+    }
+
+    /// <summary>🚀 SNS 발행 모달 — 훅 = 주제(없으면 첫 컷 대본) · 3컷 대본/길이 → 타임스탬프 설명.</summary>
+    private void OpenPublish()
+    {
+        if (_fullVideoPath is not { } path) return;
+        var beats = new List<PromptFlowStudio.Services.Publishing.ScriptBeat>(Vm.Cuts.Count);
+        foreach (var c in Vm.Cuts) beats.Add(new(c.Script, c.DurationSec));
+        var hook = !string.IsNullOrWhiteSpace(Vm.TopicInput) ? Vm.TopicInput : beats.Count > 0 ? beats[0].Script : null;
+        PubVm.Open(path, hook, beats);
     }
 
     private void SaveToGallery(string url)

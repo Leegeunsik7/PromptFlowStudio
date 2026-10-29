@@ -7,11 +7,29 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 using PromptFlowStudio.Services.Account;   // LicenseService.DataAreaRoot()
 using PromptFlowStudio.Services.Render;    // RenderEngineKind
+using PromptFlowStudio.Services.Security;  // LocalCipher(SNS 자격 봉인)
 
 namespace PromptFlowStudio.Services.Configuration;
 
 /// <summary>사용자 환경설정 영속본(<c>user_settings.json</c>) — 비밀이 아닌 값만. API 키는 Wan/Gemini 설정 서비스가 머신바운드 암호화로 보관.</summary>
 public sealed record UserSettings(string ComfyUiUrl, string RenderMode);
+
+/// <summary>
+/// SNS 채널 자격 — YouTube(OAuth Client/RefreshToken) · Instagram(Graph UserId/AccessToken · 로컬 웹훅 브릿지 URL).
+/// 디스크에는 필드별 LocalCipher(AES-256-GCM · 머신바운드) 봉인본만 기록. <see cref="ToString"/> 은 비밀 마스킹.
+/// </summary>
+public sealed record SnsCredentials(
+    string YouTubeClientId, string YouTubeClientSecret, string YouTubeRefreshToken,
+    string InstagramUserId, string InstagramAccessToken, string InstagramWebhookUrl)
+{
+    public static readonly SnsCredentials Empty = new("", "", "", "", "", "");
+    public bool YouTubeConfigured => YouTubeClientId.Length > 0 && YouTubeClientSecret.Length > 0 && YouTubeRefreshToken.Length > 0;
+    public bool InstagramConfigured => InstagramUserId.Length > 0 && InstagramAccessToken.Length > 0;
+    public bool InstagramBridgeConfigured => InstagramWebhookUrl.Length > 0;
+
+    public override string ToString() =>
+        "SnsCredentials { YouTube = " + (YouTubeConfigured ? "***" : "-") + ", Instagram = " + (InstagramConfigured ? "***" : "-") + " }";
+}
 
 /// <summary>
 /// [PromptFlowStudio] 앱 환경설정 관리자 — 순수 BCL(System.Text.Json · 외부 NuGet 0).
@@ -46,6 +64,72 @@ public sealed class AppSettingsManager
         FilePath = filePath;
         _bundled = new UserSettings(NormalizeUrl(cfg?["ComfyUI:BaseUrl"]), NormalizeMode(cfg?["Render:DefaultMode"]));
         _s = LoadInitial();
+        SnsFilePath = Path.Combine(Path.GetDirectoryName(filePath) ?? "", SnsFileName);
+        _sns = LoadSns();
+    }
+
+    // ── SNS 채널 자격(암호화 저장소) ──
+    public const string SnsFileName = "sns_credentials.json";
+    private const string SnsPurpose = "MS2E::PromptFlowStudio::SNS::v1";
+    private volatile SnsCredentials _sns;
+
+    /// <summary>SNS 자격 저장 성공 시 새 스냅샷 전달(퍼블리셔 핫리로드).</summary>
+    public event Action<SnsCredentials>? OnSnsChanged;
+    public string SnsFilePath { get; }
+    public SnsCredentials Sns => _sns;
+
+    /// <summary>SNS 자격 원자적 저장 — 필드별 LocalCipher 봉인 후 .tmp → 교체. 실패 시 false(상태 불변).</summary>
+    public bool SaveSns(SnsCredentials? creds)
+    {
+        var c = Normalize(creds ?? SnsCredentials.Empty);
+        lock (_gate)
+        {
+            try
+            {
+                var dir = Path.GetDirectoryName(SnsFilePath);
+                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                var sealedDto = new SnsCredentials(Seal(c.YouTubeClientId), Seal(c.YouTubeClientSecret), Seal(c.YouTubeRefreshToken),
+                    Seal(c.InstagramUserId), Seal(c.InstagramAccessToken), Seal(c.InstagramWebhookUrl));
+                var tmp = SnsFilePath + ".tmp";
+                File.WriteAllText(tmp, JsonSerializer.Serialize(sealedDto, JsonOpts));
+                File.Move(tmp, SnsFilePath, overwrite: true);
+                _sns = c;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or System.Security.Cryptography.CryptographicException)
+            {
+                Program.Log("AppSettingsManager.SaveSns", ex);
+                return false;
+            }
+        }
+        var handlers = OnSnsChanged;
+        if (handlers is not null)
+            foreach (var d in handlers.GetInvocationList())
+            {
+                try { ((Action<SnsCredentials>)d)(c); } catch (Exception ex) { Program.Log("AppSettingsManager.OnSnsChanged", ex); }
+            }
+        return true;
+    }
+
+    private static string Seal(string v) => v.Length == 0 ? "" : LocalCipher.Protect(v, SnsPurpose);
+    private static string Open(string? v) => string.IsNullOrEmpty(v) ? "" : LocalCipher.Unprotect(v, SnsPurpose);
+
+    private static SnsCredentials Normalize(SnsCredentials c) => new(
+        (c.YouTubeClientId ?? "").Trim(), (c.YouTubeClientSecret ?? "").Trim(), (c.YouTubeRefreshToken ?? "").Trim(),
+        (c.InstagramUserId ?? "").Trim(), (c.InstagramAccessToken ?? "").Trim(), (c.InstagramWebhookUrl ?? "").Trim());
+
+    private SnsCredentials LoadSns()
+    {
+        try
+        {
+            if (File.Exists(SnsFilePath) && JsonSerializer.Deserialize<SnsCredentials>(File.ReadAllText(SnsFilePath)) is { } s)
+                return new SnsCredentials(Open(s.YouTubeClientId), Open(s.YouTubeClientSecret), Open(s.YouTubeRefreshToken),
+                    Open(s.InstagramUserId), Open(s.InstagramAccessToken), Open(s.InstagramWebhookUrl));   // 타 PC/손상 → 빈 값(Graceful)
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or NotSupportedException)
+        {
+            Program.Log("AppSettingsManager.LoadSns", ex);
+        }
+        return SnsCredentials.Empty;
     }
 
     public UserSettings Current => _s;

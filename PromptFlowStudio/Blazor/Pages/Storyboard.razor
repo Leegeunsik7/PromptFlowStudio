@@ -52,6 +52,7 @@
 @inject PromptFlowStudio.Services.Autonomous.AutonomousCampaignDirectorService AutoDirector
 @inject PromptFlowStudio.Services.MediaPipeline.UnlimitedMediaStreamBufferPipeline MediaPipe
 @inject PromptFlowStudio.Services.MediaPipeline.AutoPresetContextTuner Tuner
+@inject PromptFlowStudio.ViewModels.PublishViewModel PubVm
 @using PromptFlowStudio.Services.MediaPipeline
 
 @* [PromptFlow Studio] 스토리보드 — 여러 컷을 구성해 한 번에 연쇄 생성. 상태는 StoryboardJobManager(싱글턴)가 보유,
@@ -916,12 +917,15 @@
                             @(_ytBusy ? $"⬆ 업로드 중… {_ytPct}%" : "▶️ 유튜브 업로드(비공개)")
                         </button>
                     }
+                    <button class="sb-btn go" @onclick="OpenPublish" disabled="@_upBusy"
+                            title="합본 영상을 YouTube Shorts · Instagram Reels 로 원클릭 발행(훅 기반 제목 · 대본 타임스탬프 · SRT 자막 자동 첨부)">🚀 SNS 즉시 발행</button>
                     <button class="sb-btn ghost" @onclick="ExtractSubs"
                             disabled="@(_sttBusy || _upBusy || !Stt.IsAvailable)"
                             title="@(Stt.IsAvailable ? "영상 음성에서 자막을 추출해 컷에 채웁니다(Faster-Whisper)" : "Faster-Whisper 미설치 — appsettings.json 의 Engines:FasterWhisper:Exe 지정")">
                         @(_sttBusy ? "자막 추출 중…" : "📝 자막 자동 추출")
                     </button>
                 </div>
+                <PublishModal Vm="PubVm" />
 
                 @* 표정 피크 자동 썸네일 미리보기 *@
                 @if (_thumbUrl is not null)
@@ -3059,6 +3063,20 @@
         }
         catch (Exception ex) { Program.Log("Storyboard.Stitch", ex); ShowToast("합본 실패"); }
         finally { _stitching = false; }
+    }
+
+    /// <summary>🚀 SNS 발행 모달 — 훅 = 첫 대본(없으면 제목) · 씬 대본/길이(기본 5초) → 타임스탬프 설명.</summary>
+    private void OpenPublish()
+    {
+        if (_project.FinalVideoPath is not { } path) return;
+        var beats = new List<PromptFlowStudio.Services.Publishing.ScriptBeat>(_project.Scenes.Count);
+        string? hook = null;
+        foreach (var sc in _project.Scenes)
+        {
+            beats.Add(new(sc.VoiceText, sc.DurationSec ?? 5f));
+            if (hook is null && !string.IsNullOrWhiteSpace(sc.VoiceText)) hook = sc.VoiceText;
+        }
+        PubVm.Open(path, hook ?? _project.Title, beats);
     }
 
     private void ShowToast(string msg)
