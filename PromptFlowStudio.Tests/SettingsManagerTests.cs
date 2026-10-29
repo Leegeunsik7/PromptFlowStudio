@@ -206,4 +206,67 @@ public class SettingsManagerTests
         }
         finally { try { Directory.Delete(Path.GetDirectoryName(path)!, recursive: true); } catch (IOException) { } }
     }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public async Task SettingsManager_SavesEncryptedRefreshToken_AndLoadsCorrectly()
+    {
+        var path = TempFile();
+        try
+        {
+            var m = new AppSettingsManager(Bundled(), path);
+            var linked = SnsCredentials.Empty with
+            {
+                YouTubeClientId = "cid.apps.googleusercontent.com",
+                YouTubeClientSecret = "GOCSPX-sec",
+                YouTubeRefreshToken = "1//0gRefreshTokenSecret",
+                YouTubeChannelName = "@mychannel",
+            };
+            Assert.True(m.SaveSns(linked));
+
+            // 디스크엔 봉인본만 — 영구 토큰 평문 0
+            var raw = File.ReadAllText(m.SnsFilePath);
+            Assert.DoesNotContain("1//0gRefreshTokenSecret", raw);
+            Assert.DoesNotContain("@mychannel", raw);
+
+            // 재시작 복원
+            var m2 = new AppSettingsManager(Bundled(), path);
+            Assert.Equal(linked, m2.Sns);
+            Assert.True(m2.Sns.YouTubeConfigured);
+
+            // 구버전(신규 필드 없는) 파일 → 신규 필드 "" 로 하위호환 로드
+            File.WriteAllText(m.SnsFilePath, "{\"YouTubeClientId\":\"\",\"YouTubeClientSecret\":\"\",\"YouTubeRefreshToken\":\"\",\"InstagramUserId\":\"\",\"InstagramAccessToken\":\"\",\"InstagramWebhookUrl\":\"\"}");
+            Assert.Equal(SnsCredentials.Empty, new AppSettingsManager(Bundled(), path).Sns);
+            Assert.True(m2.SaveSns(linked));
+
+            // 뷰모델 — 연결 배지 · 일반 저장이 채널명을 지우지 않음 · 연동 해제
+            var vm = new SettingsViewModel(m2, wan: null, gemini: null, engines: null, () => new FfmpegLocation(null, "미설치"));
+            Assert.True(vm.YouTubeConfigured);
+            Assert.Equal("@mychannel", vm.YouTubeChannelName);
+            Assert.False(vm.CanLinkYouTube);   // OAuth 서비스 미주입
+            Assert.True(vm.Save(includeKeys: true));
+            Assert.Equal("@mychannel", new AppSettingsManager(Bundled(), path).Sns.YouTubeChannelName);
+
+            // Instagram 60일 토큰 — 저장 시각 기록 · 잔여 일수 진단
+            vm.InstagramUserId = "17841400";
+            vm.InstagramAccessToken = "EAAGlong";
+            Assert.True(vm.Save(includeKeys: true));
+            Assert.NotEqual("", m2.Sns.InstagramTokenSavedUtc);
+            Assert.InRange(vm.InstagramTokenDaysLeft ?? -99, 59, 60);
+            var saved = m2.Sns.InstagramTokenSavedUtc;
+            Assert.True(vm.Save(includeKeys: true));
+            Assert.Equal(saved, m2.Sns.InstagramTokenSavedUtc);   // 토큰 불변 → 시각 유지
+            var now = new DateTime(2026, 10, 29, 0, 0, 0, DateTimeKind.Utc);
+            Assert.Equal(60, SettingsViewModel.ComputeTokenDaysLeft("2026-10-29T00:00:00.0000000Z", now));
+            Assert.Equal(-1, SettingsViewModel.ComputeTokenDaysLeft("2026-08-29T00:00:00.0000000Z", now));
+            Assert.Null(SettingsViewModel.ComputeTokenDaysLeft("", now));
+
+            Assert.True(await vm.UnlinkYouTubeAsync());
+            var after = new AppSettingsManager(Bundled(), path).Sns;
+            Assert.False(after.YouTubeConfigured);
+            Assert.Equal("", after.YouTubeChannelName);
+            Assert.Equal("EAAGlong", after.InstagramAccessToken);   // 타 채널 자격 보존
+        }
+        finally { try { Directory.Delete(Path.GetDirectoryName(path)!, recursive: true); } catch (IOException) { } }
+    }
 }

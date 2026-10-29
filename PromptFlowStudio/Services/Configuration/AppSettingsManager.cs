@@ -17,10 +17,12 @@ public sealed record UserSettings(string ComfyUiUrl, string RenderMode);
 /// <summary>
 /// SNS 채널 자격 — YouTube(OAuth Client/RefreshToken) · Instagram(Graph UserId/AccessToken · 로컬 웹훅 브릿지 URL).
 /// 디스크에는 필드별 LocalCipher(AES-256-GCM · 머신바운드) 봉인본만 기록. <see cref="ToString"/> 은 비밀 마스킹.
+///   ▸ <see cref="YouTubeChannelName"/>: 브라우저 OAuth 연동 시 조회한 채널 표시명 · <see cref="InstagramTokenSavedUtc"/>: 60일 장기 토큰 저장 시각(ISO-8601 UTC).
 /// </summary>
 public sealed record SnsCredentials(
     string YouTubeClientId, string YouTubeClientSecret, string YouTubeRefreshToken,
-    string InstagramUserId, string InstagramAccessToken, string InstagramWebhookUrl)
+    string InstagramUserId, string InstagramAccessToken, string InstagramWebhookUrl,
+    string YouTubeChannelName = "", string InstagramTokenSavedUtc = "")
 {
     public static readonly SnsCredentials Empty = new("", "", "", "", "", "");
     public bool YouTubeConfigured => YouTubeClientId.Length > 0 && YouTubeClientSecret.Length > 0 && YouTubeRefreshToken.Length > 0;
@@ -89,7 +91,8 @@ public sealed class AppSettingsManager
                 var dir = Path.GetDirectoryName(SnsFilePath);
                 if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
                 var sealedDto = new SnsCredentials(Seal(c.YouTubeClientId), Seal(c.YouTubeClientSecret), Seal(c.YouTubeRefreshToken),
-                    Seal(c.InstagramUserId), Seal(c.InstagramAccessToken), Seal(c.InstagramWebhookUrl));
+                    Seal(c.InstagramUserId), Seal(c.InstagramAccessToken), Seal(c.InstagramWebhookUrl),
+                    Seal(c.YouTubeChannelName), Seal(c.InstagramTokenSavedUtc));
                 var tmp = SnsFilePath + ".tmp";
                 File.WriteAllText(tmp, JsonSerializer.Serialize(sealedDto, JsonOpts));
                 File.Move(tmp, SnsFilePath, overwrite: true);
@@ -115,7 +118,8 @@ public sealed class AppSettingsManager
 
     private static SnsCredentials Normalize(SnsCredentials c) => new(
         (c.YouTubeClientId ?? "").Trim(), (c.YouTubeClientSecret ?? "").Trim(), (c.YouTubeRefreshToken ?? "").Trim(),
-        (c.InstagramUserId ?? "").Trim(), (c.InstagramAccessToken ?? "").Trim(), (c.InstagramWebhookUrl ?? "").Trim());
+        (c.InstagramUserId ?? "").Trim(), (c.InstagramAccessToken ?? "").Trim(), (c.InstagramWebhookUrl ?? "").Trim(),
+        (c.YouTubeChannelName ?? "").Trim(), (c.InstagramTokenSavedUtc ?? "").Trim());
 
     private SnsCredentials LoadSns()
     {
@@ -123,7 +127,8 @@ public sealed class AppSettingsManager
         {
             if (File.Exists(SnsFilePath) && JsonSerializer.Deserialize<SnsCredentials>(File.ReadAllText(SnsFilePath)) is { } s)
                 return new SnsCredentials(Open(s.YouTubeClientId), Open(s.YouTubeClientSecret), Open(s.YouTubeRefreshToken),
-                    Open(s.InstagramUserId), Open(s.InstagramAccessToken), Open(s.InstagramWebhookUrl));   // 타 PC/손상 → 빈 값(Graceful)
+                    Open(s.InstagramUserId), Open(s.InstagramAccessToken), Open(s.InstagramWebhookUrl),
+                    Open(s.YouTubeChannelName), Open(s.InstagramTokenSavedUtc));   // 타 PC/손상 → 빈 값(Graceful) · 구버전 파일은 신규 필드 ""
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or NotSupportedException)
         {

@@ -188,5 +188,115 @@ public class YouTubePublishTests
         finally { try { Directory.Delete(dir, true); } catch { } }
     }
 
+    /// <summary>가짜 Google 토큰/채널/폐기 엔드포인트 — 폼 본문 기록.</summary>
+    private sealed class FakeOAuth : HttpMessageHandler
+    {
+        public readonly List<(string Url, string Body)> Calls = new();
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage req, CancellationToken ct)
+        {
+            var url = req.RequestUri!.ToString();
+            Calls.Add((url, req.Content is null ? "" : await req.Content.ReadAsStringAsync(ct)));
+            if (url == YouTubeShortsPublisher.TokenEndpoint)
+                return Json("{\"access_token\":\"ya29.acc\",\"expires_in\":3599,\"refresh_token\":\"1//refresh-xyz\",\"scope\":\"" + YouTubeOAuthFlowService.Scope + "\",\"token_type\":\"Bearer\"}");
+            if (url == YouTubeOAuthFlowService.ChannelEndpoint)
+                return Json("{\"items\":[{\"snippet\":{\"title\":\"내 채널\",\"customUrl\":\"@mychannel\"}}]}");
+            if (url == YouTubeOAuthFlowService.RevokeEndpoint) return new HttpResponseMessage(HttpStatusCode.OK);
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }
+
+        private static HttpResponseMessage Json(string s) => new(HttpStatusCode.OK) { Content = new StringContent(s, Encoding.UTF8, "application/json") };
+    }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public async Task YouTubeOAuth_ExchangeCodeForTokens_ParsesRefreshTokenSuccessfully()
+    {
+        var dir = TempDir();
+        try
+        {
+            var settings = new AppSettingsManager(null, Path.Combine(dir, AppSettingsManager.FileName));
+            var fake = new FakeOAuth();
+            using var oauth = new YouTubeOAuthFlowService(settings, () => ("cid.apps.googleusercontent.com", "GOCSPX-sec"), fake) { BackoffBaseSeconds = 0 };
+            Assert.True(oauth.HasClient);
+
+            // PKCE · 동의 URL(offline+consent · S256 · 업로드 스코프 · 루프백 콜백)
+            var verifier = YouTubeOAuthFlowService.CreateCodeVerifier();
+            Assert.Equal(43, verifier.Length);
+            Assert.Equal("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", YouTubeOAuthFlowService.CreateCodeChallenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"));   // RFC 7636 부록 B
+            var authUrl = YouTubeOAuthFlowService.BuildAuthorizationUrl("cid.apps.googleusercontent.com", "http://127.0.0.1:5000/oauth2callback", "st8", "chal");
+            Assert.StartsWith(YouTubeOAuthFlowService.AuthEndpoint + "?", authUrl);
+            Assert.Contains("redirect_uri=http%3A%2F%2F127.0.0.1%3A5000%2Foauth2callback", authUrl);
+            Assert.Contains("access_type=offline", authUrl);
+            Assert.Contains("prompt=consent", authUrl);
+            Assert.Contains("code_challenge_method=S256", authUrl);
+            Assert.Contains(Uri.EscapeDataString("https://www.googleapis.com/auth/youtube.upload"), authUrl);
+
+            // 콜백 쿼리 파싱
+            var (cbCode, cbState, cbErr) = YouTubeOAuthFlowService.ParseCallbackQuery("?state=st8&code=4%2F0Ab_x&scope=a+b");
+            Assert.Equal("4/0Ab_x", cbCode);
+            Assert.Equal("st8", cbState);
+            Assert.Null(cbErr);
+            Assert.Equal("access_denied", YouTubeOAuthFlowService.ParseCallbackQuery("?error=access_denied&state=s").Error);
+
+            // 코드 → 토큰 교환(폼 본문 검증)
+            var tokens = await oauth.ExchangeCodeAsync("cid.apps.googleusercontent.com", "GOCSPX-sec", "4/0Ab_x", "http://127.0.0.1:5000/oauth2callback", verifier);
+            Assert.NotNull(tokens);
+            Assert.Equal("1//refresh-xyz", tokens!.RefreshToken);
+            Assert.Equal("ya29.acc", tokens.AccessToken);
+            Assert.Equal(3599, tokens.ExpiresIn);
+            var form = fake.Calls[0].Body;
+            Assert.Contains("grant_type=authorization_code", form);
+            Assert.Contains("code=4%2F0Ab_x", form);
+            Assert.Contains("code_verifier=" + verifier, form);
+
+            // 스키마 검증 — refresh_token 누락/손상은 null
+            Assert.Null(YouTubeOAuthFlowService.ParseTokenResponse("{\"access_token\":\"a\",\"expires_in\":3600}"));
+            Assert.Null(YouTubeOAuthFlowService.ParseTokenResponse("{ broken"));
+            Assert.Equal("@mychannel", YouTubeOAuthFlowService.ParseChannelName("{\"items\":[{\"snippet\":{\"title\":\"t\",\"customUrl\":\"mychannel\"}}]}"));
+            Assert.Equal("t", YouTubeOAuthFlowService.ParseChannelName("{\"items\":[{\"snippet\":{\"title\":\"t\"}}]}"));
+            Assert.Null(YouTubeOAuthFlowService.ParseChannelName("{\"items\":[]}"));
+
+            // 루프백 원클릭 흐름 — 브라우저 대신 콜백 URL 을 직접 호출(state 반영)
+            using var browser = new HttpClient();
+            string? callbackHtml = null;
+            using var oauth2 = new YouTubeOAuthFlowService(settings, () => ("cid.apps.googleusercontent.com", "GOCSPX-sec"), fake,
+                openBrowser: url =>
+                {
+                    var q = new Uri(url).Query;
+                    string Param(string k) { foreach (var kv in q.TrimStart('?').Split('&')) if (kv.StartsWith(k + "=", StringComparison.Ordinal)) return Uri.UnescapeDataString(kv[(k.Length + 1)..]); return ""; }
+                    var redirect = Param("redirect_uri");
+                    _ = Task.Run(async () =>
+                    {
+                        using var _404 = await browser.GetAsync(redirect.Replace("/oauth2callback", "/favicon.ico"));
+                        callbackHtml = await browser.GetStringAsync(redirect + "?code=4%2F0Ab_x&state=" + Uri.EscapeDataString(Param("state")));
+                    });
+                    return true;
+                }) { BackoffBaseSeconds = 0 };
+            Assert.True(await oauth2.StartInteractiveLoginAsync(CancellationToken.None), oauth2.LastError);
+            Assert.True(settings.Sns.YouTubeConfigured);
+            Assert.Equal("1//refresh-xyz", settings.Sns.YouTubeRefreshToken);
+            Assert.Equal("@mychannel", settings.Sns.YouTubeChannelName);
+            for (var i = 0; i < 50 && callbackHtml is null; i++) await Task.Delay(20);
+            Assert.Contains("연동이 완료되었습니다", callbackHtml);
+
+            // 연동 해제 — 토큰 폐기 호출 + 로컬 RefreshToken/채널명 삭제(클라이언트 유지)
+            Assert.True(await oauth2.DisconnectAsync());
+            Assert.Contains(fake.Calls, c => c.Url == YouTubeOAuthFlowService.RevokeEndpoint && c.Body.Contains("refresh-xyz", StringComparison.Ordinal));
+            Assert.False(settings.Sns.YouTubeConfigured);
+            Assert.Equal("", settings.Sns.YouTubeChannelName);
+            Assert.Equal("cid.apps.googleusercontent.com", settings.Sns.YouTubeClientId);
+
+            // 클라이언트 미구성 → 즉시 false(브라우저 미실행)
+            var opened = false;
+            using var none = new YouTubeOAuthFlowService(settings, () => ("", ""), fake, _ => opened = true);
+            Assert.False(none.HasClient);
+            Assert.False(await none.StartInteractiveLoginAsync(CancellationToken.None));
+            Assert.False(opened);
+            Assert.NotNull(none.LastError);
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+
     private sealed class SyncProgress(Action<double> a) : IProgress<double> { public void Report(double v) => a(v); }
 }

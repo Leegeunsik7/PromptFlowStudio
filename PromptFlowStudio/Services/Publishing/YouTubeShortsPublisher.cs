@@ -20,6 +20,7 @@ namespace PromptFlowStudio.Services.Publishing;
 ///     ② resumable 업로드(메타데이터 POST → Location 에 바이트 스트리밍 PUT · 진행률 0~1)
 ///     ③ 영상 옆 <c>.srt</c> 가 있으면 <c>captions.insert</c>(multipart/related)로 자막 트랙 등록(한글 감지 → ko, 그 외 en).
 ///   ▸ 자격: ⚙️ 환경설정 SNS 저장소(<see cref="AppSettingsManager.Sns"/> · 머신바운드 암호화) → appsettings <c>YouTube:*</c> 폴백.
+///     RefreshToken 은 <see cref="YouTubeOAuthFlowService"/>(🔗 원클릭 브라우저 로그인)가 발급·저장하며, 저장 즉시 다음 업로드부터 반영(토큰 캐시 owner 비교).
 ///     미구성이면 오프라인 모의 발행(IsMock=true · 실제 전송 0)으로 UI 흐름만 검증.
 ///   ▸ 제어 요청은 30초 타임아웃 · 429/5xx 지수 백오프 3회. 자막 등록 실패는 업로드 성공을 무효화하지 않음([부분 구제]).
 /// </summary>

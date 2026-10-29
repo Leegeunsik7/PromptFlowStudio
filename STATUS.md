@@ -1,17 +1,16 @@
 # Current Project Status
-- Active Milestone: 【SNS 자동 발행】 YouTube Shorts · Instagram Reels 원클릭 퍼블리싱 + 자막 번들링
+- Active Milestone: 【SNS 계정 연동】 YouTube 원클릭 브라우저 OAuth 루프백 로그인 + SNS 자격 UI 간소화
 - Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (net8.0-android 미검증: SDK/JDK 미설치)
-- Tests: 전체 721/721 PASS(직렬 9m41s) · FastUnit 489/489 PASS(병렬 ~26s)
+- Tests: 전체 723/723 PASS(직렬) · FastUnit 491/491 PASS(병렬 ~28s)
 - Updated: 2026-10-29 (KST)
 
 ## Completed
-- YouTube: `Services/Publishing/YouTubeShortsPublisher` — OAuth 리프레시(만료 60초 전 갱신 · 401 강제 재발급) → resumable 업로드 → 옆 `.srt` 를 `captions.insert`(ko/en 감지) · 자격 미구성 시 모의 발행
-- Instagram: `InstagramReelsPublisher` — 공개 URL 은 기존 `InstagramReelsService` Graph(REELS 컨테이너→media_publish) 위임 · 웹훅 브릿지(Zapier/Make · 토큰 미포함) 폴백 · 로컬 브릿지(공개 동의 필수)
-- 포맷터: `SnsPublishFormatter` 훅 제목 `#Shorts #AI`(≤100) · 대본 타임스탬프 설명 · 태그(≤30/500자) · 릴스 캡션(≤2200 · 해시태그 ≤30)
-- UI: `PublishModal.razor` + 싱글톤 `PublishViewModel`(채널 체크 · 공개 범위 기본 비공개 · YouTube 예약 · 채널별 진행률/취소 · 실패 격리) — Storyboard · AI 숏폼 합본 후 `🚀 SNS 즉시 발행`
-- 설정: `/app-settings` SNS 채널 연동(관리자) — `AppSettingsManager.SaveSns` 필드별 LocalCipher 봉인 `sns_credentials.json` · 연결 테스트/유효성 검사 배지
+- OAuth: `Services/Publishing/YouTubeOAuthFlowService` — HttpListener 루프백(127.0.0.1:5000/oauth2callback · 점유 시 가용 포트) · PKCE S256 · state FixedTimeEquals · offline+consent → RefreshToken 교환 · 채널 @handle 조회 · `SaveSns` 암호화 영속 · 5분 대기/30초 요청/지수백오프 · 연동 해제(revoke best-effort)
+- 클라이언트 해석: 환경변수 `PFS_YOUTUBE_CLIENT_ID/SECRET` → appsettings `YouTube:ClientId/ClientSecret` → 저장소(하드코딩 0)
+- 자격 모델: `SnsCredentials` + `YouTubeChannelName` · `InstagramTokenSavedUtc`(기본값 "" · 구버전 파일 하위호환)
+- UI `/app-settings`: 미연동 `[🔗 유튜브 계정 로그인 연동]` / 연동 `내 채널: @채널명 (연결됨 🟢)` + `[연동 해제]` · 수동 입력은 `고급` 접힘 · Instagram 토큰 발급 안내 팝오버 · 60일 토큰 D-day 배지(유효/임박/만료)
+- DI: `MainForm.cs` + `MauiProgram.cs` 양쪽 등록
 
 ## Known Issues
-- 기존 `Wan.IYouTubePublishService` 와 이름 충돌 회피로 계약명 `IYouTubeShortsPublisher`/`IInstagramReelsPublisher` 사용(작업 오더 파일명과 상이)
-- 실 Google/Meta 엔드포인트 미검증(가짜 핸들러 테스트만) · Graph 예약 발행 미지원(예약은 YouTube 만)
-- `PublishModal` 은 데스크톱 전용(Mobile.csproj RazorComponent Remove) · 모바일은 서비스만 DI
+- 번들 appsettings `YouTube:ClientId/ClientSecret` 공란 — 배포 전 Google Cloud Desktop OAuth 클라이언트 값 주입 필요(미주입 시 로그인 버튼 비활성 안내)
+- 실 Google/Meta 엔드포인트 미검증(가짜 핸들러 + 실 루프백 리스너 테스트) · 모바일은 루프백 미지원(서비스만 DI)

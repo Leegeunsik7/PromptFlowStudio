@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using PromptFlowStudio.Services.Configuration;
@@ -27,13 +28,15 @@ public sealed class SettingsViewModel
     private readonly Func<FfmpegLocation> _locateFfmpeg;
     private readonly IYouTubeShortsPublisher? _yt;
     private readonly IInstagramReelsPublisher? _ig;
+    private readonly YouTubeOAuthFlowService? _oauth;
 
     public SettingsViewModel(AppSettingsManager settings, IWanConfigService? wan, GeminiConfigService? gemini, EngineConfigService? engines,
-        IYouTubeShortsPublisher? yt = null, IInstagramReelsPublisher? ig = null)
-        : this(settings, wan, gemini, engines, FfmpegLocator.Locate, yt, ig) { }
+        IYouTubeShortsPublisher? yt = null, IInstagramReelsPublisher? ig = null, YouTubeOAuthFlowService? oauth = null)
+        : this(settings, wan, gemini, engines, FfmpegLocator.Locate, yt, ig, oauth) { }
 
     internal SettingsViewModel(AppSettingsManager settings, IWanConfigService? wan, GeminiConfigService? gemini,
-        EngineConfigService? engines, Func<FfmpegLocation> locateFfmpeg, IYouTubeShortsPublisher? yt = null, IInstagramReelsPublisher? ig = null)
+        EngineConfigService? engines, Func<FfmpegLocation> locateFfmpeg, IYouTubeShortsPublisher? yt = null, IInstagramReelsPublisher? ig = null,
+        YouTubeOAuthFlowService? oauth = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _wan = wan;
@@ -42,6 +45,7 @@ public sealed class SettingsViewModel
         _locateFfmpeg = locateFfmpeg;
         _yt = yt;
         _ig = ig;
+        _oauth = oauth;
         Load();
     }
 
@@ -74,6 +78,17 @@ public sealed class SettingsViewModel
     public bool? InstagramValid { get; private set; }
     public bool IsTestingSns { get; private set; }
 
+    /// <summary>Instagram 장기 액세스 토큰 수명(일) — Graph 장기 토큰 60일.</summary>
+    public const int InstagramTokenLifetimeDays = 60;
+    /// <summary>연동된 YouTube 채널 표시명(@handle/제목 · 미조회 시 "").</summary>
+    public string YouTubeChannelName => _settings.Sns.YouTubeChannelName;
+    /// <summary>원클릭 브라우저 로그인 가능 여부(OAuth 클라이언트 구성됨).</summary>
+    public bool CanLinkYouTube => _oauth?.HasClient ?? false;
+    public bool IsLinkingYouTube { get; private set; }
+    /// <summary>Instagram 토큰 잔여 일수(저장 시각 기준 · 미기록 null).</summary>
+    public int? InstagramTokenDaysLeft => ComputeTokenDaysLeft(_settings.Sns.InstagramTokenSavedUtc, DateTime.UtcNow);
+    private string _igTokenSavedUtc = "";
+
     public FfmpegLocation Ffmpeg { get; private set; } = new(null, "미설치");
     public string? FfmpegVersion { get; private set; }
 
@@ -94,11 +109,17 @@ public sealed class SettingsViewModel
         InstagramUserId = sns.InstagramUserId;
         InstagramAccessToken = sns.InstagramAccessToken;
         InstagramWebhookUrl = sns.InstagramWebhookUrl;
+        _igTokenSavedUtc = sns.InstagramTokenSavedUtc;
     }
 
     /// <summary>폼의 SNS 자격 스냅샷.</summary>
     public SnsCredentials SnsDraft => new(YouTubeClientId ?? "", YouTubeClientSecret ?? "", YouTubeRefreshToken ?? "",
-        InstagramUserId ?? "", InstagramAccessToken ?? "", InstagramWebhookUrl ?? "");
+        InstagramUserId ?? "", InstagramAccessToken ?? "", InstagramWebhookUrl ?? "",
+        string.Equals((YouTubeRefreshToken ?? "").Trim(), _settings.Sns.YouTubeRefreshToken, StringComparison.Ordinal) ? _settings.Sns.YouTubeChannelName : "",
+        (InstagramAccessToken ?? "").Trim() is { Length: > 0 } tk
+            ? (string.Equals(tk, _settings.Sns.InstagramAccessToken, StringComparison.Ordinal) && _igTokenSavedUtc.Length > 0
+                ? _igTokenSavedUtc : DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture))
+            : "");
 
     /// <summary>
     /// 저장 — user_settings.json → (<paramref name="includeKeys"/> 일 때) 변경된 키만 암호화 저장소 → 활성 엔진 전환. 하나라도 실패하면 false.
@@ -116,6 +137,7 @@ public sealed class SettingsViewModel
             var sns = SnsDraft;
             if (sns.InstagramWebhookUrl.Trim().Length > 0 && !InstagramReelsPublisher.IsValidWebhookUrl(sns.InstagramWebhookUrl.Trim())) ok = false;
             else if (!Equals(Trimmed(sns), _settings.Sns)) ok &= _settings.SaveSns(sns);
+            _igTokenSavedUtc = _settings.Sns.InstagramTokenSavedUtc;
         }
 
         var mode = _settings.RenderMode;
@@ -135,7 +157,53 @@ public sealed class SettingsViewModel
     }
 
     private static SnsCredentials Trimmed(SnsCredentials c) => new(c.YouTubeClientId.Trim(), c.YouTubeClientSecret.Trim(), c.YouTubeRefreshToken.Trim(),
-        c.InstagramUserId.Trim(), c.InstagramAccessToken.Trim(), c.InstagramWebhookUrl.Trim());
+        c.InstagramUserId.Trim(), c.InstagramAccessToken.Trim(), c.InstagramWebhookUrl.Trim(), c.YouTubeChannelName.Trim(), c.InstagramTokenSavedUtc.Trim());
+
+    /// <summary>토큰 잔여 일수 — 저장 시각 + 60일 − 현재(음수 = 만료). 시각 미기록/파싱 실패 null.</summary>
+    public static int? ComputeTokenDaysLeft(string? savedUtc, DateTime nowUtc)
+    {
+        if (string.IsNullOrWhiteSpace(savedUtc)
+            || !DateTime.TryParse(savedUtc, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var saved))
+            return null;
+        return (int)Math.Floor((saved.AddDays(InstagramTokenLifetimeDays) - nowUtc).TotalDays);
+    }
+
+    /// <summary>🔗 원클릭 YouTube 연동 — 기본 브라우저 Google 로그인 → 루프백 콜백 → RefreshToken 암호화 저장 → 폼 재적재.</summary>
+    public async Task<bool> LinkYouTubeAsync(CancellationToken ct = default)
+    {
+        if (_oauth is null) { StatusOk = false; StatusMessage = "YouTube 로그인 서비스를 사용할 수 없습니다."; return false; }
+        IsLinkingYouTube = true;
+        bool ok;
+        try { ok = await _oauth.StartInteractiveLoginAsync(ct).ConfigureAwait(false); }
+        finally { IsLinkingYouTube = false; }
+        if (ok) { ReloadYouTube(); YouTubeOnline = true; }
+        StatusOk = ok;
+        StatusMessage = ok
+            ? "YouTube 계정이 연동되었습니다" + (YouTubeChannelName.Length > 0 ? " — " + YouTubeChannelName : "") + "."
+            : _oauth.LastError ?? "YouTube 연동에 실패했습니다.";
+        return ok;
+    }
+
+    /// <summary>YouTube 필드만 저장본으로 재적재(작성 중인 다른 폼 값 보존).</summary>
+    private void ReloadYouTube()
+    {
+        var sns = _settings.Sns;
+        YouTubeClientId = sns.YouTubeClientId;
+        YouTubeClientSecret = sns.YouTubeClientSecret;
+        YouTubeRefreshToken = sns.YouTubeRefreshToken;
+    }
+
+    /// <summary>YouTube 연동 해제 — 토큰 폐기(best-effort) · 로컬 RefreshToken 삭제.</summary>
+    public async Task<bool> UnlinkYouTubeAsync(CancellationToken ct = default)
+    {
+        bool ok;
+        if (_oauth is not null) ok = await _oauth.DisconnectAsync(ct).ConfigureAwait(false);
+        else ok = _settings.SaveSns(_settings.Sns with { YouTubeRefreshToken = "", YouTubeChannelName = "" });
+        if (ok) { ReloadYouTube(); YouTubeOnline = null; }
+        StatusOk = ok;
+        StatusMessage = ok ? "YouTube 연동을 해제했습니다." : _oauth?.LastError ?? "연동 해제에 실패했습니다.";
+        return ok;
+    }
 
     /// <summary>YouTube 연결 테스트 — 저장된 자격으로 토큰 리프레시(저장 후 실행).</summary>
     public async Task<bool> TestYouTubeAsync(CancellationToken ct = default)
