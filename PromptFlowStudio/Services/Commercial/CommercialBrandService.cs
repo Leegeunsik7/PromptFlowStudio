@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Text;
 using PromptFlowStudio.Services.Batch;
 
@@ -66,6 +67,11 @@ public sealed class CommercialBrandService
     public const string MetaCta = "commercial.cta";
     public const string MetaDisclaimer = "commercial.disclaimer";
     public const string MetaProductImage = "commercial.productImage";
+    /// <summary>후처리 결과 — "burned"(번인 완료) · "virtual"(ffmpeg 부재 · 원본 유지) · "failed".</summary>
+    public const string MetaOverlayApplied = "commercial.overlayApplied";
+    /// <summary>외부 연동 별칭 키(작업 지시서 규격) — 표준 키 부재 시 대체 조회.</summary>
+    public const string MetaLogoPathAlias = "logoImagePath";
+    public const string MetaDisclaimerAlias = "disclaimerText";
 
     /// <summary>포맷 프리셋 — 6초 / 15초 / 30초.</summary>
     public static float DurationFor(CommercialAdFormat format) => format switch
@@ -159,6 +165,71 @@ public sealed class CommercialBrandService
         };
         if (!string.IsNullOrEmpty(productImagePath)) meta[MetaProductImage] = productImagePath;
         return meta;
+    }
+
+    /// <summary>
+    /// 번인 대상 판정 — 커머셜 작업(<see cref="MetaKind"/>="commercial")에 실존 로고 파일 또는 디스클레이머가 있으면 true.
+    /// 로고 위치는 <see cref="MetaLogoSafeZone"/>(파싱 실패 시 우하단).
+    /// </summary>
+    public static bool TryGetOverlayRequest(IReadOnlyDictionary<string, string>? meta, out string? logoPath, out string? disclaimer, out WatermarkPlacement placement)
+    {
+        logoPath = null; disclaimer = null; placement = WatermarkPlacement.BottomRight;
+        if (meta is null || !meta.TryGetValue(MetaKind, out var kind) || !string.Equals(kind, "commercial", StringComparison.Ordinal)) return false;
+        var logo = Lookup(meta, MetaLogoPath, MetaLogoPathAlias);
+        if (logo is not null && Path.IsPathRooted(logo) && File.Exists(logo)) logoPath = logo;
+        disclaimer = Lookup(meta, MetaDisclaimer, MetaDisclaimerAlias);
+        if (meta.TryGetValue(MetaLogoSafeZone, out var zone) && Enum.TryParse<WatermarkPlacement>(zone, ignoreCase: false, out var z)) placement = z;
+        return logoPath is not null || disclaimer is not null;
+    }
+
+    private static string? Lookup(IReadOnlyDictionary<string, string> meta, string key, string alias)
+    {
+        if (meta.TryGetValue(key, out var v) && !string.IsNullOrWhiteSpace(v)) return v.Trim();
+        return meta.TryGetValue(alias, out var a) && !string.IsNullOrWhiteSpace(a) ? a.Trim() : null;
+    }
+
+    /// <summary>로고 overlay 좌표(10px 세이프존 여백) — 기본 우하단 <c>W-w-10:H-h-10</c>.</summary>
+    public static string OverlayPosition(WatermarkPlacement placement) => placement switch
+    {
+        WatermarkPlacement.TopLeft => "10:10",
+        WatermarkPlacement.TopRight => "W-w-10:10",
+        WatermarkPlacement.CenterWatermark => "(W-w)/2:(H-h)/2",
+        _ => "W-w-10:H-h-10",
+    };
+
+    /// <summary>
+    /// ffmpeg 번인 인자 — 로고(폭 240px 스케일 → 세이프존 overlay) · 디스클레이머(textfile drawtext 하단 중앙 반투명 박스).
+    /// 영상은 libx264 재인코딩, 오디오는 있으면 무손실 복사.
+    /// </summary>
+    public static string[] BuildOverlayArgs(string input, string? logoPath, string? disclaimerTextFile, string? fontFile, WatermarkPlacement placement, string output)
+    {
+        var args = new List<string>(24) { "-y", "-hide_banner", "-loglevel", "error", "-i", input };
+        if (logoPath is not null) { args.Add("-i"); args.Add(logoPath); }
+
+        var fc = new StringBuilder(256);
+        var cur = "[0:v]";
+        if (logoPath is not null)
+        {
+            fc.Append("[1:v]scale=240:-1[lg];").Append(cur).Append("[lg]overlay=").Append(OverlayPosition(placement)).Append("[v1]");
+            cur = "[v1]";
+        }
+        if (disclaimerTextFile is not null)
+        {
+            if (fc.Length > 0) fc.Append(';');
+            fc.Append(cur).Append("drawtext=textfile=").Append(PromptFlowStudio.Services.Media.FontResolver.EscapeDrawPath(disclaimerTextFile)).Append(':');
+            if (fontFile is not null) fc.Append("fontfile=").Append(PromptFlowStudio.Services.Media.FontResolver.EscapeDrawPath(fontFile)).Append(':');
+            fc.Append("fontcolor=white:fontsize=h/40:box=1:boxcolor=black@0.45:boxborderw=8:x=(w-text_w)/2:y=h-text_h-24[vout]");
+        }
+        else fc.Append(";[v1]null[vout]");
+
+        args.Add("-filter_complex"); args.Add(fc.ToString());
+        args.Add("-map"); args.Add("[vout]");
+        args.Add("-map"); args.Add("0:a?");
+        args.Add("-c:v"); args.Add("libx264"); args.Add("-preset"); args.Add("veryfast"); args.Add("-crf"); args.Add("18");
+        args.Add("-c:a"); args.Add("copy");
+        args.Add("-movflags"); args.Add("+faststart");
+        args.Add(output);
+        return args.ToArray();
     }
 
     private static string LookFor(CommercialAdFormat format) => format switch

@@ -32,6 +32,8 @@ public sealed class AiShortsViewModel
 
     public ObservableCollection<ShortsCutSpec> Cuts { get; } = new();
     public int DispatchedCount { get; private set; }
+    /// <summary>마지막 숏폼 세션 합본 그룹 — 3컷 Completed 시 최종 합본 대상.</summary>
+    public string? LastDispatchGroupId { get; private set; }
     public string? StatusMessage { get; private set; }
 
     public void GenerateSequence()
@@ -48,6 +50,7 @@ public sealed class AiShortsViewModel
     {
         if (Cuts.Count == 0) GenerateSequence();
         var jobs = new BatchRenderJob[Cuts.Count];
+        var group = FFmpegVideoStitchService.NewGroupId();
         for (var i = 0; i < jobs.Length; i++)
         {
             var cut = Cuts[i];
@@ -62,9 +65,11 @@ public sealed class AiShortsViewModel
                 BgmBpm = cut.BgmBpm,
                 TransitionBeatIndex = cut.TransitionBeatIndex,
                 TransitionFx = cut.TransitionFx,
+                Metadata = FFmpegVideoStitchService.WithGroup(null, group),
             };
         }
         var added = _queue.Enqueue(jobs);
+        if (added > 0) LastDispatchGroupId = group;
         DispatchedCount += added;
         StatusMessage = added > 0 ? "숏폼 " + added + "컷 렌더 큐 적재 (9:16)" : "렌더 큐 적재 실패";
         Raise();

@@ -10,6 +10,10 @@
 @inject GalleryAutoSaveService Gallery
 @using PromptFlowStudio.Services.Shorts
 @inject PromptFlowStudio.ViewModels.AiShortsViewModel Vm
+@inject PromptFlowStudio.Services.Render.IRenderQueueService RenderQueue
+@inject PromptFlowStudio.Services.Render.FFmpegVideoStitchService Stitcher
+@inject PromptFlowStudio.Services.Media.ILocalMediaService Media
+@implements IDisposable
 
 <PageTitle>PromptFlow Studio · AI 15초 컷다운</PageTitle>
 
@@ -76,6 +80,11 @@
             }
             <button class="acd-btn go" @onclick="DispatchShorts">📤 숏폼 전체 렌더 큐로 전송</button>
             <span class="acd-hint">전송 @(Vm.DispatchedCount)건@(Vm.StatusMessage is null ? "" : " · " + Vm.StatusMessage)</span>
+            @if (_stitchTotal > 0)
+            {
+                <button class="acd-btn go" disabled="@(_stitching || _stitchDone < _stitchTotal)" @onclick="ExportFullVideoAsync">🎬 최종 완성본 1개로 합치기 (Export Full Video)</button>
+                <span class="acd-hint">렌더 큐 @(_stitchDone)/@(_stitchTotal) 완료@(_stitchMessage is null ? "" : " · " + _stitchMessage)</span>
+            }
         </section>
     </div>
 
@@ -297,8 +306,51 @@
 
     private void DispatchShorts()
     {
-        try { Vm.DispatchToRenderQueue(); }
+        try { Vm.DispatchToRenderQueue(); _stitchMessage = null; RefreshStitchProgress(); }
         catch (Exception ex) { Program.Log("AiShorts.Dispatch", ex); }
+    }
+
+    // ── 숏폼 3컷 최종 합본 ──
+    private int _stitchTotal, _stitchDone;
+    private bool _stitching;
+    private string? _stitchMessage;
+
+    protected override void OnInitialized() => RenderQueue.OnChange += OnRenderQueueChanged;
+
+    public void Dispose() => RenderQueue.OnChange -= OnRenderQueueChanged;
+
+    /// <summary>합본 그룹 완료 수가 바뀔 때만 다시 그림.</summary>
+    private void OnRenderQueueChanged()
+    {
+        try { if (RefreshStitchProgress()) _ = InvokeAsync(StateHasChanged); }
+        catch (Exception ex) { Program.Log("AiShorts.StitchProgress", ex); }
+    }
+
+    private bool RefreshStitchProgress()
+    {
+        var group = Vm.LastDispatchGroupId;
+        if (group is null) return false;
+        var (total, done) = PromptFlowStudio.Services.Render.FFmpegVideoStitchService.GroupProgress(RenderQueue.Snapshot(), group);
+        if (total == _stitchTotal && done == _stitchDone) return false;
+        _stitchTotal = total; _stitchDone = done;
+        return true;
+    }
+
+    private async Task ExportFullVideoAsync()
+    {
+        if (_stitching) return;
+        if (!PromptFlowStudio.Services.Render.FFmpegVideoStitchService.TryCollectCompletedGroup(RenderQueue.Snapshot(), Vm.LastDispatchGroupId, out var parts))
+        { _stitchMessage = "모든 컷 완료 + 로컬 산출물 필요"; return; }
+        _stitching = true;
+        try
+        {
+            var name = string.IsNullOrWhiteSpace(Vm.TopicInput) ? "shorts" : "shorts_" + Vm.TopicInput.Trim();
+            var r = await Stitcher.StitchAsync(parts, PromptFlowStudio.Services.Render.FFmpegVideoStitchService.BuildFullOutputPath(Media.MediaRoot, name));
+            _stitchMessage = r.Message;
+            if (r.Ok && !r.IsVirtual && r.OutputPath is not null) Gallery.Register(null, GalleryAssetKind.Video, r.OutputPath, "AI 숏폼 3컷 합본");
+        }
+        catch (Exception ex) { Program.Log("AiShorts.Stitch", ex); _stitchMessage = "합본 실패"; }
+        finally { _stitching = false; }
     }
 
     private void SaveToGallery(string url)

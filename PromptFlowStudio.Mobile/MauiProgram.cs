@@ -406,7 +406,8 @@ public static class MauiProgram
         builder.Services.AddSingleton<PromptFlowStudio.Services.Storyboard.StoryboardSequencerService>();   // 2번 워크플로우 스토리보드 시퀀서
         builder.Services.AddSingleton<PromptFlowStudio.Services.Render.RenderCostEstimatorService>();   // 3번 워크플로우 렌더 비용 추산
         builder.Services.AddSingleton<PromptFlowStudio.Services.Batch.BatchMassProductionService>();    // 3번 워크플로우 배치 디스패처
-        builder.Services.AddSingleton<PromptFlowStudio.Services.Render.IRenderExecutionEngine>(sp => new PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine(sp.GetService<PromptFlowStudio.Services.Wan.VideoEngineSelector>())); // 선택기 미등록 → 시뮬레이션 폴백
+        builder.Services.AddSingleton<PromptFlowStudio.Services.Render.FFmpegVideoStitchService>(); // 합본/번인 — 모바일은 ffmpeg 부재 → 가상 병합
+        builder.Services.AddSingleton<PromptFlowStudio.Services.Render.IRenderExecutionEngine>(sp => new PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine(sp.GetService<PromptFlowStudio.Services.Wan.VideoEngineSelector>(), sp.GetRequiredService<PromptFlowStudio.Services.Render.FFmpegVideoStitchService>(), null)); // 선택기 미등록 → 시뮬레이션 폴백
         builder.Services.AddSingleton<PromptFlowStudio.Services.Render.IRenderQueueService, PromptFlowStudio.Services.Render.RenderQueueService>(); // 전역 렌더 큐 워커
         builder.Services.AddSingleton<PromptFlowStudio.Services.Live.LiveStudioHostService>(); // 24/7 라이브 쇼호스트 피치 + 릴레이 버퍼
         builder.Services.AddSingleton<PromptFlowStudio.Services.Commercial.CommercialBrandService>(); // 브랜드 킷 + 커머셜 규격 프롬프트 합성

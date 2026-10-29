@@ -221,4 +221,36 @@ public class StoryboardSyncTests
         Assert.EndsWith("same subject as cut 1: corgi with blue scarf", jobs2[3].Prompt);
         Assert.Equal(new[] { 10L, 11L, 12L, 13L }, jobs2.Select(j => j.Seed));
     }
+
+    [Fact]
+    public async Task Storyboard_RenderAll_UsesRenderQueueExclusively()
+    {
+        using var vm = NewVm();
+        vm.ReceiveGeneratedScript(FourLineScript);
+        using var q = new PromptFlowStudio.Services.Render.RenderQueueService(TimeSpan.Zero, autoStart: false);
+
+        Assert.Equal(4, vm.DispatchToRenderQueue(q, "1920x1080"));
+        var group = vm.LastDispatchGroupId;
+        Assert.NotNull(group);
+        Assert.All(q.Queue, j =>
+        {
+            Assert.Equal(group, j.Metadata![PromptFlowStudio.Services.Render.FFmpegVideoStitchService.MetaGroup]);
+            Assert.Equal("1920x1080", j.Resolution);
+        });
+
+        await q.ProcessQueueAsync(CancellationToken.None);
+        Assert.Equal((4, 4), PromptFlowStudio.Services.Render.FFmpegVideoStitchService.GroupProgress(q.Snapshot(), group));
+
+        // 재전송은 새 합본 그룹(이전 세션 컷과 섞이지 않음)
+        Assert.Equal(4, vm.DispatchToRenderQueue(q));
+        Assert.NotEqual(group, vm.LastDispatchGroupId);
+
+        // 페이지 결선: 전체 생성 = 렌더 큐 단일 경로 · 레거시 JobManager 생성 루프 미호출
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !Directory.Exists(Path.Combine(dir.FullName, "PromptFlowStudio.Mobile"))) dir = dir.Parent;
+        Assert.NotNull(dir);
+        var razor = File.ReadAllText(Path.Combine(dir!.FullName, "PromptFlowStudio", "Blazor", "Pages", "Storyboard.razor"));
+        Assert.DoesNotContain("Jobs.StartAsync(", razor);
+        Assert.Contains("private void StartAll() { if (CanStart) DispatchDeckToRenderQueue(); }", razor);
+    }
 }

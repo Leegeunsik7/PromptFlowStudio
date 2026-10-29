@@ -75,7 +75,8 @@ public sealed class MainForm : Form
         services.AddSingleton<PromptFlowStudio.Services.Render.RenderCostEstimatorService>();   // 3번 워크플로우 렌더 비용/VRAM 사전 추산
         services.AddSingleton<PromptFlowStudio.Services.Batch.BatchMassProductionService>();    // 3번 워크플로우 다중 줄 프롬프트 → 배치 렌더 작업 전개
         services.AddSingleton<PromptFlowStudio.ViewModels.MassProductionViewModel>();           // 3번 워크플로우 대량 양산 상태 · 렌더 큐(화면 간 공유)
-        services.AddSingleton<PromptFlowStudio.Services.Render.IRenderExecutionEngine>(sp => new PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine(sp.GetService<VideoEngineSelector>()));   // 렌더 큐 → 활성 비디오 엔진(ComfyUI/클라우드) 어댑터 · 미구성 시 시뮬레이션 폴백
+        services.AddSingleton<PromptFlowStudio.Services.Render.FFmpegVideoStitchService>();   // 멀티 컷 합본(concat 무손실) · 커머셜 로고/디스클레이머 번인 · ffmpeg 부재 시 가상 병합
+        services.AddSingleton<PromptFlowStudio.Services.Render.IRenderExecutionEngine>(sp => new PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine(sp.GetService<VideoEngineSelector>(), sp.GetRequiredService<PromptFlowStudio.Services.Render.FFmpegVideoStitchService>(), null));   // 렌더 큐 → 활성 비디오 엔진(ComfyUI/클라우드) 어댑터 · 미구성 시 시뮬레이션 폴백
         services.AddSingleton<PromptFlowStudio.Services.Render.IRenderQueueService, PromptFlowStudio.Services.Render.RenderQueueService>();   // 전역 렌더 큐 + 백그라운드 렌더 워커(실물 엔진 어댑터 주입)
         services.AddSingleton<PromptFlowStudio.ViewModels.RenderQueueViewModel>();             // 렌더링 큐 화면 요약 통계 · 작업 목록
         services.AddSingleton<PromptFlowStudio.Services.Live.LiveStudioHostService>();         // 4번 워크플로우 쇼호스트 세일즈 피치 생성 + 24/7 릴레이 버퍼

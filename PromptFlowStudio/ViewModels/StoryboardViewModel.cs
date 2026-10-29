@@ -148,12 +148,23 @@ public sealed class StoryboardViewModel : INotifyPropertyChanged, IDisposable
         return jobs;
     }
 
-    /// <summary>전 컷을 렌더 큐에 일괄 적재 — 실제 적재 건수 반환.</summary>
+    /// <summary>마지막 일괄 전송 합본 그룹(<see cref="FFmpegVideoStitchService.MetaGroup"/>) — 전 컷 Completed 시 최종 합본 대상.</summary>
+    public string? LastDispatchGroupId { get; private set; }
+
+    /// <summary>
+    /// 스토리보드 씬 생성 단일 경로 — 전 컷을 렌더 큐에 일괄 적재(피사체 앵커 · MasterSeed+Index · 큐 VRAM 가드).
+    /// 전송마다 새 합본 그룹 키를 부여. 실제 적재 건수 반환.
+    /// </summary>
     public int DispatchToRenderQueue(IRenderQueueService queue, string resolution = RenderCostEstimatorService.DefaultResolution)
     {
         ArgumentNullException.ThrowIfNull(queue);
         var jobs = BuildRenderJobs(resolution);
-        return jobs.Length == 0 ? 0 : queue.Enqueue(jobs);
+        if (jobs.Length == 0) return 0;
+        var group = FFmpegVideoStitchService.NewGroupId();
+        for (var i = 0; i < jobs.Length; i++) jobs[i].Metadata = FFmpegVideoStitchService.WithGroup(jobs[i].Metadata, group);
+        var added = queue.Enqueue(jobs);
+        if (added > 0) LastDispatchGroupId = group;
+        return added;
     }
 
     /// <summary>프로세스 간 결정적 양수 시드(FNV-1a) — string.GetHashCode 는 실행마다 달라짐.</summary>

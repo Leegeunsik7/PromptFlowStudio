@@ -165,4 +165,42 @@ public class MassProductionAndCostTests
         Assert.False(vm.BudgetWarning);
         Assert.Equal(3, cost.ReservationCount);
     }
+
+    [Fact]
+    public void CostTracker_PersistsLedger_AcrossServiceRestarts()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pfs_cost_" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(dir, "cost_ledger.json");
+        var clock = () => new DateTimeOffset(2026, 10, 15, 12, 0, 0, TimeSpan.Zero);
+        try
+        {
+            using (var first = new PromptFlowStudio.Services.Telemetry.ProductionCostTrackerService(path, clock))
+            {
+                first.UpdateBudget(0, 1.0, enforce: true);
+                for (var i = 0; i < 3; i++) first.RecordWanSubmit("DashScope", "wan2.1-t2v-plus", 5);   // 3 × $0.50
+                Assert.True(first.IsVideoGenerationBlocked);
+            }   // Dispose → 원자적 즉시 기록
+
+            Assert.True(File.Exists(path));
+            Assert.False(File.Exists(path + ".tmp"));
+
+            using var second = new PromptFlowStudio.Services.Telemetry.ProductionCostTrackerService(path, clock);
+            Assert.Equal(1.5, second.MonthUsd, 6);
+            Assert.Equal(1.5, second.TodayUsd, 6);
+            Assert.Equal(1.0, second.Budget.MonthlyCapUsd);
+            Assert.True(second.Budget.Enforce);
+            Assert.Equal(3, second.TotalClips);
+            Assert.True(second.IsVideoGenerationBlocked);   // 재부팅 후에도 Budget Cap 차단 유지
+            Assert.NotNull(second.CheckVideoAllowed());
+
+            var nextMonth = new PromptFlowStudio.Services.Telemetry.ProductionCostTrackerService(path, () => new DateTimeOffset(2026, 11, 1, 9, 0, 0, TimeSpan.Zero));
+            Assert.Equal(0, nextMonth.MonthUsd);            // 월 경계 — 당월 누적만 집계
+            Assert.False(nextMonth.IsVideoGenerationBlocked);
+            nextMonth.Dispose();
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch (IOException) { }
+        }
+    }
 }

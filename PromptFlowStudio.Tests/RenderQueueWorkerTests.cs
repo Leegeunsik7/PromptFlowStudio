@@ -252,4 +252,39 @@ public class RenderQueueWorkerTests
         Assert.Equal(BatchJobStatus.Completed, more[0].Status);
         Assert.False(q2.IsVramPaused);
     }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public async Task RenderExecution_CancelsUnderlyingProcess_OnCancellationToken()
+    {
+        var fake = new FakeVideoEngine(null, hang: true);
+        var interrupted = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var engine = new VideoEngineRenderExecutionEngine(FakeVideoEngine.Selector(fake), null, (kind, _) => { interrupted.TrySetResult(kind); return Task.CompletedTask; });
+        using var q = new RenderQueueService(TimeSpan.Zero, autoStart: false, engine);
+        var job = new BatchRenderJob { Prompt = "long render" };
+        q.Enqueue(new[] { job });
+
+        var worker = q.ProcessQueueAsync(CancellationToken.None);
+        await fake.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(BatchJobStatus.Processing, job.Status);
+
+        Assert.True(q.CancelJob(job.JobId));
+        await worker.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(fake.ObservedCancellation);                                        // 엔진 ct 전파
+        Assert.Equal(RenderEngineKind.Cloud, await interrupted.Task.WaitAsync(TimeSpan.FromSeconds(5)));   // 엔진 중단 신호
+        Assert.Equal(BatchJobStatus.Cancelled, job.Status);
+        Assert.Null(q.ActiveJob);
+    }
+
+    [Fact]
+    public async Task ProcessRunner_KillsProcessTree_OnCancellation()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var r = await PromptFlowStudio.Services.Engines.ProcessRunner.RunAsync("cmd.exe", new[] { "/c", "ping", "-n", "30", "127.0.0.1" }, ct: cts.Token);
+        Assert.Equal(-2, r.ExitCode);                       // 취소됨
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(10)); // 30초 핑 트리 즉시 종료
+    }
 }

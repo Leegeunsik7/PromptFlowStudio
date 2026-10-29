@@ -40,6 +40,7 @@
 @inject PromptFlowStudio.Services.Ui.StoryboardToShortsFactoryBridge ShotBridge
 @inject PromptFlowStudio.ViewModels.StoryboardViewModel Vm
 @inject PromptFlowStudio.Services.Render.IRenderQueueService RenderQueue
+@inject PromptFlowStudio.Services.Render.FFmpegVideoStitchService Stitcher
 @inject PromptFlowStudio.Services.Weather.WeatherEngine Weather
 @inject GalleryAutoSaveService Gallery
 @inject PostProductionEngine Post
@@ -826,10 +827,18 @@
                     }
                     else
                     {
-                        <button class="sb-btn go" disabled="@(!CanStart)" @onclick="StartAll">✨ 스토리보드 전체 생성</button>
+                        <button class="sb-btn go" disabled="@(!CanStart)" @onclick="StartAll" title="전 컷을 렌더 큐로 일괄 전송(피사체 앵커 · MasterSeed+컷 · VRAM 가드)">✨ 스토리보드 전체 생성</button>
                         @if (Jobs.CompletedCount > 0) { <button class="sb-btn ghost" @onclick="Jobs.ResetAll">↺ 초기화</button> }
                     }
                 </div>
+                @if (_stitchTotal > 0)
+                {
+                    <div class="sb-actions">
+                        <button class="sb-btn go" disabled="@(_stitching || _stitchDone < _stitchTotal)" @onclick="ExportFullVideoAsync"
+                                title="렌더 큐의 이번 전송 컷이 모두 완료되면 컷 순서대로 단일 MP4 로 무손실 병합">🎬 최종 완성본 1개로 합치기 (Export Full Video)</button>
+                        <span class="sb-sub">렌더 큐 @(_stitchDone)/@(_stitchTotal) 완료@(_stitchMessage is null ? "" : " · " + _stitchMessage)</span>
+                    </div>
+                }
             </div>
 
             @* 컷별 상태 목록 *@
@@ -1876,6 +1885,7 @@
         try { _sfxAvailable = PromptFlowStudio.Services.Media.SfxResolver.FindTransitionSfx() is not null; } catch { _sfxAvailable = false; }
         Jobs.OnChange += OnStateChanged;
         Jobs.OnCompleted += OnJobsCompleted;
+        RenderQueue.OnChange += OnRenderQueueChanged;   // 합본 그룹 진행(완료 수 변화 시에만 렌더)
         Cfg.OnConfigChanged += OnStateChanged;   // 키 등록 시 배너/버튼 즉시 반영
         Recents.OnChange += OnStateChanged;
         QaInspector.OnChange += OnStateChanged;   // v16.17.0 최종 영상 QA 배지      // 최근 목록 변경 반영
@@ -1968,6 +1978,7 @@
         StudioNav.Requested -= OnStudioRequested;
         Jobs.OnChange -= OnStateChanged;
         Jobs.OnCompleted -= OnJobsCompleted;
+        RenderQueue.OnChange -= OnRenderQueueChanged;
         Cfg.OnConfigChanged -= OnStateChanged;
         Recents.OnChange -= OnStateChanged;
         QaInspector.OnChange -= OnStateChanged;
@@ -2428,7 +2439,8 @@
         if (mode == SceneMode.TextToVideo) ClearSceneImage(s);   // T2V 로 바꾸면 이미지 해제
     }
 
-    private void StartAll() { if (CanStart) _ = Jobs.StartAsync(_project, _parallel); }   // fire-and-forget
+    // 씬 생성 단일 경로 — 렌더 큐(RenderQueueService) 일괄 전송. 레거시 JobManager 생성 루프 미사용.
+    private void StartAll() { if (CanStart) DispatchDeckToRenderQueue(); }
 
     // ── 프로젝트 저장/열기 ──
     private void SaveProject()
@@ -2999,10 +3011,52 @@
     {
         try
         {
-            var n = Vm.DispatchToRenderQueue(RenderQueue);
+            var n = Vm.DispatchToRenderQueue(RenderQueue, _project.ExportResolution);
+            _stitchMessage = null;
+            RefreshStitchProgress();
             ShowToast(n > 0 ? "📥 " + n.ToString(System.Globalization.CultureInfo.InvariantCulture) + "컷 렌더 큐 적재 — 1번 컷 피사체 앵커 공통 적용" : "렌더 큐 적재 실패(중복 또는 빈 덱)");
         }
         catch (Exception ex) { Program.Log("Storyboard.DispatchDeck", ex); ShowToast("렌더 큐 적재 실패"); }
+    }
+
+    // ── 멀티 컷 최종 합본 ──
+    private int _stitchTotal, _stitchDone;
+    private bool _stitching;
+    private string? _stitchMessage;
+
+    /// <summary>렌더 큐 변경 — 합본 그룹 완료 수가 바뀔 때만 다시 그림(진행률 틱 렌더 폭주 방지).</summary>
+    private void OnRenderQueueChanged()
+    {
+        try { if (RefreshStitchProgress()) _ = InvokeAsync(StateHasChanged); }
+        catch (Exception ex) { Program.Log("Storyboard.StitchProgress", ex); }
+    }
+
+    private bool RefreshStitchProgress()
+    {
+        var group = Vm.LastDispatchGroupId;
+        if (group is null) return false;
+        var (total, done) = PromptFlowStudio.Services.Render.FFmpegVideoStitchService.GroupProgress(RenderQueue.Snapshot(), group);
+        if (total == _stitchTotal && done == _stitchDone) return false;
+        _stitchTotal = total; _stitchDone = done;
+        return true;
+    }
+
+    private async Task ExportFullVideoAsync()
+    {
+        if (_stitching) return;
+        if (!PromptFlowStudio.Services.Render.FFmpegVideoStitchService.TryCollectCompletedGroup(RenderQueue.Snapshot(), Vm.LastDispatchGroupId, out var parts))
+        { ShowToast("합칠 수 없습니다 — 모든 컷이 완료되고 로컬 산출물이 있어야 합니다."); return; }
+        _stitching = true;
+        try
+        {
+            var output = PromptFlowStudio.Services.Render.FFmpegVideoStitchService.BuildFullOutputPath(Media.MediaRoot, _project.Title);
+            var r = await Stitcher.StitchAsync(parts, output);
+            _stitchMessage = r.Message;
+            if (r.Ok && !r.IsVirtual && r.OutputPath is not null) _project.FinalVideoPath = r.OutputPath;
+            ShowToast(r.Ok ? "🎬 " + r.Message : "합본 실패 — " + r.Message);
+        }
+        catch (Exception ex) { Program.Log("Storyboard.Stitch", ex); ShowToast("합본 실패"); }
+        finally { _stitching = false; }
     }
 
     private void ShowToast(string msg)
