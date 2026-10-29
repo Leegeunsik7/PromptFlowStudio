@@ -51,6 +51,8 @@ public sealed class RenderQueueViewModel : IDisposable
     public bool IsPaused { get; private set; }
     /// <summary>VRAM 위험 수준 자동 일시정지 상태(배너 표출).</summary>
     public bool IsVramPaused { get; private set; }
+    /// <summary>디스크 잔여 5GB 미만 자동 일시정지 상태(배너 표출).</summary>
+    public bool IsDiskPaused { get; private set; }
     public int TotalJobsCount { get; private set; }
     public int PendingCount { get; private set; }
     public int ProcessingCount { get; private set; }
@@ -67,6 +69,19 @@ public sealed class RenderQueueViewModel : IDisposable
     public void Retry(Guid jobId) => _queue.RetryJob(jobId);
 
     public const string VramPauseNotice = "GPU 메모리가 위험 수준에 도달하여 렌더 큐를 일시 정지했습니다. 메모리가 확보되면 재개하십시오.";
+    public const string DiskPauseNotice = "디스크 잔여 용량이 5GB 미만입니다. 저장 공간을 확보하거나 임시 캐시를 정리하십시오.";
+
+    /// <summary>일시정지 배지 문구 — VRAM/디스크 자동 정지 사유 표기.</summary>
+    public string PauseLabel => IsDiskPaused ? "일시정지 (Disk Full Warning)" : IsVramPaused ? "일시정지 (VRAM Warning)" : "일시정지";
+
+    /// <summary>[🧹 임시 렌더 캐시 비우기] — 완료된 중간 조각 정리 후 결과 문구.</summary>
+    public static string CleanRenderCache(string? mediaRoot)
+    {
+        var (files, bytes) = RenderQueueService.CleanRenderCache(mediaRoot);
+        return files == 0 ? "정리할 임시 렌더 캐시가 없습니다."
+            : "임시 렌더 캐시 " + files.ToString(System.Globalization.CultureInfo.InvariantCulture) + "개 정리 · "
+              + (bytes / 1048576.0).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + "MB 확보";
+    }
 
     /// <summary>완료 작업 → 갤러리 딥링크(<c>gallery?focus=</c> 출력 경로) — 완료 전이거나 로컬 산출물이 없으면 null.</summary>
     public static string? GalleryLinkFor(BatchRenderJob job)
@@ -107,13 +122,14 @@ public sealed class RenderQueueViewModel : IDisposable
         LastErrorMessage = lastError;
         IsPaused = _queue.IsPaused;
         IsVramPaused = _queue.IsVramPaused;
+        IsDiskPaused = _queue.IsDiskPaused;
         TotalJobsCount = snap.Length;
         PendingCount = pending;
         ProcessingCount = processing;
         CompletedCount = completed;
         FailedCount = failed;
 
-        var sig = HashCode.Combine(snap.Length, pending, processing, completed, failed, IsPaused, IsVramPaused, HashCode.Combine(ActiveJob?.JobId, ActiveEngineKind, lastError));
+        var sig = HashCode.Combine(snap.Length, pending, processing, completed, failed, IsPaused, IsVramPaused, HashCode.Combine(ActiveJob?.JobId, ActiveEngineKind, lastError, IsDiskPaused));
         var data = HashCode.Combine(sig, progress.ToHashCode());
         structural = sig != _structSig;
         _structSig = sig;

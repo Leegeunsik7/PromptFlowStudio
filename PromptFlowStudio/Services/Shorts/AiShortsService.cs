@@ -23,6 +23,8 @@ public sealed record ShortsCutSpec
     public float DurationSec { get; init; }
     public string CameraMotion { get; init; } = "";
     public string VisualPrompt { get; init; } = "";
+    /// <summary>컷 나레이션 대본(합본 TTS 음성 · SRT 자막 원천).</summary>
+    public string Script { get; init; } = "";
     public string Resolution { get; init; } = AiShortsService.DefaultResolution;
     public int BgmBpm { get; init; }
     /// <summary>컷 종료 지점의 누적 박 번호(0 기준) — 프리셋 BPM 은 3초 경계가 정확히 박에 떨어지도록 선정.</summary>
@@ -100,6 +102,7 @@ public sealed class AiShortsService
                 DurationSec = duration,
                 CameraMotion = camera,
                 VisualPrompt = BuildPrompt(i, topic, camera, req, bpm),
+                Script = BuildScript(i, topic, req.HookType),
                 Resolution = resolution,
                 BgmBpm = bpm,
                 TransitionBeatIndex = (int)MathF.Round(end * bpm / 60f),
@@ -110,6 +113,20 @@ public sealed class AiShortsService
         }
         return cuts;
     }
+
+    /// <summary>컷 나레이션 대본 — 훅(질문/충격/시각/공감) · 본론 · CTA 3단.</summary>
+    private static string BuildScript(int cut, string topic, ShortsHookType hook) => cut switch
+    {
+        0 => hook switch
+        {
+            ShortsHookType.QuestionHook => topic + ", 진짜 이유를 알고 계신가요?",
+            ShortsHookType.ShockingFact => "믿기 힘들지만, " + topic + "에는 숨겨진 사실이 있습니다.",
+            ShortsHookType.VisualSpectacle => "지금부터 " + topic + "의 놀라운 순간을 보여드릴게요.",
+            _ => "누구나 한 번쯤 겪는 " + topic + " 이야기입니다.",
+        },
+        1 => topic + "의 핵심만 짧고 확실하게 정리해 드립니다.",
+        _ => "도움이 됐다면 구독과 좋아요 부탁드려요!",
+    };
 
     private static string BuildPrompt(int cut, string topic, string camera, ShortsRequest req, int bpm)
     {

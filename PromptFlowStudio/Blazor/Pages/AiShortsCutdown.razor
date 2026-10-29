@@ -12,6 +12,8 @@
 @inject PromptFlowStudio.ViewModels.AiShortsViewModel Vm
 @inject PromptFlowStudio.Services.Render.IRenderQueueService RenderQueue
 @inject PromptFlowStudio.Services.Render.FFmpegVideoStitchService Stitcher
+@inject PromptFlowStudio.Services.Audio.ITtsSynthesisService ScriptTts
+@inject PromptFlowStudio.Services.Export.SubtitleGeneratorService Subtitles
 @inject PromptFlowStudio.Services.Media.ILocalMediaService Media
 @implements IDisposable
 
@@ -339,13 +341,13 @@
     private async Task ExportFullVideoAsync()
     {
         if (_stitching) return;
-        if (!PromptFlowStudio.Services.Render.FFmpegVideoStitchService.TryCollectCompletedGroup(RenderQueue.Snapshot(), Vm.LastDispatchGroupId, out var parts))
+        if (!PromptFlowStudio.Services.Render.FFmpegVideoStitchService.TryCollectCompletedCuts(RenderQueue.Snapshot(), Vm.LastDispatchGroupId, out var cuts))
         { _stitchMessage = "모든 컷 완료 + 로컬 산출물 필요"; return; }
         _stitching = true;
         try
         {
             var name = string.IsNullOrWhiteSpace(Vm.TopicInput) ? "shorts" : "shorts_" + Vm.TopicInput.Trim();
-            var r = await Stitcher.StitchAsync(parts, PromptFlowStudio.Services.Render.FFmpegVideoStitchService.BuildFullOutputPath(Media.MediaRoot, name));
+            var r = await Stitcher.StitchCutsAsync(cuts, PromptFlowStudio.Services.Render.FFmpegVideoStitchService.BuildFullOutputPath(Media.MediaRoot, name), ScriptTts, Subtitles);   // 나레이션 AAC 믹싱 + SRT
             _stitchMessage = r.Message;
             if (r.Ok && !r.IsVirtual && r.OutputPath is not null) Gallery.Register(null, GalleryAssetKind.Video, r.OutputPath, "AI 숏폼 3컷 합본");
         }

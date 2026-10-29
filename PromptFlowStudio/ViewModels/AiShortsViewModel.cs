@@ -65,7 +65,7 @@ public sealed class AiShortsViewModel
                 BgmBpm = cut.BgmBpm,
                 TransitionBeatIndex = cut.TransitionBeatIndex,
                 TransitionFx = cut.TransitionFx,
-                Metadata = FFmpegVideoStitchService.WithGroup(null, group),
+                Metadata = FFmpegVideoStitchService.WithGroup(null, group, cut.Script),   // 나레이션 대본 → 합본 TTS·SRT
             };
         }
         var added = _queue.Enqueue(jobs);

@@ -6,6 +6,8 @@
 @inject StoryboardJobManager Jobs
 @inject NavigationManager Nav
 @inject PromptFlowStudio.ViewModels.RenderQueueViewModel Vm
+@inject PromptFlowStudio.Services.Render.EngineHealthCheckService Health
+@inject ILocalMediaService Media
 
 @* [PromptFlow Studio] 렌더링 큐 — 대량 양산 렌더 큐(RenderQueueViewModel)·단일 컷(WanJobState)·스토리보드 배치(StoryboardJobManager)의 진행을 대형 뷰어로 관찰. *@
 
@@ -20,6 +22,12 @@
     <div style="margin:12px 0;"><StudioMonitorHeader EngineReady="true" /></div>
     <div style="margin:0 0 16px;"><ResourceMonitor /></div>
 
+    @* ── 렌더 엔진 사전 헬스체크(5초 주기 Ping) ── *@
+    <div class="q-health" role="status">
+        <span class="q-health-b @(_health.IsChecked ? (_health.ComfyOnline ? "on" : "off") : "")">@_health.ComfyLabel</span>
+        <span class="q-health-b @(_health.IsChecked ? (_health.CloudConfigured ? "on" : "off") : "")">@_health.CloudLabel</span>
+    </div>
+
     @* ── 대량 양산 렌더 큐 요약 HUD ── *@
     <section class="q-hud">
         <div class="q-hud-c pend"><span class="q-hud-l">대기 중</span><b>@(Vm.PendingCount.ToString(CultureInfo.InvariantCulture))</b></div>
@@ -30,12 +38,21 @@
         <div class="q-hud-a">
             <button class="q-btn ghost" @onclick="Vm.TogglePause">@(Vm.IsPaused ? "▶ 큐 재개" : "⏸ 큐 일시정지")</button>
             <button class="q-btn ghost" disabled="@(Vm.CompletedCount == 0)" @onclick="Vm.ClearCompleted">🧹 완료 항목 정리</button>
+            <button class="q-btn ghost" disabled="@_cleaning" title="합본 목록·믹싱 중간본·TTS 임시 음성 등 완료된 중간 조각 삭제(완성 영상 보존)" @onclick="CleanCacheAsync">🧹 임시 렌더 캐시 비우기</button>
         </div>
     </section>
 
     @if (Vm.IsVramPaused)
     {
         <div class="q-err q-vram" role="alert">🛑 @PromptFlowStudio.ViewModels.RenderQueueViewModel.VramPauseNotice</div>
+    }
+    @if (Vm.IsDiskPaused)
+    {
+        <div class="q-err q-vram" role="alert">💾 @PromptFlowStudio.ViewModels.RenderQueueViewModel.DiskPauseNotice</div>
+    }
+    @if (_cacheMessage is not null)
+    {
+        <div class="q-health-msg" role="status">@_cacheMessage</div>
     }
 
     @if (Vm.TotalJobsCount > 0)
@@ -44,7 +61,7 @@
             <div class="q-card-h">
                 <span>🏭 대량 양산 렌더 큐 <span class="q-dim">— 총 @(Vm.TotalJobsCount.ToString(CultureInfo.InvariantCulture))건</span></span>
                 @if (Vm.ActiveJob is { } act) { <span class="q-badge run">렌더 중 · @(Trunc(act.Prompt))@(act.EngineKind is null ? "" : " · " + act.EngineKind)</span> }
-                else if (Vm.IsPaused) { <span class="q-badge">@(Vm.IsVramPaused ? "일시정지 (VRAM Warning)" : "일시정지")</span> }
+                else if (Vm.IsPaused) { <span class="q-badge">@Vm.PauseLabel</span> }
             </div>
             <table class="q-tbl">
                 <thead><tr><th>#</th><th>프롬프트</th><th>시드</th><th>해상도</th><th>길이</th><th>엔진</th><th>상태</th><th>진행률</th><th></th></tr></thead>
@@ -235,6 +252,11 @@
 
     @@keyframes q-flow { to { background-position: 200% 0; } }
     .q-vram { margin: 0 0 16px; white-space: normal; font-weight: 600; }
+    .q-health { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+    .q-health-b { padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; border: 1px solid var(--line); background: var(--card); }
+    .q-health-b.on { color: #22c55e; border-color: color-mix(in srgb, #22c55e 45%, var(--line)); }
+    .q-health-b.off { color: #ef4444; border-color: color-mix(in srgb, #ef4444 45%, var(--line)); }
+    .q-health-msg { margin: 0 0 12px; font-size: 12.5px; opacity: .85; }
     @@media (prefers-reduced-motion: reduce) { .q-bar-f { animation: none; } }
 </style>
 
@@ -244,6 +266,9 @@
     // ShouldRender 게이트 — 큐 VM 은 Version(표시 데이터 변경 시에만 증가)으로, 단일 컷·스토리보드는 통지 플래그로 판정.
     private long _renderedVmVersion = -1;
     private volatile bool _extDirty = true;
+    private PromptFlowStudio.Services.Render.EngineHealthSnapshot _health = PromptFlowStudio.Services.Render.EngineHealthSnapshot.Unknown;
+    private bool _cleaning;
+    private string? _cacheMessage;
 
     protected override bool ShouldRender()
     {
@@ -260,6 +285,9 @@
         Jobs.OnChange += OnExt;
         Jobs.OnCompleted += OnExt;
         Vm.Changed += OnCh;
+        Health.Changed += OnHealth;
+        _health = Health.Latest;
+        Health.Start();
         Vm.Refresh();
     }
     public void Dispose()
@@ -268,6 +296,22 @@
         Jobs.OnChange -= OnExt;
         Jobs.OnCompleted -= OnExt;
         Vm.Changed -= OnCh;
+        Health.Changed -= OnHealth;
+        Health.Stop();
+    }
+    private void OnHealth() { _health = Health.Latest; _extDirty = true; InvokeAsync(StateHasChanged); }
+
+    private async Task CleanCacheAsync()
+    {
+        if (_cleaning) return;
+        _cleaning = true; _extDirty = true;
+        try
+        {
+            var root = Media.MediaRoot;
+            _cacheMessage = await Task.Run(() => PromptFlowStudio.ViewModels.RenderQueueViewModel.CleanRenderCache(root));
+        }
+        catch (Exception ex) { Program.Log("RenderQueue.CleanCache", ex); _cacheMessage = "임시 캐시 정리 실패"; }
+        finally { _cleaning = false; _extDirty = true; }
     }
     private void OnCh() => InvokeAsync(StateHasChanged);
     private void OnExt() { _extDirty = true; InvokeAsync(StateHasChanged); }

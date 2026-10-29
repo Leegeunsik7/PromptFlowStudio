@@ -153,7 +153,7 @@ public sealed class StoryboardViewModel : INotifyPropertyChanged, IDisposable
 
     /// <summary>
     /// 스토리보드 씬 생성 단일 경로 — 전 컷을 렌더 큐에 일괄 적재(피사체 앵커 · MasterSeed+Index · 큐 VRAM 가드).
-    /// 전송마다 새 합본 그룹 키를 부여. 실제 적재 건수 반환.
+    /// 전송마다 새 합본 그룹 키를 부여 · 컷 대본은 메타(<see cref="FFmpegVideoStitchService.MetaScript"/>)로 동봉. 실제 적재 건수 반환.
     /// </summary>
     public int DispatchToRenderQueue(IRenderQueueService queue, string resolution = RenderCostEstimatorService.DefaultResolution)
     {
@@ -161,7 +161,7 @@ public sealed class StoryboardViewModel : INotifyPropertyChanged, IDisposable
         var jobs = BuildRenderJobs(resolution);
         if (jobs.Length == 0) return 0;
         var group = FFmpegVideoStitchService.NewGroupId();
-        for (var i = 0; i < jobs.Length; i++) jobs[i].Metadata = FFmpegVideoStitchService.WithGroup(jobs[i].Metadata, group);
+        for (var i = 0; i < jobs.Length; i++) jobs[i].Metadata = FFmpegVideoStitchService.WithGroup(jobs[i].Metadata, group, Cuts[i].Script);   // 대본 → 합본 TTS·SRT
         var added = queue.Enqueue(jobs);
         if (added > 0) LastDispatchGroupId = group;
         return added;

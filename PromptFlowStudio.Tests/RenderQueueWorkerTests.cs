@@ -255,6 +255,85 @@ public class RenderQueueWorkerTests
 
     [Fact]
     [Trait("Category", "FastUnit")]
+    public async Task RenderQueue_AutoPauses_WhenDiskSpaceIsCriticallyLow()
+    {
+        long free = 1L * 1024 * 1024 * 1024;   // 1GB — 임계(5GB) 미만
+        string? probedPath = "(none)";
+        using var q = new RenderQueueService(TimeSpan.Zero, autoStart: false, engine: null, vramProbe: null,
+            diskProbe: p => { probedPath = p; return Interlocked.Read(ref free); });
+        using var vm = new RenderQueueViewModel(q);
+        var target = Path.Combine(Path.GetTempPath(), "renders", "cut1.mp4");
+        var jobs = new List<BatchRenderJob> { new() { Prompt = "p0", OutputPath = target }, new() { Prompt = "p1", Seed = 1 } };
+        q.Enqueue(jobs);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var worker = q.ProcessQueueAsync(cts.Token);
+        for (var i = 0; i < 200 && !q.IsDiskPaused; i++) await Task.Delay(10);
+
+        // 디스패치 차단 — 어떤 작업도 Processing 으로 꺼내지 않음(Paused · Disk Full Warning)
+        Assert.True(q.IsPaused);
+        Assert.True(q.IsDiskPaused);
+        Assert.False(q.IsVramPaused);
+        Assert.True(vm.IsDiskPaused);
+        Assert.Equal("일시정지 (Disk Full Warning)", vm.PauseLabel);
+        Assert.Equal(target, probedPath);   // 다음 작업 출력 드라이브 기준
+        Assert.False(worker.IsCompleted);
+        Assert.All(jobs, j => Assert.Equal(BatchJobStatus.Queued, j.Status));
+        Assert.Contains("디스크 잔여 용량이 5GB 미만", RenderQueueViewModel.DiskPauseNotice);
+
+        // 공간 확보 후 수동 재개 → 경고 해제 · 전량 완료
+        Interlocked.Exchange(ref free, 50L * 1024 * 1024 * 1024);
+        q.ResumeQueue();
+        Assert.False(q.IsDiskPaused);
+        await worker.WaitAsync(cts.Token);
+        Assert.All(jobs, j => Assert.Equal(BatchJobStatus.Completed, j.Status));
+        Assert.False(vm.IsDiskPaused);
+
+        // 판정 불가(null) · 프로브 예외 → 가드 통과
+        using var q2 = new RenderQueueService(TimeSpan.Zero, autoStart: false, engine: null, vramProbe: null, diskProbe: _ => throw new IOException("not ready"));
+        var more = Jobs(1);
+        q2.Enqueue(more);
+        await q2.ProcessQueueAsync(cts.Token);
+        Assert.Equal(BatchJobStatus.Completed, more[0].Status);
+        Assert.False(q2.IsDiskPaused);
+        Assert.NotNull(RenderQueueService.ProbeFreeBytes(null));   // 실제 임시 드라이브 조회
+    }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public void RenderCache_Clean_RemovesIntermediates_KeepsFinalOutputs()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "pfs_cache_" + Guid.NewGuid().ToString("N"));
+        var media = Path.Combine(root, "media");
+        var temp = Path.Combine(root, "temp");
+        Directory.CreateDirectory(Path.Combine(media, "sub"));
+        Directory.CreateDirectory(Path.Combine(temp, FFmpegVideoStitchService.TtsTempPrefix + "x"));
+        try
+        {
+            File.WriteAllText(Path.Combine(media, "p_full.mp4"), "FINAL");
+            File.WriteAllText(Path.Combine(media, "p_full.srt"), "SRT");
+            File.WriteAllText(Path.Combine(media, "p_full.mp4.concat.txt"), "list");
+            File.WriteAllText(Path.Combine(media, "sub", "p_full.mp4.mux.mp4"), "mux");
+            File.WriteAllText(Path.Combine(media, "meta.json.tmp"), "t");
+            File.WriteAllText(Path.Combine(temp, "pfs_disclaimer_1.txt"), "d");
+            File.WriteAllText(Path.Combine(temp, FFmpegVideoStitchService.TtsTempPrefix + "x", "cut_0.wav"), "w");
+
+            var (files, bytes) = RenderQueueService.CleanRenderCache(media, temp);
+
+            Assert.Equal(5, files);
+            Assert.True(bytes > 0);
+            Assert.True(File.Exists(Path.Combine(media, "p_full.mp4")));
+            Assert.True(File.Exists(Path.Combine(media, "p_full.srt")));
+            Assert.False(File.Exists(Path.Combine(media, "p_full.mp4.concat.txt")));
+            Assert.False(Directory.Exists(Path.Combine(temp, FFmpegVideoStitchService.TtsTempPrefix + "x")));
+            Assert.Equal((0, 0L), RenderQueueService.CleanRenderCache(media, temp));
+            Assert.Equal((0, 0L), RenderQueueService.CleanRenderCache(null, Path.Combine(root, "missing")));
+        }
+        finally { try { Directory.Delete(root, recursive: true); } catch (IOException) { } }
+    }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
     public async Task RenderExecution_CancelsUnderlyingProcess_OnCancellationToken()
     {
         var fake = new FakeVideoEngine(null, hang: true);

@@ -409,6 +409,9 @@ public static class MauiProgram
         builder.Services.AddSingleton<PromptFlowStudio.Services.Render.FFmpegVideoStitchService>(); // 합본/번인 — 모바일은 ffmpeg 부재 → 가상 병합
         builder.Services.AddSingleton<PromptFlowStudio.Services.Render.IRenderExecutionEngine>(sp => new PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine(sp.GetService<PromptFlowStudio.Services.Wan.VideoEngineSelector>(), sp.GetRequiredService<PromptFlowStudio.Services.Render.FFmpegVideoStitchService>(), null)); // 선택기 미등록 → 시뮬레이션 폴백
         builder.Services.AddSingleton<PromptFlowStudio.Services.Render.IRenderQueueService, PromptFlowStudio.Services.Render.RenderQueueService>(); // 전역 렌더 큐 워커
+        builder.Services.AddSingleton<PromptFlowStudio.Services.Render.EngineHealthCheckService>(sp => new PromptFlowStudio.Services.Render.EngineHealthCheckService(sp.GetService<PromptFlowStudio.Services.Wan.VideoEngineSelector>())); // 엔진 헬스체크(선택기 미등록 → Cloud 미설정 표기)
+        builder.Services.AddSingleton<PromptFlowStudio.Services.Audio.ITtsSynthesisService>(sp => new PromptFlowStudio.Services.Audio.LocalTtsSynthesisService(sp.GetService<PromptFlowStudio.Services.Media.ILocalTtsService>())); // 대본 TTS(모바일 SAPI 부재 → 무음 Mock)
+        builder.Services.AddSingleton<PromptFlowStudio.Services.Export.SubtitleGeneratorService>(); // 합본 SRT 자막
         builder.Services.AddSingleton<PromptFlowStudio.Services.Live.LiveStudioHostService>(); // 24/7 라이브 쇼호스트 피치 + 릴레이 버퍼
         builder.Services.AddSingleton<PromptFlowStudio.Services.Commercial.CommercialBrandService>(); // 브랜드 킷 + 커머셜 규격 프롬프트 합성
         builder.Services.AddSingleton<PromptFlowStudio.Services.Shorts.AiShortsService>(); // AI 15초 숏폼 3컷 시퀀서(9:16)

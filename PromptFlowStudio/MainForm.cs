@@ -79,6 +79,9 @@ public sealed class MainForm : Form
         services.AddSingleton<PromptFlowStudio.Services.Render.IRenderExecutionEngine>(sp => new PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine(sp.GetService<VideoEngineSelector>(), sp.GetRequiredService<PromptFlowStudio.Services.Render.FFmpegVideoStitchService>(), null));   // 렌더 큐 → 활성 비디오 엔진(ComfyUI/클라우드) 어댑터 · 미구성 시 시뮬레이션 폴백
         services.AddSingleton<PromptFlowStudio.Services.Render.IRenderQueueService, PromptFlowStudio.Services.Render.RenderQueueService>();   // 전역 렌더 큐 + 백그라운드 렌더 워커(실물 엔진 어댑터 주입)
         services.AddSingleton<PromptFlowStudio.ViewModels.RenderQueueViewModel>();             // 렌더링 큐 화면 요약 통계 · 작업 목록
+        services.AddSingleton<PromptFlowStudio.Services.Render.EngineHealthCheckService>(sp => new PromptFlowStudio.Services.Render.EngineHealthCheckService(sp.GetService<VideoEngineSelector>()));   // 렌더 엔진 사전 헬스체크(ComfyUI 8188 Ping · Cloud 키) 5초 주기
+        services.AddSingleton<PromptFlowStudio.Services.Audio.ITtsSynthesisService>(sp => new PromptFlowStudio.Services.Audio.LocalTtsSynthesisService(sp.GetService<ILocalTtsService>()));   // 대본 TTS(Kokoro/F5 → SAPI → 무음 Mock) · 합본 AAC 믹싱 입력
+        services.AddSingleton<PromptFlowStudio.Services.Export.SubtitleGeneratorService>();   // 컷 타임코드 → {project}_full.srt
         services.AddSingleton<PromptFlowStudio.Services.Live.LiveStudioHostService>();         // 4번 워크플로우 쇼호스트 세일즈 피치 생성 + 24/7 릴레이 버퍼
         services.AddSingleton<PromptFlowStudio.ViewModels.LiveStudioViewModel>();              // 24/7 AI 라이브 스튜디오 피치 큐 · 가상 송출(화면 이탈 후에도 유지)
         services.AddSingleton<PromptFlowStudio.Services.Commercial.CommercialBrandService>();   // 5번 워크플로우 브랜드 킷 + 커머셜 규격 프롬프트 합성

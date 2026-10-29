@@ -41,6 +41,8 @@
 @inject PromptFlowStudio.ViewModels.StoryboardViewModel Vm
 @inject PromptFlowStudio.Services.Render.IRenderQueueService RenderQueue
 @inject PromptFlowStudio.Services.Render.FFmpegVideoStitchService Stitcher
+@inject PromptFlowStudio.Services.Audio.ITtsSynthesisService ScriptTts
+@inject PromptFlowStudio.Services.Export.SubtitleGeneratorService Subtitles
 @inject PromptFlowStudio.Services.Weather.WeatherEngine Weather
 @inject GalleryAutoSaveService Gallery
 @inject PostProductionEngine Post
@@ -3044,13 +3046,13 @@
     private async Task ExportFullVideoAsync()
     {
         if (_stitching) return;
-        if (!PromptFlowStudio.Services.Render.FFmpegVideoStitchService.TryCollectCompletedGroup(RenderQueue.Snapshot(), Vm.LastDispatchGroupId, out var parts))
+        if (!PromptFlowStudio.Services.Render.FFmpegVideoStitchService.TryCollectCompletedCuts(RenderQueue.Snapshot(), Vm.LastDispatchGroupId, out var cuts))
         { ShowToast("합칠 수 없습니다 — 모든 컷이 완료되고 로컬 산출물이 있어야 합니다."); return; }
         _stitching = true;
         try
         {
             var output = PromptFlowStudio.Services.Render.FFmpegVideoStitchService.BuildFullOutputPath(Media.MediaRoot, _project.Title);
-            var r = await Stitcher.StitchAsync(parts, output);
+            var r = await Stitcher.StitchCutsAsync(cuts, output, ScriptTts, Subtitles);   // 대본 TTS AAC 믹싱 + {project}_full.srt
             _stitchMessage = r.Message;
             if (r.Ok && !r.IsVirtual && r.OutputPath is not null) _project.FinalVideoPath = r.OutputPath;
             ShowToast(r.Ok ? "🎬 " + r.Message : "합본 실패 — " + r.Message);
