@@ -240,6 +240,7 @@
                 <span>② 🎬 라이브 비디오 캔버스</span>
                 <span class="ws-hts-tools">
                     <button class="ws-hts-tog @(_htsHud ? "on" : null)" @onclick="() => _htsHud = !_htsHud" aria-pressed="@(_htsHud ? "true" : "false")" title="HTS 차트·호가창 목업을 영상 위에 겹쳐 배경 가독성을 검증">📊 HTS HUD</button>
+                    <button class="ws-hts-tog @(_seamCheck ? "on" : null)" @onclick="ToggleSeamCheckAsync" aria-pressed="@(_seamCheck ? "true" : "false")" title="영상 종료 2초 전 → 0~2초 구간만 무한 반복해 루프 접합면(Seam) 프레임 튐을 1초 만에 점검">🔁 이음새 점검</button>
                     <span class="ws-badge @PhaseClass">@PhaseLabel</span>
                 </span>
             </div>
@@ -1596,6 +1597,19 @@
 
     // 📊 HTS HUD 가독성 시뮬레이터 상태
     private bool _htsHud;
+    private bool _seamCheck;
+
+    /// <summary>🔁 루프 이음새 인스펙터 토글 — JS rAF 가 [종료-2s, 종료] ∪ [0, 2s] 구간만 반복(interop 실패 시 상태 원복).</summary>
+    private async Task ToggleSeamCheckAsync()
+    {
+        _seamCheck = !_seamCheck;
+        try { await JS.InvokeAsync<bool>("pfsSeamInspector.set", _seamCheck, 2.0, "video.ws-video"); }
+        catch (Exception ex) when (ex is JSException or InvalidOperationException or TaskCanceledException)
+        {
+            Program.Log("Workspace.SeamCheck", ex);
+            _seamCheck = false;
+        }
+    }
     private int _htsOpacity = 60;
     private int _htsDimmer = 20;
 
@@ -1901,6 +1915,12 @@
         var cts = Interlocked.Exchange(ref _liveCts, null);
         if (cts is not null) { cts.Cancel(); cts.Dispose(); }
         _mediaCts.Cancel(); _mediaCts.Dispose();
+        if (_seamCheck)
+        {
+            _seamCheck = false;
+            try { JS.InvokeAsync<bool>("pfsSeamInspector.set", false, 2.0, "video.ws-video").AsTask().ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted); }
+            catch (Exception ex) when (ex is JSException or InvalidOperationException) { Program.Log("Workspace.SeamCheck", ex); }
+        }
     }
 
     // ── v15.9.0 Wan 2.1 Gap-Filler: Auto-Foley(무음 보완) + 멀티 컷 타임라인 병합(단일 컷 보완). 실패는 원본 유지(Graceful) ──

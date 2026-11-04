@@ -754,6 +754,43 @@
 })();
 
 /* ============================================================================
+ *  🔁 루프 이음새(Seam) 인스펙터 — 캔버스 <video> 를 [종료-W, 종료] ∪ [0, W] 구간만 무한 반복.
+ *  15s 영상이면 13→15→(네이티브 loop 0)→2→13… 으로 접합면만 1초 내 반복 확인. rAF 1개 · DOM 은 매 프레임 재조회(@key 재생성 대응).
+ * ========================================================================== */
+(function () {
+    'use strict';
+    let raf = 0, win = 2, selector = 'video.ws-video';
+    function tick() {
+        const vids = document.querySelectorAll(selector);
+        for (let i = 0; i < vids.length; i++) {
+            const v = vids[i], d = v.duration;
+            if (!isFinite(d) || d <= win * 2 || v.readyState < 1) continue;
+            if (!v.loop) v.loop = true;
+            const t = v.currentTime;
+            if (t > win && t < d - win) { try { v.currentTime = d - win; } catch (e) { } }
+            if (v.paused && !v.dataset.pfsSeamUserPaused) { const p = v.play(); if (p && p.catch) p.catch(function () { }); }
+        }
+        raf = window.requestAnimationFrame(tick);
+    }
+    window.pfsSeamInspector = {
+        set: function (enabled, windowSec, sel) {
+            if (raf) { window.cancelAnimationFrame(raf); raf = 0; }
+            if (typeof windowSec === 'number' && windowSec > 0) win = windowSec;
+            if (typeof sel === 'string' && sel.length) selector = sel;
+            if (enabled) {
+                const vids = document.querySelectorAll(selector);
+                for (let i = 0; i < vids.length; i++) {
+                    const v = vids[i], d = v.duration;
+                    if (isFinite(d) && d > win * 2) { try { v.currentTime = d - win; } catch (e) { } }
+                }
+                raf = window.requestAnimationFrame(tick);
+            }
+            return !!raf;
+        }
+    };
+})();
+
+/* ============================================================================
  *  v16.36.0 디지털 트윈 & 모캡 — 웹캠(getUserMedia) → 다운스케일 RGBA → .NET PushRgba(in-flight 1슬롯 · 백프레셔).
  *  스냅샷(트윈 복원용)은 동일 캔버스에서 동기 추출. 캡처는 전적으로 브라우저 — 네이티브 코덱 의존 0.
  * ========================================================================== */

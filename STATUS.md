@@ -1,18 +1,18 @@
 # Current Project Status
 
-- Active Milestone: 【Batch-HTS】 작업실/스토리보드 StockSuite 런처 · 대량생산 제미나이 벌크 기획 · HTS 1080p 샤프닝 내보내기
+- Active Milestone: 【Export-Seam】 WebM VP9 1080p 샤프닝 일관화 · 캔버스 루프 이음새 인스펙터 · 대량생산 StockSuite 팩 일괄 내보내기
 - Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (net8.0-android 미검증: Android SDK 미설치)
-- Tests: FastUnit 559/559 PASS (Release, ~30s)
+- Tests: FastUnit 561/561 PASS (Release)
 - Updated: 2026-11-04 (KST)
 
 ## Completed
-- Workspace/Storyboard: `💼 StockSuite로 내보내기` 옆 `🚀 StockSuite 실행`(exe 유효 시 · 2초 캐시) + 성공 토스트 내 실행 버튼 · 실행 중이면 `🔄 재실행`
-- GeminiPromptService: `GenerateBatchPromptsAsync(theme, count=5)` — 1~20편 상이 앵글 JSON 스키마 검증 · 부족분 로컬 보충([부분 구제]) · 키 없음/실패 → 로컬 앵글 템플릿 · `ToBatchPasteText`(제목\t프롬프트)
-- BatchStudio: 상단 `✨ AI 일괄 기획`(테마+개수) → 직접 붙여넣기 입력창 즉시 바인딩 → `＋ 대기열에 추가` 원클릭
-- StockSuiteExporter: `SharpenFilter`(`scale=1920:1080:flags=lanczos,unsharp=5:5:0.8:3:3:0.4`) libx264 CRF18 `-an` 재인코딩 · 실패 → `-c:v copy` → 원본 복사 폴백 · WebM 미적용
-- 설정: `stocksuite.sharpen`(기본 ON) — UserSettings 체크박스 · PublishModal `고선명 샤프닝` 체크박스 · DI 양쪽 sharpenProvider 결선
-- Tests: GeminiPromptService_GenerateBatchPrompts_ReturnsRequestedCount · StockSuiteExporter_AppliesUpscaleAndSharpenFilter_WhenSharpeningRequested
+- StockSuiteExporter: `BuildWebMArgs(in, out, sharpen)` — `-vf SharpenFilter` + VP9 CRF32 `-an` · 샤프닝 실패 → 일반 VP9 → MP4 복사 폴백(동일 기본명 .mp4)
+- StockSuiteExporter: `ExportBatchPackAsync(paths, dir, sharpen)` → `bg_ambient_01.mp4/.webm`… 순차 넘버링 · 누락 skip · 중복 차단 · 개별 실패 격리([부분 구제]) · 경로 미설정 즉시 NeedsPathSetup
+- Workspace: 캔버스 툴바 `🔁 이음새 점검` — `pfsSeamInspector`(promptflow.js rAF) [종료-2s, 종료] ∪ [0, 2s] 무한 반복 · Dispose 시 해제
+- BatchStudio: 대기열 툴바 `💼 StockSuite 팩 일괄 내보내기`(완료분 ≥1 · 실행 중 비활성) + 결과 토스트
+- PublishModal/UserSettings: WebM 선택 시에도 고선명 샤프닝 체크박스 활성
+- Tests: StockSuiteExporter_AppliesSharpenFilter_ToWebMExport · StockSuiteExporter_ExportBatchPack_ExportsIndexedFilesSuccessfully
 
 ## Next
-- 실 ffmpeg 환경에서 1080p 샤프닝 화질/인코딩 시간 확인
-- 실 Gemini 키로 벌크 기획 응답 품질·개수 준수 확인
+- 실 ffmpeg 환경에서 VP9 + 1080p 샤프닝 인코딩 시간/화질 확인
+- 실 15초 앰비언트 영상으로 이음새 점검 루프 체감 확인

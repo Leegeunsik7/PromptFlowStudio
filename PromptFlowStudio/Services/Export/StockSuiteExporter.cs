@@ -13,7 +13,13 @@ namespace PromptFlowStudio.Services.Export;
 /// <summary>StockSuite 내보내기 결과 — NeedsPathSetup=true 면 대상 경로 미설정/무효(환경설정 안내).</summary>
 public sealed record StockSuiteExportResult(bool Ok, string? TargetPath, bool NeedsPathSetup, string Message);
 
-/// <summary>StockSuite 내보내기 포맷 — MP4(기본 복사) · WebM VP9(HTS 저사양 최적화 트랜스코딩).</summary>
+/// <summary>💼 StockSuite 팩 일괄 내보내기 결과 — Exported = 넘버링된 대상 경로(순서 보존).</summary>
+public sealed record StockSuiteBatchPackResult(IReadOnlyList<string> Exported, int Failed, bool NeedsPathSetup, string Message)
+{
+    public bool Ok => Exported.Count > 0;
+}
+
+/// <summary>StockSuite 내보내기 포맷 —MP4(기본 복사) · WebM VP9(HTS 저사양 최적화 트랜스코딩).</summary>
 public enum StockSuiteExportFormat { Mp4, WebMVp9 }
 
 /// <summary>StockSuite 실행 파일 경로 검증 상태.</summary>
@@ -131,9 +137,22 @@ public sealed class StockSuiteExporter
             if (string.Equals(Path.GetFullPath(sourcePath), target, StringComparison.OrdinalIgnoreCase))
                 return new(true, target, false, "이미 StockSuite 에셋 위치의 파일입니다.");
 
-            if (webm && !Path.GetExtension(sourcePath).Equals(".webm", StringComparison.OrdinalIgnoreCase))
+            var sharpenOn = sharpen ?? DefaultSharpen;
+            if (webm && (sharpenOn || !Path.GetExtension(sourcePath).Equals(".webm", StringComparison.OrdinalIgnoreCase)))
             {
                 temp = Path.Combine(fullDir, Path.GetFileNameWithoutExtension(name) + TempExt + ".webm");
+                // 🔎 WebM 고선명: 1080p Lanczos + Unsharp(VP9 · 무음). 실패 → 일반 VP9 → MP4 복사 순 폴백.
+                if (sharpenOn)
+                {
+                    var sharpenedWebm = await TryFfmpegAsync(BuildWebMArgs(sourcePath, temp, sharpen: true), temp, ct).ConfigureAwait(false);
+                    if (sharpenedWebm is null)
+                    {
+                        File.Move(temp, target, overwrite: true);
+                        WriteSourceMarker(target, sourcePath);
+                        return new(true, target, false, "💼 StockSuite WebM(VP9) 내보내기 완료(🔎 1080p 고선명 · 🔇 무음) → " + target);
+                    }
+                    TryDelete(temp);
+                }
                 var transcoded = await TryTranscodeWebMAsync(sourcePath, temp, ct).ConfigureAwait(false);
                 if (transcoded is null)
                 {
@@ -141,16 +160,16 @@ public sealed class StockSuiteExporter
                     WriteSourceMarker(target, sourcePath);
                     return new(true, target, false, "💼 StockSuite WebM(VP9) 내보내기 완료 → " + target);
                 }
-                // [폴백] ffmpeg 부재/실패 → MP4 원본 복사로 대체 보존
+                // [폴백] ffmpeg 부재/실패 → MP4 원본 복사로 대체 보존(동일 기본 이름 · .mp4)
                 TryDelete(temp);
-                var fb = await CopyAsync(sourcePath, Path.Combine(fullDir, DefaultAssetName), ct).ConfigureAwait(false);
+                var fb = await CopyAsync(sourcePath, Path.Combine(fullDir, Path.ChangeExtension(name, ".mp4")), ct).ConfigureAwait(false);
                 return fb.Ok ? fb with { Message = "⚠ WebM 변환 실패(" + transcoded + ") — MP4 로 대체: " + fb.TargetPath } : fb;
             }
 
             // 🔇 HTS 제로-오디오: 비디오 스트림 무손실 copy + -an(오디오 드롭). ffmpeg 부재/실패 → 원본 복사 폴백.
             temp = Path.Combine(fullDir, Path.GetFileNameWithoutExtension(name) + TempExt + Path.GetExtension(name));
             // 🔎 HTS 대화면 고선명: 1080p Lanczos + Unsharp 재인코딩(무음). 실패 → 제로-오디오 스트림 복사 → 원본 복사 순 폴백.
-            if (!webm && (sharpen ?? DefaultSharpen))
+            if (!webm && sharpenOn)
             {
                 var sharpened = await TryFfmpegAsync(BuildSharpenArgs(sourcePath, temp), temp, ct).ConfigureAwait(false);
                 if (sharpened is null)
@@ -229,6 +248,54 @@ public sealed class StockSuiteExporter
 
     /// <summary>HTS 배경용 VP9 인자 — <see cref="AmbientLoopService.BuildWebMArgs"/> 위임.</summary>
     public static string[] BuildWebMArgs(string inputPath, string outputPath) => AmbientLoopService.BuildWebMArgs(inputPath, outputPath);
+
+    /// <summary>VP9 인자 — <paramref name="sharpen"/>=true 면 <see cref="SharpenFilter"/>(1080p Lanczos + Unsharp) 주입 · <c>-an</c> 무음 유지.</summary>
+    public static string[] BuildWebMArgs(string inputPath, string outputPath, bool sharpen)
+        => sharpen
+            ? ["-y", "-hide_banner", "-loglevel", "error", "-i", inputPath, "-map", "0:v:0", "-vf", SharpenFilter, "-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0", "-an", "-sn", "-dn", outputPath]
+            : AmbientLoopService.BuildWebMArgs(inputPath, outputPath);
+
+    /// <summary>팩 넘버링 이름 — <c>bg_ambient_01.mp4</c> / <c>.webm</c>(1-기반, 최소 2자리).</summary>
+    public static string BatchPackAssetName(int index, StockSuiteExportFormat format)
+        => "bg_ambient_" + index.ToString("00", CultureInfo.InvariantCulture) + (format == StockSuiteExportFormat.WebMVp9 ? ".webm" : ".mp4");
+
+    /// <summary>
+    /// 💼 대량생산 StockSuite 팩 일괄 내보내기 — 유효 영상을 입력 순서대로 <c>bg_ambient_01</c>, <c>02</c>… 로 정규화 변환/복사.
+    /// 개별 실패는 격리([부분 구제] — 성공분 보존), 중복 경로는 1회만. <paramref name="targetDirectory"/> 빈 값 = 환경설정 경로.
+    /// </summary>
+    public async Task<StockSuiteBatchPackResult> ExportBatchPackAsync(IEnumerable<string> videoPaths, string targetDirectory, bool sharpen, CancellationToken ct = default, StockSuiteExportFormat? format = null)
+    {
+        ArgumentNullException.ThrowIfNull(videoPaths);
+        var fmt = format ?? DefaultFormat;
+        var exported = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var failed = 0;
+        var index = 0;
+        string? lastError = null;
+        foreach (var p in videoPaths)
+        {
+            if (ct.IsCancellationRequested) break;
+            if (string.IsNullOrWhiteSpace(p) || !File.Exists(p)) { failed++; continue; }
+            string full;
+            try { full = Path.GetFullPath(p); }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException) { failed++; continue; }
+            if (!seen.Add(full)) continue;   // alreadyRegistered 중복 차단
+            index++;
+            var r = await ExportAsync(full, targetDirectory, BatchPackAssetName(index, fmt), ct, fmt, sharpen).ConfigureAwait(false);
+            if (r.Ok && r.TargetPath is not null) exported.Add(r.TargetPath);
+            else
+            {
+                failed++;
+                lastError = r.Message;
+                if (r.NeedsPathSetup) return new(exported, failed, true, r.Message);
+            }
+        }
+        if (ct.IsCancellationRequested) return new(exported, failed, false, "취소됨 — " + exported.Count.ToString(CultureInfo.InvariantCulture) + "개 보존");
+        var msg = exported.Count == 0
+            ? "⚠ 내보낸 영상이 없습니다" + (lastError is null ? "." : " — " + lastError)
+            : "💼 StockSuite 팩 " + exported.Count.ToString(CultureInfo.InvariantCulture) + "개 내보내기 완료" + (failed > 0 ? " (실패 " + failed.ToString(CultureInfo.InvariantCulture) + ")" : "") + " → " + Path.GetDirectoryName(exported[0]);
+        return new(exported, failed, false, msg);
+    }
 
     /// <summary>
     /// HTS 제로-오디오 인자 — 첫 비디오 스트림만 무손실 copy, 오디오/자막/데이터 스트림 드롭(<c>-an -sn -dn</c>).

@@ -115,7 +115,7 @@
                 <option value="webm">WebM VP9 (HTS 저사양 최적화) — bg_ambient.webm</option>
             </select>
         </div>
-        <div class="st-field"><label><input type="checkbox" checked="@Prefs.StockSuiteSharpen" @onchange="e => Prefs.StockSuiteSharpen = e.Value is true" /> 🔎 고선명 샤프닝 (1080p Lanczos + Unsharp) — MP4 재인코딩 · 끄면 스트림 복사(빠른 내보내기)</label></div>
+        <div class="st-field"><label><input type="checkbox" checked="@Prefs.StockSuiteSharpen" @onchange="e => Prefs.StockSuiteSharpen = e.Value is true" /> 🔎 고선명 샤프닝 (1080p Lanczos + Unsharp) — MP4·WebM 재인코딩 · 끄면 스트림 복사(빠른 내보내기)</label></div>
         <div class="st-field"><label>StockSuite 실행 파일 경로 (StockSuite.exe)</label>
             <div class="st-inrow">
                 <input type="text" class="st-sel" placeholder="예: C:\Projects\StockSuite\bin\StockSuite.exe" value="@Prefs.StockSuiteExecutablePath" @onchange="OnStockSuiteExeChanged" />

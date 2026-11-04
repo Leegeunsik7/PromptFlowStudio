@@ -7,6 +7,7 @@
 @inject NavigationManager Nav
 @inject PromptFlowStudio.ViewModels.MassProductionViewModel Vm
 @inject PromptFlowStudio.Services.AI.GeminiPromptService Gemini
+@inject PromptFlowStudio.Services.Export.StockSuiteExporter StockSuite
 
 @* [PromptFlow Studio] 대량 양산 배치 팩토리 — CSV/TXT 대량 입력을 큐로 받아 백그라운드에서 한 편씩 순차 양산.
    상태는 BatchProductionService(싱글턴)가 보유, 이 컴포넌트는 OnChange 구독 후 InvokeAsync(StateHasChanged)로만 갱신. *@
@@ -207,6 +208,7 @@
             <div class="bt-quehead">
                 <h2 class="bt-h2">③ 대기열 <span class="bt-count">@(Batch.TotalCount)편</span></h2>
                 <div class="bt-quetools">
+                    <button class="bt-mini" @onclick="ExportStockSuitePackAsync" disabled="@(_packBusy || Batch.IsRunning || Batch.CompletedCount == 0)" title="완료 영상 전체를 StockSuite 배경 폴더로 bg_ambient_01, 02… 넘버링 일괄 내보내기">@(_packBusy ? "⏳ 팩 내보내는 중…" : "💼 StockSuite 팩 일괄 내보내기")</button>
                     <button class="bt-mini" @onclick="Batch.ClearFinished" disabled="@(Batch.CompletedCount + Batch.FailedCount == 0)">완료 항목 정리</button>
                     <button class="bt-mini danger" @onclick="Batch.ClearAll" disabled="@(Batch.IsRunning || Batch.TotalCount == 0)">전체 비우기</button>
                 </div>
@@ -614,6 +616,26 @@
             ShowToast(saved is not null ? $"✅ 내보내기 — {saved}" : "내보내기를 취소했습니다.");
         }
         catch (Exception ex) { ShowToast("❌ 내보내기 실패: " + ex.Message); }
+    }
+
+    // ── 💼 StockSuite 팩 일괄 내보내기 ──
+    private bool _packBusy;
+
+    private async Task ExportStockSuitePackAsync()
+    {
+        if (_packBusy) return;
+        var paths = new List<string>();
+        foreach (var it in Batch.Items)
+            if (it.Status == BatchItemStatus.Completed && !string.IsNullOrWhiteSpace(it.FinalVideoPath)) paths.Add(it.FinalVideoPath);
+        if (paths.Count == 0) { ShowToast("⚠ 내보낼 완료 영상이 없습니다."); return; }
+        _packBusy = true;
+        try
+        {
+            var r = await StockSuite.ExportBatchPackAsync(paths, "", StockSuite.DefaultSharpen);
+            ShowToast(r.NeedsPathSetup ? "⚠ " + r.Message : r.Message);
+        }
+        catch (Exception ex) { Program.Log("BatchStudio.StockSuitePack", ex); ShowToast("❌ 팩 내보내기 실패: " + ex.Message); }
+        finally { _packBusy = false; }
     }
 
     // ── 워터마크 ──
