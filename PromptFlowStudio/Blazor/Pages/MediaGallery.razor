@@ -11,6 +11,7 @@
 @inject GalleryViewModel Vm
 @inject ILocalMediaService Media
 @inject IClipboardService Clipboard
+@inject PublishViewModel PubVm
 
 @* [PromptFlow Studio] 갤러리 — %LocalAppData%/PromptFlowStudio/Media 의 모든 MP4 를 그리드로 감상/관리/삭제. *@
 
@@ -101,6 +102,10 @@
                     </div>
                     <div class="ga-acts">
                         <button class="gl-btn up" @onclick="() => Vm.RestoreToWorkspace(si)">✨ 이 프롬프트로 작업실 복원 →</button>
+                        @if (si.IsVideo && !si.IsSample)
+                        {
+                            <button class="gl-btn up" @onclick="() => OpenPublish(si.FilePath, si.Title, si.Prompt)" title="YouTube Shorts · Instagram Reels 원클릭 발행">🚀 SNS 발행</button>
+                        }
                         <button class="gl-btn bad" @onclick="() => DeleteArchive(si)">🗑 삭제</button>
                     </div>
                 }
@@ -195,6 +200,7 @@
                     </div>
                     <div class="gl-ops">
                         <button class="gl-op" @onclick="() => Library.Reveal(m.Path)" title="탐색기에서 보기">📂</button>
+                        <button class="gl-op pub" @onclick="() => OpenPublish(m.Path, m.Folder, null)" title="🚀 SNS 발행 (YouTube Shorts · Instagram Reels)">🚀</button>
                         <button class="gl-op del" @onclick="() => _pendingDelete = m" title="삭제">🗑️</button>
                     </div>
                 </div>
@@ -216,6 +222,7 @@
             <label class="gl-loop-toggle" title="배경(앰비언트) 비디오 검토용 무한 반복"><input type="checkbox" @bind="_loopPlayback" /> 🔁 무한 반복 재생</label>
             <div class="gl-modal-f">
                 <button class="gl-btn ghost" @onclick="() => Library.Reveal(mv.Path)">💾 탐색기에서 보기</button>
+                <button class="gl-btn up" @onclick="() => OpenPublish(mv.Path, mv.Folder, null)" title="YouTube Shorts · Instagram Reels 원클릭 발행">🚀 SNS 발행</button>
                 <div class="gl-up">
                     <select class="gl-up-eng" @bind="_upEngine" disabled="@_upBusy">
                         <option value="RealEsrgan">실사 · Real-ESRGAN</option>
@@ -259,6 +266,8 @@
         </div>
     </div>
 }
+
+<PublishModal Vm="PubVm" />
 
 <style>
     .gl { padding: 6px 8px 48px; width: 100%; box-sizing: border-box; }
@@ -306,6 +315,8 @@
     .gl-op { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; font-size: 13px; }
     .gl-op:hover { border-color: var(--accent); color: var(--text-primary); }
     .gl-op.del:hover { border-color: #ef4444; color: #ef4444; }
+    .gl-op.pub { opacity: .55; transition: opacity .15s ease; }
+    .gl-tile:hover .gl-op.pub { opacity: 1; border-color: color-mix(in srgb, var(--flow-violet) 55%, var(--line)); }
 
     .gl-btn { border: none; border-radius: 10px; padding: 9px 14px; font-weight: 800; font-size: 12.5px; cursor: pointer; font-family: inherit; }
     .gl-btn.ghost { background: var(--card-2); color: var(--text-secondary); border: 1px solid var(--line); }
@@ -414,6 +425,15 @@
     private void OnFlowChanged() => InvokeAsync(StateHasChanged);
     private void OnVmChanged() => InvokeAsync(StateHasChanged);
     private void OnRestoreRequested() => InvokeAsync(() => Nav.NavigateTo("workspace"));
+    /// <summary>🚀 SNS 발행 — 미디어 경로 · 프로젝트 이름(폴더/제목) · 동명 .srt → PublishModal 바인딩. 모달은 위(z-index)에 뜨므로 확대 모달은 닫는다.</summary>
+    private void OpenPublish(string? path, string? project, string? prompt)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+        _modal = null;
+        try { PubVm.OpenForMedia(path, string.IsNullOrWhiteSpace(project) ? null : project, System.IO.Path.ChangeExtension(path, ".srt"), prompt); }
+        catch (Exception ex) { Program.Log("MediaGallery.Publish", ex); }
+    }
+
     public void Dispose()
     {
         Flow.OnChanged -= OnFlowChanged;

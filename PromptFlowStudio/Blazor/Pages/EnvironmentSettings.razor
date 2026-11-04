@@ -171,6 +171,7 @@
                     @if (Vm.IsFfmpegInstalling)
                     {
                         <span class="es-mono">@((Vm.FfmpegInstallProgress * 100f).ToString("0", System.Globalization.CultureInfo.InvariantCulture))%</span>
+                        <button class="es-btn" @onclick="Vm.CancelFfmpegInstall" title="다운로드 취소(임시 파일 자동 정리)">❌ 취소</button>
                     }
                 </div>
                 @if (Vm.IsFfmpegInstalling)

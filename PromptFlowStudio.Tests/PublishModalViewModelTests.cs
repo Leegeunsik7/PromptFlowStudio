@@ -137,4 +137,47 @@ public class PublishModalViewModelTests
         }
         finally { try { Directory.Delete(dir, true); } catch { } }
     }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public async Task PublishModal_InitializesFromWorkspaceAndGalleryContext()
+    {
+        var video = TempVideo(out var dir, withSrt: false);
+        try
+        {
+            var yt = new FakeYt();
+            using var vm = new PublishViewModel(yt, new FakeIg());
+
+            // 작업실 — 프롬프트 훅 · 프로젝트 이름 · 동명 .srt 부재 → null
+            vm.OpenForMedia(video, "ws_20261104_101500", Path.ChangeExtension(video, ".srt"), "네온 사이버펑크 도시 야경");
+            Assert.True(vm.IsOpen);
+            Assert.Equal(video, vm.VideoPath);
+            Assert.Equal("ws_20261104_101500", vm.ProjectName);
+            Assert.Null(vm.SrtPath);
+            Assert.StartsWith("네온 사이버펑크 도시 야경", vm.Title);
+            Assert.Contains("#Shorts", vm.Title);
+            Assert.Equal("private", vm.Privacy);
+            Assert.True(vm.CanStart);
+
+            // 갤러리 — 명시 자막 경로 바인딩 · 프로젝트(폴더) 이름이 훅
+            var srt = Path.Combine(dir, "custom_sub.srt");
+            File.WriteAllText(srt, "1\n00:00:00,000 --> 00:00:01,000\n자막\n");
+            vm.Close();
+            vm.OpenForMedia(video, "MyProject", srt);
+            Assert.Equal("MyProject", vm.ProjectName);
+            Assert.Equal(srt, vm.SrtPath);
+            Assert.StartsWith("MyProject", vm.Title);
+            vm.ToInstagram = false;
+            Assert.True(await vm.StartAsync());
+            Assert.Equal(srt, yt.LastSrt);
+
+            // 프로젝트 이름 미지정 → 파일명 · 자막 미지정 → 동명 .srt 자동 탐색 · 이전 결과 초기화
+            File.WriteAllText(Path.ChangeExtension(video, ".srt"), "1\n00:00:00,000 --> 00:00:01,000\nx\n");
+            vm.OpenForMedia(video, null);
+            Assert.Equal("shorts_full", vm.ProjectName);
+            Assert.Equal(Path.ChangeExtension(video, ".srt"), vm.SrtPath);
+            Assert.Null(vm.YouTubeResult);
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
 }

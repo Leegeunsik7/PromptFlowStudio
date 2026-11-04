@@ -23,6 +23,7 @@
 @inject PromptFlowStudio.Services.Gallery.GalleryMediaService GalleryMedia
 @inject PromptFlowStudio.Services.Prompt.PromptInspirationService Inspiration
 @inject PromptFlowStudio.Services.Render.IRenderQueueService RenderQueue
+@inject PromptFlowStudio.ViewModels.PublishViewModel PubVm
 
 @* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
    상태는 WanJobState(싱글턴)에 있고, 이 컴포넌트는 OnChange 를 구독해 InvokeAsync(StateHasChanged)로만 갱신한다.
@@ -151,11 +152,21 @@
             @if (_mini.Phase != PromptFlowStudio.Services.Render.MiniQueuePhase.Idle)
             {
                 <div class="ws-mini-q @(_mini.Phase == PromptFlowStudio.Services.Render.MiniQueuePhase.Failed || _miniStitchFail is not null ? "bad" : null)">
-                    <div class="ws-mini-q-l">@(_miniStitchFail is null ? _mini.Label : "⚠ 합본 실패 — " + _miniStitchFail)</div>
+                    <div class="ws-mini-q-h">
+                        <div class="ws-mini-q-l">@(_miniStitchFail is null ? _mini.Label : "⚠ 합본 실패 — " + _miniStitchFail)</div>
+                        @if (_mini.IsActive)
+                        {
+                            <button class="ws-btn ghost sm ws-mini-q-x" @onclick="CancelMiniQueue" title="이 그룹의 전 컷 일괄 취소 · GPU 추론 즉시 중단(ComfyUI /interrupt)">❌ 취소</button>
+                        }
+                    </div>
                     <div class="ws-mini-q-bar"><i style="width:@(_mini.Percent.ToString(CultureInfo.InvariantCulture))%"></i></div>
                     @if (_miniUrl is not null)
                     {
                         <video class="ws-mini-q-vid" src="@_miniUrl" controls autoplay loop muted preload="auto" @key="_miniUrl"></video>
+                    }
+                    @if (_mini.Phase == PromptFlowStudio.Services.Render.MiniQueuePhase.Completed && _mini.FinalPath is { } miniFinal)
+                    {
+                        <button class="ws-btn sm ws-pub" @onclick="() => OpenPublish(miniFinal)" title="YouTube Shorts · Instagram Reels 원클릭 발행">🚀 SNS 원클릭 발행</button>
                     }
                 </div>
             }
@@ -266,6 +277,10 @@
                             <span class="ws-hint">@_reverseMsg</span>
                         }
                         <button class="ws-btn ghost sm" @onclick="State.Reset">＋ 새로 만들기</button>
+                        @if (State.LocalPath is { } pubSrc)
+                        {
+                            <button class="ws-btn sm" @onclick="() => OpenPublish(pubSrc)" title="YouTube Shorts · Instagram Reels 원클릭 발행">🚀 SNS 원클릭 발행</button>
+                        }
                         <span class="ws-hint" title="@State.LocalPath">@ShortPath(State.LocalPath)</span>
                         <label class="ws-sztog" title="@AudioSfxEngine.GenerateAudioPrompt(State.LastPrompt)">
                             <input type="checkbox" @bind="_autoFoley" />
@@ -618,6 +633,8 @@
     </div>
 }
 
+<PublishModal Vm="PubVm" />
+
 <style>
     .ws { padding: 6px 8px 48px; width: 100%; box-sizing: border-box; }
     .ws-head { margin-bottom: 18px; }
@@ -797,6 +814,9 @@
     .ws-mini-q { margin: 4px 0 8px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--flow-cyan) 40%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--flow-cyan) 6%, transparent); }
     .ws-mini-q.bad { border-color: #e5484d; background: color-mix(in srgb, #e5484d 8%, transparent); }
     .ws-mini-q-l { font-size: 12px; color: var(--text-primary); margin-bottom: 6px; }
+    .ws-mini-q-h { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+    .ws-mini-q-x { flex: none; }
+    .ws-pub { margin-top: 6px; }
     .ws-mini-q-bar { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--text-secondary) 25%, transparent); overflow: hidden; }
     .ws-mini-q-bar > i { display: block; height: 100%; background: var(--flow-cyan); transition: width .25s ease; }
     .ws-mini-q-vid { width: 100%; margin-top: 8px; border-radius: 6px; background: #000; }
@@ -1246,6 +1266,7 @@
         _miniIds = ids;
         _miniGroup = jobs.Count > 0 ? jobs[0].StitchGroupId : null;
         _miniUrl = _miniPlayed = _miniStitchFail = null;
+        _miniCancelled = false;
         _mini = PromptFlowStudio.Services.Render.MiniQueueProgress.None;
         RefreshMiniQueue();
     }
@@ -1255,6 +1276,8 @@
     {
         if (_miniIds.Length == 0) return false;
         var next = PromptFlowStudio.Services.Render.MiniQueueProgress.Compute(RenderQueue.Snapshot(), _miniIds);
+        if (_miniCancelled && next.Phase is PromptFlowStudio.Services.Render.MiniQueuePhase.Rendering or PromptFlowStudio.Services.Render.MiniQueuePhase.Stitching)
+            next = next.AsCancelled();   // 엔진 중단 완료 전이라도 취소 상태 유지
         if (next == _mini) return false;
         _mini = next;
         if (next.Phase == PromptFlowStudio.Services.Render.MiniQueuePhase.Completed && next.FinalPath is { } fp && !string.Equals(fp, _miniPlayed, StringComparison.OrdinalIgnoreCase))
@@ -1274,6 +1297,30 @@
             try { if (RefreshMiniQueue()) StateHasChanged(); }
             catch (Exception ex) { Program.Log("Workspace.MiniQueue", ex); }
         });
+    }
+
+    private bool _miniCancelled;
+
+    /// <summary>❌ 인라인 취소 — 합본 그룹 일괄(없으면 JobId 개별) 취소 → 엔진 프로세스 킬 · ComfyUI /interrupt. 표시는 즉시 Cancelled.</summary>
+    private void CancelMiniQueue()
+    {
+        if (_miniIds.Length == 0 || !_mini.IsActive) return;
+        try
+        {
+            if (_miniGroup is { Length: > 0 } g) RenderQueue.CancelJobGroup(g);
+            else for (var i = 0; i < _miniIds.Length; i++) RenderQueue.CancelJob(_miniIds[i]);
+        }
+        catch (Exception ex) { Program.Log("Workspace.MiniQueue.Cancel", ex); }
+        _miniCancelled = true;
+        _mini = _mini.AsCancelled();
+        _durationMsg = "⏹ 렌더 취소됨 — GPU 추론 중단 신호 전송";
+    }
+
+    /// <summary>🚀 SNS 원클릭 발행 — 작업실 산출물(경로 · 프로젝트 이름 · 동명 .srt) → PublishModal.</summary>
+    private void OpenPublish(string path)
+    {
+        try { PubVm.OpenForMedia(path, Path.GetFileNameWithoutExtension(path), Path.ChangeExtension(path, ".srt"), string.IsNullOrWhiteSpace(_prompt) ? null : _prompt); }
+        catch (Exception ex) { Program.Log("Workspace.Publish", ex); }
     }
 
     private void OnDurationStitched(string group, PromptFlowStudio.Services.Render.VideoStitchResult r)

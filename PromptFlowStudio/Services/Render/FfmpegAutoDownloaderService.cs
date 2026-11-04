@@ -67,6 +67,16 @@ public sealed class FfmpegAutoDownloaderService
 
     public string BaseDirectory { get; }
 
+    /// <summary>다운로드 작업 폴더 루트(<c>pfs_ffdl_{guid}</c> 생성 위치) — null/빈값 = <see cref="Path.GetTempPath"/>. 테스트 격리용.</summary>
+    public string? WorkRoot { get; init; }
+
+    /// <summary>다운로드 중 임시 파일 확장자 — 완료 시에만 최종 이름으로 원자 이동, 실패/취소/타임아웃 시 즉시 삭제.</summary>
+    public const string TempSuffix = ".tmp";
+
+    /// <summary><see cref="InstallAsync"/> 별칭 — 다운로드(진행률 실시간 보고) → 추출. 취소 시 <see cref="OperationCanceledException"/> 전파 + 임시 파일 롤백.</summary>
+    public Task<FfmpegInstallResult> DownloadAndExtractAsync(IProgress<float>? progress = null, CancellationToken ct = default, bool requireSupportedPlatform = true)
+        => InstallAsync(progress, ct, requireSupportedPlatform);
+
     /// <summary>설치 대상 — <c>{BaseDirectory}\tools\ffmpeg\bin</c>(<see cref="FfmpegLocator"/> 1순위 후보).</summary>
     public string TargetBinDirectory => TargetBinOf(BaseDirectory);
 
@@ -81,7 +91,7 @@ public sealed class FfmpegAutoDownloaderService
         if (requireSupportedPlatform && !IsSupported) return new(false, null, "FFmpeg 자동 설치는 Windows 64-bit 에서만 지원됩니다.");
         using var overall = CancellationTokenSource.CreateLinkedTokenSource(ct);
         overall.CancelAfter(OverallTimeout);
-        var work = Path.Combine(Path.GetTempPath(), "pfs_ffdl_" + Guid.NewGuid().ToString("N"));
+        var work = Path.Combine(string.IsNullOrWhiteSpace(WorkRoot) ? Path.GetTempPath() : WorkRoot!, "pfs_ffdl_" + Guid.NewGuid().ToString("N"));
         string last = "다운로드 미러가 없습니다.";
         try
         {
@@ -123,7 +133,8 @@ public sealed class FfmpegAutoDownloaderService
                     }
                     finally
                     {
-                        try { if (File.Exists(zip)) File.Delete(zip); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                        TryDelete(zip);                // 불완전/검증 실패 압축 파일 롤백
+                        TryDelete(zip + TempSuffix);   // 다운로드 중이던 .tmp 롤백
                     }
                 }
             }
@@ -131,8 +142,13 @@ public sealed class FfmpegAutoDownloaderService
         }
         finally
         {
-            try { Directory.Delete(work, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            try { if (Directory.Exists(work)) Directory.Delete(work, recursive: true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); } catch (IOException) { } catch (UnauthorizedAccessException) { }
     }
 
     private async Task DownloadAsync(string url, string dest, IProgress<float>? progress, CancellationToken ct)
@@ -141,23 +157,37 @@ public sealed class FfmpegAutoDownloaderService
         using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
         var total = resp.Content.Headers.ContentLength ?? -1L;
-        await using var src = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-        await using var dst = new FileStream(dest, FileMode.Create, FileAccess.Write, FileShare.None, BufferSize, useAsync: true);
-        var buf = new byte[BufferSize];
-        long read = 0;
-        var lastPct = -1;
-        int n;
-        while ((n = await src.ReadAsync(buf.AsMemory(0, buf.Length), ct).ConfigureAwait(false)) > 0)
+        var tmp = dest + TempSuffix;
+        var ok = false;
+        try
         {
-            await dst.WriteAsync(buf.AsMemory(0, n), ct).ConfigureAwait(false);
-            read += n;
-            if (total > 0 && progress is not null)
+            await using (var src = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false))
+            await using (var dst = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, BufferSize, useAsync: true))
             {
-                var pct = (int)(read * 100 / total);
-                if (pct != lastPct) { lastPct = pct; progress.Report(0.9f * pct / 100f); }   // 1% 단위로만 보고
+                var buf = new byte[BufferSize];
+                long read = 0;
+                var lastPct = -1;
+                int n;
+                while ((n = await src.ReadAsync(buf.AsMemory(0, buf.Length), ct).ConfigureAwait(false)) > 0)
+                {
+                    await dst.WriteAsync(buf.AsMemory(0, n), ct).ConfigureAwait(false);
+                    read += n;
+                    if (total > 0 && progress is not null)
+                    {
+                        var pct = (int)(Math.Min(read, total) * 100 / total);   // 수신 바이트 / 전체 바이트
+                        if (pct != lastPct) { lastPct = pct; progress.Report(0.9f * pct / 100f); }   // 1% 단위로만 보고
+                    }
+                }
+                if (read == 0) throw new InvalidDataException("빈 응답");
+                if (total > 0 && read < total) throw new IOException("다운로드가 중간에 끊겼습니다 (" + read.ToString(CultureInfo.InvariantCulture) + "/" + total.ToString(CultureInfo.InvariantCulture) + " bytes)");
             }
+            File.Move(tmp, dest, overwrite: true);   // 완료분만 최종 이름으로 원자 이동
+            ok = true;
         }
-        if (read == 0) throw new InvalidDataException("빈 응답");
+        finally
+        {
+            if (!ok) TryDelete(tmp);   // 실패·취소·타임아웃 — 불완전 .tmp 즉시 롤백
+        }
     }
 
     private async Task<string?> TryFetchChecksumAsync(string url, string fileName, CancellationToken ct)
@@ -248,14 +278,14 @@ public sealed class FfmpegAutoDownloaderService
     private static string ExtractOne(ZipArchiveEntry entry, string dest)
     {
         var tmp = dest + ".part";
-        entry.ExtractToFile(tmp, overwrite: true);
-        if (!HasPeHeader(tmp))
+        try
         {
-            try { File.Delete(tmp); } catch (IOException) { }
-            throw new InvalidDataException(entry.Name + " 실행 파일 헤더(MZ) 검증 실패");
+            entry.ExtractToFile(tmp, overwrite: true);
+            if (!HasPeHeader(tmp)) throw new InvalidDataException(entry.Name + " 실행 파일 헤더(MZ) 검증 실패");
+            File.Move(tmp, dest, overwrite: true);
+            return Path.GetFullPath(dest);
         }
-        File.Move(tmp, dest, overwrite: true);
-        return Path.GetFullPath(dest);
+        finally { TryDelete(tmp); }   // 추출 실패(손상 ZIP·헤더 불일치) 시 불완전 .part 롤백 — 성공 시엔 이미 이동되어 no-op
     }
 
     private static bool HasPeHeader(string path)

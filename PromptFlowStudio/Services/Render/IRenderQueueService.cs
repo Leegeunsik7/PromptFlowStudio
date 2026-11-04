@@ -38,6 +38,26 @@ public interface IRenderQueueService : IDisposable
         return Enqueue(jobs) == jobs.Length ? jobs : Array.Empty<BatchRenderJob>();
     }
     bool CancelJob(Guid jobId);
+
+    /// <summary>
+    /// 합본 그룹(<see cref="BatchRenderJob.StitchGroupId"/>) 일괄 취소 — 대기 컷 먼저 Cancelled 확정 후 진행 중 컷 취소(엔진 프로세스 킬 · ComfyUI <c>/interrupt</c>).
+    /// 기본 구현은 <see cref="Snapshot"/> + <see cref="CancelJob"/> 조합. 취소된 작업 수 반환.
+    /// </summary>
+    int CancelJobGroup(string stitchGroupId)
+    {
+        if (string.IsNullOrEmpty(stitchGroupId)) return 0;
+        var snap = Snapshot();
+        var n = 0;
+        for (var pass = 0; pass < 2; pass++)
+            for (var i = 0; i < snap.Length; i++)
+            {
+                var j = snap[i];
+                if (!string.Equals(j.StitchGroupId, stitchGroupId, StringComparison.Ordinal)) continue;
+                if ((pass == 0) == (j.Status == BatchJobStatus.Processing)) continue;   // 1패스: 대기 컷 · 2패스: 진행 컷
+                if (CancelJob(j.JobId)) n++;
+            }
+        return n;
+    }
     bool RetryJob(Guid jobId);
     int ClearCompleted();
     void PauseQueue();

@@ -109,18 +109,40 @@ public sealed class SettingsViewModel
         IsFfmpegInstalling = true;
         FfmpegInstallProgress = 0f;
         FfmpegInstallMessage = "⬇️ FFmpeg 다운로드 중…";
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        Interlocked.Exchange(ref _ffmpegCts, cts)?.Dispose();
         Notify(onProgress);
         try
         {
             var progress = new Progress<float>(v => { FfmpegInstallProgress = v; Notify(onProgress); });
-            var r = await FfmpegDownloader.InstallAsync(progress, ct).ConfigureAwait(false);
-            FfmpegInstallMessage = (r.Ok ? "✅ " : "⚠ ") + r.Message;
+            var r = await FfmpegDownloader.DownloadAndExtractAsync(progress, cts.Token).ConfigureAwait(false);
+            FfmpegInstallMessage = r.Ok ? "✅ " + r.Message : FormatFfmpegFailure(r.Message);
             if (r.Ok) await RefreshFfmpegAsync(ct).ConfigureAwait(false);
             return r.Ok && Ffmpeg.Found;
         }
-        catch (OperationCanceledException) { FfmpegInstallMessage = "설치 취소됨"; return false; }
-        catch (Exception ex) { Program.Log("SettingsViewModel.FfmpegInstall", ex); FfmpegInstallMessage = "⚠ 설치 실패: " + ex.Message; return false; }
-        finally { IsFfmpegInstalling = false; Notify(onProgress); }
+        catch (OperationCanceledException) { FfmpegInstallMessage = "⏹ 설치 취소됨 — 다운로드 중이던 임시 파일을 정리했습니다."; return false; }
+        catch (Exception ex) { Program.Log("SettingsViewModel.FfmpegInstall", ex); FfmpegInstallMessage = FormatFfmpegFailure(ex.Message); return false; }
+        finally
+        {
+            if (ReferenceEquals(Interlocked.CompareExchange(ref _ffmpegCts, null, cts), cts)) cts.Dispose();
+            IsFfmpegInstalling = false;
+            Notify(onProgress);
+        }
+    }
+
+    private CancellationTokenSource? _ffmpegCts;
+
+    /// <summary>진행 중 FFmpeg 다운로드 취소 — 다운로더가 불완전 .tmp/압축 파일을 롤백 삭제.</summary>
+    public void CancelFfmpegInstall()
+    {
+        try { Volatile.Read(ref _ffmpegCts)?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
+    /// <summary>친절한 실패 문구 — <c>⚠ 다운로드 실패: [사유]. 네트워크 상태를 확인하세요.</c></summary>
+    public static string FormatFfmpegFailure(string? reason)
+    {
+        var r = string.IsNullOrWhiteSpace(reason) ? "알 수 없는 오류" : reason.Trim().TrimEnd('.');
+        return "⚠ 다운로드 실패: " + r + ". 네트워크 상태를 확인하세요.";
     }
 
     private static void Notify(Action? cb)

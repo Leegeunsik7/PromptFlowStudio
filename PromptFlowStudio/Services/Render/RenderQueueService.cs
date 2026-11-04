@@ -137,6 +137,28 @@ public sealed class RenderQueueService : IRenderQueueService
         return true;
     }
 
+    /// <inheritdoc/>
+    public int CancelJobGroup(string stitchGroupId)
+    {
+        if (string.IsNullOrEmpty(stitchGroupId)) return 0;
+        CancellationTokenSource? cts = null;
+        var n = 0;
+        lock (_gate)
+        {
+            // 단일 잠금 하 — 대기 컷을 먼저 Cancelled 로 확정해 워커가 다음 컷을 집어가지 못하게 한 뒤 진행 컷 취소
+            for (var i = 0; i < Queue.Count; i++)
+            {
+                var job = Queue[i];
+                if (!string.Equals(job.StitchGroupId, stitchGroupId, StringComparison.Ordinal)) continue;
+                if (job.Status is BatchJobStatus.Queued or BatchJobStatus.Pending) { job.Status = BatchJobStatus.Cancelled; n++; }
+                else if (job.Status == BatchJobStatus.Processing && ReferenceEquals(job, _activeJob) && _activeCts is { IsCancellationRequested: false } a) { cts = a; n++; }
+            }
+        }
+        if (cts is not null) { try { cts.Cancel(); } catch (ObjectDisposedException) { } }   // 엔진 프로세스 킬 + ComfyUI /interrupt 전파
+        if (n > 0) Raise();
+        return n;
+    }
+
     public bool RetryJob(Guid jobId)
     {
         lock (_gate)

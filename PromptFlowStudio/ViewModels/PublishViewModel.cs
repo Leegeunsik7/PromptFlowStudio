@@ -39,6 +39,8 @@ public sealed class PublishViewModel : IDisposable
     public bool IsOpen { get; private set; }
     public string VideoPath { get; private set; } = "";
     public string? SrtPath { get; private set; }
+    /// <summary>발행 컨텍스트 프로젝트 이름(작업실 <c>ws_…</c> · 갤러리 폴더/파일명 · 스토리보드 제목).</summary>
+    public string? ProjectName { get; private set; }
     public bool ToYouTube { get; set; } = true;
     public bool ToInstagram { get; set; } = true;
     public string Title { get; set; } = "";
@@ -75,11 +77,25 @@ public sealed class PublishViewModel : IDisposable
     public bool CanStart => !IsBusy && (ToYouTube || ToInstagram) && Title.Trim().Length > 0 && File.Exists(VideoPath);
 
     /// <summary>모달 열기 — 합본 경로 + 훅 + 씬 대본으로 메타데이터 자동 생성(이전 결과 초기화).</summary>
-    public void Open(string videoPath, string? hook, IReadOnlyList<ScriptBeat>? beats)
+    public void Open(string videoPath, string? hook, IReadOnlyList<ScriptBeat>? beats) => Open(videoPath, hook, beats, null, null);
+
+    /// <summary>
+    /// 작업실/갤러리 컨텍스트 열기 — 대본(beats) 없이 미디어 경로 · 프로젝트 이름 · 자막(.srt) 경로로 바인딩.
+    /// 훅 = 프롬프트(있으면) → 프로젝트 이름 → 파일명 순. <paramref name="srtPath"/> 미지정/부재 시 동명 .srt 자동 탐색.
+    /// </summary>
+    public void OpenForMedia(string videoPath, string? projectName, string? srtPath = null, string? prompt = null)
+    {
+        var name = string.IsNullOrWhiteSpace(projectName) ? Path.GetFileNameWithoutExtension(videoPath ?? "") : projectName.Trim();
+        var hook = string.IsNullOrWhiteSpace(prompt) ? name : prompt.Trim();
+        Open(videoPath ?? "", hook, null, name, srtPath);
+    }
+
+    private void Open(string videoPath, string? hook, IReadOnlyList<ScriptBeat>? beats, string? projectName, string? srtPath)
     {
         if (IsBusy) { IsOpen = true; Notify(); return; }
         VideoPath = videoPath ?? "";
-        SrtPath = YouTubeShortsPublisher.ResolveSrtPath(VideoPath);
+        ProjectName = string.IsNullOrWhiteSpace(projectName) ? hook : projectName;
+        SrtPath = srtPath is { Length: > 0 } && File.Exists(srtPath) ? srtPath : YouTubeShortsPublisher.ResolveSrtPath(VideoPath);
         var meta = YouTubeShortsPublisher.BuildMetadata(hook, beats);
         Title = meta.Title;
         Description = meta.Description;

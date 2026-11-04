@@ -482,7 +482,28 @@ public sealed class RetentionIngestRemuxTests
         Assert.True(sources[1] > 0 && sources[3] > 0, report);
         // 누수 = 사이클 비례 증가: 리먹스 1 회 출력 ≈ 380 KB 이므로 출력/곡선 버퍼를 사이클마다 붙잡으면 후반부만 수십 MB.
         // 후반부 증가 < 사이클당 1 KB(런타임 풀 변동 여유) · 전체 < 2 MB(일회성 풀 정착 포함)
-        Assert.True(memMid > 0 && mem1 - memMid < Math.Max(64 * 1024, (cycles - cyclesMid) * 1024), report);
+        // GC.GetTotalMemory 는 프로세스 전역 — 직렬 스위트에서 선행 테스트의 백그라운드 스레드 종료/해제가 측정 창에 섞이면 수백 KB 지터가 난다
+        // (관측: 전체 Δ −41 MB · 스레드 Δ −6 인데 후반 +562 KB). 초과 시 동일 사이클 수의 확인 창을 재측정해 더 작은 값으로 판정.
+        // 실제 누수(사이클당 ≈380 KB 보유)는 어느 창에서도 수십 MB 로 나타나므로 검출력 유지.
+        var tailCycles = cycles - cyclesMid;
+        long tailGrowth = mem1 - memMid;
+        for (var confirm = 0; confirm < 2 && memMid > 0 && tailGrowth >= Math.Max(64 * 1024, tailCycles * 1024); confirm++)
+        {
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+            var c0 = GC.GetTotalMemory(true);
+            for (var c = 0L; c < tailCycles; c++)
+            {
+                run.SetPreset((int)(c % 3));
+                clock = clock.AddSeconds(61);
+                await run.IngestAsync();
+                if (run.Remux() <= 0 || !run.Remuxed) faults++;
+            }
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+            tailGrowth = Math.Min(tailGrowth, GC.GetTotalMemory(true) - c0);
+            report += " · 확인창#" + (confirm + 1) + " 후반 " + tailGrowth + " B";
+        }
+        Assert.Equal(0, faults);
+        Assert.True(memMid > 0 && tailGrowth < Math.Max(64 * 1024, tailCycles * 1024), report);
         Assert.True(mem1 - mem0 < 2 * 1024 * 1024, report);
         Assert.True(handles1 - handles0 <= 32, report);   // 런타임 내부 핸들 변동 여유
     }

@@ -7,13 +7,13 @@ using PromptFlowStudio.Services.Batch;
 namespace PromptFlowStudio.Services.Render;
 
 /// <summary>작업실 미니 큐 진행 단계.</summary>
-public enum MiniQueuePhase : byte { Idle, Rendering, Stitching, Completed, Failed }
+public enum MiniQueuePhase : byte { Idle, Rendering, Stitching, Completed, Failed, Cancelled }
 
 /// <summary>
 /// [PromptFlowStudio] 작업실 인라인 큐 진행률 — 10s/15s/앰비언트 적재 작업(JobId 집합)을 큐 스냅샷에서 집계.
 ///   ▸ 멀티 샷: 전 컷 Completed + 합본 메타(<see cref="MultiDurationPlanner.MetaStitched"/>/<c>…Virtual</c>) → Completed, 메타 대기 중 → Stitching.
 ///   ▸ 단일(앰비언트): Completed → 최종 산출물(ResultPath 우선 → OutputPath) 로컬 실존 경로.
-///   ▸ Failed/Cancelled 컷이 하나라도 있으면 Failed. 스냅샷에 없는 작업(정리됨)은 무시, 전부 없으면 Idle.
+///   ▸ Failed 컷이 하나라도 있으면 Failed, (실패 없이) Cancelled 컷이 있으면 Cancelled. 스냅샷에 없는 작업(정리됨)은 무시, 전부 없으면 Idle.
 /// </summary>
 public readonly record struct MiniQueueProgress(MiniQueuePhase Phase, int TotalCuts, int CompletedCuts, int Percent, string? FinalPath)
 {
@@ -24,7 +24,7 @@ public readonly record struct MiniQueueProgress(MiniQueuePhase Phase, int TotalC
     {
         if (snapshot is null || jobIds is null || jobIds.Count == 0) return None;
         int total = 0, done = 0, active = 0;
-        var failed = false;
+        bool failed = false, cancelled = false;
         string? stitched = null;
         BatchRenderJob? last = null;
         for (var i = 0; i < jobIds.Count; i++)
@@ -38,7 +38,8 @@ public readonly record struct MiniQueueProgress(MiniQueuePhase Phase, int TotalC
             switch (j.Status)
             {
                 case BatchJobStatus.Completed: done++; break;
-                case BatchJobStatus.Failed or BatchJobStatus.Cancelled: failed = true; break;
+                case BatchJobStatus.Failed: failed = true; break;
+                case BatchJobStatus.Cancelled: cancelled = true; break;
                 case BatchJobStatus.Processing: active += Math.Clamp(j.ProgressPercent, 0, 100); break;
             }
             stitched ??= MultiDurationPlanner.MetaOf(j, MultiDurationPlanner.MetaStitched) ?? MultiDurationPlanner.MetaOf(j, MultiDurationPlanner.MetaStitchedVirtual);
@@ -46,6 +47,7 @@ public readonly record struct MiniQueueProgress(MiniQueuePhase Phase, int TotalC
         if (total == 0 || last is null) return None;
         var pct = Math.Clamp((done * 100 + active) / total, 0, 100);
         if (failed) return new(MiniQueuePhase.Failed, total, done, pct, null);
+        if (cancelled) return new(MiniQueuePhase.Cancelled, total, done, pct, null);
         if (done < total) return new(MiniQueuePhase.Rendering, total, done, pct, null);
         if (jobIds.Count > 1)
             return stitched is { Length: > 0 } ? new(MiniQueuePhase.Completed, total, done, 100, stitched) : new(MiniQueuePhase.Stitching, total, done, 100, null);
@@ -53,6 +55,12 @@ public readonly record struct MiniQueueProgress(MiniQueuePhase Phase, int TotalC
     }
 
     /// <summary>단일 작업 최종 산출물 — 엔진 후처리(앰비언트) 결과 ResultPath 우선, 없으면 OutputPath. 로컬 실존만.</summary>
+    /// <summary>취소 직후 즉시 표시용 — 엔진 중단 완료를 기다리지 않고 Cancelled 로 전환(진행 수치 유지).</summary>
+    public MiniQueueProgress AsCancelled() => new(MiniQueuePhase.Cancelled, TotalCuts, CompletedCuts, Percent, null);
+
+    /// <summary>렌더 진행 중(취소 버튼 노출 대상) — 합본(Stitching)은 컷이 모두 완료된 뒤라 취소 대상 아님.</summary>
+    public bool IsActive => Phase == MiniQueuePhase.Rendering;
+
     public static string? ResolveFinal(BatchRenderJob job)
     {
         var r = job.ResultPath;
@@ -68,7 +76,8 @@ public readonly record struct MiniQueueProgress(MiniQueuePhase Phase, int TotalC
         MiniQueuePhase.Rendering => "🎬 렌더링 중... (" + Percent.ToString(CultureInfo.InvariantCulture) + "%)",
         MiniQueuePhase.Stitching => "🎞️ 최종 비디오 합본 중...",
         MiniQueuePhase.Completed => FinalPath is null ? "✅ 렌더 완료 (로컬 산출물 없음)" : "✅ 완료 — " + Path.GetFileName(FinalPath),
-        MiniQueuePhase.Failed => "⚠ 렌더 실패/취소된 컷이 있습니다 (" + CompletedCuts.ToString(CultureInfo.InvariantCulture) + "/" + TotalCuts.ToString(CultureInfo.InvariantCulture) + ")",
+        MiniQueuePhase.Cancelled => "⏹ 취소됨 (Cancelled) — " + CompletedCuts.ToString(CultureInfo.InvariantCulture) + "/" + TotalCuts.ToString(CultureInfo.InvariantCulture) + " 컷",
+        MiniQueuePhase.Failed => "⚠ 렌더 실패한 컷이 있습니다 (" + CompletedCuts.ToString(CultureInfo.InvariantCulture) + "/" + TotalCuts.ToString(CultureInfo.InvariantCulture) + ")",
         _ => "",
     };
 }
