@@ -32,6 +32,7 @@
 @inject ICharacterAnchorService Anchor
 @inject IWanPromptBoosterService Booster
 @inject IGeminiDirectorService Director
+@inject PromptFlowStudio.Services.AI.GeminiPromptService GeminiPrompt
 @inject IGeminiLocalizationService Localize
 @inject IYouTubePublishService YtPublish
 @inject PromptFlowStudio.Services.Platform.ErrorDialogService Errors
@@ -75,6 +76,12 @@
         @* v3.2.0 AI 프리셋 스마트 추천 바(대본/키워드 → 147종 문맥 추천) *@
         <div class="sb-smartsuggest">
             <ThemeSmartSuggestBar OnApply="ApplyBabyTheme" Disabled="@(Jobs.IsRunning || Jobs.IsMerging)" />
+        </div>
+
+        @* ✨ 제미나이 4컷 자동 디렉팅 — 한 줄 스토리 → 컷별 프롬프트 · 카메라 · 듀레이션 일괄 세팅(키 없음/실패 시 로컬 템플릿) *@
+        <div class="sb-gemdir">
+            <input class="sb-gemdir-in" @bind="_directorStory" @bind:event="oninput" placeholder="한 줄 스토리 — 예) 심야 월스트리트 퀀트 트레이더의 하루" disabled="@(_directing || Jobs.IsRunning)" />
+            <button class="sb-tbtn wiz" @onclick="OnGeminiDirect" disabled="@(_directing || Jobs.IsRunning || string.IsNullOrWhiteSpace(_directorStory))" title="스토리를 4개 컷(전경 · 클로즈업 · 액션 · 앰비언트 엔딩)의 프롬프트 · 추천 카메라 앵글 · 듀레이션으로 자동 분할합니다">@(_directing ? "⏳ 디렉팅 중..." : "✨ 제미나이 4컷 자동 디렉팅")</button>
         </div>
 
         <div class="sb-toolbar">
@@ -1341,6 +1348,8 @@
     .sb-qa.pass { color: #059669; background: color-mix(in srgb, #10b981 15%, transparent); }
     .sb-qa.warn { color: #b45309; background: color-mix(in srgb, #f59e0b 16%, transparent); }
     .sb-qa.reject { color: #dc2626; background: color-mix(in srgb, #ef4444 15%, transparent); }
+    .sb-gemdir { display: flex; gap: 8px; align-items: center; margin: 0 0 10px; }
+    .sb-gemdir-in { flex: 1; min-width: 0; font: 600 13px inherit; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); }
     .sb-tbtn.wiz { color: #fff; border: none; background: linear-gradient(135deg, var(--flow-violet), var(--flow-magenta)); box-shadow: 0 6px 16px color-mix(in srgb, var(--flow-magenta) 26%, transparent); }
     .sb-tbtn.wiz:hover:not(:disabled) { filter: brightness(1.07); color: #fff; }
     .sb-openbtn { position: relative; font: 700 12.5px inherit; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; overflow: hidden; }
@@ -1982,6 +1991,8 @@
     public void Dispose()
     {
         try { _ppCts?.Cancel(); } catch (ObjectDisposedException) { }   // v16.12.0 진행 중 내보내기 취소
+        try { _directCts?.Cancel(); } catch (ObjectDisposedException) { }
+        _directCts?.Dispose();
         StudioNav.Requested -= OnStudioRequested;
         Jobs.OnChange -= OnStateChanged;
         Jobs.OnCompleted -= OnJobsCompleted;
@@ -3078,6 +3089,30 @@
             if (hook is null && !string.IsNullOrWhiteSpace(sc.VoiceText)) hook = sc.VoiceText;
         }
         PubVm.Open(path, hook ?? _project.Title, beats);
+    }
+
+    // ✨ 제미나이 4컷 자동 디렉팅
+    private string _directorStory = "";
+    private bool _directing;
+    private CancellationTokenSource? _directCts;
+    private async Task OnGeminiDirect()
+    {
+        if (_directing || string.IsNullOrWhiteSpace(_directorStory)) return;
+        _directing = true;
+        _directCts?.Dispose();
+        _directCts = new CancellationTokenSource();
+        try
+        {
+            var story = _directorStory.Trim();
+            var (shots, fallback) = await GeminiPrompt.DirectStoryboardAsync(story, _directCts.Token);
+            if (Vm.ApplyDirectorShots(shots, story))
+            {
+                if (string.IsNullOrWhiteSpace(_project.Title)) _project.Title = story;
+                ShowToast(fallback ? "💡 로컬 사전 기반으로 4컷 디렉팅되었습니다" : "✨ 제미나이 4컷 자동 디렉팅 완료");
+            }
+        }
+        catch (Exception ex) { Program.Log("Storyboard.GeminiDirect", ex); }
+        finally { _directing = false; }
     }
 
     private void ShowToast(string msg)

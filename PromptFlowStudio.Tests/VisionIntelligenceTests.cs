@@ -755,7 +755,7 @@ public class VisionActionMapperTests
     public void GeminiRecommendation_InjectAndEnhance_Check()
     {
         var picks = GeminiRecommendationMatrix.Picks;
-        Assert.Equal(new[] { "📸", "🎨", "🎞️", "🌌" }, picks.Select(c => c.Icon));
+        Assert.Equal(new[] { "📸", "🎨", "🎞️", "🌌", "📈", "💹", "💻" }, picks.Select(c => c.Icon));
         Assert.Equal(picks.Length, picks.Select(c => c.Label).Distinct().Count());
 
         // 픽 주입: 리터럴 동일 참조 교체 · 범위 밖은 현재 유지.

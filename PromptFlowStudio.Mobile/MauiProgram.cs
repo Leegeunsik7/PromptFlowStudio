@@ -425,6 +425,7 @@ public static class MauiProgram
         builder.Services.AddSingleton<PromptFlowStudio.Services.Camera.WirelessCameraService>(); // 무선 카메라 스트림 · 캡처 · I2V 핸드오프 버퍼
         builder.Services.AddSingleton<PromptFlowStudio.Services.Gallery.GalleryMediaService>(); // 갤러리 메타데이터 아카이브 · 작업실 복원 핸드오프
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.AI.GeminiPromptEnhancer(new System.Net.Http.HttpClient { Timeout = System.TimeSpan.FromSeconds(30) }, () => sp.GetService<PromptFlowStudio.Services.Wan.GeminiConfigService>()?.ApiKey)); // Gemini 미등록 시 원본 반환
+        builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.AI.GeminiPromptService(new System.Net.Http.HttpClient { Timeout = System.TimeSpan.FromSeconds(30) }, () => sp.GetService<PromptFlowStudio.Services.Wan.GeminiConfigService>()?.ApiKey)); // 미등록 시 로컬 룰셋 강화
 
         builder.Services.AddSingleton<PromptFlowStudio.Services.Media.OsmuExportPackager>();
 

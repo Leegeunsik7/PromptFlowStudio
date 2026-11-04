@@ -17,7 +17,7 @@
 @inject AiVoiceoverTtsService Tts
 @inject EpisodicStorySeriesBuilder SeriesBuilder
 @inject PromptFlowStudio.Services.Prompt.PromptSynthesizerService Synth
-@inject GeminiPromptEnhancer Enhancer
+@inject PromptFlowStudio.Services.AI.GeminiPromptService GeminiSvc
 @inject PromptFlowStudio.ViewModels.StoryboardViewModel StoryVm
 @inject PromptFlowStudio.Services.Camera.WirelessCameraService WirelessCam
 @inject PromptFlowStudio.Services.Gallery.GalleryMediaService GalleryMedia
@@ -459,7 +459,7 @@
 
             <div class="ws-w ws-gem">
                 <div class="ws-w-h">✨ 제미나이 AI 추천 스튜디오</div>
-                <button class="ws-gem-enh" @onclick="_geminiEnhance" disabled="@(State.IsBusy || _enhancing)" title="@GeminiRecommendationMatrix.QualityTokens">✨ AI 문장 자동 강화</button>
+                <button class="ws-gem-enh" @onclick="_geminiEnhance" disabled="@(State.IsBusy || _enhancing)" title="@(_imagePath is not null ? "참조 이미지를 Gemini Vision 으로 분석해 I2V 프롬프트를 역생성합니다" : "선택한 듀레이션에 맞춰 Wan 2.1 시네마틱 프롬프트로 강화합니다")">@(_enhancing ? "⏳ 강화 중..." : _imagePath is not null ? "✨ AI 문장 자동 강화 (Vision I2V)" : "✨ AI 문장 자동 강화")</button>
                 <div class="ws-gem-h">🌟 제미나이 픽 프리셋</div>
                 <div class="ws-chips">
                     @for (var i = 0; i < _geminiPick.Length; i++)
@@ -1022,7 +1022,7 @@
         _geminiPick = arr;
     }
 
-    // ✨ AI 문장 자동 강화 — Gemini 시네마틱 확장. 키 없음/실패 시 Enhancer 가 원본을 돌려주면 기존 로컬 품질 토큰 결합으로 폴백.
+    // ✨ AI 문장 자동 강화 — 참조 이미지 有 → Gemini Vision I2V 역추출, 無 → 듀레이션 인지 강화. 키 없음/실패는 서비스가 로컬 룰셋으로 폴백(무중단).
     private bool _enhancing;
     private async Task EnhanceWithGeminiAsync()
     {
@@ -1031,12 +1031,19 @@
         try
         {
             var src = _prompt ?? "";
-            var cam = WanCameraStyleStudio.ActiveIndex(src, WanCameraStyleStudio.Cameras);
-            var sty = WanCameraStyleStudio.ActiveIndex(src, WanCameraStyleStudio.Styles);
-            var enhanced = await Enhancer.EnhancePromptAsync(src,
-                sty >= 0 ? WanCameraStyleStudio.Styles[sty].Label : null,
-                cam >= 0 ? WanCameraStyleStudio.Cameras[cam].Label : null, _mediaCts.Token);
-            _prompt = string.Equals(enhanced, src, StringComparison.Ordinal) ? GeminiRecommendationMatrix.EnhancePromptWithGemini(src) : enhanced;
+            PromptFlowStudio.Services.AI.GeminiEnhanceOutcome r;
+            if (_imagePath is { } img)
+                r = await GeminiSvc.AnalyzeReferenceImageAsync(img, src, _durationMode, _mediaCts.Token);
+            else
+            {
+                var cam = WanCameraStyleStudio.ActiveIndex(src, WanCameraStyleStudio.Cameras);
+                var sty = WanCameraStyleStudio.ActiveIndex(src, WanCameraStyleStudio.Styles);
+                r = await GeminiSvc.EnhancePromptAsync(src, _durationMode,
+                    sty >= 0 ? WanCameraStyleStudio.Styles[sty].Label : null,
+                    cam >= 0 ? WanCameraStyleStudio.Cameras[cam].Label : null, _mediaCts.Token);
+            }
+            if (!string.IsNullOrWhiteSpace(r.Prompt)) _prompt = r.Prompt;
+            if (r.UsedFallback) _camToast = "💡 " + r.Message;
         }
         catch (Exception ex) { Program.Log("Workspace.GeminiEnhance", ex); }
         finally { _enhancing = false; }

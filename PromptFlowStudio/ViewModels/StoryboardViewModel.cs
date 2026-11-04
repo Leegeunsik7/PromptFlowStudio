@@ -103,6 +103,42 @@ public sealed class StoryboardViewModel : INotifyPropertyChanged, IDisposable
     }
 
     /// <summary>
+    /// ✨ 제미나이 4컷 자동 디렉팅 적용 — 컷별 프롬프트 · 카메라 · 듀레이션 일괄 세팅(기존 컷 교체).
+    /// 시드는 MasterSeed(없으면 스토리 기반 결정적 시드)로 고정 후 컷별 전파. 빈 샷 목록이면 false(상태 불변).
+    /// </summary>
+    public bool ApplyDirectorShots(IReadOnlyList<PromptFlowStudio.Services.AI.DirectorShot>? shots, string? story)
+    {
+        if (shots is null || shots.Count == 0) return false;
+        var cuts = new List<StoryboardCut>(shots.Count);
+        for (var i = 0; i < shots.Count; i++)
+        {
+            var sh = shots[i];
+            cuts.Add(new StoryboardCut
+            {
+                CutIndex = i + 1,
+                RawPrompt = sh.Prompt,
+                CameraMotion = sh.Camera,
+                DurationSec = sh.DurationSec > 0f ? sh.DurationSec : StoryboardCut.DefaultDurationSec,
+                TransitionType = i == 0 ? TransitionType.Cut : TransitionType.Dissolve,
+            });
+        }
+        var master = _masterSeed is > 0 ? _masterSeed.Value : StableSeed(string.IsNullOrWhiteSpace(story) ? shots[0].Prompt : story);
+        _masterSeed = master;
+        OnPropertyChanged(nameof(MasterSeed));
+        _sequencer.PropagateConsistency(cuts, master, _subjectIdentity);
+
+        _suppress = true;
+        try
+        {
+            Cuts.Clear();
+            foreach (var c in cuts) Cuts.Add(c);
+        }
+        finally { _suppress = false; }
+        AfterStructureChanged();
+        return true;
+    }
+
+    /// <summary>
     /// 전 컷 일괄 렌더 작업 생성 — 1번 컷 피사체 키워드(SubjectIdentity → 없으면 1번 컷 프롬프트)와 참조 이미지
     /// (프로젝트 앵커 → 없으면 1번 씬 i2v 이미지)를 전 컷 공통 앵커로 전파, 후속 컷 프롬프트에 앵커 구문 결합.
     /// 시드: MasterSeed 지정 시 <c>MasterSeed + (CutIndex - 1)</c>, 미지정이면 컷 시드(0 이면 결정적 대체 + 위치).

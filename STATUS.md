@@ -1,16 +1,19 @@
 # Current Project Status
-- Active Milestone: 【UI 역할 분리】 예상 첫 프레임 시뮬레이터 ↔ 라이브 비디오 캔버스 중복 제거 — 정적 Start Frame 스틸 프리뷰어 전환
-- Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (net8.0-android 미검증: SDK/JDK 미설치)
-- Tests: FastUnit 542/542 PASS(병렬 ~31s) · FirstFrame/Storyboard/BatchStudio 관련 29/29 PASS
+- Active Milestone: 【제미나이 AI 스튜디오 고도화】 듀레이션 연동 · Vision I2V 역추출 · 스토리보드 4컷 자동 디렉팅 · 로컬 폴백 가드
+- Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (net8.0-android 미검증: Android SDK 미설치)
+- Tests: FastUnit 545/545 PASS(~29s) · GeminiPromptServiceTests 3/3 PASS
 - Updated: 2026-11-04 (KST)
 
 ## Completed
-- FirstFramePreviewDeck: OnStartGenerate/CanStart·클릭 생성·▶ 오버레이·카메라 모션 애니메이션 제거 → 정적 스틸 뷰(3분할 그리드·카메라 가이드 SVG·START FRAME 배지)
-- Workspace: 참조 이미지 즉시 첫 프레임 표시 · 생성은 [영상 생성 시작] 버튼만 · 재생/SNS 발행은 라이브 비디오 캔버스 전담
-- Storyboard: '컷 앵커 스틸 뷰'로 전환 · 렌더는 [일괄 렌더]/컷별 [렌더]만
-- BatchStudio(대량생산): 붙여넣기 첫 행 대본 기반 '스틸 썸네일·레이아웃 검토 뷰'
-- 테스트: FirstFrameSimulation_LiveRender_Check — 렌더 큐 비결선(OnStartGenerate/video/ClickStart 부재) 단언으로 갱신
+- GeminiPromptService(신규 · Services/AI): gemini-2.0-flash · 듀레이션 인지 System Instruction(15s-Ambient → 루프 친화 미세 동세 지침 강제 + 응답 누락 시 루프 키워드 보장)
+- AnalyzeReferenceImageAsync: 참조 이미지 base64 인라인(≤16MB) → Wan 2.1 I2V 프롬프트 역생성
+- DirectStoryboardAsync: 한 줄 스토리 → 4컷(프롬프트·카메라·듀레이션) JSON 스키마 즉시 검증, 불일치 시 로컬 4컷 템플릿
+- FallbackLocalEnhance: 키 없음/네트워크/HTTP 오류 → 로컬 시네마틱 사전(8K·35mm·shallow DoF·smooth motion) 무중단 강화
+- Workspace: [✨ AI 문장 자동 강화] 이미지 有 → Vision I2V, 無 → 듀레이션 연동 · "⏳ 강화 중..." · 폴백 토스트
+- 제미나이 픽: 📈 퀀트 OLED 차트 · 💹 핀테크 앰비언트 · 💻 트레이딩 데스크 추가
+- Storyboard: [✨ 제미나이 4컷 자동 디렉팅] → StoryboardViewModel.ApplyDirectorShots(시드 전파·씬 동기화)
+- DI: MainForm.cs + MauiProgram.cs 양쪽 등록 · 기존 GeminiPromptEnhancer 보존
 
 ## Known Issues
-- TitanReleaseTests.VirtualProduction_And_CinematicMastering_Check 타이밍 단언(MaxSolveMicros<1000µs) 부하 시 간헐 실패
-- 실 ffmpeg 필터 품질 육안 미검증 · 번들 YouTube OAuth 클라이언트 값 공란 유지
+- TitanReleaseTests.VirtualProduction_And_CinematicMastering_Check 타이밍 단언 부하 시 간헐 실패
+- 실 Gemini API 응답 품질 육안 미검증(테스트는 스텁 핸들러)
