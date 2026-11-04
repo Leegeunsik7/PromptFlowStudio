@@ -46,6 +46,29 @@ public class PromptInspirationTests
 
     [Fact]
     [Trait("Category", "FastUnit")]
+    public void InspirationHub_ContainsFintechPresets_WithStockCandlePrompts()
+    {
+        var fin = _svc.GetPresetsByCategory(StoryPresetCategory.FintechTrading);
+        Assert.Equal(5, fin.Count);
+        var titles = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var r in fin) titles.Add(r.Title);
+        foreach (var t in new[] { "OLED 퀀트 캔들 차트", "트레이더 멀티 모니터 데스크", "월스트리트 LED 티커 보드", "다크 글래스 리플렉션", "글로벌 거래소 데이터 노드" })
+            Assert.Contains(t, titles);
+        var candle = Assert.Single(fin, r => r.Title == "OLED 퀀트 캔들 차트");
+        Assert.Contains("candlestick", candle.FullPrompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("moving average", candle.FullPrompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("volume bars", candle.FullPrompt, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(fin, r => r.FullPrompt.Contains("order book", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(fin, r => r.FullPrompt.Contains("Seoul", StringComparison.Ordinal) && r.FullPrompt.Contains("Tokyo", StringComparison.Ordinal));
+        Assert.All(fin, r => Assert.True(r.FullPrompt.Length <= PromptSynthesizerService.MaxCharacterLimit));
+        Assert.Equal("📈 핀테크 & 트레이딩 터미널", PromptInspirationService.CategoryLabel(StoryPresetCategory.FintechTrading));
+        Assert.Equal("sci-fi alien text, glowing wireframe cube, messy neon lines, fantasy energy, 2D flat cartoon",
+            PromptInspirationService.DefaultNegativeFor(StoryPresetCategory.FintechTrading));
+        Assert.Null(PromptInspirationService.DefaultNegativeFor(StoryPresetCategory.CuteBabyKids));
+    }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
     public void GetCuratedPresets_ContainsCuteBabyKidsCategory()
     {
         var baby = _svc.GetPresetsByCategory(StoryPresetCategory.CuteBabyKids);

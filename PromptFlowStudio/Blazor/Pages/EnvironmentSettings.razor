@@ -153,7 +153,7 @@
     <section class="es-card">
         <div class="es-card-t">🎬 FFmpeg 툴체인</div>
         <div class="es-row">
-            <span class="es-badge @(Vm.Ffmpeg.Found ? "ok" : "bad")">@(Vm.Ffmpeg.Found ? "정상" : "미설치")</span>
+            <span class="es-badge @(Vm.Ffmpeg.Found ? "ok" : "bad")">@(Vm.Ffmpeg.Found ? "정상 설치됨 🟢" : "미설치")</span>
             <span class="es-mono">@(Vm.Ffmpeg.Path ?? "tools/ffmpeg/bin/ffmpeg.exe 또는 PATH 에서 찾지 못함")</span>
             <button class="es-btn ghost" @onclick="RefreshFfmpeg">↻ 재탐색</button>
         </div>
@@ -164,6 +164,24 @@
         else
         {
             <div class="es-hint">앱 폴더의 tools/ffmpeg/bin/ffmpeg.exe 에 동봉하면 별도 설치 없이 합본·음성 믹싱이 동작합니다.</div>
+            @if (FfmpegAutoDownloaderService.IsSupported)
+            {
+                <div class="es-row">
+                    <button class="es-btn" @onclick="InstallFfmpeg" disabled="@(!Vm.CanAutoInstallFfmpeg)">⬇️ FFmpeg 원클릭 자동 설치 (Windows 64-bit)</button>
+                    @if (Vm.IsFfmpegInstalling)
+                    {
+                        <span class="es-mono">@((Vm.FfmpegInstallProgress * 100f).ToString("0", System.Globalization.CultureInfo.InvariantCulture))%</span>
+                    }
+                </div>
+                @if (Vm.IsFfmpegInstalling)
+                {
+                    <div class="es-ff-bar"><i style="width:@((Vm.FfmpegInstallProgress * 100f).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture))%"></i></div>
+                }
+            }
+        }
+        @if (Vm.FfmpegInstallMessage is not null)
+        {
+            <div class="es-hint">@Vm.FfmpegInstallMessage</div>
         }
     </section>
 
@@ -202,6 +220,8 @@
     .es-badge{padding:4px 10px;border-radius:999px;font-size:11.5px;font-weight:800}
     .es-badge.ok{color:#4ade80;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.4)}
     .es-badge.bad{color:#f87171;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.4)}
+    .es-ff-bar{height:6px;border-radius:3px;background:rgba(148,163,184,.25);overflow:hidden;margin:6px 0}
+    .es-ff-bar>i{display:block;height:100%;background:#22d3ee;transition:width .25s ease}
     .es-mode{padding:9px 16px;border-radius:10px;border:1px solid var(--line,rgba(148,163,184,.25));background:transparent;color:var(--sub,#93a3b8);font-weight:700;cursor:pointer}
     .es-mode.on{color:#fff;background:rgba(124,108,255,.28);border-color:rgba(124,108,255,.6)}
     .es-mono{font:12px 'Roboto Mono',Consolas,monospace;color:var(--sub,#cbd5e1);word-break:break-all}
@@ -273,6 +293,24 @@
         StateHasChanged();
         try { await t; }
         catch (OperationCanceledException) { }
+    }
+
+    private long _ffUiTick;
+    private async Task InstallFfmpeg()
+    {
+        try
+        {
+            // 진행 콜백은 스레드풀에서 올 수 있음 — 250ms 스로틀 후 렌더러 마샬링
+            await Vm.InstallFfmpegAsync(() =>
+            {
+                var now = Environment.TickCount64;
+                if (Vm.IsFfmpegInstalling && now - Interlocked.Read(ref _ffUiTick) < 250) return;
+                Interlocked.Exchange(ref _ffUiTick, now);
+                _ = InvokeAsync(StateHasChanged);
+            }, _cts.Token);
+        }
+        catch (OperationCanceledException) { }
+        StateHasChanged();
     }
 
     private async Task RefreshFfmpeg()

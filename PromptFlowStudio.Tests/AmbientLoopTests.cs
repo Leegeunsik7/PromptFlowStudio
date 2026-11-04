@@ -21,7 +21,7 @@ public class AmbientLoopTests : IDisposable
     {
         Assert.Equal("setpts=3.0*PTS,minterpolate='fps=30:mi_mode=mci'", AmbientLoopService.BuildSlowMotionFilter());
 
-        var args = AmbientLoopService.BuildAmbientArgs("in.mp4", "out_ambient15s.mp4");
+        var args = AmbientLoopService.BuildAmbientArgs("in.mp4", "out_ambient15s.mp4", highQuality: true);
         var vf = Array.IndexOf(args, "-vf");
         Assert.True(vf > 0);
         Assert.Equal("setpts=3.0*PTS,minterpolate='fps=30:mi_mode=mci'", args[vf + 1]);
@@ -37,11 +37,28 @@ public class AmbientLoopTests : IDisposable
     {
         var args = AmbientLoopService.BuildAmbientArgs("in.mp4", "o.mp4", pingPong: true);
         var fc = args[Array.IndexOf(args, "-filter_complex") + 1];
-        Assert.StartsWith("[0:v]setpts=1.5*PTS,minterpolate='fps=30:mi_mode=mci',split[fw][bw]", fc);
+        Assert.StartsWith("[0:v]setpts=1.5*PTS,fps=30,split[fw][bw]", fc);
+        Assert.DoesNotContain("minterpolate", fc);
+        Assert.StartsWith("[0:v]setpts=1.5*PTS,minterpolate='fps=30:mi_mode=mci',split[fw][bw]", AmbientLoopService.BuildPingPongFilterGraph(highQuality: true));
         Assert.Contains("[bw]reverse[rv]", fc);
         Assert.Contains("[fw][rv]concat=n=2:v=1:a=0", fc);
         Assert.Equal("[vout]", args[Array.IndexOf(args, "-map") + 1]);
         Assert.DoesNotContain("-vf", args);
+    }
+
+    [Fact]
+    public void AmbientLoop_UsesFastBlendFilter_WithoutCpuBottleneck()
+    {
+        Assert.Equal("setpts=3.0*PTS,fps=30", AmbientLoopService.BuildFastSlowFilter());
+        var args = AmbientLoopService.BuildAmbientArgs("in.mp4", "o.mp4");
+        Assert.Equal("setpts=3.0*PTS,fps=30", args[Array.IndexOf(args, "-vf") + 1]);
+        foreach (var a in args) Assert.DoesNotContain("minterpolate", a);
+        Assert.Equal("veryfast", args[Array.IndexOf(args, "-preset") + 1]);
+        Assert.Equal("15", args[Array.IndexOf(args, "-t") + 1]);
+
+        var pp = AmbientLoopService.BuildAmbientArgs("in.mp4", "o.mp4", pingPong: true);
+        var fc = pp[Array.IndexOf(pp, "-filter_complex") + 1];
+        Assert.Equal("[0:v]setpts=1.5*PTS,fps=30,split[fw][bw];[bw]reverse[rv];[fw][rv]concat=n=2:v=1:a=0,format=yuv420p[vout]", fc);
     }
 
     [Fact]

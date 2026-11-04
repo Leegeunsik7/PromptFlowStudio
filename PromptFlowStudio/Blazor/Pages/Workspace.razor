@@ -148,6 +148,17 @@
                 <label class="ws-dur-hint"><input type="checkbox" @bind="_ambientPingPong" disabled="@State.IsBusy" /> 🔁 리버스 핑퐁 루프(시작·끝 이음새 제거)</label>
             }
             @if (_durationMsg is not null) { <div class="ws-dur-hint">@_durationMsg</div> }
+            @if (_mini.Phase != PromptFlowStudio.Services.Render.MiniQueuePhase.Idle)
+            {
+                <div class="ws-mini-q @(_mini.Phase == PromptFlowStudio.Services.Render.MiniQueuePhase.Failed || _miniStitchFail is not null ? "bad" : null)">
+                    <div class="ws-mini-q-l">@(_miniStitchFail is null ? _mini.Label : "⚠ 합본 실패 — " + _miniStitchFail)</div>
+                    <div class="ws-mini-q-bar"><i style="width:@(_mini.Percent.ToString(CultureInfo.InvariantCulture))%"></i></div>
+                    @if (_miniUrl is not null)
+                    {
+                        <video class="ws-mini-q-vid" src="@_miniUrl" controls autoplay loop muted preload="auto" @key="_miniUrl"></video>
+                    }
+                </div>
+            }
             <div class="ws-row">
                 <label class="ws-lbl">해상도
                     <select class="ws-sel" @bind="_size" @bind:after="SyncSize" disabled="@State.IsBusy">
@@ -783,6 +794,12 @@
     .ws-dur-part { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--text-secondary); }
     .ws-ta-part { min-height: 52px; }
     .ws-dur-hint { font-size: 11px; color: var(--text-secondary); margin: 2px 0 4px; }
+    .ws-mini-q { margin: 4px 0 8px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--flow-cyan) 40%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--flow-cyan) 6%, transparent); }
+    .ws-mini-q.bad { border-color: #e5484d; background: color-mix(in srgb, #e5484d 8%, transparent); }
+    .ws-mini-q-l { font-size: 12px; color: var(--text-primary); margin-bottom: 6px; }
+    .ws-mini-q-bar { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--text-secondary) 25%, transparent); overflow: hidden; }
+    .ws-mini-q-bar > i { display: block; height: 100%; background: var(--flow-cyan); transition: width .25s ease; }
+    .ws-mini-q-vid { width: 100%; margin-top: 8px; border-radius: 6px; background: #000; }
     .ws-zen-chip.on { color: var(--text-primary); border-color: var(--flow-cyan); box-shadow: 0 0 12px color-mix(in srgb, var(--flow-cyan) 45%, transparent), inset 0 0 8px color-mix(in srgb, var(--flow-cyan) 18%, transparent); }
     .ws-zen-chip:disabled { opacity: .5; cursor: not-allowed; }
     @@media (prefers-reduced-motion: reduce) { .ws-accel.run { animation: none; } }
@@ -1003,6 +1020,7 @@
         PromptFlowStudio.Services.Prompt.StoryPresetCategory.EmotionalDrama,
         PromptFlowStudio.Services.Prompt.StoryPresetCategory.FashionLookbook,
         PromptFlowStudio.Services.Prompt.StoryPresetCategory.CyberpunkAction,
+        PromptFlowStudio.Services.Prompt.StoryPresetCategory.FintechTrading,
     };
     private int _inspTab;
     private bool _inspClosing;
@@ -1038,6 +1056,10 @@
         if (!await FadeOutInspirationAsync()) return;
         _vm.ApplyRecipe(recipe);
         _prompt = _vm.UserInput ?? "";
+        // 카테고리 기본 네거티브 칩(핀테크 등) — 중복 없이 기존 네거티브 뒤에 결합
+        if (PromptFlowStudio.Services.Prompt.PromptInspirationService.DefaultNegativeFor(recipe.Category) is { } neg
+            && !_baby.NegativePrompt.Contains(neg, StringComparison.Ordinal))
+            _baby.NegativePrompt = string.IsNullOrWhiteSpace(_baby.NegativePrompt) ? neg : _baby.NegativePrompt.TrimEnd().TrimEnd(',') + ", " + neg;
     }
     private async Task ApplyChipsAsync()
     {
@@ -1209,8 +1231,56 @@
     private PromptFlowStudio.Services.Render.VideoDurationMode _durationMode = PromptFlowStudio.Services.Render.VideoDurationMode.Sec5_Single;
     private readonly string?[] _subPrompts = new string?[3];
     private Action[] _durPick = Array.Empty<Action>();
-    private bool _ambientPingPong;
+    private bool _ambientPingPong = true;   // 기본 핑퐁(고속 블렌드 필터 조합 · 이음새 없는 15초 루프)
     private string? _durationMsg;
+
+    // ── 작업실 인라인 큐 진행률(MiniQueueProgress) — 적재 작업 JobId 추적 → 컷 진행/합본 → 완료 시 인라인 자동 재생 ──
+    private Guid[] _miniIds = Array.Empty<Guid>();
+    private string? _miniGroup, _miniUrl, _miniPlayed, _miniStitchFail;
+    private PromptFlowStudio.Services.Render.MiniQueueProgress _mini = PromptFlowStudio.Services.Render.MiniQueueProgress.None;
+
+    private void TrackMiniQueue(IReadOnlyList<PromptFlowStudio.Services.Batch.BatchRenderJob> jobs)
+    {
+        var ids = new Guid[jobs.Count];
+        for (var i = 0; i < ids.Length; i++) ids[i] = jobs[i].JobId;
+        _miniIds = ids;
+        _miniGroup = jobs.Count > 0 ? jobs[0].StitchGroupId : null;
+        _miniUrl = _miniPlayed = _miniStitchFail = null;
+        _mini = PromptFlowStudio.Services.Render.MiniQueueProgress.None;
+        RefreshMiniQueue();
+    }
+
+    /// <returns>표시 상태가 바뀌었는지.</returns>
+    private bool RefreshMiniQueue()
+    {
+        if (_miniIds.Length == 0) return false;
+        var next = PromptFlowStudio.Services.Render.MiniQueueProgress.Compute(RenderQueue.Snapshot(), _miniIds);
+        if (next == _mini) return false;
+        _mini = next;
+        if (next.Phase == PromptFlowStudio.Services.Render.MiniQueuePhase.Completed && next.FinalPath is { } fp && !string.Equals(fp, _miniPlayed, StringComparison.OrdinalIgnoreCase))
+        {
+            _miniPlayed = fp;
+            try { _miniUrl = Media.ToPlaybackUrl(fp); } catch (Exception ex) { Program.Log("Workspace.MiniQueue", ex); _miniUrl = null; }
+        }
+        return true;
+    }
+
+    // 워커 스레드 발생 — 렌더러 스레드로 마샬링, 예외 격리
+    private void OnRenderQueueChanged()
+    {
+        if (_miniIds.Length == 0) return;
+        _ = InvokeAsync(() =>
+        {
+            try { if (RefreshMiniQueue()) StateHasChanged(); }
+            catch (Exception ex) { Program.Log("Workspace.MiniQueue", ex); }
+        });
+    }
+
+    private void OnDurationStitched(string group, PromptFlowStudio.Services.Render.VideoStitchResult r)
+    {
+        if (r.Ok || !string.Equals(group, _miniGroup, StringComparison.Ordinal)) return;
+        _ = InvokeAsync(() => { _miniStitchFail = r.Message; StateHasChanged(); });
+    }
 
     private void InitDurationPickers()
     {
@@ -1237,6 +1307,7 @@
             Metadata = meta,
         };
         var jobs = RenderQueue.EnqueueJob(template, _subPrompts, project);
+        TrackMiniQueue(jobs);
         _durationMsg = jobs.Count == 0 ? "⚠ 렌더 큐 적재 실패"
             : "📥 렌더 큐 적재 " + jobs.Count.ToString(CultureInfo.InvariantCulture) + "컷 · " + PromptFlowStudio.Services.Render.MultiDurationPlanner.Label(_durationMode) + " → " + project;
     }
@@ -1329,6 +1400,8 @@
     protected override void OnInitialized()
     {
         State.OnChange += OnStateChanged;
+        RenderQueue.OnChange += OnRenderQueueChanged;
+        if (RenderQueue is PromptFlowStudio.Services.Render.RenderQueueService rqs) rqs.OnDurationStitched += OnDurationStitched;
         InitDurationPickers();
         _vm = new PromptFlowStudio.ViewModels.PromptInputViewModel(Synth, Inspiration);
         _vm.SetOutputSize(_size);
@@ -1403,6 +1476,8 @@
     public void Dispose()
     {
         State.OnChange -= OnStateChanged;
+        RenderQueue.OnChange -= OnRenderQueueChanged;
+        if (RenderQueue is PromptFlowStudio.Services.Render.RenderQueueService rqs) rqs.OnDurationStitched -= OnDurationStitched;
         _vm.PropertyChanged -= OnVmChanged;
         var cts = Interlocked.Exchange(ref _liveCts, null);
         if (cts is not null) { cts.Cancel(); cts.Dispose(); }

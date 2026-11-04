@@ -1,17 +1,15 @@
 # Current Project Status
-- Active Milestone: 【멀티 듀레이션】 5s/10s/15s 파이프라인 + I2V 앵커 체이닝 + 15s 앰비언트 슬로우 루프
+- Active Milestone: 【작업실 UX】 인라인 큐 진행률 + FFmpeg 원클릭 설치 + 앰비언트 고속 필터 + 📈 핀테크 프리셋
 - Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (net8.0-android 미검증: SDK/JDK 미설치)
-- Tests: 전체 739/739 PASS(직렬 ~14m) · FastUnit 507/507 PASS(병렬 ~30s)
+- Tests: 전체 746/746 PASS(직렬 ~10m) · FastUnit 514/514 PASS(병렬 ~45s)
 - Updated: 2026-11-04 (KST)
 
 ## Completed
-- 모델: `VideoDurationMode{Sec5_Single,Sec10_Dual,Sec15_Triple,Sec15_AmbientSlow}` · `BatchRenderJob.DurationMode/TargetDurationSeconds/IsAmbientLoop/StitchGroupId`
-- 계획기: `Services/Render/MultiDurationPlanner` — 5초 하위 컷 2~3개 전개(동일 그룹 키 · 빈 서브 프롬프트는 메인 상속 + 파트별 카메라 모션 차등) · 출력 `{project}_10s/_15s/_ambient15s.mp4`
-- 큐: `IRenderQueueService.EnqueueJob` 원자 적재 · 컷 완료 시 `ffmpeg -sseof -0.1 … -vframes 1` 마지막 프레임 → 다음 컷 `ReferenceImagePath`(I2V) 주입 · 전 컷 완료 시 `StitchCutsAsync` 자동 합본(그룹당 1회 · `OnDurationStitched`)
-- 앰비언트: `AmbientLoopService` — `setpts=3.0*PTS,minterpolate='fps=30:mi_mode=mci'` · 옵션 핑퐁(1.5x + reverse concat) · 무음 15초 · 엔진 후처리 결선
-- 비용: `ProductionCostTrackerService.EstimateCost(job)` 가중치 1x/2x/3x/1x(하위 컷은 컷당 1회분)
-- UI: Workspace 듀레이션 칩 4종 + 파트 서브 프롬프트 · 갤러리 모달 `🔁 무한 반복 재생` 토글(기본 on)
+- 작업실: `Services/Render/MiniQueueProgress` — 적재 JobId 집계(컷 n/N·%) → `🎞️ 합본 중` → 완료 시 Workspace 인라인 `<video>` 자동 재생 · 합본 실패 `OnDurationStitched` 표시 · `RenderQueue.OnChange` 구독/해제
+- FFmpeg: `FfmpegAutoDownloaderService` — Gyan.dev→GitHub BtbN 미러 페일오버 · 2회 지수백오프 · 10분 타임아웃 · SHA-256 `FixedTimeEquals` · 파일명 기준 추출(Zip-Slip 차단)+MZ 검증 → `tools/ffmpeg/bin/` · `/app-settings` ⬇️ 버튼+진행바(250ms 스로틀) → 재탐색 `정상 설치됨 🟢`
+- 앰비언트: 기본 `setpts=3.0*PTS,fps=30`(minterpolate 제거) · 핑퐁 기본 on(1.5x+reverse concat) · `highQuality` 옵트인으로 기존 minterpolate 보존
+- 인스피레이션: `StoryPresetCategory.FintechTrading` 5종 + `FintechNegative` 칩(프리셋 적용 시 네거티브 자동 결합 · 중복 차단)
 
 ## Known Issues
-- 5s 단일은 기존 직접 생성 경로, 10s/15s/Ambient는 렌더 큐 경유(진행은 큐 화면에서 확인)
-- 실 ffmpeg/엔진으로 체이닝·minterpolate 품질 미검증(주입 실행기 테스트) · 번들 YouTube OAuth 클라이언트 값 공란 유지
+- `LiveToReelsFactoryIsolatedTests` 직렬 전체 실행 1회 실패 후 재실행·단독 통과 — 순서 의존 플래키 의심(본 변경과 무관 파일)
+- 실 네트워크 다운로드·실 ffmpeg 고속 필터 품질 미검증(주입 HttpHandler/실행기 테스트) · 번들 YouTube OAuth 클라이언트 값 공란 유지

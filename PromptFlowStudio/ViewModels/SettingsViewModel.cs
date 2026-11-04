@@ -92,6 +92,42 @@ public sealed class SettingsViewModel
     public FfmpegLocation Ffmpeg { get; private set; } = new(null, "미설치");
     public string? FfmpegVersion { get; private set; }
 
+    // ── ⬇️ FFmpeg 원클릭 자동 설치 ──
+    /// <summary>설치기(테스트 주입 가능) — 기본 <c>{BaseDirectory}	oolsfmpegin</c> 대상.</summary>
+    public FfmpegAutoDownloaderService FfmpegDownloader { get; init; } = new();
+    public bool IsFfmpegInstalling { get; private set; }
+    /// <summary>0~1 진행률.</summary>
+    public float FfmpegInstallProgress { get; private set; }
+    public string? FfmpegInstallMessage { get; private set; }
+    /// <summary>미설치 + Windows x64 + 설치 중 아님.</summary>
+    public bool CanAutoInstallFfmpeg => !Ffmpeg.Found && !IsFfmpegInstalling && FfmpegAutoDownloaderService.IsSupported;
+
+    /// <summary>다운로드 → 추출 → <see cref="RefreshFfmpegAsync"/> 재탐색. <paramref name="onProgress"/> 는 UI 갱신 콜백(예외 격리).</summary>
+    public async Task<bool> InstallFfmpegAsync(Action? onProgress = null, CancellationToken ct = default)
+    {
+        if (IsFfmpegInstalling) return false;
+        IsFfmpegInstalling = true;
+        FfmpegInstallProgress = 0f;
+        FfmpegInstallMessage = "⬇️ FFmpeg 다운로드 중…";
+        Notify(onProgress);
+        try
+        {
+            var progress = new Progress<float>(v => { FfmpegInstallProgress = v; Notify(onProgress); });
+            var r = await FfmpegDownloader.InstallAsync(progress, ct).ConfigureAwait(false);
+            FfmpegInstallMessage = (r.Ok ? "✅ " : "⚠ ") + r.Message;
+            if (r.Ok) await RefreshFfmpegAsync(ct).ConfigureAwait(false);
+            return r.Ok && Ffmpeg.Found;
+        }
+        catch (OperationCanceledException) { FfmpegInstallMessage = "설치 취소됨"; return false; }
+        catch (Exception ex) { Program.Log("SettingsViewModel.FfmpegInstall", ex); FfmpegInstallMessage = "⚠ 설치 실패: " + ex.Message; return false; }
+        finally { IsFfmpegInstalling = false; Notify(onProgress); }
+    }
+
+    private static void Notify(Action? cb)
+    {
+        try { cb?.Invoke(); } catch (Exception ex) { Program.Log("SettingsViewModel.FfmpegInstall", ex); }
+    }
+
     /// <summary>현재 저장본으로 폼 재적재.</summary>
     public void Load()
     {

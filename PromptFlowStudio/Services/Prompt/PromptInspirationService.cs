@@ -7,7 +7,7 @@ using System.Text.Json;
 namespace PromptFlowStudio.Services.Prompt;
 
 /// <summary>스토리 레시피 장르.</summary>
-public enum StoryPresetCategory { CinematicSciFi, NatureDocu, EmotionalDrama, FashionLookbook, CyberpunkAction, CuteBabyKids }
+public enum StoryPresetCategory { CinematicSciFi, NatureDocu, EmotionalDrama, FashionLookbook, CyberpunkAction, CuteBabyKids, FintechTrading }
 
 /// <summary>장르별 완성형 시나리오 프리셋 — <see cref="FullPrompt"/> 는 Wan 2.1 최적화(≤800자).</summary>
 public sealed record StoryRecipe(string Title, StoryPresetCategory Category, string FullPrompt, string RecommendedCamera, string RecommendedLighting);
@@ -62,6 +62,23 @@ public sealed class PromptInspirationService
         new("꼬마 우주비행사의 풍선 모험", StoryPresetCategory.CuteBabyKids,
             "Cute toddler in a miniature retro-futuristic astronaut suit holding a glowing crescent-moon balloon in a dreamy pastel galaxy nursery, floating soft movements, whimsical and heartwarming.",
             "Slow Floating Crane Reveal", "Pastel Ambient Glow, Rim Specular"),
+
+        // ── FintechTrading (📈 핀테크 & 트레이딩 터미널) ──
+        new("OLED 퀀트 캔들 차트", StoryPresetCategory.FintechTrading,
+            "Photorealistic close-up of a dark-mode OLED trading terminal showing crisp green and red stock candlestick charts with moving average lines and volume bars, the camera slowly panning across the price action, true black background, sharp anti-aliased chart typography, 8k ultra-detailed, premium financial commercial look.",
+            "Slow Lateral Pan, Macro Lens", "True Black OLED Glow, Soft Screen Bounce"),
+        new("트레이더 멀티 모니터 데스크", StoryPresetCategory.FintechTrading,
+            "A professional trader's desk in a dark night-time office with an array of curved monitors displaying live candlestick charts and a real-time order book depth ladder, city lights through floor-to-ceiling windows, focused realistic atmosphere, photorealistic.",
+            "Slow Dolly Push-In Over Shoulder", "Cool Monitor Spill, Dim Ambient Office"),
+        new("월스트리트 LED 티커 보드", StoryPresetCategory.FintechTrading,
+            "A massive Wall Street style LED ticker board with stock symbols and real-time percentage changes scrolling smoothly in green and red, crowds softly blurred below, realistic urban financial district, cinematic photorealism.",
+            "Low-Angle Slow Tilt Up", "LED Ticker Glow, Overcast Daylight"),
+        new("다크 글래스 리플렉션", StoryPresetCategory.FintechTrading,
+            "Ambient shot of a sleek black glass desk subtly reflecting a rising green trend line from a nearby monitor, minimalist luxury office, shallow depth of field, calm elegant motion, photorealistic premium fintech aesthetic.",
+            "Slow Low-Angle Glide", "Soft Reflection Highlights, Low-Key Lighting"),
+        new("글로벌 거래소 데이터 노드", StoryPresetCategory.FintechTrading,
+            "A clean corporate financial visualization of a world map connecting Seoul, New York and Tokyo stock exchange indices with thin precise data lines and index values, restrained navy and white palette, professional broadcast finance graphics, photorealistic studio display.",
+            "Slow Orbit Push-In", "Clean Studio Key Light, Subtle Display Glow"),
 
         // ── CinematicSciFi ──
         new("궤도 정거장의 새벽", StoryPresetCategory.CinematicSciFi,
@@ -124,6 +141,12 @@ public sealed class PromptInspirationService
             "Two cyber-enhanced fighters clash with glowing energy blades on a skyscraper rooftop in heavy rain, sparks scattering on impact, a giant holographic koi swimming in the sky behind them",
             "Dynamic Orbit with Speed Ramp", "Electric Blue Rim Light, Volumetric Rain"),
     };
+
+    /// <summary>📈 핀테크 기본 네거티브 칩 — SF·판타지·만화풍 오염 차단(실사 금융 비주얼 유지).</summary>
+    public const string FintechNegative = "sci-fi alien text, glowing wireframe cube, messy neon lines, fantasy energy, 2D flat cartoon";
+
+    /// <summary>카테고리 기본 네거티브(없으면 null) — 프리셋 적용 시 작업실 네거티브 필드에 주입.</summary>
+    public static string? DefaultNegativeFor(StoryPresetCategory c) => c == StoryPresetCategory.FintechTrading ? FintechNegative : null;
 
     public static readonly InspirationChip[] Subjects =
     {
@@ -192,6 +215,7 @@ public sealed class PromptInspirationService
         StoryPresetCategory.FashionLookbook => "👗 패션 룩북",
         StoryPresetCategory.CyberpunkAction => "🌆 사이버펑크 액션",
         StoryPresetCategory.CuteBabyKids => "👶 큐트 베이비",
+        StoryPresetCategory.FintechTrading => "📈 핀테크 & 트레이딩 터미널",
         _ => c.ToString(),
     };
 
