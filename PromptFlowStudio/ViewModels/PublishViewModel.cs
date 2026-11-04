@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using PromptFlowStudio.Services.AI;
 using PromptFlowStudio.Services.Publishing;
 
 namespace PromptFlowStudio.ViewModels;
@@ -24,13 +25,16 @@ public sealed class PublishViewModel : IDisposable
 
     private readonly IYouTubeShortsPublisher _yt;
     private readonly IInstagramReelsPublisher _ig;
+    private readonly GeminiPromptService? _gemini;
     private CancellationTokenSource? _cts;
+    private CancellationTokenSource? _seoCts;
     private int _disposed;
 
-    public PublishViewModel(IYouTubeShortsPublisher yt, IInstagramReelsPublisher ig)
+    public PublishViewModel(IYouTubeShortsPublisher yt, IInstagramReelsPublisher ig, GeminiPromptService? gemini = null)
     {
         _yt = yt ?? throw new ArgumentNullException(nameof(yt));
         _ig = ig ?? throw new ArgumentNullException(nameof(ig));
+        _gemini = gemini;
     }
 
     /// <summary>상태 변경 통지(백그라운드 스레드 가능 — 구독자는 InvokeAsync(StateHasChanged)).</summary>
@@ -54,6 +58,12 @@ public sealed class PublishViewModel : IDisposable
     public string PublicVideoUrl { get; set; } = "";
     /// <summary>릴스 공개 게시 동의(로컬 브릿지 경로 필수).</summary>
     public bool InstagramConsent { get; set; }
+    /// <summary>SEO 자동 완성 입력 — 작업실 프롬프트(없으면 훅/프로젝트 이름).</summary>
+    public string SourcePrompt { get; private set; } = "";
+    /// <summary>SEO 자동 완성 듀레이션 힌트(초, 0=미상).</summary>
+    public float DurationSec { get; private set; }
+    public bool IsSeoBusy { get; private set; }
+    public string? SeoMessage { get; private set; }
 
     public bool YouTubeEnabled => _yt.Enabled;
     public bool InstagramEnabled => _ig.Enabled;
@@ -83,11 +93,70 @@ public sealed class PublishViewModel : IDisposable
     /// 작업실/갤러리 컨텍스트 열기 — 대본(beats) 없이 미디어 경로 · 프로젝트 이름 · 자막(.srt) 경로로 바인딩.
     /// 훅 = 프롬프트(있으면) → 프로젝트 이름 → 파일명 순. <paramref name="srtPath"/> 미지정/부재 시 동명 .srt 자동 탐색.
     /// </summary>
-    public void OpenForMedia(string videoPath, string? projectName, string? srtPath = null, string? prompt = null)
+    public void OpenForMedia(string videoPath, string? projectName, string? srtPath = null, string? prompt = null, float durationSec = 0)
     {
         var name = string.IsNullOrWhiteSpace(projectName) ? Path.GetFileNameWithoutExtension(videoPath ?? "") : projectName.Trim();
         var hook = string.IsNullOrWhiteSpace(prompt) ? name : prompt.Trim();
         Open(videoPath ?? "", hook, null, name, srtPath);
+        if (!IsBusy) DurationSec = durationSec > 0 ? durationSec : 0;
+    }
+
+    /// <summary>현재 채널 선택 → 플랫폼 라벨(둘 다/YouTube/Instagram).</summary>
+    public string SeoPlatform => (ToYouTube, ToInstagram) switch
+    {
+        (true, true) => "YouTube Shorts + Instagram Reels",
+        (false, true) => "Instagram Reels",
+        _ => "YouTube Shorts",
+    };
+
+    /// <summary>
+    /// ✨ AI 제목·해시태그 자동 생성 — 프롬프트 · 듀레이션 · 플랫폼 기반 Gemini 호출 → 제목 · 설명 · 태그 · 릴스 캡션 자동 입력.
+    /// 키 없음/실패 시 서비스가 로컬 템플릿 폴백. 서비스 미주입이면 로컬 템플릿 직접 사용. 발행 중이거나 생성 중이면 false.
+    /// </summary>
+    public async Task<bool> GenerateSeoAsync(CancellationToken ct = default)
+    {
+        if (IsBusy || IsSeoBusy || !IsOpen) return false;
+        IsSeoBusy = true;
+        SeoMessage = "✨ 제미나이 SEO 생성 중…";
+        _seoCts?.Dispose();
+        _seoCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var token = _seoCts.Token;
+        Notify();
+        try
+        {
+            var platform = SeoPlatform;
+            var meta = _gemini is null
+                ? GeminiPromptService.BuildLocalSnsMetadata(SourcePrompt, platform)
+                : await _gemini.GenerateSnsMetadataAsync(SourcePrompt, platform, DurationSec, token).ConfigureAwait(false);
+            if (IsBusy) return false;   // 생성 중 발행 시작 → 사용자 입력 보존
+            ApplySeo(meta);
+            SeoMessage = (meta.UsedFallback ? "💡 " : "✨ ") + meta.Message;
+            return true;
+        }
+        catch (OperationCanceledException) { SeoMessage = "SEO 생성 취소됨"; return false; }
+        catch (Exception ex)
+        {
+            Program.Log("PublishViewModel.Seo", ex);
+            SeoMessage = "SEO 생성 실패: " + ex.Message;
+            return false;
+        }
+        finally
+        {
+            IsSeoBusy = false;
+            Notify();
+        }
+    }
+
+    /// <summary>SEO 메타를 입력 필드에 반영(제목 100자 · 태그 쉼표 구분 · 캡션 = 설명 + 해시태그).</summary>
+    public void ApplySeo(SnsSeoMetadata meta)
+    {
+        ArgumentNullException.ThrowIfNull(meta);
+        var title = (meta.Title ?? "").Trim();
+        if (title.Length > GeminiPromptService.MaxSnsTitle) title = title[..GeminiPromptService.MaxSnsTitle].TrimEnd();
+        if (title.Length > 0) Title = title;
+        Description = meta.Description ?? "";
+        TagsText = string.Join(", ", meta.Tags);
+        Caption = Description.Length == 0 ? string.Join(" ", meta.Tags) : Description + Environment.NewLine + Environment.NewLine + string.Join(" ", meta.Tags);
     }
 
     private void Open(string videoPath, string? hook, IReadOnlyList<ScriptBeat>? beats, string? projectName, string? srtPath)
@@ -95,6 +164,9 @@ public sealed class PublishViewModel : IDisposable
         if (IsBusy) { IsOpen = true; Notify(); return; }
         VideoPath = videoPath ?? "";
         ProjectName = string.IsNullOrWhiteSpace(projectName) ? hook : projectName;
+        SourcePrompt = (hook ?? "").Trim();
+        DurationSec = 0;
+        SeoMessage = null;
         SrtPath = srtPath is { Length: > 0 } && File.Exists(srtPath) ? srtPath : YouTubeShortsPublisher.ResolveSrtPath(VideoPath);
         var meta = YouTubeShortsPublisher.BuildMetadata(hook, beats);
         Title = meta.Title;
@@ -152,6 +224,7 @@ public sealed class PublishViewModel : IDisposable
     public void Cancel()
     {
         try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
+        try { _seoCts?.Cancel(); } catch (ObjectDisposedException) { }
     }
 
     private async Task<bool> RunYouTubeAsync(CancellationToken ct)
@@ -218,6 +291,8 @@ public sealed class PublishViewModel : IDisposable
         Cancel();
         _cts?.Dispose();
         _cts = null;
+        _seoCts?.Dispose();
+        _seoCts = null;
     }
 
     /// <summary>동기 진행률 중계(Progress&lt;T&gt; 의 SynchronizationContext 포스팅 회피 — 순서 보장).</summary>

@@ -116,4 +116,50 @@ public class GeminiPromptServiceTests
 
         Assert.Empty((await svc.DirectStoryboardAsync("  ")).Shots);
     }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public async Task GeminiPromptService_GenerateSnsMetadata_ReturnsValidTitleAndTags()
+    {
+        // ① Gemini 정상 응답 — 스키마 검증 · '#' 보정 · 공백 제거 · 중복 제거 · 최대 8개 · 플랫폼/듀레이션 전달
+        var json = "{\"title\":\"네온 금융 도시의 새벽\",\"description\":\"AI 시네마틱 숏폼.\",\"hashtags\":[\"#Fintech\",\"AI Video\",\"#fintech\",\"#Cinematic\",\"#Shorts\",\"#Neon\",\"#Seoul\",\"#Stock\",\"#Market\",\"#Extra\"]}";
+        var h = new StubHandler(_ => Text(json));
+        var api = new GeminiPromptService(new HttpClient(h), () => "k");
+        var r = await api.GenerateSnsMetadataAsync("neon fintech city at dawn, slow 360-degree orbit shot around the subject", "instagram", 15f);
+        Assert.False(r.UsedFallback);
+        Assert.Equal("네온 금융 도시의 새벽", r.Title);
+        Assert.Equal("AI 시네마틱 숏폼.", r.Description);
+        Assert.InRange(r.Tags.Count, GeminiPromptService.MinSnsTags, GeminiPromptService.MaxSnsTags);
+        Assert.Equal(8, r.Tags.Count);
+        Assert.All(r.Tags, t => { Assert.StartsWith("#", t); Assert.DoesNotContain(" ", t); });
+        Assert.Contains("#AIVideo", r.Tags);
+        Assert.Single(r.Tags, t => string.Equals(t, "#Fintech", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(1, h.Calls);
+        Assert.Contains("Instagram Reels", h.LastBody);
+        Assert.Contains("15 seconds", h.LastBody);
+
+        // ② API 키 누락 → 네트워크 호출 0 · 로컬 템플릿(프롬프트 첫 구절 제목 + #StockSuite #AIAnimation)
+        var nh = new StubHandler(_ => throw new InvalidOperationException("must not call"));
+        var local = await new GeminiPromptService(new HttpClient(nh), () => null).GenerateSnsMetadataAsync("neon fintech city at dawn, orbit", "YouTube");
+        Assert.True(local.UsedFallback);
+        Assert.Equal(0, nh.Calls);
+        Assert.Contains("neon fintech city at dawn", local.Title);
+        Assert.EndsWith("#Shorts", local.Title);
+        Assert.Contains("#StockSuite", local.Tags);
+        Assert.Contains("#AIAnimation", local.Tags);
+        Assert.DoesNotContain("#Reels", local.Tags);
+        Assert.InRange(local.Tags.Count, GeminiPromptService.MinSnsTags, GeminiPromptService.MaxSnsTags);
+
+        // ③ 스키마 불일치(태그 5개 미만)/HTTP 실패 → 로컬 폴백 · 빈 프롬프트도 무예외
+        var bad = await new GeminiPromptService(new HttpClient(new StubHandler(_ => Text("{\"title\":\"t\",\"hashtags\":[\"#a\"]}"))), () => "k").GenerateSnsMetadataAsync("p", "reels");
+        Assert.True(bad.UsedFallback);
+        Assert.DoesNotContain("#Shorts", bad.Tags);
+        var down = await new GeminiPromptService(new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.BadRequest))), () => "k").GenerateSnsMetadataAsync("p", null);
+        Assert.True(down.UsedFallback);
+        var empty = await api.GenerateSnsMetadataAsync("  ", "youtube");
+        Assert.True(empty.UsedFallback);
+        Assert.False(string.IsNullOrWhiteSpace(empty.Title));
+        Assert.Null(GeminiPromptService.ParseSnsMetadata("not json"));
+        Assert.Equal("YouTube Shorts + Instagram Reels", GeminiPromptService.NormalizePlatform("YouTube Shorts + Instagram Reels"));
+    }
 }

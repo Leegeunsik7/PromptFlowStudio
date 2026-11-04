@@ -25,6 +25,7 @@
 @inject PromptFlowStudio.Services.Render.IRenderQueueService RenderQueue
 @inject PromptFlowStudio.ViewModels.PublishViewModel PubVm
 @inject PromptFlowStudio.Services.Configuration.AppSettingsManager AppSettings
+@inject PromptFlowStudio.Services.Platform.IClipboardService Clipboard
 
 @* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
    상태는 WanJobState(싱글턴)에 있고, 이 컴포넌트는 OnChange 를 구독해 InvokeAsync(StateHasChanged)로만 갱신한다.
@@ -231,6 +232,15 @@
             {
                 @* 큐 렌더(10s/15s/앰비언트) 완료 산출물 — @key 로 <video> 재생성해 소스 교체 즉시 강제 리로드 *@
                 <video class="ws-video" src="@_canvasQueueUrl" controls autoplay loop muted preload="auto" @key="_canvasQueueUrl"></video>
+                @if (_canvasQueuePath is { } qPath)
+                {
+                    <div class="ws-done">
+                        <button class="ws-btn sm" @onclick="() => OpenPublish(qPath)" title="YouTube Shorts · Instagram Reels 원클릭 발행">🚀 SNS 원클릭 발행</button>
+                        <button class="ws-btn ghost sm" @onclick="() => RevealInExplorer(qPath)" title="윈도우 탐색기에서 파일 선택 상태로 열기">📂 폴더 열기</button>
+                        <button class="ws-btn ghost sm" @onclick="() => CopyMediaPath(qPath)" title="파일 절대 경로를 클립보드에 복사">📋 경로 복사</button>
+                        <span class="ws-hint" title="@qPath">@ShortPath(qPath)</span>
+                    </div>
+                }
             }
             else if (State.Phase == WanJobPhase.Idle)
             {
@@ -290,6 +300,8 @@
                         @if (State.LocalPath is { } pubSrc)
                         {
                             <button class="ws-btn sm" @onclick="() => OpenPublish(pubSrc)" title="YouTube Shorts · Instagram Reels 원클릭 발행">🚀 SNS 원클릭 발행</button>
+                            <button class="ws-btn ghost sm" @onclick="() => RevealInExplorer(pubSrc)" title="윈도우 탐색기에서 파일 선택 상태로 열기">📂 폴더 열기</button>
+                            <button class="ws-btn ghost sm" @onclick="() => CopyMediaPath(pubSrc)" title="파일 절대 경로를 클립보드에 복사">📋 경로 복사</button>
                         }
                         <span class="ws-hint" title="@State.LocalPath">@ShortPath(State.LocalPath)</span>
                         <label class="ws-sztog" title="@AudioSfxEngine.GenerateAudioPrompt(State.LastPrompt)">
@@ -483,14 +495,18 @@
                     <div class="ws-tiles">
                         @foreach (var m in _recent)
                         {
-                            @if (m.PosterUrl is not null)
-                            {
-                                <img class="ws-tile" src="@m.PosterUrl" alt="@m.Name" loading="lazy" @key="m.Path" />
-                            }
-                            else
-                            {
-                                <video class="ws-tile" src="@m.PlaybackUrl" muted preload="metadata" controls @key="m.Path"></video>
-                            }
+                            var item = m;
+                            @* 클릭 → 캔버스 소스 교체 + 프롬프트·카메라·듀레이션·화면비·시드 역복원(.meta.json) *@
+                            <div class="ws-tile-pick" @onclick="() => RehydrateFromRecent(item)" title="클릭: @(item.Name) 작업 설정을 작업실에 복원" @key="item.Path">
+                                @if (item.PosterUrl is not null)
+                                {
+                                    <img class="ws-tile" src="@item.PosterUrl" alt="@item.Name" loading="lazy" />
+                                }
+                                else
+                                {
+                                    <video class="ws-tile" src="@item.PlaybackUrl" muted preload="metadata"></video>
+                                }
+                            </div>
                         }
                     </div>
                 }
@@ -865,6 +881,9 @@
     .ws-more:hover { text-decoration: underline; }
     .ws-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
     .ws-tile { width: 100%; aspect-ratio: 16/9; object-fit: cover; border-radius: 8px; background: #000; border: 1px solid var(--line); }
+    .ws-tile-pick { cursor: pointer; border-radius: 8px; transition: transform .12s ease, box-shadow .12s ease; }
+    .ws-tile-pick:hover { transform: translateY(-1px); box-shadow: 0 0 0 2px var(--accent, #7c5cff); }
+    .ws-tile-pick .ws-tile { display: block; pointer-events: none; }
     .ws-mon { display: flex; flex-direction: column; gap: 8px; }
     .ws-mon-r { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--text-secondary); }
     .ws-dot { font: 700 11px var(--mono); } .ws-dot.ok { color: #10b981; } .ws-dot.off { color: var(--text-muted); }
@@ -1279,7 +1298,8 @@
 
     // ── 작업실 인라인 큐 진행률(MiniQueueProgress) — 적재 작업 JobId 추적 → 컷 진행/합본 → 완료 시 인라인 자동 재생 ──
     private Guid[] _miniIds = Array.Empty<Guid>();
-    private string? _miniGroup, _miniUrl, _miniPlayed, _miniStitchFail, _miniError, _miniNotice, _canvasQueueUrl;
+    private string? _miniGroup, _miniUrl, _miniPlayed, _miniStitchFail, _miniError, _miniNotice, _canvasQueueUrl, _canvasQueuePath;
+    private string? _metaWrittenFor;
     private PromptFlowStudio.Services.Render.MiniQueueProgress _mini = PromptFlowStudio.Services.Render.MiniQueueProgress.None;
 
     private void TrackMiniQueue(IReadOnlyList<PromptFlowStudio.Services.Batch.BatchRenderJob> jobs)
@@ -1288,7 +1308,7 @@
         for (var i = 0; i < ids.Length; i++) ids[i] = jobs[i].JobId;
         _miniIds = ids;
         _miniGroup = jobs.Count > 0 ? jobs[0].StitchGroupId : null;
-        _miniUrl = _miniPlayed = _miniStitchFail = _miniError = _miniNotice = _canvasQueueUrl = null;
+        _miniUrl = _miniPlayed = _miniStitchFail = _miniError = _miniNotice = _canvasQueueUrl = _canvasQueuePath = null;
         _miniCancelled = false;
         _mini = PromptFlowStudio.Services.Render.MiniQueueProgress.None;
         RefreshMiniQueue();
@@ -1314,11 +1334,12 @@
                     _miniPlayed = fp;
                     try { _miniUrl = Media.ToPlaybackUrl(fp); } catch (Exception ex) { Program.Log("Workspace.MiniQueue", ex); _miniUrl = null; }
                     _canvasQueueUrl = _miniUrl;
+                    _canvasQueuePath = _miniUrl is null ? null : fp;
                 }
             }
             else
             {
-                _miniUrl = _canvasQueueUrl = null;
+                _miniUrl = _canvasQueueUrl = _canvasQueuePath = null;
                 _miniError = MiniMissingOutputMessage();
             }
             _miniNotice = MiniJobMeta(PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.MetaAmbientNotice);
@@ -1392,8 +1413,73 @@
     /// <summary>🚀 SNS 원클릭 발행 — 작업실 산출물(경로 · 프로젝트 이름 · 동명 .srt) → PublishModal.</summary>
     private void OpenPublish(string path)
     {
-        try { PubVm.OpenForMedia(path, Path.GetFileNameWithoutExtension(path), Path.ChangeExtension(path, ".srt"), string.IsNullOrWhiteSpace(_prompt) ? null : _prompt); }
+        try
+        {
+            // 산출물 사이드카 메타 우선(최근 미디어 역복원 영상 등) → 없으면 현재 입력 폼 프롬프트 · 듀레이션.
+            var snap = PromptFlowStudio.Services.Gallery.WorkspaceRehydration.Load(path);
+            var prompt = snap.HasMetadata && snap.Prompt.Length > 0 ? snap.Prompt : _prompt;
+            var mode = snap.HasMetadata ? snap.DurationMode : _durationMode;
+            PubVm.OpenForMedia(path, Path.GetFileNameWithoutExtension(path), Path.ChangeExtension(path, ".srt"), string.IsNullOrWhiteSpace(prompt) ? null : prompt,
+                PromptFlowStudio.Services.Gallery.WorkspaceRehydration.SecondsOf(mode));
+        }
         catch (Exception ex) { Program.Log("Workspace.Publish", ex); }
+    }
+
+    /// <summary>📂 폴더 열기 — 탐색기에서 산출물 파일을 선택 상태로 연다(<c>explorer.exe /select,</c>). 파일 부재 시 토스트.</summary>
+    private void RevealInExplorer(string path)
+    {
+        try
+        {
+            var full = Path.GetFullPath(path);
+            if (!File.Exists(full)) { _camToast = "⚠ 파일을 찾을 수 없습니다: " + Path.GetFileName(full); return; }
+            Library.Reveal(full);
+        }
+        catch (Exception ex) { Program.Log("Workspace.Reveal", ex); _camToast = "⚠ 탐색기를 열 수 없습니다"; }
+    }
+
+    /// <summary>📋 경로 복사 — 절대 경로를 클립보드에 복사하고 토스트 표시.</summary>
+    private void CopyMediaPath(string path)
+    {
+        try
+        {
+            var full = Path.GetFullPath(path);
+            _camToast = Clipboard.SetText(full) ? "📋 파일 경로가 복사되었습니다" : "⚠ 클립보드 복사에 실패했습니다";
+        }
+        catch (Exception ex) { Program.Log("Workspace.CopyPath", ex); _camToast = "⚠ 클립보드 복사에 실패했습니다"; }
+    }
+
+    /// <summary>
+    /// 🕒 최근 미디어 클릭 → 역복원(Re-hydration): 캔버스 소스 교체 + 사이드카 메타의 프롬프트 · 카메라 모션 · 듀레이션 · 화면비 · 시드를 입력 폼에 주입.
+    /// 렌더 중에는 입력 폼을 건드리지 않는다.
+    /// </summary>
+    private void RehydrateFromRecent(MediaItem item)
+    {
+        if (State.IsBusy || item is null) return;
+        try
+        {
+            var snap = PromptFlowStudio.Services.Gallery.WorkspaceRehydration.Load(item.Path);
+            var isVideo = item.PosterUrl is null;
+            if (isVideo)
+            {
+                _canvasQueueUrl = item.PlaybackUrl;
+                _canvasQueuePath = item.Path;
+            }
+            if (snap.HasMetadata)
+            {
+                if (snap.Prompt.Length > 0) { _prompt = snap.Prompt; _vm.UserInput = _prompt; }
+                _durationMode = snap.DurationMode;
+                _durationMsg = null;
+                Array.Clear(_subPrompts);
+                if (!string.Equals(_size, snap.WorkspaceSize, StringComparison.Ordinal)) { _size = snap.WorkspaceSize; _vm.SetOutputSize(_size); }
+                if (snap.Seed > 0) { _canvas.SeedPinned = true; _canvas.Seed = snap.Seed; }
+            }
+            _camToast = snap.HasMetadata
+                ? "♻️ 작업 설정 복원 · " + PromptFlowStudio.Services.Render.MultiDurationPlanner.Label(snap.DurationMode) + " · " + snap.AspectRatio
+                  + (snap.CameraMotion.Length > 0 ? " · 🎥 " + snap.CameraMotion : "")
+                : "ℹ️ 저장된 작업 메타가 없어 영상만 불러왔습니다";
+        }
+        catch (Exception ex) { Program.Log("Workspace.Rehydrate", ex); }
+        StateHasChanged();
     }
 
     private void OnDurationStitched(string group, PromptFlowStudio.Services.Render.VideoStitchResult r)
@@ -1439,7 +1525,7 @@
         if (!CanStart) return;
         RefreshRenderMode();
         if (_durationMode != PromptFlowStudio.Services.Render.VideoDurationMode.Sec5_Single) { EnqueueDuration(_prompt); return; }
-        _canvasQueueUrl = null;   // 단일 생성 — 캔버스를 라이브 진행 표시로 복귀
+        _canvasQueueUrl = _canvasQueuePath = null;   // 단일 생성 — 캔버스를 라이브 진행 표시로 복귀
         // v16.20.0 미세 표정 퍼핏 — 표정 구문·정체성 유지·얼굴 보호 네거티브 비영속 주입(Neutral 은 원문 그대로).
         // v16.22.0 피사체 Identity 고정 — 프로필 정체성/의상/스타일 구문(비영속) · 얼굴 사진 I2V(사용자 이미지 우선) · 프로필 시드(핀 우선).
         var idLock = _idLockOn ? IdentityLockOf() : null;
@@ -1720,6 +1806,12 @@
         {
             _alertedError = err;
             Errors.Show(err, () => { State.Reset(); Start(); });
+        }
+        // 단일 생성 산출물 사이드카(.meta.json) 1회 기록 — 최근 미디어 역복원용(기존 메타 보존 · 실패 격리).
+        if (State.Phase == WanJobPhase.Completed && State.IsLocal && State.LocalPath is { } mp && !string.Equals(_metaWrittenFor, mp, StringComparison.Ordinal))
+        {
+            _metaWrittenFor = mp;
+            PromptFlowStudio.Services.Gallery.WorkspaceRehydration.WriteIfMissing(mp, State.LastPrompt, _durationMode, _size, _canvas.EffectiveSeed ?? 0);
         }
         if (State.Phase == WanJobPhase.Completed) _recent = Library.List(6);   // 새 결과를 퀵갤러리에 반영
         // v16.22.0 고정 캐릭터 정합성 — 완료 영상 1회 측정(fire-and-forget · 내부 예외 격리).

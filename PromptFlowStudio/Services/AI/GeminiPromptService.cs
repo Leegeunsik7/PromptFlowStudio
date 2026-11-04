@@ -20,6 +20,9 @@ public sealed record GeminiEnhanceOutcome(string Prompt, bool UsedFallback, stri
 /// <summary>스토리보드 제미나이 디렉터 1컷 — 프롬프트 · 카메라 앵글 · 듀레이션(초).</summary>
 public sealed record DirectorShot(int Index, string Title, string Prompt, string Camera, float DurationSec);
 
+/// <summary>SNS 발행 SEO 메타 — <see cref="UsedFallback"/>=true 면 로컬 템플릿(키 없음/호출 실패/스키마 불일치).</summary>
+public sealed record SnsSeoMetadata(string Title, string Description, IReadOnlyList<string> Tags, bool UsedFallback, string Message);
+
 /// <summary>
 /// [PromptFlowStudio] ✨ 제미나이 AI 스튜디오 엔진 — Wan 2.1 워크플로우 결합형 프롬프트 서비스(순수 BCL).
 ///   ▸ 듀레이션 인지 System Instruction(15s 앰비언트 → 루프 친화 미세 동세 지침 강제 주입).
@@ -30,7 +33,7 @@ public sealed record DirectorShot(int Index, string Title, string Prompt, string
 /// </summary>
 public sealed class GeminiPromptService
 {
-    public const string Model = "gemini-2.0-flash";
+    public const string Model = "gemini-2.5-flash";
     public const string Endpoint = "https://generativelanguage.googleapis.com/v1beta/models/" + Model + ":generateContent";
 
     public static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(25);
@@ -223,6 +226,98 @@ public sealed class GeminiPromptService
         catch (JsonException) { return null; }
 
         static string? Str(JsonElement e, string n) => e.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+    }
+
+    /// <summary>SNS 발행 메타(헤드라인 제목 · 짧은 본문 · 해시태그 5~8개) 생성. 키 없음/실패/스키마 불일치 → 로컬 템플릿. 절대 throw 하지 않음.</summary>
+    public async Task<SnsSeoMetadata> GenerateSnsMetadataAsync(string? prompt, string? platform, float durationSec = 0, CancellationToken ct = default)
+    {
+        var src = (prompt ?? "").Trim();
+        var plat = NormalizePlatform(platform);
+        if (src.Length == 0 || !HasKey()) return BuildLocalSnsMetadata(src, plat);
+
+        var user = new StringBuilder(src.Length + 96).Append("Platform: ").Append(plat).Append("\nVideo prompt: ").Append(src);
+        if (durationSec > 0) user.Append("\nDuration: ").Append(durationSec.ToString("0", System.Globalization.CultureInfo.InvariantCulture)).Append(" seconds");
+        var text = await CallAsync(SnsSeoInstruction, user.ToString(), null, true, 0.7, ct).ConfigureAwait(false);
+        var parsed = text is null ? null : ParseSnsMetadata(text);
+        return parsed ?? BuildLocalSnsMetadata(src, plat);
+    }
+
+    public const string SnsSeoInstruction =
+        "You are a short-form video SEO copywriter. Write metadata for the given platform in Korean. " +
+        "Respond with JSON only: {\"title\":string,\"description\":string,\"hashtags\":[string]} — " +
+        "title is a punchy headline (max 90 chars), description is 1-2 short sentences (max 300 chars), " +
+        "hashtags has 5 to 8 items targeting fintech and cinematic AI video audiences, each starting with '#', no spaces.";
+
+    public const int MinSnsTags = 5;
+    public const int MaxSnsTags = 8;
+    public const int MaxSnsTitle = 100;
+    public const int MaxSnsDescription = 500;
+    public const string SnsFallbackNotice = "로컬 템플릿으로 작성되었습니다";
+    private static readonly string[] LocalSnsTags = { "#StockSuite", "#AIAnimation", "#AIVideo", "#Cinematic", "#Fintech", "#Shorts", "#Reels", "#PromptFlow" };
+
+    /// <summary>"youtube"/"instagram"/기타 → 표준 플랫폼 라벨(미지정은 YouTube Shorts).</summary>
+    public static string NormalizePlatform(string? platform)
+    {
+        var p = (platform ?? "").Trim();
+        if (p.Contains("insta", StringComparison.OrdinalIgnoreCase) || p.Contains("reels", StringComparison.OrdinalIgnoreCase))
+            return p.Contains("you", StringComparison.OrdinalIgnoreCase) ? "YouTube Shorts + Instagram Reels" : "Instagram Reels";
+        return "YouTube Shorts";
+    }
+
+    /// <summary>로컬 SNS 템플릿 — 프롬프트 첫 구절 기반 제목 + 고정 해시태그 6~8개.</summary>
+    public static SnsSeoMetadata BuildLocalSnsMetadata(string? prompt, string? platform)
+    {
+        var src = (prompt ?? "").Trim();
+        var head = src;
+        var cut = head.IndexOfAny(new[] { ',', '.', '\n' });
+        if (cut > 0) head = head[..cut];
+        head = head.Trim();
+        if (head.Length == 0) head = "AI 시네마틱 영상";
+        if (head.Length > 70) head = head[..70].TrimEnd() + "…";
+        var plat = NormalizePlatform(platform);
+        var title = "🎬 " + head + (plat.StartsWith("Instagram", StringComparison.Ordinal) ? " #Reels" : " #Shorts");
+        var desc = src.Length == 0 ? "AI로 생성한 시네마틱 숏폼 영상입니다." : "AI로 생성한 시네마틱 숏폼 영상 — " + (src.Length > 200 ? src[..200].TrimEnd() + "…" : src);
+        var tags = new List<string>(MaxSnsTags);
+        for (var i = 0; i < LocalSnsTags.Length && tags.Count < MaxSnsTags; i++)
+        {
+            var t = LocalSnsTags[i];
+            if (plat == "Instagram Reels" && t == "#Shorts") continue;
+            if (plat == "YouTube Shorts" && t == "#Reels") continue;
+            tags.Add(t);
+        }
+        return new SnsSeoMetadata(title.Length <= MaxSnsTitle ? title : title[..MaxSnsTitle], desc, tags, true, SnsFallbackNotice);
+    }
+
+    /// <summary>SNS JSON 스키마 즉시 검증 — 제목 누락 · 해시태그 5개 미만이면 null. 해시태그는 '#' 보정 · 공백 제거 · 중복 제거 · 최대 8개.</summary>
+    public static SnsSeoMetadata? ParseSnsMetadata(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(GeminiClient.StripFence(json));
+            var r = doc.RootElement;
+            if (r.ValueKind != JsonValueKind.Object) return null;
+            var title = r.TryGetProperty("title", out var t) && t.ValueKind == JsonValueKind.String ? (t.GetString() ?? "").Trim() : "";
+            if (title.Length == 0) return null;
+            var desc = r.TryGetProperty("description", out var d) && d.ValueKind == JsonValueKind.String ? (d.GetString() ?? "").Trim() : "";
+            if (!r.TryGetProperty("hashtags", out var h) || h.ValueKind != JsonValueKind.Array) return null;
+            var tags = new List<string>(MaxSnsTags);
+            foreach (var e in h.EnumerateArray())
+            {
+                if (tags.Count >= MaxSnsTags) break;
+                if (e.ValueKind != JsonValueKind.String) continue;
+                var tag = (e.GetString() ?? "").Replace(" ", "", StringComparison.Ordinal).Trim();
+                if (tag.Length == 0 || tag == "#") continue;
+                if (tag[0] != '#') tag = "#" + tag;
+                var dup = false;
+                for (var i = 0; i < tags.Count; i++) if (string.Equals(tags[i], tag, StringComparison.OrdinalIgnoreCase)) { dup = true; break; }
+                if (!dup) tags.Add(tag);
+            }
+            if (tags.Count < MinSnsTags) return null;
+            if (title.Length > MaxSnsTitle) title = title[..MaxSnsTitle].TrimEnd();
+            if (desc.Length > MaxSnsDescription) desc = desc[..MaxSnsDescription].TrimEnd();
+            return new SnsSeoMetadata(title, desc, tags, false, "Gemini SEO 자동 완성");
+        }
+        catch (JsonException) { return null; }
     }
 
     private bool HasKey()
