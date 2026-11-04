@@ -73,6 +73,8 @@ public sealed class UserPreferenceService
         public const string StockSuiteAssetPath = "stocksuite.assets";
         /// <summary>StockSuite 내보내기 포맷(mp4 | webm — VP9 HTS 저사양 최적화).</summary>
         public const string StockSuiteFormat = "stocksuite.format";
+        /// <summary>StockSuite 실행 파일(StockSuite.exe) 경로 — 🚀 원클릭 실행.</summary>
+        public const string StockSuiteExecutablePath = "stocksuite.exe";
     }
 
     private const string Prefix = "sm.pref.";
@@ -173,6 +175,13 @@ public sealed class UserPreferenceService
         set => Set(Keys.StockSuiteAssetPath, value ?? "");
     }
 
+    /// <summary>🚀 StockSuite 실행 파일 경로(비우면 미설정 → 실행 버튼 비활성).</summary>
+    public string StockSuiteExecutablePath
+    {
+        get => Get(Keys.StockSuiteExecutablePath);
+        set => Set(Keys.StockSuiteExecutablePath, value ?? "");
+    }
+
     /// <summary>💼 StockSuite 내보내기 포맷 — <c>mp4</c>(기본) | <c>webm</c>(VP9 HTS 저사양 최적화).</summary>
     public string StockSuiteFormat
     {
@@ -206,6 +215,7 @@ public sealed class UserPreferenceService
         [Keys.FfmpegPath] = "",
         [Keys.StockSuiteAssetPath] = "",
         [Keys.StockSuiteFormat] = "mp4",
+        [Keys.StockSuiteExecutablePath] = "",
     };
 
     /// <summary>

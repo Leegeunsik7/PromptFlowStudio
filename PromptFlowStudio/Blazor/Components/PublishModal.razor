@@ -28,6 +28,17 @@
                     </select>
                     <button class="pm-btn" @onclick="ExportStockSuite" disabled="@vm.IsStockSuiteBusy"
                             title="환경설정의 StockSuite 에셋 폴더에 bg_ambient.mp4 로 원자적 덮어쓰기">@(vm.IsStockSuiteBusy ? "⏳ 복사 중…" : "💼 StockSuite로 내보내기")</button>
+                    @if (vm.StockSuiteExported && vm.CanLaunchStockSuite)
+                    {
+                        @if (vm.StockSuiteRestartPending)
+                        {
+                            <button class="pm-btn" @onclick="() => vm.LaunchStockSuite(true)" title="실행 중인 StockSuite 를 종료하고 다시 실행해 새 에셋을 즉시 반영">🔄 재실행</button>
+                        }
+                        else
+                        {
+                            <button class="pm-btn" @onclick="() => vm.LaunchStockSuite(false)" title="환경설정의 StockSuite.exe 를 실행해 에셋 적용을 실기 검증">🚀 StockSuite 실행</button>
+                        }
+                    }
                     @if (vm.StockSuiteMessage is { Length: > 0 } ssMsg)
                     {
                         <span class="pm-seo-msg">@ssMsg</span>
@@ -43,6 +54,28 @@
                     <span class="pm-seo-msg">@seoMsg</span>
                 }
             </div>
+
+            @if (vm.BgmAvailable)
+            {
+                <div class="pm-lbl">🎵 배경음악 선택 (영상 길이 컷 · 끝 1.5초 페이드아웃)</div>
+                <div class="pm-row pm-seo">
+                    <select class="pm-btn" value="@(PromptFlowStudio.Services.Export.AudioMuxService.Key(vm.Bgm))"
+                            @onchange="e => vm.Bgm = PromptFlowStudio.Services.Export.AudioMuxService.ParsePreset(e.Value?.ToString())" disabled="@vm.IsBusy">
+                        <option value="none">무음(기본)</option>
+                        <option value="synthwave">📈 핀테크 신스웨이브</option>
+                        <option value="lofi">☕ 로파이 비트</option>
+                        <option value="custom">사용자 MP3 선택</option>
+                    </select>
+                    @if (vm.Bgm == PromptFlowStudio.Services.Export.SnsBgmPreset.CustomFile)
+                    {
+                        <input class="pm-in" placeholder="예: C:\Music\bgm.mp3" @bind="vm.CustomBgmPath" disabled="@vm.IsBusy" />
+                    }
+                    @if (vm.BgmStatus is { Length: > 0 } bgmMsg)
+                    {
+                        <span class="pm-seo-msg">@bgmMsg</span>
+                    }
+                </div>
+            }
 
             <div class="pm-lbl">대상 채널</div>
             <div class="pm-row">

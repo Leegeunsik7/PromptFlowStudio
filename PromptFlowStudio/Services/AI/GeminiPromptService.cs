@@ -15,7 +15,11 @@ using PromptFlowStudio.Services.Wan;
 namespace PromptFlowStudio.Services.AI;
 
 /// <summary>Gemini 강화 결과 — <see cref="UsedFallback"/>=true 면 로컬 룰셋으로 강화됨(키 없음/호출 실패).</summary>
-public sealed record GeminiEnhanceOutcome(string Prompt, bool UsedFallback, string Message);
+public sealed record GeminiEnhanceOutcome(string Prompt, bool UsedFallback, string Message, string? SourceKorean = null)
+{
+    /// <summary>한글 원문을 영문 시네마틱으로 번역·치환한 결과인지.</summary>
+    public bool Translated => SourceKorean is not null;
+}
 
 /// <summary>스토리보드 제미나이 디렉터 1컷 — 프롬프트 · 카메라 앵글 · 듀레이션(초).</summary>
 public sealed record DirectorShot(int Index, string Title, string Prompt, string Camera, float DurationSec);
@@ -68,7 +72,46 @@ public sealed class GeminiPromptService
     public const string LocalAmbientTokens = "seamless ping-pong loop, continuous subtle motion, slow camera drift, soft lighting shifts, no abrupt cuts, ambient wallpaper aesthetic";
     public const string LocalI2VTokens = "natural subtle subject motion, gentle parallax camera move, preserve original composition and color palette";
 
+    /// <summary>한글 입력 전용 — 의미 보존 영문 시네마틱 번역 모드.</summary>
+    public const string TranslationInstruction =
+        "Professional Cinematic Video Prompt Translation. " +
+        "The user's prompt is written in Korean. Translate it into ONE vivid English prompt (max 120 words) for the Wan 2.1 video model, " +
+        "preserving every subject, action, count, color and mood of the Korean original exactly — do not add or remove story elements. " +
+        "Then enrich it with cinematic craft: lighting setup, camera lens and movement, depth of field, material textures, color grading, 8k detail. " +
+        "Output English only — no Korean characters, no quotes, no markdown, no explanations.";
+
     public const string FallbackNotice = "로컬 사전 기반으로 강화되었습니다";
+    public const string TranslateFallbackNotice = "로컬 용어집으로 한→영 변환되었습니다(일부 원문 유지)";
+
+    /// <summary>한글(음절·자모·호환 자모) 포함 여부 — 할당 0.</summary>
+    public static bool ContainsHangul(string? s)
+    {
+        if (string.IsNullOrEmpty(s)) return false;
+        foreach (var c in s)
+            if (c is (>= '가' and <= '힣') or (>= 'ᄀ' and <= 'ᇿ') or (>= '㄰' and <= '㆏')) return true;
+        return false;
+    }
+
+    /// <summary>한글 프롬프트 로컬 폴백 — 오프라인 용어집 치환 후 시네마틱 토큰 결합.</summary>
+    public static string FallbackLocalTranslate(string? koPrompt, VideoDurationMode mode = VideoDurationMode.Sec5_Single)
+    {
+        var s = (koPrompt ?? "").Trim();
+        if (s.Length == 0) return "";
+        var sb = new StringBuilder(s);
+        foreach (var (ko, en) in VisualGlossary) sb.Replace(ko, en);
+        return FallbackLocalEnhance(Media.GlobalMultiDubbingEngine.Translate(sb.ToString(), "en"), mode);
+    }
+
+    /// <summary>오프라인 시각 용어집(긴 표현 우선). 미상 어휘는 원문 유지([부분 구제]).</summary>
+    private static readonly (string Ko, string En)[] VisualGlossary =
+    {
+        ("골든리트리버", "golden retriever"), ("고양이", "cat"), ("강아지", "puppy"), ("아기", "baby"),
+        ("노을", "sunset"), ("일출", "sunrise"), ("밤하늘", "night sky"), ("해변", "beach"), ("바다", "ocean"),
+        ("도시", "city"), ("네온", "neon"), ("숲속", "forest"), ("빗속", "in the rain"), ("눈밭", "snowfield"),
+        ("트레이딩", "trading"), ("데스크", "desk"), ("모니터", "monitor"), ("차트", "chart"), ("카페", "cafe"),
+        ("달리는", "running"), ("걷는", "walking"), ("날아가는", "flying"), ("웃는", "smiling"),
+        ("의 ", " "), ("에서 ", " at "),
+    };
 
     private readonly HttpClient _http;
     private readonly Func<string?> _apiKey;
@@ -129,8 +172,21 @@ public sealed class GeminiPromptService
         if (!string.IsNullOrWhiteSpace(camera)) user.Append("\nCamera motion: ").Append(camera.Trim());
         if (!string.IsNullOrWhiteSpace(style)) user.Append("\nVisual style: ").Append(style.Trim());
 
-        var text = await CallAsync(BuildSystemInstruction(mode), user.ToString(), null, false, 0.6, ct).ConfigureAwait(false);
+        var korean = ContainsHangul(src);
+        var sys = BuildSystemInstruction(mode);
+        if (korean) sys = TranslationInstruction + " " + sys;
+
+        var text = await CallAsync(sys, user.ToString(), null, false, 0.6, ct).ConfigureAwait(false);
         var clean = Sanitize(text);
+        if (korean)
+        {
+            var origin = src.Trim();
+            // 모델이 한글을 남기면 Wan 2.1 품질 저하 → 번역 실패로 간주하고 로컬 용어집 폴백
+            if (clean is null || ContainsHangul(clean)) return new(FallbackLocalTranslate(src, mode), true, TranslateFallbackNotice, origin);
+            if (mode == VideoDurationMode.Sec15_AmbientSlow && !clean.Contains("loop", StringComparison.OrdinalIgnoreCase))
+                clean = FallbackLocalEnhance(clean, mode);
+            return new(clean, false, "Gemini 한→영 시네마틱 번역 완료", origin);
+        }
         if (clean is null) return new(FallbackLocalEnhance(src, mode), true, FallbackNotice);
         if (mode == VideoDurationMode.Sec15_AmbientSlow && !clean.Contains("loop", StringComparison.OrdinalIgnoreCase))
             clean = FallbackLocalEnhance(clean, mode);   // 모델이 루프 지침을 누락해도 앰비언트 키워드 보장

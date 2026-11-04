@@ -63,9 +63,10 @@ public class GeminiPromptServiceTests
         var r = await svc.EnhancePromptAsync("노을 해변의 골든리트리버", VideoDurationMode.Sec5_Single);
         Assert.True(r.UsedFallback);
         Assert.Equal(0, h.Calls);
-        Assert.StartsWith("노을 해변의 골든리트리버, ", r.Prompt);
+        Assert.StartsWith("sunset beach golden retriever, ", r.Prompt);
         Assert.Contains("35mm lens", r.Prompt);
-        Assert.Equal(GeminiPromptService.FallbackNotice, r.Message);
+        Assert.Equal(GeminiPromptService.TranslateFallbackNotice, r.Message);
+        Assert.Equal("노을 해변의 골든리트리버", r.SourceKorean);
         Assert.DoesNotContain("ping-pong", r.Prompt);
 
         // 네트워크 단절도 예외 없이 폴백, 재강화 시 중복 결합 없음

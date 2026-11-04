@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
@@ -14,6 +15,12 @@ public sealed record StockSuiteExportResult(bool Ok, string? TargetPath, bool Ne
 
 /// <summary>StockSuite 내보내기 포맷 — MP4(기본 복사) · WebM VP9(HTS 저사양 최적화 트랜스코딩).</summary>
 public enum StockSuiteExportFormat { Mp4, WebMVp9 }
+
+/// <summary>StockSuite 실행 파일 경로 검증 상태.</summary>
+public enum StockSuiteExeStatus { NotConfigured, NotFound, NotExecutable, Ok }
+
+/// <summary>🚀 StockSuite 실행 결과 — AlreadyRunning=true 면 재실행 확인 필요.</summary>
+public sealed record StockSuiteLaunchResult(bool Ok, bool AlreadyRunning, string Message);
 
 /// <summary>
 /// [PromptFlowStudio] 💼 StockSuite 원클릭 에셋 내보내기 — 선택 영상을 HTS/StockSuite 에셋 폴더에 표준 명칭으로 원자적 덮어쓰기.
@@ -35,6 +42,7 @@ public sealed class StockSuiteExporter
     private readonly FfmpegRunner _run;
     private readonly object _hashLock = new();
     private readonly Dictionary<string, bool> _hashCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Func<string?> _exePath;
 
     public StockSuiteExporter() : this(null) { }
 
@@ -42,8 +50,10 @@ public sealed class StockSuiteExporter
     /// <param name="formatProvider">기본 포맷 공급자(<c>mp4</c>|<c>webm</c> · null = mp4).</param>
     /// <param name="resolveFfmpeg">ffmpeg 경로 조회(null = <see cref="FfmpegLocator"/>).</param>
     /// <param name="runner">ffmpeg 실행기(테스트 주입 · null = <see cref="Engines.ProcessRunner"/>).</param>
-    public StockSuiteExporter(Func<string?>? targetDirProvider, Func<string?>? formatProvider = null, Func<string?>? resolveFfmpeg = null, FfmpegRunner? runner = null)
+    /// <param name="executableProvider">StockSuite.exe 경로 공급자(🚀 원클릭 실행 · null = 미설정).</param>
+    public StockSuiteExporter(Func<string?>? targetDirProvider, Func<string?>? formatProvider = null, Func<string?>? resolveFfmpeg = null, FfmpegRunner? runner = null, Func<string?>? executableProvider = null)
     {
+        _exePath = executableProvider ?? (static () => null);
         _targetDir = targetDirProvider ?? (static () => null);
         _format = formatProvider ?? (static () => null);
         _resolveFfmpeg = resolveFfmpeg ?? (static () => FfmpegLocator.Locate().Path);
@@ -273,5 +283,107 @@ public sealed class StockSuiteExporter
         try { if (File.Exists(path)) File.Delete(path); }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
+    }
+
+    // ══════════════════════ 🚀 StockSuite 원클릭 런처 ══════════════════════
+
+    /// <summary>실행 중 프로세스 수 조회(테스트 주입 · 기본 = 프로세스 이름 일치).</summary>
+    public Func<string, int> RunningProbe { get; set; } = CountRunning;
+    /// <summary>프로세스 시작기(테스트 주입 · 기본 = <see cref="Process.Start(ProcessStartInfo)"/>).</summary>
+    public Func<ProcessStartInfo, bool> Starter { get; set; } = DefaultStart;
+    /// <summary>기존 프로세스 종료기(재실행 · 테스트 주입). 반환 = 종료 성공 여부.</summary>
+    public Func<string, bool> Terminator { get; set; } = TerminateAll;
+
+    public string? ConfiguredExecutable
+    {
+        get
+        {
+            try { var p = _exePath(); return string.IsNullOrWhiteSpace(p) ? null : p.Trim().Trim('"'); }
+            catch (Exception ex) { Program.Log("StockSuite.Exe", ex); return null; }
+        }
+    }
+
+    public bool CanLaunch => ValidateExecutablePath(ConfiguredExecutable) == StockSuiteExeStatus.Ok;
+
+    /// <summary>실행 파일 경로 검증 — 비어 있음 / 부재 / .exe 아님 / OK.</summary>
+    public static StockSuiteExeStatus ValidateExecutablePath(string? path)
+    {
+        var p = (path ?? "").Trim().Trim('"');
+        if (p.Length == 0) return StockSuiteExeStatus.NotConfigured;
+        if (p.IndexOfAny(Path.GetInvalidPathChars()) >= 0) return StockSuiteExeStatus.NotFound;
+        if (!Path.GetExtension(p).Equals(".exe", StringComparison.OrdinalIgnoreCase)) return StockSuiteExeStatus.NotExecutable;
+        return File.Exists(p) ? StockSuiteExeStatus.Ok : StockSuiteExeStatus.NotFound;
+    }
+
+    public static string DescribeExeStatus(StockSuiteExeStatus s) => s switch
+    {
+        StockSuiteExeStatus.Ok => "✅ 실행 파일을 확인했습니다.",
+        StockSuiteExeStatus.NotExecutable => "❌ .exe 실행 파일이 아닙니다.",
+        StockSuiteExeStatus.NotFound => "❌ 실행 파일이 존재하지 않습니다.",
+        _ => "ℹ 비어 있음 — 환경설정에서 StockSuite.exe 경로를 지정하세요.",
+    };
+
+    /// <summary>
+    /// 🚀 StockSuite 실행. 이미 실행 중이면 <paramref name="restartIfRunning"/>=false → AlreadyRunning(경고),
+    /// true → 기존 프로세스 종료 후 재실행. 절대 throw 하지 않음.
+    /// </summary>
+    public StockSuiteLaunchResult Launch(bool restartIfRunning = false)
+    {
+        var exe = ConfiguredExecutable;
+        var st = ValidateExecutablePath(exe);
+        if (st != StockSuiteExeStatus.Ok) return new(false, false, DescribeExeStatus(st));
+        var full = Path.GetFullPath(exe!);
+        var name = Path.GetFileNameWithoutExtension(full);
+        try
+        {
+            if (RunningProbe(name) > 0)
+            {
+                if (!restartIfRunning) return new(false, true, "⚠ StockSuite 가 이미 실행 중입니다 — 재실행하면 변경된 에셋이 즉시 반영됩니다.");
+                if (!Terminator(name)) return new(false, true, "⚠ 실행 중인 StockSuite 를 종료하지 못했습니다 — 수동으로 닫은 뒤 다시 시도하세요.");
+            }
+            var psi = new ProcessStartInfo(full) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(full) ?? "" };
+            return Starter(psi)
+                ? new(true, false, restartIfRunning ? "🔄 StockSuite 재실행 완료" : "🚀 StockSuite 실행 완료")
+                : new(false, false, "⚠ StockSuite 실행에 실패했습니다.");
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            Program.Log("StockSuite.Launch", ex);
+            return new(false, false, "⚠ StockSuite 실행 실패: " + ex.Message);
+        }
+    }
+
+    private static int CountRunning(string processName)
+    {
+        var ps = Process.GetProcessesByName(processName);
+        foreach (var p in ps) p.Dispose();
+        return ps.Length;
+    }
+
+    private static bool DefaultStart(ProcessStartInfo psi)
+    {
+        using var p = Process.Start(psi);
+        return p is not null || psi.UseShellExecute;
+    }
+
+    private static bool TerminateAll(string processName)
+    {
+        var ps = Process.GetProcessesByName(processName);
+        var ok = true;
+        foreach (var p in ps)
+        {
+            try
+            {
+                if (!p.HasExited && (!p.CloseMainWindow() || !p.WaitForExit(3000))) { p.Kill(entireProcessTree: true); p.WaitForExit(3000); }
+                ok &= p.HasExited;
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException)
+            {
+                Program.Log("StockSuite.Terminate", ex);
+                ok = false;
+            }
+            finally { p.Dispose(); }
+        }
+        return ok;
     }
 }

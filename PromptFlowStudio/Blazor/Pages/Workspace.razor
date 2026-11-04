@@ -518,6 +518,10 @@
                     </div>
                 }
                 <button class="ws-gem-enh" @onclick="_geminiEnhance" disabled="@(State.IsBusy || _enhancing)" title="@(_imagePath is not null ? "참조 이미지를 Gemini Vision 으로 분석해 I2V 프롬프트를 역생성합니다" : "선택한 듀레이션에 맞춰 Wan 2.1 시네마틱 프롬프트로 강화합니다")">@(_enhancing ? "⏳ 강화 중..." : _imagePath is not null ? "✨ AI 문장 자동 강화 (Vision I2V)" : "✨ AI 문장 자동 강화")</button>
+                @if (_promptKoOrigin is { } ko && string.Equals(_prompt, _promptKoTranslated, StringComparison.Ordinal))
+                {
+                    <div class="ws-gem-ko" title="@ko">🇰🇷 원문: @ko</div>
+                }
                 <div class="ws-gem-h">🌟 제미나이 픽 프리셋</div>
                 <div class="ws-chips">
                     @for (var i = 0; i < _geminiPick.Length; i++)
@@ -938,6 +942,7 @@
     .ws-gem-enh { width: 100%; font: 800 12px inherit; font-family: inherit; padding: 9px 12px; border-radius: 10px; border: none; color: #fff; cursor: pointer;
         background: linear-gradient(135deg, #4f8cff, #a78bfa, #f472b6); }
     .ws-gem-enh:disabled { opacity: .45; cursor: not-allowed; }
+    .ws-gem-ko { margin-top: 4px; font-size: 11px; color: #9aa4b2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .ws-gem-h { font-size: 11px; font-weight: 800; color: var(--text-secondary); margin: 10px 0 6px; }
     .ws-chip-gem { background: linear-gradient(135deg, rgba(79,140,255,.12), rgba(244,114,182,.12)); }
     .ws-more { margin-top: 10px; background: none; border: none; color: var(--accent-2); font: 700 11.5px inherit; cursor: pointer; padding: 0; }
@@ -1107,6 +1112,7 @@
 
     // ✨ AI 문장 자동 강화 — 참조 이미지 有 → Gemini Vision I2V 역추출, 無 → 듀레이션 인지 강화. 키 없음/실패는 서비스가 로컬 룰셋으로 폴백(무중단).
     private bool _enhancing;
+    private string? _promptKoOrigin, _promptKoTranslated;   // 한→영 치환 전 한글 원문(툴팁/서브 라벨 보존) · 치환본이 그대로일 때만 표시
     private async Task EnhanceWithGeminiAsync()
     {
         if (_enhancing) return;
@@ -1125,7 +1131,7 @@
                     sty >= 0 ? WanCameraStyleStudio.Styles[sty].Label : null,
                     cam >= 0 ? WanCameraStyleStudio.Cameras[cam].Label : null, _mediaCts.Token);
             }
-            if (!string.IsNullOrWhiteSpace(r.Prompt)) _prompt = r.Prompt;
+            if (!string.IsNullOrWhiteSpace(r.Prompt)) { _prompt = r.Prompt; if (r.SourceKorean is not null) { _promptKoOrigin = r.SourceKorean; _promptKoTranslated = r.Prompt; } }
             if (r.UsedFallback) _camToast = "💡 " + r.Message;
         }
         catch (Exception ex) { Program.Log("Workspace.GeminiEnhance", ex); }

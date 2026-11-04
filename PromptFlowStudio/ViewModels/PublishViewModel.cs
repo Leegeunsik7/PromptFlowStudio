@@ -27,12 +27,16 @@ public sealed class PublishViewModel : IDisposable
     private readonly IInstagramReelsPublisher _ig;
     private readonly GeminiPromptService? _gemini;
     private readonly PromptFlowStudio.Services.Export.StockSuiteExporter? _stockSuite;
+    private readonly PromptFlowStudio.Services.Export.AudioMuxService? _audioMux;
+    private string? _publishPath;   // BGM 합성본(없으면 원본)
     private CancellationTokenSource? _cts;
     private CancellationTokenSource? _seoCts;
     private int _disposed;
 
-    public PublishViewModel(IYouTubeShortsPublisher yt, IInstagramReelsPublisher ig, GeminiPromptService? gemini = null, PromptFlowStudio.Services.Export.StockSuiteExporter? stockSuite = null)
+    public PublishViewModel(IYouTubeShortsPublisher yt, IInstagramReelsPublisher ig, GeminiPromptService? gemini = null, PromptFlowStudio.Services.Export.StockSuiteExporter? stockSuite = null,
+        PromptFlowStudio.Services.Export.AudioMuxService? audioMux = null)
     {
+        _audioMux = audioMux;
         _yt = yt ?? throw new ArgumentNullException(nameof(yt));
         _ig = ig ?? throw new ArgumentNullException(nameof(ig));
         _gemini = gemini;
@@ -70,6 +74,17 @@ public sealed class PublishViewModel : IDisposable
     public bool IsStockSuiteBusy { get; private set; }
     public string? StockSuiteMessage { get; private set; }
     public bool StockSuiteAvailable => _stockSuite is not null;
+    /// <summary>직전 내보내기 성공 여부(🚀 실행 버튼 노출 조건).</summary>
+    public bool StockSuiteExported { get; private set; }
+    /// <summary>StockSuite 가 이미 실행 중 — 재실행 확인 대기.</summary>
+    public bool StockSuiteRestartPending { get; private set; }
+    public bool CanLaunchStockSuite => _stockSuite?.CanLaunch == true;
+
+    /// <summary>🎵 SNS 배경음악(무음 기본) · 사용자 MP3 경로 · 합성 상태.</summary>
+    public bool BgmAvailable => _audioMux is not null;
+    public PromptFlowStudio.Services.Export.SnsBgmPreset Bgm { get; set; } = PromptFlowStudio.Services.Export.SnsBgmPreset.None;
+    public string CustomBgmPath { get; set; } = "";
+    public string? BgmStatus { get; private set; }
     private PromptFlowStudio.Services.Export.StockSuiteExportFormat? _stockFormat;
     /// <summary>모달 포맷 선택 — 미선택이면 환경설정 기본(MP4 | WebM VP9).</summary>
     public PromptFlowStudio.Services.Export.StockSuiteExportFormat StockSuiteFormat
@@ -181,6 +196,8 @@ public sealed class PublishViewModel : IDisposable
         DurationSec = 0;
         SeoMessage = null;
         StockSuiteMessage = null;
+        StockSuiteExported = StockSuiteRestartPending = false;
+        BgmStatus = null;
         SrtPath = srtPath is { Length: > 0 } && File.Exists(srtPath) ? srtPath : YouTubeShortsPublisher.ResolveSrtPath(VideoPath);
         var meta = YouTubeShortsPublisher.BuildMetadata(hook, beats);
         Title = meta.Title;
@@ -211,6 +228,8 @@ public sealed class PublishViewModel : IDisposable
         {
             var r = await _stockSuite.ExportAsync(VideoPath, null, null, ct, StockSuiteFormat).ConfigureAwait(false);
             StockSuiteMessage = r.Ok ? r.Message : "⚠ " + r.Message;
+            StockSuiteExported = r.Ok;
+            StockSuiteRestartPending = false;
             return r.Ok;
         }
         catch (Exception ex)
@@ -220,6 +239,17 @@ public sealed class PublishViewModel : IDisposable
             return false;
         }
         finally { IsStockSuiteBusy = false; Notify(); }
+    }
+
+    /// <summary>🚀 StockSuite 실행 — 이미 실행 중이면 <see cref="StockSuiteRestartPending"/> 로 재실행 확인을 요구.</summary>
+    public bool LaunchStockSuite(bool restart = false)
+    {
+        if (_stockSuite is null) return false;
+        var r = _stockSuite.Launch(restart);
+        StockSuiteRestartPending = r.AlreadyRunning;
+        StockSuiteMessage = r.Message;
+        Notify();
+        return r.Ok;
     }
 
     public void Close()
@@ -245,6 +275,7 @@ public sealed class PublishViewModel : IDisposable
 
         try
         {
+            _publishPath = await PrepareBgmAsync(token).ConfigureAwait(false);
             var ytTask = ToYouTube ? RunYouTubeAsync(token) : Task.FromResult(true);
             var igTask = ToInstagram ? RunInstagramAsync(token) : Task.FromResult(true);
             var results = await Task.WhenAll(ytTask, igTask).ConfigureAwait(false);
@@ -255,6 +286,18 @@ public sealed class PublishViewModel : IDisposable
             IsBusy = false;
             Notify();
         }
+    }
+
+    /// <summary>🎵 BGM 합성 — 무음/미주입/실패 시 원본 경로([부분 구제] · 발행은 계속).</summary>
+    private async Task<string> PrepareBgmAsync(CancellationToken ct)
+    {
+        if (_audioMux is null || Bgm == PromptFlowStudio.Services.Export.SnsBgmPreset.None) { BgmStatus = null; return VideoPath; }
+        BgmStatus = "🎵 배경음악 합성 중…";
+        Notify();
+        var r = await _audioMux.MuxAsync(VideoPath, Bgm, CustomBgmPath, DurationSec, ct).ConfigureAwait(false);
+        BgmStatus = r.Ok ? r.Message : "⚠ " + r.Message;
+        Notify();
+        return r.Ok ? r.OutputPath : VideoPath;
     }
 
     public void Cancel()
@@ -272,7 +315,7 @@ public sealed class PublishViewModel : IDisposable
         var meta = new ShortsMetadata(Title.Trim(), Description, tags, at is null ? Privacy : "private", at);
         try
         {
-            var r = await _yt.PublishAsync(VideoPath, meta, SrtPath, new InlineProgress(p => { YouTubeProgress = Math.Clamp(p, 0, 1); Notify(); }), ct).ConfigureAwait(false);
+            var r = await _yt.PublishAsync(_publishPath ?? VideoPath, meta, SrtPath, new InlineProgress(p => { YouTubeProgress = Math.Clamp(p, 0, 1); Notify(); }), ct).ConfigureAwait(false);
             YouTubeResult = r;
             YouTubeStatus = r.Message;
             if (r.Ok) YouTubeProgress = 1;
@@ -294,7 +337,7 @@ public sealed class PublishViewModel : IDisposable
         try
         {
             var url = string.IsNullOrWhiteSpace(PublicVideoUrl) ? null : PublicVideoUrl.Trim();
-            var r = await _ig.PublishAsync(VideoPath, url, Caption ?? "", InstagramConsent,
+            var r = await _ig.PublishAsync(_publishPath ?? VideoPath, url, Caption ?? "", InstagramConsent,
                 new InlineProgress(p => { InstagramProgress = Math.Clamp(p, 0, 1); Notify(); }), ct).ConfigureAwait(false);
             InstagramResult = r;
             InstagramStatus = r.Message;
