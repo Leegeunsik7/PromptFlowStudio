@@ -464,6 +464,15 @@ public sealed class RenderQueueService : IRenderQueueService
             lock (_gate) job.ProgressPercent = p;
             Raise();
         }
+        // Mock 실물 보장 — 어댑터가 샘플 생성기를 제공하면 testsrc 5초 MP4(+앰비언트 후처리)를 디스크에 생성. 실패는 기존 빈 완료 유지.
+        if (_engine is IMockRenderOutputProvider mock)
+        {
+            string? path = null;
+            try { path = await mock.RenderMockAsync(job, ct).ConfigureAwait(false); }
+            catch (Exception ex) when (ex is not OperationCanceledException) { Program.Log("RenderQueue.MockOutput", ex); }
+            ct.ThrowIfCancellationRequested();
+            if (path is not null && HasLocalOutput(path)) lock (_gate) job.ResultPath = path;
+        }
     }
 
     /// <summary>실물 엔진 실행 — 실패 결과·로컬 산출물 부재는 예외로 승격(Failed 격리).</summary>

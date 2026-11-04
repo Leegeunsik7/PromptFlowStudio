@@ -31,3 +31,12 @@ public interface IRenderExecutionEngine
 
     Task<RenderExecutionResult> ExecuteAsync(BatchRenderJob job, IProgress<int> progress, CancellationToken ct);
 }
+
+/// <summary>
+/// [선택] Mock(시뮬레이션) 렌더 시 실물 샘플 산출물 생성기 — 큐 시뮬레이션 완료 직후 호출.
+/// 생성된 로컬 경로(성공) 또는 null(미구성·ffmpeg 부재·실패 → 기존 빈 완료 유지).
+/// </summary>
+public interface IMockRenderOutputProvider
+{
+    Task<string?> RenderMockAsync(BatchRenderJob job, CancellationToken ct);
+}

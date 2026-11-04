@@ -1305,13 +1305,28 @@
             else
             {
                 _miniUrl = _canvasQueueUrl = null;
-                _miniError = "렌더 완료로 보고됐으나 산출 파일이 디스크에 없습니다 (Mock 시뮬레이션 모드 또는 엔진 출력 누락)";
+                _miniError = MiniMissingOutputMessage();
             }
             _miniNotice = MiniJobMeta(PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.MetaAmbientNotice);
         }
         else if (next.Phase == PromptFlowStudio.Services.Render.MiniQueuePhase.Failed)
             _miniError = MiniFailedMessage() ?? "렌더 실패";
         return true;
+    }
+
+    /// <summary>완료 보고 + 산출물 부재 — 실행 엔진 종류별 원인 안내(Mock: ffmpeg 부재 · Cloud: 원격 URL 미수신 · ComfyUI: 출력 누락).</summary>
+    private string MiniMissingOutputMessage()
+    {
+        string? kind = null;
+        foreach (var j in RenderQueue.Snapshot())
+            if (Array.IndexOf(_miniIds, j.JobId) >= 0 && !string.IsNullOrWhiteSpace(j.EngineKind)) { kind = j.EngineKind; break; }
+        return kind switch
+        {
+            PromptFlowStudio.Services.Render.RenderEngineKind.Mock => "Mock 모드: 샘플 MP4 생성 실패 — FFmpeg 미설치 또는 실행 오류입니다 ([환경설정]에서 FFmpeg 설치)",
+            PromptFlowStudio.Services.Render.RenderEngineKind.Cloud => "Cloud(DashScope) 렌더 완료 보고 후 결과 영상을 로컬로 받지 못했습니다 (네트워크/URL 만료 확인)",
+            PromptFlowStudio.Services.Render.RenderEngineKind.ComfyUi => "ComfyUI 렌더 완료 보고 후 출력 파일이 디스크에 없습니다 (ComfyUI output 폴더 확인)",
+            _ => "렌더 완료로 보고됐으나 산출 파일이 디스크에 없습니다 (엔진 출력 누락)",
+        };
     }
 
     /// <summary>추적 작업 중 첫 실패 컷의 오류 메시지.</summary>

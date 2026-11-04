@@ -19,7 +19,7 @@ namespace PromptFlowStudio.Services.Render;
 ///   ▸ 취소 전파: 큐 CTS 취소 → 엔진 ct(로컬 CLI 는 <see cref="PromptFlowStudio.Services.Engines.ProcessRunner"/> 프로세스 트리 종료)
 ///     + ComfyUI 서버 <c>POST /interrupt</c>(GPU 즉시 해제 · 2초 타임아웃 · 실패 격리).
 /// </summary>
-public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine
+public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, IMockRenderOutputProvider
 {
     private static readonly TimeSpan InterruptTimeout = TimeSpan.FromSeconds(2);
     private static readonly HttpClient s_http = new() { Timeout = InterruptTimeout };
@@ -45,6 +45,24 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine
     /// <summary>ComfyUI 베이스 URL 공급자(호출 시점 평가 → [환경설정] 저장 즉시 반영). null 이면 <c>PFS_COMFY_URL</c> → 127.0.0.1:8188.</summary>
     public Func<string>? ComfyBaseUrl { get; init; }
 
+    /// <summary>
+    /// [환경설정] 렌더 모드 공급자(ComfyUI/Cloud/Mock · 디스패치 시점마다 평가). ComfyUI → 로컬 엔진, Cloud → 비-ComfyUI 활성 엔진(DashScope/Wan).
+    /// null 이면 선택기 활성 엔진 그대로.
+    /// </summary>
+    public Func<string>? RenderMode { get; init; }
+
+    /// <summary>원격 산출물 다운로더(URL · 로컬 경로 · ct). null 이면 내장 HTTP(타임아웃·지수 백오프 3회).</summary>
+    public Func<string, string, CancellationToken, Task>? Downloader { get; init; }
+
+    /// <summary>Mock 샘플 MP4 생성용 ffmpeg 경로 공급자 — null 이면 Mock 샘플 생성 비활성(기존 빈 완료).</summary>
+    public Func<string?>? MockFfmpeg { get; init; }
+
+    /// <summary>Mock 샘플 ffmpeg 실행기(테스트 주입). null 이면 <see cref="ProcessRunner"/>.</summary>
+    public FfmpegRunner? MockRunner { get; init; }
+
+    /// <summary>Cloud(DashScope) 오류 접두 — 작업실 인라인 오류 식별용.</summary>
+    public const string CloudErrorPrefix = "☁️ DashScope 오류: ";
+
     public bool IsAvailable => !(ForceSimulation?.Invoke() ?? false) && TryGetActive() is { Enabled: true };
 
     public string EngineKind => KindOf(TryGetActive());
@@ -63,9 +81,28 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine
             r = await engine.GenerateAsync(request, relay, ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
         if (!r.Ok || string.IsNullOrWhiteSpace(r.VideoUrl))
-            return new RenderExecutionResult(false, kind, null, string.IsNullOrWhiteSpace(r.Message) ? "엔진 생성 실패" : r.Message);
+            return new RenderExecutionResult(false, kind, null, DescribeFailure(kind, r.Message, r.TaskId));
 
         var output = r.VideoUrl;
+        if (IsRemote(output) && !string.IsNullOrWhiteSpace(job.OutputPath) && Path.IsPathRooted(job.OutputPath))
+        {
+            // 클라우드 결과 URL → 작업 OutputPath 로 실물 다운로드(앰비언트·합본·플레이어가 로컬 파일 필요)
+            try
+            {
+                var dir = Path.GetDirectoryName(job.OutputPath);
+                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                await (Downloader ?? DefaultDownloadAsync)(output, job.OutputPath, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+            {
+                Program.Log("RenderExec.Download", ex);
+                return new RenderExecutionResult(false, kind, null, CloudErrorPrefix + "결과 영상 다운로드 실패 — " + ex.Message);
+            }
+            ct.ThrowIfCancellationRequested();
+            if (!RenderQueueService.HasLocalOutput(job.OutputPath))
+                return new RenderExecutionResult(false, kind, null, CloudErrorPrefix + "결과 영상 다운로드 실패 — 파일이 비어 있습니다");
+            output = job.OutputPath;
+        }
         if (!string.IsNullOrWhiteSpace(job.OutputPath) && Path.IsPathRooted(output) && File.Exists(output)
             && !string.Equals(Path.GetFullPath(output), Path.GetFullPath(job.OutputPath), StringComparison.OrdinalIgnoreCase))
         {
@@ -217,10 +254,141 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine
     internal static string? ToEngineSize(string? resolution)
         => string.IsNullOrWhiteSpace(resolution) ? null : resolution.Trim().Replace('x', '*').Replace('X', '*');
 
+    /// <summary>
+    /// 활성 엔진 — [환경설정] 렌더 모드를 디스패치 시점에 실시간 반영. ComfyUI 모드 → ComfyUI 엔진, Cloud 모드 → 선택기 활성이 ComfyUI 면 첫 비-ComfyUI 엔진.
+    /// 해당 엔진이 없으면 선택기 활성 폴백.
+    /// </summary>
     private IVideoGenerationEngine? TryGetActive()
     {
         if (_selector is null || _selector.All.Count == 0) return null;
-        try { return _selector.Active; } catch (Exception) { return null; }
+        IVideoGenerationEngine? active;
+        try { active = _selector.Active; } catch (Exception) { return null; }
+        string? mode;
+        try { mode = RenderMode?.Invoke(); } catch (Exception ex) { Program.Log("RenderExec.Mode", ex); mode = null; }
+        if (string.IsNullOrWhiteSpace(mode)) return active;
+        var all = _selector.All;
+        if (string.Equals(mode, RenderEngineKind.ComfyUi, StringComparison.OrdinalIgnoreCase))
+        {
+            if (active is ComfyUiVideoEngine) return active;
+            for (var i = 0; i < all.Count; i++) if (all[i] is ComfyUiVideoEngine) return all[i];
+        }
+        else if (string.Equals(mode, RenderEngineKind.Cloud, StringComparison.OrdinalIgnoreCase))
+        {
+            if (active is not ComfyUiVideoEngine) return active;
+            for (var i = 0; i < all.Count; i++) if (all[i] is not ComfyUiVideoEngine) return all[i];
+        }
+        return active;
+    }
+
+    /// <summary>실패 메시지 — Cloud 는 DashScope 응답 원문(인증·할당량 등) 그대로 접두 표기, 그 외 원문.</summary>
+    internal static string DescribeFailure(string kind, string? message, string? taskId)
+    {
+        var msg = string.IsNullOrWhiteSpace(message) ? "엔진 생성 실패" : message.Trim();
+        if (!string.Equals(kind, RenderEngineKind.Cloud, StringComparison.Ordinal)) return msg;
+        var hint = ClassifyCloudError(msg);
+        return CloudErrorPrefix + (hint is null ? "" : "[" + hint + "] ") + msg
+               + (string.IsNullOrWhiteSpace(taskId) ? "" : " (task_id=" + taskId + ")");
+    }
+
+    /// <summary>DashScope 오류 분류 — 인증 · 할당량 · 속도 제한 · 시간 초과. 미분류 null.</summary>
+    internal static string? ClassifyCloudError(string? message)
+    {
+        if (string.IsNullOrEmpty(message)) return null;
+        if (message.Contains("InvalidApiKey", StringComparison.OrdinalIgnoreCase) || message.Contains("401", StringComparison.Ordinal)
+            || message.Contains("Unauthorized", StringComparison.OrdinalIgnoreCase) || message.Contains("API 키", StringComparison.Ordinal)
+            || message.Contains("AccessDenied", StringComparison.OrdinalIgnoreCase)) return "인증 실패";
+        if (message.Contains("429", StringComparison.Ordinal) || message.Contains("Throttl", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("속도 제한", StringComparison.Ordinal)) return "속도 제한";
+        if (message.Contains("Arrearage", StringComparison.OrdinalIgnoreCase) || message.Contains("quota", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("할당량", StringComparison.Ordinal) || message.Contains("FreeTier", StringComparison.OrdinalIgnoreCase)) return "할당량 부족";
+        if (message.Contains("시간 초과", StringComparison.Ordinal) || message.Contains("timeout", StringComparison.OrdinalIgnoreCase)) return "시간 초과";
+        return null;
+    }
+
+    private static bool IsRemote(string? path)
+        => path is not null && (path.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || path.StartsWith("https://", StringComparison.OrdinalIgnoreCase));
+
+    private static readonly HttpClient s_download = new() { Timeout = TimeSpan.FromMinutes(5) };
+
+    /// <summary>원격 영상 다운로드 — 임시 파일 → 원자 이동, 실패 시 지수 백오프(1s·2s) 최대 3회. HTTP 오류는 상태 코드 포함 예외.</summary>
+    private static async Task DefaultDownloadAsync(string url, string dest, CancellationToken ct)
+    {
+        var tmp = dest + ".part";
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                using (var res = await s_download.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false))
+                {
+                    if (!res.IsSuccessStatusCode)
+                        throw new HttpRequestException("HTTP " + ((int)res.StatusCode).ToString(CultureInfo.InvariantCulture) + " " + res.ReasonPhrase, null, res.StatusCode);
+                    await using var src = await res.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+                    await using var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true);
+                    await src.CopyToAsync(fs, ct).ConfigureAwait(false);
+                }
+                File.Move(tmp, dest, overwrite: true);
+                return;
+            }
+            catch (Exception ex) when (attempt < 2 && !ct.IsCancellationRequested && ex is HttpRequestException or IOException or TaskCanceledException)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1 << attempt), ct).ConfigureAwait(false);
+            }
+            finally
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            }
+        }
+    }
+
+    /// <summary>Mock 샘플 길이(초).</summary>
+    public const int MockDurationSec = 5;
+
+    /// <summary>
+    /// Mock 샘플 ffmpeg 인자 — <c>-y -f lavfi -i testsrc=duration=5:size=WxH:rate=30 -c:v libx264 -pix_fmt yuv420p {out}</c>.
+    /// 해상도 파싱 실패 시 1280x720.
+    /// </summary>
+    internal static string[] BuildMockArgs(string? resolution, string output)
+    {
+        var size = ToEngineSize(resolution)?.Replace('*', 'x') ?? "1280x720";
+        if (!IsValidSize(size)) size = "1280x720";
+        return ["-y", "-f", "lavfi", "-i", "testsrc=duration=" + MockDurationSec.ToString(CultureInfo.InvariantCulture) + ":size=" + size + ":rate=30",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", output];
+    }
+
+    private static bool IsValidSize(string s)
+    {
+        var i = s.IndexOf('x');
+        return i > 0 && int.TryParse(s.AsSpan(0, i), NumberStyles.None, CultureInfo.InvariantCulture, out var w) && w > 0
+               && int.TryParse(s.AsSpan(i + 1), NumberStyles.None, CultureInfo.InvariantCulture, out var h) && h > 0;
+    }
+
+    /// <summary>
+    /// Mock 실물 보장 — ffmpeg testsrc 5초 MP4 를 <see cref="BatchRenderJob.OutputPath"/> 에 생성 후 앰비언트 후처리(15초 루프)까지 적용.
+    /// <see cref="MockFfmpeg"/> 미구성 · OutputPath 비로컬 · ffmpeg 부재/실패면 null(Graceful).
+    /// </summary>
+    public async Task<string?> RenderMockAsync(BatchRenderJob job, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(job);
+        if (MockFfmpeg is null || string.IsNullOrWhiteSpace(job.OutputPath) || !Path.IsPathRooted(job.OutputPath)) return null;
+        var exe = MockFfmpeg();
+        if (string.IsNullOrWhiteSpace(exe)) return null;
+        var output = job.OutputPath;
+        var dir = Path.GetDirectoryName(output);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        var ok = await (MockRunner ?? DefaultMockRunAsync)(exe, BuildMockArgs(job.Resolution, output), ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        if (!ok || !RenderQueueService.HasLocalOutput(output))
+        {
+            Program.Log("RenderExec.Mock", new InvalidOperationException("Mock 샘플 MP4 생성 실패: " + output));
+            return null;
+        }
+        return await ApplyAmbientLoopAsync(job, output, ct).ConfigureAwait(false);
+    }
+
+    private static async Task<bool> DefaultMockRunAsync(string exe, IReadOnlyList<string> args, CancellationToken ct)
+    {
+        var r = await PromptFlowStudio.Services.Engines.ProcessRunner.RunAsync(exe, args, ct: ct).ConfigureAwait(false);
+        return r.Ok;
     }
 
     private static string KindOf(IVideoGenerationEngine? engine)
