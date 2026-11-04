@@ -26,6 +26,7 @@
 @inject PromptFlowStudio.ViewModels.PublishViewModel PubVm
 @inject PromptFlowStudio.Services.Configuration.AppSettingsManager AppSettings
 @inject PromptFlowStudio.Services.Platform.IClipboardService Clipboard
+@inject PromptFlowStudio.Services.Export.StockSuiteExporter StockSuite
 
 @* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
    상태는 WanJobState(싱글턴)에 있고, 이 컴포넌트는 OnChange 를 구독해 InvokeAsync(StateHasChanged)로만 갱신한다.
@@ -238,6 +239,7 @@
                         <button class="ws-btn sm" @onclick="() => OpenPublish(qPath)" title="YouTube Shorts · Instagram Reels 원클릭 발행">🚀 SNS 원클릭 발행</button>
                         <button class="ws-btn ghost sm" @onclick="() => RevealInExplorer(qPath)" title="윈도우 탐색기에서 파일 선택 상태로 열기">📂 폴더 열기</button>
                         <button class="ws-btn ghost sm" @onclick="() => CopyMediaPath(qPath)" title="파일 절대 경로를 클립보드에 복사">📋 경로 복사</button>
+                        <button class="ws-btn ghost sm" @onclick="() => ExportToStockSuite(qPath)" disabled="@_stockBusy" title="환경설정의 StockSuite 에셋 폴더에 bg_ambient.mp4 로 원자적 덮어쓰기">💼 StockSuite로 내보내기</button>
                         <span class="ws-hint" title="@qPath">@ShortPath(qPath)</span>
                     </div>
                 }
@@ -302,6 +304,7 @@
                             <button class="ws-btn sm" @onclick="() => OpenPublish(pubSrc)" title="YouTube Shorts · Instagram Reels 원클릭 발행">🚀 SNS 원클릭 발행</button>
                             <button class="ws-btn ghost sm" @onclick="() => RevealInExplorer(pubSrc)" title="윈도우 탐색기에서 파일 선택 상태로 열기">📂 폴더 열기</button>
                             <button class="ws-btn ghost sm" @onclick="() => CopyMediaPath(pubSrc)" title="파일 절대 경로를 클립보드에 복사">📋 경로 복사</button>
+                            <button class="ws-btn ghost sm" @onclick="() => ExportToStockSuite(pubSrc)" disabled="@_stockBusy" title="환경설정의 StockSuite 에셋 폴더에 bg_ambient.mp4 로 원자적 덮어쓰기">💼 StockSuite로 내보내기</button>
                         }
                         <span class="ws-hint" title="@State.LocalPath">@ShortPath(State.LocalPath)</span>
                         <label class="ws-sztog" title="@AudioSfxEngine.GenerateAudioPrompt(State.LastPrompt)">
@@ -1438,6 +1441,21 @@
     }
 
     /// <summary>📋 경로 복사 — 절대 경로를 클립보드에 복사하고 토스트 표시.</summary>
+    /// <summary>💼 StockSuite로 내보내기 — 설정 폴더에 bg_ambient.mp4 원자적 복사. 미설정/실패 시 경로 재설정 안내 토스트.</summary>
+    private bool _stockBusy;
+    private async Task ExportToStockSuite(string path)
+    {
+        if (_stockBusy) return;
+        _stockBusy = true;
+        try
+        {
+            var r = await StockSuite.ExportAsync(path);
+            _camToast = r.Ok ? r.Message : r.NeedsPathSetup ? "⚠ " + r.Message + " (설정 ▸ 사용자 설정 ▸ StockSuite 에셋 경로)" : "⚠ " + r.Message;
+        }
+        catch (Exception ex) { Program.Log("Workspace.StockSuite", ex); _camToast = "⚠ StockSuite 내보내기 실패 — 경로를 재설정하세요"; }
+        finally { _stockBusy = false; }
+    }
+
     private void CopyMediaPath(string path)
     {
         try

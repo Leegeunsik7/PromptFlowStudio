@@ -26,15 +26,17 @@ public sealed class PublishViewModel : IDisposable
     private readonly IYouTubeShortsPublisher _yt;
     private readonly IInstagramReelsPublisher _ig;
     private readonly GeminiPromptService? _gemini;
+    private readonly PromptFlowStudio.Services.Export.StockSuiteExporter? _stockSuite;
     private CancellationTokenSource? _cts;
     private CancellationTokenSource? _seoCts;
     private int _disposed;
 
-    public PublishViewModel(IYouTubeShortsPublisher yt, IInstagramReelsPublisher ig, GeminiPromptService? gemini = null)
+    public PublishViewModel(IYouTubeShortsPublisher yt, IInstagramReelsPublisher ig, GeminiPromptService? gemini = null, PromptFlowStudio.Services.Export.StockSuiteExporter? stockSuite = null)
     {
         _yt = yt ?? throw new ArgumentNullException(nameof(yt));
         _ig = ig ?? throw new ArgumentNullException(nameof(ig));
         _gemini = gemini;
+        _stockSuite = stockSuite;
     }
 
     /// <summary>상태 변경 통지(백그라운드 스레드 가능 — 구독자는 InvokeAsync(StateHasChanged)).</summary>
@@ -64,6 +66,10 @@ public sealed class PublishViewModel : IDisposable
     public float DurationSec { get; private set; }
     public bool IsSeoBusy { get; private set; }
     public string? SeoMessage { get; private set; }
+    /// <summary>💼 StockSuite 내보내기 진행/결과 메시지.</summary>
+    public bool IsStockSuiteBusy { get; private set; }
+    public string? StockSuiteMessage { get; private set; }
+    public bool StockSuiteAvailable => _stockSuite is not null;
 
     public bool YouTubeEnabled => _yt.Enabled;
     public bool InstagramEnabled => _ig.Enabled;
@@ -167,6 +173,7 @@ public sealed class PublishViewModel : IDisposable
         SourcePrompt = (hook ?? "").Trim();
         DurationSec = 0;
         SeoMessage = null;
+        StockSuiteMessage = null;
         SrtPath = srtPath is { Length: > 0 } && File.Exists(srtPath) ? srtPath : YouTubeShortsPublisher.ResolveSrtPath(VideoPath);
         var meta = YouTubeShortsPublisher.BuildMetadata(hook, beats);
         Title = meta.Title;
@@ -186,6 +193,28 @@ public sealed class PublishViewModel : IDisposable
     }
 
     /// <summary>모달 닫기 — 전송 중이면 백그라운드 계속(다시 열어 진행률 확인).</summary>
+    /// <summary>💼 StockSuite로 내보내기 — 현재 영상 → 설정된 에셋 폴더(<c>bg_ambient.mp4</c>) 원자적 덮어쓰기. 미주입/진행 중이면 false.</summary>
+    public async Task<bool> ExportToStockSuiteAsync(CancellationToken ct = default)
+    {
+        if (_stockSuite is null || IsStockSuiteBusy || !IsOpen) return false;
+        IsStockSuiteBusy = true;
+        StockSuiteMessage = "💼 StockSuite로 복사 중…";
+        Notify();
+        try
+        {
+            var r = await _stockSuite.ExportAsync(VideoPath, null, null, ct).ConfigureAwait(false);
+            StockSuiteMessage = r.Ok ? r.Message : "⚠ " + r.Message;
+            return r.Ok;
+        }
+        catch (Exception ex)
+        {
+            Program.Log("Publish.StockSuite", ex);
+            StockSuiteMessage = "⚠ StockSuite 내보내기 실패: " + ex.Message;
+            return false;
+        }
+        finally { IsStockSuiteBusy = false; Notify(); }
+    }
+
     public void Close()
     {
         IsOpen = false;

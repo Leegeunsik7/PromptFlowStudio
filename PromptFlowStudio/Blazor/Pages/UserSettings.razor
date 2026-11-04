@@ -100,6 +100,21 @@
         <div class="st-hint">지정 경로는 스토리보드 ▸ Long→Shorts 재구성의 실프레임 추출에 즉시 적용됩니다.</div>
     </section>
 
+    @* ── 💼 StockSuite 에셋 경로 (원클릭 내보내기 대상) ── *@
+    <section class="st-card">
+        <div class="st-card-h"><span class="st-ic">💼</span><div><div class="st-card-t">StockSuite 에셋 경로</div><div class="st-card-d">작업실 · 스토리보드 · SNS 발행 모달의 [💼 StockSuite로 내보내기]가 이 폴더에 bg_ambient.mp4 로 덮어씁니다.</div></div></div>
+        <div class="st-field"><label>에셋 폴더</label>
+            <div class="st-inrow">
+                <input type="text" class="st-sel" placeholder="예: C:\Projects\StockSuite\Assets\Video" value="@Prefs.StockSuiteAssetPath" @onchange="OnStockSuitePathChanged" />
+                <button class="st-btn-sm" @onclick="ValidateStockSuitePath">🔍 검증</button>
+            </div>
+        </div>
+        @if (!string.IsNullOrEmpty(_stockMsg))
+        {
+            <div class="st-hint @(_stockOk ? "ok" : "err")">@_stockMsg</div>
+        }
+    </section>
+
     @* ── 생성 기본값 (준비 중) ── *@
     <section class="st-card">
         <div class="st-card-h"><span class="st-ic">🎬</span><div><div class="st-card-t">생성 기본값 <span class="st-soon">준비 중</span></div><div class="st-card-d">새 프로젝트의 기본 해상도·화면비·길이. 생성 파이프라인 연결 후 적용됩니다.</div></div></div>
@@ -174,6 +189,18 @@
         if (string.IsNullOrEmpty(path)) { _ffmpegOk = true; _ffmpegMsg = "ℹ 비어 있음 — 시스템 PATH의 ffmpeg를 탐색합니다(없으면 스텁 프리뷰)."; return; }
         if (System.IO.File.Exists(path)) { _ffmpegOk = true; _ffmpegMsg = "✅ 유효한 실행 파일을 확인했습니다."; }
         else { _ffmpegOk = false; _ffmpegMsg = "❌ 해당 경로에 파일이 존재하지 않습니다."; }
+    }
+
+    // 💼 StockSuite 에셋 경로 — Prefs 직결(즉시 영속) + 폴더 존재 검증.
+    private string? _stockMsg;
+    private bool _stockOk;
+    private void OnStockSuitePathChanged(ChangeEventArgs e) { Prefs.StockSuiteAssetPath = (e.Value?.ToString() ?? "").Trim().Trim('"'); _stockMsg = null; }
+    private void ValidateStockSuitePath()
+    {
+        var path = (Prefs.StockSuiteAssetPath ?? "").Trim();
+        if (string.IsNullOrEmpty(path)) { _stockOk = false; _stockMsg = "ℹ 비어 있음 — 내보내기 전에 StockSuite 에셋 폴더를 지정하세요."; return; }
+        if (System.IO.Directory.Exists(path)) { _stockOk = true; _stockMsg = "✅ 에셋 폴더를 확인했습니다."; }
+        else { _stockOk = false; _stockMsg = "❌ 폴더가 존재하지 않습니다(상위 폴더가 있으면 내보내기 시 자동 생성)."; }
     }
 
     // 스튜디오 모드 즉시 전환(방송 스튜디오 테마 루트 플래그 + 영속).

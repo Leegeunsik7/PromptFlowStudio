@@ -408,6 +408,8 @@ public static class MauiProgram
         builder.Services.AddSingleton<PromptFlowStudio.Services.Storyboard.StoryboardSequencerService>();   // 2번 워크플로우 스토리보드 시퀀서
         builder.Services.AddSingleton<PromptFlowStudio.Services.Render.RenderCostEstimatorService>();   // 3번 워크플로우 렌더 비용 추산
         builder.Services.AddSingleton<PromptFlowStudio.Services.Batch.BatchMassProductionService>();    // 3번 워크플로우 배치 디스패처
+        builder.Services.AddSingleton<PromptFlowStudio.Services.Render.StoryboardStitchService>(); // 스토리보드 4컷 합성 — 모바일 ffmpeg 부재 시 실패 결과
+        builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.Export.StockSuiteExporter(() => sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.StockSuiteAssetPath)); // 💼 StockSuite 내보내기
         builder.Services.AddSingleton<PromptFlowStudio.Services.Render.FFmpegVideoStitchService>(); // 합본/번인 — 모바일은 ffmpeg 부재 → 가상 병합
         builder.Services.AddSingleton<PromptFlowStudio.Services.Configuration.AppSettingsManager>(); // user_settings.json → appsettings 기본값(ComfyUI 주소 · 렌더 모드)
         builder.Services.AddSingleton<PromptFlowStudio.Services.Publishing.IYouTubeShortsPublisher>(sp => PromptFlowStudio.Services.Publishing.YouTubeShortsPublisher.Create(sp.GetRequiredService<PromptFlowStudio.Services.Configuration.AppSettingsManager>(), sp.GetService<Microsoft.Extensions.Configuration.IConfiguration>())); // 🚀 Shorts 발행(모달은 데스크톱 전용 · 서비스만 공유)

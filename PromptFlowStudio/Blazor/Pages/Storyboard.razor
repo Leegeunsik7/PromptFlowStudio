@@ -42,6 +42,8 @@
 @inject PromptFlowStudio.ViewModels.StoryboardViewModel Vm
 @inject PromptFlowStudio.Services.Render.IRenderQueueService RenderQueue
 @inject PromptFlowStudio.Services.Render.FFmpegVideoStitchService Stitcher
+@inject PromptFlowStudio.Services.Render.StoryboardStitchService SbStitch
+@inject PromptFlowStudio.Services.Export.StockSuiteExporter StockSuite
 @inject PromptFlowStudio.Services.Audio.ITtsSynthesisService ScriptTts
 @inject PromptFlowStudio.Services.Export.SubtitleGeneratorService Subtitles
 @inject PromptFlowStudio.Services.Weather.WeatherEngine Weather
@@ -849,6 +851,19 @@
                                 title="렌더 큐의 이번 전송 컷이 모두 완료되면 컷 순서대로 단일 MP4 로 무손실 병합">🎬 최종 완성본 1개로 합치기 (Export Full Video)</button>
                         <span class="sb-sub">렌더 큐 @(_stitchDone)/@(_stitchTotal) 완료@(_stitchMessage is null ? "" : " · " + _stitchMessage)</span>
                     </div>
+                    @if (_autoStitching)
+                    {
+                        <div class="sb-actions"><span class="sb-sub">🎞️ 4컷 마스터 자동 합성 중… (concat 스트림 복사 → 실패 시 1280x720 정규화)</span></div>
+                    }
+                    else if (_masterPath is { } master)
+                    {
+                        <div class="sb-actions">
+                            <button class="sb-btn go" @onclick="PlayMaster" title="자동 합성된 20초 마스터 영상을 최종 영상 패널에서 재생">▶ 마스터 영상 재생</button>
+                            <button class="sb-btn ghost" @onclick="ExportMasterAsync" disabled="@_exporting" title="전체 결합 파일(storyboard_…_full20s.mp4)을 원하는 위치로 저장">📦 전체 결합 파일 내보내기</button>
+                            <button class="sb-btn ghost" @onclick="() => ExportToStockSuiteAsync(master)" disabled="@_stockBusy" title="환경설정의 StockSuite 에셋 폴더에 bg_ambient.mp4 로 원자적 덮어쓰기">💼 StockSuite로 내보내기</button>
+                            <span class="sb-sub" title="@master">@(System.IO.Path.GetFileName(master))</span>
+                        </div>
+                    }
                 }
             </div>
 
@@ -910,6 +925,7 @@
                         @(_exporting ? "내보내는 중…" : "💾 비디오 파일 내보내기 (.mp4)")
                     </button>
                     <button class="sb-btn ghost" @onclick="OpenMeta" disabled="@_upBusy">📺 유튜브 메타데이터 생성</button>
+                    <button class="sb-btn ghost" @onclick="() => ExportToStockSuiteAsync(_project.FinalVideoPath)" disabled="@_stockBusy" title="환경설정의 StockSuite 에셋 폴더에 bg_ambient.mp4 로 원자적 덮어쓰기">💼 StockSuite로 내보내기</button>
                     <button class="sb-btn ghost" @onclick="GenerateThumbnail" disabled="@(_thumbBusy || _upBusy)"
                             title="표정 피크 컷의 얼굴을 1.5배 매크로 크롭 + Real-ESRGAN 4K 로 thumbnail.png 자동 생성">
                         @(_thumbBusy ? "🖼️ 썸네일 생성 중…" : "🖼️ 자동 썸네일(4K)")
@@ -1993,6 +2009,8 @@
         try { _ppCts?.Cancel(); } catch (ObjectDisposedException) { }   // v16.12.0 진행 중 내보내기 취소
         try { _directCts?.Cancel(); } catch (ObjectDisposedException) { }
         _directCts?.Dispose();
+        try { _autoStitchCts?.Cancel(); } catch (ObjectDisposedException) { }
+        _autoStitchCts?.Dispose();
         StudioNav.Requested -= OnStudioRequested;
         Jobs.OnChange -= OnStateChanged;
         Jobs.OnCompleted -= OnJobsCompleted;
@@ -3045,8 +3063,85 @@
     /// <summary>렌더 큐 변경 — 합본 그룹 완료 수가 바뀔 때만 다시 그림(진행률 틱 렌더 폭주 방지).</summary>
     private void OnRenderQueueChanged()
     {
-        try { if (RefreshStitchProgress()) _ = InvokeAsync(StateHasChanged); }
+        try
+        {
+            if (!RefreshStitchProgress()) return;
+            _ = InvokeAsync(StateHasChanged);
+            // 🎞️ 4컷 전부 완료 → 마스터 자동 합성(그룹당 1회)
+            if (_stitchTotal == PromptFlowStudio.Services.Render.StoryboardStitchService.AutoStitchCutCount && _stitchDone == _stitchTotal
+                && Vm.LastDispatchGroupId is { } g && !string.Equals(_autoStitchedGroup, g, StringComparison.Ordinal))
+            {
+                _autoStitchedGroup = g;
+                _ = InvokeAsync(() => AutoStitchMasterAsync(g));
+            }
+        }
         catch (Exception ex) { Program.Log("Storyboard.StitchProgress", ex); }
+    }
+
+    // ── 🎞️ 스토리보드 4컷 자동 합성(마스터 20s) ──
+    private string? _autoStitchedGroup, _masterPath;
+    private bool _autoStitching, _stockBusy;
+    private CancellationTokenSource? _autoStitchCts;
+
+    private async Task AutoStitchMasterAsync(string group)
+    {
+        if (_autoStitching) return;
+        try
+        {
+            if (!PromptFlowStudio.Services.Render.StoryboardStitchService.TryCollectGroupCuts(RenderQueue.Snapshot(), group, out var cuts)
+                || !PromptFlowStudio.Services.Render.StoryboardStitchService.ShouldAutoStitch(cuts)) return;
+            _autoStitching = true;
+            StateHasChanged();
+            _autoStitchCts?.Dispose();
+            _autoStitchCts = new CancellationTokenSource();
+            var output = PromptFlowStudio.Services.Render.StoryboardStitchService.BuildOutputPath(Media.MediaRoot, DateTime.Now);
+            var r = await SbStitch.StitchAsync(cuts, output, _autoStitchCts.Token);
+            _stitchMessage = r.Message;
+            if (r.Ok && r.OutputPath is { } path)
+            {
+                _masterPath = path;
+                _project.FinalVideoPath = path;
+                Gallery.Register(_project, GalleryAssetKind.Video, Media.ToPlaybackUrl(path), "🎞️ 스토리보드 마스터 20s");
+                ShowToast("🎞️ " + r.Message);
+            }
+            else ShowToast("4컷 자동 합성 실패 — " + r.Message);
+        }
+        catch (Exception ex) { Program.Log("Storyboard.AutoStitch", ex); ShowToast("4컷 자동 합성 실패"); }
+        finally { _autoStitching = false; StateHasChanged(); }
+    }
+
+    private void PlayMaster()
+    {
+        if (_masterPath is null) return;
+        if (!File.Exists(_masterPath)) { ShowToast("마스터 영상 파일을 찾을 수 없습니다."); _masterPath = null; return; }
+        _project.FinalVideoPath = _masterPath;
+    }
+
+    private async Task ExportMasterAsync()
+    {
+        if (_masterPath is null || _exporting) return;
+        _exporting = true;
+        try
+        {
+            var saved = await Export.ExportAsync(_masterPath, string.IsNullOrWhiteSpace(_project.Title) ? System.IO.Path.GetFileNameWithoutExtension(_masterPath) : _project.Title + "_full20s");
+            ShowToast(saved is not null ? $"✅ 전체 결합 파일 내보내기 — {saved}" : "내보내기를 취소했습니다.");
+        }
+        catch (Exception ex) { Errors.Show(ex); }
+        finally { _exporting = false; }
+    }
+
+    /// <summary>💼 StockSuite로 내보내기 — 설정 폴더 bg_ambient.mp4 원자적 복사. 미설정/실패 시 경로 재설정 안내.</summary>
+    private async Task ExportToStockSuiteAsync(string? path)
+    {
+        if (_stockBusy || string.IsNullOrWhiteSpace(path)) return;
+        _stockBusy = true;
+        try
+        {
+            var r = await StockSuite.ExportAsync(path);
+            ShowToast(r.Ok ? r.Message : r.NeedsPathSetup ? "⚠ " + r.Message + " (설정 ▸ 사용자 설정 ▸ StockSuite 에셋 경로)" : "⚠ " + r.Message);
+        }
+        catch (Exception ex) { Program.Log("Storyboard.StockSuite", ex); ShowToast("⚠ StockSuite 내보내기 실패 — 경로를 재설정하세요"); }
+        finally { _stockBusy = false; }
     }
 
     private bool RefreshStitchProgress()

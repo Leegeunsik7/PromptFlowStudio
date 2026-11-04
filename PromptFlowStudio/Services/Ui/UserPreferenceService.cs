@@ -69,6 +69,8 @@ public sealed class UserPreferenceService
         public const string QualityCustom = "wan.guardrail.custom";    // 문자열
         /// <summary>[v5.7.3] 커스텀 FFmpeg 실행 파일 경로(비우면 시스템 PATH 탐색 · 데스크톱 실프레임 추출용).</summary>
         public const string FfmpegPath = "system.ffmpeg";              // 파일 경로(빈 문자열=PATH)
+        /// <summary>StockSuite 에셋 폴더(예: C:\Projects\StockSuite\Assets\Video · 빈 문자열=미설정).</summary>
+        public const string StockSuiteAssetPath = "stocksuite.assets";
     }
 
     private const string Prefix = "sm.pref.";
@@ -162,6 +164,13 @@ public sealed class UserPreferenceService
         set => Set(Keys.FfmpegPath, value ?? "");
     }
 
+    /// <summary>💼 StockSuite 에셋 내보내기 대상 폴더(비우면 미설정 → 내보내기 시 경로 설정 안내).</summary>
+    public string StockSuiteAssetPath
+    {
+        get => Get(Keys.StockSuiteAssetPath);
+        set => Set(Keys.StockSuiteAssetPath, value ?? "");
+    }
+
     public bool Loaded { get; private set; }
 
     /// <summary>기본값. Reset 과 '값 없음' 이 같은 표를 본다.</summary>
@@ -186,6 +195,7 @@ public sealed class UserPreferenceService
         [Keys.QualityPreset] = "Balanced",
         [Keys.QualityCustom] = "",
         [Keys.FfmpegPath] = "",
+        [Keys.StockSuiteAssetPath] = "",
     };
 
     /// <summary>
