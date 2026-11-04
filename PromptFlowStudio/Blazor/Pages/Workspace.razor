@@ -27,6 +27,7 @@
 @inject PromptFlowStudio.Services.Configuration.AppSettingsManager AppSettings
 @inject PromptFlowStudio.Services.Platform.IClipboardService Clipboard
 @inject PromptFlowStudio.Services.Export.StockSuiteExporter StockSuite
+@inject PromptFlowStudio.Services.Prompt.PresetManagerService Presets
 
 @* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
    상태는 WanJobState(싱글턴)에 있고, 이 컴포넌트는 OnChange 를 구독해 InvokeAsync(StateHasChanged)로만 갱신한다.
@@ -119,7 +120,18 @@
 
             <div class="ws-insp-bar">
                 <button class="ws-insp-open" @onclick="OpenInspiration" disabled="@State.IsBusy" title="장르별 완성 스토리 · 레고식 조합기">💡 스토리 레시피 & 영감 모음</button>
+                <button class="ws-preset-save" @onclick="ToggleUserPresetForm" disabled="@State.IsBusy" title="프롬프트 · 네거티브 · 카메라 모션 · 스타일 · 듀레이션을 user_presets.json 에 영구 저장">⭐ 현재 설정을 프리셋으로 저장</button>
             </div>
+            @if (_upFormOpen)
+            {
+                <div class="ws-preset-form">
+                    <input class="ws-preset-in" @bind="_upName" @bind:event="oninput" maxlength="@PromptFlowStudio.Services.Prompt.PresetManagerService.MaxNameLength"
+                           placeholder="프리셋 이름 (예: 심야 OLED 퀀트 다크)" @onkeydown="OnUserPresetKey" />
+                    <button class="ws-btn sm" @onclick="SaveUserPreset" disabled="@(string.IsNullOrWhiteSpace(_upName) || string.IsNullOrWhiteSpace(_prompt))">💾 저장</button>
+                    <button class="ws-btn ghost sm" @onclick="() => _upFormOpen = false">취소</button>
+                </div>
+            }
+            @if (_upMsg is not null) { <div class="ws-hint">@_upMsg</div> }
             <textarea class="ws-ta" @bind="_prompt" @bind:event="oninput"
                       placeholder="@(_imagePath is null ? "예) 노을 지는 해변을 천천히 걷는 골든리트리버, 시네마틱, 부드러운 카메라 팬" : "예) 카메라가 천천히 줌인, 머리카락이 바람에 날림 (i2v는 움직임 위주로 · 프롬프트 선택)")"
                       maxlength="800" disabled="@State.IsBusy"></textarea>
@@ -226,13 +238,28 @@
         <div class="ws-card">
             <div class="ws-card-h">
                 <span>② 🎬 라이브 비디오 캔버스</span>
-                <span class="ws-badge @PhaseClass">@PhaseLabel</span>
+                <span class="ws-hts-tools">
+                    <button class="ws-hts-tog @(_htsHud ? "on" : null)" @onclick="() => _htsHud = !_htsHud" aria-pressed="@(_htsHud ? "true" : "false")" title="HTS 차트·호가창 목업을 영상 위에 겹쳐 배경 가독성을 검증">📊 HTS HUD</button>
+                    <span class="ws-badge @PhaseClass">@PhaseLabel</span>
+                </span>
             </div>
+            @if (_htsHud)
+            {
+                <div class="ws-hts-ctl">
+                    <label>오버레이 투명도 <b>@(_htsOpacity.ToString(CultureInfo.InvariantCulture))%</b>
+                        <input type="range" min="@HtsHudOverlay.MinOpacity" max="@HtsHudOverlay.MaxOpacity" step="1" @bind="_htsOpacity" @bind:event="oninput" /></label>
+                    <label>배경 어둡기 <b>@(_htsDimmer.ToString(CultureInfo.InvariantCulture))%</b>
+                        <input type="range" min="@HtsHudOverlay.MinDimmer" max="@HtsHudOverlay.MaxDimmer" step="1" @bind="_htsDimmer" @bind:event="oninput" /></label>
+                </div>
+            }
 
             @if (_canvasQueueUrl is not null && !State.IsBusy)
             {
                 @* 큐 렌더(10s/15s/앰비언트) 완료 산출물 — @key 로 <video> 재생성해 소스 교체 즉시 강제 리로드 *@
-                <video class="ws-video" src="@_canvasQueueUrl" controls autoplay loop muted preload="auto" @key="_canvasQueueUrl"></video>
+                <div class="ws-hts-wrap">
+                    <video class="ws-video" src="@_canvasQueueUrl" controls autoplay loop muted preload="auto" @key="_canvasQueueUrl"></video>
+                    @if (_htsHud) { <HtsHudOverlay OpacityPercent="_htsOpacity" DimmerPercent="_htsDimmer" /> }
+                </div>
                 @if (_canvasQueuePath is { } qPath)
                 {
                     <div class="ws-done">
@@ -279,7 +306,10 @@
                 }
                 else
                 {
-                    <video class="ws-video" src="@ShownVideoUrl" controls autoplay loop muted preload="auto"></video>
+                    <div class="ws-hts-wrap">
+                        <video class="ws-video" src="@ShownVideoUrl" controls autoplay loop muted preload="auto"></video>
+                        @if (_htsHud) { <HtsHudOverlay OpacityPercent="_htsOpacity" DimmerPercent="_htsDimmer" /> }
+                    </div>
                 }
                 <div class="ws-done">
                     @if (IsPortrait)
@@ -474,6 +504,19 @@
 
             <div class="ws-w ws-gem">
                 <div class="ws-w-h">✨ 제미나이 AI 추천 스튜디오</div>
+                @if (_myPresets.Count > 0)
+                {
+                    <div class="ws-gem-h">⭐ 내 프리셋</div>
+                    <div class="ws-chips">
+                        @foreach (var up in _myPresets)
+                        {
+                            <span class="ws-chip ws-chip-my" @key="up.Id">
+                                <button class="ws-chip-my-b" @onclick="() => ApplyUserPreset(up)" disabled="@State.IsBusy" title="@UserPresetTip(up)">⭐ @up.Name</button>
+                                <button class="ws-chip-my-x" @onclick="() => DeleteUserPreset(up.Id)" disabled="@State.IsBusy" title="프리셋 삭제">✕</button>
+                            </span>
+                        }
+                    </div>
+                }
                 <button class="ws-gem-enh" @onclick="_geminiEnhance" disabled="@(State.IsBusy || _enhancing)" title="@(_imagePath is not null ? "참조 이미지를 Gemini Vision 으로 분석해 I2V 프롬프트를 역생성합니다" : "선택한 듀레이션에 맞춰 Wan 2.1 시네마틱 프롬프트로 강화합니다")">@(_enhancing ? "⏳ 강화 중..." : _imagePath is not null ? "✨ AI 문장 자동 강화 (Vision I2V)" : "✨ AI 문장 자동 강화")</button>
                 <div class="ws-gem-h">🌟 제미나이 픽 프리셋</div>
                 <div class="ws-chips">
@@ -772,6 +815,24 @@
     .ws-tid { opacity: .7; }
 
     .ws-video { width: 100%; border-radius: 12px; background: #000; border: 1px solid var(--line); }
+    /* 📊 HTS HUD 가독성 시뮬레이터 */
+    .ws-hts-tools { display: inline-flex; align-items: center; gap: 6px; }
+    .ws-hts-tog { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--text-secondary, #aab); cursor: pointer; }
+    .ws-hts-tog.on { background: rgba(61, 139, 255, .18); border-color: #3d8bff; color: #9cc3ff; }
+    .ws-hts-ctl { display: flex; flex-wrap: wrap; gap: 14px; font-size: 11.5px; color: var(--text-secondary, #aab); margin: 6px 0; }
+    .ws-hts-ctl label { display: flex; align-items: center; gap: 6px; }
+    .ws-hts-ctl input[type=range] { width: 120px; }
+    .ws-hts-wrap { position: relative; }
+    .ws-hts-wrap > .ws-video { display: block; }
+    /* ⭐ 사용자 프리셋 */
+    .ws-preset-save { margin-left: auto; font-size: 11.5px; font-weight: 700; padding: 4px 9px; border-radius: 8px; border: 1px dashed #f5c542; background: rgba(245, 197, 66, .08); color: #f5c542; cursor: pointer; }
+    .ws-preset-save:disabled { opacity: .5; cursor: default; }
+    .ws-preset-form { display: flex; gap: 6px; align-items: center; margin: 4px 0 6px; }
+    .ws-preset-in { flex: 1; min-width: 0; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--text-primary); font-size: 12px; }
+    .ws-chip-my { display: inline-flex; align-items: center; gap: 0; padding: 0; overflow: hidden; border-color: rgba(245, 197, 66, .55); }
+    .ws-chip-my-b, .ws-chip-my-x { border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; padding: 4px 8px; }
+    .ws-chip-my-x { padding: 4px 6px; opacity: .6; border-left: 1px solid rgba(245, 197, 66, .3); }
+    .ws-chip-my-x:hover { opacity: 1; }
     /* 세로(쇼츠) 결과 — 카드에서 과대 확대 방지(중앙 정렬 · 폭 캡) */
     .ws-video-wrap.portrait { max-width: 300px; margin: 0 auto; }
     .ws-video-wrap.portrait .ws-video { width: 100%; height: auto; }
@@ -1500,6 +1561,84 @@
         StateHasChanged();
     }
 
+    // 📊 HTS HUD 가독성 시뮬레이터 상태
+    private bool _htsHud;
+    private int _htsOpacity = 60;
+    private int _htsDimmer = 20;
+
+    // ⭐ 사용자 커스텀 프리셋(user_presets.json)
+    private IReadOnlyList<PromptFlowStudio.Services.Prompt.WorkspaceUserPreset> _myPresets = Array.Empty<PromptFlowStudio.Services.Prompt.WorkspaceUserPreset>();
+    private bool _upFormOpen;
+    private string? _upName, _upMsg;
+
+    private void ToggleUserPresetForm() { _upFormOpen = !_upFormOpen; _upMsg = null; }
+    private void OnUserPresetKey(KeyboardEventArgs e) { if (e.Key == "Enter") SaveUserPreset(); }
+
+    private static string UserPresetTip(PromptFlowStudio.Services.Prompt.WorkspaceUserPreset up)
+        => PromptFlowStudio.Services.Render.MultiDurationPlanner.Label(up.DurationMode)
+           + (up.CameraMotion.Length > 0 ? " · 🎥 " + up.CameraMotion : "")
+           + (up.Style.Length > 0 ? " · 🎨 " + up.Style : "");
+
+    private void SaveUserPreset()
+    {
+        try
+        {
+            var cam = WanCameraStyleStudio.ActiveIndex(_prompt, WanCameraStyleStudio.Cameras);
+            var sty = WanCameraStyleStudio.ActiveIndex(_prompt, WanCameraStyleStudio.Styles);
+            var saved = Presets.Save(_upName ?? "", _prompt ?? "", _baby.NegativePrompt,
+                cam >= 0 ? WanCameraStyleStudio.Cameras[cam].Label : "",
+                sty >= 0 ? WanCameraStyleStudio.Styles[sty].Label : "",
+                _durationMode);
+            _upMsg = "⭐ 프리셋 저장됨 · " + saved.Name;
+            _upName = null;
+            _upFormOpen = false;
+        }
+        catch (ArgumentException ex) { _upMsg = "⚠ " + ex.Message; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Program.Log("Workspace.SavePreset", ex); _upMsg = "⚠ 프리셋 저장 실패: " + ex.Message; }
+    }
+
+    private void DeleteUserPreset(Guid id)
+    {
+        try { _upMsg = Presets.Delete(id) ? "🗑 프리셋 삭제됨" : "⚠ 이미 삭제된 프리셋"; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Program.Log("Workspace.DeletePreset", ex); _upMsg = "⚠ 삭제 실패: " + ex.Message; }
+    }
+
+    /// <summary>원클릭 복원 — 프롬프트·네거티브·듀레이션 주입, 카메라/스타일 라벨이 프롬프트에 없으면 그룹 배타 결합으로 재적용.</summary>
+    private void ApplyUserPreset(PromptFlowStudio.Services.Prompt.WorkspaceUserPreset preset)
+    {
+        if (State.IsBusy || preset is null) return;
+        var prompt = ReapplyByLabel(preset.Prompt, WanCameraStyleStudio.Cameras, preset.CameraMotion, cam: true);
+        prompt = ReapplyByLabel(prompt, WanCameraStyleStudio.Styles, preset.Style, cam: false);
+        _prompt = prompt;
+        _vm.UserInput = _prompt;
+        _baby.NegativePrompt = preset.NegativePrompt;
+        _durationMode = preset.DurationMode;
+        _durationMsg = null;
+        Array.Clear(_subPrompts);
+        _upMsg = "⭐ 프리셋 적용 · " + preset.Name;
+    }
+
+    private static string ReapplyByLabel(string prompt, PromptChip[] group, string label, bool cam)
+    {
+        if (label.Length == 0) return prompt;
+        for (var i = 0; i < group.Length; i++)
+        {
+            if (!string.Equals(group[i].Label, label, StringComparison.Ordinal)) continue;
+            if (WanCameraStyleStudio.ActiveIndex(prompt, group) == i) return prompt;
+            return cam ? WanCameraStyleStudio.ApplyCamera(prompt, i) : WanCameraStyleStudio.ApplyStyle(prompt, i);
+        }
+        return prompt;
+    }
+
+    private void OnUserPresetsChanged()
+    {
+        _ = InvokeAsync(() =>
+        {
+            try { _myPresets = Presets.GetAll(); StateHasChanged(); }
+            catch (Exception ex) { Program.Log("Workspace.PresetsChanged", ex); }
+        });
+    }
+
     private void OnDurationStitched(string group, PromptFlowStudio.Services.Render.VideoStitchResult r)
     {
         if (r.Ok || !string.Equals(group, _miniGroup, StringComparison.Ordinal)) return;
@@ -1652,6 +1791,8 @@
         BuildBabyInjectors();
         BuildGeminiInjectors();
         BuildZenInjectors();
+        _myPresets = Presets.GetAll();
+        Presets.Changed += OnUserPresetsChanged;
         var d = Draft.Consume();   // 모션프리셋(/motion)에서 전달된 스니펫 흡수
         if (!string.IsNullOrWhiteSpace(d)) _prompt = d;
         _recent = Library.List(6);
@@ -1723,6 +1864,7 @@
         RenderQueue.OnChange -= OnRenderQueueChanged;
         if (RenderQueue is PromptFlowStudio.Services.Render.RenderQueueService rqs) rqs.OnDurationStitched -= OnDurationStitched;
         _vm.PropertyChanged -= OnVmChanged;
+        Presets.Changed -= OnUserPresetsChanged;
         var cts = Interlocked.Exchange(ref _liveCts, null);
         if (cts is not null) { cts.Cancel(); cts.Dispose(); }
         _mediaCts.Cancel(); _mediaCts.Dispose();

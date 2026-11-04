@@ -1,0 +1,165 @@
+@using System.Globalization
+@* 📊 HTS HUD 가독성 시뮬레이터 — 배경 영상 위 HTS 목업(종합차트·10단 호가·체결·잔고 바). 정적 결정론 데이터(렌더 할당 최소) · pointer-events 차단으로 영상 컨트롤 유지. *@
+<div class="hts-hud" aria-hidden="true">
+    <div class="hts-dim" style="opacity:@DimCss"></div>
+    <div class="hts-layer" style="opacity:@OpacityCss">
+        <div class="hts-chart">
+            <div class="hts-tt">종합차트 · KOSPI200 F 1분</div>
+            <svg viewBox="0 0 @(ChartW) 100" preserveAspectRatio="none">
+                @for (var g = 1; g < 5; g++)
+                {
+                    <line class="hts-grid" x1="0" x2="@(ChartW)" y1="@(GridY[g])" y2="@(GridY[g])" />
+                }
+                @for (var i = 0; i < CandleCount; i++)
+                {
+                    <g>
+                        <line class="@(Up[i] ? "hts-up" : "hts-dn")" x1="@(Cx[i])" x2="@(Cx[i])" y1="@(Hi[i])" y2="@(Lo[i])" />
+                        <rect class="@(Up[i] ? "hts-up-b" : "hts-dn-b")" x="@(Bx[i])" y="@(By[i])" width="@(BodyW)" height="@(Bh[i])" />
+                    </g>
+                }
+                <polyline class="hts-ma" points="@MaPoints" />
+            </svg>
+        </div>
+        <div class="hts-side">
+            <div class="hts-tt">호가 10단계</div>
+            <div class="hts-book">
+                @for (var i = 0; i < 10; i++)
+                {
+                    <div class="hts-row ask"><span class="hts-qty">@AskQty[i]</span><span class="hts-px">@AskPx[i]</span><span></span></div>
+                }
+                @for (var i = 0; i < 10; i++)
+                {
+                    <div class="hts-row bid"><span></span><span class="hts-px">@BidPx[i]</span><span class="hts-qty">@BidQty[i]</span></div>
+                }
+            </div>
+            <div class="hts-tt">체결</div>
+            <div class="hts-ticks">
+                @for (var i = 0; i < TickCount; i++)
+                {
+                    <div class="hts-tick @(TickUp[i] ? "up" : "dn")"><span>@TickTime[i]</span><span>@TickPx[i]</span><span>@TickQty[i]</span></div>
+                }
+            </div>
+        </div>
+        <div class="hts-bar">
+            <span>예수금 <b>12,480,000</b></span>
+            <span>평가손익 <b class="up">+384,500 (+3.18%)</b></span>
+            <span>미체결 <b>2건</b></span>
+            <span class="hts-live">● 실시간</span>
+        </div>
+    </div>
+</div>
+
+<style>
+    .hts-hud { position: absolute; inset: 0; pointer-events: none; border-radius: 12px; overflow: hidden; font-family: Consolas, "Malgun Gothic", monospace; }
+    .hts-dim { position: absolute; inset: 0; background: #000; transition: opacity .12s linear; }
+    .hts-layer { position: absolute; inset: 0; display: grid; grid-template-columns: 1fr 30%; grid-template-rows: 1fr auto; gap: 4px; padding: 6px; color: #dfe6f0; font-size: 9px; transition: opacity .12s linear; }
+    .hts-chart, .hts-side { background: rgba(10, 14, 22, .78); border: 1px solid rgba(120, 140, 170, .35); border-radius: 4px; padding: 3px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+    .hts-chart svg { flex: 1; width: 100%; height: 100%; }
+    .hts-tt { font-weight: 700; color: #9fb3d1; padding: 1px 2px 2px; border-bottom: 1px solid rgba(120, 140, 170, .25); margin-bottom: 2px; white-space: nowrap; }
+    .hts-grid { stroke: rgba(150, 170, 200, .22); stroke-width: .3; vector-effect: non-scaling-stroke; }
+    .hts-up { stroke: #ff4d4f; stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .hts-dn { stroke: #3d8bff; stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .hts-up-b { fill: #ff4d4f; }
+    .hts-dn-b { fill: #3d8bff; }
+    .hts-ma { fill: none; stroke: #f5c542; stroke-width: 1; vector-effect: non-scaling-stroke; }
+    .hts-book { display: flex; flex-direction: column; flex: 2; min-height: 0; }
+    .hts-row { display: grid; grid-template-columns: 1fr 1fr 1fr; line-height: 1.15; text-align: right; padding: 0 2px; }
+    .hts-row.ask { background: rgba(61, 139, 255, .12); }
+    .hts-row.bid { background: rgba(255, 77, 79, .12); }
+    .hts-row.ask .hts-px { color: #6aa8ff; }
+    .hts-row.bid .hts-px { color: #ff7a7c; }
+    .hts-qty { color: #c9d3e0; }
+    .hts-ticks { flex: 1; min-height: 0; overflow: hidden; }
+    .hts-tick { display: grid; grid-template-columns: 1.2fr 1fr .7fr; text-align: right; line-height: 1.15; padding: 0 2px; }
+    .hts-tick.up { color: #ff7a7c; }
+    .hts-tick.dn { color: #6aa8ff; }
+    .hts-bar { grid-column: 1 / span 2; display: flex; gap: 14px; align-items: center; background: rgba(10, 14, 22, .85); border: 1px solid rgba(120, 140, 170, .35); border-radius: 4px; padding: 3px 8px; white-space: nowrap; overflow: hidden; }
+    .hts-bar b { color: #fff; }
+    .hts-bar b.up { color: #ff7a7c; }
+    .hts-live { margin-left: auto; color: #3ddc84; font-weight: 700; }
+</style>
+
+@code {
+    /// <summary>오버레이 불투명도(%) — 20~80 으로 클램프.</summary>
+    [Parameter] public int OpacityPercent { get; set; } = 60;
+    /// <summary>배경 어둡기(%) — 0~50 으로 클램프.</summary>
+    [Parameter] public int DimmerPercent { get; set; } = 20;
+
+    public const int MinOpacity = 20, MaxOpacity = 80, MinDimmer = 0, MaxDimmer = 50;
+
+    public static int ClampOpacity(int v) => v < MinOpacity ? MinOpacity : v > MaxOpacity ? MaxOpacity : v;
+    public static int ClampDimmer(int v) => v < MinDimmer ? MinDimmer : v > MaxDimmer ? MaxDimmer : v;
+
+    private string OpacityCss => (ClampOpacity(OpacityPercent) / 100d).ToString("0.00", CultureInfo.InvariantCulture);
+    private string DimCss => (ClampDimmer(DimmerPercent) / 100d).ToString("0.00", CultureInfo.InvariantCulture);
+
+    // ── 정적 결정론 목업 데이터(1회 생성 · 모든 인스턴스 공유) ──
+    private const int CandleCount = 48, TickCount = 8;
+    private const double Step = 4.0;
+    private static readonly string ChartW = (CandleCount * Step).ToString("0", CultureInfo.InvariantCulture);
+    private static readonly string BodyW = (Step * 0.6).ToString("0.0", CultureInfo.InvariantCulture);
+    private static readonly string[] GridY = { "0", "20", "40", "60", "80" };
+    private static readonly bool[] Up = new bool[CandleCount];
+    private static readonly string[] Cx = new string[CandleCount], Bx = new string[CandleCount], By = new string[CandleCount],
+        Bh = new string[CandleCount], Hi = new string[CandleCount], Lo = new string[CandleCount];
+    private static readonly string MaPoints;
+    private static readonly string[] AskPx = new string[10], AskQty = new string[10], BidPx = new string[10], BidQty = new string[10];
+    private static readonly string[] TickTime = new string[TickCount], TickPx = new string[TickCount], TickQty = new string[TickCount];
+    private static readonly bool[] TickUp = new bool[TickCount];
+
+    static HtsHudOverlay()
+    {
+        var ic = CultureInfo.InvariantCulture;
+        var rng = new Random(20261104);
+        var open = new double[CandleCount]; var close = new double[CandleCount];
+        var hi = new double[CandleCount]; var lo = new double[CandleCount];
+        var p = 50.0;
+        for (var i = 0; i < CandleCount; i++)
+        {
+            var o = p;
+            var c = Math.Clamp(o + (rng.NextDouble() - 0.46) * 8.0, 12.0, 88.0);
+            open[i] = o; close[i] = c;
+            hi[i] = Math.Max(o, c) + rng.NextDouble() * 4.0;
+            lo[i] = Math.Min(o, c) - rng.NextDouble() * 4.0;
+            p = c;
+        }
+        var ma = new System.Text.StringBuilder(CandleCount * 12);
+        double sum = 0;
+        for (var i = 0; i < CandleCount; i++)
+        {
+            // SVG y 는 아래로 증가 → 가격 반전
+            Up[i] = close[i] >= open[i];
+            var cx = i * Step + Step / 2;
+            var top = 100 - Math.Max(open[i], close[i]);
+            var h = Math.Max(0.6, Math.Abs(close[i] - open[i]));
+            Cx[i] = cx.ToString("0.0", ic);
+            Bx[i] = (cx - Step * 0.3).ToString("0.0", ic);
+            By[i] = top.ToString("0.0", ic);
+            Bh[i] = h.ToString("0.0", ic);
+            Hi[i] = (100 - hi[i]).ToString("0.0", ic);
+            Lo[i] = (100 - lo[i]).ToString("0.0", ic);
+            sum += close[i];
+            if (i >= 5) sum -= close[i - 5];
+            var avg = sum / Math.Min(i + 1, 5);
+            if (i > 0) ma.Append(' ');
+            ma.Append(cx.ToString("0.0", ic)).Append(',').Append((100 - avg).ToString("0.0", ic));
+        }
+        MaPoints = ma.ToString();
+
+        const double mid = 352.45, tick = 0.05;
+        for (var i = 0; i < 10; i++)
+        {
+            AskPx[i] = (mid + (10 - i) * tick).ToString("0.00", ic);
+            BidPx[i] = (mid - i * tick).ToString("0.00", ic);
+            AskQty[i] = rng.Next(12, 980).ToString("N0", ic);
+            BidQty[i] = rng.Next(12, 980).ToString("N0", ic);
+        }
+        for (var i = 0; i < TickCount; i++)
+        {
+            TickUp[i] = rng.Next(2) == 0;
+            TickTime[i] = "15:19:" + (58 - i * 3).ToString("00", ic);
+            TickPx[i] = (mid + (TickUp[i] ? tick : 0)).ToString("0.00", ic);
+            TickQty[i] = rng.Next(1, 120).ToString(ic);
+        }
+    }
+}

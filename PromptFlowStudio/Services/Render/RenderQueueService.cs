@@ -584,8 +584,14 @@ public sealed class RenderQueueService : IRenderQueueService
                 subjectAnchor = job.SubjectAnchor,
                 referenceImagePath = job.ReferenceImagePath,
                 metadata = job.Metadata,
+                engine = job.EngineKind,
+                isMock = string.Equals(job.EngineKind, RenderEngineKind.Mock, StringComparison.Ordinal),
             });
             File.WriteAllText(GalleryMediaService.MetaPathFor(mediaPath), json);
+            // 최종 산출물(앰비언트 15s 등)이 별도 파일이면 동일 메타 복제 — 갤러리 Mock 태깅·복원 일관성
+            if (IsLocalPath(job.ResultPath) && !string.Equals(Path.GetFullPath(job.ResultPath!), Path.GetFullPath(mediaPath), StringComparison.OrdinalIgnoreCase)
+                && File.Exists(job.ResultPath))
+                File.WriteAllText(GalleryMediaService.MetaPathFor(job.ResultPath!), json);
         }
         catch (Exception ex) { Program.Log("RenderQueue.Meta", ex); }
     }

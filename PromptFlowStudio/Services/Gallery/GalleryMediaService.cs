@@ -27,6 +27,10 @@ public sealed class GalleryItem
     public string? ReferenceImagePath { get; init; }
     /// <summary>폴더가 비었을 때 노출하는 기본 템플릿(파일 없음 · 삭제는 목록에서만).</summary>
     public bool IsSample { get; init; }
+    /// <summary>🧪 Mock 더미 산출물 — 메타 <c>isMock</c>/<c>engine=Mock</c> 또는 <c>testsrc</c> 컬러바 흔적.</summary>
+    public bool IsMock { get; init; }
+    /// <summary>카드 태그 — <c>🧪 Mock</c> · <c>🎬 AI Render</c>(샘플은 null).</summary>
+    public string? AssetTag => IsSample ? null : IsMock ? "🧪 Mock" : "🎬 AI Render";
     public bool IsVideo => !IsImagePath(FilePath);
 
     internal static bool IsImagePath(string path)
@@ -103,22 +107,87 @@ public sealed class GalleryMediaService
             for (int i = 0; i < _items.Count; i++)
                 if (_items[i].ItemId == itemId) { target = _items[i]; break; }
         }
-        if (target is null) return false;
-
-        if (!target.IsSample)
-        {
-            if (root is null || !IsUnderRoot(root, target.FilePath)) return false;
-            try
-            {
-                if (File.Exists(target.FilePath)) File.Delete(target.FilePath);
-                var meta = MetaPathFor(target.FilePath);
-                if (File.Exists(meta)) File.Delete(meta);
-            }
-            catch (Exception ex) { Program.Log("GalleryMedia.Delete", ex); return false; }
-        }
-
+        if (target is null || !TryDeleteFiles(root, target)) return false;
         lock (_lock) return _items.Remove(target);
     }
+
+    /// <summary>체크박스 다중 선택 삭제 — 성공 개수 반환([부분 구제] 실패 항목은 목록 유지).</summary>
+    public int DeleteGalleryItems(IEnumerable<Guid> itemIds)
+    {
+        ArgumentNullException.ThrowIfNull(itemIds);
+        var ids = new HashSet<Guid>(itemIds);
+        if (ids.Count == 0) return 0;
+        return DeleteWhere(it => ids.Contains(it.ItemId));
+    }
+
+    /// <summary>🧹 Mock 더미 일괄 삭제 — <see cref="GalleryItem.IsMock"/> 미디어 + 사이드카 메타 영구 삭제. 성공 개수 반환.</summary>
+    public int DeleteMockAssets() => DeleteWhere(static it => it.IsMock && !it.IsSample);
+
+    public int MockCount
+    {
+        get
+        {
+            lock (_lock)
+            {
+                int n = 0;
+                for (int i = 0; i < _items.Count; i++) if (_items[i].IsMock && !_items[i].IsSample) n++;
+                return n;
+            }
+        }
+    }
+
+    private int DeleteWhere(Predicate<GalleryItem> match)
+    {
+        GalleryItem[] targets;
+        string? root;
+        lock (_lock)
+        {
+            root = _root;
+            targets = _items.FindAll(match).ToArray();
+        }
+        var deleted = new List<GalleryItem>(targets.Length);
+        foreach (var t in targets)
+            if (TryDeleteFiles(root, t)) deleted.Add(t);
+        if (deleted.Count > 0)
+            lock (_lock) foreach (var d in deleted) _items.Remove(d);
+        return deleted.Count;
+    }
+
+    private static bool TryDeleteFiles(string? root, GalleryItem target)
+    {
+        if (target.IsSample) return true;
+        if (root is null || !IsUnderRoot(root, target.FilePath)) return false;
+        try
+        {
+            if (File.Exists(target.FilePath)) File.Delete(target.FilePath);
+            var meta = MetaPathFor(target.FilePath);
+            if (File.Exists(meta)) File.Delete(meta);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            Program.Log("GalleryMedia.Delete", ex);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Mock 판정 — 메타 <c>isMock:true</c> · <c>engine/engineKind == "Mock"</c> · <c>metadata</c> 값/프롬프트/제목에 <c>testsrc</c> 포함.
+    /// </summary>
+    public static bool IsMockMeta(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object) return false;
+        if (root.TryGetProperty("isMock", out var m) && m.ValueKind == JsonValueKind.True) return true;
+        if (Str(root, "engine").Equals("Mock", StringComparison.OrdinalIgnoreCase)
+            || Str(root, "engineKind").Equals("Mock", StringComparison.OrdinalIgnoreCase)) return true;
+        if (HasTestSrc(Str(root, "prompt")) || HasTestSrc(Str(root, "title"))) return true;
+        if (root.TryGetProperty("metadata", out var md) && md.ValueKind == JsonValueKind.Object)
+            foreach (var p in md.EnumerateObject())
+                if (p.Value.ValueKind == JsonValueKind.String && HasTestSrc(p.Value.GetString())) return true;
+        return false;
+    }
+
+    private static bool HasTestSrc(string? s) => s is not null && s.Contains("testsrc", StringComparison.OrdinalIgnoreCase);
 
     public GalleryRestoreContext PackageRestoreContext(GalleryItem item)
     {
@@ -207,6 +276,7 @@ public sealed class GalleryMediaService
             long seed = 0;
             float duration = 0;
             DateTime created = info.LastWriteTime;
+            bool isMock = HasTestSrc(title);
 
             var metaPath = MetaPathFor(file);
             if (File.Exists(metaPath))
@@ -217,6 +287,7 @@ public sealed class GalleryMediaService
                     var r = doc.RootElement;
                     if (r.ValueKind == JsonValueKind.Object)
                     {
+                        isMock |= IsMockMeta(r);
                         title = Str(r, "title") is { Length: > 0 } t ? t : title;
                         prompt = Str(r, "prompt");
                         thumb = Str(r, "thumbnail");
@@ -249,6 +320,7 @@ public sealed class GalleryMediaService
                 CreatedAt = created,
                 RenderDurationSec = duration,
                 ReferenceImagePath = reference.Length > 0 ? reference : null,
+                IsMock = isMock,
             };
         }
         catch (Exception ex) { Program.Log("GalleryMedia.Item", ex); return null; }

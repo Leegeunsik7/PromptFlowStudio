@@ -71,6 +71,8 @@ public sealed class UserPreferenceService
         public const string FfmpegPath = "system.ffmpeg";              // 파일 경로(빈 문자열=PATH)
         /// <summary>StockSuite 에셋 폴더(예: C:\Projects\StockSuite\Assets\Video · 빈 문자열=미설정).</summary>
         public const string StockSuiteAssetPath = "stocksuite.assets";
+        /// <summary>StockSuite 내보내기 포맷(mp4 | webm — VP9 HTS 저사양 최적화).</summary>
+        public const string StockSuiteFormat = "stocksuite.format";
     }
 
     private const string Prefix = "sm.pref.";
@@ -171,6 +173,13 @@ public sealed class UserPreferenceService
         set => Set(Keys.StockSuiteAssetPath, value ?? "");
     }
 
+    /// <summary>💼 StockSuite 내보내기 포맷 — <c>mp4</c>(기본) | <c>webm</c>(VP9 HTS 저사양 최적화).</summary>
+    public string StockSuiteFormat
+    {
+        get => Get(Keys.StockSuiteFormat);
+        set => Set(Keys.StockSuiteFormat, string.Equals(value, "webm", StringComparison.OrdinalIgnoreCase) ? "webm" : "mp4");
+    }
+
     public bool Loaded { get; private set; }
 
     /// <summary>기본값. Reset 과 '값 없음' 이 같은 표를 본다.</summary>
@@ -196,6 +205,7 @@ public sealed class UserPreferenceService
         [Keys.QualityCustom] = "",
         [Keys.FfmpegPath] = "",
         [Keys.StockSuiteAssetPath] = "",
+        [Keys.StockSuiteFormat] = "mp4",
     };
 
     /// <summary>

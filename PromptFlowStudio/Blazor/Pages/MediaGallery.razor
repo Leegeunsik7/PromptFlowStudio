@@ -12,6 +12,7 @@
 @inject ILocalMediaService Media
 @inject IClipboardService Clipboard
 @inject PublishViewModel PubVm
+@inject PromptFlowStudio.Services.Export.StockSuiteExporter StockSuite
 
 @* [PromptFlow Studio] 갤러리 — %LocalAppData%/PromptFlowStudio/Media 의 모든 MP4 를 그리드로 감상/관리/삭제. *@
 
@@ -43,8 +44,22 @@
             </div>
             <input class="gl-search" value="@Vm.SearchQuery" @oninput="OnArchiveSearch" placeholder="프롬프트·제목 검색…" />
             <button class="gl-btn ghost" @onclick="RefreshArchive" title="아카이브 새로고침">⟳</button>
+            <button class="gl-btn bad" @onclick="DeleteMockAll" disabled="@(Vm.MockCount == 0)" title="🧪 Mock 태그 영상 + 메타데이터를 디스크에서 영구 삭제">🧹 더미/Mock 파일 일괄 삭제 (@(Vm.MockCount))</button>
+            <button class="gl-btn bad" @onclick="DeleteCheckedAll" disabled="@(Vm.CheckedCount == 0)" title="체크된 항목을 디스크에서 영구 삭제">🗑 다중 선택 삭제 (@(Vm.CheckedCount))</button>
+            @if (Vm.CheckedCount > 0)
+            {
+                <button class="gl-btn ghost" @onclick="Vm.ClearChecks" title="선택 해제">✕</button>
+            }
             <span class="ga-cnt">@Vm.MediaItems.Count / @Vm.TotalCount</span>
         </div>
+        @if (_confirmBulk is { } cb)
+        {
+            <div class="ga-confirm">
+                <span>⚠ @(cb == BulkKind.Mock ? "Mock 더미 " + Vm.MockCount.ToString(CultureInfo.InvariantCulture) : "선택 " + Vm.CheckedCount.ToString(CultureInfo.InvariantCulture))개 파일을 영구 삭제할까요? (되돌릴 수 없음)</span>
+                <button class="gl-btn bad" @onclick="ConfirmBulk">삭제</button>
+                <button class="gl-btn ghost" @onclick="() => _confirmBulk = null">취소</button>
+            </div>
+        }
         <div class="ga-body">
             <div class="ga-grid">
                 @foreach (var g in Vm.MediaItems)
@@ -63,6 +78,20 @@
                             @if (g.IsSample)
                             {
                                 <span class="ga-badge smp">샘플</span>
+                            }
+                            else
+                            {
+                                <input type="checkbox" class="ga-chk" checked="@Vm.IsChecked(g)" @onchange="() => Vm.ToggleCheck(g)" @onclick:stopPropagation="true" title="다중 선택" />
+                                <span class="ga-tag @(g.IsMock ? "mock" : "ai")">@g.AssetTag</span>
+                                @if (g.IsVideo && IsStockApplied(g))
+                                {
+                                    <span class="ga-ss" title="StockSuite 에셋 폴더의 bg_ambient 와 일치">🟢 StockSuite 적용 중</span>
+                                }
+                                @if (g.IsVideo)
+                                {
+                                    <button class="ga-hover" @onclick="() => ExportStock(g)" @onclick:stopPropagation="true" disabled="@_stockBusy"
+                                            title="@("StockSuite 에셋 폴더에 " + PromptFlowStudio.Services.Export.StockSuiteExporter.FormatLabel(StockSuite.DefaultFormat) + " 로 즉시 덮어쓰기")">💼 StockSuite로 즉시 내보내기</button>
+                                }
                             }
                         </div>
                         <div class="ga-t" title="@g.Title">@g.Title</div>
@@ -105,6 +134,10 @@
                         @if (si.IsVideo && !si.IsSample)
                         {
                             <button class="gl-btn up" @onclick="() => OpenPublish(si.FilePath, si.Title, si.Prompt)" title="YouTube Shorts · Instagram Reels 원클릭 발행">🚀 SNS 발행</button>
+                        }
+                        @if (si.IsVideo && !si.IsSample)
+                        {
+                            <button class="gl-btn up" @onclick="() => ExportStock(si)" disabled="@_stockBusy" title="StockSuite 에셋 폴더에 즉시 덮어쓰기">💼 StockSuite</button>
                         }
                         <button class="gl-btn bad" @onclick="() => DeleteArchive(si)">🗑 삭제</button>
                     </div>
@@ -376,6 +409,15 @@
     .ga-acts { display: flex; gap: 8px; flex-wrap: wrap; }
     .ga-msg { font: 600 11px var(--mono); color: var(--accent-2); }
     .ga-none { font-size: 12px; color: var(--text-muted); padding: 14px; text-align: center; }
+    .ga-chk { position: absolute; top: 6px; right: 6px; width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent); z-index: 2; }
+    .ga-tag { position: absolute; bottom: 6px; left: 6px; font: 800 9.5px var(--mono); color: #fff; border-radius: 6px; padding: 2px 6px; }
+    .ga-tag.mock { background: rgba(234, 88, 12, .85); }
+    .ga-tag.ai { background: rgba(16, 185, 129, .8); }
+    .ga-ss { position: absolute; bottom: 6px; right: 6px; font: 800 9.5px var(--mono); color: #fff; background: rgba(0,0,0,.7); border: 1px solid #22c55e; border-radius: 6px; padding: 2px 6px; }
+    .ga-hover { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); opacity: 0; transition: opacity .14s; border: 1px solid var(--accent); background: rgba(0,0,0,.75); color: #fff; border-radius: 8px; padding: 5px 8px; font-weight: 700; font-size: 10.5px; font-family: inherit; cursor: pointer; white-space: nowrap; }
+    .ga-card:hover .ga-hover { opacity: 1; }
+    .ga-hover:disabled { cursor: wait; }
+    .ga-confirm { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; margin-bottom: 10px; border: 1px solid #ef4444; border-radius: 10px; background: color-mix(in srgb, #ef4444 10%, var(--card-2)); font-size: 12px; font-weight: 700; color: var(--text-primary); }
     @@media (max-width: 900px) { .ga-body { grid-template-columns: 1fr; } }
     .gl-bar-f { height: 100%; border-radius: 999px; transition: width .4s ease; background: linear-gradient(90deg, var(--flow-violet), var(--flow-cyan), var(--flow-magenta)); }
 </style>
@@ -456,6 +498,46 @@
     }
 
     private void CopyPrompt(GalleryItem g) => Clipboard.SetText(g.Prompt);
+
+    // ── 🧹 정화 도구 · 💼 StockSuite 직결 ──
+    private enum BulkKind { Mock, Checked }
+    private BulkKind? _confirmBulk;
+    private bool _stockBusy;
+
+    private void DeleteMockAll() => _confirmBulk = BulkKind.Mock;
+    private void DeleteCheckedAll() => _confirmBulk = BulkKind.Checked;
+
+    private void ConfirmBulk()
+    {
+        var kind = _confirmBulk;
+        _confirmBulk = null;
+        try
+        {
+            var n = kind == BulkKind.Mock ? Vm.DeleteMockAssets() : kind == BulkKind.Checked ? Vm.DeleteChecked() : 0;
+            if (n > 0) Refresh();   // 하단 MP4 그리드 동기화
+        }
+        catch (Exception ex) { Program.Log("MediaGallery.BulkDelete", ex); Vm.SetStatus("⚠ 일괄 삭제 실패: " + ex.Message); }
+    }
+
+    private bool IsStockApplied(GalleryItem g)
+    {
+        try { return StockSuite.IsApplied(g.FilePath); }
+        catch (Exception ex) { Program.Log("MediaGallery.StockApplied", ex); return false; }
+    }
+
+    private async Task ExportStock(GalleryItem g)
+    {
+        if (_stockBusy) return;
+        _stockBusy = true;
+        Vm.SetStatus("💼 StockSuite 내보내기 중(" + PromptFlowStudio.Services.Export.StockSuiteExporter.FormatLabel(StockSuite.DefaultFormat) + ")… " + g.Title);
+        try
+        {
+            var r = await StockSuite.ExportAsync(g.FilePath);
+            Vm.SetStatus(r.Ok ? r.Message : r.NeedsPathSetup ? "⚠ " + r.Message + " (설정 ▸ 사용자 설정 ▸ StockSuite 에셋 경로)" : "⚠ " + r.Message);
+        }
+        catch (Exception ex) { Program.Log("MediaGallery.StockSuite", ex); Vm.SetStatus("⚠ StockSuite 내보내기 실패 — 경로를 재설정하세요"); }
+        finally { _stockBusy = false; await InvokeAsync(StateHasChanged); }
+    }
 
     private string? ThumbOf(GalleryItem g)
     {

@@ -109,6 +109,12 @@
                 <button class="st-btn-sm" @onclick="ValidateStockSuitePath">🔍 검증</button>
             </div>
         </div>
+        <div class="st-field"><label>내보내기 포맷</label>
+            <select class="st-sel" value="@Prefs.StockSuiteFormat" @onchange="OnStockSuiteFormatChanged">
+                <option value="mp4">MP4 (기본) — bg_ambient.mp4</option>
+                <option value="webm">WebM VP9 (HTS 저사양 최적화) — bg_ambient.webm</option>
+            </select>
+        </div>
         @if (!string.IsNullOrEmpty(_stockMsg))
         {
             <div class="st-hint @(_stockOk ? "ok" : "err")">@_stockMsg</div>
@@ -195,6 +201,7 @@
     private string? _stockMsg;
     private bool _stockOk;
     private void OnStockSuitePathChanged(ChangeEventArgs e) { Prefs.StockSuiteAssetPath = (e.Value?.ToString() ?? "").Trim().Trim('"'); _stockMsg = null; }
+    private void OnStockSuiteFormatChanged(ChangeEventArgs e) => Prefs.StockSuiteFormat = e.Value?.ToString() ?? "mp4";
     private void ValidateStockSuitePath()
     {
         var path = (Prefs.StockSuiteAssetPath ?? "").Trim();

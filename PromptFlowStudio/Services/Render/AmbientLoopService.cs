@@ -75,6 +75,13 @@ public sealed class AmbientLoopService
         return args.ToArray();
     }
 
+    /// <summary>
+    /// HTS 저사양 배경용 WebM(VP9) 초경량 변환 인자 — <c>-y -i {in} -c:v libvpx-vp9 -crf 32 -b:v 0 -an {out}</c>.
+    /// 무음·CRF 품질 모드(비트레이트 상한 0)로 디코드 부하 최소 · 무한 루프 재생용.
+    /// </summary>
+    public static string[] BuildWebMArgs(string inputPath, string outputPath)
+        => ["-y", "-hide_banner", "-loglevel", "error", "-i", inputPath, "-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0", "-an", outputPath];
+
     /// <summary>출력 무결성 — 실존 + <see cref="MinValidOutputBytes"/> 초과.</summary>
     public static bool IsValidOutput(string? path)
     {

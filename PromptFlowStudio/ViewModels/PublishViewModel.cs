@@ -70,6 +70,13 @@ public sealed class PublishViewModel : IDisposable
     public bool IsStockSuiteBusy { get; private set; }
     public string? StockSuiteMessage { get; private set; }
     public bool StockSuiteAvailable => _stockSuite is not null;
+    private PromptFlowStudio.Services.Export.StockSuiteExportFormat? _stockFormat;
+    /// <summary>모달 포맷 선택 — 미선택이면 환경설정 기본(MP4 | WebM VP9).</summary>
+    public PromptFlowStudio.Services.Export.StockSuiteExportFormat StockSuiteFormat
+    {
+        get => _stockFormat ?? _stockSuite?.DefaultFormat ?? PromptFlowStudio.Services.Export.StockSuiteExportFormat.Mp4;
+        set { _stockFormat = value; Notify(); }
+    }
 
     public bool YouTubeEnabled => _yt.Enabled;
     public bool InstagramEnabled => _ig.Enabled;
@@ -202,7 +209,7 @@ public sealed class PublishViewModel : IDisposable
         Notify();
         try
         {
-            var r = await _stockSuite.ExportAsync(VideoPath, null, null, ct).ConfigureAwait(false);
+            var r = await _stockSuite.ExportAsync(VideoPath, null, null, ct, StockSuiteFormat).ConfigureAwait(false);
             StockSuiteMessage = r.Ok ? r.Message : "⚠ " + r.Message;
             return r.Ok;
         }

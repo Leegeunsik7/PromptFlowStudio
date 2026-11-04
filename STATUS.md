@@ -1,18 +1,19 @@
 # Current Project Status
 
-- Active Milestone: 【스토리보드】 4컷 자동 합성(Stitch) · 💼 StockSuite 원클릭 에셋 내보내기
+- Active Milestone: 【HTS】 HTS HUD 가독성 시뮬레이터 · 커스텀 프리셋 저장 엔진 · StockSuite 제로-오디오 스트립
 - Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (net8.0-android 미검증: Android SDK 미설치)
-- Tests: FastUnit 549/549 PASS (Release, ~39s)
+- Tests: FastUnit 554/554 PASS (Release, ~33s)
 - Updated: 2026-11-04 (KST)
 
 ## Completed
-- StoryboardStitchService(신규 · Services/Render): 4컷 그룹 완료 감지 → concat demuxer(`-f concat -safe 0`) `-c:v copy` 우선 → 실패 시 `scale=1280:720`+pad 정규화 재인코딩 · 임시 파일→실물 검증→원자적 이동 · `storyboard_{ts}_full20s.mp4` + `.storyboard.json`(컷별 프롬프트·시작/종료 타임스탬프)
-- StockSuiteExporter(신규 · Services/Export): 설정 폴더에 `bg_ambient.mp4` 원자적 덮어쓰기(`.~pfs` 임시→Move) · 미설정/무효 경로 시 NeedsPathSetup 안내
-- UserPreferenceService: `stocksuite.assets` 키 + UserSettings 💼 StockSuite 에셋 경로 필드(검증 버튼 · localStorage 영속)
-- Storyboard: 렌더 큐 4컷 완료 시 마스터 자동 합성(그룹당 1회 · CTS Dispose) → 최종 영상/갤러리 등록 · [▶ 마스터 영상 재생] [📦 전체 결합 파일 내보내기] [💼 StockSuite로 내보내기]
-- Workspace(캔버스·완료 패널) · PublishModal(PublishViewModel.ExportToStockSuiteAsync) 💼 버튼
-- DI: MainForm · MauiProgram 양쪽 등록
-- Tests: StoryboardStitchService_GeneratesValidConcatListAndExecutesFfmpeg · StockSuiteExporter_CopiesFileToTargetDirectorySuccessfully
+- HtsHudOverlay.razor(신규): 종합차트 캔들·MA · 10단 호가 · 체결 · 잔고/미체결 바 목업(정적 결정론 데이터 · pointer-events 차단)
+- Workspace: 캔버스 헤더 `📊 HTS HUD` 토글 + 투명도(20~80%)·어둡기(0~50%) 슬라이더
+- PresetManagerService(신규): `user_presets.json` — 프롬프트·네거티브·카메라·스타일·듀레이션 · 동명 덮어쓰기 · 원자 교체 · `.corrupt.bak`
+- Workspace: `⭐ 현재 설정을 프리셋으로 저장` 인라인 폼 · 제미나이 스튜디오 `⭐ 내 프리셋` 칩(원클릭 복원/삭제) · Changed 구독/해제
+- StockSuiteExporter: MP4/WebM 원본도 `-map 0:v:0 -c:v copy -an -sn -dn`(+faststart) 무음 스트립 · ffmpeg 부재/실패 시 원본 복사 폴백
+- 이전 묶음 포함: 갤러리 Mock 정화 · WebM(VP9) 내보내기 · StockSuite 적용 뱃지
+- DI: MainForm · MauiProgram 양쪽 PresetManagerService 결선
+- Tests: PresetManagerService_SavesAndLoadsUserPresetsSuccessfully · StockSuiteExporter_AppliesAudioDropOption_ForHtsOptimizedExport
 
 ## Next
-- 실제 ffmpeg 환경에서 해상도 혼재 4컷 합성 E2E 확인
+- 실제 ffmpeg 환경에서 무음 스트립/VP9 결과 HTS 루프 재생 E2E 확인

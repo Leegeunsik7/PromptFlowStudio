@@ -102,5 +102,60 @@ public sealed class GalleryViewModel
         return ok;
     }
 
+    // ── 🧹 정화 도구: Mock 일괄 삭제 · 체크박스 다중 선택 삭제 ──
+    private readonly HashSet<Guid> _checked = new();
+    public int CheckedCount => _checked.Count;
+    public int MockCount => _gallery.MockCount;
+    public bool IsChecked(GalleryItem item) => item is not null && _checked.Contains(item.ItemId);
+
+    public void ToggleCheck(GalleryItem item)
+    {
+        if (item is null) return;
+        if (!_checked.Remove(item.ItemId)) _checked.Add(item.ItemId);
+        Raise();
+    }
+
+    public void ClearChecks()
+    {
+        _checked.Clear();
+        Raise();
+    }
+
+    /// <summary>체크된 항목 영구 삭제 — 성공 개수.</summary>
+    public int DeleteChecked()
+    {
+        if (_checked.Count == 0) return 0;
+        var requested = _checked.Count;
+        var n = _gallery.DeleteGalleryItems(_checked);
+        AfterBulkDelete();
+        StatusMessage = n == requested ? "🗑 선택 " + n + "개 삭제됨" : "🗑 " + n + "/" + requested + "개 삭제 — 일부 실패(파일 잠금 또는 출력 폴더 외부)";
+        Raise();
+        return n;
+    }
+
+    /// <summary>🧹 Mock 더미 일괄 영구 삭제 — 성공 개수.</summary>
+    public int DeleteMockAssets()
+    {
+        var requested = _gallery.MockCount;
+        var n = _gallery.DeleteMockAssets();
+        AfterBulkDelete();
+        StatusMessage = requested == 0 ? "🧹 삭제할 Mock 더미 파일이 없습니다" : n == requested ? "🧹 Mock 더미 " + n + "개 삭제 완료" : "🧹 Mock " + n + "/" + requested + "개 삭제 — 일부 실패";
+        Raise();
+        return n;
+    }
+
+    private void AfterBulkDelete()
+    {
+        _checked.Clear();
+        ApplyFilter();   // 삭제된 선택 항목은 필터 재적용 시 해제
+    }
+
+    /// <summary>외부(카드 액션) 상태 메시지 표시.</summary>
+    public void SetStatus(string? message)
+    {
+        StatusMessage = message;
+        Raise();
+    }
+
     private void Raise() => Changed?.Invoke();
 }

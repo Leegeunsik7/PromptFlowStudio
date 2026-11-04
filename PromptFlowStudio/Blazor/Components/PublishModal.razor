@@ -21,6 +21,11 @@
             @if (vm.StockSuiteAvailable)
             {
                 <div class="pm-row pm-seo">
+                    <select class="pm-btn" value="@(vm.StockSuiteFormat == PromptFlowStudio.Services.Export.StockSuiteExportFormat.WebMVp9 ? "webm" : "mp4")"
+                            @onchange="e => vm.StockSuiteFormat = PromptFlowStudio.Services.Export.StockSuiteExporter.ParseFormat(e.Value?.ToString())" disabled="@vm.IsStockSuiteBusy" title="StockSuite 내보내기 포맷">
+                        <option value="mp4">MP4 (기본)</option>
+                        <option value="webm">WebM VP9 (HTS 저사양 최적화)</option>
+                    </select>
                     <button class="pm-btn" @onclick="ExportStockSuite" disabled="@vm.IsStockSuiteBusy"
                             title="환경설정의 StockSuite 에셋 폴더에 bg_ambient.mp4 로 원자적 덮어쓰기">@(vm.IsStockSuiteBusy ? "⏳ 복사 중…" : "💼 StockSuite로 내보내기")</button>
                     @if (vm.StockSuiteMessage is { Length: > 0 } ssMsg)
