@@ -478,10 +478,18 @@ public sealed class RenderQueueService : IRenderQueueService
         if (result is null || !result.Ok)
             throw new InvalidOperationException(string.IsNullOrWhiteSpace(result?.Message) ? "렌더 엔진 실행 실패" : result.Message);
 
-        var output = result.OutputPath;
-        if (IsLocalPath(output) && !File.Exists(output))
-            throw new FileNotFoundException("렌더 산출 파일 없음", output);
+        // 산출물 실존 가드 — 엔진이 경로를 비워 보내면 작업 OutputPath 로 재확인. 로컬 경로인데 부재/0바이트면 '유령 완료' 대신 Failed.
+        var output = string.IsNullOrWhiteSpace(result.OutputPath) ? job.OutputPath : result.OutputPath;
+        if (IsLocalPath(output) && !HasLocalOutput(output!))
+            throw new FileNotFoundException("렌더 산출 파일 없음(디스크 미존재 또는 0바이트): " + output, output);
         lock (_gate) { job.EngineKind = result.EngineKind; job.ResultPath = output; }
+    }
+
+    /// <summary>로컬 산출물 실존 + 비어있지 않음.</summary>
+    internal static bool HasLocalOutput(string path)
+    {
+        try { return File.Exists(path) && new FileInfo(path).Length > 0; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { return false; }
     }
 
     /// <summary>

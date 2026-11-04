@@ -120,6 +120,37 @@ public class MultiDurationPipelineTests : IDisposable
         Assert.False(jobs[1].Metadata!.ContainsKey(MultiDurationPlanner.MetaStitched));   // 가상 병합은 실물 경로로 기록하지 않음
     }
 
+    [Fact]
+    public async Task RenderQueue_MarksFailed_WhenOutputFileDoesNotExist()
+    {
+        var missing = Path.Combine(_dir, "ghost.mp4");
+        var empty = Path.Combine(_dir, "empty.mp4");
+        File.WriteAllBytes(empty, Array.Empty<byte>());
+        var engine = new PathReturningEngine();
+        using var q = new RenderQueueService(TimeSpan.Zero, autoStart: false, engine);
+        var ghost = new BatchRenderJob { Prompt = "p", OutputPath = missing };             // 엔진이 경로만 보고 — 파일 없음
+        var zero = new BatchRenderJob { Prompt = "p", OutputPath = empty };                // 0바이트
+        var nullPath = new BatchRenderJob { Prompt = "p", OutputPath = missing, Seed = 7 }; // 엔진 경로 null → 작업 OutputPath 재확인
+        engine.ReturnNullFor = nullPath.JobId;
+        q.Enqueue(new[] { ghost, zero, nullPath });
+
+        await q.ProcessQueueAsync(CancellationToken.None);
+
+        Assert.All(new[] { ghost, zero, nullPath }, j => Assert.Equal(BatchJobStatus.Failed, j.Status));
+        Assert.Contains("렌더 산출 파일 없음", ghost.ErrorMessage);
+        Assert.Null(ghost.ResultPath);
+    }
+
+    /// <summary>파일을 쓰지 않고 경로만 성공으로 보고하는 엔진(유령 완료 재현).</summary>
+    private sealed class PathReturningEngine : IRenderExecutionEngine
+    {
+        public Guid ReturnNullFor { get; set; }
+        public bool IsAvailable => true;
+        public string EngineKind => RenderEngineKind.Mock;
+        public Task<RenderExecutionResult> ExecuteAsync(BatchRenderJob job, IProgress<int> progress, CancellationToken ct)
+            => Task.FromResult(new RenderExecutionResult(true, EngineKind, job.JobId == ReturnNullFor ? null : job.OutputPath, "ok"));
+    }
+
     /// <summary>작업 OutputPath 에 더미 산출물을 쓰고 디스패치 시점 참조 이미지를 기록.</summary>
     private sealed class FileWritingEngine : IRenderExecutionEngine
     {

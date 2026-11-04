@@ -13,7 +13,8 @@ namespace PromptFlowStudio.Services.Render;
 ///   ▸ 기본(고속): <c>setpts=3.0*PTS,fps=30</c> 프레임 스트레칭 — minterpolate 대비 CPU 부하 극소, 15초 수 초 내 인코딩.
 ///   ▸ 고품질(옵트인): <c>setpts=3.0*PTS,minterpolate='fps=30:mi_mode=mci'</c> 모션 보간.
 ///   ▸ 핑퐁: 1.5배 슬로우 → 정방향+역방향 concat(시작·끝 프레임 일치 → 무한 반복 시 이음새 없음) — 총 15초.
-///   ▸ 항상 <c>-an</c> 무음 · <c>-t 15</c> 클램프 · libx264/yuv420p. ffmpeg 부재/실패는 원본 유지(Graceful · IsVirtual).
+///   ▸ 항상 <c>-an</c> 무음 · <c>-t 15</c> 클램프 · libx264/yuv420p. 단순 필터는 <c>-vf</c>, 핑퐁(복합 스트림)은 반드시 <c>-filter_complex</c> + <c>-map [outv]</c>.
+///   ▸ 결과 검증: 출력 실존 + <see cref="MinValidOutputBytes"/> 초과. ffmpeg 부재·비정상 종료·출력 누락은 예외 없이 원본 5초 경로를 <see cref="VideoStitchResult.OutputPath"/> 로 반환(<see cref="FallbackNotice"/>).
 /// </summary>
 public sealed class AmbientLoopService
 {
@@ -21,6 +22,10 @@ public sealed class AmbientLoopService
     public const double PingPongSlowFactor = 1.5;
     public const int TargetFps = 30;
     public const int TargetSeconds = 15;
+    /// <summary>유효 산출물 최소 크기(바이트) — 이하이면 ffmpeg 가 헤더만 쓰고 죽은 것으로 간주.</summary>
+    public const long MinValidOutputBytes = 1024;
+    /// <summary>후처리 실패 시 로그·작업 메타에 기록되는 대체 보존 안내.</summary>
+    public const string FallbackNotice = "FFmpeg 후처리 실패/미설치로 인해 원본 5s 비디오로 대체 보존";
 
     private readonly Func<string?> _resolveFfmpeg;
     private readonly FfmpegRunner _run;
@@ -44,16 +49,22 @@ public sealed class AmbientLoopService
         => "setpts=" + factor.ToString("0.0##", CultureInfo.InvariantCulture) + "*PTS,minterpolate='fps="
            + TargetFps.ToString(CultureInfo.InvariantCulture) + ":mi_mode=mci'";
 
-    /// <summary>핑퐁 필터 그래프 — 슬로우 → split → reverse → concat → <c>[vout]</c>. 기본 고속 필터, <paramref name="highQuality"/> 시 minterpolate.</summary>
+    /// <summary>핑퐁 출력 라벨 — <c>-map</c> 대상.</summary>
+    public const string PingPongOutLabel = "[outv]";
+
+    /// <summary>
+    /// 핑퐁 필터 그래프(<c>-filter_complex</c> 전용) — <c>[0:v]슬로우,split=2[v0][v1];[v1]reverse[v2];[v0][v2]concat=n=2:v=1:a=0[outv]</c>.
+    /// 슬로우 배율은 <see cref="PingPongSlowFactor"/>(5s×1.5=7.5s ×2 = 15s) — 3.0 배면 정방향만으로 15초를 채워 <c>-t 15</c> 에 역방향이 잘려 루프 이음새가 생김.
+    /// </summary>
     public static string BuildPingPongFilterGraph(bool highQuality = false)
         => "[0:v]" + (highQuality ? BuildSlowMotionFilter(PingPongSlowFactor) : BuildFastSlowFilter(PingPongSlowFactor))
-           + ",split[fw][bw];[bw]reverse[rv];[fw][rv]concat=n=2:v=1:a=0,format=yuv420p[vout]";
+           + ",split=2[v0][v1];[v1]reverse[v2];[v0][v2]concat=n=2:v=1:a=0" + PingPongOutLabel;
 
-    /// <summary>앰비언트 15초 인자 — 기본 <c>-vf</c> 고속 슬로우, 핑퐁은 <c>-filter_complex</c> + <c>-map [vout]</c>. <paramref name="highQuality"/> 시 minterpolate 보간.</summary>
+    /// <summary>앰비언트 15초 인자 — 기본 <c>-vf</c> 고속 슬로우, 핑퐁은 <c>-filter_complex</c> + <c>-map [outv]</c>. <paramref name="highQuality"/> 시 minterpolate 보간.</summary>
     public static string[] BuildAmbientArgs(string inputPath, string outputPath, bool pingPong = false, bool highQuality = false)
     {
         var args = new List<string>(28) { "-y", "-hide_banner", "-loglevel", "error", "-i", inputPath };
-        if (pingPong) { args.Add("-filter_complex"); args.Add(BuildPingPongFilterGraph(highQuality)); args.Add("-map"); args.Add("[vout]"); }
+        if (pingPong) { args.Add("-filter_complex"); args.Add(BuildPingPongFilterGraph(highQuality)); args.Add("-map"); args.Add(PingPongOutLabel); }
         else { args.Add("-vf"); args.Add(highQuality ? BuildSlowMotionFilter() : BuildFastSlowFilter()); }
         args.AddRange(new[]
         {
@@ -64,31 +75,64 @@ public sealed class AmbientLoopService
         return args.ToArray();
     }
 
-    /// <summary>후처리 실행 — 성공 시 Ok + 출력 경로. ffmpeg 부재 IsVirtual=true, 입력 누락·실패 Ok=false(원본 유지는 호출자 책임).</summary>
+    /// <summary>출력 무결성 — 실존 + <see cref="MinValidOutputBytes"/> 초과.</summary>
+    public static bool IsValidOutput(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        try { return File.Exists(path) && new FileInfo(path).Length > MinValidOutputBytes; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { return false; }
+    }
+
+    /// <summary>
+    /// 후처리 실행 — 성공 시 Ok + 출력 경로. 입력 누락만 OutputPath=null.
+    /// ffmpeg 부재(IsVirtual=true)·비정상 종료·출력 누락/손상(≤1KB)은 예외 없이 Ok=false + OutputPath=<b>원본 입력 경로</b>(대체 보존) + <see cref="FallbackNotice"/>.
+    /// </summary>
     public async Task<VideoStitchResult> RenderAsync(string inputPath, string outputPath, bool pingPong = false, CancellationToken ct = default, bool highQuality = false)
     {
         if (string.IsNullOrWhiteSpace(inputPath) || !File.Exists(inputPath)) return new(false, false, null, 0, "앰비언트 입력 누락: " + inputPath);
-        if (string.IsNullOrWhiteSpace(outputPath)) return new(false, false, null, 1, "출력 경로가 비어 있습니다.");
+        var source = Path.GetFullPath(inputPath);
+        if (string.IsNullOrWhiteSpace(outputPath)) return Fallback(source, false, "출력 경로가 비어 있습니다.");
         string? ffmpeg;
         try { ffmpeg = _resolveFfmpeg(); }
         catch (Exception ex) { Program.Log("Ambient.Resolve", ex); ffmpeg = null; }
-        if (ffmpeg is null) return new(false, true, null, 1, "ffmpeg 미탐지 — 앰비언트 후처리 생략(원본 유지)");
+        if (ffmpeg is null) return Fallback(source, true, "ffmpeg 미탐지");
 
         var full = Path.GetFullPath(outputPath);
         try
         {
             var dir = Path.GetDirectoryName(full);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-            var ok = await _run(ffmpeg, BuildAmbientArgs(Path.GetFullPath(inputPath), full, pingPong, highQuality), ct).ConfigureAwait(false);
-            if (ct.IsCancellationRequested) return new(false, false, null, 1, "취소됨");
-            if (!ok || !File.Exists(full) || new FileInfo(full).Length == 0) return new(false, false, null, 1, "ffmpeg 앰비언트 루프 실패");
+            var ok = await _run(ffmpeg, BuildAmbientArgs(source, full, pingPong, highQuality), ct).ConfigureAwait(false);
+            if (ct.IsCancellationRequested) { TryDeletePartial(full, source); return new(false, false, source, 1, "취소됨 — 원본 5s 유지"); }
+            if (!ok || !IsValidOutput(full))
+            {
+                TryDeletePartial(full, source);
+                return Fallback(source, false, ok ? "출력 파일 없음/손상(≤1KB)" : "ffmpeg 비정상 종료");
+            }
             return new(true, false, full, 1, "앰비언트 15초 루프 완료" + (pingPong ? "(핑퐁)" : "(3x 고속 슬로우)"));
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (OperationCanceledException) { TryDeletePartial(full, source); return new(false, false, source, 1, "취소됨 — 원본 5s 유지"); }
+        catch (Exception ex)
         {
             Program.Log("Ambient.Render", ex);
-            return new(false, false, null, 1, "앰비언트 후처리 실패: " + ex.Message);
+            TryDeletePartial(full, source);
+            return Fallback(source, false, ex.Message);
         }
+    }
+
+    private static VideoStitchResult Fallback(string source, bool isVirtual, string reason)
+    {
+        var msg = FallbackNotice + " (" + reason + ")";
+        if (!isVirtual) Program.Log("Ambient.Fallback", new InvalidOperationException(msg));
+        return new(false, isVirtual, source, 1, msg);
+    }
+
+    /// <summary>실패 잔여물(0바이트·헤더만) 삭제 — 원본과 동일 경로면 절대 건드리지 않음.</summary>
+    private static void TryDeletePartial(string output, string source)
+    {
+        if (string.Equals(output, source, StringComparison.OrdinalIgnoreCase)) return;
+        try { if (File.Exists(output)) File.Delete(output); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Program.Log("Ambient.Cleanup", ex); }
     }
 
     private static async Task<bool> DefaultRunAsync(string exe, IReadOnlyList<string> args, CancellationToken ct)

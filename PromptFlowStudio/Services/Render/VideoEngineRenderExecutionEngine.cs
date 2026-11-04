@@ -113,6 +113,8 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine
     public const string MetaAmbientPingPong = "ambient.pingpong";
     /// <summary>앰비언트 메타 — 후처리 결과(applied · virtual · failed).</summary>
     public const string MetaAmbientApplied = "ambient.applied";
+    /// <summary>앰비언트 메타 — 대체 보존 사유(<see cref="AmbientLoopService.FallbackNotice"/> 포함). 성공 시 미기록.</summary>
+    public const string MetaAmbientNotice = "ambient.notice";
 
     /// <summary>
     /// <see cref="VideoDurationMode.Sec15_AmbientSlow"/> 후처리 — 로컬 5초 산출물을 <c>{project}_ambient15s.mp4</c> 무음 15초 루프로 변환해 최종 산출물로 확정.
@@ -130,7 +132,9 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine
         var state = res.Ok ? "applied" : res.IsVirtual ? "virtual" : "failed";
         if (!res.Ok && !res.IsVirtual) Program.Log("RenderExec.Ambient", new InvalidOperationException(res.Message));
         job.Metadata = MultiDurationPlanner.WithMeta(job.Metadata, MetaAmbientApplied, state);
-        return res.Ok && res.OutputPath is not null ? res.OutputPath : output;
+        if (!res.Ok) job.Metadata = MultiDurationPlanner.WithMeta(job.Metadata, MetaAmbientNotice, res.Message);
+        // 성공본 또는 대체 보존 원본 — 실존 확인 후 채택, 아니면 원본 5초 유지(유실 금지)
+        return res.OutputPath is { } p && File.Exists(p) ? p : output;
     }
 
     /// <summary>취소 콜백 — 중단 신호 fire-and-forget(예외 격리 · 콜백 스레드 비차단).</summary>

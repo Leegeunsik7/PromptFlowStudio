@@ -151,7 +151,7 @@
             @if (_durationMsg is not null) { <div class="ws-dur-hint">@_durationMsg</div> }
             @if (_mini.Phase != PromptFlowStudio.Services.Render.MiniQueuePhase.Idle)
             {
-                <div class="ws-mini-q @(_mini.Phase == PromptFlowStudio.Services.Render.MiniQueuePhase.Failed || _miniStitchFail is not null ? "bad" : null)">
+                <div class="ws-mini-q @(_mini.Phase == PromptFlowStudio.Services.Render.MiniQueuePhase.Failed || _miniStitchFail is not null || _miniError is not null ? "bad" : null)">
                     <div class="ws-mini-q-h">
                         <div class="ws-mini-q-l">@(_miniStitchFail is null ? _mini.Label : "⚠ 합본 실패 — " + _miniStitchFail)</div>
                         @if (_mini.IsActive)
@@ -160,6 +160,8 @@
                         }
                     </div>
                     <div class="ws-mini-q-bar"><i style="width:@(_mini.Percent.ToString(CultureInfo.InvariantCulture))%"></i></div>
+                    @if (_miniError is not null) { <div class="ws-mini-err">⛔ @(_miniError)</div> }
+                    @if (_miniNotice is not null) { <div class="ws-mini-note">ℹ @(_miniNotice)</div> }
                     @if (_miniUrl is not null)
                     {
                         <video class="ws-mini-q-vid" src="@_miniUrl" controls autoplay loop muted preload="auto" @key="_miniUrl"></video>
@@ -222,7 +224,12 @@
                 <span class="ws-badge @PhaseClass">@PhaseLabel</span>
             </div>
 
-            @if (State.Phase == WanJobPhase.Idle)
+            @if (_canvasQueueUrl is not null && !State.IsBusy)
+            {
+                @* 큐 렌더(10s/15s/앰비언트) 완료 산출물 — @key 로 <video> 재생성해 소스 교체 즉시 강제 리로드 *@
+                <video class="ws-video" src="@_canvasQueueUrl" controls autoplay loop muted preload="auto" @key="_canvasQueueUrl"></video>
+            }
+            else if (State.Phase == WanJobPhase.Idle)
             {
                 <div class="ws-empty">
                     @* 뷰파인더 HUD — 선택 해상도 비율 가이드 박스 + 3분할 그리드 + 중앙 크로스헤어 + 해상도 상태 *@
@@ -819,6 +826,8 @@
     .ws-pub { margin-top: 6px; }
     .ws-mini-q-bar { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--text-secondary) 25%, transparent); overflow: hidden; }
     .ws-mini-q-bar > i { display: block; height: 100%; background: var(--flow-cyan); transition: width .25s ease; }
+    .ws-mini-err { margin-top: 6px; font-size: 12px; font-weight: 600; color: #e5484d; }
+    .ws-mini-note { margin-top: 6px; font-size: 11px; color: var(--text-secondary); }
     .ws-mini-q-vid { width: 100%; margin-top: 8px; border-radius: 6px; background: #000; }
     .ws-zen-chip.on { color: var(--text-primary); border-color: var(--flow-cyan); box-shadow: 0 0 12px color-mix(in srgb, var(--flow-cyan) 45%, transparent), inset 0 0 8px color-mix(in srgb, var(--flow-cyan) 18%, transparent); }
     .ws-zen-chip:disabled { opacity: .5; cursor: not-allowed; }
@@ -1256,7 +1265,7 @@
 
     // ── 작업실 인라인 큐 진행률(MiniQueueProgress) — 적재 작업 JobId 추적 → 컷 진행/합본 → 완료 시 인라인 자동 재생 ──
     private Guid[] _miniIds = Array.Empty<Guid>();
-    private string? _miniGroup, _miniUrl, _miniPlayed, _miniStitchFail;
+    private string? _miniGroup, _miniUrl, _miniPlayed, _miniStitchFail, _miniError, _miniNotice, _canvasQueueUrl;
     private PromptFlowStudio.Services.Render.MiniQueueProgress _mini = PromptFlowStudio.Services.Render.MiniQueueProgress.None;
 
     private void TrackMiniQueue(IReadOnlyList<PromptFlowStudio.Services.Batch.BatchRenderJob> jobs)
@@ -1265,7 +1274,7 @@
         for (var i = 0; i < ids.Length; i++) ids[i] = jobs[i].JobId;
         _miniIds = ids;
         _miniGroup = jobs.Count > 0 ? jobs[0].StitchGroupId : null;
-        _miniUrl = _miniPlayed = _miniStitchFail = null;
+        _miniUrl = _miniPlayed = _miniStitchFail = _miniError = _miniNotice = _canvasQueueUrl = null;
         _miniCancelled = false;
         _mini = PromptFlowStudio.Services.Render.MiniQueueProgress.None;
         RefreshMiniQueue();
@@ -1280,12 +1289,47 @@
             next = next.AsCancelled();   // 엔진 중단 완료 전이라도 취소 상태 유지
         if (next == _mini) return false;
         _mini = next;
-        if (next.Phase == PromptFlowStudio.Services.Render.MiniQueuePhase.Completed && next.FinalPath is { } fp && !string.Equals(fp, _miniPlayed, StringComparison.OrdinalIgnoreCase))
+        if (next.Phase == PromptFlowStudio.Services.Render.MiniQueuePhase.Completed)
         {
-            _miniPlayed = fp;
-            try { _miniUrl = Media.ToPlaybackUrl(fp); } catch (Exception ex) { Program.Log("Workspace.MiniQueue", ex); _miniUrl = null; }
+            // 완료 콜백 — 디스크 실존 재확인 후에만 캔버스 소스 교체, 아니면 인라인 빨간 오류
+            if (next.FinalPath is { } fp && File.Exists(fp))
+            {
+                _miniError = null;
+                if (!string.Equals(fp, _miniPlayed, StringComparison.OrdinalIgnoreCase))
+                {
+                    _miniPlayed = fp;
+                    try { _miniUrl = Media.ToPlaybackUrl(fp); } catch (Exception ex) { Program.Log("Workspace.MiniQueue", ex); _miniUrl = null; }
+                    _canvasQueueUrl = _miniUrl;
+                }
+            }
+            else
+            {
+                _miniUrl = _canvasQueueUrl = null;
+                _miniError = "렌더 완료로 보고됐으나 산출 파일이 디스크에 없습니다 (Mock 시뮬레이션 모드 또는 엔진 출력 누락)";
+            }
+            _miniNotice = MiniJobMeta(PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.MetaAmbientNotice);
         }
+        else if (next.Phase == PromptFlowStudio.Services.Render.MiniQueuePhase.Failed)
+            _miniError = MiniFailedMessage() ?? "렌더 실패";
         return true;
+    }
+
+    /// <summary>추적 작업 중 첫 실패 컷의 오류 메시지.</summary>
+    private string? MiniFailedMessage()
+    {
+        foreach (var j in RenderQueue.Snapshot())
+            if (j.Status == PromptFlowStudio.Services.Batch.BatchJobStatus.Failed && Array.IndexOf(_miniIds, j.JobId) >= 0 && !string.IsNullOrWhiteSpace(j.ErrorMessage))
+                return j.ErrorMessage;
+        return null;
+    }
+
+    /// <summary>추적 작업 메타 값(첫 매치).</summary>
+    private string? MiniJobMeta(string key)
+    {
+        foreach (var j in RenderQueue.Snapshot())
+            if (Array.IndexOf(_miniIds, j.JobId) >= 0 && j.Metadata is { } m && m.TryGetValue(key, out var v) && !string.IsNullOrWhiteSpace(v))
+                return v;
+        return null;
     }
 
     // 워커 스레드 발생 — 렌더러 스레드로 마샬링, 예외 격리
@@ -1363,6 +1407,7 @@
     {
         if (!CanStart) return;
         if (_durationMode != PromptFlowStudio.Services.Render.VideoDurationMode.Sec5_Single) { EnqueueDuration(_prompt); return; }
+        _canvasQueueUrl = null;   // 단일 생성 — 캔버스를 라이브 진행 표시로 복귀
         // v16.20.0 미세 표정 퍼핏 — 표정 구문·정체성 유지·얼굴 보호 네거티브 비영속 주입(Neutral 은 원문 그대로).
         // v16.22.0 피사체 Identity 고정 — 프로필 정체성/의상/스타일 구문(비영속) · 얼굴 사진 I2V(사용자 이미지 우선) · 프로필 시드(핀 우선).
         var idLock = _idLockOn ? IdentityLockOf() : null;
