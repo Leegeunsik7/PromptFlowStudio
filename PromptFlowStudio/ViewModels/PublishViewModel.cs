@@ -93,6 +93,14 @@ public sealed class PublishViewModel : IDisposable
         set { _stockFormat = value; Notify(); }
     }
 
+    private bool? _stockSharpen;
+    /// <summary>🔎 고선명 샤프닝(1080p Lanczos + Unsharp) — 미선택이면 환경설정 기본(ON).</summary>
+    public bool StockSuiteSharpen
+    {
+        get => _stockSharpen ?? _stockSuite?.DefaultSharpen ?? true;
+        set { _stockSharpen = value; Notify(); }
+    }
+
     public bool YouTubeEnabled => _yt.Enabled;
     public bool InstagramEnabled => _ig.Enabled;
     public bool IsBusy { get; private set; }
@@ -226,7 +234,7 @@ public sealed class PublishViewModel : IDisposable
         Notify();
         try
         {
-            var r = await _stockSuite.ExportAsync(VideoPath, null, null, ct, StockSuiteFormat).ConfigureAwait(false);
+            var r = await _stockSuite.ExportAsync(VideoPath, null, null, ct, StockSuiteFormat, StockSuiteSharpen).ConfigureAwait(false);
             StockSuiteMessage = r.Ok ? r.Message : "⚠ " + r.Message;
             StockSuiteExported = r.Ok;
             StockSuiteRestartPending = false;

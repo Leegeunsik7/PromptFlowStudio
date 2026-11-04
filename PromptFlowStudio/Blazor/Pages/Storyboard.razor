@@ -861,6 +861,7 @@
                             <button class="sb-btn go" @onclick="PlayMaster" title="자동 합성된 20초 마스터 영상을 최종 영상 패널에서 재생">▶ 마스터 영상 재생</button>
                             <button class="sb-btn ghost" @onclick="ExportMasterAsync" disabled="@_exporting" title="전체 결합 파일(storyboard_…_full20s.mp4)을 원하는 위치로 저장">📦 전체 결합 파일 내보내기</button>
                             <button class="sb-btn ghost" @onclick="() => ExportToStockSuiteAsync(master)" disabled="@_stockBusy" title="환경설정의 StockSuite 에셋 폴더에 bg_ambient.mp4 로 원자적 덮어쓰기">💼 StockSuite로 내보내기</button>
+                            @if (StockCanLaunch) { <button class="sb-btn ghost" @onclick="() => LaunchStockSuite(false)" title="환경설정의 StockSuite.exe 를 즉시 실행해 에셋 적용을 실기 검증">🚀 StockSuite 실행</button> }
                             <span class="sb-sub" title="@master">@(System.IO.Path.GetFileName(master))</span>
                         </div>
                     }
@@ -926,6 +927,7 @@
                     </button>
                     <button class="sb-btn ghost" @onclick="OpenMeta" disabled="@_upBusy">📺 유튜브 메타데이터 생성</button>
                     <button class="sb-btn ghost" @onclick="() => ExportToStockSuiteAsync(_project.FinalVideoPath)" disabled="@_stockBusy" title="환경설정의 StockSuite 에셋 폴더에 bg_ambient.mp4 로 원자적 덮어쓰기">💼 StockSuite로 내보내기</button>
+                    @if (StockCanLaunch) { <button class="sb-btn ghost" @onclick="() => LaunchStockSuite(false)" title="환경설정의 StockSuite.exe 를 즉시 실행해 에셋 적용을 실기 검증">🚀 StockSuite 실행</button> }
                     <button class="sb-btn ghost" @onclick="GenerateThumbnail" disabled="@(_thumbBusy || _upBusy)"
                             title="표정 피크 컷의 얼굴을 1.5배 매크로 크롭 + Real-ESRGAN 4K 로 thumbnail.png 자동 생성">
                         @(_thumbBusy ? "🖼️ 썸네일 생성 중…" : "🖼️ 자동 썸네일(4K)")
@@ -1313,7 +1315,7 @@
         <CharacterStudioModal Project="_project" OnClose="() => _characterOpen = false" OnApplied="OnCharacterApplied" OnOpenProject="OpenEpisodeProject" />
     }
 
-    @if (_toast is not null) { <div class="sb-toast">@_toast</div> }
+    @if (_toast is not null) { <div class="sb-toast">@_toast@if (ReferenceEquals(_toast, _stockToast) && StockCanLaunch) { <button class="sb-btn ghost" style="margin-left:10px" @onclick="() => LaunchStockSuite(_stockRestart)" title="StockSuite 를 실행(실행 중이면 재실행)해 새 에셋을 즉시 반영">@(_stockRestart ? "🔄 StockSuite 재실행" : "🚀 StockSuite 실행")</button> }</div> }
 
     @* 스위치 역할 실시간 가이드 토스트(우하단) *@
     <ToggleTooltip Guide="_switchGuide" OnClose="() => { _switchGuide = null; _guideTimer?.Dispose(); }" />
@@ -3130,6 +3132,30 @@
         finally { _exporting = false; }
     }
 
+    private string? _stockToast;
+    private bool _stockRestart;
+    private long _stockProbeTick = long.MinValue / 2;
+    private bool _stockCanLaunch;
+    /// <summary>🚀 실행 가능 여부(exe 검증) — 렌더마다 디스크 조회 방지, 2초 캐시.</summary>
+    private bool StockCanLaunch
+    {
+        get
+        {
+            var now = Environment.TickCount64;
+            if (now - _stockProbeTick > 2000) { _stockProbeTick = now; _stockCanLaunch = StockSuite.CanLaunch; }
+            return _stockCanLaunch;
+        }
+    }
+
+    /// <summary>🚀 StockSuite 실행 — 이미 실행 중이면 토스트에 🔄 재실행 버튼 제시. 절대 throw 하지 않음(Launch 보장).</summary>
+    private void LaunchStockSuite(bool restart)
+    {
+        var r = StockSuite.Launch(restart);
+        _stockRestart = r.AlreadyRunning;
+        ShowToast(r.Message);
+        _stockToast = r.AlreadyRunning ? _toast : null;
+    }
+
     /// <summary>💼 StockSuite로 내보내기 — 설정 폴더 bg_ambient.mp4 원자적 복사. 미설정/실패 시 경로 재설정 안내.</summary>
     private async Task ExportToStockSuiteAsync(string? path)
     {
@@ -3139,6 +3165,8 @@
         {
             var r = await StockSuite.ExportAsync(path);
             ShowToast(r.Ok ? r.Message : r.NeedsPathSetup ? "⚠ " + r.Message + " (설정 ▸ 사용자 설정 ▸ StockSuite 에셋 경로)" : "⚠ " + r.Message);
+            _stockRestart = false;
+            _stockToast = r.Ok ? _toast : null;   // 성공 토스트에만 🚀 실행 버튼 노출
         }
         catch (Exception ex) { Program.Log("Storyboard.StockSuite", ex); ShowToast("⚠ StockSuite 내보내기 실패 — 경로를 재설정하세요"); }
         finally { _stockBusy = false; }

@@ -75,6 +75,8 @@ public sealed class UserPreferenceService
         public const string StockSuiteFormat = "stocksuite.format";
         /// <summary>StockSuite 실행 파일(StockSuite.exe) 경로 — 🚀 원클릭 실행.</summary>
         public const string StockSuiteExecutablePath = "stocksuite.exe";
+        /// <summary>StockSuite 고선명 샤프닝(1080p Lanczos + Unsharp) — 기본 ON.</summary>
+        public const string StockSuiteSharpen = "stocksuite.sharpen";
     }
 
     private const string Prefix = "sm.pref.";
@@ -189,6 +191,13 @@ public sealed class UserPreferenceService
         set => Set(Keys.StockSuiteFormat, string.Equals(value, "webm", StringComparison.OrdinalIgnoreCase) ? "webm" : "mp4");
     }
 
+    /// <summary>🔎 StockSuite 고선명 샤프닝(1080p Lanczos + Unsharp 재인코딩) — 기본 ON, OFF 면 스트림 복사.</summary>
+    public bool StockSuiteSharpen
+    {
+        get => GetBool(Keys.StockSuiteSharpen);
+        set => SetBool(Keys.StockSuiteSharpen, value);
+    }
+
     public bool Loaded { get; private set; }
 
     /// <summary>기본값. Reset 과 '값 없음' 이 같은 표를 본다.</summary>
@@ -216,6 +225,7 @@ public sealed class UserPreferenceService
         [Keys.StockSuiteAssetPath] = "",
         [Keys.StockSuiteFormat] = "mp4",
         [Keys.StockSuiteExecutablePath] = "",
+        [Keys.StockSuiteSharpen] = "1",
     };
 
     /// <summary>

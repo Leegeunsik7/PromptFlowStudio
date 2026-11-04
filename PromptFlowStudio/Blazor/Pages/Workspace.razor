@@ -58,7 +58,7 @@
 
     @if (_camToast is not null)
     {
-        <div class="ws-cam-toast" role="status">@(_camToast) <button class="ws-cam-toast-x" @onclick="() => _camToast = null" title="닫기">✕</button></div>
+        <div class="ws-cam-toast" role="status">@(_camToast) @if (ReferenceEquals(_camToast, _stockToast) && StockCanLaunch) { <button class="ws-btn sm" @onclick="() => LaunchStockSuite(_stockRestart)" title="StockSuite 를 실행(실행 중이면 재실행)해 새 에셋을 즉시 반영">@(_stockRestart ? "🔄 StockSuite 재실행" : "🚀 StockSuite 실행")</button> } <button class="ws-cam-toast-x" @onclick="() => _camToast = null" title="닫기">✕</button></div>
     }
 
     <section class="ws-grid">
@@ -267,6 +267,7 @@
                         <button class="ws-btn ghost sm" @onclick="() => RevealInExplorer(qPath)" title="윈도우 탐색기에서 파일 선택 상태로 열기">📂 폴더 열기</button>
                         <button class="ws-btn ghost sm" @onclick="() => CopyMediaPath(qPath)" title="파일 절대 경로를 클립보드에 복사">📋 경로 복사</button>
                         <button class="ws-btn ghost sm" @onclick="() => ExportToStockSuite(qPath)" disabled="@_stockBusy" title="환경설정의 StockSuite 에셋 폴더에 bg_ambient.mp4 로 원자적 덮어쓰기">💼 StockSuite로 내보내기</button>
+                        @if (StockCanLaunch) { <button class="ws-btn ghost sm" @onclick="() => LaunchStockSuite(false)" title="환경설정의 StockSuite.exe 를 즉시 실행해 에셋 적용을 실기 검증">🚀 StockSuite 실행</button> }
                         <span class="ws-hint" title="@qPath">@ShortPath(qPath)</span>
                     </div>
                 }
@@ -335,6 +336,7 @@
                             <button class="ws-btn ghost sm" @onclick="() => RevealInExplorer(pubSrc)" title="윈도우 탐색기에서 파일 선택 상태로 열기">📂 폴더 열기</button>
                             <button class="ws-btn ghost sm" @onclick="() => CopyMediaPath(pubSrc)" title="파일 절대 경로를 클립보드에 복사">📋 경로 복사</button>
                             <button class="ws-btn ghost sm" @onclick="() => ExportToStockSuite(pubSrc)" disabled="@_stockBusy" title="환경설정의 StockSuite 에셋 폴더에 bg_ambient.mp4 로 원자적 덮어쓰기">💼 StockSuite로 내보내기</button>
+                            @if (StockCanLaunch) { <button class="ws-btn ghost sm" @onclick="() => LaunchStockSuite(false)" title="환경설정의 StockSuite.exe 를 즉시 실행해 에셋 적용을 실기 검증">🚀 StockSuite 실행</button> }
                         }
                         <span class="ws-hint" title="@State.LocalPath">@ShortPath(State.LocalPath)</span>
                         <label class="ws-sztog" title="@AudioSfxEngine.GenerateAudioPrompt(State.LastPrompt)">
@@ -1510,6 +1512,29 @@
     /// <summary>📋 경로 복사 — 절대 경로를 클립보드에 복사하고 토스트 표시.</summary>
     /// <summary>💼 StockSuite로 내보내기 — 설정 폴더에 bg_ambient.mp4 원자적 복사. 미설정/실패 시 경로 재설정 안내 토스트.</summary>
     private bool _stockBusy;
+    private string? _stockToast;
+    private bool _stockRestart;
+    private long _stockProbeTick = long.MinValue / 2;
+    private bool _stockCanLaunch;
+    /// <summary>🚀 실행 가능 여부(exe 검증) — 렌더마다 디스크 조회 방지, 2초 캐시.</summary>
+    private bool StockCanLaunch
+    {
+        get
+        {
+            var now = Environment.TickCount64;
+            if (now - _stockProbeTick > 2000) { _stockProbeTick = now; _stockCanLaunch = StockSuite.CanLaunch; }
+            return _stockCanLaunch;
+        }
+    }
+
+    /// <summary>🚀 StockSuite 실행 — 이미 실행 중이면 토스트에 🔄 재실행 버튼 제시. 절대 throw 하지 않음(Launch 보장).</summary>
+    private void LaunchStockSuite(bool restart)
+    {
+        var r = StockSuite.Launch(restart);
+        _stockRestart = r.AlreadyRunning;
+        _camToast = r.Message;
+        _stockToast = r.AlreadyRunning ? _camToast : null;
+    }
     private async Task ExportToStockSuite(string path)
     {
         if (_stockBusy) return;
@@ -1518,6 +1543,8 @@
         {
             var r = await StockSuite.ExportAsync(path);
             _camToast = r.Ok ? r.Message : r.NeedsPathSetup ? "⚠ " + r.Message + " (설정 ▸ 사용자 설정 ▸ StockSuite 에셋 경로)" : "⚠ " + r.Message;
+            _stockRestart = false;
+            _stockToast = r.Ok ? _camToast : null;   // 성공 토스트에만 🚀 실행 버튼 노출
         }
         catch (Exception ex) { Program.Log("Workspace.StockSuite", ex); _camToast = "⚠ StockSuite 내보내기 실패 — 경로를 재설정하세요"; }
         finally { _stockBusy = false; }

@@ -6,6 +6,7 @@
 @inject IVideoExportService Export
 @inject NavigationManager Nav
 @inject PromptFlowStudio.ViewModels.MassProductionViewModel Vm
+@inject PromptFlowStudio.Services.AI.GeminiPromptService Gemini
 
 @* [PromptFlow Studio] 대량 양산 배치 팩토리 — CSV/TXT 대량 입력을 큐로 받아 백그라운드에서 한 편씩 순차 양산.
    상태는 BatchProductionService(싱글턴)가 보유, 이 컴포넌트는 OnChange 구독 후 InvokeAsync(StateHasChanged)로만 갱신. *@
@@ -28,6 +29,18 @@
     </header>
 
     <div style="margin:12px 0 16px;"><StudioMonitorHeader EngineReady="true" /></div>
+
+    @* ✨ 제미나이 시리즈 일괄 기획 — 테마 1개 → N편 상이한 앵글 프롬프트 → 직접 붙여넣기 입력창 즉시 바인딩(키 없음/실패 → 로컬 앵글 템플릿) *@
+    <section class="bt-ai">
+        <span class="bt-ai-t">✨ AI 일괄 기획</span>
+        <input class="bt-sel bt-ai-in" placeholder="테마 키워드 (예: 새벽의 트레이딩룸, 핀테크 데이터 센터)" @bind="_aiTheme" @bind:event="oninput"
+               @onkeydown="OnAiThemeKey" disabled="@(_aiBusy || Batch.IsRunning)" />
+        <select class="bt-sel" @bind="_aiCount" disabled="@(_aiBusy || Batch.IsRunning)" title="생성할 샷/대본 개수">
+            <option value="3">3편</option><option value="5">5편</option><option value="8">8편</option><option value="10">10편</option><option value="20">20편</option>
+        </select>
+        <button class="bt-tbtn bt-ai-go" @onclick="GenerateAiBatchAsync" disabled="@(_aiBusy || Batch.IsRunning || string.IsNullOrWhiteSpace(_aiTheme))">@(_aiBusy ? "⏳ 기획 중…" : "✨ 제미나이 시리즈 일괄 기획")</button>
+        @if (_aiNote is not null) { <span class="bt-note">@_aiNote</span> }
+    </section>
 
     @* 엑셀식 배치 그리드 — 셀 수정·검증·CSV/JSON 임포트 후 일괄 큐 등록(공유 배치 큐) *@
     <div style="margin:0 0 16px;"><MassProductionGrid /></div>
@@ -333,6 +346,10 @@
     .bt-ta { width: 100%; box-sizing: border-box; background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; color: var(--text-primary); font-size: 12.5px; font-family: inherit; line-height: 1.6; resize: vertical; }
     .bt-ta:focus { outline: none; border-color: var(--accent); }
     .bt-inline { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+    .bt-ai { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 16px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--card-2); }
+    .bt-ai-t { font-weight: 800; font-size: 13px; color: var(--text-primary); }
+    .bt-ai-in { flex: 1 1 280px; min-width: 200px; }
+    .bt-ai-go { border-color: var(--accent); color: var(--text-primary); }
     .bt-note { font-size: 11.5px; color: #10b981; font-weight: 700; }
 
     .bt-tbtn { font: 700 12.5px inherit; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; }
@@ -452,6 +469,12 @@
     private string? _watermarkThumb;
 
     private string _paste = "";
+    // ✨ 제미나이 시리즈 일괄 기획
+    private string _aiTheme = "";
+    private int _aiCount = 5;
+    private bool _aiBusy;
+    private string? _aiNote;
+    private readonly System.Threading.CancellationTokenSource _life = new();
 
     /// <summary>v16.12.0: 붙여넣기 목록의 첫 유효 행 → 첫 컷 프롬프트(제목,대본 · 탭/콤마 구분 시 대본 우선).</summary>
     private string BatchFirstRowPrompt
@@ -526,6 +549,30 @@
             ShowToast(added > 0 ? $"📄 {file.Name} — {added}편을 대기열에 추가했습니다." : "추가할 항목을 찾지 못했습니다(빈 파일).");
         }
         catch (Exception ex) { ShowToast("❌ 파일 읽기 실패: " + ex.Message); }
+    }
+
+    private async Task OnAiThemeKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !_aiBusy && !string.IsNullOrWhiteSpace(_aiTheme)) await GenerateAiBatchAsync();
+    }
+
+    /// <summary>✨ 테마 → N편 기획 → 직접 붙여넣기 입력창(제목\t프롬프트)에 바인딩. 대기열 등록은 ＋ 버튼 원클릭.</summary>
+    private async Task GenerateAiBatchAsync()
+    {
+        if (_aiBusy || string.IsNullOrWhiteSpace(_aiTheme)) return;
+        _aiBusy = true;
+        _aiNote = null;
+        try
+        {
+            var r = await Gemini.GenerateBatchPromptsAsync(_aiTheme, _aiCount, _life.Token);
+            if (r.Items.Count == 0) { ShowToast("⚠ " + r.Message); return; }
+            _paste = PromptFlowStudio.Services.AI.GeminiPromptService.ToBatchPasteText(r.Items);
+            _aiNote = (r.UsedFallback ? "💡 " : "✨ ") + r.Message;
+            ShowToast("✨ " + r.Items.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + "편 기획 완료 — ＋ 대기열에 추가 후 ▶️ 시작");
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("BatchStudio.AiPlan", ex); ShowToast("⚠ 일괄 기획 실패: " + ex.Message); }
+        finally { _aiBusy = false; if (!_life.IsCancellationRequested) StateHasChanged(); }
     }
 
     private void AddFromPaste()
@@ -653,5 +700,7 @@
         Cfg.OnConfigChanged -= OnStateChanged;
         Vm.PropertyChanged -= OnMassProductionChanged;
         _toastTimer?.Dispose();
+        _life.Cancel();
+        _life.Dispose();
     }
 }

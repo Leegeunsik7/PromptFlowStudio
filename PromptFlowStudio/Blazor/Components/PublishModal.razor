@@ -26,6 +26,7 @@
                         <option value="mp4">MP4 (기본)</option>
                         <option value="webm">WebM VP9 (HTS 저사양 최적화)</option>
                     </select>
+            <label class="pm-btn" title="1080p Lanczos 업스케일 + 언샵 마스크 샤프닝(재인코딩) — 끄면 스트림 복사(빠른 내보내기)"><input type="checkbox" checked="@vm.StockSuiteSharpen" @onchange="e => vm.StockSuiteSharpen = e.Value is true" disabled="@(vm.IsStockSuiteBusy || vm.StockSuiteFormat == PromptFlowStudio.Services.Export.StockSuiteExportFormat.WebMVp9)" /> 고선명 샤프닝 (1080p Lanczos + Unsharp)</label>
                     <button class="pm-btn" @onclick="ExportStockSuite" disabled="@vm.IsStockSuiteBusy"
                             title="환경설정의 StockSuite 에셋 폴더에 bg_ambient.mp4 로 원자적 덮어쓰기">@(vm.IsStockSuiteBusy ? "⏳ 복사 중…" : "💼 StockSuite로 내보내기")</button>
                     @if (vm.StockSuiteExported && vm.CanLaunchStockSuite)

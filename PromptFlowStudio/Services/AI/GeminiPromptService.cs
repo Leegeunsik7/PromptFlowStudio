@@ -24,6 +24,12 @@ public sealed record GeminiEnhanceOutcome(string Prompt, bool UsedFallback, stri
 /// <summary>스토리보드 제미나이 디렉터 1컷 — 프롬프트 · 카메라 앵글 · 듀레이션(초).</summary>
 public sealed record DirectorShot(int Index, string Title, string Prompt, string Camera, float DurationSec);
 
+/// <summary>✨ 대량생산 일괄 기획 1편 — 제목·영문 프롬프트·카메라·태그.</summary>
+public sealed record BatchPromptItem(int Index, string Title, string Prompt, string Camera, IReadOnlyList<string> Tags);
+
+/// <summary>✨ 대량생산 일괄 기획 결과 — UsedFallback=true 면 로컬 템플릿(일부/전체).</summary>
+public sealed record BatchPlanResult(IReadOnlyList<BatchPromptItem> Items, bool UsedFallback, string Message);
+
 /// <summary>SNS 발행 SEO 메타 — <see cref="UsedFallback"/>=true 면 로컬 템플릿(키 없음/호출 실패/스키마 불일치).</summary>
 public sealed record SnsSeoMetadata(string Title, string Description, IReadOnlyList<string> Tags, bool UsedFallback, string Message);
 
@@ -282,6 +288,128 @@ public sealed class GeminiPromptService
         catch (JsonException) { return null; }
 
         static string? Str(JsonElement e, string n) => e.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+    }
+
+    // ══════════════════════ ✨ 대량생산 시리즈 일괄 기획 ══════════════════════
+
+    public const int MinBatchCount = 1;
+    public const int MaxBatchCount = 20;
+    public const string BatchFallbackNotice = "로컬 앵글 템플릿으로 일괄 기획되었습니다";
+
+    public const string BatchPlannerInstruction =
+        "You are a series director for short cinematic videos (fintech, trading room, cinematic ambience). " +
+        "Given a theme keyword and a count N, create exactly N DISTINCT shots for the Wan 2.1 video model, each with a different camera angle and visual detail. " +
+        "Respond with JSON only: {\"items\":[{\"title\":string,\"prompt\":string,\"camera\":string,\"tags\":[string]}]} with N items. " +
+        "title: short Korean title (max 30 chars). prompt: vivid English, max 80 words, no line breaks. tags: 3-5 lowercase English keywords.";
+
+    /// <summary>로컬 폴백 앵글/디테일 로테이션 — 핀테크·트레이딩룸·시네마틱.</summary>
+    private static readonly (string Title, string Camera, string Detail)[] BatchAngles =
+    {
+        ("오프닝 전경", "Crane Up / Wide", "wide establishing shot of a high-tech trading floor, rows of glowing monitors"),
+        ("차트 클로즈업", "Macro / 100mm", "extreme close-up of candlestick charts and ticker data reflecting on glass"),
+        ("트레이더 시점", "Over-the-Shoulder / 35mm", "over-the-shoulder view of a trader scanning multi-screen dashboards"),
+        ("데이터 흐름", "Slow Dolly In", "abstract holographic data streams and fintech UI elements flowing in 3D space"),
+        ("도시 야경", "Aerial Drone / Orbit", "aerial night view of the financial district skyline with neon reflections"),
+        ("키보드 디테일", "Low Angle / 50mm", "low angle detail of fingers on a backlit mechanical keyboard, bokeh screens"),
+        ("서버룸", "Tracking Shot", "tracking shot through a server room with blinking LEDs and cool blue haze"),
+        ("결정의 순간", "Dolly Zoom", "decisive moment as a market alert flashes, rising tension, dramatic rim light"),
+        ("앰비언트 루프", "Static / Bokeh", "calm ambient desk scene at dawn, soft monitor glow, slow drifting bokeh"),
+        ("탑뷰 그리드", "Top-Down / 24mm", "top-down view of a minimalist desk with tablets showing live market heatmaps"),
+    };
+
+    private static readonly string[] LocalBatchTags = { "fintech", "trading", "cinematic" };
+
+    /// <summary>
+    /// 테마 키워드 1개 → N개(1~20) 상이한 앵글의 영문 프롬프트·메타 세트. 키 없음/실패/스키마 불일치 → 로컬 앵글 템플릿.
+    /// 응답이 N개 미만이면 로컬 템플릿으로 보충([부분 구제]). 취소 외 throw 하지 않음.
+    /// </summary>
+    public async Task<BatchPlanResult> GenerateBatchPromptsAsync(string themeKeyword, int count = 5, CancellationToken ct = default)
+    {
+        var theme = (themeKeyword ?? "").Trim();
+        var n = Math.Clamp(count, MinBatchCount, MaxBatchCount);
+        if (theme.Length == 0) return new(Array.Empty<BatchPromptItem>(), true, "테마 키워드를 입력하세요.");
+        if (!HasKey()) return new(BuildLocalBatchPrompts(theme, n), true, BatchFallbackNotice);
+
+        var user = "Theme: " + theme + "\nCount: " + n.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var text = await CallAsync(BatchPlannerInstruction, user, null, true, 0.8, ct).ConfigureAwait(false);
+        var parsed = text is null ? null : ParseBatchPrompts(text, n);
+        if (parsed is null) return new(BuildLocalBatchPrompts(theme, n), true, BatchFallbackNotice);
+        if (parsed.Count >= n) return new(parsed, false, "✨ Gemini 시리즈 " + n.ToString(System.Globalization.CultureInfo.InvariantCulture) + "편 기획 완료");
+
+        var local = BuildLocalBatchPrompts(theme, n);
+        var merged = new BatchPromptItem[n];
+        for (var i = 0; i < n; i++) merged[i] = i < parsed.Count ? parsed[i] : local[i];
+        return new(merged, true, "Gemini " + parsed.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + "편 + 로컬 보충");
+    }
+
+    /// <summary>로컬 앵글 로테이션 템플릿 — 정확히 <paramref name="count"/>개(1~20), 모두 상이한 프롬프트.</summary>
+    public static IReadOnlyList<BatchPromptItem> BuildLocalBatchPrompts(string? theme, int count)
+    {
+        var t = (theme ?? "").Trim();
+        if (t.Length == 0) return Array.Empty<BatchPromptItem>();
+        var n = Math.Clamp(count, MinBatchCount, MaxBatchCount);
+        var list = new BatchPromptItem[n];
+        for (var i = 0; i < n; i++)
+        {
+            var a = BatchAngles[i % BatchAngles.Length];
+            var round = i / BatchAngles.Length;
+            var take = (round + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var title = round == 0 ? a.Title : a.Title + " " + take;
+            var variant = round == 0 ? "" : ", alternate take " + take + " with shifted color temperature";
+            list[i] = new BatchPromptItem(i + 1, title, t + ", " + a.Detail + variant + ", " + LocalCinematicTokens, a.Camera, LocalBatchTags);
+        }
+        return list;
+    }
+
+    /// <summary>벌크 기획 JSON 스키마 즉시 검증 — 배열 없음/프롬프트 누락 시 null. 최대 <paramref name="max"/>개, 중복 프롬프트 제거.</summary>
+    public static IReadOnlyList<BatchPromptItem>? ParseBatchPrompts(string json, int max)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(GeminiClient.StripFence(json));
+            var root = doc.RootElement;
+            JsonElement arr;
+            if (root.ValueKind == JsonValueKind.Array) arr = root;
+            else if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("items", out arr) || arr.ValueKind != JsonValueKind.Array) return null;
+
+            var list = new List<BatchPromptItem>(Math.Min(arr.GetArrayLength(), Math.Max(max, 1)));
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var e in arr.EnumerateArray())
+            {
+                if (list.Count >= max) break;
+                if (e.ValueKind != JsonValueKind.Object) return null;
+                var prompt = OneLine(Str(e, "prompt"));
+                if (prompt.Length == 0) return null;
+                if (!seen.Add(prompt)) continue;
+                var idx = list.Count + 1;
+                var title = OneLine(Str(e, "title"));
+                var cam = OneLine(Str(e, "camera"));
+                var tags = new List<string>(5);
+                if (e.TryGetProperty("tags", out var tg) && tg.ValueKind == JsonValueKind.Array)
+                    foreach (var x in tg.EnumerateArray())
+                        if (x.ValueKind == JsonValueKind.String && x.GetString() is { Length: > 0 } tv && tags.Count < 8) tags.Add(tv.Trim());
+                list.Add(new BatchPromptItem(idx,
+                    title.Length == 0 ? "시리즈 " + idx.ToString(System.Globalization.CultureInfo.InvariantCulture) : (title.Length > 30 ? title[..30] : title),
+                    prompt, cam.Length == 0 ? "Static" : cam, tags));
+            }
+            return list.Count == 0 ? null : list;
+        }
+        catch (JsonException) { return null; }
+
+        static string? Str(JsonElement e, string n) => e.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+        static string OneLine(string? s) => (s ?? "").Replace('\r', ' ').Replace('\n', ' ').Replace('\t', ' ').Trim();
+    }
+
+    /// <summary>대량생산 붙여넣기 포맷(<c>제목\t프롬프트</c> 한 줄씩) — BatchProductionService.ImportFromText 호환(탭 우선 분리).</summary>
+    public static string ToBatchPasteText(IReadOnlyList<BatchPromptItem> items)
+    {
+        var sb = new StringBuilder(items.Count * 160);
+        for (var i = 0; i < items.Count; i++)
+        {
+            if (i > 0) sb.Append('\n');
+            sb.Append(items[i].Title).Append('\t').Append(items[i].Prompt);
+        }
+        return sb.ToString();
     }
 
     /// <summary>SNS 발행 메타(헤드라인 제목 · 짧은 본문 · 해시태그 5~8개) 생성. 키 없음/실패/스키마 불일치 → 로컬 템플릿. 절대 throw 하지 않음.</summary>

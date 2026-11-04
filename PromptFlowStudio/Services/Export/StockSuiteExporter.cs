@@ -43,6 +43,10 @@ public sealed class StockSuiteExporter
     private readonly object _hashLock = new();
     private readonly Dictionary<string, bool> _hashCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Func<string?> _exePath;
+    private readonly Func<bool> _sharpen;
+
+    /// <summary>HTS 대화면 고선명 필터 — 1080p Lanczos 업스케일 + 언샵 마스크 샤프닝.</summary>
+    public const string SharpenFilter = "scale=1920:1080:flags=lanczos,unsharp=5:5:0.8:3:3:0.4";
 
     public StockSuiteExporter() : this(null) { }
 
@@ -51,9 +55,11 @@ public sealed class StockSuiteExporter
     /// <param name="resolveFfmpeg">ffmpeg 경로 조회(null = <see cref="FfmpegLocator"/>).</param>
     /// <param name="runner">ffmpeg 실행기(테스트 주입 · null = <see cref="Engines.ProcessRunner"/>).</param>
     /// <param name="executableProvider">StockSuite.exe 경로 공급자(🚀 원클릭 실행 · null = 미설정).</param>
-    public StockSuiteExporter(Func<string?>? targetDirProvider, Func<string?>? formatProvider = null, Func<string?>? resolveFfmpeg = null, FfmpegRunner? runner = null, Func<string?>? executableProvider = null)
+    /// <param name="sharpenProvider">고선명 샤프닝 기본값 공급자(null = OFF · 앱 DI 는 환경설정 기본 ON).</param>
+    public StockSuiteExporter(Func<string?>? targetDirProvider, Func<string?>? formatProvider = null, Func<string?>? resolveFfmpeg = null, FfmpegRunner? runner = null, Func<string?>? executableProvider = null, Func<bool>? sharpenProvider = null)
     {
         _exePath = executableProvider ?? (static () => null);
+        _sharpen = sharpenProvider ?? (static () => false);
         _targetDir = targetDirProvider ?? (static () => null);
         _format = formatProvider ?? (static () => null);
         _resolveFfmpeg = resolveFfmpeg ?? (static () => FfmpegLocator.Locate().Path);
@@ -86,8 +92,18 @@ public sealed class StockSuiteExporter
 
     public static string FormatLabel(StockSuiteExportFormat f) => f == StockSuiteExportFormat.WebMVp9 ? "WebM VP9" : "MP4";
 
-    /// <summary>원본 → <c>{targetDir}\{assetName}</c> 원자적 덮어쓰기. 대상 폴더는 상위가 존재할 때만 생성. <paramref name="format"/> null = 환경설정 기본.</summary>
-    public async Task<StockSuiteExportResult> ExportAsync(string? sourcePath, string? targetDir = null, string? assetName = null, CancellationToken ct = default, StockSuiteExportFormat? format = null)
+    /// <summary>환경설정 고선명 샤프닝 기본값(공급자 예외 → OFF).</summary>
+    public bool DefaultSharpen
+    {
+        get
+        {
+            try { return _sharpen(); }
+            catch (Exception ex) { Program.Log("StockSuite.Sharpen", ex); return false; }
+        }
+    }
+
+    /// <summary>원본 → <c>{targetDir}\{assetName}</c> 원자적 덮어쓰기. 대상 폴더는 상위가 존재할 때만 생성. <paramref name="format"/>·<paramref name="sharpen"/> null = 환경설정 기본.</summary>
+    public async Task<StockSuiteExportResult> ExportAsync(string? sourcePath, string? targetDir = null, string? assetName = null, CancellationToken ct = default, StockSuiteExportFormat? format = null, bool? sharpen = null)
     {
         if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
             return new(false, null, false, "원본 영상을 찾을 수 없습니다.");
@@ -133,7 +149,19 @@ public sealed class StockSuiteExporter
 
             // 🔇 HTS 제로-오디오: 비디오 스트림 무손실 copy + -an(오디오 드롭). ffmpeg 부재/실패 → 원본 복사 폴백.
             temp = Path.Combine(fullDir, Path.GetFileNameWithoutExtension(name) + TempExt + Path.GetExtension(name));
-            var stripped = await TryFfmpegAsync(BuildZeroAudioArgs(sourcePath, temp), temp, ct).ConfigureAwait(false);
+            // 🔎 HTS 대화면 고선명: 1080p Lanczos + Unsharp 재인코딩(무음). 실패 → 제로-오디오 스트림 복사 → 원본 복사 순 폴백.
+            if (!webm && (sharpen ?? DefaultSharpen))
+            {
+                var sharpened = await TryFfmpegAsync(BuildSharpenArgs(sourcePath, temp), temp, ct).ConfigureAwait(false);
+                if (sharpened is null)
+                {
+                    File.Move(temp, target, overwrite: true);
+                    WriteSourceMarker(target, sourcePath);
+                    return new(true, target, false, "💼 StockSuite 내보내기 완료(🔎 1080p 고선명 · 🔇 무음) → " + target);
+                }
+                TryDelete(temp);
+            }
+            var stripped =await TryFfmpegAsync(BuildZeroAudioArgs(sourcePath, temp), temp, ct).ConfigureAwait(false);
             if (stripped is null)
             {
                 File.Move(temp, target, overwrite: true);
@@ -210,6 +238,15 @@ public sealed class StockSuiteExporter
         => outputPath.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)
             ? ["-y", "-hide_banner", "-loglevel", "error", "-i", inputPath, "-map", "0:v:0", "-c:v", "copy", "-an", "-sn", "-dn", "-movflags", "+faststart", outputPath]
             : ["-y", "-hide_banner", "-loglevel", "error", "-i", inputPath, "-map", "0:v:0", "-c:v", "copy", "-an", "-sn", "-dn", outputPath];
+
+    /// <summary>
+    /// HTS 고선명 인자 — <see cref="SharpenFilter"/>(1080p Lanczos + Unsharp) 적용 후 H.264 재인코딩, 오디오/자막/데이터 드롭(<c>-an -sn -dn</c>).
+    /// MP4 는 <c>+faststart</c>.
+    /// </summary>
+    public static string[] BuildSharpenArgs(string inputPath, string outputPath)
+        => outputPath.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)
+            ? ["-y", "-hide_banner", "-loglevel", "error", "-i", inputPath, "-map", "0:v:0", "-vf", SharpenFilter, "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-an", "-sn", "-dn", "-movflags", "+faststart", outputPath]
+            : ["-y", "-hide_banner", "-loglevel", "error", "-i", inputPath, "-map", "0:v:0", "-vf", SharpenFilter, "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-an", "-sn", "-dn", outputPath];
 
     /// <summary>
     /// 🟢 StockSuite 적용 중 판정 — 설정 폴더의 <c>bg_ambient.mp4/.webm</c> 출처 마커가 원본(경로·크기·수정시각)과 일치하거나,
