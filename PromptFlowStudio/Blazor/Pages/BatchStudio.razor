@@ -126,8 +126,8 @@
                 @if (_addedNote is not null) { <span class="bt-note">@_addedNote</span> }
             </div>
 
-            @* v5.6.5: 생성 전 예상 첫 프레임 시뮬레이터 — 붙여넣은 대본 기반 정체성 프리뷰 *@
-            <FirstFramePreviewDeck Prompt="@_paste" MotionStyle="대량 양산" />
+            @* v5.6.5: 생성 전 예상 첫 프레임 — v16.12.0: 첫 행 프롬프트 기반 스틸 썸네일/레이아웃 검토 뷰(렌더 큐 비결선) *@
+            <FirstFramePreviewDeck Heading="🗂️ 첫 행 스틸 썸네일 · 레이아웃 검토" Prompt="@BatchFirstRowPrompt" MotionStyle="대량 양산" />
 
             <div class="bt-divider"></div>
 
@@ -452,6 +452,23 @@
     private string? _watermarkThumb;
 
     private string _paste = "";
+
+    /// <summary>v16.12.0: 붙여넣기 목록의 첫 유효 행 → 첫 컷 프롬프트(제목,대본 · 탭/콤마 구분 시 대본 우선).</summary>
+    private string BatchFirstRowPrompt
+    {
+        get
+        {
+            foreach (var raw in (_paste ?? "").Split('\n'))
+            {
+                var line = raw.Trim();
+                if (line.Length == 0) continue;
+                int sep = line.IndexOfAny(new[] { '	', ',' });
+                if (sep > 0 && sep < line.Length - 1) { var body = line[(sep + 1)..].Trim(); if (body.Length > 0) return body; }
+                return line;
+            }
+            return "";
+        }
+    }
     private string? _addedNote;
     private string? _toast;
     private System.Threading.Timer? _toastTimer;

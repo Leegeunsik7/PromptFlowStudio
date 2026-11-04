@@ -141,7 +141,10 @@ public sealed class AppSettingsManager
     public UserSettings Bundled => _bundled;
     public string ComfyUiUrl => _s.ComfyUiUrl;
     public string RenderMode => _s.RenderMode;
-    public bool IsMockMode => string.Equals(_s.RenderMode, RenderEngineKind.Mock, StringComparison.Ordinal);
+    public bool IsMockMode => string.Equals(_s.RenderMode, RenderEngineKind.Mock, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>렌더 모드만 즉시 영구 저장(저장된 ComfyUI 주소 유지) — 환경설정 칩 클릭 시 호출.</summary>
+    public bool SaveRenderMode(string? renderMode) => Save(_s.ComfyUiUrl, renderMode);
 
     /// <summary>실사용 ComfyUI 주소 — <c>PFS_COMFY_URL</c> → 저장값.</summary>
     public string EffectiveComfyUiUrl
@@ -197,12 +200,18 @@ public sealed class AppSettingsManager
     public static string NormalizeUrl(string? url)
         => string.IsNullOrWhiteSpace(url) ? DefaultComfyUiUrl : url.Trim().TrimEnd('/');
 
-    /// <summary>렌더 모드 정규화 — ComfyUI / Cloud / Mock(대소문자 무시), 그 외 ComfyUI.</summary>
+    /// <summary>렌더 모드 정규화 — 대소문자 무시 + 별칭(cloud/dashscope/wan/wan21 → Cloud · mock/simulation → Mock), 그 외 ComfyUI.</summary>
     public static string NormalizeMode(string? mode)
     {
         var m = mode?.Trim();
-        if (string.Equals(m, RenderEngineKind.Cloud, StringComparison.OrdinalIgnoreCase)) return RenderEngineKind.Cloud;
-        if (string.Equals(m, RenderEngineKind.Mock, StringComparison.OrdinalIgnoreCase)) return RenderEngineKind.Mock;
+        if (string.IsNullOrEmpty(m)) return RenderEngineKind.ComfyUi;
+        if (string.Equals(m, RenderEngineKind.Cloud, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(m, "dashscope", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(m, "wan", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(m, "wan21", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(m, "wan2.1", StringComparison.OrdinalIgnoreCase)) return RenderEngineKind.Cloud;
+        if (string.Equals(m, RenderEngineKind.Mock, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(m, "simulation", StringComparison.OrdinalIgnoreCase)) return RenderEngineKind.Mock;
         return RenderEngineKind.ComfyUi;
     }
 

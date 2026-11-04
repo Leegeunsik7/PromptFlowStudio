@@ -1705,18 +1705,24 @@ public class TitanReleaseTests
         Assert.Equal("Static", bare.CameraLabel);
         Assert.Equal("9:16", bare.AspectLabel);
 
-        // ④ UI 결선: 공용 덱 → 서비스 · 두 페이지가 해상도·1-Click 생성 콜백 전달
+        // ④ UI 결선: 공용 덱 → 서비스 · v16.12.0 정적 스틸 뷰어 — 렌더 큐/클릭 생성/▶ 재생 결선 차단
         var root = RepoRoot();
         var deck = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Components", "Common", "FirstFramePreviewDeck.razor"));
         Assert.Contains("FirstFrameSimulationService", deck, StringComparison.Ordinal);
         Assert.Contains("ffs-skel", deck, StringComparison.Ordinal);
+        Assert.Contains("ffs-still", deck, StringComparison.Ordinal);
         Assert.DoesNotContain("@inject", deck, StringComparison.Ordinal);                  // 모바일 서브컴포넌트 안전
-        foreach (var page in new[] { "Workspace.razor", "Storyboard.razor" })
+        Assert.DoesNotContain("OnStartGenerate", deck, StringComparison.Ordinal);
+        Assert.DoesNotContain("<video", deck, StringComparison.Ordinal);
+        Assert.DoesNotContain("@onclick=\"ClickStart\"", deck, StringComparison.Ordinal);
+        foreach (var page in new[] { "Workspace.razor", "Storyboard.razor", "BatchStudio.razor" })
         {
             var src = File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Pages", page));
-            Assert.Contains("OnStartGenerate=", src, StringComparison.Ordinal);
-            Assert.Contains("Size=", src, StringComparison.Ordinal);
+            Assert.Contains("<FirstFramePreviewDeck", src, StringComparison.Ordinal);
+            Assert.DoesNotContain("OnStartGenerate=", src, StringComparison.Ordinal);
         }
+        foreach (var page in new[] { "Workspace.razor", "Storyboard.razor" })
+            Assert.Contains("Size=", File.ReadAllText(Path.Combine(root, "PromptFlowStudio", "Blazor", "Pages", page)), StringComparison.Ordinal);
     }
 
     [Fact]

@@ -269,4 +269,45 @@ public class SettingsManagerTests
         }
         finally { try { Directory.Delete(Path.GetDirectoryName(path)!, recursive: true); } catch (IOException) { } }
     }
+
+    [Theory]
+    [Trait("Category", "FastUnit")]
+    [InlineData("cloud", RenderEngineKind.Cloud)]
+    [InlineData(" CLOUD ", RenderEngineKind.Cloud)]
+    [InlineData("DashScope", RenderEngineKind.Cloud)]
+    [InlineData("wan", RenderEngineKind.Cloud)]
+    [InlineData("wan21", RenderEngineKind.Cloud)]
+    [InlineData("comfyui", RenderEngineKind.ComfyUi)]
+    [InlineData("local", RenderEngineKind.ComfyUi)]
+    [InlineData("MOCK", RenderEngineKind.Mock)]
+    [InlineData(null, RenderEngineKind.ComfyUi)]
+    public void NormalizeMode_IsCaseInsensitive_WithAliases(string? raw, string expected)
+        => Assert.Equal(expected, AppSettingsManager.NormalizeMode(raw));
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public void ApplyRenderMode_PersistsImmediately_AndKeepsUnsavedUrlDraft()
+    {
+        var path = TempFile();
+        try
+        {
+            var m = new AppSettingsManager(Bundled(mode: "Mock"), path);
+            var vm = new SettingsViewModel(m, wan: null, gemini: null, engines: null, () => new FfmpegLocation(null, "미설치"));
+            vm.Load();
+            var changed = 0;
+            m.OnSettingsChanged += _ => changed++;
+            vm.ComfyUiUrl = "http://draft:1111";   // 미저장 폼 초안 — 칩 클릭으로 커밋되면 안 됨
+
+            Assert.True(vm.ApplyRenderMode("cloud"));
+            Assert.Equal(1, changed);
+            Assert.Equal(RenderEngineKind.Cloud, vm.RenderMode);
+            Assert.Equal(RenderEngineKind.Cloud, m.RenderMode);
+            Assert.False(m.IsMockMode);
+            Assert.Equal("http://10.0.0.5:8188", m.ComfyUiUrl);
+
+            var reloaded = new AppSettingsManager(Bundled(mode: "Mock"), path);   // 재시작 후에도 유지
+            Assert.Equal(RenderEngineKind.Cloud, reloaded.RenderMode);
+        }
+        finally { try { Directory.Delete(Path.GetDirectoryName(path)!, recursive: true); } catch (IOException) { } }
+    }
 }

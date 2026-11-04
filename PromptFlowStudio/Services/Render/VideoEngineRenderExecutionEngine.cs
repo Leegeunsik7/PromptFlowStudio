@@ -266,6 +266,7 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
         string? mode;
         try { mode = RenderMode?.Invoke(); } catch (Exception ex) { Program.Log("RenderExec.Mode", ex); mode = null; }
         if (string.IsNullOrWhiteSpace(mode)) return active;
+        mode = PromptFlowStudio.Services.Configuration.AppSettingsManager.NormalizeMode(mode);   // 대소문자·별칭(dashscope/wan/local) 흡수
         var all = _selector.All;
         if (string.Equals(mode, RenderEngineKind.ComfyUi, StringComparison.OrdinalIgnoreCase))
         {

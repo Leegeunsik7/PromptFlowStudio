@@ -350,13 +350,14 @@
             @* v5.7.1: Long→Shorts 스마트 재구성(파일/URL → 9:16 컷 자동 배치) *@
             <ShortsExtractorView Project="_project" OnChanged="StateHasChanged" FfmpegPath="@Prefs.FfmpegBinaryPath" />
 
-            @* v5.6.5·v5.6.6: 생성 전 예상 첫 프레임 + 캐릭터/스타일 앵커 대조(전 컷 i2v 정체성) *@
-            <FirstFramePreviewDeck Prompt='@(_project.Scenes.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.Prompt))?.Prompt ?? _project.Title ?? "")'
+            @* v5.6.5·v5.6.6: 생성 전 예상 첫 프레임 + 캐릭터/스타일 앵커 대조(전 컷 i2v 정체성)
+               v16.12.0: 컷 앵커 스틸 뷰 — 렌더 큐 비결선(렌더는 [일괄 렌더]/컷별 [렌더] 버튼만) *@
+            <FirstFramePreviewDeck Heading="🎞️ 컷 앵커 스틸 뷰 · 첫 컷 Start Frame" Prompt='@(_project.Scenes.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.Prompt))?.Prompt ?? _project.Title ?? "")'
                                    AnchorImageUrl="@(Anchor.HasAnchor(_project) ? (_anchorThumb ?? Anchor.ThumbUrl(_project)) : null)"
                                    ActualOutputUrl="@StoryboardActualUrl"
                                    IdentityScore="@IdentityScore"
                                    OnRegisterGallery="RegisterActualToGallery"
-                                   Size="@_project.ExportResolution" CanStart="@CanStart" OnStartGenerate="StartAll" />
+                                   Size="@_project.ExportResolution" />
             @if (IdentityScore is double lowsc && lowsc < 80)
             {
                 <div class="sb-note">⚠ 정체성 유지율 @lowsc.ToString("F1")% (&lt;80%) — 가드레일을 자동 <b>Strict</b> 로 격상했습니다(자율 보정).</div>

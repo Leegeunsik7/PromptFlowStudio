@@ -192,7 +192,7 @@
             @foreach (var m in Modes)
             {
                 var mode = m;
-                <button class="es-mode @(Vm.RenderMode == mode.Key ? "on" : null)" @onclick="() => Vm.RenderMode = mode.Key">@mode.Label</button>
+                <button class="es-mode @(Vm.RenderMode == mode.Key ? "on" : null)" @onclick="() => ApplyMode(mode.Key)">@mode.Label</button>
             }
         </div>
         <div class="es-hint">Mock 은 실물 엔진을 호출하지 않고 렌더 큐를 시뮬레이션으로 처리합니다.</div>
@@ -257,6 +257,13 @@
     }
 
     private void Save() => Vm.Save(Session.IsAdmin);
+
+    /// <summary>렌더 모드 칩 — 클릭 즉시 디스크 영구 저장 + 활성 엔진 동기화 + 선택 상태 반영.</summary>
+    private void ApplyMode(string mode)
+    {
+        Vm.ApplyRenderMode(mode);
+        StateHasChanged();
+    }
 
     private async Task TestComfy()
     {

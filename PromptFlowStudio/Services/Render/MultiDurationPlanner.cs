@@ -121,6 +121,7 @@ public static class MultiDurationPlanner
                 DurationMode = mode,
                 StitchGroupId = group,
                 Metadata = meta,
+                EngineKind = template.EngineKind,   // 적재 시점 렌더 모드 표기(디스패치 시 실엔진으로 재확정)
             };
         }
         return jobs;

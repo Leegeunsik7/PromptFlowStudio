@@ -199,19 +199,38 @@ public sealed class SettingsViewModel
         }
 
         var mode = _settings.RenderMode;
-        if (_engines is not null && !string.Equals(mode, RenderEngineKind.Mock, StringComparison.Ordinal))
-        {
-            var target = string.Equals(mode, RenderEngineKind.ComfyUi, StringComparison.Ordinal) ? RenderEngineKind.ComfyUi : CloudEngineKey;
-            if (!string.Equals(_engines.VideoEngineKey, target, StringComparison.OrdinalIgnoreCase))
-                try { _engines.SetVideoEngine(target); }
-                catch (Exception ex) { Program.Log("SettingsViewModel.SetVideoEngine", ex); ok = false; }
-        }
+        ok &= SyncActiveEngine(mode);
 
         ComfyUiUrl = _settings.ComfyUiUrl;
         RenderMode = mode;
         StatusOk = ok;
         StatusMessage = ok ? "저장했습니다 — 재시작 후에도 유지됩니다." : "일부 항목 저장에 실패했습니다(로그 확인).";
         return ok;
+    }
+
+    /// <summary>
+    /// 렌더 모드 칩 즉시 적용 — 정규화 → user_settings.json 영구 저장(폼의 미저장 URL·키는 건드리지 않음) → 활성 비디오 엔진 동기화.
+    /// 저장 실패 시 false(디스크 저장본으로 폼 복귀).
+    /// </summary>
+    public bool ApplyRenderMode(string? mode)
+    {
+        var ok = _settings.SaveRenderMode(AppSettingsManager.NormalizeMode(mode));
+        var saved = _settings.RenderMode;
+        if (ok) ok = SyncActiveEngine(saved);
+        RenderMode = saved;
+        StatusOk = ok;
+        StatusMessage = ok ? "렌더 모드 '" + saved + "' 저장 — 작업실·렌더 큐에 즉시 반영됩니다." : "렌더 모드 저장에 실패했습니다(로그 확인).";
+        return ok;
+    }
+
+    /// <summary>Mock 이 아니면 선택기 활성 엔진을 모드에 맞춤(ComfyUI ↔ Cloud). 예외 격리 · 실패 false.</summary>
+    private bool SyncActiveEngine(string mode)
+    {
+        if (_engines is null || string.Equals(mode, RenderEngineKind.Mock, StringComparison.OrdinalIgnoreCase)) return true;
+        var target = string.Equals(mode, RenderEngineKind.ComfyUi, StringComparison.OrdinalIgnoreCase) ? RenderEngineKind.ComfyUi : CloudEngineKey;
+        if (string.Equals(_engines.VideoEngineKey, target, StringComparison.OrdinalIgnoreCase)) return true;
+        try { _engines.SetVideoEngine(target); return true; }
+        catch (Exception ex) { Program.Log("SettingsViewModel.SetVideoEngine", ex); return false; }
     }
 
     private static SnsCredentials Trimmed(SnsCredentials c) => new(c.YouTubeClientId.Trim(), c.YouTubeClientSecret.Trim(), c.YouTubeRefreshToken.Trim(),

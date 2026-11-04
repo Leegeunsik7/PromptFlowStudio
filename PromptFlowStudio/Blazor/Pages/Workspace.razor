@@ -24,6 +24,7 @@
 @inject PromptFlowStudio.Services.Prompt.PromptInspirationService Inspiration
 @inject PromptFlowStudio.Services.Render.IRenderQueueService RenderQueue
 @inject PromptFlowStudio.ViewModels.PublishViewModel PubVm
+@inject PromptFlowStudio.Services.Configuration.AppSettingsManager AppSettings
 
 @* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
    상태는 WanJobState(싱글턴)에 있고, 이 컴포넌트는 OnChange 를 구독해 InvokeAsync(StateHasChanged)로만 갱신한다.
@@ -203,8 +204,9 @@
                     }
                 </div>
             </div>
-            @* v5.6.5·v5.6.6: 생성 전 예상 첫 프레임 + 참조(i2v) 이미지 앵커 대조(정체성 드리프트 사전검증) *@
-            <FirstFramePreviewDeck Prompt="@_prompt" AnchorImageUrl="@_imagePreview" AnchorAspect="@_vm.ReferenceAspectCss" Size="@_size" CanStart="@CanStart" OnStartGenerate="Start" />
+            @* v5.6.5·v5.6.6: 생성 전 예상 첫 프레임 + 참조(i2v) 이미지 앵커 대조(정체성 드리프트 사전검증)
+               v16.12.0: 정적 스틸 프리뷰 전용 — 렌더 큐 비결선(생성은 [영상 생성 시작] 버튼만 · 재생은 라이브 비디오 캔버스 전담) *@
+            <FirstFramePreviewDeck Prompt="@_prompt" AnchorImageUrl="@_imagePreview" AnchorAspect="@_vm.ReferenceAspectCss" Size="@_size" />
             <div class="ws-actions">
                 @if (State.IsBusy)
                 {
@@ -214,6 +216,7 @@
                 {
                     <button class="ws-btn" disabled="@(!CanStart)" @onclick="Start">✨ 생성 시작</button>
                 }
+                <span class="ws-eng ws-eng-@(_renderMode.ToLowerInvariant())" title="[환경설정] 기본 렌더 모드 — 변경 즉시 반영">● 렌더 엔진: @(_renderMode)</span>
             </div>
         </div>
 
@@ -695,7 +698,11 @@
     .ws-thumb-x:hover:not(:disabled) { background: #ef4444; } .ws-thumb-x:disabled { opacity: .5; cursor: not-allowed; }
     .ws-imgerr { font-size: 11.5px; color: #ef4444; }
 
-    .ws-actions { display: flex; gap: 10px; }
+    .ws-actions { display: flex; gap: 10px; align-items: center; }
+    .ws-eng { margin-left: auto; font-size: 11.5px; font-weight: 800; padding: 4px 10px; border-radius: 999px; border: 1px solid rgba(148,163,184,.35); color: #cbd5e1; }
+    .ws-eng-cloud { color: #38bdf8; border-color: rgba(56,189,248,.45); background: rgba(56,189,248,.1); }
+    .ws-eng-comfyui { color: #a78bfa; border-color: rgba(167,139,250,.45); background: rgba(167,139,250,.1); }
+    .ws-eng-mock { color: #fbbf24; border-color: rgba(251,191,36,.45); background: rgba(251,191,36,.1); }
     .ws-btn { font-size: 13.5px; font-weight: 800; padding: 11px 18px; border-radius: 12px; border: none; color: #fff; cursor: pointer;
         background: linear-gradient(135deg, var(--flow-violet), var(--accent)); box-shadow: 0 8px 22px color-mix(in srgb, var(--flow-violet) 28%, transparent); text-decoration: none; }
     .ws-btn:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
@@ -1397,6 +1404,7 @@
     /// <summary>10s/15s/Ambient — 렌더 큐 적재(멀티 샷 체이닝·합본 / 앰비언트 루프 후처리는 큐 워커·엔진이 수행).</summary>
     private void EnqueueDuration(string prompt)
     {
+        RefreshRenderMode();   // 렌더 시작 직전 최신 [환경설정] 모드 재조회
         var project = "ws_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
         var meta = _durationMode == PromptFlowStudio.Services.Render.VideoDurationMode.Sec15_AmbientSlow && _ambientPingPong
             ? new Dictionary<string, string>(StringComparer.Ordinal) { [PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.MetaAmbientPingPong] = "true" }
@@ -1411,6 +1419,7 @@
             OutputPath = Path.Combine(Media.MediaRoot, project + ".mp4"),
             DurationMode = _durationMode,
             Metadata = meta,
+            EngineKind = _renderMode,   // 적재 시점 모드 표기(실제 엔진은 디스패치 시점 설정으로 재확정)
         };
         var jobs = RenderQueue.EnqueueJob(template, _subPrompts, project);
         TrackMiniQueue(jobs);
@@ -1421,6 +1430,7 @@
     private void Start()
     {
         if (!CanStart) return;
+        RefreshRenderMode();
         if (_durationMode != PromptFlowStudio.Services.Render.VideoDurationMode.Sec5_Single) { EnqueueDuration(_prompt); return; }
         _canvasQueueUrl = null;   // 단일 생성 — 캔버스를 라이브 진행 표시로 복귀
         // v16.20.0 미세 표정 퍼핏 — 표정 구문·정체성 유지·얼굴 보호 네거티브 비영속 주입(Neutral 은 원문 그대로).
@@ -1504,8 +1514,23 @@
     }
 
     // ── OnChange 구독: 상태 변화를 UI 로. 폴링 스레드에서 오므로 InvokeAsync 로 마샬링 ──
+    // ── 렌더 엔진 배지 — [환경설정] 모드 실시간 동기화(OnSettingsChanged 구독/해제 쌍) ──
+    private string _renderMode = PromptFlowStudio.Services.Render.RenderEngineKind.ComfyUi;
+
+    private void RefreshRenderMode()
+        => _renderMode = PromptFlowStudio.Services.Configuration.AppSettingsManager.NormalizeMode(AppSettings.RenderMode);
+
+    private void OnAppSettingsChanged(PromptFlowStudio.Services.Configuration.UserSettings s)
+    {
+        var next = PromptFlowStudio.Services.Configuration.AppSettingsManager.NormalizeMode(s.RenderMode);
+        if (string.Equals(next, _renderMode, StringComparison.Ordinal)) return;
+        _ = InvokeAsync(() => { _renderMode = next; StateHasChanged(); });
+    }
+
     protected override void OnInitialized()
     {
+        RefreshRenderMode();
+        AppSettings.OnSettingsChanged += OnAppSettingsChanged;
         State.OnChange += OnStateChanged;
         RenderQueue.OnChange += OnRenderQueueChanged;
         if (RenderQueue is PromptFlowStudio.Services.Render.RenderQueueService rqs) rqs.OnDurationStitched += OnDurationStitched;
@@ -1582,6 +1607,7 @@
     private string? _camToast;
     public void Dispose()
     {
+        AppSettings.OnSettingsChanged -= OnAppSettingsChanged;
         State.OnChange -= OnStateChanged;
         RenderQueue.OnChange -= OnRenderQueueChanged;
         if (RenderQueue is PromptFlowStudio.Services.Render.RenderQueueService rqs) rqs.OnDurationStitched -= OnDurationStitched;
