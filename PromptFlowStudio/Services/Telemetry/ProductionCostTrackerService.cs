@@ -180,6 +180,22 @@ public sealed class ProductionCostTrackerService : IDisposable
 
     public static double ElevenLabsUsd(CostRateCard r, long chars) => Math.Max(0, chars) / 1000.0 * r.ElevenLabsPer1kChars;
 
+    /// <summary>듀레이션 모드 과금 가중치 — 5s 1x · 10s 2x · 15s 3x · 15s-Ambient 1x(+로컬 후처리 무과금).</summary>
+    public static int DurationCostMultiplier(PromptFlowStudio.Services.Render.VideoDurationMode mode)
+        => PromptFlowStudio.Services.Render.MultiDurationPlanner.CostMultiplier(mode);
+
+    /// <summary>
+    /// 렌더 작업 예상 USD — 5초 추론 1회분 단가 × 듀레이션 가중치. 멀티 샷 하위 컷(<see cref="PromptFlowStudio.Services.Batch.BatchRenderJob.StitchGroupId"/> 보유)은
+    /// 컷 1회분만(그룹 합계 = 가중치). 예산 예약(<see cref="ReserveEstimate"/>)용.
+    /// </summary>
+    public double EstimateCost(PromptFlowStudio.Services.Batch.BatchRenderJob job, string? provider = null, string? model = null)
+    {
+        ArgumentNullException.ThrowIfNull(job);
+        var unit = WanUsd(Rates, ServiceOfProvider(provider), model, DefaultClipSeconds);
+        var multiplier = job.StitchGroupId is { Length: > 0 } ? 1 : DurationCostMultiplier(job.DurationMode);
+        return unit * multiplier;
+    }
+
     /// <summary>WanTokenVault 프로바이더 키 → 과금 서비스.</summary>
     public static CostService ServiceOfProvider(string? provider) => provider switch
     {

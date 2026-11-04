@@ -43,8 +43,18 @@ public sealed class BatchRenderJob
     public string? TransitionFx { get; init; }
     /// <summary>피사체 일관성 앵커(1번 컷 피사체 키워드) — 후속 컷 공통.</summary>
     public string? SubjectAnchor { get; init; }
-    /// <summary>피사체 일관성 참조 이미지 경로(1번 컷/프로젝트 앵커) — 후속 컷 공통.</summary>
-    public string? ReferenceImagePath { get; init; }
+    /// <summary>피사체 일관성 참조 이미지 경로(1번 컷/프로젝트 앵커) — 후속 컷 공통. 멀티 샷 체이닝은 이전 컷 마지막 프레임을 워커가 주입.</summary>
+    public string? ReferenceImagePath { get; set; }
+
+    // ── 멀티 듀레이션(5s/10s/15s/15s-Ambient) 메타 ──
+    /// <summary>듀레이션 모드 — 멀티 샷(10s/15s)은 큐가 5초 하위 컷으로 분할·체이닝·합본, Ambient 는 단일 5초 + 슬로우 루프 후처리.</summary>
+    public VideoDurationMode DurationMode { get; init; } = VideoDurationMode.Sec5_Single;
+    /// <summary>모드 최종 산출 길이(초) — 5 · 10 · 15 · 15.</summary>
+    public int TargetDurationSeconds => MultiDurationPlanner.TargetSeconds(DurationMode);
+    /// <summary>15초 앰비언트 슬로우 루프 후처리 대상.</summary>
+    public bool IsAmbientLoop => DurationMode == VideoDurationMode.Sec15_AmbientSlow;
+    /// <summary>멀티 샷 체이닝 그룹 키(<see cref="FFmpegVideoStitchService.MetaGroup"/> 와 동일 값) — 단일 작업은 null.</summary>
+    public string? StitchGroupId { get; init; }
     /// <summary>후처리 메타(커머셜 로고 세이프존·CTA·디스클레이머 · 라이브 루프 등) — 갤러리 <c>.meta.json</c> 에 동반 기록. 후처리 완료 시 엔진이 갱신.</summary>
     public IReadOnlyDictionary<string, string>? Metadata { get; set; }
 }

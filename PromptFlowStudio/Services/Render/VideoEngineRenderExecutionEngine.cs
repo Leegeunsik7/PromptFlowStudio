@@ -75,6 +75,7 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine
             output = job.OutputPath;
         }
         output = await ApplyCommercialOverlayAsync(job, output, ct).ConfigureAwait(false);
+        output = await ApplyAmbientLoopAsync(job, output, ct).ConfigureAwait(false);
         return new RenderExecutionResult(true, kind, output, r.Message);
     }
 
@@ -103,6 +104,33 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine
         meta[CommercialBrandService.MetaOverlayApplied] = state;
         job.Metadata = meta;
         return output;
+    }
+
+    /// <summary>앰비언트 슬로우 루프 후처리기(null = 생략) — 기본 ctor 는 ffmpeg 실물.</summary>
+    public AmbientLoopService? Ambient { get; init; } = new();
+
+    /// <summary>앰비언트 메타 — 핑퐁 루프 사용("true").</summary>
+    public const string MetaAmbientPingPong = "ambient.pingpong";
+    /// <summary>앰비언트 메타 — 후처리 결과(applied · virtual · failed).</summary>
+    public const string MetaAmbientApplied = "ambient.applied";
+
+    /// <summary>
+    /// <see cref="VideoDurationMode.Sec15_AmbientSlow"/> 후처리 — 로컬 5초 산출물을 <c>{project}_ambient15s.mp4</c> 무음 15초 루프로 변환해 최종 산출물로 확정.
+    /// ffmpeg 부재/실패는 원본 5초 유지(Graceful). 결과는 메타 <see cref="MetaAmbientApplied"/>.
+    /// </summary>
+    internal async Task<string> ApplyAmbientLoopAsync(BatchRenderJob job, string output, CancellationToken ct)
+    {
+        var ambient = Ambient;
+        if (ambient is null || !job.IsAmbientLoop || !Path.IsPathRooted(output) || !File.Exists(output)) return output;
+        var project = MultiDurationPlanner.MetaOf(job, MultiDurationPlanner.MetaProject);
+        var target = MultiDurationPlanner.BuildOutputPath(Path.GetDirectoryName(output) ?? "", project, VideoDurationMode.Sec15_AmbientSlow);
+        var pingPong = string.Equals(MultiDurationPlanner.MetaOf(job, MetaAmbientPingPong), "true", StringComparison.OrdinalIgnoreCase);
+        var res = await ambient.RenderAsync(output, target, pingPong, ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        var state = res.Ok ? "applied" : res.IsVirtual ? "virtual" : "failed";
+        if (!res.Ok && !res.IsVirtual) Program.Log("RenderExec.Ambient", new InvalidOperationException(res.Message));
+        job.Metadata = MultiDurationPlanner.WithMeta(job.Metadata, MetaAmbientApplied, state);
+        return res.Ok && res.OutputPath is not null ? res.OutputPath : output;
     }
 
     /// <summary>취소 콜백 — 중단 신호 fire-and-forget(예외 격리 · 콜백 스레드 비차단).</summary>

@@ -212,7 +212,8 @@
                 <span class="gl-modal-t" title="@mv.Path">@mv.Name</span>
                 <button class="gl-op" @onclick="() => _modal = null">✕</button>
             </div>
-            <video class="gl-modal-vid" src="@mv.PlaybackUrl" controls autoplay loop></video>
+            <video class="gl-modal-vid" src="@mv.PlaybackUrl" controls autoplay loop="@_loopPlayback"></video>
+            <label class="gl-loop-toggle" title="배경(앰비언트) 비디오 검토용 무한 반복"><input type="checkbox" @bind="_loopPlayback" /> 🔁 무한 반복 재생</label>
             <div class="gl-modal-f">
                 <button class="gl-btn ghost" @onclick="() => Library.Reveal(mv.Path)">💾 탐색기에서 보기</button>
                 <div class="gl-up">
@@ -315,6 +316,7 @@
     .gl-modal-h { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--line); }
     .gl-modal-t { font-size: 13px; font-weight: 700; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .gl-modal-vid { width: 100%; max-height: 66vh; background: #000; display: block; }
+    .gl-loop-toggle { display: inline-flex; align-items: center; gap: 6px; margin: 6px 0 0; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
     .gl-modal-f { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; }
     .gl-modal-info { font: 600 11px var(--mono); color: var(--text-muted); }
 
@@ -368,6 +370,8 @@
 </style>
 
 @code {
+    /// <summary>모달 플레이어 무한 반복(기본 on — 배경 비디오 검토용).</summary>
+    private bool _loopPlayback = true;
     private IReadOnlyList<MediaItem> _items = Array.Empty<MediaItem>();
     private string _filter = "";
     private long _totalBytes, _freeBytes;

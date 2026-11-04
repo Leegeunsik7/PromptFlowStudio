@@ -45,6 +45,8 @@ public sealed class RenderQueueService : IRenderQueueService
     private bool _diskPaused;
     private bool _workerRunning;
     private bool _disposed;
+    private FFmpegVideoStitchService? _stitcher;
+    private readonly HashSet<string> _stitchedGroups = new(StringComparer.Ordinal);
 
     public RenderQueueService() : this(TimeSpan.FromMilliseconds(120), autoStart: true) { }
 
@@ -55,7 +57,14 @@ public sealed class RenderQueueService : IRenderQueueService
         : this(TimeSpan.FromMilliseconds(120), autoStart: true, engine, telemetry is null ? null : () => telemetry.Latest?.VramUsedRatio, ProbeFreeBytes)
     {
         _telemetry = telemetry;
+        _stitcher = new FFmpegVideoStitchService();
     }
+
+    /// <summary>멀티 샷 후처리기(마지막 프레임 I2V 앵커 추출 · 그룹 합본) — null 이면 체이닝 후처리 생략(DI 기본 ctor 는 ffmpeg 실물).</summary>
+    public FFmpegVideoStitchService? Stitcher { get => _stitcher; init => _stitcher = value; }
+
+    /// <summary>멀티 샷 그룹 합본 완료 알림(그룹 키 · 결과) — 워커 스레드에서 발생, 구독자 예외 격리.</summary>
+    public event Action<string, VideoStitchResult>? OnDurationStitched;
 
     /// <param name="vramProbe">VRAM 사용률(0~1) 조회 — null 반환(GPU 미탐지)이면 가드 생략.</param>
     /// <param name="diskProbe">출력 경로(null = 임시 폴더) 드라이브 잔여 바이트 조회 — null 반환(판정 불가)이면 가드 생략.</param>
@@ -98,6 +107,13 @@ public sealed class RenderQueueService : IRenderQueueService
         }
         if (added > 0) { Raise(); EnsureWorker(); }
         return added;
+    }
+
+    public IReadOnlyList<BatchRenderJob> EnqueueJob(BatchRenderJob job, IReadOnlyList<string?>? subPrompts = null, string? projectName = null)
+    {
+        ArgumentNullException.ThrowIfNull(job);
+        var jobs = MultiDurationPlanner.Expand(job, subPrompts, projectName);
+        return Enqueue(jobs) == jobs.Length ? jobs : Array.Empty<BatchRenderJob>();
     }
 
     public bool CancelJob(Guid jobId)
@@ -229,6 +245,7 @@ public sealed class RenderQueueService : IRenderQueueService
                     job.CompletedAt = DateTimeOffset.Now;
                 }
                 WriteRenderMeta(job, startedAt);
+                await ChainDurationCutAsync(job, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -255,6 +272,56 @@ public sealed class RenderQueueService : IRenderQueueService
                 Raise();
             }
         }
+    }
+
+    /// <summary>
+    /// 멀티 샷 체이닝 후처리 — 다음 컷이 Queued 면 이 컷의 마지막 프레임을 추출해 다음 컷 I2V 앵커(<see cref="BatchRenderJob.ReferenceImagePath"/>)로 주입,
+    /// 그룹 전 컷 Completed·로컬 산출물 실존 시 <c>{project}_10s.mp4</c>/<c>_15s.mp4</c> 합본(그룹당 1회). 실패는 격리(T2V 폴백 · 컷 상태 유지).
+    /// </summary>
+    internal async Task ChainDurationCutAsync(BatchRenderJob job, CancellationToken ct)
+    {
+        var stitcher = _stitcher;
+        if (stitcher is null || !MultiDurationPlanner.IsMultiShot(job.DurationMode) || job.StitchGroupId is not { Length: > 0 } group) return;
+        try
+        {
+            var snapshot = Snapshot();
+            var output = FFmpegVideoStitchService.LocalOutputOf(job);
+            var next = MultiDurationPlanner.FindNextCut(snapshot, job);
+            if (output is not null && next is not null && next.Status == BatchJobStatus.Queued)
+            {
+                var png = MultiDurationPlanner.LastFramePathFor(output);
+                if (await stitcher.ExtractLastFrameAsync(output, png, ct).ConfigureAwait(false))
+                {
+                    lock (_gate)
+                    {
+                        if (next.Status == BatchJobStatus.Queued)
+                        {
+                            next.ReferenceImagePath = png;
+                            next.Metadata = MultiDurationPlanner.WithMeta(next.Metadata, MultiDurationPlanner.MetaAnchorFrame, png);
+                        }
+                    }
+                    Raise();
+                }
+            }
+
+            if (!FFmpegVideoStitchService.TryCollectCompletedCuts(snapshot, group, out var cuts)
+                || cuts.Length < MultiDurationPlanner.ShotCount(job.DurationMode)) return;
+            lock (_gate) { if (!_stitchedGroups.Add(group)) return; }
+            var dir = Path.GetDirectoryName(cuts[0].VideoPath) ?? Path.GetTempPath();
+            var target = MultiDurationPlanner.BuildOutputPath(dir, MultiDurationPlanner.MetaOf(job, MultiDurationPlanner.MetaProject), job.DurationMode);
+            var r = await stitcher.StitchCutsAsync(cuts, target, null, null, ct).ConfigureAwait(false);
+            if (r.Ok && r.OutputPath is not null)
+                lock (_gate) job.Metadata = MultiDurationPlanner.WithMeta(job.Metadata, r.IsVirtual ? MultiDurationPlanner.MetaStitchedVirtual : MultiDurationPlanner.MetaStitched, r.OutputPath);
+            else
+            {
+                lock (_gate) _stitchedGroups.Remove(group);   // 재시도 허용
+                Program.Log("RenderQueue.DurationStitch", new InvalidOperationException(r.Message));
+            }
+            try { OnDurationStitched?.Invoke(group, r); } catch (Exception ex) { Program.Log("RenderQueue.DurationStitch", ex); }
+            Raise();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex) { Program.Log("RenderQueue.DurationChain", ex); }
     }
 
     /// <summary>디스패치 직전 VRAM 점검 — 대기 작업이 있고 사용률 ≥ 임계면 큐 일시정지(Paused · VRAM Warning). 프로브 예외는 격리(통과).</summary>
@@ -494,6 +561,7 @@ public sealed class RenderQueueService : IRenderQueueService
         try { _shutdown.Cancel(); } catch (ObjectDisposedException) { }
         _shutdown.Dispose();
         OnChange = null;
+        OnDurationStitched = null;
     }
 
     private void EnsureWorker()

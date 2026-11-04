@@ -26,6 +26,17 @@ public interface IRenderQueueService : IDisposable
 
     /// <summary>작업 일괄 등록(Queued 로 전환) — 이미 등록된 JobId 는 건너뜀. 실제 적재 건수 반환.</summary>
     int Enqueue(IEnumerable<BatchRenderJob> jobs);
+
+    /// <summary>
+    /// 듀레이션 모드 단위 적재 — 멀티 샷(10s/15s)은 동일 그룹 키 하위 컷 2~3개로 전개해 단일 잠금 하 원자적 삽입(<see cref="MultiDurationPlanner.Expand"/>).
+    /// 적재된 작업 반환(중복 등으로 일부라도 누락 시 빈 배열).
+    /// </summary>
+    IReadOnlyList<BatchRenderJob> EnqueueJob(BatchRenderJob job, IReadOnlyList<string?>? subPrompts = null, string? projectName = null)
+    {
+        ArgumentNullException.ThrowIfNull(job);
+        var jobs = MultiDurationPlanner.Expand(job, subPrompts, projectName);
+        return Enqueue(jobs) == jobs.Length ? jobs : Array.Empty<BatchRenderJob>();
+    }
     bool CancelJob(Guid jobId);
     bool RetryJob(Guid jobId);
     int ClearCompleted();

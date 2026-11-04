@@ -254,6 +254,30 @@ public sealed class FFmpegVideoStitchService
         return w == 0 ? null : new StitchProbe(w, h, audio);
     }
 
+    /// <summary>
+    /// 멀티 샷 I2V 앵커 — 영상 마지막 프레임을 PNG 로 추출(<see cref="MultiDurationPlanner.BuildLastFrameArgs"/>).
+    /// ffmpeg 부재·입력 누락·실패·빈 출력은 false(호출자는 T2V 폴백).
+    /// </summary>
+    public async Task<bool> ExtractLastFrameAsync(string videoPath, string pngPath, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(videoPath) || string.IsNullOrWhiteSpace(pngPath) || !File.Exists(videoPath)) return false;
+        var ffmpeg = SafeResolve();
+        if (ffmpeg is null) return false;
+        try
+        {
+            var full = Path.GetFullPath(pngPath);
+            var dir = Path.GetDirectoryName(full);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            var ok = await _run(ffmpeg, MultiDurationPlanner.BuildLastFrameArgs(Path.GetFullPath(videoPath), full), ct).ConfigureAwait(false);
+            return ok && !ct.IsCancellationRequested && File.Exists(full) && new FileInfo(full).Length > 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Program.Log("Stitch.LastFrame", ex);
+            return false;
+        }
+    }
+
     /// <summary>파트들을 단일 MP4 로 무손실 병합. ffmpeg 부재면 가상 병합 매니페스트.</summary>
     public async Task<VideoStitchResult> StitchAsync(IReadOnlyList<string> parts, string outputPath, CancellationToken ct = default)
     {

@@ -203,4 +203,22 @@ public class MassProductionAndCostTests
             try { Directory.Delete(dir, recursive: true); } catch (IOException) { }
         }
     }
+
+    [Theory]
+    [InlineData(VideoDurationMode.Sec5_Single, 1)]
+    [InlineData(VideoDurationMode.Sec10_Dual, 2)]
+    [InlineData(VideoDurationMode.Sec15_Triple, 3)]
+    [InlineData(VideoDurationMode.Sec15_AmbientSlow, 1)]
+    public void CostTracker_CalculatesCorrectCostMultiplier_BasedOnDurationMode(VideoDurationMode mode, int multiplier)
+    {
+        using var cost = new PromptFlowStudio.Services.Telemetry.ProductionCostTrackerService(null, () => new DateTimeOffset(2026, 11, 4, 12, 0, 0, TimeSpan.Zero));
+        var unit = PromptFlowStudio.Services.Telemetry.ProductionCostTrackerService.WanUsd(cost.Rates, PromptFlowStudio.Services.Telemetry.CostService.DashScope, null, 5);
+        Assert.Equal(multiplier, PromptFlowStudio.Services.Telemetry.ProductionCostTrackerService.DurationCostMultiplier(mode));
+        Assert.Equal(unit * multiplier, cost.EstimateCost(new BatchRenderJob { DurationMode = mode }), 9);
+
+        // 큐 전개 후 하위 컷 합계도 동일 가중치(컷당 1회분)
+        var sum = 0.0;
+        foreach (var j in MultiDurationPlanner.Expand(new BatchRenderJob { Prompt = "p", DurationMode = mode })) sum += cost.EstimateCost(j);
+        Assert.Equal(unit * multiplier, sum, 9);
+    }
 }

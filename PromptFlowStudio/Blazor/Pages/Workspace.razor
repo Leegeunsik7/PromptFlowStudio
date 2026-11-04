@@ -22,6 +22,7 @@
 @inject PromptFlowStudio.Services.Camera.WirelessCameraService WirelessCam
 @inject PromptFlowStudio.Services.Gallery.GalleryMediaService GalleryMedia
 @inject PromptFlowStudio.Services.Prompt.PromptInspirationService Inspiration
+@inject PromptFlowStudio.Services.Render.IRenderQueueService RenderQueue
 
 @* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
    상태는 WanJobState(싱글턴)에 있고, 이 컴포넌트는 OnChange 를 구독해 InvokeAsync(StateHasChanged)로만 갱신한다.
@@ -118,6 +119,35 @@
             <textarea class="ws-ta" @bind="_prompt" @bind:event="oninput"
                       placeholder="@(_imagePath is null ? "예) 노을 지는 해변을 천천히 걷는 골든리트리버, 시네마틱, 부드러운 카메라 팬" : "예) 카메라가 천천히 줌인, 머리카락이 바람에 날림 (i2v는 움직임 위주로 · 프롬프트 선택)")"
                       maxlength="800" disabled="@State.IsBusy"></textarea>
+            @* 멀티 듀레이션 — 5s 단일(직접 생성) · 10s/15s 멀티 샷(렌더 큐 체이닝·합본) · 15s 앰비언트(5초 + 3x 슬로우 루프) *@
+            <div class="ws-dur" role="radiogroup" aria-label="영상 길이">
+                @for (var i = 0; i < DurationModes.Length; i++)
+                {
+                    var m = DurationModes[i];
+                    <button class="ws-dur-chip @(_durationMode == m ? "on" : null)" role="radio" aria-checked="@(_durationMode == m ? "true" : "false")"
+                            @onclick="_durPick[i]" disabled="@State.IsBusy" @key="m">@PromptFlowStudio.Services.Render.MultiDurationPlanner.Label(m)</button>
+                }
+            </div>
+            @if (PromptFlowStudio.Services.Render.MultiDurationPlanner.IsMultiShot(_durationMode))
+            {
+                <div class="ws-dur-parts">
+                    @for (var i = 0; i < PromptFlowStudio.Services.Render.MultiDurationPlanner.ShotCount(_durationMode); i++)
+                    {
+                        var idx = i;
+                        <label class="ws-dur-part" @key="idx">
+                            <span>@PromptFlowStudio.Services.Render.MultiDurationPlanner.PartLabel(idx)</span>
+                            <textarea class="ws-ta ws-ta-part" @bind="_subPrompts[idx]" @bind:event="oninput" maxlength="800" disabled="@State.IsBusy"
+                                      placeholder="@PromptFlowStudio.Services.Render.MultiDurationPlanner.ResolvePartPrompt(_prompt, null, idx, PromptFlowStudio.Services.Render.MultiDurationPlanner.ShotCount(_durationMode))"></textarea>
+                        </label>
+                    }
+                    <div class="ws-dur-hint">비운 파트는 메인 프롬프트 + 카메라 모션 차등 상속 · 이전 컷 마지막 프레임이 다음 컷 I2V 앵커로 자동 주입됩니다.</div>
+                </div>
+            }
+            else if (_durationMode == PromptFlowStudio.Services.Render.VideoDurationMode.Sec15_AmbientSlow)
+            {
+                <label class="ws-dur-hint"><input type="checkbox" @bind="_ambientPingPong" disabled="@State.IsBusy" /> 🔁 리버스 핑퐁 루프(시작·끝 이음새 제거)</label>
+            }
+            @if (_durationMsg is not null) { <div class="ws-dur-hint">@_durationMsg</div> }
             <div class="ws-row">
                 <label class="ws-lbl">해상도
                     <select class="ws-sel" @bind="_size" @bind:after="SyncSize" disabled="@State.IsBusy">
@@ -745,6 +775,14 @@
     .ws-zen-chip { display: flex; align-items: center; justify-content: center; gap: 5px; min-height: 30px; padding: 5px 8px; border-radius: 9px; border: 1px solid var(--line); background: var(--card-2);
         color: var(--text-secondary); font: 700 11px inherit; font-family: inherit; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: border-color .15s, box-shadow .15s, color .15s; }
     .ws-zen-chip:hover:not(:disabled) { color: var(--text-primary); border-color: color-mix(in srgb, var(--flow-cyan) 55%, var(--line)); }
+    .ws-dur { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 8px 0 4px; }
+    .ws-dur-chip { min-height: 30px; padding: 5px 8px; border-radius: 9px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-secondary); cursor: pointer; font-size: 12px; }
+    .ws-dur-chip.on { color: var(--text-primary); border-color: var(--flow-cyan); box-shadow: 0 0 10px color-mix(in srgb, var(--flow-cyan) 40%, transparent); }
+    .ws-dur-chip:disabled { opacity: .5; cursor: default; }
+    .ws-dur-parts { display: flex; flex-direction: column; gap: 6px; margin: 4px 0; }
+    .ws-dur-part { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--text-secondary); }
+    .ws-ta-part { min-height: 52px; }
+    .ws-dur-hint { font-size: 11px; color: var(--text-secondary); margin: 2px 0 4px; }
     .ws-zen-chip.on { color: var(--text-primary); border-color: var(--flow-cyan); box-shadow: 0 0 12px color-mix(in srgb, var(--flow-cyan) 45%, transparent), inset 0 0 8px color-mix(in srgb, var(--flow-cyan) 18%, transparent); }
     .ws-zen-chip:disabled { opacity: .5; cursor: not-allowed; }
     @@media (prefers-reduced-motion: reduce) { .ws-accel.run { animation: none; } }
@@ -1161,9 +1199,52 @@
     private bool CanStart => State.Enabled && !State.IsBusy
         && (!string.IsNullOrWhiteSpace(_prompt) || !string.IsNullOrWhiteSpace(_imagePath));
 
+    private static readonly PromptFlowStudio.Services.Render.VideoDurationMode[] DurationModes =
+    {
+        PromptFlowStudio.Services.Render.VideoDurationMode.Sec5_Single,
+        PromptFlowStudio.Services.Render.VideoDurationMode.Sec10_Dual,
+        PromptFlowStudio.Services.Render.VideoDurationMode.Sec15_Triple,
+        PromptFlowStudio.Services.Render.VideoDurationMode.Sec15_AmbientSlow,
+    };
+    private PromptFlowStudio.Services.Render.VideoDurationMode _durationMode = PromptFlowStudio.Services.Render.VideoDurationMode.Sec5_Single;
+    private readonly string?[] _subPrompts = new string?[3];
+    private Action[] _durPick = Array.Empty<Action>();
+    private bool _ambientPingPong;
+    private string? _durationMsg;
+
+    private void InitDurationPickers()
+    {
+        _durPick = new Action[DurationModes.Length];
+        for (var i = 0; i < DurationModes.Length; i++) { var m = DurationModes[i]; _durPick[i] = () => { _durationMode = m; _durationMsg = null; }; }
+    }
+
+    /// <summary>10s/15s/Ambient — 렌더 큐 적재(멀티 샷 체이닝·합본 / 앰비언트 루프 후처리는 큐 워커·엔진이 수행).</summary>
+    private void EnqueueDuration(string prompt)
+    {
+        var project = "ws_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
+        var meta = _durationMode == PromptFlowStudio.Services.Render.VideoDurationMode.Sec15_AmbientSlow && _ambientPingPong
+            ? new Dictionary<string, string>(StringComparer.Ordinal) { [PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.MetaAmbientPingPong] = "true" }
+            : null;
+        var template = new PromptFlowStudio.Services.Batch.BatchRenderJob
+        {
+            Prompt = prompt,
+            Seed = _canvas.EffectiveSeed ?? Random.Shared.NextInt64(1, int.MaxValue),   // 그룹 전 컷 동일 시드(일관성)
+            Resolution = _size.Replace('*', 'x'),
+            DurationSec = PromptFlowStudio.Services.Render.MultiDurationPlanner.ShotSeconds,
+            ReferenceImagePath = _imagePath,
+            OutputPath = Path.Combine(Media.MediaRoot, project + ".mp4"),
+            DurationMode = _durationMode,
+            Metadata = meta,
+        };
+        var jobs = RenderQueue.EnqueueJob(template, _subPrompts, project);
+        _durationMsg = jobs.Count == 0 ? "⚠ 렌더 큐 적재 실패"
+            : "📥 렌더 큐 적재 " + jobs.Count.ToString(CultureInfo.InvariantCulture) + "컷 · " + PromptFlowStudio.Services.Render.MultiDurationPlanner.Label(_durationMode) + " → " + project;
+    }
+
     private void Start()
     {
         if (!CanStart) return;
+        if (_durationMode != PromptFlowStudio.Services.Render.VideoDurationMode.Sec5_Single) { EnqueueDuration(_prompt); return; }
         // v16.20.0 미세 표정 퍼핏 — 표정 구문·정체성 유지·얼굴 보호 네거티브 비영속 주입(Neutral 은 원문 그대로).
         // v16.22.0 피사체 Identity 고정 — 프로필 정체성/의상/스타일 구문(비영속) · 얼굴 사진 I2V(사용자 이미지 우선) · 프로필 시드(핀 우선).
         var idLock = _idLockOn ? IdentityLockOf() : null;
@@ -1248,6 +1329,7 @@
     protected override void OnInitialized()
     {
         State.OnChange += OnStateChanged;
+        InitDurationPickers();
         _vm = new PromptFlowStudio.ViewModels.PromptInputViewModel(Synth, Inspiration);
         _vm.SetOutputSize(_size);
         _vm.PropertyChanged += OnVmChanged;
