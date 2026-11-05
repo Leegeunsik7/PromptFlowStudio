@@ -3,7 +3,7 @@ using PromptFlowStudio.Services.Gallery;
 
 namespace PromptFlowStudio.ViewModels;
 
-public enum GalleryFilter { All, Vertical9x16, Landscape16x9 }
+public enum GalleryFilter { All, Vertical9x16, Landscape16x9, Favorites, AiRender, Exported }
 
 /// <summary>
 /// [PromptFlowStudio] 갤러리 화면 VM — 카테고리/검색 필터 · 인스펙터 선택 · Workspace 복원 핸드오프.
@@ -78,6 +78,9 @@ public sealed class GalleryViewModel
     {
         if (filter == GalleryFilter.Vertical9x16 && it.AspectCategory != AspectCategory.Vertical9x16) return false;
         if (filter == GalleryFilter.Landscape16x9 && it.AspectCategory != AspectCategory.Landscape16x9) return false;
+        if (filter == GalleryFilter.Favorites && !it.IsFavorite) return false;
+        if (filter == GalleryFilter.AiRender && (it.IsSample || it.IsMock || it.IsExported)) return false;
+        if (filter == GalleryFilter.Exported && !it.IsExported) return false;
         return query.Length == 0
             || it.Title.Contains(query, StringComparison.OrdinalIgnoreCase)
             || it.Prompt.Contains(query, StringComparison.OrdinalIgnoreCase);
@@ -90,6 +93,16 @@ public sealed class GalleryViewModel
         StatusMessage = "작업실로 복원 — " + item.Title;
         Raise();
         RestoreRequested?.Invoke();
+    }
+
+    /// <summary>⭐ 즐겨찾기 토글 — 메타 저장 후 필터 재적용(즐겨찾기 탭에서 해제 시 즉시 제외).</summary>
+    public bool ToggleFavorite(GalleryItem item)
+    {
+        if (item is null) return false;
+        var ok = _gallery.ToggleFavorite(item.ItemId);
+        StatusMessage = ok ? (item.IsFavorite ? "⭐ 즐겨찾기 추가 — " : "☆ 즐겨찾기 해제 — ") + item.Title : "즐겨찾기 저장 실패(파일 잠금 또는 출력 폴더 외부)";
+        ApplyFilter();
+        return ok;
     }
 
     public bool Delete(GalleryItem item)

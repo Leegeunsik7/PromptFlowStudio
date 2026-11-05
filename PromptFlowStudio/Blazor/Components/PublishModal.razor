@@ -45,6 +45,20 @@
                         <span class="pm-seo-msg">@ssMsg</span>
                     }
                 </div>
+                <div class="pm-row pm-seo">
+                    <select class="pm-btn" value="@(PromptFlowStudio.Services.Export.StockSuiteExporter.HtsAspectKey(vm.MultiHtsAspect))"
+                            @onchange="e => vm.MultiHtsAspect = PromptFlowStudio.Services.Export.StockSuiteExporter.ParseHtsAspect(e.Value?.ToString())" disabled="@vm.IsMultiPackageBusy" title="HTS 데스크톱 울트라와이드 비율">
+                        <option value="16x9">HTS 16:9 (1920×1080)</option>
+                        <option value="21x9">HTS 21:9 (2560×1080)</option>
+                        <option value="32x9">HTS 32:9 (3840×1080)</option>
+                    </select>
+                    <button class="pm-btn" @onclick="ExportMultiPackage" disabled="@vm.IsMultiPackageBusy"
+                            title="HTS 울트라와이드(무음·샤프닝) + 모바일 9:16 + SNS 쇼츠 9:16(BGM·1.5초 페이드아웃)을 한 번에 생성">@(vm.IsMultiPackageBusy ? "⏳ 패키지 생성 중…" : "📦 올인원 멀티 패키지 내보내기")</button>
+                    @if (vm.MultiPackageMessage is { Length: > 0 } mpMsg)
+                    {
+                        <span class="pm-seo-msg">@mpMsg</span>
+                    }
+                </div>
             }
 
             <div class="pm-row pm-seo">
@@ -220,6 +234,13 @@
         if (Vm is null) return;
         try { await Vm.GenerateSeoAsync(); }
         catch (Exception ex) { Program.Log("PublishModal.Seo", ex); }
+    }
+
+    private async Task ExportMultiPackage()
+    {
+        if (Vm is null) return;
+        try { await Vm.ExportMultiPackageAsync(); }
+        catch (Exception ex) { Program.Log("PublishModal.MultiPkg", ex); }
     }
 
     private async Task ExportStockSuite()

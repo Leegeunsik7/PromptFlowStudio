@@ -30,7 +30,13 @@ public sealed class GalleryItem
     /// <summary>🧪 Mock 더미 산출물 — 메타 <c>isMock</c>/<c>engine=Mock</c> 또는 <c>testsrc</c> 컬러바 흔적.</summary>
     public bool IsMock { get; init; }
     /// <summary>카드 태그 — <c>🧪 Mock</c> · <c>🎬 AI Render</c>(샘플은 null).</summary>
-    public string? AssetTag => IsSample ? null : IsMock ? "🧪 Mock" : "🎬 AI Render";
+    public string? AssetTag => IsSample ? null : IsMock ? "🧪 Mock" : IsExported ? "📦 내보냄" : "🎬 AI Render";
+    /// <summary>⭐ 즐겨찾기 — 메타 <c>isFavorite</c>(토글은 <see cref="GalleryMediaService.SetFavorite"/>).</summary>
+    public bool IsFavorite { get; internal set; }
+    /// <summary>📦 내보낸 산출물 — 메타 <c>isExported:true</c>(멀티 패키지 익스포터 기록).</summary>
+    public bool IsExported { get; init; }
+    /// <summary>정적 첫 프레임 포스터(<c>{이름}.poster.jpg</c>) — 없으면 null(CSS 스틸).</summary>
+    public string? PosterPath { get; init; }
     public bool IsVideo => !IsImagePath(FilePath);
 
     internal static bool IsImagePath(string path)
@@ -76,7 +82,7 @@ public sealed class GalleryMediaService
                 root = Path.GetFullPath(directoryPath);
                 foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
                 {
-                    if (!IsMediaFile(file) || IsInUploads(root, file)) continue;
+                    if (!IsMediaFile(file) || IsInUploads(root, file) || file.EndsWith(PosterSuffix, StringComparison.OrdinalIgnoreCase)) continue;
                     var item = TryLoadItem(file);
                     if (item is not null) found.Add(item);
                 }
@@ -221,6 +227,56 @@ public sealed class GalleryMediaService
     public GalleryRestoreContext? TakePendingRestore() => Interlocked.Exchange(ref _pendingRestore, null);
 
     public static string MetaPathFor(string mediaPath) => Path.ChangeExtension(mediaPath, null) + MetaSuffix;
+    public const string PosterSuffix = ".poster.jpg";
+    public static string PosterPathFor(string mediaPath) => Path.ChangeExtension(mediaPath, null) + PosterSuffix;
+
+    /// <summary>
+    /// ⭐ 즐겨찾기 설정 — 사이드카 <c>.meta.json</c> 의 <c>isFavorite</c> 갱신(기존 필드 보존 · 없으면 생성 · 임시파일 원자 교체).
+    /// 샘플은 메모리에서만 토글. 대상 없음/루트 이탈/쓰기 실패 시 false(상태 불변).
+    /// </summary>
+    public bool SetFavorite(Guid itemId, bool favorite)
+    {
+        GalleryItem? target = null;
+        string? root;
+        lock (_lock)
+        {
+            root = _root;
+            for (int i = 0; i < _items.Count; i++)
+                if (_items[i].ItemId == itemId) { target = _items[i]; break; }
+        }
+        if (target is null) return false;
+        if (!target.IsSample)
+        {
+            if (root is null || !IsUnderRoot(root, target.FilePath)) return false;
+            var meta = MetaPathFor(target.FilePath);
+            try
+            {
+                System.Text.Json.Nodes.JsonObject obj;
+                try { obj = File.Exists(meta) ? System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(meta)) as System.Text.Json.Nodes.JsonObject ?? new() : new(); }
+                catch (JsonException) { obj = new(); }   // 손상 메타 → 새로 작성
+                obj["isFavorite"] = favorite;
+                var tmp = meta + ".~tmp";
+                File.WriteAllText(tmp, obj.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+                File.Move(tmp, meta, overwrite: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                Program.Log("GalleryMedia.Favorite", ex);
+                return false;
+            }
+        }
+        lock (_lock) target.IsFavorite = favorite;
+        return true;
+    }
+
+    public bool ToggleFavorite(Guid itemId)
+    {
+        GalleryItem? t = null;
+        lock (_lock)
+            for (int i = 0; i < _items.Count; i++)
+                if (_items[i].ItemId == itemId) { t = _items[i]; break; }
+        return t is not null && SetFavorite(itemId, !t.IsFavorite);
+    }
 
     public static AspectCategory Classify(int width, int height)
     {
@@ -276,7 +332,7 @@ public sealed class GalleryMediaService
             long seed = 0;
             float duration = 0;
             DateTime created = info.LastWriteTime;
-            bool isMock = HasTestSrc(title);
+            bool isMock = HasTestSrc(title), isFav = false, isExported = false;
 
             var metaPath = MetaPathFor(file);
             if (File.Exists(metaPath))
@@ -288,6 +344,8 @@ public sealed class GalleryMediaService
                     if (r.ValueKind == JsonValueKind.Object)
                     {
                         isMock |= IsMockMeta(r);
+                        isFav = r.TryGetProperty("isFavorite", out var fv) && fv.ValueKind == JsonValueKind.True;
+                        isExported = r.TryGetProperty("isExported", out var ev) && ev.ValueKind == JsonValueKind.True;
                         title = Str(r, "title") is { Length: > 0 } t ? t : title;
                         prompt = Str(r, "prompt");
                         thumb = Str(r, "thumbnail");
@@ -306,6 +364,7 @@ public sealed class GalleryMediaService
             if (dims is null || string.IsNullOrEmpty(resolution))
                 resolution = w.ToString(CultureInfo.InvariantCulture) + "x" + h.ToString(CultureInfo.InvariantCulture);
             if (string.IsNullOrEmpty(thumb) && GalleryItem.IsImagePath(file)) thumb = file;
+            var poster = PosterPathFor(file);
 
             return new GalleryItem
             {
@@ -321,6 +380,9 @@ public sealed class GalleryMediaService
                 RenderDurationSec = duration,
                 ReferenceImagePath = reference.Length > 0 ? reference : null,
                 IsMock = isMock,
+                IsFavorite = isFav,
+                IsExported = isExported,
+                PosterPath = File.Exists(poster) ? poster : null,
             };
         }
         catch (Exception ex) { Program.Log("GalleryMedia.Item", ex); return null; }

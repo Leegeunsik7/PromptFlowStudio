@@ -29,6 +29,7 @@
 @inject PromptFlowStudio.Services.Export.StockSuiteExporter StockSuite
 @inject PromptFlowStudio.Services.Prompt.PresetManagerService Presets
 @inject PromptFlowStudio.Services.Render.MediaProbeService Probe
+@inject PromptFlowStudio.Services.Export.StockSuiteWatchlistService Watchlist
 
 @* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
    상태는 WanJobState(싱글턴)에 있고, 이 컴포넌트는 OnChange 를 구독해 InvokeAsync(StateHasChanged)로만 갱신한다.
@@ -133,6 +134,18 @@
                 </div>
             }
             @if (_upMsg is not null) { <div class="ws-hint">@_upMsg</div> }
+            @* 📊 StockSuite 관심종목 연동 칩 바 — 칩 클릭 → 핵심 사업 메타포 + 티커 HUD 텍스처 Wan 2.1 시네마틱 프롬프트 *@
+            <div class="ws-watch-bar" role="group" aria-label="내 관심종목 연동">
+                <span class="ws-mood-cap" title="@(_watch.FromFile ? _watch.SourcePath : "StockSuite watchlist.json 미발견 — 기본 핀테크 종목군(코스피 TOP 5 · 매그니피센트 7)")">📊 내 관심종목 연동@(_watch.FromFile ? "" : " (기본)")</span>
+                @for (var i = 0; i < _watch.Stocks.Count; i++)
+                {
+                    var ws = _watch.Stocks[i];
+                    <button class="ws-mood-chip @(_tickerSel == ws.Ticker ? "on" : null)" @key="ws.Ticker" @onclick="TickerPick(i)" disabled="@(State.IsBusy || _tickerBusy)"
+                            title="@(ws.Sector.Length > 0 ? ws.Sector : ws.Name)">@ws.ChipLabel</button>
+                }
+                <button class="ws-mood-chip" @onclick="ReloadWatchlist" disabled="@_tickerBusy" title="StockSuite 관심종목 다시 읽기">↻</button>
+                @if (_tickerMsg is not null) { <span class="ws-mood-cap">@_tickerMsg</span> }
+            </div>
             <textarea class="ws-ta" @bind="_prompt" @bind:event="oninput"
                       placeholder="@(_imagePath is null ? "예) 노을 지는 해변을 천천히 걷는 골든리트리버, 시네마틱, 부드러운 카메라 팬" : "예) 카메라가 천천히 줌인, 머리카락이 바람에 날림 (i2v는 움직임 위주로 · 프롬프트 선택)")"
                       maxlength="800" disabled="@State.IsBusy"></textarea>
@@ -1047,6 +1060,7 @@
     @@media (prefers-reduced-motion: reduce) { .ws-bar-f { animation: none; } }
 
     /* 💡 스토리 레시피 & 인스피레이션 모달 */
+    .ws-watch-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0 6px; }
     .ws-mood-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
     .ws-mood-cap { font-size: 11px; opacity: .7; margin-right: 2px; }
     .ws-mood-chip { font-size: 12px; padding: 3px 9px; border-radius: 999px; border: 1px solid rgba(255,255,255,.15); background: rgba(255,255,255,.04); color: inherit; cursor: pointer; }
@@ -1190,6 +1204,50 @@
     }
     private string AccelClass => !State.Enabled ? "off" : State.IsBusy ? "run" : "ready";
     private string AccelLabel => !State.Enabled ? "OFFLINE" : State.IsBusy ? "RENDERING" : "READY";
+
+    // 📊 관심종목 연동 — 칩 핸들러는 목록 로드 시 1회 생성.
+    private PromptFlowStudio.Services.Export.WatchlistLoadResult _watch = new(PromptFlowStudio.Services.Export.StockSuiteWatchlistService.Defaults, false, null);
+    private Func<Task>[] _tickerPick = Array.Empty<Func<Task>>();
+    private bool _tickerBusy;
+    private string? _tickerSel, _tickerMsg;
+
+    private Func<Task> TickerPick(int i) => i < _tickerPick.Length ? _tickerPick[i] : static () => Task.CompletedTask;
+
+    private void LoadWatchlist(bool reload)
+    {
+        try { _watch = reload ? Watchlist.Load() : Watchlist.Current; }
+        catch (Exception ex) { Program.Log("Workspace.Watchlist", ex); }
+        var arr = new Func<Task>[_watch.Stocks.Count];
+        for (var k = 0; k < arr.Length; k++)
+        {
+            var st = _watch.Stocks[k];
+            arr[k] = () => GenerateTickerPromptAsync(st);
+        }
+        _tickerPick = arr;
+    }
+
+    private void ReloadWatchlist()
+    {
+        LoadWatchlist(true);
+        _tickerMsg = _watch.FromFile ? "📊 관심종목 " + _watch.Stocks.Count.ToString(CultureInfo.InvariantCulture) + "개 연동" : "💡 watchlist.json 미발견 — 기본 종목군";
+    }
+
+    private async Task GenerateTickerPromptAsync(PromptFlowStudio.Services.Export.WatchlistStock st)
+    {
+        if (_tickerBusy) return;
+        _tickerBusy = true;
+        _tickerSel = st.Ticker;
+        _tickerMsg = "⏳ " + st.ChipLabel + " 기획 중…";
+        try
+        {
+            var r = await GeminiSvc.GenerateTickerPromptAsync(st.Ticker, st.Name, st.Sector, _mediaCts.Token);
+            if (!string.IsNullOrWhiteSpace(r.Prompt)) _prompt = r.Prompt;
+            _tickerMsg = (r.UsedFallback ? "💡 " : "") + r.Message;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("Workspace.TickerPrompt", ex); _tickerMsg = "⚠ 종목 기획 실패 — 다시 시도하세요."; }
+        finally { _tickerBusy = false; }
+    }
 
     // 📈 시황 무드 연동 · ✨ 3-Way 스타일 변형 — 칩/탭 핸들러는 인덱스당 1회 생성 캐시.
     private Action[]? _moodPick;
@@ -2093,6 +2151,7 @@
         _vm.PropertyChanged += OnVmChanged;
         BuildBabyInjectors();
         BuildGeminiInjectors();
+        LoadWatchlist(false);
         BuildZenInjectors();
         _myPresets = Presets.GetAll();
         Presets.Changed += OnUserPresetsChanged;

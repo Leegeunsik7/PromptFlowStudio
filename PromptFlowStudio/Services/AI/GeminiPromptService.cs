@@ -695,6 +695,66 @@ public sealed class GeminiPromptService
         return v == 0 ? 1 : v;
     }
 
+    // ══════════════════════ 📊 관심종목(Watchlist) 시네마틱 디렉터 ══════════════════════
+
+    public const string TickerFallbackNotice = "로컬 종목 메타포 사전으로 기획되었습니다";
+
+    public const string TickerInstruction =
+        "You are a cinematic AI video prompt director for Wan 2.1 fintech ambient backgrounds. Given a listed company (ticker, name, sector, core business metaphor), " +
+        "write ONE English video prompt (one line, max 600 chars) that visualizes the company's core business as a cinematic metaphor, " +
+        "and engrave the exact ticker code as a glowing HUD texture (e.g. holographic ticker overlay). No brand logos, no readable text other than the ticker. " +
+        "Describe lighting, color, camera motion; seamless loopable ambient. Output ONLY the prompt text.";
+
+    /// <summary>티커/섹터 → 핵심 사업 영문 메타포(미등록은 섹터 키워드 · 최후 범용 금융 메타포).</summary>
+    public static string BusinessMetaphorOf(string? ticker, string? sector)
+    {
+        switch ((ticker ?? "").Trim().ToUpperInvariant())
+        {
+            case "005930": return "HBM memory stacks and AI foundry wafers glowing on a cleanroom fab line";
+            case "000660": return "stacked HBM DRAM dies with through-silicon vias pulsing with data";
+            case "373220": return "EV battery cells charging with flowing lithium energy currents";
+            case "207940": return "bioreactor tanks and floating antibody molecules in a sterile biopharma plant";
+            case "005380": return "electric and hydrogen vehicles gliding through a smart factory assembly line";
+            case "NVDA": return "GPU accelerator dies and tensor cores firing in a vast AI datacenter";
+            case "AAPL": return "sleek aluminum devices and custom silicon chips floating in a minimal design lab";
+            case "MSFT": return "cloud datacenter racks and AI copilot neural streams across a global grid";
+            case "GOOGL": return "search index constellations and TPU pods forming a planetary knowledge graph";
+            case "AMZN": return "robotic fulfillment centers and cloud server aisles flowing with parcels and data";
+            case "META": return "social graph nodes and VR headsets projecting an immersive metaverse";
+            case "TSLA": return "autonomous electric cars and gigafactory robots under bright production lights";
+        }
+        var sec = (sector ?? "").Trim();
+        if (sec.Contains("반도체", StringComparison.Ordinal) || sec.Contains("semi", StringComparison.OrdinalIgnoreCase)) return "silicon wafers and chip dies glowing in a semiconductor fab";
+        if (sec.Contains("배터리", StringComparison.Ordinal) || sec.Contains("2차전지", StringComparison.Ordinal)) return "battery cells charging with flowing energy currents";
+        if (sec.Contains("바이오", StringComparison.Ordinal) || sec.Contains("bio", StringComparison.OrdinalIgnoreCase)) return "floating DNA helices and molecules in a biotech lab";
+        if (sec.Contains("자동차", StringComparison.Ordinal) || sec.Contains("auto", StringComparison.OrdinalIgnoreCase)) return "vehicles gliding through a futuristic smart factory";
+        if (sec.Contains("금융", StringComparison.Ordinal) || sec.Contains("bank", StringComparison.OrdinalIgnoreCase)) return "golden vault doors and flowing transaction ledgers";
+        return "abstract holographic candlestick charts and flowing market data streams";
+    }
+
+    /// <summary>로컬 티커 프롬프트 — 핵심 사업 메타포 + 티커 HUD 텍스처 + 시네마틱 룩(결정적).</summary>
+    public static string BuildLocalTickerPrompt(string ticker, string? name, string? sector)
+    {
+        var t = (ticker ?? "").Trim().ToUpperInvariant();
+        var p = "Cinematic ambient fintech background: " + BusinessMetaphorOf(t, sector)
+            + ", the ticker code \"" + t + "\" engraved as a glowing holographic HUD texture with live price ticks, "
+            + "dark trading-room atmosphere, teal and amber volumetric light, slow dolly in, shallow depth of field, seamless loop, 4k, professional color grading";
+        return p.Length <= PromptSynthesizerService.MaxCharacterLimit ? p : p[..PromptSynthesizerService.MaxCharacterLimit].TrimEnd();
+    }
+
+    /// <summary>📊 종목 칩 → Wan 2.1 시네마틱 프롬프트. 키 없음/실패/티커 누락 응답 → 로컬 메타포 폴백(무중단).</summary>
+    public async Task<GeminiEnhanceOutcome> GenerateTickerPromptAsync(string? ticker, string? name, string? sector, CancellationToken ct = default)
+    {
+        var t = (ticker ?? "").Trim().ToUpperInvariant();
+        if (t.Length == 0) return new("", true, "종목 티커가 비었습니다.");
+        var local = BuildLocalTickerPrompt(t, name, sector);
+        if (!HasKey()) return new(local, true, TickerFallbackNotice);
+        var user = "Ticker: " + t + "\nCompany: " + (name ?? "") + "\nSector: " + (sector ?? "") + "\nCore business metaphor: " + BusinessMetaphorOf(t, sector);
+        var text = Sanitize(await CallAsync(TickerInstruction, user, null, false, 0.8, ct).ConfigureAwait(false));
+        if (text is null || !text.Contains(t, StringComparison.OrdinalIgnoreCase)) return new(local, true, TickerFallbackNotice);
+        return new(text, false, "📊 " + t + " " + (name ?? "") + " 시네마틱 기획 완료");
+    }
+
     private static string? Sanitize(string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return null;

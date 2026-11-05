@@ -28,6 +28,30 @@ public enum StockSuiteExeStatus { NotConfigured, NotFound, NotExecutable, Ok }
 /// <summary>🚀 StockSuite 실행 결과 — AlreadyRunning=true 면 재실행 확인 필요.</summary>
 public sealed record StockSuiteLaunchResult(bool Ok, bool AlreadyRunning, string Message);
 
+/// <summary>📦 HTS 데스크톱 울트라와이드 비율 — 16:9(1920×1080) · 21:9(2560×1080) · 32:9(3840×1080).</summary>
+public enum HtsUltraAspect { Wide16x9, Ultra21x9, Super32x9 }
+
+/// <summary>📦 올인원 멀티 패키지 옵션 — OutputDirectory null = 원본 옆 <c>{name}_package</c> · BgmPath 우선, 없으면 BgmPreset 합성.</summary>
+public sealed record MultiExportOptions
+{
+    public HtsUltraAspect HtsAspect { get; init; } = HtsUltraAspect.Ultra21x9;
+    public StockSuiteExportFormat HtsFormat { get; init; } = StockSuiteExportFormat.WebMVp9;
+    public string? OutputDirectory { get; init; }
+    public string? BgmPath { get; init; }
+    public SnsBgmPreset BgmPreset { get; init; } = SnsBgmPreset.FintechSynthwave;
+    /// <summary>원본 길이(초) — ≤0 이면 Wan 기본 5초로 페이드아웃 시점 계산.</summary>
+    public double DurationSec { get; init; }
+}
+
+/// <summary>패키지 단일 규격 — Key: <c>hts</c>|<c>mobile</c>|<c>shorts</c>.</summary>
+public sealed record MultiExportProfile(string Key, string Label, int Width, int Height, string OutputPath, string[] Args);
+
+/// <summary>📦 멀티 패키지 결과 — Generated = 성공 산출물 경로(규격 순서 보존) · [부분 구제] 실패분은 Failed 키.</summary>
+public sealed record MultiExportResult(IReadOnlyList<string> Generated, IReadOnlyList<string> Failed, string? PackageDirectory, string Message)
+{
+    public bool Ok => Generated.Count > 0 && Failed.Count == 0;
+}
+
 /// <summary>
 /// [PromptFlowStudio] 💼 StockSuite 원클릭 에셋 내보내기 — 선택 영상을 HTS/StockSuite 에셋 폴더에 표준 명칭으로 원자적 덮어쓰기.
 ///   ▸ MP4: ffmpeg <c>-c:v copy -an</c> 제로-오디오 스트립(부재/실패 시 원본 복사) → 대상 폴더 내 임시 파일(<c>.~pfs</c>) → <see cref="File.Move(string,string,bool)"/> 교체(동일 볼륨 원자적) → <c>bg_ambient.mp4</c>.
@@ -374,6 +398,181 @@ public sealed class StockSuiteExporter
             ? "⚠ 내보낸 영상이 없습니다" + (lastError is null ? "." : " — " + lastError)
             : "💼 StockSuite 팩 " + exported.Count.ToString(CultureInfo.InvariantCulture) + "개 내보내기 완료" + (failed > 0 ? " (실패 " + failed.ToString(CultureInfo.InvariantCulture) + ")" : "") + " → " + Path.GetDirectoryName(exported[0]);
         return new(exported, failed, false, msg);
+    }
+
+    // ── 📦 올인원 멀티 타겟 패키지 ──
+    /// <summary>Wan 기본 컷 길이 — 길이 미상 시 쇼츠 페이드아웃 시점 계산용.</summary>
+    public const double DefaultClipSeconds = 5.0;
+    /// <summary>9:16 세로형 스마트 중앙 크롭(모바일/쇼츠 공용).</summary>
+    public const string VerticalCropFilter = "crop=ih*9/16:ih,scale=1080:1920:flags=lanczos";
+
+    /// <summary>쇼츠 BGM 해석기(프리셋, 길이) → WAV 경로. 기본 = <see cref="AudioMuxService.EnsurePresetBgm"/>(로컬 합성).</summary>
+    public Func<SnsBgmPreset, double, string?> BgmResolver { get; set; } = static (p, d) => new AudioMuxService().EnsurePresetBgm(p, d);
+
+    public static (int W, int H) HtsResolution(HtsUltraAspect a) => a switch
+    {
+        HtsUltraAspect.Wide16x9 => (1920, 1080),
+        HtsUltraAspect.Super32x9 => (3840, 1080),
+        _ => (2560, 1080),
+    };
+
+    public static string HtsAspectKey(HtsUltraAspect a) => a switch
+    {
+        HtsUltraAspect.Wide16x9 => "16x9",
+        HtsUltraAspect.Super32x9 => "32x9",
+        _ => "21x9",
+    };
+
+    public static HtsUltraAspect ParseHtsAspect(string? v) => (v ?? "").Trim() switch
+    {
+        "16x9" or "16:9" => HtsUltraAspect.Wide16x9,
+        "32x9" or "32:9" => HtsUltraAspect.Super32x9,
+        _ => HtsUltraAspect.Ultra21x9,
+    };
+
+    /// <summary>HTS 중앙 스마트 크롭 — 원본 비율과 무관하게 목표 비율 최대 영역을 중앙 절취 → Lanczos 스케일 + 언샵.</summary>
+    public static string BuildHtsFilter(HtsUltraAspect a)
+    {
+        var (w, h) = HtsResolution(a);
+        var inv = CultureInfo.InvariantCulture;
+        var ws = w.ToString(inv);
+        var hs = h.ToString(inv);
+        return "crop=min(iw\\,ih*" + ws + "/" + hs + "):min(ih\\,iw*" + hs + "/" + ws + "),scale=" + ws + ":" + hs + ":flags=lanczos,unsharp=5:5:0.8:3:3:0.4";
+    }
+
+    /// <summary>3대 규격 프로파일(HTS · 모바일 · 쇼츠) — 인자/해상도 순수 계산(실행 없음).</summary>
+    public static IReadOnlyList<MultiExportProfile> BuildMultiTargetProfiles(string sourceVideoPath, MultiExportOptions options, string packageDirectory, string? bgmPath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceVideoPath);
+        ArgumentNullException.ThrowIfNull(options);
+        var inv = CultureInfo.InvariantCulture;
+        var name = Path.GetFileNameWithoutExtension(sourceVideoPath);
+        var (hw, hh) = HtsResolution(options.HtsAspect);
+        var webm = options.HtsFormat == StockSuiteExportFormat.WebMVp9;
+        var htsOut = Path.Combine(packageDirectory, name + "_hts_" + HtsAspectKey(options.HtsAspect) + (webm ? ".webm" : ".mp4"));
+        string[] htsArgs = webm
+            ? ["-y", "-hide_banner", "-loglevel", "error", "-i", sourceVideoPath, "-map", "0:v:0", "-vf", BuildHtsFilter(options.HtsAspect), "-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0", "-an", "-sn", "-dn", htsOut]
+            : ["-y", "-hide_banner", "-loglevel", "error", "-i", sourceVideoPath, "-map", "0:v:0", "-vf", BuildHtsFilter(options.HtsAspect), "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-an", "-sn", "-dn", "-movflags", "+faststart", htsOut];
+
+        var mobileOut = Path.Combine(packageDirectory, name + "_mobile_9x16.mp4");
+        string[] mobileArgs = ["-y", "-hide_banner", "-loglevel", "error", "-i", sourceVideoPath, "-map", "0:v:0", "-vf", VerticalCropFilter,
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p", "-an", "-sn", "-dn", "-movflags", "+faststart", mobileOut];
+
+        var shortsOut = Path.Combine(packageDirectory, name + "_shorts_9x16.mp4");
+        var dur = options.DurationSec > 0 ? options.DurationSec : DefaultClipSeconds;
+        var shorts = new List<string>(40) { "-y", "-hide_banner", "-loglevel", "error", "-i", sourceVideoPath };
+        if (!string.IsNullOrWhiteSpace(bgmPath))
+        {
+            shorts.Add("-stream_loop"); shorts.Add("-1"); shorts.Add("-i"); shorts.Add(bgmPath);
+            shorts.Add("-map"); shorts.Add("0:v:0"); shorts.Add("-map"); shorts.Add("1:a:0");
+        }
+        else { shorts.Add("-map"); shorts.Add("0:v:0"); }
+        shorts.Add("-vf"); shorts.Add(VerticalCropFilter);
+        shorts.Add("-c:v"); shorts.Add("libx264"); shorts.Add("-preset"); shorts.Add("medium"); shorts.Add("-crf"); shorts.Add("20"); shorts.Add("-pix_fmt"); shorts.Add("yuv420p");
+        if (!string.IsNullOrWhiteSpace(bgmPath))
+        {
+            shorts.Add("-c:a"); shorts.Add("aac"); shorts.Add("-b:a"); shorts.Add(AudioMuxService.AudioBitrate);
+            shorts.Add("-af"); shorts.Add("afade=t=out:st=" + AudioMuxService.FadeStart(dur).ToString("0.###", inv) + ":d=" + AudioMuxService.FadeOutSec.ToString("0.###", inv));
+            shorts.Add("-shortest"); shorts.Add("-t"); shorts.Add(dur.ToString("0.###", inv));
+        }
+        else shorts.Add("-an");
+        shorts.Add("-movflags"); shorts.Add("+faststart"); shorts.Add(shortsOut);
+
+        return
+        [
+            new("hts", "🖥 HTS " + HtsAspectKey(options.HtsAspect).Replace('x', ':'), hw, hh, htsOut, htsArgs),
+            new("mobile", "📱 StockSuite 모바일 9:16", 1080, 1920, mobileOut, mobileArgs),
+            new("shorts", "🎬 SNS 쇼츠 9:16" + (string.IsNullOrWhiteSpace(bgmPath) ? " (무음)" : " + BGM"), 1080, 1920, shortsOut, shorts.ToArray()),
+        ];
+    }
+
+    /// <summary>
+    /// 📦 원클릭 멀티 타겟 패키지 — 단일 원본 → HTS 울트라와이드 · 모바일 9:16 · 쇼츠 9:16+BGM 동시 생성.
+    /// 규격별 실패 격리([부분 구제]) · 산출물 옆 <c>.meta.json</c>(isExported) 기록 → 갤러리 📦 필터 노출. 절대 throw 하지 않음(인자 오류 제외).
+    /// </summary>
+    public async Task<MultiExportResult> ExportMultiTargetPackageAsync(string sourceVideoPath, MultiExportOptions options, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var none = Array.Empty<string>();
+        if (string.IsNullOrWhiteSpace(sourceVideoPath) || !File.Exists(sourceVideoPath))
+            return new(none, none, null, "⚠ 원본 영상을 찾을 수 없습니다.");
+        string src, pkg;
+        try
+        {
+            src = Path.GetFullPath(sourceVideoPath);
+            pkg = string.IsNullOrWhiteSpace(options.OutputDirectory)
+                ? Path.Combine(Path.GetDirectoryName(src) ?? ".", Path.GetFileNameWithoutExtension(src) + "_package")
+                : Path.GetFullPath(options.OutputDirectory);
+            Directory.CreateDirectory(pkg);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            Program.Log("StockSuite.MultiPkg", ex);
+            return new(none, none, null, "⚠ 패키지 폴더 생성 실패: " + ex.Message);
+        }
+
+        var dur = options.DurationSec > 0 ? options.DurationSec : DefaultClipSeconds;
+        string? bgm = options.BgmPath?.Trim().Trim('"');
+        if (string.IsNullOrWhiteSpace(bgm) || !File.Exists(bgm))
+        {
+            bgm = null;
+            if (options.BgmPreset is not (SnsBgmPreset.None or SnsBgmPreset.CustomFile))
+            {
+                try { bgm = BgmResolver(options.BgmPreset, dur); }
+                catch (Exception ex) { Program.Log("StockSuite.MultiPkg.Bgm", ex); bgm = null; }   // BGM 실패 → 무음 쇼츠 폴백
+            }
+        }
+
+        var generated = new List<string>(3);
+        var failed = new List<string>(3);
+        string? lastError = null;
+        foreach (var p in BuildMultiTargetProfiles(src, options, pkg, bgm))
+        {
+            if (ct.IsCancellationRequested) break;
+            string? err;
+            try { err = await TryFfmpegAsync(p.Args, p.OutputPath, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { TryDelete(p.OutputPath); break; }
+            catch (Exception ex) { Program.Log("StockSuite.MultiPkg." + p.Key, ex); err = ex.Message; }
+            if (err is null)
+            {
+                generated.Add(p.OutputPath);
+                WriteExportMeta(p, src);
+            }
+            else
+            {
+                TryDelete(p.OutputPath);
+                failed.Add(p.Key);
+                lastError = p.Label + ": " + err;
+            }
+        }
+
+        var n = generated.Count.ToString(CultureInfo.InvariantCulture);
+        string msg;
+        if (ct.IsCancellationRequested) msg = "취소됨 — " + n + "개 보존";
+        else if (generated.Count == 0) msg = "⚠ 멀티 패키지 생성 실패 — " + (lastError ?? "알 수 없는 오류");
+        else if (failed.Count > 0) msg = "📦 멀티 패키지 " + n + "/3 생성 (실패: " + string.Join(", ", failed) + ") → " + pkg;
+        else msg = "📦 올인원 멀티 패키지 3종 생성 완료 → " + pkg;
+        return new(generated, failed, pkg, msg);
+    }
+
+    private static void WriteExportMeta(MultiExportProfile p, string sourcePath)
+    {
+        try
+        {
+            var inv = CultureInfo.InvariantCulture;
+            var res = p.Width.ToString(inv) + "x" + p.Height.ToString(inv);
+            var json = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["title"] = Path.GetFileNameWithoutExtension(sourcePath) + " · " + p.Label,
+                ["resolution"] = res,
+                ["isExported"] = true,
+                ["exportProfile"] = p.Key,
+                ["sourcePath"] = sourcePath,
+                ["createdAt"] = DateTime.Now.ToString("o", inv),
+            });
+            File.WriteAllText(Path.ChangeExtension(p.OutputPath, null) + ".meta.json", json);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException) { Program.Log("StockSuite.MultiPkg.Meta", ex); }
     }
 
     /// <summary>

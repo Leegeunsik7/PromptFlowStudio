@@ -204,6 +204,7 @@ public sealed class PublishViewModel : IDisposable
         DurationSec = 0;
         SeoMessage = null;
         StockSuiteMessage = null;
+        MultiPackageMessage = null;
         StockSuiteExported = StockSuiteRestartPending = false;
         BgmStatus = null;
         SrtPath = srtPath is { Length: > 0 } && File.Exists(srtPath) ? srtPath : YouTubeShortsPublisher.ResolveSrtPath(VideoPath);
@@ -247,6 +248,42 @@ public sealed class PublishViewModel : IDisposable
             return false;
         }
         finally { IsStockSuiteBusy = false; Notify(); }
+    }
+
+    // ── 📦 올인원 멀티 타겟 패키지 ──
+    public PromptFlowStudio.Services.Export.HtsUltraAspect MultiHtsAspect { get; set; } = PromptFlowStudio.Services.Export.HtsUltraAspect.Ultra21x9;
+    public bool IsMultiPackageBusy { get; private set; }
+    public string? MultiPackageMessage { get; private set; }
+
+    /// <summary>📦 HTS 울트라와이드 · 모바일 9:16 · 쇼츠 9:16+BGM 동시 생성 — BGM 은 발행 BGM 선택을 따름(무음이면 핀테크 신스웨이브).</summary>
+    public async Task<bool> ExportMultiPackageAsync(CancellationToken ct = default)
+    {
+        if (_stockSuite is null || IsMultiPackageBusy || !IsOpen) return false;
+        IsMultiPackageBusy = true;
+        MultiPackageMessage = "📦 멀티 패키지 생성 중…";
+        Notify();
+        try
+        {
+            var preset = Bgm == PromptFlowStudio.Services.Export.SnsBgmPreset.None ? PromptFlowStudio.Services.Export.SnsBgmPreset.FintechSynthwave : Bgm;
+            var opts = new PromptFlowStudio.Services.Export.MultiExportOptions
+            {
+                HtsAspect = MultiHtsAspect,
+                HtsFormat = StockSuiteFormat,
+                BgmPreset = preset,
+                BgmPath = preset == PromptFlowStudio.Services.Export.SnsBgmPreset.CustomFile ? CustomBgmPath : null,
+                DurationSec = DurationSec,
+            };
+            var r = await _stockSuite.ExportMultiTargetPackageAsync(VideoPath, opts, ct).ConfigureAwait(false);
+            MultiPackageMessage = r.Message;
+            return r.Ok;
+        }
+        catch (Exception ex)
+        {
+            Program.Log("Publish.MultiPkg", ex);
+            MultiPackageMessage = "⚠ 멀티 패키지 실패: " + ex.Message;
+            return false;
+        }
+        finally { IsMultiPackageBusy = false; Notify(); }
     }
 
     /// <summary>🚀 StockSuite 실행 — 이미 실행 중이면 <see cref="StockSuiteRestartPending"/> 로 재실행 확인을 요구.</summary>
