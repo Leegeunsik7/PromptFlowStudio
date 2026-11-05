@@ -397,17 +397,20 @@ public sealed class StockSuiteExporter
             // 🔎 HTS 대화면 고선명: 1080p Lanczos + Unsharp 재인코딩(무음). 실패 → 제로-오디오 스트림 복사 → 원본 복사 순 폴백.
             if (!webm && filter is not null)
             {
-                var sharpened = await TryFfmpegAsync(BuildSharpenArgs(sourcePath, temp, filter), temp, ct).ConfigureAwait(false);
+                // 🚀 1080p/4K · 60fps: 감지된 GPU 인코더(NVENC/QSV/AMF) 우선 → 실패 시 libx264 무중단 폴백.
+                var gpu = await ResolveGpuVendorAsync(ct).ConfigureAwait(false);
+                var sharpened = await TryEncodeMp4Async(sourcePath, temp, filter, gpu, ct).ConfigureAwait(false);
                 if (sharpened is not null && filterNoWm is not null)
                 {
                     TryDelete(temp);
-                    sharpened = await TryFfmpegAsync(BuildSharpenArgs(sourcePath, temp, filterNoWm), temp, ct).ConfigureAwait(false);
+                    sharpened = await TryEncodeMp4Async(sourcePath, temp, filterNoWm, gpu, ct).ConfigureAwait(false);
                     if (sharpened is null) tag = tag.Replace("📺 HUD 워터마크 · ", "⚠ 워터마크 생략 · ", StringComparison.Ordinal);
                 }
                 if (sharpened is null)
                 {
                     await SwapIntoPlaceAsync(temp, target, ct).ConfigureAwait(false);
                     WriteSourceMarker(target, sourcePath);
+                    if (gpu != GpuEncoderVendor.Cpu && Accel?.Active == gpu) tag = "🚀 " + HardwareAccelDetector.Label(gpu) + " · " + tag;
                     return new(true, target, false, "💼 StockSuite 내보내기 완료(" + tag + ") → " + target);
                 }
                 TryDelete(temp);
@@ -476,6 +479,31 @@ public sealed class StockSuiteExporter
         ct.ThrowIfCancellationRequested();
         if (!ok) return "ffmpeg 비정상 종료";
         return AmbientLoopService.IsValidOutput(output) ? null : "출력 파일 없음/손상";
+    }
+
+    /// <summary>🚀 GPU 가속 감지기(null = CPU 전용 · 앱 DI 는 <see cref="HardwareAccelDetector.Shared"/>).</summary>
+    public HardwareAccelDetector? Accel { get; set; }
+
+    private async Task<GpuEncoderVendor> ResolveGpuVendorAsync(CancellationToken ct)
+    {
+        var d = Accel;
+        if (d is null) return GpuEncoderVendor.Cpu;
+        try { return await d.DetectAsync(ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { Program.Log("StockSuite.HwAccel", ex); return GpuEncoderVendor.Cpu; }
+    }
+
+    /// <summary>MP4 재인코딩 — GPU 우선 시도, 실패 시 감지기 강등(<see cref="HardwareAccelDetector.MarkFailed"/>) 후 libx264 재시도. 성공 null.</summary>
+    private async Task<string?> TryEncodeMp4Async(string source, string output, string filter, GpuEncoderVendor gpu, CancellationToken ct)
+    {
+        if (gpu != GpuEncoderVendor.Cpu && Accel?.Active == gpu)
+        {
+            var hw = await TryFfmpegAsync(BuildSharpenArgs(source, output, filter, gpu), output, ct).ConfigureAwait(false);
+            if (hw is null) return null;
+            Program.Log("StockSuite.HwAccel", new InvalidOperationException(HardwareAccelDetector.H264Encoder(gpu) + " 실패(" + hw + ") — libx264 폴백"));
+            Accel?.MarkFailed();
+            TryDelete(output);
+        }
+        return await TryFfmpegAsync(BuildSharpenArgs(source, output, filter), output, ct).ConfigureAwait(false);
     }
 
     /// <summary>HTS 배경용 VP9 인자 — <see cref="AmbientLoopService.BuildWebMArgs"/> 위임.</summary>
@@ -727,6 +755,20 @@ public sealed class StockSuiteExporter
     /// MP4 는 <c>+faststart</c>.
     /// </summary>
     public static string[] BuildSharpenArgs(string inputPath, string outputPath) => BuildSharpenArgs(inputPath, outputPath, SharpenFilter);
+
+    /// <summary>🚀 H.264 재인코딩 인자 — <paramref name="vendor"/> 하드웨어 인코더 바인딩(CPU = libx264 기존 인자). GPU 는 <c>-pix_fmt yuv420p</c> 유지.</summary>
+    public static string[] BuildSharpenArgs(string inputPath, string outputPath, string videoFilter, GpuEncoderVendor vendor)
+    {
+        if (vendor == GpuEncoderVendor.Cpu) return BuildSharpenArgs(inputPath, outputPath, videoFilter);
+        var codec = HardwareAccelDetector.VideoCodecArgs(vendor);
+        var a = new List<string>(32) { "-y", "-hide_banner", "-loglevel", "error", "-i", inputPath, "-map", "0:v:0", "-vf", videoFilter };
+        a.AddRange(codec);
+        a.Add("-pix_fmt"); a.Add("yuv420p");
+        a.Add("-an"); a.Add("-sn"); a.Add("-dn");
+        if (outputPath.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)) { a.Add("-movflags"); a.Add("+faststart"); }
+        a.Add(outputPath);
+        return a.ToArray();
+    }
 
     /// <summary>H.264 재인코딩 인자 — 임의 필터 체인(<see cref="BuildVideoFilter"/> · 샤프닝/60fps 보간) 주입.</summary>
     public static string[] BuildSharpenArgs(string inputPath, string outputPath, string videoFilter)

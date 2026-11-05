@@ -27,6 +27,7 @@
 @inject PromptFlowStudio.Services.Configuration.AppSettingsManager AppSettings
 @inject PromptFlowStudio.Services.Platform.IClipboardService Clipboard
 @inject PromptFlowStudio.Services.Export.StockSuiteExporter StockSuite
+@inject PromptFlowStudio.Services.ProcessBridge.StockSuiteProcessMonitor StockMon
 @inject PromptFlowStudio.Services.Prompt.PresetManagerService Presets
 @inject PromptFlowStudio.Services.Render.MediaProbeService Probe
 @inject PromptFlowStudio.Services.Export.StockSuiteWatchlistService Watchlist
@@ -44,6 +45,15 @@
             <button class="ws-back" @onclick='() => Nav.NavigateTo("")'>← 워크스페이스</button>
             <button class="ws-back" @onclick='() => Nav.NavigateTo("storyboard")'>🎬 스토리보드(여러 컷) →</button>
             <button class="ws-back" @onclick="ExpandToStoryboard" disabled="@(State.IsBusy || string.IsNullOrWhiteSpace(_prompt))" title="현재 프롬프트·시드로 1번 컷을 채우고 2~4번 컷을 기승전결로 자동 전개">🎬 스토리보드로 4컷 확장</button>
+            @{ var ssSnap = StockMon.Current; }
+            @if (ssSnap.IsRunning)
+            {
+                <button class="ws-ssmon on" @onclick="OnStockSuiteBadgeClick" title="@("클릭 → StockSuite 창 최상단 활성화 · 메모리 " + ssSnap.WorkingSetMb.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + " MB")">🟢 StockSuite 연동 활성 (PID: @(ssSnap.Pid.ToString(System.Globalization.CultureInfo.InvariantCulture)))</button>
+            }
+            else
+            {
+                <button class="ws-ssmon off" @onclick="OnStockSuiteBadgeClick" title="클릭 → StockSuite 원클릭 실행">⚪ StockSuite 미실행</button>
+            }
         </div>
         <h1 class="ws-title">새 프로젝트 <span class="ws-title-g">텍스트 → 영상</span>
             <span class="ws-accel @AccelClass" title="Wan 2.1 엔진 상태">⚡ @(AccelClass == "ready" ? _vm.StatusBadge : "WAN 2.1 · " + AccelLabel)</span></h1>
@@ -819,6 +829,9 @@
     .ws-navrow { display: flex; gap: 14px; margin-bottom: 4px; }
     .ws-back { font: 700 12px/1 var(--mono); color: var(--text-muted); background: none; border: none; cursor: pointer; padding: 0 0 10px; }
     .ws-back:hover { color: var(--accent); }
+    .ws-ssmon { margin-left: auto; font: 700 11px/1 var(--mono); padding: 4px 10px; border-radius: 999px; cursor: pointer; border: 1px solid var(--border, #333); background: none; color: var(--text-muted); align-self: flex-start; }
+    .ws-ssmon.on { color: #22c55e; border-color: rgba(34,197,94,.45); background: rgba(34,197,94,.08); }
+    .ws-ssmon:hover { color: var(--accent); }
     .ws-title { font-size: 28px; font-weight: 900; letter-spacing: -.4px; color: var(--text-primary); margin: 0 0 6px; }
     .ws-title-g { background: linear-gradient(90deg, var(--flow-violet), var(--flow-cyan)); -webkit-background-clip: text; background-clip: text; color: transparent; }
     .ws-sub { font-size: 13.5px; color: var(--text-secondary); margin: 0; }
@@ -1804,6 +1817,29 @@
         }
     }
 
+    /// <summary>🟢 툴바 뱃지 — 실행 중이면 창 최상단 활성화, 미실행이면 원클릭 실행.</summary>
+    private void OnStockSuiteBadgeClick()
+    {
+        try
+        {
+            if (StockMon.IsRunning)
+            {
+                if (!StockMon.BringStockSuiteToFront()) { _camToast = "⚠ StockSuite 창을 활성화하지 못했습니다 — 작업 표시줄에서 직접 선택하세요."; _stockToast = null; }
+                return;
+            }
+            if (!StockCanLaunch) { _camToast = "⚠ StockSuite.exe 경로 미설정 (설정 ▸ 사용자 설정 ▸ StockSuite 실행 파일)"; _stockToast = null; return; }
+            LaunchStockSuite(false);
+            StockMon.Refresh();
+        }
+        catch (Exception ex) { Program.Log("Workspace.StockMon", ex); }
+    }
+
+    private void OnStockMonChanged()
+    {
+        try { _ = InvokeAsync(StateHasChanged); }
+        catch (Exception ex) { Program.Log("Workspace.StockMon", ex); }
+    }
+
     /// <summary>🚀 StockSuite 실행 — 이미 실행 중이면 토스트에 🔄 재실행 버튼 제시. 절대 throw 하지 않음(Launch 보장).</summary>
     private void LaunchStockSuite(bool restart)
     {
@@ -2178,6 +2214,8 @@
         State.OnChange += OnStateChanged;
         RenderQueue.OnChange += OnRenderQueueChanged;
         if (RenderQueue is PromptFlowStudio.Services.Render.RenderQueueService rqs) rqs.OnDurationStitched += OnDurationStitched;
+        StockMon.OnChanged += OnStockMonChanged;
+        StockMon.Start();   // 🟢 2초 주기 StockSuite 프로세스 폴링(싱글톤 · 멱등)
         InitDurationPickers();
         _vm = new PromptFlowStudio.ViewModels.PromptInputViewModel(Synth, Inspiration);
         _vm.SetOutputSize(_size);
@@ -2260,6 +2298,7 @@
         State.OnChange -= OnStateChanged;
         RenderQueue.OnChange -= OnRenderQueueChanged;
         if (RenderQueue is PromptFlowStudio.Services.Render.RenderQueueService rqs) rqs.OnDurationStitched -= OnDurationStitched;
+        StockMon.OnChanged -= OnStockMonChanged;
         _vm.PropertyChanged -= OnVmChanged;
         Presets.Changed -= OnUserPresetsChanged;
         var cts = Interlocked.Exchange(ref _liveCts, null);

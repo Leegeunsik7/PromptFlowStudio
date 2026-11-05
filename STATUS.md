@@ -1,13 +1,13 @@
-# Current Project Status - Active Milestone: 【Pro Suite】 매니페스트 엄격 매칭/롤백 · 🖥️ 4K UHD & 📺 핀테크 워터마크 인코더 · 🕒 프롬프트 타임머신
+# Current Project Status - Active Milestone: 【Perf Pro】 🚀 FFmpeg GPU 가속(NVENC/QSV/AMF) · 🟢 StockSuite 실시간 프로세스 모니터 · 📢 SNS -14 LUFS 음향 정규화
 - Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (net8.0-android 미검증: Android SDK 미설치)
-- Tests: FastUnit 582/582 PASS (Release)
+- Tests: FastUnit 586/586 PASS (Release)
 - Updated: 2026-11-05 (KST)
 
 ## Completed
-- 🧾 `.stocksuite_manifest.json`: `activeAsset`·`sourceRenderId`·`sourceSha256`·`sourceBytes`·`exportedAt`·`backupAsset`(+백업 출처) 원자 기록 — 직전 활성 출처를 백업 출처로 승계
-- 오탐 차단: `GalleryMediaService` 역방향 치유에서 파일명 매칭 제거 → 출처 마커 경로 · 매니페스트 SHA-256(렌더 ID/크기 후보) · 내용 SHA-256만 허용, `*.backup.*` 색인 제외
-- ↩️ 롤백: 덮어쓰기 직전 `bg_ambient.backup.mp4` 보존(동일 출처 재내보내기는 생략) · `RollbackPrevious()` 활성↔백업 맞교환(마커·매니페스트 교환, 핫리로드 신호) · PublishModal/갤러리 `[↩️ 이전 배경으로 복원]`
-- 🖥️ `StockSuiteResolution.Uhd4K`: `scale=3840:2160:flags=lanczos`(+Unsharp) · PublishModal 해상도 선택
-- 📺 HUD 워터마크: 좌상단 `ANG QUANT LAB · REALTIME STREAM` / 우상단 `● LIVE KST` drawtext(4K 2배 스케일) · 폰트 자동 탐색(맑은 고딕→Arial→Segoe, 없으면 fontfile 생략) · drawtext 실패 시 워터마크 제외 체인 재시도
-- 🕒 `PromptHistoryService`(신규·DI 양쪽): 10단계 링 버퍼 · 중복 무시 · 구독자 예외 격리 · Workspace `[🕒 되돌리기]` 드롭다운(강화/번역/3-Way/시황 무드 전후 + 입력 정지 1.5초) → 프롬프트(카메라 토큰)·시드 복원
-- Tests: `ManifestRollbackWatermarkHistoryTests` 4종 (strict manifest · rollback · 4K/watermark · prompt history)
+- 🚀 `Services/Render/HardwareAccelDetector`(신규): 1회 `ffmpeg -encoders` 프로브 → NVENC → QSV → AMF 후보별 1프레임 실검증 인코드(범용 빌드 목록 오탐 차단) · 결과 캐시 · 실패/부재 시 CPU
+- `StockSuiteExporter` MP4 재인코딩(1080p 고선명·4K·60fps): 감지 GPU 인코더 우선(`h264_nvenc -preset p4 -rc vbr -cq 22` / `h264_qsv -global_quality 22` / `h264_amf cqp 22`) → 실패 시 `MarkFailed()` 강등 후 libx264 무중단 폴백 · 성공 메시지 `🚀 {벤더}` 태그 · WebM(VP9)은 CPU 유지
+- `StockSuiteExporter.Accel` 프로퍼티(null = CPU 전용) — DI 양쪽 `HardwareAccelDetector.Shared` 결선
+- 🟢 `Services/Process/StockSuiteProcessMonitor`(신규 · ns `ProcessBridge` — `System.Diagnostics.Process` 해석 충돌 회피): 2초 Timer 폴링(재진입 차단) · PID/WorkingSet · 변화 시에만 `OnChanged` · 조회 예외 격리 · `BringStockSuiteToFront()` = `IsIconic`→`ShowWindow(SW_RESTORE)`+`SetForegroundWindow`(`#if WINDOWS`, 그 외 스텁)
+- Workspace 상단 툴바 뱃지: `🟢 StockSuite 연동 활성 (PID: n)` 클릭 → 창 활성화 / `⚪ StockSuite 미실행` 클릭 → 원클릭 실행(경로 미설정 시 안내 토스트) · 구독/해제 쌍 · `InvokeAsync(StateHasChanged)`
+- 📢 `AudioMuxService`: `-af loudnorm=I=-14:LRA=11:TP=-1.5,afade=…` + `-ar 48000`(loudnorm 192kHz 업샘플 방지) · 길이 미상 시 loudnorm 단독
+- Tests: `PerfProGpuProcessLoudnormTests` 4종 (GPU 감지/폴백 · exporter GPU→libx264 폴백 · 프로세스 모니터 · loudnorm) + 기존 BGM 테스트 기대값 갱신

@@ -85,7 +85,7 @@ public class BilingualBridgeBgmLauncherTests
         Assert.Contains("-i in.mp4 -stream_loop -1 -i bgm.mp3", s);
         Assert.Contains("-map 0:v:0 -map 1:a:0", s);
         Assert.Contains("-c:v copy -c:a aac -b:a 192k -shortest", s);
-        Assert.Contains("-af afade=t=out:st=8.5:d=1.5", s);
+        Assert.Contains("-af loudnorm=I=-14:LRA=11:TP=-1.5,afade=t=out:st=8.5:d=1.5", s);
         Assert.Contains("-t 10", s);
         Assert.Equal("out_sns.mp4", args[^1]);
 
@@ -114,7 +114,7 @@ public class BilingualBridgeBgmLauncherTests
             Assert.True(ok.Ok);
             Assert.Equal(AudioMuxService.BuildOutputPath(video), ok.OutputPath);
             Assert.NotNull(seen);
-            Assert.Contains("afade=t=out:st=8.5:d=1.5", seen!);
+            Assert.Contains("loudnorm=I=-14:LRA=11:TP=-1.5,afade=t=out:st=8.5:d=1.5", seen!);
 
             // ffmpeg 부재 → 원본 유지(예외 0)
             var none = await new AudioMuxService(() => null, run, dir).MuxAsync(video, SnsBgmPreset.CustomFile, bgm, 10);

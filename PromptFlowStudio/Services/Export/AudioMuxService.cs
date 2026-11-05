@@ -18,7 +18,7 @@ public sealed record AudioMuxResult(bool Ok, string OutputPath, string Message);
 
 /// <summary>
 /// [PromptFlowStudio] 🎵 SNS 쇼츠 경량 BGM 믹서 — 무음 Wan 2.1 영상에 배경음악을 합성(Muxing).
-///   ▸ <c>ffmpeg -i video -stream_loop -1 -i bgm -c:v copy -c:a aac -b:a 192k -shortest -af afade=t=out:st={d-1.5}:d=1.5 -t {d} out_sns.mp4</c>
+///   ▸ <c>ffmpeg -i video -stream_loop -1 -i bgm -c:v copy -c:a aac -b:a 192k -shortest -af loudnorm=I=-14:LRA=11:TP=-1.5,afade=t=out:st={d-1.5}:d=1.5 -ar 48000 -t {d} out_sns.mp4</c>
 ///   ▸ 비디오는 무손실 copy, 음악은 영상 길이(5/10/15s)에 정확히 맞춰 컷 + 끝 1.5초 페이드아웃. 짧은 음원은 루프.
 ///   ▸ 프리셋(핀테크 신스웨이브 · 로파이)은 <see cref="AiGenerativeMusicEngine.Synthesize"/> 로컬 결정적 합성(WAV 캐시 · 외부 에셋/네트워크 0).
 ///   ▸ ffmpeg 부재/실패/취소 → 예외 없이 Ok=false(호출부가 원본 발행으로 폴백).
@@ -28,6 +28,10 @@ public sealed class AudioMuxService
     public const double FadeOutSec = 1.5;
     public const string AudioBitrate = "192k";
     public const string OutputSuffix = "_sns";
+    /// <summary>📢 SNS 쇼츠/릴스 표준 라우드니스 — EBU R128 원패스 -14 LUFS · LRA 11 · True Peak -1.5 dBTP.</summary>
+    public const string LoudnormFilter = "loudnorm=I=-14:LRA=11:TP=-1.5";
+    /// <summary>loudnorm 내부 192kHz 업샘플 → AAC 출력 48kHz 고정.</summary>
+    public const string OutputSampleRate = "48000";
 
     private readonly Func<string?> _resolveFfmpeg;
     private readonly FfmpegRunner _run;
@@ -80,8 +84,8 @@ public sealed class AudioMuxService
     }
 
     /// <summary>
-    /// 합성 인자 — 비디오 copy · AAC 192k · 영상 길이 컷(-shortest + -t) · 끝 1.5초 페이드아웃.
-    /// 길이 미상(≤0)이면 -shortest 만으로 영상 끝에 맞춘다(페이드 생략).
+    /// 합성 인자 — 비디오 copy · AAC 192k · 영상 길이 컷(-shortest + -t) · <see cref="LoudnormFilter"/>(-14 LUFS) 정규화 → 끝 1.5초 페이드아웃.
+    /// 길이 미상(≤0)이면 -shortest 만으로 영상 끝에 맞춘다(정규화만 · 페이드 생략).
     /// </summary>
     public static string[] BuildMuxArgs(string videoPath, string bgmPath, double durationSec, string outputPath)
     {
@@ -94,11 +98,14 @@ public sealed class AudioMuxService
             "-map", "0:v:0", "-map", "1:a:0",
             "-c:v", "copy", "-c:a", "aac", "-b:a", AudioBitrate, "-shortest",
         };
+        a.Add("-af");
         if (durationSec > 0)
         {
-            a.Add("-af"); a.Add("afade=t=out:st=" + FadeStart(durationSec).ToString("0.###", inv) + ":d=" + FadeOutSec.ToString("0.###", inv));
+            a.Add(LoudnormFilter + ",afade=t=out:st=" + FadeStart(durationSec).ToString("0.###", inv) + ":d=" + FadeOutSec.ToString("0.###", inv));
             a.Add("-t"); a.Add(durationSec.ToString("0.###", inv));
         }
+        else a.Add(LoudnormFilter);
+        a.Add("-ar"); a.Add(OutputSampleRate);
         a.Add("-movflags"); a.Add("+faststart");
         a.Add(outputPath);
         return a.ToArray();
