@@ -1,17 +1,18 @@
 # Current Project Status
-- Active Milestone: 【Governance-Opt】 ⚡ 장중 듀얼 트랙 게이트 · 🚀 Process.Start 단일 관문 · 🛡️ Win32 P/Invoke 런타임 OS 가드
+- Active Milestone: 【Stability-Core】 🛡️ Pre-flight 디스크 센티넬 · 🔌 IPC 재접속 워치독 · ⏱️ 듀얼 스크린 동기 매니페스트
 - Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (Mobile: 로컬 Android SDK 부재로 미빌드)
-- Tests: FastUnit 623/623 · 전체 856/856 PASS (Release)
+- Tests: FastUnit 626/626 · 전체 859/859 PASS (Release)
 - Updated: 2026-11-05 (KST)
 
 ## Completed
-- ⚡ `ProcessCategory { HeavyEncoding, LightweightProbe, ShellExternal }` · `ProcessRunner.Classify`(ffprobe · `-frames:v 1`/`-vframes 1` = 경량 자동 분류) · `ProbeGate` 훅
-- ⚡ `TradingSafetyGuardService.RunProbeAsync`/`RunCategorizedAsync` — 경량 프로브 독립 퍼밋(4) · 중량 슬롯(1) 점유 중에도 즉시 실행 · `ActiveProbeSlots`
-- ⚡ `IProcessRunner.RunAsync(…, ProcessCategory)` · `RunGatedAsync(exe, category, body)` · `LumaFaceDetector`(1프레임) 경량 트랙 · `nvidia-smi` 경량 프로브 이관
-- 🚀 `IProcessRunner.LaunchExternal`/`LaunchExternalAsync`(http/https 외 스킴·제어문자·부재 경로 차단 · 예외 격리) · `SystemProcessRunner.Gateway`
-- 🚀 `Process.Start`/`ProcessCompat.Start` 호출부 이관(전체 9개): MediaLibrary · DeepLink · AutoUpdate · ResourceMonitor · CommercialEnhancement · ZeroTrust · YouTubeOAuth · StockSuiteExporter · HUD — 남은 직접 호출은 `ProcessRunner.LaunchExternal` 내부 1곳
-- 🛡️ `NativePlatformGuard.IsWindows`(테스트용 `SimulateNonWindows` 스코프) → `StockSuiteProcessMonitor.ActivateWindow` · `TrySetDesktopWallpaper` no-op 가드
-- 테스트 `GovernanceOptTests` 3종
+- 🛡️ `Services/Render/PreFlightResourceSentinel` — `CheckDiskSpace(dir, 5GB)` → `PreFlightCheckResult`(`Insufficient disk space: {free}MB available, {required}MB required.`) · 조회 불가 = 통과 · `FreeSpaceProvider` 주입
+- 🛡️ `StockSuiteExporter.PreFlight` · `CanSafelyEncode(estimatedOutputSize)` · 4K/60fps 단건 + 듀얼 분할 착수 전 Fail-Fast(백업·ffmpeg 미착수)
+- 🔌 `IpcConnectionState { Disconnected, Listening, Connected, Reconnecting }` · `OnConnectionStateChanged` · `ReconnectInterval`(3초) · 읽기/쓰기 IOException·ObjectDisposed → Reconnecting + 파이프 폐기·재생성
+- 🔌 `Workspace.razor` 배지 `🟡 Reconnecting...`(`.ws-ipc-wait`) · 구독/해제 쌍
+- ⏱️ `stocksuite_displays_sync.json`(syncId · loopDurationSec · fps · left/rightScreen · masterEpochUtc) 원자 기록 · `DualMonitorSplitResult.SyncManifestPath` · `DualSyncLoopSeconds`/`DualSyncFps`
+- ⏱️ IPC `MasterClockSync` — `BuildMasterClockSyncPacket` · `ComputeSyncOffset`(루프 내 오프셋·프레임) · `BroadcastMasterClockSyncAsync`(파이프 전용)
+- 🧪 `StabilityCoreSentinelIpcSyncTests` 3건
 
 ## Next
-- Mobile Android SDK 환경에서 빌드 검증
+- StockSuite 측 `MasterClockSync` 수신 → 두 WebView2 `currentTime` 시크 결선
+- 듀얼 루프 길이 ffprobe 자동 산출(현재 기본 15초)

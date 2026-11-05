@@ -14,6 +14,8 @@ namespace PromptFlowStudio.Services.Export;
 public sealed record DualMonitorSplitResult(string? LeftPath, string? RightPath, string? DisplayConfigPath, bool NeedsPathSetup, string Message)
 {
     public bool Ok => LeftPath is not null && RightPath is not null;
+    /// <summary>⏱️ 듀얼 스크린 동기 매니페스트(<c>stocksuite_displays_sync.json</c>) 경로 — 실패 시 null.</summary>
+    public string? SyncManifestPath { get; init; }
 }
 
 public sealed partial class StockSuiteExporter
@@ -24,6 +26,38 @@ public sealed partial class StockSuiteExporter
     public const int MaxBezelGapPixels = 400;
     public const string DualScreenPrefix = "bg_screen_";
     public const string DisplayConfigName = "stocksuite_displays.json";
+    public const string DisplaySyncName = "stocksuite_displays_sync.json";
+    public const double DefaultSyncLoopSeconds = 15.0;
+    public const int DefaultSyncFps = 60;
+
+    /// <summary>듀얼 화면 루프 길이(초) — 동기 매니페스트 기록값(0 이하 = 기본 15초).</summary>
+    public double DualSyncLoopSeconds { get; set; } = DefaultSyncLoopSeconds;
+    /// <summary>듀얼 화면 FPS — 동기 매니페스트 기록값(1~240 클램프).</summary>
+    public int DualSyncFps { get; set; } = DefaultSyncFps;
+
+    /// <summary>동기 ID — <c>sync_yyyyMMdd_HHmmss</c>(UTC).</summary>
+    public static string BuildSyncId(DateTimeOffset at) => "sync_" + at.UtcDateTime.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// ⏱️ 듀얼 스크린 동기 매니페스트 JSON — 두 WebView2 창이 동일 마스터 에포크(ms) 기준으로 프레임 오프셋을 산출해 장시간 타이머 드리프트(이음새 어긋남) 제거.
+    /// </summary>
+    public static string BuildDisplaySyncJson(string leftName, string rightName, double loopDurationSec, int fps, DateTimeOffset masterEpoch)
+    {
+        var loop = double.IsFinite(loopDurationSec) && loopDurationSec > 0 ? loopDurationSec : DefaultSyncLoopSeconds;
+        using var ms = new MemoryStream();
+        using (var w = new Utf8JsonWriter(ms, new JsonWriterOptions { Indented = true }))
+        {
+            w.WriteStartObject();
+            w.WriteString("syncId", BuildSyncId(masterEpoch));
+            w.WriteNumber("loopDurationSec", Math.Round(loop, 3));
+            w.WriteNumber("fps", Math.Clamp(fps, 1, 240));
+            w.WriteString("leftScreen", leftName);
+            w.WriteString("rightScreen", rightName);
+            w.WriteNumber("masterEpochUtc", masterEpoch.ToUnixTimeMilliseconds());
+            w.WriteEndObject();
+        }
+        return Encoding.UTF8.GetString(ms.ToArray());
+    }
 
     /// <summary>⏩ 정방향 크로스페이드 루프 인자 — <see cref="AmbientLoopService.BuildAmbientArgs(string, string, LoopMode, bool, double, double)"/> 위임(역재생 없음).</summary>
     public static string[] BuildForwardCrossfadeLoopArgs(string inputPath, string outputPath, double sourceSeconds = AmbientLoopService.DefaultSourceSeconds, double crossfadeSeconds = AmbientLoopService.DefaultCrossfadeSeconds)
@@ -111,6 +145,8 @@ public sealed partial class StockSuiteExporter
         {
             return new(null, null, null, true, "StockSuite 에셋 경로 접근 실패: " + ex.Message);
         }
+        var pre = PreFlight.CheckDiskSpace(fullDir);   // 🛡️ 듀얼 분할(2× 인코딩) Fail-Fast
+        if (!pre.Ok) return new(null, null, null, false, pre.Message!);
 
         var outs = new string?[2];
         var errors = new StringBuilder();
@@ -150,7 +186,20 @@ public sealed partial class StockSuiteExporter
                 TryDelete(tmp);
                 cfg = null;
             }
-            return new(outs[0], outs[1], cfg, false, "🖥️ 듀얼 모니터 분할 완료 (" + FormatLabel(fmt) + " · 베젤 " + ClampBezel(bezelGapPixels).ToString(CultureInfo.InvariantCulture) + "px)");
+            string? sync = Path.Combine(fullDir, DisplaySyncName);
+            var stmp = sync + TempExt;
+            try
+            {
+                File.WriteAllText(stmp, BuildDisplaySyncJson(Path.GetFileName(outs[0]!), Path.GetFileName(outs[1]!), DualSyncLoopSeconds, DualSyncFps, UtcNow()));
+                File.Move(stmp, sync, overwrite: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Program.Log("StockSuite.DisplaySync", ex);
+                TryDelete(stmp);
+                sync = null;
+            }
+            return new(outs[0], outs[1], cfg, false, "🖥️ 듀얼 모니터 분할 완료 (" + FormatLabel(fmt) + " · 베젤 " + ClampBezel(bezelGapPixels).ToString(CultureInfo.InvariantCulture) + "px)") { SyncManifestPath = sync };
         }
         var part = outs[0] is not null || outs[1] is not null ? "[부분 구제] 일부 화면만 생성 —" : "듀얼 모니터 분할 실패 —";
         return new(outs[0], outs[1], null, false, part + errors.ToString());

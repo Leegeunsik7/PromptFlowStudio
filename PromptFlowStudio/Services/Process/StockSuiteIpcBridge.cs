@@ -20,6 +20,9 @@ public sealed record StockSuiteIpcMessage(StockSuiteIpcKind Kind, string? Ticker
 /// <summary>테마 브로드캐스트 전달 경로.</summary>
 public enum IpcSendRoute { Failed = 0, Pipe, FileFallback }
 
+/// <summary>🔌 파이프 연결 상태 — 끊김 후 재접속 대기 = <see cref="Reconnecting"/>(🟡).</summary>
+public enum IpcConnectionState { Disconnected = 0, Listening, Connected, Reconnecting }
+
 /// <summary>
 /// 🔌 StockSuite ↔ PFS 양방향 Named Pipe 브릿지(<c>\\.\pipe\StockSuiteBridge</c> · 줄 단위 UTF-8 JSON).
 ///   ▸ PFS = 듀플렉스 서버(현재 사용자 한정 ACL) · StockSuite = 클라이언트. 연결 끊김 시 자동 재대기(1초 백오프).
@@ -48,7 +51,7 @@ public sealed class StockSuiteIpcBridge : IDisposable
     private NamedPipeServerStream? _pipe;
     private System.Threading.Timer? _debounce;
     private (HtsHudTheme Theme, int Dimmer) _queued;
-    private int _connected, _disposed;
+    private int _connected, _disposed, _state;
 
     public StockSuiteIpcBridge(Func<string?>? fallbackDirectory, string? pipeName = null)
     {
@@ -71,6 +74,13 @@ public sealed class StockSuiteIpcBridge : IDisposable
     public event Action<string, IReadOnlyList<OhlcvCandle>>? OnQuotePushed;
     /// <summary>연결 상태 변화.</summary>
     public event Action? OnConnectionChanged;
+    /// <summary>🔌 연결 상태 전이(Listening/Connected/Reconnecting/Disconnected · 백그라운드 스레드).</summary>
+    public event Action<IpcConnectionState>? OnConnectionStateChanged;
+
+    /// <summary>현재 연결 상태.</summary>
+    public IpcConnectionState ConnectionState => (IpcConnectionState)Volatile.Read(ref _state);
+    /// <summary>파이프 IO 장애 후 재생성 주기(기본 3초 · 테스트 단축 가능).</summary>
+    public TimeSpan ReconnectInterval { get; set; } = TimeSpan.FromSeconds(3);
 
     /// <summary>서버 수신 루프 시작(멱등).</summary>
     public void Start()
@@ -83,16 +93,21 @@ public sealed class StockSuiteIpcBridge : IDisposable
 
     private async Task ServeLoopAsync(CancellationToken ct)
     {
+        var hadConnection = false;
         while (!ct.IsCancellationRequested)
         {
             NamedPipeServerStream? pipe = null;
+            var faulted = false;
             try
             {
+                if (!hadConnection) SetState(IpcConnectionState.Listening);
                 pipe = new NamedPipeServerStream(_pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
                     PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly, PipeBufferSize, PipeBufferSize);   // 버퍼 0 이면 상대 미독 시 쓰기 블록
                 await pipe.WaitForConnectionAsync(ct).ConfigureAwait(false);
                 lock (_gate) _pipe = pipe;
+                hadConnection = true;
                 SetConnected(true);
+                SetState(IpcConnectionState.Connected);
                 await ReadLoopAsync(pipe, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
@@ -100,7 +115,7 @@ public sealed class StockSuiteIpcBridge : IDisposable
             {
                 Program.Log("StockSuiteIpc.Serve", ex);
                 if (ex is PlatformNotSupportedException) break;   // 파이프 미지원 플랫폼 → 파일 폴백 전용
-                try { await Task.Delay(1000, ct).ConfigureAwait(false); } catch (OperationCanceledException) { break; }
+                faulted = true;
             }
             finally
             {
@@ -108,7 +123,15 @@ public sealed class StockSuiteIpcBridge : IDisposable
                 SetConnected(false);
                 pipe?.Dispose();
             }
+            if (ct.IsCancellationRequested) break;
+            // 🟡 StockSuite 재시작/종료 → Reconnecting 유지(재접속 시 Connected 복귀). IO 장애 = 주기 대기 후 파이프 재생성.
+            if (hadConnection) SetState(IpcConnectionState.Reconnecting);
+            if (!faulted) continue;
+            var wait = ReconnectInterval;
+            if (wait <= TimeSpan.Zero) wait = TimeSpan.FromMilliseconds(10);
+            try { await Task.Delay(wait, ct).ConfigureAwait(false); } catch (OperationCanceledException) { break; }
         }
+        SetState(IpcConnectionState.Disconnected);
     }
 
     private async Task ReadLoopAsync(Stream pipe, CancellationToken ct)
@@ -272,6 +295,7 @@ public sealed class StockSuiteIpcBridge : IDisposable
         {
             Program.Log("StockSuiteIpc.Write", ex);
             LastError = ex.GetType().Name + ": " + ex.Message;
+            if (ex is IOException or ObjectDisposedException) BeginReconnect(pipe);
             return false;
         }
         finally { try { _writeLock.Release(); } catch (ObjectDisposedException) { } }
@@ -302,6 +326,65 @@ public sealed class StockSuiteIpcBridge : IDisposable
         return true;
     }
 
+    /// <summary>쓰기 장애 → Reconnecting 전이 + 파이프 폐기(수신 루프가 예외로 깨어나 주기 재생성).</summary>
+    private void BeginReconnect(NamedPipeServerStream pipe)
+    {
+        if (Volatile.Read(ref _disposed) == 1) return;
+        SetState(IpcConnectionState.Reconnecting);
+        lock (_gate) if (ReferenceEquals(_pipe, pipe)) _pipe = null;
+        SetConnected(false);
+        try { pipe.Dispose(); } catch (IOException) { }
+    }
+
+    private void SetState(IpcConnectionState state)
+    {
+        if (Interlocked.Exchange(ref _state, (int)state) == (int)state) return;
+        var h = OnConnectionStateChanged;
+        if (h is null) return;
+        try { h(state); } catch (Exception ex) { Program.Log("StockSuiteIpc.OnState", ex); }
+    }
+
+    /// <summary>⏱️ 마스터 에포크 기준 루프 내 오프셋(초)·프레임 — 두 디스플레이가 동일 프레임으로 시크.</summary>
+    public static (double OffsetSec, long Frame) ComputeSyncOffset(long masterEpochUtcMs, long nowUtcMs, double loopDurationSec, int fps)
+    {
+        if (!double.IsFinite(loopDurationSec) || loopDurationSec <= 0) return (0, 0);
+        var f = Math.Clamp(fps, 1, 240);
+        var loopMs = (long)Math.Round(loopDurationSec * 1000.0);
+        if (loopMs <= 0) return (0, 0);
+        var elapsed = nowUtcMs - masterEpochUtcMs;
+        var mod = ((elapsed % loopMs) + loopMs) % loopMs;
+        var offset = mod / 1000.0;
+        return (offset, (long)Math.Floor(offset * f));
+    }
+
+    /// <summary>MasterClockSync 패킷(1줄 JSON) — <c>{"type":"MasterClockSync","timestamp":…,"syncId":…,"offsetSec":…,"frame":…}</c>.</summary>
+    public static string BuildMasterClockSyncPacket(string syncId, long masterEpochUtcMs, double loopDurationSec, int fps, DateTimeOffset at)
+    {
+        var now = at.ToUnixTimeMilliseconds();
+        var (offset, frame) = ComputeSyncOffset(masterEpochUtcMs, now, loopDurationSec, fps);
+        var buf = new System.Buffers.ArrayBufferWriter<byte>(192);
+        using (var w = new Utf8JsonWriter(buf))
+        {
+            w.WriteStartObject();
+            w.WriteString("type", "MasterClockSync");
+            w.WriteNumber("timestamp", now);
+            w.WriteString("syncId", syncId ?? "");
+            w.WriteNumber("masterEpochUtc", masterEpochUtcMs);
+            w.WriteNumber("fps", Math.Clamp(fps, 1, 240));
+            w.WriteNumber("offsetSec", Math.Round(offset, 4));
+            w.WriteNumber("frame", frame);
+            w.WriteEndObject();
+        }
+        return Encoding.UTF8.GetString(buf.WrittenSpan);
+    }
+
+    /// <summary>⏱️ 듀얼 디스플레이 마스터 클럭 동기 브로드캐스트 — 파이프 연결 시에만(미연결 = false · 파일 폴백 없음).</summary>
+    public Task<bool> BroadcastMasterClockSyncAsync(string syncId, long masterEpochUtcMs, double loopDurationSec, int fps, CancellationToken ct = default)
+    {
+        if (Volatile.Read(ref _disposed) == 1 || !IsConnected) return Task.FromResult(false);
+        return TryWritePipeAsync(BuildMasterClockSyncPacket(syncId, masterEpochUtcMs, loopDurationSec, fps, UtcNow()), ct);
+    }
+
     private void SetConnected(bool on)
     {
         if (Interlocked.Exchange(ref _connected, on ? 1 : 0) == (on ? 1 : 0)) return;
@@ -326,5 +409,6 @@ public sealed class StockSuiteIpcBridge : IDisposable
         OnTickerSelected = null;
         OnQuotePushed = null;
         OnConnectionChanged = null;
+        OnConnectionStateChanged = null;
     }
 }

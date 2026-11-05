@@ -178,6 +178,16 @@ public sealed partial class StockSuiteExporter
     /// <summary>🎨 단건 내보내기 LUT 프로필(작업실 드롭다운 결선) — FFmpeg <c>eq</c> 체인 번인.</summary>
     public LutProfile Lut { get; set; } = LutProfile.None;
 
+    /// <summary>🛡️ 대용량 인코딩(4K·60fps·듀얼 분할) 착수 전 디스크 Fail-Fast 센티넬.</summary>
+    public PreFlightResourceSentinel PreFlight { get; set; } = new();
+
+    /// <summary>대상 경로(null = 설정 경로)에 예상 산출 크기만큼 여유가 있는지 — 조회 불가 시 true.</summary>
+    public bool CanSafelyEncode(long estimatedOutputSize, string? targetDir = null)
+    {
+        var dir = string.IsNullOrWhiteSpace(targetDir) ? ConfiguredDirectory : targetDir.Trim().Trim('"');
+        return dir is null || PreFlight.CheckDiskSpace(dir, estimatedOutputSize).Ok;
+    }
+
     public StockSuiteExporter() : this(null) { }
 
     /// <param name="targetDirProvider">설정된 StockSuite 에셋 경로 공급자(null/빈 값 = 미설정).</param>
@@ -355,6 +365,11 @@ public sealed partial class StockSuiteExporter
             var target = Path.Combine(fullDir, name);
             if (string.Equals(Path.GetFullPath(sourcePath), target, StringComparison.OrdinalIgnoreCase))
                 return new(true, target, false, "이미 StockSuite 에셋 위치의 파일입니다.");
+            if (resolution == StockSuiteResolution.Uhd4K || (smooth60 ?? DefaultSmooth60))
+            {
+                var pre = PreFlight.CheckDiskSpace(fullDir);   // 🛡️ 4K/60fps 대용량 인코딩 Fail-Fast(백업·인코딩 착수 전)
+                if (!pre.Ok) return new(false, null, false, pre.Message!);
+            }
             BackupActiveAsset(target, sourcePath);   // ↩️ 덮어쓰기 직전 이전 배경 보존
 
             var sharpenOn = sharpen ?? DefaultSharpen;

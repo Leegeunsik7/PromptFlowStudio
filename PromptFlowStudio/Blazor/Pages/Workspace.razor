@@ -63,6 +63,7 @@
                 <button class="ws-ssmon off" @onclick="OnStockSuiteBadgeClick" title="클릭 → StockSuite 원클릭 실행">⚪ StockSuite 미실행</button>
             }
             @if (Ipc.IsConnected) { <span class="ws-ipc" title="StockSuiteBridge Named Pipe 양방향 연결 — 종목 수신 · HUD 테마 동기화">🔌 IPC</span> }
+            else if (Ipc.ConnectionState == PromptFlowStudio.Services.ProcessBridge.IpcConnectionState.Reconnecting) { <span class="ws-ipc ws-ipc-wait" title="StockSuite 파이프 끊김 — 3초 주기 자동 재접속 중(파일 폴백 유지)">🟡 Reconnecting...</span> }
             @if (Journal.RecoveringCount > 0) { <span class="ws-recover" role="status">[🔄 미완료 클라우드 작업 복원 중: @(Journal.RecoveringCount.ToString(CultureInfo.InvariantCulture))건]</span> }
             else if (Journal.Count > 0) { <button class="ws-recover ws-jbadge" @onclick="OpenJournal" title="클릭 → 저널 인스펙터(수동 회수·재시도·삭제)">[🔄 미완료 클라우드 작업: @(Journal.Count.ToString(CultureInfo.InvariantCulture))건]</button> }
             @if (_retryMsg is not null) { <span class="ws-retry" role="status">@_retryMsg</span> }
@@ -903,6 +904,7 @@
     .ws-ssmon { margin-left: auto; font: 700 11px/1 var(--mono); padding: 4px 10px; border-radius: 999px; cursor: pointer; border: 1px solid var(--border, #333); background: none; color: var(--text-muted); align-self: flex-start; }
     .ws-ssmon.on { color: #22c55e; border-color: rgba(34,197,94,.45); background: rgba(34,197,94,.08); }
     .ws-ssmon:hover { color: var(--accent); }
+    .ws-ipc-wait { border-color: rgba(250,204,21,.45) !important; color: #facc15 !important; background: rgba(250,204,21,.08) !important; }
     .ws-ipc { font: 700 11px/1 var(--mono); padding: 4px 10px; border-radius: 999px; border: 1px solid rgba(56,189,248,.45); color: #38bdf8; background: rgba(56,189,248,.08); align-self: flex-start; }
     .ws-recover { font: 700 11px/1 var(--mono); padding: 4px 10px; border-radius: 999px; border: 1px solid rgba(250,204,21,.45); color: #facc15; background: rgba(250,204,21,.08); align-self: flex-start; animation: ws-recover-pulse 1.4s ease-in-out infinite; }
     @@keyframes ws-recover-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
@@ -2410,6 +2412,8 @@
         });
     }
 
+    private void OnIpcState(PromptFlowStudio.Services.ProcessBridge.IpcConnectionState _) => OnHubChanged();
+
     private void OnHubChanged()
     {
         try { _ = InvokeAsync(StateHasChanged); }
@@ -2669,6 +2673,7 @@
         Journal.OnChanged += OnHubChanged;
         Resilience.OnRetryAttempt += OnRetryAttempt;
         Ipc.OnConnectionChanged += OnHubChanged;
+        Ipc.OnConnectionStateChanged += OnIpcState;
         Ipc.OnTickerSelected += OnIpcTicker;
         Ipc.Start();   // 🔌 멱등
         InitDurationPickers();
@@ -2809,6 +2814,7 @@
         Journal.OnChanged -= OnHubChanged;
         Resilience.OnRetryAttempt -= OnRetryAttempt;
         Ipc.OnConnectionChanged -= OnHubChanged;
+        Ipc.OnConnectionStateChanged -= OnIpcState;
         Ipc.OnTickerSelected -= OnIpcTicker;
         _vm.PropertyChanged -= OnVmChanged;
         Presets.Changed -= OnUserPresetsChanged;
