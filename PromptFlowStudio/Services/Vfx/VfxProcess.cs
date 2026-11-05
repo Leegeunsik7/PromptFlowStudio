@@ -6,6 +6,7 @@ using System.Globalization;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using PromptFlowStudio.Services.Engines;
 using PromptFlowStudio.Services.Spatial;   // ReadExactAsync
 
 namespace PromptFlowStudio.Services.Vfx;
@@ -31,15 +32,14 @@ internal static class VfxProcess
         return null;
     }
 
-    public static Process Start(string exe, IEnumerable<string> args, bool stdin, CancellationToken ct)
-    {
-        var psi = new ProcessStartInfo { FileName = exe, RedirectStandardOutput = !stdin, RedirectStandardInput = stdin, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in args) psi.ArgumentList.Add(a);
-        var p = new Process { StartInfo = psi };
-        if (!p.StartCompat()) { p.Dispose(); throw new InvalidOperationException("프로세스 시작 실패: " + Path.GetFileName(exe)); }
-        _ = p.StandardError.ReadToEndAsync(ct);
-        return p;
-    }
+    /// <summary>🛡️ <see cref="IProcessRunner.StartStreaming"/> 경유 스트리밍 시작(거버넌스 우선순위 · stderr 자동 드레인) — 실패 시 예외.</summary>
+    public static Process Start(IProcessRunner runner, string exe, IEnumerable<string> args, bool stdin, CancellationToken ct)
+        => (runner ?? SystemProcessRunner.Shared).StartStreaming(exe, args, stdin, !stdin, ct)
+           ?? throw new InvalidOperationException("프로세스 시작 실패: " + Path.GetFileName(exe));
+
+    /// <summary>🛡️ 일반 CLI 실행(종료 코드 · 10분 타임아웃) — <see cref="IProcessRunner.RunAsync"/> 단일 게이트웨이.</summary>
+    public static Task<int> RunAsync(IProcessRunner runner, string exe, List<string> args, CancellationToken ct)
+        => (runner ?? SystemProcessRunner.Shared).RunExitCodeAsync(exe, args, TimeSpan.FromMinutes(10), ct);
 
     public static List<string> DecodeArgs(string input, int w, int h, double? fps)
     {
@@ -61,7 +61,21 @@ internal static class VfxProcess
     /// <summary>
     /// 디코드 → process(src, dst) → 인코드. 프레임 버퍼 대여 1회(프레임당 할당 0). 반환 = 처리 프레임 수(실패 0 · 출력 삭제).
     /// </summary>
-    public static async Task<int> PipeAsync(string ffmpeg, string input, int inW, int inH, int outW, int outH, double outFps, double? decodeFps,
+    public static async Task<int> PipeAsync(IProcessRunner runner, string ffmpeg, string input, int inW, int inH, int outW, int outH, double outFps, double? decodeFps,
+        Action<byte[], byte[]> process, string output, int maxFrames, Action<int>? progress, CancellationToken ct)
+    {
+        runner ??= SystemProcessRunner.Shared;
+        var frames = 0;
+        var r = await runner.RunGatedAsync(ffmpeg, async c =>
+        {
+            frames = await PipeCoreAsync(runner, ffmpeg, input, inW, inH, outW, outH, outFps, decodeFps, process, output, maxFrames, progress, c).ConfigureAwait(false);
+            return new ProcessResult(true, frames > 0 ? 0 : 1, "", "");
+        }, ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        return r.Ok ? frames : 0;
+    }
+
+    private static async Task<int> PipeCoreAsync(IProcessRunner runner, string ffmpeg, string input, int inW, int inH, int outW, int outH, double outFps, double? decodeFps,
         Action<byte[], byte[]> process, string output, int maxFrames, Action<int>? progress, CancellationToken ct)
     {
         Process? dec = null, enc = null;
@@ -73,8 +87,8 @@ internal static class VfxProcess
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output))!);
-            dec = Start(ffmpeg, DecodeArgs(input, inW, inH, decodeFps), false, ct);
-            enc = Start(ffmpeg, EncodeArgs(outW, outH, outFps, input, output), true, ct);
+            dec = Start(runner, ffmpeg, DecodeArgs(input, inW, inH, decodeFps), false, ct);
+            enc = Start(runner, ffmpeg, EncodeArgs(outW, outH, outFps, input, output), true, ct);
             var sink = enc.StandardInput.BaseStream;
             while (frames < maxFrames && await Spatial3dGaussianSplattingEngine.ReadExactAsync(dec.StandardOutput.BaseStream, src, inN, ct).ConfigureAwait(false))
             {

@@ -105,6 +105,49 @@ public static class ProcessRunner
         }
     }
 
+    /// <summary>
+    /// 🛡️ 바이너리 스트리밍 프로세스(rawvideo stdin/stdout 파이프) 시작 — 라인 기반 <see cref="RunAsync"/> 로 표현 불가한 경로용.
+    ///   거버넌스 우선순위(<see cref="PriorityResolver"/>) 적용 · stderr 는 자동 드레인(파이프 데드락 차단). 시작 실패 null.
+    ///   ⚠ 호출부가 Dispose/Kill 책임. 동시 실행 제한은 <see cref="RunGatedAsync"/> 로 감싼다.
+    /// </summary>
+    public static Process? StartStreaming(string exe, IEnumerable<string> args, bool redirectStdin, bool redirectStdout, CancellationToken ct = default)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = exe,
+            RedirectStandardInput = redirectStdin,
+            RedirectStandardOutput = redirectStdout,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        var proc = new Process { StartInfo = psi };
+        try
+        {
+            if (!proc.StartCompat()) { proc.Dispose(); return null; }
+        }
+        catch (System.ComponentModel.Win32Exception ex) { Program.Log("ProcessRunner.Stream", ex); proc.Dispose(); return null; }
+        ApplyPriority(proc, exe);
+        _ = DrainAsync(proc.StandardError, ct);
+        return proc;
+    }
+
+    private static async Task DrainAsync(StreamReader r, CancellationToken ct)
+    {
+        try { _ = await r.ReadToEndAsync(ct).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or ObjectDisposedException or InvalidOperationException) { /* 프로세스 종료/취소 */ }
+    }
+
+    /// <summary>🛡️ 스트리밍 작업 본체를 장중 동시 실행 게이트(<see cref="EncoderGate"/>) 슬롯 안에서 실행 — 게이트 미설정 시 즉시 실행.</summary>
+    public static async Task<ProcessResult> RunGatedAsync(string exe, Func<CancellationToken, Task<ProcessResult>> body, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(body);
+        var gate = EncoderGate;
+        if (gate is null) return await body(ct).ConfigureAwait(false);
+        return await gate(exe, body, ct).ConfigureAwait(false);
+    }
+
     private static void ApplyPriority(Process proc, string exe)
     {
         var resolver = PriorityResolver;

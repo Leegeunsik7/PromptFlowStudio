@@ -26,6 +26,8 @@ public sealed class GalleryItem
     public AspectCategory AspectCategory { get; init; }
     public DateTime CreatedAt { get; init; }
     public float RenderDurationSec { get; init; }
+    /// <summary>⏱️ 영상 재생시간(메타 <c>durationSeconds</c> · 트림 시 <see cref="GalleryMediaService.NotifyMediaMetadataChanged"/> 로 즉시 갱신) — 미상 null.</summary>
+    public double? DurationSeconds { get; internal set; }
     /// <summary>I2V 첫 프레임 참조 이미지 경로(메타 <c>referenceImagePath</c>) — T2V 산출물이면 null.</summary>
     public string? ReferenceImagePath { get; init; }
     /// <summary>폴더가 비었을 때 노출하는 기본 템플릿(파일 없음 · 삭제는 목록에서만).</summary>
@@ -293,6 +295,39 @@ public sealed class GalleryMediaService
         return true;
     }
 
+    /// <summary>🔔 미디어 메타 변경 통지(전체 경로) — 갤러리/스토리보드 뷰가 구독해 재생시간 뱃지 등을 즉시 갱신. 핸들러 예외 격리.</summary>
+    public event Action<string>? MediaMetadataChanged;
+
+    /// <summary>
+    /// ✂️ 트림 등으로 미디어가 바뀌었음을 통지 — 스캔 목록의 항목 재생시간을 즉시 갱신(재스캔 없이)하고 <see cref="MediaMetadataChanged"/> 발행.
+    ///   반환 = 메모리 항목 갱신 여부(목록에 없으면 false · 이벤트는 항상 발행 → 새 클립은 구독자가 재스캔).
+    /// </summary>
+    public bool NotifyMediaMetadataChanged(string mediaPath, double? durationSeconds)
+    {
+        if (string.IsNullOrWhiteSpace(mediaPath)) return false;
+        var item = FindByPath(mediaPath);
+        if (item is not null && durationSeconds is { } d && d > 0) lock (_lock) item.DurationSeconds = d;
+        var h = MediaMetadataChanged;
+        if (h is not null)
+        {
+            foreach (var del in h.GetInvocationList())
+            {
+                try { ((Action<string>)del)(mediaPath); }
+                catch (Exception ex) { Program.Log("GalleryMedia.MetaChanged", ex); }
+            }
+        }
+        return item is not null;
+    }
+
+    /// <summary>재생시간 뱃지 문구 — <c>m:ss.f</c>(1분 미만 <c>s.f s</c>) · 미상 null.</summary>
+    public static string? FormatDurationBadge(double? seconds)
+    {
+        if (seconds is not { } s || s <= 0 || double.IsNaN(s) || double.IsInfinity(s)) return null;
+        if (s < 60) return s.ToString("0.0", CultureInfo.InvariantCulture) + "s";
+        var m = (int)(s / 60);
+        return m.ToString(CultureInfo.InvariantCulture) + ":" + (s - m * 60).ToString("00.0", CultureInfo.InvariantCulture);
+    }
+
     public bool ToggleFavorite(Guid itemId)
     {
         GalleryItem? t = null;
@@ -371,6 +406,7 @@ public sealed class GalleryMediaService
             string title = Path.GetFileNameWithoutExtension(file), prompt = "", thumb = "", resolution = "", reference = "";
             long seed = 0;
             float duration = 0;
+            double? playDur = null;
             DateTime created = info.LastWriteTime;
             bool isMock = HasTestSrc(title), isFav = false, isExported = false;
 
@@ -393,6 +429,7 @@ public sealed class GalleryMediaService
                         reference = Str(r, "referenceImagePath");
                         if (r.TryGetProperty("seed", out var s) && s.ValueKind == JsonValueKind.Number && s.TryGetInt64(out var sv)) seed = sv;
                         if (r.TryGetProperty("renderDurationSec", out var d) && d.ValueKind == JsonValueKind.Number && d.TryGetSingle(out var dv)) duration = dv;
+                        if (r.TryGetProperty("durationSeconds", out var pd) && pd.ValueKind == JsonValueKind.Number && pd.TryGetDouble(out var pdv) && pdv > 0) playDur = pdv;
                         if (r.TryGetProperty("createdAt", out var c) && c.ValueKind == JsonValueKind.String && c.TryGetDateTime(out var cv)) created = cv;
                     }
                 }
@@ -418,6 +455,7 @@ public sealed class GalleryMediaService
                 AspectCategory = Classify(w, h),
                 CreatedAt = created,
                 RenderDurationSec = duration,
+                DurationSeconds = playDur,
                 ReferenceImagePath = reference.Length > 0 ? reference : null,
                 IsMock = isMock,
                 IsFavorite = isFav,

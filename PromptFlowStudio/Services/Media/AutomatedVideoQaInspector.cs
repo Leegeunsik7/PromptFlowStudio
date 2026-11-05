@@ -151,10 +151,17 @@ public sealed class AutomatedVideoQaInspector
     private int _busy;
     private QaInspectionReport? _last;
 
-    public AutomatedVideoQaInspector(IVideoMergeService merge) : this(() => merge.ResolvedFfmpegPath) { }
+    public AutomatedVideoQaInspector(IVideoMergeService merge, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null) : this(() => merge.ResolvedFfmpegPath, processRunner) { }
 
     /// <param name="ffmpegPath">ffmpeg 경로 공급자(테스트 주입용).</param>
-    public AutomatedVideoQaInspector(Func<string?> ffmpegPath) => _ffmpeg = ffmpegPath;
+    /// <param name="processRunner">🛡️ 실행 게이트웨이(null = <see cref="PromptFlowStudio.Services.Engines.SystemProcessRunner.Shared"/>).</param>
+    public AutomatedVideoQaInspector(Func<string?> ffmpegPath, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
+    {
+        _ffmpeg = ffmpegPath;
+        _runner = processRunner ?? PromptFlowStudio.Services.Engines.SystemProcessRunner.Shared;
+    }
+
+    private readonly PromptFlowStudio.Services.Engines.IProcessRunner _runner;
 
     public event Action? OnChange;
     public bool IsAvailable => _ffmpeg() is not null;
@@ -183,7 +190,7 @@ public sealed class AutomatedVideoQaInspector
             var parser = new FfmpegQaLogParser();
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(ScanTimeout);
-            await RunScanAsync(exe, videoPath, parser, cts.Token).ConfigureAwait(false);
+            await RunScanAsync(_runner, exe, videoPath, parser, cts.Token).ConfigureAwait(false);
             parser.Complete();
             return Publish(Evaluate(parser, subtitles) with { VideoPath = videoPath });
         }
@@ -396,26 +403,12 @@ public sealed class AutomatedVideoQaInspector
         return r;
     }
 
-    private static async Task RunScanAsync(string exe, string input, FfmpegQaLogParser parser, CancellationToken ct)
+    /// <summary>🛡️ <see cref="PromptFlowStudio.Services.Engines.IProcessRunner"/> 경유 스캔 — stderr 라인을 파서에 실시간 공급. 취소 시 OCE 전파 · 미시작 시 예외.</summary>
+    private static async Task RunScanAsync(PromptFlowStudio.Services.Engines.IProcessRunner runner, string exe, string input, FfmpegQaLogParser parser, CancellationToken ct)
     {
-        var psi = new ProcessStartInfo { FileName = exe, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in BuildArgs(input)) psi.ArgumentList.Add(a);
-        using var proc = new Process { StartInfo = psi };
-        if (!proc.StartCompat()) throw new InvalidOperationException("ffmpeg 시작 실패");
-        try
-        {
-            var drainOut = proc.StandardOutput.BaseStream.CopyToAsync(Stream.Null, ct);
-            string? line;
-            while ((line = await proc.StandardError.ReadLineAsync(ct).ConfigureAwait(false)) is not null)
-                parser.Feed(line.AsSpan());
-            await drainOut.ConfigureAwait(false);
-            await proc.WaitForExitAsync(ct).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            try { if (!proc.HasExited) proc.KillCompat(true); } catch { }
-            throw;
-        }
+        var r = await runner.RunAsync(exe, BuildArgs(input), onLine: (isErr, line) => { if (isErr) parser.Feed(line.AsSpan()); }, ct: ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        if (!r.Started) throw new InvalidOperationException("ffmpeg 시작 실패");
     }
 
     private static string F1(double v) => double.IsNegativeInfinity(v) ? "-inf" : v.ToString("0.0", CultureInfo.InvariantCulture);

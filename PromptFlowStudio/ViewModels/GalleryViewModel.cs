@@ -16,6 +16,16 @@ public sealed class GalleryViewModel
     public GalleryViewModel(GalleryMediaService gallery)
     {
         _gallery = gallery ?? throw new ArgumentNullException(nameof(gallery));
+        _gallery.MediaMetadataChanged += OnMediaMetadataChanged;   // 싱글톤 수명 동일 — 해제 불요
+    }
+
+    private string? _lastDir;
+
+    /// <summary>✂️ 트림 등 메타 변경 — 기존 항목은 뱃지만 재렌더, 목록에 없는 새 클립은 마지막 폴더 재스캔.</summary>
+    private void OnMediaMetadataChanged(string mediaPath)
+    {
+        if (_gallery.FindByPath(mediaPath) is null && _lastDir is { Length: > 0 } dir) { Refresh(dir); return; }
+        Raise();
     }
 
     public event Action? Changed;
@@ -40,6 +50,7 @@ public sealed class GalleryViewModel
 
     public void Refresh(string directoryPath)
     {
+        _lastDir = directoryPath;
         _gallery.ScanGalleryItems(directoryPath);
         ApplyFilter();
     }

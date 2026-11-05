@@ -13,6 +13,14 @@ public interface IProcessRunner
 {
     Task<ProcessResult> RunAsync(string exe, IEnumerable<string> args, string? workingDir = null,
         Action<bool, string>? onLine = null, CancellationToken ct = default);
+
+    /// <summary>🛡️ 바이너리 파이프(rawvideo) 스트리밍 프로세스 시작 — 거버넌스 우선순위 적용(기본 = <see cref="ProcessRunner.StartStreaming"/>). 실패 null.</summary>
+    System.Diagnostics.Process? StartStreaming(string exe, IEnumerable<string> args, bool redirectStdin, bool redirectStdout, CancellationToken ct = default)
+        => ProcessRunner.StartStreaming(exe, args, redirectStdin, redirectStdout, ct);
+
+    /// <summary>🛡️ 스트리밍 작업을 장중 동시 실행 게이트 안에서 수행(기본 = <see cref="ProcessRunner.RunGatedAsync"/>).</summary>
+    Task<ProcessResult> RunGatedAsync(string exe, Func<CancellationToken, Task<ProcessResult>> body, CancellationToken ct = default)
+        => ProcessRunner.RunGatedAsync(exe, body, ct);
 }
 
 /// <summary>기본 구현 — 정적 <see cref="ProcessRunner"/> 위임(전역 <c>PriorityResolver</c>/<c>EncoderGate</c> 훅 경유).</summary>
@@ -36,5 +44,19 @@ public static class ProcessRunnerExtensions
             var r = await runner.RunAsync(exe, args, ct: ct).ConfigureAwait(false);
             return r.Ok;
         };
+    }
+
+    /// <summary>
+    /// 종료 코드 반환 실행(레거시 <c>int RunAsync</c> 호환) — 미시작 −1 · 타임아웃 −2 · 취소는 <see cref="OperationCanceledException"/> 전파.
+    /// </summary>
+    public static async Task<int> RunExitCodeAsync(this IProcessRunner runner, string exe, IEnumerable<string> args, TimeSpan timeout, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(runner);
+        using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (timeout > TimeSpan.Zero) d.CancelAfter(timeout);
+        var r = await runner.RunAsync(exe, args, ct: d.Token).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        if (!r.Started) return -1;
+        return r.ExitCode;
     }
 }

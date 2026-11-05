@@ -32,6 +32,11 @@ public sealed class PreExportQaSentinel
     private const int BlackMeanLimit = 16;          // 평균 휘도 < 16 → 블랙 프레임
     private const double SilentRmsLimit = 30.0;     // RMS < 30(16bit) → 무음 의심
 
+    private readonly IProcessRunner _runner;
+
+    /// <param name="processRunner">🛡️ 실행 게이트웨이(null = <see cref="SystemProcessRunner.Shared"/>).</param>
+    public PreExportQaSentinel(IProcessRunner? processRunner = null) => _runner = processRunner ?? SystemProcessRunner.Shared;
+
     /// <summary>최종 영상을 배포 전 감수한다. ffmpeg 부재/실패는 통과(경고).</summary>
     public async Task<QaReport> AnalyzeAsync(string videoPath, CancellationToken ct = default)
     {
@@ -109,7 +114,7 @@ public sealed class PreExportQaSentinel
     private static QaReport Pass(string reason) => new(true, -120, 0, 0, 0, false, false, false, "✅ " + reason, Array.Empty<string>());
 
     // ── FFmpeg 디코드 ──
-    private static async Task<short[]> DecodePcmAsync(string ffmpeg, string video, CancellationToken ct)
+    private async Task<short[]> DecodePcmAsync(string ffmpeg, string video, CancellationToken ct)
     {
         var bytes = await RunBinaryAsync(ffmpeg, new[] { "-i", video, "-vn", "-ac", "1", "-ar", "44100", "-f", "s16le", "pipe:1" }, ct).ConfigureAwait(false);
         if (bytes.Length < 2) return Array.Empty<short>();
@@ -118,7 +123,7 @@ public sealed class PreExportQaSentinel
         return pcm;
     }
 
-    private static async Task<List<byte[]>> DecodeGrayFramesAsync(string ffmpeg, string video, CancellationToken ct)
+    private async Task<List<byte[]>> DecodeGrayFramesAsync(string ffmpeg, string video, CancellationToken ct)
     {
         var bytes = await RunBinaryAsync(ffmpeg, new[] { "-i", video, "-vf", $"fps={SampleFps},scale={Dim}:{Dim}", "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1" }, ct).ConfigureAwait(false);
         var list = new List<byte[]>();
@@ -134,19 +139,26 @@ public sealed class PreExportQaSentinel
         return list;
     }
 
-    private static async Task<byte[]> RunBinaryAsync(string ffmpeg, string[] args, CancellationToken ct)
+    /// <summary>🛡️ 바이너리 stdout(PCM/rawvideo) 수집 — <see cref="IProcessRunner.StartStreaming"/>(우선순위) + <see cref="IProcessRunner.RunGatedAsync"/>(장중 동시 1) 경유.</summary>
+    private async Task<byte[]> RunBinaryAsync(string ffmpeg, string[] args, CancellationToken ct)
     {
-        var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in args) psi.ArgumentList.Add(a);
-        using var proc = new Process { StartInfo = psi };
-        if (!proc.StartCompat()) return Array.Empty<byte>();
-        using var ms = new MemoryStream();
-        var copy = proc.StandardOutput.BaseStream.CopyToAsync(ms, 81920, ct);
-        var drain = proc.StandardError.ReadToEndAsync(ct);
-        await Task.WhenAll(copy, drain).ConfigureAwait(false);
-        try { await proc.WaitForExitAsync(ct).ConfigureAwait(false); }
-        catch (OperationCanceledException) { try { if (!proc.HasExited) proc.KillCompat(true); } catch { } throw; }
-        return ms.ToArray();
+        var bytes = Array.Empty<byte>();
+        await _runner.RunGatedAsync(ffmpeg, async c =>
+        {
+            using var proc = _runner.StartStreaming(ffmpeg, args, redirectStdin: false, redirectStdout: true, c);
+            if (proc is null) return new ProcessResult(false, -1, "", "");
+            try
+            {
+                using var ms = new MemoryStream();
+                await proc.StandardOutput.BaseStream.CopyToAsync(ms, 81920, c).ConfigureAwait(false);
+                await proc.WaitForExitAsync(c).ConfigureAwait(false);
+                bytes = ms.ToArray();
+                return new ProcessResult(true, proc.ExitCode, "", "");
+            }
+            finally { try { if (!proc.HasExited) proc.KillCompat(true); } catch { } }
+        }, ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        return bytes;
     }
 
     private static string? ResolveFfmpeg()

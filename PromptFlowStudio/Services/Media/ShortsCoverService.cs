@@ -29,14 +29,17 @@ public interface IShortsCoverService
 }
 
 /// <summary>
-/// [PromptFlowStudio] 숏츠 커버 썸네일 — 순수 BCL <see cref="Process"/> 로 ffmpeg <c>drawtext</c> 합성(외부 NuGet 0).
+/// [PromptFlowStudio] 숏츠 커버 썸네일 — 🛡️ <see cref="PromptFlowStudio.Services.Engines.IProcessRunner"/> 경유 ffmpeg <c>drawtext</c> 합성(외부 NuGet 0).
 ///   ▸ ffmpeg 경로는 <see cref="IVideoMergeService.ResolvedFfmpegPath"/> 재사용(중복 탐색 방지).
 ///   ▸ 배경을 가로 1080 으로 스케일(세로 비율 유지)해 폰트 크기를 일관되게 → 화면 중앙에 굵은 글씨 + 검은 테두리(4px) + 반투명 박스.
 ///   ▸ 문구는 임시 UTF-8 파일(textfile=)로 넘겨 한글/특수문자 인라인 이스케이프를 회피(자막과 동일 전략), 경로는 InvariantCulture/이스케이프 안전.
 ///   ▸ 길면 자동 줄맞춤(최대 4줄)·글자수에 맞춰 폰트 크기 조절. 어떤 실패든 null(Graceful).
 /// </summary>
-public sealed class ShortsCoverService(IVideoMergeService merge) : IShortsCoverService
+public sealed class ShortsCoverService(IVideoMergeService merge, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null) : IShortsCoverService
 {
+    /// <summary>🛡️ 실행 게이트웨이(장중 BelowNormal · 동시 1 게이트).</summary>
+    private readonly PromptFlowStudio.Services.Engines.IProcessRunner _runner = processRunner ?? PromptFlowStudio.Services.Engines.SystemProcessRunner.Shared;
+
     private const int TargetWidth = 1080;    // 스케일 기준 폭(폰트 크기 일관성)
     private const int MaxLines = 4;
     private const int MaxCharsPerLine = 11;  // 대략 1줄 글자수(가로 1080 · 대형 폰트 기준)
@@ -91,30 +94,17 @@ public sealed class ShortsCoverService(IVideoMergeService merge) : IShortsCoverS
             if (boxBackground) vf.Append("box=1:boxcolor=black@0.45:boxborderw=28:");
             vf.Append($"line_spacing=14:x=(w-text_w)/2:y=(h-text_h)/2");
 
-            var psi = new ProcessStartInfo
-            {
-                FileName = ffmpeg, RedirectStandardError = true, RedirectStandardOutput = true,
-                UseShellExecute = false, CreateNoWindow = true,
-            };
-            psi.ArgumentList.Add("-y");
-            if (isVideo) { psi.ArgumentList.Add("-ss"); psi.ArgumentList.Add("00:00:01"); }   // 영상은 1초 지점 프레임
-            psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(source);
-            psi.ArgumentList.Add("-vf"); psi.ArgumentList.Add(vf.ToString());
-            psi.ArgumentList.Add("-frames:v"); psi.ArgumentList.Add("1");
-            psi.ArgumentList.Add("-q:v"); psi.ArgumentList.Add("2");
-            psi.ArgumentList.Add(outputPath);
+            var args = new List<string>(12) { "-y" };
+            if (isVideo) { args.Add("-ss"); args.Add("00:00:01"); }   // 영상은 1초 지점 프레임
+            args.Add("-i"); args.Add(source);
+            args.Add("-vf"); args.Add(vf.ToString());
+            args.Add("-frames:v"); args.Add("1");
+            args.Add("-q:v"); args.Add("2");
+            args.Add(outputPath);
 
-            using var proc = new Process { StartInfo = psi };
-            proc.ErrorDataReceived += (_, __) => { };   // 버퍼 드레인(데드락 방지)
-            proc.OutputDataReceived += (_, __) => { };
-            if (!proc.StartCompat()) return null;
-            proc.BeginErrorReadLine();
-            proc.BeginOutputReadLine();
-
-            try { await proc.WaitForExitAsync(ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) { try { if (!proc.HasExited) proc.KillCompat(entireProcessTree: true); } catch { } return null; }
-
-            return proc.ExitCode == 0 && File.Exists(outputPath) ? outputPath : null;
+            var r = await _runner.RunAsync(ffmpeg, args, ct: ct).ConfigureAwait(false);   // 🛡️ 단일 게이트웨이(stdout/stderr 동시 드레인 · 취소 트리 kill)
+            if (ct.IsCancellationRequested || r.ExitCode == -2) return null;
+            return r.Ok && File.Exists(outputPath) ? outputPath : null;
         }
         catch (Exception ex) { Program.Log("ShortsCoverService.Generate", ex); return null; }
         finally { try { if (txtFile is not null && File.Exists(txtFile)) File.Delete(txtFile); } catch { /* 무시 */ } }

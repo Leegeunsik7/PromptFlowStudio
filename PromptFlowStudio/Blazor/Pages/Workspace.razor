@@ -2196,18 +2196,23 @@
         _scrubMsg = "✂️ 무손실 컷 중…";
         try
         {
+            // 🔓 덮어쓰기: 임시 컷 → JS 소스 디태치(파일 핸들 해제) → 원자 교체 → 캐시 버스트(?v=ticks) 재마운트. 훅은 렌더러 컨텍스트에서 JS 호출.
+            var hooks = new PromptFlowStudio.Services.Video.VideoHandleHooks(
+                c => InvokeAsync(() => JS.InvokeVoidAsync("promptflow.releaseVideoSource", c, ScrubVideoSelector).AsTask()),
+                (ok, c) => InvokeAsync(() => JS.InvokeVoidAsync("promptflow.reloadVideoSource", c, ScrubVideoSelector, null).AsTask()));
             var r = overwrite
-                ? await Trimmer.TrimInPlaceAsync(path, _trimStart, _trimEnd, _mediaCts.Token)
+                ? await Trimmer.TrimInPlaceAsync(path, _trimStart, _trimEnd, hooks, _mediaCts.Token)
                 : await Trimmer.TrimAsync(path, PromptFlowStudio.Services.Video.VideoTrimService.BuildClipPath(Path.GetDirectoryName(path) ?? Media.MediaRoot, path, _trimStart, _trimEnd), _trimStart, _trimEnd, _mediaCts.Token);
-            _scrubMsg = r.Ok ? r.Message + (overwrite ? "" : " → 갤러리 저장: " + Path.GetFileName(r.Path)) : "⚠ " + r.Message;
+            _scrubMsg = r.Ok ? r.Message + (r.DurationSeconds is { } dur ? " · ⏱ " + dur.ToString("0.0", CultureInfo.InvariantCulture) + "s" : "") + (overwrite ? "" : " → 갤러리 저장: " + Path.GetFileName(r.Path)) : "⚠ " + r.Message;
             if (r.Ok && overwrite)
             {
                 _scrubFpsPath = null;
-                if (_canvasQueuePath == path && _canvasQueueUrl is { } u)   // @key 교체로 <video> 강제 리로드
-                {
-                    var q = u.IndexOf('?');
-                    _canvasQueueUrl = (q < 0 ? u : u[..q]) + "?trim=" + DateTime.UtcNow.Ticks.ToString(CultureInfo.InvariantCulture);
-                }
+                if (_spec is not null && _specPath == path) { _spec = null; _specPath = null; }   // 규격 캐시 무효화(길이 변경)
+            }
+            if (r.Ok && r.Path is { } outPath)
+            {
+                try { GalleryMedia.NotifyMediaMetadataChanged(outPath, r.DurationSeconds); }   // 🗂️ 갤러리/스토리보드 재생시간 뱃지 즉시 갱신
+                catch (Exception ex) { Program.Log("Workspace.TrimNotify", ex); }
             }
             if (r.Ok) _trimOpen = false;
         }

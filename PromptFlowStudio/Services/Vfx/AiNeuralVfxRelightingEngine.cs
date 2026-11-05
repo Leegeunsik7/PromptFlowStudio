@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using PromptFlowStudio.Services.Engines;      // IProcessRunner
 using PromptFlowStudio.Services.Interactive;   // ShoppableVideoOverlayEngine.ProbeAsync
 using PromptFlowStudio.Services.Media;         // IVideoMergeService
 using PromptFlowStudio.Services.Spatial;       // 단안 깊이 · BMP 코덱
@@ -67,13 +68,17 @@ public sealed class AiNeuralVfxRelightingEngine
     private int _pvW, _pvH, _busy;
     private long _frames;
 
-    public AiNeuralVfxRelightingEngine(IVideoMergeService merge, Spatial3dGaussianSplattingEngine depth) : this(() => merge.ResolvedFfmpegPath, depth) { }
+    public AiNeuralVfxRelightingEngine(IVideoMergeService merge, Spatial3dGaussianSplattingEngine depth, IProcessRunner? processRunner = null) : this(() => merge.ResolvedFfmpegPath, depth, processRunner) { }
 
-    public AiNeuralVfxRelightingEngine(Func<string?> ffmpeg, Spatial3dGaussianSplattingEngine? depth)
+    /// <param name="processRunner">🛡️ 실행 게이트웨이(null = <see cref="SystemProcessRunner.Shared"/>).</param>
+    public AiNeuralVfxRelightingEngine(Func<string?> ffmpeg, Spatial3dGaussianSplattingEngine? depth, IProcessRunner? processRunner = null)
     {
         _ffmpeg = ffmpeg;
         _depth = depth;
+        _runner = processRunner ?? SystemProcessRunner.Shared;
     }
+
+    private readonly IProcessRunner _runner;
 
     public event Action? OnChange;
 
@@ -310,17 +315,17 @@ public sealed class AiNeuralVfxRelightingEngine
             var w = PreviewWidth;
             var h = Math.Max(16, (int)Math.Round(PreviewWidth * (double)probe.Value.H / probe.Value.W) & ~1);
             var t = probe.Value.Duration > 0 ? Math.Clamp(seconds, 0, Math.Max(0, probe.Value.Duration - 0.05)) : 0;
-            var frame = await GrabFrameAsync(ffmpeg, path, t, w, h, ct).ConfigureAwait(false);
+            var frame = await GrabFrameAsync(_runner, ffmpeg, path, t, w, h, ct).ConfigureAwait(false);
             return frame is null ? null : SetPreview(frame, w, h);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { return null; }
         catch (Exception ex) { Program.Log("Relight.Preview", ex); LastAction = "⚠ 프리뷰 실패: " + ex.Message; VfxProcess.Raise(OnChange, "Relight.OnChange"); return null; }
     }
 
-    internal static async Task<byte[]?> GrabFrameAsync(string ffmpeg, string path, double t, int w, int h, CancellationToken ct)
+    internal static async Task<byte[]?> GrabFrameAsync(IProcessRunner runner, string ffmpeg, string path, double t, int w, int h, CancellationToken ct)
     {
         var ci = CultureInfo.InvariantCulture;
-        using var p = VfxProcess.Start(ffmpeg, new[] { "-hide_banner", "-v", "error", "-ss", t.ToString("0.###", ci), "-i", path, "-frames:v", "1", "-vf", "scale=" + w.ToString(ci) + ":" + h.ToString(ci),
+        using var p = VfxProcess.Start(runner, ffmpeg, new[] { "-hide_banner", "-v", "error", "-ss", t.ToString("0.###", ci), "-i", path, "-frames:v", "1", "-vf", "scale=" + w.ToString(ci) + ":" + h.ToString(ci),
             "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1" }, false, ct);
         using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
         d.CancelAfter(TimeSpan.FromSeconds(30));
@@ -345,10 +350,10 @@ public sealed class AiNeuralVfxRelightingEngine
             if (probe is null) return Done(new(false, null, 0, "BCL", "해상도를 읽지 못했습니다."));
             var w = Math.Clamp(width, 160, 3840) & ~1;
             var h = Math.Max(16, (int)Math.Round(w * (double)probe.Value.H / probe.Value.W) & ~1);
-            var fps = Math.Clamp(await ProbeFpsAsync(ffmpeg, input, ct).ConfigureAwait(false), 1, 120);
+            var fps = Math.Clamp(await ProbeFpsAsync(_runner, ffmpeg, input, ct).ConfigureAwait(false), 1, 120);
             var lights = LightSnapshot(); var shading = Shading;
             var expected = Math.Max(1, probe.Value.Duration * fps);
-            var frames = await VfxProcess.PipeAsync(ffmpeg, input, w, h, w, h, fps, null, (src, dst) => ProcessFrame(src, w, h, lights, shading, dst), output, MaxFrames,
+            var frames = await VfxProcess.PipeAsync(_runner, ffmpeg, input, w, h, w, h, fps, null, (src, dst) => ProcessFrame(src, w, h, lights, shading, dst), output, MaxFrames,
                 f => { Progress = Math.Min(0.99, f / expected); VfxProcess.Raise(OnChange, "Relight.OnChange"); }, ct).ConfigureAwait(false);
             if (frames == 0) return Done(new(false, null, 0, "BCL", "리라이팅 인코드 실패"));
             LastAction = "💡 리라이팅 완료 · " + frames.ToString(CultureInfo.InvariantCulture) + "프레임";
@@ -374,16 +379,14 @@ public sealed class AiNeuralVfxRelightingEngine
         return 30;
     }
 
-    internal static async Task<double> ProbeFpsAsync(string ffmpeg, string path, CancellationToken ct)
+    /// <summary>ffmpeg 배너(stderr) fps 파싱 — 🛡️ <see cref="IProcessRunner"/> 경유 · 15초 타임아웃 · 실패 30.</summary>
+    internal static async Task<double> ProbeFpsAsync(IProcessRunner runner, string ffmpeg, string path, CancellationToken ct)
     {
-        var psi = new System.Diagnostics.ProcessStartInfo { FileName = ffmpeg, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
-        psi.ArgumentList.Add("-hide_banner"); psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(path);
-        using var p = new System.Diagnostics.Process { StartInfo = psi };
-        if (!p.StartCompat()) return 30;
         using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
         d.CancelAfter(TimeSpan.FromSeconds(15));
-        try { return ParseFps(await p.StandardError.ReadToEndAsync(d.Token).ConfigureAwait(false)); }
-        finally { try { if (!p.HasExited) p.KillCompat(true); } catch { } }
+        var r = await (runner ?? SystemProcessRunner.Shared).RunAsync(ffmpeg, new[] { "-hide_banner", "-i", path }, ct: d.Token).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        return r.Started ? ParseFps(r.StdErr) : 30;
     }
 
     private VfxVideoResult Done(VfxVideoResult r)

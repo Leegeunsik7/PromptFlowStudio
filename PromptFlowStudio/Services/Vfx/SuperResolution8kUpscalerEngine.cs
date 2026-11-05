@@ -43,14 +43,18 @@ public sealed class SuperResolution8kUpscalerEngine
     private int _busy;
     private long _jobs;
 
-    public SuperResolution8kUpscalerEngine(IVideoMergeService merge, EngineConfigService? engines = null)
-        : this(() => merge.ResolvedFfmpegPath, () => engines?.Resolve(EngineKeys.RealEsrgan) ?? s_esrgan.Value) { }
+    public SuperResolution8kUpscalerEngine(IVideoMergeService merge, EngineConfigService? engines = null, IProcessRunner? processRunner = null)
+        : this(() => merge.ResolvedFfmpegPath, () => engines?.Resolve(EngineKeys.RealEsrgan) ?? s_esrgan.Value, processRunner) { }
 
-    public SuperResolution8kUpscalerEngine(Func<string?> ffmpeg, Func<string?>? esrgan)
+    /// <param name="processRunner">🛡️ 실행 게이트웨이(null = <see cref="SystemProcessRunner.Shared"/>).</param>
+    public SuperResolution8kUpscalerEngine(Func<string?> ffmpeg, Func<string?>? esrgan, IProcessRunner? processRunner = null)
     {
         _ffmpeg = ffmpeg;
         _esrgan = esrgan ?? (() => null);
+        _runner = processRunner ?? SystemProcessRunner.Shared;
     }
+
+    private readonly IProcessRunner _runner;
 
     private static readonly Lazy<string?> s_esrgan = new(() => VfxProcess.ResolveCli("PFS_REALESRGAN", "realesrgan-ncnn-vulkan.exe", "realesrgan-ncnn-vulkan"));
 
@@ -236,7 +240,7 @@ public sealed class SuperResolution8kUpscalerEngine
         var probe = await ShoppableVideoOverlayEngine.ProbeAsync(ffmpeg, path, ct).ConfigureAwait(false);
         if (probe is null) return null;
         int w = Math.Min(probe.Value.W, 1920) & ~1, h = Math.Max(2, (int)Math.Round(w * (double)probe.Value.H / probe.Value.W) & ~1);
-        var f = await AiNeuralVfxRelightingEngine.GrabFrameAsync(ffmpeg, path, Math.Max(0, seconds), w, h, ct).ConfigureAwait(false);
+        var f = await AiNeuralVfxRelightingEngine.GrabFrameAsync(_runner, ffmpeg, path, Math.Max(0, seconds), w, h, ct).ConfigureAwait(false);
         return f is null ? null : SetPreview(f, w, h);
     }
 
@@ -292,15 +296,15 @@ public sealed class SuperResolution8kUpscalerEngine
             if (_esrgan() is { } esr && AiPasses(probe.Value.W, dw) > 0)
             {
                 Step(0.05, "🧠 Real-ESRGAN 프레임 추출");
-                var fps = await AiNeuralVfxRelightingEngine.ProbeFpsAsync(ffmpeg, input, ct).ConfigureAwait(false);
+                var fps = await AiNeuralVfxRelightingEngine.ProbeFpsAsync(_runner, ffmpeg, input, ct).ConfigureAwait(false);
                 var a = Path.Combine(tmp, "a"); var b = Path.Combine(tmp, "b");
                 Directory.CreateDirectory(a); Directory.CreateDirectory(b);
-                var ok = await AiGenerativeFoleySoundscapeEngine.RunAsync(ffmpeg, new() { "-hide_banner", "-v", "error", "-i", input, "-vf", BuildFilter(probe.Value.W, probe.Value.H, s with { Sharpness = 0 }, false), Path.Combine(a, "%08d.png") }, ct).ConfigureAwait(false) == 0;
+                var ok = await VfxProcess.RunAsync(_runner, ffmpeg, new() { "-hide_banner", "-v", "error", "-i", input, "-vf", BuildFilter(probe.Value.W, probe.Value.H, s with { Sharpness = 0 }, false), Path.Combine(a, "%08d.png") }, ct).ConfigureAwait(false) == 0;
                 var passes = AiPasses(probe.Value.W, dw);
                 for (var p = 0; ok && p < passes; p++)
                 {
                     Step(0.15 + 0.35 * p, "🧠 Real-ESRGAN x4 패스 " + (p + 1).ToString(CultureInfo.InvariantCulture) + "/" + passes.ToString(CultureInfo.InvariantCulture));
-                    ok = await AiGenerativeFoleySoundscapeEngine.RunAsync(esr, BuildEsrganArgs(a, b, s.Model), ct).ConfigureAwait(false) == 0 && Directory.GetFiles(b, "*.png").Length > 0;
+                    ok = await VfxProcess.RunAsync(_runner, esr, BuildEsrganArgs(a, b, s.Model), ct).ConfigureAwait(false) == 0 && Directory.GetFiles(b, "*.png").Length > 0;
                     if (ok) { VfxProcess.DeleteDirQuiet(a); Directory.Move(b, a); Directory.CreateDirectory(b); }
                 }
                 if (ok)
@@ -309,7 +313,7 @@ public sealed class SuperResolution8kUpscalerEngine
                     var args = BuildFfmpegArgs(a, output, dw, dh, s, true, fps);
                     args.InsertRange(args.IndexOf("-vf"), new[] { "-i", input, "-map", "0:v:0", "-map", "1:a:0?", "-c:a", "aac", "-b:a", "192k" });
                     args.Add(output);
-                    if (await AiGenerativeFoleySoundscapeEngine.RunAsync(ffmpeg, args, ct).ConfigureAwait(false) == 0 && File.Exists(output))
+                    if (await VfxProcess.RunAsync(_runner, ffmpeg, args, ct).ConfigureAwait(false) == 0 && File.Exists(output))
                         return Ok(output, dw, dh, "Real-ESRGAN " + ModelName(s.Model), "");
                 }
                 note = "[부분 구제] Real-ESRGAN 실패 → ffmpeg 정제 폴백. ";
@@ -318,7 +322,7 @@ public sealed class SuperResolution8kUpscalerEngine
             Step(0.4, "🎞 정제 업스케일(ffmpeg)");
             var fa = BuildFfmpegArgs(input, output, dw, dh, s, false);
             fa.AddRange(new[] { "-c:a", "copy", output });
-            if (await AiGenerativeFoleySoundscapeEngine.RunAsync(ffmpeg, fa, ct).ConfigureAwait(false) == 0 && File.Exists(output))
+            if (await VfxProcess.RunAsync(_runner, ffmpeg, fa, ct).ConfigureAwait(false) == 0 && File.Exists(output))
                 return Ok(output, dw, dh, "ffmpeg lanczos+hqdn3d", note);
             VfxProcess.DeleteQuiet(output);
             return Done(new(false, null, 0, "—", note + "업스케일 실패(인코더/디스크 확인)"));

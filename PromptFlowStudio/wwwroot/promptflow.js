@@ -1049,3 +1049,50 @@
         }
     };
 })();
+/* 🔓 트리머 핫스왑 — <video> 소스 디태치(OS 파일 핸들 즉시 해제) · 캐시 버스트 재마운트. 인자 = id 또는 CSS 선택자. */
+(function () {
+    'use strict';
+    function pick(key) {
+        if (!key) return null;
+        const byId = document.getElementById(key);
+        if (byId && byId.tagName === 'VIDEO') return byId;
+        try {
+            const vids = document.querySelectorAll(key);
+            for (let i = 0; i < vids.length; i++) { if (vids[i].tagName === 'VIDEO' && vids[i].offsetParent !== null) return vids[i]; }
+            return vids.length && vids[0].tagName === 'VIDEO' ? vids[0] : null;
+        } catch (e) { return null; }
+    }
+    function bust(src) {
+        if (!src) return src;
+        const base = String(src).replace(/([?&])(v|trim)=\d+(&|$)/g, function (m, p1, k, p3) { return p3 ? p1 : ''; }).replace(/[?&]$/, '');
+        return base + (base.indexOf('?') < 0 ? '?' : '&') + 'v=' + Date.now();
+    }
+    const pf = window.promptflow = window.promptflow || {};
+    pf.releaseVideoSource = function (elementId) {
+        const v = pick(elementId);
+        if (!v) return false;
+        try {
+            v.dataset.pfsReleasedSrc = v.currentSrc || v.getAttribute('src') || '';
+            v.pause();
+            v.removeAttribute('src');
+            const ss = v.querySelectorAll('source');
+            for (let i = 0; i < ss.length; i++) ss[i].removeAttribute('src');
+            v.load();   // 빈 소스 load → 미디어 파이프라인이 파일 핸들 반환
+            return true;
+        } catch (e) { return false; }
+    };
+    pf.reloadVideoSource = function (elementId, newSrc) {
+        const v = pick(elementId);
+        if (!v) return false;
+        try {
+            const src = bust(newSrc || v.dataset.pfsReleasedSrc || '');
+            if (!src) return false;
+            delete v.dataset.pfsReleasedSrc;
+            v.setAttribute('src', src);
+            v.load();
+            try { v.currentTime = 0; } catch (e) { /* 메타 로드 전 — 기본 0 */ }
+            if (v.autoplay) { const p = v.play(); if (p && p.catch) p.catch(function () { }); }
+            return true;
+        } catch (e) { return false; }
+    };
+})();

@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using PromptFlowStudio.Services.Engines;      // IProcessRunner
 using PromptFlowStudio.Services.Interactive;   // ShoppableVideoOverlayEngine.ProbeAsync
 using PromptFlowStudio.Services.Media;         // IVideoMergeService
 using PromptFlowStudio.Services.Sound;         // RunAsync
@@ -55,14 +56,18 @@ public sealed class MotionFrameInterpolationEngine
     private int _busy;
     private long _jobs;
 
-    public MotionFrameInterpolationEngine(IVideoMergeService merge) : this(() => merge.ResolvedFfmpegPath, () => s_rife.Value, () => s_flavr.Value) { }
+    public MotionFrameInterpolationEngine(IVideoMergeService merge, IProcessRunner? processRunner = null) : this(() => merge.ResolvedFfmpegPath, () => s_rife.Value, () => s_flavr.Value, processRunner) { }
 
-    public MotionFrameInterpolationEngine(Func<string?> ffmpeg, Func<string?>? rife, Func<string?>? flavr)
+    /// <param name="processRunner">🛡️ 실행 게이트웨이(null = <see cref="SystemProcessRunner.Shared"/>).</param>
+    public MotionFrameInterpolationEngine(Func<string?> ffmpeg, Func<string?>? rife, Func<string?>? flavr, IProcessRunner? processRunner = null)
     {
         _ffmpeg = ffmpeg;
         _rife = rife ?? (() => null);
         _flavr = flavr ?? (() => null);
+        _runner = processRunner ?? SystemProcessRunner.Shared;
     }
+
+    private readonly IProcessRunner _runner;
 
     private static readonly Lazy<string?> s_rife = new(() => VfxProcess.ResolveCli("PFS_RIFE", "rife-ncnn-vulkan.exe", "rife-ncnn-vulkan"));
     private static readonly Lazy<string?> s_flavr = new(() => VfxProcess.ResolveCli("PFS_FLAVR", "flavr.exe", "flavr.cmd", "flavr"));
@@ -220,10 +225,10 @@ public sealed class MotionFrameInterpolationEngine
         if (ffmpeg is null || !File.Exists(path)) return null;
         var probe = await ShoppableVideoOverlayEngine.ProbeAsync(ffmpeg, path, ct).ConfigureAwait(false);
         if (probe is null) return null;
-        var fps = await AiNeuralVfxRelightingEngine.ProbeFpsAsync(ffmpeg, path, ct).ConfigureAwait(false);
+        var fps = await AiNeuralVfxRelightingEngine.ProbeFpsAsync(_runner, ffmpeg, path, ct).ConfigureAwait(false);
         int w = PreviewWidth, h = Math.Max(16, (int)Math.Round(PreviewWidth * (double)probe.Value.H / probe.Value.W) & ~1);
-        var a = await AiNeuralVfxRelightingEngine.GrabFrameAsync(ffmpeg, path, Math.Max(0, seconds), w, h, ct).ConfigureAwait(false);
-        var b = await AiNeuralVfxRelightingEngine.GrabFrameAsync(ffmpeg, path, Math.Max(0, seconds) + 1.0 / fps, w, h, ct).ConfigureAwait(false);
+        var a = await AiNeuralVfxRelightingEngine.GrabFrameAsync(_runner, ffmpeg, path, Math.Max(0, seconds), w, h, ct).ConfigureAwait(false);
+        var b = await AiNeuralVfxRelightingEngine.GrabFrameAsync(_runner, ffmpeg, path, Math.Max(0, seconds) + 1.0 / fps, w, h, ct).ConfigureAwait(false);
         return a is null || b is null ? null : SetPreview(a, b, w, h);
     }
 
@@ -298,7 +303,7 @@ public sealed class MotionFrameInterpolationEngine
         {
             var probe = await ShoppableVideoOverlayEngine.ProbeAsync(ffmpeg, input, ct).ConfigureAwait(false);
             if (probe is null) return Done(new(false, null, 0, "—", "영상 정보를 읽지 못했습니다."));
-            var srcFps = await AiNeuralVfxRelightingEngine.ProbeFpsAsync(ffmpeg, input, ct).ConfigureAwait(false);
+            var srcFps = await AiNeuralVfxRelightingEngine.ProbeFpsAsync(_runner, ffmpeg, input, ct).ConfigureAwait(false);
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(output))!);
             var note = "";
             var useAi = slow is null && Engine != InterpEngine.FfmpegMci && (RifeAvailable || FlavrAvailable);
@@ -308,15 +313,15 @@ public sealed class MotionFrameInterpolationEngine
                 var a = Path.Combine(tmp, "in"); var b = Path.Combine(tmp, "out");
                 Directory.CreateDirectory(a); Directory.CreateDirectory(b);
                 Step(0.05, "🧠 프레임 추출");
-                var ok = await AiGenerativeFoleySoundscapeEngine.RunAsync(ffmpeg, new() { "-hide_banner", "-v", "error", "-i", input, Path.Combine(a, "%08d.png") }, ct).ConfigureAwait(false) == 0;
+                var ok = await VfxProcess.RunAsync(_runner, ffmpeg, new() { "-hide_banner", "-v", "error", "-i", input, Path.Combine(a, "%08d.png") }, ct).ConfigureAwait(false) == 0;
                 var srcFrames = ok ? Directory.GetFiles(a, "*.png").Length : 0;
                 if (srcFrames >= 2)
                 {
                     Step(0.2, pickFlavr ? "🧠 FLAVR 보간" : "🧠 RIFE 보간");
                     var factor = (int)Math.Clamp(Math.Round(target / srcFps), 2, 8);
                     var code = pickFlavr
-                        ? await AiGenerativeFoleySoundscapeEngine.RunAsync(_flavr()!, BuildFlavrArgs(a, b, factor), ct).ConfigureAwait(false)
-                        : await AiGenerativeFoleySoundscapeEngine.RunAsync(_rife()!, BuildRifeArgs(a, b, TargetFrames(srcFrames, srcFps, target)), ct).ConfigureAwait(false);
+                        ? await VfxProcess.RunAsync(_runner, _flavr()!, BuildFlavrArgs(a, b, factor), ct).ConfigureAwait(false)
+                        : await VfxProcess.RunAsync(_runner, _rife()!, BuildRifeArgs(a, b, TargetFrames(srcFrames, srcFps, target)), ct).ConfigureAwait(false);
                     var outFrames = code == 0 ? Directory.GetFiles(b, "*.png").Length : 0;
                     if (outFrames > srcFrames)
                     {
@@ -325,7 +330,7 @@ public sealed class MotionFrameInterpolationEngine
                         var args = new List<string> { "-hide_banner", "-v", "error", "-y", "-framerate", outFps.ToString("0.###", CultureInfo.InvariantCulture), "-i", Path.Combine(b, "%08d.png"),
                             "-i", input, "-map", "0:v:0", "-map", "1:a:0?", "-vf", "fps=" + target.ToString(CultureInfo.InvariantCulture), "-c:v", "libx264", "-crf", "17", "-preset", "medium", "-pix_fmt", "yuv420p",
                             "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", output };
-                        if (await AiGenerativeFoleySoundscapeEngine.RunAsync(ffmpeg, args, ct).ConfigureAwait(false) == 0 && File.Exists(output))
+                        if (await VfxProcess.RunAsync(_runner, ffmpeg, args, ct).ConfigureAwait(false) == 0 && File.Exists(output))
                             return Ok(output, outFrames, pickFlavr ? "FLAVR" : "RIFE v4.6", target, "");
                     }
                 }
@@ -336,13 +341,13 @@ public sealed class MotionFrameInterpolationEngine
             List<string> fa;
             if (slow is { } sl)
             {
-                var hasAudio = await AudioPresentAsync(ffmpeg, input, ct).ConfigureAwait(false);
+                var hasAudio = await AudioPresentAsync(_runner, ffmpeg, input, ct).ConfigureAwait(false);
                 fa = new List<string> { "-hide_banner", "-v", "error", "-y", "-i", input, "-filter_complex", BuildSlowMoFilter(srcFps, target, sl, probe.Value.Duration, hasAudio), "-map", "[outv]" };
                 if (hasAudio) fa.AddRange(new[] { "-map", "[outa]", "-c:a", "aac", "-b:a", "192k" });
             }
             else fa = new List<string> { "-hide_banner", "-v", "error", "-y", "-i", input, "-vf", MinterpolateFilter(target), "-c:a", "copy" };
             fa.AddRange(new[] { "-c:v", "libx264", "-crf", "17", "-preset", "medium", "-pix_fmt", "yuv420p", "-movflags", "+faststart", output });
-            if (await AiGenerativeFoleySoundscapeEngine.RunAsync(ffmpeg, fa, ct).ConfigureAwait(false) == 0 && File.Exists(output))
+            if (await VfxProcess.RunAsync(_runner, ffmpeg, fa, ct).ConfigureAwait(false) == 0 && File.Exists(output))
                 return Ok(output, 0, "ffmpeg minterpolate(MCI)" + (slow is { } s2 ? " · " + Math.Clamp(s2.Factor, 2, 8).ToString(CultureInfo.InvariantCulture) + "x 슬로모션" : ""), target, note);
             VfxProcess.DeleteQuiet(output);
             return Done(new(false, null, 0, "—", note + "보간 실패(ffmpeg 확인)"));
@@ -358,14 +363,11 @@ public sealed class MotionFrameInterpolationEngine
         }
     }
 
-    private static async Task<bool> AudioPresentAsync(string ffmpeg, string input, CancellationToken ct)
+    private static async Task<bool> AudioPresentAsync(IProcessRunner runner, string ffmpeg, string input, CancellationToken ct)
     {
-        var psi = new System.Diagnostics.ProcessStartInfo { FileName = ffmpeg, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
-        psi.ArgumentList.Add("-hide_banner"); psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(input);
-        using var p = new System.Diagnostics.Process { StartInfo = psi };
-        if (!p.StartCompat()) return false;
-        try { return (await p.StandardError.ReadToEndAsync(ct).ConfigureAwait(false)).Contains("Audio:", StringComparison.Ordinal); }
-        finally { try { if (!p.HasExited) p.KillCompat(true); } catch { } }
+        var r = await runner.RunAsync(ffmpeg, new[] { "-hide_banner", "-i", input }, ct: ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        return r.Started && r.StdErr.Contains("Audio:", StringComparison.Ordinal);
     }
 
     private VfxVideoResult Ok(string output, int frames, string engine, int fps, string note)
