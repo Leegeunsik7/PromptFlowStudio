@@ -377,9 +377,13 @@ public sealed partial class StockSuiteExporter
             var uhd = resolution == StockSuiteResolution.Uhd4K;
             var lut = Lut;
             var filter = BuildVideoFilter(sharpenOn, smoothOn, resolution, watermark, watermark ? ResolveWatermarkFont() : null, lut: lut);
-            // 워터마크 폰트/drawtext 실패 대비 — 워터마크 제외 체인으로 1회 재시도.
-            var filterNoWm = watermark ? BuildVideoFilter(sharpenOn, smoothOn, resolution, false, null, lut: lut) : null;
-            var tag = (uhd ? "🖥️ 4K UHD · " : sharpenOn ? "🔎 1080p 고선명 · " : "") + (smoothOn ? "⚡ 60fps 스무딩 · " : "") + (watermark ? "📺 HUD 워터마크 · " : "") + (lut != LutProfile.None ? "🎨 " + ColorGradingService.Label(lut) + " · " : "") + "🔇 무음";
+            // 📊 라이브 티커 배지(데이터 null/빈 티커 → 생략 폴백).
+            var badgeOn = BurnTickerBadge && BuildTickerBadgeFilter(TickerBadge, null, resolution) is not null;
+            if (badgeOn) filter = AppendTickerBadge(filter, TickerBadge, ResolveTickerBadgeFont(), resolution);
+            // 워터마크/배지 폰트·drawtext 실패 대비 — 오버레이 제외 체인으로 1회 재시도.
+            var filterNoWm = watermark || badgeOn ? BuildVideoFilter(sharpenOn, smoothOn, resolution, false, null, lut: lut) : null;
+            if (badgeOn && filterNoWm is null) filterNoWm = "null";   // 배지 단독 → 무필터 재인코딩 폴백
+            var tag = (uhd ? "🖥️ 4K UHD · " : sharpenOn ? "🔎 1080p 고선명 · " : "") + (smoothOn ? "⚡ 60fps 스무딩 · " : "") + (watermark ? "📺 HUD 워터마크 · " : "") + (badgeOn ? TickerBadgeTag : "") + (lut != LutProfile.None ? "🎨 " + ColorGradingService.Label(lut) + " · " : "") + "🔇 무음";
             if (webm && (filter is not null || !Path.GetExtension(sourcePath).Equals(".webm", StringComparison.OrdinalIgnoreCase)))
             {
                 temp = Path.Combine(fullDir, Path.GetFileNameWithoutExtension(name) + TempExt + ".webm");
@@ -391,7 +395,7 @@ public sealed partial class StockSuiteExporter
                     {
                         TryDelete(temp);
                         sharpenedWebm = await TryFfmpegAsync(BuildWebMArgs(sourcePath, temp, filterNoWm), temp, ct).ConfigureAwait(false);
-                        if (sharpenedWebm is null) tag = tag.Replace("📺 HUD 워터마크 · ", "⚠ 워터마크 생략 · ", StringComparison.Ordinal);
+                        if (sharpenedWebm is null) tag = tag.Replace("📺 HUD 워터마크 · ", "⚠ 워터마크 생략 · ", StringComparison.Ordinal).Replace(TickerBadgeTag, "⚠ 배지 생략 · ", StringComparison.Ordinal);
                     }
                     if (sharpenedWebm is null)
                     {
@@ -426,7 +430,7 @@ public sealed partial class StockSuiteExporter
                 {
                     TryDelete(temp);
                     sharpened = await TryEncodeMp4Async(sourcePath, temp, filterNoWm, gpu, ct).ConfigureAwait(false);
-                    if (sharpened is null) tag = tag.Replace("📺 HUD 워터마크 · ", "⚠ 워터마크 생략 · ", StringComparison.Ordinal);
+                    if (sharpened is null) tag = tag.Replace("📺 HUD 워터마크 · ", "⚠ 워터마크 생략 · ", StringComparison.Ordinal).Replace(TickerBadgeTag, "⚠ 배지 생략 · ", StringComparison.Ordinal);
                 }
                 if (sharpened is null)
                 {

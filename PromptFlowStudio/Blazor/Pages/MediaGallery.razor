@@ -14,6 +14,7 @@
 @inject PublishViewModel PubVm
 @inject PromptFlowStudio.Services.Export.StockSuiteExporter StockSuite
 @inject PromptFlowStudio.Services.Export.StockSuitePlaylistService Playlist
+@inject PromptFlowStudio.Services.Export.AssetBundleService Bundles
 
 @* [PromptFlow Studio] 갤러리 — %LocalAppData%/PromptFlowStudio/Media 의 모든 MP4 를 그리드로 감상/관리/삭제. *@
 
@@ -245,6 +246,8 @@
 
     <div class="gl-toolbar">
         <input class="gl-search" @bind="_filter" @bind:event="oninput" placeholder="파일명·폴더 검색…" />
+        <button class="gl-btn up" @onclick="ExportBundle" disabled="@_bundleBusy" title="현재 목록 영상 + .meta.json + playlist.json · 디스플레이 설정을 단일 .pfsbundle(ZIP)로 패키징 — MediaRoot/_bundles">📦 Export .pfsbundle</button>
+        <label class="gl-btn up gl-file @(_bundleBusy ? "off" : null)" title=".pfsbundle 가져오기 — 매니페스트 검증 · SHA-256 무결성 · 중복 건너뜀 · 플레이리스트 슬롯 안전 병합">📥 Import Bundle<InputFile class="gl-file-input" OnChange="ImportBundle" accept=".pfsbundle,application/zip" disabled="@_bundleBusy" /></label>
         <button class="gl-btn up" @onclick="OpenSchedule" title="장초반/정규장/장마감/야간 시간대별 배경 자동 전환 — StockSuite playlist.json 발행">📅 장중 스케줄러</button>
         @if (_canRollback)
         {
@@ -463,6 +466,7 @@
     .gl-btn { border: none; border-radius: 10px; padding: 9px 14px; font-weight: 800; font-size: 12.5px; cursor: pointer; font-family: inherit; }
     .gl-btn.ghost { background: var(--card-2); color: var(--text-secondary); border: 1px solid var(--line); }
     .gl-btn.bad { background: #ef4444; color: #fff; }
+    .gl-file { position: relative; overflow: hidden; } .gl-file.off { opacity: .5; pointer-events: none; } .gl-file-input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 
     .gl-modal { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,.72); display: grid; place-items: center; padding: 24px; }
     .gl-modal-box { width: min(860px, 96vw); max-height: 92vh; overflow-y: auto; overscroll-behavior: contain; background: var(--card); border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 30px 80px rgba(0,0,0,.5); }
@@ -664,6 +668,55 @@
     }
     private BulkKind? _confirmBulk;
     private bool _stockBusy, _canRollback;
+    private bool _bundleBusy;
+    public const long MaxBundleBytes = 16L * 1024 * 1024 * 1024;
+
+    /// <summary>📦 현재 필터 목록 → MediaRoot/_bundles/pfs_yyyyMMdd_HHmmss.pfsbundle(프리셋 포함).</summary>
+    private async Task ExportBundle()
+    {
+        if (_bundleBusy) return;
+        _bundleBusy = true;
+        try
+        {
+            var ids = new List<string>(Filtered.Count);
+            foreach (var m in Filtered) ids.Add(m.Path);
+            var path = System.IO.Path.Combine(Media.MediaRoot, "_bundles", "pfs_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", System.Globalization.CultureInfo.InvariantCulture) + PromptFlowStudio.Services.Export.AssetBundleService.Extension);
+            var r = await Bundles.ExportBundleAsync(path, ids, includePresets: true);
+            Vm.SetStatus(r.Ok ? r.Message : "⚠ " + r.Message);
+        }
+        catch (Exception ex) { Program.Log("MediaGallery.BundleExport", ex); Vm.SetStatus("⚠ 번들 내보내기 실패"); }
+        finally { _bundleBusy = false; await InvokeAsync(StateHasChanged); }
+    }
+
+    /// <summary>📥 선택 .pfsbundle → 임시 파일 스트리밍 → 검증 · 추출 · 갤러리 갱신.</summary>
+    private async Task ImportBundle(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file is null || _bundleBusy) return;
+        if (file.Size > MaxBundleBytes) { Vm.SetStatus("⚠ 번들 파일이 너무 큽니다"); return; }
+        _bundleBusy = true;
+        var tmp = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "pfs_import_" + Guid.NewGuid().ToString("N") + PromptFlowStudio.Services.Export.AssetBundleService.Extension);
+        try
+        {
+            await using (var src = file.OpenReadStream(MaxBundleBytes))
+            await using (var dst = System.IO.File.Create(tmp))
+                await src.CopyToAsync(dst);
+            var r = await Bundles.ImportBundleAsync(tmp);
+            Vm.SetStatus(r.Ok ? r.Message : "⚠ " + r.Message);
+            if (r.Imported.Count > 0) { Refresh(); RefreshArchive(); }
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or OperationCanceledException or ObjectDisposedException or UnauthorizedAccessException)
+        {
+            Program.Log("MediaGallery.BundleImport", ex);
+            Vm.SetStatus("⚠ 번들 가져오기 실패: " + ex.Message);
+        }
+        finally
+        {
+            try { if (System.IO.File.Exists(tmp)) System.IO.File.Delete(tmp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            _bundleBusy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
 
     private void ProbeRollback()
     {

@@ -33,6 +33,14 @@
                         <option value="4k">4K UHD (3840x2160 Lanczos)</option>
                     </select>
             <label class="pm-btn" title="좌상단 ANG QUANT LAB · REALTIME STREAM / 우상단 ● LIVE KST 번인(재인코딩) — 폰트 미설치·drawtext 실패 시 워터마크 생략 폴백"><input type="checkbox" checked="@vm.StockSuiteWatermark" @onchange="e => vm.StockSuiteWatermark = e.Value is true" disabled="@vm.IsStockSuiteBusy" /> 📺 핀테크 HUD 워터마크</label>
+            <label class="pm-btn" title="우하단 반투명 카드에 티커·사명 / 시세·등락률(+ 네온 그린 · − 크림슨) 번인 — 티커 공란·폰트 실패 시 배지 생략 폴백"><input type="checkbox" checked="@vm.StockSuiteTickerBadge" @onchange="e => vm.StockSuiteTickerBadge = e.Value is true" disabled="@vm.IsStockSuiteBusy" /> 📊 라이브 티커 배지</label>
+            @if (vm.StockSuiteTickerBadge)
+            {
+                <input class="pm-btn" style="width:6em" placeholder="AAPL" value="@vm.TickerSymbol" @onchange="e => vm.TickerSymbol = e.Value?.ToString() ?? string.Empty" disabled="@vm.IsStockSuiteBusy" title="티커" />
+                <input class="pm-btn" style="width:9em" placeholder="Apple Inc." value="@vm.TickerCompany" @onchange="e => vm.TickerCompany = e.Value?.ToString() ?? string.Empty" disabled="@vm.IsStockSuiteBusy" title="사명" />
+                <input class="pm-btn" style="width:6em" type="number" step="0.01" value="@(vm.TickerPrice.ToString(System.Globalization.CultureInfo.InvariantCulture))" @onchange="e => vm.TickerPrice = decimal.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var tp) ? tp : 0m" disabled="@vm.IsStockSuiteBusy" title="시세($)" />
+                <input class="pm-btn" style="width:5em" type="number" step="0.1" value="@(vm.TickerChangePercent.ToString(System.Globalization.CultureInfo.InvariantCulture))" @onchange="e => vm.TickerChangePercent = double.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var tc) ? tc : 0d" disabled="@vm.IsStockSuiteBusy" title="등락률(%)" />
+            }
             <label class="pm-btn" title="16~24fps AI 영상을 minterpolate(MCI) 로 60fps 보간 — 고주사율(120Hz+) OLED 끊김 제거 · 재인코딩 시간 증가"><input type="checkbox" checked="@vm.StockSuiteSmooth60" @onchange="e => vm.StockSuiteSmooth60 = e.Value is true" disabled="@vm.IsStockSuiteBusy" /> ⚡ 60fps 모션 스무딩</label>
                     <button class="pm-btn" @onclick="ExportStockSuite" disabled="@vm.IsStockSuiteBusy"
                             title="환경설정의 StockSuite 에셋 폴더에 bg_ambient.mp4 로 원자적 덮어쓰기">@(vm.IsStockSuiteBusy ? "⏳ 복사 중…" : "💼 StockSuite로 내보내기")</button>

@@ -6,6 +6,7 @@
 @inject IJSRuntime JS
 @inject PromptFlowStudio.Services.Render.RenderCacheCleaner CacheCleaner
 @inject PromptFlowStudio.Services.Export.StockSuiteHealthService StockHealth
+@inject PromptFlowStudio.Services.Diagnostics.HardwareBenchmarkService Benchmark
 
 @* [PromptFlow Studio] 사용자 설정 — 이 PC 의 화면·생성 기본값 표시 설정.
    ⚠ 관리자 비밀번호 없이 <로그인한 모든 사용자>가 쓴다. 이 PC 의 localStorage 에만 저장된다.
@@ -119,6 +120,23 @@
         </div>
         <div class="st-field"><label><input type="checkbox" checked="@Prefs.StockSuiteSharpen" @onchange="e => Prefs.StockSuiteSharpen = e.Value is true" /> 🔎 고선명 샤프닝 (1080p Lanczos + Unsharp) — MP4·WebM 재인코딩 · 끄면 스트림 복사(빠른 내보내기)</label></div>
         <div class="st-field"><label><input type="checkbox" checked="@Prefs.StockSuiteSmooth60" @onchange="e => Prefs.StockSuiteSmooth60 = e.Value is true" /> ⚡ 60fps 모션 스무딩 (minterpolate MCI) — 16~24fps AI 영상을 고주사율 모니터용 60fps 로 보간 · 재인코딩 시간 증가</label></div>
+        <div class="st-field"><label>⚡ 하드웨어 벤치마크 오토튠</label>
+            <div class="st-inrow">
+                <button class="st-btn-sm" @onclick="RunBenchmark" disabled="@_benchBusy" title="1초 합성 1080p 인코드(NVENC/QSV/CPU)로 처리량 측정 → 렌더 프로필 추천">@(_benchBusy ? "⏳ 측정 중…" : "⚡ Run 1-Sec Benchmark & Auto-Tune")</button>
+                @if (_bench is { } br)
+                {
+                    <span>@br.Message</span>
+                    @if (!_benchApplied)
+                    {
+                        <button class="st-btn-sm" @onclick="ApplyBenchmark" title="추천 프로필을 샤프닝 · 60fps 스무딩 기본값에 반영">✅ 추천 설정 적용</button>
+                    }
+                    else
+                    {
+                        <span>✔ 적용됨@(br.Profile == PromptFlowStudio.Services.Diagnostics.RenderProfileTier.Ultra ? " — 내보내기 모달에서 4K UHD 선택 권장" : "")</span>
+                    }
+                }
+            </div>
+        </div>
         <div class="st-field"><label><input type="checkbox" checked="@Prefs.TradingSafetyMode" @onchange="e => Prefs.TradingSafetyMode = e.Value is true" /> 🛡️ 장중 트레이딩 안전 모드 — 평일 09:00~15:30(KST) FFmpeg 우선순위 BelowNormal · 동시 렌더/인코딩 1개 제한(HTS 주문 렉 방지)</label></div>
         <div class="st-field"><label><input type="checkbox" checked="@Prefs.HtsEcoMode" @onchange="OnEcoModeChanged" /> 🌱 HTS 스마트 에코 절전 모드 — 창 최소화/백그라운드 전환 시 영상 재생 일시정지(GPU 디코딩 0%) · 복귀 즉시 재개</label></div>
         <div class="st-field"><label>StockSuite 실행 파일 경로 (StockSuite.exe)</label>
@@ -228,6 +246,26 @@
 </style>
 
 @code {
+    private PromptFlowStudio.Services.Diagnostics.HardwareBenchmarkResult? _bench;
+    private bool _benchBusy, _benchApplied;
+
+    private async Task RunBenchmark()
+    {
+        if (_benchBusy) return;
+        _benchBusy = true; _benchApplied = false; _bench = null;
+        try { _bench = await Benchmark.RunAsync(); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { Program.Log("UserSettings.Benchmark", ex); }
+        finally { _benchBusy = false; await InvokeAsync(StateHasChanged); }
+    }
+
+    /// <summary>사용자 확인 시 추천 프로필 반영 — Eco: 60fps OFF · Balanced/Ultra: 60fps ON · 샤프닝 ON.</summary>
+    private void ApplyBenchmark()
+    {
+        if (_bench is not { } b) return;
+        Prefs.StockSuiteSharpen = true;
+        Prefs.StockSuiteSmooth60 = b.Smooth60;
+        _benchApplied = true;
+    }
     private string _theme = "dark", _density = "comfortable", _lang = "ko";
     private bool _motionOff, _soundDone, _broadcast;
     private bool _saved;

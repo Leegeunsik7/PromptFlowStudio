@@ -113,6 +113,12 @@ public sealed class PublishViewModel : IDisposable
     public PromptFlowStudio.Services.Export.StockSuiteResolution StockSuiteResolution { get; set; } = PromptFlowStudio.Services.Export.StockSuiteResolution.Fhd1080;
     /// <summary>📺 핀테크 HUD 워터마크(좌상단 브랜드 · 우상단 LIVE KST) 번인.</summary>
     public bool StockSuiteWatermark { get; set; }
+    /// <summary>📊 우하단 라이브 티커 HUD 배지 번인(티커 공란 → 생략 폴백).</summary>
+    public bool StockSuiteTickerBadge { get; set; }
+    public string TickerSymbol { get; set; } = "";
+    public string TickerCompany { get; set; } = "";
+    public decimal TickerPrice { get; set; }
+    public double TickerChangePercent { get; set; }
     /// <summary>↩️ 이전 배경 백업 존재 — 복원 버튼 노출.</summary>
     public bool CanRollbackStockSuite => _stockSuite?.CanRollback() == true;
 
@@ -269,6 +275,8 @@ public sealed class PublishViewModel : IDisposable
         Notify();
         try
         {
+            _stockSuite.BurnTickerBadge = StockSuiteTickerBadge;
+            _stockSuite.TickerBadge = string.IsNullOrWhiteSpace(TickerSymbol) ? null : new PromptFlowStudio.Services.Export.TickerBadgeData(TickerSymbol, TickerCompany, TickerPrice, TickerChangePercent);
             var r = await _stockSuite.ExportAsync(VideoPath, null, null, ct, StockSuiteFormat, StockSuiteSharpen, StockSuiteSmooth60, StockSuiteResolution, StockSuiteWatermark).ConfigureAwait(false);
             StockSuiteMessage = r.Ok ? r.Message : "⚠ " + r.Message;
             StockSuiteExported = r.Ok;
