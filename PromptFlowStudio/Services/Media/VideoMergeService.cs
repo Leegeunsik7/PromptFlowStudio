@@ -87,8 +87,11 @@ public interface IVideoMergeService
 ///   ▸ 인자는 <see cref="ProcessStartInfo.ArgumentList"/> 로 전달 — 공백 포함 경로("PromptFlow Studio") 따옴표 문제 원천 차단.
 ///   출력 해상도(가로 HD/FHD·세로 쇼츠)는 <see cref="MergeAsync"/> 파라미터로 받는다 — 세로 포맷도 scale+pad 로 비율 유지·레터박스. fps 는 <c>Merge:Fps</c>(기본 30).
 /// </summary>
-public sealed class VideoMergeService(IConfiguration cfg) : IVideoMergeService
+public sealed class VideoMergeService(IConfiguration cfg, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null, Func<string?>? ffmpegResolver = null) : IVideoMergeService
 {
+    /// <summary>🛡️ 단일 게이트웨이 — 모든 ffmpeg 실행은 <see cref="PromptFlowStudio.Services.Engines.IProcessRunner"/> 경유(장중 BelowNormal · 동시 1 게이트 · 취소 트리 kill).</summary>
+    private readonly PromptFlowStudio.Services.Engines.IProcessRunner _runner = processRunner ?? PromptFlowStudio.Services.Engines.SystemProcessRunner.Shared;
+
     private int Fps => int.TryParse(cfg["Merge:Fps"], out var v) && v > 0 ? v : 30;
 
     private const double ClipSeconds = 5.0;   // Wan 컷 길이(고정) — 페이드아웃 시점/BGM afade 계산용
@@ -553,14 +556,10 @@ public sealed class VideoMergeService(IConfiguration cfg) : IVideoMergeService
                 if (pct != lastPct) { lastPct = pct; progress.Report(pct); }
             }
 
-            using var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
             var err = new StringBuilder();
 
-            proc.ErrorDataReceived += (_, e) =>
+            void OnErr(string line)
             {
-                var line = e.Data;
-                if (line is null) return;
-
                 err.AppendLine(line);
                 if (err.Length > 16000) err.Remove(0, err.Length - 12000);   // tail 만 유지(장시간 인코딩 메모리 누수 방지)
                 log?.Report(line);
@@ -571,38 +570,31 @@ public sealed class VideoMergeService(IConfiguration cfg) : IVideoMergeService
                     var dm = DurationRx.Match(line);
                     if (dm.Success && TryHms(dm, out var d)) { durSum += d; durCount++; }
                 }
-            };
+            }
 
-            proc.OutputDataReceived += (_, e) =>
+            void OnOut(string line)
             {
-                var line = e.Data;
-                if (line is null || progress is null) return;
+                if (progress is null) return;
 
                 // -progress 출력: out_time_us=microsec (우선) 또는 out_time=HH:MM:SS.us
                 var um = ProgUsRx.Match(line);
                 if (um.Success && long.TryParse(um.Groups[1].Value, out var us)) { ReportPct(us / 1_000_000.0); return; }
                 var om = ProgTimeRx.Match(line);
                 if (om.Success && TryHms(om, out var s)) ReportPct(s);
-            };
-
-            if (!proc.StartCompat())
-                return new(false, null, "ffmpeg 프로세스를 시작하지 못했습니다.");
-            proc.BeginErrorReadLine();
-            proc.BeginOutputReadLine();
-
-            try { await proc.WaitForExitAsync(ct).ConfigureAwait(false); }
-            catch (OperationCanceledException)
-            {
-                try { if (!proc.HasExited) proc.KillCompat(entireProcessTree: true); } catch { /* 무시 */ }
-                return new(false, null, "병합이 취소되었습니다.");
             }
+
+            var pr = await _runner.RunAsync(psi.FileName, psi.ArgumentList, null, (isErr, line) => { if (isErr) OnErr(line); else OnOut(line); }, ct).ConfigureAwait(false);
+            if (!pr.Started)
+                return new(false, null, "ffmpeg 프로세스를 시작하지 못했습니다. " + pr.StdErr);
+            if (ct.IsCancellationRequested || pr.ExitCode == -2)
+                return new(false, null, "병합이 취소되었습니다.");
 
             // 자막 임시파일 정리(인코딩 종료 후 불필요).
             foreach (var sf in subFiles) { try { if (sf is not null && File.Exists(sf)) File.Delete(sf); } catch { /* 무시 */ } }
             foreach (var wf in wordFiles) { try { if (File.Exists(wf)) File.Delete(wf); } catch { /* 무시 */ } }
 
-            if (proc.ExitCode != 0)
-                return new(false, null, $"ffmpeg 실패(종료코드 {proc.ExitCode}). {Tail(err.ToString())}");
+            if (pr.ExitCode != 0)
+                return new(false, null, $"ffmpeg 실패(종료코드 {pr.ExitCode}). {Tail(err.ToString())}");
             if (!File.Exists(outputPath))
                 return new(false, null, "ffmpeg 가 출력 파일을 생성하지 못했습니다.");
 
@@ -641,16 +633,8 @@ public sealed class VideoMergeService(IConfiguration cfg) : IVideoMergeService
             psi.ArgumentList.Add("-q:v"); psi.ArgumentList.Add("2");
             psi.ArgumentList.Add(jpg);
 
-            using var proc = new Process { StartInfo = psi };
-            proc.ErrorDataReceived += (_, __) => { };   // 버퍼 드레인(데드락 방지)
-            proc.OutputDataReceived += (_, __) => { };
-            if (!proc.StartCompat()) return false;
-            proc.BeginErrorReadLine();
-            proc.BeginOutputReadLine();
-            try { await proc.WaitForExitAsync(ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) { try { if (!proc.HasExited) proc.KillCompat(entireProcessTree: true); } catch { } return false; }
-
-            return proc.ExitCode == 0 && File.Exists(jpg);
+            var pr = await _runner.RunAsync(psi.FileName, psi.ArgumentList, ct: ct).ConfigureAwait(false);   // 🛡️ IProcessRunner 경유(드레인·취소 kill 내장)
+            return pr.Ok && File.Exists(jpg);
         }
         catch (Exception ex) { Program.Log("VideoMergeService.ExtractPoster", ex); return false; }
     }
@@ -677,16 +661,8 @@ public sealed class VideoMergeService(IConfiguration cfg) : IVideoMergeService
             psi.ArgumentList.Add("-q:v"); psi.ArgumentList.Add("3");
             psi.ArgumentList.Add(outputJpgPath);
 
-            using var proc = new Process { StartInfo = psi };
-            proc.ErrorDataReceived += (_, __) => { };   // 버퍼 드레인(데드락 방지)
-            proc.OutputDataReceived += (_, __) => { };
-            if (!proc.StartCompat()) return null;
-            proc.BeginErrorReadLine();
-            proc.BeginOutputReadLine();
-            try { await proc.WaitForExitAsync(ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) { try { if (!proc.HasExited) proc.KillCompat(entireProcessTree: true); } catch { } return null; }
-
-            return proc.ExitCode == 0 && File.Exists(outputJpgPath) ? outputJpgPath : null;
+            var pr = await _runner.RunAsync(psi.FileName, psi.ArgumentList, ct: ct).ConfigureAwait(false);   // 🛡️ IProcessRunner 경유
+            return pr.Ok && File.Exists(outputJpgPath) ? outputJpgPath : null;
         }
         catch (Exception ex) { Program.Log("VideoMergeService.ExtractFrame", ex); return null; }
     }
@@ -725,10 +701,11 @@ public sealed class VideoMergeService(IConfiguration cfg) : IVideoMergeService
     }
 
     /// <summary>ffmpeg 실행 파일 위치 결정 — exe 옆(기존 배포 관례) 우선 → <see cref="CliPathResolver"/> 3단계(Tools\ffmpeg\ 번들 → 로컬앱데이터 → PATH). 못 찾으면 null.</summary>
-    private static string? ResolveExisting()
+    private string? ResolveExisting()
     {
         try
         {
+            if (ffmpegResolver is not null) return ffmpegResolver();   // 테스트/DI 주입 경로
             var local = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
             if (File.Exists(local)) return local;
 

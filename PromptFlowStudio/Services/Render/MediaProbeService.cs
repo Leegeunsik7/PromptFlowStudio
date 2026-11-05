@@ -52,11 +52,20 @@ public sealed class MediaProbeService
 {
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(10);
     private readonly Func<string?> _ffmpeg;
+    private readonly IProcessRunner _runner;
 
     public MediaProbeService() : this(null) { }
 
     /// <param name="ffmpegPath">ffmpeg 경로 공급자(설정 경로 우선) — null 이면 <see cref="FfmpegLocator"/>.</param>
-    public MediaProbeService(Func<string?>? ffmpegPath) => _ffmpeg = ffmpegPath ?? (() => FfmpegLocator.Locate().Path);
+    public MediaProbeService(Func<string?>? ffmpegPath) : this(ffmpegPath, null) { }
+
+    /// <param name="ffmpegPath">ffmpeg 경로 공급자 — null 이면 <see cref="FfmpegLocator"/>.</param>
+    /// <param name="processRunner">🛡️ 단일 실행 게이트웨이(DI) — null 이면 <see cref="SystemProcessRunner.Shared"/>.</param>
+    public MediaProbeService(Func<string?>? ffmpegPath, IProcessRunner? processRunner)
+    {
+        _ffmpeg = ffmpegPath ?? (() => FfmpegLocator.Locate().Path);
+        _runner = processRunner ?? SystemProcessRunner.Shared;
+    }
 
     /// <summary>대상 비디오 규격 추출 — 파일 부재 null · 도구 부재 시 크기/확장자만 담은 폴백 규격.</summary>
     public async Task<MediaSpec?> ProbeAsync(string? path, CancellationToken ct = default)
@@ -76,7 +85,7 @@ public sealed class MediaProbeService
         var ffmpeg = SafeFfmpeg();
         try
         {
-            var r = await ProcessRunner.RunAsync(ResolveProbe(ffmpeg),
+            var r = await _runner.RunAsync(ResolveProbe(ffmpeg),
                 ["-v", "error", "-show_entries",
                  "format=format_name,duration,bit_rate:stream=codec_type,codec_name,codec_tag_string,width,height,avg_frame_rate,r_frame_rate",
                  "-of", "json", path], ct: cts.Token).ConfigureAwait(false);
@@ -84,7 +93,7 @@ public sealed class MediaProbeService
 
             if (!string.IsNullOrEmpty(ffmpeg))
             {
-                var b = await ProcessRunner.RunAsync(ffmpeg, ["-hide_banner", "-i", path], ct: cts.Token).ConfigureAwait(false);
+                var b = await _runner.RunAsync(ffmpeg, ["-hide_banner", "-i", path], ct: cts.Token).ConfigureAwait(false);
                 if (ParseFfmpegBanner(b.StdErr, size) is { } bs) return bs;
             }
         }
@@ -102,7 +111,7 @@ public sealed class MediaProbeService
         cts.CancelAfter(ProbeTimeout);
         try
         {
-            var r = await ProcessRunner.RunAsync(ffmpeg,
+            var r = await _runner.RunAsync(ffmpeg,
                 ["-hide_banner", "-i", path, "-vf", "fps=2,crop=iw/2:ih/2,scale=96:-2,signalstats,metadata=print:key=lavfi.signalstats.YAVG",
                  "-frames:v", "20", "-an", "-f", "null", "-"], ct: cts.Token).ConfigureAwait(false);
             return ParseSignalStatsYavg(r.StdErr + "\n" + r.StdOut);

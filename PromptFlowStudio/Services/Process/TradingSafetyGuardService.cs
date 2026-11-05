@@ -13,7 +13,7 @@ namespace PromptFlowStudio.Services.ProcessBridge;
 ///   ▸ <see cref="Attach"/> 시 <see cref="ProcessRunner"/> 전역 훅(우선순위·게이트) 결선 — <see cref="Dispose"/> 에서 해제.
 ///   ▸ 게이트는 AsyncLocal 재진입 허용(렌더 작업 내부 ffmpeg 호출이 자기 슬롯에 막히는 교착 차단).
 /// </summary>
-public sealed class TradingSafetyGuardService : IDisposable
+public sealed partial class TradingSafetyGuardService : IDisposable
 {
     public static readonly TimeSpan Kst = TimeSpan.FromHours(9);
     public static readonly TimeSpan DefaultOpen = new(9, 0, 0);
@@ -62,7 +62,7 @@ public sealed class TradingSafetyGuardService : IDisposable
     }
 
     /// <summary>KRX 정규장 판정 — 평일 09:00~15:30(KST) 이면서 휴장일 아님.</summary>
-    public static bool IsMarketHours(DateTimeOffset at) => IsMarketHours(at, DefaultOpen, DefaultClose) && !IsKrxHoliday(at);
+    public static bool IsMarketHours(DateTimeOffset at) => ResolveSession(at).Status == KrxSessionStatus.RegularMarket;   // 📅 krx_closures.json 세션 오버라이드(수능 10:00 개장 등) 반영
 
     /// <summary>📅 KST 기준 평일 휴장일(<see cref="KrxHolidayCalendar"/>) 여부.</summary>
     public static bool IsKrxHoliday(DateTimeOffset at) => KrxHolidayCalendar.IsHoliday(DateOnly.FromDateTime(at.ToOffset(Kst).DateTime));
@@ -75,6 +75,8 @@ public sealed class TradingSafetyGuardService : IDisposable
         get
         {
             var now = UtcNow();
+            if (RespectKrxHolidays && !IncludeWeekends && MarketOpen == DefaultOpen && MarketClose == DefaultClose)
+                return ResolveSession(now).Status == KrxSessionStatus.RegularMarket;   // 기본 정규장 = 4단계 세션 머신(일자별 오버라이드 포함)
             return IsMarketHours(now, MarketOpen, MarketClose, IncludeWeekends) && !(RespectKrxHolidays && IsKrxHoliday(now));
         }
     }

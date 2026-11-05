@@ -1,16 +1,16 @@
 # Current Project Status
-- Active Milestone: 【Governance】 📅 KRX 휴장일 캘린더 · 🖼️ 갤러리 스냅샷 매니저 · 🛡️ 전사 FFmpeg 실행기(IProcessRunner) 일원화
+- Active Milestone: 【Pro-Governance】 🎛️ 핵심 비디오 서비스 IProcessRunner 수렴 · ✂️ 무손실 키프레임 트리머 · 📈 KRX 4단계 세션 관제
 - Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (net8.0-android 미검증: Android SDK 미설치)
-- Tests: FastUnit 605/605 PASS (Release)
+- Tests: FastUnit 613/613 PASS (Release)
 - Updated: 2026-11-05 (KST)
 
 ## Completed
-- 📅 `KrxHolidayCalendar`(신규 · BCL `KoreanLunisolarCalendar`): 신정·삼일절·근로자의 날(5/1)·어린이날·부처님오신날·현충일·광복절·개천절·한글날·성탄절 · 설/추석 3일 · 대체공휴일(설·추석·어린이날 2014~ · 국경일 2021~ · 부처님오신날/성탄절 2023~) · 연말 폐장일(12/31 또는 직전 영업일) · 비정기 휴장 `AddClosure` · 연도별 캐시
-- 🛡️ `TradingSafetyGuardService`: `RespectKrxHolidays`(기본 ON) · `IsHolidayNow` · 휴장일 자동 해제(GPU 100%)
-- ⏱️ `Workspace.razor`: 10초 `PeriodicTimer` 판정 틱 — 상태 변경 시에만 `InvokeAsync(StateHasChanged)` · Dispose 시 CTS 해제
-- 🖼️ 갤러리: `GalleryMediaType.Still`(`_stills/*.png`) · `[🖼️ 스냅샷]` 탭(`GalleryFilter.Snapshots` · AI Render 탭에서 제외) · 카드 호버 `[바탕화면 적용]·[탐색기에서 보기]·[스냅샷 삭제]` · 다중 선택 삭제 기존 체크박스 연동
-- 🎛️ `IProcessRunner`/`SystemProcessRunner`(정적 `ProcessRunner` 훅 위임) · `AsFfmpegRunner` 어댑터 · `AudioMuxService`·`StoryboardStitchService` DI 생성자 · `MainForm.cs`·`MauiProgram.cs` 등록
-- 테스트 `GovernanceKrxGallerySnapshotTests`(3건)
+- 🎛️ `AmbientLoopService`(`IProcessRunner` 생성자) · `MediaProbeService`(ffprobe/배너/휘도 3경로) · `VideoMergeService`(병합·포스터·프레임 — 레거시 `new Process()` 제거, 진행률 라인 콜백 유지) 전량 `IProcessRunner` 경유 · DI(`MainForm.cs`·`MauiProgram.cs`) 결선
+- ✂️ `Services/Video/VideoTrimService`(신규): `-ss -to -i -c copy -avoid_negative_ts make_zero` · 구간 검증 · 새 클립(`_trim_{s}-{e}s`) / 덮어쓰기(임시 산출 → 검증 → 원자적 교체, 실패 시 원본 보존)
+- ✂️ `Workspace.razor` 스크러버 바 `[✂️ 구간 자르기]` — Start/End 0.1s 입력 · 현재 위치 1클릭 마킹 · `[현재 영상에 덮어쓰기]`/`[새 클립으로 갤러리 저장]`
+- 📅 `KrxHolidayCalendar.Sessions`: `%LOCALAPPDATA%/PromptFlowStudio/Config/krx_closures.json`(closures · sessions 오버라이드 — 수능 10:00 개장·조기 폐장) · 불량 항목 [부분 구제] · 앱 시작 시 로드
+- 📈 `KrxSessionStatus` PreMarket/RegularMarket/PostMarket/Closed · `ResolveSession`(다음 전환 시각·남은 시간) · 기본 정규장 판정이 세션 머신 경유 · 툴바 4색 배지 + 남은 시간 툴팁(10초 틱 · 분 단위 변경 시만 재렌더)
+- 테스트 `ProcessRunnerGovernanceTests`(8건)
 
 ## Next
-- 나머지 직접 `new Process()` FFmpeg 호출부(VideoMergeService 등) `IProcessRunner` 단계적 이관
+- 잔여 Media/Wan 계열 직접 `Process` 호출부 `IProcessRunner` 단계적 이관

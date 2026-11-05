@@ -33,14 +33,19 @@ public sealed class AmbientLoopService
     private readonly Func<string?> _resolveFfmpeg;
     private readonly FfmpegRunner _run;
 
-    public AmbientLoopService() : this(null, null) { }
+    public AmbientLoopService() : this(SystemProcessRunner.Shared) { }
+
+    /// <param name="processRunner">🛡️ 단일 실행 게이트웨이(DI · 장중 BelowNormal/동시 1 게이트).</param>
+    /// <param name="resolveFfmpeg">ffmpeg 경로 조회. null 이면 <see cref="FfmpegLocator"/>.</param>
+    public AmbientLoopService(IProcessRunner processRunner, Func<string?>? resolveFfmpeg = null)
+        : this(resolveFfmpeg, (processRunner ?? throw new ArgumentNullException(nameof(processRunner))).AsFfmpegRunner()) { }
 
     /// <param name="resolveFfmpeg">ffmpeg 경로 조회(null = 부재). null 이면 <see cref="FfmpegLocator"/>.</param>
-    /// <param name="runner">ffmpeg 실행기. null 이면 <see cref="ProcessRunner"/>.</param>
+    /// <param name="runner">ffmpeg 실행기(테스트 주입). null 이면 <see cref="SystemProcessRunner"/>.</param>
     public AmbientLoopService(Func<string?>? resolveFfmpeg, FfmpegRunner? runner)
     {
         _resolveFfmpeg = resolveFfmpeg ?? (static () => FfmpegLocator.Locate().Path);
-        _run = runner ?? DefaultRunAsync;
+        _run = runner ?? SystemProcessRunner.Shared.AsFfmpegRunner();
     }
 
     /// <summary>고속 슬로우 필터(기본) — <c>setpts={f}*PTS,fps=30</c>. 모션 보간 없이 프레임 스트레칭만 수행(CPU 병목 없음).</summary>
@@ -187,11 +192,5 @@ public sealed class AmbientLoopService
         if (string.Equals(output, source, StringComparison.OrdinalIgnoreCase)) return;
         try { if (File.Exists(output)) File.Delete(output); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Program.Log("Ambient.Cleanup", ex); }
-    }
-
-    private static async Task<bool> DefaultRunAsync(string exe, IReadOnlyList<string> args, CancellationToken ct)
-    {
-        var r = await ProcessRunner.RunAsync(exe, args, ct: ct).ConfigureAwait(false);
-        return r.Ok && r.ExitCode == 0;
     }
 }

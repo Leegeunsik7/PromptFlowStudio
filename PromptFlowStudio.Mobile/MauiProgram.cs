@@ -386,7 +386,7 @@ public static class MauiProgram
 
         builder.Services.TryAddSingleton<Microsoft.Extensions.Configuration.IConfiguration>(builder.Configuration);
 
-        builder.Services.AddSingleton<PromptFlowStudio.Services.Media.IVideoMergeService, PromptFlowStudio.Services.Media.VideoMergeService>();
+        builder.Services.AddSingleton<PromptFlowStudio.Services.Media.IVideoMergeService>(sp => new PromptFlowStudio.Services.Media.VideoMergeService(sp.GetRequiredService<Microsoft.Extensions.Configuration.IConfiguration>(), sp.GetRequiredService<PromptFlowStudio.Services.Engines.IProcessRunner>()));
 
         builder.Services.AddSingleton<PromptFlowStudio.Services.Media.FfmpegVideoMixerService>();   // v16.12.0 후처리 엔진(데스크톱 동일 · ffmpeg 부재 시 Graceful)
 
@@ -405,7 +405,7 @@ public static class MauiProgram
         builder.Services.AddSingleton<PromptFlowStudio.Services.Storyboard.SocialMetadataAiGenerator>(); // v16.15.0 (Gemini/오프라인 SEO 미등록 시 로컬 템플릿)
         builder.Services.AddSingleton<PromptFlowStudio.Services.Prompt.PromptSynthesizerService>();   // 1번 워크플로우 프롬프트 합성기
         builder.Services.AddSingleton<PromptFlowStudio.Services.Prompt.PromptInspirationService>();   // 💡 스토리 레시피 & 인스피레이션 허브
-        builder.Services.AddSingleton<PromptFlowStudio.Services.Render.MediaProbeService>(sp => new PromptFlowStudio.Services.Render.MediaProbeService(() => sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.FfmpegBinaryPath is { Length: > 0 } fp && System.IO.File.Exists(fp) ? fp : PromptFlowStudio.Services.Render.FfmpegLocator.Locate().Path));   // ℹ️ 미디어 규격 인스펙터(ffprobe → ffmpeg 배너 → 헤더 폴백)
+        builder.Services.AddSingleton<PromptFlowStudio.Services.Render.MediaProbeService>(sp => new PromptFlowStudio.Services.Render.MediaProbeService(() => sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.FfmpegBinaryPath is { Length: > 0 } fp && System.IO.File.Exists(fp) ? fp : PromptFlowStudio.Services.Render.FfmpegLocator.Locate().Path, sp.GetRequiredService<PromptFlowStudio.Services.Engines.IProcessRunner>()));   // ℹ️ 미디어 규격 인스펙터(ffprobe → ffmpeg 배너 → 헤더 폴백)
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.Render.RenderCacheCleaner(() => new[] { sp.GetRequiredService<PromptFlowStudio.Services.Media.ILocalMediaService>().MediaRoot, System.IO.Path.Combine(AppContext.BaseDirectory, "_renders") }, () => sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.RenderCacheMaxGb ?? PromptFlowStudio.Services.Render.RenderCacheCleaner.DefaultMaxCacheGb));   // 🧹 렌더 캐시 자동 정리(임시 회수 + LRU 상한)
         builder.Services.AddSingleton<PromptFlowStudio.Services.Prompt.PresetManagerService>();   // ⭐ 작업실 커스텀 프리셋(user_presets.json)
         builder.Services.AddSingleton<PromptFlowStudio.Services.Storyboard.StoryboardSequencerService>();   // 2번 워크플로우 스토리보드 시퀀서
@@ -421,6 +421,7 @@ public static class MauiProgram
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.Chart.ChartStillGeneratorService(() => sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.StockSuiteAssetPath));   // 📊 티커 기반 차트 스틸 생성기(I2V 시작 프레임)
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.Export.StockSuiteHealthService(() => sp.GetRequiredService<PromptFlowStudio.Services.Export.StockSuiteExporter>().ConfiguredDirectory, sp.GetService<PromptFlowStudio.Services.ProcessBridge.StockSuiteIpcBridge>()));   // 🩺 StockSuite 연동 헬스 닥터
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.Export.AudioMuxService(() => sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.FfmpegBinaryPath is { Length: > 0 } fp && System.IO.File.Exists(fp) ? fp : PromptFlowStudio.Services.Render.FfmpegLocator.Locate().Path, sp.GetRequiredService<PromptFlowStudio.Services.Engines.IProcessRunner>(), null));   // 🎵 SNS 쇼츠 BGM 믹서(로컬 합성 프리셋 · ffmpeg 무손실 비디오 copy)
+        builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.Video.VideoTrimService(() => sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.FfmpegBinaryPath is { Length: > 0 } fp && System.IO.File.Exists(fp) ? fp : PromptFlowStudio.Services.Render.FfmpegLocator.Locate().Path, sp.GetRequiredService<PromptFlowStudio.Services.Engines.IProcessRunner>()));   // ✂️ 캔버스 무손실 키프레임 트리머(-c copy · IProcessRunner 경유)
         builder.Services.AddSingleton<PromptFlowStudio.Services.Render.FFmpegVideoStitchService>(); // 합본/번인 — 모바일은 ffmpeg 부재 → 가상 병합
         builder.Services.AddSingleton<PromptFlowStudio.Services.Configuration.AppSettingsManager>(); // user_settings.json → appsettings 기본값(ComfyUI 주소 · 렌더 모드)
         builder.Services.AddSingleton<PromptFlowStudio.Services.Publishing.IYouTubeShortsPublisher>(sp => PromptFlowStudio.Services.Publishing.YouTubeShortsPublisher.Create(sp.GetRequiredService<PromptFlowStudio.Services.Configuration.AppSettingsManager>(), sp.GetService<Microsoft.Extensions.Configuration.IConfiguration>())); // 🚀 Shorts 발행(모달은 데스크톱 전용 · 서비스만 공유)

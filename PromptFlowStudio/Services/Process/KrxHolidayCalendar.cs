@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Threading;
 
 namespace PromptFlowStudio.Services.ProcessBridge;
 
@@ -12,7 +13,7 @@ namespace PromptFlowStudio.Services.ProcessBridge;
 ///   ▸ 연말 폐장일 — 12/31(주말·공휴일이면 직전 영업일).
 ///   ▸ 선거일·임시공휴일 등 비정기 휴장은 <see cref="AddClosure"/> 로 주입. 연도별 집합 캐시(최초 1회 계산 후 무할당 조회).
 /// </summary>
-public static class KrxHolidayCalendar
+public static partial class KrxHolidayCalendar
 {
     private static readonly KoreanLunisolarCalendar Lunar = new();
     private static readonly ConcurrentDictionary<int, HashSet<DateOnly>> Cache = new();
@@ -23,13 +24,14 @@ public static class KrxHolidayCalendar
     {
         Extra[date] = 0;
         Cache.TryRemove(date.Year, out _);
+        Interlocked.Increment(ref _closureVersion);
     }
 
     /// <summary>비정기 휴장일 제거.</summary>
     public static bool RemoveClosure(DateOnly date)
     {
         var removed = Extra.TryRemove(date, out _);
-        if (removed) Cache.TryRemove(date.Year, out _);
+        if (removed) { Cache.TryRemove(date.Year, out _); Interlocked.Increment(ref _closureVersion); }
         return removed;
     }
 

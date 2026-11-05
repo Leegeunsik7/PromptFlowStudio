@@ -28,6 +28,7 @@
 @inject PromptFlowStudio.Services.Platform.IClipboardService Clipboard
 @inject PromptFlowStudio.Services.Export.StockSuiteExporter StockSuite
 @inject PromptFlowStudio.Services.ProcessBridge.TradingSafetyGuardService TradingGuard
+@inject PromptFlowStudio.Services.Video.VideoTrimService Trimmer
 @inject PromptFlowStudio.Services.ProcessBridge.StockSuiteProcessMonitor StockMon
 @inject PromptFlowStudio.Services.Prompt.PresetManagerService Presets
 @inject PromptFlowStudio.Services.Render.MediaProbeService Probe
@@ -50,10 +51,7 @@
             <button class="ws-back" @onclick='() => Nav.NavigateTo("")'>← 워크스페이스</button>
             <button class="ws-back" @onclick='() => Nav.NavigateTo("storyboard")'>🎬 스토리보드(여러 컷) →</button>
             <button class="ws-back" @onclick="ExpandToStoryboard" disabled="@(State.IsBusy || string.IsNullOrWhiteSpace(_prompt))" title="현재 프롬프트·시드로 1번 컷을 채우고 2~4번 컷을 기승전결로 자동 전개">🎬 스토리보드로 4컷 확장</button>
-            @if (TradingGuard.IsThrottling)
-            {
-                <span class="ws-trade-guard" title="평일 09:00~15:30(KST · KRX 휴장일 자동 해제) — FFmpeg 우선순위 BelowNormal · 동시 렌더/인코딩 1개 제한 (설정 ▸ 사용자 설정에서 해제)">@PromptFlowStudio.Services.ProcessBridge.TradingSafetyGuardService.IndicatorText</span>
-            }
+            <span class="ws-trade-guard @(PromptFlowStudio.Services.ProcessBridge.TradingSafetyGuardService.SessionCss(_session.Status))" title="@SessionTooltip">@SessionBadgeText</span>
             @{ var ssSnap = StockMon.Current; }
             @if (ssSnap.IsRunning)
             {
@@ -1078,6 +1076,11 @@
     .ws-done { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     .ws-scrub { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
     .ws-trade-guard { font: 700 11px/1 var(--mono); padding: 4px 10px; border-radius: 999px; border: 1px solid #c9a227; color: #ffd54a; background: rgba(201,162,39,.12); align-self: flex-start; }
+    .ws-trade-guard.pre { border-color: #d4b106; color: #ffe066; background: rgba(212,177,6,.12); }
+    .ws-trade-guard.post { border-color: #e8833a; color: #ffa45c; background: rgba(232,131,58,.12); }
+    .ws-trade-guard.closed { border-color: #3fae62; color: #6fdc8c; background: rgba(63,174,98,.12); }
+    .ws-trim { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 6px; font: 12px var(--mono); }
+    .ws-trim input { width: 72px; }
     .ws-hint { font: 600 11px var(--mono); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; }
     .ws-src { font: 700 11px var(--mono); border-radius: 999px; padding: 5px 10px; border: 1px solid var(--line); white-space: nowrap; }
     .ws-src.ok { color: #10b981; border-color: color-mix(in srgb, #10b981 45%, var(--line)); }
@@ -2149,9 +2152,69 @@
                 <button class="ws-btn ghost sm" @onclick="() => SetWallpaper(snap)" title="방금 추출한 스냅샷을 윈도우 바탕화면으로 설정">🖼️ 배경화면 설정</button>
                 <button class="ws-btn ghost sm" @onclick="() => RevealInExplorer(snap)" title="스냅샷 파일 위치 열기">📂</button>
             }
+            <button class="ws-btn ghost sm @(_trimOpen ? "on" : null)" @onclick="ToggleTrim" disabled="@_scrubBusy" title="재인코딩 없이(-c copy) 시작/끝 왜곡 프레임 무손실 컷">✂️ 구간 자르기</button>
             @if (_scrubMsg is { Length: > 0 }) { <span class="ws-hint">@_scrubMsg</span> }
         </div>
+        @if (_trimOpen)
+        {
+            <div class="ws-trim">
+                <label>Start <input type="number" step="0.1" min="0" @bind="_trimStart" @bind:culture="CultureInfo.InvariantCulture" />s</label>
+                <button class="ws-btn ghost sm" @onclick="() => MarkTrimAsync(true)" disabled="@_scrubBusy" title="현재 재생 위치를 시작점으로">⏺ 시작=현재</button>
+                <label>End <input type="number" step="0.1" min="0" @bind="_trimEnd" @bind:culture="CultureInfo.InvariantCulture" />s</label>
+                <button class="ws-btn ghost sm" @onclick="() => MarkTrimAsync(false)" disabled="@_scrubBusy" title="현재 재생 위치를 종료점으로">⏹ 끝=현재</button>
+                <button class="ws-btn sm" @onclick="() => ApplyTrimAsync(true)" disabled="@_scrubBusy" title="임시 산출 → 검증 → 원자적 교체(실패 시 원본 보존)">현재 영상에 덮어쓰기</button>
+                <button class="ws-btn ghost sm" @onclick="() => ApplyTrimAsync(false)" disabled="@_scrubBusy" title="원본 옆에 _trim 클립으로 저장 → 갤러리 노출">새 클립으로 갤러리 저장</button>
+            </div>
+        }
     };
+
+    // ══════ ✂️ 무손실 키프레임 트리머 ══════
+    private bool _trimOpen;
+    private double _trimStart = 0.5, _trimEnd = 14.5;
+
+    private async Task ToggleTrim()
+    {
+        _trimOpen = !_trimOpen;
+        if (!_trimOpen || await ReadPlayheadAsync() is not { } st || st[1] <= 0 || double.IsNaN(st[1])) return;
+        _trimStart = Math.Min(0.5, Math.Round(st[1] * 0.1, 1));
+        _trimEnd = Math.Max(_trimStart + 0.1, Math.Round(st[1] - Math.Min(0.5, st[1] * 0.1), 1));
+    }
+
+    private async Task MarkTrimAsync(bool start)
+    {
+        if (await ReadPlayheadAsync() is not { } st) { _scrubMsg = "⚠ 재생 중인 영상을 찾지 못했습니다."; return; }
+        var t = Math.Round(st[0], 1);
+        if (start) _trimStart = t; else _trimEnd = t;
+    }
+
+    private async Task ApplyTrimAsync(bool overwrite)
+    {
+        if (_scrubBusy || InspectPath is not { } path) return;
+        var st = await ReadPlayheadAsync();
+        if (PromptFlowStudio.Services.Video.VideoTrimService.ValidateRange(_trimStart, _trimEnd, st?[1]) is { } bad) { _scrubMsg = "⚠ " + bad; return; }
+        _scrubBusy = true;
+        _scrubMsg = "✂️ 무손실 컷 중…";
+        try
+        {
+            var r = overwrite
+                ? await Trimmer.TrimInPlaceAsync(path, _trimStart, _trimEnd, _mediaCts.Token)
+                : await Trimmer.TrimAsync(path, PromptFlowStudio.Services.Video.VideoTrimService.BuildClipPath(Path.GetDirectoryName(path) ?? Media.MediaRoot, path, _trimStart, _trimEnd), _trimStart, _trimEnd, _mediaCts.Token);
+            _scrubMsg = r.Ok ? r.Message + (overwrite ? "" : " → 갤러리 저장: " + Path.GetFileName(r.Path)) : "⚠ " + r.Message;
+            if (r.Ok && overwrite)
+            {
+                _scrubFpsPath = null;
+                if (_canvasQueuePath == path && _canvasQueueUrl is { } u)   // @key 교체로 <video> 강제 리로드
+                {
+                    var q = u.IndexOf('?');
+                    _canvasQueueUrl = (q < 0 ? u : u[..q]) + "?trim=" + DateTime.UtcNow.Ticks.ToString(CultureInfo.InvariantCulture);
+                }
+            }
+            if (r.Ok) _trimOpen = false;
+        }
+        catch (OperationCanceledException) { _scrubMsg = null; }
+        catch (Exception ex) { Program.Log("Workspace.Trim", ex); _scrubMsg = "⚠ 구간 자르기 실패"; }
+        finally { _scrubBusy = false; }
+    }
 
     private async Task EnsureScrubFpsAsync(string path)
     {
@@ -2619,6 +2682,7 @@
         AbsorbWirelessCameraFrame();   // 무선 카메라(/wireless-camera)에서 전달된 I2V 첫 프레임 흡수
         AbsorbGalleryRestore();        // 갤러리(/gallery) ✨ 작업실 복원 — 프롬프트·시드·해상도·I2V 참조 이미지 주입
         _guardOn = TradingGuard.IsThrottling;
+        RefreshSession();
         _ = GuardTickLoopAsync(_guardCts.Token);   // 🛡️ 10초 주기 장중 판정 — 09:00 개장/15:30 마감 인디케이터 자동 전환
     }
 
@@ -2626,6 +2690,27 @@
     private readonly CancellationTokenSource _guardCts = new();
     private bool _guardOn;
     public static readonly TimeSpan GuardTickInterval = TimeSpan.FromSeconds(10);
+    private PromptFlowStudio.Services.ProcessBridge.KrxSessionInfo _session;
+    private long _sessionRemainMin = -1;
+
+    /// <summary>📈 KRX 4단계 세션 재평가 — 단계 또는 남은 분이 바뀌면 true(툴팁 실시간 갱신).</summary>
+    private bool RefreshSession()
+    {
+        var s = TradingGuard.CurrentSession;
+        var min = (long)Math.Ceiling(s.Remaining.TotalMinutes);
+        if (s.Status == _session.Status && min == _sessionRemainMin) return false;
+        _session = s;
+        _sessionRemainMin = min;
+        return true;
+    }
+
+    private string SessionBadgeText => _session.Status == PromptFlowStudio.Services.ProcessBridge.KrxSessionStatus.RegularMarket && !_guardOn
+        ? "📈 정규장 (안전 모드 꺼짐)"
+        : PromptFlowStudio.Services.ProcessBridge.TradingSafetyGuardService.SessionLabel(_session.Status);
+
+    private string SessionTooltip => "KRX 세션 전환까지 " + PromptFlowStudio.Services.ProcessBridge.TradingSafetyGuardService.FormatRemaining(_session.Remaining)
+        + " (" + _session.NextChangeKst.ToString("MM-dd HH:mm", CultureInfo.InvariantCulture) + " KST) — 장전 08:30 · 정규 09:00~15:30 · 시간외 ~18:00 · krx_closures.json 비정기 일정 반영"
+        + (_guardOn ? " · FFmpeg BelowNormal · 동시 렌더/인코딩 1개 제한" : "");
 
     private async Task GuardTickLoopAsync(CancellationToken ct)
     {
@@ -2637,7 +2722,8 @@
                 try
                 {
                     var on = TradingGuard.IsThrottling;
-                    if (on == _guardOn) continue;
+                    var sessionChanged = RefreshSession();
+                    if (on == _guardOn && !sessionChanged) continue;
                     _guardOn = on;
                     await InvokeAsync(StateHasChanged).ConfigureAwait(false);
                 }
