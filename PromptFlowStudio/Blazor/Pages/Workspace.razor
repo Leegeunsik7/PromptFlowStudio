@@ -30,6 +30,7 @@
 @inject PromptFlowStudio.Services.Prompt.PresetManagerService Presets
 @inject PromptFlowStudio.Services.Render.MediaProbeService Probe
 @inject PromptFlowStudio.Services.Export.StockSuiteWatchlistService Watchlist
+@inject PromptFlowStudio.Services.Prompt.PromptHistoryService History
 
 @* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
    상태는 WanJobState(싱글턴)에 있고, 이 컴포넌트는 OnChange 를 구독해 InvokeAsync(StateHasChanged)로만 갱신한다.
@@ -146,7 +147,22 @@
                 <button class="ws-mood-chip" @onclick="ReloadWatchlist" disabled="@_tickerBusy" title="StockSuite 관심종목 다시 읽기">↻</button>
                 @if (_tickerMsg is not null) { <span class="ws-mood-cap">@_tickerMsg</span> }
             </div>
-            <textarea class="ws-ta" @bind="_prompt" @bind:event="oninput"
+            <div class="ws-hist">
+                <button class="ws-hist-btn" @onclick="ToggleHistory" disabled="@(State.IsBusy || History.Count == 0)" title="프롬프트 타임머신 — AI 강화·번역·3-Way·시황 무드 직전 상태로 되돌리기">🕒 되돌리기 @(History.Count)</button>
+                @if (_histOpen)
+                {
+                    var snaps = History.Snapshots;
+                    <div class="ws-hist-menu" role="menu">
+                        @for (var hi = 0; hi < snaps.Count; hi++)
+                        {
+                            var hIdx = hi;
+                            var hs = snaps[hi];
+                            <button class="ws-hist-item" role="menuitem" @key="hs" @onclick="() => RestoreSnapshot(hIdx)" title="@hs.Prompt">@hs.Display<small>@(hs.Camera is null ? "" : "🎥 " + hs.Camera + " · ")🌱 @hs.Seed.ToString(CultureInfo.InvariantCulture)</small></button>
+                        }
+                    </div>
+                }
+            </div>
+            <textarea class="ws-ta" @bind="_prompt" @bind:event="oninput" @bind:after="OnPromptTyped"
                       placeholder="@(_imagePath is null ? "예) 노을 지는 해변을 천천히 걷는 골든리트리버, 시네마틱, 부드러운 카메라 팬" : "예) 카메라가 천천히 줌인, 머리카락이 바람에 날림 (i2v는 움직임 위주로 · 프롬프트 선택)")"
                       maxlength="800" disabled="@State.IsBusy"></textarea>
             @* 📈 시황 무드 연동 칩 바 · ✨ 3종 스타일 동시 전개 *@
@@ -824,6 +840,14 @@
 
     .ws-ta { width: 100%; min-height: 160px; resize: vertical; border-radius: 12px; border: 1px solid var(--line); background: var(--card-2);
         color: var(--text-primary); padding: 12px 14px; font-size: 13.5px; line-height: 1.6; font-family: inherit; }
+    .ws-hist { position: relative; display: flex; justify-content: flex-end; margin-bottom: 4px; }
+    .ws-hist-btn { font-size: 12px; padding: 3px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); cursor: pointer; }
+    .ws-hist-btn:disabled { opacity: .45; cursor: default; }
+    .ws-hist-menu { position: absolute; top: 100%; right: 0; z-index: 30; min-width: 260px; max-height: 320px; overflow-y: auto; display: flex; flex-direction: column;
+        border: 1px solid var(--line); border-radius: 10px; background: var(--card-2); box-shadow: 0 8px 24px rgba(0,0,0,.35); padding: 4px; }
+    .ws-hist-item { text-align: left; padding: 6px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--text-primary); cursor: pointer; display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+    .ws-hist-item:hover { background: var(--line); }
+    .ws-hist-item small { opacity: .7; font-size: 11px; }
     .ws-ta:focus { outline: none; border-color: var(--accent); }
     .ws-ta:disabled { opacity: .6; }
 
@@ -1259,7 +1283,13 @@
             for (var k = 0; k < arr.Length; k++)
             {
                 var mood = PromptFlowStudio.Services.AI.GeminiPromptService.MarketMoods[k].Mood;
-                arr[k] = () => _prompt = PromptFlowStudio.Services.AI.GeminiPromptService.ApplyMarketSentiment(_prompt, mood);
+                var moodLabel = PromptFlowStudio.Services.AI.GeminiPromptService.MarketMoods[k].Label + " 무드";
+                arr[k] = () =>
+                {
+                    Snap("무드 적용 전");
+                    _prompt = PromptFlowStudio.Services.AI.GeminiPromptService.ApplyMarketSentiment(_prompt, mood);
+                    Snap(moodLabel);
+                };
             }
             _moodPick = arr;
         }
@@ -1283,6 +1313,7 @@
         _variantMsg = null;
         try
         {
+            Snap("3-Way 전개 전");
             var r = await GeminiSvc.GenerateThreeWayVariantsAsync(_prompt, _mediaCts.Token);
             _variants = r.Variants;
             _variantSel = -1;
@@ -1296,6 +1327,7 @@
                     _variantSel = idx;
                     _prompt = _variants[idx].Prompt;
                     _canvas.Seed = _variants[idx].Seed; _canvas.SeedPinned = true;   // 스타일 시드 고정(재현성)
+                    Snap("3-Way " + _variants[idx].Title);
                 };
             }
             _variantPick = picks;
@@ -1366,6 +1398,7 @@
         try
         {
             var src = _prompt ?? "";
+            Snap(ContainsHangul(src) ? "원본 한글" : "강화 전 원본");
             PromptFlowStudio.Services.AI.GeminiEnhanceOutcome r;
             if (_imagePath is { } img)
                 r = await GeminiSvc.AnalyzeReferenceImageAsync(img, src, _durationMode, _mediaCts.Token);
@@ -1377,7 +1410,7 @@
                     sty >= 0 ? WanCameraStyleStudio.Styles[sty].Label : null,
                     cam >= 0 ? WanCameraStyleStudio.Cameras[cam].Label : null, _mediaCts.Token);
             }
-            if (!string.IsNullOrWhiteSpace(r.Prompt)) { _prompt = r.Prompt; if (r.SourceKorean is not null) { _promptKoOrigin = r.SourceKorean; _promptKoTranslated = r.Prompt; } }
+            if (!string.IsNullOrWhiteSpace(r.Prompt)) { _prompt = r.Prompt; if (r.SourceKorean is not null) { _promptKoOrigin = r.SourceKorean; _promptKoTranslated = r.Prompt; } Snap(r.SourceKorean is not null ? "제미나이 영문 강화" : "제미나이 강화"); }
             if (r.UsedFallback) _camToast = "💡 " + r.Message;
         }
         catch (Exception ex) { Program.Log("Workspace.GeminiEnhance", ex); }
@@ -2221,6 +2254,8 @@
     private string? _camToast;
     public void Dispose()
     {
+        _typingTimer?.Dispose();
+        History.Changed -= OnHistoryChanged;
         AppSettings.OnSettingsChanged -= OnAppSettingsChanged;
         State.OnChange -= OnStateChanged;
         RenderQueue.OnChange -= OnRenderQueueChanged;
@@ -2236,6 +2271,63 @@
             try { JS.InvokeAsync<bool>("pfsSeamInspector.set", false, 2.0, "video.ws-video").AsTask().ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted); }
             catch (Exception ex) when (ex is JSException or InvalidOperationException) { Program.Log("Workspace.SeamCheck", ex); }
         }
+    }
+
+    // ── 🕒 프롬프트 타임머신 ──
+    private bool _histOpen;
+    private System.Threading.Timer? _typingTimer;
+    private bool _histSubscribed;
+
+    private void EnsureHistorySubscribed()
+    {
+        if (_histSubscribed) return;
+        _histSubscribed = true;
+        History.Changed += OnHistoryChanged;
+    }
+
+    private void OnHistoryChanged() => _ = InvokeAsync(StateHasChanged);
+
+    private void ToggleHistory() { EnsureHistorySubscribed(); _histOpen = !_histOpen; }
+
+    private static bool ContainsHangul(string s)
+    {
+        foreach (var c in s) if (c >= '가' && c <= '힣') return true;
+        return false;
+    }
+
+    /// <summary>현재 프롬프트·카메라·시드 스냅샷 적재(직전과 동일하면 무시).</summary>
+    private void Snap(string label)
+    {
+        try
+        {
+            EnsureHistorySubscribed();
+            var p = _prompt ?? "";
+            var cam = WanCameraStyleStudio.ActiveIndex(p, WanCameraStyleStudio.Cameras);
+            History.Push(label, p, cam >= 0 ? WanCameraStyleStudio.Cameras[cam].Label : null, _canvas.Seed, _canvas.SeedPinned);
+        }
+        catch (Exception ex) { Program.Log("Workspace.PromptSnap", ex); }
+    }
+
+    /// <summary>입력 정지 1.5초 후 스냅샷(디바운스 · 타이머 1개 재사용).</summary>
+    private void OnPromptTyped()
+    {
+        _typingTimer ??= new System.Threading.Timer(static st =>
+        {
+            var self = (Workspace)st!;
+            try { _ = self.InvokeAsync(() => self.Snap("직접 입력")); }
+            catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { Program.Log("Workspace.TypingSnap", ex); }
+        }, this, System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
+        _typingTimer.Change(1500, System.Threading.Timeout.Infinite);
+    }
+
+    private void RestoreSnapshot(int newestIndex)
+    {
+        _histOpen = false;
+        if (History.Restore(newestIndex) is not { } snap) return;
+        Snap("되돌리기 전");
+        _prompt = snap.Prompt;
+        _canvas.Seed = snap.Seed;
+        _canvas.SeedPinned = snap.SeedPinned;
     }
 
     // ── v15.9.0 Wan 2.1 Gap-Filler: Auto-Foley(무음 보완) + 멀티 컷 타임라인 병합(단일 컷 보완). 실패는 원본 유지(Graceful) ──

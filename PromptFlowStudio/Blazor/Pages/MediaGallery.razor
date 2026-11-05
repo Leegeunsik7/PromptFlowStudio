@@ -193,6 +193,10 @@
     <div class="gl-toolbar">
         <input class="gl-search" @bind="_filter" @bind:event="oninput" placeholder="파일명·폴더 검색…" />
         <button class="gl-btn up" @onclick="OpenSchedule" title="장초반/정규장/장마감/야간 시간대별 배경 자동 전환 — StockSuite playlist.json 발행">📅 장중 스케줄러</button>
+        @if (_canRollback)
+        {
+            <button class="gl-btn up" @onclick="RollbackStock" disabled="@_stockBusy" title="StockSuite 활성 배경 ↔ 직전 백업(bg_ambient.backup) 맞교환">↩️ 이전 배경으로 복원</button>
+        }
     </div>
 
     @if (Filtered.Count == 0)
@@ -507,6 +511,7 @@
     protected override void OnInitialized()
     {
         Refresh();
+        ProbeRollback();
         Flow.OnChanged += OnFlowChanged;   // v5.6 플로우 자산 실시간 갱신
         Vm.Changed += OnVmChanged;
         Vm.RestoreRequested += OnRestoreRequested;
@@ -558,7 +563,26 @@
     // ── 🧹 정화 도구 · 💼 StockSuite 직결 ──
     private enum BulkKind { Mock, Checked }
     private BulkKind? _confirmBulk;
-    private bool _stockBusy;
+    private bool _stockBusy, _canRollback;
+
+    private void ProbeRollback()
+    {
+        try { _canRollback = StockSuite.CanRollback(); }
+        catch (Exception ex) { Program.Log("MediaGallery.RollbackProbe", ex); _canRollback = false; }
+    }
+
+    private async Task RollbackStock()
+    {
+        if (_stockBusy) return;
+        _stockBusy = true;
+        try
+        {
+            var r = StockSuite.RollbackPrevious();
+            Vm.SetStatus(r.Ok ? r.Message : "⚠ " + r.Message);
+        }
+        catch (Exception ex) { Program.Log("MediaGallery.Rollback", ex); Vm.SetStatus("⚠ 롤백 실패"); }
+        finally { _stockBusy = false; ProbeRollback(); await InvokeAsync(StateHasChanged); }
+    }
 
     private void DeleteMockAll() => _confirmBulk = BulkKind.Mock;
     private void DeleteCheckedAll() => _confirmBulk = BulkKind.Checked;
@@ -589,7 +613,7 @@
         try
         {
             var r = await StockSuite.ExportAsync(g.FilePath);
-            if (r.Ok) RefreshArchive();   // 📦 내보냄 메타 즉시 반영
+            if (r.Ok) { RefreshArchive(); ProbeRollback(); }   // 📦 내보냄 메타 즉시 반영 · ↩️ 복원 버튼
             Vm.SetStatus(r.Ok ? r.Message : r.NeedsPathSetup ? "⚠ " + r.Message + " (설정 ▸ 사용자 설정 ▸ StockSuite 에셋 경로)" : "⚠ " + r.Message);
         }
         catch (Exception ex) { Program.Log("MediaGallery.StockSuite", ex); Vm.SetStatus("⚠ StockSuite 내보내기 실패 — 경로를 재설정하세요"); }

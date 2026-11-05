@@ -28,6 +28,16 @@ public enum StockSuiteExeStatus { NotConfigured, NotFound, NotExecutable, Ok }
 /// <summary>🚀 StockSuite 실행 결과 — AlreadyRunning=true 면 재실행 확인 필요.</summary>
 public sealed record StockSuiteLaunchResult(bool Ok, bool AlreadyRunning, string Message);
 
+/// <summary>🖥️ StockSuite 단일 내보내기 해상도 프로필 — 1080p(기본) · 4K UHD(3840×2160 Lanczos).</summary>
+public enum StockSuiteResolution { Fhd1080, Uhd4K }
+
+/// <summary>
+/// 🧾 <c>.stocksuite_manifest.json</c> — 활성 에셋의 출처(렌더 ID · SHA-256 · 바이트) 및 직전 백업 출처.
+/// 갤러리 역방향 치유는 이 매니페스트의 SHA-256/렌더 ID 로만 엄격 매칭(파일명 오탐 차단).
+/// </summary>
+public sealed record StockSuiteManifest(string ActiveAsset, string SourceRenderId, string SourceSha256, long SourceBytes, DateTimeOffset ExportedAt,
+    string? BackupAsset = null, string? BackupRenderId = null, string? BackupSha256 = null, long BackupBytes = 0);
+
 /// <summary>📦 HTS 데스크톱 울트라와이드 비율 — 16:9(1920×1080) · 21:9(2560×1080) · 32:9(3840×1080).</summary>
 public enum HtsUltraAspect { Wide16x9, Ultra21x9, Super32x9 }
 
@@ -91,6 +101,65 @@ public sealed class StockSuiteExporter
         var motion = lowSpec ? Fps60LiteFilter : MotionInterpolateFilter;
         if (sharpen) return smooth60 ? SharpenFilter + "," + motion : SharpenFilter;
         return smooth60 ? motion : null;
+    }
+
+    /// <summary>🖥️ 4K UHD 프로필 — 3840×2160 Lanczos 업스케일(샤프닝 ON 이면 Unsharp 결합).</summary>
+    public const string Uhd4KScaleFilter = "scale=3840:2160:flags=lanczos";
+    public const string Uhd4KSharpenFilter = Uhd4KScaleFilter + ",unsharp=5:5:0.8:3:3:0.4";
+    /// <summary>핀테크 HUD 워터마크 문구(좌상단 · 우상단).</summary>
+    public const string WatermarkLeftText = "ANG QUANT LAB · REALTIME STREAM";
+    public const string WatermarkRightText = "● LIVE KST";
+
+    /// <summary>스케일/샤프닝 단계 — 4K 는 샤프닝 여부와 무관하게 Lanczos 업스케일.</summary>
+    public static string? BuildScaleFilter(bool sharpen, StockSuiteResolution resolution)
+        => resolution == StockSuiteResolution.Uhd4K ? (sharpen ? Uhd4KSharpenFilter : Uhd4KScaleFilter) : sharpen ? SharpenFilter : null;
+
+    /// <summary>drawtext 텍스트 이스케이프 — <c>\ ' : %</c> 를 필터그래프 규칙으로 보호.</summary>
+    private static string EscapeDrawText(string s)
+        => s.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("'", "’", StringComparison.Ordinal)
+            .Replace(":", "\\:", StringComparison.Ordinal).Replace("%", "\\%", StringComparison.Ordinal);
+
+    /// <summary>
+    /// 📺 핀테크 HUD 워터마크 drawtext 체인 — 좌상단 브랜드, 우상단 LIVE 배지. <paramref name="fontFile"/> null 이면 fontfile 생략(ffmpeg 기본 폰트).
+    /// 4K 는 폰트/여백 2배.
+    /// </summary>
+    public static string BuildWatermarkFilter(string? fontFile, StockSuiteResolution resolution = StockSuiteResolution.Fhd1080)
+    {
+        var k = resolution == StockSuiteResolution.Uhd4K ? 2 : 1;
+        var font = string.IsNullOrWhiteSpace(fontFile) ? "" : "fontfile='" + fontFile.Replace("\\", "/", StringComparison.Ordinal).Replace(":", "\\:", StringComparison.Ordinal) + "':";
+        var size = (24 * k).ToString(CultureInfo.InvariantCulture);
+        var m = (40 * k).ToString(CultureInfo.InvariantCulture);
+        var bw = (6 * k).ToString(CultureInfo.InvariantCulture);
+        var style = ":fontsize=" + size + ":fontcolor=white@0.7:box=1:boxcolor=black@0.4:boxborderw=" + bw;
+        return "drawtext=" + font + "text='" + EscapeDrawText(WatermarkLeftText) + "':x=" + m + ":y=" + m + style
+            + ",drawtext=" + font + "text='" + EscapeDrawText(WatermarkRightText) + "':x=w-tw-" + m + ":y=" + m + style;
+    }
+
+    /// <summary>Windows 기본 폰트 탐색(맑은 고딕 → Arial · 미설치/비Windows → null = fontfile 생략 폴백).</summary>
+    public static string? ResolveWatermarkFont()
+    {
+        try
+        {
+            var fonts = Environment.GetFolderPath(Environment.SpecialFolder.Fonts);
+            if (string.IsNullOrEmpty(fonts)) return null;
+            foreach (var f in new[] { "malgun.ttf", "arial.ttf", "segoeui.ttf" })
+            {
+                var p = Path.Combine(fonts, f);
+                if (File.Exists(p)) return p;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { Program.Log("StockSuite.Font", ex); }
+        return null;
+    }
+
+    /// <summary>필터 체인 합성 — 스케일(1080p/4K) → 60fps → 워터마크 순. 전부 OFF 면 null.</summary>
+    public static string? BuildVideoFilter(bool sharpen, bool smooth60, StockSuiteResolution resolution, bool watermark, string? fontFile, bool lowSpec = false)
+    {
+        var parts = new List<string>(3);
+        if (BuildScaleFilter(sharpen, resolution) is { } s) parts.Add(s);
+        if (smooth60) parts.Add(lowSpec ? Fps60LiteFilter : MotionInterpolateFilter);
+        if (watermark) parts.Add(BuildWatermarkFilter(fontFile, resolution));
+        return parts.Count == 0 ? null : string.Join(",", parts);
     }
 
     /// <summary>환경설정 60fps 모션 스무딩 기본값(공급자 예외 → OFF).</summary>
@@ -160,18 +229,19 @@ public sealed class StockSuiteExporter
     }
 
     /// <summary>원본 → <c>{targetDir}\{assetName}</c> 원자적 덮어쓰기. 대상 폴더는 상위가 존재할 때만 생성. <paramref name="format"/>·<paramref name="sharpen"/> null = 환경설정 기본.</summary>
-    public async Task<StockSuiteExportResult> ExportAsync(string? sourcePath, string? targetDir = null, string? assetName = null, CancellationToken ct = default, StockSuiteExportFormat? format = null, bool? sharpen = null, bool? smooth60 = null)
-        => await ExportAsync(sourcePath, targetDir, assetName, hotReload: true, ct, format, sharpen, smooth60).ConfigureAwait(false);
+    public async Task<StockSuiteExportResult> ExportAsync(string? sourcePath, string? targetDir = null, string? assetName = null, CancellationToken ct = default, StockSuiteExportFormat? format = null, bool? sharpen = null, bool? smooth60 = null, StockSuiteResolution resolution = StockSuiteResolution.Fhd1080, bool watermark = false)
+        => await ExportAsync(sourcePath, targetDir, assetName, hotReload: true, ct, format, sharpen, smooth60, resolution, watermark).ConfigureAwait(false);
 
     /// <param name="hotReload">false = 핫리로드 신호 생략(스케줄러가 일괄 발행 후 1회 신호).</param>
-    public async Task<StockSuiteExportResult> ExportAsync(string? sourcePath, string? targetDir, string? assetName, bool hotReload, CancellationToken ct = default, StockSuiteExportFormat? format = null, bool? sharpen = null, bool? smooth60 = null)
+    public async Task<StockSuiteExportResult> ExportAsync(string? sourcePath, string? targetDir, string? assetName, bool hotReload, CancellationToken ct = default, StockSuiteExportFormat? format = null, bool? sharpen = null, bool? smooth60 = null, StockSuiteResolution resolution = StockSuiteResolution.Fhd1080, bool watermark = false)
     {
-        var r = await ExportCoreAsync(sourcePath, targetDir, assetName, ct, format, sharpen, smooth60).ConfigureAwait(false);
+        var r = await ExportCoreAsync(sourcePath, targetDir, assetName, ct, format, sharpen, smooth60, resolution, watermark).ConfigureAwait(false);
         // 🔁 라이브 핫리로드 — 실제 교체가 일어난 경우에만 신호(동일 위치 no-op 제외).
         if (r.Ok && r.TargetPath is { } t && !string.Equals(Path.GetFullPath(sourcePath!), t, StringComparison.OrdinalIgnoreCase))
         {
             if (hotReload) WriteHotReloadTrigger(t, UtcNow());
             ExportMetadata.MarkExported(sourcePath!, new[] { t }, UtcNow());   // 📦 원본 메타 규격 통일
+            WriteManifest(t, sourcePath!, UtcNow());                           // 🧾 엄격 매칭 매니페스트
         }
         return r;
     }
@@ -252,7 +322,7 @@ public sealed class StockSuiteExporter
         }
     }
 
-    private async Task<StockSuiteExportResult> ExportCoreAsync(string? sourcePath, string? targetDir, string? assetName, CancellationToken ct, StockSuiteExportFormat? format, bool? sharpen, bool? smooth60)
+    private async Task<StockSuiteExportResult> ExportCoreAsync(string? sourcePath, string? targetDir, string? assetName, CancellationToken ct, StockSuiteExportFormat? format, bool? sharpen, bool? smooth60, StockSuiteResolution resolution, bool watermark)
     {
         if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
             return new(false, null, false, "원본 영상을 찾을 수 없습니다.");
@@ -279,11 +349,15 @@ public sealed class StockSuiteExporter
             var target = Path.Combine(fullDir, name);
             if (string.Equals(Path.GetFullPath(sourcePath), target, StringComparison.OrdinalIgnoreCase))
                 return new(true, target, false, "이미 StockSuite 에셋 위치의 파일입니다.");
+            BackupActiveAsset(target, sourcePath);   // ↩️ 덮어쓰기 직전 이전 배경 보존
 
             var sharpenOn = sharpen ?? DefaultSharpen;
             var smoothOn = smooth60 ?? DefaultSmooth60;
-            var filter = BuildVideoFilter(sharpenOn, smoothOn);
-            var tag = (sharpenOn ? "🔎 1080p 고선명 · " : "") + (smoothOn ? "⚡ 60fps 스무딩 · " : "") + "🔇 무음";
+            var uhd = resolution == StockSuiteResolution.Uhd4K;
+            var filter = BuildVideoFilter(sharpenOn, smoothOn, resolution, watermark, watermark ? ResolveWatermarkFont() : null);
+            // 워터마크 폰트/drawtext 실패 대비 — 워터마크 제외 체인으로 1회 재시도.
+            var filterNoWm = watermark ? BuildVideoFilter(sharpenOn, smoothOn, resolution, false, null) : null;
+            var tag = (uhd ? "🖥️ 4K UHD · " : sharpenOn ? "🔎 1080p 고선명 · " : "") + (smoothOn ? "⚡ 60fps 스무딩 · " : "") + (watermark ? "📺 HUD 워터마크 · " : "") + "🔇 무음";
             if (webm && (filter is not null || !Path.GetExtension(sourcePath).Equals(".webm", StringComparison.OrdinalIgnoreCase)))
             {
                 temp = Path.Combine(fullDir, Path.GetFileNameWithoutExtension(name) + TempExt + ".webm");
@@ -291,6 +365,12 @@ public sealed class StockSuiteExporter
                 if (filter is not null)
                 {
                     var sharpenedWebm = await TryFfmpegAsync(BuildWebMArgs(sourcePath, temp, filter), temp, ct).ConfigureAwait(false);
+                    if (sharpenedWebm is not null && filterNoWm is not null)
+                    {
+                        TryDelete(temp);
+                        sharpenedWebm = await TryFfmpegAsync(BuildWebMArgs(sourcePath, temp, filterNoWm), temp, ct).ConfigureAwait(false);
+                        if (sharpenedWebm is null) tag = tag.Replace("📺 HUD 워터마크 · ", "⚠ 워터마크 생략 · ", StringComparison.Ordinal);
+                    }
                     if (sharpenedWebm is null)
                     {
                         await SwapIntoPlaceAsync(temp, target, ct).ConfigureAwait(false);
@@ -318,6 +398,12 @@ public sealed class StockSuiteExporter
             if (!webm && filter is not null)
             {
                 var sharpened = await TryFfmpegAsync(BuildSharpenArgs(sourcePath, temp, filter), temp, ct).ConfigureAwait(false);
+                if (sharpened is not null && filterNoWm is not null)
+                {
+                    TryDelete(temp);
+                    sharpened = await TryFfmpegAsync(BuildSharpenArgs(sourcePath, temp, filterNoWm), temp, ct).ConfigureAwait(false);
+                    if (sharpened is null) tag = tag.Replace("📺 HUD 워터마크 · ", "⚠ 워터마크 생략 · ", StringComparison.Ordinal);
+                }
                 if (sharpened is null)
                 {
                     await SwapIntoPlaceAsync(temp, target, ct).ConfigureAwait(false);
@@ -706,6 +792,225 @@ public sealed class StockSuiteExporter
             _hashCache[key] = eq;
         }
         return eq;
+    }
+
+    // ══════════════════════ 🧾 매니페스트 & ↩️ 원클릭 롤백 ══════════════════════
+
+    public const string ManifestName = ".stocksuite_manifest.json";
+    public const string BackupInfix = ".backup";
+
+    /// <summary><c>bg_ambient.mp4</c> → <c>bg_ambient.backup.mp4</c>.</summary>
+    public static string BackupPathFor(string target)
+        => Path.Combine(Path.GetDirectoryName(target) ?? "", Path.GetFileNameWithoutExtension(target) + BackupInfix + Path.GetExtension(target));
+
+    /// <summary>백업 산출물 여부(갤러리 색인 제외용).</summary>
+    public static bool IsBackupAsset(string path)
+        => Path.GetFileNameWithoutExtension(path).EndsWith(BackupInfix, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>파일 SHA-256 소문자 hex(실패 → 빈 문자열).</summary>
+    public static string ComputeSha256Hex(string path)
+    {
+        try
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 81920, FileOptions.SequentialScan);
+            return Convert.ToHexString(SHA256.HashData(fs)).ToLowerInvariant();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            Program.Log("StockSuite.Sha256", ex);
+            return "";
+        }
+    }
+
+    /// <summary>매니페스트 JSON(camelCase · UTC ISO-8601).</summary>
+    public static string BuildManifestJson(StockSuiteManifest m)
+    {
+        var buf = new System.Buffers.ArrayBufferWriter<byte>(512);
+        using (var w = new System.Text.Json.Utf8JsonWriter(buf, new System.Text.Json.JsonWriterOptions { Indented = true }))
+        {
+            w.WriteStartObject();
+            w.WriteString("activeAsset", m.ActiveAsset);
+            w.WriteString("sourceRenderId", m.SourceRenderId);
+            w.WriteString("sourceSha256", m.SourceSha256);
+            w.WriteNumber("sourceBytes", m.SourceBytes);
+            w.WriteString("exportedAt", m.ExportedAt.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture));
+            if (m.BackupAsset is { Length: > 0 } ba)
+            {
+                w.WriteString("backupAsset", ba);
+                w.WriteString("backupRenderId", m.BackupRenderId ?? "");
+                w.WriteString("backupSha256", m.BackupSha256 ?? "");
+                w.WriteNumber("backupBytes", m.BackupBytes);
+            }
+            w.WriteEndObject();
+        }
+        return System.Text.Encoding.UTF8.GetString(buf.WrittenSpan);
+    }
+
+    /// <summary><paramref name="dir"/>의 매니페스트 읽기 — 부재/손상/스키마 불일치 → null.</summary>
+    public static StockSuiteManifest? TryReadManifest(string? dir)
+    {
+        if (string.IsNullOrWhiteSpace(dir)) return null;
+        try
+        {
+            var p = Path.Combine(dir, ManifestName);
+            if (!File.Exists(p)) return null;
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(p));
+            var r = doc.RootElement;
+            if (r.ValueKind != System.Text.Json.JsonValueKind.Object) return null;
+            var active = Str(r, "activeAsset");
+            if (active.Length == 0 || active.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) return null;
+            var backup = Str(r, "backupAsset");
+            if (backup.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) backup = "";
+            DateTimeOffset.TryParse(Str(r, "exportedAt"), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var at);
+            return new StockSuiteManifest(active, Str(r, "sourceRenderId"), Str(r, "sourceSha256").ToLowerInvariant(), Num(r, "sourceBytes"), at,
+                backup.Length == 0 ? null : backup, Str(r, "backupRenderId"), Str(r, "backupSha256").ToLowerInvariant(), Num(r, "backupBytes"));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or ArgumentException)
+        {
+            Program.Log("StockSuite.ManifestRead", ex);
+            return null;
+        }
+
+        static string Str(System.Text.Json.JsonElement e, string n)
+            => e.TryGetProperty(n, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.String ? v.GetString() ?? "" : "";
+        static long Num(System.Text.Json.JsonElement e, string n)
+            => e.TryGetProperty(n, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.Number && v.TryGetInt64(out var l) ? l : 0;
+    }
+
+    private static void WriteManifestFile(string dir, StockSuiteManifest m)
+    {
+        var path = Path.Combine(dir, ManifestName);
+        var tmp = path + TempExt;
+        try
+        {
+            File.WriteAllText(tmp, BuildManifestJson(m));
+            File.Move(tmp, path, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Program.Log("StockSuite.ManifestWrite", ex);
+            TryDelete(tmp);
+        }
+    }
+
+    /// <summary>내보내기 성공 후 매니페스트 기록 — 직전 매니페스트의 활성 출처는 백업 출처로 승계.</summary>
+    private static void WriteManifest(string target, string sourcePath, DateTimeOffset now)
+    {
+        var dir = Path.GetDirectoryName(target);
+        if (string.IsNullOrEmpty(dir)) return;
+        var prev = TryReadManifest(dir);
+        var backup = BackupPathFor(target);
+        var hasBackup = File.Exists(backup);
+        long bytes;
+        try { bytes = new FileInfo(sourcePath).Length; } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { bytes = 0; }
+        // 백업 출처 — 직전 활성 출처가 같은 에셋이었고 지금 백업으로 이동했다면 승계, 재내보내기(동일 출처)면 기존 백업 출처 유지.
+        var renderId = Path.GetFileNameWithoutExtension(sourcePath);
+        var sha = ComputeSha256Hex(sourcePath);
+        string? bId = null, bSha = null; long bBytes = 0;
+        if (hasBackup && prev is not null)
+        {
+            var sameAsset = string.Equals(prev.ActiveAsset, Path.GetFileName(target), StringComparison.OrdinalIgnoreCase);
+            if (sameAsset && !string.Equals(prev.SourceSha256, sha, StringComparison.Ordinal)) { bId = prev.SourceRenderId; bSha = prev.SourceSha256; bBytes = prev.SourceBytes; }
+            else { bId = prev.BackupRenderId; bSha = prev.BackupSha256; bBytes = prev.BackupBytes; }
+        }
+        WriteManifestFile(dir, new StockSuiteManifest(Path.GetFileName(target), renderId, sha, bytes, now,
+            hasBackup ? Path.GetFileName(backup) : null, bId, bSha, bBytes));
+    }
+
+    /// <summary>덮어쓰기 직전 활성 파일 → <c>*.backup.*</c> 복사 보존. 동일 출처 재내보내기는 백업 생략(진짜 이전 배경 유지). 실패 격리.</summary>
+    private static void BackupActiveAsset(string target, string sourcePath)
+    {
+        try
+        {
+            if (!File.Exists(target)) return;
+            if (MarkerMatches(target, new FileInfo(Path.GetFullPath(sourcePath)))) return;
+            var backup = BackupPathFor(target);
+            var tmp = backup + TempExt;
+            File.Copy(target, tmp, overwrite: true);
+            File.Move(tmp, backup, overwrite: true);
+            var marker = target + SourceMarkerSuffix;
+            if (File.Exists(marker)) File.Copy(marker, backup + SourceMarkerSuffix, overwrite: true);
+            else TryDelete(backup + SourceMarkerSuffix);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            Program.Log("StockSuite.Backup", ex);
+        }
+    }
+
+    /// <summary>↩️ 롤백 가능 여부 — 매니페스트 백업(또는 기본 이름 백업) 실존.</summary>
+    public bool CanRollback(string? targetDir = null) => ResolveRollbackPair(targetDir) is not null;
+
+    private (string Dir, string Active, string Backup)? ResolveRollbackPair(string? targetDir)
+    {
+        var dir = string.IsNullOrWhiteSpace(targetDir) ? ConfiguredDirectory : targetDir.Trim().Trim('"');
+        if (dir is null) return null;
+        try
+        {
+            var full = Path.GetFullPath(dir);
+            if (!Directory.Exists(full)) return null;
+            var m = TryReadManifest(full);
+            if (m?.BackupAsset is { } ba && File.Exists(Path.Combine(full, ba)))
+                return (full, Path.Combine(full, m.ActiveAsset), Path.Combine(full, ba));
+            foreach (var name in new[] { DefaultAssetName, WebMAssetName })
+            {
+                var a = Path.Combine(full, name);
+                var b = BackupPathFor(a);
+                if (File.Exists(b)) return (full, a, b);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { Program.Log("StockSuite.RollbackProbe", ex); }
+        return null;
+    }
+
+    /// <summary>
+    /// ↩️ 이전 배경으로 복원 — 활성 ↔ 백업 원자적 맞교환(재실행 시 되돌리기 가능) + 출처 마커·매니페스트 교환 + 핫리로드 신호.
+    /// </summary>
+    public StockSuiteExportResult RollbackPrevious(string? targetDir = null)
+    {
+        var pair = ResolveRollbackPair(targetDir);
+        if (pair is null) return new(false, null, !IsConfigured && string.IsNullOrWhiteSpace(targetDir), "복원할 이전 배경(백업)이 없습니다.");
+        var (dir, active, backup) = pair.Value;
+        var swap = active + TempExt + ".swap";
+        try
+        {
+            var hadActive = File.Exists(active);
+            if (hadActive) File.Move(active, swap, overwrite: true);
+            try { File.Move(backup, active, overwrite: true); }
+            catch
+            {
+                if (hadActive) File.Move(swap, active, overwrite: true);   // 원상 복구
+                throw;
+            }
+            if (hadActive) File.Move(swap, backup, overwrite: true);
+            SwapFiles(active + SourceMarkerSuffix, backup + SourceMarkerSuffix);
+            // 마커 시각이 대상보다 오래되면 무효 처리되므로 교환 후 갱신.
+            foreach (var mk in new[] { active + SourceMarkerSuffix, backup + SourceMarkerSuffix })
+                if (File.Exists(mk)) File.SetLastWriteTimeUtc(mk, DateTime.UtcNow);
+
+            var now = UtcNow();
+            if (TryReadManifest(dir) is { } m)
+                WriteManifestFile(dir, new StockSuiteManifest(Path.GetFileName(active), m.BackupRenderId ?? "", m.BackupSha256 ?? "", m.BackupBytes, now,
+                    hadActive ? Path.GetFileName(backup) : null, m.SourceRenderId, m.SourceSha256, m.SourceBytes));
+            WriteHotReloadTrigger(active, now);
+            lock (_hashLock) _hashCache.Clear();
+            return new(true, active, false, "↩️ 이전 배경으로 복원 완료 → " + Path.GetFileName(active));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Program.Log("StockSuite.Rollback", ex);   // swap 임시본은 유일 사본일 수 있어 삭제하지 않음
+            return new(false, null, false, "↩️ 롤백 실패: " + ex.Message);
+        }
+    }
+
+    private static void SwapFiles(string a, string b)
+    {
+        var ea = File.Exists(a); var eb = File.Exists(b);
+        if (!ea && !eb) return;
+        var t = a + TempExt;
+        if (ea) File.Move(a, t, overwrite: true);
+        if (eb) File.Move(b, a, overwrite: true);
+        if (ea) File.Move(t, b, overwrite: true);
     }
 
     private static async Task<bool> DefaultRunAsync(string exe, IReadOnlyList<string> args, CancellationToken ct)

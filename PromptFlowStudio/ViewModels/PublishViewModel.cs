@@ -109,6 +109,32 @@ public sealed class PublishViewModel : IDisposable
         set { _stockSmooth60 = value; Notify(); }
     }
 
+    /// <summary>🖥️ 해상도 프로필 — 1080p(기본) | 4K UHD(3840×2160 Lanczos).</summary>
+    public PromptFlowStudio.Services.Export.StockSuiteResolution StockSuiteResolution { get; set; } = PromptFlowStudio.Services.Export.StockSuiteResolution.Fhd1080;
+    /// <summary>📺 핀테크 HUD 워터마크(좌상단 브랜드 · 우상단 LIVE KST) 번인.</summary>
+    public bool StockSuiteWatermark { get; set; }
+    /// <summary>↩️ 이전 배경 백업 존재 — 복원 버튼 노출.</summary>
+    public bool CanRollbackStockSuite => _stockSuite?.CanRollback() == true;
+
+    /// <summary>↩️ 이전 배경으로 복원 — 활성 ↔ 백업 맞교환.</summary>
+    public bool RollbackStockSuite()
+    {
+        if (_stockSuite is null || IsStockSuiteBusy) return false;
+        try
+        {
+            var r = _stockSuite.RollbackPrevious();
+            StockSuiteMessage = r.Ok ? r.Message : "⚠ " + r.Message;
+            return r.Ok;
+        }
+        catch (Exception ex)
+        {
+            Program.Log("Publish.StockSuiteRollback", ex);
+            StockSuiteMessage = "⚠ 롤백 실패: " + ex.Message;
+            return false;
+        }
+        finally { Notify(); }
+    }
+
     public bool YouTubeEnabled => _yt.Enabled;
     public bool InstagramEnabled => _ig.Enabled;
     public bool IsBusy { get; private set; }
@@ -243,7 +269,7 @@ public sealed class PublishViewModel : IDisposable
         Notify();
         try
         {
-            var r = await _stockSuite.ExportAsync(VideoPath, null, null, ct, StockSuiteFormat, StockSuiteSharpen, StockSuiteSmooth60).ConfigureAwait(false);
+            var r = await _stockSuite.ExportAsync(VideoPath, null, null, ct, StockSuiteFormat, StockSuiteSharpen, StockSuiteSmooth60, StockSuiteResolution, StockSuiteWatermark).ConfigureAwait(false);
             StockSuiteMessage = r.Ok ? r.Message : "⚠ " + r.Message;
             StockSuiteExported = r.Ok;
             StockSuiteRestartPending = false;

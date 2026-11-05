@@ -27,6 +27,12 @@
                         <option value="webm">WebM VP9 (HTS 저사양 최적화)</option>
                     </select>
             <label class="pm-btn" title="1080p Lanczos 업스케일 + 언샵 마스크 샤프닝(재인코딩) — 끄면 스트림 복사(빠른 내보내기)"><input type="checkbox" checked="@vm.StockSuiteSharpen" @onchange="e => vm.StockSuiteSharpen = e.Value is true" disabled="@vm.IsStockSuiteBusy" /> 고선명 샤프닝 (1080p Lanczos + Unsharp)</label>
+                    <select class="pm-btn" value="@(vm.StockSuiteResolution == PromptFlowStudio.Services.Export.StockSuiteResolution.Uhd4K ? "4k" : "1080")"
+                            @onchange="@(e => vm.StockSuiteResolution = e.Value?.ToString() == "4k" ? PromptFlowStudio.Services.Export.StockSuiteResolution.Uhd4K : PromptFlowStudio.Services.Export.StockSuiteResolution.Fhd1080)" disabled="@vm.IsStockSuiteBusy" title="해상도 프로필">
+                        <option value="1080">1080p (기본)</option>
+                        <option value="4k">4K UHD (3840x2160 Lanczos)</option>
+                    </select>
+            <label class="pm-btn" title="좌상단 ANG QUANT LAB · REALTIME STREAM / 우상단 ● LIVE KST 번인(재인코딩) — 폰트 미설치·drawtext 실패 시 워터마크 생략 폴백"><input type="checkbox" checked="@vm.StockSuiteWatermark" @onchange="e => vm.StockSuiteWatermark = e.Value is true" disabled="@vm.IsStockSuiteBusy" /> 📺 핀테크 HUD 워터마크</label>
             <label class="pm-btn" title="16~24fps AI 영상을 minterpolate(MCI) 로 60fps 보간 — 고주사율(120Hz+) OLED 끊김 제거 · 재인코딩 시간 증가"><input type="checkbox" checked="@vm.StockSuiteSmooth60" @onchange="e => vm.StockSuiteSmooth60 = e.Value is true" disabled="@vm.IsStockSuiteBusy" /> ⚡ 60fps 모션 스무딩</label>
                     <button class="pm-btn" @onclick="ExportStockSuite" disabled="@vm.IsStockSuiteBusy"
                             title="환경설정의 StockSuite 에셋 폴더에 bg_ambient.mp4 로 원자적 덮어쓰기">@(vm.IsStockSuiteBusy ? "⏳ 복사 중…" : "💼 StockSuite로 내보내기")</button>
@@ -40,6 +46,10 @@
                         {
                             <button class="pm-btn" @onclick="() => vm.LaunchStockSuite(false)" title="환경설정의 StockSuite.exe 를 실행해 에셋 적용을 실기 검증">🚀 StockSuite 실행</button>
                         }
+                    }
+                    @if (vm.StockSuiteExported && vm.CanRollbackStockSuite)
+                    {
+                        <button class="pm-btn" @onclick="() => vm.RollbackStockSuite()" disabled="@vm.IsStockSuiteBusy" title="덮어쓰기 직전 백업(bg_ambient.backup)과 맞교환 — 다시 누르면 되돌리기">↩️ 이전 배경으로 복원</button>
                     }
                     @if (vm.StockSuiteMessage is { Length: > 0 } ssMsg)
                     {

@@ -95,7 +95,7 @@ public sealed class GalleryMediaService
                 foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
                 {
                     if (!IsMediaFile(file) || IsInUploads(root, file) || file.EndsWith(PosterSuffix, StringComparison.OrdinalIgnoreCase)) continue;
-                    // 🩹 역방향 치유 — StockSuite 폴더에 실존하는 산출물(출처 마커/파일명/해시)과 일치하면 메타 보정.
+                    // 🩹 역방향 치유 — StockSuite 산출물과 엄격 일치(출처 마커 경로 · 매니페스트 SHA-256 · 내용 SHA-256)할 때만 메타 보정. 파일명 매칭 금지(오탐).
                     if (exported?.Match(file) is { } target && !Export.ExportMetadata.IsMarkedExported(file)
                         && Export.ExportMetadata.MarkExported(file, new[] { target }, DateTimeOffset.UtcNow)) healed++;
                     var item = TryLoadItem(file);
@@ -410,13 +410,19 @@ public sealed class GalleryMediaService
         catch (Exception ex) { Program.Log("GalleryMedia.ExportDir", ex); return null; }
     }
 
-    /// <summary>StockSuite 대상 폴더 산출물 색인 — 출처 마커(<c>.pfs-src</c>) · 파일명 · 크기+SHA-256 순 매칭.</summary>
+    /// <summary>
+    /// StockSuite 대상 폴더 산출물 색인 — 출처 마커(<c>.pfs-src</c>) 경로 · <c>.stocksuite_manifest.json</c> SHA-256(렌더 ID/크기 후보) · 내용 크기+SHA-256 순 엄격 매칭.
+    /// 단순 파일명(<c>bg_ambient.mp4</c>) 일치는 오탐 원인이라 사용하지 않으며, 백업(<c>*.backup.*</c>)은 활성 에셋이 아니므로 제외.
+    /// </summary>
     private sealed class ExportedTargetIndex
     {
         private readonly string _dir;
         private readonly Dictionary<string, string> _bySource = new(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, string> _byName = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<long, List<string>> _bySize = new();
+        private Export.StockSuiteManifest? _manifest;
+        private byte[]? _manifestSha;
+        private string? _manifestTarget;
+        private int _count;
 
         private ExportedTargetIndex(string dir) => _dir = dir;
 
@@ -430,7 +436,8 @@ public sealed class GalleryMediaService
                 var idx = new ExportedTargetIndex(full);
                 foreach (var t in Directory.EnumerateFiles(full, "*", SearchOption.TopDirectoryOnly))
                 {
-                    if (!IsMediaFile(t) || t.Contains(".~pfs", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!IsMediaFile(t) || t.Contains(".~pfs", StringComparison.OrdinalIgnoreCase) || Export.StockSuiteExporter.IsBackupAsset(t)) continue;
+                    idx._count++;
                     var marker = t + Export.StockSuiteExporter.SourceMarkerSuffix;
                     if (File.Exists(marker))
                     {
@@ -439,12 +446,20 @@ public sealed class GalleryMediaService
                         var src = (bar >= 0 ? payload[..bar] : payload).Trim();
                         if (src.Length > 0) idx._bySource[src] = t;
                     }
-                    idx._byName[Path.GetFileName(t)] = t;
                     var len = new FileInfo(t).Length;
                     if (!idx._bySize.TryGetValue(len, out var l)) idx._bySize[len] = l = new List<string>(1);
                     l.Add(t);
                 }
-                return idx._byName.Count == 0 ? null : idx;
+                if (Export.StockSuiteExporter.TryReadManifest(full) is { } m && m.SourceSha256.Length == 64)
+                {
+                    var active = Path.Combine(full, m.ActiveAsset);
+                    try
+                    {
+                        if (File.Exists(active)) { idx._manifest = m; idx._manifestSha = Convert.FromHexString(m.SourceSha256); idx._manifestTarget = active; }
+                    }
+                    catch (FormatException) { }   // 손상 해시 → 매니페스트 매칭 비활성
+                }
+                return idx._count == 0 ? null : idx;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
             {
@@ -461,12 +476,18 @@ public sealed class GalleryMediaService
                 var full = Path.GetFullPath(file);
                 if (IsUnderRoot(_dir, full)) return null;
                 if (_bySource.TryGetValue(full, out var t)) return t;
-                if (_byName.TryGetValue(Path.GetFileName(full), out t)) return t;
                 var len = new FileInfo(full).Length;
-                if (len == 0 || !_bySize.TryGetValue(len, out var cands)) return null;
+                if (len == 0) return null;
+                // 🧾 매니페스트 — 렌더 ID 또는 바이트 수가 후보일 때만 해시, SHA-256 일치해야 확정(렌더 ID 단독 일치는 불충분).
+                var m = _manifest;
+                var manifestCand = m is not null && (len == m.SourceBytes || string.Equals(Path.GetFileNameWithoutExtension(full), m.SourceRenderId, StringComparison.OrdinalIgnoreCase));
+                var sizeCand = _bySize.TryGetValue(len, out var cands);
+                if (!manifestCand && !sizeCand) return null;
                 byte[] h;
                 using (var a = new FileStream(full, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 81920, FileOptions.SequentialScan)) h = SHA256.HashData(a);
-                foreach (var c in cands)
+                if (manifestCand && CryptographicOperations.FixedTimeEquals(h, _manifestSha!)) return _manifestTarget;
+                if (!sizeCand) return null;
+                foreach (var c in cands!)
                 {
                     using var b = new FileStream(c, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 81920, FileOptions.SequentialScan);
                     if (CryptographicOperations.FixedTimeEquals(h, SHA256.HashData(b))) return c;
