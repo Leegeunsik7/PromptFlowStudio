@@ -284,6 +284,32 @@ public sealed class PublishViewModel : IDisposable
         finally { IsStockSuiteBusy = false; Notify(); }
     }
 
+    // ── 🖥️ 듀얼 모니터 파노라마 분할 ──
+    /// <summary>베젤 간격(px) — 우측 화면 크롭 오프셋 보정.</summary>
+    public int DualBezelGapPixels { get; set; } = PromptFlowStudio.Services.Export.StockSuiteExporter.DefaultBezelGapPixels;
+
+    /// <summary>🖥️ 울트라와이드 원본 → <c>bg_screen_1/2</c> 좌/우 분할 + 멀티 디스플레이 설정 갱신. 미주입/진행 중이면 false.</summary>
+    public async Task<bool> ExportDualMonitorSplitAsync(CancellationToken ct = default)
+    {
+        if (_stockSuite is null || IsStockSuiteBusy || !IsOpen) return false;
+        IsStockSuiteBusy = true;
+        StockSuiteMessage = "🖥️ 듀얼 모니터 분할 중…";
+        Notify();
+        try
+        {
+            var r = await _stockSuite.ExportDualMonitorSplitAsync(VideoPath, DualBezelGapPixels, null, StockSuiteFormat, ct).ConfigureAwait(false);
+            StockSuiteMessage = r.Ok ? r.Message : "⚠ " + r.Message;
+            return r.Ok;
+        }
+        catch (Exception ex)
+        {
+            Program.Log("Publish.DualSplit", ex);
+            StockSuiteMessage = "⚠ 듀얼 모니터 분할 실패: " + ex.Message;
+            return false;
+        }
+        finally { IsStockSuiteBusy = false; Notify(); }
+    }
+
     // ── 📦 올인원 멀티 타겟 패키지 ──
     public PromptFlowStudio.Services.Export.HtsUltraAspect MultiHtsAspect { get; set; } = PromptFlowStudio.Services.Export.HtsUltraAspect.Ultra21x9;
     public bool IsMultiPackageBusy { get; private set; }

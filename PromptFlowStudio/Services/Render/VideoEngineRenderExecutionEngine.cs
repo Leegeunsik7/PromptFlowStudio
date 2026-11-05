@@ -172,6 +172,8 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
     public const string MetaAmbientPingPong = "ambient.pingpong";
     /// <summary>앰비언트 메타 — 후처리 결과(applied · virtual · failed).</summary>
     public const string MetaAmbientApplied = "ambient.applied";
+    /// <summary>앰비언트 메타 — 루프 모드(<see cref="LoopMode"/> 이름 · 미지정 = 정방향 크로스페이드). 핑퐁 메타가 우선.</summary>
+    public const string MetaAmbientLoopMode = "ambient.loopmode";
     /// <summary>앰비언트 메타 — 대체 보존 사유(<see cref="AmbientLoopService.FallbackNotice"/> 포함). 성공 시 미기록.</summary>
     public const string MetaAmbientNotice = "ambient.notice";
 
@@ -186,7 +188,8 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
         var project = MultiDurationPlanner.MetaOf(job, MultiDurationPlanner.MetaProject);
         var target = MultiDurationPlanner.BuildOutputPath(Path.GetDirectoryName(output) ?? "", project, VideoDurationMode.Sec15_AmbientSlow);
         var pingPong = string.Equals(MultiDurationPlanner.MetaOf(job, MetaAmbientPingPong), "true", StringComparison.OrdinalIgnoreCase);
-        var res = await ambient.RenderAsync(output, target, pingPong, ct).ConfigureAwait(false);
+        var mode = pingPong ? LoopMode.PingPong : AmbientLoopService.ParseLoopMode(MultiDurationPlanner.MetaOf(job, MetaAmbientLoopMode));
+        var res = await ambient.RenderAsync(output, target, mode, ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
         var state = res.Ok ? "applied" : res.IsVirtual ? "virtual" : "failed";
         if (!res.Ok && !res.IsVirtual) Program.Log("RenderExec.Ambient", new InvalidOperationException(res.Message));

@@ -47,6 +47,7 @@
                             <button class="pm-btn" @onclick="() => vm.LaunchStockSuite(false)" title="환경설정의 StockSuite.exe 를 실행해 에셋 적용을 실기 검증">🚀 StockSuite 실행</button>
                         }
                     }
+                    <button class="pm-btn" @onclick="ExportDualSplit" disabled="@vm.IsStockSuiteBusy" title="32:9/21:9 울트라와이드 원본을 좌/우 1920×1080(bg_screen_1 · bg_screen_2)으로 분할 — 베젤 간격만큼 우측 크롭 보정 + 멀티 디스플레이 설정 갱신">🖥️ 듀얼 모니터 분할 내보내기</button>
                     @if (vm.StockSuiteExported && vm.CanRollbackStockSuite)
                     {
                         <button class="pm-btn" @onclick="() => vm.RollbackStockSuite()" disabled="@vm.IsStockSuiteBusy" title="덮어쓰기 직전 백업(bg_ambient.backup)과 맞교환 — 다시 누르면 되돌리기">↩️ 이전 배경으로 복원</button>
@@ -259,6 +260,13 @@
         if (Vm is null) return;
         try { await Vm.ExportToStockSuiteAsync(); }
         catch (Exception ex) { Program.Log("PublishModal.StockSuite", ex); }
+    }
+
+    private async Task ExportDualSplit()
+    {
+        if (Vm is null) return;
+        try { await Vm.ExportDualMonitorSplitAsync(); }
+        catch (Exception ex) { Program.Log("PublishModal.DualSplit", ex); }
     }
 
     private static string Pct(double v) => Math.Round(Math.Clamp(v, 0, 1) * 100).ToString("0", CultureInfo.InvariantCulture);

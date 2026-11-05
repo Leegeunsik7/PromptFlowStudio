@@ -73,7 +73,7 @@ public sealed record MultiExportResult(IReadOnlyList<string> Generated, IReadOnl
 ///   ▸ 적용 상태: 대상 옆 출처 마커(<c>.pfs-src</c>) 또는 MP4 SHA-256 일치 → <see cref="IsApplied"/>.
 ///   ▸ 경로·포맷은 환경설정 공급자 · 명시 인자 우선.
 /// </summary>
-public sealed class StockSuiteExporter
+public sealed partial class StockSuiteExporter
 {
     public const string DefaultAssetName = "bg_ambient.mp4";
     public const string WebMAssetName = "bg_ambient.webm";

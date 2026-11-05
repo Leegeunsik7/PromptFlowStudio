@@ -90,6 +90,7 @@ public sealed class MainForm : Form
         services.AddSingleton(sp => new PromptFlowStudio.Services.Export.StockSuitePlaylistService(sp.GetRequiredService<PromptFlowStudio.Services.Export.StockSuiteExporter>()));   // 📅 StockSuite 장중 스케줄러
         services.AddSingleton<PromptFlowStudio.Services.Prompt.PromptHistoryService>();   // 🕒 프롬프트 타임머신
         services.AddSingleton(sp => new PromptFlowStudio.Services.Export.StockSuiteWatchlistService(() => PromptFlowStudio.Services.Export.StockSuiteWatchlistService.RootsFrom(sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.StockSuiteAssetPath, sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.StockSuiteExecutablePath)));   // 📊 StockSuite 관심종목 연동
+        services.AddSingleton<PromptFlowStudio.Services.Chart.ChartStillGeneratorService>();   // 📊 티커 기반 차트 스틸 생성기(I2V 시작 프레임)
         services.AddSingleton(sp => new PromptFlowStudio.Services.Export.AudioMuxService(() => sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.FfmpegBinaryPath is { Length: > 0 } fp && System.IO.File.Exists(fp) ? fp : PromptFlowStudio.Services.Render.FfmpegLocator.Locate().Path));   // 🎵 SNS 쇼츠 BGM 믹서(로컬 합성 프리셋 · ffmpeg 무손실 비디오 copy)
         services.AddSingleton<PromptFlowStudio.ViewModels.PublishViewModel>();                  // SNS 원클릭 발행 모달(싱글톤 — 화면 이동 중에도 백그라운드 전송 유지)
         services.AddSingleton(_ => PromptFlowStudio.Services.Network.ResilientHttpClient.Shared);   // 🛡️ 지수 백오프(Jitter) 재시도 — ⏳ 작업실 알림 공유 인스턴스

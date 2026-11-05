@@ -147,7 +147,8 @@ public class AmbientLoopTests : IDisposable
 
         Assert.Equal(Path.Combine(_dir, "bg_ambient15s.mp4"), output);
         Assert.NotNull(seen);
-        Assert.Contains("-vf", seen!);
+        Assert.Contains("-filter_complex", seen!);   // 기본 = 정방향 크로스페이드(역재생 없음)
+        Assert.DoesNotContain(seen!, a => a.Contains("reverse", StringComparison.Ordinal));
         Assert.Equal("applied", job.Metadata![VideoEngineRenderExecutionEngine.MetaAmbientApplied]);
     }
 

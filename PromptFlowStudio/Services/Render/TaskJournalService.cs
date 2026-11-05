@@ -289,7 +289,7 @@ public sealed class TaskJournalService : IDisposable
             {
                 var target = MultiDurationPlanner.BuildOutputPath(Path.GetDirectoryName(output) ?? "",
                     e.Project ?? Path.GetFileNameWithoutExtension(output), VideoDurationMode.Sec15_AmbientSlow);
-                var res = await amb.RenderAsync(output, target, e.PingPong, ct).ConfigureAwait(false);
+                var res = await amb.RenderAsync(output, target, e.PingPong ? LoopMode.PingPong : LoopMode.ForwardCrossfade, ct).ConfigureAwait(false);
                 if (res.OutputPath is { } p && File.Exists(p)) final = p;
             }
             catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)

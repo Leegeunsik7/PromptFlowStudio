@@ -417,6 +417,7 @@ public static class MauiProgram
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.Export.StockSuitePlaylistService(sp.GetRequiredService<PromptFlowStudio.Services.Export.StockSuiteExporter>()));   // 📅 StockSuite 장중 스케줄러
         builder.Services.AddSingleton<PromptFlowStudio.Services.Prompt.PromptHistoryService>();   // 🕒 프롬프트 타임머신
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.Export.StockSuiteWatchlistService(() => PromptFlowStudio.Services.Export.StockSuiteWatchlistService.RootsFrom(sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.StockSuiteAssetPath, sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.StockSuiteExecutablePath)));   // 📊 StockSuite 관심종목 연동
+        builder.Services.AddSingleton<PromptFlowStudio.Services.Chart.ChartStillGeneratorService>();   // 📊 티커 기반 차트 스틸 생성기(I2V 시작 프레임)
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.Export.AudioMuxService(() => sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.FfmpegBinaryPath is { Length: > 0 } fp && System.IO.File.Exists(fp) ? fp : PromptFlowStudio.Services.Render.FfmpegLocator.Locate().Path));   // 🎵 SNS 쇼츠 BGM 믹서(로컬 합성 프리셋 · ffmpeg 무손실 비디오 copy)
         builder.Services.AddSingleton<PromptFlowStudio.Services.Render.FFmpegVideoStitchService>(); // 합본/번인 — 모바일은 ffmpeg 부재 → 가상 병합
         builder.Services.AddSingleton<PromptFlowStudio.Services.Configuration.AppSettingsManager>(); // user_settings.json → appsettings 기본값(ComfyUI 주소 · 렌더 모드)

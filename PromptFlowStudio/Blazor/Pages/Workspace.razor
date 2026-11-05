@@ -35,6 +35,7 @@
 @inject PromptFlowStudio.Services.Render.TaskJournalService Journal
 @inject PromptFlowStudio.Services.ProcessBridge.StockSuiteIpcBridge Ipc
 @inject PromptFlowStudio.Services.Network.ResilientHttpClient Resilience
+@inject PromptFlowStudio.Services.Chart.ChartStillGeneratorService ChartGen
 
 @* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
    상태는 WanJobState(싱글턴)에 있고, 이 컴포넌트는 OnChange 를 구독해 InvokeAsync(StateHasChanged)로만 갱신한다.
@@ -151,6 +152,12 @@
                         <button class="ws-thumb-x" @onclick="ClearImage" disabled="@State.IsBusy" title="이미지 제거">✕</button>
                     </div>
                 }
+            </div>
+            @* 📊 티커 기반 차트 스틸 즉시 생성 — 선택 종목(없으면 관심종목 첫 칩) OLED 퀀트 차트 PNG → START FRAME · STILL 자동 안착(I2V) *@
+            <div class="ws-watch-bar">
+                <button class="ws-mood-chip" @onclick="GenerateChartStillAsync" disabled="@(State.IsBusy || _chartBusy)"
+                        title="선택한 관심종목 티커로 OLED 캔들·이평선·볼린저·피보나치·호가 그리드 차트 스틸을 만들어 I2V 시작 프레임으로 바인딩합니다">@(_chartBusy ? "⏳ 차트 생성 중…" : "📊 차트 스틸 즉시 생성")</button>
+                @if (_chartMsg is not null) { <span class="ws-mood-cap">@_chartMsg</span> }
             </div>
 
             @* v16.5.0 🎯 끝 프레임(Last Frame) 슬롯 — 첫 프레임과 함께 넣으면 두 키프레임 보간으로 모션 동선을 고정 *@
@@ -1332,6 +1339,36 @@
             arr[k] = () => GenerateTickerPromptAsync(st);
         }
         _tickerPick = arr;
+    }
+
+    // 📊 차트 스틸 생성기 — 선택 티커 → PNG → 참조 이미지(I2V 시작 프레임) 바인딩.
+    private bool _chartBusy;
+    private string? _chartMsg;
+
+    private async Task GenerateChartStillAsync()
+    {
+        if (_chartBusy) return;
+        var ticker = _tickerSel ?? (_watch.Stocks.Count > 0 ? _watch.Stocks[0].Ticker : null);
+        if (string.IsNullOrWhiteSpace(ticker)) { _chartMsg = "💡 관심종목 칩을 먼저 선택하세요."; return; }
+        _chartBusy = true;
+        _chartMsg = null;
+        try
+        {
+            var r = await ChartGen.GenerateAsync(ticker, Path.Combine(Media.MediaRoot, "_uploads"), new PromptFlowStudio.Services.Chart.ChartStillOptions { Width = 1920, Height = 1080 }, _mediaCts.Token);
+            _chartMsg = r.Message;
+            if (r.Ok && r.Path is { } png)
+            {
+                _imagePath = png;
+                _imageName = Path.GetFileName(png);
+                _imagePreview = Media.ToPlaybackUrl(png);
+                _imgError = null;
+                try { await using var fs = File.OpenRead(png); await _vm.HandleImageDroppedAsync(fs, _mediaCts.Token); }   // T2V→I2V 감지 · 비율 판독
+                catch (Exception ex) when (ex is not OperationCanceledException) { Program.Log("Workspace.ChartStillVm", ex); }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("Workspace.ChartStill", ex); _chartMsg = "⚠ 차트 스틸 생성 실패 — 다시 시도하세요."; }
+        finally { _chartBusy = false; }
     }
 
     private void ReloadWatchlist()
