@@ -5,6 +5,7 @@
 @inject PromptFlowStudio.Services.Ui.UserPreferenceService Prefs
 @inject IJSRuntime JS
 @inject PromptFlowStudio.Services.Render.RenderCacheCleaner CacheCleaner
+@inject PromptFlowStudio.Services.Export.StockSuiteHealthService StockHealth
 
 @* [PromptFlow Studio] 사용자 설정 — 이 PC 의 화면·생성 기본값 표시 설정.
    ⚠ 관리자 비밀번호 없이 <로그인한 모든 사용자>가 쓴다. 이 PC 의 localStorage 에만 저장된다.
@@ -128,6 +129,27 @@
         {
             <div class="st-hint @(_stockOk ? "ok" : "err")">@_stockMsg</div>
         }
+        @* 🩺 StockSuite 연동 헬스 닥터 — 폴더 권한 · 디스플레이 규격 · 매니페스트 무결성 · IPC 파이프 4대 진단 + 1클릭 복구 *@
+        <div class="st-field">
+            <div class="st-inrow">
+                <button class="st-btn-sm" @onclick="RunHealthCheckAsync" disabled="@_healthBusy">@(_healthBusy ? "⏳ 진단 중…" : "🩺 StockSuite 연동 정밀 진단")</button>
+                @if (_health is { NeedsRepair: true })
+                {
+                    <button class="st-btn-sm" @onclick="RepairHealthAsync" disabled="@_healthBusy" title="깨진 JSON·매니페스트·디스플레이 설정을 .corrupt 로 보존한 뒤 표준 규격으로 재작성">🩹 기본 규격으로 1클릭 복구</button>
+                }
+            </div>
+        </div>
+        @if (_health is { } hr)
+        {
+            <div class="st-health">
+                <div class="st-health-h">@PromptFlowStudio.Services.Export.StockSuiteHealthService.Badge(hr.Overall)@(hr.IpcLatencyMs >= 0 ? " · IPC " + hr.IpcLatencyMs.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "ms" : "")</div>
+                @foreach (var it in hr.Items)
+                {
+                    <div class="st-health-r h@((int)it.Status)"><b>@PromptFlowStudio.Services.Export.StockSuiteHealthService.Label(it.Check)</b><span>@it.Message</span></div>
+                }
+            </div>
+        }
+        @if (_healthMsg is not null) { <div class="st-hint @(_health is { Overall: PromptFlowStudio.Services.Export.IntegrationHealth.Unhealthy } ? "err" : "ok")">@_healthMsg</div> }
     </section>
 
     @* ── 🧹 렌더 캐시 정리 ── *@
@@ -193,6 +215,13 @@
     .st-inrow .st-sel{flex:1}
     .st-btn-sm{flex:0 0 auto;padding:9px 14px;border-radius:9px;border:1px solid var(--line,rgba(148,163,184,.22));background:rgba(124,108,255,.14);color:var(--ink,#e6eefc);font-size:12.5px;font-weight:700;cursor:pointer;white-space:nowrap}
     .st-btn-sm:hover{border-color:var(--accent,#7c6cff)}
+    .st-health{display:flex;flex-direction:column;gap:4px;margin-top:6px;padding:10px 12px;border-radius:10px;border:1px solid var(--line,rgba(148,163,184,.22));font-size:12px}
+    .st-health-h{font-weight:800;margin-bottom:2px}
+    .st-health-r{display:flex;gap:10px}
+    .st-health-r b{flex:0 0 120px}
+    .st-health-r.h0 span{color:#4ade80}
+    .st-health-r.h1 span{color:#facc15}
+    .st-health-r.h2 span{color:#f87171}
     .st-hint.ok{color:#4ade80} .st-hint.err{color:#f87171}
 </style>
 
@@ -239,6 +268,33 @@
         if (string.IsNullOrEmpty(path)) { _stockOk = false; _stockMsg = "ℹ 비어 있음 — 내보내기 전에 StockSuite 에셋 폴더를 지정하세요."; return; }
         if (System.IO.Directory.Exists(path)) { _stockOk = true; _stockMsg = "✅ 에셋 폴더를 확인했습니다."; }
         else { _stockOk = false; _stockMsg = "❌ 폴더가 존재하지 않습니다(상위 폴더가 있으면 내보내기 시 자동 생성)."; }
+    }
+
+    // 🩺 StockSuite 헬스 닥터 — 진단/복구 모두 백그라운드 스레드 · 예외 격리.
+    private PromptFlowStudio.Services.Export.HealthCheckResult? _health;
+    private bool _healthBusy;
+    private string? _healthMsg;
+    private async Task RunHealthCheckAsync()
+    {
+        if (_healthBusy) return;
+        _healthBusy = true; _healthMsg = null;
+        try { _health = await Task.Run(() => StockHealth.ValidateIntegrationHealthAsync()); }
+        catch (Exception ex) { Program.Log("Settings.StockHealth", ex); _healthMsg = "⚠ 진단 실패 — 다시 시도하세요."; }
+        finally { _healthBusy = false; }
+    }
+    private async Task RepairHealthAsync()
+    {
+        if (_healthBusy) return;
+        _healthBusy = true; _healthMsg = null;
+        try
+        {
+            var before = _health;
+            var r = await Task.Run(() => StockHealth.RepairAsync(before));
+            _health = r.After;
+            _healthMsg = "🩹 복구 " + r.Repaired.ToString(System.Globalization.CultureInfo.InvariantCulture) + "건 — " + string.Join(" · ", r.Actions);
+        }
+        catch (Exception ex) { Program.Log("Settings.StockRepair", ex); _healthMsg = "⚠ 복구 실패 — 다시 시도하세요."; }
+        finally { _healthBusy = false; }
     }
 
     // 🧹 렌더 캐시 — 상한(GB) Prefs 직결 · 즉시 비우기(백그라운드 · 진행 중 산출물 60초 보호).

@@ -967,3 +967,62 @@
         }
     };
 })();
+/* ============================================================================
+ *  🔀 캔버스 A/B 스플릿 비교기 — .ws-ab-h 핸들 드래그(마우스·터치·펜) → 컨테이너 --ab(0~100%) 직접 갱신.
+ *  문서 위임 1회 설치 · .NET 왕복 0 · 키보드(←/→ 2%, Shift 10%, Home/End) 접근성.
+ * ========================================================================== */
+(function () {
+    'use strict';
+    let drag = null;
+    function host(el) { return el && el.closest ? el.closest('.ws-ab') : null; }
+    function setPct(box, pct) {
+        if (!box) return 0;
+        pct = pct < 0 ? 0 : pct > 100 ? 100 : pct;
+        box.style.setProperty('--ab', pct.toFixed(2) + '%');
+        const h = box.querySelector('.ws-ab-h');
+        if (h) h.setAttribute('aria-valuenow', Math.round(pct).toString());
+        return pct;
+    }
+    function fromEvent(box, e) {
+        const r = box.getBoundingClientRect();
+        return r.width > 0 ? ((e.clientX - r.left) / r.width) * 100 : 50;
+    }
+    document.addEventListener('pointerdown', function (e) {
+        const t = e.target;
+        if (!t || !t.classList || !t.classList.contains('ws-ab-h')) return;
+        const box = host(t);
+        if (!box) return;
+        drag = { box: box, id: e.pointerId, el: t };
+        try { t.setPointerCapture(e.pointerId); } catch (x) { }
+        setPct(box, fromEvent(box, e));
+        e.preventDefault();
+    }, true);
+    document.addEventListener('pointermove', function (e) {
+        if (!drag || e.pointerId !== drag.id) return;
+        if (!drag.box.isConnected) { drag = null; return; }
+        setPct(drag.box, fromEvent(drag.box, e));
+    }, true);
+    function end(e) {
+        if (!drag || e.pointerId !== drag.id) return;
+        try { drag.el.releasePointerCapture(e.pointerId); } catch (x) { }
+        drag = null;
+    }
+    document.addEventListener('pointerup', end, true);
+    document.addEventListener('pointercancel', end, true);
+    document.addEventListener('keydown', function (e) {
+        const t = e.target;
+        if (!t || !t.classList || !t.classList.contains('ws-ab-h')) return;
+        const box = host(t);
+        const cur = parseFloat(t.getAttribute('aria-valuenow') || '50');
+        const step = e.shiftKey ? 10 : 2;
+        let next = null;
+        if (e.key === 'ArrowLeft') next = cur - step;
+        else if (e.key === 'ArrowRight') next = cur + step;
+        else if (e.key === 'Home') next = 0;
+        else if (e.key === 'End') next = 100;
+        if (next === null) return;
+        setPct(box, next);
+        e.preventDefault();
+    }, true);
+    window.pfsAbSplit = { set: function (sel, pct) { return setPct(document.querySelector(sel || '.ws-ab'), +pct); } };
+})();
