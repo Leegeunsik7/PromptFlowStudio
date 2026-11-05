@@ -1,14 +1,16 @@
-# Current Project Status - Active Milestone: 【Pro Workflow】 🎬 티커 올인원 I2V 오토-디렉터 · 🩺 StockSuite 헬스 닥터 · 🔀 캔버스 A/B 스플릿 비교기
+# Current Project Status
+- Active Milestone: 【Quant Core】 📈 실시세 OHLCV 이평선 차트 · 🎞️ 1프레임 스크러버/📸 스냅샷 · 🛡️ 장중 트레이딩 세이프가드
 - Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (net8.0-android 미검증: Android SDK 미설치)
-- Tests: FastUnit 599/599 PASS (Release)
+- Tests: FastUnit 602/602 PASS (Release)
 - Updated: 2026-11-05 (KST)
 
 ## Completed
-- 🎬 `Services/Chart/TickerAutoDirector`(신규): ① `ChartStillGeneratorService.GenerateAsync` 1920×1080 PNG → ② START FRAME 바인딩 콜백 → ③ `GeminiPromptService.GenerateTickerPromptAsync` 산업 메타포 프롬프트 · 단계별 예외 격리([부분 구제]) · 재진입 차단 · 취소 전파
-- Workspace 관심종목 칩 클릭 · IPC `TickerSelected` 모두 `GenerateTickerPromptAsync` → 오토-디렉터 경유(1클릭 → [생성]만) · `BindStartFrameAsync` 공용화(차트 스틸 버튼 재사용) · 프롬프트 히스토리 Snap
-- 🩺 `Services/Export/StockSuiteHealthService`(신규): `ValidateIntegrationHealthAsync` — AssetDirectory(쓰기/삭제 프로브) · DisplaySchema(`stocksuite_displays.json` 스키마) · ManifestIntegrity(SHA-256 형식·활성/백업 존재·크기) · IpcPipeConnection(브릿지 상태 또는 250ms 클라이언트 접속 지연) → `HealthCheckResult`(Healthy/Degraded/Unhealthy)
-- 🩹 `RepairAsync`: 폴더 생성(상위 존재 시) · 손상 파일 `.corrupt` 보존 후 표준 규격 원자적 재작성(매니페스트는 활성 에셋 SHA-256 재계산 · 백업 자동 편입) · 중지 IPC 브릿지 재기동 → 재진단
-- UserSettings StockSuite 카드 `[🩺 StockSuite 연동 정밀 진단]` · `[🩹 기본 규격으로 1클릭 복구]` · 항목별 상태 리포트
-- 🔀 Workspace `[🔀 A/B 비교]` 토글 — 원본 비디오(좌) | `backdrop-filter` LUT + 샤프닝 근사(우) · `promptflow.js` `pfsAbSplit` 문서 위임 포인터 드래그(마우스/터치/펜) · 키보드 ←/→/Home/End · .NET 왕복 0
-- DI: `MainForm.cs` + `MauiProgram.cs` 양쪽 `StockSuiteHealthService` 싱글톤
-- Tests: `ProWorkflowDirectorHealthTests` 3종(오토-디렉터 전체 파이프라인 · 손상 진단/복구 · 정상 Healthy + 실 Named Pipe 프로브)
+- 📈 `ChartStillGeneratorService`: `OhlcvCandle`(검증) · `OhlcvQuoteParser`(`quotes.json` 티커 맵/단일 · 객체/배열 캔들) · IPC 캐시 → quotes.json → 시드 합성 폴백 · MA5(골드)/MA20(레드)/MA60(그린) · 거래량 전일 종가 대비 색상 · `ChartStillResult.RealData`
+- 🔌 `StockSuiteIpcBridge`: `QuotePushed`(≤512KB · 스키마 검증) → `OnQuotePushed` → `ChartStillGeneratorService.PushQuotes`(MainForm 결선)
+- 🎞️ Workspace `[⏮ -1F] [+1F ⏭]`: FFmpeg 프로브 FPS(폴백 30) 프레임 격자 스텝(`StockSuiteExporter.StepFrame`) · `pfsFrameScrub` JS
+- 📸 `StockSuiteExporter.ExtractSnapshotAsync`: `-ss {t} -i {video} -vframes 1 -q:v 2 out.png` → `MediaRoot/_stills`(갤러리 자동 노출) · 🖼️ 바탕화면 설정(`#if WINDOWS` SystemParametersInfo)
+- 🛡️ `Services/Process/TradingSafetyGuardService`(신규): 평일 09:00~15:30 KST(UTC+9 고정·사용자 구간·자정 넘김) · `ProcessRunner` 훅(ffmpeg BelowNormal · 동시 인코딩 1 게이트, AsyncLocal 재진입) · `RenderQueueService.TradingGuard` 슬롯 공유 · 설정 토글(기본 ON) · 작업실 인디케이터
+- DI: `MainForm.cs`·`MauiProgram.cs` 양쪽 등록 · 테스트 `QuantCoreOhlcvScrubberGuardTests`(3건)
+
+## Next
+- 공휴일(휴장일) 캘린더 반영 · 인디케이터 장 개시/마감 시점 자동 리렌더 타이머

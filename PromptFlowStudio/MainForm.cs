@@ -90,12 +90,13 @@ public sealed class MainForm : Form
         services.AddSingleton(sp => new PromptFlowStudio.Services.Export.StockSuitePlaylistService(sp.GetRequiredService<PromptFlowStudio.Services.Export.StockSuiteExporter>()));   // 📅 StockSuite 장중 스케줄러
         services.AddSingleton<PromptFlowStudio.Services.Prompt.PromptHistoryService>();   // 🕒 프롬프트 타임머신
         services.AddSingleton(sp => new PromptFlowStudio.Services.Export.StockSuiteWatchlistService(() => PromptFlowStudio.Services.Export.StockSuiteWatchlistService.RootsFrom(sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.StockSuiteAssetPath, sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.StockSuiteExecutablePath)));   // 📊 StockSuite 관심종목 연동
-        services.AddSingleton<PromptFlowStudio.Services.Chart.ChartStillGeneratorService>();   // 📊 티커 기반 차트 스틸 생성기(I2V 시작 프레임)
+        services.AddSingleton(sp => new PromptFlowStudio.Services.Chart.ChartStillGeneratorService(() => sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.StockSuiteAssetPath));   // 📊 티커 기반 차트 스틸 생성기(I2V 시작 프레임)
         services.AddSingleton(sp => new PromptFlowStudio.Services.Export.StockSuiteHealthService(() => sp.GetRequiredService<PromptFlowStudio.Services.Export.StockSuiteExporter>().ConfiguredDirectory, sp.GetService<PromptFlowStudio.Services.ProcessBridge.StockSuiteIpcBridge>()));   // 🩺 StockSuite 연동 헬스 닥터
         services.AddSingleton(sp => new PromptFlowStudio.Services.Export.AudioMuxService(() => sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.FfmpegBinaryPath is { Length: > 0 } fp && System.IO.File.Exists(fp) ? fp : PromptFlowStudio.Services.Render.FfmpegLocator.Locate().Path));   // 🎵 SNS 쇼츠 BGM 믹서(로컬 합성 프리셋 · ffmpeg 무손실 비디오 copy)
         services.AddSingleton<PromptFlowStudio.ViewModels.PublishViewModel>();                  // SNS 원클릭 발행 모달(싱글톤 — 화면 이동 중에도 백그라운드 전송 유지)
         services.AddSingleton(_ => PromptFlowStudio.Services.Network.ResilientHttpClient.Shared);   // 🛡️ 지수 백오프(Jitter) 재시도 — ⏳ 작업실 알림 공유 인스턴스
         services.AddSingleton(sp => { var wan = sp.GetService<IWanApiService>(); var media = sp.GetService<ILocalMediaService>(); return new PromptFlowStudio.Services.Render.TaskJournalService { Query = wan is null ? null : (id, ct) => wan.QueryAsync(id, ct), Ambient = new PromptFlowStudio.Services.Render.AmbientLoopService(), MediaRootProvider = () => media?.MediaRoot }; });   // ☁️ 클라우드 태스크 복구 저널(active_tasks.json · 시작/재연결 시 자동 복원)
+        services.AddSingleton(sp => new PromptFlowStudio.Services.ProcessBridge.TradingSafetyGuardService(() => sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.TradingSafetyMode ?? true));   // 🛡️ 장중 트레이딩 세이프가드(FFmpeg BelowNormal · 동시 인코딩 1)
         services.AddSingleton(sp => new PromptFlowStudio.Services.ProcessBridge.StockSuiteIpcBridge(() => sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.StockSuiteAssetPath));   // 🔌 StockSuite 양방향 Named Pipe IPC(미연결 → hotreload.trigger 파일 폴백)
         services.AddSingleton<PromptFlowStudio.Services.Render.IRenderExecutionEngine>(sp => { var app = sp.GetRequiredService<PromptFlowStudio.Services.Configuration.AppSettingsManager>(); return new PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine(sp.GetService<VideoEngineSelector>(), sp.GetRequiredService<PromptFlowStudio.Services.Render.FFmpegVideoStitchService>(), null) { Journal = sp.GetRequiredService<PromptFlowStudio.Services.Render.TaskJournalService>(), ForceSimulation = () => app.IsMockMode, ComfyBaseUrl = () => app.EffectiveComfyUiUrl, RenderMode = () => app.RenderMode, MockFfmpeg = () => PromptFlowStudio.Services.Render.FfmpegLocator.Locate().Path }; });   // 렌더 큐 → 활성 비디오 엔진(ComfyUI/클라우드) 어댑터 · 미구성 시 시뮬레이션 폴백
         services.AddSingleton<PromptFlowStudio.Services.Render.IRenderQueueService, PromptFlowStudio.Services.Render.RenderQueueService>();   // 전역 렌더 큐 + 백그라운드 렌더 워커(실물 엔진 어댑터 주입)
@@ -1006,6 +1007,11 @@ public sealed class MainForm : Form
         {
             _services.GetRequiredService<PromptFlowStudio.Services.Render.TaskJournalService>().StartAutoRecovery();   // ☁️ 미완료 클라우드 작업 자동 복원 + 네트워크 재연결 감시
             _services.GetRequiredService<PromptFlowStudio.Services.ProcessBridge.StockSuiteIpcBridge>().Start();         // 🔌 StockSuiteBridge Named Pipe 서버 대기
+            var tradingGuard = _services.GetRequiredService<PromptFlowStudio.Services.ProcessBridge.TradingSafetyGuardService>();
+            tradingGuard.Attach();                                                                                      // 🛡️ ProcessRunner 우선순위/게이트 훅
+            if (_services.GetService<PromptFlowStudio.Services.Render.IRenderQueueService>() is PromptFlowStudio.Services.Render.RenderQueueService rq) rq.TradingGuard = tradingGuard;
+            var chartGen = _services.GetRequiredService<PromptFlowStudio.Services.Chart.ChartStillGeneratorService>();
+            _services.GetRequiredService<PromptFlowStudio.Services.ProcessBridge.StockSuiteIpcBridge>().OnQuotePushed += chartGen.PushQuotes;   // 📈 IPC 실시세 → 차트 캐시
         }
         catch (Exception ex) { Program.Log("EnterpriseHub.AutoStart", ex); }
 

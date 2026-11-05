@@ -23,6 +23,12 @@ public sealed record ProcessResult(bool Started, int ExitCode, string StdOut, st
 /// </summary>
 public static class ProcessRunner
 {
+    /// <summary>🛡️ 실행 직후 우선순위 결정 훅(exe → 우선순위 · null = 변경 없음) — <c>TradingSafetyGuardService.Attach</c> 결선.</summary>
+    public static Func<string, ProcessPriorityClass?>? PriorityResolver { get; set; }
+
+    /// <summary>🛡️ 동시 실행 게이트 훅(exe · 실행 본체 · 취소) — 장중 인코딩 1개 제한. null = 즉시 실행.</summary>
+    public static Func<string, Func<CancellationToken, Task<ProcessResult>>, CancellationToken, Task<ProcessResult>>? EncoderGate { get; set; }
+
     /// <summary>
     /// CLI 를 실행하고 종료까지 대기한다. <paramref name="onLine"/>(isErr, line) 로 각 출력 라인을 실시간 전달(진행률 % 파싱용).
     ///   예외/취소는 삼키고 결과 record 로 반환(호출부가 Graceful 처리).
@@ -30,6 +36,16 @@ public static class ProcessRunner
     public static async Task<ProcessResult> RunAsync(
         string exe, IEnumerable<string> args, string? workingDir = null,
         Action<bool, string>? onLine = null, CancellationToken ct = default)
+    {
+        var gate = EncoderGate;
+        if (gate is null) return await RunCoreAsync(exe, args, workingDir, onLine, ct).ConfigureAwait(false);
+        try { return await gate(exe, c => RunCoreAsync(exe, args, workingDir, onLine, c), ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { return new(false, -2, "", "취소됨"); }   // 슬롯 대기 중 취소
+    }
+
+    private static async Task<ProcessResult> RunCoreAsync(
+        string exe, IEnumerable<string> args, string? workingDir,
+        Action<bool, string>? onLine, CancellationToken ct)
     {
         var psi = new ProcessStartInfo
         {
@@ -66,6 +82,7 @@ public static class ProcessRunner
             };
 
             if (!proc.StartCompat()) return new(false, -1, "", "프로세스를 시작하지 못했습니다.");
+            ApplyPriority(proc, exe);
             proc.BeginOutputReadLine();
             proc.BeginErrorReadLine();
 
@@ -86,6 +103,18 @@ public static class ProcessRunner
             try { if (proc is not null && !proc.HasExited) proc.KillCompat(entireProcessTree: true); } catch { /* 무시 */ }
             proc?.Dispose();
         }
+    }
+
+    private static void ApplyPriority(Process proc, string exe)
+    {
+        var resolver = PriorityResolver;
+        if (resolver is null) return;
+        try
+        {
+            var p = resolver(exe);
+            if (p is { } v && !proc.HasExited) proc.PriorityClass = v;
+        }
+        catch (Exception ex) { Program.Log("ProcessRunner.Priority", ex); }   // 우선순위 실패는 실행에 영향 없음
     }
 
     /// <summary>프로세스와 그 자식 트리를 즉시 종료하고 실제 종료를 짧게 대기(자식 reap 보장).</summary>

@@ -1,16 +1,155 @@
 using System;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace PromptFlowStudio.Services.Chart;
 
 /// <summary>차트 스틸 생성 결과 — 성공 시 PNG 절대 경로.</summary>
-public sealed record ChartStillResult(bool Ok, string? Path, string Message);
+public sealed record ChartStillResult(bool Ok, string? Path, string Message)
+{
+    /// <summary>실제 시세(OHLCV) 바인딩 여부 — false = 시드 합성 폴백.</summary>
+    public bool RealData { get; init; }
+}
+
+/// <summary>📈 OHLCV 캔들 1개(일봉/분봉) — StockSuite <c>quotes.json</c> · IPC <c>QuotePushed</c> 공용.</summary>
+public readonly record struct OhlcvCandle(DateTimeOffset Timestamp, double Open, double High, double Low, double Close, double Volume)
+{
+    /// <summary>유효성 — 유한 양수 가격 · High ≥ max(O,C,L) · Low ≤ min(O,C) · 거래량 ≥ 0.</summary>
+    public bool IsValid =>
+        double.IsFinite(Open) && double.IsFinite(High) && double.IsFinite(Low) && double.IsFinite(Close) && double.IsFinite(Volume)
+        && Low > 0 && Volume >= 0 && High >= Math.Max(Math.Max(Open, Close), Low) && Low <= Math.Min(Open, Close);
+}
+
+/// <summary>📈 OHLCV JSON 파서(System.Text.Json · 스키마 즉시 검증) — 무효 캔들은 건너뜀, 시각 오름차순 정렬.</summary>
+public static class OhlcvQuoteParser
+{
+    public const string QuotesFileName = "quotes.json";
+    public const int MaxCandles = 400;
+    public const long MaxFileBytes = 8L * 1024 * 1024;
+
+    /// <summary>캔들 배열 파싱 — 원소: <c>{"t"|"timestamp"|"date","o"|"open","h"|"high","l"|"low","c"|"close","v"|"volume"}</c> 또는 <c>[t,o,h,l,c,v]</c>.</summary>
+    public static OhlcvCandle[] ParseCandles(JsonElement arr)
+    {
+        if (arr.ValueKind != JsonValueKind.Array) return Array.Empty<OhlcvCandle>();
+        var list = new List<OhlcvCandle>(Math.Min(arr.GetArrayLength(), MaxCandles * 4));
+        foreach (var e in arr.EnumerateArray())
+            if (TryParseCandle(e, out var c)) list.Add(c);
+        list.Sort(static (a, b) => a.Timestamp.CompareTo(b.Timestamp));
+        if (list.Count > MaxCandles) list.RemoveRange(0, list.Count - MaxCandles);   // 최신 MaxCandles 개 유지
+        return list.ToArray();
+    }
+
+    public static bool TryParseCandle(JsonElement e, out OhlcvCandle candle)
+    {
+        candle = default;
+        DateTimeOffset ts; double o, h, l, c, v;
+        if (e.ValueKind == JsonValueKind.Array)
+        {
+            if (e.GetArrayLength() < 6) return false;
+            if (!TryTime(e[0], out ts) || !Num(e[1], out o) || !Num(e[2], out h) || !Num(e[3], out l) || !Num(e[4], out c) || !Num(e[5], out v)) return false;
+        }
+        else if (e.ValueKind == JsonValueKind.Object)
+        {
+            if (!TryTime(Prop(e, "t", "timestamp", "date"), out ts)
+                || !Num(Prop(e, "o", "open", null), out o) || !Num(Prop(e, "h", "high", null), out h)
+                || !Num(Prop(e, "l", "low", null), out l) || !Num(Prop(e, "c", "close", null), out c)) return false;
+            var vol = Prop(e, "v", "volume", null);
+            v = 0;
+            if (vol.ValueKind != JsonValueKind.Undefined && !Num(vol, out v)) return false;
+        }
+        else return false;
+        candle = new OhlcvCandle(ts, o, h, l, c, v);
+        return candle.IsValid;
+    }
+
+    /// <summary>
+    /// <c>quotes.json</c> 문서에서 티커 캔들 추출 — <c>{"ticker":"005930","candles":[…]}</c> 또는 <c>{"005930":[…],"AAPL":[…]}</c>.
+    /// 티커 매칭은 <see cref="ChartStillGeneratorService.SanitizeTicker"/> 정규화 + 거래소 접미사(<c>.KS</c>) 무시.
+    /// </summary>
+    public static OhlcvCandle[]? ParseQuotesDocument(string json, string ticker)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 16 });
+            var r = doc.RootElement;
+            if (r.ValueKind != JsonValueKind.Object) return null;
+            if (r.TryGetProperty("candles", out var cs))
+            {
+                var t = r.TryGetProperty("ticker", out var tk) && tk.ValueKind == JsonValueKind.String ? tk.GetString() : null;
+                return t is null || TickerMatches(t, ticker) ? NullIfEmpty(ParseCandles(cs)) : null;
+            }
+            foreach (var p in r.EnumerateObject())
+                if (p.Value.ValueKind == JsonValueKind.Array && TickerMatches(p.Name, ticker)) return NullIfEmpty(ParseCandles(p.Value));
+            return null;
+        }
+        catch (JsonException) { return null; }
+    }
+
+    /// <summary>폴더의 <c>quotes.json</c> 읽기(크기 상한 · IO 예외 격리) — 없거나 무효 = null.</summary>
+    public static OhlcvCandle[]? TryLoadFromDirectory(string? directory, string ticker)
+    {
+        if (string.IsNullOrWhiteSpace(directory)) return null;
+        try
+        {
+            var path = Path.Combine(directory.Trim().Trim('"'), QuotesFileName);
+            var fi = new FileInfo(path);
+            if (!fi.Exists || fi.Length == 0 || fi.Length > MaxFileBytes) return null;
+            return ParseQuotesDocument(File.ReadAllText(path, Encoding.UTF8), ticker);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            Program.Log("ChartStill.Quotes", ex);
+            return null;
+        }
+    }
+
+    public static bool TickerMatches(string? a, string? b)
+    {
+        var x = ChartStillGeneratorService.SanitizeTicker(a);
+        var y = ChartStillGeneratorService.SanitizeTicker(b);
+        if (x == y) return true;
+        return string.Equals(BaseSymbol(x), BaseSymbol(y), StringComparison.Ordinal);
+    }
+
+    private static string BaseSymbol(string s) { var i = s.IndexOf('.'); return i > 0 ? s.Substring(0, i) : s; }
+
+    private static OhlcvCandle[]? NullIfEmpty(OhlcvCandle[] a) => a.Length == 0 ? null : a;
+
+    private static JsonElement Prop(JsonElement e, string a, string b, string? c)
+    {
+        if (e.TryGetProperty(a, out var v) || e.TryGetProperty(b, out v) || (c is not null && e.TryGetProperty(c, out v))) return v;
+        return default;
+    }
+
+    private static bool Num(JsonElement e, out double v)
+    {
+        v = 0;
+        if (e.ValueKind == JsonValueKind.Number) return e.TryGetDouble(out v) && double.IsFinite(v);
+        if (e.ValueKind == JsonValueKind.String) return double.TryParse(e.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out v) && double.IsFinite(v);
+        return false;
+    }
+
+    private static bool TryTime(JsonElement e, out DateTimeOffset ts)
+    {
+        ts = default;
+        if (e.ValueKind == JsonValueKind.String)
+            return DateTimeOffset.TryParse(e.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out ts);
+        if (e.ValueKind == JsonValueKind.Number && e.TryGetInt64(out var n) && n > 0)
+        {
+            try { ts = n >= 100_000_000_000L ? DateTimeOffset.FromUnixTimeMilliseconds(n) : DateTimeOffset.FromUnixTimeSeconds(n); return true; }
+            catch (ArgumentOutOfRangeException) { return false; }
+        }
+        return false;
+    }
+}
 
 /// <summary>차트 스틸 옵션 — 1280×720(기본) 또는 1920×1080 · 캔들 수.</summary>
 public sealed record ChartStillOptions
@@ -23,15 +162,53 @@ public sealed record ChartStillOptions
 /// <summary>
 /// 📊 티커 기반 퀀트 차트 스틸 생성기(Pure BCL — 자체 래스터라이저 + PNG 인코더).
 /// OLED 딥블랙 배경 · 네온 그린/레드 캔들 · MA20/MA60 · 볼린저 밴드(20, 2σ) · 피보나치 되돌림 · 거래량 바 · 10호가 그리드.
-/// 시세는 티커+날짜 시드 결정적 기하 브라운 운동(동일 티커·동일 일자 = 동일 차트) — I2V 시작 프레임 바인딩용.
+/// 📈 실제 시세 우선: IPC <c>QuotePushed</c> 캐시 → StockSuite 에셋 폴더 <c>quotes.json</c> → (없음/무효) 시드 합성 폴백.
+/// 이동평균 MA5(골드)·MA20(레드)·MA60(그린) · 거래량 바 = 전일 종가 대비 양/음 색상.
+/// 합성 시세는 티커+날짜 시드 결정적 기하 브라운 운동(동일 티커·동일 일자 = 동일 차트) — I2V 시작 프레임 바인딩용.
 /// </summary>
 public sealed class ChartStillGeneratorService
 {
     public const int MinWidth = 320, MinHeight = 180, MaxWidth = 3840, MaxHeight = 2160;
-    public const int MaWindowFast = 20, MaWindowSlow = 60, BollingerWindow = 20;
+    public const int MaWindowShort = 5, MaWindowFast = 20, MaWindowSlow = 60, BollingerWindow = 20;
+    /// <summary>실시세 바인딩 최소 캔들 수(미만 = 합성 폴백).</summary>
+    public const int MinRealCandles = 5;
     public const double BollingerK = 2.0;
     public const int OrderBookLevels = 10;
     public static readonly double[] FibLevels = { 0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0 };
+
+    private readonly Func<string?> _quotesDir;
+    private readonly ConcurrentDictionary<string, OhlcvCandle[]> _pushed = new(StringComparer.Ordinal);
+
+    public ChartStillGeneratorService() : this(null) { }
+
+    /// <param name="quotesDirectory">StockSuite 에셋 폴더 공급자(<c>quotes.json</c> 위치 · null = 파일 조회 생략).</param>
+    public ChartStillGeneratorService(Func<string?>? quotesDirectory) => _quotesDir = quotesDirectory ?? (static () => null);
+
+    /// <summary>IPC <c>QuotePushed</c> 수신 캔들 캐시(티커별 최신본 교체 · 스레드 안전 · 무효 캔들 제거).</summary>
+    public void PushQuotes(string ticker, IReadOnlyList<OhlcvCandle> candles)
+    {
+        if (candles is null) return;
+        var valid = new List<OhlcvCandle>(candles.Count);
+        for (var i = 0; i < candles.Count; i++) if (candles[i].IsValid) valid.Add(candles[i]);
+        var key = SanitizeTicker(ticker);
+        if (valid.Count == 0) { _pushed.TryRemove(key, out _); return; }
+        valid.Sort(static (a, b) => a.Timestamp.CompareTo(b.Timestamp));
+        if (valid.Count > OhlcvQuoteParser.MaxCandles) valid.RemoveRange(0, valid.Count - OhlcvQuoteParser.MaxCandles);
+        _pushed[key] = valid.ToArray();
+    }
+
+    /// <summary>실시세 조회 — IPC 캐시 우선, 다음 <c>quotes.json</c>. 최소 캔들 미달/없음 = null(합성 폴백).</summary>
+    public OhlcvCandle[]? ResolveQuotes(string? ticker)
+    {
+        var sym = SanitizeTicker(ticker);
+        if (_pushed.TryGetValue(sym, out var cached) && cached.Length >= MinRealCandles) return cached;
+        foreach (var kv in _pushed)
+            if (kv.Value.Length >= MinRealCandles && OhlcvQuoteParser.TickerMatches(kv.Key, sym)) return kv.Value;
+        string? dir = null;
+        try { dir = _quotesDir(); } catch (Exception ex) { Program.Log("ChartStill.QuotesDir", ex); }
+        var file = OhlcvQuoteParser.TryLoadFromDirectory(dir, sym);
+        return file is { Length: >= MinRealCandles } ? file : null;
+    }
 
     /// <summary>현재 시각 공급자(테스트 주입) — 시드의 일자 성분.</summary>
     public Func<DateTimeOffset> UtcNow { get; set; } = static () => DateTimeOffset.UtcNow;
@@ -82,14 +259,16 @@ public sealed class ChartStillGeneratorService
             var dir = Path.GetFullPath(outputDirectory);
             Directory.CreateDirectory(dir);
             var path = Path.Combine(dir, "chart_" + sym + "_" + now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture) + ".png");
-            var rgb = Render(sym, w, h, n, StableSeed(sym, now));
+            var real = ResolveQuotes(sym);
+            if (real is not null && real.Length > n) real = real.AsSpan(real.Length - n).ToArray();   // 최근 n 개
+            var rgb = Render(sym, w, h, real?.Length ?? n, StableSeed(sym, now), real);
             ct.ThrowIfCancellationRequested();
             temp = path + ".~pfs";
             using (var fs = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
                 WritePng(fs, rgb, w, h);
             File.Move(temp, path, overwrite: true);
             temp = null;
-            return new(true, path, "📊 " + sym + " 차트 스틸 생성 완료 (" + w.ToString(CultureInfo.InvariantCulture) + "×" + h.ToString(CultureInfo.InvariantCulture) + ")");
+            return new(true, path, "📊 " + sym + " 차트 스틸 생성 완료 (" + w.ToString(CultureInfo.InvariantCulture) + "×" + h.ToString(CultureInfo.InvariantCulture) + (real is null ? " · 합성 시세)" : " · 실시세 " + real.Length.ToString(CultureInfo.InvariantCulture) + "봉)")) { RealData = real is not null };
         }
         catch (OperationCanceledException) { return new(false, null, "취소됨"); }
         catch (Exception ex)
@@ -129,6 +308,16 @@ public sealed class ChartStillGeneratorService
         var u1 = 1.0 - r.NextDouble();
         var u2 = r.NextDouble();
         return Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2);
+    }
+
+    /// <summary>단순 이동평균(초기 구간은 가용 개수 평균) — 테스트 검증용 공개.</summary>
+    public static double[] ComputeMovingAverage(IReadOnlyList<double> src, int window)
+    {
+        var a = new double[src.Count];
+        for (var i = 0; i < a.Length; i++) a[i] = src[i];
+        var d = new double[a.Length];
+        MovingAverage(a, a.Length, Math.Max(1, window), d);
+        return d;
     }
 
     private static void MovingAverage(double[] src, int n, int window, double[] dst)
@@ -205,17 +394,27 @@ public sealed class ChartStillGeneratorService
         public static int TextWidth(string s, int scale) => s.Length * 6 * scale;
     }
 
-    private const uint Grid = 0x161A1F, Up = 0x00FF88, Down = 0xFF3355, MaFast = 0xFFB000, MaSlow = 0x00D0FF,
+    internal const uint MaShortColor = 0xFFD700, MaFastColor = 0xFF2D2D, MaSlowColor = 0x22DD55;
+    private const uint Grid = 0x161A1F, Up = 0x00FF88, Down = 0xFF3355, MaShort = MaShortColor, MaFast = MaFastColor, MaSlow = MaSlowColor,
         Band = 0xB066FF, Fib = 0xFFD54A, Axis = 0x8A93A0, Head = 0xE8EEF5;
 
     private static string Price(double v) => v.ToString(v >= 1000 ? "0" : "0.00", CultureInfo.InvariantCulture);
 
     /// <summary>RGB 버퍼 렌더 — 테스트/미리보기 공용.</summary>
-    internal static byte[] Render(string sym, int w, int h, int n, int seed)
+    internal static byte[] Render(string sym, int w, int h, int n, int seed, IReadOnlyList<OhlcvCandle>? real = null)
     {
+        if (real is { Count: >= 2 }) n = real.Count;
+        else real = null;
         var open = new double[n]; var high = new double[n]; var low = new double[n]; var close = new double[n]; var vol = new double[n];
-        Synthesize(seed, n, open, high, low, close, vol);
-        var ma20 = new double[n]; var ma60 = new double[n];
+        if (real is null) Synthesize(seed, n, open, high, low, close, vol);
+        else
+            for (var i = 0; i < n; i++)
+            {
+                var k = real[i];
+                open[i] = k.Open; high[i] = k.High; low[i] = k.Low; close[i] = k.Close; vol[i] = k.Volume;
+            }
+        var ma5 = new double[n]; var ma20 = new double[n]; var ma60 = new double[n];
+        MovingAverage(close, n, MaWindowShort, ma5);
         MovingAverage(close, n, MaWindowFast, ma20);
         MovingAverage(close, n, MaWindowSlow, ma60);
         var bbU = new double[n]; var bbL = new double[n];
@@ -244,7 +443,9 @@ public sealed class ChartStillGeneratorService
             pMax = Math.Max(pMax, Math.Max(high[i], bbU[i])); pMin = Math.Min(pMin, Math.Min(low[i], bbL[i]));
             hiAll = Math.Max(hiAll, high[i]); loAll = Math.Min(loAll, low[i]); vMax = Math.Max(vMax, vol[i]);
         }
-        var span = pMax - pMin; pMax += span * 0.04; pMin -= span * 0.04; span = pMax - pMin;
+        if (vMax <= 0) vMax = 1;
+        var span = pMax - pMin; if (span <= 0) span = Math.Max(1e-6, pMax * 0.01);
+        pMax += span * 0.04; pMin -= span * 0.04; span = pMax - pMin;
         double Y(double p) => plotT + (pMax - p) / span * (plotB - plotT);
         var slot = (plotR - plotL) / (double)n;
         double X(int i) => plotL + slot * (i + 0.5);
@@ -288,20 +489,22 @@ public sealed class ChartStillGeneratorService
         for (var i = 0; i < n; i++)
         {
             var col = close[i] >= open[i] ? Up : Down;
+            var volCol = i == 0 ? col : close[i] >= close[i - 1] ? Up : Down;   // 거래량 = 전일 종가 대비
             var cx = (int)X(i);
             c.Line(cx, Y(high[i]), cx, Y(low[i]), col, 0.95, Math.Max(1, u));
             int yo = (int)Y(open[i]), yc = (int)Y(close[i]);
             if (Math.Abs(yo - yc) < u) yc = yo + u;
             c.Fill(cx - body / 2, yo, cx - body / 2 + body - 1, yc, col);
             var vh = (int)((volB - volT) * vol[i] / vMax);
-            c.Fill(cx - body / 2, volB - vh, cx - body / 2 + body - 1, volB, col, 0.5);
+            c.Fill(cx - body / 2, volB - vh, cx - body / 2 + body - 1, volB, volCol, 0.5);
         }
 
         // 이동평균
         for (var i = 1; i < n; i++)
         {
-            c.Line(X(i - 1), Y(ma20[i - 1]), X(i), Y(ma20[i]), MaFast, 0.95, Math.Max(1, 2 * u));
-            if (i >= MaWindowSlow / 2) c.Line(X(i - 1), Y(ma60[i - 1]), X(i), Y(ma60[i]), MaSlow, 0.9, Math.Max(1, 2 * u));
+            if (i >= MaWindowSlow / 2 || n < MaWindowSlow) c.Line(X(i - 1), Y(ma60[i - 1]), X(i), Y(ma60[i]), MaSlow, 1, Math.Max(1, 2 * u));
+            c.Line(X(i - 1), Y(ma20[i - 1]), X(i), Y(ma20[i]), MaFast, 1, Math.Max(1, 2 * u));
+            c.Line(X(i - 1), Y(ma5[i - 1]), X(i), Y(ma5[i]), MaShort, 1, Math.Max(1, 2 * u));
         }
 
         // 현재가 라인
@@ -340,12 +543,14 @@ public sealed class ChartStillGeneratorService
         c.Text(Price(last), px, pad, hs, lastCol);
         px += Canvas.TextWidth(Price(last) + " ", hs);
         c.Text((chg >= 0 ? "+" : "") + chg.ToString("0.00", CultureInfo.InvariantCulture) + "%", px, pad, hs, lastCol);
-        var legend = "MA20  MA60  BB20 2  FIB";
+        var legend = "MA5  MA20  MA60  BB20 2  FIB";
         var lx = plotR - Canvas.TextWidth(legend, fs);
-        c.Text("MA20", lx, pad + 2 * u, fs, MaFast);
-        c.Text("MA60", lx + Canvas.TextWidth("MA20  ", fs), pad + 2 * u, fs, MaSlow);
-        c.Text("BB20 2", lx + Canvas.TextWidth("MA20  MA60  ", fs), pad + 2 * u, fs, Band);
-        c.Text("FIB", lx + Canvas.TextWidth("MA20  MA60  BB20 2  ", fs), pad + 2 * u, fs, Fib);
+        c.Text("MA5", lx, pad + 2 * u, fs, MaShort);
+        c.Text("MA20", lx + Canvas.TextWidth("MA5  ", fs), pad + 2 * u, fs, MaFast);
+        c.Text("MA60", lx + Canvas.TextWidth("MA5  MA20  ", fs), pad + 2 * u, fs, MaSlow);
+        c.Text("BB20 2", lx + Canvas.TextWidth("MA5  MA20  MA60  ", fs), pad + 2 * u, fs, Band);
+        c.Text("FIB", lx + Canvas.TextWidth("MA5  MA20  MA60  BB20 2  ", fs), pad + 2 * u, fs, Fib);
+        if (real is not null) c.Text("LIVE", pad, pad + 7 * hs + 4 * u, fs, Up);
         c.Text("ORDER BOOK", bookL + 4 * u, plotT - 7 * fs - 6 * u, fs, Axis);
         return c.Px;
     }

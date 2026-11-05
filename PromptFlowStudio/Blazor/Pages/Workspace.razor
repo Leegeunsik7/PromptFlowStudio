@@ -27,6 +27,7 @@
 @inject PromptFlowStudio.Services.Configuration.AppSettingsManager AppSettings
 @inject PromptFlowStudio.Services.Platform.IClipboardService Clipboard
 @inject PromptFlowStudio.Services.Export.StockSuiteExporter StockSuite
+@inject PromptFlowStudio.Services.ProcessBridge.TradingSafetyGuardService TradingGuard
 @inject PromptFlowStudio.Services.ProcessBridge.StockSuiteProcessMonitor StockMon
 @inject PromptFlowStudio.Services.Prompt.PresetManagerService Presets
 @inject PromptFlowStudio.Services.Render.MediaProbeService Probe
@@ -49,6 +50,10 @@
             <button class="ws-back" @onclick='() => Nav.NavigateTo("")'>← 워크스페이스</button>
             <button class="ws-back" @onclick='() => Nav.NavigateTo("storyboard")'>🎬 스토리보드(여러 컷) →</button>
             <button class="ws-back" @onclick="ExpandToStoryboard" disabled="@(State.IsBusy || string.IsNullOrWhiteSpace(_prompt))" title="현재 프롬프트·시드로 1번 컷을 채우고 2~4번 컷을 기승전결로 자동 전개">🎬 스토리보드로 4컷 확장</button>
+            @if (TradingGuard.IsThrottling)
+            {
+                <span class="ws-trade-guard" title="평일 09:00~15:30(KST) — FFmpeg 우선순위 BelowNormal · 동시 렌더/인코딩 1개 제한 (설정 ▸ 사용자 설정에서 해제)">@PromptFlowStudio.Services.ProcessBridge.TradingSafetyGuardService.IndicatorText</span>
+            }
             @{ var ssSnap = StockMon.Current; }
             @if (ssSnap.IsRunning)
             {
@@ -434,6 +439,7 @@
                     @if (_abOn) { @AbSplit }
                     @if (_htsHud) { <HtsHudOverlay OpacityPercent="_htsOpacity" DimmerPercent="_htsDimmer" Theme="_htsTheme" /> }
                 </div>
+                @ScrubBar
                 @if (_canvasQueuePath is { } qPath)
                 {
                     <div class="ws-done">
@@ -487,6 +493,7 @@
                         @if (_htsHud) { <HtsHudOverlay OpacityPercent="_htsOpacity" DimmerPercent="_htsDimmer" Theme="_htsTheme" /> }
                     </div>
                 }
+                @ScrubBar
                 <div class="ws-done">
                     @if (IsPortrait)
                     {
@@ -1069,6 +1076,8 @@
     .ws-sztog { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font: 700 11px var(--mono); color: var(--text-secondary); margin-right: auto; }
     .ws-sztog input { accent-color: var(--flow-violet); }
     .ws-done { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .ws-scrub { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 6px 0; }
+    .ws-trade-guard { font: 700 11px/1 var(--mono); padding: 4px 10px; border-radius: 999px; border: 1px solid #c9a227; color: #ffd54a; background: rgba(201,162,39,.12); align-self: flex-start; }
     .ws-hint { font: 600 11px var(--mono); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; }
     .ws-src { font: 700 11px var(--mono); border-radius: 999px; padding: 5px 10px; border: 1px solid var(--line); white-space: nowrap; }
     .ws-src.ok { color: #10b981; border-color: color-mix(in srgb, #10b981 45%, var(--line)); }
@@ -2122,6 +2131,88 @@
     private string AbFilterCss => _lut == PromptFlowStudio.Services.Export.LutProfile.None
         ? AbSharpenCss
         : PromptFlowStudio.Services.Export.ColorGradingService.CssFilter(_lut) + " " + AbSharpenCss;
+    // ══════ 🎞️ 1프레임 마이크로 스크러버 · 📸 4K 무손실 스냅샷 ══════
+    private const string ScrubVideoSelector = "video.ws-video";
+    private bool _scrubBusy;
+    private string? _scrubMsg, _lastSnap, _scrubFpsPath;
+    private double _scrubFps = PromptFlowStudio.Services.Export.StockSuiteExporter.DefaultScrubFps;
+
+    private RenderFragment ScrubBar => __builder =>
+    {
+        if (InspectPath is null) return;
+        <div class="ws-scrub">
+            <button class="ws-btn ghost sm" @onclick="() => StepFrameAsync(-1)" disabled="@_scrubBusy" title="@("정확히 1프레임(1/" + _scrubFps.ToString("0.##", CultureInfo.InvariantCulture) + "초) 뒤로")">⏮ -1F</button>
+            <button class="ws-btn ghost sm" @onclick="() => StepFrameAsync(1)" disabled="@_scrubBusy" title="@("정확히 1프레임(1/" + _scrubFps.ToString("0.##", CultureInfo.InvariantCulture) + "초) 앞으로")">+1F ⏭</button>
+            <button class="ws-btn sm" @onclick="ExtractSnapshotAsync" disabled="@_scrubBusy" title="현재 프레임을 FFmpeg 단일 프레임 추출(PNG 무손실) → 갤러리 스틸(_stills) 자동 보존">📸 4K 스냅샷 추출</button>
+            @if (_lastSnap is { } snap)
+            {
+                <button class="ws-btn ghost sm" @onclick="() => SetWallpaper(snap)" title="방금 추출한 스냅샷을 윈도우 바탕화면으로 설정">🖼️ 배경화면 설정</button>
+                <button class="ws-btn ghost sm" @onclick="() => RevealInExplorer(snap)" title="스냅샷 파일 위치 열기">📂</button>
+            }
+            @if (_scrubMsg is { Length: > 0 }) { <span class="ws-hint">@_scrubMsg</span> }
+        </div>
+    };
+
+    private async Task EnsureScrubFpsAsync(string path)
+    {
+        if (_scrubFpsPath == path) return;
+        double? fps = _spec is { } sp && _specPath == path ? sp.Fps : null;
+        if (fps is null)
+        {
+            try { fps = (await Probe.ProbeAsync(path, _mediaCts.Token))?.Fps; }
+            catch (Exception ex) when (ex is not OperationCanceledException) { Program.Log("Workspace.ScrubFps", ex); }
+        }
+        _scrubFps = PromptFlowStudio.Services.Export.StockSuiteExporter.NormalizeFps(fps);
+        _scrubFpsPath = path;
+    }
+
+    private async Task<double[]?> ReadPlayheadAsync()
+    {
+        try
+        {
+            var st = await JS.InvokeAsync<double[]>("pfsFrameScrub.get", ScrubVideoSelector);
+            return st is { Length: >= 2 } ? st : null;
+        }
+        catch (Exception ex) when (ex is JSException or InvalidOperationException or TaskCanceledException) { Program.Log("Workspace.ScrubGet", ex); return null; }
+    }
+
+    private async Task StepFrameAsync(int frames)
+    {
+        if (_scrubBusy || InspectPath is not { } path) return;
+        _scrubBusy = true;
+        try
+        {
+            await EnsureScrubFpsAsync(path);
+            if (await ReadPlayheadAsync() is not { } st) { _scrubMsg = "⚠ 재생 중인 영상을 찾지 못했습니다."; return; }
+            var t = PromptFlowStudio.Services.Export.StockSuiteExporter.StepFrame(st[0], frames, _scrubFps, st[1]);
+            await JS.InvokeAsync<bool>("pfsFrameScrub.seek", ScrubVideoSelector, t);
+            var frame = (long)Math.Round(t * _scrubFps);
+            _scrubMsg = "🎞️ F" + frame.ToString(CultureInfo.InvariantCulture) + " · " + t.ToString("0.000", CultureInfo.InvariantCulture) + "s @" + _scrubFps.ToString("0.##", CultureInfo.InvariantCulture) + "fps";
+        }
+        catch (Exception ex) when (ex is JSException or InvalidOperationException or TaskCanceledException) { Program.Log("Workspace.ScrubStep", ex); _scrubMsg = "⚠ 프레임 이동 실패"; }
+        finally { _scrubBusy = false; }
+    }
+
+    private async Task ExtractSnapshotAsync()
+    {
+        if (_scrubBusy || InspectPath is not { } path) return;
+        _scrubBusy = true;
+        _scrubMsg = "📸 추출 중…";
+        try
+        {
+            var st = await ReadPlayheadAsync();
+            var r = await StockSuite.ExtractSnapshotAsync(path, st?[0] ?? 0, Path.Combine(Media.MediaRoot, "_stills"), _mediaCts.Token);
+            _lastSnap = r.Ok ? r.Path : _lastSnap;
+            _scrubMsg = r.Ok ? r.Message + " → 갤러리 스틸 보존" : "⚠ " + r.Message;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException) { Program.Log("Workspace.Snapshot", ex); _scrubMsg = "⚠ 스냅샷 추출 실패"; }
+        catch (OperationCanceledException) { _scrubMsg = null; }
+        finally { _scrubBusy = false; }
+    }
+
+    private void SetWallpaper(string png)
+        => _scrubMsg = PromptFlowStudio.Services.Export.StockSuiteExporter.TrySetDesktopWallpaper(png) ? "🖼️ 바탕화면 배경으로 설정했습니다." : "⚠ 배경화면 설정 실패(Windows 전용)";
+
     private RenderFragment AbSplit => __builder =>
     {
         <div class="ws-ab">

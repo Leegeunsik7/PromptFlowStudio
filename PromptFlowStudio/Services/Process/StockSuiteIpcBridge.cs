@@ -1,16 +1,18 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using PromptFlowStudio.Services.Chart;
 using PromptFlowStudio.Services.Export;
 
 namespace PromptFlowStudio.Services.ProcessBridge;
 
 /// <summary>IPC 메시지 종류.</summary>
-public enum StockSuiteIpcKind { Unknown = 0, TickerSelected, ThemeChanged, Ping }
+public enum StockSuiteIpcKind { Unknown = 0, TickerSelected, ThemeChanged, Ping, QuotePushed }
 
 /// <summary>파싱된 IPC 메시지(줄 단위 JSON 1건).</summary>
 public sealed record StockSuiteIpcMessage(StockSuiteIpcKind Kind, string? Ticker, string? Name, string? Sector);
@@ -22,6 +24,7 @@ public enum IpcSendRoute { Failed = 0, Pipe, FileFallback }
 /// 🔌 StockSuite ↔ PFS 양방향 Named Pipe 브릿지(<c>\\.\pipe\StockSuiteBridge</c> · 줄 단위 UTF-8 JSON).
 ///   ▸ PFS = 듀플렉스 서버(현재 사용자 한정 ACL) · StockSuite = 클라이언트. 연결 끊김 시 자동 재대기(1초 백오프).
 ///   ▸ 수신: <c>{"type":"TickerSelected","ticker":"005930","name":"삼성전자"}</c> → <see cref="OnTickerSelected"/>.
+///   ▸ 수신: <c>{"type":"QuotePushed","ticker":"005930","candles":[{"t":…,"o":…,"h":…,"l":…,"c":…,"v":…}]}</c> → <see cref="OnQuotePushed"/>(실시세 차트).
 ///   ▸ 송신: <c>{"type":"ThemeChanged","theme":"OledBlack","dimmer":20,"ts":…}</c> — HTS 테마/Dimmer 변경 시 150ms 디바운스 브로드캐스트.
 ///   ▸ 파이프 미연결/쓰기 실패 → StockSuite 에셋 폴더 <c>hts_theme.json</c> + <c>hotreload.trigger</c> 파일 폴백(기존 경로 유지).
 ///   ▸ 콜백·IO 예외 격리, Dispose 시 CTS·파이프·타이머 해제.
@@ -31,6 +34,8 @@ public sealed class StockSuiteIpcBridge : IDisposable
     public const string DefaultPipeName = "StockSuiteBridge";
     public const string ThemeFileName = "hts_theme.json";
     public const int MaxLineLength = 4096;
+    /// <summary>QuotePushed 1줄 상한(캔들 400개 여유) — 초과 = 폐기.</summary>
+    public const int MaxQuoteLineLength = 512 * 1024;
     public static readonly TimeSpan WriteTimeout = TimeSpan.FromSeconds(1);
     private const int DebounceMs = 150;
     private const int PipeBufferSize = 8192;
@@ -62,6 +67,8 @@ public sealed class StockSuiteIpcBridge : IDisposable
 
     /// <summary>StockSuite 종목 선택 수신(백그라운드 스레드 — UI 는 InvokeAsync).</summary>
     public event Action<StockSuiteIpcMessage>? OnTickerSelected;
+    /// <summary>📈 StockSuite 실시세 OHLCV 푸시 수신(티커 · 검증된 캔들 · 백그라운드 스레드).</summary>
+    public event Action<string, IReadOnlyList<OhlcvCandle>>? OnQuotePushed;
     /// <summary>연결 상태 변화.</summary>
     public event Action? OnConnectionChanged;
 
@@ -118,6 +125,15 @@ public sealed class StockSuiteIpcBridge : IDisposable
     /// <summary>수신 1줄 처리 — 유효 TickerSelected 면 이벤트 발행(true).</summary>
     public bool DispatchLine(string? line)
     {
+        if (line is not null && line.Contains("\"QuotePushed\"", StringComparison.Ordinal))
+        {
+            var q = ParseQuotePush(line);
+            if (q is null) return false;
+            var qh = OnQuotePushed;
+            if (qh is null) return true;
+            try { qh(q.Value.Ticker, q.Value.Candles); } catch (Exception ex) { Program.Log("StockSuiteIpc.OnQuote", ex); }
+            return true;
+        }
         var msg = ParseMessage(line);
         if (msg is null || msg.Kind != StockSuiteIpcKind.TickerSelected) return false;
         var h = OnTickerSelected;
@@ -146,6 +162,23 @@ public sealed class StockSuiteIpcBridge : IDisposable
             var ticker = Str(r, "ticker")?.Trim();
             if (kind == StockSuiteIpcKind.TickerSelected && !IsValidTicker(ticker)) return null;
             return new StockSuiteIpcMessage(kind, ticker, Str(r, "name")?.Trim(), Str(r, "sector")?.Trim());
+        }
+        catch (JsonException) { return null; }
+    }
+
+    /// <summary>QuotePushed 1줄 파싱 + 스키마 검증(길이 · 티커 · 유효 캔들 ≥ 1). 실패 = null.</summary>
+    public static (string Ticker, OhlcvCandle[] Candles)? ParseQuotePush(string? line)
+    {
+        if (string.IsNullOrWhiteSpace(line) || line.Length > MaxQuoteLineLength) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(line, new JsonDocumentOptions { MaxDepth = 16 });
+            var r = doc.RootElement;
+            if (r.ValueKind != JsonValueKind.Object || Str(r, "type") != "QuotePushed") return null;
+            var ticker = Str(r, "ticker")?.Trim();
+            if (!IsValidTicker(ticker) || !r.TryGetProperty("candles", out var cs)) return null;
+            var candles = OhlcvQuoteParser.ParseCandles(cs);
+            return candles.Length == 0 ? null : (ticker!, candles);
         }
         catch (JsonException) { return null; }
     }
@@ -291,6 +324,7 @@ public sealed class StockSuiteIpcBridge : IDisposable
         }
         _writeLock.Dispose();
         OnTickerSelected = null;
+        OnQuotePushed = null;
         OnConnectionChanged = null;
     }
 }

@@ -1026,3 +1026,26 @@
     }, true);
     window.pfsAbSplit = { set: function (sel, pct) { return setPct(document.querySelector(sel || '.ws-ab'), +pct); } };
 })();
+
+/* 🎞️ 1프레임 마이크로 스크러버 — 현재 재생 위치/길이 조회 · 정밀 시킹(일시정지 후 이동). 프레임 격자 계산은 C#(StockSuiteExporter.StepFrame). */
+(function () {
+    'use strict';
+    function pick(sel) {
+        const vids = document.querySelectorAll(sel || 'video.ws-video');
+        for (let i = 0; i < vids.length; i++) { if (vids[i].offsetParent !== null) return vids[i]; }
+        return vids.length ? vids[0] : null;
+    }
+    window.pfsFrameScrub = {
+        get: function (sel) {
+            const v = pick(sel);
+            if (!v) return null;
+            const d = isFinite(v.duration) ? v.duration : 0;
+            return [v.currentTime || 0, d];
+        },
+        seek: function (sel, t) {
+            const v = pick(sel);
+            if (!v) return false;
+            try { v.pause(); v.dataset.pfsSeamUserPaused = '1'; v.currentTime = Math.max(0, +t || 0); return true; } catch (e) { return false; }
+        }
+    };
+})();

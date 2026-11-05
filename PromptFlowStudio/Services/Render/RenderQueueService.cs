@@ -63,6 +63,12 @@ public sealed class RenderQueueService : IRenderQueueService
     /// <summary>멀티 샷 후처리기(마지막 프레임 I2V 앵커 추출 · 그룹 합본) — null 이면 체이닝 후처리 생략(DI 기본 ctor 는 ffmpeg 실물).</summary>
     public FFmpegVideoStitchService? Stitcher { get => _stitcher; init => _stitcher = value; }
 
+    /// <summary>🛡️ 장중 트레이딩 세이프가드 — 설정 시 정규장 동안 렌더 실행이 인코딩 슬롯(1개)을 점유. null = 제한 없음.</summary>
+    public PromptFlowStudio.Services.ProcessBridge.TradingSafetyGuardService? TradingGuard { get; set; }
+
+    /// <summary>🛡️ 장중 부하 제한 활성 여부(인디케이터용).</summary>
+    public bool IsTradingThrottled => TradingGuard?.IsThrottling == true;
+
     /// <summary>멀티 샷 그룹 합본 완료 알림(그룹 키 · 결과) — 워커 스레드에서 발생, 구독자 예외 격리.</summary>
     public event Action<string, VideoStitchResult>? OnDurationStitched;
 
@@ -259,7 +265,10 @@ public sealed class RenderQueueService : IRenderQueueService
             try
             {
                 var engine = _engine;
-                if (engine is { IsAvailable: true }) await ExecuteOnEngineAsync(engine, job, jobCts.Token).ConfigureAwait(false);
+                var guard = TradingGuard;
+                if (guard is not null && engine is { IsAvailable: true })   // 🛡️ 장중: 인코딩 슬롯 1개 공유(내보내기 ffmpeg 와 직렬화)
+                    await guard.RunGatedAsync(async c => { await ExecuteOnEngineAsync(engine, job, c).ConfigureAwait(false); return true; }, jobCts.Token).ConfigureAwait(false);
+                else if (engine is { IsAvailable: true }) await ExecuteOnEngineAsync(engine, job, jobCts.Token).ConfigureAwait(false);
                 else await SimulateAsync(job, jobCts.Token).ConfigureAwait(false);
                 lock (_gate)
                 {
