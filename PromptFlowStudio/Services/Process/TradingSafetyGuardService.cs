@@ -20,13 +20,17 @@ public sealed partial class TradingSafetyGuardService : IDisposable
     public static readonly TimeSpan DefaultClose = new(15, 30, 0);
     public const ProcessPriorityClass ThrottledPriority = ProcessPriorityClass.BelowNormal;
     public const int ThrottledMaxConcurrency = 1;
+    /// <summary>⚡ 장중 경량 프로브(ffprobe·1프레임) 독립 퍼밋 수 — 중량 인코딩 슬롯과 분리.</summary>
+    public const int ProbeMaxConcurrency = 4;
     public const string IndicatorText = "🛡️ 장중 안전 모드 가동 중 (GPU 부하 제한)";
 
     private readonly Func<bool> _enabled;
     private readonly SemaphoreSlim _slot = new(ThrottledMaxConcurrency, ThrottledMaxConcurrency);
+    private readonly SemaphoreSlim _probeSlot = new(ProbeMaxConcurrency, ProbeMaxConcurrency);
     private readonly AsyncLocal<bool> _held = new();
     private Func<string, ProcessPriorityClass?>? _resolver;
     private Func<string, Func<CancellationToken, Task<ProcessResult>>, CancellationToken, Task<ProcessResult>>? _gate;
+    private Func<string, Func<CancellationToken, Task<ProcessResult>>, CancellationToken, Task<ProcessResult>>? _probeGate;
     private int _attached, _disposed;
 
     /// <param name="enabledProvider">안전 모드 토글 공급자(null = 항상 ON · 앱 DI 는 환경설정).</param>
@@ -132,8 +136,36 @@ public sealed partial class TradingSafetyGuardService : IDisposable
         }
     }
 
+    /// <summary>
+    /// ⚡ 경량 프로브 트랙 — 중량 슬롯(<see cref="RunGatedAsync{T}"/>) 점유와 무관하게 독립 퍼밋(<see cref="ProbeMaxConcurrency"/>)으로 즉시 실행.
+    ///   제한 중이 아니거나 중량 슬롯 보유 컨텍스트(재진입)면 퍼밋 없이 실행.
+    /// </summary>
+    public async Task<T> RunProbeAsync<T>(Func<CancellationToken, Task<T>> work, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(work);
+        if (_held.Value || !IsThrottling || Volatile.Read(ref _disposed) == 1) return await work(ct).ConfigureAwait(false);
+        await _probeSlot.WaitAsync(ct).ConfigureAwait(false);
+        try { return await work(ct).ConfigureAwait(false); }
+        finally
+        {
+            try { _probeSlot.Release(); } catch (ObjectDisposedException) { }
+        }
+    }
+
+    /// <summary>분류별 라우팅 — 중량 = 단일 게이트 · 경량 = 독립 퍼밋 · 셸 = 즉시.</summary>
+    public Task<T> RunCategorizedAsync<T>(ProcessCategory category, Func<CancellationToken, Task<T>> work, CancellationToken ct = default)
+        => category switch
+        {
+            ProcessCategory.HeavyEncoding => RunGatedAsync(work, ct),
+            ProcessCategory.LightweightProbe => RunProbeAsync(work, ct),
+            _ => work(ct),
+        };
+
     /// <summary>현재 점유 중 슬롯 수(진단).</summary>
     public int ActiveSlots => ThrottledMaxConcurrency - _slot.CurrentCount;
+
+    /// <summary>현재 점유 중 경량 프로브 퍼밋 수(진단).</summary>
+    public int ActiveProbeSlots => ProbeMaxConcurrency - _probeSlot.CurrentCount;
 
     /// <summary><see cref="ProcessRunner"/> 전역 훅 결선(멱등).</summary>
     public void Attach()
@@ -141,12 +173,17 @@ public sealed partial class TradingSafetyGuardService : IDisposable
         if (Volatile.Read(ref _disposed) == 1 || Interlocked.Exchange(ref _attached, 1) == 1) return;
         _resolver = ResolvePriority;
         _gate = GateAsync;
+        _probeGate = ProbeGateAsync;
         ProcessRunner.PriorityResolver = _resolver;
         ProcessRunner.EncoderGate = _gate;
+        ProcessRunner.ProbeGate = _probeGate;
     }
 
     private Task<ProcessResult> GateAsync(string exe, Func<CancellationToken, Task<ProcessResult>> work, CancellationToken ct)
         => IsEncoderExecutable(exe) ? RunGatedAsync(work, ct) : work(ct);
+
+    private Task<ProcessResult> ProbeGateAsync(string exe, Func<CancellationToken, Task<ProcessResult>> work, CancellationToken ct)
+        => RunProbeAsync(work, ct);
 
     public void Dispose()
     {
@@ -155,7 +192,9 @@ public sealed partial class TradingSafetyGuardService : IDisposable
         {
             if (ReferenceEquals(ProcessRunner.PriorityResolver, _resolver)) ProcessRunner.PriorityResolver = null;
             if (ReferenceEquals(ProcessRunner.EncoderGate, _gate)) ProcessRunner.EncoderGate = null;
+            if (ReferenceEquals(ProcessRunner.ProbeGate, _probeGate)) ProcessRunner.ProbeGate = null;
         }
         _slot.Dispose();
+        _probeSlot.Dispose();
     }
 }

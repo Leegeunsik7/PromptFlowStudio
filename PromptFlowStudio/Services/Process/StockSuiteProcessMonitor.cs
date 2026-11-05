@@ -173,8 +173,17 @@ public sealed class StockSuiteProcessMonitor : IDisposable
 
     private static bool ActivateWindow(IntPtr hWnd)
     {
-        if (IsIconic(hWnd)) ShowWindow(hWnd, SW_RESTORE);
-        return SetForegroundWindow(hWnd);
+        if (!PromptFlowStudio.Services.Platform.NativePlatformGuard.IsWindows || hWnd == IntPtr.Zero) return false;   // 🛡️ 런타임 OS 가드(비 Windows = no-op)
+        try
+        {
+            if (IsIconic(hWnd)) ShowWindow(hWnd, SW_RESTORE);
+            return SetForegroundWindow(hWnd);
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or PlatformNotSupportedException)
+        {
+            Program.Log("StockSuiteMon.Activate", ex);
+            return false;
+        }
     }
 #else
     private static bool ActivateWindow(IntPtr hWnd) => false;   // 비 Windows 스텁

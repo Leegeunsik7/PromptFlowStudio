@@ -362,8 +362,7 @@ public sealed class YouTubeOAuthFlowService : IDisposable
 
     private static bool OpenSystemBrowser(string url)
     {
-        try { using var p = ProcessCompat.Start(new ProcessStartInfo(url) { UseShellExecute = true }); return ProcessCompat.IsSupported; }
-        catch (Exception ex) { Program.Log("YouTubeOAuth.OpenBrowser", ex); return false; }
+        return PromptFlowStudio.Services.Engines.SystemProcessRunner.Gateway.LaunchExternal(url);   // 🚀 IProcessRunner 단일 관문(검증 · 예외 격리)
     }
 
     /// <summary>제어 요청 — 30초 타임아웃 · 429/5xx 지수 백오프(Retry-After 우선) · 예외는 상태코드로 환원.</summary>

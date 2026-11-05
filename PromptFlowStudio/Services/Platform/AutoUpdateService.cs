@@ -151,12 +151,9 @@ public sealed class AutoUpdateService : IAutoUpdateService
     {
         if (!File.Exists(setupPath)) throw new FileNotFoundException("설치 파일을 찾을 수 없습니다.", setupPath);
 
-        Process.Start(new ProcessStartInfo
-        {
-            FileName = setupPath,
-            Arguments = "/SILENT",     // Inno 무음(진행바만) — 파일 잠금은 CloseApplications 로 정리
-            UseShellExecute = true,    // ⚠ true 여야 installer admin 매니페스트로 UAC 승격 프롬프트가 뜬다
-        });
+        // 🚀 IProcessRunner 단일 관문 — Inno 무음(/SILENT) · 셸 실행(⚠ UAC 승격 프롬프트 필수). 실패 시 앱 종료 금지(예외 → 상위 "업데이트 실패").
+        if (!PromptFlowStudio.Services.Engines.SystemProcessRunner.Gateway.LaunchExternal(setupPath, "/SILENT", openWithShell: true))
+            throw new InvalidOperationException("설치 프로그램을 실행하지 못했습니다.");
 
         // 파일 잠금 해제를 위해 즉시 종료(설치 후 인스톨러가 앱을 재시작).
         try { Application.Exit(); } catch { Environment.Exit(0); }

@@ -134,8 +134,8 @@ public sealed class LumaFaceDetector
     {
         var args = new[] { "-y", "-i", imagePath, "-vf", $"scale={SampleWidth}:-2", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1" };
         var bytes = Array.Empty<byte>();
-        // 🛡️ IProcessRunner.StartStreaming(우선순위·stderr 자동 드레인) + RunGatedAsync(장중 동시 게이트) 경유.
-        await _runner.RunGatedAsync(ffmpeg, async c =>
+        // 🛡️ IProcessRunner.StartStreaming(우선순위·stderr 자동 드레인) + RunGatedAsync(1프레임 = 경량 프로브 트랙 · 중량 게이트 우회) 경유.
+        await _runner.RunGatedAsync(ffmpeg, ProcessCategory.LightweightProbe, async c =>
         {
             using var proc = _runner.StartStreaming(ffmpeg, args, redirectStdin: false, redirectStdout: true, c);
             if (proc is null) return new ProcessResult(false, -1, "", "");

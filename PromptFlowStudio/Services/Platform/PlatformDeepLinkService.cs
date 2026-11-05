@@ -56,8 +56,7 @@ public sealed class PlatformDeepLinkService
             if (string.IsNullOrWhiteSpace(url)) return false;
             if (!(url.StartsWith("https://", StringComparison.OrdinalIgnoreCase) || url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)))
                 return false;   // 스킴 위조(file:/javascript: 등) 차단
-            ProcessCompat.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-            return true;
+            return PromptFlowStudio.Services.Engines.SystemProcessRunner.Gateway.LaunchExternal(url);   // 🚀 IProcessRunner 단일 관문
         }
         catch (Exception ex) { PromptFlowStudio.Program.Log("PlatformDeepLink.OpenUrl", ex); return false; }
     }

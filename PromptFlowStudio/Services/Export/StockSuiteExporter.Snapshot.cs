@@ -100,6 +100,7 @@ public sealed partial class StockSuiteExporter
     /// <summary>🖼️ 윈도우 바탕화면 배경 설정(Windows 전용 · 그 외 false).</summary>
     public static bool TrySetDesktopWallpaper(string? imagePath)
     {
+        if (!PromptFlowStudio.Services.Platform.NativePlatformGuard.IsWindows) return false;   // 🛡️ 런타임 OS 가드(비 Windows = no-op)
         if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath)) return false;
 #if WINDOWS
         try

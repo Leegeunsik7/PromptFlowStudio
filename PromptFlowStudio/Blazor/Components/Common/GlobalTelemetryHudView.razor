@@ -7086,7 +7086,7 @@
         try
         {
             System.IO.Directory.CreateDirectory(HotfixSigner.OutputRoot);
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = HotfixSigner.OutputRoot, UseShellExecute = true });
+            PromptFlowStudio.Services.Engines.SystemProcessRunner.Gateway.LaunchExternal(HotfixSigner.OutputRoot);   // 🚀 IProcessRunner 단일 관문
         }
         catch (Exception ex) { Program.Log("HotfixSigner.OpenOutputFolder", ex); }
     }

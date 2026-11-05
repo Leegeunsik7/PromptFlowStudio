@@ -33,6 +33,23 @@ public interface IProcessRunner
 
     /// <summary>셸 연결 프로그램으로 URL/파일 열기(기본 = <see cref="ProcessRunner.ShellOpen"/>). 실패 false.</summary>
     bool ShellOpen(string target) => ProcessRunner.ShellOpen(target);
+
+    /// <summary>🛡️ 명시 분류 실행 — 경량 프로브는 장중 중량 게이트 우회(기본 = 인스턴스 <see cref="RunAsync(string, IEnumerable{string}, string?, Action{bool, string}?, CancellationToken)"/> 위임 · 테스트 대역 기록 유지).</summary>
+    Task<ProcessResult> RunAsync(string exe, IEnumerable<string> args, ProcessCategory category, string? workingDir = null,
+        Action<bool, string>? onLine = null, CancellationToken ct = default)
+        => RunAsync(exe, args, workingDir, onLine, ct);
+
+    /// <summary>🛡️ 분류별 게이트 실행(기본 = <see cref="ProcessRunner.RunGatedAsync(string, ProcessCategory, Func{CancellationToken, Task{ProcessResult}}, CancellationToken)"/>).</summary>
+    Task<ProcessResult> RunGatedAsync(string exe, ProcessCategory category, Func<CancellationToken, Task<ProcessResult>> body, CancellationToken ct = default)
+        => ProcessRunner.RunGatedAsync(exe, category, body, ct);
+
+    /// <summary>🚀 외부 대상(URL·폴더·실행 파일) 동기 실행 — 검증 · 예외 격리 · 실패 false(기본 = <see cref="ProcessRunner.LaunchExternal"/>).</summary>
+    bool LaunchExternal(string target, string arguments = "", bool openWithShell = true)
+        => ProcessRunner.LaunchExternal(target, arguments, openWithShell);
+
+    /// <summary>🚀 외부 대상 실행(비동기 · 기본 = 인스턴스 <see cref="LaunchExternal"/> 위임). 실패/취소 false — 절대 throw 하지 않음.</summary>
+    Task<bool> LaunchExternalAsync(string target, string arguments = "", bool openWithShell = true, CancellationToken ct = default)
+        => ct.IsCancellationRequested ? Task.FromResult(false) : Task.FromResult(LaunchExternal(target, arguments, openWithShell));
 }
 
 /// <summary>기본 구현 — 정적 <see cref="ProcessRunner"/> 위임(전역 <c>PriorityResolver</c>/<c>EncoderGate</c> 훅 경유).</summary>
@@ -40,9 +57,16 @@ public sealed class SystemProcessRunner : IProcessRunner
 {
     public static readonly SystemProcessRunner Shared = new();
 
+    /// <summary>🚀 인터페이스 형 단일 관문(기본 인터페이스 멤버 — <c>LaunchExternal</c>·분류 게이트 — 접근용).</summary>
+    public static IProcessRunner Gateway => Shared;
+
     public Task<ProcessResult> RunAsync(string exe, IEnumerable<string> args, string? workingDir = null,
         Action<bool, string>? onLine = null, CancellationToken ct = default)
         => ProcessRunner.RunAsync(exe, args, workingDir, onLine, ct);
+
+    public Task<ProcessResult> RunAsync(string exe, IEnumerable<string> args, ProcessCategory category, string? workingDir = null,
+        Action<bool, string>? onLine = null, CancellationToken ct = default)
+        => ProcessRunner.RunAsync(exe, args, category, workingDir, onLine, ct);
 }
 
 public static class ProcessRunnerExtensions

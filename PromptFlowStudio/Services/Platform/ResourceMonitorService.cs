@@ -100,20 +100,14 @@ public sealed class ResourceMonitorService
     {
         try
         {
-            var psi = new ProcessStartInfo
-            {
-                FileName = "nvidia-smi",
-                Arguments = "--query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits",
-                RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true,
-            };
-            using var proc = ProcessCompat.Start(psi);
-            if (proc is null) return null;
-            var outTask = proc.StandardOutput.ReadToEndAsync();
+            // 🛡️ IProcessRunner 단일 관문(경량 프로브 트랙 · 2.5s 타임아웃 시 트리 kill · 미지원 플랫폼 Started=false).
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(2500);
-            try { await proc.WaitForExitAsync(cts.Token).ConfigureAwait(false); }
-            catch { try { if (!proc.HasExited) proc.KillCompat(entireProcessTree: true); } catch { } return null; }
-            var outp = await outTask.ConfigureAwait(false);
+            var r = await PromptFlowStudio.Services.Engines.SystemProcessRunner.Gateway.RunAsync("nvidia-smi",
+                new[] { "--query-gpu=name,utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits" },
+                PromptFlowStudio.Services.Engines.ProcessCategory.LightweightProbe, ct: cts.Token).ConfigureAwait(false);
+            if (!r.Ok) return null;
+            var outp = r.StdOut;
 
             var line = outp.Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.Length > 0);
             if (line is null) return null;

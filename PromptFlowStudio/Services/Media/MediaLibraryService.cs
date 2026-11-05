@@ -71,12 +71,8 @@ public sealed class MediaLibraryService(ILocalMediaService media) : IMediaLibrar
         try
         {
             // 탐색기에서 해당 파일을 선택한 채로 연다.
-            ProcessCompat.Start(new ProcessStartInfo
-            {
-                FileName = "explorer.exe",
-                Arguments = $"/select,\"{path}\"",
-                UseShellExecute = true,
-            });
+            // 🚀 IProcessRunner 단일 관문(검증 · 예외 격리).
+            PromptFlowStudio.Services.Engines.SystemProcessRunner.Gateway.LaunchExternal("explorer.exe", "/select,\"" + path + "\"");
         }
         catch (Exception ex) { Program.Log("MediaLibrary.Reveal", ex); }
     }

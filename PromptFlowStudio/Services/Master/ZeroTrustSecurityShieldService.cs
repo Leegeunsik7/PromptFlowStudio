@@ -833,8 +833,7 @@ public sealed class ZeroTrustSecurityShieldService : IDisposable
         using var listener = new HttpListener();
         listener.Prefixes.Add(redirect);
         listener.Start();
-        try { ProcessCompat.Start(new ProcessStartInfo(req.Url) { UseShellExecute = true }); }
-        catch (Exception ex) { Program.Log("ZeroTrust.Browser", ex); return null; }
+        if (!await PromptFlowStudio.Services.Engines.SystemProcessRunner.Gateway.LaunchExternalAsync(req.Url, ct: ct).ConfigureAwait(false)) return null;   // 🚀 IProcessRunner 단일 관문
         using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
         d.CancelAfter(TimeSpan.FromMinutes(5));
         HttpListenerContext ctx;

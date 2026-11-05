@@ -1080,7 +1080,7 @@ public sealed partial class StockSuiteExporter
 
     /// <summary>실행 중 프로세스 수 조회(테스트 주입 · 기본 = 프로세스 이름 일치).</summary>
     public Func<string, int> RunningProbe { get; set; } = CountRunning;
-    /// <summary>프로세스 시작기(테스트 주입 · 기본 = <see cref="Process.Start(ProcessStartInfo)"/>).</summary>
+    /// <summary>프로세스 시작기(테스트 주입 · 기본 = <see cref="IProcessRunner.LaunchExternal"/> 단일 관문).</summary>
     public Func<ProcessStartInfo, bool> Starter { get; set; } = DefaultStart;
     /// <summary>기존 프로세스 종료기(재실행 · 테스트 주입). 반환 = 종료 성공 여부.</summary>
     public Func<string, bool> Terminator { get; set; } = TerminateAll;
@@ -1153,8 +1153,7 @@ public sealed partial class StockSuiteExporter
 
     private static bool DefaultStart(ProcessStartInfo psi)
     {
-        using var p = Process.Start(psi);
-        return p is not null || psi.UseShellExecute;
+        return PromptFlowStudio.Services.Engines.SystemProcessRunner.Gateway.LaunchExternal(psi.FileName, psi.Arguments, psi.UseShellExecute);   // 🚀 작업 디렉터리 = exe 폴더(자동)
     }
 
     private static bool TerminateAll(string processName)

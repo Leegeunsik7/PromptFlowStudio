@@ -15,6 +15,17 @@ public sealed record ProcessResult(bool Started, int ExitCode, string StdOut, st
     public bool Ok => Started && ExitCode == 0;
 }
 
+/// <summary>🛡️ 외부 프로세스 분류 — 장중 듀얼 트랙 게이트 라우팅 기준.</summary>
+public enum ProcessCategory
+{
+    /// <summary>중량 인코딩(렌더·60fps 보간·4K 업스케일·VP9) — 장중 단일 동시 게이트(<see cref="ProcessRunner.EncoderGate"/>).</summary>
+    HeavyEncoding = 0,
+    /// <summary>경량 프로브(ffprobe·메타데이터·1프레임 추출) — 중량 게이트 우회 · 독립 단기 퍼밋(<see cref="ProcessRunner.ProbeGate"/>).</summary>
+    LightweightProbe = 1,
+    /// <summary>셸 외부 실행(브라우저·탐색기·외부 앱) — 게이트 없음.</summary>
+    ShellExternal = 2,
+}
+
 /// <summary>
 /// [PromptFlowStudio] 외부 오픈소스 AI 엔진 CLI 공용 실행기 — 순수 BCL <see cref="Process"/>(외부 NuGet 0).
 ///   ▸ stdout/stderr 를 <b>비동기로 동시 드레인</b>해 파이프 버퍼 가득참에 의한 데드락을 차단(BeginXxxReadLine + 라인 콜백).
@@ -28,6 +39,28 @@ public static class ProcessRunner
 
     /// <summary>🛡️ 동시 실행 게이트 훅(exe · 실행 본체 · 취소) — 장중 인코딩 1개 제한. null = 즉시 실행.</summary>
     public static Func<string, Func<CancellationToken, Task<ProcessResult>>, CancellationToken, Task<ProcessResult>>? EncoderGate { get; set; }
+
+    /// <summary>🛡️ 경량 프로브 독립 퍼밋 훅(exe · 실행 본체 · 취소) — 중량 게이트와 분리. null = 즉시 실행.</summary>
+    public static Func<string, Func<CancellationToken, Task<ProcessResult>>, CancellationToken, Task<ProcessResult>>? ProbeGate { get; set; }
+
+    /// <summary>
+    /// 🛡️ 호출 자동 분류 — ffprobe 계열 또는 단일 프레임 출력(<c>-frames:v 1</c> · <c>-vframes 1</c> · <c>-frames 1</c>) = 경량 프로브, 그 외 중량 인코딩.
+    /// </summary>
+    public static ProcessCategory Classify(string? exe, IReadOnlyList<string>? args)
+    {
+        if (!string.IsNullOrWhiteSpace(exe)
+            && Path.GetFileNameWithoutExtension(exe.Trim().Trim('"')).StartsWith("ffprobe", StringComparison.OrdinalIgnoreCase))
+            return ProcessCategory.LightweightProbe;
+        if (args is null) return ProcessCategory.HeavyEncoding;
+        for (int i = 0; i + 1 < args.Count; i++)
+        {
+            var a = args[i];
+            if ((string.Equals(a, "-frames:v", StringComparison.Ordinal) || string.Equals(a, "-vframes", StringComparison.Ordinal) || string.Equals(a, "-frames", StringComparison.Ordinal))
+                && string.Equals(args[i + 1], "1", StringComparison.Ordinal))
+                return ProcessCategory.LightweightProbe;
+        }
+        return ProcessCategory.HeavyEncoding;
+    }
 
     /// <summary>
     /// CLI 를 실행하고 종료까지 대기한다. <paramref name="onLine"/>(isErr, line) 로 각 출력 라인을 실시간 전달(진행률 % 파싱용).
@@ -43,11 +76,34 @@ public static class ProcessRunner
         string exe, IEnumerable<string> args, IReadOnlyDictionary<string, string?>? env, string? workingDir = null,
         Action<bool, string>? onLine = null, CancellationToken ct = default)
     {
-        var gate = EncoderGate;
+        var list = args as IReadOnlyList<string> ?? new List<string>(args);
+        return await RunCategorizedAsync(exe, list, Classify(exe, list), env, workingDir, onLine, ct).ConfigureAwait(false);
+    }
+
+    /// <summary><see cref="RunAsync(string, IEnumerable{string}, string?, Action{bool, string}?, CancellationToken)"/> + 명시 분류(자동 분류 무시).</summary>
+    public static Task<ProcessResult> RunAsync(
+        string exe, IEnumerable<string> args, ProcessCategory category, string? workingDir = null,
+        Action<bool, string>? onLine = null, CancellationToken ct = default)
+        => RunCategorizedAsync(exe, args as IReadOnlyList<string> ?? new List<string>(args), category, null, workingDir, onLine, ct);
+
+    private static async Task<ProcessResult> RunCategorizedAsync(
+        string exe, IReadOnlyList<string> args, ProcessCategory category, IReadOnlyDictionary<string, string?>? env, string? workingDir,
+        Action<bool, string>? onLine, CancellationToken ct)
+    {
+        var gate = ResolveGate(category);
         if (gate is null) return await RunCoreAsync(exe, args, workingDir, onLine, env, ct).ConfigureAwait(false);
         try { return await gate(exe, c => RunCoreAsync(exe, args, workingDir, onLine, env, c), ct).ConfigureAwait(false); }
         catch (OperationCanceledException) { return new(false, -2, "", "취소됨"); }   // 슬롯 대기 중 취소
     }
+
+    /// <summary>분류 → 게이트(중량 = <see cref="EncoderGate"/> · 경량 = <see cref="ProbeGate"/> · 셸 = 없음).</summary>
+    private static Func<string, Func<CancellationToken, Task<ProcessResult>>, CancellationToken, Task<ProcessResult>>? ResolveGate(ProcessCategory category)
+        => category switch
+        {
+            ProcessCategory.HeavyEncoding => EncoderGate,
+            ProcessCategory.LightweightProbe => ProbeGate,
+            _ => null,
+        };
 
     private static async Task<ProcessResult> RunCoreAsync(
         string exe, IEnumerable<string> args, string? workingDir,
@@ -164,10 +220,14 @@ public static class ProcessRunner
     }
 
     /// <summary>🛡️ 스트리밍 작업 본체를 장중 동시 실행 게이트(<see cref="EncoderGate"/>) 슬롯 안에서 실행 — 게이트 미설정 시 즉시 실행.</summary>
-    public static async Task<ProcessResult> RunGatedAsync(string exe, Func<CancellationToken, Task<ProcessResult>> body, CancellationToken ct = default)
+    public static Task<ProcessResult> RunGatedAsync(string exe, Func<CancellationToken, Task<ProcessResult>> body, CancellationToken ct = default)
+        => RunGatedAsync(exe, ProcessCategory.HeavyEncoding, body, ct);
+
+    /// <summary>🛡️ 분류별 게이트 실행 — 경량 프로브는 중량 슬롯을 기다리지 않고 독립 퍼밋(<see cref="ProbeGate"/>) 경유.</summary>
+    public static async Task<ProcessResult> RunGatedAsync(string exe, ProcessCategory category, Func<CancellationToken, Task<ProcessResult>> body, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(body);
-        var gate = EncoderGate;
+        var gate = ResolveGate(category);
         if (gate is null) return await body(ct).ConfigureAwait(false);
         return await gate(exe, body, ct).ConfigureAwait(false);
     }
@@ -176,16 +236,62 @@ public static class ProcessRunner
     /// 셸 연결 프로그램으로 대상(URL·파일·폴더)을 연다(<c>UseShellExecute=true</c>) — 반환된 <see cref="Process"/> 핸들은 즉시 Dispose(핸들 누수 0).
     ///   실패(Win32Exception 등)는 로그 후 false.
     /// </summary>
-    public static bool ShellOpen(string target)
+    public static bool ShellOpen(string target) => LaunchExternal(target, "", openWithShell: true);
+
+    /// <summary>
+    /// 🚀 외부 대상(URL·파일·폴더·실행 파일) 실행 — 전 서비스 <c>Process.Start</c> 단일 관문(게이트 없음 · <see cref="ProcessCategory.ShellExternal"/>).
+    ///   ▸ 검증: 빈 대상 / 제어문자(NUL·개행) / "://" 포함 시 http·https 외 스킴 / 루트 경로 미존재 → false.
+    ///   ▸ 루트 파일 경로는 작업 디렉터리 = 파일 폴더. 핸들 즉시 Dispose. 예외(실행 파일 부재 등)는 로그 후 false — 절대 throw 하지 않음.
+    /// </summary>
+    public static bool LaunchExternal(string? target, string? arguments = "", bool openWithShell = true)
     {
-        if (string.IsNullOrWhiteSpace(target)) return false;
+        if (!ValidateExternalTarget(target, arguments) || !ProcessCompat.IsSupported) return false;
+        var t = target!.Trim();
         try
         {
-            using var p = Process.Start(new ProcessStartInfo(target) { UseShellExecute = true });
-            return true;
+            var psi = new ProcessStartInfo(t) { UseShellExecute = openWithShell };
+            if (!string.IsNullOrEmpty(arguments)) psi.Arguments = arguments;
+            if (!openWithShell) psi.CreateNoWindow = true;
+            if (Path.IsPathRooted(t) && File.Exists(t)) psi.WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(t)) ?? "";
+            using var p = Process.Start(psi);
+            return p is not null || openWithShell;   // 셸 위임(기존 인스턴스 재사용) 시 null 이어도 성공
         }
-        catch (System.ComponentModel.Win32Exception ex) { Program.Log("ProcessRunner.ShellOpen", ex); return false; }
-        catch (Exception ex) { Program.Log("ProcessRunner.ShellOpen", ex); return false; }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or PlatformNotSupportedException
+                                       or FileNotFoundException or ObjectDisposedException or ArgumentException or UnauthorizedAccessException)
+        {
+            Program.Log("ProcessRunner.LaunchExternal", ex);
+            return false;
+        }
+    }
+
+    /// <summary><see cref="LaunchExternal"/> 비동기 래퍼(동기 완료 · 취소 선요청 시 false).</summary>
+    public static Task<bool> LaunchExternalAsync(string? target, string? arguments = "", bool openWithShell = true, CancellationToken ct = default)
+        => ct.IsCancellationRequested ? Task.FromResult(false) : Task.FromResult(LaunchExternal(target, arguments, openWithShell));
+
+    /// <summary>외부 실행 대상/인자 안전 검증(순수 판정 · 실행 없음).</summary>
+    public static bool ValidateExternalTarget(string? target, string? arguments = "")
+    {
+        if (string.IsNullOrWhiteSpace(target)) return false;
+        var t = target.Trim();
+        if (HasControlChar(t) || (arguments is not null && HasControlChar(arguments))) return false;
+        if (t.Contains("://", StringComparison.Ordinal))
+        {
+            if (!Uri.TryCreate(t, UriKind.Absolute, out var u)) return false;
+            return u.Scheme == Uri.UriSchemeHttps || u.Scheme == Uri.UriSchemeHttp;   // file:/javascript: 등 위조 스킴 차단
+        }
+        if (t.IndexOfAny(Path.GetInvalidPathChars()) >= 0) return false;
+        try
+        {
+            if (Path.IsPathRooted(t)) return File.Exists(t) || Directory.Exists(t);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException) { return false; }
+        return true;   // PATH 해석 대상(explorer.exe 등)
+    }
+
+    private static bool HasControlChar(string s)
+    {
+        foreach (var c in s) if (c is '\0' or '\r' or '\n') return true;
+        return false;
     }
 
     private static void ApplyPriority(Process proc, string exe)
