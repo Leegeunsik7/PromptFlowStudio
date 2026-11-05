@@ -31,6 +31,18 @@ public sealed record BatchPromptItem(int Index, string Title, string Prompt, str
 public sealed record BatchPlanResult(IReadOnlyList<BatchPromptItem> Items, bool UsedFallback, string Message);
 
 /// <summary>SNS 발행 SEO 메타 — <see cref="UsedFallback"/>=true 면 로컬 템플릿(키 없음/호출 실패/스키마 불일치).</summary>
+/// <summary>📈 증시 시황 무드.</summary>
+public enum MarketMood { BullRally, BearDefense, HighVolatility, MidnightWallStreet }
+
+/// <summary>시황 무드 칩 프리셋 — Tokens 는 프롬프트에 주입되는 조명·색감·동세 블록.</summary>
+public sealed record MarketMoodPreset(MarketMood Mood, string Emoji, string Label, string English, string Tokens);
+
+/// <summary>3-Way 스타일 변형 1종 — 프롬프트·추천 카메라·결정적 시드.</summary>
+public sealed record StyleVariant(int Index, string StyleKey, string Title, string Prompt, string Camera, long Seed);
+
+/// <summary>3-Way 변형 결과.</summary>
+public sealed record ThreeWayVariantResult(IReadOnlyList<StyleVariant> Variants, bool UsedFallback, string Message);
+
 public sealed record SnsSeoMetadata(string Title, string Description, IReadOnlyList<string> Tags, bool UsedFallback, string Message);
 
 /// <summary>
@@ -555,6 +567,132 @@ public sealed class GeminiPromptService
             if (ex is not OperationCanceledException) Program.Log("GeminiPromptService.Call", ex);
             return null;
         }
+    }
+
+    // ══════════════════════ 📈 증시 시황 감성 인젝터 ══════════════════════
+
+    /// <summary>시황 무드 프리셋 — 조명·색감·피사체 동세 토큰 블록(교체 단위).</summary>
+    public static readonly MarketMoodPreset[] MarketMoods =
+    {
+        new(MarketMood.BullRally, "🔥", "불장/급등", "Bull Rally",
+            "bull market rally mood, neon green and emerald volumetric light beams, towering bullish green candlesticks climbing up-right, rapid buy-side trade ticks flashing, energetic upward camera push"),
+        new(MarketMood.BearDefense, "🩸", "하락/방어", "Bear Defense",
+            "bear market defense mood, deep crimson red order-book depth, solemn blue-hour lighting, dense wall of sell orders stacked tight, slow restrained camera drift"),
+        new(MarketMood.HighVolatility, "⚡", "변동성 폭발", "High Volatility",
+            "high volatility surge mood, glowing Fibonacci fan lines, dynamic fast panning, lightning-fast refreshing depth chart, flickering strobe accents"),
+        new(MarketMood.MidnightWallStreet, "🌙", "나스닥 심야", "Midnight WallStreet",
+            "midnight Nasdaq Wall Street mood, rain-streaked window with Wall Street bokeh, calm dark-mode OLED screens, gently flowing order book, soft low-key lighting"),
+    };
+
+    public static MarketMoodPreset MoodOf(MarketMood mood)
+    {
+        foreach (var m in MarketMoods) if (m.Mood == mood) return m;
+        return MarketMoods[0];
+    }
+
+    /// <summary>
+    /// 시황 무드 주입 — 기존 무드 블록을 모두 걷어낸 뒤 선택 무드의 조명·색감·동세 토큰으로 재편(멱등 · 무드 전환 시 누적 없음).
+    /// 빈 프롬프트 → 무드 토큰만 반환.
+    /// </summary>
+    public static string ApplyMarketSentiment(string? prompt, MarketMood mood)
+    {
+        var s = StripMarketSentiment(prompt);
+        var tokens = MoodOf(mood).Tokens;
+        return s.Length == 0 ? tokens : s + ", " + tokens;
+    }
+
+    /// <summary>적용된 무드 블록 제거(원문 복원).</summary>
+    public static string StripMarketSentiment(string? prompt)
+    {
+        var s = (prompt ?? "").Trim();
+        foreach (var m in MarketMoods)
+        {
+            s = s.Replace(", " + m.Tokens, "", StringComparison.OrdinalIgnoreCase)
+                 .Replace(m.Tokens, "", StringComparison.OrdinalIgnoreCase);
+        }
+        return s.Trim().TrimEnd(',').Trim();
+    }
+
+    /// <summary>현재 프롬프트에 적용된 무드(없으면 null) — 칩 활성 표시용.</summary>
+    public static MarketMood? ActiveMarketMood(string? prompt)
+    {
+        if (string.IsNullOrEmpty(prompt)) return null;
+        foreach (var m in MarketMoods)
+            if (prompt.Contains(m.Tokens, StringComparison.OrdinalIgnoreCase)) return m.Mood;
+        return null;
+    }
+
+    // ══════════════════════ ✨ 제미나이 3-Way 스타일 변형 엔진 ══════════════════════
+
+    /// <summary>3종 시네마틱 룩 — (키, 제목, 룩 토큰, 추천 카메라).</summary>
+    public static readonly (string Key, string Title, string Look, string Camera)[] ThreeWayStyles =
+    {
+        ("realistic-dark-quant", "Realistic Dark Quant",
+            "photorealistic 35mm film lens, Wall Street quant trading desk, restrained cinematic low-key lighting, muted charcoal palette with subtle teal highlights", "Slow Dolly In"),
+        ("cyber-neon-depth", "Cyber Neon Depth",
+            "holographic depth-layered charts, cyberpunk neon magenta and cyan accents, futuristic trading room, glowing volumetric data streams", "Orbit Pan"),
+        ("minimal-modern-studio", "Minimal Modern Studio",
+            "minimalist modern studio, clean single-color soft gradient backdrop, sleek uncluttered interface panels, even diffused lighting, generous negative space", "Static Locked-Off"),
+    };
+
+    public const string ThreeWayFallbackNotice = "로컬 스타일 매트릭스로 3종 전개되었습니다";
+
+    public const string ThreeWayInstruction =
+        "You are a cinematic AI video prompt director for fintech/stock-market visuals. Rewrite the user's idea into exactly 3 English video prompts, " +
+        "one per style IN THIS ORDER: (1) Realistic Dark Quant - 35mm photoreal lens, Wall Street quant desk, restrained cinematic lighting; " +
+        "(2) Cyber Neon Depth - holographic depth, cyberpunk neon accents, futuristic trading room; " +
+        "(3) Minimal Modern Studio - minimalist single-color gradient, clean interface, soft even light. " +
+        "Each prompt: one line, max 600 chars, keep the subject, describe lighting, color and motion. " +
+        "Return ONLY JSON: {\"items\":[{\"title\":\"...\",\"prompt\":\"...\",\"camera\":\"...\"}]} with exactly 3 items.";
+
+    /// <summary>✨ 1회 기획 → 3종 스타일 동시 전개. 키 없음/실패/스키마 불일치 → 로컬 매트릭스 폴백(무중단).</summary>
+    public async Task<ThreeWayVariantResult> GenerateThreeWayVariantsAsync(string? idea, CancellationToken ct = default)
+    {
+        var t = (idea ?? "").Trim();
+        if (t.Length == 0) return new(Array.Empty<StyleVariant>(), true, "아이디어(프롬프트)를 입력하세요.");
+        var local = BuildLocalThreeWayVariants(t);
+        if (!HasKey()) return new(local, true, ThreeWayFallbackNotice);
+
+        var text = await CallAsync(ThreeWayInstruction, "Idea: " + t, null, true, 0.85, ct).ConfigureAwait(false);
+        var parsed = text is null ? null : ParseBatchPrompts(text, ThreeWayStyles.Length);
+        if (parsed is null || parsed.Count < ThreeWayStyles.Length) return new(local, true, ThreeWayFallbackNotice);
+
+        var list = new StyleVariant[ThreeWayStyles.Length];
+        for (var i = 0; i < list.Length; i++)
+        {
+            var p = parsed[i].Prompt;
+            if (p.Length > PromptSynthesizerService.MaxCharacterLimit) p = p[..PromptSynthesizerService.MaxCharacterLimit].TrimEnd();
+            var cam = string.Equals(parsed[i].Camera, "Static", StringComparison.Ordinal) ? local[i].Camera : parsed[i].Camera;
+            list[i] = local[i] with { Prompt = p, Camera = cam };
+        }
+        return new(list, false, "✨ Gemini 3종 스타일 전개 완료");
+    }
+
+    /// <summary>로컬 3종 변형 — 동일 아이디어 + 스타일별 룩 토큰·카메라·결정적 시드(아이디어×스타일 FNV-1a).</summary>
+    public static IReadOnlyList<StyleVariant> BuildLocalThreeWayVariants(string? idea)
+    {
+        var t = (idea ?? "").Trim().TrimEnd(',').Trim();
+        if (t.Length == 0) return Array.Empty<StyleVariant>();
+        var list = new StyleVariant[ThreeWayStyles.Length];
+        for (var i = 0; i < list.Length; i++)
+        {
+            var st = ThreeWayStyles[i];
+            var p = t + ", " + st.Look + ", " + st.Camera.ToLowerInvariant() + " camera motion, smooth motion, professional color grading";
+            if (p.Length > PromptSynthesizerService.MaxCharacterLimit) p = p[..PromptSynthesizerService.MaxCharacterLimit].TrimEnd();
+            list[i] = new StyleVariant(i + 1, st.Key, st.Title, p, st.Camera, VariantSeed(t, st.Key));
+        }
+        return list;
+    }
+
+    /// <summary>결정적 시드 — FNV-1a 32bit(아이디어 + 스타일 키) → 1..int.MaxValue.</summary>
+    public static long VariantSeed(string idea, string styleKey)
+    {
+        var h = 2166136261u;
+        foreach (var c in idea) { h ^= c; h *= 16777619u; }
+        h ^= '|'; h *= 16777619u;
+        foreach (var c in styleKey) { h ^= c; h *= 16777619u; }
+        var v = h & 0x7FFFFFFFu;
+        return v == 0 ? 1 : v;
     }
 
     private static string? Sanitize(string? text)

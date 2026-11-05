@@ -1,18 +1,13 @@
 # Current Project Status
-- Active Milestone: 【Diagnostics】 HTS 3대 테마 HUD · 미디어 규격 인스펙터 · 렌더 캐시 자동 정리기
+- Active Milestone: 【Quant Studio】 StockSuite 핫리로드 트리거 · 시황 감성 인젝터 · 3-Way 스타일 변형 매트릭스
 - Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (net8.0-android 미검증: Android SDK 미설치)
-- Tests: FastUnit 567/567 PASS (Release)
+- Tests: FastUnit 571/571 PASS (Release)
 - Updated: 2026-11-05 (KST)
 
 ## Completed
-- HtsHudThemes(`Services/Export/HtsHudTheme.cs`): OLED 딥블랙 · 네이비 퀀트(10단 호가) · 모던 미니멀(라인+볼륨) — CSS 클래스/호가 깊이/파서
-- 조도 검사기: `Evaluate(luma, dimmer, theme)` WCAG 대비율 4.5:1 기준 🟢 최적 / 🟡 주의(Dimmer N% 권장 · 원클릭 적용)
-- HtsHudOverlay: `Theme` 파라미터 · `RootClass(theme)` · 테마별 CSS · 미니멀 라인 차트/볼륨 바(정적 데이터)
-- MediaProbeService: ffprobe JSON → ffmpeg `-i` 배너 → 헤더 폴백 · 코덱(H.264 (avc1)/VP9)·해상도@FPS·Mbps·MB·무음 · 중앙 YAVG 조도 측정(10s 타임아웃)
-- Workspace: `[ℹ️ 미디어 규격]` 카드 · HUD 테마 드롭다운 · `[🔆 조도 검사]` 뱃지
-- RenderCacheCleaner: `_temp_*`·`*_temp*.mp4`·`*.tmp`·`concat_*.txt`·`synth_*.wav` 회수(진행 중 보호) · 상한 초과 시 `.meta.json` 없는 오래된 미디어 LRU Prune · 앱 시작 백그라운드 실행
-- UserSettings: 최대 렌더 캐시 용량(GB, 기본 10) · `[🧹 임시 캐시 즉시 비우기]` — DI: MainForm + MauiProgram
-- Tests: MediaProbeService_ExtractsVideoSpecsCorrectly · RenderCacheCleaner_RemovesOrphanTempFilesSuccessfully · HtsHudOverlay_SwitchesThemesCorrectly 외 3건
-
-## Next
-- 조도 검사 실영상(ffmpeg signalstats) 실기 검증 · Android 빌드 검증
+- StockSuiteExporter 세이프 스왑: 임시(`.~pfs`) → `SwapIntoPlaceAsync` 원자 교체, 잠금 시 3회 선형 지연 재시도(`SwapRetryDelay`), 최종 실패는 IOException 정규화(경로 재설정 오인 차단 · 기존 에셋 보존 · 임시 정리)
+- 라이브 핫리로드: 내보내기 성공 시 `hotreload.trigger` 원자 기록 `{ "updatedAt": ISO-8601 UTC, "file": "bg_ambient.mp4" }` (실패/no-op 시 미갱신)
+- 시황 감성 인젝터: `MarketMood`(🔥Bull · 🩸Bear · ⚡Volatility · 🌙Midnight) · `ApplyMarketSentiment`(무드 블록 교체·멱등) · `StripMarketSentiment` · `ActiveMarketMood`
+- 3-Way 변형: `GenerateThreeWayVariantsAsync`(Gemini JSON → 스키마 검증 → 로컬 매트릭스 폴백) · Realistic Dark Quant / Cyber Neon Depth / Minimal Modern Studio · 추천 카메라 · FNV-1a 결정적 시드
+- Workspace: [시황 무드 연동] 칩 바(활성 표시) · [✨ 3종 스타일 동시 전개] → 탭 선택(프롬프트+시드 고정 교체) · 📥 3종 렌더 큐 일괄 적재
+- Tests: StockSuiteExporter_WritesHotReloadTriggerFile_UponSuccessfulExport · StockSuiteExporter_HandlesFileLockGracefully_WithRetry · GeminiPromptService_ApplyMarketSentiment_InjectsAccurateVisualMetaphors · GeminiPromptService_GenerateThreeWayVariants_ReturnsThreeDistinctStyles

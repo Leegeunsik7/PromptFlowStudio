@@ -111,6 +111,85 @@ public sealed class StockSuiteExporter
     /// <summary>원본 → <c>{targetDir}\{assetName}</c> 원자적 덮어쓰기. 대상 폴더는 상위가 존재할 때만 생성. <paramref name="format"/>·<paramref name="sharpen"/> null = 환경설정 기본.</summary>
     public async Task<StockSuiteExportResult> ExportAsync(string? sourcePath, string? targetDir = null, string? assetName = null, CancellationToken ct = default, StockSuiteExportFormat? format = null, bool? sharpen = null)
     {
+        var r = await ExportCoreAsync(sourcePath, targetDir, assetName, ct, format, sharpen).ConfigureAwait(false);
+        // 🔁 라이브 핫리로드 — 실제 교체가 일어난 경우에만 신호(동일 위치 no-op 제외).
+        if (r.Ok && r.TargetPath is { } t && !string.Equals(Path.GetFullPath(sourcePath!), t, StringComparison.OrdinalIgnoreCase))
+            WriteHotReloadTrigger(t, UtcNow());
+        return r;
+    }
+
+    // ══════════════════════ 🔁 원자적 세이프 스왑 & 핫리로드 브릿지 ══════════════════════
+
+    /// <summary>StockSuite FileSystemWatcher 감시 대상 신호 파일 — <c>{ "updatedAt": ISO-8601 UTC, "file": "bg_ambient.mp4" }</c>.</summary>
+    public const string HotReloadTriggerName = "hotreload.trigger";
+    /// <summary>잠금 시 지연 재시도 횟수(최초 시도 제외).</summary>
+    public const int SwapRetryCount = 3;
+    /// <summary>재시도 기본 지연(선형 증가: 1×, 2×, 3×) — 테스트 단축 주입.</summary>
+    public TimeSpan SwapRetryDelay { get; set; } = TimeSpan.FromMilliseconds(250);
+    /// <summary>트리거 시각 공급자(테스트 주입).</summary>
+    public Func<DateTimeOffset> UtcNow { get; set; } = static () => DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// 임시 파일 → 대상 원자적 교체. StockSuite 가 대상을 잠그고 있으면(공유 위반) 즉시 실패하지 않고
+    /// <see cref="SwapRetryCount"/>회 지연 재시도. 최종 실패 시 임시 파일은 호출부 catch 가 정리.
+    /// </summary>
+    private async Task SwapIntoPlaceAsync(string temp, string target, CancellationToken ct)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                File.Move(temp, target, overwrite: true);
+                return;
+            }
+            catch (Exception ex) when (attempt < SwapRetryCount && ex is IOException or UnauthorizedAccessException)
+            {
+                Program.Log("StockSuite.SwapRetry", ex);
+                await Task.Delay(SwapRetryDelay * (attempt + 1), ct).ConfigureAwait(false);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                // 재시도 소진 — 잠금(공유 위반)을 경로 설정 오류로 오인하지 않도록 IOException 으로 정규화.
+                throw new IOException("대상 파일이 다른 프로세스(StockSuite)에 의해 잠겨 있습니다: " + Path.GetFileName(target), ex);
+            }
+        }
+    }
+
+    /// <summary>핫리로드 트리거 JSON 페이로드(정규 · camelCase · UTC ISO-8601).</summary>
+    public static string BuildHotReloadTriggerJson(string fileName, DateTimeOffset updatedAt)
+    {
+        var buf = new System.Buffers.ArrayBufferWriter<byte>(128);
+        using (var w = new System.Text.Json.Utf8JsonWriter(buf))
+        {
+            w.WriteStartObject();
+            w.WriteString("updatedAt", updatedAt.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture));
+            w.WriteString("file", fileName);
+            w.WriteEndObject();
+        }
+        return System.Text.Encoding.UTF8.GetString(buf.WrittenSpan);
+    }
+
+    /// <summary>대상 폴더에 <see cref="HotReloadTriggerName"/> 원자적 기록(임시 → 교체). 실패는 격리(내보내기 결과 불변).</summary>
+    private static void WriteHotReloadTrigger(string target, DateTimeOffset now)
+    {
+        var dir = Path.GetDirectoryName(target);
+        if (string.IsNullOrEmpty(dir)) return;
+        var path = Path.Combine(dir, HotReloadTriggerName);
+        var tmp = path + TempExt;
+        try
+        {
+            File.WriteAllText(tmp, BuildHotReloadTriggerJson(Path.GetFileName(target), now));
+            File.Move(tmp, path, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Program.Log("StockSuite.HotReload", ex);
+            TryDelete(tmp);
+        }
+    }
+
+    private async Task<StockSuiteExportResult> ExportCoreAsync(string? sourcePath, string? targetDir, string? assetName, CancellationToken ct, StockSuiteExportFormat? format, bool? sharpen)
+    {
         if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
             return new(false, null, false, "원본 영상을 찾을 수 없습니다.");
         var dir = string.IsNullOrWhiteSpace(targetDir) ? ConfiguredDirectory : targetDir.Trim().Trim('"');
@@ -147,7 +226,7 @@ public sealed class StockSuiteExporter
                     var sharpenedWebm = await TryFfmpegAsync(BuildWebMArgs(sourcePath, temp, sharpen: true), temp, ct).ConfigureAwait(false);
                     if (sharpenedWebm is null)
                     {
-                        File.Move(temp, target, overwrite: true);
+                        await SwapIntoPlaceAsync(temp, target, ct).ConfigureAwait(false);
                         WriteSourceMarker(target, sourcePath);
                         return new(true, target, false, "💼 StockSuite WebM(VP9) 내보내기 완료(🔎 1080p 고선명 · 🔇 무음) → " + target);
                     }
@@ -156,7 +235,7 @@ public sealed class StockSuiteExporter
                 var transcoded = await TryTranscodeWebMAsync(sourcePath, temp, ct).ConfigureAwait(false);
                 if (transcoded is null)
                 {
-                    File.Move(temp, target, overwrite: true);
+                    await SwapIntoPlaceAsync(temp, target, ct).ConfigureAwait(false);
                     WriteSourceMarker(target, sourcePath);
                     return new(true, target, false, "💼 StockSuite WebM(VP9) 내보내기 완료 → " + target);
                 }
@@ -174,7 +253,7 @@ public sealed class StockSuiteExporter
                 var sharpened = await TryFfmpegAsync(BuildSharpenArgs(sourcePath, temp), temp, ct).ConfigureAwait(false);
                 if (sharpened is null)
                 {
-                    File.Move(temp, target, overwrite: true);
+                    await SwapIntoPlaceAsync(temp, target, ct).ConfigureAwait(false);
                     WriteSourceMarker(target, sourcePath);
                     return new(true, target, false, "💼 StockSuite 내보내기 완료(🔎 1080p 고선명 · 🔇 무음) → " + target);
                 }
@@ -183,7 +262,7 @@ public sealed class StockSuiteExporter
             var stripped =await TryFfmpegAsync(BuildZeroAudioArgs(sourcePath, temp), temp, ct).ConfigureAwait(false);
             if (stripped is null)
             {
-                File.Move(temp, target, overwrite: true);
+                await SwapIntoPlaceAsync(temp, target, ct).ConfigureAwait(false);
                 WriteSourceMarker(target, sourcePath);
                 return new(true, target, false, "💼 StockSuite 내보내기 완료(🔇 무음 HTS 최적화) → " + target);
             }
@@ -215,7 +294,7 @@ public sealed class StockSuiteExporter
                 await src.CopyToAsync(dst, ct).ConfigureAwait(false);
                 await dst.FlushAsync(ct).ConfigureAwait(false);
             }
-            File.Move(temp, target, overwrite: true);
+            await SwapIntoPlaceAsync(temp, target, ct).ConfigureAwait(false);
         }
         catch
         {
