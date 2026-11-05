@@ -34,6 +34,7 @@
 @inject PromptFlowStudio.Services.Prompt.PromptHistoryService History
 @inject PromptFlowStudio.Services.Render.TaskJournalService Journal
 @inject PromptFlowStudio.Services.ProcessBridge.StockSuiteIpcBridge Ipc
+@inject PromptFlowStudio.Services.Network.ResilientHttpClient Resilience
 
 @* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
    상태는 WanJobState(싱글턴)에 있고, 이 컴포넌트는 OnChange 를 구독해 InvokeAsync(StateHasChanged)로만 갱신한다.
@@ -41,7 +42,7 @@
 
 <PageTitle>PromptFlow Studio · 새 프로젝트</PageTitle>
 
-<div class="ws">
+<div class="ws" style="--ws-lut: @(PromptFlowStudio.Services.Export.ColorGradingService.CssFilter(_lut))">
     <header class="ws-head">
         <div class="ws-navrow">
             <button class="ws-back" @onclick='() => Nav.NavigateTo("")'>← 워크스페이스</button>
@@ -58,7 +59,50 @@
             }
             @if (Ipc.IsConnected) { <span class="ws-ipc" title="StockSuiteBridge Named Pipe 양방향 연결 — 종목 수신 · HUD 테마 동기화">🔌 IPC</span> }
             @if (Journal.RecoveringCount > 0) { <span class="ws-recover" role="status">[🔄 미완료 클라우드 작업 복원 중: @(Journal.RecoveringCount.ToString(CultureInfo.InvariantCulture))건]</span> }
+            else if (Journal.Count > 0) { <button class="ws-recover ws-jbadge" @onclick="OpenJournal" title="클릭 → 저널 인스펙터(수동 회수·재시도·삭제)">[🔄 미완료 클라우드 작업: @(Journal.Count.ToString(CultureInfo.InvariantCulture))건]</button> }
+            @if (_retryMsg is not null) { <span class="ws-retry" role="status">@_retryMsg</span> }
         </div>
+        @if (_jOpen)
+        {
+            <div class="ws-jmodal-bg" @onclick="CloseJournal">
+                <div class="ws-jmodal" role="dialog" aria-label="클라우드 작업 저널 인스펙터" @onclick:stopPropagation="true">
+                    <div class="ws-jmodal-h">
+                        <b>🔄 클라우드 작업 저널</b>
+                        <span>
+                            <button class="ws-btn ghost sm" @onclick="PurgeAllJournal" disabled="@(_jBusy || _jEntries.Count == 0)">🧹 전체 비우기</button>
+                            <button class="ws-btn ghost sm" @onclick="CloseJournal">✕</button>
+                        </span>
+                    </div>
+                    @if (_jMsg is not null) { <div class="ws-hint">@_jMsg</div> }
+                    @if (_jEntries.Count == 0)
+                    {
+                        <div class="ws-hint">저널이 비어 있습니다.</div>
+                    }
+                    else
+                    {
+                        <table class="ws-jtbl">
+                            <thead><tr><th>Task ID</th><th>발번 시각</th><th>프롬프트</th><th>상태</th><th></th></tr></thead>
+                            <tbody>
+                                @foreach (var je in _jEntries)
+                                {
+                                    <tr @key="je.TaskId">
+                                        <td class="mono" title="@je.TaskId">@ShortId(je.TaskId)</td>
+                                        <td class="mono">@(je.StartedAt.ToLocalTime().ToString("MM-dd HH:mm:ss", CultureInfo.InvariantCulture))</td>
+                                        <td title="@je.Prompt">@Summary(je.Prompt)</td>
+                                        <td><span class="ws-jst @JournalStatusClass(je.Status)">@je.Status</span></td>
+                                        <td class="ws-jact">
+                                            <button class="ws-btn ghost sm" @onclick="() => RecoverJournalAsync(je.TaskId)" disabled="@_jBusy" title="상태 무관 원격 결과 즉시 회수">⬇ 수동 회수/다운로드</button>
+                                            <button class="ws-btn ghost sm" @onclick="() => RetryJournalAsync(je.TaskId)" disabled="@_jBusy" title="Processing 으로 복귀 → 자동 회수 대상 편입">🔁 재시도</button>
+                                            <button class="ws-btn ghost sm" @onclick="() => PurgeJournal(je.TaskId)" disabled="@_jBusy">🗑 저널에서 영구 삭제</button>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    }
+                </div>
+            </div>
+        }
         <h1 class="ws-title">새 프로젝트 <span class="ws-title-g">텍스트 → 영상</span>
             <span class="ws-accel @AccelClass" title="Wan 2.1 엔진 상태">⚡ @(AccelClass == "ready" ? _vm.StatusBadge : "WAN 2.1 · " + AccelLabel)</span></h1>
         <p class="ws-sub">프롬프트를 입력하면 통의만상(Wan 2.1)이 5초 영상을 생성합니다.</p>
@@ -313,6 +357,13 @@
                     <button class="ws-hts-tog @(_htsHud ? "on" : null)" @onclick="() => _htsHud = !_htsHud" aria-pressed="@(_htsHud ? "true" : "false")" title="HTS 차트·호가창 목업을 영상 위에 겹쳐 배경 가독성을 검증">📊 HTS HUD</button>
                     @if (InspectPath is not null) { <button class="ws-hts-tog @(_specOpen ? "on" : null)" @onclick="ToggleSpecAsync" aria-pressed="@(_specOpen ? "true" : "false")" title="실측 코덱 · 해상도/FPS · 비트레이트 · 파일 크기 · 무음(-an) 적용 여부">ℹ️ 미디어 규격</button> }
                     <button class="ws-hts-tog @(_seamCheck ? "on" : null)" @onclick="ToggleSeamCheckAsync" aria-pressed="@(_seamCheck ? "true" : "false")" title="영상 종료 2초 전 → 0~2초 구간만 무한 반복해 루프 접합면(Seam) 프레임 튐을 1초 만에 점검">🔁 이음새 점검</button>
+                    <label class="ws-lut-l" title="HTS 시네마틱 LUT 톤 매핑 — 캔버스 실시간 미리보기 · StockSuite 내보내기 시 FFmpeg eq 번인">🎨 톤 매핑 LUT
+                        <select class="ws-hts-sel" value="@((int)_lut)" @onchange="OnLutChanged">
+                            @foreach (var lp in PromptFlowStudio.Services.Export.ColorGradingService.All)
+                            {
+                                <option value="@((int)lp)">@PromptFlowStudio.Services.Export.ColorGradingService.Label(lp)</option>
+                            }
+                        </select></label>
                     <span class="ws-badge @PhaseClass">@PhaseLabel</span>
                 </span>
             </div>
@@ -957,6 +1008,19 @@
     .ws-hts-ctl label { display: flex; align-items: center; gap: 6px; }
     .ws-hts-ctl input[type=range] { width: 120px; }
     .ws-hts-wrap { position: relative; }
+    .ws-video { filter: var(--ws-lut, none); transition: filter .25s ease; }
+    .ws-lut-l { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
+    .ws-jbadge { cursor: pointer; animation: none; }
+    .ws-retry { font: 700 11px/1 var(--mono); padding: 4px 10px; border-radius: 999px; border: 1px solid rgba(96,165,250,.45); color: #93c5fd; background: rgba(96,165,250,.08); }
+    .ws-jmodal-bg { position: fixed; inset: 0; z-index: 900; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; }
+    .ws-jmodal { width: min(920px, 94vw); max-height: 80vh; overflow: auto; padding: 14px 16px; border-radius: 12px; background: #0d0b16; border: 1px solid var(--line); }
+    .ws-jmodal-h { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 8px; }
+    .ws-jtbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .ws-jtbl th, .ws-jtbl td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
+    .ws-jtbl td.mono { font-family: var(--mono); white-space: nowrap; }
+    .ws-jact { display: flex; flex-wrap: wrap; gap: 4px; }
+    .ws-jst { font: 700 10px/1 var(--mono); padding: 3px 7px; border-radius: 999px; border: 1px solid var(--line); }
+    .ws-jst.proc { color: #facc15; } .ws-jst.cancel { color: #a1a1aa; } .ws-jst.fail { color: #f87171; }
     .ws-hts-sel { font-size: 11px; padding: 2px 6px; border-radius: 6px; background: rgba(8, 6, 16, .6); color: inherit; border: 1px solid var(--line); }
     .ws-lum { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); }
     .ws-lum.ok { color: #4ade80; border-color: rgba(74, 222, 128, .45); background: rgba(34, 197, 94, .1); }
@@ -1861,6 +1925,7 @@
         _stockBusy = true;
         try
         {
+            StockSuite.Lut = _lut;   // 🎨 LUT 번인(FFmpeg eq 체인)
             var r = await StockSuite.ExportAsync(path);
             _camToast = r.Ok ? r.Message : r.NeedsPathSetup ? "⚠ " + r.Message + " (설정 ▸ 사용자 설정 ▸ StockSuite 에셋 경로)" : "⚠ " + r.Message;
             _stockRestart = false;
@@ -1984,6 +2049,111 @@
     }
 
     // 🔌 StockSuite → PFS 종목 선택 수신 — 관심종목 자동 전환 + 프롬프트 추천 갱신
+    // ══ 🎨 LUT 톤 매핑 · 🔄 저널 인스펙터 · ⏳ 재시도 알림 ══
+    private PromptFlowStudio.Services.Export.LutProfile _lut = PromptFlowStudio.Services.Export.LutProfile.None;
+    private bool _jOpen, _jBusy;
+    private string? _jMsg, _retryMsg;
+    private IReadOnlyList<PromptFlowStudio.Services.Render.CloudTaskJournalEntry> _jEntries = Array.Empty<PromptFlowStudio.Services.Render.CloudTaskJournalEntry>();
+    private int _retrySeq;
+
+    private void OnLutChanged(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)
+            && Enum.IsDefined(typeof(PromptFlowStudio.Services.Export.LutProfile), v))
+            _lut = (PromptFlowStudio.Services.Export.LutProfile)v;
+    }
+
+    private void OpenJournal() { _jMsg = null; ReloadJournal(); _jOpen = true; }
+    private void CloseJournal() => _jOpen = false;
+    private void ReloadJournal()
+    {
+        try { _jEntries = Journal.LoadAll(); }
+        catch (Exception ex) { Program.Log("Workspace.Journal.Load", ex); _jEntries = Array.Empty<PromptFlowStudio.Services.Render.CloudTaskJournalEntry>(); }
+    }
+
+    private static string ShortId(string id) => id.Length <= 14 ? id : id.Substring(0, 6) + "…" + id.Substring(id.Length - 6);
+    private static string Summary(string? p) => string.IsNullOrEmpty(p) ? "" : p.Length <= 48 ? p : p.Substring(0, 48) + "…";
+    private static string JournalStatusClass(string s) => s switch
+    {
+        PromptFlowStudio.Services.Render.TaskJournalService.StatusUserCanceled => "cancel",
+        PromptFlowStudio.Services.Render.TaskJournalService.StatusFailed => "fail",
+        _ => "proc",
+    };
+
+    private async Task RecoverJournalAsync(string taskId)
+    {
+        if (_jBusy) return;
+        _jBusy = true; _jMsg = "⏳ 회수 중…";
+        try
+        {
+            var r = await Journal.RecoverTaskAsync(taskId, _mediaCts.Token);
+            _jMsg = r.Recovered > 0 ? "✅ 회수 완료 — " + r.RecoveredPaths[0]
+                : r.Dropped > 0 ? "⚠ 원격 작업 실패/만료 — 저널에서 제거됨"
+                : r.Scanned == 0 ? "⚠ 다른 복구 진행 중이거나 조회 서비스 미구성"
+                : "⏳ 원격 작업 진행 중 — 잠시 후 다시 시도하세요";
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("Workspace.Journal.Recover", ex); _jMsg = "⚠ 회수 실패: " + ex.Message; }
+        finally { _jBusy = false; ReloadJournal(); }
+    }
+
+    private async Task RetryJournalAsync(string taskId)
+    {
+        if (_jBusy) return;
+        _jBusy = true;
+        try
+        {
+            Journal.Retry(taskId);
+            _jMsg = "🔁 자동 회수 대상으로 복귀 — 회수 시도 중";
+            ReloadJournal();
+            var r = await Journal.RecoverAsync(_mediaCts.Token);
+            if (r.Recovered > 0) _jMsg = "✅ 재시도 회수 " + r.Recovered.ToString(CultureInfo.InvariantCulture) + "건 완료";
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("Workspace.Journal.Retry", ex); _jMsg = "⚠ 재시도 실패: " + ex.Message; }
+        finally { _jBusy = false; ReloadJournal(); }
+    }
+
+    private void PurgeJournal(string taskId)
+    {
+        try { if (Journal.Purge(taskId)) _jMsg = "🗑 저널에서 삭제됨"; }
+        catch (Exception ex) { Program.Log("Workspace.Journal.Purge", ex); }
+        ReloadJournal();
+    }
+
+    private void PurgeAllJournal()
+    {
+        try { _jMsg = "🧹 " + Journal.PurgeAll().ToString(CultureInfo.InvariantCulture) + "건 삭제"; }
+        catch (Exception ex) { Program.Log("Workspace.Journal.PurgeAll", ex); }
+        ReloadJournal();
+    }
+
+    private void OnRetryAttempt(int current, int max, TimeSpan delay)
+    {
+        try
+        {
+            _retryMsg = "⏳ API 일시 지연으로 재시도 중 (" + current.ToString(CultureInfo.InvariantCulture) + "/" + max.ToString(CultureInfo.InvariantCulture) + ")...";
+            var seq = Interlocked.Increment(ref _retrySeq);
+            _ = InvokeAsync(StateHasChanged);
+            _ = ClearRetryLaterAsync(seq, delay + TimeSpan.FromSeconds(3));
+        }
+        catch (Exception ex) { Program.Log("Workspace.RetryNotice", ex); }
+    }
+
+    private async Task ClearRetryLaterAsync(int seq, TimeSpan after)
+    {
+        try
+        {
+            await Task.Delay(after, _mediaCts.Token);
+            if (Volatile.Read(ref _retrySeq) != seq) return;   // 후속 재시도 알림 유지
+            _retryMsg = null;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
+        catch (Exception ex) { Program.Log("Workspace.RetryClear", ex); }
+    }
+
     private void OnIpcTicker(PromptFlowStudio.Services.ProcessBridge.StockSuiteIpcMessage m)
     {
         _ = InvokeAsync(async () =>
@@ -2261,6 +2431,7 @@
         StockMon.OnChanged += OnStockMonChanged;
         StockMon.Start();   // 🟢 2초 주기 StockSuite 프로세스 폴링(싱글톤 · 멱등)
         Journal.OnChanged += OnHubChanged;
+        Resilience.OnRetryAttempt += OnRetryAttempt;
         Ipc.OnConnectionChanged += OnHubChanged;
         Ipc.OnTickerSelected += OnIpcTicker;
         Ipc.Start();   // 🔌 멱등
@@ -2348,6 +2519,7 @@
         if (RenderQueue is PromptFlowStudio.Services.Render.RenderQueueService rqs) rqs.OnDurationStitched -= OnDurationStitched;
         StockMon.OnChanged -= OnStockMonChanged;
         Journal.OnChanged -= OnHubChanged;
+        Resilience.OnRetryAttempt -= OnRetryAttempt;
         Ipc.OnConnectionChanged -= OnHubChanged;
         Ipc.OnTickerSelected -= OnIpcTicker;
         _vm.PropertyChanged -= OnVmChanged;

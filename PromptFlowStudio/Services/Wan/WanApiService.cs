@@ -395,13 +395,18 @@ public sealed class WanApiService(IWanConfigService cfg, QuotaRateGuardService g
         if (routed && route.Provider == WanTokenVault.SiliconFlow)
             return await QuerySiliconFlowAsync(taskId, route.Key, ct).ConfigureAwait(false);
 
-        using var req = new HttpRequestMessage(HttpMethod.Get,
-            $"{(routed ? BaseFor(route.Provider) : BaseUrl)}/api/v1/tasks/{Uri.EscapeDataString(taskId)}");
-        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", routed ? route.Key : ApiKey);
+        var queryUrl = $"{(routed ? BaseFor(route.Provider) : BaseUrl)}/api/v1/tasks/{Uri.EscapeDataString(taskId)}";
+        var bearer = routed ? route.Key : ApiKey;
 
         try
         {
-            using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+            // 🛡️ 429/502/503/504·순단 → 지수 백오프 + Jitter 재시도(요청 매 시도 재생성)
+            using var resp = await PromptFlowStudio.Services.Network.ResilientHttpClient.Shared.SendAsync(_http, () =>
+            {
+                var req = new HttpRequestMessage(HttpMethod.Get, queryUrl);
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
+                return req;
+            }, ct).ConfigureAwait(false);
             using var body = await PooledUtf8Body.ReadAsync(resp.Content, ct).ConfigureAwait(false);
             var wire = WanWire.Parse(body.Span);
 

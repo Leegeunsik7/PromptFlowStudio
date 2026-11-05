@@ -38,13 +38,18 @@ public sealed class TaskJournalService : IDisposable
     public const string FileName = "active_tasks.json";
     public const string AmbientModeLabel = "15s-Ambient";
     public const string StatusProcessing = "Processing";
+    /// <summary>앱 종료·네트워크 단절로 중단 — 재시작 시 자동 회수 대상.</summary>
+    public const string StatusInterrupted = "Interrupted";
+    /// <summary>사용자 의도 [취소] — 자동 회수 영구 제외(좀비 다운로드 차단). 저널 인스펙터에서 수동 회수/재시도/삭제만 허용.</summary>
+    public const string StatusUserCanceled = "UserCanceled";
+    public const string StatusFailed = "Failed";
     /// <summary>DashScope 결과 URL 유효기간(24h) — 경과 + 원격 미확인 항목은 폐기.</summary>
     public static readonly TimeSpan ResultUrlTtl = TimeSpan.FromHours(24);
 
     private static readonly JsonSerializerOptions s_json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true };
     private readonly object _gate = new();
     private readonly string _path;
-    private int _recovering, _pendingCount, _disposed, _netHooked;
+    private int _recovering, _pendingCount, _disposed, _netHooked, _count = -1;
 
     public TaskJournalService(string? journalPath = null)
     {
@@ -71,6 +76,22 @@ public sealed class TaskJournalService : IDisposable
     public event Action? OnChanged;
     /// <summary>복원 완수 산출물 경로(갤러리 새로고침 트리거).</summary>
     public event Action<string>? OnRecovered;
+
+    /// <summary>저널 총 건수(캐시 — 렌더 핫패스 IO 없음).</summary>
+    public int Count
+    {
+        get
+        {
+            var c = Volatile.Read(ref _count);
+            if (c >= 0) return c;
+            lock (_gate) { c = ReadUnsafe().Count; Volatile.Write(ref _count, c); }
+            return c;
+        }
+    }
+
+    /// <summary>자동 회수 대상 여부 — <see cref="StatusUserCanceled"/> 는 명시적 제외.</summary>
+    public static bool IsAutoRecoverable(CloudTaskJournalEntry e)
+        => e is not null && !string.Equals(e.Status, StatusUserCanceled, StringComparison.Ordinal);
 
     public static string DurationLabel(VideoDurationMode mode) => mode == VideoDurationMode.Sec15_AmbientSlow ? AmbientModeLabel : mode.ToString();
 
@@ -122,19 +143,52 @@ public sealed class TaskJournalService : IDisposable
         return removed;
     }
 
-    /// <summary>상태 필드만 갱신(예: Interrupted).</summary>
-    public void MarkStatus(string? taskId, string status)
+    /// <summary>상태 필드만 갱신(예: Interrupted · UserCanceled). 변경 시 true.</summary>
+    public bool MarkStatus(string? taskId, string status)
     {
-        if (string.IsNullOrWhiteSpace(taskId)) return;
+        if (string.IsNullOrWhiteSpace(taskId)) return false;
         lock (_gate)
         {
             var list = ReadUnsafe();
             var idx = IndexOf(list, taskId);
-            if (idx < 0 || string.Equals(list[idx].Status, status, StringComparison.Ordinal)) return;
+            if (idx < 0 || string.Equals(list[idx].Status, status, StringComparison.Ordinal)) return false;
             list[idx] = list[idx] with { Status = status };
             WriteUnsafe(list);
         }
         Raise();
+        return true;
+    }
+
+    /// <summary>사용자 [취소] 확정 — 자동 회수 제외.</summary>
+    public bool MarkUserCanceled(string? taskId) => MarkStatus(taskId, StatusUserCanceled);
+
+    /// <summary>[재시도] — UserCanceled/Failed/Interrupted → Processing 복귀(다음 자동 회수 대상 편입).</summary>
+    public bool Retry(string? taskId) => MarkStatus(taskId, StatusProcessing);
+
+    /// <summary>[저널에서 영구 삭제].</summary>
+    public bool Purge(string? taskId) => Remove(taskId);
+
+    /// <summary>[전체 비우기] — 삭제 건수 반환.</summary>
+    public int PurgeAll()
+    {
+        int n;
+        lock (_gate)
+        {
+            var list = ReadUnsafe();
+            n = list.Count;
+            if (n == 0) return 0;
+            list.Clear();
+            WriteUnsafe(list);
+        }
+        Raise();
+        return n;
+    }
+
+    /// <summary>[수동 회수/다운로드] — 상태 무관 단건 회수(UserCanceled 포함).</summary>
+    public Task<TaskRecoveryResult> RecoverTaskAsync(string taskId, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(taskId)) return Task.FromResult(TaskRecoveryResult.Empty);
+        return RecoverCoreAsync(e => string.Equals(e.TaskId, taskId, StringComparison.Ordinal), ct);
     }
 
     /// <summary>앱 시작 시 1회 복구 + 네트워크 재연결 감시(멱등).</summary>
@@ -157,15 +211,19 @@ public sealed class TaskJournalService : IDisposable
         catch (Exception ex) { Program.Log("TaskJournal.Recover", ex); }
     }
 
-    /// <summary>미완료 저널 복구 — 재진입 차단(진행 중이면 Empty).</summary>
-    public async Task<TaskRecoveryResult> RecoverAsync(CancellationToken ct = default)
+    /// <summary>미완료 저널 자동 복구(UserCanceled 제외) — 재진입 차단(진행 중이면 Empty).</summary>
+    public Task<TaskRecoveryResult> RecoverAsync(CancellationToken ct = default) => RecoverCoreAsync(IsAutoRecoverable, ct);
+
+    private async Task<TaskRecoveryResult> RecoverCoreAsync(Func<CloudTaskJournalEntry, bool> filter, CancellationToken ct)
     {
         var query = Query;
         if (query is null || Volatile.Read(ref _disposed) == 1) return TaskRecoveryResult.Empty;
         if (Interlocked.Exchange(ref _recovering, 1) == 1) return TaskRecoveryResult.Empty;
         try
         {
-            var entries = LoadAll();
+            var all = LoadAll();
+            var entries = new List<CloudTaskJournalEntry>(all.Count);
+            for (var i = 0; i < all.Count; i++) if (filter(all[i])) entries.Add(all[i]);
             if (entries.Count == 0) return TaskRecoveryResult.Empty;
             Volatile.Write(ref _pendingCount, entries.Count);
             Raise();
@@ -305,9 +363,10 @@ public sealed class TaskJournalService : IDisposable
         {
             var dir = Path.GetDirectoryName(_path);
             if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-            if (list.Count == 0) { if (File.Exists(_path)) File.Delete(_path); return true; }
+            if (list.Count == 0) { if (File.Exists(_path)) File.Delete(_path); Volatile.Write(ref _count, 0); return true; }
             File.WriteAllText(tmp, JsonSerializer.Serialize(list, s_json));
             File.Move(tmp, _path, overwrite: true);
+            Volatile.Write(ref _count, list.Count);
             return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)

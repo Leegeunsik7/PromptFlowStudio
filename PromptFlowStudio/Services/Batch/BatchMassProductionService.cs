@@ -29,6 +29,9 @@ public sealed class BatchRenderJob
     public string? ErrorMessage { get; set; }
     /// <summary>자동 재시도 횟수 — CUDA OOM 다운스케일 재시도는 0 일 때 1회만.</summary>
     public int RetryCount { get; set; }
+    /// <summary>사용자 [취소] 요청 플래그(직렬화 제외) — 클라우드 저널을 UserCanceled 로 전환해 재시작 시 좀비 다운로드 차단.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool UserCancelRequested { get; set; }
 
     // ── 시퀀스 메타(선택) — 스토리보드/숏폼 전송분만 기록, 단건 작업은 null ──
     /// <summary>시퀀스 내 컷 순서(1부터).</summary>

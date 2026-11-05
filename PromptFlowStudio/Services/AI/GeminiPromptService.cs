@@ -51,7 +51,7 @@ public sealed record SnsSeoMetadata(string Title, string Description, IReadOnlyL
 ///   ▸ Vision I2V 역추출(<see cref="AnalyzeReferenceImageAsync"/> · 이미지 base64 인라인).
 ///   ▸ 스토리보드 4컷 자동 디렉팅(<see cref="DirectStoryboardAsync"/>).
 ///   ▸ 키 없음/네트워크/HTTP/스키마 오류 → 예외 없이 <see cref="FallbackLocalEnhance"/>/<see cref="BuildLocalShots"/> 로 무중단.
-///   ▸ 429/5xx 지수 백오프 1회 재시도, 호출 전체 <see cref="CallTimeout"/> 상한.
+///   ▸ 429/502/503/504·순단 2^n초+Jitter 지수 백오프 최대 3회 재시도(ResilientHttpClient), 호출 전체 <see cref="CallTimeout"/> 상한.
 /// </summary>
 public sealed class GeminiPromptService
 {
@@ -59,8 +59,6 @@ public sealed class GeminiPromptService
     public const string Endpoint = "https://generativelanguage.googleapis.com/v1beta/models/" + Model + ":generateContent";
 
     public static readonly TimeSpan CallTimeout = TimeSpan.FromSeconds(25);
-    private const int MaxAttempts = 2;
-    private const int BaseBackoffMs = 400;
     public const long MaxImageBytes = GeminiClient.MaxInlineBytes;
 
     public const string BaseInstruction =
@@ -132,6 +130,8 @@ public sealed class GeminiPromptService
     };
 
     private readonly HttpClient _http;
+    /// <summary>🛡️ 지수 백오프 재시도기(null = 공유 인스턴스).</summary>
+    public PromptFlowStudio.Services.Network.ResilientHttpClient? Resilience { get; init; }
     private readonly Func<string?> _apiKey;
 
     public GeminiPromptService(HttpClient http, Func<string?> apiKeyProvider)
@@ -545,22 +545,19 @@ public sealed class GeminiPromptService
                 ["generationConfig"] = gen,
             }.ToJsonString();
 
-            for (var attempt = 0; attempt < MaxAttempts; attempt++)
+            // 🛡️ 429/502/503/504·네트워크 순단 → 지수 백오프 + Jitter 재시도(⏳ 작업실 알림)
+            using var resp = await (Resilience ?? PromptFlowStudio.Services.Network.ResilientHttpClient.Shared).SendAsync(_http, () =>
             {
-                if (attempt > 0) await Task.Delay(BaseBackoffMs << (attempt - 1), cts.Token).ConfigureAwait(false);
-                using var req = new HttpRequestMessage(HttpMethod.Post, Endpoint)
+                var req = new HttpRequestMessage(HttpMethod.Post, Endpoint)
                 {
                     Content = new StringContent(payload, Encoding.UTF8, "application/json"),
                 };
                 req.Headers.TryAddWithoutValidation("x-goog-api-key", key);
-
-                using var resp = await _http.SendAsync(req, cts.Token).ConfigureAwait(false);
-                if (resp.StatusCode == HttpStatusCode.TooManyRequests || (int)resp.StatusCode >= 500) continue;
-                if (!resp.IsSuccessStatusCode) return null;
-                var body = await resp.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
-                return GeminiClient.ExtractText(body);
-            }
-            return null;
+                return req;
+            }, cts.Token).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode) return null;
+            var body = await resp.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
+            return GeminiClient.ExtractText(body);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {

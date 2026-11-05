@@ -51,6 +51,8 @@ public sealed record MultiExportOptions
     public SnsBgmPreset BgmPreset { get; init; } = SnsBgmPreset.FintechSynthwave;
     /// <summary>⚡ HTS 규격에 60fps 모션 보간 결합.</summary>
     public bool Smooth60 { get; init; }
+    /// <summary>🎨 HTS 규격 LUT 톤 매핑 번인(None = 원색).</summary>
+    public LutProfile Lut { get; init; } = LutProfile.None;
     /// <summary>원본 길이(초) — ≤0 이면 Wan 기본 5초로 페이드아웃 시점 계산.</summary>
     public double DurationSec { get; init; }
 }
@@ -152,12 +154,13 @@ public sealed class StockSuiteExporter
         return null;
     }
 
-    /// <summary>필터 체인 합성 — 스케일(1080p/4K) → 60fps → 워터마크 순. 전부 OFF 면 null.</summary>
-    public static string? BuildVideoFilter(bool sharpen, bool smooth60, StockSuiteResolution resolution, bool watermark, string? fontFile, bool lowSpec = false)
+    /// <summary>필터 체인 합성 — 스케일(1080p/4K) → 60fps → 🎨 LUT(eq) → 워터마크 순(워터마크 원색 유지). 전부 OFF 면 null.</summary>
+    public static string? BuildVideoFilter(bool sharpen, bool smooth60, StockSuiteResolution resolution, bool watermark, string? fontFile, bool lowSpec = false, LutProfile lut = LutProfile.None)
     {
-        var parts = new List<string>(3);
+        var parts = new List<string>(4);
         if (BuildScaleFilter(sharpen, resolution) is { } s) parts.Add(s);
         if (smooth60) parts.Add(lowSpec ? Fps60LiteFilter : MotionInterpolateFilter);
+        if (ColorGradingService.BuildFfmpegEqFilter(lut) is { } eq) parts.Add(eq);
         if (watermark) parts.Add(BuildWatermarkFilter(fontFile, resolution));
         return parts.Count == 0 ? null : string.Join(",", parts);
     }
@@ -171,6 +174,9 @@ public sealed class StockSuiteExporter
             catch (Exception ex) { Program.Log("StockSuite.Smooth60", ex); return false; }
         }
     }
+
+    /// <summary>🎨 단건 내보내기 LUT 프로필(작업실 드롭다운 결선) — FFmpeg <c>eq</c> 체인 번인.</summary>
+    public LutProfile Lut { get; set; } = LutProfile.None;
 
     public StockSuiteExporter() : this(null) { }
 
@@ -354,10 +360,11 @@ public sealed class StockSuiteExporter
             var sharpenOn = sharpen ?? DefaultSharpen;
             var smoothOn = smooth60 ?? DefaultSmooth60;
             var uhd = resolution == StockSuiteResolution.Uhd4K;
-            var filter = BuildVideoFilter(sharpenOn, smoothOn, resolution, watermark, watermark ? ResolveWatermarkFont() : null);
+            var lut = Lut;
+            var filter = BuildVideoFilter(sharpenOn, smoothOn, resolution, watermark, watermark ? ResolveWatermarkFont() : null, lut: lut);
             // 워터마크 폰트/drawtext 실패 대비 — 워터마크 제외 체인으로 1회 재시도.
-            var filterNoWm = watermark ? BuildVideoFilter(sharpenOn, smoothOn, resolution, false, null) : null;
-            var tag = (uhd ? "🖥️ 4K UHD · " : sharpenOn ? "🔎 1080p 고선명 · " : "") + (smoothOn ? "⚡ 60fps 스무딩 · " : "") + (watermark ? "📺 HUD 워터마크 · " : "") + "🔇 무음";
+            var filterNoWm = watermark ? BuildVideoFilter(sharpenOn, smoothOn, resolution, false, null, lut: lut) : null;
+            var tag = (uhd ? "🖥️ 4K UHD · " : sharpenOn ? "🔎 1080p 고선명 · " : "") + (smoothOn ? "⚡ 60fps 스무딩 · " : "") + (watermark ? "📺 HUD 워터마크 · " : "") + (lut != LutProfile.None ? "🎨 " + ColorGradingService.Label(lut) + " · " : "") + "🔇 무음";
             if (webm && (filter is not null || !Path.GetExtension(sourcePath).Equals(".webm", StringComparison.OrdinalIgnoreCase)))
             {
                 temp = Path.Combine(fullDir, Path.GetFileNameWithoutExtension(name) + TempExt + ".webm");
@@ -610,7 +617,7 @@ public sealed class StockSuiteExporter
         var name = Path.GetFileNameWithoutExtension(sourceVideoPath);
         var (hw, hh) = HtsResolution(options.HtsAspect);
         var webm = options.HtsFormat == StockSuiteExportFormat.WebMVp9;
-        var htsVf = BuildHtsFilter(options.HtsAspect, options.Smooth60);
+        var htsVf = ColorGradingService.AppendTo(BuildHtsFilter(options.HtsAspect, options.Smooth60), options.Lut)!;
         var htsOut = Path.Combine(packageDirectory, name + "_hts_" + HtsAspectKey(options.HtsAspect) + (webm ? ".webm" : ".mp4"));
         string[] htsArgs = webm
             ? ["-y", "-hide_banner", "-loglevel", "error", "-i", sourceVideoPath, "-map", "0:v:0", "-vf", htsVf, "-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0", "-an", "-sn", "-dn", htsOut]

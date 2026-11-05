@@ -88,7 +88,8 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
         }
         catch (OperationCanceledException)
         {
-            journal?.MarkStatus(jrelay!.TaskId, "Interrupted");   // 원격 태스크는 계속될 수 있음 → 저널 유지(재시작 시 복구)
+            // 사용자 [취소] → UserCanceled(자동 회수 제외) · 종료/단절 → Interrupted(재시작 시 복구)
+            journal?.MarkStatus(jrelay!.TaskId, job.UserCancelRequested ? TaskJournalService.StatusUserCanceled : TaskJournalService.StatusInterrupted);
             throw;
         }
         var journalTaskId = jrelay?.TaskId ?? r.TaskId;
@@ -351,9 +352,11 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
                 File.Move(tmp, dest, overwrite: true);
                 return;
             }
-            catch (Exception ex) when (attempt < 2 && !ct.IsCancellationRequested && ex is HttpRequestException or IOException or TaskCanceledException)
+            catch (Exception ex) when (attempt < PromptFlowStudio.Services.Network.ResilientHttpClient.MaxRetries && !ct.IsCancellationRequested
+                && (ex is IOException or TaskCanceledException || (ex is HttpRequestException h && (h.StatusCode is null || PromptFlowStudio.Services.Network.ResilientHttpClient.IsTransient(h.StatusCode.Value)))))
             {
-                await Task.Delay(TimeSpan.FromSeconds(1 << attempt), ct).ConfigureAwait(false);
+                // 🛡️ 2^n 초 + Jitter 지수 백오프(⏳ 작업실 재시도 알림)
+                await PromptFlowStudio.Services.Network.ResilientHttpClient.Shared.WaitBeforeRetryAsync(attempt + 1, ct).ConfigureAwait(false);
             }
             finally
             {

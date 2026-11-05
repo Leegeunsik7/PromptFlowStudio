@@ -128,6 +128,7 @@ public sealed class RenderQueueService : IRenderQueueService
             {
                 cts = _activeCts;
                 if (cts is null || cts.IsCancellationRequested) return false;   // 이미 취소 진행 중 — 중복 통지 차단
+                job.UserCancelRequested = true;   // 사용자 의도 취소 → 저널 UserCanceled(좀비 회수 차단)
             }
             else if (job.Status is BatchJobStatus.Queued or BatchJobStatus.Pending) job.Status = BatchJobStatus.Cancelled;
             else return false;
@@ -151,7 +152,7 @@ public sealed class RenderQueueService : IRenderQueueService
                 var job = Queue[i];
                 if (!string.Equals(job.StitchGroupId, stitchGroupId, StringComparison.Ordinal)) continue;
                 if (job.Status is BatchJobStatus.Queued or BatchJobStatus.Pending) { job.Status = BatchJobStatus.Cancelled; n++; }
-                else if (job.Status == BatchJobStatus.Processing && ReferenceEquals(job, _activeJob) && _activeCts is { IsCancellationRequested: false } a) { cts = a; n++; }
+                else if (job.Status == BatchJobStatus.Processing && ReferenceEquals(job, _activeJob) && _activeCts is { IsCancellationRequested: false } a) { job.UserCancelRequested = true; cts = a; n++; }
             }
         }
         if (cts is not null) { try { cts.Cancel(); } catch (ObjectDisposedException) { } }   // 엔진 프로세스 킬 + ComfyUI /interrupt 전파
@@ -539,6 +540,7 @@ public sealed class RenderQueueService : IRenderQueueService
         job.EngineKind = null;
         job.ResultPath = null;
         job.ErrorMessage = null;
+        job.UserCancelRequested = false;
     }
 
     /// <summary>엔진 진행률 → 작업 진행률(동기 반영 · 0~99 클램프, 100 은 완료 전이에서만).</summary>
