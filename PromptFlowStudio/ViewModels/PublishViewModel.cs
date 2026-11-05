@@ -101,6 +101,14 @@ public sealed class PublishViewModel : IDisposable
         set { _stockSharpen = value; Notify(); }
     }
 
+    private bool? _stockSmooth60;
+    /// <summary>⚡ 60fps 모션 스무딩(minterpolate) — 미선택이면 환경설정 기본(OFF).</summary>
+    public bool StockSuiteSmooth60
+    {
+        get => _stockSmooth60 ?? _stockSuite?.DefaultSmooth60 ?? false;
+        set { _stockSmooth60 = value; Notify(); }
+    }
+
     public bool YouTubeEnabled => _yt.Enabled;
     public bool InstagramEnabled => _ig.Enabled;
     public bool IsBusy { get; private set; }
@@ -235,7 +243,7 @@ public sealed class PublishViewModel : IDisposable
         Notify();
         try
         {
-            var r = await _stockSuite.ExportAsync(VideoPath, null, null, ct, StockSuiteFormat, StockSuiteSharpen).ConfigureAwait(false);
+            var r = await _stockSuite.ExportAsync(VideoPath, null, null, ct, StockSuiteFormat, StockSuiteSharpen, StockSuiteSmooth60).ConfigureAwait(false);
             StockSuiteMessage = r.Ok ? r.Message : "⚠ " + r.Message;
             StockSuiteExported = r.Ok;
             StockSuiteRestartPending = false;
@@ -272,6 +280,7 @@ public sealed class PublishViewModel : IDisposable
                 BgmPreset = preset,
                 BgmPath = preset == PromptFlowStudio.Services.Export.SnsBgmPreset.CustomFile ? CustomBgmPath : null,
                 DurationSec = DurationSec,
+                Smooth60 = StockSuiteSmooth60,
             };
             var r = await _stockSuite.ExportMultiTargetPackageAsync(VideoPath, opts, ct).ConfigureAwait(false);
             MultiPackageMessage = r.Message;

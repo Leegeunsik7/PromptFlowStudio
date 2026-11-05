@@ -13,6 +13,7 @@
 @inject IClipboardService Clipboard
 @inject PublishViewModel PubVm
 @inject PromptFlowStudio.Services.Export.StockSuiteExporter StockSuite
+@inject PromptFlowStudio.Services.Export.StockSuitePlaylistService Playlist
 
 @* [PromptFlow Studio] 갤러리 — %LocalAppData%/PromptFlowStudio/Media 의 모든 MP4 를 그리드로 감상/관리/삭제. *@
 
@@ -191,6 +192,7 @@
 
     <div class="gl-toolbar">
         <input class="gl-search" @bind="_filter" @bind:event="oninput" placeholder="파일명·폴더 검색…" />
+        <button class="gl-btn up" @onclick="OpenSchedule" title="장초반/정규장/장마감/야간 시간대별 배경 자동 전환 — StockSuite playlist.json 발행">📅 장중 스케줄러</button>
     </div>
 
     @if (Filtered.Count == 0)
@@ -311,6 +313,39 @@
     </div>
 }
 
+@* 📅 장중 시간대별 스케줄러 *@
+@if (_scheduleOpen)
+{
+    <div class="gl-modal" @onclick="CloseSchedule">
+        <div class="gl-confirm gl-sched" @onclick:stopPropagation="true">
+            <div class="gl-confirm-t">📅 StockSuite 장중 스케줄러</div>
+            <div class="gl-confirm-d"><span>시간대별 배경 영상을 지정하면 슬롯 파일 복사 + playlist.json · hotreload.trigger 를 동시 갱신합니다.</span></div>
+            @foreach (var slot in PromptFlowStudio.Services.Export.StockSuitePlaylistService.DefaultSlots)
+            {
+                var key = slot.Key;
+                <div class="gl-sched-row" @key="key">
+                    <div class="gl-sched-lb"><b>@slot.Label</b><span>@slot.Time · @slot.File</span></div>
+                    <select class="gl-up-eng" value="@(SlotValue(key))" @onchange="e => SetSlot(key, e.Value?.ToString())" disabled="@_scheduleBusy">
+                        <option value="">— 지정 안 함(기존 유지) —</option>
+                        @foreach (var m in _items)
+                        {
+                            <option value="@m.Path">@m.Folder / @m.Name</option>
+                        }
+                    </select>
+                </div>
+            }
+            @if (_scheduleMsg is not null)
+            {
+                <div class="gl-confirm-d"><span>@_scheduleMsg</span></div>
+            }
+            <div class="gl-confirm-a">
+                <button class="gl-btn ghost" @onclick="CloseSchedule" disabled="@_scheduleBusy">닫기</button>
+                <button class="gl-btn up" @onclick="PublishSchedule" disabled="@(_scheduleBusy || _slotAssign.Count == 0)">@(_scheduleBusy ? "발행 중…" : "StockSuite 스케줄 발행")</button>
+            </div>
+        </div>
+    </div>
+}
+
 <PublishModal Vm="PubVm" />
 
 <style>
@@ -321,7 +356,13 @@
     .gl-sub { font-size: 13px; color: var(--text-secondary); margin: 0; }
     .gl-stat { display: flex; align-items: center; gap: 8px; font: 600 11.5px var(--mono); color: var(--text-muted); }
 
-    .gl-toolbar { margin-bottom: 14px; }
+    .gl-toolbar { margin-bottom: 14px; display: flex; gap: 8px; align-items: center; }
+    .gl-toolbar .gl-search { flex: 1; }
+    .gl-sched { width: min(620px, 94vw); }
+    .gl-sched-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 8px 0; }
+    .gl-sched-lb { display: flex; flex-direction: column; font-size: 13px; color: var(--text-primary); }
+    .gl-sched-lb span { font-size: 11px; opacity: .7; }
+    .gl-sched-row select { max-width: 320px; }
     .gl-search { width: 100%; max-width: 360px; box-sizing: border-box; background: var(--card-2); border: 1px solid var(--line); border-radius: 10px; padding: 9px 13px; color: var(--text-primary); font-size: 13px; font-family: inherit; }
     .gl-search:focus { outline: none; border-color: var(--accent); }
 
@@ -548,10 +589,41 @@
         try
         {
             var r = await StockSuite.ExportAsync(g.FilePath);
+            if (r.Ok) RefreshArchive();   // 📦 내보냄 메타 즉시 반영
             Vm.SetStatus(r.Ok ? r.Message : r.NeedsPathSetup ? "⚠ " + r.Message + " (설정 ▸ 사용자 설정 ▸ StockSuite 에셋 경로)" : "⚠ " + r.Message);
         }
         catch (Exception ex) { Program.Log("MediaGallery.StockSuite", ex); Vm.SetStatus("⚠ StockSuite 내보내기 실패 — 경로를 재설정하세요"); }
         finally { _stockBusy = false; await InvokeAsync(StateHasChanged); }
+    }
+
+    // ── 📅 장중 스케줄러 ──
+    private bool _scheduleOpen, _scheduleBusy;
+    private string? _scheduleMsg;
+    private readonly Dictionary<string, string?> _slotAssign = new(StringComparer.Ordinal);
+
+    private void OpenSchedule() { _scheduleOpen = true; _scheduleMsg = null; }
+    private void CloseSchedule() { if (!_scheduleBusy) _scheduleOpen = false; }
+    private string SlotValue(string key) => _slotAssign.TryGetValue(key, out var v) ? v ?? "" : "";
+
+    private void SetSlot(string key, string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) _slotAssign.Remove(key);
+        else _slotAssign[key] = path;
+    }
+
+    private async Task PublishSchedule()
+    {
+        if (_scheduleBusy || _slotAssign.Count == 0) return;
+        _scheduleBusy = true;
+        _scheduleMsg = "📅 스케줄 발행 중…";
+        try
+        {
+            var r = await Playlist.PublishAsync(_slotAssign);
+            _scheduleMsg = r.NeedsPathSetup ? "⚠ " + r.Message + " (설정 ▸ 사용자 설정 ▸ StockSuite 에셋 경로)" : r.Message;
+            if (r.Published.Count > 0) RefreshArchive();   // 📦 내보냄 탭 즉시 반영
+        }
+        catch (Exception ex) { Program.Log("MediaGallery.Schedule", ex); _scheduleMsg = "⚠ 스케줄 발행 실패: " + ex.Message; }
+        finally { _scheduleBusy = false; await InvokeAsync(StateHasChanged); }
     }
 
     private Guid? _hoverId;

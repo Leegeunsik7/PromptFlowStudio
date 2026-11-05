@@ -117,6 +117,7 @@
             </select>
         </div>
         <div class="st-field"><label><input type="checkbox" checked="@Prefs.StockSuiteSharpen" @onchange="e => Prefs.StockSuiteSharpen = e.Value is true" /> 🔎 고선명 샤프닝 (1080p Lanczos + Unsharp) — MP4·WebM 재인코딩 · 끄면 스트림 복사(빠른 내보내기)</label></div>
+        <div class="st-field"><label><input type="checkbox" checked="@Prefs.StockSuiteSmooth60" @onchange="e => Prefs.StockSuiteSmooth60 = e.Value is true" /> ⚡ 60fps 모션 스무딩 (minterpolate MCI) — 16~24fps AI 영상을 고주사율 모니터용 60fps 로 보간 · 재인코딩 시간 증가</label></div>
         <div class="st-field"><label>StockSuite 실행 파일 경로 (StockSuite.exe)</label>
             <div class="st-inrow">
                 <input type="text" class="st-sel" placeholder="예: C:\Projects\StockSuite\bin\StockSuite.exe" value="@Prefs.StockSuiteExecutablePath" @onchange="OnStockSuiteExeChanged" />

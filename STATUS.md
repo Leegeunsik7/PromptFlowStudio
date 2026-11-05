@@ -1,17 +1,15 @@
 # Current Project Status
-- Active Milestone: 【Pro Studio】 원클릭 멀티 타겟 패키지 · StockSuite 관심종목 연동 디렉터 · 갤러리 Hover-to-Play/즐겨찾기
+- Active Milestone: 【Pro HTS】 내보내기 메타 규격 통일/역방향 치유 · ⚡ 60fps 모션 보간 · 📅 장중 시간대별 플레이리스트 스케줄러
 - Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (net8.0-android 미검증: Android SDK 미설치)
-- Tests: FastUnit 574/574 PASS (Release)
+- Tests: FastUnit 578/578 PASS (Release)
 - Updated: 2026-11-05 (KST)
 
 ## Completed
-- 멀티 패키지: `StockSuiteExporter.ExportMultiTargetPackageAsync(src, MultiExportOptions)` → `{name}_package/` 에 3종 동시 생성 · 규격별 [부분 구제] · 산출물 `.meta.json`(`isExported:true`)
-  - HTS 16:9/21:9/32:9(1920/2560/3840×1080) 중앙 스마트 크롭 + Lanczos + Unsharp · 무음 WebM/MP4
-  - 모바일 9:16 `crop=ih*9/16:ih,scale=1080:1920` 경량 MP4(veryfast·crf28·무음)
-  - 쇼츠 9:16 + BGM 루프 믹싱 + 1.5초 afade out(BGM 부재 시 무음 폴백) · `BuildMultiTargetProfiles` 순수 인자 계산
-- PublishModal(작업실·갤러리 공용): HTS 비율 셀렉터 + [📦 올인원 멀티 패키지 내보내기] (`PublishViewModel.ExportMultiPackageAsync`)
-- `StockSuiteWatchlistService`(신규·DI 데스크톱/모바일): `watchlist.json` → `config/favorites.json` 탐색 · 다형 스키마 · 0-패딩/중복 차단 · 부재 시 코스피 TOP5 + 매그니피센트 7
-- Workspace: 프롬프트 상단 [📊 내 관심종목 연동] 칩 바 → `GeminiPromptService.GenerateTickerPromptAsync`(핵심 사업 메타포 + 티커 HUD 텍스처 · 로컬 폴백)
-- 갤러리: 정적 포스터(`.poster.jpg`/썸네일/CSS 스틸) 기본 · 호버 시에만 `<video>` 마운트(무음 2초 루프) · 이탈 시 언마운트
-- 갤러리 ⭐: `GalleryMediaService.SetFavorite/ToggleFavorite`(메타 필드 보존·원자 교체) · 필터 탭 [⭐ 즐겨찾기]·[🎬 AI Render]·[📦 내보냄]
-- Tests: StockSuiteExporter_ExportsMultiTargetPackage_GeneratesAllProfiles · StockSuiteWatchlistService_ParsesWatchlistJson_AndProvidesFallback · GalleryService_ManagesFavorites_AndFiltersCorrectly
+- `ExportMetadata`(신규): 원본 `.meta.json` 에 `isExported:true` · `exportedAt`(ISO-8601 UTC) · `exportedTargets[]`(중복 제거 누적) 병합 · 기존 필드 보존 · 원자 교체
+  - 적용 경로: `ExportAsync`(MP4/WebM · 배치 팩 경유) · `ExportMultiTargetPackageAsync`(원본 + 산출물 메타)
+- 역방향 치유: `GalleryMediaService(Func<string?> stockSuiteDir)` 스캔 시 StockSuite 폴더 산출물과 출처 마커(`.pfs-src`)/파일명/크기+SHA-256 매칭 → `isExported` 보정(`LastHealedCount`)
+- ⚡ 60fps: `BuildVideoFilter(sharpen, smooth60, lowSpec)` → 샤프닝 뒤 `minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir`(저사양 `fps=60`)
+  - `ExportAsync/ExportBatchPackAsync(smooth60)` · `MultiExportOptions.Smooth60`(HTS 규격만) · 환경설정 `stocksuite.smooth60`(기본 OFF) · PublishModal/UserSettings 체크박스
+- 📅 `StockSuitePlaylistService`(신규·DI 데스크톱/모바일): 4슬롯(장초반/정규장/장마감/야간) → 슬롯 파일 내보내기 + `playlist.json` + `hotreload.trigger`(file=playlist.json) · 미지정 슬롯 기존 파일 유지 · 자정 넘김 `ResolveActiveSlot` · 스키마 검증 `TryParse`
+- MediaGallery: 툴바 [📅 장중 스케줄러] 모달 → [StockSuite 스케줄 발행] · 내보내기 후 아카이브 즉시 재스캔(📦 탭 반영)
+- Tests: StockSuiteExporter_UnifiesExportMetadata_AcrossAllExportMethods · GalleryMediaService_RetroactivelyHealsExportedFlag_FromStockSuiteTargets · StockSuiteExporter_Applies60FpsInterpolationFilter_WhenRequested · StockSuitePlaylistService_GeneratesValidPlaylistSchedule_AndWritesJson

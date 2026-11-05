@@ -68,21 +68,36 @@ public sealed class GalleryMediaService
     private string? _root;
     private GalleryRestoreContext? _pendingRestore;
 
+    private readonly Func<string?> _exportTargetDir;
+
+    public GalleryMediaService() : this(null) { }
+
+    /// <param name="exportTargetDirProvider">StockSuite 에셋 폴더 공급자 — 스캔 시 역방향 치유(이미 내보낸 원본에 <c>isExported</c> 보정) 대상.</param>
+    public GalleryMediaService(Func<string?>? exportTargetDirProvider)
+        => _exportTargetDir = exportTargetDirProvider ?? (static () => null);
+
     public IReadOnlyList<GalleryItem> Items { get { lock (_lock) return _items.ToArray(); } }
     public bool HasPendingRestore => Volatile.Read(ref _pendingRestore) is not null;
+    /// <summary>마지막 스캔에서 역방향 치유로 <c>isExported</c> 가 보정된 원본 수.</summary>
+    public int LastHealedCount { get; private set; }
 
     public IReadOnlyList<GalleryItem> ScanGalleryItems(string directoryPath)
     {
         var found = new List<GalleryItem>();
         string? root = null;
+        var healed = 0;
         try
         {
             if (!string.IsNullOrWhiteSpace(directoryPath) && Directory.Exists(directoryPath))
             {
                 root = Path.GetFullPath(directoryPath);
+                var exported = ExportedTargetIndex.TryBuild(SafeTargetDir());
                 foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
                 {
                     if (!IsMediaFile(file) || IsInUploads(root, file) || file.EndsWith(PosterSuffix, StringComparison.OrdinalIgnoreCase)) continue;
+                    // 🩹 역방향 치유 — StockSuite 폴더에 실존하는 산출물(출처 마커/파일명/해시)과 일치하면 메타 보정.
+                    if (exported?.Match(file) is { } target && !Export.ExportMetadata.IsMarkedExported(file)
+                        && Export.ExportMetadata.MarkExported(file, new[] { target }, DateTimeOffset.UtcNow)) healed++;
                     var item = TryLoadItem(file);
                     if (item is not null) found.Add(item);
                 }
@@ -94,6 +109,7 @@ public sealed class GalleryMediaService
         if (found.Count > MaxItems) found.RemoveRange(MaxItems, found.Count - MaxItems);
         if (found.Count == 0) found.AddRange(CreateSampleItems());
 
+        LastHealedCount = healed;
         lock (_lock)
         {
             _root = root;
@@ -386,6 +402,83 @@ public sealed class GalleryMediaService
             };
         }
         catch (Exception ex) { Program.Log("GalleryMedia.Item", ex); return null; }
+    }
+
+    private string? SafeTargetDir()
+    {
+        try { var d = _exportTargetDir(); return string.IsNullOrWhiteSpace(d) ? null : d.Trim().Trim('"'); }
+        catch (Exception ex) { Program.Log("GalleryMedia.ExportDir", ex); return null; }
+    }
+
+    /// <summary>StockSuite 대상 폴더 산출물 색인 — 출처 마커(<c>.pfs-src</c>) · 파일명 · 크기+SHA-256 순 매칭.</summary>
+    private sealed class ExportedTargetIndex
+    {
+        private readonly string _dir;
+        private readonly Dictionary<string, string> _bySource = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> _byName = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<long, List<string>> _bySize = new();
+
+        private ExportedTargetIndex(string dir) => _dir = dir;
+
+        public static ExportedTargetIndex? TryBuild(string? dir)
+        {
+            if (dir is null) return null;
+            try
+            {
+                var full = Path.GetFullPath(dir);
+                if (!Directory.Exists(full)) return null;
+                var idx = new ExportedTargetIndex(full);
+                foreach (var t in Directory.EnumerateFiles(full, "*", SearchOption.TopDirectoryOnly))
+                {
+                    if (!IsMediaFile(t) || t.Contains(".~pfs", StringComparison.OrdinalIgnoreCase)) continue;
+                    var marker = t + Export.StockSuiteExporter.SourceMarkerSuffix;
+                    if (File.Exists(marker))
+                    {
+                        var payload = File.ReadAllText(marker);
+                        var bar = payload.IndexOf('|');
+                        var src = (bar >= 0 ? payload[..bar] : payload).Trim();
+                        if (src.Length > 0) idx._bySource[src] = t;
+                    }
+                    idx._byName[Path.GetFileName(t)] = t;
+                    var len = new FileInfo(t).Length;
+                    if (!idx._bySize.TryGetValue(len, out var l)) idx._bySize[len] = l = new List<string>(1);
+                    l.Add(t);
+                }
+                return idx._byName.Count == 0 ? null : idx;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                Program.Log("GalleryMedia.ExportIndex", ex);
+                return null;
+            }
+        }
+
+        /// <summary>일치 대상 경로 — 없으면 null. 대상 폴더 내부 파일 자신은 제외.</summary>
+        public string? Match(string file)
+        {
+            try
+            {
+                var full = Path.GetFullPath(file);
+                if (IsUnderRoot(_dir, full)) return null;
+                if (_bySource.TryGetValue(full, out var t)) return t;
+                if (_byName.TryGetValue(Path.GetFileName(full), out t)) return t;
+                var len = new FileInfo(full).Length;
+                if (len == 0 || !_bySize.TryGetValue(len, out var cands)) return null;
+                byte[] h;
+                using (var a = new FileStream(full, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 81920, FileOptions.SequentialScan)) h = SHA256.HashData(a);
+                foreach (var c in cands)
+                {
+                    using var b = new FileStream(c, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 81920, FileOptions.SequentialScan);
+                    if (CryptographicOperations.FixedTimeEquals(h, SHA256.HashData(b))) return c;
+                }
+                return null;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                Program.Log("GalleryMedia.ExportMatch", ex);
+                return null;
+            }
+        }
     }
 
     private static string Str(JsonElement r, string name)

@@ -27,6 +27,7 @@
                         <option value="webm">WebM VP9 (HTS 저사양 최적화)</option>
                     </select>
             <label class="pm-btn" title="1080p Lanczos 업스케일 + 언샵 마스크 샤프닝(재인코딩) — 끄면 스트림 복사(빠른 내보내기)"><input type="checkbox" checked="@vm.StockSuiteSharpen" @onchange="e => vm.StockSuiteSharpen = e.Value is true" disabled="@vm.IsStockSuiteBusy" /> 고선명 샤프닝 (1080p Lanczos + Unsharp)</label>
+            <label class="pm-btn" title="16~24fps AI 영상을 minterpolate(MCI) 로 60fps 보간 — 고주사율(120Hz+) OLED 끊김 제거 · 재인코딩 시간 증가"><input type="checkbox" checked="@vm.StockSuiteSmooth60" @onchange="e => vm.StockSuiteSmooth60 = e.Value is true" disabled="@vm.IsStockSuiteBusy" /> ⚡ 60fps 모션 스무딩</label>
                     <button class="pm-btn" @onclick="ExportStockSuite" disabled="@vm.IsStockSuiteBusy"
                             title="환경설정의 StockSuite 에셋 폴더에 bg_ambient.mp4 로 원자적 덮어쓰기">@(vm.IsStockSuiteBusy ? "⏳ 복사 중…" : "💼 StockSuite로 내보내기")</button>
                     @if (vm.StockSuiteExported && vm.CanLaunchStockSuite)

@@ -39,6 +39,8 @@ public sealed record MultiExportOptions
     public string? OutputDirectory { get; init; }
     public string? BgmPath { get; init; }
     public SnsBgmPreset BgmPreset { get; init; } = SnsBgmPreset.FintechSynthwave;
+    /// <summary>⚡ HTS 규격에 60fps 모션 보간 결합.</summary>
+    public bool Smooth60 { get; init; }
     /// <summary>원본 길이(초) — ≤0 이면 Wan 기본 5초로 페이드아웃 시점 계산.</summary>
     public double DurationSec { get; init; }
 }
@@ -74,9 +76,32 @@ public sealed class StockSuiteExporter
     private readonly Dictionary<string, bool> _hashCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Func<string?> _exePath;
     private readonly Func<bool> _sharpen;
+    private readonly Func<bool> _smooth60;
 
     /// <summary>HTS 대화면 고선명 필터 — 1080p Lanczos 업스케일 + 언샵 마스크 샤프닝.</summary>
     public const string SharpenFilter = "scale=1920:1080:flags=lanczos,unsharp=5:5:0.8:3:3:0.4";
+    /// <summary>⚡ 60fps 모션 보간(MCI · AOBMC · 양방향 ME) — 16~24fps AI 영상을 고주사율 모니터용으로 보간.</summary>
+    public const string MotionInterpolateFilter = "minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir";
+    /// <summary>⚡ 저사양 60fps — 프레임 복제(보간 없음).</summary>
+    public const string Fps60LiteFilter = "fps=60";
+
+    /// <summary>비디오 필터 체인 합성 — 샤프닝/스케일 뒤에 60fps 보간 결합. 둘 다 OFF 면 null(스트림 복사 경로).</summary>
+    public static string? BuildVideoFilter(bool sharpen, bool smooth60, bool lowSpec = false)
+    {
+        var motion = lowSpec ? Fps60LiteFilter : MotionInterpolateFilter;
+        if (sharpen) return smooth60 ? SharpenFilter + "," + motion : SharpenFilter;
+        return smooth60 ? motion : null;
+    }
+
+    /// <summary>환경설정 60fps 모션 스무딩 기본값(공급자 예외 → OFF).</summary>
+    public bool DefaultSmooth60
+    {
+        get
+        {
+            try { return _smooth60(); }
+            catch (Exception ex) { Program.Log("StockSuite.Smooth60", ex); return false; }
+        }
+    }
 
     public StockSuiteExporter() : this(null) { }
 
@@ -86,10 +111,12 @@ public sealed class StockSuiteExporter
     /// <param name="runner">ffmpeg 실행기(테스트 주입 · null = <see cref="Engines.ProcessRunner"/>).</param>
     /// <param name="executableProvider">StockSuite.exe 경로 공급자(🚀 원클릭 실행 · null = 미설정).</param>
     /// <param name="sharpenProvider">고선명 샤프닝 기본값 공급자(null = OFF · 앱 DI 는 환경설정 기본 ON).</param>
-    public StockSuiteExporter(Func<string?>? targetDirProvider, Func<string?>? formatProvider = null, Func<string?>? resolveFfmpeg = null, FfmpegRunner? runner = null, Func<string?>? executableProvider = null, Func<bool>? sharpenProvider = null)
+    /// <param name="smooth60Provider">⚡ 60fps 모션 스무딩 기본값 공급자(null = OFF).</param>
+    public StockSuiteExporter(Func<string?>? targetDirProvider, Func<string?>? formatProvider = null, Func<string?>? resolveFfmpeg = null, FfmpegRunner? runner = null, Func<string?>? executableProvider = null, Func<bool>? sharpenProvider = null, Func<bool>? smooth60Provider = null)
     {
         _exePath = executableProvider ?? (static () => null);
         _sharpen = sharpenProvider ?? (static () => false);
+        _smooth60 = smooth60Provider ?? (static () => false);
         _targetDir = targetDirProvider ?? (static () => null);
         _format = formatProvider ?? (static () => null);
         _resolveFfmpeg = resolveFfmpeg ?? (static () => FfmpegLocator.Locate().Path);
@@ -133,12 +160,19 @@ public sealed class StockSuiteExporter
     }
 
     /// <summary>원본 → <c>{targetDir}\{assetName}</c> 원자적 덮어쓰기. 대상 폴더는 상위가 존재할 때만 생성. <paramref name="format"/>·<paramref name="sharpen"/> null = 환경설정 기본.</summary>
-    public async Task<StockSuiteExportResult> ExportAsync(string? sourcePath, string? targetDir = null, string? assetName = null, CancellationToken ct = default, StockSuiteExportFormat? format = null, bool? sharpen = null)
+    public async Task<StockSuiteExportResult> ExportAsync(string? sourcePath, string? targetDir = null, string? assetName = null, CancellationToken ct = default, StockSuiteExportFormat? format = null, bool? sharpen = null, bool? smooth60 = null)
+        => await ExportAsync(sourcePath, targetDir, assetName, hotReload: true, ct, format, sharpen, smooth60).ConfigureAwait(false);
+
+    /// <param name="hotReload">false = 핫리로드 신호 생략(스케줄러가 일괄 발행 후 1회 신호).</param>
+    public async Task<StockSuiteExportResult> ExportAsync(string? sourcePath, string? targetDir, string? assetName, bool hotReload, CancellationToken ct = default, StockSuiteExportFormat? format = null, bool? sharpen = null, bool? smooth60 = null)
     {
-        var r = await ExportCoreAsync(sourcePath, targetDir, assetName, ct, format, sharpen).ConfigureAwait(false);
+        var r = await ExportCoreAsync(sourcePath, targetDir, assetName, ct, format, sharpen, smooth60).ConfigureAwait(false);
         // 🔁 라이브 핫리로드 — 실제 교체가 일어난 경우에만 신호(동일 위치 no-op 제외).
         if (r.Ok && r.TargetPath is { } t && !string.Equals(Path.GetFullPath(sourcePath!), t, StringComparison.OrdinalIgnoreCase))
-            WriteHotReloadTrigger(t, UtcNow());
+        {
+            if (hotReload) WriteHotReloadTrigger(t, UtcNow());
+            ExportMetadata.MarkExported(sourcePath!, new[] { t }, UtcNow());   // 📦 원본 메타 규격 통일
+        }
         return r;
     }
 
@@ -198,11 +232,17 @@ public sealed class StockSuiteExporter
     {
         var dir = Path.GetDirectoryName(target);
         if (string.IsNullOrEmpty(dir)) return;
+        WriteHotReloadTrigger(dir, Path.GetFileName(target), now);
+    }
+
+    /// <summary><paramref name="dir"/>/<see cref="HotReloadTriggerName"/> 원자적 기록 — <paramref name="fileName"/> = 갱신 파일(예: <c>playlist.json</c>). 실패 격리.</summary>
+    internal static void WriteHotReloadTrigger(string dir, string fileName, DateTimeOffset now)
+    {
         var path = Path.Combine(dir, HotReloadTriggerName);
         var tmp = path + TempExt;
         try
         {
-            File.WriteAllText(tmp, BuildHotReloadTriggerJson(Path.GetFileName(target), now));
+            File.WriteAllText(tmp, BuildHotReloadTriggerJson(fileName, now));
             File.Move(tmp, path, overwrite: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -212,7 +252,7 @@ public sealed class StockSuiteExporter
         }
     }
 
-    private async Task<StockSuiteExportResult> ExportCoreAsync(string? sourcePath, string? targetDir, string? assetName, CancellationToken ct, StockSuiteExportFormat? format, bool? sharpen)
+    private async Task<StockSuiteExportResult> ExportCoreAsync(string? sourcePath, string? targetDir, string? assetName, CancellationToken ct, StockSuiteExportFormat? format, bool? sharpen, bool? smooth60)
     {
         if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
             return new(false, null, false, "원본 영상을 찾을 수 없습니다.");
@@ -241,18 +281,21 @@ public sealed class StockSuiteExporter
                 return new(true, target, false, "이미 StockSuite 에셋 위치의 파일입니다.");
 
             var sharpenOn = sharpen ?? DefaultSharpen;
-            if (webm && (sharpenOn || !Path.GetExtension(sourcePath).Equals(".webm", StringComparison.OrdinalIgnoreCase)))
+            var smoothOn = smooth60 ?? DefaultSmooth60;
+            var filter = BuildVideoFilter(sharpenOn, smoothOn);
+            var tag = (sharpenOn ? "🔎 1080p 고선명 · " : "") + (smoothOn ? "⚡ 60fps 스무딩 · " : "") + "🔇 무음";
+            if (webm && (filter is not null || !Path.GetExtension(sourcePath).Equals(".webm", StringComparison.OrdinalIgnoreCase)))
             {
                 temp = Path.Combine(fullDir, Path.GetFileNameWithoutExtension(name) + TempExt + ".webm");
-                // 🔎 WebM 고선명: 1080p Lanczos + Unsharp(VP9 · 무음). 실패 → 일반 VP9 → MP4 복사 순 폴백.
-                if (sharpenOn)
+                // 🔎 WebM 고선명/⚡60fps: 필터 체인(VP9 · 무음). 실패 → 일반 VP9 → MP4 복사 순 폴백.
+                if (filter is not null)
                 {
-                    var sharpenedWebm = await TryFfmpegAsync(BuildWebMArgs(sourcePath, temp, sharpen: true), temp, ct).ConfigureAwait(false);
+                    var sharpenedWebm = await TryFfmpegAsync(BuildWebMArgs(sourcePath, temp, filter), temp, ct).ConfigureAwait(false);
                     if (sharpenedWebm is null)
                     {
                         await SwapIntoPlaceAsync(temp, target, ct).ConfigureAwait(false);
                         WriteSourceMarker(target, sourcePath);
-                        return new(true, target, false, "💼 StockSuite WebM(VP9) 내보내기 완료(🔎 1080p 고선명 · 🔇 무음) → " + target);
+                        return new(true, target, false, "💼 StockSuite WebM(VP9) 내보내기 완료(" + tag + ") → " + target);
                     }
                     TryDelete(temp);
                 }
@@ -272,14 +315,14 @@ public sealed class StockSuiteExporter
             // 🔇 HTS 제로-오디오: 비디오 스트림 무손실 copy + -an(오디오 드롭). ffmpeg 부재/실패 → 원본 복사 폴백.
             temp = Path.Combine(fullDir, Path.GetFileNameWithoutExtension(name) + TempExt + Path.GetExtension(name));
             // 🔎 HTS 대화면 고선명: 1080p Lanczos + Unsharp 재인코딩(무음). 실패 → 제로-오디오 스트림 복사 → 원본 복사 순 폴백.
-            if (!webm && sharpenOn)
+            if (!webm && filter is not null)
             {
-                var sharpened = await TryFfmpegAsync(BuildSharpenArgs(sourcePath, temp), temp, ct).ConfigureAwait(false);
+                var sharpened = await TryFfmpegAsync(BuildSharpenArgs(sourcePath, temp, filter), temp, ct).ConfigureAwait(false);
                 if (sharpened is null)
                 {
                     await SwapIntoPlaceAsync(temp, target, ct).ConfigureAwait(false);
                     WriteSourceMarker(target, sourcePath);
-                    return new(true, target, false, "💼 StockSuite 내보내기 완료(🔎 1080p 고선명 · 🔇 무음) → " + target);
+                    return new(true, target, false, "💼 StockSuite 내보내기 완료(" + tag + ") → " + target);
                 }
                 TryDelete(temp);
             }
@@ -354,9 +397,11 @@ public sealed class StockSuiteExporter
 
     /// <summary>VP9 인자 — <paramref name="sharpen"/>=true 면 <see cref="SharpenFilter"/>(1080p Lanczos + Unsharp) 주입 · <c>-an</c> 무음 유지.</summary>
     public static string[] BuildWebMArgs(string inputPath, string outputPath, bool sharpen)
-        => sharpen
-            ? ["-y", "-hide_banner", "-loglevel", "error", "-i", inputPath, "-map", "0:v:0", "-vf", SharpenFilter, "-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0", "-an", "-sn", "-dn", outputPath]
-            : AmbientLoopService.BuildWebMArgs(inputPath, outputPath);
+        => sharpen ? BuildWebMArgs(inputPath, outputPath, SharpenFilter) : AmbientLoopService.BuildWebMArgs(inputPath, outputPath);
+
+    /// <summary>VP9 인자 — 임의 필터 체인(<see cref="BuildVideoFilter"/>) 주입 · <c>-an</c> 무음 유지.</summary>
+    public static string[] BuildWebMArgs(string inputPath, string outputPath, string videoFilter)
+        => ["-y", "-hide_banner", "-loglevel", "error", "-i", inputPath, "-map", "0:v:0", "-vf", videoFilter, "-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0", "-an", "-sn", "-dn", outputPath];
 
     /// <summary>팩 넘버링 이름 — <c>bg_ambient_01.mp4</c> / <c>.webm</c>(1-기반, 최소 2자리).</summary>
     public static string BatchPackAssetName(int index, StockSuiteExportFormat format)
@@ -366,7 +411,7 @@ public sealed class StockSuiteExporter
     /// 💼 대량생산 StockSuite 팩 일괄 내보내기 — 유효 영상을 입력 순서대로 <c>bg_ambient_01</c>, <c>02</c>… 로 정규화 변환/복사.
     /// 개별 실패는 격리([부분 구제] — 성공분 보존), 중복 경로는 1회만. <paramref name="targetDirectory"/> 빈 값 = 환경설정 경로.
     /// </summary>
-    public async Task<StockSuiteBatchPackResult> ExportBatchPackAsync(IEnumerable<string> videoPaths, string targetDirectory, bool sharpen, CancellationToken ct = default, StockSuiteExportFormat? format = null)
+    public async Task<StockSuiteBatchPackResult> ExportBatchPackAsync(IEnumerable<string> videoPaths, string targetDirectory, bool sharpen, CancellationToken ct = default, StockSuiteExportFormat? format = null, bool? smooth60 = null)
     {
         ArgumentNullException.ThrowIfNull(videoPaths);
         var fmt = format ?? DefaultFormat;
@@ -384,7 +429,7 @@ public sealed class StockSuiteExporter
             catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException) { failed++; continue; }
             if (!seen.Add(full)) continue;   // alreadyRegistered 중복 차단
             index++;
-            var r = await ExportAsync(full, targetDirectory, BatchPackAssetName(index, fmt), ct, fmt, sharpen).ConfigureAwait(false);
+            var r = await ExportAsync(full, targetDirectory, BatchPackAssetName(index, fmt), ct, fmt, sharpen, smooth60).ConfigureAwait(false);
             if (r.Ok && r.TargetPath is not null) exported.Add(r.TargetPath);
             else
             {
@@ -431,6 +476,8 @@ public sealed class StockSuiteExporter
     };
 
     /// <summary>HTS 중앙 스마트 크롭 — 원본 비율과 무관하게 목표 비율 최대 영역을 중앙 절취 → Lanczos 스케일 + 언샵.</summary>
+    public static string BuildHtsFilter(HtsUltraAspect a, bool smooth60) => smooth60 ? BuildHtsFilter(a) + "," + MotionInterpolateFilter : BuildHtsFilter(a);
+
     public static string BuildHtsFilter(HtsUltraAspect a)
     {
         var (w, h) = HtsResolution(a);
@@ -449,10 +496,11 @@ public sealed class StockSuiteExporter
         var name = Path.GetFileNameWithoutExtension(sourceVideoPath);
         var (hw, hh) = HtsResolution(options.HtsAspect);
         var webm = options.HtsFormat == StockSuiteExportFormat.WebMVp9;
+        var htsVf = BuildHtsFilter(options.HtsAspect, options.Smooth60);
         var htsOut = Path.Combine(packageDirectory, name + "_hts_" + HtsAspectKey(options.HtsAspect) + (webm ? ".webm" : ".mp4"));
         string[] htsArgs = webm
-            ? ["-y", "-hide_banner", "-loglevel", "error", "-i", sourceVideoPath, "-map", "0:v:0", "-vf", BuildHtsFilter(options.HtsAspect), "-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0", "-an", "-sn", "-dn", htsOut]
-            : ["-y", "-hide_banner", "-loglevel", "error", "-i", sourceVideoPath, "-map", "0:v:0", "-vf", BuildHtsFilter(options.HtsAspect), "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-an", "-sn", "-dn", "-movflags", "+faststart", htsOut];
+            ? ["-y", "-hide_banner", "-loglevel", "error", "-i", sourceVideoPath, "-map", "0:v:0", "-vf", htsVf, "-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0", "-an", "-sn", "-dn", htsOut]
+            : ["-y", "-hide_banner", "-loglevel", "error", "-i", sourceVideoPath, "-map", "0:v:0", "-vf", htsVf, "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-an", "-sn", "-dn", "-movflags", "+faststart", htsOut];
 
         var mobileOut = Path.Combine(packageDirectory, name + "_mobile_9x16.mp4");
         string[] mobileArgs = ["-y", "-hide_banner", "-loglevel", "error", "-i", sourceVideoPath, "-map", "0:v:0", "-vf", VerticalCropFilter,
@@ -526,6 +574,7 @@ public sealed class StockSuiteExporter
         var generated = new List<string>(3);
         var failed = new List<string>(3);
         string? lastError = null;
+        var now = UtcNow();
         foreach (var p in BuildMultiTargetProfiles(src, options, pkg, bgm))
         {
             if (ct.IsCancellationRequested) break;
@@ -536,7 +585,7 @@ public sealed class StockSuiteExporter
             if (err is null)
             {
                 generated.Add(p.OutputPath);
-                WriteExportMeta(p, src);
+                WriteExportMeta(p, src, now);
             }
             else
             {
@@ -546,6 +595,7 @@ public sealed class StockSuiteExporter
             }
         }
 
+        if (generated.Count > 0) ExportMetadata.MarkExported(src, generated, now);   // 📦 원본 메타 규격 통일
         var n = generated.Count.ToString(CultureInfo.InvariantCulture);
         string msg;
         if (ct.IsCancellationRequested) msg = "취소됨 — " + n + "개 보존";
@@ -555,7 +605,7 @@ public sealed class StockSuiteExporter
         return new(generated, failed, pkg, msg);
     }
 
-    private static void WriteExportMeta(MultiExportProfile p, string sourcePath)
+    private static void WriteExportMeta(MultiExportProfile p, string sourcePath, DateTimeOffset now)
     {
         try
         {
@@ -566,6 +616,8 @@ public sealed class StockSuiteExporter
                 ["title"] = Path.GetFileNameWithoutExtension(sourcePath) + " · " + p.Label,
                 ["resolution"] = res,
                 ["isExported"] = true,
+                ["exportedAt"] = ExportMetadata.FormatTimestamp(now),
+                ["exportedTargets"] = new[] { p.OutputPath },
                 ["exportProfile"] = p.Key,
                 ["sourcePath"] = sourcePath,
                 ["createdAt"] = DateTime.Now.ToString("o", inv),
@@ -588,10 +640,13 @@ public sealed class StockSuiteExporter
     /// HTS 고선명 인자 — <see cref="SharpenFilter"/>(1080p Lanczos + Unsharp) 적용 후 H.264 재인코딩, 오디오/자막/데이터 드롭(<c>-an -sn -dn</c>).
     /// MP4 는 <c>+faststart</c>.
     /// </summary>
-    public static string[] BuildSharpenArgs(string inputPath, string outputPath)
+    public static string[] BuildSharpenArgs(string inputPath, string outputPath) => BuildSharpenArgs(inputPath, outputPath, SharpenFilter);
+
+    /// <summary>H.264 재인코딩 인자 — 임의 필터 체인(<see cref="BuildVideoFilter"/> · 샤프닝/60fps 보간) 주입.</summary>
+    public static string[] BuildSharpenArgs(string inputPath, string outputPath, string videoFilter)
         => outputPath.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)
-            ? ["-y", "-hide_banner", "-loglevel", "error", "-i", inputPath, "-map", "0:v:0", "-vf", SharpenFilter, "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-an", "-sn", "-dn", "-movflags", "+faststart", outputPath]
-            : ["-y", "-hide_banner", "-loglevel", "error", "-i", inputPath, "-map", "0:v:0", "-vf", SharpenFilter, "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-an", "-sn", "-dn", outputPath];
+            ? ["-y", "-hide_banner", "-loglevel", "error", "-i", inputPath, "-map", "0:v:0", "-vf", videoFilter, "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-an", "-sn", "-dn", "-movflags", "+faststart", outputPath]
+            : ["-y", "-hide_banner", "-loglevel", "error", "-i", inputPath, "-map", "0:v:0", "-vf", videoFilter, "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-an", "-sn", "-dn", outputPath];
 
     /// <summary>
     /// 🟢 StockSuite 적용 중 판정 — 설정 폴더의 <c>bg_ambient.mp4/.webm</c> 출처 마커가 원본(경로·크기·수정시각)과 일치하거나,

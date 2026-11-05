@@ -77,6 +77,8 @@ public sealed class UserPreferenceService
         public const string StockSuiteExecutablePath = "stocksuite.exe";
         /// <summary>StockSuite 고선명 샤프닝(1080p Lanczos + Unsharp) — 기본 ON.</summary>
         public const string StockSuiteSharpen = "stocksuite.sharpen";
+        /// <summary>⚡ StockSuite 60fps 모션 스무딩(minterpolate) — 기본 OFF.</summary>
+        public const string StockSuiteSmooth60 = "stocksuite.smooth60";
         /// <summary>🧹 최대 렌더 캐시 용량(GB) — 초과 시 메타 없는 오래된 파일부터 LRU 정리.</summary>
         public const string RenderCacheMaxGb = "render.cacheMaxGb";
     }
@@ -200,6 +202,13 @@ public sealed class UserPreferenceService
         set => SetBool(Keys.StockSuiteSharpen, value);
     }
 
+    /// <summary>⚡ StockSuite 60fps 모션 스무딩(16~24fps → 60fps 보간) — 기본 OFF(재인코딩 비용 큼).</summary>
+    public bool StockSuiteSmooth60
+    {
+        get => GetBool(Keys.StockSuiteSmooth60);
+        set => SetBool(Keys.StockSuiteSmooth60, value);
+    }
+
     /// <summary>🧹 최대 렌더 캐시 용량(GB, 1~500 · 기본 10).</summary>
     public int RenderCacheMaxGb
     {
@@ -235,6 +244,7 @@ public sealed class UserPreferenceService
         [Keys.StockSuiteFormat] = "mp4",
         [Keys.StockSuiteExecutablePath] = "",
         [Keys.StockSuiteSharpen] = "1",
+        [Keys.StockSuiteSmooth60] = "0",
         [Keys.RenderCacheMaxGb] = "10",
     };
 
