@@ -225,6 +225,52 @@ public sealed class GalleryViewModel
         return n;
     }
 
+    // ── ☑️ 다중 선택 모드: 체크박스 노출 · 선택 번들 내보내기 · 일괄 삭제 ──
+    /// <summary>선택 모드 활성(카드 체크박스 노출). 끄면 선택 해제.</summary>
+    public bool IsSelectModeActive { get; private set; }
+
+    public void ToggleSelectMode()
+    {
+        IsSelectModeActive = !IsSelectModeActive;
+        if (!IsSelectModeActive) _checked.Clear();
+        Raise();
+    }
+
+    /// <summary>선택된 미디어 ID(절대 경로) — 디스크에 남은 체크 항목만.</summary>
+    public HashSet<string> SelectedMediaIds
+    {
+        get
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (_checked.Count == 0) return set;
+            foreach (var it in _gallery.Items)
+                if (!it.IsSample && it.FilePath.Length > 0 && _checked.Contains(it.ItemId)) set.Add(it.FilePath);
+            return set;
+        }
+    }
+
+    /// <summary>현재 목록(샘플 제외) 전부 선택.</summary>
+    public void SelectAll()
+    {
+        foreach (var it in MediaItems) if (!it.IsSample) _checked.Add(it.ItemId);
+        Raise();
+    }
+
+    public void DeselectAll() => ClearChecks();
+
+    /// <summary>📦 선택 항목만 .pfsbundle 로 내보내기 — 선택 없음 → null.</summary>
+    public async Task<PromptFlowStudio.Services.Export.AssetBundleExportResult?> ExportSelectedBundleAsync(
+        PromptFlowStudio.Services.Export.AssetBundleService bundles, string outputPath, bool includePresets = true, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(bundles);
+        var ids = SelectedMediaIds;
+        if (ids.Count == 0) { StatusMessage = "📦 내보낼 선택 항목이 없습니다"; Raise(); return null; }
+        var r = await bundles.ExportBundleAsync(outputPath, ids, includePresets, ct).ConfigureAwait(false);
+        StatusMessage = r.Ok ? r.Message : "⚠ " + r.Message;
+        Raise();
+        return r;
+    }
+
     private void AfterBulkDelete()
     {
         _checked.Clear();

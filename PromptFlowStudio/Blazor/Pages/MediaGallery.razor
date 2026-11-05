@@ -51,10 +51,16 @@
             <input class="gl-search" value="@Vm.SearchQuery" @oninput="OnArchiveSearch" placeholder="🔎 프롬프트(영/한)·티커·파일명 검색…" />
             <button class="gl-btn ghost" @onclick="RefreshArchive" title="아카이브 새로고침">⟳</button>
             <button class="gl-btn bad" @onclick="DeleteMockAll" disabled="@(Vm.MockCount == 0)" title="🧪 Mock 태그 영상 + 메타데이터를 디스크에서 영구 삭제">🧹 더미/Mock 파일 일괄 삭제 (@(Vm.MockCount))</button>
-            <button class="gl-btn bad" @onclick="DeleteCheckedAll" disabled="@(Vm.CheckedCount == 0)" title="체크된 항목을 디스크에서 영구 삭제">🗑 다중 선택 삭제 (@(Vm.CheckedCount))</button>
-            @if (Vm.CheckedCount > 0)
+            <button class="gl-btn @(Vm.IsSelectModeActive ? "up" : "ghost")" @onclick="Vm.ToggleSelectMode" aria-pressed="@(Vm.IsSelectModeActive ? "true" : "false")" title="카드 체크박스로 골라 번들 내보내기 · 일괄 삭제">☑️ Select Mode</button>
+            @if (Vm.IsSelectModeActive)
             {
-                <button class="gl-btn ghost" @onclick="Vm.ClearChecks" title="선택 해제">✕</button>
+                <button class="gl-btn ghost" @onclick="Vm.SelectAll" title="현재 목록 전부 선택">Select All</button>
+                <button class="gl-btn ghost" @onclick="Vm.DeselectAll" disabled="@(Vm.CheckedCount == 0)" title="선택 해제">Deselect All</button>
+                @if (Vm.CheckedCount > 0)
+                {
+                    <button class="gl-btn up" @onclick="ExportSelectedBundle" disabled="@_bundleBusy" title="체크한 항목만 .pfsbundle(ZIP · 프리셋 포함)로 패키징 — MediaRoot/_bundles">📦 Export Selected (@(Vm.CheckedCount))</button>
+                    <button class="gl-btn bad" @onclick="DeleteCheckedAll" title="체크된 항목을 디스크에서 영구 삭제(확인 필요)">🗑️ Delete Selected (@(Vm.CheckedCount))</button>
+                }
             }
             <span class="ga-cnt">@Vm.MediaItems.Count / @Vm.TotalCount</span>
         </div>
@@ -139,7 +145,10 @@
                             }
                             else
                             {
-                                <input type="checkbox" class="ga-chk" checked="@Vm.IsChecked(g)" @onchange="() => Vm.ToggleCheck(g)" @onclick:stopPropagation="true" title="다중 선택" />
+                                @if (Vm.IsSelectModeActive)
+                                {
+                                    <input type="checkbox" class="ga-chk" checked="@Vm.IsChecked(g)" @onchange="() => Vm.ToggleCheck(g)" @onclick:stopPropagation="true" title="다중 선택" />
+                                }
                                 <span class="ga-tag @(g.IsStill ? "still" : g.IsMock ? "mock" : g.IsExported ? "exp" : "ai")">@g.AssetTag</span>
                                 @if (g.IsVideo && IsStockApplied(g))
                                 {
@@ -685,6 +694,20 @@
             Vm.SetStatus(r.Ok ? r.Message : "⚠ " + r.Message);
         }
         catch (Exception ex) { Program.Log("MediaGallery.BundleExport", ex); Vm.SetStatus("⚠ 번들 내보내기 실패"); }
+        finally { _bundleBusy = false; await InvokeAsync(StateHasChanged); }
+    }
+
+    /// <summary>☑️ 선택 항목만 → MediaRoot/_bundles/pfs_sel_yyyyMMdd_HHmmss.pfsbundle(프리셋 포함).</summary>
+    private async Task ExportSelectedBundle()
+    {
+        if (_bundleBusy) return;
+        _bundleBusy = true;
+        try
+        {
+            var path = System.IO.Path.Combine(Media.MediaRoot, "_bundles", "pfs_sel_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", System.Globalization.CultureInfo.InvariantCulture) + PromptFlowStudio.Services.Export.AssetBundleService.Extension);
+            await Vm.ExportSelectedBundleAsync(Bundles, path, includePresets: true);
+        }
+        catch (Exception ex) { Program.Log("MediaGallery.BundleExportSelected", ex); Vm.SetStatus("⚠ 선택 번들 내보내기 실패"); }
         finally { _bundleBusy = false; await InvokeAsync(StateHasChanged); }
     }
 

@@ -120,6 +120,14 @@
         </div>
         <div class="st-field"><label><input type="checkbox" checked="@Prefs.StockSuiteSharpen" @onchange="e => Prefs.StockSuiteSharpen = e.Value is true" /> 🔎 고선명 샤프닝 (1080p Lanczos + Unsharp) — MP4·WebM 재인코딩 · 끄면 스트림 복사(빠른 내보내기)</label></div>
         <div class="st-field"><label><input type="checkbox" checked="@Prefs.StockSuiteSmooth60" @onchange="e => Prefs.StockSuiteSmooth60 = e.Value is true" /> ⚡ 60fps 모션 스무딩 (minterpolate MCI) — 16~24fps AI 영상을 고주사율 모니터용 60fps 로 보간 · 재인코딩 시간 증가</label></div>
+        <div class="st-field"><label>🖥️ 기본 내보내기 해상도</label>
+            <select value="@Prefs.DefaultResolution.ToString()" @onchange="e => Prefs.DefaultResolution = Enum.TryParse<PromptFlowStudio.Services.Ui.ExportResolution>(e.Value?.ToString(), out var dr) ? dr : PromptFlowStudio.Services.Ui.ExportResolution.Res1080p">
+                @foreach (var r in Enum.GetValues<PromptFlowStudio.Services.Ui.ExportResolution>())
+                {
+                    <option value="@r.ToString()">@(PromptFlowStudio.Services.Ui.ExportResolutionInfo.Label(r))</option>
+                }
+            </select>
+        </div>
         <div class="st-field"><label>⚡ 하드웨어 벤치마크 오토튠</label>
             <div class="st-inrow">
                 <button class="st-btn-sm" @onclick="RunBenchmark" disabled="@_benchBusy" title="1초 합성 1080p 인코드(NVENC/QSV/CPU)로 처리량 측정 → 렌더 프로필 추천">@(_benchBusy ? "⏳ 측정 중…" : "⚡ Run 1-Sec Benchmark & Auto-Tune")</button>
@@ -132,7 +140,7 @@
                     }
                     else
                     {
-                        <span>✔ 적용됨@(br.Profile == PromptFlowStudio.Services.Diagnostics.RenderProfileTier.Ultra ? " — 내보내기 모달에서 4K UHD 선택 권장" : "")</span>
+                        <span>✔ 적용됨 — 기본 해상도 @(PromptFlowStudio.Services.Ui.ExportResolutionInfo.Label(Prefs.DefaultResolution))</span>
                     }
                 }
             </div>
@@ -258,13 +266,12 @@
         finally { _benchBusy = false; await InvokeAsync(StateHasChanged); }
     }
 
-    /// <summary>사용자 확인 시 추천 프로필 반영 — Eco: 60fps OFF · Balanced/Ultra: 60fps ON · 샤프닝 ON.</summary>
-    private void ApplyBenchmark()
+    /// <summary>사용자 확인 시 추천 프로필 반영 — Eco: 1080p·30fps · Balanced: 1080p·60fps · Ultra: 4K·60fps · 샤프닝 ON.</summary>
+    private async Task ApplyBenchmark()
     {
         if (_bench is not { } b) return;
-        Prefs.StockSuiteSharpen = true;
-        Prefs.StockSuiteSmooth60 = b.Smooth60;
-        _benchApplied = true;
+        try { await PromptFlowStudio.Services.Diagnostics.HardwareBenchmarkService.ApplyRecommendationAsync(b, Prefs); _benchApplied = true; }
+        catch (Exception ex) { Program.Log("UserSettings.BenchmarkApply", ex); }
     }
     private string _theme = "dark", _density = "comfortable", _lang = "ko";
     private bool _motionOff, _soundDone, _broadcast;

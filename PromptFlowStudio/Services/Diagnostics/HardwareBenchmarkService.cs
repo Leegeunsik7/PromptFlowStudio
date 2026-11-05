@@ -93,6 +93,21 @@ public sealed class HardwareBenchmarkService
         return a.ToArray();
     }
 
+    /// <summary>
+    /// ✅ 추천 프로필 영속 — 샤프닝 ON · Ultra: 4K UHD + 60fps · Balanced: 1080p + 60fps · Eco: 1080p + 30fps(스무딩 OFF).
+    /// </summary>
+    public static Task ApplyRecommendationAsync(HardwareBenchmarkResult result, PromptFlowStudio.Services.Ui.UserPreferenceService prefs)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        ArgumentNullException.ThrowIfNull(prefs);
+        prefs.StockSuiteSharpen = true;
+        prefs.StockSuiteSmooth60 = result.Smooth60;
+        prefs.DefaultResolution = result.Profile == RenderProfileTier.Ultra
+            ? PromptFlowStudio.Services.Ui.ExportResolution.Res4K_UHD
+            : PromptFlowStudio.Services.Ui.ExportResolution.Res1080p;
+        return Task.CompletedTask;
+    }
+
     public async Task<HardwareBenchmarkResult> RunAsync(CancellationToken ct = default)
     {
         string? ffmpeg;

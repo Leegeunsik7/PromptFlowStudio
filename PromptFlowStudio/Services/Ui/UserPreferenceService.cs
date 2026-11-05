@@ -2,6 +2,32 @@ using Microsoft.JSInterop;
 
 namespace PromptFlowStudio.Services.Ui;
 
+/// <summary>🖥️ 기본 내보내기 해상도 — 1080p(1920×1080) · 4K UHD(3840×2160) · 21:9(2560×1080) · 32:9(3840×1080).</summary>
+public enum ExportResolution : byte { Res1080p, Res4K_UHD, Res21x9, Res32x9 }
+
+/// <summary><see cref="ExportResolution"/> 라벨·픽셀·StockSuite 프로필 매핑(StockSuite 는 1080p/4K 만 — 울트라와이드 = 1080p 폴백).</summary>
+public static class ExportResolutionInfo
+{
+    public static (int Width, int Height) Pixels(ExportResolution r) => r switch
+    {
+        ExportResolution.Res4K_UHD => (3840, 2160),
+        ExportResolution.Res21x9 => (2560, 1080),
+        ExportResolution.Res32x9 => (3840, 1080),
+        _ => (1920, 1080),
+    };
+
+    public static string Label(ExportResolution r) => r switch
+    {
+        ExportResolution.Res4K_UHD => "4K UHD",
+        ExportResolution.Res21x9 => "21:9",
+        ExportResolution.Res32x9 => "32:9",
+        _ => "1080p",
+    };
+
+    public static PromptFlowStudio.Services.Export.StockSuiteResolution ToStockSuite(ExportResolution r)
+        => r == ExportResolution.Res4K_UHD ? PromptFlowStudio.Services.Export.StockSuiteResolution.Uhd4K : PromptFlowStudio.Services.Export.StockSuiteResolution.Fhd1080;
+}
+
 // =============================================================================
 //  사용자 설정 중앙 저장소
 //
@@ -85,6 +111,15 @@ public sealed class UserPreferenceService
         public const string HtsEcoMode = "hts.ecoMode";
         /// <summary>🧹 최대 렌더 캐시 용량(GB) — 초과 시 메타 없는 오래된 파일부터 LRU 정리.</summary>
         public const string RenderCacheMaxGb = "render.cacheMaxGb";
+        /// <summary>🖥️ 기본 내보내기 해상도(<see cref="ExportResolution"/> 이름) — 벤치마크 Ultra → 4K 영속.</summary>
+        public const string DefaultResolution = "export.defaultResolution";
+    }
+
+    /// <summary>🖥️ 기본 내보내기 해상도(1080p 기본 · 미지원/손상 값 → 1080p 폴백).</summary>
+    public ExportResolution DefaultResolution
+    {
+        get => Enum.TryParse<ExportResolution>(Get(Keys.DefaultResolution), false, out var r) && Enum.IsDefined(r) ? r : ExportResolution.Res1080p;
+        set => Set(Keys.DefaultResolution, Enum.IsDefined(value) ? value.ToString() : nameof(ExportResolution.Res1080p));
     }
 
     private const string Prefix = "sm.pref.";
@@ -266,6 +301,7 @@ public sealed class UserPreferenceService
         [Keys.TradingSafetyMode] = "1",
         [Keys.HtsEcoMode] = "1",
         [Keys.RenderCacheMaxGb] = "10",
+        [Keys.DefaultResolution] = nameof(ExportResolution.Res1080p),
     };
 
     /// <summary>

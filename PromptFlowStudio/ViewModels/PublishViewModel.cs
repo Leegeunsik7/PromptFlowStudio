@@ -28,15 +28,21 @@ public sealed class PublishViewModel : IDisposable
     private readonly GeminiPromptService? _gemini;
     private readonly PromptFlowStudio.Services.Export.StockSuiteExporter? _stockSuite;
     private readonly PromptFlowStudio.Services.Export.AudioMuxService? _audioMux;
+    private readonly PromptFlowStudio.Services.Chart.ChartStillGeneratorService? _quotes;
+    private readonly PromptFlowStudio.Services.Ui.UserPreferenceService? _prefs;
     private string? _publishPath;   // BGM 합성본(없으면 원본)
     private CancellationTokenSource? _cts;
     private CancellationTokenSource? _seoCts;
     private int _disposed;
 
     public PublishViewModel(IYouTubeShortsPublisher yt, IInstagramReelsPublisher ig, GeminiPromptService? gemini = null, PromptFlowStudio.Services.Export.StockSuiteExporter? stockSuite = null,
-        PromptFlowStudio.Services.Export.AudioMuxService? audioMux = null)
+        PromptFlowStudio.Services.Export.AudioMuxService? audioMux = null,
+        PromptFlowStudio.Services.Chart.ChartStillGeneratorService? quotes = null,
+        PromptFlowStudio.Services.Ui.UserPreferenceService? prefs = null)
     {
         _audioMux = audioMux;
+        _quotes = quotes;
+        _prefs = prefs;
         _yt = yt ?? throw new ArgumentNullException(nameof(yt));
         _ig = ig ?? throw new ArgumentNullException(nameof(ig));
         _gemini = gemini;
@@ -119,6 +125,61 @@ public sealed class PublishViewModel : IDisposable
     public string TickerCompany { get; set; } = "";
     public decimal TickerPrice { get; set; }
     public double TickerChangePercent { get; set; }
+    /// <summary>📈 마지막 자동 채움 출처 메시지(null = 미조회/실패).</summary>
+    public string? TickerQuoteMessage { get; private set; }
+
+    /// <summary>표시용 시세 — 국내(6자리 숫자 코드) <c>74,500원</c> · 그 외 <c>$185.50</c>.</summary>
+    public string TickerPriceText => FormatQuotePrice(TickerSymbol, TickerPrice);
+    /// <summary>표시용 등락률 — <c>+2.4%</c> · <c>-1.2%</c>.</summary>
+    public string TickerChangeText => FormatQuoteChange(TickerChangePercent);
+
+    /// <summary>국내 종목 코드(6자리 숫자 · <c>.KS</c>/<c>.KQ</c> 접미사 허용).</summary>
+    public static bool IsKrxTicker(string? ticker)
+    {
+        var s = (ticker ?? "").Trim();
+        var dot = s.IndexOf('.');
+        if (dot >= 0) s = s[..dot];
+        if (s.Length != 6) return false;
+        foreach (var c in s) if (c is < '0' or > '9') return false;
+        return true;
+    }
+
+    public static string FormatQuotePrice(string? ticker, decimal price)
+        => IsKrxTicker(ticker)
+            ? decimal.Round(price, 0, MidpointRounding.AwayFromZero).ToString("#,0", System.Globalization.CultureInfo.InvariantCulture) + "원"
+            : "$" + price.ToString("#,0.00", System.Globalization.CultureInfo.InvariantCulture);
+
+    public static string FormatQuoteChange(double pct)
+        => double.IsFinite(pct) ? (pct >= 0 ? "+" : "") + pct.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "%" : "0.0%";
+
+    /// <summary>티커 입력 → 저장 후 캐시 시세 자동 채움(수동 편집은 이후 그대로 유지).</summary>
+    public void SetTicker(string? ticker)
+    {
+        TickerSymbol = (ticker ?? "").Trim();
+        TryAutoFillQuote();
+        Notify();
+    }
+
+    /// <summary>
+    /// 📈 IPC <c>QuotePushed</c> 캐시 → <c>quotes.json</c> 순 최신 캔들 조회 → 시세(마지막 종가) · 등락률(직전 종가 대비) 자동 채움.
+    /// 미주입 · 티커 공란 · 시세 없음 → false(기존 입력 보존).
+    /// </summary>
+    public bool TryAutoFillQuote()
+    {
+        TickerQuoteMessage = null;
+        if (_quotes is null || string.IsNullOrWhiteSpace(TickerSymbol)) return false;
+        PromptFlowStudio.Services.Chart.OhlcvCandle[]? c;
+        try { c = _quotes.ResolveQuotes(TickerSymbol); }
+        catch (Exception ex) { Program.Log("Publish.QuoteAutoFill", ex); return false; }
+        if (c is not { Length: >= 2 }) return false;
+        var last = c[^1].Close;
+        var prev = c[^2].Close;
+        if (!double.IsFinite(last) || last <= 0 || last >= 1e15) return false;
+        TickerPrice = Math.Round((decimal)last, 2, MidpointRounding.AwayFromZero);
+        TickerChangePercent = prev > 0 ? Math.Round((last - prev) / prev * 100.0, 2, MidpointRounding.AwayFromZero) : 0;
+        TickerQuoteMessage = "📈 캐시 시세 자동 채움 — " + TickerPriceText + " · " + TickerChangeText;
+        return true;
+    }
     /// <summary>↩️ 이전 배경 백업 존재 — 복원 버튼 노출.</summary>
     public bool CanRollbackStockSuite => _stockSuite?.CanRollback() == true;
 
@@ -257,6 +318,7 @@ public sealed class PublishViewModel : IDisposable
         Schedule = false;
         ScheduleLocal = DateTime.Now.AddHours(1);
         InstagramConsent = false;
+        if (_prefs is not null) StockSuiteResolution = PromptFlowStudio.Services.Ui.ExportResolutionInfo.ToStockSuite(_prefs.DefaultResolution);   // 🖥️ 벤치마크 Ultra → 4K 기본
         YouTubeProgress = InstagramProgress = 0;
         YouTubeStatus = InstagramStatus = null;
         YouTubeResult = null;
