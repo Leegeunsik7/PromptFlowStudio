@@ -39,13 +39,17 @@ public sealed class AudioMuxService
 
     public AudioMuxService() : this(null) { }
 
+    /// <summary>🛡️ DI 주입 실행기 경유(장중 세이프가드 일원화).</summary>
+    public AudioMuxService(Func<string?>? resolveFfmpeg, Engines.IProcessRunner processRunner, string? cacheDir)
+        : this(resolveFfmpeg, Engines.ProcessRunnerExtensions.AsFfmpegRunner(processRunner), cacheDir) { }
+
     /// <param name="resolveFfmpeg">ffmpeg 경로 조회(null = <see cref="FfmpegLocator"/>).</param>
     /// <param name="runner">ffmpeg 실행기(테스트 주입 · null = ProcessRunner).</param>
     /// <param name="cacheDir">프리셋 BGM WAV 캐시 폴더(null = %TEMP%\PromptFlowStudio\bgm).</param>
     public AudioMuxService(Func<string?>? resolveFfmpeg, FfmpegRunner? runner = null, string? cacheDir = null)
     {
         _resolveFfmpeg = resolveFfmpeg ?? (static () => FfmpegLocator.Locate().Path);
-        _run = runner ?? DefaultRunAsync;
+        _run = runner ?? Engines.ProcessRunnerExtensions.AsFfmpegRunner(Engines.SystemProcessRunner.Shared);
         _cacheDir = string.IsNullOrWhiteSpace(cacheDir) ? Path.Combine(Path.GetTempPath(), "PromptFlowStudio", "bgm") : cacheDir;
     }
 
@@ -164,11 +168,5 @@ public sealed class AudioMuxService
             Program.Log("AudioMux.Run", ex);
             return new(false, videoPath, "BGM 합성 실패: " + ex.Message);
         }
-    }
-
-    private static async Task<bool> DefaultRunAsync(string exe, IReadOnlyList<string> args, CancellationToken ct)
-    {
-        var r = await Engines.ProcessRunner.RunAsync(exe, args, ct: ct).ConfigureAwait(false);
-        return r.Ok && r.ExitCode == 0;
     }
 }

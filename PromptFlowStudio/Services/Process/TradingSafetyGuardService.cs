@@ -8,7 +8,7 @@ using PromptFlowStudio.Services.Engines;
 namespace PromptFlowStudio.Services.ProcessBridge;
 
 /// <summary>
-/// 🛡️ 스마트 마켓아워 트레이딩 세이프가드 — 한국 증시 정규장(평일 09:00~15:30 KST · UTC+9 고정, DST 없음) 또는 사용자 정의 장중 구간 판별.
+/// 🛡️ 스마트 마켓아워 트레이딩 세이프가드 — 한국 증시 정규장(평일 09:00~15:30 KST · UTC+9 고정, DST 없음 · KRX 휴장일 자동 해제) 또는 사용자 정의 장중 구간 판별.
 ///   ▸ 안전 모드 ON + 장중 → FFmpeg 인코더 프로세스 <see cref="ProcessPriorityClass.BelowNormal"/> 강제 · 동시 렌더/인코딩 1개 게이트.
 ///   ▸ <see cref="Attach"/> 시 <see cref="ProcessRunner"/> 전역 훅(우선순위·게이트) 결선 — <see cref="Dispose"/> 에서 해제.
 ///   ▸ 게이트는 AsyncLocal 재진입 허용(렌더 작업 내부 ffmpeg 호출이 자기 슬롯에 막히는 교착 차단).
@@ -40,6 +40,8 @@ public sealed class TradingSafetyGuardService : IDisposable
     public TimeSpan MarketClose { get; set; } = DefaultClose;
     /// <summary>사용자 정의 장중 구간 시 주말 포함 여부(기본 false = 평일만).</summary>
     public bool IncludeWeekends { get; set; }
+    /// <summary>📅 KRX 휴장일(공휴일·대체공휴일·근로자의 날·연말 폐장일) 자동 해제 여부(기본 true).</summary>
+    public bool RespectKrxHolidays { get; set; } = true;
 
     public bool IsEnabled
     {
@@ -59,9 +61,23 @@ public sealed class TradingSafetyGuardService : IDisposable
         return open <= close ? t >= open && t < close : t >= open || t < close;   // 자정 넘김 구간 지원
     }
 
-    public static bool IsMarketHours(DateTimeOffset at) => IsMarketHours(at, DefaultOpen, DefaultClose);
+    /// <summary>KRX 정규장 판정 — 평일 09:00~15:30(KST) 이면서 휴장일 아님.</summary>
+    public static bool IsMarketHours(DateTimeOffset at) => IsMarketHours(at, DefaultOpen, DefaultClose) && !IsKrxHoliday(at);
 
-    public bool IsMarketHoursNow => IsMarketHours(UtcNow(), MarketOpen, MarketClose, IncludeWeekends);
+    /// <summary>📅 KST 기준 평일 휴장일(<see cref="KrxHolidayCalendar"/>) 여부.</summary>
+    public static bool IsKrxHoliday(DateTimeOffset at) => KrxHolidayCalendar.IsHoliday(DateOnly.FromDateTime(at.ToOffset(Kst).DateTime));
+
+    /// <summary>현재 KST 기준 휴장일이라 안전 모드가 자동 해제된 상태인지.</summary>
+    public bool IsHolidayNow => RespectKrxHolidays && IsKrxHoliday(UtcNow());
+
+    public bool IsMarketHoursNow
+    {
+        get
+        {
+            var now = UtcNow();
+            return IsMarketHours(now, MarketOpen, MarketClose, IncludeWeekends) && !(RespectKrxHolidays && IsKrxHoliday(now));
+        }
+    }
 
     /// <summary>안전 모드 ON + 장중 = 부하 제한 활성.</summary>
     public bool IsThrottling => IsEnabled && IsMarketHoursNow;

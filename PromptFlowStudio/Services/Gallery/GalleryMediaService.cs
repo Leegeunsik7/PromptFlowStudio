@@ -11,6 +11,9 @@ namespace PromptFlowStudio.Services.Gallery;
 
 public enum AspectCategory { Vertical9x16, Landscape16x9, Square1x1 }
 
+/// <summary>갤러리 미디어 종류 — Still = <c>MediaRoot/_stills</c> 캡처 스냅샷(PNG).</summary>
+public enum GalleryMediaType { Video, Image, Still }
+
 public sealed class GalleryItem
 {
     public Guid ItemId { get; init; }
@@ -30,7 +33,7 @@ public sealed class GalleryItem
     /// <summary>🧪 Mock 더미 산출물 — 메타 <c>isMock</c>/<c>engine=Mock</c> 또는 <c>testsrc</c> 컬러바 흔적.</summary>
     public bool IsMock { get; init; }
     /// <summary>카드 태그 — <c>🧪 Mock</c> · <c>🎬 AI Render</c>(샘플은 null).</summary>
-    public string? AssetTag => IsSample ? null : IsMock ? "🧪 Mock" : IsExported ? "📦 내보냄" : "🎬 AI Render";
+    public string? AssetTag => IsSample ? null : IsStill ? "🖼️ 스냅샷" : IsMock ? "🧪 Mock" : IsExported ? "📦 내보냄" : "🎬 AI Render";
     /// <summary>⭐ 즐겨찾기 — 메타 <c>isFavorite</c>(토글은 <see cref="GalleryMediaService.SetFavorite"/>).</summary>
     public bool IsFavorite { get; internal set; }
     /// <summary>📦 내보낸 산출물 — 메타 <c>isExported:true</c>(멀티 패키지 익스포터 기록).</summary>
@@ -40,6 +43,9 @@ public sealed class GalleryItem
     /// <summary>파일 크기(바이트) — 스토리지 대시보드 집계용(샘플 0).</summary>
     public long SizeBytes { get; init; }
     public bool IsVideo => !IsImagePath(FilePath);
+    /// <summary>🖼️ <c>_stills/</c> 폴더 PNG 스냅샷.</summary>
+    public bool IsStill { get; init; }
+    public GalleryMediaType MediaType => IsStill ? GalleryMediaType.Still : IsVideo ? GalleryMediaType.Video : GalleryMediaType.Image;
 
     internal static bool IsImagePath(string path)
     {
@@ -100,7 +106,7 @@ public sealed class GalleryMediaService
                     // 🩹 역방향 치유 — StockSuite 산출물과 엄격 일치(출처 마커 경로 · 매니페스트 SHA-256 · 내용 SHA-256)할 때만 메타 보정. 파일명 매칭 금지(오탐).
                     if (exported?.Match(file) is { } target && !Export.ExportMetadata.IsMarkedExported(file)
                         && Export.ExportMetadata.MarkExported(file, new[] { target }, DateTimeOffset.UtcNow)) healed++;
-                    var item = TryLoadItem(file);
+                    var item = TryLoadItem(file, IsStillSnapshot(root, file));
                     if (item is not null) found.Add(item);
                 }
             }
@@ -330,6 +336,22 @@ public sealed class GalleryMediaService
         return rel.StartsWith("_uploads", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>스냅샷 저장 폴더명(<c>MediaRoot/_stills</c>).</summary>
+    public const string StillsFolder = "_stills";
+
+    /// <summary><paramref name="root"/> 하위 <c>_stills/</c> 의 PNG 인지.</summary>
+    public static bool IsStillSnapshot(string root, string file)
+    {
+        try
+        {
+            if (!Path.GetExtension(file).Equals(".png", StringComparison.OrdinalIgnoreCase)) return false;
+            var rel = Path.GetRelativePath(root, file);
+            return rel.StartsWith(StillsFolder + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+                || rel.StartsWith(StillsFolder + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (ArgumentException) { return false; }
+    }
+
     private static bool IsUnderRoot(string root, string file)
     {
         try
@@ -341,7 +363,7 @@ public sealed class GalleryMediaService
         catch { return false; }
     }
 
-    private static GalleryItem? TryLoadItem(string file)
+    private static GalleryItem? TryLoadItem(string file, bool isStill)
     {
         try
         {
@@ -400,6 +422,7 @@ public sealed class GalleryMediaService
                 IsMock = isMock,
                 IsFavorite = isFav,
                 IsExported = isExported,
+                IsStill = isStill,
                 PosterPath = File.Exists(poster) ? poster : null,
                 SizeBytes = info.Length,
             };

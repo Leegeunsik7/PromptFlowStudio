@@ -52,7 +52,7 @@
             <button class="ws-back" @onclick="ExpandToStoryboard" disabled="@(State.IsBusy || string.IsNullOrWhiteSpace(_prompt))" title="현재 프롬프트·시드로 1번 컷을 채우고 2~4번 컷을 기승전결로 자동 전개">🎬 스토리보드로 4컷 확장</button>
             @if (TradingGuard.IsThrottling)
             {
-                <span class="ws-trade-guard" title="평일 09:00~15:30(KST) — FFmpeg 우선순위 BelowNormal · 동시 렌더/인코딩 1개 제한 (설정 ▸ 사용자 설정에서 해제)">@PromptFlowStudio.Services.ProcessBridge.TradingSafetyGuardService.IndicatorText</span>
+                <span class="ws-trade-guard" title="평일 09:00~15:30(KST · KRX 휴장일 자동 해제) — FFmpeg 우선순위 BelowNormal · 동시 렌더/인코딩 1개 제한 (설정 ▸ 사용자 설정에서 해제)">@PromptFlowStudio.Services.ProcessBridge.TradingSafetyGuardService.IndicatorText</span>
             }
             @{ var ssSnap = StockMon.Current; }
             @if (ssSnap.IsRunning)
@@ -2618,6 +2618,35 @@
         _vm.UserInput = _prompt;
         AbsorbWirelessCameraFrame();   // 무선 카메라(/wireless-camera)에서 전달된 I2V 첫 프레임 흡수
         AbsorbGalleryRestore();        // 갤러리(/gallery) ✨ 작업실 복원 — 프롬프트·시드·해상도·I2V 참조 이미지 주입
+        _guardOn = TradingGuard.IsThrottling;
+        _ = GuardTickLoopAsync(_guardCts.Token);   // 🛡️ 10초 주기 장중 판정 — 09:00 개장/15:30 마감 인디케이터 자동 전환
+    }
+
+    /// <summary>🛡️ 장중 안전 모드 판정 백그라운드 틱 — 상태가 바뀔 때만 재렌더(휴장일·개장·마감 실시간 반영).</summary>
+    private readonly CancellationTokenSource _guardCts = new();
+    private bool _guardOn;
+    public static readonly TimeSpan GuardTickInterval = TimeSpan.FromSeconds(10);
+
+    private async Task GuardTickLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(GuardTickInterval);
+            while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+            {
+                try
+                {
+                    var on = TradingGuard.IsThrottling;
+                    if (on == _guardOn) continue;
+                    _guardOn = on;
+                    await InvokeAsync(StateHasChanged).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (ObjectDisposedException) { return; }
+                catch (Exception ex) { Program.Log("Workspace.GuardTick", ex); }
+            }
+        }
+        catch (OperationCanceledException) { /* 페이지 이탈 */ }
     }
 
     /// <summary>갤러리 복원 번들 1회 소비 → 프롬프트(UserInput) · Seed 핀 · 출력 사이즈 · I2V 참조 이미지(첫 프레임 · 모드 자동 활성화) 주입.</summary>
@@ -2694,6 +2723,7 @@
         var cts = Interlocked.Exchange(ref _liveCts, null);
         if (cts is not null) { cts.Cancel(); cts.Dispose(); }
         _mediaCts.Cancel(); _mediaCts.Dispose();
+        _guardCts.Cancel(); _guardCts.Dispose();
         if (_seamCheck)
         {
             _seamCheck = false;

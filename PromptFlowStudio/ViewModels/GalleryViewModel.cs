@@ -3,7 +3,7 @@ using PromptFlowStudio.Services.Gallery;
 
 namespace PromptFlowStudio.ViewModels;
 
-public enum GalleryFilter { All, Vertical9x16, Landscape16x9, Favorites, AiRender, Exported }
+public enum GalleryFilter { All, Vertical9x16, Landscape16x9, Favorites, AiRender, Exported, Snapshots }
 
 /// <summary>
 /// [PromptFlowStudio] 갤러리 화면 VM — 카테고리/검색 필터 · 인스펙터 선택 · Workspace 복원 핸드오프.
@@ -137,7 +137,8 @@ public sealed class GalleryViewModel
         if (filter == GalleryFilter.Vertical9x16 && it.AspectCategory != AspectCategory.Vertical9x16) return false;
         if (filter == GalleryFilter.Landscape16x9 && it.AspectCategory != AspectCategory.Landscape16x9) return false;
         if (filter == GalleryFilter.Favorites && !it.IsFavorite) return false;
-        if (filter == GalleryFilter.AiRender && (it.IsSample || it.IsMock || it.IsExported)) return false;
+        if (filter == GalleryFilter.AiRender && (it.IsSample || it.IsMock || it.IsExported || it.IsStill)) return false;
+        if (filter == GalleryFilter.Snapshots && !it.IsStill) return false;
         if (filter == GalleryFilter.Exported && !it.IsExported) return false;
         return GalleryMediaService.MatchesText(it, query);   // 키워드 AND · 제목/프롬프트/파일명(티커)
     }

@@ -44,12 +44,15 @@ public sealed class StoryboardStitchService
 
     public StoryboardStitchService() : this(null, null) { }
 
+    /// <summary>🛡️ DI 주입 실행기 경유(장중 세이프가드 일원화).</summary>
+    public StoryboardStitchService(IProcessRunner processRunner) : this(null, processRunner.AsFfmpegRunner()) { }
+
     /// <param name="resolveFfmpeg">ffmpeg 경로(null 반환 = 부재). null 이면 <see cref="FfmpegLocator"/>.</param>
-    /// <param name="runner">ffmpeg 실행기(테스트 주입). null 이면 <see cref="ProcessRunner"/>.</param>
+    /// <param name="runner">ffmpeg 실행기(테스트 주입). null 이면 <see cref="SystemProcessRunner"/>.</param>
     public StoryboardStitchService(Func<string?>? resolveFfmpeg, FfmpegRunner? runner)
     {
         _resolveFfmpeg = resolveFfmpeg ?? DefaultResolve;
-        _run = runner ?? DefaultRunAsync;
+        _run = runner ?? SystemProcessRunner.Shared.AsFfmpegRunner();
     }
 
     public bool IsFfmpegAvailable => SafeResolve() is not null;
@@ -190,12 +193,6 @@ public sealed class StoryboardStitchService
     }
 
     private static string? DefaultResolve() => FfmpegLocator.Locate().Path;
-
-    private static async Task<bool> DefaultRunAsync(string exe, IReadOnlyList<string> args, CancellationToken ct)
-    {
-        var r = await ProcessRunner.RunAsync(exe, args, ct: ct).ConfigureAwait(false);
-        return r.Ok && r.ExitCode == 0;
-    }
 
     private static void TryDelete(string path)
     {
