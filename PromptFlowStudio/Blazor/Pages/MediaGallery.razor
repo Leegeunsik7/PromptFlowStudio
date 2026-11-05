@@ -46,7 +46,7 @@
                 <button class="ga-tab @(Vm.SelectedFilter == GalleryFilter.AiRender ? "on" : null)" @onclick="() => Vm.SetFilter(GalleryFilter.AiRender)">🎬 AI Render</button>
                 <button class="ga-tab @(Vm.SelectedFilter == GalleryFilter.Exported ? "on" : null)" @onclick="() => Vm.SetFilter(GalleryFilter.Exported)">📦 내보냄</button>
             </div>
-            <input class="gl-search" value="@Vm.SearchQuery" @oninput="OnArchiveSearch" placeholder="프롬프트·제목 검색…" />
+            <input class="gl-search" value="@Vm.SearchQuery" @oninput="OnArchiveSearch" placeholder="🔎 프롬프트(영/한)·티커·파일명 검색…" />
             <button class="gl-btn ghost" @onclick="RefreshArchive" title="아카이브 새로고침">⟳</button>
             <button class="gl-btn bad" @onclick="DeleteMockAll" disabled="@(Vm.MockCount == 0)" title="🧪 Mock 태그 영상 + 메타데이터를 디스크에서 영구 삭제">🧹 더미/Mock 파일 일괄 삭제 (@(Vm.MockCount))</button>
             <button class="gl-btn bad" @onclick="DeleteCheckedAll" disabled="@(Vm.CheckedCount == 0)" title="체크된 항목을 디스크에서 영구 삭제">🗑 다중 선택 삭제 (@(Vm.CheckedCount))</button>
@@ -56,10 +56,50 @@
             }
             <span class="ga-cnt">@Vm.MediaItems.Count / @Vm.TotalCount</span>
         </div>
+        @* 🔎 다각도 칩 필터 — 같은 칩 재클릭 = 해제 *@
+        <div class="ga-chips" role="group" aria-label="다각도 필터">
+            <span class="ga-chip-cap">화면비</span>
+            <button class="ga-chip @(Vm.AspectChip == GalleryAspectChip.W16x9 ? "on" : null)" @onclick="() => Vm.SetAspectChip(GalleryAspectChip.W16x9)">16:9</button>
+            <button class="ga-chip @(Vm.AspectChip == GalleryAspectChip.W21x9 ? "on" : null)" @onclick="() => Vm.SetAspectChip(GalleryAspectChip.W21x9)">21:9</button>
+            <button class="ga-chip @(Vm.AspectChip == GalleryAspectChip.W32x9 ? "on" : null)" @onclick="() => Vm.SetAspectChip(GalleryAspectChip.W32x9)">32:9</button>
+            <button class="ga-chip @(Vm.AspectChip == GalleryAspectChip.V9x16 ? "on" : null)" @onclick="() => Vm.SetAspectChip(GalleryAspectChip.V9x16)">9:16</button>
+            <span class="ga-chip-cap">해상도</span>
+            <button class="ga-chip @(Vm.ResolutionChip == GalleryResolutionChip.Uhd4K ? "on" : null)" @onclick="() => Vm.SetResolutionChip(GalleryResolutionChip.Uhd4K)">4K</button>
+            <button class="ga-chip @(Vm.ResolutionChip == GalleryResolutionChip.Fhd1080 ? "on" : null)" @onclick="() => Vm.SetResolutionChip(GalleryResolutionChip.Fhd1080)">1080p</button>
+            <span class="ga-chip-cap">코덱</span>
+            <button class="ga-chip @(Vm.CodecChip == GalleryCodecChip.Mp4 ? "on" : null)" @onclick="() => Vm.SetCodecChip(GalleryCodecChip.Mp4)">MP4</button>
+            <button class="ga-chip @(Vm.CodecChip == GalleryCodecChip.WebM ? "on" : null)" @onclick="() => Vm.SetCodecChip(GalleryCodecChip.WebM)">WebM</button>
+            @if (Vm.HasActiveSearch)
+            {
+                <button class="gl-btn bad" @onclick="() => _confirmBulk = BulkKind.Search" disabled="@(Vm.SearchResultCount == 0)" title="현재 검색·칩 조건에 일치하는 항목만 디스크에서 영구 삭제">🗑 검색된 결과만 일괄 삭제 (@(Vm.SearchResultCount))</button>
+                <button class="gl-btn ghost" @onclick="ExportSearchResults" disabled="@(Vm.SearchResultCount == 0)" title="내 비디오\PromptFlowStudio Exports 로 미디어 + 메타 복사">📤 검색된 결과 일괄 내보내기</button>
+            }
+        </div>
+        @* 💽 스토리지 점유율 대시보드 *@
+        @{ var stg = Vm.Storage; }
+        <div class="ga-stg">
+            <div class="ga-stg-h">
+                <b>💽 @MediaLibraryService.FormatBytes(stg.TotalBytes)</b>
+                <span>/ 디스크 여유 @(stg.FreeBytes >= 0 ? MediaLibraryService.FormatBytes(stg.FreeBytes) : "확인 불가")</span>
+                <span class="ga-stg-n">· 에셋 @(stg.Count.ToString(CultureInfo.InvariantCulture))개</span>
+            </div>
+            <div class="ga-stg-bar" role="img" aria-label="포맷별 점유율">
+                <i class="uhd" style="width:@(stg.Percent(stg.Uhd4KBytes).ToString("0.##", CultureInfo.InvariantCulture))%"></i>
+                <i class="fhd" style="width:@(stg.Percent(stg.Fhd1080Mp4Bytes).ToString("0.##", CultureInfo.InvariantCulture))%"></i>
+                <i class="webm" style="width:@(stg.Percent(stg.WebMBytes).ToString("0.##", CultureInfo.InvariantCulture))%"></i>
+                <i class="etc" style="width:@(stg.Percent(stg.OtherBytes).ToString("0.##", CultureInfo.InvariantCulture))%"></i>
+            </div>
+            <div class="ga-stg-lg">
+                <span><i class="uhd"></i>4K UHD @MediaLibraryService.FormatBytes(stg.Uhd4KBytes)</span>
+                <span><i class="fhd"></i>1080p MP4 @MediaLibraryService.FormatBytes(stg.Fhd1080Mp4Bytes)</span>
+                <span><i class="webm"></i>WebM @MediaLibraryService.FormatBytes(stg.WebMBytes)</span>
+                <span><i class="etc"></i>기타 @MediaLibraryService.FormatBytes(stg.OtherBytes)</span>
+            </div>
+        </div>
         @if (_confirmBulk is { } cb)
         {
             <div class="ga-confirm">
-                <span>⚠ @(cb == BulkKind.Mock ? "Mock 더미 " + Vm.MockCount.ToString(CultureInfo.InvariantCulture) : "선택 " + Vm.CheckedCount.ToString(CultureInfo.InvariantCulture))개 파일을 영구 삭제할까요? (되돌릴 수 없음)</span>
+                <span>⚠ @(cb == BulkKind.Mock ? "Mock 더미 " + Vm.MockCount.ToString(CultureInfo.InvariantCulture) : cb == BulkKind.Search ? "검색 결과 " + Vm.SearchResultCount.ToString(CultureInfo.InvariantCulture) : "선택 " + Vm.CheckedCount.ToString(CultureInfo.InvariantCulture))개 파일을 영구 삭제할까요? (되돌릴 수 없음)</span>
                 <button class="gl-btn bad" @onclick="ConfirmBulk">삭제</button>
                 <button class="gl-btn ghost" @onclick="() => _confirmBulk = null">취소</button>
             </div>
@@ -477,6 +517,18 @@
     .ga-hover { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); opacity: 0; transition: opacity .14s; border: 1px solid var(--accent); background: rgba(0,0,0,.75); color: #fff; border-radius: 8px; padding: 5px 8px; font-weight: 700; font-size: 10.5px; font-family: inherit; cursor: pointer; white-space: nowrap; }
     .ga-card:hover .ga-hover { opacity: 1; }
     .ga-hover:disabled { cursor: wait; }
+    .ga-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0 0 10px; }
+    .ga-chip-cap { font-size: 11px; font-weight: 800; color: var(--text-muted); margin-left: 6px; }
+    .ga-chip { font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border, #333); background: none; color: var(--text-secondary, #bbb); cursor: pointer; }
+    .ga-chip.on { color: var(--accent); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+    .ga-stg { padding: 8px 10px; margin-bottom: 10px; border: 1px solid var(--border, #333); border-radius: 10px; background: var(--card-2); font-size: 12px; }
+    .ga-stg-h { display: flex; gap: 6px; align-items: baseline; color: var(--text-primary); }
+    .ga-stg-n { color: var(--text-muted); }
+    .ga-stg-bar { display: flex; height: 8px; margin: 6px 0; border-radius: 999px; overflow: hidden; background: color-mix(in srgb, var(--text-muted) 18%, transparent); }
+    .ga-stg-bar i { display: block; height: 100%; }
+    .ga-stg-lg { display: flex; gap: 12px; flex-wrap: wrap; color: var(--text-muted); font-size: 11px; }
+    .ga-stg-lg i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
+    .ga-stg .uhd { background: #a855f7; } .ga-stg .fhd { background: #38bdf8; } .ga-stg .webm { background: #22c55e; } .ga-stg .etc { background: #94a3b8; }
     .ga-confirm { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; margin-bottom: 10px; border: 1px solid #ef4444; border-radius: 10px; background: color-mix(in srgb, #ef4444 10%, var(--card-2)); font-size: 12px; font-weight: 700; color: var(--text-primary); }
     @@media (max-width: 900px) { .ga-body { grid-template-columns: 1fr; } }
     .gl-bar-f { height: 100%; border-radius: 999px; transition: width .4s ease; background: linear-gradient(90deg, var(--flow-violet), var(--flow-cyan), var(--flow-magenta)); }
@@ -561,7 +613,13 @@
     private void CopyPrompt(GalleryItem g) => Clipboard.SetText(g.Prompt);
 
     // ── 🧹 정화 도구 · 💼 StockSuite 직결 ──
-    private enum BulkKind { Mock, Checked }
+    private enum BulkKind { Mock, Checked, Search }
+
+    private void ExportSearchResults()
+    {
+        try { Vm.ExportSearchResults(); }
+        catch (Exception ex) { Program.Log("MediaGallery.ExportSearch", ex); Vm.SetStatus("⚠ 내보내기 실패: " + ex.Message); }
+    }
     private BulkKind? _confirmBulk;
     private bool _stockBusy, _canRollback;
 
@@ -593,7 +651,7 @@
         _confirmBulk = null;
         try
         {
-            var n = kind == BulkKind.Mock ? Vm.DeleteMockAssets() : kind == BulkKind.Checked ? Vm.DeleteChecked() : 0;
+            var n = kind == BulkKind.Mock ? Vm.DeleteMockAssets() : kind == BulkKind.Checked ? Vm.DeleteChecked() : kind == BulkKind.Search ? Vm.DeleteSearchResults() : 0;
             if (n > 0) Refresh();   // 하단 MP4 그리드 동기화
         }
         catch (Exception ex) { Program.Log("MediaGallery.BulkDelete", ex); Vm.SetStatus("⚠ 일괄 삭제 실패: " + ex.Message); }

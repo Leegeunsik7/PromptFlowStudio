@@ -32,6 +32,8 @@
 @inject PromptFlowStudio.Services.Render.MediaProbeService Probe
 @inject PromptFlowStudio.Services.Export.StockSuiteWatchlistService Watchlist
 @inject PromptFlowStudio.Services.Prompt.PromptHistoryService History
+@inject PromptFlowStudio.Services.Render.TaskJournalService Journal
+@inject PromptFlowStudio.Services.ProcessBridge.StockSuiteIpcBridge Ipc
 
 @* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
    상태는 WanJobState(싱글턴)에 있고, 이 컴포넌트는 OnChange 를 구독해 InvokeAsync(StateHasChanged)로만 갱신한다.
@@ -54,6 +56,8 @@
             {
                 <button class="ws-ssmon off" @onclick="OnStockSuiteBadgeClick" title="클릭 → StockSuite 원클릭 실행">⚪ StockSuite 미실행</button>
             }
+            @if (Ipc.IsConnected) { <span class="ws-ipc" title="StockSuiteBridge Named Pipe 양방향 연결 — 종목 수신 · HUD 테마 동기화">🔌 IPC</span> }
+            @if (Journal.RecoveringCount > 0) { <span class="ws-recover" role="status">[🔄 미완료 클라우드 작업 복원 중: @(Journal.RecoveringCount.ToString(CultureInfo.InvariantCulture))건]</span> }
         </div>
         <h1 class="ws-title">새 프로젝트 <span class="ws-title-g">텍스트 → 영상</span>
             <span class="ws-accel @AccelClass" title="Wan 2.1 엔진 상태">⚡ @(AccelClass == "ready" ? _vm.StatusBadge : "WAN 2.1 · " + AccelLabel)</span></h1>
@@ -318,7 +322,7 @@
                     <label>오버레이 투명도 <b>@(_htsOpacity.ToString(CultureInfo.InvariantCulture))%</b>
                         <input type="range" min="@HtsHudOverlay.MinOpacity" max="@HtsHudOverlay.MaxOpacity" step="1" @bind="_htsOpacity" @bind:event="oninput" /></label>
                     <label>배경 어둡기 <b>@(_htsDimmer.ToString(CultureInfo.InvariantCulture))%</b>
-                        <input type="range" min="@HtsHudOverlay.MinDimmer" max="@HtsHudOverlay.MaxDimmer" step="1" @bind="_htsDimmer" @bind:event="oninput" /></label>
+                        <input type="range" min="@HtsHudOverlay.MinDimmer" max="@HtsHudOverlay.MaxDimmer" step="1" @bind="_htsDimmer" @bind:event="oninput" @bind:after="BroadcastHtsTheme" /></label>
                     <label>테마
                         <select class="ws-hts-sel" value="@((int)_htsTheme)" @onchange="OnHtsThemeChanged">
                             @foreach (var th in PromptFlowStudio.Services.Export.HtsHudThemes.All)
@@ -332,7 +336,7 @@
                         <span class="ws-lum @lv.CssClass" title="@LumaTitle(lv)">@lv.Badge</span>
                         @if (lv.Level == PromptFlowStudio.Services.Export.HtsReadability.Caution && lv.RecommendedDimmer <= HtsHudOverlay.MaxDimmer)
                         {
-                            <button class="ws-hts-tog" @onclick="() => _htsDimmer = lv.RecommendedDimmer">Dimmer 적용</button>
+                            <button class="ws-hts-tog" @onclick="() => { _htsDimmer = lv.RecommendedDimmer; BroadcastHtsTheme(); }">Dimmer 적용</button>
                         }
                     }
                 </div>
@@ -832,6 +836,9 @@
     .ws-ssmon { margin-left: auto; font: 700 11px/1 var(--mono); padding: 4px 10px; border-radius: 999px; cursor: pointer; border: 1px solid var(--border, #333); background: none; color: var(--text-muted); align-self: flex-start; }
     .ws-ssmon.on { color: #22c55e; border-color: rgba(34,197,94,.45); background: rgba(34,197,94,.08); }
     .ws-ssmon:hover { color: var(--accent); }
+    .ws-ipc { font: 700 11px/1 var(--mono); padding: 4px 10px; border-radius: 999px; border: 1px solid rgba(56,189,248,.45); color: #38bdf8; background: rgba(56,189,248,.08); align-self: flex-start; }
+    .ws-recover { font: 700 11px/1 var(--mono); padding: 4px 10px; border-radius: 999px; border: 1px solid rgba(250,204,21,.45); color: #facc15; background: rgba(250,204,21,.08); align-self: flex-start; animation: ws-recover-pulse 1.4s ease-in-out infinite; }
+    @@keyframes ws-recover-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
     .ws-title { font-size: 28px; font-weight: 900; letter-spacing: -.4px; color: var(--text-primary); margin: 0 0 6px; }
     .ws-title-g { background: linear-gradient(90deg, var(--flow-violet), var(--flow-cyan)); -webkit-background-clip: text; background-clip: text; color: transparent; }
     .ws-sub { font-size: 13.5px; color: var(--text-secondary); margin: 0; }
@@ -1963,7 +1970,44 @@
     {
         if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)
             && Enum.IsDefined(typeof(PromptFlowStudio.Services.Export.HtsHudTheme), v))
+        {
             _htsTheme = (PromptFlowStudio.Services.Export.HtsHudTheme)v;
+            BroadcastHtsTheme();
+        }
+    }
+
+    // 🔌 PFS → StockSuite 테마/Dimmer 브로드캐스트(150ms 디바운스 · 파이프 미연결 시 파일 폴백)
+    private void BroadcastHtsTheme()
+    {
+        try { Ipc.QueueThemeBroadcast(_htsTheme, _htsDimmer); }
+        catch (Exception ex) { Program.Log("Workspace.IpcTheme", ex); }
+    }
+
+    // 🔌 StockSuite → PFS 종목 선택 수신 — 관심종목 자동 전환 + 프롬프트 추천 갱신
+    private void OnIpcTicker(PromptFlowStudio.Services.ProcessBridge.StockSuiteIpcMessage m)
+    {
+        _ = InvokeAsync(async () =>
+        {
+            try
+            {
+                var ticker = m.Ticker ?? "";
+                PromptFlowStudio.Services.Export.WatchlistStock? st = null;
+                for (var i = 0; i < _watch.Stocks.Count; i++)
+                    if (string.Equals(_watch.Stocks[i].Ticker, ticker, StringComparison.OrdinalIgnoreCase)) { st = _watch.Stocks[i]; break; }
+                st ??= new PromptFlowStudio.Services.Export.WatchlistStock(ticker, string.IsNullOrWhiteSpace(m.Name) ? ticker : m.Name!, m.Sector ?? "");
+                _tickerSel = st.Ticker;
+                StateHasChanged();
+                if (!State.IsBusy) await GenerateTickerPromptAsync(st);
+                StateHasChanged();
+            }
+            catch (Exception ex) { Program.Log("Workspace.IpcTicker", ex); }
+        });
+    }
+
+    private void OnHubChanged()
+    {
+        try { _ = InvokeAsync(StateHasChanged); }
+        catch (Exception ex) { Program.Log("Workspace.HubChanged", ex); }
     }
 
     private async Task InspectLumaAsync()
@@ -2216,6 +2260,10 @@
         if (RenderQueue is PromptFlowStudio.Services.Render.RenderQueueService rqs) rqs.OnDurationStitched += OnDurationStitched;
         StockMon.OnChanged += OnStockMonChanged;
         StockMon.Start();   // 🟢 2초 주기 StockSuite 프로세스 폴링(싱글톤 · 멱등)
+        Journal.OnChanged += OnHubChanged;
+        Ipc.OnConnectionChanged += OnHubChanged;
+        Ipc.OnTickerSelected += OnIpcTicker;
+        Ipc.Start();   // 🔌 멱등
         InitDurationPickers();
         _vm = new PromptFlowStudio.ViewModels.PromptInputViewModel(Synth, Inspiration);
         _vm.SetOutputSize(_size);
@@ -2299,6 +2347,9 @@
         RenderQueue.OnChange -= OnRenderQueueChanged;
         if (RenderQueue is PromptFlowStudio.Services.Render.RenderQueueService rqs) rqs.OnDurationStitched -= OnDurationStitched;
         StockMon.OnChanged -= OnStockMonChanged;
+        Journal.OnChanged -= OnHubChanged;
+        Ipc.OnConnectionChanged -= OnHubChanged;
+        Ipc.OnTickerSelected -= OnIpcTicker;
         _vm.PropertyChanged -= OnVmChanged;
         Presets.Changed -= OnUserPresetsChanged;
         var cts = Interlocked.Exchange(ref _liveCts, null);

@@ -28,6 +28,15 @@ public sealed class GalleryViewModel
     public string SearchQuery { get; set; } = "";
     public int TotalCount => _gallery.Items.Count;
     public string? StatusMessage { get; private set; }
+    /// <summary>🔎 다각도 칩 필터(화면비 · 해상도 · 코덱).</summary>
+    public GalleryAspectChip AspectChip { get; set; }
+    public GalleryResolutionChip ResolutionChip { get; set; }
+    public GalleryCodecChip CodecChip { get; set; }
+    /// <summary>💽 스토리지 점유율(필터 재적용 시 갱신).</summary>
+    public GalleryStorageBreakdown Storage { get; private set; } = new(0, 0, 0, 0, 0, 0, -1);
+    /// <summary>검색/칩 조건 활성 여부(일괄 액션 노출 기준).</summary>
+    public bool HasActiveSearch => !string.IsNullOrWhiteSpace(SearchQuery) || AspectChip != GalleryAspectChip.Any
+        || ResolutionChip != GalleryResolutionChip.Any || CodecChip != GalleryCodecChip.Any;
 
     public void Refresh(string directoryPath)
     {
@@ -68,10 +77,59 @@ public sealed class GalleryViewModel
     {
         MediaItems.Clear();
         var q = SearchQuery?.Trim() ?? "";
-        foreach (var it in _gallery.Items)
-            if (Matches(it, SelectedFilter, q)) MediaItems.Add(it);
+        var chips = new GallerySearchQuery(null, AspectChip, ResolutionChip, CodecChip);
+        var all = _gallery.Items;
+        foreach (var it in all)
+            if (Matches(it, SelectedFilter, q) && GalleryMediaService.MatchesSearch(it, chips)) MediaItems.Add(it);
         if (SelectedItem is { } sel && !MediaItems.Contains(sel)) SelectedItem = null;
+        Storage = _gallery.ComputeStorage();
         Raise();
+    }
+
+    public void SetAspectChip(GalleryAspectChip c) { AspectChip = AspectChip == c ? GalleryAspectChip.Any : c; ApplyFilter(); }
+    public void SetResolutionChip(GalleryResolutionChip c) { ResolutionChip = ResolutionChip == c ? GalleryResolutionChip.Any : c; ApplyFilter(); }
+    public void SetCodecChip(GalleryCodecChip c) { CodecChip = CodecChip == c ? GalleryCodecChip.Any : c; ApplyFilter(); }
+
+    /// <summary>현재 검색 결과(샘플 제외) 수.</summary>
+    public int SearchResultCount
+    {
+        get { var n = 0; foreach (var it in MediaItems) if (!it.IsSample) n++; return n; }
+    }
+
+    /// <summary>🗑 검색된 결과만 일괄 영구 삭제 — 성공 개수.</summary>
+    public int DeleteSearchResults()
+    {
+        var ids = new List<Guid>(MediaItems.Count);
+        foreach (var it in MediaItems) if (!it.IsSample) ids.Add(it.ItemId);
+        if (ids.Count == 0) return 0;
+        var n = _gallery.DeleteGalleryItems(ids);
+        AfterBulkDelete();
+        StatusMessage = n == ids.Count ? "🗑 검색 결과 " + n + "개 삭제됨" : "🗑 검색 결과 " + n + "/" + ids.Count + "개 삭제 — 일부 실패";
+        Raise();
+        return n;
+    }
+
+    /// <summary>📤 검색된 결과 일괄 내보내기 — 성공 개수.</summary>
+    public int ExportSearchResults(string? targetDirectory = null)
+    {
+        var list = new List<GalleryItem>(MediaItems.Count);
+        foreach (var it in MediaItems) if (!it.IsSample) list.Add(it);
+        if (list.Count == 0) { StatusMessage = "📤 내보낼 검색 결과가 없습니다"; Raise(); return 0; }
+        var dir = string.IsNullOrWhiteSpace(targetDirectory) ? GalleryMediaService.DefaultExportDirectory(DateTime.Now) : targetDirectory;
+        try
+        {
+            var (n, d) = GalleryMediaService.ExportItems(list, dir);
+            StatusMessage = "📤 " + n + "/" + list.Count + "개 내보냄 → " + d;
+            Raise();
+            return n;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            Program.Log("GalleryVm.Export", ex);
+            StatusMessage = "⚠ 내보내기 실패: " + ex.Message;
+            Raise();
+            return 0;
+        }
     }
 
     public static bool Matches(GalleryItem it, GalleryFilter filter, string query)
@@ -81,9 +139,7 @@ public sealed class GalleryViewModel
         if (filter == GalleryFilter.Favorites && !it.IsFavorite) return false;
         if (filter == GalleryFilter.AiRender && (it.IsSample || it.IsMock || it.IsExported)) return false;
         if (filter == GalleryFilter.Exported && !it.IsExported) return false;
-        return query.Length == 0
-            || it.Title.Contains(query, StringComparison.OrdinalIgnoreCase)
-            || it.Prompt.Contains(query, StringComparison.OrdinalIgnoreCase);
+        return GalleryMediaService.MatchesText(it, query);   // 키워드 AND · 제목/프롬프트/파일명(티커)
     }
 
     public void RestoreToWorkspace(GalleryItem item)

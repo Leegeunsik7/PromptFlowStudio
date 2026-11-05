@@ -75,13 +75,30 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
         if (engine is not { Enabled: true }) return new RenderExecutionResult(false, kind, null, "렌더 엔진 미설정");
 
         var request = BuildRequest(job);
-        var relay = progress is null ? null : new WanProgressRelay(progress);
+        // ☁️ 클라우드 발번 즉시 저널링(task_id 첫 보고 1회) — 단절·재시작 복구용
+        var journal = string.Equals(kind, RenderEngineKind.Cloud, StringComparison.Ordinal) ? Journal : null;
+        JournalingRelay? jrelay = journal is null ? null : new JournalingRelay(progress, journal, job, kind);
+        IProgress<WanProgress>? relay = jrelay is not null ? jrelay : progress is null ? null : new WanProgressRelay(progress);
         WanGenerationResult r;
-        using (ct.Register(static s => { var (self, k) = ((VideoEngineRenderExecutionEngine, string))s!; self.FireInterrupt(k); }, (this, kind)))
-            r = await engine.GenerateAsync(request, relay, ct).ConfigureAwait(false);
-        ct.ThrowIfCancellationRequested();
+        try
+        {
+            using (ct.Register(static s => { var (self, k) = ((VideoEngineRenderExecutionEngine, string))s!; self.FireInterrupt(k); }, (this, kind)))
+                r = await engine.GenerateAsync(request, relay, ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+        }
+        catch (OperationCanceledException)
+        {
+            journal?.MarkStatus(jrelay!.TaskId, "Interrupted");   // 원격 태스크는 계속될 수 있음 → 저널 유지(재시작 시 복구)
+            throw;
+        }
+        var journalTaskId = jrelay?.TaskId ?? r.TaskId;
+        if (journal is not null && !string.IsNullOrWhiteSpace(r.TaskId) && jrelay!.TaskId is null)
+            journal.Record(TaskJournalService.EntryFor(job, r.TaskId!, kind, DateTimeOffset.UtcNow));
         if (!r.Ok || string.IsNullOrWhiteSpace(r.VideoUrl))
+        {
+            if (r.Status is WanTaskStatus.Failed or WanTaskStatus.Canceled) journal?.Remove(journalTaskId);   // 원격 종료 실패 — 복구 대상 아님
             return new RenderExecutionResult(false, kind, null, DescribeFailure(kind, r.Message, r.TaskId));
+        }
 
         var output = r.VideoUrl;
         if (IsRemote(output) && !string.IsNullOrWhiteSpace(job.OutputPath) && Path.IsPathRooted(job.OutputPath))
@@ -113,8 +130,12 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
         }
         output = await ApplyCommercialOverlayAsync(job, output, ct).ConfigureAwait(false);
         output = await ApplyAmbientLoopAsync(job, output, ct).ConfigureAwait(false);
+        journal?.Remove(journalTaskId);   // 로컬 저장 완료 → 저널 안전 제거
         return new RenderExecutionResult(true, kind, output, r.Message);
     }
+
+    /// <summary>☁️ 클라우드 태스크 복구 저널(null = 미사용).</summary>
+    public TaskJournalService? Journal { get; init; }
 
     /// <summary>
     /// 커머셜 번인 후처리 — 대상 메타 · 로컬 산출물일 때만. 성공 시 합성본(<c>{이름}_branded.mp4</c>)을 원본 자리로 교체해 경로 유지,
@@ -312,7 +333,7 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
     private static readonly HttpClient s_download = new() { Timeout = TimeSpan.FromMinutes(5) };
 
     /// <summary>원격 영상 다운로드 — 임시 파일 → 원자 이동, 실패 시 지수 백오프(1s·2s) 최대 3회. HTTP 오류는 상태 코드 포함 예외.</summary>
-    private static async Task DefaultDownloadAsync(string url, string dest, CancellationToken ct)
+    internal static async Task DefaultDownloadAsync(string url, string dest, CancellationToken ct)
     {
         var tmp = dest + ".part";
         for (var attempt = 0; ; attempt++)
@@ -400,5 +421,20 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
     private sealed class WanProgressRelay(IProgress<int> target) : IProgress<WanProgress>
     {
         public void Report(WanProgress value) => target.Report(value.Percent);
+    }
+
+    /// <summary>진행 중계 + 첫 task_id 보고 시 저널 1회 기록(예외 격리).</summary>
+    private sealed class JournalingRelay(IProgress<int>? target, TaskJournalService journal, BatchRenderJob job, string kind) : IProgress<WanProgress>
+    {
+        private string? _taskId;
+        public string? TaskId => Volatile.Read(ref _taskId);
+
+        public void Report(WanProgress value)
+        {
+            target?.Report(value.Percent);
+            if (value.TaskId is not { Length: > 0 } id || Interlocked.CompareExchange(ref _taskId, id, null) is not null) return;
+            try { journal.Record(TaskJournalService.EntryFor(job, id, kind, DateTimeOffset.UtcNow)); }
+            catch (Exception ex) { Program.Log("RenderExec.Journal", ex); }
+        }
     }
 }

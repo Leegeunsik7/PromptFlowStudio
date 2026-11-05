@@ -37,6 +37,8 @@ public sealed class GalleryItem
     public bool IsExported { get; init; }
     /// <summary>정적 첫 프레임 포스터(<c>{이름}.poster.jpg</c>) — 없으면 null(CSS 스틸).</summary>
     public string? PosterPath { get; init; }
+    /// <summary>파일 크기(바이트) — 스토리지 대시보드 집계용(샘플 0).</summary>
+    public long SizeBytes { get; init; }
     public bool IsVideo => !IsImagePath(FilePath);
 
     internal static bool IsImagePath(string path)
@@ -399,6 +401,7 @@ public sealed class GalleryMediaService
                 IsFavorite = isFav,
                 IsExported = isExported,
                 PosterPath = File.Exists(poster) ? poster : null,
+                SizeBytes = info.Length,
             };
         }
         catch (Exception ex) { Program.Log("GalleryMedia.Item", ex); return null; }
@@ -577,4 +580,171 @@ public sealed class GalleryMediaService
             + "<rect width='" + ws + "' height='" + hs + "' fill='url(#g)'/></svg>";
         return "data:image/svg+xml;base64," + Convert.ToBase64String(Encoding.UTF8.GetBytes(svg));
     }
+
+    // ── 🔎 스마트 검색 · 💽 스토리지 대시보드 ──
+
+    /// <summary>복합 검색 — 키워드(공백 분리 AND · 제목/프롬프트/파일명/티커) × 화면비 × 해상도 × 코덱 칩.</summary>
+    public IReadOnlyList<GalleryItem> Search(GallerySearchQuery query)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        var snap = Items;
+        var res = new List<GalleryItem>(snap.Count);
+        for (var i = 0; i < snap.Count; i++)
+            if (MatchesSearch(snap[i], query)) res.Add(snap[i]);
+        return res;
+    }
+
+    public static bool MatchesSearch(GalleryItem it, GallerySearchQuery q)
+    {
+        ArgumentNullException.ThrowIfNull(it);
+        ArgumentNullException.ThrowIfNull(q);
+        if (q.Aspect != GalleryAspectChip.Any && ClassifyAspectChip(it) != q.Aspect) return false;
+        if (q.Resolution != GalleryResolutionChip.Any && ClassifyResolutionChip(it) != q.Resolution) return false;
+        if (q.Codec != GalleryCodecChip.Any && ClassifyCodecChip(it.FilePath) != q.Codec) return false;
+        return MatchesText(it, q.Text);
+    }
+
+    /// <summary>키워드 전부 포함(대소문자 무시) — 제목 · 프롬프트 · 파일명 대상. 빈 질의 = 통과.</summary>
+    public static bool MatchesText(GalleryItem it, string? text)
+    {
+        ArgumentNullException.ThrowIfNull(it);
+        if (string.IsNullOrWhiteSpace(text)) return true;
+        var span = text.AsSpan().Trim();
+        var file = Path.GetFileName(it.FilePath ?? "");
+        while (span.Length > 0)
+        {
+            var sp = span.IndexOfAny(' ', '\t');
+            var tok = sp < 0 ? span : span[..sp];
+            span = sp < 0 ? ReadOnlySpan<char>.Empty : span[(sp + 1)..].TrimStart();
+            if (tok.Length == 0) continue;
+            if (!it.Title.AsSpan().Contains(tok, StringComparison.OrdinalIgnoreCase)
+                && !it.Prompt.AsSpan().Contains(tok, StringComparison.OrdinalIgnoreCase)
+                && !file.AsSpan().Contains(tok, StringComparison.OrdinalIgnoreCase)) return false;
+        }
+        return true;
+    }
+
+    /// <summary>화면비 칩 분류 — 세로(9:16) · 16:9(1.6~2.0) · 21:9(2.2~2.6) · 32:9(3.2 이상). 그 외 Any.</summary>
+    public static GalleryAspectChip ClassifyAspectChip(GalleryItem it)
+    {
+        ArgumentNullException.ThrowIfNull(it);
+        if (ParseResolution(it.Resolution) is not { } d || d.W <= 0 || d.H <= 0) return GalleryAspectChip.Any;
+        var r = (double)d.W / d.H;
+        return r < 0.8 ? GalleryAspectChip.V9x16
+             : r >= 1.6 && r < 2.0 ? GalleryAspectChip.W16x9
+             : r >= 2.2 && r < 2.6 ? GalleryAspectChip.W21x9
+             : r >= 3.2 ? GalleryAspectChip.W32x9
+             : GalleryAspectChip.Any;
+    }
+
+    /// <summary>해상도 칩 분류(짧은 변 기준 — 울트라와이드 3840×1080 은 1080p) — 2160 이상 4K · 1080 이상 1080p.</summary>
+    public static GalleryResolutionChip ClassifyResolutionChip(GalleryItem it)
+    {
+        ArgumentNullException.ThrowIfNull(it);
+        if (ParseResolution(it.Resolution) is not { } d) return GalleryResolutionChip.Any;
+        var shortSide = Math.Min(d.W, d.H);
+        return shortSide >= 2160 ? GalleryResolutionChip.Uhd4K : shortSide >= 1080 ? GalleryResolutionChip.Fhd1080 : GalleryResolutionChip.Any;
+    }
+
+    public static GalleryCodecChip ClassifyCodecChip(string? path)
+    {
+        var ext = Path.GetExtension(path ?? "");
+        return ext.Equals(".webm", StringComparison.OrdinalIgnoreCase) ? GalleryCodecChip.WebM
+             : ext.Equals(".mp4", StringComparison.OrdinalIgnoreCase) ? GalleryCodecChip.Mp4
+             : GalleryCodecChip.Any;
+    }
+
+    /// <summary>스토리지 점유율 — 총량 · 4K UHD · 1080p MP4 · WebM · 기타 + 디스크 여유(샘플 제외).</summary>
+    public GalleryStorageBreakdown ComputeStorage()
+    {
+        string? root;
+        lock (_lock) root = _root;
+        return ComputeStorage(Items, root);
+    }
+
+    public static GalleryStorageBreakdown ComputeStorage(IReadOnlyList<GalleryItem> items, string? root)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        long total = 0, uhd = 0, fhd = 0, webm = 0, other = 0;
+        var count = 0;
+        for (var i = 0; i < items.Count; i++)
+        {
+            var it = items[i];
+            if (it.IsSample || it.SizeBytes <= 0) continue;
+            count++;
+            total += it.SizeBytes;
+            var codec = ClassifyCodecChip(it.FilePath);
+            var res = ClassifyResolutionChip(it);
+            if (codec == GalleryCodecChip.WebM) webm += it.SizeBytes;
+            else if (res == GalleryResolutionChip.Uhd4K) uhd += it.SizeBytes;
+            else if (res == GalleryResolutionChip.Fhd1080 && codec == GalleryCodecChip.Mp4) fhd += it.SizeBytes;
+            else other += it.SizeBytes;
+        }
+        return new GalleryStorageBreakdown(count, total, uhd, fhd, webm, other, FreeBytesOf(root));
+    }
+
+    private static long FreeBytesOf(string? root)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(root)) return -1;
+            var drive = Path.GetPathRoot(Path.GetFullPath(root));
+            return string.IsNullOrEmpty(drive) ? -1 : new DriveInfo(drive).AvailableFreeSpace;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            Program.Log("GalleryMedia.FreeSpace", ex);
+            return -1;
+        }
+    }
+
+    /// <summary>검색 결과 일괄 내보내기 — 미디어 + 사이드카 메타 복사([부분 구제] 실패 건 제외). 반환 (성공 수, 대상 폴더).</summary>
+    public static (int Copied, string Directory) ExportItems(IReadOnlyList<GalleryItem> items, string targetDirectory)
+    {
+        ArgumentNullException.ThrowIfNull(items);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetDirectory);
+        Directory.CreateDirectory(targetDirectory);
+        var copied = 0;
+        for (var i = 0; i < items.Count; i++)
+        {
+            var it = items[i];
+            if (it.IsSample || !File.Exists(it.FilePath)) continue;
+            try
+            {
+                var dest = Path.Combine(targetDirectory, Path.GetFileName(it.FilePath));
+                File.Copy(it.FilePath, dest, overwrite: true);
+                var meta = MetaPathFor(it.FilePath);
+                if (File.Exists(meta)) File.Copy(meta, MetaPathFor(dest), overwrite: true);
+                copied++;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Program.Log("GalleryMedia.Export", ex); }
+        }
+        return (copied, targetDirectory);
+    }
+
+    /// <summary>기본 내보내기 폴더 — 내 비디오\PromptFlowStudio Exports\search_{시각}(스캔 루트 밖 · 중복 색인 방지).</summary>
+    public static string DefaultExportDirectory(DateTime now)
+    {
+        var baseDir = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
+        if (string.IsNullOrWhiteSpace(baseDir)) baseDir = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        return Path.Combine(baseDir, "PromptFlowStudio Exports", "search_" + now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture));
+    }
+}
+
+/// <summary>화면비 칩.</summary>
+public enum GalleryAspectChip { Any = 0, W16x9, W21x9, W32x9, V9x16 }
+/// <summary>해상도 칩.</summary>
+public enum GalleryResolutionChip { Any = 0, Uhd4K, Fhd1080 }
+/// <summary>코덱(컨테이너) 칩.</summary>
+public enum GalleryCodecChip { Any = 0, Mp4, WebM }
+
+/// <summary>복합 검색 질의.</summary>
+public sealed record GallerySearchQuery(string? Text, GalleryAspectChip Aspect = GalleryAspectChip.Any,
+    GalleryResolutionChip Resolution = GalleryResolutionChip.Any, GalleryCodecChip Codec = GalleryCodecChip.Any);
+
+/// <summary>스토리지 점유율 스냅샷(FreeBytes 음수 = 조회 불가).</summary>
+public sealed record GalleryStorageBreakdown(int Count, long TotalBytes, long Uhd4KBytes, long Fhd1080Mp4Bytes, long WebMBytes, long OtherBytes, long FreeBytes)
+{
+    /// <summary>총량 대비 비중(0~100).</summary>
+    public double Percent(long part) => TotalBytes <= 0 ? 0 : Math.Clamp(part * 100.0 / TotalBytes, 0, 100);
 }
