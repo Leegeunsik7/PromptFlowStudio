@@ -70,6 +70,8 @@ public sealed class MainForm : Form
         services.AddSingleton<GeminiClient>();                                      // Gemini 멀티모달 REST 공용 클라이언트(텍스트+이미지/오디오/비디오 인라인 · 3대 고급 서비스 공유)
         services.AddSingleton<PromptFlowStudio.Services.Prompt.PromptSynthesizerService>();   // 1번 워크플로우 프롬프트 합성기(Subject 우선 · 800자 예산 · 네거티브 중복 제거)
         services.AddSingleton<PromptFlowStudio.Services.Prompt.PromptInspirationService>();   // 💡 스토리 레시피 & 인스피레이션 허브(장르 프리셋 · 칩 조합기)
+        services.AddSingleton<PromptFlowStudio.Services.Render.MediaProbeService>(sp => new PromptFlowStudio.Services.Render.MediaProbeService(() => sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.FfmpegBinaryPath is { Length: > 0 } fp && System.IO.File.Exists(fp) ? fp : PromptFlowStudio.Services.Render.FfmpegLocator.Locate().Path));   // ℹ️ 미디어 규격 인스펙터(ffprobe → ffmpeg 배너 → 헤더 폴백)
+        services.AddSingleton(sp => new PromptFlowStudio.Services.Render.RenderCacheCleaner(() => new[] { sp.GetRequiredService<PromptFlowStudio.Services.Media.ILocalMediaService>().MediaRoot, System.IO.Path.Combine(AppContext.BaseDirectory, "_renders") }, () => sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.RenderCacheMaxGb ?? PromptFlowStudio.Services.Render.RenderCacheCleaner.DefaultMaxCacheGb));   // 🧹 렌더 캐시 자동 정리(임시 회수 + LRU 상한)
         services.AddSingleton<PromptFlowStudio.Services.Prompt.PresetManagerService>();   // ⭐ 작업실 커스텀 프리셋(user_presets.json)
         services.AddSingleton<PromptFlowStudio.Services.Storyboard.StoryboardSequencerService>();   // 2번 워크플로우 스토리보드 시퀀서(대본 → N컷 분할 · 시드/피사체 일관성 전파)
         services.AddSingleton<PromptFlowStudio.ViewModels.StoryboardViewModel>();   // 2번 워크플로우 컷 덱 상태(Workspace → Storyboard 대본 인계 · 화면 간 공유)
@@ -940,6 +942,7 @@ public sealed class MainForm : Form
 
         // 임시/캐시 파편 자동 정소(24h 이상) — 백그라운드, 실패해도 기동 무영향.
         try { _ = sp.GetRequiredService<IResourceCleanupService>().CleanupOnStartupAsync(); } catch { /* 정소 실패 무시 */ }
+        try { _ = sp.GetRequiredService<PromptFlowStudio.Services.Render.RenderCacheCleaner>().CleanAsync(); } catch (Exception ex) { Program.Log("MainForm.RenderCache", ex); }   // 🧹 고아 임시 파일 회수 + LRU 상한(백그라운드)
 
         var view = new BlazorWebView
         {

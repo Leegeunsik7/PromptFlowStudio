@@ -1,18 +1,18 @@
 # Current Project Status
-
-- Active Milestone: 【Export-Seam】 WebM VP9 1080p 샤프닝 일관화 · 캔버스 루프 이음새 인스펙터 · 대량생산 StockSuite 팩 일괄 내보내기
+- Active Milestone: 【Diagnostics】 HTS 3대 테마 HUD · 미디어 규격 인스펙터 · 렌더 캐시 자동 정리기
 - Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (net8.0-android 미검증: Android SDK 미설치)
-- Tests: FastUnit 561/561 PASS (Release)
-- Updated: 2026-11-04 (KST)
+- Tests: FastUnit 567/567 PASS (Release)
+- Updated: 2026-11-05 (KST)
 
 ## Completed
-- StockSuiteExporter: `BuildWebMArgs(in, out, sharpen)` — `-vf SharpenFilter` + VP9 CRF32 `-an` · 샤프닝 실패 → 일반 VP9 → MP4 복사 폴백(동일 기본명 .mp4)
-- StockSuiteExporter: `ExportBatchPackAsync(paths, dir, sharpen)` → `bg_ambient_01.mp4/.webm`… 순차 넘버링 · 누락 skip · 중복 차단 · 개별 실패 격리([부분 구제]) · 경로 미설정 즉시 NeedsPathSetup
-- Workspace: 캔버스 툴바 `🔁 이음새 점검` — `pfsSeamInspector`(promptflow.js rAF) [종료-2s, 종료] ∪ [0, 2s] 무한 반복 · Dispose 시 해제
-- BatchStudio: 대기열 툴바 `💼 StockSuite 팩 일괄 내보내기`(완료분 ≥1 · 실행 중 비활성) + 결과 토스트
-- PublishModal/UserSettings: WebM 선택 시에도 고선명 샤프닝 체크박스 활성
-- Tests: StockSuiteExporter_AppliesSharpenFilter_ToWebMExport · StockSuiteExporter_ExportBatchPack_ExportsIndexedFilesSuccessfully
+- HtsHudThemes(`Services/Export/HtsHudTheme.cs`): OLED 딥블랙 · 네이비 퀀트(10단 호가) · 모던 미니멀(라인+볼륨) — CSS 클래스/호가 깊이/파서
+- 조도 검사기: `Evaluate(luma, dimmer, theme)` WCAG 대비율 4.5:1 기준 🟢 최적 / 🟡 주의(Dimmer N% 권장 · 원클릭 적용)
+- HtsHudOverlay: `Theme` 파라미터 · `RootClass(theme)` · 테마별 CSS · 미니멀 라인 차트/볼륨 바(정적 데이터)
+- MediaProbeService: ffprobe JSON → ffmpeg `-i` 배너 → 헤더 폴백 · 코덱(H.264 (avc1)/VP9)·해상도@FPS·Mbps·MB·무음 · 중앙 YAVG 조도 측정(10s 타임아웃)
+- Workspace: `[ℹ️ 미디어 규격]` 카드 · HUD 테마 드롭다운 · `[🔆 조도 검사]` 뱃지
+- RenderCacheCleaner: `_temp_*`·`*_temp*.mp4`·`*.tmp`·`concat_*.txt`·`synth_*.wav` 회수(진행 중 보호) · 상한 초과 시 `.meta.json` 없는 오래된 미디어 LRU Prune · 앱 시작 백그라운드 실행
+- UserSettings: 최대 렌더 캐시 용량(GB, 기본 10) · `[🧹 임시 캐시 즉시 비우기]` — DI: MainForm + MauiProgram
+- Tests: MediaProbeService_ExtractsVideoSpecsCorrectly · RenderCacheCleaner_RemovesOrphanTempFilesSuccessfully · HtsHudOverlay_SwitchesThemesCorrectly 외 3건
 
 ## Next
-- 실 ffmpeg 환경에서 VP9 + 1080p 샤프닝 인코딩 시간/화질 확인
-- 실 15초 앰비언트 영상으로 이음새 점검 루프 체감 확인
+- 조도 검사 실영상(ffmpeg signalstats) 실기 검증 · Android 빌드 검증

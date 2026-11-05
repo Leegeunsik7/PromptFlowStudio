@@ -28,6 +28,7 @@
 @inject PromptFlowStudio.Services.Platform.IClipboardService Clipboard
 @inject PromptFlowStudio.Services.Export.StockSuiteExporter StockSuite
 @inject PromptFlowStudio.Services.Prompt.PresetManagerService Presets
+@inject PromptFlowStudio.Services.Render.MediaProbeService Probe
 
 @* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
    상태는 WanJobState(싱글턴)에 있고, 이 컴포넌트는 OnChange 를 구독해 InvokeAsync(StateHasChanged)로만 갱신한다.
@@ -240,6 +241,7 @@
                 <span>② 🎬 라이브 비디오 캔버스</span>
                 <span class="ws-hts-tools">
                     <button class="ws-hts-tog @(_htsHud ? "on" : null)" @onclick="() => _htsHud = !_htsHud" aria-pressed="@(_htsHud ? "true" : "false")" title="HTS 차트·호가창 목업을 영상 위에 겹쳐 배경 가독성을 검증">📊 HTS HUD</button>
+                    @if (InspectPath is not null) { <button class="ws-hts-tog @(_specOpen ? "on" : null)" @onclick="ToggleSpecAsync" aria-pressed="@(_specOpen ? "true" : "false")" title="실측 코덱 · 해상도/FPS · 비트레이트 · 파일 크기 · 무음(-an) 적용 여부">ℹ️ 미디어 규격</button> }
                     <button class="ws-hts-tog @(_seamCheck ? "on" : null)" @onclick="ToggleSeamCheckAsync" aria-pressed="@(_seamCheck ? "true" : "false")" title="영상 종료 2초 전 → 0~2초 구간만 무한 반복해 루프 접합면(Seam) 프레임 튐을 1초 만에 점검">🔁 이음새 점검</button>
                     <span class="ws-badge @PhaseClass">@PhaseLabel</span>
                 </span>
@@ -251,6 +253,47 @@
                         <input type="range" min="@HtsHudOverlay.MinOpacity" max="@HtsHudOverlay.MaxOpacity" step="1" @bind="_htsOpacity" @bind:event="oninput" /></label>
                     <label>배경 어둡기 <b>@(_htsDimmer.ToString(CultureInfo.InvariantCulture))%</b>
                         <input type="range" min="@HtsHudOverlay.MinDimmer" max="@HtsHudOverlay.MaxDimmer" step="1" @bind="_htsDimmer" @bind:event="oninput" /></label>
+                    <label>테마
+                        <select class="ws-hts-sel" value="@((int)_htsTheme)" @onchange="OnHtsThemeChanged">
+                            @foreach (var th in PromptFlowStudio.Services.Export.HtsHudThemes.All)
+                            {
+                                <option value="@((int)th)">@PromptFlowStudio.Services.Export.HtsHudThemes.Label(th)</option>
+                            }
+                        </select></label>
+                    <button class="ws-hts-tog" @onclick="InspectLumaAsync" disabled="@(_lumaBusy || InspectPath is null)" title="영상 중앙 차트 영역(50%) 평균 밝기를 실측해 HUD 대비율을 진단">@(_lumaBusy ? "⏳ 측정 중" : "🔆 조도 검사")</button>
+                    @if (LumaVerdict is { } lv)
+                    {
+                        <span class="ws-lum @lv.CssClass" title="@LumaTitle(lv)">@lv.Badge</span>
+                        @if (lv.Level == PromptFlowStudio.Services.Export.HtsReadability.Caution && lv.RecommendedDimmer <= HtsHudOverlay.MaxDimmer)
+                        {
+                            <button class="ws-hts-tog" @onclick="() => _htsDimmer = lv.RecommendedDimmer">Dimmer 적용</button>
+                        }
+                    }
+                </div>
+            }
+            @if (_specOpen && InspectPath is not null)
+            {
+                <div class="ws-spec" role="dialog" aria-label="미디어 규격">
+                    <div class="ws-spec-h"><b>ℹ️ 미디어 테크니컬 규격</b><button class="ws-spec-x" @onclick="() => _specOpen = false" aria-label="닫기">✕</button></div>
+                    @if (_specBusy)
+                    {
+                        <div class="ws-hint">⏳ 분석 중…</div>
+                    }
+                    else if (_spec is { } sp)
+                    {
+                        <dl class="ws-spec-g">
+                            <dt>포맷/코덱</dt><dd>@sp.CodecLabel <span class="ws-hint">@sp.Container</span></dd>
+                            <dt>해상도</dt><dd>@sp.ResolutionLabel</dd>
+                            <dt>비트레이트</dt><dd>@sp.BitrateLabel</dd>
+                            <dt>파일 크기</dt><dd>@sp.SizeLabel</dd>
+                            <dt>오디오</dt><dd class="@(sp.HasAudio ? "warn" : "ok")">@sp.AudioLabel</dd>
+                        </dl>
+                        @if (sp.Source == "header") { <div class="ws-hint">※ ffprobe/ffmpeg 미설치 — 파일 헤더 정보만 표시합니다.</div> }
+                    }
+                    else
+                    {
+                        <div class="ws-hint">❌ 규격을 읽을 수 없습니다(파일 없음).</div>
+                    }
                 </div>
             }
 
@@ -259,7 +302,7 @@
                 @* 큐 렌더(10s/15s/앰비언트) 완료 산출물 — @key 로 <video> 재생성해 소스 교체 즉시 강제 리로드 *@
                 <div class="ws-hts-wrap">
                     <video class="ws-video" src="@_canvasQueueUrl" controls autoplay loop muted preload="auto" @key="_canvasQueueUrl"></video>
-                    @if (_htsHud) { <HtsHudOverlay OpacityPercent="_htsOpacity" DimmerPercent="_htsDimmer" /> }
+                    @if (_htsHud) { <HtsHudOverlay OpacityPercent="_htsOpacity" DimmerPercent="_htsDimmer" Theme="_htsTheme" /> }
                 </div>
                 @if (_canvasQueuePath is { } qPath)
                 {
@@ -310,7 +353,7 @@
                 {
                     <div class="ws-hts-wrap">
                         <video class="ws-video" src="@ShownVideoUrl" controls autoplay loop muted preload="auto"></video>
-                        @if (_htsHud) { <HtsHudOverlay OpacityPercent="_htsOpacity" DimmerPercent="_htsDimmer" /> }
+                        @if (_htsHud) { <HtsHudOverlay OpacityPercent="_htsOpacity" DimmerPercent="_htsDimmer" Theme="_htsTheme" /> }
                     </div>
                 }
                 <div class="ws-done">
@@ -830,6 +873,18 @@
     .ws-hts-ctl label { display: flex; align-items: center; gap: 6px; }
     .ws-hts-ctl input[type=range] { width: 120px; }
     .ws-hts-wrap { position: relative; }
+    .ws-hts-sel { font-size: 11px; padding: 2px 6px; border-radius: 6px; background: rgba(8, 6, 16, .6); color: inherit; border: 1px solid var(--line); }
+    .ws-lum { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); }
+    .ws-lum.ok { color: #4ade80; border-color: rgba(74, 222, 128, .45); background: rgba(34, 197, 94, .1); }
+    .ws-lum.warn { color: #facc15; border-color: rgba(250, 204, 21, .45); background: rgba(250, 204, 21, .1); }
+    .ws-lum.na { color: var(--text-secondary, #aab); }
+    .ws-spec { margin: 6px 0; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(61, 139, 255, .45); background: rgba(10, 14, 22, .92); font-size: 12px; }
+    .ws-spec-h { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    .ws-spec-x { background: transparent; border: 0; color: inherit; cursor: pointer; }
+    .ws-spec-g { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; margin: 0; }
+    .ws-spec-g dt { color: var(--text-secondary, #aab); }
+    .ws-spec-g dd { margin: 0; font-family: Consolas, monospace; }
+    .ws-spec-g dd.ok { color: #4ade80; } .ws-spec-g dd.warn { color: #facc15; }
     .ws-hts-wrap > .ws-video { display: block; }
     /* ⭐ 사용자 프리셋 */
     .ws-preset-save { margin-left: auto; font-size: 11.5px; font-weight: 700; padding: 4px 9px; border-radius: 8px; border: 1px dashed #f5c542; background: rgba(245, 197, 66, .08); color: #f5c542; cursor: pointer; }
@@ -1612,6 +1667,77 @@
     }
     private int _htsOpacity = 60;
     private int _htsDimmer = 20;
+    private PromptFlowStudio.Services.Export.HtsHudTheme _htsTheme = PromptFlowStudio.Services.Export.HtsHudTheme.OledBlack;
+
+    // 🔆 조도 검사기 · ℹ️ 미디어 규격 인스펙터
+    private double? _centerLuma;
+    private string? _lumaPath;
+    private bool _lumaBusy, _specOpen, _specBusy;
+    private PromptFlowStudio.Services.Render.MediaSpec? _spec;
+    private string? _specPath;
+    private PromptFlowStudio.Services.Export.HtsLuminanceVerdict? _lumaCache;
+    private (double? L, int D, PromptFlowStudio.Services.Export.HtsHudTheme T) _lumaKey;
+
+    /// <summary>규격/조도 검사 대상 로컬 파일 — 큐 산출물 우선, 완료된 로컬 저장본 차선.</summary>
+    private string? InspectPath =>
+        _canvasQueuePath is { } q && !State.IsBusy ? q
+        : State.Phase == WanJobPhase.Completed && State.IsLocal ? State.LocalPath : null;
+
+    private PromptFlowStudio.Services.Export.HtsLuminanceVerdict? LumaVerdict
+    {
+        get
+        {
+            if (_lumaPath is null || _lumaPath != InspectPath) return null;
+            var key = (_centerLuma, _htsDimmer, _htsTheme);
+            if (_lumaCache is null || key != _lumaKey)
+            {
+                _lumaCache = PromptFlowStudio.Services.Export.HtsHudThemes.Evaluate(_centerLuma, _htsDimmer, _htsTheme);
+                _lumaKey = key;
+            }
+            return _lumaCache;
+        }
+    }
+
+    private static string LumaTitle(PromptFlowStudio.Services.Export.HtsLuminanceVerdict v)
+        => "실효 배경 휘도 " + (v.EffectiveLuma * 100).ToString("0", CultureInfo.InvariantCulture)
+           + "% · 대비율 " + v.ContrastRatio.ToString("0.0", CultureInfo.InvariantCulture) + ":1 (기준 4.5:1)";
+
+    private void OnHtsThemeChanged(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v)
+            && Enum.IsDefined(typeof(PromptFlowStudio.Services.Export.HtsHudTheme), v))
+            _htsTheme = (PromptFlowStudio.Services.Export.HtsHudTheme)v;
+    }
+
+    private async Task InspectLumaAsync()
+    {
+        var path = InspectPath;
+        if (path is null || _lumaBusy) return;
+        _lumaBusy = true;
+        try
+        {
+            _centerLuma = await Probe.MeasureCenterLumaAsync(path);
+            _lumaPath = path;
+        }
+        catch (Exception ex) { Program.Log("Workspace.Luma", ex); }
+        finally { _lumaBusy = false; }
+    }
+
+    private async Task ToggleSpecAsync()
+    {
+        _specOpen = !_specOpen;
+        var path = InspectPath;
+        if (!_specOpen || path is null || (_spec is not null && _specPath == path)) return;
+        _specBusy = true;
+        _spec = null;
+        try
+        {
+            _spec = await Probe.ProbeAsync(path);
+            _specPath = path;
+        }
+        catch (Exception ex) { Program.Log("Workspace.Spec", ex); }
+        finally { _specBusy = false; }
+    }
 
     // ⭐ 사용자 커스텀 프리셋(user_presets.json)
     private IReadOnlyList<PromptFlowStudio.Services.Prompt.WorkspaceUserPreset> _myPresets = Array.Empty<PromptFlowStudio.Services.Prompt.WorkspaceUserPreset>();

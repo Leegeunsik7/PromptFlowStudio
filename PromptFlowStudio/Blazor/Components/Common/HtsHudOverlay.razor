@@ -1,33 +1,44 @@
 @using System.Globalization
 @* 📊 HTS HUD 가독성 시뮬레이터 — 배경 영상 위 HTS 목업(종합차트·10단 호가·체결·잔고 바). 정적 결정론 데이터(렌더 할당 최소) · pointer-events 차단으로 영상 컨트롤 유지. *@
-<div class="hts-hud" aria-hidden="true">
+<div class="@RootClass(Theme)" data-theme="@ThemeKey" aria-hidden="true">
     <div class="hts-dim" style="opacity:@DimCss"></div>
     <div class="hts-layer" style="opacity:@OpacityCss">
         <div class="hts-chart">
-            <div class="hts-tt">종합차트 · KOSPI200 F 1분</div>
+            <div class="hts-tt">@(IsLine ? "KOSPI200 F · 라인" : "종합차트 · KOSPI200 F 1분")</div>
             <svg viewBox="0 0 @(ChartW) 100" preserveAspectRatio="none">
                 @for (var g = 1; g < 5; g++)
                 {
                     <line class="hts-grid" x1="0" x2="@(ChartW)" y1="@(GridY[g])" y2="@(GridY[g])" />
                 }
-                @for (var i = 0; i < CandleCount; i++)
+                @if (IsLine)
                 {
-                    <g>
-                        <line class="@(Up[i] ? "hts-up" : "hts-dn")" x1="@(Cx[i])" x2="@(Cx[i])" y1="@(Hi[i])" y2="@(Lo[i])" />
-                        <rect class="@(Up[i] ? "hts-up-b" : "hts-dn-b")" x="@(Bx[i])" y="@(By[i])" width="@(BodyW)" height="@(Bh[i])" />
-                    </g>
+                    @for (var i = 0; i < CandleCount; i++)
+                    {
+                        <rect class="hts-vol" x="@(Bx[i])" y="@(VolY[i])" width="@(BodyW)" height="@(VolH[i])" />
+                    }
+                    <polyline class="hts-line" points="@ClosePoints" />
                 }
-                <polyline class="hts-ma" points="@MaPoints" />
+                else
+                {
+                    @for (var i = 0; i < CandleCount; i++)
+                    {
+                        <g>
+                            <line class="@(Up[i] ? "hts-up" : "hts-dn")" x1="@(Cx[i])" x2="@(Cx[i])" y1="@(Hi[i])" y2="@(Lo[i])" />
+                            <rect class="@(Up[i] ? "hts-up-b" : "hts-dn-b")" x="@(Bx[i])" y="@(By[i])" width="@(BodyW)" height="@(Bh[i])" />
+                        </g>
+                    }
+                    <polyline class="hts-ma" points="@MaPoints" />
+                }
             </svg>
         </div>
         <div class="hts-side">
-            <div class="hts-tt">호가 10단계</div>
+            <div class="hts-tt">@(Depth == 10 ? "호가 10단계" : "호가 5단계")</div>
             <div class="hts-book">
-                @for (var i = 0; i < 10; i++)
+                @for (var i = 10 - Depth; i < 10; i++)
                 {
                     <div class="hts-row ask"><span class="hts-qty">@AskQty[i]</span><span class="hts-px">@AskPx[i]</span><span></span></div>
                 }
-                @for (var i = 0; i < 10; i++)
+                @for (var i = 0; i < Depth; i++)
                 {
                     <div class="hts-row bid"><span></span><span class="hts-px">@BidPx[i]</span><span class="hts-qty">@BidQty[i]</span></div>
                 }
@@ -77,6 +88,22 @@
     .hts-bar b { color: #fff; }
     .hts-bar b.up { color: #ff7a7c; }
     .hts-live { margin-left: auto; color: #3ddc84; font-weight: 700; }
+    .hts-vol { fill: rgba(140, 160, 190, .35); }
+    .hts-line { fill: none; stroke: #3182f6; stroke-width: 1.6; vector-effect: non-scaling-stroke; }
+    /* ⚫ OLED 딥블랙 — 초저조도 · 네온 그린/레드 캔들 */
+    .hts-t-oled .hts-chart, .hts-t-oled .hts-side, .hts-t-oled .hts-bar { background: rgba(0, 0, 0, .86); border-color: rgba(60, 255, 160, .18); }
+    .hts-t-oled .hts-up { stroke: #00ff9c; } .hts-t-oled .hts-up-b { fill: #00ff9c; }
+    .hts-t-oled .hts-dn { stroke: #ff2e63; } .hts-t-oled .hts-dn-b { fill: #ff2e63; }
+    .hts-t-oled .hts-tt { color: #7dffc9; }
+    /* 🔷 네이비 퀀트 — 딥네이비 · 10단 호가 */
+    .hts-t-navy .hts-chart, .hts-t-navy .hts-side, .hts-t-navy .hts-bar { background: rgba(10, 24, 56, .88); border-color: rgba(90, 130, 200, .45); }
+    .hts-t-navy .hts-tt { color: #a9c4ff; background: rgba(30, 60, 120, .45); }
+    .hts-t-navy .hts-row.ask { background: rgba(61, 139, 255, .2); } .hts-t-navy .hts-row.bid { background: rgba(255, 77, 79, .2); }
+    /* ⬜ 모던 미니멀 — 라인 차트 · 볼륨 바 */
+    .hts-t-mini .hts-chart, .hts-t-mini .hts-side, .hts-t-mini .hts-bar { background: rgba(23, 23, 28, .62); border-color: transparent; border-radius: 10px; }
+    .hts-t-mini .hts-tt { color: #f2f4f6; border-bottom-color: transparent; font-family: "Malgun Gothic", sans-serif; }
+    .hts-t-mini .hts-grid { stroke: rgba(255, 255, 255, .07); }
+    .hts-t-mini .hts-row.ask, .hts-t-mini .hts-row.bid { background: transparent; }
 </style>
 
 @code {
@@ -85,7 +112,22 @@
     /// <summary>배경 어둡기(%) — 0~50 으로 클램프.</summary>
     [Parameter] public int DimmerPercent { get; set; } = 20;
 
+    /// <summary>테마 프리셋(OLED 딥블랙 · 네이비 퀀트 · 모던 미니멀).</summary>
+    [Parameter] public PromptFlowStudio.Services.Export.HtsHudTheme Theme { get; set; } = PromptFlowStudio.Services.Export.HtsHudTheme.OledBlack;
+
     public const int MinOpacity = 20, MaxOpacity = 80, MinDimmer = 0, MaxDimmer = 50;
+
+    /// <summary>루트 CSS 클래스(<c>hts-hud hts-t-*</c>) — 정적 테이블(렌더 할당 0).</summary>
+    public static string RootClass(PromptFlowStudio.Services.Export.HtsHudTheme t) => t switch
+    {
+        PromptFlowStudio.Services.Export.HtsHudTheme.NavyQuant => "hts-hud hts-t-navy",
+        PromptFlowStudio.Services.Export.HtsHudTheme.ModernMinimal => "hts-hud hts-t-mini",
+        _ => "hts-hud hts-t-oled",
+    };
+
+    private string ThemeKey => PromptFlowStudio.Services.Export.HtsHudThemes.CssClass(Theme);
+    private bool IsLine => PromptFlowStudio.Services.Export.HtsHudThemes.UsesLineChart(Theme);
+    private int Depth => PromptFlowStudio.Services.Export.HtsHudThemes.BookDepth(Theme);
 
     public static int ClampOpacity(int v) => v < MinOpacity ? MinOpacity : v > MaxOpacity ? MaxOpacity : v;
     public static int ClampDimmer(int v) => v < MinDimmer ? MinDimmer : v > MaxDimmer ? MaxDimmer : v;
@@ -102,7 +144,8 @@
     private static readonly bool[] Up = new bool[CandleCount];
     private static readonly string[] Cx = new string[CandleCount], Bx = new string[CandleCount], By = new string[CandleCount],
         Bh = new string[CandleCount], Hi = new string[CandleCount], Lo = new string[CandleCount];
-    private static readonly string MaPoints;
+    private static readonly string MaPoints, ClosePoints;
+    private static readonly string[] VolY = new string[CandleCount], VolH = new string[CandleCount];
     private static readonly string[] AskPx = new string[10], AskQty = new string[10], BidPx = new string[10], BidQty = new string[10];
     private static readonly string[] TickTime = new string[TickCount], TickPx = new string[TickCount], TickQty = new string[TickCount];
     private static readonly bool[] TickUp = new bool[TickCount];
@@ -145,6 +188,20 @@
             ma.Append(cx.ToString("0.0", ic)).Append(',').Append((100 - avg).ToString("0.0", ic));
         }
         MaPoints = ma.ToString();
+
+        // 모던 미니멀 — 종가 라인 + 하단 볼륨 바(별도 시드 · 기존 캔들/호가 시퀀스 불변)
+        var vr = new Random(20261105);
+        var cl = new System.Text.StringBuilder(CandleCount * 12);
+        for (var i = 0; i < CandleCount; i++)
+        {
+            var cx = i * Step + Step / 2;
+            if (i > 0) cl.Append(' ');
+            cl.Append(cx.ToString("0.0", ic)).Append(',').Append((100 - close[i]).ToString("0.0", ic));
+            var vh = 3.0 + vr.NextDouble() * 15.0;
+            VolH[i] = vh.ToString("0.0", ic);
+            VolY[i] = (100 - vh).ToString("0.0", ic);
+        }
+        ClosePoints = cl.ToString();
 
         const double mid = 352.45, tick = 0.05;
         for (var i = 0; i < 10; i++)

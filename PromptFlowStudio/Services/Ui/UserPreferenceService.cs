@@ -77,6 +77,8 @@ public sealed class UserPreferenceService
         public const string StockSuiteExecutablePath = "stocksuite.exe";
         /// <summary>StockSuite 고선명 샤프닝(1080p Lanczos + Unsharp) — 기본 ON.</summary>
         public const string StockSuiteSharpen = "stocksuite.sharpen";
+        /// <summary>🧹 최대 렌더 캐시 용량(GB) — 초과 시 메타 없는 오래된 파일부터 LRU 정리.</summary>
+        public const string RenderCacheMaxGb = "render.cacheMaxGb";
     }
 
     private const string Prefix = "sm.pref.";
@@ -198,6 +200,13 @@ public sealed class UserPreferenceService
         set => SetBool(Keys.StockSuiteSharpen, value);
     }
 
+    /// <summary>🧹 최대 렌더 캐시 용량(GB, 1~500 · 기본 10).</summary>
+    public int RenderCacheMaxGb
+    {
+        get => PromptFlowStudio.Services.Render.RenderCacheCleaner.ClampMaxGb(GetInt(Keys.RenderCacheMaxGb, PromptFlowStudio.Services.Render.RenderCacheCleaner.DefaultMaxCacheGb));
+        set => SetInt(Keys.RenderCacheMaxGb, PromptFlowStudio.Services.Render.RenderCacheCleaner.ClampMaxGb(value));
+    }
+
     public bool Loaded { get; private set; }
 
     /// <summary>기본값. Reset 과 '값 없음' 이 같은 표를 본다.</summary>
@@ -226,6 +235,7 @@ public sealed class UserPreferenceService
         [Keys.StockSuiteFormat] = "mp4",
         [Keys.StockSuiteExecutablePath] = "",
         [Keys.StockSuiteSharpen] = "1",
+        [Keys.RenderCacheMaxGb] = "10",
     };
 
     /// <summary>

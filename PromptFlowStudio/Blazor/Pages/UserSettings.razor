@@ -4,6 +4,7 @@
 @inject NavigationManager Nav
 @inject PromptFlowStudio.Services.Ui.UserPreferenceService Prefs
 @inject IJSRuntime JS
+@inject PromptFlowStudio.Services.Render.RenderCacheCleaner CacheCleaner
 
 @* [PromptFlow Studio] 사용자 설정 — 이 PC 의 화면·생성 기본값 표시 설정.
    ⚠ 관리자 비밀번호 없이 <로그인한 모든 사용자>가 쓴다. 이 PC 의 localStorage 에만 저장된다.
@@ -128,6 +129,21 @@
         }
     </section>
 
+    @* ── 🧹 렌더 캐시 정리 ── *@
+    <section class="st-card">
+        <div class="st-card-h"><span class="st-ic">🧹</span><div><div class="st-card-t">렌더 캐시 · 임시 파일</div><div class="st-card-d">중간 인코딩 산출물(_temp_* · *.tmp · concat_*.txt · synth_*.wav)을 회수하고, 상한 초과 시 메타데이터가 없는 오래된 파일부터 정리(LRU)합니다.</div></div></div>
+        <div class="st-field"><label>최대 렌더 캐시 용량 (GB)</label>
+            <div class="st-inrow">
+                <input type="number" class="st-sel" min="@PromptFlowStudio.Services.Render.RenderCacheCleaner.MinMaxCacheGb" max="@PromptFlowStudio.Services.Render.RenderCacheCleaner.MaxMaxCacheGb" step="1" value="@Prefs.RenderCacheMaxGb" @onchange="OnCacheMaxChanged" />
+                <button class="st-btn-sm" @onclick="CleanCacheNow" disabled="@_cacheBusy">@(_cacheBusy ? "⏳ 정리 중" : "🧹 임시 캐시 즉시 비우기")</button>
+            </div>
+        </div>
+        @if (!string.IsNullOrEmpty(_cacheMsg))
+        {
+            <div class="st-hint ok">@_cacheMsg</div>
+        }
+    </section>
+
     @* ── 생성 기본값 (준비 중) ── *@
     <section class="st-card">
         <div class="st-card-h"><span class="st-ic">🎬</span><div><div class="st-card-t">생성 기본값 <span class="st-soon">준비 중</span></div><div class="st-card-d">새 프로젝트의 기본 해상도·화면비·길이. 생성 파이프라인 연결 후 적용됩니다.</div></div></div>
@@ -222,6 +238,24 @@
         if (string.IsNullOrEmpty(path)) { _stockOk = false; _stockMsg = "ℹ 비어 있음 — 내보내기 전에 StockSuite 에셋 폴더를 지정하세요."; return; }
         if (System.IO.Directory.Exists(path)) { _stockOk = true; _stockMsg = "✅ 에셋 폴더를 확인했습니다."; }
         else { _stockOk = false; _stockMsg = "❌ 폴더가 존재하지 않습니다(상위 폴더가 있으면 내보내기 시 자동 생성)."; }
+    }
+
+    // 🧹 렌더 캐시 — 상한(GB) Prefs 직결 · 즉시 비우기(백그라운드 · 진행 중 산출물 60초 보호).
+    private string? _cacheMsg;
+    private bool _cacheBusy;
+    private void OnCacheMaxChanged(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var gb))
+            Prefs.RenderCacheMaxGb = gb;
+        _cacheMsg = null;
+    }
+    private async Task CleanCacheNow()
+    {
+        if (_cacheBusy) return;
+        _cacheBusy = true;
+        try { _cacheMsg = (await CacheCleaner.CleanAsync(PromptFlowStudio.Services.Render.RenderCacheCleaner.ImmediateMinAge)).Summary; }
+        catch (Exception ex) { Program.Log("UserSettings.CacheClean", ex); _cacheMsg = "❌ 캐시 정리 중 오류가 발생했습니다."; }
+        finally { _cacheBusy = false; }
     }
 
     // 스튜디오 모드 즉시 전환(방송 스튜디오 테마 루트 플래그 + 영속).
