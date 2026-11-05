@@ -23,6 +23,11 @@ public sealed class LumaFaceDetector
     private const int SampleWidth = 80;        // 디코드 축소 폭(연산량↓ · 정확도 충분)
     private const double MinSkinFraction = 0.03;   // 피부 픽셀 최소 비율(미만이면 탐지 실패)
 
+    private readonly IProcessRunner _runner;
+
+    public LumaFaceDetector(PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
+        => _runner = processRunner ?? SystemProcessRunner.Shared;
+
     /// <summary>이미지의 피사체(얼굴) 무게중심을 추론한다. ffmpeg 부재/실패/저신뢰는 Ok=false(폴백).</summary>
     public async Task<FaceCenterResult> DetectAsync(string imagePath, CancellationToken ct = default)
     {
@@ -125,27 +130,26 @@ public sealed class LumaFaceDetector
         => y > 60 && cb >= 77 && cb <= 127 && cr >= 133 && cr <= 173;
 
     // ── FFmpeg 로 rgb24 rawvideo 디코드(바이너리 stdout) ──
-    private static async Task<(byte[]? Rgb, int W, int H)> DecodeRgb24Async(string ffmpeg, string imagePath, CancellationToken ct)
+    private async Task<(byte[]? Rgb, int W, int H)> DecodeRgb24Async(string ffmpeg, string imagePath, CancellationToken ct)
     {
-        var psi = new ProcessStartInfo
+        var args = new[] { "-y", "-i", imagePath, "-vf", $"scale={SampleWidth}:-2", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1" };
+        var bytes = Array.Empty<byte>();
+        // 🛡️ IProcessRunner.StartStreaming(우선순위·stderr 자동 드레인) + RunGatedAsync(장중 동시 게이트) 경유.
+        await _runner.RunGatedAsync(ffmpeg, async c =>
         {
-            FileName = ffmpeg, RedirectStandardOutput = true, RedirectStandardError = true,
-            UseShellExecute = false, CreateNoWindow = true,
-        };
-        foreach (var a in new[] { "-y", "-i", imagePath, "-vf", $"scale={SampleWidth}:-2", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1" })
-            psi.ArgumentList.Add(a);
-
-        using var proc = new Process { StartInfo = psi };
-        if (!proc.StartCompat()) return (null, 0, 0);
-
-        using var ms = new MemoryStream();
-        var copy = proc.StandardOutput.BaseStream.CopyToAsync(ms, 81920, ct);
-        var drain = proc.StandardError.ReadToEndAsync(ct);   // stderr 드레인(데드락 방지)
-        await Task.WhenAll(copy, drain).ConfigureAwait(false);
-        try { await proc.WaitForExitAsync(ct).ConfigureAwait(false); }
-        catch (OperationCanceledException) { try { if (!proc.HasExited) proc.KillCompat(true); } catch { } throw; }
-
-        var bytes = ms.ToArray();
+            using var proc = _runner.StartStreaming(ffmpeg, args, redirectStdin: false, redirectStdout: true, c);
+            if (proc is null) return new ProcessResult(false, -1, "", "");
+            try
+            {
+                using var ms = new MemoryStream();
+                await proc.StandardOutput.BaseStream.CopyToAsync(ms, 81920, c).ConfigureAwait(false);
+                await proc.WaitForExitAsync(c).ConfigureAwait(false);
+                bytes = ms.ToArray();
+                return new ProcessResult(true, proc.ExitCode, "", "");
+            }
+            finally { try { if (!proc.HasExited) proc.KillCompat(true); } catch { } }
+        }, ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
         if (bytes.Length < SampleWidth * 3) return (null, 0, 0);
         var h = bytes.Length / (SampleWidth * 3);           // rawvideo 헤더 없음 → 높이 역산
         return (bytes, SampleWidth, h);

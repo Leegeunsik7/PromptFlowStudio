@@ -121,6 +121,7 @@ public sealed class UnrealEngine5LiveStagingBridge : IDisposable
     private static readonly HttpClient s_http = new() { Timeout = TimeSpan.FromSeconds(3) };
 
     private readonly Func<string?> _ffmpeg;
+    private readonly PromptFlowStudio.Services.Engines.IProcessRunner _runner;
     private readonly CinematicCameraMotionControlEngine _camera;
     private readonly AiChromaKeyingAndRelightingEngine _chroma;
     private readonly HttpClient _http;
@@ -134,11 +135,12 @@ public sealed class UnrealEngine5LiveStagingBridge : IDisposable
     private double _emaInterval, _emaJitter, _ingestFps, _playProgress;
     private CameraTrackingSample _latest;
 
-    public UnrealEngine5LiveStagingBridge(IVideoMergeService merge, CinematicCameraMotionControlEngine camera, AiChromaKeyingAndRelightingEngine chroma)
-        : this(() => merge.ResolvedFfmpegPath, camera, chroma, null) { }
+    public UnrealEngine5LiveStagingBridge(IVideoMergeService merge, CinematicCameraMotionControlEngine camera, AiChromaKeyingAndRelightingEngine chroma, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
+        : this(() => merge.ResolvedFfmpegPath, camera, chroma, null, processRunner) { }
 
-    public UnrealEngine5LiveStagingBridge(Func<string?> ffmpeg, CinematicCameraMotionControlEngine camera, AiChromaKeyingAndRelightingEngine chroma, HttpClient? http)
+    public UnrealEngine5LiveStagingBridge(Func<string?> ffmpeg, CinematicCameraMotionControlEngine camera, AiChromaKeyingAndRelightingEngine chroma, HttpClient? http, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
     {
+        _runner = processRunner ?? PromptFlowStudio.Services.Engines.SystemProcessRunner.Shared;
         _ffmpeg = ffmpeg;
         _camera = camera;
         _chroma = chroma;
@@ -450,14 +452,11 @@ public sealed class UnrealEngine5LiveStagingBridge : IDisposable
 
     private async Task IngestLoopAsync(string ffmpeg, List<string> args, int w, int h, CancellationTokenSource cts)
     {
-        var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in args) psi.ArgumentList.Add(a);
         var n = w * h * 3;
         try
         {
-            using var p = new Process { StartInfo = psi };
-            if (!p.StartCompat()) return;
-            _ = p.StandardError.ReadToEndAsync(cts.Token);
+            using var p = _runner.StartStreaming(ffmpeg, args, redirectStdin: false, redirectStdout: true, cts.Token);
+            if (p is null) return;
             try
             {
                 var stream = p.StandardOutput.BaseStream;

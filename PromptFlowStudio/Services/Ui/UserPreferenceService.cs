@@ -81,6 +81,8 @@ public sealed class UserPreferenceService
         public const string StockSuiteSmooth60 = "stocksuite.smooth60";
         /// <summary>🛡️ 장중 트레이딩 안전 모드(평일 09:00~15:30 KST FFmpeg 우선순위 강등 · 동시 인코딩 1) — 기본 ON.</summary>
         public const string TradingSafetyMode = "trading.safetyMode";
+        /// <summary>🌱 HTS 스마트 에코 절전 — 창 최소화/백그라운드 시 &lt;video&gt; 일시정지(GPU 디코더 0%) · 복귀 시 재개. 기본 ON.</summary>
+        public const string HtsEcoMode = "hts.ecoMode";
         /// <summary>🧹 최대 렌더 캐시 용량(GB) — 초과 시 메타 없는 오래된 파일부터 LRU 정리.</summary>
         public const string RenderCacheMaxGb = "render.cacheMaxGb";
     }
@@ -218,6 +220,13 @@ public sealed class UserPreferenceService
         set => SetBool(Keys.TradingSafetyMode, value);
     }
 
+    /// <summary>🌱 HTS 스마트 에코 절전 모드 — 기본 ON.</summary>
+    public bool HtsEcoMode
+    {
+        get => GetBool(Keys.HtsEcoMode);
+        set => SetBool(Keys.HtsEcoMode, value);
+    }
+
     /// <summary>🧹 최대 렌더 캐시 용량(GB, 1~500 · 기본 10).</summary>
     public int RenderCacheMaxGb
     {
@@ -255,6 +264,7 @@ public sealed class UserPreferenceService
         [Keys.StockSuiteSharpen] = "1",
         [Keys.StockSuiteSmooth60] = "0",
         [Keys.TradingSafetyMode] = "1",
+        [Keys.HtsEcoMode] = "1",
         [Keys.RenderCacheMaxGb] = "10",
     };
 

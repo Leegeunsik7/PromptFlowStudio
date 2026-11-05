@@ -27,6 +27,10 @@ public sealed class BatchRenderJob
     public string? ResultPath { get; set; }
     /// <summary>실패 원인 — Failed 전이 시 기록, 재적재 시 초기화.</summary>
     public string? ErrorMessage { get; set; }
+    /// <summary>🧯 결함 격리(Fault Quarantine) — 처리 중 예외로 이 작업만 격리되고 나머지 큐는 계속 진행. 상태는 <see cref="BatchJobStatus.Failed"/>(재시도 가능) 유지.</summary>
+    public bool IsQuarantined { get; set; }
+    /// <summary>격리 사유 분류(예: "API Rate Limit 429", "Invalid Input") — 재적재 시 초기화.</summary>
+    public string? QuarantineReason { get; set; }
     /// <summary>자동 재시도 횟수 — CUDA OOM 다운스케일 재시도는 0 일 때 1회만.</summary>
     public int RetryCount { get; set; }
     /// <summary>사용자 [취소] 요청 플래그(직렬화 제외) — 클라우드 저널을 UserCanceled 로 전환해 재시작 시 좀비 다운로드 차단.</summary>

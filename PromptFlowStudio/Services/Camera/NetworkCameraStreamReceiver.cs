@@ -176,29 +176,23 @@ public sealed class NetworkCameraStreamReceiver : ICameraStreamReceiver, IDispos
     private static async Task<byte[]?> FfmpegGrabAsync(string ffmpeg, Uri uri, CancellationToken ct)
     {
         if (!ProcessCompat.IsSupported) return null;
-        var psi = new ProcessStartInfo(ffmpeg)
-        {
-            UseShellExecute = false, CreateNoWindow = true,
-            RedirectStandardOutput = true, RedirectStandardError = true,
-        };
-        psi.ArgumentList.Add("-hide_banner"); psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add("error");
-        if (uri.Scheme.StartsWith("rtsp", StringComparison.OrdinalIgnoreCase)) { psi.ArgumentList.Add("-rtsp_transport"); psi.ArgumentList.Add("tcp"); }
-        psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(uri.OriginalString);
-        psi.ArgumentList.Add("-frames:v"); psi.ArgumentList.Add("1");
-        psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("image2pipe");
-        psi.ArgumentList.Add("-vcodec"); psi.ArgumentList.Add("mjpeg");
-        psi.ArgumentList.Add("pipe:1");
+        var args = new List<string>(14) { "-hide_banner", "-loglevel", "error" };
+        if (uri.Scheme.StartsWith("rtsp", StringComparison.OrdinalIgnoreCase)) { args.Add("-rtsp_transport"); args.Add("tcp"); }
+        args.Add("-i"); args.Add(uri.OriginalString);
+        args.Add("-frames:v"); args.Add("1");
+        args.Add("-f"); args.Add("image2pipe");
+        args.Add("-vcodec"); args.Add("mjpeg");
+        args.Add("pipe:1");
 
-        using var p = Process.Start(psi);
+        // 🛡️ IProcessRunner 스트리밍 경유(거버넌스 우선순위 · stderr 자동 드레인)
+        using var p = ((IProcessRunner)SystemProcessRunner.Shared).StartStreaming(ffmpeg, args, redirectStdin: false, redirectStdout: true, ct);
         if (p is null) return null;
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(FfmpegTimeout);
         try
         {
-            var drainErr = p.StandardError.ReadToEndAsync(cts.Token);   // stderr 파이프 막힘 방지
             var bytes = await ReadAllCappedAsync(p.StandardOutput.BaseStream, cts.Token).ConfigureAwait(false);
             await p.WaitForExitAsync(cts.Token).ConfigureAwait(false);
-            await drainErr.ConfigureAwait(false);
             return p.ExitCode == 0 && bytes is not null && CameraFrameCodec.TryReadSize(bytes, out _, out _) ? bytes : null;
         }
         finally

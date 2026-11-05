@@ -30,7 +30,12 @@ public sealed class AiQualityGuardService
     private const double SharpnessFloor = 6.0; // 절대 선명도 바닥(이하는 전면 소프트)
 
     private readonly QuotaRateGuardService _quota;
-    public AiQualityGuardService(QuotaRateGuardService quota) { _quota = quota; }
+    private readonly IProcessRunner _runner;
+    public AiQualityGuardService(QuotaRateGuardService quota, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
+    {
+        _quota = quota;
+        _runner = processRunner ?? SystemProcessRunner.Shared;
+    }
 
     /// <summary>컷 비디오를 감수한다. threshold=프레임 간 최소 허용 SSIM. ffmpeg/디코드 실패는 Ok=true(통과).</summary>
     public async Task<QualityVerdict> AnalyzeAsync(string videoPath, double threshold, CancellationToken ct = default)
@@ -139,28 +144,28 @@ public sealed class AiQualityGuardService
     private static QualityVerdict Pass(string reason) => new(true, 1, 0, 0, false, false, reason, 0);
 
     // ── FFmpeg: gray rawvideo 다중 프레임 디코드 ──
-    private static async Task<List<byte[]>> DecodeGrayFramesAsync(string ffmpeg, string video, CancellationToken ct)
+    private async Task<List<byte[]>> DecodeGrayFramesAsync(string ffmpeg, string video, CancellationToken ct)
     {
-        var psi = new ProcessStartInfo
-        {
-            FileName = ffmpeg, RedirectStandardOutput = true, RedirectStandardError = true,
-            UseShellExecute = false, CreateNoWindow = true,
-        };
-        foreach (var a in new[] { "-y", "-i", video, "-vf", $"fps={SampleFps},scale={Dim}:{Dim}", "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1" })
-            psi.ArgumentList.Add(a);
-
-        using var proc = new Process { StartInfo = psi };
+        var args = new[] { "-y", "-i", video, "-vf", $"fps={SampleFps},scale={Dim}:{Dim}", "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1" };
         var list = new List<byte[]>();
-        if (!proc.StartCompat()) return list;
+        var bytes = Array.Empty<byte>();
+        // 🛡️ IProcessRunner.StartStreaming(우선순위·stderr 드레인) + RunGatedAsync(장중 동시 게이트) 경유.
+        await _runner.RunGatedAsync(ffmpeg, async c =>
+        {
+            using var proc = _runner.StartStreaming(ffmpeg, args, redirectStdin: false, redirectStdout: true, c);
+            if (proc is null) return new ProcessResult(false, -1, "", "");
+            try
+            {
+                using var ms = new MemoryStream();
+                await proc.StandardOutput.BaseStream.CopyToAsync(ms, 81920, c).ConfigureAwait(false);
+                await proc.WaitForExitAsync(c).ConfigureAwait(false);
+                bytes = ms.ToArray();
+                return new ProcessResult(true, proc.ExitCode, "", "");
+            }
+            finally { try { if (!proc.HasExited) proc.KillCompat(true); } catch { } }
+        }, ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
 
-        using var ms = new MemoryStream();
-        var copy = proc.StandardOutput.BaseStream.CopyToAsync(ms, 81920, ct);
-        var drain = proc.StandardError.ReadToEndAsync(ct);
-        await Task.WhenAll(copy, drain).ConfigureAwait(false);
-        try { await proc.WaitForExitAsync(ct).ConfigureAwait(false); }
-        catch (OperationCanceledException) { try { if (!proc.HasExited) proc.KillCompat(true); } catch { } throw; }
-
-        var bytes = ms.ToArray();
         var frameSize = Dim * Dim;
         var count = bytes.Length / frameSize;
         if (count == 0) return list;

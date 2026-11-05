@@ -1,17 +1,18 @@
 # Current Project Status
-- Active Milestone: 【Trim-Governance】 🔓 트리머 파일 락 해제 핫스왑 · 🗂️ 트림 메타데이터 동기화 · 🛡️ Vfx/Media/Comfy IProcessRunner 수렴
-- Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (Mobile 미빌드: 공유 파일은 선택적 매개변수만 추가)
-- Tests: FastUnit 616/616 PASS (Release)
+- Active Milestone: 【Core-Robustness】 🛡️ 전사 IProcessRunner 100% 수렴 · 🌱 HTS 스마트 에코 절전 · 🧯 렌더 큐 결함 격리/⚡ 우선순위 제어
+- Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (Mobile: 로컬 Android SDK 부재로 미빌드 — 공유 파일은 선택적 매개변수만 추가)
+- Tests: FastUnit 620/620 · 전체 853/853 PASS (Release)
 - Updated: 2026-11-05 (KST)
 
 ## Completed
-- 🔓 `promptflow.js`: `promptflow.releaseVideoSource`(src 제거 + `load()` → OS 핸들 해제) · `reloadVideoSource`(`?v=ticks` 캐시 버스트 · 0초 재마운트)
-- 🔓 `VideoTrimService.TrimInPlaceAsync(…, VideoHandleHooks)`: 임시 컷(재생 유지) → Release → 원자 교체(공유 위반 8×120ms 재시도) → Reload(성공/원본) · 훅 예외 격리 · `Workspace.razor` 결선
-- 🗂️ `.meta.json` `durationSeconds`(min(end,원본)−start) + `trimHistory[{start,end,trimmedAt}]` · 새 클립은 원본 메타 계승(즐겨찾기/내보냄 제외)
-- 🗂️ `GalleryMediaService.NotifyMediaMetadataChanged`/`MediaMetadataChanged` · `GalleryItem.DurationSeconds` · 갤러리 카드 `⏱` 재생시간 뱃지 · VM 자동 갱신(새 클립 재스캔)
-- 🛡️ `IProcessRunner.StartStreaming`/`RunGatedAsync`(기본 구현 · 바이너리 rawvideo 파이프 우선순위+장중 게이트) · `RunExitCodeAsync` 확장
-- 🛡️ Vfx(`VfxProcess`·리라이팅·보간·업스케일) · Media(`ShortsCoverService`·`PreExportQaSentinel`·`AutomatedVideoQaInspector`) 직접 `new Process` 0 · Comfy 계열 0 확인
-- 테스트 `TrimGovernanceTests`(3건 · 소스 가드 포함)
+- 🛡️ `Services/` 직접 `new Process` 0건(허용 = `Engines/ProcessRunner.cs` 단일 게이트웨이) — Wan·Storyboard·Broadcast·Interactive·Enterprise·Spatial·Virtual·Sound·Hardware·SelfFix·Deploy·Hardening·Camera 28개 파일 이관
+- 🛡️ `IProcessRunner` 확장: `RunWithEnvAsync`(자식 전용 환경변수 · 부모 오염 없음) · `StartStreaming(…, onStderrLine)`(진단 tail 보존) · `ShellOpen`(OAuth 브라우저)
+- 📱 `Mobile/wwwroot/index.html` `promptflow.js` 결선(비디오 락 해제·스크러버·에코)
+- 🌱 `promptflow.setEcoMode`/`ecoSuspend`/`ecoResume`: `visibilitychange`/`pagehide` 시 재생 중 `<video>` pause → 복귀 시 에코가 멈춘 것만 play · `MainForm.OnResize` 최소화 훅 · 설정 `🌱 HTS 스마트 에코 절전 모드`(기본 ON)
+- 🧯 `RenderQueueService`: 예외 작업만 `Failed`+`IsQuarantined`/`QuarantineReason`(429·Invalid Input·Timeout·Network·I/O·Engine) 격리 후 큐 계속 · Retry 시 해제 · 큐 화면 `🧯 격리` 배지
+- ⚡ `MoveJobUp`/`MoveJobDown`/`MoveJobToTop`(Queued/Pending 만) · 큐 화면 `▲ ▼ ⚡` 버튼
+- 테스트 `CoreRobustnessTests`(정적 스캔 · 격리 후 계속 · 사유 분류 · 우선순위 재정렬)
 
 ## Next
-- 잔여 Wan/Storyboard/Broadcast/Spatial/Enterprise 등 직접 `Process` 호출부 단계적 이관(약 40곳)
+- 셸 위임 `Process.Start(UseShellExecute)`(인스톨러·URL·StockSuite 실행) 및 `ProcessCompat.Start` 호출부 `ShellOpen` 수렴 검토
+- Mobile Android SDK 환경에서 빌드 검증

@@ -80,6 +80,7 @@ public sealed class CloudRenderFarmDispatcherService : IDisposable
     private static readonly HttpClient Http = new(new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(5) }) { Timeout = System.Threading.Timeout.InfiniteTimeSpan };
 
     private readonly Func<string?> _ffmpeg;
+    private readonly PromptFlowStudio.Services.Engines.IProcessRunner _runner;   // 🛡️ 단일 실행 게이트웨이(우선순위 · 동시 실행 게이트 · 취소 트리 kill)
     private readonly Func<string?> _token;
     private readonly Func<string?> _scaleUrl;
     private readonly object _gate = new();
@@ -88,15 +89,16 @@ public sealed class CloudRenderFarmDispatcherService : IDisposable
     private int _total, _done, _remote, _local, _failovers, _active, _nvencBroken;
     private bool _disposed;
 
-    public CloudRenderFarmDispatcherService(IVideoMergeService merge, SecureSecretVault vault)
+    public CloudRenderFarmDispatcherService(IVideoMergeService merge, SecureSecretVault vault, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
         : this(() => merge.ResolvedFfmpegPath, () => vault.TryGetExternalCredential("RENDER_FARM_TOKEN") ?? Environment.GetEnvironmentVariable("PFS_RENDER_FARM_TOKEN"),
-               () => Environment.GetEnvironmentVariable("PFS_RENDER_FARM_SCALE_URL"))
+               () => Environment.GetEnvironmentVariable("PFS_RENDER_FARM_SCALE_URL"), processRunner)
     {
         foreach (var n in ParseNodeList(Environment.GetEnvironmentVariable("PFS_RENDER_FARM_NODES"))) AddNode(n);
     }
 
-    public CloudRenderFarmDispatcherService(Func<string?> ffmpeg, Func<string?> token, Func<string?> scaleUrl)
+    public CloudRenderFarmDispatcherService(Func<string?> ffmpeg, Func<string?> token, Func<string?> scaleUrl, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
     {
+        _runner = processRunner ?? PromptFlowStudio.Services.Engines.SystemProcessRunner.Shared;
         _ffmpeg = ffmpeg;
         _token = token;
         _scaleUrl = scaleUrl;
@@ -623,18 +625,16 @@ public sealed class CloudRenderFarmDispatcherService : IDisposable
         catch (Exception ex) { Program.Log("RenderFarm.Scale", ex); }
     }
 
-    private static async Task<(int W, int H, double Duration, double Fps)?> ProbeVideoAsync(string ffmpeg, string path, CancellationToken ct)
+    private async Task<(int W, int H, double Duration, double Fps)?> ProbeVideoAsync(string ffmpeg, string path, CancellationToken ct)
     {
         try
         {
-            var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
-            psi.ArgumentList.Add("-hide_banner"); psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(path);
-            using var p = new Process { StartInfo = psi };
-            if (!p.StartCompat()) return null;
             using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
             d.CancelAfter(TimeSpan.FromSeconds(15));
-            var err = await p.StandardError.ReadToEndAsync(d.Token).ConfigureAwait(false);
-            try { await p.WaitForExitAsync(d.Token).ConfigureAwait(false); } catch (OperationCanceledException) { try { p.KillCompat(true); } catch { } }
+            var r = await _runner.RunAsync(ffmpeg, new[] { "-hide_banner", "-i", path }, ct: d.Token).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            if (!r.Started || r.ExitCode == -2) return null;   // 미시작 · 15초 타임아웃
+            var err = r.StdErr;
             if (!CommercialProductSegmenterService.TryParseVideoSize(err, out var w, out var h)) return null;
             return (w, h, InteractiveChoiceBranchingService.ParseDuration(err), ParseFps(err));
         }
@@ -642,29 +642,16 @@ public sealed class CloudRenderFarmDispatcherService : IDisposable
         catch (Exception ex) { Program.Log("RenderFarm.Probe", ex); return null; }
     }
 
-    internal static async Task<bool> RunFfmpegAsync(string ffmpeg, List<string> args, TimeSpan timeout, CancellationToken ct)
+    internal async Task<bool> RunFfmpegAsync(string ffmpeg, List<string> args, TimeSpan timeout, CancellationToken ct)
     {
-        var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in args) psi.ArgumentList.Add(a);
-        using var p = new Process { StartInfo = psi };
-        try { if (!p.StartCompat()) return false; }
-        catch (Exception ex) { Program.Log("RenderFarm.Ffmpeg", ex); return false; }
         using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
         d.CancelAfter(timeout);
-        try
-        {
-            var err = p.StandardError.ReadToEndAsync(d.Token);
-            _ = p.StandardOutput.ReadToEndAsync(d.Token);
-            await p.WaitForExitAsync(d.Token).ConfigureAwait(false);
-            if (p.ExitCode != 0) Program.Log("RenderFarm.Ffmpeg", new InvalidOperationException((await err.ConfigureAwait(false)).Trim()));
-            return p.ExitCode == 0;
-        }
-        catch (OperationCanceledException)
-        {
-            try { if (!p.HasExited) p.KillCompat(true); } catch { }
-            if (ct.IsCancellationRequested) throw;
-            return false;
-        }
+        var r = await _runner.RunAsync(ffmpeg, args, ct: d.Token).ConfigureAwait(false);   // 🛡️ 취소/타임아웃 시 runner 가 트리 kill
+        ct.ThrowIfCancellationRequested();
+        if (!r.Started) { Program.Log("RenderFarm.Ffmpeg", new InvalidOperationException(r.StdErr)); return false; }
+        if (r.ExitCode == -2) return false;   // 타임아웃
+        if (r.ExitCode != 0) Program.Log("RenderFarm.Ffmpeg", new InvalidOperationException(r.StdErr.Trim()));
+        return r.ExitCode == 0;
     }
 
     private static void TryDelete(string path)

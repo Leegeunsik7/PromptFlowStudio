@@ -60,12 +60,17 @@ public sealed class AiGenerativeFoleySoundscapeEngine
     };
 
     private readonly Func<string?> _ffmpeg;
+    private readonly PromptFlowStudio.Services.Engines.IProcessRunner _runner;
     private int _busy;
     private long _generated;
 
-    public AiGenerativeFoleySoundscapeEngine(IVideoMergeService merge) : this(() => merge.ResolvedFfmpegPath) { }
+    public AiGenerativeFoleySoundscapeEngine(IVideoMergeService merge, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null) : this(() => merge.ResolvedFfmpegPath, processRunner) { }
 
-    public AiGenerativeFoleySoundscapeEngine(Func<string?> ffmpeg) => _ffmpeg = ffmpeg;
+    public AiGenerativeFoleySoundscapeEngine(Func<string?> ffmpeg, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
+    {
+        _ffmpeg = ffmpeg;
+        _runner = processRunner ?? PromptFlowStudio.Services.Engines.SystemProcessRunner.Shared;
+    }
 
     public event Action? OnChange;
 
@@ -396,15 +401,13 @@ public sealed class AiGenerativeFoleySoundscapeEngine
             var w = MotionWidth;
             var h = Math.Max(8, (int)Math.Round(MotionWidth * (double)probe.Value.H / probe.Value.W) & ~1);
             var ci = CultureInfo.InvariantCulture;
-            var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-            foreach (var x in new[] { "-hide_banner", "-v", "error", "-t", MaxSeconds.ToString(ci), "-i", videoPath, "-vf", "fps=" + MotionFps.ToString(ci) + ",scale=" + w.ToString(ci) + ":" + h.ToString(ci),
-                         "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1" })
-                psi.ArgumentList.Add(x);
-            using var p = new Process { StartInfo = psi };
-            if (!p.StartCompat()) return null;
             using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
             d.CancelAfter(TimeSpan.FromMinutes(5));
-            _ = p.StandardError.ReadToEndAsync(d.Token);
+            using var p = _runner.StartStreaming(ffmpeg,
+                new[] { "-hide_banner", "-v", "error", "-t", MaxSeconds.ToString(ci), "-i", videoPath, "-vf", "fps=" + MotionFps.ToString(ci) + ",scale=" + w.ToString(ci) + ":" + h.ToString(ci),
+                        "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1" },
+                redirectStdin: false, redirectStdout: true, d.Token);
+            if (p is null) return null;
             var n = w * h;
             a = ArrayPool<byte>.Shared.Rent(n); b = ArrayPool<byte>.Shared.Rent(n);
             var motion = new List<MotionSample>(1024);
@@ -448,7 +451,7 @@ public sealed class AiGenerativeFoleySoundscapeEngine
         if (ffmpeg is null || !File.Exists(video) || !File.Exists(audioWav)) return null;
         foreach (var withAudio in new[] { true, false })
         {
-            if (await RunAsync(ffmpeg, BuildInjectArgs(video, audioWav, output, withAudio), ct).ConfigureAwait(false) == 0 && File.Exists(output))
+            if (await RunAsync(ffmpeg, BuildInjectArgs(video, audioWav, output, withAudio), ct, _runner).ConfigureAwait(false) == 0 && File.Exists(output))
             {
                 LastAction = "💉 오디오 인젝션 · " + Path.GetFileName(output);
                 Raise();
@@ -459,25 +462,9 @@ public sealed class AiGenerativeFoleySoundscapeEngine
         return null;
     }
 
-    internal static async Task<int> RunAsync(string exe, List<string> args, CancellationToken ct)
-    {
-        var psi = new ProcessStartInfo { FileName = exe, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in args) psi.ArgumentList.Add(a);
-        using var p = new Process { StartInfo = psi };
-        try
-        {
-            if (!p.StartCompat()) return -1;
-            using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            d.CancelAfter(TimeSpan.FromMinutes(10));
-            _ = p.StandardOutput.ReadToEndAsync(d.Token);
-            _ = p.StandardError.ReadToEndAsync(d.Token);
-            await p.WaitForExitAsync(d.Token).ConfigureAwait(false);
-            return p.ExitCode;
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return -2; }
-        catch (System.ComponentModel.Win32Exception ex) { Program.Log("Sound.Run", ex); return -3; }
-        finally { try { if (!p.HasExited) p.KillCompat(true); } catch { } }
-    }
+    /// <summary>종료 코드 실행(미시작 −1 · 10분 타임아웃 −2 · 외부 취소 OCE 전파) — IProcessRunner 경유.</summary>
+    internal static Task<int> RunAsync(string exe, List<string> args, CancellationToken ct, PromptFlowStudio.Services.Engines.IProcessRunner? runner = null)
+        => PromptFlowStudio.Services.Engines.ProcessRunnerExtensions.RunExitCodeAsync(runner ?? PromptFlowStudio.Services.Engines.SystemProcessRunner.Shared, exe, args, TimeSpan.FromMinutes(10), ct);
 
     private void Raise()
     {

@@ -28,6 +28,11 @@ public sealed class PromptFlowPackagerService
     private const string Tfm = "net8.0-windows";
 
     private readonly SemaphoreSlim _buildGate = new(1, 1);
+    private readonly PromptFlowStudio.Services.Engines.IProcessRunner _runner;
+
+    /// <summary>프로세스 실행기 주입(미지정 시 <c>SystemProcessRunner.Shared</c>).</summary>
+    public PromptFlowPackagerService(PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
+        => _runner = processRunner ?? PromptFlowStudio.Services.Engines.SystemProcessRunner.Shared;
 
     /// <summary>실시간 빌드 로그 스트림(임의 스레드에서 호출됨 — 구독 UI 가 InvokeAsync 로 마샬링).</summary>
     public event Action<string>? OnLogReceived;
@@ -66,8 +71,8 @@ public sealed class PromptFlowPackagerService
 
             // ── [1/3] 런타임 내장 단일 EXE 퍼블리시 — 핵심 산출물(실패 시에만 파이프라인 실패).
             Log("📦 [1/3] 런타임 내장 단일 EXE 퍼블리시(self-contained · PublishSingleFile)…");
-            var args = $"publish \"{csproj}\" -c Release -r {PublishRid} "
-                     + "/p:PublishSingleFile=true /p:IncludeNativeLibrariesForSelfExtract=true --self-contained true";
+            var args = new[] { "publish", csproj, "-c", "Release", "-r", PublishRid,
+                               "/p:PublishSingleFile=true", "/p:IncludeNativeLibrariesForSelfExtract=true", "--self-contained", "true" };
             if (!await RunCommandAsync("dotnet", args, projDir, ct))
             {
                 Log("❌ 단일 EXE 퍼블리시 실패 — .NET SDK 설치 및 소스 상태를 확인하세요.");
@@ -306,7 +311,7 @@ public sealed class PromptFlowPackagerService
             await File.WriteAllTextAsync(issPath, iss, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true), ct);
             Log($"   › setup_script.iss 동적 생성({issPath})");
 
-            if (!await RunCommandAsync(isccPath, $"\"{issPath}\"", projDir, ct))
+            if (!await RunCommandAsync(isccPath, new[] { issPath }, projDir, ct))
             {
                 Log("   [ERR] ISCC 컴파일이 0이 아닌 코드로 종료되었습니다.");
                 return null;
@@ -526,42 +531,23 @@ end;
         }
     }
 
-    private async Task<bool> RunCommandAsync(string fileName, string arguments, string workingDir, CancellationToken ct)
+    /// <summary>[로그 깨짐 방지] dotnet CLI 영어(ASCII) 강제 — 자식 프로세스 전용(앱 전역 환경 불변).</summary>
+    private static readonly IReadOnlyDictionary<string, string?> CliEnglishEnv = new Dictionary<string, string?>(StringComparer.Ordinal) { ["DOTNET_CLI_UI_LANGUAGE"] = "en" };
+
+    private async Task<bool> RunCommandAsync(string fileName, string[] arguments, string workingDir, CancellationToken ct)
     {
-        return await Task.Run(() =>
+        ct.ThrowIfCancellationRequested();
+        // [로그 깨짐 방지] dotnet CLI 를 영어(ASCII)로 강제해 코드페이지 불일치 차단(자식 프로세스가 상속 · runner 는 UTF-8 디코드).
+        var r = await _runner.RunWithEnvAsync(fileName, arguments, CliEnglishEnv, workingDir,
+            (isErr, line) => Log(isErr ? ClassifyStderr(line) : "   › " + line), ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        if (!r.Started)
         {
-            var psi = new ProcessStartInfo
-            {
-                FileName = fileName,
-                Arguments = arguments,
-                WorkingDirectory = workingDir,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                // [로그 깨짐 방지] 자식 출력/에러를 UTF-8 로 디코드 + dotnet CLI 는 영어(ASCII)로 강제해 코드페이지 불일치 원천 차단.
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8,
-            };
-            psi.Environment["DOTNET_CLI_UI_LANGUAGE"] = "en";
-            try
-            {
-                using var proc = new Process { StartInfo = psi };
-                proc.OutputDataReceived += (_, e) => { if (e.Data is not null) Log($"   › {e.Data}"); };
-                proc.ErrorDataReceived += (_, e) => { if (e.Data is not null) Log(ClassifyStderr(e.Data)); };
-                if (!proc.StartCompat()) throw new PlatformNotSupportedException("외부 프로세스 미지원 플랫폼");
-                proc.BeginOutputReadLine();
-                proc.BeginErrorReadLine();
-                proc.WaitForExit();
-                if (proc.ExitCode != 0) Log($"   ↳ 종료 코드 {proc.ExitCode} (실패)");
-                return proc.ExitCode == 0;
-            }
-            catch (Exception ex)
-            {
-                Log($"   [ERR] '{fileName}' 실행 불가: {ex.Message} (해당 도구 설치/PATH 확인)");
-                return false;
-            }
-        }, ct);
+            Log($"   [ERR] '{fileName}' 실행 불가: {r.StdErr} (해당 도구 설치/PATH 확인)");
+            return false;
+        }
+        if (r.ExitCode != 0) Log($"   ↳ 종료 코드 {r.ExitCode} (실패)");
+        return r.ExitCode == 0;
     }
 
     // stderr 라인 분류 — 다수 CLI 는 INFO 도 stderr 로 출력하므로, 실제 오류 키워드만 [ERR] 로 표기.

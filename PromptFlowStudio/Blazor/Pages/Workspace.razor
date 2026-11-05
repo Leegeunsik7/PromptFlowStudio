@@ -13,6 +13,7 @@
 @inject NavigationManager Nav
 @inject PromptFlowStudio.Services.AI.Wan.LiveStreamVirtualCamPipe VirtualCam
 @inject IJSRuntime JS
+@inject IServiceProvider EcoSp
 @inject AiAudioDrivenLipSyncService LipAi
 @inject AiVoiceoverTtsService Tts
 @inject EpisodicStorySeriesBuilder SeriesBuilder
@@ -2941,10 +2942,19 @@
     protected override void OnAfterRender(bool firstRender)
     {
         if (!firstRender) return;
+        // 🌱 HTS 스마트 에코 절전 — 백그라운드/최소화 시 <video> 일시정지(GPU 디코더 0%). 설정 서비스 부재(모바일) 시 기본 ON.
+        var eco = EcoSp.GetService(typeof(PromptFlowStudio.Services.Ui.UserPreferenceService)) is PromptFlowStudio.Services.Ui.UserPreferenceService ecoPrefs ? ecoPrefs.HtsEcoMode : true;
+        _ = SetEcoModeAsync(eco);
         var live = _live = new LiveCanvasFrameReader(VirtualCam);
         var draw = _liveDraw = () => JS.InvokeVoidAsync("pfsLiveCanvas.draw", "ws-live", live.Width, live.Height, live.Frame).AsTask();
         var cts = _liveCts = new CancellationTokenSource();
         _ = LiveLoopAsync(live, draw, cts.Token);
+    }
+
+    private async Task SetEcoModeAsync(bool enabled)
+    {
+        try { await JS.InvokeVoidAsync("promptflow.setEcoMode", enabled); }
+        catch (Exception ex) when (ex is JSException or JSDisconnectedException or InvalidOperationException or TaskCanceledException or ObjectDisposedException) { /* 브릿지 미적재 — 무시 */ }
     }
 
     private async Task LiveLoopAsync(LiveCanvasFrameReader reader, Func<Task> draw, CancellationToken ct)

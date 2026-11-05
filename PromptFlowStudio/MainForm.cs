@@ -979,9 +979,30 @@ public sealed class MainForm : Form
 
         view.RootComponents.Add<App>("#app");
         Controls.Add(view);
+        _webView = view;
     }
 
     private readonly ServiceProvider? _services;
+    private BlazorWebView? _webView;
+    private bool _ecoMinimized;
+
+    /// <summary>🌱 HTS 스마트 에코 — 창 최소화 시 JS 에코 일시정지(GPU 디코더 0%), 복원 시 재개. WebView2 는 최소화만으로 hidden 을 보장하지 않아 호스트가 직접 통지.</summary>
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        var min = WindowState == FormWindowState.Minimized;
+        if (min == _ecoMinimized) return;
+        _ecoMinimized = min;
+        try
+        {
+            var core = _webView?.WebView?.CoreWebView2;
+            if (core is null) return;
+            _ = core.ExecuteScriptAsync(min
+                ? "window.promptflow&&window.promptflow.ecoSuspend&&window.promptflow.ecoSuspend()"
+                : "window.promptflow&&window.promptflow.ecoResume&&window.promptflow.ecoResume()");
+        }
+        catch (Exception ex) { Program.Log("MainForm.EcoResize", ex); }
+    }
 
     /// <summary>OBS WebSocket 5.0 기본 엔드포인트(obs-websocket 기본 포트 4455, 루프백) - 환경변수 PFS_OBS_URL 로 재정의.</summary>
     internal const string DefaultObsUrl = "ws://127.0.0.1:4455";

@@ -60,6 +60,13 @@ public interface IRenderQueueService : IDisposable
     }
     bool RetryJob(Guid jobId);
     int ClearCompleted();
+
+    /// <summary>⚡ 대기 작업 우선순위 — 바로 위 대기 작업과 자리 교환(대기/보류 상태만). 이동 시 true.</summary>
+    bool MoveJobUp(Guid jobId) => false;
+    /// <summary>⚡ 대기 작업 우선순위 — 바로 아래 대기 작업과 자리 교환.</summary>
+    bool MoveJobDown(Guid jobId) => false;
+    /// <summary>⚡ 최우선 실행 — 대기열 1순위(다음 디스패치 대상)로 즉시 끌어올림.</summary>
+    bool MoveJobToTop(Guid jobId) => false;
     void PauseQueue();
     void ResumeQueue();
 

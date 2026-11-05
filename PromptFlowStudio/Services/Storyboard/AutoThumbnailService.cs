@@ -20,8 +20,9 @@ public sealed record ThumbnailResult(bool Ok, string? Path, bool Upscaled, strin
 ///     <see cref="EngineKeys.RealEsrgan"/> CLI(<see cref="CliPathResolver"/>로 자동 탐색)로 4K 초고화질 <c>thumbnail.png</c> 배출.
 ///   ▸ Graceful: ffmpeg/Real-ESRGAN 부재 시 — ffmpeg 없으면 실패 메시지, ESRGAN 없으면 ffmpeg 고화질 스케일로 폴백(썸네일은 항상 산출 시도).
 /// </summary>
-public sealed class AutoThumbnailService(IVideoMergeService merge, EngineConfigService engines, ILocalMediaService media)
+public sealed class AutoThumbnailService(IVideoMergeService merge, EngineConfigService engines, ILocalMediaService media, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
 {
+    private readonly IProcessRunner _runner = processRunner ?? SystemProcessRunner.Shared;
     private const double CaptureSec = 2.2;   // 컷 내 표정 피크 근사 시점(5초 컷 · 소스 기준)
 
     /// <summary>프로젝트의 렌더 완료 컷에서 표정 피크 프레임을 잡아 얼굴 매크로 크롭 + 4K 업스케일한 thumbnail.png 를 만든다.</summary>
@@ -66,7 +67,7 @@ public sealed class AutoThumbnailService(IVideoMergeService merge, EngineConfigS
                 var model = engines.Extra(EngineKeys.RealEsrgan, "Model", "realesrgan-x4plus") ?? "realesrgan-x4plus";
                 var args = ProcessRunner.Substitute(engines.Args(EngineKeys.RealEsrgan), new Dictionary<string, string>
                 { ["in"] = cropPng, ["out"] = outPng, ["scale"] = "4", ["model"] = model });
-                var r = await ProcessRunner.RunAsync(esrgan, args, null, null, ct).ConfigureAwait(false);
+                var r = await _runner.RunAsync(esrgan, args, null, null, ct).ConfigureAwait(false);
                 if (r.Started && r.ExitCode == 0 && File.Exists(outPng))
                 {
                     TryDelete(cropPng);
@@ -98,21 +99,13 @@ public sealed class AutoThumbnailService(IVideoMergeService merge, EngineConfigS
     /// <summary>썸네일 재생 URL(가상호스트) — 미리보기용. 없으면 null.</summary>
     public string? PlaybackUrl(string? path) => string.IsNullOrEmpty(path) || !File.Exists(path) ? null : media.ToPlaybackUrl(path);
 
-    private static async Task<bool> RunFfmpegAsync(string ffmpeg, string[] args, CancellationToken ct)
+    /// <summary>🛡️ <see cref="IProcessRunner"/> 경유 ffmpeg 실행(stdout/stderr 동시 드레인 · 취소 시 트리 kill → false). 종료 코드 0 = 성공.</summary>
+    private async Task<bool> RunFfmpegAsync(string ffmpeg, string[] args, CancellationToken ct)
     {
         try
         {
-            var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
-            foreach (var a in args) psi.ArgumentList.Add(a);
-            using var proc = new Process { StartInfo = psi };
-            proc.ErrorDataReceived += (_, __) => { };
-            proc.OutputDataReceived += (_, __) => { };
-            if (!proc.StartCompat()) return false;
-            proc.BeginErrorReadLine();
-            proc.BeginOutputReadLine();
-            try { await proc.WaitForExitAsync(ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) { try { if (!proc.HasExited) proc.KillCompat(entireProcessTree: true); } catch { } return false; }
-            return proc.ExitCode == 0;
+            var r = await _runner.RunAsync(ffmpeg, args, ct: ct).ConfigureAwait(false);
+            return r.Ok;
         }
         catch (Exception ex) { Program.Log("AutoThumbnail.Ffmpeg", ex); return false; }
     }

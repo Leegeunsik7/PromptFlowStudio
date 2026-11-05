@@ -56,15 +56,20 @@ public sealed class Spatial3dGaussianSplattingEngine
     public static readonly TimeSpan ReconTimeout = TimeSpan.FromMinutes(3);
 
     private readonly Func<string?> _ffmpeg;
+    private readonly PromptFlowStudio.Services.Engines.IProcessRunner _runner;   // 🛡️ 단일 실행 게이트웨이(우선순위 · stderr 자동 드레인)
     private readonly object _gate = new();
     private GaussianSplat[]? _splats;
     private float[]? _zbuf, _acc;
     private int _count, _busy, _frames, _recons;
     private float _pivot = 3f, _hfov = DefaultHfovDeg;
 
-    public Spatial3dGaussianSplattingEngine(IVideoMergeService merge) : this(() => merge.ResolvedFfmpegPath) { }
+    public Spatial3dGaussianSplattingEngine(IVideoMergeService merge, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null) : this(() => merge.ResolvedFfmpegPath, processRunner) { }
 
-    public Spatial3dGaussianSplattingEngine(Func<string?> ffmpeg) => _ffmpeg = ffmpeg;
+    public Spatial3dGaussianSplattingEngine(Func<string?> ffmpeg, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
+    {
+        _ffmpeg = ffmpeg;
+        _runner = processRunner ?? PromptFlowStudio.Services.Engines.SystemProcessRunner.Shared;
+    }
 
     public event Action? OnChange;
 
@@ -387,15 +392,12 @@ public sealed class Spatial3dGaussianSplattingEngine
             var h = Math.Max(16, (int)Math.Round(ReconWidth * (double)probe.Value.H / probe.Value.W) & ~1);
             maxFrames = Math.Clamp(maxFrames, 1, 240);
             var ci = CultureInfo.InvariantCulture;
-            var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-            foreach (var a in new[] { "-hide_banner", "-v", "error", "-i", mediaPath, "-vf", "fps=" + ReconFps.ToString(ci) + ",scale=" + w.ToString(ci) + ":" + h.ToString(ci),
-                         "-frames:v", maxFrames.ToString(ci), "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1" })
-                psi.ArgumentList.Add(a);
-            using var proc = new Process { StartInfo = psi };
-            if (!proc.StartCompat()) return Done(new(false, 0, 0, SplatCount, 0, 0, "ffmpeg 시작 실패"));
+            var args = new[] { "-hide_banner", "-v", "error", "-i", mediaPath, "-vf", "fps=" + ReconFps.ToString(ci) + ",scale=" + w.ToString(ci) + ":" + h.ToString(ci),
+                         "-frames:v", maxFrames.ToString(ci), "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1" };
             using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
             d.CancelAfter(ReconTimeout);
-            _ = proc.StandardError.ReadToEndAsync(d.Token);
+            using var proc = _runner.StartStreaming(ffmpeg, args, false, true, d.Token);   // 🛡️ stderr 자동 드레인
+            if (proc is null) return Done(new(false, 0, 0, SplatCount, 0, 0, "ffmpeg 시작 실패"));
 
             var n = w * h;
             rgb = new byte[n * 3];   // 결선점 계약(byte[]) — 복원 1회 1개

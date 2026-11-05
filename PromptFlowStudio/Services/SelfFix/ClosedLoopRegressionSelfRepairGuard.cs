@@ -49,7 +49,13 @@ public sealed class ClosedLoopRegressionSelfRepairGuard
     public string? LastOutputTail { get; private set; }
     public event Action? OnChange;
 
-    public ClosedLoopRegressionSelfRepairGuard() => Execute = RunDotnetAsync;
+    private readonly PromptFlowStudio.Services.Engines.IProcessRunner _runner;
+
+    public ClosedLoopRegressionSelfRepairGuard(PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
+    {
+        _runner = processRunner ?? PromptFlowStudio.Services.Engines.SystemProcessRunner.Shared;
+        Execute = RunDotnetAsync;
+    }
 
     /// <summary>폐루프: 스냅샷 → 적용 → 빌드 → 테스트 → (실패) 복원 + 안전 재수정 → 커밋/롤백.</summary>
     public async Task<RepairReport> RepairAsync(string repoRoot, string sourceRoot, IReadOnlyDictionary<string, List<SourcePatch>> patchesByFile, CancellationToken ct)
@@ -220,34 +226,43 @@ public sealed class ClosedLoopRegressionSelfRepairGuard
         try { OnChange?.Invoke(); } catch (Exception ex) { PromptFlowStudio.Program.Log("SelfFix.Guard.OnChange", ex); }
     }
 
+    /// <summary>자식 dotnet 전용 텔레메트리 옵트아웃(앱 전역 환경 불변).</summary>
+    private static readonly IReadOnlyDictionary<string, string?> TelemetryOptOutEnv = new Dictionary<string, string?>(StringComparer.Ordinal) { ["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1" };
+
     /// <summary>기본 실행기: dotnet 프로세스(출력 상한 256 KB · 타임아웃/취소 시 프로세스 트리 종료).</summary>
     public async Task<CommandResult> RunDotnetAsync(string args, string workDir, CancellationToken ct)
     {
-        var psi = new ProcessStartInfo("dotnet", args)
-        {
-            WorkingDirectory = workDir, UseShellExecute = false, CreateNoWindow = true,
-            RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8,
-        };
-        psi.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
         var sb = new StringBuilder(8192);
-        void On(object? _, DataReceivedEventArgs e) { if (e.Data is null) return; lock (sb) { if (sb.Length > 256 * 1024) sb.Remove(0, 64 * 1024); sb.Append(e.Data).Append('\n'); } }
+        void On(bool _, string line) { lock (sb) { if (sb.Length > 256 * 1024) sb.Remove(0, 64 * 1024); sb.Append(line).Append('\n'); } }
         var t0 = Stopwatch.GetTimestamp();
-        using var p = new Process { StartInfo = psi };
-        p.OutputDataReceived += On; p.ErrorDataReceived += On;
-        if (!p.StartCompat()) return new CommandResult(-1, "프로세스 미지원 플랫폼", 0, false);
-        p.BeginOutputReadLine(); p.BeginErrorReadLine();
         using var lim = CancellationTokenSource.CreateLinkedTokenSource(ct);
         lim.CancelAfter(CommandTimeout);
-        var timedOut = false;
-        try { await p.WaitForExitAsync(lim.Token).ConfigureAwait(false); }
-        catch (OperationCanceledException)
-        {
-            try { p.KillCompat(entireProcessTree: true); } catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception) { PromptFlowStudio.Program.Log("SelfFix.Kill", ex); }
-            if (ct.IsCancellationRequested) throw;
-            timedOut = true;
-        }
+        // 🛡️ IProcessRunner 경유 — 취소/타임아웃 시 runner 가 프로세스 트리 종료(ExitCode −2 · 예외 없음).
+        var r = await _runner.RunWithEnvAsync("dotnet", SplitCommandLine(args), TelemetryOptOutEnv, workDir, On, lim.Token).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        if (!r.Started) return new CommandResult(-1, "프로세스 미지원 플랫폼", 0, false);
+        var timedOut = r.ExitCode == -2 && lim.IsCancellationRequested;
         string output; lock (sb) output = sb.ToString();
-        return new CommandResult(timedOut ? -1 : p.ExitCode, output, Stopwatch.GetElapsedTime(t0).TotalMilliseconds, timedOut);
+        return new CommandResult(timedOut ? -1 : r.ExitCode, output, Stopwatch.GetElapsedTime(t0).TotalMilliseconds, timedOut);
+    }
+
+    /// <summary>명령줄 문자열 → 인자 목록(공백 구분 · 큰따옴표 묶음 · <c>\"</c> 이스케이프).</summary>
+    internal static List<string> SplitCommandLine(string args)
+    {
+        var list = new List<string>();
+        if (string.IsNullOrWhiteSpace(args)) return list;
+        var cur = new StringBuilder();
+        var inQ = false; var has = false;
+        for (var i = 0; i < args.Length; i++)
+        {
+            var ch = args[i];
+            if (ch == '\\' && i + 1 < args.Length && args[i + 1] == '"') { cur.Append('"'); i++; has = true; }
+            else if (ch == '"') { inQ = !inQ; has = true; }
+            else if (!inQ && char.IsWhiteSpace(ch)) { if (has) { list.Add(cur.ToString()); cur.Clear(); has = false; } }
+            else { cur.Append(ch); has = true; }
+        }
+        if (has) list.Add(cur.ToString());
+        return list;
     }
 
     private sealed class Snapshot

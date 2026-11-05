@@ -67,6 +67,9 @@ public sealed class RenderQueueViewModel : IDisposable
     public void ClearCompleted() => _queue.ClearCompleted();
     public void Cancel(Guid jobId) => _queue.CancelJob(jobId);
     public void Retry(Guid jobId) => _queue.RetryJob(jobId);
+    public void MoveUp(Guid jobId) => _queue.MoveJobUp(jobId);
+    public void MoveDown(Guid jobId) => _queue.MoveJobDown(jobId);
+    public void MoveToTop(Guid jobId) => _queue.MoveJobToTop(jobId);
 
     public const string VramPauseNotice = "GPU 메모리가 위험 수준에 도달하여 렌더 큐를 일시 정지했습니다. 메모리가 확보되면 재개하십시오.";
     public const string DiskPauseNotice = "디스크 잔여 용량이 5GB 미만입니다. 저장 공간을 확보하거나 임시 캐시를 정리하십시오.";

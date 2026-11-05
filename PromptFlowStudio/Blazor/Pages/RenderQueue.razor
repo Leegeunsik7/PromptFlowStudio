@@ -77,12 +77,18 @@
                             <td class="q-mono">@job.Resolution</td>
                             <td class="q-mono">@(job.DurationSec.ToString("0.#", CultureInfo.InvariantCulture))s</td>
                             <td>@if (job.EngineKind is { } ek) { <span class="q-eng @EngineCls(ek)">@ek</span> } else { <span class="q-dim">—</span> }</td>
-                            <td><span class="q-st @JobCls(job.Status)" tabindex="@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? "0" : null)" aria-label="@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? job.ErrorMessage : null)" data-tip="@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? job.ErrorMessage : null)">@JobLabel(job.Status)@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? " ⓘ" : "")</span></td>
+                            <td><span class="q-st @JobCls(job.Status)" tabindex="@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? "0" : null)" aria-label="@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? job.ErrorMessage : null)" data-tip="@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? job.ErrorMessage : null)">@JobLabel(job.Status)@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? " ⓘ" : "")</span>@if (job.IsQuarantined && job.Status == BatchJobStatus.Failed) { <span class="q-st fail" title="🧯 결함 격리 — 나머지 큐는 계속 진행">🧯 격리 · @(job.QuarantineReason)</span> }</td>
                             <td>
                                 <div class="q-scene-bar"><div class="q-scene-bar-f" style="width:@(job.ProgressPercent.ToString(CultureInfo.InvariantCulture))%"></div></div>
                                 <span class="q-mono q-pct">@(job.ProgressPercent.ToString(CultureInfo.InvariantCulture))%</span>
                             </td>
                             <td class="q-tbl-a">
+                                @if (job.Status is BatchJobStatus.Queued)
+                                {
+                                    <button class="q-ic" title="▲ 위로" @onclick="() => Vm.MoveUp(job.JobId)">▲</button>
+                                    <button class="q-ic" title="▼ 아래로" @onclick="() => Vm.MoveDown(job.JobId)">▼</button>
+                                    <button class="q-ic" title="⚡ 최우선 실행(대기열 1순위)" @onclick="() => Vm.MoveToTop(job.JobId)">⚡</button>
+                                }
                                 @if (job.Status is BatchJobStatus.Queued or BatchJobStatus.Processing)
                                 {
                                     <button class="q-ic" title="취소" @onclick="() => Vm.Cancel(job.JobId)">✕</button>

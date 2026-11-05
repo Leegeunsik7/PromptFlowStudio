@@ -29,6 +29,7 @@ public sealed class HardwareVideoEncoderOffloader : IDisposable
     public const int RingSize = 3, MaxWidth = 7680, MaxHeight = 4320, H264MaxWidth = 4096;
 
     private readonly Func<string?> _ffmpeg;
+    private readonly PromptFlowStudio.Services.Engines.IProcessRunner _runner;
     private readonly object _gate = new();
     private readonly SemaphoreSlim _probeLock = new(1, 1);
     private readonly byte[][] _ring = new byte[RingSize][];
@@ -54,9 +55,14 @@ public sealed class HardwareVideoEncoderOffloader : IDisposable
     private HwCodec _codec;
     private string? _note;
 
-    public HardwareVideoEncoderOffloader(Func<string?> ffmpeg) => _ffmpeg = ffmpeg;
+    public HardwareVideoEncoderOffloader(Func<string?> ffmpeg, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
+    {
+        _ffmpeg = ffmpeg;
+        _runner = processRunner ?? PromptFlowStudio.Services.Engines.SystemProcessRunner.Shared;
+    }
     public HardwareVideoEncoderOffloader(IServiceProvider sp)
-        : this(() => (sp.GetService(typeof(PromptFlowStudio.Services.Media.IVideoMergeService)) as PromptFlowStudio.Services.Media.IVideoMergeService)?.ResolvedFfmpegPath) { }
+        : this(() => (sp.GetService(typeof(PromptFlowStudio.Services.Media.IVideoMergeService)) as PromptFlowStudio.Services.Media.IVideoMergeService)?.ResolvedFfmpegPath,
+               sp.GetService(typeof(PromptFlowStudio.Services.Engines.IProcessRunner)) as PromptFlowStudio.Services.Engines.IProcessRunner) { }
 
     public event Action? OnChange;
 
@@ -144,7 +150,7 @@ public sealed class HardwareVideoEncoderOffloader : IDisposable
                 to.CancelAfter(TimeSpan.FromSeconds(8));
                 try
                 {
-                    var r = await PromptFlowStudio.Services.Engines.ProcessRunner.RunAsync(ff, new[] { "-hide_banner", "-encoders" }, null, null, to.Token).ConfigureAwait(false);
+                    var r = await _runner.RunAsync(ff, new[] { "-hide_banner", "-encoders" }, null, null, to.Token).ConfigureAwait(false);
                     listing = r.StdOut + r.StdErr;
                 }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }
@@ -161,7 +167,7 @@ public sealed class HardwareVideoEncoderOffloader : IDisposable
                         to.CancelAfter(TimeSpan.FromSeconds(8));
                         try
                         {
-                            var r = await PromptFlowStudio.Services.Engines.ProcessRunner.RunAsync(ff, new[] { "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=gray:s=320x180:r=30",
+                            var r = await _runner.RunAsync(ff, new[] { "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=gray:s=320x180:r=30",
                                 "-frames:v", "3", "-c:v", name, "-f", "null", "-" }, null, null, to.Token).ConfigureAwait(false);
                             ok = r.Ok;
                             if (!ok) err = FirstLine(r.StdErr) ?? "테스트 인코드 실패(" + r.ExitCode.ToString(CultureInfo.InvariantCulture) + ")";
@@ -240,13 +246,11 @@ public sealed class HardwareVideoEncoderOffloader : IDisposable
         try
         {
             if (o.OutputPath is { } op) Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(op))!);
-            var psi = new ProcessStartInfo(ff) { UseShellExecute = false, RedirectStandardInput = true, RedirectStandardError = true, RedirectStandardOutput = true, CreateNoWindow = true };
-            foreach (var a in BuildArgs(v, _codec, o.Width, o.Height, o.Fps, o.BitrateKbps, _pipeFmt, o.OutputPath)) psi.ArgumentList.Add(a);
-            var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
-            p.ErrorDataReceived += (_, e) => { if (e.Data is { Length: > 0 } d) lock (_log) { _log.Enqueue(d); while (_log.Count > 12) _log.Dequeue(); } };
-            p.OutputDataReceived += (_, _) => { };
-            if (!p.StartCompat()) { p.Dispose(); return false; }
-            p.BeginErrorReadLine(); p.BeginOutputReadLine();
+            // 🛡️ IProcessRunner.StartStreaming(우선순위 · stderr 자동 드레인) — stdout 은 무시 드레인(파이프 데드락 방지).
+            var p = _runner.StartStreaming(ff, BuildArgs(v, _codec, o.Width, o.Height, o.Fps, o.BitrateKbps, _pipeFmt, o.OutputPath), redirectStdin: true, redirectStdout: true,
+                onStderrLine: d => { if (d.Length > 0) lock (_log) { _log.Enqueue(d); while (_log.Count > 12) _log.Dequeue(); } });
+            if (p is null) return false;
+            _ = DrainStdoutAsync(p.StandardOutput.BaseStream);
             _proc = p;
             _stdin = p.StandardInput.BaseStream;
             return true;
@@ -429,6 +433,12 @@ public sealed class HardwareVideoEncoderOffloader : IDisposable
         }
         Raise();
         return rep;
+    }
+
+    private static async Task DrainStdoutAsync(Stream s)
+    {
+        try { await s.CopyToAsync(Stream.Null).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException) { /* 프로세스 종료 */ }
     }
 
     private void KillProcess()

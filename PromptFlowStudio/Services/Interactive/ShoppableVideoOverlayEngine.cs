@@ -7,6 +7,7 @@ using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using PromptFlowStudio.Services.Engines;
 using PromptFlowStudio.Services.Media;
 
 namespace PromptFlowStudio.Services.Interactive;
@@ -71,16 +72,19 @@ public sealed class ShoppableVideoOverlayEngine
     public static readonly TimeSpan TrackTimeout = TimeSpan.FromSeconds(90);
 
     private readonly Func<string?> _ffmpeg;
+    /// <summary>🛡️ 실행 게이트웨이(장중 BelowNormal · 동시 1 게이트).</summary>
+    private readonly IProcessRunner _runner;
     private readonly CommercialBrandCampaignService? _brand;
     private readonly object _gate = new();
     private readonly List<ShoppableTag> _tags = new();
     private int _busy, _tracked;
 
-    public ShoppableVideoOverlayEngine(IVideoMergeService merge, CommercialBrandCampaignService? brand = null)
-        : this(() => merge.ResolvedFfmpegPath, brand) { }
+    public ShoppableVideoOverlayEngine(IVideoMergeService merge, CommercialBrandCampaignService? brand = null, IProcessRunner? processRunner = null)
+        : this(() => merge.ResolvedFfmpegPath, brand, processRunner) { }
 
-    public ShoppableVideoOverlayEngine(Func<string?> ffmpeg, CommercialBrandCampaignService? brand)
+    public ShoppableVideoOverlayEngine(Func<string?> ffmpeg, CommercialBrandCampaignService? brand, IProcessRunner? processRunner = null)
     {
+        _runner = processRunner ?? SystemProcessRunner.Shared;
         _ffmpeg = ffmpeg;
         _brand = brand;
     }
@@ -363,64 +367,71 @@ public sealed class ShoppableVideoOverlayEngine
             var start = Math.Max(0, tag.StartSeconds);
             var dur = Math.Max(0.5, tag.EndSeconds - start);
 
-            var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-            foreach (var a in new[] { "-hide_banner", "-v", "error", "-ss", start.ToString("0.###", CultureInfo.InvariantCulture), "-t", dur.ToString("0.###", CultureInfo.InvariantCulture),
+            var args = new[] { "-hide_banner", "-v", "error", "-ss", start.ToString("0.###", CultureInfo.InvariantCulture), "-t", dur.ToString("0.###", CultureInfo.InvariantCulture),
                          "-i", videoPath, "-vf", "fps=" + TrackFps.ToString(CultureInfo.InvariantCulture) + ",scale=" + w.ToString(CultureInfo.InvariantCulture) + ":" + h.ToString(CultureInfo.InvariantCulture),
-                         "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1" })
-                psi.ArgumentList.Add(a);
+                         "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1" };
 
-            using var proc = new Process { StartInfo = psi };
-            if (!proc.StartCompat()) return new(false, 0, 0, "ffmpeg 시작 실패");
-            using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            d.CancelAfter(TrackTimeout);
-            _ = proc.StandardError.ReadToEndAsync(d.Token);
-
-            var frameBytes = w * h;
-            var frame = ArrayPool<byte>.Shared.Rent(frameBytes);
-            var tpl = ArrayPool<byte>.Shared.Rent(frameBytes);
-            try
+            // 🛡️ 바이너리 stdout — IProcessRunner.StartStreaming(우선순위 · stderr 자동 드레인) + RunGatedAsync(장중 동시 게이트).
+            //    ⚠ 프로브(RunAsync · 자체 게이트)는 게이트 밖에서 선행(슬롯 1 재진입 데드락 방지).
+            var result = new HotspotTrackResult(false, 0, 0, "ffmpeg 시작 실패");
+            var done = new ProcessResult(true, 0, "", "");
+            await _runner.RunGatedAsync(ffmpeg, async gc =>
             {
-                var init = tag.Keyframes[0].Box.Clamp();
-                var tw = Math.Max(4, (int)(init.W * w)); var th = Math.Max(4, (int)(init.H * h));
-                tw = Math.Min(tw, w); th = Math.Min(th, h);
-                var px = Math.Clamp((int)(init.X * w), 0, w - tw); var py = Math.Clamp((int)(init.Y * h), 0, h - th);
-                var keys = new List<HotspotKeyframe>(64);
-                double confSum = 0; var n = 0;
-                var s = proc.StandardOutput.BaseStream;
-                for (var i = 0; i < MaxTrackFrames; i++)
+                using var proc = _runner.StartStreaming(ffmpeg, args, redirectStdin: false, redirectStdout: true, gc);
+                if (proc is null) return new ProcessResult(false, -1, "", "");
+                using var d = CancellationTokenSource.CreateLinkedTokenSource(gc);
+                d.CancelAfter(TrackTimeout);
+
+                var frameBytes = w * h;
+                var frame = ArrayPool<byte>.Shared.Rent(frameBytes);
+                var tpl = ArrayPool<byte>.Shared.Rent(frameBytes);
+                try
                 {
-                    if (!await ReadExactAsync(s, frame, frameBytes, d.Token).ConfigureAwait(false)) break;
-                    var tt = start + (double)i / TrackFps;
-                    if (i == 0)
+                    var init = tag.Keyframes[0].Box.Clamp();
+                    var tw = Math.Max(4, (int)(init.W * w)); var th = Math.Max(4, (int)(init.H * h));
+                    tw = Math.Min(tw, w); th = Math.Min(th, h);
+                    var px = Math.Clamp((int)(init.X * w), 0, w - tw); var py = Math.Clamp((int)(init.Y * h), 0, h - th);
+                    var keys = new List<HotspotKeyframe>(64);
+                    double confSum = 0; var n = 0;
+                    var s = proc.StandardOutput.BaseStream;
+                    for (var i = 0; i < MaxTrackFrames; i++)
                     {
-                        CopyTemplate(frame.AsSpan(0, frameBytes), w, px, py, tw, th, tpl.AsSpan(0, tw * th));
-                        keys.Add(new(tt, init));
-                        continue;
+                        if (!await ReadExactAsync(s, frame, frameBytes, d.Token).ConfigureAwait(false)) break;
+                        var tt = start + (double)i / TrackFps;
+                        if (i == 0)
+                        {
+                            CopyTemplate(frame.AsSpan(0, frameBytes), w, px, py, tw, th, tpl.AsSpan(0, tw * th));
+                            keys.Add(new(tt, init));
+                            continue;
+                        }
+                        var conf = TrackStep(frame.AsSpan(0, frameBytes), w, h, tpl.AsSpan(0, tw * th), tw, th, px, py, SearchRadius, out var nx, out var ny);
+                        confSum += conf; n++;
+                        if (conf >= MinConfidence)
+                        {
+                            px = nx; py = ny;
+                            BlendTemplate(frame.AsSpan(0, frameBytes), w, px, py, tw, th, tpl.AsSpan(0, tw * th));
+                        }
+                        keys.Add(new(tt, new HotspotBox((float)px / w, (float)py / h, (float)tw / w, (float)th / h).Clamp()));
                     }
-                    var conf = TrackStep(frame.AsSpan(0, frameBytes), w, h, tpl.AsSpan(0, tw * th), tw, th, px, py, SearchRadius, out var nx, out var ny);
-                    confSum += conf; n++;
-                    if (conf >= MinConfidence)
-                    {
-                        px = nx; py = ny;
-                        BlendTemplate(frame.AsSpan(0, frameBytes), w, px, py, tw, th, tpl.AsSpan(0, tw * th));
-                    }
-                    keys.Add(new(tt, new HotspotBox((float)px / w, (float)py / h, (float)tw / w, (float)th / h).Clamp()));
+                    try { if (!proc.HasExited) proc.KillCompat(true); } catch { }
+                    if (keys.Count < 2) { result = new(false, keys.Count, 0, "추적할 프레임이 부족합니다."); return done; }
+                    var simple = Simplify(keys);
+                    lock (_gate) { tag.Keyframes.Clear(); tag.Keyframes.AddRange(simple); }
+                    Interlocked.Increment(ref _tracked);
+                    var mean = n == 0 ? 1 : confSum / n;
+                    LastAction = "🎯 추적 완료 · " + tag.ProductName + " · 키 " + simple.Count.ToString(CultureInfo.InvariantCulture);
+                    result = new(true, simple.Count, mean, mean < MinConfidence ? "추적 신뢰도가 낮습니다 — 박스를 확인하세요." : "추적 완료");
+                    return done;
                 }
-                try { if (!proc.HasExited) proc.KillCompat(true); } catch { }
-                if (keys.Count < 2) return new(false, keys.Count, 0, "추적할 프레임이 부족합니다.");
-                var simple = Simplify(keys);
-                lock (_gate) { tag.Keyframes.Clear(); tag.Keyframes.AddRange(simple); }
-                Interlocked.Increment(ref _tracked);
-                var mean = n == 0 ? 1 : confSum / n;
-                LastAction = "🎯 추적 완료 · " + tag.ProductName + " · 키 " + simple.Count.ToString(CultureInfo.InvariantCulture);
-                return new(true, simple.Count, mean, mean < MinConfidence ? "추적 신뢰도가 낮습니다 — 박스를 확인하세요." : "추적 완료");
-            }
-            finally
-            {
-                ArrayPool<byte>.Shared.Return(frame);
-                ArrayPool<byte>.Shared.Return(tpl);
-                try { if (!proc.HasExited) proc.KillCompat(true); } catch { }
-            }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(frame);
+                    ArrayPool<byte>.Shared.Return(tpl);
+                    try { if (!proc.HasExited) proc.KillCompat(true); } catch { }
+                }
+            }, ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            return result;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { return new(false, 0, 0, "취소됨"); }
         catch (Exception ex) { Program.Log("Shoppable.Track", ex); return new(false, 0, 0, "추적 실패: " + ex.Message); }
@@ -444,18 +455,17 @@ public sealed class ShoppableVideoOverlayEngine
     }
 
     /// <summary>ffmpeg -i stderr 로 해상도/길이 조회(실패 null).</summary>
-    internal static async Task<(int W, int H, double Duration)?> ProbeAsync(string ffmpeg, string path, CancellationToken ct)
+    internal static async Task<(int W, int H, double Duration)?> ProbeAsync(string ffmpeg, string path, CancellationToken ct, IProcessRunner? runner = null)
     {
         try
         {
-            var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
-            psi.ArgumentList.Add("-hide_banner"); psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(path);
-            using var p = new Process { StartInfo = psi };
-            if (!p.StartCompat()) return null;
+            // 🛡️ IProcessRunner 경유(stderr 수집 · 15초 타임아웃 시 트리 kill). ffmpeg -i 는 출력 미지정으로 비0 종료 → 종료 코드 무시, stderr 만 파싱.
             using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
             d.CancelAfter(TimeSpan.FromSeconds(15));
-            var err = await p.StandardError.ReadToEndAsync(d.Token).ConfigureAwait(false);
-            try { await p.WaitForExitAsync(d.Token).ConfigureAwait(false); } catch (OperationCanceledException) { try { p.KillCompat(true); } catch { } }
+            var r = await (runner ?? SystemProcessRunner.Shared).RunAsync(ffmpeg, new[] { "-hide_banner", "-i", path }, ct: d.Token).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            if (!r.Started || d.IsCancellationRequested) return null;
+            var err = r.StdErr;
             if (!CommercialProductSegmenterService.TryParseVideoSize(err, out var w, out var h)) return null;
             return (w, h, InteractiveChoiceBranchingService.ParseDuration(err));
         }
@@ -463,8 +473,8 @@ public sealed class ShoppableVideoOverlayEngine
         catch (Exception ex) { Program.Log("Shoppable.Probe", ex); return null; }
     }
 
-    private static async Task<(int W, int H)?> ProbeSizeAsync(string ffmpeg, string path, CancellationToken ct)
-        => await ProbeAsync(ffmpeg, path, ct).ConfigureAwait(false) is { } p ? (p.W, p.H) : null;
+    private async Task<(int W, int H)?> ProbeSizeAsync(string ffmpeg, string path, CancellationToken ct)
+        => await ProbeAsync(ffmpeg, path, ct, _runner).ConfigureAwait(false) is { } p ? (p.W, p.H) : null;
 
     private void Raise()
     {

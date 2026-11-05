@@ -8,6 +8,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Timer = System.Threading.Timer;
+using PromptFlowStudio.Services.Engines;
 using PromptFlowStudio.Services.Media;
 using PromptFlowStudio.Services.Storyboard;
 
@@ -64,6 +65,8 @@ public sealed class InteractiveChoiceBranchingService : IDisposable
     public static readonly TimeSpan RenderTimeout = TimeSpan.FromMinutes(5);
 
     private readonly Func<string?> _ffmpeg;
+    /// <summary>🛡️ 실행 게이트웨이(장중 BelowNormal · 동시 1 게이트).</summary>
+    private readonly IProcessRunner _runner;
     private readonly InteractiveConversionAnalytics? _analytics;
     private readonly ShoppableVideoOverlayEngine? _shop;
     private readonly Broadcast.LiveChatAiReactionEngine? _chat;
@@ -79,15 +82,16 @@ public sealed class InteractiveChoiceBranchingService : IDisposable
     private long _deadline, _lastRaise;
     private bool _disposed;
 
-    public InteractiveChoiceBranchingService(IVideoMergeService merge, InteractiveConversionAnalytics analytics, ShoppableVideoOverlayEngine shop, Broadcast.LiveChatAiReactionEngine chat)
-        : this(() => merge.ResolvedFfmpegPath, analytics, shop)
+    public InteractiveChoiceBranchingService(IVideoMergeService merge, InteractiveConversionAnalytics analytics, ShoppableVideoOverlayEngine shop, Broadcast.LiveChatAiReactionEngine chat, IProcessRunner? processRunner = null)
+        : this(() => merge.ResolvedFfmpegPath, analytics, shop, processRunner)
     {
         _chat = chat;
         chat.OnMessage += OnChatMessage;
     }
 
-    public InteractiveChoiceBranchingService(Func<string?> ffmpeg, InteractiveConversionAnalytics? analytics, ShoppableVideoOverlayEngine? shop)
+    public InteractiveChoiceBranchingService(Func<string?> ffmpeg, InteractiveConversionAnalytics? analytics, ShoppableVideoOverlayEngine? shop, IProcessRunner? processRunner = null)
     {
+        _runner = processRunner ?? SystemProcessRunner.Shared;
         _ffmpeg = ffmpeg;
         _analytics = analytics;
         _shop = shop;
@@ -608,7 +612,7 @@ public sealed class InteractiveChoiceBranchingService : IDisposable
         }
     }
 
-    private static async Task<(bool Ok, string Note)> RenderLinearAsync(string ffmpeg, List<ChoiceNode> path, IReadOnlyList<ShoppableTag> tags, string output, CancellationToken ct)
+    private async Task<(bool Ok, string Note)> RenderLinearAsync(string ffmpeg, List<ChoiceNode> path, IReadOnlyList<ShoppableTag> tags, string output, CancellationToken ct)
     {
         var tmp = Path.Combine(Path.GetTempPath(), "pfs_interactive_" + Guid.NewGuid().ToString("N")[..8]);
         try
@@ -652,28 +656,16 @@ public sealed class InteractiveChoiceBranchingService : IDisposable
         }
     }
 
-    private static async Task<bool> RunAsync(string ffmpeg, List<string> args, CancellationToken ct)
+    private async Task<bool> RunAsync(string ffmpeg, List<string> args, CancellationToken ct)
     {
-        var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in args) psi.ArgumentList.Add(a);
-        using var p = new Process { StartInfo = psi };
-        if (!p.StartCompat()) return false;
+        // 🛡️ IProcessRunner 경유(stdout/stderr 동시 드레인 · 취소/타임아웃 시 트리 kill). 타임아웃은 linked CTS 로 보존.
         using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
         d.CancelAfter(RenderTimeout);
-        try
-        {
-            var err = p.StandardError.ReadToEndAsync(d.Token);
-            _ = p.StandardOutput.ReadToEndAsync(d.Token);
-            await p.WaitForExitAsync(d.Token).ConfigureAwait(false);
-            if (p.ExitCode != 0) Program.Log("InteractiveChoice.Ffmpeg", new InvalidOperationException((await err.ConfigureAwait(false)).Trim()));
-            return p.ExitCode == 0;
-        }
-        catch (OperationCanceledException)
-        {
-            try { if (!p.HasExited) p.KillCompat(true); } catch { }
-            if (ct.IsCancellationRequested) throw;
-            return false;
-        }
+        var r = await _runner.RunAsync(ffmpeg, args, ct: d.Token).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        if (!r.Started || d.IsCancellationRequested) return false;
+        if (r.ExitCode != 0) Program.Log("InteractiveChoice.Ffmpeg", new InvalidOperationException(r.StdErr.Trim()));
+        return r.ExitCode == 0;
     }
 
     /// <summary>graph.json(플레이어 데이터) — Utf8JsonWriter 직렬화 · 안전 URL 태그만 포함.</summary>

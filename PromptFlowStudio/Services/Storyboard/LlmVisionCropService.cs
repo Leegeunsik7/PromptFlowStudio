@@ -21,8 +21,9 @@ public sealed record FaceCropResult(bool Ok, string? Path, string Method, bool U
 ///   ▸ <b>오프라인 폴백</b>: Gemini 키 없음/실패/저신뢰(confidence&lt;0.3)면 휴리스틱(중앙-상단 43%)으로 크롭 — 항상 산출 시도(Graceful).
 ///   ▸ 크롭 중심 비율은 C# 에서 [1/3, 2/3]로 클램프해 크롭 박스가 항상 프레임 안에 들어오게 함(ffmpeg min/max·콤마 이스케이프 불필요).
 /// </summary>
-public sealed class LlmVisionCropService(IVideoMergeService merge, EngineConfigService engines, ILocalMediaService media, GeminiClient gemini)
+public sealed class LlmVisionCropService(IVideoMergeService merge, EngineConfigService engines, ILocalMediaService media, GeminiClient gemini, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
 {
+    private readonly IProcessRunner _runner = processRunner ?? SystemProcessRunner.Shared;
     private const double CaptureSec = 2.2;       // 표정 피크 근사 시점(소스 기준)
     private const double Zoom = 1.5;             // 매크로 줌 배수
     private const double HeuristicFaceY = 43.0;  // 폴백 얼굴 세로 중심(%) — 상단-중앙(y_offset≈0.10·ih)
@@ -70,7 +71,7 @@ public sealed class LlmVisionCropService(IVideoMergeService merge, EngineConfigS
                 var model = engines.Extra(EngineKeys.RealEsrgan, "Model", "realesrgan-x4plus") ?? "realesrgan-x4plus";
                 var args = ProcessRunner.Substitute(engines.Args(EngineKeys.RealEsrgan), new System.Collections.Generic.Dictionary<string, string>
                 { ["in"] = cropPng, ["out"] = outPng, ["scale"] = "4", ["model"] = model });
-                var r = await ProcessRunner.RunAsync(esrgan, args, null, null, ct).ConfigureAwait(false);
+                var r = await _runner.RunAsync(esrgan, args, null, null, ct).ConfigureAwait(false);
                 if (r.Started && r.ExitCode == 0 && File.Exists(outPng))
                 {
                     TryDelete(cropPng);
@@ -186,21 +187,13 @@ public sealed class LlmVisionCropService(IVideoMergeService merge, EngineConfigS
     private static string Inv(double d) => d.ToString(CultureInfo.InvariantCulture);
     private static void TryDelete(string p) { try { if (File.Exists(p)) File.Delete(p); } catch { } }
 
-    private static async Task<bool> RunFfmpegAsync(string ffmpeg, string[] args, CancellationToken ct)
+    /// <summary>🛡️ <see cref="IProcessRunner"/> 경유 ffmpeg 실행(stdout/stderr 동시 드레인 · 취소 시 트리 kill → false). 종료 코드 0 = 성공.</summary>
+    private async Task<bool> RunFfmpegAsync(string ffmpeg, string[] args, CancellationToken ct)
     {
         try
         {
-            var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
-            foreach (var a in args) psi.ArgumentList.Add(a);
-            using var proc = new Process { StartInfo = psi };
-            proc.ErrorDataReceived += (_, __) => { };
-            proc.OutputDataReceived += (_, __) => { };
-            if (!proc.StartCompat()) return false;
-            proc.BeginErrorReadLine();
-            proc.BeginOutputReadLine();
-            try { await proc.WaitForExitAsync(ct).ConfigureAwait(false); }
-            catch (OperationCanceledException) { try { if (!proc.HasExited) proc.KillCompat(entireProcessTree: true); } catch { } return false; }
-            return proc.ExitCode == 0;
+            var r = await _runner.RunAsync(ffmpeg, args, ct: ct).ConfigureAwait(false);
+            return r.Ok;
         }
         catch (Exception ex) { Program.Log("LlmVisionCrop.Ffmpeg", ex); return false; }
     }

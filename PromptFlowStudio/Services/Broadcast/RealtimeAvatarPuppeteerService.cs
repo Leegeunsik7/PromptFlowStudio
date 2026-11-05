@@ -8,6 +8,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using PromptFlowStudio.Services.Diagnostics;
+using PromptFlowStudio.Services.Engines;
 using PromptFlowStudio.Services.Media;
 using PromptFlowStudio.Services.Storyboard;
 
@@ -55,6 +56,8 @@ public sealed class RealtimeAvatarPuppeteerService : IDisposable
     private static readonly string[] FaceTable = BuildFaceTable();
 
     private readonly Func<string?> _ffmpeg;
+    /// <summary>🛡️ 실행 게이트웨이(우선순위 적용 · 실시간 발화 지연 방지 위해 동시 게이트 미적용 = 기존 동작 유지).</summary>
+    private readonly IProcessRunner _runner;
     private readonly object _gate = new();
     private readonly Queue<Clip> _queue = new(MaxQueue);
     private readonly byte[] _chunk = new byte[ChunkBytes];
@@ -79,12 +82,13 @@ public sealed class RealtimeAvatarPuppeteerService : IDisposable
     private int _spoken, _dropped, _underruns, _sinkErrors, _decodeFails;
     private long _chunksWritten;
 
-    public RealtimeAvatarPuppeteerService(IVideoMergeService merge) : this(() => merge.ResolvedFfmpegPath, null) { }
+    public RealtimeAvatarPuppeteerService(IVideoMergeService merge, IProcessRunner? processRunner = null) : this(() => merge.ResolvedFfmpegPath, null, processRunner) { }
 
     /// <param name="ffmpeg">ffmpeg 경로 공급자(테스트 주입 · null 반환 시 오디오 없는 가상 발화).</param>
     /// <param name="overlayDir">오버레이 텍스트 폴더(null = %TEMP%/PromptFlowStudio/live).</param>
-    public RealtimeAvatarPuppeteerService(Func<string?> ffmpeg, string? overlayDir)
+    public RealtimeAvatarPuppeteerService(Func<string?> ffmpeg, string? overlayDir, IProcessRunner? processRunner = null)
     {
+        _runner = processRunner ?? SystemProcessRunner.Shared;
         _ffmpeg = ffmpeg;
         _overlayDir = overlayDir ?? Path.Combine(Path.GetTempPath(), "PromptFlowStudio", "live");
     }
@@ -422,19 +426,17 @@ public sealed class RealtimeAvatarPuppeteerService : IDisposable
     {
         var ffmpeg = _ffmpeg();
         if (ffmpeg is null) return (null, 0);
-        var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in new[] { "-hide_banner", "-v", "error", "-i", path, "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", "24000", "pipe:1" })
-            psi.ArgumentList.Add(a);
+        var args = new[] { "-hide_banner", "-v", "error", "-i", path, "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", "24000", "pipe:1" };
 
-        using var proc = new Process { StartInfo = psi };
-        if (!proc.StartCompat()) return (null, 0);
+        // 🛡️ IProcessRunner.StartStreaming(바이너리 PCM stdout · stderr 자동 드레인 · 우선순위). 시작 실패 null.
+        using var proc = _runner.StartStreaming(ffmpeg, args, redirectStdin: false, redirectStdout: true, ct);
+        if (proc is null) return (null, 0);
         using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
         d.CancelAfter(DecodeTimeout);
         var buf = ArrayPool<byte>.Shared.Rent(MaxClipBytes);
         var len = 0;
         try
         {
-            _ = proc.StandardError.ReadToEndAsync(d.Token);   // stderr 드레인
             var s = proc.StandardOutput.BaseStream;
             while (len < MaxClipBytes)
             {

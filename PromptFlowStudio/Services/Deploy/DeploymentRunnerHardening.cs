@@ -33,6 +33,12 @@ public sealed record ScriptRunResult(bool Started, int ExitCode, bool TimedOut, 
 /// </summary>
 public sealed class DeploymentRunnerHardening
 {
+    private readonly IProcessRunner _runner;
+
+    /// <summary>프로세스 실행기 주입(미지정 시 <see cref="SystemProcessRunner.Shared"/> — 거버넌스 우선순위/게이트 경유).</summary>
+    public DeploymentRunnerHardening(IProcessRunner? processRunner = null)
+        => _runner = processRunner ?? SystemProcessRunner.Shared;
+
     /// <summary>기본 실행 타임아웃 — 이 시간 안에 끝나지 않으면 프로세스 트리를 강제 종료.</summary>
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromMinutes(10);
 
@@ -133,76 +139,41 @@ public sealed class DeploymentRunnerHardening
     {
         var budget = timeout is { } t && t > TimeSpan.Zero ? t : DefaultTimeout;
 
-        var psi = new ProcessStartInfo
-        {
-            FileName = exe,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,     // ⚠ 셸 미경유 — 메타문자 해석/인젝션 원천 차단
-            CreateNoWindow = true,
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8,
-        };
-        foreach (var a in args) psi.ArgumentList.Add(a);   // 공백/한글/메타문자 경로도 리터럴로 안전 전달
-        if (!string.IsNullOrWhiteSpace(workingDir) && Directory.Exists(workingDir)) psi.WorkingDirectory = workingDir!;
-
         var so = new StringBuilder();
         var se = new StringBuilder();
-        Process? proc = null;
         try
         {
-            proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
-            proc.OutputDataReceived += (_, e) => { if (e.Data is null) return; if (so.Length < 400_000) so.AppendLine(e.Data); log?.Invoke(e.Data); };
-            proc.ErrorDataReceived  += (_, e) => { if (e.Data is null) return; if (se.Length < 400_000) se.AppendLine(e.Data); log?.Invoke(e.Data); };
-
-            if (!proc.StartCompat()) return ScriptRunResult.Rejected("프로세스를 시작하지 못했습니다.");
-            proc.BeginOutputReadLine();
-            proc.BeginErrorReadLine();
-
+            // 인자는 IProcessRunner 가 ArgumentList 로만 전달(셸 미경유 — 메타문자 해석/인젝션 원천 차단). 취소 시 runner 가 트리 전체 Kill(좀비 방어).
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(budget);   // ⏱ TimeSpan 타임아웃(기본 10분)
 
-            try
+            var r = await _runner.RunAsync(exe, args, workingDir, (isErr, line) =>
             {
-                await proc.WaitForExitAsync(cts.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
+                var sb = isErr ? se : so;
+                if (sb.Length < 400_000) sb.AppendLine(line);
+                log?.Invoke(line);
+            }, cts.Token).ConfigureAwait(false);
+
+            if (r.ExitCode == -2 && cts.IsCancellationRequested)
             {
-                var killed = KillTree(proc);   // ⚠ 좀비 방어 — 트리 전체(Kill(true)) 강제 종료
                 var timedOut = !ct.IsCancellationRequested;
                 var msg = timedOut
                     ? $"타임아웃({Friendly(budget)}) — 스크립트 무응답으로 프로세스 트리를 강제 종료했습니다."
                     : "취소됨 — 프로세스 트리를 종료했습니다.";
                 log?.Invoke("⏹ " + msg);
-                return new ScriptRunResult(true, -1, timedOut, killed, so.ToString(), se.ToString(), msg);
+                return new ScriptRunResult(r.Started, -1, timedOut, r.Started, so.ToString(), se.ToString(), msg);
             }
 
-            var code = proc.ExitCode;
+            if (!r.Started)
+                return ScriptRunResult.Rejected(string.IsNullOrEmpty(r.StdErr) ? "프로세스를 시작하지 못했습니다." : r.StdErr);
+
+            var code = r.ExitCode;
             return new ScriptRunResult(true, code, false, false, so.ToString(), se.ToString(), code == 0 ? "성공" : $"실패(exit {code})");
         }
-        catch (System.ComponentModel.Win32Exception ex) { return ScriptRunResult.Rejected("실행 불가: " + ex.Message); }
         catch (Exception ex) { Program.Log("DeploymentRunnerHardening.Run", ex); return ScriptRunResult.Rejected(ex.Message); }
-        finally
-        {
-            // 어떤 경로(취소·예외·조기반환)로 나가도 살아있는 프로세스 트리를 남기지 않는다(Orphan/Zombie 0).
-            try { if (proc is not null && !proc.HasExited) proc.KillCompat(entireProcessTree: true); } catch { /* 무시 */ }
-            proc?.Dispose();
-        }
     }
 
     // ══════════════════════ 내부 ══════════════════════
-
-    private static bool KillTree(Process proc)
-    {
-        try
-        {
-            if (proc.HasExited) return false;
-            proc.KillCompat(entireProcessTree: true);   // Win/맥/리눅스 공통 — 자식까지 확실히 종료
-            try { proc.WaitForExit(3000); } catch { /* 무시 */ }
-            return true;
-        }
-        catch { return false; }
-    }
 
     private static string? ResolveRunner(ScriptShell shell)
     {

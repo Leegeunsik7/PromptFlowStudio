@@ -51,6 +51,7 @@ public sealed class C2paContentProvenanceEngine : IDisposable
     public static readonly TimeSpan EncodeTimeout = TimeSpan.FromMinutes(20);
 
     private readonly Func<string?> _ffmpeg;
+    private readonly PromptFlowStudio.Services.Engines.IProcessRunner _runner;   // 🛡️ 단일 실행 게이트웨이(우선순위 · 동시 실행 게이트 · 취소 트리 kill)
     private readonly Func<byte[]> _sealKey;
     private readonly Func<byte[]> _wmKey;
     private readonly string _keyDir;
@@ -60,12 +61,13 @@ public sealed class C2paContentProvenanceEngine : IDisposable
     private int _busy;
     private long _signed, _verified, _failed;
 
-    public C2paContentProvenanceEngine(IVideoMergeService merge, SecureSecretVault vault)
+    public C2paContentProvenanceEngine(IVideoMergeService merge, SecureSecretVault vault, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
         : this(() => merge.ResolvedFfmpegPath, () => vault.ResolveOrCreate("C2PA_SIGNER_SEAL"), () => vault.ResolveOrCreate("C2PA_WATERMARK"),
-               Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "Keys")) { }
+               Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "Keys"), processRunner) { }
 
-    public C2paContentProvenanceEngine(Func<string?> ffmpeg, Func<byte[]> sealKey, Func<byte[]> watermarkKey, string keyDir)
+    public C2paContentProvenanceEngine(Func<string?> ffmpeg, Func<byte[]> sealKey, Func<byte[]> watermarkKey, string keyDir, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
     {
+        _runner = processRunner ?? PromptFlowStudio.Services.Engines.SystemProcessRunner.Shared;
         _ffmpeg = ffmpeg;
         _sealKey = sealKey;
         _wmKey = watermarkKey;
@@ -473,63 +475,62 @@ public sealed class C2paContentProvenanceEngine : IDisposable
             var seed = SeedFrom(_wmKey());
             var fps = await ProbeFpsAsync(ffmpeg, input, ct).ConfigureAwait(false);
 
-            var dec = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-            foreach (var a in new[] { "-hide_banner", "-v", "error", "-i", input, "-vf", "scale=" + w.ToString(CultureInfo.InvariantCulture) + ":" + h.ToString(CultureInfo.InvariantCulture), "-f", "rawvideo", "-pix_fmt", "yuv420p", "pipe:1" })
-                dec.ArgumentList.Add(a);
-            var enc = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardInput = true, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
-            foreach (var a in new[] { "-hide_banner", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", w.ToString(CultureInfo.InvariantCulture) + "x" + h.ToString(CultureInfo.InvariantCulture),
+            var decArgs = new[] { "-hide_banner", "-v", "error", "-i", input, "-vf", "scale=" + w.ToString(CultureInfo.InvariantCulture) + ":" + h.ToString(CultureInfo.InvariantCulture), "-f", "rawvideo", "-pix_fmt", "yuv420p", "pipe:1" };
+            var encArgs = new[] { "-hide_banner", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", w.ToString(CultureInfo.InvariantCulture) + "x" + h.ToString(CultureInfo.InvariantCulture),
                          "-r", fps.ToString("0.###", CultureInfo.InvariantCulture), "-i", "pipe:0", "-i", input, "-map", "0:v", "-map", "1:a?",
                          "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "copy", "-shortest",
-                         "-metadata", "comment=c2pa:xmp:iid:" + instance, "-metadata", "copyright=" + TeamCollaborationSessionBridge.SanitizeText(req.Tenant, 64), "-movflags", "+faststart", output })
-                enc.ArgumentList.Add(a);
+                         "-metadata", "comment=c2pa:xmp:iid:" + instance, "-metadata", "copyright=" + TeamCollaborationSessionBridge.SanitizeText(req.Tenant, 64), "-movflags", "+faststart", output };
 
             using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            d.CancelAfter(EncodeTimeout);
-            using var pd = new Process { StartInfo = dec };
-            using var pe = new Process { StartInfo = enc };
-            if (!pd.StartCompat()) return Fail("디코더 시작 실패");
-            if (!pe.StartCompat()) { try { pd.KillCompat(true); } catch { } return Fail("인코더 시작 실패"); }
-            var decErr = pd.StandardError.ReadToEndAsync(d.Token);
-            var encErr = pe.StandardError.ReadToEndAsync(d.Token);
-            _ = pe.StandardOutput.ReadToEndAsync(d.Token);
-            var frameBytes = w * h * 3 / 2;
-            var buf = ArrayPool<byte>.Shared.Rent(frameBytes);
             var frames = 0;
-            var expected = Math.Max(1, dur * fps);
-            try
+            // 🛡️ 디코더/인코더 파이프 쌍을 장중 동시 실행 게이트 슬롯 안에서 실행(stderr 는 runner 가 자동 드레인)
+            var gr = await _runner.RunGatedAsync(ffmpeg, async gc =>
             {
-                var src = pd.StandardOutput.BaseStream;
-                var dst = pe.StandardInput.BaseStream;
-                while (true)
+                d.CancelAfter(EncodeTimeout);   // 타임아웃은 슬롯 획득 후부터(해시·사이드카 기록까지 포함)
+                using var gl = CancellationTokenSource.CreateLinkedTokenSource(gc, d.Token);
+                using var pd = _runner.StartStreaming(ffmpeg, decArgs, false, true, gl.Token);
+                if (pd is null) return new PromptFlowStudio.Services.Engines.ProcessResult(false, -1, "", "디코더 시작 실패");
+                using var pe = _runner.StartStreaming(ffmpeg, encArgs, true, false, gl.Token);
+                if (pe is null) { try { pd.KillCompat(true); } catch { } return new PromptFlowStudio.Services.Engines.ProcessResult(false, -1, "", "인코더 시작 실패"); }
+                var frameBytes = w * h * 3 / 2;
+                var buf = ArrayPool<byte>.Shared.Rent(frameBytes);
+                var expected = Math.Max(1, dur * fps);
+                try
                 {
-                    var off = 0;
-                    while (off < frameBytes)
+                    var src = pd.StandardOutput.BaseStream;
+                    var dst = pe.StandardInput.BaseStream;
+                    while (true)
                     {
-                        var r = await src.ReadAsync(buf.AsMemory(off, frameBytes - off), d.Token).ConfigureAwait(false);
-                        if (r <= 0) break;
-                        off += r;
+                        var off = 0;
+                        while (off < frameBytes)
+                        {
+                            var r = await src.ReadAsync(buf.AsMemory(off, frameBytes - off), gl.Token).ConfigureAwait(false);
+                            if (r <= 0) break;
+                            off += r;
+                        }
+                        if (off < frameBytes) break;
+                        EmbedWatermark(buf.AsSpan(0, w * h), w, h, wmId, seed);
+                        await dst.WriteAsync(buf.AsMemory(0, frameBytes), gl.Token).ConfigureAwait(false);
+                        if ((++frames & 15) == 0) { Progress = Math.Min(0.95, frames / expected); Raise(); }
                     }
-                    if (off < frameBytes) break;
-                    EmbedWatermark(buf.AsSpan(0, w * h), w, h, wmId, seed);
-                    await dst.WriteAsync(buf.AsMemory(0, frameBytes), d.Token).ConfigureAwait(false);
-                    if ((++frames & 15) == 0) { Progress = Math.Min(0.95, frames / expected); Raise(); }
+                    await dst.FlushAsync(gl.Token).ConfigureAwait(false);
+                    pe.StandardInput.Close();
+                    await pd.WaitForExitAsync(gl.Token).ConfigureAwait(false);
+                    await pe.WaitForExitAsync(gl.Token).ConfigureAwait(false);
+                    return new PromptFlowStudio.Services.Engines.ProcessResult(true, pe.ExitCode, "", "");
                 }
-                await dst.FlushAsync(d.Token).ConfigureAwait(false);
-                pe.StandardInput.Close();
-                await pd.WaitForExitAsync(d.Token).ConfigureAwait(false);
-                await pe.WaitForExitAsync(d.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
+                finally
+                {
+                    try { if (!pd.HasExited) pd.KillCompat(true); } catch { }
+                    try { if (!pe.HasExited) pe.KillCompat(true); } catch { }
+                    ArrayPool<byte>.Shared.Return(buf);
+                }
+            }, ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            if (!gr.Started) return Fail(gr.StdErr.Length > 0 ? gr.StdErr : "인코더 시작 실패");
+            if (frames == 0 || gr.ExitCode != 0)
             {
-                try { if (!pd.HasExited) pd.KillCompat(true); } catch { }
-                try { if (!pe.HasExited) pe.KillCompat(true); } catch { }
-                throw;
-            }
-            finally { ArrayPool<byte>.Shared.Return(buf); }
-            if (frames == 0 || pe.ExitCode != 0)
-            {
-                var err = pe.ExitCode != 0 ? await encErr.ConfigureAwait(false) : await decErr.ConfigureAwait(false);
-                Program.Log("C2pa.Encode", new InvalidOperationException(err.Trim()));
+                Program.Log("C2pa.Encode", new InvalidOperationException("ffmpeg exit " + gr.ExitCode.ToString(CultureInfo.InvariantCulture) + " · frames " + frames.ToString(CultureInfo.InvariantCulture)));
                 return Fail("인코딩 실패(원본 보존)");
             }
 
@@ -595,20 +596,17 @@ public sealed class C2paContentProvenanceEngine : IDisposable
         return v;
     }
 
-    private static async Task<(ulong Id, double Score)?> DetectFromVideoAsync(string ffmpeg, string video, ulong seed, int maxFrames, CancellationToken ct)
+    private async Task<(ulong Id, double Score)?> DetectFromVideoAsync(string ffmpeg, string video, ulong seed, int maxFrames, CancellationToken ct)
     {
         var probe = await ShoppableVideoOverlayEngine.ProbeAsync(ffmpeg, video, ct).ConfigureAwait(false);
         if (probe is null) return null;
         var w = probe.Value.W & ~1; var h = probe.Value.H & ~1;
-        var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in new[] { "-hide_banner", "-v", "error", "-i", video, "-frames:v", maxFrames.ToString(CultureInfo.InvariantCulture),
-                     "-vf", "scale=" + w.ToString(CultureInfo.InvariantCulture) + ":" + h.ToString(CultureInfo.InvariantCulture), "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1" })
-            psi.ArgumentList.Add(a);
-        using var p = new Process { StartInfo = psi };
-        if (!p.StartCompat()) return null;
+        var args = new[] { "-hide_banner", "-v", "error", "-i", video, "-frames:v", maxFrames.ToString(CultureInfo.InvariantCulture),
+                     "-vf", "scale=" + w.ToString(CultureInfo.InvariantCulture) + ":" + h.ToString(CultureInfo.InvariantCulture), "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1" };
         using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
         d.CancelAfter(TimeSpan.FromSeconds(60));
-        _ = p.StandardError.ReadToEndAsync(d.Token);
+        using var p = _runner.StartStreaming(ffmpeg, args, false, true, d.Token);   // 🛡️ stderr 자동 드레인
+        if (p is null) return null;
         var frame = ArrayPool<byte>.Shared.Rent(w * h);
         var means = ArrayPool<float>.Shared.Rent(Math.Max(1, (w / Block) * (h / Block)));
         var acc = new double[PayloadBits];
@@ -642,17 +640,16 @@ public sealed class C2paContentProvenanceEngine : IDisposable
         return (id, score);
     }
 
-    private static async Task<double> ProbeFpsAsync(string ffmpeg, string input, CancellationToken ct)
+    private async Task<double> ProbeFpsAsync(string ffmpeg, string input, CancellationToken ct)
     {
         try
         {
-            var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
-            psi.ArgumentList.Add("-hide_banner"); psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(input);
-            using var p = new Process { StartInfo = psi };
-            if (!p.StartCompat()) return 30;
             using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
             d.CancelAfter(TimeSpan.FromSeconds(15));
-            var err = await p.StandardError.ReadToEndAsync(d.Token).ConfigureAwait(false);
+            var r = await _runner.RunAsync(ffmpeg, new[] { "-hide_banner", "-i", input }, ct: d.Token).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            if (!r.Started || r.ExitCode == -2) return 30;   // 미시작 · 15초 타임아웃
+            var err = r.StdErr;
             var f = CloudRenderFarmDispatcherService.ParseFps(err);
             return f is > 1 and < 241 ? f : 30;
         }

@@ -54,14 +54,16 @@ public sealed class AudioStemSeparationAndMixingEngine
 
     private readonly Func<string?> _ffmpeg;
     private readonly Func<string?> _demucs;
+    private readonly PromptFlowStudio.Services.Engines.IProcessRunner _runner;
     private int _busy;
 
-    public AudioStemSeparationAndMixingEngine(IVideoMergeService merge) : this(() => merge.ResolvedFfmpegPath, () => s_demucs.Value) { }
+    public AudioStemSeparationAndMixingEngine(IVideoMergeService merge, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null) : this(() => merge.ResolvedFfmpegPath, () => s_demucs.Value, processRunner) { }
 
-    public AudioStemSeparationAndMixingEngine(Func<string?> ffmpeg, Func<string?>? demucs)
+    public AudioStemSeparationAndMixingEngine(Func<string?> ffmpeg, Func<string?>? demucs, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
     {
         _ffmpeg = ffmpeg;
         _demucs = demucs ?? (() => null);
+        _runner = processRunner ?? PromptFlowStudio.Services.Engines.SystemProcessRunner.Shared;
     }
 
     private static readonly Lazy<string?> s_demucs = new(ResolveDemucs);
@@ -302,15 +304,13 @@ public sealed class AudioStemSeparationAndMixingEngine
     // ══════════════════════ 디코드 · Demucs · 인스턴스 흐름 ══════════════════════
 
     /// <summary>ffmpeg → 48kHz 스테레오 float(최대 300초 · 오디오 없음 null).</summary>
-    public static async Task<(float[] L, float[] R)?> DecodeAudioAsync(string ffmpeg, string path, CancellationToken ct)
+    public static async Task<(float[] L, float[] R)?> DecodeAudioAsync(string ffmpeg, string path, CancellationToken ct, PromptFlowStudio.Services.Engines.IProcessRunner? runner = null)
     {
         var ci = CultureInfo.InvariantCulture;
-        var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in new[] { "-hide_banner", "-v", "error", "-t", MaxSeconds.ToString(ci), "-i", path, "-vn", "-ac", "2", "-ar", Rate.ToString(ci), "-f", "f32le", "pipe:1" })
-            psi.ArgumentList.Add(a);
-        using var p = new Process { StartInfo = psi };
-        if (!p.StartCompat()) return null;
-        _ = p.StandardError.ReadToEndAsync(ct);
+        using var p = (runner ?? PromptFlowStudio.Services.Engines.SystemProcessRunner.Shared).StartStreaming(ffmpeg,
+            new[] { "-hide_banner", "-v", "error", "-t", MaxSeconds.ToString(ci), "-i", path, "-vn", "-ac", "2", "-ar", Rate.ToString(ci), "-f", "f32le", "pipe:1" },
+            redirectStdin: false, redirectStdout: true, ct);
+        if (p is null) return null;
         using var ms = new MemoryStream();
         try { await p.StandardOutput.BaseStream.CopyToAsync(ms, ct).ConfigureAwait(false); }
         finally { try { if (!p.HasExited) p.KillCompat(true); } catch { } }
@@ -345,7 +345,7 @@ public sealed class AudioStemSeparationAndMixingEngine
     }
 
     /// <summary>Demucs htdemucs(4스템: vocals/drums/bass/other) → BGM=bass+other · SFX=잔여. 실패 null.</summary>
-    public static async Task<StemSet?> SeparateDemucsAsync(string demucs, float[] l, float[] r, int rate, CancellationToken ct)
+    public static async Task<StemSet?> SeparateDemucsAsync(string demucs, float[] l, float[] r, int rate, CancellationToken ct, PromptFlowStudio.Services.Engines.IProcessRunner? runner = null)
     {
         var dir = Path.Combine(Path.GetTempPath(), "pfs_demucs_" + Guid.NewGuid().ToString("N"));
         try
@@ -353,7 +353,7 @@ public sealed class AudioStemSeparationAndMixingEngine
             Directory.CreateDirectory(dir);
             var input = Path.Combine(dir, "mix.wav");
             SoundDsp.WriteStereoWav(input, l, r, rate);
-            var code = await AiGenerativeFoleySoundscapeEngine.RunAsync(demucs, new() { "-n", "htdemucs", "--float32", "-o", dir, input }, ct).ConfigureAwait(false);
+            var code = await AiGenerativeFoleySoundscapeEngine.RunAsync(demucs, new() { "-n", "htdemucs", "--float32", "-o", dir, input }, ct, runner).ConfigureAwait(false);
             if (code != 0) return null;
             var od = Path.Combine(dir, "htdemucs", "mix");
             var sl = new float[4][]; var sr = new float[4][];
@@ -390,7 +390,7 @@ public sealed class AudioStemSeparationAndMixingEngine
         try
         {
             StemSet? set = null;
-            if (_demucs() is { } dm) set = await SeparateDemucsAsync(dm, l, r, Rate, ct).ConfigureAwait(false);
+            if (_demucs() is { } dm) set = await SeparateDemucsAsync(dm, l, r, Rate, ct, _runner).ConfigureAwait(false);
             set ??= await Task.Run(() => SeparateBcl(l, r, Rate), ct).ConfigureAwait(false);
             Stems = set; SourceLeft = l; SourceRight = r; SourcePath = sourceTag;
             LastAction = "🎚 스템 분리 완료 · " + set.Method + " · " + (set.Length / (double)Rate).ToString("0.0", CultureInfo.InvariantCulture) + "초";
@@ -406,7 +406,7 @@ public sealed class AudioStemSeparationAndMixingEngine
         if (ffmpeg is null || !File.Exists(path)) { LastAction = "⚠ 오디오 로드 불가(ffmpeg/파일 확인)"; Raise(); return null; }
         try
         {
-            var a = await DecodeAudioAsync(ffmpeg, path, ct).ConfigureAwait(false);
+            var a = await DecodeAudioAsync(ffmpeg, path, ct, _runner).ConfigureAwait(false);
             if (a is null) { LastAction = "⚠ 오디오 트랙이 없습니다."; Raise(); return null; }
             return await LoadAudioAsync(a.Value.L, a.Value.R, path, ct).ConfigureAwait(false);
         }

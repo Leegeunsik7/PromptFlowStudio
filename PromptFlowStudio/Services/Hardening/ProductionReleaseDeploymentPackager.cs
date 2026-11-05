@@ -42,6 +42,7 @@ public sealed class ProductionReleaseDeploymentPackager
 
     private static readonly OpCode[] OneByte = new OpCode[256], TwoByte = new OpCode[256];
     private readonly Func<byte[]> _key;
+    private readonly PromptFlowStudio.Services.Engines.IProcessRunner _runner;
     private long _bundles, _verified, _tamper;
 
     static ProductionReleaseDeploymentPackager()
@@ -55,9 +56,14 @@ public sealed class ProductionReleaseDeploymentPackager
     }
 
     public ProductionReleaseDeploymentPackager(IServiceProvider sp)
-        : this(sp.GetService(typeof(SecureSecretVault)) is SecureSecretVault v ? () => v.ResolveOrCreate(ManifestKeyName) : () => SHA256.HashData("pfs-release-manifest-dev"u8)) { }
+        : this(sp.GetService(typeof(SecureSecretVault)) is SecureSecretVault v ? () => v.ResolveOrCreate(ManifestKeyName) : () => SHA256.HashData("pfs-release-manifest-dev"u8),
+               sp.GetService(typeof(PromptFlowStudio.Services.Engines.IProcessRunner)) as PromptFlowStudio.Services.Engines.IProcessRunner) { }
 
-    public ProductionReleaseDeploymentPackager(Func<byte[]> key) => _key = key;
+    public ProductionReleaseDeploymentPackager(Func<byte[]> key, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
+    {
+        _key = key;
+        _runner = processRunner ?? PromptFlowStudio.Services.Engines.SystemProcessRunner.Shared;
+    }
 
     public event Action? OnChange;
     public event Action<string>? OnLog;
@@ -346,28 +352,22 @@ public sealed class ProductionReleaseDeploymentPackager
     {
         if (!plan.Feasible) throw new InvalidOperationException("퍼블리시 불가: " + string.Join(" / ", plan.Blockers));
         if (!File.Exists(plan.Project)) throw new FileNotFoundException("프로젝트 파일 없음", plan.Project);
-        var psi = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in plan.Arguments) psi.ArgumentList.Add(a);
         Busy = true; Raise();
         try
         {
-            using var p = new Process { StartInfo = psi, EnableRaisingEvents = true };
-            p.OutputDataReceived += (_, e) => { if (e.Data is { } d) Log(d); };
-            p.ErrorDataReceived += (_, e) => { if (e.Data is { } d) Log("ERR " + d); };
-            try { if (!p.StartCompat()) return -1; }
-            catch (System.ComponentModel.Win32Exception ex) { Log("dotnet 실행 실패: " + ex.Message); return -1; }
-            p.BeginOutputReadLine(); p.BeginErrorReadLine();
             using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
             d.CancelAfter(PublishTimeout);
-            try { await p.WaitForExitAsync(d.Token).ConfigureAwait(false); }
-            catch (OperationCanceledException)
+            // ArgumentList 전달 · 취소/타임아웃 시 runner 가 프로세스 트리 Kill.
+            var r = await _runner.RunAsync("dotnet", plan.Arguments, null,
+                (isErr, line) => Log(isErr ? "ERR " + line : line), d.Token).ConfigureAwait(false);
+            if (r.ExitCode == -2 && d.IsCancellationRequested)
             {
-                try { p.KillCompat(entireProcessTree: true); } catch (InvalidOperationException) { }
                 Log("⏱ 퍼블리시 타임아웃/취소 → 프로세스 트리 종료");
                 return -2;
             }
-            LastAction = "🏗 publish " + plan.Rid + " 종료 코드 " + p.ExitCode.ToString(CultureInfo.InvariantCulture);
-            return p.ExitCode;
+            if (!r.Started) { Log("dotnet 실행 실패: " + r.StdErr); return -1; }
+            LastAction = "🏗 publish " + plan.Rid + " 종료 코드 " + r.ExitCode.ToString(CultureInfo.InvariantCulture);
+            return r.ExitCode;
         }
         finally { Busy = false; Raise(); }
     }

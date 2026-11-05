@@ -33,19 +33,25 @@ public static class ProcessRunner
     /// CLI 를 실행하고 종료까지 대기한다. <paramref name="onLine"/>(isErr, line) 로 각 출력 라인을 실시간 전달(진행률 % 파싱용).
     ///   예외/취소는 삼키고 결과 record 로 반환(호출부가 Graceful 처리).
     /// </summary>
-    public static async Task<ProcessResult> RunAsync(
+    public static Task<ProcessResult> RunAsync(
         string exe, IEnumerable<string> args, string? workingDir = null,
+        Action<bool, string>? onLine = null, CancellationToken ct = default)
+        => RunWithEnvAsync(exe, args, null, workingDir, onLine, ct);
+
+    /// <summary><see cref="RunAsync"/> + 자식 프로세스 전용 환경변수(부모 프로세스 환경 오염 없음).</summary>
+    public static async Task<ProcessResult> RunWithEnvAsync(
+        string exe, IEnumerable<string> args, IReadOnlyDictionary<string, string?>? env, string? workingDir = null,
         Action<bool, string>? onLine = null, CancellationToken ct = default)
     {
         var gate = EncoderGate;
-        if (gate is null) return await RunCoreAsync(exe, args, workingDir, onLine, ct).ConfigureAwait(false);
-        try { return await gate(exe, c => RunCoreAsync(exe, args, workingDir, onLine, c), ct).ConfigureAwait(false); }
+        if (gate is null) return await RunCoreAsync(exe, args, workingDir, onLine, env, ct).ConfigureAwait(false);
+        try { return await gate(exe, c => RunCoreAsync(exe, args, workingDir, onLine, env, c), ct).ConfigureAwait(false); }
         catch (OperationCanceledException) { return new(false, -2, "", "취소됨"); }   // 슬롯 대기 중 취소
     }
 
     private static async Task<ProcessResult> RunCoreAsync(
         string exe, IEnumerable<string> args, string? workingDir,
-        Action<bool, string>? onLine, CancellationToken ct)
+        Action<bool, string>? onLine, IReadOnlyDictionary<string, string?>? env, CancellationToken ct)
     {
         var psi = new ProcessStartInfo
         {
@@ -59,6 +65,7 @@ public static class ProcessRunner
         };
         foreach (var a in args) psi.ArgumentList.Add(a);
         if (!string.IsNullOrWhiteSpace(workingDir) && Directory.Exists(workingDir)) psi.WorkingDirectory = workingDir!;
+        if (env is not null) foreach (var kv in env) psi.Environment[kv.Key] = kv.Value;
 
         var so = new StringBuilder();
         var se = new StringBuilder();
@@ -111,6 +118,10 @@ public static class ProcessRunner
     ///   ⚠ 호출부가 Dispose/Kill 책임. 동시 실행 제한은 <see cref="RunGatedAsync"/> 로 감싼다.
     /// </summary>
     public static Process? StartStreaming(string exe, IEnumerable<string> args, bool redirectStdin, bool redirectStdout, CancellationToken ct = default)
+        => StartStreaming(exe, args, redirectStdin, redirectStdout, null, ct);
+
+    /// <summary><see cref="StartStreaming(string, IEnumerable{string}, bool, bool, CancellationToken)"/> + stderr 라인 콜백(진단 로그 tail 수집용 · 콜백 예외 격리).</summary>
+    public static Process? StartStreaming(string exe, IEnumerable<string> args, bool redirectStdin, bool redirectStdout, Action<string>? onStderrLine, CancellationToken ct = default)
     {
         var psi = new ProcessStartInfo
         {
@@ -129,8 +140,21 @@ public static class ProcessRunner
         }
         catch (System.ComponentModel.Win32Exception ex) { Program.Log("ProcessRunner.Stream", ex); proc.Dispose(); return null; }
         ApplyPriority(proc, exe);
-        _ = DrainAsync(proc.StandardError, ct);
+        _ = onStderrLine is null ? DrainAsync(proc.StandardError, ct) : DrainLinesAsync(proc.StandardError, onStderrLine, ct);
         return proc;
+    }
+
+    private static async Task DrainLinesAsync(StreamReader r, Action<string> onLine, CancellationToken ct)
+    {
+        try
+        {
+            string? line;
+            while ((line = await r.ReadLineAsync(ct).ConfigureAwait(false)) is not null)
+            {
+                try { onLine(line); } catch (Exception ex) { Program.Log("ProcessRunner.StderrLine", ex); }
+            }
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or ObjectDisposedException or InvalidOperationException) { /* 프로세스 종료/취소 */ }
     }
 
     private static async Task DrainAsync(StreamReader r, CancellationToken ct)
@@ -146,6 +170,22 @@ public static class ProcessRunner
         var gate = EncoderGate;
         if (gate is null) return await body(ct).ConfigureAwait(false);
         return await gate(exe, body, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 셸 연결 프로그램으로 대상(URL·파일·폴더)을 연다(<c>UseShellExecute=true</c>) — 반환된 <see cref="Process"/> 핸들은 즉시 Dispose(핸들 누수 0).
+    ///   실패(Win32Exception 등)는 로그 후 false.
+    /// </summary>
+    public static bool ShellOpen(string target)
+    {
+        if (string.IsNullOrWhiteSpace(target)) return false;
+        try
+        {
+            using var p = Process.Start(new ProcessStartInfo(target) { UseShellExecute = true });
+            return true;
+        }
+        catch (System.ComponentModel.Win32Exception ex) { Program.Log("ProcessRunner.ShellOpen", ex); return false; }
+        catch (Exception ex) { Program.Log("ProcessRunner.ShellOpen", ex); return false; }
     }
 
     private static void ApplyPriority(Process proc, string exe)

@@ -120,6 +120,7 @@
         <div class="st-field"><label><input type="checkbox" checked="@Prefs.StockSuiteSharpen" @onchange="e => Prefs.StockSuiteSharpen = e.Value is true" /> 🔎 고선명 샤프닝 (1080p Lanczos + Unsharp) — MP4·WebM 재인코딩 · 끄면 스트림 복사(빠른 내보내기)</label></div>
         <div class="st-field"><label><input type="checkbox" checked="@Prefs.StockSuiteSmooth60" @onchange="e => Prefs.StockSuiteSmooth60 = e.Value is true" /> ⚡ 60fps 모션 스무딩 (minterpolate MCI) — 16~24fps AI 영상을 고주사율 모니터용 60fps 로 보간 · 재인코딩 시간 증가</label></div>
         <div class="st-field"><label><input type="checkbox" checked="@Prefs.TradingSafetyMode" @onchange="e => Prefs.TradingSafetyMode = e.Value is true" /> 🛡️ 장중 트레이딩 안전 모드 — 평일 09:00~15:30(KST) FFmpeg 우선순위 BelowNormal · 동시 렌더/인코딩 1개 제한(HTS 주문 렉 방지)</label></div>
+        <div class="st-field"><label><input type="checkbox" checked="@Prefs.HtsEcoMode" @onchange="OnEcoModeChanged" /> 🌱 HTS 스마트 에코 절전 모드 — 창 최소화/백그라운드 전환 시 영상 재생 일시정지(GPU 디코딩 0%) · 복귀 즉시 재개</label></div>
         <div class="st-field"><label>StockSuite 실행 파일 경로 (StockSuite.exe)</label>
             <div class="st-inrow">
                 <input type="text" class="st-sel" placeholder="예: C:\Projects\StockSuite\bin\StockSuite.exe" value="@Prefs.StockSuiteExecutablePath" @onchange="OnStockSuiteExeChanged" />
@@ -275,6 +276,14 @@
     private PromptFlowStudio.Services.Export.HealthCheckResult? _health;
     private bool _healthBusy;
     private string? _healthMsg;
+    private async Task OnEcoModeChanged(ChangeEventArgs e)
+    {
+        var on = e.Value is true;
+        Prefs.HtsEcoMode = on;
+        try { await JS.InvokeVoidAsync("promptflow.setEcoMode", on); }
+        catch (Exception ex) when (ex is JSException or JSDisconnectedException or InvalidOperationException or TaskCanceledException) { /* 브릿지 미적재 — 다음 작업실 진입 시 반영 */ }
+    }
+
     private async Task RunHealthCheckAsync()
     {
         if (_healthBusy) return;

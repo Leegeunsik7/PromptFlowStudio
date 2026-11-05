@@ -35,6 +35,12 @@ public sealed class MotionTrackingSubtitleService
     private const int BlockRadius = 7;     // ROI 블록 반경(15×15)
     private const int SearchRadius = 10;   // 프레임 간 탐색창 반경
 
+    /// <summary>🛡️ 실행 게이트웨이(장중 BelowNormal · 동시 1 게이트).</summary>
+    private readonly IProcessRunner _runner;
+
+    /// <summary>DI/테스트 생성자 — 실행기 미지정 시 <see cref="SystemProcessRunner.Shared"/>.</summary>
+    public MotionTrackingSubtitleService(IProcessRunner? processRunner = null) => _runner = processRunner ?? SystemProcessRunner.Shared;
+
     // ══════════════════════ 트래킹 ══════════════════════
 
     /// <summary>영상의 ROI(정규화)를 블록 매칭으로 추적해 궤적을 만든다. ffmpeg/저신뢰는 빈 트랙(Graceful).</summary>
@@ -143,7 +149,7 @@ public sealed class MotionTrackingSubtitleService
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
                 "-c:a", "copy", "-movflags", "+faststart", output,
             };
-            var res = await ProcessRunner.RunAsync(ffmpeg, args, workingDir: null, onLine: null, ct: ct).ConfigureAwait(false);
+            var res = await _runner.RunAsync(ffmpeg, args, workingDir: null, onLine: null, ct: ct).ConfigureAwait(false);
             return res.Ok && File.Exists(output);
         }
         catch (OperationCanceledException) { return false; }
@@ -171,24 +177,29 @@ public sealed class MotionTrackingSubtitleService
     private static string EscapeText(string s) => s.Replace("\\", "\\\\").Replace(":", "\\:").Replace("'", "’").Replace("%", "\\%");
     private static string Num(double v) => v.ToString("0.###", CultureInfo.InvariantCulture);
 
-    private static async Task<List<byte[]>> DecodeGrayFramesAsync(string ffmpeg, string video, CancellationToken ct)
+    private async Task<List<byte[]>> DecodeGrayFramesAsync(string ffmpeg, string video, CancellationToken ct)
     {
-        var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in new[] { "-y", "-i", video, "-vf", $"fps={SampleFps},scale={W}:{H}", "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1" })
-            psi.ArgumentList.Add(a);
-
-        using var proc = new Process { StartInfo = psi };
+        var args = new[] { "-y", "-i", video, "-vf", $"fps={SampleFps},scale={W}:{H}", "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1" };
         var list = new List<byte[]>();
-        if (!proc.StartCompat()) return list;
+        var bytes = Array.Empty<byte>();
 
-        using var ms = new MemoryStream();
-        var copy = proc.StandardOutput.BaseStream.CopyToAsync(ms, 81920, ct);
-        var drain = proc.StandardError.ReadToEndAsync(ct);
-        await Task.WhenAll(copy, drain).ConfigureAwait(false);
-        try { await proc.WaitForExitAsync(ct).ConfigureAwait(false); }
-        catch (OperationCanceledException) { try { if (!proc.HasExited) proc.KillCompat(true); } catch { } throw; }
+        // 🛡️ 바이너리 stdout — IProcessRunner.StartStreaming(우선순위 · stderr 자동 드레인) + RunGatedAsync(장중 동시 게이트).
+        await _runner.RunGatedAsync(ffmpeg, async c =>
+        {
+            using var proc = _runner.StartStreaming(ffmpeg, args, redirectStdin: false, redirectStdout: true, c);
+            if (proc is null) return new ProcessResult(false, -1, "", "");
+            try
+            {
+                using var ms = new MemoryStream();
+                await proc.StandardOutput.BaseStream.CopyToAsync(ms, 81920, c).ConfigureAwait(false);
+                await proc.WaitForExitAsync(c).ConfigureAwait(false);
+                bytes = ms.ToArray();
+                return new ProcessResult(true, proc.ExitCode, "", "");
+            }
+            finally { try { if (!proc.HasExited) proc.KillCompat(true); } catch { } }
+        }, ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
 
-        var bytes = ms.ToArray();
         var frameSize = W * H;
         var count = bytes.Length / frameSize;
         var step = Math.Max(1, count / MaxFrames);

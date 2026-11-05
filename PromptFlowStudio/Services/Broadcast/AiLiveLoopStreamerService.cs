@@ -6,6 +6,7 @@ using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using PromptFlowStudio.Services.Engines;
 using PromptFlowStudio.Services.Media;
 
 namespace PromptFlowStudio.Services.Broadcast;
@@ -64,6 +65,8 @@ public sealed class AiLiveLoopStreamerService : IDisposable
 
     private readonly Func<string?> _ffmpeg;
     private readonly RealtimeAvatarPuppeteerService? _avatar;
+    /// <summary>🛡️ 실행 게이트웨이(우선순위 적용 · 24/7 송출이라 동시 게이트 미적용 = 기존 동작 유지).</summary>
+    private readonly IProcessRunner _runner;
     private readonly string _workDir;
     private readonly object _gate = new();
     private readonly List<string> _playlist = new();
@@ -79,13 +82,14 @@ public sealed class AiLiveLoopStreamerService : IDisposable
     private long _pFrame, _pDrop;
     private double _pFps, _pKbps, _pSpeed;
 
-    public AiLiveLoopStreamerService(IVideoMergeService merge, RealtimeAvatarPuppeteerService avatar)
-        : this(() => merge.ResolvedFfmpegPath, avatar, null) { }
+    public AiLiveLoopStreamerService(IVideoMergeService merge, RealtimeAvatarPuppeteerService avatar, IProcessRunner? processRunner = null)
+        : this(() => merge.ResolvedFfmpegPath, avatar, null, processRunner) { }
 
     /// <param name="ffmpeg">ffmpeg 경로 공급자(테스트 주입).</param>
     /// <param name="workDir">ffconcat 목록 폴더(null = %TEMP%/PromptFlowStudio/live).</param>
-    public AiLiveLoopStreamerService(Func<string?> ffmpeg, RealtimeAvatarPuppeteerService? avatar, string? workDir)
+    public AiLiveLoopStreamerService(Func<string?> ffmpeg, RealtimeAvatarPuppeteerService? avatar, string? workDir, IProcessRunner? processRunner = null)
     {
+        _runner = processRunner ?? SystemProcessRunner.Shared;
         _ffmpeg = ffmpeg;
         _avatar = avatar;
         _workDir = workDir ?? Path.Combine(Path.GetTempPath(), "PromptFlowStudio", "live");
@@ -460,14 +464,18 @@ public sealed class AiLiveLoopStreamerService : IDisposable
             var args = BuildArgs(cfg with { VoiceMix = cfg.VoiceMix && _avatar is not null }, list, nvenc,
                 overlay ? _avatar!.AvatarTextPath : null, overlay ? _avatar!.CaptionTextPath : null, overlay ? FontResolver.FindKoreanFont(true) : null);
 
-            var psi = new ProcessStartInfo
+            // 🛡️ IProcessRunner.StartStreaming(stdin PCM 싱크 · stdout -progress · stderr 라인 수집(최근 4KB) · 우선순위). 시작 실패 null.
+            var errTail = new StringBuilder(4096);
+            proc = _runner.StartStreaming(ffmpeg, args, redirectStdin: true, redirectStdout: true, line =>
             {
-                FileName = ffmpeg, UseShellExecute = false, CreateNoWindow = true,
-                RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true,
-            };
-            foreach (var a in args) psi.ArgumentList.Add(a);
-            proc = new Process { StartInfo = psi };
-            if (!proc.StartCompat()) return (-1, "송출 프로세스 시작 실패");
+                lock (errTail)
+                {
+                    if (errTail.Length + line.Length > 4096) errTail.Remove(0, Math.Min(errTail.Length, line.Length + 1024));
+                    errTail.Append(line).Append((char)10);
+                }
+            }, ct);
+            if (proc is null) return (-1, "송출 프로세스 시작 실패");
+            var startedTick = Environment.TickCount64;
 
             lock (_gate)
             {
@@ -481,15 +489,19 @@ public sealed class AiLiveLoopStreamerService : IDisposable
             else { try { proc.StandardInput.Close(); } catch { } }
             Raise(true);
 
-            var errTask = DrainStderrAsync(proc);
             var outTask = ReadProgressAsync(proc);
             try { await proc.WaitForExitAsync(ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { KillProcess(); }
             _avatar?.AttachSink(null);
             try { await outTask.ConfigureAwait(false); } catch { }
-            var err = "";
-            try { err = await errTask.ConfigureAwait(false); } catch { }
-            return (proc.HasExited ? proc.ExitCode : -1, err);
+            var exitCode = proc.HasExited ? proc.ExitCode : -1;
+            string err;
+            lock (errTail) err = errTail.ToString();
+            // 안전망: stderr 미수신(드레인 지연) 상태로 NVENC 세션이 프로브 창 내 자의 종료하면 NVENC 실패로 추정.
+            if (err.Length == 0 && nvenc && exitCode != 0 && !ct.IsCancellationRequested && Volatile.Read(ref _applyRequested) == 0
+                && Environment.TickCount64 - startedTick < (long)NvencProbeWindow.TotalMilliseconds)
+                err = NvencSuspectNote;
+            return (exitCode, err);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -504,19 +516,8 @@ public sealed class AiLiveLoopStreamerService : IDisposable
         }
     }
 
-    private static async Task<string> DrainStderrAsync(Process proc)
-    {
-        // 최근 4KB 만 보존(24시간 누적 방지).
-        var sb = new StringBuilder(4096);
-        var r = proc.StandardError;
-        string? line;
-        while ((line = await r.ReadLineAsync().ConfigureAwait(false)) is not null)
-        {
-            if (sb.Length + line.Length > 4096) sb.Remove(0, Math.Min(sb.Length, line.Length + 1024));
-            sb.Append(line).Append('\n');
-        }
-        return sb.ToString();
-    }
+    /// <summary>stderr 비수집 시 NVENC 조기 실패 추정 표식(<see cref="LooksLikeNvencFailure"/> 매칭 키워드 포함).</summary>
+    private const string NvencSuspectNote = "nvenc: Error while opening encoder (추정 · 프로브 창 내 비정상 종료)";
 
     private async Task ReadProgressAsync(Process proc)
     {

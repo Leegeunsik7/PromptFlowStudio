@@ -1096,3 +1096,43 @@
         } catch (e) { return false; }
     };
 })();
+/* 🌱 HTS 스마트 에코 절전(Smart Idle Suspend) — 문서 숨김(최소화/백그라운드) 시 재생 중 <video> 일시정지 → GPU 디코더 0%, 복귀 시 우리가 멈춘 것만 재개. */
+(function () {
+    'use strict';
+    const pf = window.promptflow = window.promptflow || {};
+    const MARK = 'pfsEcoPaused';
+    let enabled = true;
+    let suspended = false;
+    function suspend() {
+        if (!enabled || suspended) return;
+        suspended = true;
+        const vids = document.querySelectorAll('video');
+        for (let i = 0; i < vids.length; i++) {
+            const v = vids[i];
+            try { if (!v.paused && !v.ended) { v.dataset[MARK] = '1'; v.pause(); } } catch (e) { /* 개별 실패 격리 */ }
+        }
+    }
+    function resume() {
+        if (!suspended) return;
+        suspended = false;
+        const vids = document.querySelectorAll('video');
+        for (let i = 0; i < vids.length; i++) {
+            const v = vids[i];
+            if (v.dataset[MARK] !== '1') continue;
+            delete v.dataset[MARK];
+            try { const p = v.play(); if (p && p.catch) p.catch(function () { }); } catch (e) { /* 자동재생 정책 등 — 무시 */ }
+        }
+    }
+    function onVisibility() { if (document.visibilityState === 'hidden') suspend(); else resume(); }
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', suspend);
+    window.addEventListener('pageshow', function () { if (document.visibilityState !== 'hidden') resume(); });
+    pf.setEcoMode = function (on) {
+        enabled = !!on;
+        if (!enabled) resume(); else if (document.visibilityState === 'hidden') suspend();
+        return enabled;
+    };
+    pf.isEcoSuspended = function () { return suspended; };
+    pf.ecoSuspend = suspend;   // 호스트(WinForms 최소화 훅) 직접 호출용
+    pf.ecoResume = resume;
+})();

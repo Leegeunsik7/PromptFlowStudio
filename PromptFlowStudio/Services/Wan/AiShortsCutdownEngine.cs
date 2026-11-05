@@ -39,9 +39,11 @@ public sealed record CutdownResult(bool Ok, string? OutputPath, string? Playback
 ///   ▸ ffmpeg 미탑재/실패 시 계획(Plan)만 반환하고 Ok=false — LongToShortsConverter/FfmpegFrameExtractor 와 동일한
 ///     스텁 정합·Graceful 폴백 기조(빈 화면/예외 전파 없음).
 /// </summary>
-public sealed class AiShortsCutdownEngine(ILocalMediaService media)
+public sealed class AiShortsCutdownEngine(ILocalMediaService media, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
 {
     public const double TargetDurationSec = 15.0;
+
+    private readonly PromptFlowStudio.Services.Engines.IProcessRunner _runner = processRunner ?? PromptFlowStudio.Services.Engines.SystemProcessRunner.Shared;
 
     private static readonly HttpClient _shared = new() { Timeout = TimeSpan.FromSeconds(60) };
     private static readonly Regex _durationRx = new(@"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", RegexOptions.Compiled);
@@ -101,16 +103,9 @@ public sealed class AiShortsCutdownEngine(ILocalMediaService media)
         try
         {
             var ffmpegExe = !string.IsNullOrWhiteSpace(customFfmpegPath) && File.Exists(customFfmpegPath) ? customFfmpegPath! : "ffmpeg";
-            using var proc = new System.Diagnostics.Process();
-            proc.StartInfo.FileName = ffmpegExe;
-            proc.StartInfo.Arguments = $"-i \"{videoPath}\"";
-            proc.StartInfo.CreateNoWindow = true;
-            proc.StartInfo.UseShellExecute = false;
-            proc.StartInfo.RedirectStandardError = true;
-            proc.Start();
-            var stderr = await proc.StandardError.ReadToEndAsync(ct).ConfigureAwait(false);
-            await proc.WaitForExitAsync(ct).ConfigureAwait(false);
-            var m = _durationRx.Match(stderr);
+            // 🛡️ IProcessRunner 경유(stdout/stderr 동시 드레인 · 취소 트리 kill). 종료 코드 무관 stderr 의 Duration 만 파싱.
+            var r = await _runner.RunAsync(ffmpegExe, new[] { "-i", videoPath }, ct: ct).ConfigureAwait(false);
+            var m = _durationRx.Match(r.StdErr);
             if (m.Success)
             {
                 var h = int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
@@ -121,6 +116,7 @@ public sealed class AiShortsCutdownEngine(ILocalMediaService media)
         }
         catch (Exception ex) { Program.Log("AiShortsCutdown.Probe", ex); }
 #else
+        _ = _runner;
         await Task.CompletedTask; // 모바일: ffmpeg 프로세스 미지원 → 0 폴백
 #endif
         return 0;
@@ -187,15 +183,15 @@ public sealed class AiShortsCutdownEngine(ILocalMediaService media)
 #if WINDOWS
                 var (crf, preset) = QualityParams(quality);
                 var ffmpegExe = !string.IsNullOrWhiteSpace(customFfmpegPath) && File.Exists(customFfmpegPath) ? customFfmpegPath! : "ffmpeg";
-                using var proc = new System.Diagnostics.Process();
-                proc.StartInfo.FileName = ffmpegExe;
-                proc.StartInfo.Arguments =
-                    $"-y -ss {plan.StartSec.ToString("F2", CultureInfo.InvariantCulture)} -i \"{localPath}\" " +
-                    $"-t {plan.TargetDurationSec.ToString("F2", CultureInfo.InvariantCulture)} -c:v libx264 -preset {preset} -crf {crf.ToString(CultureInfo.InvariantCulture)} -c:a aac -movflags +faststart \"{outputPath}\"";
-                proc.StartInfo.CreateNoWindow = true;
-                proc.StartInfo.UseShellExecute = false;
-                proc.Start();
-                await proc.WaitForExitAsync(ct).ConfigureAwait(false);
+                var args = new[]
+                {
+                    "-y", "-ss", plan.StartSec.ToString("F2", CultureInfo.InvariantCulture), "-i", localPath,
+                    "-t", plan.TargetDurationSec.ToString("F2", CultureInfo.InvariantCulture), "-c:v", "libx264", "-preset", preset,
+                    "-crf", crf.ToString(CultureInfo.InvariantCulture), "-c:a", "aac", "-movflags", "+faststart", outputPath,
+                };
+                // 🛡️ IProcessRunner 경유(우선순위·장중 게이트·취소 트리 kill). 취소는 기존과 동일하게 OCE 로 전파 → 예외 경로.
+                _ = await _runner.RunAsync(ffmpegExe, args, ct: ct).ConfigureAwait(false);
+                ct.ThrowIfCancellationRequested();
 #endif
                 if (!File.Exists(outputPath) || new FileInfo(outputPath).Length == 0)
                 {

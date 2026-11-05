@@ -293,8 +293,10 @@ public sealed class RenderQueueService : IRenderQueueService
                     Program.Log("RenderQueue.OomRetry", new InvalidOperationException(OomRetryNotice + " → " + job.Resolution, ex));
                 else
                 {
-                    lock (_gate) { job.Status = BatchJobStatus.Failed; job.ErrorMessage = ex.Message; }
-                    Program.Log("RenderQueue.Execute", ex);
+                    // 🧯 결함 격리: 이 작업만 Failed+Quarantined 로 격리하고 루프는 다음 대기 작업으로 계속(전체 큐 중단 없음).
+                    var reason = ClassifyQuarantineReason(ex);
+                    lock (_gate) { job.Status = BatchJobStatus.Failed; job.ErrorMessage = ex.Message; job.IsQuarantined = true; job.QuarantineReason = reason; }
+                    Program.Log("RenderQueue.Quarantine", new InvalidOperationException(reason, ex));
                 }
             }
             finally
@@ -550,6 +552,75 @@ public sealed class RenderQueueService : IRenderQueueService
         job.ResultPath = null;
         job.ErrorMessage = null;
         job.UserCancelRequested = false;
+        job.IsQuarantined = false;
+        job.QuarantineReason = null;
+    }
+
+    /// <summary>🧯 예외 → 격리 사유 분류(대소문자 무시 부분 일치 · 할당 최소화).</summary>
+    internal static string ClassifyQuarantineReason(Exception ex)
+    {
+        var m = ex.Message ?? "";
+        if (ex is System.Net.Http.HttpRequestException { StatusCode: System.Net.HttpStatusCode.TooManyRequests }
+            || m.Contains("429", StringComparison.Ordinal) || m.Contains("rate limit", StringComparison.OrdinalIgnoreCase))
+            return "API Rate Limit 429";
+        if (ex is ArgumentException or FormatException || m.Contains("invalid", StringComparison.OrdinalIgnoreCase))
+            return "Invalid Input";
+        if (ex is TimeoutException || m.Contains("timeout", StringComparison.OrdinalIgnoreCase) || m.Contains("timed out", StringComparison.OrdinalIgnoreCase))
+            return "Timeout";
+        if (ex is System.Net.Http.HttpRequestException) return "Network Error";
+        if (ex is IOException or UnauthorizedAccessException) return "I/O Error";
+        return "Engine Error";
+    }
+
+    /// <summary>대기열 이동 대상(아직 디스패치 전) 판정.</summary>
+    private static bool IsReorderable(BatchJobStatus s) => s is BatchJobStatus.Queued or BatchJobStatus.Pending;
+
+    /// <inheritdoc/>
+    public bool MoveJobUp(Guid jobId)
+    {
+        lock (_gate)
+        {
+            var i = IndexOf(jobId);
+            if (i < 0 || !IsReorderable(Queue[i].Status)) return false;
+            var j = i - 1;
+            while (j >= 0 && !IsReorderable(Queue[j].Status)) j--;
+            if (j < 0) return false;
+            Queue.Move(i, j);
+        }
+        Raise();
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public bool MoveJobDown(Guid jobId)
+    {
+        lock (_gate)
+        {
+            var i = IndexOf(jobId);
+            if (i < 0 || !IsReorderable(Queue[i].Status)) return false;
+            var j = i + 1;
+            while (j < Queue.Count && !IsReorderable(Queue[j].Status)) j++;
+            if (j >= Queue.Count) return false;
+            Queue.Move(i, j);
+        }
+        Raise();
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public bool MoveJobToTop(Guid jobId)
+    {
+        lock (_gate)
+        {
+            var i = IndexOf(jobId);
+            if (i < 0 || !IsReorderable(Queue[i].Status)) return false;
+            var first = 0;
+            while (first < i && !IsReorderable(Queue[first].Status)) first++;
+            if (first == i) return false;   // 이미 1순위
+            Queue.Move(i, first);
+        }
+        Raise();
+        return true;
     }
 
     /// <summary>엔진 진행률 → 작업 진행률(동기 반영 · 0~99 클램프, 100 은 완료 전이에서만).</summary>

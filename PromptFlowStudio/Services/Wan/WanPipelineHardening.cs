@@ -46,6 +46,11 @@ public sealed class WanPipelineHardening
     /// <summary>VRAM 탐지 기본 타임아웃 — 무응답 nvidia-smi 를 이 시간 안에 강제 종료.</summary>
     public static readonly TimeSpan DefaultVramTimeout = TimeSpan.FromSeconds(3);
 
+    private readonly IProcessRunner _runner;
+
+    public WanPipelineHardening(PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
+        => _runner = processRunner ?? SystemProcessRunner.Shared;
+
     /// <summary>클라우드 최대 시도 횟수(1 이상). 소진 시 로컬 폴백.</summary>
     public int MaxCloudAttempts { get; init; } = 3;
     /// <summary>지수 백오프 기준 간격(1회차).</summary>
@@ -67,58 +72,23 @@ public sealed class WanPipelineHardening
         var exe = ResolveNvidiaSmi();
         if (exe is null) return VramProbe.None;   // 미설치 → 0MB(CPU/최저 오프로딩 모드)
 
-        Process? proc = null;
         try
         {
-            var psi = new ProcessStartInfo
-            {
-                FileName = exe,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8,
-            };
-            psi.ArgumentList.Add("--query-gpu=memory.total");
-            psi.ArgumentList.Add("--format=csv,noheader,nounits");
-
-            proc = new Process { StartInfo = psi };
-            if (!proc.StartCompat()) return VramProbe.None;
-
-            // ⚠ stdout·stderr 를 동시에 비동기로 읽는다 — 한쪽 파이프 버퍼가 가득 차 WaitForExit 가 영원히 막히는 데드락을 차단.
-            var stdoutTask = proc.StandardOutput.ReadToEndAsync();
-            var stderrTask = proc.StandardError.ReadToEndAsync();
-
+            // 🛡️ IProcessRunner 경유 — stdout·stderr 동시 드레인(파이프 데드락 차단) · 취소 시 프로세스 트리 강제 종료(Orphan 방지).
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(budget);   // ⏱ TimeSpan 타임아웃 — 무응답이면 여기서 취소된다.
-
-            try
-            {
-                await proc.WaitForExitAsync(cts.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                KillTree(proc);   // 취소/타임아웃 → 프로세스 트리 완전 종료(Orphan 방지)
+            var r = await _runner.RunAsync(exe, new[] { "--query-gpu=memory.total", "--format=csv,noheader,nounits" }, ct: cts.Token).ConfigureAwait(false);
+            if (cts.IsCancellationRequested)
                 return ct.IsCancellationRequested ? VramProbe.None : VramProbe.Timeout;
-            }
+            if (!r.Started) return VramProbe.None;
 
-            var outp = await stdoutTask.ConfigureAwait(false);
-            _ = await stderrTask.ConfigureAwait(false);   // stderr 도 끝까지 읽어 파이프를 비운다.
-
-            var mb = AlibabaWanHybridEngine.ParseNvidiaSmiVram(outp);   // 기존 파서 재사용(단일 진실 원천)
+            var mb = AlibabaWanHybridEngine.ParseNvidiaSmiVram(r.StdOut);   // 기존 파서 재사용(단일 진실 원천)
             return mb > 0 ? new VramProbe(mb, true, false, "nvidia-smi") : VramProbe.None;
         }
         catch (Exception ex)
         {
             Program.Log("WanPipelineHardening.DetectVram", ex);
             return VramProbe.None;   // 어떤 실패든 0MB Graceful.
-        }
-        finally
-        {
-            // 어떤 경로로 빠져나가도 살아있는 프로세스를 남기지 않는다.
-            try { if (proc is not null && !proc.HasExited) proc.KillCompat(entireProcessTree: true); } catch { /* 무시 */ }
-            proc?.Dispose();
         }
     }
 
@@ -250,15 +220,5 @@ public sealed class WanPipelineHardening
     {
         try { return CliPathResolver.GetExecutablePath("nvidia-smi", "nvidia-smi.exe"); }
         catch { return null; }
-    }
-
-    private static void KillTree(Process proc)
-    {
-        try
-        {
-            if (!proc.HasExited) proc.KillCompat(entireProcessTree: true);
-            try { proc.WaitForExit(2000); } catch { /* 무시 */ }
-        }
-        catch { /* 이미 종료/권한 — 무시 */ }
     }
 }

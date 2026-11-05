@@ -54,6 +54,7 @@ public sealed class MvHevcSpatialVideoTranscoder
     public static readonly TimeSpan CliTimeout = TimeSpan.FromMinutes(10);
 
     private readonly Func<string?> _ffmpeg;
+    private readonly PromptFlowStudio.Services.Engines.IProcessRunner _runner;   // 🛡️ 단일 실행 게이트웨이(우선순위 · 동시 실행 게이트 · 취소 트리 kill)
     private readonly Func<string?> _spatialCli;
     private readonly Spatial3dGaussianSplattingEngine? _splat;
     private readonly object _gate = new();
@@ -64,13 +65,14 @@ public sealed class MvHevcSpatialVideoTranscoder
     private float[]? _pvDepth;
     private int _pvW, _pvH;
 
-    public MvHevcSpatialVideoTranscoder(IVideoMergeService merge, Spatial3dGaussianSplattingEngine splat)
-        : this(() => merge.ResolvedFfmpegPath, splat, () => s_cli.Value) { }
+    public MvHevcSpatialVideoTranscoder(IVideoMergeService merge, Spatial3dGaussianSplattingEngine splat, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
+        : this(() => merge.ResolvedFfmpegPath, splat, () => s_cli.Value, processRunner) { }
 
     private static readonly Lazy<string?> s_cli = new(ResolveSpatialCli);   // PATH 스캔 1회(HUD 렌더 경로 보호)
 
-    public MvHevcSpatialVideoTranscoder(Func<string?> ffmpeg, Spatial3dGaussianSplattingEngine? splat, Func<string?>? spatialCli)
+    public MvHevcSpatialVideoTranscoder(Func<string?> ffmpeg, Spatial3dGaussianSplattingEngine? splat, Func<string?>? spatialCli, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
     {
+        _runner = processRunner ?? PromptFlowStudio.Services.Engines.SystemProcessRunner.Shared;
         _ffmpeg = ffmpeg;
         _splat = splat;
         _spatialCli = spatialCli ?? (() => null);
@@ -341,15 +343,12 @@ public sealed class MvHevcSpatialVideoTranscoder
             var h = Math.Max(16, (int)Math.Round(PreviewWidth * (double)probe.Value.H / probe.Value.W) & ~1);
             var t = probe.Value.Duration > 0 ? Math.Clamp(seconds, 0, Math.Max(0, probe.Value.Duration - 0.05)) : 0;
             var ci = CultureInfo.InvariantCulture;
-            var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-            foreach (var a in new[] { "-hide_banner", "-v", "error", "-ss", t.ToString("0.###", ci), "-i", mediaPath, "-frames:v", "1",
-                         "-vf", "scale=" + w.ToString(ci) + ":" + h.ToString(ci), "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1" })
-                psi.ArgumentList.Add(a);
-            using var proc = new Process { StartInfo = psi };
-            if (!proc.StartCompat()) return null;
+            var args = new[] { "-hide_banner", "-v", "error", "-ss", t.ToString("0.###", ci), "-i", mediaPath, "-frames:v", "1",
+                         "-vf", "scale=" + w.ToString(ci) + ":" + h.ToString(ci), "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1" };
             using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
             d.CancelAfter(TimeSpan.FromSeconds(30));
-            _ = proc.StandardError.ReadToEndAsync(d.Token);
+            using var proc = _runner.StartStreaming(ffmpeg, args, false, true, d.Token);   // 🛡️ stderr 자동 드레인
+            if (proc is null) return null;
             var rgb = new byte[w * h * 3];
             var ok = await Spatial3dGaussianSplattingEngine.ReadExactAsync(proc.StandardOutput.BaseStream, rgb, rgb.Length, d.Token).ConfigureAwait(false);
             try { if (!proc.HasExited) proc.KillCompat(true); } catch { }
@@ -489,19 +488,29 @@ public sealed class MvHevcSpatialVideoTranscoder
         }
     }
 
+    /// <summary>🛡️ 디코더/인코더 파이프 쌍을 장중 동시 실행 게이트 슬롯 안에서 실행.</summary>
     private async Task<(int Frames, float[] Azimuth)> RenderSbsAsync(string ffmpeg, string encoder, string input, string output, int w, int h, double fps,
         StereoSettings stereo, int expected, CancellationToken ct)
     {
-        var ci = CultureInfo.InvariantCulture;
-        var dpsi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in new[] { "-hide_banner", "-v", "error", "-i", input, "-vf", "fps=" + fps.ToString("0.###", ci) + ",scale=" + w.ToString(ci) + ":" + h.ToString(ci),
-                     "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1" })
-            dpsi.ArgumentList.Add(a);
-        var epsi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardInput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in BuildEncodeArgs(encoder, w, h, fps, output)) epsi.ArgumentList.Add(a);
+        (int Frames, float[] Azimuth) res = (0, Array.Empty<float>());
+        await _runner.RunGatedAsync(ffmpeg, async gc =>
+        {
+            res = await RenderSbsCoreAsync(ffmpeg, encoder, input, output, w, h, fps, stereo, expected, gc).ConfigureAwait(false);
+            return new PromptFlowStudio.Services.Engines.ProcessResult(true, res.Frames > 0 ? 0 : 1, "", "");
+        }, ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();
+        return res;
+    }
 
-        using var dec = new Process { StartInfo = dpsi };
-        using var enc = new Process { StartInfo = epsi };
+    private async Task<(int Frames, float[] Azimuth)> RenderSbsCoreAsync(string ffmpeg, string encoder, string input, string output, int w, int h, double fps,
+        StereoSettings stereo, int expected, CancellationToken ct)
+    {
+        var ci = CultureInfo.InvariantCulture;
+        var dargs = new[] { "-hide_banner", "-v", "error", "-i", input, "-vf", "fps=" + fps.ToString("0.###", ci) + ",scale=" + w.ToString(ci) + ":" + h.ToString(ci),
+                     "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1" };
+        var eargs = BuildEncodeArgs(encoder, w, h, fps, output);
+
+        Process? dec = null, enc = null;
         var n = w * h;
         var rgb = new byte[n * 3];   // 결선점 계약(byte[]) — 트랜스코드 1회 1개
         var sbs = ArrayPool<byte>.Shared.Rent(n * 6);
@@ -512,9 +521,10 @@ public sealed class MvHevcSpatialVideoTranscoder
         var frames = 0;
         try
         {
-            if (!dec.StartCompat() || !enc.StartCompat()) return (0, Array.Empty<float>());
-            _ = dec.StandardError.ReadToEndAsync(ct);
-            _ = enc.StandardError.ReadToEndAsync(ct);
+            dec = _runner.StartStreaming(ffmpeg, dargs, false, true, ct);   // 🛡️ stderr 자동 드레인
+            if (dec is null) return (0, Array.Empty<float>());
+            enc = _runner.StartStreaming(ffmpeg, eargs, true, false, ct);
+            if (enc is null) return (0, Array.Empty<float>());
             var input0 = dec.StandardOutput.BaseStream;
             var sink = enc.StandardInput.BaseStream;
             while (frames < MaxFrames && await Spatial3dGaussianSplattingEngine.ReadExactAsync(input0, rgb, n * 3, ct).ConfigureAwait(false))
@@ -538,8 +548,8 @@ public sealed class MvHevcSpatialVideoTranscoder
         }
         finally
         {
-            try { if (!dec.HasExited) dec.KillCompat(true); } catch { }
-            try { if (!enc.HasExited) enc.KillCompat(true); } catch { }
+            if (dec is not null) { try { if (!dec.HasExited) dec.KillCompat(true); } catch { } dec.Dispose(); }
+            if (enc is not null) { try { if (!enc.HasExited) enc.KillCompat(true); } catch { } enc.Dispose(); }
             ArrayPool<byte>.Shared.Return(sbs);
             ArrayPool<float>.Shared.Return(depth);
             ArrayPool<float>.Shared.Return(scratch);
@@ -547,15 +557,12 @@ public sealed class MvHevcSpatialVideoTranscoder
         }
     }
 
-    private static async Task<bool> BuildBinauralWavAsync(string ffmpeg, string input, string wavPath, float[] azimuth, double fps, CancellationToken ct)
+    private async Task<bool> BuildBinauralWavAsync(string ffmpeg, string input, string wavPath, float[] azimuth, double fps, CancellationToken ct)
     {
         var ci = CultureInfo.InvariantCulture;
-        var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in new[] { "-hide_banner", "-v", "error", "-i", input, "-vn", "-ac", "1", "-ar", AudioRate.ToString(ci), "-t", MaxAudioSeconds.ToString(ci), "-f", "f32le", "pipe:1" })
-            psi.ArgumentList.Add(a);
-        using var p = new Process { StartInfo = psi };
-        if (!p.StartCompat()) return false;
-        _ = p.StandardError.ReadToEndAsync(ct);
+        var args = new[] { "-hide_banner", "-v", "error", "-i", input, "-vn", "-ac", "1", "-ar", AudioRate.ToString(ci), "-t", MaxAudioSeconds.ToString(ci), "-f", "f32le", "pipe:1" };
+        using var p = _runner.StartStreaming(ffmpeg, args, false, true, ct);   // 🛡️ stderr 자동 드레인
+        if (p is null) return false;
         using var ms = new MemoryStream();
         try { await p.StandardOutput.BaseStream.CopyToAsync(ms, ct).ConfigureAwait(false); }
         finally { try { if (!p.HasExited) p.KillCompat(true); } catch { } }
@@ -576,35 +583,15 @@ public sealed class MvHevcSpatialVideoTranscoder
     private async Task<string> PickEncoderAsync(string ffmpeg, CancellationToken ct)
     {
         if (_encoder is { } cached) return cached;
-        var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-        psi.ArgumentList.Add("-hide_banner"); psi.ArgumentList.Add("-encoders");
-        using var p = new Process { StartInfo = psi };
-        if (!p.StartCompat()) return "libx264";
-        _ = p.StandardError.ReadToEndAsync(ct);
-        var text = await p.StandardOutput.ReadToEndAsync(ct).ConfigureAwait(false);
-        try { await p.WaitForExitAsync(ct).ConfigureAwait(false); } catch (OperationCanceledException) { try { p.KillCompat(true); } catch { } throw; }
-        return _encoder = PickEncoder(text);
+        var r = await _runner.RunAsync(ffmpeg, new[] { "-hide_banner", "-encoders" }, ct: ct).ConfigureAwait(false);
+        ct.ThrowIfCancellationRequested();   // 취소 시 OCE 유지(runner 는 트리 kill 후 -2 반환)
+        if (!r.Started) return "libx264";
+        return _encoder = PickEncoder(r.StdOut);
     }
 
-    private static async Task<int> RunAsync(string exe, List<string> args, TimeSpan timeout, CancellationToken ct)
-    {
-        var psi = new ProcessStartInfo { FileName = exe, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in args) psi.ArgumentList.Add(a);
-        using var p = new Process { StartInfo = psi };
-        try
-        {
-            if (!p.StartCompat()) return -1;
-            using var d = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            d.CancelAfter(timeout);
-            _ = p.StandardOutput.ReadToEndAsync(d.Token);
-            _ = p.StandardError.ReadToEndAsync(d.Token);
-            await p.WaitForExitAsync(d.Token).ConfigureAwait(false);
-            return p.ExitCode;
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return -2; }   // 개별 단계 타임아웃
-        catch (System.ComponentModel.Win32Exception ex) { Program.Log("Spatial.Run", ex); return -3; }
-        finally { try { if (!p.HasExited) p.KillCompat(true); } catch { } }
-    }
+    /// <summary>🛡️ <see cref="PromptFlowStudio.Services.Engines.IProcessRunner"/> 경유 — 미시작 −1 · 개별 단계 타임아웃 −2 · 외부 취소는 OCE 전파.</summary>
+    private Task<int> RunAsync(string exe, List<string> args, TimeSpan timeout, CancellationToken ct)
+        => PromptFlowStudio.Services.Engines.ProcessRunnerExtensions.RunExitCodeAsync(_runner, exe, args, timeout, ct);
 
     // ══════════════════════ 패키지 ══════════════════════
 

@@ -87,10 +87,17 @@ public sealed class ProductionOAuth2TokenVaultGateway : IDisposable
     private readonly Func<byte[]>? _vaultKey;
     private readonly CancellationTokenSource _cts = new();
     private HttpGraphTransport? _http;
+#if WINDOWS
+    private readonly PromptFlowStudio.Services.Engines.IProcessRunner _runner;
+#endif
     private uint _rng = 0x2545F491u;
 
-    public ProductionOAuth2TokenVaultGateway(IGraphTransport? transport = null, Func<string, string?>? env = null, Func<byte[]>? vaultKey = null)
+    public ProductionOAuth2TokenVaultGateway(IGraphTransport? transport = null, Func<string, string?>? env = null, Func<byte[]>? vaultKey = null,
+        PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
     {
+#if WINDOWS
+        _runner = processRunner ?? PromptFlowStudio.Services.Engines.SystemProcessRunner.Shared;
+#endif
         env ??= Environment.GetEnvironmentVariable;
         _injected = transport; _vaultKey = vaultKey;
         string? mockYtSecret = null, mockMetaSecret = null;
@@ -212,7 +219,7 @@ public sealed class ProductionOAuth2TokenVaultGateway : IDisposable
             listener.Prefixes.Add(LoopbackPrefix);
             listener.Start();
             var url = BeginAuthorization(p, DefaultRedirect);
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true });
+            if (!_runner.ShellOpen(url)) { a.PendingAuthorization = false; a.Phase = LiveAuthPhase.Failed; a.LastError = "루프백 인가 실패: 시스템 브라우저 실행 불가"; return false; }
             var ctx = await listener.GetContextAsync().WaitAsync(TimeSpan.FromSeconds(ConsentTimeoutSec), ct).ConfigureAwait(false);
             var code = ctx.Request.QueryString["code"]; var state = ctx.Request.QueryString["state"]; var err = ctx.Request.QueryString["error"];
             var html = System.Text.Encoding.UTF8.GetBytes(err is null ? "<html><body style='font-family:sans-serif'>✅ PromptFlow Studio 계정 연결 완료 — 이 창을 닫아도 됩니다.</body></html>" : "<html><body>⚠ 동의 거부/오류 — 앱으로 돌아가세요.</body></html>");

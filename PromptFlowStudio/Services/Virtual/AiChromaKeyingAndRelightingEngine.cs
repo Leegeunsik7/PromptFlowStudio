@@ -59,6 +59,7 @@ public sealed class AiChromaKeyingAndRelightingEngine
     public static readonly TimeSpan VideoTimeout = TimeSpan.FromMinutes(30);
 
     private readonly Func<string?> _ffmpeg;
+    private readonly PromptFlowStudio.Services.Engines.IProcessRunner _runner;
     private readonly object _gate = new();
     private byte[]? _alpha;
     private float[]? _f1, _f2;
@@ -66,9 +67,13 @@ public sealed class AiChromaKeyingAndRelightingEngine
     private int _pvW, _pvH, _busy;
     private long _frames;
 
-    public AiChromaKeyingAndRelightingEngine(IVideoMergeService merge) : this(() => merge.ResolvedFfmpegPath) { }
+    public AiChromaKeyingAndRelightingEngine(IVideoMergeService merge, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null) : this(() => merge.ResolvedFfmpegPath, processRunner) { }
 
-    public AiChromaKeyingAndRelightingEngine(Func<string?> ffmpeg) => _ffmpeg = ffmpeg;
+    public AiChromaKeyingAndRelightingEngine(Func<string?> ffmpeg, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
+    {
+        _ffmpeg = ffmpeg;
+        _runner = processRunner ?? PromptFlowStudio.Services.Engines.SystemProcessRunner.Shared;
+    }
 
     public event Action? OnChange;
 
@@ -444,17 +449,10 @@ public sealed class AiChromaKeyingAndRelightingEngine
         }
     }
 
-    private static Process Start(string exe, List<string> args, bool stdin, CancellationToken ct)
-    {
-        var psi = new ProcessStartInfo { FileName = exe, RedirectStandardOutput = !stdin, RedirectStandardInput = stdin, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-        foreach (var a in args) psi.ArgumentList.Add(a);
-        var p = new Process { StartInfo = psi };
-        if (!p.StartCompat()) { p.Dispose(); throw new InvalidOperationException("ffmpeg 시작 실패"); }
-        _ = p.StandardError.ReadToEndAsync(ct);
-        return p;
-    }
+    private Process Start(string exe, List<string> args, bool stdin, CancellationToken ct)
+        => _runner.StartStreaming(exe, args, redirectStdin: stdin, redirectStdout: !stdin, ct) ?? throw new InvalidOperationException("ffmpeg 시작 실패");
 
-    private static async Task<byte[]?> GrabAsync(string ffmpeg, string path, double t, int w, int h, bool cover, CancellationToken ct)
+    private async Task<byte[]?> GrabAsync(string ffmpeg, string path, double t, int w, int h, bool cover, CancellationToken ct)
     {
         var ci = CultureInfo.InvariantCulture;
         var vf = "scale=" + w.ToString(ci) + ":" + h.ToString(ci) + (cover ? ":force_original_aspect_ratio=increase,crop=" + w.ToString(ci) + ":" + h.ToString(ci) : "");

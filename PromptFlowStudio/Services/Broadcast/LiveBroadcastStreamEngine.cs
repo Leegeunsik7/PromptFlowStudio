@@ -24,8 +24,13 @@ public sealed class LiveBroadcastStreamEngine
     public static readonly IReadOnlyList<string> Protocols = new[] { "rtmp", "srt", "ndi" };
 
     private readonly object _lock = new();
+    /// <summary>🛡️ 실행 게이트웨이(장중 BelowNormal 우선순위 · stderr 자동 드레인).</summary>
+    private readonly IProcessRunner _runner;
     private Process? _proc;
     private CancellationTokenSource? _cts;
+
+    /// <summary>DI/테스트 생성자 — 실행기 미지정 시 <see cref="SystemProcessRunner.Shared"/>.</summary>
+    public LiveBroadcastStreamEngine(IProcessRunner? processRunner = null) => _runner = processRunner ?? SystemProcessRunner.Shared;
 
     /// <summary>상태 변경 방송(송출 LED/업타임).</summary>
     public event Action? OnChange;
@@ -101,11 +106,9 @@ public sealed class LiveBroadcastStreamEngine
         try
         {
             var args = BuildArgs(proto, input, url, loop, nvenc);
-            var psi = new ProcessStartInfo { FileName = ffmpeg, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true };
-            foreach (var a in args) psi.ArgumentList.Add(a);
-
-            var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
-            if (!proc.StartCompat()) return new(false, "송출 프로세스 시작 실패.");
+            // 🛡️ 장기 실행 송출 — IProcessRunner 스트리밍 경로(stderr 자동 드레인 · 우선순위 적용). 시작 실패 null.
+            var proc = _runner.StartStreaming(ffmpeg, args, redirectStdin: false, redirectStdout: false);
+            if (proc is null) return new(false, "송출 프로세스 시작 실패.");
 
             lock (_lock)
             {
@@ -140,9 +143,7 @@ public sealed class LiveBroadcastStreamEngine
     {
         try
         {
-            var drain = proc.StandardError.ReadToEndAsync();   // stderr 드레인(버퍼 데드락 방지)
-            await proc.WaitForExitAsync().ConfigureAwait(false);
-            await drain.ConfigureAwait(false);
+            await proc.WaitForExitAsync().ConfigureAwait(false);   // stderr 는 StartStreaming 이 자동 드레인(버퍼 데드락 방지)
         }
         catch { }
         finally
