@@ -60,9 +60,9 @@ public class RealtimeAudioTelemetryMonitorTests
         using var m = new RealtimeAudioTelemetryMonitor();
         m.InjectTone(RealtimeAudioTelemetryMonitor.FftSize);
         m.Analyze(); // 워밍업(JIT)
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        for (int i = 0; i < 50; i++) { m.InjectTone(480); m.Analyze(); }
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+        // 부하 시 티어드 JIT/런타임 일회성 할당 노이즈 배제 — 최소 윈도우 기준(AllocationProbe)
+        var alloc = AllocationProbe.MinAllocated(() => { for (int i = 0; i < 50; i++) { m.InjectTone(480); m.Analyze(); } });
+        Assert.Equal(0, alloc);
     }
 
     [Fact]

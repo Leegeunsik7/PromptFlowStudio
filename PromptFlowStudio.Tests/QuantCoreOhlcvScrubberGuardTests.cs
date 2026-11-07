@@ -189,7 +189,8 @@ public class QuantCoreOhlcvScrubberGuardTests : IDisposable
         Assert.True(TradingSafetyGuardService.IsMarketHours(new DateTimeOffset(2026, 11, 5, 23, 0, 0, kst), new TimeSpan(22, 0, 0), new TimeSpan(6, 0, 0)));   // 사용자 정의(자정 넘김)
 
         var enabled = true;
-        using var guard = new TradingSafetyGuardService(() => enabled) { UtcNow = static () => new DateTimeOffset(2026, 11, 5, 10, 0, 0, TimeSpan.FromHours(9)) };
+        // ⏱️ 결정적 시계 — 2026-11-03(화) 10:00:00 KST 고정(러너 부하·실행 시각 무관)
+        using var guard = new TradingSafetyGuardService(() => enabled, static () => FrozenTuesday10Kst);
         Assert.True(guard.IsThrottling);
         Assert.Equal(1, guard.MaxConcurrentEncodes);
         Assert.Equal(ProcessPriorityClass.BelowNormal, guard.ResolvePriority(@"C:\tools\ffmpeg.exe"));
@@ -197,18 +198,24 @@ public class QuantCoreOhlcvScrubberGuardTests : IDisposable
         Assert.True(TradingSafetyGuardService.IsEncoderExecutable("/usr/bin/ffmpeg"));
         Assert.False(TradingSafetyGuardService.IsEncoderExecutable(null));
 
-        // 동시 인코딩 1개 게이트 + 재진입 허용(교착 없음)
-        var active = 0; var peak = 0;
+        // 동시 인코딩 1개 게이트 + 재진입 허용(교착 없음) — 벽시계 지연 없이 TCS 로 순서 제어
+        var active = 0; var peak = 0; var entered = 0;
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         async Task<bool> Work(CancellationToken ct)
         {
             var now = Interlocked.Increment(ref active);
             InterlockedMax(ref peak, now);
-            await Task.Delay(30, ct);
+            Interlocked.Increment(ref entered);
+            await release.Task.WaitAsync(ct);
             var nested = await guard.RunGatedAsync(static _ => Task.FromResult(true), ct);
             Interlocked.Decrement(ref active);
             return nested;
         }
-        var results = await Task.WhenAll(guard.RunGatedAsync(Work), guard.RunGatedAsync(Work), guard.RunGatedAsync(Work)).WaitAsync(TimeSpan.FromSeconds(10));
+        var pending = new[] { guard.RunGatedAsync(Work), guard.RunGatedAsync(Work), guard.RunGatedAsync(Work) };
+        for (var spin = 0; Volatile.Read(ref entered) == 0 && spin < 6000; spin++) await Task.Yield();
+        Assert.Equal(1, Volatile.Read(ref entered));   // 슬롯 1개 — 첫 작업만 진입, 나머지는 대기
+        release.SetResult();
+        var results = await Task.WhenAll(pending).WaitAsync(TimeSpan.FromSeconds(60));
         Assert.All(results, Assert.True);
         Assert.Equal(1, peak);
         Assert.Equal(0, guard.ActiveSlots);
@@ -219,11 +226,46 @@ public class QuantCoreOhlcvScrubberGuardTests : IDisposable
         Assert.Null(guard.ResolvePriority("ffmpeg"));
         Assert.Equal(int.MaxValue, guard.MaxConcurrentEncodes);
         enabled = true;
-        guard.UtcNow = static () => new DateTimeOffset(2026, 11, 5, 16, 0, 0, TimeSpan.FromHours(9));
+        guard.UtcNow = static () => new DateTimeOffset(2026, 11, 3, 16, 0, 0, TimeSpan.FromHours(9));
         Assert.False(guard.IsThrottling);
 
         using var me = Process.GetCurrentProcess();
         Assert.False(TradingSafetyGuardService.TryApplyPriority(me, null));   // null = 변경 없음
+    }
+
+    private static readonly DateTimeOffset FrozenTuesday10Kst = new(2026, 11, 3, 10, 0, 0, TimeSpan.FromHours(9));
+
+    [Fact]
+    public void TradingSafetyGuardService_WithInjectedTime_ConsistentlyDetectsMarketHours()
+    {
+        Assert.Equal(DayOfWeek.Tuesday, FrozenTuesday10Kst.DayOfWeek);
+        var tp = new FixedTimeProvider(FrozenTuesday10Kst);
+        using var byTp = new TradingSafetyGuardService(null, tp);
+        using var byFunc = new TradingSafetyGuardService(null, static () => FrozenTuesday10Kst);
+        for (var i = 0; i < 200; i++)
+        {
+            Assert.True(byTp.IsThrottling);
+            Assert.True(byFunc.IsMarketHoursNow);
+            Assert.Equal(KrxSessionStatus.RegularMarket, byFunc.CurrentSession.Status);
+            Assert.Equal(ProcessPriorityClass.BelowNormal, byTp.ResolvePriority("ffmpeg.exe"));
+            Assert.Equal(1, byFunc.MaxConcurrentEncodes);
+        }
+
+        tp.Now = new DateTimeOffset(2026, 11, 3, 15, 30, 0, TimeSpan.FromHours(9));   // 마감 경계(배타)
+        Assert.False(byTp.IsThrottling);
+        Assert.Null(byTp.ResolvePriority("ffmpeg.exe"));
+        tp.Now = new DateTimeOffset(2026, 11, 3, 0, 59, 59, TimeSpan.Zero);          // UTC → KST 09:59:59
+        Assert.True(byTp.IsThrottling);
+
+        byFunc.UtcNow = null!;   // null = 시스템 시계 복귀(예외 없음)
+        Assert.NotNull(byFunc.UtcNow);
+        Assert.Throws<ArgumentNullException>(() => new TradingSafetyGuardService(null, (TimeProvider)null!));
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = now;
+        public override DateTimeOffset GetUtcNow() => Now;
     }
 
     private static void InterlockedMax(ref int target, int value)

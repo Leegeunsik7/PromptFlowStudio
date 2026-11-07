@@ -5,7 +5,7 @@ namespace PromptFlowStudio.Services.Ui;
 /// <summary>🖥️ 기본 내보내기 해상도 — 1080p(1920×1080) · 4K UHD(3840×2160) · 21:9(2560×1080) · 32:9(3840×1080).</summary>
 public enum ExportResolution : byte { Res1080p, Res4K_UHD, Res21x9, Res32x9 }
 
-/// <summary><see cref="ExportResolution"/> 라벨·픽셀·StockSuite 프로필 매핑(StockSuite 는 1080p/4K 만 — 울트라와이드 = 1080p 폴백).</summary>
+/// <summary><see cref="ExportResolution"/> 라벨·픽셀·StockSuite 프로필 매핑(울트라와이드 21:9/32:9 네이티브 스케일).</summary>
 public static class ExportResolutionInfo
 {
     public static (int Width, int Height) Pixels(ExportResolution r) => r switch
@@ -25,7 +25,13 @@ public static class ExportResolutionInfo
     };
 
     public static PromptFlowStudio.Services.Export.StockSuiteResolution ToStockSuite(ExportResolution r)
-        => r == ExportResolution.Res4K_UHD ? PromptFlowStudio.Services.Export.StockSuiteResolution.Uhd4K : PromptFlowStudio.Services.Export.StockSuiteResolution.Fhd1080;
+        => r switch
+        {
+            ExportResolution.Res4K_UHD => PromptFlowStudio.Services.Export.StockSuiteResolution.Uhd4K,
+            ExportResolution.Res21x9 => PromptFlowStudio.Services.Export.StockSuiteResolution.Ultra21x9,
+            ExportResolution.Res32x9 => PromptFlowStudio.Services.Export.StockSuiteResolution.Super32x9,
+            _ => PromptFlowStudio.Services.Export.StockSuiteResolution.Fhd1080,
+        };
 }
 
 // =============================================================================

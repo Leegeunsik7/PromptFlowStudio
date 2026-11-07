@@ -152,6 +152,45 @@ public sealed class GalleryMediaService
         return DeleteWhere(it => ids.Contains(it.ItemId));
     }
 
+    /// <summary>
+    /// ⏳ 비동기 일괄 삭제 — 항목마다 <see cref="BatchProgressReport"/> 보고 · 항목 경계에서 취소 확인(조기 종료).
+    /// 취소돼도 이미 지운 항목은 목록에서 제거하고 개수 반환([부분 구제] · 예외 대신 <see cref="BatchDeleteResult.Canceled"/>).
+    /// </summary>
+    public async Task<BatchDeleteResult> DeleteBatchAsync(IEnumerable<Guid> itemIds, IProgress<BatchProgressReport>? progress = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(itemIds);
+        var ids = new HashSet<Guid>(itemIds);
+        if (ids.Count == 0) return new(0, 0, ct.IsCancellationRequested);
+        GalleryItem[] targets;
+        string? root;
+        lock (_lock)
+        {
+            root = _root;
+            targets = _items.FindAll(it => ids.Contains(it.ItemId)).ToArray();
+        }
+        var total = targets.Length;
+        var deleted = new List<GalleryItem>(total);
+        var canceled = false;
+        try
+        {
+            for (var i = 0; i < total; i++)
+            {
+                if (ct.IsCancellationRequested) { canceled = true; break; }
+                var t = targets[i];
+                progress?.Report(new(i, total, Path.GetFileName(t.FilePath)));
+                // 대용량(4K/UHD) 파일 삭제는 스레드풀에서 — UI 스레드 차단 방지
+                if (await Task.Run(() => TryDeleteFiles(root, t), CancellationToken.None).ConfigureAwait(false)) deleted.Add(t);
+            }
+            if (!canceled) progress?.Report(new(total, total, null));
+        }
+        finally
+        {
+            if (deleted.Count > 0)
+                lock (_lock) foreach (var d in deleted) _items.Remove(d);
+        }
+        return new(deleted.Count, total, canceled);
+    }
+
     /// <summary>🧹 Mock 더미 일괄 삭제 — <see cref="GalleryItem.IsMock"/> 미디어 + 사이드카 메타 영구 삭제. 성공 개수 반환.</summary>
     public int DeleteMockAssets() => DeleteWhere(static it => it.IsMock && !it.IsSample);
 

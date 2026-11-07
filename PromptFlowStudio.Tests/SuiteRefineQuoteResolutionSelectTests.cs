@@ -107,8 +107,9 @@ public class SuiteRefineQuoteResolutionSelectTests : IDisposable
         Assert.Equal(ExportResolution.Res1080p, prefs.DefaultResolution);
         Assert.False(prefs.StockSuiteSmooth60);
 
-        // 울트라와이드 → StockSuite 1080p 폴백 · 손상 값 → 1080p
-        Assert.Equal(StockSuiteResolution.Fhd1080, ExportResolutionInfo.ToStockSuite(ExportResolution.Res32x9));
+        // 울트라와이드 → StockSuite 네이티브 21:9/32:9 · 손상 값 → 1080p
+        Assert.Equal(StockSuiteResolution.Super32x9, ExportResolutionInfo.ToStockSuite(ExportResolution.Res32x9));
+        Assert.Equal(StockSuiteResolution.Ultra21x9, ExportResolutionInfo.ToStockSuite(ExportResolution.Res21x9));
         Assert.Equal((2560, 1080), ExportResolutionInfo.Pixels(ExportResolution.Res21x9));
         prefs.Set(UserPreferenceService.Keys.DefaultResolution, "garbage");
         Assert.Equal(ExportResolution.Res1080p, prefs.DefaultResolution);

@@ -27,10 +27,12 @@
                         <option value="webm">WebM VP9 (HTS 저사양 최적화)</option>
                     </select>
             <label class="pm-btn" title="1080p Lanczos 업스케일 + 언샵 마스크 샤프닝(재인코딩) — 끄면 스트림 복사(빠른 내보내기)"><input type="checkbox" checked="@vm.StockSuiteSharpen" @onchange="e => vm.StockSuiteSharpen = e.Value is true" disabled="@vm.IsStockSuiteBusy" /> 고선명 샤프닝 (1080p Lanczos + Unsharp)</label>
-                    <select class="pm-btn" value="@(vm.StockSuiteResolution == PromptFlowStudio.Services.Export.StockSuiteResolution.Uhd4K ? "4k" : "1080")"
-                            @onchange="@(e => vm.StockSuiteResolution = e.Value?.ToString() == "4k" ? PromptFlowStudio.Services.Export.StockSuiteResolution.Uhd4K : PromptFlowStudio.Services.Export.StockSuiteResolution.Fhd1080)" disabled="@vm.IsStockSuiteBusy" title="해상도 프로필">
+                    <select class="pm-btn" value="@(PromptFlowStudio.Services.Export.StockSuiteExporter.ResolutionKey(vm.StockSuiteResolution))"
+                            @onchange="@(e => vm.StockSuiteResolution = PromptFlowStudio.Services.Export.StockSuiteExporter.ParseResolution(e.Value?.ToString()))" disabled="@vm.IsStockSuiteBusy" title="해상도 프로필">
                         <option value="1080">1080p (기본)</option>
                         <option value="4k">4K UHD (3840x2160 Lanczos)</option>
+                        <option value="21x9">21:9 울트라와이드 (2560x1080 Lanczos)</option>
+                        <option value="32x9">32:9 슈퍼 울트라와이드 (3840x1080 Lanczos)</option>
                     </select>
             <label class="pm-btn" title="좌상단 ANG QUANT LAB · REALTIME STREAM / 우상단 ● LIVE KST 번인(재인코딩) — 폰트 미설치·drawtext 실패 시 워터마크 생략 폴백"><input type="checkbox" checked="@vm.StockSuiteWatermark" @onchange="e => vm.StockSuiteWatermark = e.Value is true" disabled="@vm.IsStockSuiteBusy" /> 📺 핀테크 HUD 워터마크</label>
             <label class="pm-btn" title="우하단 반투명 카드에 티커·사명 / 시세·등락률(+ 네온 그린 · − 크림슨) 번인 — 티커 공란·폰트 실패 시 배지 생략 폴백"><input type="checkbox" checked="@vm.StockSuiteTickerBadge" @onchange="e => { vm.StockSuiteTickerBadge = e.Value is true; if (vm.StockSuiteTickerBadge && vm.TickerSymbol.Length > 0 && vm.TickerPrice == 0m) vm.SetTicker(vm.TickerSymbol); }" disabled="@vm.IsStockSuiteBusy" /> 📊 라이브 티커 배지</label>

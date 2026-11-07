@@ -214,6 +214,20 @@ public sealed class GalleryViewModel
         return n;
     }
 
+    /// <summary>⏳ 체크된 항목 비동기 영구 삭제 — 진행 보고 · 취소 시 조기 종료(이미 지운 항목 반영).</summary>
+    public async Task<BatchDeleteResult> DeleteCheckedAsync(IProgress<BatchProgressReport>? progress = null, CancellationToken ct = default)
+    {
+        if (_checked.Count == 0) return default;
+        var ids = new List<Guid>(_checked);
+        var r = await _gallery.DeleteBatchAsync(ids, progress, ct).ConfigureAwait(false);
+        AfterBulkDelete();
+        StatusMessage = r.Canceled ? "⏹ 일괄 삭제 취소됨 — " + r.Deleted + "/" + r.Requested + "개 삭제됨"
+            : r.Deleted == r.Requested ? "🗑 선택 " + r.Deleted + "개 삭제됨"
+            : "🗑 " + r.Deleted + "/" + r.Requested + "개 삭제 — 일부 실패(파일 잠금 또는 출력 폴더 외부)";
+        Raise();
+        return r;
+    }
+
     /// <summary>🧹 Mock 더미 일괄 영구 삭제 — 성공 개수.</summary>
     public int DeleteMockAssets()
     {
@@ -261,11 +275,18 @@ public sealed class GalleryViewModel
     /// <summary>📦 선택 항목만 .pfsbundle 로 내보내기 — 선택 없음 → null.</summary>
     public async Task<PromptFlowStudio.Services.Export.AssetBundleExportResult?> ExportSelectedBundleAsync(
         PromptFlowStudio.Services.Export.AssetBundleService bundles, string outputPath, bool includePresets = true, CancellationToken ct = default)
+        => await ExportSelectedBundleAsync(bundles, outputPath, includePresets, null, ct).ConfigureAwait(false);
+
+    /// <summary>⏳ 진행 보고 + 취소 지원 선택 번들 내보내기 — 취소 시 <see cref="OperationCanceledException"/> 전파(상태 문구 갱신).</summary>
+    public async Task<PromptFlowStudio.Services.Export.AssetBundleExportResult?> ExportSelectedBundleAsync(
+        PromptFlowStudio.Services.Export.AssetBundleService bundles, string outputPath, bool includePresets, IProgress<BatchProgressReport>? progress, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(bundles);
         var ids = SelectedMediaIds;
         if (ids.Count == 0) { StatusMessage = "📦 내보낼 선택 항목이 없습니다"; Raise(); return null; }
-        var r = await bundles.ExportBundleAsync(outputPath, ids, includePresets, ct).ConfigureAwait(false);
+        PromptFlowStudio.Services.Export.AssetBundleExportResult r;
+        try { r = await bundles.ExportBundleAsync(outputPath, new List<string>(ids), includePresets, progress, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { StatusMessage = "⏹ 번들 내보내기 취소됨"; Raise(); throw; }
         StatusMessage = r.Ok ? r.Message : "⚠ " + r.Message;
         Raise();
         return r;

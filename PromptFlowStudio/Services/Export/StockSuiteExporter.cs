@@ -28,8 +28,8 @@ public enum StockSuiteExeStatus { NotConfigured, NotFound, NotExecutable, Ok }
 /// <summary>🚀 StockSuite 실행 결과 — AlreadyRunning=true 면 재실행 확인 필요.</summary>
 public sealed record StockSuiteLaunchResult(bool Ok, bool AlreadyRunning, string Message);
 
-/// <summary>🖥️ StockSuite 단일 내보내기 해상도 프로필 — 1080p(기본) · 4K UHD(3840×2160 Lanczos).</summary>
-public enum StockSuiteResolution { Fhd1080, Uhd4K }
+/// <summary>🖥️ StockSuite 단일 내보내기 해상도 프로필 — 1080p(기본) · 4K UHD(3840×2160) · 21:9(2560×1080) · 32:9(3840×1080) 네이티브 Lanczos.</summary>
+public enum StockSuiteResolution { Fhd1080, Uhd4K, Ultra21x9, Super32x9 }
 
 /// <summary>
 /// 🧾 <c>.stocksuite_manifest.json</c> — 활성 에셋의 출처(렌더 ID · SHA-256 · 바이트) 및 직전 백업 출처.
@@ -112,9 +112,69 @@ public sealed partial class StockSuiteExporter
     public const string WatermarkLeftText = "ANG QUANT LAB · REALTIME STREAM";
     public const string WatermarkRightText = "● LIVE KST";
 
-    /// <summary>스케일/샤프닝 단계 — 4K 는 샤프닝 여부와 무관하게 Lanczos 업스케일.</summary>
-    public static string? BuildScaleFilter(bool sharpen, StockSuiteResolution resolution)
-        => resolution == StockSuiteResolution.Uhd4K ? (sharpen ? Uhd4KSharpenFilter : Uhd4KScaleFilter) : sharpen ? SharpenFilter : null;
+    /// <summary>🖥️ 21:9 네이티브 — 중앙 스마트 크롭(왜곡 없음) → 2560×1080 Lanczos + Unsharp.</summary>
+    public static readonly string Ultra21x9Filter = BuildHtsFilter(HtsUltraAspect.Ultra21x9);
+    /// <summary>🖥️ 32:9 네이티브 — 중앙 스마트 크롭(왜곡 없음) → 3840×1080 Lanczos + Unsharp.</summary>
+    public static readonly string Super32x9Filter = BuildHtsFilter(HtsUltraAspect.Super32x9);
+
+    /// <summary>프로필 픽셀 크기.</summary>
+    public static (int W, int H) Pixels(StockSuiteResolution r) => r switch
+    {
+        StockSuiteResolution.Uhd4K => (3840, 2160),
+        StockSuiteResolution.Ultra21x9 => (2560, 1080),
+        StockSuiteResolution.Super32x9 => (3840, 1080),
+        _ => (1920, 1080),
+    };
+
+    /// <summary>울트라와이드(21:9·32:9) 프로필 여부.</summary>
+    public static bool IsUltrawide(StockSuiteResolution r) => r is StockSuiteResolution.Ultra21x9 or StockSuiteResolution.Super32x9;
+
+    /// <summary>📈 1080p 기준 최대 비트레이트(bps) — VBV 상한은 픽셀 수에 비례, 버퍼 = 2×.</summary>
+    public const long BaseMaxRateBps = 12_000_000;
+
+    /// <summary>📈 픽셀 비례 VBV 상한 — 1080p 12M/24M · 21:9 16M/32M · 32:9 24M/48M · 4K 48M/96M.</summary>
+    public static (long MaxRate, long BufSize) RateCapFor(StockSuiteResolution r)
+    {
+        var (w, h) = Pixels(r);
+        var max = BaseMaxRateBps * w * h / (1920L * 1080L);
+        return (max, max * 2);
+    }
+
+    /// <summary>스케일/샤프닝 단계 — 4K 는 샤프닝 여부와 무관하게 Lanczos 업스케일 · 울트라와이드는 항상 네이티브 크롭 + Lanczos + Unsharp.</summary>
+    public static string? BuildScaleFilter(bool sharpen, StockSuiteResolution resolution) => resolution switch
+    {
+        StockSuiteResolution.Uhd4K => sharpen ? Uhd4KSharpenFilter : Uhd4KScaleFilter,
+        StockSuiteResolution.Ultra21x9 => Ultra21x9Filter,
+        StockSuiteResolution.Super32x9 => Super32x9Filter,
+        _ => sharpen ? SharpenFilter : null,
+    };
+
+    /// <summary>UI 선택 키(<c>1080</c>|<c>4k</c>|<c>21x9</c>|<c>32x9</c>).</summary>
+    public static string ResolutionKey(StockSuiteResolution r) => r switch
+    {
+        StockSuiteResolution.Uhd4K => "4k",
+        StockSuiteResolution.Ultra21x9 => "21x9",
+        StockSuiteResolution.Super32x9 => "32x9",
+        _ => "1080",
+    };
+
+    /// <summary>UI 선택 키 파싱(미지/null → 1080p).</summary>
+    public static StockSuiteResolution ParseResolution(string? key) => (key ?? "").Trim().ToLowerInvariant() switch
+    {
+        "4k" or "uhd" => StockSuiteResolution.Uhd4K,
+        "21x9" or "21:9" => StockSuiteResolution.Ultra21x9,
+        "32x9" or "32:9" => StockSuiteResolution.Super32x9,
+        _ => StockSuiteResolution.Fhd1080,
+    };
+
+    /// <summary>해상도 태그(결과 메시지).</summary>
+    public static string ResolutionTag(StockSuiteResolution r, bool sharpen) => r switch
+    {
+        StockSuiteResolution.Uhd4K => "🖥️ 4K UHD · ",
+        StockSuiteResolution.Ultra21x9 => "🖥️ 21:9 울트라와이드 2560×1080 · ",
+        StockSuiteResolution.Super32x9 => "🖥️ 32:9 슈퍼 울트라와이드 3840×1080 · ",
+        _ => sharpen ? "🔎 1080p 고선명 · " : "",
+    };
 
     /// <summary>drawtext 텍스트 이스케이프 — <c>\ ' : %</c> 를 필터그래프 규칙으로 보호.</summary>
     private static string EscapeDrawText(string s)
@@ -374,7 +434,6 @@ public sealed partial class StockSuiteExporter
 
             var sharpenOn = sharpen ?? DefaultSharpen;
             var smoothOn = smooth60 ?? DefaultSmooth60;
-            var uhd = resolution == StockSuiteResolution.Uhd4K;
             var lut = Lut;
             var filter = BuildVideoFilter(sharpenOn, smoothOn, resolution, watermark, watermark ? ResolveWatermarkFont() : null, lut: lut);
             // 📊 라이브 티커 배지(데이터 null/빈 티커 → 생략 폴백).
@@ -383,7 +442,7 @@ public sealed partial class StockSuiteExporter
             // 워터마크/배지 폰트·drawtext 실패 대비 — 오버레이 제외 체인으로 1회 재시도.
             var filterNoWm = watermark || badgeOn ? BuildVideoFilter(sharpenOn, smoothOn, resolution, false, null, lut: lut) : null;
             if (badgeOn && filterNoWm is null) filterNoWm = "null";   // 배지 단독 → 무필터 재인코딩 폴백
-            var tag = (uhd ? "🖥️ 4K UHD · " : sharpenOn ? "🔎 1080p 고선명 · " : "") + (smoothOn ? "⚡ 60fps 스무딩 · " : "") + (watermark ? "📺 HUD 워터마크 · " : "") + (badgeOn ? TickerBadgeTag : "") + (lut != LutProfile.None ? "🎨 " + ColorGradingService.Label(lut) + " · " : "") + "🔇 무음";
+            var tag = ResolutionTag(resolution, sharpenOn) + (smoothOn ? "⚡ 60fps 스무딩 · " : "") + (watermark ? "📺 HUD 워터마크 · " : "") + (badgeOn ? TickerBadgeTag : "") + (lut != LutProfile.None ? "🎨 " + ColorGradingService.Label(lut) + " · " : "") + "🔇 무음";
             if (webm && (filter is not null || !Path.GetExtension(sourcePath).Equals(".webm", StringComparison.OrdinalIgnoreCase)))
             {
                 temp = Path.Combine(fullDir, Path.GetFileNameWithoutExtension(name) + TempExt + ".webm");
@@ -425,11 +484,11 @@ public sealed partial class StockSuiteExporter
             {
                 // 🚀 1080p/4K · 60fps: 감지된 GPU 인코더(NVENC/QSV/AMF) 우선 → 실패 시 libx264 무중단 폴백.
                 var gpu = await ResolveGpuVendorAsync(ct).ConfigureAwait(false);
-                var sharpened = await TryEncodeMp4Async(sourcePath, temp, filter, gpu, ct).ConfigureAwait(false);
+                var sharpened = await TryEncodeMp4Async(sourcePath, temp, filter, gpu, ct, resolution).ConfigureAwait(false);
                 if (sharpened is not null && filterNoWm is not null)
                 {
                     TryDelete(temp);
-                    sharpened = await TryEncodeMp4Async(sourcePath, temp, filterNoWm, gpu, ct).ConfigureAwait(false);
+                    sharpened = await TryEncodeMp4Async(sourcePath, temp, filterNoWm, gpu, ct, resolution).ConfigureAwait(false);
                     if (sharpened is null) tag = tag.Replace("📺 HUD 워터마크 · ", "⚠ 워터마크 생략 · ", StringComparison.Ordinal).Replace(TickerBadgeTag, "⚠ 배지 생략 · ", StringComparison.Ordinal);
                 }
                 if (sharpened is null)
@@ -519,17 +578,17 @@ public sealed partial class StockSuiteExporter
     }
 
     /// <summary>MP4 재인코딩 — GPU 우선 시도, 실패 시 감지기 강등(<see cref="HardwareAccelDetector.MarkFailed"/>) 후 libx264 재시도. 성공 null.</summary>
-    private async Task<string?> TryEncodeMp4Async(string source, string output, string filter, GpuEncoderVendor gpu, CancellationToken ct)
+    private async Task<string?> TryEncodeMp4Async(string source, string output, string filter, GpuEncoderVendor gpu, CancellationToken ct, StockSuiteResolution resolution = StockSuiteResolution.Fhd1080)
     {
         if (gpu != GpuEncoderVendor.Cpu && Accel?.Active == gpu)
         {
-            var hw = await TryFfmpegAsync(BuildSharpenArgs(source, output, filter, gpu), output, ct).ConfigureAwait(false);
+            var hw = await TryFfmpegAsync(BuildSharpenArgs(source, output, filter, gpu, resolution), output, ct).ConfigureAwait(false);
             if (hw is null) return null;
             Program.Log("StockSuite.HwAccel", new InvalidOperationException(HardwareAccelDetector.H264Encoder(gpu) + " 실패(" + hw + ") — libx264 폴백"));
             Accel?.MarkFailed();
             TryDelete(output);
         }
-        return await TryFfmpegAsync(BuildSharpenArgs(source, output, filter), output, ct).ConfigureAwait(false);
+        return await TryFfmpegAsync(BuildSharpenArgs(source, output, filter, GpuEncoderVendor.Cpu, resolution), output, ct).ConfigureAwait(false);
     }
 
     /// <summary>HTS 배경용 VP9 인자 — <see cref="AmbientLoopService.BuildWebMArgs"/> 위임.</summary>
@@ -794,6 +853,25 @@ public sealed partial class StockSuiteExporter
         if (outputPath.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)) { a.Add("-movflags"); a.Add("+faststart"); }
         a.Add(outputPath);
         return a.ToArray();
+    }
+
+    /// <summary>
+    /// 🖥️ 해상도 인지 재인코딩 인자 — 울트라와이드(21:9·32:9)는 픽셀 비례 VBV 상한(<see cref="RateCapFor"/>) <c>-maxrate/-bufsize</c> 주입.
+    /// 1080p/4K 는 기존 인자 그대로.
+    /// </summary>
+    public static string[] BuildSharpenArgs(string inputPath, string outputPath, string videoFilter, GpuEncoderVendor vendor, StockSuiteResolution resolution)
+    {
+        var a = BuildSharpenArgs(inputPath, outputPath, videoFilter, vendor);
+        if (!IsUltrawide(resolution)) return a;
+        var at = Array.IndexOf(a, "-pix_fmt");
+        if (at < 0) return a;
+        var (max, buf) = RateCapFor(resolution);
+        var r = new string[a.Length + 4];
+        Array.Copy(a, r, at);
+        r[at] = "-maxrate"; r[at + 1] = max.ToString(CultureInfo.InvariantCulture);
+        r[at + 2] = "-bufsize"; r[at + 3] = buf.ToString(CultureInfo.InvariantCulture);
+        Array.Copy(a, at, r, at + 4, a.Length - at);
+        return r;
     }
 
     /// <summary>H.264 재인코딩 인자 — 임의 필터 체인(<see cref="BuildVideoFilter"/> · 샤프닝/60fps 보간) 주입.</summary>

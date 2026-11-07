@@ -382,6 +382,21 @@
     </div>
 }
 
+@* ⏳ 일괄 작업 진행 모달(번들 내보내기 · 일괄 삭제) *@
+@if (_batchOpen)
+{
+    <div class="gl-modal" role="dialog" aria-modal="true" aria-label="일괄 작업 진행">
+        <div class="gl-confirm gl-batch">
+            <div class="gl-confirm-t">@_batchTitle</div>
+            <div class="gl-batch-track"><div class="gl-batch-fill" style="width:@((_batchReport.Fraction * 100).ToString("0.#", System.Globalization.CultureInfo.InvariantCulture))%"></div></div>
+            <div class="gl-batch-line">@_batchReport.Format()</div>
+            <div class="gl-confirm-a">
+                <button class="gl-btn bad" @onclick="CancelBatch" disabled="@(_batchCts is null || _batchCts.IsCancellationRequested)">@(_batchCts?.IsCancellationRequested == true ? "취소 중…" : "Cancel")</button>
+            </div>
+        </div>
+    </div>
+}
+
 @* 📅 장중 시간대별 스케줄러 *@
 @if (_scheduleOpen)
 {
@@ -490,6 +505,10 @@
     .gl-confirm-t { font-size: 17px; font-weight: 800; color: var(--text-primary); }
     .gl-confirm-d { font-size: 13px; color: var(--text-secondary); margin: 10px 0 18px; line-height: 1.6; } .gl-confirm-d span { color: var(--text-muted); font-size: 11.5px; }
     .gl-confirm-a { display: flex; gap: 10px; justify-content: center; }
+    .gl-batch { width: min(460px, 92vw); }
+    .gl-batch-track { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; margin: 14px 0 10px; }
+    .gl-batch-fill { height: 100%; background: var(--accent, #4f8cff); transition: width .15s linear; }
+    .gl-batch-line { font-family: Consolas, monospace; font-size: 12.5px; color: var(--text-secondary); margin-bottom: 16px; word-break: break-all; }
 
     /* 4K 업스케일(모달) */
     .gl-up { display: flex; align-items: center; gap: 8px; }
@@ -627,6 +646,9 @@
         Flow.OnChanged -= OnFlowChanged;
         Vm.Changed -= OnVmChanged;
         Vm.RestoreRequested -= OnRestoreRequested;
+        CancelBatch();
+        _batchCts?.Dispose();
+        _batchCts = null;
     }
 
     // ── 메타데이터 아카이브 ──
@@ -702,13 +724,51 @@
     {
         if (_bundleBusy) return;
         _bundleBusy = true;
+        var (progress, ct) = BeginBatch("📦 선택 번들 내보내기");
         try
         {
             var path = System.IO.Path.Combine(Media.MediaRoot, "_bundles", "pfs_sel_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", System.Globalization.CultureInfo.InvariantCulture) + PromptFlowStudio.Services.Export.AssetBundleService.Extension);
-            await Vm.ExportSelectedBundleAsync(Bundles, path, includePresets: true);
+            await Vm.ExportSelectedBundleAsync(Bundles, path, true, progress, ct);
         }
+        catch (OperationCanceledException) { /* VM 이 취소 상태 문구 설정 */ }
         catch (Exception ex) { Program.Log("MediaGallery.BundleExportSelected", ex); Vm.SetStatus("⚠ 선택 번들 내보내기 실패"); }
-        finally { _bundleBusy = false; await InvokeAsync(StateHasChanged); }
+        finally { EndBatch(); _bundleBusy = false; await InvokeAsync(StateHasChanged); }
+    }
+
+    // ── ⏳ 일괄 작업 진행 모달 ──
+    private bool _batchOpen;
+    private string _batchTitle = "";
+    private BatchProgressReport _batchReport;
+    private CancellationTokenSource? _batchCts;
+
+    private (IProgress<BatchProgressReport> Progress, CancellationToken Ct) BeginBatch(string title)
+    {
+        _batchCts?.Dispose();
+        _batchCts = new CancellationTokenSource();
+        _batchTitle = title;
+        _batchReport = default;
+        _batchOpen = true;
+        StateHasChanged();
+        // 백그라운드 보고 → UI 디스패처 경유(예외 격리)
+        var progress = new Progress<BatchProgressReport>(r =>
+        {
+            _batchReport = r;
+            _ = InvokeAsync(StateHasChanged).ContinueWith(static t => Program.Log("MediaGallery.BatchProgress", t.Exception!), TaskContinuationOptions.OnlyOnFaulted);
+        });
+        return (progress, _batchCts.Token);
+    }
+
+    private void CancelBatch()
+    {
+        try { _batchCts?.Cancel(); }
+        catch (ObjectDisposedException) { }
+    }
+
+    private void EndBatch()
+    {
+        _batchOpen = false;
+        _batchCts?.Dispose();
+        _batchCts = null;
     }
 
     /// <summary>📥 선택 .pfsbundle → 임시 파일 스트리밍 → 검증 · 추출 · 갤러리 갱신.</summary>
@@ -763,13 +823,27 @@
     private void DeleteMockAll() => _confirmBulk = BulkKind.Mock;
     private void DeleteCheckedAll() => _confirmBulk = BulkKind.Checked;
 
-    private void ConfirmBulk()
+    private async Task ConfirmBulk()
     {
         var kind = _confirmBulk;
         _confirmBulk = null;
+        if (kind == BulkKind.Checked)
+        {
+            if (_bundleBusy) return;
+            _bundleBusy = true;
+            var (progress, ct) = BeginBatch("🗑️ 선택 항목 일괄 삭제");
+            try
+            {
+                var r = await Vm.DeleteCheckedAsync(progress, ct);
+                if (r.Deleted > 0) Refresh();   // 하단 MP4 그리드 동기화
+            }
+            catch (Exception ex) { Program.Log("MediaGallery.BulkDelete", ex); Vm.SetStatus("⚠ 일괄 삭제 실패: " + ex.Message); }
+            finally { EndBatch(); _bundleBusy = false; await InvokeAsync(StateHasChanged); }
+            return;
+        }
         try
         {
-            var n = kind == BulkKind.Mock ? Vm.DeleteMockAssets() : kind == BulkKind.Checked ? Vm.DeleteChecked() : kind == BulkKind.Search ? Vm.DeleteSearchResults() : 0;
+            var n = kind == BulkKind.Mock ? Vm.DeleteMockAssets() : kind == BulkKind.Search ? Vm.DeleteSearchResults() : 0;
             if (n > 0) Refresh();   // 하단 MP4 그리드 동기화
         }
         catch (Exception ex) { Program.Log("MediaGallery.BulkDelete", ex); Vm.SetStatus("⚠ 일괄 삭제 실패: " + ex.Message); }

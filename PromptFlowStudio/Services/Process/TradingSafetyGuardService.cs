@@ -34,10 +34,26 @@ public sealed partial class TradingSafetyGuardService : IDisposable
     private int _attached, _disposed;
 
     /// <param name="enabledProvider">안전 모드 토글 공급자(null = 항상 ON · 앱 DI 는 환경설정).</param>
-    public TradingSafetyGuardService(Func<bool>? enabledProvider = null) => _enabled = enabledProvider ?? (static () => true);
+    /// <param name="clock">⏱️ 결정적 시계(null = <see cref="TimeProvider.System"/>) — 테스트는 고정 시각 주입.</param>
+    public TradingSafetyGuardService(Func<bool>? enabledProvider = null, Func<DateTimeOffset>? clock = null)
+    {
+        _enabled = enabledProvider ?? (static () => true);
+        _clock = clock ?? SystemClock;
+    }
 
-    /// <summary>현재 시각 공급자(테스트 주입).</summary>
-    public Func<DateTimeOffset> UtcNow { get; set; } = static () => DateTimeOffset.UtcNow;
+    /// <summary>⏱️ <see cref="TimeProvider"/> 주입 오버로드.</summary>
+    public TradingSafetyGuardService(Func<bool>? enabledProvider, TimeProvider timeProvider)
+        : this(enabledProvider, (timeProvider ?? throw new ArgumentNullException(nameof(timeProvider))).GetUtcNow) { }
+
+    private static readonly Func<DateTimeOffset> SystemClock = TimeProvider.System.GetUtcNow;
+    private Func<DateTimeOffset> _clock;
+
+    /// <summary>현재 시각 공급자(테스트 주입 · null 대입 시 시스템 시계 복귀).</summary>
+    public Func<DateTimeOffset> UtcNow
+    {
+        get => _clock;
+        set => _clock = value ?? SystemClock;
+    }
     /// <summary>장 시작(KST 기준 시각).</summary>
     public TimeSpan MarketOpen { get; set; } = DefaultOpen;
     /// <summary>장 마감(KST 기준 시각).</summary>

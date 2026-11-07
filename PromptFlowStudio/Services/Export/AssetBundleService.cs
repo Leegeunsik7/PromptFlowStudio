@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using PromptFlowStudio.Services.Gallery;
 using PromptFlowStudio.Services.Media;
 
 namespace PromptFlowStudio.Services.Export;
@@ -145,10 +146,19 @@ public sealed class AssetBundleService
         catch (JsonException) { return null; }
     }
 
-    public async Task<AssetBundleExportResult> ExportBundleAsync(string outputPath, IEnumerable<string> mediaIds, bool includePresets, CancellationToken ct = default)
+    public Task<AssetBundleExportResult> ExportBundleAsync(string outputPath, IEnumerable<string> mediaIds, bool includePresets, CancellationToken ct = default)
+        => ExportBundleAsync(outputPath, mediaIds, includePresets, null, ct);
+
+    /// <summary>
+    /// ⏳ 진행 보고 + 취소 지원 내보내기 — 항목마다 <see cref="BatchProgressReport"/>(완료 수 · 현재 파일명) 보고, 완료 시 (n/n, null).
+    /// 취소 시 임시 파일 정리 후 <see cref="OperationCanceledException"/> 전파(완성 번들 미생성).
+    /// </summary>
+    public async Task<AssetBundleExportResult> ExportBundleAsync(string outputPath, IEnumerable<string> mediaIds, bool includePresets, IProgress<BatchProgressReport>? progress, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(outputPath);
         ArgumentNullException.ThrowIfNull(mediaIds);
+        var ids = mediaIds as IReadOnlyList<string> ?? new List<string>(mediaIds);
+        var total = ids.Count;
         var full = Path.GetFullPath(outputPath.EndsWith(Extension, StringComparison.OrdinalIgnoreCase) ? outputPath : outputPath + Extension);
         var tmp = full + ".~pfs";
         var root = MediaRoot;
@@ -162,9 +172,11 @@ public sealed class AssetBundleService
             await using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.ReadWrite, FileShare.None, 81920, FileOptions.Asynchronous))
             using (var zip = new ZipArchive(fs, ZipArchiveMode.Create, leaveOpen: false))
             {
-                foreach (var id in mediaIds)
+                for (var i = 0; i < total; i++)
                 {
+                    var id = ids[i];
                     ct.ThrowIfCancellationRequested();
+                    progress?.Report(new(i, total, SafeFileName(id)));
                     if (ResolveMedia(id, root) is not { } m || !seen.Add(m.Rel)) { skipped.Add(id); continue; }
                     try
                     {
@@ -177,6 +189,8 @@ public sealed class AssetBundleService
                     }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Program.Log("AssetBundle.Export", ex); skipped.Add(id); }
                 }
+                ct.ThrowIfCancellationRequested();
+                progress?.Report(new(total, total, null));
                 if (includePresets && _presetDir() is { Length: > 0 } pd)
                 {
                     foreach (var name in PresetFiles)
@@ -208,6 +222,13 @@ public sealed class AssetBundleService
             TryDelete(tmp);
             return new(false, null, 0, 0, skipped, "번들 내보내기 실패: " + ex.Message);
         }
+    }
+
+    private static string? SafeFileName(string? id)
+    {
+        if (string.IsNullOrEmpty(id)) return null;
+        try { return Path.GetFileName(id); }
+        catch (ArgumentException) { return id; }
     }
 
     public async Task<AssetBundleImportResult> ImportBundleAsync(string bundlePath, CancellationToken ct = default)
