@@ -7,6 +7,7 @@
 @inject PromptFlowStudio.Services.Render.RenderCacheCleaner CacheCleaner
 @inject PromptFlowStudio.Services.Export.StockSuiteHealthService StockHealth
 @inject PromptFlowStudio.Services.Diagnostics.HardwareBenchmarkService Benchmark
+@inject PromptFlowStudio.Services.Diagnostics.DiagnosticReportService DiagReport
 
 @* [PromptFlow Studio] 사용자 설정 — 이 PC 의 화면·생성 기본값 표시 설정.
    ⚠ 관리자 비밀번호 없이 <로그인한 모든 사용자>가 쓴다. 이 PC 의 localStorage 에만 저장된다.
@@ -178,6 +179,13 @@
             </div>
         }
         @if (_healthMsg is not null) { <div class="st-hint @(_health is { Overall: PromptFlowStudio.Services.Export.IntegrationHealth.Unhealthy } ? "err" : "ok")">@_healthMsg</div> }
+        @* 🩺 원클릭 진단 번들 — OS·GPU 프로브·최근 로그 500줄·익명화 설정·StockSuite 헬스 → 바탕화면 pfs_diagnostic_{시각}.zip *@
+        <div class="st-field">
+            <div class="st-inrow">
+                <button class="st-btn-sm" @onclick="ExportDiagnosticAsync" disabled="@_diagBusy" title="지원 요청용 익명화 진단 번들을 바탕화면에 저장(개인 키 미포함)">@(_diagBusy ? "⏳ 번들 생성 중…" : "🩺 Export Diagnostic Report")</button>
+            </div>
+        </div>
+        @if (_diagMsg is not null) { <div class="st-hint @(_diagOk ? "ok" : "err")" title="@_diagPath">@_diagMsg</div> }
     </section>
 
     @* ── 🧹 렌더 캐시 정리 ── *@
@@ -337,6 +345,26 @@
         catch (Exception ex) { Program.Log("Settings.StockHealth", ex); _healthMsg = "⚠ 진단 실패 — 다시 시도하세요."; }
         finally { _healthBusy = false; }
     }
+    // 🩺 원클릭 진단 번들 — 바탕화면 직접 저장(부재 시 문서 폴더) · 실패 격리.
+    private bool _diagBusy, _diagOk;
+    private string? _diagMsg, _diagPath;
+    private async Task ExportDiagnosticAsync()
+    {
+        if (_diagBusy) return;
+        _diagBusy = true; _diagMsg = null;
+        try
+        {
+            var dir = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) dir = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+            var zip = await Task.Run(() => DiagReport.GenerateReportBundleAsync(dir));
+            var bad = PromptFlowStudio.Services.Diagnostics.DiagnosticReportService.VerifyBundle(zip);
+            _diagOk = bad is null; _diagPath = zip;
+            _diagMsg = bad is null ? "✅ 진단 번들 저장 → " + zip : "⚠ 번들 검증 실패: " + bad;
+        }
+        catch (Exception ex) { Program.Log("Settings.DiagBundle", ex); _diagOk = false; _diagMsg = "⚠ 진단 번들 생성 실패 — " + ex.Message; }
+        finally { _diagBusy = false; }
+    }
+
     private async Task RepairHealthAsync()
     {
         if (_healthBusy) return;

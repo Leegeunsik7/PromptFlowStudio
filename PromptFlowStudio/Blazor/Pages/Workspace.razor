@@ -433,9 +433,9 @@
 
             @if (_canvasQueueUrl is not null && !State.IsBusy)
             {
-                @* 큐 렌더(10s/15s/앰비언트) 완료 산출물 — @key 로 <video> 재생성해 소스 교체 즉시 강제 리로드 *@
+                @* 큐 렌더(10s/15s/앰비언트)·갤러리 선택 산출물 — 🎞️ 듀얼 버퍼(A/B) 크로스디졸브: 자식 <video> 2장은 JS 소유(promptflow.swapVideoSource) → 소스 교체 시 검은 화면 0 *@
                 <div class="ws-hts-wrap @(_abOn ? "ab-on" : null)">
-                    <video class="ws-video" src="@_canvasQueueUrl" controls autoplay loop muted preload="auto" @key="_canvasQueueUrl"></video>
+                    <div id="@XdHostId" class="ws-xd"></div>
                     @if (_abOn) { @AbSplit }
                     @if (_htsHud) { <HtsHudOverlay OpacityPercent="_htsOpacity" DimmerPercent="_htsDimmer" Theme="_htsTheme" /> }
                 </div>
@@ -1062,6 +1062,9 @@
     .ws-spec-g dd { margin: 0; font-family: Consolas, monospace; }
     .ws-spec-g dd.ok { color: #4ade80; } .ws-spec-g dd.warn { color: #facc15; }
     .ws-hts-wrap > .ws-video { display: block; }
+    /* 🎞️ 듀얼 버퍼 크로스디졸브 — 그리드 단일 셀 겹침(컨테이너 높이 = 큰 레이어), 활성 z2/대기 z1 */
+    .ws-xd { display: grid; position: relative; width: 100%; border-radius: 12px; overflow: hidden; background: #000; }
+    .ws-xd > video { grid-area: 1 / 1; width: 100%; height: 100%; display: block; object-fit: contain; background: #000; }
     /* ⭐ 사용자 프리셋 */
     .ws-preset-save { margin-left: auto; font-size: 11.5px; font-weight: 700; padding: 4px 9px; border-radius: 8px; border: 1px dashed #f5c542; background: rgba(245, 197, 66, .08); color: #f5c542; cursor: pointer; }
     .ws-preset-save:disabled { opacity: .5; cursor: default; }
@@ -2802,6 +2805,20 @@
     }
 
     private string? _camToast;
+    // 🎞️ 듀얼 버퍼 크로스디졸브 — 렌더 후 큐 URL 변경 시에만 JS 스왑(컨테이너 소멸 시 기록 리셋 → 재마운트 시 재로드)
+    private const string XdHostId = "ws-xd-queue";
+    private string? _xdShownUrl;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        var want = _canvasQueueUrl is not null && !State.IsBusy ? _canvasQueueUrl : null;
+        if (want is null) { _xdShownUrl = null; return; }
+        if (string.Equals(want, _xdShownUrl, StringComparison.Ordinal)) return;
+        _xdShownUrl = want;
+        try { await JS.InvokeAsync<bool>("promptflow.swapVideoSource", XdHostId, want); }
+        catch (Exception ex) when (ex is JSException or JSDisconnectedException or TaskCanceledException or InvalidOperationException) { _xdShownUrl = null; }
+    }
+
     public void Dispose()
     {
         _typingTimer?.Dispose();

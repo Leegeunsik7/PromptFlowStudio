@@ -1136,3 +1136,85 @@
     pf.ecoSuspend = suspend;   // 호스트(WinForms 최소화 훅) 직접 호출용
     pf.ecoResume = resume;
 })();
+/* 🎞️ 듀얼 버퍼 무깜빡임 크로스디졸브 — A/B <video> 2레이어 겹침. 대기 레이어에 새 소스 로드 → canplay/loadeddata → 재생 → 600ms 오파시티 교차 → 구 레이어 정지·해제.
+   활성 레이어만 .ws-video 클래스 보유(기존 "video.ws-video" 셀렉터: 스크럽·심 검사·핸들 해제 호환). 컨테이너 자식은 JS 소유(Blazor 미렌더). */
+(function () {
+    'use strict';
+    const pf = window.promptflow = window.promptflow || {};
+    const FADE_MS = 600;
+    const ACTIVE_CLS = 'ws-video';
+    function host(sel) {
+        try { return typeof sel === 'string' ? (document.getElementById(sel) || document.querySelector(sel)) : sel; } catch (e) { return null; }
+    }
+    function makeLayer() {
+        const v = document.createElement('video');
+        v.className = 'ws-xd-layer';
+        v.muted = true; v.loop = true; v.autoplay = false; v.playsInline = true; v.preload = 'auto';
+        v.setAttribute('muted', ''); v.setAttribute('loop', ''); v.setAttribute('playsinline', '');
+        v.style.opacity = '0'; v.style.zIndex = '1';
+        v.style.transition = 'opacity ' + FADE_MS + 'ms ease';
+        return v;
+    }
+    function ensure(h) {
+        if (h._pfsXd) return h._pfsXd;
+        const a = makeLayer(), b = makeLayer();
+        h.appendChild(a); h.appendChild(b);
+        h._pfsXd = { layers: [a, b], active: -1, token: 0, src: null, timer: 0 };
+        return h._pfsXd;
+    }
+    function setActive(v, on) {
+        v.style.opacity = on ? '1' : '0';
+        v.style.zIndex = on ? '2' : '1';
+        v.controls = on;
+        v.style.pointerEvents = on ? 'auto' : 'none';
+        if (on) v.classList.add(ACTIVE_CLS); else v.classList.remove(ACTIVE_CLS);
+    }
+    function reset(v) {
+        try { v.pause(); v.removeAttribute('src'); v.load(); } catch (e) { /* 격리 */ }
+    }
+    pf.swapVideoSource = function (sel, newSrc) {
+        const h = host(sel);
+        if (!h || !newSrc) return false;
+        const st = ensure(h);
+        if (st.src === newSrc && st.active >= 0) return true;
+        st.src = newSrc;
+        const token = ++st.token;
+        if (st.timer) { clearTimeout(st.timer); st.timer = 0; }
+        const oldIdx = st.active;
+        const nextIdx = oldIdx === 0 ? 1 : 0;
+        const next = st.layers[nextIdx];
+        const old = oldIdx >= 0 ? st.layers[oldIdx] : null;
+        let done = false;
+        function onReady() {
+            if (done || token !== st.token) return;
+            done = true;
+            next.removeEventListener('canplay', onReady);
+            next.removeEventListener('loadeddata', onReady);
+            try { const p = next.play(); if (p && p.catch) p.catch(function () { }); } catch (e) { /* 자동재생 정책 */ }
+            setActive(next, true);
+            st.active = nextIdx;
+            if (old) {
+                old.style.opacity = '0'; old.style.zIndex = '1'; old.controls = false; old.style.pointerEvents = 'none';
+                old.classList.remove(ACTIVE_CLS);
+                st.timer = setTimeout(function () { st.timer = 0; if (token === st.token) reset(old); }, FADE_MS);
+            }
+        }
+        next.addEventListener('canplay', onReady);
+        next.addEventListener('loadeddata', onReady);
+        try {
+            next.setAttribute('src', newSrc);
+            next.load();
+            if (next.readyState >= 2) onReady();
+        } catch (e) { return false; }
+        return true;
+    };
+    pf.disposeVideoSwap = function (sel) {
+        const h = host(sel);
+        if (!h || !h._pfsXd) return false;
+        const st = h._pfsXd;
+        st.token++;
+        if (st.timer) clearTimeout(st.timer);
+        for (let i = 0; i < st.layers.length; i++) reset(st.layers[i]);
+        return true;
+    };
+})();

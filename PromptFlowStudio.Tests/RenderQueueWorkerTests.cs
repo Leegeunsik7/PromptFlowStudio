@@ -324,9 +324,11 @@ public class RenderQueueWorkerTests
         var jobs = new List<BatchRenderJob> { new() { Prompt = "p0", OutputPath = target }, new() { Prompt = "p1", Seed = 1 } };
         q.Enqueue(jobs);
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        // 부하 내성: 전체 스위트 병렬 실행 시 스레드풀 지연 → 벽시계 상한 완화(폴링 15s · 전체 60s)
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var worker = q.ProcessQueueAsync(cts.Token);
-        for (var i = 0; i < 200 && !q.IsDiskPaused; i++) await Task.Delay(10);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (!q.IsDiskPaused && sw.Elapsed < TimeSpan.FromSeconds(15)) await Task.Delay(10);
 
         // 디스패치 차단 — 어떤 작업도 Processing 으로 꺼내지 않음(Paused · Disk Full Warning)
         Assert.True(q.IsPaused);

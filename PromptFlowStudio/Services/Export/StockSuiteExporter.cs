@@ -484,11 +484,12 @@ public sealed partial class StockSuiteExporter
             {
                 // 🚀 1080p/4K · 60fps: 감지된 GPU 인코더(NVENC/QSV/AMF) 우선 → 실패 시 libx264 무중단 폴백.
                 var gpu = await ResolveGpuVendorAsync(ct).ConfigureAwait(false);
-                var sharpened = await TryEncodeMp4Async(sourcePath, temp, filter, gpu, ct, resolution).ConfigureAwait(false);
+                var (sharpened, fellBack) = await TryEncodeMp4Async(sourcePath, temp, filter, gpu, ct, resolution).ConfigureAwait(false);
                 if (sharpened is not null && filterNoWm is not null)
                 {
                     TryDelete(temp);
-                    sharpened = await TryEncodeMp4Async(sourcePath, temp, filterNoWm, gpu, ct, resolution).ConfigureAwait(false);
+                    (sharpened, var fb2) = await TryEncodeMp4Async(sourcePath, temp, filterNoWm, gpu, ct, resolution).ConfigureAwait(false);
+                    fellBack |= fb2 || (sharpened is null && gpu != GpuEncoderVendor.Cpu && Accel?.Active != gpu);
                     if (sharpened is null) tag = tag.Replace("📺 HUD 워터마크 · ", "⚠ 워터마크 생략 · ", StringComparison.Ordinal).Replace(TickerBadgeTag, "⚠ 배지 생략 · ", StringComparison.Ordinal);
                 }
                 if (sharpened is null)
@@ -496,7 +497,7 @@ public sealed partial class StockSuiteExporter
                     await SwapIntoPlaceAsync(temp, target, ct).ConfigureAwait(false);
                     WriteSourceMarker(target, sourcePath);
                     if (gpu != GpuEncoderVendor.Cpu && Accel?.Active == gpu) tag = "🚀 " + HardwareAccelDetector.Label(gpu) + " · " + tag;
-                    return new(true, target, false, "💼 StockSuite 내보내기 완료(" + tag + ") → " + target);
+                    return new(true, target, false, "💼 StockSuite 내보내기 완료(" + tag + ") → " + target + (fellBack ? " " + CpuFallbackTag : ""));
                 }
                 TryDelete(temp);
             }
@@ -578,17 +579,34 @@ public sealed partial class StockSuiteExporter
     }
 
     /// <summary>MP4 재인코딩 — GPU 우선 시도, 실패 시 감지기 강등(<see cref="HardwareAccelDetector.MarkFailed"/>) 후 libx264 재시도. 성공 null.</summary>
-    private async Task<string?> TryEncodeMp4Async(string source, string output, string filter, GpuEncoderVendor gpu, CancellationToken ct, StockSuiteResolution resolution = StockSuiteResolution.Fhd1080)
+    private async Task<(string? Error, bool FellBack)> TryEncodeMp4Async(string source, string output, string filter, GpuEncoderVendor gpu, CancellationToken ct, StockSuiteResolution resolution = StockSuiteResolution.Fhd1080)
     {
         if (gpu != GpuEncoderVendor.Cpu && Accel?.Active == gpu)
         {
             var hw = await TryFfmpegAsync(BuildSharpenArgs(source, output, filter, gpu, resolution), output, ct).ConfigureAwait(false);
-            if (hw is null) return null;
+            if (hw is null) return (null, false);
+            // 🛟 VRAM 고갈(NV_ENC_ERR_OUT_OF_MEMORY)/인코더 소실/exit 1 → 경고 로그 + 감지기 강등 + 안전 CPU(libx264 medium/crf20) 즉시 재시도.
             Program.Log("StockSuite.HwAccel", new InvalidOperationException(HardwareAccelDetector.H264Encoder(gpu) + " 실패(" + hw + ") — libx264 폴백"));
             Accel?.MarkFailed();
             TryDelete(output);
+            var cpu = await TryFfmpegAsync(BuildCpuFallbackArgs(source, output, filter, resolution), output, ct).ConfigureAwait(false);
+            return (cpu, cpu is null);
         }
-        return await TryFfmpegAsync(BuildSharpenArgs(source, output, filter, GpuEncoderVendor.Cpu, resolution), output, ct).ConfigureAwait(false);
+        return (await TryFfmpegAsync(BuildSharpenArgs(source, output, filter, GpuEncoderVendor.Cpu, resolution), output, ct).ConfigureAwait(false), false);
+    }
+
+    /// <summary>완료 메시지/메타 접미 — GPU 실패 후 CPU 폴백 성공 표식.</summary>
+    public const string CpuFallbackTag = "[Fell back to CPU encoder]";
+
+    /// <summary>🛟 GPU 런타임 실패 시 안전 CPU 인자 — <c>-c:v libx264 -preset medium -crf 20</c>(울트라와이드 VBV 상한 유지).</summary>
+    public static string[] BuildCpuFallbackArgs(string inputPath, string outputPath, string videoFilter, StockSuiteResolution resolution = StockSuiteResolution.Fhd1080)
+    {
+        var a = BuildSharpenArgs(inputPath, outputPath, videoFilter, GpuEncoderVendor.Cpu, resolution);
+        var p = Array.IndexOf(a, "-preset");
+        if (p >= 0 && p + 1 < a.Length) a[p + 1] = "medium";
+        var c = Array.IndexOf(a, "-crf");
+        if (c >= 0 && c + 1 < a.Length) a[c + 1] = "20";
+        return a;
     }
 
     /// <summary>HTS 배경용 VP9 인자 — <see cref="AmbientLoopService.BuildWebMArgs"/> 위임.</summary>
