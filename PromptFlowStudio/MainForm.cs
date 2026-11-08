@@ -986,6 +986,7 @@ public sealed class MainForm : Form
     }
 
     private readonly ServiceProvider? _services;
+    private PromptFlowStudio.Services.Export.StockSuiteHotReloadWatchdog? _hotReloadWatchdog;   // 🩺 핫리로드 헬스 워치독
     private BlazorWebView? _webView;
     private bool _ecoMinimized;
 
@@ -1040,6 +1041,13 @@ public sealed class MainForm : Form
             if (_services.GetService<PromptFlowStudio.Services.Render.IRenderQueueService>() is PromptFlowStudio.Services.Render.RenderQueueService rq) rq.TradingGuard = tradingGuard;
             var chartGen = _services.GetRequiredService<PromptFlowStudio.Services.Chart.ChartStillGeneratorService>();
             _services.GetRequiredService<PromptFlowStudio.Services.ProcessBridge.StockSuiteIpcBridge>().OnQuotePushed += chartGen.PushQuotes;   // 📈 IPC 실시세 → 차트 캐시
+            // 🩺 핫리로드 헬스 워치독 — StockSuite 가동 중일 때만 5초 ack 감시 → 미응답/오류 시 이전 배경 자동 롤백
+            var ssExporter = _services.GetRequiredService<PromptFlowStudio.Services.Export.StockSuiteExporter>();
+            var ssIpc = _services.GetRequiredService<PromptFlowStudio.Services.ProcessBridge.StockSuiteIpcBridge>();
+            var ssMon = _services.GetService<PromptFlowStudio.Services.ProcessBridge.StockSuiteProcessMonitor>();
+            _hotReloadWatchdog ??= new PromptFlowStudio.Services.Export.StockSuiteHotReloadWatchdog(ssExporter.RollbackPreviousAssetAsync, () => ssIpc.IsConnected || (ssMon?.IsRunning ?? false));
+            ssExporter.Watchdog = _hotReloadWatchdog;
+            ssIpc.OnHotReloadAck += _hotReloadWatchdog.Acknowledge;
         }
         catch (Exception ex) { Program.Log("EnterpriseHub.AutoStart", ex); }
 
@@ -1077,6 +1085,7 @@ public sealed class MainForm : Form
     {
         if (disposing)
         {
+            try { _hotReloadWatchdog?.Dispose(); } catch (Exception ex) { Program.Log("MainForm.HotReloadWatchdog", ex); }
             try { _services?.Dispose(); } catch { /* 무시 */ }
         }
         base.Dispose(disposing);

@@ -103,7 +103,7 @@ public class StoryboardStitchAndStockSuiteTests : IDisposable
         var target = Path.Combine(_dir, "StockSuite", "Assets", "Video");
         Directory.CreateDirectory(Path.GetDirectoryName(target)!);   // 상위 존재 → 대상 폴더 자동 생성
 
-        var exp = new StockSuiteExporter(() => target);
+        var exp = new StockSuiteExporter(() => target) { SilentContainerVerifier = static _ => PromptFlowStudio.Services.Export.SilentVerdict.Silent };
         Assert.True(exp.IsConfigured);
 
         var r = await exp.ExportAsync(src);
@@ -120,12 +120,12 @@ public class StoryboardStitchAndStockSuiteTests : IDisposable
         Assert.Equal(new byte[] { 1, 1, 1 }, File.ReadAllBytes(dest));
 
         // 미설정 → 경로 설정 안내
-        var unset = await new StockSuiteExporter(() => "  ").ExportAsync(src);
+        var unset = await new StockSuiteExporter(() => "  ") { SilentContainerVerifier = static _ => PromptFlowStudio.Services.Export.SilentVerdict.Silent }.ExportAsync(src);
         Assert.False(unset.Ok);
         Assert.True(unset.NeedsPathSetup);
 
         // 상위 폴더도 없는 경로 → 재설정 안내
-        var bad = await new StockSuiteExporter(() => Path.Combine(_dir, "nope", "deeper", "Video")).ExportAsync(src);
+        var bad = await new StockSuiteExporter(() => Path.Combine(_dir, "nope", "deeper", "Video")) { SilentContainerVerifier = static _ => PromptFlowStudio.Services.Export.SilentVerdict.Silent }.ExportAsync(src);
         Assert.False(bad.Ok);
         Assert.True(bad.NeedsPathSetup);
     }

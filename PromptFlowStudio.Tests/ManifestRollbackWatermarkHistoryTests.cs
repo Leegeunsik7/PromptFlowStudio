@@ -35,7 +35,7 @@ public class ManifestRollbackWatermarkHistoryTests : IDisposable
 
     /// <summary>ffmpeg 부재 → 원본 복사 경로(바이트 동일).</summary>
     private StockSuiteExporter CopyExporter(string target)
-        => new(() => target, null, () => null) { SwapRetryDelay = TimeSpan.FromMilliseconds(1) };
+        => new(() => target, null, () => null) { SwapRetryDelay = TimeSpan.FromMilliseconds(1), SilentContainerVerifier = static _ => PromptFlowStudio.Services.Export.SilentVerdict.Silent };
 
     [Fact]
     [Trait("Category", "FastUnit")]

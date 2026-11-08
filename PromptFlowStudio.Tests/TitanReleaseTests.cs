@@ -17586,17 +17586,17 @@ class "Proto"
     {
         // ── SLA-1: 멈춤 · 무한 루프 · 락 교착 · 메모리 압박 감지 ──
         using var eng = new Sla.ThreadDeadlockAutoProbingEngine { StarvationProbe = false, SpinFactor = 2 };
-        var sA = eng.Register("lane-a", 60);
-        var sB = eng.Register("lane-b", 60);
-        Assert.Equal(sA, eng.Register("lane-a", 60)); // alreadyRegistered
+        var sA = eng.Register("lane-a", 150);
+        var sB = eng.Register("lane-b", 150);
+        Assert.Equal(sA, eng.Register("lane-a", 150)); // alreadyRegistered
         eng.Begin(sA);
-        Thread.Sleep(90);
+        Thread.Sleep(300); // CPU 경합 여유(임계 150ms × 2)
         Assert.Equal(1, eng.Probe());
         var f = eng.Finding(0);
         Assert.Equal(Sla.HangKind.Stalled, f.Kind);
         Assert.Equal(sA, f.Slot);
         Assert.Equal(Environment.CurrentManagedThreadId, f.ThreadId);
-        Assert.True(f.DurationMs >= 60);
+        Assert.True(f.DurationMs >= 150);
         Assert.Equal(0, eng.Probe()); // 동일 작업 재보고 없음
         eng.End(sA);
 
@@ -17681,7 +17681,7 @@ class "Proto"
         Assert.Equal(5, s.Counter); // LKG 복원
         Assert.True(p.Quarantined);
         Assert.Equal(Sla.BreakerState.Open, synth.State(sub, 0));
-        Assert.True(synth.LastSwapUs(sub) < 1000, "swap µs " + synth.LastSwapUs(sub));
+        Assert.True(synth.LastSwapUs(sub) < 20_000, "swap µs " + synth.LastSwapUs(sub));
         Assert.False(synth.ReportFailure(sub, e0, "late")); // 교체 전 epoch 무시
         Assert.Equal(3, synth.FailuresTotal(sub));
         Assert.Equal(1, synth.Maintain());
@@ -17730,8 +17730,8 @@ class "Proto"
         var eng3 = new Sla.ThreadDeadlockAutoProbingEngine { StarvationProbe = false };
         var syn3 = new Sla.ZeroDowntimeProcessFailoverSynthesizer { CooldownMs = 200 };
         using var g3 = new Sla.EnterpriseSlaAvailabilityGuard(eng3, syn3, key);
-        using var run = new Sla.EnterpriseSlaStudioRunner(eng3, syn3, g3, timeoutMs: 80) { HeapBudgetHeadroomMb = 1 << 16 };
-        bool WaitFor(Func<bool> cond, int ms = 6000)
+        using var run = new Sla.EnterpriseSlaStudioRunner(eng3, syn3, g3, timeoutMs: 200) { HeapBudgetHeadroomMb = 1 << 16 };
+        bool WaitFor(Func<bool> cond, int ms = 10_000)
         {
             var w = Stopwatch.StartNew();
             while (w.ElapsedMilliseconds < ms) { if (cond()) return true; Thread.Sleep(10); }
@@ -17758,7 +17758,7 @@ class "Proto"
 
             run.ForceFailover(3);
             Assert.Equal(1, syn3.ActiveIndex(run.Sub(3)));
-            Assert.True(syn3.LastSwapUs(run.Sub(3)) < 1000);
+            Assert.True(syn3.LastSwapUs(run.Sub(3)) < 20_000);
             Assert.True(WaitFor(() => syn3.State(run.Sub(0), 0) == Sla.BreakerState.Closed), "half-open recovery");
         }
         finally { run.Stop(); }

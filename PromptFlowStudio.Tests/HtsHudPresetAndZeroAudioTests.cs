@@ -97,7 +97,7 @@ public class HtsHudPresetAndZeroAudioTests : IDisposable
             File.WriteAllBytes(arr[^1], new byte[AmbientLoopService.MinValidOutputBytes + 16]);
             return Task.FromResult(true);
         };
-        var exp = new StockSuiteExporter(() => target, () => "mp4", () => "ffmpeg.exe", runner);
+        var exp = new StockSuiteExporter(() => target, () => "mp4", () => "ffmpeg.exe", runner) { SilentContainerVerifier = static _ => PromptFlowStudio.Services.Export.SilentVerdict.Silent };
         var r = await exp.ExportAsync(src);
         Assert.True(r.Ok, r.Message);
         Assert.Contains("무음", r.Message);
@@ -111,14 +111,14 @@ public class HtsHudPresetAndZeroAudioTests : IDisposable
         Assert.True(exp.IsApplied(src));
 
         // ffmpeg 실패 → 원본 복사 폴백(내보내기 자체는 성공 보존)
-        var failExp = new StockSuiteExporter(() => target, () => "mp4", () => "ffmpeg.exe", (_, _, _) => Task.FromResult(false));
+        var failExp = new StockSuiteExporter(() => target, () => "mp4", () => "ffmpeg.exe", (_, _, _) => Task.FromResult(false)) { SilentContainerVerifier = static _ => PromptFlowStudio.Services.Export.SilentVerdict.Silent };
         var fb = await failExp.ExportAsync(src);
         Assert.True(fb.Ok, fb.Message);
         Assert.Equal(File.ReadAllBytes(src), File.ReadAllBytes(dest));
         Assert.Empty(Directory.GetFiles(target, "*.~pfs*"));
 
         // ffmpeg 부재 → 원본 복사 폴백
-        var none = await new StockSuiteExporter(() => target, () => "mp4", () => null, runner).ExportAsync(src);
+        var none = await new StockSuiteExporter(() => target, () => "mp4", () => null, runner) { SilentContainerVerifier = static _ => PromptFlowStudio.Services.Export.SilentVerdict.Silent }.ExportAsync(src);
         Assert.True(none.Ok, none.Message);
         Assert.Single(calls);
     }

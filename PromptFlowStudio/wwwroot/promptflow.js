@@ -1277,3 +1277,16 @@
         return true;
     };
 })();
+/* 🎞️ 갤러리 라이트박스 → 발행 모달 — 지정 <video>(id 또는 CSS 선택자) 현재 재생 시각(초). 부재/무효 = -1(C# 폴백). */
+(function () {
+    'use strict';
+    const pf = window.promptflow = window.promptflow || {};
+    pf.getVideoCurrentTime = function (elementId) {
+        try {
+            const v = typeof elementId === 'string' ? (document.getElementById(elementId) || document.querySelector(elementId)) : elementId;
+            if (!v || typeof v.currentTime !== 'number') return -1;
+            const t = v.currentTime;
+            return isFinite(t) && t >= 0 ? t : -1;
+        } catch (e) { return -1; }
+    };
+})();

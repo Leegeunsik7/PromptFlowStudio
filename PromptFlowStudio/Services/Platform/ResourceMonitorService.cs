@@ -34,6 +34,24 @@ public sealed class ResourceMonitorService
 
     public ResourceMonitorService() : this(QueryNvidiaAsync) { }
 
+    /// <summary>🎮 상태 푸터 GPU 배지 등급 — 사용률·VRAM 점유율 중 큰 값: &lt;70 ok(녹) · 70~90 warn(황) · &gt;90 crit(적).</summary>
+    public static string GpuBadgeLevel(ResourceSample s)
+    {
+        var util = s.GpuUtilPct ?? 0;
+        var vram = s.VramTotalMb is double t && t > 0 && s.VramUsedMb is double u ? u * 100.0 / t : 0;
+        var load = Math.Max(util, vram);
+        return load > 90 ? "crit" : load >= 70 ? "warn" : "ok";
+    }
+
+    /// <summary>🎮 <c>🎮 GPU: {util}% | VRAM: {used}/{total}MB</c> — GPU 미가용 = null(배지 숨김).</summary>
+    public static string? GpuBadgeText(ResourceSample s)
+    {
+        if (!s.GpuAvailable || s.GpuUtilPct is not double util) return null;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        return string.Concat("🎮 GPU: ", Math.Round(util).ToString("0", inv), "% | VRAM: ",
+            (s.VramUsedMb ?? 0).ToString("0", inv), "/", (s.VramTotalMb ?? 0).ToString("0", inv), "MB");
+    }
+
     /// <summary>테스트용 — GPU 조회 대체.</summary>
     internal ResourceMonitorService(Func<CancellationToken, Task<(string Name, double Util, double Used, double Total)?>> query) => _query = query;
 

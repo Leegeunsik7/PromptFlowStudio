@@ -1,15 +1,17 @@
 # Current Project Status
-- Active Milestone: 【Security Audio】 🔇 StockSuite 무음 폴백 강화 · 🎵 쇼츠 BGM 격리 · 🎞️ 갤러리 미리보기 시각 동기
+
+- Active Milestone: 【Zero-Trust Guard】 🛡️ StockSuite 제로트러스트 무음 가드 · 🩺 핫리로드 워치독 자동 롤백 · 🎞️ 라이트박스 정밀 타임스탬프 · 🟢 GPU 텔레메트리 배지
 - Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (Mobile: 로컬 Android SDK 부재로 미빌드)
-- Tests: 전체 883/883 PASS (`-- RunConfiguration.MaxCpuCount=2`, 10m26s)
-- Updated: 2026-11-08 (KST)
+- Tests: 전체 887/887 PASS (8m15s) · `*IsolatedTests` 99/99 PASS (4m37s)
+- Updated: 2026-11-09 (KST)
 
 ## Completed
-- 🔇 `StockSuiteExporter.CopyAsync` — 오디오 동반 원본은 원본 복사 폴백 거부 → `SilentFallbackRejectedMessage` · `ContainsAudioTrack`(BCL MP4 `hdlr soun`/MKV `A_*` 스캔) · `SourceAudioProbe` 주입
-- 🎵 `enum ExportProfile` + `IsStockSuiteTarget(path, profile)` — HtsDesktop/DualMonitorSplit 만 `-an` 강제, SnsShorts/MobileVertical 면제 · `ProfileOf(key)` 멀티 패키지 매핑
-- 🎞️ `GalleryViewModel.Begin/EndHoverPreview` · `ResolvePreviewTimestamp`(호버 위치 → 직전 위치 → 중간점 → 1초) → `PublishViewModel.Initialize(path, sec)` · MediaGallery `OpenPublish` 결선
-- 🧪 `SecurityAudioFallbackGalleryTests` 3건 · `ScrubberSilentGuardEtaTests` 쇼츠 BGM 기대값 갱신
+- 🛡️ `StockSuiteExporter` — ffmpeg 부재 시 미인식 컨테이너 무음 폴백 거부(Zero-Trust)
+- 🩺 `StockSuiteHotReloadWatchdog` — `hotreload.trigger` 후 5초 내 IPC `HotReloadAck`/`hotreload.ack` 미수신·오류 시 `*.backup.*` 자동 롤백
+- 🎞️ `GalleryViewModel`/`MediaGallery` 라이트박스 JS interop 정확 타임스탬프 추출
+- 🟢 `GpuTelemetryBadge.razor` (MainLayout 결선) · `ResourceMonitorService` 확장
+- 🧪 `ZeroTrustSilentGuardWatchdogTests` 3건 · 기존 테스트 기대값 갱신
+- 🧹 이전 실행 실패 원인: 호스트 RAM 고갈(외부 StockManager 스위트 동시 실행) — 좀비 testhost/ffmpeg 정리 후 재실행 통과
 
 ## Next
-- 확대 모달 `<video>` 실제 재생 위치(JS interop) 전달
-- 실 ffmpeg 기준 ETA 표본 보정(GPU/CPU 폴백 분리 가중치)
+- 모바일 빌드 검증(Android SDK 확보 시)

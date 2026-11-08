@@ -103,7 +103,7 @@ public class WebMSharpenAndBatchPackTests : IDisposable
         var target = Path.Combine(_dir, "Pack");
 
         // ffmpeg 부재 → 원본 복사 폴백으로 넘버링 정규화(누락·중복은 건너뜀)
-        var exp = new StockSuiteExporter(null, () => "mp4", () => null);
+        var exp = new StockSuiteExporter(null, () => "mp4", () => null) { SilentContainerVerifier = static _ => PromptFlowStudio.Services.Export.SilentVerdict.Silent };
         var r = await exp.ExportBatchPackAsync(new[] { v1, Path.Combine(_dir, "missing.mp4"), v2, v1, v3 }, target, sharpen: false);
         Assert.True(r.Ok, r.Message);
         Assert.Equal(3, r.Exported.Count);
@@ -117,7 +117,7 @@ public class WebMSharpenAndBatchPackTests : IDisposable
 
         // WebM + 샤프닝 → .webm 넘버링 · 각 호출에 샤프닝 필터
         var calls = new List<string[]>();
-        var webm = new StockSuiteExporter(null, () => "webm", () => "ffmpeg.exe", FakeRunner(calls));
+        var webm = new StockSuiteExporter(null, () => "webm", () => "ffmpeg.exe", FakeRunner(calls)) { SilentContainerVerifier = static _ => PromptFlowStudio.Services.Export.SilentVerdict.Silent };
         var w = await webm.ExportBatchPackAsync(new[] { v1, v2 }, target, sharpen: true);
         Assert.True(w.Ok, w.Message);
         Assert.Equal(new[] { Path.Combine(target, "bg_ambient_01.webm"), Path.Combine(target, "bg_ambient_02.webm") }, w.Exported);
@@ -125,7 +125,7 @@ public class WebMSharpenAndBatchPackTests : IDisposable
         Assert.All(calls, c => Assert.Equal(StockSuiteExporter.SharpenFilter, c[Array.IndexOf(c, "-vf") + 1]));
 
         // 경로 미설정 → NeedsPathSetup
-        var none = await new StockSuiteExporter().ExportBatchPackAsync(new[] { v1 }, "", sharpen: false);
+        var none = await new StockSuiteExporter() { SilentContainerVerifier = static _ => PromptFlowStudio.Services.Export.SilentVerdict.Silent }.ExportBatchPackAsync(new[] { v1 }, "", sharpen: false);
         Assert.False(none.Ok);
         Assert.True(none.NeedsPathSetup);
     }

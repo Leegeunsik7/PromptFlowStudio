@@ -17,7 +17,12 @@ public sealed record StockSuiteExportResult(bool Ok, string? TargetPath, bool Ne
     public EncoderTelemetry? Telemetry { get; init; }
     /// <summary>🔇 산출물 오디오 포함 여부 — ffmpeg 경로는 Silent Ambient Guard(<c>-an</c>) 로 항상 false · 원본 복사 폴백은 오디오 미탐지 원본에만 허용(오디오 동반 시 거부).</summary>
     public bool HasAudio { get; init; }
+    /// <summary>🩺 핫리로드 헬스 워치독 결과(워치독 미결선/신호 생략 = null).</summary>
+    public Task<HotReloadWatchResult>? HotReloadWatch { get; init; }
 }
+
+/// <summary>🛡️ Zero-Trust 무음 판정 — Silent 만 원본 복사 허용.</summary>
+public enum SilentVerdict { Unverified = 0, Silent, HasAudio }
 
 /// <summary>💼 StockSuite 팩 일괄 내보내기 결과 — Exported = 넘버링된 대상 경로(순서 보존).</summary>
 public sealed record StockSuiteBatchPackResult(IReadOnlyList<string> Exported, int Failed, bool NeedsPathSetup, string Message)
@@ -332,7 +337,13 @@ public sealed partial class StockSuiteExporter
         // 🔁 라이브 핫리로드 — 실제 교체가 일어난 경우에만 신호(동일 위치 no-op 제외).
         if (r.Ok && r.TargetPath is { } t && !string.Equals(Path.GetFullPath(sourcePath!), t, StringComparison.OrdinalIgnoreCase))
         {
-            if (hotReload) WriteHotReloadTrigger(t, UtcNow());
+            if (hotReload)
+            {
+                var wd = Watchdog;
+                var arm = wd?.Arm(t);   // 🩺 신호 기록 전 무장(스테일 ack 제거 · 빠른 ack 유실 방지)
+                WriteHotReloadTrigger(t, UtcNow());
+                if (arm is not null) r = r with { HotReloadWatch = wd!.RunAsync(arm) };
+            }
             ExportMetadata.MarkExported(sourcePath!, new[] { t }, UtcNow(), r.Telemetry, r.HasAudio);   // 📦 원본 메타 규격 통일 · ⚡ 인코더 텔레메트리 · 🔇 hasAudio
             WriteManifest(t, sourcePath!, UtcNow());                           // 🧾 엄격 매칭 매니페스트
         }
@@ -564,6 +575,16 @@ public sealed partial class StockSuiteExporter
             Program.Log("StockSuite.SilentGuard", new InvalidOperationException(SilentFallbackRejectedMessage + " " + Path.GetFileName(target)));
             return new(false, null, false, SilentFallbackRejectedMessage);
         }
+        // 🛡️ Zero-Trust Default-Deny: 지원 컨테이너(MP4/MOV/WebM/MKV) + 무음 적극 확인 시에만 원본 복사 허용.
+        SilentVerdict verdict;
+        try { verdict = SilentContainerVerifier(sourcePath); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Program.Log("StockSuite.ZeroTrust", ex); verdict = SilentVerdict.Unverified; }
+        if (verdict != SilentVerdict.Silent)
+        {
+            var msg = verdict == SilentVerdict.HasAudio ? SilentFallbackRejectedMessage : ZeroTrustRejectedMessage;
+            Program.Log("StockSuite.ZeroTrust", new InvalidOperationException(msg + " " + Path.GetFileName(target)));
+            return new(false, null, false, msg);
+        }
         var temp = target + TempExt;
         try
         {
@@ -588,6 +609,62 @@ public sealed partial class StockSuiteExporter
     }
 
     private static readonly byte[] HdlrTag = "hdlr"u8.ToArray();
+
+    /// <summary>🛡️ Zero-Trust 거부 메시지 — 미지원/판별 불가 컨테이너(ffmpeg 부재 시).</summary>
+    public const string ZeroTrustRejectedMessage = "Export aborted: Zero-trust audio policy rejected unverified container without FFmpeg.";
+
+    /// <summary>🛡️ 무음 컨테이너 검증기(테스트 주입용 · 기본 <see cref="VerifySilentContainer"/>).</summary>
+    public Func<string, SilentVerdict> SilentContainerVerifier { get; set; } = VerifySilentContainer;
+
+    /// <summary>
+    /// 🛡️ Zero-Trust 무음 판정 — 확장자·매직 바이트 모두 MP4/MOV(<c>ftyp</c>/<c>moov</c>/<c>wide</c>) 또는 WebM/MKV(EBML <c>1A45DFA3</c>)이고
+    /// 비디오 트랙(<c>hdlr vide</c> / CodecID <c>V_*</c>) ≥ 1 · 오디오 트랙 0 일 때만 <see cref="SilentVerdict.Silent"/>. 그 외 Unverified.
+    /// </summary>
+    public static SilentVerdict VerifySilentContainer(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return SilentVerdict.Unverified;
+        var ext = Path.GetExtension(path);
+        var isoExt = ext.Equals(".mp4", StringComparison.OrdinalIgnoreCase) || ext.Equals(".mov", StringComparison.OrdinalIgnoreCase);
+        var mkvExt = ext.Equals(".webm", StringComparison.OrdinalIgnoreCase) || ext.Equals(".mkv", StringComparison.OrdinalIgnoreCase);
+        if (!isoExt && !mkvExt) return SilentVerdict.Unverified;
+
+        const int Overlap = 16;
+        var buf = new byte[81920 + Overlap];
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.SequentialScan);
+        var head = fs.Read(buf, 0, 12);
+        if (head < 12) return SilentVerdict.Unverified;
+        var h = buf.AsSpan(0, 12);
+        bool iso = isoExt && (h.Slice(4, 4).SequenceEqual("ftyp"u8) || h.Slice(4, 4).SequenceEqual("moov"u8) || h.Slice(4, 4).SequenceEqual("wide"u8));
+        bool mkv = mkvExt && h[0] == 0x1A && h[1] == 0x45 && h[2] == 0xDF && h[3] == 0xA3;
+        if (!iso && !mkv) return SilentVerdict.Unverified;
+
+        var video = false;
+        var carry = head;
+        int read;
+        while ((read = fs.Read(buf, carry, buf.Length - carry)) > 0 || carry > 0)
+        {
+            var len = carry + read;
+            var span = buf.AsSpan(0, len);
+            for (var i = 0; i + 16 <= len; i++)
+            {
+                if (iso && span[i] == (byte)'h' && span.Slice(i, 4).SequenceEqual(HdlrTag))
+                {
+                    var t = span.Slice(i + 12, 4);
+                    if (t.SequenceEqual("soun"u8)) return SilentVerdict.HasAudio;
+                    if (t.SequenceEqual("vide"u8)) video = true;
+                }
+                if (mkv && span[i] == 0x86 && (span[i + 1] & 0x80) != 0)
+                {
+                    if (span[i + 2] == (byte)'A' && span[i + 3] == (byte)'_') return SilentVerdict.HasAudio;
+                    if (span[i + 2] == (byte)'V' && span[i + 3] == (byte)'_') video = true;
+                }
+            }
+            if (read == 0) break;
+            carry = Math.Min(Overlap, len);
+            span.Slice(len - carry, carry).CopyTo(buf);
+        }
+        return video ? SilentVerdict.Silent : SilentVerdict.Unverified;
+    }
 
     /// <summary>
     /// 🔇 BCL 오디오 트랙 감지 — MP4/MOV <c>hdlr</c> 핸들러 <c>soun</c>, Matroska/WebM CodecID(<c>0x86</c>) <c>A_*</c> 스캔.
@@ -1280,6 +1357,13 @@ public sealed partial class StockSuiteExporter
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { Program.Log("StockSuite.RollbackProbe", ex); }
         return null;
     }
+
+    /// <summary>🩺 핫리로드 헬스 워치독(null = 미결선 · 데스크톱 DI 에서 IPC ack 와 함께 결선).</summary>
+    public StockSuiteHotReloadWatchdog? Watchdog { get; set; }
+
+    /// <summary>↩️ <see cref="RollbackPrevious"/> 비동기 래퍼(워치독 자동 롤백용 · 파일 IO 백그라운드).</summary>
+    public Task<StockSuiteExportResult> RollbackPreviousAssetAsync(string? targetDir = null)
+        => Task.Run(() => RollbackPrevious(targetDir));
 
     /// <summary>
     /// ↩️ 이전 배경으로 복원 — 활성 ↔ 백업 원자적 맞교환(재실행 시 되돌리기 가능) + 출처 마커·매니페스트 교환 + 핫리로드 신호.

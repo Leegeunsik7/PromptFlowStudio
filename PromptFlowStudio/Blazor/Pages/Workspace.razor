@@ -2006,6 +2006,17 @@
         _camToast = r.Message;
         _stockToast = r.AlreadyRunning ? _camToast : null;
     }
+    /// <summary>🩺 핫리로드 워치독 결과 → 토스트(롤백/실패만 · 백그라운드 완료 → InvokeAsync).</summary>
+    private async Task AwaitHotReloadWatchAsync(Task<PromptFlowStudio.Services.Export.HotReloadWatchResult> watch)
+    {
+        try
+        {
+            var w = await watch.ConfigureAwait(false);
+            if (w.Outcome is not (PromptFlowStudio.Services.Export.HotReloadOutcome.RolledBack or PromptFlowStudio.Services.Export.HotReloadOutcome.RollbackFailed)) return;
+            await InvokeAsync(() => { _camToast = w.Message; _stockToast = null; StateHasChanged(); });
+        }
+        catch (Exception ex) { Program.Log("Workspace.HotReloadWatch", ex); }
+    }
     private async Task ExportToStockSuite(string path)
     {
         if (_stockBusy) return;
@@ -2018,6 +2029,7 @@
             _camToast = r.Ok ? r.Message : r.NeedsPathSetup ? "⚠ " + r.Message + " (설정 ▸ 사용자 설정 ▸ StockSuite 에셋 경로)" : "⚠ " + r.Message;
             _stockRestart = false;
             _stockToast = r.Ok ? _camToast : null;   // 성공 토스트에만 🚀 실행 버튼 노출
+            if (r.HotReloadWatch is { } watch) _ = AwaitHotReloadWatchAsync(watch);   // 🩺 5초 ack 미수신 → 자동 롤백 경고
         }
         catch (Exception ex) { Program.Log("Workspace.StockSuite", ex); _camToast = "⚠ StockSuite 내보내기 실패 — 경로를 재설정하세요"; }
         finally { _stockBusy = false; }

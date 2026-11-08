@@ -12,6 +12,7 @@
 @inject ILocalMediaService Media
 @inject IClipboardService Clipboard
 @inject PublishViewModel PubVm
+@inject Microsoft.JSInterop.IJSRuntime JS
 @inject PromptFlowStudio.Services.Export.StockSuiteExporter StockSuite
 @inject PromptFlowStudio.Services.Export.StockSuitePlaylistService Playlist
 @inject PromptFlowStudio.Services.Export.AssetBundleService Bundles
@@ -333,11 +334,11 @@
                 <span class="gl-modal-t" title="@mv.Path">@mv.Name</span>
                 <button class="gl-op" @onclick="() => _modal = null">✕</button>
             </div>
-            <video class="gl-modal-vid" src="@mv.PlaybackUrl" controls autoplay loop="@_loopPlayback"></video>
+            <video id="@(GalleryViewModel.LightboxVideoId)" class="gl-modal-vid" src="@mv.PlaybackUrl" controls autoplay loop="@_loopPlayback"></video>
             <label class="gl-loop-toggle" title="배경(앰비언트) 비디오 검토용 무한 반복"><input type="checkbox" @bind="_loopPlayback" /> 🔁 무한 반복 재생</label>
             <div class="gl-modal-f">
                 <button class="gl-btn ghost" @onclick="() => Library.Reveal(mv.Path)">💾 탐색기에서 보기</button>
-                <button class="gl-btn up" @onclick="() => OpenPublish(mv.Path, mv.Folder, null)" title="YouTube Shorts · Instagram Reels 원클릭 발행">🚀 SNS 발행</button>
+                <button class="gl-btn up" @onclick="() => OpenPublishFromLightboxAsync(mv.Path, mv.Folder)" title="YouTube Shorts · Instagram Reels 원클릭 발행">🚀 SNS 발행</button>
                 <div class="gl-up">
                     <select class="gl-up-eng" @bind="_upEngine" disabled="@_upBusy">
                         <option value="RealEsrgan">실사 · Real-ESRGAN</option>
@@ -633,11 +634,19 @@
     private void OnVmChanged() => InvokeAsync(StateHasChanged);
     private void OnRestoreRequested() => InvokeAsync(() => Nav.NavigateTo("workspace"));
     /// <summary>🚀 SNS 발행 — 미디어 경로 · 프로젝트 이름(폴더/제목) · 동명 .srt → PublishModal 바인딩. 모달은 위(z-index)에 뜨므로 확대 모달은 닫는다.</summary>
-    private void OpenPublish(string? path, string? project, string? prompt)
+    /// <summary>🎞️ 라이트박스 [발행] — 확대 재생 중인 &lt;video&gt; currentTime(JS interop) 을 정확한 미리보기 시각으로 전달.</summary>
+    private async Task OpenPublishFromLightboxAsync(string? path, string? project)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+        var at = await Vm.ResolveLightboxTimestampAsync(JS, path);   // 모달 닫기 전 조회(요소 생존)
+        OpenPublish(path, project, null, at);
+    }
+
+    private void OpenPublish(string? path, string? project, string? prompt, double? atSec = null)
     {
         if (string.IsNullOrWhiteSpace(path)) return;
         _modal = null;
-        try { PubVm.Initialize(path, Vm.ResolvePreviewTimestamp(path), string.IsNullOrWhiteSpace(project) ? null : project, System.IO.Path.ChangeExtension(path, ".srt"), prompt); }   // 🎞️ 호버/중간점 미리보기 시각
+        try { PubVm.Initialize(path, atSec ?? Vm.ResolvePreviewTimestamp(path), string.IsNullOrWhiteSpace(project) ? null : project, System.IO.Path.ChangeExtension(path, ".srt"), prompt); }   // 🎞️ 호버/중간점 미리보기 시각
         catch (Exception ex) { Program.Log("MediaGallery.Publish", ex); }
     }
 

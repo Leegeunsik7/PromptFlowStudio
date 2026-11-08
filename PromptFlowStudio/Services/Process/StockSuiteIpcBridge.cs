@@ -76,6 +76,8 @@ public sealed class StockSuiteIpcBridge : IDisposable
     public event Action? OnConnectionChanged;
     /// <summary>🔌 연결 상태 전이(Listening/Connected/Reconnecting/Disconnected · 백그라운드 스레드).</summary>
     public event Action<IpcConnectionState>? OnConnectionStateChanged;
+    /// <summary>🩺 StockSuite 핫리로드 응답(ok · 오류 메시지 · 백그라운드 스레드) — HotReloadAck / HotReloadError.</summary>
+    public event Action<bool, string?>? OnHotReloadAck;
 
     /// <summary>현재 연결 상태.</summary>
     public IpcConnectionState ConnectionState => (IpcConnectionState)Volatile.Read(ref _state);
@@ -157,6 +159,15 @@ public sealed class StockSuiteIpcBridge : IDisposable
             try { qh(q.Value.Ticker, q.Value.Candles); } catch (Exception ex) { Program.Log("StockSuiteIpc.OnQuote", ex); }
             return true;
         }
+        if (line is not null && line.Contains("\"HotReload", StringComparison.Ordinal))
+        {
+            var ack = ParseHotReloadAck(line);
+            if (ack is null) return false;
+            var ah = OnHotReloadAck;
+            if (ah is null) return true;
+            try { ah(ack.Value.Ok, ack.Value.Error); } catch (Exception ex) { Program.Log("StockSuiteIpc.OnHotReloadAck", ex); }
+            return true;
+        }
         var msg = ParseMessage(line);
         if (msg is null || msg.Kind != StockSuiteIpcKind.TickerSelected) return false;
         var h = OnTickerSelected;
@@ -185,6 +196,25 @@ public sealed class StockSuiteIpcBridge : IDisposable
             var ticker = Str(r, "ticker")?.Trim();
             if (kind == StockSuiteIpcKind.TickerSelected && !IsValidTicker(ticker)) return null;
             return new StockSuiteIpcMessage(kind, ticker, Str(r, "name")?.Trim(), Str(r, "sector")?.Trim());
+        }
+        catch (JsonException) { return null; }
+    }
+
+    /// <summary>🩺 <c>{"type":"HotReloadAck"}</c> → (true) · <c>{"type":"HotReloadError","error":"..."}</c> → (false, error). 스키마 위반 = null.</summary>
+    public static (bool Ok, string? Error)? ParseHotReloadAck(string? line)
+    {
+        if (string.IsNullOrWhiteSpace(line) || line.Length > MaxLineLength) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(line);
+            var r = doc.RootElement;
+            if (r.ValueKind != JsonValueKind.Object) return null;
+            return Str(r, "type") switch
+            {
+                "HotReloadAck" => r.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.False ? (false, Str(r, "error") ?? "StockSuite reported hot-reload error") : (true, null),
+                "HotReloadError" => (false, Str(r, "error") ?? "StockSuite reported hot-reload error"),
+                _ => null,
+            };
         }
         catch (JsonException) { return null; }
     }

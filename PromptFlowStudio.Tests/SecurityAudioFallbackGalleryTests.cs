@@ -73,7 +73,7 @@ public class SecurityAudioFallbackGalleryTests : IDisposable
 
         // 오디오 미탐지 원본은 복사 폴백 유지(무음 보장)
         var silent = Path.Combine(_dir, "silent.mp4");
-        File.WriteAllBytes(silent, new byte[4096]);
+        File.WriteAllBytes(silent, ZeroTrustSilentGuardWatchdogTests.SilentMp4());   // 🛡️ Zero-Trust: ftyp + hdlr vide 확인된 무음 MP4
         Assert.False(StockSuiteExporter.ContainsAudioTrack(silent));
         var ok = await missing.ExportAsync(silent, format: StockSuiteExportFormat.Mp4, sharpen: false, smooth60: false);
         Assert.True(ok.Ok, ok.Message);

@@ -97,7 +97,7 @@ public class GalleryCleanupAndWebMExportTests : IDisposable
             captured = a;
             File.WriteAllBytes(a[^1], new byte[4096]);   // 가짜 VP9 산출물(>1KB)
             return Task.FromResult(true);
-        });
+        }) { SilentContainerVerifier = static _ => PromptFlowStudio.Services.Export.SilentVerdict.Silent };
         Assert.Equal(StockSuiteExportFormat.WebMVp9, exporter.DefaultFormat);
 
         var r = await exporter.ExportAsync(src);
@@ -111,13 +111,13 @@ public class GalleryCleanupAndWebMExportTests : IDisposable
         Assert.True(exporter.IsApplied(src));
 
         // ffmpeg 부재 → MP4 복사 폴백
-        var noFfmpeg = new StockSuiteExporter(() => target, () => "webm", () => null);
+        var noFfmpeg = new StockSuiteExporter(() => target, () => "webm", () => null) { SilentContainerVerifier = static _ => PromptFlowStudio.Services.Export.SilentVerdict.Silent };
         var fb = await noFfmpeg.ExportAsync(src);
         Assert.True(fb.Ok);
         Assert.Equal(Path.Combine(target, StockSuiteExporter.DefaultAssetName), fb.TargetPath);
 
         // MP4 명시 → 해시 일치 적용 판정 · 다른 원본은 미적용
-        var mp4 = new StockSuiteExporter(() => target);
+        var mp4 = new StockSuiteExporter(() => target) { SilentContainerVerifier = static _ => PromptFlowStudio.Services.Export.SilentVerdict.Silent };
         Assert.True((await mp4.ExportAsync(src, format: StockSuiteExportFormat.Mp4)).Ok);
         Assert.True(mp4.IsApplied(src));
         var other = Media("other.mp4", null);

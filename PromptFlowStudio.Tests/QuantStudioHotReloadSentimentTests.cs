@@ -30,7 +30,7 @@ public class QuantStudioHotReloadSentimentTests : IDisposable
     }
 
     // ffmpeg 미탐지 → 원본 복사 경로(임시 파일 → 원자적 교체)
-    private static StockSuiteExporter Exporter(string target) => new(() => target, () => "mp4", () => null);
+    private static StockSuiteExporter Exporter(string target) => new(() => target, () => "mp4", () => null) { SilentContainerVerifier = static _ => PromptFlowStudio.Services.Export.SilentVerdict.Silent };   // 🛡️ 복사 의미론 검증(무음 정책은 ZeroTrust 테스트 담당)
 
     [Fact]
     [Trait("Category", "FastUnit")]

@@ -112,6 +112,33 @@ public sealed class GalleryViewModel
     public double ResolvePreviewTimestamp(string? mediaPath)
         => string.IsNullOrWhiteSpace(mediaPath) ? 1.0 : ResolvePreviewTimestamp(_gallery.FindByPath(mediaPath));
 
+    /// <summary>🎞️ 확대 재생(라이트박스) <c>&lt;video&gt;</c> 요소 id.</summary>
+    public const string LightboxVideoId = "gl-lightbox-video";
+    /// <summary>JS interop 조회 상한 — 초과/실패 시 1초 내 <see cref="ResolvePreviewTimestamp(string?)"/> 폴백.</summary>
+    public static readonly TimeSpan LightboxQueryTimeout = TimeSpan.FromMilliseconds(800);
+
+    /// <summary>
+    /// 🎞️ 라이트박스 재생 위치 — <c>promptflow.getVideoCurrentTime(id)</c> 의 정확한 currentTime(초).
+    /// JS 미가용·예외·타임아웃·음수/비유한 값 → 호버/중간점/1초 폴백.
+    /// </summary>
+    public async Task<double> ResolveLightboxTimestampAsync(Microsoft.JSInterop.IJSRuntime? js, string? mediaPath, string elementId = LightboxVideoId)
+    {
+        if (js is not null)
+        {
+            using var cts = new CancellationTokenSource(LightboxQueryTimeout);
+            try
+            {
+                var t = await js.InvokeAsync<double>("promptflow.getVideoCurrentTime", cts.Token, new object?[] { elementId });
+                if (double.IsFinite(t) && t >= 0) return t;
+            }
+            catch (Exception ex) when (ex is Microsoft.JSInterop.JSException or OperationCanceledException or InvalidOperationException or TaskCanceledException)
+            {
+                Program.Log("Gallery.LightboxTimestamp", ex);
+            }
+        }
+        return ResolvePreviewTimestamp(mediaPath);
+    }
+
     public void SelectMedia(GalleryItem item)
     {
         SelectedItem = item;

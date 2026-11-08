@@ -1,0 +1,57 @@
+@using PromptFlowStudio.Services.Platform
+@inject IServiceProvider Services
+@implements IDisposable
+
+@* 🎮 상태 푸터 GPU/VRAM 배지 — ResourceMonitorService(nvidia-smi · 1.5초 캐시) 3초 폴링. 미등록(모바일)/GPU 미가용 = 숨김. *@
+@if (_text is not null)
+{
+    <span class="gpu-badge @(_level)" title="@(_name ?? "GPU")">@(_text)</span>
+}
+
+<style>
+    .gpu-badge { display: inline-block; margin: 6px 10px 0; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; border: 1px solid currentColor; white-space: nowrap; }
+    .gpu-badge.ok { color: #22c55e; background: rgba(34, 197, 94, .10); }
+    .gpu-badge.warn { color: #f59e0b; background: rgba(245, 158, 11, .12); }
+    .gpu-badge.crit { color: #ef4444; background: rgba(239, 68, 68, .14); }
+</style>
+
+@code {
+    private const int PollMs = 3000;
+    private ResourceMonitorService? _res;
+    private System.Threading.Timer? _timer;
+    private string? _text, _name;
+    private string _level = "ok";
+    private int _busy, _disposed;
+
+    protected override void OnInitialized()
+    {
+        _res = Services.GetService(typeof(ResourceMonitorService)) as ResourceMonitorService;
+        if (_res is null) return;
+        _timer = new System.Threading.Timer(static s => ((GpuTelemetryBadge)s!).Tick(), this, 0, PollMs);
+    }
+
+    private void Tick() => _ = RefreshAsync();
+
+    private async Task RefreshAsync()
+    {
+        if (_res is null || Volatile.Read(ref _disposed) == 1 || Interlocked.Exchange(ref _busy, 1) == 1) return;
+        try
+        {
+            var s = await _res.SampleAsync();
+            var text = ResourceMonitorService.GpuBadgeText(s);
+            var level = ResourceMonitorService.GpuBadgeLevel(s);
+            if (text == _text && level == _level) return;
+            _text = text; _level = level; _name = s.GpuName;
+            if (Volatile.Read(ref _disposed) == 0) await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex) { Program.Log("GpuTelemetryBadge", ex); }
+        finally { Volatile.Write(ref _busy, 0); }
+    }
+
+    public void Dispose()
+    {
+        Volatile.Write(ref _disposed, 1);
+        _timer?.Dispose();
+        _timer = null;
+    }
+}
