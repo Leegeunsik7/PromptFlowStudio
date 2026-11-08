@@ -61,6 +61,57 @@ public sealed class GalleryViewModel
         ApplyFilter();
     }
 
+    // ── 🎞️ 발행 미리보기 시각 — Hover-to-Play(2초 무음 루프) 위치 추적 ──
+    /// <summary>호버 미리보기 루프 길이(초) — MediaGallery <c>ontimeupdate</c> 2초 되감기와 동일.</summary>
+    public const double HoverLoopSec = 2.0;
+    /// <summary>단조 시계(ms) — 테스트 주입용.</summary>
+    public Func<long> ClockMs { get; set; } = static () => Environment.TickCount64;
+    private Guid? _hoverId;
+    private long _hoverStartMs;
+    private Guid? _lastPreviewId;
+    private double _lastPreviewSec;
+
+    /// <summary>호버 재생 시작 기록.</summary>
+    public void BeginHoverPreview(Guid itemId) { _hoverId = itemId; _hoverStartMs = ClockMs(); }
+
+    /// <summary>호버 이탈 — 마지막 재생 위치를 해당 항목 미리보기 시각으로 보존.</summary>
+    public void EndHoverPreview(Guid itemId)
+    {
+        if (_hoverId != itemId) return;
+        RecordPreviewTime(itemId, CurrentHoverSec());
+        _hoverId = null;
+    }
+
+    /// <summary>명시 미리보기 시각 지정(디자인 프레임 등).</summary>
+    public void RecordPreviewTime(Guid itemId, double sec)
+    {
+        if (!double.IsFinite(sec) || sec <= 0) return;
+        _lastPreviewId = itemId;
+        _lastPreviewSec = sec;
+    }
+
+    private double CurrentHoverSec()
+    {
+        var ms = ClockMs() - _hoverStartMs;
+        return ms <= 0 ? 0 : (ms % (long)(HoverLoopSec * 1000)) / 1000.0;
+    }
+
+    /// <summary>
+    /// 🎞️ PublishModal 미리보기 시각 — 진행 중 호버 위치 → 직전 호버/지정 위치 → 길이 중간점 → 1초 순.
+    /// </summary>
+    public double ResolvePreviewTimestamp(GalleryItem? item)
+    {
+        const double Fallback = 1.0;
+        if (item is null) return Fallback;
+        if (_hoverId == item.ItemId && CurrentHoverSec() is var h && h > 0) return h;
+        if (_lastPreviewId == item.ItemId && _lastPreviewSec > 0) return _lastPreviewSec;
+        return item.DurationSeconds is double d && double.IsFinite(d) && d > 0 ? d / 2 : Fallback;
+    }
+
+    /// <summary>경로 기반 해석(라이브러리 타일/확대 모달) — 갤러리 미등록이면 1초.</summary>
+    public double ResolvePreviewTimestamp(string? mediaPath)
+        => string.IsNullOrWhiteSpace(mediaPath) ? 1.0 : ResolvePreviewTimestamp(_gallery.FindByPath(mediaPath));
+
     public void SelectMedia(GalleryItem item)
     {
         SelectedItem = item;

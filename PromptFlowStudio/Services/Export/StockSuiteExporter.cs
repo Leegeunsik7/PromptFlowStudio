@@ -15,7 +15,7 @@ public sealed record StockSuiteExportResult(bool Ok, string? TargetPath, bool Ne
 {
     /// <summary>⚡ 재인코딩 경로의 인코더 텔레메트리(스트림 복사/원본 복사 = null).</summary>
     public EncoderTelemetry? Telemetry { get; init; }
-    /// <summary>🔇 산출물 오디오 포함 여부 — ffmpeg 경로는 Silent Ambient Guard(<c>-an</c>) 로 항상 false · 원본 그대로 복사 폴백만 true(무음 미보장).</summary>
+    /// <summary>🔇 산출물 오디오 포함 여부 — ffmpeg 경로는 Silent Ambient Guard(<c>-an</c>) 로 항상 false · 원본 복사 폴백은 오디오 미탐지 원본에만 허용(오디오 동반 시 거부).</summary>
     public bool HasAudio { get; init; }
 }
 
@@ -65,6 +65,9 @@ public sealed record MultiExportOptions
 }
 
 /// <summary>패키지 단일 규격 — Key: <c>hts</c>|<c>mobile</c>|<c>shorts</c>.</summary>
+/// <summary>🔇 내보내기 규격 — Silent Ambient Guard(<c>-an</c>) 는 데스크톱 앰비언트(HTS·듀얼 모니터)에만 강제, 모바일/쇼츠는 BGM 보존.</summary>
+public enum ExportProfile { HtsDesktop, DualMonitorSplit, SnsShorts, MobileVertical }
+
 public sealed record MultiExportProfile(string Key, string Label, int Width, int Height, string OutputPath, string[] Args);
 
 /// <summary>📦 멀티 패키지 결과 — Generated = 성공 산출물 경로(규격 순서 보존) · [부분 구제] 실패분은 Failed 키.</summary>
@@ -544,8 +547,23 @@ public sealed partial class StockSuiteExporter
         }
     }
 
+    /// <summary>🔇 원본 복사 폴백 거부 메시지 — ffmpeg 부재/실패로 오디오 스트립 불가 시.</summary>
+    public const string SilentFallbackRejectedMessage = "Export aborted: Cannot safely guarantee silent audio for StockSuite without FFmpeg.";
+
+    /// <summary>🔇 원본 오디오 트랙 감지기(테스트 주입용 · 기본 <see cref="ContainsAudioTrack"/>).</summary>
+    public Func<string, bool> SourceAudioProbe { get; set; } = ContainsAudioTrack;
+
     private async Task<StockSuiteExportResult> CopyAsync(string sourcePath, string target, CancellationToken ct)
     {
+        // 🔇 Fail-safe: 오디오 동반 원본은 무음 보장 불가 → StockSuite(실거래 화면) 로 원본 복사 금지.
+        bool audio;
+        try { audio = SourceAudioProbe(sourcePath); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Program.Log("StockSuite.SilentGuard", ex); audio = true; }
+        if (audio)
+        {
+            Program.Log("StockSuite.SilentGuard", new InvalidOperationException(SilentFallbackRejectedMessage + " " + Path.GetFileName(target)));
+            return new(false, null, false, SilentFallbackRejectedMessage);
+        }
         var temp = target + TempExt;
         try
         {
@@ -566,8 +584,37 @@ public sealed partial class StockSuiteExporter
         if (!File.Exists(target) || new FileInfo(target).Length != new FileInfo(sourcePath).Length)
             return new(false, null, false, "복사 검증 실패: " + name);
         WriteSourceMarker(target, sourcePath);
-        Program.Log("StockSuite.SilentGuard", new InvalidOperationException("ffmpeg 부재/실패 — 원본 복사 폴백(오디오 스트립 미적용): " + name));
-        return new(true, target, false, "💼 StockSuite 내보내기 완료 → " + target) { HasAudio = true };
+        return new(true, target, false, "💼 StockSuite 내보내기 완료 → " + target);
+    }
+
+    private static readonly byte[] HdlrTag = "hdlr"u8.ToArray();
+
+    /// <summary>
+    /// 🔇 BCL 오디오 트랙 감지 — MP4/MOV <c>hdlr</c> 핸들러 <c>soun</c>, Matroska/WebM CodecID(<c>0x86</c>) <c>A_*</c> 스캔.
+    /// 판별 불가 컨테이너는 false(오디오 미탐지).
+    /// </summary>
+    public static bool ContainsAudioTrack(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return false;
+        const int Overlap = 16;
+        var buf = new byte[81920 + Overlap];
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, FileOptions.SequentialScan);
+        var carry = 0;
+        int read;
+        while ((read = fs.Read(buf, carry, buf.Length - carry)) > 0)
+        {
+            var len = carry + read;
+            var span = buf.AsSpan(0, len);
+            for (var i = 0; i + 16 <= len; i++)
+            {
+                if (span[i] == (byte)'h' && span.Slice(i, 4).SequenceEqual(HdlrTag)
+                    && span[i + 12] == (byte)'s' && span[i + 13] == (byte)'o' && span[i + 14] == (byte)'u' && span[i + 15] == (byte)'n') return true;
+                if (span[i] == 0x86 && (span[i + 1] & 0x80) != 0 && span[i + 2] == (byte)'A' && span[i + 3] == (byte)'_') return true;
+            }
+            carry = Math.Min(Overlap, len);
+            span.Slice(len - carry, carry).CopyTo(buf);
+        }
+        return false;
     }
 
     /// <summary>WebM 변환 — 성공 시 null, 실패 시 사유 문자열.</summary>
@@ -575,13 +622,13 @@ public sealed partial class StockSuiteExporter
         => TryFfmpegAsync(BuildWebMArgs(source, output), output, ct);
 
     /// <summary>ffmpeg 실행 + 출력 무결성 검증 — 성공 시 null, 실패 시 사유 문자열.</summary>
-    private async Task<string?> TryFfmpegAsync(string[] args, string output, CancellationToken ct)
+    private async Task<string?> TryFfmpegAsync(string[] args, string output, CancellationToken ct, ExportProfile profile = ExportProfile.HtsDesktop)
     {
         string? ffmpeg;
         try { ffmpeg = _resolveFfmpeg(); }
         catch (Exception ex) { Program.Log("StockSuite.Ffmpeg", ex); ffmpeg = null; }
         if (string.IsNullOrWhiteSpace(ffmpeg)) return "ffmpeg 미탐지";
-        if (IsStockSuiteTarget(output)) args = EnforceSilentAmbient(args);   // 🔇 Silent Ambient Guard — StockSuite 폴더 산출물은 무조건 무음
+        if (IsStockSuiteTarget(output, profile)) args = EnforceSilentAmbient(args);   // 🔇 Silent Ambient Guard — StockSuite 폴더 산출물은 무조건 무음
         var ok = await _run(ffmpeg, args, ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
         if (!ok) return "ffmpeg 비정상 종료";
@@ -598,6 +645,10 @@ public sealed partial class StockSuiteExporter
     {
         if (!string.IsNullOrWhiteSpace(fullDir)) _stockTargets.TryAdd(Path.TrimEndingDirectorySeparator(Path.GetFullPath(fullDir)), 0);
     }
+
+    /// <summary>🔇 규격 인지 가드 — 모바일/쇼츠(<see cref="ExportProfile.SnsShorts"/>·<see cref="ExportProfile.MobileVertical"/>) 는 StockSuite 하위여도 면제(BGM·-14 LUFS 유지).</summary>
+    public bool IsStockSuiteTarget(string? path, ExportProfile profile)
+        => profile is ExportProfile.HtsDesktop or ExportProfile.DualMonitorSplit && IsStockSuiteTarget(path);
 
     /// <summary>🔇 경로가 StockSuite 에셋 폴더(설정 경로 또는 내보내기 대상 폴더) 하위인지.</summary>
     public bool IsStockSuiteTarget(string? path)
@@ -891,7 +942,7 @@ public sealed partial class StockSuiteExporter
         {
             if (ct.IsCancellationRequested) break;
             string? err;
-            try { err = await TryFfmpegAsync(p.Args, p.OutputPath, ct).ConfigureAwait(false); }
+            try { err = await TryFfmpegAsync(p.Args, p.OutputPath, ct, ProfileOf(p.Key)).ConfigureAwait(false); }
             catch (OperationCanceledException) { TryDelete(p.OutputPath); break; }
             catch (Exception ex) { Program.Log("StockSuite.MultiPkg." + p.Key, ex); err = ex.Message; }
             if (err is null)
@@ -916,6 +967,14 @@ public sealed partial class StockSuiteExporter
         else msg = "📦 올인원 멀티 패키지 3종 생성 완료 → " + pkg;
         return new(generated, failed, pkg, msg);
     }
+
+    /// <summary>멀티 패키지 키 → 규격(쇼츠/모바일은 Silent Guard 면제).</summary>
+    public static ExportProfile ProfileOf(string key) => key switch
+    {
+        "shorts" => ExportProfile.SnsShorts,
+        "mobile" => ExportProfile.MobileVertical,
+        _ => ExportProfile.HtsDesktop,
+    };
 
     private static void WriteExportMeta(MultiExportProfile p, string sourcePath, DateTimeOffset now)
     {

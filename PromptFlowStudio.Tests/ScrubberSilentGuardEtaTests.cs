@@ -131,7 +131,7 @@ public class ScrubberSilentGuardEtaTests : IDisposable
         Assert.All(calls, c => Assert.Contains("-an", c));
         Assert.False(ExportMetadata.ReadHasAudio(src));
 
-        // BGM 이 선택된 쇼츠 산출물이라도 StockSuite 폴더 대상이면 오디오 스트립
+        // 쇼츠는 StockSuite 하위 폴더여도 BGM 유지(데스크톱 앰비언트만 가드)
         var bgm = Path.Combine(_dir, "bgm.mp3");
         File.WriteAllBytes(bgm, new byte[2048]);
         calls.Clear();
@@ -144,9 +144,8 @@ public class ScrubberSilentGuardEtaTests : IDisposable
         });
         Assert.NotEmpty(m.Generated);
         var shorts = calls.Single(c => c[^1].EndsWith("_shorts_9x16.mp4", StringComparison.Ordinal));
-        Assert.Contains("-an", shorts);
-        Assert.DoesNotContain("-c:a", shorts);
-        Assert.DoesNotContain("1:a:0", shorts);
+        Assert.DoesNotContain("-an", shorts);
+        Assert.Contains("1:a:0", shorts);
 
         // StockSuite 외 폴더는 BGM 유지(가드 비적용)
         calls.Clear();

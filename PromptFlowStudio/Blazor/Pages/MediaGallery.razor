@@ -637,7 +637,7 @@
     {
         if (string.IsNullOrWhiteSpace(path)) return;
         _modal = null;
-        try { PubVm.OpenForMedia(path, string.IsNullOrWhiteSpace(project) ? null : project, System.IO.Path.ChangeExtension(path, ".srt"), prompt); }
+        try { PubVm.Initialize(path, Vm.ResolvePreviewTimestamp(path), string.IsNullOrWhiteSpace(project) ? null : project, System.IO.Path.ChangeExtension(path, ".srt"), prompt); }   // 🎞️ 호버/중간점 미리보기 시각
         catch (Exception ex) { Program.Log("MediaGallery.Publish", ex); }
     }
 
@@ -901,8 +901,8 @@
     }
 
     private Guid? _hoverId;
-    private void HoverOn(GalleryItem g) { if (g.IsVideo && !g.IsSample) _hoverId = g.ItemId; }
-    private void HoverOff(GalleryItem g) { if (_hoverId == g.ItemId) _hoverId = null; }
+    private void HoverOn(GalleryItem g) { if (g.IsVideo && !g.IsSample) { _hoverId = g.ItemId; Vm.BeginHoverPreview(g.ItemId); } }
+    private void HoverOff(GalleryItem g) { Vm.EndHoverPreview(g.ItemId); if (_hoverId == g.ItemId) _hoverId = null; }
 
     /// <summary>정적 스틸 — 사이드카 썸네일 → <c>.poster.jpg</c> 순.</summary>
     private string? StillOf(GalleryItem g)

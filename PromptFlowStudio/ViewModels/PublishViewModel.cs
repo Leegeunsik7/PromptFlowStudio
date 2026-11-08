@@ -408,6 +408,14 @@ public sealed class PublishViewModel : IDisposable
     /// 작업실/갤러리 컨텍스트 열기 — 대본(beats) 없이 미디어 경로 · 프로젝트 이름 · 자막(.srt) 경로로 바인딩.
     /// 훅 = 프롬프트(있으면) → 프로젝트 이름 → 파일명 순. <paramref name="srtPath"/> 미지정/부재 시 동명 .srt 자동 탐색.
     /// </summary>
+    /// <summary>🎞️ 갤러리 진입 — 미디어 바인딩 + 갤러리 미리보기 시각(호버/중간점) 전달(무효 = 1초).</summary>
+    public void Initialize(string mediaPath, double currentTimestampSec, string? projectName = null, string? srtPath = null, string? prompt = null, float durationSec = 0)
+    {
+        OpenForMedia(mediaPath, projectName, srtPath, prompt, durationSec);
+        PreviewTimestampSec = double.IsFinite(currentTimestampSec) && currentTimestampSec > 0 ? currentTimestampSec : 1.0;
+        Notify();
+    }
+
     public void OpenForMedia(string videoPath, string? projectName, string? srtPath = null, string? prompt = null, float durationSec = 0)
     {
         var name = string.IsNullOrWhiteSpace(projectName) ? Path.GetFileNameWithoutExtension(videoPath ?? "") : projectName.Trim();

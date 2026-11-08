@@ -157,7 +157,7 @@ public sealed partial class StockSuiteExporter
             var temp = Path.Combine(fullDir, Path.GetFileNameWithoutExtension(name) + TempExt + Path.GetExtension(name));
             try
             {
-                var err = await TryFfmpegAsync(BuildDualMonitorSplitArgs(source, temp, i, bezelGapPixels, fmt), temp, ct).ConfigureAwait(false);
+                var err = await TryFfmpegAsync(BuildDualMonitorSplitArgs(source, temp, i, bezelGapPixels, fmt), temp, ct, ExportProfile.DualMonitorSplit).ConfigureAwait(false);
                 if (err is null) { File.Move(temp, target, overwrite: true); outs[i] = target; }
                 else { TryDelete(temp); errors.Append(i == 0 ? " 좌:" : " 우:").Append(err); }
             }
