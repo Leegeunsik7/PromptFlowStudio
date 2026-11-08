@@ -421,6 +421,10 @@
                             <dt>비트레이트</dt><dd>@sp.BitrateLabel</dd>
                             <dt>파일 크기</dt><dd>@sp.SizeLabel</dd>
                             <dt>오디오</dt><dd class="@(sp.HasAudio ? "warn" : "ok")">@sp.AudioLabel</dd>
+                            @if (sp.Encoder is { } enc)
+                            {
+                                <dt>인코더</dt><dd><span class="ws-enc-badge @(enc.IsHardware ? "hw" : "cpu")">[@enc.Badge]</span>@(enc.IsFallback ? " ⚠ GPU→CPU 폴백" : "")@(enc.EncodeElapsedMs > 0 ? " · ⏱ " + (enc.EncodeElapsedMs / 1000d).ToString("0.0", CultureInfo.InvariantCulture) + "s" : "")</dd>
+                            }
                         </dl>
                         @if (sp.Source == "header") { <div class="ws-hint">※ ffprobe/ffmpeg 미설치 — 파일 헤더 정보만 표시합니다.</div> }
                     }
@@ -470,25 +474,25 @@
             }
             else if (State.Phase == WanJobPhase.Completed && State.VideoUrl is not null)
             {
-                @* 로컬 성공 시 가상호스트 URL(디스크 직접 스트리밍), 실패 시 원격 URL — 어느 쪽이든 <video>가 바로 재생 *@
+                @* 로컬 성공 시 가상호스트 URL(디스크 직접 스트리밍), 실패 시 원격 URL — 🎞️ 듀얼 버퍼(A/B) 크로스디졸브 호스트(JS 소유 <video> 2장) *@
                 @if (IsPortrait && _safeZone)
                 {
                     <div class="ws-video-wrap portrait">
                         <ShortsSafeZone Caption="@_prompt">
-                            <video class="ws-video" src="@ShownVideoUrl" controls autoplay loop muted preload="auto"></video>
+                            <div id="@XdMainId" class="ws-xd"></div>
                         </ShortsSafeZone>
                     </div>
                 }
                 else if (IsPortrait)
                 {
                     <div class="ws-video-wrap portrait">
-                        <video class="ws-video" src="@ShownVideoUrl" controls autoplay loop muted preload="auto"></video>
+                        <div id="@XdMainId" class="ws-xd"></div>
                     </div>
                 }
                 else
                 {
                     <div class="ws-hts-wrap @(_abOn ? "ab-on" : null)">
-                        <video class="ws-video" src="@ShownVideoUrl" controls autoplay loop muted preload="auto"></video>
+                        <div id="@XdMainId" class="ws-xd"></div>
                         @if (_abOn) { @AbSplit }
                         @if (_htsHud) { <HtsHudOverlay OpacityPercent="_htsOpacity" DimmerPercent="_htsDimmer" Theme="_htsTheme" /> }
                     </div>
@@ -1061,10 +1065,12 @@
     .ws-spec-g dt { color: var(--text-secondary, #aab); }
     .ws-spec-g dd { margin: 0; font-family: Consolas, monospace; }
     .ws-spec-g dd.ok { color: #4ade80; } .ws-spec-g dd.warn { color: #facc15; }
+    .ws-enc-badge { font-weight: 700; padding: 1px 6px; border-radius: 6px; } .ws-enc-badge.hw { color: #4ade80; background: rgba(74, 222, 128, .12); } .ws-enc-badge.cpu { color: #f59e0b; background: rgba(245, 158, 11, .12); }
     .ws-hts-wrap > .ws-video { display: block; }
     /* 🎞️ 듀얼 버퍼 크로스디졸브 — 그리드 단일 셀 겹침(컨테이너 높이 = 큰 레이어), 활성 z2/대기 z1 */
     .ws-xd { display: grid; position: relative; width: 100%; border-radius: 12px; overflow: hidden; background: #000; }
     .ws-xd > video { grid-area: 1 / 1; width: 100%; height: 100%; display: block; object-fit: contain; background: #000; }
+    .ws-xd > canvas { grid-area: 1 / 1; width: 100%; height: 100%; object-fit: contain; }
     /* ⭐ 사용자 프리셋 */
     .ws-preset-save { margin-left: auto; font-size: 11.5px; font-weight: 700; padding: 4px 9px; border-radius: 8px; border: 1px dashed #f5c542; background: rgba(245, 197, 66, .08); color: #f5c542; cursor: pointer; }
     .ws-preset-save:disabled { opacity: .5; cursor: default; }
@@ -2005,6 +2011,7 @@
         {
             StockSuite.Lut = _lut;   // 🎨 LUT 번인(FFmpeg eq 체인)
             var r = await StockSuite.ExportAsync(path);
+            if (r.Ok && _specPath == path) { _spec = null; _specPath = null; }   // ⚡ 인코더 텔레메트리 갱신 → 규격 캐시 무효화
             _camToast = r.Ok ? r.Message : r.NeedsPathSetup ? "⚠ " + r.Message + " (설정 ▸ 사용자 설정 ▸ StockSuite 에셋 경로)" : "⚠ " + r.Message;
             _stockRestart = false;
             _stockToast = r.Ok ? _camToast : null;   // 성공 토스트에만 🚀 실행 버튼 노출
@@ -2204,8 +2211,8 @@
         {
             // 🔓 덮어쓰기: 임시 컷 → JS 소스 디태치(파일 핸들 해제) → 원자 교체 → 캐시 버스트(?v=ticks) 재마운트. 훅은 렌더러 컨텍스트에서 JS 호출.
             var hooks = new PromptFlowStudio.Services.Video.VideoHandleHooks(
-                c => InvokeAsync(() => JS.InvokeVoidAsync("promptflow.releaseVideoSource", c, ScrubVideoSelector).AsTask()),
-                (ok, c) => InvokeAsync(() => JS.InvokeVoidAsync("promptflow.reloadVideoSource", c, ScrubVideoSelector, null).AsTask()));
+                c => InvokeAsync(() => JS.InvokeVoidAsync("promptflow.releaseVideoSwap", c, ScrubVideoSelector).AsTask()),   // 🧊 프리즈 프레임 → 핸들 해제
+                (ok, c) => InvokeAsync(() => JS.InvokeVoidAsync("promptflow.reloadVideoSwap", c, ScrubVideoSelector, null).AsTask()));   // 🎞️ 크로스디졸브 재적재
             var r = overwrite
                 ? await Trimmer.TrimInPlaceAsync(path, _trimStart, _trimEnd, hooks, _mediaCts.Token)
                 : await Trimmer.TrimAsync(path, PromptFlowStudio.Services.Video.VideoTrimService.BuildClipPath(Path.GetDirectoryName(path) ?? Media.MediaRoot, path, _trimStart, _trimEnd), _trimStart, _trimEnd, _mediaCts.Token);
@@ -2807,15 +2814,25 @@
     private string? _camToast;
     // 🎞️ 듀얼 버퍼 크로스디졸브 — 렌더 후 큐 URL 변경 시에만 JS 스왑(컨테이너 소멸 시 기록 리셋 → 재마운트 시 재로드)
     private const string XdHostId = "ws-xd-queue";
-    private string? _xdShownUrl;
+    private const string XdMainId = "ws-xd-main";
+    private string? _xdShownUrl, _xdShownHost;
+    private int _xdShownLayout = -1;
 
+    // 렌더 분기와 동일 판정 — 큐 산출물 우선, 아니면 단일 생성 완료 캔버스(세로/세이프존/가로 레이아웃 키 포함: 호스트 재생성 시 재적재)
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        var want = _canvasQueueUrl is not null && !State.IsBusy ? _canvasQueueUrl : null;
-        if (want is null) { _xdShownUrl = null; return; }
-        if (string.Equals(want, _xdShownUrl, StringComparison.Ordinal)) return;
-        _xdShownUrl = want;
-        try { await JS.InvokeAsync<bool>("promptflow.swapVideoSource", XdHostId, want); }
+        string? want = null, hostId = null;
+        var layout = 0;
+        if (_canvasQueueUrl is not null && !State.IsBusy) { want = _canvasQueueUrl; hostId = XdHostId; }
+        else if (State.Phase == WanJobPhase.Completed && State.VideoUrl is not null && ShownVideoUrl is { } main)
+        {
+            want = main; hostId = XdMainId;
+            layout = IsPortrait ? (_safeZone ? 2 : 1) : 0;
+        }
+        if (want is null) { _xdShownUrl = _xdShownHost = null; _xdShownLayout = -1; return; }
+        if (layout == _xdShownLayout && ReferenceEquals(hostId, _xdShownHost) && string.Equals(want, _xdShownUrl, StringComparison.Ordinal)) return;
+        _xdShownUrl = want; _xdShownHost = hostId; _xdShownLayout = layout;
+        try { await JS.InvokeAsync<bool>("promptflow.swapVideoSource", hostId, want); }
         catch (Exception ex) when (ex is JSException or JSDisconnectedException or TaskCanceledException or InvalidOperationException) { _xdShownUrl = null; }
     }
 

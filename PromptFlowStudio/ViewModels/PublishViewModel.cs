@@ -121,6 +121,67 @@ public sealed class PublishViewModel : IDisposable
     public bool StockSuiteWatermark { get; set; }
     /// <summary>📊 우하단 라이브 티커 HUD 배지 번인(티커 공란 → 생략 폴백).</summary>
     public bool StockSuiteTickerBadge { get; set; }
+
+    private PromptFlowStudio.Services.Export.LutProfile? _stockLut;
+    /// <summary>🎨 LUT 번인 — 미선택이면 내보내기 서비스 현재 값(작업실 LUT).</summary>
+    public PromptFlowStudio.Services.Export.LutProfile StockSuiteLut
+    {
+        get => _stockLut ?? _stockSuite?.Lut ?? PromptFlowStudio.Services.Export.LutProfile.None;
+        set { _stockLut = value; Notify(); }
+    }
+
+    // ── ⚡ 핀테크 퀵 프리셋 ──
+    public const string CustomPresetKey = "publish.fintechPreset.custom";
+    public PromptFlowStudio.Services.Export.FintechPresetKind? ActivePreset { get; private set; }
+    public string? PresetMessage { get; private set; }
+    public bool HasCustomPreset => _prefs is not null && PromptFlowStudio.Services.Export.FintechExportPreset.TryDeserialize(_prefs.Get(CustomPresetKey)) is not null;
+
+    /// <summary>현재 스위치 11종 스냅샷.</summary>
+    public PromptFlowStudio.Services.Export.FintechExportPreset CapturePreset()
+        => new(StockSuiteFormat, StockSuiteSharpen, StockSuiteSmooth60, StockSuiteResolution, StockSuiteWatermark, StockSuiteTickerBadge,
+            StockSuiteLut, Bgm, MultiHtsAspect, ToYouTube, ToInstagram);
+
+    /// <summary>프리셋 → 모든 스위치 즉시 반영(1회 통지).</summary>
+    public void ApplyPreset(PromptFlowStudio.Services.Export.FintechExportPreset p, PromptFlowStudio.Services.Export.FintechPresetKind kind)
+    {
+        ArgumentNullException.ThrowIfNull(p);
+        _stockFormat = p.Format;
+        _stockSharpen = p.Sharpen;
+        _stockSmooth60 = p.Smooth60;
+        StockSuiteResolution = p.Resolution;
+        StockSuiteWatermark = p.Watermark;
+        StockSuiteTickerBadge = p.TickerBadge;
+        _stockLut = p.Lut;
+        Bgm = p.Bgm;
+        MultiHtsAspect = p.MultiHtsAspect;
+        ToYouTube = p.ToYouTube;
+        ToInstagram = p.ToInstagram;
+        ActivePreset = kind;
+        PresetMessage = "⚡ " + PromptFlowStudio.Services.Export.FintechExportPreset.Label(kind) + " 적용";
+        Notify();
+    }
+
+    /// <summary>내장/사용자 프리셋 적용 — 사용자 프리셋 부재 시 false.</summary>
+    public bool ApplyPreset(PromptFlowStudio.Services.Export.FintechPresetKind kind)
+    {
+        var p = kind == PromptFlowStudio.Services.Export.FintechPresetKind.Custom
+            ? (_prefs is null ? null : PromptFlowStudio.Services.Export.FintechExportPreset.TryDeserialize(_prefs.Get(CustomPresetKey)))
+            : PromptFlowStudio.Services.Export.FintechExportPreset.BuiltIn(kind);
+        if (p is null) { PresetMessage = "⚠ 저장된 사용자 프리셋이 없습니다."; Notify(); return false; }
+        ApplyPreset(p, kind);
+        return true;
+    }
+
+    /// <summary>💾 현재 스위치를 사용자 프리셋으로 저장(Prefs).</summary>
+    public bool SaveCustomPreset()
+    {
+        if (_prefs is null) { PresetMessage = "⚠ 환경설정 저장소 없음"; Notify(); return false; }
+        _prefs.Set(CustomPresetKey, CapturePreset().Serialize());
+        ActivePreset = PromptFlowStudio.Services.Export.FintechPresetKind.Custom;
+        PresetMessage = "💾 사용자 프리셋 저장 완료";
+        Notify();
+        return true;
+    }
     public string TickerSymbol { get; set; } = "";
     public string TickerCompany { get; set; } = "";
     public decimal TickerPrice { get; set; }
@@ -338,6 +399,7 @@ public sealed class PublishViewModel : IDisposable
         try
         {
             _stockSuite.BurnTickerBadge = StockSuiteTickerBadge;
+            if (_stockLut is { } lut) _stockSuite.Lut = lut;   // 🎨 모달/프리셋 LUT 명시 선택 시에만 덮어씀(미선택 = 작업실 LUT 유지)
             _stockSuite.TickerBadge = string.IsNullOrWhiteSpace(TickerSymbol) ? null : new PromptFlowStudio.Services.Export.TickerBadgeData(TickerSymbol, TickerCompany, TickerPrice, TickerChangePercent);
             var r = await _stockSuite.ExportAsync(VideoPath, null, null, ct, StockSuiteFormat, StockSuiteSharpen, StockSuiteSmooth60, StockSuiteResolution, StockSuiteWatermark).ConfigureAwait(false);
             StockSuiteMessage = r.Ok ? r.Message : "⚠ " + r.Message;

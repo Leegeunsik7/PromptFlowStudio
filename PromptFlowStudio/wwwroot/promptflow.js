@@ -1193,6 +1193,7 @@
             try { const p = next.play(); if (p && p.catch) p.catch(function () { }); } catch (e) { /* 자동재생 정책 */ }
             setActive(next, true);
             st.active = nextIdx;
+            dropSnap(st);
             if (old) {
                 old.style.opacity = '0'; old.style.zIndex = '1'; old.controls = false; old.style.pointerEvents = 'none';
                 old.classList.remove(ACTIVE_CLS);
@@ -1208,11 +1209,69 @@
         } catch (e) { return false; }
         return true;
     };
+    /* 🧊 프리즈 프레임 — 파일 핸들 해제(트림 원자 덮어쓰기) 동안 현재 프레임을 캔버스(z3)로 고정 → 새 소스 준비 시 600ms 페이드아웃. */
+    function freeze(h, st, v) {
+        dropSnap(st, true);
+        try {
+            const w = v.videoWidth, hh = v.videoHeight;
+            if (!w || !hh) return;
+            const c = document.createElement('canvas');
+            c.width = w; c.height = hh;
+            c.className = 'ws-xd-snap';
+            c.style.zIndex = '3'; c.style.pointerEvents = 'none';
+            c.style.transition = 'opacity ' + FADE_MS + 'ms ease';
+            c.getContext('2d').drawImage(v, 0, 0, w, hh);
+            h.appendChild(c);
+            st.snap = c;
+        } catch (e) { /* 캡처 실패 — 스냅샷 없이 진행 */ }
+    }
+    function dropSnap(st, now) {
+        const c = st.snap;
+        if (!c) return;
+        st.snap = null;
+        if (now) { c.remove(); return; }
+        c.style.opacity = '0';
+        setTimeout(function () { c.remove(); }, FADE_MS);
+    }
+    function hostOf(sel) {
+        let v = null;
+        try { v = typeof sel === 'string' ? document.querySelector(sel) : sel; } catch (e) { v = null; }
+        if (!v || v.tagName !== 'VIDEO') return null;
+        const h = v.parentElement;
+        return h && h._pfsXd ? { h: h, v: v } : null;
+    }
+    /** 트림 덮어쓰기 전 — 듀얼 버퍼 호스트면 프리즈 프레임 후 활성 레이어 해제, 아니면 기존 releaseVideoSource. */
+    pf.releaseVideoSwap = function (sel) {
+        const x = hostOf(sel);
+        if (!x) return pf.releaseVideoSource ? pf.releaseVideoSource(sel) : false;
+        const st = x.h._pfsXd;
+        freeze(x.h, st, x.v);
+        st.released = x.v.currentSrc || x.v.getAttribute('src') || st.src || '';
+        st.token++;
+        if (st.timer) { clearTimeout(st.timer); st.timer = 0; }
+        for (let i = 0; i < st.layers.length; i++) reset(st.layers[i]);   // 대기 레이어 포함 모든 핸들 반환
+        return true;
+    };
+    /** 트림 덮어쓰기 후 — 캐시 버스트 URL 로 크로스디졸브 재적재(프리즈 프레임 → 새 프레임). */
+    pf.reloadVideoSwap = function (sel, newSrc) {
+        let h = null;
+        try { h = document.querySelector('.ws-xd'); } catch (e) { h = null; }
+        const x = hostOf(sel);
+        if (x) h = x.h;
+        if (!h || !h._pfsXd || !h._pfsXd.released) return pf.reloadVideoSource ? pf.reloadVideoSource(sel, newSrc) : false;
+        const st = h._pfsXd;
+        const base = newSrc || st.released;
+        st.released = null;
+        if (!base) { dropSnap(st, true); return false; }
+        const clean = String(base).replace(/([?&])(v|trim)=\d+(&|$)/g, function (m, p1, k, p3) { return p3 ? p1 : ''; }).replace(/[?&]$/, '');
+        return pf.swapVideoSource(h, clean + (clean.indexOf('?') < 0 ? '?' : '&') + 'v=' + Date.now());
+    };
     pf.disposeVideoSwap = function (sel) {
         const h = host(sel);
         if (!h || !h._pfsXd) return false;
         const st = h._pfsXd;
         st.token++;
+        dropSnap(st, true);
         if (st.timer) clearTimeout(st.timer);
         for (let i = 0; i < st.layers.length; i++) reset(st.layers[i]);
         return true;

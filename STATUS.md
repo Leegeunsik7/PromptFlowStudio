@@ -1,16 +1,17 @@
 # Current Project Status
-- Active Milestone: 【Enterprise Polish】 🎞️ 듀얼 버퍼 크로스디졸브 · 🛟 GPU→CPU 동적 페일오버 · 🩺 원클릭 진단 번들
+- Active Milestone: 【Suite Complete】 🎞️ 전 캔버스 크로스디졸브 · ⚡ 인코더 텔레메트리 메타 · 🎛️ 핀테크 퀵 프리셋
 - Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (Mobile: 로컬 Android SDK 부재로 미빌드)
-- Tests: 전체 871/871 PASS (`-- RunConfiguration.MaxCpuCount=2`, 10m24s)
+- Tests: 전체 873/873 PASS (`-- RunConfiguration.MaxCpuCount=2`, 12m04s)
 - Updated: 2026-11-08 (KST)
 
 ## Completed
-- 🎞️ `promptflow.swapVideoSource` A/B 2레이어 600ms 크로스디졸브 — `Workspace.razor` 큐/갤러리 플레이어 결선(활성 레이어만 `.ws-video`)
-- 🛟 `StockSuiteExporter` GPU 실패 → libx264 `-preset medium -crf 20` 즉시 재시도 + `[Fell back to CPU encoder]` 완료 메시지
-- 🩺 `DiagnosticReportService` — `pfs_diagnostic_{ts}.zip`(시스템·인코더 프로브·로그 500줄·익명화 설정·StockSuite 헬스·SHA-256 manifest)
-- 🩺 `UserSettings.razor` `[🩺 Export Diagnostic Report]` → 바탕화면 저장 + 무결성 검증
-- 🧪 `EnterprisePolishTests` 3건 · `RenderQueue_AutoPauses_WhenDiskSpaceIsCriticallyLow` 부하 내성(폴링 15s · CTS 60s)
+- 🎞️ 단일 생성 완료 캔버스(세로·세이프존·가로) A/B 듀얼 버퍼 호스트 결선 — `OnAfterRenderAsync` 레이아웃 키 재적재
+- 🧊 트림 덮어쓰기 `releaseVideoSwap`(프리즈 프레임 캔버스 + 전 레이어 핸들 해제) → `reloadVideoSwap`(캐시 버스트 크로스디졸브)
+- ⚡ `EncoderTelemetry`(actualEncoder · isFallback · encodeElapsedMs) → `ExportMetadata` `.meta.json` 병합 · `ReadEncoderTelemetry`
+- ⚡ `MediaSpec.Encoder` + 규격 카드 `[⚡ NVENC]`(녹)/`[🖥️ CPU (libx264)]`(황) 배지
+- 🎛️ `FintechExportPreset` 3종 + 사용자 프리셋(Prefs JSON) · `PublishViewModel.ApplyPreset/SaveCustomPreset` · 모달 Quick Preset/LUT 드롭다운
+- 🧪 `SuiteCompleteTelemetryPresetTests` 2건
 
 ## Next
-- 단일 생성 플레이어(`ShownVideoUrl`)·트림 재로드에도 듀얼 버퍼 스왑 확장
-- 전체 스위트 메모리 사용량 프로파일링
+- 단일 내보내기 9:16 세로 크롭 해상도 프로필(현재 Mobile Shorts 는 발행 대상·BGM 중심)
+- 크로스디졸브 실기 검증(WebView2 · 트림 덮어쓰기 핸들 해제 타이밍)

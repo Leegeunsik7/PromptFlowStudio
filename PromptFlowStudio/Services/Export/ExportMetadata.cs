@@ -22,7 +22,10 @@ public static class ExportMetadata
         => at.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
 
     /// <summary>원본 메타에 내보내기 표식 병합 — 성공 시 true.</summary>
-    public static bool MarkExported(string mediaPath, IEnumerable<string> targets, DateTimeOffset at)
+    public static bool MarkExported(string mediaPath, IEnumerable<string> targets, DateTimeOffset at) => MarkExported(mediaPath, targets, at, null);
+
+    /// <summary>원본 메타에 내보내기 표식 + ⚡ 인코더 텔레메트리(<c>actualEncoder</c> · <c>isFallback</c> · <c>encodeElapsedMs</c>) 병합.</summary>
+    public static bool MarkExported(string mediaPath, IEnumerable<string> targets, DateTimeOffset at, EncoderTelemetry? telemetry)
     {
         if (string.IsNullOrWhiteSpace(mediaPath) || targets is null) return false;
         string meta = "", tmp = "";
@@ -46,6 +49,12 @@ public static class ExportMetadata
             obj["isExported"] = true;
             obj["exportedAt"] = FormatTimestamp(at);
             obj["exportedTargets"] = arr;
+            if (telemetry is { } tel && !string.IsNullOrWhiteSpace(tel.ActualEncoder))
+            {
+                obj["actualEncoder"] = tel.ActualEncoder;
+                obj["isFallback"] = tel.IsFallback;
+                obj["encodeElapsedMs"] = tel.EncodeElapsedMs;
+            }
 
             tmp = meta + ".~tmp";
             File.WriteAllText(tmp, obj.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
@@ -57,6 +66,28 @@ public static class ExportMetadata
             Program.Log("Export.Meta", ex);
             try { if (tmp.Length > 0 && File.Exists(tmp)) File.Delete(tmp); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             return false;
+        }
+    }
+
+    /// <summary>메타의 인코더 텔레메트리 읽기 — 부재/손상/필드 없음 = null.</summary>
+    public static EncoderTelemetry? ReadEncoderTelemetry(string mediaPath)
+    {
+        try
+        {
+            var meta = MetaPathFor(mediaPath);
+            if (!File.Exists(meta)) return null;
+            using var doc = JsonDocument.Parse(File.ReadAllText(meta));
+            var r = doc.RootElement;
+            if (r.ValueKind != JsonValueKind.Object || !r.TryGetProperty("actualEncoder", out var enc) || enc.ValueKind != JsonValueKind.String) return null;
+            var name = enc.GetString();
+            if (string.IsNullOrWhiteSpace(name)) return null;
+            var fb = r.TryGetProperty("isFallback", out var f) && f.ValueKind == JsonValueKind.True;
+            var ms = r.TryGetProperty("encodeElapsedMs", out var e) && e.ValueKind == JsonValueKind.Number && e.TryGetInt64(out var l) ? l : 0L;
+            return new EncoderTelemetry(name, fb, ms);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentException or NotSupportedException)
+        {
+            return null;
         }
     }
 
@@ -74,6 +105,26 @@ public static class ExportMetadata
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentException or NotSupportedException)
         {
             return false;
+        }
+    }
+}
+
+/// <summary>⚡ 인코더 실행 텔레메트리 — 실제 인코더(<c>h264_nvenc</c>·<c>h264_qsv</c>·<c>libx264</c>) · GPU→CPU 폴백 여부 · 인코딩 소요(ms).</summary>
+public sealed record EncoderTelemetry(string ActualEncoder, bool IsFallback, long EncodeElapsedMs)
+{
+    /// <summary>하드웨어 인코더 여부(<c>_nvenc</c> · <c>_qsv</c> · <c>_amf</c>).</summary>
+    public bool IsHardware => ActualEncoder.EndsWith("_nvenc", StringComparison.OrdinalIgnoreCase)
+        || ActualEncoder.EndsWith("_qsv", StringComparison.OrdinalIgnoreCase)
+        || ActualEncoder.EndsWith("_amf", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>인스펙터 배지 — <c>⚡ NVENC</c> · <c>⚡ QSV</c> · <c>⚡ AMF</c> · <c>🖥️ CPU (libx264)</c>.</summary>
+    public string Badge
+    {
+        get
+        {
+            if (!IsHardware) return "🖥️ CPU (" + ActualEncoder + ")";
+            var i = ActualEncoder.LastIndexOf('_');
+            return "⚡ " + ActualEncoder.Substring(i + 1).ToUpperInvariant();
         }
     }
 }

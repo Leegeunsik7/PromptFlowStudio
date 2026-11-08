@@ -11,7 +11,11 @@ using PromptFlowStudio.Services.Render;
 namespace PromptFlowStudio.Services.Export;
 
 /// <summary>StockSuite 내보내기 결과 — NeedsPathSetup=true 면 대상 경로 미설정/무효(환경설정 안내).</summary>
-public sealed record StockSuiteExportResult(bool Ok, string? TargetPath, bool NeedsPathSetup, string Message);
+public sealed record StockSuiteExportResult(bool Ok, string? TargetPath, bool NeedsPathSetup, string Message)
+{
+    /// <summary>⚡ 재인코딩 경로의 인코더 텔레메트리(스트림 복사/원본 복사 = null).</summary>
+    public EncoderTelemetry? Telemetry { get; init; }
+}
 
 /// <summary>💼 StockSuite 팩 일괄 내보내기 결과 — Exported = 넘버링된 대상 경로(순서 보존).</summary>
 public sealed record StockSuiteBatchPackResult(IReadOnlyList<string> Exported, int Failed, bool NeedsPathSetup, string Message)
@@ -316,7 +320,7 @@ public sealed partial class StockSuiteExporter
         if (r.Ok && r.TargetPath is { } t && !string.Equals(Path.GetFullPath(sourcePath!), t, StringComparison.OrdinalIgnoreCase))
         {
             if (hotReload) WriteHotReloadTrigger(t, UtcNow());
-            ExportMetadata.MarkExported(sourcePath!, new[] { t }, UtcNow());   // 📦 원본 메타 규격 통일
+            ExportMetadata.MarkExported(sourcePath!, new[] { t }, UtcNow(), r.Telemetry);   // 📦 원본 메타 규격 통일 · ⚡ 인코더 텔레메트리
             WriteManifest(t, sourcePath!, UtcNow());                           // 🧾 엄격 매칭 매니페스트
         }
         return r;
@@ -484,6 +488,7 @@ public sealed partial class StockSuiteExporter
             {
                 // 🚀 1080p/4K · 60fps: 감지된 GPU 인코더(NVENC/QSV/AMF) 우선 → 실패 시 libx264 무중단 폴백.
                 var gpu = await ResolveGpuVendorAsync(ct).ConfigureAwait(false);
+                var encodeSw = Stopwatch.StartNew();
                 var (sharpened, fellBack) = await TryEncodeMp4Async(sourcePath, temp, filter, gpu, ct, resolution).ConfigureAwait(false);
                 if (sharpened is not null && filterNoWm is not null)
                 {
@@ -496,8 +501,10 @@ public sealed partial class StockSuiteExporter
                 {
                     await SwapIntoPlaceAsync(temp, target, ct).ConfigureAwait(false);
                     WriteSourceMarker(target, sourcePath);
-                    if (gpu != GpuEncoderVendor.Cpu && Accel?.Active == gpu) tag = "🚀 " + HardwareAccelDetector.Label(gpu) + " · " + tag;
-                    return new(true, target, false, "💼 StockSuite 내보내기 완료(" + tag + ") → " + target + (fellBack ? " " + CpuFallbackTag : ""));
+                    var onGpu = gpu != GpuEncoderVendor.Cpu && Accel?.Active == gpu;
+                    if (onGpu) tag = "🚀 " + HardwareAccelDetector.Label(gpu) + " · " + tag;
+                    var telemetry = new EncoderTelemetry(onGpu ? HardwareAccelDetector.H264Encoder(gpu) : "libx264", fellBack, encodeSw.ElapsedMilliseconds);
+                    return new(true, target, false, "💼 StockSuite 내보내기 완료(" + tag + ") → " + target + (fellBack ? " " + CpuFallbackTag : "")) { Telemetry = telemetry };
                 }
                 TryDelete(temp);
             }

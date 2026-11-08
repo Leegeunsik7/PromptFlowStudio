@@ -20,6 +20,25 @@
 
             @if (vm.StockSuiteAvailable)
             {
+                @* ⚡ 핀테크 퀵 프리셋 — 선택 즉시 해상도·60fps·LUT·워터마크·배지·BGM(loudnorm)·멀티 비율·발행 대상 11종 일괄 반영 *@
+                <div class="pm-row pm-seo">
+                    <select class="pm-btn" value="@(vm.ActivePreset is { } ap ? PromptFlowStudio.Services.Export.FintechExportPreset.Key(ap) : "")"
+                            @onchange="OnQuickPreset" disabled="@(vm.IsStockSuiteBusy || vm.IsBusy)" title="⚡ Quick Preset — 인코딩 스위치 일괄 설정">
+                        <option value="">⚡ Quick Preset</option>
+                        <option value="oled">@PromptFlowStudio.Services.Export.FintechExportPreset.Label(PromptFlowStudio.Services.Export.FintechPresetKind.OledHts)</option>
+                        <option value="shorts">@PromptFlowStudio.Services.Export.FintechExportPreset.Label(PromptFlowStudio.Services.Export.FintechPresetKind.MobileShorts)</option>
+                        <option value="uw329">@PromptFlowStudio.Services.Export.FintechExportPreset.Label(PromptFlowStudio.Services.Export.FintechPresetKind.Ultrawide32x9)</option>
+                        @if (vm.HasCustomPreset) { <option value="custom">💾 Custom Preset</option> }
+                        <option value="save">💾 Save Current as Custom Preset</option>
+                    </select>
+                    <select class="pm-btn" value="@((int)vm.StockSuiteLut)" @onchange="OnLutChanged" disabled="@vm.IsStockSuiteBusy" title="🎨 LUT 번인">
+                        @foreach (var lp in PromptFlowStudio.Services.Export.ColorGradingService.All)
+                        {
+                            <option value="@((int)lp)">🎨 @PromptFlowStudio.Services.Export.ColorGradingService.Label(lp)</option>
+                        }
+                    </select>
+                    @if (vm.PresetMessage is { } pmsg) { <span class="pm-seo-msg">@pmsg</span> }
+                </div>
                 <div class="pm-row pm-seo">
                     <select class="pm-btn" value="@(vm.StockSuiteFormat == PromptFlowStudio.Services.Export.StockSuiteExportFormat.WebMVp9 ? "webm" : "mp4")"
                             @onchange="e => vm.StockSuiteFormat = PromptFlowStudio.Services.Export.StockSuiteExporter.ParseFormat(e.Value?.ToString())" disabled="@vm.IsStockSuiteBusy" title="StockSuite 내보내기 포맷">
@@ -268,6 +287,21 @@
         if (Vm is null) return;
         try { await Vm.ExportMultiPackageAsync(); }
         catch (Exception ex) { Program.Log("PublishModal.MultiPkg", ex); }
+    }
+
+    private void OnQuickPreset(ChangeEventArgs e)
+    {
+        if (Vm is null) return;
+        var v = e.Value?.ToString();
+        if (v == "save") { Vm.SaveCustomPreset(); return; }
+        if (PromptFlowStudio.Services.Export.FintechExportPreset.ParseKind(v) is { } k) Vm.ApplyPreset(k);
+    }
+
+    private void OnLutChanged(ChangeEventArgs e)
+    {
+        if (Vm is null) return;
+        if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var i) && Enum.IsDefined(typeof(PromptFlowStudio.Services.Export.LutProfile), i))
+            Vm.StockSuiteLut = (PromptFlowStudio.Services.Export.LutProfile)i;
     }
 
     private async Task ExportStockSuite()

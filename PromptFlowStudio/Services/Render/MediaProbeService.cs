@@ -40,6 +40,9 @@ public sealed record MediaSpec(
 
     /// <summary>무음(-an) 적용 여부 라벨.</summary>
     public string AudioLabel => HasAudio ? "Audio Present 🔊" : "Muted 🔇 (HTS 최적화)";
+
+    /// <summary>⚡ 사이드카 <c>.meta.json</c> 의 마지막 내보내기 인코더 텔레메트리(없으면 null).</summary>
+    public PromptFlowStudio.Services.Export.EncoderTelemetry? Encoder { get; init; }
 }
 
 /// <summary>
@@ -67,8 +70,16 @@ public sealed class MediaProbeService
         _runner = processRunner ?? SystemProcessRunner.Shared;
     }
 
-    /// <summary>대상 비디오 규격 추출 — 파일 부재 null · 도구 부재 시 크기/확장자만 담은 폴백 규격.</summary>
+    /// <summary>대상 비디오 규격 추출 — 파일 부재 null · 도구 부재 시 크기/확장자만 담은 폴백 규격. ⚡ 인코더 텔레메트리 병합.</summary>
     public async Task<MediaSpec?> ProbeAsync(string? path, CancellationToken ct = default)
+    {
+        var spec = await ProbeCoreAsync(path, ct).ConfigureAwait(false);
+        if (spec is null) return null;
+        var tel = PromptFlowStudio.Services.Export.ExportMetadata.ReadEncoderTelemetry(path!);
+        return tel is null ? spec : spec with { Encoder = tel };
+    }
+
+    private async Task<MediaSpec?> ProbeCoreAsync(string? path, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(path)) return null;
         long size;
