@@ -111,7 +111,7 @@ public class SuiteCompleteTelemetryPresetTests : IDisposable
         Assert.Equal(FintechPresetKind.OledHts, vm.ActivePreset);
 
         Assert.True(vm.ApplyPreset(FintechPresetKind.MobileShorts));
-        Assert.Equal(StockSuiteResolution.Fhd1080, vm.StockSuiteResolution);
+        Assert.Equal(StockSuiteResolution.Vertical9x16, vm.StockSuiteResolution);   // 📱 9:16 세로 1080×1920
         Assert.False(vm.StockSuiteSmooth60);
         Assert.Equal(LutProfile.None, vm.StockSuiteLut);
         Assert.True(vm.StockSuiteWatermark);

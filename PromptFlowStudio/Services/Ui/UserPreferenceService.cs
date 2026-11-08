@@ -3,7 +3,7 @@ using Microsoft.JSInterop;
 namespace PromptFlowStudio.Services.Ui;
 
 /// <summary>🖥️ 기본 내보내기 해상도 — 1080p(1920×1080) · 4K UHD(3840×2160) · 21:9(2560×1080) · 32:9(3840×1080).</summary>
-public enum ExportResolution : byte { Res1080p, Res4K_UHD, Res21x9, Res32x9 }
+public enum ExportResolution : byte { Res1080p, Res4K_UHD, Res21x9, Res32x9, Res9_16 }
 
 /// <summary><see cref="ExportResolution"/> 라벨·픽셀·StockSuite 프로필 매핑(울트라와이드 21:9/32:9 네이티브 스케일).</summary>
 public static class ExportResolutionInfo
@@ -13,6 +13,7 @@ public static class ExportResolutionInfo
         ExportResolution.Res4K_UHD => (3840, 2160),
         ExportResolution.Res21x9 => (2560, 1080),
         ExportResolution.Res32x9 => (3840, 1080),
+        ExportResolution.Res9_16 => (1080, 1920),
         _ => (1920, 1080),
     };
 
@@ -21,6 +22,7 @@ public static class ExportResolutionInfo
         ExportResolution.Res4K_UHD => "4K UHD",
         ExportResolution.Res21x9 => "21:9",
         ExportResolution.Res32x9 => "32:9",
+        ExportResolution.Res9_16 => "1080x1920 (9:16 Vertical)",
         _ => "1080p",
     };
 
@@ -30,7 +32,8 @@ public static class ExportResolutionInfo
             ExportResolution.Res4K_UHD => PromptFlowStudio.Services.Export.StockSuiteResolution.Uhd4K,
             ExportResolution.Res21x9 => PromptFlowStudio.Services.Export.StockSuiteResolution.Ultra21x9,
             ExportResolution.Res32x9 => PromptFlowStudio.Services.Export.StockSuiteResolution.Super32x9,
-            _ => PromptFlowStudio.Services.Export.StockSuiteResolution.Fhd1080,
+            ExportResolution.Res9_16 => PromptFlowStudio.Services.Export.StockSuiteResolution.Vertical9x16,
+            _ =>PromptFlowStudio.Services.Export.StockSuiteResolution.Fhd1080,
         };
 }
 
@@ -119,6 +122,31 @@ public sealed class UserPreferenceService
         public const string RenderCacheMaxGb = "render.cacheMaxGb";
         /// <summary>🖥️ 기본 내보내기 해상도(<see cref="ExportResolution"/> 이름) — 벤치마크 Ultra → 4K 영속.</summary>
         public const string DefaultResolution = "export.defaultResolution";
+        /// <summary>💾 단일 사용자 핀테크 프리셋(레거시 · JSON).</summary>
+        public const string FintechCustomPreset = "publish.fintechPreset.custom";
+        /// <summary>💾 이름 붙은 사용자 핀테크 프리셋 목록(JSON 배열).</summary>
+        public const string CustomPresets = "export.customPresets";
+    }
+
+    /// <summary>💾 이름 붙은 사용자 내보내기 프리셋 — 재시작 후에도 영속(손상 값 → 빈 목록). 반환은 복사본.</summary>
+    public List<PromptFlowStudio.Services.Export.FintechExportPreset> CustomPresets
+    {
+        get => PromptFlowStudio.Services.Export.FintechExportPreset.TryDeserializeList(Get(Keys.CustomPresets));
+        set => Set(Keys.CustomPresets, PromptFlowStudio.Services.Export.FintechExportPreset.SerializeList(value));
+    }
+
+    /// <summary>💾 이름 기준 업서트(대소문자 무시) — 최신 항목은 끝 · 상한 초과 시 가장 오래된 항목 제거. 이름 공백이면 false.</summary>
+    public bool SaveCustomPreset(string? name, PromptFlowStudio.Services.Export.FintechExportPreset preset)
+    {
+        ArgumentNullException.ThrowIfNull(preset);
+        var n = name?.Trim();
+        if (string.IsNullOrEmpty(n)) return false;
+        var list = CustomPresets;
+        list.RemoveAll(p => string.Equals(p.Name, n, StringComparison.OrdinalIgnoreCase));
+        list.Add(preset with { Name = n });
+        while (list.Count > PromptFlowStudio.Services.Export.FintechExportPreset.MaxCustomPresets) list.RemoveAt(0);
+        CustomPresets = list;
+        return true;
     }
 
     /// <summary>🖥️ 기본 내보내기 해상도(1080p 기본 · 미지원/손상 값 → 1080p 폴백).</summary>
@@ -308,6 +336,8 @@ public sealed class UserPreferenceService
         [Keys.HtsEcoMode] = "1",
         [Keys.RenderCacheMaxGb] = "10",
         [Keys.DefaultResolution] = nameof(ExportResolution.Res1080p),
+        [Keys.FintechCustomPreset] = "",
+        [Keys.CustomPresets] = "[]",
     };
 
     /// <summary>

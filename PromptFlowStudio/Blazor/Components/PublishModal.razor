@@ -22,15 +22,20 @@
             {
                 @* ⚡ 핀테크 퀵 프리셋 — 선택 즉시 해상도·60fps·LUT·워터마크·배지·BGM(loudnorm)·멀티 비율·발행 대상 11종 일괄 반영 *@
                 <div class="pm-row pm-seo">
-                    <select class="pm-btn" value="@(vm.ActivePreset is { } ap ? PromptFlowStudio.Services.Export.FintechExportPreset.Key(ap) : "")"
+                    <select class="pm-btn" value="@(vm.ActiveCustomPresetName is { } acn ? "user:" + acn : vm.ActivePreset is { } ap ? PromptFlowStudio.Services.Export.FintechExportPreset.Key(ap) : "")"
                             @onchange="OnQuickPreset" disabled="@(vm.IsStockSuiteBusy || vm.IsBusy)" title="⚡ Quick Preset — 인코딩 스위치 일괄 설정">
                         <option value="">⚡ Quick Preset</option>
                         <option value="oled">@PromptFlowStudio.Services.Export.FintechExportPreset.Label(PromptFlowStudio.Services.Export.FintechPresetKind.OledHts)</option>
                         <option value="shorts">@PromptFlowStudio.Services.Export.FintechExportPreset.Label(PromptFlowStudio.Services.Export.FintechPresetKind.MobileShorts)</option>
                         <option value="uw329">@PromptFlowStudio.Services.Export.FintechExportPreset.Label(PromptFlowStudio.Services.Export.FintechPresetKind.Ultrawide32x9)</option>
                         @if (vm.HasCustomPreset) { <option value="custom">💾 Custom Preset</option> }
+                        @foreach (var cp in vm.CustomPresets)
+                        {
+                            <option value="@("user:" + cp.Name)">💾 @cp.Name</option>
+                        }
                         <option value="save">💾 Save Current as Custom Preset</option>
                     </select>
+                    <input class="pm-btn" style="width:9em" placeholder="프리셋 이름" value="@vm.CustomPresetName" @onchange="e => vm.CustomPresetName = e.Value?.ToString() ?? string.Empty" disabled="@(vm.IsStockSuiteBusy || vm.IsBusy)" title="💾 Save Current as Custom Preset 시 사용할 이름(재시작 후에도 유지)" />
                     <select class="pm-btn" value="@((int)vm.StockSuiteLut)" @onchange="OnLutChanged" disabled="@vm.IsStockSuiteBusy" title="🎨 LUT 번인">
                         @foreach (var lp in PromptFlowStudio.Services.Export.ColorGradingService.All)
                         {
@@ -52,6 +57,7 @@
                         <option value="4k">4K UHD (3840x2160 Lanczos)</option>
                         <option value="21x9">21:9 울트라와이드 (2560x1080 Lanczos)</option>
                         <option value="32x9">32:9 슈퍼 울트라와이드 (3840x1080 Lanczos)</option>
+                        <option value="9x16">1080x1920 (9:16 Vertical)</option>
                     </select>
             <label class="pm-btn" title="좌상단 ANG QUANT LAB · REALTIME STREAM / 우상단 ● LIVE KST 번인(재인코딩) — 폰트 미설치·drawtext 실패 시 워터마크 생략 폴백"><input type="checkbox" checked="@vm.StockSuiteWatermark" @onchange="e => vm.StockSuiteWatermark = e.Value is true" disabled="@vm.IsStockSuiteBusy" /> 📺 핀테크 HUD 워터마크</label>
             <label class="pm-btn" title="우하단 반투명 카드에 티커·사명 / 시세·등락률(+ 네온 그린 · − 크림슨) 번인 — 티커 공란·폰트 실패 시 배지 생략 폴백"><input type="checkbox" checked="@vm.StockSuiteTickerBadge" @onchange="e => { vm.StockSuiteTickerBadge = e.Value is true; if (vm.StockSuiteTickerBadge && vm.TickerSymbol.Length > 0 && vm.TickerPrice == 0m) vm.SetTicker(vm.TickerSymbol); }" disabled="@vm.IsStockSuiteBusy" /> 📊 라이브 티커 배지</label>
@@ -70,6 +76,8 @@
             <label class="pm-btn" title="16~24fps AI 영상을 minterpolate(MCI) 로 60fps 보간 — 고주사율(120Hz+) OLED 끊김 제거 · 재인코딩 시간 증가"><input type="checkbox" checked="@vm.StockSuiteSmooth60" @onchange="e => vm.StockSuiteSmooth60 = e.Value is true" disabled="@vm.IsStockSuiteBusy" /> ⚡ 60fps 모션 스무딩</label>
                     <button class="pm-btn" @onclick="ExportStockSuite" disabled="@vm.IsStockSuiteBusy"
                             title="환경설정의 StockSuite 에셋 폴더에 bg_ambient.mp4 로 원자적 덮어쓰기">@(vm.IsStockSuiteBusy ? "⏳ 복사 중…" : "💼 StockSuite로 내보내기")</button>
+                    <button class="pm-btn" @onclick="PreviewFrame" disabled="@(vm.IsPreviewBusy || vm.IsStockSuiteBusy)"
+                            title="크롭·LUT·워터마크·티커 배지를 1초 지점 1프레임에만 합성 — 전체 렌더 전 차트 가림 여부 확인">@(vm.IsPreviewBusy ? "⏳ 미리보기…" : "👁️ Preview Frame")</button>
                     @if (vm.StockSuiteExported && vm.CanLaunchStockSuite)
                     {
                         @if (vm.StockSuiteRestartPending)
@@ -85,6 +93,20 @@
                     @if (vm.StockSuiteExported && vm.CanRollbackStockSuite)
                     {
                         <button class="pm-btn" @onclick="() => vm.RollbackStockSuite()" disabled="@vm.IsStockSuiteBusy" title="덮어쓰기 직전 백업(bg_ambient.backup)과 맞교환 — 다시 누르면 되돌리기">↩️ 이전 배경으로 복원</button>
+                    }
+                    @if (vm.PreviewMessage is { Length: > 0 } pvMsg)
+                    {
+                        <div class="pm-pv">
+                            <div class="pm-pv-h"><span class="pm-seo-msg">@pvMsg</span><button class="pm-x" @onclick="vm.ClearPreviewFrame" title="미리보기 닫기">✕</button></div>
+                            @if (vm.PreviewDataUri is { } pvUri)
+                            {
+                                <img class="pm-pv-img" src="@pvUri" alt="burn-in preview" title="@vm.PreviewFramePath" />
+                            }
+                            else if (vm.PreviewFramePath is { } pvPath)
+                            {
+                                <span class="pm-path">@pvPath</span>
+                            }
+                        </div>
                     }
                     @if (vm.StockSuiteMessage is { Length: > 0 } ssMsg)
                     {
@@ -242,6 +264,9 @@
     .pm-btn{padding:9px 16px;border-radius:10px;border:1px solid var(--line,rgba(148,163,184,.25));background:transparent;color:inherit;font-weight:800;font-size:13px;cursor:pointer}
     .pm-btn.go{border:0;color:#fff;background:linear-gradient(135deg,#8b7bff,#6d5efc)}
     .pm-btn[disabled]{opacity:.55;cursor:default}
+    .pm-pv{flex-basis:100%;display:flex;flex-direction:column;gap:6px;padding:8px;border:1px solid var(--line,rgba(148,163,184,.25));border-radius:10px;background:rgba(2,6,23,.45)}
+    .pm-pv-h{display:flex;justify-content:space-between;align-items:center;gap:8px}
+    .pm-pv-img{max-width:100%;max-height:52vh;object-fit:contain;align-self:center;border-radius:6px;background:#000}
 </style>
 
 @code {
@@ -294,6 +319,7 @@
         if (Vm is null) return;
         var v = e.Value?.ToString();
         if (v == "save") { Vm.SaveCustomPreset(); return; }
+        if (v is not null && v.StartsWith("user:", StringComparison.Ordinal)) { Vm.ApplyCustomPreset(v.Substring(5)); return; }
         if (PromptFlowStudio.Services.Export.FintechExportPreset.ParseKind(v) is { } k) Vm.ApplyPreset(k);
     }
 
@@ -309,6 +335,13 @@
         if (Vm is null) return;
         try { await Vm.ExportToStockSuiteAsync(); }
         catch (Exception ex) { Program.Log("PublishModal.StockSuite", ex); }
+    }
+
+    private async Task PreviewFrame()
+    {
+        if (Vm is null) return;
+        try { await Vm.GeneratePreviewFrameAsync(); }
+        catch (Exception ex) { Program.Log("PublishModal.Preview", ex); }
     }
 
     private async Task ExportDualSplit()

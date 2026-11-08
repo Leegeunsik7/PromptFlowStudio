@@ -32,8 +32,9 @@ public enum StockSuiteExeStatus { NotConfigured, NotFound, NotExecutable, Ok }
 /// <summary>🚀 StockSuite 실행 결과 — AlreadyRunning=true 면 재실행 확인 필요.</summary>
 public sealed record StockSuiteLaunchResult(bool Ok, bool AlreadyRunning, string Message);
 
-/// <summary>🖥️ StockSuite 단일 내보내기 해상도 프로필 — 1080p(기본) · 4K UHD(3840×2160) · 21:9(2560×1080) · 32:9(3840×1080) 네이티브 Lanczos.</summary>
-public enum StockSuiteResolution { Fhd1080, Uhd4K, Ultra21x9, Super32x9 }
+/// <summary>🖥️ StockSuite 단일 내보내기 해상도 프로필 — 1080p(기본) · 4K UHD(3840×2160) · 21:9(2560×1080) · 32:9(3840×1080) 네이티브 Lanczos · 📱 9:16 세로(1080×1920 중앙 크롭).</summary>
+/// <remarks>⚠ 값 순서 고정(프리셋 JSON 정수 직렬화) — 신규 항목은 끝에만 추가.</remarks>
+public enum StockSuiteResolution { Fhd1080, Uhd4K, Ultra21x9, Super32x9, Vertical9x16 }
 
 /// <summary>
 /// 🧾 <c>.stocksuite_manifest.json</c> — 활성 에셋의 출처(렌더 ID · SHA-256 · 바이트) 및 직전 백업 출처.
@@ -120,11 +121,14 @@ public sealed partial class StockSuiteExporter
     public static readonly string Ultra21x9Filter = BuildHtsFilter(HtsUltraAspect.Ultra21x9);
     /// <summary>🖥️ 32:9 네이티브 — 중앙 스마트 크롭(왜곡 없음) → 3840×1080 Lanczos + Unsharp.</summary>
     public static readonly string Super32x9Filter = BuildHtsFilter(HtsUltraAspect.Super32x9);
+    /// <summary>📱 9:16 세로 쇼츠 — 중앙 크롭(왜곡 없음) → 1080×1920 Lanczos + Unsharp.</summary>
+    public const string Vertical9x16Filter = "crop=ih*9/16:ih,scale=1080:1920:flags=lanczos,unsharp=5:5:0.8:3:3:0.4";
 
     /// <summary>프로필 픽셀 크기.</summary>
     public static (int W, int H) Pixels(StockSuiteResolution r) => r switch
     {
         StockSuiteResolution.Uhd4K => (3840, 2160),
+        StockSuiteResolution.Vertical9x16 => (1080, 1920),
         StockSuiteResolution.Ultra21x9 => (2560, 1080),
         StockSuiteResolution.Super32x9 => (3840, 1080),
         _ => (1920, 1080),
@@ -150,15 +154,17 @@ public sealed partial class StockSuiteExporter
         StockSuiteResolution.Uhd4K => sharpen ? Uhd4KSharpenFilter : Uhd4KScaleFilter,
         StockSuiteResolution.Ultra21x9 => Ultra21x9Filter,
         StockSuiteResolution.Super32x9 => Super32x9Filter,
+        StockSuiteResolution.Vertical9x16 => Vertical9x16Filter,
         _ => sharpen ? SharpenFilter : null,
     };
 
-    /// <summary>UI 선택 키(<c>1080</c>|<c>4k</c>|<c>21x9</c>|<c>32x9</c>).</summary>
+    /// <summary>UI 선택 키(<c>1080</c>|<c>4k</c>|<c>21x9</c>|<c>32x9</c>|<c>9x16</c>).</summary>
     public static string ResolutionKey(StockSuiteResolution r) => r switch
     {
         StockSuiteResolution.Uhd4K => "4k",
         StockSuiteResolution.Ultra21x9 => "21x9",
         StockSuiteResolution.Super32x9 => "32x9",
+        StockSuiteResolution.Vertical9x16 => "9x16",
         _ => "1080",
     };
 
@@ -168,6 +174,7 @@ public sealed partial class StockSuiteExporter
         "4k" or "uhd" => StockSuiteResolution.Uhd4K,
         "21x9" or "21:9" => StockSuiteResolution.Ultra21x9,
         "32x9" or "32:9" => StockSuiteResolution.Super32x9,
+        "9x16" or "9:16" => StockSuiteResolution.Vertical9x16,
         _ => StockSuiteResolution.Fhd1080,
     };
 
@@ -177,6 +184,7 @@ public sealed partial class StockSuiteExporter
         StockSuiteResolution.Uhd4K => "🖥️ 4K UHD · ",
         StockSuiteResolution.Ultra21x9 => "🖥️ 21:9 울트라와이드 2560×1080 · ",
         StockSuiteResolution.Super32x9 => "🖥️ 32:9 슈퍼 울트라와이드 3840×1080 · ",
+        StockSuiteResolution.Vertical9x16 => "📱 9:16 세로 쇼츠 1080×1920 · ",
         _ => sharpen ? "🔎 1080p 고선명 · " : "",
     };
 
@@ -450,6 +458,7 @@ public sealed partial class StockSuiteExporter
             if (webm && (filter is not null || !Path.GetExtension(sourcePath).Equals(".webm", StringComparison.OrdinalIgnoreCase)))
             {
                 temp = Path.Combine(fullDir, Path.GetFileNameWithoutExtension(name) + TempExt + ".webm");
+                var webmSw = Stopwatch.StartNew();   // ⚡ VP9 인코더 텔레메트리(Media Specs 배지)
                 // 🔎 WebM 고선명/⚡60fps: 필터 체인(VP9 · 무음). 실패 → 일반 VP9 → MP4 복사 순 폴백.
                 if (filter is not null)
                 {
@@ -464,7 +473,7 @@ public sealed partial class StockSuiteExporter
                     {
                         await SwapIntoPlaceAsync(temp, target, ct).ConfigureAwait(false);
                         WriteSourceMarker(target, sourcePath);
-                        return new(true, target, false, "💼 StockSuite WebM(VP9) 내보내기 완료(" + tag + ") → " + target);
+                        return new(true, target, false, "💼 StockSuite WebM(VP9) 내보내기 완료(" + tag + ") → " + target) { Telemetry = new EncoderTelemetry(WebMEncoderName, false, webmSw.ElapsedMilliseconds) };
                     }
                     TryDelete(temp);
                 }
@@ -473,7 +482,7 @@ public sealed partial class StockSuiteExporter
                 {
                     await SwapIntoPlaceAsync(temp, target, ct).ConfigureAwait(false);
                     WriteSourceMarker(target, sourcePath);
-                    return new(true, target, false, "💼 StockSuite WebM(VP9) 내보내기 완료 → " + target);
+                    return new(true, target, false, "💼 StockSuite WebM(VP9) 내보내기 완료 → " + target) { Telemetry = new EncoderTelemetry(WebMEncoderName, false, webmSw.ElapsedMilliseconds) };
                 }
                 // [폴백] ffmpeg 부재/실패 → MP4 원본 복사로 대체 보존(동일 기본 이름 · .mp4)
                 TryDelete(temp);
@@ -601,6 +610,9 @@ public sealed partial class StockSuiteExporter
         }
         return (await TryFfmpegAsync(BuildSharpenArgs(source, output, filter, GpuEncoderVendor.Cpu, resolution), output, ct).ConfigureAwait(false), false);
     }
+
+    /// <summary>⚡ WebM 경로 인코더 식별자(텔레메트리 <c>actualEncoder</c>).</summary>
+    public const string WebMEncoderName = "libvpx-vp9";
 
     /// <summary>완료 메시지/메타 접미 — GPU 실패 후 CPU 폴백 성공 표식.</summary>
     public const string CpuFallbackTag = "[Fell back to CPU encoder]";

@@ -131,7 +131,7 @@ public sealed class PublishViewModel : IDisposable
     }
 
     // ── ⚡ 핀테크 퀵 프리셋 ──
-    public const string CustomPresetKey = "publish.fintechPreset.custom";
+    public const string CustomPresetKey = PromptFlowStudio.Services.Ui.UserPreferenceService.Keys.FintechCustomPreset;
     public PromptFlowStudio.Services.Export.FintechPresetKind? ActivePreset { get; private set; }
     public string? PresetMessage { get; private set; }
     public bool HasCustomPreset => _prefs is not null && PromptFlowStudio.Services.Export.FintechExportPreset.TryDeserialize(_prefs.Get(CustomPresetKey)) is not null;
@@ -157,6 +157,7 @@ public sealed class PublishViewModel : IDisposable
         ToYouTube = p.ToYouTube;
         ToInstagram = p.ToInstagram;
         ActivePreset = kind;
+        ActiveCustomPresetName = null;
         PresetMessage = "⚡ " + PromptFlowStudio.Services.Export.FintechExportPreset.Label(kind) + " 적용";
         Notify();
     }
@@ -172,15 +173,117 @@ public sealed class PublishViewModel : IDisposable
         return true;
     }
 
-    /// <summary>💾 현재 스위치를 사용자 프리셋으로 저장(Prefs).</summary>
-    public bool SaveCustomPreset()
+    /// <summary>💾 현재 스위치를 사용자 프리셋으로 저장(Prefs) — <see cref="CustomPresetName"/> 이 있으면 이름 붙은 목록에도 업서트.</summary>
+    public bool SaveCustomPreset() => SaveCustomPreset(CustomPresetName);
+
+    /// <summary>💾 저장 시 사용할 사용자 프리셋 이름(모달 입력 · 공백 = 단일 레거시 슬롯만).</summary>
+    public string CustomPresetName { get; set; } = "";
+
+    /// <summary>💾 이름 붙은 사용자 프리셋 목록(재시작 후 Prefs 에서 복원 · 미주입 = 빈 목록).</summary>
+    public IReadOnlyList<PromptFlowStudio.Services.Export.FintechExportPreset> CustomPresets
+        => _prefs is null ? Array.Empty<PromptFlowStudio.Services.Export.FintechExportPreset>() : _prefs.CustomPresets;
+
+    /// <summary>💾 현재 스위치 → 레거시 슬롯 + (이름 有) 이름 붙은 목록 영속.</summary>
+    public bool SaveCustomPreset(string? name)
     {
         if (_prefs is null) { PresetMessage = "⚠ 환경설정 저장소 없음"; Notify(); return false; }
-        _prefs.Set(CustomPresetKey, CapturePreset().Serialize());
+        var snap = CapturePreset();
+        _prefs.Set(CustomPresetKey, snap.Serialize());
+        var named = _prefs.SaveCustomPreset(name, snap);
         ActivePreset = PromptFlowStudio.Services.Export.FintechPresetKind.Custom;
-        PresetMessage = "💾 사용자 프리셋 저장 완료";
+        ActiveCustomPresetName = named ? name!.Trim() : null;
+        PresetMessage = named ? "💾 사용자 프리셋 '" + ActiveCustomPresetName + "' 저장 완료" : "💾 사용자 프리셋 저장 완료";
         Notify();
         return true;
+    }
+
+    /// <summary>활성 이름 붙은 사용자 프리셋(null = 내장/레거시).</summary>
+    public string? ActiveCustomPresetName { get; private set; }
+
+    /// <summary>💾 이름 붙은 사용자 프리셋 적용(대소문자 무시) — 부재 시 false.</summary>
+    public bool ApplyCustomPreset(string? name)
+    {
+        var n = name?.Trim();
+        PromptFlowStudio.Services.Export.FintechExportPreset? hit = null;
+        if (!string.IsNullOrEmpty(n))
+            foreach (var p in CustomPresets)
+                if (string.Equals(p.Name, n, StringComparison.OrdinalIgnoreCase)) { hit = p; break; }
+        if (hit is null) { PresetMessage = "⚠ 사용자 프리셋을 찾을 수 없습니다: " + n; Notify(); return false; }
+        ApplyPreset(hit, PromptFlowStudio.Services.Export.FintechPresetKind.Custom);
+        ActiveCustomPresetName = hit.Name;
+        PresetMessage = "⚡ 💾 " + hit.Name + " 적용";
+        Notify();
+        return true;
+    }
+
+    // ── 👁️ 1프레임 번인 미리보기 ──
+    /// <summary>직전 미리보기 JPEG 절대 경로(null = 없음/실패).</summary>
+    public string? PreviewFramePath { get; private set; }
+    public bool IsPreviewBusy { get; private set; }
+    public string? PreviewMessage { get; private set; }
+
+    /// <summary>현재 스위치 → 미리보기 옵션(크롭/스케일 · LUT · 워터마크 · 티커 배지).</summary>
+    public PromptFlowStudio.Services.Export.ExportOptions CapturePreviewOptions() => new()
+    {
+        Sharpen = StockSuiteSharpen,
+        Resolution = StockSuiteResolution,
+        Watermark = StockSuiteWatermark,
+        Lut = StockSuiteLut,
+        TickerBadge = StockSuiteTickerBadge && !string.IsNullOrWhiteSpace(TickerSymbol)
+            ? new PromptFlowStudio.Services.Export.TickerBadgeData(TickerSymbol, TickerCompany, TickerPrice, TickerChangePercent) : null,
+    };
+
+    /// <summary>👁️ 전체 합성 체인 1프레임 JPEG 생성 — 미주입/진행 중/영상 없음이면 false.</summary>
+    public async Task<bool> GeneratePreviewFrameAsync(CancellationToken ct = default)
+    {
+        if (_stockSuite is null || IsPreviewBusy || !IsOpen || string.IsNullOrWhiteSpace(VideoPath)) return false;
+        IsPreviewBusy = true;
+        PreviewMessage = "👁️ 미리보기 생성 중…";
+        Notify();
+        try
+        {
+            var path = await _stockSuite.GeneratePreviewFrameAsync(VideoPath, CapturePreviewOptions(), ct).ConfigureAwait(false);
+            var ok = path.Length > 0;
+            PreviewFramePath = ok ? path : null;
+            PreviewDataUri = ok ? await LoadPreviewDataUriAsync(path, ct).ConfigureAwait(false) : null;
+            PreviewMessage = ok ? "👁️ 1프레임 번인 미리보기 (" + PromptFlowStudio.Services.Export.StockSuiteExporter.ResolutionTag(StockSuiteResolution, StockSuiteSharpen).TrimEnd(' ', '·') + ")"
+                : "⚠ " + (_stockSuite.LastPreviewError ?? "미리보기 실패");
+            return ok;
+        }
+        catch (Exception ex)
+        {
+            Program.Log("Publish.Preview", ex);
+            PreviewMessage = "⚠ 미리보기 실패: " + ex.Message;
+            return false;
+        }
+        finally { IsPreviewBusy = false; Notify(); }
+    }
+
+    /// <summary>미리보기 JPEG 최대 인라인 크기(초과 시 썸네일 생략 · 경로만 표시).</summary>
+    public const int MaxPreviewInlineBytes = 4 * 1024 * 1024;
+
+    /// <summary>👁️ 인라인 썸네일용 data URI(생성 시 1회 계산 · 렌더 경로 재할당 없음).</summary>
+    public string? PreviewDataUri { get; private set; }
+
+    private static async Task<string?> LoadPreviewDataUriAsync(string path, CancellationToken ct)
+    {
+        try
+        {
+            var fi = new FileInfo(path);
+            if (!fi.Exists || fi.Length == 0 || fi.Length > MaxPreviewInlineBytes) return null;
+            var bytes = await File.ReadAllBytesAsync(path, ct).ConfigureAwait(false);
+            return "data:image/jpeg;base64," + Convert.ToBase64String(bytes);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Program.Log("Publish.PreviewLoad", ex); return null; }
+    }
+
+    /// <summary>미리보기 패널 닫기.</summary>
+    public void ClearPreviewFrame()
+    {
+        PreviewFramePath = null;
+        PreviewDataUri = null;
+        PreviewMessage = null;
+        Notify();
     }
     public string TickerSymbol { get; set; } = "";
     public string TickerCompany { get; set; } = "";
@@ -384,6 +487,9 @@ public sealed class PublishViewModel : IDisposable
         YouTubeStatus = InstagramStatus = null;
         YouTubeResult = null;
         InstagramResult = null;
+        PreviewFramePath = null;   // 👁️ 이전 영상 미리보기 잔존 차단
+        PreviewDataUri = null;
+        PreviewMessage = null;
         IsOpen = true;
         Notify();
     }
