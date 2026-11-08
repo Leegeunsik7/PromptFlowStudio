@@ -15,6 +15,8 @@ public sealed record StockSuiteExportResult(bool Ok, string? TargetPath, bool Ne
 {
     /// <summary>⚡ 재인코딩 경로의 인코더 텔레메트리(스트림 복사/원본 복사 = null).</summary>
     public EncoderTelemetry? Telemetry { get; init; }
+    /// <summary>🔇 산출물 오디오 포함 여부 — ffmpeg 경로는 Silent Ambient Guard(<c>-an</c>) 로 항상 false · 원본 그대로 복사 폴백만 true(무음 미보장).</summary>
+    public bool HasAudio { get; init; }
 }
 
 /// <summary>💼 StockSuite 팩 일괄 내보내기 결과 — Exported = 넘버링된 대상 경로(순서 보존).</summary>
@@ -328,7 +330,7 @@ public sealed partial class StockSuiteExporter
         if (r.Ok && r.TargetPath is { } t && !string.Equals(Path.GetFullPath(sourcePath!), t, StringComparison.OrdinalIgnoreCase))
         {
             if (hotReload) WriteHotReloadTrigger(t, UtcNow());
-            ExportMetadata.MarkExported(sourcePath!, new[] { t }, UtcNow(), r.Telemetry);   // 📦 원본 메타 규격 통일 · ⚡ 인코더 텔레메트리
+            ExportMetadata.MarkExported(sourcePath!, new[] { t }, UtcNow(), r.Telemetry, r.HasAudio);   // 📦 원본 메타 규격 통일 · ⚡ 인코더 텔레메트리 · 🔇 hasAudio
             WriteManifest(t, sourcePath!, UtcNow());                           // 🧾 엄격 매칭 매니페스트
         }
         return r;
@@ -434,6 +436,7 @@ public sealed partial class StockSuiteExporter
                     return new(false, null, true, "StockSuite 에셋 경로가 존재하지 않습니다: " + fullDir + " — 환경설정에서 경로를 재설정하세요.");
                 Directory.CreateDirectory(fullDir);
             }
+            RegisterStockSuiteTarget(fullDir);   // 🔇 명시 대상 폴더도 Silent Ambient Guard 적용
             var target = Path.Combine(fullDir, name);
             if (string.Equals(Path.GetFullPath(sourcePath), target, StringComparison.OrdinalIgnoreCase))
                 return new(true, target, false, "이미 StockSuite 에셋 위치의 파일입니다.");
@@ -563,7 +566,8 @@ public sealed partial class StockSuiteExporter
         if (!File.Exists(target) || new FileInfo(target).Length != new FileInfo(sourcePath).Length)
             return new(false, null, false, "복사 검증 실패: " + name);
         WriteSourceMarker(target, sourcePath);
-        return new(true, target, false, "💼 StockSuite 내보내기 완료 → " + target);
+        Program.Log("StockSuite.SilentGuard", new InvalidOperationException("ffmpeg 부재/실패 — 원본 복사 폴백(오디오 스트립 미적용): " + name));
+        return new(true, target, false, "💼 StockSuite 내보내기 완료 → " + target) { HasAudio = true };
     }
 
     /// <summary>WebM 변환 — 성공 시 null, 실패 시 사유 문자열.</summary>
@@ -577,10 +581,82 @@ public sealed partial class StockSuiteExporter
         try { ffmpeg = _resolveFfmpeg(); }
         catch (Exception ex) { Program.Log("StockSuite.Ffmpeg", ex); ffmpeg = null; }
         if (string.IsNullOrWhiteSpace(ffmpeg)) return "ffmpeg 미탐지";
+        if (IsStockSuiteTarget(output)) args = EnforceSilentAmbient(args);   // 🔇 Silent Ambient Guard — StockSuite 폴더 산출물은 무조건 무음
         var ok = await _run(ffmpeg, args, ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
         if (!ok) return "ffmpeg 비정상 종료";
         return AmbientLoopService.IsValidOutput(output) ? null : "출력 파일 없음/손상";
+    }
+
+    /// <summary>🔇 Silent Ambient Guard 경고(PublishModal) — BGM 선택 상태로 StockSuite 내보내기 시 표시.</summary>
+    public const string SilentAmbientWarning = "⚠️ StockSuite backgrounds must be silent. BGM will be stripped.";
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _stockTargets = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>StockSuite 대상 폴더 등록(설정 경로 외 명시 targetDir 내보내기도 가드 적용).</summary>
+    internal void RegisterStockSuiteTarget(string fullDir)
+    {
+        if (!string.IsNullOrWhiteSpace(fullDir)) _stockTargets.TryAdd(Path.TrimEndingDirectorySeparator(Path.GetFullPath(fullDir)), 0);
+    }
+
+    /// <summary>🔇 경로가 StockSuite 에셋 폴더(설정 경로 또는 내보내기 대상 폴더) 하위인지.</summary>
+    public bool IsStockSuiteTarget(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        try
+        {
+            var dir = Path.GetDirectoryName(Path.GetFullPath(path));
+            if (string.IsNullOrEmpty(dir)) return false;
+            dir = Path.TrimEndingDirectorySeparator(dir);
+            if (_stockTargets.ContainsKey(dir)) return true;
+            var cfg = ConfiguredDirectory;
+            if (cfg is null) return false;
+            var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(cfg));
+            return dir.Equals(root, StringComparison.OrdinalIgnoreCase)
+                || dir.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { return false; }
+    }
+
+    /// <summary>
+    /// 🔇 Silent Ambient Guard — ffmpeg 인자에서 오디오 매핑/코덱/필터(<c>-map N:a</c>·<c>-c:a</c>·<c>-b:a</c>·<c>-af</c>·<c>-ar</c>·<c>-ac</c>) 제거 후
+    /// 출력 직전 <c>-an</c> 보장. 이미 무음이면 원본 배열 그대로 반환(할당 없음).
+    /// </summary>
+    public static string[] EnforceSilentAmbient(string[] args)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+        if (args.Length == 0) return args;
+        var hasAn = false;
+        var dirty = false;
+        for (var i = 0; i < args.Length - 1; i++)
+        {
+            if (args[i] == "-an") hasAn = true;
+            else if (IsAudioOption(args, i)) dirty = true;
+        }
+        if (hasAn && !dirty) return args;
+        var list = new List<string>(args.Length + 1);
+        var last = args.Length - 1;
+        for (var i = 0; i < last; i++)
+        {
+            if (args[i] == "-an") continue;
+            if (IsAudioOption(args, i)) { i++; continue; }   // 옵션 + 값 쌍 제거
+            list.Add(args[i]);
+        }
+        list.Add("-an");
+        list.Add(args[last]);
+        return list.ToArray();
+    }
+
+    private static bool IsAudioOption(string[] a, int i)
+    {
+        if (i + 1 >= a.Length) return false;
+        var o = a[i];
+        return o switch
+        {
+            "-c:a" or "-codec:a" or "-acodec" or "-b:a" or "-af" or "-filter:a" or "-ar" or "-ac" or "-q:a" => true,
+            "-map" => a[i + 1].Contains(":a", StringComparison.Ordinal),
+            _ => false,
+        };
     }
 
     /// <summary>🚀 GPU 가속 감지기(null = CPU 전용 · 앱 DI 는 <see cref="HardwareAccelDetector.Shared"/>).</summary>

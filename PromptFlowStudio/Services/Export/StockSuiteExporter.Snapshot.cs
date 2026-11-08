@@ -136,8 +136,42 @@ public sealed partial class StockSuiteExporter
     public static string PreviewFrameFileName(string sourceVideoPath)
         => "preview_" + Path.GetFileNameWithoutExtension(SnapshotFileName(sourceVideoPath, 0)).Replace("snap_", "", StringComparison.Ordinal) + ".jpg";
 
+    /// <summary>미리보기 파일명(시각 포함) — <c>preview_{원본명}_{mm-ss-fff}.jpg</c>(스크러버 위치별 구분 · 세션 정리 대상).</summary>
+    public static string PreviewFrameFileName(string sourceVideoPath, double seconds)
+        => "preview_" + Path.GetFileNameWithoutExtension(SnapshotFileName(sourceVideoPath, seconds)).Replace("snap_", "", StringComparison.Ordinal) + ".jpg";
+
+    private readonly System.Collections.Generic.List<string> _previewFiles = new(4);
+    private readonly object _previewGate = new();
+
+    /// <summary>🧹 현재 세션이 생성한 미리보기 임시 파일.</summary>
+    public string[] PreviewSessionFiles { get { lock (_previewGate) return _previewFiles.ToArray(); } }
+
+    /// <summary>🧹 세션 미리보기 임시 파일 일괄 삭제 — 모달 닫기 · 새 미리보기 요청 시 호출. 정리(삭제 또는 이미 부재) 건수 반환 · 예외 없음.</summary>
+    public int CleanupPreviewFrames()
+    {
+        string[] files;
+        lock (_previewGate) { files = _previewFiles.ToArray(); _previewFiles.Clear(); }
+        var n = 0;
+        foreach (var f in files)
+        {
+            TryDelete(f);
+            if (!File.Exists(f)) n++;
+        }
+        return n;
+    }
+
+    private void TrackPreviewFile(string path)
+    {
+        lock (_previewGate)
+        {
+            foreach (var f in _previewFiles) if (string.Equals(f, path, StringComparison.OrdinalIgnoreCase)) return;
+            _previewFiles.Add(path);
+        }
+    }
+
     /// <summary>
-    /// 👁️ 1프레임 번인 미리보기 — 전체 합성 체인을 1초 지점 1프레임에만 적용해 경량 JPEG 생성.
+    /// 👁️ 1프레임 번인 미리보기 — 전체 합성 체인을 스크러버 시각(<see cref="ExportOptions.AtSeconds"/>) 1프레임에만 적용해 경량 JPEG 생성.
+    /// 새 요청 시 직전 세션 임시 파일 정리.
     /// 성공 시 절대 경로, 실패 시 빈 문자열(예외 없음 · 사유는 <see cref="LastPreviewError"/>).
     /// </summary>
     public async Task<string> GeneratePreviewFrameAsync(string sourceVideoPath, ExportOptions options, CancellationToken ct = default)
@@ -153,14 +187,15 @@ public sealed partial class StockSuiteExporter
         {
             var dir = Path.GetFullPath(string.IsNullOrWhiteSpace(options.OutputDirectory) ? Path.Combine(Path.GetTempPath(), "pfs_preview") : options.OutputDirectory);
             Directory.CreateDirectory(dir);
-            outPath = Path.Combine(dir, PreviewFrameFileName(sourceVideoPath));
+            CleanupPreviewFrames();   // 🧹 새 미리보기 요청 → 직전 세션 임시 파일 정리
+            var t = double.IsFinite(options.AtSeconds) && options.AtSeconds > 0 ? options.AtSeconds : 0;
+            outPath = Path.Combine(dir, PreviewFrameFileName(sourceVideoPath, t));
             TryDelete(outPath);   // 직전 미리보기 잔존 시 성공 오판 방지
             var src = Path.GetFullPath(sourceVideoPath);
             var filter = BuildPreviewFilter(options, options.Watermark ? ResolveWatermarkFont() : null, ResolveTickerBadgeFont());
-            var t = double.IsFinite(options.AtSeconds) && options.AtSeconds > 0 ? options.AtSeconds : 0;
-            if (await TryPreviewAsync(ffmpeg, src, outPath, filter, t, ct).ConfigureAwait(false)) return outPath;
-            // 원본이 1초보다 짧음 → 0초 1회 재시도.
-            if (t > 0 && await TryPreviewAsync(ffmpeg, src, outPath, filter, 0, ct).ConfigureAwait(false)) return outPath;
+            if (await TryPreviewAsync(ffmpeg, src, outPath, filter, t, ct).ConfigureAwait(false)) { TrackPreviewFile(outPath); return outPath; }
+            // 스크러버 시각이 원본 길이 초과 → 0초 1회 재시도.
+            if (t > 0 && await TryPreviewAsync(ffmpeg, src, outPath, filter, 0, ct).ConfigureAwait(false)) { TrackPreviewFile(outPath); return outPath; }
             TryDelete(outPath);
             LastPreviewError = "미리보기 프레임 생성 실패(FFmpeg 종료 코드 확인)";
             return string.Empty;

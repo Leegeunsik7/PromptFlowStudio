@@ -21,7 +21,7 @@ namespace PromptFlowStudio.Services.Render;
 ///   ▸ 디스크 가드레일: 디스패치 직전 출력 드라이브 잔여 &lt; <see cref="DiskPauseThresholdBytes"/> 면 자동 일시정지(<see cref="IsDiskPaused"/>) — 재개는 수동.
 ///   ▸ OnChange 구독자 예외는 격리.
 /// </summary>
-public sealed class RenderQueueService : IRenderQueueService
+public sealed partial class RenderQueueService : IRenderQueueService
 {
     public const int ProgressStep = 5;
     /// <summary>VRAM 사용률 자동 일시정지 임계(0~1).</summary>
@@ -276,6 +276,7 @@ public sealed class RenderQueueService : IRenderQueueService
                     job.Status = BatchJobStatus.Completed;
                     job.CompletedAt = DateTimeOffset.Now;
                 }
+                RecordThroughputSample((long)(DateTimeOffset.Now - startedAt).TotalMilliseconds, JobWeight(job));   // ⏱️ ETA 롤링 평균
                 WriteRenderMeta(job, startedAt);
                 await ChainDurationCutAsync(job, ct).ConfigureAwait(false);
             }

@@ -26,6 +26,10 @@ public static class ExportMetadata
 
     /// <summary>원본 메타에 내보내기 표식 + ⚡ 인코더 텔레메트리(<c>actualEncoder</c> · <c>isFallback</c> · <c>encodeElapsedMs</c>) 병합.</summary>
     public static bool MarkExported(string mediaPath, IEnumerable<string> targets, DateTimeOffset at, EncoderTelemetry? telemetry)
+        => MarkExported(mediaPath, targets, at, telemetry, null);
+
+    /// <summary>원본 메타에 내보내기 표식 + 텔레메트리 + 🔇 <c>hasAudio</c>(산출물 오디오 포함 여부 · null = 기록 생략).</summary>
+    public static bool MarkExported(string mediaPath, IEnumerable<string> targets, DateTimeOffset at, EncoderTelemetry? telemetry, bool? hasAudio)
     {
         if (string.IsNullOrWhiteSpace(mediaPath) || targets is null) return false;
         string meta = "", tmp = "";
@@ -56,6 +60,8 @@ public static class ExportMetadata
                 obj["encodeElapsedMs"] = tel.EncodeElapsedMs;
             }
 
+            if (hasAudio is { } ha) obj["hasAudio"] = ha;
+
             tmp = meta + ".~tmp";
             File.WriteAllText(tmp, obj.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
             File.Move(tmp, meta, overwrite: true);
@@ -84,6 +90,24 @@ public static class ExportMetadata
             var fb = r.TryGetProperty("isFallback", out var f) && f.ValueKind == JsonValueKind.True;
             var ms = r.TryGetProperty("encodeElapsedMs", out var e) && e.ValueKind == JsonValueKind.Number && e.TryGetInt64(out var l) ? l : 0L;
             return new EncoderTelemetry(name, fb, ms);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentException or NotSupportedException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>🔇 메타 <c>hasAudio</c> 읽기 — 부재/손상/필드 없음 = null.</summary>
+    public static bool? ReadHasAudio(string mediaPath)
+    {
+        try
+        {
+            var meta = MetaPathFor(mediaPath);
+            if (!File.Exists(meta)) return null;
+            using var doc = JsonDocument.Parse(File.ReadAllText(meta));
+            return doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty("hasAudio", out var v)
+                ? v.ValueKind switch { JsonValueKind.True => true, JsonValueKind.False => false, _ => null }
+                : null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentException or NotSupportedException)
         {

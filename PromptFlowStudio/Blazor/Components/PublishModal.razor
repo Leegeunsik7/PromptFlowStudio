@@ -108,6 +108,10 @@
                             }
                         </div>
                     }
+                    @if (vm.StockSuiteSilentWarning is { } silentWarn)
+                    {
+                        <span class="pm-seo-msg" title="HTS 앰비언트 배경은 오디오 트랙을 제거(-an)하여 장중 음악 재생을 차단합니다.">@silentWarn</span>
+                    }
                     @if (vm.StockSuiteMessage is { Length: > 0 } ssMsg)
                     {
                         <span class="pm-seo-msg">@ssMsg</span>

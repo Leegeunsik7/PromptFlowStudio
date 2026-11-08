@@ -217,6 +217,18 @@ public sealed class PublishViewModel : IDisposable
     }
 
     // ── 👁️ 1프레임 번인 미리보기 ──
+    /// <summary>🎞️ 미리보기 추출 시각(초) — 모달 열 때 작업실 스크러버 현재 재생 위치로 설정(기본 1초 · 무효/음수 = 0).</summary>
+    public double PreviewTimestampSec
+    {
+        get => _previewTs;
+        set => _previewTs = double.IsFinite(value) && value > 0 ? value : 0;
+    }
+    private double _previewTs = 1.0;
+
+    /// <summary>🔇 Silent Ambient Guard 경고 — BGM 선택 상태에서 StockSuite 배경은 무음 강제(null = 경고 없음).</summary>
+    public string? StockSuiteSilentWarning => Bgm != PromptFlowStudio.Services.Export.SnsBgmPreset.None
+        ? PromptFlowStudio.Services.Export.StockSuiteExporter.SilentAmbientWarning : null;
+
     /// <summary>직전 미리보기 JPEG 절대 경로(null = 없음/실패).</summary>
     public string? PreviewFramePath { get; private set; }
     public bool IsPreviewBusy { get; private set; }
@@ -231,6 +243,7 @@ public sealed class PublishViewModel : IDisposable
         Lut = StockSuiteLut,
         TickerBadge = StockSuiteTickerBadge && !string.IsNullOrWhiteSpace(TickerSymbol)
             ? new PromptFlowStudio.Services.Export.TickerBadgeData(TickerSymbol, TickerCompany, TickerPrice, TickerChangePercent) : null,
+        AtSeconds = PreviewTimestampSec,
     };
 
     /// <summary>👁️ 전체 합성 체인 1프레임 JPEG 생성 — 미주입/진행 중/영상 없음이면 false.</summary>
@@ -246,7 +259,8 @@ public sealed class PublishViewModel : IDisposable
             var ok = path.Length > 0;
             PreviewFramePath = ok ? path : null;
             PreviewDataUri = ok ? await LoadPreviewDataUriAsync(path, ct).ConfigureAwait(false) : null;
-            PreviewMessage = ok ? "👁️ 1프레임 번인 미리보기 (" + PromptFlowStudio.Services.Export.StockSuiteExporter.ResolutionTag(StockSuiteResolution, StockSuiteSharpen).TrimEnd(' ', '·') + ")"
+            PreviewMessage = ok ? "👁️ 1프레임 번인 미리보기 (" + PromptFlowStudio.Services.Export.StockSuiteExporter.ResolutionTag(StockSuiteResolution, StockSuiteSharpen).TrimEnd(' ', '·')
+                    + " · 🎞️ " + PromptFlowStudio.Services.Export.StockSuiteExporter.FormatSeekSeconds(PreviewTimestampSec) + "s)"
                 : "⚠ " + (_stockSuite.LastPreviewError ?? "미리보기 실패");
             return ok;
         }
@@ -490,6 +504,7 @@ public sealed class PublishViewModel : IDisposable
         PreviewFramePath = null;   // 👁️ 이전 영상 미리보기 잔존 차단
         PreviewDataUri = null;
         PreviewMessage = null;
+        PreviewTimestampSec = 1.0;   // 🎞️ 작업실이 스크러버 위치로 덮어씀(미지정 = 1초)
         IsOpen = true;
         Notify();
     }
@@ -599,7 +614,18 @@ public sealed class PublishViewModel : IDisposable
     public void Close()
     {
         IsOpen = false;
+        CleanupPreviewTemp();   // 🧹 모달 닫기 → 세션 미리보기 임시 파일 정리
         Notify();
+    }
+
+    /// <summary>🧹 미리보기 임시 파일 삭제 + 패널 상태 초기화(예외 격리).</summary>
+    private void CleanupPreviewTemp()
+    {
+        PreviewFramePath = null;
+        PreviewDataUri = null;
+        PreviewMessage = null;
+        try { _stockSuite?.CleanupPreviewFrames(); }
+        catch (Exception ex) { Program.Log("Publish.PreviewCleanup", ex); }
     }
 
     /// <summary>업로드 시작 — 선택 채널 병렬 전송. 모든 선택 채널 성공 시 true.</summary>
@@ -712,6 +738,7 @@ public sealed class PublishViewModel : IDisposable
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         OnChange = null;
         Cancel();
+        CleanupPreviewTemp();
         _cts?.Dispose();
         _cts = null;
         _seoCts?.Dispose();

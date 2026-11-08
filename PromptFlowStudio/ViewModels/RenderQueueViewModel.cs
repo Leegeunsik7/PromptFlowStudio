@@ -62,6 +62,22 @@ public sealed class RenderQueueViewModel : IDisposable
     public string? ActiveEngineKind { get; private set; }
     /// <summary>가장 최근(큐 후순위) 실패 작업의 원인 — 없으면 null.</summary>
     public string? LastErrorMessage { get; private set; }
+    /// <summary>⏱️ 큐 ETA 라벨 — <c>⏱️ ETA: ~mm:ss (Est. HH:mm:ss KST)</c>(산출 불가 = null).</summary>
+    public string? EtaLabel { get; private set; }
+    private long _etaSecs = -1;
+
+    private void UpdateEta()
+    {
+        TimeSpan? rem;
+        DateTimeOffset? at;
+        try { rem = _queue.EstimatedRemainingTime; at = _queue.EstimatedCompletionTime; }
+        catch (Exception ex) { Program.Log("RenderQueueVm.Eta", ex); rem = null; at = null; }
+        if (rem is not { } r || at is not { } a) { _etaSecs = -1; EtaLabel = null; return; }
+        var secs = (long)Math.Ceiling(r.TotalSeconds);
+        if (secs == _etaSecs && EtaLabel is not null) return;   // 초 단위 변화 시에만 문자열 재생성
+        _etaSecs = secs;
+        EtaLabel = PromptFlowStudio.Services.Render.RenderQueueService.FormatEta(r, a);
+    }
 
     public void TogglePause() { if (_queue.IsPaused) _queue.ResumeQueue(); else _queue.PauseQueue(); }
     public void ClearCompleted() => _queue.ClearCompleted();
@@ -131,6 +147,7 @@ public sealed class RenderQueueViewModel : IDisposable
         ProcessingCount = processing;
         CompletedCount = completed;
         FailedCount = failed;
+        UpdateEta();
 
         var sig = HashCode.Combine(snap.Length, pending, processing, completed, failed, IsPaused, IsVramPaused, HashCode.Combine(ActiveJob?.JobId, ActiveEngineKind, lastError, IsDiskPaused));
         var data = HashCode.Combine(sig, progress.ToHashCode());

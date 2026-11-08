@@ -62,6 +62,7 @@
                 <span>🏭 대량 양산 렌더 큐 <span class="q-dim">— 총 @(Vm.TotalJobsCount.ToString(CultureInfo.InvariantCulture))건</span></span>
                 @if (Vm.ActiveJob is { } act) { <span class="q-badge run">렌더 중 · @(Trunc(act.Prompt))@(act.EngineKind is null ? "" : " · " + act.EngineKind)</span> }
                 else if (Vm.IsPaused) { <span class="q-badge">@Vm.PauseLabel</span> }
+                @if (Vm.EtaLabel is { } eta) { <span class="q-badge q-eta" title="최근 인코딩 롤링 평균 × 해상도 가중치(4K·32:9 1.8× · 1080p60 1.0× · 9:16/1080p30 0.7×)">@eta</span> }
             </div>
             <table class="q-tbl">
                 <thead><tr><th>#</th><th>프롬프트</th><th>시드</th><th>해상도</th><th>길이</th><th>엔진</th><th>상태</th><th>진행률</th><th></th></tr></thead>

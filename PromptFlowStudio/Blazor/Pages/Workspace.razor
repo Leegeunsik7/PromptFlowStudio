@@ -1928,7 +1928,7 @@
     }
 
     /// <summary>🚀 SNS 원클릭 발행 — 작업실 산출물(경로 · 프로젝트 이름 · 동명 .srt) → PublishModal.</summary>
-    private void OpenPublish(string path)
+    private async Task OpenPublish(string path)
     {
         try
         {
@@ -1938,6 +1938,9 @@
             var mode = snap.HasMetadata ? snap.DurationMode : _durationMode;
             PubVm.OpenForMedia(path, Path.GetFileNameWithoutExtension(path), Path.ChangeExtension(path, ".srt"), string.IsNullOrWhiteSpace(prompt) ? null : prompt,
                 PromptFlowStudio.Services.Gallery.WorkspaceRehydration.SecondsOf(mode));
+            // 🎞️ 스크러버 동기 — 동일 영상이 재생기에 로드돼 있으면 현재 재생 위치를 미리보기 시각으로(실패 = 기본 1초 유지).
+            if (InspectPath is { } ip && string.Equals(ip, path, StringComparison.OrdinalIgnoreCase) && await ReadPlayheadAsync() is { } st)
+                PubVm.PreviewTimestampSec = st[0];
         }
         catch (Exception ex) { Program.Log("Workspace.Publish", ex); }
     }
