@@ -4,6 +4,7 @@
 @inject PlutoTrendEngine Engine
 @inject PlutoLearningService Learning
 @inject PlutoSocialRadarEngine Radar
+@inject PlutoIdentityVault IdentityVault
 @inject PromptDraftService Draft
 @inject NavigationManager Nav
 @inject PromptFlowStudio.Services.Platform.IClipboardService Clipboard
@@ -14,6 +15,7 @@
     <div class="pl-head">
         <h1 class="pl-title">🪐 플루토 <span class="pl-title-g">트렌드 랩</span></h1>
         <div class="pl-sub">플루토가 고른 쇼츠·릴스 트렌드 — 채택·내보내기·평가할수록 취향을 학습합니다.</div>
+        <button class="pl-identity@(_identity is not null ? " on" : "")" data-pluto-identity-open="1" title="아기/반려동물 프로필 — 외모 특징이 새 트렌드 프롬프트에 캐릭터 일관성 앵커로 반영됩니다" @onclick="() => _identityModal = true">@(_identity is { } ip ? ip.FormatBadge(DateTime.Today) : "🍼 우리 아이 프로필 만들기")</button>
     </div>
 
     <div class="pl-brain" data-pluto-hud="1" title="채택 1 · 내보내기 3 · 👍 1 · 📈 SNS 공식 학습 2 XP — 10 XP 마다 레벨 업">
@@ -130,11 +132,15 @@
     @if (_toast is { } msg) { <div class="pl-toast" role="status">@msg</div> }
 </div>
 
+<PlutoIdentityModal Open="_identityModal" Vault="IdentityVault" OnClose="() => _identityModal = false" OnSaved="OnIdentitySaved" />
+
 <style>
     .pl { padding: 24px 28px; max-width: 1280px; }
     .pl-title { font-size: 26px; font-weight: 900; margin: 0; }
     .pl-title-g { background: linear-gradient(135deg,#8b7bff,#ff7bc6); -webkit-background-clip: text; background-clip: text; color: transparent; }
     .pl-sub { opacity: .75; margin-top: 6px; font-size: 14px; }
+    .pl-identity { margin-top: 10px; padding: 6px 14px; border-radius: 999px; border: 1px dashed rgba(244,114,182,.55); background: transparent; color: inherit; font-weight: 800; font-size: 13px; cursor: pointer; }
+    .pl-identity.on { border-style: solid; background: rgba(244,114,182,.14); color: #f472b6; }
     .pl-brain { margin-top: 14px; padding: 10px 14px; border-radius: 14px; background: linear-gradient(90deg, rgba(167,139,250,.18), rgba(244,114,182,.14)); border: 1px solid rgba(167,139,250,.35); font-size: 14px; font-weight: 600; }
     .pl-brain-bar { margin-top: 6px; height: 6px; border-radius: 3px; background: rgba(255,255,255,.12); overflow: hidden; }
     .pl-brain-fill { height: 100%; background: linear-gradient(90deg, #a78bfa, #f472b6); transition: width .4s ease; }
@@ -182,6 +188,8 @@
     private string? _toast;
     private System.Threading.Timer? _toastTimer;
     private readonly CancellationTokenSource _cts = new();
+    private PlutoIdentityProfile? _identity;
+    private bool _identityModal;
 
     // ── 📈 SNS 트렌드 레이더 ──
     private enum LabView { Curation, Radar }
@@ -201,6 +209,9 @@
         try { await Learning.EnsureLoadedAsync(_cts.Token); }   // 🧠 HUD 레벨/XP 표시용 메모리 선적재
         catch (OperationCanceledException) { }
         catch (Exception ex) { Program.Log("PlutoTrendLab.Brain", ex); }
+        try { _identity = await IdentityVault.GetActiveProfileAsync(_cts.Token); }   // 🍼 프로필 칩 표시용
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("PlutoTrendLab.Identity", ex); }
         await LoadAsync();
     }
 
@@ -337,6 +348,13 @@
             _toast = null;
             try { _ = InvokeAsync(StateHasChanged); } catch (Exception ex) { Program.Log("PlutoTrendLab.Toast", ex); }
         }, null, 2500, System.Threading.Timeout.Infinite);
+    }
+
+    private void OnIdentitySaved(PlutoIdentityProfile? p)
+    {
+        _identity = p;
+        _identityModal = false;
+        Toast(p is null ? "🗑 우리 아이 프로필을 삭제했어요" : "💾 " + p.FormatBadge(DateTime.Today) + " — 새 트렌드에 캐릭터 앵커를 반영할게요");
     }
 
     private void OnLearningChanged()

@@ -1,0 +1,193 @@
+@using PromptFlowStudio.Services.Pluto
+
+@* [PromptFlow Studio] 🍼 플루토 아이덴티티 모달 — 이름/태명 · 출생일 · 아기/반려동물 · 외모 특징 · 애착 소품 → PlutoIdentityVault 영속.
+   모바일 링크 대상 서브컴포넌트 — @inject 금지(볼트는 파라미터 주입). *@
+
+@if (Open)
+{
+    <div class="pim-dim" @onclick="CloseAsync"></div>
+    <div class="pim" role="dialog" aria-label="플루토 아이덴티티 프로필" data-pluto-identity="1">
+        <div class="pim-h">
+            <span>@(_pet ? "🐾" : "🍼") 우리 아이 프로필</span>
+            <button class="pim-x" title="닫기" @onclick="CloseAsync">✕</button>
+        </div>
+        <div class="pim-body">
+            <div class="pim-seg" role="radiogroup">
+                <button class="pim-seg-b@(_pet ? "" : " on")" role="radio" aria-checked="@(_pet ? "false" : "true")" data-identity-kind="baby" @onclick="() => _pet = false">🍼 아기</button>
+                <button class="pim-seg-b@(_pet ? " on" : "")" role="radio" aria-checked="@(_pet ? "true" : "false")" data-identity-kind="pet" @onclick="() => _pet = true">🐾 반려동물</button>
+            </div>
+
+            <label class="pim-lbl">이름 / 태명</label>
+            <input class="pim-in" maxlength="@PlutoIdentityProfile.MaxNameLength" placeholder="예: 하윤이" @bind="_name" @bind:event="oninput" />
+
+            <div class="pim-row">
+                <div class="pim-col">
+                    <label class="pim-lbl">출생일</label>
+                    <input class="pim-in" type="date" @bind="_birth" @bind:format="yyyy-MM-dd" />
+                </div>
+                <div class="pim-col">
+                    <label class="pim-lbl">성별</label>
+                    <select class="pim-in" @bind="_gender">
+                        <option value="">선택 안 함</option>
+                        <option value="female">@(_pet ? "암컷" : "여아")</option>
+                        <option value="male">@(_pet ? "수컷" : "남아")</option>
+                    </select>
+                </div>
+            </div>
+            <div class="pim-dday">📅 오늘 D+@(Math.Max(1, (int)(DateTime.Today - _birth.Date).TotalDays).ToString(System.Globalization.CultureInfo.InvariantCulture))</div>
+
+            <label class="pim-lbl">고유 외모 특징 <span class="pim-hint">(영상 프롬프트에 그대로 들어가요 · 영문 권장)</span></label>
+            <textarea class="pim-in" rows="3" maxlength="@PlutoIdentityProfile.MaxFeaturesLength" placeholder="예: charming dimples, soft curly baby hair, bright brown eyes" @bind="_features" @bind:event="oninput"></textarea>
+            <div class="pim-chips">
+                @foreach (var (ko, en) in (_pet ? PetSuggestions : BabySuggestions))
+                {
+                    <button class="pim-chip" title="@en" @onclick="() => AddFeature(en)">+ @ko</button>
+                }
+            </div>
+
+            <label class="pim-lbl">애착 인형 / 소품</label>
+            <input class="pim-in" maxlength="@PlutoIdentityProfile.MaxItemLength" placeholder="예: fluffy bunny plush toy" @bind="_item" @bind:event="oninput" />
+
+            @if (_error is { } err) { <div class="pim-err">@err</div> }
+
+            <div class="pim-actions">
+                @if (!string.IsNullOrEmpty(_id))
+                {
+                    <button class="pim-btn del" disabled="@_busy" data-identity-delete="1" @onclick="DeleteAsync">🗑 삭제</button>
+                }
+                <button class="pim-btn go" disabled="@(_busy || string.IsNullOrWhiteSpace(_name))" data-identity-save="1" @onclick="SaveAsync">@(_busy ? "⏳ 저장 중..." : "💾 저장")</button>
+            </div>
+        </div>
+    </div>
+}
+
+<style>
+    .pim-dim { position: fixed; inset: 0; background: rgba(2,6,23,.5); z-index: 890; }
+    .pim { position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%); width: min(440px, 94vw); max-height: 92vh; z-index: 891; display: flex; flex-direction: column; background: var(--card,#111a2e); color: var(--ink,#e6eefc); border: 1px solid rgba(244,114,182,.35); border-radius: 16px; box-shadow: 0 18px 48px rgba(0,0,0,.45); }
+    .pim-h { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; font-weight: 900; border-bottom: 1px solid rgba(148,163,184,.16); }
+    .pim-x { background: transparent; border: 0; color: inherit; font-size: 16px; cursor: pointer; }
+    .pim-body { padding: 14px 18px; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+    .pim-seg { display: flex; gap: 6px; }
+    .pim-seg-b { flex: 1; padding: 8px; border-radius: 10px; border: 1px solid rgba(148,163,184,.3); background: transparent; color: inherit; font-weight: 800; cursor: pointer; }
+    .pim-seg-b.on { border-color: transparent; color: #fff; background: linear-gradient(135deg,#f472b6,#a78bfa); }
+    .pim-lbl { font-size: 12px; font-weight: 700; opacity: .8; }
+    .pim-hint { font-weight: 500; opacity: .7; }
+    .pim-in { width: 100%; box-sizing: border-box; border-radius: 10px; border: 1px solid rgba(148,163,184,.3); background: transparent; color: inherit; padding: 8px 10px; font: inherit; }
+    .pim-row { display: flex; gap: 10px; }
+    .pim-col { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+    .pim-dday { font-size: 12px; font-weight: 800; color: #f472b6; }
+    .pim-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .pim-chip { padding: 4px 10px; border-radius: 999px; border: 1px dashed rgba(244,114,182,.5); background: transparent; color: inherit; font-size: 12px; cursor: pointer; }
+    .pim-err { color: #f87171; font-size: 12px; }
+    .pim-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
+    .pim-btn { padding: 9px 14px; border-radius: 10px; border: 1px solid rgba(148,163,184,.3); background: transparent; color: inherit; font-weight: 800; cursor: pointer; }
+    .pim-btn.go { border: 0; color: #fff; background: linear-gradient(135deg,#f472b6,#8b7bff); }
+    .pim-btn.del { margin-right: auto; color: #f87171; }
+    .pim-btn:disabled { opacity: .5; cursor: default; }
+</style>
+
+@code {
+    [Parameter] public bool Open { get; set; }
+    [Parameter] public PlutoIdentityVault? Vault { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    /// <summary>저장 성공 → 저장된 프로필(삭제 시 null).</summary>
+    [Parameter] public EventCallback<PlutoIdentityProfile?> OnSaved { get; set; }
+
+    private static readonly (string Ko, string En)[] BabySuggestions =
+    {
+        ("보조개", "charming dimples"), ("곱슬머리", "soft curly baby hair"), ("앙증맞은 손발", "tiny hands and feet"),
+        ("동그란 눈", "big round bright eyes"), ("통통한 볼", "chubby rosy cheeks"), ("배냇머리", "fine wispy newborn hair"),
+    };
+    private static readonly (string Ko, string En)[] PetSuggestions =
+    {
+        ("복슬복슬 털", "fluffy soft fur"), ("쫑긋 귀", "perky pointed ears"), ("동그란 눈", "big round glossy eyes"),
+        ("하얀 양말 발", "white sock-like paws"), ("짧은 다리", "short stubby legs"), ("말린 꼬리", "curly tail"),
+    };
+
+    private bool _wasOpen;
+    private string _id = "";
+    private string _name = "";
+    private DateTime _birth = DateTime.Today;
+    private bool _pet;
+    private string _gender = "";
+    private string _features = "";
+    private string _item = "";
+    private string? _error;
+    private bool _busy;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Open && !_wasOpen) await LoadAsync();   // 열릴 때마다 현재 활성 프로필로 폼 초기화
+        _wasOpen = Open;
+    }
+
+    private async Task LoadAsync()
+    {
+        _error = null;
+        PlutoIdentityProfile? p = null;
+        try { if (Vault is not null) p = await Vault.GetActiveProfileAsync(); }
+        catch (Exception ex) { Program.Log("PlutoIdentity.Load", ex); }
+        _id = p?.Id ?? "";
+        _name = p?.SubjectName ?? "";
+        _birth = p?.BirthDate.Date ?? DateTime.Today;
+        _pet = p?.IsPet ?? false;
+        _gender = p?.Gender ?? "";
+        _features = p?.VisualFeatures ?? "";
+        _item = p?.FavoriteItem ?? "";
+    }
+
+    private void AddFeature(string en)
+    {
+        var cur = (_features ?? "").TrimEnd(' ', ',');
+        if (cur.Contains(en, StringComparison.OrdinalIgnoreCase)) return;
+        var next = cur.Length == 0 ? en : cur + ", " + en;
+        if (next.Length <= PlutoIdentityProfile.MaxFeaturesLength) _features = next;
+    }
+
+    private async Task SaveAsync()
+    {
+        _error = null;
+        if (_busy || Vault is null || string.IsNullOrWhiteSpace(_name)) return;
+        _busy = true;
+        try
+        {
+            var p = new PlutoIdentityProfile
+            {
+                Id = _id,
+                SubjectName = _name,
+                BirthDate = _birth.Date,
+                Category = _pet ? PlutoIdentityProfile.PetCategory : PlutoIdentityProfile.BabyCategory,
+                Gender = _gender,
+                VisualFeatures = _features,
+                FavoriteItem = _item,
+                IsActive = true,
+            };
+            await Vault.SaveProfileAsync(p);
+            _id = p.Id;
+            await OnSaved.InvokeAsync(await Vault.GetActiveProfileAsync());
+        }
+        catch (Exception ex) { Program.Log("PlutoIdentity.Save", ex); _error = "⚠ 저장 실패 — 다시 시도해 주세요"; }
+        finally { _busy = false; }
+    }
+
+    private async Task DeleteAsync()
+    {
+        _error = null;
+        if (_busy || Vault is null || string.IsNullOrEmpty(_id)) return;
+        _busy = true;
+        try
+        {
+            await Vault.DeleteProfileAsync(_id);
+            _id = "";
+            await OnSaved.InvokeAsync(null);
+        }
+        catch (Exception ex) { Program.Log("PlutoIdentity.Delete", ex); _error = "⚠ 삭제 실패"; }
+        finally { _busy = false; }
+    }
+
+    private async Task CloseAsync()
+    {
+        try { await OnClose.InvokeAsync(); }
+        catch (Exception ex) { Program.Log("PlutoIdentity.Close", ex); }
+    }
+}

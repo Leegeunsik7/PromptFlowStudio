@@ -44,6 +44,9 @@ public sealed class PlutoGenerativeEngine
         _rng = rng ?? new Random();
     }
 
+    /// <summary>🍼 아이덴티티 볼트 — 활성 프로필 구분(Baby/Pet)과 테마 일치 시 캐릭터 일관성 앵커를 프롬프트 선두에 삽입.</summary>
+    public PlutoIdentityVault? Identity { get; init; }
+
     /// <summary>🧠 마지막 <see cref="GenerateDynamicTrendsAsync"/> 가 LLM 결과를 사용했는지(false = 로컬 조합기).</summary>
     public bool LastUsedLlm { get; private set; }
 
@@ -161,6 +164,7 @@ public sealed class PlutoGenerativeEngine
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Gen] lexicon load: " + ex.Message); }   // [부분 구제] 시드 어휘만으로 생성
         }
         await EnsureRadarAsync(ct).ConfigureAwait(false);
+        await EnsureIdentityAsync(ct).ConfigureAwait(false);
         return Synthesize(category, count, now ?? DateTime.Now);
     }
 
@@ -170,6 +174,22 @@ public sealed class PlutoGenerativeEngine
         try { await _radar.EnsureLoadedAsync(ct).ConfigureAwait(false); }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Gen] radar load: " + ex.Message); }   // [부분 구제] 벤치마크 패턴만 사용
+    }
+
+    private async Task EnsureIdentityAsync(CancellationToken ct)
+    {
+        if (Identity is null) return;
+        try { await Identity.EnsureLoadedAsync(ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Gen] identity load: " + ex.Message); }   // [부분 구제] 앵커 없이 생성
+    }
+
+    /// <summary>🍼 활성 프로필 앵커(미주입/불일치 테마 → 빈 문자열).</summary>
+    private string IdentityAnchor(StudioThemeCategory category)
+    {
+        if (Identity is null) return "";
+        try { return PlutoIdentityVault.AnchorFor(Identity.ActiveProfile, category); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Gen] identity: " + ex.Message); return ""; }
     }
 
     public const string LlmTrendInstruction =
@@ -194,6 +214,7 @@ public sealed class PlutoGenerativeEngine
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Gen] lexicon load: " + ex.Message); }
         }
         await EnsureRadarAsync(ct).ConfigureAwait(false);
+        await EnsureIdentityAsync(ct).ConfigureAwait(false);
         var t = now ?? DateTime.Now;
         var n = Math.Clamp(count, 1, MotifsFor(category).Length);
         LastUsedLlm = false;
@@ -223,6 +244,9 @@ public sealed class PlutoGenerativeEngine
           .Append("Season: ").Append(ctx.SeasonEn).Append('\n')
           .Append("Time of day: ").Append(ctx.TimeEn).Append(" (").Append(ctx.LightingEn).Append(")\n")
           .Append("Count: ").Append(count.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        var anchor = IdentityAnchor(category);
+        if (anchor.Length > 0)
+            sb.Append("Subject identity anchor (begin every prompt with exactly this to keep the same character): ").Append(anchor).Append('\n');
         AppendTokens(sb, "Learned lighting tokens", TopOrEmpty(DnaBucket.Lighting));
         AppendTokens(sb, "Learned camera tokens", TopOrEmpty(DnaBucket.Camera));
         AppendTokens(sb, "Learned atmosphere tokens", TopOrEmpty(DnaBucket.Atmosphere));
@@ -278,6 +302,7 @@ public sealed class PlutoGenerativeEngine
 
         var ctx = ContextFor(now);
         var stamp = now.ToString("yyMMddHHmm", CultureInfo.InvariantCulture);
+        var anchor = IdentityAnchor(category);
         var result = new List<PlutoTrend>(Math.Max(max, 1));
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var e in arr.EnumerateArray())
@@ -286,6 +311,7 @@ public sealed class PlutoGenerativeEngine
             var prompt = PlutoLlmBridge.Str(e, "prompt", 900);
             var hook = PlutoLlmBridge.Str(e, "hook", 120);
             if (prompt.Length < 12 || hook.Length == 0 || !seen.Add(prompt)) continue;
+            prompt = PlutoIdentityVault.ApplyAnchor(prompt, anchor);   // 🍼 LLM 누락 대비 앵커 보장(멱등)
             var title = PlutoLlmBridge.Str(e, "title", 40);
             if (title.Length == 0) title = ctx.TimeKo + " · 플루토 추천";
             var camera = PlutoLlmBridge.Str(e, "camera", 160);
@@ -329,6 +355,7 @@ public sealed class PlutoGenerativeEngine
         var topA = TopOrEmpty(DnaBucket.Atmosphere);
         var stamp = now.ToString("yyMMddHHmm", CultureInfo.InvariantCulture);
         var patterns = ViralPatterns(category);
+        var anchor = IdentityAnchor(category);
 
         var result = new List<PlutoTrend>(count);
         for (var n = 0; n < count; n++)
@@ -346,6 +373,7 @@ public sealed class PlutoGenerativeEngine
                 + "; Core emotion: " + m.Subject + " " + m.Core + ", " + atmosphere
                 + "; Lingering outro: " + m.Outro + ", " + atmosphere + " mood";
             if (patterns.Count > 0) prompt += "; SNS pacing: " + PlutoSocialRadarEngine.PatternDirective(patterns[n % patterns.Count]);
+            prompt = PlutoIdentityVault.ApplyAnchor(prompt, anchor);   // 🍼 캐릭터 일관성 앵커 선두 삽입
             var template = HookTemplatesKo[RngNext(HookTemplatesKo.Length)];
             var hook = template.Replace("{ctx}", ctx.SeasonKo + " " + ctx.TimeKo, StringComparison.Ordinal)
                 .Replace("{title}", m.TitleKo, StringComparison.Ordinal)

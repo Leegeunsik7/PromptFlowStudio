@@ -57,6 +57,9 @@ public sealed class PlutoCopilot
         _radar = radar;
     }
 
+    /// <summary>🍼 아이덴티티 볼트 — 활성 프로필 구분(Baby/Pet)과 감지 테마 일치 시 캐릭터 일관성 앵커를 시나리오 프롬프트 선두에 삽입.</summary>
+    public PlutoIdentityVault? Identity { get; init; }
+
     /// <summary>🧠 LLM 결선 여부(키 미설정이어도 true — 실제 사용 여부는 <see cref="PlutoCopilotScript.UsedLlm"/>).</summary>
     public bool HasLlm => _llm is not null;
 
@@ -86,9 +89,26 @@ public sealed class PlutoCopilot
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Copilot] radar load: " + ex.Message); }   // [부분 구제] 벤치마크 패턴만 사용
         }
+        if (Identity is not null)
+        {
+            try { await Identity.EnsureLoadedAsync(ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Copilot] identity load: " + ex.Message); }   // [부분 구제] 앵커 없이 생성
+        }
         var local = Draft(userMemo, now);   // 검증 + 폴백 기준선(카테고리 · BGM)
         var text = await PlutoLlmBridge.TryCompleteAsync(_llm, LlmScriptInstruction, BuildLlmScriptRequest(local, now ?? DateTime.Now), 0.85, ct).ConfigureAwait(false);
-        return (text is null ? null : ParseLlmScript(text, local)) ?? local;
+        var llm = text is null ? null : ParseLlmScript(text, local);
+        if (llm is null) return local;
+        var anchor = IdentityAnchor(local.Category);
+        return anchor.Length == 0 ? llm : llm with { VideoPrompt = PlutoIdentityVault.ApplyAnchor(llm.VideoPrompt, anchor) };   // 🍼 LLM 결과에도 앵커 보장(멱등)
+    }
+
+    /// <summary>🍼 활성 프로필 앵커(미주입/불일치 테마 → 빈 문자열).</summary>
+    private string IdentityAnchor(StudioThemeCategory category)
+    {
+        if (Identity is null) return "";
+        try { return PlutoIdentityVault.AnchorFor(Identity.ActiveProfile, category); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Copilot] identity: " + ex.Message); return ""; }
     }
 
     private string BuildLlmScriptRequest(PlutoCopilotScript local, DateTime now)
@@ -100,6 +120,9 @@ public sealed class PlutoCopilot
           .Append("Season / time: ").Append(ctx.SeasonEn).Append(", ").Append(ctx.TimeEn).Append('\n')
           .Append("Preferred lighting: ").Append(TopOr(DnaBucket.Lighting, ctx.LightingEn)).Append('\n')
           .Append("Preferred atmosphere: ").Append(TopOr(DnaBucket.Atmosphere, "warm pastel tone")).Append('\n');
+        var anchor = IdentityAnchor(local.Category);
+        if (anchor.Length > 0)
+            sb.Append("Subject identity anchor (keep this exact same character in every act): ").Append(anchor).Append('\n');
         if (TopPattern(local.Category) is { } p)
             sb.Append("Proven SNS viral formula (apply its hook timing and cut pacing): ").Append(p.Title).Append(" — ").Append(PlutoSocialRadarEngine.PatternDirective(p)).Append('\n');
         return sb.ToString();
@@ -255,7 +278,8 @@ public sealed class PlutoCopilot
         if (TopPattern(ms.Category) is { } viral)
             sb.Append(" SNS pacing: ").Append(PlutoSocialRadarEngine.PatternDirective(viral)).Append('.');
 
-        return new PlutoCopilotScript(text, ms.Category, ms.Ko, BuildHook(text, ms), acts, sb.ToString(), ms.Camera, ms.Bgm,
+        var videoPrompt = PlutoIdentityVault.ApplyAnchor(sb.ToString(), IdentityAnchor(ms.Category));   // 🍼 캐릭터 일관성 앵커 선두 삽입
+        return new PlutoCopilotScript(text, ms.Category, ms.Ko, BuildHook(text, ms), acts, videoPrompt, ms.Camera, ms.Bgm,
             StockSuiteExporter.BabyBgmLabel(ms.Bgm));
     }
 
