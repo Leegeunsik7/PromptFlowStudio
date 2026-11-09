@@ -158,13 +158,6 @@
                     </div>
                 }
             </div>
-            @* 📊 티커 기반 차트 스틸 즉시 생성 — 선택 종목(없으면 관심종목 첫 칩) OLED 퀀트 차트 PNG → START FRAME · STILL 자동 안착(I2V) *@
-            <div class="ws-watch-bar">
-                <button class="ws-mood-chip" @onclick="GenerateChartStillAsync" disabled="@(State.IsBusy || _chartBusy)"
-                        title="선택한 관심종목 티커로 OLED 캔들·이평선·볼린저·피보나치·호가 그리드 차트 스틸을 만들어 I2V 시작 프레임으로 바인딩합니다">@(_chartBusy ? "⏳ 차트 생성 중…" : "📊 차트 스틸 즉시 생성")</button>
-                @if (_chartMsg is not null) { <span class="ws-mood-cap">@_chartMsg</span> }
-            </div>
-
             @* v16.5.0 🎯 끝 프레임(Last Frame) 슬롯 — 첫 프레임과 함께 넣으면 두 키프레임 보간으로 모션 동선을 고정 *@
             @if (_imagePath is not null)
             {
@@ -205,20 +198,20 @@
                 </div>
             }
             @if (_upMsg is not null) { <div class="ws-hint">@_upMsg</div> }
-            @* 📊 StockSuite 관심종목 연동 칩 바 — 칩 클릭 → 핵심 사업 메타포 + 티커 HUD 텍스처 Wan 2.1 시네마틱 프롬프트 *@
-            <div class="ws-watch-bar" role="group" aria-label="내 관심종목 연동">
-                <span class="ws-mood-cap" title="@(_watch.FromFile ? _watch.SourcePath : "StockSuite watchlist.json 미발견 — 기본 핀테크 종목군(코스피 TOP 5 · 매그니피센트 7)")">📊 내 관심종목 연동@(_watch.FromFile ? "" : " (기본)")</span>
-                @for (var i = 0; i < _watch.Stocks.Count; i++)
+            @* 🌱 우리 아기 성장 단계 칩 바 — 클릭 → 연령 적합 피사체·스타일 키워드를 프롬프트 선두에 시드(멱등 · 단계 전환 시 교체) *@
+            <div class="ws-watch-bar" role="group" aria-label="우리 아기 성장 단계">
+                <span class="ws-mood-cap">🌱 우리 아기 성장 단계</span>
+                @{ var activeStage = PromptFlowStudio.Services.AI.GeminiPromptService.ActiveGrowthStage(_prompt); }
+                @for (var i = 0; i < PromptFlowStudio.Services.AI.GeminiPromptService.BabyGrowthStages.Length; i++)
                 {
-                    var ws = _watch.Stocks[i];
-                    <button class="ws-mood-chip @(_tickerSel == ws.Ticker ? "on" : null)" @key="ws.Ticker" @onclick="TickerPick(i)" disabled="@(State.IsBusy || _tickerBusy)"
-                            title="@(ws.Sector.Length > 0 ? ws.Sector : ws.Name)">@ws.ChipLabel</button>
+                    var gs = PromptFlowStudio.Services.AI.GeminiPromptService.BabyGrowthStages[i];
+                    <button class="ws-mood-chip @(activeStage == gs.Stage ? "on" : null)" @key="gs.Stage" @onclick="StagePick(i)" disabled="@State.IsBusy"
+                            title="@gs.Tokens">@gs.Emoji @gs.Label <small>(@gs.Range)</small></button>
                 }
-                <button class="ws-mood-chip" @onclick="ReloadWatchlist" disabled="@_tickerBusy" title="StockSuite 관심종목 다시 읽기">↻</button>
-                @if (_tickerMsg is not null) { <span class="ws-mood-cap">@_tickerMsg</span> }
             </div>
+            @if (_tickerMsg is not null) { <div class="ws-hint">@_tickerMsg</div> }
             <div class="ws-hist">
-                <button class="ws-hist-btn" @onclick="ToggleHistory" disabled="@(State.IsBusy || History.Count == 0)" title="프롬프트 타임머신 — AI 강화·번역·3-Way·시황 무드 직전 상태로 되돌리기">🕒 되돌리기 @(History.Count)</button>
+                <button class="ws-hist-btn" @onclick="ToggleHistory" disabled="@(State.IsBusy || History.Count == 0)" title="프롬프트 타임머신 — AI 강화·번역·3-Way·아기 무드 직전 상태로 되돌리기">🕒 되돌리기 @(History.Count)</button>
                 @if (_histOpen)
                 {
                     var snaps = History.Snapshots;
@@ -235,13 +228,13 @@
             <textarea class="ws-ta" @bind="_prompt" @bind:event="oninput" @bind:after="OnPromptTyped"
                       placeholder="@(_imagePath is null ? "예) 노을 지는 해변을 천천히 걷는 골든리트리버, 시네마틱, 부드러운 카메라 팬" : "예) 카메라가 천천히 줌인, 머리카락이 바람에 날림 (i2v는 움직임 위주로 · 프롬프트 선택)")"
                       maxlength="800" disabled="@State.IsBusy"></textarea>
-            @* 📈 시황 무드 연동 칩 바 · ✨ 3종 스타일 동시 전개 *@
-            <div class="ws-mood-bar" role="group" aria-label="시황 무드 연동">
-                <span class="ws-mood-cap">시황 무드 연동</span>
-                @{ var activeMood = PromptFlowStudio.Services.AI.GeminiPromptService.ActiveMarketMood(_prompt); }
-                @for (var i = 0; i < PromptFlowStudio.Services.AI.GeminiPromptService.MarketMoods.Length; i++)
+            @* 👶 아기 감성 & 성장 무드 칩 바 · ✨ 3종 스타일 동시 전개 *@
+            <div class="ws-mood-bar" role="group" aria-label="아기 감성 & 성장 무드">
+                <span class="ws-mood-cap">아기 감성 & 성장 무드</span>
+                @{ var activeMood = PromptFlowStudio.Services.AI.GeminiPromptService.ActiveBabyMood(_prompt); }
+                @for (var i = 0; i < PromptFlowStudio.Services.AI.GeminiPromptService.BabyMoods.Length; i++)
                 {
-                    var mp = PromptFlowStudio.Services.AI.GeminiPromptService.MarketMoods[i];
+                    var mp = PromptFlowStudio.Services.AI.GeminiPromptService.BabyMoods[i];
                     <button class="ws-mood-chip @(activeMood == mp.Mood ? "on" : null)" @key="mp.Mood" @onclick="MoodPick(i)" disabled="@State.IsBusy"
                             title="@mp.Tokens">@mp.Emoji @mp.Label <small>(@mp.English)</small></button>
                 }
@@ -1359,45 +1352,13 @@
 
     // 📊 관심종목 연동 — 칩 핸들러는 목록 로드 시 1회 생성.
     private PromptFlowStudio.Services.Export.WatchlistLoadResult _watch = new(PromptFlowStudio.Services.Export.StockSuiteWatchlistService.Defaults, false, null);
-    private Func<Task>[] _tickerPick = Array.Empty<Func<Task>>();
     private bool _tickerBusy;
-    private string? _tickerSel, _tickerMsg;
+    private string? _tickerMsg;
 
-    private Func<Task> TickerPick(int i) => i < _tickerPick.Length ? _tickerPick[i] : static () => Task.CompletedTask;
-
-    private void LoadWatchlist(bool reload)
+    private void LoadWatchlist()
     {
-        try { _watch = reload ? Watchlist.Load() : Watchlist.Current; }
+        try { _watch = Watchlist.Current; }
         catch (Exception ex) { Program.Log("Workspace.Watchlist", ex); }
-        var arr = new Func<Task>[_watch.Stocks.Count];
-        for (var k = 0; k < arr.Length; k++)
-        {
-            var st = _watch.Stocks[k];
-            arr[k] = () => GenerateTickerPromptAsync(st);
-        }
-        _tickerPick = arr;
-    }
-
-    // 📊 차트 스틸 생성기 — 선택 티커 → PNG → 참조 이미지(I2V 시작 프레임) 바인딩.
-    private bool _chartBusy;
-    private string? _chartMsg;
-
-    private async Task GenerateChartStillAsync()
-    {
-        if (_chartBusy) return;
-        var ticker = _tickerSel ?? (_watch.Stocks.Count > 0 ? _watch.Stocks[0].Ticker : null);
-        if (string.IsNullOrWhiteSpace(ticker)) { _chartMsg = "💡 관심종목 칩을 먼저 선택하세요."; return; }
-        _chartBusy = true;
-        _chartMsg = null;
-        try
-        {
-            var r = await ChartGen.GenerateAsync(ticker, Path.Combine(Media.MediaRoot, "_uploads"), new PromptFlowStudio.Services.Chart.ChartStillOptions { Width = 1920, Height = 1080 }, _mediaCts.Token);
-            _chartMsg = r.Message;
-            if (r.Ok && r.Path is { } png) await BindStartFrameAsync(png, _mediaCts.Token);
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception ex) { Program.Log("Workspace.ChartStill", ex); _chartMsg = "⚠ 차트 스틸 생성 실패 — 다시 시도하세요."; }
-        finally { _chartBusy = false; }
     }
 
     /// <summary>📊 PNG → START FRAME · STILL 바인딩(T2V→I2V 감지 · 비율 판독). UI 스레드에서 호출.</summary>
@@ -1417,18 +1378,10 @@
         => _director ??= PromptFlowStudio.Services.Chart.TickerAutoDirector.Create(ChartGen, GeminiSvc, Path.Combine(Media.MediaRoot, "_uploads"),
             (png, ct) => InvokeAsync(() => BindStartFrameAsync(png, ct)));
 
-    private void ReloadWatchlist()
-    {
-        LoadWatchlist(true);
-        _tickerMsg = _watch.FromFile ? "📊 관심종목 " + _watch.Stocks.Count.ToString(CultureInfo.InvariantCulture) + "개 연동" : "💡 watchlist.json 미발견 — 기본 종목군";
-    }
-
     private async Task GenerateTickerPromptAsync(PromptFlowStudio.Services.Export.WatchlistStock st)
     {
         if (_tickerBusy) return;
         _tickerBusy = true;
-        _tickerSel = st.Ticker;
-        _chartBusy = true;
         _tickerMsg = "⏳ " + st.ChipLabel + " 차트 스틸 · 시작 프레임 · 프롬프트 준비 중…";
         try
         {
@@ -1438,30 +1391,52 @@
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { Program.Log("Workspace.TickerPrompt", ex); _tickerMsg = "⚠ 종목 기획 실패 — 다시 시도하세요."; }
-        finally { _tickerBusy = false; _chartBusy = false; }
+        finally { _tickerBusy = false; }
     }
 
-    // 📈 시황 무드 연동 · ✨ 3-Way 스타일 변형 — 칩/탭 핸들러는 인덱스당 1회 생성 캐시.
+    // 👶 아기 감성 무드 · 🌱 성장 단계 · ✨ 3-Way 스타일 변형 — 칩/탭 핸들러는 인덱스당 1회 생성 캐시.
     private Action[]? _moodPick;
     private Action MoodPick(int i)
     {
         if (_moodPick is null)
         {
-            var arr = new Action[PromptFlowStudio.Services.AI.GeminiPromptService.MarketMoods.Length];
+            var arr = new Action[PromptFlowStudio.Services.AI.GeminiPromptService.BabyMoods.Length];
             for (var k = 0; k < arr.Length; k++)
             {
-                var mood = PromptFlowStudio.Services.AI.GeminiPromptService.MarketMoods[k].Mood;
-                var moodLabel = PromptFlowStudio.Services.AI.GeminiPromptService.MarketMoods[k].Label + " 무드";
+                var mood = PromptFlowStudio.Services.AI.GeminiPromptService.BabyMoods[k].Mood;
+                var moodLabel = PromptFlowStudio.Services.AI.GeminiPromptService.BabyMoods[k].Label + " 무드";
                 arr[k] = () =>
                 {
                     Snap("무드 적용 전");
-                    _prompt = PromptFlowStudio.Services.AI.GeminiPromptService.ApplyMarketSentiment(_prompt, mood);
+                    _prompt = PromptFlowStudio.Services.AI.GeminiPromptService.ApplyBabyMood(_prompt, mood);
                     Snap(moodLabel);
                 };
             }
             _moodPick = arr;
         }
         return _moodPick[i];
+    }
+
+    private Action[]? _stagePick;
+    private Action StagePick(int i)
+    {
+        if (_stagePick is null)
+        {
+            var arr = new Action[PromptFlowStudio.Services.AI.GeminiPromptService.BabyGrowthStages.Length];
+            for (var k = 0; k < arr.Length; k++)
+            {
+                var stage = PromptFlowStudio.Services.AI.GeminiPromptService.BabyGrowthStages[k].Stage;
+                var stageLabel = PromptFlowStudio.Services.AI.GeminiPromptService.BabyGrowthStages[k].Label + " 단계";
+                arr[k] = () =>
+                {
+                    Snap("성장 단계 적용 전");
+                    _prompt = PromptFlowStudio.Services.AI.GeminiPromptService.ApplyGrowthStage(_prompt, stage);
+                    Snap(stageLabel);
+                };
+            }
+            _stagePick = arr;
+        }
+        return _stagePick[i];
     }
 
     private IReadOnlyList<PromptFlowStudio.Services.AI.StyleVariant> _variants = Array.Empty<PromptFlowStudio.Services.AI.StyleVariant>();
@@ -2428,8 +2403,6 @@
                 for (var i = 0; i < _watch.Stocks.Count; i++)
                     if (string.Equals(_watch.Stocks[i].Ticker, ticker, StringComparison.OrdinalIgnoreCase)) { st = _watch.Stocks[i]; break; }
                 st ??= new PromptFlowStudio.Services.Export.WatchlistStock(ticker, string.IsNullOrWhiteSpace(m.Name) ? ticker : m.Name!, m.Sector ?? "");
-                _tickerSel = st.Ticker;
-                StateHasChanged();
                 if (!State.IsBusy) await GenerateTickerPromptAsync(st);
                 StateHasChanged();
             }
@@ -2707,7 +2680,7 @@
         _vm.PropertyChanged += OnVmChanged;
         BuildBabyInjectors();
         BuildGeminiInjectors();
-        LoadWatchlist(false);
+        LoadWatchlist();
         BuildZenInjectors();
         _myPresets = Presets.GetAll();
         Presets.Changed += OnUserPresetsChanged;

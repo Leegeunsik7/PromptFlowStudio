@@ -37,6 +37,18 @@ public enum MarketMood { BullRally, BearDefense, HighVolatility, MidnightWallStr
 /// <summary>시황 무드 칩 프리셋 — Tokens 는 프롬프트에 주입되는 조명·색감·동세 블록.</summary>
 public sealed record MarketMoodPreset(MarketMood Mood, string Emoji, string Label, string English, string Tokens);
 
+/// <summary>👶 아기 감성 & 성장 무드.</summary>
+public enum BabyMood { SereneSleep, FirstMilestone, GigglePlay, FairytaleFantasy }
+
+/// <summary>아기 감성 무드 칩 프리셋 — Tokens 는 프롬프트에 주입되는 조명·색감·동세 블록.</summary>
+public sealed record BabyMoodPreset(BabyMood Mood, string Emoji, string Label, string English, string Tokens);
+
+/// <summary>🌱 우리 아기 성장 단계.</summary>
+public enum BabyGrowthStage { Newborn, HundredDays, FirstBirthday, Toddler }
+
+/// <summary>성장 단계 칩 프리셋 — Tokens 는 연령 적합 피사체·스타일 키워드 블록.</summary>
+public sealed record BabyGrowthStagePreset(BabyGrowthStage Stage, string Emoji, string Label, string Range, string Tokens);
+
 /// <summary>3-Way 스타일 변형 1종 — 프롬프트·추천 카메라·결정적 시드.</summary>
 public sealed record StyleVariant(int Index, string StyleKey, string Title, string Prompt, string Camera, long Seed);
 
@@ -618,6 +630,103 @@ public sealed class GeminiPromptService
             if (prompt.Contains(m.Tokens, StringComparison.OrdinalIgnoreCase)) return m.Mood;
         return null;
     }
+
+    // ══════════════════════ 👶 아기 감성 & 성장 무드 인젝터 ══════════════════════
+
+    /// <summary>아기 감성 무드 프리셋 — 수면 · 마일스톤 · 놀이 · 동화(교체 단위).</summary>
+    public static readonly BabyMoodPreset[] BabyMoods =
+    {
+        new(BabyMood.SereneSleep, "🌙", "평온한 수면", "Serene Angel Sleep",
+            "serene angel sleep mood, sweet nap in a soft cotton crib, gentle rhythmic soft breathing, warm dim nightlight glow, slow tender camera drift"),
+        new(BabyMood.FirstMilestone, "💖", "첫돌 & 걸음마", "First Milestone",
+            "first birthday and first steps milestone celebration mood, proud wobbly first steps toward loving arms, warm festive bokeh lights, joyful heartfelt family moment"),
+        new(BabyMood.GigglePlay, "🎈", "까르르 놀이", "Giggle Playtime",
+            "giggling and babbling playtime mood, colorful soft toy playtime on a cozy play mat, cute bright smiles and tiny clapping hands, cheerful airy daylight"),
+        new(BabyMood.FairytaleFantasy, "✨", "동화 판타지", "Fairytale Dream",
+            "fairytale dream mood, warm golden sunbeam through sheer curtains, pastel fantasy palette with floating sparkles, soft dreamy glow, gentle floating camera"),
+    };
+
+    /// <summary>성장 단계 프리셋 — 연령 적합 피사체·스타일 키워드(캐릭터 일관성 유지).</summary>
+    public static readonly BabyGrowthStagePreset[] BabyGrowthStages =
+    {
+        new(BabyGrowthStage.Newborn, "👶", "신생아", "0~3개월",
+            "newborn baby 0-3 months old, peaceful crib, soft swaddle blanket, tiny fingers, gentle newborn slumber"),
+        new(BabyGrowthStage.HundredDays, "🍼", "백일 & 터미타임", "3~6개월",
+            "infant baby 3-6 months old, tummy time on a soft mat, cute rolling over, bright big eyes, baby giggles"),
+        new(BabyGrowthStage.FirstBirthday, "🎂", "첫돌 축하", "12개월",
+            "one-year-old baby first birthday, tiny hanbok or party dress, birthday cake with one candle, first standing, confetti and flowers"),
+        new(BabyGrowthStage.Toddler, "🏃", "아장아장 키즈", "2~3세",
+            "toddler 2-3 years old, toddler running, joyful playground, blowing bubbles, energetic joy"),
+    };
+
+    public static BabyMoodPreset BabyMoodOf(BabyMood mood)
+    {
+        foreach (var m in BabyMoods) if (m.Mood == mood) return m;
+        return BabyMoods[0];
+    }
+
+    public static BabyGrowthStagePreset GrowthStageOf(BabyGrowthStage stage)
+    {
+        foreach (var g in BabyGrowthStages) if (g.Stage == stage) return g;
+        return BabyGrowthStages[0];
+    }
+
+    /// <summary>아기 감성 무드 주입 — 기존 무드 블록 제거 후 선택 무드 토큰으로 재편(멱등 · 전환 시 누적 없음).</summary>
+    public static string ApplyBabyMood(string? prompt, BabyMood mood)
+    {
+        var s = StripBabyMood(prompt);
+        var tokens = BabyMoodOf(mood).Tokens;
+        return s.Length == 0 ? tokens : s + ", " + tokens;
+    }
+
+    /// <summary>적용된 아기 무드 블록 제거.</summary>
+    public static string StripBabyMood(string? prompt)
+    {
+        var s = (prompt ?? "").Trim();
+        foreach (var m in BabyMoods) s = StripBlock(s, m.Tokens);
+        return s.Trim().TrimEnd(',').Trim();
+    }
+
+    /// <summary>현재 적용된 아기 무드(없으면 null) — 칩 활성 표시용.</summary>
+    public static BabyMood? ActiveBabyMood(string? prompt)
+    {
+        if (string.IsNullOrEmpty(prompt)) return null;
+        foreach (var m in BabyMoods)
+            if (prompt.Contains(m.Tokens, StringComparison.OrdinalIgnoreCase)) return m.Mood;
+        return null;
+    }
+
+    /// <summary>
+    /// 성장 단계 주입 — 기존 단계 블록 제거 후 선택 단계의 연령 적합 키워드를 프롬프트 선두에 시드(피사체 우선 · 멱등 · 무드 블록 보존).
+    /// </summary>
+    public static string ApplyGrowthStage(string? prompt, BabyGrowthStage stage)
+    {
+        var s = StripGrowthStage(prompt);
+        var tokens = GrowthStageOf(stage).Tokens;
+        return s.Length == 0 ? tokens : tokens + ", " + s;
+    }
+
+    /// <summary>적용된 성장 단계 블록 제거.</summary>
+    public static string StripGrowthStage(string? prompt)
+    {
+        var s = (prompt ?? "").Trim();
+        foreach (var g in BabyGrowthStages) s = StripBlock(s, g.Tokens);
+        return s.Trim().Trim(',').Trim();
+    }
+
+    /// <summary>현재 적용된 성장 단계(없으면 null).</summary>
+    public static BabyGrowthStage? ActiveGrowthStage(string? prompt)
+    {
+        if (string.IsNullOrEmpty(prompt)) return null;
+        foreach (var g in BabyGrowthStages)
+            if (prompt.Contains(g.Tokens, StringComparison.OrdinalIgnoreCase)) return g.Stage;
+        return null;
+    }
+
+    private static string StripBlock(string s, string tokens)
+        => s.Replace(tokens + ", ", "", StringComparison.OrdinalIgnoreCase)
+            .Replace(", " + tokens, "", StringComparison.OrdinalIgnoreCase)
+            .Replace(tokens, "", StringComparison.OrdinalIgnoreCase);
 
     // ══════════════════════ ✨ 제미나이 3-Way 스타일 변형 엔진 ══════════════════════
 
