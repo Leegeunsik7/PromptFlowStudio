@@ -1,0 +1,177 @@
+@page "/pluto-trends"
+@implements IDisposable
+@using PromptFlowStudio.Services.Pluto
+@inject PlutoTrendEngine Engine
+@inject PlutoLearningService Learning
+@inject PromptDraftService Draft
+@inject NavigationManager Nav
+@inject PromptFlowStudio.Services.Platform.IClipboardService Clipboard
+
+@* [PromptFlow Studio] 🪐 플루토 트렌드 랩 — 4대 테마 트렌드 카드 · 🚀 스튜디오 주입 · 📋 해시태그 복사 · 👍/👎 즉시 학습. *@
+
+<div class="pl">
+    <div class="pl-head">
+        <h1 class="pl-title">🪐 플루토 <span class="pl-title-g">트렌드 랩</span></h1>
+        <div class="pl-sub">플루토가 고른 쇼츠·릴스 트렌드 — 채택·내보내기·평가할수록 취향을 학습합니다.</div>
+    </div>
+
+    <div class="pl-pills" role="tablist">
+        @foreach (var cat in PlutoTrendEngine.Categories)
+        {
+            var c = cat;
+            <button class="pl-pill@(c == _category ? " on" : "")" role="tab" aria-selected="@(c == _category ? "true" : "false")" data-pluto-cat="@((int)c)" @onclick="() => SwitchAsync(c)">@PlutoTrendEngine.Label(c)</button>
+        }
+    </div>
+
+    @if (_loading)
+    {
+        <div class="pl-empty">🪐 플루토가 트렌드를 고르는 중…</div>
+    }
+    else if (_trends.Count == 0)
+    {
+        <div class="pl-empty">추천할 트렌드가 없습니다.</div>
+    }
+    else
+    {
+        <div class="pl-grid">
+            @foreach (var tr in _trends)
+            {
+                var t = tr;
+                <div class="pl-card" data-pluto-trend="@t.Id">
+                    <div class="pl-tags">
+                        @if ((t.Platforms & SocialPlatform.YouTubeShorts) != 0) { <span class="pl-tag yt">🔴 YouTube Shorts</span> }
+                        @if ((t.Platforms & SocialPlatform.InstagramReels) != 0) { <span class="pl-tag ig">🟣 Instagram Reels</span> }
+                        <span class="pl-w" title="플루토 학습 가중치">⚖ @(Learning.GetWeight(t.Id).ToString("+0.00;-0.00;0.00", System.Globalization.CultureInfo.InvariantCulture))</span>
+                    </div>
+                    <div class="pl-hook">@t.ViralHook</div>
+                    <div class="pl-name">@t.Title</div>
+                    <div class="pl-prompt" title="@t.VideoPrompt">@Excerpt(t.VideoPrompt)</div>
+                    <div class="pl-meta"><span>🎥 @t.CameraMotion</span><span>🎵 @t.BgmStyle</span></div>
+                    <div class="pl-actions">
+                        <button class="pl-btn go" @onclick="() => ApplyAsync(t)">🚀 스튜디오로 바로 적용</button>
+                        <button class="pl-btn" @onclick="() => CopyTags(t)">📋 해시태그 복사</button>
+                        <button class="pl-btn sm" title="좋아요 — 플루토에게 알려주기" @onclick="() => RateAsync(t, InteractionType.ThumbsUp)">👍</button>
+                        <button class="pl-btn sm" title="별로예요 — 덜 추천" @onclick="() => RateAsync(t, InteractionType.ThumbsDown)">👎</button>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+
+    @if (_toast is { } msg) { <div class="pl-toast" role="status">@msg</div> }
+</div>
+
+<style>
+    .pl { padding: 24px 28px; max-width: 1280px; }
+    .pl-title { font-size: 26px; font-weight: 900; margin: 0; }
+    .pl-title-g { background: linear-gradient(135deg,#8b7bff,#ff7bc6); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .pl-sub { opacity: .75; margin-top: 6px; font-size: 14px; }
+    .pl-pills { display: flex; gap: 8px; flex-wrap: wrap; margin: 18px 0; }
+    .pl-pill { padding: 8px 16px; border-radius: 999px; border: 1px solid var(--line,rgba(148,163,184,.3)); background: transparent; color: inherit; font-weight: 800; cursor: pointer; }
+    .pl-pill.on { background: linear-gradient(135deg,#8b7bff,#6d5efc); color: #fff; border-color: transparent; }
+    .pl-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; }
+    .pl-card { border: 1px solid var(--line,rgba(148,163,184,.25)); border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+    .pl-tags { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .pl-tag { font-size: 11px; font-weight: 800; padding: 3px 8px; border-radius: 6px; }
+    .pl-tag.yt { background: rgba(239,68,68,.15); color: #ef4444; }
+    .pl-tag.ig { background: rgba(168,85,247,.15); color: #a855f7; }
+    .pl-w { margin-left: auto; font-size: 11px; opacity: .6; }
+    .pl-hook { font-size: 17px; font-weight: 900; }
+    .pl-name { font-size: 12px; opacity: .7; }
+    .pl-prompt { font-size: 13px; opacity: .85; }
+    .pl-meta { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; opacity: .75; }
+    .pl-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+    .pl-btn { padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line,rgba(148,163,184,.25)); background: transparent; color: inherit; font-weight: 800; font-size: 13px; cursor: pointer; }
+    .pl-btn.go { border: 0; color: #fff; background: linear-gradient(135deg,#8b7bff,#6d5efc); }
+    .pl-btn.sm { padding: 8px 10px; }
+    .pl-empty { opacity: .7; padding: 40px 0; text-align: center; }
+    .pl-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: rgba(15,23,42,.92); color: #fff; padding: 10px 18px; border-radius: 10px; font-weight: 700; z-index: 50; }
+    @@media (max-width: 900px) { .pl-grid { grid-template-columns: 1fr; } }
+</style>
+
+@code {
+    private StudioThemeCategory _category = StudioThemeCategory.BabyParenting;
+    private IReadOnlyList<PlutoTrend> _trends = Array.Empty<PlutoTrend>();
+    private bool _loading = true;
+    private string? _toast;
+    private System.Threading.Timer? _toastTimer;
+    private readonly CancellationTokenSource _cts = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        Learning.Changed += OnLearningChanged;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try { _trends = await Engine.GetCuratedTrendsAsync(_category, _cts.Token); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("PlutoTrendLab.Load", ex); _trends = Array.Empty<PlutoTrend>(); }
+        finally { _loading = false; }
+    }
+
+    private async Task SwitchAsync(StudioThemeCategory c)
+    {
+        if (c == _category && !_loading) return;
+        _category = c;
+        await LoadAsync();
+    }
+
+    private static string Excerpt(string s) => s.Length <= 110 ? s : s[..107] + "…";
+
+    private async Task ApplyAsync(PlutoTrend t)
+    {
+        Draft.Send(PlutoTrendEngine.EnglishName(t.Category) + " theme, " + t.BuildStudioPrompt());   // 작업실 진입 시 프롬프트로 흡수
+        try { await Learning.RecordInteractionAsync(t.Id, InteractionType.Adopted, _cts.Token); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { Program.Log("PlutoTrendLab.Adopt", ex); }
+        catch (OperationCanceledException) { }
+        Nav.NavigateTo("workspace");
+    }
+
+    private void CopyTags(PlutoTrend t)
+    {
+        bool ok;
+        try { ok = Clipboard.SetText(t.BuildCopyText()); }
+        catch (Exception ex) { Program.Log("PlutoTrendLab.Copy", ex); ok = false; }
+        Toast(ok ? "📋 제목 & 해시태그를 복사했어요" : "⚠ 복사 실패 — 다시 시도해 주세요");
+    }
+
+    private async Task RateAsync(PlutoTrend t, InteractionType type)
+    {
+        try
+        {
+            await Learning.RecordInteractionAsync(t.Id, type, _cts.Token);
+            Toast(type == InteractionType.ThumbsDown ? "👎 플루토가 덜 추천할게요" : "👍 플루토가 기억했어요");
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("PlutoTrendLab.Rate", ex); }
+    }
+
+    private void Toast(string msg)
+    {
+        _toast = msg;
+        _toastTimer?.Dispose();
+        _toastTimer = new System.Threading.Timer(_ =>
+        {
+            _toast = null;
+            try { _ = InvokeAsync(StateHasChanged); } catch (Exception ex) { Program.Log("PlutoTrendLab.Toast", ex); }
+        }, null, 2500, System.Threading.Timeout.Infinite);
+    }
+
+    private void OnLearningChanged()
+    {
+        try { _ = InvokeAsync(StateHasChanged); }
+        catch (Exception ex) { Program.Log("PlutoTrendLab.Changed", ex); }
+    }
+
+    public void Dispose()
+    {
+        Learning.Changed -= OnLearningChanged;
+        try { _cts.Cancel(); } catch (ObjectDisposedException) { }
+        _cts.Dispose();
+        _toastTimer?.Dispose();
+        _toastTimer = null;
+    }
+}

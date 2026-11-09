@@ -30,6 +30,7 @@ public sealed class PublishViewModel : IDisposable
     private readonly PromptFlowStudio.Services.Export.AudioMuxService? _audioMux;
     private readonly PromptFlowStudio.Services.Chart.ChartStillGeneratorService? _quotes;
     private readonly PromptFlowStudio.Services.Ui.UserPreferenceService? _prefs;
+    private readonly PromptFlowStudio.Services.Platform.IClipboardService? _clipboard;
     private string? _publishPath;   // BGM 합성본(없으면 원본)
     private CancellationTokenSource? _cts;
     private CancellationTokenSource? _seoCts;
@@ -38,8 +39,10 @@ public sealed class PublishViewModel : IDisposable
     public PublishViewModel(IYouTubeShortsPublisher yt, IInstagramReelsPublisher ig, GeminiPromptService? gemini = null, PromptFlowStudio.Services.Export.StockSuiteExporter? stockSuite = null,
         PromptFlowStudio.Services.Export.AudioMuxService? audioMux = null,
         PromptFlowStudio.Services.Chart.ChartStillGeneratorService? quotes = null,
-        PromptFlowStudio.Services.Ui.UserPreferenceService? prefs = null)
+        PromptFlowStudio.Services.Ui.UserPreferenceService? prefs = null,
+        PromptFlowStudio.Services.Platform.IClipboardService? clipboard = null)
     {
+        _clipboard = clipboard;
         _audioMux = audioMux;
         _quotes = quotes;
         _prefs = prefs;
@@ -214,6 +217,82 @@ public sealed class PublishViewModel : IDisposable
         PresetMessage = "⚡ 💾 " + hit.Name + " 적용";
         Notify();
         return true;
+    }
+
+    // ── 📱 SNS 패스트트랙 프리셋(YouTube Shorts · Instagram Reels) ──
+    /// <summary>활성 SNS 프리셋(null = 미선택).</summary>
+    public SocialExportPreset? ActiveSocialPreset { get; private set; }
+    public int OutputWidth { get; private set; }
+    public int OutputHeight { get; private set; }
+    public int OutputFps { get; private set; }
+    /// <summary>목표 라우드니스(LUFS · null = 정규화 없음).</summary>
+    public double? TargetLoudnessLufs { get; private set; }
+    public bool SoftFilmGrain { get; private set; }
+
+    /// <summary>📱 SNS 프리셋 적용 — 9:16 1080×1920 · fps · 라우드니스 · 그레인 · 채널 · 제목/태그 자동 보강(1회 통지).</summary>
+    public void ApplySocialPreset(SocialPresetKind kind)
+    {
+        var p = SocialExportPreset.For(kind);
+        ActiveSocialPreset = p;
+        OutputWidth = p.Width;
+        OutputHeight = p.Height;
+        OutputFps = p.Fps;
+        TargetLoudnessLufs = p.LoudnessLufs;
+        SoftFilmGrain = p.FilmGrain;
+        _stockSmooth60 = p.Fps >= 60;
+        ToYouTube = kind == SocialPresetKind.YouTubeShorts;
+        ToInstagram = kind == SocialPresetKind.InstagramReels;
+        var tags = p.MergeTags(SnsPublishFormatter.ParseTags(TagsText));
+        TagsText = string.Join(", ", tags);
+        var t = Title.Trim();
+        if (t.Length == 0) t = string.IsNullOrWhiteSpace(SourcePrompt) ? (ProjectName ?? "") : SourcePrompt;
+        var lead = p.Hashtags[0];
+        if (t.IndexOf(lead, StringComparison.OrdinalIgnoreCase) < 0)
+        {
+            var max = GeminiPromptService.MaxSnsTitle - lead.Length - 1;
+            if (t.Length > max) t = t[..Math.Max(0, max)].TrimEnd();
+            t = t.Length == 0 ? lead : t + " " + lead;
+        }
+        Title = t;
+        if (kind == SocialPresetKind.InstagramReels)
+        {
+            var cap = (Caption ?? "").Trim();
+            Caption = cap.IndexOf(lead, StringComparison.OrdinalIgnoreCase) >= 0 ? cap : (cap.Length == 0 ? "" : cap + " ") + string.Join(" ", p.Hashtags);
+        }
+        PresetMessage = "📱 " + p.Label + " 적용 — " + p.SpecSummary;
+        Notify();
+    }
+
+    /// <summary>📋 제목 + 해시태그 복사 텍스트(모바일 앱 붙여넣기용).</summary>
+    public string BuildTitleAndTagsCopyText()
+    {
+        var tags = SnsPublishFormatter.ParseTags(TagsText);
+        var sb = new System.Text.StringBuilder(Title.Length + 128);
+        sb.Append(Title.Trim());
+        if (tags.Count > 0)
+        {
+            sb.Append('\n').Append('\n');
+            for (var i = 0; i < tags.Count; i++)
+            {
+                if (i > 0) sb.Append(' ');
+                var tg = tags[i];
+                if (!tg.StartsWith('#')) sb.Append('#');
+                sb.Append(tg);
+            }
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>📋 제목 &amp; 태그 클립보드 복사 — 클립보드 미주입/실패 시 false(메시지로 안내).</summary>
+    public bool CopyTitleAndTags()
+    {
+        var text = BuildTitleAndTagsCopyText();
+        bool ok;
+        try { ok = _clipboard?.SetText(text) == true; }
+        catch (Exception ex) { Program.Log("Publish.CopyTags", ex); ok = false; }
+        PresetMessage = ok ? "📋 제목 & 태그 복사 완료" : "⚠ 클립보드 복사 실패 — 제목/태그 칸에서 직접 복사하세요.";
+        Notify();
+        return ok;
     }
 
     // ── 👁️ 1프레임 번인 미리보기 ──

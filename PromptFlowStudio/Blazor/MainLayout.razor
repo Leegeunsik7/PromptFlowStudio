@@ -53,6 +53,7 @@
             <nav class="nav" @onclick="CloseDrawer" @onmouseleave="HideSideGuide">
                 @* Step 4: 아기 시네마틱 스튜디오 5대 핵심 워크플로우 — 2 그룹(제작 · 앨범&보관함). 고급/개발자 도구는 접힌 아코디언(라우트·페이지 보존). *@
                 <div class="nav-grp" data-nav-group="baby-studio">🎨 아기 스튜디오</div>
+                <div class="navw" @onmouseenter='e => ShowSideGuide("pluto-trends", e.ClientY)'><NavLink class="nav-item" href="pluto-trends" data-nav-core="pluto-trends"><span class="ic">🪐</span><span class="nav-t" title="플루토 트렌드 랩">플루토 트렌드 랩</span></NavLink></div>
                 <div class="navw" @onmouseenter='e => ShowSideGuide("", e.ClientY)'>
                     <NavLink class="nav-item" href="" accesskey="0" Match="NavLinkMatch.All" data-nav-core="single-cut">
                         <span class="ic">🎬</span><span class="nav-t" title="1컷 단편 제작">1컷 단편 제작</span><span class="nav-kbd">Alt+0</span>

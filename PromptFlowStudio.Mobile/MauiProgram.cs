@@ -404,6 +404,8 @@ public static class MauiProgram
 
         builder.Services.AddSingleton<PromptFlowStudio.Services.Storyboard.SocialMetadataAiGenerator>(); // v16.15.0 (Gemini/오프라인 SEO 미등록 시 로컬 템플릿)
         builder.Services.AddSingleton<PromptFlowStudio.Services.Prompt.PromptSynthesizerService>();   // 1번 워크플로우 프롬프트 합성기
+        builder.Services.AddSingleton(_ => new PromptFlowStudio.Services.Pluto.PlutoLearningService());   // 🪐 플루토 자가 학습
+        builder.Services.AddSingleton<PromptFlowStudio.Services.Pluto.PlutoTrendEngine>();             // 🪐 플루토 트렌드 큐레이션
         builder.Services.AddSingleton<PromptFlowStudio.Services.Prompt.PromptInspirationService>();   // 💡 스토리 레시피 & 인스피레이션 허브
         builder.Services.AddSingleton<PromptFlowStudio.Services.Render.MediaProbeService>(sp => new PromptFlowStudio.Services.Render.MediaProbeService(() => sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.FfmpegBinaryPath is { Length: > 0 } fp && System.IO.File.Exists(fp) ? fp : PromptFlowStudio.Services.Render.FfmpegLocator.Locate().Path, sp.GetRequiredService<PromptFlowStudio.Services.Engines.IProcessRunner>()));   // ℹ️ 미디어 규격 인스펙터(ffprobe → ffmpeg 배너 → 헤더 폴백)
         builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.Render.RenderCacheCleaner(() => new[] { sp.GetRequiredService<PromptFlowStudio.Services.Media.ILocalMediaService>().MediaRoot, System.IO.Path.Combine(AppContext.BaseDirectory, "_renders") }, () => sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.RenderCacheMaxGb ?? PromptFlowStudio.Services.Render.RenderCacheCleaner.DefaultMaxCacheGb));   // 🧹 렌더 캐시 자동 정리(임시 회수 + LRU 상한)

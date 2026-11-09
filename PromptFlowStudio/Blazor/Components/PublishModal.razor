@@ -18,6 +18,16 @@
         <div class="pm-body">
             <div class="pm-row pm-path" title="@vm.VideoPath">🎬 @(System.IO.Path.GetFileName(vm.VideoPath))@(vm.SrtPath is null ? "" : "  ·  📝 " + System.IO.Path.GetFileName(vm.SrtPath))</div>
 
+            @* 📱 SNS 패스트트랙 — 9:16 1080×1920 · fps · 라우드니스 · 해시태그 원클릭 + 제목&태그 복사 *@
+            <div class="pm-row pm-seo" data-social-fasttrack="1">
+                <button class="pm-btn@(vm.ActiveSocialPreset?.Kind == PromptFlowStudio.Services.Publishing.SocialPresetKind.YouTubeShorts ? " pm-on" : "")" disabled="@vm.IsBusy"
+                        @onclick="() => vm.ApplySocialPreset(PromptFlowStudio.Services.Publishing.SocialPresetKind.YouTubeShorts)" title="@PromptFlowStudio.Services.Publishing.SocialExportPreset.YouTubeShorts.SpecSummary">🔴 YouTube Shorts</button>
+                <button class="pm-btn@(vm.ActiveSocialPreset?.Kind == PromptFlowStudio.Services.Publishing.SocialPresetKind.InstagramReels ? " pm-on" : "")" disabled="@vm.IsBusy"
+                        @onclick="() => vm.ApplySocialPreset(PromptFlowStudio.Services.Publishing.SocialPresetKind.InstagramReels)" title="@PromptFlowStudio.Services.Publishing.SocialExportPreset.InstagramReels.SpecSummary">🟣 Instagram Reels</button>
+                <button class="pm-btn" @onclick="() => vm.CopyTitleAndTags()" title="제목 + 해시태그를 클립보드로 복사(모바일 앱 붙여넣기용)">📋 제목 &amp; 태그 복사</button>
+                @if (vm.ActiveSocialPreset is { } sp) { <span class="pm-seo-msg">@sp.SpecSummary</span> }
+            </div>
+
             @if (vm.StockSuiteAvailable)
             {
                 @* ⚡ 핀테크 퀵 프리셋 — 선택 즉시 해상도·60fps·LUT·워터마크·배지·BGM(loudnorm)·멀티 비율·발행 대상 11종 일괄 반영 *@
@@ -268,6 +278,7 @@
     .pm-btn{padding:9px 16px;border-radius:10px;border:1px solid var(--line,rgba(148,163,184,.25));background:transparent;color:inherit;font-weight:800;font-size:13px;cursor:pointer}
     .pm-btn.go{border:0;color:#fff;background:linear-gradient(135deg,#8b7bff,#6d5efc)}
     .pm-btn[disabled]{opacity:.55;cursor:default}
+    .pm-btn.pm-on{border-color:#8b7bff;background:rgba(139,123,255,.18)}
     .pm-pv{flex-basis:100%;display:flex;flex-direction:column;gap:6px;padding:8px;border:1px solid var(--line,rgba(148,163,184,.25));border-radius:10px;background:rgba(2,6,23,.45)}
     .pm-pv-h{display:flex;justify-content:space-between;align-items:center;gap:8px}
     .pm-pv-img{max-width:100%;max-height:52vh;object-fit:contain;align-self:center;border-radius:6px;background:#000}
