@@ -2738,6 +2738,7 @@
         Presets.Changed += OnUserPresetsChanged;
         var d = Draft.Consume();   // 모션프리셋(/motion)에서 전달된 스니펫 흡수
         if (!string.IsNullOrWhiteSpace(d)) _prompt = d;
+        if (Draft.ConsumePlutoTrend() is { } plutoId) PubVm.ActivePlutoTrendId = plutoId;   // 🪐 트렌드 랩 → 내보내기 학습 루프
         _recent = Library.List(6);
         _vm.UserInput = _prompt;
         AbsorbWirelessCameraFrame();   // 무선 카메라(/wireless-camera)에서 전달된 I2V 첫 프레임 흡수

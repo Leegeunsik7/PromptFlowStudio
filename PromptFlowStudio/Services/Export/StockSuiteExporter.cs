@@ -67,6 +67,8 @@ public sealed record MultiExportOptions
     public LutProfile Lut { get; init; } = LutProfile.None;
     /// <summary>원본 길이(초) — ≤0 이면 Wan 기본 5초로 페이드아웃 시점 계산.</summary>
     public double DurationSec { get; init; }
+    /// <summary>📱 SNS 프리셋(쇼츠 규격에 loudnorm · 그레인 · fps 적용 · null = 기존 동작).</summary>
+    public PromptFlowStudio.Services.Publishing.SocialExportPreset? Social { get; init; }
 }
 
 /// <summary>패키지 단일 규격 — Key: <c>hts</c>|<c>mobile</c>|<c>shorts</c>.</summary>
@@ -969,12 +971,13 @@ public sealed partial class StockSuiteExporter
             shorts.Add("-map"); shorts.Add("0:v:0"); shorts.Add("-map"); shorts.Add("1:a:0");
         }
         else { shorts.Add("-map"); shorts.Add("0:v:0"); }
-        shorts.Add("-vf"); shorts.Add(VerticalCropFilter);
+        shorts.Add("-vf"); shorts.Add(AppendSocialVideoFilter(VerticalCropFilter, options.Social));
+        if (options.Social is { } sp) { shorts.Add("-r"); shorts.Add(sp.Fps.ToString(inv)); }
         shorts.Add("-c:v"); shorts.Add("libx264"); shorts.Add("-preset"); shorts.Add("medium"); shorts.Add("-crf"); shorts.Add("20"); shorts.Add("-pix_fmt"); shorts.Add("yuv420p");
         if (!string.IsNullOrWhiteSpace(bgmPath))
         {
             shorts.Add("-c:a"); shorts.Add("aac"); shorts.Add("-b:a"); shorts.Add(AudioMuxService.AudioBitrate);
-            shorts.Add("-af"); shorts.Add("afade=t=out:st=" + AudioMuxService.FadeStart(dur).ToString("0.###", inv) + ":d=" + AudioMuxService.FadeOutSec.ToString("0.###", inv));
+            shorts.Add("-af"); shorts.Add(AppendSocialAudioFilter("afade=t=out:st=" + AudioMuxService.FadeStart(dur).ToString("0.###", inv) + ":d=" + AudioMuxService.FadeOutSec.ToString("0.###", inv), options.Social)!);
             shorts.Add("-shortest"); shorts.Add("-t"); shorts.Add(dur.ToString("0.###", inv));
         }
         else shorts.Add("-an");

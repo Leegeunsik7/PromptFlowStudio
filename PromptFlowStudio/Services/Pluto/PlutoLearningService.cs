@@ -30,6 +30,11 @@ public sealed class PlutoLearningService : IDisposable
     public const double MinWeight = -1.0;
     public const double MaxWeight = 5.0;
     public const string FileName = "pluto_trend_memory.json";
+    /// <summary>🧠 XP 가중 — 채택 1 · 내보내기 완료 3 · 👍 1. 레벨당 10 XP.</summary>
+    public const int AdoptedXp = 1;
+    public const int ExportXp = 3;
+    public const int ThumbsUpXp = 1;
+    public const int XpPerLevel = 10;
 
     private readonly string _path;
     private readonly Random _rng;
@@ -59,6 +64,46 @@ public sealed class PlutoLearningService : IDisposable
         public double Weight { get; set; }
         public int Interactions { get; set; }
         public DateTime LastUtc { get; set; }
+        public int Adopted { get; set; }
+        public int Exports { get; set; }
+        public int ThumbsUp { get; set; }
+        public int ThumbsDown { get; set; }
+    }
+
+    /// <summary>🧠 누적 XP = 채택×1 + 내보내기×3 + 👍×1.</summary>
+    public static int ComputeXp(int adopted, int exports, int thumbsUp)
+        => Math.Max(0, adopted) * AdoptedXp + Math.Max(0, exports) * ExportXp + Math.Max(0, thumbsUp) * ThumbsUpXp;
+
+    /// <summary>🧠 레벨 = 1 + XP / 10.</summary>
+    public static int LevelFor(int xp) => 1 + Math.Max(0, xp) / XpPerLevel;
+
+    /// <summary>🧠 누적 XP(전체 트렌드 합산).</summary>
+    public int CurrentXP
+    {
+        get
+        {
+            int a = 0, x = 0, u = 0;
+            lock (_sync)
+                foreach (var kv in _entries) { a += kv.Value.Adopted; x += kv.Value.Exports; u += kv.Value.ThumbsUp; }
+            return ComputeXp(a, x, u);
+        }
+    }
+
+    /// <summary>🧠 현재 레벨.</summary>
+    public int CurrentLevel => LevelFor(CurrentXP);
+
+    /// <summary>🧠 다음 레벨 도달 XP(누적 기준).</summary>
+    public int NextLevelXP => CurrentLevel * XpPerLevel;
+
+    /// <summary>🧠 누적 피드백 횟수(전 유형).</summary>
+    public int TotalInteractions
+    {
+        get
+        {
+            var n = 0;
+            lock (_sync) foreach (var kv in _entries) n += kv.Value.Interactions;
+            return n;
+        }
     }
 
     public static double Delta(InteractionType t) => t switch
@@ -125,6 +170,13 @@ public sealed class PlutoLearningService : IDisposable
             if (!_entries.TryGetValue(trendId, out var e)) { e = new Entry(); _entries[trendId] = e; }
             e.Weight = Math.Clamp(e.Weight + Delta(type), MinWeight, MaxWeight);
             e.Interactions++;
+            switch (type)
+            {
+                case InteractionType.Adopted: e.Adopted++; break;
+                case InteractionType.ExportCompleted: e.Exports++; break;
+                case InteractionType.ThumbsUp: e.ThumbsUp++; break;
+                case InteractionType.ThumbsDown: e.ThumbsDown++; break;
+            }
             e.LastUtc = DateTime.UtcNow;
             w = e.Weight;
             json = JsonSerializer.Serialize(_entries);

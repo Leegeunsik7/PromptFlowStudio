@@ -31,6 +31,8 @@ public sealed class PublishViewModel : IDisposable
     private readonly PromptFlowStudio.Services.Chart.ChartStillGeneratorService? _quotes;
     private readonly PromptFlowStudio.Services.Ui.UserPreferenceService? _prefs;
     private readonly PromptFlowStudio.Services.Platform.IClipboardService? _clipboard;
+    private readonly PromptFlowStudio.Services.Pluto.PlutoLearningService? _learning;
+    private string? _activePlutoTrendId;
     private string? _publishPath;   // BGM 합성본(없으면 원본)
     private CancellationTokenSource? _cts;
     private CancellationTokenSource? _seoCts;
@@ -40,9 +42,11 @@ public sealed class PublishViewModel : IDisposable
         PromptFlowStudio.Services.Export.AudioMuxService? audioMux = null,
         PromptFlowStudio.Services.Chart.ChartStillGeneratorService? quotes = null,
         PromptFlowStudio.Services.Ui.UserPreferenceService? prefs = null,
-        PromptFlowStudio.Services.Platform.IClipboardService? clipboard = null)
+        PromptFlowStudio.Services.Platform.IClipboardService? clipboard = null,
+        PromptFlowStudio.Services.Pluto.PlutoLearningService? learning = null)
     {
         _clipboard = clipboard;
+        _learning = learning;
         _audioMux = audioMux;
         _quotes = quotes;
         _prefs = prefs;
@@ -613,6 +617,7 @@ public sealed class PublishViewModel : IDisposable
             StockSuiteMessage = r.Ok ? r.Message : "⚠ " + r.Message;
             StockSuiteExported = r.Ok;
             StockSuiteRestartPending = false;
+            if (r.Ok) await RecordPlutoExportAsync(CancellationToken.None).ConfigureAwait(false);
             return r.Ok;
         }
         catch (Exception ex)
@@ -673,9 +678,11 @@ public sealed class PublishViewModel : IDisposable
                 BgmPath = preset == PromptFlowStudio.Services.Export.SnsBgmPreset.CustomFile ? CustomBgmPath : null,
                 DurationSec = DurationSec,
                 Smooth60 = StockSuiteSmooth60,
+                Social = ActiveSocialPreset,
             };
             var r = await _stockSuite.ExportMultiTargetPackageAsync(VideoPath, opts, ct).ConfigureAwait(false);
             MultiPackageMessage = r.Message;
+            if (r.Ok) await RecordPlutoExportAsync(CancellationToken.None).ConfigureAwait(false);
             return r.Ok;
         }
         catch (Exception ex)
@@ -685,6 +692,29 @@ public sealed class PublishViewModel : IDisposable
             return false;
         }
         finally { IsMultiPackageBusy = false; Notify(); }
+    }
+
+    // ── 🪐 Pluto 내보내기 학습 루프 ──
+    /// <summary>🪐 작업실에 주입된 Pluto 트렌드 Id(내보내기 성공 시 ExportCompleted +0.15 보상 후 소거).</summary>
+    public string? ActivePlutoTrendId
+    {
+        get => Volatile.Read(ref _activePlutoTrendId);
+        set => Volatile.Write(ref _activePlutoTrendId, string.IsNullOrWhiteSpace(value) ? null : value.Trim());
+    }
+
+    /// <summary>🪐 내보내기 성공 → 활성 트렌드에 ExportCompleted 기록(원자적 소거 · 중복 보상 차단 · 예외 격리). 기록 시 true.</summary>
+    public async Task<bool> RecordPlutoExportAsync(CancellationToken ct = default)
+    {
+        if (_learning is null) return false;
+        var id = Interlocked.Exchange(ref _activePlutoTrendId, null);
+        if (id is null) return false;
+        try
+        {
+            await _learning.RecordInteractionAsync(id, PromptFlowStudio.Services.Pluto.InteractionType.ExportCompleted, ct).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) { Interlocked.CompareExchange(ref _activePlutoTrendId, id, null); return false; }
+        catch (Exception ex) { Program.Log("Publish.PlutoExport", ex); return false; }
     }
 
     /// <summary>🚀 StockSuite 실행 — 이미 실행 중이면 <see cref="StockSuiteRestartPending"/> 로 재실행 확인을 요구.</summary>
@@ -733,16 +763,41 @@ public sealed class PublishViewModel : IDisposable
         try
         {
             _publishPath = await PrepareBgmAsync(token).ConfigureAwait(false);
+            _publishPath = await PrepareSocialAsync(_publishPath, token).ConfigureAwait(false);
             var ytTask = ToYouTube ? RunYouTubeAsync(token) : Task.FromResult(true);
             var igTask = ToInstagram ? RunInstagramAsync(token) : Task.FromResult(true);
             var results = await Task.WhenAll(ytTask, igTask).ConfigureAwait(false);
-            return results[0] && results[1];
+            var ok = results[0] && results[1];
+            if (ok) await RecordPlutoExportAsync(CancellationToken.None).ConfigureAwait(false);
+            return ok;
         }
         finally
         {
             IsBusy = false;
             Notify();
         }
+    }
+
+    /// <summary>📱 SNS 프리셋 실필터 렌더(loudnorm · 그레인 · fps) — 미선택/미주입/실패 시 입력 경로 유지([부분 구제] · 발행 계속).</summary>
+    private async Task<string> PrepareSocialAsync(string path, CancellationToken ct)
+    {
+        if (_stockSuite is null || ActiveSocialPreset is not { } p) return path;
+        PresetMessage = "📱 " + p.Label + " 필터 렌더 중…";
+        Notify();
+        try
+        {
+            var r = await _stockSuite.RenderSocialAsync(path, p, ct).ConfigureAwait(false);
+            PresetMessage = r.Message;
+            return r.Ok && r.TargetPath is { } t ? t : path;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            Program.Log("Publish.Social", ex);
+            PresetMessage = "⚠ " + p.Label + " 렌더 실패 — 원본으로 진행";
+            return path;
+        }
+        finally { Notify(); }
     }
 
     /// <summary>🎵 BGM 합성 — 무음/미주입/실패 시 원본 경로([부분 구제] · 발행은 계속).</summary>

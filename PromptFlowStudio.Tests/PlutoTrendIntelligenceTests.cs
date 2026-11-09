@@ -150,6 +150,103 @@ public class PlutoTrendIntelligenceTests
         finally { try { Directory.Delete(dir, true); } catch (IOException) { } }
     }
 
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public async Task PlutoLearningService_RecordsExportCompleted_WhenExportSucceedsWithActiveTrend()
+    {
+        var dir = TempDir();
+        try
+        {
+            const string id = "baby-first-steps";
+            using var svc = new PlutoLearningService(Path.Combine(dir, PlutoLearningService.FileName), new Random(3));
+            using var vm = new PublishViewModel(new NullYt(), new NullIg(), learning: svc);
+            Assert.False(await vm.RecordPlutoExportAsync());   // 활성 트렌드 없음 → 기록 없음
+            Assert.Equal(0, svc.CurrentXP);
+
+            vm.ActivePlutoTrendId = id;
+            Assert.True(await vm.RecordPlutoExportAsync());
+            Assert.Equal(0.15, svc.GetWeight(id), 6);
+            Assert.Equal(PlutoLearningService.ExportXp, svc.CurrentXP);
+            Assert.Null(vm.ActivePlutoTrendId);   // 소거 → 중복 보상 차단
+            Assert.False(await vm.RecordPlutoExportAsync());
+            Assert.Equal(0.15, svc.GetWeight(id), 6);
+
+            using var vm2 = new PublishViewModel(new NullYt(), new NullIg());   // 학습 서비스 미주입 → 안전 no-op
+            vm2.ActivePlutoTrendId = id;
+            Assert.False(await vm2.RecordPlutoExportAsync());
+        }
+        finally { try { Directory.Delete(dir, true); } catch (IOException) { } }
+    }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public void StockSuiteExporter_AppliesSocialFilters_YouTubeLoudnormAndReelsGrain()
+    {
+        var src = Path.Combine(Path.GetTempPath(), "pfs-src.mp4");
+        var yt = PromptFlowStudio.Services.Export.StockSuiteExporter.BuildSocialArgs(src, "out_shorts.mp4", SocialExportPreset.YouTubeShorts);
+        var yaf = Array.IndexOf(yt, "-af");
+        Assert.True(yaf > 0);
+        Assert.Equal("loudnorm=I=-14:LRA=7:TP=-1.5", yt[yaf + 1]);
+        Assert.DoesNotContain(yt, a => a.Contains("noise=", StringComparison.Ordinal));
+        Assert.Equal("60", yt[Array.IndexOf(yt, "-r") + 1]);
+
+        var ig = PromptFlowStudio.Services.Export.StockSuiteExporter.BuildSocialArgs(src, "out_reels.mp4", SocialExportPreset.InstagramReels);
+        Assert.EndsWith(",noise=alls=8:allf=t+u", ig[Array.IndexOf(ig, "-vf") + 1], StringComparison.Ordinal);
+        Assert.Equal("30", ig[Array.IndexOf(ig, "-r") + 1]);
+        Assert.DoesNotContain(ig, a => a.Contains("loudnorm", StringComparison.Ordinal));
+
+        // 📦 멀티 패키지 쇼츠 규격에도 동일 실필터 결합
+        var opts = new PromptFlowStudio.Services.Export.MultiExportOptions { Social = SocialExportPreset.YouTubeShorts, DurationSec = 5 };
+        var shorts = PromptFlowStudio.Services.Export.StockSuiteExporter.BuildMultiTargetProfiles(src, opts, Path.GetTempPath(), "bgm.wav")[2].Args;
+        Assert.Contains(shorts, a => a.StartsWith("afade=", StringComparison.Ordinal) && a.EndsWith(",loudnorm=I=-14:LRA=7:TP=-1.5", StringComparison.Ordinal));
+        var reels = PromptFlowStudio.Services.Export.StockSuiteExporter.BuildMultiTargetProfiles(src, opts with { Social = SocialExportPreset.InstagramReels }, Path.GetTempPath(), null)[2].Args;
+        Assert.Contains(reels, a => a.EndsWith(",noise=alls=8:allf=t+u", StringComparison.Ordinal));
+        Assert.Equal("30", reels[Array.IndexOf(reels, "-r") + 1]);
+        var plain = PromptFlowStudio.Services.Export.StockSuiteExporter.BuildMultiTargetProfiles(src, opts with { Social = null }, Path.GetTempPath(), "bgm.wav")[2].Args;
+        Assert.DoesNotContain(plain, a => a.Contains("loudnorm", StringComparison.Ordinal) || a.Contains("noise=", StringComparison.Ordinal));
+        Assert.DoesNotContain("-r", plain);
+    }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public async Task PlutoLearningService_CalculatesAccurateLevelAndXp()
+    {
+        Assert.Equal(0, PlutoLearningService.ComputeXp(0, 0, 0));
+        Assert.Equal(1 + 9 + 2, PlutoLearningService.ComputeXp(1, 3, 2));
+        Assert.Equal(1, PlutoLearningService.LevelFor(0));
+        Assert.Equal(1, PlutoLearningService.LevelFor(9));
+        Assert.Equal(2, PlutoLearningService.LevelFor(10));
+        Assert.Equal(4, PlutoLearningService.LevelFor(35));
+
+        var dir = TempDir();
+        try
+        {
+            var path = Path.Combine(dir, PlutoLearningService.FileName);
+            using (var svc = new PlutoLearningService(path, new Random(5)))
+            {
+                await svc.EnsureLoadedAsync();
+                Assert.Equal(1, svc.CurrentLevel);
+                Assert.Equal(10, svc.NextLevelXP);
+                await svc.RecordInteractionAsync("a", InteractionType.Adopted);          // +1
+                for (var i = 0; i < 3; i++) await svc.RecordInteractionAsync("a", InteractionType.ExportCompleted);   // +9
+                await svc.RecordInteractionAsync("b", InteractionType.ThumbsUp);         // +1
+                await svc.RecordInteractionAsync("b", InteractionType.ThumbsDown);       // +0
+                Assert.Equal(11, svc.CurrentXP);
+                Assert.Equal(2, svc.CurrentLevel);
+                Assert.Equal(20, svc.NextLevelXP);
+                Assert.Equal(6, svc.TotalInteractions);
+            }
+            using (var reload = new PlutoLearningService(path, new Random(5)))   // 영속 → 재시작 후 동일 레벨
+            {
+                await reload.EnsureLoadedAsync();
+                Assert.Equal(11, reload.CurrentXP);
+                Assert.Equal(2, reload.CurrentLevel);
+                Assert.Equal(6, reload.TotalInteractions);
+            }
+        }
+        finally { try { Directory.Delete(dir, true); } catch (IOException) { } }
+    }
+
     private sealed class NullYt : IYouTubeShortsPublisher
     {
         public bool Enabled => false;

@@ -15,6 +15,12 @@
         <div class="pl-sub">플루토가 고른 쇼츠·릴스 트렌드 — 채택·내보내기·평가할수록 취향을 학습합니다.</div>
     </div>
 
+    <div class="pl-brain" data-pluto-hud="1" title="채택 1 · 내보내기 3 · 👍 1 XP — 10 XP 마다 레벨 업">
+        @{ var xp = Learning.CurrentXP; var lv = PlutoLearningService.LevelFor(xp); var next = lv * PlutoLearningService.XpPerLevel; var floor = next - PlutoLearningService.XpPerLevel; var pct = (xp - floor) * 100 / PlutoLearningService.XpPerLevel; }
+        <span>🧠 플루토 AI 두뇌: Lv.@(lv) (@(xp)/@(next) XP) · @(Learning.TotalInteractions)회 피드백 학습 완료</span>
+        <div class="pl-brain-bar"><div class="pl-brain-fill" style="width:@(pct.ToString(System.Globalization.CultureInfo.InvariantCulture))%"></div></div>
+    </div>
+
     <div class="pl-pills" role="tablist">
         @foreach (var cat in PlutoTrendEngine.Categories)
         {
@@ -66,6 +72,9 @@
     .pl-title { font-size: 26px; font-weight: 900; margin: 0; }
     .pl-title-g { background: linear-gradient(135deg,#8b7bff,#ff7bc6); -webkit-background-clip: text; background-clip: text; color: transparent; }
     .pl-sub { opacity: .75; margin-top: 6px; font-size: 14px; }
+    .pl-brain { margin-top: 14px; padding: 10px 14px; border-radius: 14px; background: linear-gradient(90deg, rgba(167,139,250,.18), rgba(244,114,182,.14)); border: 1px solid rgba(167,139,250,.35); font-size: 14px; font-weight: 600; }
+    .pl-brain-bar { margin-top: 6px; height: 6px; border-radius: 3px; background: rgba(255,255,255,.12); overflow: hidden; }
+    .pl-brain-fill { height: 100%; background: linear-gradient(90deg, #a78bfa, #f472b6); transition: width .4s ease; }
     .pl-pills { display: flex; gap: 8px; flex-wrap: wrap; margin: 18px 0; }
     .pl-pill { padding: 8px 16px; border-radius: 999px; border: 1px solid var(--line,rgba(148,163,184,.3)); background: transparent; color: inherit; font-weight: 800; cursor: pointer; }
     .pl-pill.on { background: linear-gradient(135deg,#8b7bff,#6d5efc); color: #fff; border-color: transparent; }
@@ -100,6 +109,9 @@
     protected override async Task OnInitializedAsync()
     {
         Learning.Changed += OnLearningChanged;
+        try { await Learning.EnsureLoadedAsync(_cts.Token); }   // 🧠 HUD 레벨/XP 표시용 메모리 선적재
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("PlutoTrendLab.Brain", ex); }
         await LoadAsync();
     }
 
@@ -124,6 +136,7 @@
     private async Task ApplyAsync(PlutoTrend t)
     {
         Draft.Send(PlutoTrendEngine.EnglishName(t.Category) + " theme, " + t.BuildStudioPrompt());   // 작업실 진입 시 프롬프트로 흡수
+        Draft.SendPlutoTrend(t.Id);   // 🪐 내보내기 성공 시 ExportCompleted(+0.15) 보상 대상
         try { await Learning.RecordInteractionAsync(t.Id, InteractionType.Adopted, _cts.Token); }
         catch (Exception ex) when (ex is not OperationCanceledException) { Program.Log("PlutoTrendLab.Adopt", ex); }
         catch (OperationCanceledException) { }

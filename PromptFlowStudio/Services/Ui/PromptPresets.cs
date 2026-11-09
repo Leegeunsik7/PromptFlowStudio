@@ -83,4 +83,17 @@ public sealed class PromptDraftService
         _pending = null;
         return v;
     }
+
+    private string? _plutoTrendId;
+
+    /// <summary>🪐 Pluto 트렌드 카드 출처 Id 적재(작업실 → 내보내기 학습 루프).</summary>
+    public void SendPlutoTrend(string? trendId) => _plutoTrendId = string.IsNullOrWhiteSpace(trendId) ? null : trendId.Trim();
+
+    /// <summary>🪐 적재된 Pluto 트렌드 Id 를 한 번 꺼내 비운다(없으면 null).</summary>
+    public string? ConsumePlutoTrend()
+    {
+        var v = _plutoTrendId;
+        _plutoTrendId = null;
+        return v;
+    }
 }
