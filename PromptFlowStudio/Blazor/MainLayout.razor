@@ -161,7 +161,7 @@
                 🎨 커스텀 테마 제작@(Theme.Active is { } a ? $" · {a.Name}" : "")
             </button>
 
-            <GpuTelemetryBadge />   @* 🎮 GPU/VRAM 상태 배지 *@
+            <GpuTelemetryBadge />   @* 🚦 Step5: 단일 신호등 상태 배지(클릭 → GPU/VRAM 상세 팝오버) *@
             <div class="side-foot">
                 <div class="side-ava">@Avatar</div>
                 <div class="side-um">
@@ -186,6 +186,12 @@
                  한다. .content 가 overflow:auto 라 sticky 가 그 안에서 동작한다.
                ═══════════════════════════════════════════════════════════════ *@
             <header class="topbar" role="banner">
+                @* 🍼 Step5: 헤더 좌측 = ☰ + 브랜드 로고/태그라인 · 증시 잔재 위젯은 기본 화면에서 제거(설정 > 연동 진단). *@
+                <button type="button" class="topbar-ham @(_sideCollapsed ? "off" : null)" aria-label="사이드바 접기/펼치기" title="사이드바 접기/펼치기" @onclick="ToggleSidebar">☰</button>
+                <div class="topbar-logo" data-header-brand>
+                    <span class="topbar-logo-n">PromptFlow Studio</span>
+                    <span class="topbar-logo-tag">아기 성장 &amp; 감성 영상 시네마틱 스튜디오</span>
+                </div>
                 <div class="topbar-where">
                     @if (Here is { } h)
                     {
@@ -195,8 +201,7 @@
                 </div>
 
                 <div class="topbar-tools">
-                    @* v17.50.1: 스튜디오 트리거 98개는 좌측 사이드바 6대 카테고리로 이관 — 헤더는 트랜스포트 바(타임코드 · 레이턴시 · 메모리/GPU · 피크)만. *@
-                    <MasterTransportBar OnToggleSidebar="ToggleSidebar" SidebarCollapsed="_sideCollapsed" />
+                    <span class="topbar-ready" role="status" data-header-status>🟢 준비 완료</span>
                     <div class="topbar-brand" title="ANG Technology">
                         <img class="ang-mark ang-w" src="img/ang_logo_w.png"
                              alt="" aria-hidden="true" draggable="false" />

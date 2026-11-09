@@ -2,25 +2,51 @@
 @inject IServiceProvider Services
 @implements IDisposable
 
-@* 🎮 상태 푸터 GPU/VRAM 배지 — ResourceMonitorService(nvidia-smi · 1.5초 캐시) 3초 폴링. 미등록(모바일)/GPU 미가용 = 숨김. *@
-@if (_text is not null)
-{
-    <span class="gpu-badge @(_level)" title="@(_name ?? "GPU")">@(_text)</span>
-}
+@* 🚦 Step5 상태 푸터 단일 신호등 배지 — 🟢 정상 · 🟡 리소스 집중(GPU/VRAM ≥70%) · 🔴 점검 필요(샘플링 실패).
+   클릭 → GPU/VRAM 상세 팝오버. ResourceMonitorService(nvidia-smi · 1.5초 캐시) 3초 폴링 · 미등록(모바일) = 기본 🟢. *@
+<div class="sys-light-wrap">
+    <button type="button" class="sys-light @(LightCss(_light))" data-status-light="@(LightCss(_light))" aria-expanded="@(_open ? "true" : "false")" @onclick="() => _open = !_open">@(LightText(_light))</button>
+    @if (_open)
+    {
+        <div class="sys-light-pop" role="dialog" aria-label="시스템 진단">
+            <div class="sys-light-pop-h">🩺 시스템 진단</div>
+            <div>@(_name ?? "GPU 정보 없음")</div>
+            <div class="sys-light-num">@(_text ?? "GPU/VRAM 텔레메트리 미가용")</div>
+            @if (_err is not null) { <div class="sys-light-err">@(_err)</div> }
+        </div>
+    }
+</div>
 
 <style>
-    .gpu-badge { display: inline-block; margin: 6px 10px 0; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; border: 1px solid currentColor; white-space: nowrap; }
-    .gpu-badge.ok { color: #22c55e; background: rgba(34, 197, 94, .10); }
-    .gpu-badge.warn { color: #f59e0b; background: rgba(245, 158, 11, .12); }
-    .gpu-badge.crit { color: #ef4444; background: rgba(239, 68, 68, .14); }
+    .sys-light-wrap { position: relative; margin: 6px 10px 0; }
+    .sys-light { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; border: 1px solid currentColor; white-space: nowrap; cursor: pointer; background: transparent; }
+    .sys-light.ok { color: #22c55e; background: rgba(34, 197, 94, .10); }
+    .sys-light.warn { color: #f59e0b; background: rgba(245, 158, 11, .12); }
+    .sys-light.crit { color: #ef4444; background: rgba(239, 68, 68, .14); }
+    .sys-light-pop { position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 50; min-width: 220px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line, #333); background: var(--panel, #1b1d24); color: inherit; font-size: 11px; box-shadow: 0 6px 20px rgba(0,0,0,.35); display: flex; flex-direction: column; gap: 4px; }
+    .sys-light-pop-h { font-weight: 800; }
+    .sys-light-num { font-variant-numeric: tabular-nums; }
+    .sys-light-err { color: #ef4444; }
 </style>
 
 @code {
     private const int PollMs = 3000;
     private ResourceMonitorService? _res;
     private System.Threading.Timer? _timer;
-    private string? _text, _name;
+    private string? _text, _name, _err;
     private string _level = "ok";
+    private int _light; // 0=🟢 1=🟡 2=🔴
+    private bool _open;
+
+    /// <summary>🚦 GPU 부하 레벨(ok/warn/crit) + 오류 여부 → 신호등 단계. 순수 함수(테스트 가능).</summary>
+    public static int LightFrom(string level, bool error) => error ? 2 : level == "ok" ? 0 : 1;
+    public static string LightCss(int light) => light switch { 2 => "crit", 1 => "warn", _ => "ok" };
+    public static string LightText(int light) => light switch
+    {
+        2 => "🔴 시스템 점검 필요",
+        1 => "🟡 렌더링 리소스 집중 중",
+        _ => "🟢 아기 스튜디오 엔진 정상 가동 중",
+    };
     private int _busy, _disposed;
 
     protected override void OnInitialized()
@@ -40,11 +66,17 @@
             var s = await _res.SampleAsync();
             var text = ResourceMonitorService.GpuBadgeText(s);
             var level = ResourceMonitorService.GpuBadgeLevel(s);
-            if (text == _text && level == _level) return;
-            _text = text; _level = level; _name = s.GpuName;
+            var light = LightFrom(level, false);
+            if (text == _text && level == _level && light == _light) return;
+            _text = text; _level = level; _name = s.GpuName; _light = light; _err = null;
             if (Volatile.Read(ref _disposed) == 0) await InvokeAsync(StateHasChanged);
         }
-        catch (Exception ex) { Program.Log("GpuTelemetryBadge", ex); }
+        catch (Exception ex)
+        {
+            Program.Log("GpuTelemetryBadge", ex);
+            _light = 2; _err = ex.Message;
+            try { if (Volatile.Read(ref _disposed) == 0) await InvokeAsync(StateHasChanged); } catch (Exception ex2) { Program.Log("GpuTelemetryBadge.Render", ex2); }
+        }
         finally { Volatile.Write(ref _busy, 0); }
     }
 

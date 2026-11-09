@@ -52,18 +52,7 @@
             <button class="ws-back" @onclick='() => Nav.NavigateTo("")'>← 워크스페이스</button>
             <button class="ws-back" @onclick='() => Nav.NavigateTo("storyboard")'>🎬 스토리보드(여러 컷) →</button>
             <button class="ws-back" @onclick="ExpandToStoryboard" disabled="@(State.IsBusy || string.IsNullOrWhiteSpace(_prompt))" title="현재 프롬프트·시드로 1번 컷을 채우고 2~4번 컷을 기승전결로 자동 전개">🎬 스토리보드로 4컷 확장</button>
-            <span class="ws-trade-guard @(PromptFlowStudio.Services.ProcessBridge.TradingSafetyGuardService.SessionCss(_session.Status))" title="@SessionTooltip">@SessionBadgeText</span>
-            @{ var ssSnap = StockMon.Current; }
-            @if (ssSnap.IsRunning)
-            {
-                <button class="ws-ssmon on" @onclick="OnStockSuiteBadgeClick" title="@("클릭 → StockSuite 창 최상단 활성화 · 메모리 " + ssSnap.WorkingSetMb.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + " MB")">🟢 StockSuite 연동 활성 (PID: @(ssSnap.Pid.ToString(System.Globalization.CultureInfo.InvariantCulture)))</button>
-            }
-            else
-            {
-                <button class="ws-ssmon off" @onclick="OnStockSuiteBadgeClick" title="클릭 → StockSuite 원클릭 실행">⚪ StockSuite 미실행</button>
-            }
-            @if (Ipc.IsConnected) { <span class="ws-ipc" title="StockSuiteBridge Named Pipe 양방향 연결 — 종목 수신 · HUD 테마 동기화">🔌 IPC</span> }
-            else if (Ipc.ConnectionState == PromptFlowStudio.Services.ProcessBridge.IpcConnectionState.Reconnecting) { <span class="ws-ipc ws-ipc-wait" title="StockSuite 파이프 끊김 — 3초 주기 자동 재접속 중(파일 폴백 유지)">🟡 Reconnecting...</span> }
+            @* 🍼 Step5: 증시 세션/외부 연동 배지는 기본 아기 스튜디오 화면에서 제거(설정 > 연동 진단으로 이관). *@
             @if (Journal.RecoveringCount > 0) { <span class="ws-recover" role="status">[🔄 미완료 클라우드 작업 복원 중: @(Journal.RecoveringCount.ToString(CultureInfo.InvariantCulture))건]</span> }
             else if (Journal.Count > 0) { <button class="ws-recover ws-jbadge" @onclick="OpenJournal" title="클릭 → 저널 인스펙터(수동 회수·재시도·삭제)">[🔄 미완료 클라우드 작업: @(Journal.Count.ToString(CultureInfo.InvariantCulture))건]</button> }
             @if (_retryMsg is not null) { <span class="ws-retry" role="status">@_retryMsg</span> }
@@ -359,11 +348,12 @@
             <div class="ws-card-h">
                 <span>② 🎬 라이브 비디오 캔버스</span>
                 <span class="ws-hts-tools">
-                    <button class="ws-hts-tog @(_htsHud ? "on" : null)" @onclick="() => _htsHud = !_htsHud" aria-pressed="@(_htsHud ? "true" : "false")" title="HTS 차트·호가창 목업을 영상 위에 겹쳐 배경 가독성을 검증">📊 HTS HUD</button>
+                    <button class="ws-hts-tog @(_growthBadge ? "on" : null)" @onclick="() => _growthBadge = !_growthBadge" aria-pressed="@(_growthBadge ? "true" : "false")" title="개월 수 · 성장 마일스톤 뱃지와 자막을 영상 위에 미리보기" data-canvas-tool="growth-badge">🏷️ 성장 뱃지/자막</button>
+                    <button class="ws-hts-tog @(_bgmOn ? "on" : null)" @onclick="() => _bgmOn = !_bgmOn" aria-pressed="@(_bgmOn ? "true" : "false")" title="감성 BGM 믹스 토글" data-canvas-tool="bgm">🎵 감성 BGM</button>
                     @if (InspectPath is not null) { <button class="ws-hts-tog @(_specOpen ? "on" : null)" @onclick="ToggleSpecAsync" aria-pressed="@(_specOpen ? "true" : "false")" title="실측 코덱 · 해상도/FPS · 비트레이트 · 파일 크기 · 무음(-an) 적용 여부">ℹ️ 미디어 규격</button> }
                     <button class="ws-hts-tog @(_abOn ? "on" : null)" @onclick="() => _abOn = !_abOn" aria-pressed="@(_abOn ? "true" : "false")" title="좌: 원본 · 우: 선택 LUT + 샤프닝 — 분할 핸들을 드래그해 텍스트·캔들 라인 선명도를 즉시 비교">🔀 A/B 비교</button>
                     <button class="ws-hts-tog @(_seamCheck ? "on" : null)" @onclick="ToggleSeamCheckAsync" aria-pressed="@(_seamCheck ? "true" : "false")" title="영상 종료 2초 전 → 0~2초 구간만 무한 반복해 루프 접합면(Seam) 프레임 튐을 1초 만에 점검">🔁 이음새 점검</button>
-                    <label class="ws-lut-l" title="HTS 시네마틱 LUT 톤 매핑 — 캔버스 실시간 미리보기 · StockSuite 내보내기 시 FFmpeg eq 번인">🎨 톤 매핑 LUT
+                    <label class="ws-lut-l" title="시네마틱 컬러 그레이딩 — 캔버스 실시간 미리보기 · 내보내기 시 FFmpeg eq 번인" data-canvas-tool="lut">🎨 톤매핑/LUT
                         <select class="ws-hts-sel" value="@((int)_lut)" @onchange="OnLutChanged">
                             @foreach (var lp in PromptFlowStudio.Services.Export.ColorGradingService.All)
                             {
@@ -434,7 +424,7 @@
                 <div class="ws-hts-wrap @(_abOn ? "ab-on" : null)">
                     <div id="@XdHostId" class="ws-xd"></div>
                     @if (_abOn) { @AbSplit }
-                    @if (_htsHud) { <HtsHudOverlay OpacityPercent="_htsOpacity" DimmerPercent="_htsDimmer" Theme="_htsTheme" /> }
+                    @if (_growthBadge) { <div class="ws-growth-badge" aria-hidden="true">🏷️ 우리 아기 성장 기록</div> }
                 </div>
                 @ScrubBar
                 @if (_canvasQueuePath is { } qPath)
@@ -487,7 +477,7 @@
                     <div class="ws-hts-wrap @(_abOn ? "ab-on" : null)">
                         <div id="@XdMainId" class="ws-xd"></div>
                         @if (_abOn) { @AbSplit }
-                        @if (_htsHud) { <HtsHudOverlay OpacityPercent="_htsOpacity" DimmerPercent="_htsDimmer" Theme="_htsTheme" /> }
+                        @if (_growthBadge) { <div class="ws-growth-badge" aria-hidden="true">🏷️ 우리 아기 성장 기록</div> }
                     </div>
                 }
                 @ScrubBar
@@ -1021,6 +1011,7 @@
     /* 📊 HTS HUD 가독성 시뮬레이터 */
     .ws-hts-tools { display: inline-flex; align-items: center; gap: 6px; }
     .ws-hts-tog { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--text-secondary, #aab); cursor: pointer; }
+    .ws-growth-badge { position: absolute; left: 12px; bottom: 12px; z-index: 3; padding: 4px 12px; border-radius: 999px; font-size: 13px; font-weight: 800; color: #fff; background: rgba(255, 140, 170, .82); box-shadow: 0 2px 8px rgba(0,0,0,.25); pointer-events: none; }
     .ws-hts-tog.on { background: rgba(61, 139, 255, .18); border-color: #3d8bff; color: #9cc3ff; }
     .ws-hts-ctl { display: flex; flex-wrap: wrap; gap: 14px; font-size: 11.5px; color: var(--text-secondary, #aab); margin: 6px 0; }
     .ws-hts-ctl label { display: flex; align-items: center; gap: 6px; }
@@ -2057,8 +2048,11 @@
         StateHasChanged();
     }
 
-    // 📊 HTS HUD 가독성 시뮬레이터 상태
-    private bool _htsHud;
+    // 📊 HTS HUD 가독성 시뮬레이터 — 🍼 Step5: 아기 스튜디오 기본 화면에서 토글 제거(레거시 보존 · 항상 OFF)
+    private bool _htsHud { get; set; }
+    // 🏷️ 성장 뱃지/자막 · 🎵 감성 BGM 캔버스 토글
+    private bool _growthBadge;
+    private bool _bgmOn;
     private bool _seamCheck;
 
     /// <summary>🔁 루프 이음새 인스펙터 토글 — JS rAF 가 [종료-2s, 종료] ∪ [0, 2s] 구간만 반복(interop 실패 시 상태 원복).</summary>

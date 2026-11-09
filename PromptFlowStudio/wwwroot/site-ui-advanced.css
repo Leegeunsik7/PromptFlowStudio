@@ -1908,6 +1908,13 @@
     overscroll-behavior-x: contain; scrollbar-width: thin; scrollbar-color: var(--line) transparent;
 }
 .topbar-tools > * { flex-shrink: 0; }
+/* 🍼 Step5 아기 스튜디오 헤더 — ☰ · 브랜드/태그라인 · 준비 상태 칩 */
+.topbar-ham { flex: none; width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: inherit; cursor: pointer; font-size: 15px; line-height: 1; }
+.topbar-ham.off { opacity: .6; }
+.topbar-logo { display: flex; flex-direction: column; min-width: 0; flex: none; line-height: 1.15; }
+.topbar-logo-n { font-size: 14px; font-weight: 800; letter-spacing: -.01em; white-space: nowrap; }
+.topbar-logo-tag { font-size: 11px; opacity: .65; white-space: nowrap; }
+.topbar-ready { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; color: #16a34a; background: rgba(34, 197, 94, .10); border: 1px solid rgba(34, 197, 94, .35); white-space: nowrap; }
 .topbar-tools > :first-child { margin-left: auto; }   /* 버튼이 적으면 오른쪽 정렬 유지 · 넘치면 왼쪽부터 스크롤 */
 .topbar-tools::-webkit-scrollbar { height: 4px; }
 .topbar-tools::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
