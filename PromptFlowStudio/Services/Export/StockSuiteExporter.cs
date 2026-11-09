@@ -71,7 +71,8 @@ public sealed record MultiExportOptions
 
 /// <summary>패키지 단일 규격 — Key: <c>hts</c>|<c>mobile</c>|<c>shorts</c>.</summary>
 /// <summary>🔇 내보내기 규격 — Silent Ambient Guard(<c>-an</c>) 는 데스크톱 앰비언트(HTS·듀얼 모니터)에만 강제, 모바일/쇼츠는 BGM 보존.</summary>
-public enum ExportProfile { HtsDesktop, DualMonitorSplit, SnsShorts, MobileVertical }
+/// <remarks>🎵 <see cref="BabyCinematic"/> = 아기 스튜디오 단일 MP4(BGM 주 산출물 직접 먹싱 · 가드 면제).</remarks>
+public enum ExportProfile { HtsDesktop, DualMonitorSplit, SnsShorts, MobileVertical, BabyCinematic }
 
 public sealed record MultiExportProfile(string Key, string Label, int Width, int Height, string OutputPath, string[] Args);
 
@@ -334,6 +335,16 @@ public sealed partial class StockSuiteExporter
     public async Task<StockSuiteExportResult> ExportAsync(string? sourcePath, string? targetDir, string? assetName, bool hotReload, CancellationToken ct = default, StockSuiteExportFormat? format = null, bool? sharpen = null, bool? smooth60 = null, StockSuiteResolution resolution = StockSuiteResolution.Fhd1080, bool watermark = false)
     {
         var r = await ExportCoreAsync(sourcePath, targetDir, assetName, ct, format, sharpen, smooth60, resolution, watermark).ConfigureAwait(false);
+        // 🎵 아기 스튜디오 — BGM 을 주 산출물에 직접 먹싱(동반 _baby_bgm 파일 없음 · 실패 시 무음 산출물 보존).
+        if (r.Ok && IsBabyBgmEnabled && r.TargetPath is { } bt && !string.Equals(Path.GetFullPath(sourcePath!), bt, StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                if (await TryMuxBabyBgmIntoPrimaryAsync(bt, ct).ConfigureAwait(false))
+                    r = r with { HasAudio = true, Message = r.Message.Replace("🔇 무음", "🔊 BGM", StringComparison.Ordinal) + " · " + BabyBgmTag + BabyBgmLabel(BabyBgm!.Value) };
+            }
+            catch (OperationCanceledException) { return new(false, null, false, "취소됨"); }
+        }
         // 🔁 라이브 핫리로드 — 실제 교체가 일어난 경우에만 신호(동일 위치 no-op 제외).
         if (r.Ok && r.TargetPath is { } t && !string.Equals(Path.GetFullPath(sourcePath!), t, StringComparison.OrdinalIgnoreCase))
         {

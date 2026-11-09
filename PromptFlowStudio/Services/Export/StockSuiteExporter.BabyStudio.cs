@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using PromptFlowStudio.Services.AI;
 using PromptFlowStudio.Services.Music;
+using PromptFlowStudio.Services.Render;
 using PromptFlowStudio.Services.Sound;
 
 namespace PromptFlowStudio.Services.Export;
@@ -20,13 +21,20 @@ public sealed partial class StockSuiteExporter
     public const double BabyBgmVolume = 0.25;
     /// <summary>🎵 아기 BGM 페이드 인/아웃 길이(초).</summary>
     public const double BabyBgmFadeSec = 1.5;
-    /// <summary>🎵 아기 BGM 동반 산출물 접미사(원본 옆 · 무음 StockSuite 에셋과 분리).</summary>
-    public const string BabyBgmSuffix = "_baby_bgm";
+    /// <summary>🎵 주 산출물 먹싱 임시 접미사(성공 시 원자적 교체 · 실패 시 삭제).</summary>
+    internal const string BabyBgmMuxTempSuffix = ".~bgm";
     public const string BabyBgmTag = "🎵 감성 BGM · ";
     public const string GrowthBadgeTag = "🏷️ 성장 뱃지 · ";
 
     /// <summary>🎵 캔버스 BGM 토글 결선 — null = OFF(무음/기존 트랙 유지).</summary>
     public BabyBgmTrack? BabyBgm { get; set; }
+
+    /// <summary>🎵 BGM 직접 먹싱 활성(<see cref="ExportProfile.BabyCinematic"/>) — 주 MP4 단일 산출물.</summary>
+    public bool IsBabyBgmEnabled => BabyBgm is not null;
+
+    /// <summary>⏱️ 비디오 길이 프로브(초 · 0 = 미상) — 기본 <see cref="MediaProbeService.GetDurationAsync"/>. 테스트 주입용.</summary>
+    public Func<string, CancellationToken, Task<double>> DurationProbe { get; set; }
+        = static (p, ct) => new MediaProbeService().GetDurationAsync(p, ct);
 
     /// <summary>🎵 아기 BGM 해석기(트랙, 길이) → WAV 경로. 기본 = 로컬 합성(오프라인).</summary>
     public Func<BabyBgmTrack, double, string?> BabyBgmResolver { get; set; } = static (t, d) => EnsureBabyBgm(t, d, null);
@@ -41,14 +49,17 @@ public sealed partial class StockSuiteExporter
         _ => "🌙 자장가",
     };
 
-    /// <summary>🎵 아기 BGM 오디오 필터 — loudnorm(-14 LUFS) → volume 0.25 덕킹 → 페이드 인 → (길이 기지 시) 페이드 아웃.</summary>
+    /// <summary>⏱️ 페이드 아웃 시작 = max(0, 길이 − 1.5s).</summary>
+    public static double BabyBgmFadeOutStart(double durationSec) => Math.Max(0, durationSec - BabyBgmFadeSec);
+
+    /// <summary>🎵 아기 BGM 오디오 필터 — loudnorm(-14 LUFS) → volume 0.25 → afade in 1.5s → (길이 기지 시) afade out <c>st={길이-1.5:F2}</c>.</summary>
     public static string BuildBabyBgmAudioFilter(double durationSec)
     {
         var inv = CultureInfo.InvariantCulture;
-        var f = AudioMuxService.LoudnormFilter + ",volume=" + BabyBgmVolume.ToString("0.##", inv)
-            + ",afade=t=in:st=0:d=" + BabyBgmFadeSec.ToString("0.###", inv);
-        if (double.IsFinite(durationSec) && durationSec > BabyBgmFadeSec * 2)
-            f += ",afade=t=out:st=" + (durationSec - BabyBgmFadeSec).ToString("0.###", inv) + ":d=" + BabyBgmFadeSec.ToString("0.###", inv);
+        var d = BabyBgmFadeSec.ToString("0.###", inv);
+        var f = AudioMuxService.LoudnormFilter + ",volume=" + BabyBgmVolume.ToString("0.##", inv) + ",afade=t=in:st=0:d=" + d;
+        if (double.IsFinite(durationSec) && durationSec > 0)
+            f += ",afade=t=out:st=" + BabyBgmFadeOutStart(durationSec).ToString("F2", inv) + ":d=" + d;
         return f;
     }
 
@@ -61,21 +72,15 @@ public sealed partial class StockSuiteExporter
             "-i", videoPath,
             "-stream_loop", "-1", "-i", bgmPath,
             "-map", "0:v:0", "-map", "1:a:0",
-            "-c:v", "copy", "-c:a", "aac", "-b:a", AudioMuxService.AudioBitrate,
+            "-c:v", "copy", "-c:a", videoPath.EndsWith(".webm", StringComparison.OrdinalIgnoreCase) ? "libopus" : "aac", "-b:a", AudioMuxService.AudioBitrate,
             "-af", BuildBabyBgmAudioFilter(durationSec),
             "-ar", AudioMuxService.OutputSampleRate, "-shortest",
         };
         if (double.IsFinite(durationSec) && durationSec > 0) { a.Add("-t"); a.Add(durationSec.ToString("0.###", CultureInfo.InvariantCulture)); }
-        if (outputPath.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)) { a.Add("-movflags"); a.Add("+faststart"); }
+        if (videoPath.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)) { a.Add("-movflags"); a.Add("+faststart"); a.Add("-f"); a.Add("mp4"); }
+        else if (videoPath.EndsWith(".webm", StringComparison.OrdinalIgnoreCase)) { a.Add("-f"); a.Add("webm"); }
         a.Add(outputPath);
         return a.ToArray();
-    }
-
-    /// <summary>원본 옆 <c>{name}_baby_bgm.mp4</c>.</summary>
-    public static string BuildBabyBgmOutputPath(string videoPath)
-    {
-        var dir = Path.GetDirectoryName(Path.GetFullPath(videoPath)) ?? ".";
-        return Path.Combine(dir, Path.GetFileNameWithoutExtension(videoPath) + BabyBgmSuffix + ".mp4");
     }
 
     /// <summary>🎵 아기 BGM 로컬 합성 WAV(캐시 재사용) — 실패 시 null.</summary>
@@ -108,21 +113,35 @@ public sealed partial class StockSuiteExporter
     }
 
     /// <summary>
-    /// 🎵 BGM ON 시 원본 옆 동반 산출물(<c>_baby_bgm.mp4</c>) 합성 — StockSuite 무음 에셋(Silent Ambient Guard)은 그대로 유지.
-    /// 성공 시 출력 경로, OFF/실패 시 null(throw 없음 · 취소는 전파).
+    /// 🎵 BGM ON 시 주 산출물(<paramref name="primaryPath"/>)에 BGM 직접 먹싱 — 길이 프로브 → 페이드 아웃 계산 → 임시 파일 합성 → 원자적 교체.
+    /// <see cref="ExportProfile.BabyCinematic"/> 로 실행(Silent Ambient Guard 면제). 성공 true · OFF/실패 false(무음 산출물 보존 · 취소는 전파).
     /// </summary>
-    public async Task<string?> TryMuxBabyBgmAsync(string sourcePath, double durationSec, CancellationToken ct = default)
+    public async Task<bool> TryMuxBabyBgmIntoPrimaryAsync(string primaryPath, CancellationToken ct = default)
     {
-        if (BabyBgm is not { } track || string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath)) return null;
+        if (BabyBgm is not { } track || string.IsNullOrWhiteSpace(primaryPath) || !File.Exists(primaryPath)) return false;
+        double duration;
+        try { duration = await DurationProbe(primaryPath, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { Program.Log("StockSuite.BabyBgm.Probe", ex); duration = 0; }
         string? bgm;
-        try { bgm = BabyBgmResolver(track, durationSec); }
+        try { bgm = BabyBgmResolver(track, duration); }
         catch (Exception ex) { Program.Log("StockSuite.BabyBgm.Resolve", ex); bgm = null; }
-        if (string.IsNullOrWhiteSpace(bgm) || !File.Exists(bgm)) return null;
-        var output = BuildBabyBgmOutputPath(sourcePath);
-        var err = await TryFfmpegAsync(BuildBabyBgmMuxArgs(sourcePath, bgm, durationSec, output), output, ct, ExportProfile.SnsShorts).ConfigureAwait(false);
-        if (err is null) return output;
-        Program.Log("StockSuite.BabyBgm", new IOException(err));
-        return null;
+        if (string.IsNullOrWhiteSpace(bgm) || !File.Exists(bgm)) return false;
+        var temp = primaryPath + BabyBgmMuxTempSuffix;
+        try
+        {
+            var err = await TryFfmpegAsync(BuildBabyBgmMuxArgs(primaryPath, bgm, duration, temp), temp, ct, ExportProfile.BabyCinematic).ConfigureAwait(false);
+            if (err is not null) { Program.Log("StockSuite.BabyBgm", new IOException(err)); TryDelete(temp); return false; }
+            await SwapIntoPlaceAsync(temp, primaryPath, ct).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) { TryDelete(temp); throw; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Program.Log("StockSuite.BabyBgm", ex);
+            TryDelete(temp);
+            return false;
+        }
     }
 
     /// <summary>🏷️ 단계 기본 D-day — 신생아 D+30 · 백일 D+100 · 첫돌 D+365 · 그 외 오늘 날짜.</summary>

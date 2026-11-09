@@ -791,6 +791,72 @@
 })();
 
 /* ============================================================================
+ * 🎵 캔버스 감성 BGM 미리듣기 — 단일 <audio>(loop · 0.25) 를 캔버스 <video> 재생/일시정지/시킹/리셋에 동기화.
+ * ========================================================================== */
+(function () {
+    'use strict';
+    let audio = null, selector = 'video.ws-video', vol = 0.25, bound = [], obs = null;
+    const EVTS = ['play', 'playing', 'pause', 'seeked', 'ended', 'emptied'];
+    function syncTime(v) {
+        if (audio && isFinite(audio.duration) && audio.duration > 0) audio.currentTime = (v.currentTime || 0) % audio.duration;
+    }
+    function play() { const p = audio.play(); if (p && p.catch) p.catch(function () { }); }
+    function onEvt(e) {
+        const v = e.target;
+        if (!audio || !v) return;
+        try {
+            if (e.type === 'play' || e.type === 'playing') { syncTime(v); play(); }
+            else if (e.type === 'seeked') syncTime(v);
+            else if (e.type === 'ended' || e.type === 'emptied') { audio.pause(); audio.currentTime = 0; }
+            else audio.pause();
+        } catch (err) { }
+    }
+    function unbind() {
+        for (let i = 0; i < bound.length; i++) for (let k = 0; k < EVTS.length; k++) bound[i].removeEventListener(EVTS[k], onEvt);
+        bound = [];
+    }
+    function sameSet(vids) {
+        if (vids.length !== bound.length) return false;
+        for (let i = 0; i < vids.length; i++) if (vids[i] !== bound[i]) return false;
+        return true;
+    }
+    function bind() {
+        const vids = document.querySelectorAll(selector);
+        if (sameSet(vids)) return;
+        unbind();
+        let playing = false;
+        for (let i = 0; i < vids.length; i++) {
+            const v = vids[i];
+            for (let k = 0; k < EVTS.length; k++) v.addEventListener(EVTS[k], onEvt);
+            bound.push(v);
+            if (!v.paused && !v.ended) { playing = true; syncTime(v); }
+        }
+        if (audio && playing) play();
+    }
+    window.pfsBgmPreview = {
+        set: function (enabled, url, volume, sel) {
+            if (typeof sel === 'string' && sel.length && sel !== selector) { selector = sel; unbind(); }
+            if (typeof volume === 'number' && volume >= 0 && volume <= 1) vol = volume;
+            if (!enabled || typeof url !== 'string' || !url.length) { this.stop(); return false; }
+            if (!audio) { audio = new Audio(); audio.loop = true; audio.preload = 'auto'; }
+            if (audio.getAttribute('src') !== url) { audio.pause(); audio.src = url; unbind(); }
+            audio.volume = vol;
+            bind();
+            if (!obs && window.MutationObserver) {   // 듀얼 버퍼 <video> 교체 시 재결선(동일 집합이면 no-op)
+                obs = new MutationObserver(function () { if (audio) bind(); });
+                obs.observe(document.body, { childList: true, subtree: true });
+            }
+            return true;
+        },
+        stop: function () {
+            unbind();
+            if (obs) { obs.disconnect(); obs = null; }
+            if (audio) { try { audio.pause(); audio.removeAttribute('src'); audio.load(); } catch (e) { } audio = null; }
+        }
+    };
+})();
+
+/* ============================================================================
  *  v16.36.0 디지털 트윈 & 모캡 — 웹캠(getUserMedia) → 다운스케일 RGBA → .NET PushRgba(in-flight 1슬롯 · 백프레셔).
  *  스냅샷(트윈 복원용)은 동일 캔버스에서 동기 추출. 캡처는 전적으로 브라우저 — 네이티브 코덱 의존 0.
  * ========================================================================== */

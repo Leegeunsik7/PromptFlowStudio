@@ -37,33 +37,57 @@ public sealed class BabyBgmAndGrowthBadgeTests : IDisposable
             File.WriteAllBytes(arr[^1], new byte[AmbientLoopService.MinValidOutputBytes + 16]);
             return Task.FromResult(true);
         };
-        var exp = new StockSuiteExporter(() => target, () => "mp4", () => "ffmpeg.exe", runner) { BabyBgmResolver = (_, _) => bgm };
+        var exp = new StockSuiteExporter(() => target, () => "mp4", () => "ffmpeg.exe", runner) { BabyBgmResolver = (_, _) => bgm, DurationProbe = (_, _) => Task.FromResult(10.0) };
         return (exp, calls, src, target);
     }
 
     [Fact]
-    public async Task StockSuiteExporter_MuxesBabyBgm_WhenCanvasBgmToggleEnabled()
+    public async Task StockSuiteExporter_BabyStudio_MuxesAudioIntoPrimaryFile_WithoutSidecar()
     {
         var (exp, calls, src, target) = Setup();
         exp.BabyBgm = BabyBgmTrack.MusicBox;
+        Assert.True(exp.IsBabyBgmEnabled);
         var r = await exp.ExportAsync(src);
-        Assert.True(r.Ok, r.Message);
-        var outPath = await exp.TryMuxBabyBgmAsync(src, 10);
 
-        Assert.NotNull(outPath);
-        Assert.EndsWith("render_baby_bgm.mp4", outPath, StringComparison.Ordinal);
+        Assert.True(r.Ok, r.Message);
+        Assert.True(r.HasAudio);
+        Assert.Contains(StockSuiteExporter.BabyBgmTag, r.Message, StringComparison.Ordinal);
+        var primary = Path.Combine(target, StockSuiteExporter.DefaultAssetName);
+        Assert.Equal(primary, r.TargetPath);
+        Assert.True(File.Exists(primary));
+        // 1차 = 무음 HTS 인코딩 → 2차 = 주 산출물에 BGM 먹싱(비디오 + 오디오 스트림 · 가드 면제)
+        Assert.Contains("-an", calls[0]);
         var mux = calls[^1];
+        Assert.Equal(primary, mux[Array.IndexOf(mux, "-i") + 1]);
         Assert.Contains(mux, a => a.EndsWith("musicbox.wav", StringComparison.Ordinal));
+        Assert.Contains("0:v:0", mux);
         Assert.Contains("1:a:0", mux);
+        Assert.Equal("aac", mux[Array.IndexOf(mux, "-c:a") + 1]);
+        Assert.DoesNotContain("-an", mux);
+        // 동반 파일·임시 파일 잔존 0
+        Assert.Empty(Directory.GetFiles(_dir, "*_baby_bgm*", SearchOption.AllDirectories));
+        Assert.Empty(Directory.GetFiles(target, "*.~bgm"));
+    }
+
+    [Fact]
+    public async Task StockSuiteExporter_CalculatesAudioFadeOut_BasedOnProbedDuration()
+    {
+        var (exp, calls, src, _) = Setup();
+        string? probed = null;
+        exp.DurationProbe = (p, _) => { probed = p; return Task.FromResult(12.34); };
+        exp.BabyBgm = BabyBgmTrack.Lullaby;
+        var r = await exp.ExportAsync(src);
+
+        Assert.True(r.Ok, r.Message);
+        Assert.Equal(r.TargetPath, probed);
+        var mux = calls[^1];
         var af = mux[Array.IndexOf(mux, "-af") + 1];
         Assert.Contains("loudnorm=I=-14", af, StringComparison.Ordinal);
-        Assert.Contains("volume=0.25", af, StringComparison.Ordinal);
-        Assert.Contains("afade=t=in", af, StringComparison.Ordinal);
-        Assert.Contains("afade=t=out:st=8.5", af, StringComparison.Ordinal);
-        Assert.DoesNotContain("-an", mux);
-        // 🔇 StockSuite 에셋 자체는 Silent Ambient Guard 유지
-        Assert.Contains("-an", calls[0]);
-        Assert.False(File.Exists(Path.Combine(target, "render_baby_bgm.mp4")));
+        Assert.Contains("volume=0.25,afade=t=in:st=0:d=1.5,afade=t=out:st=10.84:d=1.5", af, StringComparison.Ordinal);
+        Assert.Equal("12.34", mux[Array.IndexOf(mux, "-t") + 1]);
+        // 짧은 영상 → 시작점 0 클램프 · 길이 미상 → 페이드 아웃 생략
+        Assert.Contains("afade=t=out:st=0.00:d=1.5", StockSuiteExporter.BuildBabyBgmAudioFilter(1.0), StringComparison.Ordinal);
+        Assert.DoesNotContain("afade=t=out", StockSuiteExporter.BuildBabyBgmAudioFilter(0), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -71,8 +95,22 @@ public sealed class BabyBgmAndGrowthBadgeTests : IDisposable
     {
         var (exp, calls, src, _) = Setup();
         exp.BabyBgm = null;
-        Assert.Null(await exp.TryMuxBabyBgmAsync(src, 10));
+        Assert.False(await exp.TryMuxBabyBgmIntoPrimaryAsync(src));
         Assert.Empty(calls);
+        var r = await exp.ExportAsync(src);
+        Assert.True(r.Ok, r.Message);
+        Assert.False(r.HasAudio);
+        Assert.Single(calls);
+        Assert.Contains("-an", calls[0]);
+    }
+
+    [Fact]
+    public void ExportProfile_BabyCinematic_IsExemptFromSilentAmbientGuard()
+    {
+        var (exp, _, _, target) = Setup();
+        var p = Path.Combine(target, "x.mp4");
+        Assert.True(exp.IsStockSuiteTarget(p, ExportProfile.HtsDesktop));
+        Assert.False(exp.IsStockSuiteTarget(p, ExportProfile.BabyCinematic));
     }
 
     [Fact]

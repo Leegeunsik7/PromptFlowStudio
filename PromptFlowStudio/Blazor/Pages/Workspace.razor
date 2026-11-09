@@ -349,10 +349,10 @@
                 <span>② 🎬 라이브 비디오 캔버스</span>
                 <span class="ws-hts-tools">
                     <button class="ws-hts-tog @(_growthBadge ? "on" : null)" @onclick="() => _growthBadge = !_growthBadge" aria-pressed="@(_growthBadge ? "true" : "false")" title="개월 수 · 성장 마일스톤 뱃지와 자막을 영상 위에 미리보기" data-canvas-tool="growth-badge">🏷️ 성장 뱃지/자막</button>
-                    <button class="ws-hts-tog @(_bgmOn ? "on" : null)" @onclick="() => _bgmOn = !_bgmOn" aria-pressed="@(_bgmOn ? "true" : "false")" title="감성 BGM 믹스 토글" data-canvas-tool="bgm">🎵 감성 BGM</button>
+                    <button class="ws-hts-tog @(_bgmOn ? "on" : null)" @onclick="ToggleBgmAsync" aria-pressed="@(_bgmOn ? "true" : "false")" title="감성 BGM 믹스 토글" data-canvas-tool="bgm">🎵 감성 BGM</button>
                     @if (_bgmOn)
                     {
-                        <select class="ws-hts-sel" value="@((int)_bgmTrack)" @onchange="OnBgmTrackChanged" title="내보내기 시 원본 옆 _baby_bgm.mp4 로 합성(-14 LUFS · 0.25 볼륨 · 페이드 인/아웃)" data-canvas-tool="bgm-track">
+                        <select class="ws-hts-sel" value="@((int)_bgmTrack)" @onchange="OnBgmTrackChanged" title="캔버스 재생과 동기 미리듣기 · 내보내기 시 주 MP4 에 직접 합성(-14 LUFS · 0.25 볼륨 · 1.5초 페이드 인/아웃)" data-canvas-tool="bgm-track">
                             @foreach (var bt in BabyBgmTracks)
                             {
                                 <option value="@((int)bt)">@PromptFlowStudio.Services.Export.StockSuiteExporter.BabyBgmLabel(bt)</option>
@@ -2005,12 +2005,7 @@
             StockSuite.Lut = _lut;   // 🎨 LUT 번인(FFmpeg eq 체인)
             StockSuite.GrowthBadgeText = _growthBadge ? GrowthBadgeLabel : null;   // 🏷️ 성장 뱃지 drawtext 번인
             StockSuite.BabyBgm = _bgmOn ? _bgmTrack : null;                       // 🎵 감성 BGM(OFF → 무음 유지)
-            var r = await StockSuite.ExportAsync(path);
-            if (r.Ok && _bgmOn)
-            {
-                var bgmOut = await StockSuite.TryMuxBabyBgmAsync(path, 0, _mediaCts.Token);
-                if (bgmOut is not null) r = r with { Message = r.Message + " · " + PromptFlowStudio.Services.Export.StockSuiteExporter.BabyBgmTag + Path.GetFileName(bgmOut) };
-            }
+            var r = await StockSuite.ExportAsync(path);   // 🎵 BGM ON → 주 MP4 에 직접 먹싱(동반 파일 없음 · 페이드 아웃 자동)
             if (r.Ok && _specPath == path) { _spec = null; _specPath = null; }   // ⚡ 인코더 텔레메트리 갱신 → 규격 캐시 무효화
             _camToast = r.Ok ? r.Message : r.NeedsPathSetup ? "⚠ " + r.Message + " (설정 ▸ 사용자 설정 ▸ StockSuite 에셋 경로)" : "⚠ " + r.Message;
             _stockRestart = false;
@@ -2077,10 +2072,41 @@
     /// <summary>🏷️ 활성 성장 단계 + 사용자 D-day/문구 → 캔버스 뱃지 · 내보내기 drawtext 공용 텍스트.</summary>
     private string GrowthBadgeLabel => PromptFlowStudio.Services.Export.StockSuiteExporter.FormatGrowthBadgeText(
         PromptFlowStudio.Services.AI.GeminiPromptService.ActiveGrowthStage(_prompt), _badgeCustom, DateTime.Today);
-    private void OnBgmTrackChanged(ChangeEventArgs e)
+    private async Task OnBgmTrackChanged(ChangeEventArgs e)
     {
         if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) && Enum.IsDefined(typeof(PromptFlowStudio.Services.Export.BabyBgmTrack), v))
+        {
             _bgmTrack = (PromptFlowStudio.Services.Export.BabyBgmTrack)v;
+            await SyncBgmPreviewAsync();
+        }
+    }
+
+    /// <summary>🎵 감성 BGM 토글 — 캔버스 미리듣기 동기화(interop 실패 시 토글 상태 유지 · 미리듣기만 생략).</summary>
+    private async Task ToggleBgmAsync()
+    {
+        _bgmOn = !_bgmOn;
+        await SyncBgmPreviewAsync();
+    }
+
+    /// <summary>🎵 캔버스 BGM 미리듣기 — 트랙 WAV(MediaRoot/bgm 캐시) → 가상호스트 URL → JS 가 video.ws-video 재생/일시정지/리셋에 0.25 볼륨으로 동기.</summary>
+    private async Task SyncBgmPreviewAsync()
+    {
+        try
+        {
+            string? url = null;
+            if (_bgmOn)
+            {
+                var track = _bgmTrack;
+                var dir = Path.Combine(Media.MediaRoot, "bgm");
+                var wav = await Task.Run(() => PromptFlowStudio.Services.Export.StockSuiteExporter.EnsureBabyBgm(track, 30, dir));
+                url = wav is null ? null : Media.ToPlaybackUrl(wav);
+            }
+            await JS.InvokeAsync<bool>("pfsBgmPreview.set", _bgmOn && url is not null, url, PromptFlowStudio.Services.Export.StockSuiteExporter.BabyBgmVolume, "video.ws-video");
+        }
+        catch (Exception ex) when (ex is JSException or InvalidOperationException or TaskCanceledException)
+        {
+            Program.Log("Workspace.BgmPreview", ex);
+        }
     }
     private bool _seamCheck;
 
@@ -2875,6 +2901,11 @@
             _seamCheck = false;
             try { JS.InvokeAsync<bool>("pfsSeamInspector.set", false, 2.0, "video.ws-video").AsTask().ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted); }
             catch (Exception ex) when (ex is JSException or InvalidOperationException) { Program.Log("Workspace.SeamCheck", ex); }
+        }
+        if (_bgmOn)
+        {
+            try { JS.InvokeVoidAsync("pfsBgmPreview.stop").AsTask().ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted); }
+            catch (Exception ex) when (ex is JSException or InvalidOperationException) { Program.Log("Workspace.BgmPreview", ex); }
         }
     }
 

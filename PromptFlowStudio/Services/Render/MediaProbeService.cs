@@ -70,6 +70,13 @@ public sealed class MediaProbeService
         _runner = processRunner ?? SystemProcessRunner.Shared;
     }
 
+    /// <summary>⏱️ 비디오 길이(초) — 파일/도구 부재·파싱 실패 시 0(throw 없음 · 취소는 전파).</summary>
+    public async Task<double> GetDurationAsync(string? path, CancellationToken ct = default)
+    {
+        var spec = await ProbeCoreAsync(path, ct).ConfigureAwait(false);
+        return spec is { DurationSec: var d } && double.IsFinite(d) && d > 0 ? d : 0;
+    }
+
     /// <summary>대상 비디오 규격 추출 — 파일 부재 null · 도구 부재 시 크기/확장자만 담은 폴백 규격. ⚡ 인코더 텔레메트리 병합.</summary>
     public async Task<MediaSpec?> ProbeAsync(string? path, CancellationToken ct = default)
     {
