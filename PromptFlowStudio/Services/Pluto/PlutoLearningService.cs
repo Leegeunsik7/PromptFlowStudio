@@ -68,6 +68,8 @@ public sealed class PlutoLearningService : IDisposable
         public int Exports { get; set; }
         public int ThumbsUp { get; set; }
         public int ThumbsDown { get; set; }
+        /// <summary>📈 외부 학습 보너스 XP(SNS 레이더 채널 학습 등).</summary>
+        public int BonusXp { get; set; }
     }
 
     /// <summary>🧠 누적 XP = 채택×1 + 내보내기×3 + 👍×1.</summary>
@@ -82,10 +84,10 @@ public sealed class PlutoLearningService : IDisposable
     {
         get
         {
-            int a = 0, x = 0, u = 0;
+            int a = 0, x = 0, u = 0, b = 0;
             lock (_sync)
-                foreach (var kv in _entries) { a += kv.Value.Adopted; x += kv.Value.Exports; u += kv.Value.ThumbsUp; }
-            return ComputeXp(a, x, u);
+                foreach (var kv in _entries) { a += kv.Value.Adopted; x += kv.Value.Exports; u += kv.Value.ThumbsUp; b += Math.Max(0, kv.Value.BonusXp); }
+            return ComputeXp(a, x, u) + b;
         }
     }
 
@@ -184,6 +186,28 @@ public sealed class PlutoLearningService : IDisposable
         await PersistAsync(json, ct).ConfigureAwait(false);
         RaiseChanged();
         return w;
+    }
+
+    /// <summary>
+    /// 📈 보너스 XP 적립(예: SNS 레이더 채널 학습 +2) — 출처 키 엔트리에 누적 · 가중치 불변 · 상호작용 +1 · 즉시 원자적 영속. 반환 = 갱신 후 누적 XP.
+    /// </summary>
+    public async Task<int> AddBonusXpAsync(string sourceKey, int xp, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(sourceKey)) throw new ArgumentException("sourceKey required", nameof(sourceKey));
+        if (xp <= 0) throw new ArgumentOutOfRangeException(nameof(xp));
+        await EnsureLoadedAsync(ct).ConfigureAwait(false);
+        string json;
+        lock (_sync)
+        {
+            if (!_entries.TryGetValue(sourceKey, out var e)) { e = new Entry(); _entries[sourceKey] = e; }
+            e.BonusXp = Math.Max(0, e.BonusXp) + xp;
+            e.Interactions++;
+            e.LastUtc = DateTime.UtcNow;
+            json = JsonSerializer.Serialize(_entries);
+        }
+        await PersistAsync(json, ct).ConfigureAwait(false);
+        RaiseChanged();
+        return CurrentXP;
     }
 
     private async Task PersistAsync(string json, CancellationToken ct)

@@ -3,11 +3,12 @@
 @using PromptFlowStudio.Services.Pluto
 @inject PlutoTrendEngine Engine
 @inject PlutoLearningService Learning
+@inject PlutoSocialRadarEngine Radar
 @inject PromptDraftService Draft
 @inject NavigationManager Nav
 @inject PromptFlowStudio.Services.Platform.IClipboardService Clipboard
 
-@* [PromptFlow Studio] 🪐 플루토 트렌드 랩 — 4대 테마 트렌드 카드 · 🚀 스튜디오 주입 · 📋 해시태그 복사 · 👍/👎 즉시 학습. *@
+@* [PromptFlow Studio] 🪐 플루토 트렌드 랩 — 4대 테마 트렌드 카드 · 🚀 스튜디오 주입 · 📋 해시태그 복사 · 👍/👎 즉시 학습 · 📈 SNS 트렌드 레이더(채널 공식 학습 +2 XP). *@
 
 <div class="pl">
     <div class="pl-head">
@@ -15,12 +16,67 @@
         <div class="pl-sub">플루토가 고른 쇼츠·릴스 트렌드 — 채택·내보내기·평가할수록 취향을 학습합니다.</div>
     </div>
 
-    <div class="pl-brain" data-pluto-hud="1" title="채택 1 · 내보내기 3 · 👍 1 XP — 10 XP 마다 레벨 업">
+    <div class="pl-brain" data-pluto-hud="1" title="채택 1 · 내보내기 3 · 👍 1 · 📈 SNS 공식 학습 2 XP — 10 XP 마다 레벨 업">
         @{ var xp = Learning.CurrentXP; var lv = PlutoLearningService.LevelFor(xp); var next = lv * PlutoLearningService.XpPerLevel; var floor = next - PlutoLearningService.XpPerLevel; var pct = (xp - floor) * 100 / PlutoLearningService.XpPerLevel; }
         <span>🧠 플루토 AI 두뇌: Lv.@(lv) (@(xp)/@(next) XP) · @(Learning.TotalInteractions)회 피드백 학습 완료</span>
         <div class="pl-brain-bar"><div class="pl-brain-fill" style="width:@(pct.ToString(System.Globalization.CultureInfo.InvariantCulture))%"></div></div>
     </div>
 
+    <div class="pl-views" role="tablist" data-pluto-view-toggle="1">
+        <button class="pl-view@(_view == LabView.Curation ? " on" : "")" role="tab" aria-selected="@(_view == LabView.Curation ? "true" : "false")" data-pluto-view="curation" @onclick="() => SwitchViewAsync(LabView.Curation)">🪐 플루토 큐레이션</button>
+        <span class="pl-view-sep">|</span>
+        <button class="pl-view@(_view == LabView.Radar ? " on" : "")" role="tab" aria-selected="@(_view == LabView.Radar ? "true" : "false")" data-pluto-view="radar" @onclick="() => SwitchViewAsync(LabView.Radar)">📈 실시간 SNS 트렌드 레이더</button>
+    </div>
+
+    @if (_view == LabView.Radar)
+    {
+        <div class="pl-radar" data-social-radar="1">
+            <div class="pl-pills" role="tablist">
+                <button class="pl-pill yt@(_radarPlatform == SocialPlatform.YouTubeShorts ? " on" : "")" role="tab" aria-selected="@(_radarPlatform == SocialPlatform.YouTubeShorts ? "true" : "false")" data-radar-tab="yt" @onclick="() => SwitchRadarAsync(SocialPlatform.YouTubeShorts)">🔴 YouTube Shorts 급상승 공식</button>
+                <button class="pl-pill ig@(_radarPlatform == SocialPlatform.InstagramReels ? " on" : "")" role="tab" aria-selected="@(_radarPlatform == SocialPlatform.InstagramReels ? "true" : "false")" data-radar-tab="ig" @onclick="() => SwitchRadarAsync(SocialPlatform.InstagramReels)">🟣 Instagram Reels 감성 무드</button>
+                <button class="pl-btn sm pl-radar-refresh" disabled="@_radarLoading" title="레이더 다시 스캔" @onclick="RefreshRadarAsync">🔄</button>
+            </div>
+            <div class="pl-fresh-note">@(_radarPlatform == SocialPlatform.YouTubeShorts ? "🔥 Trending YouTube Channel Formulas — 고유지율 훅 · 빠른 컷 페이싱 · 리플레이 루프" : "✨ Trending Instagram Reels Aesthetics — 웜 컬러 그레이딩 · 로파이 BGM · 감성 비네트")@(_radarLlm ? " · 🧠 Gemini 실시간 분석" : " · 📚 검증 벤치마크")</div>
+
+            @if (_radarLoading)
+            {
+                <div class="pl-empty">📈 플루토가 SNS 트렌드를 스캔하는 중…</div>
+            }
+            else if (_insights.Count == 0)
+            {
+                <div class="pl-empty">표시할 SNS 트렌드가 없습니다.</div>
+            }
+            else
+            {
+                <div class="pl-grid">
+                    @foreach (var ins in _insights)
+                    {
+                        var s = ins;
+                        var learned = Radar.GetLearnedCount(s.Id);
+                        <div class="pl-card pl-rcard" data-radar-insight="@s.Id">
+                            <div class="pl-tags">
+                                @if (s.Platform == SocialPlatform.YouTubeShorts) { <span class="pl-tag yt">🔴 YouTube Shorts</span> } else { <span class="pl-tag ig">🟣 Instagram Reels</span> }
+                                <span class="pl-tag cat">@PlutoSocialRadarEngine.CategoryLabel(s.ChannelCategory)</span>
+                                @if (s.FromLlm) { <span class="pl-tag gen">🧠 실시간</span> }
+                                @if (learned > 0) { <span class="pl-w" title="플루토 채널 친숙도">🧠 학습 @(learned)회</span> }
+                            </div>
+                            <div class="pl-hook">@s.Title</div>
+                            <div class="pl-mech" data-radar-mechanism="1">⚡ @s.ViralMechanism</div>
+                            <div class="pl-meta"><span>🎥 @s.RecommendedPromptTags.Camera</span><span>⏱ @s.PacingGuideline</span><span>🎵 @PlutoSocialRadarEngine.BgmLabel(s.TrendingBgmStyle)</span></div>
+                            <div class="pl-prompt">💡 @s.RecommendedPromptTags.SubjectAction · @s.RecommendedPromptTags.Lighting</div>
+                            <div class="pl-htags">@string.Join(" ", s.ViralHashtagSet)</div>
+                            <div class="pl-actions">
+                                <button class="pl-btn" data-radar-learn="@s.Id" disabled="@_learningBusy" @onclick="() => LearnStyleAsync(s)">🧠 플루토 학습 (+2 XP)</button>
+                                <button class="pl-btn go" data-radar-apply="@s.Id" @onclick="() => ApplyInsight(s)">🚀 이 공식으로 스튜디오 제작</button>
+                            </div>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+    }
+    else
+    {
     <div class="pl-pills" role="tablist">
         @foreach (var cat in PlutoTrendEngine.Categories)
         {
@@ -69,6 +125,7 @@
             }
         </div>
     }
+    }
 
     @if (_toast is { } msg) { <div class="pl-toast" role="status">@msg</div> }
 </div>
@@ -81,6 +138,16 @@
     .pl-brain { margin-top: 14px; padding: 10px 14px; border-radius: 14px; background: linear-gradient(90deg, rgba(167,139,250,.18), rgba(244,114,182,.14)); border: 1px solid rgba(167,139,250,.35); font-size: 14px; font-weight: 600; }
     .pl-brain-bar { margin-top: 6px; height: 6px; border-radius: 3px; background: rgba(255,255,255,.12); overflow: hidden; }
     .pl-brain-fill { height: 100%; background: linear-gradient(90deg, #a78bfa, #f472b6); transition: width .4s ease; }
+    .pl-views { display: flex; gap: 6px; align-items: center; margin-top: 16px; }
+    .pl-view { padding: 8px 14px; border-radius: 10px; border: 0; background: transparent; color: inherit; font-weight: 800; font-size: 14px; cursor: pointer; opacity: .6; }
+    .pl-view.on { opacity: 1; background: rgba(139,123,255,.16); color: #8b7bff; }
+    .pl-view-sep { opacity: .35; }
+    .pl-pill.yt.on { background: linear-gradient(135deg,#ef4444,#f97316); }
+    .pl-pill.ig.on { background: linear-gradient(135deg,#a855f7,#ec4899); }
+    .pl-radar-refresh { margin-left: auto; }
+    .pl-tag.cat { background: rgba(148,163,184,.15); }
+    .pl-mech { display: inline-block; align-self: flex-start; font-size: 12px; font-weight: 800; padding: 4px 10px; border-radius: 999px; background: rgba(251,191,36,.15); color: #d97706; }
+    .pl-htags { font-size: 12px; opacity: .65; word-break: break-all; }
     .pl-pills { display: flex; gap: 8px; flex-wrap: wrap; margin: 18px 0; }
     .pl-pill { padding: 8px 16px; border-radius: 999px; border: 1px solid var(--line,rgba(148,163,184,.3)); background: transparent; color: inherit; font-weight: 800; cursor: pointer; }
     .pl-pill.on { background: linear-gradient(135deg,#8b7bff,#6d5efc); color: #fff; border-color: transparent; }
@@ -116,9 +183,21 @@
     private System.Threading.Timer? _toastTimer;
     private readonly CancellationTokenSource _cts = new();
 
+    // ── 📈 SNS 트렌드 레이더 ──
+    private enum LabView { Curation, Radar }
+    private LabView _view = LabView.Curation;
+    private SocialPlatform _radarPlatform = SocialPlatform.YouTubeShorts;
+    private IReadOnlyList<SocialTrendInsight> _insights = Array.Empty<SocialTrendInsight>();
+    private readonly Dictionary<SocialPlatform, IReadOnlyList<SocialTrendInsight>> _radarCache = new();
+    private readonly Dictionary<SocialPlatform, bool> _radarLlmCache = new();
+    private bool _radarLoading;
+    private bool _radarLlm;
+    private bool _learningBusy;
+
     protected override async Task OnInitializedAsync()
     {
         Learning.Changed += OnLearningChanged;
+        Radar.Changed += OnLearningChanged;
         try { await Learning.EnsureLoadedAsync(_cts.Token); }   // 🧠 HUD 레벨/XP 표시용 메모리 선적재
         catch (OperationCanceledException) { }
         catch (Exception ex) { Program.Log("PlutoTrendLab.Brain", ex); }
@@ -152,6 +231,70 @@
         if (c == _category && !_loading) return;
         _category = c;
         await LoadAsync();
+    }
+
+    private async Task SwitchViewAsync(LabView v)
+    {
+        if (_view == v) return;
+        _view = v;
+        if (v == LabView.Radar) await LoadRadarAsync(false);
+    }
+
+    private async Task SwitchRadarAsync(SocialPlatform p)
+    {
+        if (_radarPlatform == p && _insights.Count > 0) return;
+        _radarPlatform = p;
+        await LoadRadarAsync(false);
+    }
+
+    private Task RefreshRadarAsync() => LoadRadarAsync(true);
+
+    /// <summary>📈 플랫폼 인사이트 적재(Gemini 우선 · 엔진이 벤치마크로 무중단 폴백) — 플랫폼별 캐시.</summary>
+    private async Task LoadRadarAsync(bool force)
+    {
+        if (_radarLoading) return;
+        var p = _radarPlatform;
+        if (!force && _radarCache.TryGetValue(p, out var cached))
+        {
+            _insights = cached;
+            _radarLlm = _radarLlmCache.TryGetValue(p, out var l) && l;
+            return;
+        }
+        _radarLoading = true;
+        try
+        {
+            var list = await Radar.GetTrendingSocialInsightsAsync(p, _cts.Token);
+            _radarCache[p] = list;
+            _radarLlmCache[p] = Radar.LastUsedLlm;
+            _insights = list;
+            _radarLlm = Radar.LastUsedLlm;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("PlutoTrendLab.Radar", ex); _insights = PlutoSocialRadarEngine.BenchmarksFor(p); _radarLlm = false; }
+        finally { _radarLoading = false; }
+    }
+
+    /// <summary>🧠 채널 공식 학습 — 친숙도 가중치 영속 + XP +2.</summary>
+    private async Task LearnStyleAsync(SocialTrendInsight s)
+    {
+        if (_learningBusy) return;
+        _learningBusy = true;
+        try
+        {
+            await Radar.LearnChannelStyleAsync(s.Id, _cts.Token);
+            Toast("🧠 플루토가 '" + s.Title + "' 공식을 학습했어요 (+" + PlutoSocialRadarEngine.LearnXp.ToString(System.Globalization.CultureInfo.InvariantCulture) + " XP)");
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("PlutoTrendLab.RadarLearn", ex); Toast("⚠ 학습 실패 — 다시 시도해 주세요"); }
+        finally { _learningBusy = false; }
+    }
+
+    /// <summary>🚀 공식 → 작업실 프롬프트(주체·조명·훅·페이싱·카메라) + 감성 BGM 주입 후 이동.</summary>
+    private void ApplyInsight(SocialTrendInsight s)
+    {
+        Draft.Send(s.BuildStudioPrompt());
+        Draft.SendBgm(s.BgmTrack);
+        Nav.NavigateTo("workspace");
     }
 
     private static string Excerpt(string s) => s.Length <= 110 ? s : s[..107] + "…";
@@ -205,6 +348,7 @@
     public void Dispose()
     {
         Learning.Changed -= OnLearningChanged;
+        Radar.Changed -= OnLearningChanged;
         try { _cts.Cancel(); } catch (ObjectDisposedException) { }
         _cts.Dispose();
         _toastTimer?.Dispose();

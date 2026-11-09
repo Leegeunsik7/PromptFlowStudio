@@ -96,4 +96,17 @@ public sealed class PromptDraftService
         _plutoTrendId = null;
         return v;
     }
+
+    private PromptFlowStudio.Services.Export.BabyBgmTrack? _bgm;
+
+    /// <summary>📈 작업실 감성 BGM 트랙 적재(SNS 레이더 공식 → 작업실 BGM ON).</summary>
+    public void SendBgm(PromptFlowStudio.Services.Export.BabyBgmTrack? track) => _bgm = track;
+
+    /// <summary>📈 적재된 BGM 트랙을 한 번 꺼내 비운다(없으면 null).</summary>
+    public PromptFlowStudio.Services.Export.BabyBgmTrack? ConsumeBgm()
+    {
+        var v = _bgm;
+        _bgm = null;
+        return v;
+    }
 }

@@ -43,13 +43,18 @@ public sealed class PlutoCopilot
 
     private readonly PlutoPreferenceLexicon? _lexicon;
     private readonly IPlutoLlmClient? _llm;
+    private readonly PlutoSocialRadarEngine? _radar;
 
     public PlutoCopilot() : this(null, null) { }
     public PlutoCopilot(PlutoPreferenceLexicon? lexicon) : this(lexicon, null) { }
-    public PlutoCopilot(PlutoPreferenceLexicon? lexicon, IPlutoLlmClient? llm)
+    public PlutoCopilot(PlutoPreferenceLexicon? lexicon, IPlutoLlmClient? llm) : this(lexicon, llm, null) { }
+
+    /// <summary>📈 <paramref name="radar"/> 주입 시 SNS 상위 바이럴 패턴(페이싱 · 훅 구조)을 시나리오 프롬프트에 반영.</summary>
+    public PlutoCopilot(PlutoPreferenceLexicon? lexicon, IPlutoLlmClient? llm, PlutoSocialRadarEngine? radar)
     {
         _lexicon = lexicon;
         _llm = llm;
+        _radar = radar;
     }
 
     /// <summary>🧠 LLM 결선 여부(키 미설정이어도 true — 실제 사용 여부는 <see cref="PlutoCopilotScript.UsedLlm"/>).</summary>
@@ -74,6 +79,13 @@ public sealed class PlutoCopilot
     /// </summary>
     public async Task<PlutoCopilotScript> DraftScriptFromMemoAsync(string userMemo, DateTime? now = null, CancellationToken ct = default)
     {
+        if (string.IsNullOrWhiteSpace(userMemo)) throw new ArgumentException("memo required", nameof(userMemo));
+        if (_radar is not null)
+        {
+            try { await _radar.EnsureLoadedAsync(ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Copilot] radar load: " + ex.Message); }   // [부분 구제] 벤치마크 패턴만 사용
+        }
         var local = Draft(userMemo, now);   // 검증 + 폴백 기준선(카테고리 · BGM)
         var text = await PlutoLlmBridge.TryCompleteAsync(_llm, LlmScriptInstruction, BuildLlmScriptRequest(local, now ?? DateTime.Now), 0.85, ct).ConfigureAwait(false);
         return (text is null ? null : ParseLlmScript(text, local)) ?? local;
@@ -88,6 +100,8 @@ public sealed class PlutoCopilot
           .Append("Season / time: ").Append(ctx.SeasonEn).Append(", ").Append(ctx.TimeEn).Append('\n')
           .Append("Preferred lighting: ").Append(TopOr(DnaBucket.Lighting, ctx.LightingEn)).Append('\n')
           .Append("Preferred atmosphere: ").Append(TopOr(DnaBucket.Atmosphere, "warm pastel tone")).Append('\n');
+        if (TopPattern(local.Category) is { } p)
+            sb.Append("Proven SNS viral formula (apply its hook timing and cut pacing): ").Append(p.Title).Append(" — ").Append(PlutoSocialRadarEngine.PatternDirective(p)).Append('\n');
         return sb.ToString();
     }
 
@@ -238,6 +252,8 @@ public sealed class PlutoCopilot
               .Append(acts[i].StartSec.ToString(CultureInfo.InvariantCulture)).Append('-')
               .Append(acts[i].EndSec.ToString(CultureInfo.InvariantCulture)).Append("s): ").Append(acts[i].PromptEn).Append('.');
         }
+        if (TopPattern(ms.Category) is { } viral)
+            sb.Append(" SNS pacing: ").Append(PlutoSocialRadarEngine.PatternDirective(viral)).Append('.');
 
         return new PlutoCopilotScript(text, ms.Category, ms.Ko, BuildHook(text, ms), acts, sb.ToString(), ms.Camera, ms.Bgm,
             StockSuiteExporter.BabyBgmLabel(ms.Bgm));
@@ -264,6 +280,18 @@ public sealed class PlutoCopilot
         if (mo.Success && int.TryParse(mo.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var months) && months > 0)
             return months.ToString(CultureInfo.InvariantCulture) + "개월 아기의 " + ms.Ko + " " + ms.Emoji;
         return ms.Ko + ", 우리 집에 찾아온 작은 기적 " + ms.Emoji;
+    }
+
+    /// <summary>📈 레이더 최상위 바이럴 패턴(미주입/예외 → null).</summary>
+    private SocialTrendInsight? TopPattern(StudioThemeCategory category)
+    {
+        if (_radar is null) return null;
+        try
+        {
+            var top = _radar.TopViralPatterns(category, 1);
+            return top.Count > 0 ? top[0] : null;
+        }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Copilot] radar: " + ex.Message); return null; }
     }
 
     private string TopOr(DnaBucket b, string fallback)

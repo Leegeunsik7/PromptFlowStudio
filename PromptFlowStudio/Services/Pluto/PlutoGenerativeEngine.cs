@@ -23,6 +23,7 @@ public sealed class PlutoGenerativeEngine
 
     private readonly PlutoPreferenceLexicon? _lexicon;
     private readonly IPlutoLlmClient? _llm;
+    private readonly PlutoSocialRadarEngine? _radar;
     private readonly Random _rng;
     private readonly object _sync = new();
     private readonly List<PlutoTrend> _recent = new();
@@ -32,10 +33,14 @@ public sealed class PlutoGenerativeEngine
 
     public PlutoGenerativeEngine(PlutoPreferenceLexicon? lexicon, Random? rng = null) : this(lexicon, null, rng) { }
 
-    public PlutoGenerativeEngine(PlutoPreferenceLexicon? lexicon, IPlutoLlmClient? llm, Random? rng = null)
+    public PlutoGenerativeEngine(PlutoPreferenceLexicon? lexicon, IPlutoLlmClient? llm, Random? rng = null) : this(lexicon, llm, null, rng) { }
+
+    /// <summary>📈 <paramref name="radar"/> 주입 시 SNS 상위 바이럴 패턴(페이싱 · 훅 구조)을 LLM 요청 · 로컬 프롬프트에 반영.</summary>
+    public PlutoGenerativeEngine(PlutoPreferenceLexicon? lexicon, IPlutoLlmClient? llm, PlutoSocialRadarEngine? radar, Random? rng = null)
     {
         _lexicon = lexicon;
         _llm = llm;
+        _radar = radar;
         _rng = rng ?? new Random();
     }
 
@@ -155,7 +160,16 @@ public sealed class PlutoGenerativeEngine
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Gen] lexicon load: " + ex.Message); }   // [부분 구제] 시드 어휘만으로 생성
         }
+        await EnsureRadarAsync(ct).ConfigureAwait(false);
         return Synthesize(category, count, now ?? DateTime.Now);
+    }
+
+    private async Task EnsureRadarAsync(CancellationToken ct)
+    {
+        if (_radar is null) return;
+        try { await _radar.EnsureLoadedAsync(ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Gen] radar load: " + ex.Message); }   // [부분 구제] 벤치마크 패턴만 사용
     }
 
     public const string LlmTrendInstruction =
@@ -179,6 +193,7 @@ public sealed class PlutoGenerativeEngine
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Gen] lexicon load: " + ex.Message); }
         }
+        await EnsureRadarAsync(ct).ConfigureAwait(false);
         var t = now ?? DateTime.Now;
         var n = Math.Clamp(count, 1, MotifsFor(category).Length);
         LastUsedLlm = false;
@@ -211,6 +226,17 @@ public sealed class PlutoGenerativeEngine
         AppendTokens(sb, "Learned lighting tokens", TopOrEmpty(DnaBucket.Lighting));
         AppendTokens(sb, "Learned camera tokens", TopOrEmpty(DnaBucket.Camera));
         AppendTokens(sb, "Learned atmosphere tokens", TopOrEmpty(DnaBucket.Atmosphere));
+        var patterns = ViralPatterns(category);
+        if (patterns.Count > 0)
+        {
+            sb.Append("Proven SNS viral formulas to weave into pacing and hooks: ");
+            for (var i = 0; i < patterns.Count; i++)
+            {
+                if (i > 0) sb.Append(" | ");
+                sb.Append(patterns[i].Title).Append(" — ").Append(PlutoSocialRadarEngine.PatternDirective(patterns[i]));
+            }
+            sb.Append('\n');
+        }
         lock (_sync)
         {
             if (_recent.Count > 0)
@@ -302,6 +328,7 @@ public sealed class PlutoGenerativeEngine
         var topC = TopOrEmpty(DnaBucket.Camera);
         var topA = TopOrEmpty(DnaBucket.Atmosphere);
         var stamp = now.ToString("yyMMddHHmm", CultureInfo.InvariantCulture);
+        var patterns = ViralPatterns(category);
 
         var result = new List<PlutoTrend>(count);
         for (var n = 0; n < count; n++)
@@ -318,6 +345,7 @@ public sealed class PlutoGenerativeEngine
             var prompt = "Hook: " + m.Subject + " " + m.Hook + ", " + ctx.TimeEn + " with " + ctx.SeasonEn + ", " + lighting
                 + "; Core emotion: " + m.Subject + " " + m.Core + ", " + atmosphere
                 + "; Lingering outro: " + m.Outro + ", " + atmosphere + " mood";
+            if (patterns.Count > 0) prompt += "; SNS pacing: " + PlutoSocialRadarEngine.PatternDirective(patterns[n % patterns.Count]);
             var template = HookTemplatesKo[RngNext(HookTemplatesKo.Length)];
             var hook = template.Replace("{ctx}", ctx.SeasonKo + " " + ctx.TimeKo, StringComparison.Ordinal)
                 .Replace("{title}", m.TitleKo, StringComparison.Ordinal)
@@ -340,6 +368,14 @@ public sealed class PlutoGenerativeEngine
             if (_recent.Count > MaxRecent) _recent.RemoveRange(0, _recent.Count - MaxRecent);
         }
         return result;
+    }
+
+    /// <summary>📈 레이더 상위 바이럴 패턴(미주입/예외 → 빈 목록).</summary>
+    private IReadOnlyList<SocialTrendInsight> ViralPatterns(StudioThemeCategory category)
+    {
+        if (_radar is null) return Array.Empty<SocialTrendInsight>();
+        try { return _radar.TopViralPatterns(category, 2); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Gen] radar: " + ex.Message); return Array.Empty<SocialTrendInsight>(); }
     }
 
     private IReadOnlyList<string> TopOrEmpty(DnaBucket b) => _lexicon is null ? Array.Empty<string>() : _lexicon.TopTokens(b, 3);
