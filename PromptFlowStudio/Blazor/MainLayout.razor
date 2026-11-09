@@ -51,35 +51,41 @@
             </div>
             @* 메뉴를 고르면 드로어를 닫는다 — 모바일에서 안 닫히면 본문이 안 보인다 *@
             <nav class="nav" @onclick="CloseDrawer" @onmouseleave="HideSideGuide">
-                <div class="nav-grp">스튜디오</div>
+                @* Step 4: 아기 시네마틱 스튜디오 5대 핵심 워크플로우 — 2 그룹(제작 · 앨범&보관함). 고급/개발자 도구는 접힌 아코디언(라우트·페이지 보존). *@
+                <div class="nav-grp" data-nav-group="baby-studio">🎨 아기 스튜디오</div>
                 <div class="navw" @onmouseenter='e => ShowSideGuide("", e.ClientY)'>
-                    <NavLink class="nav-item" href="" accesskey="0" Match="NavLinkMatch.All">
-                        <span class="ic">🎬</span><span class="nav-t" title="워크스페이스">워크스페이스</span><span class="nav-kbd">Alt+0</span>
+                    <NavLink class="nav-item" href="" accesskey="0" Match="NavLinkMatch.All" data-nav-core="single-cut">
+                        <span class="ic">🎬</span><span class="nav-t" title="1컷 단편 제작">1컷 단편 제작</span><span class="nav-kbd">Alt+0</span>
                     </NavLink>
                 </div>
+                <div class="navw" @onmouseenter='e => ShowSideGuide("storyboard", e.ClientY)'><NavLink class="nav-item" href="storyboard" data-nav-core="growth-diary"><span class="ic">📖</span><span class="nav-t" title="4컷 성장 일기">4컷 성장 일기</span></NavLink></div>
+                <div class="navw" @onmouseenter='e => ShowSideGuide("ai-cutdown", e.ClientY)'><NavLink class="nav-item" href="ai-cutdown" data-nav-core="shorts"><span class="ic">📱</span><span class="nav-t" title="15초 릴스·쇼츠">15초 릴스·쇼츠</span></NavLink></div>
 
-                @* 생성 워크플로우 — 모든 단계가 실제 페이지로 연결됨. *@
-                <div class="nav-grp">생성 워크플로우</div>
-                <div class="navw" @onmouseenter='e => ShowSideGuide("workspace", e.ClientY)'><NavLink class="nav-item" href="workspace"><span class="ic">✍️</span><span class="nav-t" title="프롬프트 입력">프롬프트 입력</span></NavLink></div>
-                <div class="navw" @onmouseenter='e => ShowSideGuide("storyboard", e.ClientY)'><NavLink class="nav-item" href="storyboard"><span class="ic">🎞️</span><span class="nav-t" title="스토리보드">스토리보드</span></NavLink></div>
-                <div class="navw" @onmouseenter='e => ShowSideGuide("batch", e.ClientY)'><NavLink class="nav-item" href="batch"><span class="ic">🏭</span><span class="nav-t" title="대량 양산">대량 양산</span></NavLink></div>
-                <div class="navw" @onmouseenter='e => ShowSideGuide("analytics", e.ClientY)'><NavLink class="nav-item" href="analytics"><span class="ic">📊</span><span class="nav-t" title="생산성 &amp; 비용 대시보드">생산성 &amp; 비용</span></NavLink></div>
-                <div class="navw" @onmouseenter='e => ShowSideGuide("live-studio", e.ClientY)'><NavLink class="nav-item" href="live-studio"><span class="ic">📺</span><span class="nav-t" title="24/7 AI 라이브 스튜디오">24/7 AI 라이브 스튜디오</span></NavLink></div>
-                <div class="navw" @onmouseenter='e => ShowSideGuide("brand-studio", e.ClientY)'><NavLink class="nav-item" href="brand-studio"><span class="ic">🛍️</span><span class="nav-t" title="커머셜 브랜드 스튜디오">커머셜 브랜드 스튜디오</span></NavLink></div>
-                <div class="navw" @onmouseenter='e => ShowSideGuide("camera-studio", e.ClientY)'><NavLink class="nav-item" href="camera-studio"><span class="ic">🎥</span><span class="nav-t" title="스마트 카메라 & 모션">스마트 카메라 & 모션</span></NavLink></div>
-                <div class="navw" @onmouseenter='e => ShowSideGuide("queue", e.ClientY)'><NavLink class="nav-item" href="queue"><span class="ic">⏳</span><span class="nav-t" title="렌더링 큐">렌더링 큐</span></NavLink></div>
-                <div class="navw" @onmouseenter='e => ShowSideGuide("gallery", e.ClientY)'><NavLink class="nav-item" href="gallery"><span class="ic">🖼️</span><span class="nav-t" title="갤러리">갤러리</span></NavLink></div>
-                @* v5.8.2: AI 15초 컷다운 — 15~30초 원본을 15초 숏폼으로 자동 재단(신규 사이드 메뉴 · 갤러리 다음). *@
-                <div class="navw" @onmouseenter='e => ShowSideGuide("ai-cutdown", e.ClientY)'><NavLink class="nav-item" href="ai-cutdown"><span class="ic">✂️</span><span class="nav-t" title="AI 15초 컷다운">AI 15초 컷다운</span></NavLink></div>
-                @* v5.6.2: 노드 오케스트레이터(구글 Flow 대체 코어) 정식 라우트 — 갤러리 다음. *@
-                <div class="navw" @onmouseenter='e => ShowSideGuide("flow", e.ClientY)'><NavLink class="nav-item" href="flow"><span class="ic">🕹️</span><span class="nav-t" title="노드 오케스트레이터">노드 오케스트레이터</span></NavLink></div>
-                <div class="navw" @onmouseenter='e => ShowSideGuide("node-studio", e.ClientY)'><NavLink class="nav-item" href="node-studio"><span class="ic">🧩</span><span class="nav-t" title="비주얼 노드 플로우 스튜디오">비주얼 노드 플로우</span></NavLink></div>
-                @* v5.3.2: 모바일 시뮬레이터 — PC 우측에 디바이스 프레임을 슬라이딩 토글(라우팅 아님). *@
-                <div class="navw" @onmouseenter='e => ShowSideGuide("mobile-sim", e.ClientY)'><button type="button" class='nav-item nav-btn @(_showMobileSim ? "on" : null)' @onclick="ToggleMobileSim"><span class="ic">📱</span><span class="nav-t" title="모바일 시뮬레이터">모바일 시뮬레이터</span></button></div>
-                @* v6.2.0: 글로벌 관제 — 데스크톱 전용 우측 슬라이딩 관제 대시보드(라우팅 아님 · 모바일 라우터와 무간섭). *@
-                <div class="navw" @onmouseenter='e => ShowSideGuide("observability", e.ClientY)'><button type="button" class='nav-item nav-btn @(_showObservability ? "on" : null)' @onclick="ToggleObservability"><span class="ic">📊</span><span class="nav-t" title="글로벌 관제">글로벌 관제</span></button></div>
-                @* v7.0.0: AI 멀티트랙 타임라인 — 데스크톱 전용 우측 슬라이딩 NLE 스튜디오(라우팅 아님 · 모바일 라우터 무간섭). *@
-                <div class="navw" @onmouseenter='e => ShowSideGuide("timeline", e.ClientY)'><button type="button" class='nav-item nav-btn @(_showTimeline ? "on" : null)' @onclick="ToggleTimeline"><span class="ic">🎬</span><span class="nav-t" title="AI 타임라인">AI 타임라인</span></button></div>
+                <div class="nav-grp" data-nav-group="album">📦 앨범 &amp; 보관함</div>
+                <div class="navw" @onmouseenter='e => ShowSideGuide("gallery", e.ClientY)'><NavLink class="nav-item" href="gallery" data-nav-core="album"><span class="ic">🖼️</span><span class="nav-t" title="아기 영상 앨범">아기 영상 앨범</span></NavLink></div>
+                <div class="navw" @onmouseenter='e => ShowSideGuide("queue", e.ClientY)'><NavLink class="nav-item" href="queue" data-nav-core="queue"><span class="ic">⚡</span><span class="nav-t" title="렌더링 대기열">렌더링 대기열</span></NavLink></div>
+                <div class="navw" @onmouseenter='e => ShowSideGuide("settings", e.ClientY)'><NavLink class="nav-item" href="settings" data-nav-core="settings"><span class="ic">⚙️</span><span class="nav-t" title="스튜디오 설정">스튜디오 설정</span></NavLink></div>
+
+                @* 🛠️ 고급 / 개발자 도구 — 기본 접힘(_devToolsOpen = false). 엔터프라이즈·개발자 페이지는 삭제하지 않고 이곳에 격리. *@
+                <button type="button" class="nav-acc nav-dev @(_devToolsOpen ? "open" : null)" data-nav-dev-tools aria-expanded="@(_devToolsOpen ? "true" : "false")" @onclick="ToggleDevTools" @onclick:stopPropagation="true">
+                    <span class="nav-acc-t">🛠️ 고급 / 개발자 도구</span><span class="nav-acc-c" aria-hidden="true">▾</span>
+                </button>
+                @if (_devToolsOpen)
+                {
+                    <div class="nav-acc-body" data-nav-dev-body>
+                    <div class="navw" @onmouseenter='e => ShowSideGuide("live-studio", e.ClientY)'><NavLink class="nav-item" href="live-studio"><span class="ic">📺</span><span class="nav-t" title="24/7 AI 라이브 스튜디오">24/7 AI 라이브 스튜디오</span></NavLink></div>
+                    <div class="navw" @onmouseenter='e => ShowSideGuide("brand-studio", e.ClientY)'><NavLink class="nav-item" href="brand-studio"><span class="ic">🛍️</span><span class="nav-t" title="커머셜 브랜드 스튜디오">커머셜 브랜드 스튜디오</span></NavLink></div>
+                    <div class="navw" @onmouseenter='e => ShowSideGuide("analytics", e.ClientY)'><NavLink class="nav-item" href="analytics"><span class="ic">📊</span><span class="nav-t" title="생산성 &amp; 비용">생산성 &amp; 비용</span></NavLink></div>
+                    <div class="navw" @onmouseenter='e => ShowSideGuide("flow", e.ClientY)'><NavLink class="nav-item" href="flow"><span class="ic">🕹️</span><span class="nav-t" title="노드 오케스트레이터">노드 오케스트레이터</span></NavLink></div>
+                    <div class="navw" @onmouseenter='e => ShowSideGuide("node-studio", e.ClientY)'><NavLink class="nav-item" href="node-studio"><span class="ic">🧩</span><span class="nav-t" title="비주얼 노드 플로우">비주얼 노드 플로우</span></NavLink></div>
+                    <div class="navw" @onmouseenter='e => ShowSideGuide("mobile-sim", e.ClientY)'><button type="button" class='nav-item nav-btn @(_showMobileSim ? "on" : null)' @onclick="ToggleMobileSim"><span class="ic">📱</span><span class="nav-t" title="모니터 시뮬레이터">모니터 시뮬레이터</span></button></div>
+                    <div class="navw" @onmouseenter='e => ShowSideGuide("observability", e.ClientY)'><button type="button" class='nav-item nav-btn @(_showObservability ? "on" : null)' @onclick="ToggleObservability"><span class="ic">📡</span><span class="nav-t" title="글로벌 관제">글로벌 관제</span></button></div>
+                    <div class="navw" @onmouseenter='e => ShowSideGuide("timeline", e.ClientY)'><button type="button" class='nav-item nav-btn @(_showTimeline ? "on" : null)' @onclick="ToggleTimeline"><span class="ic">🎬</span><span class="nav-t" title="AI 타임라인">AI 타임라인</span></button></div>
+                    <div class="navw" @onmouseenter='e => ShowSideGuide("workspace", e.ClientY)'><NavLink class="nav-item" href="workspace"><span class="ic">✍️</span><span class="nav-t" title="프롬프트 입력">프롬프트 입력</span></NavLink></div>
+                    <div class="navw" @onmouseenter='e => ShowSideGuide("batch", e.ClientY)'><NavLink class="nav-item" href="batch"><span class="ic">🏭</span><span class="nav-t" title="대량 양산">대량 양산</span></NavLink></div>
+                    <div class="navw" @onmouseenter='e => ShowSideGuide("camera-studio", e.ClientY)'><NavLink class="nav-item" href="camera-studio"><span class="ic">🎥</span><span class="nav-t" title="스마트 카메라 &amp; 모션">스마트 카메라 &amp; 모션</span></NavLink></div>
+                    </div>
+                }
 
                 @* v17.50.1: 6대 도메인 아코디언 — 스튜디오 모달 진입점 전량(StudioCatalog). 검색어 입력 시 전 카테고리 펼침 필터. *@
                 <div class="nav-grp">스튜디오 모듈</div>
@@ -117,8 +123,6 @@
                 <div class="nav-grp">시스템</div>
                 @* 사용자 설정 — 테마 등 이 PC 운용 환경(관리자 비밀번호 불요, 모든 사용자). *@
                 <div class="navw" @onmouseenter='e => ShowSideGuide("user-settings", e.ClientY)'><NavLink class="nav-item" href="user-settings"><span class="ic">🎚️</span><span class="nav-t" title="사용자 설정">사용자 설정</span></NavLink></div>
-                @* 회원·라이선스·메일·설치PC 관리는 <관리자 설정> 탭으로 통합(관리자 비밀번호 게이트). *@
-                <div class="navw" @onmouseenter='e => ShowSideGuide("settings", e.ClientY)'><NavLink class="nav-item" href="settings"><span class="ic">⚙️</span><span class="nav-t" title="관리자 설정">관리자 설정</span></NavLink></div>
                 @* 환경설정 — ComfyUI 주소 · 클라우드 키(관리자만) · FFmpeg 상태 · 기본 렌더 모드(user_settings.json). *@
                 <div class="navw" @onmouseenter='e => ShowSideGuide("app-settings", e.ClientY)'><NavLink class="nav-item" href="app-settings"><span class="ic">🛠️</span><span class="nav-t" title="환경설정">⚙️ 환경설정</span></NavLink></div>
                 @* v5.3.4: 중복 메뉴 [원클릭 앱 제작] 제거 — 배포는 [관리자 설정 ▸ 보안·배포] 탭으로 일원화. *@
@@ -1686,6 +1690,8 @@
     private bool _showMobileSim; // v5.3.2 모바일 시뮬레이터 사이드 패널 열림
     private bool _simFullscreen; // v5.6.5 시뮬레이터 전체화면(오버레이 transform 제약 해제 트리거)
     private bool _showObservability; // v6.2.0 글로벌 관제 HUD 오버레이 열림
+    private bool _devToolsOpen; // Step 4: 🛠️ 고급/개발자 도구 아코디언 — 기본 접힘
+    private void ToggleDevTools() => _devToolsOpen = !_devToolsOpen;
     private bool _showTimeline;       // v7.0.0 AI 멀티트랙 타임라인 오버레이 열림
     private readonly PromptFlowStudio.Services.Storyboard.StoryboardProject _simProject = new(); // 시뮬레이터 미리보기 데모 프로젝트
     private ElementReference _mssRef;   // v5.3.3 모바일 시뮬레이터 오버레이(열릴 때 포커스 이동 대상)
@@ -1930,11 +1936,10 @@
     {
         new SideOpt("theme",   "🎨", "테마",     "다크", "라이트", () => Prefs.IsThemeLight),
         new SideOpt("sidebar", "📚", "사이드바", "다크", "라이트", () => Prefs.IsSidebarLight),
+        // Step 4: 📡 방송 토글은 사용자 설정·명령 팔레트(ui.broadcast)와 중복이라 사이드바 하단에서 제거.
         // ⚠ 모션은 <켜기가 기본>이다. 끄기를 기본으로 두면 처음 쓰는 사람은
         //   이 제품이 정적인 화면인 줄 안다.
         new SideOpt("motion",  "🎬", "모션",     "정지", "켜기",   () => !Prefs.IsMotionDisabled),
-        // 방송 스튜디오 시네마틱 테마(글래스모피즘·네온) — 기본 ON.
-        new SideOpt("broadcast","📡", "스튜디오", "표준", "방송",   () => Prefs.IsBroadcast),
     };
 
     private void SetOpt(string key, bool on)
