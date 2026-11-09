@@ -82,8 +82,29 @@
 
         @* ✨ 제미나이 4컷 자동 디렉팅 — 한 줄 스토리 → 컷별 프롬프트 · 카메라 · 듀레이션 일괄 세팅(키 없음/실패 시 로컬 템플릿) *@
         <div class="sb-gemdir">
-            <input class="sb-gemdir-in" @bind="_directorStory" @bind:event="oninput" placeholder="한 줄 스토리 — 예) 심야 월스트리트 퀀트 트레이더의 하루" disabled="@(_directing || Jobs.IsRunning)" />
+            <input class="sb-gemdir-in" @bind="_directorStory" @bind:event="oninput" placeholder="한 줄 스토리 — 예) 우리 아기 첫 걸음마 하던 날" disabled="@(_directing || Jobs.IsRunning)" />
             <button class="sb-tbtn wiz" @onclick="OnGeminiDirect" disabled="@(_directing || Jobs.IsRunning || string.IsNullOrWhiteSpace(_directorStory))" title="스토리를 4개 컷(전경 · 클로즈업 · 액션 · 앰비언트 엔딩)의 프롬프트 · 추천 카메라 앵글 · 듀레이션으로 자동 분할합니다">@(_directing ? "⏳ 디렉팅 중..." : "✨ 제미나이 4컷 자동 디렉팅")</button>
+        </div>
+
+        <div class="sb-milestone" aria-label="아기 성장 다이어리 4컷 프리셋">
+            @foreach (var mp in PromptFlowStudio.Services.Storyboard.StoryboardDirectorService.Presets)
+            {
+                var kind = mp.Kind;
+                <button class="sb-ms-chip @(_milestone == kind ? "on" : null)" @onclick="() => ApplyMilestone(kind)" disabled="@(Jobs.IsRunning || Jobs.IsMerging)" title="@mp.English">@mp.Emoji @mp.Label</button>
+            }
+            <select class="sb-ms-sel" @bind="_milestoneStage" disabled="@(Jobs.IsRunning || Jobs.IsMerging)" title="아기 성장 단계(4컷 공통)">
+                @foreach (var gs in PromptFlowStudio.Services.AI.GeminiPromptService.BabyGrowthStages)
+                {
+                    <option value="@gs.Stage">@gs.Emoji @gs.Label</option>
+                }
+            </select>
+            <input class="sb-ms-feat" @bind="_milestoneFeatures" placeholder="아기 특징(영문) — 예) chubby cheeks, curly brown hair" disabled="@(Jobs.IsRunning || Jobs.IsMerging)" />
+            <select class="sb-ms-sel" @bind="_shortsBgm" title="릴스/쇼츠 BGM(아기 안전 음량)">
+                <option value="@PromptFlowStudio.Services.Render.BabyBgmKind.Lullaby">🌙 자장가</option>
+                <option value="@PromptFlowStudio.Services.Render.BabyBgmKind.MusicBox">🎶 오르골</option>
+                <option value="@PromptFlowStudio.Services.Render.BabyBgmKind.Acoustic">🎸 어쿠스틱</option>
+            </select>
+            <button class="sb-tbtn wiz sb-ms-shorts" @onclick="StitchBabyShortsAsync" disabled="@(_shortsBusy || Jobs.IsRunning || Jobs.IsMerging)" title="완료된 4컷을 컷당 3.75초로 이어 1080x1920(9:16) 센터 크롭 · 자장가 BGM 15초 쇼츠로 내보냅니다">@(_shortsBusy ? "⏳ 묶는 중..." : "📱 15초 성장 릴스/쇼츠로 묶기")</button>
         </div>
 
         <div class="sb-toolbar">
@@ -400,6 +421,10 @@
                             <span class="sb-qa" title="@($"감정 긴장도 {scene.EmotionTension}")">🎭 @scene.EmotionMood</span>
                         }
                         <div class="sb-scene-ops">
+                            @if (_milestone is not null && i < PromptFlowStudio.Services.Storyboard.StoryboardDirectorService.CutCount)
+                            {
+                                <button class="sb-op" disabled="@Jobs.IsRunning" @onclick="() => RegenerateMilestoneCut(i)" title="이 컷 프롬프트를 마일스톤 원본으로 재생성(아기 일관성 태그 유지)">↻</button>
+                            }
                             <button class="sb-op" disabled="@(Jobs.IsRunning || i == 0)" @onclick="() => Move(i, -1)" title="위로">↑</button>
                             <button class="sb-op" disabled="@(Jobs.IsRunning || i == _project.Scenes.Count - 1)" @onclick="() => Move(i, 1)" title="아래로">↓</button>
                             <button class="sb-op del" disabled="@(Jobs.IsRunning || _project.Scenes.Count <= 1)" @onclick="() => RemoveScene(scene)" title="삭제">✕</button>
@@ -1367,6 +1392,12 @@
     .sb-qa.warn { color: #b45309; background: color-mix(in srgb, #f59e0b 16%, transparent); }
     .sb-qa.reject { color: #dc2626; background: color-mix(in srgb, #ef4444 15%, transparent); }
     .sb-gemdir { display: flex; gap: 8px; align-items: center; margin: 0 0 10px; }
+    .sb-milestone { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 10px; }
+    .sb-ms-chip { font: 700 12px inherit; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); cursor: pointer; }
+    .sb-ms-chip.on { border-color: #ff9ec7; background: rgba(255,158,199,.18); }
+    .sb-ms-sel, .sb-ms-feat { font: 600 12px inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); }
+    .sb-ms-feat { flex: 1; min-width: 160px; }
+    .sb-ms-shorts { margin-left: auto; }
     .sb-gemdir-in { flex: 1; min-width: 0; font: 600 13px inherit; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); color: var(--text-primary); }
     .sb-tbtn.wiz { color: #fff; border: none; background: linear-gradient(135deg, var(--flow-violet), var(--flow-magenta)); box-shadow: 0 6px 16px color-mix(in srgb, var(--flow-magenta) 26%, transparent); }
     .sb-tbtn.wiz:hover:not(:disabled) { filter: brightness(1.07); color: #fff; }
@@ -2013,6 +2044,8 @@
         _directCts?.Dispose();
         try { _autoStitchCts?.Cancel(); } catch (ObjectDisposedException) { }
         _autoStitchCts?.Dispose();
+        try { _shortsCts?.Cancel(); } catch (ObjectDisposedException) { }
+        _shortsCts?.Dispose();
         StudioNav.Requested -= OnStudioRequested;
         Jobs.OnChange -= OnStateChanged;
         Jobs.OnCompleted -= OnJobsCompleted;
@@ -3212,6 +3245,59 @@
             if (hook is null && !string.IsNullOrWhiteSpace(sc.VoiceText)) hook = sc.VoiceText;
         }
         PubVm.Open(path, hook ?? _project.Title, beats);
+    }
+
+    // 🍼 아기 성장 다이어리 4컷 마일스톤 프리셋 + 📱 15초 쇼츠
+    private PromptFlowStudio.Services.Storyboard.BabyMilestonePresetKind? _milestone;
+    private PromptFlowStudio.Services.AI.BabyGrowthStage _milestoneStage = PromptFlowStudio.Services.AI.BabyGrowthStage.HundredDays;
+    private string _milestoneFeatures = "";
+    private PromptFlowStudio.Services.Render.BabyBgmKind _shortsBgm = PromptFlowStudio.Services.Render.BabyBgmKind.Lullaby;
+    private bool _shortsBusy;
+    private CancellationTokenSource? _shortsCts;
+
+    private void ApplyMilestone(PromptFlowStudio.Services.Storyboard.BabyMilestonePresetKind kind)
+    {
+        if (Jobs.IsRunning || Jobs.IsMerging) { ShowToast("생성/병합 중에는 사용할 수 없습니다."); return; }
+        if (_milestone != kind) _milestoneStage = PromptFlowStudio.Services.Storyboard.StoryboardDirectorService.PresetOf(kind).DefaultStage;
+        foreach (var s in _project.Scenes) ClearSceneImageFile(s);
+        if (!PromptFlowStudio.Services.Storyboard.StoryboardDirectorService.ApplyToProject(_project, kind, _milestoneStage, _milestoneFeatures)) return;
+        _milestone = kind;
+        ShowToast("🍼 " + _project.Title + " — 4컷 구성 완료. 컷별 문구를 다듬거나 ↻로 재생성하세요.");
+    }
+
+    private void RegenerateMilestoneCut(int index)
+    {
+        if (_milestone is not { } kind || index < 0 || index >= _project.Scenes.Count) return;
+        _project.Scenes[index].Prompt = PromptFlowStudio.Services.Storyboard.StoryboardDirectorService.BuildCut(kind, index, _milestoneStage, _milestoneFeatures);
+    }
+
+    private async Task StitchBabyShortsAsync()
+    {
+        if (_shortsBusy) return;
+        var cuts = new List<PromptFlowStudio.Services.Render.StoryboardStitchCut>(4);
+        foreach (var s in _project.Scenes)
+            if (s.Status == SceneStatus.Completed && !string.IsNullOrWhiteSpace(s.LocalPath) && File.Exists(s.LocalPath))
+                cuts.Add(new PromptFlowStudio.Services.Render.StoryboardStitchCut(s.LocalPath, s.Prompt, s.DurationSec ?? 0));
+        if (cuts.Count == 0) { ShowToast("묶을 완료 컷이 없습니다 — 먼저 4컷을 생성하세요."); return; }
+        _shortsBusy = true;
+        try
+        {
+            _shortsCts?.Dispose();
+            _shortsCts = new CancellationTokenSource();
+            var opts = PromptFlowStudio.Services.Render.StoryboardStitchService.BuildBabyShortsOptions(cuts.Count, _shortsBgm, _project.BgmPath);
+            var output = PromptFlowStudio.Services.Render.StoryboardStitchService.BuildShortsOutputPath(Media.MediaRoot, DateTime.Now);
+            var r = await SbStitch.StitchBabyShortsAsync(cuts, output, opts, _shortsCts.Token);
+            if (r.Ok && r.OutputPath is { } path)
+            {
+                _masterPath = path;
+                _project.FinalVideoPath = path;
+                Gallery.Register(_project, GalleryAssetKind.Video, Media.ToPlaybackUrl(path), "📱 15초 성장 쇼츠");
+                ShowToast(r.Message);
+            }
+            else ShowToast("쇼츠 묶기 실패 — " + r.Message);
+        }
+        catch (Exception ex) { Program.Log("Storyboard.BabyShorts", ex); ShowToast("쇼츠 묶기 실패"); }
+        finally { _shortsBusy = false; StateHasChanged(); }
     }
 
     // ✨ 제미나이 4컷 자동 디렉팅
