@@ -94,7 +94,7 @@ public sealed class PlutoTrendEngine
         if (_generator is null) return await GetCuratedTrendsAsync(category, ct).ConfigureAwait(false);
         try
         {
-            var fresh = await _generator.SynthesizeAsync(category, count, null, ct).ConfigureAwait(false);
+            var fresh = await _generator.GenerateDynamicTrendsAsync(category, count, null, ct).ConfigureAwait(false);   // 🧠 LLM 우선 · 로컬 폴백
             if (_learning is null) return fresh;
             await _learning.EnsureLoadedAsync(ct).ConfigureAwait(false);
             return _learning.Rank(fresh);

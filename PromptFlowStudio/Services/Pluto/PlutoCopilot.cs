@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
 using PromptFlowStudio.Services.Export;
 
 namespace PromptFlowStudio.Services.Pluto;
@@ -21,13 +24,16 @@ public sealed record PlutoCopilotScript(
     BabyBgmTrack BgmTrack,
     string BgmLabel)
 {
+    /// <summary>🧠 Gemini LLM 시나리오 여부(false = 로컬 키워드·마일스톤 템플릿).</summary>
+    public bool UsedLlm { get; init; }
+
     /// <summary>🚀 스튜디오 주입용 프롬프트(3막 + 카메라).</summary>
     public string BuildStudioPrompt() => VideoPrompt + ", camera: " + CameraMotion;
 }
 
 /// <summary>
 /// 🪐 Pluto Interactive Copilot — 사용자의 일상 메모(한국어) → 마일스톤·장소·감정 해석 → 15초 3막(분투 → 성공 → 여운) 바이럴 시나리오.
-/// DNA 렉시콘 상위 조명/분위기 토큰을 우선 반영(로컬 · 외부 호출 없음).
+/// DNA 렉시콘 상위 조명/분위기 토큰을 우선 반영. 🧠 <see cref="IPlutoLlmClient"/> 주입 시 <see cref="DraftScriptFromMemoAsync"/> 가 Gemini 스토리텔링 우선 · 실패 시 로컬 템플릿 폴백.
 /// </summary>
 public sealed class PlutoCopilot
 {
@@ -36,9 +42,109 @@ public sealed class PlutoCopilot
     private static readonly Regex MonthCount = new(@"(\d{1,2})\s*개월", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
 
     private readonly PlutoPreferenceLexicon? _lexicon;
+    private readonly IPlutoLlmClient? _llm;
 
-    public PlutoCopilot() : this(null) { }
-    public PlutoCopilot(PlutoPreferenceLexicon? lexicon) => _lexicon = lexicon;
+    public PlutoCopilot() : this(null, null) { }
+    public PlutoCopilot(PlutoPreferenceLexicon? lexicon) : this(lexicon, null) { }
+    public PlutoCopilot(PlutoPreferenceLexicon? lexicon, IPlutoLlmClient? llm)
+    {
+        _lexicon = lexicon;
+        _llm = llm;
+    }
+
+    /// <summary>🧠 LLM 결선 여부(키 미설정이어도 true — 실제 사용 여부는 <see cref="PlutoCopilotScript.UsedLlm"/>).</summary>
+    public bool HasLlm => _llm is not null;
+
+    public const string LlmScriptInstruction =
+        "You are Pluto, a warm short-form video storyteller. " +
+        "Transform this parent's real-life baby/pet/daily memory into a captivating 15-second 3-act short-form video script " +
+        "(Act 1: Hook/Setup [0-4s], Act 2: Climax/Action [4-11s], Act 3: Emotional Lingering Smile [11-15s]). " +
+        "Also specify camera movement and matching baby/acoustic BGM. " +
+        "Respond with JSON only: {\"hookTitle\":string,\"milestone\":string,\"acts\":[{\"label\":string,\"prompt\":string}],\"camera\":string,\"bgm\":\"lullaby\"|\"musicbox\"|\"acoustic\"} - " +
+        "hookTitle: Korean viral hook title with one emoji (max 40 chars); milestone: short Korean label of the moment; " +
+        "acts: exactly 3 items, label is a short Korean act name, prompt is a vivid English text-to-video prompt for that act; " +
+        "camera: English camera movement directive.";
+
+    /// <summary>🧠 LLM 3막 시간 구간(Hook 0-4s · Climax 4-11s · Lingering 11-15s).</summary>
+    private static readonly (int Start, int End)[] LlmActWindows = { (0, 4), (4, 11), (11, TotalSeconds) };
+
+    /// <summary>
+    /// 🧠 메모 → 15초 3막 시나리오(Gemini 우선). LLM 미설정/예외/3.5초 초과/스키마 불일치 → 로컬 키워드·마일스톤 템플릿(<see cref="Draft"/>) 무중단 폴백.
+    /// 빈 메모는 <see cref="ArgumentException"/>.
+    /// </summary>
+    public async Task<PlutoCopilotScript> DraftScriptFromMemoAsync(string userMemo, DateTime? now = null, CancellationToken ct = default)
+    {
+        var local = Draft(userMemo, now);   // 검증 + 폴백 기준선(카테고리 · BGM)
+        var text = await PlutoLlmBridge.TryCompleteAsync(_llm, LlmScriptInstruction, BuildLlmScriptRequest(local, now ?? DateTime.Now), 0.85, ct).ConfigureAwait(false);
+        return (text is null ? null : ParseLlmScript(text, local)) ?? local;
+    }
+
+    private string BuildLlmScriptRequest(PlutoCopilotScript local, DateTime now)
+    {
+        var ctx = PlutoGenerativeEngine.ContextFor(now);
+        var sb = new System.Text.StringBuilder(local.Memo.Length + 256);
+        sb.Append("Memo (Korean): ").Append(local.Memo).Append('\n')
+          .Append("Detected theme: ").Append(local.Category.ToString()).Append('\n')
+          .Append("Season / time: ").Append(ctx.SeasonEn).Append(", ").Append(ctx.TimeEn).Append('\n')
+          .Append("Preferred lighting: ").Append(TopOr(DnaBucket.Lighting, ctx.LightingEn)).Append('\n')
+          .Append("Preferred atmosphere: ").Append(TopOr(DnaBucket.Atmosphere, "warm pastel tone")).Append('\n');
+        return sb.ToString();
+    }
+
+    /// <summary>LLM 시나리오 JSON 스키마 즉시 검증 — 3막 프롬프트 모두 필요(누락 시 null). BGM 미인식은 로컬 기준선 유지.</summary>
+    public static PlutoCopilotScript? ParseLlmScript(string json, PlutoCopilotScript local)
+    {
+        using var doc = PlutoLlmBridge.TryParse(json);
+        if (doc is null) return null;
+        var r = doc.RootElement;
+        if (r.ValueKind != JsonValueKind.Object || !r.TryGetProperty("acts", out var arr) || arr.ValueKind != JsonValueKind.Array) return null;
+        if (arr.GetArrayLength() < LlmActWindows.Length) return null;
+
+        var acts = new PlutoAct[LlmActWindows.Length];
+        var i = 0;
+        foreach (var e in arr.EnumerateArray())
+        {
+            if (i >= acts.Length) break;
+            var prompt = PlutoLlmBridge.Str(e, "prompt", 600);
+            if (prompt.Length < 8) return null;
+            var label = PlutoLlmBridge.Str(e, "label", 40);
+            if (label.Length == 0) label = local.Acts.Count > i ? local.Acts[i].LabelKo : "Act " + (i + 1).ToString(CultureInfo.InvariantCulture);
+            var (st, en) = LlmActWindows[i];
+            acts[i] = new PlutoAct(st, en, label, prompt);
+            i++;
+        }
+
+        var hook = PlutoLlmBridge.Str(r, "hookTitle", 60);
+        var milestone = PlutoLlmBridge.Str(r, "milestone", 30);
+        var camera = PlutoLlmBridge.Str(r, "camera", 200);
+        var bgm = ParseBgm(PlutoLlmBridge.Str(r, "bgm", 40)) ?? local.BgmTrack;
+
+        var sb = new System.Text.StringBuilder(768);
+        sb.Append("15-second vertical short, 3-act story. ");
+        for (var k = 0; k < acts.Length; k++)
+        {
+            if (k > 0) sb.Append(' ');
+            sb.Append("Act ").Append((k + 1).ToString(CultureInfo.InvariantCulture)).Append(" (")
+              .Append(acts[k].StartSec.ToString(CultureInfo.InvariantCulture)).Append('-')
+              .Append(acts[k].EndSec.ToString(CultureInfo.InvariantCulture)).Append("s): ").Append(acts[k].PromptEn.TrimEnd('.')).Append('.');
+        }
+
+        return new PlutoCopilotScript(local.Memo, local.Category,
+            milestone.Length == 0 ? local.MilestoneKo : milestone,
+            hook.Length == 0 ? local.HookTitle : hook,
+            acts, sb.ToString(),
+            camera.Length == 0 ? local.CameraMotion : camera,
+            bgm, StockSuiteExporter.BabyBgmLabel(bgm)) { UsedLlm = true };
+    }
+
+    private static BabyBgmTrack? ParseBgm(string s)
+    {
+        if (s.Length == 0) return null;
+        if (s.Contains("music", StringComparison.OrdinalIgnoreCase) || s.Contains("box", StringComparison.OrdinalIgnoreCase) || s.Contains("오르골", StringComparison.Ordinal)) return BabyBgmTrack.MusicBox;
+        if (s.Contains("acoustic", StringComparison.OrdinalIgnoreCase) || s.Contains("guitar", StringComparison.OrdinalIgnoreCase) || s.Contains("어쿠스틱", StringComparison.Ordinal)) return BabyBgmTrack.Acoustic;
+        if (s.Contains("lullaby", StringComparison.OrdinalIgnoreCase) || s.Contains("자장가", StringComparison.Ordinal)) return BabyBgmTrack.Lullaby;
+        return null;
+    }
 
     private sealed record Milestone(string[] Keys, StudioThemeCategory Category, string Ko, string Emoji, string Subject, string Struggle, string Triumph, string Outro, string Camera, BabyBgmTrack Bgm);
 

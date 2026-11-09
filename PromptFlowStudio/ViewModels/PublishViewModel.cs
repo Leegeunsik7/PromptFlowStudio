@@ -753,6 +753,8 @@ public sealed class PublishViewModel : IDisposable
     /// <summary>📣 마지막 생성 소셜 게시글 초안(없으면 null).</summary>
     public PromptFlowStudio.Services.Pluto.PlutoSocialPost? PlutoSocialDraft { get; private set; }
     public string? PlutoSocialMessage { get; private set; }
+    /// <summary>🧠 LLM 캡션 작성 중(중복 요청 차단).</summary>
+    public bool IsPlutoSocialBusy { get; private set; }
 
     /// <summary>📣 현재 채널(Shorts/Reels) · 제목 · 프롬프트 → 감성 본문 + 10~15 해시태그 초안 생성. 채널 미선택 시 null.</summary>
     public PromptFlowStudio.Services.Pluto.PlutoSocialPost? GeneratePlutoSocialDraft()
@@ -780,6 +782,28 @@ public sealed class PublishViewModel : IDisposable
         var draft = PromptFlowStudio.Services.Pluto.PlutoSocialCopywriter.Compose(Title, src, p);
         PlutoSocialDraft = draft;
         PlutoSocialMessage = "🪐 플루토가 게시글 초안을 작성했어요 (해시태그 " + draft.Hashtags.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + "개)";
+    }
+
+    /// <summary>🧠 Gemini 감성 캡션(2~3줄 + 12~15 해시태그) 초안 — LLM 실패/미설정 시 로컬 템플릿 폴백. 채널 미선택 시 null.</summary>
+    public async Task<PromptFlowStudio.Services.Pluto.PlutoSocialPost?> GeneratePlutoSocialDraftAsync(CancellationToken ct = default)
+    {
+        var p = (ToYouTube ? PromptFlowStudio.Services.Pluto.SocialPlatform.YouTubeShorts : PromptFlowStudio.Services.Pluto.SocialPlatform.None)
+              | (ToInstagram ? PromptFlowStudio.Services.Pluto.SocialPlatform.InstagramReels : PromptFlowStudio.Services.Pluto.SocialPlatform.None);
+        if (p == PromptFlowStudio.Services.Pluto.SocialPlatform.None) return GeneratePlutoSocialDraft();
+        if (IsPlutoSocialBusy) return PlutoSocialDraft;
+        var src = string.IsNullOrWhiteSpace(SourcePrompt) ? (ProjectName ?? "") : SourcePrompt;
+        IsPlutoSocialBusy = true;
+        PlutoSocialMessage = "🧠 플루토가 캡션을 쓰는 중…";
+        Notify();
+        PromptFlowStudio.Services.Pluto.PlutoSocialPost draft;
+        try { draft = await PromptFlowStudio.Services.Pluto.PlutoSocialCopywriter.DraftSocialPostAsync(_gemini, Title, src, p, null, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { draft = PromptFlowStudio.Services.Pluto.PlutoSocialCopywriter.Compose(Title, src, p); }
+        finally { IsPlutoSocialBusy = false; }
+        PlutoSocialDraft = draft;
+        PlutoSocialMessage = (draft.UsedLlm ? "🧠 플루토(Gemini)가 감성 캡션을 작성했어요" : "🪐 플루토가 게시글 초안을 작성했어요")
+            + " (해시태그 " + draft.Hashtags.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + "개)";
+        Notify();
+        return draft;
     }
 
     /// <summary>📋 전체 본문 + 해시태그 클립보드 복사(클립보드 미주입/실패 시 false).</summary>

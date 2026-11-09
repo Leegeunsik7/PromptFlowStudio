@@ -186,7 +186,7 @@
             {
                 <div class="pm-pluto" data-pluto-social="1">
                     <div class="pm-row">
-                        <button class="pm-btn pm-pluto-btn" @onclick="GeneratePlutoSocial" disabled="@vm.IsBusy">🪐 플루토 소셜 카피 작성</button>
+                        <button class="pm-btn pm-pluto-btn" @onclick="GeneratePlutoSocialAsync" disabled="@(vm.IsBusy || vm.IsPlutoSocialBusy)">🪐 플루토 소셜 카피 작성</button>
                         @if (vm.PlutoSocialDraft is not null)
                         {
                             <button class="pm-btn" @onclick="CopyPlutoSocial">📋 전체 본문 + 해시태그 복사</button>
@@ -347,9 +347,10 @@
         catch (Exception ex) { Program.Log("PublishModal.Seo", ex); }
     }
 
-    private void GeneratePlutoSocial()
+    private async Task GeneratePlutoSocialAsync()
     {
-        try { Vm?.GeneratePlutoSocialDraft(); }
+        if (Vm is null) return;
+        try { await Vm.GeneratePlutoSocialDraftAsync(); }   // 🧠 Gemini 캡션 우선 · 로컬 폴백
         catch (Exception ex) { Program.Log("PublishModal.PlutoSocial", ex); }
     }
 

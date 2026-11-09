@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -11,7 +12,8 @@ public readonly record struct PlutoContextSeed(string SeasonEn, string SeasonKo,
 
 /// <summary>
 /// ✨ Pluto Generative Engine — 고정 카드 대신 (계절·시간대 컨텍스트 × 테마 모티프 × DNA 렉시콘 상위 토큰 × 바이럴 3막 구조)
-/// 조합으로 매 요청마다 새 트렌드 카드를 합성(로컬 · 외부 호출 없음). 70% 학습 토큰 활용 / 30% 시드 어휘 탐색.
+/// 조합으로 매 요청마다 새 트렌드 카드를 합성. 70% 학습 토큰 활용 / 30% 시드 어휘 탐색.
+/// 🧠 <see cref="IPlutoLlmClient"/> 주입 시 <see cref="GenerateDynamicTrendsAsync"/> 가 Gemini 추론 우선 · 실패 시 로컬 조합기 무중단 폴백.
 /// </summary>
 public sealed class PlutoGenerativeEngine
 {
@@ -20,6 +22,7 @@ public sealed class PlutoGenerativeEngine
     private const int MaxRecent = 64;
 
     private readonly PlutoPreferenceLexicon? _lexicon;
+    private readonly IPlutoLlmClient? _llm;
     private readonly Random _rng;
     private readonly object _sync = new();
     private readonly List<PlutoTrend> _recent = new();
@@ -27,11 +30,17 @@ public sealed class PlutoGenerativeEngine
 
     public PlutoGenerativeEngine() : this(null, null) { }
 
-    public PlutoGenerativeEngine(PlutoPreferenceLexicon? lexicon, Random? rng = null)
+    public PlutoGenerativeEngine(PlutoPreferenceLexicon? lexicon, Random? rng = null) : this(lexicon, null, rng) { }
+
+    public PlutoGenerativeEngine(PlutoPreferenceLexicon? lexicon, IPlutoLlmClient? llm, Random? rng = null)
     {
         _lexicon = lexicon;
+        _llm = llm;
         _rng = rng ?? new Random();
     }
+
+    /// <summary>🧠 마지막 <see cref="GenerateDynamicTrendsAsync"/> 가 LLM 결과를 사용했는지(false = 로컬 조합기).</summary>
+    public bool LastUsedLlm { get; private set; }
 
     /// <summary>테마 모티프 — 주체 행동(Hook) · 감정 정점(Core) · 여운(Outro) · 한글 제목 · 주제 태그.</summary>
     private readonly record struct Motif(string Subject, string Hook, string Core, string Outro, string TitleKo, string BeatKo, string Tag);
@@ -147,6 +156,135 @@ public sealed class PlutoGenerativeEngine
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Gen] lexicon load: " + ex.Message); }   // [부분 구제] 시드 어휘만으로 생성
         }
         return Synthesize(category, count, now ?? DateTime.Now);
+    }
+
+    public const string LlmTrendInstruction =
+        "You are Pluto, a viral short-form video creative director for YouTube Shorts and Instagram Reels. " +
+        "Using the given category, season, time of day and the creator's learned style tokens, invent fresh, non-repetitive vertical video concepts. " +
+        "Respond with JSON only: {\"trends\":[{\"title\":string,\"hook\":string,\"prompt\":string,\"camera\":string,\"bgm\":string,\"hashtags\":[string]}]} - " +
+        "title: short Korean title (max 30 chars); hook: Korean viral hook line with 1-2 emojis; " +
+        "prompt: English text-to-video prompt in 3 acts (Hook -> Core emotion -> Lingering outro) weaving in the style tokens; " +
+        "camera: English camera directive; bgm: English BGM style; hashtags: 4-8 Korean/English topical hashtags starting with '#'. " +
+        "Every concept must differ in subject, action and setting.";
+
+    /// <summary>
+    /// 🧠 LLM 트렌드 발굴 — Gemini에 카테고리 · DNA 상위 토큰 · 계절 · 시간대 컨텍스트를 주어 N건(기본 4) 바이럴 컨셉 합성.
+    /// LLM 미설정/예외/3.5초 초과/스키마 불일치 → 로컬 조합기로 무중단 폴백. 부족분은 로컬로 보충([부분 구제]).
+    /// </summary>
+    public async Task<IReadOnlyList<PlutoTrend>> GenerateDynamicTrendsAsync(StudioThemeCategory category, int count = 4, DateTime? now = null, CancellationToken ct = default)
+    {
+        if (_lexicon is not null)
+        {
+            try { await _lexicon.EnsureLoadedAsync(ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Gen] lexicon load: " + ex.Message); }
+        }
+        var t = now ?? DateTime.Now;
+        var n = Math.Clamp(count, 1, MotifsFor(category).Length);
+        LastUsedLlm = false;
+
+        var text = await PlutoLlmBridge.TryCompleteAsync(_llm, LlmTrendInstruction, BuildLlmTrendRequest(category, n, t), 0.95, ct).ConfigureAwait(false);
+        var parsed = text is null ? null : ParseLlmTrends(text, category, n, t);
+        if (parsed is null) return Synthesize(category, n, t);
+
+        LastUsedLlm = true;
+        lock (_sync)
+        {
+            _recent.AddRange(parsed);
+            if (_recent.Count > MaxRecent) _recent.RemoveRange(0, _recent.Count - MaxRecent);
+        }
+        if (parsed.Count >= n) return parsed;
+        var merged = new List<PlutoTrend>(n);   // [부분 구제] 부족분 로컬 보충
+        merged.AddRange(parsed);
+        merged.AddRange(Synthesize(category, n - parsed.Count, t));
+        return merged;
+    }
+
+    private string BuildLlmTrendRequest(StudioThemeCategory category, int count, DateTime now)
+    {
+        var ctx = ContextFor(now);
+        var sb = new System.Text.StringBuilder(512);
+        sb.Append("Category: ").Append(CategoryLabel(category)).Append('\n')
+          .Append("Season: ").Append(ctx.SeasonEn).Append('\n')
+          .Append("Time of day: ").Append(ctx.TimeEn).Append(" (").Append(ctx.LightingEn).Append(")\n")
+          .Append("Count: ").Append(count.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        AppendTokens(sb, "Learned lighting tokens", TopOrEmpty(DnaBucket.Lighting));
+        AppendTokens(sb, "Learned camera tokens", TopOrEmpty(DnaBucket.Camera));
+        AppendTokens(sb, "Learned atmosphere tokens", TopOrEmpty(DnaBucket.Atmosphere));
+        lock (_sync)
+        {
+            if (_recent.Count > 0)
+            {
+                sb.Append("Avoid repeating these recent titles: ");
+                var from = Math.Max(0, _recent.Count - 8);
+                for (var i = from; i < _recent.Count; i++) { if (i > from) sb.Append(" | "); sb.Append(_recent[i].Title); }
+                sb.Append('\n');
+            }
+        }
+        return sb.ToString();
+
+        static void AppendTokens(System.Text.StringBuilder sb, string label, IReadOnlyList<string> tokens)
+        {
+            if (tokens.Count == 0) return;
+            sb.Append(label).Append(": ");
+            for (var i = 0; i < tokens.Count; i++) { if (i > 0) sb.Append(", "); sb.Append(tokens[i]); }
+            sb.Append('\n');
+        }
+    }
+
+    private static string CategoryLabel(StudioThemeCategory c) => c switch
+    {
+        StudioThemeCategory.BabyParenting => "Baby & parenting (babies, toddlers, family milestones)",
+        StudioThemeCategory.PetsCompanions => "Pets & companions (dogs, cats, small animals)",
+        StudioThemeCategory.HealingNature => "Healing nature (calm landscapes, ASMR ambience)",
+        _ => "Daily aesthetic vlog (routines, cafes, hobbies)",
+    };
+
+    /// <summary>LLM 트렌드 JSON 스키마 즉시 검증 — 프롬프트/훅 누락 항목 제외 · 중복 프롬프트 제거 · 최대 <paramref name="max"/>건. 유효 0건이면 null.</summary>
+    public IReadOnlyList<PlutoTrend>? ParseLlmTrends(string json, StudioThemeCategory category, int max, DateTime now)
+    {
+        using var doc = PlutoLlmBridge.TryParse(json);
+        if (doc is null) return null;
+        var root = doc.RootElement;
+        JsonElement arr;
+        if (root.ValueKind == JsonValueKind.Array) arr = root;
+        else if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("trends", out arr) || arr.ValueKind != JsonValueKind.Array) return null;
+
+        var ctx = ContextFor(now);
+        var stamp = now.ToString("yyMMddHHmm", CultureInfo.InvariantCulture);
+        var result = new List<PlutoTrend>(Math.Max(max, 1));
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var e in arr.EnumerateArray())
+        {
+            if (result.Count >= max) break;
+            var prompt = PlutoLlmBridge.Str(e, "prompt", 900);
+            var hook = PlutoLlmBridge.Str(e, "hook", 120);
+            if (prompt.Length < 12 || hook.Length == 0 || !seen.Add(prompt)) continue;
+            var title = PlutoLlmBridge.Str(e, "title", 40);
+            if (title.Length == 0) title = ctx.TimeKo + " · 플루토 추천";
+            var camera = PlutoLlmBridge.Str(e, "camera", 160);
+            if (camera.Length == 0) camera = "slow push-in";
+            var bgm = PlutoLlmBridge.Str(e, "bgm", 80);
+            if (bgm.Length == 0) bgm = BgmPool[RngNext(BgmPool.Length)].Name;
+
+            var topical = new List<string>(10);
+            var tagSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "#Shorts", "#YouTubeShorts", "#Reels", "#InstaReels" };
+            if (e.TryGetProperty("hashtags", out var h) && h.ValueKind == JsonValueKind.Array)
+                foreach (var x in h.EnumerateArray())
+                    if (x.ValueKind == JsonValueKind.String) PlutoLlmBridge.AddTag(topical, tagSeen, x.GetString(), 8);
+            PlutoLlmBridge.AddTag(topical, tagSeen, CategoryTag(category), 9);
+            PlutoLlmBridge.AddTag(topical, tagSeen, "#플루토추천", 10);
+
+            var serial = Interlocked.Increment(ref _serial);
+            var id = IdPrefix + "llm-" + ((int)category).ToString(CultureInfo.InvariantCulture) + "-" + stamp + "-" + serial.ToString(CultureInfo.InvariantCulture);
+            var platforms = (result.Count % 3) switch { 0 => SocialPlatform.Both, 1 => SocialPlatform.InstagramReels, _ => SocialPlatform.YouTubeShorts };
+            var yt = new string[2 + topical.Count];
+            yt[0] = "#Shorts"; yt[1] = "#YouTubeShorts"; topical.CopyTo(yt, 2);
+            var ig = new string[2 + topical.Count];
+            ig[0] = "#Reels"; ig[1] = "#InstaReels"; topical.CopyTo(ig, 2);
+            result.Add(new PlutoTrend(id, category, title, hook, prompt, camera, bgm, platforms, yt, ig));
+        }
+        return result.Count == 0 ? null : result;
     }
 
     /// <summary>동기 합성(렉시콘은 이미 적재된 상태를 사용).</summary>

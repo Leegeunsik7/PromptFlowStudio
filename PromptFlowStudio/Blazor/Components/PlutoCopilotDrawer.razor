@@ -15,7 +15,7 @@
             <div class="pcd-lbl">오늘 있었던 일을 짧게 적어주세요</div>
             <textarea class="pcd-in" rows="3" maxlength="300" placeholder="예) 오늘 아기가 거실에서 처음으로 뒤집기 성공하고 방긋 웃었어"
                       @bind="_memo" @bind:event="oninput"></textarea>
-            <button class="pcd-btn go" disabled="@(Copilot is null || string.IsNullOrWhiteSpace(_memo))" @onclick="Generate">✨ 시나리오 생성</button>
+            <button class="pcd-btn go" disabled="@(_busy || Copilot is null || string.IsNullOrWhiteSpace(_memo))" @onclick="GenerateAsync">@(_busy ? "🧠 플루토가 이야기를 쓰는 중…" : "✨ 시나리오 생성")</button>
             @if (_error is { Length: > 0 } err)
             {
                 <div class="pcd-err">@err</div>
@@ -24,7 +24,7 @@
             {
                 <div class="pcd-card">
                     <div class="pcd-hook">@sc.HookTitle</div>
-                    <div class="pcd-ms">🏷 @sc.MilestoneKo</div>
+                    <div class="pcd-ms">🏷 @sc.MilestoneKo · @(sc.UsedLlm ? "🧠 Gemini 스토리" : "⚡ 로컬 템플릿")</div>
                     @foreach (var act in sc.Acts)
                     {
                         <div class="pcd-act">
@@ -74,13 +74,16 @@
     private string _memo = "";
     private PlutoCopilotScript? _script;
     private string? _error;
+    private bool _busy;
 
-    private void Generate()
+    private async Task GenerateAsync()
     {
         _error = null;
-        if (Copilot is null || string.IsNullOrWhiteSpace(_memo)) return;
-        try { _script = Copilot.Draft(_memo); }
+        if (_busy || Copilot is null || string.IsNullOrWhiteSpace(_memo)) return;
+        _busy = true;
+        try { _script = await Copilot.DraftScriptFromMemoAsync(_memo); }   // 🧠 Gemini 우선 · 3.5초 내 로컬 폴백
         catch (Exception ex) { Program.Log("PlutoCopilot.Draft", ex); _script = null; _error = "⚠ 시나리오 생성 실패 — 메모를 바꿔 다시 시도해 주세요"; }
+        finally { _busy = false; }
     }
 
     private async Task ApplyAsync()

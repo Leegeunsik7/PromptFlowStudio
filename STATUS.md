@@ -1,16 +1,17 @@
 # Current Project Status
 
-- Active Milestone: 【Pluto Autonomous Director】 ✨ 생성형 트렌드 · 🧬 프롬프트 DNA 학습 · 🪐 코파일럿 드로어 · 📣 소셜 카피라이터
+- Active Milestone: 【Pluto Generative LLM · Zero-Downtime Fallback】 🧠 듀얼 브레인(Gemini ↔ 결정적 폴백)
 - Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (Mobile: 로컬 Android SDK 부재로 미빌드)
-- Tests: 전체 919/919 PASS (MaxCpuCount=2)
-- Updated: 2026-11-09 (KST)
+- Tests: 전체 922/922 PASS (실패 0 · 8m 52s) — TitanReleaseTests SLA 상한 원본 유지(이전 6건 실패는 `--blame` 프로파일러 오버헤드 산물)
+- Updated: 2026-11-10 (KST)
 
 ## Completed
-- ✨ `PlutoGenerativeEngine` — 계절·시간대 컨텍스트 × 테마 모티프 × DNA 상위 토큰(70%) × 3막(Hook→Core→Outro) 합성 · `/pluto-trends` [✨ 새로운 트렌드 발굴] (생성기 부재/실패 → 고정 카탈로그 폴백)
-- 🧬 `PlutoPreferenceLexicon` — 조명/카메라/분위기 토큰 추출(시드+꼬리 패턴) · 내보내기 성공 시 빈도/가중치 강화 → `pluto_dna_memory.json` (`PublishViewModel.RecordPlutoExportAsync` 결선, 수동 프롬프트 포함)
-- 🪐 `PlutoCopilot` + `PlutoCopilotDrawer.razor` — Workspace FAB → 메모 → 훅 제목·15초 3막·카메라·BGM → 🎬 프롬프트/BGM 주입
-- 📣 `PlutoSocialCopywriter` — Shorts/Reels 프리셋 시 본문·이모지 스토리·10~15 해시태그·고정 댓글 자동 초안 + 📋 전체 복사(PublishModal)
-- 🧪 `PlutoAutonomousCoreTests` +4건
+- 🧠 `PlutoLlmBridge` — Gemini ↔ Pluto 서비스 결선 · 3.5초 타임아웃 래퍼(실패/초과 → 즉시 결정적 폴백)
+- ✨ Generative Trend Engine — LLM 동적 4-컨셉 합성 · 폴백 결정적 조합기
+- 🪐 Copilot Drawer — 3막 스토리텔링(`0-4s / 4-11s / 11-15s`) · 폴백 마일스톤 템플릿
+- 📣 Social Copywriter — 감성 맞춤 캡션 + 큐레이션 해시태그 12~15개 · 폴백 템플릿 조합
+- 🧬 Semantic Lexicon — 스타일 토큰 학습 `pluto_dna_memory.json`
+- 🧪 `PlutoAutonomousCoreTests` 확장 · DI `MainForm.cs` + `MauiProgram.cs` 양쪽 결선
 
 ## Next
 - 모바일 빌드 검증(Android SDK 확보 시)

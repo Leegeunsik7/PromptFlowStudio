@@ -1,5 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace PromptFlowStudio.Services.Pluto;
 
@@ -12,6 +15,9 @@ public sealed record PlutoSocialPost(
     IReadOnlyList<string> Hashtags,
     string PinnedComment)
 {
+    /// <summary>🧠 Gemini LLM 캡션 여부(false = 로컬 템플릿).</summary>
+    public bool UsedLlm { get; init; }
+
     /// <summary>📋 전체 본문 + 해시태그(복사용).</summary>
     public string FullText
     {
@@ -29,12 +35,91 @@ public sealed record PlutoSocialPost(
 }
 
 /// <summary>
-/// 📣 Pluto Viral Social Copywriter — 영상 프롬프트/훅 → 플랫폼(Shorts·Reels)별 감성 캡션(이모지) + 10~15개 타깃 해시태그 + 고정 댓글(로컬 템플릿).
+/// 📣 Pluto Viral Social Copywriter — 영상 프롬프트/훅 → 플랫폼(Shorts·Reels)별 감성 캡션(이모지) + 10~15개 타깃 해시태그 + 고정 댓글.
+/// 🧠 <see cref="DraftSocialPostAsync"/> = Gemini 캡션 우선 · <see cref="Compose"/> = 로컬 템플릿(폴백).
 /// </summary>
 public static class PlutoSocialCopywriter
 {
     public const int MinTags = 10;
     public const int MaxTags = 15;
+    /// <summary>🧠 LLM 캡션 해시태그 하한(12~15).</summary>
+    public const int MinLlmTags = 12;
+
+    public const string LlmCaptionInstruction =
+        "You are Pluto, a viral social media copywriter for parents and creators. Write in natural Korean. " +
+        "Based on the given video title and prompt, write an engaging caption with a warm parent/creator tone and emojis. " +
+        "Respond with JSON only: {\"hook\":string,\"story\":[string],\"hashtags\":[string],\"pinnedComment\":string} - " +
+        "hook: one catchy opening line with emoji (max 80 chars); story: 2 to 3 short heartwarming storytelling lines with emojis; " +
+        "hashtags: 12 to 15 curated, non-repetitive viral hashtags tailored to the target platform (mix Korean and English), each starting with '#', no spaces; " +
+        "pinnedComment: an engaging question to pin as the first comment (max 120 chars).";
+
+    /// <summary>
+    /// 🧠 게시글 초안(Gemini 우선) — 실제 제목/프롬프트 기반 감성 캡션 2~3줄 + 12~15 바이럴 해시태그.
+    /// LLM 미설정/예외/3.5초 초과/스키마 불일치 → <see cref="Compose"/> 로컬 템플릿 무중단 폴백. 취소 외 throw 하지 않음.
+    /// </summary>
+    public static async Task<PlutoSocialPost> DraftSocialPostAsync(IPlutoLlmClient? llm, string? title, string? sourceText, SocialPlatform platform,
+        IReadOnlyList<string>? extraTags = null, CancellationToken ct = default)
+    {
+        var local = Compose(title, sourceText, platform, extraTags);
+        var user = new System.Text.StringBuilder(256)
+            .Append("Platform: ").Append(PlatformLabel(local.Platform)).Append('\n')
+            .Append("Theme: ").Append(InferCategory((title ?? "") + " " + (sourceText ?? "")).ToString()).Append('\n')
+            .Append("Title: ").Append(local.Title).Append('\n')
+            .Append("Video prompt: ").Append(string.IsNullOrWhiteSpace(sourceText) ? local.Title : sourceText.Trim()).ToString();
+        var text = await PlutoLlmBridge.TryCompleteAsync(llm, LlmCaptionInstruction, user, 0.9, ct).ConfigureAwait(false);
+        return (text is null ? null : ParseLlmPost(text, local, extraTags)) ?? local;
+    }
+
+    private static string PlatformLabel(SocialPlatform p) => p switch
+    {
+        SocialPlatform.YouTubeShorts => "YouTube Shorts",
+        SocialPlatform.InstagramReels => "Instagram Reels",
+        _ => "YouTube Shorts + Instagram Reels",
+    };
+
+    /// <summary>LLM 캡션 JSON 스키마 즉시 검증 — 훅 · 스토리 2줄 이상 · 해시태그 5개 이상 필요(미달 시 null). 해시태그 12개 미만은 테마 풀로 보충([부분 구제]).</summary>
+    public static PlutoSocialPost? ParseLlmPost(string json, PlutoSocialPost local, IReadOnlyList<string>? extraTags = null)
+    {
+        using var doc = PlutoLlmBridge.TryParse(json);
+        if (doc is null) return null;
+        var r = doc.RootElement;
+        if (r.ValueKind != JsonValueKind.Object) return null;
+        var hook = PlutoLlmBridge.Str(r, "hook", 120);
+        if (hook.Length == 0) return null;
+        if (!r.TryGetProperty("story", out var st) || st.ValueKind != JsonValueKind.Array) return null;
+        var story = new List<string>(3);
+        foreach (var e in st.EnumerateArray())
+        {
+            if (story.Count >= 3) break;
+            if (e.ValueKind != JsonValueKind.String) continue;
+            var line = (e.GetString() ?? "").Replace('\r', ' ').Replace('\n', ' ').Trim();
+            if (line.Length > 160) line = line[..160].TrimEnd();
+            if (line.Length > 0) story.Add(line);
+        }
+        if (story.Count < 2) return null;
+
+        if (!r.TryGetProperty("hashtags", out var h) || h.ValueKind != JsonValueKind.Array) return null;
+        var llmTags = new List<string>(MaxTags);
+        var llmSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var e in h.EnumerateArray())
+            if (e.ValueKind == JsonValueKind.String) PlutoLlmBridge.AddTag(llmTags, llmSeen, e.GetString(), MaxTags);
+        if (llmTags.Count < 5) return null;
+
+        var p = local.Platform;
+        var tags = new List<string>(MaxTags);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if ((p & SocialPlatform.YouTubeShorts) == 0) { seen.Add("#Shorts"); seen.Add("#YouTubeShorts"); }   // 타 플랫폼 태그 차단
+        if ((p & SocialPlatform.InstagramReels) == 0) { seen.Add("#Reels"); seen.Add("#InstaReels"); }
+        if ((p & SocialPlatform.YouTubeShorts) != 0) PlutoLlmBridge.AddTag(tags, seen, "#Shorts", MaxTags);
+        if ((p & SocialPlatform.InstagramReels) != 0) PlutoLlmBridge.AddTag(tags, seen, "#Reels", MaxTags);
+        if (extraTags is not null) foreach (var e in extraTags) PlutoLlmBridge.AddTag(tags, seen, e, MaxTags);
+        foreach (var t in llmTags) PlutoLlmBridge.AddTag(tags, seen, t, MaxTags);
+        foreach (var t in local.Hashtags) { if (tags.Count >= MinLlmTags) break; PlutoLlmBridge.AddTag(tags, seen, t, MaxTags); }
+
+        var pin = (p & SocialPlatform.YouTubeShorts) != 0 ? PlutoLlmBridge.Str(r, "pinnedComment", 160) : "";
+        if (pin.Length == 0) pin = local.PinnedComment;
+        return new PlutoSocialPost(p, local.Title, hook, story, tags, pin) { UsedLlm = true };
+    }
 
     private static readonly string[] BabyTags = { "#육아스타그램", "#베이비릴스", "#성장일기", "#돌준맘", "#육아브이로그", "#아기스타그램", "#육아일기", "#딸스타그램", "#아들스타그램", "#babymilestone", "#babyreels", "#momlife", "#육아소통" };
     private static readonly string[] PetTags = { "#반려동물", "#댕댕이", "#냥스타그램", "#멍스타그램", "#펫스타그램", "#강아지일상", "#고양이일상", "#반려견", "#dogsofinstagram", "#catsofinstagram", "#petreels", "#cutepets" };
