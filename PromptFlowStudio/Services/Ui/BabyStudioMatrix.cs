@@ -41,6 +41,46 @@ public static class BabyStudioMatrix
         new("부드러운 슬로우",   "부드러운 슬로우 모션",                 "🕊️"),
     };
 
+    /// <summary>🎥 아기 시네마틱 카메라 모션 4종 — 그룹 배타(모션 1개만 유지).</summary>
+    public static readonly PromptChip[] CameraMotions =
+    {
+        new("눈높이 아이레벨",   "smooth low-angle dolly push-in at baby's eye level", "👶"),
+        new("부드러운 줌인",     "slow cinematic close-up zoom on tiny facial expressions and eyelashes", "✨"),
+        new("아장아장 오빗",     "playful low-angle 360-degree orbit around the baby playing on the carpet", "🎈"),
+        new("포근한 핸드헬드",   "warm documentary-style handheld mom-cam with subtle breathing motion", "🧸"),
+    };
+
+    /// <summary>😊 표정 & 감정 키워드 — 클릭 시 꼬리 결합(중복 0).</summary>
+    public static readonly PromptChip[] Expressions =
+    {
+        new("새근새근 천사 수면", "새근새근 천사처럼 잠든 아기", "💤"),
+        new("방긋방긋 미소",      "방긋방긋 해맑게 웃는 아기 미소", "😊"),
+        new("까르르 폭소",        "까르르 소리 내어 터지는 아기 웃음", "😆"),
+        new("호기심 가득 눈맞춤", "호기심 가득한 눈으로 카메라를 바라보는 눈맞춤", "👀"),
+    };
+
+    /// <summary>🧸 놀이 & 행동 키워드.</summary>
+    public static readonly PromptChip[] Actions =
+    {
+        new("첫 걸음마 도전",     "첫 걸음마에 도전하는 아장아장 발걸음", "👣"),
+        new("이유식 냠냠",        "작은 숟가락으로 이유식을 냠냠 먹는 모습", "🥣"),
+        new("터미타임 고개들기",  "엎드려 터미타임 중 고개를 번쩍 드는 아기", "💪"),
+        new("장난감 만지작",      "작은 손으로 장난감을 만지작거리는 모습", "🧩"),
+        new("비눗방울 톡톡",      "떠다니는 비눗방울을 손끝으로 톡톡 터뜨리는 모습", "🫧"),
+    };
+
+    /// <summary>🎈 소품 & 배경 키워드.</summary>
+    public static readonly PromptChip[] Atmosphere =
+    {
+        new("애착인형 곰돌이",    "품에 꼭 안은 애착인형 곰돌이", "🧸"),
+        new("포근한 아기 침대",   "포근한 하얀 리넨의 아기 침대", "🛏️"),
+        new("따스한 햇살 창가",   "따스한 햇살이 스며드는 창가", "☀️"),
+        new("돌잔치 풍선 & 꽃",   "파스텔 풍선과 꽃으로 꾸민 돌잔치 배경", "🎈"),
+    };
+
+    /// <summary>카메라 모션 원클릭 — 이전 모션 토큰을 빼고 새 모션을 결합(재클릭·범위 밖은 현재 참조 · 0B).</summary>
+    public static string ApplyCameraMotion(string? current, int index) => WanCameraStyleStudio.ApplyExclusive(current, CameraMotions, index);
+
     /// <summary>
     /// 스마트 모디파이어 결합 — 빈 입력은 리터럴 참조, 이미 포함된 모디파이어는 현재 참조를 그대로 반환(0B).
     ///   결합이 필요할 때만 꼬리 공백/쉼표를 span 으로 잘라 <c>string.Create</c> 1회(결과 문자열 자체) — 중간 문자열 0.
@@ -105,6 +145,23 @@ public sealed class BabyStudioSession
     public string ApplyTheme(PromptChip[] themes, int index, string current)
     {
         if ((uint)index >= (uint)themes.Length) return current;
+        MergeGuard();
+        return themes[index].Snippet;
+    }
+
+    /// <summary>
+    /// 키워드 칩 원클릭 — 프롬프트 꼬리에 키워드를 1회 결합(이미 있으면 현재 참조)하고 얼굴 보호 가드를 CAS 결합.
+    ///   범위 밖 인덱스는 현재 유지.
+    /// </summary>
+    public string AppendKeyword(PromptChip[] keywords, int index, string? current)
+    {
+        if ((uint)index >= (uint)keywords.Length) return current ?? "";
+        MergeGuard();
+        return BabyStudioMatrix.AppendModifier(current, keywords[index].Snippet);
+    }
+
+    private void MergeGuard()
+    {
         while (true)
         {
             var seen = Volatile.Read(ref _negative);
@@ -116,6 +173,5 @@ public sealed class BabyStudioSession
                 break;
             }
         }
-        return themes[index].Snippet;
     }
 }

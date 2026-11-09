@@ -755,7 +755,7 @@ public class VisionActionMapperTests
     public void GeminiRecommendation_InjectAndEnhance_Check()
     {
         var picks = GeminiRecommendationMatrix.Picks;
-        Assert.Equal(new[] { "📸", "🎨", "🎞️", "🌌", "📈", "💹", "💻" }, picks.Select(c => c.Icon));
+        Assert.Equal(new[] { "📷", "🎨", "📼" }, picks.Select(c => c.Icon));
         Assert.Equal(picks.Length, picks.Select(c => c.Label).Distinct().Count());
 
         // 픽 주입: 리터럴 동일 참조 교체 · 범위 밖은 현재 유지.
@@ -793,6 +793,99 @@ public class VisionActionMapperTests
         var bytes = GC.GetAllocatedBytesForCurrentThread() - before;
         Assert.Equal(head.Length + 2 + tokens.Length, joined.Length);
         Assert.True(bytes <= 2L * joined.Length + 40, $"강화 1회 할당 {bytes}B — 결과 문자열 외 할당 의심");
+    }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public void Workspace_RightPanel_VisualStyles_InjectCorrectStylingTokens()
+    {
+        var picks = GeminiRecommendationMatrix.Picks;
+        Assert.Equal(new[] { "스튜디오 감성 화보", "픽사풍 3D 감성 애니", "16mm 레트로 홈비디오" }, picks.Select(c => c.Label));
+        Assert.Contains("85mm f/1.4 portrait lens", picks[0].Snippet);
+        Assert.Contains("creamy bokeh", picks[0].Snippet);
+        Assert.Contains("Pixar-style 3D animation", picks[1].Snippet);
+        Assert.Contains("pastel lighting", picks[1].Snippet);
+        Assert.Contains("Kodak 16mm film", picks[2].Snippet);
+        Assert.Contains("VHS home-video", picks[2].Snippet);
+
+        // 빈 입력 → 스타일 리터럴 참조, 기본 문장 뒤 1회 결합.
+        Assert.Same(picks[0].Snippet, GeminiRecommendationMatrix.ApplyStyle("", 0));
+        const string baseP = "창가에서 웃는 아기";
+        var p = GeminiRecommendationMatrix.ApplyStyle(baseP, 0);
+        Assert.Equal(baseP + ", " + picks[0].Snippet, p);
+        Assert.Same(p, GeminiRecommendationMatrix.ApplyStyle(p, 0));          // 재클릭 중복 0
+
+        // 다른 스타일 → 이전 스타일 토큰 교체(단 1개만 유지), 키워드는 보존.
+        p = BabyStudioMatrix.AppendModifier(p, BabyStudioMatrix.Expressions[1].Snippet);
+        p = GeminiRecommendationMatrix.ApplyStyle(p, 1);
+        Assert.DoesNotContain(picks[0].Snippet, p);
+        Assert.Contains(BabyStudioMatrix.Expressions[1].Snippet, p);
+        Assert.EndsWith(picks[1].Snippet, p);
+        Assert.StartsWith(baseP, p);
+        p = GeminiRecommendationMatrix.ApplyStyle(p, 2);
+        Assert.DoesNotContain(picks[1].Snippet, p);
+        Assert.Equal(baseP + ", " + BabyStudioMatrix.Expressions[1].Snippet + ", " + picks[2].Snippet, p);
+        Assert.Equal(2, WanCameraStyleStudio.ActiveIndex(p, picks));
+        Assert.Same(p, GeminiRecommendationMatrix.ApplyStyle(p, -1));
+        Assert.Same(p, GeminiRecommendationMatrix.ApplyStyle(p, picks.Length));
+
+        // 강화 토큰과 공존: 스타일 교체 후에도 품질 토큰 유지.
+        var enh = GeminiRecommendationMatrix.EnhancePromptWithGemini(p);
+        var swapped = GeminiRecommendationMatrix.ApplyStyle(enh, 0);
+        Assert.Contains(GeminiRecommendationMatrix.QualityTokens, swapped);
+        Assert.DoesNotContain(picks[2].Snippet, swapped);
+        Assert.EndsWith(picks[0].Snippet, swapped);
+    }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public void Workspace_BabyCameraMotions_AppliesLowAngleAndCinematicTags()
+    {
+        var cams = BabyStudioMatrix.CameraMotions;
+        Assert.Equal(new[] { "👶", "✨", "🎈", "🧸" }, cams.Select(c => c.Icon));
+        Assert.Contains("low-angle dolly push-in", cams[0].Snippet);
+        Assert.Contains("eye level", cams[0].Snippet);
+        Assert.Contains("cinematic close-up zoom", cams[1].Snippet);
+        Assert.Contains("eyelashes", cams[1].Snippet);
+        Assert.Contains("low-angle 360-degree orbit", cams[2].Snippet);
+        Assert.Contains("handheld", cams[3].Snippet);
+        Assert.Contains("breathing motion", cams[3].Snippet);
+
+        const string baseP = "카펫 위에서 노는 아기";
+        var p = baseP;
+        for (var i = 0; i < cams.Length; i++)
+        {
+            p = BabyStudioMatrix.ApplyCameraMotion(p, i);
+            Assert.Equal(baseP + ", " + cams[i].Snippet, p);                 // 모션은 항상 1개만
+            Assert.Equal(i, WanCameraStyleStudio.ActiveIndex(p, cams));
+            Assert.Same(p, BabyStudioMatrix.ApplyCameraMotion(p, i));
+        }
+        Assert.Same(p, BabyStudioMatrix.ApplyCameraMotion(p, 9));
+
+        // 키워드 칩: 3그룹 꼬리 결합 · 중복 0 · 얼굴 보호 가드 결합.
+        Assert.Equal(4, BabyStudioMatrix.Expressions.Length);
+        Assert.Equal(5, BabyStudioMatrix.Actions.Length);
+        Assert.Equal(4, BabyStudioMatrix.Atmosphere.Length);
+        var all = BabyStudioMatrix.Expressions.Concat(BabyStudioMatrix.Actions).Concat(BabyStudioMatrix.Atmosphere).Select(c => c.Label).ToArray();
+        Assert.Contains("새근새근 천사 수면", all);
+        Assert.Contains("터미타임 고개들기", all);
+        Assert.Contains("돌잔치 풍선 & 꽃", all);
+        foreach (var bad in new[] { "보디가드", "유성구", "취약 웃음", "찌르르", "뼘칭" })
+            Assert.DoesNotContain(all, l => l.Contains(bad, StringComparison.Ordinal));
+
+        var s = new BabyStudioSession();
+        var k = s.AppendKeyword(BabyStudioMatrix.Actions, 0, p);
+        Assert.Equal(p + ", " + BabyStudioMatrix.Actions[0].Snippet, k);
+        Assert.Same(k, s.AppendKeyword(BabyStudioMatrix.Actions, 0, k));
+        Assert.True(s.GuardActive);
+        Assert.Equal(1, s.GuardHits);
+        Assert.Same(k, s.AppendKeyword(BabyStudioMatrix.Atmosphere, -1, k));
+
+        // 키워드 뒤에 모션 교체해도 키워드 보존.
+        var k2 = BabyStudioMatrix.ApplyCameraMotion(k, 0);
+        Assert.Contains(BabyStudioMatrix.Actions[0].Snippet, k2);
+        Assert.DoesNotContain(cams[3].Snippet, k2);
+        Assert.EndsWith(cams[0].Snippet, k2);
     }
 
     // ── v15.4.0 라이브 비디오 캔버스 & Wan 2.1 튜너 ──

@@ -607,11 +607,13 @@
         @* ── ③ 퀵 위젯 레일 ── *@
         <aside class="ws-rail">
             <div class="ws-w">
-                <div class="ws-w-h">⚡ 프롬프트·모션 템플릿</div>
+                <div class="ws-w-h">🎥 아기 카메라 모션</div>
                 <div class="ws-chips">
-                    @foreach (var c in RailChips)
+                    @{ var babyCamOn = WanCameraStyleStudio.ActiveIndex(_prompt, BabyStudioMatrix.CameraMotions); }
+                    @for (var i = 0; i < _babyCam.Length; i++)
                     {
-                        <button class="ws-chip" @onclick="() => AddChip(c.Snippet)" disabled="@State.IsBusy" title="@c.Snippet" @key="c.Snippet">
+                        var c = BabyStudioMatrix.CameraMotions[i];
+                        <button class="ws-chip @(babyCamOn == i ? "on" : null)" @onclick="_babyCam[i]" disabled="@State.IsBusy" title="@c.Snippet" @key="c.Snippet">
                             <span>@c.Icon</span> @c.Label
                         </button>
                     }
@@ -619,7 +621,7 @@
                 <button class="ws-more" @onclick='() => Nav.NavigateTo("camera-studio?tab=motion")'>더 많은 모션·카메라 →</button>
 
                 <div class="ws-baby">
-                    <div class="ws-baby-h">👶 아기 스튜디오 울티메이트 매트릭스</div>
+                    <div class="ws-baby-h">👶 아기 스튜디오 얼티메이트 매트릭스</div>
                     <div class="ws-baby-tabs">
                         @for (var t = 0; t < BabyTabNames.Length; t++)
                         {
@@ -631,7 +633,7 @@
                         @for (var i = 0; i < acts.Length; i++)
                         {
                             var b = cat[i];
-                            <button class="ws-chip ws-chip-baby @(_babyTab == 2 ? "mod" : null)" @onclick="acts[i]" disabled="@State.IsBusy" title="@b.Snippet" @key="b.Label">
+                            <button class="ws-chip ws-chip-baby" @onclick="acts[i]" disabled="@State.IsBusy" title="@b.Snippet" @key="b.Label">
                                 <span>@b.Icon</span> @b.Label
                             </button>
                         }
@@ -703,12 +705,13 @@
                 {
                     <div class="ws-gem-ko" title="@ko">🇰🇷 원문: @ko</div>
                 }
-                <div class="ws-gem-h">🌟 제미나이 픽 프리셋</div>
+                <div class="ws-gem-h">🎨 비주얼 스타일</div>
                 <div class="ws-chips">
+                    @{ var gemStyOn = WanCameraStyleStudio.ActiveIndex(_prompt, GeminiRecommendationMatrix.Picks); }
                     @for (var i = 0; i < _geminiPick.Length; i++)
                     {
                         var g = GeminiRecommendationMatrix.Picks[i];
-                        <button class="ws-chip ws-chip-gem" @onclick="_geminiPick[i]" disabled="@State.IsBusy" title="@g.Snippet" @key="g.Label">
+                        <button class="ws-chip ws-chip-gem @(gemStyOn == i ? "on" : null)" @onclick="_geminiPick[i]" disabled="@State.IsBusy" title="@g.Snippet" @key="g.Label">
                             <span>@g.Icon</span> @g.Label
                         </button>
                     }
@@ -1290,20 +1293,19 @@
 
     // ── 우측 레일(퀵 위젯) ──
     private IReadOnlyList<MediaItem> _recent = Array.Empty<MediaItem>();
-    private static PromptChip[] RailChips => PromptPresets.Camera;
     private string FreeSpace => MediaLibraryService.FormatBytes(Library.FreeSpaceBytes());
-    private void AddChip(string snippet)
-        => _prompt = string.IsNullOrWhiteSpace(_prompt) ? snippet : _prompt.TrimEnd().TrimEnd(',') + ", " + snippet;
 
     // v15.2.0/v15.2.1 아기 스튜디오 매트릭스: 핸들러 델리게이트를 인스턴스당 1회만 만들어 렌더마다 클로저 생성 없음.
     //   테마 클릭 → 정적 리터럴 참조 대입(0B) + 얼굴 보호 네거티브 CAS 결합, 모디파이어 클릭 → span 결합(결과 문자열 1회).
-    private static readonly string[] BabyTabNames = { "🍼 감성 성장", "🧚 몽환 동화", "🎥 모디파이어" };
+    //   Step3: 표정·행동·소품 키워드 칩은 모두 꼬리 결합(중복 0) + 얼굴 보호 가드, 카메라 모션은 그룹 배타.
+    private static readonly string[] BabyTabNames = { "😊 표정 & 감정", "🧸 놀이 & 행동", "🎈 소품 & 배경" };
     private static PromptChip[] BabyCatalog(int tab) => tab switch
     {
-        0 => BabyStudioMatrix.Growth,
-        1 => BabyStudioMatrix.Fantasy,
-        _ => BabyStudioMatrix.Modifiers,
+        0 => BabyStudioMatrix.Expressions,
+        1 => BabyStudioMatrix.Actions,
+        _ => BabyStudioMatrix.Atmosphere,
     };
+    private Action[] _babyCam = Array.Empty<Action>();
     private readonly BabyStudioSession _baby = new();
     private int _babyTab;
     private Action[][] _babyActs = { Array.Empty<Action>(), Array.Empty<Action>(), Array.Empty<Action>() };
@@ -1321,12 +1323,13 @@
             for (var i = 0; i < arr.Length; i++)
             {
                 var idx = i;
-                arr[i] = tab == 2
-                    ? () => _prompt = BabyStudioMatrix.AppendModifier(_prompt, idx)
-                    : () => { _prompt = _baby.ApplyTheme(src, idx, _prompt); _canvas.FaceSharpen = true; };
+                arr[i] = () => { _prompt = _baby.AppendKeyword(src, idx, _prompt); _canvas.FaceSharpen = true; };
             }
             acts[t] = arr;
         }
+        var cam = new Action[BabyStudioMatrix.CameraMotions.Length];
+        for (var i = 0; i < cam.Length; i++) { var idx = i; cam[i] = () => _prompt = BabyStudioMatrix.ApplyCameraMotion(_prompt, idx); }
+        _babyCam = cam;
         _babyTabSel = tabs;
         _babyActs = acts;
     }
@@ -1526,7 +1529,7 @@
         for (var i = 0; i < arr.Length; i++)
         {
             var idx = i;
-            arr[i] = () => _prompt = GeminiRecommendationMatrix.InjectPick(idx, _prompt);
+            arr[i] = () => _prompt = GeminiRecommendationMatrix.ApplyStyle(_prompt, idx);
         }
         _geminiPick = arr;
     }
