@@ -1,0 +1,98 @@
+@using PromptFlowStudio.Services.Pluto
+
+@* [PromptFlow Studio] 🪐 플루토 코파일럿 드로어 — 일상 메모 → 15초 3막 시나리오(훅 · 막별 프롬프트 · 카메라 · BGM) → 🎬 스튜디오 적용.
+   모바일 링크 대상 서브컴포넌트 — @inject 금지(코파일럿은 파라미터 주입). *@
+
+@if (Open)
+{
+    <div class="pcd-dim" @onclick="CloseAsync"></div>
+    <aside class="pcd" role="dialog" aria-label="플루토 시나리오 코파일럿" data-pluto-copilot="1">
+        <div class="pcd-h">
+            <span>🪐 플루토에게 시나리오 요청</span>
+            <button class="pcd-x" title="닫기" @onclick="CloseAsync">✕</button>
+        </div>
+        <div class="pcd-body">
+            <div class="pcd-lbl">오늘 있었던 일을 짧게 적어주세요</div>
+            <textarea class="pcd-in" rows="3" maxlength="300" placeholder="예) 오늘 아기가 거실에서 처음으로 뒤집기 성공하고 방긋 웃었어"
+                      @bind="_memo" @bind:event="oninput"></textarea>
+            <button class="pcd-btn go" disabled="@(Copilot is null || string.IsNullOrWhiteSpace(_memo))" @onclick="Generate">✨ 시나리오 생성</button>
+            @if (_error is { Length: > 0 } err)
+            {
+                <div class="pcd-err">@err</div>
+            }
+            @if (_script is { } sc)
+            {
+                <div class="pcd-card">
+                    <div class="pcd-hook">@sc.HookTitle</div>
+                    <div class="pcd-ms">🏷 @sc.MilestoneKo</div>
+                    @foreach (var act in sc.Acts)
+                    {
+                        <div class="pcd-act">
+                            <div class="pcd-act-t">@act.LabelKo · @(act.StartSec.ToString(System.Globalization.CultureInfo.InvariantCulture))~@(act.EndSec.ToString(System.Globalization.CultureInfo.InvariantCulture))초</div>
+                            <div class="pcd-act-p">@act.PromptEn</div>
+                        </div>
+                    }
+                    <div class="pcd-meta"><span>🎥 @sc.CameraMotion</span><span>🎵 @sc.BgmLabel</span></div>
+                    <button class="pcd-btn go" @onclick="ApplyAsync">🎬 스튜디오에 바로 적용</button>
+                </div>
+            }
+        </div>
+    </aside>
+}
+
+<style>
+    .pcd-dim { position: fixed; inset: 0; background: rgba(2,6,23,.45); z-index: 880; }
+    .pcd { position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 94vw); z-index: 881; display: flex; flex-direction: column;
+           background: var(--card,#111a2e); color: var(--ink,#e6eefc); border-left: 1px solid rgba(167,139,250,.35); box-shadow: -18px 0 48px rgba(0,0,0,.4);
+           animation: pcd-in .22s ease-out; }
+    @@keyframes pcd-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
+    .pcd-h { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; font-weight: 900; border-bottom: 1px solid rgba(148,163,184,.16); }
+    .pcd-x { background: transparent; border: 0; color: inherit; font-size: 16px; cursor: pointer; }
+    .pcd-body { padding: 14px 18px; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
+    .pcd-lbl { font-size: 12px; font-weight: 700; opacity: .75; }
+    .pcd-in { width: 100%; border-radius: 10px; border: 1px solid rgba(148,163,184,.3); background: transparent; color: inherit; padding: 10px; font: inherit; resize: vertical; }
+    .pcd-btn { padding: 9px 14px; border-radius: 10px; border: 1px solid rgba(148,163,184,.3); background: transparent; color: inherit; font-weight: 800; cursor: pointer; }
+    .pcd-btn.go { border: 0; color: #fff; background: linear-gradient(135deg,#8b7bff,#6d5efc); }
+    .pcd-btn:disabled { opacity: .5; cursor: default; }
+    .pcd-err { color: #f87171; font-size: 12px; }
+    .pcd-card { border: 1px solid rgba(167,139,250,.35); border-radius: 14px; padding: 14px; display: flex; flex-direction: column; gap: 8px;
+                background: linear-gradient(160deg, rgba(167,139,250,.12), rgba(244,114,182,.08)); }
+    .pcd-hook { font-size: 18px; font-weight: 900; }
+    .pcd-ms { font-size: 12px; opacity: .7; }
+    .pcd-act { border-left: 3px solid #a78bfa; padding-left: 10px; }
+    .pcd-act-t { font-size: 12px; font-weight: 800; }
+    .pcd-act-p { font-size: 12.5px; opacity: .85; }
+    .pcd-meta { display: flex; flex-direction: column; gap: 4px; font-size: 12px; opacity: .8; }
+</style>
+
+@code {
+    [Parameter] public bool Open { get; set; }
+    [Parameter] public PlutoCopilot? Copilot { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<PlutoCopilotScript> OnApply { get; set; }
+
+    private string _memo = "";
+    private PlutoCopilotScript? _script;
+    private string? _error;
+
+    private void Generate()
+    {
+        _error = null;
+        if (Copilot is null || string.IsNullOrWhiteSpace(_memo)) return;
+        try { _script = Copilot.Draft(_memo); }
+        catch (Exception ex) { Program.Log("PlutoCopilot.Draft", ex); _script = null; _error = "⚠ 시나리오 생성 실패 — 메모를 바꿔 다시 시도해 주세요"; }
+    }
+
+    private async Task ApplyAsync()
+    {
+        if (_script is not { } sc) return;
+        try { await OnApply.InvokeAsync(sc); }
+        catch (Exception ex) { Program.Log("PlutoCopilot.Apply", ex); _error = "⚠ 적용 실패"; }
+    }
+
+    private async Task CloseAsync()
+    {
+        try { await OnClose.InvokeAsync(); }
+        catch (Exception ex) { Program.Log("PlutoCopilot.Close", ex); }
+    }
+}

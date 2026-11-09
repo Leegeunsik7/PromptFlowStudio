@@ -182,6 +182,27 @@
                     <span class="pm-badge @(vm.InstagramEnabled ? "ok" : "mock")">@(vm.InstagramEnabled ? "연결됨" : "모의")</span></label>
             </div>
 
+            @if (vm.ToYouTube || vm.ToInstagram)
+            {
+                <div class="pm-pluto" data-pluto-social="1">
+                    <div class="pm-row">
+                        <button class="pm-btn pm-pluto-btn" @onclick="GeneratePlutoSocial" disabled="@vm.IsBusy">🪐 플루토 소셜 카피 작성</button>
+                        @if (vm.PlutoSocialDraft is not null)
+                        {
+                            <button class="pm-btn" @onclick="CopyPlutoSocial">📋 전체 본문 + 해시태그 복사</button>
+                        }
+                    </div>
+                    @if (vm.PlutoSocialMessage is { Length: > 0 } plMsg)
+                    {
+                        <div class="pm-pluto-msg">@plMsg</div>
+                    }
+                    @if (vm.PlutoSocialDraft is { } post)
+                    {
+                        <pre class="pm-pluto-pre">@post.FullText</pre>
+                    }
+                </div>
+            }
+
             <div class="pm-lbl">제목 (훅 기반 자동 · @(vm.Title.Length)/100)</div>
             <input class="pm-in" @bind="vm.Title" @bind:event="oninput" maxlength="100" disabled="@vm.IsBusy" />
 
@@ -247,6 +268,10 @@
 }
 
 <style>
+    .pm-pluto{margin-top:6px;padding:10px;border-radius:12px;border:1px solid rgba(167,139,250,.35);background:linear-gradient(90deg,rgba(167,139,250,.12),rgba(244,114,182,.10))}
+    .pm-pluto-btn{background:linear-gradient(135deg,#8b7bff,#6d5efc);color:#fff;border:0}
+    .pm-pluto-msg{font-size:12px;opacity:.8;margin-top:6px}
+    .pm-pluto-pre{white-space:pre-wrap;font-family:inherit;font-size:12.5px;margin:8px 0 0;max-height:220px;overflow:auto}
     .pm-dim{position:fixed;inset:0;background:rgba(2,6,23,.62);z-index:900}
     .pm{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(640px,94vw);max-height:90vh;display:flex;flex-direction:column;z-index:901;
         background:var(--card,#111a2e);border:1px solid var(--line,rgba(148,163,184,.2));border-radius:16px;color:var(--ink,#e6eefc);box-shadow:0 24px 60px rgba(0,0,0,.45)}
@@ -320,6 +345,18 @@
         if (Vm is null) return;
         try { await Vm.GenerateSeoAsync(); }
         catch (Exception ex) { Program.Log("PublishModal.Seo", ex); }
+    }
+
+    private void GeneratePlutoSocial()
+    {
+        try { Vm?.GeneratePlutoSocialDraft(); }
+        catch (Exception ex) { Program.Log("PublishModal.PlutoSocial", ex); }
+    }
+
+    private void CopyPlutoSocial()
+    {
+        try { Vm?.CopyPlutoSocialDraft(); }
+        catch (Exception ex) { Program.Log("PublishModal.PlutoCopy", ex); }
     }
 
     private async Task ExportMultiPackage()

@@ -73,12 +73,38 @@ public sealed class PlutoTrendEngine
     private static readonly string[] IgBase = { "#Reels", "#InstaReels" };
 
     private readonly PlutoLearningService? _learning;
+    private readonly PlutoGenerativeEngine? _generator;
     private readonly PlutoTrend[] _catalog;
 
-    public PlutoTrendEngine(PlutoLearningService? learning = null)
+    public PlutoTrendEngine(PlutoLearningService? learning = null, PlutoGenerativeEngine? generator = null)
     {
         _learning = learning;
+        _generator = generator;
         _catalog = BuildCatalog();
+    }
+
+    /// <summary>✨ 생성형 엔진 결선 여부(미주입 시 고정 카탈로그만).</summary>
+    public bool CanDiscover => _generator is not null;
+
+    /// <summary>
+    /// ✨ 새로운 트렌드 발굴 — 생성형 엔진으로 4건 합성 후 학습 순위 적용. 생성기 부재/실패 시 고정 카탈로그로 1초 내 폴백([부분 구제]).
+    /// </summary>
+    public async Task<IReadOnlyList<PlutoTrend>> DiscoverFreshTrendsAsync(StudioThemeCategory category, int count = 4, CancellationToken ct = default)
+    {
+        if (_generator is null) return await GetCuratedTrendsAsync(category, ct).ConfigureAwait(false);
+        try
+        {
+            var fresh = await _generator.SynthesizeAsync(category, count, null, ct).ConfigureAwait(false);
+            if (_learning is null) return fresh;
+            await _learning.EnsureLoadedAsync(ct).ConfigureAwait(false);
+            return _learning.Rank(fresh);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine("[Pluto] discover fallback: " + ex.Message);
+            return await GetCuratedTrendsAsync(category, ct).ConfigureAwait(false);
+        }
     }
 
     public static IReadOnlyList<StudioThemeCategory> Categories { get; } = new[]
@@ -112,7 +138,7 @@ public sealed class PlutoTrendEngine
     {
         if (string.IsNullOrEmpty(id)) return null;
         foreach (var t in _catalog) if (string.Equals(t.Id, id, StringComparison.Ordinal)) return t;
-        return null;
+        return _generator?.FindRecent(id);
     }
 
     /// <summary>카테고리별 3~4건 — 학습 서비스가 있으면 동적 순위.</summary>

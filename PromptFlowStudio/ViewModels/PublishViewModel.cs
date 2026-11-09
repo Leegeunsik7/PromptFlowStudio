@@ -32,6 +32,7 @@ public sealed class PublishViewModel : IDisposable
     private readonly PromptFlowStudio.Services.Ui.UserPreferenceService? _prefs;
     private readonly PromptFlowStudio.Services.Platform.IClipboardService? _clipboard;
     private readonly PromptFlowStudio.Services.Pluto.PlutoLearningService? _learning;
+    private readonly PromptFlowStudio.Services.Pluto.PlutoPreferenceLexicon? _lexicon;
     private string? _activePlutoTrendId;
     private string? _publishPath;   // BGM 합성본(없으면 원본)
     private CancellationTokenSource? _cts;
@@ -43,8 +44,10 @@ public sealed class PublishViewModel : IDisposable
         PromptFlowStudio.Services.Chart.ChartStillGeneratorService? quotes = null,
         PromptFlowStudio.Services.Ui.UserPreferenceService? prefs = null,
         PromptFlowStudio.Services.Platform.IClipboardService? clipboard = null,
-        PromptFlowStudio.Services.Pluto.PlutoLearningService? learning = null)
+        PromptFlowStudio.Services.Pluto.PlutoLearningService? learning = null,
+        PromptFlowStudio.Services.Pluto.PlutoPreferenceLexicon? lexicon = null)
     {
+        _lexicon = lexicon;
         _clipboard = clipboard;
         _learning = learning;
         _audioMux = audioMux;
@@ -264,6 +267,8 @@ public sealed class PublishViewModel : IDisposable
             Caption = cap.IndexOf(lead, StringComparison.OrdinalIgnoreCase) >= 0 ? cap : (cap.Length == 0 ? "" : cap + " ") + string.Join(" ", p.Hashtags);
         }
         PresetMessage = "📱 " + p.Label + " 적용 — " + p.SpecSummary;
+        try { ComposePlutoSocial(); }   // 📣 Shorts/Reels 프리셋 → 플루토 게시글 초안 자동 작성(예외 격리)
+        catch (Exception ex) { Program.Log("Publish.PlutoSocialAuto", ex); }
         Notify();
     }
 
@@ -577,6 +582,8 @@ public sealed class PublishViewModel : IDisposable
         MultiPackageMessage = null;
         StockSuiteExported = StockSuiteRestartPending = false;
         BgmStatus = null;
+        PlutoSocialDraft = null;
+        PlutoSocialMessage = null;
         SrtPath = srtPath is { Length: > 0 } && File.Exists(srtPath) ? srtPath : YouTubeShortsPublisher.ResolveSrtPath(VideoPath);
         var meta = YouTubeShortsPublisher.BuildMetadata(hook, beats);
         Title = meta.Title;
@@ -702,9 +709,13 @@ public sealed class PublishViewModel : IDisposable
         set => Volatile.Write(ref _activePlutoTrendId, string.IsNullOrWhiteSpace(value) ? null : value.Trim());
     }
 
-    /// <summary>🪐 내보내기 성공 → 활성 트렌드에 ExportCompleted 기록(원자적 소거 · 중복 보상 차단 · 예외 격리). 기록 시 true.</summary>
+    /// <summary>
+    /// 🪐 내보내기 성공 → 🧬 프롬프트 DNA 강화(트렌드/수동 프롬프트 공통) + 활성 트렌드에 ExportCompleted 기록
+    /// (원자적 소거 · 중복 보상 차단 · 예외 격리). 트렌드 보상 기록 시 true.
+    /// </summary>
     public async Task<bool> RecordPlutoExportAsync(CancellationToken ct = default)
     {
+        await ReinforcePlutoDnaAsync(ct).ConfigureAwait(false);
         if (_learning is null) return false;
         var id = Interlocked.Exchange(ref _activePlutoTrendId, null);
         if (id is null) return false;
@@ -715,6 +726,73 @@ public sealed class PublishViewModel : IDisposable
         }
         catch (OperationCanceledException) { Interlocked.CompareExchange(ref _activePlutoTrendId, id, null); return false; }
         catch (Exception ex) { Program.Log("Publish.PlutoExport", ex); return false; }
+    }
+
+    /// <summary>🧬 마지막 DNA 강화 토큰 수(진단·HUD).</summary>
+    public int LastDnaTokenCount { get; private set; }
+
+    /// <summary>🧬 발행 프롬프트(<see cref="SourcePrompt"/>) → 조명·카메라·분위기 토큰 강화(같은 프롬프트 연속 중복 보상 차단 · 예외 격리).</summary>
+    public async Task<int> ReinforcePlutoDnaAsync(CancellationToken ct = default)
+    {
+        if (_lexicon is null) return 0;
+        var prompt = SourcePrompt;
+        if (string.IsNullOrWhiteSpace(prompt)) return 0;
+        if (Interlocked.Exchange(ref _lastDnaPrompt, prompt) is { } prev && string.Equals(prev, prompt, StringComparison.Ordinal)) return 0;
+        try
+        {
+            var tokens = await _lexicon.ReinforceAsync(prompt, PromptFlowStudio.Services.Pluto.PlutoPreferenceLexicon.ExportReward, ct).ConfigureAwait(false);
+            LastDnaTokenCount = tokens.Count;
+            return tokens.Count;
+        }
+        catch (OperationCanceledException) { Interlocked.CompareExchange(ref _lastDnaPrompt, null, prompt); return 0; }
+        catch (Exception ex) { Program.Log("Publish.PlutoDna", ex); return 0; }
+    }
+    private string? _lastDnaPrompt;
+
+    // ── 📣 Pluto 소셜 카피라이터 ──
+    /// <summary>📣 마지막 생성 소셜 게시글 초안(없으면 null).</summary>
+    public PromptFlowStudio.Services.Pluto.PlutoSocialPost? PlutoSocialDraft { get; private set; }
+    public string? PlutoSocialMessage { get; private set; }
+
+    /// <summary>📣 현재 채널(Shorts/Reels) · 제목 · 프롬프트 → 감성 본문 + 10~15 해시태그 초안 생성. 채널 미선택 시 null.</summary>
+    public PromptFlowStudio.Services.Pluto.PlutoSocialPost? GeneratePlutoSocialDraft()
+    {
+        var p = (ToYouTube ? PromptFlowStudio.Services.Pluto.SocialPlatform.YouTubeShorts : PromptFlowStudio.Services.Pluto.SocialPlatform.None)
+              | (ToInstagram ? PromptFlowStudio.Services.Pluto.SocialPlatform.InstagramReels : PromptFlowStudio.Services.Pluto.SocialPlatform.None);
+        if (p == PromptFlowStudio.Services.Pluto.SocialPlatform.None)
+        {
+            PlutoSocialDraft = null;
+            PlutoSocialMessage = "⚠ YouTube Shorts 또는 Instagram Reels 를 선택하세요";
+            Notify();
+            return null;
+        }
+        ComposePlutoSocial(p);
+        Notify();
+        return PlutoSocialDraft;
+    }
+
+    private void ComposePlutoSocial(PromptFlowStudio.Services.Pluto.SocialPlatform p = PromptFlowStudio.Services.Pluto.SocialPlatform.None)
+    {
+        if (p == PromptFlowStudio.Services.Pluto.SocialPlatform.None)
+            p = (ToYouTube ? PromptFlowStudio.Services.Pluto.SocialPlatform.YouTubeShorts : PromptFlowStudio.Services.Pluto.SocialPlatform.None)
+              | (ToInstagram ? PromptFlowStudio.Services.Pluto.SocialPlatform.InstagramReels : PromptFlowStudio.Services.Pluto.SocialPlatform.None);
+        var src = string.IsNullOrWhiteSpace(SourcePrompt) ? (ProjectName ?? "") : SourcePrompt;
+        var draft = PromptFlowStudio.Services.Pluto.PlutoSocialCopywriter.Compose(Title, src, p);
+        PlutoSocialDraft = draft;
+        PlutoSocialMessage = "🪐 플루토가 게시글 초안을 작성했어요 (해시태그 " + draft.Hashtags.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + "개)";
+    }
+
+    /// <summary>📋 전체 본문 + 해시태그 클립보드 복사(클립보드 미주입/실패 시 false).</summary>
+    public bool CopyPlutoSocialDraft()
+    {
+        var d = PlutoSocialDraft;
+        if (d is null || _clipboard is null) return false;
+        bool ok;
+        try { ok = _clipboard.SetText(d.FullText); }
+        catch (Exception ex) { Program.Log("Publish.PlutoCopy", ex); ok = false; }
+        PlutoSocialMessage = ok ? "📋 전체 본문 + 해시태그를 복사했어요" : "⚠ 복사 실패 — 다시 시도해 주세요";
+        Notify();
+        return ok;
     }
 
     /// <summary>🚀 StockSuite 실행 — 이미 실행 중이면 <see cref="StockSuiteRestartPending"/> 로 재실행 확인을 요구.</summary>

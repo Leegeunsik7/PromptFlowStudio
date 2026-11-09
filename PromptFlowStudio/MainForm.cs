@@ -70,6 +70,9 @@ public sealed class MainForm : Form
         services.AddSingleton<GeminiClient>();                                      // Gemini 멀티모달 REST 공용 클라이언트(텍스트+이미지/오디오/비디오 인라인 · 3대 고급 서비스 공유)
         services.AddSingleton<PromptFlowStudio.Services.Prompt.PromptSynthesizerService>();   // 1번 워크플로우 프롬프트 합성기(Subject 우선 · 800자 예산 · 네거티브 중복 제거)
         services.AddSingleton(_ => new PromptFlowStudio.Services.Pluto.PlutoLearningService());   // 🪐 플루토 자가 학습(pluto_trend_memory.json)
+        services.AddSingleton(_ => new PromptFlowStudio.Services.Pluto.PlutoPreferenceLexicon());   // 🧬 플루토 프롬프트 DNA(pluto_dna_memory.json)
+        services.AddSingleton(sp => new PromptFlowStudio.Services.Pluto.PlutoGenerativeEngine(sp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoPreferenceLexicon)) as PromptFlowStudio.Services.Pluto.PlutoPreferenceLexicon));   // ✨ 플루토 생성형 트렌드
+        services.AddSingleton(sp => new PromptFlowStudio.Services.Pluto.PlutoCopilot(sp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoPreferenceLexicon)) as PromptFlowStudio.Services.Pluto.PlutoPreferenceLexicon));   // 🪐 플루토 시나리오 코파일럿
         services.AddSingleton<PromptFlowStudio.Services.Pluto.PlutoTrendEngine>();             // 🪐 플루토 트렌드 큐레이션(4대 테마)
         services.AddSingleton<PromptFlowStudio.Services.Prompt.PromptInspirationService>();   // 💡 스토리 레시피 & 인스피레이션 허브(장르 프리셋 · 칩 조합기)
         services.AddSingleton<PromptFlowStudio.Services.Render.MediaProbeService>(sp => new PromptFlowStudio.Services.Render.MediaProbeService(() => sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.FfmpegBinaryPath is { Length: > 0 } fp && System.IO.File.Exists(fp) ? fp : PromptFlowStudio.Services.Render.FfmpegLocator.Locate().Path, sp.GetRequiredService<PromptFlowStudio.Services.Engines.IProcessRunner>()));   // ℹ️ 미디어 규격 인스펙터(ffprobe → ffmpeg 배너 → 헤더 폴백)

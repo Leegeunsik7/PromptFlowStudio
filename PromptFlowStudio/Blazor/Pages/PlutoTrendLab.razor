@@ -29,6 +29,11 @@
         }
     </div>
 
+    <div class="pl-discover">
+        <button class="pl-btn go" data-pluto-discover="1" disabled="@(_loading || !Engine.CanDiscover)" @onclick="DiscoverAsync">✨ 플루토에게 새로운 트렌드 발굴 요청</button>
+        @if (_fresh) { <span class="pl-fresh-note">🧬 계절·시간대 + 학습된 프롬프트 DNA 로 방금 합성한 카드예요</span> }
+    </div>
+
     @if (_loading)
     {
         <div class="pl-empty">🪐 플루토가 트렌드를 고르는 중…</div>
@@ -47,6 +52,7 @@
                     <div class="pl-tags">
                         @if ((t.Platforms & SocialPlatform.YouTubeShorts) != 0) { <span class="pl-tag yt">🔴 YouTube Shorts</span> }
                         @if ((t.Platforms & SocialPlatform.InstagramReels) != 0) { <span class="pl-tag ig">🟣 Instagram Reels</span> }
+                        @if (t.Id.StartsWith(PlutoGenerativeEngine.IdPrefix, StringComparison.Ordinal)) { <span class="pl-tag gen">✨ 플루토 생성</span> }
                         <span class="pl-w" title="플루토 학습 가중치">⚖ @(Learning.GetWeight(t.Id).ToString("+0.00;-0.00;0.00", System.Globalization.CultureInfo.InvariantCulture))</span>
                     </div>
                     <div class="pl-hook">@t.ViralHook</div>
@@ -84,6 +90,9 @@
     .pl-tag { font-size: 11px; font-weight: 800; padding: 3px 8px; border-radius: 6px; }
     .pl-tag.yt { background: rgba(239,68,68,.15); color: #ef4444; }
     .pl-tag.ig { background: rgba(168,85,247,.15); color: #a855f7; }
+    .pl-tag.gen { background: rgba(244,114,182,.15); color: #f472b6; }
+    .pl-discover { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+    .pl-fresh-note { font-size: 12px; opacity: .75; }
     .pl-w { margin-left: auto; font-size: 11px; opacity: .6; }
     .pl-hook { font-size: 17px; font-weight: 900; }
     .pl-name { font-size: 12px; opacity: .7; }
@@ -102,6 +111,7 @@
     private StudioThemeCategory _category = StudioThemeCategory.BabyParenting;
     private IReadOnlyList<PlutoTrend> _trends = Array.Empty<PlutoTrend>();
     private bool _loading = true;
+    private bool _fresh;
     private string? _toast;
     private System.Threading.Timer? _toastTimer;
     private readonly CancellationTokenSource _cts = new();
@@ -118,10 +128,23 @@
     private async Task LoadAsync()
     {
         _loading = true;
+        _fresh = false;
         try { _trends = await Engine.GetCuratedTrendsAsync(_category, _cts.Token); }
         catch (OperationCanceledException) { }
         catch (Exception ex) { Program.Log("PlutoTrendLab.Load", ex); _trends = Array.Empty<PlutoTrend>(); }
         finally { _loading = false; }
+    }
+
+    /// <summary>✨ 생성형 엔진으로 새 카드 4건 합성(실패 시 엔진이 고정 카탈로그로 폴백).</summary>
+    private async Task DiscoverAsync()
+    {
+        if (_loading) return;
+        _loading = true;
+        try { _trends = await Engine.DiscoverFreshTrendsAsync(_category, 4, _cts.Token); _fresh = true; }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("PlutoTrendLab.Discover", ex); }
+        finally { _loading = false; }
+        if (_fresh) Toast("✨ 플루토가 새로운 트렌드 " + _trends.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + "개를 발굴했어요");
     }
 
     private async Task SwitchAsync(StudioThemeCategory c)

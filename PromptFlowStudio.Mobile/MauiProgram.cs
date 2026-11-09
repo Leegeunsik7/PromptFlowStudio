@@ -405,6 +405,9 @@ public static class MauiProgram
         builder.Services.AddSingleton<PromptFlowStudio.Services.Storyboard.SocialMetadataAiGenerator>(); // v16.15.0 (Gemini/오프라인 SEO 미등록 시 로컬 템플릿)
         builder.Services.AddSingleton<PromptFlowStudio.Services.Prompt.PromptSynthesizerService>();   // 1번 워크플로우 프롬프트 합성기
         builder.Services.AddSingleton(_ => new PromptFlowStudio.Services.Pluto.PlutoLearningService());   // 🪐 플루토 자가 학습
+        builder.Services.AddSingleton(_ => new PromptFlowStudio.Services.Pluto.PlutoPreferenceLexicon());   // 🧬 플루토 프롬프트 DNA(pluto_dna_memory.json)
+        builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.Pluto.PlutoGenerativeEngine(sp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoPreferenceLexicon)) as PromptFlowStudio.Services.Pluto.PlutoPreferenceLexicon));   // ✨ 플루토 생성형 트렌드
+        builder.Services.AddSingleton(sp => new PromptFlowStudio.Services.Pluto.PlutoCopilot(sp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoPreferenceLexicon)) as PromptFlowStudio.Services.Pluto.PlutoPreferenceLexicon));   // 🪐 플루토 시나리오 코파일럿
         builder.Services.AddSingleton<PromptFlowStudio.Services.Pluto.PlutoTrendEngine>();             // 🪐 플루토 트렌드 큐레이션
         builder.Services.AddSingleton<PromptFlowStudio.Services.Prompt.PromptInspirationService>();   // 💡 스토리 레시피 & 인스피레이션 허브
         builder.Services.AddSingleton<PromptFlowStudio.Services.Render.MediaProbeService>(sp => new PromptFlowStudio.Services.Render.MediaProbeService(() => sp.GetService<PromptFlowStudio.Services.Ui.UserPreferenceService>()?.FfmpegBinaryPath is { Length: > 0 } fp && System.IO.File.Exists(fp) ? fp : PromptFlowStudio.Services.Render.FfmpegLocator.Locate().Path, sp.GetRequiredService<PromptFlowStudio.Services.Engines.IProcessRunner>()));   // ℹ️ 미디어 규격 인스펙터(ffprobe → ffmpeg 배너 → 헤더 폴백)
