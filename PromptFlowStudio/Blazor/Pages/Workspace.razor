@@ -88,6 +88,13 @@
             else if (Journal.Count > 0) { <button class="ws-recover ws-jbadge" @onclick="OpenJournal" title="클릭 → 저널 인스펙터(수동 회수·재시도·삭제)">[🔄 미완료 클라우드 작업: @(Journal.Count.ToString(CultureInfo.InvariantCulture))건]</button> }
             @if (_retryMsg is not null) { <span class="ws-retry" role="status">@_retryMsg</span> }
         </div>
+        @* 🎞 실시간 모션 프리뷰 — FFmpeg 없이 캔버스 60fps Ken Burns + Web Audio 동기 + KO/EN 자막(궤적/자막/BGM 변경은 재생 유지 핫스왑) *@
+        @if (_motionImage is not null)
+        {
+            <div class="ws-motion-preview" data-motion-preview="1">
+                <PlutoMotionPreviewer Js="JS" Trajectory="_motionPath" Subtitles="_motionSubs" ImageUrl="@_motionImageUrl" BgmUrl="@(_bgmOn ? _motionBgmUrl : null)" BgmVolume="MotionPreviewBgmVolume" />
+            </div>
+        }
         @if (_jOpen)
         {
             <div class="ws-jmodal-bg" @onclick="CloseJournal">
@@ -997,6 +1004,7 @@
     .ws-vstory.busy { opacity: .55; }
     .ws-motion-spin { display: inline-block; width: 12px; height: 12px; border: 2px solid color-mix(in srgb, #f9a8d4 30%, transparent); border-top-color: #f9a8d4; border-radius: 50%; vertical-align: -2px; animation: ws-motion-spin .8s linear infinite; }
     @@keyframes ws-motion-spin { to { transform: rotate(360deg); } }
+    .ws-motion-preview { display: flex; justify-content: center; margin: 8px 0; }
     .ws-drop-hint { display: flex; flex-direction: column; align-items: center; gap: 3px; text-align: center; padding: 14px; pointer-events: none; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
     .ws-drop-ic { font-size: 26px; opacity: .6; }
     .ws-drop-hint b { color: var(--text-secondary); }
@@ -1413,6 +1421,7 @@
         if (_disposed) return;
         _motionImage = imagePath;            // 🎥 1-Click 모션 렌더 입력(사진 + 4막 궤적)
         _motionPath = plan.MotionPath;
+        _motionImageUrl = Media.ToPlaybackUrl(imagePath);   // 🎞 실시간 프리뷰 입력
         _motionToast = null;
         _motionOutput = null;
         var applied = StoryVm.ApplyDirectorShots(plan.ToDirectorShots(), plan.DetectedMood);
@@ -1426,6 +1435,8 @@
             _visionStoryToast = "📸 " + plan.DetectedMood + " · " + plan.DetectedSetting + " → 4컷 완성 · 🎵 " + plan.SuggestedBgmTheme + " · 💬 " + plan.SuggestedSubtitle;
         }
         else _visionStoryToast = "📸 스토리 구성에 실패했습니다 — 다른 사진으로 다시 시도해 주세요.";
+        RefreshMotionPreviewSubs();      // 🎞 프리뷰 자막 · BGM 초기화
+        _ = RefreshMotionBgmAsync();
         StateHasChanged();
     }
 
@@ -1434,6 +1445,52 @@
     private bool _motionBusy;
     private string? _motionToast;
     private string? _motionOutput;     // 렌더 완료 MP4 절대 경로(📂 위치 열기)
+    private string? _motionImageUrl;   // 🎞 프리뷰 캔버스 원본(가상호스트 URL)
+    private string? _motionBgmUrl;     // 🎞 프리뷰 BGM WAV(가상호스트 URL · 없으면 SFX 만)
+    private PromptFlowStudio.Services.Pluto.PlutoSubtitleScript? _motionSubs;   // 🎞 프리뷰 3막 자막(로컬 결정론 초안)
+    private int _motionBgmSeq;
+    private const double MotionPreviewBgmVolume = PromptFlowStudio.Services.Export.StockSuiteExporter.BabyBgmVolume;   // 내보내기 믹스와 동일 볼륨
+
+    /// <summary>🎞 프리뷰 자막 갱신 — 프롬프트/사진 스토리 초안 → 로컬 결정론 3막(LLM 호출 없음 · 타이핑마다 호출 가능).</summary>
+    private void RefreshMotionPreviewSubs()
+    {
+        if (_motionImage is null) return;
+        try
+        {
+            var src = string.IsNullOrWhiteSpace(_visionSubtitle) ? _prompt : _visionSubtitle + ", " + _prompt;
+            _motionSubs = PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(src, _identity?.SubjectName);
+        }
+        catch (Exception ex) { Program.Log("Workspace.MotionPreviewSubs", ex); }
+    }
+
+    /// <summary>🎞 프리뷰 BGM URL 갱신(선택 트랙 WAV 보장 → 가상호스트 URL). 미리보기 전용 — 예외 전파 금지.</summary>
+    private async Task RefreshMotionBgmAsync()
+    {
+        var seq = ++_motionBgmSeq;
+        try
+        {
+            string? url = null;
+            if (_bgmOn)
+            {
+                var track = _bgmTrack;
+                var dir = Path.Combine(Media.MediaRoot, "bgm");
+                var wav = await Task.Run(() => PromptFlowStudio.Services.Export.StockSuiteExporter.EnsureBabyBgm(track, 30, dir));
+                url = wav is null ? null : Media.ToPlaybackUrl(wav);
+            }
+            if (_disposed || seq != _motionBgmSeq) return;
+            _motionBgmUrl = url;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex) { Program.Log("Workspace.MotionPreviewBgm", ex); }
+    }
+
+    /// <summary>🎬 디렉터 랭크 변경 → 프리뷰 궤적/자막 상태 재평가(재생 유지 핫스왑).</summary>
+    private void OnDirectorRankChanged()
+    {
+        if (_disposed || _motionImage is null) return;
+        try { _ = InvokeAsync(() => { if (_disposed) return; RefreshMotionPreviewSubs(); StateHasChanged(); }); }
+        catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { Program.Log("Workspace.MotionPreviewRank", ex); }
+    }
 
     /// <summary>
     /// 🎥 1-Click 모션 비디오 — 사진 1장 → 15초 60fps Ken Burns MP4(<c>%TEMP%\PromptFlowStudio\motion\</c>).
@@ -2343,6 +2400,7 @@
                 url = wav is null ? null : Media.ToPlaybackUrl(wav);
             }
             if (_disposed || seq != _bgmSyncSeq) return;   // 이탈 후/더 최신 동기화 존재 → 폐기
+            if (_motionImage is not null && !string.Equals(_motionBgmUrl, url, StringComparison.Ordinal)) { _motionBgmUrl = url; StateHasChanged(); }   // 🎞 프리뷰 BGM 트랙 핫스왑
             await JS.InvokeAsync<bool>("pfsBgmPreview.set", _bgmOn && url is not null, url, PromptFlowStudio.Services.Export.StockSuiteExporter.BabyBgmVolume, "video.ws-video");
         }
         catch (Exception ex) when (ex is JSDisconnectedException or ObjectDisposedException) { /* WebView 해제 — 무시 */ }
@@ -3015,6 +3073,7 @@
         _myPresets = Presets.GetAll();
         Presets.Changed += OnUserPresetsChanged;
         IdentityVault.Changed += OnIdentityChanged;
+        PlutoDirector.Changed += OnDirectorRankChanged;   // 🎞 프리뷰 핫스왑
         _ = LoadIdentityAsync();   // 🍼 활성 프로필 선적재(예외 격리)
         var d = Draft.Consume();   // 모션프리셋(/motion)에서 전달된 스니펫 흡수
         if (!string.IsNullOrWhiteSpace(d)) _prompt = d;
@@ -3162,6 +3221,7 @@
     {
         _disposed = true;   // 🎵 진행 중 BGM 동기화의 늦은 set(true) 차단
         IdentityVault.Changed -= OnIdentityChanged;
+        PlutoDirector.Changed -= OnDirectorRankChanged;
         _typingTimer?.Dispose();
         History.Changed -= OnHistoryChanged;
         AppSettings.OnSettingsChanged -= OnAppSettingsChanged;
@@ -3249,6 +3309,7 @@
     /// <summary>입력 정지 1.5초 후 스냅샷(디바운스 · 타이머 1개 재사용).</summary>
     private void OnPromptTyped()
     {
+        RefreshMotionPreviewSubs();   // 🎞 프리뷰 자막 핫스왑(사진 없으면 no-op)
         _typingTimer ??= new System.Threading.Timer(static st =>
         {
             var self = (Workspace)st!;

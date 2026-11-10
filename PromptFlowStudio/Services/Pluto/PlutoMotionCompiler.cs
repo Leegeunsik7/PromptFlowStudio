@@ -66,7 +66,7 @@ public readonly record struct PlutoMotionFrame(double Zoom, double FocalX, doubl
 ///   ▸ 서브픽셀: zoompan 은 x/y 를 정수 픽셀로 내리므로 입력을 <see cref="DefaultSupersample"/>배 Lanczos 업스케일(커버 크롭)해 출력 기준 1/4px 정밀도 확보.
 /// <see cref="EvaluateFrame"/> 는 같은 수식의 C# 미러(검증 · 미리보기용 · 무할당).
 /// </summary>
-public static class PlutoMotionCompiler
+public static partial class PlutoMotionCompiler
 {
     public const int DefaultWidth = 1080, DefaultHeight = 1920, DefaultFps = 60;
     public const int DefaultSupersample = 4, MaxSupersample = 8;

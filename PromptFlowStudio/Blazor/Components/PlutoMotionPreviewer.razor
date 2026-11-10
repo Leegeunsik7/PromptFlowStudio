@@ -1,0 +1,143 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Pluto
+@implements IAsyncDisposable
+@* [PromptFlow Studio] 🎞 Pluto 실시간 모션 프리뷰어 — 9:16 캔버스 60fps Ken Burns + Web Audio 동기 + KO/EN 자막(FFmpeg 미사용).
+   엔진: wwwroot/js/pluto-motion-previewer.js (window.plutoMotionPreviewer). 플레이헤드/스크러버/시간 라벨은 JS 가 DOM 직접 갱신(프레임당 interop 0).
+   모바일 링크 대상 서브컴포넌트 → @inject 금지(Js 파라미터 주입). 궤적/자막 파라미터 변경은 재생을 끊지 않고 in-place 핫스왑. *@
+
+<div class="pmp" @ref="_root" tabindex="0" data-pmp="1" data-pmp-empty="@(HasMedia ? "0" : "1")" aria-label="15초 모션 미리보기">
+    <div class="pmp-stage">
+        <canvas class="pmp-canvas" width="1080" height="1920"></canvas>
+        @if (!HasMedia)
+        {
+            <div class="pmp-empty" role="status" data-pmp-empty-msg="1">📷 사진을 올리면 15초 모션 미리보기가 여기에 표시됩니다</div>
+        }
+    </div>
+    <div class="pmp-bar">
+        <button type="button" class="pmp-btn" data-pmp-play="1" @onclick="ToggleAsync" disabled="@(!HasMedia)" title="재생/일시정지 (Space)" aria-label="재생/일시정지">@(_playing ? "⏸" : "▶")</button>
+        <input type="range" class="pmp-scrub" data-pmp-scrub="1" min="0" max="15" step="0.01" value="0" disabled="@(!HasMedia)" aria-label="타임라인 0.00초 ~ 15.00초" />
+        <span class="pmp-time" data-pmp-time="1"></span>
+        <select class="pmp-rate" data-pmp-rate="1" @onchange="OnRateChangedAsync" disabled="@(!HasMedia)" title="재생 속도" aria-label="재생 속도">
+            <option value="0.5">0.5×</option>
+            <option value="1" selected>1.0×</option>
+            <option value="2">2.0×</option>
+        </select>
+    </div>
+</div>
+
+<style>
+    .pmp { display: inline-flex; flex-direction: column; gap: 6px; width: min(270px, 100%); outline: none; }
+    .pmp:focus-visible .pmp-stage { box-shadow: 0 0 0 2px #f9a8d4; }
+    .pmp-stage { position: relative; aspect-ratio: 9 / 16; width: 100%; border-radius: 12px; overflow: hidden; background: #0b0b12; }
+    .pmp-canvas { display: block; width: 100%; height: 100%; }
+    .pmp-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; text-align: center; font-size: 12px; line-height: 1.5; color: rgba(255,255,255,.7); pointer-events: none; }
+    .pmp-bar { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+    .pmp-btn { width: 28px; height: 24px; border: 1px solid rgba(249,168,212,.5); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }
+    .pmp-btn:disabled, .pmp-scrub:disabled, .pmp-rate:disabled { opacity: .45; cursor: default; }
+    .pmp-scrub { flex: 1 1 auto; min-width: 0; accent-color: #f9a8d4; }
+    .pmp-time { min-width: 92px; text-align: right; font-variant-numeric: tabular-nums; opacity: .85; }
+    .pmp-rate { font-size: 11px; background: transparent; color: inherit; border: 1px solid rgba(255,255,255,.25); border-radius: 6px; }
+    @@media (max-width: 480px) { .pmp { width: 100%; } }
+</style>
+
+@code {
+    /// <summary>JS 런타임(호스트 페이지가 주입 · null → 정적 렌더만).</summary>
+    [Parameter] public IJSRuntime? Js { get; set; }
+    /// <summary>카메라 궤적(null/빈 궤적 → 줌 1.0 정지).</summary>
+    [Parameter] public PlutoMotionTrajectory? Trajectory { get; set; }
+    /// <summary>3막 KO/EN 자막(null → 자막 없음).</summary>
+    [Parameter] public PlutoSubtitleScript? Subtitles { get; set; }
+    /// <summary>원본 사진 URL(가상호스트). null/빈 값 → 빈 상태.</summary>
+    [Parameter] public string? ImageUrl { get; set; }
+    /// <summary>BGM WAV URL(null → BGM 없음 · SFX 만).</summary>
+    [Parameter] public string? BgmUrl { get; set; }
+    [Parameter] public double BgmVolume { get; set; } = 0.25;
+
+    private ElementReference _root;
+    private DotNetObjectReference<PlutoMotionPreviewer>? _self;
+    private bool _ready, _playing, _disposed;
+    private string _contractJson = "", _subsJson = "";
+    private string? _pushedContract, _pushedSubs, _pushedImage, _pushedBgm;
+    private double _pushedVolume = double.NaN;
+
+    private bool HasMedia => !string.IsNullOrWhiteSpace(ImageUrl);
+
+    protected override void OnParametersSet()
+    {
+        _contractJson = PlutoMotionCompiler.ExportPreviewContractJson(Trajectory);
+        _subsJson = PlutoMotionPreviewModel.SubtitlesJson(Subtitles);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_disposed || Js is not { } js) return;
+        try
+        {
+            if (!_ready)
+            {
+                _self ??= DotNetObjectReference.Create(this);
+                _ready = await js.InvokeAsync<bool>("plutoMotionPreviewer.init", _root, _self, _contractJson, _subsJson, ImageUrl, BgmUrl, BgmVolume);
+                if (!_ready) return;
+                _pushedContract = _contractJson; _pushedSubs = _subsJson; _pushedImage = ImageUrl; _pushedBgm = BgmUrl; _pushedVolume = BgmVolume;
+                return;
+            }
+            // 🔁 핫스왑 — 바뀐 항목만 전송(재생/플레이헤드 유지).
+            if (!string.Equals(_pushedContract, _contractJson, StringComparison.Ordinal) || !string.Equals(_pushedSubs, _subsJson, StringComparison.Ordinal))
+            {
+                _pushedContract = _contractJson; _pushedSubs = _subsJson;
+                await js.InvokeAsync<bool>("plutoMotionPreviewer.update", _root, _contractJson, _subsJson);
+            }
+            if (!string.Equals(_pushedImage, ImageUrl, StringComparison.Ordinal))
+            {
+                _pushedImage = ImageUrl;
+                await js.InvokeAsync<bool>("plutoMotionPreviewer.setImage", _root, ImageUrl);
+            }
+            if (!string.Equals(_pushedBgm, BgmUrl, StringComparison.Ordinal) || _pushedVolume != BgmVolume)
+            {
+                _pushedBgm = BgmUrl; _pushedVolume = BgmVolume;
+                await js.InvokeAsync<bool>("plutoMotionPreviewer.setBgm", _root, BgmUrl, BgmVolume);
+            }
+        }
+        catch (Exception ex) when (IsBenign(ex)) { /* WebView 해제/스크립트 미로드 — 미리보기 전용 · 전파 금지 */ }
+    }
+
+    /// <summary>JS → .NET: 재생 상태 전이(▶/⏸ 아이콘 동기 · 프레임당 호출 아님).</summary>
+    [JSInvokable]
+    public Task OnPreviewerPlayState(bool playing)
+    {
+        if (_disposed || _playing == playing) return Task.CompletedTask;
+        _playing = playing;
+        return InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ToggleAsync()
+    {
+        if (!_ready || Js is not { } js) return;
+        try { await js.InvokeAsync<bool>("plutoMotionPreviewer.toggle", _root); }
+        catch (Exception ex) when (IsBenign(ex)) { }
+    }
+
+    private async Task OnRateChangedAsync(ChangeEventArgs e)
+    {
+        if (!_ready || Js is not { } js) return;
+        if (!double.TryParse(e.Value?.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var rate)) rate = 1.0;
+        try { await js.InvokeVoidAsync("plutoMotionPreviewer.setRate", _root, rate); }
+        catch (Exception ex) when (IsBenign(ex)) { }
+    }
+
+    private static bool IsBenign(Exception ex)
+        => ex is JSException or JSDisconnectedException or ObjectDisposedException or InvalidOperationException or OperationCanceledException;
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        if (_ready && Js is { } js)
+        {
+            try { await js.InvokeVoidAsync("plutoMotionPreviewer.dispose", _root); }
+            catch (Exception ex) when (IsBenign(ex)) { }
+        }
+        _self?.Dispose();
+        _self = null;
+    }
+}

@@ -1,19 +1,20 @@
 # Current Project Status
-- Active Milestone: 【Pluto Streaming】 Zero-Alloc SSE 파이프 소비기 + In-Flight 증분 JSON 어셈블러 + 점진 UI 페인트
+- Active Milestone: 【Pluto Real-Time Previewer】 60fps 캔버스 Ken Burns + Web Audio 마스터 클록 + KO/EN 자막 크로스페이드
 - Build: Release `-warnaserror` 0W/0E — PromptFlowStudio (`-p:NuGetAudit=false` · Mobile 미빌드)
-- Tests: 전체 1016/1016 PASS (`~Streaming` 필터 14/14 · 신규 7)
-- Updated: 2026-11-11 (KST) · 미커밋
+- Tests: 전체 1021/1021 PASS (`~Previewer|~Motion` 29/29 · 신규 5)
+- Updated: 2026-11-11 (KST) · SSE 코어 커밋 6f8d9b2 푸시 완료(origin/master·main) · 프리뷰어 미커밋
 
 ## Completed
-- 🌊 `Services/Pluto/PlutoStreamingPipeConsumer.cs`: `PipeReader`(4KiB) + `SequenceReader` 줄 프레이밍 · SSE `data:`/`[DONE]` + Ollama NDJSON(`done:true`) · 스택 `Utf8JsonReader`로 `choices[0].delta.content`/`message.content` 추출(줄 파싱 0B 실측)
-- 🧩 `Services/Pluto/PlutoIncrementalJsonAssembler.cs`: 바이트 상태 기계(괄호 비트 스택 · 문자열/이스케이프 · `<think>`/산문/펜스 무시) · 루트 배열 또는 루트 객체 첫 배열의 요소가 닫히는 즉시 방출 · 절단 시 즉석 봉합 → `PlutoJsonSanitizer` 2차 구제
-- 🔁 `PlutoLlmFailoverClient.StreamArrayAsync<T>` · `PlutoLlmBridge.StreamArrayAsync<T>` · `PlutoCustomLocalGateway.StreamArrayAsync<T>`(`stream:true` · 유휴 타임아웃 재무장 · 총 60초 · 취소는 서킷 미집계)
-- 🎞 `PlutoMilestoneOrchestrator.OrchestrateFourCutPlanStreamAsync`(템플릿 선방출 → 슬롯별 스냅샷 · `StreamedSlotMask`) · `PlutoCopilot.StreamTripletVariantsAsync` · `PlutoSubtitleDirector.TryParseStreamedAct`
-- 🖥 `Workspace.razor` 마일스톤: 스냅샷마다 스토리보드 4슬롯 재페인트 + ✅/⏳ 컷 표시 · `PlutoCopilotDrawer.razor`: 변형 카드 점진 표시 + `OnVariantStreamed` EventCallback
-- 🧪 `PromptFlowStudio.Tests/PlutoStreamingPipelineTests.cs`
+- 🎞 `Services/Pluto/PlutoMotionCompiler.Preview.cs`: `ExportPreviewContract(Json)`(내부 `Resolve` 세그먼트 그대로 노출 · 이징 다항식 계수) · `PlutoMotionPreviewModel.Evaluate`(JS 미러) · `SubtitleAlpha`(150ms) · `ToJson/FromJson/SubtitlesJson`
+- 🖌 `wwwroot/js/pluto-motion-previewer.js`: rAF 루프 · `setTransform(z,0,0,z,-x·W·z,-y·H·z)` 클램프 뷰포트 · `AudioContext.currentTime` 마스터 클록(불가 시 `performance.now()` 폴백) · BGM 루프 + SFX 3종(0.8/5.5/13.2s) 합성 · 8ms 페이드 무팝 스크럽/재배치
+- 🧩 `Blazor/Components/PlutoMotionPreviewer.razor`: 9:16 캔버스 · ▶/⏸(Space) · 스크러버 0~15s · 0.5×/1×/2× · 파라미터 변경 시 in-place 핫스왑(`@inject` 없음 · `Js` 파라미터)
+- 🖥 `Workspace.razor`: 사진 스토리 완료 시 프리뷰 표시 · 프롬프트 타이핑/BGM 트랙/디렉터 랭크 변경 → 핫스왑(`PlutoDirector.Changed` 구독/해제 쌍)
+- 🔗 `wwwroot/index.html` + `PromptFlowStudio.Mobile/wwwroot/index.html` 스크립트 태그
+- 🧪 `PromptFlowStudio.Tests/PlutoMotionPreviewerTests.cs`
 
 ## Notes
-- 체인 순서 유지: Gemini(배치 → 요소 재생) 우선 → 로컬 게이트웨이만 실시간 스트리밍. Gemini 가용 시 TTFT 이득 없음
-- SSE 다중 `data:` 줄 이벤트는 줄 단위로 개별 처리(이벤트 단위 결합 안 함 — OpenAI 호환 서버는 단일 줄)
-- `System.IO.Pipelines`는 BlazorWebView 패키지 전이 의존으로 해소(신규 NuGet 0) — Mobile(MAUI) 빌드는 미검증
-- `OnVariantStreamed`는 Workspace에서 미구독 · HUD `gth-v` 카드 미추가(신규 DI 서비스 없음) · 실 로컬 SLM 서버 대상 수동 검증 미실시
+- 실제 WebView2 내 재생/오디오 동기/스크럽은 수동 검증 미실시(JS 평가기는 node 로 값만 확인) · Mobile(MAUI) 빌드 미검증
+- 프리뷰 자막은 로컬 결정론 초안(`GenerateLocal`) — 렌더 시 LLM 편지와 문구가 다를 수 있음 · 자막 구간은 스펙대로 0-4/4-12/12-15(번인 SRT 1-4/5-10/11-14 와 상이)
+- 프리뷰 SFX 는 JS 재합성(음색이 `PlutoAudioSynthesizer` WAV 와 동일하지 않음 · 오프셋/볼륨만 일치)
+- 디렉터 랭크는 궤적 자체를 바꾸지 않음(궤적은 사진 스토리 플랜 산출) — 랭크 변경 시 자막/상태만 재평가
+- 불안정: `TitanReleaseTests.ZeroTouchAutopilot_And_BurnInGuard_Check`(µs 시간 예산) 전체 실행 3회 중 1회 실패 · 단독/재실행 통과 · 프리뷰어와 무관
