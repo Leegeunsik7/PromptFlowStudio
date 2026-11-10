@@ -1773,7 +1773,7 @@
     private void OnVmChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
         if (e.PropertyName is nameof(_vm.UserInput) or nameof(_vm.Result) or nameof(_vm.CharacterCount) or nameof(_vm.IsOverBudget)) return;
-        _ = InvokeAsync(StateHasChanged);
+        RefreshUi();
     }
 
     private string? _alertedError;   // v16.3.1: 같은 실패로 팝업 반복 방지
@@ -1849,7 +1849,7 @@
             if (audio is null) { _lipMsg = "⚠ 나레이션 합성 실패(TTS 엔진/네트워크 확인)"; return; }
             var dir = Path.GetDirectoryName(src) ?? Media.MediaRoot;
             var output = Path.Combine(dir, Path.GetFileNameWithoutExtension(src) + "_lipsync.mp4");
-            var status = new Progress<string>(s => { _lipMsg = s; _ = InvokeAsync(StateHasChanged); });
+            var status = new Progress<string>(s => { _lipMsg = s; RefreshUi(); });
             var r = await LipAi.SyncAsync(new AudioLipSyncRequest(src, audio, output, _lipText + " " + (_prompt ?? ""), _emotion, _emotionIntensity), status, ct);
             if (r.Ok && r.OutputPath is not null)
             {
@@ -1993,7 +1993,7 @@
     private void OnRenderQueueChanged()
     {
         if (_miniIds.Length == 0) return;
-        _ = InvokeAsync(() =>
+        PostUi(() =>
         {
             try { if (RefreshMiniQueue()) StateHasChanged(); }
             catch (Exception ex) { Program.Log("Workspace.MiniQueue", ex); }
@@ -2097,7 +2097,7 @@
 
     private void OnStockMonChanged()
     {
-        try { _ = InvokeAsync(StateHasChanged); }
+        try { RefreshUi(); }
         catch (Exception ex) { Program.Log("Workspace.StockMon", ex); }
     }
 
@@ -2231,7 +2231,7 @@
         try
         {
             _identity = IdentityVault.ActiveProfile;
-            _ = InvokeAsync(StateHasChanged);
+            RefreshUi();
         }
         catch (Exception ex) { Program.Log("Workspace.IdentityChanged", ex); }
     }
@@ -2286,6 +2286,27 @@
     }
     private int _bgmSyncSeq;
     private volatile bool _disposed;
+
+    // 🛡️ 백그라운드 콜백 → UI 재렌더 단일 진입점 — 관측되는 Task(폐기 후 늦은 통지의 미관측 예외 차단) · 폐기 후 no-op.
+    private void RefreshUi() => _ = RefreshUiAsync();
+
+    private async Task RefreshUiAsync()
+    {
+        if (_disposed) return;
+        try { await InvokeAsync(StateHasChanged); }
+        catch (ObjectDisposedException) { }
+        catch (Exception ex) { Program.Log("Workspace.RefreshUi", ex); }
+    }
+
+    private void PostUi(Action work) => _ = PostUiAsync(work);
+
+    private async Task PostUiAsync(Action work)
+    {
+        if (_disposed) return;
+        try { await InvokeAsync(work); }
+        catch (ObjectDisposedException) { }
+        catch (Exception ex) { Program.Log("Workspace.PostUi", ex); }
+    }
     private bool _seamCheck;
 
     /// <summary>🔁 루프 이음새 인스펙터 토글 — JS rAF 가 [종료-2s, 종료] ∪ [0, 2s] 구간만 반복(interop 실패 시 상태 원복).</summary>
@@ -2602,7 +2623,7 @@
         {
             _retryMsg = "⏳ API 일시 지연으로 재시도 중 (" + current.ToString(CultureInfo.InvariantCulture) + "/" + max.ToString(CultureInfo.InvariantCulture) + ")...";
             var seq = Interlocked.Increment(ref _retrySeq);
-            _ = InvokeAsync(StateHasChanged);
+            RefreshUi();
             _ = ClearRetryLaterAsync(seq, delay + TimeSpan.FromSeconds(3));
         }
         catch (Exception ex) { Program.Log("Workspace.RetryNotice", ex); }
@@ -2644,7 +2665,7 @@
 
     private void OnHubChanged()
     {
-        try { _ = InvokeAsync(StateHasChanged); }
+        try { RefreshUi(); }
         catch (Exception ex) { Program.Log("Workspace.HubChanged", ex); }
     }
 
@@ -2744,7 +2765,7 @@
 
     private void OnUserPresetsChanged()
     {
-        _ = InvokeAsync(() =>
+        PostUi(() =>
         {
             try { _myPresets = Presets.GetAll(); StateHasChanged(); }
             catch (Exception ex) { Program.Log("Workspace.PresetsChanged", ex); }
@@ -2754,7 +2775,7 @@
     private void OnDurationStitched(string group, PromptFlowStudio.Services.Render.VideoStitchResult r)
     {
         if (r.Ok || !string.Equals(group, _miniGroup, StringComparison.Ordinal)) return;
-        _ = InvokeAsync(() => { _miniStitchFail = r.Message; StateHasChanged(); });
+        PostUi(() => { _miniStitchFail = r.Message; StateHasChanged(); });
     }
 
     private void InitDurationPickers()
@@ -2898,7 +2919,7 @@
     {
         var next = PromptFlowStudio.Services.Configuration.AppSettingsManager.NormalizeMode(s.RenderMode);
         if (string.Equals(next, _renderMode, StringComparison.Ordinal)) return;
-        _ = InvokeAsync(() => { _renderMode = next; StateHasChanged(); });
+        PostUi(() => { _renderMode = next; StateHasChanged(); });
     }
 
     protected override void OnInitialized()
@@ -3115,7 +3136,7 @@
         History.Changed += OnHistoryChanged;
     }
 
-    private void OnHistoryChanged() => _ = InvokeAsync(StateHasChanged);
+    private void OnHistoryChanged() => RefreshUi();
 
     private void ToggleHistory() { EnsureHistorySubscribed(); _histOpen = !_histOpen; }
 
@@ -3307,7 +3328,7 @@
             _foleyDoneFor = lp;
             _ = RunAutoFoleyAsync(lp, State.LastPrompt);
         }
-        _ = InvokeAsync(StateHasChanged);
+        RefreshUi();
     }
 
     private string PhaseLabel => State.Phase switch

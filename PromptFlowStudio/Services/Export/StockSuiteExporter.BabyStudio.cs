@@ -172,6 +172,8 @@ public sealed partial class StockSuiteExporter
         }
         finally
         {
+            // 🧹 성공 시 temp 는 이미 교체(Move)되어 부재 — 비IO 예외(Win32·InvalidOperation 등) 경로에서도 잔여 temp 확정 정리.
+            TryDelete(temp);
             if (sfxFiles is not null)
                 for (var i = 0; i < sfxFiles.Length; i++) TryDelete(sfxFiles[i]);
         }
@@ -204,6 +206,7 @@ public sealed partial class StockSuiteExporter
         var dir = string.IsNullOrWhiteSpace(SfxTempDir) ? Path.Combine(Path.GetTempPath(), "PromptFlowStudio", "sfx") : SfxTempDir;
         var paths = new string[cues.Count];
         var written = 0;
+        var ok = false;
         try
         {
             Directory.CreateDirectory(dir);
@@ -214,13 +217,19 @@ public sealed partial class StockSuiteExporter
                 File.WriteAllBytes(p, Pluto.PlutoAudioSynthesizer.Generate(cues[i].SfxType));
                 paths[written++] = p;
             }
+            ok = true;
             return paths;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             Program.Log("StockSuite.BabySfx", new IOException("⚠ SFX 합성 실패 → BGM 단독 폴백", ex));
-            for (var i = 0; i < written; i++) TryDelete(paths[i]);
             return null;
+        }
+        finally
+        {
+            // 🧹 필터 외 예외(합성기 내부 오류 등)로 빠져나가도 작성분 정리.
+            if (!ok)
+                for (var i = 0; i < written; i++) TryDelete(paths[i]);
         }
     }
 
@@ -356,31 +365,71 @@ public sealed partial class StockSuiteExporter
         var inv = CultureInfo.InvariantCulture;
         var font = string.IsNullOrWhiteSpace(fontFile) ? "" : "fontfile='" + fontFile.Replace("\\", "/", StringComparison.Ordinal).Replace(":", "\\:", StringComparison.Ordinal) + "':";
         var center = ":x=(w-text_w)/2:y=h-";
-        var mono = ":fontsize=" + (24 * k).ToString(inv) + ":fontcolor=white:box=1:boxcolor=black@0.4:boxborderw=" + (10 * k).ToString(inv)
+        var mono = ":fontcolor=white:box=1:boxcolor=black@0.4:boxborderw=" + (10 * k).ToString(inv)
             + center + (120 * k).ToString(inv);
-        var primary = ":fontsize=" + (24 * k).ToString(inv) + ":fontcolor=0xFFF1D6:box=1:boxcolor=black@0.45:boxborderw=" + (10 * k).ToString(inv)
+        var primary = ":fontcolor=0xFFF1D6:box=1:boxcolor=black@0.45:boxborderw=" + (10 * k).ToString(inv)
             + center + (164 * k).ToString(inv);
-        var secondary = ":fontsize=" + (16 * k).ToString(inv) + ":fontcolor=white@0.85:box=1:boxcolor=black@0.3:boxborderw=" + (8 * k).ToString(inv)
+        var secondary = ":fontcolor=white@0.85:box=1:boxcolor=black@0.3:boxborderw=" + (8 * k).ToString(inv)
             + center + (120 * k).ToString(inv);
         var sb = new StringBuilder(384 * cues.Count);
         for (var i = 0; i < cues.Count; i++)
         {
             var c = cues[i];
             if (string.IsNullOrWhiteSpace(c.Text) || c.EndSec <= c.StartSec || c.StartSec < 0) continue;
-            var clean = CleanSubtitleLine(c.Text);
+            var clean = FitSubtitleText(CleanSubtitleLine(c.Text), SubtitlePrimaryFontSize);
             if (clean.Length == 0) continue;
-            var en = CleanSubtitleLine(c.SecondaryText);
+            var en = FitSubtitleText(CleanSubtitleLine(c.SecondaryText), SubtitleSecondaryFontSize);
             var gate = "':enable='between(t," + c.StartSec.ToString(inv) + "," + c.EndSec.ToString(inv) + ")'";
             if (sb.Length > 0) sb.Append(',');
-            sb.Append("drawtext=").Append(font).Append("text='").Append(EscapeDrawText(clean)).Append(gate).Append(en.Length == 0 ? mono : primary);
+            sb.Append("drawtext=").Append(font).Append("text='").Append(EscapeDrawText(clean)).Append(gate)
+              .Append(":fontsize=").Append((FitSubtitleFontSize(clean, SubtitlePrimaryFontSize) * k).ToString(inv))
+              .Append(en.Length == 0 ? mono : primary);
             if (en.Length > 0)
-                sb.Append(",drawtext=").Append(font).Append("text='").Append(EscapeDrawText(en)).Append(gate).Append(secondary);
+                sb.Append(",drawtext=").Append(font).Append("text='").Append(EscapeDrawText(en)).Append(gate)
+                  .Append(":fontsize=").Append((FitSubtitleFontSize(en, SubtitleSecondaryFontSize) * k).ToString(inv))
+                  .Append(secondary);
         }
         return sb.Length == 0 ? null : sb.ToString();
     }
 
     private static string CleanSubtitleLine(string? s)
         => string.IsNullOrWhiteSpace(s) ? "" : StripEmoji(s.Replace('\r', ' ').Replace('\n', ' '));
+
+    // ── 💌 자막 클리핑 가드 — 1080px 폭 기준 한 줄 수용 한계(한글 30자 · 라틴 65자) 초과 시 폰트 비례 축소(하한 보장) ──
+    public const int SubtitlePrimaryFontSize = 24;
+    public const int SubtitleSecondaryFontSize = 16;
+    public const int SubtitleKoFitChars = 30;
+    public const int SubtitleEnFitChars = 65;
+    /// <summary>💌 축소 하한(1080 기준 pt) — 이하로는 가독성 붕괴 → 대신 말줄임.</summary>
+    public const int SubtitleMinFontSize = 11;
+
+    private static bool HasHangulOrCjk(string s)
+    {
+        foreach (var ch in s)
+            if (ch is >= 'ᄀ' and <= 'ᇿ' or >= '㄰' and <= '㆏' or >= '가' and <= '힯' or >= '一' and <= '鿿') return true;
+        return false;
+    }
+
+    /// <summary>💌 줄 길이 기반 폰트 크기(1080 기준) — 한계 이내 → 기본값 · 초과 → <c>base·limit/len</c>(하한 <see cref="SubtitleMinFontSize"/>).</summary>
+    public static int FitSubtitleFontSize(string line, int baseSize)
+    {
+        if (string.IsNullOrEmpty(line) || baseSize <= SubtitleMinFontSize) return baseSize;
+        var limit = HasHangulOrCjk(line) ? SubtitleKoFitChars : SubtitleEnFitChars;
+        if (line.Length <= limit) return baseSize;
+        return Math.Max(SubtitleMinFontSize, baseSize * limit / line.Length);
+    }
+
+    /// <summary>💌 하한 폰트로도 폭 초과하는 극단 길이 → 단어 경계 말줄임(<c>...</c>)으로 프레임 이탈 차단.</summary>
+    public static string FitSubtitleText(string line, int baseSize)
+    {
+        if (string.IsNullOrEmpty(line) || baseSize <= SubtitleMinFontSize) return line;
+        var limit = HasHangulOrCjk(line) ? SubtitleKoFitChars : SubtitleEnFitChars;
+        var cap = limit * baseSize / SubtitleMinFontSize;
+        if (line.Length <= cap) return line;
+        var cut = line.LastIndexOf(' ', cap - 3);
+        if (cut < cap / 2) cut = cap - 3;
+        return line[..cut].TrimEnd() + "...";
+    }
 
     internal static string? AppendTimedSubtitles(string? baseFilter, IReadOnlyList<SubtitleCue>? cues, string? fontFile, StockSuiteResolution resolution)
     {
@@ -432,11 +481,14 @@ public sealed partial class StockSuiteExporter
             File.Move(tmp, path, overwrite: true);
             return path;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             Program.Log("StockSuite.SubtitleSrt", ex);
-            TryDelete(tmp);
             return null;
+        }
+        finally
+        {
+            TryDelete(tmp);   // 🧹 성공 시 Move 로 부재 · 실패/비IO 예외 시 잔여 .srt.tmp 정리
         }
     }
 }

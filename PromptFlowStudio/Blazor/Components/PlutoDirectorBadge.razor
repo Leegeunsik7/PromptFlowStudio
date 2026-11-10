@@ -87,7 +87,7 @@
         Unsubscribe();
         if (Director is not { } dir) return;
         _subscribed = dir;
-        dir.Changed += OnDirectorChanged;
+        _subscribed.Changed += OnDirectorChanged;   // 해제(Unsubscribe)와 동일 수신자 — 구독/해제 쌍 정적 감사 정합
         var cts = new CancellationTokenSource();
         _cts = cts;
         _ = LoadAsync(dir, cts.Token);   // 🧠 XP 메모리 선적재(예외 격리)
@@ -105,9 +105,11 @@
         catch (Exception ex) { Program.Log("PlutoDirectorBadge.Load", ex); }
     }
 
-    private void OnDirectorChanged()
+    private void OnDirectorChanged() => _ = RefreshAsync();
+
+    private async Task RefreshAsync()
     {
-        try { _ = InvokeAsync(StateHasChanged); }
+        try { await InvokeAsync(StateHasChanged); }
         catch (ObjectDisposedException) { }
         catch (Exception ex) { Program.Log("PlutoDirectorBadge.Changed", ex); }
     }

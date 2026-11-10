@@ -568,13 +568,17 @@ public sealed class PlutoVisionStorySynthesizer
         {
             var fi = new FileInfo(path);
             if (!fi.Exists || fi.Length == 0) return (null, Array.Empty<byte>());
+            // 🔓 FileShare.ReadWrite — 사용자 원본(편집기·동기화 클라이언트 점유 중)을 잠그지 않고 읽기.
+            await using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 4096, FileOptions.Asynchronous);
             if (fi.Length <= MaxImageBytes)
             {
-                var all = await File.ReadAllBytesAsync(path, ct).ConfigureAwait(false);
+                var buf = new byte[fi.Length];
+                var read = await fs.ReadAtLeastAsync(buf, buf.Length, false, ct).ConfigureAwait(false);   // 읽는 중 축소 대비
+                if (read == 0) return (null, Array.Empty<byte>());
+                var all = read == buf.Length ? buf : buf.AsSpan(0, read).ToArray();
                 return (all, all);
             }
             var head = new byte[ExifScanBytes];
-            await using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 4096, FileOptions.Asynchronous);
             var n = await fs.ReadAtLeastAsync(head, head.Length, false, ct).ConfigureAwait(false);
             return (null, n == head.Length ? head : head.AsSpan(0, n).ToArray());
         }

@@ -1,18 +1,18 @@
 # Current Project Status
 
-- Active Milestone: 【Pluto 3.0 Vision-to-Story】 📸 사진 1장 → 15초 3막 4컷 스토리보드 + 🪐 통합 디렉터 HUD
+- Active Milestone: 【Pluto 3.0 안정화 감사】 임시파일·무잠금·진행률 포화·장문 자막·Blazor 스레드 안전
 - Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (Mobile: 로컬 SDK 부재로 미빌드)
-- Tests: `~VisionStory|~Director|~Pluto` 91/91 PASS (신규 `PlutoVisionStoryTests` 3) — 호스트 RAM 제약으로 전체 스위트 미실행
+- Tests (RAM-safe 4배치 · MaxCpuCount=2): Titan|Security 110 · StockSuite|Export|Sfx 78 · Pluto|Vision|Subtitle|Director 187 · Publish|Workspace|Modal 58 — 전량 PASS
 - Updated: 2026-11-10 (KST)
 
 ## Completed
-- 🪐 트렌드 랩 HUD 통합 — 구 10 XP 두뇌 카운터 제거 · `PlutoDirectorBadge Unified` 단일 표시(`HudTitle` · `XpLabel` · 해금 광학 `UnlockedOpticsTooltip`)
-- 📸 `PlutoVisionStorySynthesizer`(싱글톤, MainForm·MauiProgram) — `SynthesizeFromImageAsync(imagePath, parentMemo, ct)`
-  - 판독 페일오버: Gemini Vision(`IPlutoVisionClient` · 8초) → 로컬 게이트웨이(파일명·EXIF·메모 텍스트) → 규칙 분석기(6 정서 템플릿)
-  - Act1 셔터 3초 전(0-4s) · Act2 빌드업/사진 속 클라이맥스(4-12s) · Act3 5초 후 여운(12-15s) — 앵커 선두 · 디렉터 광학 말미 멱등
-  - `PlutoVisionStoryPlan`: 무드 · 세팅 · 4컷 · BGM 테마/트랙 · 감성 자막 초안 · 출처 · 디렉터 Lv
-- 🖥 Workspace `📸 사진으로 15초 스토리 완성`(클릭/드롭) + `📸 참조 사진으로` — 4컷 일괄 · BGM ON · 감성 자막 ON(초안 우선)
+- 🧹 BabyStudio: 먹싱 temp `finally` 확정 삭제(비IO 예외 포함) · SFX WAV 부분 작성분 `finally` 정리 · `.srt.~pfs` 잔여 정리
+- 🔓 VisionStory: 이미지 전체/EXIF 읽기 단일 `FileStream(FileShare.ReadWrite)` — 사용자 원본 무잠금
+- 🎬 DirectorRank `ProgressPercent`: long 산술 · span≤0/최고 티어 초과 100% 포화(오버플로·0 나눗셈 차단)
+- 💬 자막 클리핑 가드: 한글 30자/라틴 65자 초과 → 폰트 비례 축소(하한 11pt) · 극단 길이 말줄임 — 4K ×2
+- 🧵 Blazor: Workspace `RefreshUi`/`PostUi` 관측 Task 헬퍼(12곳) · PublishModal 관측 재렌더 · Close 시 SEO CTS 취소(업로드는 백그라운드 유지)
+- 🐞 PlutoDirectorBadge 구독/해제 수신자 정합(Headless_UI_Rendering_Check 기존 실패 수정)
+- 🧪 신규 `PlutoStabilityAuditTests` 17
 
 ## Next
-- 모바일 빌드 검증(SDK 확보 시) · 전체 스위트 회귀(여유 RAM 확보 시)
-- 실 사진 샘플로 Gemini Vision 판독 품질 · 로컬 VLM(이미지 입력) 게이트웨이 확장 검토
+- 모바일 빌드 검증(SDK 확보 시) · 4배치 필터 밖 테스트 회귀(여유 RAM 확보 시)

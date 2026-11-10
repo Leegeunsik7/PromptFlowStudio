@@ -363,9 +363,13 @@
         if (_bound is not null) _bound.OnChange += OnVmChanged;
     }
 
-    private void OnVmChanged()
+    // 백그라운드 스레드 통지 → 관측되는 비동기 재렌더(폐기 후 늦은 통지의 미관측 Task 예외 차단).
+    private void OnVmChanged() => _ = RefreshAsync();
+
+    private async Task RefreshAsync()
     {
-        try { _ = InvokeAsync(StateHasChanged); }
+        try { await InvokeAsync(StateHasChanged); }
+        catch (ObjectDisposedException) { }
         catch (Exception ex) { Program.Log("PublishModal.OnChange", ex); }
     }
 

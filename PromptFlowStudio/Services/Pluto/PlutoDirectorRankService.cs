@@ -94,9 +94,10 @@ public sealed class PlutoDirectorRankService : IPlutoDirectorRankService, IDispo
     /// <summary>티어 내 진행률 0~100(최고 티어는 NextTierXp 기준 포화).</summary>
     public static int ProgressPercent(int xp, PlutoDirectorTier tier)
     {
-        var span = tier.NextTierXp - tier.RequiredXp;
-        if (span <= 0) return 100;
-        return Math.Clamp((xp - tier.RequiredXp) * 100 / span, 0, 100);
+        // long 산술 — int.MaxValue 급 XP · 비정상 티어 경계에서도 오버플로/0 나눗셈 없이 0~100 포화.
+        var span = (long)tier.NextTierXp - tier.RequiredXp;
+        if (span <= 0 || xp >= tier.NextTierXp) return 100;
+        return (int)Math.Clamp(((long)xp - tier.RequiredXp) * 100 / span, 0L, 100L);
     }
 
     /// <summary>🪐 배지 라벨 — "🪐 Pluto Lv.2 감성 스토리텔러 (25/50 XP)".</summary>

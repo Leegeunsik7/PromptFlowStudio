@@ -934,6 +934,8 @@ public sealed class PublishViewModel : IDisposable
     public void Close()
     {
         IsOpen = false;
+        // ✨ 진행 중 SEO 생성 취소(닫힌 모달 입력란 덮어쓰기 차단) — 업로드 _cts 는 의도적으로 유지(전송 백그라운드 계속).
+        try { _seoCts?.Cancel(); } catch (ObjectDisposedException) { }
         CleanupPreviewTemp();   // 🧹 모달 닫기 → 세션 미리보기 임시 파일 정리
         Notify();
     }
