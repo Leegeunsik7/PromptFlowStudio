@@ -10,6 +10,7 @@
     <aside class="pcd" role="dialog" aria-label="플루토 시나리오 코파일럿" data-pluto-copilot="1">
         <div class="pcd-h">
             <span>🪐 플루토에게 시나리오 요청</span>
+            <PlutoDirectorBadge Director="Copilot?.Director" AlignRight="true" />
             <button class="pcd-x" title="닫기" @onclick="CloseAsync">✕</button>
         </div>
         <div class="pcd-body">
@@ -59,7 +60,7 @@
            background: var(--card,#111a2e); color: var(--ink,#e6eefc); border-left: 1px solid rgba(167,139,250,.35); box-shadow: -18px 0 48px rgba(0,0,0,.4);
            animation: pcd-in .22s ease-out; }
     @@keyframes pcd-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
-    .pcd-h { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; font-weight: 900; border-bottom: 1px solid rgba(148,163,184,.16); }
+    .pcd-h { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; padding: 14px 18px; font-weight: 900; border-bottom: 1px solid rgba(148,163,184,.16); }
     .pcd-x { background: transparent; border: 0; color: inherit; font-size: 16px; cursor: pointer; }
     .pcd-body { padding: 14px 18px; overflow: auto; display: flex; flex-direction: column; gap: 10px; }
     .pcd-lbl { font-size: 12px; font-weight: 700; opacity: .75; }

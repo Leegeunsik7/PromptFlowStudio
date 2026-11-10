@@ -42,6 +42,7 @@
 @inject PromptFlowStudio.Services.Pluto.PlutoCopilot PlutoCopilotSvc
 @inject PromptFlowStudio.Services.Pluto.PlutoIdentityVault IdentityVault
 @inject PromptFlowStudio.Services.Pluto.PlutoLocalAiSettingsService LocalAiSettings
+@inject PromptFlowStudio.Services.Pluto.IPlutoDirectorRankService PlutoDirector
 
 @* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
    상태는 WanJobState(싱글턴)에 있고, 이 컴포넌트는 OnChange 를 구독해 InvokeAsync(StateHasChanged)로만 갱신한다.
@@ -61,6 +62,7 @@
             <button class="ws-back" data-milestone="DailyRoutine" @onclick='() => ApplyMilestonePresetAsync("DailyRoutine")' disabled="@(State.IsBusy || _milestoneBusy)" title="우리아이 하루 — 4컷 성장 일기를 스토리보드 4슬롯에 한 번에 세팅">☀️ 하루</button>
             @if (_milestoneBusy) { <span class="ws-retry" role="status">🎞 플루토가 4컷을 구성하는 중…</span> }
             <button class="ws-back" data-local-ai-open="1" @onclick="() => _localAiModal = true" title="Gemini 장애 시 사내/로컬 AI 서버(OpenAI 호환 · Ollama)로 자동 전환 — 엔드포인트 · 모델 · 연결 테스트">🦙 로컬 AI 설정@(LocalAiSettings.Gateway.Options.IsEnabled ? " · ON" : "")</button>
+            <PlutoDirectorBadge Director="PlutoDirector" />   @* 🎬 디렉터 랭크(XP → 광학 티어) *@
             @* 🍼 Step5: 증시 세션/외부 연동 배지는 기본 아기 스튜디오 화면에서 제거(설정 > 연동 진단으로 이관). *@
             @if (Journal.RecoveringCount > 0) { <span class="ws-recover" role="status">[🔄 미완료 클라우드 작업 복원 중: @(Journal.RecoveringCount.ToString(CultureInfo.InvariantCulture))건]</span> }
             else if (Journal.Count > 0) { <button class="ws-recover ws-jbadge" @onclick="OpenJournal" title="클릭 → 저널 인스펙터(수동 회수·재시도·삭제)">[🔄 미완료 클라우드 작업: @(Journal.Count.ToString(CultureInfo.InvariantCulture))건]</button> }

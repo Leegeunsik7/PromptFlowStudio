@@ -94,10 +94,29 @@ public sealed class PlutoMilestoneOrchestrator
     /// <summary>⏱ 단계별 LLM 예산(기본 3.5초 · 테스트 결정론용 주입 · null이면 체인 기본값).</summary>
     public TimeSpan? LlmBudget { get; init; }
 
-    public PlutoMilestoneOrchestrator(IPlutoLlmClient? llm = null, PlutoIdentityVault? identity = null)
+    public PlutoMilestoneOrchestrator(IPlutoLlmClient? llm = null, PlutoIdentityVault? identity = null, IPlutoDirectorRankService? director = null)
     {
         _llm = llm;
         _identity = identity;
+        _director = director;
+    }
+
+    private readonly IPlutoDirectorRankService? _director;
+
+    /// <summary>🎬 디렉터 티어 광학을 4컷 전 프롬프트 말미에 결합(멱등 · 미주입/예외 → 원본 플랜).</summary>
+    public PlutoMilestonePlan ApplyDirectorOptics(PlutoMilestonePlan plan)
+    {
+        if (_director is null || plan.Scenes.Count == 0) return plan;
+        PlutoDirectorTier tier;
+        try { tier = _director.GetCurrentTier(); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Milestone] director: " + ex.Message); return plan; }
+        var scenes = new PlutoMilestoneScene[plan.Scenes.Count];
+        for (var i = 0; i < scenes.Length; i++)
+        {
+            var s = plan.Scenes[i];
+            scenes[i] = NewScene(s.SlotIndex, s.SceneTitle, PlutoDirectorRankService.Enrich(s.Prompt, tier), s.CameraMovement, s.RecommendedBgm);
+        }
+        return new PlutoMilestonePlan { MilestoneName = plan.MilestoneName, Theme = plan.Theme, Scenes = scenes, PersonaConsistencyAnchor = plan.PersonaConsistencyAnchor, UsedLlm = plan.UsedLlm };
     }
 
     /// <summary>🎞 마일스톤 키("100일의 기적"·"첫돌"·"하루"·enum 이름) → 4컷 플랜. LLM 실패/미설정/3.5초 초과 → 템플릿.</summary>
@@ -106,9 +125,23 @@ public sealed class PlutoMilestoneOrchestrator
         var theme = ParseTheme(milestoneKey);
         var (anchor, isPet) = await ResolveAnchorAsync(ct).ConfigureAwait(false);
         var local = BuildLocal(theme, anchor, isPet, userNote);
-        var user = BuildLlmRequest(local, userNote);
+        var directive = await DirectorDirectiveAsync(ct).ConfigureAwait(false);
+        var user = BuildLlmRequest(local, userNote, directive);
         var text = await PlutoLlmBridge.TryCompleteAsync(_llm, LlmMilestoneInstruction, user, 0.85, ct, LlmBudget).ConfigureAwait(false);
-        return Merge(local, text);
+        return ApplyDirectorOptics(Merge(local, text));   // 🎬 LLM · 템플릿 슬롯 공통 광학 주입
+    }
+
+    /// <summary>🎬 디렉터 XP 적재 후 LLM 지시문(미주입/예외 → null · 취소만 전파).</summary>
+    private async Task<string?> DirectorDirectiveAsync(CancellationToken ct)
+    {
+        if (_director is null) return null;
+        try
+        {
+            await _director.EnsureLoadedAsync(ct).ConfigureAwait(false);
+            return PlutoDirectorRankService.LlmDirective(_director.GetCurrentTier());
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Milestone] director fallback: " + ex.Message); return null; }
     }
 
     /// <summary>⚡ 로컬 결정론 플랜(LLM 미사용) — 같은 입력 → 같은 결과.</summary>
@@ -203,7 +236,7 @@ public sealed class PlutoMilestoneOrchestrator
         RecommendedBgm = bgm,
     };
 
-    private static string BuildLlmRequest(PlutoMilestonePlan local, string? userNote)
+    private static string BuildLlmRequest(PlutoMilestonePlan local, string? userNote, string? directorDirective = null)
     {
         var sb = new StringBuilder(512);
         sb.Append("Milestone: ").Append(local.MilestoneName).Append(" (").Append(local.Theme.ToString()).Append(")\n");
@@ -212,6 +245,7 @@ public sealed class PlutoMilestoneOrchestrator
         if (note.Length > 0) sb.Append("Parent note: ").Append(note).Append('\n');
         sb.Append("Slot cameras: ");
         for (var i = 0; i < SceneCount; i++) { if (i > 0) sb.Append(" | "); sb.Append(TimeRangeOf(i + 1)).Append(' ').Append(SlotCameras[i]); }
+        if (directorDirective is { Length: > 0 }) sb.Append('\n').Append(directorDirective);
         return sb.ToString();
     }
 

@@ -82,7 +82,10 @@ public sealed partial class PlutoCopilot
         if (llmJson is not null) FillFromLlm(llmJson, local, anchor, pacing, slots);
         var result = new PlutoScriptVariant[slots.Length];
         for (var i = 0; i < result.Length; i++)
-            result[i] = slots[i] ?? LocalVariant(TripletStyles[i], local, anchor, pacing);   // [부분 구제] 누락 슬롯만 로컬 보강
+        {
+            var v = slots[i] ?? LocalVariant(TripletStyles[i], local, anchor, pacing);   // [부분 구제] 누락 슬롯만 로컬 보강
+            result[i] = Director is null ? v : v with { Prompt = Optics(v.Prompt) };   // 🎬 디렉터 티어 광학 주입(LLM · 로컬 공통 · 멱등)
+        }
         return result;
     }
 

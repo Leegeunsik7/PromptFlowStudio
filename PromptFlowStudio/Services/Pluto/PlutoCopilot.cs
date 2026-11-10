@@ -60,6 +60,9 @@ public sealed partial class PlutoCopilot
     /// <summary>🍼 아이덴티티 볼트 — 활성 프로필 구분(Baby/Pet)과 감지 테마 일치 시 캐릭터 일관성 앵커를 시나리오 프롬프트 선두에 삽입.</summary>
     public PlutoIdentityVault? Identity { get; init; }
 
+    /// <summary>🎬 디렉터 랭크 — 누적 XP 티어 광학 키워드를 LLM 요청 · 결정론 템플릿 프롬프트에 자동 주입(미주입 → 기존 프롬프트 그대로).</summary>
+    public IPlutoDirectorRankService? Director { get; init; }
+
     /// <summary>🧠 LLM 결선 여부(키 미설정이어도 true — 실제 사용 여부는 <see cref="PlutoCopilotScript.UsedLlm"/>).</summary>
     public bool HasLlm => _llm is not null;
 
@@ -89,7 +92,24 @@ public sealed partial class PlutoCopilot
         var llm = text is null ? null : ParseLlmScript(text, local);
         if (llm is null) return local;
         var anchor = IdentityAnchor(local.Category);
-        return anchor.Length == 0 ? llm : llm with { VideoPrompt = PlutoIdentityVault.ApplyAnchor(llm.VideoPrompt, anchor) };   // 🍼 LLM 결과에도 앵커 보장(멱등)
+        var vp = anchor.Length == 0 ? llm.VideoPrompt : PlutoIdentityVault.ApplyAnchor(llm.VideoPrompt, anchor);   // 🍼 LLM 결과에도 앵커 보장(멱등)
+        return llm with { VideoPrompt = Optics(vp) };   // 🎬 디렉터 광학 보장(멱등)
+    }
+
+    /// <summary>🎬 디렉터 티어 광학 결합(미주입/예외 → 원문).</summary>
+    private string Optics(string prompt)
+    {
+        if (Director is null) return prompt;
+        try { return Director.EnrichPromptWithOptics(prompt); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Copilot] director: " + ex.Message); return prompt; }
+    }
+
+    /// <summary>🎬 LLM 요청용 디렉터 지시문(미주입/예외 → null).</summary>
+    private string? DirectorDirective()
+    {
+        if (Director is null) return null;
+        try { return PlutoDirectorRankService.LlmDirective(Director.GetCurrentTier()); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Copilot] director: " + ex.Message); return null; }
     }
 
     /// <summary>📈🍼 레이더 · 아이덴티티 볼트 지연 로드([부분 구제] — 실패 시 해당 컨텍스트 없이 생성, 취소만 전파).</summary>
@@ -106,6 +126,12 @@ public sealed partial class PlutoCopilot
             try { await Identity.EnsureLoadedAsync(ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Copilot] identity load: " + ex.Message); }   // [부분 구제] 앵커 없이 생성
+        }
+        if (Director is not null)
+        {
+            try { await Director.EnsureLoadedAsync(ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Copilot] director load: " + ex.Message); }   // [부분 구제] Lv.1 광학
         }
     }
 
@@ -131,6 +157,7 @@ public sealed partial class PlutoCopilot
             sb.Append("Subject identity anchor (keep this exact same character in every act): ").Append(anchor).Append('\n');
         if (TopPattern(local.Category) is { } p)
             sb.Append("Proven SNS viral formula (apply its hook timing and cut pacing): ").Append(p.Title).Append(" — ").Append(PlutoSocialRadarEngine.PatternDirective(p)).Append('\n');
+        if (DirectorDirective() is { } dd) sb.Append(dd).Append('\n');
         return sb.ToString();
     }
 
@@ -284,7 +311,7 @@ public sealed partial class PlutoCopilot
         if (TopPattern(ms.Category) is { } viral)
             sb.Append(" SNS pacing: ").Append(PlutoSocialRadarEngine.PatternDirective(viral)).Append('.');
 
-        var videoPrompt = PlutoIdentityVault.ApplyAnchor(sb.ToString(), IdentityAnchor(ms.Category));   // 🍼 캐릭터 일관성 앵커 선두 삽입
+        var videoPrompt = PlutoIdentityVault.ApplyAnchor(Optics(sb.ToString()), IdentityAnchor(ms.Category));   // 🎬 디렉터 광학 말미 · 🍼 캐릭터 일관성 앵커 선두 삽입
         return new PlutoCopilotScript(text, ms.Category, ms.Ko, BuildHook(text, ms), acts, videoPrompt, ms.Camera, ms.Bgm,
             StockSuiteExporter.BabyBgmLabel(ms.Bgm));
     }

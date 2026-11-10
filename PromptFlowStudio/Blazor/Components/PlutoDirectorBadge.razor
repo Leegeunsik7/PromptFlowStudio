@@ -1,0 +1,111 @@
+@using System.Globalization
+@using PromptFlowStudio.Services.Pluto
+@implements IDisposable
+
+@* [PromptFlow Studio] 🎬 Pluto 디렉터 랭크 배지 — "🪐 Pluto Lv.N 칭호 (XP/다음 XP)" + 진행 바 + 호버/포커스 팝오버(해금 광학 파라미터).
+   모바일 링크 대상 서브컴포넌트 — @inject 금지(Director 파라미터 주입 · Changed 구독/해제 쌍). *@
+
+@if (Director is { } dir)
+{
+    var xp = dir.CurrentXp;
+    var tier = PlutoDirectorRankService.TierFor(xp);
+    var pct = PlutoDirectorRankService.ProgressPercent(xp, tier);
+    <span class="pdb@(AlignRight ? " r" : "")" tabindex="0" data-pluto-director="@(tier.Level.ToString(CultureInfo.InvariantCulture))">
+        <span class="pdb-lbl">@(PlutoDirectorRankService.BadgeLabel(xp, tier))</span>
+        <span class="pdb-bar" aria-hidden="true"><span class="pdb-fill" style="width:@(pct.ToString(CultureInfo.InvariantCulture))%"></span></span>
+        <span class="pdb-pop" role="tooltip">
+            <span class="pdb-ph">🎬 @(tier.EnglishTitle) — 프롬프트에 자동 주입 중인 광학 파라미터</span>
+            @foreach (var t in PlutoDirectorRankService.Tiers)
+            {
+                var on = t.Level <= tier.Level;
+                var cls = on ? (t.Level == tier.Level ? "pdb-tier on cur" : "pdb-tier on") : "pdb-tier";
+                <span class="@cls">
+                    <span class="pdb-th">@(on ? "✓" : "🔒") Lv.@(t.Level.ToString(CultureInfo.InvariantCulture)) @(t.Title) · @(t.RequiredXp.ToString(CultureInfo.InvariantCulture))XP~</span>
+                    <span class="pdb-kw">@(string.Join(" · ", t.CinematographyKeywords))</span>
+                </span>
+            }
+            <span class="pdb-foot">채택 1 · 내보내기 3 · 👍 1 · 📈 SNS 학습 2 XP</span>
+        </span>
+    </span>
+}
+
+<style>
+    .pdb { position: relative; display: inline-flex; flex-direction: column; gap: 4px; padding: 5px 10px 6px; border-radius: 999px;
+           background: linear-gradient(135deg, rgba(124,92,255,.16), rgba(255,170,90,.14)); border: 1px solid rgba(160,130,255,.35);
+           font: 700 11px/1.1 var(--mono, monospace); color: var(--text, #eee); cursor: default; vertical-align: middle; outline: none; align-self: flex-start; }
+    .pdb:focus-visible { box-shadow: 0 0 0 2px rgba(160,130,255,.6); }
+    .pdb-lbl { white-space: nowrap; }
+    .pdb-bar { display: block; height: 3px; border-radius: 3px; background: rgba(255,255,255,.12); overflow: hidden; }
+    .pdb-fill { display: block; height: 100%; border-radius: 3px; background: linear-gradient(90deg, #8b6cff, #ffb35c);
+                background-size: 200% 100%; transition: width .7s cubic-bezier(.22,1,.36,1); animation: pdb-shine 3.2s linear infinite; }
+    .pdb-pop { position: absolute; top: calc(100% + 8px); left: 0; z-index: 60; width: 320px; display: flex; flex-direction: column; gap: 6px;
+               padding: 10px 12px; border-radius: 10px; background: rgba(22,18,34,.97); border: 1px solid rgba(160,130,255,.35);
+               box-shadow: 0 10px 28px rgba(0,0,0,.45); font: 500 11px/1.4 var(--mono, monospace); color: #ddd;
+               opacity: 0; visibility: hidden; transform: translateY(-4px); transition: opacity .18s ease, transform .18s ease, visibility .18s; pointer-events: none; }
+    .pdb.r .pdb-pop { left: auto; right: 0; }
+    .pdb:hover .pdb-pop, .pdb:focus-within .pdb-pop { opacity: 1; visibility: visible; transform: none; }
+    .pdb-ph { font-weight: 700; color: #ffcf8a; }
+    .pdb-tier { display: flex; flex-direction: column; gap: 2px; opacity: .45; }
+    .pdb-tier.on { opacity: 1; }
+    .pdb-tier.cur .pdb-th { color: #b9a6ff; }
+    .pdb-th { font-weight: 700; }
+    .pdb-kw { color: #aaa; padding-left: 14px; }
+    .pdb-foot { color: #888; border-top: 1px solid rgba(255,255,255,.08); padding-top: 5px; }
+    @@keyframes pdb-shine { from { background-position: 0% 0; } to { background-position: 200% 0; } }
+    @@media (prefers-reduced-motion: reduce) { .pdb-fill { animation: none; transition: none; } }
+</style>
+
+@code {
+    /// <summary>🎬 디렉터 랭크 서비스(null → 미표시).</summary>
+    [Parameter] public IPlutoDirectorRankService? Director { get; set; }
+
+    /// <summary>팝오버 우측 정렬(화면 우측 배치용).</summary>
+    [Parameter] public bool AlignRight { get; set; }
+
+    private IPlutoDirectorRankService? _subscribed;
+    private CancellationTokenSource? _cts;
+
+    protected override void OnParametersSet()
+    {
+        if (ReferenceEquals(_subscribed, Director)) return;
+        Unsubscribe();
+        if (Director is not { } dir) return;
+        _subscribed = dir;
+        dir.Changed += OnDirectorChanged;
+        var cts = new CancellationTokenSource();
+        _cts = cts;
+        _ = LoadAsync(dir, cts.Token);   // 🧠 XP 메모리 선적재(예외 격리)
+    }
+
+    private async Task LoadAsync(IPlutoDirectorRankService dir, CancellationToken ct)
+    {
+        try
+        {
+            await dir.EnsureLoadedAsync(ct);
+            if (!ct.IsCancellationRequested) await InvokeAsync(StateHasChanged);
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
+        catch (Exception ex) { Program.Log("PlutoDirectorBadge.Load", ex); }
+    }
+
+    private void OnDirectorChanged()
+    {
+        try { _ = InvokeAsync(StateHasChanged); }
+        catch (ObjectDisposedException) { }
+        catch (Exception ex) { Program.Log("PlutoDirectorBadge.Changed", ex); }
+    }
+
+    private void Unsubscribe()
+    {
+        if (_subscribed is not null) _subscribed.Changed -= OnDirectorChanged;
+        _subscribed = null;
+        var cts = _cts;
+        _cts = null;
+        if (cts is null) return;
+        try { cts.Cancel(); } catch (ObjectDisposedException) { }
+        cts.Dispose();
+    }
+
+    public void Dispose() => Unsubscribe();
+}
