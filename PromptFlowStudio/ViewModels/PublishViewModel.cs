@@ -33,6 +33,7 @@ public sealed class PublishViewModel : IDisposable
     private readonly PromptFlowStudio.Services.Platform.IClipboardService? _clipboard;
     private readonly PromptFlowStudio.Services.Pluto.PlutoLearningService? _learning;
     private readonly PromptFlowStudio.Services.Pluto.PlutoPreferenceLexicon? _lexicon;
+    private readonly PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector? _letter;
     private string? _activePlutoTrendId;
     private string? _publishPath;   // BGM 합성본(없으면 원본)
     private CancellationTokenSource? _cts;
@@ -45,9 +46,11 @@ public sealed class PublishViewModel : IDisposable
         PromptFlowStudio.Services.Ui.UserPreferenceService? prefs = null,
         PromptFlowStudio.Services.Platform.IClipboardService? clipboard = null,
         PromptFlowStudio.Services.Pluto.PlutoLearningService? learning = null,
-        PromptFlowStudio.Services.Pluto.PlutoPreferenceLexicon? lexicon = null)
+        PromptFlowStudio.Services.Pluto.PlutoPreferenceLexicon? lexicon = null,
+        PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector? letter = null)
     {
         _lexicon = lexicon;
+        _letter = letter;
         _clipboard = clipboard;
         _learning = learning;
         _audioMux = audioMux;
@@ -584,6 +587,9 @@ public sealed class PublishViewModel : IDisposable
         BgmStatus = null;
         PlutoSocialDraft = null;
         PlutoSocialMessage = null;
+        PlutoLetter = null;
+        PlutoLetterMessage = null;
+        BurnLetterSubtitles = false;
         SrtPath = srtPath is { Length: > 0 } && File.Exists(srtPath) ? srtPath : YouTubeShortsPublisher.ResolveSrtPath(VideoPath);
         var meta = YouTubeShortsPublisher.BuildMetadata(hook, beats);
         Title = meta.Title;
@@ -620,7 +626,13 @@ public sealed class PublishViewModel : IDisposable
             _stockSuite.BurnTickerBadge = StockSuiteTickerBadge;
             if (_stockLut is { } lut) _stockSuite.Lut = lut;   // 🎨 모달/프리셋 LUT 명시 선택 시에만 덮어씀(미선택 = 작업실 LUT 유지)
             _stockSuite.TickerBadge = string.IsNullOrWhiteSpace(TickerSymbol) ? null : new PromptFlowStudio.Services.Export.TickerBadgeData(TickerSymbol, TickerCompany, TickerPrice, TickerChangePercent);
-            var r = await _stockSuite.ExportAsync(VideoPath, null, null, ct, StockSuiteFormat, StockSuiteSharpen, StockSuiteSmooth60, StockSuiteResolution, StockSuiteWatermark).ConfigureAwait(false);
+            // 💌 감성 편지 자막 번인(체크 + 생성된 편지 → enable 시간 게이트 drawtext + .srt 동반)
+            var letter = BurnLetterSubtitles ? PlutoLetter : null;
+            _stockSuite.BurnSubtitles = letter is not null;
+            _stockSuite.SubtitleCues = letter?.ToCues();
+            PromptFlowStudio.Services.Export.StockSuiteExportResult r;
+            try { r = await _stockSuite.ExportAsync(VideoPath, null, null, ct, StockSuiteFormat, StockSuiteSharpen, StockSuiteSmooth60, StockSuiteResolution, StockSuiteWatermark).ConfigureAwait(false); }
+            finally { _stockSuite.BurnSubtitles = false; _stockSuite.SubtitleCues = null; }   // 공유 싱글톤 — 작업실 내보내기로 누수 차단
             StockSuiteMessage = r.Ok ? r.Message : "⚠ " + r.Message;
             StockSuiteExported = r.Ok;
             StockSuiteRestartPending = false;
@@ -815,6 +827,56 @@ public sealed class PublishViewModel : IDisposable
         try { ok = _clipboard.SetText(d.FullText); }
         catch (Exception ex) { Program.Log("Publish.PlutoCopy", ex); ok = false; }
         PlutoSocialMessage = ok ? "📋 전체 본문 + 해시태그를 복사했어요" : "⚠ 복사 실패 — 다시 시도해 주세요";
+        Notify();
+        return ok;
+    }
+
+    // ── 💌 Pluto 감성 편지 자막 ──
+    /// <summary>💌 마지막 생성 3막 편지 자막(없으면 null).</summary>
+    public PromptFlowStudio.Services.Pluto.PlutoSubtitleScript? PlutoLetter { get; private set; }
+    public string? PlutoLetterMessage { get; private set; }
+    /// <summary>🧠 편지 작성 중(중복 요청 차단).</summary>
+    public bool IsPlutoLetterBusy { get; private set; }
+    /// <summary>🏷️ StockSuite 내보내기 시 감성 자막 번인 여부.</summary>
+    public bool BurnLetterSubtitles { get; set; }
+
+    /// <summary>💌 발행 프롬프트 → 3막 감성 편지 자막(Gemini 우선 · 로컬 템플릿 폴백 · 디렉터 미주입 시 로컬).</summary>
+    public async Task<PromptFlowStudio.Services.Pluto.PlutoSubtitleScript?> GeneratePlutoLetterAsync(string? subjectName = null, CancellationToken ct = default)
+    {
+        if (IsPlutoLetterBusy) return PlutoLetter;
+        var src = string.IsNullOrWhiteSpace(SourcePrompt) ? (ProjectName ?? "") : SourcePrompt;
+        IsPlutoLetterBusy = true;
+        PlutoLetterMessage = "💌 플루토가 편지를 쓰는 중…";
+        Notify();
+        PromptFlowStudio.Services.Pluto.PlutoSubtitleScript script;
+        try
+        {
+            script = _letter is null
+                ? PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(src, subjectName)
+                : await _letter.GenerateLetterScriptAsync(src, subjectName, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { script = PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(src, subjectName); }
+        catch (Exception ex)
+        {
+            Program.Log("Publish.PlutoLetter", ex);
+            script = PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(src, subjectName);
+        }
+        finally { IsPlutoLetterBusy = false; }
+        PlutoLetter = script;
+        PlutoLetterMessage = script.UsedLlm ? "🧠 플루토(Gemini)가 감성 편지를 썼어요" : "🪐 플루토가 감성 편지를 썼어요";
+        Notify();
+        return script;
+    }
+
+    /// <summary>📋 편지 전체 텍스트 클립보드 복사(미생성/클립보드 미주입/실패 시 false).</summary>
+    public bool CopyPlutoLetter()
+    {
+        var l = PlutoLetter;
+        if (l is null || _clipboard is null) return false;
+        bool ok;
+        try { ok = _clipboard.SetText(l.ToFullLetterText()); }
+        catch (Exception ex) { Program.Log("Publish.PlutoLetterCopy", ex); ok = false; }
+        PlutoLetterMessage = ok ? "📋 감성 편지 자막을 복사했어요" : "⚠ 복사 실패 — 다시 시도해 주세요";
         Notify();
         return ok;
     }

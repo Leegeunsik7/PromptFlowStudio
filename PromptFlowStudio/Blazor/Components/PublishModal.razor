@@ -203,6 +203,37 @@
                 </div>
             }
 
+            <div class="pm-pluto pm-letter" data-pluto-letter="1">
+                <div class="pm-row">
+                    <b>💌 플루토 감성 편지 자막</b>
+                    @if (vm.PlutoLetter is { } lb)
+                    {
+                        <span class="pm-badge @(lb.UsedLlm ? "ok" : "mock")">@(lb.UsedLlm ? "Gemini" : "Local")</span>
+                    }
+                </div>
+                <div class="pm-row">
+                    <button class="pm-btn pm-pluto-btn" @onclick="GeneratePlutoLetterAsync" disabled="@(vm.IsBusy || vm.IsPlutoLetterBusy)">@(vm.IsPlutoLetterBusy ? "⏳ 편지 쓰는 중…" : "💌 감성 편지 자막 작성")</button>
+                    @if (vm.PlutoLetter is not null)
+                    {
+                        <button class="pm-btn" @onclick="CopyPlutoLetter" title="To. 이름 · 3막 편지 · 서명 전체를 클립보드로 복사">📋 자막 전체 복사</button>
+                    }
+                </div>
+                @if (vm.PlutoLetter is { } letter)
+                {
+                    <div class="pm-letter-line"><span class="pm-chip">01~04초</span>@letter.Act1Text</div>
+                    <div class="pm-letter-line"><span class="pm-chip">05~10초</span>@letter.Act2Text</div>
+                    <div class="pm-letter-line"><span class="pm-chip">11~14초</span>@letter.Act3Text</div>
+                    @if (vm.StockSuiteAvailable)
+                    {
+                        <label class="pm-chk" title="StockSuite 내보내기 시 하단 중앙 반투명 박스로 1~4초 · 5~10초 · 11~14초 시간 동기 번인 + .srt 동반 저장 — drawtext 실패 시 자막 생략 폴백"><input type="checkbox" checked="@vm.BurnLetterSubtitles" @onchange="e => vm.BurnLetterSubtitles = e.Value is true" disabled="@vm.IsStockSuiteBusy" /> 🏷️ 영상에 감성 자막 번인 (자막 포함 렌더링)</label>
+                    }
+                }
+                @if (vm.PlutoLetterMessage is { Length: > 0 } lMsg)
+                {
+                    <div class="pm-pluto-msg">@lMsg</div>
+                }
+            </div>
+
             <div class="pm-lbl">제목 (훅 기반 자동 · @(vm.Title.Length)/100)</div>
             <input class="pm-in" @bind="vm.Title" @bind:event="oninput" maxlength="100" disabled="@vm.IsBusy" />
 
@@ -271,6 +302,8 @@
     .pm-pluto{margin-top:6px;padding:10px;border-radius:12px;border:1px solid rgba(167,139,250,.35);background:linear-gradient(90deg,rgba(167,139,250,.12),rgba(244,114,182,.10))}
     .pm-pluto-btn{background:linear-gradient(135deg,#8b7bff,#6d5efc);color:#fff;border:0}
     .pm-pluto-msg{font-size:12px;opacity:.8;margin-top:6px}
+    .pm-letter-line{display:flex;align-items:center;gap:8px;font-size:13px;margin-top:6px}
+    .pm-chip{flex:none;padding:1px 8px;border-radius:999px;font-size:10.5px;font-weight:800;color:#f9a8d4;background:rgba(244,114,182,.14);border:1px solid rgba(244,114,182,.4)}
     .pm-pluto-pre{white-space:pre-wrap;font-family:inherit;font-size:12.5px;margin:8px 0 0;max-height:220px;overflow:auto}
     .pm-dim{position:fixed;inset:0;background:rgba(2,6,23,.62);z-index:900}
     .pm{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(640px,94vw);max-height:90vh;display:flex;flex-direction:column;z-index:901;
@@ -352,6 +385,19 @@
         if (Vm is null) return;
         try { await Vm.GeneratePlutoSocialDraftAsync(); }   // 🧠 Gemini 캡션 우선 · 로컬 폴백
         catch (Exception ex) { Program.Log("PublishModal.PlutoSocial", ex); }
+    }
+
+    private async Task GeneratePlutoLetterAsync()
+    {
+        if (Vm is null) return;
+        try { await Vm.GeneratePlutoLetterAsync(); }   // 🧠 Gemini 편지 우선 · 로컬 템플릿 폴백
+        catch (Exception ex) { Program.Log("PublishModal.PlutoLetter", ex); }
+    }
+
+    private void CopyPlutoLetter()
+    {
+        try { Vm?.CopyPlutoLetter(); }
+        catch (Exception ex) { Program.Log("PublishModal.PlutoLetterCopy", ex); }
     }
 
     private void CopyPlutoSocial()

@@ -15,6 +15,9 @@ namespace PromptFlowStudio.Services.Export;
 /// <summary>🎵 아기 감성 BGM 트랙.</summary>
 public enum BabyBgmTrack { Lullaby, MusicBox, Acoustic }
 
+/// <summary>💌 시간 동기 자막 큐(초 단위 표시 구간 + 텍스트).</summary>
+public readonly record struct SubtitleCue(int StartSec, int EndSec, string Text);
+
 public sealed partial class StockSuiteExporter
 {
     /// <summary>🎵 아기 BGM 덕킹 볼륨(-14 LUFS 정규화 후 0.25 배).</summary>
@@ -193,5 +196,96 @@ public sealed partial class StockSuiteExporter
         var badge = BuildGrowthBadgeFilter(text, fontFile, resolution);
         if (badge is null) return baseFilter;
         return baseFilter is null ? badge : baseFilter + "," + badge;
+    }
+
+    // ── 💌 플루토 감성 편지 자막 번인 ──
+    public const string SubtitleTag = "💌 감성 자막 · ";
+
+    /// <summary>💌 시간 동기 감성 자막 번인 스위치(true + 유효 큐 → drawtext enable 체인 + <c>.srt</c> 동반 기록).</summary>
+    public bool BurnSubtitles { get; set; }
+
+    /// <summary>💌 번인 대상 자막 큐(null/빈 → 생략).</summary>
+    public IReadOnlyList<SubtitleCue>? SubtitleCues { get; set; }
+
+    public bool IsSubtitleBurnEnabled => BurnSubtitles && BuildTimedSubtitleFilter(SubtitleCues, null) is not null;
+
+    /// <summary>💌 하단 중앙 반투명 박스 drawtext × N — 큐별 <c>enable='between(t,s,e)'</c> 시간 게이트. 유효 큐 없음 → null. 4K 는 2배 스케일.</summary>
+    public static string? BuildTimedSubtitleFilter(IReadOnlyList<SubtitleCue>? cues, string? fontFile, StockSuiteResolution resolution = StockSuiteResolution.Fhd1080)
+    {
+        if (cues is null || cues.Count == 0) return null;
+        var k = resolution == StockSuiteResolution.Uhd4K ? 2 : 1;
+        var inv = CultureInfo.InvariantCulture;
+        var font = string.IsNullOrWhiteSpace(fontFile) ? "" : "fontfile='" + fontFile.Replace("\\", "/", StringComparison.Ordinal).Replace(":", "\\:", StringComparison.Ordinal) + "':";
+        var style = ":fontsize=" + (24 * k).ToString(inv) + ":fontcolor=white:box=1:boxcolor=black@0.4:boxborderw=" + (10 * k).ToString(inv)
+            + ":x=(w-text_w)/2:y=h-" + (120 * k).ToString(inv);
+        var sb = new StringBuilder(256 * cues.Count);
+        for (var i = 0; i < cues.Count; i++)
+        {
+            var c = cues[i];
+            if (string.IsNullOrWhiteSpace(c.Text) || c.EndSec <= c.StartSec || c.StartSec < 0) continue;
+            var clean = StripEmoji(c.Text.Replace('\r', ' ').Replace('\n', ' '));
+            if (clean.Length == 0) continue;
+            if (sb.Length > 0) sb.Append(',');
+            sb.Append("drawtext=").Append(font).Append("text='").Append(EscapeDrawText(clean))
+              .Append("':enable='between(t,").Append(c.StartSec.ToString(inv)).Append(',').Append(c.EndSec.ToString(inv)).Append(")'")
+              .Append(style);
+        }
+        return sb.Length == 0 ? null : sb.ToString();
+    }
+
+    internal static string? AppendTimedSubtitles(string? baseFilter, IReadOnlyList<SubtitleCue>? cues, string? fontFile, StockSuiteResolution resolution)
+    {
+        var subs = BuildTimedSubtitleFilter(cues, fontFile, resolution);
+        if (subs is null) return baseFilter;
+        return baseFilter is null ? subs : baseFilter + "," + subs;
+    }
+
+    /// <summary>💌 표준 SRT 직렬화(1-based 번호 · <c>HH:mm:ss,fff</c>). 유효 큐 없음 → 빈 문자열.</summary>
+    public static string BuildSrt(IReadOnlyList<SubtitleCue>? cues)
+    {
+        if (cues is null || cues.Count == 0) return "";
+        var sb = new StringBuilder(128 * cues.Count);
+        var n = 0;
+        for (var i = 0; i < cues.Count; i++)
+        {
+            var c = cues[i];
+            if (string.IsNullOrWhiteSpace(c.Text) || c.EndSec <= c.StartSec || c.StartSec < 0) continue;
+            if (n > 0) sb.Append('\n');
+            n++;
+            sb.Append(n.ToString(CultureInfo.InvariantCulture)).Append('\n');
+            AppendSrtTime(sb, c.StartSec).Append(" --> ");
+            AppendSrtTime(sb, c.EndSec).Append('\n');
+            sb.Append(c.Text.Replace("\r", "", StringComparison.Ordinal).Trim()).Append('\n');
+        }
+        return sb.ToString();
+    }
+
+    private static StringBuilder AppendSrtTime(StringBuilder sb, int totalSec)
+    {
+        var inv = CultureInfo.InvariantCulture;
+        return sb.Append((totalSec / 3600).ToString("00", inv)).Append(':')
+                 .Append((totalSec / 60 % 60).ToString("00", inv)).Append(':')
+                 .Append((totalSec % 60).ToString("00", inv)).Append(",000");
+    }
+
+    /// <summary>💌 <c>{출력명}.srt</c> 동반 기록(외부 플레이어용 · 원자적 · 실패 격리). 성공 시 경로.</summary>
+    internal string? TryWriteSubtitleSidecar(string targetPath)
+    {
+        var srt = BuildSrt(SubtitleCues);
+        if (srt.Length == 0) return null;
+        var path = Path.ChangeExtension(targetPath, ".srt");
+        var tmp = path + TempExt;
+        try
+        {
+            File.WriteAllText(tmp, srt, new UTF8Encoding(false));
+            File.Move(tmp, path, overwrite: true);
+            return path;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Program.Log("StockSuite.SubtitleSrt", ex);
+            TryDelete(tmp);
+            return null;
+        }
     }
 }

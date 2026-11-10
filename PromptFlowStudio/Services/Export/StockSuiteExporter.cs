@@ -347,6 +347,9 @@ public sealed partial class StockSuiteExporter
             }
             catch (OperationCanceledException) { return new(false, null, false, "취소됨"); }
         }
+        // 💌 감성 자막 SRT 동반 기록(외부 플레이어용 · 실패 격리).
+        if (r.Ok && BurnSubtitles && r.TargetPath is { } srtTarget && TryWriteSubtitleSidecar(srtTarget) is { } srtPath)
+            r = r with { Message = r.Message + " · 📝 " + Path.GetFileName(srtPath) };
         // 🔁 라이브 핫리로드 — 실제 교체가 일어난 경우에만 신호(동일 위치 no-op 제외).
         if (r.Ok && r.TargetPath is { } t && !string.Equals(Path.GetFullPath(sourcePath!), t, StringComparison.OrdinalIgnoreCase))
         {
@@ -484,10 +487,13 @@ public sealed partial class StockSuiteExporter
             // 🏷️ 성장 뱃지/자막(좌하단 흰 박스 drawtext · 빈 텍스트 → 생략).
             var growthOn = BuildGrowthBadgeFilter(GrowthBadgeText, null, resolution) is not null;
             if (growthOn) filter = AppendGrowthBadge(filter, GrowthBadgeText, ResolveTickerBadgeFont(), resolution);
+            // 💌 감성 편지 자막(하단 중앙 · 큐별 enable='between(t,s,e)' 시간 게이트 · 큐 없음 → 생략).
+            var subsOn = IsSubtitleBurnEnabled;
+            if (subsOn) filter = AppendTimedSubtitles(filter, SubtitleCues, ResolveTickerBadgeFont(), resolution);
             // 워터마크/배지 폰트·drawtext 실패 대비 — 오버레이 제외 체인으로 1회 재시도.
-            var filterNoWm = watermark || badgeOn || growthOn ? BuildVideoFilter(sharpenOn, smoothOn, resolution, false, null, lut: lut) : null;
-            if ((badgeOn || growthOn) && filterNoWm is null) filterNoWm = "null";   // 배지 단독 → 무필터 재인코딩 폴백
-            var tag = ResolutionTag(resolution, sharpenOn) + (smoothOn ? "⚡ 60fps 스무딩 · " : "") + (watermark ? "📺 HUD 워터마크 · " : "") + (badgeOn ? TickerBadgeTag : "") + (growthOn ? GrowthBadgeTag : "") + (lut != LutProfile.None ? "🎨 " + ColorGradingService.Label(lut) + " · " : "") + "🔇 무음";
+            var filterNoWm = watermark || badgeOn || growthOn || subsOn ? BuildVideoFilter(sharpenOn, smoothOn, resolution, false, null, lut: lut) : null;
+            if ((badgeOn || growthOn || subsOn) && filterNoWm is null) filterNoWm = "null";   // 배지 단독 → 무필터 재인코딩 폴백
+            var tag = ResolutionTag(resolution, sharpenOn) + (smoothOn ? "⚡ 60fps 스무딩 · " : "") + (watermark ? "📺 HUD 워터마크 · " : "") + (badgeOn ? TickerBadgeTag : "") + (growthOn ? GrowthBadgeTag : "") + (subsOn ? SubtitleTag : "") + (lut != LutProfile.None ? "🎨 " + ColorGradingService.Label(lut) + " · " : "") + "🔇 무음";
             if (webm && (filter is not null || !Path.GetExtension(sourcePath).Equals(".webm", StringComparison.OrdinalIgnoreCase)))
             {
                 temp = Path.Combine(fullDir, Path.GetFileNameWithoutExtension(name) + TempExt + ".webm");
@@ -500,7 +506,7 @@ public sealed partial class StockSuiteExporter
                     {
                         TryDelete(temp);
                         sharpenedWebm = await TryFfmpegAsync(BuildWebMArgs(sourcePath, temp, filterNoWm), temp, ct).ConfigureAwait(false);
-                        if (sharpenedWebm is null) tag = tag.Replace("📺 HUD 워터마크 · ", "⚠ 워터마크 생략 · ", StringComparison.Ordinal).Replace(TickerBadgeTag, "⚠ 배지 생략 · ", StringComparison.Ordinal).Replace(GrowthBadgeTag, "⚠ 성장 뱃지 생략 · ", StringComparison.Ordinal);
+                        if (sharpenedWebm is null) tag = tag.Replace("📺 HUD 워터마크 · ", "⚠ 워터마크 생략 · ", StringComparison.Ordinal).Replace(TickerBadgeTag, "⚠ 배지 생략 · ", StringComparison.Ordinal).Replace(GrowthBadgeTag, "⚠ 성장 뱃지 생략 · ", StringComparison.Ordinal).Replace(SubtitleTag, "⚠ 자막 생략 · ", StringComparison.Ordinal);
                     }
                     if (sharpenedWebm is null)
                     {
@@ -537,7 +543,7 @@ public sealed partial class StockSuiteExporter
                     TryDelete(temp);
                     (sharpened, var fb2) = await TryEncodeMp4Async(sourcePath, temp, filterNoWm, gpu, ct, resolution).ConfigureAwait(false);
                     fellBack |= fb2 || (sharpened is null && gpu != GpuEncoderVendor.Cpu && Accel?.Active != gpu);
-                    if (sharpened is null) tag = tag.Replace("📺 HUD 워터마크 · ", "⚠ 워터마크 생략 · ", StringComparison.Ordinal).Replace(TickerBadgeTag, "⚠ 배지 생략 · ", StringComparison.Ordinal).Replace(GrowthBadgeTag, "⚠ 성장 뱃지 생략 · ", StringComparison.Ordinal);
+                    if (sharpened is null) tag = tag.Replace("📺 HUD 워터마크 · ", "⚠ 워터마크 생략 · ", StringComparison.Ordinal).Replace(TickerBadgeTag, "⚠ 배지 생략 · ", StringComparison.Ordinal).Replace(GrowthBadgeTag, "⚠ 성장 뱃지 생략 · ", StringComparison.Ordinal).Replace(SubtitleTag, "⚠ 자막 생략 · ", StringComparison.Ordinal);
                 }
                 if (sharpened is null)
                 {
