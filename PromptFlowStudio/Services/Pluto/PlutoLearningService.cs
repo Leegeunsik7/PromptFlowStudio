@@ -41,7 +41,8 @@ public sealed class PlutoLearningService : IDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _sync = new();
     private Dictionary<string, Entry> _entries = new(StringComparer.Ordinal);
-    private bool _loaded;
+    private volatile bool _loaded;
+    private volatile bool _readOnly;   // 🛡️ 적재 불가(잠금·권한) 세션 — 기존 파일 덮어쓰기 금지
     private int _disposed;
 
     public PlutoLearningService() : this(null, null) { }
@@ -134,19 +135,9 @@ public sealed class PlutoLearningService : IDisposable
         try
         {
             if (_loaded) return;
-            Dictionary<string, Entry>? data = null;
-            try
-            {
-                if (File.Exists(_path))
-                {
-                    await using var fs = File.OpenRead(_path);
-                    data = await JsonSerializer.DeserializeAsync<Dictionary<string, Entry>>(fs, cancellationToken: ct).ConfigureAwait(false);
-                }
-            }
-            catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
-            {
-                System.Diagnostics.Debug.WriteLine("[Pluto] memory load failed: " + ex.Message);   // 손상 파일 → 빈 메모리로 재시작
-            }
+            // 손상 JSON → .corrupt 격리 후 빈 메모리 · 일시적 잠금 → 재시도 · 끝내 읽기 불가 → 디스크 덮어쓰기 금지(누적 XP 보호)
+            var (data, status) = await PlutoJsonStore.TryLoadAsync<Dictionary<string, Entry>>(_path, "Pluto", ct).ConfigureAwait(false);
+            _readOnly = status == PlutoLoadStatus.Unreadable;
             lock (_sync)
             {
                 _entries = new Dictionary<string, Entry>(StringComparer.Ordinal);
@@ -166,7 +157,6 @@ public sealed class PlutoLearningService : IDisposable
         if (string.IsNullOrWhiteSpace(trendId)) throw new ArgumentException("trendId required", nameof(trendId));
         await EnsureLoadedAsync(ct).ConfigureAwait(false);
         double w;
-        string json;
         lock (_sync)
         {
             if (!_entries.TryGetValue(trendId, out var e)) { e = new Entry(); _entries[trendId] = e; }
@@ -181,9 +171,8 @@ public sealed class PlutoLearningService : IDisposable
             }
             e.LastUtc = DateTime.UtcNow;
             w = e.Weight;
-            json = JsonSerializer.Serialize(_entries);
         }
-        await PersistAsync(json, ct).ConfigureAwait(false);
+        await PersistAsync(ct).ConfigureAwait(false);
         RaiseChanged();
         return w;
     }
@@ -196,34 +185,31 @@ public sealed class PlutoLearningService : IDisposable
         if (string.IsNullOrWhiteSpace(sourceKey)) throw new ArgumentException("sourceKey required", nameof(sourceKey));
         if (xp <= 0) throw new ArgumentOutOfRangeException(nameof(xp));
         await EnsureLoadedAsync(ct).ConfigureAwait(false);
-        string json;
         lock (_sync)
         {
             if (!_entries.TryGetValue(sourceKey, out var e)) { e = new Entry(); _entries[sourceKey] = e; }
             e.BonusXp = Math.Max(0, e.BonusXp) + xp;
             e.Interactions++;
             e.LastUtc = DateTime.UtcNow;
-            json = JsonSerializer.Serialize(_entries);
         }
-        await PersistAsync(json, ct).ConfigureAwait(false);
+        await PersistAsync(ct).ConfigureAwait(false);
         RaiseChanged();
         return CurrentXP;
     }
 
-    private async Task PersistAsync(string json, CancellationToken ct)
+    /// <summary>
+    /// 게이트 획득 후 "최신" 상태를 직렬화해 원자적 기록 — 스냅샷을 게이트 밖에서 뜨면 동시 기록(피드백 연타 + 내보내기 완료) 시 오래된 스냅샷이 나중에 기록되는 Lost-Update 발생.
+    /// 실패/읽기 불가 세션 → false([부분 구제] 메모리 내 상태 유지).
+    /// </summary>
+    private async Task<bool> PersistAsync(CancellationToken ct)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var dir = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-            var tmp = _path + ".tmp";
-            await File.WriteAllTextAsync(tmp, json, ct).ConfigureAwait(false);
-            File.Move(tmp, _path, overwrite: true);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            System.Diagnostics.Debug.WriteLine("[Pluto] memory persist failed: " + ex.Message);   // [부분 구제] 메모리 내 가중치 유지
+            if (_readOnly) return false;
+            string json;
+            lock (_sync) json = JsonSerializer.Serialize(_entries);
+            return await PlutoJsonStore.WriteAtomicAsync(_path, json, "Pluto", ct).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
     }

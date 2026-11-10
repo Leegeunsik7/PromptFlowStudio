@@ -201,10 +201,28 @@ public sealed partial class StockSuiteExporter
         _ => sharpen ? "🔎 1080p 고선명 · " : "",
     };
 
-    /// <summary>drawtext 텍스트 이스케이프 — <c>\ ' : %</c> 를 필터그래프 규칙으로 보호.</summary>
-    private static string EscapeDrawText(string s)
-        => s.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("'", "’", StringComparison.Ordinal)
-            .Replace(":", "\\:", StringComparison.Ordinal).Replace("%", "\\%", StringComparison.Ordinal);
+    /// <summary>
+    /// drawtext <c>text='…'</c> 따옴표 내부용 이스케이프 — FFmpeg 3단계(필터그래프 따옴표 → 옵션 <c>av_get_token</c> → drawtext 확장) 왕복 보장.
+    /// <c>\</c>→<c>\\\\</c>(리터럴 백슬래시) · <c>%</c>→<c>\\%</c>(<c>%{…}</c> 확장/Stray % 오류 차단) · <c>:</c>→<c>\:</c>(옵션 구분자) ·
+    /// <c>'</c>→<c>'\\\''</c>(따옴표 닫고 그래프 수준 이스케이프 후 재개) · 제어 문자(개행·탭·NUL 등)→공백. <c>, ; [ ]</c> 는 따옴표가 보호.
+    /// </summary>
+    internal static string EscapeDrawText(string? s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        var sb = new System.Text.StringBuilder(s.Length + 16);
+        foreach (var ch in s)
+        {
+            switch (ch)
+            {
+                case '\\': sb.Append("\\\\\\\\"); break;
+                case '%': sb.Append("\\\\%"); break;
+                case ':': sb.Append("\\:"); break;
+                case '\'': sb.Append("'\\\\\\''"); break;
+                default: sb.Append(char.IsControl(ch) ? ' ' : ch); break;
+            }
+        }
+        return sb.ToString();
+    }
 
     /// <summary>
     /// 📺 핀테크 HUD 워터마크 drawtext 체인 — 좌상단 브랜드, 우상단 LIVE 배지. <paramref name="fontFile"/> null 이면 fontfile 생략(ffmpeg 기본 폰트).

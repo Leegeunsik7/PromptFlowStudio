@@ -103,14 +103,14 @@ public class FintechSuiteBenchmarkBadgeBundleTests : IDisposable
         Assert.Contains("fontsize=20:fontcolor=white", up);
         Assert.Contains("fontcolor=" + StockSuiteExporter.TickerUpColor, up);
         Assert.DoesNotContain(StockSuiteExporter.TickerDownColor, up);
-        Assert.Contains("$185.50 ▲ +2.4\\%", up);
+        Assert.Contains("$185.50 ▲ +2.4\\\\%", up);   // 3단계 이스케이프 — 옵션 \\ → drawtext \% → 리터럴 %
         Assert.Contains("fontfile='C\\:/Windows/Fonts/arialbd.ttf'", up);
         Assert.Contains("x=iw-360-40", up);   // 우하단 카드
 
         var down = StockSuiteExporter.BuildTickerBadgeFilter(new TickerBadgeData("TSLA", null, 201m, -1.26), null, StockSuiteResolution.Uhd4K);
         Assert.NotNull(down);
         Assert.Contains("fontcolor=" + StockSuiteExporter.TickerDownColor, down);
-        Assert.Contains("▼ -1.3\\%", down);   // InvariantCulture 반올림(0.0)
+        Assert.Contains("▼ -1.3\\\\%", down);   // InvariantCulture 반올림(0.0)
         Assert.Contains("text='TSLA'", down);
         Assert.DoesNotContain("fontfile", down);   // 폰트 부재 → 생략 폴백
         Assert.Contains("fontsize=40", down);      // 4K 2배

@@ -2154,8 +2154,13 @@
     }
 
     /// <summary>🎵 캔버스 BGM 미리듣기 — 트랙 WAV(MediaRoot/bgm 캐시) → 가상호스트 URL → JS 가 video.ws-video 재생/일시정지/리셋에 0.25 볼륨으로 동기.</summary>
+    /// <remarks>
+    /// 🛡️ 세대 번호 가드 — WAV 합성(Task.Run) 중 토글/트랙 변경 또는 페이지 이탈(Dispose) 시 늦게 끝난 호출이 <c>set(true)</c> 를 보내
+    /// 다른 페이지에서 BGM 이 재생되거나 OFF 상태에 옛 트랙이 붙는 경합 차단. 미리듣기 전용 — 어떤 예외도 전파하지 않음.
+    /// </remarks>
     private async Task SyncBgmPreviewAsync()
     {
+        var seq = ++_bgmSyncSeq;
         try
         {
             string? url = null;
@@ -2166,13 +2171,17 @@
                 var wav = await Task.Run(() => PromptFlowStudio.Services.Export.StockSuiteExporter.EnsureBabyBgm(track, 30, dir));
                 url = wav is null ? null : Media.ToPlaybackUrl(wav);
             }
+            if (_disposed || seq != _bgmSyncSeq) return;   // 이탈 후/더 최신 동기화 존재 → 폐기
             await JS.InvokeAsync<bool>("pfsBgmPreview.set", _bgmOn && url is not null, url, PromptFlowStudio.Services.Export.StockSuiteExporter.BabyBgmVolume, "video.ws-video");
         }
-        catch (Exception ex) when (ex is JSException or InvalidOperationException or TaskCanceledException)
+        catch (Exception ex) when (ex is JSDisconnectedException or ObjectDisposedException) { /* WebView 해제 — 무시 */ }
+        catch (Exception ex)
         {
             Program.Log("Workspace.BgmPreview", ex);
         }
     }
+    private int _bgmSyncSeq;
+    private volatile bool _disposed;
     private bool _seamCheck;
 
     /// <summary>🔁 루프 이음새 인스펙터 토글 — JS rAF 가 [종료-2s, 종료] ∪ [0, 2s] 구간만 반복(interop 실패 시 상태 원복).</summary>
@@ -2806,7 +2815,7 @@
         _ = LoadIdentityAsync();   // 🍼 활성 프로필 선적재(예외 격리)
         var d = Draft.Consume();   // 모션프리셋(/motion)에서 전달된 스니펫 흡수
         if (!string.IsNullOrWhiteSpace(d)) _prompt = d;
-        if (Draft.ConsumePlutoTrend() is { } plutoId) PubVm.ActivePlutoTrendId = plutoId;   // 🪐 트렌드 랩 → 내보내기 학습 루프
+        PubVm.BindPlutoTrend(Draft.ConsumePlutoTrend());   // 🪐 트렌드 랩 → 내보내기 학습 루프(트렌드 없이 진입 → 잔존 Id 소거 · 진행 중 내보내기는 보존)
         if (Draft.ConsumeBgm() is { } radarBgm) { _bgmTrack = radarBgm; _bgmOn = true; }   // 📈 SNS 레이더 공식 → 감성 BGM 트랙/ON
         _recent = Library.List(6);
         _vm.UserInput = _prompt;
@@ -2948,6 +2957,7 @@
 
     public void Dispose()
     {
+        _disposed = true;   // 🎵 진행 중 BGM 동기화의 늦은 set(true) 차단
         IdentityVault.Changed -= OnIdentityChanged;
         _typingTimer?.Dispose();
         History.Changed -= OnHistoryChanged;
@@ -2973,11 +2983,9 @@
             try { JS.InvokeAsync<bool>("pfsSeamInspector.set", false, 2.0, "video.ws-video").AsTask().ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted); }
             catch (Exception ex) when (ex is JSException or InvalidOperationException) { Program.Log("Workspace.SeamCheck", ex); }
         }
-        if (_bgmOn)
-        {
-            try { JS.InvokeVoidAsync("pfsBgmPreview.stop").AsTask().ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted); }
-            catch (Exception ex) when (ex is JSException or InvalidOperationException) { Program.Log("Workspace.BgmPreview", ex); }
-        }
+        // 🎵 무조건 정지(멱등) — _bgmOn=false 여도 경합으로 남은 전역 Audio·MutationObserver 를 정리(재진입 시 OFF 상태 BGM 재생 방지)
+        try { JS.InvokeVoidAsync("pfsBgmPreview.stop").AsTask().ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted); }
+        catch (Exception ex) when (ex is JSException or JSDisconnectedException or InvalidOperationException or ObjectDisposedException) { Program.Log("Workspace.BgmPreview", ex); }
     }
 
     // ── 🕒 프롬프트 타임머신 ──
@@ -3012,6 +3020,7 @@
     {
         Snap("플루토 시나리오 전");
         _prompt = WithIdentityAnchor(sc.BuildStudioPrompt());   // 🍼 코파일럿 앵커 누락(테마 불일치) 대비 · 멱등
+        PubVm.BindPlutoTrend(null);   // 🪐 프롬프트 전면 교체 → 이전 트렌드 보상 대상 해제(무관 내보내기 오보상 차단)
         if (_vm is not null) _vm.UserInput = _prompt;
         _bgmTrack = sc.BgmTrack;
         _bgmOn = true;
@@ -3124,6 +3133,7 @@
         var draw = _liveDraw = () => JS.InvokeVoidAsync("pfsLiveCanvas.draw", "ws-live", live.Width, live.Height, live.Frame).AsTask();
         var cts = _liveCts = new CancellationTokenSource();
         _ = LiveLoopAsync(live, draw, cts.Token);
+        _ = SyncBgmPreviewAsync();   // 🎵 SNS 레이더 주입 BGM ON → 미리듣기 시작 · OFF → 잔존 전역 미리듣기 정리(예외 내부 격리)
     }
 
     private async Task SetEcoModeAsync(bool enabled)

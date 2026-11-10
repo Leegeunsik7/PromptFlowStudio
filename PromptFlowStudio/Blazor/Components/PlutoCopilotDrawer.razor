@@ -1,4 +1,5 @@
 @using PromptFlowStudio.Services.Pluto
+@implements IDisposable
 
 @* [PromptFlow Studio] 🪐 플루토 코파일럿 드로어 — 일상 메모 → 3스타일(📷 화보 · 🎨 픽사풍 3D · 📼 16mm 레트로) 15초 3막 변형 카드 → 🎬 1-클릭 스튜디오 적용.
    모바일 링크 대상 서브컴포넌트 — @inject 금지(코파일럿은 파라미터 주입). *@
@@ -87,15 +88,37 @@
     private string? _error;
     private bool _busy;
 
+    private CancellationTokenSource? _cts;   // 🛡️ 진행 중 생성 — 닫기/페이지 이탈 시 취소(늦은 결과가 재오픈 시 튀어나오는 잔상 차단)
+
     private async Task GenerateAsync()
     {
         _error = null;
         if (_busy || Copilot is null || string.IsNullOrWhiteSpace(_memo)) return;
         _busy = true;
         _variants = null;
-        try { _variants = await Copilot.DraftTripletVariantsAsync(_memo); }   // 🧠 Gemini 우선 · 3.5초 내 로컬 3스타일 폴백
+        var cts = new CancellationTokenSource();
+        _cts = cts;
+        try
+        {
+            var result = await Copilot.DraftTripletVariantsAsync(_memo, cts.Token);   // 🧠 Gemini 우선 · 3.5초 내 로컬 3스타일 폴백
+            if (!cts.IsCancellationRequested) _variants = result;
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested) { }   // 닫기/이탈 — 조용히 폐기
         catch (Exception ex) { Program.Log("PlutoCopilot.Triplet", ex); _variants = null; _error = "⚠ 시나리오 생성 실패 — 메모를 바꿔 다시 시도해 주세요"; }
-        finally { _busy = false; }
+        finally
+        {
+            if (ReferenceEquals(_cts, cts)) _cts = null;
+            cts.Dispose();
+            _busy = false;
+        }
+    }
+
+    private void CancelPending()
+    {
+        var cts = _cts;
+        _cts = null;
+        try { cts?.Cancel(); }
+        catch (ObjectDisposedException) { }
     }
 
     private async Task ApplyAsync(PlutoScriptVariant v)
@@ -106,7 +129,10 @@
 
     private async Task CloseAsync()
     {
+        CancelPending();
         try { await OnClose.InvokeAsync(); }
         catch (Exception ex) { Program.Log("PlutoCopilot.Close", ex); }
     }
+
+    public void Dispose() => CancelPending();
 }

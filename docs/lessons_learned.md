@@ -37,3 +37,7 @@
 - 증상: 전체 테스트 testhost 무CPU 정체(간헐) — blame-hang 덤프상 `LiveSessionSyncBridge.Stop()` → `CloseAsync`(CloseOutputAsyncCore → Abort)와 취소된 `ReceiveAsync`(Abort) · keepalive 타이머가 `WebSocketBase` 내부 락을 교차 대기.
 - 규칙: 수신 루프 취소와 동시에 소켓을 닫는 정지 경로는 `CloseAsync` 금지 → `Abort()`만. 정상 종료(원격 Close 수신 후)에서만 `CloseAsync`.
 - 진단: `dotnet test --blame-hang --blame-hang-timeout 8m` → `dotnet-dump analyze <dmp> -c "clrstack -all"`.
+## 8. Pluto 자가 진단 감사 (2026-11-10)
+- drawtext `text='…'` 는 FFmpeg 3단계 파싱(그래프 따옴표 → 옵션 `av_get_token` → drawtext 확장): `%`는 `\\%`, `\`는 `\\\\`, `'`는 `'\\\''`(따옴표 닫고 재개) — 1단계(`\%`)만 하면 "Stray %"로 필터 실패 → 오버레이 전부 생략 폴백. 검증은 `PlutoHardeningAuditTests` 파서 포팅 시뮬레이터.
+- JSON 저장소 `lock{스냅샷}` → `await gate{기록}` 순서는 동시 기록 시 오래된 스냅샷이 나중에 써지는 Lost-Update. 게이트 안에서 최신 상태 직렬화(`PlutoJsonStore`). 적재 시 일시 잠금을 "빈 파일"로 오인하면 다음 저장이 누적 학습을 덮어씀 → Unreadable 세션은 쓰기 금지.
+- 벽시계 단일 최대치(`MaxIngestUs < 2ms`) 단언은 병렬 GC 정지 1회로 깨짐 → N회 중 최선(min) 실측으로 SLA, 최대치는 계측 여부만.

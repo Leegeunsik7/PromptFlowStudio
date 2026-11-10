@@ -89,6 +89,7 @@ public sealed class PlutoIdentityVault : IDisposable
     private readonly object _sync = new();
     private List<PlutoIdentityProfile> _profiles = new();
     private volatile bool _loaded;
+    private volatile bool _readOnly;   // 🛡️ 적재 불가(잠금·권한) 세션 — 기존 파일 덮어쓰기 금지
     private int _disposed;
 
     public PlutoIdentityVault() : this(null) { }
@@ -137,19 +138,9 @@ public sealed class PlutoIdentityVault : IDisposable
         try
         {
             if (_loaded) return;
-            List<PlutoIdentityProfile>? data = null;
-            try
-            {
-                if (File.Exists(_path))
-                {
-                    await using var fs = File.OpenRead(_path);
-                    data = await JsonSerializer.DeserializeAsync<List<PlutoIdentityProfile>>(fs, cancellationToken: ct).ConfigureAwait(false);
-                }
-            }
-            catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
-            {
-                System.Diagnostics.Debug.WriteLine("[Pluto.Identity] load failed: " + ex.Message);   // 손상 파일 → 빈 볼트로 재시작
-            }
+            // 손상 JSON → .corrupt 격리 후 빈 볼트 · 일시적 잠금 → 재시도 · 끝내 읽기 불가 → 디스크 덮어쓰기 금지(기존 프로필 보호)
+            var (data, status) = await PlutoJsonStore.TryLoadAsync<List<PlutoIdentityProfile>>(_path, "Pluto.Identity", ct).ConfigureAwait(false);
+            _readOnly = status == PlutoLoadStatus.Unreadable;
             lock (_sync)
             {
                 _profiles = new List<PlutoIdentityProfile>();
@@ -169,39 +160,38 @@ public sealed class PlutoIdentityVault : IDisposable
         return ActiveProfile;
     }
 
-    /// <summary>프로필 업서트 — Id 미지정 시 Guid 발급 · 활성 저장 시 다른 프로필 비활성 · 즉시 원자적 영속.</summary>
-    public async Task SaveProfileAsync(PlutoIdentityProfile profile, CancellationToken ct = default)
+    /// <summary>프로필 업서트 — Id 미지정 시 Guid 발급 · 활성 저장 시 다른 프로필 비활성 · 즉시 원자적 영속. 반환 = 디스크 영속 성공(false = 메모리만 유지).</summary>
+    public async Task<bool> SaveProfileAsync(PlutoIdentityProfile profile, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(profile);
         if (string.IsNullOrWhiteSpace(profile.SubjectName)) throw new ArgumentException("SubjectName required", nameof(profile));
         await EnsureLoadedAsync(ct).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(profile.Id)) profile.Id = Guid.NewGuid().ToString("N");
         var copy = Normalize(profile.Clone());
-        string json;
         lock (_sync)
         {
             if (copy.IsActive)
                 foreach (var p in _profiles) p.IsActive = false;
             var idx = _profiles.FindIndex(p => string.Equals(p.Id, copy.Id, StringComparison.Ordinal));
             if (idx >= 0) _profiles[idx] = copy; else _profiles.Add(copy);
-            json = JsonSerializer.Serialize(_profiles);
         }
-        await PersistAsync(json, ct).ConfigureAwait(false);
+        var ok = await PersistAsync(ct).ConfigureAwait(false);
         RaiseChanged();
+        return ok;
     }
 
-    public async Task DeleteProfileAsync(string id, CancellationToken ct = default)
+    /// <summary>프로필 삭제 — 반환 = 디스크 상태 일치(삭제 영속 성공 또는 대상 없음). false = 영속 실패(메모리만 반영).</summary>
+    public async Task<bool> DeleteProfileAsync(string id, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(id)) return;
+        if (string.IsNullOrWhiteSpace(id)) return false;
         await EnsureLoadedAsync(ct).ConfigureAwait(false);
-        string json;
         lock (_sync)
         {
-            if (_profiles.RemoveAll(p => string.Equals(p.Id, id, StringComparison.Ordinal)) == 0) return;
-            json = JsonSerializer.Serialize(_profiles);
+            if (_profiles.RemoveAll(p => string.Equals(p.Id, id, StringComparison.Ordinal)) == 0) return true;   // 이미 없음 = 디스크와 일치
         }
-        await PersistAsync(json, ct).ConfigureAwait(false);
+        var ok = await PersistAsync(ct).ConfigureAwait(false);
         RaiseChanged();
+        return ok;
     }
 
     /// <summary>🧬 테마와 프로필 구분 일치 시 앵커(Baby ↔ 육아, Pet ↔ 반려동물), 아니면 빈 문자열.</summary>
@@ -240,20 +230,19 @@ public sealed class PlutoIdentityVault : IDisposable
         return p;
     }
 
-    private async Task PersistAsync(string json, CancellationToken ct)
+    /// <summary>
+    /// 게이트 획득 후 "최신" 상태를 직렬화해 원자적 기록 — 스냅샷을 게이트 밖에서 뜨면 동시 저장 시 오래된 스냅샷이 나중에 기록되는 Lost-Update 발생.
+    /// 실패/읽기 불가 세션 → false([부분 구제] 메모리 내 프로필 유지).
+    /// </summary>
+    private async Task<bool> PersistAsync(CancellationToken ct)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var dir = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-            var tmp = _path + ".tmp";
-            await File.WriteAllTextAsync(tmp, json, ct).ConfigureAwait(false);
-            File.Move(tmp, _path, overwrite: true);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            System.Diagnostics.Debug.WriteLine("[Pluto.Identity] persist failed: " + ex.Message);   // [부분 구제] 메모리 내 프로필 유지
+            if (_readOnly) return false;
+            string json;
+            lock (_sync) json = JsonSerializer.Serialize(_profiles);
+            return await PlutoJsonStore.WriteAtomicAsync(_path, json, "Pluto.Identity", ct).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
     }

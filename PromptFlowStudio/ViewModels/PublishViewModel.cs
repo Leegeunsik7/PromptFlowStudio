@@ -721,6 +721,20 @@ public sealed class PublishViewModel : IDisposable
         set => Volatile.Write(ref _activePlutoTrendId, string.IsNullOrWhiteSpace(value) ? null : value.Trim());
     }
 
+    /// <summary>🪐 보상 대상 내보내기(발행·StockSuite·멀티 패키지) 진행 중 — 잔존 트렌드 Id 소거 보류.</summary>
+    public bool IsPlutoRewardExportBusy => IsBusy || IsStockSuiteBusy || IsMultiPackageBusy;
+
+    /// <summary>
+    /// 🪐 작업실 세션 트렌드 결선 — 새 Id 가 있으면 교체, 없으면(트렌드 없이 진입/프롬프트 전면 교체) 진행 중 보상 내보내기가 없을 때만 잔존 Id 소거.
+    /// 싱글톤 VM 에 남은 옛 트렌드가 이후 무관한 내보내기에서 ExportCompleted 를 오적립하는 것을 차단. 반환 = 결선 후 활성 Id.
+    /// </summary>
+    public string? BindPlutoTrend(string? trendId)
+    {
+        if (!string.IsNullOrWhiteSpace(trendId)) ActivePlutoTrendId = trendId;
+        else if (!IsPlutoRewardExportBusy) ActivePlutoTrendId = null;
+        return ActivePlutoTrendId;
+    }
+
     /// <summary>
     /// 🪐 내보내기 성공 → 🧬 프롬프트 DNA 강화(트렌드/수동 프롬프트 공통) + 활성 트렌드에 ExportCompleted 기록
     /// (원자적 소거 · 중복 보상 차단 · 예외 격리). 트렌드 보상 기록 시 true.

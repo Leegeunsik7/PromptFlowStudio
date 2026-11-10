@@ -32,7 +32,8 @@ public sealed class PlutoSocialRadarEngine : IDisposable
     private readonly Dictionary<string, SocialTrendInsight> _known = new(StringComparer.Ordinal);
     private readonly List<string> _llmIds = new();
     private Dictionary<string, Entry> _entries = new(StringComparer.Ordinal);
-    private bool _loaded;
+    private volatile bool _loaded;
+    private volatile bool _readOnly;   // 🛡️ 적재 불가(잠금·권한) 세션 — 기존 파일 덮어쓰기 금지
     private long _serial;
     private int _disposed;
 
@@ -322,19 +323,9 @@ public sealed class PlutoSocialRadarEngine : IDisposable
         try
         {
             if (_loaded) return;
-            Dictionary<string, Entry>? data = null;
-            try
-            {
-                if (File.Exists(_path))
-                {
-                    await using var fs = File.OpenRead(_path);
-                    data = await JsonSerializer.DeserializeAsync<Dictionary<string, Entry>>(fs, cancellationToken: ct).ConfigureAwait(false);
-                }
-            }
-            catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
-            {
-                System.Diagnostics.Debug.WriteLine("[Pluto.Radar] load failed: " + ex.Message);   // 손상 파일 → 빈 지식으로 재시작
-            }
+            // 손상 JSON → .corrupt 격리 후 빈 지식 · 일시적 잠금 → 재시도 · 끝내 읽기 불가 → 디스크 덮어쓰기 금지(채널 학습 보호)
+            var (data, status) = await PlutoJsonStore.TryLoadAsync<Dictionary<string, Entry>>(_path, "Pluto.Radar", ct).ConfigureAwait(false);
+            _readOnly = status == PlutoLoadStatus.Unreadable;
             lock (_sync)
             {
                 _entries = new Dictionary<string, Entry>(StringComparer.Ordinal);
@@ -342,7 +333,7 @@ public sealed class PlutoSocialRadarEngine : IDisposable
                     foreach (var kv in data)
                         if (kv.Value is not null && !string.IsNullOrWhiteSpace(kv.Key) && double.IsFinite(kv.Value.Weight))
                         {
-                            kv.Value.Hashtags ??= new List<string>();
+                            Repair(kv.Value);   // 🛡️ 수동 편집/구버전 null 필드 → FromEntry NRE 차단
                             _entries[kv.Key] = kv.Value;
                         }
             }
@@ -361,7 +352,6 @@ public sealed class PlutoSocialRadarEngine : IDisposable
         await EnsureLoadedAsync(ct).ConfigureAwait(false);
         var insight = Find(insightId) ?? throw new KeyNotFoundException("unknown social insight: " + insightId);
         double w;
-        string json;
         lock (_sync)
         {
             if (!_entries.TryGetValue(insightId, out var e)) { e = new Entry(); _entries[insightId] = e; }
@@ -370,9 +360,8 @@ public sealed class PlutoSocialRadarEngine : IDisposable
             e.Learned++;
             e.LastUtc = DateTime.UtcNow;
             w = e.Weight;
-            json = JsonSerializer.Serialize(_entries);
         }
-        await PersistAsync(json, ct).ConfigureAwait(false);
+        await PersistAsync(ct).ConfigureAwait(false);
         if (_learning is not null)
         {
             try { await _learning.AddBonusXpAsync("social:" + insightId, LearnXp, ct).ConfigureAwait(false); }
@@ -434,6 +423,21 @@ public sealed class PlutoSocialRadarEngine : IDisposable
         e.Hashtags = new List<string>(s.ViralHashtagSet);
     }
 
+    /// <summary>역직렬화 엔트리 null 문자열/목록 정규화(JSON <c>null</c> 은 이니셜라이저 기본값을 덮어씀) · 열거형 범위 밖 → 기본값.</summary>
+    internal static void Repair(Entry e)
+    {
+        e.Title ??= "";
+        e.ViralMechanism ??= "";
+        e.PacingGuideline ??= "";
+        e.Camera ??= "";
+        e.Lighting ??= "";
+        e.SubjectAction ??= "";
+        if (e.Hashtags is null) e.Hashtags = new List<string>();
+        else e.Hashtags.RemoveAll(static h => string.IsNullOrWhiteSpace(h));
+        if (!Enum.IsDefined(e.Category)) e.Category = SocialChannelCategory.DailyAesthetic;
+        if (!Enum.IsDefined(e.Bgm)) e.Bgm = SocialBgmStyle.LullabyLoFi;
+    }
+
     private static SocialTrendInsight? FromEntry(string id, Entry e)
     {
         if (e.Title.Length == 0 || e.ViralMechanism.Length == 0) return null;
@@ -442,20 +446,19 @@ public sealed class PlutoSocialRadarEngine : IDisposable
         { FromLlm = id.StartsWith(IdPrefix + "llm-", StringComparison.Ordinal) };
     }
 
-    private async Task PersistAsync(string json, CancellationToken ct)
+    /// <summary>
+    /// 게이트 획득 후 "최신" 상태를 직렬화해 원자적 기록 — 스냅샷을 게이트 밖에서 뜨면 동시 기록(피드백 연타 + 내보내기 완료) 시 오래된 스냅샷이 나중에 기록되는 Lost-Update 발생.
+    /// 실패/읽기 불가 세션 → false([부분 구제] 메모리 내 상태 유지).
+    /// </summary>
+    private async Task<bool> PersistAsync(CancellationToken ct)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var dir = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-            var tmp = _path + ".tmp";
-            await File.WriteAllTextAsync(tmp, json, ct).ConfigureAwait(false);
-            File.Move(tmp, _path, overwrite: true);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            System.Diagnostics.Debug.WriteLine("[Pluto.Radar] persist failed: " + ex.Message);   // [부분 구제] 메모리 내 가중치 유지
+            if (_readOnly) return false;
+            string json;
+            lock (_sync) json = JsonSerializer.Serialize(_entries);
+            return await PlutoJsonStore.WriteAtomicAsync(_path, json, "Pluto.Radar", ct).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
     }

@@ -63,7 +63,8 @@ public sealed class PlutoPreferenceLexicon : IDisposable
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _sync = new();
     private Dictionary<string, Entry> _entries = new(StringComparer.Ordinal);
-    private bool _loaded;
+    private volatile bool _loaded;
+    private volatile bool _readOnly;   // 🛡️ 적재 불가(잠금·권한) 세션 — 기존 파일 덮어쓰기 금지
     private int _disposed;
 
     public PlutoPreferenceLexicon() : this(null) { }
@@ -177,19 +178,9 @@ public sealed class PlutoPreferenceLexicon : IDisposable
         try
         {
             if (_loaded) return;
-            List<Entry>? data = null;
-            try
-            {
-                if (File.Exists(_path))
-                {
-                    await using var fs = File.OpenRead(_path);
-                    data = await JsonSerializer.DeserializeAsync<List<Entry>>(fs, cancellationToken: ct).ConfigureAwait(false);
-                }
-            }
-            catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
-            {
-                System.Diagnostics.Debug.WriteLine("[Pluto.DNA] load failed: " + ex.Message);   // 손상 파일 → 빈 사전
-            }
+            // 손상 JSON → .corrupt 격리 후 빈 사전 · 일시적 잠금 → 재시도 · 끝내 읽기 불가 → 디스크 덮어쓰기 금지(학습 DNA 보호)
+            var (data, status) = await PlutoJsonStore.TryLoadAsync<List<Entry>>(_path, "Pluto.DNA", ct).ConfigureAwait(false);
+            _readOnly = status == PlutoLoadStatus.Unreadable;
             lock (_sync)
             {
                 _entries = new Dictionary<string, Entry>(StringComparer.Ordinal);
@@ -209,7 +200,6 @@ public sealed class PlutoPreferenceLexicon : IDisposable
         var tokens = Extract(prompt);
         if (tokens.Count == 0) return tokens;
         await EnsureLoadedAsync(ct).ConfigureAwait(false);
-        string json;
         lock (_sync)
         {
             var now = DateTime.UtcNow;
@@ -222,9 +212,8 @@ public sealed class PlutoPreferenceLexicon : IDisposable
                 e.LastUtc = now;
             }
             Trim();
-            json = JsonSerializer.Serialize(new List<Entry>(_entries.Values));
         }
-        await PersistAsync(json, ct).ConfigureAwait(false);
+        await PersistAsync(ct).ConfigureAwait(false);
         RaiseChanged();
         return tokens;
     }
@@ -258,31 +247,31 @@ public sealed class PlutoPreferenceLexicon : IDisposable
     /// <summary>버킷별 상위 가중치 토큰(양수만 · 가중치→빈도 내림차순).</summary>
     public IReadOnlyList<string> TopTokens(DnaBucket bucket, int take)
     {
-        var picks = new List<Entry>();
+        // 🛡️ 값 스냅샷을 lock 안에서 복사 — 정렬 중 동시 ReinforceAsync 가 Weight 를 바꾸면 비교 불일치(InvalidOperationException) 가능.
+        var picks = new List<(string Phrase, double Weight, int Frequency)>();
         lock (_sync)
             foreach (var kv in _entries)
-                if (kv.Value.Bucket == bucket && kv.Value.Weight > 0) picks.Add(kv.Value);
-        picks.Sort((a, b) => { var c = b.Weight.CompareTo(a.Weight); return c != 0 ? c : b.Frequency.CompareTo(a.Frequency); });
+                if (kv.Value.Bucket == bucket && kv.Value.Weight > 0) picks.Add((kv.Value.Phrase, kv.Value.Weight, kv.Value.Frequency));
+        picks.Sort(static (a, b) => { var c = b.Weight.CompareTo(a.Weight); return c != 0 ? c : b.Frequency.CompareTo(a.Frequency); });
         var n = Math.Min(Math.Max(0, take), picks.Count);
         var r = new string[n];
         for (var i = 0; i < n; i++) r[i] = picks[i].Phrase;
         return r;
     }
 
-    private async Task PersistAsync(string json, CancellationToken ct)
+    /// <summary>
+    /// 게이트 획득 후 "최신" 상태를 직렬화해 원자적 기록 — 스냅샷을 게이트 밖에서 뜨면 동시 기록(피드백 연타 + 내보내기 완료) 시 오래된 스냅샷이 나중에 기록되는 Lost-Update 발생.
+    /// 실패/읽기 불가 세션 → false([부분 구제] 메모리 내 상태 유지).
+    /// </summary>
+    private async Task<bool> PersistAsync(CancellationToken ct)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var dir = Path.GetDirectoryName(_path);
-            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-            var tmp = _path + ".tmp";
-            await File.WriteAllTextAsync(tmp, json, ct).ConfigureAwait(false);
-            File.Move(tmp, _path, overwrite: true);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            System.Diagnostics.Debug.WriteLine("[Pluto.DNA] persist failed: " + ex.Message);   // [부분 구제] 메모리 내 유지
+            if (_readOnly) return false;
+            string json;
+            lock (_sync) json = JsonSerializer.Serialize(new List<Entry>(_entries.Values));
+            return await PlutoJsonStore.WriteAtomicAsync(_path, json, "Pluto.DNA", ct).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
     }

@@ -162,8 +162,10 @@
                 FavoriteItem = _item,
                 IsActive = true,
             };
-            await Vault.SaveProfileAsync(p);
+            var persisted = await Vault.SaveProfileAsync(p);
             _id = p.Id;
+            // 🛡️ 디스크 영속 실패(잠금·권한) — 메모리 프로필은 적용(Changed 통지)되지만 재시작 시 유실 → 모달 유지 + 경고
+            if (!persisted) { _error = "⚠ 디스크 저장 실패 — 이번 실행 동안만 유지돼요. 다시 저장해 주세요"; return; }
             await OnSaved.InvokeAsync(await Vault.GetActiveProfileAsync());
         }
         catch (Exception ex) { Program.Log("PlutoIdentity.Save", ex); _error = "⚠ 저장 실패 — 다시 시도해 주세요"; }
@@ -177,8 +179,9 @@
         _busy = true;
         try
         {
-            await Vault.DeleteProfileAsync(_id);
+            var persisted = await Vault.DeleteProfileAsync(_id);
             _id = "";
+            if (!persisted) { _error = "⚠ 디스크 반영 실패 — 재시작 시 프로필이 다시 보일 수 있어요"; return; }
             await OnSaved.InvokeAsync(null);
         }
         catch (Exception ex) { Program.Log("PlutoIdentity.Delete", ex); _error = "⚠ 삭제 실패"; }
