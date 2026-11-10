@@ -2994,7 +2994,8 @@
     private bool _plutoDrawer;
 
     /// <summary>🎬 코파일럿 시나리오 → 프롬프트(3막+카메라) · 감성 BGM 트랙/ON 주입 → 드로어 닫기(되돌리기 스냅샷 보존).</summary>
-    private async Task ApplyPlutoScriptAsync(PromptFlowStudio.Services.Pluto.PlutoCopilotScript sc)
+    /// <summary>🎞 트리플렛 변형 1-클릭 적용 — 프롬프트(3막 + 카메라) 주입 · 추천 BGM 활성 · 드로어 닫기 · 토스트.</summary>
+    private async Task ApplyPlutoScriptAsync(PromptFlowStudio.Services.Pluto.PlutoScriptVariant sc)
     {
         Snap("플루토 시나리오 전");
         _prompt = WithIdentityAnchor(sc.BuildStudioPrompt());   // 🍼 코파일럿 앵커 누락(테마 불일치) 대비 · 멱등
@@ -3003,7 +3004,7 @@
         _bgmOn = true;
         Snap("🪐 " + sc.HookTitle);
         _plutoDrawer = false;
-        _camToast = "🪐 플루토 시나리오 적용 — " + sc.HookTitle;
+        _camToast = "🎬 " + sc.StyleName + " 스타일 적용 — " + sc.HookTitle;
         try { await SyncBgmPreviewAsync(); }
         catch (Exception ex) { Program.Log("Workspace.PlutoBgm", ex); }   // 미리듣기만 생략 · 주입 유지
     }

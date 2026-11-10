@@ -35,7 +35,7 @@ public sealed record PlutoCopilotScript(
 /// 🪐 Pluto Interactive Copilot — 사용자의 일상 메모(한국어) → 마일스톤·장소·감정 해석 → 15초 3막(분투 → 성공 → 여운) 바이럴 시나리오.
 /// DNA 렉시콘 상위 조명/분위기 토큰을 우선 반영. 🧠 <see cref="IPlutoLlmClient"/> 주입 시 <see cref="DraftScriptFromMemoAsync"/> 가 Gemini 스토리텔링 우선 · 실패 시 로컬 템플릿 폴백.
 /// </summary>
-public sealed class PlutoCopilot
+public sealed partial class PlutoCopilot
 {
     public const int TotalSeconds = 15;
     private static readonly Regex DayCount = new(@"(\d{1,4})\s*일", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
@@ -83,6 +83,18 @@ public sealed class PlutoCopilot
     public async Task<PlutoCopilotScript> DraftScriptFromMemoAsync(string userMemo, DateTime? now = null, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(userMemo)) throw new ArgumentException("memo required", nameof(userMemo));
+        await EnsureContextLoadedAsync(ct).ConfigureAwait(false);
+        var local = Draft(userMemo, now);   // 검증 + 폴백 기준선(카테고리 · BGM)
+        var text = await PlutoLlmBridge.TryCompleteAsync(_llm, LlmScriptInstruction, BuildLlmScriptRequest(local, now ?? DateTime.Now), 0.85, ct).ConfigureAwait(false);
+        var llm = text is null ? null : ParseLlmScript(text, local);
+        if (llm is null) return local;
+        var anchor = IdentityAnchor(local.Category);
+        return anchor.Length == 0 ? llm : llm with { VideoPrompt = PlutoIdentityVault.ApplyAnchor(llm.VideoPrompt, anchor) };   // 🍼 LLM 결과에도 앵커 보장(멱등)
+    }
+
+    /// <summary>📈🍼 레이더 · 아이덴티티 볼트 지연 로드([부분 구제] — 실패 시 해당 컨텍스트 없이 생성, 취소만 전파).</summary>
+    private async Task EnsureContextLoadedAsync(CancellationToken ct)
+    {
         if (_radar is not null)
         {
             try { await _radar.EnsureLoadedAsync(ct).ConfigureAwait(false); }
@@ -95,12 +107,6 @@ public sealed class PlutoCopilot
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Copilot] identity load: " + ex.Message); }   // [부분 구제] 앵커 없이 생성
         }
-        var local = Draft(userMemo, now);   // 검증 + 폴백 기준선(카테고리 · BGM)
-        var text = await PlutoLlmBridge.TryCompleteAsync(_llm, LlmScriptInstruction, BuildLlmScriptRequest(local, now ?? DateTime.Now), 0.85, ct).ConfigureAwait(false);
-        var llm = text is null ? null : ParseLlmScript(text, local);
-        if (llm is null) return local;
-        var anchor = IdentityAnchor(local.Category);
-        return anchor.Length == 0 ? llm : llm with { VideoPrompt = PlutoIdentityVault.ApplyAnchor(llm.VideoPrompt, anchor) };   // 🍼 LLM 결과에도 앵커 보장(멱등)
     }
 
     /// <summary>🍼 활성 프로필 앵커(미주입/불일치 테마 → 빈 문자열).</summary>

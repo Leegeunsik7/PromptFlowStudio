@@ -1,17 +1,18 @@
 # Current Project Status
 
-- Active Milestone: 【Pluto Identity Vault · Persona Consistency】 🍼 아기/반려동물 프로필 영속 · D-Day 뱃지 · 캐릭터 일관성 앵커
+- Active Milestone: 【Pluto Multi-Variant Triplet Copilot】 🎞 📷 스튜디오 화보 · 🎨 픽사풍 3D · 📼 16mm 레트로 3스타일 동시 기획
 - Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (Mobile: 로컬 Android SDK 부재로 미빌드)
-- Tests: 전체 929/929 PASS (실패 0 · 8m 28s · MaxCpuCount=2) — 1차 실행 시 `MasterStation_EpgAndFailover_Check` 1회 간헐 실패 → 단독/재실행 PASS
+- Tests: 전체 932/932 PASS (실패 0 · 10m 50s · MaxCpuCount=2)
 - Updated: 2026-11-10 (KST)
 
 ## Completed
-- 🍼 `PlutoIdentityVault` — `pluto_identity_vault.json` 원자적 영속 · 활성 프로필 1개 · 손상 파일 → 빈 볼트 재시작 · `Changed` 이벤트
-- 🧬 `PlutoIdentityProfile` — `CurrentDDay`(최소 1) · `GetConsistencyAnchor()` · `FormatBadge()`(🍼/🐾 이름 · D+N)
-- 🔗 Generative Engine / Copilot — `Identity` init 속성 · 테마 일치(Baby↔육아, Pet↔반려) 시 앵커 선두 삽입(LLM 요청 + 결과 멱등 보장)
-- 🖥 `Workspace.razor` — 성장 뱃지 프로필 바인딩 · 뱃지/툴바 칩 → 모달 · 생성/강화/코파일럿 적용 프롬프트에 앵커(생성은 비영속)
-- 🪟 `PlutoIdentityModal.razor` — 이름·출생일·구분·성별·외모 특징(추천 칩)·애착 소품 · 저장/삭제 + 토스트 · Trend Lab 진입 칩
-- 🧪 `PlutoIdentityVaultTests` 4건 · DI `MainForm.cs` + `MauiProgram.cs` 양쪽 결선
+- 🎞 `PlutoScriptVariant` — VariantId · StyleName · HookTitle · Prompt · Camera · BGM · Act1/2/3 + `BgmTrack` · `UsedLlm` · `BuildStudioPrompt()`
+- 🧠 `PlutoCopilot.DraftTripletVariantsAsync` — Gemini 1회 호출(3.5초 예산) · 슬롯별 스키마 검증 · 누락 슬롯만 로컬 스타일 사전 보강([부분 구제])
+- ⏱ 3막 타이밍 0-4s Hook · 4-11s Climax · 11-15s Emotional Smile · 🍼 아이덴티티 앵커 3변형 전부 멱등 삽입 · SNS 페이싱 반영
+- ♻ `DraftScriptFromMemoAsync` 단일 API 하위 호환 유지(컨텍스트 로드 헬퍼 공용화)
+- 🪟 `PlutoCopilotDrawer.razor` — `🧠 3가지 감성 스타일로 기획 중...` 펄스 뱃지 · 3카드(3막 칩 · 카메라/BGM 뱃지) · `🎬 이 스타일로 스튜디오 적용`
+- 🖥 `Workspace.razor` — 변형 프롬프트+카메라 주입 · 추천 BGM 활성 · 드로어 닫기 · 토스트
+- 🧪 `PlutoCopilotTripletTests` 3건
 
 ## Next
-- Step 2 진행 · 모바일 빌드 검증(Android SDK 확보 시)
+- Step 3 진행 · 모바일 빌드 검증(Android SDK 확보 시)
