@@ -45,7 +45,7 @@ public sealed class PlutoLlmFailoverClient : IPlutoLlmClient
 }
 
 /// <summary>
-/// 🧠 Zero-Downtime LLM 브리지 — 3.5초 예산(토큰 무시 클라이언트도 WhenAny로 차단) · 예외 격리 · 무응답/미설정 → null(호출측이 로컬 폴백).
+/// 🧠 Zero-Downtime LLM 브리지 — 3.5초 예산 · 게이트웨이 단계는 컴팩트 프롬프트 + JSON 자가 치유(토큰 무시 클라이언트도 WhenAny로 차단) · 예외 격리 · 무응답/미설정 → null(호출측이 로컬 폴백).
 /// 호출자 취소만 전파.
 /// </summary>
 public static class PlutoLlmBridge
@@ -53,9 +53,12 @@ public static class PlutoLlmBridge
     public static readonly TimeSpan Budget = TimeSpan.FromMilliseconds(3500);
 
     public static Task<string?> TryCompleteAsync(IPlutoLlmClient? llm, string system, string user, double temperature, CancellationToken ct, TimeSpan? budget = null)
-        => llm is PlutoLlmFailoverClient chain
-            ? TryCompleteAsync(chain.Primary, chain.Gateway, system, user, temperature, ct, budget)
-            : TryCompleteSingleAsync(llm, system, user, temperature, ct, budget);
+        => llm switch
+        {
+            PlutoLlmFailoverClient chain => TryCompleteAsync(chain.Primary, chain.Gateway, system, user, temperature, ct, budget),
+            PlutoCustomLocalGateway gw => TryGatewayAsync(gw, system, user, temperature, ct, budget),
+            _ => TryCompleteSingleAsync(llm, system, user, temperature, ct, budget),
+        };
 
     /// <summary>
     /// 🔁 우선순위 체인 — ① Gemini(클라우드 · 3.5초) → ② 커스텀 로컬 AI 게이트웨이(REST · 활성 시 · 게이트웨이 타임아웃) → ③ null(호출측 결정론 템플릿).
@@ -68,7 +71,20 @@ public static class PlutoLlmBridge
         bool enabled;
         try { enabled = gateway.Options.IsEnabled; } catch { return null; }
         if (!enabled) return null;
-        return await TryCompleteSingleAsync(gateway, system, user, temperature, ct, budget ?? gateway.Options.EffectiveTimeout).ConfigureAwait(false);
+        return await TryGatewayAsync(gateway, system, user, temperature, ct, budget ?? gateway.Options.EffectiveTimeout).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 🔌 로컬 게이트웨이 단계 — 🗜 컴팩트 불변 접두 프롬프트(<see cref="PlutoPromptCompressor"/> · KV-캐시 재사용) 전송 →
+    /// 🩹 응답 자가 치유(<see cref="PlutoJsonSanitizer"/>). Gemini는 원본 서술형 지시문 유지.
+    /// </summary>
+    private static async Task<string?> TryGatewayAsync(PlutoCustomLocalGateway gateway, string system, string user, double temperature, CancellationToken ct, TimeSpan? budget)
+    {
+        var p = PlutoPromptCompressor.Compose(system, user);
+        var text = await TryCompleteSingleAsync(gateway, p.System, p.User, temperature, ct, budget).ConfigureAwait(false);
+        if (text is null) return null;
+        var healed = PlutoJsonSanitizer.Sanitize(text);
+        return healed.Length == 0 ? null : healed;
     }
 
     private static async Task<string?> TryCompleteSingleAsync(IPlutoLlmClient? llm, string system, string user, double temperature, CancellationToken ct, TimeSpan? budget)
@@ -114,14 +130,8 @@ public static class PlutoLlmBridge
     internal static JsonDocument? TryParse(string? json)
     {
         if (string.IsNullOrWhiteSpace(json)) return null;
-        var s = json.Trim();
-        if (s.StartsWith("```", StringComparison.Ordinal))
-        {
-            var nl = s.IndexOf('\n');
-            s = nl < 0 ? "" : s[(nl + 1)..];
-            var end = s.LastIndexOf("```", StringComparison.Ordinal);
-            if (end >= 0) s = s[..end];
-        }
+        var s = PlutoJsonSanitizer.Sanitize(json);   // 🩹 펜스·서두/후미·후행 쉼표·잘린 괄호 자가 치유(정상 JSON은 무변경)
+        if (s.Length == 0) return null;
         try { return JsonDocument.Parse(s); }
         catch (JsonException) { return null; }
     }

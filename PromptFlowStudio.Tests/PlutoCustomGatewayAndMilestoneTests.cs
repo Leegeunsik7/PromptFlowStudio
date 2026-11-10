@@ -537,7 +537,7 @@ public sealed class PlutoCustomGatewayAndMilestoneTests : IDisposable
             Assert.Contains("#로컬SEO", vm.TagsText, StringComparison.Ordinal);
             Assert.Contains("#로컬SEO", vm.Caption, StringComparison.Ordinal);
             Assert.Equal(1, gemini.Calls);
-            Assert.Contains(h.Requests, r => r.Path == "/v1/chat/completions" && r.Body.Contains("newborn sleeping", StringComparison.Ordinal) && r.Body.Contains("SEO copywriter", StringComparison.Ordinal));
+            Assert.Contains(h.Requests, r => r.Path == "/v1/chat/completions" && r.Body.Contains("newborn sleeping", StringComparison.Ordinal) && r.Body.Contains("SEO: KO metadata", StringComparison.Ordinal));   // 🗜 게이트웨이는 컴팩트 SEO 지시문
             Assert.Equal("✨ " + PublishViewModel.PlutoSeoMessage, vm.SeoMessage);
             Assert.DoesNotContain("Gemini", vm.SeoMessage, StringComparison.Ordinal);
             Assert.False(vm.IsSeoBusy);

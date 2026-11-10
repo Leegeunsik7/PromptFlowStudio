@@ -573,7 +573,7 @@ public sealed class PublishViewModel : IDisposable
         {
             var text = await PromptFlowStudio.Services.Pluto.PlutoLlmBridge.TryCompleteAsync(
                 llm, GeminiPromptService.SnsSeoInstruction, GeminiPromptService.BuildSnsUserPrompt(src, platform, DurationSec), 0.7, token).ConfigureAwait(false);
-            var parsed = text is null ? null : GeminiPromptService.ParseSnsMetadata(text);
+            var parsed = text is null ? null : GeminiPromptService.ParseSnsMetadata(PromptFlowStudio.Services.Pluto.PlutoJsonSanitizer.Sanitize(text));   // 🩹 로컬 SLM 출력 자가 치유
             if (parsed is not null) return parsed with { Message = PlutoSeoMessage };
         }
         return GeminiPromptService.BuildLocalSnsMetadata(src, platform);

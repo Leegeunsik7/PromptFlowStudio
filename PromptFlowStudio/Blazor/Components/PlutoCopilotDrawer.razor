@@ -19,7 +19,14 @@
             <button class="pcd-btn go" disabled="@(_busy || Copilot is null || string.IsNullOrWhiteSpace(_memo))" @onclick="GenerateAsync">✨ 시나리오 요청</button>
             @if (_busy)
             {
-                <div class="pcd-busy" role="status">🧠 플루토가 3가지 감성 스타일로 기획 중...</div>
+                <div class="pcd-stages" role="status" aria-live="polite" data-stage="@(_stage)">
+                    @for (var i = 0; i < Stages.Length; i++)
+                    {
+                        var cls = i < _stage ? "pcd-stage done" : i == _stage ? "pcd-busy pcd-stage" : "pcd-stage";
+                        <div class="@cls">@(i < _stage ? "✓ " : "")@Stages[i]</div>
+                    }
+                    <button class="pcd-btn pcd-cancel" title="생성 취소(로컬 GPU/CPU 연산 즉시 중단)" @onclick="CancelGeneration">⏹ 생성 취소</button>
+                </div>
             }
             @if (_error is { Length: > 0 } err)
             {
@@ -66,6 +73,11 @@
     .pcd-busy { align-self: flex-start; padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 800; color: #c4b5fd;
                 border: 1px solid rgba(167,139,250,.45); background: rgba(167,139,250,.12); animation: pcd-pulse 1.4s ease-in-out infinite; }
     @@keyframes pcd-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .55; transform: scale(.97); } }
+    .pcd-stages { display: flex; flex-direction: column; gap: 6px; }
+    .pcd-stage { align-self: flex-start; padding: 6px 12px; font-size: 12px; font-weight: 700; opacity: .4; }
+    .pcd-stage.done { opacity: .8; color: #86efac; }
+    .pcd-stage.pcd-busy { opacity: 1; }
+    .pcd-cancel { align-self: flex-start; font-size: 12px; padding: 6px 12px; }
     .pcd-style { display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 900; }
     .pcd-src { font-size: 11px; font-weight: 700; opacity: .65; }
     .pcd-hook { font-size: 16px; font-weight: 900; }
@@ -87,6 +99,17 @@
     private IReadOnlyList<PlutoScriptVariant>? _variants;
     private string? _error;
     private bool _busy;
+    private int _stage;   // 0 페르소나 분석 · 1 3대 스타일 구성 · 2 BGM 큐시트 매칭
+
+    /// <summary>🧠 단계별 진행 — 0~1초 · 1~2.5초 · 2.5초~.</summary>
+    private static readonly string[] Stages =
+    {
+        "🍼 아이 페르소나 및 성장 단계 분석 중...",
+        "🎬 3대 스타일(화보·3D·레트로) 시나리오 구성 중...",
+        "🎵 카메라 무빙 및 감성 BGM 큐시트 매칭 중...",
+    };
+    private static readonly TimeSpan Stage2At = TimeSpan.FromMilliseconds(1000);
+    private static readonly TimeSpan Stage3At = TimeSpan.FromMilliseconds(2500);
 
     private CancellationTokenSource? _cts;   // 🛡️ 진행 중 생성 — 닫기/페이지 이탈 시 취소(늦은 결과가 재오픈 시 튀어나오는 잔상 차단)
 
@@ -95,9 +118,12 @@
         _error = null;
         if (_busy || Copilot is null || string.IsNullOrWhiteSpace(_memo)) return;
         _busy = true;
+        _stage = 0;
         _variants = null;
         var cts = new CancellationTokenSource();
         _cts = cts;
+        var stageCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token);
+        _ = RunStagesAsync(stageCts.Token);   // ⏱ 경량 단계 진행(생성 종료/취소 시 함께 정지)
         try
         {
             var result = await Copilot.DraftTripletVariantsAsync(_memo, cts.Token);   // 🧠 Gemini 우선 · 3.5초 내 로컬 3스타일 폴백
@@ -107,10 +133,45 @@
         catch (Exception ex) { Program.Log("PlutoCopilot.Triplet", ex); _variants = null; _error = "⚠ 시나리오 생성 실패 — 메모를 바꿔 다시 시도해 주세요"; }
         finally
         {
+            try { stageCts.Cancel(); } catch (ObjectDisposedException) { }
+            stageCts.Dispose();
             if (ReferenceEquals(_cts, cts)) _cts = null;
             cts.Dispose();
             _busy = false;
+            _stage = 0;
         }
+    }
+
+    private async Task RunStagesAsync(CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(Stage2At, ct);
+            ct.ThrowIfCancellationRequested();   // 종료 직후 지연 콜백의 잔상 차단
+            _stage = 1;
+            await InvokeAsync(StateHasChanged);
+            await Task.Delay(Stage3At - Stage2At, ct);
+            ct.ThrowIfCancellationRequested();
+            _stage = 2;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (OperationCanceledException) { }
+        catch (ObjectDisposedException) { }
+        catch (Exception ex) { Program.Log("PlutoCopilot.Stage", ex); }
+    }
+
+    /// <summary>⏹ 사용자 취소 — 진행 중 HTTP(로컬 게이트웨이) 요청까지 즉시 중단(연결 토큰 전파).</summary>
+    private void CancelGeneration()
+    {
+        if (!_busy) return;
+        CancelPending();
+        _error = "⏹ 생성을 취소했어요";
+    }
+
+    /// <summary>부모가 <see cref="Open"/>을 false로 내리면(닫기·화면 전환) 진행 중 생성 즉시 취소.</summary>
+    protected override void OnParametersSet()
+    {
+        if (!Open && _cts is not null) CancelPending();
     }
 
     private void CancelPending()

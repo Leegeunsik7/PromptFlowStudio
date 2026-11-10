@@ -236,9 +236,8 @@ public sealed class PlutoCustomLocalGateway : IPlutoLlmClient, IDisposable
         if (text.StartsWith("<think>", StringComparison.OrdinalIgnoreCase) && end >= 0) text = text[(end + 8)..].Trim();
         if (text.Length == 0) return null;
         if (text[0] is '{' or '[' || text.StartsWith("```", StringComparison.Ordinal)) return text;
-        var a = text.IndexOf('{');
-        var b = text.LastIndexOf('}');
-        return a >= 0 && b > a ? text[a..(b + 1)] : text;
+        var healed = PlutoJsonSanitizer.Sanitize(text);   // 🩹 산문 속 JSON 추출 — 잘린 출력도 마지막 '}' 오절단 없이 봉합
+        return healed.Length > 0 ? healed : text;
     }
 
     private void OnSuccess()
