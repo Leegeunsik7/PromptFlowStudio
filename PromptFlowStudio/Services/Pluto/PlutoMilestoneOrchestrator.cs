@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -116,7 +117,7 @@ public sealed class PlutoMilestoneOrchestrator
             var s = plan.Scenes[i];
             scenes[i] = NewScene(s.SlotIndex, s.SceneTitle, PlutoDirectorRankService.Enrich(s.Prompt, tier), s.CameraMovement, s.RecommendedBgm);
         }
-        return new PlutoMilestonePlan { MilestoneName = plan.MilestoneName, Theme = plan.Theme, Scenes = scenes, PersonaConsistencyAnchor = plan.PersonaConsistencyAnchor, UsedLlm = plan.UsedLlm };
+        return new PlutoMilestonePlan { MilestoneName = plan.MilestoneName, Theme = plan.Theme, Scenes = scenes, PersonaConsistencyAnchor = plan.PersonaConsistencyAnchor, UsedLlm = plan.UsedLlm, StreamedSlotMask = plan.StreamedSlotMask };
     }
 
     /// <summary>🎞 마일스톤 키("100일의 기적"·"첫돌"·"하루"·enum 이름) → 4컷 플랜. LLM 실패/미설정/3.5초 초과 → 템플릿.</summary>
@@ -129,6 +130,43 @@ public sealed class PlutoMilestoneOrchestrator
         var user = BuildLlmRequest(local, userNote, directive);
         var text = await PlutoLlmBridge.TryCompleteAsync(_llm, LlmMilestoneInstruction, user, 0.85, ct, LlmBudget).ConfigureAwait(false);
         return ApplyDirectorOptics(Merge(local, text));   // 🎬 LLM · 템플릿 슬롯 공통 광학 주입
+    }
+
+    /// <summary>
+    /// 🌊 점진 4컷 플랜 — ① 로컬 템플릿 플랜 즉시 방출(캔버스 선페인트) → ② LLM 씬이 스트림에서 닫힐 때마다 해당 슬롯만 교체한 스냅샷 방출
+    /// (1컷이 도착하면 2~4컷 생성 중에도 즉시 반영). LLM 실패/절단 → 이미 방출된 스냅샷 유지(누락 슬롯은 템플릿). 호출자 취소만 전파.
+    /// </summary>
+    public async IAsyncEnumerable<PlutoMilestonePlan> OrchestrateFourCutPlanStreamAsync(string milestoneKey, string? userNote = null, [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var theme = ParseTheme(milestoneKey);
+        var (anchor, isPet) = await ResolveAnchorAsync(ct).ConfigureAwait(false);
+        var local = BuildLocal(theme, anchor, isPet, userNote);
+        yield return ApplyDirectorOptics(local);
+
+        var directive = await DirectorDirectiveAsync(ct).ConfigureAwait(false);
+        var user = BuildLlmRequest(local, userNote, directive);
+        var scenes = new PlutoMilestoneScene[SceneCount];
+        for (var i = 0; i < SceneCount; i++) scenes[i] = local.Scenes[i];
+        var mask = 0;
+        PlutoJsonElementParser<PlutoMilestoneScene> parser = (ReadOnlyMemory<byte> utf8, int ordinal, out PlutoMilestoneScene scene) =>
+        {
+            using var doc = JsonDocument.Parse(utf8);
+            return TryBuildScene(doc.RootElement, ordinal + 1, local, out scene);
+        };
+        await foreach (var scene in PlutoLlmBridge.StreamArrayAsync(_llm, LlmMilestoneInstruction, user, 0.85, parser, null, LlmBudget, ct).ConfigureAwait(false))
+        {
+            scenes[scene.SlotIndex - 1] = scene;
+            mask |= 1 << (scene.SlotIndex - 1);
+            yield return ApplyDirectorOptics(new PlutoMilestonePlan
+            {
+                MilestoneName = local.MilestoneName,
+                Theme = local.Theme,
+                Scenes = (PlutoMilestoneScene[])scenes.Clone(),
+                PersonaConsistencyAnchor = local.PersonaConsistencyAnchor,
+                UsedLlm = true,
+                StreamedSlotMask = mask,
+            });
+        }
     }
 
     /// <summary>🎬 디렉터 XP 적재 후 LLM 지시문(미주입/예외 → null · 취소만 전파).</summary>
@@ -206,24 +244,33 @@ public sealed class PlutoMilestoneOrchestrator
         foreach (var e in arr.EnumerateArray())
         {
             pos++;
-            if (e.ValueKind != JsonValueKind.Object) continue;
-            var slot = e.TryGetProperty("slot", out var sv) && sv.ValueKind == JsonValueKind.Number && sv.TryGetInt32(out var n) ? n : pos;
-            if (slot < 1 || slot > SceneCount) continue;
-            var prompt = PlutoLlmBridge.Str(e, "prompt", MaxPromptLength);
-            if (prompt.Length == 0) continue;
-            var baseScene = local.Scenes[slot - 1];
-            var title = PlutoLlmBridge.Str(e, "title", MaxTitleLength);
-            var camera = PlutoLlmBridge.Str(e, "camera", 60);
-            var bgm = PlutoLlmBridge.Str(e, "bgm", 60);
-            scenes[slot - 1] = NewScene(slot,
-                title.Length > 0 ? title : baseScene.SceneTitle,
-                PlutoIdentityVault.ApplyAnchor(prompt, local.PersonaConsistencyAnchor),
-                camera.Length > 0 ? camera : baseScene.CameraMovement,
-                bgm.Length > 0 ? bgm : baseScene.RecommendedBgm);
+            if (!TryBuildScene(e, pos, local, out var scene)) continue;
+            scenes[scene.SlotIndex - 1] = scene;
             used = true;
         }
         if (!used) return local;
         return new PlutoMilestonePlan { MilestoneName = local.MilestoneName, Theme = local.Theme, Scenes = scenes, PersonaConsistencyAnchor = local.PersonaConsistencyAnchor, UsedLlm = true };
+    }
+
+    /// <summary>LLM 씬 요소 1개 검증(배치 <see cref="Merge"/> · 스트리밍 공용) — 슬롯(없으면 순서 <paramref name="pos"/>) · 프롬프트 필수 · 앵커 재삽입 · 빈 필드는 로컬 보강.</summary>
+    internal static bool TryBuildScene(JsonElement e, int pos, PlutoMilestonePlan local, out PlutoMilestoneScene scene)
+    {
+        scene = null!;
+        if (e.ValueKind != JsonValueKind.Object) return false;
+        var slot = e.TryGetProperty("slot", out var sv) && sv.ValueKind == JsonValueKind.Number && sv.TryGetInt32(out var n) ? n : pos;
+        if (slot < 1 || slot > SceneCount || local.Scenes.Count < SceneCount) return false;
+        var prompt = PlutoLlmBridge.Str(e, "prompt", MaxPromptLength);
+        if (prompt.Length == 0) return false;
+        var baseScene = local.Scenes[slot - 1];
+        var title = PlutoLlmBridge.Str(e, "title", MaxTitleLength);
+        var camera = PlutoLlmBridge.Str(e, "camera", 60);
+        var bgm = PlutoLlmBridge.Str(e, "bgm", 60);
+        scene = NewScene(slot,
+            title.Length > 0 ? title : baseScene.SceneTitle,
+            PlutoIdentityVault.ApplyAnchor(prompt, local.PersonaConsistencyAnchor),
+            camera.Length > 0 ? camera : baseScene.CameraMovement,
+            bgm.Length > 0 ? bgm : baseScene.RecommendedBgm);
+        return true;
     }
 
     private static PlutoMilestoneScene NewScene(int slot, string title, string prompt, string camera, string bgm) => new()

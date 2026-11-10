@@ -231,6 +231,27 @@ public sealed class PlutoSubtitleDirector
     }
 
     /// <summary>
+    /// 🌊 스트리밍 요소 파서(<see cref="PlutoJsonElementParser{T}"/>) — <c>{"act","ko","en"}</c> 1개 → <see cref="PlutoSubtitleAct"/>.
+    /// <see cref="Merge"/>와 동일 검증(막 1~3 · KO 필수 · EN 라틴 문자 1자 이상) · 구간은 <see cref="PlutoSubtitleScript.ActWindows"/>.
+    /// </summary>
+    public static bool TryParseStreamedAct(ReadOnlyMemory<byte> elementUtf8, int ordinal, out PlutoSubtitleAct act)
+    {
+        act = null!;
+        using var doc = JsonDocument.Parse(elementUtf8);
+        var el = doc.RootElement;
+        if (el.ValueKind != JsonValueKind.Object) return false;
+        var idx = ordinal;
+        if (el.TryGetProperty("act", out var a) && a.ValueKind == JsonValueKind.Number && a.TryGetInt32(out var n)) idx = n - 1;
+        if ((uint)idx >= 3u) return false;
+        var k = Sanitize(PlutoLlmBridge.Str(el, "ko", MaxActLength * 2), MaxActLength);
+        var e = Sanitize(PlutoLlmBridge.Str(el, "en", MaxEnglishLength * 2), MaxEnglishLength);
+        if (k.Length == 0 || !HasLatinLetter(e)) return false;
+        var w = PlutoSubtitleScript.ActWindows[idx];
+        act = new PlutoSubtitleAct { Act = idx + 1, StartSec = w.Start, EndSec = w.End, KoreanText = k, EnglishText = e };
+        return true;
+    }
+
+    /// <summary>
     /// LLM JSON 스키마 검증 — 루트 배열 <c>[{"act","ko","en"}]</c> 또는 <c>{"acts":[…]}</c>. 막 번호(<c>act</c> 1~3, 없으면 순서) 기준,
     /// KO·EN 모두 유효한 막만 채택(EN은 라틴 문자 1자 이상) · 나머지 막은 로컬 KO/EN 쌍 보강. 하나도 없으면 로컬 그대로.
     /// </summary>

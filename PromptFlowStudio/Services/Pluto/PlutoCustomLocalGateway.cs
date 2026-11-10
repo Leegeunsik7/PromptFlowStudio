@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -27,6 +29,8 @@ public sealed class PlutoCustomLocalGateway : IPlutoLlmClient, IDisposable
     public const double DefaultTemperature = 0.7;
     public const int MaxResponseBytes = 1 << 20;
     private const int MaxCooldownMs = 30_000;
+    /// <summary>🌊 스트리밍 1회 전체 상한(청크 간 유휴 타임아웃과 별개).</summary>
+    public static readonly TimeSpan StreamTotalBudget = TimeSpan.FromMilliseconds(PlutoLocalGatewayOptions.MaxTimeoutMs);
 
     private readonly HttpClient _http;
     private int _preferOllama;          // 0 = OpenAI 우선 · 1 = Ollama 우선
@@ -126,6 +130,86 @@ public sealed class PlutoCustomLocalGateway : IPlutoLlmClient, IDisposable
         }
     }
 
+    /// <summary>
+    /// 🌊 스트리밍 채팅(<c>stream:true</c> · OpenAI SSE / Ollama NDJSON) → 응답 배열 요소가 닫히는 즉시 방출(TTFT 단축 · 본문 전체 버퍼링 없음).
+    ///   ▸ 헤더 도착 · 청크 간 유휴는 <see cref="PlutoLocalGatewayOptions.EffectiveTimeout"/>, 전체는 <see cref="StreamTotalBudget"/> 상한.
+    ///   ▸ 절단(컨텍스트 한도 · 소켓 종료 · 타임아웃) 시 진행 중 요소 봉합 후 정상 종료. 요소 0건이면 서킷 실패 집계. 호출자 취소만 전파(구제분 방출 후).
+    /// </summary>
+    public async IAsyncEnumerable<T> StreamArrayAsync<T>(string system, string user, double temperature, PlutoJsonElementParser<T> parser,
+        PlutoStreamReport? report = null, [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(parser);
+        report ??= new PlutoStreamReport();
+        if (Volatile.Read(ref _disposed) != 0 || !Options.IsEnabled || !Options.TryResolveBase(out var baseUri) || IsCircuitOpen) yield break;
+        var model = string.IsNullOrWhiteSpace(Options.ModelName) ? PlutoLocalGatewayOptions.DefaultModelName : Options.ModelName.Trim();
+        var idle = Options.EffectiveTimeout;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(idle);
+        var resp = await OpenChatStreamAsync(baseUri, model, Options.ApiKey, system, user, temperature, cts.Token, ct).ConfigureAwait(false);
+        if (resp is null) { OnFailure(); yield break; }
+        try
+        {
+            var body = await OpenBodyAsync(resp, cts.Token, ct).ConfigureAwait(false);
+            if (body is not null)
+            {
+                await foreach (var item in PlutoStreamingPipeConsumer.StreamArrayAsync(body, parser, report, cts, idle, StreamTotalBudget, cts.Token).ConfigureAwait(false))
+                    yield return item;
+            }
+        }
+        finally { resp.Dispose(); }
+        if (ct.IsCancellationRequested) { report.End = PlutoStreamEnd.Canceled; ct.ThrowIfCancellationRequested(); }   // 사용자 취소는 서킷 미집계
+        if (report.Elements > 0) OnSuccess(); else OnFailure();
+    }
+
+    /// <summary>스트리밍 응답 헤더까지 수신(성공 2xx만 반환 · 프로토콜 대체 포함). 실패 → null · 호출자 취소만 전파.</summary>
+    private async Task<HttpResponseMessage?> OpenChatStreamAsync(Uri baseUri, string model, string? key, string system, string user, double temperature, CancellationToken linked, CancellationToken callerCt)
+    {
+        try
+        {
+            var ollamaFirst = PrefersOllama;
+            var (resp, tryAlternate) = await SendChatStreamAsync(baseUri, ollamaFirst, model, key, system, user, temperature, linked).ConfigureAwait(false);
+            if (resp is null && tryAlternate)
+            {
+                (resp, _) = await SendChatStreamAsync(baseUri, !ollamaFirst, model, key, system, user, temperature, linked).ConfigureAwait(false);
+                if (resp is not null) Volatile.Write(ref _preferOllama, ollamaFirst ? 0 : 1);
+            }
+            return resp;
+        }
+        catch (OperationCanceledException) when (callerCt.IsCancellationRequested) { throw; }
+        catch (Exception ex) when (ex is OperationCanceledException or HttpRequestException or IOException or ObjectDisposedException or InvalidOperationException)
+        {
+            Log("stream", ex);
+            return null;
+        }
+    }
+
+    private async Task<(HttpResponseMessage? Response, bool TryAlternate)> SendChatStreamAsync(Uri baseUri, bool ollama, string model, string? key, string system, string user, double temperature, CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Post, new Uri(baseUri, ollama ? OllamaChatPath : OpenAiChatPath))
+        {
+            Content = new StringContent(BuildPayload(model, system, user, temperature, ollama, stream: true), Encoding.UTF8, "application/json"),
+        };
+        if (!string.IsNullOrEmpty(key)) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+        HttpResponseMessage resp;
+        try { resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false); }
+        catch (HttpRequestException ex) { Log(ollama ? "ollama" : "openai", ex); return (null, true); }   // 🔁 연결 실패 → 대체 프로토콜
+        if (resp.IsSuccessStatusCode) return (resp, false);
+        var alternate = resp.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed or HttpStatusCode.NotImplemented;
+        resp.Dispose();
+        return (null, alternate);
+    }
+
+    private static async Task<Stream?> OpenBodyAsync(HttpResponseMessage resp, CancellationToken linked, CancellationToken callerCt)
+    {
+        try { return await resp.Content.ReadAsStreamAsync(linked).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (callerCt.IsCancellationRequested) { throw; }
+        catch (Exception ex) when (ex is OperationCanceledException or HttpRequestException or IOException or ObjectDisposedException or InvalidOperationException)
+        {
+            Log("stream-body", ex);
+            return null;
+        }
+    }
+
     /// <returns>(본문 또는 null, 대체 프로토콜 시도 여부)</returns>
     private async Task<(string? Text, bool TryAlternate)> SendChatAsync(Uri baseUri, bool ollama, string model, string? key, string system, string user, double temperature, CancellationToken ct)
     {
@@ -185,7 +269,11 @@ public sealed class PlutoCustomLocalGateway : IPlutoLlmClient, IDisposable
     internal static string BuildOllamaPayload(string model, string system, string user, double temperature)
         => BuildPayload(model, system, user, temperature, ollama: true);
 
-    private static string BuildPayload(string model, string system, string user, double temperature, bool ollama)
+    /// <summary>스트리밍 요청 본문 — OpenAI <c>"stream":true</c> · Ollama <c>"stream":true</c>(NDJSON).</summary>
+    internal static string BuildStreamPayload(string model, string system, string user, double temperature, bool ollama)
+        => BuildPayload(model, system, user, temperature, ollama, stream: true);
+
+    private static string BuildPayload(string model, string system, string user, double temperature, bool ollama, bool stream = false)
     {
         var t = double.IsFinite(temperature) ? Math.Clamp(temperature, 0.0, 2.0) : DefaultTemperature;
         using var ms = new MemoryStream(256 + (system?.Length ?? 0) + (user?.Length ?? 0));
@@ -199,10 +287,14 @@ public sealed class PlutoCustomLocalGateway : IPlutoLlmClient, IDisposable
             w.WriteEndArray();
             if (ollama)
             {
-                w.WriteBoolean("stream", false);
+                w.WriteBoolean("stream", stream);
                 w.WriteStartObject("options"); w.WriteNumber("temperature", t); w.WriteEndObject();
             }
-            else w.WriteNumber("temperature", t);
+            else
+            {
+                w.WriteNumber("temperature", t);
+                if (stream) w.WriteBoolean("stream", true);
+            }
             w.WriteEndObject();
         }
         return Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length);

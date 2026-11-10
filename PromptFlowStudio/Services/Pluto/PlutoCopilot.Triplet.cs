@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using System.Collections.Generic;
 using System.Text;
 using System.Text.Json;
@@ -71,6 +72,42 @@ public sealed partial class PlutoCopilot
         return BuildTriplet(local, text);
     }
 
+    /// <summary>스타일 표시 순서(📷 화보 0 · 🎨 픽사 1 · 📼 레트로 2) — 미인식 ID는 맨 뒤.</summary>
+    public static int TripletOrder(string? variantId)
+    {
+        for (var i = 0; i < TripletStyles.Length; i++)
+            if (string.Equals(TripletStyles[i].Id, variantId, StringComparison.Ordinal)) return i;
+        return TripletStyles.Length;
+    }
+
+    /// <summary>
+    /// 🌊 점진 트리플렛 — LLM 변형이 스트림에서 닫히는 즉시 방출(도착 순) → 종료 후 누락 스타일만 로컬 변형으로 보강 방출. 항상 3건.
+    /// 빈 메모는 <see cref="ArgumentException"/>(첫 열거 시) · 호출자 취소만 전파.
+    /// </summary>
+    public async IAsyncEnumerable<PlutoScriptVariant> StreamTripletVariantsAsync(string userMemo, DateTime? now = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(userMemo)) throw new ArgumentException("memo required", nameof(userMemo));
+        await EnsureContextLoadedAsync(cancellationToken).ConfigureAwait(false);
+        var at = now ?? DateTime.Now;
+        var local = Draft(userMemo, at);
+        var slots = new PlutoScriptVariant?[TripletStyles.Length];
+        var anchor = IdentityAnchor(local.Category);
+        var pacing = TopPattern(local.Category) is { } viral ? PlutoSocialRadarEngine.PatternDirective(viral) : null;
+        PlutoJsonElementParser<PlutoScriptVariant> parser = (ReadOnlyMemory<byte> utf8, int ordinal, out PlutoScriptVariant variant) =>
+        {
+            using var doc = JsonDocument.Parse(utf8);
+            return TryBuildVariant(doc.RootElement, local, anchor, pacing, slots, out variant);
+        };
+        await foreach (var v in PlutoLlmBridge.StreamArrayAsync(_llm, LlmTripletInstruction, BuildLlmScriptRequest(local, at), 0.9, parser, null, null, cancellationToken).ConfigureAwait(false))
+            yield return Director is null ? v : v with { Prompt = Optics(v.Prompt) };
+        for (var i = 0; i < slots.Length; i++)
+        {
+            if (slots[i] is not null) continue;
+            var v = LocalVariant(TripletStyles[i], local, anchor, pacing);   // [부분 구제] 누락 슬롯만 로컬 보강
+            yield return Director is null ? v : v with { Prompt = Optics(v.Prompt) };
+        }
+    }
+
     /// <summary>⚡ 로컬 결정론 트리플렛(LLM 미사용).</summary>
     public IReadOnlyList<PlutoScriptVariant> DraftTripletLocal(string memo, DateTime? now = null) => BuildTriplet(Draft(memo, now), null);
 
@@ -126,22 +163,28 @@ public sealed partial class PlutoCopilot
         if (doc is null) return;
         var r = doc.RootElement;
         if (r.ValueKind != JsonValueKind.Object || !r.TryGetProperty("variants", out var arr) || arr.ValueKind != JsonValueKind.Array) return;
-        foreach (var e in arr.EnumerateArray())
-        {
-            var a1 = PlutoLlmBridge.Str(e, "act1", 500);
-            var a2 = PlutoLlmBridge.Str(e, "act2", 500);
-            var a3 = PlutoLlmBridge.Str(e, "act3", 500);
-            if (a1.Length < 8 || a2.Length < 8 || a3.Length < 8) continue;
-            var idx = StyleSlot(PlutoLlmBridge.Str(e, "style", 40), slots);
-            if (idx < 0) continue;
-            var s = TripletStyles[idx];
-            var hook = PlutoLlmBridge.Str(e, "hookTitle", 60);
-            var camera = PlutoLlmBridge.Str(e, "camera", 200);
-            var bgm = ParseBgm(PlutoLlmBridge.Str(e, "bgm", 40)) ?? s.Bgm;
-            slots[idx] = new PlutoScriptVariant(s.Id, s.StyleName, hook.Length == 0 ? local.HookTitle : hook,
-                ComposeTripletPrompt(s, a1, a2, a3, anchor, pacing), camera.Length == 0 ? s.Camera : camera,
-                StockSuiteExporter.BabyBgmLabel(bgm), a1, a2, a3) { BgmTrack = bgm, MilestoneKo = local.MilestoneKo, UsedLlm = true };
-        }
+        foreach (var e in arr.EnumerateArray()) TryBuildVariant(e, local, anchor, pacing, slots, out _);
+    }
+
+    /// <summary>LLM 변형 요소 1개 검증(배치 · 스트리밍 공용) — 채택 시 해당 스타일 슬롯 점유(중복 차단).</summary>
+    private static bool TryBuildVariant(JsonElement e, PlutoCopilotScript local, string anchor, string? pacing, PlutoScriptVariant?[] slots, out PlutoScriptVariant variant)
+    {
+        variant = null!;
+        var a1 = PlutoLlmBridge.Str(e, "act1", 500);
+        var a2 = PlutoLlmBridge.Str(e, "act2", 500);
+        var a3 = PlutoLlmBridge.Str(e, "act3", 500);
+        if (a1.Length < 8 || a2.Length < 8 || a3.Length < 8) return false;
+        var idx = StyleSlot(PlutoLlmBridge.Str(e, "style", 40), slots);
+        if (idx < 0) return false;
+        var s = TripletStyles[idx];
+        var hook = PlutoLlmBridge.Str(e, "hookTitle", 60);
+        var camera = PlutoLlmBridge.Str(e, "camera", 200);
+        var bgm = ParseBgm(PlutoLlmBridge.Str(e, "bgm", 40)) ?? s.Bgm;
+        variant = new PlutoScriptVariant(s.Id, s.StyleName, hook.Length == 0 ? local.HookTitle : hook,
+            ComposeTripletPrompt(s, a1, a2, a3, anchor, pacing), camera.Length == 0 ? s.Camera : camera,
+            StockSuiteExporter.BabyBgmLabel(bgm), a1, a2, a3) { BgmTrack = bgm, MilestoneKo = local.MilestoneKo, UsedLlm = true };
+        slots[idx] = variant;
+        return true;
     }
 
     /// <summary>스타일 키 → 슬롯(이미 채워진 슬롯 중복 차단). 미인식 키는 첫 빈 슬롯.</summary>

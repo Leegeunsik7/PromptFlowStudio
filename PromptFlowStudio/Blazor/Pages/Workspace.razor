@@ -61,6 +61,17 @@
             <button class="ws-back" data-milestone="FirstBirthday" @onclick='() => ApplyMilestonePresetAsync("FirstBirthday")' disabled="@(State.IsBusy || _milestoneBusy)" title="첫돌의 감동 — 4컷 성장 일기를 스토리보드 4슬롯에 한 번에 세팅">🎂 첫돌</button>
             <button class="ws-back" data-milestone="DailyRoutine" @onclick='() => ApplyMilestonePresetAsync("DailyRoutine")' disabled="@(State.IsBusy || _milestoneBusy)" title="우리아이 하루 — 4컷 성장 일기를 스토리보드 4슬롯에 한 번에 세팅">☀️ 하루</button>
             @if (_milestoneBusy) { <span class="ws-retry" role="status">🎞 플루토가 4컷을 구성하는 중…</span> }
+            @* 🌊 점진 스트리밍 — 1컷이 도착하는 즉시 스토리보드 캔버스에 페인트(나머지 컷 생성 중) *@
+            @if (_milestoneBusy && _milestoneLive is { } live)
+            {
+                <span class="ws-retry" role="status" data-milestone-live="@(live.StreamedSlotMask)">
+                    @for (var i = 0; i < live.Scenes.Count; i++)
+                    {
+                        var arrived = (live.StreamedSlotMask & (1 << i)) != 0;
+                        <span title="@live.Scenes[i].SceneTitle" style="@(arrived ? "" : "opacity:.45")">@(arrived ? "✅" : "⏳")@(i + 1)컷 </span>
+                    }
+                </span>
+            }
             @* 📸 Vision-to-Story — 사진 1장(클릭/드롭) → 15초 3막 4컷 · 추천 BGM · 감성 자막 초안 일괄 세팅 *@
             <span class="ws-back ws-vstory@(_visionStoryBusy ? " busy" : "")" data-vision-story="1" title="아기/반려동물 사진 1장 → 셔터 3초 전 호기심 · 사진 속 클라이맥스 · 5초 후 여운의 15초 3막 스토리를 4컷 캔버스에 한 번에 세팅(Gemini Vision → 로컬 AI → 규칙 분석 · 디렉터 광학 자동 주입)">📸 사진으로 15초 스토리 완성<InputFile class="ws-drop-input" OnChange="OnVisionStoryPickedAsync" accept="image/png,image/jpeg,image/webp,image/bmp" disabled="@(State.IsBusy || _visionStoryBusy)" /></span>
             @if (_imagePath is not null && !_visionStoryBusy) { <button class="ws-back" data-vision-story-ref="1" @onclick="() => RunVisionStoryAsync(_imagePath)" disabled="@State.IsBusy" title="이미 올린 참조 이미지로 15초 3막 스토리 구성">📸 참조 사진으로</button> }
@@ -1319,29 +1330,42 @@
         Nav.NavigateTo("storyboard");
     }
     private bool _milestoneBusy;
+    private PromptFlowStudio.Services.Pluto.PlutoMilestonePlan? _milestoneLive;   // 🌊 스트리밍 중 최신 스냅샷(도착 슬롯 표시)
     /// <summary>🎞 4컷 성장 마일스톤 프리셋 — 오케스트레이터(Gemini → 로컬 게이트웨이 → 템플릿) 결과를 스토리보드 4슬롯에 일괄 적용(프롬프트·카메라·구간). 작업실 프롬프트는 부모 메모로 전달.</summary>
     private async Task ApplyMilestonePresetAsync(string milestoneKey)
     {
         if (_milestoneBusy) return;
         _milestoneBusy = true;
+        _milestoneLive = null;
         StateHasChanged();
-        PromptFlowStudio.Services.Pluto.PlutoMilestonePlan plan;
+        PromptFlowStudio.Services.Pluto.PlutoMilestonePlan? plan = null;
+        var painted = false;
         try
         {
             var orch = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoMilestoneOrchestrator)) as PromptFlowStudio.Services.Pluto.PlutoMilestoneOrchestrator;
-            plan = orch is null
-                ? PromptFlowStudio.Services.Pluto.PlutoMilestoneOrchestrator.BuildLocal(PromptFlowStudio.Services.Pluto.PlutoMilestoneOrchestrator.ParseTheme(milestoneKey), _identity?.GetConsistencyAnchor(), _identity?.IsPet == true, _prompt)
-                : await orch.OrchestrateFourCutPlanAsync(milestoneKey, _prompt, _mediaCts.Token);
+            if (orch is not null)
+            {
+                // 🌊 템플릿 4컷 선페인트 → LLM 씬이 스트림에서 닫힐 때마다 해당 슬롯 즉시 재페인트(2~4컷 생성 중에도 1컷 반영)
+                await foreach (var snap in orch.OrchestrateFourCutPlanStreamAsync(milestoneKey, _prompt, _mediaCts.Token))
+                {
+                    if (_disposed) return;
+                    plan = snap;
+                    _milestoneLive = snap;
+                    painted = StoryVm.ApplyDirectorShots(snap.ToDirectorShots(), snap.MilestoneName);
+                    StateHasChanged();
+                }
+            }
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
-        catch (Exception ex)
-        {
-            Program.Log("Workspace.PlutoMilestone", ex);
-            plan = PromptFlowStudio.Services.Pluto.PlutoMilestoneOrchestrator.BuildLocal(PromptFlowStudio.Services.Pluto.PlutoMilestoneOrchestrator.ParseTheme(milestoneKey), _identity?.GetConsistencyAnchor(), _identity?.IsPet == true, _prompt);
-        }
-        finally { _milestoneBusy = false; }
+        catch (Exception ex) { Program.Log("Workspace.PlutoMilestone", ex); }   // [부분 구제] 이미 페인트된 스냅샷 유지
+        finally { _milestoneBusy = false; _milestoneLive = null; }
         if (_disposed) return;
-        if (StoryVm.ApplyDirectorShots(plan.ToDirectorShots(), plan.MilestoneName)) Nav.NavigateTo("storyboard");
+        if (plan is null)
+        {
+            plan = PromptFlowStudio.Services.Pluto.PlutoMilestoneOrchestrator.BuildLocal(PromptFlowStudio.Services.Pluto.PlutoMilestoneOrchestrator.ParseTheme(milestoneKey), _identity?.GetConsistencyAnchor(), _identity?.IsPet == true, _prompt);
+            painted = StoryVm.ApplyDirectorShots(plan.ToDirectorShots(), plan.MilestoneName);
+        }
+        if (painted) Nav.NavigateTo("storyboard");
         else StateHasChanged();
     }
 

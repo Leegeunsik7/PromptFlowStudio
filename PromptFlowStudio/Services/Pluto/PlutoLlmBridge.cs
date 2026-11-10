@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -37,6 +38,43 @@ public sealed class PlutoLlmFailoverClient : IPlutoLlmClient
     public Task<string?> CompleteJsonAsync(string system, string user, double temperature, CancellationToken ct)
         => PlutoLlmBridge.TryCompleteAsync(Primary, Gateway, system, user, temperature, ct);
 
+    /// <summary>
+    /// 🌊 배열 응답 점진 스트리밍 — ① Primary(Gemini · 배치 → 요소 재생) → ② 로컬 게이트웨이(SSE/NDJSON · 요소가 닫히는 즉시 방출) → ③ 0건(호출측 템플릿).
+    /// 게이트웨이 단계는 배치 체인과 동일하게 컴팩트 프롬프트 전송. 실패는 0건 종료 · 호출자 취소만 전파.
+    /// </summary>
+    public async IAsyncEnumerable<T> StreamArrayAsync<T>(string system, string user, double temperature, PlutoJsonElementParser<T> parser,
+        PlutoStreamReport? report = null, TimeSpan? budget = null, [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(parser);
+        report ??= new PlutoStreamReport();
+        var gateway = Gateway;
+        if (Primary is not null && !ReferenceEquals(Primary, gateway))
+        {
+            var text = await PlutoLlmBridge.TryCompleteAsync(Primary, system, user, temperature, ct, budget).ConfigureAwait(false);
+            if (text is not null)
+            {
+                var batch = PlutoIncrementalJsonAssembler<T>.ParseAll(text, parser);
+                if (batch.Count > 0)
+                {
+                    report.End = PlutoStreamEnd.Done;
+                    for (var i = 0; i < batch.Count; i++) { report.Elements++; yield return batch[i]; }
+                    yield break;
+                }
+            }
+        }
+        if (gateway is null) yield break;
+        bool enabled;
+        try { enabled = gateway.Options.IsEnabled; } catch (Exception ex) when (ex is not OperationCanceledException) { enabled = false; }
+        if (!enabled) yield break;
+        var p = PlutoPromptCompressor.Compose(system, user);
+        await foreach (var item in gateway.StreamArrayAsync(p.System, p.User, temperature, parser, report, ct).ConfigureAwait(false))
+            yield return item;
+    }
+
+    /// <summary>🌊 단일 프롬프트 편의 오버로드(system 없음 · 기본 온도).</summary>
+    public IAsyncEnumerable<T> StreamArrayAsync<T>(string prompt, PlutoJsonElementParser<T> parser, CancellationToken ct = default)
+        => StreamArrayAsync(string.Empty, prompt, PlutoCustomLocalGateway.DefaultTemperature, parser, null, null, ct);
+
     private static bool Probe(IPlutoLlmClient? c)
     {
         if (c is null) return false;
@@ -72,6 +110,39 @@ public static class PlutoLlmBridge
         try { enabled = gateway.Options.IsEnabled; } catch { return null; }
         if (!enabled) return null;
         return await TryGatewayAsync(gateway, system, user, temperature, ct, budget ?? gateway.Options.EffectiveTimeout).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 🌊 <see cref="IPlutoLlmClient"/> 종류별 배열 스트리밍 — 페일오버 체인/게이트웨이는 실시간 요소 방출, 그 외 클라이언트는 배치 응답을 요소 단위로 재생.
+    /// 실패/미설정 → 0건(호출측 로컬 폴백) · 호출자 취소만 전파.
+    /// </summary>
+    public static async IAsyncEnumerable<T> StreamArrayAsync<T>(IPlutoLlmClient? llm, string system, string user, double temperature, PlutoJsonElementParser<T> parser,
+        PlutoStreamReport? report = null, TimeSpan? budget = null, [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(parser);
+        report ??= new PlutoStreamReport();
+        IAsyncEnumerable<T>? live = llm switch
+        {
+            PlutoLlmFailoverClient chain => chain.StreamArrayAsync(system, user, temperature, parser, report, budget, ct),
+            PlutoCustomLocalGateway gw => StreamGateway(gw, system, user, temperature, parser, report, ct),
+            _ => null,
+        };
+        if (live is not null)
+        {
+            await foreach (var item in live.ConfigureAwait(false)) yield return item;
+            yield break;
+        }
+        var text = await TryCompleteSingleAsync(llm, system, user, temperature, ct, budget).ConfigureAwait(false);
+        if (text is null) yield break;
+        var batch = PlutoIncrementalJsonAssembler<T>.ParseAll(text, parser);
+        report.End = PlutoStreamEnd.Done;
+        for (var i = 0; i < batch.Count; i++) { report.Elements++; yield return batch[i]; }
+    }
+
+    private static IAsyncEnumerable<T> StreamGateway<T>(PlutoCustomLocalGateway gw, string system, string user, double temperature, PlutoJsonElementParser<T> parser, PlutoStreamReport report, CancellationToken ct)
+    {
+        var p = PlutoPromptCompressor.Compose(system, user);
+        return gw.StreamArrayAsync(p.System, p.User, temperature, parser, report, ct);
     }
 
     /// <summary>

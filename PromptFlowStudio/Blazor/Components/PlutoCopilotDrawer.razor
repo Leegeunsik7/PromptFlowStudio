@@ -95,9 +95,11 @@
     [Parameter] public PlutoCopilot? Copilot { get; set; }
     [Parameter] public EventCallback OnClose { get; set; }
     [Parameter] public EventCallback<PlutoScriptVariant> OnApply { get; set; }
+    /// <summary>🌊 변형 카드가 스트림에서 완성될 때마다 실시간 전달(나머지 스타일 생성 중에도 즉시).</summary>
+    [Parameter] public EventCallback<PlutoScriptVariant> OnVariantStreamed { get; set; }
 
     private string _memo = "";
-    private IReadOnlyList<PlutoScriptVariant>? _variants;
+    private List<PlutoScriptVariant>? _variants;
     private string? _error;
     private bool _busy;
     private int _stage;   // 0 페르소나 분석 · 1 3대 스타일 구성 · 2 BGM 큐시트 매칭
@@ -127,8 +129,26 @@
         _ = RunStagesAsync(stageCts.Token);   // ⏱ 경량 단계 진행(생성 종료/취소 시 함께 정지)
         try
         {
-            var result = await Copilot.DraftTripletVariantsAsync(_memo, cts.Token);   // 🧠 Gemini 우선 · 3.5초 내 로컬 3스타일 폴백
-            if (!cts.IsCancellationRequested) _variants = result;
+            // 🌊 Gemini 우선 · 로컬 AI는 SSE 점진 스트리밍 — 변형 1건이 닫히는 즉시 카드 표시(누락 스타일은 종료 후 로컬 보강)
+            await foreach (var v in Copilot.StreamTripletVariantsAsync(_memo, null, cts.Token))
+            {
+                if (cts.IsCancellationRequested) break;
+                var list = _variants ??= new List<PlutoScriptVariant>(3);
+                var at = list.Count;
+                var order = PlutoCopilot.TripletOrder(v.VariantId);
+                for (var i = 0; i < list.Count; i++)
+                {
+                    if (PlutoCopilot.TripletOrder(list[i].VariantId) > order) { at = i; break; }
+                }
+                list.Insert(at, v);
+                await InvokeAsync(StateHasChanged);
+                if (OnVariantStreamed.HasDelegate)
+                {
+                    try { await OnVariantStreamed.InvokeAsync(v); }
+                    catch (Exception ex) when (ex is not OperationCanceledException) { Program.Log("PlutoCopilot.Streamed", ex); }   // 구독자 예외 격리
+                }
+            }
+            if (cts.IsCancellationRequested) _variants = null;
         }
         catch (OperationCanceledException) when (cts.IsCancellationRequested) { }   // 닫기/이탈 — 조용히 폐기
         catch (Exception ex) { Program.Log("PlutoCopilot.Triplet", ex); _variants = null; _error = "⚠ 시나리오 생성 실패 — 메모를 바꿔 다시 시도해 주세요"; }

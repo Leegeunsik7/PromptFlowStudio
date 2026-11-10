@@ -39,6 +39,9 @@ public sealed class PlutoMilestonePlan
     /// <summary>LLM(Gemini/로컬 게이트웨이) 결과가 1컷 이상 채택됐는지.</summary>
     public bool UsedLlm { get; init; }
 
+    /// <summary>🌊 스트리밍으로 LLM 씬이 도착·채택된 슬롯 비트(슬롯 1 = bit0) — 점진 페인트 표시용.</summary>
+    public int StreamedSlotMask { get; init; }
+
     /// <summary>🎬 스토리보드 4슬롯 일괄 적용 입력(<c>StoryboardViewModel.ApplyDirectorShots</c>).</summary>
     public PromptFlowStudio.Services.AI.DirectorShot[] ToDirectorShots()
     {
