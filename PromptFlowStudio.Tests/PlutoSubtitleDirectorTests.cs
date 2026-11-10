@@ -174,4 +174,49 @@ public sealed class PlutoSubtitleDirectorTests : IDisposable
         Assert.Null(StockSuiteExporter.BuildTimedSubtitleFilter(Array.Empty<SubtitleCue>(), null));
         Assert.Null(StockSuiteExporter.BuildTimedSubtitleFilter(new[] { new SubtitleCue(1, 4, "  ") }, null));
     }
+
+    [Fact]
+    public async Task Workspace_ExportWithSubtitles_AppliesTimedBurnInAndCreatesSrt()
+    {
+        var src = Path.Combine(_dir, "ws_render.mp4");
+        File.WriteAllBytes(src, new byte[] { 0, 0, 0, 0x18, 1, 2, 3 });
+        var target = Path.Combine(_dir, "WsStockSuite");
+        Directory.CreateDirectory(target);
+        var calls = new List<string[]>();
+        FfmpegRunner runner = (exe, args, ct) =>
+        {
+            var arr = args.ToArray();
+            calls.Add(arr);
+            File.WriteAllBytes(arr[^1], new byte[AmbientLoopService.MinValidOutputBytes + 16]);
+            return Task.FromResult(true);
+        };
+        var exp = new StockSuiteExporter(() => target, () => "mp4", () => "ffmpeg.exe", runner);
+        var script = await new PlutoSubtitleDirector().GenerateLetterScriptAsync("baby first step in the park", "하린");
+
+        // 💌 토글 ON → 단일 렌더 경로에 1-4 · 5-10 · 11-14 시간 게이트 drawtext + {출력명}.srt
+        var r = await exp.ExportWithSubtitlesAsync(src, script.ToCues());
+        Assert.True(r.Ok, r.Message);
+        var vf = calls[0][Array.IndexOf(calls[0], "-vf") + 1];
+        Assert.Contains("enable='between(t,1,4)'", vf, StringComparison.Ordinal);
+        Assert.Contains("enable='between(t,5,10)'", vf, StringComparison.Ordinal);
+        Assert.Contains("enable='between(t,11,14)'", vf, StringComparison.Ordinal);
+        Assert.Contains(script.Act1Text, vf, StringComparison.Ordinal);
+        Assert.Contains(StockSuiteExporter.SubtitleTag, r.Message, StringComparison.Ordinal);
+        var srtPath = Path.ChangeExtension(r.TargetPath!, ".srt");
+        Assert.Equal(Path.GetFileNameWithoutExtension(r.TargetPath!) + ".srt", Path.GetFileName(srtPath));
+        Assert.Equal(script.ToSrtFormat(), File.ReadAllText(srtPath));
+
+        // 공유 싱글톤 누수 차단 — 호출 후 스위치/큐 원복
+        Assert.False(exp.BurnSubtitles);
+        Assert.Null(exp.SubtitleCues);
+
+        // 🔕 토글 OFF(null 큐) → drawtext 시간 게이트 없음 · .srt 미생성
+        File.Delete(srtPath);
+        calls.Clear();
+        var off = await exp.ExportWithSubtitlesAsync(src, null);
+        Assert.True(off.Ok, off.Message);
+        Assert.DoesNotContain(calls.SelectMany(c => c), a => a.Contains("between(t,", StringComparison.Ordinal));
+        Assert.DoesNotContain(StockSuiteExporter.SubtitleTag, off.Message, StringComparison.Ordinal);
+        Assert.False(File.Exists(Path.ChangeExtension(off.TargetPath!, ".srt")));
+    }
 }

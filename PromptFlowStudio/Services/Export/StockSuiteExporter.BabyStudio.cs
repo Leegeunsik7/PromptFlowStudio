@@ -209,6 +209,15 @@ public sealed partial class StockSuiteExporter
 
     public bool IsSubtitleBurnEnabled => BurnSubtitles && BuildTimedSubtitleFilter(SubtitleCues, null) is not null;
 
+    /// <summary>💌 작업실 단일 내보내기 — 자막 스위치/큐를 이 호출 범위로 한정(공유 싱글톤 누수 차단). <paramref name="cues"/> null/빈 → 자막 없이 내보내기.</summary>
+    public async Task<StockSuiteExportResult> ExportWithSubtitlesAsync(string? sourcePath, IReadOnlyList<SubtitleCue>? cues, CancellationToken ct = default)
+    {
+        BurnSubtitles = cues is { Count: > 0 };
+        SubtitleCues = BurnSubtitles ? cues : null;
+        try { return await ExportAsync(sourcePath, null, null, ct).ConfigureAwait(false); }
+        finally { BurnSubtitles = false; SubtitleCues = null; }
+    }
+
     /// <summary>💌 하단 중앙 반투명 박스 drawtext × N — 큐별 <c>enable='between(t,s,e)'</c> 시간 게이트. 유효 큐 없음 → null. 4K 는 2배 스케일.</summary>
     public static string? BuildTimedSubtitleFilter(IReadOnlyList<SubtitleCue>? cues, string? fontFile, StockSuiteResolution resolution = StockSuiteResolution.Fhd1080)
     {

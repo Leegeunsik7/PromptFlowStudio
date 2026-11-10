@@ -351,6 +351,7 @@
                 <span>② 🎬 라이브 비디오 캔버스</span>
                 <span class="ws-hts-tools">
                     <button class="ws-hts-tog @(_growthBadge ? "on" : null)" @onclick="() => _growthBadge = !_growthBadge" aria-pressed="@(_growthBadge ? "true" : "false")" title="개월 수 · 성장 마일스톤 뱃지와 자막을 영상 위에 미리보기" data-canvas-tool="growth-badge">🏷️ 성장 뱃지/자막</button>
+                    <button class="ws-hts-tog @(_letterSubs ? "on" : null)" @onclick="() => _letterSubs = !_letterSubs" aria-pressed="@(_letterSubs ? "true" : "false")" title="내보내기 시 플루토 3막 감성 편지 자막(1~4초 · 5~10초 · 11~14초)을 주 MP4 에 번인하고 {출력명}.srt 를 함께 저장" data-canvas-tool="letter-subs">🏷️ 감성 자막 포함</button>
                     <button class="ws-hts-tog @(_identity is not null ? "on" : null)" @onclick="OpenIdentityModal" title="아기/반려동물 프로필 — 이름 · 출생일(D-day) · 외모 특징이 모든 프롬프트에 캐릭터 일관성 앵커로 반영됩니다" data-canvas-tool="identity">@IdentityChipLabel</button>
                     <button class="ws-hts-tog @(_bgmOn ? "on" : null)" @onclick="ToggleBgmAsync" aria-pressed="@(_bgmOn ? "true" : "false")" title="감성 BGM 믹스 토글" data-canvas-tool="bgm">🎵 감성 BGM</button>
                     @if (_bgmOn)
@@ -1949,6 +1950,17 @@
     /// <summary>📋 경로 복사 — 절대 경로를 클립보드에 복사하고 토스트 표시.</summary>
     /// <summary>💼 StockSuite로 내보내기 — 설정 폴더에 bg_ambient.mp4 원자적 복사. 미설정/실패 시 경로 재설정 안내 토스트.</summary>
     private bool _stockBusy;
+    private bool _letterSubs;   // 💌 감성 자막 번인 토글(기본 OFF)
+
+    /// <summary>💌 작업실 프롬프트 + 활성 프로필 이름 → 3막 편지(Gemini 우선 · 실패/취소 → 로컬 결정론 폴백).</summary>
+    private async Task<PromptFlowStudio.Services.Pluto.PlutoSubtitleScript> GenerateWorkspaceLetterAsync(CancellationToken ct)
+    {
+        var name = _identity?.SubjectName;
+        var director = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector)) as PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector;
+        if (director is null) return PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(_prompt, name);
+        try { return await director.GenerateLetterScriptAsync(_prompt, name, ct); }
+        catch (Exception ex) { Program.Log("Workspace.PlutoLetter", ex); return PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(_prompt, name); }
+    }
     private string? _stockToast;
     private bool _stockRestart;
     private long _stockProbeTick = long.MinValue / 2;
@@ -2015,7 +2027,8 @@
             StockSuite.Lut = _lut;   // 🎨 LUT 번인(FFmpeg eq 체인)
             StockSuite.GrowthBadgeText = _growthBadge ? GrowthBadgeLabel : null;   // 🏷️ 성장 뱃지 drawtext 번인
             StockSuite.BabyBgm = _bgmOn ? _bgmTrack : null;                       // 🎵 감성 BGM(OFF → 무음 유지)
-            var r = await StockSuite.ExportAsync(path);   // 🎵 BGM ON → 주 MP4 에 직접 먹싱(동반 파일 없음 · 페이드 아웃 자동)
+            var cues = _letterSubs ? (await GenerateWorkspaceLetterAsync(_mediaCts.Token)).ToCues() : null;   // 💌 감성 자막(OFF → null)
+            var r = await StockSuite.ExportWithSubtitlesAsync(path, cues, _mediaCts.Token);   // 🎵 BGM 직접 먹싱 · 💌 시간 게이트 drawtext + {출력}.srt
             if (r.Ok && _specPath == path) { _spec = null; _specPath = null; }   // ⚡ 인코더 텔레메트리 갱신 → 규격 캐시 무효화
             _camToast = r.Ok ? r.Message : r.NeedsPathSetup ? "⚠ " + r.Message + " (설정 ▸ 사용자 설정 ▸ StockSuite 에셋 경로)" : "⚠ " + r.Message;
             _stockRestart = false;

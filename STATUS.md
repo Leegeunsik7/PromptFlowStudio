@@ -1,18 +1,16 @@
 # Current Project Status
 
-- Active Milestone: 【Pluto Emotional Letter Subtitle Director】 💌 3막 감성 편지 자막 + 시간 동기 번인 파이프라인
+- Active Milestone: 【Workspace Subtitle Burn-In Parity】 💌 작업실 단일 내보내기 경로 감성 자막 번인 연동
 - Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (Mobile: 로컬 Android SDK 부재로 미빌드)
-- Tests: 전체 935/935 PASS (실패 0 · 9m 39s · MaxCpuCount=2)
+- Tests: 전체 936/936 PASS (재실행 · 11m 37s · MaxCpuCount=2) — 1차 실행 1건 간헐 실패(재현 안 됨 · 미식별)
 - Updated: 2026-11-10 (KST)
 
 ## Completed
-- 💌 `PlutoSubtitleScript` — SubjectName · Act1/2/3 · UsedLlm · `ToCues()` · `ToSrtFormat()` · `ToFullLetterText()` (01~04 · 05~10 · 11~14초)
-- 🧠 `PlutoSubtitleDirector.GenerateLetterScriptAsync` — Gemini(3.5초 예산 · `LlmBudget` 주입) · 막별 스키마 검증 [부분 구제] · 테마 8종 결정론 로컬 템플릿(FNV-1a) · 아이덴티티 볼트 이름 · 받침 호격
-- 🎬 `StockSuiteExporter.BurnSubtitles/SubtitleCues` — `drawtext enable='between(t,s,e)'` 하단 중앙 박스 체인 · drawtext 실패 → 오버레이 제외 재시도(`⚠ 자막 생략`) · `{출력}.srt` 원자적 동반 기록
-- 🪟 `PublishModal.razor` — 감성 편지 박스(Gemini/Local 뱃지 · 타임스탬프 칩) · `📋 자막 전체 복사` · `🏷️ 영상에 감성 자막 번인`
-- 🧩 `PublishViewModel` — 생성/복사/번인 토글 · 공유 싱글톤 자막 상태 export 후 리셋
-- 🔌 DI: `MainForm.cs` + `MauiProgram.cs` 싱글톤
-- 🧪 `PlutoSubtitleDirectorTests` 3건
+- 🏷️ `Workspace.razor` — 캔버스 툴바 `🏷️ 감성 자막 포함` 토글(기본 OFF · `data-canvas-tool="letter-subs"`)
+- 🧠 `GenerateWorkspaceLetterAsync` — 작업실 프롬프트 + 활성 프로필 이름 → `PlutoSubtitleDirector`(Gemini 우선 · 실패/미주입 → 로컬 결정론 폴백)
+- 🎬 `StockSuiteExporter.ExportWithSubtitlesAsync` — 호출 범위 한정 `BurnSubtitles/SubtitleCues` 설정 → 1~4·5~10·11~14초 `drawtext enable` 번인 + `{출력명}.srt` · finally 원복(공유 싱글톤 누수 차단)
+- 🔌 `ExportToStockSuite` — LUT · 성장 뱃지 · BGM 기존 체인 유지 + 자막 큐 전달
+- 🧪 `Workspace_ExportWithSubtitles_AppliesTimedBurnInAndCreatesSrt` (ON: 시간 게이트·SRT · OFF: 필터/SRT 없음 · 상태 원복)
 
 ## Next
-- 작업실(Workspace) 내보내기 경로 자막 번인 연동 · 모바일 빌드 검증(Android SDK 확보 시)
+- 간헐 실패 테스트 식별(trx 로깅 상시화) · 모바일 빌드 검증(Android SDK 확보 시)
