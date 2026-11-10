@@ -17,6 +17,34 @@ public interface IPlutoLlmClient
 }
 
 /// <summary>
+/// 🔁 Gemini(클라우드) + 커스텀 로컬 AI 게이트웨이 페일오버 묶음 — DI에서 Pluto 서비스에 <see cref="IPlutoLlmClient"/>로 주입.
+/// <see cref="PlutoLlmBridge.TryCompleteAsync(IPlutoLlmClient?, string, string, double, CancellationToken, TimeSpan?)"/>가 인식해 단계별 예산으로 체인 실행.
+/// </summary>
+public sealed class PlutoLlmFailoverClient : IPlutoLlmClient
+{
+    public IPlutoLlmClient? Primary { get; }
+    public PlutoCustomLocalGateway? Gateway { get; }
+
+    public PlutoLlmFailoverClient(IPlutoLlmClient? primary, PlutoCustomLocalGateway? gateway)
+    {
+        Primary = primary is PlutoLlmFailoverClient nested ? nested.Primary : primary;   // 중첩 방지
+        Gateway = gateway;
+    }
+
+    public bool IsAvailable => Probe(Primary) || Probe(Gateway);
+
+    /// <summary>브리지 경유 체인(직접 호출 대비) — 실패 시 null.</summary>
+    public Task<string?> CompleteJsonAsync(string system, string user, double temperature, CancellationToken ct)
+        => PlutoLlmBridge.TryCompleteAsync(Primary, Gateway, system, user, temperature, ct);
+
+    private static bool Probe(IPlutoLlmClient? c)
+    {
+        if (c is null) return false;
+        try { return c.IsAvailable; } catch { return false; }
+    }
+}
+
+/// <summary>
 /// 🧠 Zero-Downtime LLM 브리지 — 3.5초 예산(토큰 무시 클라이언트도 WhenAny로 차단) · 예외 격리 · 무응답/미설정 → null(호출측이 로컬 폴백).
 /// 호출자 취소만 전파.
 /// </summary>
@@ -24,7 +52,26 @@ public static class PlutoLlmBridge
 {
     public static readonly TimeSpan Budget = TimeSpan.FromMilliseconds(3500);
 
-    public static async Task<string?> TryCompleteAsync(IPlutoLlmClient? llm, string system, string user, double temperature, CancellationToken ct, TimeSpan? budget = null)
+    public static Task<string?> TryCompleteAsync(IPlutoLlmClient? llm, string system, string user, double temperature, CancellationToken ct, TimeSpan? budget = null)
+        => llm is PlutoLlmFailoverClient chain
+            ? TryCompleteAsync(chain.Primary, chain.Gateway, system, user, temperature, ct, budget)
+            : TryCompleteSingleAsync(llm, system, user, temperature, ct, budget);
+
+    /// <summary>
+    /// 🔁 우선순위 체인 — ① Gemini(클라우드 · 3.5초) → ② 커스텀 로컬 AI 게이트웨이(REST · 활성 시 · 게이트웨이 타임아웃) → ③ null(호출측 결정론 템플릿).
+    /// 단계별 예산 독립(<paramref name="budget"/> 지정 시 양 단계 공통). 호출자 취소만 전파.
+    /// </summary>
+    public static async Task<string?> TryCompleteAsync(IPlutoLlmClient? primary, PlutoCustomLocalGateway? gateway, string system, string user, double temperature, CancellationToken ct, TimeSpan? budget = null)
+    {
+        var text = await TryCompleteSingleAsync(primary, system, user, temperature, ct, budget).ConfigureAwait(false);
+        if (text is not null || gateway is null || ReferenceEquals(primary, gateway)) return text;
+        bool enabled;
+        try { enabled = gateway.Options.IsEnabled; } catch { return null; }
+        if (!enabled) return null;
+        return await TryCompleteSingleAsync(gateway, system, user, temperature, ct, budget ?? gateway.Options.EffectiveTimeout).ConfigureAwait(false);
+    }
+
+    private static async Task<string?> TryCompleteSingleAsync(IPlutoLlmClient? llm, string system, string user, double temperature, CancellationToken ct, TimeSpan? budget)
     {
         if (llm is null) return null;
         bool available;

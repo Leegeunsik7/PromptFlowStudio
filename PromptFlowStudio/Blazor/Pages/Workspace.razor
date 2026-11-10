@@ -54,6 +54,11 @@
             <button class="ws-back" @onclick='() => Nav.NavigateTo("")'>← 워크스페이스</button>
             <button class="ws-back" @onclick='() => Nav.NavigateTo("storyboard")'>🎬 스토리보드(여러 컷) →</button>
             <button class="ws-back" @onclick="ExpandToStoryboard" disabled="@(State.IsBusy || string.IsNullOrWhiteSpace(_prompt))" title="현재 프롬프트·시드로 1번 컷을 채우고 2~4번 컷을 기승전결로 자동 전개">🎬 스토리보드로 4컷 확장</button>
+            @* 🎞 4컷 성장 마일스톤 — 아침 훅 → 액션 → 미소 → 잠 · 활성 프로필 앵커 선두 · 4슬롯 일괄 세팅 *@
+            <button class="ws-back" data-milestone="Day100" @onclick='() => ApplyMilestonePresetAsync("Day100")' disabled="@(State.IsBusy || _milestoneBusy)" title="100일의 기적 — 4컷 성장 일기를 스토리보드 4슬롯에 한 번에 세팅">💯 100일의 기적</button>
+            <button class="ws-back" data-milestone="FirstBirthday" @onclick='() => ApplyMilestonePresetAsync("FirstBirthday")' disabled="@(State.IsBusy || _milestoneBusy)" title="첫돌의 감동 — 4컷 성장 일기를 스토리보드 4슬롯에 한 번에 세팅">🎂 첫돌</button>
+            <button class="ws-back" data-milestone="DailyRoutine" @onclick='() => ApplyMilestonePresetAsync("DailyRoutine")' disabled="@(State.IsBusy || _milestoneBusy)" title="우리아이 하루 — 4컷 성장 일기를 스토리보드 4슬롯에 한 번에 세팅">☀️ 하루</button>
+            @if (_milestoneBusy) { <span class="ws-retry" role="status">🎞 플루토가 4컷을 구성하는 중…</span> }
             @* 🍼 Step5: 증시 세션/외부 연동 배지는 기본 아기 스튜디오 화면에서 제거(설정 > 연동 진단으로 이관). *@
             @if (Journal.RecoveringCount > 0) { <span class="ws-recover" role="status">[🔄 미완료 클라우드 작업 복원 중: @(Journal.RecoveringCount.ToString(CultureInfo.InvariantCulture))건]</span> }
             else if (Journal.Count > 0) { <button class="ws-recover ws-jbadge" @onclick="OpenJournal" title="클릭 → 저널 인스펙터(수동 회수·재시도·삭제)">[🔄 미완료 클라우드 작업: @(Journal.Count.ToString(CultureInfo.InvariantCulture))건]</button> }
@@ -1293,6 +1298,32 @@
     {
         if (!StoryVm.ExpandFromWorkspace(_prompt, _canvas.EffectiveSeed)) return;
         Nav.NavigateTo("storyboard");
+    }
+    private bool _milestoneBusy;
+    /// <summary>🎞 4컷 성장 마일스톤 프리셋 — 오케스트레이터(Gemini → 로컬 게이트웨이 → 템플릿) 결과를 스토리보드 4슬롯에 일괄 적용(프롬프트·카메라·구간). 작업실 프롬프트는 부모 메모로 전달.</summary>
+    private async Task ApplyMilestonePresetAsync(string milestoneKey)
+    {
+        if (_milestoneBusy) return;
+        _milestoneBusy = true;
+        StateHasChanged();
+        PromptFlowStudio.Services.Pluto.PlutoMilestonePlan plan;
+        try
+        {
+            var orch = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoMilestoneOrchestrator)) as PromptFlowStudio.Services.Pluto.PlutoMilestoneOrchestrator;
+            plan = orch is null
+                ? PromptFlowStudio.Services.Pluto.PlutoMilestoneOrchestrator.BuildLocal(PromptFlowStudio.Services.Pluto.PlutoMilestoneOrchestrator.ParseTheme(milestoneKey), _identity?.GetConsistencyAnchor(), _identity?.IsPet == true, _prompt)
+                : await orch.OrchestrateFourCutPlanAsync(milestoneKey, _prompt, _mediaCts.Token);
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex)
+        {
+            Program.Log("Workspace.PlutoMilestone", ex);
+            plan = PromptFlowStudio.Services.Pluto.PlutoMilestoneOrchestrator.BuildLocal(PromptFlowStudio.Services.Pluto.PlutoMilestoneOrchestrator.ParseTheme(milestoneKey), _identity?.GetConsistencyAnchor(), _identity?.IsPet == true, _prompt);
+        }
+        finally { _milestoneBusy = false; }
+        if (_disposed) return;
+        if (StoryVm.ApplyDirectorShots(plan.ToDirectorShots(), plan.MilestoneName)) Nav.NavigateTo("storyboard");
+        else StateHasChanged();
     }
     private string _size = "1280*720";
     private bool _safeZone = true;   // 숏츠 세이프존 오버레이(세로 결과일 때만 표시)
