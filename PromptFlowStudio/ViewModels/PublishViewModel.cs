@@ -34,6 +34,7 @@ public sealed class PublishViewModel : IDisposable
     private readonly PromptFlowStudio.Services.Pluto.PlutoLearningService? _learning;
     private readonly PromptFlowStudio.Services.Pluto.PlutoPreferenceLexicon? _lexicon;
     private readonly PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector? _letter;
+    private readonly PromptFlowStudio.Services.Pluto.PlutoLlmFailoverClient? _captionLlm;   // 🔁 Gemini → 로컬 AI 게이트웨이 → 템플릿
     private string? _activePlutoTrendId;
     private string? _publishPath;   // BGM 합성본(없으면 원본)
     private CancellationTokenSource? _cts;
@@ -47,8 +48,10 @@ public sealed class PublishViewModel : IDisposable
         PromptFlowStudio.Services.Platform.IClipboardService? clipboard = null,
         PromptFlowStudio.Services.Pluto.PlutoLearningService? learning = null,
         PromptFlowStudio.Services.Pluto.PlutoPreferenceLexicon? lexicon = null,
-        PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector? letter = null)
+        PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector? letter = null,
+        PromptFlowStudio.Services.Pluto.PlutoLlmFailoverClient? captionLlm = null)
     {
+        _captionLlm = captionLlm;
         _lexicon = lexicon;
         _letter = letter;
         _clipboard = clipboard;
@@ -810,7 +813,7 @@ public sealed class PublishViewModel : IDisposable
         PlutoSocialMessage = "🪐 플루토가 게시글 초안을 작성했어요 (해시태그 " + draft.Hashtags.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + "개)";
     }
 
-    /// <summary>🧠 Gemini 감성 캡션(2~3줄 + 12~15 해시태그) 초안 — LLM 실패/미설정 시 로컬 템플릿 폴백. 채널 미선택 시 null.</summary>
+    /// <summary>🧠 감성 캡션(2~3줄 + 12~15 해시태그) 초안 — 페일오버 체인(Gemini → 로컬 AI 게이트웨이 → 결정론적 템플릿). 체인 미주입 시 Gemini 단독. 채널 미선택 시 null.</summary>
     public async Task<PromptFlowStudio.Services.Pluto.PlutoSocialPost?> GeneratePlutoSocialDraftAsync(CancellationToken ct = default)
     {
         var p = (ToYouTube ? PromptFlowStudio.Services.Pluto.SocialPlatform.YouTubeShorts : PromptFlowStudio.Services.Pluto.SocialPlatform.None)
@@ -822,15 +825,18 @@ public sealed class PublishViewModel : IDisposable
         PlutoSocialMessage = "🧠 플루토가 캡션을 쓰는 중…";
         Notify();
         PromptFlowStudio.Services.Pluto.PlutoSocialPost draft;
-        try { draft = await PromptFlowStudio.Services.Pluto.PlutoSocialCopywriter.DraftSocialPostAsync(_gemini, Title, src, p, null, ct).ConfigureAwait(false); }
+        try { draft = await PromptFlowStudio.Services.Pluto.PlutoSocialCopywriter.DraftSocialPostAsync(CaptionClient, Title, src, p, null, ct).ConfigureAwait(false); }
         catch (OperationCanceledException) { draft = PromptFlowStudio.Services.Pluto.PlutoSocialCopywriter.Compose(Title, src, p); }
         finally { IsPlutoSocialBusy = false; }
         PlutoSocialDraft = draft;
-        PlutoSocialMessage = (draft.UsedLlm ? "🧠 플루토(Gemini)가 감성 캡션을 작성했어요" : "🪐 플루토가 게시글 초안을 작성했어요")
+        PlutoSocialMessage = (draft.UsedLlm ? "🧠 플루토(AI)가 감성 캡션을 작성했어요" : "🪐 플루토가 게시글 초안을 작성했어요")
             + " (해시태그 " + draft.Hashtags.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + "개)";
         Notify();
         return draft;
     }
+
+    /// <summary>🔁 SNS 캡션 LLM — 페일오버 체인 우선 · 미주입 시 Gemini 단독(null이면 템플릿).</summary>
+    internal PromptFlowStudio.Services.Pluto.IPlutoLlmClient? CaptionClient => (PromptFlowStudio.Services.Pluto.IPlutoLlmClient?)_captionLlm ?? _gemini;
 
     /// <summary>📋 전체 본문 + 해시태그 클립보드 복사(클립보드 미주입/실패 시 false).</summary>
     public bool CopyPlutoSocialDraft()

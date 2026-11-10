@@ -55,23 +55,41 @@ public sealed class PlutoCustomLocalGateway : IPlutoLlmClient, IDisposable
     public bool PrefersOllama => Volatile.Read(ref _preferOllama) == 1;
 
     /// <summary>📡 서버 가용성 — <c>GET /v1/models</c> → 실패 시 <c>GET /api/tags</c>. 2xx면 true · 서킷 해제. 예외 없음(호출자 취소 제외).</summary>
-    public async Task<bool> PingAsync(CancellationToken ct = default)
+    public async Task<bool> PingAsync(CancellationToken ct = default) => (await PingDetailedAsync(ct).ConfigureAwait(false)).IsOnline;
+
+    /// <summary>📡 진단 Ping — 온라인 여부 · 감지 프로토콜(OpenAI/Ollama) · 왕복 지연 · 사용자용 오류 팁. 예외 없음(호출자 취소 제외).</summary>
+    public async Task<PlutoGatewayPingResult> PingDetailedAsync(CancellationToken ct = default)
     {
-        if (Volatile.Read(ref _disposed) != 0 || !Options.TryResolveBase(out var baseUri)) return false;
+        if (Volatile.Read(ref _disposed) != 0) return PlutoGatewayPingResult.Offline("게이트웨이가 종료되었어요");
+        if (!Options.TryResolveBase(out var baseUri)) return PlutoGatewayPingResult.Offline(PlutoGatewayPingResult.InvalidUrlTip);
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(Options.EffectiveTimeout);
+        var t0 = Environment.TickCount64;
         try
         {
-            if (await GetOkAsync(new Uri(baseUri, OpenAiModelsPath), cts.Token).ConfigureAwait(false)
-                || await GetOkAsync(new Uri(baseUri, OllamaTagsPath), cts.Token).ConfigureAwait(false))
+            var openAi = await GetStatusAsync(new Uri(baseUri, OpenAiModelsPath), cts.Token).ConfigureAwait(false);
+            if (openAi is >= 200 and < 300) { OnSuccess(); return PlutoGatewayPingResult.Online(PlutoGatewayPingResult.OpenAiProtocol, Environment.TickCount64 - t0); }
+            var ollama = await GetStatusAsync(new Uri(baseUri, OllamaTagsPath), cts.Token).ConfigureAwait(false);
+            if (ollama is >= 200 and < 300)
             {
+                Volatile.Write(ref _preferOllama, 1);
                 OnSuccess();
-                return true;
+                return PlutoGatewayPingResult.Online(PlutoGatewayPingResult.OllamaProtocol, Environment.TickCount64 - t0);
             }
-            return false;
+            if (openAi < 0 && ollama < 0) return PlutoGatewayPingResult.Offline(PlutoGatewayPingResult.RefusedTip);
+            if (openAi is 401 or 403 || ollama is 401 or 403) return PlutoGatewayPingResult.Offline(PlutoGatewayPingResult.AuthTip);
+            return PlutoGatewayPingResult.Offline(PlutoGatewayPingResult.NoEndpointTip);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch (Exception ex) when (ex is OperationCanceledException or HttpRequestException or IOException or ObjectDisposedException) { Log("ping", ex); return false; }
+        catch (OperationCanceledException) { return PlutoGatewayPingResult.Offline(PlutoGatewayPingResult.TimeoutTip); }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or ObjectDisposedException) { Log("ping", ex); return PlutoGatewayPingResult.Offline(PlutoGatewayPingResult.RefusedTip); }
+    }
+
+    /// <summary>🔄 설정 변경 직후 — 서킷·실패 카운트·프로토콜 선호 초기화(새 엔드포인트를 즉시 재시도).</summary>
+    public void ResetState()
+    {
+        OnSuccess();
+        Volatile.Write(ref _preferOllama, 0);
     }
 
     /// <summary>시스템/사용자 지시 → 응답 본문(temperature 0.7). 실패/타임아웃 → null.</summary>
@@ -129,16 +147,17 @@ public sealed class PlutoCustomLocalGateway : IPlutoLlmClient, IDisposable
         }
     }
 
-    private async Task<bool> GetOkAsync(Uri uri, CancellationToken ct)
+    /// <returns>HTTP 상태 코드 · 연결 실패 시 -1.</returns>
+    private async Task<int> GetStatusAsync(Uri uri, CancellationToken ct)
     {
         try
         {
             using var req = new HttpRequestMessage(HttpMethod.Get, uri);
             if (!string.IsNullOrEmpty(Options.ApiKey)) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Options.ApiKey);
             using var resp = await _http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
-            return resp.IsSuccessStatusCode;
+            return (int)resp.StatusCode;
         }
-        catch (HttpRequestException) { return false; }
+        catch (HttpRequestException) { return -1; }
     }
 
     private static async Task<string?> ReadBoundedAsync(HttpContent content, CancellationToken ct)

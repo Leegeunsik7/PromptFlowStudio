@@ -1,0 +1,194 @@
+@using PromptFlowStudio.Services.Pluto
+@implements IDisposable
+
+@* [PromptFlow Studio] 🦙 플루토 로컬 AI 설정 모달 — 활성 토글 · 엔드포인트 URL · 모델 식별자 · 🔌 연결 테스트(Ping) · 저장(실행 중 게이트웨이 즉시 반영 + pluto_local_ai_settings.json).
+   모바일 링크 대상 서브컴포넌트 — @inject 금지(설정 서비스는 파라미터 주입). *@
+
+@if (Open)
+{
+    <div class="pla-dim" @onclick="CloseAsync"></div>
+    <div class="pla" role="dialog" aria-label="로컬 AI 설정" data-pluto-local-ai="1">
+        <div class="pla-h">
+            <span>🦙 로컬 AI 설정</span>
+            <button class="pla-x" title="닫기" @onclick="CloseAsync">✕</button>
+        </div>
+        <div class="pla-body">
+            <div class="pla-note">Gemini가 응답하지 않을 때 사내/로컬 AI 서버(OpenAI 호환 · Ollama)로 자동 전환해요. 실패하면 내장 템플릿으로 마무리합니다.</div>
+
+            <label class="pla-tog">
+                <input type="checkbox" @bind="_enabled" data-local-ai-enabled="1" />
+                <span>로컬 AI 엔진 활성화</span>
+            </label>
+
+            <label class="pla-lbl">엔드포인트 URL</label>
+            <input class="pla-in" maxlength="@PlutoLocalAiSettingsService.MaxBaseUrlLength" placeholder="@PlutoLocalGatewayOptions.DefaultBaseUrl" data-local-ai-url="1" @bind="_url" @bind:event="oninput" />
+
+            <label class="pla-lbl">모델 식별자</label>
+            <input class="pla-in" maxlength="@PlutoLocalAiSettingsService.MaxModelNameLength" placeholder="@PlutoLocalGatewayOptions.DefaultModelName" data-local-ai-model="1" @bind="_model" @bind:event="oninput" />
+
+            <label class="pla-tog sm" title="루프백(localhost) 외 주소 호출 허용 — 아이 프로필 정보가 해당 서버로 전송됩니다">
+                <input type="checkbox" @bind="_allowRemote" />
+                <span>LAN 엔드포인트 허용 <span class="pla-hint">(localhost 외 주소)</span></span>
+            </label>
+
+            <div class="pla-test">
+                <button class="pla-btn" disabled="@(_pinging || Settings is null)" data-local-ai-ping="1" @onclick="PingAsync">@(_pinging ? "⏳ 확인 중..." : "🔌 연결 테스트 (Ping)")</button>
+                @if (_ping is { } pr)
+                {
+                    <span class="pla-badge @(pr.IsOnline ? "ok" : "off")" role="status" data-local-ai-status="@(pr.IsOnline ? "online" : "offline")">
+                        @(pr.IsOnline
+                            ? "🟢 연결 성공 · " + pr.Protocol + " · " + pr.LatencyMs.ToString(System.Globalization.CultureInfo.InvariantCulture) + "ms"
+                            : "🔴 오프라인")
+                    </span>
+                }
+            </div>
+            @if (_ping is { IsOnline: false } off) { <div class="pla-tip">💡 @off.Message</div> }
+
+            @if (_error is { } err) { <div class="pla-err">@err</div> }
+            @if (_saved is { } ok) { <div class="pla-ok">@ok</div> }
+
+            <div class="pla-actions">
+                <button class="pla-btn" disabled="@_busy" @onclick="ResetDefaults">↺ 기본값</button>
+                <button class="pla-btn go" disabled="@(_busy || Settings is null)" data-local-ai-save="1" @onclick="SaveAsync">@(_busy ? "⏳ 저장 중..." : "💾 저장")</button>
+            </div>
+        </div>
+    </div>
+}
+<style>
+    .pla-dim { position: fixed; inset: 0; background: rgba(2,6,23,.5); z-index: 890; }
+    .pla { position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%); width: min(460px, 94vw); max-height: 92vh; z-index: 891; display: flex; flex-direction: column; background: var(--card,#111a2e); color: var(--ink,#e6eefc); border: 1px solid rgba(167,139,250,.4); border-radius: 16px; box-shadow: 0 18px 48px rgba(0,0,0,.45); }
+    .pla-h { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; font-weight: 900; border-bottom: 1px solid rgba(148,163,184,.16); }
+    .pla-x { background: transparent; border: 0; color: inherit; font-size: 16px; cursor: pointer; }
+    .pla-body { padding: 14px 18px; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+    .pla-note { font-size: 12px; opacity: .75; line-height: 1.5; }
+    .pla-tog { display: flex; align-items: center; gap: 8px; font-weight: 800; cursor: pointer; }
+    .pla-tog.sm { font-size: 12px; font-weight: 600; }
+    .pla-lbl { font-size: 12px; font-weight: 700; opacity: .8; }
+    .pla-hint { font-weight: 500; opacity: .7; }
+    .pla-in { width: 100%; box-sizing: border-box; border-radius: 10px; border: 1px solid rgba(148,163,184,.3); background: transparent; color: inherit; padding: 8px 10px; font: inherit; }
+    .pla-test { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+    .pla-badge { padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 800; }
+    .pla-badge.ok { background: rgba(34,197,94,.16); color: #4ade80; }
+    .pla-badge.off { background: rgba(248,113,113,.16); color: #f87171; }
+    .pla-tip { font-size: 12px; opacity: .85; line-height: 1.5; }
+    .pla-err { color: #f87171; font-size: 12px; }
+    .pla-ok { color: #4ade80; font-size: 12px; }
+    .pla-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
+    .pla-btn { padding: 9px 14px; border-radius: 10px; border: 1px solid rgba(148,163,184,.3); background: transparent; color: inherit; font-weight: 800; cursor: pointer; }
+    .pla-btn.go { border: 0; color: #fff; background: linear-gradient(135deg,#a78bfa,#6366f1); }
+    .pla-btn:disabled { opacity: .5; cursor: default; }
+</style>
+
+@code {
+    [Parameter] public bool Open { get; set; }
+    [Parameter] public PlutoLocalAiSettingsService? Settings { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    /// <summary>저장(런타임 적용) 성공 → 적용된 설정 스냅샷.</summary>
+    [Parameter] public EventCallback<PlutoLocalGatewayOptions> OnSaved { get; set; }
+
+    private bool _wasOpen;
+    private bool _enabled;
+    private string _url = PlutoLocalGatewayOptions.DefaultBaseUrl;
+    private string _model = PlutoLocalGatewayOptions.DefaultModelName;
+    private bool _allowRemote;
+    private int _timeoutMs = PlutoLocalGatewayOptions.DefaultTimeoutMs;
+    private PlutoGatewayPingResult? _ping;
+    private string? _error;
+    private string? _saved;
+    private bool _busy;
+    private bool _pinging;
+    private CancellationTokenSource? _pingCts;
+    private bool _disposed;
+
+    protected override void OnParametersSet()
+    {
+        if (Open && !_wasOpen) LoadForm();   // 열릴 때마다 실행 중 설정으로 폼 초기화
+        if (!Open && _wasOpen) CancelPing();
+        _wasOpen = Open;
+    }
+
+    private void LoadForm()
+    {
+        _error = null;
+        _saved = null;
+        _ping = null;
+        if (Settings is null) { _error = "⚠ 로컬 AI 게이트웨이가 등록되지 않았어요"; return; }
+        var o = Settings.Snapshot();
+        _enabled = o.IsEnabled;
+        _url = o.BaseUrl;
+        _model = o.ModelName;
+        _allowRemote = o.AllowRemote;
+        _timeoutMs = o.TimeoutMs;
+    }
+
+    private PlutoLocalGatewayOptions Draft() => new() { IsEnabled = _enabled, BaseUrl = _url, ModelName = _model, AllowRemote = _allowRemote, TimeoutMs = _timeoutMs };
+
+    private void ResetDefaults()
+    {
+        _url = PlutoLocalGatewayOptions.DefaultBaseUrl;
+        _model = PlutoLocalGatewayOptions.DefaultModelName;
+        _allowRemote = false;
+        _timeoutMs = PlutoLocalGatewayOptions.DefaultTimeoutMs;
+        _ping = null;
+        _error = _saved = null;
+    }
+
+    private async Task PingAsync()
+    {
+        if (_pinging || Settings is null) return;
+        CancelPing();
+        var cts = _pingCts = new CancellationTokenSource();
+        _pinging = true;
+        _ping = null;
+        _error = null;
+        try { _ping = await Settings.TestConnectionAsync(Draft(), cts.Token); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("PlutoLocalAi.Ping", ex); _ping = PlutoGatewayPingResult.Offline(PlutoGatewayPingResult.RefusedTip); }
+        finally
+        {
+            _pinging = false;
+            if (ReferenceEquals(_pingCts, cts)) _pingCts = null;
+            cts.Dispose();
+        }
+        if (!_disposed) StateHasChanged();
+    }
+
+    private async Task SaveAsync()
+    {
+        _error = _saved = null;
+        if (_busy || Settings is null) return;
+        _busy = true;
+        try
+        {
+            var (applied, persisted, err) = await Settings.SaveAsync(Draft());
+            if (!applied) { _error = "⚠ " + err; return; }
+            _saved = persisted ? "✅ 저장했어요 — 바로 적용됩니다" : "⚠ " + err;
+            var snap = Settings.Snapshot();
+            _url = snap.BaseUrl;
+            _model = snap.ModelName;
+            await OnSaved.InvokeAsync(snap);
+        }
+        catch (Exception ex) { Program.Log("PlutoLocalAi.Save", ex); _error = "⚠ 저장 실패 — 다시 시도해 주세요"; }
+        finally { _busy = false; }
+    }
+
+    private void CancelPing()
+    {
+        var c = _pingCts;
+        if (c is null) return;
+        try { c.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
+    private async Task CloseAsync()
+    {
+        CancelPing();
+        try { await OnClose.InvokeAsync(); }
+        catch (Exception ex) { Program.Log("PlutoLocalAi.Close", ex); }
+    }
+
+    public void Dispose()
+    {
+        _disposed = true;
+        CancelPing();
+    }
+}

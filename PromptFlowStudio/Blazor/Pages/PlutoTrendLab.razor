@@ -5,6 +5,7 @@
 @inject PlutoLearningService Learning
 @inject PlutoSocialRadarEngine Radar
 @inject PlutoIdentityVault IdentityVault
+@inject PlutoLocalAiSettingsService LocalAiSettings
 @inject PromptDraftService Draft
 @inject NavigationManager Nav
 @inject PromptFlowStudio.Services.Platform.IClipboardService Clipboard
@@ -16,6 +17,7 @@
         <h1 class="pl-title">🪐 플루토 <span class="pl-title-g">트렌드 랩</span></h1>
         <div class="pl-sub">플루토가 고른 쇼츠·릴스 트렌드 — 채택·내보내기·평가할수록 취향을 학습합니다.</div>
         <button class="pl-identity@(_identity is not null ? " on" : "")" data-pluto-identity-open="1" title="아기/반려동물 프로필 — 외모 특징이 새 트렌드 프롬프트에 캐릭터 일관성 앵커로 반영됩니다" @onclick="() => _identityModal = true">@(_identity is { } ip ? ip.FormatBadge(DateTime.Today) : "🍼 우리 아이 프로필 만들기")</button>
+        <button class="pl-identity@(LocalAiSettings.Gateway.Options.IsEnabled ? " on" : "")" data-local-ai-open="1" title="Gemini 장애 시 사내/로컬 AI 서버(OpenAI 호환 · Ollama)로 자동 전환 — 엔드포인트 · 모델 · 연결 테스트" @onclick="() => _localAiModal = true">🦙 로컬 AI 설정</button>
     </div>
 
     <div class="pl-brain" data-pluto-hud="1" title="채택 1 · 내보내기 3 · 👍 1 · 📈 SNS 공식 학습 2 XP — 10 XP 마다 레벨 업">
@@ -133,6 +135,7 @@
 </div>
 
 <PlutoIdentityModal Open="_identityModal" Vault="IdentityVault" OnClose="() => _identityModal = false" OnSaved="OnIdentitySaved" />
+<PlutoLocalAiSettingsModal Open="_localAiModal" Settings="LocalAiSettings" OnClose="() => _localAiModal = false" />
 
 <style>
     .pl { padding: 24px 28px; max-width: 1280px; }
@@ -190,6 +193,7 @@
     private readonly CancellationTokenSource _cts = new();
     private PlutoIdentityProfile? _identity;
     private bool _identityModal;
+    private bool _localAiModal;
 
     // ── 📈 SNS 트렌드 레이더 ──
     private enum LabView { Curation, Radar }

@@ -8,6 +8,8 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using PromptFlowStudio.Services.Pluto;
+using PromptFlowStudio.Services.Publishing;
+using PromptFlowStudio.ViewModels;
 using Xunit;
 
 namespace PromptFlowStudio.Tests;
@@ -316,5 +318,186 @@ public sealed class PlutoCustomGatewayAndMilestoneTests : IDisposable
         // 프로필 없음 → 기본 앵커 · 반려동물 → pet 앵커
         Assert.StartsWith(PlutoMilestoneOrchestrator.DefaultBabyAnchor + ", ", (await new PlutoMilestoneOrchestrator().OrchestrateFourCutPlanAsync("하루")).Scenes[0].Prompt, StringComparison.Ordinal);
         Assert.StartsWith(PlutoMilestoneOrchestrator.DefaultPetAnchor + ", the pet", PlutoMilestoneOrchestrator.BuildLocal(PlutoMilestoneTheme.DailyRoutine, null, isPet: true).Scenes[0].Prompt, StringComparison.Ordinal);
+    }
+    // ══════════════════════ 🦙 로컬 AI 설정 UI 서비스 · Publish 캡션 페일오버 ══════════════════════
+
+    private sealed class UriHandler : HttpMessageHandler
+    {
+        public Func<Uri, Task<HttpResponseMessage>> Respond { get; init; } = static _ => Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+        public readonly List<Uri> Requests = new();
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            lock (Requests) Requests.Add(request.RequestUri!);
+            return Respond(request.RequestUri!);
+        }
+    }
+
+    private sealed class NoopYt : IYouTubeShortsPublisher
+    {
+        public bool Enabled => false;
+        public Task<ShortsPublishResult> PublishAsync(string videoPath, ShortsMetadata meta, string? srtPath = null, IProgress<double>? progress = null, CancellationToken ct = default)
+            => Task.FromResult(new ShortsPublishResult(false, false, null, null, false, "off"));
+        public Task<bool> TestConnectionAsync(CancellationToken ct = default) => Task.FromResult(false);
+    }
+
+    private sealed class NoopIg : IInstagramReelsPublisher
+    {
+        public bool Enabled => false;
+        public Task<ReelsPublishOutcome> PublishAsync(string videoPath, string? publicVideoUrl, string caption, bool publicConsent, IProgress<double>? progress = null, CancellationToken ct = default)
+            => Task.FromResult(new ReelsPublishOutcome(false, false, ReelsRoute.Mock, null, "off"));
+        public Task<bool> ValidateCredentialsAsync(string? userId, string? accessToken, CancellationToken ct = default) => Task.FromResult(false);
+    }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public async Task PlutoLocalGatewayOptions_PersistsAndAppliesRuntimeChanges()
+    {
+        var path = Path.Combine(_dir, PlutoLocalAiSettingsService.FileName);
+        // 서버: 127.0.0.1:9100 = OpenAI 호환(/v1/models) · :9200 = Ollama 전용(/api/tags) · 그 외 포트 연결 거부
+        var h = new UriHandler
+        {
+            Respond = u => u.Port switch
+            {
+                9100 when u.AbsolutePath == "/v1/models" => Task.FromResult(Json("{\"data\":[]}")),
+                9100 => Task.FromResult(Json(OpenAiReply("{\"ok\":1}"))),
+                9200 when u.AbsolutePath == "/api/tags" => Task.FromResult(Json("{\"models\":[]}")),
+                9200 => Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)),
+                _ => throw new HttpRequestException("refused"),
+            },
+        };
+        using var gw = new PlutoCustomLocalGateway(new PlutoLocalGatewayOptions { BaseUrl = "http://127.0.0.1:9999", TimeoutMs = 3500 }, h);
+        using var svc = new PlutoLocalAiSettingsService(gw, path, h);
+        var changed = 0;
+        svc.Changed += () => Interlocked.Increment(ref changed);
+        Assert.False(gw.IsAvailable);
+
+        // 🔌 연결 테스트 — 초안만 Ping · 실행 중 게이트웨이 불변
+        var draft = new PlutoLocalGatewayOptions { IsEnabled = true, BaseUrl = " http://127.0.0.1:9100 ", ModelName = " my-slm " };
+        var ok = await svc.TestConnectionAsync(draft);
+        Assert.True(ok.IsOnline);
+        Assert.Equal(PlutoGatewayPingResult.OpenAiProtocol, ok.Protocol);
+        var ollama = await svc.TestConnectionAsync(new PlutoLocalGatewayOptions { BaseUrl = "http://127.0.0.1:9200" });
+        Assert.True(ollama.IsOnline);
+        Assert.Equal(PlutoGatewayPingResult.OllamaProtocol, ollama.Protocol);
+        var refused = await svc.TestConnectionAsync(new PlutoLocalGatewayOptions { BaseUrl = "http://127.0.0.1:9300" });
+        Assert.False(refused.IsOnline);
+        Assert.Equal(PlutoGatewayPingResult.RefusedTip, refused.Message);
+        var lan = await svc.TestConnectionAsync(new PlutoLocalGatewayOptions { BaseUrl = "http://10.0.0.5:9100" });   // 🔒 프라이버시 게이트
+        Assert.False(lan.IsOnline);
+        Assert.Equal(PlutoGatewayPingResult.InvalidUrlTip, lan.Message);
+        Assert.False(gw.Options.IsEnabled);
+        Assert.Equal("http://127.0.0.1:9999", gw.Options.BaseUrl);
+        Assert.Equal(0, changed);
+
+        // 🚫 잘못된 URL → 적용·영속 모두 거부
+        var bad = await svc.SaveAsync(new PlutoLocalGatewayOptions { IsEnabled = true, BaseUrl = "ftp://x" });
+        Assert.False(bad.Applied);
+        Assert.NotNull(bad.Error);
+        Assert.False(File.Exists(path));
+        Assert.False(gw.Options.IsEnabled);
+
+        // ⚡ 서킷 열린 상태 → 저장 즉시 해제 · 새 엔드포인트/모델 반영 · 원자 영속
+        gw.Options.IsEnabled = true;
+        Assert.Null(await gw.CompleteJsonAsync("s", "u"));   // :9999 거부 → 서킷 오픈
+        Assert.True(gw.IsCircuitOpen);
+        var saved = await svc.SaveAsync(draft);
+        Assert.True(saved.Applied);
+        Assert.True(saved.Persisted);
+        Assert.Equal(1, changed);
+        Assert.False(gw.IsCircuitOpen);
+        Assert.True(gw.IsAvailable);
+        Assert.Equal("http://127.0.0.1:9100", gw.Options.BaseUrl);
+        Assert.Equal("my-slm", gw.Options.ModelName);
+        Assert.True((await gw.PingDetailedAsync()).IsOnline);
+        Assert.Equal("{\"ok\":1}", await gw.CompleteJsonAsync("s", "u"));
+        Assert.Equal(9100, h.Requests[^1].Port);
+        Assert.True(File.Exists(path));
+        Assert.DoesNotContain("ApiKey", await File.ReadAllTextAsync(path), StringComparison.Ordinal);
+
+        // 🚀 재시작 모사 — 저장 파일이 환경변수 기본값을 덮어씀
+        var reloaded = PlutoLocalAiSettingsService.LoadEffectiveOptions(path);
+        Assert.True(reloaded.IsEnabled);
+        Assert.Equal("http://127.0.0.1:9100", reloaded.BaseUrl);
+        Assert.Equal("my-slm", reloaded.ModelName);
+
+        // 🔴 비활성 저장 → 즉시 게이트웨이 차단(브리지가 템플릿으로)
+        Assert.True((await svc.SaveAsync(new PlutoLocalGatewayOptions { IsEnabled = false, BaseUrl = "http://127.0.0.1:9100" })).Applied);
+        Assert.False(gw.IsAvailable);
+        Assert.Null(await gw.CompleteJsonAsync("s", "u"));
+        Assert.False(PlutoLocalAiSettingsService.LoadEffectiveOptions(path).IsEnabled);
+
+        // 🛡️ 손상 파일 → 예외 없이 환경변수/기본값
+        await File.WriteAllTextAsync(path, "{ not json");
+        var fallback = PlutoLocalAiSettingsService.LoadEffectiveOptions(path);
+        Assert.False(string.IsNullOrWhiteSpace(fallback.BaseUrl));
+    }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public async Task PublishViewModel_GeneratesCaptions_ViaFailoverChain()
+    {
+        const string caption = "{\"hook\":\"🍼 로컬 AI가 쓴 훅\",\"story\":[\"첫 줄 💛\",\"둘째 줄 🥹\"],\"hashtags\":[\"#로컬캡션\",\"#육아스타그램\",\"#성장일기\",\"#babyreels\",\"#아기스타그램\",\"#딸바보\"]}";
+        static PublishViewModel Open(PlutoLlmFailoverClient? chain)
+        {
+            var vm = new PublishViewModel(new NoopYt(), new NoopIg(), captionLlm: chain);
+            vm.OpenForMedia("x.mp4", "x", null, "newborn sleeping on a pastel blanket");
+            vm.ToYouTube = true;
+            vm.ToInstagram = true;
+            return vm;
+        }
+
+        // 기준선 — 체인 미주입 → 결정론적 템플릿
+        string baseline;
+        using (var bare = Open(null))
+        {
+            var d0 = await bare.GeneratePlutoSocialDraftAsync();
+            Assert.NotNull(d0);
+            Assert.False(d0!.UsedLlm);
+            baseline = d0.FullText;
+        }
+
+        // ① Gemini 예외 → 로컬 게이트웨이(OpenAI 호환) 캡션
+        var gemini = new FakeLlm { Throw = new HttpRequestException("gemini down") };
+        var h = new StubHandler { Respond = (_, _) => Task.FromResult(Json(OpenAiReply(caption))) };
+        using (var gw = new PlutoCustomLocalGateway(Enabled(), h))
+        using (var vm = Open(new PlutoLlmFailoverClient(gemini, gw)))
+        {
+            Assert.IsType<PlutoLlmFailoverClient>(vm.CaptionClient);
+            var d = await vm.GeneratePlutoSocialDraftAsync();
+            Assert.NotNull(d);
+            Assert.True(d!.UsedLlm);
+            Assert.Equal("🍼 로컬 AI가 쓴 훅", d.HookIntro);
+            Assert.Contains("#로컬캡션", d.Hashtags);
+            Assert.InRange(d.Hashtags.Count, PlutoSocialCopywriter.MinLlmTags, PlutoSocialCopywriter.MaxTags);
+            Assert.Equal(1, gemini.Calls);
+            Assert.Contains(h.Requests, r => r.Path == "/v1/chat/completions" && r.Body.Contains("newborn sleeping", StringComparison.Ordinal));
+            Assert.Contains("AI", vm.PlutoSocialMessage, StringComparison.Ordinal);
+            Assert.False(vm.IsPlutoSocialBusy);
+        }
+
+        // ② Gemini 성공 → 게이트웨이 미호출
+        var h2 = new StubHandler { Respond = (_, _) => Task.FromResult(Json(OpenAiReply(caption))) };
+        using (var gw = new PlutoCustomLocalGateway(Enabled(), h2))
+        using (var vm = Open(new PlutoLlmFailoverClient(new FakeLlm { Response = caption.Replace("로컬 AI가 쓴 훅", "제미나이 훅", StringComparison.Ordinal) }, gw)))
+        {
+            var d = await vm.GeneratePlutoSocialDraftAsync();
+            Assert.True(d!.UsedLlm);
+            Assert.Equal("🍼 제미나이 훅", d.HookIntro);
+            Assert.Empty(h2.Requests);
+        }
+
+        // ③ Gemini 미가용 + 게이트웨이 오프라인(연결 거부) → 템플릿과 동일 · 예외 없음
+        var h3 = new StubHandler { Respond = (_, _) => throw new HttpRequestException("refused") };
+        using (var gw = new PlutoCustomLocalGateway(Enabled(), h3))
+        using (var vm = Open(new PlutoLlmFailoverClient(new FakeLlm { IsAvailable = false }, gw)))
+        {
+            var d = await vm.GeneratePlutoSocialDraftAsync();
+            Assert.NotNull(d);
+            Assert.False(d!.UsedLlm);
+            Assert.Equal(baseline, d.FullText);
+            Assert.Contains("해시태그", vm.PlutoSocialMessage, StringComparison.Ordinal);
+            Assert.NotEmpty(h3.Requests);
+        }
     }
 }

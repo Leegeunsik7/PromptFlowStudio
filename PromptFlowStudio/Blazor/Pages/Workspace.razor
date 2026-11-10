@@ -41,6 +41,7 @@
 @inject PromptFlowStudio.Services.Chart.ChartStillGeneratorService ChartGen
 @inject PromptFlowStudio.Services.Pluto.PlutoCopilot PlutoCopilotSvc
 @inject PromptFlowStudio.Services.Pluto.PlutoIdentityVault IdentityVault
+@inject PromptFlowStudio.Services.Pluto.PlutoLocalAiSettingsService LocalAiSettings
 
 @* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
    상태는 WanJobState(싱글턴)에 있고, 이 컴포넌트는 OnChange 를 구독해 InvokeAsync(StateHasChanged)로만 갱신한다.
@@ -59,6 +60,7 @@
             <button class="ws-back" data-milestone="FirstBirthday" @onclick='() => ApplyMilestonePresetAsync("FirstBirthday")' disabled="@(State.IsBusy || _milestoneBusy)" title="첫돌의 감동 — 4컷 성장 일기를 스토리보드 4슬롯에 한 번에 세팅">🎂 첫돌</button>
             <button class="ws-back" data-milestone="DailyRoutine" @onclick='() => ApplyMilestonePresetAsync("DailyRoutine")' disabled="@(State.IsBusy || _milestoneBusy)" title="우리아이 하루 — 4컷 성장 일기를 스토리보드 4슬롯에 한 번에 세팅">☀️ 하루</button>
             @if (_milestoneBusy) { <span class="ws-retry" role="status">🎞 플루토가 4컷을 구성하는 중…</span> }
+            <button class="ws-back" data-local-ai-open="1" @onclick="() => _localAiModal = true" title="Gemini 장애 시 사내/로컬 AI 서버(OpenAI 호환 · Ollama)로 자동 전환 — 엔드포인트 · 모델 · 연결 테스트">🦙 로컬 AI 설정@(LocalAiSettings.Gateway.Options.IsEnabled ? " · ON" : "")</button>
             @* 🍼 Step5: 증시 세션/외부 연동 배지는 기본 아기 스튜디오 화면에서 제거(설정 > 연동 진단으로 이관). *@
             @if (Journal.RecoveringCount > 0) { <span class="ws-recover" role="status">[🔄 미완료 클라우드 작업 복원 중: @(Journal.RecoveringCount.ToString(CultureInfo.InvariantCulture))건]</span> }
             else if (Journal.Count > 0) { <button class="ws-recover ws-jbadge" @onclick="OpenJournal" title="클릭 → 저널 인스펙터(수동 회수·재시도·삭제)">[🔄 미완료 클라우드 작업: @(Journal.Count.ToString(CultureInfo.InvariantCulture))건]</button> }
@@ -906,6 +908,7 @@
 <button class="ws-pluto-fab" data-pluto-fab="1" title="일상 메모로 15초 3막 시나리오 만들기" @onclick="() => _plutoDrawer = true">🪐 플루토에게 시나리오 요청</button>
 <PlutoCopilotDrawer Open="_plutoDrawer" Copilot="PlutoCopilotSvc" OnClose="() => _plutoDrawer = false" OnApply="ApplyPlutoScriptAsync" />
 <PlutoIdentityModal Open="_identityModal" Vault="IdentityVault" OnClose="() => _identityModal = false" OnSaved="OnIdentitySaved" />
+<PlutoLocalAiSettingsModal Open="_localAiModal" Settings="LocalAiSettings" OnClose="() => _localAiModal = false" />
 
 <style>
     .ws-pluto-fab { position: fixed; right: 22px; bottom: 22px; z-index: 870; padding: 12px 18px; border-radius: 999px; border: 0; cursor: pointer; font-weight: 900; color: #fff;
@@ -2131,6 +2134,7 @@
     // ── 🍼 플루토 아이덴티티 볼트 ──
     private PromptFlowStudio.Services.Pluto.PlutoIdentityProfile? _identity;
     private bool _identityModal;
+    private bool _localAiModal;
     private string IdentityChipLabel => _identity is { } ip ? (ip.IsPet ? "🐾 " : "🍼 ") + ip.SubjectName : "🍼 우리 아이 프로필";
     private void OpenIdentityModal() => _identityModal = true;
     /// <summary>🏷️ 뱃지 클릭 — 프로필 있음 → 프로필 모달, 없음 → 기존 D-day/문구 인라인 편집.</summary>
