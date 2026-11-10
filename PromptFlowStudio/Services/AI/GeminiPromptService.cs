@@ -443,11 +443,17 @@ public sealed class GeminiPromptService : PromptFlowStudio.Services.Pluto.IPluto
         var plat = NormalizePlatform(platform);
         if (src.Length == 0 || !HasKey()) return BuildLocalSnsMetadata(src, plat);
 
-        var user = new StringBuilder(src.Length + 96).Append("Platform: ").Append(plat).Append("\nVideo prompt: ").Append(src);
-        if (durationSec > 0) user.Append("\nDuration: ").Append(durationSec.ToString("0", System.Globalization.CultureInfo.InvariantCulture)).Append(" seconds");
-        var text = await CallAsync(SnsSeoInstruction, user.ToString(), null, true, 0.7, ct).ConfigureAwait(false);
+        var text = await CallAsync(SnsSeoInstruction, BuildSnsUserPrompt(src, plat, durationSec), null, true, 0.7, ct).ConfigureAwait(false);
         var parsed = text is null ? null : ParseSnsMetadata(text);
         return parsed ?? BuildLocalSnsMetadata(src, plat);
+    }
+
+    /// <summary>SNS SEO 사용자 지시(플랫폼 · 프롬프트 · 듀레이션) — Gemini 직접 호출 · 플루토 페일오버 체인 공용.</summary>
+    public static string BuildSnsUserPrompt(string prompt, string platform, float durationSec)
+    {
+        var user = new StringBuilder(prompt.Length + 96).Append("Platform: ").Append(platform).Append("\nVideo prompt: ").Append(prompt);
+        if (durationSec > 0) user.Append("\nDuration: ").Append(durationSec.ToString("0", System.Globalization.CultureInfo.InvariantCulture)).Append(" seconds");
+        return user.ToString();
     }
 
     public const string SnsSeoInstruction =

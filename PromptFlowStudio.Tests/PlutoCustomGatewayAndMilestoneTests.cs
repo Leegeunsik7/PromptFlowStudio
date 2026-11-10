@@ -500,4 +500,79 @@ public sealed class PlutoCustomGatewayAndMilestoneTests : IDisposable
             Assert.NotEmpty(h3.Requests);
         }
     }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public async Task PublishViewModel_GeneratesSeoMetadata_ViaFailoverChain()
+    {
+        const string prompt = "newborn sleeping on a pastel blanket, soft window light";
+        const string seo = "{\"title\":\"🍼 로컬 AI 제목\",\"description\":\"꿈나라 여행 중인 우리 아기 💛\",\"hashtags\":[\"#로컬SEO\",\"#육아스타그램\",\"#성장일기\",\"#babyreels\",\"#아기스타그램\",\"#딸바보\"]}";
+        static PublishViewModel Open(PlutoLlmFailoverClient? chain)
+        {
+            var vm = new PublishViewModel(new NoopYt(), new NoopIg(), captionLlm: chain);
+            vm.OpenForMedia("x.mp4", "x", null, prompt);
+            vm.ToYouTube = true;
+            vm.ToInstagram = true;
+            return vm;
+        }
+        var local = PromptFlowStudio.Services.AI.GeminiPromptService.BuildLocalSnsMetadata(prompt, "YouTube Shorts + Instagram Reels");
+
+        // 기준선 — LLM 미주입 → 결정론적 템플릿
+        using (var bare = Open(null))
+        {
+            Assert.True(await bare.GenerateSeoAsync());
+            Assert.Equal(local.Title, bare.Title);
+            Assert.Equal(string.Join(", ", local.Tags), bare.TagsText);
+            Assert.Contains(PromptFlowStudio.Services.AI.GeminiPromptService.SnsFallbackNotice, bare.SeoMessage, StringComparison.Ordinal);
+        }
+
+        // ① Gemini 예외 → 로컬 게이트웨이 SEO
+        var gemini = new FakeLlm { Throw = new HttpRequestException("gemini down") };
+        var h = new StubHandler { Respond = (_, _) => Task.FromResult(Json(OpenAiReply(seo))) };
+        using (var gw = new PlutoCustomLocalGateway(Enabled(), h))
+        using (var vm = Open(new PlutoLlmFailoverClient(gemini, gw)))
+        {
+            Assert.True(await vm.GenerateSeoAsync());
+            Assert.Equal("🍼 로컬 AI 제목", vm.Title);
+            Assert.Contains("#로컬SEO", vm.TagsText, StringComparison.Ordinal);
+            Assert.Contains("#로컬SEO", vm.Caption, StringComparison.Ordinal);
+            Assert.Equal(1, gemini.Calls);
+            Assert.Contains(h.Requests, r => r.Path == "/v1/chat/completions" && r.Body.Contains("newborn sleeping", StringComparison.Ordinal) && r.Body.Contains("SEO copywriter", StringComparison.Ordinal));
+            Assert.Equal("✨ " + PublishViewModel.PlutoSeoMessage, vm.SeoMessage);
+            Assert.DoesNotContain("Gemini", vm.SeoMessage, StringComparison.Ordinal);
+            Assert.False(vm.IsSeoBusy);
+        }
+
+        // ② Gemini 성공 → 게이트웨이 미호출
+        var h2 = new StubHandler { Respond = (_, _) => Task.FromResult(Json(OpenAiReply(seo))) };
+        using (var gw = new PlutoCustomLocalGateway(Enabled(), h2))
+        using (var vm = Open(new PlutoLlmFailoverClient(new FakeLlm { Response = seo.Replace("로컬 AI 제목", "제미나이 제목", StringComparison.Ordinal) }, gw)))
+        {
+            Assert.True(await vm.GenerateSeoAsync());
+            Assert.Equal("🍼 제미나이 제목", vm.Title);
+            Assert.Empty(h2.Requests);
+        }
+
+        // ③ Gemini 미가용 + 게이트웨이 오프라인 → 템플릿과 동일 · 예외 없음
+        var h3 = new StubHandler { Respond = (_, _) => throw new HttpRequestException("refused") };
+        using (var gw = new PlutoCustomLocalGateway(Enabled(), h3))
+        using (var vm = Open(new PlutoLlmFailoverClient(new FakeLlm { IsAvailable = false }, gw)))
+        {
+            Assert.True(await vm.GenerateSeoAsync());
+            Assert.Equal(local.Title, vm.Title);
+            Assert.Equal(string.Join(", ", local.Tags), vm.TagsText);
+            Assert.StartsWith("💡 ", vm.SeoMessage, StringComparison.Ordinal);
+            Assert.NotEmpty(h3.Requests);
+        }
+
+        // ④ 스키마 불일치(해시태그 5개 미만) → 템플릿
+        var h4 = new StubHandler { Respond = (_, _) => Task.FromResult(Json(OpenAiReply("{\"title\":\"짧음\",\"hashtags\":[\"#a\",\"#b\"]}"))) };
+        using (var gw = new PlutoCustomLocalGateway(Enabled(), h4))
+        using (var vm = Open(new PlutoLlmFailoverClient(null, gw)))
+        {
+            Assert.True(await vm.GenerateSeoAsync());
+            Assert.Equal(local.Title, vm.Title);
+            Assert.NotEmpty(h4.Requests);
+        }
+    }
 }

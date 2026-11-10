@@ -527,24 +527,21 @@ public sealed class PublishViewModel : IDisposable
     };
 
     /// <summary>
-    /// ✨ AI 제목·해시태그 자동 생성 — 프롬프트 · 듀레이션 · 플랫폼 기반 Gemini 호출 → 제목 · 설명 · 태그 · 릴스 캡션 자동 입력.
-    /// 키 없음/실패 시 서비스가 로컬 템플릿 폴백. 서비스 미주입이면 로컬 템플릿 직접 사용. 발행 중이거나 생성 중이면 false.
+    /// ✨ AI 제목·해시태그 자동 생성 — 프롬프트 · 듀레이션 · 플랫폼 기반 페일오버 체인(Gemini 3.5초 → 로컬 AI 게이트웨이 → 결정론적 템플릿)
+    /// → 제목 · 설명 · 태그 · 릴스 캡션 자동 입력. 체인 미주입 시 Gemini 단독, LLM 전무 시 로컬 템플릿. 발행 중이거나 생성 중이면 false.
     /// </summary>
     public async Task<bool> GenerateSeoAsync(CancellationToken ct = default)
     {
         if (IsBusy || IsSeoBusy || !IsOpen) return false;
         IsSeoBusy = true;
-        SeoMessage = "✨ 제미나이 SEO 생성 중…";
+        SeoMessage = "✨ 플루토(AI) SEO 생성 중…";
         _seoCts?.Dispose();
         _seoCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var token = _seoCts.Token;
         Notify();
         try
         {
-            var platform = SeoPlatform;
-            var meta = _gemini is null
-                ? GeminiPromptService.BuildLocalSnsMetadata(SourcePrompt, platform)
-                : await _gemini.GenerateSnsMetadataAsync(SourcePrompt, platform, DurationSec, token).ConfigureAwait(false);
+            var meta = await BuildSeoMetadataAsync(token).ConfigureAwait(false);
             if (IsBusy) return false;   // 생성 중 발행 시작 → 사용자 입력 보존
             ApplySeo(meta);
             SeoMessage = (meta.UsedFallback ? "💡 " : "✨ ") + meta.Message;
@@ -562,6 +559,24 @@ public sealed class PublishViewModel : IDisposable
             IsSeoBusy = false;
             Notify();
         }
+    }
+
+    public const string PlutoSeoMessage = "플루토(AI) SEO 자동 완성";
+
+    /// <summary>🔁 SEO 메타 — <see cref="CaptionClient"/> 체인 응답을 즉시 스키마 검증, 무응답/불일치는 로컬 템플릿. 호출자 취소만 전파.</summary>
+    private async Task<SnsSeoMetadata> BuildSeoMetadataAsync(CancellationToken token)
+    {
+        var src = (SourcePrompt ?? "").Trim();
+        var platform = GeminiPromptService.NormalizePlatform(SeoPlatform);
+        var llm = CaptionClient;
+        if (src.Length > 0 && llm is not null)
+        {
+            var text = await PromptFlowStudio.Services.Pluto.PlutoLlmBridge.TryCompleteAsync(
+                llm, GeminiPromptService.SnsSeoInstruction, GeminiPromptService.BuildSnsUserPrompt(src, platform, DurationSec), 0.7, token).ConfigureAwait(false);
+            var parsed = text is null ? null : GeminiPromptService.ParseSnsMetadata(text);
+            if (parsed is not null) return parsed with { Message = PlutoSeoMessage };
+        }
+        return GeminiPromptService.BuildLocalSnsMetadata(src, platform);
     }
 
     /// <summary>SEO 메타를 입력 필드에 반영(제목 100자 · 태그 쉼표 구분 · 캡션 = 설명 + 해시태그).</summary>

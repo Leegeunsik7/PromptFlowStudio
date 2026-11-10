@@ -145,7 +145,7 @@
 
             <div class="pm-row pm-seo">
                 <button class="pm-btn pm-seo-btn" @onclick="GenerateSeo" disabled="@(vm.IsBusy || vm.IsSeoBusy)"
-                        title="프롬프트 · 듀레이션 · 선택 채널 기반 제미나이 SEO 제목 · 설명 · 해시태그 자동 입력(키 없으면 로컬 템플릿)">@(vm.IsSeoBusy ? "⏳ 생성 중…" : "✨ AI 제목·해시태그 자동 생성")</button>
+                        title="프롬프트 · 듀레이션 · 선택 채널 기반 플루토(AI) SEO 제목 · 설명 · 해시태그 자동 입력(Gemini → 로컬 AI 게이트웨이 → 로컬 템플릿)">@(vm.IsSeoBusy ? "⏳ 생성 중…" : "✨ AI 제목·해시태그 자동 생성")</button>
                 @if (vm.SeoMessage is { Length: > 0 } seoMsg)
                 {
                     <span class="pm-seo-msg">@seoMsg</span>
