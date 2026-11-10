@@ -84,6 +84,7 @@
                 }
             }
             <label class="pm-btn" title="16~24fps AI 영상을 minterpolate(MCI) 로 60fps 보간 — 고주사율(120Hz+) OLED 끊김 제거 · 재인코딩 시간 증가"><input type="checkbox" checked="@vm.StockSuiteSmooth60" @onchange="e => vm.StockSuiteSmooth60 = e.Value is true" disabled="@vm.IsStockSuiteBusy" /> ⚡ 60fps 모션 스무딩</label>
+            <label class="pm-btn" title="3막 타임라인 효과음(0.8초 📸 셔터 · 5.5초 ✨ 차임 · 13.2초 🌙 잠자리 벨)을 감성 BGM 과 amix 합성 — BGM ON 시 적용 · 실패 시 BGM 단독 폴백"><input type="checkbox" checked="@vm.IncludeSfx" @onchange="e => vm.IncludeSfx = e.Value is true" disabled="@vm.IsStockSuiteBusy" /> 🔔 감성 효과음(SFX)</label>
                     <button class="pm-btn" @onclick="ExportStockSuite" disabled="@vm.IsStockSuiteBusy"
                             title="환경설정의 StockSuite 에셋 폴더에 bg_ambient.mp4 로 원자적 덮어쓰기">@(vm.IsStockSuiteBusy ? "⏳ 복사 중…" : "💼 StockSuite로 내보내기")</button>
                     <button class="pm-btn" @onclick="PreviewFrame" disabled="@(vm.IsPreviewBusy || vm.IsStockSuiteBusy)"

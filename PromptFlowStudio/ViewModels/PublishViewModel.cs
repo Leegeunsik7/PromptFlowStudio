@@ -648,9 +648,11 @@ public sealed class PublishViewModel : IDisposable
             var letter = BurnLetterSubtitles ? PlutoLetter : null;
             _stockSuite.BurnSubtitles = letter is not null;
             _stockSuite.SubtitleCues = letter?.ToCues();
+            var prevSfx = _stockSuite.IncludeSfx;
+            _stockSuite.IncludeSfx = IncludeSfx;   // 🔔 감성 효과음(BGM ON 시 타임라인 amix)
             PromptFlowStudio.Services.Export.StockSuiteExportResult r;
             try { r = await _stockSuite.ExportAsync(VideoPath, null, null, ct, StockSuiteFormat, StockSuiteSharpen, StockSuiteSmooth60, StockSuiteResolution, StockSuiteWatermark).ConfigureAwait(false); }
-            finally { _stockSuite.BurnSubtitles = false; _stockSuite.SubtitleCues = null; }   // 공유 싱글톤 — 작업실 내보내기로 누수 차단
+            finally { _stockSuite.BurnSubtitles = false; _stockSuite.SubtitleCues = null; _stockSuite.IncludeSfx = prevSfx; }   // 공유 싱글톤 — 작업실 내보내기로 누수 차단
             StockSuiteMessage = r.Ok ? r.Message : "⚠ " + r.Message;
             StockSuiteExported = r.Ok;
             StockSuiteRestartPending = false;
@@ -874,6 +876,8 @@ public sealed class PublishViewModel : IDisposable
     public bool IsPlutoLetterBusy { get; private set; }
     /// <summary>🏷️ StockSuite 내보내기 시 감성 자막 번인 여부.</summary>
     public bool BurnLetterSubtitles { get; set; }
+    /// <summary>🔔 StockSuite 내보내기 시 3막 타임라인 감성 효과음(SFX) 믹스 여부(기본 ON).</summary>
+    public bool IncludeSfx { get; set; } = true;
 
     /// <summary>💌 발행 프롬프트 → 3막 감성 편지 자막(Gemini 우선 · 로컬 템플릿 폴백 · 디렉터 미주입 시 로컬).</summary>
     public async Task<PromptFlowStudio.Services.Pluto.PlutoSubtitleScript?> GeneratePlutoLetterAsync(string? subjectName = null, CancellationToken ct = default)

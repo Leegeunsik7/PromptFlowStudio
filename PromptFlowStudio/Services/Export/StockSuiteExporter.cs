@@ -360,8 +360,9 @@ public sealed partial class StockSuiteExporter
         {
             try
             {
-                if (await TryMuxBabyBgmIntoPrimaryAsync(bt, ct).ConfigureAwait(false))
-                    r = r with { HasAudio = true, Message = r.Message.Replace("🔇 무음", "🔊 BGM", StringComparison.Ordinal) + " · " + BabyBgmTag + BabyBgmLabel(BabyBgm!.Value) };
+                var mixed = await MuxBabyAudioIntoPrimaryAsync(bt, ct).ConfigureAwait(false);   // −1 실패 · 0 BGM · n BGM+SFX n큐
+                if (mixed >= 0)
+                    r = r with { HasAudio = true, Message = r.Message.Replace("🔇 무음", "🔊 BGM", StringComparison.Ordinal) + " · " + BabyBgmTag + BabyBgmLabel(BabyBgm!.Value) + (mixed > 0 ? " · " + SfxTag + mixed.ToString(System.Globalization.CultureInfo.InvariantCulture) + "큐" : "") };
             }
             catch (OperationCanceledException) { return new(false, null, false, "취소됨"); }
         }

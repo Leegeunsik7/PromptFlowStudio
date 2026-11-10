@@ -120,8 +120,15 @@ public sealed partial class StockSuiteExporter
     /// <see cref="ExportProfile.BabyCinematic"/> 로 실행(Silent Ambient Guard 면제). 성공 true · OFF/실패 false(무음 산출물 보존 · 취소는 전파).
     /// </summary>
     public async Task<bool> TryMuxBabyBgmIntoPrimaryAsync(string primaryPath, CancellationToken ct = default)
+        => await MuxBabyAudioIntoPrimaryAsync(primaryPath, ct).ConfigureAwait(false) >= 0;
+
+    /// <summary>
+    /// 🎵🔔 BGM(+ <see cref="IncludeSfx"/> 시 타임라인 SFX) 먹싱 코어 — 반환 −1 = OFF/실패(무음 보존) · 0 = BGM 단독 · n&gt;0 = BGM + SFX n큐.
+    /// SFX 합성/믹싱 실패 → 경고 로그 후 BGM 단독 폴백. 임시 SFX WAV 는 finally 에서 정리.
+    /// </summary>
+    internal async Task<int> MuxBabyAudioIntoPrimaryAsync(string primaryPath, CancellationToken ct)
     {
-        if (BabyBgm is not { } track || string.IsNullOrWhiteSpace(primaryPath) || !File.Exists(primaryPath)) return false;
+        if (BabyBgm is not { } track || string.IsNullOrWhiteSpace(primaryPath) || !File.Exists(primaryPath)) return -1;
         double duration;
         try { duration = await DurationProbe(primaryPath, ct).ConfigureAwait(false); }
         catch (OperationCanceledException) { throw; }
@@ -129,22 +136,142 @@ public sealed partial class StockSuiteExporter
         string? bgm;
         try { bgm = BabyBgmResolver(track, duration); }
         catch (Exception ex) { Program.Log("StockSuite.BabyBgm.Resolve", ex); bgm = null; }
-        if (string.IsNullOrWhiteSpace(bgm) || !File.Exists(bgm)) return false;
+        if (string.IsNullOrWhiteSpace(bgm) || !File.Exists(bgm)) return -1;
         var temp = primaryPath + BabyBgmMuxTempSuffix;
+        string[]? sfxFiles = null;
         try
         {
+            // 🔔 SFX 타임라인 믹스 우선 시도 — 실패 시 BGM 단독 폴백(경고 로그).
+            if (IncludeSfx)
+            {
+                var cues = ResolveSfxCues(duration);
+                sfxFiles = cues.Count > 0 ? TryWriteSfxCueWavs(cues) : null;
+                if (sfxFiles is not null)
+                {
+                    var sfxErr = await TryFfmpegAsync(BuildBabyBgmSfxMixArgs(primaryPath, bgm, sfxFiles, cues, duration, temp), temp, ct, ExportProfile.BabyCinematic).ConfigureAwait(false);
+                    if (sfxErr is null)
+                    {
+                        await SwapIntoPlaceAsync(temp, primaryPath, ct).ConfigureAwait(false);
+                        return cues.Count;
+                    }
+                    Program.Log("StockSuite.BabySfx", new IOException("⚠ SFX 믹싱 실패 → BGM 단독 폴백: " + sfxErr));
+                    TryDelete(temp);
+                }
+            }
             var err = await TryFfmpegAsync(BuildBabyBgmMuxArgs(primaryPath, bgm, duration, temp), temp, ct, ExportProfile.BabyCinematic).ConfigureAwait(false);
-            if (err is not null) { Program.Log("StockSuite.BabyBgm", new IOException(err)); TryDelete(temp); return false; }
+            if (err is not null) { Program.Log("StockSuite.BabyBgm", new IOException(err)); TryDelete(temp); return -1; }
             await SwapIntoPlaceAsync(temp, primaryPath, ct).ConfigureAwait(false);
-            return true;
+            return 0;
         }
         catch (OperationCanceledException) { TryDelete(temp); throw; }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             Program.Log("StockSuite.BabyBgm", ex);
             TryDelete(temp);
-            return false;
+            return -1;
         }
+        finally
+        {
+            if (sfxFiles is not null)
+                for (var i = 0; i < sfxFiles.Length; i++) TryDelete(sfxFiles[i]);
+        }
+    }
+
+    // ── 🔔 플루토 타임라인 SFX ──
+    public const string SfxTag = "🔔 감성 효과음 · ";
+    /// <summary>🔔 SFX 마스터 리미터 상한(≈ −1 dBFS) — amix normalize=0 합산 클리핑 방지.</summary>
+    public const string SfxLimiter = "alimiter=limit=0.89:level=0";
+    private const string SfxAudioFormat = "aformat=sample_rates=48000:channel_layouts=stereo";
+
+    /// <summary>🔔 감성 효과음 믹스 토글(BGM ON 시에만 적용 · 기본 OFF — UI 가 매 내보내기마다 결선).</summary>
+    public bool IncludeSfx { get; set; }
+
+    /// <summary>🔔 큐 시트 공급자(영상 길이 초 → 큐) — 기본 <see cref="Pluto.PlutoSfxDirector.Shared"/>. 테스트 주입용.</summary>
+    public Func<double, IReadOnlyList<Pluto.PlutoSfxCue>> SfxCueSheetProvider { get; set; } = static d => Pluto.PlutoSfxDirector.Shared.BuildCueSheet(d);
+
+    /// <summary>🔔 SFX 임시 WAV 폴더(null = %TEMP%\PromptFlowStudio\sfx).</summary>
+    public string? SfxTempDir { get; set; }
+
+    private IReadOnlyList<Pluto.PlutoSfxCue> ResolveSfxCues(double durationSec)
+    {
+        try { return SfxCueSheetProvider(durationSec) ?? Array.Empty<Pluto.PlutoSfxCue>(); }
+        catch (Exception ex) { Program.Log("StockSuite.BabySfx.Cues", ex); return Array.Empty<Pluto.PlutoSfxCue>(); }
+    }
+
+    /// <summary>🔔 큐별 절차적 SFX → 임시 WAV(큐 순서). 실패 시 작성분 정리 후 null(BGM 단독 폴백).</summary>
+    internal string[]? TryWriteSfxCueWavs(IReadOnlyList<Pluto.PlutoSfxCue> cues)
+    {
+        var dir = string.IsNullOrWhiteSpace(SfxTempDir) ? Path.Combine(Path.GetTempPath(), "PromptFlowStudio", "sfx") : SfxTempDir;
+        var paths = new string[cues.Count];
+        var written = 0;
+        try
+        {
+            Directory.CreateDirectory(dir);
+            var stamp = Guid.NewGuid().ToString("N");
+            for (var i = 0; i < cues.Count; i++)
+            {
+                var p = Path.Combine(dir, "sfx_" + stamp + "_" + i.ToString(CultureInfo.InvariantCulture) + "_" + cues[i].SfxType.ToString().ToLowerInvariant() + ".wav");
+                File.WriteAllBytes(p, Pluto.PlutoAudioSynthesizer.Generate(cues[i].SfxType));
+                paths[written++] = p;
+            }
+            return paths;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            Program.Log("StockSuite.BabySfx", new IOException("⚠ SFX 합성 실패 → BGM 단독 폴백", ex));
+            for (var i = 0; i < written; i++) TryDelete(paths[i]);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 🔔 BGM + SFX 멀티트랙 필터그래프 — 입력 1 = BGM(loudnorm −14 LUFS · 0.25 · 페이드), 2.. = SFX(볼륨 → <c>adelay=ms|ms</c>).
+    /// <c>amix=inputs=N:normalize=0</c>(BGM 레벨 보존) → <see cref="SfxLimiter"/> → <c>[aout]</c>.
+    /// </summary>
+    public static string BuildBabyBgmSfxFilterGraph(double durationSec, IReadOnlyList<Pluto.PlutoSfxCue> cues)
+    {
+        var inv = CultureInfo.InvariantCulture;
+        var sb = new StringBuilder(256 + cues.Count * 96);
+        sb.Append("[1:a]").Append(BuildBabyBgmAudioFilter(durationSec)).Append(',').Append(SfxAudioFormat).Append("[bgm];");
+        for (var i = 0; i < cues.Count; i++)
+        {
+            var ms = Math.Max(0, cues[i].OffsetMs).ToString(inv);
+            var vol = Math.Clamp(double.IsFinite(cues[i].VolumeRatio) ? cues[i].VolumeRatio : 0, 0, 1).ToString("0.###", inv);
+            sb.Append("[").Append((i + 2).ToString(inv)).Append(":a]").Append(SfxAudioFormat)
+              .Append(",volume=").Append(vol)
+              .Append(",adelay=").Append(ms).Append('|').Append(ms)
+              .Append("[d").Append(i.ToString(inv)).Append("];");
+        }
+        sb.Append("[bgm]");
+        for (var i = 0; i < cues.Count; i++) sb.Append("[d").Append(i.ToString(inv)).Append(']');
+        sb.Append("amix=inputs=").Append((cues.Count + 1).ToString(inv)).Append(":duration=first:dropout_transition=0:normalize=0,")
+          .Append(SfxLimiter).Append("[aout]");
+        return sb.ToString();
+    }
+
+    /// <summary>🔔 BGM + SFX 먹싱 인자 — 비디오 copy · BGM 루프 · SFX 입력 N개 · filter_complex → AAC · -shortest.</summary>
+    public static string[] BuildBabyBgmSfxMixArgs(string videoPath, string bgmPath, IReadOnlyList<string> sfxPaths, IReadOnlyList<Pluto.PlutoSfxCue> cues, double durationSec, string outputPath)
+    {
+        if (sfxPaths.Count != cues.Count) throw new ArgumentException("SFX 경로 수와 큐 수 불일치", nameof(sfxPaths));
+        var a = new List<string>(40 + sfxPaths.Count * 2)
+        {
+            "-y", "-hide_banner", "-loglevel", "error",
+            "-i", videoPath,
+            "-stream_loop", "-1", "-i", bgmPath,
+        };
+        for (var i = 0; i < sfxPaths.Count; i++) { a.Add("-i"); a.Add(sfxPaths[i]); }
+        a.Add("-filter_complex"); a.Add(BuildBabyBgmSfxFilterGraph(durationSec, cues));
+        a.Add("-map"); a.Add("0:v:0"); a.Add("-map"); a.Add("[aout]");
+        a.Add("-c:v"); a.Add("copy");
+        a.Add("-c:a"); a.Add(videoPath.EndsWith(".webm", StringComparison.OrdinalIgnoreCase) ? "libopus" : "aac");
+        a.Add("-b:a"); a.Add(AudioMuxService.AudioBitrate);
+        a.Add("-ar"); a.Add(AudioMuxService.OutputSampleRate);
+        a.Add("-shortest");
+        if (double.IsFinite(durationSec) && durationSec > 0) { a.Add("-t"); a.Add(durationSec.ToString("0.###", CultureInfo.InvariantCulture)); }
+        if (videoPath.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)) { a.Add("-movflags"); a.Add("+faststart"); a.Add("-f"); a.Add("mp4"); }
+        else if (videoPath.EndsWith(".webm", StringComparison.OrdinalIgnoreCase)) { a.Add("-f"); a.Add("webm"); }
+        a.Add(outputPath);
+        return a.ToArray();
     }
 
     /// <summary>🏷️ 단계 기본 D-day — 신생아 D+30 · 백일 D+100 · 첫돌 D+365 · 그 외 오늘 날짜.</summary>
