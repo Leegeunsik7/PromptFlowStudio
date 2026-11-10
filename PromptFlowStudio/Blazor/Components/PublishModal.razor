@@ -215,17 +215,21 @@
                     <button class="pm-btn pm-pluto-btn" @onclick="GeneratePlutoLetterAsync" disabled="@(vm.IsBusy || vm.IsPlutoLetterBusy)">@(vm.IsPlutoLetterBusy ? "⏳ 편지 쓰는 중…" : "💌 감성 편지 자막 작성")</button>
                     @if (vm.PlutoLetter is not null)
                     {
-                        <button class="pm-btn" @onclick="CopyPlutoLetter" title="To. 이름 · 3막 편지 · 서명 전체를 클립보드로 복사">📋 자막 전체 복사</button>
+                        <button class="pm-btn" @onclick="CopyPlutoLetter" title="To. 이름 · 3막 KO/EN 이중 자막 · 서명 전체를 클립보드로 복사">📋 자막 전체 복사</button>
                     }
                 </div>
                 @if (vm.PlutoLetter is { } letter)
                 {
-                    <div class="pm-letter-line"><span class="pm-chip">01~04초</span>@letter.Act1Text</div>
-                    <div class="pm-letter-line"><span class="pm-chip">05~10초</span>@letter.Act2Text</div>
-                    <div class="pm-letter-line"><span class="pm-chip">11~14초</span>@letter.Act3Text</div>
+                    @foreach (var act in letter.Acts)
+                    {
+                        <div class="pm-letter-line" data-letter-act="@(act.Act)"><span class="pm-chip">@(act.StartSec.ToString("00", System.Globalization.CultureInfo.InvariantCulture))~@(act.EndSec.ToString("00", System.Globalization.CultureInfo.InvariantCulture))초</span><span class="pm-letter-pair"><span class="pm-letter-ko">@act.KoreanText</span>@if (!string.IsNullOrWhiteSpace(act.EnglishText))
+                        {
+                            <span class="pm-letter-en" lang="en">@act.EnglishText</span>
+                        }</span></div>
+                    }
                     @if (vm.StockSuiteAvailable)
                     {
-                        <label class="pm-chk" title="StockSuite 내보내기 시 하단 중앙 반투명 박스로 1~4초 · 5~10초 · 11~14초 시간 동기 번인 + .srt 동반 저장 — drawtext 실패 시 자막 생략 폴백"><input type="checkbox" checked="@vm.BurnLetterSubtitles" @onchange="e => vm.BurnLetterSubtitles = e.Value is true" disabled="@vm.IsStockSuiteBusy" /> 🏷️ 영상에 감성 자막 번인 (자막 포함 렌더링)</label>
+                        <label class="pm-chk" title="StockSuite 내보내기 시 하단 중앙 반투명 박스로 1~4초 · 5~10초 · 11~14초 KO/EN 2줄 시간 동기 번인 + 이중 언어 .srt 동반 저장 — drawtext 실패 시 자막 생략 폴백"><input type="checkbox" checked="@vm.BurnLetterSubtitles" @onchange="e => vm.BurnLetterSubtitles = e.Value is true" disabled="@vm.IsStockSuiteBusy" /> 🏷️ 영상에 감성 자막 번인 (자막 포함 렌더링)</label>
                     }
                 }
                 @if (vm.PlutoLetterMessage is { Length: > 0 } lMsg)
@@ -303,6 +307,9 @@
     .pm-pluto-btn{background:linear-gradient(135deg,#8b7bff,#6d5efc);color:#fff;border:0}
     .pm-pluto-msg{font-size:12px;opacity:.8;margin-top:6px}
     .pm-letter-line{display:flex;align-items:center;gap:8px;font-size:13px;margin-top:6px}
+    .pm-letter-pair{display:flex;flex-direction:column;gap:2px;min-width:0}
+    .pm-letter-ko{color:#fff1d6;font-weight:600}
+    .pm-letter-en{font-size:11.5px;font-style:italic;opacity:.78}
     .pm-chip{flex:none;padding:1px 8px;border-radius:999px;font-size:10.5px;font-weight:800;color:#f9a8d4;background:rgba(244,114,182,.14);border:1px solid rgba(244,114,182,.4)}
     .pm-pluto-pre{white-space:pre-wrap;font-family:inherit;font-size:12.5px;margin:8px 0 0;max-height:220px;overflow:auto}
     .pm-dim{position:fixed;inset:0;background:rgba(2,6,23,.62);z-index:900}

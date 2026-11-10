@@ -903,13 +903,13 @@ public sealed class PublishViewModel : IDisposable
         return script;
     }
 
-    /// <summary>📋 편지 전체 텍스트 클립보드 복사(미생성/클립보드 미주입/실패 시 false).</summary>
+    /// <summary>📋 KO/EN 이중 편지 전체 텍스트 클립보드 복사(미생성/클립보드 미주입/실패 시 false).</summary>
     public bool CopyPlutoLetter()
     {
         var l = PlutoLetter;
         if (l is null || _clipboard is null) return false;
         bool ok;
-        try { ok = _clipboard.SetText(l.ToFullLetterText()); }
+        try { ok = _clipboard.SetText(l.ToBilingualClipboardText()); }
         catch (Exception ex) { Program.Log("Publish.PlutoLetterCopy", ex); ok = false; }
         PlutoLetterMessage = ok ? "📋 감성 편지 자막을 복사했어요" : "⚠ 복사 실패 — 다시 시도해 주세요";
         Notify();

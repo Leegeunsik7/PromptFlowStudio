@@ -15,8 +15,8 @@ namespace PromptFlowStudio.Services.Export;
 /// <summary>🎵 아기 감성 BGM 트랙.</summary>
 public enum BabyBgmTrack { Lullaby, MusicBox, Acoustic }
 
-/// <summary>💌 시간 동기 자막 큐(초 단위 표시 구간 + 텍스트).</summary>
-public readonly record struct SubtitleCue(int StartSec, int EndSec, string Text);
+/// <summary>💌 시간 동기 자막 큐(초 단위 표시 구간 + 주 자막(KO) + 선택 보조 자막(EN)).</summary>
+public readonly record struct SubtitleCue(int StartSec, int EndSec, string Text, string? SecondaryText = null);
 
 public sealed partial class StockSuiteExporter
 {
@@ -218,29 +218,42 @@ public sealed partial class StockSuiteExporter
         finally { BurnSubtitles = false; SubtitleCues = null; }
     }
 
-    /// <summary>💌 하단 중앙 반투명 박스 drawtext × N — 큐별 <c>enable='between(t,s,e)'</c> 시간 게이트. 유효 큐 없음 → null. 4K 는 2배 스케일.</summary>
+    /// <summary>
+    /// 💌 하단 중앙 반투명 박스 drawtext — 큐별 <c>enable='between(t,s,e)'</c> 시간 게이트. 유효 큐 없음 → null. 4K 는 2배 스케일.
+    /// 단일 언어: 흰 글자 24pt · <c>y=h-120</c>. 이중 언어(<see cref="SubtitleCue.SecondaryText"/>): KO 웜 크림 24pt <c>y=h-164</c>(주) + EN 반투명 흰 16pt <c>y=h-120</c>(보조).
+    /// </summary>
     public static string? BuildTimedSubtitleFilter(IReadOnlyList<SubtitleCue>? cues, string? fontFile, StockSuiteResolution resolution = StockSuiteResolution.Fhd1080)
     {
         if (cues is null || cues.Count == 0) return null;
         var k = resolution == StockSuiteResolution.Uhd4K ? 2 : 1;
         var inv = CultureInfo.InvariantCulture;
         var font = string.IsNullOrWhiteSpace(fontFile) ? "" : "fontfile='" + fontFile.Replace("\\", "/", StringComparison.Ordinal).Replace(":", "\\:", StringComparison.Ordinal) + "':";
-        var style = ":fontsize=" + (24 * k).ToString(inv) + ":fontcolor=white:box=1:boxcolor=black@0.4:boxborderw=" + (10 * k).ToString(inv)
-            + ":x=(w-text_w)/2:y=h-" + (120 * k).ToString(inv);
-        var sb = new StringBuilder(256 * cues.Count);
+        var center = ":x=(w-text_w)/2:y=h-";
+        var mono = ":fontsize=" + (24 * k).ToString(inv) + ":fontcolor=white:box=1:boxcolor=black@0.4:boxborderw=" + (10 * k).ToString(inv)
+            + center + (120 * k).ToString(inv);
+        var primary = ":fontsize=" + (24 * k).ToString(inv) + ":fontcolor=0xFFF1D6:box=1:boxcolor=black@0.45:boxborderw=" + (10 * k).ToString(inv)
+            + center + (164 * k).ToString(inv);
+        var secondary = ":fontsize=" + (16 * k).ToString(inv) + ":fontcolor=white@0.85:box=1:boxcolor=black@0.3:boxborderw=" + (8 * k).ToString(inv)
+            + center + (120 * k).ToString(inv);
+        var sb = new StringBuilder(384 * cues.Count);
         for (var i = 0; i < cues.Count; i++)
         {
             var c = cues[i];
             if (string.IsNullOrWhiteSpace(c.Text) || c.EndSec <= c.StartSec || c.StartSec < 0) continue;
-            var clean = StripEmoji(c.Text.Replace('\r', ' ').Replace('\n', ' '));
+            var clean = CleanSubtitleLine(c.Text);
             if (clean.Length == 0) continue;
+            var en = CleanSubtitleLine(c.SecondaryText);
+            var gate = "':enable='between(t," + c.StartSec.ToString(inv) + "," + c.EndSec.ToString(inv) + ")'";
             if (sb.Length > 0) sb.Append(',');
-            sb.Append("drawtext=").Append(font).Append("text='").Append(EscapeDrawText(clean))
-              .Append("':enable='between(t,").Append(c.StartSec.ToString(inv)).Append(',').Append(c.EndSec.ToString(inv)).Append(")'")
-              .Append(style);
+            sb.Append("drawtext=").Append(font).Append("text='").Append(EscapeDrawText(clean)).Append(gate).Append(en.Length == 0 ? mono : primary);
+            if (en.Length > 0)
+                sb.Append(",drawtext=").Append(font).Append("text='").Append(EscapeDrawText(en)).Append(gate).Append(secondary);
         }
         return sb.Length == 0 ? null : sb.ToString();
     }
+
+    private static string CleanSubtitleLine(string? s)
+        => string.IsNullOrWhiteSpace(s) ? "" : StripEmoji(s.Replace('\r', ' ').Replace('\n', ' '));
 
     internal static string? AppendTimedSubtitles(string? baseFilter, IReadOnlyList<SubtitleCue>? cues, string? fontFile, StockSuiteResolution resolution)
     {
@@ -249,7 +262,7 @@ public sealed partial class StockSuiteExporter
         return baseFilter is null ? subs : baseFilter + "," + subs;
     }
 
-    /// <summary>💌 표준 SRT 직렬화(1-based 번호 · <c>HH:mm:ss,fff</c>). 유효 큐 없음 → 빈 문자열.</summary>
+    /// <summary>💌 표준 SRT 직렬화(1-based 번호 · <c>HH:mm:ss,fff</c> · 보조 자막(EN) 있으면 2번째 줄). 유효 큐 없음 → 빈 문자열.</summary>
     public static string BuildSrt(IReadOnlyList<SubtitleCue>? cues)
     {
         if (cues is null || cues.Count == 0) return "";
@@ -265,6 +278,8 @@ public sealed partial class StockSuiteExporter
             AppendSrtTime(sb, c.StartSec).Append(" --> ");
             AppendSrtTime(sb, c.EndSec).Append('\n');
             sb.Append(c.Text.Replace("\r", "", StringComparison.Ordinal).Trim()).Append('\n');
+            if (!string.IsNullOrWhiteSpace(c.SecondaryText))
+                sb.Append(c.SecondaryText.Replace('\r', ' ').Replace('\n', ' ').Trim()).Append('\n');
         }
         return sb.ToString();
     }

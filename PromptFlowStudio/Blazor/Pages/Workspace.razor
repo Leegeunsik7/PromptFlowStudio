@@ -358,7 +358,7 @@
                 <span>② 🎬 라이브 비디오 캔버스</span>
                 <span class="ws-hts-tools">
                     <button class="ws-hts-tog @(_growthBadge ? "on" : null)" @onclick="() => _growthBadge = !_growthBadge" aria-pressed="@(_growthBadge ? "true" : "false")" title="개월 수 · 성장 마일스톤 뱃지와 자막을 영상 위에 미리보기" data-canvas-tool="growth-badge">🏷️ 성장 뱃지/자막</button>
-                    <button class="ws-hts-tog @(_letterSubs ? "on" : null)" @onclick="() => _letterSubs = !_letterSubs" aria-pressed="@(_letterSubs ? "true" : "false")" title="내보내기 시 플루토 3막 감성 편지 자막(1~4초 · 5~10초 · 11~14초)을 주 MP4 에 번인하고 {출력명}.srt 를 함께 저장" data-canvas-tool="letter-subs">🏷️ 감성 자막 포함</button>
+                    <button class="ws-hts-tog @(_letterSubs ? "on" : null)" @onclick="() => _letterSubs = !_letterSubs" aria-pressed="@(_letterSubs ? "true" : "false")" title="내보내기 시 플루토 3막 KO/EN 이중 감성 편지 자막(1~4초 · 5~10초 · 11~14초)을 주 MP4 에 2줄 번인하고 이중 언어 {출력명}.srt 를 함께 저장" data-canvas-tool="letter-subs">🏷️ 감성 자막 포함</button>
                     <button class="ws-hts-tog @(_identity is not null ? "on" : null)" @onclick="OpenIdentityModal" title="아기/반려동물 프로필 — 이름 · 출생일(D-day) · 외모 특징이 모든 프롬프트에 캐릭터 일관성 앵커로 반영됩니다" data-canvas-tool="identity">@IdentityChipLabel</button>
                     <button class="ws-hts-tog @(_bgmOn ? "on" : null)" @onclick="ToggleBgmAsync" aria-pressed="@(_bgmOn ? "true" : "false")" title="감성 BGM 믹스 토글" data-canvas-tool="bgm">🎵 감성 BGM</button>
                     @if (_bgmOn)

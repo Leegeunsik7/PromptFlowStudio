@@ -39,8 +39,8 @@ public static class PlutoPromptCompressor
             "Pluto: 4 scenes of one day, same subject/wardrobe/light/room. s1 0-4s morning hook, s2 4-8s play, s3 8-12s big smile, s4 12-15s sleep. JSON only:\n" +
             "{\"scenes\":[{\"slot\":1,\"title\":\"KO<=30\",\"prompt\":\"EN<=400 no names\",\"camera\":\"EN\",\"bgm\":\"EN\"}]x4}",
         [PlutoSubtitleDirector.LlmLetterInstruction] =
-            "Pluto: KO 3-line letter parent->subject. act1 opening image, act2 today's growth, act3 loving promise with name. Each<=40 chars, no emoji/quotes/hashtags. JSON only:\n" +
-            "{\"act1\":\"\",\"act2\":\"\",\"act3\":\"\"}",
+            "Pluto: KO+EN 3-line letter parent->subject; en=poetic EN of same line. act1 1-4s opening image, act2 5-10s today's growth, act3 11-14s loving promise with name. ko<=40, en<=70 chars, no emoji/quotes/hashtags. JSON array only:\n" +
+            "[{\"act\":1,\"ko\":\"\",\"en\":\"\"}]x3",
         [PlutoSocialCopywriter.LlmCaptionInstruction] =
             "Pluto: KO SNS caption, warm parent tone, emojis. JSON only:\n" +
             "{\"hook\":\"<=80\",\"story\":[\"2-3 lines\"],\"hashtags\":[\"#KO/EN x12-15\"],\"pinnedComment\":\"question<=120\"}",
