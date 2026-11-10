@@ -491,4 +491,126 @@ public sealed partial class StockSuiteExporter
             TryDelete(tmp);   // 🧹 성공 시 Move 로 부재 · 실패/비IO 예외 시 잔여 .srt.tmp 정리
         }
     }
+
+    // ══════════════════════ 🎥 Ken Burns 모션 영상(사진 1장 → 15초 60fps) ══════════════════════
+
+    public const string MotionTag = "🎥 Ken Burns 모션 · ";
+    /// <summary>모션 영상 기본 출력 폴더(<c>%TEMP%</c> 하위).</summary>
+    public const string MotionOutputFolder = "motion";
+    public const string MotionFileSuffix = "_kenburns.mp4";
+
+    /// <summary>
+    /// 🎥 정지 이미지 → zoompan 모션 MP4 인자 — 입력 1프레임 · <c>-frames:v</c>/<c>-t</c> 로 길이 고정 · libx264 crf18 · 무음(오디오는 후속 먹싱).
+    /// </summary>
+    public static string[] BuildMotionVideoArgs(string imagePath, string videoFilter, int frames, int fps, string outputPath)
+    {
+        var inv = CultureInfo.InvariantCulture;
+        return
+        [
+            "-y", "-hide_banner", "-loglevel", "error",
+            "-i", imagePath,
+            "-vf", videoFilter,
+            "-frames:v", frames.ToString(inv), "-r", fps.ToString(inv),
+            "-t", ((double)frames / fps).ToString("0.###", inv),
+            "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
+            "-an", "-sn", "-dn", "-movflags", "+faststart", "-f", "mp4", outputPath,
+        ];
+    }
+
+    /// <summary>
+    /// 🎥 사진 1장 → 15초 60fps Ken Burns MP4 — <see cref="Pluto.PlutoMotionCompiler.CompileFfmpegZoomPanFilter"/> 필터그래프 +
+    /// 이중 언어 자막 번인(+ <c>.srt</c>) → BGM(−14 LUFS) + 절차적 SFX(셔터 · 차임 · 자장가 톤) 먹싱까지 단일 산출물.
+    /// [부분 구제] 자막 번인 실패 → 자막 없이 재시도 · 오디오 먹싱 실패 → 무음 영상 보존(둘 다 Ok=true + ⚠ 태그).
+    /// </summary>
+    /// <param name="options">해상도(<see cref="StockSuiteResolution.Uhd4K"/> = 2160×3840 · 그 외 1080×1920) · 출력 폴더.</param>
+    /// <param name="subtitles">자막 큐(null → <see cref="BurnSubtitles"/> ON 일 때 <see cref="SubtitleCues"/>).</param>
+    /// <param name="bgm">BGM 트랙(null → <see cref="BabyBgm"/> → 자장가).</param>
+    /// <param name="includeSfx">SFX 믹스(null → ON).</param>
+    /// <param name="outputPath">출력 MP4 경로(null → <c>{출력 폴더}/{이미지명}_kenburns.mp4</c>).</param>
+    public async Task<StockSuiteExportResult> ExportMotionVideoFromPhotoAsync(string imagePath, Pluto.PlutoMotionTrajectory trajectory, ExportOptions options,
+        IReadOnlyList<SubtitleCue>? subtitles = null, BabyBgmTrack? bgm = null, bool? includeSfx = null, string? outputPath = null, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath)) return new StockSuiteExportResult(false, null, false, "원본 사진을 찾을 수 없습니다.");
+        if (options is null) return new StockSuiteExportResult(false, null, false, "옵션이 없습니다.");
+        trajectory ??= Pluto.PlutoMotionTrajectory.Empty;
+        if (Pluto.PlutoMotionCompiler.TotalFrames(trajectory) == 0)
+            trajectory = Pluto.PlutoMotionCompiler.SynthesizeFourAct(Pluto.PlutoMotionCompiler.BabyFocal);   // 빈 궤적 → 기본 4막
+
+        var uhd = options.Resolution == StockSuiteResolution.Uhd4K;
+        int width = uhd ? 2160 : Pluto.PlutoMotionCompiler.DefaultWidth, height = uhd ? 3840 : Pluto.PlutoMotionCompiler.DefaultHeight;
+        const int fps = Pluto.PlutoMotionCompiler.DefaultFps;
+        var frames = Pluto.PlutoMotionCompiler.TotalFrames(trajectory, fps);
+        var motion = Pluto.PlutoMotionCompiler.CompileFfmpegZoomPanFilter(trajectory, width, height, fps, uhd ? 2 : Pluto.PlutoMotionCompiler.DefaultSupersample);
+
+        string target;
+        try
+        {
+            target = Path.GetFullPath(string.IsNullOrWhiteSpace(outputPath)
+                ? Path.Combine(string.IsNullOrWhiteSpace(options.OutputDirectory) ? Path.Combine(Path.GetTempPath(), "PromptFlowStudio", MotionOutputFolder) : options.OutputDirectory,
+                    Path.GetFileNameWithoutExtension(imagePath) + MotionFileSuffix)
+                : outputPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            Program.Log("StockSuite.Motion.Path", ex);
+            return new StockSuiteExportResult(false, null, false, "출력 경로를 만들 수 없습니다: " + ex.Message);
+        }
+
+        var cues = subtitles ?? (BurnSubtitles ? SubtitleCues : null);
+        var subsOn = BuildTimedSubtitleFilter(cues, null, options.Resolution) is not null;
+        var src = Path.GetFullPath(imagePath);
+        var temp = target + TempExt;
+        var tag = MotionTag + frames.ToString(CultureInfo.InvariantCulture) + "프레임 @" + fps.ToString(CultureInfo.InvariantCulture) + "fps · ";
+        var prevBgm = BabyBgm;
+        var prevSfx = IncludeSfx;
+        var prevCues = SubtitleCues;
+        try
+        {
+            string? err = null;
+            if (subsOn)
+            {
+                var burned = AppendTimedSubtitles(motion, cues, ResolveTickerBadgeFont(), options.Resolution)!;
+                err = await TryFfmpegAsync(BuildMotionVideoArgs(src, burned, frames, fps, temp), temp, ct, ExportProfile.BabyCinematic).ConfigureAwait(false);
+                if (err is null) tag += SubtitleTag;
+                else
+                {
+                    Program.Log("StockSuite.Motion.Subtitle", new IOException("⚠ 자막 번인 실패 → 자막 없이 재시도: " + err));
+                    TryDelete(temp);
+                }
+            }
+            if (!subsOn || err is not null)
+            {
+                err = await TryFfmpegAsync(BuildMotionVideoArgs(src, motion, frames, fps, temp), temp, ct, ExportProfile.BabyCinematic).ConfigureAwait(false);
+                if (err is not null) { TryDelete(temp); return new StockSuiteExportResult(false, null, false, "모션 영상 렌더 실패: " + err); }
+                if (subsOn) tag += "⚠ 자막 생략 · ";
+            }
+            await SwapIntoPlaceAsync(temp, target, ct).ConfigureAwait(false);
+
+            if (subsOn) { SubtitleCues = cues; TryWriteSubtitleSidecar(target); }
+
+            // 🎵🔔 BGM(−14 LUFS) + SFX — 검증된 먹싱 코어 재사용(실패 시 무음 영상 보존).
+            BabyBgm = bgm ?? prevBgm ?? BabyBgmTrack.Lullaby;
+            IncludeSfx = includeSfx ?? true;
+            var mixed = await MuxBabyAudioIntoPrimaryAsync(target, ct).ConfigureAwait(false);
+            tag += mixed < 0
+                ? "⚠ 오디오 생략 · 🔇 무음"
+                : "🔊 BGM · " + BabyBgmTag + BabyBgmLabel(BabyBgm.Value) + (mixed > 0 ? " · " + SfxTag + mixed.ToString(CultureInfo.InvariantCulture) + "큐" : "");
+            return new StockSuiteExportResult(true, target, false, tag) { HasAudio = mixed >= 0 };
+        }
+        catch (OperationCanceledException) { TryDelete(temp); throw; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Program.Log("StockSuite.Motion", ex);
+            return new StockSuiteExportResult(false, null, false, "모션 영상 내보내기 실패: " + ex.Message);
+        }
+        finally
+        {
+            TryDelete(temp);
+            BabyBgm = prevBgm;
+            IncludeSfx = prevSfx;
+            SubtitleCues = prevCues;
+        }
+    }
 }

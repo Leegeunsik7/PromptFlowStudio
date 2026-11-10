@@ -1,18 +1,17 @@
 # Current Project Status
-
-- Active Milestone: 【Pluto 3.0 안정화 감사】 임시파일·무잠금·진행률 포화·장문 자막·Blazor 스레드 안전
-- Build: Release `-warnaserror` 0W/0E — PromptFlowStudio · PromptFlowStudio.Tests (Mobile: 로컬 SDK 부재로 미빌드)
-- Tests (RAM-safe 4배치 · MaxCpuCount=2): Titan|Security 110 · StockSuite|Export|Sfx 78 · Pluto|Vision|Subtitle|Director 187 · Publish|Workspace|Modal 58 — 전량 PASS
+- Active Milestone: 【Pluto Deep-Motion】 Ken Burns 모션 컴파일러(사진 1장 → 15초 60fps zoompan)
+- Build: Release `-warnaserror` 0W/0E PromptFlowStudio · PromptFlowStudio.Tests (`-p:NuGetAudit=false` — NU1900 취약점 피드 조회 실패 우회 · Mobile 미빌드)
+- Tests: 전체 1007/1007 PASS (Motion|Vision 필터 98)
 - Updated: 2026-11-10 (KST)
 
 ## Completed
-- 🧹 BabyStudio: 먹싱 temp `finally` 확정 삭제(비IO 예외 포함) · SFX WAV 부분 작성분 `finally` 정리 · `.srt.~pfs` 잔여 정리
-- 🔓 VisionStory: 이미지 전체/EXIF 읽기 단일 `FileStream(FileShare.ReadWrite)` — 사용자 원본 무잠금
-- 🎬 DirectorRank `ProgressPercent`: long 산술 · span≤0/최고 티어 초과 100% 포화(오버플로·0 나눗셈 차단)
-- 💬 자막 클리핑 가드: 한글 30자/라틴 65자 초과 → 폰트 비례 축소(하한 11pt) · 극단 길이 말줄임 — 4K ×2
-- 🧵 Blazor: Workspace `RefreshUi`/`PostUi` 관측 Task 헬퍼(12곳) · PublishModal 관측 재렌더 · Close 시 SEO CTS 취소(업로드는 백그라운드 유지)
-- 🐞 PlutoDirectorBadge 구독/해제 수신자 정합(Headless_UI_Rendering_Check 기존 실패 수정)
-- 🧪 신규 `PlutoStabilityAuditTests` 17
+- 🎥 `Services/Pluto/PlutoMotionCompiler.cs`: `PlutoMotionSegment`/`PlutoMotionTrajectory`/`PlutoEasingFunction` · `SynthesizeFourAct` · `CompileFfmpegZoomPanFilter` · C# 미러 `EvaluateFrame`
+  - z: `max(1,min(10,if(lte(on,240),…)))` 3t²−2t³ · x/y: `max(0,min(iw-iw/zoom,f·iw-iw/zoom/2))` 클램프 · 4배 Lanczos 슈퍼샘플(서브픽셀)
+- 🎯 `PlutoVisionStoryPlan.DetectedFocalPoint`/`MotionPath` — Vision `focal_x/focal_y`([0,1] 스키마 검증 · 비전 출처만 채택) → 삼분할 폴백(아기 0.50,0.38 · 반려 0.50,0.55)
+- 📦 `StockSuiteExporter.ExportMotionVideoFromPhotoAsync` + `BuildMotionVideoArgs` — 자막 번인(+srt) → BGM −14 LUFS + SFX 먹싱, [부분 구제] 자막/오디오 실패 격리
+- 🧪 `PlutoMotionCompilerTests` 4건(컴파일 수식 문자열 직접 평가기로 0~901프레임 경계·연속성 검증)
 
-## Next
-- 모바일 빌드 검증(SDK 확보 시) · 4배치 필터 밖 테스트 회귀(여유 RAM 확보 시)
+## Open
+- 실 FFmpeg 렌더 미검증(이 PC PATH 에 ffmpeg 없음) — zoompan `on` 0/1-기반 양쪽 안전하게 설계했으나 실기 1회 확인 필요
+- UI 결선(Trend Lab 디렉터 HUD "모션 영상 내보내기" 버튼) 미구현 — 스펙 범위 외
+- 초점이 가장자리일 때 줌 1.25 기준 뷰포트 중심은 [0.4,0.6]으로 클램프(레터박스 방지 우선)

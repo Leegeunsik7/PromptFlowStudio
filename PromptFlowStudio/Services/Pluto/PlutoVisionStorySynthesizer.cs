@@ -72,6 +72,10 @@ public sealed class PlutoVisionStoryPlan
     public PlutoVisionSource Source { get; init; } = PlutoVisionSource.Heuristic;
     /// <summary>주입된 디렉터 티어(미주입 0).</summary>
     public int DirectorLevel { get; init; }
+    /// <summary>🎯 얼굴/눈 초점(정규화 0~1 · 원점 좌상단) — Gemini Vision 판독, 실패 시 삼분할 폴백(아기 0.50,0.38 · 반려 0.50,0.55).</summary>
+    public (double X, double Y) DetectedFocalPoint { get; init; } = PlutoMotionCompiler.BabyFocal;
+    /// <summary>🎥 4막 Ken Burns 카메라 궤적(<see cref="PlutoMotionCompiler.CompileFfmpegZoomPanFilter"/> 입력).</summary>
+    public PlutoMotionTrajectory MotionPath { get; init; } = PlutoMotionTrajectory.Empty;
 
     /// <summary>🎬 스토리보드 일괄 적용 입력(<c>StoryboardViewModel.ApplyDirectorShots</c>).</summary>
     public PromptFlowStudio.Services.AI.DirectorShot[] ToDirectorShots()
@@ -109,7 +113,9 @@ public sealed class PlutoVisionStorySynthesizer
         "Act 3 (slot 4, 12-15s): the warm, peaceful afterglow 5 seconds AFTER the shot. Keep the same subject, outfit, room and lighting in every slot. " +
         "Return JSON only: {\"kind\":\"smile|sleep|bath|play|celebration|outdoor\",\"mood\":\"<Korean short mood>\",\"setting\":\"<Korean setting and props>\"," +
         "\"expression\":\"\",\"gaze\":\"\",\"lighting\":\"\",\"props\":\"\",\"action\":\"\",\"bgm\":\"\",\"subtitle\":\"<Korean one-line emotional caption>\"," +
-        "\"scenes\":[{\"slot\":1,\"title\":\"<Korean>\",\"prompt\":\"<English video prompt>\",\"camera\":\"\"}]} with exactly 4 scenes.";
+        "\"focal_x\":0.52,\"focal_y\":0.38," +
+        "\"scenes\":[{\"slot\":1,\"title\":\"<Korean>\",\"prompt\":\"<English video prompt>\",\"camera\":\"\"}]} with exactly 4 scenes. " +
+        "focal_x/focal_y are the normalized [0.0-1.0] image coordinates (origin top-left) of the subject's eyes/face center.";
 
     private const string GatewayPreamble = "No pixels are available — infer the photo from this metadata.\n";
 
@@ -369,6 +375,8 @@ public sealed class PlutoVisionStorySynthesizer
             PersonaConsistencyAnchor = a,
             Attributes = attrs,
             Source = PlutoVisionSource.Heuristic,
+            DetectedFocalPoint = PlutoMotionCompiler.FallbackFocal(attrs.IsPet),
+            MotionPath = PlutoMotionCompiler.SynthesizeFourAct(PlutoMotionCompiler.FallbackFocal(attrs.IsPet)),
         };
     }
 
@@ -476,6 +484,15 @@ public sealed class PlutoVisionStorySynthesizer
         var subtitle = PlutoLlmBridge.Str(root, "subtitle", MaxSubtitleLength);
         var bgm = PlutoLlmBridge.Str(root, "bgm", MaxFieldLength);
         if (mood.Length > 0 || setting.Length > 0 || subtitle.Length > 0 || bgm.Length > 0) used = true;
+        // 🎯 초점 좌표 — 픽셀을 본 비전 응답만 채택(게이트웨이는 텍스트 추론 → 삼분할 폴백 유지). 범위 밖/비수치 → 폴백.
+        var focal = baseline.DetectedFocalPoint;
+        var motion = baseline.MotionPath;
+        if (source == PlutoVisionSource.Vision && TryFocal(root, out var vf))
+        {
+            focal = vf;
+            motion = PlutoMotionCompiler.SynthesizeFourAct(vf);
+            used = true;
+        }
         if (!used) return null;
 
         return new PlutoVisionStoryPlan
@@ -489,7 +506,31 @@ public sealed class PlutoVisionStorySynthesizer
             PersonaConsistencyAnchor = local.PersonaConsistencyAnchor,
             Attributes = attrs,
             Source = source,
+            DetectedFocalPoint = focal,
+            MotionPath = motion,
         };
+    }
+
+    /// <summary>🎯 <c>focal_x</c>/<c>focal_y</c> 스키마 검증 — 둘 다 유한 수치 · [0,1] 범위일 때만 true.</summary>
+    internal static bool TryFocal(JsonElement root, out (double X, double Y) focal)
+    {
+        focal = default;
+        if (!TryUnit(root, "focal_x", out var x) || !TryUnit(root, "focal_y", out var y)) return false;
+        focal = (x, y);
+        return true;
+    }
+
+    private static bool TryUnit(JsonElement root, string name, out double value)
+    {
+        value = 0;
+        if (!root.TryGetProperty(name, out var e)) return false;
+        var ok = e.ValueKind switch
+        {
+            JsonValueKind.Number => e.TryGetDouble(out value),
+            JsonValueKind.String => double.TryParse(e.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out value),
+            _ => false,
+        };
+        return ok && double.IsFinite(value) && value >= 0.0 && value <= 1.0;
     }
 
     private static string Pick(JsonElement root, string name, string fallback)
@@ -668,6 +709,8 @@ public sealed class PlutoVisionStorySynthesizer
         Attributes = p.Attributes,
         Source = source,
         DirectorLevel = directorLevel,
+        DetectedFocalPoint = p.DetectedFocalPoint,
+        MotionPath = p.MotionPath,
     };
 
     private static bool ProbeVision(IPlutoVisionClient? v)
