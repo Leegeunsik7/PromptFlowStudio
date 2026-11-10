@@ -456,4 +456,26 @@ public sealed class PlutoMotionCompilerTests : IDisposable
         Assert.False((await exp.ExportMotionVideoFromPhotoAsync(Path.Combine(_dir, "missing.jpg"), traj, new ExportOptions())).Ok);
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => exp.ExportMotionVideoFromPhotoAsync(photo, traj, new ExportOptions(), ct: new CancellationToken(true)));
     }
+
+    /// <summary>🎬 작업실 1-Click 모션 렌더 결선 — 버튼 · 진행 스피너 · 위치 열기 링크 · 자막/BGM/SFX 인자 · 궤적 전달.</summary>
+    [Fact]
+    public void Workspace_Wires_OneClick_MotionVideo_Render()
+    {
+        DirectoryInfo? d = new(AppContext.BaseDirectory);
+        while (d is not null && !File.Exists(Path.Combine(d.FullName, "PromptFlowStudio", "PromptFlowStudio.csproj"))) d = d.Parent;
+        Assert.NotNull(d);
+        var ws = File.ReadAllText(Path.Combine(d!.FullName, "PromptFlowStudio", "Blazor", "Pages", "Workspace.razor"));
+
+        Assert.Contains("data-motion-render=\"1\" @onclick=\"RenderMotionVideoAsync\"", ws, StringComparison.Ordinal);
+        Assert.Contains("🎬 15초 모션 비디오 즉시 렌더", ws, StringComparison.Ordinal);
+        Assert.Contains("data-motion-busy=\"1\"", ws, StringComparison.Ordinal);
+        Assert.Contains("ws-motion-spin", ws, StringComparison.Ordinal);
+        Assert.Contains("@@keyframes ws-motion-spin", ws, StringComparison.Ordinal);
+        Assert.Contains("data-motion-open=\"1\" @onclick=\"() => RevealInExplorer(mvo)\"", ws, StringComparison.Ordinal);
+        Assert.Contains("_motionPath = plan.MotionPath;", ws, StringComparison.Ordinal);
+        Assert.Contains("StockSuite.ExportMotionVideoFromPhotoAsync(image, _motionPath", ws, StringComparison.Ordinal);
+        Assert.Contains("(await GenerateWorkspaceLetterAsync(_mediaCts.Token)).ToCues()", ws, StringComparison.Ordinal);
+        Assert.Contains("includeSfx: true, ct: _mediaCts.Token", ws, StringComparison.Ordinal);
+        Assert.Contains("finally { _motionBusy = false; _stockBusy = false; }", ws, StringComparison.Ordinal);
+    }
 }

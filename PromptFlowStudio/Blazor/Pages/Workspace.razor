@@ -66,6 +66,10 @@
             @if (_imagePath is not null && !_visionStoryBusy) { <button class="ws-back" data-vision-story-ref="1" @onclick="() => RunVisionStoryAsync(_imagePath)" disabled="@State.IsBusy" title="이미 올린 참조 이미지로 15초 3막 스토리 구성">📸 참조 사진으로</button> }
             @if (_visionStoryBusy) { <span class="ws-retry" role="status">📸 플루토가 사진 속 순간의 앞뒤를 상상하는 중…</span> }
             else if (_visionStoryToast is { } vst) { <span class="ws-retry" role="status" data-vision-story-result="1">@(vst) <button class="ws-back" @onclick='() => Nav.NavigateTo("storyboard")'>🎬 스토리보드 열기 →</button></span> }
+            @* 🎥 1-Click 모션 비디오 — 사진 1장 → 15초 60fps Ken Burns MP4(이중 자막 · BGM · SFX) *@
+            @if (_motionImage is not null && !_visionStoryBusy) { <button class="ws-back" data-motion-render="1" @onclick="RenderMotionVideoAsync" disabled="@(_motionBusy || _stockBusy)" title="사진 1장을 4막 Ken Burns 카메라 궤적으로 15초 60fps MP4 렌더 — KO/EN 이중 자막 번인 · BGM · 절차적 SFX 믹스">🎬 15초 모션 비디오 즉시 렌더</button> }
+            @if (_motionBusy) { <span class="ws-retry" role="status" data-motion-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 🎥 모션 비디오 렌더 중… (15초 · 60fps)</span> }
+            else if (_motionToast is { } mvt) { <span class="ws-retry" role="status" data-motion-result="1">@(mvt) @if (_motionOutput is { } mvo) { <button class="ws-back" data-motion-open="1" @onclick="() => RevealInExplorer(mvo)" title="@(mvo)">📂 @(Path.GetFileName(mvo)) 위치 열기</button> }</span> }
             <button class="ws-back" data-local-ai-open="1" @onclick="() => _localAiModal = true" title="Gemini 장애 시 사내/로컬 AI 서버(OpenAI 호환 · Ollama)로 자동 전환 — 엔드포인트 · 모델 · 연결 테스트">🦙 로컬 AI 설정@(LocalAiSettings.Gateway.Options.IsEnabled ? " · ON" : "")</button>
             <PlutoDirectorBadge Director="PlutoDirector" />   @* 🎬 디렉터 랭크(XP → 광학 티어) *@
             @* 🍼 Step5: 증시 세션/외부 연동 배지는 기본 아기 스튜디오 화면에서 제거(설정 > 연동 진단으로 이관). *@
@@ -980,6 +984,8 @@
     .ws-drop-input:disabled { cursor: not-allowed; }
     .ws-vstory { position: relative; display: inline-block; color: #f9a8d4; }
     .ws-vstory.busy { opacity: .55; }
+    .ws-motion-spin { display: inline-block; width: 12px; height: 12px; border: 2px solid color-mix(in srgb, #f9a8d4 30%, transparent); border-top-color: #f9a8d4; border-radius: 50%; vertical-align: -2px; animation: ws-motion-spin .8s linear infinite; }
+    @@keyframes ws-motion-spin { to { transform: rotate(360deg); } }
     .ws-drop-hint { display: flex; flex-direction: column; align-items: center; gap: 3px; text-align: center; padding: 14px; pointer-events: none; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
     .ws-drop-ic { font-size: 26px; opacity: .6; }
     .ws-drop-hint b { color: var(--text-secondary); }
@@ -1381,6 +1387,10 @@
         }
         _visionStoryBusy = false;
         if (_disposed) return;
+        _motionImage = imagePath;            // 🎥 1-Click 모션 렌더 입력(사진 + 4막 궤적)
+        _motionPath = plan.MotionPath;
+        _motionToast = null;
+        _motionOutput = null;
         var applied = StoryVm.ApplyDirectorShots(plan.ToDirectorShots(), plan.DetectedMood);
         if (applied)
         {
@@ -1393,6 +1403,39 @@
         }
         else _visionStoryToast = "📸 스토리 구성에 실패했습니다 — 다른 사진으로 다시 시도해 주세요.";
         StateHasChanged();
+    }
+
+    private string? _motionImage;      // 🎥 모션 렌더 원본 사진
+    private PromptFlowStudio.Services.Pluto.PlutoMotionTrajectory? _motionPath;
+    private bool _motionBusy;
+    private string? _motionToast;
+    private string? _motionOutput;     // 렌더 완료 MP4 절대 경로(📂 위치 열기)
+
+    /// <summary>
+    /// 🎥 1-Click 모션 비디오 — 사진 1장 → 15초 60fps Ken Burns MP4(<c>%TEMP%\PromptFlowStudio\motion\</c>).
+    /// KO/EN 이중 자막 번인 · BGM(선택 트랙 · OFF → 자장가) · 절차적 SFX 강제 ON. 익스포터 공유 상태 보호를 위해 StockSuite 내보내기와 상호 배제.
+    /// </summary>
+    private async Task RenderMotionVideoAsync()
+    {
+        if (_motionBusy || _stockBusy || _motionImage is not { } image) return;
+        _motionBusy = true;
+        _stockBusy = true;
+        _motionToast = null;
+        _motionOutput = null;
+        StateHasChanged();
+        try
+        {
+            var cues = (await GenerateWorkspaceLetterAsync(_mediaCts.Token)).ToCues();
+            var r = await StockSuite.ExportMotionVideoFromPhotoAsync(image, _motionPath ?? PromptFlowStudio.Services.Pluto.PlutoMotionTrajectory.Empty,
+                new PromptFlowStudio.Services.Export.ExportOptions(), cues, _bgmOn ? _bgmTrack : null, includeSfx: true, ct: _mediaCts.Token);
+            _motionOutput = r.Ok ? r.TargetPath : null;
+            _motionToast = r.Ok ? "✅ " + r.Message : "⚠ " + r.Message;
+        }
+        catch (OperationCanceledException) { }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.MotionVideo", ex); _motionToast = "⚠ 모션 비디오 렌더 실패: " + ex.Message; }
+        finally { _motionBusy = false; _stockBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
     }
     private string _size = "1280*720";
     private bool _safeZone = true;   // 숏츠 세이프존 오버레이(세로 결과일 때만 표시)
