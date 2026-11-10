@@ -61,6 +61,11 @@
             <button class="ws-back" data-milestone="FirstBirthday" @onclick='() => ApplyMilestonePresetAsync("FirstBirthday")' disabled="@(State.IsBusy || _milestoneBusy)" title="첫돌의 감동 — 4컷 성장 일기를 스토리보드 4슬롯에 한 번에 세팅">🎂 첫돌</button>
             <button class="ws-back" data-milestone="DailyRoutine" @onclick='() => ApplyMilestonePresetAsync("DailyRoutine")' disabled="@(State.IsBusy || _milestoneBusy)" title="우리아이 하루 — 4컷 성장 일기를 스토리보드 4슬롯에 한 번에 세팅">☀️ 하루</button>
             @if (_milestoneBusy) { <span class="ws-retry" role="status">🎞 플루토가 4컷을 구성하는 중…</span> }
+            @* 📸 Vision-to-Story — 사진 1장(클릭/드롭) → 15초 3막 4컷 · 추천 BGM · 감성 자막 초안 일괄 세팅 *@
+            <span class="ws-back ws-vstory@(_visionStoryBusy ? " busy" : "")" data-vision-story="1" title="아기/반려동물 사진 1장 → 셔터 3초 전 호기심 · 사진 속 클라이맥스 · 5초 후 여운의 15초 3막 스토리를 4컷 캔버스에 한 번에 세팅(Gemini Vision → 로컬 AI → 규칙 분석 · 디렉터 광학 자동 주입)">📸 사진으로 15초 스토리 완성<InputFile class="ws-drop-input" OnChange="OnVisionStoryPickedAsync" accept="image/png,image/jpeg,image/webp,image/bmp" disabled="@(State.IsBusy || _visionStoryBusy)" /></span>
+            @if (_imagePath is not null && !_visionStoryBusy) { <button class="ws-back" data-vision-story-ref="1" @onclick="() => RunVisionStoryAsync(_imagePath)" disabled="@State.IsBusy" title="이미 올린 참조 이미지로 15초 3막 스토리 구성">📸 참조 사진으로</button> }
+            @if (_visionStoryBusy) { <span class="ws-retry" role="status">📸 플루토가 사진 속 순간의 앞뒤를 상상하는 중…</span> }
+            else if (_visionStoryToast is { } vst) { <span class="ws-retry" role="status" data-vision-story-result="1">@(vst) <button class="ws-back" @onclick='() => Nav.NavigateTo("storyboard")'>🎬 스토리보드 열기 →</button></span> }
             <button class="ws-back" data-local-ai-open="1" @onclick="() => _localAiModal = true" title="Gemini 장애 시 사내/로컬 AI 서버(OpenAI 호환 · Ollama)로 자동 전환 — 엔드포인트 · 모델 · 연결 테스트">🦙 로컬 AI 설정@(LocalAiSettings.Gateway.Options.IsEnabled ? " · ON" : "")</button>
             <PlutoDirectorBadge Director="PlutoDirector" />   @* 🎬 디렉터 랭크(XP → 광학 티어) *@
             @* 🍼 Step5: 증시 세션/외부 연동 배지는 기본 아기 스튜디오 화면에서 제거(설정 > 연동 진단으로 이관). *@
@@ -973,6 +978,8 @@
     .ws-drop.has { border-style: solid; min-height: auto; padding: 10px; }
     .ws-drop-input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
     .ws-drop-input:disabled { cursor: not-allowed; }
+    .ws-vstory { position: relative; display: inline-block; color: #f9a8d4; }
+    .ws-vstory.busy { opacity: .55; }
     .ws-drop-hint { display: flex; flex-direction: column; align-items: center; gap: 3px; text-align: center; padding: 14px; pointer-events: none; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
     .ws-drop-ic { font-size: 26px; opacity: .6; }
     .ws-drop-hint b { color: var(--text-secondary); }
@@ -1330,6 +1337,62 @@
         if (_disposed) return;
         if (StoryVm.ApplyDirectorShots(plan.ToDirectorShots(), plan.MilestoneName)) Nav.NavigateTo("storyboard");
         else StateHasChanged();
+    }
+
+    private bool _visionStoryBusy;
+    private string? _visionStoryToast;
+    private string? _visionSubtitle;   // 📸 사진 스토리 감성 자막 초안(💌 편지 자막 생성 입력 우선)
+
+    /// <summary>📸 사진 선택/드롭 → 참조 이미지(i2v)로 저장 후 15초 3막 스토리 합성.</summary>
+    private async Task OnVisionStoryPickedAsync(InputFileChangeEventArgs e)
+    {
+        if (_visionStoryBusy) return;
+        if (await SaveUploadAsync(e.File, keepName: true) is not { } savePath) return;
+        _imagePath = savePath;
+        _imageName = e.File.Name;
+        _imagePreview = Media.ToPlaybackUrl(savePath);
+        await RunVisionStoryAsync(savePath);
+    }
+
+    /// <summary>
+    /// 📸 Vision-to-Story — 합성기(Gemini Vision → 로컬 게이트웨이 → 규칙 분석) 결과를 스토리보드 4컷에 일괄 적용 +
+    /// 추천 BGM 트랙 ON · 감성 자막 초안/자막 번인 ON. 빈 작업실 프롬프트는 클라이맥스(사진 속 순간) 컷으로 채움. 화면 유지(설정 보존).
+    /// </summary>
+    private async Task RunVisionStoryAsync(string? imagePath)
+    {
+        if (_visionStoryBusy || string.IsNullOrWhiteSpace(imagePath)) return;
+        _visionStoryBusy = true;
+        _visionStoryToast = null;
+        StateHasChanged();
+        PromptFlowStudio.Services.Pluto.PlutoVisionStoryPlan plan;
+        try
+        {
+            var synth = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoVisionStorySynthesizer)) as PromptFlowStudio.Services.Pluto.PlutoVisionStorySynthesizer
+                        ?? new PromptFlowStudio.Services.Pluto.PlutoVisionStorySynthesizer(null, null, IdentityVault, PlutoDirector);
+            plan = await synth.SynthesizeFromImageAsync(imagePath, _prompt, _mediaCts.Token);
+        }
+        catch (OperationCanceledException) { _visionStoryBusy = false; return; }   // 페이지 이탈
+        catch (Exception ex)
+        {
+            Program.Log("Workspace.PlutoVisionStory", ex);   // [부분 구제] 규칙 분석 플랜
+            var attrs = PromptFlowStudio.Services.Pluto.PlutoVisionStorySynthesizer.AnalyzeHeuristic(imagePath, default, _prompt, _identity?.IsPet == true);
+            plan = PromptFlowStudio.Services.Pluto.PlutoVisionStorySynthesizer.ApplyOptics(
+                PromptFlowStudio.Services.Pluto.PlutoVisionStorySynthesizer.BuildLocal(attrs, _identity?.GetConsistencyAnchor(), _prompt), PlutoDirector.GetCurrentTier());
+        }
+        _visionStoryBusy = false;
+        if (_disposed) return;
+        var applied = StoryVm.ApplyDirectorShots(plan.ToDirectorShots(), plan.DetectedMood);
+        if (applied)
+        {
+            _bgmTrack = plan.SuggestedBgmTrack;
+            _bgmOn = true;
+            _visionSubtitle = plan.SuggestedSubtitle;
+            _letterSubs = true;
+            if (string.IsNullOrWhiteSpace(_prompt) && plan.StoryboardScenes.Count > 2) _prompt = plan.StoryboardScenes[2].Prompt;   // 사진 속 클라이맥스
+            _visionStoryToast = "📸 " + plan.DetectedMood + " · " + plan.DetectedSetting + " → 4컷 완성 · 🎵 " + plan.SuggestedBgmTheme + " · 💬 " + plan.SuggestedSubtitle;
+        }
+        else _visionStoryToast = "📸 스토리 구성에 실패했습니다 — 다른 사진으로 다시 시도해 주세요.";
+        StateHasChanged();
     }
     private string _size = "1280*720";
     private bool _safeZone = true;   // 숏츠 세이프존 오버레이(세로 결과일 때만 표시)
@@ -1995,9 +2058,10 @@
     {
         var name = _identity?.SubjectName;
         var director = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector)) as PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector;
-        if (director is null) return PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(_prompt, name);
-        try { return await director.GenerateLetterScriptAsync(_prompt, name, ct); }
-        catch (Exception ex) { Program.Log("Workspace.PlutoLetter", ex); return PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(_prompt, name); }
+        var src = string.IsNullOrWhiteSpace(_visionSubtitle) ? _prompt : _visionSubtitle + ", " + _prompt;   // 📸 사진 스토리 자막 초안 우선
+        if (director is null) return PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(src, name);
+        try { return await director.GenerateLetterScriptAsync(src, name, ct); }
+        catch (Exception ex) { Program.Log("Workspace.PlutoLetter", ex); return PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(src, name); }
     }
     private string? _stockToast;
     private bool _stockRestart;
@@ -2772,7 +2836,7 @@
     }
 
     /// <summary>업로드 이미지를 미디어 루트의 _uploads 에 저장하고 경로를 돌려준다(실패 시 null + _imgError).</summary>
-    private async Task<string?> SaveUploadAsync(IBrowserFile? file)
+    private async Task<string?> SaveUploadAsync(IBrowserFile? file, bool keepName = false)
     {
         if (file is null) return null;
         _imgError = null;
@@ -2786,7 +2850,7 @@
             Directory.CreateDirectory(dir);
             var ext = Path.GetExtension(file.Name);
             if (string.IsNullOrWhiteSpace(ext)) ext = ".png";
-            var savePath = Path.Combine(dir, $"{Guid.NewGuid():N}{ext}");
+            var savePath = Path.Combine(dir, keepName ? Guid.NewGuid().ToString("N") + "_" + SafeStem(file.Name) + ext : $"{Guid.NewGuid():N}{ext}");   // 📸 원본 이름 보존(규칙 분석 힌트)
 
             await using (var src = file.OpenReadStream(maxSize))
             await using (var dst = new FileStream(savePath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous))
@@ -2794,6 +2858,17 @@
             return savePath;
         }
         catch (Exception ex) { _imgError = "이미지 로드 실패: " + ex.Message; return null; }
+    }
+
+    /// <summary>파일명 줄기 → 파일시스템 안전 문자열(최대 40자 · 불가 문자 '_').</summary>
+    private static string SafeStem(string name)
+    {
+        var stem = Path.GetFileNameWithoutExtension(name ?? "");
+        if (stem.Length > 40) stem = stem[..40];
+        var invalid = Path.GetInvalidFileNameChars();
+        var chars = stem.ToCharArray();
+        for (var i = 0; i < chars.Length; i++) if (Array.IndexOf(invalid, chars[i]) >= 0 || chars[i] == ' ') chars[i] = '_';
+        return chars.Length == 0 ? "photo" : new string(chars);
     }
 
     /// <summary>참조 이미지 제거(임시 파일 정리 · best-effort).</summary>

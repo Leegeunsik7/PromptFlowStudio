@@ -21,11 +21,10 @@
         <button class="pl-identity@(LocalAiSettings.Gateway.Options.IsEnabled ? " on" : "")" data-local-ai-open="1" title="Gemini 장애 시 사내/로컬 AI 서버(OpenAI 호환 · Ollama)로 자동 전환 — 엔드포인트 · 모델 · 연결 테스트" @onclick="() => _localAiModal = true">🦙 로컬 AI 설정</button>
     </div>
 
-    <div class="pl-brain" data-pluto-hud="1" title="채택 1 · 내보내기 3 · 👍 1 · 📈 SNS 공식 학습 2 XP — 10 XP 마다 레벨 업">
-        @{ var xp = Learning.CurrentXP; var lv = PlutoLearningService.LevelFor(xp); var next = lv * PlutoLearningService.XpPerLevel; var floor = next - PlutoLearningService.XpPerLevel; var pct = (xp - floor) * 100 / PlutoLearningService.XpPerLevel; }
-        <span>🧠 플루토 AI 두뇌: Lv.@(lv) (@(xp)/@(next) XP) · @(Learning.TotalInteractions)회 피드백 학습 완료</span>
-        <PlutoDirectorBadge Director="Director" />   @* 🎬 디렉터 랭크 — 프롬프트 광학 자동 주입 티어 *@
-        <div class="pl-brain-bar"><div class="pl-brain-fill" style="width:@(pct.ToString(System.Globalization.CultureInfo.InvariantCulture))%"></div></div>
+    @* 🪐 통합 디렉터 HUD — 구 10 XP 레벨 카운터 폐기 · 디렉터 랭크 단일 표시(칭호 · XP · 진행 바 · 해금 광학 툴팁) *@
+    <div class="pl-brain" data-pluto-hud="1" data-pluto-director-hud="1">
+        <PlutoDirectorBadge Director="Director" Unified="true" />
+        <span class="pl-brain-sub">채택 1 · 내보내기 3 · 👍 1 · 📈 SNS 공식 학습 2 XP · @(Learning.TotalInteractions)회 피드백 학습 완료</span>
     </div>
 
     <div class="pl-views" role="tablist" data-pluto-view-toggle="1">
@@ -146,10 +145,9 @@
     .pl-sub { opacity: .75; margin-top: 6px; font-size: 14px; }
     .pl-identity { margin-top: 10px; padding: 6px 14px; border-radius: 999px; border: 1px dashed rgba(244,114,182,.55); background: transparent; color: inherit; font-weight: 800; font-size: 13px; cursor: pointer; }
     .pl-identity.on { border-style: solid; background: rgba(244,114,182,.14); color: #f472b6; }
-    .pl-brain .pdb { margin: 6px 0 4px; }
+    .pl-brain .pdb { margin: 0 0 6px; }
+    .pl-brain-sub { display: block; font-size: 12px; font-weight: 500; opacity: .75; }
     .pl-brain { margin-top: 14px; padding: 10px 14px; border-radius: 14px; background: linear-gradient(90deg, rgba(167,139,250,.18), rgba(244,114,182,.14)); border: 1px solid rgba(167,139,250,.35); font-size: 14px; font-weight: 600; }
-    .pl-brain-bar { margin-top: 6px; height: 6px; border-radius: 3px; background: rgba(255,255,255,.12); overflow: hidden; }
-    .pl-brain-fill { height: 100%; background: linear-gradient(90deg, #a78bfa, #f472b6); transition: width .4s ease; }
     .pl-views { display: flex; gap: 6px; align-items: center; margin-top: 16px; }
     .pl-view { padding: 8px 14px; border-radius: 10px; border: 0; background: transparent; color: inherit; font-weight: 800; font-size: 14px; cursor: pointer; opacity: .6; }
     .pl-view.on { opacity: 1; background: rgba(139,123,255,.16); color: #8b7bff; }

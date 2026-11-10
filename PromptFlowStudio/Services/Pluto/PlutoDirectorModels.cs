@@ -8,7 +8,7 @@ namespace PromptFlowStudio.Services.Pluto;
 /// </summary>
 public sealed class PlutoDirectorTier
 {
-    public PlutoDirectorTier(int level, string title, string englishTitle, int requiredXp, int nextTierXp, string[] keywords, string promptModifier)
+    public PlutoDirectorTier(int level, string title, string englishTitle, int requiredXp, int nextTierXp, string[] keywords, string promptModifier, string[]? koreanTraits = null)
     {
         Level = level;
         Title = title;
@@ -17,6 +17,7 @@ public sealed class PlutoDirectorTier
         NextTierXp = nextTierXp;
         CinematographyKeywords = keywords;
         PromptModifier = promptModifier;
+        KoreanTraits = koreanTraits ?? System.Array.Empty<string>();
     }
 
     /// <summary>1 ~ 4.</summary>
@@ -30,6 +31,8 @@ public sealed class PlutoDirectorTier
     public IReadOnlyList<string> CinematographyKeywords { get; }
     /// <summary>프롬프트 말미 결합용 모디파이어(", " 로 시작).</summary>
     public string PromptModifier { get; }
+    /// <summary>🪐 HUD 툴팁용 한글 광학 특성(예: "85mm f/1.4", "골든아워 역광").</summary>
+    public IReadOnlyList<string> KoreanTraits { get; }
 
     /// <summary>최고 티어 여부.</summary>
     public bool IsMax => Level >= PlutoDirectorRankService.MaxLevel;

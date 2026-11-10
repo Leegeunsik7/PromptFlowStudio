@@ -37,16 +37,20 @@ public sealed class PlutoDirectorRankService : IPlutoDirectorRankService, IDispo
     {
         new(1, "내추럴 비기너", "Natural Storyteller", 0, 20,
             new[] { "standard warm daylight", "50mm lens", "clean natural focus" },
-            ", standard warm daylight, 50mm lens, clean natural focus"),
+            ", standard warm daylight, 50mm lens, clean natural focus",
+            new[] { "50mm 표준 렌즈", "따스한 자연광" }),
         new(2, "감성 스토리텔러", "Emotional Colorist", 20, 50,
             new[] { "85mm portrait framing", "f/1.4 shallow depth of field", "golden-hour rim backlight", "delicate film grain" },
-            ", cinematic 85mm portrait framing, f/1.4 shallow depth of field, warm golden-hour rim backlight, delicate film grain, natural skin tones"),
+            ", cinematic 85mm portrait framing, f/1.4 shallow depth of field, warm golden-hour rim backlight, delicate film grain, natural skin tones",
+            new[] { "85mm f/1.4", "골든아워 역광", "필름 그레인" }),
         new(3, "시네마틱 마스터", "Cinematic Master", 50, 100,
             new[] { "anamorphic horizontal lens flare", "volumetric light rays (Tyndall effect)", "subtle dolly push-in", "4K skin texture retention" },
-            ", anamorphic horizontal lens flare, volumetric light rays with Tyndall effect, subtle dolly push-in, 4K skin texture retention"),
+            ", anamorphic horizontal lens flare, volumetric light rays with Tyndall effect, subtle dolly push-in, 4K skin texture retention",
+            new[] { "아나모픽 렌즈 플레어", "틴들 볼류메트릭 광선", "4K 피부 텍스처" }),
         new(4, "바이럴 마에스트로", "Viral Maestro", 100, 200,
             new[] { "0.5s micro whip-zoom hook", "algorithmic beat-synced pacing", "dynamic atmospheric contrast" },
-            ", 0.5s micro whip-zoom hook, algorithmic beat-synced pacing, dynamic atmospheric contrast, anamorphic cinematic depth"),
+            ", 0.5s micro whip-zoom hook, algorithmic beat-synced pacing, dynamic atmospheric contrast, anamorphic cinematic depth",
+            new[] { "0.5초 휩줌 훅", "비트 싱크 편집", "다이내믹 대기 대비" }),
     };
 
     private readonly PlutoLearningService? _learning;
@@ -99,6 +103,30 @@ public sealed class PlutoDirectorRankService : IPlutoDirectorRankService, IDispo
     public static string BadgeLabel(int xp, PlutoDirectorTier tier)
         => "🪐 Pluto Lv." + tier.Level.ToString(CultureInfo.InvariantCulture) + " " + tier.Title
            + " (" + Math.Max(0, xp).ToString(CultureInfo.InvariantCulture) + "/" + tier.NextTierXp.ToString(CultureInfo.InvariantCulture) + " XP)";
+
+    /// <summary>🪐 통합 HUD 칭호 — "🪐 감성 스토리텔러 (Lv.2)".</summary>
+    public static string HudTitle(PlutoDirectorTier tier)
+        => "🪐 " + tier.Title + " (Lv." + tier.Level.ToString(CultureInfo.InvariantCulture) + ")";
+
+    /// <summary>🪐 통합 HUD XP — "(25/50 XP)".</summary>
+    public static string XpLabel(int xp, PlutoDirectorTier tier)
+        => "(" + Math.Max(0, xp).ToString(CultureInfo.InvariantCulture) + "/" + tier.NextTierXp.ToString(CultureInfo.InvariantCulture) + " XP)";
+
+    /// <summary>🪐 해금된(현재 티어 이하) 한글 광학 특성 누적 — "50mm 표준 렌즈, 따스한 자연광, 85mm f/1.4, …".</summary>
+    public static string UnlockedOpticsTooltip(PlutoDirectorTier tier)
+    {
+        var sb = new System.Text.StringBuilder(160);
+        for (var i = 0; i < Tiers.Length && Tiers[i].Level <= tier.Level; i++)
+        {
+            var traits = Tiers[i].KoreanTraits;
+            for (var j = 0; j < traits.Count; j++)
+            {
+                if (sb.Length > 0) sb.Append(", ");
+                sb.Append(traits[j]);
+            }
+        }
+        return sb.ToString();
+    }
 
     public string EnrichPromptWithOptics(string basePrompt) => Enrich(basePrompt, GetCurrentTier());
 

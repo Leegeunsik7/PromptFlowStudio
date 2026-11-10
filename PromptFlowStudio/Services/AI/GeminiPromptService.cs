@@ -65,7 +65,7 @@ public sealed record SnsSeoMetadata(string Title, string Description, IReadOnlyL
 ///   ▸ 키 없음/네트워크/HTTP/스키마 오류 → 예외 없이 <see cref="FallbackLocalEnhance"/>/<see cref="BuildLocalShots"/> 로 무중단.
 ///   ▸ 429/502/503/504·순단 2^n초+Jitter 지수 백오프 최대 3회 재시도(ResilientHttpClient), 호출 전체 <see cref="CallTimeout"/> 상한.
 /// </summary>
-public sealed class GeminiPromptService : PromptFlowStudio.Services.Pluto.IPlutoLlmClient
+public sealed class GeminiPromptService : PromptFlowStudio.Services.Pluto.IPlutoLlmClient, PromptFlowStudio.Services.Pluto.IPlutoVisionClient
 {
     public const string Model = "gemini-2.5-flash";
     public const string Endpoint = "https://generativelanguage.googleapis.com/v1beta/models/" + Model + ":generateContent";
@@ -540,6 +540,15 @@ public sealed class GeminiPromptService : PromptFlowStudio.Services.Pluto.IPluto
     /// <summary>🧠 Pluto LLM 결선 — JSON 응답 generateContent(지수 백오프 · 타임아웃). 실패는 null.</summary>
     public Task<string?> CompleteJsonAsync(string system, string user, double temperature, CancellationToken ct)
         => CallAsync(system, user, null, true, temperature, ct);
+
+    /// <summary>👁 Pluto 비전 결선 — 키 설정 여부.</summary>
+    public bool IsVisionAvailable => HasKey();
+
+    /// <summary>👁 Pluto 비전 결선 — 이미지 inline_data + JSON 응답(지수 백오프 · 타임아웃). 빈/상한 초과 이미지 · 실패는 null.</summary>
+    public Task<string?> DescribeImageJsonAsync(string system, string user, byte[] image, string mimeType, double temperature, CancellationToken ct)
+        => image is { Length: > 0 } && image.Length <= MaxImageBytes
+            ? CallAsync(system, user, new GeminiMedia(string.IsNullOrWhiteSpace(mimeType) ? "image/jpeg" : mimeType, image), true, temperature, ct)
+            : Task.FromResult<string?>(null);
 
     private bool HasKey()
     {

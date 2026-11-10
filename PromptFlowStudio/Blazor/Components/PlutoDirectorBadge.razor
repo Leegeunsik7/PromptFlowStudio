@@ -10,11 +10,20 @@
     var xp = dir.CurrentXp;
     var tier = PlutoDirectorRankService.TierFor(xp);
     var pct = PlutoDirectorRankService.ProgressPercent(xp, tier);
-    <span class="pdb@(AlignRight ? " r" : "")" tabindex="0" data-pluto-director="@(tier.Level.ToString(CultureInfo.InvariantCulture))">
-        <span class="pdb-lbl">@(PlutoDirectorRankService.BadgeLabel(xp, tier))</span>
+    var rootCls = Unified ? (AlignRight ? "pdb r u" : "pdb u") : (AlignRight ? "pdb r" : "pdb");
+    <span class="@rootCls" tabindex="0" data-pluto-director="@(tier.Level.ToString(CultureInfo.InvariantCulture))">
+        @if (Unified)
+        {
+            <span class="pdb-lbl" data-pluto-director-title="1">@(PlutoDirectorRankService.HudTitle(tier)) <span class="pdb-xp">@(PlutoDirectorRankService.XpLabel(xp, tier))</span></span>
+        }
+        else
+        {
+            <span class="pdb-lbl">@(PlutoDirectorRankService.BadgeLabel(xp, tier))</span>
+        }
         <span class="pdb-bar" aria-hidden="true"><span class="pdb-fill" style="width:@(pct.ToString(CultureInfo.InvariantCulture))%"></span></span>
         <span class="pdb-pop" role="tooltip">
             <span class="pdb-ph">🎬 @(tier.EnglishTitle) — 프롬프트에 자동 주입 중인 광학 파라미터</span>
+            <span class="pdb-act" data-pluto-director-traits="1">✨ @(PlutoDirectorRankService.UnlockedOpticsTooltip(tier))</span>
             @foreach (var t in PlutoDirectorRankService.Tiers)
             {
                 var on = t.Level <= tier.Level;
@@ -45,6 +54,10 @@
     .pdb.r .pdb-pop { left: auto; right: 0; }
     .pdb:hover .pdb-pop, .pdb:focus-within .pdb-pop { opacity: 1; visibility: visible; transform: none; }
     .pdb-ph { font-weight: 700; color: #ffcf8a; }
+    .pdb-act { color: #f5e6ff; }
+    .pdb.u { border-radius: 14px; padding: 8px 14px 9px; gap: 6px; font-size: 14px; align-self: stretch; }
+    .pdb.u .pdb-xp { font-weight: 600; opacity: .8; }
+    .pdb.u .pdb-bar { height: 6px; }
     .pdb-tier { display: flex; flex-direction: column; gap: 2px; opacity: .45; }
     .pdb-tier.on { opacity: 1; }
     .pdb-tier.cur .pdb-th { color: #b9a6ff; }
@@ -61,6 +74,9 @@
 
     /// <summary>팝오버 우측 정렬(화면 우측 배치용).</summary>
     [Parameter] public bool AlignRight { get; set; }
+
+    /// <summary>🪐 통합 HUD 모드(트렌드 랩) — "🪐 칭호 (Lv.N)" + "(XP/다음 XP)" + 굵은 진행 바 + 해금 광학 툴팁.</summary>
+    [Parameter] public bool Unified { get; set; }
 
     private IPlutoDirectorRankService? _subscribed;
     private CancellationTokenSource? _cts;
