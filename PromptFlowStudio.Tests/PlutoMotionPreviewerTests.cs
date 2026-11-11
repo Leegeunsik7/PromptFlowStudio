@@ -165,6 +165,52 @@ public sealed class PlutoMotionPreviewerTests
     }
 
     [Fact]
+    public void Workspace_AppliesBeatSyncedTrajectory_ToPreviewer()
+    {
+        // 120 BPM · 위상 0.2s → 비트 0.2 + 0.5k → 막 경계 4·8·12 → 4.2·8.2·12.2 · SFX 0.8/5.5/13.2 → 0.7/5.7/13.2
+        var pulse = PlutoDspAndBeatSyncTests.PulseTrack(120, 0.2, 16.0);
+        var wav = PromptFlowStudio.Services.Pluto.Dsp.PlutoPcmWav.EncodePcm16(pulse, default, 1, 48000);
+        var sync = PlutoMotionCompiler.BuildBeatSyncedPreview(Trajectory, wav);
+        Assert.True(sync.Applied);
+        Assert.InRange(sync.Bpm, 118.0, 122.0);
+        Assert.True(sync.BeatCount >= 29);
+
+        using var doc = JsonDocument.Parse(PlutoMotionCompiler.ExportPreviewContractJson(sync.Trajectory, sfxCues: sync.SfxCues));
+        var root = doc.RootElement;
+        var segs = root.GetProperty("segments");
+        Assert.Equal(4, segs.GetArrayLength());
+        Assert.Equal(PlutoMotionCompiler.FourActDurationSec, root.GetProperty("durationSec").GetDouble(), 6);   // 총 길이 불변
+        double[] expectedCuts = { 4.2, 8.2, 12.2 };
+        for (var i = 0; i < 3; i++)
+        {
+            var end = segs[i].GetProperty("endSec").GetDouble();
+            Assert.InRange(end, expectedCuts[i] - 0.04, expectedCuts[i] + 0.04);
+            Assert.Equal(end, segs[i + 1].GetProperty("startSec").GetDouble(), 9);                      // 연속 컷
+            var nearestBeat = double.MaxValue;
+            foreach (var b in PromptFlowStudio.Services.Pluto.Dsp.PlutoAudioBeatDetector.Shared.DetectBeats(wav))
+                nearestBeat = Math.Min(nearestBeat, Math.Abs(b - end));
+            Assert.True(nearestBeat <= 1.0 / Fps + 1e-9, $"cut {end:F4} ↔ beat Δ{nearestBeat:F4}");   // 검출 비트에 프레임 정밀 스냅
+        }
+        var sfx = root.GetProperty("sfx");
+        Assert.Equal(3, sfx.GetArrayLength());
+        double[] at = { 0.7, 5.7, 13.2 };
+        for (var i = 0; i < 3; i++)
+        {
+            Assert.Equal(i, sfx[i].GetProperty("kind").GetInt32());
+            Assert.InRange(sfx[i].GetProperty("at").GetDouble(), at[i] - 0.03, at[i] + 0.03);
+        }
+        var round = PlutoMotionPreviewModel.FromJson(PlutoMotionCompiler.ExportPreviewContractJson(sync.Trajectory, sfxCues: sync.SfxCues));
+        Assert.Equal(3, round.Sfx.Count);
+
+        // 폴백(무음) → 원본 궤적 · 계약에 sfx 키 없음(JS 기본 큐)
+        var none = PlutoMotionCompiler.BuildBeatSyncedPreview(Trajectory, new byte[64]);
+        Assert.False(none.Applied);
+        Assert.Same(Trajectory, none.Trajectory);
+        using var plain = JsonDocument.Parse(PlutoMotionCompiler.ExportPreviewContractJson(Trajectory));
+        Assert.False(plain.RootElement.TryGetProperty("sfx", out _));
+    }
+
+    [Fact]
     public void Previewer_Js_And_Workspace_AreWired()
     {
         var d = new DirectoryInfo(AppContext.BaseDirectory);
@@ -185,7 +231,10 @@ public sealed class PlutoMotionPreviewerTests
 
         Assert.Contains("js/pluto-motion-previewer.js", File.ReadAllText(Path.Combine(app, "wwwroot", "index.html")), StringComparison.Ordinal);
         var ws = File.ReadAllText(Path.Combine(app, "Blazor", "Pages", "Workspace.razor"));
-        Assert.Contains("<PlutoMotionPreviewer Js=\"JS\" Trajectory=\"_motionPath\" Subtitles=\"_motionSubs\"", ws, StringComparison.Ordinal);
+        Assert.Contains("<PlutoMotionPreviewer Js=\"JS\" Trajectory=\"MotionPreviewPath\" SfxCues=\"MotionBeatSync?.SfxCues\" Subtitles=\"_motionSubs\"", ws, StringComparison.Ordinal);
+        Assert.Contains("BuildBeatSyncedPreview(", ws, StringComparison.Ordinal);
+        Assert.Contains("🎵 비트 싱크 퀀타이즈 적용됨 (", ws, StringComparison.Ordinal);
+        Assert.Contains("c.sfx = cues.length > 0 ? cues : SFX_CUES;", js, StringComparison.Ordinal);
         Assert.Contains("PlutoDirector.Changed += OnDirectorRankChanged;", ws, StringComparison.Ordinal);
         Assert.Contains("PlutoDirector.Changed -= OnDirectorRankChanged;", ws, StringComparison.Ordinal);
     }

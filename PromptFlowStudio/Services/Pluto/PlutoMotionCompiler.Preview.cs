@@ -40,7 +40,15 @@ public sealed record PlutoMotionPreviewContract
     public double MinZoom { get; init; } = PlutoMotionCompiler.MinZoom;
     public double MaxZoom { get; init; } = PlutoMotionCompiler.MaxZoom;
     public IReadOnlyList<PlutoMotionPreviewSegment> Segments { get; init; } = Array.Empty<PlutoMotionPreviewSegment>();
+    /// <summary>🔔 SFX 큐(비어 있음 → JS 기본 15초 큐 시트 · 비트 싱크 시 스냅된 큐).</summary>
+    public IReadOnlyList<PlutoMotionPreviewSfx> Sfx { get; init; } = Array.Empty<PlutoMotionPreviewSfx>();
 }
+
+/// <summary>🔔 프리뷰 SFX 1큐 — <c>Kind</c> = <see cref="PlutoSfxType"/> 순번(JS <c>synthSfx</c> 인덱스) · 시작 초 · 볼륨.</summary>
+public readonly record struct PlutoMotionPreviewSfx(int Kind, double AtSec, double Volume);
+
+/// <summary>🥁 비트 싱크 프리뷰 — 스냅된 궤적/SFX 큐 + 검출 BPM · 비트 수. <see cref="Applied"/> = false → 원본 그대로(폴백 격자).</summary>
+public sealed record PlutoBeatSyncedPreview(PlutoMotionTrajectory Trajectory, IReadOnlyList<PlutoSfxCue> SfxCues, double Bpm, int BeatCount, bool Applied);
 
 /// <summary>🎞 프리뷰 1샘플 — 줌 · 초점 · 클램프된 뷰포트 좌상단(모두 프레임 대비 정규화 0~1).</summary>
 public readonly record struct PlutoMotionPreviewSample(double Zoom, double FocalX, double FocalY, double X, double Y);
@@ -59,7 +67,8 @@ public static partial class PlutoMotionCompiler
     };
 
     /// <summary>🎞 궤적 → 프리뷰 계약(FFmpeg 수식과 같은 <c>Resolve</c> 결과를 그대로 노출 → 프리뷰/렌더 수학적 동치).</summary>
-    public static PlutoMotionPreviewContract ExportPreviewContract(PlutoMotionTrajectory? trajectory, int width = DefaultWidth, int height = DefaultHeight, int fps = DefaultFps)
+    public static PlutoMotionPreviewContract ExportPreviewContract(PlutoMotionTrajectory? trajectory, int width = DefaultWidth, int height = DefaultHeight, int fps = DefaultFps,
+        IReadOnlyList<PlutoSfxCue>? sfxCues = null)
     {
         width = ClampDim(width);
         height = ClampDim(height);
@@ -83,12 +92,43 @@ public static partial class PlutoMotionCompiler
             Width = width, Height = height, Fps = fps,
             DurationSec = segs.Length == 0 ? 0.0 : segs[^1].EndFrame / (double)fps,
             Segments = list,
+            Sfx = ToPreviewSfx(sfxCues),
         };
     }
 
+    private static PlutoMotionPreviewSfx[] ToPreviewSfx(IReadOnlyList<PlutoSfxCue>? cues)
+    {
+        if (cues is not { Count: > 0 }) return Array.Empty<PlutoMotionPreviewSfx>();
+        var arr = new PlutoMotionPreviewSfx[cues.Count];
+        for (var i = 0; i < arr.Length; i++)
+        {
+            var c = cues[i];
+            arr[i] = new PlutoMotionPreviewSfx((int)c.SfxType, Math.Max(0, c.OffsetMs) / 1000.0,
+                Math.Clamp(double.IsFinite(c.VolumeRatio) ? c.VolumeRatio : 0, 0, 1));
+        }
+        return arr;
+    }
+
     /// <summary>🎞 프리뷰 계약 JSON(camelCase · 리플렉션 없는 <see cref="Utf8JsonWriter"/> — 트리밍/AOT 안전).</summary>
-    public static string ExportPreviewContractJson(PlutoMotionTrajectory? trajectory, int width = DefaultWidth, int height = DefaultHeight, int fps = DefaultFps)
-        => PlutoMotionPreviewModel.ToJson(ExportPreviewContract(trajectory, width, height, fps));
+    public static string ExportPreviewContractJson(PlutoMotionTrajectory? trajectory, int width = DefaultWidth, int height = DefaultHeight, int fps = DefaultFps,
+        IReadOnlyList<PlutoSfxCue>? sfxCues = null)
+        => PlutoMotionPreviewModel.ToJson(ExportPreviewContract(trajectory, width, height, fps, sfxCues));
+
+    /// <summary>
+    /// 🥁 BGM WAV → 비트 그리드 → 막 경계 · SFX 큐 스냅(익스포터 <c>TryBeatSyncTrajectoryAsync</c> 와 동일 규칙 → 프리뷰/렌더 컷 일치).
+    /// 파싱 실패 · 무음 · 폴백 격자 → <see cref="PlutoBeatSyncedPreview.Applied"/> = false(원본 궤적 · 기본 큐).
+    /// </summary>
+    public static PlutoBeatSyncedPreview BuildBeatSyncedPreview(PlutoMotionTrajectory? baseTrajectory, ReadOnlySpan<byte> bgmWav,
+        Dsp.PlutoAudioBeatDetector? detector = null, Dsp.IPlutoBeatSyncQuantizer? quantizer = null)
+    {
+        var traj = baseTrajectory ?? PlutoMotionTrajectory.Empty;
+        var dur = traj.DurationSec;
+        var baseCues = PlutoSfxDirector.Shared.BuildCueSheet(dur > 0 ? dur : FourActDurationSec);
+        var grid = (detector ?? Dsp.PlutoAudioBeatDetector.Shared).Analyze(bgmWav);
+        if (grid.IsFallback || grid.Beats.Count == 0) return new PlutoBeatSyncedPreview(traj, baseCues, 0, 0, false);
+        var q = quantizer ?? Dsp.PlutoBeatSyncQuantizer.Shared;
+        return new PlutoBeatSyncedPreview(q.QuantizeTrajectory(traj, grid.Beats), q.QuantizeSfxCues(baseCues, grid.Beats), grid.Bpm, grid.Beats.Count, true);
+    }
 }
 
 /// <summary>
@@ -213,6 +253,20 @@ public static class PlutoMotionPreviewModel
                 w.WriteEndObject();
             }
             w.WriteEndArray();
+            if (contract.Sfx.Count > 0)   // 🔔 비트 스냅 큐(없으면 키 생략 → JS 기본 큐)
+            {
+                w.WriteStartArray("sfx");
+                for (var i = 0; i < contract.Sfx.Count; i++)
+                {
+                    var f = contract.Sfx[i];
+                    w.WriteStartObject();
+                    w.WriteNumber("kind", f.Kind);
+                    w.WriteNumber("at", f.AtSec);
+                    w.WriteNumber("vol", f.Volume);
+                    w.WriteEndObject();
+                }
+                w.WriteEndArray();
+            }
             w.WriteEndObject();
         }
         return Encoding.UTF8.GetString(buffer.WrittenSpan);
@@ -273,8 +327,17 @@ public static class PlutoMotionPreviewModel
                 Easing = easing, EaseCoefficients = coeff,
             };
         }
+        var sfx = Array.Empty<PlutoMotionPreviewSfx>();
+        if (root.TryGetProperty("sfx", out var sfxArr))
+        {
+            sfx = new PlutoMotionPreviewSfx[sfxArr.GetArrayLength()];
+            var j = 0;
+            foreach (var f in sfxArr.EnumerateArray())
+                sfx[j++] = new PlutoMotionPreviewSfx(f.GetProperty("kind").GetInt32(), f.GetProperty("at").GetDouble(), f.GetProperty("vol").GetDouble());
+        }
         return new PlutoMotionPreviewContract
         {
+            Sfx = sfx,
             Version = root.GetProperty("version").GetInt32(),
             Width = root.GetProperty("width").GetInt32(), Height = root.GetProperty("height").GetInt32(), Fps = root.GetProperty("fps").GetInt32(),
             DurationSec = root.GetProperty("durationSec").GetDouble(),

@@ -43,6 +43,7 @@
 @inject PromptFlowStudio.Services.Pluto.PlutoIdentityVault IdentityVault
 @inject PromptFlowStudio.Services.Pluto.PlutoLocalAiSettingsService LocalAiSettings
 @inject PromptFlowStudio.Services.Pluto.IPlutoDirectorRankService PlutoDirector
+@inject PromptFlowStudio.Services.Pluto.Dsp.IPlutoBeatSyncQuantizer BeatQuantizer
 
 @* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
    상태는 WanJobState(싱글턴)에 있고, 이 컴포넌트는 OnChange 를 구독해 InvokeAsync(StateHasChanged)로만 갱신한다.
@@ -92,7 +93,8 @@
         @if (_motionImage is not null)
         {
             <div class="ws-motion-preview" data-motion-preview="1">
-                <PlutoMotionPreviewer Js="JS" Trajectory="_motionPath" Subtitles="_motionSubs" ImageUrl="@_motionImageUrl" BgmUrl="@(_bgmOn ? _motionBgmUrl : null)" BgmVolume="MotionPreviewBgmVolume" />
+                <PlutoMotionPreviewer Js="JS" Trajectory="MotionPreviewPath" SfxCues="MotionBeatSync?.SfxCues" Subtitles="_motionSubs" ImageUrl="@_motionImageUrl" BgmUrl="@(_bgmOn ? _motionBgmUrl : null)" BgmVolume="MotionPreviewBgmVolume" />
+                @if (MotionBeatSync is { } mbs) { <span class="ws-retry" role="status" data-motion-beatsync="1">🎵 비트 싱크 퀀타이즈 적용됨 (@(mbs.Bpm.ToString("F0", CultureInfo.InvariantCulture)) BPM, @(mbs.BeatCount.ToString(CultureInfo.InvariantCulture)) 비트 정렬)</span> }
             </div>
         }
         @if (_jOpen)
@@ -1449,6 +1451,39 @@
     private string? _motionBgmUrl;     // 🎞 프리뷰 BGM WAV(가상호스트 URL · 없으면 SFX 만)
     private PromptFlowStudio.Services.Pluto.PlutoSubtitleScript? _motionSubs;   // 🎞 프리뷰 3막 자막(로컬 결정론 초안)
     private int _motionBgmSeq;
+    private PromptFlowStudio.Services.Pluto.PlutoBeatSyncedPreview? _motionBeatSync;      // 🥁 프리뷰 BGM 비트 스냅 결과
+    private PromptFlowStudio.Services.Pluto.PlutoMotionTrajectory? _motionBeatBase;     // 스냅 계산 기준 궤적(교체 시 무효)
+    private int _motionBeatSeq;
+
+    /// <summary>🥁 유효 비트 싱크(BGM ON · 현 궤적 기준 · 폴백 아님) — 아니면 null.</summary>
+    private PromptFlowStudio.Services.Pluto.PlutoBeatSyncedPreview? MotionBeatSync
+        => _bgmOn && _motionBeatSync is { Applied: true } b && ReferenceEquals(_motionBeatBase, _motionPath) ? b : null;
+
+    /// <summary>🎞 프리뷰 궤적 — 비트 스냅 궤적(익스포터와 동일 규칙) · 없으면 원본.</summary>
+    private PromptFlowStudio.Services.Pluto.PlutoMotionTrajectory? MotionPreviewPath => MotionBeatSync?.Trajectory ?? _motionPath;
+
+    /// <summary>🥁 BGM WAV → 비트 검출 → 막 경계 · SFX 큐 스냅(백그라운드 · 세대 가드 · 미리보기 전용 — 예외 전파 금지).</summary>
+    private async Task RefreshMotionBeatSyncAsync(string? wav)
+    {
+        var seq = ++_motionBeatSeq;
+        var basePath = _motionPath;
+        PromptFlowStudio.Services.Pluto.PlutoBeatSyncedPreview? r = null;
+        try
+        {
+            if (wav is not null && basePath is not null)
+            {
+                var q = BeatQuantizer;
+                r = await Task.Run(() => PromptFlowStudio.Services.Pluto.PlutoMotionCompiler.BuildBeatSyncedPreview(basePath, File.ReadAllBytes(wav), null, q));
+            }
+        }
+        catch (Exception ex) { Program.Log("Workspace.MotionBeatSync", ex); r = null; }
+        if (_disposed || seq != _motionBeatSeq) return;
+        _motionBeatSync = r;
+        _motionBeatBase = basePath;
+        try { await InvokeAsync(StateHasChanged); }
+        catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { }
+    }
+
     private const double MotionPreviewBgmVolume = PromptFlowStudio.Services.Export.StockSuiteExporter.BabyBgmVolume;   // 내보내기 믹스와 동일 볼륨
 
     /// <summary>🎞 프리뷰 자막 갱신 — 프롬프트/사진 스토리 초안 → 로컬 결정론 3막(LLM 호출 없음 · 타이핑마다 호출 가능).</summary>
@@ -1469,16 +1504,17 @@
         var seq = ++_motionBgmSeq;
         try
         {
-            string? url = null;
+            string? url = null, wav = null;
             if (_bgmOn)
             {
                 var track = _bgmTrack;
                 var dir = Path.Combine(Media.MediaRoot, "bgm");
-                var wav = await Task.Run(() => PromptFlowStudio.Services.Export.StockSuiteExporter.EnsureBabyBgm(track, 30, dir));
+                wav = await Task.Run(() => PromptFlowStudio.Services.Export.StockSuiteExporter.EnsureBabyBgm(track, 30, dir));
                 url = wav is null ? null : Media.ToPlaybackUrl(wav);
             }
             if (_disposed || seq != _motionBgmSeq) return;
             _motionBgmUrl = url;
+            _ = RefreshMotionBeatSyncAsync(wav);   // 🥁 비트 스냅 궤적 · SFX 큐
             await InvokeAsync(StateHasChanged);
         }
         catch (Exception ex) { Program.Log("Workspace.MotionPreviewBgm", ex); }
@@ -2391,16 +2427,21 @@
         var seq = ++_bgmSyncSeq;
         try
         {
-            string? url = null;
+            string? url = null, wav = null;
             if (_bgmOn)
             {
                 var track = _bgmTrack;
                 var dir = Path.Combine(Media.MediaRoot, "bgm");
-                var wav = await Task.Run(() => PromptFlowStudio.Services.Export.StockSuiteExporter.EnsureBabyBgm(track, 30, dir));
+                wav = await Task.Run(() => PromptFlowStudio.Services.Export.StockSuiteExporter.EnsureBabyBgm(track, 30, dir));
                 url = wav is null ? null : Media.ToPlaybackUrl(wav);
             }
             if (_disposed || seq != _bgmSyncSeq) return;   // 이탈 후/더 최신 동기화 존재 → 폐기
-            if (_motionImage is not null && !string.Equals(_motionBgmUrl, url, StringComparison.Ordinal)) { _motionBgmUrl = url; StateHasChanged(); }   // 🎞 프리뷰 BGM 트랙 핫스왑
+            if (_motionImage is not null && !string.Equals(_motionBgmUrl, url, StringComparison.Ordinal))
+            {
+                _motionBgmUrl = url;   // 🎞 프리뷰 BGM 트랙 핫스왑
+                _ = RefreshMotionBeatSyncAsync(wav);   // 🥁 트랙 교체 → 비트 재스냅
+                StateHasChanged();
+            }
             await JS.InvokeAsync<bool>("pfsBgmPreview.set", _bgmOn && url is not null, url, PromptFlowStudio.Services.Export.StockSuiteExporter.BabyBgmVolume, "video.ws-video");
         }
         catch (Exception ex) when (ex is JSDisconnectedException or ObjectDisposedException) { /* WebView 해제 — 무시 */ }

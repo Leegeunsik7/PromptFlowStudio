@@ -55,19 +55,22 @@ public sealed partial class StockSuiteExporter
     /// <summary>⏱️ 페이드 아웃 시작 = max(0, 길이 − 1.5s).</summary>
     public static double BabyBgmFadeOutStart(double durationSec) => Math.Max(0, durationSec - BabyBgmFadeSec);
 
-    /// <summary>🎵 아기 BGM 오디오 필터 — loudnorm(-14 LUFS) → volume 0.25 → afade in 1.5s → (길이 기지 시) afade out <c>st={길이-1.5:F2}</c>.</summary>
-    public static string BuildBabyBgmAudioFilter(double durationSec)
+    /// <summary>
+    /// 🎵 아기 BGM 오디오 필터 — loudnorm(-14 LUFS) → volume 0.25 → afade in 1.5s → (길이 기지 시) afade out <c>st={길이-1.5:F2}</c>.
+    /// <paramref name="mastered"/> = C# 트루피크 마스터링 완료 WAV → loudnorm·volume 이중 마스터링 생략(페이드만).
+    /// </summary>
+    public static string BuildBabyBgmAudioFilter(double durationSec, bool mastered = false)
     {
         var inv = CultureInfo.InvariantCulture;
         var d = BabyBgmFadeSec.ToString("0.###", inv);
-        var f = AudioMuxService.LoudnormFilter + ",volume=" + BabyBgmVolume.ToString("0.##", inv) + ",afade=t=in:st=0:d=" + d;
+        var f = (mastered ? "" : AudioMuxService.LoudnormFilter + ",volume=" + BabyBgmVolume.ToString("0.##", inv) + ",") + "afade=t=in:st=0:d=" + d;
         if (double.IsFinite(durationSec) && durationSec > 0)
             f += ",afade=t=out:st=" + BabyBgmFadeOutStart(durationSec).ToString("F2", inv) + ":d=" + d;
         return f;
     }
 
     /// <summary>🎵 아기 BGM 합성 인자 — 비디오 copy + BGM 루프 · AAC · -shortest.</summary>
-    public static string[] BuildBabyBgmMuxArgs(string videoPath, string bgmPath, double durationSec, string outputPath)
+    public static string[] BuildBabyBgmMuxArgs(string videoPath, string bgmPath, double durationSec, string outputPath, bool mastered = false)
     {
         var a = new List<string>(32)
         {
@@ -76,7 +79,7 @@ public sealed partial class StockSuiteExporter
             "-stream_loop", "-1", "-i", bgmPath,
             "-map", "0:v:0", "-map", "1:a:0",
             "-c:v", "copy", "-c:a", videoPath.EndsWith(".webm", StringComparison.OrdinalIgnoreCase) ? "libopus" : "aac", "-b:a", AudioMuxService.AudioBitrate,
-            "-af", BuildBabyBgmAudioFilter(durationSec),
+            "-af", BuildBabyBgmAudioFilter(durationSec, mastered),
             "-ar", AudioMuxService.OutputSampleRate, "-shortest",
         };
         if (double.IsFinite(durationSec) && durationSec > 0) { a.Add("-t"); a.Add(durationSec.ToString("0.###", CultureInfo.InvariantCulture)); }
@@ -155,7 +158,7 @@ public sealed partial class StockSuiteExporter
                 sfxFiles = cues.Count > 0 ? TryWriteSfxCueWavs(cues) : null;
                 if (sfxFiles is not null)
                 {
-                    var sfxErr = await TryFfmpegAsync(BuildBabyBgmSfxMixArgs(primaryPath, bgm, sfxFiles, cues, duration, temp), temp, ct, ExportProfile.BabyCinematic).ConfigureAwait(false);
+                    var sfxErr = await TryFfmpegAsync(BuildBabyBgmSfxMixArgs(primaryPath, bgm, sfxFiles, cues, duration, temp, masteredBgm is not null), temp, ct, ExportProfile.BabyCinematic).ConfigureAwait(false);
                     if (sfxErr is null)
                     {
                         await SwapIntoPlaceAsync(temp, primaryPath, ct).ConfigureAwait(false);
@@ -165,7 +168,8 @@ public sealed partial class StockSuiteExporter
                     TryDelete(temp);
                 }
             }
-            var err = await TryFfmpegAsync(BuildBabyBgmMuxArgs(primaryPath, bgm, duration, temp), temp, ct, ExportProfile.BabyCinematic).ConfigureAwait(false);
+            // 🎛️ 마스터링 WAV → loudnorm/volume 우회(AAC 직행) · 마스터링 OFF/실패 → 레거시 FFmpeg 정규화 폴백.
+            var err = await TryFfmpegAsync(BuildBabyBgmMuxArgs(primaryPath, bgm, duration, temp, masteredBgm is not null), temp, ct, ExportProfile.BabyCinematic).ConfigureAwait(false);
             if (err is not null) { Program.Log("StockSuite.BabyBgm", new IOException(err)); TryDelete(temp); return -1; }
             await SwapIntoPlaceAsync(temp, primaryPath, ct).ConfigureAwait(false);
             return 0;
@@ -308,11 +312,11 @@ public sealed partial class StockSuiteExporter
     /// 🔔 BGM + SFX 멀티트랙 필터그래프 — 입력 1 = BGM(loudnorm −14 LUFS · 0.25 · 페이드), 2.. = SFX(볼륨 → <c>adelay=ms|ms</c>).
     /// <c>amix=inputs=N:normalize=0</c>(BGM 레벨 보존) → <see cref="SfxLimiter"/> → <c>[aout]</c>.
     /// </summary>
-    public static string BuildBabyBgmSfxFilterGraph(double durationSec, IReadOnlyList<Pluto.PlutoSfxCue> cues)
+    public static string BuildBabyBgmSfxFilterGraph(double durationSec, IReadOnlyList<Pluto.PlutoSfxCue> cues, bool mastered = false)
     {
         var inv = CultureInfo.InvariantCulture;
         var sb = new StringBuilder(256 + cues.Count * 96);
-        sb.Append("[1:a]").Append(BuildBabyBgmAudioFilter(durationSec)).Append(',').Append(SfxAudioFormat).Append("[bgm];");
+        sb.Append("[1:a]").Append(BuildBabyBgmAudioFilter(durationSec, mastered)).Append(',').Append(SfxAudioFormat).Append("[bgm];");
         for (var i = 0; i < cues.Count; i++)
         {
             var ms = Math.Max(0, cues[i].OffsetMs).ToString(inv);
@@ -330,7 +334,7 @@ public sealed partial class StockSuiteExporter
     }
 
     /// <summary>🔔 BGM + SFX 먹싱 인자 — 비디오 copy · BGM 루프 · SFX 입력 N개 · filter_complex → AAC · -shortest.</summary>
-    public static string[] BuildBabyBgmSfxMixArgs(string videoPath, string bgmPath, IReadOnlyList<string> sfxPaths, IReadOnlyList<Pluto.PlutoSfxCue> cues, double durationSec, string outputPath)
+    public static string[] BuildBabyBgmSfxMixArgs(string videoPath, string bgmPath, IReadOnlyList<string> sfxPaths, IReadOnlyList<Pluto.PlutoSfxCue> cues, double durationSec, string outputPath, bool mastered = false)
     {
         if (sfxPaths.Count != cues.Count) throw new ArgumentException("SFX 경로 수와 큐 수 불일치", nameof(sfxPaths));
         var a = new List<string>(40 + sfxPaths.Count * 2)
@@ -340,7 +344,7 @@ public sealed partial class StockSuiteExporter
             "-stream_loop", "-1", "-i", bgmPath,
         };
         for (var i = 0; i < sfxPaths.Count; i++) { a.Add("-i"); a.Add(sfxPaths[i]); }
-        a.Add("-filter_complex"); a.Add(BuildBabyBgmSfxFilterGraph(durationSec, cues));
+        a.Add("-filter_complex"); a.Add(BuildBabyBgmSfxFilterGraph(durationSec, cues, mastered));
         a.Add("-map"); a.Add("0:v:0"); a.Add("-map"); a.Add("[aout]");
         a.Add("-c:v"); a.Add("copy");
         a.Add("-c:a"); a.Add(videoPath.EndsWith(".webm", StringComparison.OrdinalIgnoreCase) ? "libopus" : "aac");

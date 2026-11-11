@@ -74,6 +74,14 @@
             }
         }
         c.segments = ok;
+        var cues = [];                               // 🥁 비트 스냅 SFX 큐(계약 sfx) — 없거나 무효 → 기본 큐 시트
+        if (Array.isArray(c.sfx)) {
+            for (var j = 0; j < c.sfx.length; j++) {
+                var f = c.sfx[j];
+                if (f && (f.kind === 0 || f.kind === 1 || f.kind === 2) && isFinite(f.at) && f.at >= 0 && isFinite(f.vol)) cues.push({ kind: f.kind, at: +f.at, vol: clamp(+f.vol, 0, 1) });
+            }
+        }
+        c.sfx = cues.length > 0 ? cues : SFX_CUES;
         c.minZoom = isFinite(c.minZoom) && c.minZoom > 0 ? c.minZoom : 1;
         c.maxZoom = isFinite(c.maxZoom) && c.maxZoom >= c.minZoom ? c.maxZoom : 10;
         return c;
@@ -345,8 +353,9 @@
         inst.lastCt = -1;
         try {
             if (inst.bgmBuf) startVoice(inst, inst.bgmBuf, inst.bgmBus, t0, t % inst.bgmBuf.duration, rate, true, 1);
-            for (var i = 0; i < SFX_CUES.length; i++) {
-                var cue = SFX_CUES[i], buf = inst.sfx[cue.kind];
+            var cues = (inst.contract && inst.contract.sfx) || SFX_CUES;
+            for (var i = 0; i < cues.length; i++) {
+                var cue = cues[i], buf = inst.sfx[cue.kind];
                 if (cue.at >= inst.duration) continue;
                 if (t <= cue.at) startVoice(inst, buf, inst.master, t0 + (cue.at - t) / rate, 0, 1, false, cue.vol);
                 else if (t < cue.at + buf.duration - 0.03) startVoice(inst, buf, inst.master, t0, t - cue.at, 1, false, cue.vol);
@@ -411,10 +420,18 @@
         if (inst.playing && !inst.scrubbing) anchor(inst);
     }
 
+    function sameCues(a, b) {
+        if (a === b) return true;
+        if (!a || !b || a.length !== b.length) return false;
+        for (var i = 0; i < a.length; i++) if (a[i].kind !== b[i].kind || a[i].at !== b[i].at || a[i].vol !== b[i].vol) return false;
+        return true;
+    }
+
     function applyContract(inst, json) {
+        var prevSfx = inst.contract ? inst.contract.sfx : null;
         inst.contract = parseContract(json);
         var d = inst.contract.segments.length > 0 ? inst.contract.segments[inst.contract.segments.length - 1].endSec : DEFAULT_DURATION;
-        var changed = d !== inst.duration;
+        var changed = d !== inst.duration || !sameCues(prevSfx, inst.contract.sfx);   // 🥁 비트 스냅 큐 변경도 재배치
         inst.duration = d;
         if (inst.scrub) inst.scrub.max = d.toFixed(2);
         if (inst.t > d) inst.t = d;

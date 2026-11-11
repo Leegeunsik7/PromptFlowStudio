@@ -273,11 +273,67 @@ public sealed class PlutoDspAndBeatSyncTests : IDisposable
         Assert.True(fedBgmLen > PlutoPcmWav.HeaderBytes);
         Assert.Empty(Directory.GetFiles(masterDir));                                    // 임시 마스터 WAV 정리
         var graph = calls[^1][Array.IndexOf(calls[^1], "-filter_complex") + 1];
+        Assert.DoesNotContain("loudnorm", graph, StringComparison.Ordinal);                // 이중 마스터링 차단
         var delays = Regex.Matches(graph, @"adelay=(\d+)\|").Select(m => int.Parse(m.Groups[1].Value)).ToArray();
         Assert.Equal(3, delays.Length);
         Assert.InRange(delays[0], 670, 730);
         Assert.InRange(delays[1], 5670, 5730);
         Assert.InRange(delays[2], 13170, 13230);
+    }
+
+    [Fact]
+    public async Task StockSuiteExporter_BypassesLoudnorm_WhenMasteredWavProvided()
+    {
+        // 순수 인자 — 마스터링 WAV → loudnorm/volume 생략 · 페이드 + AAC 192k/48k 직행 · 레거시 경로는 그대로.
+        var mastered = StockSuiteExporter.BuildBabyBgmMuxArgs("in.mp4", "m.wav", 15, "out.mp4", mastered: true);
+        var af = mastered[Array.IndexOf(mastered, "-af") + 1];
+        Assert.DoesNotContain("loudnorm", af, StringComparison.Ordinal);
+        Assert.DoesNotContain("volume=", af, StringComparison.Ordinal);
+        Assert.Equal("afade=t=in:st=0:d=1.5,afade=t=out:st=13.50:d=1.5", af);
+        Assert.Equal("aac", mastered[Array.IndexOf(mastered, "-c:a") + 1]);
+        Assert.Equal("192k", mastered[Array.IndexOf(mastered, "-b:a") + 1]);
+        Assert.Equal("48000", mastered[Array.IndexOf(mastered, "-ar") + 1]);
+        Assert.Equal("m.wav", mastered[Array.IndexOf(mastered, "-stream_loop") + 3]);
+        var legacy = StockSuiteExporter.BuildBabyBgmMuxArgs("in.mp4", "b.wav", 15, "out.mp4");
+        Assert.Contains("loudnorm=I=-14", legacy[Array.IndexOf(legacy, "-af") + 1], StringComparison.Ordinal);
+        Assert.Contains("volume=0.25", legacy[Array.IndexOf(legacy, "-af") + 1], StringComparison.Ordinal);
+        var cues = PlutoSfxDirector.Shared.BuildCueSheet(15);
+        var g = StockSuiteExporter.BuildBabyBgmSfxFilterGraph(15, cues, mastered: true);
+        Assert.DoesNotContain("loudnorm", g, StringComparison.Ordinal);
+        Assert.DoesNotContain("volume=0.25", g, StringComparison.Ordinal);
+        Assert.StartsWith("[1:a]afade=t=in", g, StringComparison.Ordinal);
+        Assert.Contains(StockSuiteExporter.SfxLimiter, g, StringComparison.Ordinal);
+
+        // 실 먹싱 코어 — 마스터링 ON → FFmpeg 에 loudnorm 없음 · OFF(폴백) → 레거시 loudnorm + 0.25.
+        var bgm = Path.Combine(_dir, "pulse.wav");
+        var pulse = PulseTrack(120, 0.2, 16.0);
+        File.WriteAllBytes(bgm, EncodeFloat32Stereo(pulse, pulse));
+        foreach (var on in new[] { true, false })
+        {
+            var src = Path.Combine(_dir, "render_" + on + ".mp4");
+            File.WriteAllBytes(src, new byte[] { 0, 0, 0, 0x18, 1, 2, 3 });
+            string[]? last = null;
+            FfmpegRunner runner = (exe, args, ct) =>
+            {
+                last = args.ToArray();
+                File.WriteAllBytes(last[^1], new byte[AmbientLoopService.MinValidOutputBytes + 16]);
+                return Task.FromResult(true);
+            };
+            var exp = new StockSuiteExporter(() => _dir, () => "mp4", () => "ffmpeg.exe", runner)
+            {
+                BabyBgmResolver = (_, _) => bgm,
+                DurationProbe = (_, _) => Task.FromResult(15.0),
+                MasteringTempDir = Path.Combine(_dir, "master"),
+                BabyBgm = BabyBgmTrack.Lullaby,
+                TruePeakMasteringEnabled = on,
+            };
+            Assert.Equal(0, await exp.MuxBabyAudioIntoPrimaryAsync(src, CancellationToken.None));
+            Assert.NotNull(last);
+            var filter = last![Array.IndexOf(last, "-af") + 1];
+            Assert.Equal(!on, filter.Contains("loudnorm", StringComparison.Ordinal));
+            Assert.Equal(!on, filter.Contains("volume=0.25", StringComparison.Ordinal));
+            Assert.Equal("aac", last[Array.IndexOf(last, "-c:a") + 1]);
+        }
     }
 
     [Fact]
@@ -308,7 +364,7 @@ public sealed class PlutoDspAndBeatSyncTests : IDisposable
     }
 
     /// <summary>bpm 펄스(880Hz 톤 + 노이즈 · 15ms 지수 감쇠) 모노 트랙.</summary>
-    private static float[] PulseTrack(double bpm, double phase, double seconds)
+    internal static float[] PulseTrack(double bpm, double phase, double seconds)
     {
         var n = (int)(seconds * Rate);
         var x = new float[n];

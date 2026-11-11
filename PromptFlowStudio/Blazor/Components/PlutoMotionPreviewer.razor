@@ -47,6 +47,8 @@
     [Parameter] public PlutoMotionTrajectory? Trajectory { get; set; }
     /// <summary>3막 KO/EN 자막(null → 자막 없음).</summary>
     [Parameter] public PlutoSubtitleScript? Subtitles { get; set; }
+    /// <summary>🥁 비트 스냅 SFX 큐(null → JS 기본 15초 큐 시트).</summary>
+    [Parameter] public IReadOnlyList<PlutoSfxCue>? SfxCues { get; set; }
     /// <summary>원본 사진 URL(가상호스트). null/빈 값 → 빈 상태.</summary>
     [Parameter] public string? ImageUrl { get; set; }
     /// <summary>BGM WAV URL(null → BGM 없음 · SFX 만).</summary>
@@ -64,7 +66,7 @@
 
     protected override void OnParametersSet()
     {
-        _contractJson = PlutoMotionCompiler.ExportPreviewContractJson(Trajectory);
+        _contractJson = PlutoMotionCompiler.ExportPreviewContractJson(Trajectory, sfxCues: SfxCues);
         _subsJson = PlutoMotionPreviewModel.SubtitlesJson(Subtitles);
     }
 
