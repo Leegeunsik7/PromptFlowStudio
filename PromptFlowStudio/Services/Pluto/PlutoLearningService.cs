@@ -43,6 +43,7 @@ public sealed class PlutoLearningService : IDisposable
     public const double ViralActiveThreshold = 0.05;
 
     private readonly string _path;
+    private readonly IPlutoStorageManager? _storage;   // ☁️ 주입 시 Drive 볼트(폴백 포함) 경로·기록 위임
     private readonly Random _rng;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _sync = new();
@@ -51,7 +52,13 @@ public sealed class PlutoLearningService : IDisposable
     private volatile bool _readOnly;   // 🛡️ 적재 불가(잠금·권한) 세션 — 기존 파일 덮어쓰기 금지
     private int _disposed;
 
-    public PlutoLearningService() : this(null, null) { }
+    public PlutoLearningService() : this((string?)null, null) { }
+
+    /// <summary>☁️ <see cref="IPlutoStorageManager"/> 경유 — <c>G:\내 드라이브\DATA\Pluto</c> 우선 · 로컬 폴백.</summary>
+    public PlutoLearningService(IPlutoStorageManager storage, Random? rng = null) : this((string?)null, rng)
+    {
+        _storage = storage ?? throw new ArgumentNullException(nameof(storage));
+    }
 
     public PlutoLearningService(string? storagePath, Random? rng = null)
     {
@@ -61,7 +68,19 @@ public sealed class PlutoLearningService : IDisposable
         _rng = rng ?? new Random();
     }
 
-    public string StoragePath => _path;
+    public string StoragePath => _storage?.ResolveDataPath(FileName) ?? _path;
+
+    /// <summary>🔥 최근 바이럴 트렌드 적재 시각(UTC · 수동 발굴/자율 수확 공통) — 없음 → null.</summary>
+    public DateTime? LastViralIngestUtc
+    {
+        get
+        {
+            lock (_sync)
+                return _entries.TryGetValue(TrendIngestSourceKey, out var e) && e.LastUtc != default
+                    ? (e.LastUtc.Kind == DateTimeKind.Local ? e.LastUtc.ToUniversalTime() : DateTime.SpecifyKind(e.LastUtc, DateTimeKind.Utc))
+                    : null;
+        }
+    }
 
     /// <summary>상태 변경 통지(백그라운드 스레드 가능).</summary>
     public event Action? Changed;
@@ -142,7 +161,7 @@ public sealed class PlutoLearningService : IDisposable
         {
             if (_loaded) return;
             // 손상 JSON → .corrupt 격리 후 빈 메모리 · 일시적 잠금 → 재시도 · 끝내 읽기 불가 → 디스크 덮어쓰기 금지(누적 XP 보호)
-            var (data, status) = await PlutoJsonStore.TryLoadAsync<Dictionary<string, Entry>>(_path, "Pluto", ct).ConfigureAwait(false);
+            var (data, status) = await PlutoJsonStore.TryLoadAsync<Dictionary<string, Entry>>(StoragePath, "Pluto", ct).ConfigureAwait(false);
             _readOnly = status == PlutoLoadStatus.Unreadable;
             lock (_sync)
             {
@@ -265,7 +284,9 @@ public sealed class PlutoLearningService : IDisposable
             if (_readOnly) return false;
             string json;
             lock (_sync) json = JsonSerializer.Serialize(_entries);
-            return await PlutoJsonStore.WriteAtomicAsync(_path, json, "Pluto", ct).ConfigureAwait(false);
+            return _storage is not null
+                ? await _storage.WriteAllTextAtomicAsync(FileName, json, ct).ConfigureAwait(false)
+                : await PlutoJsonStore.WriteAtomicAsync(_path, json, "Pluto", ct).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
     }

@@ -85,6 +85,7 @@ public sealed class PlutoIdentityVault : IDisposable
     public const string FileName = "pluto_identity_vault.json";
 
     private readonly string _path;
+    private readonly IPlutoStorageManager? _storage;   // ☁️ 주입 시 Drive 볼트(폴백 포함) 경로·기록 위임
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _sync = new();
     private List<PlutoIdentityProfile> _profiles = new();
@@ -92,7 +93,13 @@ public sealed class PlutoIdentityVault : IDisposable
     private volatile bool _readOnly;   // 🛡️ 적재 불가(잠금·권한) 세션 — 기존 파일 덮어쓰기 금지
     private int _disposed;
 
-    public PlutoIdentityVault() : this(null) { }
+    public PlutoIdentityVault() : this((string?)null) { }
+
+    /// <summary>☁️ <see cref="IPlutoStorageManager"/> 경유 — <c>G:\내 드라이브\DATA\Pluto</c> 우선 · 로컬 폴백.</summary>
+    public PlutoIdentityVault(IPlutoStorageManager storage) : this((string?)null)
+    {
+        _storage = storage ?? throw new ArgumentNullException(nameof(storage));
+    }
 
     public PlutoIdentityVault(string? storagePath)
     {
@@ -101,7 +108,7 @@ public sealed class PlutoIdentityVault : IDisposable
             : storagePath;
     }
 
-    public string StoragePath => _path;
+    public string StoragePath => _storage?.ResolveDataPath(FileName) ?? _path;
 
     /// <summary>상태 변경 통지(백그라운드 스레드 가능).</summary>
     public event Action? Changed;
@@ -139,7 +146,7 @@ public sealed class PlutoIdentityVault : IDisposable
         {
             if (_loaded) return;
             // 손상 JSON → .corrupt 격리 후 빈 볼트 · 일시적 잠금 → 재시도 · 끝내 읽기 불가 → 디스크 덮어쓰기 금지(기존 프로필 보호)
-            var (data, status) = await PlutoJsonStore.TryLoadAsync<List<PlutoIdentityProfile>>(_path, "Pluto.Identity", ct).ConfigureAwait(false);
+            var (data, status) = await PlutoJsonStore.TryLoadAsync<List<PlutoIdentityProfile>>(StoragePath, "Pluto.Identity", ct).ConfigureAwait(false);
             _readOnly = status == PlutoLoadStatus.Unreadable;
             lock (_sync)
             {
@@ -242,7 +249,9 @@ public sealed class PlutoIdentityVault : IDisposable
             if (_readOnly) return false;
             string json;
             lock (_sync) json = JsonSerializer.Serialize(_profiles);
-            return await PlutoJsonStore.WriteAtomicAsync(_path, json, "Pluto.Identity", ct).ConfigureAwait(false);
+            return _storage is not null
+                ? await _storage.WriteAllTextAtomicAsync(FileName, json, ct).ConfigureAwait(false)
+                : await PlutoJsonStore.WriteAtomicAsync(_path, json, "Pluto.Identity", ct).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
     }

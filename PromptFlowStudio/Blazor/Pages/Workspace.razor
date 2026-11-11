@@ -43,6 +43,8 @@
 @inject PromptFlowStudio.Services.Pluto.PlutoIdentityVault IdentityVault
 @inject PromptFlowStudio.Services.Pluto.PlutoLocalAiSettingsService LocalAiSettings
 @inject PromptFlowStudio.Services.Pluto.PlutoCoreProcessManager PlutoCoreMgr
+@inject PromptFlowStudio.Services.Pluto.IPlutoStorageManager PlutoStorage
+@inject PromptFlowStudio.Services.Pluto.PlutoAutonomousTrendHarvester PlutoHarvester
 @inject PromptFlowStudio.Services.Pluto.IPlutoDirectorRankService PlutoDirector
 @inject PromptFlowStudio.Services.Pluto.Dsp.IPlutoBeatSyncQuantizer BeatQuantizer
 
@@ -99,6 +101,8 @@
                     }
                 </span>
             }
+            <span class="ws-pcore@(PlutoStorage.IsCloudSynced ? " on" : "")" data-pluto-storage="@(PlutoStorage.IsCloudSynced ? "drive" : "local")" title="@("Pluto 학습 데이터 저장 위치: " + PlutoStorage.ActiveRoot)">@(PlutoStorage.IsCloudSynced ? @"☁️ G:\내 드라이브\DATA 동기화됨" : "💾 로컬 폴백")</span>
+            <span class="ws-pcore@(PlutoHarvester.IsRunning ? " on" : "")" data-pluto-harvest="@(PlutoHarvester.IsHarvesting ? "busy" : PlutoHarvester.IsRunning ? "on" : "off")">@(PlutoHarvester.StatusLabel)</span>
             <PlutoDirectorBadge Director="PlutoDirector" />   @* 🎬 디렉터 랭크(XP → 광학 티어) *@
             @* 🍼 Step5: 증시 세션/외부 연동 배지는 기본 아기 스튜디오 화면에서 제거(설정 > 연동 진단으로 이관). *@
             @if (Journal.RecoveringCount > 0) { <span class="ws-recover" role="status">[🔄 미완료 클라우드 작업 복원 중: @(Journal.RecoveringCount.ToString(CultureInfo.InvariantCulture))건]</span> }
@@ -3147,6 +3151,8 @@
         if (RenderQueue is PromptFlowStudio.Services.Render.RenderQueueService rqs) rqs.OnDurationStitched += OnDurationStitched;
         StockMon.OnChanged += OnStockMonChanged;
         PlutoCoreMgr.OnChanged += OnPlutoCoreChanged;
+        PlutoStorage.Changed += OnPlutoCoreChanged;     // ☁️ Drive ↔ 로컬 폴백 배지
+        PlutoHarvester.Changed += OnPlutoCoreChanged;   // 🔄 자율 수확 배지
         PlutoCoreMgr.StartMonitoring();   // 🪐 5초 헬스 폴링(싱글톤 · 멱등)
         StockMon.Start();   // 🟢 2초 주기 StockSuite 프로세스 폴링(싱글톤 · 멱등)
         Journal.OnChanged += OnHubChanged;
@@ -3323,6 +3329,8 @@
         if (RenderQueue is PromptFlowStudio.Services.Render.RenderQueueService rqs) rqs.OnDurationStitched -= OnDurationStitched;
         StockMon.OnChanged -= OnStockMonChanged;
         PlutoCoreMgr.OnChanged -= OnPlutoCoreChanged;
+        PlutoStorage.Changed -= OnPlutoCoreChanged;
+        PlutoHarvester.Changed -= OnPlutoCoreChanged;
         try { _plutoCoreCts?.Cancel(); } catch (ObjectDisposedException) { }
         Journal.OnChanged -= OnHubChanged;
         Resilience.OnRetryAttempt -= OnRetryAttempt;

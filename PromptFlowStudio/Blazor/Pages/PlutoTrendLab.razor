@@ -7,6 +7,8 @@
 @inject PlutoSocialRadarEngine Radar
 @inject PlutoIdentityVault IdentityVault
 @inject PlutoLocalAiSettingsService LocalAiSettings
+@inject IPlutoStorageManager Storage
+@inject PlutoAutonomousTrendHarvester Harvester
 @inject PromptDraftService Draft
 @inject NavigationManager Nav
 @inject PromptFlowStudio.Services.Platform.IClipboardService Clipboard
@@ -19,6 +21,10 @@
         <div class="pl-sub">플루토가 고른 쇼츠·릴스 트렌드 — 채택·내보내기·평가할수록 취향을 학습합니다.</div>
         <button class="pl-identity@(_identity is not null ? " on" : "")" data-pluto-identity-open="1" title="아기/반려동물 프로필 — 외모 특징이 새 트렌드 프롬프트에 캐릭터 일관성 앵커로 반영됩니다" @onclick="() => _identityModal = true">@(_identity is { } ip ? ip.FormatBadge(DateTime.Today) : "🍼 우리 아이 프로필 만들기")</button>
         <button class="pl-identity@(LocalAiSettings.Gateway.Options.IsEnabled ? " on" : "")" data-local-ai-open="1" title="Gemini 장애 시 사내/로컬 AI 서버(OpenAI 호환 · Ollama)로 자동 전환 — 엔드포인트 · 모델 · 연결 테스트" @onclick="() => _localAiModal = true">🦙 로컬 AI 설정</button>
+        <div class="pl-sync-row">
+            <span class="pl-sync@(Storage.IsCloudSynced ? " on" : "")" data-pluto-storage="@(Storage.IsCloudSynced ? "drive" : "local")" title="@("트렌드 메모리 · 바이럴 패턴 · 아이덴티티 저장 위치: " + Storage.ActiveRoot)">@(Storage.StatusLabel)</span>
+            <span class="pl-sync@(Harvester.IsHarvesting ? " busy" : "")" data-pluto-harvest="@(Harvester.IsHarvesting ? "busy" : Harvester.IsRunning ? "on" : "off")" title="@("⏱️ 자율 갱신: " + PlutoAutonomousTrendHarvester.FormatTimeAgo(Harvester.LastHarvestUtc, DateTime.UtcNow) + " · 6시간마다 점검 · 12시간 경과 시 아기/반려동물 바이럴 훅 자동 학습(+2 XP)")">@(Harvester.StatusLabel)</span>
+        </div>
     </div>
 
     @* 🪐 통합 디렉터 HUD — 구 10 XP 레벨 카운터 폐기 · 디렉터 랭크 단일 표시(칭호 · XP · 진행 바 · 해금 광학 툴팁) *@
@@ -155,6 +161,10 @@
     .pl-title-g { background: linear-gradient(135deg,#8b7bff,#ff7bc6); -webkit-background-clip: text; background-clip: text; color: transparent; }
     .pl-sub { opacity: .75; margin-top: 6px; font-size: 14px; }
     .pl-identity { margin-top: 10px; padding: 6px 14px; border-radius: 999px; border: 1px dashed rgba(244,114,182,.55); background: transparent; color: inherit; font-weight: 800; font-size: 13px; cursor: pointer; }
+    .pl-sync-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .pl-sync { padding: 3px 10px; border-radius: 999px; border: 1px solid rgba(148,163,184,.35); font-size: 11.5px; font-weight: 700; color: var(--text-muted, #94a3b8); }
+    .pl-sync.on { border-color: rgba(56,189,248,.55); color: #38bdf8; background: rgba(56,189,248,.10); }
+    .pl-sync.busy { border-color: rgba(250,204,21,.55); color: #facc15; }
     .pl-identity.on { border-style: solid; background: rgba(244,114,182,.14); color: #f472b6; }
     .pl-brain .pdb { margin: 0 0 6px; }
     .pl-brain-sub { display: block; font-size: 12px; font-weight: 500; opacity: .75; }
@@ -222,6 +232,8 @@
     {
         Learning.Changed += OnLearningChanged;
         Radar.Changed += OnLearningChanged;
+        Storage.Changed += OnLearningChanged;     // ☁️ Drive ↔ 로컬 폴백 전환
+        Harvester.Changed += OnLearningChanged;   // 🔄 자율 수확 시작/완료 → 배지·바이럴 칩 무리로드 갱신
         try { await Learning.EnsureLoadedAsync(_cts.Token); }   // 🧠 HUD 레벨/XP 표시용 메모리 선적재
         catch (OperationCanceledException) { }
         catch (Exception ex) { Program.Log("PlutoTrendLab.Brain", ex); }
@@ -399,6 +411,8 @@
     {
         Learning.Changed -= OnLearningChanged;
         Radar.Changed -= OnLearningChanged;
+        Storage.Changed -= OnLearningChanged;
+        Harvester.Changed -= OnLearningChanged;
         try { _cts.Cancel(); } catch (ObjectDisposedException) { }
         _cts.Dispose();
         _toastTimer?.Dispose();
