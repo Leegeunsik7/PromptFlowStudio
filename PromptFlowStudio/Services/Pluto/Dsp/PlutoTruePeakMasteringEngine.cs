@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Collections.Generic;
 using System.Numerics;
 
 namespace PromptFlowStudio.Services.Pluto.Dsp;
@@ -48,6 +49,13 @@ public static class PlutoTruePeakMasteringEngine
 
     /// <summary>WAV 마스터링 — 파싱 실패/무음/예외 → false.</summary>
     public static bool TryMasterWavBuffer(ReadOnlySpan<byte> wavBytes, out byte[] mastered, out PlutoMasteringReport report)
+        => TryMasterWavBuffer(wavBytes, null, out mastered, out report);
+
+    /// <summary>
+    /// 🎛️🎚️ WAV 마스터링 + SFX 큐 사이드체인 더킹(<see cref="PlutoSidechainDucker"/> · 리미팅 후 적용 → 게인 ≤ 1 이라 트루피크 상한 유지).
+    /// <paramref name="duckCues"/> null/빈 목록 → 더킹 생략.
+    /// </summary>
+    public static bool TryMasterWavBuffer(ReadOnlySpan<byte> wavBytes, IReadOnlyList<PlutoSfxCue>? duckCues, out byte[] mastered, out PlutoMasteringReport report)
     {
         mastered = Array.Empty<byte>();
         report = default;
@@ -63,6 +71,7 @@ public static class PlutoTruePeakMasteringEngine
             if (r is not null) PlutoPcmWav.DecodeChannel(wavBytes, in info, 1, r);
             var rs = r is null ? Span<float>.Empty : r.AsSpan(0, n);
             if (!MasterInPlace(l.AsSpan(0, n), rs, info.SampleRate, out report)) return false;
+            if (duckCues is { Count: > 0 }) PlutoSidechainDucker.Shared.ApplyDucking(l.AsSpan(0, n), rs, duckCues, info.SampleRate);
             mastered = PlutoPcmWav.EncodePcm16(l.AsSpan(0, n), rs, stereo ? 2 : 1, info.SampleRate);
             return true;
         }

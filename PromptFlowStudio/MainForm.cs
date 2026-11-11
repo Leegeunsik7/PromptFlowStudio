@@ -74,7 +74,9 @@ public sealed class MainForm : Form
         services.AddSingleton(_ => new PromptFlowStudio.Services.Pluto.PlutoIdentityVault());   // 🍼 플루토 아이덴티티 볼트(pluto_identity_vault.json · 캐릭터 일관성 앵커)
         services.AddSingleton(_ => new PromptFlowStudio.Services.Pluto.PlutoCustomLocalGateway(PromptFlowStudio.Services.Pluto.PlutoLocalAiSettingsService.LoadEffectiveOptions(), null));   // 🔌 플루토 커스텀 로컬 AI 게이트웨이(OpenAI /v1/chat/completions · Ollama /api/chat · PFS_LOCAL_AI_*)
         services.AddSingleton(sp => new PromptFlowStudio.Services.Pluto.PlutoLocalAiSettingsService((PromptFlowStudio.Services.Pluto.PlutoCustomLocalGateway)sp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoCustomLocalGateway))!));   // 🦙 로컬 AI 설정(pluto_local_ai_settings.json > PFS_LOCAL_AI_* · 실행 중 즉시 반영)
-        services.AddSingleton(sp => new PromptFlowStudio.Services.Pluto.PlutoLlmFailoverClient(sp.GetService(typeof(PromptFlowStudio.Services.AI.GeminiPromptService)) as PromptFlowStudio.Services.Pluto.IPlutoLlmClient, sp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoCustomLocalGateway)) as PromptFlowStudio.Services.Pluto.PlutoCustomLocalGateway));   // 🔁 Gemini → 로컬 게이트웨이 → 템플릿 체인
+        services.AddSingleton(_ => new PromptFlowStudio.Services.Pluto.PlutoCoreProcessManager());   // 🪐 PlutoCore 허브 수명 관리(D:\PROGRAM\PlutoCore · 파이프 헬스 · 창 없는 기동)
+        services.AddSingleton(sp => new PromptFlowStudio.Services.Pluto.PlutoCoreLlmClient((PromptFlowStudio.Services.Pluto.PlutoCoreProcessManager)sp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoCoreProcessManager))!));   // 🪐 PlutoCore Named Pipe LLM 단계(PLUTOCORE_API_KEY)
+        services.AddSingleton(sp => new PromptFlowStudio.Services.Pluto.PlutoLlmFailoverClient(sp.GetService(typeof(PromptFlowStudio.Services.AI.GeminiPromptService)) as PromptFlowStudio.Services.Pluto.IPlutoLlmClient, sp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoCustomLocalGateway)) as PromptFlowStudio.Services.Pluto.PlutoCustomLocalGateway, sp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoCoreLlmClient)) as PromptFlowStudio.Services.Pluto.PlutoCoreLlmClient));   // 🔁 Gemini → PlutoCore → 로컬 게이트웨이 → 템플릿 체인
         services.AddSingleton(_ => new PromptFlowStudio.Services.Pluto.PlutoPreferenceLexicon());   // 🧬 플루토 프롬프트 DNA(pluto_dna_memory.json)
         services.AddSingleton(sp => new PromptFlowStudio.Services.Pluto.PlutoSocialRadarEngine(null, sp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoLlmFailoverClient)) as PromptFlowStudio.Services.Pluto.IPlutoLlmClient, sp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoLearningService)) as PromptFlowStudio.Services.Pluto.PlutoLearningService));   // 📈 플루토 SNS 트렌드 레이더(pluto_social_radar.json · 🧠 Gemini 우선 · 벤치마크 폴백)
         services.AddSingleton(sp => new PromptFlowStudio.Services.Pluto.PlutoGenerativeEngine(sp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoPreferenceLexicon)) as PromptFlowStudio.Services.Pluto.PlutoPreferenceLexicon, sp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoLlmFailoverClient)) as PromptFlowStudio.Services.Pluto.IPlutoLlmClient, sp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoSocialRadarEngine)) as PromptFlowStudio.Services.Pluto.PlutoSocialRadarEngine) { Identity = sp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoIdentityVault)) as PromptFlowStudio.Services.Pluto.PlutoIdentityVault });   // ✨ 플루토 생성형 트렌드(🧠 Gemini 우선 · 로컬 폴백)
@@ -1067,6 +1069,9 @@ public sealed class MainForm : Form
             ssIpc.OnHotReloadAck += _hotReloadWatchdog.Acknowledge;
         }
         catch (Exception ex) { Program.Log("EnterpriseHub.AutoStart", ex); }
+
+        try { _services.GetService<PromptFlowStudio.Services.Pluto.PlutoCoreProcessManager>()?.StartMonitoring(); }   // 🪐 PlutoCore 5초 헬스 폴링 → 페일오버 체인 자동 라우팅
+        catch (Exception ex) { Program.Log("PlutoCore.Monitor", ex); }
 
         try
         {

@@ -44,6 +44,27 @@
             </div>
             @if (_ping is { IsOnline: false } off) { <div class="pla-tip">💡 @off.Message</div> }
 
+            @if (Core is { } core)
+            {
+                var cs = core.Current;
+                <div class="pla-core" data-plutocore-panel="1">
+                    <div class="pla-core-h">🪐 PlutoCore 허브 <span class="pla-hint">(@(core.RootDirectory))</span></div>
+                    <div class="pla-core-row">
+                        <span class="pla-badge @(cs.IsRunning ? "ok" : "off")" role="status" data-plutocore-status="@(cs.IsRunning ? "running" : cs.DirectoryExists ? "stopped" : "missing")">
+                            @(cs.IsRunning
+                                ? "🟢 연결됨" + (cs.Latency is { } lat ? " · " + lat.TotalMilliseconds.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "ms" : "") + (cs.ProcessId is { } pid ? " · PID " + pid.ToString(System.Globalization.CultureInfo.InvariantCulture) : "")
+                                : cs.DirectoryExists ? "⚪ 미실행" : "⚫ 폴더 없음")
+                        </span>
+                        <button class="pla-btn" disabled="@_coreBusy" data-plutocore-check="1" @onclick="CheckCoreAsync">@(_coreBusy ? "⏳ 확인 중..." : "🩺 상태 확인")</button>
+                        @if (!cs.IsRunning && cs.CanLaunch)
+                        {
+                            <button class="pla-btn go" disabled="@_coreBusy" data-plutocore-launch="1" @onclick="LaunchCoreAsync">🚀 실행</button>
+                        }
+                    </div>
+                    @if (_coreMsg is { } cm) { <div class="pla-tip">@cm</div> }
+                </div>
+            }
+
             @if (_error is { } err) { <div class="pla-err">@err</div> }
             @if (_saved is { } ok) { <div class="pla-ok">@ok</div> }
 
@@ -55,6 +76,9 @@
     </div>
 }
 <style>
+    .pla-core { margin: 12px 0 4px; padding: 10px 12px; border: 1px solid rgba(148,163,184,.2); border-radius: 12px; }
+    .pla-core-h { font-weight: 800; font-size: 13px; margin-bottom: 8px; word-break: break-all; }
+    .pla-core-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     .pla-dim { position: fixed; inset: 0; background: rgba(2,6,23,.5); z-index: 890; }
     .pla { position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%); width: min(460px, 94vw); max-height: 92vh; z-index: 891; display: flex; flex-direction: column; background: var(--card,#111a2e); color: var(--ink,#e6eefc); border: 1px solid rgba(167,139,250,.4); border-radius: 16px; box-shadow: 0 18px 48px rgba(0,0,0,.45); }
     .pla-h { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; font-weight: 900; border-bottom: 1px solid rgba(148,163,184,.16); }
@@ -85,6 +109,8 @@
     [Parameter] public EventCallback OnClose { get; set; }
     /// <summary>저장(런타임 적용) 성공 → 적용된 설정 스냅샷.</summary>
     [Parameter] public EventCallback<PlutoLocalGatewayOptions> OnSaved { get; set; }
+    /// <summary>🪐 PlutoCore 허브 관리자(선택 · 파라미터 주입 — @inject 금지).</summary>
+    [Parameter] public PlutoCoreProcessManager? Core { get; set; }
 
     private bool _wasOpen;
     private bool _enabled;
@@ -99,11 +125,14 @@
     private bool _pinging;
     private CancellationTokenSource? _pingCts;
     private bool _disposed;
+    private bool _coreBusy;
+    private string? _coreMsg;
+    private CancellationTokenSource? _coreCts;
 
     protected override void OnParametersSet()
     {
         if (Open && !_wasOpen) LoadForm();   // 열릴 때마다 실행 중 설정으로 폼 초기화
-        if (!Open && _wasOpen) CancelPing();
+        if (!Open && _wasOpen) { CancelPing(); CancelCore(); }
         _wasOpen = Open;
     }
 
@@ -112,6 +141,7 @@
         _error = null;
         _saved = null;
         _ping = null;
+        _coreMsg = null;
         if (Settings is null) { _error = "⚠ 로컬 AI 게이트웨이가 등록되지 않았어요"; return; }
         var o = Settings.Snapshot();
         _enabled = o.IsEnabled;
@@ -172,6 +202,56 @@
         finally { _busy = false; }
     }
 
+    private async Task CheckCoreAsync()
+    {
+        if (_coreBusy || Core is null) return;
+        await RunCoreAsync(async (core, ct) =>
+        {
+            var st = await core.CheckStatusAsync(ct);
+            _coreMsg = st.IsRunning ? "✅ PlutoCore 허브 응답 — Gemini 장애 시 자동 전환됩니다"
+                : !st.DirectoryExists ? "💡 " + core.RootDirectory + " 폴더가 없어요"
+                : st.ExecutablePath is null ? "💡 PlutoCore.exe 를 찾지 못했어요 — PlutoCore 를 먼저 빌드해 주세요"
+                : "💡 PlutoCore 가 실행 중이 아니에요 — 🚀 실행을 눌러 주세요";
+        });
+    }
+
+    private async Task LaunchCoreAsync()
+    {
+        if (_coreBusy || Core is null) return;
+        _coreMsg = "⏳ PlutoCore 기동 중...";
+        await RunCoreAsync(async (core, ct) =>
+        {
+            var ok = await core.TryLaunchAsync(ct);
+            _coreMsg = ok ? "✅ PlutoCore 기동 완료" : "⚠ PlutoCore 기동 실패 — 8초 내 허브 응답 없음";
+        });
+    }
+
+    private async Task RunCoreAsync(Func<PlutoCoreProcessManager, CancellationToken, Task> work)
+    {
+        var core = Core;
+        if (core is null) return;
+        CancelCore();
+        var cts = _coreCts = new CancellationTokenSource();
+        _coreBusy = true;
+        try { await work(core, cts.Token); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("PlutoLocalAi.Core", ex); _coreMsg = "⚠ PlutoCore 처리 실패"; }
+        finally
+        {
+            _coreBusy = false;
+            if (ReferenceEquals(_coreCts, cts)) _coreCts = null;
+            cts.Dispose();
+        }
+        if (!_disposed) StateHasChanged();
+    }
+
+    private void CancelCore()
+    {
+        var c = _coreCts;
+        if (c is null) return;
+        try { c.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
     private void CancelPing()
     {
         var c = _pingCts;
@@ -190,5 +270,6 @@
     {
         _disposed = true;
         CancelPing();
+        CancelCore();
     }
 }

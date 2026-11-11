@@ -42,6 +42,7 @@
 @inject PromptFlowStudio.Services.Pluto.PlutoCopilot PlutoCopilotSvc
 @inject PromptFlowStudio.Services.Pluto.PlutoIdentityVault IdentityVault
 @inject PromptFlowStudio.Services.Pluto.PlutoLocalAiSettingsService LocalAiSettings
+@inject PromptFlowStudio.Services.Pluto.PlutoCoreProcessManager PlutoCoreMgr
 @inject PromptFlowStudio.Services.Pluto.IPlutoDirectorRankService PlutoDirector
 @inject PromptFlowStudio.Services.Pluto.Dsp.IPlutoBeatSyncQuantizer BeatQuantizer
 
@@ -83,6 +84,21 @@
             @if (_motionBusy) { <span class="ws-retry" role="status" data-motion-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 🎥 모션 비디오 렌더 중… (15초 · 60fps)</span> }
             else if (_motionToast is { } mvt) { <span class="ws-retry" role="status" data-motion-result="1">@(mvt) @if (_motionOutput is { } mvo) { <button class="ws-back" data-motion-open="1" @onclick="() => RevealInExplorer(mvo)" title="@(mvo)">📂 @(Path.GetFileName(mvo)) 위치 열기</button> }</span> }
             <button class="ws-back" data-local-ai-open="1" @onclick="() => _localAiModal = true" title="Gemini 장애 시 사내/로컬 AI 서버(OpenAI 호환 · Ollama)로 자동 전환 — 엔드포인트 · 모델 · 연결 테스트">🦙 로컬 AI 설정@(LocalAiSettings.Gateway.Options.IsEnabled ? " · ON" : "")</button>
+            @{ var pcs = PlutoCoreMgr.Current; }
+            @if (pcs.IsRunning)
+            {
+                <button class="ws-back ws-pcore on" data-plutocore-pill="running" @onclick="() => _localAiModal = true"
+                        title="@("PlutoCore 허브 연결됨 · " + pcs.EndpointUrl + (pcs.Latency is { } plat ? " · 핑 " + plat.TotalMilliseconds.ToString("0.0", CultureInfo.InvariantCulture) + "ms" : "") + (pcs.ProcessId is { } ppid ? " · PID " + ppid.ToString(CultureInfo.InvariantCulture) : ""))">🟢 PlutoCore (@(PlutoCoreMgr.RootDirectory)) 연결됨</button>
+            }
+            else if (pcs.DirectoryExists)
+            {
+                <span class="ws-pcore" data-plutocore-pill="stopped">⚪ PlutoCore 미실행
+                    @if (pcs.CanLaunch)
+                    {
+                        <button class="ws-back ws-pcore-go" data-plutocore-launch="1" disabled="@_plutoCoreLaunching" @onclick="LaunchPlutoCoreAsync" title="@(pcs.ExecutablePath)">@(_plutoCoreLaunching ? "⏳ 기동 중..." : "[🚀 기동]")</button>
+                    }
+                </span>
+            }
             <PlutoDirectorBadge Director="PlutoDirector" />   @* 🎬 디렉터 랭크(XP → 광학 티어) *@
             @* 🍼 Step5: 증시 세션/외부 연동 배지는 기본 아기 스튜디오 화면에서 제거(설정 > 연동 진단으로 이관). *@
             @if (Journal.RecoveringCount > 0) { <span class="ws-recover" role="status">[🔄 미완료 클라우드 작업 복원 중: @(Journal.RecoveringCount.ToString(CultureInfo.InvariantCulture))건]</span> }
@@ -940,7 +956,7 @@
 <button class="ws-pluto-fab" data-pluto-fab="1" title="일상 메모로 15초 3막 시나리오 만들기" @onclick="() => _plutoDrawer = true">🪐 플루토에게 시나리오 요청</button>
 <PlutoCopilotDrawer Open="_plutoDrawer" Copilot="PlutoCopilotSvc" OnClose="() => _plutoDrawer = false" OnApply="ApplyPlutoScriptAsync" />
 <PlutoIdentityModal Open="_identityModal" Vault="IdentityVault" OnClose="() => _identityModal = false" OnSaved="OnIdentitySaved" />
-<PlutoLocalAiSettingsModal Open="_localAiModal" Settings="LocalAiSettings" OnClose="() => _localAiModal = false" />
+<PlutoLocalAiSettingsModal Open="_localAiModal" Settings="LocalAiSettings" Core="PlutoCoreMgr" OnClose="() => _localAiModal = false" />
 
 <style>
     .ws-pluto-fab { position: fixed; right: 22px; bottom: 22px; z-index: 870; padding: 12px 18px; border-radius: 999px; border: 0; cursor: pointer; font-weight: 900; color: #fff;
@@ -949,6 +965,9 @@
     .ws { padding: 6px 8px 48px; width: 100%; box-sizing: border-box; }
     .ws-head { margin-bottom: 18px; }
     .ws-navrow { display: flex; gap: 14px; margin-bottom: 4px; }
+    .ws-pcore { font: 700 12px/1 var(--mono); color: var(--text-muted); padding: 0 0 10px; }
+    .ws-pcore.on { color: #4ade80; }
+    .ws-pcore-go { padding: 0 0 0 6px; color: #f9a8d4; }
     .ws-back { font: 700 12px/1 var(--mono); color: var(--text-muted); background: none; border: none; cursor: pointer; padding: 0 0 10px; }
     .ws-back:hover { color: var(--accent); }
     .ws-ssmon { margin-left: auto; font: 700 11px/1 var(--mono); padding: 4px 10px; border-radius: 999px; cursor: pointer; border: 1px solid var(--border, #333); background: none; color: var(--text-muted); align-self: flex-start; }
@@ -2255,6 +2274,37 @@
         catch (Exception ex) { Program.Log("Workspace.StockMon", ex); }
     }
 
+    private void OnPlutoCoreChanged()
+    {
+        try { RefreshUi(); }
+        catch (Exception ex) { Program.Log("Workspace.PlutoCore", ex); }
+    }
+
+    private bool _plutoCoreLaunching;
+    private CancellationTokenSource? _plutoCoreCts;
+
+    /// <summary>🚀 PlutoCore 허브 기동(창 없음 · 8초 준비 대기) — 실패는 토스트만.</summary>
+    private async Task LaunchPlutoCoreAsync()
+    {
+        if (_plutoCoreLaunching) return;
+        _plutoCoreLaunching = true;
+        var cts = _plutoCoreCts = new CancellationTokenSource();
+        try
+        {
+            var ok = await PlutoCoreMgr.TryLaunchAsync(cts.Token);
+            _camToast = ok ? "🟢 PlutoCore 허브 기동 완료 — Gemini 장애 시 자동 전환" : "⚠ PlutoCore 기동 실패 — 8초 내 허브 응답 없음";
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("Workspace.PlutoCore.Launch", ex); }
+        finally
+        {
+            _plutoCoreLaunching = false;
+            if (ReferenceEquals(_plutoCoreCts, cts)) _plutoCoreCts = null;
+            cts.Dispose();
+        }
+        RefreshUi();
+    }
+
     private void OnStockMonChanged()
     {
         try { RefreshUi(); }
@@ -3096,6 +3146,8 @@
         RenderQueue.OnChange += OnRenderQueueChanged;
         if (RenderQueue is PromptFlowStudio.Services.Render.RenderQueueService rqs) rqs.OnDurationStitched += OnDurationStitched;
         StockMon.OnChanged += OnStockMonChanged;
+        PlutoCoreMgr.OnChanged += OnPlutoCoreChanged;
+        PlutoCoreMgr.StartMonitoring();   // 🪐 5초 헬스 폴링(싱글톤 · 멱등)
         StockMon.Start();   // 🟢 2초 주기 StockSuite 프로세스 폴링(싱글톤 · 멱등)
         Journal.OnChanged += OnHubChanged;
         Resilience.OnRetryAttempt += OnRetryAttempt;
@@ -3270,6 +3322,8 @@
         RenderQueue.OnChange -= OnRenderQueueChanged;
         if (RenderQueue is PromptFlowStudio.Services.Render.RenderQueueService rqs) rqs.OnDurationStitched -= OnDurationStitched;
         StockMon.OnChanged -= OnStockMonChanged;
+        PlutoCoreMgr.OnChanged -= OnPlutoCoreChanged;
+        try { _plutoCoreCts?.Cancel(); } catch (ObjectDisposedException) { }
         Journal.OnChanged -= OnHubChanged;
         Resilience.OnRetryAttempt -= OnRetryAttempt;
         Ipc.OnConnectionChanged -= OnHubChanged;

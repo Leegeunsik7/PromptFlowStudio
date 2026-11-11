@@ -25,18 +25,21 @@ public sealed class PlutoLlmFailoverClient : IPlutoLlmClient
 {
     public IPlutoLlmClient? Primary { get; }
     public PlutoCustomLocalGateway? Gateway { get; }
+    /// <summary>🪐 PlutoCore Named Pipe 허브(D:\PROGRAM\PlutoCore) — 관리자 상태 생존 시 자동 라우팅(Gemini 다음 · REST 게이트웨이 앞).</summary>
+    public PlutoCoreLlmClient? Core { get; }
 
-    public PlutoLlmFailoverClient(IPlutoLlmClient? primary, PlutoCustomLocalGateway? gateway)
+    public PlutoLlmFailoverClient(IPlutoLlmClient? primary, PlutoCustomLocalGateway? gateway, PlutoCoreLlmClient? core = null)
     {
         Primary = primary is PlutoLlmFailoverClient nested ? nested.Primary : primary;   // 중첩 방지
         Gateway = gateway;
+        Core = core;
     }
 
-    public bool IsAvailable => Probe(Primary) || Probe(Gateway);
+    public bool IsAvailable => Probe(Primary) || Probe(Core) || Probe(Gateway);
 
     /// <summary>브리지 경유 체인(직접 호출 대비) — 실패 시 null.</summary>
     public Task<string?> CompleteJsonAsync(string system, string user, double temperature, CancellationToken ct)
-        => PlutoLlmBridge.TryCompleteAsync(Primary, Gateway, system, user, temperature, ct);
+        => PlutoLlmBridge.TryCompleteChainAsync(Primary, Core, Gateway, system, user, temperature, ct);
 
     /// <summary>
     /// 🌊 배열 응답 점진 스트리밍 — ① Primary(Gemini · 배치 → 요소 재생) → ② 로컬 게이트웨이(SSE/NDJSON · 요소가 닫히는 즉시 방출) → ③ 0건(호출측 템플릿).
@@ -51,6 +54,20 @@ public sealed class PlutoLlmFailoverClient : IPlutoLlmClient
         if (Primary is not null && !ReferenceEquals(Primary, gateway))
         {
             var text = await PlutoLlmBridge.TryCompleteAsync(Primary, system, user, temperature, ct, budget).ConfigureAwait(false);
+            if (text is not null)
+            {
+                var batch = PlutoIncrementalJsonAssembler<T>.ParseAll(text, parser);
+                if (batch.Count > 0)
+                {
+                    report.End = PlutoStreamEnd.Done;
+                    for (var i = 0; i < batch.Count; i++) { report.Elements++; yield return batch[i]; }
+                    yield break;
+                }
+            }
+        }
+        if (Core is { } core && Probe(core))
+        {
+            var text = await PlutoLlmBridge.TryCompleteAsync(core, system, user, temperature, ct, budget).ConfigureAwait(false);
             if (text is not null)
             {
                 var batch = PlutoIncrementalJsonAssembler<T>.ParseAll(text, parser);
@@ -93,8 +110,9 @@ public static class PlutoLlmBridge
     public static Task<string?> TryCompleteAsync(IPlutoLlmClient? llm, string system, string user, double temperature, CancellationToken ct, TimeSpan? budget = null)
         => llm switch
         {
-            PlutoLlmFailoverClient chain => TryCompleteAsync(chain.Primary, chain.Gateway, system, user, temperature, ct, budget),
+            PlutoLlmFailoverClient chain => TryCompleteChainAsync(chain.Primary, chain.Core, chain.Gateway, system, user, temperature, ct, budget),
             PlutoCustomLocalGateway gw => TryGatewayAsync(gw, system, user, temperature, ct, budget),
+            PlutoCoreLlmClient core => TryGatewayAsync(core, system, user, temperature, ct, budget ?? core.RequestTimeout),
             _ => TryCompleteSingleAsync(llm, system, user, temperature, ct, budget),
         };
 
@@ -102,9 +120,17 @@ public static class PlutoLlmBridge
     /// 🔁 우선순위 체인 — ① Gemini(클라우드 · 3.5초) → ② 커스텀 로컬 AI 게이트웨이(REST · 활성 시 · 게이트웨이 타임아웃) → ③ null(호출측 결정론 템플릿).
     /// 단계별 예산 독립(<paramref name="budget"/> 지정 시 양 단계 공통). 호출자 취소만 전파.
     /// </summary>
-    public static async Task<string?> TryCompleteAsync(IPlutoLlmClient? primary, PlutoCustomLocalGateway? gateway, string system, string user, double temperature, CancellationToken ct, TimeSpan? budget = null)
+    public static Task<string?> TryCompleteAsync(IPlutoLlmClient? primary, PlutoCustomLocalGateway? gateway, string system, string user, double temperature, CancellationToken ct, TimeSpan? budget = null)
+        => TryCompleteChainAsync(primary, null, gateway, system, user, temperature, ct, budget);
+
+    /// <summary>
+    /// 🔁 확장 체인 — ① Gemini → ② 🪐 PlutoCore 허브(생존 + 키 · 컴팩트 프롬프트 · 자가 치유) → ③ REST 로컬 게이트웨이 → ④ null(결정론 템플릿).
+    /// </summary>
+    public static async Task<string?> TryCompleteChainAsync(IPlutoLlmClient? primary, PlutoCoreLlmClient? core, PlutoCustomLocalGateway? gateway, string system, string user, double temperature, CancellationToken ct, TimeSpan? budget = null)
     {
         var text = await TryCompleteSingleAsync(primary, system, user, temperature, ct, budget).ConfigureAwait(false);
+        if (text is null && core is not null && !ReferenceEquals(primary, core))
+            text = await TryGatewayAsync(core, system, user, temperature, ct, budget ?? core.RequestTimeout).ConfigureAwait(false);
         if (text is not null || gateway is null || ReferenceEquals(primary, gateway)) return text;
         bool enabled;
         try { enabled = gateway.Options.IsEnabled; } catch { return null; }
@@ -149,7 +175,7 @@ public static class PlutoLlmBridge
     /// 🔌 로컬 게이트웨이 단계 — 🗜 컴팩트 불변 접두 프롬프트(<see cref="PlutoPromptCompressor"/> · KV-캐시 재사용) 전송 →
     /// 🩹 응답 자가 치유(<see cref="PlutoJsonSanitizer"/>). Gemini는 원본 서술형 지시문 유지.
     /// </summary>
-    private static async Task<string?> TryGatewayAsync(PlutoCustomLocalGateway gateway, string system, string user, double temperature, CancellationToken ct, TimeSpan? budget)
+    private static async Task<string?> TryGatewayAsync(IPlutoLlmClient gateway, string system, string user, double temperature, CancellationToken ct, TimeSpan? budget)
     {
         var p = PlutoPromptCompressor.Compose(system, user);
         var text = await TryCompleteSingleAsync(gateway, p.System, p.User, temperature, ct, budget).ConfigureAwait(false);

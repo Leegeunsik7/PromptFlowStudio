@@ -145,15 +145,16 @@ public sealed partial class StockSuiteExporter
         string? masteredBgm = null;
         try
         {
-            // 🎛️🥁 FFmpeg 투입 전 C# DSP — 트루피크 마스터링(−14 LUFS · ≤ −1 dBTP) + 비트 그리드(실패 시 원본 BGM · 스냅 생략).
-            var dsp = await PrepareBgmDspAsync(bgm, IncludeSfx && BeatSyncEnabled, ct).ConfigureAwait(false);
+            // 🎛️🥁🎚️ FFmpeg 투입 전 C# DSP — 트루피크 마스터링(−14 LUFS · ≤ −1 dBTP) + 비트 그리드 + SFX 큐 사이드체인 더킹(실패 시 원본 BGM · 스냅 생략).
+            var rawCues = IncludeSfx ? ResolveSfxCues(duration) : null;
+            var dsp = await PrepareBgmDspAsync(bgm, IncludeSfx && BeatSyncEnabled, ct, SidechainDuckingEnabled ? rawCues : null).ConfigureAwait(false);
             masteredBgm = dsp.MasteredPath;
             if (masteredBgm is not null) bgm = masteredBgm;
 
             // 🔔 SFX 타임라인 믹스 우선 시도 — 실패 시 BGM 단독 폴백(경고 로그).
             if (IncludeSfx)
             {
-                var cues = ResolveSfxCues(duration);
+                var cues = rawCues ?? Array.Empty<Pluto.PlutoSfxCue>();
                 if (dsp.Beats is { Count: > 0 } beats) cues = Pluto.Dsp.PlutoBeatSyncQuantizer.Shared.QuantizeSfxCues(cues, beats);
                 sfxFiles = cues.Count > 0 ? TryWriteSfxCueWavs(cues) : null;
                 if (sfxFiles is not null)
@@ -196,6 +197,8 @@ public sealed partial class StockSuiteExporter
     public bool BeatSyncEnabled { get; set; } = true;
     /// <summary>🎛️ BGM 을 FFmpeg 투입 전 C# 트루피크 마스터링(−14 LUFS · ≤ −1 dBTP · PCM16). 실패 → 원본 BGM.</summary>
     public bool TruePeakMasteringEnabled { get; set; } = true;
+    /// <summary>🎚️ 마스터링 BGM 에 SFX 큐 구간 사이드체인 더킹(−4 dB · 25ms/180ms) — 마스터링 ON 경로에서만 적용.</summary>
+    public bool SidechainDuckingEnabled { get; set; } = true;
     /// <summary>🎛️ 마스터링 임시 WAV 폴더(null = %TEMP%\PromptFlowStudio\master).</summary>
     public string? MasteringTempDir { get; set; }
 
@@ -203,7 +206,7 @@ public sealed partial class StockSuiteExporter
     /// 🎛️🥁 BGM 1회 로드 → (비트 그리드) + (트루피크 마스터링 임시 WAV). 백그라운드 스레드 실행 · 실패/비정상 WAV → (null, null)(검증된 경로 그대로).
     /// 마스터링 WAV 는 호출자가 finally 에서 정리.
     /// </summary>
-    internal async Task<(string? MasteredPath, IReadOnlyList<double>? Beats)> PrepareBgmDspAsync(string bgmPath, bool wantBeats, CancellationToken ct)
+    internal async Task<(string? MasteredPath, IReadOnlyList<double>? Beats)> PrepareBgmDspAsync(string bgmPath, bool wantBeats, CancellationToken ct, IReadOnlyList<Pluto.PlutoSfxCue>? duckCues = null)
     {
         var master = TruePeakMasteringEnabled;
         if ((!master && !wantBeats) || string.IsNullOrWhiteSpace(bgmPath)) return (null, null);
@@ -216,7 +219,9 @@ public sealed partial class StockSuiteExporter
                 IReadOnlyList<double>? beats = null;
                 if (wantBeats && Pluto.Dsp.PlutoAudioBeatDetector.Shared.Analyze(bytes) is { IsFallback: false } grid) beats = grid.Beats;
                 ct.ThrowIfCancellationRequested();
-                if (!master || !Pluto.Dsp.PlutoTruePeakMasteringEngine.TryMasterWavBuffer(bytes, out var wav, out _)) return ((string?)null, beats);
+                // 🎚️ 더킹 구간 = 믹스에 실제 투입될 비트 스냅 후 큐(호출측 QuantizeSfxCues 와 동일 결정론 결과).
+                if (duckCues is { Count: > 0 } && beats is { Count: > 0 }) duckCues = Pluto.Dsp.PlutoBeatSyncQuantizer.Shared.QuantizeSfxCues(duckCues, beats);
+                if (!master || !Pluto.Dsp.PlutoTruePeakMasteringEngine.TryMasterWavBuffer(bytes, duckCues, out var wav, out _)) return ((string?)null, beats);
                 Directory.CreateDirectory(dir);
                 var path = Path.Combine(dir, "master_" + Guid.NewGuid().ToString("N") + ".wav");
                 try { File.WriteAllBytes(path, wav); }
