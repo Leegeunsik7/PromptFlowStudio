@@ -68,10 +68,44 @@ public static class PlutoPromptCompressor
         ("Proven SNS viral formulas to weave into pacing and hooks: ", "viral formulas: "),
         ("Avoid repeating these recent titles: ", "avoid titles: "),
         ("Creator already learned these formulas (offer fresh variations): ", "known formulas(vary): "),
+        (ViralRequestLabel, "viral trends: "),
         ("Time of day: ", "time: "),
         ("Video prompt: ", "video: "),
         ("Parent note: ", "note: "),
     };
+
+    /// <summary>🔥 LLM 요청용 활성 바이럴 트렌드 라벨(게이트웨이 단계에서 <c>viral trends: </c>로 압축).</summary>
+    public const string ViralRequestLabel = "Active viral trend modifiers (blend naturally into every act): ";
+
+    /// <summary>🔥 결정론 프롬프트 내 바이럴 블록 표지(멱등 판정).</summary>
+    public const string ViralMarker = " Viral trend: ";
+
+    /// <summary>
+    /// 🔥 상위 가중 바이럴 모디파이어를 프롬프트 말미에 결합 — 이미 결합된 프롬프트·빈 목록은 원문(멱등).
+    /// 모디파이어 내부 공백/중복은 제거 · 종결 마침표 보장.
+    /// </summary>
+    public static string BlendViralModifiers(string prompt, IReadOnlyList<string>? modifiers)
+    {
+        if (string.IsNullOrEmpty(prompt) || modifiers is null || modifiers.Count == 0) return prompt ?? string.Empty;
+        if (prompt.Contains(ViralMarker.Trim(), StringComparison.Ordinal)) return prompt;
+        var sb = new StringBuilder(prompt.Length + 192);
+        sb.Append(prompt.TrimEnd());
+        if (sb.Length > 0 && sb[^1] != '.') sb.Append('.');
+        var added = 0;
+        for (var i = 0; i < modifiers.Count; i++)
+        {
+            var m = modifiers[i]?.Trim().TrimEnd('.');
+            if (string.IsNullOrEmpty(m)) continue;
+            var dup = false;
+            for (var j = 0; j < i; j++)
+                if (string.Equals(modifiers[j]?.Trim().TrimEnd('.'), m, StringComparison.Ordinal)) { dup = true; break; }
+            if (dup) continue;
+            sb.Append(added == 0 ? ViralMarker : ", ").Append(m);
+            added++;
+        }
+        if (added == 0) return prompt;
+        return sb.Append('.').ToString();
+    }
 
     /// <summary>알려진 Pluto 지시문이면 true(컴팩트 스키마 보유).</summary>
     public static bool IsKnown(string? system) => system is not null && CompactSystems.ContainsKey(system);

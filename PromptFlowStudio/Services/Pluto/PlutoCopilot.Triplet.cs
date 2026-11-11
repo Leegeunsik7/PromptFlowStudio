@@ -93,17 +93,18 @@ public sealed partial class PlutoCopilot
         var slots = new PlutoScriptVariant?[TripletStyles.Length];
         var anchor = IdentityAnchor(local.Category);
         var pacing = TopPattern(local.Category) is { } viral ? PlutoSocialRadarEngine.PatternDirective(viral) : null;
+        var trends = ViralModifiers();   // 🔥 활성 바이럴 트렌드
         PlutoJsonElementParser<PlutoScriptVariant> parser = (ReadOnlyMemory<byte> utf8, int ordinal, out PlutoScriptVariant variant) =>
         {
             using var doc = JsonDocument.Parse(utf8);
-            return TryBuildVariant(doc.RootElement, local, anchor, pacing, slots, out variant);
+            return TryBuildVariant(doc.RootElement, local, anchor, pacing, trends, slots, out variant);
         };
         await foreach (var v in PlutoLlmBridge.StreamArrayAsync(_llm, LlmTripletInstruction, BuildLlmScriptRequest(local, at), 0.9, parser, null, null, cancellationToken).ConfigureAwait(false))
             yield return Director is null ? v : v with { Prompt = Optics(v.Prompt) };
         for (var i = 0; i < slots.Length; i++)
         {
             if (slots[i] is not null) continue;
-            var v = LocalVariant(TripletStyles[i], local, anchor, pacing);   // [부분 구제] 누락 슬롯만 로컬 보강
+            var v = LocalVariant(TripletStyles[i], local, anchor, pacing, trends);   // [부분 구제] 누락 슬롯만 로컬 보강
             yield return Director is null ? v : v with { Prompt = Optics(v.Prompt) };
         }
     }
@@ -116,17 +117,18 @@ public sealed partial class PlutoCopilot
         var slots = new PlutoScriptVariant?[TripletStyles.Length];
         var anchor = IdentityAnchor(local.Category);
         var pacing = TopPattern(local.Category) is { } viral ? PlutoSocialRadarEngine.PatternDirective(viral) : null;
-        if (llmJson is not null) FillFromLlm(llmJson, local, anchor, pacing, slots);
+        var trends = ViralModifiers();   // 🔥 활성 바이럴 트렌드
+        if (llmJson is not null) FillFromLlm(llmJson, local, anchor, pacing, trends, slots);
         var result = new PlutoScriptVariant[slots.Length];
         for (var i = 0; i < result.Length; i++)
         {
-            var v = slots[i] ?? LocalVariant(TripletStyles[i], local, anchor, pacing);   // [부분 구제] 누락 슬롯만 로컬 보강
+            var v = slots[i] ?? LocalVariant(TripletStyles[i], local, anchor, pacing, trends);   // [부분 구제] 누락 슬롯만 로컬 보강
             result[i] = Director is null ? v : v with { Prompt = Optics(v.Prompt) };   // 🎬 디렉터 티어 광학 주입(LLM · 로컬 공통 · 멱등)
         }
         return result;
     }
 
-    private static PlutoScriptVariant LocalVariant(TripletStyle s, PlutoCopilotScript local, string anchor, string? pacing)
+    private static PlutoScriptVariant LocalVariant(TripletStyle s, PlutoCopilotScript local, string anchor, string? pacing, IReadOnlyList<string>? trends)
     {
         var a1 = ActBase(local, 0) + ", " + s.HookMod;
         var a2 = ActBase(local, 1) + ", " + s.ClimaxMod;
@@ -137,15 +139,15 @@ public sealed partial class PlutoCopilot
             RetroVariantId => "그 시절 홈캠으로 남긴 " + local.MilestoneKo + " 📼",
             _ => local.HookTitle,
         };
-        return new PlutoScriptVariant(s.Id, s.StyleName, hook, ComposeTripletPrompt(s, a1, a2, a3, anchor, pacing), s.Camera,
+        return new PlutoScriptVariant(s.Id, s.StyleName, hook, ComposeTripletPrompt(s, a1, a2, a3, anchor, pacing, trends), s.Camera,
             StockSuiteExporter.BabyBgmLabel(s.Bgm), a1, a2, a3) { BgmTrack = s.Bgm, MilestoneKo = local.MilestoneKo };
     }
 
     private static string ActBase(PlutoCopilotScript local, int i)
         => local.Acts.Count > i ? local.Acts[i].PromptEn.TrimEnd('.', ' ') : "baby sharing a sweet everyday moment";
 
-    /// <summary>스타일 룩 선두 + 3막 타이밍 + SNS 페이싱 + 🍼 아이덴티티 앵커(멱등).</summary>
-    private static string ComposeTripletPrompt(TripletStyle s, string a1, string a2, string a3, string anchor, string? pacing)
+    /// <summary>스타일 룩 선두 + 3막 타이밍 + SNS 페이싱 + 🔥 바이럴 트렌드 + 🍼 아이덴티티 앵커(멱등).</summary>
+    private static string ComposeTripletPrompt(TripletStyle s, string a1, string a2, string a3, string anchor, string? pacing, IReadOnlyList<string>? trends)
     {
         var sb = new StringBuilder(s.Look.Length + a1.Length + a2.Length + a3.Length + 192);
         sb.Append(s.Look).Append(". 15-second vertical short, 3-act story. ")
@@ -153,21 +155,21 @@ public sealed partial class PlutoCopilot
           .Append("Act 2 (4-11s) Climax: ").Append(a2.TrimEnd('.', ' ')).Append(". ")
           .Append("Act 3 (11-15s) Emotional smile: ").Append(a3.TrimEnd('.', ' ')).Append('.');
         if (pacing is { Length: > 0 }) sb.Append(" SNS pacing: ").Append(pacing).Append('.');
-        return PlutoIdentityVault.ApplyAnchor(sb.ToString(), anchor);
+        return PlutoIdentityVault.ApplyAnchor(PlutoPromptCompressor.BlendViralModifiers(sb.ToString(), trends), anchor);
     }
 
     /// <summary>LLM 트리플렛 JSON 슬롯별 즉시 검증 — 3막 모두 8자 이상이어야 채택(미달 슬롯은 비워 로컬 보강).</summary>
-    private static void FillFromLlm(string json, PlutoCopilotScript local, string anchor, string? pacing, PlutoScriptVariant?[] slots)
+    private static void FillFromLlm(string json, PlutoCopilotScript local, string anchor, string? pacing, IReadOnlyList<string>? trends, PlutoScriptVariant?[] slots)
     {
         using var doc = PlutoLlmBridge.TryParse(json);
         if (doc is null) return;
         var r = doc.RootElement;
         if (r.ValueKind != JsonValueKind.Object || !r.TryGetProperty("variants", out var arr) || arr.ValueKind != JsonValueKind.Array) return;
-        foreach (var e in arr.EnumerateArray()) TryBuildVariant(e, local, anchor, pacing, slots, out _);
+        foreach (var e in arr.EnumerateArray()) TryBuildVariant(e, local, anchor, pacing, trends, slots, out _);
     }
 
     /// <summary>LLM 변형 요소 1개 검증(배치 · 스트리밍 공용) — 채택 시 해당 스타일 슬롯 점유(중복 차단).</summary>
-    private static bool TryBuildVariant(JsonElement e, PlutoCopilotScript local, string anchor, string? pacing, PlutoScriptVariant?[] slots, out PlutoScriptVariant variant)
+    private static bool TryBuildVariant(JsonElement e, PlutoCopilotScript local, string anchor, string? pacing, IReadOnlyList<string>? trends, PlutoScriptVariant?[] slots, out PlutoScriptVariant variant)
     {
         variant = null!;
         var a1 = PlutoLlmBridge.Str(e, "act1", 500);
@@ -181,7 +183,7 @@ public sealed partial class PlutoCopilot
         var camera = PlutoLlmBridge.Str(e, "camera", 200);
         var bgm = ParseBgm(PlutoLlmBridge.Str(e, "bgm", 40)) ?? s.Bgm;
         variant = new PlutoScriptVariant(s.Id, s.StyleName, hook.Length == 0 ? local.HookTitle : hook,
-            ComposeTripletPrompt(s, a1, a2, a3, anchor, pacing), camera.Length == 0 ? s.Camera : camera,
+            ComposeTripletPrompt(s, a1, a2, a3, anchor, pacing, trends), camera.Length == 0 ? s.Camera : camera,
             StockSuiteExporter.BabyBgmLabel(bgm), a1, a2, a3) { BgmTrack = bgm, MilestoneKo = local.MilestoneKo, UsedLlm = true };
         slots[idx] = variant;
         return true;

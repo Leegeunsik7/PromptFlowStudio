@@ -35,6 +35,12 @@ public sealed class PlutoLearningService : IDisposable
     public const int ExportXp = 3;
     public const int ThumbsUpXp = 1;
     public const int XpPerLevel = 10;
+    /// <summary>🔥 바이럴 트렌드 메모리 — 키 접두 · 발굴 1회당 XP · 재학습 감쇠 · 활성 임계 가중치.</summary>
+    public const string ViralKeyPrefix = "viral:";
+    public const string TrendIngestSourceKey = "xp:trend-ingest";
+    public const int TrendIngestXp = 2;
+    public const double ViralDecay = 0.6;
+    public const double ViralActiveThreshold = 0.05;
 
     private readonly string _path;
     private readonly Random _rng;
@@ -195,6 +201,56 @@ public sealed class PlutoLearningService : IDisposable
         await PersistAsync(ct).ConfigureAwait(false);
         RaiseChanged();
         return CurrentXP;
+    }
+
+    /// <summary>
+    /// 🔥 바이럴 트렌드 토큰 적재 — 태그별 가중치 = 기존×<see cref="ViralDecay"/> + 점수(0~<see cref="MaxWeight"/> 클램프 · 최근 발굴 우대)
+    /// + 발굴 보너스 <see cref="TrendIngestXp"/> XP · 1회 원자적 영속. 유효 토큰 0건 → XP 미적립. 반환 = 갱신 후 누적 XP.
+    /// </summary>
+    public async Task<int> IngestViralTrendsAsync(IReadOnlyList<ViralTrendToken> tokens, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(tokens);
+        await EnsureLoadedAsync(ct).ConfigureAwait(false);
+        var accepted = 0;
+        lock (_sync)
+        {
+            var now = DateTime.UtcNow;
+            for (var i = 0; i < tokens.Count; i++)
+            {
+                var t = tokens[i];
+                if (t is null || string.IsNullOrWhiteSpace(t.Tag) || !double.IsFinite(t.Score) || t.Score <= 0) continue;
+                var key = ViralKeyPrefix + t.Tag;
+                if (!_entries.TryGetValue(key, out var e)) { e = new Entry(); _entries[key] = e; }
+                e.Weight = Math.Clamp(Math.Max(0, e.Weight) * ViralDecay + t.Score, 0, MaxWeight);
+                e.LastUtc = now;
+                accepted++;
+            }
+            if (accepted > 0)
+            {
+                if (!_entries.TryGetValue(TrendIngestSourceKey, out var x)) { x = new Entry(); _entries[TrendIngestSourceKey] = x; }
+                x.BonusXp = Math.Max(0, x.BonusXp) + TrendIngestXp;
+                x.Interactions++;
+                x.LastUtc = now;
+            }
+        }
+        if (accepted == 0) return CurrentXP;
+        await PersistAsync(ct).ConfigureAwait(false);
+        RaiseChanged();
+        return CurrentXP;
+    }
+
+    /// <summary>🔥 활성 바이럴 트렌드 풀 — 가중치 ≥ <see cref="ViralActiveThreshold"/> · 내림차순(동점 태그 사전순) 상위 <paramref name="max"/>건. 미적재 → 빈 목록.</summary>
+    public IReadOnlyList<ActiveViralTrend> GetActiveViralTrends(int max = 3)
+    {
+        if (max <= 0) return Array.Empty<ActiveViralTrend>();
+        var list = new List<ActiveViralTrend>(8);
+        lock (_sync)
+            foreach (var kv in _entries)
+                if (kv.Key.StartsWith(ViralKeyPrefix, StringComparison.Ordinal) && kv.Value.Weight >= ViralActiveThreshold)
+                    list.Add(new ActiveViralTrend(kv.Key[ViralKeyPrefix.Length..], kv.Value.Weight));
+        list.Sort((a, b) => { var c = b.Weight.CompareTo(a.Weight); return c != 0 ? c : string.CompareOrdinal(a.Tag, b.Tag); });
+        if (list.Count > max) list.RemoveRange(max, list.Count - max);
+        return list;
     }
 
     /// <summary>

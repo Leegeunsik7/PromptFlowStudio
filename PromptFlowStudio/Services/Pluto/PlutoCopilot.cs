@@ -63,6 +63,12 @@ public sealed partial class PlutoCopilot
     /// <summary>🎬 디렉터 랭크 — 누적 XP 티어 광학 키워드를 LLM 요청 · 결정론 템플릿 프롬프트에 자동 주입(미주입 → 기존 프롬프트 그대로).</summary>
     public IPlutoDirectorRankService? Director { get; init; }
 
+    /// <summary>🔥 학습 메모리 — 활성 바이럴 트렌드 상위 가중 모디파이어를 모든 시나리오/트리플렛 프롬프트에 자동 결합(미주입 → 미결합).</summary>
+    public PlutoLearningService? Learning { get; init; }
+
+    /// <summary>🔥 프롬프트당 결합할 바이럴 모디파이어 최대 개수.</summary>
+    public const int MaxViralModifiers = 3;
+
     /// <summary>🧠 LLM 결선 여부(키 미설정이어도 true — 실제 사용 여부는 <see cref="PlutoCopilotScript.UsedLlm"/>).</summary>
     public bool HasLlm => _llm is not null;
 
@@ -92,7 +98,8 @@ public sealed partial class PlutoCopilot
         var llm = text is null ? null : ParseLlmScript(text, local);
         if (llm is null) return local;
         var anchor = IdentityAnchor(local.Category);
-        var vp = anchor.Length == 0 ? llm.VideoPrompt : PlutoIdentityVault.ApplyAnchor(llm.VideoPrompt, anchor);   // 🍼 LLM 결과에도 앵커 보장(멱등)
+        var blended = PlutoPromptCompressor.BlendViralModifiers(llm.VideoPrompt, ViralModifiers());   // 🔥 활성 바이럴 트렌드 보장(멱등)
+        var vp = anchor.Length == 0 ? blended : PlutoIdentityVault.ApplyAnchor(blended, anchor);   // 🍼 LLM 결과에도 앵커 보장(멱등)
         return llm with { VideoPrompt = Optics(vp) };   // 🎬 디렉터 광학 보장(멱등)
     }
 
@@ -133,6 +140,49 @@ public sealed partial class PlutoCopilot
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Copilot] director load: " + ex.Message); }   // [부분 구제] Lv.1 광학
         }
+        if (Learning is not null)
+        {
+            try { await Learning.EnsureLoadedAsync(ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Copilot] viral load: " + ex.Message); }   // [부분 구제] 바이럴 결합 없이 생성
+        }
+    }
+
+    /// <summary>🔥 활성 바이럴 트렌드 상위 모디파이어(미주입/빈 풀/예외 → null).</summary>
+    private IReadOnlyList<string>? ViralModifiers()
+    {
+        if (Learning is null) return null;
+        try
+        {
+            var active = Learning.GetActiveViralTrends(MaxViralModifiers);
+            if (active.Count == 0) return null;
+            var list = new List<string>(active.Count);
+            for (var i = 0; i < active.Count; i++)
+                if (PlutoTrendAnalyzer.ModifierFor(active[i].Tag) is { } m) list.Add(m);
+            return list.Count == 0 ? null : list;
+        }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Copilot] viral: " + ex.Message); return null; }
+    }
+
+    /// <summary>🔥 LLM 요청용 활성 바이럴 지시 1줄(태그 + 모디파이어 · 없으면 null).</summary>
+    private string? ViralRequestLine()
+    {
+        if (Learning is null) return null;
+        try
+        {
+            var active = Learning.GetActiveViralTrends(MaxViralModifiers);
+            if (active.Count == 0) return null;
+            var sb = new System.Text.StringBuilder(256).Append(PlutoPromptCompressor.ViralRequestLabel);
+            var n = 0;
+            for (var i = 0; i < active.Count; i++)
+            {
+                if (PlutoTrendAnalyzer.ModifierFor(active[i].Tag) is not { } m) continue;
+                if (n++ > 0) sb.Append("; ");
+                sb.Append(active[i].Tag).Append(" = ").Append(m);
+            }
+            return n == 0 ? null : sb.ToString();
+        }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Copilot] viral: " + ex.Message); return null; }
     }
 
     /// <summary>🍼 활성 프로필 앵커(미주입/불일치 테마 → 빈 문자열).</summary>
@@ -157,6 +207,7 @@ public sealed partial class PlutoCopilot
             sb.Append("Subject identity anchor (keep this exact same character in every act): ").Append(anchor).Append('\n');
         if (TopPattern(local.Category) is { } p)
             sb.Append("Proven SNS viral formula (apply its hook timing and cut pacing): ").Append(p.Title).Append(" — ").Append(PlutoSocialRadarEngine.PatternDirective(p)).Append('\n');
+        if (ViralRequestLine() is { } vl) sb.Append(vl).Append('\n');
         if (DirectorDirective() is { } dd) sb.Append(dd).Append('\n');
         return sb.ToString();
     }
@@ -311,7 +362,8 @@ public sealed partial class PlutoCopilot
         if (TopPattern(ms.Category) is { } viral)
             sb.Append(" SNS pacing: ").Append(PlutoSocialRadarEngine.PatternDirective(viral)).Append('.');
 
-        var videoPrompt = PlutoIdentityVault.ApplyAnchor(Optics(sb.ToString()), IdentityAnchor(ms.Category));   // 🎬 디렉터 광학 말미 · 🍼 캐릭터 일관성 앵커 선두 삽입
+        var blended = PlutoPromptCompressor.BlendViralModifiers(sb.ToString(), ViralModifiers());   // 🔥 활성 바이럴 트렌드 자동 결합
+        var videoPrompt = PlutoIdentityVault.ApplyAnchor(Optics(blended), IdentityAnchor(ms.Category));   // 🎬 디렉터 광학 말미 · 🍼 캐릭터 일관성 앵커 선두 삽입
         return new PlutoCopilotScript(text, ms.Category, ms.Ko, BuildHook(text, ms), acts, videoPrompt, ms.Camera, ms.Bgm,
             StockSuiteExporter.BabyBgmLabel(ms.Bgm));
     }

@@ -24,7 +24,7 @@
     @* 🪐 통합 디렉터 HUD — 구 10 XP 레벨 카운터 폐기 · 디렉터 랭크 단일 표시(칭호 · XP · 진행 바 · 해금 광학 툴팁) *@
     <div class="pl-brain" data-pluto-hud="1" data-pluto-director-hud="1">
         <PlutoDirectorBadge Director="Director" Unified="true" />
-        <span class="pl-brain-sub">채택 1 · 내보내기 3 · 👍 1 · 📈 SNS 공식 학습 2 XP · @(Learning.TotalInteractions)회 피드백 학습 완료</span>
+        <span class="pl-brain-sub">채택 1 · 내보내기 3 · 👍 1 · 📈 SNS 공식 학습 2 · 🔥 트렌드 발굴 2 XP · @(Learning.TotalInteractions)회 피드백 학습 완료</span>
     </div>
 
     <div class="pl-views" role="tablist" data-pluto-view-toggle="1">
@@ -94,6 +94,17 @@
         <button class="pl-btn go" data-pluto-discover="1" disabled="@(_loading || !Engine.CanDiscover)" @onclick="DiscoverAsync">✨ 플루토에게 새로운 트렌드 발굴 요청</button>
         @if (_fresh) { <span class="pl-fresh-note">🧬 계절·시간대 + 학습된 프롬프트 DNA 로 방금 합성한 카드예요</span> }
     </div>
+    var viralPool = Learning.GetActiveViralTrends(5);
+    @if (viralPool.Count > 0)
+    {
+        <div class="pl-pills" data-pluto-viral-pool="1" title="상위 3개 트렌드가 플루토 시나리오 · 트리플렛 프롬프트에 자동 결합됩니다">
+            <span class="pl-fresh-note">🔥 활성 바이럴 메모리</span>
+            @foreach (var vt in viralPool)
+            {
+                <span class="pl-tag gen" data-pluto-viral="@vt.Tag">@vt.Tag ⚖ @(vt.Weight.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture))</span>
+            }
+        </div>
+    }
 
     @if (_loading)
     {
@@ -239,7 +250,23 @@
         catch (OperationCanceledException) { }
         catch (Exception ex) { Program.Log("PlutoTrendLab.Discover", ex); }
         finally { _loading = false; }
-        if (_fresh) Toast("✨ 플루토가 새로운 트렌드 " + _trends.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + "개를 발굴했어요");
+        if (!_fresh) return;
+        var top = await IngestViralAsync();   // 🔥 바이럴 메모리 풀 갱신(+2 XP) → 다음 프롬프트부터 즉시 결합
+        Toast("✨ 플루토가 새로운 트렌드 " + _trends.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + "개를 발굴했어요"
+            + (top is null ? "" : " · 🔥 " + top + " 학습 (+" + PlutoLearningService.TrendIngestXp.ToString(System.Globalization.CultureInfo.InvariantCulture) + " XP)"));
+    }
+
+    /// <summary>🔥 발굴 카드 → 바이럴 토큰 분석 → 학습 메모리 적재. 반환 = 최상위 태그(실패 → null · [부분 구제] 카드 표시는 유지).</summary>
+    private async Task<string?> IngestViralAsync()
+    {
+        try
+        {
+            var analysis = PlutoTrendAnalyzer.Analyze(_category, _trends);
+            await Learning.IngestViralTrendsAsync(analysis.Tokens, _cts.Token);
+            return analysis.Tokens.Count > 0 ? analysis.Tokens[0].Tag : null;
+        }
+        catch (OperationCanceledException) { return null; }
+        catch (Exception ex) { Program.Log("PlutoTrendLab.Viral", ex); return null; }
     }
 
     private async Task SwitchAsync(StudioThemeCategory c)
