@@ -113,6 +113,39 @@ public static partial class PlutoMotionCompiler
         };
     }
 
+    /// <summary>재배치 후 세그먼트 최소 길이(초) — 비트 스냅이 막을 붕괴시키지 않도록.</summary>
+    public const double MinRetimedSegmentSec = 0.5;
+
+    /// <summary>
+    /// 🥁 비트 양자화 재배치 — 시간순 세그먼트의 내부 경계(i번 종료 = i+1번 시작)를 <paramref name="interiorBoundaries"/>로 교체.
+    /// 첫 시작 · 마지막 종료(총 길이)는 불변 · 줌/초점/오빗 값 체인 유지 → 경계에서 위치 연속(C⁰).
+    /// Cubic/Smootherstep 이징은 구간 양 끝 1차 도함수 0 이라 재배치 후에도 경계 속도 0 → C¹ 연속 보존.
+    /// 경계 개수 불일치 · 비유한 · 비단조 · 최소 길이(<see cref="MinRetimedSegmentSec"/>) 위반 시 원본 반환.
+    /// </summary>
+    public static PlutoMotionTrajectory RetimeBoundaries(PlutoMotionTrajectory trajectory, ReadOnlySpan<double> interiorBoundaries)
+    {
+        if (trajectory?.Segments is not { Count: > 1 } src || interiorBoundaries.Length != src.Count - 1) return trajectory ?? PlutoMotionTrajectory.Empty;
+        for (var i = 0; i < src.Count; i++)
+            if (src[i] is null || (i > 0 && src[i].StartTimeSec < src[i - 1].StartTimeSec)) return trajectory;   // 시간순 전제
+        var prev = src[0].StartTimeSec;
+        for (var i = 0; i < interiorBoundaries.Length; i++)
+        {
+            var b = interiorBoundaries[i];
+            if (!double.IsFinite(b) || b - prev < MinRetimedSegmentSec - 1e-9) return trajectory;
+            prev = b;
+        }
+        if (src[^1].EndTimeSec - prev < MinRetimedSegmentSec - 1e-9) return trajectory;
+
+        var segs = new PlutoMotionSegment[src.Count];
+        for (var i = 0; i < segs.Length; i++)
+        {
+            var start = i == 0 ? src[0].StartTimeSec : interiorBoundaries[i - 1];
+            var end = i == segs.Length - 1 ? src[^1].EndTimeSec : interiorBoundaries[i];
+            segs[i] = src[i] with { StartTimeSec = start, EndTimeSec = end };
+        }
+        return trajectory with { Segments = segs };
+    }
+
     /// <summary>총 출력 프레임 수(세그먼트 없음 → 0).</summary>
     public static int TotalFrames(PlutoMotionTrajectory? trajectory, int fps = DefaultFps)
     {

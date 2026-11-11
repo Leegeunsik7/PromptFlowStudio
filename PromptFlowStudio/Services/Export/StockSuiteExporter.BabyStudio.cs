@@ -139,12 +139,19 @@ public sealed partial class StockSuiteExporter
         if (string.IsNullOrWhiteSpace(bgm) || !File.Exists(bgm)) return -1;
         var temp = primaryPath + BabyBgmMuxTempSuffix;
         string[]? sfxFiles = null;
+        string? masteredBgm = null;
         try
         {
+            // 🎛️🥁 FFmpeg 투입 전 C# DSP — 트루피크 마스터링(−14 LUFS · ≤ −1 dBTP) + 비트 그리드(실패 시 원본 BGM · 스냅 생략).
+            var dsp = await PrepareBgmDspAsync(bgm, IncludeSfx && BeatSyncEnabled, ct).ConfigureAwait(false);
+            masteredBgm = dsp.MasteredPath;
+            if (masteredBgm is not null) bgm = masteredBgm;
+
             // 🔔 SFX 타임라인 믹스 우선 시도 — 실패 시 BGM 단독 폴백(경고 로그).
             if (IncludeSfx)
             {
                 var cues = ResolveSfxCues(duration);
+                if (dsp.Beats is { Count: > 0 } beats) cues = Pluto.Dsp.PlutoBeatSyncQuantizer.Shared.QuantizeSfxCues(cues, beats);
                 sfxFiles = cues.Count > 0 ? TryWriteSfxCueWavs(cues) : null;
                 if (sfxFiles is not null)
                 {
@@ -174,8 +181,72 @@ public sealed partial class StockSuiteExporter
         {
             // 🧹 성공 시 temp 는 이미 교체(Move)되어 부재 — 비IO 예외(Win32·InvalidOperation 등) 경로에서도 잔여 temp 확정 정리.
             TryDelete(temp);
+            if (masteredBgm is not null) TryDelete(masteredBgm);
             if (sfxFiles is not null)
                 for (var i = 0; i < sfxFiles.Length; i++) TryDelete(sfxFiles[i]);
+        }
+    }
+
+    // ── 🥁🎛️ 플루토 비트 동기 · 트루피크 마스터링 ──
+    /// <summary>🥁 BGM 비트 그리드로 SFX 큐 · 모션 막 경계 자석 스냅(검출 실패 = 폴백 격자 → 스냅 생략).</summary>
+    public bool BeatSyncEnabled { get; set; } = true;
+    /// <summary>🎛️ BGM 을 FFmpeg 투입 전 C# 트루피크 마스터링(−14 LUFS · ≤ −1 dBTP · PCM16). 실패 → 원본 BGM.</summary>
+    public bool TruePeakMasteringEnabled { get; set; } = true;
+    /// <summary>🎛️ 마스터링 임시 WAV 폴더(null = %TEMP%\PromptFlowStudio\master).</summary>
+    public string? MasteringTempDir { get; set; }
+
+    /// <summary>
+    /// 🎛️🥁 BGM 1회 로드 → (비트 그리드) + (트루피크 마스터링 임시 WAV). 백그라운드 스레드 실행 · 실패/비정상 WAV → (null, null)(검증된 경로 그대로).
+    /// 마스터링 WAV 는 호출자가 finally 에서 정리.
+    /// </summary>
+    internal async Task<(string? MasteredPath, IReadOnlyList<double>? Beats)> PrepareBgmDspAsync(string bgmPath, bool wantBeats, CancellationToken ct)
+    {
+        var master = TruePeakMasteringEnabled;
+        if ((!master && !wantBeats) || string.IsNullOrWhiteSpace(bgmPath)) return (null, null);
+        var dir = string.IsNullOrWhiteSpace(MasteringTempDir) ? Path.Combine(Path.GetTempPath(), "PromptFlowStudio", "master") : MasteringTempDir;
+        try
+        {
+            return await Task.Run(() =>
+            {
+                var bytes = File.ReadAllBytes(bgmPath);
+                IReadOnlyList<double>? beats = null;
+                if (wantBeats && Pluto.Dsp.PlutoAudioBeatDetector.Shared.Analyze(bytes) is { IsFallback: false } grid) beats = grid.Beats;
+                ct.ThrowIfCancellationRequested();
+                if (!master || !Pluto.Dsp.PlutoTruePeakMasteringEngine.TryMasterWavBuffer(bytes, out var wav, out _)) return ((string?)null, beats);
+                Directory.CreateDirectory(dir);
+                var path = Path.Combine(dir, "master_" + Guid.NewGuid().ToString("N") + ".wav");
+                try { File.WriteAllBytes(path, wav); }
+                catch { TryDelete(path); throw; }
+                return (path, beats);
+            }, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            Program.Log("StockSuite.BabyBgm.Dsp", ex);
+            return (null, null);
+        }
+    }
+
+    /// <summary>🥁 모션 막 경계 비트 스냅 — BGM 해석 → 비트 그리드 → <see cref="Pluto.Dsp.PlutoBeatSyncQuantizer.QuantizeTrajectory"/>. 실패 → 원본 궤적.</summary>
+    internal async Task<Pluto.PlutoMotionTrajectory> TryBeatSyncTrajectoryAsync(Pluto.PlutoMotionTrajectory trajectory, BabyBgmTrack track, CancellationToken ct)
+    {
+        if (!BeatSyncEnabled) return trajectory;
+        try
+        {
+            var bgm = BabyBgmResolver(track, trajectory.DurationSec);
+            if (string.IsNullOrWhiteSpace(bgm) || !File.Exists(bgm)) return trajectory;
+            return await Task.Run(() =>
+            {
+                var grid = Pluto.Dsp.PlutoAudioBeatDetector.Shared.Analyze(File.ReadAllBytes(bgm));
+                return grid.IsFallback ? trajectory : Pluto.Dsp.PlutoBeatSyncQuantizer.Shared.QuantizeTrajectory(trajectory, grid.Beats);
+            }, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            Program.Log("StockSuite.Motion.BeatSync", ex);
+            return trajectory;
         }
     }
 
@@ -536,6 +607,7 @@ public sealed partial class StockSuiteExporter
         trajectory ??= Pluto.PlutoMotionTrajectory.Empty;
         if (Pluto.PlutoMotionCompiler.TotalFrames(trajectory) == 0)
             trajectory = Pluto.PlutoMotionCompiler.SynthesizeFourAct(Pluto.PlutoMotionCompiler.BabyFocal);   // 빈 궤적 → 기본 4막
+        trajectory = await TryBeatSyncTrajectoryAsync(trajectory, bgm ?? BabyBgm ?? BabyBgmTrack.Lullaby, ct).ConfigureAwait(false);   // 🥁 막 경계 → BGM 비트
 
         var uhd = options.Resolution == StockSuiteResolution.Uhd4K;
         int width = uhd ? 2160 : Pluto.PlutoMotionCompiler.DefaultWidth, height = uhd ? 3840 : Pluto.PlutoMotionCompiler.DefaultHeight;
