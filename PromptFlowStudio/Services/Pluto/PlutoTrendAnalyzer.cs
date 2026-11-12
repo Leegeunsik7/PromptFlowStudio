@@ -138,6 +138,105 @@ public static class PlutoTrendAnalyzer
             tokens);
     }
 
+    /// <summary>🌐 실시간 키워드 분류 — 날씨/계절 · 간식/먹거리 · 밈/챌린지 · 기타 일상.</summary>
+    public enum LiveTrendKind
+    {
+        Lifestyle = 0,
+        Weather = 1,
+        Snack = 2,
+        Meme = 3,
+    }
+
+    private static readonly string[] WeatherKeywords =
+    {
+        "날씨", "비", "눈", "폭설", "한파", "폭염", "태풍", "장마", "미세먼지", "황사", "기온", "추위", "더위", "단풍", "벚꽃", "첫눈", "소나기",
+        "크리스마스", "추석", "설날", "연휴", "봄", "여름", "가을", "겨울", "weather", "rain", "snow", "storm",
+    };
+
+    private static readonly string[] SnackKeywords =
+    {
+        "과자", "간식", "라면", "치킨", "디저트", "빵", "케이크", "쿠키", "초콜릿", "아이스크림", "커피", "음료", "맛집", "레시피", "탕후루", "붕어빵",
+        "편의점", "신상", "snack", "food", "recipe",
+    };
+
+    private static readonly string[] MemeKeywords =
+    {
+        "챌린지", "밈", "유행", "짤", "댄스", "릴스", "쇼츠", "틱톡", "바이럴", "challenge", "meme", "viral", "dance",
+    };
+
+    /// <summary>키워드 → 분류(우선순위: 밈 → 간식 → 날씨 → 일상). 단음절 키워드("비"·"눈")는 전체 일치/공백 토큰 일치만 인정.</summary>
+    public static LiveTrendKind ClassifyLiveKeyword(string? keyword)
+    {
+        if (string.IsNullOrWhiteSpace(keyword)) return LiveTrendKind.Lifestyle;
+        if (MatchAny(keyword, MemeKeywords)) return LiveTrendKind.Meme;
+        if (MatchAny(keyword, SnackKeywords)) return LiveTrendKind.Snack;
+        if (MatchAny(keyword, WeatherKeywords)) return LiveTrendKind.Weather;
+        return LiveTrendKind.Lifestyle;
+    }
+
+    private static bool MatchAny(string keyword, string[] dict)
+    {
+        foreach (var k in dict)
+        {
+            if (k.Length <= 1)
+            {
+                if (string.Equals(keyword, k, StringComparison.OrdinalIgnoreCase)) return true;
+                foreach (var part in keyword.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                    if (string.Equals(part, k, StringComparison.OrdinalIgnoreCase)) return true;
+                continue;
+            }
+            if (keyword.Contains(k, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// 🌐 실시간 급상승 키워드 → 니치(아기/반려동물/일상) 숏폼 표본 카드 — 분류별 훅/카메라 문구가 태그 사전 키워드를 포함해
+    /// <see cref="Analyze"/> 적중 보너스로 이어짐(날씨→골든아워·창가 빛 · 간식→매크로 줌·ASMR · 밈→POV · 일상→레트로 필름). 빈 입력 → 빈 목록.
+    /// </summary>
+    public static IReadOnlyList<PlutoTrend> BuildLiveTrendSamples(StudioThemeCategory niche, IReadOnlyList<PlutoLiveTrendKeyword>? keywords)
+    {
+        if (keywords is null || keywords.Count == 0) return Array.Empty<PlutoTrend>();
+        var subject = niche switch
+        {
+            StudioThemeCategory.PetsCompanions => "a curious puppy and kitten",
+            StudioThemeCategory.BabyParenting => "a giggling baby",
+            _ => "a cozy everyday moment",
+        };
+        var nicheTag = niche switch
+        {
+            StudioThemeCategory.PetsCompanions => "#반려동물",
+            StudioThemeCategory.BabyParenting => "#육아",
+            _ => "#일상",
+        };
+        var list = new List<PlutoTrend>(keywords.Count);
+        for (var i = 0; i < keywords.Count; i++)
+        {
+            var kw = keywords[i]?.Keyword;
+            if (string.IsNullOrWhiteSpace(kw)) continue;
+            var (hook, prompt, camera) = ClassifyLiveKeyword(kw) switch
+            {
+                LiveTrendKind.Weather => ("오늘 '" + kw + "' 날씨 속 " + subject + " 반응",
+                    subject + " watching today's " + kw + " weather by the window, golden hour backlight, warm window light",
+                    "slow push-in at eye-level"),
+                LiveTrendKind.Snack => ("요즘 핫한 '" + kw + "' 첫 맛 리액션",
+                    subject + " discovering the trending " + kw + " snack, macro close-up on tiny hands or paws, soft sound ASMR crunch",
+                    "macro micro-zoom close-up"),
+                LiveTrendKind.Meme => ("'" + kw + "' 밈 따라하기 POV",
+                    subject + " recreating the viral " + kw + " meme, first-person POV reaction",
+                    "handheld POV eye-level"),
+                _ => ("오늘의 화제 '" + kw + "' × " + subject,
+                    subject + " in a playful nod to today's trending topic " + kw + ", vintage home video film grain look",
+                    "gentle handheld retro 16mm drift"),
+            };
+            var tag = "#" + kw.Replace(" ", "", StringComparison.Ordinal);
+            list.Add(new PlutoTrend("live-" + i.ToString(System.Globalization.CultureInfo.InvariantCulture), niche,
+                kw, hook, prompt, camera, "trending", SocialPlatform.Both,
+                new[] { "#Shorts", tag, nicheTag }, new[] { "#Reels", tag, nicheTag }));
+        }
+        return list;
+    }
+
     private static string TopModifier(ViralTrendToken[] tokens, ViralTrendFacet facet, string fallback)
     {
         foreach (var t in tokens) if (t.Facet == facet) return t.Modifier;   // 점수 내림차순 → 첫 적중이 최상위

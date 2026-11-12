@@ -13,6 +13,7 @@ namespace PromptFlowStudio.Services.Pluto;
 /// 📈 Pluto Social Trend Radar — YouTube Shorts 급상승 공식 · Instagram Reels 감성 무드 채널 아키타입 분해(훅 페이싱 · 15초 루프 · BGM · 컬러).
 /// 🧠 <see cref="IPlutoLlmClient"/> 우선(3.5초 예산) · 미설정/예외/초과/스키마 불일치 → 내장 12개 벤치마크로 무중단 폴백.
 /// 학습(<see cref="LearnChannelStyleAsync"/>) → 채널 친숙도 가중치를 <c>pluto_social_radar.json</c> 에 원자적 영속 + Pluto XP +2.
+/// ☁️ <see cref="IPlutoStorageManager"/> 주입 시 <c>G:\내 드라이브\DATA\Pluto</c> 볼트(로컬 폴백) — 첫 해석 시 레거시 <c>%LOCALAPPDATA%\PromptFlowStudio</c> 사본 1회 시드.
 /// </summary>
 public sealed class PlutoSocialRadarEngine : IDisposable
 {
@@ -25,6 +26,7 @@ public sealed class PlutoSocialRadarEngine : IDisposable
     private const int MaxLlmCache = 64;
 
     private readonly string _path;
+    private readonly IPlutoStorageManager? _storage;   // ☁️ 주입 시 Drive 볼트(폴백 포함) 경로·기록 위임
     private readonly IPlutoLlmClient? _llm;
     private readonly PlutoLearningService? _learning;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -37,7 +39,14 @@ public sealed class PlutoSocialRadarEngine : IDisposable
     private long _serial;
     private int _disposed;
 
-    public PlutoSocialRadarEngine() : this(null, null, null) { }
+    public PlutoSocialRadarEngine() : this((string?)null, null, null) { }
+
+    /// <summary>☁️ <see cref="IPlutoStorageManager"/> 경유 — <c>G:\내 드라이브\DATA\Pluto</c> 우선 · 로컬 폴백 · 레거시 경로 1회 시드.</summary>
+    public PlutoSocialRadarEngine(IPlutoStorageManager storage, IPlutoLlmClient? llm = null, PlutoLearningService? learning = null)
+        : this((string?)null, llm, learning)
+    {
+        _storage = storage ?? throw new ArgumentNullException(nameof(storage));
+    }
 
     public PlutoSocialRadarEngine(string? storagePath, IPlutoLlmClient? llm = null, PlutoLearningService? learning = null)
     {
@@ -49,7 +58,7 @@ public sealed class PlutoSocialRadarEngine : IDisposable
         foreach (var b in Benchmarks) _known[b.Id] = b;
     }
 
-    public string StoragePath => _path;
+    public string StoragePath => _storage?.ResolveDataPath(FileName) ?? _path;
 
     /// <summary>🧠 마지막 <see cref="GetTrendingSocialInsightsAsync"/> 가 LLM 결과를 사용했는지.</summary>
     public bool LastUsedLlm { get; private set; }
@@ -324,7 +333,7 @@ public sealed class PlutoSocialRadarEngine : IDisposable
         {
             if (_loaded) return;
             // 손상 JSON → .corrupt 격리 후 빈 지식 · 일시적 잠금 → 재시도 · 끝내 읽기 불가 → 디스크 덮어쓰기 금지(채널 학습 보호)
-            var (data, status) = await PlutoJsonStore.TryLoadAsync<Dictionary<string, Entry>>(_path, "Pluto.Radar", ct).ConfigureAwait(false);
+            var (data, status) = await PlutoJsonStore.TryLoadAsync<Dictionary<string, Entry>>(StoragePath, "Pluto.Radar", ct).ConfigureAwait(false);
             _readOnly = status == PlutoLoadStatus.Unreadable;
             lock (_sync)
             {
@@ -458,7 +467,9 @@ public sealed class PlutoSocialRadarEngine : IDisposable
             if (_readOnly) return false;
             string json;
             lock (_sync) json = JsonSerializer.Serialize(_entries);
-            return await PlutoJsonStore.WriteAtomicAsync(_path, json, "Pluto.Radar", ct).ConfigureAwait(false);
+            return _storage is not null
+                ? await _storage.WriteAllTextAtomicAsync(FileName, json, ct).ConfigureAwait(false)
+                : await PlutoJsonStore.WriteAtomicAsync(_path, json, "Pluto.Radar", ct).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
     }

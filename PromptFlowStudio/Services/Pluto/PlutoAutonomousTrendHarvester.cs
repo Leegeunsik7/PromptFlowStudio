@@ -22,7 +22,8 @@ public sealed record PlutoViralPatternSnapshot(
     DateTime HarvestedUtc,
     bool FromGenerator,
     IReadOnlyList<PlutoViralPatternSnapshot.Niche> Niches,
-    IReadOnlyList<ViralTrendToken> Tokens)
+    IReadOnlyList<ViralTrendToken> Tokens,
+    IReadOnlyList<PlutoLiveTrendKeyword>? LiveKeywords = null)
 {
     public sealed record Niche(StudioThemeCategory Category, string HookStructure, string LensAngle, string Lighting, string Pacing);
 }
@@ -31,6 +32,7 @@ public sealed record PlutoViralPatternSnapshot(
 /// 🔄 Pluto 자율 트렌드 수확기 — 기동 <see cref="DefaultStartupDelay"/> 후 1회 + <see cref="DefaultInterval"/> 주기로 트렌드 메모리 신선도 점검.
 /// 최근 적재(수동 발굴 포함)가 <see cref="DefaultStaleAfter"/> 초과 → 아기/반려동물 니치별 생성형 발굴(LLM 페일오버 체인 · 실패 시 카탈로그 폴백)
 /// → <see cref="PlutoTrendAnalyzer"/> 토큰 병합(태그별 최고점) → <see cref="PlutoLearningService.IngestViralTrendsAsync"/>(+2 XP · 활성 모디파이어 즉시 갱신)
+/// 🌐 <see cref="IPlutoWebTrendFetcher"/> 주입 시 수확 직전 실시간 급상승 키워드(Google Trends RSS)를 먼저 수집 → 니치별 표본 카드로 병합(실패/빈 목록 → 기존 경로 그대로).
 /// → 패턴 스냅샷 Drive 기록 → <see cref="Changed"/> 통지. 단일 비행(동시 수확 차단) · 루프 예외 격리 · Dispose 시 취소.
 /// </summary>
 public sealed class PlutoAutonomousTrendHarvester : IDisposable
@@ -47,6 +49,7 @@ public sealed class PlutoAutonomousTrendHarvester : IDisposable
     private readonly PlutoLearningService _learning;
     private readonly IPlutoStorageManager? _storage;
     private readonly PlutoTrendEngine? _engine;
+    private readonly IPlutoWebTrendFetcher? _web;
     private readonly TimeSpan _startupDelay;
     private readonly TimeSpan _interval;
     private readonly TimeSpan _staleAfter;
@@ -56,6 +59,7 @@ public sealed class PlutoAutonomousTrendHarvester : IDisposable
     private int _busy;
     private int _disposed;
     private volatile PlutoHarvestResult? _last;
+    private volatile IReadOnlyList<PlutoLiveTrendKeyword> _lastLive = Array.Empty<PlutoLiveTrendKeyword>();
 
     public PlutoAutonomousTrendHarvester(
         PlutoLearningService learning,
@@ -64,11 +68,13 @@ public sealed class PlutoAutonomousTrendHarvester : IDisposable
         TimeSpan? startupDelay = null,
         TimeSpan? interval = null,
         TimeSpan? staleAfter = null,
-        Func<DateTime>? utcNow = null)
+        Func<DateTime>? utcNow = null,
+        IPlutoWebTrendFetcher? webFetcher = null)
     {
         _learning = learning ?? throw new ArgumentNullException(nameof(learning));
         _storage = storage;
         _engine = engine;
+        _web = webFetcher;
         _startupDelay = startupDelay is { } d && d >= TimeSpan.Zero ? d : DefaultStartupDelay;
         _interval = interval is { } i && i > TimeSpan.Zero ? i : DefaultInterval;
         _staleAfter = staleAfter is { } s && s >= TimeSpan.Zero ? s : DefaultStaleAfter;
@@ -83,6 +89,9 @@ public sealed class PlutoAutonomousTrendHarvester : IDisposable
     public PlutoHarvestResult? LastResult => _last;
     public TimeSpan Interval => _interval;
     public TimeSpan StaleAfter => _staleAfter;
+
+    /// <summary>🌐 최근 수확에 반영된 실시간 급상승 키워드(없음 → 빈 목록).</summary>
+    public IReadOnlyList<PlutoLiveTrendKeyword> LastLiveKeywords => _lastLive;
 
     /// <summary>최근 트렌드 메모리 갱신 시각(수동 발굴 + 자율 수확 공통).</summary>
     public DateTime? LastHarvestUtc => _learning.LastViralIngestUtc;
@@ -160,11 +169,13 @@ public sealed class PlutoAutonomousTrendHarvester : IDisposable
             var best = new Dictionary<string, ViralTrendToken>(StringComparer.OrdinalIgnoreCase);
             var niches = new List<PlutoViralPatternSnapshot.Niche>(Niches.Length);
             var fromGen = false;
+            var live = await FetchLiveAsync(ct).ConfigureAwait(false);
+            _lastLive = live;
             foreach (var niche in Niches)
             {
                 var samples = await DiscoverAsync(niche, ct).ConfigureAwait(false);
                 fromGen |= samples is not null && _engine is { CanDiscover: true };
-                var a = PlutoTrendAnalyzer.Analyze(niche, samples);
+                var a = PlutoTrendAnalyzer.Analyze(niche, MergeLive(niche, samples, live));
                 niches.Add(new PlutoViralPatternSnapshot.Niche(niche, a.HookStructure, a.LensAngle, a.Lighting, a.Pacing));
                 foreach (var t in a.Tokens)
                     if (!best.TryGetValue(t.Tag, out var cur) || t.Score > cur.Score) best[t.Tag] = t;
@@ -181,7 +192,7 @@ public sealed class PlutoAutonomousTrendHarvester : IDisposable
             {
                 try
                 {
-                    var json = JsonSerializer.Serialize(new PlutoViralPatternSnapshot(now, fromGen, niches, tokens));
+                    var json = JsonSerializer.Serialize(new PlutoViralPatternSnapshot(now, fromGen, niches, tokens, live));
                     await _storage.WriteAllTextAtomicAsync(PatternsFileName, json, ct).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) { throw; }
@@ -196,6 +207,32 @@ public sealed class PlutoAutonomousTrendHarvester : IDisposable
             Volatile.Write(ref _busy, 0);
             if (raised) RaiseChanged();
         }
+    }
+
+    /// <summary>🌐 실시간 키워드 수집 — 수집기 부재/실패 → 빈 목록(LLM/카탈로그 폴백). 외부 취소만 전파.</summary>
+    private async Task<IReadOnlyList<PlutoLiveTrendKeyword>> FetchLiveAsync(CancellationToken ct)
+    {
+        if (_web is null) return Array.Empty<PlutoLiveTrendKeyword>();
+        try { return await _web.FetchLiveTrendingKeywordsAsync(ct).ConfigureAwait(false) ?? Array.Empty<PlutoLiveTrendKeyword>(); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return Array.Empty<PlutoLiveTrendKeyword>(); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine("[Pluto.Harvest] live trends failed: " + ex.Message);
+            return Array.Empty<PlutoLiveTrendKeyword>();
+        }
+    }
+
+    /// <summary>발굴 표본 + 실시간 키워드 표본 병합 — 실시간 없음 → 원본 그대로(null 유지 = 사전 점수만).</summary>
+    private static IReadOnlyList<PlutoTrend>? MergeLive(StudioThemeCategory niche, IReadOnlyList<PlutoTrend>? samples, IReadOnlyList<PlutoLiveTrendKeyword> live)
+    {
+        if (live.Count == 0) return samples;
+        var liveSamples = PlutoTrendAnalyzer.BuildLiveTrendSamples(niche, live);
+        if (samples is null || samples.Count == 0) return liveSamples;
+        var merged = new List<PlutoTrend>(samples.Count + liveSamples.Count);
+        merged.AddRange(samples);
+        merged.AddRange(liveSamples);
+        return merged;
     }
 
     /// <summary>니치 발굴 — 엔진 부재/타임아웃/실패 → null(사전 점수만). 외부 취소만 전파.</summary>
