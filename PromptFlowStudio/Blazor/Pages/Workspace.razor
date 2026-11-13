@@ -49,6 +49,7 @@
 @inject PromptFlowStudio.Services.Pluto.Dsp.IPlutoBeatSyncQuantizer BeatQuantizer
 @inject PromptFlowStudio.Services.Pluto.IPlutoImageFocalDetector FocalDetector
 @inject PromptFlowStudio.Services.Pluto.IPlutoMontageCompiler MontageCompiler
+@inject PromptFlowStudio.Services.Pluto.IPlutoPhotoCurationEngine Curation
 @inject PromptFlowStudio.Services.Pluto.IPlutoCustomBgmService CustomBgm
 
 @* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
@@ -89,8 +90,29 @@
             @if (_motionBusy) { <span class="ws-retry" role="status" data-motion-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 🎥 모션 비디오 렌더 중… (15초 · 60fps)</span> }
             else if (_motionToast is { } mvt) { <span class="ws-retry" role="status" data-motion-result="1">@(mvt) @if (_motionOutput is { } mvo) { <button class="ws-back" data-motion-open="1" @onclick="() => RevealInExplorer(mvo)" title="@(mvo)">📂 @(Path.GetFileName(mvo)) 위치 열기</button> }</span> }
             @* 🎞️ 멀티컷 몽타주 — 사진 2~5장 → 15초 60fps · 노출 정합 자동 색보정 · BGM 비트 스냅 xfade *@
-            <span class="ws-back" data-montage-pick="1" title="사진 2~5장을 선택(여러 장 동시 선택 가능) — 비트에 맞춘 15초 멀티컷 몽타주 · 사진 간 밝기 자동 정합">🎞️ 몽타주 사진 추가 (@(_montagePhotos.Count.ToString(CultureInfo.InvariantCulture))/5)<InputFile class="ws-drop-input" OnChange="OnMontagePhotosPickedAsync" multiple accept="image/png,image/jpeg,image/webp,image/bmp" disabled="@(State.IsBusy || _montageBusy || _montagePhotos.Count >= MontageMaxPhotos)" /></span>
-            @if (_montagePhotos.Count > 0 && !_montageBusy) { <button class="ws-back" data-montage-clear="1" @onclick="ClearMontagePhotos" title="@(string.Join(" · ", _montagePhotos.Select(static p => Path.GetFileName(p))))">✕ 몽타주 비우기</button> }
+            <span class="ws-back" data-montage-pick="1" title="사진 2~5장(연사 최대 30장 · 장당 15MB) 선택 — 6장 이상이면 AI가 베스트 4컷을 자동 선별 · 비트에 맞춘 15초 멀티컷 몽타주">🎞️ 몽타주 사진 추가 (@(_montagePhotos.Count.ToString(CultureInfo.InvariantCulture))/5@(_curationPool.Count > _montagePhotos.Count ? " · 후보 " + _curationPool.Count.ToString(CultureInfo.InvariantCulture) + "장" : ""))<InputFile class="ws-drop-input" OnChange="OnMontagePhotosPickedAsync" multiple accept="image/png,image/jpeg,image/webp,image/bmp" disabled="@(State.IsBusy || _montageBusy || _curationBusy || _curationPool.Count >= CurationMaxPhotos)" /></span>
+            @if (_curationPool.Count >= 4 && !_montageBusy) { <button class="ws-back" data-curation-run="1" @onclick="RunPhotoCurationAsync" disabled="@(_curationBusy || _motionBusy || _stockBusy)" title="흔들림 · 노출 불량 · 유사 연사를 걸러내고 베스트 컷을 3막(후킹 → 리듬 → 클라이맥스) 순서로 배치">[✨ AI 베스트 컷 자동 선별]</button> }
+            @if (_curationBusy) { <span class="ws-retry" role="status" data-curation-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> ✨ @(_curationPool.Count.ToString(CultureInfo.InvariantCulture))장 분석 중… (선명도 · 노출 · 연사 중복)</span> }
+            else if (_curationResult is { } cur)
+            {
+                <span class="ws-pcore on" data-curation-pill="1">✨ AI 큐레이션: @(cur.TotalInputCount.ToString(CultureInfo.InvariantCulture))장 중 베스트 @(cur.SelectedCuts.Count.ToString(CultureInfo.InvariantCulture))컷 선별 (흔들림 @(cur.BlurryRejectedCount.ToString(CultureInfo.InvariantCulture))장 · 유사 연사 @(cur.DuplicateRejectedCount.ToString(CultureInfo.InvariantCulture))장 제외)</span>
+                <button class="ws-back" data-curation-toggle="1" @onclick="() => _showCurationDetails = !_showCurationDetails">[선별 상세]</button>
+                @if (_showCurationDetails)
+                {
+                    <div class="ws-retry" data-curation-details="1" style="display:block">
+                        @foreach (var sc in cur.SelectedCuts)
+                        {
+                            <div data-curation-selected="@(sc.NarrativeActOrder.ToString(CultureInfo.InvariantCulture))">🎬 @(sc.NarrativeActOrder.ToString(CultureInfo.InvariantCulture)). [@(sc.NarrativeRoleLabel)] @(Path.GetFileName(sc.ImagePath)) · 점수 @(sc.CompositeScore.ToString("0.00", CultureInfo.InvariantCulture)) (선명 @(sc.SharpnessScore.ToString("0.00", CultureInfo.InvariantCulture)) · 노출 @(sc.ExposureScore.ToString("0.00", CultureInfo.InvariantCulture)) · 돌출 @(sc.SaliencyScore.ToString("0.00", CultureInfo.InvariantCulture)))</div>
+                        }
+                        @foreach (var rc in cur.AllEvaluated)
+                        {
+                            if (rc.IsSelected) continue;
+                            <div data-curation-rejected="@((int)rc.RejectionReason)">✕ @(Path.GetFileName(rc.ImagePath)) — @(PromptFlowStudio.Services.Pluto.PlutoPhotoCurationEngine.ReasonLabel(rc.RejectionReason))</div>
+                        }
+                    </div>
+                }
+            }
+            @if (_montagePhotos.Count > 0 && !_montageBusy && !_curationBusy) { <button class="ws-back" data-montage-clear="1" @onclick="ClearMontagePhotos" title="@(string.Join(" · ", _montagePhotos.Select(static p => Path.GetFileName(p))))">✕ 몽타주 비우기</button> }
             @if (_montagePhotos.Count >= 2)
             {
                 <span class="ws-pcore on" data-montage-grade="@(_montageLook)">🎨 자동 색보정: @(_montageLook) · @(_montagePhotos.Count.ToString(CultureInfo.InvariantCulture))컷 비트 몽타주</span>
@@ -1725,28 +1747,89 @@
     private string? _montageOutput;
     private string _montageLook = PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.NaturalPastelName;
 
-    /// <summary>🎞️ 다중 사진 선택 → 업로드 저장 후 큐 추가(중복 제외 · 최대 5장).</summary>
+    // ── ✨ 배치 베스트 컷 큐레이션(연사 최대 30장) ──
+    private const int CurationMaxPhotos = PromptFlowStudio.Services.Pluto.PlutoPhotoCurationEngine.MaxBatchSize;
+    private const long CurationMaxPhotoBytes = 15L * 1024 * 1024;
+    private const int CurationAutoThreshold = 5;   // 초과 업로드 → 자동 선별
+    private readonly List<string> _curationPool = new();
+    private PromptFlowStudio.Services.Pluto.PlutoBatchCurationResult? _curationResult;
+    private bool _showCurationDetails;
+    private bool _curationBusy;
+
+    /// <summary>🎞️ 다중 사진 선택(최대 30장 · 장당 15MB) → 후보 풀 적재 → 6장 이상이면 AI 베스트 컷 자동 선별, 이하면 큐에 직접 추가(최대 5장).</summary>
     private async Task OnMontagePhotosPickedAsync(InputFileChangeEventArgs e)
     {
-        if (_montageBusy) return;
+        if (_montageBusy || _curationBusy) return;
         IReadOnlyList<IBrowserFile> files;
-        try { files = e.GetMultipleFiles(32); }
-        catch (InvalidOperationException ex) { Program.Log("Workspace.MontagePick", ex); _montageToast = "⚠ 한 번에 너무 많은 파일을 선택했습니다."; return; }
-        for (var i = 0; i < files.Count && _montagePhotos.Count < MontageMaxPhotos; i++)
+        try { files = e.GetMultipleFiles(CurationMaxPhotos); }
+        catch (InvalidOperationException ex) { Program.Log("Workspace.MontagePick", ex); _montageToast = "⚠ 한 번에 최대 30장까지 선택할 수 있습니다."; return; }
+        var skipped = 0;
+        for (var i = 0; i < files.Count && _curationPool.Count < CurationMaxPhotos; i++)
         {
+            if (files[i].Size > CurationMaxPhotoBytes) { skipped++; continue; }
             if (await SaveUploadAsync(files[i], keepName: true) is not { } path) continue;
-            if (!_montagePhotos.Contains(path, StringComparer.OrdinalIgnoreCase)) _montagePhotos.Add(path);
+            if (!_curationPool.Contains(path, StringComparer.OrdinalIgnoreCase)) _curationPool.Add(path);
         }
-        _montageToast = files.Count > 0 && _montagePhotos.Count >= MontageMaxPhotos ? "🎞️ 최대 5장까지 담았습니다." : null;
         _montageOutput = null;
+        if (_curationPool.Count > CurationAutoThreshold)
+        {
+            _montageToast = skipped > 0 ? "⚠ 15MB 초과 사진 " + skipped.ToString(CultureInfo.InvariantCulture) + "장 제외" : null;
+            await RunPhotoCurationAsync();
+            return;
+        }
+        for (var i = 0; i < _curationPool.Count && _montagePhotos.Count < MontageMaxPhotos; i++)
+            if (!_montagePhotos.Contains(_curationPool[i], StringComparer.OrdinalIgnoreCase)) _montagePhotos.Add(_curationPool[i]);
+        _montageToast = skipped > 0 ? "⚠ 15MB 초과 사진 " + skipped.ToString(CultureInfo.InvariantCulture) + "장 제외"
+            : files.Count > 0 && _montagePhotos.Count >= MontageMaxPhotos ? "🎞️ 최대 5장까지 담았습니다." : null;
         RefreshMontageLook();
         StateHasChanged();
         await RefreshMontagePreviewAsync();
     }
 
+    /// <summary>✨ 후보 풀 → 흔들림/노출/연사 제거 → 베스트 4컷 3막 배열 → 몽타주 큐 · 초점 캐시 교체 → 프리뷰 플랜 재컴파일. 실패 → 기존 큐 보존([부분 구제]).</summary>
+    private async Task RunPhotoCurationAsync()
+    {
+        if (_curationBusy || _montageBusy || _curationPool.Count < 2) return;
+        _curationBusy = true;
+        StateHasChanged();
+        try
+        {
+            var pool = _curationPool.ToArray();
+            var result = await Curation.CurateBatchAsync(pool, PromptFlowStudio.Services.Pluto.PlutoPhotoCurationEngine.DefaultCutCount, ResolveVisionSynth(), _mediaCts.Token);
+            if (_disposed) return;
+            if (result.SelectedCuts.Count >= PromptFlowStudio.Services.Pluto.PlutoMontageCompiler.MinClips)
+            {
+                var photos = new string[result.SelectedCuts.Count];
+                var focals = new (double X, double Y)[photos.Length];
+                for (var i = 0; i < photos.Length; i++)
+                {
+                    photos[i] = result.SelectedCuts[i].ImagePath;
+                    focals[i] = result.SelectedCuts[i].FocalPoint;
+                }
+                _montagePhotos.Clear();
+                _montagePhotos.AddRange(photos);
+                _stagedFocalPoints = focals;
+                _stagedFocalKey = string.Join("|", photos);
+                _curationResult = result;
+                _showCurationDetails = false;
+                _montageOutput = null;
+            }
+            else _montageToast = "⚠ 선별 가능한 사진이 부족합니다(판독 가능 2장 이상 필요).";
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.PhotoCuration", ex); _montageToast = "⚠ AI 베스트 컷 선별 실패: " + ex.Message; }
+        finally { _curationBusy = false; }
+        RefreshMontageLook();
+        await InvokeAsync(StateHasChanged);
+        await RefreshMontagePreviewAsync();
+    }
+
     private void ClearMontagePhotos()
     {
-        if (_montageBusy) return;
+        if (_montageBusy || _curationBusy) return;
+        _curationPool.Clear();
+        _curationResult = null;
+        _showCurationDetails = false;
         _montagePhotos.Clear();
         _montageToast = null;
         _montageOutput = null;

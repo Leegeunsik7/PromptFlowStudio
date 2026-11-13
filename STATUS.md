@@ -1,18 +1,16 @@
 # Current Project Status
-- Active Milestone: 【Pluto 커스텀 BGM 업로드 · 15초 하이라이트 자동 추출】 프리뷰/익스포트 비트 동기 엔드투엔드
+- Active Milestone: 【Pluto 배치 사진 큐레이션 · AI 베스트 컷 자동 선별】 라플라시안 선명도 + 64bit dHash + 3막 배열 → 몽타주 프리뷰/익스포트
 - Build: ✅ Release `-warnaserror -p:NuGetAudit=false` 0/0 (PromptFlowStudio · Tests)
-- Tests: ✅ 1092/1092 PASS (Highlight|CustomBgm|Dsp|BeatSync 필터 37/37)
+- Tests: ✅ 1096/1096 PASS (Curation|Montage|Focal 필터 15/15)
 - Updated: 2026-11-13 (KST)
 
 ## Completed
-- 🎵 `PlutoAudioHighlightExtractor`: N=2048/H=512 · 0.50·RMS+0.35·Flux+0.15·Centroid 누적합 · 0.25s 슬라이딩 · 25s↑ 경계 2s −0.08 · ±0.5s 비트 스냅 · 30ms/250ms 페이드 · 짧은 곡 0 패딩 · 스트리밍 프레임 디코드
-- 🎵 `PlutoCustomBgmService`: 25MB 가드 · WAV 직통 · 압축 포맷 FFmpeg(48k/2ch/pcm_s16le · 60s 타임아웃 · 8분 상한) · 임시 파일 finally 정리 · 디코드 캐시(넛지 재사용) · DI 양쪽
-- 🎛️ `StockSuiteExporter`: 모션/몽타주 `customBgmWavBytes`(기본 null) → 해석기 일시 교체 → 비트 스냅 · 더킹 · 트루피크 마스터링 동일 경로 · 라벨 `🎧 커스텀 BGM`
-- 🎞 JS `setCustomBgm`/`clearCustomBgm` · `PlutoMotionPreviewer.CustomBgmDataUrl`
-- 🖥️ Workspace: 업로드 · 하이라이트/BPM 배지 · ◀ -1s / +1s ▶ · ✕ 기본 BGM · 단일 궤적/몽타주 하이라이트 비트 재정렬
-- 🧪 `PlutoCustomBgmHighlightTests` 6종
+- ✨ `PlutoPhotoCurationEngine`: ≤128² 썸네일 1회 디코드 · 초점 가중(r 0.35 · 2×) ∇²Y 분산/0.045 · 흐림 <0.18 · 노출 Y∉[0.14, 0.92] · Composite 0.45/0.30/0.25 · dHash 9×8 탐욕 NMS(Hamming ≤8) · 게이트별 최소 컷 구제 · Vision 표정 보정(동시 3 · 4초)
+- 🎬 3막 배열: Act 1 = max(0.6·Sal+0.4·Sharp) · Act 3 = 잔여 max Composite · Act 2 = Σ|ΔX| 최대 순열
+- 🖥️ Workspace: 최대 30장 · 장당 15MB · 5장 초과 자동 선별 · 4장↑ `[✨ AI 베스트 컷 자동 선별]` · 큐레이션 필 + `[선별 상세]`(Act 배지 · 제외 사유) · 선별 초점 캐시 직결
+- 🔌 DI: `MainForm.cs` · `MauiProgram.cs` Singleton
+- 🧪 `PlutoPhotoCurationTests` 4종
 
 ## Notes
-- 프리뷰는 data URL 대신 가상호스트 WAV URL 전달(15초 WAV ≈ 2.9MB → JS interop 부담 회피)
-- 수동 넛지(`ExtractWindowAt`)는 스냅 없이 정확한 오프셋 유지
-- Mobile(MAUI) 빌드 · 실제 FFmpeg 압축 디코드 · 브라우저 재생 미검증
+- GDI+ 디코드 불가 파일은 중립값(선명 0.65 · 경로 해시)으로 후보 유지 · 누락 파일은 `UnreadableFile`
+- Mobile(MAUI) 빌드 · 실제 연사 사진 품질 · Vision 보정 실호출 미검증
