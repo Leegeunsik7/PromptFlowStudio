@@ -199,7 +199,7 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
     /// <summary>
     /// <see cref="VideoDurationMode.Sec15_AmbientSlow"/> 후처리 — 로컬 5초 산출물을 <c>{project}_ambient15s.mp4</c> 무음 15초 루프로 변환해 최종 산출물로 확정.
     /// ffmpeg 부재/실패는 원본 5초 유지(Graceful). 결과는 메타 <see cref="MetaAmbientApplied"/>.
-    /// <paramref name="cloud"/>=true(Wan 2.1 5초 클립): 원속도 3세그먼트 — 핑퐁 체크 시 정→역→정(<see cref="LoopMode.TriplePingPong"/>), 해제 시 0.75s 크로스디졸브(<see cref="LoopMode.TripleCrossfade"/>).
+    /// <paramref name="cloud"/>=true(Wan 2.1 5초 클립): 핑퐁 체크 시 1.5배 슬로우 정 7.5s→역 7.5s 무이음새(<see cref="LoopMode.TriplePingPong"/>), 해제 시 0.75s 크로스디졸브(<see cref="LoopMode.TripleCrossfade"/>).
     /// </summary>
     internal async Task<string> ApplyAmbientLoopAsync(BatchRenderJob job, string output, CancellationToken ct, bool cloud = false)
     {

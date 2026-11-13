@@ -38,6 +38,7 @@ public sealed record SnsCredentials(
 ///   ▸ 우선순위: <c>user_settings.json</c>(사용자 저장본) → 번들 <c>appsettings.json</c>(<c>ComfyUI:BaseUrl</c> · <c>Render:DefaultMode</c>) → 내장 기본값.
 ///   ▸ 저장은 .tmp 기록 후 교체(원자적) · 인메모리 스냅샷 참조 교체(읽기 lock-free) · 저장 성공 시 <see cref="OnChanged"/> · <see cref="OnSettingsChanged"/>(구독자별 예외 격리).
 ///   ▸ 환경변수 <c>PFS_COMFY_URL</c> 은 기존 동작대로 최우선(<see cref="EffectiveComfyUiUrl"/>).
+///   ▸ Google Drive 미러(<see cref="MemberRegistryService"/> 동일 규약): 로컬 부재 + 미러 존재 시 시작 시 자동 복원, 저장 성공 시 미러로 원자 복제(실패는 로컬 동작 무영향).
 /// </summary>
 public sealed class AppSettingsManager
 {
@@ -58,12 +59,23 @@ public sealed class AppSettingsManager
     /// <summary>사용자 저장본에서 로드했는지(false = 번들 기본값).</summary>
     public bool LoadedFromUser { get; private set; }
 
-    public AppSettingsManager(IConfiguration cfg) : this(cfg, Path.Combine(LicenseService.DataAreaRoot(), FileName)) { }
+    /// <summary>미러(백업) 디렉터리 — null 이면 미러 비활성.</summary>
+    public string? MirrorDir { get; }
+    /// <summary>최근 미러 실패 사유(진단용).</summary>
+    public string? LastMirrorError { get; private set; }
+    /// <summary>시작 시 미러에서 user_settings.json 을 복원했는지.</summary>
+    public bool RestoredFromMirror { get; private set; }
+
+    public AppSettingsManager(IConfiguration cfg)
+        : this(cfg, Path.Combine(LicenseService.DataAreaRoot(), FileName), MemberRegistryService.ResolveMirrorDir()) { }
 
     /// <param name="filePath">user_settings.json 경로(테스트 주입).</param>
-    public AppSettingsManager(IConfiguration? cfg, string filePath)
+    /// <param name="mirrorDir">미러 디렉터리(Google Drive) — null/공백이면 미러 비활성(테스트 기본).</param>
+    public AppSettingsManager(IConfiguration? cfg, string filePath, string? mirrorDir = null)
     {
         FilePath = filePath;
+        MirrorDir = string.IsNullOrWhiteSpace(mirrorDir) ? null : mirrorDir;
+        TryRestoreFromMirror();
         _bundled = new UserSettings(NormalizeUrl(cfg?["ComfyUI:BaseUrl"]), NormalizeMode(cfg?["Render:DefaultMode"]));
         _s = LoadInitial();
         SnsFilePath = Path.Combine(Path.GetDirectoryName(filePath) ?? "", SnsFileName);
@@ -171,6 +183,7 @@ public sealed class AppSettingsManager
                 Program.Log("AppSettingsManager.Save", ex);
                 return false;
             }
+            MirrorToBackup();
         }
         try { OnChanged?.Invoke(); } catch (Exception ex) { Program.Log("AppSettingsManager.OnChanged", ex); }
         var snap = _s;
@@ -213,6 +226,51 @@ public sealed class AppSettingsManager
         if (string.Equals(m, RenderEngineKind.Mock, StringComparison.OrdinalIgnoreCase)
             || string.Equals(m, "simulation", StringComparison.OrdinalIgnoreCase)) return RenderEngineKind.Mock;
         return RenderEngineKind.ComfyUi;
+    }
+
+    private string? MirrorPath => MirrorDir is null ? null : Path.Combine(MirrorDir, FileName);
+
+    /// <summary>로컬 user_settings.json 이 없고 미러에 유효한 설정이 있으면 복원. 기존 로컬 파일은 절대 덮어쓰지 않음.</summary>
+    private void TryRestoreFromMirror()
+    {
+        var src = MirrorPath;
+        if (src is null) return;
+        try
+        {
+            if (File.Exists(FilePath) || !File.Exists(src)) return;
+            if (JsonSerializer.Deserialize<UserSettings>(File.ReadAllText(src)) is null) return;   // 스키마 검증 실패 시 복원 안 함
+            var dir = Path.GetDirectoryName(FilePath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            var tmp = FilePath + ".restore.tmp";
+            File.Copy(src, tmp, overwrite: true);
+            File.Move(tmp, FilePath, overwrite: false);
+            RestoredFromMirror = true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or NotSupportedException)
+        {
+            LastMirrorError = ex.Message;
+        }
+    }
+
+    /// <summary>로컬 user_settings.json 을 미러로 원자 복제(tmp 기록 후 교체). 실패해도 로컬 저장 결과에 영향 없음.</summary>
+    private void MirrorToBackup()
+    {
+        var dst = MirrorPath;
+        if (dst is null) return;
+        try
+        {
+            if (!File.Exists(FilePath)) return;
+            Directory.CreateDirectory(MirrorDir!);
+            var tmp = dst + ".tmp";
+            File.Copy(FilePath, tmp, overwrite: true);
+            if (File.Exists(dst)) File.Replace(tmp, dst, null, ignoreMetadataErrors: true);
+            else File.Move(tmp, dst);
+            LastMirrorError = null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException)
+        {
+            LastMirrorError = ex.Message;
+        }
     }
 
     private UserSettings LoadInitial()

@@ -1,15 +1,14 @@
 # Current Project Status
-- Active Milestone: 【15초 앰비언트 Cloud 결선】 Wan 2.1 5초 요청 + FFmpeg 3세그먼트 15초 루프 · Cloud 오류 명시 · 옵시디언 Mock
+- Active Milestone: 【무이음새 앰비언트 핑퐁 + 환경설정 Drive 미러】
 - Build: ✅ Release `-warnaserror -p:NuGetAudit=false` 0/0 (PromptFlowStudio · Tests)
-- Tests: ✅ 1108/1108 PASS (AmbientCloudLoopTests 신규)
+- Tests: ✅ 1109/1109 PASS (SettingsManager 미러/복원 신규 · AmbientCloudLoopTests 갱신)
 - Updated: 2026-11-13 (KST)
 
 ## Completed
-- ☁️ `WanVideoRequest.Duration` → DashScope `parameters.duration`(null 생략). 앰비언트 작업은 항상 5초 요청(15 직접 요청 금지)
-- 🔁 Cloud 앰비언트: 핑퐁 ☑ → 정·역·정 `split=3 · reverse · concat=n=3`(원속도 15.00s) / ☐ → `xfade fade 0.75` ×2 + `tpad` + `trim=15`
-- 🚫 Cloud 모드 명시 + 엔진 미구성 → `IsAvailable=true`로 큐 Mock 폴백 차단, `☁️ DashScope 오류:` 배너로 Failed
-- 🧾 작업실 네거티브 프롬프트 → 작업 메타 `prompt.negative` → Cloud 요청 전달
-- 🌑 Mock 앰비언트: `testsrc` → `color=#07090E` 320x180 geq 앰버/시안 동심원 펄스 + bicubic 업스케일 + vignette(720p 5s ≈ 4.6s)
+- 🔁 Cloud 앰비언트 핑퐁 ☑ → 2세그먼트 `setpts=1.5*PTS,fps=30,split=2 · reverse · concat=n=2` = 정 7.5s + 역 7.5s = 15.00s (t=0 ≡ t=15 프레임, `<video loop>` 무이음새)
+- 🔁 핑퐁 ☐ → 기존 `xfade fade 0.75` ×2 + `tpad` + `trim=15` 유지
+- 💾 `AppSettingsManager`: `user_settings.json` 로컬 부재 + `G:\내 드라이브\DATA\PromptFlowStudio\user_settings.json` 존재 시 시작 시 자동 복원(로컬 존재 시 덮어쓰기 금지 · 손상 미러 거부)
+- 💾 저장 성공 시 미러로 원자 복제(tmp → `File.Replace`), 실패는 `LastMirrorError`만 기록. 경로 해석은 `MemberRegistryService.ResolveMirrorDir()`(`PROMPTFLOW_AUTH_MIRROR` / off) 공유
 
-## Notes
-- 정·역·정(F→R→F)은 마지막 프레임=원본 끝 프레임 → 무한 반복 시 시작 프레임과 불일치(이음새 1회). 완전 무이음은 기존 2세그먼트 `LoopMode.PingPong`
+## Next
+- Drive 미러 상태(`LastMirrorError`)를 환경설정 화면에 노출

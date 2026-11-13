@@ -10,7 +10,7 @@ namespace PromptFlowStudio.Services.Render;
 
 /// <summary>
 /// 앰비언트 루프 방식 — <see cref="ForwardCrossfade"/>(기본) 는 시간 역행 없이 꼬리→머리 xfade 오버랩으로 이음새 제거.
-/// <see cref="TriplePingPong"/>·<see cref="TripleCrossfade"/> 는 Cloud(Wan 2.1 · 5초 고정) 클립을 원속도 3세그먼트로 15초 확장.
+/// <see cref="TriplePingPong"/>(1.5배 슬로우 정·역 2세그먼트 무이음새)·<see cref="TripleCrossfade"/>(원속도 3세그먼트) 는 Cloud(Wan 2.1 · 5초 고정) 클립을 15초로 확장.
 /// </summary>
 public enum LoopMode { SlowStretch, PingPong, ForwardCrossfade, TriplePingPong, TripleCrossfade }
 
@@ -102,12 +102,11 @@ public sealed class AmbientLoopService
     public const double TripleCrossfadeSeconds = 0.75;
 
     /// <summary>
-    /// ☁️ Cloud 3세그먼트 핑퐁(<c>-filter_complex</c> 전용) — 원속도 정방향 5s → 역방향 5s → 정방향 5s = 15s.
-    /// <c>[0:v]fps=30,split=3[v0][v1][v2];[v1]reverse[vr];[v0][vr][v2]concat=n=3:v=1:a=0[outv]</c>
+    /// ☁️ Cloud 무이음새 2세그먼트 핑퐁(<c>-filter_complex</c> 전용) — 5s 클립을 1.5배 슬로우(<c>setpts=1.5*PTS</c>) 정방향 7.5s → 역방향 7.5s = 정확히 15.00s.
+    /// 끝 프레임(t=15)이 시작 프레임(t=0)과 동일 → <c>&lt;video loop&gt;</c> 무한 반복 시 점프 없음(구 정·역·정 3세그먼트는 마지막 프레임에서 끝나 이음새 발생).
+    /// <c>[0:v]setpts=1.5*PTS,fps=30,split=2[v0][v1];[v1]reverse[v2];[v0][v2]concat=n=2:v=1:a=0[outv]</c>
     /// </summary>
-    public static string BuildTriplePingPongFilterGraph()
-        => "[0:v]fps=" + TargetFps.ToString(CultureInfo.InvariantCulture)
-           + ",split=3[v0][v1][v2];[v1]reverse[vr];[v0][vr][v2]concat=n=3:v=1:a=0" + PingPongOutLabel;
+    public static string BuildTriplePingPongFilterGraph() => BuildPingPongFilterGraph(highQuality: false);
 
     /// <summary>
     /// ☁️ Cloud 3세그먼트 크로스디졸브(<c>-filter_complex</c> 전용) — 동일 클립 3회 체인, 이음부 <c>xfade=fade:0.75</c>,
@@ -204,7 +203,7 @@ public sealed class AmbientLoopService
                 TryDeletePartial(full, source);
                 return Fallback(source, false, ok ? "출력 파일 없음/손상(≤1KB)" : "ffmpeg 비정상 종료");
             }
-            return new(true, false, full, 1, "앰비언트 15초 루프 완료" + (mode switch { LoopMode.PingPong => "(핑퐁)", LoopMode.ForwardCrossfade => "(정방향 크로스페이드)", LoopMode.TriplePingPong => "(☁️ 5s 정·역·정 핑퐁)", LoopMode.TripleCrossfade => "(☁️ 5s×3 크로스디졸브)", _ => "(3x 고속 슬로우)" }));
+            return new(true, false, full, 1, "앰비언트 15초 루프 완료" + (mode switch { LoopMode.PingPong => "(핑퐁)", LoopMode.ForwardCrossfade => "(정방향 크로스페이드)", LoopMode.TriplePingPong => "(☁️ 1.5x 정·역 무이음새 핑퐁)", LoopMode.TripleCrossfade => "(☁️ 5s×3 크로스디졸브)", _ => "(3x 고속 슬로우)" }));
         }
         catch (OperationCanceledException) { TryDeletePartial(full, source); return new(false, false, source, 1, "취소됨 — 원본 5s 유지"); }
         catch (Exception ex)

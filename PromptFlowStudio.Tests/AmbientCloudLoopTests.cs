@@ -4,7 +4,7 @@ using PromptFlowStudio.Services.Wan;
 
 namespace PromptFlowStudio.Tests;
 
-/// <summary>15초 앰비언트 Cloud — Wan 2.1 5초 요청 · 3세그먼트 핑퐁/크로스디졸브 확장 · Cloud 오류 명시(Mock 무폴백) · 옵시디언 Mock 회귀 잠금.</summary>
+/// <summary>15초 앰비언트 Cloud — Wan 2.1 5초 요청 · 1.5x 정·역 2세그먼트 핑퐁/3세그먼트 크로스디졸브 확장 · Cloud 오류 명시(Mock 무폴백) · 옵시디언 Mock 회귀 잠금.</summary>
 [Trait("Category", "FastUnit")]
 public class AmbientCloudLoopTests : IDisposable
 {
@@ -92,10 +92,11 @@ public class AmbientCloudLoopTests : IDisposable
         if (pingPong)
         {
             Assert.Equal(AmbientLoopService.BuildTriplePingPongFilterGraph(), graph);
-            Assert.Contains("split=3", graph);
-            Assert.Contains("reverse", graph);
-            Assert.Contains("concat=n=3:v=1:a=0", graph);
-            Assert.DoesNotContain("setpts=1.5", graph);   // 원속도(슬로우 아님)
+            // 무이음새 2세그먼트: 1.5배 슬로우 정방향 7.5s + 역방향 7.5s = 15.00s (t=0 ≡ t=15 프레임)
+            Assert.Equal("[0:v]setpts=1.5*PTS,fps=30,split=2[v0][v1];[v1]reverse[v2];[v0][v2]concat=n=2:v=1:a=0[outv]", graph);
+            Assert.DoesNotContain("split=3", graph);
+            Assert.DoesNotContain("concat=n=3", graph);
+            Assert.Equal(15.00, (double)cloud.Seen.Duration!.Value * AmbientLoopService.PingPongSlowFactor * 2, 3);
         }
         else
         {

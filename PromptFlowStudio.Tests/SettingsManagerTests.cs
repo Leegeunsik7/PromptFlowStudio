@@ -310,4 +310,48 @@ public class SettingsManagerTests
         }
         finally { try { Directory.Delete(Path.GetDirectoryName(path)!, recursive: true); } catch (IOException) { } }
     }
+
+    [Fact]
+    [Trait("Category", "FastUnit")]
+    public void SettingsManager_MirrorsOnSave_AndRestoresWhenLocalMissing()
+    {
+        var path = TempFile();
+        var root = Path.GetDirectoryName(path)!;
+        var mirror = Path.Combine(root, "drive");
+        var local = Path.Combine(root, "local", AppSettingsManager.FileName);
+        try
+        {
+            var m = new AppSettingsManager(Bundled(), local, mirror);
+            Assert.False(m.RestoredFromMirror);
+            Assert.True(m.Save("http://192.168.0.9:8188/", "Mock"));
+            var mirrored = Path.Combine(mirror, AppSettingsManager.FileName);
+            Assert.True(File.Exists(mirrored));
+            Assert.Equal(File.ReadAllText(local), File.ReadAllText(mirrored));
+            Assert.False(File.Exists(mirrored + ".tmp"));
+            Assert.Null(m.LastMirrorError);
+
+            // 로컬 유실 → 시작 시 미러에서 자동 복원
+            File.Delete(local);
+            var restored = new AppSettingsManager(Bundled(), local, mirror);
+            Assert.True(restored.RestoredFromMirror);
+            Assert.True(restored.LoadedFromUser);
+            Assert.Equal("http://192.168.0.9:8188", restored.ComfyUiUrl);
+            Assert.Equal(RenderEngineKind.Mock, restored.RenderMode);
+
+            // 로컬 존재 시 미러로 덮어쓰지 않음
+            File.WriteAllText(mirrored, "{\"ComfyUiUrl\":\"http://10.9.9.9:8188\",\"RenderMode\":\"Cloud\"}");
+            var keep = new AppSettingsManager(Bundled(), local, mirror);
+            Assert.False(keep.RestoredFromMirror);
+            Assert.Equal("http://192.168.0.9:8188", keep.ComfyUiUrl);
+
+            // 손상 미러는 복원하지 않음
+            File.Delete(local);
+            File.WriteAllText(mirrored, "{ broken");
+            var broken = new AppSettingsManager(Bundled(), local, mirror);
+            Assert.False(broken.RestoredFromMirror);
+            Assert.False(File.Exists(local));
+            Assert.NotNull(broken.LastMirrorError);
+        }
+        finally { try { Directory.Delete(root, recursive: true); } catch (IOException) { } }
+    }
 }
