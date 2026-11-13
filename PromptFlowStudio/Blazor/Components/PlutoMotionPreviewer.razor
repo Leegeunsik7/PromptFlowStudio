@@ -54,6 +54,8 @@
     /// <summary>BGM WAV URL(null → BGM 없음 · SFX 만).</summary>
     [Parameter] public string? BgmUrl { get; set; }
     [Parameter] public double BgmVolume { get; set; } = 0.25;
+    /// <summary>🎵 커스텀 BGM 하이라이트(data: 또는 가상호스트 URL · null → <see cref="BgmUrl"/> 합성 트랙). 설정 시 주 BGM 트랙으로 대체.</summary>
+    [Parameter] public string? CustomBgmDataUrl { get; set; }
     /// <summary>🎞 멀티컷 몽타주 프리뷰(null → 단일 사진 모드). 클립 2~5장 이미지 · 클립별 궤적 · xfade · 색보정.</summary>
     [Parameter] public PlutoMontagePreviewPlan? MontagePlan { get; set; }
 
@@ -61,7 +63,7 @@
     private DotNetObjectReference<PlutoMotionPreviewer>? _self;
     private bool _ready, _playing, _disposed;
     private string _contractJson = "", _subsJson = "";
-    private string? _pushedContract, _pushedSubs, _pushedImage, _pushedBgm;
+    private string? _pushedContract, _pushedSubs, _pushedImage, _pushedBgm, _pushedCustomBgm;
     private double _pushedVolume = double.NaN;
     private PlutoMontagePreviewPlan? _montageSource;
     private string? _montageJson, _pushedMontage;
@@ -89,6 +91,16 @@
         else await js.InvokeAsync<bool>("plutoMotionPreviewer.setMontagePlan", _root, _montageJson);
     }
 
+    /// <summary>🎵 커스텀 BGM → JS(null → 합성 트랙 복귀). 바뀐 경우에만 전송.</summary>
+    private async Task PushCustomBgmAsync(IJSRuntime js)
+    {
+        var url = string.IsNullOrWhiteSpace(CustomBgmDataUrl) ? null : CustomBgmDataUrl;
+        if (string.Equals(_pushedCustomBgm, url, StringComparison.Ordinal)) return;
+        _pushedCustomBgm = url;
+        if (url is null) await js.InvokeAsync<bool>("plutoMotionPreviewer.clearCustomBgm", _root);
+        else await js.InvokeAsync<bool>("plutoMotionPreviewer.setCustomBgm", _root, url);
+    }
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (_disposed || Js is not { } js) return;
@@ -101,6 +113,7 @@
                 if (!_ready) return;
                 _pushedContract = _contractJson; _pushedSubs = _subsJson; _pushedImage = ImageUrl; _pushedBgm = BgmUrl; _pushedVolume = BgmVolume;
                 await PushMontageAsync(js);
+                await PushCustomBgmAsync(js);
                 return;
             }
             // 🔁 핫스왑 — 바뀐 항목만 전송(재생/플레이헤드 유지).
@@ -120,6 +133,7 @@
                 await js.InvokeAsync<bool>("plutoMotionPreviewer.setBgm", _root, BgmUrl, BgmVolume);
             }
             await PushMontageAsync(js);
+            await PushCustomBgmAsync(js);
         }
         catch (Exception ex) when (IsBenign(ex)) { /* WebView 해제/스크립트 미로드 — 미리보기 전용 · 전파 금지 */ }
     }

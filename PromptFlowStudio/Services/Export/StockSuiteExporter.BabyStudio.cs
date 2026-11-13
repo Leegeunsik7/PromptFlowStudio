@@ -607,10 +607,20 @@ public sealed partial class StockSuiteExporter
     /// <param name="bgm">BGM 트랙(null → <see cref="BabyBgm"/> → 자장가).</param>
     /// <param name="includeSfx">SFX 믹스(null → ON).</param>
     /// <param name="outputPath">출력 MP4 경로(null → <c>{출력 폴더}/{이미지명}_kenburns.mp4</c>).</param>
+    /// <param name="customBgmWavBytes">🎵 커스텀 BGM 하이라이트 WAV(null/빈 → 선택 트랙) — 비트 스냅 · 사이드체인 더킹(−4 dB) · 트루피크 마스터링(−14 LUFS / −1 dBTP) 동일 경로.</param>
     public async Task<StockSuiteExportResult> ExportMotionVideoFromPhotoAsync(string imagePath, Pluto.PlutoMotionTrajectory trajectory, ExportOptions options,
-        IReadOnlyList<SubtitleCue>? subtitles = null, BabyBgmTrack? bgm = null, bool? includeSfx = null, string? outputPath = null, CancellationToken ct = default)
+        IReadOnlyList<SubtitleCue>? subtitles = null, BabyBgmTrack? bgm = null, bool? includeSfx = null, string? outputPath = null, CancellationToken ct = default,
+        byte[]? customBgmWavBytes = null)
     {
         ct.ThrowIfCancellationRequested();
+        var custom = BeginCustomBgm(customBgmWavBytes);
+        try { return await ExportMotionVideoCoreAsync(imagePath, trajectory, options, subtitles, bgm, includeSfx, outputPath, ct).ConfigureAwait(false); }
+        finally { EndCustomBgm(custom); }
+    }
+
+    private async Task<StockSuiteExportResult> ExportMotionVideoCoreAsync(string imagePath, Pluto.PlutoMotionTrajectory trajectory, ExportOptions options,
+        IReadOnlyList<SubtitleCue>? subtitles, BabyBgmTrack? bgm, bool? includeSfx, string? outputPath, CancellationToken ct)
+    {
         if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath)) return new StockSuiteExportResult(false, null, false, "원본 사진을 찾을 수 없습니다.");
         if (options is null) return new StockSuiteExportResult(false, null, false, "옵션이 없습니다.");
         trajectory ??= Pluto.PlutoMotionTrajectory.Empty;
@@ -677,7 +687,7 @@ public sealed partial class StockSuiteExporter
             var mixed = await MuxBabyAudioIntoPrimaryAsync(target, ct).ConfigureAwait(false);
             tag += mixed < 0
                 ? "⚠ 오디오 생략 · 🔇 무음"
-                : "🔊 BGM · " + BabyBgmTag + BabyBgmLabel(BabyBgm.Value) + (mixed > 0 ? " · " + SfxTag + mixed.ToString(CultureInfo.InvariantCulture) + "큐" : "");
+                : "🔊 BGM · " + BabyBgmTag + ActiveBgmLabel(BabyBgm.Value) + (mixed > 0 ? " · " + SfxTag + mixed.ToString(CultureInfo.InvariantCulture) + "큐" : "");
             return new StockSuiteExportResult(true, target, false, tag) { HasAudio = mixed >= 0 };
         }
         catch (OperationCanceledException) { TryDelete(temp); throw; }
@@ -693,6 +703,54 @@ public sealed partial class StockSuiteExporter
             IncludeSfx = prevSfx;
             SubtitleCues = prevCues;
         }
+    }
+
+    // ── 🎵 커스텀 BGM(사용자 업로드 하이라이트) ──
+    public const string CustomBgmLabel = "🎧 커스텀 BGM";
+    private bool _customBgmActive;
+
+    /// <summary>🎵 진행 중 내보내기 BGM 라벨(커스텀 활성 → <see cref="CustomBgmLabel"/>).</summary>
+    private string ActiveBgmLabel(BabyBgmTrack track) => _customBgmActive ? CustomBgmLabel : BabyBgmLabel(track);
+
+    private sealed record CustomBgmScope(string Path, Func<BabyBgmTrack, double, string?> PrevResolver, bool PrevActive);
+
+    /// <summary>
+    /// 🎵 커스텀 WAV → 임시 파일 → <see cref="BabyBgmResolver"/> 일시 교체(비트 스냅 · 마스터링 · 더킹 · 먹싱 전 경로가 동일 파일 사용).
+    /// null/빈/비정상 WAV → null(선택 트랙 유지 · 경고 로그).
+    /// </summary>
+    private CustomBgmScope? BeginCustomBgm(byte[]? wav)
+    {
+        if (wav is not { Length: > 0 }) return null;
+        if (!Pluto.Dsp.PlutoPcmWav.TryReadHeader(wav, out _))
+        {
+            Program.Log("StockSuite.CustomBgm", new InvalidDataException("⚠ 커스텀 BGM WAV 헤더 무효 → 기본 트랙 폴백"));
+            return null;
+        }
+        var dir = string.IsNullOrWhiteSpace(MasteringTempDir) ? Path.Combine(Path.GetTempPath(), "PromptFlowStudio", "master") : MasteringTempDir;
+        var path = Path.Combine(dir, "custom_bgm_" + Guid.NewGuid().ToString("N") + ".wav");
+        try
+        {
+            Directory.CreateDirectory(dir);
+            File.WriteAllBytes(path, wav);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Program.Log("StockSuite.CustomBgm", ex);
+            TryDelete(path);
+            return null;
+        }
+        var scope = new CustomBgmScope(path, BabyBgmResolver, _customBgmActive);
+        BabyBgmResolver = (_, _) => path;
+        _customBgmActive = true;
+        return scope;
+    }
+
+    private void EndCustomBgm(CustomBgmScope? scope)
+    {
+        if (scope is null) return;
+        BabyBgmResolver = scope.PrevResolver;
+        _customBgmActive = scope.PrevActive;
+        TryDelete(scope.Path);
     }
 
     // ══════════════════════ 🎞️ 멀티컷 몽타주(사진 2~5장 → 15초 60fps · 자동 색보정 · 비트 xfade) ══════════════════════
@@ -771,7 +829,8 @@ public sealed partial class StockSuiteExporter
     /// </summary>
     /// <param name="preferredLook">룩 후보(null → NaturalPastel) — <see cref="Pluto.PlutoColorGradingCompiler.SelectLook"/> 결과 권장.</param>
     public async Task<StockSuiteExportResult> ExportMontageVideoFromPhotosAsync(IReadOnlyList<string> imagePaths, IReadOnlyList<(double X, double Y)>? focalPoints, ExportOptions options,
-        IReadOnlyList<SubtitleCue>? subtitles = null, BabyBgmTrack? bgm = null, bool includeSfx = true, string? preferredLook = null, string? outputPath = null, CancellationToken ct = default)
+        IReadOnlyList<SubtitleCue>? subtitles = null, BabyBgmTrack? bgm = null, bool includeSfx = true, string? preferredLook = null, string? outputPath = null, CancellationToken ct = default,
+        byte[]? customBgmWavBytes = null)
     {
         ct.ThrowIfCancellationRequested();
         if (options is null) return new StockSuiteExportResult(false, null, false, "옵션이 없습니다.");
@@ -789,8 +848,11 @@ public sealed partial class StockSuiteExporter
         var prevSfx = IncludeSfx;
         var prevCues = SubtitleCues;
         string? temp = null;
+        CustomBgmScope? custom = null;
         try
         {
+            custom = BeginCustomBgm(customBgmWavBytes);   // 🎵 동시 실행 가드 통과 후에만 해석기 교체
+
             var uhd = options.Resolution == StockSuiteResolution.Uhd4K;
             int width = uhd ? 2160 : Pluto.PlutoMotionCompiler.DefaultWidth, height = uhd ? 3840 : Pluto.PlutoMotionCompiler.DefaultHeight;
             const int fps = Pluto.PlutoMotionCompiler.DefaultFps;
@@ -869,7 +931,7 @@ public sealed partial class StockSuiteExporter
             var mixed = await MuxBabyAudioIntoPrimaryAsync(target, ct).ConfigureAwait(false);
             tag += mixed < 0
                 ? "⚠ 오디오 생략 · 🔇 무음"
-                : "🔊 BGM · " + BabyBgmTag + BabyBgmLabel(track) + (mixed > 0 ? " · " + SfxTag + mixed.ToString(inv) + "큐" : "");
+                : "🔊 BGM · " + BabyBgmTag + ActiveBgmLabel(track) + (mixed > 0 ? " · " + SfxTag + mixed.ToString(inv) + "큐" : "");
             return new StockSuiteExportResult(true, target, false, tag) { HasAudio = mixed >= 0 };
         }
         catch (OperationCanceledException) { throw; }
@@ -881,6 +943,7 @@ public sealed partial class StockSuiteExporter
         finally
         {
             if (temp is not null) TryDelete(temp);
+            EndCustomBgm(custom);
             BabyBgm = prevBgm;
             IncludeSfx = prevSfx;
             SubtitleCues = prevCues;

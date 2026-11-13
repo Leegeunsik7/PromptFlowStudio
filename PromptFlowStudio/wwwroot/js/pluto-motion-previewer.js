@@ -438,13 +438,25 @@
             inst.bgmBus.connect(inst.master);
             inst.sfx = [synthSfx(ac, 0), synthSfx(ac, 1), synthSfx(ac, 2)];
             inst.ac = ac;
-            if (inst.bgmUrl) loadBgm(inst);
+            if (activeBgmUrl(inst)) loadBgm(inst);
         } catch (e) { inst.audioFailed = true; inst.ac = null; }
         return inst.ac;
     }
 
+    // 🎵 커스텀 BGM(업로드 하이라이트 data:/가상호스트 URL) 우선 · 없으면 합성 트랙.
+    function activeBgmUrl(inst) { return inst.customBgmUrl || inst.bgmUrl; }
+
+    // 활성 BGM 소스 교체 → 버퍼 무효화 후 재디코드(재생 중이면 재배치 · 빈 소스 → 무음 폴백).
+    function reloadBgm(inst) {
+        if (!activeBgmUrl(inst)) {
+            inst.bgmSeq++;
+            inst.bgmBuf = null;
+            if (inst.playing && inst.clockMode === 1 && !inst.scrubbing) schedule(inst);
+        } else if (inst.ac) loadBgm(inst);
+    }
+
     function loadBgm(inst) {
-        var ac = inst.ac, url = inst.bgmUrl, seq = ++inst.bgmSeq;
+        var ac = inst.ac, url = activeBgmUrl(inst), seq = ++inst.bgmSeq;
         if (!ac || !url) return;
         fetch(url).then(function (r) {
             if (!r.ok) throw new Error('bgm ' + r.status);
@@ -627,7 +639,7 @@
                 t: 0, rate: 1, playing: false, starting: false, scrubbing: false, raf: 0,
                 clockMode: 0, anchorT: 0, anchorClock: 0, lastCt: -1, lastCtPerf: 0, lastCs: -1, lastDur: -1,
                 ac: null, audioFailed: false, master: null, bgmBus: null, sfx: null, voices: [],
-                bgmUrl: bgmUrl || null, bgmBuf: null, bgmSeq: 0, bgmVolume: isFinite(bgmVolume) ? clamp(+bgmVolume, 0, 1) : 0.25,
+                bgmUrl: bgmUrl || null, customBgmUrl: null, bgmBuf: null, bgmSeq: 0, bgmVolume: isFinite(bgmVolume) ? clamp(+bgmVolume, 0, 1) : 0.25,
                 tick: null, onKey: null, onInput: null, onChange: null
             };
             inst.tick = function () { frame(inst); };
@@ -683,11 +695,25 @@
             url = url || null;
             if (url === inst.bgmUrl) return true;
             inst.bgmUrl = url;
-            if (!url) {
-                inst.bgmSeq++;
-                inst.bgmBuf = null;
-                if (inst.playing && inst.clockMode === 1 && !inst.scrubbing) schedule(inst);
-            } else if (inst.ac) loadBgm(inst);
+            if (!inst.customBgmUrl) reloadBgm(inst);                     // 커스텀 BGM 활성 중엔 합성 트랙 교체가 들리지 않음
+            return true;
+        },
+        // 🎵 커스텀 BGM — 업로드 하이라이트(15초) AudioBuffer 를 주 BGM 트랙으로 사용(decodeAudioData · 마스터 클록 동기 유지).
+        setCustomBgm: function (root, dataUrl) {
+            var inst = get(root);
+            if (!inst) return false;
+            dataUrl = dataUrl || null;
+            if (dataUrl === inst.customBgmUrl) return true;
+            inst.customBgmUrl = dataUrl;
+            reloadBgm(inst);
+            return true;
+        },
+        clearCustomBgm: function (root) {
+            var inst = get(root);
+            if (!inst) return false;
+            if (!inst.customBgmUrl) return true;
+            inst.customBgmUrl = null;
+            reloadBgm(inst);                                              // 합성 트랙 복귀
             return true;
         },
         play: function (root) { var inst = get(root); if (inst) play(inst); },

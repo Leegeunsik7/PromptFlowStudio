@@ -129,6 +129,18 @@ public static partial class PlutoMotionCompiler
         var q = quantizer ?? Dsp.PlutoBeatSyncQuantizer.Shared;
         return new PlutoBeatSyncedPreview(q.QuantizeTrajectory(traj, grid.Beats), q.QuantizeSfxCues(baseCues, grid.Beats), grid.Bpm, grid.Beats.Count, true);
     }
+
+    /// <summary>🎵 기지 비트(커스텀 BGM 하이라이트 상대 비트) → 막 경계 · SFX 큐 스냅. 빈 비트 → Applied=false(원본 궤적 · 기본 큐).</summary>
+    public static PlutoBeatSyncedPreview BuildBeatSyncedPreview(PlutoMotionTrajectory? baseTrajectory, IReadOnlyList<double>? beats, double bpm,
+        Dsp.IPlutoBeatSyncQuantizer? quantizer = null)
+    {
+        var traj = baseTrajectory ?? PlutoMotionTrajectory.Empty;
+        var dur = traj.DurationSec;
+        var baseCues = PlutoSfxDirector.Shared.BuildCueSheet(dur > 0 ? dur : FourActDurationSec);
+        if (beats is not { Count: > 0 }) return new PlutoBeatSyncedPreview(traj, baseCues, 0, 0, false);
+        var q = quantizer ?? Dsp.PlutoBeatSyncQuantizer.Shared;
+        return new PlutoBeatSyncedPreview(q.QuantizeTrajectory(traj, beats), q.QuantizeSfxCues(baseCues, beats), bpm, beats.Count, true);
+    }
 }
 
 /// <summary>

@@ -1,19 +1,18 @@
 # Current Project Status
-- Active Milestone: 【Pluto 사진별 초점 · 멀티컷 60fps 캔버스 프리뷰】 2~5장 몽타주 엔드투엔드
+- Active Milestone: 【Pluto 커스텀 BGM 업로드 · 15초 하이라이트 자동 추출】 프리뷰/익스포트 비트 동기 엔드투엔드
 - Build: ✅ Release `-warnaserror -p:NuGetAudit=false` 0/0 (PromptFlowStudio · Tests)
-- Tests: ✅ 1086/1086 PASS (Focal|Montage|Previewer 필터 16/16)
+- Tests: ✅ 1092/1092 PASS (Highlight|CustomBgm|Dsp|BeatSync 필터 37/37)
 - Updated: 2026-11-13 (KST)
 
 ## Completed
-- 🎯 `PlutoImageFocalDetector`: ≤96px 그리드 · 피부톤 +2.5 · 1.5·|ΔY| · 중앙 가우시안(0.5, 0.42, σ 0.28) 가중 중심 → [0.2, 0.8]² · 비Windows/판독 불가 → (0.50, 0.42)
-- 🎯 배치: 로컬 전량 → Vision 설정 시 병렬 보정(Semaphore 3 · 4초) · 실패/시간 초과 → 로컬 유지 · DI 양쪽 등록
-- 🎞 `PlutoMontageCompiler.Preview`: `PlutoMontagePreviewPlan`/`Clip`/`PlutoPreviewColorGrade` · 클립별 궤적 계약 · Utf8JsonWriter JSON
-- 🖼 JS `setMontagePlan`/`clearMontagePlan`: 클립 이미지 선로드(URL 재사용) · 클립 로컬 시간 궤적 · xfade α 블렌드 · `ctx.filter` 색보정 + 웜 오버레이 · 자막 전 `filter=none`
-- 🧩 `PlutoMotionPreviewer.MontagePlan` 파라미터(참조 변경 시만 재직렬화 · null → 단일 모드)
-- 🖥️ Workspace: 2~5장 → 초점·색·비트 → 프리뷰 플랜 바인딩(세대 가드) · 렌더 시 동일 사진별 초점 전달
-- 🧪 `PlutoPerPhotoFocalAndPreviewTests` 4종
+- 🎵 `PlutoAudioHighlightExtractor`: N=2048/H=512 · 0.50·RMS+0.35·Flux+0.15·Centroid 누적합 · 0.25s 슬라이딩 · 25s↑ 경계 2s −0.08 · ±0.5s 비트 스냅 · 30ms/250ms 페이드 · 짧은 곡 0 패딩 · 스트리밍 프레임 디코드
+- 🎵 `PlutoCustomBgmService`: 25MB 가드 · WAV 직통 · 압축 포맷 FFmpeg(48k/2ch/pcm_s16le · 60s 타임아웃 · 8분 상한) · 임시 파일 finally 정리 · 디코드 캐시(넛지 재사용) · DI 양쪽
+- 🎛️ `StockSuiteExporter`: 모션/몽타주 `customBgmWavBytes`(기본 null) → 해석기 일시 교체 → 비트 스냅 · 더킹 · 트루피크 마스터링 동일 경로 · 라벨 `🎧 커스텀 BGM`
+- 🎞 JS `setCustomBgm`/`clearCustomBgm` · `PlutoMotionPreviewer.CustomBgmDataUrl`
+- 🖥️ Workspace: 업로드 · 하이라이트/BPM 배지 · ◀ -1s / +1s ▶ · ✕ 기본 BGM · 단일 궤적/몽타주 하이라이트 비트 재정렬
+- 🧪 `PlutoCustomBgmHighlightTests` 6종
 
 ## Notes
-- 스펙 편차: 클립 `Trajectory` 타입은 기존 `PlutoMotionPreviewContract` 재사용(JS 파서 공유)
-- `PlutoVisionStorySynthesizer.IsVisionConfigured` 추가(비전 경로 사전 점검)
-- Mobile(MAUI) 빌드 · 실제 브라우저 캔버스 렌더 미검증
+- 프리뷰는 data URL 대신 가상호스트 WAV URL 전달(15초 WAV ≈ 2.9MB → JS interop 부담 회피)
+- 수동 넛지(`ExtractWindowAt`)는 스냅 없이 정확한 오프셋 유지
+- Mobile(MAUI) 빌드 · 실제 FFmpeg 압축 디코드 · 브라우저 재생 미검증
