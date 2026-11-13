@@ -85,6 +85,9 @@ public sealed record WanVideoRequest
     /// <summary>v15.2.1: 네거티브 프롬프트(input.negative_prompt, 서버 제한 500자). 비어 있으면 필드 생략 — 기존 페이로드와 동일.</summary>
     public string? NegativePrompt { get; init; }
 
+    /// <summary>클립 길이(초, parameters.duration). null 이면 필드 생략(서버 기본). Wan 2.1 T2V/I2V 는 5초만 허용 — 앰비언트 15초는 5초 요청 후 FFmpeg 루프 확장.</summary>
+    public int? Duration { get; init; }
+
     /// <summary>v15.4.0: Wan 2.1 튜너 값(스텝·CFG·모션 버킷·얼굴 보정·60FPS 보간). null 이면 엔진 기본값.
     ///   DashScope 는 해당 파라미터를 받지 않아 Seed 만 반영되고, 로컬 CLI 엔진은 인자 템플릿 자리표시자로 전달된다.</summary>
     public WanTuning? Tuning { get; init; }

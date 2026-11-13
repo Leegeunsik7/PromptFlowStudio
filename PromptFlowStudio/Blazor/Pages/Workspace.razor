@@ -3403,6 +3403,8 @@
         var meta = _durationMode == PromptFlowStudio.Services.Render.VideoDurationMode.Sec15_AmbientSlow && _ambientPingPong
             ? new Dictionary<string, string>(StringComparer.Ordinal) { [PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.MetaAmbientPingPong] = "true" }
             : null;
+        if (!string.IsNullOrWhiteSpace(_baby.NegativePrompt))   // ☁️ Cloud 요청에 네거티브 프롬프트 전달
+            meta = PromptFlowStudio.Services.Render.MultiDurationPlanner.WithMeta(meta, PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.MetaNegativePrompt, _baby.NegativePrompt!);
         var template = new PromptFlowStudio.Services.Batch.BatchRenderJob
         {
             Prompt = prompt,

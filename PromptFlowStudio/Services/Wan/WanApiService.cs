@@ -187,6 +187,7 @@ public sealed class WanApiService(IWanConfigService cfg, QuotaRateGuardService g
 
         var negative = (request.NegativePrompt ?? "").Trim();
         if (negative.Length > 0) input.NegativePrompt = negative.Length > 500 ? negative[..500] : negative;
+        if (request.Duration is int dur && dur > 0) parameters.Duration = dur;   // null → 필드 생략(기존 페이로드 동일)
 
         var payload = new DashScopeSubmitBody { Model = model, Input = input, Parameters = parameters };
         var baseUrl = BaseFor(provider);

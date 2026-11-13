@@ -31,6 +31,7 @@ internal sealed class DashScopeParameters
     [JsonPropertyName("prompt_extend")] public bool PromptExtend { get; set; }
     [JsonPropertyName("watermark")]     public bool? Watermark { get; set; }
     [JsonPropertyName("seed")]          public int? Seed { get; set; }
+    [JsonPropertyName("duration")]      public int? Duration { get; set; }
 }
 
 /// <summary>SiliconFlow /v1/video/submit 요청 본문(i2v image 필드는 Base64ImageJsonContent 가 스트리밍 부착).</summary>

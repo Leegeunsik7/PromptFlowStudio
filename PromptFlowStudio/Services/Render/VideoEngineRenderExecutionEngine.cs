@@ -63,16 +63,35 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
     /// <summary>Cloud(DashScope) 오류 접두 — 작업실 인라인 오류 식별용.</summary>
     public const string CloudErrorPrefix = "☁️ DashScope 오류: ";
 
-    public bool IsAvailable => !(ForceSimulation?.Invoke() ?? false) && TryGetActive() is { Enabled: true };
+    /// <summary>
+    /// 실행 가능 — 활성 엔진 구성됨, 또는 [환경설정] 렌더 모드가 명시적 Cloud(엔진 미구성이어도 true → <see cref="ExecuteAsync"/> 가 명시 오류로 Failed 처리,
+    /// 큐가 Mock 컬러바로 조용히 폴백하지 않게 함).
+    /// </summary>
+    public bool IsAvailable => !(ForceSimulation?.Invoke() ?? false) && (TryGetActive() is { Enabled: true } || IsExplicitCloud());
 
-    public string EngineKind => KindOf(TryGetActive());
+    public string EngineKind => IsExplicitCloud() && TryGetActive() is not { Enabled: true } ? RenderEngineKind.Cloud : KindOf(TryGetActive());
+
+    /// <summary>Cloud 엔진 미구성 시 오류 본문(작업실 배너 노출).</summary>
+    public const string CloudNotConfiguredMessage = "[인증 실패] Cloud(DashScope Wan 2.1) 엔진이 비활성입니다 — API 키 미구성/소진. [환경설정]에서 DashScope 키를 확인하세요 (Mock 대체 생성 안 함)";
+
+    /// <summary>[환경설정] 렌더 모드가 Cloud 로 명시됐는지(공급자 미설정/예외 = false).</summary>
+    internal bool IsExplicitCloud()
+    {
+        string? mode;
+        try { mode = RenderMode?.Invoke(); } catch (Exception ex) { Program.Log("RenderExec.Mode", ex); return false; }
+        return !string.IsNullOrWhiteSpace(mode)
+               && string.Equals(PromptFlowStudio.Services.Configuration.AppSettingsManager.NormalizeMode(mode), RenderEngineKind.Cloud, StringComparison.OrdinalIgnoreCase);
+    }
 
     public async Task<RenderExecutionResult> ExecuteAsync(BatchRenderJob job, IProgress<int> progress, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(job);
         var engine = TryGetActive();
         var kind = KindOf(engine);
-        if (engine is not { Enabled: true }) return new RenderExecutionResult(false, kind, null, "렌더 엔진 미설정");
+        if (engine is not { Enabled: true })
+            return IsExplicitCloud()
+                ? new RenderExecutionResult(false, RenderEngineKind.Cloud, null, CloudErrorPrefix + CloudNotConfiguredMessage)
+                : new RenderExecutionResult(false, kind, null, "렌더 엔진 미설정");
 
         var request = BuildRequest(job);
         // ☁️ 클라우드 발번 즉시 저널링(task_id 첫 보고 1회) — 단절·재시작 복구용
@@ -130,7 +149,7 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
             output = job.OutputPath;
         }
         output = await ApplyCommercialOverlayAsync(job, output, ct).ConfigureAwait(false);
-        output = await ApplyAmbientLoopAsync(job, output, ct).ConfigureAwait(false);
+        output = await ApplyAmbientLoopAsync(job, output, ct, cloud: string.Equals(kind, RenderEngineKind.Cloud, StringComparison.Ordinal)).ConfigureAwait(false);
         journal?.Remove(journalTaskId);   // 로컬 저장 완료 → 저널 안전 제거
         return new RenderExecutionResult(true, kind, output, r.Message);
     }
@@ -180,15 +199,17 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
     /// <summary>
     /// <see cref="VideoDurationMode.Sec15_AmbientSlow"/> 후처리 — 로컬 5초 산출물을 <c>{project}_ambient15s.mp4</c> 무음 15초 루프로 변환해 최종 산출물로 확정.
     /// ffmpeg 부재/실패는 원본 5초 유지(Graceful). 결과는 메타 <see cref="MetaAmbientApplied"/>.
+    /// <paramref name="cloud"/>=true(Wan 2.1 5초 클립): 원속도 3세그먼트 — 핑퐁 체크 시 정→역→정(<see cref="LoopMode.TriplePingPong"/>), 해제 시 0.75s 크로스디졸브(<see cref="LoopMode.TripleCrossfade"/>).
     /// </summary>
-    internal async Task<string> ApplyAmbientLoopAsync(BatchRenderJob job, string output, CancellationToken ct)
+    internal async Task<string> ApplyAmbientLoopAsync(BatchRenderJob job, string output, CancellationToken ct, bool cloud = false)
     {
         var ambient = Ambient;
         if (ambient is null || !job.IsAmbientLoop || !Path.IsPathRooted(output) || !File.Exists(output)) return output;
         var project = MultiDurationPlanner.MetaOf(job, MultiDurationPlanner.MetaProject);
         var target = MultiDurationPlanner.BuildOutputPath(Path.GetDirectoryName(output) ?? "", project, VideoDurationMode.Sec15_AmbientSlow);
         var pingPong = string.Equals(MultiDurationPlanner.MetaOf(job, MetaAmbientPingPong), "true", StringComparison.OrdinalIgnoreCase);
-        var mode = pingPong ? LoopMode.PingPong : AmbientLoopService.ParseLoopMode(MultiDurationPlanner.MetaOf(job, MetaAmbientLoopMode));
+        var mode = cloud ? (pingPong ? LoopMode.TriplePingPong : LoopMode.TripleCrossfade)
+                 : pingPong ? LoopMode.PingPong : AmbientLoopService.ParseLoopMode(MultiDurationPlanner.MetaOf(job, MetaAmbientLoopMode));
         var res = await ambient.RenderAsync(output, target, mode, ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
         var state = res.Ok ? "applied" : res.IsVirtual ? "virtual" : "failed";
@@ -234,7 +255,16 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
         Size = ToEngineSize(job.Resolution),
         Seed = job.Seed,
         ImagePath = ResolveReferenceImage(job.ReferenceImagePath),
+        NegativePrompt = MultiDurationPlanner.MetaOf(job, MetaNegativePrompt) is { Length: > 0 } neg ? neg : null,
+        // 🌫️ 앰비언트 15초: Wan 2.1 은 5초만 허용 → 항상 5초 요청 후 FFmpeg 로 15초 루프 확장(15 직접 요청 금지)
+        Duration = job.IsAmbientLoop ? AmbientCloudClipSeconds : null,
     };
+
+    /// <summary>앰비언트 Cloud 요청 클립 길이(초) — Wan 2.1 허용 최대치.</summary>
+    public const int AmbientCloudClipSeconds = 5;
+
+    /// <summary>작업 메타 — 네거티브 프롬프트(작업실 → 엔진 요청 전달).</summary>
+    public const string MetaNegativePrompt = "prompt.negative";
 
     /// <summary>실존 로컬 이미지면 전체 경로, 아니면 null(T2V).</summary>
     internal static string? ResolveReferenceImage(string? path)
@@ -375,13 +405,35 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
     /// Mock 샘플 ffmpeg 인자 — <c>-y -f lavfi -i testsrc=duration=5:size=WxH:rate=30 -c:v libx264 -pix_fmt yuv420p {out}</c>.
     /// 해상도 파싱 실패 시 1280x720.
     /// </summary>
-    internal static string[] BuildMockArgs(string? resolution, string output)
+    internal static string[] BuildMockArgs(string? resolution, string output, bool ambient = false)
     {
         var size = ToEngineSize(resolution)?.Replace('*', 'x') ?? "1280x720";
         if (!IsValidSize(size)) size = "1280x720";
+        if (ambient)
+            return ["-y", "-f", "lavfi", "-i", "color=c=0x07090E:s=" + ObsidianBaseSize + ":r=30:d=" + MockDurationSec.ToString(CultureInfo.InvariantCulture),
+                    "-vf", BuildObsidianPulseFilter(size), "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", output];
         return ["-y", "-f", "lavfi", "-i", "testsrc=duration=" + MockDurationSec.ToString(CultureInfo.InvariantCulture) + ":size=" + size + ":rate=30",
                 "-c:v", "libx264", "-pix_fmt", "yuv420p", output];
     }
+
+    /// <summary>
+    /// 🌑 Mock 앰비언트 — 옵시디언(#07090E) 바탕 동심원 펄스(앰버/시안 교차 · 중심 감쇠) + 비네트. 방송 컬러바 대체.
+    /// geq 는 픽셀당 연산이 무거워 <see cref="ObsidianBaseSize"/> 저해상도로 생성 후 bicubic 업스케일(링이 부드러워 손실 없음).
+    /// </summary>
+    internal static string BuildObsidianPulseFilter(string size)
+        => "format=gbrp,geq="
+           + "r='" + ObsidianRing + "7+30*ld(2)+6*ld(3)'"
+           + ":g='" + ObsidianRing + "9+20*ld(2)+24*ld(3)'"
+           + ":b='" + ObsidianRing + "14+6*ld(2)+30*ld(3)'"
+           + ",scale=" + size.Replace('x', ':') + ":flags=bicubic,vignette=PI/4,format=yuv420p";
+
+    /// <summary>Mock 앰비언트 geq 생성 해상도.</summary>
+    internal const string ObsidianBaseSize = "320x180";
+
+    // ld(0)=중심 거리 · ld(1)=중심 감쇠 · ld(2)=앰버 링 · ld(3)=시안 링(반 위상)
+    private const string ObsidianRing =
+        "st(0,hypot(X-W/2,Y-H/2));st(1,exp(-ld(0)/(W*0.3)));"
+        + "st(2,pow(0.5+0.5*sin(ld(0)/5.5-T*2.2),6)*ld(1));st(3,pow(0.5+0.5*sin(ld(0)/5.5-T*2.2+PI),6)*ld(1));";
 
     private static bool IsValidSize(string s)
     {
@@ -403,7 +455,7 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
         var output = job.OutputPath;
         var dir = Path.GetDirectoryName(output);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-        var ok = await (MockRunner ?? DefaultMockRunAsync)(exe, BuildMockArgs(job.Resolution, output), ct).ConfigureAwait(false);
+        var ok = await (MockRunner ?? DefaultMockRunAsync)(exe, BuildMockArgs(job.Resolution, output, job.IsAmbientLoop), ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
         if (!ok || !RenderQueueService.HasLocalOutput(output))
         {
