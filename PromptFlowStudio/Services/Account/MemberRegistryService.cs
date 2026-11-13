@@ -56,13 +56,43 @@ public sealed class MemberRegistryService
 
     private readonly List<MemberEntity> _members = new();
     private readonly string _path;
+    private readonly string? _mirrorDir;
     private readonly object _lock = new();
+
+    /// <summary>회원 원장 미러(백업) 디렉터리 환경변수 — 빈 문자열/"off"면 미러 비활성.</summary>
+    public const string MirrorEnvVar = "PROMPTFLOW_AUTH_MIRROR";
+    /// <summary>기본 미러 경로(Google Drive 동기화 폴더). 존재할 때만 사용.</summary>
+    public const string DefaultMirrorDir = @"G:\내 드라이브\DATA\PromptFlowStudio";
+    /// <summary>최근 미러 실패 사유(진단용).</summary>
+    public string? LastMirrorError { get; private set; }
+    /// <summary>시작 시 미러에서 원장을 복원했는지.</summary>
+    public bool RestoredFromMirror { get; private set; }
+
+    /// <summary>미러 디렉터리 해석: 환경변수 우선, 없으면 기본 경로(존재 시).</summary>
+    public static string? ResolveMirrorDir()
+    {
+        var env = Environment.GetEnvironmentVariable(MirrorEnvVar);
+        if (env is not null)
+        {
+            env = env.Trim();
+            if (env.Length == 0 || env.Equals("off", StringComparison.OrdinalIgnoreCase)) return null;
+            return env;
+        }
+        try { return Directory.Exists(DefaultMirrorDir) ? DefaultMirrorDir : null; }
+        catch { return null; }
+    }
     private static readonly JsonSerializerOptions Opts = new() { WriteIndented = true };
     public event Action? Changed;
 
     public MemberRegistryService()
+        : this(Path.Combine(LicenseService.DataAreaRoot(), "members.json"), ResolveMirrorDir()) { }
+
+    /// <summary>테스트/커스텀 경로용 — mirrorDir가 null이면 미러 비활성.</summary>
+    public MemberRegistryService(string path, string? mirrorDir)
     {
-        _path = Path.Combine(LicenseService.DataAreaRoot(), "members.json");
+        _path = path;
+        _mirrorDir = string.IsNullOrWhiteSpace(mirrorDir) ? null : mirrorDir;
+        TryRestoreFromMirror();
         Load();
         // ⚠ 하드코딩 기본 계정 없음(보안). 원장이 비어 있으면 <첫 가입자>가 자동 관리자(First-User 온보딩) —
         //   RegisterFull 이 Count==0 을 락 안에서 원자적으로 판정해 최초 가입자에게 Admin 을 부여한다.
@@ -95,7 +125,48 @@ public sealed class MemberRegistryService
                 try { File.Delete(tmp); } catch { /* 임시파일 삭제 실패 무시 */ }
             }
             catch { /* 저장 실패는 앱 동작을 막지 않음 */ }
+            MirrorToBackup();
         }
+    }
+
+    private string? MirrorPath => _mirrorDir is null ? null : Path.Combine(_mirrorDir, Path.GetFileName(_path));
+
+    /// <summary>로컬 원장이 없고 미러에 유효한 원장이 있으면 복원(PC 이전/정리 대비). 기존 로컬 파일은 절대 덮어쓰지 않음.</summary>
+    private void TryRestoreFromMirror()
+    {
+        var src = MirrorPath;
+        if (src is null) return;
+        try
+        {
+            if (File.Exists(_path) || !File.Exists(src)) return;
+            var list = JsonSerializer.Deserialize(File.ReadAllText(src), PromptFlowJsonContext.Default.MemberEntityList);
+            if (list is null || list.Count == 0) return;   // 스키마 검증 실패/빈 원장은 복원하지 않음
+            var dir = Path.GetDirectoryName(_path);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            var tmp = _path + ".restore.tmp";
+            File.Copy(src, tmp, overwrite: true);
+            File.Move(tmp, _path, overwrite: false);
+            RestoredFromMirror = true;
+        }
+        catch (Exception ex) { LastMirrorError = ex.Message; }
+    }
+
+    /// <summary>로컬 원장을 미러 디렉터리에 원자적으로 복제(tmp 기록 후 교체). 실패해도 로컬 동작에 영향 없음.</summary>
+    private void MirrorToBackup()
+    {
+        var dst = MirrorPath;
+        if (dst is null) return;
+        try
+        {
+            if (!File.Exists(_path)) return;
+            Directory.CreateDirectory(_mirrorDir!);
+            var tmp = dst + ".tmp";
+            File.Copy(_path, tmp, overwrite: true);
+            if (File.Exists(dst)) File.Replace(tmp, dst, null, ignoreMetadataErrors: true);
+            else File.Move(tmp, dst);
+            LastMirrorError = null;
+        }
+        catch (Exception ex) { LastMirrorError = ex.Message; }
     }
 
     public IReadOnlyList<MemberView> Members =>

@@ -81,7 +81,7 @@
                 </span>
             }
             @* 📸 Vision-to-Story — 사진 1장(클릭/드롭) → 15초 3막 4컷 · 추천 BGM · 감성 자막 초안 일괄 세팅 *@
-            <span class="ws-back ws-vstory@(_visionStoryBusy ? " busy" : "")" data-vision-story="1" title="아기/반려동물 사진 1장 → 셔터 3초 전 호기심 · 사진 속 클라이맥스 · 5초 후 여운의 15초 3막 스토리를 4컷 캔버스에 한 번에 세팅(Gemini Vision → 로컬 AI → 규칙 분석 · 디렉터 광학 자동 주입)">📸 사진으로 15초 스토리 완성<InputFile class="ws-drop-input" OnChange="OnVisionStoryPickedAsync" accept="image/png,image/jpeg,image/webp,image/bmp" disabled="@(State.IsBusy || _visionStoryBusy)" /></span>
+            <span class="ws-back ws-file-pick ws-vstory@(_visionStoryBusy ? " busy" : "")" data-vision-story="1" title="아기/반려동물 사진 1장 → 셔터 3초 전 호기심 · 사진 속 클라이맥스 · 5초 후 여운의 15초 3막 스토리를 4컷 캔버스에 한 번에 세팅(Gemini Vision → 로컬 AI → 규칙 분석 · 디렉터 광학 자동 주입)">📸 사진으로 15초 스토리 완성<InputFile class="ws-drop-input" OnChange="OnVisionStoryPickedAsync" accept="image/png,image/jpeg,image/webp,image/bmp" disabled="@(State.IsBusy || _visionStoryBusy)" /></span>
             @if (_imagePath is not null && !_visionStoryBusy) { <button class="ws-back" data-vision-story-ref="1" @onclick="() => RunVisionStoryAsync(_imagePath)" disabled="@State.IsBusy" title="이미 올린 참조 이미지로 15초 3막 스토리 구성">📸 참조 사진으로</button> }
             @if (_visionStoryBusy) { <span class="ws-retry" role="status">📸 플루토가 사진 속 순간의 앞뒤를 상상하는 중…</span> }
             else if (_visionStoryToast is { } vst) { <span class="ws-retry" role="status" data-vision-story-result="1">@(vst) <button class="ws-back" @onclick='() => Nav.NavigateTo("storyboard")'>🎬 스토리보드 열기 →</button></span> }
@@ -90,7 +90,7 @@
             @if (_motionBusy) { <span class="ws-retry" role="status" data-motion-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 🎥 모션 비디오 렌더 중… (15초 · 60fps)</span> }
             else if (_motionToast is { } mvt) { <span class="ws-retry" role="status" data-motion-result="1">@(mvt) @if (_motionOutput is { } mvo) { <button class="ws-back" data-motion-open="1" @onclick="() => RevealInExplorer(mvo)" title="@(mvo)">📂 @(Path.GetFileName(mvo)) 위치 열기</button> }</span> }
             @* 🎞️ 멀티컷 몽타주 — 사진 2~5장 → 15초 60fps · 노출 정합 자동 색보정 · BGM 비트 스냅 xfade *@
-            <span class="ws-back" data-montage-pick="1" title="사진 2~5장(연사 최대 30장 · 장당 15MB) 선택 — 6장 이상이면 AI가 베스트 4컷을 자동 선별 · 비트에 맞춘 15초 멀티컷 몽타주">🎞️ 몽타주 사진 추가 (@(_montagePhotos.Count.ToString(CultureInfo.InvariantCulture))/5@(_curationPool.Count > _montagePhotos.Count ? " · 후보 " + _curationPool.Count.ToString(CultureInfo.InvariantCulture) + "장" : ""))<InputFile class="ws-drop-input" OnChange="OnMontagePhotosPickedAsync" multiple accept="image/png,image/jpeg,image/webp,image/bmp" disabled="@(State.IsBusy || _montageBusy || _curationBusy || _curationPool.Count >= CurationMaxPhotos)" /></span>
+            <span class="ws-back ws-file-pick" data-montage-pick="1" title="사진 2~5장(연사 최대 30장 · 장당 15MB) 선택 — 6장 이상이면 AI가 베스트 4컷을 자동 선별 · 비트에 맞춘 15초 멀티컷 몽타주">🎞️ 몽타주 사진 추가 (@(_montagePhotos.Count.ToString(CultureInfo.InvariantCulture))/5@(_curationPool.Count > _montagePhotos.Count ? " · 후보 " + _curationPool.Count.ToString(CultureInfo.InvariantCulture) + "장" : ""))<InputFile class="ws-drop-input" OnChange="OnMontagePhotosPickedAsync" multiple accept="image/png,image/jpeg,image/webp,image/bmp" disabled="@(State.IsBusy || _montageBusy || _curationBusy || _curationPool.Count >= CurationMaxPhotos)" /></span>
             @if (_curationPool.Count >= 4 && !_montageBusy) { <button class="ws-back" data-curation-run="1" @onclick="RunPhotoCurationAsync" disabled="@(_curationBusy || _motionBusy || _stockBusy)" title="흔들림 · 노출 불량 · 유사 연사를 걸러내고 베스트 컷을 3막(후킹 → 리듬 → 클라이맥스) 순서로 배치">[✨ AI 베스트 컷 자동 선별]</button> }
             @if (_curationBusy) { <span class="ws-retry" role="status" data-curation-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> ✨ @(_curationPool.Count.ToString(CultureInfo.InvariantCulture))장 분석 중… (선명도 · 노출 · 연사 중복)</span> }
             else if (_curationResult is { } cur)
@@ -121,7 +121,7 @@
             @if (_montageBusy) { <span class="ws-retry" role="status" data-montage-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 🎞️ 몽타주 렌더 중… (@(_montagePhotos.Count.ToString(CultureInfo.InvariantCulture))컷 · 15초 · 60fps)</span> }
             else if (_montageToast is { } mtt) { <span class="ws-retry" role="status" data-montage-result="1">@(mtt) @if (_montageOutput is { } mto) { <button class="ws-back" data-montage-open="1" @onclick="() => RevealInExplorer(mto)" title="@(mto)">📂 @(Path.GetFileName(mto)) 위치 열기</button> }</span> }
             @* 🎵 커스텀 BGM — 업로드 음원 → 최고 흥분도 15초 하이라이트(비트 스냅) → 프리뷰 · 렌더 공통 *@
-            <span class="ws-back" data-custom-bgm-pick="1" title="내 음원(.mp3 · .wav · .m4a · .aac · .ogg · 최대 25MB) → 가장 신나는 15초 하이라이트를 자동 추출해 비트에 맞춰 컷을 다시 정렬">🎵 내 BGM 업로드<InputFile class="ws-drop-input" OnChange="OnCustomBgmPickedAsync" accept=".mp3,.wav,.m4a,.aac,.ogg" disabled="@(_customBgmBusy || _motionBusy || _montageBusy)" /></span>
+            <span class="ws-back ws-file-pick" data-custom-bgm-pick="1" title="내 음원(.mp3 · .wav · .m4a · .aac · .ogg · 최대 25MB) → 가장 신나는 15초 하이라이트를 자동 추출해 비트에 맞춰 컷을 다시 정렬">🎵 내 BGM 업로드<InputFile class="ws-drop-input" OnChange="OnCustomBgmPickedAsync" accept=".mp3,.wav,.m4a,.aac,.ogg" disabled="@(_customBgmBusy || _motionBusy || _montageBusy)" /></span>
             @if (_customBgmBusy) { <span class="ws-retry" role="status" data-custom-bgm-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 🎵 하이라이트 분석 중…</span> }
             else if (_customBgm is { } cbg)
             {
@@ -1078,7 +1078,10 @@
     .ws-drop.has { border-style: solid; min-height: auto; padding: 10px; }
     .ws-drop-input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
     .ws-drop-input:disabled { cursor: not-allowed; }
-    .ws-vstory { position: relative; display: inline-block; color: #f9a8d4; }
+    .ws-file-pick { position: relative; display: inline-flex; align-items: center; overflow: hidden; isolation: isolate; }
+    .ws-file-pick > input[type="file"] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; z-index: 1; }
+    .ws-file-pick > input[type="file"]:disabled { cursor: not-allowed; }
+    .ws-vstory { color: #f9a8d4; }
     .ws-vstory.busy { opacity: .55; }
     .ws-motion-spin { display: inline-block; width: 12px; height: 12px; border: 2px solid color-mix(in srgb, #f9a8d4 30%, transparent); border-top-color: #f9a8d4; border-radius: 50%; vertical-align: -2px; animation: ws-motion-spin .8s linear infinite; }
     @@keyframes ws-motion-spin { to { transform: rotate(360deg); } }

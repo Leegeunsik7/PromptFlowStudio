@@ -110,7 +110,7 @@ a { color: inherit; text-decoration: none; }
 .content { overflow: auto; background: var(--canvas); }
 
 /* 사이드바는 셸 높이에 고정 — min-height:0 이 없으면 스튜디오 목록이 길어질 때 행이 늘어나 .nav 스크롤이 사라지고 하단 메뉴가 잘린다. */
-.sidebar { display: flex; flex-direction: column; min-height: 0; overflow: hidden; background: linear-gradient(180deg, var(--side), var(--side-2)); color: var(--side-ink); border-right: 1px solid rgba(255,255,255,.05); }
+.sidebar { position: relative; z-index: 30; display: flex; flex-direction: column; min-height: 0; overflow: hidden; background: linear-gradient(180deg, var(--side), var(--side-2)); color: var(--side-ink); border-right: 1px solid rgba(255,255,255,.05); }
 .side-brand { display: flex; align-items: center; gap: 11px; padding: 20px 18px 16px; }
 /* 안전 방패 마크는 인라인 SVG(앰버)다. 어두운 사이드바에서 또렷하도록 다크 타일 위에 얹는다. */
 .side-logo { width: 40px; height: 40px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 11px;
