@@ -27,6 +27,16 @@ internal static class HeadlessUiRendererCheck
         });
     }
 
+    public static async Task<string> RenderAsync(Type component, IServiceProvider sp, IDictionary<string, object?> parameters)
+    {
+        await using var html = new HtmlRenderer(sp, NullLoggerFactory.Instance);
+        return await html.Dispatcher.InvokeAsync(async () =>
+        {
+            var root = await html.RenderComponentAsync(component, ParameterView.FromDictionary(parameters));
+            return root.ToHtmlString();
+        });
+    }
+
     public static int LiveSubscriberCount(object target)
     {
         var n = 0;

@@ -4,6 +4,7 @@
 //   - 클록: 재생 중 마스터는 AudioContext.currentTime(렌더 퀀텀 사이는 performance.now() 로 보간) → UI 스레드 스터터에도 A/V 드리프트 0.
 //           오디오 불가(정책/장치 없음) 시 performance.now() 단독 클록으로 폴백.
 //   - 무팝: 모든 소스는 전용 GainNode 경유 — 시작 6ms 페이드 인 · 정지 8ms 페이드 아웃 후 stop(DC 클릭 없음).
+//   - 🎞 멀티컷 몽타주(setMontagePlan): 클립 2~5장 이미지 선로드 · 클립별 궤적(클립 로컬 시간) · xfade 크로스디졸브 · ctx.filter 근사 색보정.
 //   - 프레임 루프 무할당: 샘플 객체 재사용 · 자막 줄바꿈/폰트는 갱신 시 1회 계산 · 라벨 문자열은 1/100초 변할 때만 생성.
 (function () {
     'use strict';
@@ -173,6 +174,150 @@
         ctx.shadowOffsetY = 0;
     }
 
+    // ───────────── 🎞 멀티컷 몽타주 ─────────────
+    function fmt(v) { return (Math.round(v * 1000) / 1000).toString(); }
+
+    function parseMontage(json) {
+        var d = null;
+        try { d = typeof json === 'string' ? JSON.parse(json) : json; } catch (e) { d = null; }
+        if (!d || d.version !== 1 || !Array.isArray(d.clips) || d.clips.length === 0) return null;
+        var clips = [];
+        for (var i = 0; i < d.clips.length; i++) {
+            var c = d.clips[i];
+            if (!c || !isFinite(c.startSec) || !isFinite(c.endSec) || c.endSec <= c.startSec) continue;
+            var g = c.colorGrade || {};
+            var b = isFinite(g.brightness) ? clamp(+g.brightness, 0, 3) : 1;
+            var k = isFinite(g.contrast) ? clamp(+g.contrast, 0, 3) : 1;
+            var sat = isFinite(g.saturation) ? clamp(+g.saturation, 0, 3) : 1;
+            var warm = isFinite(g.warmTintAlpha) ? clamp(+g.warmTintAlpha, 0, 1) : 0;
+            clips.push({
+                startSec: +c.startSec, endSec: +c.endSec,
+                transitionOutSec: isFinite(c.transitionOutSec) && c.transitionOutSec > 0 ? +c.transitionOutSec : 0,
+                url: typeof c.imageUrl === 'string' ? c.imageUrl : '',
+                contract: parseContract(c.trajectory),
+                filter: 'brightness(' + fmt(b) + ') contrast(' + fmt(k) + ') saturate(' + fmt(sat) + ')',   // 프레임 루프 문자열 생성 0
+                warm: warm,
+                img: null, coverX: 0, coverY: 0, coverW: W, coverH: H
+            });
+        }
+        if (clips.length === 0) return null;
+        clips.sort(function (a, b) { return a.startSec - b.startSec; });
+        var total = isFinite(d.totalDurationSec) && d.totalDurationSec > 0 ? +d.totalDurationSec : clips[clips.length - 1].endSec;
+        return { clips: clips, total: total, beats: Array.isArray(d.beats) ? d.beats : [] };
+    }
+
+    function loadClipImage(inst, clip, seq) {
+        var img = new Image();
+        img.decoding = 'async';
+        img.onload = function () {
+            if (!inst.alive || seq !== inst.montageSeq) return;
+            var iw = img.naturalWidth, ih = img.naturalHeight;
+            if (!(iw > 0 && ih > 0)) return;
+            var sc = Math.max(W / iw, H / ih);                            // 커버 크롭(FFmpeg scale=increase + crop)
+            clip.coverW = iw * sc; clip.coverH = ih * sc;
+            clip.coverX = (W - clip.coverW) / 2; clip.coverY = (H - clip.coverH) / 2;
+            clip.img = img;
+            invalidate(inst);
+        };
+        img.onerror = function () { if (seq === inst.montageSeq) { clip.img = null; invalidate(inst); } };
+        img.src = clip.url;
+    }
+
+    // 클립 이미지 선로드(계획 갱신 시 1회 — 프레임마다 new Image() 없음). 같은 URL 은 이전 계획의 디코드 결과 재사용.
+    function preloadMontage(inst, m, prev) {
+        var seq = ++inst.montageSeq;
+        for (var i = 0; i < m.clips.length; i++) {
+            var clip = m.clips[i], reused = false;
+            if (!clip.url) continue;
+            if (prev) {
+                for (var j = 0; j < prev.clips.length; j++) {
+                    var p = prev.clips[j];
+                    if (p.img && p.url === clip.url) {
+                        clip.img = p.img; clip.coverX = p.coverX; clip.coverY = p.coverY; clip.coverW = p.coverW; clip.coverH = p.coverH;
+                        reused = true;
+                        break;
+                    }
+                }
+            }
+            if (!reused) loadClipImage(inst, clip, seq);
+        }
+    }
+
+    function drawClip(inst, clip, t, alpha) {
+        if (!clip.img || alpha <= 0.002) return;
+        var ctx = inst.ctx;
+        var s = evalInto(clip.contract, t - clip.startSec, inst.sample);   // 클립 로컬 시간 · Horner 이징(3τ² − 2τ³ 등)
+        var z = s.zoom;
+        ctx.globalAlpha = alpha;
+        ctx.filter = clip.filter;
+        ctx.setTransform(z, 0, 0, z, -s.x * W * z, -s.y * H * z);
+        ctx.drawImage(clip.img, clip.coverX, clip.coverY, clip.coverW, clip.coverH);
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.filter = 'none';
+        if (clip.warm > 0) {                                              // 🌅 섀도 웜 시프트 근사 — 은은한 앰버 오버레이
+            ctx.globalAlpha = alpha * clip.warm * 0.35;
+            ctx.fillStyle = '#ff9a4d';
+            ctx.fillRect(0, 0, W, H);
+        }
+        ctx.globalAlpha = 1;
+    }
+
+    function drawMontage(inst) {
+        var clips = inst.montage.clips, t = inst.t, n = clips.length;
+        var i = 0;
+        while (i < n - 1 && t >= clips[i + 1].startSec) i++;              // 주 클립 = 시작 시각이 t 이하인 마지막 클립
+        var cur = clips[i];
+        if (i > 0) {
+            var prev = clips[i - 1], d = prev.transitionOutSec;
+            if (d > 0 && t <= cur.startSec + d) {                          // xfade 창 — 나가는 클립 아래 · 들어오는 클립 α 블렌드
+                drawClip(inst, prev, t, 1);
+                drawClip(inst, cur, t, clamp((t - cur.startSec) / d, 0, 1));
+                return;
+            }
+        }
+        drawClip(inst, cur, t, 1);
+    }
+
+    function hasMedia(inst) {
+        if (inst.montage) {
+            var c = inst.montage.clips;
+            for (var i = 0; i < c.length; i++) if (c[i].url) return true;
+            return false;
+        }
+        return !!inst.img;
+    }
+
+    function setDuration(inst, d) {
+        inst.duration = d;
+        if (inst.scrub) inst.scrub.max = d.toFixed(2);
+        if (inst.t > d) inst.t = d;
+    }
+
+    function setMontagePlan(inst, json) {
+        var m = parseMontage(json);
+        if (!m) { clearMontagePlan(inst); return false; }
+        var prev = inst.montage;
+        inst.montage = m;
+        preloadMontage(inst, m, prev);
+        var changed = m.total !== inst.duration;
+        setDuration(inst, m.total);
+        if (changed && inst.playing && !inst.scrubbing) anchor(inst);
+        invalidate(inst);
+        return true;
+    }
+
+    function clearMontagePlan(inst) {
+        if (!inst.montage) return;
+        inst.montage = null;
+        inst.montageSeq++;
+        var c = inst.contract;
+        var d = c && c.segments.length > 0 ? c.segments[c.segments.length - 1].endSec : DEFAULT_DURATION;
+        setDuration(inst, d);
+        if (!inst.img) pause(inst);
+        else if (inst.playing && !inst.scrubbing) anchor(inst);
+        invalidate(inst);
+    }
+
     // ───────────── 🎨 렌더 ─────────────
     function draw(inst) {
         var ctx = inst.ctx;
@@ -180,6 +325,14 @@
         ctx.globalAlpha = 1;
         ctx.fillStyle = '#0b0b12';
         ctx.fillRect(0, 0, W, H);
+        if (inst.montage) {
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            drawMontage(inst);
+            ctx.filter = 'none';                                          // 자막은 색보정 미적용
+            drawSubtitles(inst, inst.t);
+            return;
+        }
         if (!inst.img) return;                                            // 빈 상태 — 안내 문구는 Blazor 오버레이
         var s = evalInto(inst.contract, inst.t, inst.sample);
         var z = s.zoom;
@@ -381,7 +534,7 @@
 
     // ───────────── ▶ 트랜스포트 ─────────────
     function play(inst) {
-        if (!inst.alive || inst.playing || inst.starting || !inst.img) return;
+        if (!inst.alive || inst.playing || inst.starting || !hasMedia(inst)) return;
         if (inst.t >= inst.duration - 0.001) inst.t = 0;
         var ac = ensureAudio(inst);
         var begin = function () {
@@ -431,16 +584,15 @@
         var prevSfx = inst.contract ? inst.contract.sfx : null;
         inst.contract = parseContract(json);
         var d = inst.contract.segments.length > 0 ? inst.contract.segments[inst.contract.segments.length - 1].endSec : DEFAULT_DURATION;
+        if (inst.montage) d = inst.montage.total;                         // 🎞 몽타주 활성 → 몽타주 길이 우선
         var changed = d !== inst.duration || !sameCues(prevSfx, inst.contract.sfx);   // 🥁 비트 스냅 큐 변경도 재배치
-        inst.duration = d;
-        if (inst.scrub) inst.scrub.max = d.toFixed(2);
-        if (inst.t > d) inst.t = d;
+        setDuration(inst, d);
         if (changed && inst.playing && !inst.scrubbing) anchor(inst);      // 길이가 바뀐 경우에만 SFX 재배치(같으면 재생 무중단)
     }
 
     function setImage(inst, url) {
         var seq = ++inst.imgSeq;
-        if (!url) { inst.img = null; pause(inst); invalidate(inst); return; }
+        if (!url) { inst.img = null; if (!inst.montage) pause(inst); invalidate(inst); return; }
         var img = new Image();
         img.decoding = 'async';
         img.onload = function () {
@@ -471,7 +623,7 @@
                 scrub: root.querySelector('[data-pmp-scrub]'), label: root.querySelector('[data-pmp-time]'),
                 contract: null, acts: [], crossfade: 0.15, duration: DEFAULT_DURATION,
                 sample: { zoom: 1, fx: 0.5, fy: 0.5, x: 0, y: 0, segment: -1 },
-                img: null, imgSeq: 0, coverX: 0, coverY: 0, coverW: W, coverH: H,
+                img: null, imgSeq: 0, montage: null, montageSeq: 0, coverX: 0, coverY: 0, coverW: W, coverH: H,
                 t: 0, rate: 1, playing: false, starting: false, scrubbing: false, raf: 0,
                 clockMode: 0, anchorT: 0, anchorClock: 0, lastCt: -1, lastCtPerf: 0, lastCs: -1, lastDur: -1,
                 ac: null, audioFailed: false, master: null, bgmBus: null, sfx: null, voices: [],
@@ -517,6 +669,9 @@
             invalidate(inst);
             return true;
         },
+        // 🎞 멀티컷 몽타주 — 계획 교체(플레이헤드 유지) · null/무효 → 단일 사진 모드 복귀.
+        setMontagePlan: function (root, montagePlan) { var inst = get(root); if (!inst) return false; return setMontagePlan(inst, montagePlan); },
+        clearMontagePlan: function (root) { var inst = get(root); if (!inst) return false; clearMontagePlan(inst); return true; },
         setImage: function (root, url) { var inst = get(root); if (!inst) return false; setImage(inst, url); return true; },
         setBgm: function (root, url, volume) {
             var inst = get(root);
@@ -542,7 +697,7 @@
         setRate: function (root, r) { var inst = get(root); if (inst) setRate(inst, r); },
         state: function (root) {
             var inst = get(root);
-            return inst ? { t: inst.t, playing: inst.playing, rate: inst.rate, duration: inst.duration, clock: inst.clockMode === 1 ? 'audio' : 'performance', hasImage: !!inst.img } : null;
+            return inst ? { t: inst.t, playing: inst.playing, rate: inst.rate, duration: inst.duration, clock: inst.clockMode === 1 ? 'audio' : 'performance', hasImage: !!inst.img, montageClips: inst.montage ? inst.montage.clips.length : 0 } : null;
         },
         // 🧪 패리티 점검용 — C# PlutoMotionPreviewModel.Evaluate 와 같은 값을 반환.
         evaluate: function (contractJson, t) {
@@ -571,6 +726,8 @@
             }
             inst.dotnet = null;
             inst.img = null;
+            inst.montage = null;
+            inst.montageSeq++;
             instances.delete(root);
         }
     };

@@ -34,6 +34,9 @@ public interface IPlutoMontageCompiler
 {
     PlutoMontagePlan CompileMontagePlan(IReadOnlyList<string> imagePaths, IReadOnlyList<(double X, double Y)>? focalPoints, IReadOnlyList<double>? beatTimestampsSec,
         IReadOnlyList<PlutoColorGradeProfile>? colorProfiles, double totalDurationSec = 15.0, int width = 1080, int height = 1920, int fps = 60);
+
+    /// <summary>🎞 몽타주 플랜 → 캔버스 멀티컷 프리뷰 계약(클립별 이미지 URL · 궤적 · 전환 창 · 브라우저 필터 색보정).</summary>
+    PlutoMontagePreviewPlan BuildMontagePreviewPlan(PlutoMontagePlan plan, IReadOnlyList<string> imageUrls, IReadOnlyList<double>? beatTimestampsSec = null);
 }
 
 /// <summary>
@@ -42,7 +45,7 @@ public interface IPlutoMontageCompiler
 ///   ▸ 컷 c_i 는 ±<see cref="BeatSnapToleranceSec"/> 내 최근접 비트로 스냅(최소 클립 <see cref="MinClipSec"/> 위반 시 스냅 생략).
 ///   ▸ 카메라: Push-In → Gentle Drift → Pull-Back 순환(<see cref="PlutoMotionCompiler"/> 슈퍼샘플 zoompan) + 클립별 색보정 → xfade 체인 → <c>[vout]</c>.
 /// </summary>
-public sealed class PlutoMontageCompiler : IPlutoMontageCompiler
+public sealed partial class PlutoMontageCompiler : IPlutoMontageCompiler
 {
     public static readonly PlutoMontageCompiler Shared = new();
 

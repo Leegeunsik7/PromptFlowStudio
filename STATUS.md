@@ -1,18 +1,19 @@
 # Current Project Status
-- Active Milestone: 【Pluto 멀티컷 몽타주 · 자동 색보정】 2~5장 → 15초 60fps 비트 xfade 몽타주
+- Active Milestone: 【Pluto 사진별 초점 · 멀티컷 60fps 캔버스 프리뷰】 2~5장 몽타주 엔드투엔드
 - Build: ✅ Release `-warnaserror -p:NuGetAudit=false` 0/0 (PromptFlowStudio · Tests)
-- Tests: ✅ 1082/1082 PASS (Montage|Color|Motion 필터 42/42)
+- Tests: ✅ 1086/1086 PASS (Focal|Montage|Previewer 필터 16/16)
 - Updated: 2026-11-13 (KST)
 
 ## Completed
-- 🎨 `PlutoImageColorAnalyzer`: ≤128px 썸네일 LockBits · Rec.709 휘도/대비/섀도 크러시/역광/웜쿨 · 비Windows·판독 불가 → 중립 · 목표 휘도 0.54 정합([−0.12, +0.15])
-- 🎨 `PlutoColorGradingCompiler`: GoldenHourWarm/VintageFilm16mm/NaturalPastel · 바이럴 태그/디렉터 레벨 룩 선택 · 오답 노트 차단 → NaturalPastel · `eq/colorbalance/vignette` Invariant
-- 🎞️ `PlutoMontageCompiler`: 컷 중앙 역산으로 ΣT−(N−1)d=15s 구성상 보장 · ±0.25s 비트 스냅(최소 1.8s) · 프레임 정렬 · Push-In/Drift/Pull-Back · xfade 체인 → `[vout]`
-- 📤 `StockSuiteExporter.ExportMontageVideoFromPhotosAsync`: 다중 `-i` + filter_complex + 자막 번인([부분 구제] 재시도) → 마스터링/더킹/SFX 먹싱 재사용 · 동시 실행 차단
-- 🖥️ Workspace: 다중 선택(최대 5) · 색보정 배지 · `[🎞️ 15초 멀티컷 몽타주 렌더]` · DI 양쪽 등록
-- 🧪 `PlutoMontageAndColorTests` 5종
+- 🎯 `PlutoImageFocalDetector`: ≤96px 그리드 · 피부톤 +2.5 · 1.5·|ΔY| · 중앙 가우시안(0.5, 0.42, σ 0.28) 가중 중심 → [0.2, 0.8]² · 비Windows/판독 불가 → (0.50, 0.42)
+- 🎯 배치: 로컬 전량 → Vision 설정 시 병렬 보정(Semaphore 3 · 4초) · 실패/시간 초과 → 로컬 유지 · DI 양쪽 등록
+- 🎞 `PlutoMontageCompiler.Preview`: `PlutoMontagePreviewPlan`/`Clip`/`PlutoPreviewColorGrade` · 클립별 궤적 계약 · Utf8JsonWriter JSON
+- 🖼 JS `setMontagePlan`/`clearMontagePlan`: 클립 이미지 선로드(URL 재사용) · 클립 로컬 시간 궤적 · xfade α 블렌드 · `ctx.filter` 색보정 + 웜 오버레이 · 자막 전 `filter=none`
+- 🧩 `PlutoMotionPreviewer.MontagePlan` 파라미터(참조 변경 시만 재직렬화 · null → 단일 모드)
+- 🖥️ Workspace: 2~5장 → 초점·색·비트 → 프리뷰 플랜 바인딩(세대 가드) · 렌더 시 동일 사진별 초점 전달
+- 🧪 `PlutoPerPhotoFocalAndPreviewTests` 4종
 
 ## Notes
-- 시그니처 편차: 스펙의 `Task<string>`/`PlutoSubtitleAct` 대신 기존 모션 경로와 동일한 `StockSuiteExportResult`/`SubtitleCue` 사용 + `preferredLook` 인자 추가
-- 클립 초점은 현재 폴백 초점(아기/반려) 일괄 — 사진별 Vision 초점 결선은 후속
-- Mobile(MAUI) 빌드 미검증 · 실제 FFmpeg 렌더 미검증(러너 모킹 테스트만)
+- 스펙 편차: 클립 `Trajectory` 타입은 기존 `PlutoMotionPreviewContract` 재사용(JS 파서 공유)
+- `PlutoVisionStorySynthesizer.IsVisionConfigured` 추가(비전 경로 사전 점검)
+- Mobile(MAUI) 빌드 · 실제 브라우저 캔버스 렌더 미검증

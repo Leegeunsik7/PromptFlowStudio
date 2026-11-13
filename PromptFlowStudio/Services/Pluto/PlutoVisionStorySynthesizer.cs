@@ -130,6 +130,9 @@ public sealed class PlutoVisionStorySynthesizer
     /// <summary>게이트웨이 단계 예산(null → 브리지 기본).</summary>
     public TimeSpan? LlmBudget { get; init; }
 
+    /// <summary>👁 비전 클라이언트 결선 + 키 설정 여부(초점 보정 등 비전 전용 경로의 사전 점검).</summary>
+    public bool IsVisionConfigured => ProbeVision(_vision);
+
     public PlutoVisionStorySynthesizer(IPlutoVisionClient? vision = null, IPlutoLlmClient? llm = null, PlutoIdentityVault? identity = null, IPlutoDirectorRankService? director = null)
     {
         _vision = vision;

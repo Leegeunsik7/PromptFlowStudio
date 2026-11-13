@@ -47,6 +47,8 @@
 @inject PromptFlowStudio.Services.Pluto.PlutoAutonomousTrendHarvester PlutoHarvester
 @inject PromptFlowStudio.Services.Pluto.IPlutoDirectorRankService PlutoDirector
 @inject PromptFlowStudio.Services.Pluto.Dsp.IPlutoBeatSyncQuantizer BeatQuantizer
+@inject PromptFlowStudio.Services.Pluto.IPlutoImageFocalDetector FocalDetector
+@inject PromptFlowStudio.Services.Pluto.IPlutoMontageCompiler MontageCompiler
 
 @* [PromptFlow Studio] 새 프로젝트 — 텍스트→영상(Wan 2.1) 생성 파이프라인 구동 화면.
    상태는 WanJobState(싱글턴)에 있고, 이 컴포넌트는 OnChange 를 구독해 InvokeAsync(StateHasChanged)로만 갱신한다.
@@ -125,6 +127,13 @@
             <div class="ws-motion-preview" data-motion-preview="1">
                 <PlutoMotionPreviewer Js="JS" Trajectory="MotionPreviewPath" SfxCues="MotionBeatSync?.SfxCues" Subtitles="_motionSubs" ImageUrl="@_motionImageUrl" BgmUrl="@(_bgmOn ? _motionBgmUrl : null)" BgmVolume="MotionPreviewBgmVolume" />
                 @if (MotionBeatSync is { } mbs) { <span class="ws-retry" role="status" data-motion-beatsync="1">🎵 비트 싱크 퀀타이즈 적용됨 (@(mbs.Bpm.ToString("F0", CultureInfo.InvariantCulture)) BPM, @(mbs.BeatCount.ToString(CultureInfo.InvariantCulture)) 비트 정렬)</span> }
+            </div>
+        }
+        @* 🎞️ 멀티컷 몽타주 프리뷰 — 사진별 초점 · 클립별 카메라 · xfade 크로스디졸브 · 근사 색보정(오디오 마스터 클록 동기) *@
+        @if (_activeMontagePreviewPlan is { } amp)
+        {
+            <div class="ws-motion-preview" data-montage-preview="@(amp.Clips.Count.ToString(CultureInfo.InvariantCulture))">
+                <PlutoMotionPreviewer Js="JS" MontagePlan="@_activeMontagePreviewPlan" Subtitles="_motionSubs" BgmUrl="@(_bgmOn ? _motionBgmUrl : null)" BgmVolume="MotionPreviewBgmVolume" />
             </div>
         }
         @if (_jOpen)
@@ -1611,6 +1620,7 @@
         _montageOutput = null;
         RefreshMontageLook();
         StateHasChanged();
+        await RefreshMontagePreviewAsync();
     }
 
     private void ClearMontagePhotos()
@@ -1619,6 +1629,84 @@
         _montagePhotos.Clear();
         _montageToast = null;
         _montageOutput = null;
+        _montagePreviewSeq++;
+        _stagedFocalPoints = null;
+        _stagedFocalKey = null;
+        _activeMontagePreviewPlan = null;
+    }
+
+    // ── 🎯 사진별 초점 · 🎞 멀티컷 프리뷰 ──
+    private IReadOnlyList<(double X, double Y)>? _stagedFocalPoints;
+    private string? _stagedFocalKey;   // 초점이 계산된 사진 목록(순서 포함) — 렌더 시 재사용 판정
+    private PromptFlowStudio.Services.Pluto.PlutoMontagePreviewPlan? _activeMontagePreviewPlan;
+    private int _montagePreviewSeq;
+
+    private PromptFlowStudio.Services.Pluto.PlutoVisionStorySynthesizer? ResolveVisionSynth()
+        => EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoVisionStorySynthesizer)) as PromptFlowStudio.Services.Pluto.PlutoVisionStorySynthesizer;
+
+    /// <summary>🎯 사진별 초점(로컬 돌출도 + Vision 병렬 보정) — 같은 사진 목록이면 캐시. 실패 → 기본 초점([부분 구제]).</summary>
+    private async Task<IReadOnlyList<(double X, double Y)>> EnsureStagedFocalPointsAsync(string[] photos, CancellationToken ct)
+    {
+        var key = string.Join("|", photos);
+        if (_stagedFocalPoints is { } cached && cached.Count == photos.Length && string.Equals(_stagedFocalKey, key, StringComparison.Ordinal)) return cached;
+        IReadOnlyList<(double X, double Y)> pts;
+        try { pts = await FocalDetector.ExtractBatchFocalPointsAsync(photos, ResolveVisionSynth(), ct); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            Program.Log("Workspace.MontageFocal", ex);
+            var f = PromptFlowStudio.Services.Pluto.PlutoMotionCompiler.FallbackFocal(_identity?.IsPet == true);
+            var arr = new (double X, double Y)[photos.Length];
+            for (var i = 0; i < arr.Length; i++) arr[i] = f;
+            pts = arr;
+        }
+        if (pts.Count != photos.Length) return pts;
+        _stagedFocalPoints = pts;
+        _stagedFocalKey = key;
+        return pts;
+    }
+
+    /// <summary>🎞 2~5장 → 초점 · 색 분석 · 비트 → 몽타주 플랜 → 캔버스 프리뷰 플랜(세대 가드 · 미리보기 전용 — 예외 전파 금지).</summary>
+    private async Task RefreshMontagePreviewAsync()
+    {
+        var seq = ++_montagePreviewSeq;
+        var photos = _montagePhotos.ToArray();
+        if (photos.Length < PromptFlowStudio.Services.Pluto.PlutoMontageCompiler.MinClips || photos.Length > MontageMaxPhotos)
+        {
+            _activeMontagePreviewPlan = null;
+            return;
+        }
+        PromptFlowStudio.Services.Pluto.PlutoMontagePreviewPlan? preview = null;
+        try
+        {
+            var ct = _mediaCts.Token;
+            var focals = await EnsureStagedFocalPointsAsync(photos, ct);
+            if (_disposed || seq != _montagePreviewSeq) return;
+            var analyzer = StockSuite.ColorAnalyzer;
+            var look = _montageLook;
+            var notebook = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService)) as PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService;
+            var profiles = await Task.Run(() =>
+            {
+                var m = new PromptFlowStudio.Services.Pluto.PlutoImageColorMetrics[photos.Length];
+                for (var i = 0; i < m.Length; i++)
+                {
+                    try { m[i] = analyzer.AnalyzeImage(photos[i]); }
+                    catch (Exception ex) when (ex is not OperationCanceledException) { Program.Log("Workspace.MontageColor", ex); m[i] = PromptFlowStudio.Services.Pluto.PlutoImageColorMetrics.Neutral; }
+                }
+                return analyzer.BuildHarmonizedProfiles(m, look, notebook);
+            }, ct);
+            var beats = _bgmOn ? await StockSuite.TryDetectBgmBeatsAsync(_bgmTrack, PromptFlowStudio.Services.Pluto.PlutoMotionCompiler.FourActDurationSec, ct) : null;
+            if (_disposed || seq != _montagePreviewSeq) return;
+            var plan = MontageCompiler.CompileMontagePlan(photos, focals, beats, profiles, PromptFlowStudio.Services.Pluto.PlutoMotionCompiler.FourActDurationSec);
+            var urls = new string[photos.Length];
+            for (var i = 0; i < urls.Length; i++) urls[i] = Media.ToPlaybackUrl(photos[i]);
+            preview = MontageCompiler.BuildMontagePreviewPlan(plan, urls, beats);
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.MontagePreview", ex); preview = null; }
+        if (_disposed || seq != _montagePreviewSeq) return;
+        _activeMontagePreviewPlan = preview;
+        await InvokeAsync(StateHasChanged);
     }
 
     /// <summary>🎨 활성 바이럴 태그 · 디렉터 랭크 → 후보 룩 → 오답 노트 차단 시 NaturalPastel([부분 구제] 실패 → NaturalPastel).</summary>
@@ -1657,9 +1745,7 @@
         try
         {
             var photos = _montagePhotos.ToArray();
-            var focal = PromptFlowStudio.Services.Pluto.PlutoMotionCompiler.FallbackFocal(_identity?.IsPet == true);
-            var focals = new (double X, double Y)[photos.Length];
-            for (var i = 0; i < focals.Length; i++) focals[i] = focal;
+            var focals = await EnsureStagedFocalPointsAsync(photos, _mediaCts.Token);   // 🎯 프리뷰와 동일한 사진별 초점
             StockSuite.MistakeNotebook ??= EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService)) as PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService;
             var cues = (await GenerateWorkspaceLetterAsync(_mediaCts.Token)).ToCues();
             var r = await StockSuite.ExportMontageVideoFromPhotosAsync(photos, focals, new PromptFlowStudio.Services.Export.ExportOptions(), cues,

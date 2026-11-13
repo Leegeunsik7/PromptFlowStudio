@@ -5,7 +5,7 @@
    엔진: wwwroot/js/pluto-motion-previewer.js (window.plutoMotionPreviewer). 플레이헤드/스크러버/시간 라벨은 JS 가 DOM 직접 갱신(프레임당 interop 0).
    모바일 링크 대상 서브컴포넌트 → @inject 금지(Js 파라미터 주입). 궤적/자막 파라미터 변경은 재생을 끊지 않고 in-place 핫스왑. *@
 
-<div class="pmp" @ref="_root" tabindex="0" data-pmp="1" data-pmp-empty="@(HasMedia ? "0" : "1")" aria-label="15초 모션 미리보기">
+<div class="pmp" @ref="_root" tabindex="0" data-pmp="1" data-pmp-empty="@(HasMedia ? "0" : "1")" data-pmp-montage="@(HasMontage ? MontagePlan!.Clips.Count.ToString(CultureInfo.InvariantCulture) : "0")" aria-label="15초 모션 미리보기">
     <div class="pmp-stage">
         <canvas class="pmp-canvas" width="1080" height="1920"></canvas>
         @if (!HasMedia)
@@ -54,6 +54,8 @@
     /// <summary>BGM WAV URL(null → BGM 없음 · SFX 만).</summary>
     [Parameter] public string? BgmUrl { get; set; }
     [Parameter] public double BgmVolume { get; set; } = 0.25;
+    /// <summary>🎞 멀티컷 몽타주 프리뷰(null → 단일 사진 모드). 클립 2~5장 이미지 · 클립별 궤적 · xfade · 색보정.</summary>
+    [Parameter] public PlutoMontagePreviewPlan? MontagePlan { get; set; }
 
     private ElementReference _root;
     private DotNetObjectReference<PlutoMotionPreviewer>? _self;
@@ -61,13 +63,30 @@
     private string _contractJson = "", _subsJson = "";
     private string? _pushedContract, _pushedSubs, _pushedImage, _pushedBgm;
     private double _pushedVolume = double.NaN;
+    private PlutoMontagePreviewPlan? _montageSource;
+    private string? _montageJson, _pushedMontage;
 
-    private bool HasMedia => !string.IsNullOrWhiteSpace(ImageUrl);
+    private bool HasMontage => MontagePlan is { Clips.Count: > 0 };
+    private bool HasMedia => HasMontage || !string.IsNullOrWhiteSpace(ImageUrl);
 
     protected override void OnParametersSet()
     {
         _contractJson = PlutoMotionCompiler.ExportPreviewContractJson(Trajectory, sfxCues: SfxCues);
         _subsJson = PlutoMotionPreviewModel.SubtitlesJson(Subtitles);
+        if (!ReferenceEquals(_montageSource, MontagePlan))   // 레코드 참조가 바뀐 경우에만 재직렬화
+        {
+            _montageSource = MontagePlan;
+            _montageJson = HasMontage ? MontagePlan!.ToJson() : null;
+        }
+    }
+
+    /// <summary>🎞 몽타주 플랜 → JS(null → 단일 사진 모드 복귀). 바뀐 경우에만 전송.</summary>
+    private async Task PushMontageAsync(IJSRuntime js)
+    {
+        if (string.Equals(_pushedMontage, _montageJson, StringComparison.Ordinal)) return;
+        _pushedMontage = _montageJson;
+        if (_montageJson is null) await js.InvokeAsync<bool>("plutoMotionPreviewer.clearMontagePlan", _root);
+        else await js.InvokeAsync<bool>("plutoMotionPreviewer.setMontagePlan", _root, _montageJson);
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -81,6 +100,7 @@
                 _ready = await js.InvokeAsync<bool>("plutoMotionPreviewer.init", _root, _self, _contractJson, _subsJson, ImageUrl, BgmUrl, BgmVolume);
                 if (!_ready) return;
                 _pushedContract = _contractJson; _pushedSubs = _subsJson; _pushedImage = ImageUrl; _pushedBgm = BgmUrl; _pushedVolume = BgmVolume;
+                await PushMontageAsync(js);
                 return;
             }
             // 🔁 핫스왑 — 바뀐 항목만 전송(재생/플레이헤드 유지).
@@ -99,6 +119,7 @@
                 _pushedBgm = BgmUrl; _pushedVolume = BgmVolume;
                 await js.InvokeAsync<bool>("plutoMotionPreviewer.setBgm", _root, BgmUrl, BgmVolume);
             }
+            await PushMontageAsync(js);
         }
         catch (Exception ex) when (IsBenign(ex)) { /* WebView 해제/스크립트 미로드 — 미리보기 전용 · 전파 금지 */ }
     }
