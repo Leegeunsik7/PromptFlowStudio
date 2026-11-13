@@ -24,6 +24,7 @@ public sealed class PlutoGenerativeEngine
     private readonly PlutoPreferenceLexicon? _lexicon;
     private readonly IPlutoLlmClient? _llm;
     private readonly PlutoSocialRadarEngine? _radar;
+    private readonly IPlutoMistakeNotebookService? _mistakes;
     private readonly Random _rng;
     private readonly object _sync = new();
     private readonly List<PlutoTrend> _recent = new();
@@ -36,11 +37,13 @@ public sealed class PlutoGenerativeEngine
     public PlutoGenerativeEngine(PlutoPreferenceLexicon? lexicon, IPlutoLlmClient? llm, Random? rng = null) : this(lexicon, llm, null, rng) { }
 
     /// <summary>📈 <paramref name="radar"/> 주입 시 SNS 상위 바이럴 패턴(페이싱 · 훅 구조)을 LLM 요청 · 로컬 프롬프트에 반영.</summary>
-    public PlutoGenerativeEngine(PlutoPreferenceLexicon? lexicon, IPlutoLlmClient? llm, PlutoSocialRadarEngine? radar, Random? rng = null)
+    /// <summary>🛡️ <paramref name="mistakeNotebook"/> 주입 시 차단 토큰을 LLM 인스트럭션 말미에 부정 제약으로 덧붙임.</summary>
+    public PlutoGenerativeEngine(PlutoPreferenceLexicon? lexicon, IPlutoLlmClient? llm, PlutoSocialRadarEngine? radar, Random? rng = null, IPlutoMistakeNotebookService? mistakeNotebook = null)
     {
         _lexicon = lexicon;
         _llm = llm;
         _radar = radar;
+        _mistakes = mistakeNotebook;
         _rng = rng ?? new Random();
     }
 
@@ -184,6 +187,24 @@ public sealed class PlutoGenerativeEngine
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Gen] identity load: " + ex.Message); }   // [부분 구제] 앵커 없이 생성
     }
 
+    private async Task EnsureMistakesAsync(CancellationToken ct)
+    {
+        if (_mistakes is null) return;
+        try { await _mistakes.EnsureLoadedAsync(ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Gen] mistakes load: " + ex.Message); }   // [부분 구제] 부정 제약 없이 생성
+    }
+
+    /// <summary>🛡️ LLM 인스트럭션 — 오답 노트 차단 토큰이 있으면 <c>Avoid motifs/styles: …</c> 부정 제약을 말미에 덧붙임(예외 격리).</summary>
+    public string BuildLlmTrendInstruction()
+    {
+        if (_mistakes is null) return LlmTrendInstruction;
+        string constraint;
+        try { constraint = _mistakes.BuildNegativeConstraintPrompt(); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Gen] mistakes: " + ex.Message); return LlmTrendInstruction; }
+        return string.IsNullOrWhiteSpace(constraint) ? LlmTrendInstruction : LlmTrendInstruction + " " + constraint + ".";
+    }
+
     /// <summary>🍼 활성 프로필 앵커(미주입/불일치 테마 → 빈 문자열).</summary>
     private string IdentityAnchor(StudioThemeCategory category)
     {
@@ -215,11 +236,12 @@ public sealed class PlutoGenerativeEngine
         }
         await EnsureRadarAsync(ct).ConfigureAwait(false);
         await EnsureIdentityAsync(ct).ConfigureAwait(false);
+        await EnsureMistakesAsync(ct).ConfigureAwait(false);
         var t = now ?? DateTime.Now;
         var n = Math.Clamp(count, 1, MotifsFor(category).Length);
         LastUsedLlm = false;
 
-        var text = await PlutoLlmBridge.TryCompleteAsync(_llm, LlmTrendInstruction, BuildLlmTrendRequest(category, n, t), 0.95, ct).ConfigureAwait(false);
+        var text = await PlutoLlmBridge.TryCompleteAsync(_llm, BuildLlmTrendInstruction(), BuildLlmTrendRequest(category, n, t), 0.95, ct).ConfigureAwait(false);
         var parsed = text is null ? null : ParseLlmTrends(text, category, n, t);
         if (parsed is null) return Synthesize(category, n, t);
 

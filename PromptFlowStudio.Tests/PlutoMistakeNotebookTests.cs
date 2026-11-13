@@ -164,4 +164,51 @@ public class PlutoMistakeNotebookTests
         }
         finally { TryDelete(dir); }
     }
+
+    private sealed class CaptureLlm : IPlutoLlmClient
+    {
+        public bool IsAvailable => true;
+        public string LastSystem = "";
+        public int Calls;
+
+        public Task<string?> CompleteJsonAsync(string system, string user, double temperature, CancellationToken ct)
+        {
+            Interlocked.Increment(ref Calls);
+            LastSystem = system;
+            return Task.FromResult<string?>(null);   // 로컬 폴백 유도 — 인스트럭션 캡처만 검증
+        }
+    }
+
+    [Fact]
+    public async Task GenerativeEngine_AppendsNegativeConstraint_WhenTokensSuppressed()
+    {
+        var dir = TempDir();
+        try
+        {
+            using var nb = new PlutoMistakeNotebookService(Path.Combine(dir, PlutoMistakeNotebookService.FileName), () => T0);
+            var llm = new CaptureLlm();
+            var gen = new PlutoGenerativeEngine(null, llm, null, new Random(5), nb);
+
+            // 차단 토큰 없음 → 원본 인스트럭션 그대로
+            Assert.Equal(PlutoGenerativeEngine.LlmTrendInstruction, gen.BuildLlmTrendInstruction());
+            await gen.GenerateDynamicTrendsAsync(StudioThemeCategory.PetsCompanions, 2, new DateTime(2026, 11, 1, 9, 0, 0));
+            Assert.Equal(1, llm.Calls);
+            Assert.DoesNotContain(PlutoMistakeNotebookService.ConstraintPrefix, llm.LastSystem, StringComparison.Ordinal);
+
+            var tok = new[] { "neon glitch" };
+            await nb.RecordNegativeFeedbackAsync(tok, 1.0, "👎");
+            await nb.RecordNegativeFeedbackAsync(tok, 1.0, "👎");   // 2.0 ≥ 1.8 → 차단
+            Assert.Contains("neon glitch", nb.GetSuppressedTokens());
+
+            var trends = await gen.GenerateDynamicTrendsAsync(StudioThemeCategory.PetsCompanions, 2, new DateTime(2026, 11, 1, 9, 0, 0));
+            Assert.Equal(2, trends.Count);   // LLM null → 로컬 폴백 무중단
+            Assert.Equal(2, llm.Calls);
+            Assert.StartsWith(PlutoGenerativeEngine.LlmTrendInstruction, llm.LastSystem, StringComparison.Ordinal);
+            Assert.Contains("Avoid motifs/styles: neon glitch", llm.LastSystem, StringComparison.Ordinal);
+
+            // 미주입 엔진 → 하위 호환(제약 없음)
+            Assert.Equal(PlutoGenerativeEngine.LlmTrendInstruction, new PlutoGenerativeEngine(null, llm, null, new Random(5)).BuildLlmTrendInstruction());
+        }
+        finally { TryDelete(dir); }
+    }
 }
