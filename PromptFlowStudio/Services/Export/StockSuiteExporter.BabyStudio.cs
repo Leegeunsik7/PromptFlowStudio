@@ -694,4 +694,197 @@ public sealed partial class StockSuiteExporter
             SubtitleCues = prevCues;
         }
     }
+
+    // ══════════════════════ 🎞️ 멀티컷 몽타주(사진 2~5장 → 15초 60fps · 자동 색보정 · 비트 xfade) ══════════════════════
+
+    public const string MontageTag = "🎞️ 멀티컷 몽타주 · ";
+    public const string MontageFileSuffix = "_montage.mp4";
+    /// <summary>자막 번인 전 xfade 체인 중간 패드.</summary>
+    internal const string MontageMainPad = "vmain";
+
+    private int _montageExporting;
+    /// <summary>🔒 몽타주 렌더 진행 중(동시 실행 차단 — 익스포터 공유 상태 BabyBgm/IncludeSfx/SubtitleCues 보호).</summary>
+    public bool IsMontageExporting => Volatile.Read(ref _montageExporting) != 0;
+
+    /// <summary>🎨 색 분석기(테스트 주입용 · 기본 <see cref="Pluto.PlutoImageColorAnalyzer.Shared"/>).</summary>
+    public Pluto.IPlutoImageColorAnalyzer ColorAnalyzer { get; set; } = Pluto.PlutoImageColorAnalyzer.Shared;
+    /// <summary>🎞️ 몽타주 컴파일러(기본 <see cref="Pluto.PlutoMontageCompiler.Shared"/>).</summary>
+    public Pluto.IPlutoMontageCompiler MontageCompiler { get; set; } = Pluto.PlutoMontageCompiler.Shared;
+    /// <summary>🛡️ 오답 노트(차단 룩 → NaturalPastel 폴백 · null = 미적용).</summary>
+    public Pluto.IPlutoMistakeNotebookService? MistakeNotebook { get; set; }
+    /// <summary>마지막 성공 몽타주 플랜(UI 배지 · 진단).</summary>
+    public Pluto.PlutoMontagePlan? LastMontagePlan { get; private set; }
+
+    /// <summary>🎞️ 다중 입력 몽타주 인자 — 사진별 <c>-i</c> · <c>-filter_complex</c> · <c>-map [pad]</c> · 프레임/길이 고정 · libx264 crf18 · 무음.</summary>
+    public static string[] BuildMontageVideoArgs(IReadOnlyList<string> imagePaths, string filterComplex, string finalPad, int frames, int fps, string outputPath)
+    {
+        var inv = CultureInfo.InvariantCulture;
+        var a = new List<string>(32 + imagePaths.Count * 2) { "-y", "-hide_banner", "-loglevel", "error" };
+        for (var i = 0; i < imagePaths.Count; i++) { a.Add("-i"); a.Add(imagePaths[i]); }
+        a.Add("-filter_complex"); a.Add(filterComplex);
+        a.Add("-map"); a.Add("[" + finalPad + "]");
+        a.Add("-frames:v"); a.Add(frames.ToString(inv));
+        a.Add("-r"); a.Add(fps.ToString(inv));
+        a.Add("-t"); a.Add(((double)frames / fps).ToString("0.###", inv));
+        a.Add("-c:v"); a.Add("libx264"); a.Add("-preset"); a.Add("medium"); a.Add("-crf"); a.Add("18"); a.Add("-pix_fmt"); a.Add("yuv420p");
+        a.Add("-an"); a.Add("-sn"); a.Add("-dn"); a.Add("-movflags"); a.Add("+faststart"); a.Add("-f"); a.Add("mp4");
+        a.Add(outputPath);
+        return a.ToArray();
+    }
+
+    /// <summary>💌 몽타주 그래프 말미에 자막 번인 — 최종 패드 → <c>[vmain];[vmain]drawtext…[pad]</c>. 유효 큐 없음 → 원본 그래프.</summary>
+    public static string AppendMontageSubtitles(string filterComplex, string finalPad, IReadOnlyList<SubtitleCue>? cues, string? fontFile, StockSuiteResolution resolution)
+    {
+        var subs = BuildTimedSubtitleFilter(cues, fontFile, resolution);
+        var tail = "[" + finalPad + "]";
+        if (subs is null || !filterComplex.EndsWith(tail, StringComparison.Ordinal)) return filterComplex;
+        return filterComplex[..^tail.Length] + "[" + MontageMainPad + "];[" + MontageMainPad + "]" + subs + tail;
+    }
+
+    /// <summary>🥁 BGM 비트 그리드(검출 실패/폴백 격자/OFF → null · 취소만 전파).</summary>
+    internal async Task<IReadOnlyList<double>?> TryDetectBgmBeatsAsync(BabyBgmTrack track, double durationSec, CancellationToken ct)
+    {
+        if (!BeatSyncEnabled) return null;
+        try
+        {
+            var bgm = BabyBgmResolver(track, durationSec);
+            if (string.IsNullOrWhiteSpace(bgm) || !File.Exists(bgm)) return null;
+            return await Task.Run(() =>
+            {
+                var grid = Pluto.Dsp.PlutoAudioBeatDetector.Shared.Analyze(File.ReadAllBytes(bgm));
+                return grid.IsFallback ? null : grid.Beats;
+            }, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            Program.Log("StockSuite.Montage.Beats", ex);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 🎞️ 사진 2~5장 → 15초 60fps 세로 몽타주 MP4 — 사진별 색 분석 → 노출 정합 + 시네마틱 룩(오답 노트 차단 → NaturalPastel) →
+    /// BGM 비트 스냅 컷 · 클립별 Push-In/Drift/Pull-Back zoompan · xfade 체인 → KO/EN 자막 번인 →
+    /// 트루피크 마스터링(−14 LUFS · ≤ −1 dBTP) + 사이드체인 더킹 + 비트 스냅 SFX 먹싱(검증된 <see cref="MuxBabyAudioIntoPrimaryAsync"/> 재사용).
+    /// [부분 구제] 자막 번인 실패 → 자막 없이 재시도 · 오디오 실패 → 무음 영상 보존. 동시 실행은 즉시 거부.
+    /// </summary>
+    /// <param name="preferredLook">룩 후보(null → NaturalPastel) — <see cref="Pluto.PlutoColorGradingCompiler.SelectLook"/> 결과 권장.</param>
+    public async Task<StockSuiteExportResult> ExportMontageVideoFromPhotosAsync(IReadOnlyList<string> imagePaths, IReadOnlyList<(double X, double Y)>? focalPoints, ExportOptions options,
+        IReadOnlyList<SubtitleCue>? subtitles = null, BabyBgmTrack? bgm = null, bool includeSfx = true, string? preferredLook = null, string? outputPath = null, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (options is null) return new StockSuiteExportResult(false, null, false, "옵션이 없습니다.");
+        if (imagePaths is null || imagePaths.Count < Pluto.PlutoMontageCompiler.MinClips || imagePaths.Count > Pluto.PlutoMontageCompiler.MaxClips)
+            return new StockSuiteExportResult(false, null, false, "몽타주는 사진 2~5장이 필요합니다.");
+        var srcs = new string[imagePaths.Count];
+        for (var i = 0; i < srcs.Length; i++)
+        {
+            if (string.IsNullOrWhiteSpace(imagePaths[i]) || !File.Exists(imagePaths[i])) return new StockSuiteExportResult(false, null, false, "원본 사진을 찾을 수 없습니다: " + imagePaths[i]);
+            srcs[i] = Path.GetFullPath(imagePaths[i]);
+        }
+        if (Interlocked.CompareExchange(ref _montageExporting, 1, 0) != 0) return new StockSuiteExportResult(false, null, false, "이미 몽타주 렌더가 진행 중입니다.");
+
+        var prevBgm = BabyBgm;
+        var prevSfx = IncludeSfx;
+        var prevCues = SubtitleCues;
+        string? temp = null;
+        try
+        {
+            var uhd = options.Resolution == StockSuiteResolution.Uhd4K;
+            int width = uhd ? 2160 : Pluto.PlutoMotionCompiler.DefaultWidth, height = uhd ? 3840 : Pluto.PlutoMotionCompiler.DefaultHeight;
+            const int fps = Pluto.PlutoMotionCompiler.DefaultFps;
+            const double total = Pluto.PlutoMotionCompiler.FourActDurationSec;
+            var track = bgm ?? prevBgm ?? BabyBgmTrack.Lullaby;
+
+            // 🎨 색 분석(백그라운드 · 실패 → 중립) → 노출 정합 프로파일
+            var analyzer = ColorAnalyzer;
+            var metrics = await Task.Run(() =>
+            {
+                var m = new Pluto.PlutoImageColorMetrics[srcs.Length];
+                for (var i = 0; i < m.Length; i++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    try { m[i] = analyzer.AnalyzeImage(srcs[i]); }
+                    catch (Exception ex) when (ex is not OperationCanceledException) { Program.Log("StockSuite.Montage.Color", ex); m[i] = Pluto.PlutoImageColorMetrics.Neutral; }
+                }
+                return m;
+            }, ct).ConfigureAwait(false);
+            var profiles = analyzer.BuildHarmonizedProfiles(metrics, preferredLook ?? Pluto.PlutoColorGradingCompiler.NaturalPastelName, MistakeNotebook);
+
+            // 🥁 BGM 비트 → 컷 스냅 → filter_complex
+            var beats = await TryDetectBgmBeatsAsync(track, total, ct).ConfigureAwait(false);
+            var plan = MontageCompiler.CompileMontagePlan(srcs, focalPoints, beats, profiles, total, width, height, fps);
+            var frames = (int)Math.Round(plan.TotalDurationSec * fps, MidpointRounding.AwayFromZero);
+
+            string target;
+            try
+            {
+                target = Path.GetFullPath(string.IsNullOrWhiteSpace(outputPath)
+                    ? Path.Combine(string.IsNullOrWhiteSpace(options.OutputDirectory) ? Path.Combine(Path.GetTempPath(), "PromptFlowStudio", MotionOutputFolder) : options.OutputDirectory,
+                        Path.GetFileNameWithoutExtension(srcs[0]) + MontageFileSuffix)
+                    : outputPath);
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                Program.Log("StockSuite.Montage.Path", ex);
+                return new StockSuiteExportResult(false, null, false, "출력 경로를 만들 수 없습니다: " + ex.Message);
+            }
+
+            var cues = subtitles ?? (BurnSubtitles ? SubtitleCues : null);
+            var subsOn = BuildTimedSubtitleFilter(cues, null, options.Resolution) is not null;
+            temp = target + TempExt;
+            var look = profiles.Count > 0 ? profiles[0].PresetName : Pluto.PlutoColorGradingCompiler.NaturalPastelName;
+            var inv = CultureInfo.InvariantCulture;
+            var tag = MontageTag + srcs.Length.ToString(inv) + "컷 · " + frames.ToString(inv) + "프레임 @" + fps.ToString(inv) + "fps · 🎨 " + look
+                      + " · 🥁 비트 컷 " + plan.SnappedCuts.ToString(inv) + "/" + (srcs.Length - 1).ToString(inv) + " · ";
+
+            string? err = null;
+            if (subsOn)
+            {
+                var burned = AppendMontageSubtitles(plan.FilterComplexGraph, plan.FinalVideoPadLabel, cues, ResolveTickerBadgeFont(), options.Resolution);
+                err = await TryFfmpegAsync(BuildMontageVideoArgs(srcs, burned, plan.FinalVideoPadLabel, frames, fps, temp), temp, ct, ExportProfile.BabyCinematic).ConfigureAwait(false);
+                if (err is null) tag += SubtitleTag;
+                else
+                {
+                    Program.Log("StockSuite.Montage.Subtitle", new IOException("⚠ 자막 번인 실패 → 자막 없이 재시도: " + err));
+                    TryDelete(temp);
+                }
+            }
+            if (!subsOn || err is not null)
+            {
+                err = await TryFfmpegAsync(BuildMontageVideoArgs(srcs, plan.FilterComplexGraph, plan.FinalVideoPadLabel, frames, fps, temp), temp, ct, ExportProfile.BabyCinematic).ConfigureAwait(false);
+                if (err is not null) { TryDelete(temp); return new StockSuiteExportResult(false, null, false, "몽타주 렌더 실패: " + err); }
+                if (subsOn) tag += "⚠ 자막 생략 · ";
+            }
+            await SwapIntoPlaceAsync(temp, target, ct).ConfigureAwait(false);
+            LastMontagePlan = plan;
+
+            if (subsOn) { SubtitleCues = cues; TryWriteSubtitleSidecar(target); }
+
+            // 🎵🔔 마스터링 BGM + 사이드체인 더킹 + 비트 스냅 SFX(실패 시 무음 영상 보존).
+            BabyBgm = track;
+            IncludeSfx = includeSfx;
+            var mixed = await MuxBabyAudioIntoPrimaryAsync(target, ct).ConfigureAwait(false);
+            tag += mixed < 0
+                ? "⚠ 오디오 생략 · 🔇 무음"
+                : "🔊 BGM · " + BabyBgmTag + BabyBgmLabel(track) + (mixed > 0 ? " · " + SfxTag + mixed.ToString(inv) + "큐" : "");
+            return new StockSuiteExportResult(true, target, false, tag) { HasAudio = mixed >= 0 };
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
+        {
+            Program.Log("StockSuite.Montage", ex);
+            return new StockSuiteExportResult(false, null, false, "몽타주 내보내기 실패: " + ex.Message);
+        }
+        finally
+        {
+            if (temp is not null) TryDelete(temp);
+            BabyBgm = prevBgm;
+            IncludeSfx = prevSfx;
+            SubtitleCues = prevCues;
+            Volatile.Write(ref _montageExporting, 0);
+        }
+    }
 }

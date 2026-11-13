@@ -85,6 +85,16 @@
             @if (_motionImage is not null && !_visionStoryBusy) { <button class="ws-back" data-motion-render="1" @onclick="RenderMotionVideoAsync" disabled="@(_motionBusy || _stockBusy)" title="사진 1장을 4막 Ken Burns 카메라 궤적으로 15초 60fps MP4 렌더 — KO/EN 이중 자막 번인 · BGM · 절차적 SFX 믹스">🎬 15초 모션 비디오 즉시 렌더</button> }
             @if (_motionBusy) { <span class="ws-retry" role="status" data-motion-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 🎥 모션 비디오 렌더 중… (15초 · 60fps)</span> }
             else if (_motionToast is { } mvt) { <span class="ws-retry" role="status" data-motion-result="1">@(mvt) @if (_motionOutput is { } mvo) { <button class="ws-back" data-motion-open="1" @onclick="() => RevealInExplorer(mvo)" title="@(mvo)">📂 @(Path.GetFileName(mvo)) 위치 열기</button> }</span> }
+            @* 🎞️ 멀티컷 몽타주 — 사진 2~5장 → 15초 60fps · 노출 정합 자동 색보정 · BGM 비트 스냅 xfade *@
+            <span class="ws-back" data-montage-pick="1" title="사진 2~5장을 선택(여러 장 동시 선택 가능) — 비트에 맞춘 15초 멀티컷 몽타주 · 사진 간 밝기 자동 정합">🎞️ 몽타주 사진 추가 (@(_montagePhotos.Count.ToString(CultureInfo.InvariantCulture))/5)<InputFile class="ws-drop-input" OnChange="OnMontagePhotosPickedAsync" multiple accept="image/png,image/jpeg,image/webp,image/bmp" disabled="@(State.IsBusy || _montageBusy || _montagePhotos.Count >= MontageMaxPhotos)" /></span>
+            @if (_montagePhotos.Count > 0 && !_montageBusy) { <button class="ws-back" data-montage-clear="1" @onclick="ClearMontagePhotos" title="@(string.Join(" · ", _montagePhotos.Select(static p => Path.GetFileName(p))))">✕ 몽타주 비우기</button> }
+            @if (_montagePhotos.Count >= 2)
+            {
+                <span class="ws-pcore on" data-montage-grade="@(_montageLook)">🎨 자동 색보정: @(_montageLook) · @(_montagePhotos.Count.ToString(CultureInfo.InvariantCulture))컷 비트 몽타주</span>
+                <button class="ws-back" data-montage-render="1" @onclick="RenderMontageVideoAsync" disabled="@(_montageBusy || _motionBusy || _stockBusy)" title="사진별 Push-In → Drift → Pull-Back 카메라 · 비트 스냅 xfade · KO/EN 자막 · 마스터링 BGM + SFX">[🎞️ 15초 멀티컷 몽타주 렌더]</button>
+            }
+            @if (_montageBusy) { <span class="ws-retry" role="status" data-montage-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 🎞️ 몽타주 렌더 중… (@(_montagePhotos.Count.ToString(CultureInfo.InvariantCulture))컷 · 15초 · 60fps)</span> }
+            else if (_montageToast is { } mtt) { <span class="ws-retry" role="status" data-montage-result="1">@(mtt) @if (_montageOutput is { } mto) { <button class="ws-back" data-montage-open="1" @onclick="() => RevealInExplorer(mto)" title="@(mto)">📂 @(Path.GetFileName(mto)) 위치 열기</button> }</span> }
             <button class="ws-back" data-local-ai-open="1" @onclick="() => _localAiModal = true" title="Gemini 장애 시 사내/로컬 AI 서버(OpenAI 호환 · Ollama)로 자동 전환 — 엔드포인트 · 모델 · 연결 테스트">🦙 로컬 AI 설정@(LocalAiSettings.Gateway.Options.IsEnabled ? " · ON" : "")</button>
             @{ var pcs = PlutoCoreMgr.Current; }
             @if (pcs.IsRunning)
@@ -1577,6 +1587,93 @@
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
     }
+    // ── 🎞️ 멀티컷 몽타주(사진 2~5장) ──
+    private const int MontageMaxPhotos = PromptFlowStudio.Services.Pluto.PlutoMontageCompiler.MaxClips;
+    private readonly List<string> _montagePhotos = new();
+    private bool _montageBusy;
+    private string? _montageToast;
+    private string? _montageOutput;
+    private string _montageLook = PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.NaturalPastelName;
+
+    /// <summary>🎞️ 다중 사진 선택 → 업로드 저장 후 큐 추가(중복 제외 · 최대 5장).</summary>
+    private async Task OnMontagePhotosPickedAsync(InputFileChangeEventArgs e)
+    {
+        if (_montageBusy) return;
+        IReadOnlyList<IBrowserFile> files;
+        try { files = e.GetMultipleFiles(32); }
+        catch (InvalidOperationException ex) { Program.Log("Workspace.MontagePick", ex); _montageToast = "⚠ 한 번에 너무 많은 파일을 선택했습니다."; return; }
+        for (var i = 0; i < files.Count && _montagePhotos.Count < MontageMaxPhotos; i++)
+        {
+            if (await SaveUploadAsync(files[i], keepName: true) is not { } path) continue;
+            if (!_montagePhotos.Contains(path, StringComparer.OrdinalIgnoreCase)) _montagePhotos.Add(path);
+        }
+        _montageToast = files.Count > 0 && _montagePhotos.Count >= MontageMaxPhotos ? "🎞️ 최대 5장까지 담았습니다." : null;
+        _montageOutput = null;
+        RefreshMontageLook();
+        StateHasChanged();
+    }
+
+    private void ClearMontagePhotos()
+    {
+        if (_montageBusy) return;
+        _montagePhotos.Clear();
+        _montageToast = null;
+        _montageOutput = null;
+    }
+
+    /// <summary>🎨 활성 바이럴 태그 · 디렉터 랭크 → 후보 룩 → 오답 노트 차단 시 NaturalPastel([부분 구제] 실패 → NaturalPastel).</summary>
+    private void RefreshMontageLook()
+    {
+        try
+        {
+            var learning = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoLearningService)) as PromptFlowStudio.Services.Pluto.PlutoLearningService;
+            var active = learning?.GetActiveViralTrends(3);
+            var tags = new string[active?.Count ?? 0];
+            for (var i = 0; i < tags.Length; i++) tags[i] = active![i].Tag;
+            var candidate = PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.SelectLook(tags, PlutoDirector.GetCurrentTier().Level);
+            var notebook = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService)) as PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService;
+            _montageLook = PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.ResolveLook(candidate, notebook).PresetName;
+        }
+        catch (Exception ex)
+        {
+            Program.Log("Workspace.MontageLook", ex);
+            _montageLook = PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.NaturalPastelName;
+        }
+    }
+
+    /// <summary>
+    /// 🎞️ 15초 멀티컷 몽타주 — 사진 2~5장 → 노출 정합 색보정 · 비트 스냅 xfade · KO/EN 자막 · 마스터링 BGM + SFX MP4.
+    /// 익스포터 공유 상태 보호를 위해 모션/StockSuite 내보내기와 상호 배제.
+    /// </summary>
+    private async Task RenderMontageVideoAsync()
+    {
+        if (_montageBusy || _motionBusy || _stockBusy || _montagePhotos.Count < 2) return;
+        _montageBusy = true;
+        _stockBusy = true;
+        _montageToast = null;
+        _montageOutput = null;
+        RefreshMontageLook();
+        StateHasChanged();
+        try
+        {
+            var photos = _montagePhotos.ToArray();
+            var focal = PromptFlowStudio.Services.Pluto.PlutoMotionCompiler.FallbackFocal(_identity?.IsPet == true);
+            var focals = new (double X, double Y)[photos.Length];
+            for (var i = 0; i < focals.Length; i++) focals[i] = focal;
+            StockSuite.MistakeNotebook ??= EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService)) as PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService;
+            var cues = (await GenerateWorkspaceLetterAsync(_mediaCts.Token)).ToCues();
+            var r = await StockSuite.ExportMontageVideoFromPhotosAsync(photos, focals, new PromptFlowStudio.Services.Export.ExportOptions(), cues,
+                _bgmOn ? _bgmTrack : null, includeSfx: true, preferredLook: _montageLook, ct: _mediaCts.Token);
+            _montageOutput = r.Ok ? r.TargetPath : null;
+            _montageToast = r.Ok ? "✅ " + r.Message : "⚠ " + r.Message;
+        }
+        catch (OperationCanceledException) { }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.MontageVideo", ex); _montageToast = "⚠ 몽타주 렌더 실패: " + ex.Message; }
+        finally { _montageBusy = false; _stockBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
     private string _size = "1280*720";
     private bool _safeZone = true;   // 숏츠 세이프존 오버레이(세로 결과일 때만 표시)
 
