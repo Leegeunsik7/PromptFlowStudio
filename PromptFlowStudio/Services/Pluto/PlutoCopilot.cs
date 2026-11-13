@@ -66,6 +66,11 @@ public sealed partial class PlutoCopilot
     /// <summary>🔥 학습 메모리 — 활성 바이럴 트렌드 상위 가중 모디파이어를 모든 시나리오/트리플렛 프롬프트에 자동 결합(미주입 → 미결합).</summary>
     public PlutoLearningService? Learning { get; init; }
 
+    /// <summary>🛡️ 오답 노트 — 차단 태그 모디파이어 제외 + LLM 요청 말미 부정 제약(미주입 → <see cref="Learning"/> 의 노트 사용).</summary>
+    public IPlutoMistakeNotebookService? MistakeNotebook { get; init; }
+
+    private IPlutoMistakeNotebookService? Mistakes => MistakeNotebook ?? Learning?.MistakeNotebook;
+
     /// <summary>🔥 프롬프트당 결합할 바이럴 모디파이어 최대 개수.</summary>
     public const int MaxViralModifiers = 3;
 
@@ -146,6 +151,12 @@ public sealed partial class PlutoCopilot
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Copilot] viral load: " + ex.Message); }   // [부분 구제] 바이럴 결합 없이 생성
         }
+        if (Mistakes is { } nb)
+        {
+            try { await nb.EnsureLoadedAsync(ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Copilot] mistake load: " + ex.Message); }   // [부분 구제] 회피 없이 생성
+        }
     }
 
     /// <summary>🔥 활성 바이럴 트렌드 상위 모디파이어(미주입/빈 풀/예외 → null).</summary>
@@ -156,9 +167,10 @@ public sealed partial class PlutoCopilot
         {
             var active = Learning.GetActiveViralTrends(MaxViralModifiers);
             if (active.Count == 0) return null;
+            var suppressed = PlutoTrendAnalyzer.SafeSuppressed(Mistakes);   // 🛡️ 오답 노트 회피
             var list = new List<string>(active.Count);
             for (var i = 0; i < active.Count; i++)
-                if (PlutoTrendAnalyzer.ModifierFor(active[i].Tag) is { } m) list.Add(m);
+                if (PlutoTrendAnalyzer.ModifierFor(active[i].Tag) is { } m && !PlutoTrendAnalyzer.IsSuppressed(suppressed, active[i].Tag, m)) list.Add(m);
             return list.Count == 0 ? null : list;
         }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Copilot] viral: " + ex.Message); return null; }
@@ -167,20 +179,21 @@ public sealed partial class PlutoCopilot
     /// <summary>🔥 LLM 요청용 활성 바이럴 지시 1줄(태그 + 모디파이어 · 없으면 null).</summary>
     private string? ViralRequestLine()
     {
-        if (Learning is null) return null;
+        if (Learning is null && Mistakes is null) return null;
         try
         {
-            var active = Learning.GetActiveViralTrends(MaxViralModifiers);
-            if (active.Count == 0) return null;
+            var active = Learning?.GetActiveViralTrends(MaxViralModifiers) ?? Array.Empty<ActiveViralTrend>();
+            var suppressed = PlutoTrendAnalyzer.SafeSuppressed(Mistakes);   // 🛡️ 오답 노트 회피
             var sb = new System.Text.StringBuilder(256).Append(PlutoPromptCompressor.ViralRequestLabel);
             var n = 0;
             for (var i = 0; i < active.Count; i++)
             {
-                if (PlutoTrendAnalyzer.ModifierFor(active[i].Tag) is not { } m) continue;
+                if (PlutoTrendAnalyzer.ModifierFor(active[i].Tag) is not { } m || PlutoTrendAnalyzer.IsSuppressed(suppressed, active[i].Tag, m)) continue;
                 if (n++ > 0) sb.Append("; ");
                 sb.Append(active[i].Tag).Append(" = ").Append(m);
             }
-            return n == 0 ? null : sb.ToString();
+            var line = PlutoPromptCompressor.AppendNegativeConstraint(n == 0 ? null : sb.ToString(), Mistakes);   // 🛡️ 부정 제약 1줄
+            return line.Length == 0 ? null : line;
         }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Copilot] viral: " + ex.Message); return null; }
     }

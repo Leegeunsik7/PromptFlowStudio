@@ -106,9 +106,50 @@ public static class PlutoTrendAnalyzer
         return null;
     }
 
-    /// <summary>🔥 카테고리 + 표본 트렌드 카드 → 바이럴 토큰(점수 내림차순 · 동점 사전 순). 표본 없음 → 카테고리 사전 점수만.</summary>
-    public static ViralTrendAnalysis Analyze(StudioThemeCategory category, IReadOnlyList<PlutoTrend>? samples = null)
+    /// <summary>모디파이어 → 태그 역조회(미지 → null).</summary>
+    public static string? TagForModifier(string? modifier)
     {
+        if (string.IsNullOrWhiteSpace(modifier)) return null;
+        var m = modifier.Trim().TrimEnd('.');
+        foreach (var d in Tags)
+            if (string.Equals(d.Modifier, m, StringComparison.OrdinalIgnoreCase)) return d.Tag;
+        return null;
+    }
+
+    /// <summary>🛡️ 오답 노트 차단 여부 — 태그 또는 모디파이어 원문이 차단 집합에 있으면 true.</summary>
+    public static bool IsSuppressed(IReadOnlySet<string>? suppressed, string? tag, string? modifier = null)
+    {
+        if (suppressed is null || suppressed.Count == 0) return false;
+        if (tag is { Length: > 0 } && suppressed.Contains(tag)) return true;
+        if (modifier is { Length: > 0 } && suppressed.Contains(modifier.Trim().TrimEnd('.'))) return true;
+        return false;
+    }
+
+    /// <summary>🛡️ 오답 노트 차단 집합 안전 조회(미주입/예외 → null · [부분 구제] 필터 없이 진행).</summary>
+    public static IReadOnlySet<string>? SafeSuppressed(IPlutoMistakeNotebookService? mistakes)
+    {
+        if (mistakes is null) return null;
+        try { var s = mistakes.GetSuppressedTokens(); return s.Count == 0 ? null : s; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Mistake] suppressed: " + ex.Message); return null; }
+    }
+
+    /// <summary>🛡️ 카드가 적중한 바이럴 태그(사전 순서) — 오답 노트 토큰 추출용.</summary>
+    public static IReadOnlyList<string> MatchTags(PlutoTrend? trend)
+    {
+        if (trend is null) return Array.Empty<string>();
+        var list = new List<string>(Tags.Length);
+        foreach (var d in Tags)
+            if (Hits(trend, d.Keywords)) list.Add(d.Tag);
+        return list;
+    }
+
+    /// <summary>
+    /// 🔥 카테고리 + 표본 트렌드 카드 → 바이럴 토큰(점수 내림차순 · 동점 사전 순). 표본 없음 → 카테고리 사전 점수만.
+    /// 🛡️ <paramref name="mistakes"/> 주입 시 오답 노트 차단 태그/모디파이어는 토큰·축별 대표 지시문에서 제외(축 전멸 → 기본 지시문).
+    /// </summary>
+    public static ViralTrendAnalysis Analyze(StudioThemeCategory category, IReadOnlyList<PlutoTrend>? samples = null, IPlutoMistakeNotebookService? mistakes = null)
+    {
+        var suppressed = SafeSuppressed(mistakes);
         var priors = Priors(category);
         var scores = new double[Tags.Length];
         for (var i = 0; i < Tags.Length; i++)
@@ -124,12 +165,14 @@ public static class PlutoTrendAnalyzer
         for (var i = 0; i < idx.Length; i++) idx[i] = i;
         Array.Sort(idx, (a, b) => { var c = scores[b].CompareTo(scores[a]); return c != 0 ? c : a.CompareTo(b); });
 
-        var tokens = new ViralTrendToken[idx.Length];
+        var kept = new List<ViralTrendToken>(idx.Length);
         for (var i = 0; i < idx.Length; i++)
         {
             var d = Tags[idx[i]];
-            tokens[i] = new ViralTrendToken(d.Tag, d.Facet, d.Modifier, Math.Round(scores[idx[i]], 4));
+            if (IsSuppressed(suppressed, d.Tag, d.Modifier)) continue;   // 🛡️ 오답 노트 회피
+            kept.Add(new ViralTrendToken(d.Tag, d.Facet, d.Modifier, Math.Round(scores[idx[i]], 4)));
         }
+        var tokens = kept.ToArray();
         return new ViralTrendAnalysis(category,
             TopModifier(tokens, ViralTrendFacet.Hook, "eye-catching reaction close-up within the first 1.5s"),
             TopModifier(tokens, ViralTrendFacet.Lens, "eye-level 35mm vertical framing"),

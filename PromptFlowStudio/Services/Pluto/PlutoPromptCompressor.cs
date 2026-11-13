@@ -72,6 +72,7 @@ public static class PlutoPromptCompressor
         ("Time of day: ", "time: "),
         ("Video prompt: ", "video: "),
         ("Parent note: ", "note: "),
+        (PlutoMistakeNotebookService.ConstraintPrefix, "avoid: "),
     };
 
     /// <summary>🔥 LLM 요청용 활성 바이럴 트렌드 라벨(게이트웨이 단계에서 <c>viral trends: </c>로 압축).</summary>
@@ -84,10 +85,11 @@ public static class PlutoPromptCompressor
     /// 🔥 상위 가중 바이럴 모디파이어를 프롬프트 말미에 결합 — 이미 결합된 프롬프트·빈 목록은 원문(멱등).
     /// 모디파이어 내부 공백/중복은 제거 · 종결 마침표 보장.
     /// </summary>
-    public static string BlendViralModifiers(string prompt, IReadOnlyList<string>? modifiers)
+    public static string BlendViralModifiers(string prompt, IReadOnlyList<string>? modifiers, IPlutoMistakeNotebookService? mistakes = null)
     {
         if (string.IsNullOrEmpty(prompt) || modifiers is null || modifiers.Count == 0) return prompt ?? string.Empty;
         if (prompt.Contains(ViralMarker.Trim(), StringComparison.Ordinal)) return prompt;
+        var suppressed = PlutoTrendAnalyzer.SafeSuppressed(mistakes);   // 🛡️ 오답 노트 차단 모디파이어 제외
         var sb = new StringBuilder(prompt.Length + 192);
         sb.Append(prompt.TrimEnd());
         if (sb.Length > 0 && sb[^1] != '.') sb.Append('.');
@@ -96,6 +98,7 @@ public static class PlutoPromptCompressor
         {
             var m = modifiers[i]?.Trim().TrimEnd('.');
             if (string.IsNullOrEmpty(m)) continue;
+            if (suppressed is not null && PlutoTrendAnalyzer.IsSuppressed(suppressed, PlutoTrendAnalyzer.TagForModifier(m), m)) continue;
             var dup = false;
             for (var j = 0; j < i; j++)
                 if (string.Equals(modifiers[j]?.Trim().TrimEnd('.'), m, StringComparison.Ordinal)) { dup = true; break; }
@@ -118,8 +121,9 @@ public static class PlutoPromptCompressor
     }
 
     /// <summary>로컬 게이트웨이용 프롬프트 — system(불변) + user(<c>---</c> · [CTX] 앵커 · [REQ] 요청).</summary>
-    public static PlutoCompactPrompt Compose(string? system, string? user)
+    public static PlutoCompactPrompt Compose(string? system, string? user, IPlutoMistakeNotebookService? mistakes = null)
     {
+        user = AppendNegativeConstraint(user, mistakes);
         var sys = CompactSystem(system);
         var ctx = new StringBuilder(128);
         var req = new StringBuilder((user?.Length ?? 0) + 16);
@@ -138,6 +142,20 @@ public static class PlutoPromptCompressor
         if (ctx.Length > 0) sb.Append(ContextHeader).Append('\n').Append(ctx);
         sb.Append(RequestHeader).Append('\n').Append(req);
         return new PlutoCompactPrompt(sys, sb.ToString().TrimEnd());
+    }
+
+    /// <summary>
+    /// 🛡️ LLM 요청 말미에 오답 노트 부정 제약 1줄(<c>Avoid motifs/styles: …</c>) 결합 — 미주입/차단 없음/이미 포함 → 원문(멱등).
+    /// </summary>
+    public static string AppendNegativeConstraint(string? request, IPlutoMistakeNotebookService? mistakes, int maxTokens = 3)
+    {
+        var src = request ?? string.Empty;
+        if (mistakes is null || src.Contains(PlutoMistakeNotebookService.ConstraintPrefix, StringComparison.Ordinal)) return src;
+        string neg;
+        try { neg = mistakes.BuildNegativeConstraintPrompt(maxTokens); }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Mistake] constraint: " + ex.Message); return src; }   // [부분 구제]
+        if (string.IsNullOrEmpty(neg)) return src;
+        return src.Length == 0 ? neg : src.TrimEnd() + "\n" + neg;
     }
 
     /// <summary>근사 토큰 수 — ASCII 4자당 1토큰 · 비ASCII(한글·이모지) 문자당 1토큰.</summary>

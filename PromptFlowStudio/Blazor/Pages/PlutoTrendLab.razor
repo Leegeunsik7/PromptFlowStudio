@@ -3,6 +3,7 @@
 @using PromptFlowStudio.Services.Pluto
 @inject PlutoTrendEngine Engine
 @inject PlutoLearningService Learning
+@inject IPlutoMistakeNotebookService Mistakes
 @inject IPlutoDirectorRankService Director
 @inject PlutoSocialRadarEngine Radar
 @inject PlutoIdentityVault IdentityVault
@@ -111,6 +112,14 @@
             }
         </div>
     }
+    var guarded = Mistakes.GetSuppressedTokens();
+    @if (guarded.Count > 0)
+    {
+        <div class="pl-pills" data-pluto-mistake-guard="1">
+            <span class="pl-guard" title="@("차단 패턴: " + string.Join(", ", guarded) + " — 👎 누적 벌점 ≥ 1.8 차단 · 14일 반감기 · 👍/적용 시 < 0.8 로 내려가면 해제")">🛡️ 오답 노트 회피 활성: @(guarded.Count.ToString(System.Globalization.CultureInfo.InvariantCulture))개 패턴 차단 중</span>
+            <button class="pl-guard-reset" data-pluto-mistake-reset="1" disabled="@_mistakeBusy" @onclick="ClearMistakesAsync">[초기화]</button>
+        </div>
+    }
 
     @if (_loading)
     {
@@ -200,6 +209,8 @@
     .pl-btn { padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line,rgba(148,163,184,.25)); background: transparent; color: inherit; font-weight: 800; font-size: 13px; cursor: pointer; }
     .pl-btn.go { border: 0; color: #fff; background: linear-gradient(135deg,#8b7bff,#6d5efc); }
     .pl-btn.sm { padding: 8px 10px; }
+    .pl-guard { padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 800; color: #b45309; background: rgba(245,158,11,.14); border: 1px solid rgba(245,158,11,.35); }
+    .pl-guard-reset { padding: 3px 8px; border-radius: 8px; border: 1px solid var(--line,rgba(148,163,184,.25)); background: transparent; color: inherit; font-size: 11px; font-weight: 700; cursor: pointer; }
     .pl-empty { opacity: .7; padding: 40px 0; text-align: center; }
     .pl-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: rgba(15,23,42,.92); color: #fff; padding: 10px 18px; border-radius: 10px; font-weight: 700; z-index: 50; }
     @@media (max-width: 900px) { .pl-grid { grid-template-columns: 1fr; } }
@@ -210,6 +221,8 @@
     private IReadOnlyList<PlutoTrend> _trends = Array.Empty<PlutoTrend>();
     private bool _loading = true;
     private bool _fresh;
+    private bool _interacted;     // 🛡️ 현재 발굴 배치에 👍/👎/적용 발생 여부(없이 재발굴 → 소프트 스킵 0.4)
+    private bool _mistakeBusy;
     private string? _toast;
     private System.Threading.Timer? _toastTimer;
     private readonly CancellationTokenSource _cts = new();
@@ -234,6 +247,10 @@
         Radar.Changed += OnLearningChanged;
         Storage.Changed += OnLearningChanged;     // ☁️ Drive ↔ 로컬 폴백 전환
         Harvester.Changed += OnLearningChanged;   // 🔄 자율 수확 시작/완료 → 배지·바이럴 칩 무리로드 갱신
+        Mistakes.Changed += OnLearningChanged;    // 🛡️ 오답 노트 차단/해제 → 회피 배지 갱신
+        try { await Mistakes.EnsureLoadedAsync(_cts.Token); }   // 🛡️ 차단 패턴 선적재
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("PlutoTrendLab.Mistake", ex); }
         try { await Learning.EnsureLoadedAsync(_cts.Token); }   // 🧠 HUD 레벨/XP 표시용 메모리 선적재
         catch (OperationCanceledException) { }
         catch (Exception ex) { Program.Log("PlutoTrendLab.Brain", ex); }
@@ -247,6 +264,7 @@
     {
         _loading = true;
         _fresh = false;
+        _interacted = false;
         try { _trends = await Engine.GetCuratedTrendsAsync(_category, _cts.Token); }
         catch (OperationCanceledException) { }
         catch (Exception ex) { Program.Log("PlutoTrendLab.Load", ex); _trends = Array.Empty<PlutoTrend>(); }
@@ -257,6 +275,13 @@
     private async Task DiscoverAsync()
     {
         if (_loading) return;
+        if (_fresh && !_interacted && _trends.Count > 0)   // 🛡️ 평가 없이 즉시 재발굴 → 직전 배치 소프트 스킵(0.4)
+        {
+            try { await Learning.RecordSoftSkipAsync(_trends, _cts.Token); }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { Program.Log("PlutoTrendLab.Skip", ex); }
+        }
+        _interacted = false;
         _loading = true;
         try { _trends = await Engine.DiscoverFreshTrendsAsync(_category, 4, _cts.Token); _fresh = true; }
         catch (OperationCanceledException) { }
@@ -273,7 +298,7 @@
     {
         try
         {
-            var analysis = PlutoTrendAnalyzer.Analyze(_category, _trends);
+            var analysis = PlutoTrendAnalyzer.Analyze(_category, _trends, Mistakes);   // 🛡️ 오답 노트 차단 태그 제외
             await Learning.IngestViralTrendsAsync(analysis.Tokens, _cts.Token);
             return analysis.Tokens.Count > 0 ? analysis.Tokens[0].Tag : null;
         }
@@ -358,7 +383,8 @@
     {
         Draft.Send(PlutoTrendEngine.EnglishName(t.Category) + " theme, " + t.BuildStudioPrompt());   // 작업실 진입 시 프롬프트로 흡수
         Draft.SendPlutoTrend(t.Id);   // 🪐 내보내기 성공 시 ExportCompleted(+0.15) 보상 대상
-        try { await Learning.RecordInteractionAsync(t.Id, InteractionType.Adopted, _cts.Token); }
+        _interacted = true;
+        try { await Learning.RecordCardFeedbackAsync(t, InteractionType.Adopted, _cts.Token); }   // 🛡️ 채택 → 오답 노트 상쇄 1.2
         catch (Exception ex) when (ex is not OperationCanceledException) { Program.Log("PlutoTrendLab.Adopt", ex); }
         catch (OperationCanceledException) { }
         Nav.NavigateTo("workspace");
@@ -376,11 +402,23 @@
     {
         try
         {
-            await Learning.RecordInteractionAsync(t.Id, type, _cts.Token);
+            _interacted = true;
+            await Learning.RecordCardFeedbackAsync(t, type, _cts.Token);   // 🛡️ 👎 → 오답 노트 벌점 1.0 · 👍 → 상쇄 1.2
             Toast(type == InteractionType.ThumbsDown ? "👎 플루토가 덜 추천할게요" : "👍 플루토가 기억했어요");
         }
         catch (OperationCanceledException) { }
         catch (Exception ex) { Program.Log("PlutoTrendLab.Rate", ex); }
+    }
+
+    /// <summary>🛡️ 오답 노트 초기화 — 차단 패턴 전부 해제.</summary>
+    private async Task ClearMistakesAsync()
+    {
+        if (_mistakeBusy) return;
+        _mistakeBusy = true;
+        try { await Mistakes.ClearAllAsync(_cts.Token); Toast("🛡️ 오답 노트를 초기화했어요 — 모든 패턴을 다시 추천해요"); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Program.Log("PlutoTrendLab.MistakeClear", ex); Toast("⚠ 오답 노트 초기화 실패"); }
+        finally { _mistakeBusy = false; }
     }
 
     private void Toast(string msg)
@@ -413,6 +451,7 @@
         Radar.Changed -= OnLearningChanged;
         Storage.Changed -= OnLearningChanged;
         Harvester.Changed -= OnLearningChanged;
+        Mistakes.Changed -= OnLearningChanged;
         try { _cts.Cancel(); } catch (ObjectDisposedException) { }
         _cts.Dispose();
         _toastTimer?.Dispose();

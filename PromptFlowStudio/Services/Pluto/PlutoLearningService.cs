@@ -85,6 +85,63 @@ public sealed class PlutoLearningService : IDisposable
     /// <summary>상태 변경 통지(백그라운드 스레드 가능).</summary>
     public event Action? Changed;
 
+    /// <summary>🛡️ 오답 노트 — 👎/소프트 스킵 → 카드 패턴 토큰 벌점 · 👍/채택 → 벌점 상쇄(미주입 → 가중치 학습만).</summary>
+    public IPlutoMistakeNotebookService? MistakeNotebook { get; init; }
+
+    /// <summary>
+    /// 🛡️ 카드 피드백 — 가중치 학습(<see cref="RecordInteractionAsync"/>) + 오답 노트 전달(👎 → 벌점 1.0 · 👍/채택 → 상쇄 1.2 · 내보내기 → 노트 미변경).
+    /// 노트 실패는 격리([부분 구제] 가중치 학습 결과 유지). 반환 = 갱신 후 가중치.
+    /// </summary>
+    public async Task<double> RecordCardFeedbackAsync(PlutoTrend trend, InteractionType type, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(trend);
+        var w = await RecordInteractionAsync(trend.Id, type, ct).ConfigureAwait(false);
+        if (MistakeNotebook is not { } nb) return w;
+        try
+        {
+            var tokens = ExtractMistakeTokens(trend);
+            if (tokens.Count == 0) return w;
+            if (type == InteractionType.ThumbsDown)
+                await nb.RecordNegativeFeedbackAsync(tokens, PlutoMistakeNotebookService.DislikePenalty, "👎 " + trend.Id, ct).ConfigureAwait(false);
+            else if (type is InteractionType.ThumbsUp or InteractionType.Adopted)
+                await nb.RecordPositiveReliefAsync(tokens, PlutoMistakeNotebookService.DefaultRelief, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Mistake] feedback: " + ex.Message); }
+        return w;
+    }
+
+    /// <summary>
+    /// 🛡️ 소프트 스킵(평가·채택 없이 즉시 재생성) — 배치 내 카드 토큰 합집합에 벌점 0.4(토큰당 1회) · 가중치 불변.
+    /// 미주입/빈 배치 → 무동작. 실패 격리.
+    /// </summary>
+    public async Task RecordSoftSkipAsync(IReadOnlyList<PlutoTrend>? skipped, CancellationToken ct = default)
+    {
+        if (MistakeNotebook is not { } nb || skipped is null || skipped.Count == 0) return;
+        try
+        {
+            var tokens = new List<string>(skipped.Count * 4);
+            for (var i = 0; i < skipped.Count; i++)
+                if (skipped[i] is { } t) tokens.AddRange(ExtractMistakeTokens(t));
+            if (tokens.Count == 0) return;
+            await nb.RecordNegativeFeedbackAsync(tokens, PlutoMistakeNotebookService.SoftSkipPenalty, "skip", ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Mistake] skip: " + ex.Message); }
+    }
+
+    /// <summary>🛡️ 카드 → 오답 노트 토큰(적중 바이럴 태그 + 카메라 앵글 + BGM 무드 · 빈 값 제외).</summary>
+    public static IReadOnlyList<string> ExtractMistakeTokens(PlutoTrend trend)
+    {
+        ArgumentNullException.ThrowIfNull(trend);
+        var tags = PlutoTrendAnalyzer.MatchTags(trend);
+        var list = new List<string>(tags.Count + 2);
+        for (var i = 0; i < tags.Count; i++) list.Add(tags[i]);
+        if (!string.IsNullOrWhiteSpace(trend.CameraMotion)) list.Add(trend.CameraMotion.Trim());
+        if (!string.IsNullOrWhiteSpace(trend.BgmStyle)) list.Add(trend.BgmStyle.Trim());
+        return list;
+    }
+
     public sealed class Entry
     {
         public double Weight { get; set; }

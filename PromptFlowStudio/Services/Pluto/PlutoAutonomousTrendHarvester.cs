@@ -166,7 +166,13 @@ public sealed class PlutoAutonomousTrendHarvester : IDisposable
 
             RaiseChanged();
             raised = true;
-            var best = new Dictionary<string, ViralTrendToken>(StringComparer.OrdinalIgnoreCase);
+            if (_learning.MistakeNotebook is { } nb)
+            {
+                try { await nb.EnsureLoadedAsync(ct).ConfigureAwait(false); }   // 🛡️ 오답 노트 선적재(차단 태그 수확 제외)
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Harvest] mistake load: " + ex.Message); }   // [부분 구제] 필터 없이 수확
+            }
+            var best =new Dictionary<string, ViralTrendToken>(StringComparer.OrdinalIgnoreCase);
             var niches = new List<PlutoViralPatternSnapshot.Niche>(Niches.Length);
             var fromGen = false;
             var live = await FetchLiveAsync(ct).ConfigureAwait(false);
@@ -175,7 +181,7 @@ public sealed class PlutoAutonomousTrendHarvester : IDisposable
             {
                 var samples = await DiscoverAsync(niche, ct).ConfigureAwait(false);
                 fromGen |= samples is not null && _engine is { CanDiscover: true };
-                var a = PlutoTrendAnalyzer.Analyze(niche, MergeLive(niche, samples, live));
+                var a = PlutoTrendAnalyzer.Analyze(niche, MergeLive(niche, samples, live), _learning.MistakeNotebook);   // 🛡️ 오답 노트 차단 태그 제외
                 niches.Add(new PlutoViralPatternSnapshot.Niche(niche, a.HookStructure, a.LensAngle, a.Lighting, a.Pacing));
                 foreach (var t in a.Tokens)
                     if (!best.TryGetValue(t.Tag, out var cur) || t.Score > cur.Score) best[t.Tag] = t;
