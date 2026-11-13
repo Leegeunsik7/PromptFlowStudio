@@ -16,7 +16,21 @@ namespace PromptFlowStudio.Services.Export;
 public enum BabyBgmTrack { Lullaby, MusicBox, Acoustic }
 
 /// <summary>💌 시간 동기 자막 큐(초 단위 표시 구간 + 주 자막(KO) + 선택 보조 자막(EN)).</summary>
-public readonly record struct SubtitleCue(int StartSec, int EndSec, string Text, string? SecondaryText = null);
+public readonly record struct SubtitleCue(int StartSec, int EndSec, string Text, string? SecondaryText = null)
+{
+    /// <summary>🎞 정밀 시작(초 · 소수) — 설정 시 <see cref="StartSec"/> 대신 번인/SRT/프리뷰에 사용(몽타주 클립 경계 정렬).</summary>
+    public double? StartPreciseSec { get; init; }
+    /// <summary>🎞 정밀 종료(초 · 소수) — 설정 시 <see cref="EndSec"/> 대신 사용.</summary>
+    public double? EndPreciseSec { get; init; }
+    /// <summary>실효 시작(초) — 정밀 값 우선.</summary>
+    public double EffectiveStartSec => StartPreciseSec ?? StartSec;
+    /// <summary>실효 종료(초) — 정밀 값 우선.</summary>
+    public double EffectiveEndSec => EndPreciseSec ?? EndSec;
+
+    /// <summary>🎞 소수 초 큐 — 정수 필드는 floor/ceil 근사(하위 호환) · 정밀 필드에 원값.</summary>
+    public static SubtitleCue Precise(double startSec, double endSec, string text, string? secondaryText = null)
+        => new((int)Math.Floor(startSec), (int)Math.Ceiling(endSec), text, secondaryText) { StartPreciseSec = startSec, EndPreciseSec = endSec };
+}
 
 public sealed partial class StockSuiteExporter
 {
@@ -455,11 +469,11 @@ public sealed partial class StockSuiteExporter
         for (var i = 0; i < cues.Count; i++)
         {
             var c = cues[i];
-            if (string.IsNullOrWhiteSpace(c.Text) || c.EndSec <= c.StartSec || c.StartSec < 0) continue;
+            if (string.IsNullOrWhiteSpace(c.Text) || c.EffectiveEndSec <= c.EffectiveStartSec || c.EffectiveStartSec < 0) continue;
             var clean = FitSubtitleText(CleanSubtitleLine(c.Text), SubtitlePrimaryFontSize);
             if (clean.Length == 0) continue;
             var en = FitSubtitleText(CleanSubtitleLine(c.SecondaryText), SubtitleSecondaryFontSize);
-            var gate = "':enable='between(t," + c.StartSec.ToString(inv) + "," + c.EndSec.ToString(inv) + ")'";
+            var gate = "':enable='between(t," + c.EffectiveStartSec.ToString("0.###", inv) + "," + c.EffectiveEndSec.ToString("0.###", inv) + ")'";
             if (sb.Length > 0) sb.Append(',');
             sb.Append("drawtext=").Append(font).Append("text='").Append(EscapeDrawText(clean)).Append(gate)
               .Append(":fontsize=").Append((FitSubtitleFontSize(clean, SubtitlePrimaryFontSize) * k).ToString(inv))
@@ -527,12 +541,12 @@ public sealed partial class StockSuiteExporter
         for (var i = 0; i < cues.Count; i++)
         {
             var c = cues[i];
-            if (string.IsNullOrWhiteSpace(c.Text) || c.EndSec <= c.StartSec || c.StartSec < 0) continue;
+            if (string.IsNullOrWhiteSpace(c.Text) || c.EffectiveEndSec <= c.EffectiveStartSec || c.EffectiveStartSec < 0) continue;
             if (n > 0) sb.Append('\n');
             n++;
             sb.Append(n.ToString(CultureInfo.InvariantCulture)).Append('\n');
-            AppendSrtTime(sb, c.StartSec).Append(" --> ");
-            AppendSrtTime(sb, c.EndSec).Append('\n');
+            AppendSrtTime(sb, c.EffectiveStartSec).Append(" --> ");
+            AppendSrtTime(sb, c.EffectiveEndSec).Append('\n');
             sb.Append(c.Text.Replace("\r", "", StringComparison.Ordinal).Trim()).Append('\n');
             if (!string.IsNullOrWhiteSpace(c.SecondaryText))
                 sb.Append(c.SecondaryText.Replace('\r', ' ').Replace('\n', ' ').Trim()).Append('\n');
@@ -540,12 +554,15 @@ public sealed partial class StockSuiteExporter
         return sb.ToString();
     }
 
-    private static StringBuilder AppendSrtTime(StringBuilder sb, int totalSec)
+    private static StringBuilder AppendSrtTime(StringBuilder sb, double sec)
     {
         var inv = CultureInfo.InvariantCulture;
+        var ms = (long)Math.Round(Math.Max(0, sec) * 1000.0);
+        var totalSec = ms / 1000;
         return sb.Append((totalSec / 3600).ToString("00", inv)).Append(':')
                  .Append((totalSec / 60 % 60).ToString("00", inv)).Append(':')
-                 .Append((totalSec % 60).ToString("00", inv)).Append(",000");
+                 .Append((totalSec % 60).ToString("00", inv)).Append(',')
+                 .Append((ms % 1000).ToString("000", inv));
     }
 
     /// <summary>💌 <c>{출력명}.srt</c> 동반 기록(외부 플레이어용 · 원자적 · 실패 격리). 성공 시 경로.</summary>

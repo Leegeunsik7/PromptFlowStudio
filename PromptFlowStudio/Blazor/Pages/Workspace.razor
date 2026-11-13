@@ -100,14 +100,27 @@
                 @if (_showCurationDetails)
                 {
                     <div class="ws-retry" data-curation-details="1" style="display:block">
-                        @foreach (var sc in cur.SelectedCuts)
+                        @for (var si = 0; si < cur.SelectedCuts.Count; si++)
                         {
-                            <div data-curation-selected="@(sc.NarrativeActOrder.ToString(CultureInfo.InvariantCulture))">🎬 @(sc.NarrativeActOrder.ToString(CultureInfo.InvariantCulture)). [@(sc.NarrativeRoleLabel)] @(Path.GetFileName(sc.ImagePath)) · 점수 @(sc.CompositeScore.ToString("0.00", CultureInfo.InvariantCulture)) (선명 @(sc.SharpnessScore.ToString("0.00", CultureInfo.InvariantCulture)) · 노출 @(sc.ExposureScore.ToString("0.00", CultureInfo.InvariantCulture)) · 돌출 @(sc.SaliencyScore.ToString("0.00", CultureInfo.InvariantCulture)))</div>
+                            var slot = si;
+                            var sc = cur.SelectedCuts[si];
+                            <div data-curation-selected="@(sc.NarrativeActOrder.ToString(CultureInfo.InvariantCulture))">
+                                <button class="ws-back" data-curation-up="@(slot.ToString(CultureInfo.InvariantCulture))" @onclick="() => MoveCurationCutAsync(slot, slot - 1)" disabled="@(slot == 0 || _curationEditBusy)" title="앞으로 이동">[▲]</button>
+                                <button class="ws-back" data-curation-down="@(slot.ToString(CultureInfo.InvariantCulture))" @onclick="() => MoveCurationCutAsync(slot, slot + 1)" disabled="@(slot == cur.SelectedCuts.Count - 1 || _curationEditBusy)" title="뒤로 이동">[▼]</button>
+                                🎬 @(sc.NarrativeActOrder.ToString(CultureInfo.InvariantCulture)). [@(sc.NarrativeRoleLabel)] @(Path.GetFileName(sc.ImagePath)) · 점수 @(sc.CompositeScore.ToString("0.00", CultureInfo.InvariantCulture)) (선명 @(sc.SharpnessScore.ToString("0.00", CultureInfo.InvariantCulture)) · 노출 @(sc.ExposureScore.ToString("0.00", CultureInfo.InvariantCulture)) · 돌출 @(sc.SaliencyScore.ToString("0.00", CultureInfo.InvariantCulture)))
+                            </div>
                         }
                         @foreach (var rc in cur.AllEvaluated)
                         {
                             if (rc.IsSelected) continue;
-                            <div data-curation-rejected="@((int)rc.RejectionReason)">✕ @(Path.GetFileName(rc.ImagePath)) — @(PromptFlowStudio.Services.Pluto.PlutoPhotoCurationEngine.ReasonLabel(rc.RejectionReason))</div>
+                            var origIdx = rc.OriginalIndex;
+                            <div data-curation-rejected="@((int)rc.RejectionReason)">
+                                ✕ @(Path.GetFileName(rc.ImagePath)) — @(PromptFlowStudio.Services.Pluto.PlutoPhotoCurationEngine.ReasonLabel(rc.RejectionReason))
+                                @if (rc.RejectionReason != PromptFlowStudio.Services.Pluto.PlutoCurationRejectionReason.UnreadableFile)
+                                {
+                                    <button class="ws-back" data-curation-swap="@(origIdx.ToString(CultureInfo.InvariantCulture))" @onclick="() => SwapCurationCandidateAsync(origIdx)" disabled="@(_curationEditBusy)" title="이 사진을 마지막 컷(클라이맥스)과 교체">[채택 교체]</button>
+                                }
+                            </div>
                         }
                     </div>
                 }
@@ -117,6 +130,9 @@
             {
                 <span class="ws-pcore on" data-montage-grade="@(_montageLook)">🎨 자동 색보정: @(_montageLook) · @(_montagePhotos.Count.ToString(CultureInfo.InvariantCulture))컷 비트 몽타주</span>
                 <button class="ws-back" data-montage-render="1" @onclick="RenderMontageVideoAsync" disabled="@(_montageBusy || _motionBusy || _stockBusy)" title="사진별 Push-In → Drift → Pull-Back 카메라 · 비트 스냅 xfade · KO/EN 자막 · 마스터링 BGM + SFX">[🎞️ 15초 멀티컷 몽타주 렌더]</button>
+                <button class="ws-back" data-montage-story="1" @onclick="GenerateMontageStoryAsync" disabled="@(_activeMontagePlan is null || _montageStoryBusy || _montageBusy)" title="클립 경계에 맞춘 3막(후킹 → 리듬 → 클라이맥스) KO/EN 자막 — Gemini → PlutoCore → 로컬 게이트웨이 → 템플릿">[✨ 3막 자막 자동 생성]</button>
+                @if (_montageStoryBusy) { <span class="ws-retry" role="status" data-montage-story-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 3막 자막 생성 중…</span> }
+                else if (_montageCues is { Count: > 0 } mcs) { <span class="ws-pcore on" data-montage-story-count="@(mcs.Count.ToString(CultureInfo.InvariantCulture))">💬 3막 자막 @(mcs.Count.ToString(CultureInfo.InvariantCulture))컷 · @(_montageStoryLlm ? "AI" : "템플릿")</span> }
             }
             @if (_montageBusy) { <span class="ws-retry" role="status" data-montage-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 🎞️ 몽타주 렌더 중… (@(_montagePhotos.Count.ToString(CultureInfo.InvariantCulture))컷 · 15초 · 60fps)</span> }
             else if (_montageToast is { } mtt) { <span class="ws-retry" role="status" data-montage-result="1">@(mtt) @if (_montageOutput is { } mto) { <button class="ws-back" data-montage-open="1" @onclick="() => RevealInExplorer(mto)" title="@(mto)">📂 @(Path.GetFileName(mto)) 위치 열기</button> }</span> }
@@ -167,7 +183,7 @@
         @if (_activeMontagePreviewPlan is { } amp)
         {
             <div class="ws-motion-preview" data-montage-preview="@(amp.Clips.Count.ToString(CultureInfo.InvariantCulture))">
-                <PlutoMotionPreviewer Js="JS" MontagePlan="@_activeMontagePreviewPlan" Subtitles="_motionSubs" BgmUrl="@(_bgmOn ? _motionBgmUrl : null)" BgmVolume="MotionPreviewBgmVolume" CustomBgmDataUrl="@_customBgmUrl" />
+                <PlutoMotionPreviewer Js="JS" MontagePlan="@_activeMontagePreviewPlan" Subtitles="_motionSubs" SubtitleCues="_montageCues"BgmUrl="@(_bgmOn ? _motionBgmUrl : null)" BgmVolume="MotionPreviewBgmVolume" CustomBgmDataUrl="@_customBgmUrl" />
             </div>
         }
         @if (_jOpen)
@@ -1827,6 +1843,57 @@
         await RefreshMontagePreviewAsync();
     }
 
+    private bool _curationEditBusy;
+
+    /// <summary>🔁 [채택 교체] — 탈락 후보 → 마지막 컷(클라이맥스) 슬롯 승격.</summary>
+    private Task SwapCurationCandidateAsync(int rejectedOriginalIndex)
+    {
+        if (_curationResult is not { SelectedCuts.Count: > 0 } cur) return Task.CompletedTask;
+        return EditCurationAsync(() => Curation.SwapCandidate(cur, cur.SelectedCuts.Count - 1, rejectedOriginalIndex));
+    }
+
+    /// <summary>↕ [▲]/[▼] — 선택 컷 순서 이동.</summary>
+    private Task MoveCurationCutAsync(int fromIndex, int toIndex)
+    {
+        if (_curationResult is not { } cur || (uint)toIndex >= (uint)cur.SelectedCuts.Count) return Task.CompletedTask;
+        return EditCurationAsync(() => Curation.MoveSelectedCut(cur, fromIndex, toIndex));
+    }
+
+    private async Task EditCurationAsync(Func<PromptFlowStudio.Services.Pluto.PlutoBatchCurationResult> edit)
+    {
+        if (_curationEditBusy || _curationBusy || _montageBusy) return;
+        PromptFlowStudio.Services.Pluto.PlutoBatchCurationResult updated;
+        try { updated = edit(); }
+        catch (ArgumentException ex) { Program.Log("Workspace.CurationEdit", ex); _montageToast = "⚠ 컷 편집 실패: " + ex.Message; return; }
+        if (ReferenceEquals(updated, _curationResult)) return;
+        _curationEditBusy = true;
+        try { await ApplyUpdatedCurationAsync(updated); }
+        finally { _curationEditBusy = false; }
+        if (!_disposed) await InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>✨ 교체/재배열 공용 후처리 — 몽타주 큐 · 초점 캐시 동기화 → 플랜/프리뷰 재컴파일(BGM 비트 유지) → 3막 자막 갱신.</summary>
+    private async Task ApplyUpdatedCurationAsync(PromptFlowStudio.Services.Pluto.PlutoBatchCurationResult updated)
+    {
+        var cuts = updated.SelectedCuts;
+        var photos = new string[cuts.Count];
+        var focals = new (double X, double Y)[cuts.Count];
+        for (var i = 0; i < photos.Length; i++)
+        {
+            photos[i] = cuts[i].ImagePath;
+            focals[i] = cuts[i].FocalPoint;
+        }
+        _curationResult = updated;
+        _montagePhotos.Clear();
+        _montagePhotos.AddRange(photos);
+        _stagedFocalPoints = focals;
+        _stagedFocalKey = string.Join("|", photos);
+        _montageOutput = null;
+        RefreshMontageLook();
+        StateHasChanged();
+        await RefreshMontagePreviewAsync();   // 플랜 · 프리뷰 · 비트 · 3막 자막(템플릿 → AI 승격) 일괄 재구성
+    }
+
     private void ClearMontagePhotos()
     {
         if (_montageBusy || _curationBusy) return;
@@ -1840,6 +1907,9 @@
         _stagedFocalPoints = null;
         _stagedFocalKey = null;
         _activeMontagePreviewPlan = null;
+        _activeMontagePlan = null;
+        _montageCues = null;
+        _montageStorySeq++;
     }
 
     // ── 🎯 사진별 초점 · 🎞 멀티컷 프리뷰 ──
@@ -1847,6 +1917,51 @@
     private string? _stagedFocalKey;   // 초점이 계산된 사진 목록(순서 포함) — 렌더 시 재사용 판정
     private PromptFlowStudio.Services.Pluto.PlutoMontagePreviewPlan? _activeMontagePreviewPlan;
     private int _montagePreviewSeq;
+
+    // ── 🎬 몽타주 3막 자막(클립 경계 정렬 · 프리뷰 + 렌더 공용) ──
+    private PromptFlowStudio.Services.Pluto.PlutoMontagePlan? _activeMontagePlan;
+    private IReadOnlyList<PromptFlowStudio.Services.Export.SubtitleCue>? _montageCues;
+    private bool _montageStoryBusy, _montageStoryLlm;
+    private int _montageStorySeq;
+
+    private string MontageThemeHint()
+        => string.IsNullOrWhiteSpace(_visionSubtitle) ? _prompt ?? "" : _visionSubtitle + ", " + _prompt;
+
+    /// <summary>🎬 결정론 템플릿 초안 즉시 적용(오답 노트 차단 토큰 회피 · 실패 → 자막 없음).</summary>
+    private void ApplyLocalMontageCues(PromptFlowStudio.Services.Pluto.PlutoMontagePlan plan)
+    {
+        try
+        {
+            var notebook = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService)) as PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService;
+            _montageCues = PromptFlowStudio.Services.Pluto.PlutoMontageStoryGenerator.GenerateLocal(plan, MontageThemeHint(), notebook?.GetSuppressedTokens());
+            _montageStoryLlm = false;
+        }
+        catch (Exception ex) { Program.Log("Workspace.MontageStoryLocal", ex); _montageCues = null; }
+    }
+
+    /// <summary>🎬 [✨ 3막 자막 자동 생성] — 4단 페일오버 생성(세대 가드 · 실패 → 템플릿 유지).</summary>
+    private async Task GenerateMontageStoryAsync()
+    {
+        if (_activeMontagePlan is not { } plan || _montageStoryBusy) return;
+        var gen = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMontageStoryGenerator)) as PromptFlowStudio.Services.Pluto.IPlutoMontageStoryGenerator;
+        if (gen is null) { ApplyLocalMontageCues(plan); return; }
+        var seq = ++_montageStorySeq;
+        _montageStoryBusy = true;
+        StateHasChanged();
+        try
+        {
+            var cuts = _curationResult?.SelectedCuts is { } sc && sc.Count == plan.Clips.Count ? sc : null;
+            var cues = await gen.GenerateThreeActSubtitlesAsync(plan, cuts, MontageThemeHint(), _mediaCts.Token);
+            if (_disposed || seq != _montageStorySeq || !ReferenceEquals(plan, _activeMontagePlan)) return;
+            _montageCues = cues;
+            _montageStoryLlm = gen.LastUsedLlm;
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.MontageStory", ex); }
+        finally { if (seq == _montageStorySeq) _montageStoryBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
 
     private PromptFlowStudio.Services.Pluto.PlutoVisionStorySynthesizer? ResolveVisionSynth()
         => EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoVisionStorySynthesizer)) as PromptFlowStudio.Services.Pluto.PlutoVisionStorySynthesizer;
@@ -1881,9 +1996,12 @@
         if (photos.Length < PromptFlowStudio.Services.Pluto.PlutoMontageCompiler.MinClips || photos.Length > MontageMaxPhotos)
         {
             _activeMontagePreviewPlan = null;
+            _activeMontagePlan = null;
+            _montageCues = null;
             return;
         }
         PromptFlowStudio.Services.Pluto.PlutoMontagePreviewPlan? preview = null;
+        PromptFlowStudio.Services.Pluto.PlutoMontagePlan? compiled = null;
         try
         {
             var ct = _mediaCts.Token;
@@ -1909,12 +2027,19 @@
             var urls = new string[photos.Length];
             for (var i = 0; i < urls.Length; i++) urls[i] = Media.ToPlaybackUrl(photos[i]);
             preview = MontageCompiler.BuildMontagePreviewPlan(plan, urls, beats);
+            compiled = plan;
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
-        catch (Exception ex) { Program.Log("Workspace.MontagePreview", ex); preview = null; }
+        catch (Exception ex) { Program.Log("Workspace.MontagePreview", ex); preview = null; compiled = null; }
         if (_disposed || seq != _montagePreviewSeq) return;
         _activeMontagePreviewPlan = preview;
+        _activeMontagePlan = compiled;
+        _montageStorySeq++;   // 진행 중 생성 결과 폐기(플랜 교체)
+        _montageStoryBusy = false;
+        if (compiled is not null) ApplyLocalMontageCues(compiled);   // 🎬 템플릿 초안 즉시 → AI 생성으로 승격
+        else _montageCues = null;
         await InvokeAsync(StateHasChanged);
+        if (compiled is not null) await GenerateMontageStoryAsync();
     }
 
     /// <summary>🎨 활성 바이럴 태그 · 디렉터 랭크 → 후보 룩 → 오답 노트 차단 시 NaturalPastel([부분 구제] 실패 → NaturalPastel).</summary>
@@ -1955,7 +2080,9 @@
             var photos = _montagePhotos.ToArray();
             var focals = await EnsureStagedFocalPointsAsync(photos, _mediaCts.Token);   // 🎯 프리뷰와 동일한 사진별 초점
             StockSuite.MistakeNotebook ??= EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService)) as PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService;
-            var cues = (await GenerateWorkspaceLetterAsync(_mediaCts.Token)).ToCues();
+            IReadOnlyList<PromptFlowStudio.Services.Export.SubtitleCue> cues = _montageCues is { Count: > 0 } mc && _activeMontagePlan is { } amp && amp.Clips.Count == photos.Length
+                ? mc   // 🎬 클립 경계 정렬 3막 자막(프리뷰와 동일)
+                : (await GenerateWorkspaceLetterAsync(_mediaCts.Token)).ToCues();
             var r = await StockSuite.ExportMontageVideoFromPhotosAsync(photos, focals, new PromptFlowStudio.Services.Export.ExportOptions(), cues,
                 _bgmOn ? _bgmTrack : null, includeSfx: true, preferredLook: _montageLook, ct: _mediaCts.Token, customBgmWavBytes: _customBgm?.CroppedWavBytes);
             _montageOutput = r.Ok ? r.TargetPath : null;

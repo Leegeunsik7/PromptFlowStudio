@@ -47,6 +47,8 @@
     [Parameter] public PlutoMotionTrajectory? Trajectory { get; set; }
     /// <summary>3막 KO/EN 자막(null → 자막 없음).</summary>
     [Parameter] public PlutoSubtitleScript? Subtitles { get; set; }
+    /// <summary>🎞 정밀 큐(몽타주 3막 · 클립 경계 정렬) — 설정 시 <see cref="Subtitles"/> 보다 우선.</summary>
+    [Parameter] public IReadOnlyList<PromptFlowStudio.Services.Export.SubtitleCue>? SubtitleCues { get; set; }
     /// <summary>🥁 비트 스냅 SFX 큐(null → JS 기본 15초 큐 시트).</summary>
     [Parameter] public IReadOnlyList<PlutoSfxCue>? SfxCues { get; set; }
     /// <summary>원본 사진 URL(가상호스트). null/빈 값 → 빈 상태.</summary>
@@ -74,7 +76,7 @@
     protected override void OnParametersSet()
     {
         _contractJson = PlutoMotionCompiler.ExportPreviewContractJson(Trajectory, sfxCues: SfxCues);
-        _subsJson = PlutoMotionPreviewModel.SubtitlesJson(Subtitles);
+        _subsJson = SubtitleCues is { Count: > 0 } sc ? PlutoMotionPreviewModel.CueSubtitlesJson(sc) : PlutoMotionPreviewModel.SubtitlesJson(Subtitles);
         if (!ReferenceEquals(_montageSource, MontagePlan))   // 레코드 참조가 바뀐 경우에만 재직렬화
         {
             _montageSource = MontagePlan;

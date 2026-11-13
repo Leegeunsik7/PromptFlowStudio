@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Numerics;
 using System.Threading;
 using System.Threading.Tasks;
@@ -38,6 +39,12 @@ public interface IPlutoPhotoCurationEngine
 
     /// <summary>초점 가중(반경 0.35 · 2배) 라플라시안 분산 → [0,1] — 판독 불가 → 0.65.</summary>
     double ComputeLaplacianSharpness(string imagePath, (double X, double Y) focalPoint);
+
+    /// <summary>🔁 탈락 후보(<paramref name="rejectedOriginalIndex"/>)를 선택 슬롯으로 승격 — 순수 변환(원본 불변).</summary>
+    PlutoBatchCurationResult SwapCandidate(PlutoBatchCurationResult current, int selectedSlotIndex, int rejectedOriginalIndex);
+
+    /// <summary>↕ 선택 컷 순서 이동 + 3막 라벨 재부여 — 순수 변환(원본 불변).</summary>
+    PlutoBatchCurationResult MoveSelectedCut(PlutoBatchCurationResult current, int fromIndex, int toIndex);
 }
 
 /// <summary>
@@ -480,6 +487,92 @@ public sealed class PlutoPhotoCurationEngine : IPlutoPhotoCurationEngine
 
     private static string ActLabel(int position, int count)
         => position == 0 ? Act1Label : position == count - 1 ? Act3Label : Act2Label;
+
+    public const double SwapFocalMin = 0.20, SwapFocalMax = 0.80;
+
+    /// <summary>🔁 탈락 후보 → 선택 슬롯 승격(막 순번·라벨 승계 · 초점 [0.2,0.8]² 클램프) · 밀려난 컷 → 순위 밖 · 제외 집계 재산출.</summary>
+    public PlutoBatchCurationResult SwapCandidate(PlutoBatchCurationResult current, int selectedSlotIndex, int rejectedOriginalIndex)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        var sel = current.SelectedCuts;
+        if ((uint)selectedSlotIndex >= (uint)sel.Count) throw new ArgumentOutOfRangeException(nameof(selectedSlotIndex));
+        var all = current.AllEvaluated;
+        int promotedAt = -1, displacedAt = -1;
+        var displaced = sel[selectedSlotIndex];
+        for (var i = 0; i < all.Count; i++)
+        {
+            var c = all[i];
+            if (c.OriginalIndex == rejectedOriginalIndex && !c.IsSelected) promotedAt = i;
+            if (c.OriginalIndex == displaced.OriginalIndex && c.IsSelected) displacedAt = i;
+        }
+        if (promotedAt < 0) throw new ArgumentException("탈락 후보를 찾을 수 없습니다: " + rejectedOriginalIndex.ToString(CultureInfo.InvariantCulture), nameof(rejectedOriginalIndex));
+
+        var src = all[promotedAt];
+        var promoted = src with
+        {
+            IsSelected = true,
+            RejectionReason = PlutoCurationRejectionReason.None,
+            NarrativeActOrder = displaced.NarrativeActOrder,
+            NarrativeRoleLabel = displaced.NarrativeRoleLabel,
+            FocalPoint = (Math.Clamp(src.FocalPoint.X, SwapFocalMin, SwapFocalMax), Math.Clamp(src.FocalPoint.Y, SwapFocalMin, SwapFocalMax)),
+        };
+        var demoted = displaced with
+        {
+            IsSelected = false, NarrativeActOrder = 0, NarrativeRoleLabel = string.Empty,
+            RejectionReason = PlutoCurationRejectionReason.LowerRankCut,
+        };
+
+        var newAll = new PlutoCuratedPhotoCandidate[all.Count];
+        for (var i = 0; i < newAll.Length; i++) newAll[i] = all[i];
+        newAll[promotedAt] = promoted;
+        if (displacedAt >= 0) newAll[displacedAt] = demoted;
+        var newSel = new PlutoCuratedPhotoCandidate[sel.Count];
+        for (var i = 0; i < newSel.Length; i++) newSel[i] = sel[i];
+        newSel[selectedSlotIndex] = promoted;
+
+        int blurry = 0, exposure = 0, duplicate = 0;
+        for (var i = 0; i < newAll.Length; i++)
+        {
+            switch (newAll[i].RejectionReason)
+            {
+                case PlutoCurationRejectionReason.BlurryOutOfFocus: blurry++; break;
+                case PlutoCurationRejectionReason.PoorExposure: exposure++; break;
+                case PlutoCurationRejectionReason.DuplicateBurstShot: duplicate++; break;
+            }
+        }
+        return current with { SelectedCuts = newSel, AllEvaluated = newAll, BlurryRejectedCount = blurry, ExposureRejectedCount = exposure, DuplicateRejectedCount = duplicate };
+    }
+
+    /// <summary>↕ 선택 컷 순서 이동 → 순번(i+1) · 3막 라벨 재부여 · AllEvaluated 반영(동일 위치 → 원본 반환).</summary>
+    public PlutoBatchCurationResult MoveSelectedCut(PlutoBatchCurationResult current, int fromIndex, int toIndex)
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        var sel = current.SelectedCuts;
+        if ((uint)fromIndex >= (uint)sel.Count) throw new ArgumentOutOfRangeException(nameof(fromIndex));
+        if ((uint)toIndex >= (uint)sel.Count) throw new ArgumentOutOfRangeException(nameof(toIndex));
+        if (fromIndex == toIndex) return current;
+
+        var list = new List<PlutoCuratedPhotoCandidate>(sel.Count);
+        for (var i = 0; i < sel.Count; i++) list.Add(sel[i]);
+        var moving = list[fromIndex];
+        list.RemoveAt(fromIndex);
+        list.Insert(toIndex, moving);
+
+        var newSel = new PlutoCuratedPhotoCandidate[list.Count];
+        for (var i = 0; i < newSel.Length; i++)
+            newSel[i] = list[i] with { NarrativeActOrder = i + 1, NarrativeRoleLabel = ActLabel(i, newSel.Length) };
+
+        var all = current.AllEvaluated;
+        var newAll = new PlutoCuratedPhotoCandidate[all.Count];
+        for (var i = 0; i < newAll.Length; i++)
+        {
+            newAll[i] = all[i];
+            if (!all[i].IsSelected) continue;
+            for (var j = 0; j < newSel.Length; j++)
+                if (newSel[j].OriginalIndex == all[i].OriginalIndex) { newAll[i] = newSel[j]; break; }
+        }
+        return current with { SelectedCuts = newSel, AllEvaluated = newAll };
+    }
 
     /// <summary>🎬 Act 1 = max(0.6·Sal + 0.4·Sharp) · Act 3 = 잔여 max Composite · Act 2 = Σ|ΔX| 최대 순열(≤3장 전수).</summary>
     private static Eval[] SequenceThreeActs(List<Eval> picks)

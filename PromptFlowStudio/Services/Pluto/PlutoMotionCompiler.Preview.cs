@@ -285,9 +285,31 @@ public static class PlutoMotionPreviewModel
     }
 
     /// <summary>프리뷰 자막 JSON(<c>{"crossfadeSec":0.15,"acts":[{startSec,endSec,ko,en}…]}</c>).</summary>
-    public static string SubtitlesJson(PlutoSubtitleScript? script)
+    public static string SubtitlesJson(PlutoSubtitleScript? script) => WriteSubtitlesJson(BuildSubtitles(script));
+
+    /// <summary>🎞 정밀 큐(몽타주 클립 경계 정렬 · 소수 초) → 프리뷰 자막 JSON. 유효 큐만(빈 KO · 역전 구간 제외).</summary>
+    public static string CueSubtitlesJson(IReadOnlyList<PromptFlowStudio.Services.Export.SubtitleCue>? cues) => WriteSubtitlesJson(BuildCueSubtitles(cues));
+
+    /// <summary>🎞 정밀 큐 → 프리뷰 자막 배열(실효 초 · null/빈 → 빈 배열).</summary>
+    public static PlutoMotionPreviewSubtitle[] BuildCueSubtitles(IReadOnlyList<PromptFlowStudio.Services.Export.SubtitleCue>? cues)
     {
-        var acts = BuildSubtitles(script);
+        if (cues is null || cues.Count == 0) return Array.Empty<PlutoMotionPreviewSubtitle>();
+        var n = 0;
+        for (var i = 0; i < cues.Count; i++)
+            if (!string.IsNullOrWhiteSpace(cues[i].Text) && cues[i].EffectiveEndSec > cues[i].EffectiveStartSec) n++;
+        var arr = new PlutoMotionPreviewSubtitle[n];
+        n = 0;
+        for (var i = 0; i < cues.Count; i++)
+        {
+            var c = cues[i];
+            if (string.IsNullOrWhiteSpace(c.Text) || c.EffectiveEndSec <= c.EffectiveStartSec) continue;
+            arr[n++] = new PlutoMotionPreviewSubtitle(c.EffectiveStartSec, c.EffectiveEndSec, c.Text, c.SecondaryText ?? "");
+        }
+        return arr;
+    }
+
+    private static string WriteSubtitlesJson(PlutoMotionPreviewSubtitle[] acts)
+    {
         var buffer = new ArrayBufferWriter<byte>(512);
         using (var w = new Utf8JsonWriter(buffer))
         {
