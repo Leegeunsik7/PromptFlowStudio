@@ -52,7 +52,7 @@ public sealed class PlutoLocalAiSettingsService : IDisposable
         _probeHandler = probeHandler;
     }
 
-    public static string DefaultPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", FileName);
+    public static string DefaultPath => Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", FileName);
 
     /// <summary>현재 실행 중 설정 스냅샷(폼 초기화용 · API 키 제외).</summary>
     public PlutoLocalGatewayOptions Snapshot()

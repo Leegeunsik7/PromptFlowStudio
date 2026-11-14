@@ -35,7 +35,7 @@ public sealed class HotfixAutoSignerEngine
     public string? LastAction { get; private set; }
     public HotfixSignResult? LastResult { get; private set; }
     public string OutputRoot { get; } =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "HotfixReleases");
+        Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "HotfixReleases");
 
     public long Signed => Interlocked.Read(ref _signed);
     public long Failures => Interlocked.Read(ref _failures);

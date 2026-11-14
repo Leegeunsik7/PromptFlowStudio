@@ -51,7 +51,7 @@ public sealed class DiagnosticReportService
     }
 
     public static string DefaultLogPath()
-        => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "logs", "shell.log");
+        => Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "logs", "shell.log");
 
     public static string BundleFileName(DateTimeOffset now) => "pfs_diagnostic_" + now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture) + ".zip";
 

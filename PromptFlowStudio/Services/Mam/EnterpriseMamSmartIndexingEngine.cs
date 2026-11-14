@@ -70,7 +70,7 @@ public sealed class EnterpriseMamSmartIndexingEngine
     public EnterpriseMamSmartIndexingEngine() : this(null) { }
 
     public EnterpriseMamSmartIndexingEngine(string? folder)
-        => _folder = folder ?? System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "Mam");
+        => _folder = folder ?? System.IO.Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "Mam");
 
     public event Action? OnChange;
     public int Count { get { lock (_gate) return _assets.Count; } }

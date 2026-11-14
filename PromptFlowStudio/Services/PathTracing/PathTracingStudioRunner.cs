@@ -281,7 +281,7 @@ def Xform "Studio"
 
     public string ExportMtlx()
     {
-        var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "materials");
+        var dir = Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "materials");
         Directory.CreateDirectory(dir);
         var path = Path.Combine(dir, "studio_" + DateTime.Now.ToString("yyyyMMdd_HHmmss", System.Globalization.CultureInfo.InvariantCulture) + ".mtlx");
         File.WriteAllText(path, _mtl.ExportMtlx(), new UTF8Encoding(false));

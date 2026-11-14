@@ -77,7 +77,7 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
     public PlutoMistakeNotebookService(string? storagePath, Func<DateTime>? utcNow = null)
     {
         _path = string.IsNullOrWhiteSpace(storagePath)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", FileName)
+            ? Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", FileName)
             : storagePath;
         _utcNow = utcNow ?? (static () => DateTime.UtcNow);
     }

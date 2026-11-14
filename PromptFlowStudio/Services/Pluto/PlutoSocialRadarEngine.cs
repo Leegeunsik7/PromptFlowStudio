@@ -51,7 +51,7 @@ public sealed class PlutoSocialRadarEngine : IDisposable
     public PlutoSocialRadarEngine(string? storagePath, IPlutoLlmClient? llm = null, PlutoLearningService? learning = null)
     {
         _path = string.IsNullOrWhiteSpace(storagePath)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", FileName)
+            ? Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", FileName)
             : storagePath;
         _llm = llm;
         _learning = learning;

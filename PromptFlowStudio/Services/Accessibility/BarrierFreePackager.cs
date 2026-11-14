@@ -33,7 +33,7 @@ public sealed class BarrierFreePackager
 
     public event Action? OnChange;
 
-    public string OutputRoot { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "BarrierFree");
+    public string OutputRoot { get; set; } = Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "BarrierFree");
     public long Packages => Interlocked.Read(ref _packages);
     public BarrierFreeResult? Last { get; private set; }
     public string? LastAction { get; private set; }

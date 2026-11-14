@@ -121,7 +121,7 @@ public sealed class SpatialSlamStudioRunner : IDisposable
     /// <summary>OpenUSD(usda) + 3DGS 변환 내보내기 → 경로.</summary>
     public string Export(string? dir = null)
     {
-        dir ??= Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "slam");
+        dir ??= Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "slam");
         Directory.CreateDirectory(dir);
         int pts, splats;
         var layer = new UsdLayer("slam.usda");

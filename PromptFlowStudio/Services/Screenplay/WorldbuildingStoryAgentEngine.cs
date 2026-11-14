@@ -122,7 +122,7 @@ public sealed class WorldbuildingStoryAgentEngine
     public WorldbuildingStoryAgentEngine(GeminiClient? gemini, string? folder)
     {
         _gemini = gemini;
-        _folder = folder ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "Worldbuilding");
+        _folder = folder ?? Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "Worldbuilding");
     }
 
     public event Action? OnChange;

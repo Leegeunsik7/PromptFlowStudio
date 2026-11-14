@@ -35,7 +35,7 @@ public sealed class BenchmarkingReportGenerator
     public long SaveFailures => Interlocked.Read(ref _saveFailures);
 
     /// <summary>리포트 저장 루트(형제 폴더 규약 — <c>LocalMediaService.MediaRoot</c> 와 동일 베이스 · 컨피그 오버라이드 없음).</summary>
-    public static string ReportsRoot => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "Reports");
+    public static string ReportsRoot => Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "Reports");
 
     /// <summary>JSON 직렬화(들여쓰기 · 순수 데이터).</summary>
     public static string ToJson(BenchmarkSweepReport report, TunerSnapshot? tuner = null)

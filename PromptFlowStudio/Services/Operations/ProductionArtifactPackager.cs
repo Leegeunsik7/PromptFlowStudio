@@ -33,10 +33,10 @@ public sealed record ReleaseZipReport(bool AnyIncluded, string ZipPath, long Byt
 public sealed class ProductionArtifactPackager
 {
     /// <summary>패키징 산출 루트(소스 트리 밖 · <see cref="Media.LocalMediaService.MediaRoot"/> 와 동일 규약의 형제 폴더).</summary>
-    public static string DistRoot => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "Dist");
+    public static string DistRoot => Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "Dist");
 
     /// <summary>v10.7.0 합본 릴리스 zip 산출 루트 — DistRoot(플랫폼별 개별 zip)와 별개, 최종 배포 아티팩트 전용.</summary>
-    public static string ArtifactsRoot => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "Artifacts");
+    public static string ArtifactsRoot => Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "Artifacts");
 
     private readonly object _gate = new();
     private long _packagedCount, _skippedCount;

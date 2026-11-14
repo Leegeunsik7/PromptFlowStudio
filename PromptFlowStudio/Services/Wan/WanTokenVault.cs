@@ -45,7 +45,7 @@ public sealed class WanTokenVault
 
     /// <summary>기본 저장 경로(%LocalAppData%\PromptFlowStudio\Config\vault.enc).</summary>
     public static string DefaultStorePath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "Config", "vault.enc");
+        global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "Config", "vault.enc");
 
     /// <summary>현재 플랫폼의 디스크 암호화 방식 표기.</summary>
     public static string CipherName =>

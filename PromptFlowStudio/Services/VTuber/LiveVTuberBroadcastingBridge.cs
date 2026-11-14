@@ -460,7 +460,7 @@ public sealed class LiveVTuberBroadcastingBridge : IDisposable
     public LiveVTuberBroadcastingBridge(AiAudioDrivenLipSyncService? lip, string? mediaRoot)
     {
         _lip = lip;
-        MediaRoot = mediaRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "Media", "vtuber");
+        MediaRoot = mediaRoot ?? Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "Media", "vtuber");
         Overlay = new OverlaySseServer(MediaRoot);
         _jw = new Utf8JsonWriter(_json);
     }

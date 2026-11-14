@@ -114,7 +114,7 @@ public sealed class EpisodicStorySeriesBuilder
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true };
 
     public EpisodicStorySeriesBuilder(CharacterIdentityLockService identity, StoryboardRepository repo)
-        : this(identity, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "Characters"), repo.Save) { }
+        : this(identity, Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "Characters"), repo.Save) { }
 
     public EpisodicStorySeriesBuilder(CharacterIdentityLockService identity, string root, Func<StoryboardProject, string?> save)
     {

@@ -14,7 +14,7 @@ internal static class Program
     /// </summary>
     private static string LogPath =>
         Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData,
             "PromptFlowStudio", "logs", "shell.log");
 
     [STAThread]

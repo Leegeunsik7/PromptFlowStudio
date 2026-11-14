@@ -54,7 +54,7 @@ public sealed class TaskJournalService : IDisposable
     public TaskJournalService(string? journalPath = null)
     {
         _path = string.IsNullOrWhiteSpace(journalPath)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "Render", FileName)
+            ? Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "Render", FileName)
             : journalPath;
     }
 
@@ -310,7 +310,7 @@ public sealed class TaskJournalService : IDisposable
         string? root = null;
         try { root = MediaRootProvider?.Invoke(); } catch (Exception ex) { Program.Log("TaskJournal.MediaRoot", ex); }
         if (string.IsNullOrWhiteSpace(root))
-            root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "Media");
+            root = Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "Media");
         return Path.Combine(root, "recovered_" + MultiDurationPlanner.SanitizeName(e.TaskId) + ".mp4");
     }
 

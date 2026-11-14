@@ -23,7 +23,7 @@ public sealed record RetentionCleanupResult(DateTimeOffset At, int FilesScanned,
 /// </summary>
 public sealed class OperationsCanaryLogRetentionCleaner : IDisposable
 {
-    public static string LogsRoot => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "logs");
+    public static string LogsRoot => Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "logs");
     public static readonly IReadOnlyList<string> DefaultPatterns = new[] { "*.otlp.log", "canary-*.log" };
     public const int RetentionDays = 7;
     private const int RingSlots = 32;

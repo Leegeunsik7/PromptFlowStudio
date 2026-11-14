@@ -341,7 +341,7 @@ public sealed class EnterpriseSlaAvailabilityGuard : IDisposable
         string.Join('|', version.ToString(CultureInfo.InvariantCulture), count.ToString(CultureInfo.InvariantCulture), avail.ToString("R", CultureInfo.InvariantCulture),
             downMs.ToString("R", CultureInfo.InvariantCulture), windowMs.ToString("R", CultureInfo.InvariantCulture), incidents.ToString(CultureInfo.InvariantCulture), head);
 
-    public static string DefaultExportPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "sla", "recovery-manifest.json");
+    public static string DefaultExportPath => Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "sla", "recovery-manifest.json");
 
     /// <summary>매니페스트 원자 내보내기(System.Text.Json · 집계 서명) → 경로.</summary>
     public string Export(string? path = null)

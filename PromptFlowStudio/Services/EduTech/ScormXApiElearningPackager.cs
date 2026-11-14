@@ -53,7 +53,7 @@ public sealed class ScormXApiElearningPackager : IDisposable
 
     public event Action? OnChange;
 
-    public string OutputRoot { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "ELearning");
+    public string OutputRoot { get; set; } = Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "ELearning");
     public string BaseIri { get; set; } = "https://promptflow.studio/xapi";
     public string LtiToolUrl { get; set; } = "https://tool.example.edu/lti";
     public long Packages => Interlocked.Read(ref _packages);

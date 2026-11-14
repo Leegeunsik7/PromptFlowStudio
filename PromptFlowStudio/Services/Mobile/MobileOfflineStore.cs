@@ -74,7 +74,7 @@ public sealed class MobileOfflineStore : IMobileOfflineStore
     public MobileOfflineStore(string? storageDir = null, string passphrase = "pfs-offline-default")
     {
         var dir = string.IsNullOrWhiteSpace(storageDir)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "sync")
+            ? Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "sync")
             : storageDir!;
         try { Directory.CreateDirectory(dir); } catch { /* 생성 실패는 Persist 에서 재시도 */ }
         _path = Path.Combine(dir, FileName);

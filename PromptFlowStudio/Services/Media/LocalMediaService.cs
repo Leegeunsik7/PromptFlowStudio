@@ -30,7 +30,7 @@ public sealed class LocalMediaService(IConfiguration cfg, IVideoMergeService mer
     /// <inheritdoc/>
     public string MediaRoot { get; } =
         string.IsNullOrWhiteSpace(cfg["Media:Root"])
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "Media")
+            ? Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "Media")
             : cfg["Media:Root"]!;
 
     /// <inheritdoc/>

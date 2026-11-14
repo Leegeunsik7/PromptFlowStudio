@@ -504,7 +504,7 @@ public sealed class MobileOfflineStorageEngine : IDisposable
     {
         try
         {
-            var root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            var root = global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData;
             if (string.IsNullOrWhiteSpace(root)) root = AppContext.BaseDirectory;
             return Path.Combine(root, "PromptFlowStudio", "offline-store.bin");
         }

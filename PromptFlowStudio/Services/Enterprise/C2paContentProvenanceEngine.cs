@@ -63,7 +63,7 @@ public sealed class C2paContentProvenanceEngine : IDisposable
 
     public C2paContentProvenanceEngine(IVideoMergeService merge, SecureSecretVault vault, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
         : this(() => merge.ResolvedFfmpegPath, () => vault.ResolveOrCreate("C2PA_SIGNER_SEAL"), () => vault.ResolveOrCreate("C2PA_WATERMARK"),
-               Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "Keys"), processRunner) { }
+               Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "Keys"), processRunner) { }
 
     public C2paContentProvenanceEngine(Func<string?> ffmpeg, Func<byte[]> sealKey, Func<byte[]> watermarkKey, string keyDir, PromptFlowStudio.Services.Engines.IProcessRunner? processRunner = null)
     {

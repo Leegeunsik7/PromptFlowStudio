@@ -38,7 +38,7 @@ public sealed class PresetManagerService
     public PresetManagerService(string? storagePath)
     {
         StoragePath = string.IsNullOrWhiteSpace(storagePath)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", FileName)
+            ? Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", FileName)
             : storagePath;
     }
 

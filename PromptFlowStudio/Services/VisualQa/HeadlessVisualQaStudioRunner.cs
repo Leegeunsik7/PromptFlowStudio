@@ -60,7 +60,7 @@ public sealed class HeadlessVisualQaStudioRunner : IDisposable
     public float ZmpSeries(int i) => _zmpS[Idx(i)];
     public float TickMsSeries(int i) => _msS[Idx(i)];
 
-    public static string BaselineDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "visual_baselines");
+    public static string BaselineDir => Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "visual_baselines");
 
     // ══════════════════════ 프레임(무할당) ══════════════════════
 

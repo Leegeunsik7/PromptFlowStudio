@@ -43,7 +43,7 @@ public sealed class PromptInspirationService
     public PromptInspirationService(string? customPresetPath)
     {
         CustomPresetPath = string.IsNullOrWhiteSpace(customPresetPath)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", CustomPresetFileName)
+            ? Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", CustomPresetFileName)
             : customPresetPath!;
     }
 

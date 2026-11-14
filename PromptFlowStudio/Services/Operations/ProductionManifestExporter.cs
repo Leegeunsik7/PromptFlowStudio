@@ -31,7 +31,7 @@ public sealed record ManifestExportResult(bool Ok, string? JsonPath, string? Yam
 /// </summary>
 public sealed class ProductionManifestExporter
 {
-    public static string ExportRoot => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "Manifests");
+    public static string ExportRoot => Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "Manifests");
 
     /// <summary>LTS 지원 정책 요약(RELEASE_NOTES.md "LTS 지원 정책" 절과 동일 정본).</summary>
     public const string LtsPolicySummary = "호환성 창 9.5~10.99(major.minor, Desktop/Mobile/Shared 동일) · 원자적 롤백 보장(사전 스냅샷) · 전 감사/정책 판정 SHA-256 해시체인 봉인";

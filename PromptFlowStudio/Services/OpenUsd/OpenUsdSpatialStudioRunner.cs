@@ -343,7 +343,7 @@ def Xform "World"
             n = OpenUsdSpatialAssetCompositorEngine.WriteUsda(_usd.Stage, usda);
         }
         if (n < 0) throw new InvalidOperationException("USDA 버퍼 초과");
-        var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "usd");
+        var dir = Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "usd");
         Directory.CreateDirectory(dir);
         var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss", System.Globalization.CultureInfo.InvariantCulture);
         File.WriteAllBytes(Path.Combine(dir, "world_" + stamp + ".usda"), usda.AsSpan(0, n).ToArray());

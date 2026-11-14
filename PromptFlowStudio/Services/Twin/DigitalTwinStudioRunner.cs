@@ -285,7 +285,7 @@ def Xform "Factory"
         {
             if (on && _sinkOut is null)
             {
-                var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "datasets",
+                var root = Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "datasets",
                     DateTime.Now.ToString("yyyyMMdd_HHmmss", System.Globalization.CultureInfo.InvariantCulture));
                 _sinkOut = new FolderDatasetSink(root);
                 _gen.Sink = _sinkOut;

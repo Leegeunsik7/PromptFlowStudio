@@ -120,7 +120,7 @@ public sealed class ProductionOAuth2TokenVaultGateway : IDisposable
     /// <summary>자격증명 미설정 플랫폼이 사용하는 격리 계약 시뮬레이터.</summary>
     public LivePublishContractSimulator Contract { get; }
     public Func<double> Clock { get; set; } = static () => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
-    public string VaultPath { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "LiveOAuth", "vault.pfv");
+    public string VaultPath { get; set; } = Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "LiveOAuth", "vault.pfv");
     public bool IsLive(LiveProvider p) => _live[(int)p];
     public bool AnyLive => _live[0] || _live[1];
     public string ModeName(LiveProvider p) => _live[(int)p] ? "LIVE" : "계약 Mock";

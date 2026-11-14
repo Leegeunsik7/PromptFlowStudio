@@ -85,7 +85,7 @@ public sealed class CustomThemeRegistryService
     {
         _db = db ?? throw new ArgumentNullException(nameof(db));
         Root = string.IsNullOrWhiteSpace(root)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "Themes")
+            ? Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "Themes")
             : root!;
         Reload();
     }

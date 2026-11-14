@@ -60,14 +60,21 @@ public sealed class PlutoDriveStorageManager : IPlutoStorageManager
     {
         _primary = string.IsNullOrWhiteSpace(primaryRoot) ? null : primaryRoot;
         _fallback = string.IsNullOrWhiteSpace(fallbackRoot)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "Data", SubFolder)
+            ? Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "Data", SubFolder)
             : fallbackRoot;
         _legacy = string.IsNullOrWhiteSpace(legacyRoot) ? null : legacyRoot;
     }
 
-    public static string? DefaultPrimaryRoot() => OperatingSystem.IsWindows() ? Path.Combine(DriveVaultRoot, SubFolder) : null;
+    /// <summary>Drive 볼트 비활성 스위치 — 값이 "off"면 Drive 미사용(테스트 하네스가 실 백업 접근 차단용으로 설정).</summary>
+    public const string DriveEnvVar = "PROMPTFLOW_PLUTO_DRIVE";
 
-    public static string DefaultLegacyRoot() => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio");
+    public static string? DefaultPrimaryRoot()
+    {
+        if (string.Equals(Environment.GetEnvironmentVariable(DriveEnvVar)?.Trim(), "off", StringComparison.OrdinalIgnoreCase)) return null;
+        return OperatingSystem.IsWindows() ? Path.Combine(DriveVaultRoot, SubFolder) : null;
+    }
+
+    public static string DefaultLegacyRoot() => Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio");
 
     public string? PrimaryRoot => _primary;
     public string FallbackRoot => _fallback;

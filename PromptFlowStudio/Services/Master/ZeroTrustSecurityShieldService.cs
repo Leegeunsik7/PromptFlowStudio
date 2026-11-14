@@ -117,7 +117,7 @@ public sealed class ZeroTrustSecurityShieldService : IDisposable
     private bool _disposed;
 
     public ZeroTrustSecurityShieldService(SecureSecretVault vault, EnterpriseSecurityAudit? legacyAudit = null)
-        : this(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "ZeroTrust"),
+        : this(Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "ZeroTrust"),
                () => vault.ResolveOrCreate("ZT_FALLBACK_WRAP"), legacyAudit, null, true) { }
 
     public ZeroTrustSecurityShieldService(string dir, Func<byte[]> fallbackSeed, EnterpriseSecurityAudit? legacyAudit, Func<DateTimeOffset>? clock, bool preferDpapiNg)

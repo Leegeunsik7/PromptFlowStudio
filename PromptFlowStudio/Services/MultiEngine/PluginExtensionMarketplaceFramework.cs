@@ -151,7 +151,7 @@ namespace PromptFlowStudio.Services.MultiEngine
         private bool _disposed;
 
         public PluginExtensionMarketplaceFramework(PromptFlowStudio.Services.Security.SecureSecretVault vault)
-            : this(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "Plugins"), () => vault.ResolveOrCreate("PLUGIN_TRUST")) { }
+            : this(Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "Plugins"), () => vault.ResolveOrCreate("PLUGIN_TRUST")) { }
 
         public PluginExtensionMarketplaceFramework(string root, Func<byte[]> trustKey)
         {

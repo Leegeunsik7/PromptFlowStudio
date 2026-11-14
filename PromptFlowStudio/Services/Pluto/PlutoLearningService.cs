@@ -63,7 +63,7 @@ public sealed class PlutoLearningService : IDisposable
     public PlutoLearningService(string? storagePath, Random? rng = null)
     {
         _path = string.IsNullOrWhiteSpace(storagePath)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", FileName)
+            ? Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", FileName)
             : storagePath;
         _rng = rng ?? new Random();
     }

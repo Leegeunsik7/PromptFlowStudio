@@ -72,7 +72,7 @@ public sealed class PlutoPreferenceLexicon : IDisposable
     public PlutoPreferenceLexicon(string? storagePath)
     {
         _path = string.IsNullOrWhiteSpace(storagePath)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", FileName)
+            ? Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", FileName)
             : storagePath;
     }
 

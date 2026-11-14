@@ -62,7 +62,7 @@ public sealed class OmniChannelPublisherStudioRunner : ICreatorPresetTarget, IDi
         LiveCommerceStudioRunner? commerce = null, BeatSyncAudioMixStudioRunner? beat = null, SecureSecretVault? secrets = null, string? root = null, bool? simulate = null)
     {
         _reels = reels; _station = station; _showrunner = showrunner; _commerce = commerce; _beat = beat;
-        Root = root ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio");
+        Root = root ?? Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio");
         Func<byte[]> key;
         if (secrets is not null) { key = () => secrets.ResolveOrCreate("SOCIAL_OAUTH_VAULT"); KeySecure = true; }
         else { _ephemeralKey = RandomNumberGenerator.GetBytes(32); key = () => (byte[])_ephemeralKey.Clone(); KeySecure = false; }

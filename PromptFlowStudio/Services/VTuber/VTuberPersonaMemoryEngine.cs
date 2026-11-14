@@ -106,7 +106,7 @@ public sealed class VTuberPersonaMemoryEngine
     public VTuberPersonaMemoryEngine(GeminiClient? gemini, string? folder)
     {
         _gemini = gemini;
-        _folder = folder ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "VTuber");
+        _folder = folder ?? Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "VTuber");
         LoadAll();
     }
 

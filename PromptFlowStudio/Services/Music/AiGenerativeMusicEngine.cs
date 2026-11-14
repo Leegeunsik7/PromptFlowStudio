@@ -94,7 +94,7 @@ public sealed class AiGenerativeMusicEngine : IDisposable
     {
         _config = config;
         _ffmpeg = ffmpeg;
-        _folder = folder ?? System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "Media", "music");
+        _folder = folder ?? System.IO.Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "Media", "music");
         _http = handler is null ? new HttpClient() : new HttpClient(handler, disposeHandler: false);
         _http.Timeout = HttpTimeout;
         _poll = poll ?? TimeSpan.FromSeconds(3);

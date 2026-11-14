@@ -104,7 +104,7 @@ public sealed class PlutoIdentityVault : IDisposable
     public PlutoIdentityVault(string? storagePath)
     {
         _path = string.IsNullOrWhiteSpace(storagePath)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", FileName)
+            ? Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", FileName)
             : storagePath;
     }
 

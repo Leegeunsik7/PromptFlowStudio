@@ -102,7 +102,7 @@ public sealed class AiDigitalTwinGeneratorEngine
     {
         _ffmpeg = ffmpeg;
         _themes = themes;
-        _folder = folder ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "DigitalTwins");
+        _folder = folder ?? Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "DigitalTwins");
     }
 
     public event Action? OnChange;

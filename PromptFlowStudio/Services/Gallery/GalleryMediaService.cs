@@ -826,7 +826,7 @@ public sealed class GalleryMediaService
     public static string DefaultExportDirectory(DateTime now)
     {
         var baseDir = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
-        if (string.IsNullOrWhiteSpace(baseDir)) baseDir = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (string.IsNullOrWhiteSpace(baseDir)) baseDir = global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData;
         return Path.Combine(baseDir, "PromptFlowStudio Exports", "search_" + now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture));
     }
 }

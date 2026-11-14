@@ -45,7 +45,7 @@ public sealed class SecureSecretVault
     public long CanaryResolved => Interlocked.Read(ref _canaryResolved);
     public long Generated => Interlocked.Read(ref _generated);
     public long InsecureFallbacks => Interlocked.Read(ref _insecureFallbacks);
-    public string VaultRoot => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "Keys");
+    public string VaultRoot => Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "Keys");
     public IReadOnlyList<SecretResolution> History { get { lock (_gate) return new List<SecretResolution>(_history); } }
 
     /// <summary>키 이름으로 시크릿을 해석 — 환경변수→DPAPI 보관값→(최초 실행)신규 생성+봉인→비보안 결정적 폴백 순.</summary>

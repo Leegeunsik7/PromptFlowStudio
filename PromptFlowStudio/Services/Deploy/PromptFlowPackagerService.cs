@@ -477,7 +477,7 @@ end;
         }
         var pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
         var pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        var lad = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var lad = global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData;
         string[] candidates =
         {
             Path.Combine(pf86, "Inno Setup 6", "ISCC.exe"),

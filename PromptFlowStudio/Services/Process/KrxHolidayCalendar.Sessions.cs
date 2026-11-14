@@ -37,7 +37,7 @@ public static partial class KrxHolidayCalendar
 
     /// <summary>기본 경로 — <c>%LOCALAPPDATA%/PromptFlowStudio/Config/krx_closures.json</c>.</summary>
     public static string DefaultClosuresPath =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "Config", ClosuresFileName);
+        Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "Config", ClosuresFileName);
 
     /// <summary>일자별 세션 시각 오버라이드 등록(유효하지 않으면 false).</summary>
     public static bool SetSessionHours(DateOnly date, KrxSessionHours hours)

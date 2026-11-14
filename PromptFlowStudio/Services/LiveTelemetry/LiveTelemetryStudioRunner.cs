@@ -33,7 +33,7 @@ public sealed class LiveTelemetryStudioRunner : IDisposable
         _slotSample = profiler.Register("텔레메트리 표본");
         _slotWork = profiler.Register("적응 워크로드");
         if (sp is not null) GaugesBound = profiler.RegisterStudios(sp);
-        OtaRoot = otaRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PromptFlowStudio", "ota");
+        OtaRoot = otaRoot ?? Path.Combine(global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData, "PromptFlowStudio", "ota");
     }
 
     public event Action? OnChange;

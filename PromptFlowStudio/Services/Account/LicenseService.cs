@@ -39,7 +39,7 @@ public sealed class LicenseService
     /// <summary>PromptFlowStudio 데이터 영역(쓰기 가능) — %LocalAppData%\PromptFlowStudio.</summary>
     public static string DataAreaRoot()
     {
-        var b = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var b = global::PromptFlowStudio.Services.Platform.AppDataPaths.LocalAppData;
         if (string.IsNullOrWhiteSpace(b)) b = Path.GetTempPath();
         var d = Path.Combine(b, "PromptFlowStudio");
         try { Directory.CreateDirectory(d); } catch { /* 경로만 반환 */ }
