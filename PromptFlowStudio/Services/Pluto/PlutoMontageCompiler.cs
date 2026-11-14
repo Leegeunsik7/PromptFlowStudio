@@ -37,6 +37,11 @@ public interface IPlutoMontageCompiler
 
     /// <summary>🎞 몽타주 플랜 → 캔버스 멀티컷 프리뷰 계약(클립별 이미지 URL · 궤적 · 전환 창 · 브라우저 필터 색보정).</summary>
     PlutoMontagePreviewPlan BuildMontagePreviewPlan(PlutoMontagePlan plan, IReadOnlyList<string> imageUrls, IReadOnlyList<double>? beatTimestampsSec = null);
+
+    /// <summary>🔒 Zero-Drift 잠금 플랜 재구성(컷 경계 · 전환 · 총 길이 보존) — 기본 구현은 <see cref="PlutoMontageCompiler.Shared"/> 위임.</summary>
+    PlutoMontagePlan CompileLockedMontagePlan(PlutoMontagePlan lockedPlan, IReadOnlyList<string> imagePaths, IReadOnlyList<(double X, double Y)>? focalPoints,
+        IReadOnlyList<PlutoColorGradeProfile>? colorProfiles, int width = 1080, int height = 1920, int fps = 60)
+        => PlutoMontageCompiler.Shared.CompileLockedMontagePlan(lockedPlan, imagePaths, focalPoints, colorProfiles, width, height, fps);
 }
 
 /// <summary>
@@ -137,6 +142,51 @@ public sealed partial class PlutoMontageCompiler : IPlutoMontageCompiler
             offsets[i] = Snap(cuts[i] - d / 2, fps);
             cuts[i] = offsets[i] + d / 2;
         }
+        return BuildPlan(imagePaths, focalPoints, colorProfiles, total, width, height, fps, d, offsets, cuts, snapped);
+    }
+
+    /// <summary>
+    /// 🔒 Zero-Drift 타임라인 잠금 — 프리뷰/자막이 사용한 <paramref name="lockedPlan"/> 의 xfade offset · 전환 길이 · 총 길이를 그대로 재사용해
+    /// 출력 해상도/색보정만 다른 동일 컷 경계 플랜을 재구성(비트 재검출 · 재스냅 없음 → 컷 드리프트 0ms).
+    /// 클립 수 불일치 · 비단조 offset · 비유한 값 → <see cref="ArgumentException"/>(호출측 재계산 폴백).
+    /// </summary>
+    public PlutoMontagePlan CompileLockedMontagePlan(PlutoMontagePlan lockedPlan, IReadOnlyList<string> imagePaths, IReadOnlyList<(double X, double Y)>? focalPoints,
+        IReadOnlyList<PlutoColorGradeProfile>? colorProfiles, int width = 1080, int height = 1920, int fps = 60)
+    {
+        ArgumentNullException.ThrowIfNull(lockedPlan);
+        if (imagePaths is null || imagePaths.Count < MinClips || imagePaths.Count > MaxClips)
+            throw new ArgumentException("몽타주는 사진 2~5장이 필요합니다.", nameof(imagePaths));
+        for (var i = 0; i < imagePaths.Count; i++)
+            if (string.IsNullOrWhiteSpace(imagePaths[i])) throw new ArgumentException("빈 사진 경로(" + i.ToString(Inv) + ")", nameof(imagePaths));
+        var n = imagePaths.Count;
+        if (lockedPlan.Clips is null || lockedPlan.Clips.Count != n) throw new ArgumentException("잠금 플랜 클립 수 불일치", nameof(lockedPlan));
+        var total = lockedPlan.TotalDurationSec;
+        if (!double.IsFinite(total) || total <= 0) throw new ArgumentException("잠금 플랜 총 길이 오류", nameof(lockedPlan));
+        fps = Math.Clamp(fps, 1, 240);
+
+        var d = lockedPlan.TransitionSec > 0 ? lockedPlan.TransitionSec : lockedPlan.Clips[0].TransitionOutSec;
+        if (!double.IsFinite(d) || d <= 0) throw new ArgumentException("잠금 플랜 전환 길이 오류", nameof(lockedPlan));
+        d = Snap(d, fps);
+        var src = lockedPlan.TransitionOffsetsSec;
+        var offsets = new double[n - 1];
+        var cuts = new double[n - 1];
+        for (var i = 0; i < offsets.Length; i++)
+        {
+            var o = src is not null && src.Count == n - 1 ? src[i] : lockedPlan.Clips[i + 1].StartSec;
+            if (!double.IsFinite(o)) throw new ArgumentException("잠금 플랜 offset 오류", nameof(lockedPlan));
+            o = Snap(o, fps);
+            var prev = i == 0 ? 0.0 : offsets[i - 1];
+            if (o <= prev || o + d >= total) throw new ArgumentException("잠금 플랜 offset 비단조/범위 초과", nameof(lockedPlan));
+            offsets[i] = o;
+            cuts[i] = o + d / 2;
+        }
+        return BuildPlan(imagePaths, focalPoints, colorProfiles, total, width, height, fps, d, offsets, cuts, lockedPlan.SnappedCuts);
+    }
+
+    private PlutoMontagePlan BuildPlan(IReadOnlyList<string> imagePaths, IReadOnlyList<(double X, double Y)>? focalPoints, IReadOnlyList<PlutoColorGradeProfile>? colorProfiles,
+        double total, int width, int height, int fps, double d, double[] offsets, double[] cuts, int snapped)
+    {
+        var n = imagePaths.Count;
         var durations = new double[n];
         for (var i = 0; i < n; i++)
         {

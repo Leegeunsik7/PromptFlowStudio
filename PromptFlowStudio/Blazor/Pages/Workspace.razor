@@ -133,6 +133,44 @@
                 <button class="ws-back" data-montage-story="1" @onclick="GenerateMontageStoryAsync" disabled="@(_activeMontagePlan is null || _montageStoryBusy || _montageBusy)" title="클립 경계에 맞춘 3막(후킹 → 리듬 → 클라이맥스) KO/EN 자막 — Gemini → PlutoCore → 로컬 게이트웨이 → 템플릿">[✨ 3막 자막 자동 생성]</button>
                 @if (_montageStoryBusy) { <span class="ws-retry" role="status" data-montage-story-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 3막 자막 생성 중…</span> }
                 else if (_montageCues is { Count: > 0 } mcs) { <span class="ws-pcore on" data-montage-story-count="@(mcs.Count.ToString(CultureInfo.InvariantCulture))">💬 3막 자막 @(mcs.Count.ToString(CultureInfo.InvariantCulture))컷 · @(_montageStoryLlm ? "AI" : "템플릿")</span> }
+                <button class="ws-back" data-sns-kit="1" @onclick="GenerateSnsKitAsync" disabled="@(_snsBusy || _montageBusy)" title="피사체 중심 9:16(1080×1920) 스마트 크롭 + 훅 제목 3종 · KO/EN 캡션 · 해시태그 12개 — Gemini → PlutoCore → 로컬 게이트웨이 → 템플릿 · 오답 노트 차단 태그 제외">[📱 9:16 릴스/쇼츠 스마트 패키징 &amp; SNS 키트]</button>
+                <button class="ws-back" data-perf-toggle="1" @onclick="TogglePerfPanel" aria-expanded="@(_perfOpen ? "true" : "false")" title="게시 후 3초 유지율 · CTR · 완주율을 입력하면 Pluto가 승리 패턴은 강화(XP)하고 약한 훅은 오답 노트로 회피 학습">[📊 배포 성과 피드백 학습] @(_perfOpen ? "▲" : "▼")</button>
+            }
+            @if (_snsBusy) { <span class="ws-retry" role="status" data-sns-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 📱 SNS 키트 생성 중…</span> }
+            else if (_snsKit is { } kit && _montagePhotos.Count >= 2)
+            {
+                <div class="ws-sns-kit" data-sns-kit-panel="1" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%">
+                    <span class="ws-pcore on" data-sns-source="@(kit.UsedLlm ? "llm" : "template")">📱 SNS 키트 · @(kit.UsedLlm ? "AI" : "템플릿") · 🕗 @(kit.RecommendedPostingWindow)</span>
+                    @for (var ti = 0; ti < kit.Titles.Count; ti++)
+                    {
+                        var titleIdx = ti;
+                        <button class="ws-back" data-sns-title="@(titleIdx.ToString(CultureInfo.InvariantCulture))" @onclick="() => CopySnsPart(titleIdx)" title="클릭하여 제목 복사">📋 @(kit.Titles[titleIdx])</button>
+                    }
+                    <button class="ws-back" data-sns-copy-caption="1" @onclick="() => CopySnsPart(-1)" title="@(kit.CaptionKo)">📋 캡션(KO/EN) 복사</button>
+                    <button class="ws-back" data-sns-copy-tags="@(kit.Hashtags.Count.ToString(CultureInfo.InvariantCulture))" @onclick="() => CopySnsPart(-2)" title="@(string.Join(" ", kit.Hashtags))">📋 해시태그 @(kit.Hashtags.Count.ToString(CultureInfo.InvariantCulture))개 복사</button>
+                    <button class="ws-back" data-sns-copy-all="1" @onclick="() => CopySnsPart(-3)">📋 전체 복사</button>
+                    <button class="ws-back" data-montage-render-vertical="1" @onclick="RenderVerticalMontageAsync" disabled="@(_montageBusy || _motionBusy || _stockBusy)" title="사진별 초점 중심 9:16 선크롭 → 프리뷰와 동일한 컷 경계(🔒 타임라인 잠금)로 MP4 렌더">[🎞️ 9:16 스마트 크롭 MP4 렌더]</button>
+                    <span class="ws-retry" data-sns-hashtags="1">@(string.Join(" ", kit.Hashtags))</span>
+                </div>
+            }
+            @if (_snsToast is { } snt) { <span class="ws-retry" role="status" data-sns-toast="1">@(snt)</span> }
+            @if (_perfOpen && _montagePhotos.Count >= 2)
+            {
+                <div class="ws-perf-panel" data-perf-panel="1" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%">
+                    <select class="ws-back" data-perf-platform="1" @bind="_perfPlatform" disabled="@(_perfBusy)">
+                        <option value="YouTube Shorts">YouTube Shorts</option>
+                        <option value="Instagram Reels">Instagram Reels</option>
+                    </select>
+                    <label class="ws-retry">영상 ID <input type="text" data-perf-video="1" @bind="_perfVideoId" maxlength="200" style="width:11em" disabled="@(_perfBusy)" /></label>
+                    <label class="ws-retry">3초 유지율 % <input type="number" data-perf-hook="1" @bind="_perfHook" min="0" max="100" step="0.1" style="width:5em" disabled="@(_perfBusy)" /></label>
+                    <label class="ws-retry">CTR % <input type="number" data-perf-ctr="1" @bind="_perfCtr" min="0" max="100" step="0.1" style="width:5em" disabled="@(_perfBusy)" /></label>
+                    <label class="ws-retry">완주율 % <input type="number" data-perf-completion="1" @bind="_perfCompletion" min="0" max="100" step="0.1" style="width:5em" disabled="@(_perfBusy)" /></label>
+                    <button class="ws-back" data-perf-submit="1" @onclick="SubmitPerformanceAsync" disabled="@(_perfBusy)" title="돌파(3초 ≥ 65% · CTR ≥ 7.5% · 완주 ≥ 55%) → 패턴 강화 + XP · 부진(3초 &lt; 42% · CTR &lt; 2.2%) → 오답 노트">[📈 성과 학습 반영]</button>
+                    @if (_perfOutcome is { } po)
+                    {
+                        <span class="@(po.IsBreakoutSuccess ? "ws-pcore on" : "ws-retry")" role="status" data-perf-outcome="@(po.IsBreakoutSuccess ? "breakout" : po.RecordedMistakePenalty ? "penalty" : po.AlreadyRegistered ? "duplicate" : "neutral")">@(po.SummaryMessage) · 🪐 @(PlutoDirector.CurrentXp.ToString(CultureInfo.InvariantCulture)) XP</span>
+                    }
+                </div>
             }
             @if (_montageBusy) { <span class="ws-retry" role="status" data-montage-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 🎞️ 몽타주 렌더 중… (@(_montagePhotos.Count.ToString(CultureInfo.InvariantCulture))컷 · 15초 · 60fps)</span> }
             else if (_montageToast is { } mtt) { <span class="ws-retry" role="status" data-montage-result="1">@(mtt) @if (_montageOutput is { } mto) { <button class="ws-back" data-montage-open="1" @onclick="() => RevealInExplorer(mto)" title="@(mto)">📂 @(Path.GetFileName(mto)) 위치 열기</button> }</span> }
@@ -1903,6 +1941,10 @@
         _montagePhotos.Clear();
         _montageToast = null;
         _montageOutput = null;
+        _snsKit = null;
+        _snsToast = null;
+        _perfOutcome = null;
+        _perfVideoId = "";
         _montagePreviewSeq++;
         _stagedFocalPoints = null;
         _stagedFocalKey = null;
@@ -2066,7 +2108,12 @@
     /// 🎞️ 15초 멀티컷 몽타주 — 사진 2~5장 → 노출 정합 색보정 · 비트 스냅 xfade · KO/EN 자막 · 마스터링 BGM + SFX MP4.
     /// 익스포터 공유 상태 보호를 위해 모션/StockSuite 내보내기와 상호 배제.
     /// </summary>
-    private async Task RenderMontageVideoAsync()
+    private Task RenderMontageVideoAsync() => RenderMontageCoreAsync(false);
+
+    /// <summary>📱 9:16 스마트 크롭 몽타주(초점 중심 선크롭 + 🔒 타임라인 잠금).</summary>
+    private Task RenderVerticalMontageAsync() => RenderMontageCoreAsync(true);
+
+    private async Task RenderMontageCoreAsync(bool vertical9x16)
     {
         if (_montageBusy || _motionBusy || _stockBusy || _montagePhotos.Count < 2) return;
         _montageBusy = true;
@@ -2083,14 +2130,112 @@
             IReadOnlyList<PromptFlowStudio.Services.Export.SubtitleCue> cues = _montageCues is { Count: > 0 } mc && _activeMontagePlan is { } amp && amp.Clips.Count == photos.Length
                 ? mc   // 🎬 클립 경계 정렬 3막 자막(프리뷰와 동일)
                 : (await GenerateWorkspaceLetterAsync(_mediaCts.Token)).ToCues();
+            // 🔒 Zero-Drift — 프리뷰 · 3막 자막과 동일한 컷 경계(클립 수 일치 시)
+            var locked = _activeMontagePlan is { } lp && lp.Clips.Count == photos.Length ? lp : null;
             var r = await StockSuite.ExportMontageVideoFromPhotosAsync(photos, focals, new PromptFlowStudio.Services.Export.ExportOptions(), cues,
-                _bgmOn ? _bgmTrack : null, includeSfx: true, preferredLook: _montageLook, ct: _mediaCts.Token, customBgmWavBytes: _customBgm?.CroppedWavBytes);
+                _bgmOn ? _bgmTrack : null, includeSfx: true, preferredLook: _montageLook, ct: _mediaCts.Token, customBgmWavBytes: _customBgm?.CroppedWavBytes,
+                lockedPlan: locked, vertical9x16SmartCrop: vertical9x16);
             _montageOutput = r.Ok ? r.TargetPath : null;
+            if (r.Ok && r.TargetPath is { } rendered) _perfVideoId = Path.GetFileNameWithoutExtension(rendered);
             _montageToast = r.Ok ? "✅ " + r.Message : "⚠ " + r.Message;
         }
         catch (OperationCanceledException) { }   // 페이지 이탈
         catch (Exception ex) { Program.Log("Workspace.MontageVideo", ex); _montageToast = "⚠ 몽타주 렌더 실패: " + ex.Message; }
         finally { _montageBusy = false; _stockBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    // ── 📱 Pluto 4.2 — 9:16 SNS 키트 · 📈 폐루프 성과 학습 ──
+    private PromptFlowStudio.Services.Pluto.PlutoSnsPublishingKit? _snsKit;
+    private bool _snsBusy;
+    private string? _snsToast;
+    private bool _perfOpen, _perfBusy;
+    private string _perfPlatform = "YouTube Shorts";
+    private string _perfVideoId = "";
+    private double _perfHook = 50, _perfCtr = 4, _perfCompletion = 40;
+    private PromptFlowStudio.Services.Pluto.PlutoReinforcementOutcome? _perfOutcome;
+
+    private string[] ActiveViralTagsSafe(int max)
+    {
+        try
+        {
+            var learning = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoLearningService)) as PromptFlowStudio.Services.Pluto.PlutoLearningService;
+            var active = learning?.GetActiveViralTrends(max);
+            var tags = new string[active?.Count ?? 0];
+            for (var i = 0; i < tags.Length; i++) tags[i] = active![i].Tag;
+            return tags;
+        }
+        catch (Exception ex) { Program.Log("Workspace.ViralTags", ex); return Array.Empty<string>(); }
+    }
+
+    /// <summary>📱 [9:16 릴스/쇼츠 스마트 패키징 &amp; SNS 키트] — 4단 페일오버 키트 생성(실패 → 템플릿 · 예외 전파 금지).</summary>
+    private async Task GenerateSnsKitAsync()
+    {
+        if (_snsBusy || _montagePhotos.Count < 2) return;
+        _snsBusy = true;
+        _snsToast = null;
+        StateHasChanged();
+        try
+        {
+            var packager = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMultiFormatPackager)) as PromptFlowStudio.Services.Pluto.IPlutoMultiFormatPackager;
+            var tags = ActiveViralTagsSafe(5);
+            if (packager is null)
+            {
+                var notebook = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService)) as PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService;
+                _snsKit = PromptFlowStudio.Services.Pluto.PlutoMultiFormatPackager.BuildTemplateKit(MontageThemeHint(), tags, _montageCues, notebook?.GetSuppressedTokens(), DateTime.UtcNow);
+            }
+            else _snsKit = await packager.GeneratePublishingKitAsync(MontageThemeHint(), tags, _montageCues, _mediaCts.Token);
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.SnsKit", ex); _snsToast = "⚠ SNS 키트 생성 실패: " + ex.Message; }
+        finally { _snsBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>📋 키트 복사 — 0..2 제목 · -1 캡션 · -2 해시태그 · -3 전체.</summary>
+    private void CopySnsPart(int part)
+    {
+        if (_snsKit is not { } kit) return;
+        string text, label;
+        if (part >= 0 && part < kit.Titles.Count) { text = kit.Titles[part]; label = "제목"; }
+        else if (part == -1) { text = kit.CaptionEn.Length > 0 ? kit.CaptionKo + "\n\n" + kit.CaptionEn : kit.CaptionKo; label = "캡션"; }
+        else if (part == -2) { text = string.Join(" ", kit.Hashtags); label = "해시태그"; }
+        else { text = kit.FullText; label = "전체 키트"; }
+        try { _snsToast = Clipboard.SetText(text) ? "📋 " + label + "이(가) 복사되었습니다" : "⚠ 클립보드 복사에 실패했습니다"; }
+        catch (Exception ex) { Program.Log("Workspace.SnsCopy", ex); _snsToast = "⚠ 클립보드 복사에 실패했습니다"; }
+    }
+
+    private void TogglePerfPanel()
+    {
+        _perfOpen = !_perfOpen;
+        if (_perfOpen && string.IsNullOrWhiteSpace(_perfVideoId))
+            _perfVideoId = _montageOutput is { } mo ? Path.GetFileNameWithoutExtension(mo) : _montagePhotos.Count > 0 ? Path.GetFileNameWithoutExtension(_montagePhotos[0]) + "_montage" : "";
+    }
+
+    /// <summary>📈 [성과 학습 반영] — 지표 → 폐루프 강화(돌파 → 패턴/XP · 부진 → 오답 노트 · 중복 차단 · 예외 전파 금지).</summary>
+    private async Task SubmitPerformanceAsync()
+    {
+        if (_perfBusy) return;
+        var svc = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoClosedLoopReinforcementService)) as PromptFlowStudio.Services.Pluto.IPlutoClosedLoopReinforcementService;
+        if (svc is null) { _snsToast = "⚠ 성과 학습 서비스를 사용할 수 없습니다."; return; }
+        var videoId = string.IsNullOrWhiteSpace(_perfVideoId) ? "" : _perfVideoId.Trim();
+        if (videoId.Length == 0) { _snsToast = "⚠ 영상 ID를 입력하세요."; return; }
+        _perfBusy = true;
+        StateHasChanged();
+        try
+        {
+            var hook = _montageCues is { Count: > 0 } mc && !string.IsNullOrWhiteSpace(mc[0].Text) ? mc[0].Text.Trim() : "montage-hook";
+            var telemetry = new PromptFlowStudio.Services.Pluto.PlutoVideoPerformanceTelemetry(videoId, _perfPlatform, hook, _montageLook,
+                _customBgm is not null ? "custom" : _bgmOn ? _bgmTrack.ToString() : "none", ActiveViralTagsSafe(3),
+                _perfHook, _perfCompletion, _perfCtr, DateTimeOffset.UtcNow);
+            _perfOutcome = await svc.IngestPerformanceAsync(telemetry, _mediaCts.Token);
+            _snsToast = null;
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.PerfFeedback", ex); _snsToast = "⚠ 성과 학습 반영 실패: " + ex.Message; }
+        finally { _perfBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
     }

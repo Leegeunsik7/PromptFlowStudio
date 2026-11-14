@@ -845,9 +845,11 @@ public sealed partial class StockSuiteExporter
     /// [부분 구제] 자막 번인 실패 → 자막 없이 재시도 · 오디오 실패 → 무음 영상 보존. 동시 실행은 즉시 거부.
     /// </summary>
     /// <param name="preferredLook">룩 후보(null → NaturalPastel) — <see cref="Pluto.PlutoColorGradingCompiler.SelectLook"/> 결과 권장.</param>
+    /// <param name="lockedPlan">🔒 Zero-Drift 잠금 — 프리뷰/3막 자막이 사용한 플랜(클립 수 일치 시 컷 경계 · 전환 · 총 길이 그대로 재사용 · 비트 재검출 생략). 불일치/손상 → 재계산 폴백.</param>
+    /// <param name="vertical9x16SmartCrop">📱 원본을 초점 중심 9:16 으로 선크롭(<see cref="Pluto.PlutoMultiFormatPackager.ComputeCrop"/> · 헤더 판독 실패 사진은 원본 유지).</param>
     public async Task<StockSuiteExportResult> ExportMontageVideoFromPhotosAsync(IReadOnlyList<string> imagePaths, IReadOnlyList<(double X, double Y)>? focalPoints, ExportOptions options,
         IReadOnlyList<SubtitleCue>? subtitles = null, BabyBgmTrack? bgm = null, bool includeSfx = true, string? preferredLook = null, string? outputPath = null, CancellationToken ct = default,
-        byte[]? customBgmWavBytes = null)
+        byte[]? customBgmWavBytes = null, Pluto.PlutoMontagePlan? lockedPlan = null, bool vertical9x16SmartCrop = false)
     {
         ct.ThrowIfCancellationRequested();
         if (options is null) return new StockSuiteExportResult(false, null, false, "옵션이 없습니다.");
@@ -891,9 +893,47 @@ public sealed partial class StockSuiteExporter
             }, ct).ConfigureAwait(false);
             var profiles = analyzer.BuildHarmonizedProfiles(metrics, preferredLook ?? Pluto.PlutoColorGradingCompiler.NaturalPastelName, MistakeNotebook);
 
-            // 🥁 BGM 비트 → 컷 스냅 → filter_complex
-            var beats = await TryDetectBgmBeatsAsync(track, total, ct).ConfigureAwait(false);
-            var plan = MontageCompiler.CompileMontagePlan(srcs, focalPoints, beats, profiles, total, width, height, fps);
+            // 📱 9:16 스마트 선크롭(초점 중심 · 경계 내부) → 크롭 좌표계로 초점 재매핑
+            var focals = focalPoints;
+            Pluto.PixelCropRect?[]? crops = null;
+            if (vertical9x16SmartCrop)
+            {
+                crops = new Pluto.PixelCropRect?[srcs.Length];
+                var remapped = new (double X, double Y)[srcs.Length];
+                for (var i = 0; i < srcs.Length; i++)
+                {
+                    var f = focalPoints is not null && i < focalPoints.Count ? focalPoints[i] : Pluto.PlutoMotionCompiler.BabyFocal;
+                    remapped[i] = f;
+                    if (!Pluto.PlutoMultiFormatPackager.TryReadImageFileSize(srcs[i], out var iw, out var ih)) continue;
+                    var rect = Pluto.PlutoMultiFormatPackager.ComputeCrop(iw, ih, new Pluto.FocalPoint(f.X, f.Y));
+                    crops[i] = Pluto.PlutoMultiFormatPackager.ToPixelRect(rect, iw, ih);
+                    remapped[i] = Pluto.PlutoMultiFormatPackager.RemapFocal(f, rect);
+                }
+                focals = remapped;
+            }
+
+            // 🔒 잠금 플랜 우선(컷 드리프트 0) → 🥁 BGM 비트 → 컷 스냅 → filter_complex
+            Pluto.PlutoMontagePlan? plan = null;
+            var lockedTag = "";
+            if (lockedPlan is not null && lockedPlan.Clips is { } lc && lc.Count == srcs.Length)
+            {
+                try
+                {
+                    plan = MontageCompiler.CompileLockedMontagePlan(lockedPlan, srcs, focals, profiles, width, height, fps);
+                    lockedTag = "🔒 타임라인 잠금 · ";
+                }
+                catch (ArgumentException ex) { Program.Log("StockSuite.Montage.Lock", ex); plan = null; }   // [부분 구제] 재계산 폴백
+            }
+            if (plan is null)
+            {
+                var beats = await TryDetectBgmBeatsAsync(track, total, ct).ConfigureAwait(false);
+                plan = MontageCompiler.CompileMontagePlan(srcs, focals, beats, profiles, total, width, height, fps);
+            }
+            if (crops is not null)
+            {
+                var cropped = Pluto.PlutoMultiFormatPackager.InjectSourceCrops(plan.FilterComplexGraph, crops);
+                if (!ReferenceEquals(cropped, plan.FilterComplexGraph)) { plan = plan with { FilterComplexGraph = cropped }; lockedTag += "📱 9:16 스마트 크롭 · "; }
+            }
             var frames = (int)Math.Round(plan.TotalDurationSec * fps, MidpointRounding.AwayFromZero);
 
             string target;
@@ -917,7 +957,7 @@ public sealed partial class StockSuiteExporter
             var look = profiles.Count > 0 ? profiles[0].PresetName : Pluto.PlutoColorGradingCompiler.NaturalPastelName;
             var inv = CultureInfo.InvariantCulture;
             var tag = MontageTag + srcs.Length.ToString(inv) + "컷 · " + frames.ToString(inv) + "프레임 @" + fps.ToString(inv) + "fps · 🎨 " + look
-                      + " · 🥁 비트 컷 " + plan.SnappedCuts.ToString(inv) + "/" + (srcs.Length - 1).ToString(inv) + " · ";
+                      + " · 🥁 비트 컷 " + plan.SnappedCuts.ToString(inv) + "/" + (srcs.Length - 1).ToString(inv) + " · " + lockedTag;
 
             string? err = null;
             if (subsOn)

@@ -315,7 +315,59 @@ public sealed class PlutoLearningService : IDisposable
         return CurrentXP;
     }
 
-    /// <summary>🔥 활성 바이럴 트렌드 풀 — 가중치 ≥ <see cref="ViralActiveThreshold"/> · 내림차순(동점 태그 사전순) 상위 <paramref name="max"/>건. 미적재 → 빈 목록.</summary>
+    /// <summary>📈 성과 패턴 키 접두사(훅/스타일/LUT/BGM) — 트렌드 · 바이럴 키와 분리.</summary>
+    public const string PatternKeyPrefix = "pattern:";
+    /// <summary>📈 성과 패턴 기본 가중치(미추적) · 상한.</summary>
+    public const double PatternBaseWeight = 1.0, PatternMaxWeight = 2.5;
+
+    /// <summary>📈 성과 패턴 가중치(미추적 → <see cref="PatternBaseWeight"/>).</summary>
+    public double GetPatternWeight(string patternToken)
+    {
+        if (string.IsNullOrWhiteSpace(patternToken)) return PatternBaseWeight;
+        lock (_sync) return _entries.TryGetValue(PatternKeyPrefix + patternToken, out var e) && e.Weight > 0 ? e.Weight : PatternBaseWeight;
+    }
+
+    /// <summary>
+    /// 📈 폐루프 성과 강화 — 패턴 토큰별 가중치 ×<paramref name="multiplier"/>(기준 1.0 · 상한 <see cref="PatternMaxWeight"/>) + 출처 키 보너스 XP를 1회 원자적 영속.
+    /// 유효 토큰 0건 + XP 0 → 무변경. 반환 = 갱신 후 누적 XP.
+    /// </summary>
+    public async Task<int> ApplyPatternReinforcementAsync(IReadOnlyList<string> patternTokens, double multiplier, string sourceKey, int xp, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(patternTokens);
+        if (string.IsNullOrWhiteSpace(sourceKey)) throw new ArgumentException("sourceKey required", nameof(sourceKey));
+        if (!double.IsFinite(multiplier) || multiplier <= 0) throw new ArgumentOutOfRangeException(nameof(multiplier));
+        await EnsureLoadedAsync(ct).ConfigureAwait(false);
+        var touched = 0;
+        lock (_sync)
+        {
+            var now = DateTime.UtcNow;
+            for (var i = 0; i < patternTokens.Count; i++)
+            {
+                var t = patternTokens[i];
+                if (string.IsNullOrWhiteSpace(t)) continue;
+                var key = PatternKeyPrefix + t.Trim();
+                if (!_entries.TryGetValue(key, out var e)) { e = new Entry { Weight = PatternBaseWeight }; _entries[key] = e; }
+                var basis = e.Weight > 0 ? e.Weight : PatternBaseWeight;
+                e.Weight = Math.Clamp(basis * multiplier, 0.1, PatternMaxWeight);
+                e.Interactions++;
+                e.LastUtc = now;
+                touched++;
+            }
+            if (xp > 0)
+            {
+                if (!_entries.TryGetValue(sourceKey, out var x)) { x = new Entry(); _entries[sourceKey] = x; }
+                x.BonusXp = Math.Max(0, x.BonusXp) + xp;
+                x.Interactions++;
+                x.LastUtc = now;
+            }
+        }
+        if (touched == 0 && xp <= 0) return CurrentXP;
+        await PersistAsync(ct).ConfigureAwait(false);
+        RaiseChanged();
+        return CurrentXP;
+    }
+
+    /// <summary>🔥 활성 바이럴 트렌드 풀 —가중치 ≥ <see cref="ViralActiveThreshold"/> · 내림차순(동점 태그 사전순) 상위 <paramref name="max"/>건. 미적재 → 빈 목록.</summary>
     public IReadOnlyList<ActiveViralTrend> GetActiveViralTrends(int max = 3)
     {
         if (max <= 0) return Array.Empty<ActiveViralTrend>();

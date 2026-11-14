@@ -1,5 +1,4 @@
 using System;
-using System.Buffers.Binary;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
@@ -261,67 +260,7 @@ public sealed class PromptInputViewModel : INotifyPropertyChanged
 
     /// <summary>PNG/JPEG/WebP/BMP 헤더에서 픽셀 크기를 판독(디코딩 없이 · 순수 BCL).</summary>
     public static bool TryReadImageSize(ReadOnlySpan<byte> d, out int width, out int height)
-    {
-        width = 0; height = 0;
-        // PNG: 8B 시그니처 + IHDR(폭/높이 BE)
-        if (d.Length >= 24 && d[0] == 0x89 && d[1] == 0x50 && d[2] == 0x4E && d[3] == 0x47)
-        {
-            width = BinaryPrimitives.ReadInt32BigEndian(d.Slice(16, 4));
-            height = BinaryPrimitives.ReadInt32BigEndian(d.Slice(20, 4));
-            return width > 0 && height > 0;
-        }
-        // BMP: BITMAPINFOHEADER 폭/높이 LE(높이 음수 = top-down)
-        if (d.Length >= 26 && d[0] == (byte)'B' && d[1] == (byte)'M')
-        {
-            width = BinaryPrimitives.ReadInt32LittleEndian(d.Slice(18, 4));
-            height = Math.Abs(BinaryPrimitives.ReadInt32LittleEndian(d.Slice(22, 4)));
-            return width > 0 && height > 0;
-        }
-        // WebP: RIFF....WEBP + VP8 / VP8L / VP8X
-        if (d.Length >= 30 && d[0] == (byte)'R' && d[1] == (byte)'I' && d[8] == (byte)'W' && d[9] == (byte)'E')
-        {
-            var fourcc = d.Slice(12, 4);
-            if (fourcc.SequenceEqual("VP8 "u8))
-            {
-                width = BinaryPrimitives.ReadUInt16LittleEndian(d.Slice(26, 2)) & 0x3FFF;
-                height = BinaryPrimitives.ReadUInt16LittleEndian(d.Slice(28, 2)) & 0x3FFF;
-            }
-            else if (fourcc.SequenceEqual("VP8L"u8))
-            {
-                var bits = BinaryPrimitives.ReadUInt32LittleEndian(d.Slice(21, 4));
-                width = (int)(bits & 0x3FFF) + 1;
-                height = (int)((bits >> 14) & 0x3FFF) + 1;
-            }
-            else if (fourcc.SequenceEqual("VP8X"u8))
-            {
-                width = (d[24] | d[25] << 8 | d[26] << 16) + 1;
-                height = (d[27] | d[28] << 8 | d[29] << 16) + 1;
-            }
-            return width > 0 && height > 0;
-        }
-        // JPEG: SOFn 마커 스캔(DHT/JPG/DAC 제외)
-        if (d.Length >= 4 && d[0] == 0xFF && d[1] == 0xD8)
-        {
-            var i = 2;
-            while (i + 9 < d.Length)
-            {
-                if (d[i] != 0xFF) { i++; continue; }
-                var marker = d[i + 1];
-                if (marker == 0xFF) { i++; continue; }
-                if (marker == 0xD8 || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7)) { i += 2; continue; }
-                var len = BinaryPrimitives.ReadUInt16BigEndian(d.Slice(i + 2, 2));
-                if (marker >= 0xC0 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC)
-                {
-                    height = BinaryPrimitives.ReadUInt16BigEndian(d.Slice(i + 5, 2));
-                    width = BinaryPrimitives.ReadUInt16BigEndian(d.Slice(i + 7, 2));
-                    return width > 0 && height > 0;
-                }
-                if (len < 2) return false;
-                i += 2 + len;
-            }
-        }
-        return false;
-    }
+        => PromptFlowStudio.Services.Pluto.PlutoMultiFormatPackager.TryReadImageSize(d, out width, out height);
 
     private PromptContext BuildContext() =>
         new(_userInput, _cameraMotion, _graphicStyle, _subjectIdentity, _isIdentityLocked, _negativeInput, _autoBabyModifier);

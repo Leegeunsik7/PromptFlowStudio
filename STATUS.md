@@ -1,15 +1,16 @@
 # Current Project Status
-- Active Milestone: 【Pluto 4.1 하드닝 — 테스트 저장소 격리(hermetic)】
-- Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Mobile `net8.0-ios` CoreCompile 0W/0E
-- Tests: ✅ 1113/1113 PASS (전체 스위트, Release, 11m25s, 격리 루트) · ✅ 타깃 Mirror/DriveHealth/Audit 60/60 PASS
+- Active Milestone: 【Pluto 4.2 — 폐루프 성과 강화 · 9:16 릴스/쇼츠 패키저 · Zero-Drift 타임라인 잠금】
+- Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Mobile `net8.0-ios` CoreCompile 0W/0E · ✅ Tests 0W/0E
+- Tests: ✅ 1118/1118 PASS (전체 스위트, Release, 10m59s) · 신규 `Pluto42FeatureUpgradeTests` 5/5
 - Updated: 2026-11-15 (KST)
 
 ## Completed
-- 🧪 테스트 저장소 격리: `AppDataPaths.LocalAppData`(`PROMPTFLOW_LOCALAPPDATA` 오버라이드) 단일 해석점 48곳 치환 · 테스트 `[ModuleInitializer]`가 `%TEMP%\pfs_tests_*` 로 리다이렉트 + `PROMPTFLOW_AUTH_MIRROR`/`PROMPTFLOW_PLUTO_DRIVE`=off · 종료 시 정리 — 실 `audit.log.enc` 무변경 확인
-- 🔍 격리 3종(`LiveCommerce` · `LiveAudienceEngagement` · `PlatformVisibilityGateway`) 재검증: `e9686f7` 무수정 상태에서 단독·전체 모두 PASS — 1,112 B/34 ms 실패 재현 불가(일시적 환경 부하로 추정), 코드 변경 없음
-- 📱 iOS CA1416 `Process` 경고 5건 제거 · 🔀 `origin/main` · `origin/master` 동기화
-- ☁️ `PlutoDriveHealthService` 백업 상태 카드 · 🪟 System.Drawing Windows 가드
+- 📈 `PlutoClosedLoopReinforcementService` — 돌파(3초≥65 · CTR≥7.5 · 완주≥55) → 패턴 ×1.15~1.35(상한 2.5) + XP 15~35 · 부진(3초<42 · CTR<2.2) → 결손 비례 오답 노트 벌점 1.0~2.0 · 영상별 중복 반영 차단 장부(`pluto_reinforcement_ledger.json`)
+- 📱 `PlutoMultiFormatPackager` — 초점 중심 9:16 크롭(경계 클램프 · 짝수 픽셀) + SNS 키트(제목 3 · KO/EN 캡션 · 해시태그 12 · 게시 시간대) 4단 페일오버 · 차단 태그 제외
+- 🔒 `CompileLockedMontagePlan` + `ExportMontageVideoFromPhotosAsync(lockedPlan, vertical9x16SmartCrop)` — 프리뷰/자막과 컷 경계 0ms 드리프트 · 불일치 시 재계산 폴백
+- 🧩 Workspace: [📱 9:16 릴스/쇼츠 스마트 패키징 & SNS 키트] · [📊 배포 성과 피드백 학습] · DI 데스크톱/모바일 양쪽 등록
+- ♻️ 이미지 헤더 판독기 Services로 이관(모바일 링크 공유)
 
 ## Next
-- 3종 실패 재발 시 `PollDueAsync` 라운드별 할당 원인 추적
-- `_omniPublisher` 단일 모달 피크(~1 GB) 원인 분석
+- 성과 패턴 가중치(`pattern:*`)를 훅/룩 선택 랭킹에 반영
+- 성과 학습 HUD 카드(XP 증분 · 차단 훅) 검토
