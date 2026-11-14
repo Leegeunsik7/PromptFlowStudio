@@ -1541,6 +1541,7 @@ public sealed partial class StockSuiteExporter
 
     private static int CountRunning(string processName)
     {
+        if (!(OperatingSystem.IsWindows() || OperatingSystem.IsMacCatalyst())) return 0;   // 📱 iOS: 프로세스 열거 미지원
         var ps = Process.GetProcessesByName(processName);
         foreach (var p in ps) p.Dispose();
         return ps.Length;
@@ -1553,6 +1554,7 @@ public sealed partial class StockSuiteExporter
 
     private static bool TerminateAll(string processName)
     {
+        if (!(OperatingSystem.IsWindows() || OperatingSystem.IsMacCatalyst())) return true;   // 📱 iOS: 종료 대상 없음
         var ps = Process.GetProcessesByName(processName);
         var ok = true;
         foreach (var p in ps)

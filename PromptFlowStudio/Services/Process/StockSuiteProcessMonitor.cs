@@ -144,6 +144,7 @@ public sealed class StockSuiteProcessMonitor : IDisposable
 
     private static StockSuiteProcessSnapshot DefaultProbe(string processName)
     {
+        if (!(OperatingSystem.IsWindows() || OperatingSystem.IsMacCatalyst())) return StockSuiteProcessSnapshot.NotRunning;   // 📱 iOS: 프로세스 열거 미지원
         System.Diagnostics.Process[] ps;
         try { ps = System.Diagnostics.Process.GetProcessesByName(processName); }
         catch (Exception ex) when (ex is PlatformNotSupportedException or InvalidOperationException or NotSupportedException) { return StockSuiteProcessSnapshot.NotRunning; }

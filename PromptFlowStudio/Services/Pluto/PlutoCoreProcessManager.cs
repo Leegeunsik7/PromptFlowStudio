@@ -245,7 +245,7 @@ public sealed class PlutoCoreProcessManager : IDisposable
                 try { await p.WaitForExitAsync(cts.Token).ConfigureAwait(false); }
                 catch (OperationCanceledException) when (!ct.IsCancellationRequested)
                 {
-                    try { p.Kill(entireProcessTree: true); } catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException) { Log(ex); }
+                    try { if (OperatingSystem.IsWindows() || OperatingSystem.IsMacCatalyst()) p.Kill(entireProcessTree: true); } catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException) { Log(ex); }
                 }
             }
         }

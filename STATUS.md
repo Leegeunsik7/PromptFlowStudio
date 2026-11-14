@@ -1,17 +1,18 @@
 # Current Project Status
-- Active Milestone: 【Pluto 4.1 하드닝 — 3/4 Drive 헬스 · 4/4 Windows 가드 · 크롤러 누수 제거】
-- Build: ✅ Release `-warnaserror -p:NuGetAudit=false` 0/0 (PromptFlowStudio · Tests)
-- Tests: ✅ 1113/1113 PASS (11 m · `InteractiveModalCrawlerTests` 175 모달 결함 0)
+- Active Milestone: 【Pluto 4.1 하드닝 — Mobile iOS CA1416 `Process` 가드 · 브랜치 동기화】
+- Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Mobile `net8.0-ios` CoreCompile 0W/0E
+- Tests: ✅ 60/60 targeted PASS · ⚠️ 전체 스위트 3건 실패(아래, 베이스라인 동일)
 - Updated: 2026-11-14 (KST)
 
 ## Completed
-- 🎬 1/4 `PlutoMontageStoryGenerator` 3막 자막 · `SubtitleCue` 소수초 SRT
-- 🔁 2/4 `SwapCandidate` · `MoveSelectedCut` · Workspace `[선별 상세]` HITL
-- ☁️ 3/4 `PlutoDriveHealthService`(DI 양쪽) + Settings 백업 상태 카드(7파일 · `LastMirrorError`)
-- 🪟 4/4 Pluto 색/초점/큐레이션 System.Drawing `OperatingSystem.IsWindows()` 가드(CA1416)
-- 🧵 크롤러: 모달마다 루트 DI 재생성·폐기(Runner Stop+Join) + GC → 4 GB/154 스레드 → 피크 ~1.0 GB/58 · 종료 525 MB/32
-- 🛡 `LiveToReelsFactoryStudioRunner`·`StreamGatewayClipperStudioRunner` Dispose 경합(해제된 WaitHandle → testhost 크래시) 차단
+- 📱 iOS CA1416 `Process` 경고 5건 제거: `StockSuiteExporter.cs` · `PlutoCoreProcessManager.cs` · `StockSuiteProcessMonitor.cs`
+- 🔀 `origin/main` · `origin/master` fast-forward 동기화
+- ☁️ 3/4 `PlutoDriveHealthService` + Settings 백업 상태 카드 · 🪟 4/4 System.Drawing Windows 가드
+- 🧵 크롤러 모달별 DI 루트 재생성·폐기 · Runner Dispose 경합 차단
+
+## Known Issues (under investigation)
+- 3 isolated tests (`LiveCommerceIsolatedTests`, `LiveAudienceEngagementIsolatedTests`, `PlatformVisibilityGatewayIsolatedTests`) fail at baseline `a8ed9e5` too, deterministically (`1112` allocations / `34.0 ms` median tick); likely an environment/local-state or .NET workload change since 17:32; under investigation.
 
 ## Next
-- Mobile(MAUI) 빌드 검증(4/4 가드 실기)
+- 위 3건 원인 규명(`TitanReleaseTests.cs` 폴링 경로 할당 1,112 B)
 - `_omniPublisher` 단일 모달 피크(~1 GB) 원인 분석
