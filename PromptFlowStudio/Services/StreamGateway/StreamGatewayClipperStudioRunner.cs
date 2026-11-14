@@ -69,6 +69,7 @@ public sealed class StreamGatewayClipperStudioRunner : IDisposable
     private readonly float[] _cleanS = new float[120];
     private readonly byte[] _preview = new byte[PreviewBytes];
     private readonly AutoResetEvent _clipEvt = new(false);
+    private volatile bool _disposed;
     private byte[] _y = Array.Empty<byte>(), _uv = Array.Empty<byte>();
     private float[] _l = Array.Empty<float>(), _r = Array.Empty<float>();
     private int _sHead, _sN, _cHead, _cN, _clipId;
@@ -352,7 +353,7 @@ public sealed class StreamGatewayClipperStudioRunner : IDisposable
     public void WritePreviewBmp(byte[] dst) { lock (_prevGate) _preview.AsSpan(0, Math.Min(dst.Length, PreviewBytes)).CopyTo(dst); }
 
     // ══════════════════════ 클립(클립 스레드 · 비핫패스 머티리얼라이즈) ══════════════════════
-    public void RequestClip(double seconds) { _clipAuto = false; _clipReq = seconds; _clipEvt.Set(); }
+    public void RequestClip(double seconds) { if (_disposed) return; _clipAuto = false; _clipReq = seconds; _clipEvt.Set(); }
 
     /// <summary>즉시 무손실 클립(호출 스레드) — 리먹스 ≤ 10 ms · 이후 세그먼트 스트림 복사.</summary>
     public LosslessHighlightClip? ClipNow(double seconds, bool auto = false)
@@ -457,7 +458,7 @@ public sealed class StreamGatewayClipperStudioRunner : IDisposable
             if (_cN > WarmupSec && level >= SpikeRatio && !Guard.Shedding && g >= _cooldownUntil)
             {
                 Spikes++; _cooldownUntil = g + CooldownMs;
-                if (AutoClip) { _clipAuto = true; _clipReq = ClipSeconds; _clipEvt.Set(); }
+                if (AutoClip && !_disposed) { _clipAuto = true; _clipReq = ClipSeconds; _clipEvt.Set(); }
             }
         }
         var ms = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
@@ -527,7 +528,8 @@ public sealed class StreamGatewayClipperStudioRunner : IDisposable
     {
         while (_running)
         {
-            _clipEvt.WaitOne(250);
+            try { _clipEvt.WaitOne(250); }
+            catch (ObjectDisposedException) { return; }   // ClipNow 가 Join(3000) 을 넘겨 Dispose 가 이벤트를 먼저 해제한 경합 — 호스트 크래시 차단
             var s = _clipReq;
             if (s <= 0) continue;
             _clipReq = 0;
@@ -550,6 +552,7 @@ public sealed class StreamGatewayClipperStudioRunner : IDisposable
         if (_trans is not null && ReferenceEquals(_trans.Engine.Tap, Ring)) _trans.Engine.Tap = null;
         _enc.Dispose();
         lock (_clips) { foreach (var c in _clips) c.Dispose(); _clips.Clear(); }
+        _disposed = true;
         _clipEvt.Dispose();
     }
 }

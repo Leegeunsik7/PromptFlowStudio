@@ -68,7 +68,7 @@ public sealed class LiveToReelsFactoryStudioRunner : IClimaxClipDispatcher, IDub
     private long _lastChat = -1, _lastHits = -1, _lastHead = -1, _lastUnits = -1, _clock;
     private bool _lastSoldOut;
     private Thread? _detect, _pack;
-    private volatile bool _running, _packing;
+    private volatile bool _running, _packing, _disposed;
     private SegmentedChunkStream? _synthetic;
     private double _syntheticSec;
 
@@ -153,7 +153,7 @@ public sealed class LiveToReelsFactoryStudioRunner : IClimaxClipDispatcher, IDub
 
     private void StartPacker()
     {
-        if (_packing) return;
+        if (_packing || _disposed) return;   // Dispose 후 지연 Enqueue 가 해제된 _packEvt 위에 워커를 재기동하지 않도록 차단
         _packing = true;
         _pack = new Thread(PackLoop) { IsBackground = true, Name = "PF.LiveToReels.Pack" };
         try { _pack.Priority = ThreadPriority.Lowest; } catch (PlatformNotSupportedException) { }
@@ -308,6 +308,7 @@ public sealed class LiveToReelsFactoryStudioRunner : IClimaxClipDispatcher, IDub
     // ══════════════════════ IClimaxClipDispatcher(감지 스레드 · 무할당) ══════════════════════
     public bool Dispatch(in ClimaxClipRequest request)
     {
+        if (_disposed) return false;
         lock (_reqGate)
         {
             if (_reqN >= ReqRing) return false;
@@ -323,7 +324,8 @@ public sealed class LiveToReelsFactoryStudioRunner : IClimaxClipDispatcher, IDub
     {
         while (_packing)
         {
-            _packEvt.WaitOne(250);
+            try { _packEvt.WaitOne(250); }
+            catch (ObjectDisposedException) { return; }   // Join(3000) 초과 후 Dispose 가 이벤트를 먼저 해제한 경합 — 워커 조용히 종료(호스트 크래시 차단)
             while (_packing && TryTake(out var r))
             {
                 try { ProcessRequest(in r); }
@@ -499,6 +501,8 @@ public sealed class LiveToReelsFactoryStudioRunner : IClimaxClipDispatcher, IDub
         if (LinkDubbing) SetLinkDubbing(false);
         Guard.OnJobFinished -= OnJobFinished;
         Guard.Dispose();
+        _disposed = true;
+        _packing = false;
         _packEvt.Dispose();
         lock (_reels) { foreach (var r in _reels) r.Dispose(); _reels.Clear(); }
         Interlocked.Exchange(ref _synthetic, null)?.Dispose();

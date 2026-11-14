@@ -37,13 +37,12 @@ public class InteractiveModalCrawlerTests
         var targets = ResolveCatalogTargets();
         Assert.Equal(StudioCatalog.Entries.Length, targets.Count);
 
-        var services = new ServiceCollection();
         using var owner = new System.Windows.Forms.Control();
-        MainForm.ConfigureServices(services, new ConfigurationBuilder().Build(), owner);
-        services.AddSingleton<PromptFlowStudio.Services.Platform.IFilePickerService, HeadlessDialogs>();   // 모달 대화상자 대신 취소(null) — 크롤 중 UI 블로킹 차단
-        services.AddSingleton<PromptFlowStudio.Services.Platform.IVideoExportService, HeadlessDialogs>();
-        services.AddSingleton<PromptFlowStudio.Services.Platform.IClipboardService, HeadlessDialogs>();
-        await using var root = services.BuildServiceProvider();
+        // 싱글턴 Runner(전용 60 Hz 스레드 · 대용량 가우시안 버퍼)는 Start 후 루트 DI 수명까지 생존 — 175 전수를 단일 루트로 돌리면
+        // 스레드/메모리가 누적(4 GB · 154 스레드)되므로 RecycleEvery 모달마다 루트를 폐기(=Runner.Dispose→Stop+Join)하고 재생성.
+        ServiceProvider? root = null;
+        long peakMb = 0; var peakKey = "";
+        var sinceRecycle = 0;
 
         var stats = new CatStats[StudioCatalog.Categories.Length];
         for (var i = 0; i < stats.Length; i++) stats[i] = new CatStats();
@@ -55,12 +54,31 @@ public class InteractiveModalCrawlerTests
             if (!string.IsNullOrEmpty(only) && Array.IndexOf(only.Split(','), t.Entry.Key) < 0) continue;
             var s = stats[t.Entry.Category];
             s.Modals++;
+            if (root is null || sinceRecycle >= RecycleEvery)
+            {
+                if (root is not null)
+                {
+                    await DisposeRootAsync(root, defects);
+                    GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();   // 폐기 Runner 의 LOH 가우시안/프레임 버퍼를 gen2 지연 없이 즉시 회수(톱니 피크 제거)
+                }
+                root = BuildRoot(owner);
+                sinceRecycle = 0;
+            }
+            sinceRecycle++;
             var r = await CrawlAsync(root, t);
             if (r.MountError is null) s.Mounted++; else defects.Add("[MOUNT] " + t.Entry.Key + " " + t.Component.Name + ": " + r.MountError);
             s.Switches += r.Switches; s.Sliders += r.Sliders; s.Buttons += r.Buttons; s.Selects += r.Selects; s.Inputs += r.Inputs;
             s.Dispatched += r.Dispatched; s.Healthy += r.Healthy; s.Reacted += r.Reacted; s.Disabled += r.Disabled;
             defects.AddRange(r.Defects);
+            var ws = Environment.WorkingSet / (1024 * 1024);
+            if (ws > peakMb) { peakMb = ws; peakKey = t.Entry.Key; }
         }
+        if (root is not null) await DisposeRootAsync(root, defects);
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        var liveMb = Environment.WorkingSet / (1024 * 1024);
+        var threads = System.Diagnostics.Process.GetCurrentProcess().Threads.Count;
+        _out.WriteLine("crawl end: workingSet=" + liveMb.ToString(CultureInfo.InvariantCulture) + "MB threads=" + threads.ToString(CultureInfo.InvariantCulture) + " peakAfterModal=" + peakMb.ToString(CultureInfo.InvariantCulture) + "MB@" + peakKey);
 
         var sb = new StringBuilder();
         sb.AppendLine("| Cat | 모달 | 마운트 | 실패 | 스위치 | 슬라이더 | 버튼 | 셀렉트 | 입력 | 디스패치 | 정상 | 정상률 | DOM반응 | 비활성 |");
@@ -76,6 +94,24 @@ public class InteractiveModalCrawlerTests
         if (string.IsNullOrEmpty(only)) Assert.Equal(targets.Count, total.Modals);
         Assert.True(total.Dispatched > 0);
         Assert.True(defects.Count == 0, sb.ToString());
+    }
+
+    private const int RecycleEvery = 1;   // 25 단위 실측 피크 1.7 GB · 120 스레드 → 모달 단위 격리로 Runner 동시 생존 ≤ 1
+
+    private static ServiceProvider BuildRoot(System.Windows.Forms.Control owner)
+    {
+        var services = new ServiceCollection();
+        MainForm.ConfigureServices(services, new ConfigurationBuilder().Build(), owner);
+        services.AddSingleton<PromptFlowStudio.Services.Platform.IFilePickerService, HeadlessDialogs>();   // 모달 대화상자 대신 취소(null) — 크롤 중 UI 블로킹 차단
+        services.AddSingleton<PromptFlowStudio.Services.Platform.IVideoExportService, HeadlessDialogs>();
+        services.AddSingleton<PromptFlowStudio.Services.Platform.IClipboardService, HeadlessDialogs>();
+        return services.BuildServiceProvider();
+    }
+
+    private static async Task DisposeRootAsync(ServiceProvider root, List<string> defects)
+    {
+        try { await root.DisposeAsync(); }
+        catch (Exception ex) { defects.Add("[ROOT-DISPOSE] " + ex.GetType().Name + " " + ex.Message); }
     }
 
     private static void Row(StringBuilder sb, string cat, CatStats s)
