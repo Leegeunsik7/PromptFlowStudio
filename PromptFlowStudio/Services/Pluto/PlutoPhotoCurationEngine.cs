@@ -101,7 +101,7 @@ public sealed class PlutoPhotoCurationEngine : IPlutoPhotoCurationEngine
     {
         width = height = 0;
 #if WINDOWS
-        if (string.IsNullOrWhiteSpace(imagePath) || !System.IO.File.Exists(imagePath)) return null;
+        if (!OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(imagePath) || !System.IO.File.Exists(imagePath)) return null;   // CA1416 가드(비 Windows → 결정론 폴백)
         try
         {
             using var src = new System.Drawing.Bitmap(imagePath);

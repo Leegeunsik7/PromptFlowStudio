@@ -3,6 +3,9 @@
 @inject SessionState Session
 @inject MemberRegistryService Members
 @inject NavigationManager Nav
+@inject PromptFlowStudio.Services.Pluto.IPlutoDriveHealthService DriveHealth
+@using PromptFlowStudio.Services.Pluto
+@using System.Globalization
 
 @* [PromptFlowStudio] 관리자 설정 — 사이드바에서 진입하는 관리자 전용 화면(진입 시 관리자 비밀번호 게이트). 탭 구성:
      [회원·권한] 회원 RBAC 관리 · [메일(SMTP)] 발송 서버(암호화 저장) · [설치 PC] 배포자 수집 정보
@@ -71,6 +74,46 @@ else
     {
         @* 4대 오픈소스 AI 엔진(TTS/업스케일/STT/립싱크) 실행 파일 경로·인자 설정 + 연결 진단. *@
         <EngineSettingsPanel />
+
+        @* ☁️ Google Drive 7대 영구 백업 헬스(PC 이전 준비) — 존재 · 크기 · JSON 파싱 검증 + 미러 오류 노출. *@
+        <section class="dh">
+            <div class="dh-head">
+                <div>
+                    <div class="dh-title">☁️ Google Drive 영구 백업 · PC 이전 준비 상태</div>
+                    @if (_drive is { } rep)
+                    {
+                        <div class="dh-sum @(rep.HealthyCount == rep.TotalCount ? "ok" : "warn")">
+                            @(rep.HealthyCount)/@(rep.TotalCount) 파일 정상 동기화 · @(rep.IsDriveMounted ? "드라이브 연결됨" : "드라이브 미연결") · 점검 @(rep.CheckedAtUtc.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture))
+                        </div>
+                    }
+                </div>
+                <button class="dh-btn" disabled="@_driveBusy" @onclick="VerifyDriveAsync">@(_driveBusy ? "⏳ 검증 중…" : "🔄 지금 전체 드라이브 백업 검증")</button>
+            </div>
+            @if (_drive is { } r2)
+            {
+                @if (!string.IsNullOrEmpty(r2.SettingsMirrorError))
+                {
+                    <div class="dh-err" role="alert">⚠️ 설정 미러 오류(user_settings.json): @r2.SettingsMirrorError</div>
+                }
+                @if (!string.IsNullOrEmpty(r2.MemberMirrorError))
+                {
+                    <div class="dh-err" role="alert">⚠️ 회원 원장 미러 오류(members.json): @r2.MemberMirrorError</div>
+                }
+                <div class="dh-list">
+                    @foreach (var it in r2.Items)
+                    {
+                        <div class="dh-row" title="@(it.FullPath)">
+                            <span class="dh-badge s@((int)it.Status)">@BadgeText(it.Status)</span>
+                            <span class="dh-name">@it.FileName</span>
+                            <span class="dh-cat">@it.Category</span>
+                            <span class="dh-size">@FormatSize(it.SizeBytes)</span>
+                            <span class="dh-time">@(it.LastModifiedUtc is { } t ? t.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) : "—")</span>
+                            @if (!string.IsNullOrEmpty(it.ErrorDetail)) { <span class="dh-detail">@it.ErrorDetail</span> }
+                        </div>
+                    }
+                </div>
+            }
+        </section>
     }
     else if (_tab == Tab.Gemini)
     {
@@ -128,6 +171,23 @@ else
     .st-gate-b{width:100%;margin-top:16px;padding:13px;border-radius:12px;border:0;cursor:pointer;font-family:inherit;font-size:14.5px;font-weight:800;color:#fff;background:linear-gradient(135deg,#8b7bff,#6d5efc);box-shadow:0 8px 22px rgba(124,108,255,.32)}
     .st-gate-b:hover{filter:brightness(1.06)}
     .st-gate-hint{margin-top:14px;font-size:11.5px;color:var(--sub,#94a3b8)}
+    /* ── ☁️ Drive 백업 헬스 카드 ── */
+    .dh{margin-top:18px;padding:16px 18px;border-radius:14px;background:var(--card,#111a2e);border:1px solid var(--line,rgba(148,163,184,.18))}
+    .dh-head{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+    .dh-title{font-size:14.5px;font-weight:800;color:var(--ink,#f1f6ff)}
+    .dh-sum{font-size:12.5px;margin-top:4px}
+    .dh-sum.ok{color:#34d399}.dh-sum.warn{color:#fbbf24}
+    .dh-btn{border:0;border-radius:10px;padding:9px 14px;cursor:pointer;font-family:inherit;font-size:13px;font-weight:700;color:#fff;background:linear-gradient(135deg,#3b82f6,#2563eb)}
+    .dh-btn:disabled{opacity:.6;cursor:wait}
+    .dh-err{margin:6px 0;padding:8px 11px;border-radius:9px;font-size:12.5px;color:#fbbf24;background:color-mix(in srgb,#f59e0b 12%,transparent);border:1px solid color-mix(in srgb,#f59e0b 38%,transparent)}
+    .dh-list{display:flex;flex-direction:column;gap:4px}
+    .dh-row{display:grid;grid-template-columns:96px 1fr 104px 72px 120px;gap:8px;align-items:center;font-size:12.5px;padding:6px 8px;border-radius:8px;background:rgba(8,13,24,.35)}
+    .dh-badge{font-weight:700;font-size:11.5px}
+    .dh-badge.s0{color:#34d399}.dh-badge.s1{color:#fbbf24}.dh-badge.s2{color:#f87171}.dh-badge.s3{color:#94a3b8}
+    .dh-name{font-family:Consolas,monospace;color:var(--ink,#e6eefc);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .dh-cat,.dh-size,.dh-time{color:var(--sub,#93a3b8)}
+    .dh-size{text-align:right}
+    .dh-detail{grid-column:2/-1;color:#f87171;font-size:11.5px}
 </style>
 
 @code {
@@ -151,9 +211,37 @@ else
     }
     private void OnGateKey(KeyboardEventArgs e) { if (e.Key == "Enter") TryUnlock(); }
 
+    // ── ☁️ Drive 7대 백업 헬스 ──
+    private PlutoDriveHealthReport? _drive;
+    private bool _driveBusy;
+
+    private async Task VerifyDriveAsync()
+    {
+        if (_driveBusy) return;
+        _driveBusy = true;
+        try { _drive = await DriveHealth.ForceSyncAndVerifyAsync(); }
+        catch (Exception ex) { Program.Log("Settings.DriveHealth", ex); _drive = DriveHealth.CheckHealth(); }
+        finally { _driveBusy = false; }
+    }
+
+    private static string BadgeText(PlutoDriveFileStatus s) => s switch
+    {
+        PlutoDriveFileStatus.Healthy => "✅ 동기화됨",
+        PlutoDriveFileStatus.Missing => "⚠️ 미생성",
+        PlutoDriveFileStatus.CorruptOrEmpty => "❌ 손상/오류",
+        _ => "⛔ 드라이브 없음",
+    };
+
+    private static string FormatSize(long b) => b <= 0 ? "—"
+        : b < 1024 ? b.ToString(CultureInfo.InvariantCulture) + " B"
+        : b < 1024 * 1024 ? (b / 1024.0).ToString("0.0", CultureInfo.InvariantCulture) + " KB"
+        : (b / (1024.0 * 1024.0)).ToString("0.00", CultureInfo.InvariantCulture) + " MB";
+
     protected override void OnInitialized()
     {
         if (!Session.IsAuthenticated) { Nav.NavigateTo("login"); return; }
+        try { _drive = DriveHealth.CheckHealth(); }
+        catch (Exception ex) { Program.Log("Settings.DriveHealth", ex); }
     }
 
     // v5.3.2: 쿼리(?tab=) 값이 바뀔 때만 초기 활성 탭을 반영한다(사용자의 이후 탭 클릭은 보존).

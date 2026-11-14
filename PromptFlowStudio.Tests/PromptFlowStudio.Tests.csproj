@@ -24,6 +24,11 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <!-- GDI+/CPU 경합(testhost 크래시·Soak 사이클 미달) 방지 — 컬렉션 순차 실행(CI의 DisableParallelization=true와 동일). -->
+  <ItemGroup>
+    <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\PromptFlowStudio\PromptFlowStudio.csproj" />
   </ItemGroup>

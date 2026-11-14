@@ -192,4 +192,60 @@ public sealed class PlutoHardeningAndStoryTests
         Assert.Same(swapped, engine.MoveSelectedCut(swapped, 2, 2));
         Assert.Throws<ArgumentOutOfRangeException>(() => engine.MoveSelectedCut(swapped, 0, 4));
     }
+
+    [Fact]
+    public void DriveHealthService_ReportsAll7Files_AndDetectsMissingOrHealthyState()
+    {
+        var root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "pfs_drivehealth_" + Guid.NewGuid().ToString("N"));
+        var pluto = System.IO.Path.Combine(root, "Pluto");
+        var studio = System.IO.Path.Combine(root, "PromptFlowStudio");
+        System.IO.Directory.CreateDirectory(pluto);
+        System.IO.Directory.CreateDirectory(studio);
+        try
+        {
+            var svc = new PlutoDriveHealthService();
+
+            // 1) 빈 폴더 → 7개 모두 Missing
+            var empty = svc.CheckHealth(pluto, studio);
+            Assert.True(empty.IsDriveMounted);
+            Assert.Equal(7, empty.TotalCount);
+            Assert.Equal(7, empty.Items.Count);
+            Assert.Equal(0, empty.HealthyCount);
+            Assert.All(empty.Items, i => Assert.Equal(PlutoDriveFileStatus.Missing, i.Status));
+            Assert.Equal(5, empty.Items.Count(i => i.Category == PlutoDriveHealthService.CategoryPluto));
+            Assert.Equal(2, empty.Items.Count(i => i.Category == PlutoDriveHealthService.CategoryStudio));
+
+            // 2) 정상 JSON 5개 + 손상 JSON 1개 + 빈 파일 1개
+            foreach (var f in PlutoDriveHealthService.PlutoFiles)
+                System.IO.File.WriteAllText(System.IO.Path.Combine(pluto, f), "{\"ok\":true}");
+            System.IO.File.WriteAllText(System.IO.Path.Combine(studio, "members.json"), "[{\"Id\":\"a\"");   // 잘린 JSON
+            System.IO.File.WriteAllText(System.IO.Path.Combine(studio, "user_settings.json"), "");
+
+            var rep = svc.CheckHealth(pluto, studio);
+            Assert.Equal(5, rep.HealthyCount);
+            Assert.All(rep.Items.Where(i => i.Category == PlutoDriveHealthService.CategoryPluto), i =>
+            {
+                Assert.Equal(PlutoDriveFileStatus.Healthy, i.Status);
+                Assert.True(i.SizeBytes > 0);
+                Assert.NotNull(i.LastModifiedUtc);
+            });
+            var members = rep.Items.Single(i => i.FileName == "members.json");
+            Assert.Equal(PlutoDriveFileStatus.CorruptOrEmpty, members.Status);
+            Assert.False(string.IsNullOrEmpty(members.ErrorDetail));
+            Assert.Equal(PlutoDriveFileStatus.CorruptOrEmpty, rep.Items.Single(i => i.FileName == "user_settings.json").Status);
+
+            // 3) 복구 → 7/7, 4) 드라이브 폴더 부재 → DriveUnavailable
+            System.IO.File.WriteAllText(System.IO.Path.Combine(studio, "members.json"), "[]");
+            System.IO.File.WriteAllText(System.IO.Path.Combine(studio, "user_settings.json"), "{}");
+            Assert.Equal(7, svc.CheckHealth(pluto, studio).HealthyCount);
+
+            var gone = svc.CheckHealth(System.IO.Path.Combine(root, "nope1"), System.IO.Path.Combine(root, "nope2"));
+            Assert.False(gone.IsDriveMounted);
+            Assert.All(gone.Items, i => Assert.Equal(PlutoDriveFileStatus.DriveUnavailable, i.Status));
+        }
+        finally
+        {
+            try { System.IO.Directory.Delete(root, recursive: true); } catch (System.IO.IOException) { } catch (UnauthorizedAccessException) { }
+        }
+    }
 }

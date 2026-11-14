@@ -50,7 +50,7 @@ public sealed class PlutoImageColorAnalyzer : IPlutoImageColorAnalyzer
     public PlutoImageColorMetrics AnalyzeImage(string imagePath)
     {
 #if WINDOWS
-        if (string.IsNullOrWhiteSpace(imagePath) || !System.IO.File.Exists(imagePath)) return PlutoImageColorMetrics.Neutral;
+        if (!OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(imagePath) || !System.IO.File.Exists(imagePath)) return PlutoImageColorMetrics.Neutral;   // CA1416 가드(비 Windows → 결정론 폴백)
         try
         {
             using var src = new System.Drawing.Bitmap(imagePath);

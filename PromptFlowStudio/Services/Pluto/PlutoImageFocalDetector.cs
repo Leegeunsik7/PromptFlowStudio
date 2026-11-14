@@ -33,7 +33,7 @@ public sealed class PlutoImageFocalDetector : IPlutoImageFocalDetector
     public (double X, double Y) DetectLocalFocalPoint(string imagePath)
     {
 #if WINDOWS
-        if (string.IsNullOrWhiteSpace(imagePath) || !System.IO.File.Exists(imagePath)) return Fallback;
+        if (!OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(imagePath) || !System.IO.File.Exists(imagePath)) return Fallback;   // CA1416 가드(비 Windows → 결정론 폴백)
         int[]? px = null;
         try
         {

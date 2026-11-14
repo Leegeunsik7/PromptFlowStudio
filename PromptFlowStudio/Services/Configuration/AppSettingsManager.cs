@@ -228,6 +228,19 @@ public sealed class AppSettingsManager
         return RenderEngineKind.ComfyUi;
     }
 
+    /// <summary>즉시 미러 플러시 — 로컬 user_settings.json 부재 시 현재 스냅샷 저장(미러 포함), 존재 시 미러만 복제. 실패 사유는 <see cref="LastMirrorError"/>.</summary>
+    public bool FlushMirror()
+    {
+        if (MirrorDir is null) return false;
+        if (!File.Exists(FilePath))
+        {
+            var cur = _s;
+            return Save(cur.ComfyUiUrl, cur.RenderMode) && LastMirrorError is null;
+        }
+        lock (_gate) MirrorToBackup();
+        return LastMirrorError is null;
+    }
+
     private string? MirrorPath => MirrorDir is null ? null : Path.Combine(MirrorDir, FileName);
 
     /// <summary>로컬 user_settings.json 이 없고 미러에 유효한 설정이 있으면 복원. 기존 로컬 파일은 절대 덮어쓰지 않음.</summary>

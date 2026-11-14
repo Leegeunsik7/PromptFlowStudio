@@ -169,6 +169,21 @@ public sealed class MemberRegistryService
         catch (Exception ex) { LastMirrorError = ex.Message; }
     }
 
+    /// <summary>미러 디렉터리(null = 비활성).</summary>
+    public string? MirrorDir => _mirrorDir;
+
+    /// <summary>즉시 미러 플러시 — 로컬 원장 존재 시 미러 복제, 부재 시(회원 있음) 저장 후 복제. 실패 사유는 <see cref="LastMirrorError"/>.</summary>
+    public bool FlushMirror()
+    {
+        lock (_lock)
+        {
+            if (_mirrorDir is null) return false;
+            if (File.Exists(_path)) MirrorToBackup();
+            else if (_members.Count > 0) Save();
+        }
+        return LastMirrorError is null;
+    }
+
     public IReadOnlyList<MemberView> Members =>
         _members.Select(u => new MemberView(u.Id, u.Name, u.Email, u.Phone, u.Role, u.Status, u.CreatedAt, u.Birth, u.LicenseKey, u.Gender, u.Company, u.MemberId)).ToList();
     public int Count => _members.Count;
