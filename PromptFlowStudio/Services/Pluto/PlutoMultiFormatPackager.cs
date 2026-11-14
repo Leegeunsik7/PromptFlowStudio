@@ -77,12 +77,38 @@ public sealed class PlutoMultiFormatPackager : IPlutoMultiFormatPackager
     private readonly IPlutoLlmClient? _llm;
     private readonly IPlutoMistakeNotebookService? _notebook;
     private readonly Func<DateTime> _utcNow;
+    private readonly IPlutoAdaptivePatternRanker? _ranker;
 
-    public PlutoMultiFormatPackager(IPlutoLlmClient? llm, IPlutoMistakeNotebookService? notebook, Func<DateTime>? utcNow = null)
+    public PlutoMultiFormatPackager(IPlutoLlmClient? llm, IPlutoMistakeNotebookService? notebook, Func<DateTime>? utcNow = null, IPlutoAdaptivePatternRanker? ranker = null)
     {
         _llm = llm;
         _notebook = notebook;
         _utcNow = utcNow ?? (() => DateTime.UtcNow);
+        _ranker = ranker;
+    }
+
+    public const string ProvenHookPrefix = "Proven high-retention hook angle (from past breakout): ";
+
+    /// <summary>
+    /// 🧠 학습 랭킹 반영 — 강화된 학습 태그(활성 태그 밖 포함)를 합류시켜 (학습 가중치 − 오답 감점) 순 재정렬 + 강화된 1위 훅.
+    /// 랭커 없음/학습 신호 없음/실패 → 입력 그대로([부분 구제]).
+    /// </summary>
+    public static (IReadOnlyList<string> Tags, string? LearnedHook) ApplyAdaptiveRanking(IPlutoAdaptivePatternRanker? ranker, IReadOnlyList<string>? activeTags)
+    {
+        IReadOnlyList<string> input = activeTags ?? Array.Empty<string>();
+        if (ranker is null) return (input, null);
+        try
+        {
+            var rec = ranker.GetCurrentRecommendations();
+            if (!rec.HasReinforcedHistory) return (input, null);
+            var merged = new List<string>(input.Count + rec.TopTags.Count);
+            for (var i = 0; i < rec.TopTags.Count; i++) if (rec.TopTags[i].IsReinforced) merged.Add(rec.TopTags[i].DisplayLabel);
+            for (var i = 0; i < input.Count; i++) merged.Add(input[i]);
+            var ranked = ranker.RankTags(merged, HashtagCount);
+            var hook = rec.TopHook is { IsReinforced: true, IsPenalized: false } th ? th.DisplayLabel : null;
+            return (ranked, hook);
+        }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Packager] ranker: " + ex.Message); return (input, null); }
     }
 
     public NormalizedCropRect ComputeVerticalSmartCropRect(int sourceWidth, int sourceHeight, FocalPoint focalPoint, double targetAspect = 9.0 / 16.0)
@@ -269,7 +295,16 @@ public sealed class PlutoMultiFormatPackager : IPlutoMultiFormatPackager
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Packager] notebook: " + ex.Message); }   // [부분 구제] 차단 없음
 
-        var local = BuildTemplateKit(themeHint, activeTags, subtitles, suppressed, _utcNow());
+        if (_ranker is not null)
+        {
+            try { await _ranker.EnsureLoadedAsync(ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.Packager] ranker load: " + ex.Message); }
+        }
+        var (rankedTags, learnedHook) = ApplyAdaptiveRanking(_ranker, activeTags);
+        activeTags = rankedTags;
+
+        var local = BuildTemplateKit(themeHint, activeTags, subtitles, suppressed, _utcNow(), learnedHook);
         var user = new StringBuilder(512)
             .Append("Theme: ").Append(string.IsNullOrWhiteSpace(themeHint) ? "baby & family moments" : themeHint.Trim()).Append('\n')
             .Append("Category: ").Append(PlutoSocialCopywriter.InferCategory(themeHint).ToString()).Append('\n')
@@ -284,6 +319,7 @@ public sealed class PlutoMultiFormatPackager : IPlutoMultiFormatPackager
             }
             user.Append('\n');
         }
+        if (learnedHook is not null) user.Append(ProvenHookPrefix).Append(learnedHook.Replace('\n', ' ').Trim()).Append(" - lead the first title with this framing\n");
         if (negative.Length > 0) user.Append(negative).Append('\n');
 
         string? text;
@@ -331,7 +367,8 @@ public sealed class PlutoMultiFormatPackager : IPlutoMultiFormatPackager
     }
 
     /// <summary>🧩 큐레이션 템플릿 키트(결정론) — 제목 3 · KO/EN 캡션 · 해시태그 12(활성 태그 → 테마 풀 → 범용 풀 · 차단 태그 제외).</summary>
-    public static PlutoSnsPublishingKit BuildTemplateKit(string? themeHint, IReadOnlyList<string>? activeTags, IReadOnlyList<SubtitleCue>? subtitles, IReadOnlySet<string>? suppressed, DateTime utcNow)
+    public static PlutoSnsPublishingKit BuildTemplateKit(string? themeHint, IReadOnlyList<string>? activeTags, IReadOnlyList<SubtitleCue>? subtitles, IReadOnlySet<string>? suppressed, DateTime utcNow,
+        string? learnedHook = null)
     {
         var cat = PlutoSocialCopywriter.InferCategory(themeHint);
         var hook = subtitles is { Count: > 0 } && !string.IsNullOrWhiteSpace(subtitles[0].Text) ? subtitles[0].Text.Trim() : null;
@@ -348,7 +385,13 @@ public sealed class PlutoMultiFormatPackager : IPlutoMultiFormatPackager
                 "🍼 하루하루 자라는 게 보일 때마다 마음이 몽글몽글해져요 🥹\n여러분 아기의 첫 순간도 댓글로 들려주세요 💛", "🍼 Watching our little one grow every day melts our hearts 🥹 Share your baby's first moments below 💛"),
         };
         var titles = new List<string>(TitleCount);
-        if (hook is not null) titles.Add("✨ " + hook);
+        if (!string.IsNullOrWhiteSpace(learnedHook) && !IsSuppressed(learnedHook, suppressed))   // 🧠 돌파 검증 훅 프레이밍 우선
+        {
+            var lh = learnedHook.Replace('\r', ' ').Replace('\n', ' ').Trim();
+            if (lh.Length > 40) lh = lh[..40].TrimEnd();
+            titles.Add("🔥 " + lh);
+        }
+        if (hook is not null && titles.Count < TitleCount && !(titles.Count > 0 && titles[0].EndsWith(hook, StringComparison.Ordinal))) titles.Add("✨ " + hook);
         foreach (var t in new[] { t1, t2, t3 }) if (titles.Count < TitleCount && !titles.Contains(t)) titles.Add(t);
 
         var tags = new List<string>(HashtagCount);

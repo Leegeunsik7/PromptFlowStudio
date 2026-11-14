@@ -154,6 +154,16 @@
                 </div>
             }
             @if (_snsToast is { } snt) { <span class="ws-retry" role="status" data-sns-toast="1">@(snt)</span> }
+            @if (_adaptiveRec is { } arec)
+            {
+                <div class="ws-adaptive-strip" data-adaptive-strip="@(arec.HasReinforcedHistory ? "learned" : "explore")" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%">
+                    <span class="@(arec.TopHook.IsReinforced ? "ws-pcore on" : "ws-retry")" data-adaptive-hook="@(arec.TopHook.DisplayLabel)" title="@("점수 " + arec.TopHook.FinalScore.ToString("0.000", CultureInfo.InvariantCulture) + " · 학습 ×" + arec.TopHook.LearnedWeightMultiplier.ToString("0.00", CultureInfo.InvariantCulture))">🧠 최적 훅: @(arec.TopHook.DisplayLabel) · @(arec.TopHook.ReasonBadge)</span>
+                    <span class="@(arec.TopColorLook.IsReinforced ? "ws-pcore on" : "ws-retry")" data-adaptive-look="@(arec.TopColorLook.DisplayLabel)" title="@("점수 " + arec.TopColorLook.FinalScore.ToString("0.000", CultureInfo.InvariantCulture) + " · 학습 ×" + arec.TopColorLook.LearnedWeightMultiplier.ToString("0.00", CultureInfo.InvariantCulture))">🎨 최적 룩: @(arec.TopColorLook.DisplayLabel) · @(arec.TopColorLook.ReasonBadge)</span>
+                    <button class="ws-back" data-adaptive-apply="1" @onclick="ApplyLearnedLookAndHookAsync" disabled="@(_adaptiveBusy || _montageBusy)" title="배포 성과로 강화된 1위 색보정 룩을 몽타주에 고정하고, 1위 훅을 3막 자막(Act 1)·프롬프트에 주입">[🧠 학습 최적 룩·훅 적용]</button>
+                    @if (_learnedLookPinned is { } llp) { <span class="ws-retry" data-adaptive-pinned="@(llp)">📌 룩 고정: @(llp)</span> }
+                    @if (_adaptiveToast is { } adt) { <span class="ws-retry" role="status" data-adaptive-toast="1">@(adt)</span> }
+                </div>
+            }
             @if (_perfOpen && _montagePhotos.Count >= 2)
             {
                 <div class="ws-perf-panel" data-perf-panel="1" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%">
@@ -1975,7 +1985,8 @@
         try
         {
             var notebook = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService)) as PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService;
-            _montageCues = PromptFlowStudio.Services.Pluto.PlutoMontageStoryGenerator.GenerateLocal(plan, MontageThemeHint(), notebook?.GetSuppressedTokens());
+            var ranker = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoAdaptivePatternRanker)) as PromptFlowStudio.Services.Pluto.IPlutoAdaptivePatternRanker;
+            _montageCues = PromptFlowStudio.Services.Pluto.PlutoMontageStoryGenerator.GenerateLocal(plan, MontageThemeHint(), notebook?.GetSuppressedTokens(), ranker);
             _montageStoryLlm = false;
         }
         catch (Exception ex) { Program.Log("Workspace.MontageStoryLocal", ex); _montageCues = null; }
@@ -2081,7 +2092,12 @@
         if (compiled is not null) ApplyLocalMontageCues(compiled);   // 🎬 템플릿 초안 즉시 → AI 생성으로 승격
         else _montageCues = null;
         await InvokeAsync(StateHasChanged);
-        if (compiled is not null) await GenerateMontageStoryAsync();
+        if (compiled is not null)
+        {
+            await RefreshAdaptiveRecommendationAsync();   // 🧠 몽타주 세션 초기화 → 학습 최적 훅·룩 갱신
+            if (_disposed || seq != _montagePreviewSeq) return;
+            await GenerateMontageStoryAsync();
+        }
     }
 
     /// <summary>🎨 활성 바이럴 태그 · 디렉터 랭크 → 후보 룩 → 오답 노트 차단 시 NaturalPastel([부분 구제] 실패 → NaturalPastel).</summary>
@@ -2093,7 +2109,7 @@
             var active = learning?.GetActiveViralTrends(3);
             var tags = new string[active?.Count ?? 0];
             for (var i = 0; i < tags.Length; i++) tags[i] = active![i].Tag;
-            var candidate = PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.SelectLook(tags, PlutoDirector.GetCurrentTier().Level);
+            var candidate = _learnedLookPinned ?? PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.SelectLook(tags, PlutoDirector.GetCurrentTier().Level);   // 🧠 학습 최적 룩 고정 우선
             var notebook = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService)) as PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService;
             _montageLook = PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.ResolveLook(candidate, notebook).PresetName;
         }
@@ -2232,10 +2248,72 @@
                 _perfHook, _perfCompletion, _perfCtr, DateTimeOffset.UtcNow);
             _perfOutcome = await svc.IngestPerformanceAsync(telemetry, _mediaCts.Token);
             _snsToast = null;
+            await RefreshAdaptiveRecommendationAsync();   // 🧠 폐루프 → 순방향 랭킹 즉시 반영
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
         catch (Exception ex) { Program.Log("Workspace.PerfFeedback", ex); _snsToast = "⚠ 성과 학습 반영 실패: " + ex.Message; }
         finally { _perfBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    // ── 🧠 Pluto 4.2.1 — 학습 가중치 → 훅·룩 순방향 랭킹 ──
+    private PromptFlowStudio.Services.Pluto.PlutoAdaptiveRecommendation? _adaptiveRec;
+    private string? _learnedLookPinned;
+    private string? _adaptiveToast;
+    private bool _adaptiveBusy;
+    private int _adaptiveSeq;
+
+    /// <summary>🧠 학습 최적 추천 갱신(세대 가드 · 예외 전파 금지 · 랭커 미등록 → 생략).</summary>
+    private async Task RefreshAdaptiveRecommendationAsync()
+    {
+        if (_disposed || EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoAdaptivePatternRanker)) is not PromptFlowStudio.Services.Pluto.IPlutoAdaptivePatternRanker ranker) return;
+        var seq = ++_adaptiveSeq;
+        try
+        {
+            await ranker.EnsureLoadedAsync(_mediaCts.Token);
+            var rec = ranker.GetCurrentRecommendations();
+            if (_disposed || seq != _adaptiveSeq) return;
+            _adaptiveRec = rec;
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.AdaptiveRank", ex); return; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>🧠 [학습 최적 룩·훅 적용] — 1위 룩 고정 → 몽타주 재구성(3막 자막에 1위 훅 선반영) · 몽타주 없으면 프롬프트에 훅 큐 주입.</summary>
+    private async Task ApplyLearnedLookAndHookAsync()
+    {
+        if (_adaptiveBusy || _montageBusy) return;
+        _adaptiveBusy = true;
+        _adaptiveToast = null;
+        StateHasChanged();
+        try
+        {
+            await RefreshAdaptiveRecommendationAsync();
+            if (_disposed || _adaptiveRec is not { } rec) return;
+            var look = rec.TopColorLook.DisplayLabel;
+            if (PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.TryGetPreset(look) is not null) _learnedLookPinned = look;
+            RefreshMontageLook();
+            var hook = rec.TopHook;
+            if (_montagePhotos.Count >= 2)
+            {
+                await RefreshMontagePreviewAsync();   // 🎬 프리뷰 · 3막 자막 재생성(랭커가 1위 훅을 Act 1에 반영)
+                _adaptiveToast = "🧠 룩 " + _montageLook + " · 훅 '" + hook.DisplayLabel + "' 반영";
+            }
+            else if (hook.IsReinforced && !hook.IsPenalized && !(_prompt ?? "").Contains(hook.DisplayLabel, StringComparison.Ordinal))
+            {
+                Snap("학습 훅 적용 전");
+                _prompt = string.IsNullOrWhiteSpace(_prompt) ? "opening hook: " + hook.DisplayLabel : _prompt.TrimEnd() + ", opening hook: " + hook.DisplayLabel;
+                Snap("🧠 학습 훅");
+                _adaptiveToast = "🧠 프롬프트에 학습 훅 주입 · 룩 " + _montageLook;
+            }
+            else _adaptiveToast = "🧠 룩 " + _montageLook + " 고정";
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.AdaptiveApply", ex); _adaptiveToast = "⚠ 학습 최적 적용 실패: " + ex.Message; }
+        finally { _adaptiveBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
     }
@@ -3839,6 +3917,7 @@
         IdentityVault.Changed += OnIdentityChanged;
         PlutoDirector.Changed += OnDirectorRankChanged;   // 🎞 프리뷰 핫스왑
         _ = LoadIdentityAsync();   // 🍼 활성 프로필 선적재(예외 격리)
+        _ = RefreshAdaptiveRecommendationAsync();   // 🧠 학습 최적 훅·룩 선적재(예외 격리)
         var d = Draft.Consume();   // 모션프리셋(/motion)에서 전달된 스니펫 흡수
         if (!string.IsNullOrWhiteSpace(d)) _prompt = d;
         PubVm.BindPlutoTrend(Draft.ConsumePlutoTrend());   // 🪐 트렌드 랩 → 내보내기 학습 루프(트렌드 없이 진입 → 잔존 Id 소거 · 진행 중 내보내기는 보존)

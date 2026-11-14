@@ -48,6 +48,7 @@ public sealed class PlutoMontageStoryGenerator : IPlutoMontageStoryGenerator
 
     private readonly IPlutoLlmClient? _llm;
     private readonly IPlutoMistakeNotebookService? _notebook;
+    private readonly IPlutoAdaptivePatternRanker? _ranker;
     private volatile bool _lastUsedLlm;
 
     /// <summary>LLM 전체 예산(체인 각 단계 타임아웃은 브리지 정책 유지).</summary>
@@ -55,10 +56,11 @@ public sealed class PlutoMontageStoryGenerator : IPlutoMontageStoryGenerator
 
     public bool LastUsedLlm => _lastUsedLlm;
 
-    public PlutoMontageStoryGenerator(IPlutoLlmClient? llm = null, IPlutoMistakeNotebookService? notebook = null)
+    public PlutoMontageStoryGenerator(IPlutoLlmClient? llm = null, IPlutoMistakeNotebookService? notebook = null, IPlutoAdaptivePatternRanker? ranker = null)
     {
         _llm = llm;
         _notebook = notebook;
+        _ranker = ranker;
     }
 
     public async Task<IReadOnlyList<SubtitleCue>> GenerateThreeActSubtitlesAsync(PlutoMontagePlan plan, IReadOnlyList<PlutoCuratedPhotoCandidate>? curatedCuts = null,
@@ -71,11 +73,12 @@ public sealed class PlutoMontageStoryGenerator : IPlutoMontageStoryGenerator
         if (windows.Length == 0) return Array.Empty<SubtitleCue>();
 
         var suppressed = SafeSuppressed();
-        var local = BuildTemplateLines(windows.Length, themeHint, Seed(plan), suppressed);
+        var adaptive = await ResolveAdaptiveAsync(_ranker, themeHint, ct).ConfigureAwait(false);
+        var local = BuildTemplateLines(windows.Length, themeHint, Seed(plan), suppressed, adaptive.PreferredTemplateHook);
         string? json = null;
         if (_llm is not null)
         {
-            var user = BuildUserPrompt(windows, curatedCuts, themeHint, SafeNegativeConstraint());
+            var user = BuildUserPrompt(windows, curatedCuts, themeHint, SafeNegativeConstraint(), adaptive.ProvenHook, adaptive.BoostedTags);
             try { json = await PlutoLlmBridge.TryCompleteAsync(_llm, LlmInstruction, user, Temperature, ct, LlmBudget).ConfigureAwait(false); }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.MontageStory] llm fallback: " + ex.Message); json = null; }
@@ -90,11 +93,12 @@ public sealed class PlutoMontageStoryGenerator : IPlutoMontageStoryGenerator
     }
 
     /// <summary>⚡ LLM 미사용 결정론 큐(프리뷰 즉시 표시용 초안).</summary>
-    public static IReadOnlyList<SubtitleCue> GenerateLocal(PlutoMontagePlan plan, string? themeHint = null, IReadOnlySet<string>? suppressed = null)
+    public static IReadOnlyList<SubtitleCue> GenerateLocal(PlutoMontagePlan plan, string? themeHint = null, IReadOnlySet<string>? suppressed = null,
+        IPlutoAdaptivePatternRanker? ranker = null)
     {
         ArgumentNullException.ThrowIfNull(plan);
         var windows = ComputeCueWindows(plan);
-        var lines = BuildTemplateLines(windows.Length, themeHint, Seed(plan), suppressed);
+        var lines = BuildTemplateLines(windows.Length, themeHint, Seed(plan), suppressed, ResolveAdaptive(ranker, themeHint).PreferredTemplateHook);
         var cues = new SubtitleCue[windows.Length];
         for (var i = 0; i < cues.Length; i++)
             cues[i] = SubtitleCue.Precise(windows[i].Start, windows[i].End, lines[i].Ko, lines[i].En);
@@ -156,8 +160,9 @@ public sealed class PlutoMontageStoryGenerator : IPlutoMontageStoryGenerator
 
     // ── 🧠 프롬프트 ──
 
-    /// <summary>📝 LLM 사용자 프롬프트 — 컷 수 · 막 · 시간 구간 · 큐레이션 역할 · 테마 · 부정 제약.</summary>
-    public static string BuildUserPrompt((double Start, double End)[] windows, IReadOnlyList<PlutoCuratedPhotoCandidate>? curatedCuts, string? themeHint, string? negativeConstraint)
+    /// <summary>📝 LLM 사용자 프롬프트 — 컷 수 · 막 · 시간 구간 · 큐레이션 역할 · 테마 · 🧠 학습 최적 훅/태그 · 부정 제약.</summary>
+    public static string BuildUserPrompt((double Start, double End)[] windows, IReadOnlyList<PlutoCuratedPhotoCandidate>? curatedCuts, string? themeHint, string? negativeConstraint,
+        string? provenHook = null, IReadOnlyList<string>? boostedTags = null)
     {
         var inv = CultureInfo.InvariantCulture;
         var sb = new StringBuilder(256 + 96 * windows.Length);
@@ -172,8 +177,80 @@ public sealed class PlutoMontageStoryGenerator : IPlutoMontageStoryGenerator
                 sb.Append(" role: ").Append(cc.NarrativeRoleLabel);
             sb.Append('\n');
         }
+        if (!string.IsNullOrWhiteSpace(provenHook))
+            sb.Append(ProvenHookPrefix).Append(Clip(provenHook.Replace('\n', ' ').Trim(), 80)).Append("\" (reuse its angle and energy for the Act 1 hook, do not copy verbatim)\n");
+        if (boostedTags is { Count: > 0 })
+        {
+            sb.Append(BoostedTagsPrefix);
+            for (var i = 0; i < boostedTags.Count && i < 5; i++)
+            {
+                if (i > 0) sb.Append(", ");
+                sb.Append(boostedTags[i]);
+            }
+            sb.Append('\n');
+        }
         if (!string.IsNullOrWhiteSpace(negativeConstraint)) sb.Append(negativeConstraint.Trim()).Append('\n');
         return sb.ToString();
+    }
+
+    // ── 🧠 Pluto 4.2.1 학습 랭킹 결선 ──
+
+    public const string ProvenHookPrefix = "Proven high-retention hook from past performance: \"";
+    public const string BoostedTagsPrefix = "Reinforced winning style tags: ";
+
+    /// <summary>🧠 학습 반영 힌트 — 템플릿 Act1 선호 줄(테마 은행 내 · 학습 신호 있을 때만) · LLM용 검증된 훅 · 강화 태그.</summary>
+    internal readonly record struct AdaptiveHints(string? PreferredTemplateHook, string? ProvenHook, IReadOnlyList<string>? BoostedTags);
+
+    /// <summary>🧠 모든 테마의 Act1 훅 줄(KO) — 랭커 기본 후보.</summary>
+    public static IReadOnlyList<string> AllTemplateHookLines => s_allHookLines ??= BuildAllHookLines();   // 지연 생성(Themes 정적 초기화 이후)
+    private static string[]? s_allHookLines;
+
+    /// <summary>🧠 테마 힌트 → 해당 테마의 Act1 훅 줄(KO).</summary>
+    public static IReadOnlyList<string> TemplateHookLines(string? themeHint)
+    {
+        var bank = DetectTheme(themeHint).Hook;
+        var arr = new string[bank.Length];
+        for (var i = 0; i < arr.Length; i++) arr[i] = bank[i].Ko;
+        return arr;
+    }
+
+    private static string[] BuildAllHookLines()
+    {
+        var list = new List<string>(Themes.Length * 2);
+        for (var t = 0; t < Themes.Length; t++)
+            for (var k = 0; k < Themes[t].Hook.Length; k++) list.Add(Themes[t].Hook[k].Ko);
+        return list.ToArray();
+    }
+
+    private static async Task<AdaptiveHints> ResolveAdaptiveAsync(IPlutoAdaptivePatternRanker? ranker, string? themeHint, CancellationToken ct)
+    {
+        if (ranker is null) return default;
+        try { await ranker.EnsureLoadedAsync(ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.MontageStory] ranker load: " + ex.Message); }
+        return ResolveAdaptive(ranker, themeHint);
+    }
+
+    /// <summary>🧠 랭커 → 힌트(학습 신호 없음/실패 → 기존 결정론 동작 유지).</summary>
+    internal static AdaptiveHints ResolveAdaptive(IPlutoAdaptivePatternRanker? ranker, string? themeHint)
+    {
+        if (ranker is null) return default;
+        try
+        {
+            string? preferred = null;
+            var bank = ranker.RankOptions(PlutoPatternKind.Hook, TemplateHookLines(themeHint));
+            var informed = false;
+            for (var i = 0; i < bank.Count; i++) if (bank[i].IsReinforced || bank[i].IsPenalized) { informed = true; break; }
+            if (informed && bank.Count > 0) preferred = bank[0].DisplayLabel;
+
+            var rec = ranker.GetCurrentRecommendations();
+            var proven = rec.TopHook is { IsReinforced: true, IsPenalized: false } th ? th.DisplayLabel : null;
+            List<string>? tags = null;
+            for (var i = 0; i < rec.TopTags.Count; i++)
+                if (rec.TopTags[i] is { IsReinforced: true, IsPenalized: false } tt) (tags ??= new List<string>(4)).Add(tt.DisplayLabel);
+            return new AdaptiveHints(preferred, proven, tags);
+        }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.MontageStory] ranker: " + ex.Message); return default; }   // [부분 구제]
     }
 
     private string SafeNegativeConstraint()
@@ -250,7 +327,7 @@ public sealed class PlutoMontageStoryGenerator : IPlutoMontageStoryGenerator
     }
 
     /// <summary>📚 컷 수 → 템플릿 KO/EN — 중간 컷은 서로 다른 Rhythm 줄 · 차단 토큰 포함 줄은 회피(전부 차단 → 기본 줄).</summary>
-    internal static (string Ko, string En)[] BuildTemplateLines(int count, string? themeHint, uint seed, IReadOnlySet<string>? suppressed)
+    internal static (string Ko, string En)[] BuildTemplateLines(int count, string? themeHint, uint seed, IReadOnlySet<string>? suppressed, string? preferredHook = null)
     {
         if (count <= 0) return Array.Empty<(string, string)>();
         var theme = DetectTheme(themeHint);
@@ -260,7 +337,11 @@ public sealed class PlutoMontageStoryGenerator : IPlutoMontageStoryGenerator
             var act = ActOf(i, count);
             var bank = act == 1 ? theme.Hook : act == 3 ? theme.Climax : theme.Rhythm;
             var offset = act == 2 ? i - 1 : 0;
-            lines[i] = PickAllowed(bank, (int)((seed + (uint)offset) % (uint)bank.Length), suppressed);
+            var start = (int)((seed + (uint)offset) % (uint)bank.Length);
+            if (act == 1 && preferredHook is not null)   // 🧠 학습 1위 훅 줄 우선(차단 시 PickAllowed가 다음 줄로)
+                for (var k = 0; k < bank.Length; k++)
+                    if (string.Equals(bank[k].Ko, preferredHook, StringComparison.Ordinal)) { start = k; break; }
+            lines[i] = PickAllowed(bank, start, suppressed);
         }
         return lines;
     }

@@ -327,6 +327,23 @@ public sealed class PlutoLearningService : IDisposable
         lock (_sync) return _entries.TryGetValue(PatternKeyPrefix + patternToken, out var e) && e.Weight > 0 ? e.Weight : PatternBaseWeight;
     }
 
+    /// <summary>📈 학습된 성과 패턴 스냅샷 — <paramref name="kindPrefix"/>(예: <c>hook:</c>)로 시작하는 토큰 → (접두사 제외 값, 가중치).</summary>
+    public IReadOnlyList<KeyValuePair<string, double>> GetPatternWeights(string kindPrefix)
+    {
+        ArgumentNullException.ThrowIfNull(kindPrefix);
+        var full = PatternKeyPrefix + kindPrefix;
+        var list = new List<KeyValuePair<string, double>>();
+        lock (_sync)
+            foreach (var kv in _entries)
+            {
+                if (!kv.Key.StartsWith(full, StringComparison.Ordinal) || kv.Key.Length == full.Length || kv.Value is null) continue;
+                var w = kv.Value.Weight > 0 && double.IsFinite(kv.Value.Weight) ? kv.Value.Weight : PatternBaseWeight;
+                list.Add(new KeyValuePair<string, double>(kv.Key[full.Length..], w));
+            }
+        list.Sort(static (a, b) => string.CompareOrdinal(a.Key, b.Key));   // 결정론 순서
+        return list;
+    }
+
     /// <summary>
     /// 📈 폐루프 성과 강화 — 패턴 토큰별 가중치 ×<paramref name="multiplier"/>(기준 1.0 · 상한 <see cref="PatternMaxWeight"/>) + 출처 키 보너스 XP를 1회 원자적 영속.
     /// 유효 토큰 0건 + XP 0 → 무변경. 반환 = 갱신 후 누적 XP.
