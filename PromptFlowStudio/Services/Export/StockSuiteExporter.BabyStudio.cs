@@ -847,9 +847,10 @@ public sealed partial class StockSuiteExporter
     /// <param name="preferredLook">룩 후보(null → NaturalPastel) — <see cref="Pluto.PlutoColorGradingCompiler.SelectLook"/> 결과 권장.</param>
     /// <param name="lockedPlan">🔒 Zero-Drift 잠금 — 프리뷰/3막 자막이 사용한 플랜(클립 수 일치 시 컷 경계 · 전환 · 총 길이 그대로 재사용 · 비트 재검출 생략). 불일치/손상 → 재계산 폴백.</param>
     /// <param name="vertical9x16SmartCrop">📱 원본을 초점 중심 9:16 으로 선크롭(<see cref="Pluto.PlutoMultiFormatPackager.ComputeCrop"/> · 헤더 판독 실패 사진은 원본 유지).</param>
+    /// <param name="landscape16x9">🖥 16:9 가로 캔버스(1920×1080 · UHD 3840×2160)로 렌더 — 잠금 플랜 타이밍은 그대로 · <paramref name="vertical9x16SmartCrop"/> 무시.</param>
     public async Task<StockSuiteExportResult> ExportMontageVideoFromPhotosAsync(IReadOnlyList<string> imagePaths, IReadOnlyList<(double X, double Y)>? focalPoints, ExportOptions options,
         IReadOnlyList<SubtitleCue>? subtitles = null, BabyBgmTrack? bgm = null, bool includeSfx = true, string? preferredLook = null, string? outputPath = null, CancellationToken ct = default,
-        byte[]? customBgmWavBytes = null, Pluto.PlutoMontagePlan? lockedPlan = null, bool vertical9x16SmartCrop = false)
+        byte[]? customBgmWavBytes = null, Pluto.PlutoMontagePlan? lockedPlan = null, bool vertical9x16SmartCrop = false, bool landscape16x9 = false)
     {
         ct.ThrowIfCancellationRequested();
         if (options is null) return new StockSuiteExportResult(false, null, false, "옵션이 없습니다.");
@@ -874,6 +875,7 @@ public sealed partial class StockSuiteExporter
 
             var uhd = options.Resolution == StockSuiteResolution.Uhd4K;
             int width = uhd ? 2160 : Pluto.PlutoMotionCompiler.DefaultWidth, height = uhd ? 3840 : Pluto.PlutoMotionCompiler.DefaultHeight;
+            if (landscape16x9) { (width, height) = (height, width); vertical9x16SmartCrop = false; }   // 🖥 16:9 가로 마스터(1920×1080 · 4K 3840×2160) — 세로 선크롭과 배타
             const int fps = Pluto.PlutoMotionCompiler.DefaultFps;
             const double total = Pluto.PlutoMotionCompiler.FourActDurationSec;
             var track = bgm ?? prevBgm ?? BabyBgmTrack.Lullaby;
@@ -934,6 +936,7 @@ public sealed partial class StockSuiteExporter
                 var cropped = Pluto.PlutoMultiFormatPackager.InjectSourceCrops(plan.FilterComplexGraph, crops);
                 if (!ReferenceEquals(cropped, plan.FilterComplexGraph)) { plan = plan with { FilterComplexGraph = cropped }; lockedTag += "📱 9:16 스마트 크롭 · "; }
             }
+            if (landscape16x9) lockedTag += "🖥 16:9 가로 마스터 · ";
             var frames = (int)Math.Round(plan.TotalDurationSec * fps, MidpointRounding.AwayFromZero);
 
             string target;
@@ -1007,4 +1010,88 @@ public sealed partial class StockSuiteExporter
             Volatile.Write(ref _montageExporting, 0);
         }
     }
+
+    // ══════════════════════ 🎬 Pluto 4.3 — 16:9 + 9:16 듀얼 마스터(동일 잠금 타임라인 · 0ms 드리프트) ══════════════════════
+
+    public const string DualLandscapeSuffix = "_master_16x9.mp4";
+    public const string DualVerticalSuffix = "_master_9x16.mp4";
+
+    /// <summary>
+    /// 🎬 원클릭 듀얼 마스터 — 같은 <paramref name="lockedPlan"/> · 같은 3막 <see cref="SubtitleCue"/> 컬렉션으로
+    /// ① 16:9 가로 마스터 → ② 9:16 피사체 추적 스마트 크롭 세로 마스터를 순차 렌더(익스포터 공유 상태 보호) → ③ SNS 키트(선택).
+    /// [부분 구제] 한쪽 실패 시 다른 쪽 결과 보존 · 키트 실패 → null. 호출자 취소만 전파.
+    /// </summary>
+    public async Task<DualAspectExportResult> ExportDualAspectMontageMastersAsync(IReadOnlyList<string> imagePaths, IReadOnlyList<(double X, double Y)>? focalPoints, ExportOptions options,
+        Pluto.PlutoMontagePlan lockedPlan, IReadOnlyList<SubtitleCue>? subtitles, BabyBgmTrack? bgm = null, bool includeSfx = true, string? preferredLook = null,
+        Pluto.IPlutoMultiFormatPackager? packager = null, string? themeHint = null, IReadOnlyList<string>? activeTags = null, byte[]? customBgmWavBytes = null, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (options is null) return DualAspectExportResult.Failed("옵션이 없습니다.");
+        if (lockedPlan is null) return DualAspectExportResult.Failed("🔒 잠금 플랜이 없습니다 — 먼저 몽타주 프리뷰를 구성하세요.");
+        if (imagePaths is null || imagePaths.Count < Pluto.PlutoMontageCompiler.MinClips || imagePaths.Count > Pluto.PlutoMontageCompiler.MaxClips)
+            return DualAspectExportResult.Failed("몽타주는 사진 2~5장이 필요합니다.");
+        if (lockedPlan.Clips is not { } lc || lc.Count != imagePaths.Count) return DualAspectExportResult.Failed("🔒 잠금 플랜의 컷 수가 사진 수와 다릅니다.");
+
+        string dir, stem;
+        try
+        {
+            dir = Path.GetFullPath(string.IsNullOrWhiteSpace(options.OutputDirectory) ? Path.Combine(Path.GetTempPath(), "PromptFlowStudio", MotionOutputFolder) : options.OutputDirectory);
+            stem = Path.GetFileNameWithoutExtension(imagePaths[0] ?? "montage");
+            if (string.IsNullOrWhiteSpace(stem)) stem = "montage";
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            Program.Log("StockSuite.DualMaster.Path", ex);
+            return DualAspectExportResult.Failed("출력 경로를 만들 수 없습니다: " + ex.Message);
+        }
+
+        var landscapePath = Path.Combine(dir, stem + DualLandscapeSuffix);
+        var verticalPath = Path.Combine(dir, stem + DualVerticalSuffix);
+        var land = await ExportMontageVideoFromPhotosAsync(imagePaths, focalPoints, options, subtitles, bgm, includeSfx, preferredLook, landscapePath, ct,
+            customBgmWavBytes, lockedPlan, vertical9x16SmartCrop: false, landscape16x9: true).ConfigureAwait(false);
+        var landPlan = land.Ok ? LastMontagePlan : null;
+        var vert = await ExportMontageVideoFromPhotosAsync(imagePaths, focalPoints, options, subtitles, bgm, includeSfx, preferredLook, verticalPath, ct,
+            customBgmWavBytes, lockedPlan, vertical9x16SmartCrop: true, landscape16x9: false).ConfigureAwait(false);
+        var vertPlan = vert.Ok ? LastMontagePlan : null;
+
+        Pluto.PlutoSnsPublishingKit? kit = null;
+        if (packager is not null && (land.Ok || vert.Ok))
+        {
+            try { kit = await packager.GeneratePublishingKitAsync(themeHint ?? "", activeTags ?? Array.Empty<string>(), subtitles, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex) { Program.Log("StockSuite.DualMaster.Kit", ex); kit = null; }   // [부분 구제] 영상은 보존
+        }
+
+        var msg = (land.Ok ? "🖥 16:9 ✅" : "🖥 16:9 ⚠ " + land.Message) + " · " + (vert.Ok ? "📱 9:16 ✅" : "📱 9:16 ⚠ " + vert.Message)
+                  + (land.Ok && vert.Ok ? " · 🔒 동일 타임라인(0ms 드리프트)" : "");
+        return new DualAspectExportResult(land.Ok ? land.TargetPath ?? landscapePath : "", vert.Ok ? vert.TargetPath ?? verticalPath : "", kit)
+        {
+            LandscapeOk = land.Ok,
+            VerticalOk = vert.Ok,
+            LandscapePlan = landPlan,
+            VerticalPlan = vertPlan,
+            SharedSubtitles = subtitles,
+            Message = msg,
+        };
+    }
+}
+
+/// <summary>🎬 듀얼 마스터 결과 — 실패한 쪽 경로는 빈 문자열([부분 구제]).</summary>
+public sealed record DualAspectExportResult(string Landscape16x9Path, string Vertical9x16Path, Pluto.PlutoSnsPublishingKit? PublishingKit)
+{
+    public bool LandscapeOk { get; init; }
+    public bool VerticalOk { get; init; }
+    /// <summary>양쪽 모두 성공.</summary>
+    public bool Ok => LandscapeOk && VerticalOk;
+    /// <summary>한쪽 이상 성공.</summary>
+    public bool AnyOk => LandscapeOk || VerticalOk;
+    public string Message { get; init; } = "";
+    /// <summary>16:9 렌더에 실제 사용된 플랜(진단 · 0ms 드리프트 검증).</summary>
+    public Pluto.PlutoMontagePlan? LandscapePlan { get; init; }
+    /// <summary>9:16 렌더에 실제 사용된 플랜.</summary>
+    public Pluto.PlutoMontagePlan? VerticalPlan { get; init; }
+    /// <summary>양 마스터가 공유한 자막 컬렉션(동일 참조).</summary>
+    public IReadOnlyList<SubtitleCue>? SharedSubtitles { get; init; }
+
+    internal static DualAspectExportResult Failed(string message) => new("", "", null) { Message = message };
 }

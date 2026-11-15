@@ -1,14 +1,15 @@
 # Current Project Status
-- Active Milestone: 【Pluto 4.2.2 — 학습 1위 BGM 무드 → `_bgmTrack` 결선 · 몽타주 비트 재동기】
+- Active Milestone: 【Pluto 4.3 — 자율 트렌드 기회 레이더 · 통제형 A/B 변형 생성기 · 16:9+9:16 듀얼 마스터 내보내기】
 - Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Mobile `net8.0-ios` CoreCompile 0W/0E · ✅ Tests 0W/0E
-- Tests: ✅ 1123/1123 PASS (전체 스위트, Release, 13m04s) · `PlutoAdaptiveRankerTests` 5/5 (신규 2)
+- Tests: ✅ 1127/1127 PASS (전체 스위트, Release, 12m26s) · `Pluto43AutonomousStudioTests` 4/4 (신규)
 - Updated: 2026-11-15 (KST)
 
 ## Completed
-- 🎵 `IPlutoAdaptivePatternRanker.ResolveRecommendedBgmTrackId` — `bgm:` 접두 제거 · 대소문자 무시 정확 일치 → 무드 별칭(calm/lullaby/piano · upbeat/playful/bright · cinematic/warm/emotional · energetic/pop → Bright 근사) · 미지/`custom`/`none`/빈 목록 → 폴백
-- 🧩 Workspace: 학습 스트립에 🎵 최적 BGM 배지 · [🧠 학습 최적 룩·훅·BGM 적용] → 트랙 확정(감성 BGM ON · 미리듣기 동기) 후 몽타주 재컴파일(컷 비트 · 3막 자막 재잠금)
-- 🛡️ 내 BGM 업로드 시 `_bgmTrack` 미변경(" · 🎵 내 BGM 유지") · 강화·비감점 무드만 적용
-- 클린 세션 자동 적용 1회 — 학습 이력 있음 · 내 BGM 없음 · 사용자 트랙 미선택 시 · BGM ON이면 몽타주 1회 재동기
+- 📡 `IPlutoTrendOpportunityEngine` — 트렌드 키워드 → 플랫폼별 즉시 실행 브리프(`PlutoTrendOpportunityBrief`, ReadyPrompt 포함)
+- 🧪 `IPlutoVariantABGenerator` — 챔피언 A / 챌린저 B 단일 변수 통제 실험(`PlutoVariantABPlan`: 훅·룩·BGM·자막·가설 요약)
+- 🎬 `StockSuiteExporter.BabyStudio` — 16:9 + 9:16 듀얼 마스터 내보내기 · `PlutoMontageStoryGenerator` 연동
+- 🧩 Workspace: 트렌드 레이더 · A/B 실험 UI 결선 · DI `MainForm.cs` + `MauiProgram.cs` 양쪽 등록
 
 ## Next
+- A/B 실험 결과 → 적응형 랭커 강화 피드백 결선 검토
 - 성과 학습 HUD 카드(XP 증분 · 차단 훅 · 1위 룩/BGM) 검토

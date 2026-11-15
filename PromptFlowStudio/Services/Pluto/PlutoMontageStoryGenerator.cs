@@ -214,6 +214,16 @@ public sealed class PlutoMontageStoryGenerator : IPlutoMontageStoryGenerator
         return arr;
     }
 
+    /// <summary>🧠 템플릿 Act1 훅 줄(KO) → 짝 EN 번역(미등록 → null).</summary>
+    public static string? TemplateHookEnglish(string? hookKo)
+    {
+        if (string.IsNullOrWhiteSpace(hookKo)) return null;
+        for (var t = 0; t < Themes.Length; t++)
+            for (var k = 0; k < Themes[t].Hook.Length; k++)
+                if (string.Equals(Themes[t].Hook[k].Ko, hookKo, StringComparison.Ordinal)) return Themes[t].Hook[k].En;
+        return null;
+    }
+
     private static string[] BuildAllHookLines()
     {
         var list = new List<string>(Themes.Length * 2);

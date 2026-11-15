@@ -130,11 +130,13 @@
             {
                 <span class="ws-pcore on" data-montage-grade="@(_montageLook)">🎨 자동 색보정: @(_montageLook) · @(_montagePhotos.Count.ToString(CultureInfo.InvariantCulture))컷 비트 몽타주</span>
                 <button class="ws-back" data-montage-render="1" @onclick="RenderMontageVideoAsync" disabled="@(_montageBusy || _motionBusy || _stockBusy)" title="사진별 Push-In → Drift → Pull-Back 카메라 · 비트 스냅 xfade · KO/EN 자막 · 마스터링 BGM + SFX">[🎞️ 15초 멀티컷 몽타주 렌더]</button>
+                <button class="ws-back" data-dual-master="1" @onclick="RenderDualMasterAsync" disabled="@(_montageBusy || _motionBusy || _stockBusy || _activeMontagePlan is null)" title="같은 🔒 잠금 타임라인 · 같은 3막 자막으로 16:9 가로 마스터 + 9:16 피사체 추적 세로 마스터를 한 번에 렌더(0ms 드리프트) · SNS 키트 동시 생성">[🎬 16:9 + 9:16 듀얼 마스터 동시 출력]</button>
                 <button class="ws-back" data-montage-story="1" @onclick="GenerateMontageStoryAsync" disabled="@(_activeMontagePlan is null || _montageStoryBusy || _montageBusy)" title="클립 경계에 맞춘 3막(후킹 → 리듬 → 클라이맥스) KO/EN 자막 — Gemini → PlutoCore → 로컬 게이트웨이 → 템플릿">[✨ 3막 자막 자동 생성]</button>
                 @if (_montageStoryBusy) { <span class="ws-retry" role="status" data-montage-story-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 3막 자막 생성 중…</span> }
                 else if (_montageCues is { Count: > 0 } mcs) { <span class="ws-pcore on" data-montage-story-count="@(mcs.Count.ToString(CultureInfo.InvariantCulture))">💬 3막 자막 @(mcs.Count.ToString(CultureInfo.InvariantCulture))컷 · @(_montageStoryLlm ? "AI" : "템플릿")</span> }
                 <button class="ws-back" data-sns-kit="1" @onclick="GenerateSnsKitAsync" disabled="@(_snsBusy || _montageBusy)" title="피사체 중심 9:16(1080×1920) 스마트 크롭 + 훅 제목 3종 · KO/EN 캡션 · 해시태그 12개 — Gemini → PlutoCore → 로컬 게이트웨이 → 템플릿 · 오답 노트 차단 태그 제외">[📱 9:16 릴스/쇼츠 스마트 패키징 &amp; SNS 키트]</button>
                 <button class="ws-back" data-perf-toggle="1" @onclick="TogglePerfPanel" aria-expanded="@(_perfOpen ? "true" : "false")" title="게시 후 3초 유지율 · CTR · 완주율을 입력하면 Pluto가 승리 패턴은 강화(XP)하고 약한 훅은 오답 노트로 회피 학습">[📊 배포 성과 피드백 학습] @(_perfOpen ? "▲" : "▼")</button>
+                <button class="ws-back" data-ab-build="1" @onclick="BuildAbExperimentAsync" disabled="@(_abBusy || _montageBusy || _activeMontagePlan is null)" title="챔피언 A(학습 1위 훅·룩·BGM) vs 챌린저 B(오답 노트 감점 제외 탐색 후보) — 같은 컷 경계 · 공유 실험 ID · 성과 입력 시 폐루프 강화">[⚖️ A/B 실험 변형 생성 (챔피언 vs 챌린저)]</button>
             }
             @if (_snsBusy) { <span class="ws-retry" role="status" data-sns-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 📱 SNS 키트 생성 중…</span> }
             else if (_snsKit is { } kit && _montagePhotos.Count >= 2)
@@ -154,6 +156,32 @@
                 </div>
             }
             @if (_snsToast is { } snt) { <span class="ws-retry" role="status" data-sns-toast="1">@(snt)</span> }
+            @if (_abBusy) { <span class="ws-retry" role="status" data-ab-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> ⚖️ A/B 변형 생성 중…</span> }
+            else if (_abPlan is { } abp && _montagePhotos.Count >= 2)
+            {
+                <div class="ws-ab-panel" data-ab-panel="@(abp.ExperimentId)" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%">
+                    <span class="ws-pcore on" data-ab-experiment="@(abp.ExperimentId)" title="@(abp.HypothesisSummary)">⚖️ 실험 @(abp.ExperimentId)</span>
+                    <button class="@(_abActiveB ? "ws-back" : "ws-back on")" data-ab-variant="A" aria-pressed="@(_abActiveB ? "false" : "true")" @onclick="() => SwitchAbVariantAsync(false)" disabled="@(_montageBusy)" title="@(abp.ChampionA.PromptSuffix)">🏆 @(abp.ChampionA.VariantLabel): '@(abp.ChampionA.HookStyle)' · 🎨 @(abp.ChampionA.ColorLookId) · 🎵 @(abp.ChampionA.BgmMood)</button>
+                    <button class="@(_abActiveB ? "ws-back on" : "ws-back")" data-ab-variant="B" aria-pressed="@(_abActiveB ? "true" : "false")" @onclick="() => SwitchAbVariantAsync(true)" disabled="@(_montageBusy)" title="@(abp.ChallengerB.PromptSuffix)">🧪 @(abp.ChallengerB.VariantLabel): '@(abp.ChallengerB.HookStyle)' · 🎨 @(abp.ChallengerB.ColorLookId) · 🎵 @(abp.ChallengerB.BgmMood)</button>
+                    <span class="ws-retry" data-ab-hypothesis="1">@(abp.HypothesisSummary)</span>
+                    @if (_abToast is { } abt) { <span class="ws-retry" role="status" data-ab-toast="1">@(abt)</span> }
+                </div>
+            }
+            <div class="ws-brief-strip" data-brief-strip="@((_briefs?.Count ?? 0).ToString(CultureInfo.InvariantCulture))" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%">
+                <span class="ws-pcore on">🔭 오늘의 자율 트렌드 기획안 (3선)</span>
+                <button class="ws-back" data-brief-refresh="1" @onclick="RefreshBriefsAsync" disabled="@(_briefsBusy)" title="실시간/저장 트렌드 × 학습 1위 훅·룩·BGM × 오답 노트 회피 — Gemini → PlutoCore → 로컬 게이트웨이 → 템플릿">[🔄 기획안 새로고침]</button>
+                @if (_briefsBusy) { <span class="ws-retry" role="status" data-brief-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 🔭 기획안 생성 중…</span> }
+                else if (_briefs is { Count: > 0 } brs)
+                {
+                    @foreach (var br in brs)
+                    {
+                        var brief = br;
+                        <span class="ws-retry" data-brief-id="@(brief.BriefId)" title="@(brief.ReadyPrompt)">📌 @(brief.Title) · #@(brief.TrendKeyword) · @(brief.TargetPlatform) · @(brief.RationaleBadge)@(brief.AvoidedMistakeCount > 0 ? " · 🛡 회피 " + brief.AvoidedMistakeCount.ToString(CultureInfo.InvariantCulture) : "")</span>
+                        <button class="ws-back" data-brief-apply="@(brief.BriefId)" @onclick="() => ApplyBriefAsync(brief)" disabled="@(_briefsBusy || _montageBusy || State.IsBusy)" title="@("프롬프트 · 룩 " + brief.RecommendedColorLook + " · BGM " + brief.RecommendedBgmMood + " · 훅 '" + brief.RecommendedHook + "' 한 번에 세팅")">[🚀 이 기획안으로 즉시 세팅]</button>
+                    }
+                }
+                @if (_briefsToast is { } bft) { <span class="ws-retry" role="status" data-brief-toast="1">@(bft)</span> }
+            </div>
             @if (_adaptiveRec is { } arec)
             {
                 <div class="ws-adaptive-strip" data-adaptive-strip="@(arec.HasReinforcedHistory ? "learned" : "explore")" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%">
@@ -1963,6 +1991,9 @@
         _activeMontagePlan = null;
         _montageCues = null;
         _montageStorySeq++;
+        _abPlan = null;
+        _abPlanSource = null;
+        _abToast = null;
     }
 
     // ── 🎯 사진별 초점 · 🎞 멀티컷 프리뷰 ──
@@ -2164,6 +2195,163 @@
         catch (OperationCanceledException) { }   // 페이지 이탈
         catch (Exception ex) { Program.Log("Workspace.MontageVideo", ex); _montageToast = "⚠ 몽타주 렌더 실패: " + ex.Message; }
         finally { _montageBusy = false; _stockBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    // ── 🎬 Pluto 4.3 — 16:9 + 9:16 듀얼 마스터 ──
+
+    /// <summary>🎬 [16:9 + 9:16 듀얼 마스터 동시 출력] — 같은 잠금 플랜 · 같은 자막 컬렉션 · SNS 키트([부분 구제] 한쪽 실패 시 다른 쪽 보존).</summary>
+    private async Task RenderDualMasterAsync()
+    {
+        if (_montageBusy || _motionBusy || _stockBusy || _montagePhotos.Count < 2) return;
+        var photos = _montagePhotos.ToArray();
+        if (_activeMontagePlan is not { } locked || locked.Clips.Count != photos.Length) { _montageToast = "⚠ 🔒 잠금 타임라인이 없습니다 — 몽타주 프리뷰 구성 후 다시 시도하세요."; return; }
+        _montageBusy = true;
+        _stockBusy = true;
+        _montageToast = null;
+        _montageOutput = null;
+        RefreshMontageLook();
+        StateHasChanged();
+        try
+        {
+            var focals = await EnsureStagedFocalPointsAsync(photos, _mediaCts.Token);
+            StockSuite.MistakeNotebook ??= EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService)) as PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService;
+            IReadOnlyList<PromptFlowStudio.Services.Export.SubtitleCue> cues = _montageCues is { Count: > 0 } mc ? mc : (await GenerateWorkspaceLetterAsync(_mediaCts.Token)).ToCues();
+            var packager = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMultiFormatPackager)) as PromptFlowStudio.Services.Pluto.IPlutoMultiFormatPackager;
+            var dualCustomWav = _customBgm?.CroppedWavBytes;   // 🎵 두 마스터 공통 하이라이트
+            var r = await StockSuite.ExportDualAspectMontageMastersAsync(photos, focals, new PromptFlowStudio.Services.Export.ExportOptions(), locked, cues,
+                _bgmOn ? _bgmTrack : null, includeSfx: true, preferredLook: _montageLook, packager: packager, themeHint: MontageThemeHint(), activeTags: ActiveViralTagsSafe(5),
+                customBgmWavBytes: dualCustomWav, ct: _mediaCts.Token);
+            _montageOutput = r.VerticalOk ? r.Vertical9x16Path : r.LandscapeOk ? r.Landscape16x9Path : null;
+            if (_montageOutput is { } mo) _perfVideoId = Path.GetFileNameWithoutExtension(mo);
+            if (r.PublishingKit is { } kit) _snsKit = kit;
+            _montageToast = (r.Ok ? "✅ 🎬 듀얼 마스터 · " : r.AnyOk ? "⚠ 🎬 듀얼 마스터 [부분 구제] · " : "⚠ 🎬 듀얼 마스터 실패 · ") + r.Message;
+        }
+        catch (OperationCanceledException) { }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.DualMaster", ex); _montageToast = "⚠ 듀얼 마스터 렌더 실패: " + ex.Message; }
+        finally { _montageBusy = false; _stockBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    // ── ⚖️ Pluto 4.3 — A/B 실험 변형 ──
+    private PromptFlowStudio.Services.Pluto.PlutoVariantABPlan? _abPlan;
+    private PromptFlowStudio.Services.Pluto.PlutoMontagePlan? _abPlanSource;   // 변형 자막이 정렬된 플랜(교체 시 무효)
+    private bool _abBusy, _abActiveB;
+    private string? _abToast;
+
+    /// <summary>⚖️ [A/B 실험 변형 생성] — 현재 잠금 플랜 기준 챔피언/챌린저 → 챔피언 즉시 적용(예외 전파 금지).</summary>
+    private async Task BuildAbExperimentAsync()
+    {
+        if (_abBusy || _montageBusy || _activeMontagePlan is not { } plan) return;
+        if (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoVariantABGenerator)) is not PromptFlowStudio.Services.Pluto.IPlutoVariantABGenerator gen) { _abToast = "⚠ A/B 생성기를 사용할 수 없습니다."; return; }
+        _abBusy = true;
+        _abToast = null;
+        StateHasChanged();
+        try
+        {
+            var cuts = _curationResult?.SelectedCuts is { } sc && sc.Count == plan.Clips.Count ? sc : null;
+            var ab = await gen.BuildVariantPairAsync(MontageThemeHint(), plan, cuts, _mediaCts.Token);
+            if (_disposed || !ReferenceEquals(plan, _activeMontagePlan)) return;   // 플랜 교체 → 폐기
+            _abPlan = ab;
+            _abPlanSource = plan;
+            await ApplyAbVariantAsync(false);
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.AbBuild", ex); _abToast = "⚠ A/B 변형 생성 실패: " + ex.Message; }
+        finally { _abBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task SwitchAbVariantAsync(bool challenger)
+    {
+        if (_abPlan is null || _montageBusy) return;
+        try { await ApplyAbVariantAsync(challenger); }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex) { Program.Log("Workspace.AbSwitch", ex); _abToast = "⚠ 변형 전환 실패: " + ex.Message; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>⚖️ 변형 적용 — 자막(같은 컷 구간) · 룩 고정 · BGM 트랙(내 BGM 보존) · 🔒 타임라인 잠금 유지(컷 재정렬 없음).</summary>
+    private async Task ApplyAbVariantAsync(bool challenger)
+    {
+        if (_abPlan is not { } ab) return;
+        if (!ReferenceEquals(_abPlanSource, _activeMontagePlan)) { _abToast = "⚠ 몽타주 구성이 바뀌었습니다 — A/B 변형을 다시 생성하세요."; return; }
+        var v = challenger ? ab.ChallengerB : ab.ChampionA;
+        _abActiveB = challenger;
+        _montageStorySeq++;   // 진행 중 3막 생성 결과가 변형 자막을 덮지 않도록
+        _montageStoryBusy = false;
+        if (v.Subtitles.Count > 0) _montageCues = v.Subtitles;
+        if (PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.TryGetPreset(v.ColorLookId) is not null) _learnedLookPinned = v.ColorLookId;
+        RefreshMontageLook();
+        var bgmNote = await ApplyBgmMoodAsync(v.BgmMood);
+        _snsKit = null;   // 변형 자막 기준 키트 재생성 유도
+        _perfVideoId = ab.ExperimentId + (challenger ? "-B" : "-A");
+        _abToast = (challenger ? "🧪 챌린저 B" : "🏆 챔피언 A") + " 적용 · 룩 " + _montageLook + bgmNote + " · 🔒 타임라인 유지";
+    }
+
+    /// <summary>🎵 BGM 무드 → 프리셋 트랙(내 BGM 업로드 시 유지 · 해석 실패 → 현행 유지). 반환: 토스트 접미.</summary>
+    private async Task<string> ApplyBgmMoodAsync(string? mood)
+    {
+        if (_customBgm is not null) return " · 🎵 내 BGM 유지";
+        if (string.IsNullOrWhiteSpace(mood) || EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoAdaptivePatternRanker)) is not PromptFlowStudio.Services.Pluto.IPlutoAdaptivePatternRanker ranker) return "";
+        var id = ranker.ResolveRecommendedBgmTrackId(mood, BabyBgmTrackIds, _bgmTrack.ToString());
+        if (!Enum.TryParse<PromptFlowStudio.Services.Export.BabyBgmTrack>(id, true, out var track) || !Enum.IsDefined(track)) return "";
+        if (track == _bgmTrack && _bgmOn) return "";
+        _bgmTrack = track;
+        _bgmOn = true;
+        await SyncBgmPreviewAsync();
+        return " · 🎵 BGM " + PromptFlowStudio.Services.Export.StockSuiteExporter.BabyBgmLabel(track);
+    }
+
+    // ── 🔭 Pluto 4.3 — 자율 트렌드 기획안 ──
+    private IReadOnlyList<PromptFlowStudio.Services.Pluto.PlutoTrendOpportunityBrief>? _briefs;
+    private bool _briefsBusy;
+    private string? _briefsToast;
+
+    /// <summary>🔭 [기획안 새로고침] — 3선 생성(4단 페일오버 · 예외 전파 금지).</summary>
+    private async Task RefreshBriefsAsync()
+    {
+        if (_briefsBusy) return;
+        if (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoTrendOpportunityEngine)) is not PromptFlowStudio.Services.Pluto.IPlutoTrendOpportunityEngine engine) { _briefsToast = "⚠ 트렌드 기획 엔진을 사용할 수 없습니다."; return; }
+        _briefsBusy = true;
+        _briefsToast = null;
+        StateHasChanged();
+        try
+        {
+            _briefs = await engine.GenerateDailyBriefsAsync(3, _mediaCts.Token);
+            if (_briefs.Count == 0) _briefsToast = "⚠ 오늘은 오답 노트를 피한 기획안을 찾지 못했습니다.";
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.Briefs", ex); _briefsToast = "⚠ 기획안 생성 실패: " + ex.Message; }
+        finally { _briefsBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>🚀 [이 기획안으로 즉시 세팅] — 프롬프트 · 룩 고정 · BGM 트랙 · 학습 추천 갱신 · 몽타주 재구성(있을 때) 원클릭.</summary>
+    private async Task ApplyBriefAsync(PromptFlowStudio.Services.Pluto.PlutoTrendOpportunityBrief brief)
+    {
+        if (brief is null || _briefsBusy || _montageBusy || State.IsBusy) return;
+        try
+        {
+            Snap("기획안 적용 전");
+            _prompt = brief.ReadyPrompt;
+            Snap("🔭 기획안: " + brief.Title);
+            if (PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.TryGetPreset(brief.RecommendedColorLook) is not null) _learnedLookPinned = brief.RecommendedColorLook;
+            RefreshMontageLook();
+            var bgmNote = await ApplyBgmMoodAsync(brief.RecommendedBgmMood);
+            _abPlan = null;
+            _abPlanSource = null;
+            await RefreshAdaptiveRecommendationAsync();
+            if (_montagePhotos.Count >= 2) await RefreshMontagePreviewAsync();   // 새 테마 · BGM 비트로 컷 · 3막 자막 재잠금
+            _briefsToast = "🚀 '" + brief.Title + "' 세팅 · 룩 " + _montageLook + bgmNote + " · 훅 '" + brief.RecommendedHook + "'";
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.BriefApply", ex); _briefsToast = "⚠ 기획안 적용 실패: " + ex.Message; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
     }
