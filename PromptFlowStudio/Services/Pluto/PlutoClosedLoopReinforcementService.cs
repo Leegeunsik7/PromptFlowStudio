@@ -21,11 +21,24 @@ public sealed record PlutoReinforcementOutcome(bool IsBreakoutSuccess, bool Reco
     public double PenaltySeverity { get; init; }
 }
 
+/// <summary>
+/// ⚖️ A/B 실험 차등 강화 요청 — <see cref="Winner"/>/<see cref="Loser"/> 텔레메트리는 변형 간 <b>차이 나는 특성만</b> 담는다(공통 특성은 빈 문자열).
+/// <see cref="LiftPct"/> = 승자 합성 점수의 패자 대비 상승률(%) · <see cref="IsTie"/> → 변경 없음(장부만 기록).
+/// </summary>
+public sealed record PlutoExperimentReinforcementRequest(string ExperimentId, PlutoVideoPerformanceTelemetry Winner, PlutoVideoPerformanceTelemetry Loser, double LiftPct, bool IsTie);
+
 /// <summary>📈 Pluto 폐루프 성과 강화 — 게시 후 지표 → 학습 메모리(패턴 가중치 · XP) / 오답 노트(약한 훅 회피).</summary>
 public interface IPlutoClosedLoopReinforcementService
 {
     /// <summary>성과 반영(동일 플랫폼+영상 ID 재반영 차단 · 실패 시 [부분 구제] 결과 반환 · 취소만 전파).</summary>
     Task<PlutoReinforcementOutcome> IngestPerformanceAsync(PlutoVideoPerformanceTelemetry telemetry, CancellationToken ct = default);
+
+    /// <summary>
+    /// ⚖️ A/B 실험 차등 강화(같은 실험 ID 재반영 차단) — 승자 차등 특성 부스트(상승률·돌파 강도 비례 ×1.15~1.35 + XP) ·
+    /// 패자는 절대 실패(3초 유지율 &lt; <see cref="PlutoClosedLoopReinforcementService.PoorHookPct"/>)일 때만 오답 노트 벌점(근소 패배 보호).
+    /// 승자 자신이 절대 실패면 부스트 생략. 실패 시 [부분 구제] · 취소만 전파.
+    /// </summary>
+    Task<PlutoReinforcementOutcome> IngestExperimentOutcomeAsync(PlutoExperimentReinforcementRequest request, CancellationToken ct = default);
 
     /// <summary>마지막 반영 결과(없음 → null).</summary>
     PlutoReinforcementOutcome? LastOutcome { get; }
@@ -50,6 +63,9 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
     public const int MinXp = 15, MaxXp = 35;
     public const double MinPenalty = 1.0, MaxPenalty = 2.0;
     public const int LedgerCapacity = 500;
+    /// <summary>A/B 상승률 이 값(%) 이상 → 최대 차등 부스트.</summary>
+    public const double FullBoostLiftPct = 50.0;
+    public const string ExperimentLedgerPrefix = "ab|";
 
     private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
@@ -184,6 +200,95 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
             }
 
             var outcome = new PlutoReinforcementOutcome(breakout, penalty > 0, xp, mult, Summarize(telemetry, breakout, poor, xp, mult, penalty) + warn) { PenaltySeverity = penalty };
+            await AppendLedgerAsync(key, ct).ConfigureAwait(false);
+            return Publish(outcome);
+        }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>⚖️ 상승률(%) + 승자 절대 돌파 강도 → 차등 부스트 강도 0~1.</summary>
+    public static double ExperimentStrength(PlutoVideoPerformanceTelemetry winner, double liftPct)
+    {
+        ArgumentNullException.ThrowIfNull(winner);
+        var lift = double.IsFinite(liftPct) ? Math.Clamp(liftPct / FullBoostLiftPct, 0.0, 1.0) : 0.0;
+        var (breakout, strength, _, _) = Evaluate(winner);
+        return breakout ? Math.Max(lift, strength) : lift;
+    }
+
+    public async Task<PlutoReinforcementOutcome> IngestExperimentOutcomeAsync(PlutoExperimentReinforcementRequest request, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.Winner);
+        ArgumentNullException.ThrowIfNull(request.Loser);
+        if (string.IsNullOrWhiteSpace(request.ExperimentId)) throw new ArgumentException("ExperimentId required", nameof(request));
+        ct.ThrowIfCancellationRequested();
+        var key = ExperimentLedgerPrefix + request.ExperimentId.Trim();
+
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await EnsureLedgerLoadedAsync(ct).ConfigureAwait(false);
+            if (_ledgerSet.Contains(key))
+                return Publish(new PlutoReinforcementOutcome(false, false, 0, 1.0, "⏭ 이미 반영된 실험입니다: " + request.ExperimentId.Trim()) { AlreadyRegistered = true });
+
+            var xp = 0;
+            var mult = 1.0;
+            var penalty = 0.0;
+            var boosted = false;
+            var warn = "";
+            var winHook = Pct(request.Winner.ThreeSecondHookRetentionPct);
+            var loseHook = Pct(request.Loser.ThreeSecondHookRetentionPct);
+
+            if (!request.IsTie && winHook >= PoorHookPct)
+            {
+                var tokens = PatternTokens(request.Winner);
+                var strength = ExperimentStrength(request.Winner, request.LiftPct);
+                mult = BoostFor(strength);
+                xp = XpFor(strength);
+                boosted = true;
+                try
+                {
+                    if (_learning is not null && tokens.Count > 0) await _learning.ApplyPatternReinforcementAsync(tokens, mult, XpSourceKey, xp, ct).ConfigureAwait(false);
+                    else { xp = 0; mult = 1.0; boosted = false; warn = _learning is null ? " · ⚠ 학습 메모리 미연결" : " · ⚠ 차등 특성 없음"; }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] ab boost: " + ex.Message); xp = 0; mult = 1.0; boosted = false; warn = " · ⚠ 학습 기록 실패"; }   // [부분 구제]
+                try
+                {
+                    var relief = MistakeTokens(request.Winner);
+                    if (boosted && _notebook is not null && relief.Count > 0) await _notebook.RecordPositiveReliefAsync(relief, ct: ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] ab relief: " + ex.Message); }
+            }
+
+            // 🛡️ 패자 보호 — 절대 실패(3초 < 42 %)일 때만 벌점(무승부 포함 · 근소 패배는 면제)
+            if (loseHook < PoorHookPct)
+            {
+                var mistakes = MistakeTokens(request.Loser);
+                if (mistakes.Count > 0)
+                {
+                    penalty = PenaltyFor((PoorHookPct - loseHook) / PoorHookPct);
+                    try
+                    {
+                        if (_notebook is not null)
+                            await _notebook.RecordNegativeFeedbackAsync(mistakes, penalty, "ab-experiment: " + request.ExperimentId.Trim(), ct).ConfigureAwait(false);
+                        else { penalty = 0; warn += " · ⚠ 오답 노트 미연결"; }
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] ab penalty: " + ex.Message); penalty = 0; warn += " · ⚠ 오답 노트 기록 실패"; }
+                }
+            }
+
+            var sb = new StringBuilder(160);
+            if (request.IsTie) sb.Append("🤝 무승부 · 패턴 변경 없음");
+            else if (boosted) sb.Append("🏆 승자 차등 특성 ×").Append(mult.ToString("0.00", Inv)).Append(" · +").Append(xp.ToString(Inv)).Append(" XP");
+            else if (winHook < PoorHookPct) sb.Append("➖ 승자도 절대 실패선 미만 · 부스트 생략");
+            else sb.Append("➖ 부스트 미적용");
+            if (penalty > 0) sb.Append(" · 🛡️ 패자 절대 실패 벌점 ").Append(penalty.ToString("0.00", Inv));
+            else if (!request.IsTie) sb.Append(" · 🛡️ 패자 보호(오답 노트 면제)");
+
+            var outcome = new PlutoReinforcementOutcome(boosted, penalty > 0, xp, mult, sb.ToString() + warn) { PenaltySeverity = penalty };
             await AppendLedgerAsync(key, ct).ConfigureAwait(false);
             return Publish(outcome);
         }

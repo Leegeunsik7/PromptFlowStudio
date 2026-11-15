@@ -1,15 +1,16 @@
 # Current Project Status
-- Active Milestone: 【Pluto 4.3 — 자율 트렌드 기회 레이더 · 통제형 A/B 변형 생성기 · 16:9+9:16 듀얼 마스터 내보내기】
+- Active Milestone: 【Pluto 4.4 — 짝지은 A/B 실험 평가 장부 · 멀티 에피소드 시리즈 분할기】
 - Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Mobile `net8.0-ios` CoreCompile 0W/0E · ✅ Tests 0W/0E
-- Tests: ✅ 1127/1127 PASS (전체 스위트, Release, 12m26s) · `Pluto43AutonomousStudioTests` 4/4 (신규)
+- Tests: ✅ 1131/1131 PASS (전체 스위트, Release, 13m55s) · `Pluto44ExperimentAndSeriesTests` 4/4 (신규)
 - Updated: 2026-11-15 (KST)
 
 ## Completed
-- 📡 `IPlutoTrendOpportunityEngine` — 트렌드 키워드 → 플랫폼별 즉시 실행 브리프(`PlutoTrendOpportunityBrief`, ReadyPrompt 포함)
-- 🧪 `IPlutoVariantABGenerator` — 챔피언 A / 챌린저 B 단일 변수 통제 실험(`PlutoVariantABPlan`: 훅·룩·BGM·자막·가설 요약)
-- 🎬 `StockSuiteExporter.BabyStudio` — 16:9 + 9:16 듀얼 마스터 내보내기 · `PlutoMontageStoryGenerator` 연동
-- 🧩 Workspace: 트렌드 레이더 · A/B 실험 UI 결선 · DI `MainForm.cs` + `MauiProgram.cs` 양쪽 등록
+- 🏆 `IPlutoExperimentLedgerService` — 합성 점수(0.5·3초 + 0.3·완주 + 0.2·CTR×10) 승자/무승부 · LiftPct · `pluto_experiment_ledger.json` 원자 기록 · 재판정 차단
+- ⚖️ `IPlutoClosedLoopReinforcementService.IngestExperimentOutcomeAsync` — 승자 차등 특성만 부스트 · 패자는 3초 < 42% 때만 오답 노트 벌점
+- 📚 `IPlutoSeriesBatchPlanner` — 10~30장 → 서로소 2~3편(편당 3~5컷) · "n/N편" 연속 자막 · 편별 SNS 키트 · 초점 [0.2,0.8]²
+- 🩺 `PlutoDriveHealthService` 추적 파일 6+2 (실험 장부 포함)
+- 🧩 Workspace: [🏆 A/B 실험 승자 판정 & 차등 학습] · [📚 시리즈 자동 분할 (2~3편)] + 편 불러오기 · 전편 순차 출력 · DI 양쪽 등록
 
 ## Next
-- A/B 실험 결과 → 적응형 랭커 강화 피드백 결선 검토
-- 성과 학습 HUD 카드(XP 증분 · 차단 훅 · 1위 룩/BGM) 검토
+- 성과 학습 HUD 카드(실험 승률 · XP 증분 · 차단 훅) 검토
+- 시리즈 편별 16:9 + 9:16 듀얼 마스터 일괄 출력 검토

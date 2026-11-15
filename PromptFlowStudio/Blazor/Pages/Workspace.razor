@@ -92,6 +92,22 @@
             @* 🎞️ 멀티컷 몽타주 — 사진 2~5장 → 15초 60fps · 노출 정합 자동 색보정 · BGM 비트 스냅 xfade *@
             <span class="ws-back ws-file-pick" data-montage-pick="1" title="사진 2~5장(연사 최대 30장 · 장당 15MB) 선택 — 6장 이상이면 AI가 베스트 4컷을 자동 선별 · 비트에 맞춘 15초 멀티컷 몽타주">🎞️ 몽타주 사진 추가 (@(_montagePhotos.Count.ToString(CultureInfo.InvariantCulture))/5@(_curationPool.Count > _montagePhotos.Count ? " · 후보 " + _curationPool.Count.ToString(CultureInfo.InvariantCulture) + "장" : ""))<InputFile class="ws-drop-input" OnChange="OnMontagePhotosPickedAsync" multiple accept="image/png,image/jpeg,image/webp,image/bmp" disabled="@(State.IsBusy || _montageBusy || _curationBusy || _curationPool.Count >= CurationMaxPhotos)" /></span>
             @if (_curationPool.Count >= 4 && !_montageBusy) { <button class="ws-back" data-curation-run="1" @onclick="RunPhotoCurationAsync" disabled="@(_curationBusy || _motionBusy || _stockBusy)" title="흔들림 · 노출 불량 · 유사 연사를 걸러내고 베스트 컷을 3막(후킹 → 리듬 → 클라이맥스) 순서로 배치">[✨ AI 베스트 컷 자동 선별]</button> }
+            @if (_curationPool.Count >= PromptFlowStudio.Services.Pluto.PlutoSeriesBatchPlanner.RecommendedMinPhotos && !_montageBusy) { <button class="ws-back" data-series-run="1" @onclick="BuildSeriesAsync" disabled="@(_seriesBusy || _curationBusy || _motionBusy || _stockBusy)" title="고품질 비중복 컷을 서로 겹치지 않는 2~3편(편당 3~5컷)으로 나누고 'n/N편' 연속 3막 자막 · 편별 SNS 키트 생성">[📚 시리즈 자동 분할 (2~3편)]</button> }
+            @if (_seriesBusy) { <span class="ws-retry" role="status" data-series-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 📚 @(_curationPool.Count.ToString(CultureInfo.InvariantCulture))장 → 시리즈 분할 중…</span> }
+            else if (_series is { } ser)
+            {
+                <div class="ws-retry" data-series-panel="@(ser.Episodes.Count.ToString(CultureInfo.InvariantCulture))" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%">
+                    <span class="ws-pcore on" data-series-summary="1">📚 '@(ser.SeriesTheme)' @(ser.Episodes.Count.ToString(CultureInfo.InvariantCulture))편 · @(ser.TotalInputPhotos.ToString(CultureInfo.InvariantCulture))장 중 고유 @(ser.TotalUsedUniquePhotos.ToString(CultureInfo.InvariantCulture))컷</span>
+                    @foreach (var ep in ser.Episodes)
+                    {
+                        var epRef = ep;
+                        <button class="@(_seriesActiveEpisode == ep.EpisodeNumber ? "ws-back on" : "ws-back")" data-series-episode="@(ep.EpisodeNumber.ToString(CultureInfo.InvariantCulture))" @onclick="() => LoadSeriesEpisodeAsync(epRef)" disabled="@(_montageBusy || _seriesBusy)" title="@(string.Join(" · ", ep.Cuts.Select(static c => Path.GetFileName(c.ImagePath))))">▶ @(ep.EpisodeTitle) (@(ep.Cuts.Count.ToString(CultureInfo.InvariantCulture))컷)</button>
+                    }
+                    <button class="ws-back" data-series-export="1" @onclick="ExportSeriesSequentiallyAsync" disabled="@(_montageBusy || _motionBusy || _stockBusy || _seriesBusy)" title="1편부터 차례로 불러와 15초 몽타주 MP4를 순차 렌더">[🎞️ 전편 순차 출력]</button>
+                    @if (_seriesToast is { } srt) { <span class="ws-retry" role="status" data-series-toast="1">@(srt)</span> }
+                </div>
+            }
+            else if (_seriesToast is { } srt2) { <span class="ws-retry" role="status" data-series-toast="1">@(srt2)</span> }
             @if (_curationBusy) { <span class="ws-retry" role="status" data-curation-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> ✨ @(_curationPool.Count.ToString(CultureInfo.InvariantCulture))장 분석 중… (선명도 · 노출 · 연사 중복)</span> }
             else if (_curationResult is { } cur)
             {
@@ -164,6 +180,28 @@
                     <button class="@(_abActiveB ? "ws-back" : "ws-back on")" data-ab-variant="A" aria-pressed="@(_abActiveB ? "false" : "true")" @onclick="() => SwitchAbVariantAsync(false)" disabled="@(_montageBusy)" title="@(abp.ChampionA.PromptSuffix)">🏆 @(abp.ChampionA.VariantLabel): '@(abp.ChampionA.HookStyle)' · 🎨 @(abp.ChampionA.ColorLookId) · 🎵 @(abp.ChampionA.BgmMood)</button>
                     <button class="@(_abActiveB ? "ws-back on" : "ws-back")" data-ab-variant="B" aria-pressed="@(_abActiveB ? "true" : "false")" @onclick="() => SwitchAbVariantAsync(true)" disabled="@(_montageBusy)" title="@(abp.ChallengerB.PromptSuffix)">🧪 @(abp.ChallengerB.VariantLabel): '@(abp.ChallengerB.HookStyle)' · 🎨 @(abp.ChallengerB.ColorLookId) · 🎵 @(abp.ChallengerB.BgmMood)</button>
                     <span class="ws-retry" data-ab-hypothesis="1">@(abp.HypothesisSummary)</span>
+                    <button class="ws-back" data-ab-eval-toggle="1" @onclick="() => _abEvalOpen = !_abEvalOpen" aria-expanded="@(_abEvalOpen ? "true" : "false")" title="A·B 각각의 게시 후 3초 유지율 · 완주율 · CTR 입력 → 합성 점수(0.5·3초 + 0.3·완주 + 0.2·CTR×10)로 승자 판정 · 승자 차등 특성 강화 · 근소 패배는 오답 노트 면제">[🏆 A/B 실험 승자 판정 &amp; 차등 학습] @(_abEvalOpen ? "▲" : "▼")</button>
+                    @if (_abEvalOpen)
+                    {
+                        <div class="ws-retry" data-ab-eval-panel="@(abp.ExperimentId)" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%">
+                            <span>🏆 A</span>
+                            <label>3초 % <input type="number" step="0.1" min="0" max="100" style="width:64px" data-ab-eval-a-hook="1" @bind="_abEvalA.Hook" /></label>
+                            <label>완주 % <input type="number" step="0.1" min="0" max="100" style="width:64px" data-ab-eval-a-comp="1" @bind="_abEvalA.Completion" /></label>
+                            <label>CTR % <input type="number" step="0.1" min="0" max="100" style="width:64px" data-ab-eval-a-ctr="1" @bind="_abEvalA.Ctr" /></label>
+                            <span>🧪 B</span>
+                            <label>3초 % <input type="number" step="0.1" min="0" max="100" style="width:64px" data-ab-eval-b-hook="1" @bind="_abEvalB.Hook" /></label>
+                            <label>완주 % <input type="number" step="0.1" min="0" max="100" style="width:64px" data-ab-eval-b-comp="1" @bind="_abEvalB.Completion" /></label>
+                            <label>CTR % <input type="number" step="0.1" min="0" max="100" style="width:64px" data-ab-eval-b-ctr="1" @bind="_abEvalB.Ctr" /></label>
+                            <button class="ws-back" data-ab-eval-run="1" @onclick="EvaluateAbExperimentAsync" disabled="@(_abEvalBusy)">[판정 &amp; 학습 저장]</button>
+                            @if (_abEvalBusy) { <span class="ws-retry" role="status" data-ab-eval-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 🏆 판정 중…</span> }
+                            else if (_abEvalResult is { } aer && string.Equals(aer.ExperimentId, abp.ExperimentId, StringComparison.Ordinal))
+                            {
+                                <span class="ws-pcore on" data-ab-eval-winner="@(aer.WinnerLabel)">@(AbWinnerBadge(aer.WinnerLabel)) · A @(aer.ChampionScore.ToString("0.0", CultureInfo.InvariantCulture)) vs B @(aer.ChallengerScore.ToString("0.0", CultureInfo.InvariantCulture)) · 상승 +@(aer.LiftPct.ToString("0.#", CultureInfo.InvariantCulture))% · +@(aer.TotalXpAwarded.ToString(CultureInfo.InvariantCulture)) XP@(aer.AlreadyRegistered ? " · ⏭ 기존 판정" : "")</span>
+                                <span class="ws-retry" data-ab-eval-summary="1">@(aer.SummaryMessage)</span>
+                            }
+                            @if (_abEvalToast is { } aet) { <span class="ws-retry" role="status" data-ab-eval-toast="1">@(aet)</span> }
+                        </div>
+                    }
                     @if (_abToast is { } abt) { <span class="ws-retry" role="status" data-ab-toast="1">@(abt)</span> }
                 </div>
             }
@@ -1994,6 +2032,10 @@
         _abPlan = null;
         _abPlanSource = null;
         _abToast = null;
+        _series = null;
+        _seriesToast = null;
+        _seriesActiveEpisode = 0;
+        _seriesEpisodeKey = null;
     }
 
     // ── 🎯 사진별 초점 · 🎞 멀티컷 프리뷰 ──
@@ -2020,6 +2062,7 @@
             var ranker = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoAdaptivePatternRanker)) as PromptFlowStudio.Services.Pluto.IPlutoAdaptivePatternRanker;
             _montageCues = PromptFlowStudio.Services.Pluto.PlutoMontageStoryGenerator.GenerateLocal(plan, MontageThemeHint(), notebook?.GetSuppressedTokens(), ranker);
             _montageStoryLlm = false;
+            ApplySeriesCueDecoration();
         }
         catch (Exception ex) { Program.Log("Workspace.MontageStoryLocal", ex); _montageCues = null; }
     }
@@ -2040,6 +2083,7 @@
             if (_disposed || seq != _montageStorySeq || !ReferenceEquals(plan, _activeMontagePlan)) return;
             _montageCues = cues;
             _montageStoryLlm = gen.LastUsedLlm;
+            ApplySeriesCueDecoration();
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
         catch (Exception ex) { Program.Log("Workspace.MontageStory", ex); }
@@ -2256,6 +2300,8 @@
             if (_disposed || !ReferenceEquals(plan, _activeMontagePlan)) return;   // 플랜 교체 → 폐기
             _abPlan = ab;
             _abPlanSource = plan;
+            try { (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoExperimentLedgerService)) as PromptFlowStudio.Services.Pluto.IPlutoExperimentLedgerService)?.RegisterExperiment(ab); }
+            catch (Exception ex) { Program.Log("Workspace.AbRegister", ex); }   // [부분 구제] 판정 시 재등록
             await ApplyAbVariantAsync(false);
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
@@ -2305,6 +2351,130 @@
         _bgmOn = true;
         await SyncBgmPreviewAsync();
         return " · 🎵 BGM " + PromptFlowStudio.Services.Export.StockSuiteExporter.BabyBgmLabel(track);
+    }
+
+    // ── 🏆 Pluto 4.4 — A/B 실험 승자 판정 & 차등 학습 ──
+    private sealed class AbMetricsForm { public double Hook { get; set; } public double Completion { get; set; } public double Ctr { get; set; } }
+    private readonly AbMetricsForm _abEvalA = new(), _abEvalB = new();
+    private bool _abEvalOpen, _abEvalBusy;
+    private PromptFlowStudio.Services.Pluto.PlutoExperimentEvaluationResult? _abEvalResult;
+    private string? _abEvalToast;
+
+    private static string AbWinnerBadge(string winner)
+        => winner == PromptFlowStudio.Services.Pluto.PlutoExperimentLedgerService.WinnerTie ? "🤝 무승부"
+            : winner == PromptFlowStudio.Services.Pluto.PlutoExperimentLedgerService.WinnerChallenger ? "👑 챌린저 B 승리" : "👑 챔피언 A 방어";
+
+    /// <summary>🏆 [판정 &amp; 학습 저장] — 합성 점수 승자 · 상승률 · 차등 강화 · 장부 원자 기록(예외 전파 금지).</summary>
+    private async Task EvaluateAbExperimentAsync()
+    {
+        if (_abEvalBusy || _abPlan is not { } ab) return;
+        if (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoExperimentLedgerService)) is not PromptFlowStudio.Services.Pluto.IPlutoExperimentLedgerService ledger) { _abEvalToast = "⚠ 실험 장부를 사용할 수 없습니다."; return; }
+        _abEvalBusy = true;
+        _abEvalToast = null;
+        StateHasChanged();
+        try
+        {
+            var a = new PromptFlowStudio.Services.Pluto.PlutoExperimentMetricsInput(_abEvalA.Hook, _abEvalA.Completion, _abEvalA.Ctr);
+            var b = new PromptFlowStudio.Services.Pluto.PlutoExperimentMetricsInput(_abEvalB.Hook, _abEvalB.Completion, _abEvalB.Ctr);
+            var result = await ledger.EvaluateExperimentAsync(ab, a, b, _mediaCts.Token);
+            if (_disposed) return;
+            _abEvalResult = result;
+            if (!result.AlreadyRegistered) await RefreshAdaptiveRecommendationAsync();   // 🧠 차등 강화 → 학습 추천 갱신
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.AbEvaluate", ex); _abEvalToast = "⚠ 승자 판정 실패: " + ex.Message; }
+        finally { _abEvalBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    // ── 📚 Pluto 4.4 — 시리즈 자동 분할 ──
+    private PromptFlowStudio.Services.Pluto.PlutoSeriesBatchResult? _series;
+    private bool _seriesBusy;
+    private string? _seriesToast;
+    private int _seriesActiveEpisode;
+    private string? _seriesEpisodeKey;   // 불러온 편의 사진 목록 — 일치 시 3막 자막에 "n/N편" 장식
+
+    /// <summary>📚 [시리즈 자동 분할] — 후보 풀 → 서로소 2~3편 → 1편 즉시 불러오기(예외 전파 금지).</summary>
+    private async Task BuildSeriesAsync()
+    {
+        if (_seriesBusy || _curationBusy || _montageBusy) return;
+        if (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoSeriesBatchPlanner)) is not PromptFlowStudio.Services.Pluto.IPlutoSeriesBatchPlanner planner) { _seriesToast = "⚠ 시리즈 분할기를 사용할 수 없습니다."; return; }
+        _seriesBusy = true;
+        _seriesToast = null;
+        StateHasChanged();
+        try
+        {
+            var prompt = _prompt ?? "";
+            var theme = prompt.Length > 40 ? prompt[..40] : prompt;
+            var result = await planner.BuildSeriesAsync(_curationPool.ToArray(), theme, 3, _mediaCts.Token);
+            if (_disposed) return;
+            _series = result;
+            _seriesActiveEpisode = 0;
+            _seriesEpisodeKey = null;
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (InvalidOperationException ex) { _series = null; _seriesToast = "⚠ " + ex.Message; }
+        catch (Exception ex) { Program.Log("Workspace.SeriesBuild", ex); _series = null; _seriesToast = "⚠ 시리즈 분할 실패: " + ex.Message; }
+        finally { _seriesBusy = false; }
+        if (_disposed) return;
+        if (_series is { Episodes.Count: > 0 } s) await LoadSeriesEpisodeAsync(s.Episodes[0]);
+        else await InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>▶ 편 불러오기 — 컷 · 초점 → 몽타주 큐 → 프리뷰 재구성(3막 자막 "n/N편" 장식 · 편별 SNS 키트).</summary>
+    private async Task LoadSeriesEpisodeAsync(PromptFlowStudio.Services.Pluto.PlutoSeriesEpisodePlan ep)
+    {
+        if (ep is null || _montageBusy || _curationBusy) return;
+        var photos = new string[ep.Cuts.Count];
+        var focals = new (double X, double Y)[photos.Length];
+        for (var i = 0; i < photos.Length; i++) { photos[i] = ep.Cuts[i].ImagePath; focals[i] = ep.Cuts[i].FocalPoint; }
+        _montagePhotos.Clear();
+        _montagePhotos.AddRange(photos);
+        _stagedFocalPoints = focals;
+        _stagedFocalKey = string.Join("|", photos);
+        _seriesEpisodeKey = _stagedFocalKey;
+        _seriesActiveEpisode = ep.EpisodeNumber;
+        _curationResult = null;   // 시리즈 편 컷 ≠ 단편 큐레이션 선택
+        _showCurationDetails = false;
+        _montageOutput = null;
+        _abPlan = null;
+        _abPlanSource = null;
+        _snsKit = ep.PublishingKit;
+        _seriesToast = "📚 " + ep.EpisodeTitle + " 불러옴 · " + ep.Cuts.Count.ToString(CultureInfo.InvariantCulture) + "컷";
+        RefreshMontageLook();
+        StateHasChanged();
+        await RefreshMontagePreviewAsync();
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>💬 불러온 시리즈 편과 사진 목록이 같으면 3막 자막에 "n/N편" 접두 · 계속/완결 접미(중복 장식 방지).</summary>
+    private void ApplySeriesCueDecoration()
+    {
+        if (_series is not { } s || _seriesActiveEpisode <= 0 || _montageCues is not { Count: > 0 } cues) return;
+        if (!string.Equals(_seriesEpisodeKey, string.Join("|", _montagePhotos), StringComparison.Ordinal)) return;
+        var tag = PromptFlowStudio.Services.Pluto.PlutoSeriesBatchPlanner.PartTag(_seriesActiveEpisode, s.Episodes.Count);
+        if (cues[0].Text.StartsWith(tag, StringComparison.Ordinal)) return;
+        _montageCues = PromptFlowStudio.Services.Pluto.PlutoSeriesBatchPlanner.DecorateSubtitles(cues, _seriesActiveEpisode, s.Episodes.Count);
+    }
+
+    /// <summary>🎞️ [전편 순차 출력] — 1편부터 불러오기 → 15초 몽타주 렌더(편별 실패 → 다음 편 계속 · [부분 구제]).</summary>
+    private async Task ExportSeriesSequentiallyAsync()
+    {
+        if (_series is not { } s || _montageBusy || _motionBusy || _stockBusy || _seriesBusy) return;
+        var done = new List<string>(s.Episodes.Count);
+        foreach (var ep in s.Episodes)
+        {
+            if (_disposed || _mediaCts.IsCancellationRequested) return;
+            await LoadSeriesEpisodeAsync(ep);
+            if (_disposed || _activeMontagePlan is null) continue;
+            await RenderMontageVideoAsync();
+            if (_montageOutput is { } outPath) done.Add(Path.GetFileName(outPath));
+        }
+        if (_disposed) return;
+        _seriesToast = "🎞️ 시리즈 출력 " + done.Count.ToString(CultureInfo.InvariantCulture) + "/" + s.Episodes.Count.ToString(CultureInfo.InvariantCulture) + "편" + (done.Count > 0 ? " · " + string.Join(" · ", done) : "");
+        await InvokeAsync(StateHasChanged);
     }
 
     // ── 🔭 Pluto 4.3 — 자율 트렌드 기획안 ──
