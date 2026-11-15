@@ -160,6 +160,7 @@
                         <button class="@(_seriesActiveEpisode == ep.EpisodeNumber ? "ws-back on" : "ws-back")" data-series-episode="@(ep.EpisodeNumber.ToString(CultureInfo.InvariantCulture))" @onclick="() => LoadSeriesEpisodeAsync(epRef)" disabled="@(_montageBusy || _seriesBusy)" title="@(string.Join(" · ", ep.Cuts.Select(static c => Path.GetFileName(c.ImagePath))))">▶ @(ep.EpisodeTitle) (@(ep.Cuts.Count.ToString(CultureInfo.InvariantCulture))컷)</button>
                     }
                     <button class="ws-back" data-series-export="1" @onclick="ExportSeriesSequentiallyAsync" disabled="@(_montageBusy || _motionBusy || _stockBusy || _seriesBusy)" title="1편부터 차례로 불러와 15초 몽타주 MP4를 순차 렌더">[🎞️ 전편 순차 출력]</button>
+                    <button class="ws-back" data-series-batch-export="1" @onclick="ExportSeriesBatchAsync" disabled="@(_montageBusy || _motionBusy || _stockBusy || _seriesBusy || _seriesExportBusy || _seriesEpisodeOutputs.Count == 0)" title="렌더된 편 영상을 에셋 루트의 시리즈 폴더(Ep01~ · 편별 project_manifest.json · 자막 · SNS 키트) + series_manifest.json으로 일괄 내보내기">[📦 시리즈 전체 일괄 내보내기 (Ep.1~@(ser.Episodes.Count.ToString(CultureInfo.InvariantCulture)) 폴더)]</button>
                     @if (_seriesToast is { } srt) { <span class="ws-retry" role="status" data-series-toast="1">@(srt)</span> }
                 </div>
             }
@@ -261,7 +262,8 @@
                     @if (_abToast is { } abt) { <span class="ws-retry" role="status" data-ab-toast="1">@(abt)</span> }
                 </div>
             }
-            @if (_perfOpen && _montagePhotos.Count >= 2)
+            @if (_montagePhotos.Count < 2 && _perfContextSource is not null) { <button class="ws-back" data-perf-toggle-solo="1" @onclick="TogglePerfPanel" aria-expanded="@(_perfOpen ? "true" : "false")" title="방금 렌더한 영상의 훅 · 룩 · BGM · 태그가 자동 입력됩니다 — 3초 유지율 · 완주율 · CTR만 입력">[📊 배포 성과 피드백 학습] @(_perfOpen ? "▲" : "▼")</button> }
+            @if (_perfOpen && (_montagePhotos.Count >= 2 || _perfContextSource is not null))
             {
                 <div class="ws-perf-panel" data-perf-panel="1" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%">
                     <select class="ws-back" data-perf-platform="1" @bind="_perfPlatform" disabled="@(_perfBusy)">
@@ -269,6 +271,11 @@
                         <option value="Instagram Reels">Instagram Reels</option>
                     </select>
                     <label class="ws-retry">영상 ID <input type="text" data-perf-video="1" @bind="_perfVideoId" maxlength="200" style="width:11em" disabled="@(_perfBusy)" /></label>
+                    @if (_perfContextSource is { } pctx) { <span class="ws-pcore on" data-perf-context="@(pctx)" title="마지막 렌더 영상 메타 스냅샷 자동 입력">🧾 @(pctx)</span> }
+                    <label class="ws-retry">훅 <input type="text" data-perf-hookstyle="1" @bind="_perfHookStyle" maxlength="120" style="width:10em" disabled="@(_perfBusy)" /></label>
+                    <label class="ws-retry">룩 <input type="text" data-perf-look="1" @bind="_perfLookId" maxlength="60" style="width:7em" disabled="@(_perfBusy)" /></label>
+                    <label class="ws-retry">BGM <input type="text" data-perf-bgm="1" @bind="_perfBgmMood" maxlength="60" style="width:6em" disabled="@(_perfBusy)" /></label>
+                    <label class="ws-retry">태그 <input type="text" data-perf-tags="1" @bind="_perfStyleTags" maxlength="200" style="width:10em" disabled="@(_perfBusy)" /></label>
                     <label class="ws-retry">3초 유지율 % <input type="number" data-perf-hook="1" @bind="_perfHook" min="0" max="100" step="0.1" style="width:5em" disabled="@(_perfBusy)" /></label>
                     <label class="ws-retry">CTR % <input type="number" data-perf-ctr="1" @bind="_perfCtr" min="0" max="100" step="0.1" style="width:5em" disabled="@(_perfBusy)" /></label>
                     <label class="ws-retry">완주율 % <input type="number" data-perf-completion="1" @bind="_perfCompletion" min="0" max="100" step="0.1" style="width:5em" disabled="@(_perfBusy)" /></label>
@@ -1790,6 +1797,7 @@
             var r = await StockSuite.ExportMotionVideoFromPhotoAsync(image, _motionPath ?? PromptFlowStudio.Services.Pluto.PlutoMotionTrajectory.Empty,
                 new PromptFlowStudio.Services.Export.ExportOptions(), cues, _bgmOn ? _bgmTrack : null, includeSfx: true, ct: _mediaCts.Token, customBgmWavBytes: _customBgm?.CroppedWavBytes);
             _motionOutput = r.Ok ? r.TargetPath : null;
+            if (r.Ok) CapturePerfContext(r.TargetPath, "모션 영상", null, _montageLook);
             _motionToast = r.Ok ? "✅ " + r.Message : "⚠ " + r.Message;
         }
         catch (OperationCanceledException) { }   // 페이지 이탈
@@ -2262,7 +2270,7 @@
                 _bgmOn ? _bgmTrack : null, includeSfx: true, preferredLook: _montageLook, ct: _mediaCts.Token, customBgmWavBytes: _customBgm?.CroppedWavBytes,
                 lockedPlan: locked, vertical9x16SmartCrop: vertical9x16);
             _montageOutput = r.Ok ? r.TargetPath : null;
-            if (r.Ok && r.TargetPath is { } rendered) _perfVideoId = Path.GetFileNameWithoutExtension(rendered);
+            if (r.Ok && r.TargetPath is { } rendered) { CapturePerfContext(rendered, "몽타주", null, _montageLook); RecordSeriesEpisodeOutput(rendered); }
             _montageToast = r.Ok ? "✅ " + r.Message : "⚠ " + r.Message;
         }
         catch (OperationCanceledException) { }   // 페이지 이탈
@@ -2297,7 +2305,7 @@
                 _bgmOn ? _bgmTrack : null, includeSfx: true, preferredLook: _montageLook, packager: packager, themeHint: MontageThemeHint(), activeTags: ActiveViralTagsSafe(5),
                 customBgmWavBytes: dualCustomWav, ct: _mediaCts.Token);
             _montageOutput = r.VerticalOk ? r.Vertical9x16Path : r.LandscapeOk ? r.Landscape16x9Path : null;
-            if (_montageOutput is { } mo) _perfVideoId = Path.GetFileNameWithoutExtension(mo);
+            if (_montageOutput is { } mo) CapturePerfContext(mo, "듀얼 마스터", null, _montageLook);
             if (r.PublishingKit is { } kit) _snsKit = kit;
             _montageToast = (r.Ok ? "✅ 🎬 듀얼 마스터 · " : r.AnyOk ? "⚠ 🎬 듀얼 마스터 [부분 구제] · " : "⚠ 🎬 듀얼 마스터 실패 · ") + r.Message;
         }
@@ -2439,6 +2447,7 @@
             var result = await planner.BuildSeriesAsync(_curationPool.ToArray(), theme, 3, _mediaCts.Token);
             if (_disposed) return;
             _series = result;
+            _seriesEpisodeOutputs.Clear();
             _seriesActiveEpisode = 0;
             _seriesEpisodeKey = null;
         }
@@ -2506,6 +2515,40 @@
         await InvokeAsync(StateHasChanged);
     }
 
+    // ── 📦 Pluto 4.4.1 — 시리즈 일괄 내보내기 ──
+    private readonly Dictionary<int, string> _seriesEpisodeOutputs = new();
+    private bool _seriesExportBusy;
+
+    /// <summary>불러온 시리즈 편과 같은 사진 목록으로 렌더된 몽타주 → 편 번호별 산출물 기록.</summary>
+    private void RecordSeriesEpisodeOutput(string rendered)
+    {
+        if (_series is null || _seriesActiveEpisode <= 0) return;
+        if (!string.Equals(_seriesEpisodeKey, string.Join("|", _montagePhotos), StringComparison.Ordinal)) return;
+        _seriesEpisodeOutputs[_seriesActiveEpisode] = rendered;
+    }
+
+    /// <summary>📦 [시리즈 전체 일괄 내보내기] — 렌더된 편 영상 → StockSuite 시리즈 폴더 EpNN + series_manifest.json(예외 전파 금지).</summary>
+    private async Task ExportSeriesBatchAsync()
+    {
+        if (_series is not { } s || _seriesExportBusy || _montageBusy || _seriesBusy) return;
+        var root = StockSuite.ConfiguredDirectory;
+        if (string.IsNullOrWhiteSpace(root)) { _seriesToast = "⚠ StockSuite 에셋 경로가 설정되지 않았습니다 — 환경설정에서 경로를 지정하세요."; return; }
+        var paths = new string[s.Episodes.Count];
+        for (var i = 0; i < paths.Length; i++) paths[i] = _seriesEpisodeOutputs.TryGetValue(s.Episodes[i].EpisodeNumber, out var p) ? p : "";
+        _seriesExportBusy = true;
+        StateHasChanged();
+        try
+        {
+            var r = await StockSuite.ExportSeriesBatchToStockSuiteAsync(root, s, paths, _mediaCts.Token);
+            _seriesToast = (r.Ok ? "✅ " : "⚠ ") + r.Message;
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.SeriesBatchExport", ex); _seriesToast = "⚠ 시리즈 일괄 내보내기 실패: " + ex.Message; }
+        finally { _seriesExportBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
     // ── 🔭 Pluto 4.3 — 자율 트렌드 기획안 ──
     private IReadOnlyList<PromptFlowStudio.Services.Pluto.PlutoTrendOpportunityBrief>? _briefs;
     private bool _briefsBusy;
@@ -2564,6 +2607,9 @@
     private string _perfPlatform = "YouTube Shorts";
     private string _perfVideoId = "";
     private double _perfHook = 50, _perfCtr = 4, _perfCompletion = 40;
+    // 🧾 4.4.1 — 마지막 렌더 영상 메타 스냅샷(성과 피드백 자동 입력)
+    private string _perfHookStyle = "", _perfLookId = "", _perfBgmMood = "", _perfStyleTags = "";
+    private string? _perfContextSource;
     private PromptFlowStudio.Services.Pluto.PlutoReinforcementOutcome? _perfOutcome;
 
     private string[] ActiveViralTagsSafe(int max)
@@ -2617,6 +2663,35 @@
         catch (Exception ex) { Program.Log("Workspace.SnsCopy", ex); _snsToast = "⚠ 클립보드 복사에 실패했습니다"; }
     }
 
+    private string CurrentBgmMood() => _customBgm is not null ? "custom" : _bgmOn ? _bgmTrack.ToString() : "none";
+
+    private string PerfHookFromPrompt()
+    {
+        var p = (_prompt ?? "").Trim();
+        return p.Length == 0 ? "prompt-hook" : p.Length > 60 ? p[..60] : p;
+    }
+
+    private static readonly char[] s_perfTagSeparators = { ',', '#', ' ' };
+
+    private static string[] SplitPerfTags(string raw)
+    {
+        var parts = raw.Split(s_perfTagSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return parts.Length > 8 ? parts[..8] : parts;
+    }
+
+    /// <summary>🧾 렌더 완료 → 성과 피드백 입력 자동 채움(VideoId · HookStyle · ColorLookId · BgmMood · StyleTags). 지표 입력값은 유지.</summary>
+    private void CapturePerfContext(string? renderedPath, string source, string? hook, string? look)
+    {
+        if (string.IsNullOrWhiteSpace(renderedPath)) return;
+        _perfVideoId = Path.GetFileNameWithoutExtension(renderedPath);
+        _perfHookStyle = hook ?? (_montageCues is { Count: > 0 } mc && !string.IsNullOrWhiteSpace(mc[0].Text) ? mc[0].Text.Trim() : "montage-hook");
+        _perfLookId = string.IsNullOrWhiteSpace(look) ? _montageLook : look;
+        _perfBgmMood = CurrentBgmMood();
+        _perfStyleTags = string.Join(", ", ActiveViralTagsSafe(3));
+        _perfContextSource = source;
+        _perfOutcome = null;
+    }
+
     private void TogglePerfPanel()
     {
         _perfOpen = !_perfOpen;
@@ -2636,9 +2711,13 @@
         StateHasChanged();
         try
         {
-            var hook = _montageCues is { Count: > 0 } mc && !string.IsNullOrWhiteSpace(mc[0].Text) ? mc[0].Text.Trim() : "montage-hook";
-            var telemetry = new PromptFlowStudio.Services.Pluto.PlutoVideoPerformanceTelemetry(videoId, _perfPlatform, hook, _montageLook,
-                _customBgm is not null ? "custom" : _bgmOn ? _bgmTrack.ToString() : "none", ActiveViralTagsSafe(3),
+            var hook = !string.IsNullOrWhiteSpace(_perfHookStyle) ? _perfHookStyle.Trim()
+                : _montageCues is { Count: > 0 } mc && !string.IsNullOrWhiteSpace(mc[0].Text) ? mc[0].Text.Trim() : "montage-hook";
+            var look = string.IsNullOrWhiteSpace(_perfLookId) ? _montageLook : _perfLookId.Trim();
+            var bgm = string.IsNullOrWhiteSpace(_perfBgmMood) ? CurrentBgmMood() : _perfBgmMood.Trim();
+            var tags = string.IsNullOrWhiteSpace(_perfStyleTags) ? ActiveViralTagsSafe(3) : SplitPerfTags(_perfStyleTags);
+            var telemetry = new PromptFlowStudio.Services.Pluto.PlutoVideoPerformanceTelemetry(videoId, _perfPlatform, hook, look,
+                bgm, tags,
                 _perfHook, _perfCompletion, _perfCtr, DateTimeOffset.UtcNow);
             _perfOutcome = await svc.IngestPerformanceAsync(telemetry, _mediaCts.Token);
             _snsToast = null;
@@ -3296,6 +3375,7 @@
                 if (!string.Equals(fp, _miniPlayed, StringComparison.OrdinalIgnoreCase))
                 {
                     _miniPlayed = fp;
+                    CapturePerfContext(fp, _durationMode == PromptFlowStudio.Services.Render.VideoDurationMode.Sec15_AmbientSlow ? "15초 앰비언트 루프" : "단일 영상", PerfHookFromPrompt(), "engine-native");
                     try { _miniUrl = Media.ToPlaybackUrl(fp); } catch (Exception ex) { Program.Log("Workspace.MiniQueue", ex); _miniUrl = null; }
                     _canvasQueueUrl = _miniUrl;
                     _canvasQueuePath = _miniUrl is null ? null : fp;

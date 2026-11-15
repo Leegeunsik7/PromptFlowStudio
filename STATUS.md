@@ -1,17 +1,15 @@
 # Current Project Status
-- Active Milestone: 【작업실 헤더·플로팅 버튼 CSS 간격 다듬기 (ba8c6a7 후속)】
-- Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Tests 0W/0E
-- Tests: ✅ 1141/1141 PASS (전체 스위트, Release, 12m48s) · `EngineRoutingAndProjectExportTests` 10/10
+- Active Milestone: 【Pluto 4.4.1 Polish — 첫 렌더 400ms ComfyUI 프로브 · 성과 피드백 자동 입력 · 시리즈 일괄 내보내기】
+- Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Mobile net8.0-ios CoreCompile 0W/0E · ✅ Tests 0W/0E
+- Tests: ✅ 1144/1144 PASS (전체 스위트, Release, 10m52s) · 신규 3건
 - Updated: 2026-11-15 (KST)
 
 ## Completed
-- 🎨 Workspace CSS 전용 수정(바인딩·마크업 무변경)
-  - 헤더 행 간격 8px/14px(≥1600px 18px) · 기본 행 하단 여백 8px · 뒤로/PlutoCore 버튼 하단 10px 패딩 제거 → 수직 중앙 정렬
-  - 상태 배지(`ws-ssmon`/`ws-ipc`/`ws-recover`) 최소 높이 26px 중앙 정렬 · 배지 영역 `max-width:100%`
-  - Pluto 2열 스트립 gap 10px(≥1600px 14px) · 셀 패딩 8px/10px · `align-items: stretch`로 높이 일치
-  - 캔버스 툴바 gap 6px/8px · 토글·프로젝트 입력 최소 높이 26px
-  - 🪐 FAB: 최소 높이 44px · 최대 폭 360px · 위치 24px · 본문 하단 여백 104px
+- ⚡ `VideoEngineRenderExecutionEngine.EnsureFastProbeAsync` — ComfyUI 모드 + 로컬·DashScope 둘 다 구성 + 15초 내 결과 없음 → 400ms `/system_stats` 프로브, 오프라인이면 첫 클릭부터 Cloud Wan 2.1로 전환 (`ComfyCheckedAt`·`ComfyProbe`·`Clock` 주입, MainForm 결선)
+- 🧾 Workspace `CapturePerfContext` — 단일 영상·15초 앰비언트·모션·몽타주·듀얼 마스터 렌더 완료 시 VideoId/Hook/Look/BGM/Tags 자동 입력, 사진 2장 미만이어도 피드백 패널 토글 표시
+- 📦 `StockSuiteExporter.ExportSeriesBatchToStockSuiteAsync` — `{테마}_{yyyyMMdd}\Ep01..` + 편별 `project_manifest.json`(자막·SNS) + `series_manifest.json`, 미렌더 편은 [부분 구제]로 처리, Workspace 시리즈 패널 버튼 추가
+- 🧪 `RenderEngine_UnprobedOffline…`, `StockSuiteExporter_SeriesBatch…`, `Workspace_MountsWithAllPluto44Panels…`
 
 ## Next
-- 실제 앱에서 1280/1920px 및 ≤1100px 헤더 레이아웃 육안 확인
-- ComfyUI 온라인 판정은 헬스 체크 스냅샷 기반 — 첫 렌더 직전 즉시 핑 검토
+- 시리즈 일괄 내보내기는 이번 세션에 렌더된 편만 대상 — 앱 재시작 후에는 편 영상 재렌더 필요
+- 실제 앱에서 ComfyUI 오프라인 + 키 저장 상태로 기동 직후 첫 클릭 동작 확인

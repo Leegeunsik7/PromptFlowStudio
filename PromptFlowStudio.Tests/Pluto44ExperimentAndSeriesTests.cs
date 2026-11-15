@@ -228,4 +228,124 @@ public sealed class Pluto44ExperimentAndSeriesTests : IDisposable
         var bad = new PlutoDriveHealthService().CheckHealth(plutoDir, studio).Items.Single(i => i.FileName == PlutoExperimentLedgerService.FileName);
         Assert.Equal(PlutoDriveFileStatus.CorruptOrEmpty, bad.Status);
     }
+
+    [Fact]
+    public async Task StockSuiteExporter_SeriesBatch_CreatesEpisodeSubfoldersAndSeriesManifest()
+    {
+        var photos = new List<string>(12);
+        for (var i = 0; i < 12; i++) photos.Add(MakeScene("s" + i.ToString("00", System.Globalization.CultureInfo.InvariantCulture) + ".png", 2000 + i * 41));
+        var series = await new PlutoSeriesBatchPlanner(new PlutoPhotoCurationEngine()).BuildSeriesAsync(photos, "첫 생일: 여행/기록", 3);
+        Assert.Equal(3, series.Episodes.Count);
+
+        var videos = new string[series.Episodes.Count];
+        for (var i = 0; i < videos.Length; i++)
+        {
+            videos[i] = Path.Combine(_dir, "montage_ep" + (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture) + ".mp4");
+            File.WriteAllBytes(videos[i], new byte[1024 + i]);
+        }
+        var root = Path.Combine(_dir, "stocksuite");
+        Directory.CreateDirectory(root);
+        var exporter = new StockSuiteExporter(() => root) { LocalNow = () => new DateTime(2026, 11, 15, 10, 0, 0) };
+
+        var r = await exporter.ExportSeriesBatchToStockSuiteAsync(root, series, videos);
+
+        Assert.True(r.Ok, r.Message);
+        var seriesDir = Path.Combine(root, StockSuiteExporter.SanitizeProjectName(series.SeriesTheme) + "_20261115");
+        Assert.Equal(seriesDir, r.TargetPath);
+        Assert.DoesNotContain(':', Path.GetFileName(seriesDir));
+        Assert.DoesNotContain('/', Path.GetFileName(seriesDir));
+        for (var i = 0; i < 3; i++)
+        {
+            var ep = series.Episodes[i];
+            var epDir = Path.Combine(seriesDir, "Ep0" + (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture));
+            Assert.Equal(Path.GetFileName(epDir), StockSuiteExporter.EpisodeFolderName(ep.EpisodeNumber));
+            var copied = Path.Combine(epDir, Path.GetFileName(videos[i]));
+            Assert.True(File.Exists(copied));
+            Assert.Equal(1024 + i, new FileInfo(copied).Length);
+            Assert.Empty(Directory.GetFiles(epDir, "*.~pfs"));   // 임시 파일 잔존 0
+
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(epDir, StockSuiteExporter.ProjectManifestName)));
+            var m = doc.RootElement;
+            Assert.Equal(ep.EpisodeNumber, m.GetProperty("episodeNumber").GetInt32());
+            Assert.Equal(3, m.GetProperty("totalEpisodes").GetInt32());
+            Assert.Equal(ep.EpisodeTitle, m.GetProperty("projectName").GetString());
+            var subs = m.GetProperty("subtitles");
+            Assert.Equal(ep.Subtitles.Count, subs.GetArrayLength());
+            Assert.Equal(ep.Subtitles[0].Text, subs[0].GetProperty("text").GetString());
+            Assert.StartsWith(PlutoSeriesBatchPlanner.PartTag(i + 1, 3), subs[0].GetProperty("text").GetString(), StringComparison.Ordinal);
+            var sns = m.GetProperty("sns");
+            Assert.Equal(ep.PublishingKit.Titles.Count, sns.GetProperty("titles").GetArrayLength());
+            Assert.Equal(ep.PublishingKit.CaptionKo, sns.GetProperty("captionKo").GetString());
+            Assert.Equal(Path.GetFileName(videos[i]), m.GetProperty("exports")[0].GetProperty("file").GetString());
+        }
+
+        using (var sdoc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(seriesDir, StockSuiteExporter.SeriesManifestName))))
+        {
+            var s = sdoc.RootElement;
+            Assert.Equal(series.SeriesTheme, s.GetProperty("seriesTheme").GetString());
+            Assert.Equal(3, s.GetProperty("totalEpisodes").GetInt32());
+            Assert.Equal(3, s.GetProperty("exportedEpisodes").GetInt32());
+            Assert.Equal(series.TotalUsedUniquePhotos, s.GetProperty("totalUsedUniquePhotos").GetInt32());
+            var eps = s.GetProperty("episodes");
+            Assert.Equal(3, eps.GetArrayLength());
+            Assert.Equal("Ep02", eps[1].GetProperty("folder").GetString());
+            Assert.Equal("Ep02/" + StockSuiteExporter.ProjectManifestName, eps[1].GetProperty("manifest").GetString());
+        }
+
+        // [부분 구제] — 2편 미렌더 → 1 · 3편만 · 누락 고지
+        var partialRoot = Path.Combine(_dir, "stocksuite_partial");
+        Directory.CreateDirectory(partialRoot);
+        var partial = await exporter.ExportSeriesBatchToStockSuiteAsync(partialRoot, series, new[] { videos[0], "", videos[2] });
+        Assert.True(partial.Ok);
+        Assert.Contains("[부분 구제]", partial.Message, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(Path.Combine(partial.TargetPath!, "Ep02")));
+        Assert.True(Directory.Exists(Path.Combine(partial.TargetPath!, "Ep03")));
+
+        // 렌더 0편 · 루트 부재 → 실패(예외 없음)
+        Assert.False((await exporter.ExportSeriesBatchToStockSuiteAsync(root, series, Array.Empty<string>())).Ok);
+        var missing = await exporter.ExportSeriesBatchToStockSuiteAsync(Path.Combine(_dir, "nope"), series, videos);
+        Assert.False(missing.Ok);
+        Assert.True(missing.NeedsPathSetup);
+    }
+
+    [Fact]
+    public void Workspace_MountsWithAllPluto44Panels_WithoutExceptions()
+    {
+        // ① 컴포넌트 인스턴스화(필드 초기화 · 생성자) 예외 0
+        var type = typeof(StockSuiteExporter).Assembly.GetType("PromptFlowStudio.Blazor.Pages.Workspace", throwOnError: true)!;
+        Assert.True(typeof(Microsoft.AspNetCore.Components.ComponentBase).IsAssignableFrom(type));
+        var ws = Activator.CreateInstance(type)!;
+        const System.Reflection.BindingFlags F = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+
+        // ② Pluto 4.4/4.4.1 핸들러 결선
+        foreach (var name in new[] { "BuildSeriesAsync", "LoadSeriesEpisodeAsync", "ExportSeriesSequentiallyAsync", "ExportSeriesBatchAsync", "RecordSeriesEpisodeOutput",
+                                     "BuildAbExperimentAsync", "SubmitPerformanceAsync", "TogglePerfPanel", "CapturePerfContext" })
+            Assert.NotNull(type.GetMethod(name, F));
+
+        // ③ 렌더 완료 스냅샷 → 성과 피드백 입력 자동 채움(서비스 미주입 상태에서도 예외 0)
+        type.GetMethod("CapturePerfContext", F)!.Invoke(ws, new object?[] { Path.Combine(_dir, "ws_20261115_ambient15s.mp4"), "15초 앰비언트 루프", "느린 돌리 훅", "engine-native" });
+        string Field(string n) => (string)type.GetField(n, F)!.GetValue(ws)!;
+        Assert.Equal("ws_20261115_ambient15s", Field("_perfVideoId"));
+        Assert.Equal("느린 돌리 훅", Field("_perfHookStyle"));
+        Assert.Equal("engine-native", Field("_perfLookId"));
+        Assert.False(string.IsNullOrWhiteSpace(Field("_perfBgmMood")));
+        Assert.Equal("15초 앰비언트 루프", Field("_perfContextSource"));
+        type.GetMethod("TogglePerfPanel", F)!.Invoke(ws, null);
+        Assert.True((bool)type.GetField("_perfOpen", F)!.GetValue(ws)!);
+        Assert.Equal("ws_20261115_ambient15s", Field("_perfVideoId"));   // 토글이 스냅샷을 덮어쓰지 않음
+
+        // ④ 마크업 — 4.4 패널 · 4.4.1 결선점 존재 및 피드백 패널이 단일 영상에서도 열림
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "PromptFlowStudio", "PromptFlowStudio.csproj"))) dir = dir.Parent;
+        Assert.NotNull(dir);
+        var razor = File.ReadAllText(Path.Combine(dir!.FullName, "PromptFlowStudio", "Blazor", "Pages", "Workspace.razor"));
+        foreach (var marker in new[] { "data-series-run=\"1\"", "data-series-panel=", "data-series-export=\"1\"", "data-series-batch-export=\"1\"",
+                                       "data-ab-build=\"1\"", "data-ab-panel=", "data-perf-panel=\"1\"", "data-perf-toggle-solo=\"1\"",
+                                       "data-perf-hookstyle=\"1\"", "data-perf-look=\"1\"", "data-perf-bgm=\"1\"", "data-perf-tags=\"1\"", "data-perf-context=" })
+            Assert.Contains(marker, razor, StringComparison.Ordinal);
+        Assert.Contains("@if (_perfOpen && (_montagePhotos.Count >= 2 || _perfContextSource is not null))", razor, StringComparison.Ordinal);
+        var panel = razor.IndexOf("data-series-panel=", StringComparison.Ordinal);
+        var batch = razor.IndexOf("data-series-batch-export=", StringComparison.Ordinal);
+        Assert.True(batch > panel && batch < razor.IndexOf("</div>", panel, StringComparison.Ordinal));   // 활성 시리즈 패널 내부
+    }
 }

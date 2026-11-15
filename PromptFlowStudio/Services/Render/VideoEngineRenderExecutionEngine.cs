@@ -89,6 +89,97 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
     /// <summary>로컬 ComfyUI 온라인 여부(헬스 체크 스냅샷 · null = 미점검/알 수 없음). false + Cloud 키 구성 → Cloud Wan 2.1 자동 전환.</summary>
     public Func<bool?>? ComfyOnline { get; init; }
 
+    /// <summary>헬스 체크 스냅샷 시각(null = 미점검 · 공급자 미설정 = 스냅샷 항상 최신 간주).</summary>
+    public Func<DateTimeOffset?>? ComfyCheckedAt { get; init; }
+
+    /// <summary>ComfyUI 고속 도달성 프로브(베이스 URL · ct → 온라인). null 이면 내장 HTTP <c>GET /system_stats</c>.</summary>
+    public Func<string, CancellationToken, Task<bool>>? ComfyProbe { get; init; }
+
+    /// <summary>시계(테스트 주입) — null 이면 <see cref="DateTimeOffset.UtcNow"/>.</summary>
+    public Func<DateTimeOffset>? Clock { get; init; }
+
+    /// <summary>첫 클릭 고속 프로브 타임아웃.</summary>
+    public static readonly TimeSpan FastProbeTimeout = TimeSpan.FromMilliseconds(400);
+
+    /// <summary>도달성 결과 유효 기간 — 이보다 오래된 헬스/프로브 결과는 재프로브.</summary>
+    public static readonly TimeSpan ReachabilityFreshness = TimeSpan.FromSeconds(15);
+
+    private readonly object _probeGate = new();
+    private DateTimeOffset _probeAt = DateTimeOffset.MinValue;
+    private bool _probeOnline;
+
+    /// <summary>고속 프로브 실행 횟수(진단·테스트).</summary>
+    public int FastProbeCount { get { lock (_probeGate) return _probeCount; } }
+    private int _probeCount;
+
+    private DateTimeOffset Now() => Clock?.Invoke() ?? DateTimeOffset.UtcNow;
+
+    /// <summary>헬스 스냅샷이 신선(&lt;15s)하면 그 값, 아니면 최근 고속 프로브, 둘 다 없으면 오래된 스냅샷(또는 null).</summary>
+    internal bool? EffectiveComfyOnline()
+    {
+        bool? health;
+        try { health = ComfyOnline?.Invoke(); } catch (Exception ex) { Program.Log("RenderExec.ComfyOnline", ex); health = null; }
+        var now = Now();
+        if (health is not null && IsHealthFresh(now)) return health;
+        lock (_probeGate) if (_probeAt != DateTimeOffset.MinValue && now - _probeAt < ReachabilityFreshness) return _probeOnline;
+        return health;
+    }
+
+    private bool IsHealthFresh(DateTimeOffset now)
+    {
+        if (ComfyCheckedAt is null) return true;
+        DateTimeOffset? at;
+        try { at = ComfyCheckedAt(); } catch (Exception ex) { Program.Log("RenderExec.ComfyCheckedAt", ex); return false; }
+        return at is { } t && now - t < ReachabilityFreshness;
+    }
+
+    /// <summary>
+    /// ComfyUI 모드 + 로컬 엔진 구성 + DashScope(비-ComfyUI) 엔진 구성 상태에서 최근(&lt;15s) 도달성 결과가 없으면
+    /// 400ms 고속 프로브 → 오프라인이면 <see cref="ResolveActive"/> 가 첫 클릭에 Cloud Wan 2.1 로 자동 전환. 실패/예외 = 오프라인.
+    /// </summary>
+    internal async Task EnsureFastProbeAsync(CancellationToken ct)
+    {
+        if (_selector is null || _selector.All.Count == 0) return;
+        string? mode;
+        try { mode = RenderMode?.Invoke(); } catch (Exception) { return; }
+        if (string.IsNullOrWhiteSpace(mode)
+            || !string.Equals(PromptFlowStudio.Services.Configuration.AppSettingsManager.NormalizeMode(mode), RenderEngineKind.ComfyUi, StringComparison.OrdinalIgnoreCase)) return;
+        var all = _selector.All;
+        bool comfyEnabled = false, cloudEnabled = false;
+        for (var i = 0; i < all.Count; i++)
+        {
+            if (all[i] is ComfyUiVideoEngine) comfyEnabled |= all[i].Enabled;
+            else cloudEnabled |= all[i].Enabled;
+        }
+        if (!comfyEnabled || !cloudEnabled) return;   // 로컬 미구성은 기존 경로로 즉시 전환 · Cloud 키 없으면 프로브 불요
+        bool? health;
+        try { health = ComfyOnline?.Invoke(); } catch (Exception) { health = null; }
+        var now = Now();
+        if (health is not null && IsHealthFresh(now)) return;
+        lock (_probeGate) if (_probeAt != DateTimeOffset.MinValue && now - _probeAt < ReachabilityFreshness) return;
+
+        var baseUrl = ComfyBaseUrl?.Invoke() is { Length: > 0 } cfg ? cfg.TrimEnd('/')
+            : Environment.GetEnvironmentVariable("PFS_COMFY_URL") is { Length: > 0 } u ? u.TrimEnd('/') : "http://127.0.0.1:8188";
+        bool online;
+        using (var cts = CancellationTokenSource.CreateLinkedTokenSource(ct))
+        {
+            cts.CancelAfter(FastProbeTimeout);
+            try { online = await (ComfyProbe ?? DefaultProbeAsync)(baseUrl, cts.Token).ConfigureAwait(false); }
+            catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested) { online = false; }
+        }
+        lock (_probeGate) { _probeOnline = online; _probeAt = Now(); _probeCount++; }
+    }
+
+    private static async Task<bool> DefaultProbeAsync(string baseUrl, CancellationToken ct)
+    {
+        try
+        {
+            using var res = await s_http.GetAsync(baseUrl + "/system_stats", HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+            return res.IsSuccessStatusCode;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or OperationCanceledException or InvalidOperationException or UriFormatException) { return false; }
+    }
+
     /// <summary>로컬/Cloud 엔진 모두 사용 불가 — 작업실 배너 문구(Mock 대체 생성 안 함).</summary>
     public const string NoEngineMessage = "⚠️ AI 영상 엔진 미연결: [AI 엔진설정]에서 DashScope API 키를 저장하고 Cloud 모드를 선택해 주세요.";
 
@@ -113,6 +204,7 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
     public async Task<RenderExecutionResult> ExecuteAsync(BatchRenderJob job, IProgress<int> progress, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(job);
+        await EnsureFastProbeAsync(ct).ConfigureAwait(false);   // ⚡ 첫 클릭 400ms 프로브 → 오프라인이면 즉시 Cloud
         var engine = ResolveActive(out var autoCloud);
         var kind = KindOf(engine);
         if (engine is not { Enabled: true })
@@ -364,8 +456,7 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
         {
             IVideoGenerationEngine? comfy = active is ComfyUiVideoEngine ? active : null;
             for (var i = 0; comfy is null && i < all.Count; i++) if (all[i] is ComfyUiVideoEngine) comfy = all[i];
-            bool? online;
-            try { online = ComfyOnline?.Invoke(); } catch (Exception ex) { Program.Log("RenderExec.ComfyOnline", ex); online = null; }
+            var online = EffectiveComfyOnline();
             if (comfy is { Enabled: true } && online != false) return comfy;
             // ☁️ 로컬 미구성/오프라인 → 구성된 Cloud 엔진 자동 전환(Mock 폴백 대신)
             if (active is not ComfyUiVideoEngine && active is { Enabled: true }) { autoCloud = true; return active; }
