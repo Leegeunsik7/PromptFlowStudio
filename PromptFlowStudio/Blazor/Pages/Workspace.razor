@@ -159,7 +159,8 @@
                 <div class="ws-adaptive-strip" data-adaptive-strip="@(arec.HasReinforcedHistory ? "learned" : "explore")" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%">
                     <span class="@(arec.TopHook.IsReinforced ? "ws-pcore on" : "ws-retry")" data-adaptive-hook="@(arec.TopHook.DisplayLabel)" title="@("점수 " + arec.TopHook.FinalScore.ToString("0.000", CultureInfo.InvariantCulture) + " · 학습 ×" + arec.TopHook.LearnedWeightMultiplier.ToString("0.00", CultureInfo.InvariantCulture))">🧠 최적 훅: @(arec.TopHook.DisplayLabel) · @(arec.TopHook.ReasonBadge)</span>
                     <span class="@(arec.TopColorLook.IsReinforced ? "ws-pcore on" : "ws-retry")" data-adaptive-look="@(arec.TopColorLook.DisplayLabel)" title="@("점수 " + arec.TopColorLook.FinalScore.ToString("0.000", CultureInfo.InvariantCulture) + " · 학습 ×" + arec.TopColorLook.LearnedWeightMultiplier.ToString("0.00", CultureInfo.InvariantCulture))">🎨 최적 룩: @(arec.TopColorLook.DisplayLabel) · @(arec.TopColorLook.ReasonBadge)</span>
-                    <button class="ws-back" data-adaptive-apply="1" @onclick="ApplyLearnedLookAndHookAsync" disabled="@(_adaptiveBusy || _montageBusy)" title="배포 성과로 강화된 1위 색보정 룩을 몽타주에 고정하고, 1위 훅을 3막 자막(Act 1)·프롬프트에 주입">[🧠 학습 최적 룩·훅 적용]</button>
+                    <span class="@(arec.TopBgmMood.IsReinforced ? "ws-pcore on" : "ws-retry")" data-adaptive-bgm="@(arec.TopBgmMood.DisplayLabel)" title="@("점수 " + arec.TopBgmMood.FinalScore.ToString("0.000", CultureInfo.InvariantCulture) + " · 학습 ×" + arec.TopBgmMood.LearnedWeightMultiplier.ToString("0.00", CultureInfo.InvariantCulture))">🎵 최적 BGM: @(arec.TopBgmMood.DisplayLabel) · @(arec.TopBgmMood.ReasonBadge)</span>
+                    <button class="ws-back" data-adaptive-apply="1" @onclick="ApplyLearnedLookAndHookAsync" disabled="@(_adaptiveBusy || _montageBusy)" title="배포 성과로 강화된 1위 색보정 룩을 몽타주에 고정하고, 1위 훅을 3막 자막(Act 1)·프롬프트에 주입 · 1위 BGM 무드 트랙 선택 후 컷 비트 재정렬(내 BGM 업로드 시 유지)">[🧠 학습 최적 룩·훅·BGM 적용]</button>
                     @if (_learnedLookPinned is { } llp) { <span class="ws-retry" data-adaptive-pinned="@(llp)">📌 룩 고정: @(llp)</span> }
                     @if (_adaptiveToast is { } adt) { <span class="ws-retry" role="status" data-adaptive-toast="1">@(adt)</span> }
                 </div>
@@ -2096,6 +2097,11 @@
         {
             await RefreshAdaptiveRecommendationAsync();   // 🧠 몽타주 세션 초기화 → 학습 최적 훅·룩 갱신
             if (_disposed || seq != _montagePreviewSeq) return;
+            bool bgmChanged;
+            try { bgmChanged = await TryAutoApplyLearnedBgmAsync(); }
+            catch (OperationCanceledException) { return; }   // 페이지 이탈
+            if (_disposed || seq != _montagePreviewSeq) return;
+            if (bgmChanged) { await RefreshMontagePreviewAsync(); return; }   // 🎵 새 트랙 비트 그리드로 컷·3막 자막 재잠금(자동 적용 1회 → 재귀 1단)
             await GenerateMontageStoryAsync();
         }
     }
@@ -2296,26 +2302,65 @@
             var look = rec.TopColorLook.DisplayLabel;
             if (PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.TryGetPreset(look) is not null) _learnedLookPinned = look;
             RefreshMontageLook();
+            var bgmNote = await ApplyLearnedBgmTrackAsync(rec, true);   // 🎵 프리뷰 재생성 전 트랙 확정 → 컷 비트 재정렬
             var hook = rec.TopHook;
             if (_montagePhotos.Count >= 2)
             {
-                await RefreshMontagePreviewAsync();   // 🎬 프리뷰 · 3막 자막 재생성(랭커가 1위 훅을 Act 1에 반영)
-                _adaptiveToast = "🧠 룩 " + _montageLook + " · 훅 '" + hook.DisplayLabel + "' 반영";
+                await RefreshMontagePreviewAsync();   // 🎬 프리뷰 · 3막 자막 재생성(랭커가 1위 훅을 Act 1에 반영 · 새 BGM 비트 그리드)
+                _adaptiveToast = "🧠 룩 " + _montageLook + " · 훅 '" + hook.DisplayLabel + "'" + bgmNote + " 반영";
             }
             else if (hook.IsReinforced && !hook.IsPenalized && !(_prompt ?? "").Contains(hook.DisplayLabel, StringComparison.Ordinal))
             {
                 Snap("학습 훅 적용 전");
                 _prompt = string.IsNullOrWhiteSpace(_prompt) ? "opening hook: " + hook.DisplayLabel : _prompt.TrimEnd() + ", opening hook: " + hook.DisplayLabel;
                 Snap("🧠 학습 훅");
-                _adaptiveToast = "🧠 프롬프트에 학습 훅 주입 · 룩 " + _montageLook;
+                _adaptiveToast = "🧠 프롬프트에 학습 훅 주입 · 룩 " + _montageLook + bgmNote;
             }
-            else _adaptiveToast = "🧠 룩 " + _montageLook + " 고정";
+            else _adaptiveToast = "🧠 룩 " + _montageLook + " 고정" + bgmNote;
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
         catch (Exception ex) { Program.Log("Workspace.AdaptiveApply", ex); _adaptiveToast = "⚠ 학습 최적 적용 실패: " + ex.Message; }
         finally { _adaptiveBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
+    }
+
+    // ── 🎵 Pluto 4.2.2 — 1위 BGM 무드 → _bgmTrack ──
+    private static readonly string[] BabyBgmTrackIds = Enum.GetNames<PromptFlowStudio.Services.Export.BabyBgmTrack>();
+    private bool _bgmTrackUserPicked;      // 사용자가 트랙을 직접 고른 세션 → 자동 적용 생략
+    private bool _learnedBgmAutoApplied;   // 클린 세션 자동 적용은 1회
+
+    /// <summary>
+    /// 🎵 1위 BGM 무드 → 프리셋 트랙 해석 후 <c>_bgmTrack</c> 반영(강화 · 비감점 무드만).
+    /// 🛡️ 내 BGM 업로드 시 보존(덮어쓰지 않음). <paramref name="explicitApply"/> → 감성 BGM ON + 미리듣기 동기.
+    /// 반환: 토스트 접미(변경 없음 → 빈 문자열). 몽타주 재컴파일은 호출자 책임.
+    /// </summary>
+    private async Task<string> ApplyLearnedBgmTrackAsync(PromptFlowStudio.Services.Pluto.PlutoAdaptiveRecommendation rec, bool explicitApply)
+    {
+        if (_customBgm is not null) return " · 🎵 내 BGM 유지";
+        var mood = rec.TopBgmMood;
+        if (!mood.IsReinforced || mood.IsPenalized) return "";
+        if (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoAdaptivePatternRanker)) is not PromptFlowStudio.Services.Pluto.IPlutoAdaptivePatternRanker ranker) return "";
+        var id = ranker.ResolveRecommendedBgmTrackId(mood.Key, BabyBgmTrackIds, _bgmTrack.ToString());
+        if (!Enum.TryParse<PromptFlowStudio.Services.Export.BabyBgmTrack>(id, true, out var track) || !Enum.IsDefined(track)) return "";
+        var changed = track != _bgmTrack || (explicitApply && !_bgmOn);
+        if (!changed) return "";
+        _bgmTrack = track;
+        if (explicitApply) _bgmOn = true;
+        if (_bgmOn) await SyncBgmPreviewAsync();
+        return " · 🎵 BGM " + PromptFlowStudio.Services.Export.StockSuiteExporter.BabyBgmLabel(track);
+    }
+
+    /// <summary>🎵 클린 세션(사용자 트랙 미선택 · 내 BGM 없음 · 학습 이력 있음) → 1위 BGM 무드 1회 자동 적용 · 변경 시 true(몽타주 재동기 필요).</summary>
+    private async Task<bool> TryAutoApplyLearnedBgmAsync()
+    {
+        if (_learnedBgmAutoApplied || _bgmTrackUserPicked || _customBgm is not null || _adaptiveRec is not { HasReinforcedHistory: true } rec) return false;
+        _learnedBgmAutoApplied = true;
+        var before = _bgmTrack;
+        try { await ApplyLearnedBgmTrackAsync(rec, false); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { Program.Log("Workspace.AdaptiveBgmAuto", ex); return false; }   // [부분 구제] 기존 트랙 유지
+        return before != _bgmTrack && _bgmOn;   // BGM OFF → 비트 미사용 · 재컴파일 불필요
     }
 
     private string _size = "1280*720";
@@ -3201,6 +3246,7 @@
         if (int.TryParse(e.Value?.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) && Enum.IsDefined(typeof(PromptFlowStudio.Services.Export.BabyBgmTrack), v))
         {
             _bgmTrack = (PromptFlowStudio.Services.Export.BabyBgmTrack)v;
+            _bgmTrackUserPicked = true;   // 🎵 사용자 선택 우선 — 학습 BGM 자동 적용 생략
             await SyncBgmPreviewAsync();
         }
     }

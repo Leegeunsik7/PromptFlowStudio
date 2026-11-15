@@ -36,6 +36,9 @@ public interface IPlutoAdaptivePatternRanker
 
     /// <summary>태그를 (학습 가중치 − 오답 감점) 내림차순으로 · 최대 <paramref name="maxCount"/>개.</summary>
     IReadOnlyList<string> RankTags(IEnumerable<string> tags, int maxCount = 8);
+
+    /// <summary>🎵 1위 BGM 무드(키 · 라벨 · <c>bgm:</c> 접두 허용) → 가용 트랙 ID(정확 일치 → 무드 별칭) · 불일치/빈 목록 → <paramref name="fallbackTrackId"/>.</summary>
+    string ResolveRecommendedBgmTrackId(string? topBgmMoodKeyOrLabel, IReadOnlyList<string> availableTrackIds, string fallbackTrackId);
 }
 
 /// <summary>
@@ -119,6 +122,63 @@ public sealed class PlutoAdaptivePatternRanker : IPlutoAdaptivePatternRanker
         var result = new string[n];
         for (var i = 0; i < n; i++) result[i] = ranked[i].DisplayLabel;
         return result;
+    }
+
+    string IPlutoAdaptivePatternRanker.ResolveRecommendedBgmTrackId(string? topBgmMoodKeyOrLabel, IReadOnlyList<string> availableTrackIds, string fallbackTrackId)
+        => ResolveRecommendedBgmTrackId(topBgmMoodKeyOrLabel, availableTrackIds, fallbackTrackId);
+
+    // ── 🎵 무드 → 트랙 ──
+
+    private enum BgmMoodGroup { None, Calm, Bright, Warm, Energetic }
+
+    /// <summary>무드 별칭(소문자 부분 일치 · 선언 순서 우선).</summary>
+    private static readonly (string Keyword, BgmMoodGroup Group)[] BgmMoodAliases =
+    {
+        ("lullaby", BgmMoodGroup.Calm), ("calm", BgmMoodGroup.Calm), ("piano", BgmMoodGroup.Calm), ("sleep", BgmMoodGroup.Calm), ("soft", BgmMoodGroup.Calm), ("자장가", BgmMoodGroup.Calm), ("잔잔", BgmMoodGroup.Calm),
+        ("musicbox", BgmMoodGroup.Bright), ("music box", BgmMoodGroup.Bright), ("upbeat", BgmMoodGroup.Bright), ("playful", BgmMoodGroup.Bright), ("bright", BgmMoodGroup.Bright), ("오르골", BgmMoodGroup.Bright), ("경쾌", BgmMoodGroup.Bright),
+        ("acoustic", BgmMoodGroup.Warm), ("cinematic", BgmMoodGroup.Warm), ("warm", BgmMoodGroup.Warm), ("emotional", BgmMoodGroup.Warm), ("guitar", BgmMoodGroup.Warm), ("어쿠스틱", BgmMoodGroup.Warm), ("감성", BgmMoodGroup.Warm),
+        ("energetic", BgmMoodGroup.Energetic), ("pop", BgmMoodGroup.Energetic), ("dance", BgmMoodGroup.Energetic), ("hype", BgmMoodGroup.Energetic), ("신나", BgmMoodGroup.Energetic),
+    };
+
+    /// <summary>
+    /// 🎵 결정론 무드 → 트랙 해석 — 접두 <c>bgm:</c> 제거 · 대소문자 무시 정확 일치 → 별칭 그룹 일치(Energetic 전용 트랙 없으면 Bright 근사).
+    /// 무드 없음 · <c>custom</c>/<c>none</c> · 불일치 · 빈 목록 → <paramref name="fallbackTrackId"/>.
+    /// </summary>
+    public static string ResolveRecommendedBgmTrackId(string? topBgmMoodKeyOrLabel, IReadOnlyList<string> availableTrackIds, string fallbackTrackId)
+    {
+        if (availableTrackIds is null || availableTrackIds.Count == 0 || string.IsNullOrWhiteSpace(topBgmMoodKeyOrLabel)) return fallbackTrackId;
+        var mood = topBgmMoodKeyOrLabel.Trim();
+        if (mood.StartsWith(BgmPrefix, StringComparison.OrdinalIgnoreCase)) mood = mood[BgmPrefix.Length..].Trim();
+        if (mood.Length == 0) return fallbackTrackId;
+
+        for (var i = 0; i < availableTrackIds.Count; i++)
+        {
+            var id = availableTrackIds[i];
+            if (!string.IsNullOrWhiteSpace(id) && string.Equals(id.Trim(), mood, StringComparison.OrdinalIgnoreCase)) return id;
+        }
+
+        var group = MoodGroupOf(mood);
+        if (group == BgmMoodGroup.None) return fallbackTrackId;
+        var match = FirstTrackInGroup(availableTrackIds, group);
+        if (match is null && group == BgmMoodGroup.Energetic) match = FirstTrackInGroup(availableTrackIds, BgmMoodGroup.Bright);   // 근사 폴백
+        return match ?? fallbackTrackId;
+    }
+
+    private static string? FirstTrackInGroup(IReadOnlyList<string> ids, BgmMoodGroup group)
+    {
+        for (var i = 0; i < ids.Count; i++)
+        {
+            var id = ids[i];
+            if (!string.IsNullOrWhiteSpace(id) && MoodGroupOf(id) == group) return id;
+        }
+        return null;
+    }
+
+    private static BgmMoodGroup MoodGroupOf(string text)
+    {
+        for (var i = 0; i < BgmMoodAliases.Length; i++)
+            if (text.Contains(BgmMoodAliases[i].Keyword, StringComparison.OrdinalIgnoreCase)) return BgmMoodAliases[i].Group;
+        return BgmMoodGroup.None;
     }
 
     // ── 🧮 점수 ──

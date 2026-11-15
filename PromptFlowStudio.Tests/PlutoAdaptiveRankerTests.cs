@@ -159,6 +159,75 @@ public sealed class PlutoAdaptiveRankerTests : IDisposable
         Assert.DoesNotContain(plain.Titles, t => t.StartsWith("🔥 ", StringComparison.Ordinal));
     }
 
+    private static readonly string[] PresetTracks = Enum.GetNames<PromptFlowStudio.Services.Export.BabyBgmTrack>();
+
+    [Fact]
+    public async Task EndToEndClosedLoop_BreakoutBgmMood_ResolvesMatchingTrackId()
+    {
+        using var learning = new PlutoLearningService(Path.Combine(_dir, "trend.json"));
+        using var notebook = new PlutoMistakeNotebookService(Path.Combine(_dir, "nb.json"));
+        using var loop = new PlutoClosedLoopReinforcementService(learning, notebook, Storage());
+        IPlutoAdaptivePatternRanker ranker = new PlutoAdaptivePatternRanker(learning, notebook);
+        await ranker.EnsureLoadedAsync();
+
+        // 학습 전 1위 무드 = 사전 선호 1순위(미강화) — 기본 탐색
+        Assert.False(ranker.GetCurrentRecommendations().TopBgmMood.IsReinforced);
+
+        var r = await loop.IngestPerformanceAsync(Telemetry("vid-bgm", "0.3초 웃음 훅", PlutoColorGradingCompiler.GoldenHourWarmName, "Acoustic", new[] { "#warmvibes" }, 85, 66, 10.2));
+        Assert.True(r.IsBreakoutSuccess);
+
+        var rec = ranker.GetCurrentRecommendations();
+        Assert.True(rec.HasReinforcedHistory);
+        Assert.Equal("Acoustic", rec.TopBgmMood.DisplayLabel);
+        Assert.Equal("bgm:Acoustic", rec.TopBgmMood.Key);
+        Assert.True(rec.TopBgmMood.IsReinforced);
+        var bgms = ranker.RankOptions(PlutoPatternKind.BgmMood);
+        Assert.Equal("Acoustic", bgms[0].DisplayLabel);   // 사전 선호 1순위(Lullaby)를 앞섬
+
+        // 키 · 라벨 모두 동일 트랙으로 해석
+        Assert.Equal("Acoustic", ranker.ResolveRecommendedBgmTrackId(rec.TopBgmMood.Key, PresetTracks, "MusicBox"));
+        Assert.Equal("Acoustic", ranker.ResolveRecommendedBgmTrackId(rec.TopBgmMood.DisplayLabel, PresetTracks, "MusicBox"));
+        Assert.True(Enum.TryParse<PromptFlowStudio.Services.Export.BabyBgmTrack>(ranker.ResolveRecommendedBgmTrackId(rec.TopBgmMood.Key, PresetTracks, "MusicBox"), out var track));
+        Assert.Equal(PromptFlowStudio.Services.Export.BabyBgmTrack.Acoustic, track);
+
+        // 빈 목록 · 무드 없음 → 안전 폴백
+        Assert.Equal("MusicBox", ranker.ResolveRecommendedBgmTrackId(rec.TopBgmMood.Key, Array.Empty<string>(), "MusicBox"));
+        Assert.Equal("MusicBox", ranker.ResolveRecommendedBgmTrackId(null, PresetTracks, "MusicBox"));
+        Assert.Equal("MusicBox", ranker.ResolveRecommendedBgmTrackId("   ", PresetTracks, "MusicBox"));
+    }
+
+    [Fact]
+    public void ResolveRecommendedBgmTrackId_HandlesAliasesAndUnknownMoodsGracefully()
+    {
+        const string fb = "MusicBox";
+        // 정확 일치(대소문자 · 접두 · 공백 무시) — 원본 ID 대소문자로 반환
+        Assert.Equal("Lullaby", PlutoAdaptivePatternRanker.ResolveRecommendedBgmTrackId("bgm:lullaby", PresetTracks, fb));
+        Assert.Equal("Lullaby", PlutoAdaptivePatternRanker.ResolveRecommendedBgmTrackId("  BGM:LULLABY ", PresetTracks, fb));
+        Assert.Equal("Acoustic", PlutoAdaptivePatternRanker.ResolveRecommendedBgmTrackId("acoustic", PresetTracks, fb));
+
+        // 무드 별칭 → 그룹 트랙
+        Assert.Equal("Lullaby", PlutoAdaptivePatternRanker.ResolveRecommendedBgmTrackId("Calm Piano", PresetTracks, fb));
+        Assert.Equal("Lullaby", PlutoAdaptivePatternRanker.ResolveRecommendedBgmTrackId("bgm:calm", PresetTracks, "Acoustic"));
+        Assert.Equal("MusicBox", PlutoAdaptivePatternRanker.ResolveRecommendedBgmTrackId("Upbeat Playful", PresetTracks, "Lullaby"));
+        Assert.Equal("MusicBox", PlutoAdaptivePatternRanker.ResolveRecommendedBgmTrackId("bright", PresetTracks, "Acoustic"));
+        Assert.Equal("Acoustic", PlutoAdaptivePatternRanker.ResolveRecommendedBgmTrackId("Cinematic", PresetTracks, fb));
+        Assert.Equal("Acoustic", PlutoAdaptivePatternRanker.ResolveRecommendedBgmTrackId("warm emotional", PresetTracks, fb));
+        // Energetic 전용 트랙 없음 → Bright 근사 · 전용 트랙 있으면 우선
+        Assert.Equal("MusicBox", PlutoAdaptivePatternRanker.ResolveRecommendedBgmTrackId("energetic pop", PresetTracks, "Lullaby"));
+        Assert.Equal("DancePop", PlutoAdaptivePatternRanker.ResolveRecommendedBgmTrackId("Energetic", new[] { "Lullaby", "MusicBox", "DancePop" }, "Lullaby"));
+
+        // 미지 · custom · none · 빈 목록 → 폴백
+        Assert.Equal(fb, PlutoAdaptivePatternRanker.ResolveRecommendedBgmTrackId("custom", PresetTracks, fb));
+        Assert.Equal(fb, PlutoAdaptivePatternRanker.ResolveRecommendedBgmTrackId("none", PresetTracks, fb));
+        Assert.Equal(fb, PlutoAdaptivePatternRanker.ResolveRecommendedBgmTrackId("bgm:", PresetTracks, fb));
+        Assert.Equal(fb, PlutoAdaptivePatternRanker.ResolveRecommendedBgmTrackId("Heavy Metal", PresetTracks, fb));
+        Assert.Equal(fb, PlutoAdaptivePatternRanker.ResolveRecommendedBgmTrackId("Lullaby", Array.Empty<string>(), fb));
+        Assert.Equal("Lullaby", PlutoAdaptivePatternRanker.ResolveRecommendedBgmTrackId("Lullaby", new[] { "", "  ", "Lullaby" }, fb));   // 공백 ID 건너뜀
+
+        // 결정론 — 동일 입력 동일 출력
+        Assert.Equal(PlutoAdaptivePatternRanker.ResolveRecommendedBgmTrackId("playful", PresetTracks, fb), PlutoAdaptivePatternRanker.ResolveRecommendedBgmTrackId("playful", PresetTracks, fb));
+    }
+
     private sealed class CapturingLlm : IPlutoLlmClient
     {
         public string LastUser = "";
