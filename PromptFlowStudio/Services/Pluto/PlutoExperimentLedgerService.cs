@@ -37,6 +37,12 @@ public interface IPlutoExperimentLedgerService
     /// <summary>최근 판정(최신 우선).</summary>
     IReadOnlyList<PlutoExperimentEvaluationResult> GetRecentEvaluations(int maxCount = 20);
 
+    /// <summary>📋 판정 대기(<c>Pending</c>) 실험(최신 등록 우선 · 앱 재시작 후에도 장부에서 복원).</summary>
+    IReadOnlyList<PlutoVariantABPlan> GetPendingExperiments(int maxCount = 20);
+
+    /// <summary>장부 선적재(재시작 후 대기 실험 · 최근 판정 표시용 · 실패 → 빈 장부).</summary>
+    Task EnsureLoadedAsync(CancellationToken ct = default);
+
     /// <summary>판정 통지(백그라운드 스레드 가능).</summary>
     event Action? Changed;
 }
@@ -45,7 +51,8 @@ public interface IPlutoExperimentLedgerService
 /// 🏆 <see cref="IPlutoExperimentLedgerService"/> 구현.
 ///   ▸ 합성 점수 = 0.50·3초 유지율 + 0.30·완주율 + 0.20·(CTR × 10) · |A−B| &lt; <see cref="TieThreshold"/> → 무승부.
 ///   ▸ 차등 강화: 승자/패자 간 <b>다른</b> 훅·룩·BGM 만 <see cref="IPlutoClosedLoopReinforcementService.IngestExperimentOutcomeAsync"/> 로 전달.
-///   ▸ 장부 <c>pluto_experiment_ledger.json</c> — <see cref="IPlutoStorageManager"/> 원자 기록(Drive → %LOCALAPPDATA% 폴백) · 용량 <see cref="Capacity"/>.
+///   ▸ 장부 <c>pluto_experiment_ledger.json</c> — <see cref="IPlutoStorageManager"/> 원자 기록(Drive → %LOCALAPPDATA% 폴백) · /// 원자 기록(Drive → %LOCALAPPDATA% 폴백) · 용량 <see cref="Capacity"/>.
+///   ▸ 4.5 — 등록 즉시 <see cref="StatusPending"/> 로 영속 · 판정 완료 시 <see cref="StatusEvaluated"/> 전이(재시작 후 대기 실험 재개).
 /// </summary>
 public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService, IDisposable
 {
@@ -58,6 +65,8 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
     public const double TieThreshold = 0.5;
     public const string Platform = "ab-experiment";
     public const int Capacity = 200;
+    public const string StatusPending = "Pending";
+    public const string StatusEvaluated = "Evaluated";
 
     private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
@@ -68,6 +77,7 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
     private readonly object _sync = new();
     private readonly List<Entry> _entries = new(16);
     private bool _loaded;
+    private Task _registerPersist = Task.CompletedTask;
     private int _disposed;
 
     public PlutoExperimentLedgerService(IPlutoClosedLoopReinforcementService? reinforcement, IPlutoStorageManager? storage = null, Func<DateTimeOffset>? utcNow = null)
@@ -101,12 +111,38 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
         ArgumentNullException.ThrowIfNull(plan);
         if (string.IsNullOrWhiteSpace(plan.ExperimentId)) throw new ArgumentException("ExperimentId required", nameof(plan));
         var id = plan.ExperimentId.Trim();
+        bool changed;
         lock (_sync)
         {
             var e = FindLocked(id);
+            changed = e is null || e.Evaluation is null;
             if (e is null) { _entries.Add(Entry.From(plan, _utcNow())); TrimLocked(); }
             else if (e.Evaluation is null) e.Apply(plan);
+            if (changed && _storage is not null) { var prev = _registerPersist; _registerPersist = Task.Run(() => PersistRegisteredAsync(prev)); }   // 직렬 체인(등록 순서 보존)
         }
+        if (changed) RaiseChanged();
+    }
+
+    /// <summary>📋 등록분 영속 대기(테스트 · 종료 직전 플러시용 · 실패는 이미 격리됨).</summary>
+    public Task WhenRegisteredPersistedAsync() { lock (_sync) return _registerPersist; }
+
+    /// <summary>📋 Pending 영속 — 장부 선적재(디스크 기존 실험 병합) 후 원자 기록 · 예외 전파 금지.</summary>
+    private async Task PersistRegisteredAsync(Task previous)
+    {
+        try { await previous.ConfigureAwait(false); } catch (Exception) { /* 이전 체인 실패는 격리됨 */ }
+        if (Volatile.Read(ref _disposed) != 0) return;
+        try
+        {
+            await _gate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                await EnsureLoadedCoreAsync(CancellationToken.None).ConfigureAwait(false);
+                await PersistAsync().ConfigureAwait(false);
+            }
+            finally { _gate.Release(); }
+        }
+        catch (ObjectDisposedException) { /* 종료 중 */ }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ExperimentLedger] register persist: " + ex.Message); }   // [부분 구제] 메모리 등록 유지
     }
 
     public async Task<PlutoExperimentEvaluationResult> EvaluateExperimentAsync(PlutoVariantABPlan plan, PlutoExperimentMetricsInput championMetrics, PlutoExperimentMetricsInput challengerMetrics,
@@ -122,7 +158,7 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            await EnsureLoadedAsync(ct).ConfigureAwait(false);
+            await EnsureLoadedCoreAsync(ct).ConfigureAwait(false);
             Entry? entry;
             lock (_sync)
             {
@@ -159,6 +195,7 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
                 entry.ChampionMetrics = championMetrics;
                 entry.ChallengerMetrics = challengerMetrics;
                 entry.Evaluation = result;
+                entry.Status = StatusEvaluated;
                 TrimLocked();
             }
             await PersistAsync().ConfigureAwait(false);
@@ -180,11 +217,32 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
         }
     }
 
+    public IReadOnlyList<PlutoVariantABPlan> GetPendingExperiments(int maxCount = 20)
+    {
+        if (maxCount <= 0) return Array.Empty<PlutoVariantABPlan>();
+        lock (_sync)
+        {
+            var list = new List<PlutoVariantABPlan>(Math.Min(maxCount, _entries.Count));
+            for (var i = _entries.Count - 1; i >= 0 && list.Count < maxCount; i--)
+                if (_entries[i].Evaluation is null) list.Add(_entries[i].ToPlan());
+            return list;
+        }
+    }
+
     /// <summary>등록(판정 대기 포함) 실험 수.</summary>
     public int RegisteredCount { get { lock (_sync) return _entries.Count; } }
 
-    /// <summary>장부 선적재(UI 진입 시 최근 판정 표시용 · 실패 → 빈 장부).</summary>
+    /// <summary>장부 선적재(UI 진입 시 대기 실험 · 최근 판정 표시용 · 실패 → 빈 장부).</summary>
     public async Task EnsureLoadedAsync(CancellationToken ct = default)
+    {
+        if (_loaded || _storage is null) { _loaded = true; return; }
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try { await EnsureLoadedCoreAsync(ct).ConfigureAwait(false); }
+        finally { _gate.Release(); }
+    }
+
+    /// <summary>선적재 본체 — 호출자가 <see cref="_gate"/> 보유.</summary>
+    private async Task EnsureLoadedCoreAsync(CancellationToken ct)
     {
         if (_loaded || _storage is null) { _loaded = true; return; }
         _loaded = true;
@@ -198,11 +256,15 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
             {
                 var merged = new List<Entry>(list.Count + _entries.Count);
                 foreach (var e in list)
-                    if (e is not null && !string.IsNullOrWhiteSpace(e.ExperimentId) && FindIn(merged, e.ExperimentId) is null) merged.Add(e);
-                foreach (var e in _entries)   // 적재 전 메모리 등록분 보존(동일 ID → 메모리 우선)
+                    if (e is not null && !string.IsNullOrWhiteSpace(e.ExperimentId) && FindIn(merged, e.ExperimentId) is null) { e.Normalize(); merged.Add(e); }
+                foreach (var e in _entries)   // 적재 전 메모리 등록분 보존(동일 ID → 메모리 우선 · 디스크 판정 완료분은 불변)
                 {
                     var old = FindIn(merged, e.ExperimentId);
-                    if (old is not null) merged.Remove(old);
+                    if (old is not null)
+                    {
+                        if (old.Evaluation is not null && e.Evaluation is null) continue;
+                        merged.Remove(old);
+                    }
                     merged.Add(e);
                 }
                 _entries.Clear();
@@ -307,10 +369,29 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
         public PlutoExperimentMetricsInput? ChampionMetrics { get; set; }
         public PlutoExperimentMetricsInput? ChallengerMetrics { get; set; }
         public PlutoExperimentEvaluationResult? Evaluation { get; set; }
+        /// <summary><see cref="StatusPending"/> · <see cref="StatusEvaluated"/>(구 장부 누락 → 판정 유무로 보정).</summary>
+        public string Status { get; set; } = StatusPending;
+        public string ChampionLabel { get; set; } = "";
+        public string ChallengerLabel { get; set; } = "";
+        public string ChampionPromptSuffix { get; set; } = "";
+        public string ChallengerPromptSuffix { get; set; } = "";
+        public string HypothesisSummary { get; set; } = "";
+        public List<PromptFlowStudio.Services.Export.SubtitleCue>? ChampionSubtitles { get; set; }
+        public List<PromptFlowStudio.Services.Export.SubtitleCue>? ChallengerSubtitles { get; set; }
+
+        public void Normalize() => Status = Evaluation is null ? StatusPending : StatusEvaluated;
+
+        public PlutoVariantABPlan ToPlan()
+            => new(ExperimentId, ThemeHint,
+                new PlutoExperimentVariant(string.IsNullOrEmpty(ChampionLabel) ? PlutoVariantABGenerator.ChampionLabel : ChampionLabel, ChampionHook, ChampionLook, ChampionBgm, ChampionPromptSuffix,
+                    ChampionSubtitles is { } a ? a.ToArray() : Array.Empty<PromptFlowStudio.Services.Export.SubtitleCue>()),
+                new PlutoExperimentVariant(string.IsNullOrEmpty(ChallengerLabel) ? PlutoVariantABGenerator.ChallengerLabel : ChallengerLabel, ChallengerHook, ChallengerLook, ChallengerBgm, ChallengerPromptSuffix,
+                    ChallengerSubtitles is { } b ? b.ToArray() : Array.Empty<PromptFlowStudio.Services.Export.SubtitleCue>()),
+                HypothesisSummary);
 
         public static Entry From(PlutoVariantABPlan plan, DateTimeOffset now)
         {
-            var e = new Entry { ExperimentId = plan.ExperimentId.Trim(), RegisteredAtUtc = now };
+            var e = new Entry { ExperimentId = plan.ExperimentId.Trim(), RegisteredAtUtc = now, Status = StatusPending };
             e.Apply(plan);
             return e;
         }
@@ -324,6 +405,13 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
             ChallengerHook = plan.ChallengerB.HookStyle ?? "";
             ChallengerLook = plan.ChallengerB.ColorLookId ?? "";
             ChallengerBgm = plan.ChallengerB.BgmMood ?? "";
+            ChampionLabel = plan.ChampionA.VariantLabel ?? "";
+            ChallengerLabel = plan.ChallengerB.VariantLabel ?? "";
+            ChampionPromptSuffix = plan.ChampionA.PromptSuffix ?? "";
+            ChallengerPromptSuffix = plan.ChallengerB.PromptSuffix ?? "";
+            HypothesisSummary = plan.HypothesisSummary ?? "";
+            ChampionSubtitles = plan.ChampionA.Subtitles is { Count: > 0 } sa ? new List<PromptFlowStudio.Services.Export.SubtitleCue>(sa) : null;
+            ChallengerSubtitles = plan.ChallengerB.Subtitles is { Count: > 0 } sb ? new List<PromptFlowStudio.Services.Export.SubtitleCue>(sb) : null;
         }
     }
 }

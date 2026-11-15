@@ -241,7 +241,7 @@ public sealed class Pluto44ExperimentAndSeriesTests : IDisposable
         for (var i = 0; i < videos.Length; i++)
         {
             videos[i] = Path.Combine(_dir, "montage_ep" + (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture) + ".mp4");
-            File.WriteAllBytes(videos[i], new byte[1024 + i]);
+            File.WriteAllBytes(videos[i], ExportMediaIntegrityGuard.BuildMinimalMp4(1024 + i));
         }
         var root = Path.Combine(_dir, "stocksuite");
         Directory.CreateDirectory(root);
@@ -347,5 +347,173 @@ public sealed class Pluto44ExperimentAndSeriesTests : IDisposable
         var panel = razor.IndexOf("data-series-panel=", StringComparison.Ordinal);
         var batch = razor.IndexOf("data-series-batch-export=", StringComparison.Ordinal);
         Assert.True(batch > panel && batch < razor.IndexOf("</div>", panel, StringComparison.Ordinal));   // 활성 시리즈 패널 내부
+    }
+
+    // ── Pluto 4.5 ──
+
+    [Fact]
+    public async Task ExperimentLedger_PendingExperiment_PersistsAcrossServiceReloadAndTransitionsToEvaluated()
+    {
+        var storage = Storage("pending");
+        using (var first = new PlutoExperimentLedgerService(null, storage))
+        {
+            first.RegisterExperiment(Plan("exp-old"));
+            first.RegisterExperiment(Plan("exp-new"));
+            Assert.Equal(new[] { "exp-new", "exp-old" }, first.GetPendingExperiments().Select(p => p.ExperimentId).ToArray());   // 최신 등록 우선
+            await first.WhenRegisteredPersistedAsync();
+        }
+        var file = Path.Combine(storage.ActiveRoot, PlutoExperimentLedgerService.FileName);
+        Assert.True(File.Exists(file));
+        Assert.Contains("\"Status\":\"" + PlutoExperimentLedgerService.StatusPending + "\"", File.ReadAllText(file), StringComparison.Ordinal);
+
+        // 앱 재시작(새 인스턴스) → 대기 실험 복원 · 플랜 필드 보존
+        using (var second = new PlutoExperimentLedgerService(null, storage))
+        {
+            Assert.Empty(second.GetPendingExperiments());   // 적재 전
+            await second.EnsureLoadedAsync();
+            var pending = second.GetPendingExperiments();
+            Assert.Equal(2, pending.Count);
+            var restored = pending.Single(p => p.ExperimentId == "exp-old");
+            Assert.Equal(HookA, restored.ChampionA.HookStyle);
+            Assert.Equal(HookB, restored.ChallengerB.HookStyle);
+            Assert.Equal(PlutoColorGradingCompiler.GoldenHourWarmName, restored.ChallengerB.ColorLookId);
+            Assert.Equal("돌잔치", restored.ThemeHint);
+            Assert.Equal(PlutoVariantABGenerator.ChampionLabel, restored.ChampionA.VariantLabel);
+            Assert.Single(restored.ChampionA.Subtitles);
+            Assert.Equal(4.95, restored.ChampionA.Subtitles[0].EffectiveEndSec, 3);
+            Assert.True(restored.IsValidExperiment);
+
+            var r = await second.EvaluateExperimentAsync(restored, new PlutoExperimentMetricsInput(40, 30, 2), new PlutoExperimentMetricsInput(70, 60, 6));
+            Assert.Equal(PlutoExperimentLedgerService.WinnerChallenger, r.WinnerLabel);
+            Assert.False(r.AlreadyRegistered);
+            Assert.Equal(new[] { "exp-new" }, second.GetPendingExperiments().Select(p => p.ExperimentId).ToArray());   // Pending → Evaluated
+        }
+
+        // 재시작 후에도 전이 유지 · 판정 완료 실험 재등록은 Pending 복귀 불가
+        using (var third = new PlutoExperimentLedgerService(null, storage))
+        {
+            await third.EnsureLoadedAsync();
+            Assert.Equal(new[] { "exp-new" }, third.GetPendingExperiments().Select(p => p.ExperimentId).ToArray());
+            Assert.Single(third.GetRecentEvaluations());
+            third.RegisterExperiment(Plan("exp-old"));
+            await third.WhenRegisteredPersistedAsync();
+            Assert.Equal(new[] { "exp-new" }, third.GetPendingExperiments().Select(p => p.ExperimentId).ToArray());
+        }
+        var json = File.ReadAllText(file);
+        Assert.Contains("\"Status\":\"" + PlutoExperimentLedgerService.StatusEvaluated + "\"", json, StringComparison.Ordinal);
+        Assert.Contains("\"Status\":\"" + PlutoExperimentLedgerService.StatusPending + "\"", json, StringComparison.Ordinal);
+
+        // 새 인스턴스가 적재 전에 등록해도 디스크의 기존 실험을 덮어쓰지 않음(병합 후 기록)
+        using (var fourth = new PlutoExperimentLedgerService(null, storage))
+        {
+            fourth.RegisterExperiment(Plan("exp-third"));
+            await fourth.WhenRegisteredPersistedAsync();
+        }
+        using var fifth = new PlutoExperimentLedgerService(null, storage);
+        await fifth.EnsureLoadedAsync();
+        Assert.Equal(new[] { "exp-third", "exp-new" }, fifth.GetPendingExperiments().Select(p => p.ExperimentId).ToArray());
+        Assert.Single(fifth.GetRecentEvaluations());
+    }
+
+    [Fact]
+    public void ExportMediaIntegrityGuard_RejectsTruncatedOrInvalidMp4_AndAcceptsValidIsoBmffHeader()
+    {
+        var valid = Path.Combine(_dir, "ok.mp4");
+        File.WriteAllBytes(valid, ExportMediaIntegrityGuard.BuildMinimalMp4(4096));
+        ExportMediaIntegrityGuard.EnsureValidMp4(valid);   // 예외 없음
+        Assert.True(ExportMediaIntegrityGuard.TryValidateMp4(valid, out var none));
+        Assert.Equal("", none);
+
+        // mdat 뒤 moov(비 faststart) + 64비트 largesize 박스 → 허용
+        var tail = Path.Combine(_dir, "moov_tail.mp4");
+        var bytes = new byte[2048];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(bytes, 16);
+        "ftypisom"u8.CopyTo(bytes.AsSpan(4));
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(16), 1);
+        "mdat"u8.CopyTo(bytes.AsSpan(20));
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt64BigEndian(bytes.AsSpan(24), 2000);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(2016), 32);
+        "moov"u8.CopyTo(bytes.AsSpan(2020));
+        File.WriteAllBytes(tail, bytes);
+        ExportMediaIntegrityGuard.EnsureValidMp4(tail);
+
+        void Rejects(string name, byte[] data, string expected)
+        {
+            var path = Path.Combine(_dir, name);
+            File.WriteAllBytes(path, data);
+            var ex = Assert.Throws<InvalidOperationException>(() => ExportMediaIntegrityGuard.EnsureValidMp4(path));
+            Assert.Contains("무결성", ex.Message, StringComparison.Ordinal);
+            Assert.Contains(expected, ex.Message, StringComparison.Ordinal);
+            Assert.Contains(name, ex.Message, StringComparison.Ordinal);
+        }
+
+        Rejects("tiny.mp4", ExportMediaIntegrityGuard.BuildMinimalMp4(40), "너무 작습니다");                              // < 1024 B
+        Rejects("zeros.mp4", new byte[2048], "ftyp");                                                                       // 헤더 없음
+        var noMoov = ExportMediaIntegrityGuard.BuildMinimalMp4(2048);
+        "free"u8.CopyTo(noMoov.AsSpan(20));                                                                                 // moov → free
+        Rejects("no_moov.mp4", noMoov, "moov");
+        var truncated = ExportMediaIntegrityGuard.BuildMinimalMp4(2048);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(truncated.AsSpan(24), 50_000);                          // 마지막 박스가 EOF 초과
+        Rejects("truncated.mp4", truncated, "잘린");
+        var badSize = ExportMediaIntegrityGuard.BuildMinimalMp4(2048);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(badSize.AsSpan(16), 4);                                // 크기 < 헤더
+        Rejects("bad_size.mp4", badSize, "손상");
+
+        var missing = Assert.Throws<InvalidOperationException>(() => ExportMediaIntegrityGuard.EnsureValidMp4(Path.Combine(_dir, "nope.mp4")));
+        Assert.Contains("찾을 수 없습니다", missing.Message, StringComparison.Ordinal);
+        Assert.True(ExportMediaIntegrityGuard.IsIsoBmffPath("a.MP4"));
+        Assert.True(ExportMediaIntegrityGuard.IsIsoBmffPath("a.mov"));
+        Assert.False(ExportMediaIntegrityGuard.IsIsoBmffPath("a.webm"));
+    }
+
+    [Fact]
+    public async Task StockSuiteExporter_CorruptVideoFile_BlockedBeforeProjectFolderCopy()
+    {
+        // ① 단일 프로젝트 — 잘린 MP4 → 프로젝트 폴더 미생성
+        var root = Path.Combine(_dir, "ss_root");
+        Directory.CreateDirectory(root);
+        var corrupt = Path.Combine(_dir, "broken_render.mp4");
+        var bytes = ExportMediaIntegrityGuard.BuildMinimalMp4(4096);
+        File.WriteAllBytes(corrupt, bytes.AsSpan(0, 20).ToArray().Concat(new byte[2000]).ToArray());   // ftyp 뒤 0 패딩 → moov 없음/박스 손상
+        var exp = new StockSuiteExporter(() => root) { LocalNow = () => new DateTime(2026, 11, 16, 9, 0, 0) };
+
+        var r = await exp.ExportWithSubtitlesAsync(corrupt, null, "Broken Project");
+
+        Assert.False(r.Ok);
+        Assert.False(r.NeedsPathSetup);
+        Assert.Contains("무결성", r.Message, StringComparison.Ordinal);
+        Assert.Null(r.TargetPath);
+        Assert.False(Directory.Exists(Path.Combine(root, "Broken_Project_20261116")));
+        Assert.Empty(Directory.GetFileSystemEntries(root));
+
+        // ② 시리즈 — 손상 편만 차단 · 나머지 [부분 구제]
+        var photos = new List<string>(12);
+        for (var i = 0; i < 12; i++) photos.Add(MakeScene("c" + i.ToString("00", System.Globalization.CultureInfo.InvariantCulture) + ".png", 3000 + i * 43));
+        var series = await new PlutoSeriesBatchPlanner(new PlutoPhotoCurationEngine()).BuildSeriesAsync(photos, "무결성 시리즈", 3);
+        Assert.Equal(3, series.Episodes.Count);
+        var videos = new string[3];
+        for (var i = 0; i < 3; i++)
+        {
+            videos[i] = Path.Combine(_dir, "ep" + (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture) + ".mp4");
+            File.WriteAllBytes(videos[i], ExportMediaIntegrityGuard.BuildMinimalMp4(2048));
+        }
+        File.WriteAllBytes(videos[1], new byte[300]);   // 2편 잘림
+
+        var sr = await exp.ExportSeriesBatchToStockSuiteAsync(root, series, videos);
+        Assert.True(sr.Ok, sr.Message);
+        Assert.Contains("[부분 구제]", sr.Message, StringComparison.Ordinal);
+        Assert.Contains("손상 1편", sr.Message, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(sr.TargetPath!, "Ep01", "ep1.mp4")));
+        Assert.False(Directory.Exists(Path.Combine(sr.TargetPath!, "Ep02")));
+        Assert.True(File.Exists(Path.Combine(sr.TargetPath!, "Ep03", "ep3.mp4")));
+
+        // ③ 전 편 손상 → 실패 · 빈 시리즈 폴더 미잔존
+        var allRoot = Path.Combine(_dir, "ss_all_bad");
+        Directory.CreateDirectory(allRoot);
+        var bad = new[] { videos[1], videos[1], videos[1] };
+        var all = await exp.ExportSeriesBatchToStockSuiteAsync(allRoot, series, bad);
+        Assert.False(all.Ok);
+        Assert.Contains("손상", all.Message, StringComparison.Ordinal);
+        Assert.Empty(Directory.GetFileSystemEntries(allRoot));
     }
 }

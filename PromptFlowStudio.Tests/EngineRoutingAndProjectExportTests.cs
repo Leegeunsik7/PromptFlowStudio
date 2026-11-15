@@ -208,7 +208,7 @@ public sealed class EngineRoutingAndProjectExportTests : IDisposable
         var root = Path.Combine(_dir, "StockSuite");
         Directory.CreateDirectory(root);
         var src = Path.Combine(_dir, "ws_amb_ambient15s.mp4");
-        File.WriteAllBytes(src, new byte[] { 0, 0, 0, 24, 102, 116, 121, 112, 1, 2, 3, 4 });
+        File.WriteAllBytes(src, ExportMediaIntegrityGuard.BuildMinimalMp4());
         var exp = new StockSuiteExporter(() => root, () => "mp4", () => null)
         {
             SilentContainerVerifier = static _ => SilentVerdict.Silent,
@@ -240,7 +240,7 @@ public sealed class EngineRoutingAndProjectExportTests : IDisposable
 
         // 같은 프로젝트에 두 번째 영상 → 같은 폴더 · 이력 2건
         var src2 = Path.Combine(_dir, "ws_tri_15s.mp4");
-        File.WriteAllBytes(src2, new byte[] { 0, 0, 0, 24, 102, 116, 121, 112, 9, 9 });
+        File.WriteAllBytes(src2, ExportMediaIntegrityGuard.BuildMinimalMp4(2048));
         Assert.True((await exp.ExportWithSubtitlesAsync(src2, null, "PlutoCore Neural")).Ok);
         using (var doc = JsonDocument.Parse(File.ReadAllText(manifestPath)))
             Assert.Equal(2, doc.RootElement.GetProperty("exports").GetArrayLength());

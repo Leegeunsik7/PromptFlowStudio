@@ -161,6 +161,7 @@
                     }
                     <button class="ws-back" data-series-export="1" @onclick="ExportSeriesSequentiallyAsync" disabled="@(_montageBusy || _motionBusy || _stockBusy || _seriesBusy)" title="1편부터 차례로 불러와 15초 몽타주 MP4를 순차 렌더">[🎞️ 전편 순차 출력]</button>
                     <button class="ws-back" data-series-batch-export="1" @onclick="ExportSeriesBatchAsync" disabled="@(_montageBusy || _motionBusy || _stockBusy || _seriesBusy || _seriesExportBusy || _seriesEpisodeOutputs.Count == 0)" title="렌더된 편 영상을 에셋 루트의 시리즈 폴더(Ep01~ · 편별 project_manifest.json · 자막 · SNS 키트) + series_manifest.json으로 일괄 내보내기">[📦 시리즈 전체 일괄 내보내기 (Ep.1~@(ser.Episodes.Count.ToString(CultureInfo.InvariantCulture)) 폴더)]</button>
+                    <button class="ws-back" data-series-render-export="1" @onclick="RenderAndExportSeriesAsync" disabled="@(_montageBusy || _motionBusy || _stockBusy || _seriesBusy || _seriesExportBusy || _seriesRenderAllBusy)" title="1편부터 차례로 편별 🔒 잠금 타임라인 · 3막 자막 · 현재 BGM/룩으로 렌더한 뒤 에셋 루트의 시리즈 폴더(Ep01~ · series_manifest.json)로 즉시 일괄 내보내기">[🎬 시리즈 전편 연속 렌더링 + 일괄 내보내기]</button>
                     @if (_seriesToast is { } srt) { <span class="ws-retry" role="status" data-series-toast="1">@(srt)</span> }
                 </div>
             }
@@ -238,28 +239,16 @@
                     <button class="@(_abActiveB ? "ws-back on" : "ws-back")" data-ab-variant="B" aria-pressed="@(_abActiveB ? "true" : "false")" @onclick="() => SwitchAbVariantAsync(true)" disabled="@(_montageBusy)" title="@(abp.ChallengerB.PromptSuffix)">🧪 @(abp.ChallengerB.VariantLabel): '@(abp.ChallengerB.HookStyle)' · 🎨 @(abp.ChallengerB.ColorLookId) · 🎵 @(abp.ChallengerB.BgmMood)</button>
                     <span class="ws-retry" data-ab-hypothesis="1">@(abp.HypothesisSummary)</span>
                     <button class="ws-back" data-ab-eval-toggle="1" @onclick="() => _abEvalOpen = !_abEvalOpen" aria-expanded="@(_abEvalOpen ? "true" : "false")" title="A·B 각각의 게시 후 3초 유지율 · 완주율 · CTR 입력 → 합성 점수(0.5·3초 + 0.3·완주 + 0.2·CTR×10)로 승자 판정 · 승자 차등 특성 강화 · 근소 패배는 오답 노트 면제">[🏆 A/B 실험 승자 판정 &amp; 차등 학습] @(_abEvalOpen ? "▲" : "▼")</button>
-                    @if (_abEvalOpen)
-                    {
-                        <div class="ws-retry" data-ab-eval-panel="@(abp.ExperimentId)" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%">
-                            <span>🏆 A</span>
-                            <label>3초 % <input type="number" step="0.1" min="0" max="100" style="width:64px" data-ab-eval-a-hook="1" @bind="_abEvalA.Hook" /></label>
-                            <label>완주 % <input type="number" step="0.1" min="0" max="100" style="width:64px" data-ab-eval-a-comp="1" @bind="_abEvalA.Completion" /></label>
-                            <label>CTR % <input type="number" step="0.1" min="0" max="100" style="width:64px" data-ab-eval-a-ctr="1" @bind="_abEvalA.Ctr" /></label>
-                            <span>🧪 B</span>
-                            <label>3초 % <input type="number" step="0.1" min="0" max="100" style="width:64px" data-ab-eval-b-hook="1" @bind="_abEvalB.Hook" /></label>
-                            <label>완주 % <input type="number" step="0.1" min="0" max="100" style="width:64px" data-ab-eval-b-comp="1" @bind="_abEvalB.Completion" /></label>
-                            <label>CTR % <input type="number" step="0.1" min="0" max="100" style="width:64px" data-ab-eval-b-ctr="1" @bind="_abEvalB.Ctr" /></label>
-                            <button class="ws-back" data-ab-eval-run="1" @onclick="EvaluateAbExperimentAsync" disabled="@(_abEvalBusy)">[판정 &amp; 학습 저장]</button>
-                            @if (_abEvalBusy) { <span class="ws-retry" role="status" data-ab-eval-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 🏆 판정 중…</span> }
-                            else if (_abEvalResult is { } aer && string.Equals(aer.ExperimentId, abp.ExperimentId, StringComparison.Ordinal))
-                            {
-                                <span class="ws-pcore on" data-ab-eval-winner="@(aer.WinnerLabel)">@(AbWinnerBadge(aer.WinnerLabel)) · A @(aer.ChampionScore.ToString("0.0", CultureInfo.InvariantCulture)) vs B @(aer.ChallengerScore.ToString("0.0", CultureInfo.InvariantCulture)) · 상승 +@(aer.LiftPct.ToString("0.#", CultureInfo.InvariantCulture))% · +@(aer.TotalXpAwarded.ToString(CultureInfo.InvariantCulture)) XP@(aer.AlreadyRegistered ? " · ⏭ 기존 판정" : "")</span>
-                                <span class="ws-retry" data-ab-eval-summary="1">@(aer.SummaryMessage)</span>
-                            }
-                            @if (_abEvalToast is { } aet) { <span class="ws-retry" role="status" data-ab-eval-toast="1">@(aet)</span> }
-                        </div>
-                    }
+                    @if (_abEvalOpen) { @AbEvalForm(abp) }
                     @if (_abToast is { } abt) { <span class="ws-retry" role="status" data-ab-toast="1">@(abt)</span> }
+                </div>
+            }
+            @if (!_abBusy && !(_abPlan is not null && _montagePhotos.Count >= 2) && (_abPending.Count > 0 || _abPendingPick is not null))
+            {
+                @* 📋 Pluto 4.5 — 재시작 후에도 장부의 대기(Pending) A/B 실험을 불러와 판정 *@
+                <div class="ws-ab-panel" data-ab-pending-card="@(_abPending.Count.ToString(CultureInfo.InvariantCulture))" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%">
+                    <button class="ws-back" data-ab-eval-toggle-solo="1" @onclick="() => _abEvalOpen = !_abEvalOpen" aria-expanded="@(_abEvalOpen ? "true" : "false")" title="이전에 생성 · 게시한 A/B 실험의 성과를 입력해 승자 판정(앱 재시작 후에도 장부에 보존)">[🏆 대기 중인 A/B 실험 판정 (@(_abPending.Count.ToString(CultureInfo.InvariantCulture))건)] @(_abEvalOpen ? "▲" : "▼")</button>
+                    @if (_abEvalOpen) { @AbEvalForm(null) }
                 </div>
             }
             @if (_montagePhotos.Count < 2 && _perfContextSource is not null) { <button class="ws-back" data-perf-toggle-solo="1" @onclick="TogglePerfPanel" aria-expanded="@(_perfOpen ? "true" : "false")" title="방금 렌더한 영상의 훅 · 룩 · BGM · 태그가 자동 입력됩니다 — 3초 유지율 · 완주율 · CTR만 입력">[📊 배포 성과 피드백 학습] @(_perfOpen ? "▲" : "▼")</button> }
@@ -2339,6 +2328,8 @@
             _abPlanSource = plan;
             try { (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoExperimentLedgerService)) as PromptFlowStudio.Services.Pluto.IPlutoExperimentLedgerService)?.RegisterExperiment(ab); }
             catch (Exception ex) { Program.Log("Workspace.AbRegister", ex); }   // [부분 구제] 판정 시 재등록
+            _abPendingPick = null;   // 새 실험 → 판정 대상 = 현재 실험
+            await RefreshAbPendingAsync();
             await ApplyAbVariantAsync(false);
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
@@ -2404,7 +2395,7 @@
     /// <summary>🏆 [판정 &amp; 학습 저장] — 합성 점수 승자 · 상승률 · 차등 강화 · 장부 원자 기록(예외 전파 금지).</summary>
     private async Task EvaluateAbExperimentAsync()
     {
-        if (_abEvalBusy || _abPlan is not { } ab) return;
+        if (_abEvalBusy || AbEvalTarget is not { } ab) return;
         if (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoExperimentLedgerService)) is not PromptFlowStudio.Services.Pluto.IPlutoExperimentLedgerService ledger) { _abEvalToast = "⚠ 실험 장부를 사용할 수 없습니다."; return; }
         _abEvalBusy = true;
         _abEvalToast = null;
@@ -2417,6 +2408,7 @@
             if (_disposed) return;
             _abEvalResult = result;
             if (!result.AlreadyRegistered) await RefreshAdaptiveRecommendationAsync();   // 🧠 차등 강화 → 학습 추천 갱신
+            await RefreshAbPendingAsync();   // 📋 Pending → Evaluated 전이 반영
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
         catch (Exception ex) { Program.Log("Workspace.AbEvaluate", ex); _abEvalToast = "⚠ 승자 판정 실패: " + ex.Message; }
@@ -2424,6 +2416,94 @@
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
     }
+
+    // ── 📋 Pluto 4.5 — 영속 대기 A/B 실험 큐 ──
+    private IReadOnlyList<PromptFlowStudio.Services.Pluto.PlutoVariantABPlan> _abPending = Array.Empty<PromptFlowStudio.Services.Pluto.PlutoVariantABPlan>();
+    private PromptFlowStudio.Services.Pluto.PlutoVariantABPlan? _abPendingPick;
+    private bool _abPendingOpen;
+
+    /// <summary>판정 대상 — 대기 목록에서 고른 실험 우선 · 없으면 현재 생성 실험.</summary>
+    private PromptFlowStudio.Services.Pluto.PlutoVariantABPlan? AbEvalTarget => _abPendingPick ?? _abPlan;
+
+    /// <summary>📋 장부 선적재 → 대기 실험 목록 갱신(예외 전파 금지 · 판정 완료된 선택은 결과 표시 후 해제).</summary>
+    private async Task RefreshAbPendingAsync()
+    {
+        if (_disposed || EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoExperimentLedgerService)) is not PromptFlowStudio.Services.Pluto.IPlutoExperimentLedgerService ledger) return;
+        try
+        {
+            await ledger.EnsureLoadedAsync(_mediaCts.Token);
+            var list = ledger.GetPendingExperiments(20);
+            if (_disposed) return;
+            _abPending = list;
+            if (_abPendingPick is { } pick)
+            {
+                var still = false;
+                for (var i = 0; i < list.Count; i++) if (string.Equals(list[i].ExperimentId, pick.ExperimentId, StringComparison.Ordinal)) { still = true; break; }
+                if (!still && !(_abEvalResult is { } r && string.Equals(r.ExperimentId, pick.ExperimentId, StringComparison.Ordinal))) _abPendingPick = null;
+            }
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.AbPending", ex); return; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>📋 [대기 중인 A/B 실험 선택] 토글 — 열 때 장부 재조회.</summary>
+    private async Task ToggleAbPendingAsync()
+    {
+        _abPendingOpen = !_abPendingOpen;
+        if (_abPendingOpen) await RefreshAbPendingAsync();
+    }
+
+    private void OnAbPendingPicked(ChangeEventArgs e)
+    {
+        var id = e.Value as string;
+        _abPendingPick = null;
+        if (!string.IsNullOrEmpty(id))
+            foreach (var p in _abPending)
+                if (string.Equals(p.ExperimentId, id, StringComparison.Ordinal)) { _abPendingPick = p; break; }
+        _abEvalToast = _abPendingPick is { } pk ? "📋 실험 " + pk.ExperimentId + " 불러옴 · A '" + pk.ChampionA.HookStyle + "' vs B '" + pk.ChallengerB.HookStyle + "'" : null;
+    }
+
+    /// <summary>🏆 판정 입력 폼(현재 실험 패널 · 대기 실험 카드 공용).</summary>
+    private RenderFragment AbEvalForm(PromptFlowStudio.Services.Pluto.PlutoVariantABPlan? current) => __builder =>
+    {
+        var target = _abPendingPick ?? current;
+        <div class="ws-retry" data-ab-eval-panel="@(target?.ExperimentId ?? "")" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%">
+            <button class="ws-back" data-ab-pending-toggle="1" @onclick="ToggleAbPendingAsync" aria-expanded="@(_abPendingOpen ? "true" : "false")" title="이전에 등록한 판정 대기(Pending) 실험을 불러와 오늘의 성과로 채점 — 앱 재시작 후에도 장부에 보존">[📋 대기 중인 A/B 실험 선택] (@(_abPending.Count.ToString(CultureInfo.InvariantCulture)))</button>
+            @if (_abPendingOpen)
+            {
+                <select data-ab-pending-select="1" @onchange="OnAbPendingPicked">
+                    <option value="" selected="@(_abPendingPick is null)">@(current is null ? "— 실험을 선택하세요 —" : "— 현재 실험 (" + current.ExperimentId + ") —")</option>
+                    @foreach (var pp in _abPending)
+                    {
+                        <option value="@(pp.ExperimentId)" selected="@(_abPendingPick is not null && string.Equals(_abPendingPick.ExperimentId, pp.ExperimentId, StringComparison.Ordinal))">@(pp.ExperimentId) · '@(pp.ChampionA.HookStyle)' vs '@(pp.ChallengerB.HookStyle)'@(string.IsNullOrEmpty(pp.ThemeHint) ? "" : " · " + pp.ThemeHint)</option>
+                    }
+                </select>
+            }
+            @if (target is null) { <span class="ws-retry" data-ab-eval-empty="1">판정할 실험을 선택하세요.</span> }
+            else
+            {
+                <span class="ws-pcore on" data-ab-eval-target="@(target.ExperimentId)">⚖️ @(target.ExperimentId)</span>
+                <span>🏆 A</span>
+                <label>3초 % <input type="number" step="0.1" min="0" max="100" style="width:64px" data-ab-eval-a-hook="1" @bind="_abEvalA.Hook" /></label>
+                <label>완주 % <input type="number" step="0.1" min="0" max="100" style="width:64px" data-ab-eval-a-comp="1" @bind="_abEvalA.Completion" /></label>
+                <label>CTR % <input type="number" step="0.1" min="0" max="100" style="width:64px" data-ab-eval-a-ctr="1" @bind="_abEvalA.Ctr" /></label>
+                <span>🧪 B</span>
+                <label>3초 % <input type="number" step="0.1" min="0" max="100" style="width:64px" data-ab-eval-b-hook="1" @bind="_abEvalB.Hook" /></label>
+                <label>완주 % <input type="number" step="0.1" min="0" max="100" style="width:64px" data-ab-eval-b-comp="1" @bind="_abEvalB.Completion" /></label>
+                <label>CTR % <input type="number" step="0.1" min="0" max="100" style="width:64px" data-ab-eval-b-ctr="1" @bind="_abEvalB.Ctr" /></label>
+                <button class="ws-back" data-ab-eval-run="1" @onclick="EvaluateAbExperimentAsync" disabled="@(_abEvalBusy)">[판정 &amp; 학습 저장]</button>
+                @if (_abEvalBusy) { <span class="ws-retry" role="status" data-ab-eval-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 🏆 판정 중…</span> }
+                else if (_abEvalResult is { } aer && string.Equals(aer.ExperimentId, target.ExperimentId, StringComparison.Ordinal))
+                {
+                    <span class="ws-pcore on" data-ab-eval-winner="@(aer.WinnerLabel)">@(AbWinnerBadge(aer.WinnerLabel)) · A @(aer.ChampionScore.ToString("0.0", CultureInfo.InvariantCulture)) vs B @(aer.ChallengerScore.ToString("0.0", CultureInfo.InvariantCulture)) · 상승 +@(aer.LiftPct.ToString("0.#", CultureInfo.InvariantCulture))% · +@(aer.TotalXpAwarded.ToString(CultureInfo.InvariantCulture)) XP@(aer.AlreadyRegistered ? " · ⏭ 기존 판정" : "")</span>
+                    <span class="ws-retry" data-ab-eval-summary="1">@(aer.SummaryMessage)</span>
+                }
+            }
+            @if (_abEvalToast is { } aet) { <span class="ws-retry" role="status" data-ab-eval-toast="1">@(aet)</span> }
+        </div>
+    };
 
     // ── 📚 Pluto 4.4 — 시리즈 자동 분할 ──
     private PromptFlowStudio.Services.Pluto.PlutoSeriesBatchResult? _series;
@@ -2513,6 +2593,46 @@
         if (_disposed) return;
         _seriesToast = "🎞️ 시리즈 출력 " + done.Count.ToString(CultureInfo.InvariantCulture) + "/" + s.Episodes.Count.ToString(CultureInfo.InvariantCulture) + "편" + (done.Count > 0 ? " · " + string.Join(" · ", done) : "");
         await InvokeAsync(StateHasChanged);
+    }
+
+    // ── 🎬 Pluto 4.5 — 시리즈 전편 연속 렌더링 + 일괄 내보내기 ──
+    private bool _seriesRenderAllBusy;
+
+    /// <summary>🎬 원클릭 — 편별 불러오기(잠금 몽타주 플랜 · 3막 자막 · 현행 BGM/룩) → 렌더 → 진행 표시 → 렌더 1편 이상이면 즉시 일괄 내보내기(예외 전파 금지 · [부분 구제]).</summary>
+    private async Task RenderAndExportSeriesAsync()
+    {
+        if (_series is not { } s || _seriesRenderAllBusy || _montageBusy || _motionBusy || _stockBusy || _seriesBusy || _seriesExportBusy) return;
+        _seriesRenderAllBusy = true;
+        var rendered = 0;
+        var total = s.Episodes.Count.ToString(CultureInfo.InvariantCulture);
+        try
+        {
+            for (var i = 0; i < s.Episodes.Count; i++)
+            {
+                if (_disposed || _mediaCts.IsCancellationRequested || !ReferenceEquals(_series, s)) return;
+                var ep = s.Episodes[i];
+                await LoadSeriesEpisodeAsync(ep);
+                if (_disposed) return;
+                _seriesToast = "🎬 시리즈 연속 렌더링 중 (" + (i + 1).ToString(CultureInfo.InvariantCulture) + "/" + total + "편)...";
+                await InvokeAsync(StateHasChanged);
+                if (_activeMontagePlan is null) continue;
+                _seriesEpisodeOutputs.TryGetValue(ep.EpisodeNumber, out var before);
+                await RenderMontageVideoAsync();
+                if (_seriesEpisodeOutputs.TryGetValue(ep.EpisodeNumber, out var after) && !string.Equals(before, after, StringComparison.Ordinal)) rendered++;
+            }
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.SeriesRenderAll", ex); _seriesToast = "⚠ 시리즈 연속 렌더링 실패: " + ex.Message; }
+        finally { _seriesRenderAllBusy = false; }
+        if (_disposed) return;
+        if (_seriesEpisodeOutputs.Count == 0)
+        {
+            if (_seriesToast is null || _seriesToast.StartsWith("🎬", StringComparison.Ordinal)) _seriesToast = "⚠ 렌더된 편이 없어 내보내기를 건너뜁니다.";
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+        await ExportSeriesBatchAsync();
+        if (!_disposed && _seriesToast is { } t) { _seriesToast = "🎬 " + rendered.ToString(CultureInfo.InvariantCulture) + "/" + total + "편 렌더 · " + t; await InvokeAsync(StateHasChanged); }
     }
 
     // ── 📦 Pluto 4.4.1 — 시리즈 일괄 내보내기 ──
@@ -4799,6 +4919,7 @@
         var draw = _liveDraw = () => JS.InvokeVoidAsync("pfsLiveCanvas.draw", "ws-live", live.Width, live.Height, live.Frame).AsTask();
         var cts = _liveCts = new CancellationTokenSource();
         _ = LiveLoopAsync(live, draw, cts.Token);
+        _ = RefreshAbPendingAsync();   // 📋 재시작 후 대기 A/B 실험 복원(예외 내부 격리)
         _ = SyncBgmPreviewAsync();   // 🎵 SNS 레이더 주입 BGM ON → 미리듣기 시작 · OFF → 잔존 전역 미리듣기 정리(예외 내부 격리)
     }
 

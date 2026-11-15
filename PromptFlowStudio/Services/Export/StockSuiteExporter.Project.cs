@@ -64,6 +64,11 @@ public sealed partial class StockSuiteExporter
     {
         if (string.IsNullOrWhiteSpace(projectName)) return await ExportWithSubtitlesAsync(sourcePath, cues, ct).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath)) return new(false, null, false, "원본 영상을 찾을 수 없습니다.");
+        if (ExportMediaIntegrityGuard.IsIsoBmffPath(sourcePath))   // 🛡️ 잘린/손상 MP4 → 프로젝트 폴더 생성 전 차단
+        {
+            try { ExportMediaIntegrityGuard.EnsureValidMp4(sourcePath); }
+            catch (InvalidOperationException ex) { return new(false, null, false, ex.Message); }
+        }
         var root = ConfiguredDirectory;
         if (root is null) return new(false, null, true, "StockSuite 에셋 경로가 설정되지 않았습니다 — 환경설정에서 경로를 지정하세요.");
         string fullRoot;
@@ -196,7 +201,7 @@ public sealed partial class StockSuiteExporter
         var folder = BuildProjectFolderName(seriesBatch.SeriesTheme, now);
         var seriesDir = Path.Combine(fullRoot, folder);
         var exported = new List<(int Number, string Folder, string File, string Title)>(seriesBatch.Episodes.Count);
-        var skipped = 0;
+        int skipped = 0, corrupt = 0;
         try
         {
             Directory.CreateDirectory(seriesDir);
@@ -206,6 +211,11 @@ public sealed partial class StockSuiteExporter
                 var ep = seriesBatch.Episodes[i];
                 var src = i < episodeVideoPaths.Count ? episodeVideoPaths[i] : null;
                 if (string.IsNullOrWhiteSpace(src) || !File.Exists(src)) { skipped++; continue; }
+                if (ExportMediaIntegrityGuard.IsIsoBmffPath(src))   // 🛡️ 잘린/손상 편 → 편 폴더 복사 전 차단 · 다음 편 계속
+                {
+                    try { ExportMediaIntegrityGuard.EnsureValidMp4(src); }
+                    catch (InvalidOperationException ex) { Program.Log("StockSuite.SeriesIntegrity", ex); skipped++; corrupt++; continue; }
+                }
                 var epFolder = EpisodeFolderName(ep.EpisodeNumber);
                 var epDir = Path.Combine(seriesDir, epFolder);
                 try
@@ -232,12 +242,19 @@ public sealed partial class StockSuiteExporter
             Program.Log("StockSuite.SeriesBatch", ex);
             return new(false, null, false, "시리즈 폴더를 만들 수 없습니다: " + ex.Message);
         }
-        if (exported.Count == 0) return new(false, null, false, "렌더된 편 영상이 없습니다 — [🎞️ 전편 순차 출력] 후 다시 시도하세요.");
+        if (exported.Count == 0)
+        {
+            try { if (Directory.Exists(seriesDir) && Directory.GetFileSystemEntries(seriesDir).Length == 0) Directory.Delete(seriesDir); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Program.Log("StockSuite.SeriesCleanup", ex); }
+            return new(false, null, false, corrupt > 0
+                ? "🛡️ 편 영상 " + corrupt.ToString(CultureInfo.InvariantCulture) + "개가 잘렸거나 손상되어 내보내기를 차단했습니다 — 다시 렌더한 뒤 시도하세요."
+                : "렌더된 편 영상이 없습니다 — [🎞️ 전편 순차 출력] 후 다시 시도하세요.");
+        }
 
         var manifest = WriteSeriesManifest(seriesDir, seriesBatch, folder, exported, stamp);
         var msg = "📦 시리즈 " + exported.Count.ToString(CultureInfo.InvariantCulture) + "/" + seriesBatch.Episodes.Count.ToString(CultureInfo.InvariantCulture)
                   + "편 내보내기 · 📁 " + folder + (manifest is null ? "" : " · 🧾 " + SeriesManifestName)
-                  + (skipped > 0 ? " · [부분 구제] " + skipped.ToString(CultureInfo.InvariantCulture) + "편 누락" : "");
+                  + (skipped > 0 ? " · [부분 구제] " + skipped.ToString(CultureInfo.InvariantCulture) + "편 누락" + (corrupt > 0 ? "(🛡️ 손상 " + corrupt.ToString(CultureInfo.InvariantCulture) + "편 차단)" : "") : "");
         return new(true, seriesDir, false, msg);
     }
 
