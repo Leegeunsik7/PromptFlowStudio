@@ -67,9 +67,36 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
     /// 실행 가능 — 활성 엔진 구성됨, 또는 [환경설정] 렌더 모드가 명시적 Cloud(엔진 미구성이어도 true → <see cref="ExecuteAsync"/> 가 명시 오류로 Failed 처리,
     /// 큐가 Mock 컬러바로 조용히 폴백하지 않게 함).
     /// </summary>
-    public bool IsAvailable => !(ForceSimulation?.Invoke() ?? false) && (TryGetActive() is { Enabled: true } || IsExplicitCloud());
+    public bool IsAvailable => !(ForceSimulation?.Invoke() ?? false) && (TryGetActive() is { Enabled: true } || IsExplicitCloud() || BlockSilentMock);
 
-    public string EngineKind => IsExplicitCloud() && TryGetActive() is not { Enabled: true } ? RenderEngineKind.Cloud : KindOf(TryGetActive());
+    public string EngineKind
+    {
+        get
+        {
+            var engine = TryGetActive();
+            if (engine is { Enabled: true }) return KindOf(engine);
+            if (IsExplicitCloud()) return RenderEngineKind.Cloud;
+            return BlockSilentMock && engine is null ? RenderEngineKind.ComfyUi : KindOf(engine);
+        }
+    }
+
+    /// <summary>
+    /// true → [환경설정] 명시 Mock 이 아니면 실물 엔진 부재 시에도 큐가 Mock(컬러바/링 셰이더)로 조용히 대체하지 않고
+    /// <see cref="ExecuteAsync"/> 가 <see cref="NoEngineMessage"/> 로 Failed 처리(데스크톱 결선). false = 기존 시뮬레이션 폴백(모바일·테스트 기본).
+    /// </summary>
+    public bool BlockSilentMock { get; init; }
+
+    /// <summary>로컬 ComfyUI 온라인 여부(헬스 체크 스냅샷 · null = 미점검/알 수 없음). false + Cloud 키 구성 → Cloud Wan 2.1 자동 전환.</summary>
+    public Func<bool?>? ComfyOnline { get; init; }
+
+    /// <summary>로컬/Cloud 엔진 모두 사용 불가 — 작업실 배너 문구(Mock 대체 생성 안 함).</summary>
+    public const string NoEngineMessage = "⚠️ AI 영상 엔진 미연결: [AI 엔진설정]에서 DashScope API 키를 저장하고 Cloud 모드를 선택해 주세요.";
+
+    /// <summary>엔진 메타 — 자동 전환 안내(작업실 인라인 ℹ 노출).</summary>
+    public const string MetaEngineNotice = "engine.notice";
+
+    /// <summary>ComfyUI 모드 + 로컬 미구성/오프라인 → Cloud 자동 전환 안내.</summary>
+    public const string AutoCloudNotice = "☁️ 로컬 ComfyUI 오프라인/미구성 → 저장된 DashScope 키로 Cloud Wan 2.1 자동 전환";
 
     /// <summary>Cloud 엔진 미구성 시 오류 본문(작업실 배너 노출).</summary>
     public const string CloudNotConfiguredMessage = "[인증 실패] Cloud(DashScope Wan 2.1) 엔진이 비활성입니다 — API 키 미구성/소진. [환경설정]에서 DashScope 키를 확인하세요 (Mock 대체 생성 안 함)";
@@ -86,12 +113,15 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
     public async Task<RenderExecutionResult> ExecuteAsync(BatchRenderJob job, IProgress<int> progress, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(job);
-        var engine = TryGetActive();
+        var engine = ResolveActive(out var autoCloud);
         var kind = KindOf(engine);
         if (engine is not { Enabled: true })
             return IsExplicitCloud()
                 ? new RenderExecutionResult(false, RenderEngineKind.Cloud, null, CloudErrorPrefix + CloudNotConfiguredMessage)
-                : new RenderExecutionResult(false, kind, null, "렌더 엔진 미설정");
+                : BlockSilentMock
+                    ? new RenderExecutionResult(false, engine is null ? RenderEngineKind.ComfyUi : kind, null, NoEngineMessage)
+                    : new RenderExecutionResult(false, kind, null, "렌더 엔진 미설정");
+        if (autoCloud) job.Metadata = MultiDurationPlanner.WithMeta(job.Metadata, MetaEngineNotice, AutoCloudNotice);
 
         var request = BuildRequest(job);
         // ☁️ 클라우드 발번 즉시 저널링(task_id 첫 보고 1회) — 단절·재시작 복구용
@@ -313,8 +343,15 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
     /// 활성 엔진 — [환경설정] 렌더 모드를 디스패치 시점에 실시간 반영. ComfyUI 모드 → ComfyUI 엔진, Cloud 모드 → 선택기 활성이 ComfyUI 면 첫 비-ComfyUI 엔진.
     /// 해당 엔진이 없으면 선택기 활성 폴백.
     /// </summary>
-    private IVideoGenerationEngine? TryGetActive()
+    private IVideoGenerationEngine? TryGetActive() => ResolveActive(out _);
+
+    /// <summary>
+    /// 활성 엔진 해석 — ComfyUI 모드에서 로컬 엔진이 미구성(<c>Enabled=false</c>)이거나 헬스 체크상 오프라인이고
+    /// 비-ComfyUI(DashScope/Wan) 엔진이 구성돼 있으면 그 엔진으로 자동 전환(<paramref name="autoCloud"/>=true).
+    /// </summary>
+    internal IVideoGenerationEngine? ResolveActive(out bool autoCloud)
     {
+        autoCloud = false;
         if (_selector is null || _selector.All.Count == 0) return null;
         IVideoGenerationEngine? active;
         try { active = _selector.Active; } catch (Exception) { return null; }
@@ -325,8 +362,15 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
         var all = _selector.All;
         if (string.Equals(mode, RenderEngineKind.ComfyUi, StringComparison.OrdinalIgnoreCase))
         {
-            if (active is ComfyUiVideoEngine) return active;
-            for (var i = 0; i < all.Count; i++) if (all[i] is ComfyUiVideoEngine) return all[i];
+            IVideoGenerationEngine? comfy = active is ComfyUiVideoEngine ? active : null;
+            for (var i = 0; comfy is null && i < all.Count; i++) if (all[i] is ComfyUiVideoEngine) comfy = all[i];
+            bool? online;
+            try { online = ComfyOnline?.Invoke(); } catch (Exception ex) { Program.Log("RenderExec.ComfyOnline", ex); online = null; }
+            if (comfy is { Enabled: true } && online != false) return comfy;
+            // ☁️ 로컬 미구성/오프라인 → 구성된 Cloud 엔진 자동 전환(Mock 폴백 대신)
+            if (active is not ComfyUiVideoEngine && active is { Enabled: true }) { autoCloud = true; return active; }
+            for (var i = 0; i < all.Count; i++) if (all[i] is not ComfyUiVideoEngine && all[i].Enabled) { autoCloud = true; return all[i]; }
+            if (comfy is not null) return comfy;
         }
         else if (string.Equals(mode, RenderEngineKind.Cloud, StringComparison.OrdinalIgnoreCase))
         {

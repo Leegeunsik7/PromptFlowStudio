@@ -60,10 +60,66 @@
 
 <div class="ws" style="--ws-lut: @(PromptFlowStudio.Services.Export.ColorGradingService.CssFilter(_lut))">
     <header class="ws-head">
-        <div class="ws-navrow">
+        <div class="ws-navrow ws-row-primary" data-ws-row="primary">
             <button class="ws-back" @onclick='() => Nav.NavigateTo("")'>← 워크스페이스</button>
             <button class="ws-back" @onclick='() => Nav.NavigateTo("storyboard")'>🎬 스토리보드(여러 컷) →</button>
             <button class="ws-back" @onclick="ExpandToStoryboard" disabled="@(State.IsBusy || string.IsNullOrWhiteSpace(_prompt))" title="현재 프롬프트·시드로 1번 컷을 채우고 2~4번 컷을 기승전결로 자동 전개">🎬 스토리보드로 4컷 확장</button>
+            <div class="ws-status-badges" data-ws-status="1">
+                <button class="ws-back" data-local-ai-open="1" @onclick="() => _localAiModal = true" title="Gemini 장애 시 사내/로컬 AI 서버(OpenAI 호환 · Ollama)로 자동 전환 — 엔드포인트 · 모델 · 연결 테스트">🦙 로컬 AI 설정@(LocalAiSettings.Gateway.Options.IsEnabled ? " · ON" : "")</button>
+                @{ var pcs = PlutoCoreMgr.Current; }
+                @if (pcs.IsRunning)
+                {
+                    <button class="ws-back ws-pcore on" data-plutocore-pill="running" @onclick="() => _localAiModal = true"
+                            title="@("PlutoCore 허브 연결됨 · " + pcs.EndpointUrl + (pcs.Latency is { } plat ? " · 핑 " + plat.TotalMilliseconds.ToString("0.0", CultureInfo.InvariantCulture) + "ms" : "") + (pcs.ProcessId is { } ppid ? " · PID " + ppid.ToString(CultureInfo.InvariantCulture) : ""))">🟢 PlutoCore (@(PlutoCoreMgr.RootDirectory)) 연결됨</button>
+                }
+                else if (pcs.DirectoryExists)
+                {
+                    <span class="ws-pcore" data-plutocore-pill="stopped">⚪ PlutoCore 미실행
+                        @if (pcs.CanLaunch)
+                        {
+                            <button class="ws-back ws-pcore-go" data-plutocore-launch="1" disabled="@_plutoCoreLaunching" @onclick="LaunchPlutoCoreAsync" title="@(pcs.ExecutablePath)">@(_plutoCoreLaunching ? "⏳ 기동 중..." : "[🚀 기동]")</button>
+                        }
+                    </span>
+                }
+                <span class="ws-pcore@(PlutoStorage.IsCloudSynced ? " on" : "")" data-pluto-storage="@(PlutoStorage.IsCloudSynced ? "drive" : "local")" title="@("Pluto 학습 데이터 저장 위치: " + PlutoStorage.ActiveRoot)">@(PlutoStorage.IsCloudSynced ? @"☁️ G:\내 드라이브\DATA 동기화됨" : "💾 로컬 폴백")</span>
+                <span class="ws-pcore@(PlutoHarvester.IsRunning ? " on" : "")" data-pluto-harvest="@(PlutoHarvester.IsHarvesting ? "busy" : PlutoHarvester.IsRunning ? "on" : "off")">@(PlutoHarvester.StatusLabel)</span>
+                <PlutoDirectorBadge Director="PlutoDirector" />   @* 🎬 디렉터 랭크(XP → 광학 티어) *@
+                @* 🍼 Step5: 증시 세션/외부 연동 배지는 기본 아기 스튜디오 화면에서 제거(설정 > 연동 진단으로 이관). *@
+                @if (Journal.RecoveringCount > 0) { <span class="ws-recover" role="status">[🔄 미완료 클라우드 작업 복원 중: @(Journal.RecoveringCount.ToString(CultureInfo.InvariantCulture))건]</span> }
+                else if (Journal.Count > 0) { <button class="ws-recover ws-jbadge" @onclick="OpenJournal" title="클릭 → 저널 인스펙터(수동 회수·재시도·삭제)">[🔄 미완료 클라우드 작업: @(Journal.Count.ToString(CultureInfo.InvariantCulture))건]</button> }
+                @if (_retryMsg is not null) { <span class="ws-retry" role="status">@_retryMsg</span> }
+            </div>
+        </div>
+        @* 🧠 Pluto 인텔리전스 스트립 — 좌: 자율 트렌드 기획안 · 우: 학습 최적 훅·룩·BGM *@
+        <div class="ws-pluto-strip" data-ws-row="pluto">
+            <div class="ws-brief-strip" data-brief-strip="@((_briefs?.Count ?? 0).ToString(CultureInfo.InvariantCulture))" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+                <span class="ws-pcore on">🔭 오늘의 자율 트렌드 기획안 (3선)</span>
+                <button class="ws-back" data-brief-refresh="1" @onclick="RefreshBriefsAsync" disabled="@(_briefsBusy)" title="실시간/저장 트렌드 × 학습 1위 훅·룩·BGM × 오답 노트 회피 — Gemini → PlutoCore → 로컬 게이트웨이 → 템플릿">[🔄 기획안 새로고침]</button>
+                @if (_briefsBusy) { <span class="ws-retry" role="status" data-brief-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 🔭 기획안 생성 중…</span> }
+                else if (_briefs is { Count: > 0 } brs)
+                {
+                    @foreach (var br in brs)
+                    {
+                        var brief = br;
+                        <span class="ws-retry" data-brief-id="@(brief.BriefId)" title="@(brief.ReadyPrompt)">📌 @(brief.Title) · #@(brief.TrendKeyword) · @(brief.TargetPlatform) · @(brief.RationaleBadge)@(brief.AvoidedMistakeCount > 0 ? " · 🛡 회피 " + brief.AvoidedMistakeCount.ToString(CultureInfo.InvariantCulture) : "")</span>
+                        <button class="ws-back" data-brief-apply="@(brief.BriefId)" @onclick="() => ApplyBriefAsync(brief)" disabled="@(_briefsBusy || _montageBusy || State.IsBusy)" title="@("프롬프트 · 룩 " + brief.RecommendedColorLook + " · BGM " + brief.RecommendedBgmMood + " · 훅 '" + brief.RecommendedHook + "' 한 번에 세팅")">[🚀 이 기획안으로 즉시 세팅]</button>
+                    }
+                }
+                @if (_briefsToast is { } bft) { <span class="ws-retry" role="status" data-brief-toast="1">@(bft)</span> }
+            </div>
+            @if (_adaptiveRec is { } arec)
+            {
+                <div class="ws-adaptive-strip" data-adaptive-strip="@(arec.HasReinforcedHistory ? "learned" : "explore")" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+                    <span class="@(arec.TopHook.IsReinforced ? "ws-pcore on" : "ws-retry")" data-adaptive-hook="@(arec.TopHook.DisplayLabel)" title="@("점수 " + arec.TopHook.FinalScore.ToString("0.000", CultureInfo.InvariantCulture) + " · 학습 ×" + arec.TopHook.LearnedWeightMultiplier.ToString("0.00", CultureInfo.InvariantCulture))">🧠 최적 훅: @(arec.TopHook.DisplayLabel) · @(arec.TopHook.ReasonBadge)</span>
+                    <span class="@(arec.TopColorLook.IsReinforced ? "ws-pcore on" : "ws-retry")" data-adaptive-look="@(arec.TopColorLook.DisplayLabel)" title="@("점수 " + arec.TopColorLook.FinalScore.ToString("0.000", CultureInfo.InvariantCulture) + " · 학습 ×" + arec.TopColorLook.LearnedWeightMultiplier.ToString("0.00", CultureInfo.InvariantCulture))">🎨 최적 룩: @(arec.TopColorLook.DisplayLabel) · @(arec.TopColorLook.ReasonBadge)</span>
+                    <span class="@(arec.TopBgmMood.IsReinforced ? "ws-pcore on" : "ws-retry")" data-adaptive-bgm="@(arec.TopBgmMood.DisplayLabel)" title="@("점수 " + arec.TopBgmMood.FinalScore.ToString("0.000", CultureInfo.InvariantCulture) + " · 학습 ×" + arec.TopBgmMood.LearnedWeightMultiplier.ToString("0.00", CultureInfo.InvariantCulture))">🎵 최적 BGM: @(arec.TopBgmMood.DisplayLabel) · @(arec.TopBgmMood.ReasonBadge)</span>
+                    <button class="ws-back" data-adaptive-apply="1" @onclick="ApplyLearnedLookAndHookAsync" disabled="@(_adaptiveBusy || _montageBusy)" title="배포 성과로 강화된 1위 색보정 룩을 몽타주에 고정하고, 1위 훅을 3막 자막(Act 1)·프롬프트에 주입 · 1위 BGM 무드 트랙 선택 후 컷 비트 재정렬(내 BGM 업로드 시 유지)">[🧠 학습 최적 룩·훅·BGM 적용]</button>
+                    @if (_learnedLookPinned is { } llp) { <span class="ws-retry" data-adaptive-pinned="@(llp)">📌 룩 고정: @(llp)</span> }
+                    @if (_adaptiveToast is { } adt) { <span class="ws-retry" role="status" data-adaptive-toast="1">@(adt)</span> }
+                </div>
+            }
+        </div>
+        <div class="ws-navrow ws-row-tools" data-ws-row="tools">
             @* 🎞 4컷 성장 마일스톤 — 아침 훅 → 액션 → 미소 → 잠 · 활성 프로필 앵커 선두 · 4슬롯 일괄 세팅 *@
             <button class="ws-back" data-milestone="Day100" @onclick='() => ApplyMilestonePresetAsync("Day100")' disabled="@(State.IsBusy || _milestoneBusy)" title="100일의 기적 — 4컷 성장 일기를 스토리보드 4슬롯에 한 번에 세팅">💯 100일의 기적</button>
             <button class="ws-back" data-milestone="FirstBirthday" @onclick='() => ApplyMilestonePresetAsync("FirstBirthday")' disabled="@(State.IsBusy || _milestoneBusy)" title="첫돌의 감동 — 4컷 성장 일기를 스토리보드 4슬롯에 한 번에 세팅">🎂 첫돌</button>
@@ -205,32 +261,6 @@
                     @if (_abToast is { } abt) { <span class="ws-retry" role="status" data-ab-toast="1">@(abt)</span> }
                 </div>
             }
-            <div class="ws-brief-strip" data-brief-strip="@((_briefs?.Count ?? 0).ToString(CultureInfo.InvariantCulture))" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%">
-                <span class="ws-pcore on">🔭 오늘의 자율 트렌드 기획안 (3선)</span>
-                <button class="ws-back" data-brief-refresh="1" @onclick="RefreshBriefsAsync" disabled="@(_briefsBusy)" title="실시간/저장 트렌드 × 학습 1위 훅·룩·BGM × 오답 노트 회피 — Gemini → PlutoCore → 로컬 게이트웨이 → 템플릿">[🔄 기획안 새로고침]</button>
-                @if (_briefsBusy) { <span class="ws-retry" role="status" data-brief-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 🔭 기획안 생성 중…</span> }
-                else if (_briefs is { Count: > 0 } brs)
-                {
-                    @foreach (var br in brs)
-                    {
-                        var brief = br;
-                        <span class="ws-retry" data-brief-id="@(brief.BriefId)" title="@(brief.ReadyPrompt)">📌 @(brief.Title) · #@(brief.TrendKeyword) · @(brief.TargetPlatform) · @(brief.RationaleBadge)@(brief.AvoidedMistakeCount > 0 ? " · 🛡 회피 " + brief.AvoidedMistakeCount.ToString(CultureInfo.InvariantCulture) : "")</span>
-                        <button class="ws-back" data-brief-apply="@(brief.BriefId)" @onclick="() => ApplyBriefAsync(brief)" disabled="@(_briefsBusy || _montageBusy || State.IsBusy)" title="@("프롬프트 · 룩 " + brief.RecommendedColorLook + " · BGM " + brief.RecommendedBgmMood + " · 훅 '" + brief.RecommendedHook + "' 한 번에 세팅")">[🚀 이 기획안으로 즉시 세팅]</button>
-                    }
-                }
-                @if (_briefsToast is { } bft) { <span class="ws-retry" role="status" data-brief-toast="1">@(bft)</span> }
-            </div>
-            @if (_adaptiveRec is { } arec)
-            {
-                <div class="ws-adaptive-strip" data-adaptive-strip="@(arec.HasReinforcedHistory ? "learned" : "explore")" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%">
-                    <span class="@(arec.TopHook.IsReinforced ? "ws-pcore on" : "ws-retry")" data-adaptive-hook="@(arec.TopHook.DisplayLabel)" title="@("점수 " + arec.TopHook.FinalScore.ToString("0.000", CultureInfo.InvariantCulture) + " · 학습 ×" + arec.TopHook.LearnedWeightMultiplier.ToString("0.00", CultureInfo.InvariantCulture))">🧠 최적 훅: @(arec.TopHook.DisplayLabel) · @(arec.TopHook.ReasonBadge)</span>
-                    <span class="@(arec.TopColorLook.IsReinforced ? "ws-pcore on" : "ws-retry")" data-adaptive-look="@(arec.TopColorLook.DisplayLabel)" title="@("점수 " + arec.TopColorLook.FinalScore.ToString("0.000", CultureInfo.InvariantCulture) + " · 학습 ×" + arec.TopColorLook.LearnedWeightMultiplier.ToString("0.00", CultureInfo.InvariantCulture))">🎨 최적 룩: @(arec.TopColorLook.DisplayLabel) · @(arec.TopColorLook.ReasonBadge)</span>
-                    <span class="@(arec.TopBgmMood.IsReinforced ? "ws-pcore on" : "ws-retry")" data-adaptive-bgm="@(arec.TopBgmMood.DisplayLabel)" title="@("점수 " + arec.TopBgmMood.FinalScore.ToString("0.000", CultureInfo.InvariantCulture) + " · 학습 ×" + arec.TopBgmMood.LearnedWeightMultiplier.ToString("0.00", CultureInfo.InvariantCulture))">🎵 최적 BGM: @(arec.TopBgmMood.DisplayLabel) · @(arec.TopBgmMood.ReasonBadge)</span>
-                    <button class="ws-back" data-adaptive-apply="1" @onclick="ApplyLearnedLookAndHookAsync" disabled="@(_adaptiveBusy || _montageBusy)" title="배포 성과로 강화된 1위 색보정 룩을 몽타주에 고정하고, 1위 훅을 3막 자막(Act 1)·프롬프트에 주입 · 1위 BGM 무드 트랙 선택 후 컷 비트 재정렬(내 BGM 업로드 시 유지)">[🧠 학습 최적 룩·훅·BGM 적용]</button>
-                    @if (_learnedLookPinned is { } llp) { <span class="ws-retry" data-adaptive-pinned="@(llp)">📌 룩 고정: @(llp)</span> }
-                    @if (_adaptiveToast is { } adt) { <span class="ws-retry" role="status" data-adaptive-toast="1">@(adt)</span> }
-                </div>
-            }
             @if (_perfOpen && _montagePhotos.Count >= 2)
             {
                 <div class="ws-perf-panel" data-perf-panel="1" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%">
@@ -262,29 +292,6 @@
                 <button class="ws-back" data-custom-bgm-clear="1" @onclick="ClearCustomBgmAsync" disabled="@(_motionBusy || _montageBusy)" title="업로드 음원 해제 → 감성 BGM 합성 트랙 복원">✕ 기본 BGM</button>
             }
             @if (_customBgmError is { } cbe) { <span class="ws-retry" role="alert" data-custom-bgm-error="1">⚠ @(cbe)</span> }
-            <button class="ws-back" data-local-ai-open="1" @onclick="() => _localAiModal = true" title="Gemini 장애 시 사내/로컬 AI 서버(OpenAI 호환 · Ollama)로 자동 전환 — 엔드포인트 · 모델 · 연결 테스트">🦙 로컬 AI 설정@(LocalAiSettings.Gateway.Options.IsEnabled ? " · ON" : "")</button>
-            @{ var pcs = PlutoCoreMgr.Current; }
-            @if (pcs.IsRunning)
-            {
-                <button class="ws-back ws-pcore on" data-plutocore-pill="running" @onclick="() => _localAiModal = true"
-                        title="@("PlutoCore 허브 연결됨 · " + pcs.EndpointUrl + (pcs.Latency is { } plat ? " · 핑 " + plat.TotalMilliseconds.ToString("0.0", CultureInfo.InvariantCulture) + "ms" : "") + (pcs.ProcessId is { } ppid ? " · PID " + ppid.ToString(CultureInfo.InvariantCulture) : ""))">🟢 PlutoCore (@(PlutoCoreMgr.RootDirectory)) 연결됨</button>
-            }
-            else if (pcs.DirectoryExists)
-            {
-                <span class="ws-pcore" data-plutocore-pill="stopped">⚪ PlutoCore 미실행
-                    @if (pcs.CanLaunch)
-                    {
-                        <button class="ws-back ws-pcore-go" data-plutocore-launch="1" disabled="@_plutoCoreLaunching" @onclick="LaunchPlutoCoreAsync" title="@(pcs.ExecutablePath)">@(_plutoCoreLaunching ? "⏳ 기동 중..." : "[🚀 기동]")</button>
-                    }
-                </span>
-            }
-            <span class="ws-pcore@(PlutoStorage.IsCloudSynced ? " on" : "")" data-pluto-storage="@(PlutoStorage.IsCloudSynced ? "drive" : "local")" title="@("Pluto 학습 데이터 저장 위치: " + PlutoStorage.ActiveRoot)">@(PlutoStorage.IsCloudSynced ? @"☁️ G:\내 드라이브\DATA 동기화됨" : "💾 로컬 폴백")</span>
-            <span class="ws-pcore@(PlutoHarvester.IsRunning ? " on" : "")" data-pluto-harvest="@(PlutoHarvester.IsHarvesting ? "busy" : PlutoHarvester.IsRunning ? "on" : "off")">@(PlutoHarvester.StatusLabel)</span>
-            <PlutoDirectorBadge Director="PlutoDirector" />   @* 🎬 디렉터 랭크(XP → 광학 티어) *@
-            @* 🍼 Step5: 증시 세션/외부 연동 배지는 기본 아기 스튜디오 화면에서 제거(설정 > 연동 진단으로 이관). *@
-            @if (Journal.RecoveringCount > 0) { <span class="ws-recover" role="status">[🔄 미완료 클라우드 작업 복원 중: @(Journal.RecoveringCount.ToString(CultureInfo.InvariantCulture))건]</span> }
-            else if (Journal.Count > 0) { <button class="ws-recover ws-jbadge" @onclick="OpenJournal" title="클릭 → 저널 인스펙터(수동 회수·재시도·삭제)">[🔄 미완료 클라우드 작업: @(Journal.Count.ToString(CultureInfo.InvariantCulture))건]</button> }
-            @if (_retryMsg is not null) { <span class="ws-retry" role="status">@_retryMsg</span> }
         </div>
         @* 🎞 실시간 모션 프리뷰 — FFmpeg 없이 캔버스 60fps Ken Burns + Web Audio 동기 + KO/EN 자막(궤적/자막/BGM 변경은 재생 유지 핫스왑) *@
         @if (_motionImage is not null)
@@ -514,7 +521,12 @@
             }
             else if (_durationMode == PromptFlowStudio.Services.Render.VideoDurationMode.Sec15_AmbientSlow)
             {
+                <span class="ws-pcore on" data-ambient-badge="1">🌙 15초 엠비언트 루프 · 5초 마스터 → 무이음새 15초 핑퐁</span>
                 <label class="ws-dur-hint"><input type="checkbox" @bind="_ambientPingPong" disabled="@State.IsBusy" /> 🔁 리버스 핑퐁 루프(시작·끝 이음새 제거)</label>
+            }
+            @if (_durationMode != PromptFlowStudio.Services.Render.VideoDurationMode.Sec5_Single && !State.IsBusy && string.IsNullOrWhiteSpace(_prompt) && string.IsNullOrWhiteSpace(_imagePath))
+            {
+                <div class="ws-dur-hint" role="status" data-duration-need-input="1">⚠ 프롬프트를 입력하거나(T2V) 참조 사진 1장을 올려 주세요(I2V) — 입력 후 [✨ 생성 시작]</div>
             }
             @if (_durationMsg is not null) { <div class="ws-dur-hint">@_durationMsg</div> }
             @if (_mini.Phase != PromptFlowStudio.Services.Render.MiniQueuePhase.Idle)
@@ -689,7 +701,8 @@
                         <button class="ws-btn sm" @onclick="() => OpenPublish(qPath)" title="YouTube Shorts · Instagram Reels 원클릭 발행">🚀 SNS 원클릭 발행</button>
                         <button class="ws-btn ghost sm" @onclick="() => RevealInExplorer(qPath)" title="윈도우 탐색기에서 파일 선택 상태로 열기">📂 폴더 열기</button>
                         <button class="ws-btn ghost sm" @onclick="() => CopyMediaPath(qPath)" title="파일 절대 경로를 클립보드에 복사">📋 경로 복사</button>
-                        <button class="ws-btn ghost sm" @onclick="() => ExportToStockSuite(qPath)" disabled="@_stockBusy" title="환경설정의 StockSuite 에셋 폴더에 bg_ambient.mp4 로 원자적 덮어쓰기">💼 StockSuite로 내보내기</button>
+                        <input class="ws-stock-proj" type="text" maxlength="60" placeholder="프로젝트 폴더명(비우면 루트 라이브 교체)" data-stock-project="1" value="@(StockProjectNameView)" @onchange="OnStockProjectNameChanged" disabled="@_stockBusy" title="StockSuite 루트 아래 {프로젝트명}_{yyyyMMdd} 하위 폴더로 내보냅니다 — 비우면 기존 bg_ambient.mp4 라이브 교체" />
+                        <button class="ws-btn ghost sm" @onclick="() => ExportToStockSuite(qPath)" disabled="@_stockBusy" title="@(StockExportTitle)">💼 StockSuite로 내보내기</button>
                         @if (StockCanLaunch) { <button class="ws-btn ghost sm" @onclick="() => LaunchStockSuite(false)" title="환경설정의 StockSuite.exe 를 즉시 실행해 에셋 적용을 실기 검증">🚀 StockSuite 실행</button> }
                         <span class="ws-hint" title="@qPath">@ShortPath(qPath)</span>
                     </div>
@@ -760,7 +773,8 @@
                             <button class="ws-btn sm" @onclick="() => OpenPublish(pubSrc)" title="YouTube Shorts · Instagram Reels 원클릭 발행">🚀 SNS 원클릭 발행</button>
                             <button class="ws-btn ghost sm" @onclick="() => RevealInExplorer(pubSrc)" title="윈도우 탐색기에서 파일 선택 상태로 열기">📂 폴더 열기</button>
                             <button class="ws-btn ghost sm" @onclick="() => CopyMediaPath(pubSrc)" title="파일 절대 경로를 클립보드에 복사">📋 경로 복사</button>
-                            <button class="ws-btn ghost sm" @onclick="() => ExportToStockSuite(pubSrc)" disabled="@_stockBusy" title="환경설정의 StockSuite 에셋 폴더에 bg_ambient.mp4 로 원자적 덮어쓰기">💼 StockSuite로 내보내기</button>
+                            <input class="ws-stock-proj" type="text" maxlength="60" placeholder="프로젝트 폴더명(비우면 루트 라이브 교체)" data-stock-project="1" value="@(StockProjectNameView)" @onchange="OnStockProjectNameChanged" disabled="@_stockBusy" title="StockSuite 루트 아래 {프로젝트명}_{yyyyMMdd} 하위 폴더로 내보냅니다 — 비우면 기존 bg_ambient.mp4 라이브 교체" />
+                            <button class="ws-btn ghost sm" @onclick="() => ExportToStockSuite(pubSrc)" disabled="@_stockBusy" title="@(StockExportTitle)">💼 StockSuite로 내보내기</button>
                             @if (StockCanLaunch) { <button class="ws-btn ghost sm" @onclick="() => LaunchStockSuite(false)" title="환경설정의 StockSuite.exe 를 즉시 실행해 에셋 적용을 실기 검증">🚀 StockSuite 실행</button> }
                         }
                         <span class="ws-hint" title="@State.LocalPath">@ShortPath(State.LocalPath)</span>
@@ -995,7 +1009,7 @@
             <div class="ws-w">
                 <div class="ws-w-h">📊 API · 시스템</div>
                 <div class="ws-mon">
-                    <div class="ws-mon-r"><span>Wan API</span><span class="ws-dot @(Cfg.IsConfigured ? "ok" : "off")">@(Cfg.IsConfigured ? "● 연결됨" : "○ 미설정")</span></div>
+                    <div class="ws-mon-r" data-wan-api="@(WanApiConnected ? "cloud" : "off")"><span>Wan API</span><span class="ws-dot @(WanApiConnected ? "ok" : "off")" title="@(WanApiTitle)">@(WanApiConnected ? "● Cloud 연결됨" : "○ 미연결")</span></div>
                     <div class="ws-mon-r"><span>FFmpeg 병합</span><span class="ws-dot @(Merge.IsAvailable ? "ok" : "off")">@(Merge.IsAvailable ? "● 감지됨" : "○ 없음")</span></div>
                     <div class="ws-mon-r"><span>저장소 여유</span><span class="ws-mon-v">@FreeSpace</span></div>
                 </div>
@@ -1147,12 +1161,21 @@
 <PlutoLocalAiSettingsModal Open="_localAiModal" Settings="LocalAiSettings" Core="PlutoCoreMgr" OnClose="() => _localAiModal = false" />
 
 <style>
-    .ws-pluto-fab { position: fixed; right: 22px; bottom: 22px; z-index: 870; padding: 12px 18px; border-radius: 999px; border: 0; cursor: pointer; font-weight: 900; color: #fff;
+    .ws-pluto-fab { position: fixed; right: 22px; bottom: 22px; z-index: 870; white-space: nowrap; max-width: calc(100vw - 44px); overflow: hidden; text-overflow: ellipsis; padding: 12px 18px; border-radius: 999px; border: 0; cursor: pointer; font-weight: 900; color: #fff;
                     background: linear-gradient(135deg,#8b7bff,#f472b6); box-shadow: 0 10px 28px rgba(139,123,255,.45); }
     .ws-pluto-fab:hover { filter: brightness(1.08); }
-    .ws { padding: 6px 8px 48px; width: 100%; box-sizing: border-box; }
+    .ws { padding: 6px 8px 96px; width: 100%; box-sizing: border-box; }   /* 하단 플로팅 🪐 버튼이 마지막 카드를 가리지 않도록 여백 확보 */
     .ws-head { margin-bottom: 18px; }
-    .ws-navrow { display: flex; gap: 14px; margin-bottom: 4px; }
+    .ws-navrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-bottom: 6px; min-width: 0; }
+    .ws-row-primary { padding-bottom: 4px; border-bottom: 1px solid rgba(148,163,184,.12); }
+    .ws-status-badges { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px 10px; margin-left: auto; min-width: 0; }
+    .ws-pluto-strip { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 8px; margin: 2px 0 8px; align-items: start; }
+    .ws-pluto-strip > div { min-width: 0; padding: 6px 8px; border: 1px solid rgba(148,163,184,.14); border-radius: 10px; background: rgba(15,23,42,.25); }
+    @@media (max-width: 1100px) { .ws-pluto-strip { grid-template-columns: minmax(0,1fr); } }
+    /* 한글 라벨 세로 글자 줄바꿈 차단 — 버튼·칩·배지는 축소 금지 + 한 줄 유지, 부모가 줄바꿈 */
+    .ws-head .ws-back, .ws-head .ws-pcore, .ws-head .ws-recover, .ws-head .ws-file-pick, .ws-head select, .ws-head label, .ws-head .ws-eng { white-space: nowrap; flex-shrink: 0; }
+    .ws-head .ws-retry { white-space: nowrap; flex-shrink: 0; max-width: 100%; }
+    .ws-head .ws-retry[role], .ws-head .ws-retry[style], .ws-head .ws-retry[data-ab-hypothesis], .ws-head .ws-retry[data-ab-eval-summary], .ws-head .ws-retry[data-sns-hashtags], .ws-head .ws-retry[data-brief-id] { white-space: normal; flex: 0 1 auto; min-width: min(100%, 14em); }
     .ws-pcore { font: 700 12px/1 var(--mono); color: var(--text-muted); padding: 0 0 10px; }
     .ws-pcore.on { color: #4ade80; }
     .ws-pcore-go { padding: 0 0 0 6px; color: #f9a8d4; }
@@ -1182,7 +1205,8 @@
     @@media (max-width: 860px) { .ws-grid { grid-template-columns: 1fr; } }
 
     .ws-card { border: 1px solid var(--line); border-radius: 18px; background: var(--card); padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
-    .ws-card-h { display: flex; align-items: center; justify-content: space-between; font-size: 13.5px; font-weight: 800; color: var(--text-primary); }
+    .ws-card-h { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; font-size: 13.5px; font-weight: 800; color: var(--text-primary); }
+    .ws-card-h > span:first-child { white-space: nowrap; flex-shrink: 0; }
 
     .ws-ta { width: 100%; min-height: 160px; resize: vertical; border-radius: 12px; border: 1px solid var(--line); background: var(--card-2);
         color: var(--text-primary); padding: 12px 14px; font-size: 13.5px; line-height: 1.6; font-family: inherit; }
@@ -1284,8 +1308,10 @@
 
     .ws-video { width: 100%; border-radius: 12px; background: #000; border: 1px solid var(--line); }
     /* 📊 HTS HUD 가독성 시뮬레이터 */
-    .ws-hts-tools { display: inline-flex; align-items: center; gap: 6px; }
-    .ws-hts-tog { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--text-secondary, #aab); cursor: pointer; }
+    .ws-stock-proj { width: 15em; max-width: 100%; font: 600 11.5px var(--mono); padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); background: rgba(15,23,42,.35); color: var(--text-primary); }
+    .ws-hts-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; }
+    .ws-hts-tools > * { white-space: nowrap; flex-shrink: 0; }
+    .ws-hts-tog { white-space: nowrap; flex-shrink: 0; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--text-secondary, #aab); cursor: pointer; }
     .ws-growth-badge { position: absolute; left: 12px; bottom: 12px; z-index: 3; padding: 4px 12px; border-radius: 999px; font-size: 13px; font-weight: 800; color: #fff; background: rgba(255, 140, 170, .82); box-shadow: 0 2px 8px rgba(0,0,0,.25); cursor: pointer; }
 .ws-growth-edit { position: absolute; left: 12px; bottom: 44px; z-index: 4; width: 220px; padding: 4px 10px; border-radius: 999px; border: 1px solid rgba(255, 140, 170, .9); font-size: 12px; background: #fff; color: #3a2e39; }
     .ws-hts-tog.on { background: rgba(61, 139, 255, .18); border-color: #3d8bff; color: #9cc3ff; }
@@ -2511,6 +2537,7 @@
             Snap("기획안 적용 전");
             _prompt = brief.ReadyPrompt;
             Snap("🔭 기획안: " + brief.Title);
+            _appliedBriefTitle = brief.Title;
             if (PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.TryGetPreset(brief.RecommendedColorLook) is not null) _learnedLookPinned = brief.RecommendedColorLook;
             RefreshMontageLook();
             var bgmNote = await ApplyBgmMoodAsync(brief.RecommendedBgmMood);
@@ -3276,7 +3303,8 @@
                 _miniUrl = _canvasQueueUrl = _canvasQueuePath = null;
                 _miniError = MiniMissingOutputMessage();
             }
-            _miniNotice = MiniJobMeta(PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.MetaAmbientNotice);
+            _miniNotice = JoinNotice(MiniJobMeta(PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.MetaEngineNotice),
+                MiniJobMeta(PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.MetaAmbientNotice));
         }
         else if (next.Phase == PromptFlowStudio.Services.Render.MiniQueuePhase.Failed)
             _miniError = MiniFailedMessage() ?? "렌더 실패";
@@ -3308,6 +3336,9 @@
     }
 
     /// <summary>추적 작업 메타 값(첫 매치).</summary>
+    private static string? JoinNotice(string? a, string? b)
+        => a is null ? b : b is null ? a : a + " · " + b;
+
     private string? MiniJobMeta(string key)
     {
         foreach (var j in RenderQueue.Snapshot())
@@ -3478,6 +3509,26 @@
         }
         catch (Exception ex) { Program.Log("Workspace.HotReloadWatch", ex); }
     }
+    // ── 📁 StockSuite 프로젝트별 하위 폴더 ──
+    private string? _stockProjectName;   // null = 자동(기획안 제목 → 시리즈 테마 → 프롬프트 앞 24자) · "" = 사용자가 비움(루트 라이브 교체)
+    private string? _appliedBriefTitle;
+
+    private string StockProjectNameView => _stockProjectName ?? DefaultStockProjectName();
+
+    private string DefaultStockProjectName()
+    {
+        if (!string.IsNullOrWhiteSpace(_appliedBriefTitle)) return _appliedBriefTitle!.Trim();
+        if (_series is { } ser && !string.IsNullOrWhiteSpace(ser.SeriesTheme)) return ser.SeriesTheme;
+        var p = (_prompt ?? "").Trim();
+        return p.Length > 24 ? p[..24].Trim() : p;
+    }
+
+    private void OnStockProjectNameChanged(ChangeEventArgs e) => _stockProjectName = (e.Value as string ?? "").Trim();
+
+    private string StockExportTitle => string.IsNullOrWhiteSpace(StockProjectNameView)
+        ? "환경설정의 StockSuite 에셋 폴더에 bg_ambient.mp4 로 원자적 덮어쓰기(라이브 핫리로드)"
+        : "StockSuite 루트/" + PromptFlowStudio.Services.Export.StockSuiteExporter.BuildProjectFolderName(StockProjectNameView, DateTime.Now) + "/ 하위 폴더로 내보내기 + project_manifest.json";
+
     private async Task ExportToStockSuite(string path)
     {
         if (_stockBusy) return;
@@ -3489,11 +3540,13 @@
             StockSuite.BabyBgm = _bgmOn ? _bgmTrack : null;                       // 🎵 감성 BGM(OFF → 무음 유지)
             StockSuite.IncludeSfx = _sfxOn;                                        // 🔔 감성 효과음(BGM ON 시 amix · 실패 → BGM 단독)
             var cues = _letterSubs ? (await GenerateWorkspaceLetterAsync(_mediaCts.Token)).ToCues() : null;   // 💌 감성 자막(OFF → null)
-            var r = await StockSuite.ExportWithSubtitlesAsync(path, cues, _mediaCts.Token);   // 🎵 BGM 직접 먹싱 · 💌 시간 게이트 drawtext + {출력}.srt
+            var project = StockProjectNameView;   // 📁 비면 루트 라이브 교체(기존) · 값 → {슬러그}_{yyyyMMdd} 하위 폴더 + project_manifest.json
+            var r = await StockSuite.ExportWithSubtitlesAsync(path, cues, project, _mediaCts.Token, _snsKit, _prompt);   // 🎵 BGM 직접 먹싱 · 💌 시간 게이트 drawtext + {출력}.srt
             if (r.Ok && _specPath == path) { _spec = null; _specPath = null; }   // ⚡ 인코더 텔레메트리 갱신 → 규격 캐시 무효화
             _camToast = r.Ok ? r.Message : r.NeedsPathSetup ? "⚠ " + r.Message + " (설정 ▸ 사용자 설정 ▸ StockSuite 에셋 경로)" : "⚠ " + r.Message;
             _stockRestart = false;
             _stockToast = r.Ok ? _camToast : null;   // 성공 토스트에만 🚀 실행 버튼 노출
+            if (r.Ok && !string.IsNullOrWhiteSpace(project) && r.TargetPath is { } projTarget) RevealInExplorer(projTarget);   // 📂 해당 프로젝트 폴더 열기
             if (r.HotReloadWatch is { } watch) _ = AwaitHotReloadWatchAsync(watch);   // 🩺 5초 ack 미수신 → 자동 롤백 경고
         }
         catch (Exception ex) { Program.Log("Workspace.StockSuite", ex); _camToast = "⚠ StockSuite 내보내기 실패 — 경로를 재설정하세요"; }
@@ -4179,7 +4232,12 @@
 
     private void Start()
     {
-        if (!CanStart) return;
+        if (!CanStart)
+        {
+            if (!State.IsBusy && string.IsNullOrWhiteSpace(_prompt) && string.IsNullOrWhiteSpace(_imagePath))
+                _durationMsg = "⚠ 프롬프트(T2V) 또는 참조 사진 1장(I2V)이 필요합니다.";
+            return;
+        }
         RefreshRenderMode();
         var anchored = WithIdentityAnchor(_prompt);   // 🍼 캐릭터 일관성 앵커(비영속 · 멱등)
         if (_durationMode != PromptFlowStudio.Services.Render.VideoDurationMode.Sec5_Single) { EnqueueDuration(anchored); return; }
@@ -4278,6 +4336,15 @@
     // ── OnChange 구독: 상태 변화를 UI 로. 폴링 스레드에서 오므로 InvokeAsync 로 마샬링 ──
     // ── 렌더 엔진 배지 — [환경설정] 모드 실시간 동기화(OnSettingsChanged 구독/해제 쌍) ──
     private string _renderMode = PromptFlowStudio.Services.Render.RenderEngineKind.ComfyUi;
+
+    /// <summary>☁️ DashScope 키 구성 시 로컬 ComfyUI(127.0.0.1:8188) 정지 여부와 무관하게 Cloud 연결로 표기.</summary>
+    private bool WanApiConnected => Cfg.IsConfigured;
+
+    private string WanApiTitle => WanApiConnected
+        ? (string.Equals(_renderMode, PromptFlowStudio.Services.Render.RenderEngineKind.Cloud, StringComparison.Ordinal)
+            ? "렌더 모드 Cloud — DashScope Wan 2.1 직접 사용"
+            : "렌더 모드 " + _renderMode + " — 로컬 엔진 미구성/오프라인 시 15초 렌더는 Cloud Wan 2.1 로 자동 전환")
+        : "DashScope API 키 미구성 — [AI 엔진설정]에서 키를 저장하세요";
 
     private void RefreshRenderMode()
         => _renderMode = PromptFlowStudio.Services.Configuration.AppSettingsManager.NormalizeMode(AppSettings.RenderMode);
