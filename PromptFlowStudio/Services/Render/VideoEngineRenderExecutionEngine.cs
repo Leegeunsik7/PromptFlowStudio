@@ -33,10 +33,36 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
     /// <param name="post">커머셜 번인 후처리기(null = 생략).</param>
     /// <param name="interrupt">취소 시 엔진 중단 신호(엔진 종류 · 타임아웃 토큰). null 이면 ComfyUI <c>/interrupt</c>.</param>
     public VideoEngineRenderExecutionEngine(VideoEngineSelector? selector, FFmpegVideoStitchService? post, Func<string, CancellationToken, Task>? interrupt)
+        : this(selector, post, interrupt, null) { }
+
+    /// <param name="checkpoints">컷 체크포인트(null = 무동작 — 레거시 직접 생성 호환).</param>
+    public VideoEngineRenderExecutionEngine(VideoEngineSelector? selector, FFmpegVideoStitchService? post, Func<string, CancellationToken, Task>? interrupt, ICutRenderCheckpointService? checkpoints)
     {
         _selector = selector;
         _post = post;
         _interrupt = interrupt ?? DefaultInterruptAsync;
+        _checkpoints = checkpoints ?? NullCutRenderCheckpointService.Instance;
+    }
+
+    private readonly ICutRenderCheckpointService _checkpoints;
+
+    /// <summary>컷 재시도 백오프 지연(테스트 주입용 · null = Task.Delay).</summary>
+    public Func<TimeSpan, CancellationToken, Task>? RetryDelay { get; init; }
+
+    /// <summary>작업 메타 — 컷 체크포인트 재사용 알림.</summary>
+    public const string MetaCheckpointNotice = "checkpoint.notice";
+
+    /// <summary>컷 체크포인트 재사용 메시지(컷 번호).</summary>
+    public static string CheckpointReuseMessage(int cutIndex)
+        => "♻️ 체크포인트 컷 재사용 (컷 #" + cutIndex.ToString(CultureInfo.InvariantCulture) + ")";
+
+    /// <summary>멀티 컷/시리즈 컷 키 — 시드·네거티브·참조 이미지를 프롬프트 정규화 입력에 결합(변형 오재사용 방지).</summary>
+    internal string ComputeCutKey(BatchRenderJob job, string provider)
+    {
+        var neg = MultiDurationPlanner.MetaOf(job, MetaNegativePrompt);
+        var composite = job.Prompt + "\u001Fseed=" + job.Seed.ToString(CultureInfo.InvariantCulture)
+                        + "\u001Fneg=" + neg + "\u001Fref=" + ResolveReferenceImage(job.ReferenceImagePath);
+        return _checkpoints.ComputeCutKey(composite, job.CutIndex ?? 0, (int)MathF.Round(job.DurationSec), job.Resolution ?? "", provider);
     }
 
     /// <summary>true 반환 시 실물 엔진을 비활성으로 보고해 큐가 시뮬레이션(Mock)으로 처리 — [환경설정] 기본 렌더 모드 Mock.</summary>
@@ -215,26 +241,65 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
                     : new RenderExecutionResult(false, kind, null, "렌더 엔진 미설정");
         if (autoCloud) job.Metadata = MultiDurationPlanner.WithMeta(job.Metadata, MetaEngineNotice, AutoCloudNotice);
 
+        // ♻️ 멀티 컷/시리즈 컷 — 유효 체크포인트(24h · MP4 무결성) 적중 시 프로바이더 호출 없이 즉시 재사용
+        var isCut = job.CutIndex is > 0;
+        string? cutKey = null;
+        if (isCut)
+        {
+            try { cutKey = ComputeCutKey(job, string.IsNullOrWhiteSpace(engine.Key) ? kind : engine.Key); }
+            catch (Exception ex) { Program.Log("RenderExec.CutKey", ex); }
+            if (cutKey is not null && !string.IsNullOrWhiteSpace(job.OutputPath) && Path.IsPathRooted(job.OutputPath)
+                && TryReuseCheckpoint(cutKey, job.OutputPath) is { } reused)
+            {
+                var note = CheckpointReuseMessage(job.CutIndex!.Value);
+                job.Metadata = MultiDurationPlanner.WithMeta(job.Metadata, MetaCheckpointNotice, note);
+                progress?.Report(100);
+                reused = await ApplyCommercialOverlayAsync(job, reused, ct).ConfigureAwait(false);
+                return new RenderExecutionResult(true, kind, reused, note);
+            }
+        }
+
         var request = BuildRequest(job);
         // ☁️ 클라우드 발번 즉시 저널링(task_id 첫 보고 1회) — 단절·재시작 복구용
         var journal = string.Equals(kind, RenderEngineKind.Cloud, StringComparison.Ordinal) ? Journal : null;
-        JournalingRelay? jrelay = journal is null ? null : new JournalingRelay(progress, journal, job, kind);
-        IProgress<WanProgress>? relay = jrelay is not null ? jrelay : progress is null ? null : new WanProgressRelay(progress);
+        JournalingRelay? jrelay = null;
         WanGenerationResult r;
         try
         {
             using (ct.Register(static s => { var (self, k) = ((VideoEngineRenderExecutionEngine, string))s!; self.FireInterrupt(k); }, (this, kind)))
-                r = await engine.GenerateAsync(request, relay, ct).ConfigureAwait(false);
+            {
+                if (isCut)
+                {
+                    // 🔁 컷 단위 유한 백오프 재시도(1.5s → 3.5s) — 일시 장애만, 인증/검증 오류는 즉시 실패
+                    r = await CutRetryPolicy.ExecuteAsync(
+                        (attempt, c) =>
+                        {
+                            if (attempt > 0 && jrelay?.TaskId is { } prev) journal?.Remove(prev);   // 실패 시도 저널 회수 → 새 발번
+                            jrelay = journal is null ? null : new JournalingRelay(progress, journal, job, kind);
+                            IProgress<WanProgress>? rl = jrelay is not null ? jrelay : progress is null ? null : new WanProgressRelay(progress);
+                            return engine.GenerateAsync(request, rl, c);
+                        },
+                        static res => !res.Ok && CutRetryPolicy.IsTransientMessage(res.Message),
+                        ct, RetryDelay,
+                        (n, why) => Program.Log("RenderExec.CutRetry", new InvalidOperationException("컷 #" + job.CutIndex!.Value.ToString(CultureInfo.InvariantCulture) + " 재시도 " + n.ToString(CultureInfo.InvariantCulture) + " — " + why))).ConfigureAwait(false);
+                }
+                else
+                {
+                    jrelay = journal is null ? null : new JournalingRelay(progress, journal, job, kind);
+                    IProgress<WanProgress>? relay = jrelay is not null ? jrelay : progress is null ? null : new WanProgressRelay(progress);
+                    r = await engine.GenerateAsync(request, relay, ct).ConfigureAwait(false);
+                }
+            }
             ct.ThrowIfCancellationRequested();
         }
         catch (OperationCanceledException)
         {
             // 사용자 [취소] → UserCanceled(자동 회수 제외) · 종료/단절 → Interrupted(재시작 시 복구)
-            journal?.MarkStatus(jrelay!.TaskId, job.UserCancelRequested ? TaskJournalService.StatusUserCanceled : TaskJournalService.StatusInterrupted);
+            journal?.MarkStatus(jrelay?.TaskId, job.UserCancelRequested ? TaskJournalService.StatusUserCanceled : TaskJournalService.StatusInterrupted);
             throw;
         }
         var journalTaskId = jrelay?.TaskId ?? r.TaskId;
-        if (journal is not null && !string.IsNullOrWhiteSpace(r.TaskId) && jrelay!.TaskId is null)
+        if (journal is not null && !string.IsNullOrWhiteSpace(r.TaskId) && jrelay?.TaskId is null)
             journal.Record(TaskJournalService.EntryFor(job, r.TaskId!, kind, DateTimeOffset.UtcNow));
         if (!r.Ok || string.IsNullOrWhiteSpace(r.VideoUrl))
         {
@@ -270,10 +335,36 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
             File.Copy(output, job.OutputPath, overwrite: true);
             output = job.OutputPath;
         }
+        if (cutKey is not null) SaveCutCheckpoint(cutKey, output);   // 💾 컷 성공 즉시 저장 — 후속 컷 실패에도 보존
         output = await ApplyCommercialOverlayAsync(job, output, ct).ConfigureAwait(false);
         output = await ApplyAmbientLoopAsync(job, output, ct, cloud: string.Equals(kind, RenderEngineKind.Cloud, StringComparison.Ordinal)).ConfigureAwait(false);
         journal?.Remove(journalTaskId);   // 로컬 저장 완료 → 저널 안전 제거
         return new RenderExecutionResult(true, kind, output, r.Message);
+    }
+
+    /// <summary>체크포인트 적중 → 작업 OutputPath 로 복사 후 경로 반환, 미스/실패 null.</summary>
+    private string? TryReuseCheckpoint(string cutKey, string outputPath)
+    {
+        try
+        {
+            if (!_checkpoints.TryGetValidCheckpoint(cutKey, out var cached)) return null;
+            if (!string.Equals(Path.GetFullPath(cached), Path.GetFullPath(outputPath), StringComparison.OrdinalIgnoreCase))
+            {
+                var dir = Path.GetDirectoryName(outputPath);
+                if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                File.Copy(cached, outputPath, overwrite: true);
+            }
+            return outputPath;
+        }
+        catch (Exception ex) { Program.Log("RenderExec.CheckpointReuse", ex); return null; }
+    }
+
+    /// <summary>컷 산출물 체크포인트 저장(로컬 MP4만 · 예외 격리 — 렌더 결과에 영향 없음).</summary>
+    private void SaveCutCheckpoint(string cutKey, string? output)
+    {
+        if (string.IsNullOrWhiteSpace(output) || IsRemote(output) || !Path.IsPathRooted(output) || !File.Exists(output)) return;
+        try { _checkpoints.SaveCheckpoint(cutKey, output); }
+        catch (Exception ex) { Program.Log("RenderExec.CheckpointSave", ex); }
     }
 
     /// <summary>☁️ 클라우드 태스크 복구 저널(null = 미사용).</summary>
