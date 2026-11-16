@@ -551,6 +551,7 @@
                     <div class="ws-mini-q-bar"><i style="width:@(_mini.Percent.ToString(CultureInfo.InvariantCulture))%"></i></div>
                     @if (_miniError is not null) { <div class="ws-mini-err">⛔ @(_miniError)</div> }
                     @if (_miniNotice is not null) { <div class="ws-mini-note">ℹ @(_miniNotice)</div> }
+                    @if (_miniCheckpoint is not null) { <div class="ws-mini-note"><span class="ws-ckpt-badge" data-checkpoint-reuse="1" title="@(_miniCheckpoint)">@(PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.CheckpointBadgeLabel)</span> @(_miniCheckpoint)</div> }
                     @if (_miniUrl is not null)
                     {
                         <video class="ws-mini-q-vid" src="@_miniUrl" controls autoplay loop muted preload="auto" @key="_miniUrl"></video>
@@ -910,6 +911,7 @@
                     <div class="ws-baby-neg">
                         <div class="ws-baby-neg-h">🛡️ 네거티브 (Wan 2.1)
                             @if (_baby.GuardActive) { <span class="ws-baby-guard">얼굴 보호 ON</span> }
+                            @if (PromptDomain == PromptFlowStudio.Services.Pluto.PlutoPromptDomain.GeneralCinematic) { <span class="ws-baby-guard" data-domain="general" title="@(PromptFlowStudio.Services.Pluto.PromptDomainClassifier.GeneralCinematicNegative)">🎬 일반 시네마틱 네거티브</span> }
                         </div>
                         <textarea class="ws-ta ws-ta-neg" @bind="_baby.NegativePrompt" @bind:event="oninput" maxlength="500"
                                   placeholder="피하고 싶은 요소(선택) — 아기 테마 클릭 시 얼굴 보호 문구가 자동 결합됩니다" disabled="@State.IsBusy"></textarea>
@@ -1470,6 +1472,7 @@
     .ws-mini-q-bar > i { display: block; height: 100%; background: var(--flow-cyan); transition: width .25s ease; }
     .ws-mini-err { margin-top: 6px; font-size: 12px; font-weight: 600; color: #e5484d; }
     .ws-mini-note { margin-top: 6px; font-size: 11px; color: var(--text-secondary); }
+    .ws-ckpt-badge { display: inline-block; font: 700 10.5px var(--mono); border-radius: 999px; padding: 2px 8px; color: #10b981; border: 1px solid color-mix(in srgb, #22d3ee 55%, #10b981); background: rgba(16,185,129,.12); white-space: nowrap; }
     .ws-mini-q-vid { width: 100%; margin-top: 8px; border-radius: 6px; background: #000; }
     .ws-zen-chip.on { color: var(--text-primary); border-color: var(--flow-cyan); box-shadow: 0 0 12px color-mix(in srgb, var(--flow-cyan) 45%, transparent), inset 0 0 8px color-mix(in srgb, var(--flow-cyan) 18%, transparent); }
     .ws-zen-chip:disabled { opacity: .5; cursor: not-allowed; }
@@ -2090,7 +2093,11 @@
     private int _montageStorySeq;
 
     private string MontageThemeHint()
-        => string.IsNullOrWhiteSpace(_visionSubtitle) ? _prompt ?? "" : _visionSubtitle + ", " + _prompt;
+    {
+        var hint = string.IsNullOrWhiteSpace(_visionSubtitle) ? _prompt ?? "" : _visionSubtitle + ", " + _prompt;
+        // 🧭 아기 칩 명시 선택 시 BabyStudio 유지(토큰 없는 힌트가 일반 시네마틱 자막으로 전환되지 않도록)
+        return _babyExplicit && !PromptFlowStudio.Services.Pluto.PromptDomainClassifier.ContainsBabyToken(hint) ? "baby, " + hint : hint;
+    }
 
     /// <summary>🎬 결정론 템플릿 초안 즉시 적용(오답 노트 차단 토큰 회피 · 실패 → 자막 없음).</summary>
     private void ApplyLocalMontageCues(PromptFlowStudio.Services.Pluto.PlutoMontagePlan plan)
@@ -3040,6 +3047,11 @@
     };
     private Action[] _babyCam = Array.Empty<Action>();
     private readonly BabyStudioSession _baby = new();
+    // 🧭 도메인 격리 — 사용자가 아기 칩(키워드·무드·성장 단계)을 명시 클릭한 경우만 true(일반 프롬프트에 아기 기본값 강제 금지).
+    private bool _babyExplicit;
+    private PromptFlowStudio.Services.Pluto.PlutoPromptDomain PromptDomain => PromptFlowStudio.Services.Pluto.PromptDomainClassifier.Classify(_prompt, _babyExplicit);
+    /// <summary>요청 네거티브 — GeneralCinematic 은 아기 얼굴 가드 제거 + 일반 시네마틱 네거티브, BabyStudio 는 사용자 네거티브 그대로.</summary>
+    private string EffectiveNegative(string? prompt) => PromptFlowStudio.Services.Pluto.PromptDomainClassifier.ResolveNegativePrompt(prompt, _baby.NegativePrompt, _babyExplicit);
     private int _babyTab;
     private Action[][] _babyActs = { Array.Empty<Action>(), Array.Empty<Action>(), Array.Empty<Action>() };
     private Action[] _babyTabSel = Array.Empty<Action>();
@@ -3056,7 +3068,7 @@
             for (var i = 0; i < arr.Length; i++)
             {
                 var idx = i;
-                arr[i] = () => { _prompt = _baby.AppendKeyword(src, idx, _prompt); _canvas.FaceSharpen = true; };
+                arr[i] = () => { _babyExplicit = true; _prompt = _baby.AppendKeyword(src, idx, _prompt); _canvas.FaceSharpen = true; };
             }
             acts[t] = arr;
         }
@@ -3144,6 +3156,7 @@
                 arr[k] = () =>
                 {
                     Snap("무드 적용 전");
+                    _babyExplicit = true;
                     _prompt = PromptFlowStudio.Services.AI.GeminiPromptService.ApplyBabyMood(_prompt, mood);
                     Snap(moodLabel);
                 };
@@ -3166,6 +3179,7 @@
                 arr[k] = () =>
                 {
                     Snap("성장 단계 적용 전");
+                    _babyExplicit = true;
                     _prompt = PromptFlowStudio.Services.AI.GeminiPromptService.ApplyGrowthStage(_prompt, stage);
                     Snap(stageLabel);
                 };
@@ -3526,7 +3540,7 @@
 
     // ── 작업실 인라인 큐 진행률(MiniQueueProgress) — 적재 작업 JobId 추적 → 컷 진행/합본 → 완료 시 인라인 자동 재생 ──
     private Guid[] _miniIds = Array.Empty<Guid>();
-    private string? _miniGroup, _miniUrl, _miniPlayed, _miniStitchFail, _miniError, _miniNotice, _canvasQueueUrl, _canvasQueuePath;
+    private string? _miniGroup, _miniUrl, _miniPlayed, _miniStitchFail, _miniError, _miniNotice, _miniCheckpoint, _canvasQueueUrl, _canvasQueuePath;
     private string? _metaWrittenFor;
     private PromptFlowStudio.Services.Render.MiniQueueProgress _mini = PromptFlowStudio.Services.Render.MiniQueueProgress.None;
 
@@ -3536,7 +3550,7 @@
         for (var i = 0; i < ids.Length; i++) ids[i] = jobs[i].JobId;
         _miniIds = ids;
         _miniGroup = jobs.Count > 0 ? jobs[0].StitchGroupId : null;
-        _miniUrl = _miniPlayed = _miniStitchFail = _miniError = _miniNotice = _canvasQueueUrl = _canvasQueuePath = null;
+        _miniUrl = _miniPlayed = _miniStitchFail = _miniError = _miniNotice = _miniCheckpoint = _canvasQueueUrl = _canvasQueuePath = null;
         _miniCancelled = false;
         _mini = PromptFlowStudio.Services.Render.MiniQueueProgress.None;
         RefreshMiniQueue();
@@ -3573,6 +3587,9 @@
             }
             _miniNotice = JoinNotice(MiniJobMeta(PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.MetaEngineNotice),
                 MiniJobMeta(PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.MetaAmbientNotice));
+            // ♻️ 체크포인트 컷 재사용 배지(1컷 이상 캐시 적중 시)
+            try { _miniCheckpoint = PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.SummarizeCheckpointReuse(RenderQueue.Snapshot(), _miniIds); }
+            catch (Exception ex) { Program.Log("Workspace.MiniCheckpoint", ex); _miniCheckpoint = null; }
         }
         else if (next.Phase == PromptFlowStudio.Services.Render.MiniQueuePhase.Failed)
             _miniError = MiniFailedMessage() ?? "렌더 실패";
@@ -4479,8 +4496,9 @@
         var meta = _durationMode == PromptFlowStudio.Services.Render.VideoDurationMode.Sec15_AmbientSlow && _ambientPingPong
             ? new Dictionary<string, string>(StringComparer.Ordinal) { [PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.MetaAmbientPingPong] = "true" }
             : null;
-        if (!string.IsNullOrWhiteSpace(_baby.NegativePrompt))   // ☁️ Cloud 요청에 네거티브 프롬프트 전달
-            meta = PromptFlowStudio.Services.Render.MultiDurationPlanner.WithMeta(meta, PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.MetaNegativePrompt, _baby.NegativePrompt!);
+        var negative = EffectiveNegative(prompt);   // 🧭 도메인 격리 네거티브
+        if (!string.IsNullOrWhiteSpace(negative))   // ☁️ Cloud 요청에 네거티브 프롬프트 전달
+            meta = PromptFlowStudio.Services.Render.MultiDurationPlanner.WithMeta(meta, PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.MetaNegativePrompt, negative);
         var template = new PromptFlowStudio.Services.Batch.BatchRenderJob
         {
             Prompt = prompt,
@@ -4514,7 +4532,8 @@
         // v16.20.0 미세 표정 퍼핏 — 표정 구문·정체성 유지·얼굴 보호 네거티브 비영속 주입(Neutral 은 원문 그대로).
         // v16.22.0 피사체 Identity 고정 — 프로필 정체성/의상/스타일 구문(비영속) · 얼굴 사진 I2V(사용자 이미지 우선) · 프로필 시드(핀 우선).
         var idLock = _idLockOn ? IdentityLockOf() : null;
-        var (lockedPrompt, lockedNeg) = idLock is null ? (anchored, _baby.NegativePrompt) : EpisodicStorySeriesBuilder.ComposeScenePrompt(anchored, _baby.NegativePrompt, idLock);
+        var domainNeg = EffectiveNegative(anchored);   // 🧭 GeneralCinematic → 아기 전용 네거티브 미주입
+        var (lockedPrompt, lockedNeg) = idLock is null ? (anchored, domainNeg) : EpisodicStorySeriesBuilder.ComposeScenePrompt(anchored, domainNeg, idLock);
         var emo = FacialEmotionPuppeteerEngine.Apply(lockedPrompt, lockedNeg, _emotion, _emotionIntensity);
         var faceRef = idLock?.FaceImagePath is { } fp && File.Exists(fp) ? fp : null;
         var req = new WanVideoRequest

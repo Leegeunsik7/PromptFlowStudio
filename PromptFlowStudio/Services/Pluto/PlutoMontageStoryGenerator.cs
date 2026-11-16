@@ -321,18 +321,36 @@ public sealed class PlutoMontageStoryGenerator : IPlutoMontageStoryGenerator
             new[] { ("이 눈빛, 반칙 아니야?", "Isn't this look unfair?"), ("오늘도 귀여움 출동", "Cuteness reporting for duty") },
             new[] { ("꼬리부터 신난 하루", "A day that starts with a wagging tail"), ("작은 발자국의 대모험", "The great adventure of tiny paws"), ("졸다가 놀다가 또 졸다가", "Napping, playing, napping again") },
             new[] { ("곁에 있어줘서 고마워", "Thank you for staying by my side"), ("너는 우리 가족이야", "You are our family") }),
+        // 🎬 일반 시네마틱(아기/육아 토큰 없는 건축·풍경·제품·테크 등) — 중립 에디토리얼 3막(아기 성장/가족 문구 누수 0)
+        new(CinematicThemeId, Array.Empty<string>(),
+            new[] { ("빛이 먼저 공간을 연다", "Light opens the space first"), ("첫 프레임, 시선이 멈춘다", "The first frame stops the eye") },
+            new[] { ("디테일이 리듬을 만든다", "Details set the rhythm"), ("형태와 질감이 교차하는 순간", "Where form meets texture"), ("카메라가 구조를 따라간다", "The camera follows the structure") },
+            new[] { ("하나의 장면으로 완성되다", "It resolves into a single scene"), ("마지막 빛이 여운을 남긴다", "The final light lingers") }),
         new("everyday", Array.Empty<string>(),
             new[] { ("평범한 하루가 반짝인 순간", "When an ordinary day sparkled"), ("이 장면, 그냥 지나칠 수 없지", "A scene too good to scroll past") },
             new[] { ("작은 웃음이 모여서", "Little smiles adding up"), ("천천히, 우리만의 속도로", "Slowly, at our own pace"), ("하루하루가 쌓여 가", "Day by day, it all adds up") },
             new[] { ("이 순간을 오래 간직할게", "I'll hold on to this moment"), ("그래서 오늘도 사랑해", "And that's why I love you today too") }),
     };
 
+    /// <summary>🎬 일반 시네마틱 테마 ID.</summary>
+    public const string CinematicThemeId = "cinematic";
+
+    /// <summary>🧭 테마 힌트 → 템플릿 테마 ID(birthday/travel/pet/cinematic/everyday).</summary>
+    public static string DetectThemeId(string? hint) => DetectTheme(hint).Id;
+
+    /// <summary>
+    /// 키워드 테마 우선 → 미일치 시 도메인 분기: 아기/육아 토큰 없는 일반 힌트(<see cref="PlutoPromptDomain.GeneralCinematic"/>) → 중립 시네마틱,
+    ///   빈 힌트·BabyStudio → 기존 일상(everyday) 기본값 유지.
+    /// </summary>
     private static Theme DetectTheme(string? hint)
     {
-        if (!string.IsNullOrWhiteSpace(hint))
+        if (string.IsNullOrWhiteSpace(hint)) return Themes[^1];
+        for (var t = 0; t < Themes.Length; t++)
+            for (var k = 0; k < Themes[t].Keywords.Length; k++)
+                if (hint.Contains(Themes[t].Keywords[k], StringComparison.OrdinalIgnoreCase)) return Themes[t];
+        if (PromptDomainClassifier.Classify(hint) == PlutoPromptDomain.GeneralCinematic)
             for (var t = 0; t < Themes.Length; t++)
-                for (var k = 0; k < Themes[t].Keywords.Length; k++)
-                    if (hint.Contains(Themes[t].Keywords[k], StringComparison.OrdinalIgnoreCase)) return Themes[t];
+                if (string.Equals(Themes[t].Id, CinematicThemeId, StringComparison.Ordinal)) return Themes[t];
         return Themes[^1];
     }
 

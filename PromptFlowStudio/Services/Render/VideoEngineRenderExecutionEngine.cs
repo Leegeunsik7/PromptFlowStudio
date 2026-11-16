@@ -52,6 +52,51 @@ public sealed class VideoEngineRenderExecutionEngine : IRenderExecutionEngine, I
     /// <summary>작업 메타 — 컷 체크포인트 재사용 알림.</summary>
     public const string MetaCheckpointNotice = "checkpoint.notice";
 
+    /// <summary>UI 배지 라벨 — 컷 체크포인트 재사용.</summary>
+    public const string CheckpointBadgeLabel = "♻️ 체크포인트 컷 재사용";
+
+    /// <summary>작업 메타의 체크포인트 재사용 알림(없거나 빈 값 → null).</summary>
+    public static string? CheckpointNoticeOf(BatchRenderJob job)
+        => job is not null && MultiDurationPlanner.MetaOf(job, MetaCheckpointNotice) is { Length: > 0 } n ? n : null;
+
+    /// <summary>
+    /// 추적 작업 집합의 체크포인트 재사용 요약 — 재사용 컷 0개 → null, 1개 → 해당 알림 원문,
+    ///   2개 이상 → <c>♻️ 체크포인트 컷 재사용 N컷 (컷 #a, #b)</c>(완료 시 1회 · 핫패스 아님).
+    /// </summary>
+    public static string? SummarizeCheckpointReuse(IReadOnlyList<BatchRenderJob> jobs, IReadOnlyCollection<Guid>? filter = null)
+    {
+        if (jobs is null) return null;
+        string? first = null;
+        List<int>? cuts = null;
+        var count = 0;
+        for (var i = 0; i < jobs.Count; i++)
+        {
+            var j = jobs[i];
+            if (filter is not null && !Contains(filter, j.JobId)) continue;
+            if (CheckpointNoticeOf(j) is not { } n) continue;
+            count++;
+            first ??= n;
+            if (j.CutIndex is { } c) (cuts ??= new List<int>(4)).Add(c);
+        }
+        if (count == 0) return null;
+        if (count == 1 || cuts is null) return first;
+        cuts.Sort();
+        var sb = new System.Text.StringBuilder(CheckpointBadgeLabel.Length + 24);
+        sb.Append(CheckpointBadgeLabel).Append(' ').Append(count.ToString(CultureInfo.InvariantCulture)).Append("컷 (");
+        for (var i = 0; i < cuts.Count; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append('#').Append(cuts[i].ToString(CultureInfo.InvariantCulture));
+        }
+        return sb.Append(')').ToString();
+
+        static bool Contains(IReadOnlyCollection<Guid> set, Guid id)
+        {
+            foreach (var g in set) if (g == id) return true;
+            return false;
+        }
+    }
+
     /// <summary>컷 체크포인트 재사용 메시지(컷 번호).</summary>
     public static string CheckpointReuseMessage(int cutIndex)
         => "♻️ 체크포인트 컷 재사용 (컷 #" + cutIndex.ToString(CultureInfo.InvariantCulture) + ")";

@@ -78,7 +78,7 @@
                             <td class="q-mono">@job.Resolution</td>
                             <td class="q-mono">@(job.DurationSec.ToString("0.#", CultureInfo.InvariantCulture))s</td>
                             <td>@if (job.EngineKind is { } ek) { <span class="q-eng @EngineCls(ek)">@ek</span> } else { <span class="q-dim">—</span> }</td>
-                            <td><span class="q-st @JobCls(job.Status)" tabindex="@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? "0" : null)" aria-label="@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? job.ErrorMessage : null)" data-tip="@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? job.ErrorMessage : null)">@JobLabel(job.Status)@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? " ⓘ" : "")</span>@if (job.IsQuarantined && job.Status == BatchJobStatus.Failed) { <span class="q-st fail" title="🧯 결함 격리 — 나머지 큐는 계속 진행">🧯 격리 · @(job.QuarantineReason)</span> }</td>
+                            <td><span class="q-st @JobCls(job.Status)" tabindex="@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? "0" : null)" aria-label="@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? job.ErrorMessage : null)" data-tip="@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? job.ErrorMessage : null)">@JobLabel(job.Status)@(job.Status == BatchJobStatus.Failed && !string.IsNullOrEmpty(job.ErrorMessage) ? " ⓘ" : "")</span>@if (job.IsQuarantined && job.Status == BatchJobStatus.Failed) { <span class="q-st fail" title="🧯 결함 격리 — 나머지 큐는 계속 진행">🧯 격리 · @(job.QuarantineReason)</span> }@if (PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.CheckpointNoticeOf(job) is { } ckpt) { <span class="q-badge sm ckpt" data-checkpoint-reuse="1" title="@ckpt">@(PromptFlowStudio.Services.Render.VideoEngineRenderExecutionEngine.CheckpointBadgeLabel)</span><span class="q-ckpt-note">@ckpt</span> }</td>
                             <td>
                                 <div class="q-scene-bar"><div class="q-scene-bar-f" style="width:@(job.ProgressPercent.ToString(CultureInfo.InvariantCulture))%"></div></div>
                                 <span class="q-mono q-pct">@(job.ProgressPercent.ToString(CultureInfo.InvariantCulture))%</span>
@@ -203,6 +203,8 @@
     .q-badge.sm { padding: 3px 8px; font-size: 10px; }
     .q-badge.run { color: var(--accent-2); border-style: solid; border-color: color-mix(in srgb, var(--flow-cyan) 45%, var(--line)); }
     .q-badge.ok { color: #10b981; border-style: solid; border-color: color-mix(in srgb, #10b981 45%, var(--line)); }
+    .q-badge.ckpt { color: #10b981; border-style: solid; border-color: color-mix(in srgb, #22d3ee 55%, #10b981); background: rgba(16,185,129,.12); margin-left: 4px; }
+    .q-ckpt-note { display: block; margin-top: 2px; font: 10px var(--mono); color: #22d3ee; opacity: .85; }
     .q-badge.bad { color: #ef4444; border-style: solid; border-color: color-mix(in srgb, #ef4444 45%, var(--line)); }
 
     .q-scenes { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
