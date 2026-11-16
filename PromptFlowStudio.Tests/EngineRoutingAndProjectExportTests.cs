@@ -256,6 +256,132 @@ public sealed class EngineRoutingAndProjectExportTests : IDisposable
         Assert.True(unset.NeedsPathSetup);
     }
 
+    private static readonly SubtitleCue[] s_threeActCues =
+    {
+        SubtitleCue.Precise(0, 4.5, "셔터 3초 전", "3 seconds before"),
+        SubtitleCue.Precise(4.5, 10.25, "사진 속 클라이맥스"),
+        new(11, 14, ""),                                  // 빈 큐 → 제외
+        SubtitleCue.Precise(3661.007, 3662, "1시간 뒤 여운"),
+    };
+
+    [Fact]
+    public void BuildSubRipContent_FormatsMultiActCues_WithValidSrtTimecodes()
+    {
+        var srt = StockSuiteExporter.BuildSubRipContent(s_threeActCues);
+
+        Assert.StartsWith("1\r\n00:00:00,000 --> 00:00:04,500\r\n셔터 3초 전\r\n3 seconds before\r\n\r\n", srt, StringComparison.Ordinal);
+        Assert.Contains("2\r\n00:00:04,500 --> 00:00:10,250\r\n사진 속 클라이맥스\r\n\r\n", srt, StringComparison.Ordinal);
+        Assert.Contains("3\r\n01:01:01,007 --> 01:01:02,000\r\n1시간 뒤 여운\r\n\r\n", srt, StringComparison.Ordinal);
+        Assert.DoesNotContain("4\r\n", srt, StringComparison.Ordinal);
+        Assert.Equal(0, CountOf(srt.Replace("\r\n", "", StringComparison.Ordinal), "\n"));   // 순수 CRLF
+        Assert.Equal("", StockSuiteExporter.BuildSubRipContent(null));
+        Assert.Equal("", StockSuiteExporter.BuildSubRipContent(Array.Empty<SubtitleCue>()));
+    }
+
+    [Fact]
+    public async Task ProjectExport_WithSubtitlesAndPublishingKit_WritesSrtAndSnsCopySidecarsAndManifestFlags()
+    {
+        var root = Path.Combine(_dir, "StockSuite");
+        Directory.CreateDirectory(root);
+        var src = Path.Combine(_dir, "montage_15s.mp4");
+        File.WriteAllBytes(src, ExportMediaIntegrityGuard.BuildMinimalMp4());
+        var exp = new StockSuiteExporter(() => root, () => "mp4", () => null)
+        {
+            SilentContainerVerifier = static _ => SilentVerdict.Silent,
+            LocalNow = () => new DateTime(2026, 11, 16, 9, 0, 0),
+        };
+        var kit = new PromptFlowStudio.Services.Pluto.PlutoSnsPublishingKit(new[] { "첫 생일 여행 브이로그" }, "캡션 한국어", "english caption", new[] { "#아기", "#여행" }, "19:00–21:00");
+
+        var r = await exp.ExportWithSubtitlesAsync(src, null, "Baby Trip", CancellationToken.None, kit, null, s_threeActCues);
+
+        Assert.True(r.Ok, r.Message);
+        var projDir = Path.Combine(root, "Baby_Trip_20261116");
+        Assert.True(r.HasSubtitlesSrt);
+        Assert.True(r.HasSnsCopyText);
+        Assert.False(r.HasThumbnailJpg);   // ffmpeg 미탐지
+        Assert.Equal(StockSuiteExporter.BuildSubRipContent(s_threeActCues), File.ReadAllText(Path.Combine(projDir, StockSuiteExporter.SubRipFileName)));
+
+        var sns = File.ReadAllText(Path.Combine(projDir, StockSuiteExporter.SnsCopyFileName));
+        var shorts = sns.IndexOf(StockSuiteExporter.ShortsCopyHeader, StringComparison.Ordinal);
+        var reels = sns.IndexOf(StockSuiteExporter.ReelsCopyHeader, StringComparison.Ordinal);
+        Assert.Equal(0, shorts);
+        Assert.True(reels > shorts);
+        Assert.Contains("첫 생일 여행 브이로그", sns[..reels], StringComparison.Ordinal);
+        Assert.Contains("#아기", sns[reels..], StringComparison.Ordinal);
+        Assert.Contains("19:00–21:00", sns[reels..], StringComparison.Ordinal);
+        Assert.False(File.Exists(Path.Combine(projDir, StockSuiteExporter.ThumbnailFileName)));
+        Assert.Contains("자막(.srt) + SNS 게시문 저장 완료", StockSuiteExporter.DescribeCreatorBundle(r.HasSubtitlesSrt, r.HasSnsCopyText, r.HasThumbnailJpg), StringComparison.Ordinal);
+
+        using (var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(projDir, StockSuiteExporter.ProjectManifestName))))
+        {
+            var m = doc.RootElement;
+            Assert.True(m.GetProperty("HasSubtitlesSrt").GetBoolean());
+            Assert.True(m.GetProperty("HasSnsCopyText").GetBoolean());
+            Assert.False(m.GetProperty("HasThumbnailJpg").GetBoolean());
+            Assert.Equal(2, m.GetProperty("sidecars").GetArrayLength());
+        }
+
+        // 자막 없음 → subtitles.srt 미생성 · 키트 없음 → 템플릿 자동 SNS 게시문
+        var src2 = Path.Combine(_dir, "plain_15s.mp4");
+        File.WriteAllBytes(src2, ExportMediaIntegrityGuard.BuildMinimalMp4(2048));
+        var r2 = await exp.ExportWithSubtitlesAsync(src2, null, "Plain Day");
+        Assert.True(r2.Ok, r2.Message);
+        var dir2 = Path.Combine(root, "Plain_Day_20261116");
+        Assert.False(r2.HasSubtitlesSrt);
+        Assert.False(File.Exists(Path.Combine(dir2, StockSuiteExporter.SubRipFileName)));
+        Assert.True(r2.HasSnsCopyText);
+        Assert.Contains(StockSuiteExporter.ReelsCopyHeader, File.ReadAllText(Path.Combine(dir2, StockSuiteExporter.SnsCopyFileName)), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ProjectExport_WithoutFfmpegThumbnailSuccess_CompletesGracefullyWithoutThrowing()
+    {
+        var root = Path.Combine(_dir, "StockSuite");
+        Directory.CreateDirectory(root);
+        var fakeFfmpeg = Path.Combine(_dir, "ffmpeg.exe");
+        File.WriteAllBytes(fakeFfmpeg, new byte[] { 0x4D, 0x5A });
+        var src = Path.Combine(_dir, "stub_15s.mp4");
+        File.WriteAllBytes(src, ExportMediaIntegrityGuard.BuildMinimalMp4());
+        var thumbAttempts = new List<string>();
+        // 🧪 ffmpeg 는 "있지만" 합성 스텁 입력 → 정상 종료해도 산출물 없음(또는 썸네일 단계에서 예외)
+        FfmpegRunner runner = (_, args, _) =>
+        {
+            var seekAt = -1;
+            for (var i = 0; i < args.Count; i++) if (args[i] == "-ss") seekAt = i + 1;
+            if (seekAt > 0 && args[^1].EndsWith(".jpg", StringComparison.OrdinalIgnoreCase))
+            {
+                thumbAttempts.Add(args[seekAt]);
+                if (thumbAttempts.Count == 2) throw new InvalidOperationException("synthetic stub");
+            }
+            return Task.FromResult(true);
+        };
+        var exp = new StockSuiteExporter(() => root, () => "mp4", () => fakeFfmpeg, runner)
+        {
+            SilentContainerVerifier = static _ => SilentVerdict.Silent,
+            LocalNow = () => new DateTime(2026, 11, 16, 9, 0, 0),
+        };
+
+        var r = await exp.ExportWithSubtitlesAsync(src, null, "Stub Clip", CancellationToken.None, null, null, s_threeActCues);
+
+        Assert.True(r.Ok, r.Message);
+        Assert.Equal(new[] { "00:00:01.000", "00:00:00.200" }, thumbAttempts);   // 1초 → 짧은 클립 0.2초 재시도
+        Assert.False(r.HasThumbnailJpg);
+        var projDir = Path.Combine(root, "Stub_Clip_20261116");
+        Assert.False(File.Exists(Path.Combine(projDir, StockSuiteExporter.ThumbnailFileName)));
+        Assert.Empty(Directory.GetFiles(projDir, "*.~pfs*"));   // 임시 파일 잔여 없음
+        Assert.True(r.HasSubtitlesSrt);
+        Assert.True(r.HasSnsCopyText);
+        Assert.True(File.Exists(r.TargetPath));
+
+        // ffmpeg 경로 해석 자체가 실패해도 비차단
+        var exp2 = new StockSuiteExporter(() => root, () => "mp4", () => throw new IOException("locator down"))
+        {
+            SilentContainerVerifier = static _ => SilentVerdict.Silent,
+            LocalNow = () => new DateTime(2026, 11, 16, 9, 0, 0),
+        };
+        Assert.False(await exp2.TryExtractThumbnailAsync(src, projDir, CancellationToken.None));
+    }
+
     private static string RepoRoot()
     {
         for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)

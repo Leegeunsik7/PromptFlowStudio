@@ -3809,9 +3809,10 @@
             StockSuite.IncludeSfx = _sfxOn;                                        // 🔔 감성 효과음(BGM ON 시 amix · 실패 → BGM 단독)
             var cues = _letterSubs ? (await GenerateWorkspaceLetterAsync(_mediaCts.Token)).ToCues() : null;   // 💌 감성 자막(OFF → null)
             var project = StockProjectNameView;   // 📁 비면 루트 라이브 교체(기존) · 값 → {슬러그}_{yyyyMMdd} 하위 폴더 + project_manifest.json
-            var r = await StockSuite.ExportWithSubtitlesAsync(path, cues, project, _mediaCts.Token, _snsKit, _prompt);   // 🎵 BGM 직접 먹싱 · 💌 시간 게이트 drawtext + {출력}.srt
+            var r = await StockSuite.ExportWithSubtitlesAsync(path, cues, project, _mediaCts.Token, _snsKit, _prompt, cues ?? _montageCues);   // 🎵 BGM 직접 먹싱 · 💌 시간 게이트 drawtext + {출력}.srt · 🎁 subtitles.srt(🔒 3막 자막) · SNS_게시문.txt · thumbnail.jpg
             if (r.Ok && _specPath == path) { _spec = null; _specPath = null; }   // ⚡ 인코더 텔레메트리 갱신 → 규격 캐시 무효화
-            _camToast = r.Ok ? r.Message : r.NeedsPathSetup ? "⚠ " + r.Message + " (설정 ▸ 사용자 설정 ▸ StockSuite 에셋 경로)" : "⚠ " + r.Message;
+            var bundleNote = r.Ok && !string.IsNullOrWhiteSpace(project) ? " · 🎁 " + PromptFlowStudio.Services.Export.StockSuiteExporter.DescribeCreatorBundle(r.HasSubtitlesSrt, r.HasSnsCopyText, r.HasThumbnailJpg) : "";
+            _camToast = r.Ok ? r.Message + bundleNote : r.NeedsPathSetup ? "⚠ " + r.Message + " (설정 ▸ 사용자 설정 ▸ StockSuite 에셋 경로)" : "⚠ " + r.Message;
             _stockRestart = false;
             _stockToast = r.Ok ? _camToast : null;   // 성공 토스트에만 🚀 실행 버튼 노출
             if (r.Ok && !string.IsNullOrWhiteSpace(project) && r.TargetPath is { } projTarget) RevealInExplorer(projTarget);   // 📂 해당 프로젝트 폴더 열기

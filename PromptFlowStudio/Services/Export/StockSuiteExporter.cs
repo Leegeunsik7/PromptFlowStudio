@@ -19,6 +19,12 @@ public sealed record StockSuiteExportResult(bool Ok, string? TargetPath, bool Ne
     public bool HasAudio { get; init; }
     /// <summary>🩺 핫리로드 헬스 워치독 결과(워치독 미결선/신호 생략 = null).</summary>
     public Task<HotReloadWatchResult>? HotReloadWatch { get; init; }
+    /// <summary>🎁 프로젝트/편 폴더에 <c>subtitles.srt</c> 기록됨.</summary>
+    public bool HasSubtitlesSrt { get; init; }
+    /// <summary>🎁 프로젝트/편 폴더에 <c>SNS_게시문.txt</c> 기록됨.</summary>
+    public bool HasSnsCopyText { get; init; }
+    /// <summary>🎁 프로젝트/편 폴더에 <c>thumbnail.jpg</c> 추출됨.</summary>
+    public bool HasThumbnailJpg { get; init; }
 }
 
 /// <summary>🛡️ Zero-Trust 무음 판정 — Silent 만 원본 복사 허용.</summary>

@@ -60,7 +60,8 @@ public sealed partial class StockSuiteExporter
     /// 루트 미설정/부재 → <see cref="StockSuiteExportResult.NeedsPathSetup"/>. 매니페스트 기록 실패는 격리(영상 결과 보존).
     /// </summary>
     public async Task<StockSuiteExportResult> ExportWithSubtitlesAsync(string? sourcePath, IReadOnlyList<SubtitleCue>? cues, string? projectName,
-        CancellationToken ct = default, PromptFlowStudio.Services.Pluto.PlutoSnsPublishingKit? snsKit = null, string? prompt = null)
+        CancellationToken ct = default, PromptFlowStudio.Services.Pluto.PlutoSnsPublishingKit? snsKit = null, string? prompt = null,
+        IReadOnlyList<SubtitleCue>? sidecarSubtitles = null)
     {
         if (string.IsNullOrWhiteSpace(projectName)) return await ExportWithSubtitlesAsync(sourcePath, cues, ct).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath)) return new(false, null, false, "원본 영상을 찾을 수 없습니다.");
@@ -88,16 +89,168 @@ public sealed partial class StockSuiteExporter
         finally { BurnSubtitles = false; SubtitleCues = null; }
         if (!r.Ok || r.TargetPath is not { } target) return r;
 
-        var manifest = WriteProjectManifest(dir, projectName!.Trim(), folder, target, sourcePath, snsKit, prompt, new DateTimeOffset(now));
-        return r with { Message = r.Message + " · 📁 " + folder + (manifest is null ? "" : " · 🧾 " + ProjectManifestName) };
+        var bundle = await WriteCreatorSidecarsAsync(dir, target, sidecarSubtitles ?? cues, snsKit, projectName, ct).ConfigureAwait(false);   // 🎁 자막 · SNS 게시문 · 썸네일(격리)
+        var manifest = WriteProjectManifest(dir, projectName!.Trim(), folder, target, sourcePath, snsKit, prompt, new DateTimeOffset(now), bundle);
+        return r with
+        {
+            Message = r.Message + " · 📁 " + folder + (manifest is null ? "" : " · 🧾 " + ProjectManifestName),
+            HasSubtitlesSrt = bundle.HasSubtitlesSrt, HasSnsCopyText = bundle.HasSnsCopyText, HasThumbnailJpg = bundle.HasThumbnailJpg,
+        };
     }
+
+    // ══════════════════════ 🎁 크리에이터 업로드 번들(자막 SRT · SNS 게시문 · 커버 썸네일) ══════════════════════
+    public const string SubRipFileName = "subtitles.srt";
+    public const string SnsCopyFileName = "SNS_게시문.txt";
+    public const string ThumbnailFileName = "thumbnail.jpg";
+    public const string ShortsCopyHeader = "[YouTube Shorts 업로드용 (제목 95자 이내)]";
+    public const string ReelsCopyHeader = "[Instagram Reels / TikTok 업로드용]";
+    /// <summary>썸네일 추출 1회 시도 타임아웃(초과 → 건너뜀 · 내보내기 비차단).</summary>
+    public TimeSpan ThumbnailTimeout { get; set; } = TimeSpan.FromSeconds(15);
+
+    /// <summary>🎁 번들 사이드카 생성 결과.</summary>
+    public readonly record struct CreatorBundleResult(bool HasSubtitlesSrt, bool HasSnsCopyText, bool HasThumbnailJpg);
+
+    /// <summary>
+    /// 📝 표준 SubRip(CRLF) — <c>1\r\n00:00:00,000 --> 00:00:04,500\r\n텍스트\r\n\r\n</c>. 보조 자막(EN) 있으면 2번째 줄.
+    /// 빈/역전/음수 큐 제외 · 유효 큐 없음 → 빈 문자열.
+    /// </summary>
+    public static string BuildSubRipContent(IReadOnlyList<SubtitleCue>? subtitles)
+    {
+        if (subtitles is null || subtitles.Count == 0) return "";
+        var sb = new StringBuilder(128 * subtitles.Count);
+        var n = 0;
+        for (var i = 0; i < subtitles.Count; i++)
+        {
+            var c = subtitles[i];
+            if (string.IsNullOrWhiteSpace(c.Text) || c.EffectiveEndSec <= c.EffectiveStartSec || c.EffectiveStartSec < 0) continue;
+            n++;
+            sb.Append(n.ToString(CultureInfo.InvariantCulture)).Append("\r\n");
+            AppendSrtTime(sb, c.EffectiveStartSec).Append(" --> ");
+            AppendSrtTime(sb, c.EffectiveEndSec).Append("\r\n");
+            sb.Append(c.Text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Trim().Replace("\n", "\r\n", StringComparison.Ordinal)).Append("\r\n");
+            if (!string.IsNullOrWhiteSpace(c.SecondaryText))
+                sb.Append(c.SecondaryText.Replace('\r', ' ').Replace('\n', ' ').Trim()).Append("\r\n");
+            sb.Append("\r\n");
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>📋 <c>SNS_게시문.txt</c> 본문 — Shorts / Reels·TikTok 2개 섹션(CRLF · 메모장 붙여넣기 호환).</summary>
+    public static string BuildSnsCopyText(PromptFlowStudio.Services.Pluto.PlutoSnsPublishingKit kit)
+    {
+        ArgumentNullException.ThrowIfNull(kit);
+        var sb = new StringBuilder(1024);
+        sb.Append(ShortsCopyHeader).Append('\n').Append(PromptFlowStudio.Services.Pluto.PlutoMultiFormatPackager.FormatForYouTubeShorts(kit)).Append('\n').Append('\n');
+        sb.Append(ReelsCopyHeader).Append('\n').Append(PromptFlowStudio.Services.Pluto.PlutoMultiFormatPackager.FormatForInstagramReels(kit)).Append('\n');
+        return sb.Replace("\r\n", "\n").Replace('\r', '\n').Replace("\n", "\r\n").ToString();
+    }
+
+    /// <summary>
+    /// 🎁 대상 폴더에 <see cref="SubRipFileName"/>(자막 있을 때) · <see cref="SnsCopyFileName"/>(키트 없으면 템플릿 자동 생성) · <see cref="ThumbnailFileName"/>(ffmpeg 있을 때) 기록.
+    /// 각 단계 독립 격리 — 어떤 실패도 내보내기를 실패시키지 않는다.
+    /// </summary>
+    internal async Task<CreatorBundleResult> WriteCreatorSidecarsAsync(string dir, string videoPath, IReadOnlyList<SubtitleCue>? subtitles,
+        PromptFlowStudio.Services.Pluto.PlutoSnsPublishingKit? kit, string? themeHint, CancellationToken ct)
+    {
+        var srt = false;
+        var srtText = BuildSubRipContent(subtitles);
+        if (srtText.Length > 0) srt = TryWriteTextAtomic(Path.Combine(dir, SubRipFileName), srtText, "StockSuite.BundleSrt");
+
+        var sns = false;
+        try
+        {
+            kit ??= PromptFlowStudio.Services.Pluto.PlutoMultiFormatPackager.BuildTemplateKit(themeHint, null, subtitles, null, UtcNow().UtcDateTime);
+            sns = TryWriteTextAtomic(Path.Combine(dir, SnsCopyFileName), BuildSnsCopyText(kit), "StockSuite.BundleSns");
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { Program.Log("StockSuite.BundleSns", ex); }
+
+        var thumb = await TryExtractThumbnailAsync(videoPath, dir, ct).ConfigureAwait(false);
+        return new(srt, sns, thumb);
+    }
+
+    private static bool TryWriteTextAtomic(string path, string text, string logTag)
+    {
+        var tmp = path + TempExt;
+        try
+        {
+            File.WriteAllText(tmp, text, new UTF8Encoding(false));
+            File.Move(tmp, path, overwrite: true);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            Program.Log(logTag, ex);
+            return false;
+        }
+        finally { TryDelete(tmp); }
+    }
+
+    /// <summary>
+    /// 🖼️ 커버 프레임 <c>thumbnail.jpg</c> — 디스크에 ffmpeg 가 있을 때만 <c>00:00:01.000</c> → (짧은 클립) <c>00:00:00.200</c> 순 시도.
+    /// ffmpeg 부재 · 합성 스텁 입력 · 비정상 종료 · 타임아웃 · 예외 → false(내보내기 비차단). JPEG SOI(FF D8) 검증.
+    /// </summary>
+    internal async Task<bool> TryExtractThumbnailAsync(string videoPath, string dir, CancellationToken ct)
+    {
+        var path = Path.Combine(dir, ThumbnailFileName);
+        var tmp = Path.Combine(dir, "thumbnail" + TempExt + ".jpg");
+        try
+        {
+            string? ffmpeg;
+            try { ffmpeg = _resolveFfmpeg(); }
+            catch (Exception ex) when (ex is not OutOfMemoryException) { Program.Log("StockSuite.Thumbnail", ex); return false; }
+            if (string.IsNullOrWhiteSpace(ffmpeg) || !File.Exists(ffmpeg) || !File.Exists(videoPath)) return false;
+            foreach (var seek in s_thumbnailSeeks)
+            {
+                ct.ThrowIfCancellationRequested();
+                TryDelete(tmp);
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(ThumbnailTimeout);
+                bool ok;
+                try
+                {
+                    ok = await _run(ffmpeg, new[] { "-y", "-hide_banner", "-loglevel", "error", "-ss", seek, "-i", videoPath, "-frames:v", "1", "-q:v", "2", "-an", "-update", "1", tmp }, cts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested) { ok = false; }   // ⏱ 타임아웃 → 다음 시점
+                if (!ok || !IsJpeg(tmp)) continue;
+                File.Move(tmp, path, overwrite: true);
+                return true;
+            }
+            return false;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            if (ex is not OperationCanceledException) Program.Log("StockSuite.Thumbnail", ex);
+            return false;
+        }
+        finally { TryDelete(tmp); }
+    }
+
+    private static readonly string[] s_thumbnailSeeks = { "00:00:01.000", "00:00:00.200" };
+
+    private static bool IsJpeg(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return false;
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (fs.Length < 4) return false;
+            Span<byte> head = stackalloc byte[2];
+            fs.ReadExactly(head);
+            return head[0] == 0xFF && head[1] == 0xD8;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
+    }
+
+    /// <summary>📣 토스트용 번들 라벨 — 예: <c>영상 + 자막(.srt) + SNS 게시문 + 썸네일 저장 완료</c>.</summary>
+    public static string DescribeCreatorBundle(bool srt, bool sns, bool thumb)
+        => "영상" + (srt ? " + 자막(.srt)" : "") + (sns ? " + SNS 게시문" : "") + (thumb ? " + 썸네일" : "") + " 저장 완료";
 
     /// <summary>
     /// 🧾 <c>project_manifest.json</c> 원자 기록 — 프로젝트 메타 + 내보내기 이력(같은 파일 재내보내기 → 항목 갱신).
     /// 반환: 매니페스트 경로(실패 → null · 격리).
     /// </summary>
     internal static string? WriteProjectManifest(string dir, string projectName, string folder, string targetPath, string sourcePath,
-        PromptFlowStudio.Services.Pluto.PlutoSnsPublishingKit? snsKit, string? prompt, DateTimeOffset now)
+        PromptFlowStudio.Services.Pluto.PlutoSnsPublishingKit? snsKit, string? prompt, DateTimeOffset now, CreatorBundleResult bundle = default)
     {
         var path = Path.Combine(dir, ProjectManifestName);
         var tmp = path + TempExt;
@@ -131,6 +284,7 @@ public sealed partial class StockSuiteExporter
                 w.WriteString("createdAt", created.ToString("yyyy-MM-dd'T'HH:mm:sszzz", CultureInfo.InvariantCulture));
                 w.WriteString("updatedAt", now.ToString("yyyy-MM-dd'T'HH:mm:sszzz", CultureInfo.InvariantCulture));
                 if (!string.IsNullOrWhiteSpace(prompt)) w.WriteString("prompt", prompt.Trim());
+                WriteBundleFlags(w, bundle);
                 if (snsKit is not null)
                 {
                     w.WriteStartObject("sns");
@@ -201,7 +355,7 @@ public sealed partial class StockSuiteExporter
         var folder = BuildProjectFolderName(seriesBatch.SeriesTheme, now);
         var seriesDir = Path.Combine(fullRoot, folder);
         var exported = new List<(int Number, string Folder, string File, string Title)>(seriesBatch.Episodes.Count);
-        int skipped = 0, corrupt = 0;
+        int skipped = 0, corrupt = 0, srtCount = 0, snsCount = 0, thumbCount = 0;
         try
         {
             Directory.CreateDirectory(seriesDir);
@@ -227,7 +381,11 @@ public sealed partial class StockSuiteExporter
                     await using (var output = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true))
                         await input.CopyToAsync(output, ct).ConfigureAwait(false);
                     File.Move(tmp, target, overwrite: true);
-                    WriteEpisodeManifest(epDir, seriesBatch, ep, epFolder, target, src, stamp);
+                    var bundle = await WriteCreatorSidecarsAsync(epDir, target, ep.Subtitles, ep.PublishingKit, ep.EpisodeTitle, ct).ConfigureAwait(false);   // 🎁 편별 번들(격리)
+                    if (bundle.HasSubtitlesSrt) srtCount++;
+                    if (bundle.HasSnsCopyText) snsCount++;
+                    if (bundle.HasThumbnailJpg) thumbCount++;
+                    WriteEpisodeManifest(epDir, seriesBatch, ep, epFolder, target, src, stamp, bundle);
                     exported.Add((ep.EpisodeNumber, epFolder, Path.GetFileName(target), ep.EpisodeTitle));
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -254,8 +412,9 @@ public sealed partial class StockSuiteExporter
         var manifest = WriteSeriesManifest(seriesDir, seriesBatch, folder, exported, stamp);
         var msg = "📦 시리즈 " + exported.Count.ToString(CultureInfo.InvariantCulture) + "/" + seriesBatch.Episodes.Count.ToString(CultureInfo.InvariantCulture)
                   + "편 내보내기 · 📁 " + folder + (manifest is null ? "" : " · 🧾 " + SeriesManifestName)
+                  + " · 🎁 자막 " + srtCount.ToString(CultureInfo.InvariantCulture) + " · SNS 게시문 " + snsCount.ToString(CultureInfo.InvariantCulture) + " · 썸네일 " + thumbCount.ToString(CultureInfo.InvariantCulture)
                   + (skipped > 0 ? " · [부분 구제] " + skipped.ToString(CultureInfo.InvariantCulture) + "편 누락" + (corrupt > 0 ? "(🛡️ 손상 " + corrupt.ToString(CultureInfo.InvariantCulture) + "편 차단)" : "") : "");
-        return new(true, seriesDir, false, msg);
+        return new(true, seriesDir, false, msg) { HasSubtitlesSrt = srtCount > 0, HasSnsCopyText = snsCount > 0, HasThumbnailJpg = thumbCount > 0 };
     }
 
     private static readonly JsonWriterOptions s_manifestJson = new() { Indented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
@@ -276,6 +435,19 @@ public sealed partial class StockSuiteExporter
         w.WriteEndObject();
     }
 
+    /// <summary>🎁 번들 사이드카 플래그(<c>HasSubtitlesSrt</c> · <c>HasSnsCopyText</c> · <c>HasThumbnailJpg</c>) + 존재하는 파일 목록.</summary>
+    private static void WriteBundleFlags(Utf8JsonWriter w, CreatorBundleResult b)
+    {
+        w.WriteBoolean("HasSubtitlesSrt", b.HasSubtitlesSrt);
+        w.WriteBoolean("HasSnsCopyText", b.HasSnsCopyText);
+        w.WriteBoolean("HasThumbnailJpg", b.HasThumbnailJpg);
+        w.WriteStartArray("sidecars");
+        if (b.HasSubtitlesSrt) w.WriteStringValue(SubRipFileName);
+        if (b.HasSnsCopyText) w.WriteStringValue(SnsCopyFileName);
+        if (b.HasThumbnailJpg) w.WriteStringValue(ThumbnailFileName);
+        w.WriteEndArray();
+    }
+
     private static void WriteJsonAtomic(string path, System.Buffers.ArrayBufferWriter<byte> buf)
     {
         var tmp = path + TempExt;
@@ -289,7 +461,7 @@ public sealed partial class StockSuiteExporter
 
     /// <summary>편 폴더 <c>project_manifest.json</c> — 편 메타 · "n/N편" 자막 · 편별 SNS 키트 · 영상 파일. 실패 격리(로그).</summary>
     internal static string? WriteEpisodeManifest(string epDir, PromptFlowStudio.Services.Pluto.PlutoSeriesBatchResult series, PromptFlowStudio.Services.Pluto.PlutoSeriesEpisodePlan ep,
-        string epFolder, string targetPath, string sourcePath, DateTimeOffset now)
+        string epFolder, string targetPath, string sourcePath, DateTimeOffset now, CreatorBundleResult bundle = default)
     {
         var path = Path.Combine(epDir, ProjectManifestName);
         try
@@ -307,6 +479,7 @@ public sealed partial class StockSuiteExporter
                 w.WriteString("folder", epFolder);
                 w.WriteString("createdAt", ts);
                 w.WriteString("updatedAt", ts);
+                WriteBundleFlags(w, bundle);
                 w.WriteStartArray("subtitles");
                 foreach (var c in ep.Subtitles)
                 {
