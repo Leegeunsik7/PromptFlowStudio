@@ -405,6 +405,85 @@ public sealed class PlutoMultiFormatPackager : IPlutoMultiFormatPackager
         return new PlutoSnsPublishingKit(titles, ko, en, tags, PostingWindowFor(cat, utcNow));
     }
 
+    // ══════════════════════ 📋 Pluto 4.6 — 플랫폼 정규화 원클릭 복사 포매터(결정론) ══════════════════════
+    public const int ShortsTitleMaxChars = 95;
+    public const int ShortsMaxHashtags = 5;
+    public const int ReelsMaxHashtags = 12;
+    public const string Ellipsis = "…";
+
+    /// <summary>
+    /// ▶️ YouTube Shorts — 첫 제목(≤ 95자 · 단어 경계 · 서로게이트 비분할) + KO/EN 캡션 + 정규화 해시태그 ≤ 5개(중복 제거).
+    /// </summary>
+    public static string FormatForYouTubeShorts(PlutoSnsPublishingKit kit)
+    {
+        ArgumentNullException.ThrowIfNull(kit);
+        var sb = new StringBuilder(512);
+        var title = kit.Titles is { Count: > 0 } ? ClampTitle(kit.Titles[0], ShortsTitleMaxChars) : "";
+        if (title.Length > 0) sb.Append(title).Append('\n').Append('\n');
+        AppendCaptions(sb, kit);
+        var tags = NormalizeHashtags(kit.Hashtags, ShortsMaxHashtags);
+        if (tags.Count > 0) sb.Append('\n').Append('\n').AppendJoin(' ', tags);
+        return sb.ToString().Trim();
+    }
+
+    /// <summary>📸 Instagram Reels — KO/EN 캡션 + 중복 제거 해시태그 ≤ 12개 + 추천 게시 시간대.</summary>
+    public static string FormatForInstagramReels(PlutoSnsPublishingKit kit)
+    {
+        ArgumentNullException.ThrowIfNull(kit);
+        var sb = new StringBuilder(640);
+        AppendCaptions(sb, kit);
+        var tags = NormalizeHashtags(kit.Hashtags, ReelsMaxHashtags);
+        if (tags.Count > 0) sb.Append('\n').Append('\n').AppendJoin(' ', tags);
+        if (!string.IsNullOrWhiteSpace(kit.RecommendedPostingWindow))
+            sb.Append('\n').Append('\n').Append("🕗 추천 게시 시간: ").Append(kit.RecommendedPostingWindow.Trim());
+        return sb.ToString().Trim();
+    }
+
+    private static void AppendCaptions(StringBuilder sb, PlutoSnsPublishingKit kit)
+    {
+        var ko = kit.CaptionKo?.Trim() ?? "";
+        var en = kit.CaptionEn?.Trim() ?? "";
+        sb.Append(ko);
+        if (en.Length > 0) { if (ko.Length > 0) sb.Append('\n').Append('\n'); sb.Append(en); }
+    }
+
+    /// <summary>✂️ 제목 클램프 — 초과 시 단어 경계(뒤 40% 내 공백) 또는 서로게이트 안전 지점에서 자르고 <c>…</c> 부착(총 ≤ <paramref name="maxChars"/>).</summary>
+    public static string ClampTitle(string? title, int maxChars = ShortsTitleMaxChars)
+    {
+        var t = string.IsNullOrWhiteSpace(title) ? "" : title.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        if (t.Length <= maxChars || maxChars <= Ellipsis.Length) return t.Length <= maxChars ? t : t[..maxChars];
+        var cut = maxChars - Ellipsis.Length;
+        if (char.IsHighSurrogate(t[cut - 1])) cut--;   // 서로게이트 쌍 비분할
+        var space = t.LastIndexOf(' ', cut);
+        if (space >= cut * 6 / 10) cut = space;
+        return t[..cut].TrimEnd() + Ellipsis;
+    }
+
+    /// <summary>#️⃣ 해시태그 정규화 — 공백/구두점 제거(문자·숫자·_ 유지) · <c>#</c> 1개 접두 · 대소문자 무시 중복 제거 · 최대 <paramref name="max"/>개.</summary>
+    public static IReadOnlyList<string> NormalizeHashtags(IReadOnlyList<string>? raw, int max)
+    {
+        var result = new List<string>(Math.Max(0, max));
+        if (raw is null || max <= 0) return result;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var sb = new StringBuilder(32);
+        for (var i = 0; i < raw.Count && result.Count < max; i++)
+        {
+            var s = raw[i];
+            if (string.IsNullOrWhiteSpace(s)) continue;
+            sb.Clear();
+            for (var j = 0; j < s.Length; j++)
+            {
+                var c = s[j];
+                if (char.IsLetterOrDigit(c) || c == '_') sb.Append(c);
+                else if (char.IsHighSurrogate(c) && j + 1 < s.Length && char.IsLowSurrogate(s[j + 1]) && char.IsLetterOrDigit(s, j)) { sb.Append(c).Append(s[j + 1]); j++; }
+            }
+            if (sb.Length == 0 || sb.Length > 40) continue;
+            var tag = "#" + sb;
+            if (seen.Add(tag)) result.Add(tag);
+        }
+        return result;
+    }
+
     /// <summary>🕗 테마별 추천 게시 시간대(KST) — 주말은 오전 창 추가.</summary>
     public static string PostingWindowFor(StudioThemeCategory cat, DateTime utcNow)
     {

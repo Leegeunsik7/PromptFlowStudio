@@ -38,6 +38,13 @@ public sealed partial class StockSuiteExporter
     public const double BabyBgmVolume = 0.25;
     /// <summary>🎵 아기 BGM 페이드 인/아웃 길이(초).</summary>
     public const double BabyBgmFadeSec = 1.5;
+    /// <summary>🔁 Pluto 4.6 — 15초 심리스 루프(쇼츠/릴스 반복 재생) 경계 페이드 인(초) · 클릭/팝 0.</summary>
+    public const double SeamlessLoopFadeInSec = 0.3;
+    /// <summary>🔁 Pluto 4.6 — 15초 심리스 루프 경계 페이드 아웃(초).</summary>
+    public const double SeamlessLoopFadeOutSec = 0.6;
+
+    /// <summary>🔁 BGM 먹싱 시 심리스 루프 페이드(0.3s in · 0.6s out) — 9:16 세로 마스터 렌더 범위로만 한정.</summary>
+    public bool SeamlessLoopAudio { get; set; }
     /// <summary>🎵 주 산출물 먹싱 임시 접미사(성공 시 원자적 교체 · 실패 시 삭제).</summary>
     internal const string BabyBgmMuxTempSuffix = ".~bgm";
     public const string BabyBgmTag = "🎵 감성 BGM · ";
@@ -73,18 +80,19 @@ public sealed partial class StockSuiteExporter
     /// 🎵 아기 BGM 오디오 필터 — loudnorm(-14 LUFS) → volume 0.25 → afade in 1.5s → (길이 기지 시) afade out <c>st={길이-1.5:F2}</c>.
     /// <paramref name="mastered"/> = C# 트루피크 마스터링 완료 WAV → loudnorm·volume 이중 마스터링 생략(페이드만).
     /// </summary>
-    public static string BuildBabyBgmAudioFilter(double durationSec, bool mastered = false)
+    public static string BuildBabyBgmAudioFilter(double durationSec, bool mastered = false, bool seamlessLoop = false)
     {
         var inv = CultureInfo.InvariantCulture;
-        var d = BabyBgmFadeSec.ToString("0.###", inv);
-        var f = (mastered ? "" : AudioMuxService.LoudnormFilter + ",volume=" + BabyBgmVolume.ToString("0.##", inv) + ",") + "afade=t=in:st=0:d=" + d;
+        var fadeIn = seamlessLoop ? SeamlessLoopFadeInSec : BabyBgmFadeSec;
+        var fadeOut = seamlessLoop ? SeamlessLoopFadeOutSec : BabyBgmFadeSec;
+        var f = (mastered ? "" : AudioMuxService.LoudnormFilter + ",volume=" + BabyBgmVolume.ToString("0.##", inv) + ",") + "afade=t=in:st=0:d=" + fadeIn.ToString("0.###", inv);
         if (double.IsFinite(durationSec) && durationSec > 0)
-            f += ",afade=t=out:st=" + BabyBgmFadeOutStart(durationSec).ToString("F2", inv) + ":d=" + d;
+            f += ",afade=t=out:st=" + Math.Max(0, durationSec - fadeOut).ToString("F2", inv) + ":d=" + fadeOut.ToString("0.###", inv);
         return f;
     }
 
     /// <summary>🎵 아기 BGM 합성 인자 — 비디오 copy + BGM 루프 · AAC · -shortest.</summary>
-    public static string[] BuildBabyBgmMuxArgs(string videoPath, string bgmPath, double durationSec, string outputPath, bool mastered = false)
+    public static string[] BuildBabyBgmMuxArgs(string videoPath, string bgmPath, double durationSec, string outputPath, bool mastered = false, bool seamlessLoop = false)
     {
         var a = new List<string>(32)
         {
@@ -93,7 +101,7 @@ public sealed partial class StockSuiteExporter
             "-stream_loop", "-1", "-i", bgmPath,
             "-map", "0:v:0", "-map", "1:a:0",
             "-c:v", "copy", "-c:a", videoPath.EndsWith(".webm", StringComparison.OrdinalIgnoreCase) ? "libopus" : "aac", "-b:a", AudioMuxService.AudioBitrate,
-            "-af", BuildBabyBgmAudioFilter(durationSec, mastered),
+            "-af", BuildBabyBgmAudioFilter(durationSec, mastered, seamlessLoop),
             "-ar", AudioMuxService.OutputSampleRate, "-shortest",
         };
         if (double.IsFinite(durationSec) && durationSec > 0) { a.Add("-t"); a.Add(durationSec.ToString("0.###", CultureInfo.InvariantCulture)); }
@@ -173,7 +181,7 @@ public sealed partial class StockSuiteExporter
                 sfxFiles = cues.Count > 0 ? TryWriteSfxCueWavs(cues) : null;
                 if (sfxFiles is not null)
                 {
-                    var sfxErr = await TryFfmpegAsync(BuildBabyBgmSfxMixArgs(primaryPath, bgm, sfxFiles, cues, duration, temp, masteredBgm is not null), temp, ct, ExportProfile.BabyCinematic).ConfigureAwait(false);
+                    var sfxErr = await TryFfmpegAsync(BuildBabyBgmSfxMixArgs(primaryPath, bgm, sfxFiles, cues, duration, temp, masteredBgm is not null, SeamlessLoopAudio), temp, ct, ExportProfile.BabyCinematic).ConfigureAwait(false);
                     if (sfxErr is null)
                     {
                         await SwapIntoPlaceAsync(temp, primaryPath, ct).ConfigureAwait(false);
@@ -184,7 +192,7 @@ public sealed partial class StockSuiteExporter
                 }
             }
             // 🎛️ 마스터링 WAV → loudnorm/volume 우회(AAC 직행) · 마스터링 OFF/실패 → 레거시 FFmpeg 정규화 폴백.
-            var err = await TryFfmpegAsync(BuildBabyBgmMuxArgs(primaryPath, bgm, duration, temp, masteredBgm is not null), temp, ct, ExportProfile.BabyCinematic).ConfigureAwait(false);
+            var err = await TryFfmpegAsync(BuildBabyBgmMuxArgs(primaryPath, bgm, duration, temp, masteredBgm is not null, SeamlessLoopAudio), temp, ct, ExportProfile.BabyCinematic).ConfigureAwait(false);
             if (err is not null) { Program.Log("StockSuite.BabyBgm", new IOException(err)); TryDelete(temp); return -1; }
             await SwapIntoPlaceAsync(temp, primaryPath, ct).ConfigureAwait(false);
             return 0;
@@ -331,11 +339,11 @@ public sealed partial class StockSuiteExporter
     /// 🔔 BGM + SFX 멀티트랙 필터그래프 — 입력 1 = BGM(loudnorm −14 LUFS · 0.25 · 페이드), 2.. = SFX(볼륨 → <c>adelay=ms|ms</c>).
     /// <c>amix=inputs=N:normalize=0</c>(BGM 레벨 보존) → <see cref="SfxLimiter"/> → <c>[aout]</c>.
     /// </summary>
-    public static string BuildBabyBgmSfxFilterGraph(double durationSec, IReadOnlyList<Pluto.PlutoSfxCue> cues, bool mastered = false)
+    public static string BuildBabyBgmSfxFilterGraph(double durationSec, IReadOnlyList<Pluto.PlutoSfxCue> cues, bool mastered = false, bool seamlessLoop = false)
     {
         var inv = CultureInfo.InvariantCulture;
         var sb = new StringBuilder(256 + cues.Count * 96);
-        sb.Append("[1:a]").Append(BuildBabyBgmAudioFilter(durationSec, mastered)).Append(',').Append(SfxAudioFormat).Append("[bgm];");
+        sb.Append("[1:a]").Append(BuildBabyBgmAudioFilter(durationSec, mastered, seamlessLoop)).Append(',').Append(SfxAudioFormat).Append("[bgm];");
         for (var i = 0; i < cues.Count; i++)
         {
             var ms = Math.Max(0, cues[i].OffsetMs).ToString(inv);
@@ -353,7 +361,7 @@ public sealed partial class StockSuiteExporter
     }
 
     /// <summary>🔔 BGM + SFX 먹싱 인자 — 비디오 copy · BGM 루프 · SFX 입력 N개 · filter_complex → AAC · -shortest.</summary>
-    public static string[] BuildBabyBgmSfxMixArgs(string videoPath, string bgmPath, IReadOnlyList<string> sfxPaths, IReadOnlyList<Pluto.PlutoSfxCue> cues, double durationSec, string outputPath, bool mastered = false)
+    public static string[] BuildBabyBgmSfxMixArgs(string videoPath, string bgmPath, IReadOnlyList<string> sfxPaths, IReadOnlyList<Pluto.PlutoSfxCue> cues, double durationSec, string outputPath, bool mastered = false, bool seamlessLoop = false)
     {
         if (sfxPaths.Count != cues.Count) throw new ArgumentException("SFX 경로 수와 큐 수 불일치", nameof(sfxPaths));
         var a = new List<string>(40 + sfxPaths.Count * 2)
@@ -363,7 +371,7 @@ public sealed partial class StockSuiteExporter
             "-stream_loop", "-1", "-i", bgmPath,
         };
         for (var i = 0; i < sfxPaths.Count; i++) { a.Add("-i"); a.Add(sfxPaths[i]); }
-        a.Add("-filter_complex"); a.Add(BuildBabyBgmSfxFilterGraph(durationSec, cues, mastered));
+        a.Add("-filter_complex"); a.Add(BuildBabyBgmSfxFilterGraph(durationSec, cues, mastered, seamlessLoop));
         a.Add("-map"); a.Add("0:v:0"); a.Add("-map"); a.Add("[aout]");
         a.Add("-c:v"); a.Add("copy");
         a.Add("-c:a"); a.Add(videoPath.EndsWith(".webm", StringComparison.OrdinalIgnoreCase) ? "libopus" : "aac");
@@ -452,19 +460,20 @@ public sealed partial class StockSuiteExporter
     /// 💌 하단 중앙 반투명 박스 drawtext — 큐별 <c>enable='between(t,s,e)'</c> 시간 게이트. 유효 큐 없음 → null. 4K 는 2배 스케일.
     /// 단일 언어: 흰 글자 24pt · <c>y=h-120</c>. 이중 언어(<see cref="SubtitleCue.SecondaryText"/>): KO 웜 크림 24pt <c>y=h-164</c>(주) + EN 반투명 흰 16pt <c>y=h-120</c>(보조).
     /// </summary>
-    public static string? BuildTimedSubtitleFilter(IReadOnlyList<SubtitleCue>? cues, string? fontFile, StockSuiteResolution resolution = StockSuiteResolution.Fhd1080)
+    public static string? BuildTimedSubtitleFilter(IReadOnlyList<SubtitleCue>? cues, string? fontFile, StockSuiteResolution resolution = StockSuiteResolution.Fhd1080, bool vertical9x16 = false)
     {
         if (cues is null || cues.Count == 0) return null;
         var k = resolution == StockSuiteResolution.Uhd4K ? 2 : 1;
+        var lift = vertical9x16 ? VerticalSubtitleSafeLift : 0;   // 📱 9:16 → 쇼츠/릴스 하단 UI 오버레이 위로 상승
         var inv = CultureInfo.InvariantCulture;
         var font = string.IsNullOrWhiteSpace(fontFile) ? "" : "fontfile='" + fontFile.Replace("\\", "/", StringComparison.Ordinal).Replace(":", "\\:", StringComparison.Ordinal) + "':";
         var center = ":x=(w-text_w)/2:y=h-";
         var mono = ":fontcolor=white:box=1:boxcolor=black@0.4:boxborderw=" + (10 * k).ToString(inv)
-            + center + (120 * k).ToString(inv);
+            + center + ((120 + lift) * k).ToString(inv);
         var primary = ":fontcolor=0xFFF1D6:box=1:boxcolor=black@0.45:boxborderw=" + (10 * k).ToString(inv)
-            + center + (164 * k).ToString(inv);
+            + center + ((164 + lift) * k).ToString(inv);
         var secondary = ":fontcolor=white@0.85:box=1:boxcolor=black@0.3:boxborderw=" + (8 * k).ToString(inv)
-            + center + (120 * k).ToString(inv);
+            + center + ((120 + lift) * k).ToString(inv);
         var sb = new StringBuilder(384 * cues.Count);
         for (var i = 0; i < cues.Count; i++)
         {
@@ -485,6 +494,20 @@ public sealed partial class StockSuiteExporter
         }
         return sb.Length == 0 ? null : sb.ToString();
     }
+
+    // ── 📱 Pluto 4.6 — 9:16 모바일 세이프 존(쇼츠/릴스 하단 캡션·버튼 오버레이 회피) ──
+    /// <summary>📱 세로 마스터 하단 세이프 존 비율(높이 대비 ≥ 24%).</summary>
+    public const double VerticalSubtitleSafeZoneFraction = 0.24;
+    /// <summary>📱 1920px 기준 자막 박스 하단 여백(MarginV) = ceil(1920 × 0.24) = 461 ≥ 440.</summary>
+    public const int VerticalSubtitleMarginV = 461;
+    /// <summary>📱 기본 자막 박스 하단 여백(1080×1920 기준 · <c>y=h−120</c> · 24pt · 테두리 10 → 86px).</summary>
+    public const int BaseSubtitleBottomMarginPx = 120 - SubtitlePrimaryFontSize - 10;
+    /// <summary>📱 9:16 상승량 — 박스 하단을 정확히 <see cref="VerticalSubtitleMarginV"/> 로(4K 는 2배).</summary>
+    public const int VerticalSubtitleSafeLift = VerticalSubtitleMarginV - BaseSubtitleBottomMarginPx;
+
+    /// <summary>📱 최하단 자막 박스 하단 여백(px) — 9:16 → ≥ 높이 24%(1920 → 461 · 3840 → 922).</summary>
+    public static int ComputeSubtitleBottomMarginPx(bool vertical9x16, StockSuiteResolution resolution = StockSuiteResolution.Fhd1080)
+        => (BaseSubtitleBottomMarginPx + (vertical9x16 ? VerticalSubtitleSafeLift : 0)) * (resolution == StockSuiteResolution.Uhd4K ? 2 : 1);
 
     private static string CleanSubtitleLine(string? s)
         => string.IsNullOrWhiteSpace(s) ? "" : StripEmoji(s.Replace('\r', ' ').Replace('\n', ' '));
@@ -808,9 +831,9 @@ public sealed partial class StockSuiteExporter
     }
 
     /// <summary>💌 몽타주 그래프 말미에 자막 번인 — 최종 패드 → <c>[vmain];[vmain]drawtext…[pad]</c>. 유효 큐 없음 → 원본 그래프.</summary>
-    public static string AppendMontageSubtitles(string filterComplex, string finalPad, IReadOnlyList<SubtitleCue>? cues, string? fontFile, StockSuiteResolution resolution)
+    public static string AppendMontageSubtitles(string filterComplex, string finalPad, IReadOnlyList<SubtitleCue>? cues, string? fontFile, StockSuiteResolution resolution, bool vertical9x16 = false)
     {
-        var subs = BuildTimedSubtitleFilter(cues, fontFile, resolution);
+        var subs = BuildTimedSubtitleFilter(cues, fontFile, resolution, vertical9x16);
         var tail = "[" + finalPad + "]";
         if (subs is null || !filterComplex.EndsWith(tail, StringComparison.Ordinal)) return filterComplex;
         return filterComplex[..^tail.Length] + "[" + MontageMainPad + "];[" + MontageMainPad + "]" + subs + tail;
@@ -867,6 +890,7 @@ public sealed partial class StockSuiteExporter
         var prevBgm = BabyBgm;
         var prevSfx = IncludeSfx;
         var prevCues = SubtitleCues;
+        var prevLoop = SeamlessLoopAudio;
         string? temp = null;
         CustomBgmScope? custom = null;
         try
@@ -965,7 +989,7 @@ public sealed partial class StockSuiteExporter
             string? err = null;
             if (subsOn)
             {
-                var burned = AppendMontageSubtitles(plan.FilterComplexGraph, plan.FinalVideoPadLabel, cues, ResolveTickerBadgeFont(), options.Resolution);
+                var burned = AppendMontageSubtitles(plan.FilterComplexGraph, plan.FinalVideoPadLabel, cues, ResolveTickerBadgeFont(), options.Resolution, vertical9x16SmartCrop);
                 err = await TryFfmpegAsync(BuildMontageVideoArgs(srcs, burned, plan.FinalVideoPadLabel, frames, fps, temp), temp, ct, ExportProfile.BabyCinematic).ConfigureAwait(false);
                 if (err is null) tag += SubtitleTag;
                 else
@@ -988,6 +1012,7 @@ public sealed partial class StockSuiteExporter
             // 🎵🔔 마스터링 BGM + 사이드체인 더킹 + 비트 스냅 SFX(실패 시 무음 영상 보존).
             BabyBgm = track;
             IncludeSfx = includeSfx;
+            SeamlessLoopAudio = vertical9x16SmartCrop;   // 🔁 9:16 쇼츠/릴스 반복 재생 → 0.3s in · 0.6s out 경계 페이드(클릭/팝 0)
             var mixed = await MuxBabyAudioIntoPrimaryAsync(target, ct).ConfigureAwait(false);
             tag += mixed < 0
                 ? "⚠ 오디오 생략 · 🔇 무음"
@@ -1007,6 +1032,7 @@ public sealed partial class StockSuiteExporter
             BabyBgm = prevBgm;
             IncludeSfx = prevSfx;
             SubtitleCues = prevCues;
+            SeamlessLoopAudio = prevLoop;
             Volatile.Write(ref _montageExporting, 0);
         }
     }

@@ -1,15 +1,16 @@
 # Current Project Status
-- Active Milestone: 【Pluto 4.5 — 영속 대기 A/B 실험 큐 · 시리즈 원클릭 렌더+내보내기 · Pure-BCL MP4 무결성 가드】
+- Active Milestone: 【Pluto 4.6 — 두뇌 리포트 · 쇼츠/릴스 원클릭 복사 · 9:16 자막 세이프 존 & 15초 루프 페이드】
 - Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Mobile net8.0-ios CoreCompile 0W/0E · ✅ Tests 0W/0E
-- Tests: ✅ 1147/1147 PASS (전체 스위트, Release, 14m34s) · 신규 3건
+- Tests: ✅ 1151/1151 PASS (전체 스위트, Release, 14m53s) · 신규 4건
 - Updated: 2026-11-16 (KST)
 
 ## Completed
-- 📋 `PlutoExperimentLedgerService` — `RegisterExperiment` 즉시 `Pending` 영속(플랜 전 필드·자막 포함, 디스크 병합 후 원자 기록), `GetPendingExperiments`, 판정 시 `Evaluated` 전이 · 인터페이스에 `EnsureLoadedAsync` 노출
-- 📋 Workspace `[📋 대기 중인 A/B 실험 선택]` — 판정 폼 공용 RenderFragment, 재시작 후 현재 실험 없이도 대기 실험 카드로 판정 가능
-- 🎬 Workspace `[🎬 시리즈 전편 연속 렌더링 + 일괄 내보내기]` — "시리즈 연속 렌더링 중 (n/N편)..." 진행 표시 → `ExportSeriesBatchToStockSuiteAsync`
-- 🛡️ `ExportMediaIntegrityGuard` — FileStream 전용 ISO BMFF 박스 순회(≥1024B · ftyp 선두 · moov 필수 · EOF 초과 감지), 단일/시리즈 복사 전 차단(손상 편은 [부분 구제])
-- 🧪 `ExperimentLedger_PendingExperiment…`, `ExportMediaIntegrityGuard_Rejects…`, `StockSuiteExporter_CorruptVideoFile…` · 기존 더미 영상 → `BuildMinimalMp4`
+- 🧠 `PlutoAutonomousBrainSummaryService` — 실험 장부 × 랭커 × 오답 노트 → `PlutoBrainSummarySnapshot`(판정/대기 · 챌린저 승률 · 1위 훅/룩/BGM · 가드 수 · 다음 가설 배너) · 소스별 [부분 구제] · DI 양쪽 등록
+- 🧠 Workspace `[🧠 플루토 두뇌 리포트]` 토글 카드 — 로드 · 실험 판정 · 성과 피드백 시 갱신(세대 가드)
+- 📋 `PlutoMultiFormatPackager.FormatForYouTubeShorts`(제목 ≤95자 단어 경계·서로게이트 안전 · 태그 5) / `FormatForInstagramReels`(태그 12 중복 제거 · 게시 시간)
+- 📋 SNS 키트 패널 `[📋 쇼츠용/릴스용 원클릭 복사]` — `siteMaticClip.copy` → 네이티브 클립보드 폴백 · 상태 토스트
+- 📱 9:16 몽타주 자막 박스 하단 여백 461px(≥24% · 4K 922px) — `BuildTimedSubtitleFilter(vertical9x16)` · 16:9 기존 오프셋 유지
+- 🔁 9:16 BGM 먹싱 `SeamlessLoopAudio` → afade 0.3s in / 0.6s out(SFX 믹스 포함) · 기본 1.5s 유지
 
 ## Next
-- 실제 앱에서 재시작 후 대기 실험 복원 · 시리즈 원클릭 렌더 흐름 확인
+- 실기기 쇼츠/릴스 업로드 화면에서 자막 가림 여부 · 루프 경계 클릭 확인

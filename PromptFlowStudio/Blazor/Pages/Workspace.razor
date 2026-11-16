@@ -118,6 +118,17 @@
                     @if (_adaptiveToast is { } adt) { <span class="ws-retry" role="status" data-adaptive-toast="1">@(adt)</span> }
                 </div>
             }
+            <div class="ws-brain-strip" data-brain-strip="@(_brainOpen ? "open" : "closed")" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+                <button class="@(_brainOpen ? "ws-pcore on" : "ws-back")" data-brain-toggle="1" @onclick="ToggleBrainSummaryAsync" aria-expanded="@(_brainOpen ? "true" : "false")" title="실험 장부 × 학습 랭커 × 오답 노트 집계 — 판정 실험 · 챌린저 승률 · 오답 가드 · 다음 가설">[🧠 플루토 두뇌 리포트]</button>
+                @if (_brainOpen && _brainSummary is { } bs)
+                {
+                    <span class="ws-retry" data-brain-evaluated="@(bs.TotalEvaluatedExperiments.ToString(CultureInfo.InvariantCulture))">🏆 판정 실험 @(bs.TotalEvaluatedExperiments.ToString(CultureInfo.InvariantCulture))건 · ⏳ 대기 @(bs.PendingExperimentsCount.ToString(CultureInfo.InvariantCulture))건</span>
+                    <span class="ws-retry" data-brain-winrate="@(bs.ChallengerWinRatePct.ToString("0.#", CultureInfo.InvariantCulture))">⚔️ 챌린저 승률 @(bs.ChallengerWinRatePct.ToString("0.#", CultureInfo.InvariantCulture))%</span>
+                    <span class="ws-retry" data-brain-guards="@(bs.ActiveMistakeGuardCount.ToString(CultureInfo.InvariantCulture))">🛡️ 오답 가드 @(bs.ActiveMistakeGuardCount.ToString(CultureInfo.InvariantCulture))개</span>
+                    <span class="ws-pcore on" data-brain-hypothesis="1" style="white-space:normal">💡 @(bs.NextHypothesisBanner)</span>
+                }
+                else if (_brainOpen && _brainBusy) { <span class="ws-retry" role="status" data-brain-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 🧠 집계 중…</span> }
+            </div>
         </div>
         <div class="ws-navrow ws-row-tools" data-ws-row="tools">
             @* 🎞 4컷 성장 마일스톤 — 아침 훅 → 액션 → 미소 → 잠 · 활성 프로필 앵커 선두 · 4슬롯 일괄 세팅 *@
@@ -225,6 +236,8 @@
                     <button class="ws-back" data-sns-copy-caption="1" @onclick="() => CopySnsPart(-1)" title="@(kit.CaptionKo)">📋 캡션(KO/EN) 복사</button>
                     <button class="ws-back" data-sns-copy-tags="@(kit.Hashtags.Count.ToString(CultureInfo.InvariantCulture))" @onclick="() => CopySnsPart(-2)" title="@(string.Join(" ", kit.Hashtags))">📋 해시태그 @(kit.Hashtags.Count.ToString(CultureInfo.InvariantCulture))개 복사</button>
                     <button class="ws-back" data-sns-copy-all="1" @onclick="() => CopySnsPart(-3)">📋 전체 복사</button>
+                    <button class="ws-back" data-sns-copy-shorts="1" @onclick="() => CopySnsPlatformAsync(true)" title="제목 ≤ 95자(단어 경계) + KO/EN 캡션 + 해시태그 5개 — YouTube Shorts 업로드용">[📋 쇼츠용 원클릭 복사]</button>
+                    <button class="ws-back" data-sns-copy-reels="1" @onclick="() => CopySnsPlatformAsync(false)" title="캡션 + 중복 제거 해시태그 12개 + 추천 게시 시간 — Instagram Reels 업로드용">[📋 릴스용 원클릭 복사]</button>
                     <button class="ws-back" data-montage-render-vertical="1" @onclick="RenderVerticalMontageAsync" disabled="@(_montageBusy || _motionBusy || _stockBusy)" title="사진별 초점 중심 9:16 선크롭 → 프리뷰와 동일한 컷 경계(🔒 타임라인 잠금)로 MP4 렌더">[🎞️ 9:16 스마트 크롭 MP4 렌더]</button>
                     <span class="ws-retry" data-sns-hashtags="1">@(string.Join(" ", kit.Hashtags))</span>
                 </div>
@@ -2409,6 +2422,7 @@
             _abEvalResult = result;
             if (!result.AlreadyRegistered) await RefreshAdaptiveRecommendationAsync();   // 🧠 차등 강화 → 학습 추천 갱신
             await RefreshAbPendingAsync();   // 📋 Pending → Evaluated 전이 반영
+            await RefreshBrainSummaryAsync();   // 🧠 두뇌 리포트 갱신
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
         catch (Exception ex) { Program.Log("Workspace.AbEvaluate", ex); _abEvalToast = "⚠ 승자 판정 실패: " + ex.Message; }
@@ -2783,6 +2797,56 @@
         catch (Exception ex) { Program.Log("Workspace.SnsCopy", ex); _snsToast = "⚠ 클립보드 복사에 실패했습니다"; }
     }
 
+    /// <summary>📋 Pluto 4.6 — 플랫폼 정규화 원클릭 복사(JS 클립보드 → 네이티브 클립보드 폴백 · 예외 전파 금지).</summary>
+    private async Task CopySnsPlatformAsync(bool shorts)
+    {
+        if (_snsKit is not { } kit) return;
+        var text = shorts ? PromptFlowStudio.Services.Pluto.PlutoMultiFormatPackager.FormatForYouTubeShorts(kit) : PromptFlowStudio.Services.Pluto.PlutoMultiFormatPackager.FormatForInstagramReels(kit);
+        var label = shorts ? "▶️ 쇼츠용 업로드 문구" : "📸 릴스용 업로드 문구";
+        var ok = false;
+        try { ok = await JS.InvokeAsync<bool>("siteMaticClip.copy", text); }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex) when (ex is JSException or JSDisconnectedException or InvalidOperationException or TaskCanceledException) { Program.Log("Workspace.SnsPlatformCopy.Js", ex); }
+        if (!ok)
+        {
+            try { ok = Clipboard.SetText(text); }
+            catch (Exception ex) { Program.Log("Workspace.SnsPlatformCopy", ex); }
+        }
+        if (_disposed) return;
+        _snsToast = ok ? "📋 " + label + "가 복사되었습니다 — 바로 붙여넣기 하세요" : "⚠ 클립보드 복사에 실패했습니다";
+        await InvokeAsync(StateHasChanged);
+    }
+
+    // ── 🧠 Pluto 4.6 — 두뇌 리포트(판정 · 승률 · 오답 가드 · 다음 가설) ──
+    private PromptFlowStudio.Services.Pluto.PlutoBrainSummarySnapshot? _brainSummary;
+    private bool _brainOpen, _brainBusy;
+    private int _brainSeq;
+
+    private async Task ToggleBrainSummaryAsync()
+    {
+        _brainOpen = !_brainOpen;
+        if (_brainOpen) await RefreshBrainSummaryAsync();
+    }
+
+    /// <summary>🧠 두뇌 리포트 갱신(세대 가드 · 예외 전파 금지 · 서비스 미등록 → 생략).</summary>
+    private async Task RefreshBrainSummaryAsync()
+    {
+        if (_disposed || EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoAutonomousBrainSummaryService)) is not PromptFlowStudio.Services.Pluto.IPlutoAutonomousBrainSummaryService svc) return;
+        var seq = ++_brainSeq;
+        _brainBusy = true;
+        try
+        {
+            var snap = await svc.GetSummaryAsync(_mediaCts.Token);
+            if (_disposed || seq != _brainSeq) return;
+            _brainSummary = snap;
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.BrainSummary", ex); return; }
+        finally { if (seq == _brainSeq) _brainBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
     private string CurrentBgmMood() => _customBgm is not null ? "custom" : _bgmOn ? _bgmTrack.ToString() : "none";
 
     private string PerfHookFromPrompt()
@@ -2842,6 +2906,7 @@
             _perfOutcome = await svc.IngestPerformanceAsync(telemetry, _mediaCts.Token);
             _snsToast = null;
             await RefreshAdaptiveRecommendationAsync();   // 🧠 폐루프 → 순방향 랭킹 즉시 반영
+            await RefreshBrainSummaryAsync();   // 🧠 두뇌 리포트 갱신
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
         catch (Exception ex) { Program.Log("Workspace.PerfFeedback", ex); _snsToast = "⚠ 성과 학습 반영 실패: " + ex.Message; }
@@ -4920,6 +4985,7 @@
         var cts = _liveCts = new CancellationTokenSource();
         _ = LiveLoopAsync(live, draw, cts.Token);
         _ = RefreshAbPendingAsync();   // 📋 재시작 후 대기 A/B 실험 복원(예외 내부 격리)
+        _ = RefreshBrainSummaryAsync();   // 🧠 두뇌 리포트 선집계(예외 내부 격리)
         _ = SyncBgmPreviewAsync();   // 🎵 SNS 레이더 주입 BGM ON → 미리듣기 시작 · OFF → 잔존 전역 미리듣기 정리(예외 내부 격리)
     }
 
