@@ -417,6 +417,208 @@ public sealed partial class StockSuiteExporter
         return new(true, seriesDir, false, msg) { HasSubtitlesSrt = srtCount > 0, HasSnsCopyText = snsCount > 0, HasThumbnailJpg = thumbCount > 0 };
     }
 
+    // ══════════════════════ ⚖️ A/B 실험 짝 내보내기 ══════════════════════
+    public const string AbExperimentManifestName = "ab_experiment_manifest.json";
+    public const string AbVariantAFolder = "VariantA";
+    public const string AbVariantBFolder = "VariantB";
+
+    /// <summary><c>{테마슬러그}_AB_{yyyyMMdd}</c>(로컬 날짜).</summary>
+    public static string BuildAbExperimentFolderName(string? themeHint, DateTime localNow)
+        => SanitizeProjectName(themeHint) + "_AB_" + localNow.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// 📦 A/B 실험 짝 내보내기 — <c>{루트}\{테마슬러그}_AB_{yyyyMMdd}\VariantA\</c> · <c>\VariantB\</c> 에 변형별 영상 + 자막 SRT · SNS 게시문 · 썸네일(best-effort) · <c>project_manifest.json</c>,
+    /// 루트에 <c>ab_experiment_manifest.json</c>(실험 ID · 가설 · 변형 특성). 각 영상은 <see cref="ExportMediaIntegrityGuard.EnsureValidMp4"/> 검증(손상/누락 → 해당 변형만 건너뜀 · [부분 구제]).
+    /// 루트 미설정/부재 → <see cref="StockSuiteExportResult.NeedsPathSetup"/>. 성공 시 <c>TargetPath</c> = 실험 폴더.
+    /// </summary>
+    public async Task<StockSuiteExportResult> ExportABExperimentToStockSuiteAsync(string stockSuiteRoot, PromptFlowStudio.Services.Pluto.PlutoVariantABPlan plan,
+        string? championVideoPath, string? challengerVideoPath, CancellationToken ct = default)
+    {
+        if (plan is null || string.IsNullOrWhiteSpace(plan.ExperimentId)) return new(false, null, false, "내보낼 A/B 실험이 없습니다.");
+        if (string.IsNullOrWhiteSpace(championVideoPath) && string.IsNullOrWhiteSpace(challengerVideoPath)) return new(false, null, false, "A/B 변형 렌더 영상이 없습니다 — [⚡ A/B 두 변형 연속 렌더링] 후 다시 시도하세요.");
+        if (string.IsNullOrWhiteSpace(stockSuiteRoot)) return new(false, null, true, "StockSuite 에셋 경로가 설정되지 않았습니다 — 환경설정에서 경로를 지정하세요.");
+        string fullRoot;
+        try { fullRoot = Path.GetFullPath(stockSuiteRoot.Trim().Trim('"')); }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { return new(false, null, true, "StockSuite 에셋 경로가 올바르지 않습니다: " + stockSuiteRoot); }
+        if (!Directory.Exists(fullRoot)) return new(false, null, true, "StockSuite 에셋 경로가 존재하지 않습니다: " + fullRoot + " — 환경설정에서 경로를 재설정하세요.");
+
+        var now = LocalNow();
+        var stamp = new DateTimeOffset(now);
+        var folder = BuildAbExperimentFolderName(plan.ThemeHint, now);
+        var abDir = Path.Combine(fullRoot, folder);
+        var exported = new List<(string Slot, string Folder, string File, PromptFlowStudio.Services.Pluto.PlutoExperimentVariant Variant)>(2);
+        int skipped = 0, corrupt = 0, srtCount = 0, snsCount = 0, thumbCount = 0;
+        try
+        {
+            Directory.CreateDirectory(abDir);
+            for (var i = 0; i < 2; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var variant = i == 0 ? plan.ChampionA : plan.ChallengerB;
+                var slot = i == 0 ? AbVariantAFolder : AbVariantBFolder;
+                var src = i == 0 ? championVideoPath : challengerVideoPath;
+                if (string.IsNullOrWhiteSpace(src)) { skipped++; continue; }
+                try { ExportMediaIntegrityGuard.EnsureValidMp4(src); }   // 🛡️ 잘림/손상/부재 → 해당 변형만 차단
+                catch (InvalidOperationException ex) { Program.Log("StockSuite.AbIntegrity", ex); skipped++; corrupt++; continue; }
+                var dir = Path.Combine(abDir, slot);
+                try
+                {
+                    Directory.CreateDirectory(dir);
+                    var target = Path.Combine(dir, Path.GetFileName(src));
+                    var tmp = target + TempExt;
+                    await using (var input = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 81920, useAsync: true))
+                    await using (var output = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true))
+                        await input.CopyToAsync(output, ct).ConfigureAwait(false);
+                    File.Move(tmp, target, overwrite: true);
+                    var hint = string.IsNullOrWhiteSpace(plan.ThemeHint) ? variant.HookStyle : plan.ThemeHint;
+                    var bundle = await WriteCreatorSidecarsAsync(dir, target, variant.Subtitles, null, hint, ct).ConfigureAwait(false);   // 🎁 변형별 번들(격리)
+                    if (bundle.HasSubtitlesSrt) srtCount++;
+                    if (bundle.HasSnsCopyText) snsCount++;
+                    if (bundle.HasThumbnailJpg) thumbCount++;
+                    WriteAbVariantManifest(dir, plan, variant, slot, target, src, stamp, bundle);
+                    exported.Add((slot, slot, Path.GetFileName(target), variant));
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    Program.Log("StockSuite.AbVariant", ex);   // [부분 구제] 다른 변형 계속
+                    skipped++;
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Program.Log("StockSuite.AbExperiment", ex);
+            return new(false, null, false, "A/B 실험 폴더를 만들 수 없습니다: " + ex.Message);
+        }
+        if (exported.Count == 0)
+        {
+            try { if (Directory.Exists(abDir) && Directory.GetFileSystemEntries(abDir).Length == 0) Directory.Delete(abDir); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Program.Log("StockSuite.AbCleanup", ex); }
+            return new(false, null, false, corrupt > 0
+                ? "🛡️ A/B 변형 영상 " + corrupt.ToString(CultureInfo.InvariantCulture) + "개가 잘렸거나 손상되어 내보내기를 차단했습니다 — 다시 렌더한 뒤 시도하세요."
+                : "렌더된 A/B 변형 영상이 없습니다 — [⚡ A/B 두 변형 연속 렌더링] 후 다시 시도하세요.");
+        }
+
+        var manifest = WriteAbExperimentManifest(abDir, plan, folder, exported, stamp);
+        var msg = "📦 A/B 실험 " + exported.Count.ToString(CultureInfo.InvariantCulture) + "/2 변형 내보내기 · 📁 " + folder + (manifest is null ? "" : " · 🧾 " + AbExperimentManifestName)
+                  + " · 🎁 자막 " + srtCount.ToString(CultureInfo.InvariantCulture) + " · SNS 게시문 " + snsCount.ToString(CultureInfo.InvariantCulture) + " · 썸네일 " + thumbCount.ToString(CultureInfo.InvariantCulture)
+                  + (skipped > 0 ? " · [부분 구제] " + skipped.ToString(CultureInfo.InvariantCulture) + "변형 누락" + (corrupt > 0 ? "(🛡️ 손상 " + corrupt.ToString(CultureInfo.InvariantCulture) + "개 차단)" : "") : "");
+        return new(true, abDir, false, msg) { HasSubtitlesSrt = srtCount > 0, HasSnsCopyText = snsCount > 0, HasThumbnailJpg = thumbCount > 0 };
+    }
+
+    private static void WriteVariantTraits(Utf8JsonWriter w, PromptFlowStudio.Services.Pluto.PlutoExperimentVariant v)
+    {
+        w.WriteString("variantLabel", v.VariantLabel);
+        w.WriteString("hookStyle", v.HookStyle);
+        w.WriteString("colorLookId", v.ColorLookId);
+        w.WriteString("bgmMood", v.BgmMood);
+        if (!string.IsNullOrWhiteSpace(v.PromptSuffix)) w.WriteString("promptSuffix", v.PromptSuffix);
+    }
+
+    /// <summary>변형 폴더 <c>project_manifest.json</c> — 실험 ID · 변형 특성 · 자막 · 번들 플래그 · 영상 파일. 실패 격리(로그).</summary>
+    internal static string? WriteAbVariantManifest(string dir, PromptFlowStudio.Services.Pluto.PlutoVariantABPlan plan, PromptFlowStudio.Services.Pluto.PlutoExperimentVariant v,
+        string slot, string targetPath, string sourcePath, DateTimeOffset now, CreatorBundleResult bundle = default)
+    {
+        var path = Path.Combine(dir, ProjectManifestName);
+        try
+        {
+            var buf = new System.Buffers.ArrayBufferWriter<byte>(2048);
+            using (var w = new Utf8JsonWriter(buf, s_manifestJson))
+            {
+                var ts = now.ToString("yyyy-MM-dd'T'HH:mm:sszzz", CultureInfo.InvariantCulture);
+                w.WriteStartObject();
+                w.WriteNumber("version", 1);
+                w.WriteString("projectName", (string.IsNullOrWhiteSpace(plan.ThemeHint) ? DefaultProjectSlug : plan.ThemeHint) + " · " + slot);
+                w.WriteString("experimentId", plan.ExperimentId);
+                w.WriteString("variant", slot);
+                WriteVariantTraits(w, v);
+                w.WriteString("folder", slot);
+                w.WriteString("createdAt", ts);
+                w.WriteString("updatedAt", ts);
+                WriteBundleFlags(w, bundle);
+                w.WriteStartArray("subtitles");
+                foreach (var c in v.Subtitles)
+                {
+                    w.WriteStartObject();
+                    w.WriteNumber("startSec", Math.Round(c.EffectiveStartSec, 3));
+                    w.WriteNumber("endSec", Math.Round(c.EffectiveEndSec, 3));
+                    w.WriteString("text", c.Text);
+                    if (!string.IsNullOrWhiteSpace(c.SecondaryText)) w.WriteString("secondaryText", c.SecondaryText);
+                    w.WriteEndObject();
+                }
+                w.WriteEndArray();
+                w.WriteStartArray("exports");
+                w.WriteStartObject();
+                w.WriteString("file", Path.GetFileName(targetPath));
+                w.WriteString("source", Path.GetFullPath(sourcePath));
+                long bytes;
+                try { bytes = new FileInfo(targetPath).Length; } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { bytes = 0; }
+                w.WriteNumber("bytes", bytes);
+                w.WriteString("exportedAt", ts);
+                w.WriteEndObject();
+                w.WriteEndArray();
+                w.WriteEndObject();
+            }
+            WriteJsonAtomic(path, buf);
+            return path;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            Program.Log("StockSuite.AbVariantManifest", ex);
+            return null;
+        }
+    }
+
+    /// <summary>실험 루트 <c>ab_experiment_manifest.json</c> — 실험 ID · 가설 · 테마 · 변형 특성(A/B) · 내보낸 변형 수.</summary>
+    internal static string? WriteAbExperimentManifest(string abDir, PromptFlowStudio.Services.Pluto.PlutoVariantABPlan plan, string folder,
+        IReadOnlyList<(string Slot, string Folder, string File, PromptFlowStudio.Services.Pluto.PlutoExperimentVariant Variant)> exported, DateTimeOffset now)
+    {
+        var path = Path.Combine(abDir, AbExperimentManifestName);
+        try
+        {
+            var buf = new System.Buffers.ArrayBufferWriter<byte>(1024);
+            using (var w = new Utf8JsonWriter(buf, s_manifestJson))
+            {
+                w.WriteStartObject();
+                w.WriteNumber("version", 1);
+                w.WriteString("ExperimentId", plan.ExperimentId);
+                w.WriteString("HypothesisSummary", plan.HypothesisSummary);
+                w.WriteString("themeHint", plan.ThemeHint);
+                w.WriteString("folder", folder);
+                w.WriteNumber("exportedVariants", exported.Count);
+                w.WriteString("exportedAt", now.ToString("yyyy-MM-dd'T'HH:mm:sszzz", CultureInfo.InvariantCulture));
+                w.WriteStartArray("variants");
+                for (var i = 0; i < 2; i++)
+                {
+                    var slot = i == 0 ? AbVariantAFolder : AbVariantBFolder;
+                    var v = i == 0 ? plan.ChampionA : plan.ChallengerB;
+                    string? file = null;
+                    foreach (var e in exported) if (string.Equals(e.Slot, slot, StringComparison.Ordinal)) { file = e.File; break; }
+                    w.WriteStartObject();
+                    w.WriteString("slot", slot);
+                    w.WriteString("role", i == 0 ? PromptFlowStudio.Services.Pluto.PlutoExperimentLedgerService.WinnerChampion : PromptFlowStudio.Services.Pluto.PlutoExperimentLedgerService.WinnerChallenger);
+                    WriteVariantTraits(w, v);
+                    w.WriteBoolean("exported", file is not null);
+                    if (file is not null)
+                    {
+                        w.WriteString("file", file);
+                        w.WriteString("manifest", slot + "/" + ProjectManifestName);
+                    }
+                    w.WriteEndObject();
+                }
+                w.WriteEndArray();
+                w.WriteEndObject();
+            }
+            WriteJsonAtomic(path, buf);
+            return path;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            Program.Log("StockSuite.AbManifest", ex);
+            return null;
+        }
+    }
+
     private static readonly JsonWriterOptions s_manifestJson = new() { Indented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
     private static void WriteSnsKit(Utf8JsonWriter w, PromptFlowStudio.Services.Pluto.PlutoSnsPublishingKit? kit)

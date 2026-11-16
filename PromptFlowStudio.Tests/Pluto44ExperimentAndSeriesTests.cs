@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using PromptFlowStudio.Services.Export;
 using PromptFlowStudio.Services.Pluto;
@@ -515,5 +516,201 @@ public sealed class Pluto44ExperimentAndSeriesTests : IDisposable
         Assert.False(all.Ok);
         Assert.Contains("손상", all.Message, StringComparison.Ordinal);
         Assert.Empty(Directory.GetFileSystemEntries(allRoot));
+    }
+
+    // ── Step 5 — A/B 변형 영상 결선 · 짝 내보내기 ──
+
+    [Fact]
+    public async Task ExperimentLedger_AttachVariantArtifacts_PersistsAcrossReloadAndSurvivesEvaluation()
+    {
+        var storage = Storage("artifacts");
+        var file = Path.Combine(storage.ActiveRoot, PlutoExperimentLedgerService.FileName);
+        var aPath = Path.Combine(_dir, "exp_A_montage.mp4");
+        var bPath = Path.Combine(_dir, "exp_B_montage.mp4");
+
+        // ① 구 장부(결선 키 없음) → 역호환 적재 · null 경로
+        File.WriteAllText(file, "{\"Version\":1,\"Experiments\":[{\"ExperimentId\":\"exp-legacy\",\"ThemeHint\":\"t\",\"ChampionHook\":\"x\",\"ChallengerHook\":\"y\",\"Status\":\"Pending\"}]}");
+        using (var legacy = new PlutoExperimentLedgerService(null, storage))
+        {
+            await legacy.EnsureLoadedAsync();
+            var snap = legacy.GetExperimentArtifacts("exp-legacy");
+            Assert.NotNull(snap);
+            Assert.Null(snap!.ChampionVideoPath);
+            Assert.Null(snap.ChallengerVideoPath);
+            Assert.Null(legacy.GetExperimentArtifacts("exp-missing"));
+
+            legacy.RegisterExperiment(Plan("exp-art"));
+            var changed = 0;
+            legacy.Changed += () => Interlocked.Increment(ref changed);
+            legacy.AttachVariantArtifacts("exp-art", aPath, null);
+            legacy.AttachVariantArtifacts("exp-art", "  ", "");   // 빈 값 → 기존 유지 · 무변경
+            Assert.Equal(1, Volatile.Read(ref changed));
+            Assert.Equal(aPath, legacy.GetExperimentArtifacts("exp-art")!.ChampionVideoPath);
+            Assert.Null(legacy.GetExperimentArtifacts("exp-art")!.ChallengerVideoPath);
+            Assert.Throws<ArgumentException>(() => legacy.AttachVariantArtifacts(" ", aPath, bPath));
+            await legacy.WhenRegisteredPersistedAsync();
+        }
+        Assert.Contains("\"ChampionVideoPath\":", File.ReadAllText(file), StringComparison.Ordinal);
+
+        // ② 재시작 — 적재 전 B 결선(디스크 전용 실험) → 적재 후 병합 · A 보존 → 판정 후에도 유지
+        using (var second = new PlutoExperimentLedgerService(null, storage))
+        {
+            second.AttachVariantArtifacts("exp-art", null, bPath);
+            await second.WhenRegisteredPersistedAsync();
+            var snap = second.GetExperimentArtifacts("exp-art")!;
+            Assert.Equal(aPath, snap.ChampionVideoPath);
+            Assert.Equal(bPath, snap.ChallengerVideoPath);
+
+            second.RegisterExperiment(Plan("exp-art"));   // 같은 ID 재등록(플랜 갱신) → 결선 보존
+            await second.WhenRegisteredPersistedAsync();
+            var r = await second.EvaluateExperimentAsync(Plan("exp-art"), new PlutoExperimentMetricsInput(40, 30, 2), new PlutoExperimentMetricsInput(70, 60, 6));
+            Assert.Equal(PlutoExperimentLedgerService.WinnerChallenger, r.WinnerLabel);
+            snap = second.GetExperimentArtifacts("exp-art")!;
+            Assert.Equal(aPath, snap.ChampionVideoPath);
+            Assert.Equal(bPath, snap.ChallengerVideoPath);
+        }
+
+        // ③ 판정 후 재시작 — Evaluated 상태 + 결선 경로 유지
+        using var third = new PlutoExperimentLedgerService(null, storage);
+        await third.EnsureLoadedAsync();
+        Assert.DoesNotContain(third.GetPendingExperiments(), p => p.ExperimentId == "exp-art");
+        Assert.Contains(third.GetRecentEvaluations(), e => e.ExperimentId == "exp-art");
+        var final = third.GetExperimentArtifacts("exp-art")!;
+        Assert.Equal("exp-art", final.ExperimentId);
+        Assert.Equal(aPath, final.ChampionVideoPath);
+        Assert.Equal(bPath, final.ChallengerVideoPath);
+        Assert.Contains("\"Status\":\"" + PlutoExperimentLedgerService.StatusEvaluated + "\"", File.ReadAllText(file), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task StockSuiteExporter_ABExperiment_CreatesVariantAAndVariantBSubfoldersWithManifest()
+    {
+        var root = Path.Combine(_dir, "ss_ab");
+        Directory.CreateDirectory(root);
+        var aSrc = Path.Combine(_dir, "first_exp-ab_A_montage.mp4");
+        var bSrc = Path.Combine(_dir, "first_exp-ab_B_montage.mp4");
+        File.WriteAllBytes(aSrc, ExportMediaIntegrityGuard.BuildMinimalMp4(1500));
+        File.WriteAllBytes(bSrc, ExportMediaIntegrityGuard.BuildMinimalMp4(1700));
+        var exp = new StockSuiteExporter(() => root) { LocalNow = () => new DateTime(2026, 11, 16, 11, 0, 0) };
+        var plan = Plan("exp-ab") with { ThemeHint = "돌잔치: 첫/생일" };
+
+        var r = await exp.ExportABExperimentToStockSuiteAsync(root, plan, aSrc, bSrc);
+
+        Assert.True(r.Ok, r.Message);
+        var abDir = Path.Combine(root, StockSuiteExporter.SanitizeProjectName(plan.ThemeHint) + "_AB_20261116");
+        Assert.Equal(abDir, r.TargetPath);
+        Assert.Equal(Path.GetFileName(abDir), StockSuiteExporter.BuildAbExperimentFolderName(plan.ThemeHint, new DateTime(2026, 11, 16)));
+        Assert.DoesNotContain(':', Path.GetFileName(abDir));
+        Assert.DoesNotContain('/', Path.GetFileName(abDir));
+        Assert.True(r.HasSubtitlesSrt);
+        Assert.True(r.HasSnsCopyText);
+        foreach (var (slot, src, variant) in new[] { ("VariantA", aSrc, plan.ChampionA), ("VariantB", bSrc, plan.ChallengerB) })
+        {
+            var dir = Path.Combine(abDir, slot);
+            var copied = Path.Combine(dir, Path.GetFileName(src));
+            Assert.True(File.Exists(copied));
+            Assert.Equal(new FileInfo(src).Length, new FileInfo(copied).Length);
+            Assert.True(File.Exists(Path.Combine(dir, StockSuiteExporter.SubRipFileName)));
+            Assert.True(File.Exists(Path.Combine(dir, StockSuiteExporter.SnsCopyFileName)));
+            Assert.Empty(Directory.GetFiles(dir, "*.~pfs"));
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(dir, StockSuiteExporter.ProjectManifestName)));
+            var m = doc.RootElement;
+            Assert.Equal("exp-ab", m.GetProperty("experimentId").GetString());
+            Assert.Equal(slot, m.GetProperty("variant").GetString());
+            Assert.Equal(variant.HookStyle, m.GetProperty("hookStyle").GetString());
+            Assert.Equal(variant.ColorLookId, m.GetProperty("colorLookId").GetString());
+            Assert.Equal(variant.Subtitles.Count, m.GetProperty("subtitles").GetArrayLength());
+            Assert.Equal(Path.GetFileName(src), m.GetProperty("exports")[0].GetProperty("file").GetString());
+        }
+        using (var adoc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(abDir, StockSuiteExporter.AbExperimentManifestName))))
+        {
+            var a = adoc.RootElement;
+            Assert.Equal("exp-ab", a.GetProperty("ExperimentId").GetString());
+            Assert.Equal(plan.HypothesisSummary, a.GetProperty("HypothesisSummary").GetString());
+            Assert.Equal(2, a.GetProperty("exportedVariants").GetInt32());
+            var vs = a.GetProperty("variants");
+            Assert.Equal(2, vs.GetArrayLength());
+            Assert.Equal("VariantA", vs[0].GetProperty("slot").GetString());
+            Assert.Equal(HookA, vs[0].GetProperty("hookStyle").GetString());
+            Assert.Equal(HookB, vs[1].GetProperty("hookStyle").GetString());
+            Assert.Equal(PlutoColorGradingCompiler.GoldenHourWarmName, vs[1].GetProperty("colorLookId").GetString());
+            Assert.Equal("VariantB/" + StockSuiteExporter.ProjectManifestName, vs[1].GetProperty("manifest").GetString());
+        }
+
+        // [부분 구제] — B 손상 → A만 · 누락 고지
+        var partialRoot = Path.Combine(_dir, "ss_ab_partial");
+        Directory.CreateDirectory(partialRoot);
+        var broken = Path.Combine(_dir, "broken_B.mp4");
+        File.WriteAllBytes(broken, new byte[300]);
+        var partial = await exp.ExportABExperimentToStockSuiteAsync(partialRoot, plan, aSrc, broken);
+        Assert.True(partial.Ok, partial.Message);
+        Assert.Contains("[부분 구제]", partial.Message, StringComparison.Ordinal);
+        Assert.True(Directory.Exists(Path.Combine(partial.TargetPath!, "VariantA")));
+        Assert.False(Directory.Exists(Path.Combine(partial.TargetPath!, "VariantB")));
+
+        // 영상 0개 · 전부 손상 · 루트 부재 → 실패(예외 없음 · 빈 폴더 미잔존)
+        Assert.False((await exp.ExportABExperimentToStockSuiteAsync(root, plan, null, " ")).Ok);
+        var badRoot = Path.Combine(_dir, "ss_ab_bad");
+        Directory.CreateDirectory(badRoot);
+        var allBad = await exp.ExportABExperimentToStockSuiteAsync(badRoot, plan, broken, broken);
+        Assert.False(allBad.Ok);
+        Assert.Contains("손상", allBad.Message, StringComparison.Ordinal);
+        Assert.Empty(Directory.GetFileSystemEntries(badRoot));
+        var missing = await exp.ExportABExperimentToStockSuiteAsync(Path.Combine(_dir, "nope"), plan, aSrc, bSrc);
+        Assert.False(missing.Ok);
+        Assert.True(missing.NeedsPathSetup);
+    }
+
+    [Fact]
+    public void Workspace_ABPanel_WiresDualVariantRenderAndArtifactPreviewBindings()
+    {
+        var type = typeof(StockSuiteExporter).Assembly.GetType("PromptFlowStudio.Blazor.Pages.Workspace", throwOnError: true)!;
+        var ws = Activator.CreateInstance(type)!;
+        const System.Reflection.BindingFlags F = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        const System.Reflection.BindingFlags S = System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic;
+
+        // ① 핸들러 결선
+        foreach (var name in new[] { "RenderAbBothVariantsAsync", "ExportAbExperimentAsync", "PreviewAbVariant", "AttachAbArtifact", "AbArtifactsFor" })
+            Assert.NotNull(type.GetMethod(name, F));
+
+        // ② 변형별 출력 경로 — A/B 분리(덮어쓰기 방지) · 9:16 구분 · 파일명 안전
+        var outPath = type.GetMethod("AbVariantOutputPath", S)!;
+        string Out(bool b, bool v) => (string)outPath.Invoke(null, new object?[] { "exp:1/x", Path.Combine(_dir, "first.jpg"), b, v, _dir })!;
+        Assert.NotEqual(Out(false, false), Out(true, false));
+        Assert.NotEqual(Out(false, false), Out(false, true));
+        Assert.EndsWith("_A" + StockSuiteExporter.MontageFileSuffix, Out(false, false), StringComparison.Ordinal);
+        Assert.EndsWith("_B" + StockSuiteExporter.MontageFileSuffix, Out(true, false), StringComparison.Ordinal);
+        Assert.Equal(_dir, Path.GetDirectoryName(Out(true, false)));
+        Assert.DoesNotContain(':', Path.GetFileName(Out(false, false)));
+
+        // ③ 서비스 미주입 · 부재 영상 → 예외 0 · 미리보기 없음 · 토스트 안내
+        var arts = type.GetMethod("AbArtifactsFor", F)!.Invoke(ws, new object?[] { "exp-none" })!;
+        Assert.Equal(((string?)null, (string?)null), ((string?, string?))arts);
+        type.GetMethod("PreviewAbVariant", F)!.Invoke(ws, new object?[] { Path.Combine(_dir, "missing.mp4"), true });
+        Assert.Contains("B안", (string)type.GetField("_abEvalToast", F)!.GetValue(ws)!, StringComparison.Ordinal);
+        Assert.Null(type.GetField("_canvasQueuePath", F)!.GetValue(ws));
+
+        // ④ 마크업 — 활성 A/B 패널 내부 버튼 · 진행 문구 · 미리보기 · 수동 렌더 자동 결선 · 헤더 금지어 미노출
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "PromptFlowStudio", "PromptFlowStudio.csproj"))) dir = dir.Parent;
+        Assert.NotNull(dir);
+        var razor = File.ReadAllText(Path.Combine(dir!.FullName, "PromptFlowStudio", "Blazor", "Pages", "Workspace.razor"));
+        var panel = razor.IndexOf("data-ab-panel=", StringComparison.Ordinal);
+        var panelEnd = razor.IndexOf("</div>", panel, StringComparison.Ordinal);
+        foreach (var marker in new[] { "data-ab-dual-render=\"1\"", "data-ab-export=\"1\"", "data-ab-dual-progress=\"1\"" })
+        {
+            var at = razor.IndexOf(marker, StringComparison.Ordinal);
+            Assert.True(at > panel && at < panelEnd, "A/B 패널 외부: " + marker);
+        }
+        foreach (var text in new[] { "[⚡ A/B 두 변형 연속 렌더링]", "[📦 A/B 실험 폴더 동시 내보내기]", "[▶ A안 미리보기]", "[▶ B안 미리보기]",
+                                     "A/B 실험 연속 렌더링 중 (1/2 Champion A)...", "A/B 실험 연속 렌더링 중 (2/2 Challenger B)...",
+                                     "data-ab-preview=\"A\"", "data-ab-preview=\"B\"", "AbArtifactsFor(target.ExperimentId)",
+                                     "AttachAbArtifact(abRun.ExperimentId", "AttachAbArtifact(ab.ExperimentId, outA, outB)", "ExportABExperimentToStockSuiteAsync(root, ab, a, b" })
+            Assert.Contains(text, razor, StringComparison.Ordinal);
+        var form = razor.IndexOf("private RenderFragment AbEvalForm(", StringComparison.Ordinal);
+        Assert.True(razor.IndexOf("data-ab-preview=\"A\"", StringComparison.Ordinal) > form);   // 판정 카드(생성 직후 · 대기 실험 공용)
+        var head = razor.Substring(razor.IndexOf("<header class=\"ws-head\">", StringComparison.Ordinal));
+        head = head.Substring(0, head.IndexOf("</header>", StringComparison.Ordinal));
+        Assert.DoesNotContain("StockSuite", head, StringComparison.Ordinal);
     }
 }

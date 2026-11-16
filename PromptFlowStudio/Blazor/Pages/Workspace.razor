@@ -251,6 +251,10 @@
                     <button class="@(_abActiveB ? "ws-back" : "ws-back on")" data-ab-variant="A" aria-pressed="@(_abActiveB ? "false" : "true")" @onclick="() => SwitchAbVariantAsync(false)" disabled="@(_montageBusy)" title="@(abp.ChampionA.PromptSuffix)">🏆 @(abp.ChampionA.VariantLabel): '@(abp.ChampionA.HookStyle)' · 🎨 @(abp.ChampionA.ColorLookId) · 🎵 @(abp.ChampionA.BgmMood)</button>
                     <button class="@(_abActiveB ? "ws-back on" : "ws-back")" data-ab-variant="B" aria-pressed="@(_abActiveB ? "true" : "false")" @onclick="() => SwitchAbVariantAsync(true)" disabled="@(_montageBusy)" title="@(abp.ChallengerB.PromptSuffix)">🧪 @(abp.ChallengerB.VariantLabel): '@(abp.ChallengerB.HookStyle)' · 🎨 @(abp.ChallengerB.ColorLookId) · 🎵 @(abp.ChallengerB.BgmMood)</button>
                     <span class="ws-retry" data-ab-hypothesis="1">@(abp.HypothesisSummary)</span>
+                    <button class="ws-back" data-ab-dual-render="1" @onclick="RenderAbBothVariantsAsync" disabled="@(_abDualBusy || _abExportBusy || _montageBusy || _motionBusy || _stockBusy)" title="챔피언 A(훅 · 룩 · BGM · 자막) → 챌린저 B 순서로 두 영상을 연속 렌더하고 실험 장부에 자동 결선">[⚡ A/B 두 변형 연속 렌더링]</button>
+                    <button class="ws-back" data-ab-export="1" @onclick="ExportAbExperimentAsync" disabled="@(_abExportBusy || _abDualBusy || _montageBusy)" title="결선된 A안 · B안 영상을 에셋 루트의 {테마}_AB_{날짜} 폴더에 VariantA · VariantB 로 함께 저장(자막 · SNS 게시문 · 썸네일 · 실험 매니페스트 포함)">[📦 A/B 실험 폴더 동시 내보내기]</button>
+                    @if (_abRenderProgress is { } abrp) { <span class="ws-retry" role="status" data-ab-dual-progress="1"><span class="ws-motion-spin" aria-hidden="true"></span> ⚡ @(abrp)</span> }
+                    @if (_abExportBusy) { <span class="ws-retry" role="status" data-ab-export-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 📦 A/B 실험 폴더 내보내는 중…</span> }
                     <button class="ws-back" data-ab-eval-toggle="1" @onclick="() => _abEvalOpen = !_abEvalOpen" aria-expanded="@(_abEvalOpen ? "true" : "false")" title="A·B 각각의 게시 후 3초 유지율 · 완주율 · CTR 입력 → 합성 점수(0.5·3초 + 0.3·완주 + 0.2·CTR×10)로 승자 판정 · 승자 차등 특성 강화 · 근소 패배는 오답 노트 면제">[🏆 A/B 실험 승자 판정 &amp; 차등 학습] @(_abEvalOpen ? "▲" : "▼")</button>
                     @if (_abEvalOpen) { @AbEvalForm(abp) }
                     @if (_abToast is { } abt) { <span class="ws-retry" role="status" data-ab-toast="1">@(abt)</span> }
@@ -2269,6 +2273,9 @@
     private async Task RenderMontageCoreAsync(bool vertical9x16)
     {
         if (_montageBusy || _motionBusy || _stockBusy || _montagePhotos.Count < 2) return;
+        // ⚖️ A/B 패널 활성 변형 → 변형별 출력 경로(A/B 덮어쓰기 방지) · 완료 시 장부 슬롯 결선
+        var abRun = _abPlan is { } abNow && ReferenceEquals(_abPlanSource, _activeMontagePlan) ? abNow : null;
+        var abChallenger = _abActiveB;
         _montageBusy = true;
         _stockBusy = true;
         _montageToast = null;
@@ -2285,11 +2292,18 @@
                 : (await GenerateWorkspaceLetterAsync(_mediaCts.Token)).ToCues();
             // 🔒 Zero-Drift — 프리뷰 · 3막 자막과 동일한 컷 경계(클립 수 일치 시)
             var locked = _activeMontagePlan is { } lp && lp.Clips.Count == photos.Length ? lp : null;
-            var r = await StockSuite.ExportMontageVideoFromPhotosAsync(photos, focals, new PromptFlowStudio.Services.Export.ExportOptions(), cues,
-                _bgmOn ? _bgmTrack : null, includeSfx: true, preferredLook: _montageLook, ct: _mediaCts.Token, customBgmWavBytes: _customBgm?.CroppedWavBytes,
+            var montageOptions = new PromptFlowStudio.Services.Export.ExportOptions();
+            var abOut = abRun is null ? null : AbVariantOutputPath(abRun.ExperimentId, photos[0], abChallenger, vertical9x16, montageOptions.OutputDirectory);
+            var r = await StockSuite.ExportMontageVideoFromPhotosAsync(photos, focals, montageOptions, cues,
+                _bgmOn ? _bgmTrack : null, includeSfx: true, preferredLook: _montageLook, outputPath: abOut, ct: _mediaCts.Token, customBgmWavBytes: _customBgm?.CroppedWavBytes,
                 lockedPlan: locked, vertical9x16SmartCrop: vertical9x16);
             _montageOutput = r.Ok ? r.TargetPath : null;
-            if (r.Ok && r.TargetPath is { } rendered) { CapturePerfContext(rendered, "몽타주", null, _montageLook); RecordSeriesEpisodeOutput(rendered); }
+            if (r.Ok && r.TargetPath is { } rendered)
+            {
+                CapturePerfContext(rendered, "몽타주", null, _montageLook);
+                RecordSeriesEpisodeOutput(rendered);
+                if (abRun is not null) AttachAbArtifact(abRun.ExperimentId, abChallenger ? null : rendered, abChallenger ? rendered : null);
+            }
             _montageToast = r.Ok ? "✅ " + r.Message : "⚠ " + r.Message;
         }
         catch (OperationCanceledException) { }   // 페이지 이탈
@@ -2411,6 +2425,130 @@
         return " · 🎵 BGM " + PromptFlowStudio.Services.Export.StockSuiteExporter.BabyBgmLabel(track);
     }
 
+    // ── ⚡ Step 5 — A/B 변형 영상 결선 · 연속 렌더 · 미리보기 · 짝 내보내기 ──
+    private bool _abDualBusy, _abExportBusy;
+    private string? _abRenderProgress;
+    private string? _abArtId, _abArtA, _abArtB;   // 실재 확인된 결선 영상 캐시(실험 ID 키)
+
+    /// <summary>⚖️ 변형별 몽타주 출력 경로 — <c>{첫 사진}_{실험ID}_{A|B}[_9x16]_montage.mp4</c>(A/B 덮어쓰기 방지 · 실패 → null = 기본 경로).</summary>
+    private static string? AbVariantOutputPath(string experimentId, string firstPhoto, bool challenger, bool vertical9x16, string? outputDirectory)
+    {
+        try
+        {
+            var dir = string.IsNullOrWhiteSpace(outputDirectory)
+                ? Path.Combine(Path.GetTempPath(), "PromptFlowStudio", PromptFlowStudio.Services.Export.StockSuiteExporter.MotionOutputFolder) : outputDirectory;
+            var id = experimentId.Trim();
+            var invalid = Path.GetInvalidFileNameChars();
+            var sb = new System.Text.StringBuilder(id.Length);
+            foreach (var ch in id) sb.Append(Array.IndexOf(invalid, ch) >= 0 ? '_' : ch);
+            return Path.Combine(dir, Path.GetFileNameWithoutExtension(firstPhoto) + "_" + sb.ToString() + (challenger ? "_B" : "_A") + (vertical9x16 ? "_9x16" : "")
+                + PromptFlowStudio.Services.Export.StockSuiteExporter.MontageFileSuffix);
+        }
+        catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException) { Program.Log("Workspace.AbOutputPath", ex); return null; }
+    }
+
+    /// <summary>🎞️ 렌더 영상 → 장부 변형 슬롯 결선(예외 격리 · 미리보기 캐시 무효화).</summary>
+    private void AttachAbArtifact(string experimentId, string? championPath, string? challengerPath)
+    {
+        try { (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoExperimentLedgerService)) as PromptFlowStudio.Services.Pluto.IPlutoExperimentLedgerService)?.AttachVariantArtifacts(experimentId, championPath, challengerPath); }
+        catch (Exception ex) { Program.Log("Workspace.AbAttach", ex); }   // [부분 구제] 렌더 결과는 보존
+        _abArtId = null;
+    }
+
+    /// <summary>🎞️ 실험의 디스크 실재 결선 영상(실험 ID 캐시 · 서비스 부재/예외 → 없음).</summary>
+    private (string? A, string? B) AbArtifactsFor(string experimentId)
+    {
+        if (string.Equals(_abArtId, experimentId, StringComparison.Ordinal)) return (_abArtA, _abArtB);
+        string? a = null, b = null;
+        try
+        {
+            if ((EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoExperimentLedgerService)) as PromptFlowStudio.Services.Pluto.IPlutoExperimentLedgerService)?.GetExperimentArtifacts(experimentId) is { } snap)
+            {
+                if (snap.ChampionVideoPath is { } pa && File.Exists(pa)) a = pa;
+                if (snap.ChallengerVideoPath is { } pb && File.Exists(pb)) b = pb;
+            }
+        }
+        catch (Exception ex) { Program.Log("Workspace.AbArtifacts", ex); }
+        _abArtId = experimentId;
+        _abArtA = a;
+        _abArtB = b;
+        return (a, b);
+    }
+
+    /// <summary>⚡ [A/B 두 변형 연속 렌더링] — 챔피언 A(훅 · 룩 · BGM · 자막) → 챌린저 B 순차 렌더 → 두 영상 장부 결선([부분 구제] 한쪽 실패 시 다른 쪽 보존).</summary>
+    private async Task RenderAbBothVariantsAsync()
+    {
+        if (_abPlan is not { } ab || _abDualBusy || _abExportBusy || _montageBusy || _motionBusy || _stockBusy || _montagePhotos.Count < 2) return;
+        if (!ReferenceEquals(_abPlanSource, _activeMontagePlan)) { _abToast = "⚠ 몽타주 구성이 바뀌었습니다 — A/B 변형을 다시 생성하세요."; return; }
+        _abDualBusy = true;
+        _abToast = null;
+        string? outA = null, outB = null;
+        var aborted = false;
+        try
+        {
+            for (var i = 0; i < 2 && !aborted; i++)
+            {
+                var challenger = i == 1;
+                _abRenderProgress = challenger ? "A/B 실험 연속 렌더링 중 (2/2 Challenger B)..." : "A/B 실험 연속 렌더링 중 (1/2 Champion A)...";
+                await InvokeAsync(StateHasChanged);
+                await ApplyAbVariantAsync(challenger);
+                if (_disposed) return;
+                if (!ReferenceEquals(ab, _abPlan) || !ReferenceEquals(_abPlanSource, _activeMontagePlan) || _abActiveB != challenger) { aborted = true; break; }   // 플랜 교체 → 중단
+                await RenderMontageCoreAsync(false);
+                if (_disposed) return;
+                if (_mediaCts.IsCancellationRequested) return;   // 페이지 이탈
+                var o = _montageOutput is { } mo && File.Exists(mo) ? mo : null;
+                if (challenger) outB = o; else outA = o;
+            }
+            if (outA is not null || outB is not null) AttachAbArtifact(ab.ExperimentId, outA, outB);
+            _abToast = aborted ? "⚠ 몽타주 구성이 바뀌어 A/B 연속 렌더링을 중단했습니다 — 변형을 다시 생성하세요."
+                : outA is not null && outB is not null ? "✅ ⚡ A/B 두 변형 렌더 완료 · 🏆 " + Path.GetFileName(outA) + " · 🧪 " + Path.GetFileName(outB) + " — 실험 장부에 결선"
+                : outA is null && outB is null ? "⚠ A/B 두 변형 렌더 모두 실패 — " + (_montageToast ?? "")
+                : "⚠ [부분 구제] " + (outA is null ? "챔피언 A" : "챌린저 B") + " 렌더 실패 · 성공한 변형만 장부에 결선";
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.AbDualRender", ex); _abToast = "⚠ A/B 연속 렌더링 실패: " + ex.Message; }
+        finally { _abDualBusy = false; _abRenderProgress = null; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    /// <summary>▶ 변형 영상 → 라이브 캔버스 로드(디스크 실재 재확인 · 예외 격리).</summary>
+    private void PreviewAbVariant(string? path, bool challenger)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) { _abEvalToast = "⚠ " + (challenger ? "B" : "A") + "안 영상을 찾을 수 없습니다 — 다시 렌더하세요."; _abArtId = null; return; }
+        try
+        {
+            _canvasQueueUrl = Media.ToPlaybackUrl(path);
+            _canvasQueuePath = path;
+            _abEvalToast = "▶ " + (challenger ? "🧪 B안" : "🏆 A안") + " 미리보기 · " + Path.GetFileName(path);
+        }
+        catch (Exception ex) { Program.Log("Workspace.AbPreview", ex); _abEvalToast = "⚠ 미리보기 로드 실패: " + ex.Message; }
+    }
+
+    /// <summary>📦 [A/B 실험 폴더 동시 내보내기] — 결선된 A/B 영상 → <c>{테마}_AB_{yyyyMMdd}\VariantA|VariantB</c> + 실험 매니페스트(예외 전파 금지).</summary>
+    private async Task ExportAbExperimentAsync()
+    {
+        if (_abPlan is not { } ab || _abExportBusy || _abDualBusy || _montageBusy) return;
+        var root = StockSuite.ConfiguredDirectory;
+        if (string.IsNullOrWhiteSpace(root)) { _abToast = "⚠ StockSuite 에셋 경로가 설정되지 않았습니다 — 환경설정에서 경로를 지정하세요."; return; }
+        _abArtId = null;
+        var (a, b) = AbArtifactsFor(ab.ExperimentId);
+        if (a is null && b is null) { _abToast = "⚠ 결선된 A/B 영상이 없습니다 — [⚡ A/B 두 변형 연속 렌더링] 후 다시 시도하세요."; return; }
+        _abExportBusy = true;
+        StateHasChanged();
+        try
+        {
+            var r = await StockSuite.ExportABExperimentToStockSuiteAsync(root, ab, a, b, _mediaCts.Token);
+            _abToast = (r.Ok ? "✅ " : "⚠ ") + r.Message;
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.AbExport", ex); _abToast = "⚠ A/B 실험 내보내기 실패: " + ex.Message; }
+        finally { _abExportBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
     // ── 🏆 Pluto 4.4 — A/B 실험 승자 판정 & 차등 학습 ──
     private sealed class AbMetricsForm { public double Hook { get; set; } public double Completion { get; set; } public double Ctr { get; set; } }
     private readonly AbMetricsForm _abEvalA = new(), _abEvalB = new();
@@ -2516,6 +2654,9 @@
             else
             {
                 <span class="ws-pcore on" data-ab-eval-target="@(target.ExperimentId)">⚖️ @(target.ExperimentId)</span>
+                var (artA, artB) = AbArtifactsFor(target.ExperimentId);
+                @if (artA is not null) { <button class="ws-back" data-ab-preview="A" @onclick="() => PreviewAbVariant(artA, false)" title="@(artA)">[▶ A안 미리보기]</button> }
+                @if (artB is not null) { <button class="ws-back" data-ab-preview="B" @onclick="() => PreviewAbVariant(artB, true)" title="@(artB)">[▶ B안 미리보기]</button> }
                 <span>🏆 A</span>
                 <label>3초 % <input type="number" step="0.1" min="0" max="100" style="width:64px" data-ab-eval-a-hook="1" @bind="_abEvalA.Hook" /></label>
                 <label>완주 % <input type="number" step="0.1" min="0" max="100" style="width:64px" data-ab-eval-a-comp="1" @bind="_abEvalA.Completion" /></label>

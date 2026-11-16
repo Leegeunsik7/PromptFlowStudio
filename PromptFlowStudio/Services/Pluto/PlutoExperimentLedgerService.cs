@@ -21,6 +21,9 @@ public sealed record PlutoExperimentEvaluationResult(string ExperimentId, string
     public bool LoserPenalized { get; init; }
 }
 
+/// <summary>🎞️ A/B 실험에 결선된 변형별 렌더 영상(.mp4) 경로(미렌더 → null).</summary>
+public sealed record PlutoExperimentArtifactSnapshot(string ExperimentId, string? ChampionVideoPath, string? ChallengerVideoPath);
+
 /// <summary>🏆 Pluto 4.4 짝지은 A/B 실험 평가 장부.</summary>
 public interface IPlutoExperimentLedgerService
 {
@@ -42,6 +45,15 @@ public interface IPlutoExperimentLedgerService
 
     /// <summary>장부 선적재(재시작 후 대기 실험 · 최근 판정 표시용 · 실패 → 빈 장부).</summary>
     Task EnsureLoadedAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// 🎞️ 변형 렌더 영상 결선 — 비어 있지 않은 경로만 해당 실험에 병합(빈 값 → 기존 유지) · 원자 기록(Drive → %LOCALAPPDATA% 폴백).
+    /// Pending → Evaluated 전이 후에도 보존 · 미등록 실험은 장부 적재 후 재시도(없으면 무시) · 예외 전파 금지(인자 검증 제외).
+    /// </summary>
+    void AttachVariantArtifacts(string experimentId, string? championVideoPath, string? challengerVideoPath);
+
+    /// <summary>🎞️ 실험 변형 영상 스냅샷(미등록 → null).</summary>
+    PlutoExperimentArtifactSnapshot? GetExperimentArtifacts(string experimentId);
 
     /// <summary>판정 통지(백그라운드 스레드 가능).</summary>
     event Action? Changed;
@@ -229,6 +241,58 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
         }
     }
 
+    public void AttachVariantArtifacts(string experimentId, string? championVideoPath, string? challengerVideoPath)
+    {
+        if (string.IsNullOrWhiteSpace(experimentId)) throw new ArgumentException("ExperimentId required", nameof(experimentId));
+        var id = experimentId.Trim();
+        var a = NormalizePath(championVideoPath);
+        var b = NormalizePath(challengerVideoPath);
+        if (a is null && b is null) return;
+        bool changed;
+        lock (_sync)
+        {
+            changed = FindLocked(id) is { } e && e.MergeArtifacts(a, b);
+            if (_storage is not null) { var prev = _registerPersist; _registerPersist = Task.Run(() => PersistArtifactsAsync(prev, id, a, b)); }   // 직렬 체인 — 적재 후 재병합(디스크 전용 실험 대응)
+        }
+        if (changed) RaiseChanged();
+    }
+
+    public PlutoExperimentArtifactSnapshot? GetExperimentArtifacts(string experimentId)
+    {
+        if (string.IsNullOrWhiteSpace(experimentId)) return null;
+        lock (_sync)
+            return FindLocked(experimentId.Trim()) is { } e ? new PlutoExperimentArtifactSnapshot(e.ExperimentId, e.ChampionVideoPath, e.ChallengerVideoPath) : null;
+    }
+
+    /// <summary>🎞️ 결선 영속 — 장부 선적재 → 재병합 → 원자 기록 · 예외 전파 금지.</summary>
+    private async Task PersistArtifactsAsync(Task previous, string id, string? a, string? b)
+    {
+        try { await previous.ConfigureAwait(false); } catch (Exception) { /* 이전 체인 실패는 격리됨 */ }
+        if (Volatile.Read(ref _disposed) != 0) return;
+        try
+        {
+            bool found, lateMerge;
+            await _gate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                await EnsureLoadedCoreAsync(CancellationToken.None).ConfigureAwait(false);
+                lock (_sync)
+                {
+                    var e = FindLocked(id);
+                    found = e is not null;
+                    lateMerge = e is not null && e.MergeArtifacts(a, b);
+                }
+                if (found) await PersistAsync().ConfigureAwait(false);
+            }
+            finally { _gate.Release(); }
+            if (lateMerge) RaiseChanged();
+        }
+        catch (ObjectDisposedException) { /* 종료 중 */ }
+        catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ExperimentLedger] artifact persist: " + ex.Message); }   // [부분 구제] 메모리 결선 유지
+    }
+
+    private static string? NormalizePath(string? p) => string.IsNullOrWhiteSpace(p) ? null : p.Trim();
+
     /// <summary>등록(판정 대기 포함) 실험 수.</summary>
     public int RegisteredCount { get { lock (_sync) return _entries.Count; } }
 
@@ -262,7 +326,9 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
                     var old = FindIn(merged, e.ExperimentId);
                     if (old is not null)
                     {
-                        if (old.Evaluation is not null && e.Evaluation is null) continue;
+                        if (old.Evaluation is not null && e.Evaluation is null) { old.MergeArtifacts(e.ChampionVideoPath, e.ChallengerVideoPath); continue; }
+                        e.ChampionVideoPath ??= old.ChampionVideoPath;   // 🎞️ 디스크 결선 영상 보존
+                        e.ChallengerVideoPath ??= old.ChallengerVideoPath;
                         merged.Remove(old);
                     }
                     merged.Add(e);
@@ -378,6 +444,19 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
         public string HypothesisSummary { get; set; } = "";
         public List<PromptFlowStudio.Services.Export.SubtitleCue>? ChampionSubtitles { get; set; }
         public List<PromptFlowStudio.Services.Export.SubtitleCue>? ChallengerSubtitles { get; set; }
+        /// <summary>🎞️ 챔피언 A 렌더 영상(구 장부 누락 → null · <see cref="Apply"/> 는 건드리지 않음).</summary>
+        public string? ChampionVideoPath { get; set; }
+        /// <summary>🎞️ 챌린저 B 렌더 영상(구 장부 누락 → null).</summary>
+        public string? ChallengerVideoPath { get; set; }
+
+        /// <summary>비어 있지 않은 경로만 병합 · 반환: 변경 여부.</summary>
+        public bool MergeArtifacts(string? a, string? b)
+        {
+            var changed = false;
+            if (a is not null && !string.Equals(ChampionVideoPath, a, StringComparison.Ordinal)) { ChampionVideoPath = a; changed = true; }
+            if (b is not null && !string.Equals(ChallengerVideoPath, b, StringComparison.Ordinal)) { ChallengerVideoPath = b; changed = true; }
+            return changed;
+        }
 
         public void Normalize() => Status = Evaluation is null ? StatusPending : StatusEvaluated;
 
