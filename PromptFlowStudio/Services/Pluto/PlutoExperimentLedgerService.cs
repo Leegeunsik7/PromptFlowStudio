@@ -108,6 +108,27 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
         return HookWeight * Pct(m.ThreeSecondHookRetentionPct) + CompletionWeight * Pct(m.AverageCompletionPct) + CtrWeight * (Pct(m.ClickThroughRatePct) * CtrScale);
     }
 
+    /// <summary>A/B 패자 절대 실패선 — 3초 유지율 · 완주율 · CTR(%).</summary>
+    public const double FailHookPct = 42.0, FailCompletionPct = 30.0, FailCtrPct = 1.5;
+
+    /// <summary>
+    /// 🩺 A/B 패자 실패 차원(순수 함수) — 3지표 상대 결손 <c>(기준 − 값) / 기준</c> 중 최대(동률 → 훅 &gt; 완주 &gt; CTR).
+    /// 결손 없음 → <c>GeneralPenalty</c>.
+    /// </summary>
+    public static string ClassifyLoserFailureDimension(PlutoExperimentMetricsInput m)
+    {
+        ArgumentNullException.ThrowIfNull(m);
+        var hook = Pct(m.ThreeSecondHookRetentionPct);
+        var comp = Pct(m.AverageCompletionPct);
+        var ctr = Pct(m.ClickThroughRatePct);
+        var hookDef = hook < FailHookPct ? (FailHookPct - hook) / FailHookPct : 0.0;
+        var compDef = comp < FailCompletionPct ? (FailCompletionPct - comp) / FailCompletionPct : 0.0;
+        var ctrDef = ctr < FailCtrPct ? (FailCtrPct - ctr) / FailCtrPct : 0.0;
+        if (hookDef <= 0 && compDef <= 0 && ctrDef <= 0) return PlutoMistakeNotebookService.DimensionGeneral;
+        if (hookDef >= compDef && hookDef >= ctrDef) return PlutoMistakeNotebookService.DimensionHookRetention;
+        return compDef >= ctrDef ? PlutoMistakeNotebookService.DimensionCompletionDrop : PlutoMistakeNotebookService.DimensionLowCtr;
+    }
+
     /// <summary>승자 판정(순수 함수) — 상승률 = (승자 − 패자) / 패자 × 100(패자 0 → 100 · 무승부 0).</summary>
     public static (string Winner, double LiftPct) DecideWinner(double championScore, double challengerScore)
     {
@@ -189,7 +210,10 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
             PlutoExperimentMetricsInput winM = challengerWins ? challengerMetrics : championMetrics, loseM = challengerWins ? championMetrics : challengerMetrics;
 
             // ⚖️ 차등 특성만 강화 대상(공통 특성은 실험 변수가 아님)
-            var request = new PlutoExperimentReinforcementRequest(id, DiffTelemetry(id, "W", win, lose, winM), DiffTelemetry(id, "L", lose, win, loseM), lift, tie);
+            var request = new PlutoExperimentReinforcementRequest(id, DiffTelemetry(id, "W", win, lose, winM), DiffTelemetry(id, "L", lose, win, loseM), lift, tie)
+            {
+                LoserFailureDimension = ClassifyLoserFailureDimension(loseM),   // 🩺 훅 고정 대신 최대 결손 차원
+            };
             PlutoReinforcementOutcome? outcome = null;
             var warn = "";
             if (_reinforcement is not null)

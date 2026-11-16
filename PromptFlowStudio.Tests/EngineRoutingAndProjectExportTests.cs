@@ -382,6 +382,101 @@ public sealed class EngineRoutingAndProjectExportTests : IDisposable
         Assert.False(await exp2.TryExtractThumbnailAsync(src, projDir, CancellationToken.None));
     }
 
+    [Fact]
+    public async Task ExperimentLedger_FailingChallengerWithLowCompletion_RecordsCompletionDropDimensionInMistakeNotebook()
+    {
+        using var learning = new PromptFlowStudio.Services.Pluto.PlutoLearningService(Path.Combine(_dir, "trend.json"));
+        using var notebook = new PromptFlowStudio.Services.Pluto.PlutoMistakeNotebookService(Path.Combine(_dir, "nb.json"));
+        using var loop = new PromptFlowStudio.Services.Pluto.PlutoClosedLoopReinforcementService(learning, notebook);
+        using var ledger = new PromptFlowStudio.Services.Pluto.PlutoExperimentLedgerService(loop);
+        var cues = new[] { SubtitleCue.Precise(0.2, 4.95, "a") };
+        const string hookB = "중반에 반전이 와요";
+        var a = new PromptFlowStudio.Services.Pluto.PlutoExperimentVariant(PromptFlowStudio.Services.Pluto.PlutoVariantABGenerator.ChampionLabel,
+            "이 순간을 기다렸어요", PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.NaturalPastelName, "Lullaby", "", cues);
+        var b = new PromptFlowStudio.Services.Pluto.PlutoExperimentVariant(PromptFlowStudio.Services.Pluto.PlutoVariantABGenerator.ChallengerLabel,
+            hookB, PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.GoldenHourWarmName, "Lullaby", "", cues);
+        var plan = new PromptFlowStudio.Services.Pluto.PlutoVariantABPlan("exp-step7-comp", "돌잔치", a, b, "h");
+
+        // 챌린저: 3초 5 %(결손 88 % → 벌점 ≥ 차단선) · 완주 1 %(결손 97 %) · CTR 3 %(정상) → 완주 이탈이 최대 결손
+        var loser = new PromptFlowStudio.Services.Pluto.PlutoExperimentMetricsInput(5, 1, 3);
+        Assert.Equal(PromptFlowStudio.Services.Pluto.PlutoMistakeNotebookService.DimensionCompletionDrop, PromptFlowStudio.Services.Pluto.PlutoExperimentLedgerService.ClassifyLoserFailureDimension(loser));
+        Assert.Equal(PromptFlowStudio.Services.Pluto.PlutoMistakeNotebookService.DimensionLowCtr,
+            PromptFlowStudio.Services.Pluto.PlutoExperimentLedgerService.ClassifyLoserFailureDimension(new PromptFlowStudio.Services.Pluto.PlutoExperimentMetricsInput(40, 29, 0.2)));
+        Assert.Equal(PromptFlowStudio.Services.Pluto.PlutoMistakeNotebookService.DimensionHookRetention,
+            PromptFlowStudio.Services.Pluto.PlutoExperimentLedgerService.ClassifyLoserFailureDimension(new PromptFlowStudio.Services.Pluto.PlutoExperimentMetricsInput(10, 25, 1.4)));
+
+        var r = await ledger.EvaluateExperimentAsync(plan, new PromptFlowStudio.Services.Pluto.PlutoExperimentMetricsInput(60, 50, 5), loser);
+
+        Assert.Equal(PromptFlowStudio.Services.Pluto.PlutoExperimentLedgerService.WinnerChampion, r.WinnerLabel);
+        Assert.True(r.LoserPenalized);
+        var rules = notebook.GetActiveMistakeRules();
+        Assert.NotEmpty(rules);
+        var rule = Assert.Single(rules, x => x.PatternKey.Contains(hookB, StringComparison.Ordinal));
+        Assert.Equal(PromptFlowStudio.Services.Pluto.PlutoMistakeNotebookService.DimensionCompletionDrop, rule.FailureDimension);
+        Assert.Equal(PromptFlowStudio.Services.Pluto.PlutoMistakeNotebookService.ReasonCompletionDrop, rule.DiagnosticReasonKorean);
+        Assert.DoesNotContain(rules, x => x.FailureDimension == PromptFlowStudio.Services.Pluto.PlutoMistakeNotebookService.DimensionHookRetention);
+    }
+
+    [Fact]
+    public async Task StockSuiteExporter_DualMasterBundle_CopiesBothAspectVideosAndSidecarsIntoDualFolder()
+    {
+        var root = Path.Combine(_dir, "StockSuite");
+        Directory.CreateDirectory(root);
+        var land = Path.Combine(_dir, "master_16x9.mp4");
+        var vert = Path.Combine(_dir, "master_9x16.mp4");
+        File.WriteAllBytes(land, ExportMediaIntegrityGuard.BuildMinimalMp4());
+        File.WriteAllBytes(vert, ExportMediaIntegrityGuard.BuildMinimalMp4(2048));
+        var exp = new StockSuiteExporter(() => root, () => "mp4", () => null) { LocalNow = () => new DateTime(2026, 11, 17, 9, 0, 0) };
+        var kit = new PromptFlowStudio.Services.Pluto.PlutoSnsPublishingKit(new[] { "듀얼 마스터 여행" }, "캡션", "caption", new[] { "#여행" }, "19:00–21:00");
+
+        var r = await exp.ExportDualMasterBundleToStockSuiteAsync(root, "Family Trip", land, vert, s_threeActCues, kit);
+
+        Assert.True(r.Ok, r.Message);
+        var dual = Path.Combine(root, "Family_Trip_Dual_20261117");
+        Assert.Equal(dual, r.TargetPath);
+        Assert.Equal(File.ReadAllBytes(land), File.ReadAllBytes(Path.Combine(dual, "master_16x9.mp4")));
+        Assert.Equal(File.ReadAllBytes(vert), File.ReadAllBytes(Path.Combine(dual, "master_9x16.mp4")));
+        Assert.True(r.HasSubtitlesSrt);
+        Assert.True(r.HasSnsCopyText);
+        Assert.False(r.HasThumbnailJpg);   // ffmpeg 미탐지 → best-effort 생략
+        Assert.Equal(StockSuiteExporter.BuildSubRipContent(s_threeActCues), File.ReadAllText(Path.Combine(dual, StockSuiteExporter.SubRipFileName)));
+        Assert.Contains("듀얼 마스터 여행", File.ReadAllText(Path.Combine(dual, StockSuiteExporter.SnsCopyFileName)), StringComparison.Ordinal);
+        Assert.Empty(Directory.GetFiles(dual, "*.~pfs*"));
+
+        using var doc = JsonDocument.Parse(File.ReadAllText(Path.Combine(dual, StockSuiteExporter.ProjectManifestName)));
+        var m = doc.RootElement;
+        Assert.True(m.GetProperty("IsDualMaster").GetBoolean());
+        Assert.Equal("master_16x9.mp4", m.GetProperty("landscape16x9").GetString());
+        Assert.Equal("master_9x16.mp4", m.GetProperty("vertical9x16").GetString());
+        Assert.True(m.GetProperty("HasSubtitlesSrt").GetBoolean());
+        Assert.True(m.GetProperty("HasSnsCopyText").GetBoolean());
+        Assert.False(m.GetProperty("HasThumbnailJpg").GetBoolean());
+        Assert.Equal(2, m.GetProperty("exports").GetArrayLength());
+        Assert.Equal("Family Trip", m.GetProperty("projectName").GetString());
+    }
+
+    [Fact]
+    public async Task StockSuiteExporter_DualMasterBundle_BlocksCorruptVerticalMp4ViaIntegrityGuard()
+    {
+        var root = Path.Combine(_dir, "StockSuite");
+        Directory.CreateDirectory(root);
+        var land = Path.Combine(_dir, "ok_16x9.mp4");
+        var vert = Path.Combine(_dir, "broken_9x16.mp4");
+        File.WriteAllBytes(land, ExportMediaIntegrityGuard.BuildMinimalMp4());
+        var full = ExportMediaIntegrityGuard.BuildMinimalMp4();
+        File.WriteAllBytes(vert, full.AsSpan(0, full.Length / 2).ToArray());   // ✂️ 잘린 MP4
+        var exp = new StockSuiteExporter(() => root, () => "mp4", () => null) { LocalNow = () => new DateTime(2026, 11, 17, 9, 0, 0) };
+
+        var r = await exp.ExportDualMasterBundleToStockSuiteAsync(root, "Broken", land, vert, s_threeActCues);
+
+        Assert.False(r.Ok);
+        Assert.False(r.NeedsPathSetup);
+        Assert.Null(r.TargetPath);
+        Assert.Contains("9:16", r.Message, StringComparison.Ordinal);
+        Assert.False(Directory.Exists(Path.Combine(root, "Broken_Dual_20261117")));   // 폴더 생성 전 차단
+        Assert.Empty(Directory.GetFileSystemEntries(root));
+    }
+
     private static string RepoRoot()
     {
         for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)

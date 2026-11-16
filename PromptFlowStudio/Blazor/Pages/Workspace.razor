@@ -230,6 +230,7 @@
                 <span class="ws-pcore on" data-montage-grade="@(_montageLook)">🎨 자동 색보정: @(_montageLook) · @(_montagePhotos.Count.ToString(CultureInfo.InvariantCulture))컷 비트 몽타주</span>
                 <button class="ws-back" data-montage-render="1" @onclick="RenderMontageVideoAsync" disabled="@(_montageBusy || _motionBusy || _stockBusy)" title="사진별 Push-In → Drift → Pull-Back 카메라 · 비트 스냅 xfade · KO/EN 자막 · 마스터링 BGM + SFX">[🎞️ 15초 멀티컷 몽타주 렌더]</button>
                 <button class="ws-back" data-dual-master="1" @onclick="RenderDualMasterAsync" disabled="@(_montageBusy || _motionBusy || _stockBusy || _activeMontagePlan is null)" title="같은 🔒 잠금 타임라인 · 같은 3막 자막으로 16:9 가로 마스터 + 9:16 피사체 추적 세로 마스터를 한 번에 렌더(0ms 드리프트) · SNS 키트 동시 생성">[🎬 16:9 + 9:16 듀얼 마스터 동시 출력]</button>
+                @if (_dualResult is { Ok: true }) { <button class="ws-back" data-dual-bundle="1" @onclick="ExportDualMasterBundleAsync" disabled="@(_dualExportBusy || _montageBusy)" title="가로 · 세로 두 마스터 영상과 자막(.srt) · 게시문 · 커버 이미지 · 매니페스트를 날짜별 단일 폴더로 묶어 저장">[📦 듀얼 마스터 프로젝트 폴더 내보내기]</button> }
                 <button class="ws-back" data-montage-story="1" @onclick="GenerateMontageStoryAsync" disabled="@(_activeMontagePlan is null || _montageStoryBusy || _montageBusy)" title="클립 경계에 맞춘 3막(후킹 → 리듬 → 클라이맥스) KO/EN 자막 — Gemini → PlutoCore → 로컬 게이트웨이 → 템플릿">[✨ 3막 자막 자동 생성]</button>
                 @if (_montageStoryBusy) { <span class="ws-retry" role="status" data-montage-story-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 3막 자막 생성 중…</span> }
                 else if (_montageCues is { Count: > 0 } mcs) { <span class="ws-pcore on" data-montage-story-count="@(mcs.Count.ToString(CultureInfo.InvariantCulture))">💬 3막 자막 @(mcs.Count.ToString(CultureInfo.InvariantCulture))컷 · @(_montageStoryLlm ? "AI" : "템플릿")</span> }
@@ -2339,6 +2340,7 @@
         _stockBusy = true;
         _montageToast = null;
         _montageOutput = null;
+        _dualResult = null;
         RefreshMontageLook();
         StateHasChanged();
         try
@@ -2354,11 +2356,36 @@
             _montageOutput = r.VerticalOk ? r.Vertical9x16Path : r.LandscapeOk ? r.Landscape16x9Path : null;
             if (_montageOutput is { } mo) CapturePerfContext(mo, "듀얼 마스터", null, _montageLook);
             if (r.PublishingKit is { } kit) _snsKit = kit;
+            _dualResult = r.Ok ? r : null;
             _montageToast = (r.Ok ? "✅ 🎬 듀얼 마스터 · " : r.AnyOk ? "⚠ 🎬 듀얼 마스터 [부분 구제] · " : "⚠ 🎬 듀얼 마스터 실패 · ") + r.Message;
         }
         catch (OperationCanceledException) { }   // 페이지 이탈
         catch (Exception ex) { Program.Log("Workspace.DualMaster", ex); _montageToast = "⚠ 듀얼 마스터 렌더 실패: " + ex.Message; }
         finally { _montageBusy = false; _stockBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private PromptFlowStudio.Services.Export.DualAspectExportResult? _dualResult;
+    private bool _dualExportBusy;
+
+    /// <summary>📦 [듀얼 마스터 프로젝트 폴더 내보내기] — 16:9 · 9:16 + 자막 · 게시문 · 커버 · 매니페스트 단일 폴더(예외 전파 금지).</summary>
+    private async Task ExportDualMasterBundleAsync()
+    {
+        if (_dualResult is not { Ok: true } dr || _dualExportBusy || _montageBusy) return;
+        var root = StockSuite.ConfiguredDirectory;
+        if (string.IsNullOrWhiteSpace(root)) { _montageToast = "⚠ StockSuite 에셋 경로가 설정되지 않았습니다 — 환경설정에서 경로를 지정하세요."; return; }
+        _dualExportBusy = true;
+        StateHasChanged();
+        try
+        {
+            var r = await StockSuite.ExportDualMasterBundleToStockSuiteAsync(root, MontageThemeHint(), dr.Landscape16x9Path, dr.Vertical9x16Path,
+                dr.SharedSubtitles, dr.PublishingKit ?? _snsKit, _mediaCts.Token);
+            _montageToast = (r.Ok ? "✅ " : "⚠ ") + r.Message;
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.DualBundle", ex); _montageToast = "⚠ 듀얼 마스터 번들 내보내기 실패: " + ex.Message; }
+        finally { _dualExportBusy = false; }
         if (_disposed) return;
         await InvokeAsync(StateHasChanged);
     }

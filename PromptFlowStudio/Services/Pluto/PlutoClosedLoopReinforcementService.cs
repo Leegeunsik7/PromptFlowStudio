@@ -25,7 +25,11 @@ public sealed record PlutoReinforcementOutcome(bool IsBreakoutSuccess, bool Reco
 /// ⚖️ A/B 실험 차등 강화 요청 — <see cref="Winner"/>/<see cref="Loser"/> 텔레메트리는 변형 간 <b>차이 나는 특성만</b> 담는다(공통 특성은 빈 문자열).
 /// <see cref="LiftPct"/> = 승자 합성 점수의 패자 대비 상승률(%) · <see cref="IsTie"/> → 변경 없음(장부만 기록).
 /// </summary>
-public sealed record PlutoExperimentReinforcementRequest(string ExperimentId, PlutoVideoPerformanceTelemetry Winner, PlutoVideoPerformanceTelemetry Loser, double LiftPct, bool IsTie);
+public sealed record PlutoExperimentReinforcementRequest(string ExperimentId, PlutoVideoPerformanceTelemetry Winner, PlutoVideoPerformanceTelemetry Loser, double LiftPct, bool IsTie)
+{
+    /// <summary>🩺 패자 실패 차원(장부가 A/B 기준 42 % · 30 % · 1.5 % 결손 최대치로 분류) — null → <c>HookRetention</c>(하위 호환).</summary>
+    public string? LoserFailureDimension { get; init; }
+}
 
 /// <summary>📈 Pluto 폐루프 성과 강화 — 게시 후 지표 → 학습 메모리(패턴 가중치 · XP) / 오답 노트(약한 훅 회피).</summary>
 public interface IPlutoClosedLoopReinforcementService
@@ -289,7 +293,7 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
                     try
                     {
                         if (_notebook is not null)
-                            await _notebook.RecordDiagnosedMistakeAsync(mistakes, penalty, PlutoMistakeNotebookService.DimensionHookRetention, "ab-experiment: " + request.ExperimentId.Trim(), ct).ConfigureAwait(false);
+                            await _notebook.RecordDiagnosedMistakeAsync(mistakes, penalty, request.LoserFailureDimension ?? PlutoMistakeNotebookService.DimensionHookRetention, "ab-experiment: " + request.ExperimentId.Trim(), ct).ConfigureAwait(false);
                         else { penalty = 0; warn += " · ⚠ 오답 노트 미연결"; }
                     }
                     catch (OperationCanceledException) { throw; }

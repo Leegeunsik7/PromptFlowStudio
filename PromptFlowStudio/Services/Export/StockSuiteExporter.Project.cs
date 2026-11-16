@@ -506,6 +506,124 @@ public sealed partial class StockSuiteExporter
         return new(true, abDir, false, msg) { HasSubtitlesSrt = srtCount > 0, HasSnsCopyText = snsCount > 0, HasThumbnailJpg = thumbCount > 0 };
     }
 
+    // ══════════════════════ 🎬 16:9 + 9:16 듀얼 마스터 프로젝트 번들 ══════════════════════
+
+    /// <summary><c>{프로젝트슬러그}_Dual_{yyyyMMdd}</c>(로컬 날짜).</summary>
+    public static string BuildDualMasterFolderName(string? projectName, DateTime localNow)
+        => SanitizeProjectName(projectName) + "_Dual_" + localNow.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// 📦 듀얼 마스터 번들 — <c>{루트}\{슬러그}_Dual_{yyyyMMdd}\</c> 에 16:9 · 9:16 영상 + 자막 SRT · SNS 게시문 · 커버 썸네일(best-effort, 9:16 우선) · <c>project_manifest.json</c>(<c>IsDualMaster</c>).
+    /// 두 영상 모두 <see cref="ExportMediaIntegrityGuard.EnsureValidMp4"/> 통과해야 폴더 생성(한쪽 손상 → 전체 차단 · 짝 불일치 번들 방지).
+    /// </summary>
+    public async Task<StockSuiteExportResult> ExportDualMasterBundleToStockSuiteAsync(string stockSuiteRoot, string? projectName, string landscape16x9Path, string vertical9x16Path,
+        IReadOnlyList<SubtitleCue>? subtitles = null, PromptFlowStudio.Services.Pluto.PlutoSnsPublishingKit? publishingKit = null, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(landscape16x9Path) || string.IsNullOrWhiteSpace(vertical9x16Path))
+            return new(false, null, false, "듀얼 마스터 영상(16:9 · 9:16)이 모두 필요합니다 — [🎬 16:9 + 9:16 듀얼 마스터 동시 출력] 후 다시 시도하세요.");
+        if (string.IsNullOrWhiteSpace(stockSuiteRoot)) return new(false, null, true, "StockSuite 에셋 경로가 설정되지 않았습니다 — 환경설정에서 경로를 지정하세요.");
+        string fullRoot;
+        try { fullRoot = Path.GetFullPath(stockSuiteRoot.Trim().Trim('"')); }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { return new(false, null, true, "StockSuite 에셋 경로가 올바르지 않습니다: " + stockSuiteRoot); }
+        if (!Directory.Exists(fullRoot)) return new(false, null, true, "StockSuite 에셋 경로가 존재하지 않습니다: " + fullRoot + " — 환경설정에서 경로를 재설정하세요.");
+
+        try { ExportMediaIntegrityGuard.EnsureValidMp4(landscape16x9Path); }   // 🛡️ 폴더 생성 전 차단
+        catch (InvalidOperationException ex) { Program.Log("StockSuite.DualIntegrity", ex); return new(false, null, false, "🛡️ 16:9 마스터 차단 · " + ex.Message); }
+        try { ExportMediaIntegrityGuard.EnsureValidMp4(vertical9x16Path); }
+        catch (InvalidOperationException ex) { Program.Log("StockSuite.DualIntegrity", ex); return new(false, null, false, "🛡️ 9:16 마스터 차단 · " + ex.Message); }
+
+        var now = LocalNow();
+        var stamp = new DateTimeOffset(now);
+        var name = string.IsNullOrWhiteSpace(projectName) ? DefaultProjectSlug : projectName.Trim();
+        var folder = BuildDualMasterFolderName(name, now);
+        var dir = Path.Combine(fullRoot, folder);
+        var landName = Path.GetFileName(landscape16x9Path);
+        var vertName = Path.GetFileName(vertical9x16Path);
+        if (string.Equals(landName, vertName, StringComparison.OrdinalIgnoreCase)) { landName = "16x9_" + landName; vertName = "9x16_" + vertName; }   // 파일명 충돌 방지
+        string landTarget, vertTarget;
+        try
+        {
+            Directory.CreateDirectory(dir);
+            landTarget = await CopyAtomicAsync(landscape16x9Path, Path.Combine(dir, landName), ct).ConfigureAwait(false);
+            vertTarget = await CopyAtomicAsync(vertical9x16Path, Path.Combine(dir, vertName), ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Program.Log("StockSuite.DualBundle", ex);
+            return new(false, null, false, "듀얼 마스터 폴더에 영상을 복사할 수 없습니다: " + ex.Message);
+        }
+
+        var bundle = await WriteCreatorSidecarsAsync(dir, vertTarget, subtitles, publishingKit, name, ct).ConfigureAwait(false);   // 🎁 격리
+        var manifest = WriteDualMasterManifest(dir, name, folder, landTarget, vertTarget, landscape16x9Path, vertical9x16Path, publishingKit, stamp, bundle);
+        var msg = "📦 듀얼 마스터 번들 · 📁 " + folder + (manifest is null ? "" : " · 🧾 " + ProjectManifestName) + " · " + DescribeCreatorBundle(bundle.HasSubtitlesSrt, bundle.HasSnsCopyText, bundle.HasThumbnailJpg);
+        return new(true, dir, false, msg) { HasSubtitlesSrt = bundle.HasSubtitlesSrt, HasSnsCopyText = bundle.HasSnsCopyText, HasThumbnailJpg = bundle.HasThumbnailJpg };
+    }
+
+    private static async Task<string> CopyAtomicAsync(string src, string target, CancellationToken ct)
+    {
+        var tmp = target + TempExt;
+        try
+        {
+            await using (var input = new FileStream(src, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 81920, useAsync: true))
+            await using (var output = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true))
+                await input.CopyToAsync(output, ct).ConfigureAwait(false);
+            File.Move(tmp, target, overwrite: true);
+            return target;
+        }
+        finally { TryDelete(tmp); }
+    }
+
+    /// <summary>듀얼 폴더 <c>project_manifest.json</c> — <c>IsDualMaster</c> · 16:9/9:16 파일명 · 번들 플래그 · SNS 키트. 실패 격리(로그).</summary>
+    internal static string? WriteDualMasterManifest(string dir, string projectName, string folder, string landTarget, string vertTarget, string landSource, string vertSource,
+        PromptFlowStudio.Services.Pluto.PlutoSnsPublishingKit? kit, DateTimeOffset now, CreatorBundleResult bundle)
+    {
+        var path = Path.Combine(dir, ProjectManifestName);
+        try
+        {
+            var buf = new System.Buffers.ArrayBufferWriter<byte>(2048);
+            using (var w = new Utf8JsonWriter(buf, s_manifestJson))
+            {
+                var ts = now.ToString("yyyy-MM-dd'T'HH:mm:sszzz", CultureInfo.InvariantCulture);
+                w.WriteStartObject();
+                w.WriteNumber("version", 1);
+                w.WriteString("projectName", projectName);
+                w.WriteString("folder", folder);
+                w.WriteBoolean("IsDualMaster", true);
+                w.WriteString("landscape16x9", Path.GetFileName(landTarget));
+                w.WriteString("vertical9x16", Path.GetFileName(vertTarget));
+                w.WriteString("createdAt", ts);
+                w.WriteString("updatedAt", ts);
+                WriteBundleFlags(w, bundle);
+                WriteSnsKit(w, kit);
+                w.WriteStartArray("exports");
+                WriteDualExportEntry(w, landTarget, landSource, "16:9", ts);
+                WriteDualExportEntry(w, vertTarget, vertSource, "9:16", ts);
+                w.WriteEndArray();
+                w.WriteEndObject();
+            }
+            WriteJsonAtomic(path, buf);
+            return path;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            Program.Log("StockSuite.DualManifest", ex);
+            return null;
+        }
+    }
+
+    private static void WriteDualExportEntry(Utf8JsonWriter w, string target, string source, string aspect, string ts)
+    {
+        w.WriteStartObject();
+        w.WriteString("file", Path.GetFileName(target));
+        w.WriteString("aspect", aspect);
+        w.WriteString("source", Path.GetFullPath(source));
+        long bytes;
+        try { bytes = new FileInfo(target).Length; } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { bytes = 0; }
+        w.WriteNumber("bytes", bytes);
+        w.WriteString("exportedAt", ts);
+        w.WriteEndObject();
+    }
+
     private static void WriteVariantTraits(Utf8JsonWriter w, PromptFlowStudio.Services.Pluto.PlutoExperimentVariant v)
     {
         w.WriteString("variantLabel", v.VariantLabel);
