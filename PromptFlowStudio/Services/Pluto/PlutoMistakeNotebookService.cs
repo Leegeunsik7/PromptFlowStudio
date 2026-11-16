@@ -8,6 +8,9 @@ using System.Threading.Tasks;
 
 namespace PromptFlowStudio.Services.Pluto;
 
+/// <summary>🛡️ 오답 노트 활성 가드 스냅샷 — 패턴 키 · 실패 차원 · 한국어 진단 사유 · 현재 유효 벌점 · 최근 기록 시각.</summary>
+public sealed record PlutoMistakeRuleSnapshot(string PatternKey, string FailureDimension, string DiagnosticReasonKorean, double PenaltyWeight, DateTimeOffset RecordedAtUtc);
+
 /// <summary>
 /// 🛡️ Pluto 오답 노트 — 👎/소프트 스킵 패턴 토큰(바이럴 태그 · 카메라 앵글 · BGM 무드)에 벌점 누적 → 14일 반감기 감쇠 →
 /// 슈미트 트리거 히스테리시스(차단 ≥ 1.8 · 해제 &lt; 0.8)로 자율 회피. 👍/채택은 벌점 상쇄.
@@ -35,6 +38,16 @@ public interface IPlutoMistakeNotebookService
     /// <summary>오답 노트 전체 초기화 + 영속.</summary>
     Task ClearAllAsync(CancellationToken ct = default);
 
+    /// <summary>🩺 구조화 진단 벌점 — <paramref name="failureDimension"/>(<c>HookRetention</c> · <c>CompletionDrop</c> · <c>LowCtr</c> · <c>GeneralPenalty</c>)과 한국어 사유를 함께 영속.</summary>
+    Task RecordDiagnosedMistakeAsync(IEnumerable<string> tokens, double penaltyWeight, string failureDimension, string? reason = null, CancellationToken ct = default)
+        => RecordNegativeFeedbackAsync(tokens, penaltyWeight, reason, ct);
+
+    /// <summary>🛡️ 활성 가드(차단 중 패턴) 최신순 · 최대 <paramref name="maxCount"/>개.</summary>
+    IReadOnlyList<PlutoMistakeRuleSnapshot> GetActiveMistakeRules(int maxCount = 30) => Array.Empty<PlutoMistakeRuleSnapshot>();
+
+    /// <summary>🕊️ 오탐 용서 — 패턴 규칙 제거 + 원자 영속(제거됨 → true · 미추적 → false).</summary>
+    Task<bool> RemoveMistakeRuleAsync(string patternKey, CancellationToken ct = default) => Task.FromResult(false);
+
     /// <summary>상태 변경 통지(백그라운드 스레드 가능).</summary>
     event Action? Changed;
 }
@@ -55,6 +68,31 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
     public const string ConstraintPrefix = "Avoid motifs/styles: ";
     /// <summary>토큰 최대 길이(초과 → 절단) — 노트 비대화 방지.</summary>
     public const int MaxTokenLength = 120;
+
+    /// <summary>🩺 실패 차원 키.</summary>
+    public const string DimensionHookRetention = "HookRetention", DimensionCompletionDrop = "CompletionDrop", DimensionLowCtr = "LowCtr", DimensionGeneral = "GeneralPenalty";
+    public const string ReasonHookRetention = "초반 3초 훅 이탈 (유지율 기준 미달)";
+    public const string ReasonCompletionDrop = "중반 전개 이탈 (완주율 기준 미달)";
+    public const string ReasonLowCtr = "썸네일·제목 클릭 유인 부족 (CTR 미달)";
+    public const string ReasonGeneral = "일반 비선호 벌점 (👎·스킵 누적)";
+
+    /// <summary>차원 키 정규화(대소문자 무시 · 미지 → <see cref="DimensionGeneral"/>).</summary>
+    public static string NormalizeDimension(string? dimension)
+    {
+        if (string.Equals(dimension, DimensionHookRetention, StringComparison.OrdinalIgnoreCase)) return DimensionHookRetention;
+        if (string.Equals(dimension, DimensionCompletionDrop, StringComparison.OrdinalIgnoreCase)) return DimensionCompletionDrop;
+        if (string.Equals(dimension, DimensionLowCtr, StringComparison.OrdinalIgnoreCase)) return DimensionLowCtr;
+        return DimensionGeneral;
+    }
+
+    /// <summary>차원 → 한국어 진단 사유.</summary>
+    public static string DiagnosticReasonFor(string? dimension) => NormalizeDimension(dimension) switch
+    {
+        DimensionHookRetention => ReasonHookRetention,
+        DimensionCompletionDrop => ReasonCompletionDrop,
+        DimensionLowCtr => ReasonLowCtr,
+        _ => ReasonGeneral,
+    };
 
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = false };
 
@@ -95,6 +133,10 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
         public bool IsSuppressed { get; set; }
         public int Hits { get; set; }
         public string? LastReason { get; set; }
+        /// <summary>🩺 실패 차원(구버전 파일 → null = 일반 벌점).</summary>
+        public string? FailureDimension { get; set; }
+        /// <summary>🩺 한국어 진단 사유(구버전 파일 → null).</summary>
+        public string? DiagnosticReason { get; set; }
     }
 
     /// <summary>영속 스냅샷(버전 필드로 향후 스키마 확장).</summary>
@@ -143,7 +185,13 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
         finally { _gate.Release(); }
     }
 
-    public async Task RecordNegativeFeedbackAsync(IEnumerable<string> tokens, double penaltyWeight = DislikePenalty, string? reason = null, CancellationToken ct = default)
+    public Task RecordNegativeFeedbackAsync(IEnumerable<string> tokens, double penaltyWeight = DislikePenalty, string? reason = null, CancellationToken ct = default)
+        => RecordCoreAsync(tokens, penaltyWeight, null, reason, ct);
+
+    public Task RecordDiagnosedMistakeAsync(IEnumerable<string> tokens, double penaltyWeight, string failureDimension, string? reason = null, CancellationToken ct = default)
+        => RecordCoreAsync(tokens, penaltyWeight, NormalizeDimension(failureDimension), reason, ct);
+
+    private async Task RecordCoreAsync(IEnumerable<string> tokens, double penaltyWeight, string? dimension, string? reason, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(tokens);
         if (!double.IsFinite(penaltyWeight) || penaltyWeight <= 0) throw new ArgumentOutOfRangeException(nameof(penaltyWeight));
@@ -163,6 +211,11 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
                 e.LastUtc = now;
                 e.Hits++;
                 if (reason is { Length: > 0 }) e.LastReason = reason.Length > MaxTokenLength ? reason[..MaxTokenLength] : reason;
+                if (dimension is not null || e.FailureDimension is null)   // 일반 벌점은 기존 구조화 진단을 덮지 않음
+                {
+                    e.FailureDimension = dimension ?? DimensionGeneral;
+                    e.DiagnosticReason = DiagnosticReasonFor(e.FailureDimension);
+                }
                 e.IsSuppressed = NextSuppressedState(e.IsSuppressed, eff);
                 changed++;
             }
@@ -271,6 +324,46 @@ public sealed class PlutoMistakeNotebookService : IPlutoMistakeNotebookService, 
         lock (_sync) _entries = new Dictionary<string, Entry>(StringComparer.OrdinalIgnoreCase);
         await PersistAsync(ct).ConfigureAwait(false);
         RaiseChanged();
+    }
+
+    public IReadOnlyList<PlutoMistakeRuleSnapshot> GetActiveMistakeRules(int maxCount = 30)
+    {
+        if (maxCount <= 0) return Array.Empty<PlutoMistakeRuleSnapshot>();
+        var list = new List<(PlutoMistakeRuleSnapshot Rule, DateTime At)>(8);
+        lock (_sync)
+        {
+            if (_entries.Count == 0) return Array.Empty<PlutoMistakeRuleSnapshot>();
+            var now = _utcNow();
+            foreach (var kv in _entries)
+            {
+                var e = kv.Value;
+                if (!e.IsSuppressed) continue;
+                var eff = Decay(e.RawPenalty, e.LastUtc, now);
+                e.IsSuppressed = NextSuppressedState(true, eff);
+                if (!e.IsSuppressed) continue;
+                var dim = NormalizeDimension(e.FailureDimension);
+                var reason = string.IsNullOrWhiteSpace(e.DiagnosticReason) ? DiagnosticReasonFor(dim) : e.DiagnosticReason;
+                list.Add((new PlutoMistakeRuleSnapshot(e.Label, dim, reason, Math.Round(eff, 2, MidpointRounding.AwayFromZero), new DateTimeOffset(e.LastUtc, TimeSpan.Zero)), e.LastUtc));
+            }
+        }
+        list.Sort(static (a, b) => { var c = b.At.CompareTo(a.At); return c != 0 ? c : string.CompareOrdinal(a.Rule.PatternKey, b.Rule.PatternKey); });
+        var n = Math.Min(maxCount, list.Count);
+        var result = new PlutoMistakeRuleSnapshot[n];
+        for (var i = 0; i < n; i++) result[i] = list[i].Rule;
+        return result;
+    }
+
+    public async Task<bool> RemoveMistakeRuleAsync(string patternKey, CancellationToken ct = default)
+    {
+        var key = Normalize(patternKey);
+        if (key is null) return false;
+        await EnsureLoadedAsync(ct).ConfigureAwait(false);
+        bool removed;
+        lock (_sync) removed = _entries.Remove(key);
+        if (!removed) return false;
+        await PersistAsync(ct).ConfigureAwait(false);   // 실패 → [부분 구제] 메모리 해제 유지
+        RaiseChanged();
+        return true;
     }
 
     /// <summary>추적 중 토큰 수(진단용).</summary>

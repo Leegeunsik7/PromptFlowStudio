@@ -59,6 +59,8 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
     public const string XpSourceKey = "xp:closed-loop";
     public const double BreakoutHookPct = 65.0, BreakoutCtrPct = 7.5, BreakoutCompletionPct = 55.0;
     public const double PoorHookPct = 42.0, PoorCtrPct = 2.2;
+    /// <summary>🩺 완주율 진단 기준(%) — 부진 판정 영상의 실패 차원 분류에만 사용.</summary>
+    public const double PoorCompletionPct = 30.0;
     public const double MinBoost = 1.15, MaxBoost = 1.35;
     public const int MinXp = 15, MaxXp = 35;
     public const double MinPenalty = 1.0, MaxPenalty = 2.0;
@@ -115,6 +117,21 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
             deficit = Math.Clamp(deficit, 0.0, 1.0);
         }
         return (breakout, strength, poor, deficit);
+    }
+
+    /// <summary>🩺 실패 차원 분류(순수 함수) — 3초 유지율 · 완주율 · CTR 결손 비율 중 최대(동률 → 훅 &gt; 완주 &gt; CTR) · 결손 없음 → GeneralPenalty.</summary>
+    public static string ClassifyFailureDimension(PlutoVideoPerformanceTelemetry t)
+    {
+        ArgumentNullException.ThrowIfNull(t);
+        var hook = Pct(t.ThreeSecondHookRetentionPct);
+        var comp = Pct(t.AverageCompletionPct);
+        var ctr = Pct(t.ClickThroughRatePct);
+        var hookDef = hook < PoorHookPct ? (PoorHookPct - hook) / PoorHookPct : 0.0;
+        var compDef = comp < PoorCompletionPct ? (PoorCompletionPct - comp) / PoorCompletionPct : 0.0;
+        var ctrDef = ctr < PoorCtrPct ? (PoorCtrPct - ctr) / PoorCtrPct : 0.0;
+        if (hookDef <= 0 && compDef <= 0 && ctrDef <= 0) return PlutoMistakeNotebookService.DimensionGeneral;
+        if (hookDef >= compDef && hookDef >= ctrDef) return PlutoMistakeNotebookService.DimensionHookRetention;
+        return compDef >= ctrDef ? PlutoMistakeNotebookService.DimensionCompletionDrop : PlutoMistakeNotebookService.DimensionLowCtr;
     }
 
     /// <summary>돌파 강도 → 패턴 배수(1.15~1.35).</summary>
@@ -192,7 +209,7 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
                 try
                 {
                     if (_notebook is not null)
-                        await _notebook.RecordNegativeFeedbackAsync(MistakeTokens(telemetry), penalty, "closed-loop: " + telemetry.Platform + " " + telemetry.VideoId.Trim(), ct).ConfigureAwait(false);
+                        await _notebook.RecordDiagnosedMistakeAsync(MistakeTokens(telemetry), penalty, ClassifyFailureDimension(telemetry), "closed-loop: " + telemetry.Platform + " " + telemetry.VideoId.Trim(), ct).ConfigureAwait(false);
                     else { penalty = 0; warn = " · ⚠ 오답 노트 미연결"; }
                 }
                 catch (OperationCanceledException) { throw; }
@@ -272,7 +289,7 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
                     try
                     {
                         if (_notebook is not null)
-                            await _notebook.RecordNegativeFeedbackAsync(mistakes, penalty, "ab-experiment: " + request.ExperimentId.Trim(), ct).ConfigureAwait(false);
+                            await _notebook.RecordDiagnosedMistakeAsync(mistakes, penalty, PlutoMistakeNotebookService.DimensionHookRetention, "ab-experiment: " + request.ExperimentId.Trim(), ct).ConfigureAwait(false);
                         else { penalty = 0; warn += " · ⚠ 오답 노트 미연결"; }
                     }
                     catch (OperationCanceledException) { throw; }

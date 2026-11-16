@@ -126,6 +126,20 @@
                     <span class="ws-retry" data-brain-winrate="@(bs.ChallengerWinRatePct.ToString("0.#", CultureInfo.InvariantCulture))">⚔️ 챌린저 승률 @(bs.ChallengerWinRatePct.ToString("0.#", CultureInfo.InvariantCulture))%</span>
                     <span class="ws-retry" data-brain-guards="@(bs.ActiveMistakeGuardCount.ToString(CultureInfo.InvariantCulture))">🛡️ 오답 가드 @(bs.ActiveMistakeGuardCount.ToString(CultureInfo.InvariantCulture))개</span>
                     <span class="ws-pcore on" data-brain-hypothesis="1" style="white-space:normal">💡 @(bs.NextHypothesisBanner)</span>
+                    @* 🛡️ 오답 노트 활성 가드 인스펙터 — 패턴 · 유효 벌점 · 진단 사유 · [해제](오탐 용서) *@
+                    <div class="ws-brain-guards" data-mistake-inspector="@(_mistakeRules.Count.ToString(CultureInfo.InvariantCulture))" style="flex-basis:100%;display:flex;flex-wrap:wrap;gap:4px;align-items:center;font-size:12px">
+                        <span class="ws-retry">🛡️ 오답 노트 활성 가드</span>
+                        @if (_mistakeRules.Count == 0) { <span class="ws-retry" data-mistake-empty="1">없음</span> }
+                        @foreach (var rule in _mistakeRules)
+                        {
+                            var key = rule.PatternKey;
+                            <span class="ws-retry" data-mistake-rule="@(key)" data-mistake-dim="@(rule.FailureDimension)" title="@(rule.FailureDimension) · @(rule.RecordedAtUtc.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)) UTC">
+                                @(key) · ⚖ @(rule.PenaltyWeight.ToString("0.00", CultureInfo.InvariantCulture)) · @(rule.DiagnosticReasonKorean)
+                                <button class="ws-back" data-mistake-forgive="@(key)" style="padding:0 6px;margin-left:4px" disabled="@(_mistakeForgiveBusy)" @onclick="() => ForgiveMistakeRuleAsync(key)" title="오탐 용서 — 이 패턴의 오답 가드를 해제하고 추천 후보로 복귀">[해제]</button>
+                            </span>
+                        }
+                        @if (_mistakeStatus is { } mst) { <span class="ws-retry" role="status" data-mistake-status="1">@(mst)</span> }
+                    </div>
                 }
                 else if (_brainOpen && _brainBusy) { <span class="ws-retry" role="status" data-brain-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 🧠 집계 중…</span> }
             </div>
@@ -3002,11 +3016,49 @@
             var snap = await svc.GetSummaryAsync(_mediaCts.Token);
             if (_disposed || seq != _brainSeq) return;
             _brainSummary = snap;
+            _mistakeRules = LoadMistakeRules();
         }
         catch (OperationCanceledException) { return; }   // 페이지 이탈
         catch (Exception ex) { Program.Log("Workspace.BrainSummary", ex); return; }
         finally { if (seq == _brainSeq) _brainBusy = false; }
         if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    // ── 🛡️ 오답 노트 가드 인스펙터 · 원클릭 오탐 용서 ──
+    private IReadOnlyList<PromptFlowStudio.Services.Pluto.PlutoMistakeRuleSnapshot> _mistakeRules = Array.Empty<PromptFlowStudio.Services.Pluto.PlutoMistakeRuleSnapshot>();
+    private string? _mistakeStatus;
+    private bool _mistakeForgiveBusy;
+
+    private IReadOnlyList<PromptFlowStudio.Services.Pluto.PlutoMistakeRuleSnapshot> LoadMistakeRules()
+    {
+        try
+        {
+            if (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService)) is PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService nb)
+                return nb.GetActiveMistakeRules();
+        }
+        catch (Exception ex) { Program.Log("Workspace.MistakeRules", ex); }
+        return Array.Empty<PromptFlowStudio.Services.Pluto.PlutoMistakeRuleSnapshot>();
+    }
+
+    /// <summary>🕊️ [해제] — 규칙 제거(원자 영속) → 두뇌 리포트 · 학습 추천 갱신 → 상태 메시지.</summary>
+    private async Task ForgiveMistakeRuleAsync(string patternKey)
+    {
+        if (_disposed || _mistakeForgiveBusy || string.IsNullOrWhiteSpace(patternKey)) return;
+        if (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService)) is not PromptFlowStudio.Services.Pluto.IPlutoMistakeNotebookService nb) return;
+        _mistakeForgiveBusy = true;
+        try
+        {
+            var removed = await nb.RemoveMistakeRuleAsync(patternKey, _mediaCts.Token);
+            if (_disposed) return;
+            _mistakeStatus = removed ? "오답 가드 해제 완료: " + patternKey : "⚠ 이미 해제된 가드입니다: " + patternKey;
+        }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex) { Program.Log("Workspace.MistakeForgive", ex); _mistakeStatus = "⚠ 오답 가드 해제 실패: " + ex.Message; }
+        finally { _mistakeForgiveBusy = false; }
+        if (_disposed) return;
+        await RefreshBrainSummaryAsync();
+        await RefreshAdaptiveRecommendationAsync();
         await InvokeAsync(StateHasChanged);
     }
 
