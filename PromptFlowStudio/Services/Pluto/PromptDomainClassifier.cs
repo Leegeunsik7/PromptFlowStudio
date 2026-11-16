@@ -63,4 +63,26 @@ public static class PromptDomainClassifier
         while (s.Contains(", ,", StringComparison.Ordinal)) s = s.Replace(", ,", ",", StringComparison.Ordinal);
         return s;
     }
+
+    /// <summary>🔭 트렌드 기획안 도메인 — 프롬프트·제목 모두 아기 토큰이 없으면 GeneralCinematic(명시 아기 플래그 해제 기준).</summary>
+    public static bool IsGeneralBrief(string? prompt, string? title) => !ContainsBabyToken(prompt) && !ContainsBabyToken(title);
+
+    /// <summary>네거티브 박스가 기본 아기 얼굴 보호 템플릿만 담고 있는지(사용자 문구 0).</summary>
+    public static bool IsDefaultBabyNegative(string? negative)
+        => !string.IsNullOrWhiteSpace(negative)
+           && negative.Contains(BabyStudioMatrix.FacialSafetyNegative, StringComparison.Ordinal)
+           && StripBabyGuard(negative).Length == 0;
+
+    /// <summary>
+    /// 🔎 네거티브 박스 투명화 — GeneralCinematic 에서 박스가 기본 아기 템플릿뿐이면 박스 자체를 일반 시네마틱 네거티브로 교체(미리보기 null),
+    ///   사용자 문구가 있거나 비어 있어 실제 전송값과 다르면 박스는 보존하고 <c>Preview</c> = 실제 전송 네거티브. BabyStudio 는 항상 그대로.
+    /// </summary>
+    public static (string Box, string? Preview) SyncNegativeBox(string? prompt, string? boxText, bool explicitBabySelection)
+    {
+        var box = boxText ?? "";
+        if (Classify(prompt, explicitBabySelection) == PlutoPromptDomain.BabyStudio) return (box, null);
+        if (IsDefaultBabyNegative(box)) return (GeneralCinematicNegative, null);
+        var sent = ResolveNegativePrompt(prompt, box, explicitBabySelection);
+        return string.Equals(sent, box.Trim(), StringComparison.Ordinal) ? (box, null) : (box, sent);
+    }
 }

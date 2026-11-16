@@ -888,17 +888,18 @@ public sealed class PublishViewModel : IDisposable
         PlutoLetterMessage = "💌 플루토가 편지를 쓰는 중…";
         Notify();
         PromptFlowStudio.Services.Pluto.PlutoSubtitleScript script;
+        var domain = PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.ResolveDomain(src);   // 🧭 일반 프롬프트 → 에디토리얼 캡션
         try
         {
             script = _letter is null
-                ? PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(src, subjectName)
-                : await _letter.GenerateLetterScriptAsync(src, subjectName, ct).ConfigureAwait(false);
+                ? PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(src, subjectName, domain)
+                : await _letter.GenerateLetterScriptAsync(src, subjectName, ct, domain).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) { script = PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(src, subjectName); }
+        catch (OperationCanceledException) { script = PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(src, subjectName, domain); }
         catch (Exception ex)
         {
             Program.Log("Publish.PlutoLetter", ex);
-            script = PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(src, subjectName);
+            script = PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(src, subjectName, domain);
         }
         finally { IsPlutoLetterBusy = false; }
         PlutoLetter = script;

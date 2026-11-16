@@ -912,9 +912,16 @@
                         <div class="ws-baby-neg-h">🛡️ 네거티브 (Wan 2.1)
                             @if (_baby.GuardActive) { <span class="ws-baby-guard">얼굴 보호 ON</span> }
                             @if (PromptDomain == PromptFlowStudio.Services.Pluto.PlutoPromptDomain.GeneralCinematic) { <span class="ws-baby-guard" data-domain="general" title="@(PromptFlowStudio.Services.Pluto.PromptDomainClassifier.GeneralCinematicNegative)">🎬 일반 시네마틱 네거티브</span> }
+                            else if (_babyExplicit)
+                            {
+                                <span class="ws-baby-guard" data-domain="baby">👶 아기 스튜디오</span>
+                                <button class="ws-domain-reset" data-domain-reset="1" @onclick="ResetToGeneralCinematicMode" disabled="@State.IsBusy"
+                                        title="아기 칩 고정 해제 · 성장 단계/무드 칩 하이라이트 제거 · 일반 시네마틱 네거티브/자막으로 전환">🎬 일반 시네마틱 모드로 전환</button>
+                            }
                         </div>
                         <textarea class="ws-ta ws-ta-neg" @bind="_baby.NegativePrompt" @bind:event="oninput" maxlength="500"
                                   placeholder="피하고 싶은 요소(선택) — 아기 테마 클릭 시 얼굴 보호 문구가 자동 결합됩니다" disabled="@State.IsBusy"></textarea>
+                        @if (NegativeSendPreview is { } negSent) { <div class="ws-neg-sent" data-neg-preview="1" title="@negSent">실제 전송 네거티브: @negSent</div> }
                     </div>
                     <div class="ws-emo">
                         <div class="ws-baby-neg-h">👶 피사체 Identity 고정
@@ -1433,6 +1440,9 @@
     .ws-lip-vid { width: 100%; max-height: 260px; border-radius: 10px; background: #000; }
     .ws-baby-guard { font: 700 9.5px var(--mono); color: #10b981; border: 1px solid color-mix(in srgb, #10b981 45%, var(--line)); border-radius: 999px; padding: 2px 7px; }
     .ws-ta-neg { min-height: 64px; font-size: 11.5px; padding: 8px 10px; }
+    .ws-neg-sent { margin-top: 4px; font: 600 10px var(--mono); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ws-domain-reset { font: 700 9.5px var(--mono); color: #f59e0b; background: transparent; border: 1px solid color-mix(in srgb, #f59e0b 45%, var(--line)); border-radius: 999px; padding: 2px 7px; cursor: pointer; }
+    .ws-domain-reset:disabled { opacity: .5; cursor: default; }
     .ws-live { position: relative; border-radius: 12px; overflow: hidden; background: #000; border: 1px solid var(--line); aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center; }
     .ws-live-cv { height: 100%; max-width: 100%; image-rendering: auto; }
     .ws-live-badge { position: absolute; left: 8px; top: 8px; font: 700 10px var(--mono); color: var(--text-muted); background: rgba(0,0,0,.55); padding: 3px 8px; border-radius: 999px; }
@@ -1749,7 +1759,7 @@
         try
         {
             var src = string.IsNullOrWhiteSpace(_visionSubtitle) ? _prompt : _visionSubtitle + ", " + _prompt;
-            _motionSubs = PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(src, _identity?.SubjectName);
+            _motionSubs = PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(src, _identity?.SubjectName, PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.ResolveDomain(src, _babyExplicit));
         }
         catch (Exception ex) { Program.Log("Workspace.MotionPreviewSubs", ex); }
     }
@@ -2723,6 +2733,11 @@
         {
             Snap("기획안 적용 전");
             _prompt = brief.ReadyPrompt;
+            if (PromptFlowStudio.Services.Pluto.PromptDomainClassifier.IsGeneralBrief(brief.ReadyPrompt, brief.Title))
+            {
+                _babyExplicit = false;   // 🧭 일반 기획안 → 아기 칩 고정 해제
+                SyncDomainNegativeBox();
+            }
             Snap("🔭 기획안: " + brief.Title);
             _appliedBriefTitle = brief.Title;
             if (PromptFlowStudio.Services.Pluto.PlutoColorGradingCompiler.TryGetPreset(brief.RecommendedColorLook) is not null) _learnedLookPinned = brief.RecommendedColorLook;
@@ -3052,6 +3067,26 @@
     private PromptFlowStudio.Services.Pluto.PlutoPromptDomain PromptDomain => PromptFlowStudio.Services.Pluto.PromptDomainClassifier.Classify(_prompt, _babyExplicit);
     /// <summary>요청 네거티브 — GeneralCinematic 은 아기 얼굴 가드 제거 + 일반 시네마틱 네거티브, BabyStudio 는 사용자 네거티브 그대로.</summary>
     private string EffectiveNegative(string? prompt) => PromptFlowStudio.Services.Pluto.PromptDomainClassifier.ResolveNegativePrompt(prompt, _baby.NegativePrompt, _babyExplicit);
+    /// <summary>🔎 박스 ≠ 실제 전송 네거티브일 때만 미리보기 문자열(GeneralCinematic · 사용자 문구/빈 박스).</summary>
+    private string? NegativeSendPreview => PromptFlowStudio.Services.Pluto.PromptDomainClassifier.SyncNegativeBox(_prompt, _baby.NegativePrompt, _babyExplicit).Preview;
+
+    /// <summary>🔎 GeneralCinematic 에서 박스가 기본 아기 템플릿뿐이면 박스 텍스트를 일반 시네마틱 네거티브로 직접 교체(사용자 문구는 보존).</summary>
+    private void SyncDomainNegativeBox()
+    {
+        var box = PromptFlowStudio.Services.Pluto.PromptDomainClassifier.SyncNegativeBox(_prompt, _baby.NegativePrompt, _babyExplicit).Box;
+        if (!string.Equals(box, _baby.NegativePrompt, StringComparison.Ordinal)) _baby.NegativePrompt = box;
+    }
+
+    /// <summary>🎬 [일반 시네마틱 모드로 전환] — 아기 칩 고정 플래그 해제 + 성장 단계/무드 토큰 제거(칩 하이라이트 해제) + 네거티브 박스 동기화.</summary>
+    private void ResetToGeneralCinematicMode()
+    {
+        Snap("시네마틱 전환 전");
+        _babyExplicit = false;
+        _prompt = PromptFlowStudio.Services.AI.GeminiPromptService.StripBabyMood(PromptFlowStudio.Services.AI.GeminiPromptService.StripGrowthStage(_prompt));
+        SyncDomainNegativeBox();
+        RefreshMotionPreviewSubs();
+        Snap("🎬 일반 시네마틱 모드");
+    }
     private int _babyTab;
     private Action[][] _babyActs = { Array.Empty<Action>(), Array.Empty<Action>(), Array.Empty<Action>() };
     private Action[] _babyTabSel = Array.Empty<Action>();
@@ -3702,9 +3737,10 @@
         var name = _identity?.SubjectName;
         var director = EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector)) as PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector;
         var src = string.IsNullOrWhiteSpace(_visionSubtitle) ? _prompt : _visionSubtitle + ", " + _prompt;   // 📸 사진 스토리 자막 초안 우선
-        if (director is null) return PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(src, name);
-        try { return await director.GenerateLetterScriptAsync(src, name, ct); }
-        catch (Exception ex) { Program.Log("Workspace.PlutoLetter", ex); return PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(src, name); }
+        var domain = PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.ResolveDomain(src, _babyExplicit);   // 🧭 GeneralCinematic → 에디토리얼 캡션
+        if (director is null) return PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(src, name, domain);
+        try { return await director.GenerateLetterScriptAsync(src, name, ct, domain); }
+        catch (Exception ex) { Program.Log("Workspace.PlutoLetter", ex); return PromptFlowStudio.Services.Pluto.PlutoSubtitleDirector.GenerateLocal(src, name, domain); }
     }
     private string? _stockToast;
     private bool _stockRestart;
@@ -4917,6 +4953,7 @@
     private void OnPromptTyped()
     {
         RefreshMotionPreviewSubs();   // 🎞 프리뷰 자막 핫스왑(사진 없으면 no-op)
+        SyncDomainNegativeBox();      // 🔎 일반 프롬프트 전환 시 기본 아기 네거티브 박스 교체
         _typingTimer ??= new System.Threading.Timer(static st =>
         {
             var self = (Workspace)st!;

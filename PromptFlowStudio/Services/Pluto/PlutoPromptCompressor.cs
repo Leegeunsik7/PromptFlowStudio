@@ -41,6 +41,9 @@ public static class PlutoPromptCompressor
         [PlutoSubtitleDirector.LlmLetterInstruction] =
             "Pluto: KO+EN 3-line letter parent->subject; en=poetic EN of same line. act1 1-4s opening image, act2 5-10s today's growth, act3 11-14s loving promise with name. ko<=40, en<=70 chars, no emoji/quotes/hashtags. JSON array only:\n" +
             "[{\"act\":1,\"ko\":\"\",\"en\":\"\"}]x3",
+        [PlutoSubtitleDirector.LlmCinematicInstruction] =
+            "Pluto: KO+EN 3 editorial captions on the video subject. act1 1-4s opening image, act2 5-10s motion/detail, act3 11-14s closing line. NO baby/parent/family/growth words. ko<=40, en<=70, no emoji/quotes/hashtags. JSON array only:\n" +
+            "[{\"act\":1,\"ko\":\"\",\"en\":\"\"}]x3",
         [PlutoSocialCopywriter.LlmCaptionInstruction] =
             "Pluto: KO SNS caption, warm parent tone, emojis. JSON only:\n" +
             "{\"hook\":\"<=80\",\"story\":[\"2-3 lines\"],\"hashtags\":[\"#KO/EN x12-15\"],\"pinnedComment\":\"question<=120\"}",

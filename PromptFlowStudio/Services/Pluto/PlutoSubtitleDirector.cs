@@ -28,6 +28,13 @@ public sealed class PlutoSubtitleScript
 
     public const string LetterSignatureKo = "From. 언제나 곁에 있는 가족이";
     public const string LetterSignatureEn = "From. Your family, always by your side";
+    /// <summary>🎬 GeneralCinematic 에디토리얼 캡션 머리말/서명(가족·육아 어휘 0).</summary>
+    public const string CinematicHeaderIcon = "🎬 ";
+    public const string CinematicSignatureKo = "— PromptFlow Studio";
+
+    /// <summary>🧭 자막 도메인 — BabyStudio=감성 편지(기본·하위 호환) · GeneralCinematic=에디토리얼 캡션.</summary>
+    public PlutoPromptDomain Domain { get; init; } = PlutoPromptDomain.BabyStudio;
+    private bool IsCinematic => Domain == PlutoPromptDomain.GeneralCinematic;
 
     public string SubjectName { get; init; } = "";
     public string Act1Text { get; init; } = "";
@@ -61,11 +68,11 @@ public sealed class PlutoSubtitleScript
     public string ToFullLetterText()
     {
         var sb = new StringBuilder(160);
-        sb.Append("💌 To. ").Append(SubjectName).Append('\n').Append('\n')
+        sb.Append(IsCinematic ? CinematicHeaderIcon : "💌 To. ").Append(SubjectName).Append('\n').Append('\n')
           .Append(Act1Text).Append('\n')
           .Append(Act2Text).Append('\n')
           .Append(Act3Text).Append('\n').Append('\n')
-          .Append(LetterSignatureKo);
+          .Append(IsCinematic ? CinematicSignatureKo : LetterSignatureKo);
         return sb.ToString();
     }
 
@@ -73,11 +80,12 @@ public sealed class PlutoSubtitleScript
     public string ToBilingualClipboardText()
     {
         var sb = new StringBuilder(320);
-        sb.Append("💌 To. ").Append(SubjectName).Append('\n');
+        sb.Append(IsCinematic ? CinematicHeaderIcon : "💌 To. ").Append(SubjectName).Append('\n');
         AppendPair(sb, Act1Text, Act1En);
         AppendPair(sb, Act2Text, Act2En);
         AppendPair(sb, Act3Text, Act3En);
-        sb.Append('\n').Append(LetterSignatureKo).Append('\n').Append(LetterSignatureEn);
+        if (IsCinematic) sb.Append('\n').Append(CinematicSignatureKo);
+        else sb.Append('\n').Append(LetterSignatureKo).Append('\n').Append(LetterSignatureEn);
         return sb.ToString();
     }
 
@@ -91,6 +99,8 @@ public sealed class PlutoSubtitleScript
 /// <summary>
 /// 💌 Emotional Letter Subtitle Director — 부모/크리에이터 → 주인공에게 보내는 3막 KO/EN 이중 시적 편지 자막.
 /// 🧠 Gemini(<see cref="PlutoLlmBridge"/> 3.5초 예산) 우선 · 막별 스키마 검증(KO+EN 쌍 모두 유효해야 채택) · 누락/실패 막은 테마 마일스톤 템플릿 쌍으로 결정론적 보강([부분 구제]).
+/// 🧭 도메인 격리 — <c>domain</c> 인자가 <see cref="PlutoPromptDomain.GeneralCinematic"/> 이면 에디토리얼 시네마틱 캡션(육아 어휘 0 · LLM 응답도 금칙어 막 거부),
+///   생략(null) 또는 <see cref="PlutoPromptDomain.BabyStudio"/> 이면 기존 감성 편지 그대로. 호출자는 <see cref="ResolveDomain"/> 으로 판정해 전달.
 /// </summary>
 public sealed class PlutoSubtitleDirector
 {
@@ -105,6 +115,22 @@ public sealed class PlutoSubtitleDirector
         "Line timing: act1 [00:01-00:04] gentle opening image, act2 [00:05-00:10] growing moment of today, act3 [00:11-00:14] loving promise that calls the subject by name. " +
         "Respond with a JSON array only: [{\"act\":1,\"startSec\":1,\"endSec\":4,\"ko\":string,\"en\":string},{\"act\":2,\"startSec\":5,\"endSec\":10,\"ko\":string,\"en\":string},{\"act\":3,\"startSec\":11,\"endSec\":14,\"ko\":string,\"en\":string}] " +
         "- ko max 40 characters, en max 70 characters, no emoji, no quotes, no hashtags.";
+
+    /// <summary>🎬 GeneralCinematic LLM 지시문 — 영상 피사체 중심 에디토리얼 캡션 · 육아/가족 어휘 금지.</summary>
+    public const string LlmCinematicInstruction =
+        "You are Pluto, an editorial caption writer for 15-second cinematic short videos (architecture, landscape, product, macro, tech, city). " +
+        "Write 3 crisp bilingual narrative captions about the visual subject of the video prompt: each act has a concise Korean line (ko) and a natural English rendering (en). " +
+        "Line timing: act1 [00:01-00:04] opening image of the subject, act2 [00:05-00:10] motion, light or detail, act3 [00:11-00:14] confident closing line. " +
+        "Never use parenting, baby, family or growth vocabulary (아기, 엄마, 아빠, 성장, 첫걸음, 육아, baby, mom, dad, parent, family, growing). " +
+        "Respond with a JSON array only: [{\"act\":1,\"startSec\":1,\"endSec\":4,\"ko\":string,\"en\":string},{\"act\":2,\"startSec\":5,\"endSec\":10,\"ko\":string,\"en\":string},{\"act\":3,\"startSec\":11,\"endSec\":14,\"ko\":string,\"en\":string}] " +
+        "- ko max 40 characters, en max 70 characters, no emoji, no quotes, no hashtags.";
+
+    /// <summary>🚫 GeneralCinematic 금칙어(대소문자 무시 부분 일치) — LLM 막 채택 거부 기준.</summary>
+    public static readonly string[] CinematicForbiddenTokens =
+    {
+        "아기", "엄마", "아빠", "성장", "첫걸음", "육아", "가족", "신생아",
+        "baby", "mommy", "mother", "daddy", "father", "parent", "family", "newborn", "toddler", "little one",   // "mom"/"dad" 단독은 moment 등 오탐 → 제외
+    };
 
     /// <summary>🍼 KO/EN 템플릿 쌍(같은 의미 · <c>{v}</c>=KO 호격, <c>{n}</c>=EN 호칭).</summary>
     private readonly record struct Line(string Ko, string En);
@@ -148,6 +174,39 @@ public sealed class PlutoSubtitleDirector
             new Line[] { new("{v} 사랑해, 언제나 너의 곁을 지켜줄게", "{n}, I love you. I'll always be by your side"), new("{v} 네가 있어 오늘도 참 행복해", "{n}, because of you, today is so happy") }),
     };
 
+    /// <summary>🎬 GeneralCinematic 에디토리얼 템플릿(키워드 순서 = 우선순위 · 마지막 = 기본) — Title = 캡션 제목(아기 기본 이름 대체).</summary>
+    private static readonly (string Title, Theme Theme)[] CinematicThemes =
+    {
+        ("테크 시네마", new("cine-tech", new[] { "neural", "server", "data", "cyber", "futur", "robot", "hologram", "circuit", "quantum", "인공지능", "데이터", "미래", "로봇", "사이버" },
+            new Line[] { new("데이터의 흐름이 빛으로 깨어난다", "Streams of data wake into light"), new("어둠 속에서 맥동하는 코어", "A core pulsing in the dark") },
+            new Line[] { new("수천 개의 신호가 하나의 리듬이 된다", "A thousand signals fall into one rhythm"), new("연결될수록 선명해지는 패턴", "Patterns sharpen as everything connects") },
+            new Line[] { new("미래는 이미 이 장면 안에 있다", "The future is already inside this frame"), new("다음 장면을 설계하는 지금", "Right now, designing the next frame") })),
+        ("공간의 빛", new("cine-architecture", new[] { "architecture", "building", "skyscraper", "brutalist", "interior", "concrete", "건축", "빌딩", "건물", "인테리어" },
+            new Line[] { new("빛이 콘크리트의 결을 따라 흐른다", "Light traces the grain of raw concrete"), new("선과 면이 만든 고요한 리듬", "A quiet rhythm of lines and planes") },
+            new Line[] { new("그림자가 공간의 깊이를 다시 그린다", "Shadows redraw the depth of the space"), new("시간에 따라 표정을 바꾸는 구조", "A structure that changes with the hour") },
+            new Line[] { new("머무는 순간, 공간이 말을 건다", "Stay a moment, and the space speaks"), new("빛과 구조가 완성한 한 장면", "One frame, completed by light and form") })),
+        ("도시의 밤", new("cine-city", new[] { "city", "urban", "street", "neon", "night", "도시", "거리", "야경", "네온" },
+            new Line[] { new("네온이 젖은 거리를 물들인다", "Neon spills across the wet street"), new("잠들지 않는 도시의 첫 프레임", "First frame of a city that never sleeps") },
+            new Line[] { new("빛의 궤적이 밤의 속도를 그린다", "Light trails sketch the speed of night"), new("수많은 이야기가 스치는 교차로", "An intersection where countless stories cross") },
+            new Line[] { new("도시는 오늘도 새로운 장면을 쓴다", "Tonight, the city writes a new scene"), new("불빛 사이에 남겨진 한 순간", "A moment left between the lights") })),
+        ("프로덕트", new("cine-product", new[] { "product", "turntable", "packshot", "commercial", "brand", "제품", "패키지", "광고" },
+            new Line[] { new("디테일 하나까지 설계된 실루엣", "A silhouette engineered to the last detail"), new("빛을 받아 드러나는 소재의 질감", "Texture revealed as the light lands") },
+            new Line[] { new("한 바퀴 회전마다 새로운 각도", "A new angle with every turn"), new("완벽한 마감이 만드는 반사", "Reflections shaped by a flawless finish") },
+            new Line[] { new("형태가 곧 메시지가 된다", "Form becomes the message"), new("손에 쥐는 순간 완성되는 경험", "An experience complete the moment you hold it") })),
+        ("매크로", new("cine-macro", new[] { "macro", "close-up", "closeup", "dew", "texture", "매크로", "접사", "이슬", "클로즈업" },
+            new Line[] { new("눈으로 보지 못한 세계가 열린다", "A world the eye has never seen opens up"), new("한 방울에 담긴 작은 우주", "A small universe held in one drop") },
+            new Line[] { new("초점이 숨은 질감을 끌어낸다", "Focus pulls hidden texture into view"), new("미세한 빛이 경계를 그린다", "Fine light draws every edge") },
+            new Line[] { new("가까이 볼수록 더 놀라운 장면", "The closer you look, the more it reveals"), new("작은 것에 담긴 거대한 디테일", "Vast detail inside something small") })),
+        ("풍경", new("cine-landscape", new[] { "landscape", "mountain", "alpine", "forest", "ocean", "lake", "valley", "sunset", "desert", "풍경", "산맥", "숲", "바다", "노을", "호수" },
+            new Line[] { new("안개 너머로 깨어나는 풍경", "A landscape waking beyond the mist"), new("바람이 먼저 지나간 능선", "A ridge where the wind passed first") },
+            new Line[] { new("빛이 계곡을 천천히 채워간다", "Light slowly fills the valley"), new("고요 속에서 움직이는 자연의 시간", "Nature's time moving in the stillness") },
+            new Line[] { new("이 장면은 오직 지금에만 존재한다", "This scene exists only in this moment"), new("멈춰 서서 바라볼 이유", "A reason to stop and look") })),
+        ("시네마틱", new("cine-default", Array.Empty<string>(),
+            new Line[] { new("빛이 장면의 첫 문장을 쓴다", "Light writes the first line of the scene"), new("천천히 열리는 한 편의 프레임", "A frame that slowly opens") },
+            new Line[] { new("움직임이 이야기의 결을 만든다", "Motion shapes the texture of the story"), new("시선이 머무는 곳에 디테일이 있다", "Detail lives where the eye lingers") },
+            new Line[] { new("이 순간을 위해 설계된 장면", "A scene designed for this very moment"), new("마지막 컷까지, 시선을 붙잡는다", "Holding your gaze to the final cut") })),
+    };
+
     private readonly IPlutoLlmClient? _llm;
     private readonly PlutoIdentityVault? _identity;
 
@@ -160,9 +219,23 @@ public sealed class PlutoSubtitleDirector
         _identity = identity;
     }
 
-    /// <summary>💌 영상 프롬프트 → 3막 편지 자막(Gemini 우선 · 실패/3.5초 초과/빈 응답 → 로컬 템플릿). 호출자 취소만 전파.</summary>
-    public async Task<PlutoSubtitleScript> GenerateLetterScriptAsync(string videoPrompt, string? subjectName = null, CancellationToken cancellationToken = default)
+    /// <summary>🧭 자막 도메인 판정 — <see cref="PromptDomainClassifier.Classify"/> 위임(명시 아기 칩 선택 우선).</summary>
+    public static PlutoPromptDomain ResolveDomain(string? videoPrompt, bool explicitBabySelection = false)
+        => PromptDomainClassifier.Classify(videoPrompt, explicitBabySelection);
+
+    /// <summary>
+    /// 💌 영상 프롬프트 → 3막 편지 자막(Gemini 우선 · 실패/3.5초 초과/빈 응답 → 로컬 템플릿). 호출자 취소만 전파.
+    /// 🎬 <paramref name="domain"/> = GeneralCinematic → 에디토리얼 캡션 지시문 + 금칙어 막 거부 + 시네마틱 템플릿 보강(이름/프로필 조회 생략).
+    /// </summary>
+    public async Task<PlutoSubtitleScript> GenerateLetterScriptAsync(string videoPrompt, string? subjectName = null, CancellationToken cancellationToken = default, PlutoPromptDomain? domain = null)
     {
+        if (domain == PlutoPromptDomain.GeneralCinematic)
+        {
+            var cine = GenerateCinematicLocal(videoPrompt);
+            var cineUser = "Video prompt: " + (videoPrompt ?? "").Trim() + "\nDetected theme: " + DetectCinematicTheme(videoPrompt).Theme.Id;
+            var cineText = await PlutoLlmBridge.TryCompleteAsync(_llm, LlmCinematicInstruction, cineUser, 0.7, cancellationToken, LlmBudget).ConfigureAwait(false);
+            return Merge(cine, cineText, CinematicForbiddenTokens);
+        }
         var name = await ResolveSubjectNameAsync(subjectName, cancellationToken).ConfigureAwait(false);
         var local = GenerateLocal(videoPrompt, name);
         var user = "Subject name: " + name + "\nVideo prompt: " + (videoPrompt ?? "").Trim()
@@ -171,9 +244,10 @@ public sealed class PlutoSubtitleDirector
         return Merge(local, text);
     }
 
-    /// <summary>⚡ 로컬 결정론 편지(LLM 미사용) — 같은 프롬프트 + 이름 → 같은 결과.</summary>
-    public static PlutoSubtitleScript GenerateLocal(string? videoPrompt, string? subjectName)
+    /// <summary>⚡ 로컬 결정론 편지(LLM 미사용) — 같은 프롬프트 + 이름 (+ 도메인) → 같은 결과. <paramref name="domain"/> 생략 = 기존 감성 편지.</summary>
+    public static PlutoSubtitleScript GenerateLocal(string? videoPrompt, string? subjectName, PlutoPromptDomain? domain = null)
     {
+        if (domain == PlutoPromptDomain.GeneralCinematic) return GenerateCinematicLocal(videoPrompt);
         var name = string.IsNullOrWhiteSpace(subjectName) ? DefaultSubjectName : subjectName.Trim();
         var theme = DetectTheme(videoPrompt);
         var seed = StableHash((videoPrompt ?? "").Trim() + "|" + name);
@@ -193,6 +267,54 @@ public sealed class PlutoSubtitleDirector
             Act3En = l3.En.Replace("{n}", enName, StringComparison.Ordinal),
             UsedLlm = false,
         };
+    }
+
+    /// <summary>🎬 에디토리얼 캡션(결정론) — 피사체 키워드 테마 · 제목 = 테마 KO 제목(아기 기본 이름/호격 미사용).</summary>
+    private static PlutoSubtitleScript GenerateCinematicLocal(string? videoPrompt)
+    {
+        var (title, theme) = DetectCinematicTheme(videoPrompt);
+        var seed = StableHash("cine|" + (videoPrompt ?? "").Trim());
+        var l1 = Pick(theme.Act1, seed);
+        var l2 = Pick(theme.Act2, seed >> 3);
+        var l3 = Pick(theme.Act3, seed >> 6);
+        return new PlutoSubtitleScript
+        {
+            SubjectName = title,
+            Act1Text = l1.Ko,
+            Act2Text = l2.Ko,
+            Act3Text = l3.Ko,
+            Act1En = l1.En,
+            Act2En = l2.En,
+            Act3En = l3.En,
+            UsedLlm = false,
+            Domain = PlutoPromptDomain.GeneralCinematic,
+        };
+    }
+
+    private static (string Title, Theme Theme) DetectCinematicTheme(string? prompt)
+    {
+        if (!string.IsNullOrWhiteSpace(prompt))
+        {
+            for (var i = 0; i < CinematicThemes.Length; i++)
+            {
+                var kws = CinematicThemes[i].Theme.Keywords;
+                for (var j = 0; j < kws.Length; j++)
+                    if (prompt.Contains(kws[j], StringComparison.OrdinalIgnoreCase)) return CinematicThemes[i];
+            }
+        }
+        return CinematicThemes[^1];
+    }
+
+    /// <summary>🎬 시네마틱 테마 ID(진단/테스트용).</summary>
+    public static string CinematicThemeOf(string? prompt) => DetectCinematicTheme(prompt).Theme.Id;
+
+    /// <summary>금칙어 포함 여부(대소문자 무시 부분 일치 · null 목록 → false).</summary>
+    public static bool ContainsForbidden(string? text, string[]? forbidden)
+    {
+        if (forbidden is null || string.IsNullOrEmpty(text)) return false;
+        for (var i = 0; i < forbidden.Length; i++)
+            if (text.Contains(forbidden[i], StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 
     /// <summary>EN 호칭 — 기본/“우리 …” → <c>My little one</c> · 그 외 이름 그대로.</summary>
@@ -255,7 +377,7 @@ public sealed class PlutoSubtitleDirector
     /// LLM JSON 스키마 검증 — 루트 배열 <c>[{"act","ko","en"}]</c> 또는 <c>{"acts":[…]}</c>. 막 번호(<c>act</c> 1~3, 없으면 순서) 기준,
     /// KO·EN 모두 유효한 막만 채택(EN은 라틴 문자 1자 이상) · 나머지 막은 로컬 KO/EN 쌍 보강. 하나도 없으면 로컬 그대로.
     /// </summary>
-    internal static PlutoSubtitleScript Merge(PlutoSubtitleScript local, string? llmJson)
+    internal static PlutoSubtitleScript Merge(PlutoSubtitleScript local, string? llmJson, string[]? forbidden = null)
     {
         using var doc = PlutoLlmBridge.TryParse(llmJson);
         if (doc is null) return local;
@@ -274,6 +396,7 @@ public sealed class PlutoSubtitleDirector
             var k = Sanitize(PlutoLlmBridge.Str(el, "ko", MaxActLength * 2), MaxActLength);
             var e = Sanitize(PlutoLlmBridge.Str(el, "en", MaxEnglishLength * 2), MaxEnglishLength);
             if (k.Length == 0 || !HasLatinLetter(e)) continue;
+            if (ContainsForbidden(k, forbidden) || ContainsForbidden(e, forbidden)) continue;   // 🧭 도메인 누수 막 → 로컬 보강
             ko[idx] = k;
             en[idx] = e;
         }
@@ -288,6 +411,7 @@ public sealed class PlutoSubtitleDirector
             Act2En = en[1] ?? local.Act2En,
             Act3En = en[2] ?? local.Act3En,
             UsedLlm = true,
+            Domain = local.Domain,
         };
     }
 
