@@ -19,6 +19,10 @@ public sealed record PlutoReinforcementOutcome(bool IsBreakoutSuccess, bool Reco
     public bool AlreadyRegistered { get; init; }
     /// <summary>오답 노트 벌점 강도(0 = 미기록).</summary>
     public double PenaltySeverity { get; init; }
+    /// <summary>🩺 벌점 실패 차원(최대 정규화 결손 · 벌점 없음 → null).</summary>
+    public string? FailureDimension { get; init; }
+    /// <summary>🛡️ 이번 벌점만으로 오답 노트 차단 가드 임계(≥ <see cref="PlutoMistakeNotebookService.BlockThreshold"/>) 도달.</summary>
+    public bool GuardActivated => PenaltySeverity >= PlutoMistakeNotebookService.BlockThreshold;
 }
 
 /// <summary>
@@ -29,6 +33,8 @@ public sealed record PlutoExperimentReinforcementRequest(string ExperimentId, Pl
 {
     /// <summary>🩺 패자 실패 차원(장부가 A/B 기준 42 % · 30 % · 1.5 % 결손 최대치로 분류) — null → <c>HookRetention</c>(하위 호환).</summary>
     public string? LoserFailureDimension { get; init; }
+    /// <summary>📐 패자 최대 정규화 결손(0~1 · 장부 산출) — null → <see cref="Loser"/> 지표로 A/B 기준 재계산.</summary>
+    public double? LoserSteepestDeficit { get; init; }
 }
 
 /// <summary>📈 Pluto 폐루프 성과 강화 — 게시 후 지표 → 학습 메모리(패턴 가중치 · XP) / 오답 노트(약한 훅 회피).</summary>
@@ -39,7 +45,7 @@ public interface IPlutoClosedLoopReinforcementService
 
     /// <summary>
     /// ⚖️ A/B 실험 차등 강화(같은 실험 ID 재반영 차단) — 승자 차등 특성 부스트(상승률·돌파 강도 비례 ×1.15~1.35 + XP) ·
-    /// 패자는 절대 실패(3초 유지율 &lt; <see cref="PlutoClosedLoopReinforcementService.PoorHookPct"/>)일 때만 오답 노트 벌점(근소 패배 보호).
+    /// 패자는 절대 실패(훅 42 % · 완주 30 % · CTR 1.5 % 최대 정규화 결손 &gt; 0)일 때만 결손 비례 오답 노트 벌점(근소 패배 보호).
     /// 승자 자신이 절대 실패면 부스트 생략. 실패 시 [부분 구제] · 취소만 전파.
     /// </summary>
     Task<PlutoReinforcementOutcome> IngestExperimentOutcomeAsync(PlutoExperimentReinforcementRequest request, CancellationToken ct = default);
@@ -54,7 +60,7 @@ public interface IPlutoClosedLoopReinforcementService
 /// <summary>
 /// 📈 <see cref="IPlutoClosedLoopReinforcementService"/> 구현.
 ///   ▸ 돌파: 3초 유지율 ≥ 65 % · CTR ≥ 7.5 % · 완주율 ≥ 55 % 중 하나 → 훅/스타일/LUT/BGM 패턴 ×1.15~1.35(상한 2.5) + XP +15~35 · 오답 노트 벌점 상쇄.
-///   ▸ 부진: 3초 유지율 &lt; 42 % 또는 CTR &lt; 2.2 % → 훅 스타일 + 스타일 태그를 결손 비례 벌점(1.0~2.0)으로 오답 노트 기록(14일 반감기 · 1.8 차단).
+///   ▸ 부진: 3초 유지율 &lt; 42 % · 완주율 &lt; 30 % · CTR &lt; 2.2 % 중 최대 정규화 결손 &gt; 0 → 훅 스타일 + 스타일 태그를 결손 비례 벌점(1.0~2.0 · 완주/CTR ×1.25)으로 오답 노트 기록(14일 반감기 · 1.8 차단).
 ///   ▸ 돌파 판정 우선(혼합 신호에서 승리 패턴을 벌하지 않음). 반영 장부 <c>pluto_reinforcement_ledger.json</c>(원자 기록)로 중복 반영 차단.
 /// </summary>
 public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinforcementService, IDisposable
@@ -65,6 +71,10 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
     public const double PoorHookPct = 42.0, PoorCtrPct = 2.2;
     /// <summary>🩺 완주율 진단 기준(%) — 부진 판정 영상의 실패 차원 분류에만 사용.</summary>
     public const double PoorCompletionPct = 30.0;
+    /// <summary>📐 A/B 패자 공용 결손 기준(%) — 3초 유지율 · 완주율 · CTR.</summary>
+    public const double AbHookThresholdPct = 42.0, AbCompletionThresholdPct = 30.0, AbCtrThresholdPct = 1.5;
+    /// <summary>📐 완주/CTR 결손 증폭 — 결손 ≥ 64 %(예: 완주 10 % · CTR 0.4 %)면 단일 벌점으로 차단 가드(1.8) 도달.</summary>
+    public const double NonHookDeficitGain = 1.25;
     public const double MinBoost = 1.15, MaxBoost = 1.35;
     public const int MinXp = 15, MaxXp = 35;
     public const double MinPenalty = 1.0, MaxPenalty = 2.0;
@@ -112,30 +122,56 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
             strength = Math.Max(strength, (comp - BreakoutCompletionPct) / (100.0 - BreakoutCompletionPct));
             strength = Math.Clamp(strength, 0.0, 1.0);
         }
-        var poor = !breakout && (hook < PoorHookPct || ctr < PoorCtrPct);
-        var deficit = 0.0;
-        if (poor)
-        {
-            if (hook < PoorHookPct) deficit = Math.Max(deficit, (PoorHookPct - hook) / PoorHookPct);
-            if (ctr < PoorCtrPct) deficit = Math.Max(deficit, (PoorCtrPct - ctr) / PoorCtrPct);
-            deficit = Math.Clamp(deficit, 0.0, 1.0);
-        }
-        return (breakout, strength, poor, deficit);
+        var (steepest, _) = SteepestNormalizedDeficit(hook, comp, ctr, PoorHookPct, PoorCompletionPct, PoorCtrPct);
+        var poor = !breakout && steepest > 0;
+        return (breakout, strength, poor, poor ? steepest : 0.0);
     }
+
+    /// <summary>
+    /// 📐 최대 정규화 결손(순수 함수) — <c>max(0, (기준 − 값) / 기준)</c>를 훅 · 완주 · CTR에 대해 계산해 최대치와 차원 반환
+    /// (동률 → 훅 &gt; 완주 &gt; CTR · 결손 없음 → (0, GeneralPenalty)). 기본 기준 = A/B 42 % · 30 % · 1.5 %.
+    /// </summary>
+    public static (double Deficit, string Dimension) SteepestNormalizedDeficit(double hookPct, double completionPct, double ctrPct,
+        double hookThreshold = AbHookThresholdPct, double completionThreshold = AbCompletionThresholdPct, double ctrThreshold = AbCtrThresholdPct)
+    {
+        var hookDef = NormalizedDeficit(Pct(hookPct), hookThreshold);
+        var compDef = NormalizedDeficit(Pct(completionPct), completionThreshold);
+        var ctrDef = NormalizedDeficit(Pct(ctrPct), ctrThreshold);
+        if (hookDef <= 0 && compDef <= 0 && ctrDef <= 0) return (0.0, PlutoMistakeNotebookService.DimensionGeneral);
+        if (hookDef >= compDef && hookDef >= ctrDef) return (hookDef, PlutoMistakeNotebookService.DimensionHookRetention);
+        return compDef >= ctrDef ? (compDef, PlutoMistakeNotebookService.DimensionCompletionDrop) : (ctrDef, PlutoMistakeNotebookService.DimensionLowCtr);
+    }
+
+    /// <summary>📐 단일 지표 정규화 결손 0~1(기준 ≤ 0 → 0).</summary>
+    public static double NormalizedDeficit(double value, double threshold)
+        => threshold > 0 && double.IsFinite(value) ? Math.Clamp((threshold - value) / threshold, 0.0, 1.0) : 0.0;
+
+    /// <summary>
+    /// 📐 최대 결손 → 오답 노트 벌점 — 훅 결손은 기존 <see cref="PenaltyFor"/>(1.0~2.0) 그대로 ·
+    /// 완주/CTR 결손은 ×<see cref="NonHookDeficitGain"/> 비례 증폭(상한 2.0)해 중대 결손이 단일 벌점으로 차단 가드 도달. 결손 0 → 0.
+    /// </summary>
+    public static double PenaltyForSteepestDeficit(double deficit, string? dimension)
+    {
+        if (!double.IsFinite(deficit) || deficit <= 0) return 0.0;
+        var gain = string.Equals(dimension, PlutoMistakeNotebookService.DimensionCompletionDrop, StringComparison.Ordinal)
+            || string.Equals(dimension, PlutoMistakeNotebookService.DimensionLowCtr, StringComparison.Ordinal) ? NonHookDeficitGain : 1.0;
+        return PenaltyFor(deficit * gain);
+    }
+
+    /// <summary>🩺 실패 차원 한글 라벨(요약 메시지용).</summary>
+    public static string DimensionLabelKorean(string? dimension) => dimension switch
+    {
+        PlutoMistakeNotebookService.DimensionHookRetention => "3초 훅 이탈",
+        PlutoMistakeNotebookService.DimensionCompletionDrop => "완주 이탈",
+        PlutoMistakeNotebookService.DimensionLowCtr => "저 CTR",
+        _ => "일반 부진",
+    };
 
     /// <summary>🩺 실패 차원 분류(순수 함수) — 3초 유지율 · 완주율 · CTR 결손 비율 중 최대(동률 → 훅 &gt; 완주 &gt; CTR) · 결손 없음 → GeneralPenalty.</summary>
     public static string ClassifyFailureDimension(PlutoVideoPerformanceTelemetry t)
     {
         ArgumentNullException.ThrowIfNull(t);
-        var hook = Pct(t.ThreeSecondHookRetentionPct);
-        var comp = Pct(t.AverageCompletionPct);
-        var ctr = Pct(t.ClickThroughRatePct);
-        var hookDef = hook < PoorHookPct ? (PoorHookPct - hook) / PoorHookPct : 0.0;
-        var compDef = comp < PoorCompletionPct ? (PoorCompletionPct - comp) / PoorCompletionPct : 0.0;
-        var ctrDef = ctr < PoorCtrPct ? (PoorCtrPct - ctr) / PoorCtrPct : 0.0;
-        if (hookDef <= 0 && compDef <= 0 && ctrDef <= 0) return PlutoMistakeNotebookService.DimensionGeneral;
-        if (hookDef >= compDef && hookDef >= ctrDef) return PlutoMistakeNotebookService.DimensionHookRetention;
-        return compDef >= ctrDef ? PlutoMistakeNotebookService.DimensionCompletionDrop : PlutoMistakeNotebookService.DimensionLowCtr;
+        return SteepestNormalizedDeficit(t.ThreeSecondHookRetentionPct, t.AverageCompletionPct, t.ClickThroughRatePct, PoorHookPct, PoorCompletionPct, PoorCtrPct).Dimension;
     }
 
     /// <summary>돌파 강도 → 패턴 배수(1.15~1.35).</summary>
@@ -187,6 +223,7 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
             var xp = 0;
             var mult = 1.0;
             var penalty = 0.0;
+            string? dimension = null;
             var warn = "";
 
             if (breakout)
@@ -209,18 +246,23 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
             }
             else if (poor)
             {
-                penalty = PenaltyFor(deficit);
+                dimension = ClassifyFailureDimension(telemetry);
+                penalty = PenaltyForSteepestDeficit(deficit, dimension);   // 📐 훅 · 완주 · CTR 최대 정규화 결손 비례
                 try
                 {
                     if (_notebook is not null)
-                        await _notebook.RecordDiagnosedMistakeAsync(MistakeTokens(telemetry), penalty, ClassifyFailureDimension(telemetry), "closed-loop: " + telemetry.Platform + " " + telemetry.VideoId.Trim(), ct).ConfigureAwait(false);
+                        await _notebook.RecordDiagnosedMistakeAsync(MistakeTokens(telemetry), penalty, dimension, "closed-loop: " + telemetry.Platform + " " + telemetry.VideoId.Trim(), ct).ConfigureAwait(false);
                     else { penalty = 0; warn = " · ⚠ 오답 노트 미연결"; }
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] penalty: " + ex.Message); penalty = 0; warn = " · ⚠ 오답 노트 기록 실패"; }
             }
 
-            var outcome = new PlutoReinforcementOutcome(breakout, penalty > 0, xp, mult, Summarize(telemetry, breakout, poor, xp, mult, penalty) + warn) { PenaltySeverity = penalty };
+            var outcome = new PlutoReinforcementOutcome(breakout, penalty > 0, xp, mult, Summarize(telemetry, breakout, poor, xp, mult, penalty, dimension) + warn)
+            {
+                PenaltySeverity = penalty,
+                FailureDimension = penalty > 0 ? dimension : null,
+            };
             await AppendLedgerAsync(key, ct).ConfigureAwait(false);
             return Publish(outcome);
         }
@@ -255,10 +297,10 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
             var xp = 0;
             var mult = 1.0;
             var penalty = 0.0;
+            string? loserDim = null;
             var boosted = false;
             var warn = "";
             var winHook = Pct(request.Winner.ThreeSecondHookRetentionPct);
-            var loseHook = Pct(request.Loser.ThreeSecondHookRetentionPct);
 
             if (!request.IsTie && winHook >= PoorHookPct)
             {
@@ -283,17 +325,20 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
                 catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[Pluto.ClosedLoop] ab relief: " + ex.Message); }
             }
 
-            // 🛡️ 패자 보호 — 절대 실패(3초 < 42 %)일 때만 벌점(무승부 포함 · 근소 패배는 면제)
-            if (loseHook < PoorHookPct)
+            // 🛡️ 패자 보호 — 절대 실패(훅 42 % · 완주 30 % · CTR 1.5 % 중 하나라도 미달)일 때만 벌점(무승부 포함 · 근소 패배는 면제)
+            var (loseDeficit, loseDimCalc) = SteepestNormalizedDeficit(request.Loser.ThreeSecondHookRetentionPct, request.Loser.AverageCompletionPct, request.Loser.ClickThroughRatePct);
+            if (request.LoserSteepestDeficit is { } given && double.IsFinite(given)) loseDeficit = Math.Clamp(given, 0.0, 1.0);
+            if (loseDeficit > 0)
             {
                 var mistakes = MistakeTokens(request.Loser);
                 if (mistakes.Count > 0)
                 {
-                    penalty = PenaltyFor((PoorHookPct - loseHook) / PoorHookPct);
+                    loserDim = request.LoserFailureDimension ?? loseDimCalc;
+                    penalty = PenaltyForSteepestDeficit(loseDeficit, loserDim);
                     try
                     {
                         if (_notebook is not null)
-                            await _notebook.RecordDiagnosedMistakeAsync(mistakes, penalty, request.LoserFailureDimension ?? PlutoMistakeNotebookService.DimensionHookRetention, "ab-experiment: " + request.ExperimentId.Trim(), ct).ConfigureAwait(false);
+                            await _notebook.RecordDiagnosedMistakeAsync(mistakes, penalty, loserDim, "ab-experiment: " + request.ExperimentId.Trim(), ct).ConfigureAwait(false);
                         else { penalty = 0; warn += " · ⚠ 오답 노트 미연결"; }
                     }
                     catch (OperationCanceledException) { throw; }
@@ -306,23 +351,35 @@ public sealed class PlutoClosedLoopReinforcementService : IPlutoClosedLoopReinfo
             else if (boosted) sb.Append("🏆 승자 차등 특성 ×").Append(mult.ToString("0.00", Inv)).Append(" · +").Append(xp.ToString(Inv)).Append(" XP");
             else if (winHook < PoorHookPct) sb.Append("➖ 승자도 절대 실패선 미만 · 부스트 생략");
             else sb.Append("➖ 부스트 미적용");
-            if (penalty > 0) sb.Append(" · 🛡️ 패자 절대 실패 벌점 ").Append(penalty.ToString("0.00", Inv));
+            if (penalty > 0)
+            {
+                sb.Append(" · 🛡️ 패자 절대 실패(").Append(DimensionLabelKorean(loserDim)).Append(") 벌점 ").Append(penalty.ToString("0.00", Inv));
+                if (penalty >= PlutoMistakeNotebookService.BlockThreshold) sb.Append(" · 🚫 ").Append(DimensionLabelKorean(loserDim)).Append(" 가드 활성화");
+            }
             else if (!request.IsTie) sb.Append(" · 🛡️ 패자 보호(오답 노트 면제)");
 
-            var outcome = new PlutoReinforcementOutcome(boosted, penalty > 0, xp, mult, sb.ToString() + warn) { PenaltySeverity = penalty };
+            var outcome = new PlutoReinforcementOutcome(boosted, penalty > 0, xp, mult, sb.ToString() + warn)
+            {
+                PenaltySeverity = penalty,
+                FailureDimension = penalty > 0 ? loserDim : null,
+            };
             await AppendLedgerAsync(key, ct).ConfigureAwait(false);
             return Publish(outcome);
         }
         finally { _gate.Release(); }
     }
 
-    private static string Summarize(PlutoVideoPerformanceTelemetry t, bool breakout, bool poor, int xp, double mult, double penalty)
+    private static string Summarize(PlutoVideoPerformanceTelemetry t, bool breakout, bool poor, int xp, double mult, double penalty, string? dimension)
     {
         var sb = new StringBuilder(160);
         sb.Append("3초 ").Append(Pct(t.ThreeSecondHookRetentionPct).ToString("0.#", Inv)).Append("% · CTR ").Append(Pct(t.ClickThroughRatePct).ToString("0.#", Inv))
           .Append("% · 완주 ").Append(Pct(t.AverageCompletionPct).ToString("0.#", Inv)).Append("% → ");
         if (breakout) sb.Append("🚀 돌파 성공 · 패턴 ×").Append(mult.ToString("0.00", Inv)).Append(" · +").Append(xp.ToString(Inv)).Append(" XP");
-        else if (poor) sb.Append("🛡️ 부진 · 오답 노트 벌점 ").Append(penalty.ToString("0.00", Inv)).Append(" (훅 '").Append(t.HookStyle?.Trim() ?? "").Append("' 회피 학습)");
+        else if (poor)
+        {
+            sb.Append("🛡️ 부진(").Append(DimensionLabelKorean(dimension)).Append(") · 오답 노트 벌점 ").Append(penalty.ToString("0.00", Inv)).Append(" (훅 '").Append(t.HookStyle?.Trim() ?? "").Append("' 회피 학습)");
+            if (penalty >= PlutoMistakeNotebookService.BlockThreshold) sb.Append(" · 🚫 ").Append(DimensionLabelKorean(dimension)).Append(" 가드 활성화");
+        }
         else sb.Append("➖ 평균 성과 · 변경 없음");
         return sb.ToString();
     }

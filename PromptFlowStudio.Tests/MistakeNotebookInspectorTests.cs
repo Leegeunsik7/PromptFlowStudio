@@ -122,4 +122,99 @@ public sealed class MistakeNotebookInspectorTests : IDisposable
         Assert.Equal(after.ActiveMistakeGuardCount, nb.GetActiveMistakeRules().Count);
         Assert.DoesNotContain(nb.GetActiveMistakeRules(), r => r.PatternKey == "dark-film");
     }
+
+    private static PlutoVariantABPlan StepEightPlan(string id, string hookB)
+    {
+        var cues = new[] { PromptFlowStudio.Services.Export.SubtitleCue.Precise(0.2, 4.95, "a") };
+        var a = new PlutoExperimentVariant(PlutoVariantABGenerator.ChampionLabel, "이 순간을 기다렸어요", PlutoColorGradingCompiler.NaturalPastelName, "Lullaby", "", cues);
+        var b = new PlutoExperimentVariant(PlutoVariantABGenerator.ChallengerLabel, hookB, PlutoColorGradingCompiler.GoldenHourWarmName, "Lullaby", "", cues);
+        return new PlutoVariantABPlan(id, "돌잔치", a, b, "h");
+    }
+
+    [Fact]
+    public async Task ExperimentLedger_LosingChallengerWithHealthyHookButLowCompletion_ActivatesCompletionDropGuard()
+    {
+        using var learning = new PlutoLearningService(Path.Combine(_dir, "trend.json"));
+        using var notebook = new PlutoMistakeNotebookService(Path.Combine(_dir, "nb.json"));
+        using var loop = new PlutoClosedLoopReinforcementService(learning, notebook);
+        using var ledger = new PlutoExperimentLedgerService(loop);
+        const string hookB = "중반 설명이 길어요";
+
+        // 챌린저: 3초 48 %(정상) · 완주 10 %(결손 66.7 %) · CTR 3 %(정상) → 기존엔 훅 정상이라 면제되던 패자
+        var loser = new PlutoExperimentMetricsInput(48, 10, 3);
+        var (deficit, dim) = PlutoExperimentLedgerService.LoserSteepestDeficit(loser);
+        Assert.Equal(PlutoMistakeNotebookService.DimensionCompletionDrop, dim);
+        Assert.Equal(20.0 / 30.0, deficit, 9);
+
+        var r = await ledger.EvaluateExperimentAsync(StepEightPlan("exp-step8-comp", hookB), new PlutoExperimentMetricsInput(60, 50, 5), loser);
+
+        Assert.Equal(PlutoExperimentLedgerService.WinnerChampion, r.WinnerLabel);
+        Assert.True(r.LoserPenalized);
+        Assert.Contains("완주 이탈 가드 활성화", r.SummaryMessage, StringComparison.Ordinal);
+        Assert.True(notebook.GetEffectivePenalty(hookB) >= PlutoMistakeNotebookService.BlockThreshold);
+        var rule = Assert.Single(notebook.GetActiveMistakeRules(), x => x.PatternKey.Contains(hookB, StringComparison.Ordinal));
+        Assert.Equal(PlutoMistakeNotebookService.DimensionCompletionDrop, rule.FailureDimension);
+        Assert.Equal(PlutoMistakeNotebookService.ReasonCompletionDrop, rule.DiagnosticReasonKorean);
+        Assert.Equal(PlutoClosedLoopReinforcementService.PenaltyForSteepestDeficit(deficit, dim), rule.PenaltyWeight, 2);
+    }
+
+    [Fact]
+    public async Task ExperimentLedger_LosingChallengerWithHealthyHookButLowCtr_ActivatesLowCtrGuard()
+    {
+        using var learning = new PlutoLearningService(Path.Combine(_dir, "trend.json"));
+        using var notebook = new PlutoMistakeNotebookService(Path.Combine(_dir, "nb.json"));
+        using var loop = new PlutoClosedLoopReinforcementService(learning, notebook);
+        using var ledger = new PlutoExperimentLedgerService(loop);
+        const string hookB = "썸네일이 흐릿해요";
+
+        // 챌린저: 3초 48 % · 완주 40 % · CTR 0.4 %(결손 73.3 %) → 저 CTR 가드
+        var loser = new PlutoExperimentMetricsInput(48, 40, 0.4);
+        var (deficit, dim) = PlutoExperimentLedgerService.LoserSteepestDeficit(loser);
+        Assert.Equal(PlutoMistakeNotebookService.DimensionLowCtr, dim);
+        Assert.Equal(1.1 / 1.5, deficit, 9);
+
+        var r = await ledger.EvaluateExperimentAsync(StepEightPlan("exp-step8-ctr", hookB), new PlutoExperimentMetricsInput(60, 50, 5), loser);
+
+        Assert.True(r.LoserPenalized);
+        Assert.Contains("저 CTR 가드 활성화", r.SummaryMessage, StringComparison.Ordinal);
+        var rule = Assert.Single(notebook.GetActiveMistakeRules(), x => x.PatternKey.Contains(hookB, StringComparison.Ordinal));
+        Assert.Equal(PlutoMistakeNotebookService.DimensionLowCtr, rule.FailureDimension);
+        Assert.Equal(PlutoMistakeNotebookService.ReasonLowCtr, rule.DiagnosticReasonKorean);
+        Assert.True(rule.PenaltyWeight >= PlutoMistakeNotebookService.BlockThreshold);
+        Assert.Equal(0.0, notebook.GetEffectivePenalty("이 순간을 기다렸어요"), 9);   // 승자 훅 무벌점
+    }
+
+    [Fact]
+    public async Task ClosedLoopReinforcement_LowCompletionWithHealthyHook_ScalesPenaltyProportionallyToDeficit()
+    {
+        using var notebook = new PlutoMistakeNotebookService(Path.Combine(_dir, "nb.json"));
+        using var svc = new PlutoClosedLoopReinforcementService(null, notebook);
+
+        // 훅 결손 최대 → 기존 선형 벌점 그대로(하위 호환)
+        Assert.Equal(PlutoClosedLoopReinforcementService.PenaltyFor(0.5),
+            PlutoClosedLoopReinforcementService.PenaltyForSteepestDeficit(0.5, PlutoMistakeNotebookService.DimensionHookRetention), 9);
+        Assert.Equal(0.0, PlutoClosedLoopReinforcementService.PenaltyForSteepestDeficit(0.0, PlutoMistakeNotebookService.DimensionCompletionDrop), 9);
+
+        // 경미한 완주 결손(20 % → 결손 1/3) → 비례 벌점 · 차단 미만
+        var mild = await svc.IngestPerformanceAsync(Telemetry("완만한 전개", "#일상", 48, 20, 3));
+        Assert.True(mild.RecordedMistakePenalty);
+        Assert.Equal(PlutoMistakeNotebookService.DimensionCompletionDrop, mild.FailureDimension);
+        Assert.Equal(1.0 + (10.0 / 30.0) * PlutoClosedLoopReinforcementService.NonHookDeficitGain, mild.PenaltySeverity, 9);
+        Assert.False(mild.GuardActivated);
+        Assert.DoesNotContain(notebook.GetActiveMistakeRules(), x => x.PatternKey.Contains("완만한 전개", StringComparison.Ordinal));
+
+        // 심각한 완주 결손(10 % → 결손 2/3) → 더 큰 벌점 · 즉시 가드
+        var severe = await svc.IngestPerformanceAsync(Telemetry("긴 내레이션", "#브이로그", 48, 10, 3));
+        Assert.True(severe.PenaltySeverity > mild.PenaltySeverity);
+        Assert.Equal(1.0 + (20.0 / 30.0) * PlutoClosedLoopReinforcementService.NonHookDeficitGain, severe.PenaltySeverity, 9);
+        Assert.True(severe.GuardActivated);
+        Assert.Contains("완주 이탈 가드 활성화", severe.SummaryMessage, StringComparison.Ordinal);
+        var rule = Assert.Single(notebook.GetActiveMistakeRules(), x => x.PatternKey.Contains("긴 내레이션", StringComparison.Ordinal));
+        Assert.Equal(PlutoMistakeNotebookService.DimensionCompletionDrop, rule.FailureDimension);
+
+        // 결손 없음(훅 · 완주 · CTR 모두 기준 이상) → 벌점 없음
+        var ok = await svc.IngestPerformanceAsync(Telemetry("무난한 훅", "#무난", 48, 40, 3));
+        Assert.False(ok.RecordedMistakePenalty);
+        Assert.Null(ok.FailureDimension);
+    }
 }

@@ -300,10 +300,10 @@
                     <label class="ws-retry">3초 유지율 % <input type="number" data-perf-hook="1" @bind="_perfHook" min="0" max="100" step="0.1" style="width:5em" disabled="@(_perfBusy)" /></label>
                     <label class="ws-retry">CTR % <input type="number" data-perf-ctr="1" @bind="_perfCtr" min="0" max="100" step="0.1" style="width:5em" disabled="@(_perfBusy)" /></label>
                     <label class="ws-retry">완주율 % <input type="number" data-perf-completion="1" @bind="_perfCompletion" min="0" max="100" step="0.1" style="width:5em" disabled="@(_perfBusy)" /></label>
-                    <button class="ws-back" data-perf-submit="1" @onclick="SubmitPerformanceAsync" disabled="@(_perfBusy)" title="돌파(3초 ≥ 65% · CTR ≥ 7.5% · 완주 ≥ 55%) → 패턴 강화 + XP · 부진(3초 &lt; 42% · CTR &lt; 2.2%) → 오답 노트">[📈 성과 학습 반영]</button>
+                    <button class="ws-back" data-perf-submit="1" @onclick="SubmitPerformanceAsync" disabled="@(_perfBusy)" title="돌파(3초 ≥ 65% · CTR ≥ 7.5% · 완주 ≥ 55%) → 패턴 강화 + XP · 부진(3초 &lt; 42% · 완주 &lt; 30% · CTR &lt; 2.2% 중 최대 결손) → 결손 비례 오답 노트 벌점(완주/CTR 중대 결손은 즉시 가드)">[📈 성과 학습 반영]</button>
                     @if (_perfOutcome is { } po)
                     {
-                        <span class="@(po.IsBreakoutSuccess ? "ws-pcore on" : "ws-retry")" role="status" data-perf-outcome="@(po.IsBreakoutSuccess ? "breakout" : po.RecordedMistakePenalty ? "penalty" : po.AlreadyRegistered ? "duplicate" : "neutral")">@(po.SummaryMessage) · 🪐 @(PlutoDirector.CurrentXp.ToString(CultureInfo.InvariantCulture)) XP</span>
+                        <span class="@(po.IsBreakoutSuccess ? "ws-pcore on" : "ws-retry")" role="status" data-perf-outcome="@(po.IsBreakoutSuccess ? "breakout" : po.RecordedMistakePenalty ? "penalty" : po.AlreadyRegistered ? "duplicate" : "neutral")" data-perf-dim="@(po.FailureDimension ?? "")" data-perf-guard="@(po.GuardActivated ? "1" : "0")">@(po.SummaryMessage) · 🪐 @(PlutoDirector.CurrentXp.ToString(CultureInfo.InvariantCulture)) XP</span>
                     }
                 </div>
             }

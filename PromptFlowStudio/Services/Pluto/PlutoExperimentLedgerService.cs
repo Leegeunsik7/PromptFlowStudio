@@ -115,18 +115,14 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
     /// 🩺 A/B 패자 실패 차원(순수 함수) — 3지표 상대 결손 <c>(기준 − 값) / 기준</c> 중 최대(동률 → 훅 &gt; 완주 &gt; CTR).
     /// 결손 없음 → <c>GeneralPenalty</c>.
     /// </summary>
-    public static string ClassifyLoserFailureDimension(PlutoExperimentMetricsInput m)
+    public static string ClassifyLoserFailureDimension(PlutoExperimentMetricsInput m) => LoserSteepestDeficit(m).Dimension;
+
+    /// <summary>📐 A/B 패자 최대 정규화 결손(0~1) + 차원 — 공용 <see cref="PlutoClosedLoopReinforcementService.SteepestNormalizedDeficit"/> 위임.</summary>
+    public static (double Deficit, string Dimension) LoserSteepestDeficit(PlutoExperimentMetricsInput m)
     {
         ArgumentNullException.ThrowIfNull(m);
-        var hook = Pct(m.ThreeSecondHookRetentionPct);
-        var comp = Pct(m.AverageCompletionPct);
-        var ctr = Pct(m.ClickThroughRatePct);
-        var hookDef = hook < FailHookPct ? (FailHookPct - hook) / FailHookPct : 0.0;
-        var compDef = comp < FailCompletionPct ? (FailCompletionPct - comp) / FailCompletionPct : 0.0;
-        var ctrDef = ctr < FailCtrPct ? (FailCtrPct - ctr) / FailCtrPct : 0.0;
-        if (hookDef <= 0 && compDef <= 0 && ctrDef <= 0) return PlutoMistakeNotebookService.DimensionGeneral;
-        if (hookDef >= compDef && hookDef >= ctrDef) return PlutoMistakeNotebookService.DimensionHookRetention;
-        return compDef >= ctrDef ? PlutoMistakeNotebookService.DimensionCompletionDrop : PlutoMistakeNotebookService.DimensionLowCtr;
+        return PlutoClosedLoopReinforcementService.SteepestNormalizedDeficit(m.ThreeSecondHookRetentionPct, m.AverageCompletionPct, m.ClickThroughRatePct,
+            FailHookPct, FailCompletionPct, FailCtrPct);
     }
 
     /// <summary>승자 판정(순수 함수) — 상승률 = (승자 − 패자) / 패자 × 100(패자 0 → 100 · 무승부 0).</summary>
@@ -210,9 +206,11 @@ public sealed class PlutoExperimentLedgerService : IPlutoExperimentLedgerService
             PlutoExperimentMetricsInput winM = challengerWins ? challengerMetrics : championMetrics, loseM = challengerWins ? championMetrics : challengerMetrics;
 
             // ⚖️ 차등 특성만 강화 대상(공통 특성은 실험 변수가 아님)
+            var (loseDeficit, loseDim) = LoserSteepestDeficit(loseM);   // 📐 훅 · 완주 · CTR 최대 정규화 결손
             var request = new PlutoExperimentReinforcementRequest(id, DiffTelemetry(id, "W", win, lose, winM), DiffTelemetry(id, "L", lose, win, loseM), lift, tie)
             {
-                LoserFailureDimension = ClassifyLoserFailureDimension(loseM),   // 🩺 훅 고정 대신 최대 결손 차원
+                LoserFailureDimension = loseDim,   // 🩺 훅 고정 대신 최대 결손 차원
+                LoserSteepestDeficit = loseDeficit,   // 📐 결손 > 0 → 벌점 · 크기 비례
             };
             PlutoReinforcementOutcome? outcome = null;
             var warn = "";
