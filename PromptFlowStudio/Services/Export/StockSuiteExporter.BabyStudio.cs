@@ -45,6 +45,15 @@ public sealed partial class StockSuiteExporter
 
     /// <summary>🔁 BGM 먹싱 시 심리스 루프 페이드(0.3s in · 0.6s out) — 9:16 세로 마스터 렌더 범위로만 한정.</summary>
     public bool SeamlessLoopAudio { get; set; }
+    /// <summary>🔁 15초 엠비언트 핑퐁 루프 산출물 파일명 접미사(<see cref="Render.MultiDurationPlanner.BuildOutputPath"/>).</summary>
+    public const string AmbientLoopFileSuffix = "_ambient15s";
+    /// <summary>🔁 심리스 루프 오디오 경계 페이드 적용 태그.</summary>
+    public const string SeamlessLoopTag = "🔁 심리스 루프 페이드";
+
+    /// <summary>🔁 15초 엠비언트 단일 클립 판정 — 파일명(확장자 제외)이 <see cref="AmbientLoopFileSuffix"/> 로 끝남(대소문자 무시).</summary>
+    public static bool IsAmbientLoopClip(string? path)
+        => !string.IsNullOrWhiteSpace(path)
+           && Path.GetFileNameWithoutExtension(path).EndsWith(AmbientLoopFileSuffix, StringComparison.OrdinalIgnoreCase);
     /// <summary>🎵 주 산출물 먹싱 임시 접미사(성공 시 원자적 교체 · 실패 시 삭제).</summary>
     internal const string BabyBgmMuxTempSuffix = ".~bgm";
     public const string BabyBgmTag = "🎵 감성 BGM · ";

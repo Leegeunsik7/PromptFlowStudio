@@ -358,13 +358,18 @@ public sealed partial class StockSuiteExporter
         // 🎵 아기 스튜디오 — BGM 을 주 산출물에 직접 먹싱(동반 _baby_bgm 파일 없음 · 실패 시 무음 산출물 보존).
         if (r.Ok && IsBabyBgmEnabled && r.TargetPath is { } bt && !string.Equals(Path.GetFullPath(sourcePath!), bt, StringComparison.OrdinalIgnoreCase))
         {
+            // 🔁 15초 엠비언트 핑퐁 단일 클립 → 9:16 과 동일 0.3s in · 0.6s out 경계 페이드(반복 재생 이음새 클릭 0) — 호출 범위 한정 후 복원.
+            var prevLoop = SeamlessLoopAudio;
+            var ambientLoop = IsAmbientLoopClip(sourcePath) || IsAmbientLoopClip(bt);
+            if (ambientLoop) SeamlessLoopAudio = true;
             try
             {
                 var mixed = await MuxBabyAudioIntoPrimaryAsync(bt, ct).ConfigureAwait(false);   // −1 실패 · 0 BGM · n BGM+SFX n큐
                 if (mixed >= 0)
-                    r = r with { HasAudio = true, Message = r.Message.Replace("🔇 무음", "🔊 BGM", StringComparison.Ordinal) + " · " + BabyBgmTag + BabyBgmLabel(BabyBgm!.Value) + (mixed > 0 ? " · " + SfxTag + mixed.ToString(System.Globalization.CultureInfo.InvariantCulture) + "큐" : "") };
+                    r = r with { HasAudio = true, Message = r.Message.Replace("🔇 무음", "🔊 BGM", StringComparison.Ordinal) + " · " + BabyBgmTag + BabyBgmLabel(BabyBgm!.Value) + (mixed > 0 ? " · " + SfxTag + mixed.ToString(System.Globalization.CultureInfo.InvariantCulture) + "큐" : "") + (ambientLoop ? " · " + SeamlessLoopTag : "") };
             }
             catch (OperationCanceledException) { return new(false, null, false, "취소됨"); }
+            finally { SeamlessLoopAudio = prevLoop; }
         }
         // 💌 감성 자막 SRT 동반 기록(외부 플레이어용 · 실패 격리).
         if (r.Ok && BurnSubtitles && r.TargetPath is { } srtTarget && TryWriteSubtitleSidecar(srtTarget) is { } srtPath)
