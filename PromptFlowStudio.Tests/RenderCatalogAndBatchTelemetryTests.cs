@@ -153,4 +153,98 @@ public sealed class RenderCatalogAndBatchTelemetryTests : IDisposable
         Assert.Equal(0, (await importer.ImportCsvAsync("")).TotalRows);
         Assert.Equal(0, (await importer.ImportCsvAsync("VideoId,HookRetentionPct,CompletionPct,CtrPct\n")).TotalRows);
     }
+
+    [Fact]
+    public async Task DriveStorageManager_CoreBackupVerification_IncludesRenderCatalogJson()
+    {
+        Assert.Contains(PlutoRenderCatalogService.FileName, PlutoDriveHealthService.PlutoFiles);
+        foreach (var f in new[] { PlutoExperimentLedgerService.FileName, PlutoMistakeNotebookService.FileName, PlutoLearningService.FileName })
+            Assert.Contains(f, PlutoDriveHealthService.PlutoFiles);
+
+        // 🔁 새 PC 복원 — Drive 에만 있는 카탈로그 → 로컬 폴백으로 복사(기존 로컬 파일 덮어쓰기 없음)
+        var vault = Path.Combine(_dir, "vault");
+        var drive = Path.Combine(vault, "Pluto");
+        var local = Path.Combine(_dir, "local");
+        Directory.CreateDirectory(drive);
+        File.WriteAllText(Path.Combine(drive, PlutoRenderCatalogService.FileName), "{\"Clips\":[]}");
+        File.WriteAllText(Path.Combine(drive, PlutoLearningService.FileName), "{\"drive\":true}");
+        Directory.CreateDirectory(local);
+        File.WriteAllText(Path.Combine(local, PlutoLearningService.FileName), "{\"local\":true}");
+        var storage = new PlutoDriveStorageManager(drive, local);
+        Assert.True(storage.IsCloudSynced);
+        Assert.Equal(1, storage.RestoreCoreHubsToLocal(PlutoDriveHealthService.PlutoFiles));
+        Assert.True(File.Exists(Path.Combine(local, PlutoRenderCatalogService.FileName)));
+        Assert.Equal("{\"local\":true}", File.ReadAllText(Path.Combine(local, PlutoLearningService.FileName)));
+        Assert.Equal(0, storage.RestoreCoreHubsToLocal(PlutoDriveHealthService.PlutoFiles));   // 멱등
+
+        // 검증 리포트에 카탈로그 항목 포함(Healthy)
+        var rep = new PlutoDriveHealthService(null, null, storage).CheckHealth(drive, Path.Combine(_dir, "nostudio"));
+        var item = Assert.Single(rep.Items, i => i.FileName == PlutoRenderCatalogService.FileName);
+        Assert.Equal(PlutoDriveHealthService.CategoryPluto, item.Category);
+        Assert.Equal(PlutoDriveFileStatus.Healthy, item.Status);
+
+        // Drive 비활성(PROMPTFLOW_PLUTO_DRIVE=off 등 primary null) → 복원 0 · 예외 없음
+        var off = new PlutoDriveStorageManager(null, Path.Combine(_dir, "local_off"));
+        Assert.Equal(0, off.RestoreCoreHubsToLocal(PlutoDriveHealthService.PlutoFiles));
+        var forced = await new PlutoDriveHealthService(null, null, off).ForceSyncAndVerifyAsync();
+        Assert.Contains(forced.Items, i => i.FileName == PlutoRenderCatalogService.FileName);
+    }
+
+    [Fact]
+    public async Task TelemetryBatchImporter_BuildUnlearnedCsvTemplate_IncludesOnlyUnlearnedClips()
+    {
+        var storage = new PlutoDriveStorageManager(null, _dir);
+        using var nb = new PlutoMistakeNotebookService(storage);
+        using var loop = new PlutoClosedLoopReinforcementService(null, nb, storage);
+        using var cat = new PlutoRenderCatalogService(storage);
+        var importer = new PlutoTelemetryBatchImporter(cat, loop);
+
+        Assert.Equal("VideoId,HookRetentionPct,CompletionPct,CtrPct\n", await importer.BuildUnlearnedCsvTemplateAsync());   // 빈 카탈로그 → 헤더만
+
+        for (var i = 0; i < 20; i++)
+            await cat.RecordRenderedClipAsync(Clip("u_" + i.ToString("00", System.Globalization.CultureInfo.InvariantCulture), "t", "몽타주", "h", "x", 100 - i));
+        await cat.MarkTelemetryLoggedAsync("u_19");
+        await cat.MarkTelemetryLoggedAsync("u_05");
+
+        var csv = await importer.BuildUnlearnedCsvTemplateAsync();
+        var lines = csv.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal("VideoId,HookRetentionPct,CompletionPct,CtrPct", lines[0]);
+        Assert.Equal(16, lines.Length);   // 헤더 + 15
+        Assert.Equal("u_18,42.0,30.0,1.5", lines[1]);   // 최신순 · 학습 완료(u_19) 제외
+        Assert.DoesNotContain(lines, l => l.StartsWith("u_19,", StringComparison.Ordinal) || l.StartsWith("u_05,", StringComparison.Ordinal));
+        Assert.All(lines.Skip(1), l => Assert.EndsWith(",42.0,30.0,1.5", l, StringComparison.Ordinal));
+
+        Assert.Equal(4, (await importer.BuildUnlearnedCsvTemplateAsync(3)).Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+
+        // 전량 학습 → 헤더만
+        foreach (var c in await cat.GetRecentClipsAsync(100)) await cat.MarkTelemetryLoggedAsync(c.VideoId);
+        Assert.Equal("VideoId,HookRetentionPct,CompletionPct,CtrPct\n", await importer.BuildUnlearnedCsvTemplateAsync());
+    }
+
+    [Fact]
+    public async Task TelemetryBatchImporter_RoundTripsUnlearnedTemplateRows_IntoClosedLoopLearning()
+    {
+        var storage = new PlutoDriveStorageManager(null, _dir);
+        using var nb = new PlutoMistakeNotebookService(storage);
+        using var loop = new PlutoClosedLoopReinforcementService(null, nb, storage);
+        using var cat = new PlutoRenderCatalogService(storage);
+        await cat.RecordRenderedClipAsync(Clip("rt_a", "A", "몽타주", "hook-a", "a", 3));
+        await cat.RecordRenderedClipAsync(Clip("rt_b", "B", "몽타주", "hook-b", "b", 2));
+        await cat.RecordRenderedClipAsync(Clip("rt_c", "C", "몽타주", "hook-c", "c", 1));
+        await cat.MarkTelemetryLoggedAsync("rt_b");
+        var importer = new PlutoTelemetryBatchImporter(cat, loop);
+
+        var template = await importer.BuildUnlearnedCsvTemplateAsync();
+        var r = await importer.ImportCsvAsync(template);
+        Assert.Equal(2, r.TotalRows);
+        Assert.Equal(2, r.MatchedAndLearnedCount);
+        Assert.Equal(0, r.UnmatchedCount);
+        Assert.All(await cat.GetRecentClipsAsync(), c => Assert.True(c.TelemetryLogged));
+
+        // 반영 후 재생성 → 헤더만 · 같은 템플릿 재반영 → 기반영(중복 차단)
+        Assert.Equal("VideoId,HookRetentionPct,CompletionPct,CtrPct\n", await importer.BuildUnlearnedCsvTemplateAsync());
+        var again = await importer.ImportCsvAsync(template);
+        Assert.Equal(0, again.MatchedAndLearnedCount);
+        Assert.Equal(2, again.AlreadyRegisteredCount);
+    }
 }

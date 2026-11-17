@@ -35,6 +35,12 @@ public interface IPlutoTelemetryBatchImporter
     /// 카탈로그 VideoId/정규화 제목 매칭 → 강화 반영 · 학습 완료 표시. 행 단위 실패는 미매칭 처리(배치 중단 없음) · 취소만 전파.
     /// </summary>
     Task<PlutoTelemetryBatchImportResult> ImportCsvAsync(string csvText, string platform = "YouTube Shorts", CancellationToken ct = default);
+
+    /// <summary>
+    /// 📋 미학습 영상 CSV 템플릿 — 최근 카탈로그 100건 중 <c>TelemetryLogged == false</c> 클립(최대 <paramref name="maxRows"/>건)을
+    /// 압축 4열 헤더 + 기본값 행(<c>{VideoId},42.0,30.0,1.5</c>)으로 생성. 미학습 없음 → 헤더만.
+    /// </summary>
+    Task<string> BuildUnlearnedCsvTemplateAsync(int maxRows = 15, CancellationToken ct = default);
 }
 
 /// <summary>📥 <see cref="IPlutoTelemetryBatchImporter"/> 순수 BCL 구현(따옴표 필드 · 콤마/탭/세미콜론 구분자 · BOM 허용).</summary>
@@ -205,6 +211,32 @@ public sealed class PlutoTelemetryBatchImporter : IPlutoTelemetryBatchImporter
         }
         return result;
     }
+
+    public const string CompactHeader = "VideoId,HookRetentionPct,CompletionPct,CtrPct";
+    public const string TemplateDefaultMetrics = ",42.0,30.0,1.5";
+    public const int TemplateScanCount = 100;
+
+    public async Task<string> BuildUnlearnedCsvTemplateAsync(int maxRows = 15, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        var sb = new StringBuilder(CompactHeader).Append('\n');
+        if (maxRows <= 0) return sb.ToString();
+        var clips = await _catalog.GetRecentClipsAsync(TemplateScanCount, ct).ConfigureAwait(false);
+        var added = 0;
+        for (var i = 0; i < clips.Count && added < maxRows; i++)
+        {
+            var c = clips[i];
+            if (c.TelemetryLogged || string.IsNullOrWhiteSpace(c.VideoId)) continue;
+            sb.Append(QuoteCsv(c.VideoId)).Append(TemplateDefaultMetrics).Append('\n');
+            added++;
+        }
+        return sb.ToString();
+    }
+
+    private static readonly char[] QuoteTriggers = { ',', '"', '\n', '\r', '\t', ';' };
+
+    private static string QuoteCsv(string v)
+        => v.IndexOfAny(QuoteTriggers) < 0 ? v : "\"" + v.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
 
     public async Task<PlutoTelemetryBatchImportResult> ImportCsvAsync(string csvText, string platform = "YouTube Shorts", CancellationToken ct = default)
     {

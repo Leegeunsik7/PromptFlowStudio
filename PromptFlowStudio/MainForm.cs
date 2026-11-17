@@ -1000,6 +1000,7 @@ public sealed class MainForm : Form
         // 임시/캐시 파편 자동 정소(24h 이상) — 백그라운드, 실패해도 기동 무영향.
         try { _ = sp.GetRequiredService<IResourceCleanupService>().CleanupOnStartupAsync(); } catch { /* 정소 실패 무시 */ }
         try { _ = sp.GetRequiredService<PromptFlowStudio.Services.Render.RenderCacheCleaner>().CleanAsync(); } catch (Exception ex) { Program.Log("MainForm.RenderCache", ex); }   // 🧹 고아 임시 파일 회수 + LRU 상한(백그라운드)
+        try { var plutoStore = sp.GetRequiredService<PromptFlowStudio.Services.Pluto.IPlutoStorageManager>() as PromptFlowStudio.Services.Pluto.PlutoDriveStorageManager; if (plutoStore is not null) _ = Task.Run(() => { try { plutoStore.RestoreCoreHubsToLocal(PromptFlowStudio.Services.Pluto.PlutoDriveHealthService.PlutoFiles); } catch (Exception ex) { Program.Log("MainForm.PlutoRestore", ex); } }); } catch (Exception ex) { Program.Log("MainForm.PlutoRestore", ex); }   // 🔁 새 PC 자동 복원 — Drive 핵심 허브(렌더 카탈로그 포함) → 로컬 미러(부재 시만)
 
         var view = new BlazorWebView
         {

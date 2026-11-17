@@ -321,6 +321,7 @@
                     @if (_batchOpen)
                     {
                         <textarea data-batch-csv="1" @bind="_batchCsv" rows="4" maxlength="200000" spellcheck="false" style="width:100%;font:11px/1.4 var(--mono)" placeholder="VideoId,HookRetentionPct,CompletionPct,CtrPct&#10;my_clip_01,58.2,41.0,5.3&#10;— 또는 YouTube Studio 내보내기 CSV 전체 붙여넣기" disabled="@(_batchBusy)"></textarea>
+                        <button class="ws-back" data-batch-template="1" @onclick="FillUnlearnedTemplateAsync" disabled="@(_batchBusy)" title="아직 성과를 반영하지 않은 최근 렌더 영상(최대 15편)을 기본값 행으로 채웁니다 — 실제 수치로 고친 뒤 일괄 학습 실행">[📋 미학습 영상 CSV 템플릿 채우기]</button>
                         <button class="ws-back" data-batch-run="1" @onclick="RunBatchImportAsync" disabled="@(_batchBusy || _perfBusy || string.IsNullOrWhiteSpace(_batchCsv))">@(_batchBusy ? "⏳ 일괄 학습 중…" : "[일괄 학습 실행]")</button>
                     }
                     @if (_batchToast is { } btt) { <span class="ws-retry" role="status" data-batch-toast="1">@(btt)</span> }
@@ -3213,6 +3214,27 @@
     }
 
     private void ToggleBatchPanel() => _batchOpen = !_batchOpen;
+
+    /// <summary>📋 [미학습 영상 CSV 템플릿 채우기] — 카탈로그 미학습 클립 → 압축 4열 템플릿을 입력창에 채움(예외 전파 금지).</summary>
+    private async Task FillUnlearnedTemplateAsync()
+    {
+        if (_batchBusy) return;
+        if (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoTelemetryBatchImporter)) is not PromptFlowStudio.Services.Pluto.IPlutoTelemetryBatchImporter importer)
+        { _batchToast = "⚠ 일괄 반영 서비스를 사용할 수 없습니다."; return; }
+        try
+        {
+            var csv = await importer.BuildUnlearnedCsvTemplateAsync(15, _mediaCts.Token);
+            var n = 0;
+            for (var i = 0; i < csv.Length; i++) if (csv[i] == '\n') n++;
+            n = Math.Max(0, n - 1);   // 헤더 제외
+            _batchCsv = csv;
+            _batchToast = n == 0 ? "📋 미학습 영상이 없습니다 — 모든 렌더 영상의 성과가 반영되었습니다." : "📋 미학습 영상 " + n.ToString(CultureInfo.InvariantCulture) + "편을 불러왔습니다 — 수치를 실제 값으로 고친 뒤 [일괄 학습 실행]";
+        }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex) { Program.Log("Workspace.BatchTemplate", ex); _batchToast = "⚠ 템플릿 생성 실패: " + ex.Message; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
 
     /// <summary>📥 [일괄 학습 실행] — CSV/TSV → 카탈로그 매칭 → 폐루프 강화 → 카탈로그 · 두뇌 리포트 갱신(예외 전파 금지).</summary>
     private async Task RunBatchImportAsync()

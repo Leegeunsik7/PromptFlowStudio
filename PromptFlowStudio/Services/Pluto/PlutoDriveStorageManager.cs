@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -200,6 +201,29 @@ public sealed class PlutoDriveStorageManager : IPlutoStorageManager
             System.Diagnostics.Debug.WriteLine("[Pluto.Drive] seed failed: " + ex.Message);
             return false;
         }
+    }
+
+    /// <summary>
+    /// 🔁 핵심 허브 복원 — Drive 활성 시 Drive 에 있고 로컬 폴백에 없는 파일만 로컬로 복사(덮어쓰기 없음 · 실패 무시).
+    /// 새 PC 첫 실행/오프라인 전환 대비. Drive 비활성(<c>PROMPTFLOW_PLUTO_DRIVE=off</c> · 미마운트 · 비 Windows) → 0.
+    /// </summary>
+    /// <returns>복원된 파일 수.</returns>
+    public int RestoreCoreHubsToLocal(IReadOnlyList<string> files)
+    {
+        ArgumentNullException.ThrowIfNull(files);
+        if (!PrimaryAvailable()) return 0;
+        var local = EnsureDir(_fallback);
+        if (string.Equals(local, _primary, StringComparison.OrdinalIgnoreCase)) return 0;
+        var restored = 0;
+        for (var i = 0; i < files.Count; i++)
+        {
+            var f = files[i];
+            try { ValidateName(f); }
+            catch (ArgumentException) { continue; }
+            var dst = Path.Combine(local, f);
+            if (!File.Exists(dst) && TryCopy(Path.Combine(_primary!, f), dst)) restored++;
+        }
+        return restored;
     }
 
     private static async Task<string?> TryReadAsync(string path, CancellationToken ct)

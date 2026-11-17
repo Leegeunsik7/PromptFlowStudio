@@ -39,6 +39,7 @@ public sealed class PlutoDriveHealthService : IPlutoDriveHealthService
         PlutoIdentityVault.FileName,                         // pluto_identity_vault.json
         PlutoMistakeNotebookService.FileName,                // pluto_mistake_notebook.json
         PlutoExperimentLedgerService.FileName,               // pluto_experiment_ledger.json (🏆 A/B 실험 장부)
+        PlutoRenderCatalogService.FileName,                  // pluto_render_catalog.json (🎞️ 영속 렌더 카탈로그)
     };
 
     public static readonly string[] StudioFiles = { "members.json", AppSettingsManager.FileName };
@@ -102,6 +103,8 @@ public sealed class PlutoDriveHealthService : IPlutoDriveHealthService
                     try { _ = _storage.ResolveDataPath(f); }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { System.Diagnostics.Debug.WriteLine("[Pluto.DriveHealth] seed: " + ex.Message); }
                 }
+            // 🔁 Drive → 로컬 미러(부재 시만 · 오프라인/새 PC 복원 대비)
+            (_storage as PlutoDriveStorageManager)?.RestoreCoreHubsToLocal(PlutoFiles);
         }, ct).ConfigureAwait(false);
         return CheckHealth();
     }
