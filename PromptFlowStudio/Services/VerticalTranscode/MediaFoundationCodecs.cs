@@ -296,26 +296,111 @@ public sealed unsafe class MfH264Encoder : IDisposable
         return null;
     }
 
+    // v17.75: 하드웨어 MFT 출력 자가검증 캐시(크기별) — 키 = w<<32|h, 값 = 검증 통과 인덱스(-1 = 전부 무출력 → 소프트웨어).
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, int> s_hwVerified = new();
+
+    /// <summary>테스트/진단용 — 하드웨어 MFT 자가검증 캐시 초기화.</summary>
+    public static void ResetHardwareVerification() => s_hwVerified.Clear();
+
+    /// <summary>
+    /// v17.75: 하이브리드 GPU 노트북 등에서 일부 비동기 HW MFT 가 입력은 수락하지만 출력을 전혀 내지 않아(0 샘플)
+    /// 먹서 init 세그먼트가 기록되지 않고 프로브가 0×0 이 되던 결함 — 후보마다 프로브 인스턴스로 실제 출력(SPS/IDR)을
+    /// 확인한 뒤에만 채택하고, 전부 무출력이면 MS 소프트웨어 MFT(→ 관리 코드)로 투명 폴백한다.
+    /// </summary>
     private bool TryHardware(int w, int h, int fps, int kbps)
+    {
+        var key = (long)w << 32 | (uint)h;
+        if (s_hwVerified.TryGetValue(key, out var verified))
+        {
+            if (verified < 0) { FailReason = "HW MFT 출력 없음(검증 캐시) → CPU"; return false; }
+            if (TryHardwareAt(verified, w, h, fps, kbps, probe: false)) return true;
+            s_hwVerified.TryRemove(key, out _);
+        }
+        var count = HardwareCount();
+        if (count == 0) { FailReason = "하드웨어 H.264 MFT 없음"; return false; }
+        for (var i = 0; i < count; i++)
+        {
+            if (!TryHardwareAt(i, w, h, fps, kbps, probe: true)) continue;
+            if (TryHardwareAt(i, w, h, fps, kbps, probe: false)) { s_hwVerified[key] = i; return true; }
+        }
+        s_hwVerified[key] = -1;
+        FailReason ??= "HW MFT 출력 없음 → CPU";
+        return false;
+    }
+
+    private static int HardwareCount()
     {
         var inInfo = new Mf.TypeInfo { Major = Mf.MediaTypeVideo, Sub = Mf.NV12 };
         var outInfo = new Mf.TypeInfo { Major = Mf.MediaTypeVideo, Sub = Mf.H264 };
-        if (Mf.MFTEnumEx(Mf.CAT_VIDEO_ENCODER, 0x4 | 0x40, &inInfo, &outInfo, out var arr, out var count) < 0 || count == 0) { FailReason = "하드웨어 H.264 MFT 없음"; return false; }
+        if (Mf.MFTEnumEx(Mf.CAT_VIDEO_ENCODER, 0x4 | 0x40, &inInfo, &outInfo, out var arr, out var count) < 0) return 0;
         var acts = (IntPtr*)arr;
+        for (var i = 0; i < count; i++) Mf.Release(acts[i]);
+        Mf.CoTaskMemFree(arr);
+        return (int)count;
+    }
+
+    /// <summary>HW MFT #index 생성(매 호출 재열거 · 새 인스턴스). probe = true 면 회색 프레임으로 출력 확인 후 즉시 폐기.</summary>
+    private bool TryHardwareAt(int index, int w, int h, int fps, int kbps, bool probe)
+    {
+        var inInfo = new Mf.TypeInfo { Major = Mf.MediaTypeVideo, Sub = Mf.NV12 };
+        var outInfo = new Mf.TypeInfo { Major = Mf.MediaTypeVideo, Sub = Mf.H264 };
+        if (Mf.MFTEnumEx(Mf.CAT_VIDEO_ENCODER, 0x4 | 0x40, &inInfo, &outInfo, out var arr, out var count) < 0) return false;
+        var acts = (IntPtr*)arr;
+        MfTransform? x = null;
         try
         {
-            for (var i = 0; i < count; i++)
+            if (index >= count || Mf.Activate(acts[index], Mf.IID_Transform, out var t) < 0) return false;
+            if (Mf.Attributes(t, out var attrs) >= 0) { Mf.SetU32(attrs, Mf.ASYNC_UNLOCK, 1); Mf.SetU32(attrs, Mf.LOW_LATENCY, 1); Mf.Release(attrs); }
+            x = new MfTransform(t, async: true);
+            var name = "HW MFT #" + index.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (!Configure(x, w, h, fps, kbps) || !x.Begin())
             {
-                if (Mf.Activate(acts[i], Mf.IID_Transform, out var t) < 0) continue;
-                if (Mf.Attributes(t, out var attrs) >= 0) { Mf.SetU32(attrs, Mf.ASYNC_UNLOCK, 1); Mf.SetU32(attrs, Mf.LOW_LATENCY, 1); Mf.Release(attrs); }
-                var x = new MfTransform(t, async: true);
-                if (Configure(x, w, h, fps, kbps) && x.Begin()) { _x = x; Kind = MfEncoderKind.Hardware; HardwareName = "HW MFT #" + i.ToString(System.Globalization.CultureInfo.InvariantCulture); return true; }
-                FailReason = "HW MFT 구성 실패 0x" + x.LastHr.ToString("X8", System.Globalization.CultureInfo.InvariantCulture);
-                x.Dispose();
+                FailReason = name + " 구성 실패 0x" + x.LastHr.ToString("X8", System.Globalization.CultureInfo.InvariantCulture);
+                return false;
             }
+            if (probe)
+            {
+                var ok = ProbeOutput(x, w, h, fps);
+                if (!ok) FailReason = name + " 출력 없음(0 샘플) → 다음 후보/CPU";
+                return ok;
+            }
+            _x = x; x = null; Kind = MfEncoderKind.Hardware; HardwareName = name;
+            return true;
         }
-        finally { for (var i = 0; i < count; i++) Mf.Release(acts[i]); Mf.CoTaskMemFree(arr); }
-        return false;
+        finally
+        {
+            x?.Dispose();
+            for (var i = 0; i < count; i++) Mf.Release(acts[i]);
+            Mf.CoTaskMemFree(arr);
+        }
+    }
+
+    /// <summary>회색 NV12 프레임 최대 4장 투입 → 비어 있지 않은 출력(SPS 포함 Annex-B) 1개 이상 수확 시 true(비핫패스 · 할당 허용).</summary>
+    private static bool ProbeOutput(MfTransform x, int w, int h, int fps)
+    {
+        var y = new byte[w * h]; var uv = new byte[w * h / 2];
+        y.AsSpan().Fill(128); uv.AsSpan().Fill(128);
+        var sink = new ProbeSink();
+        var dur = 10_000_000L / Math.Max(1, fps);
+        for (var f = 0; f < 4 && !sink.HasSps; f++)
+        {
+            var s = Mf.NewSample(y, uv, f * dur, dur);
+            if (s == IntPtr.Zero) return false;
+            try { x.Feed(s, sink); }
+            finally { Mf.Release(s); }
+        }
+        if (!sink.HasSps) x.Finish(sink);
+        return sink.HasSps;
+    }
+
+    private sealed class ProbeSink : IMfSampleSink
+    {
+        public bool HasSps;
+        public void OnSample(ReadOnlySpan<byte> data, long time100ns)
+        {
+            var rest = data;
+            while (FragmentedMp4Muxer.NextNal(ref rest, out var nal)) if (!nal.IsEmpty && (nal[0] & 31) == 7) { HasSps = true; return; }
+        }
     }
 
     private bool TrySoftware(int w, int h, int fps, int kbps)

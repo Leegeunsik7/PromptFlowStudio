@@ -1,18 +1,19 @@
 # Current Project Status
-- Active Milestone: 【Step 10 — 렌더 카탈로그 Drive 백업 허브 등록 · 미학습 영상 CSV 템플릿】 ✅ 완료
-- Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Tests Release 0W/0E · ⏳ Mobile net8.0-ios CoreCompile — 신규 PC에 `ios` 워크로드 미설치(NETSDK1147)
-- Tests: ⚠️ 1182/1184 — 전체 실행 1181 통과, `SingleFileBinaryProcessBootstrap_Check` 단독 재실행 통과 · MF 2건 환경 결함(아래)
+- Active Milestone: 【Step 11 — MF H.264 0×0 프로브 결함 수정(HW MFT 출력 자가검증 → CPU MF → 관리 코드 폴백)】 ✅ 완료
+- Build: ✅ Desktop Release `-warnaserror` 0W/0E · ✅ Tests Release 0W/0E · ⏳ Mobile net8.0-ios — `ios` 워크로드 미설치(NETSDK1147)
+- Tests: ✅ 1184/1184 — 전체 실행 1183 통과 + `SingleFileBinaryProcessBootstrap_Check` 단독 재실행 통과(부하 시 간헐)
 - Updated: 2026-11-17 (KST)
 
-## Completed (Step 10)
-- 💾 `PlutoDriveStorageManager` / `PlutoDriveHealthService` — `pluto_render_catalog.json`을 Drive 백업·검증·신규 PC 복원 허브에 등록(7개 파일)
-- 📋 `PlutoTelemetryBatchImporter.BuildUnlearnedCsvTemplateAsync(maxRows=15)` — 미학습(`TelemetryLogged == false`) 클립 → 압축 4열 CSV 템플릿
-- 🖱️ `Workspace.razor` `[📋 미학습 영상 CSV 템플릿 채우기]` 버튼 · `MainForm.cs` DI 결선
-- 🧪 `RenderCatalogAndBatchTelemetryTests` 신규 3건 · `PlutoHardeningAndStoryTests` 7개 파일 허브 반영
+## Completed
+- Step 10: `6b1d98f` → `origin/main`, `origin/master` 동기화
+- Step 11: `MfH264Encoder.TryHardware` — 비동기 HW MFT 후보별 프로브(회색 프레임 → SPS 출력 확인) 후 채택, 크기별 검증 캐시
+  - 원인: 하이브리드 GPU(NVIDIA RTX 5050 + Intel) HW MFT가 입력 수락 후 0 샘플 출력 → fMP4 init 미기록 → 프로브 0×0
+  - 무출력 시 MS 소프트웨어 MFT → 관리 코드 Baseline 순 투명 폴백(MF 정상 경로 무변경)
+- `Media.MediaFeaturePack` 설치 확인(Online: True) · `VerticalVideoTranscode_*`, `VideoDemux_*` 통과
 
 ## Notes
-- 신규 PC 환경 결함: Media Foundation H.264 인코딩/프로브 0x0 → `VerticalVideoTranscode_And_StudioDirectMux_Check`, `VideoDemux_And_ThumbnailSynthesis_Check` 실패(Step 10 diff와 무관, 코덱/인코더 MFT 확인 필요)
+- FFmpeg 폴백 계층은 미추가 — 최종 폴백이 관리 코드 H.264(외부 의존 0)라 KN 에디션에서도 0×0 불가
 - `*IsolatedTests` 실시간 프레임 예산 테스트는 부하 시 간헐 실패 → 유휴 재실행
 
 ## Next
-- 신규 PC: `ios` 워크로드 설치 + MF 인코더 진단 후 1184/1184 재검증
+- 신규 PC: `ios` 워크로드 설치 후 Mobile 빌드 재검증
