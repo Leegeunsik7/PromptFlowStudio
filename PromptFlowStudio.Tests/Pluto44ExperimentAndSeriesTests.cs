@@ -344,7 +344,7 @@ public sealed class Pluto44ExperimentAndSeriesTests : IDisposable
                                        "data-ab-build=\"1\"", "data-ab-panel=", "data-perf-panel=\"1\"", "data-perf-toggle-solo=\"1\"",
                                        "data-perf-hookstyle=\"1\"", "data-perf-look=\"1\"", "data-perf-bgm=\"1\"", "data-perf-tags=\"1\"", "data-perf-context=" })
             Assert.Contains(marker, razor, StringComparison.Ordinal);
-        Assert.Contains("@if (_perfOpen && (_montagePhotos.Count >= 2 || _perfContextSource is not null))", razor, StringComparison.Ordinal);
+        Assert.Contains("@if (_perfOpen && (_montagePhotos.Count >= 2 || _perfContextSource is not null || _catalogClips.Count > 0))", razor, StringComparison.Ordinal);
         var panel = razor.IndexOf("data-series-panel=", StringComparison.Ordinal);
         var batch = razor.IndexOf("data-series-batch-export=", StringComparison.Ordinal);
         Assert.True(batch > panel && batch < razor.IndexOf("</div>", panel, StringComparison.Ordinal));   // 활성 시리즈 패널 내부

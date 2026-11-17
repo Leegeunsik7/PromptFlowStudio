@@ -283,10 +283,22 @@
                     @if (_abEvalOpen) { @AbEvalForm(null) }
                 </div>
             }
-            @if (_montagePhotos.Count < 2 && _perfContextSource is not null) { <button class="ws-back" data-perf-toggle-solo="1" @onclick="TogglePerfPanel" aria-expanded="@(_perfOpen ? "true" : "false")" title="방금 렌더한 영상의 훅 · 룩 · BGM · 태그가 자동 입력됩니다 — 3초 유지율 · 완주율 · CTR만 입력">[📊 배포 성과 피드백 학습] @(_perfOpen ? "▲" : "▼")</button> }
-            @if (_perfOpen && (_montagePhotos.Count >= 2 || _perfContextSource is not null))
+            @if (_montagePhotos.Count < 2 && (_perfContextSource is not null || _catalogClips.Count > 0)) { <button class="ws-back" data-perf-toggle-solo="1" @onclick="TogglePerfPanel" aria-expanded="@(_perfOpen ? "true" : "false")" title="방금 렌더한 영상의 훅 · 룩 · BGM · 태그가 자동 입력됩니다 — 3초 유지율 · 완주율 · CTR만 입력">[📊 배포 성과 피드백 학습] @(_perfOpen ? "▲" : "▼")</button> }
+            @if (_perfOpen && (_montagePhotos.Count >= 2 || _perfContextSource is not null || _catalogClips.Count > 0))
             {
                 <div class="ws-perf-panel" data-perf-panel="1" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%">
+                    @if (_catalogClips.Count > 0)
+                    {
+                        <label class="ws-retry" title="최근 렌더 영상(최대 30건 · 재시작 후에도 유지)을 고르면 영상 ID · 훅 · 룩 · BGM · 태그가 자동 입력됩니다">[🎞️ 최근 렌더 영상 불러오기]
+                            <select class="ws-back" data-perf-catalog="@(_catalogClips.Count.ToString(CultureInfo.InvariantCulture))" value="@(_catalogPick)" @onchange="OnCatalogClipPicked" disabled="@(_perfBusy || _batchBusy)" style="max-width:22em">
+                                <option value="">— 선택 —</option>
+                                @foreach (var cc in _catalogClips)
+                                {
+                                    <option value="@(cc.VideoId)">@(CatalogClipLabel(cc))</option>
+                                }
+                            </select>
+                        </label>
+                    }
                     <select class="ws-back" data-perf-platform="1" @bind="_perfPlatform" disabled="@(_perfBusy)">
                         <option value="YouTube Shorts">YouTube Shorts</option>
                         <option value="Instagram Reels">Instagram Reels</option>
@@ -305,6 +317,13 @@
                     {
                         <span class="@(po.IsBreakoutSuccess ? "ws-pcore on" : "ws-retry")" role="status" data-perf-outcome="@(po.IsBreakoutSuccess ? "breakout" : po.RecordedMistakePenalty ? "penalty" : po.AlreadyRegistered ? "duplicate" : "neutral")" data-perf-dim="@(po.FailureDimension ?? "")" data-perf-guard="@(po.GuardActivated ? "1" : "0")">@(po.SummaryMessage) · 🪐 @(PlutoDirector.CurrentXp.ToString(CultureInfo.InvariantCulture)) XP</span>
                     }
+                    <button class="ws-back" data-batch-toggle="1" @onclick="ToggleBatchPanel" aria-expanded="@(_batchOpen ? "true" : "false")" title="여러 영상 성과를 한 번에 반영 — 압축 4열(VideoId,HookRetentionPct,CompletionPct,CtrPct) 또는 YouTube Studio 분석 CSV(콘텐츠 · 동영상 제목 · 평균 조회율 · 노출 클릭률) 붙여넣기">[📥 CSV / 다건 성과 일괄 반영] @(_batchOpen ? "▲" : "▼")</button>
+                    @if (_batchOpen)
+                    {
+                        <textarea data-batch-csv="1" @bind="_batchCsv" rows="4" maxlength="200000" spellcheck="false" style="width:100%;font:11px/1.4 var(--mono)" placeholder="VideoId,HookRetentionPct,CompletionPct,CtrPct&#10;my_clip_01,58.2,41.0,5.3&#10;— 또는 YouTube Studio 내보내기 CSV 전체 붙여넣기" disabled="@(_batchBusy)"></textarea>
+                        <button class="ws-back" data-batch-run="1" @onclick="RunBatchImportAsync" disabled="@(_batchBusy || _perfBusy || string.IsNullOrWhiteSpace(_batchCsv))">@(_batchBusy ? "⏳ 일괄 학습 중…" : "[일괄 학습 실행]")</button>
+                    }
+                    @if (_batchToast is { } btt) { <span class="ws-retry" role="status" data-batch-toast="1">@(btt)</span> }
                 </div>
             }
             @if (_montageBusy) { <span class="ws-retry" role="status" data-montage-busy="1"><span class="ws-motion-spin" aria-hidden="true"></span> 🎞️ 몽타주 렌더 중… (@(_montagePhotos.Count.ToString(CultureInfo.InvariantCulture))컷 · 15초 · 60fps)</span> }
@@ -2949,6 +2968,13 @@
     private string _perfHookStyle = "", _perfLookId = "", _perfBgmMood = "", _perfStyleTags = "";
     private string? _perfContextSource;
     private PromptFlowStudio.Services.Pluto.PlutoReinforcementOutcome? _perfOutcome;
+    // 🎞️ Step 9 — 영속 렌더 카탈로그 · 📥 CSV 다건 일괄 반영
+    private IReadOnlyList<PromptFlowStudio.Services.Pluto.PlutoRenderedClipRecord> _catalogClips = Array.Empty<PromptFlowStudio.Services.Pluto.PlutoRenderedClipRecord>();
+    private string _catalogPick = "";
+    private int _catalogGen;
+    private bool _batchOpen, _batchBusy;
+    private string _batchCsv = "";
+    private string? _batchToast;
 
     private string[] ActiveViralTagsSafe(int max)
     {
@@ -3116,6 +3142,110 @@
         _perfStyleTags = string.Join(", ", ActiveViralTagsSafe(3));
         _perfContextSource = source;
         _perfOutcome = null;
+
+        // 🎞️ 카탈로그 영속 — 시리즈 편은 편 제목 · 편 번호 모드로 기록(덮어쓰기 없이 편별 선택 가능)
+        var title = _perfVideoId;
+        var mode = source;
+        if (_series is { } ser && _seriesActiveEpisode > 0 && string.Equals(source, "몽타주", StringComparison.Ordinal)
+            && string.Equals(_seriesEpisodeKey, string.Join("|", _montagePhotos), StringComparison.Ordinal))
+        {
+            mode = "시리즈 " + _seriesActiveEpisode.ToString(CultureInfo.InvariantCulture) + "/" + ser.Episodes.Count.ToString(CultureInfo.InvariantCulture) + "편";
+            foreach (var ep in ser.Episodes)
+                if (ep.EpisodeNumber == _seriesActiveEpisode && !string.IsNullOrWhiteSpace(ep.EpisodeTitle)) { title = ep.EpisodeTitle.Trim(); break; }
+            _perfContextSource = mode;
+        }
+        var record = new PromptFlowStudio.Services.Pluto.PlutoRenderedClipRecord(_perfVideoId, title, mode, _perfHookStyle, _perfLookId, _perfBgmMood,
+            SplitPerfTags(_perfStyleTags), renderedPath, DateTimeOffset.UtcNow, false);
+        _ = RecordCatalogClipAsync(record);
+    }
+
+    /// <summary>🎞️ 렌더 → 카탈로그 기록 후 목록 갱신(예외 전파 금지 · 서비스 미등록 → 생략).</summary>
+    private async Task RecordCatalogClipAsync(PromptFlowStudio.Services.Pluto.PlutoRenderedClipRecord record)
+    {
+        try
+        {
+            if (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoRenderCatalogService)) is not PromptFlowStudio.Services.Pluto.IPlutoRenderCatalogService cat) return;
+            await cat.RecordRenderedClipAsync(record, _mediaCts.Token);
+        }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex) { Program.Log("Workspace.RenderCatalog", ex); }
+        await RefreshCatalogClipsAsync();
+    }
+
+    /// <summary>🎞️ 최근 렌더 30건 재조회(세대 가드 · 예외 전파 금지).</summary>
+    private async Task RefreshCatalogClipsAsync()
+    {
+        var gen = Interlocked.Increment(ref _catalogGen);
+        try
+        {
+            if (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoRenderCatalogService)) is not PromptFlowStudio.Services.Pluto.IPlutoRenderCatalogService cat) return;
+            var clips = await cat.GetRecentClipsAsync(30, _mediaCts.Token);
+            if (gen != Volatile.Read(ref _catalogGen) || _disposed) return;
+            _catalogClips = clips;
+        }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex) { Program.Log("Workspace.RenderCatalogRefresh", ex); return; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private static string CatalogClipLabel(PromptFlowStudio.Services.Pluto.PlutoRenderedClipRecord c)
+        => (c.TelemetryLogged ? "✅ 학습완료" : "⏳ 미학습") + " · " + c.RenderMode + " · " + c.RenderedAtUtc.ToLocalTime().ToString("MM-dd HH:mm", CultureInfo.InvariantCulture) + " · " + (string.IsNullOrWhiteSpace(c.Title) ? c.VideoId : c.Title);
+
+    /// <summary>🎞️ [최근 렌더 영상 불러오기] — 선택 영상 메타 → 성과 입력 자동 채움(지표 입력값 유지).</summary>
+    private void OnCatalogClipPicked(ChangeEventArgs e)
+    {
+        var id = e.Value as string ?? "";
+        _catalogPick = id;
+        if (id.Length == 0) return;
+        foreach (var c in _catalogClips)
+        {
+            if (!string.Equals(c.VideoId, id, StringComparison.Ordinal)) continue;
+            _perfVideoId = c.VideoId;
+            _perfHookStyle = c.HookStyle;
+            _perfLookId = c.ColorLookId;
+            _perfBgmMood = c.BgmMood;
+            _perfStyleTags = string.Join(", ", c.Tags);
+            _perfContextSource = "🎞️ " + c.RenderMode;
+            _perfOutcome = null;
+            return;
+        }
+    }
+
+    private void ToggleBatchPanel() => _batchOpen = !_batchOpen;
+
+    /// <summary>📥 [일괄 학습 실행] — CSV/TSV → 카탈로그 매칭 → 폐루프 강화 → 카탈로그 · 두뇌 리포트 갱신(예외 전파 금지).</summary>
+    private async Task RunBatchImportAsync()
+    {
+        if (_batchBusy || string.IsNullOrWhiteSpace(_batchCsv)) return;
+        if (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoTelemetryBatchImporter)) is not PromptFlowStudio.Services.Pluto.IPlutoTelemetryBatchImporter importer)
+        { _batchToast = "⚠ 일괄 반영 서비스를 사용할 수 없습니다."; return; }
+        _batchBusy = true;
+        _batchToast = null;
+        StateHasChanged();
+        try
+        {
+            var r = await importer.ImportCsvAsync(_batchCsv, _perfPlatform, _mediaCts.Token);
+            var toast = r.TotalRows == 0 ? "⚠ 인식된 성과 행이 없습니다 — 헤더/구분자를 확인하세요." : r.SummaryKorean;
+            if (r.UnmatchedIdentifiers.Count > 0)
+            {
+                var n = Math.Min(5, r.UnmatchedIdentifiers.Count);
+                var sb = new System.Text.StringBuilder(" · 미매칭: ");
+                for (var i = 0; i < n; i++) { if (i > 0) sb.Append(", "); sb.Append(r.UnmatchedIdentifiers[i]); }
+                if (r.UnmatchedIdentifiers.Count > n) sb.Append(" 외 ").Append((r.UnmatchedIdentifiers.Count - n).ToString(CultureInfo.InvariantCulture)).Append("건");
+                toast += sb.ToString();
+            }
+            _batchToast = toast;
+            if (r.MatchedAndLearnedCount > 0) _batchCsv = "";
+            await RefreshCatalogClipsAsync();
+            await RefreshAdaptiveRecommendationAsync();   // 🧠 폐루프 → 순방향 랭킹
+            await RefreshBrainSummaryAsync();   // 🧠 두뇌 리포트 갱신
+        }
+        catch (OperationCanceledException) { return; }   // 페이지 이탈
+        catch (Exception ex) { Program.Log("Workspace.BatchTelemetry", ex); _batchToast = "⚠ 일괄 반영 실패: " + ex.Message; }
+        finally { _batchBusy = false; }
+        if (_disposed) return;
+        await InvokeAsync(StateHasChanged);
     }
 
     private void TogglePerfPanel()
@@ -3147,6 +3277,14 @@
                 _perfHook, _perfCompletion, _perfCtr, DateTimeOffset.UtcNow);
             _perfOutcome = await svc.IngestPerformanceAsync(telemetry, _mediaCts.Token);
             _snsToast = null;
+            try
+            {
+                if (EcoSp.GetService(typeof(PromptFlowStudio.Services.Pluto.IPlutoRenderCatalogService)) is PromptFlowStudio.Services.Pluto.IPlutoRenderCatalogService cat)
+                    await cat.MarkTelemetryLoggedAsync(videoId, _mediaCts.Token);   // 🎞️ ⏳ 미학습 → ✅ 학습완료
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { Program.Log("Workspace.RenderCatalogMark", ex); }
+            await RefreshCatalogClipsAsync();
             await RefreshAdaptiveRecommendationAsync();   // 🧠 폐루프 → 순방향 랭킹 즉시 반영
             await RefreshBrainSummaryAsync();   // 🧠 두뇌 리포트 갱신
         }
@@ -5263,6 +5401,7 @@
         _ = LiveLoopAsync(live, draw, cts.Token);
         _ = RefreshAbPendingAsync();   // 📋 재시작 후 대기 A/B 실험 복원(예외 내부 격리)
         _ = RefreshBrainSummaryAsync();   // 🧠 두뇌 리포트 선집계(예외 내부 격리)
+        _ = RefreshCatalogClipsAsync();   // 🎞️ 영속 렌더 카탈로그 선적재(재시작 후 최근 렌더 선택)
         _ = SyncBgmPreviewAsync();   // 🎵 SNS 레이더 주입 BGM ON → 미리듣기 시작 · OFF → 잔존 전역 미리듣기 정리(예외 내부 격리)
     }
 
